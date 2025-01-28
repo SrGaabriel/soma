@@ -1,4 +1,4 @@
-cabal-version:      3.4
+cabal-version:      3.12
 name:               soma
 version:            0.1.0.0
 -- synopsis:
@@ -19,8 +19,8 @@ common warnings
 executable soma
     import:           warnings
     main-is:          Main.hs
-    -- other-modules:
+    other-modules:    Lexing.Lexer
     -- other-extensions:
-    build-depends:    base ^>=4.19.1.0
+    build-depends: base >= 4.19.2.0
     hs-source-dirs:   app
     default-language: Haskell2010
