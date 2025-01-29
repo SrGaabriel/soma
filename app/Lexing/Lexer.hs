@@ -1,4 +1,4 @@
-module Lexing.Lexer (tokenize, tokenizeFile) where
+module Lexing.Lexer (Token(..), tokenize, tokenizeFile) where
 
 data Token
     = TokenBOF String -- Beginning of file (file path)

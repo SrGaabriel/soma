@@ -1,6 +1,7 @@
 module Main where
 
 import Lexing.Lexer (tokenizeFile)
+import Parsing.Parser ()
 
 main :: IO ()
 main = do

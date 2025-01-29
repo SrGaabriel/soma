@@ -20,7 +20,11 @@ executable soma
     import:           warnings
     main-is:          Main.hs
     other-modules:    Lexing.Lexer
-    -- other-extensions:
-    build-depends: base >= 4.19.2.0
+                      Lexing.Errors
+                      Parsing.Parser
+                      Parsing.Errors
+
+
+    build-depends:    base >= 4.19.2.0
     hs-source-dirs:   app
     default-language: Haskell2010
