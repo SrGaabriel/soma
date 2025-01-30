@@ -1,8 +1,8 @@
-module Lexing.Lexer (Token(..), tokenize, tokenizeFile) where
+module Lexing.Lexer (Token(..), TokenKind(..), tokenize, tokenizeFile) where
 
-data Token
+data TokenKind
     = TokenBOF String -- Beginning of file (file path)
-    | TokenNumber String
+    | TokenNumber
     | TokenPlus
     | TokenMinus
     | TokenAsterisk
@@ -10,44 +10,50 @@ data Token
     | TokenEquals
     | TokenLeftArrow
     | TokenRightArrow
-    | TokenNewline Int -- Indentation level
+    | TokenNewline Int
     | TokenLeftParenthesis
     | TokenRightParenthesis
-    | TokenIdentifier String
+    | TokenIdentifier
     | TokenLet
     | TokenFn
     | TokenEOF String
     deriving (Show, Eq)
 
+data Token = Token 
+    { tokenKind :: TokenKind
+    , value :: String 
+    } deriving (Show, Eq)
+
 tokenizeFile :: String -> String -> [Token]
-tokenizeFile path content = TokenBOF path : tokenize content ++ [TokenEOF path]
+tokenizeFile path content = Token (TokenBOF "") path : tokenize content ++ [Token (TokenEOF "") path]
 
 tokenize :: String -> [Token]
 tokenize [] = []
 tokenize (c:cs)
     | isSpace c = tokenize cs
-    | c == '+' = TokenPlus : tokenize cs
-    | c == '-' = TokenMinus : tokenize cs
-    | c == '*' = TokenAsterisk : tokenize cs
-    | c == '/' = TokenSlash : tokenize cs
-    | c == '=' = TokenEquals : tokenize cs
-    | c == '>' = TokenRightArrow : tokenize cs
-    | c == '<' = TokenLeftArrow : tokenize cs
-    | c == '(' = TokenLeftParenthesis : tokenize cs
-    | c == ')' = TokenRightParenthesis : tokenize cs
+    | c == '+' = Token TokenPlus "+" : tokenize cs
+    | c == '-' = Token TokenMinus "-" : tokenize cs
+    | c == '*' = Token TokenAsterisk "*" : tokenize cs
+    | c == '/' = Token TokenSlash "/" : tokenize cs
+    | c == '=' = Token TokenEquals "=" : tokenize cs
+    | c == '>' = Token TokenRightArrow ">" : tokenize cs
+    | c == '<' = Token TokenLeftArrow ">" : tokenize cs
+    | c == '(' = Token TokenLeftParenthesis "(" : tokenize cs
+    | c == ')' = Token TokenRightParenthesis ")" : tokenize cs
     | c == '\n' =
         let (spaces, rest) = span (\w -> w == ' ' || w == '\t') cs
             indent = sum (map (\w -> if w == '\t' then 4 else 1) spaces)
-        in TokenNewline indent : tokenize rest
+        in Token (TokenNewline indent) "\n" : tokenize rest
     | isDigit c =
         let (numberToken, rest) = span isDigit (c:cs)
-        in TokenNumber (numberToken) : tokenize rest
+        in Token TokenNumber numberToken : tokenize rest
     | isCharacter c =
         let (text, rest) = span isCharacter (c:cs)
-        in case text of
-            "let" -> TokenLet : tokenize rest
-            "fn" -> TokenFn : tokenize rest
-            none -> TokenIdentifier none : tokenize rest
+            kind = case text of
+                "let" -> TokenLet
+                "fn"  -> TokenFn
+                _     -> TokenIdentifier
+        in Token kind text : tokenize rest
     | otherwise = error $ "Unexpected character: " ++ [c]
 
 isDigit :: Char -> Bool

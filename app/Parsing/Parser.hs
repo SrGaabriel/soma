@@ -1,6 +1,7 @@
+{-# LANGUAGE LambdaCase #-}
 module Parsing.Parser where
 
-import Lexing.Lexer (Token(..))
+import Lexing.Lexer (Token(..), TokenKind(..))
 import Parsing.Errors (ParsingError(..))
 
 data Expression = Expression
@@ -29,3 +30,10 @@ instance Monad Parser where
     (x, rest) <- p tokens
     let Parser p2 = f x
     p2 rest
+
+consume :: TokenKind -> Parser Token
+consume expected = Parser $ \case
+  [] -> Left EndOfInput
+  (t : ts)
+    | tokenKind t == expected -> Right (t, ts)
+    | otherwise -> Left (UnexpectedToken $ value t)
