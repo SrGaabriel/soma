@@ -1,7 +1,7 @@
 module Lexing.Lexer (Token(..), TokenKind(..), tokenize, tokenizeFile) where
 
 data TokenKind
-    = TokenBOF String -- Beginning of file (file path)
+    = TokenBOF
     | TokenNumber
     | TokenPlus
     | TokenMinus
@@ -10,13 +10,13 @@ data TokenKind
     | TokenEquals
     | TokenLeftArrow
     | TokenRightArrow
-    | TokenNewline Int
+    | TokenNewline
     | TokenLeftParenthesis
     | TokenRightParenthesis
     | TokenIdentifier
     | TokenLet
     | TokenFn
-    | TokenEOF String
+    | TokenEOF
     deriving (Show, Eq)
 
 data Token = Token 
@@ -25,7 +25,7 @@ data Token = Token
     } deriving (Show, Eq)
 
 tokenizeFile :: String -> String -> [Token]
-tokenizeFile path content = Token (TokenBOF "") path : tokenize content ++ [Token (TokenEOF "") path]
+tokenizeFile path content = Token TokenBOF path : tokenize content ++ [Token TokenEOF path]
 
 tokenize :: String -> [Token]
 tokenize [] = []
@@ -42,8 +42,8 @@ tokenize (c:cs)
     | c == ')' = Token TokenRightParenthesis ")" : tokenize cs
     | c == '\n' =
         let (spaces, rest) = span (\w -> w == ' ' || w == '\t') cs
-            indent = sum (map (\w -> if w == '\t' then 4 else 1) spaces)
-        in Token (TokenNewline indent) "\n" : tokenize rest
+            indent = spaces >>= (\w -> if w == '\t' then "    " else " ") 
+        in Token TokenNewline indent : tokenize rest
     | isDigit c =
         let (numberToken, rest) = span isDigit (c:cs)
         in Token TokenNumber numberToken : tokenize rest

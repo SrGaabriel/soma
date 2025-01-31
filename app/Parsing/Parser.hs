@@ -3,14 +3,10 @@ module Parsing.Parser where
 
 import Lexing.Lexer (Token(..), TokenKind(..))
 import Parsing.Errors (ParsingError(..))
-
-data Expression = Expression
-  { token :: Token
-  , children :: [Expression]
-  } deriving (Show, Eq)
+import Parsing.Tree (RootExpr(..), Expression(..), SomeExpr)
 
 data Parser a = Parser {
-  parse :: [Token] -> Either ParsingError (a, [Token])
+  runParser :: [Token] -> Either ParsingError (a, [Token])
 }
 
 instance Functor Parser where
@@ -36,4 +32,29 @@ consume expected = Parser $ \case
   [] -> Left EndOfInput
   (t : ts)
     | tokenKind t == expected -> Right (t, ts)
-    | otherwise -> Left (UnexpectedToken $ value t)
+    | otherwise -> Left $ UnexpectedToken $ value t
+
+parse :: [Token] -> Either ParsingError RootExpr
+parse tokens = do
+    (root, _) <- runParser parser tokens
+    return root
+  where
+    parser = do
+      bofToken <- consume TokenBOF
+      declarations <- parseSequence TokenNewline TokenBOF parseExpression
+      return $ RootExpr bofToken declarations
+
+parseExpression :: Parser SomeExpr
+parseExpression = do
+  Parser $ \tokens -> Left $ UnexpectedToken "TODO"
+
+parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
+parseSequence separator end itemParser = Parser $ \tokens -> do
+    let parseNext acc remaining = case runParser (consume end) remaining of
+            Right (_, rest) -> Right (reverse acc, rest)
+            Left _ -> do
+                (item, rest1) <- runParser itemParser remaining
+                case runParser (consume separator) rest1 of
+                    Right (_, rest2) -> parseNext (item:acc) rest2
+                    Left _ -> parseNext (item:acc) rest1
+    parseNext [] tokens

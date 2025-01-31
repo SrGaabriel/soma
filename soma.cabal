@@ -23,7 +23,7 @@ executable soma
                       Lexing.Errors
                       Parsing.Parser
                       Parsing.Errors
-
+                      Parsing.Tree
 
     build-depends:    base >= 4.19.2.0
     hs-source-dirs:   app
