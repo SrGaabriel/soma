@@ -3,7 +3,7 @@ module Parsing.Parser where
 
 import Lexing.Lexer (Token(..), TokenKind(..))
 import Parsing.Errors (ParsingError(..))
-import Parsing.Tree (RootExpr(..), Expression(..), SomeExpr)
+import Parsing.Tree (ExpressionKind(..), Expression(..))
 
 data Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -34,7 +34,7 @@ consume expected = Parser $ \case
     | tokenKind t == expected -> Right (t, ts)
     | otherwise -> Left $ UnexpectedToken $ value t
 
-parse :: [Token] -> Either ParsingError RootExpr
+parse :: [Token] -> Either ParsingError Expression
 parse tokens = do
     (root, _) <- runParser parser tokens
     return root
@@ -42,9 +42,9 @@ parse tokens = do
     parser = do
       bofToken <- consume TokenBOF
       declarations <- parseSequence TokenNewline TokenBOF parseExpression
-      return $ RootExpr bofToken declarations
+      return $ Expression bofToken RootExpr declarations
 
-parseExpression :: Parser SomeExpr
+parseExpression :: Parser Expression
 parseExpression = do
   Parser $ \tokens -> Left $ UnexpectedToken "TODO"
 
