@@ -4,9 +4,9 @@ module Parsing.Tree where
 import Lexing.Lexer (Token)
 
 data Expression = Expression 
-  { token :: Token
-  , kind :: ExpressionKind
-  , children :: [Expression]
+  { exprToken :: Token
+  , exprKind :: ExpressionKind
+  , exprChildren :: [Expression]
   } deriving (Show, Eq)
 
 data ExpressionKind

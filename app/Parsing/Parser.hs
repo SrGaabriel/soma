@@ -28,16 +28,19 @@ instance Monad Parser where
     p2 rest
 
 consume :: TokenKind -> Parser Token
-consume expected = Parser $ \case
+consume expectedKind = Parser $ \case
   [] -> Left EndOfInput
   (t : ts)
-    | tokenKind t == expected -> Right (t, ts)
-    | otherwise -> Left $ UnexpectedToken $ value t
+    | tokenKind t == expectedKind -> Right (t, ts)
+    | otherwise -> Left $ ExpectedDifferentToken expectedKind t
 
 peek :: Parser Token
 peek = Parser $ \case
   [] -> Left EndOfInput
-  (t : ts) -> Right (t, ts)
+  (t : ts) -> Right (t, t:ts)
+
+expr :: Token -> ExpressionKind -> Expression
+expr token kind = Expression token kind []
 
 parse :: [Token] -> Either ParsingError Expression
 parse tokens = do
@@ -51,13 +54,13 @@ parse tokens = do
 
 parseExpression :: Parser Expression
 parseExpression = do
-  Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts) -> case t of
-        Token { tokenKind = TokenFn } -> do
-          (fnToken, rest) <- runParser (consume TokenFn) (t:ts)
-          Right(Expression fnToken FunctionExpr [], rest)
-        other -> Left $ UnexpectedToken other
+  token <- peek
+  case tokenKind token of
+    TokenFn -> do
+      fnToken <- consume TokenFn
+      _identToken <- consume TokenIdentifier
+      return $ expr fnToken FunctionExpr
+    _ -> Parser $ \_ -> Left $ UnexpectedToken token
 
 parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do
@@ -65,7 +68,9 @@ parseSequence separator end itemParser = Parser $ \tokens -> do
             Right (_, rest) -> Right (reverse acc, rest)
             Left _ -> do
                 (item, rest1) <- runParser itemParser remaining
-                case runParser (consume separator) rest1 of
-                    Right (_, rest2) -> parseNext (item:acc) rest2
-                    Left _ -> parseNext (item:acc) rest1
+                case rest1 of
+                    [] -> Right (reverse (item:acc), [])
+                    _ -> case runParser (consume separator) rest1 of
+                        Right (_, rest2) -> parseNext (item:acc) rest2
+                        Left err -> Left err  -- Now we propagate the separator error
     parseNext [] tokens
