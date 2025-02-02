@@ -49,18 +49,24 @@ parse tokens = do
   where
     parser = do
       bofToken <- consume TokenBOF
-      declarations <- parseSequence TokenNewline TokenBOF parseExpression
+      declarations <- parseSequence TokenNewline TokenBOF parseDeclaration
       return $ Expression bofToken RootExpr declarations
 
-parseExpression :: Parser Expression
-parseExpression = do
+parseDeclaration :: Parser Expression
+parseDeclaration = do
   token <- peek
   case tokenKind token of
-    TokenFn -> do
-      fnToken <- consume TokenFn
-      _identToken <- consume TokenIdentifier
-      return $ expr fnToken FunctionExpr
+    TokenFn -> parseFunction
     _ -> Parser $ \_ -> Left $ UnexpectedToken token
+
+parseFunction :: Parser Expression
+parseFunction = do
+  fnToken <- consume TokenFn
+  _identToken <- consume TokenIdentifier
+  _openParenToken <- consume TokenLeftParenthesis
+  -- TODO: Parse types instead of ignoring them
+  _args <- parseFluidSequence TokenRightParenthesis (consume TokenIdentifier)
+  return $ expr fnToken FunctionExpr
 
 parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do
@@ -72,5 +78,18 @@ parseSequence separator end itemParser = Parser $ \tokens -> do
                     [] -> Right (reverse (item:acc), [])
                     _ -> case runParser (consume separator) rest1 of
                         Right (_, rest2) -> parseNext (item:acc) rest2
-                        Left err -> Left err  -- Now we propagate the separator error
+                        Left err -> Left err
+    parseNext [] tokens
+
+parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
+parseFluidSequence  end itemParser = Parser $ \tokens -> do
+    let parseNext acc remaining = case runParser (consume end) remaining of
+            Right (_, rest) -> Right (reverse acc, rest)
+            Left _ -> do
+                (item, rest1) <- runParser itemParser remaining
+                case rest1 of
+                    [] -> Right (reverse (item:acc), [])
+                    _ -> case parseNext (item:acc) rest1 of
+                        Right (_, rest2) -> Right (reverse acc, rest2)
+                        Left err -> Left err
     parseNext [] tokens
