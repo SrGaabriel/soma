@@ -8,8 +8,12 @@ data TokenKind
     | TokenAsterisk
     | TokenSlash
     | TokenEquals
+    | TokenLeftAngleBracket
+    | TokenRightAngleBracket
     | TokenLeftArrow
     | TokenRightArrow
+    | TokenColon
+    | TokenReturns
     | TokenNewline
     | TokenLeftParenthesis
     | TokenRightParenthesis
@@ -21,7 +25,7 @@ data TokenKind
 
 data Token = Token 
     { tokenKind :: TokenKind
-    , value :: String 
+    , tokenValue :: String 
     } deriving (Show, Eq)
 
 tokenizeFile :: String -> String -> [Token]
@@ -32,14 +36,19 @@ tokenize [] = []
 tokenize (c:cs)
     | isSpace c = tokenize cs
     | c == '+' = Token TokenPlus "+" : tokenize cs
-    | c == '-' = Token TokenMinus "-" : tokenize cs
     | c == '*' = Token TokenAsterisk "*" : tokenize cs
     | c == '/' = Token TokenSlash "/" : tokenize cs
     | c == '=' = Token TokenEquals "=" : tokenize cs
-    | c == '>' = Token TokenRightArrow ">" : tokenize cs
-    | c == '<' = Token TokenLeftArrow ">" : tokenize cs
+    | c == '>' = Token TokenRightAngleBracket ">" : tokenize cs
+    | c == '<' = Token TokenLeftAngleBracket ">" : tokenize cs
     | c == '(' = Token TokenLeftParenthesis "(" : tokenize cs
     | c == ')' = Token TokenRightParenthesis ")" : tokenize cs
+    | c == ':' = case cs of
+        ':' : rest -> Token TokenReturns "::" : tokenize rest
+        _ -> Token TokenColon ":" : tokenize cs
+    | c == '-' = case cs of
+        '>' : rest -> Token TokenRightArrow "->" : tokenize rest
+        _ -> Token TokenMinus "-" : tokenize cs
     | c == '\n' =
         let (spaces, rest) = span (\w -> w == ' ' || w == '\t') cs
             indent = spaces >>= (\w -> if w == '\t' then "    " else " ") 

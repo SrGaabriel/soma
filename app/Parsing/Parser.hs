@@ -34,13 +34,33 @@ consume expectedKind = Parser $ \case
     | tokenKind t == expectedKind -> Right (t, ts)
     | otherwise -> Left $ ExpectedDifferentToken expectedKind t
 
+consumeRelevant :: TokenKind -> Parser Token
+consumeRelevant expectedKind = Parser $ \case
+  [] -> Left EndOfInput
+  (t : ts)
+    | tokenKind t == TokenNewline -> runParser (consumeRelevant expectedKind) ts
+    | tokenKind t == expectedKind -> Right (t, ts)
+    | otherwise -> Left $ ExpectedDifferentToken expectedKind t
+
 peek :: Parser Token
 peek = Parser $ \case
   [] -> Left EndOfInput
   (t : ts) -> Right (t, t:ts)
 
+expect :: TokenKind -> Parser Token
+expect kind = Parser $ \case
+  [] -> Left EndOfInput
+  (t : ts) -> if tokenKind t == kind
+    then Right (t, t:ts)
+    else Left $ ExpectedDifferentToken kind t
+
 expr :: Token -> ExpressionKind -> Expression
 expr token kind = Expression token kind []
+
+optional :: Parser Token -> Parser (Maybe Token)
+optional parser = Parser $ \tokens -> case runParser parser tokens of
+  Right (token, rest) -> Right (Just token, rest)
+  Left _ -> Right (Nothing, tokens)
 
 parse :: [Token] -> Either ParsingError Expression
 parse tokens = do
@@ -62,15 +82,20 @@ parseDeclaration = do
 parseFunction :: Parser Expression
 parseFunction = do
   fnToken <- consume TokenFn
-  _identToken <- consume TokenIdentifier
-  _openParenToken <- consume TokenLeftParenthesis
-  -- TODO: Parse types instead of ignoring them
-  _args <- parseFluidSequence TokenRightParenthesis (consume TokenIdentifier)
-  return $ expr fnToken FunctionExpr
+  nameToken <- consume TokenIdentifier
+  _args 
+    <- consumeRelevant TokenLeftParenthesis 
+    >> parseFluidSequence TokenRightParenthesis (consume TokenIdentifier)
+    <* consumeRelevant TokenRightParenthesis
+
+  _returnType <- optional $ consume TokenReturns >> consume TokenIdentifier
+  let name = tokenValue nameToken
+
+  return $ expr fnToken (FunctionExpr $ name)
 
 parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do
-    let parseNext acc remaining = case runParser (consume end) remaining of
+    let parseNext acc remaining = case runParser (expect end) remaining of
             Right (_, rest) -> Right (reverse acc, rest)
             Left _ -> do
                 (item, rest1) <- runParser itemParser remaining
@@ -83,7 +108,7 @@ parseSequence separator end itemParser = Parser $ \tokens -> do
 
 parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
 parseFluidSequence  end itemParser = Parser $ \tokens -> do
-    let parseNext acc remaining = case runParser (consume end) remaining of
+    let parseNext acc remaining = case runParser (expect end) remaining of
             Right (_, rest) -> Right (reverse acc, rest)
             Left _ -> do
                 (item, rest1) <- runParser itemParser remaining

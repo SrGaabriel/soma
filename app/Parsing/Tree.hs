@@ -12,4 +12,6 @@ data Expression = Expression
 data ExpressionKind
   = RootExpr
   | FunctionExpr
+    { functionName :: String 
+    }
   deriving (Show, Eq)
