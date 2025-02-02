@@ -24,6 +24,7 @@ executable soma
                       Parsing.Parser
                       Parsing.Errors
                       Parsing.Tree
+                      Parsing.Type
 
     build-depends:    base >= 4.19.2.0
     hs-source-dirs:   app

@@ -15,9 +15,11 @@ data TokenKind
     | TokenColon
     | TokenReturns
     | TokenNewline
+    | TokenCase
     | TokenLeftParenthesis
     | TokenRightParenthesis
     | TokenIdentifier
+    | TokenPipe
     | TokenLet
     | TokenFn
     | TokenEOF
@@ -43,6 +45,7 @@ tokenize (c:cs)
     | c == '<' = Token TokenLeftAngleBracket ">" : tokenize cs
     | c == '(' = Token TokenLeftParenthesis "(" : tokenize cs
     | c == ')' = Token TokenRightParenthesis ")" : tokenize cs
+    | c == '|' = Token TokenPipe "|" : tokenize cs
     | c == ':' = case cs of
         ':' : rest -> Token TokenReturns "::" : tokenize rest
         _ -> Token TokenColon ":" : tokenize cs
@@ -61,6 +64,7 @@ tokenize (c:cs)
             kind = case text of
                 "let" -> TokenLet
                 "fn"  -> TokenFn
+                "case" -> TokenCase
                 _     -> TokenIdentifier
         in Token kind text : tokenize rest
     | otherwise = error $ "Unexpected character: " ++ [c]

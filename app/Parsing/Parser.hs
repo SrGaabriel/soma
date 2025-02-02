@@ -4,6 +4,7 @@ module Parsing.Parser where
 import Lexing.Lexer (Token(..), TokenKind(..))
 import Parsing.Errors (ParsingError(..))
 import Parsing.Tree (ExpressionKind(..), Expression(..))
+import Parsing.Type (Type (..))
 
 data Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -88,10 +89,30 @@ parseFunction = do
     >> parseFluidSequence TokenRightParenthesis (consume TokenIdentifier)
     <* consumeRelevant TokenRightParenthesis
 
-  _returnType <- optional $ consume TokenReturns >> consume TokenIdentifier
+  _returnTypeToken <- consume TokenReturns
+  fnReturnType <- parseType
   let name = tokenValue nameToken
 
-  return $ expr fnToken (FunctionExpr $ name)
+  return $ expr fnToken (FunctionExpr name fnReturnType)
+
+parseType :: Parser Type
+parseType = do
+  nextToken <- peek
+  case tokenKind nextToken of
+    TokenLeftParenthesis -> do
+      _ <- consume TokenLeftParenthesis
+      types <- parseFluidSequence TokenRightParenthesis (parseType)
+      _ <- consume TokenRightParenthesis  
+      return $ TupleType types
+    TokenIdentifier -> do
+      typeToken <- consume TokenIdentifier
+      return $ case tokenValue typeToken of
+        "Int" -> IntType
+        other -> UnknownType other
+    _ -> failParser $ InvalidTokenForType nextToken
+
+failParser :: ParsingError -> Parser a
+failParser err = Parser $ \_ -> Left err
 
 parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do

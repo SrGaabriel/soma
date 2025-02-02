@@ -1,4 +1,4 @@
-fn fibonacci (Int Int) :: Int =
-case 0 -> 0
-case 1 -> 1
-case n -> n + fibonacci(n - 1)
+fn fibonacci (Int) :: Int =
+  | 0 -> 0
+  | 1 -> 1
+  | n -> fibonacci(n-1) + fibonacci(n-2)

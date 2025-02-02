@@ -2,6 +2,7 @@
 module Parsing.Tree where
 
 import Lexing.Lexer (Token)
+import Parsing.Type (Type)
 
 data Expression = Expression 
   { exprToken :: Token
@@ -12,6 +13,7 @@ data Expression = Expression
 data ExpressionKind
   = RootExpr
   | FunctionExpr
-    { functionName :: String 
+    { functionName :: String,
+      returnType :: Type
     }
   deriving (Show, Eq)
