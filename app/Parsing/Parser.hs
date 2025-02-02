@@ -34,6 +34,11 @@ consume expected = Parser $ \case
     | tokenKind t == expected -> Right (t, ts)
     | otherwise -> Left $ UnexpectedToken $ value t
 
+peek :: Parser Token
+peek = Parser $ \case
+  [] -> Left EndOfInput
+  (t : ts) -> Right (t, ts)
+
 parse :: [Token] -> Either ParsingError Expression
 parse tokens = do
     (root, _) <- runParser parser tokens
@@ -46,7 +51,13 @@ parse tokens = do
 
 parseExpression :: Parser Expression
 parseExpression = do
-  Parser $ \tokens -> Left $ UnexpectedToken "TODO"
+  Parser $ \case
+    [] -> Left EndOfInput
+    (t : ts) -> case t of
+        Token { tokenKind = TokenFn } -> do
+          (fnToken, rest) <- runParser (consume TokenFn) (t:ts)
+          Right(Expression fnToken FunctionExpr [], rest)
+        other -> Left $ UnexpectedToken other
 
 parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do

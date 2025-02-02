@@ -11,4 +11,5 @@ data Expression = Expression
 
 data ExpressionKind
   = RootExpr
+  | FunctionExpr
   deriving (Show, Eq)
