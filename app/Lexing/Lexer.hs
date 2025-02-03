@@ -27,38 +27,41 @@ data TokenKind
 
 data Token = Token 
     { tokenKind :: TokenKind
-    , tokenValue :: String 
+    , tokenValue :: String
+    , tokenPos :: Int
+    , tokenIndent :: Int
     } deriving (Show, Eq)
 
 tokenizeFile :: String -> String -> [Token]
-tokenizeFile path content = Token TokenBOF path : tokenize content ++ [Token TokenEOF path]
+tokenizeFile path content = Token TokenBOF path 0 0 : tokenize content 0 0 ++ [Token TokenEOF path (length content) 0]
 
-tokenize :: String -> [Token]
-tokenize [] = []
-tokenize (c:cs)
-    | isSpace c = tokenize cs
-    | c == '+' = Token TokenPlus "+" : tokenize cs
-    | c == '*' = Token TokenAsterisk "*" : tokenize cs
-    | c == '/' = Token TokenSlash "/" : tokenize cs
-    | c == '=' = Token TokenEquals "=" : tokenize cs
-    | c == '>' = Token TokenRightAngleBracket ">" : tokenize cs
-    | c == '<' = Token TokenLeftAngleBracket ">" : tokenize cs
-    | c == '(' = Token TokenLeftParenthesis "(" : tokenize cs
-    | c == ')' = Token TokenRightParenthesis ")" : tokenize cs
-    | c == '|' = Token TokenPipe "|" : tokenize cs
+tokenize :: String -> Int -> Int -> [Token]
+tokenize [] _ _ = []
+tokenize (c:cs) i indent
+    | isSpace c = tokenize cs (i + 1) indent
+    | c == '+' = Token TokenPlus "+" i indent : tokenize cs (i + 1) indent
+    | c == '*' = Token TokenAsterisk "*" i indent : tokenize cs (i + 1) indent
+    | c == '/' = Token TokenSlash "/" i indent : tokenize cs (i + 1) indent
+    | c == '=' = Token TokenEquals "=" i indent : tokenize cs (i + 1) indent
+    | c == '>' = Token TokenRightAngleBracket ">" i indent : tokenize cs (i + 1) indent
+    | c == '<' = Token TokenLeftAngleBracket "<" i indent : tokenize cs (i + 1) indent
+    | c == '(' = Token TokenLeftParenthesis "(" i indent : tokenize cs (i + 1) indent
+    | c == ')' = Token TokenRightParenthesis ")" i indent : tokenize cs (i + 1) indent
+    | c == '|' = Token TokenPipe "|" i indent : tokenize cs (i + 1) indent
     | c == ':' = case cs of
-        ':' : rest -> Token TokenReturns "::" : tokenize rest
-        _ -> Token TokenColon ":" : tokenize cs
+        ':' : rest -> Token TokenReturns "::" i indent : tokenize rest (i + 2) indent
+        _ -> Token TokenColon ":" i indent : tokenize cs (i + 1) indent
     | c == '-' = case cs of
-        '>' : rest -> Token TokenRightArrow "->" : tokenize rest
-        _ -> Token TokenMinus "-" : tokenize cs
+        '>' : rest -> Token TokenRightArrow "->" i indent : tokenize rest (i + 2) indent
+        _ -> Token TokenMinus "-" i indent : tokenize cs (i + 1) indent
     | c == '\n' =
         let (spaces, rest) = span (\w -> w == ' ' || w == '\t') cs
-            indent = spaces >>= (\w -> if w == '\t' then "    " else " ") 
-        in Token TokenNewline indent : tokenize rest
+            indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
+            newIndent = length spaces
+        in Token TokenNewline indentStr i indent : tokenize rest (i + 1 + length spaces) newIndent
     | isDigit c =
         let (numberToken, rest) = span isDigit (c:cs)
-        in Token TokenNumber numberToken : tokenize rest
+        in Token TokenNumber numberToken i indent : tokenize rest (i + length numberToken) indent
     | isCharacter c =
         let (text, rest) = span isCharacter (c:cs)
             kind = case text of
@@ -66,8 +69,8 @@ tokenize (c:cs)
                 "fn"  -> TokenFn
                 "case" -> TokenCase
                 _     -> TokenIdentifier
-        in Token kind text : tokenize rest
-    | otherwise = error $ "Unexpected character: " ++ [c]
+        in Token kind text i indent : tokenize rest (i + length text) indent
+    | otherwise = error $ "Unexpected character: " ++ [c] ++ " at index " ++ show i
 
 isDigit :: Char -> Bool
 isDigit c = c `elem` ['0'..'9']

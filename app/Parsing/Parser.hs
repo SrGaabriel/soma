@@ -91,6 +91,10 @@ parseFunction = do
 
   _returnTypeToken <- consume TokenReturns
   fnReturnType <- parseType
+
+  _equalsToken <- consumeRelevant TokenEquals
+  _body <- parseIndentedSequence (tokenIndent fnToken) (ignoreLine)
+
   let name = tokenValue nameToken
 
   return $ expr fnToken (FunctionExpr name fnReturnType)
@@ -113,6 +117,13 @@ parseType = do
 
 failParser :: ParsingError -> Parser a
 failParser err = Parser $ \_ -> Left err
+
+ignoreLine :: Parser ()
+ignoreLine = Parser $ \case
+  [] -> Left EndOfInput
+  (t : ts) -> case tokenKind t of
+    TokenNewline -> Right ((), ts)
+    _ -> Right ((), ts)
 
 parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do
@@ -138,4 +149,17 @@ parseFluidSequence  end itemParser = Parser $ \tokens -> do
                     _ -> case parseNext (item:acc) rest1 of
                         Right (_, rest2) -> Right (reverse acc, rest2)
                         Left err -> Left err
+    parseNext [] tokens
+
+parseIndentedSequence :: Int -> Parser a -> Parser [a]
+parseIndentedSequence minimumIndent itemParser = Parser $ \tokens -> do
+    let parseNext acc remaining = case remaining of
+            [] -> Right (reverse acc, [])
+            (tok:rest) ->
+                if tokenIndent tok < minimumIndent
+                then Right (reverse acc, remaining)
+                else do
+                    (item, rest1) <- runParser itemParser (tok:rest)
+                    case rest1 of
+                        remaining' -> parseNext (item:acc) remaining'
     parseNext [] tokens
