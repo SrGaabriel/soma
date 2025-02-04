@@ -6,7 +6,8 @@ data ParsingError
   | ExpectedDifferentToken 
       { expected :: TokenKind
       , received :: Token 
-      } 
+      }
+  | MissingToken TokenKind
   | InvalidTokenForType Token
   | EndOfInput
   deriving (Show, Eq)
