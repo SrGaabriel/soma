@@ -36,6 +36,11 @@ consume expectedKind = Parser $ \case
     | tokenKind t == expectedKind -> Right (t, ts)
     | otherwise -> Left $ ExpectedDifferentToken expectedKind t
 
+next :: Parser Token
+next = Parser $ \case
+  [] -> Left EndOfInput
+  (t : ts) -> Right (t, ts)
+
 consumeRelevant :: TokenKind -> Parser Token
 consumeRelevant expectedKind = Parser $ \case
   [] -> Left EndOfInput
@@ -94,11 +99,28 @@ parseFunction = do
   fnReturnType <- parseType
 
   _equalsToken <- consumeRelevant TokenEquals
-  _body <- parseIndentedBlock 2 (ignoreLine)
+  body <- parseIndentedBlock 2 (parsePatternMatchCase)
 
   let name = tokenValue nameToken
 
-  return $ expr fnToken (FunctionExpr name fnReturnType)
+  return $ Expression fnToken (FunctionExpr name fnReturnType) body
+
+parsePatternMatchCase :: Parser Expression
+parsePatternMatchCase = do
+  peeak <- peek
+  trace (show peeak) $ do
+    prefix <- consume TokenPipe
+    _pattern <- parsePattern
+
+    _arrow <- consumeRelevant TokenRightArrow
+    _body <- ignoreLine
+    return $ expr prefix PatternHandlerExpr
+
+parsePattern :: Parser Expression
+parsePattern = do
+  -- let's just consume the token for now
+  skipped <- next
+  return $ expr skipped PatternExpr
 
 parseType :: Parser Type
 parseType = do
@@ -171,10 +193,9 @@ parseIndentedBlock minimumIndent itemParser = Parser $ \tokens -> do
    let parseNext acc remaining = case remaining of
            [] -> Right (reverse acc, [])
            (tok:rest)
-               | tokenKind tok == TokenNewline -> parseNext acc rest
-               | tokenIndent tok >= minimumIndent -> do
-                  (item, rest') <- runParser itemParser rest
-                  parseNext (item:acc) rest'
-               | tokenIndent tok < minimumIndent -> Right (reverse acc, remaining)
-               | otherwise -> Right (reverse acc, remaining)
+               | tokenKind tok == TokenNewline && length (tokenValue tok) >= minimumIndent ->
+                  trace (show tok) $ do
+                    (item, rest') <- runParser itemParser rest
+                    parseNext (item:acc) rest'
+               | otherwise -> trace (show tok) $ Right (reverse acc, remaining)
    parseNext [] tokens

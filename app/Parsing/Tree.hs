@@ -16,4 +16,6 @@ data ExpressionKind
     { functionName :: String,
       returnType :: Type
     }
+  | PatternExpr
+  | PatternHandlerExpr
   deriving (Show, Eq)
