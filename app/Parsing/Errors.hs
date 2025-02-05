@@ -10,4 +10,5 @@ data ParsingError
   | MissingToken TokenKind
   | InvalidTokenForType Token
   | EndOfInput
+  | Debug
   deriving (Show, Eq)

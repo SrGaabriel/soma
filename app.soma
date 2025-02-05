@@ -2,3 +2,5 @@ fn fibonacci (Int) :: Int =
   | 0 -> 0
   | 1 -> 1
   | n -> fibonacci(n-1) + fibonacci(n-2)
+fn nothing () :: Int =
+  | n -> n

@@ -4,7 +4,7 @@ module Parsing.Parser where
 import Debug.Trace (trace)
 import Lexing.Lexer (Token(..), TokenKind(..))
 import Parsing.Errors (ParsingError(..))
-import Parsing.Tree (ExpressionKind(..), Expression(..))
+import Parsing.Tree (ExpressionKind(..), Expression(..), FunctionHandler (PatternHandler))
 import Parsing.Type (Type (..))
 
 data Parser a = Parser {
@@ -84,10 +84,11 @@ parseDeclaration = do
   token <- peek
   case tokenKind token of
     TokenFn -> parseFunction
+    TokenNewline -> next >> parseDeclaration
     _ -> Parser $ \_ -> Left $ UnexpectedToken token
 
 parseFunction :: Parser Expression
-parseFunction = do
+parseFunction = trace "woo" $ do
   fnToken <- consume TokenFn
   nameToken <- consume TokenIdentifier
   _args 
@@ -103,18 +104,16 @@ parseFunction = do
 
   let name = tokenValue nameToken
 
-  return $ Expression fnToken (FunctionExpr name fnReturnType) body
+  return $ Expression fnToken (FunctionExpr name fnReturnType PatternHandler) body
 
 parsePatternMatchCase :: Parser Expression
 parsePatternMatchCase = do
-  peeak <- peek
-  trace (show peeak) $ do
-    prefix <- consume TokenPipe
-    _pattern <- parsePattern
+  prefix <- consume TokenPipe
+  _pattern <- parsePattern
 
-    _arrow <- consumeRelevant TokenRightArrow
-    _body <- ignoreLine
-    return $ expr prefix PatternHandlerExpr
+  _arrow <- consumeRelevant TokenRightArrow
+  _body <- ignoreLine
+  return $ expr prefix PatternHandlerExpr
 
 parsePattern :: Parser Expression
 parsePattern = do
@@ -142,35 +141,36 @@ failParser :: ParsingError -> Parser a
 failParser err = Parser $ \_ -> Left err
 
 ignoreLine :: Parser ()
-ignoreLine = Parser $ \case
-  [] -> Left EndOfInput
-  (t : ts) -> case tokenKind t of
-    TokenNewline -> Right ((), t:ts)
-    _ -> runParser ignoreLine ts
+ignoreLine = Parser $ \tokens -> do
+  let (_ignored, rest) = span (\t -> tokenKind t /= TokenNewline) tokens
+  Right ((), rest)
 
-parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
+parseSequence :: Show a => TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do
-    let parseNext acc remaining = case runParser (expect end) remaining of
-            Right (_, rest) -> Right (reverse acc, rest)
-            Left _ -> do
-                (item, rest1) <- runParser itemParser remaining
-                case rest1 of
-                    [] -> Right (reverse acc, rest1)
-                    (tok:_) | tokenKind tok == end -> Right (reverse (item:acc), rest1)
-                    _ -> case runParser (consume separator) rest1 of
-                        Right (_, rest2) -> parseNext (item:acc) rest2
-                        Left err -> Left err
     parseNext [] tokens
+    where
+        parseNext acc remaining = do
+            (item, rest) <- runParser itemParser remaining
+            case rest of 
+                [] -> Right (reverse (item:acc), [])
+                _ -> do
+                  (tokenPeek, _) <- runParser next rest
+                  case tokenKind tokenPeek of
+                      tk | tk == separator -> do
+                          _ <- runParser next rest
+                          parseNext (item:acc) rest
+                        | tk == end -> Right (reverse (item:acc), rest)
+                        | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
 
 parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
 parseFluidSequence  end itemParser = Parser $ \tokens -> do
     let parseNext acc remaining = case runParser (expect end) remaining of
             Right (_, rest) -> Right (reverse acc, rest)
             Left _ -> do
-                (item, rest1) <- runParser itemParser remaining
-                case rest1 of
+                (item, rest') <- runParser itemParser remaining
+                case rest' of
                     [] -> Right (reverse (item:acc), [])
-                    _ -> case parseNext (item:acc) rest1 of
+                    _ -> case parseNext (item:acc) rest' of
                         Right (_, rest2) -> Right (reverse acc, rest2)
                         Left err -> Left err
     parseNext [] tokens
@@ -193,9 +193,8 @@ parseIndentedBlock minimumIndent itemParser = Parser $ \tokens -> do
    let parseNext acc remaining = case remaining of
            [] -> Right (reverse acc, [])
            (tok:rest)
-               | tokenKind tok == TokenNewline && length (tokenValue tok) >= minimumIndent ->
-                  trace (show tok) $ do
-                    (item, rest') <- runParser itemParser rest
-                    parseNext (item:acc) rest'
-               | otherwise -> trace (show tok) $ Right (reverse acc, remaining)
+               | tokenKind tok == TokenNewline && length (tokenValue tok) >= minimumIndent -> do
+                  (item, rest') <- runParser itemParser rest
+                  parseNext (item:acc) rest'
+               | otherwise -> Right (reverse acc, remaining)
    parseNext [] tokens

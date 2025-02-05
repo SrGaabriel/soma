@@ -14,8 +14,12 @@ data ExpressionKind
   = RootExpr
   | FunctionExpr
     { functionName :: String,
-      returnType :: Type
+      returnType :: Type,
+      handler :: FunctionHandler
     }
   | PatternExpr
   | PatternHandlerExpr
+  deriving (Show, Eq)
+
+data FunctionHandler = ExpressionHandler | PatternHandler
   deriving (Show, Eq)
