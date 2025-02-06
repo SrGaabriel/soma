@@ -54,6 +54,11 @@ peek = Parser $ \case
   [] -> Left EndOfInput
   (t : ts) -> Right (t, t:ts)
 
+skipping :: Int -> Parser Token
+skipping n = Parser $ \case
+  [] -> Left EndOfInput
+  (t : ts) -> Right (t, drop n ts)
+
 expect :: TokenKind -> Parser Token
 expect kind = Parser $ \case
   [] -> Left EndOfInput
@@ -99,12 +104,24 @@ parseFunction = do
   _returnTypeToken <- consume TokenReturns
   fnReturnType <- parseType
 
-  _equalsToken <- consumeRelevant TokenEquals
-  body <- parseIndentedBlock 2 (parsePatternMatchCase)
+  body <- parseFunctionBody
 
   let name = tokenValue nameToken
 
-  return $ Expression fnToken (FunctionExpr name fnReturnType PatternHandler) body
+  return $ Expression fnToken (FunctionExpr name fnReturnType PatternHandler) [body]
+
+parseFunctionBody :: Parser Expression
+parseFunctionBody = do
+  incoming <- peek
+  case tokenKind incoming of
+    TokenNewline -> do
+      cases <- parseIndentedBlock 2 parsePatternMatchCase
+      return $ Expression incoming PatternMatch cases
+    TokenEquals -> do
+      _equals <- next
+      expression <- parseExpression
+      return expression
+    _ -> failParser $ UnexpectedToken incoming
 
 parsePatternMatchCase :: Parser Expression
 parsePatternMatchCase = do
@@ -125,6 +142,15 @@ parsePattern = do
     TokenNumber -> do
       token <- next
       return $ expr token (NumberPatternExpr $ tokenValue token)
+    _ -> failParser $ UnexpectedToken incoming
+
+parseExpression :: Parser Expression
+parseExpression = do
+  incoming <- peek
+  case tokenKind incoming of
+    TokenNumber -> do
+      token <- next
+      return $ expr token NumberExpr
     _ -> failParser $ UnexpectedToken incoming
 
 parseType :: Parser Type

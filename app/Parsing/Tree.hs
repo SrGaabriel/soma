@@ -16,11 +16,13 @@ data ExpressionKind
     { functionName :: String
     , returnType   :: Type
     , handler      :: FunctionHandler }
+  | PatternMatch
   | NumberPatternExpr 
     { value :: String }
   | VariablePatternExpr
     { variableName :: String }
   | PatternHandlerExpr
+  | NumberExpr
   deriving (Show, Eq)
 
 data FunctionHandler = ExpressionHandler | PatternHandler
