@@ -13,11 +13,13 @@ data Expression = Expression
 data ExpressionKind
   = RootExpr
   | FunctionExpr
-    { functionName :: String,
-      returnType :: Type,
-      handler :: FunctionHandler
-    }
-  | PatternExpr
+    { functionName :: String
+    , returnType   :: Type
+    , handler      :: FunctionHandler }
+  | NumberPatternExpr 
+    { value :: String }
+  | VariablePatternExpr
+    { variableName :: String }
   | PatternHandlerExpr
   deriving (Show, Eq)
 

@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BlockArguments #-}
 module Parsing.Parser where
 
-import Debug.Trace (trace)
 import Lexing.Lexer (Token(..), TokenKind(..))
 import Parsing.Errors (ParsingError(..))
 import Parsing.Tree (ExpressionKind(..), Expression(..), FunctionHandler (PatternHandler))
@@ -88,7 +88,7 @@ parseDeclaration = do
     _ -> Parser $ \_ -> Left $ UnexpectedToken token
 
 parseFunction :: Parser Expression
-parseFunction = trace "woo" $ do
+parseFunction = do
   fnToken <- consume TokenFn
   nameToken <- consume TokenIdentifier
   _args 
@@ -109,17 +109,23 @@ parseFunction = trace "woo" $ do
 parsePatternMatchCase :: Parser Expression
 parsePatternMatchCase = do
   prefix <- consume TokenPipe
-  _pattern <- parsePattern
+  pattern <- parsePattern
 
   _arrow <- consumeRelevant TokenRightArrow
   _body <- ignoreLine
-  return $ expr prefix PatternHandlerExpr
+  return $ Expression prefix PatternHandlerExpr [pattern]
 
 parsePattern :: Parser Expression
 parsePattern = do
-  -- let's just consume the token for now
-  skipped <- next
-  return $ expr skipped PatternExpr
+  incoming <- peek
+  case tokenKind incoming of
+    TokenIdentifier -> do
+      token <- next
+      return $ expr token (VariablePatternExpr $ tokenValue token)
+    TokenNumber -> do
+      token <- next
+      return $ expr token (NumberPatternExpr $ tokenValue token)
+    _ -> failParser $ UnexpectedToken incoming
 
 parseType :: Parser Type
 parseType = do
@@ -173,19 +179,6 @@ parseFluidSequence  end itemParser = Parser $ \tokens -> do
                     _ -> case parseNext (item:acc) rest' of
                         Right (_, rest2) -> Right (reverse acc, rest2)
                         Left err -> Left err
-    parseNext [] tokens
-
-parseIndentedSequence :: Int -> Parser a -> Parser [a]
-parseIndentedSequence minimumIndent itemParser = Parser $ \tokens -> do
-    let parseNext acc remaining = case remaining of
-            [] -> Right (reverse acc, [])
-            (tok:rest) ->
-                if tokenIndent tok < minimumIndent
-                then Right (reverse acc, remaining)
-                else do
-                    (item, rest1) <- runParser itemParser (tok:rest)
-                    case rest1 of
-                        remaining' -> parseNext (item:acc) remaining'
     parseNext [] tokens
 
 parseIndentedBlock :: Int -> Parser a -> Parser [a]
