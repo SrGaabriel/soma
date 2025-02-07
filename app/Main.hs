@@ -1,7 +1,7 @@
 module Main where
 
 import Parsing.Parser (parse)
-import Parsing.Tree (Expression (Expression))
+import Parsing.Tree (Expression (Expression), getChildren)
 import Lexing.Lexer (tokenizeFile, Token (tokenValue))
 
 main :: IO ()
@@ -25,6 +25,6 @@ main = do
 prettyPrintAst :: Expression -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0
   where
-    prettyPrintAst' (Expression token kind children) indent = do
+    prettyPrintAst' (Expression token kind) indent = do
       putStrLn $ replicate indent ' ' ++ (show kind) ++ " (value='" ++ tokenValue token ++ "')"
-      mapM_ (\child -> prettyPrintAst' child (indent + 2)) children
+      mapM_ (\child -> prettyPrintAst' child (indent + 2)) (getChildren kind)

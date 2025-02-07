@@ -4,7 +4,7 @@ module Parsing.Parser where
 
 import Lexing.Lexer (Token(..), TokenKind(..))
 import Parsing.Errors (ParsingError(..))
-import Parsing.Tree (ExpressionKind(..), Expression(..), FunctionHandler (PatternHandler))
+import Parsing.Tree (ExpressionKind(..), Expression(..))
 import Parsing.Type (Type (..))
 
 data Parser a = Parser {
@@ -67,7 +67,7 @@ expect kind = Parser $ \case
     else Left $ ExpectedDifferentToken kind t
 
 expr :: Token -> ExpressionKind -> Expression
-expr token kind = Expression token kind []
+expr token kind = Expression token kind
 
 optional :: Parser Token -> Parser (Maybe Token)
 optional parser = Parser $ \tokens -> case runParser parser tokens of
@@ -82,7 +82,7 @@ parse tokens = do
     parser = do
       bofToken <- consume TokenBOF
       declarations <- parseSequence TokenNewline TokenEOF parseDeclaration
-      return $ Expression bofToken RootExpr declarations
+      return $ Expression bofToken (RootExpr declarations)
 
 parseDeclaration :: Parser Expression
 parseDeclaration = do
@@ -108,7 +108,7 @@ parseFunction = do
 
   let name = tokenValue nameToken
 
-  return $ Expression fnToken (FunctionExpr name fnReturnType PatternHandler) [body]
+  return $ Expression fnToken (FunctionExpr name fnReturnType body)
 
 parseFunctionBody :: Parser Expression
 parseFunctionBody = do
@@ -116,7 +116,7 @@ parseFunctionBody = do
   case tokenKind incoming of
     TokenNewline -> do
       cases <- parseIndentedBlock 2 parsePatternMatchCase
-      return $ Expression incoming PatternMatch cases
+      return $ Expression incoming (PatternMatchExpr cases)
     TokenEquals -> do
       _equals <- next
       expression <- parseExpression
@@ -130,7 +130,7 @@ parsePatternMatchCase = do
 
   _arrow <- consumeRelevant TokenRightArrow
   _body <- ignoreLine
-  return $ Expression prefix PatternHandlerExpr [pattern]
+  return $ Expression prefix (PatternHandlerExpr pattern)
 
 parsePattern :: Parser Expression
 parsePattern = do
