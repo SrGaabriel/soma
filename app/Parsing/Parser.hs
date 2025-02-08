@@ -4,7 +4,7 @@ module Parsing.Parser where
 
 import Lexing.Lexer (Token(..), TokenKind(..))
 import Parsing.Errors (ParsingError(..))
-import Parsing.Tree (ExpressionKind(..), Expression(..))
+import Parsing.Tree (ExpressionKind(..), Expression(..), BinaryOp(..))
 import Parsing.Type (Type (..))
 
 data Parser a = Parser {
@@ -146,12 +146,31 @@ parsePattern = do
 
 parseExpression :: Parser Expression
 parseExpression = do
-  incoming <- peek
-  case tokenKind incoming of
+  parseNumericExpression -- TODO: implement equals
+
+parseNumericExpression :: Parser Expression
+parseNumericExpression = parseBinaryOp 
+  parseTerm 
+  [TokenPlus, TokenMinus]
+
+parseTerm :: Parser Expression
+parseTerm = parseBinaryOp 
+  parseFactor 
+  [TokenAsterisk, TokenSlash]
+
+parseFactor :: Parser Expression
+parseFactor = do
+  token <- peek
+  case tokenKind token of
     TokenNumber -> do
-      token <- next
+      _ <- next
       return $ expr token NumberExpr
-    _ -> failParser $ UnexpectedToken incoming
+    TokenLeftParenthesis -> do
+      _ <- next
+      numericExpr <- parseNumericExpression
+      _ <- consume TokenRightParenthesis
+      return numericExpr
+    _ -> failParser $ UnexpectedToken token
 
 parseType :: Parser Type
 parseType = do
@@ -217,3 +236,27 @@ parseIndentedBlock minimumIndent itemParser = Parser $ \tokens -> do
                   parseNext (item:acc) rest'
                | otherwise -> Right (reverse acc, remaining)
    parseNext [] tokens
+
+parseBinaryOp :: Parser Expression -> [TokenKind] -> Parser Expression
+parseBinaryOp term operatorTokens = do
+  left <- term
+  loop left
+  where
+    loop left = do
+      mt <- optional peek
+      case mt of
+          Just t 
+            | tokenKind t `elem` operatorTokens
+            , Just op <- toBinaryOp (tokenKind t) -> do
+              _ <- next
+              right <- term
+              loop $ expr t (BinaryOpExpr left right op)
+          _ -> return left
+
+toBinaryOp :: TokenKind -> Maybe BinaryOp
+toBinaryOp = \case
+  TokenPlus -> Just BinaryAdd
+  TokenMinus -> Just BinarySubtract
+  TokenAsterisk -> Just BinaryMultiply
+  TokenSlash -> Just BinaryDivide
+  _ -> Nothing

@@ -1,6 +1,6 @@
 module Parsing.Tree where
 
-import Lexing.Lexer (Token)
+import Lexing.Lexer (Token(..))
 import Parsing.Type (Type)
 
 data Expression = Expression 
@@ -18,7 +18,7 @@ data ExpressionKind
   | BinaryOpExpr
     { binaryOpLeft :: Expression
     , binaryOpRight :: Expression
-    , binaryOpOperator :: String }
+    , binaryOp :: BinaryOp }
   | PatternMatchExpr
     { patternMatchHandlers :: [Expression] }
   | NumberPatternExpr 
@@ -29,6 +29,9 @@ data ExpressionKind
     { patternHandlerPattern :: Expression }
   | NumberExpr
   deriving (Eq)
+
+data BinaryOp = BinaryAdd | BinarySubtract | BinaryMultiply | BinaryDivide
+  deriving (Show, Eq)
 
 getChildren :: ExpressionKind -> [Expression]
 getChildren kind = case kind of
@@ -45,12 +48,12 @@ instance Show ExpressionKind where
   show kind = case kind of
     RootExpr _ -> "RootExpr"
     FunctionExpr name returnType _ -> "FunctionExpr (" ++ name ++ " -> " ++ show returnType ++ ")"
-    BinaryOpExpr left right operator -> "BinaryOpExpr " ++ show left ++ " " ++ show right ++ " " ++ operator
+    BinaryOpExpr left right operator -> "BinaryOpExpr (" ++ show left ++ " " ++ show operator ++ " " ++ show right ++ ")"
     PatternMatchExpr _ -> "PatternMatchExpr"
-    NumberPatternExpr value -> "NumberPatternExpr " ++ value
-    VariablePatternExpr name -> "VariablePatternExpr " ++ name
-    PatternHandlerExpr pattern -> "PatternHandlerExpr " ++ show pattern
+    NumberPatternExpr value -> "NumberPatternExpr (" ++ value ++ ")"
+    VariablePatternExpr name -> "VariablePatternExpr (" ++ name ++ ")"
+    PatternHandlerExpr pattern -> "PatternHandlerExpr (" ++ show pattern ++ ")"
     NumberExpr -> "NumberExpr"
 
 instance Show Expression where
-  show (Expression _ kind) = show kind
+  show (Expression token kind) = (show kind) ++ " (value='" ++ tokenValue token ++ "')"
