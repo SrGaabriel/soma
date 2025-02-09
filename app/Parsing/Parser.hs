@@ -4,7 +4,8 @@ module Parsing.Parser where
 
 import Lexing.Lexer (Token(..), TokenKind(..))
 import Parsing.Errors (ParsingError(..))
-import Parsing.Tree (ExpressionKind(..), Expression(..), BinaryOp(..))
+import Parsing.Tree (ExpressionKind(..), Expression(..))
+import Parsing.Ops (BinaryOp(..))
 import Parsing.Type (Type (..))
 
 data Parser a = Parser {

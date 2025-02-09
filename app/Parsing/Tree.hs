@@ -2,6 +2,7 @@ module Parsing.Tree where
 
 import Lexing.Lexer (Token(..))
 import Parsing.Type (Type)
+import Parsing.Ops (BinaryOp)
 
 data Expression = Expression 
   { exprToken :: Token
@@ -29,9 +30,6 @@ data ExpressionKind
     { patternHandlerPattern :: Expression }
   | NumberExpr
   deriving (Eq)
-
-data BinaryOp = BinaryAdd | BinarySubtract | BinaryMultiply | BinaryDivide
-  deriving (Show, Eq)
 
 getChildren :: ExpressionKind -> [Expression]
 getChildren kind = case kind of
