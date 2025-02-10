@@ -7,8 +7,14 @@ data ParsingError
       { expected :: TokenKind
       , received :: Token 
       }
-  | MissingToken TokenKind
   | InvalidTokenForType Token
   | EndOfInput
-  | Debug
+  | Debug 
   deriving (Show, Eq)
+
+getToken :: ParsingError -> Maybe Token
+getToken (UnexpectedToken t) = Just t
+getToken (ExpectedDifferentToken _ t) = Just t
+getToken (InvalidTokenForType t) = Just t
+getToken (EndOfInput) = Nothing
+getToken Debug = Nothing

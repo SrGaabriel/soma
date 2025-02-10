@@ -54,4 +54,4 @@ instance Show ExpressionKind where
     NumberExpr -> "NumberExpr"
 
 instance Show Expression where
-  show (Expression token kind) = (show kind) ++ " (value='" ++ tokenValue token ++ "')"
+  show (Expression token kind) = (show kind) ++ " '" ++ tokenValue token ++ "'"

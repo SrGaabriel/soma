@@ -5,5 +5,9 @@ data Type
     | StringType
     | BoolType
     | TupleType [Type]
+    | FunctionType
+        { functionTypeArgs :: [Type]
+        , functionTypeReturn :: Type
+        }
     | UnknownType String
     deriving (Show, Eq)
