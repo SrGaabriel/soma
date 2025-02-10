@@ -1,8 +1,10 @@
 module Main where
 
 import Parsing.Parser (parse)
-import Lexing.Lexer (tokenizeFile)
+import Lexing.Lexer (tokenizeFile, Token (tokenPos, tokenValue))
 import Parsing.Tree (Expression(..), getChildren)
+import Parsing.Errors (getErrorToken, getErrorMessage)
+import Logging.ErrorPrinter (printError)
 
 main :: IO ()
 main = do
@@ -12,12 +14,15 @@ main = do
     let tokens = tokenizeFile "app.soma" content
 
     let tree = parse tokens
-
-    putStrLn content
-    putStrLn "Tokens:"
-    print tokens
     case tree of
-      Left err -> print err
+      Left err ->
+        case getErrorToken err of
+          Just token -> 
+            let pos = tokenPos token in
+            let end = pos + length (tokenValue token) - 1 in
+            let message = getErrorMessage err in
+              printError "app.soma" content "PARSING" pos end message
+          Nothing -> print err
       Right tree' -> do
         putStrLn "Tree:"
         prettyPrintAst tree'

@@ -1,5 +1,5 @@
-module Parsing.Errors (ParsingError(..)) where
-import Lexing.Lexer (Token, TokenKind)
+module Parsing.Errors (ParsingError(..), getErrorToken, getErrorMessage) where
+import Lexing.Lexer (Token (..), TokenKind)
 
 data ParsingError
   = UnexpectedToken Token
@@ -12,9 +12,16 @@ data ParsingError
   | Debug 
   deriving (Show, Eq)
 
-getToken :: ParsingError -> Maybe Token
-getToken (UnexpectedToken t) = Just t
-getToken (ExpectedDifferentToken _ t) = Just t
-getToken (InvalidTokenForType t) = Just t
-getToken (EndOfInput) = Nothing
-getToken Debug = Nothing
+getErrorMessage :: ParsingError -> String
+getErrorMessage (UnexpectedToken t) = "Unexpected token: " ++ show t
+getErrorMessage (ExpectedDifferentToken tExpected tReceived) = "Expected token '" ++ show tExpected ++ "' but received " ++ show (tokenValue tReceived)
+getErrorMessage (InvalidTokenForType t) = "Invalid token for type: " ++ show t
+getErrorMessage (EndOfInput) = "End of input"
+getErrorMessage Debug = "Debug"
+
+getErrorToken :: ParsingError -> Maybe Token
+getErrorToken (UnexpectedToken t) = Just t
+getErrorToken (ExpectedDifferentToken _ t) = Just t
+getErrorToken (InvalidTokenForType t) = Just t
+getErrorToken (EndOfInput) = Nothing
+getErrorToken Debug = Nothing
