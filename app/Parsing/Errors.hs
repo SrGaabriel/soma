@@ -1,5 +1,6 @@
-module Parsing.Errors (ParsingError(..), getErrorToken, getErrorMessage) where
+module Parsing.Errors (ParsingError(..), getErrorToken) where
 import Lexing.Lexer (Token (..), TokenKind)
+import Logging.ErrorPrinter (PrintableError(..))
 
 data ParsingError
   = UnexpectedToken Token
@@ -10,18 +11,27 @@ data ParsingError
   | InvalidTokenForType Token
   | EndOfInput
   | Debug 
-  deriving (Show, Eq)
+  deriving (Eq)
 
-getErrorMessage :: ParsingError -> String
-getErrorMessage (UnexpectedToken t) = "Unexpected token: " ++ show t
-getErrorMessage (ExpectedDifferentToken tExpected tReceived) = "Expected token '" ++ show tExpected ++ "' but received " ++ show (tokenValue tReceived)
-getErrorMessage (InvalidTokenForType t) = "Invalid token for type: " ++ show t
-getErrorMessage (EndOfInput) = "End of input"
-getErrorMessage Debug = "Debug"
+instance Show ParsingError where
+  show (UnexpectedToken t) = "Unexpected token: " ++ show t
+  show (ExpectedDifferentToken tExpected tReceived) = "Expected token '" ++ show tExpected ++ "' but received " ++ show (tokenValue tReceived)
+  show (InvalidTokenForType t) = "Invalid token for type: " ++ show t
+  show (EndOfInput) = "End of input"
+  show Debug = "Debug"
+
+instance PrintableError ParsingError where
+  errorMessage err = show err
+  errorStart err = case getErrorToken err of
+    Just t -> tokenPos t
+    Nothing -> error "End of input has no position" 
+  errorEnd err = case getErrorToken err of
+    Just t -> tokenPos t + length (tokenValue t) - 1
+    Nothing -> error "End of input has no position"
 
 getErrorToken :: ParsingError -> Maybe Token
 getErrorToken (UnexpectedToken t) = Just t
 getErrorToken (ExpectedDifferentToken _ t) = Just t
 getErrorToken (InvalidTokenForType t) = Just t
-getErrorToken (EndOfInput) = Nothing
+getErrorToken (EndOfInput) = Nothing -- TODO: replace with EOF token
 getErrorToken Debug = Nothing

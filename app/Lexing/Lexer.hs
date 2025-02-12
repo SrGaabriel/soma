@@ -1,5 +1,7 @@
 module Lexing.Lexer (Token(..), TokenKind(..), tokenize, tokenizeFile) where
 
+import Lexing.Errors (LexingError(..))
+
 data TokenKind
     = TokenBOF
     | TokenNumber
@@ -32,36 +34,38 @@ data Token = Token
     , tokenIndent :: Int
     } deriving (Show, Eq)
 
-tokenizeFile :: String -> String -> [Token]
-tokenizeFile path content = Token TokenBOF path 0 0 : tokenize content 0 0 ++ [Token TokenEOF path (length content) 0]
+tokenizeFile :: String -> String -> Either LexingError [Token]
+tokenizeFile path content = do
+    tokens <- tokenize content 0 0
+    return $ Token TokenBOF path 0 0 : tokens ++ [Token TokenEOF path (length content) 0]
 
-tokenize :: String -> Int -> Int -> [Token]
-tokenize [] _ _ = []
+tokenize :: String -> Int -> Int -> Either LexingError [Token]
+tokenize [] _ _ = Right []
 tokenize (c:cs) i indent
     | isSpace c = tokenize cs (i + 1) indent
-    | c == '+' = Token TokenPlus "+" i indent : tokenize cs (i + 1) indent
-    | c == '*' = Token TokenAsterisk "*" i indent : tokenize cs (i + 1) indent
-    | c == '/' = Token TokenSlash "/" i indent : tokenize cs (i + 1) indent
-    | c == '=' = Token TokenEquals "=" i indent : tokenize cs (i + 1) indent
-    | c == '>' = Token TokenRightAngleBracket ">" i indent : tokenize cs (i + 1) indent
-    | c == '<' = Token TokenLeftAngleBracket "<" i indent : tokenize cs (i + 1) indent
-    | c == '(' = Token TokenLeftParenthesis "(" i indent : tokenize cs (i + 1) indent
-    | c == ')' = Token TokenRightParenthesis ")" i indent : tokenize cs (i + 1) indent
-    | c == '|' = Token TokenPipe "|" i indent : tokenize cs (i + 1) indent
+    | c == '+' = consToken (Token TokenPlus "+" i indent) (tokenize cs (i + 1) indent)
+    | c == '*' = consToken (Token TokenAsterisk "*" i indent) (tokenize cs (i + 1) indent)
+    | c == '/' = consToken (Token TokenSlash "/" i indent) (tokenize cs (i + 1) indent)
+    | c == '=' = consToken (Token TokenEquals "=" i indent) (tokenize cs (i + 1) indent)
+    | c == '>' = consToken (Token TokenRightAngleBracket ">" i indent) (tokenize cs (i + 1) indent)
+    | c == '<' = consToken (Token TokenLeftAngleBracket "<" i indent) (tokenize cs (i + 1) indent)
+    | c == '(' = consToken (Token TokenLeftParenthesis "(" i indent) (tokenize cs (i + 1) indent)
+    | c == ')' = consToken (Token TokenRightParenthesis ")" i indent) (tokenize cs (i + 1) indent)
+    | c == '|' = consToken (Token TokenPipe "|" i indent) (tokenize cs (i + 1) indent)
     | c == ':' = case cs of
-        ':' : rest -> Token TokenReturns "::" i indent : tokenize rest (i + 2) indent
-        _ -> Token TokenColon ":" i indent : tokenize cs (i + 1) indent
+        ':' : rest -> consToken (Token TokenReturns "::" i indent) (tokenize rest (i + 2) indent)
+        _ -> consToken (Token TokenColon ":" i indent) (tokenize cs (i + 1) indent)
     | c == '-' = case cs of
-        '>' : rest -> Token TokenRightArrow "->" i indent : tokenize rest (i + 2) indent
-        _ -> Token TokenMinus "-" i indent : tokenize cs (i + 1) indent
+        '>' : rest -> consToken (Token TokenRightArrow "->" i indent) (tokenize rest (i + 2) indent)
+        _ -> consToken (Token TokenMinus "-" i indent) (tokenize cs (i + 1) indent)
     | c == '\n' =
         let (spaces, rest) = span (\w -> w == ' ' || w == '\t') cs
             indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
             newIndent = length spaces
-        in Token TokenNewline indentStr i indent : tokenize rest (i + 1 + length spaces) newIndent
+        in consToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
     | isDigit c =
         let (numberToken, rest) = span isDigit (c:cs)
-        in Token TokenNumber numberToken i indent : tokenize rest (i + length numberToken) indent
+        in consToken (Token TokenNumber numberToken i indent) (tokenize rest (i + length numberToken) indent)
     | isCharacter c =
         let (text, rest) = span isCharacter (c:cs)
             kind = case text of
@@ -69,8 +73,13 @@ tokenize (c:cs) i indent
                 "fn"  -> TokenFn
                 "case" -> TokenCase
                 _     -> TokenIdentifier
-        in Token kind text i indent : tokenize rest (i + length text) indent
-    | otherwise = error $ "Unexpected character: " ++ [c] ++ " at index " ++ show i
+        in consToken (Token kind text i indent) (tokenize rest (i + length text) indent)
+    | otherwise = Left $ UnexpectedCharacter c i
+
+consToken :: Token -> Either LexingError [Token] -> Either LexingError [Token]
+consToken token restTokens = do
+    rest <- restTokens
+    Right (token : rest)
 
 isDigit :: Char -> Bool
 isDigit c = c `elem` ['0'..'9']

@@ -1,8 +1,13 @@
-module Logging.ErrorPrinter (printError) where
+module Logging.ErrorPrinter (PrintableError(..), printError) where
 
 import Data.List (findIndex)
 import Data.Maybe (fromMaybe)
 import System.Console.ANSI
+
+class PrintableError a where
+    errorMessage :: a -> String
+    errorStart :: a -> Int
+    errorEnd :: a -> Int
 
 data RowInfo = RowInfo
   { content :: String
@@ -10,8 +15,8 @@ data RowInfo = RowInfo
   , number :: Int
   }
 
-printError :: FilePath -> String -> String -> Int -> Int -> String -> IO ()
-printError fileName code prefix start end message = do
+printError :: PrintableError a => a -> FilePath -> String -> String -> IO ()
+printError err fileName code prefix = do
   case findRowOfIndex (lines code) start of
     Just rowInfo -> do
       let (contentTrim, trimWidth) = trimIndentReturningWidth (content rowInfo)
@@ -22,7 +27,6 @@ printError fileName code prefix start end message = do
           textToHighlight = take (relativeEnd - relativeStart) $ drop relativeStart contentTrim
           positionIndicator = replicate relativeStart ' ' ++ replicate (relativeEnd - relativeStart + 1) '^'
           
-      -- First line with error message
       setSGR [SetColor Foreground Vivid Red]
       putStr $ fileName ++ ":" ++ show (number rowInfo) ++ ":" ++ show (relativeStart + 1) ++ " "
       setSGR [Reset]
@@ -36,10 +40,8 @@ printError fileName code prefix start end message = do
       putStrLn message
       setSGR [Reset]
       
-      -- Separator line
       putStrLn "|"
       
-      -- Code line
       putStr "| row: "
       putStr (take relativeStart contentTrim)
       setSGR [SetColor Foreground Vivid Red]
@@ -48,7 +50,6 @@ printError fileName code prefix start end message = do
       let textLength = length textToHighlight
       putStrLn (drop (relativeStart + textLength) contentTrim)
       
-      -- Position indicator line
       putStr $ "| pos: "
       setSGR [SetColor Foreground Vivid Red]
       putStrLn positionIndicator
@@ -56,6 +57,9 @@ printError fileName code prefix start end message = do
       
     Nothing -> error "Error while finding the line of the error"
   where
+    start = errorStart err
+    end = errorEnd err
+    message = errorMessage err
     errorLength = end - start
 
 findRowOfIndex :: [String] -> Int -> Maybe RowInfo
@@ -74,10 +78,9 @@ findRowOfIndex rows index = do
 
 trimIndentReturningWidth :: String -> (String, Int)
 trimIndentReturningWidth str =
-  let width = fromMaybe (length str) $ findIndex (not . isSpace) str
+  let width = fromMaybe (length str) $ findIndex (/= ' ') str
   in (drop width str, width)
 
--- Helper for finding last index of character
 lastIndexOf :: Char -> String -> Int -> Int
 lastIndexOf c str maxIndex = go (min maxIndex (length str - 1))
   where
@@ -86,5 +89,3 @@ lastIndexOf c str maxIndex = go (min maxIndex (length str - 1))
       | str !! i == c = i
       | otherwise = go (i - 1)
 
-isSpace :: Char -> Bool
-isSpace c = c == ' ' || c == '\t' || c == '\n' || c == '\r'

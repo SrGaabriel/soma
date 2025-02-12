@@ -1,28 +1,27 @@
 module Main where
 
 import Parsing.Parser (parse)
-import Lexing.Lexer (tokenizeFile, Token (tokenPos, tokenValue))
+import Lexing.Lexer (tokenizeFile)
 import Parsing.Tree (Expression(..), getChildren)
-import Parsing.Errors (getErrorToken, getErrorMessage)
 import Logging.ErrorPrinter (printError)
+import System.Exit (exitFailure)
 
 main :: IO ()
 main = do
     putStrLn "Starting soma..."
     content <- readFile "app.soma"
 
-    let tokens = tokenizeFile "app.soma" content
+    tokens <- either 
+      (\err -> do
+         printError err "app.soma" content "LEXING" 
+         exitFailure
+      )
+      return (tokenizeFile "app.soma" content)
 
     let tree = parse tokens
     case tree of
       Left err ->
-        case getErrorToken err of
-          Just token -> 
-            let pos = tokenPos token in
-            let end = pos + length (tokenValue token) - 1 in
-            let message = getErrorMessage err in
-              printError "app.soma" content "PARSING" pos end message
-          Nothing -> print err
+        printError err "app.soma" content "PARSING"
       Right tree' -> do
         putStrLn "Tree:"
         prettyPrintAst tree'
