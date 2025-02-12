@@ -8,7 +8,7 @@ import Parsing.Tree (ExpressionKind(..), Expression(..))
 import Parsing.Ops (BinaryOp(..))
 import Parsing.Type (Type (..))
 
-data Parser a = Parser {
+newtype Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
 }
 

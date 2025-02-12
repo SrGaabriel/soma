@@ -28,10 +28,12 @@ executable soma
                       Parsing.Ops
                       Parsing.Pattern
                       Analysis.Inference
-                      Analysis.Scheme
+                      Analysis.Tree
                       Logging.ErrorPrinter
 
     build-depends:    base >= 4.19.2.0,
-                      ansi-terminal >= 1.0
+                      ansi-terminal >= 1.0,
+                      containers >= 0.6,
+                      mtl >= 2.2,
     hs-source-dirs:   app
     default-language: Haskell2010
