@@ -29,6 +29,7 @@ executable soma
                       Parsing.Pattern
                       Analysis.Inference
                       Analysis.Tree
+                      Analysis.Errors
                       Logging.ErrorPrinter
 
     build-depends:    base >= 4.19.2.0,
