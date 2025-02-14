@@ -25,14 +25,14 @@ data TokenKind
     | TokenLet
     | TokenFn
     | TokenEOF
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
 data Token = Token 
     { tokenKind :: TokenKind
     , tokenValue :: String
     , tokenPos :: Int
     , tokenIndent :: Int
-    } deriving (Show, Eq)
+    } deriving (Show, Eq, Ord)
 
 tokenizeFile :: String -> String -> Either LexingError [Token]
 tokenizeFile path content = do

@@ -1,10 +1,12 @@
 module Main where
 
+import Analysis.Tree (inferExpr)
 import Parsing.Parser (parse)
 import Lexing.Lexer (tokenizeFile)
 import Parsing.Tree (Expression(..), getChildren)
 import Logging.ErrorPrinter (printError)
 import System.Exit (exitFailure)
+import Analysis.Inference (cleanRunInferM)
 
 main :: IO ()
 main = do
@@ -18,13 +20,26 @@ main = do
       )
       return (tokenizeFile "app.soma" content)
 
-    let tree = parse tokens
-    case tree of
-      Left err ->
-        printError err "app.soma" content "PARSING"
-      Right tree' -> do
-        putStrLn "Tree:"
-        prettyPrintAst tree'
+    tree <- either
+        (\err -> do
+             printError err "app.soma" content "PARSING"
+             exitFailure
+        )
+        return (parse tokens)
+
+    putStrLn "Tree:"
+    prettyPrintAst tree
+
+    (_, inference) <- cleanRunInferM (inferExpr tree) >>= \(result, finalState) ->
+                either
+                  (\err -> printError err "app.soma" content "INFERENCE" >> exitFailure)
+                  (\res -> return (res, finalState))
+                  result
+
+
+    putStrLn "Inference"
+    print inference
+    
 
 prettyPrintAst :: Expression -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0

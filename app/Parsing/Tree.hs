@@ -7,7 +7,7 @@ import Parsing.Ops (BinaryOp)
 data Expression = Expression 
   { exprToken :: Token
   , exprKind :: ExpressionKind
-  } deriving (Eq)
+  } deriving (Eq, Ord)
 
 data ExpressionKind
   = RootExpr
@@ -29,7 +29,7 @@ data ExpressionKind
   | PatternHandlerExpr
     { patternHandlerPattern :: Expression }
   | NumberExpr
-  deriving (Eq)
+  deriving (Eq, Ord)
 
 getChildren :: ExpressionKind -> [Expression]
 getChildren kind = case kind of

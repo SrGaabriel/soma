@@ -10,4 +10,4 @@ data Type
         , functionTypeReturn :: Type
         }
     | UnknownType String
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
