@@ -9,11 +9,12 @@ import Parsing.Tree (Expression(..))
 
 import Parsing.Type
 import Analysis.Errors (AnalysisError(..))
+import Control.Monad (foldM)
 
 data TypeScheme
     = STypeLiteral Type
     | STypeVar Int
-    | STypeLambda TypeScheme TypeScheme
+    | STypeLambda [TypeScheme] TypeScheme
     | SUntyped
     deriving (Eq, Show)
 
@@ -48,12 +49,12 @@ class Substitutable a where
 instance Substitutable TypeScheme where
     free (STypeLiteral _) = Set.empty
     free (STypeVar v) = Set.singleton v
-    free (STypeLambda t1 t2) = free t1 `Set.union` free t2
+    free (STypeLambda t1 t2) = Set.unions $ fmap free (t1 ++ [t2])
     free SUntyped = Set.empty
 
     apply _ t@(STypeLiteral _) = t
     apply s (STypeVar v) = Map.findWithDefault (STypeVar v) v s
-    apply s (STypeLambda t1 t2) = STypeLambda (apply s t1) (apply s t2)
+    apply s (STypeLambda args ret) = STypeLambda (fmap (apply s) args) (apply s ret)
     apply _ SUntyped = SUntyped
 
 data InferState = InferState
@@ -73,10 +74,18 @@ unify expr t (STypeVar v) = bind expr v t
 unify expr (STypeLiteral t1) (STypeLiteral t2)
     | t1 == t2 = return Map.empty
     | otherwise = throwError $ UnificationError $ expr
-unify expr (STypeLambda t1 t2) (STypeLambda t3 t4) = do
-    s1 <- unify expr t1 t3
-    s2 <- unify expr (apply s1 t2) (apply s1 t4)
-    return $ s2 `Map.union` s1
+unify expr (STypeLambda args1 ret1) (STypeLambda args2 ret2) = do
+    if (length args1 /= length args2) then
+        throwError $ DifferentArgumentLengths expr expr
+    else do   
+        argSubst <- foldM (\subst (a1, a2) -> do
+            s <- unify expr (apply subst a1) (apply subst a2)
+            return $ composeS s subst
+            ) Map.empty (zip args1 args2)
+            
+        retSubst <- unify expr (apply argSubst ret1) (apply argSubst ret2)
+        
+        return $ composeS retSubst argSubst
 unify expr _ _ = throwError $ UnificationError $ expr
 
 bind :: Expression -> Int -> TypeScheme -> InferM Substitution
@@ -85,8 +94,16 @@ bind expr v t
     | v `Set.member` free t = throwError $ UnificationError expr
     | otherwise = return $ Map.singleton v t
 
-compose :: Substitution -> Substitution -> Substitution
-compose s1 s2 = Map.map (apply s1) s2 `Map.union` s1
+composeS :: Substitution -> Substitution -> Substitution
+composeS s1 s2 = Map.map (apply s1) s2 `Map.union` s1
+
+concretize :: TypeScheme -> Maybe Type
+concretize (STypeLiteral t) = Just t
+concretize (STypeLambda args ret) = do
+    args' <- traverse concretize args
+    ret' <- concretize ret
+    return $ FunctionType args' ret'
+concretize _ = Nothing
 
 evalInferM :: InferM a -> InferState -> IO (Either AnalysisError a)
 evalInferM m st = return $ evalState (runExceptT (runInfer m)) st

@@ -1,7 +1,7 @@
 module Main where
 
 import Data.Map as Map
-import Analysis.Tree (inferExpr)
+import Analysis.Tree (inferExpr, runInference, TypeMap)
 import Parsing.Parser (parse)
 import Lexing.Lexer (tokenizeFile)
 import Parsing.Tree (Expression(..), getChildren)
@@ -31,16 +31,14 @@ main = do
     putStrLn "Tree:"
     prettyPrintAst tree
 
-    (_, inference) <- cleanRunInferM (inferExpr tree) >>= \(result, finalState) ->
-                either
-                  (\err -> printError err "app.soma" content "INFERENCE" >> exitFailure)
-                  (\res -> return (res, finalState))
-                  result
+    inference <- either    
+        (\err -> printError err "app.soma" content "INFERENCE" >> exitFailure)
+        return (runInference tree)
 
 
     putStrLn "Inference"
     prettyPrintTypeState inference
-    
+
 
 prettyPrintAst :: Expression -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0
@@ -49,8 +47,8 @@ prettyPrintAst root = prettyPrintAst' root 0
       putStrLn $ replicate indent ' ' ++ show expr
       mapM_ (\child -> prettyPrintAst' child (indent + 2)) (getChildren $ exprKind expr)
 
-prettyPrintTypeState :: InferState -> IO ()
-prettyPrintTypeState state = do
+prettyPrintTypeState :: TypeMap -> IO ()
+prettyPrintTypeState typeMap = do
   putStrLn "Type state:"
-  mapM_ (\(expr, t) -> putStrLn $ show expr ++ " : " ++ show t) (Map.toList $ inferTypeMap state)
+  mapM_ (\(expr, t) -> putStrLn $ show expr ++ " : " ++ show t) (Map.toList $ typeMap)
   putStrLn "End of type state"
