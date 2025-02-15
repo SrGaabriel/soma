@@ -1,12 +1,13 @@
 module Main where
 
+import Data.Map as Map
 import Analysis.Tree (inferExpr)
 import Parsing.Parser (parse)
 import Lexing.Lexer (tokenizeFile)
 import Parsing.Tree (Expression(..), getChildren)
 import Logging.ErrorPrinter (printError)
 import System.Exit (exitFailure)
-import Analysis.Inference (cleanRunInferM)
+import Analysis.Inference (cleanRunInferM, InferState(..))
 
 main :: IO ()
 main = do
@@ -38,7 +39,7 @@ main = do
 
 
     putStrLn "Inference"
-    print inference
+    prettyPrintTypeState inference
     
 
 prettyPrintAst :: Expression -> IO ()
@@ -47,3 +48,9 @@ prettyPrintAst root = prettyPrintAst' root 0
     prettyPrintAst' expr indent = do
       putStrLn $ replicate indent ' ' ++ show expr
       mapM_ (\child -> prettyPrintAst' child (indent + 2)) (getChildren $ exprKind expr)
+
+prettyPrintTypeState :: InferState -> IO ()
+prettyPrintTypeState state = do
+  putStrLn "Type state:"
+  mapM_ (\(expr, t) -> putStrLn $ show expr ++ " : " ++ show t) (Map.toList $ inferTypeMap state)
+  putStrLn "End of type state"

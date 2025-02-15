@@ -24,7 +24,7 @@ printError err fileName code prefix = do
           relativeEnd = min
             (relativeIndex rowInfo + errorLength - trimWidth)
             (Prelude.length contentTrim)
-          textToHighlight = take (relativeEnd - relativeStart) $ drop relativeStart contentTrim
+          textToHighlight = take (relativeEnd - relativeStart + 1) $ drop relativeStart contentTrim
           positionIndicator = replicate relativeStart ' ' ++ replicate (relativeEnd - relativeStart + 1) '^'
           
       setSGR [SetColor Foreground Vivid Red]

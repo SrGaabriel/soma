@@ -1,5 +1,5 @@
 module Parsing.Errors (ParsingError(..), getErrorToken) where
-import Lexing.Lexer (Token (..), TokenKind)
+import Lexing.Lexer (Token (..), TokenKind, referenceToken)
 import Logging.ErrorPrinter (PrintableError(..))
 
 data ParsingError
@@ -14,9 +14,9 @@ data ParsingError
   deriving (Eq)
 
 instance Show ParsingError where
-  show (UnexpectedToken t) = "Unexpected token: " ++ show t
-  show (ExpectedDifferentToken tExpected tReceived) = "Expected token '" ++ show tExpected ++ "' but received " ++ show (tokenValue tReceived)
-  show (InvalidTokenForType t) = "Invalid token for type: " ++ show t
+  show (UnexpectedToken t) = "Unexpected token " ++ referenceToken t
+  show (ExpectedDifferentToken tExpected tReceived) = "Expected token '" ++ show tExpected ++ "' but received " ++ referenceToken tReceived
+  show (InvalidTokenForType t) = "Invalid token for type: " ++ referenceToken t
   show (EndOfInput) = "End of input"
   show Debug = "Debug"
 

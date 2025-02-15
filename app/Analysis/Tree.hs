@@ -27,11 +27,6 @@ inferExpr expr = case exprKind expr of
                 storeType expr opLeft
                 return opLeft
     _ -> do
-        -- TODO: remove (this is just done to traverse the entire tree instead of stopping on Untyped nodes)
         let children = getChildren $ exprKind expr
-        types <- mapM inferExpr children
-        let t = case types of
-                []     -> SUntyped
-                (x:_)  -> x
-        storeType expr t
-        return t
+        _childrenTypes <- mapM inferExpr children
+        return SUntyped

@@ -1,4 +1,4 @@
-module Lexing.Lexer (Token(..), TokenKind(..), tokenize, tokenizeFile) where
+module Lexing.Lexer (Token(..), TokenKind(..), tokenize, tokenizeFile, referenceToken) where
 
 import Lexing.Errors (LexingError(..))
 
@@ -18,6 +18,7 @@ data TokenKind
     | TokenReturns
     | TokenNewline
     | TokenCase
+    | TokenDo
     | TokenLeftParenthesis
     | TokenRightParenthesis
     | TokenIdentifier
@@ -72,6 +73,7 @@ tokenize (c:cs) i indent
                 "let" -> TokenLet
                 "fn"  -> TokenFn
                 "case" -> TokenCase
+                "do" -> TokenDo
                 _     -> TokenIdentifier
         in consToken (Token kind text i indent) (tokenize rest (i + length text) indent)
     | otherwise = Left $ UnexpectedCharacter c i
@@ -89,3 +91,12 @@ isCharacter c = c `elem` ['a'..'z'] || c `elem` ['A'..'Z']
 
 isSpace :: Char -> Bool
 isSpace c = c == ' ' || c == '\t'
+
+referenceToken :: Token -> String
+referenceToken token = case tokenKind token of
+    TokenNumber -> "number '" ++ tokenValue token ++ "'"
+    TokenNewline -> "newline"
+    TokenIdentifier -> "identifier '" ++ tokenValue token ++ "'"
+    TokenBOF -> "beginning of file"
+    TokenEOF -> "end of file"
+    _ -> "'" ++ tokenValue token ++ "'"
