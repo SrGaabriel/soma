@@ -1,13 +1,12 @@
 module Main where
 
 import Data.Map as Map
-import Analysis.Tree (inferExpr, runInference, TypeMap)
+import Analysis.Tree (runInference, TypeMap)
 import Parsing.Parser (parse)
 import Lexing.Lexer (tokenizeFile)
 import Parsing.Tree (Expression(..), getChildren)
 import Logging.ErrorPrinter (printError)
 import System.Exit (exitFailure)
-import Analysis.Inference (cleanRunInferM, InferState(..))
 
 main :: IO ()
 main = do

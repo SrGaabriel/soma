@@ -147,7 +147,7 @@ parsePattern = do
 
 parseExpression :: Parser Expression
 parseExpression = do
-  parseNumericExpression -- TODO: implement equals
+    parseNumericExpression
 
 parseNumericExpression :: Parser Expression
 parseNumericExpression = parseBinaryOp 
@@ -161,17 +161,21 @@ parseTerm = parseBinaryOp
 
 parseFactor :: Parser Expression
 parseFactor = do
-  token <- peek
-  case tokenKind token of
-    TokenNumber -> do
-      _ <- next
-      return $ expr token NumberExpr
-    TokenLeftParenthesis -> do
-      _ <- next
-      numericExpr <- parseNumericExpression
-      _ <- consume TokenRightParenthesis
-      return numericExpr
-    _ -> failParser $ UnexpectedToken token
+    token <- peek
+    case tokenKind token of
+        TokenNumber -> do
+            _ <- next
+            return $ expr token NumberExpr
+        TokenLeftParenthesis -> do
+            _ <- next
+            numericExpr <- parseNumericExpression
+            _ <- consume TokenRightParenthesis
+            return numericExpr
+        TokenDo -> do
+            doToken <- next
+            block <- parseIndentedBlock 2 parseExpression
+            return $ expr doToken (BlockExpr block)
+        _ -> failParser $ UnexpectedToken token
 
 parseType :: Parser Type
 parseType = do

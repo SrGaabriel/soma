@@ -4,3 +4,6 @@ fn fibonacci (Int) :: Int
   | n -> fibonacci(n-1) + fibonacci(n-2)
 
 fn nothing () :: Int = (5+5)*5
+
+fn nothing () :: Int = do
+    5+5
