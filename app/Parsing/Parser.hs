@@ -236,31 +236,27 @@ parseIndentedBlock :: Int -> Parser a -> Parser [a]
 parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
     indentation <- case tokens of
         [] -> Left EndOfInput
-        (t@Token { tokenKind = TokenNewline }:rest) -> if length (tokenValue t) > previousIndent
+        (t@Token { tokenKind = TokenNewline }:_) -> if length (tokenValue t) > previousIndent
             then Right $ length (tokenValue t)
-            else Left $ ExpectedIndentation $ head rest
+            else Left $ ExpectedIndentation t
 
         (t:_) -> Left $ ExpectedDifferentToken TokenNewline t
 
     let parseNext acc remaining = case remaining of
            [] -> Right (reverse acc, [])
            (tok:rest) ->
-                case rest of
-                    [] -> Right (reverse acc, remaining)
-                    [Token { tokenKind = TokenEOF }] -> Right (reverse acc, remaining)
-                    (incoming:_) -> 
-                        let kind = tokenKind tok
-                            isNewline = kind == TokenNewline
-                            tokenIndentation = length (tokenValue tok)
-                        in if isNewline then case compare tokenIndentation indentation of
-                            EQ -> do
-                                (item, rest') <- runParser itemParser rest
-                                parseNext (item:acc) rest'
-                            LT ->   if tokenIndentation == previousIndent then Right (reverse acc, remaining)
-                                    else Left $ ExpectedDifferentIndentation incoming indentation tokenIndentation
-                            GT -> do Left $ ExpectedDifferentIndentation incoming indentation tokenIndentation
-                        else if kind == TokenEOF then Right (reverse acc, remaining)
-                        else do Left $ UnseparatedStatements tok
+                let kind = tokenKind tok
+                    isNewline = kind == TokenNewline
+                    tokenIndentation = length (tokenValue tok)
+                in if isNewline then case compare tokenIndentation indentation of
+                    EQ -> do
+                        (item, rest') <- runParser itemParser rest
+                        parseNext (item:acc) rest'
+                    LT -> if tokenIndentation == previousIndent then Right (reverse acc, remaining)
+                          else Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
+                    GT -> Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
+                else if kind == TokenEOF then Right (reverse acc, remaining)
+                else Left $ UnseparatedStatements tok
 
     parseNext [] tokens
 

@@ -1,5 +1,5 @@
 module Parsing.Errors (ParsingError(..), getErrorToken) where
-import Lexing.Lexer (Token (..), TokenKind, referenceToken)
+import Lexing.Lexer (Token (..), TokenKind, referenceToken, referenceTokenKind)
 import Logging.ErrorPrinter (PrintableError(..))
 
 data ParsingError
@@ -18,7 +18,7 @@ data ParsingError
 
 instance Show ParsingError where
     show (UnexpectedToken t) = "Unexpected token " ++ referenceToken t
-    show (ExpectedDifferentToken tExpected tReceived) = "Expected token '" ++ show tExpected ++ "' but received " ++ referenceToken tReceived
+    show (ExpectedDifferentToken tExpected tReceived) = "Expected " ++ referenceTokenKind tExpected ++ " but received " ++ referenceToken tReceived
     show (InvalidTokenForType t) = "Invalid token for type: " ++ referenceToken t
     show (ExpectedIndentation _) = "Expected indentation"
     show (UnseparatedStatements t) = "Unseparated statements by newline at " ++ referenceToken t
@@ -27,13 +27,19 @@ instance Show ParsingError where
     show Debug = "Debug"
 
 instance PrintableError ParsingError where
-  errorMessage err = show err
-  errorStart err = case getErrorToken err of
-    Just t -> tokenPos t
-    Nothing -> error "End of input has no position" 
-  errorEnd err = case getErrorToken err of
-    Just t -> tokenPos t + length (tokenValue t) - 1
-    Nothing -> error "End of input has no position"
+    errorMessage err = show err
+
+    errorStart (ExpectedIndentation t) = tokenPos t - 2 -- TODO: remove workaround
+    errorStart (ExpectedDifferentIndentation t _ _) = tokenPos t + 1
+    errorStart err = case getErrorToken err of
+        Just t -> tokenPos t
+        Nothing -> error "End of input has no position" 
+
+    errorEnd (ExpectedIndentation t) = tokenPos t + length (tokenValue t) - 1
+    errorEnd (ExpectedDifferentIndentation t _ _) = tokenPos t + length (tokenValue t) - 1
+    errorEnd err = case getErrorToken err of
+        Just t -> tokenPos t + length (tokenValue t) - 1
+        Nothing -> error "End of input has no position"
 
 getErrorToken :: ParsingError -> Maybe Token
 getErrorToken (UnexpectedToken t) = Just t

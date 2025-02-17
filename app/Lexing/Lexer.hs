@@ -1,4 +1,4 @@
-module Lexing.Lexer (Token(..), TokenKind(..), tokenize, tokenizeFile, referenceToken) where
+module Lexing.Lexer (Token(..), TokenKind(..), tokenize, tokenizeFile, referenceToken, referenceTokenKind) where
 
 import Lexing.Errors (LexingError(..))
 
@@ -100,3 +100,29 @@ referenceToken token = case tokenKind token of
     TokenBOF -> "beginning of file"
     TokenEOF -> "end of file"
     _ -> "'" ++ tokenValue token ++ "'"
+
+referenceTokenKind :: TokenKind -> String
+referenceTokenKind kind = case kind of
+    TokenNumber -> "a number"
+    TokenNewline -> "a newline"
+    TokenIdentifier -> "an identifier"
+    TokenBOF -> "the beginning of the file"
+    TokenEOF -> "the end of the file"
+    TokenPlus -> "a plus sign"
+    TokenMinus -> "a minus sign"
+    TokenAsterisk -> "an asterisk"
+    TokenSlash -> "a slash"
+    TokenEquals -> "an equals sign"
+    TokenLeftAngleBracket -> "a left angle bracket"
+    TokenRightAngleBracket -> "a right angle bracket"
+    TokenLeftArrow -> "a left arrow"
+    TokenRightArrow -> "a right arrow"
+    TokenColon -> "a colon"
+    TokenReturns -> "'returns'"
+    TokenCase -> "'case'"
+    TokenDo -> "'do'"
+    TokenLeftParenthesis -> "a left parenthesis"
+    TokenRightParenthesis -> "a right parenthesis"
+    TokenPipe -> "a vertical bar"
+    TokenLet -> "'let'"
+    TokenFn -> "'fn'"

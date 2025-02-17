@@ -17,63 +17,70 @@ data RowInfo = RowInfo
 
 printError :: PrintableError a => a -> FilePath -> String -> String -> IO ()
 printError err fileName code prefix = do
-  case findRowOfIndex (lines code) start of
-    Just rowInfo -> do
-      let (contentTrim, trimWidth) = trimIndentReturningWidth (content rowInfo)
-          relativeStart = relativeIndex rowInfo - trimWidth
-          relativeEnd = min
-            (relativeIndex rowInfo + errorLength - trimWidth)
-            (Prelude.length contentTrim)
-          textToHighlight = take (relativeEnd - relativeStart + 1) $ drop relativeStart contentTrim
-          positionIndicator = replicate relativeStart ' ' ++ replicate (relativeEnd - relativeStart + 1) '^'
-          
-      setSGR [SetColor Foreground Vivid Red]
-      putStr $ fileName ++ ":" ++ show (number rowInfo) ++ ":" ++ show (relativeStart + 1) ++ " "
-      setSGR [Reset]
-      setSGR [SetConsoleIntensity BoldIntensity]
-      putStr $ "[" ++ prefix ++ "] "
-      setSGR [SetColor Foreground Vivid Red]
-      setSGR [SetConsoleIntensity BoldIntensity]
-      putStr "error: "
-      setSGR [SetColor Foreground Dull White]
-      setSGR [SetConsoleIntensity NormalIntensity]
-      putStrLn message
-      setSGR [Reset]
-      
-      putStrLn "|"
-      
-      putStr "| row: "
-      putStr (take relativeStart contentTrim)
-      setSGR [SetColor Foreground Vivid Red]
-      putStr textToHighlight
-      setSGR [Reset]
-      let textLength = length textToHighlight
-      putStrLn (drop (relativeStart + textLength) contentTrim)
-      
-      putStr $ "| pos: "
-      setSGR [SetColor Foreground Vivid Red]
-      putStrLn positionIndicator
+    case findRowOfIndex (lines code) start of
+        Just rowInfo -> do
+            let (contentTrim, trimWidth) = trimIndentReturningWidth (content rowInfo)
+                relativeStart = max 0 (relativeIndex rowInfo - trimWidth)
+                relativeEnd = min
+                  (relativeIndex rowInfo + errorLength - trimWidth)
+                  (Prelude.length contentTrim)
+                textLength = relativeEnd - relativeStart + 1
+                textToHighlight = take textLength $ drop relativeStart contentTrim
+                positionIndicator = replicate relativeStart ' ' ++ replicate textLength '^'
 
-      
-    Nothing -> error "Error while finding the line of the error"
-  where
-    start = errorStart err
-    end = errorEnd err
-    message = errorMessage err
-    errorLength = end - start
+            setSGR [SetColor Foreground Vivid Red]
+            putStr $ fileName ++ ":" ++ show (number rowInfo) ++ ":" ++ show (relativeStart + 1) ++ " "
+            setSGR [Reset]
+            setSGR [SetConsoleIntensity BoldIntensity]
+            putStr $ "[" ++ prefix ++ "] "
+            setSGR [SetColor Foreground Vivid Red]
+            setSGR [SetConsoleIntensity BoldIntensity]
+            putStr "error: "
+            setSGR [SetColor Foreground Dull White]
+            setSGR [SetConsoleIntensity NormalIntensity]
+            putStrLn message
+            setSGR [Reset]
+
+            putStrLn "|"
+
+            putStr "| row: "
+            if contentTrim == "" then putStrLn "<empty row>"
+            else do
+                putStrLn contentTrim
+                putStr (take relativeStart contentTrim)
+                setSGR [SetColor Foreground Vivid Red]
+                putStr textToHighlight
+                setSGR [Reset]
+                putStrLn (drop (relativeStart + textLength) contentTrim)
+
+            if textLength > 1 then do
+                putStr $ "| pos: "
+                setSGR [SetColor Foreground Vivid Red]
+                putStrLn positionIndicator
+            else return ()
+
+        Nothing -> error "Error while finding the line of the error"
+    where
+        start = errorStart err
+        end = errorEnd err
+        message = errorMessage err
+        errorLength = end - start
 
 findRowOfIndex :: [String] -> Int -> Maybe RowInfo
-findRowOfIndex rows index = do
+findRowOfIndex rows idx = do
   let codeContent = unlines rows
-  if index < 0 || index >= length codeContent
+      fixedIndex = if idx >= length codeContent && not (null codeContent)
+                      then length codeContent - 1
+                      else idx
+  if fixedIndex < 0 || fixedIndex >= length codeContent
     then Nothing
     else do
-      let rowStartIndex = lastIndexOf '\n' codeContent (index - 1)
-          rowEndIndex = findIndex (=='\n') $ drop index codeContent
-          actualRowEndIndex = maybe (length codeContent) (+index) rowEndIndex
+      let rowStartIndex = lastIndexOf '\n' codeContent (fixedIndex - 1)
+          rowEndIndex = findIndex (=='\n') $ drop fixedIndex codeContent
+          actualRowEndIndex = maybe (length codeContent) (+ fixedIndex) rowEndIndex
           rowContent = take (actualRowEndIndex - rowStartIndex - 1) $ drop (rowStartIndex + 1) codeContent
-          relativeIndexInRow = index - (rowStartIndex + 1)
-          rowNumber = length (filter (=='\n') $ take index codeContent) + 1
+          relativeIndexInRow = fixedIndex - (rowStartIndex + 1)
+          rowNumber = length (filter (=='\n') $ take fixedIndex codeContent) + 1
       Just $ RowInfo rowContent relativeIndexInRow rowNumber
 
 trimIndentReturningWidth :: String -> (String, Int)
