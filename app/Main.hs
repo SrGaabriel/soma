@@ -36,7 +36,6 @@ main = do
         (\err -> printError err "app.soma" content "INFERENCE" >> exitFailure)
         return (runInference tree)
 
-
     putStrLn "Inference"
     prettyPrintTypeState inference
 
