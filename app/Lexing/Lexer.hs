@@ -3,8 +3,7 @@ module Lexing.Lexer (Token(..), TokenKind(..), tokenize, tokenizeFile, reference
 import Lexing.Errors (LexingError(..))
 
 data TokenKind
-    = TokenBOF
-    | TokenNumber
+    = TokenNumber
     | TokenPlus
     | TokenMinus
     | TokenAsterisk
@@ -25,7 +24,6 @@ data TokenKind
     | TokenPipe
     | TokenLet
     | TokenFn
-    | TokenEOF
     deriving (Show, Eq, Ord)
 
 data Token = Token 
@@ -35,10 +33,10 @@ data Token = Token
     , tokenIndent :: Int
     } deriving (Show, Eq, Ord)
 
-tokenizeFile :: String -> String -> Either LexingError [Token]
-tokenizeFile path content = do
+tokenizeFile :: String -> Either LexingError [Token]
+tokenizeFile content = do
     tokens <- tokenize content 0 0
-    return $ Token TokenBOF path 0 0 : tokens ++ [Token TokenEOF path (length content) 0]
+    Right tokens
 
 tokenize :: String -> Int -> Int -> Either LexingError [Token]
 tokenize [] _ _ = Right []
@@ -97,8 +95,6 @@ referenceToken token = case tokenKind token of
     TokenNumber -> "number '" ++ tokenValue token ++ "'"
     TokenNewline -> "newline"
     TokenIdentifier -> "identifier '" ++ tokenValue token ++ "'"
-    TokenBOF -> "beginning of file"
-    TokenEOF -> "end of file"
     _ -> "'" ++ tokenValue token ++ "'"
 
 referenceTokenKind :: TokenKind -> String
@@ -106,8 +102,6 @@ referenceTokenKind kind = case kind of
     TokenNumber -> "a number"
     TokenNewline -> "a newline"
     TokenIdentifier -> "an identifier"
-    TokenBOF -> "the beginning of the file"
-    TokenEOF -> "the end of the file"
     TokenPlus -> "a plus sign"
     TokenMinus -> "a minus sign"
     TokenAsterisk -> "an asterisk"

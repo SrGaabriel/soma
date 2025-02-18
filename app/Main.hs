@@ -19,7 +19,7 @@ main = do
          printError err "app.soma" content "LEXING" 
          exitFailure
       )
-      return (tokenizeFile "app.soma" content)
+      return (tokenizeFile content)
 
     tree <- either
         (\err -> do
@@ -39,7 +39,6 @@ main = do
 
     putStrLn "Inference"
     prettyPrintTypeState inference
-
 
 prettyPrintAst :: Expression -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0

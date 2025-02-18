@@ -8,7 +8,7 @@ import Analysis.Inference (TypeScheme(..), InferState(..), InferM (runInfer), co
 import Parsing.Type (Type(IntType))
 import Data.Maybe (fromJust)
 import Analysis.Errors (AnalysisError (BinaryOpTypeMismatch))
-import Control.Monad (foldM)
+import Control.Monad (foldM, forM_)
 
 type TypeMap = Map.Map Expression Type
 
@@ -32,9 +32,9 @@ quickInferExpr expr = case exprKind expr of
                 storeType expr opLeft'
                 return opLeft
     BlockExpr expressions -> do
-        last <- foldM (\_ expr -> quickInferExpr expr) Nothing expressions
-        storeType expr (fromJust last)
-        return last
+        lastExprT <- foldM (\_ express -> quickInferExpr express) Nothing expressions
+        forM_ lastExprT (storeType expr)
+        return lastExprT
     _ -> return Nothing
 
 inferExpr :: Expression -> InferM (Maybe TypeScheme)

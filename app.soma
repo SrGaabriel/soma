@@ -11,4 +11,3 @@ fn nothing () :: Int = do
 
 fn nothing () :: Int = do
     5+5
-        

@@ -7,6 +7,7 @@ import Parsing.Errors (ParsingError(..))
 import Parsing.Tree (ExpressionKind(..), Expression(..))
 import Parsing.Ops (BinaryOp(..))
 import Parsing.Type (Type (..))
+import qualified Debug.Trace as Debug
 
 newtype Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -55,6 +56,12 @@ peek = Parser $ \case
   [] -> Left EndOfInput
   (t : ts) -> Right (t, t:ts)
 
+peekNext :: Parser Token
+peekNext = Parser $ \case
+  [] -> Left EndOfInput
+  (f : t : ts) -> Right (t, f:t:ts)
+  [_] -> Left EndOfInput
+
 skipping :: Int -> Parser Token
 skipping n = Parser $ \case
   [] -> Left EndOfInput
@@ -81,9 +88,9 @@ parse tokens = do
     return root
   where
     parser = do
-      bofToken <- consume TokenBOF
-      declarations <- parseSequence TokenNewline TokenEOF parseDeclaration
-      return $ Expression bofToken (RootExpr declarations)
+      declarations <- parseExhaustiveSequence TokenNewline parseDeclaration
+      let bof = Token TokenNewline "" 0 0 -- todo: improve this
+      return $ expr bof (RootExpr declarations)
 
 parseDeclaration :: Parser Expression
 parseDeclaration = do
@@ -130,7 +137,7 @@ parsePatternMatchCase = do
   pattern <- parsePattern
 
   _arrow <- consumeRelevant TokenRightArrow
-  _body <- ignoreLine
+  _body <- parseExpression
   return $ Expression prefix (PatternHandlerExpr pattern)
 
 parsePattern :: Parser Expression
@@ -171,12 +178,32 @@ parseFactor = do
             numericExpr <- parseNumericExpression
             _ <- consume TokenRightParenthesis
             return numericExpr
+        TokenIdentifier -> parseIdentifierExpression
         TokenDo -> do
             doToken <- next
             let indent = tokenIndent doToken
             block <- parseIndentedBlock indent parseExpression
             return $ expr doToken (BlockExpr block)
         _ -> failParser $ UnexpectedToken token
+
+parseIdentifierExpression :: Parser Expression
+parseIdentifierExpression = do
+    incoming <- peekNext
+    Debug.traceM $ "Identifier expression: " ++ show incoming
+    case tokenKind incoming of
+        TokenLeftParenthesis -> parseFunctionCall
+        _ -> do
+            token <- next
+            return $ expr token (VariableReferenceExpr $ tokenValue token)
+
+parseFunctionCall :: Parser Expression
+parseFunctionCall = do
+    identifier <- consume TokenIdentifier
+    _ <- consume TokenLeftParenthesis
+    args <- parseFluidSequence TokenRightParenthesis parseExpression
+    _ <- consume TokenRightParenthesis
+    let fnName = tokenValue identifier
+    return $ expr identifier (FunctionCallExpr fnName args)
 
 parseType :: Parser Type
 parseType = do
@@ -209,7 +236,7 @@ parseSequence separator end itemParser = Parser $ \tokens -> do
         parseNext acc remaining = do
             (item, rest) <- runParser itemParser remaining
             case rest of 
-                [] -> Right (reverse (item:acc), [])
+                [] -> Left EndOfInput
                 _ -> do
                   (tokenPeek, _) <- runParser next rest
                   case tokenKind tokenPeek of
@@ -217,6 +244,22 @@ parseSequence separator end itemParser = Parser $ \tokens -> do
                           _ <- runParser next rest
                           parseNext (item:acc) rest
                         | tk == end -> Right (reverse (item:acc), rest)
+                        | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
+
+parseExhaustiveSequence :: Show a => TokenKind -> Parser a -> Parser [a]
+parseExhaustiveSequence separator itemParser = Parser $ \tokens -> do
+    parseNext [] tokens
+    where
+        parseNext acc remaining = do
+            (item, rest) <- runParser itemParser remaining
+            case rest of 
+                [] -> Right (reverse (item:acc), [])
+                _ -> do
+                  (tokenPeek, _) <- runParser next rest
+                  case tokenKind tokenPeek of
+                      tk | tk == separator -> do
+                          _ <- runParser next rest
+                          parseNext (item:acc) rest
                         | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
 
 parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
@@ -255,7 +298,6 @@ parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
                     LT -> if tokenIndentation == previousIndent then Right (reverse acc, remaining)
                           else Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
                     GT -> Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
-                else if kind == TokenEOF then Right (reverse acc, remaining)
                 else Left $ UnseparatedStatements tok
 
     parseNext [] tokens

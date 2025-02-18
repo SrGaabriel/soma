@@ -31,6 +31,7 @@ executable soma
                       Analysis.Tree
                       Analysis.Errors
                       Logging.ErrorPrinter
+                      Project.Module
 
     build-depends:    base >= 4.19.2.0,
                       ansi-terminal >= 1.0,

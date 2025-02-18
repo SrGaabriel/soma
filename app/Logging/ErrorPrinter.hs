@@ -46,7 +46,6 @@ printError err fileName code prefix = do
             putStr "| row: "
             if contentTrim == "" then putStrLn "<empty row>"
             else do
-                putStrLn contentTrim
                 putStr (take relativeStart contentTrim)
                 setSGR [SetColor Foreground Vivid Red]
                 putStr textToHighlight
