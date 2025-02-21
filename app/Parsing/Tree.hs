@@ -29,6 +29,7 @@ data ExpressionKind
   | PatternHandlerExpr
     { patternHandlerPattern :: Expression }
   | NumberExpr
+  | StringExpr String
   | BlockExpr
     { blockExpressions :: [Expression] }
   | FunctionCallExpr
@@ -50,6 +51,7 @@ getChildren kind = case kind of
     NumberExpr -> []
     FunctionCallExpr _ args -> args
     VariableReferenceExpr _ -> []
+    StringExpr _ -> []
     BlockExpr expressions -> expressions
 
 instance Show ExpressionKind where
@@ -65,6 +67,7 @@ instance Show ExpressionKind where
         FunctionCallExpr name _ -> "FunctionCallExpr (" ++ name ++ ")"
         VariableReferenceExpr name -> "VariableReferenceExpr (" ++ name ++ ")"
         BlockExpr _ -> "BlockExpr"
+        StringExpr value -> "StringExpr (" ++ value ++ ")"
 
 instance Show Expression where
   show (Expression token kind) = (show kind) ++ " '" ++ tokenValue token ++ "'"

@@ -183,6 +183,9 @@ parseFactor = do
             let indent = tokenIndent doToken
             block <- parseIndentedBlock indent parseExpression
             return $ expr doToken (BlockExpr block)
+        TokenString -> do
+            stringToken <- next
+            return $ expr stringToken (StringExpr $ tokenValue stringToken)
         _ -> failParser $ UnexpectedToken token
 
 parseIdentifierExpression :: Parser Expression
@@ -216,6 +219,8 @@ parseType = do
       typeToken <- consume TokenIdentifier
       return $ case tokenValue typeToken of
         "Int" -> IntType
+        "String" -> StringType
+        "Bool" -> BoolType
         other -> UnknownType other
     _ -> failParser $ InvalidTokenForType nextToken
 

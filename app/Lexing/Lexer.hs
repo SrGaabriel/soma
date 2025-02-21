@@ -24,6 +24,7 @@ data TokenKind
     | TokenPipe
     | TokenLet
     | TokenFn
+    | TokenString
     deriving (Show, Eq, Ord)
 
 data Token = Token 
@@ -62,6 +63,11 @@ tokenize (c:cs) i indent
             indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
             newIndent = length spaces
         in consToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
+    | c == '"' =
+        let (text, rest) = span (/= '"') cs
+        in case rest of
+            '"' : rest' -> consToken (Token TokenString text i indent) (tokenize rest' (i + 2 + length text) indent)
+            _ -> Left $ UnexpectedCharacter c i
     | isDigit c =
         let (numberToken, rest) = span isDigit (c:cs)
         in consToken (Token TokenNumber numberToken i indent) (tokenize rest (i + length numberToken) indent)
@@ -95,6 +101,7 @@ referenceToken token = case tokenKind token of
     TokenNumber -> "number '" ++ tokenValue token ++ "'"
     TokenNewline -> "newline"
     TokenIdentifier -> "identifier '" ++ tokenValue token ++ "'"
+    TokenString -> "string '" ++ tokenValue token ++ "'"
     _ -> "'" ++ tokenValue token ++ "'"
 
 referenceTokenKind :: TokenKind -> String
@@ -120,3 +127,4 @@ referenceTokenKind kind = case kind of
     TokenPipe -> "a vertical bar"
     TokenLet -> "'let'"
     TokenFn -> "'fn'"
+    TokenString -> "a string"

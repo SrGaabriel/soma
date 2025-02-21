@@ -5,7 +5,7 @@ import Control.Monad.State
 import Control.Monad.Except
 import Parsing.Tree (Expression(..), ExpressionKind(..), getChildren)
 import Analysis.Inference (TypeScheme(..), InferState(..), InferM (runInfer), concretize)
-import Parsing.Type (Type(IntType))
+import Parsing.Type (Type(..))
 import Data.Maybe (fromJust)
 import Analysis.Errors (AnalysisError (BinaryOpTypeMismatch))
 import Control.Monad (foldM, forM_)
@@ -20,6 +20,10 @@ quickInferExpr :: Expression -> InferM (Maybe TypeScheme)
 quickInferExpr expr = case exprKind expr of
     NumberExpr -> do
         let t = STypeLiteral IntType
+        storeType expr t
+        return $ Just t
+    StringExpr _ -> do
+        let t = STypeLiteral StringType
         storeType expr t
         return $ Just t
     BinaryOpExpr left right _ -> do
