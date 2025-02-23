@@ -52,7 +52,7 @@ printError err fileName code prefix = do
                 setSGR [Reset]
                 putStrLn (drop (relativeStart + textLength) contentTrim)
 
-            if textLength > 1 then do
+            if textLength > 0 then do
                 putStr $ "| pos: "
                 setSGR [SetColor Foreground Vivid Red]
                 putStrLn positionIndicator
