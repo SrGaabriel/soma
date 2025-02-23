@@ -17,14 +17,26 @@ data RowInfo = RowInfo
 
 printError :: PrintableError a => a -> FilePath -> String -> String -> IO ()
 printError err fileName code prefix = do
-    case findRowOfIndex (lines code) start of
+    let isNewline = start < length code && code !! start == '\n'
+        adjustedStart = if isNewline then start + 1 else start
+        adjustedEnd = if isNewline
+            then case findIndex (=='\n') $ drop (start + 1) code of
+                Just nextNewline -> start + 1 + nextNewline
+                Nothing -> length code
+            else end
+
+    case findRowOfIndex (lines code) adjustedStart of
         Just rowInfo -> do
             let (contentTrim, trimWidth) = trimIndentReturningWidth (content rowInfo)
-                relativeStart = max 0 (relativeIndex rowInfo - trimWidth)
-                relativeEnd = min
-                  (relativeIndex rowInfo + errorLength - trimWidth)
-                  (Prelude.length contentTrim)
-                textLength = relativeEnd - relativeStart + 1
+                relativeStart = if isNewline 
+                    then 0
+                    else max 0 (relativeIndex rowInfo - trimWidth)
+                relativeEnd = if isNewline
+                    then length contentTrim
+                    else min
+                        (relativeIndex rowInfo + (adjustedEnd - adjustedStart) - trimWidth)
+                        (length contentTrim)
+                textLength = relativeEnd - relativeStart
                 textToHighlight = take textLength $ drop relativeStart contentTrim
                 positionIndicator = replicate relativeStart ' ' ++ replicate textLength '^'
 
@@ -63,7 +75,6 @@ printError err fileName code prefix = do
         start = errorStart err
         end = errorEnd err
         message = errorMessage err
-        errorLength = end - start
 
 findRowOfIndex :: [String] -> Int -> Maybe RowInfo
 findRowOfIndex rows idx = do
@@ -97,4 +108,3 @@ lastIndexOf c str maxIndex = go (min maxIndex (length str - 1))
       | i < 0 = -1
       | str !! i == c = i
       | otherwise = go (i - 1)
-

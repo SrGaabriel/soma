@@ -232,23 +232,23 @@ ignoreLine = Parser $ \tokens -> do
   let (_ignored, rest) = span (\t -> tokenKind t /= TokenNewline) tokens
   Right ((), rest)
 
-findPositionOfNext :: Int -> TokenKind -> Parser Int
-findPositionOfNext offset kind = Parser $ \tokens -> do
-    let findPositionOfNext' :: Int -> [Token] -> Either ParsingError Int
-        findPositionOfNext' _ [] = case tokens of
-            [] -> Left EndOfInput
-            ts ->
-                let lastToken = last ts in
-                Right $ tokenPos lastToken + length (tokenValue lastToken)
-        findPositionOfNext' skipped (t:ts) 
-            | tokenKind t == kind && skipped < offset = 
-                findPositionOfNext' (skipped + 1) ts
-            | tokenKind t == kind = 
-                Right (tokenPos t)
-            | otherwise = 
-                findPositionOfNext' skipped ts
-    rest <- findPositionOfNext' 0 tokens
-    return (rest, tokens)
+-- findPositionOfNext :: Int -> TokenKind -> Parser Int
+-- findPositionOfNext offset kind = Parser $ \tokens -> do
+--     let findPositionOfNext' :: Int -> [Token] -> Either ParsingError Int
+--         findPositionOfNext' _ [] = case tokens of
+--             [] -> Left EndOfInput
+--             ts ->
+--                 let lastToken = last ts in
+--                 Right $ tokenPos lastToken + length (tokenValue lastToken)
+--         findPositionOfNext' skipped (t:ts) 
+--             | tokenKind t == kind && skipped < offset = 
+--                 findPositionOfNext' (skipped + 1) ts
+--             | tokenKind t == kind = 
+--                 Right (tokenPos t)
+--             | otherwise = 
+--                 findPositionOfNext' skipped ts
+--     rest <- findPositionOfNext' 0 tokens
+--     return (rest, tokens)
 
 parseSequence :: Show a => TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do
@@ -303,20 +303,16 @@ parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
         (t@Token { tokenKind = TokenNewline }:_) ->
             if length (tokenValue t) > previousIndent
                 then Right $ length $ tokenValue t
-                else do
-                    (nextNewline, _) <- runParser (findPositionOfNext 1 TokenNewline) tokens
-                    Left $ ExpectedIndentation t (nextNewline - 1)
+                else Left $ ExpectedIndentation t
         (t:_) -> Left $ ExpectedDifferentToken TokenNewline t
 
     let parseNext acc remaining = case remaining of
            [] -> Right (reverse acc, [])
            (tok:rest) ->
                 let isNewline = tokenKind tok == TokenNewline
-                    nextNewlineCount = length acc + 1
                 in if isNewline then
                     case rest of
                         (nextTok:_) | tokenKind nextTok == TokenNewline ->
-                            -- Skip current newline if the next token is also a newline
                             parseNext acc rest
                         [] ->
                             parseNext acc rest
@@ -328,12 +324,8 @@ parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
                                     parseNext (item:acc) rest'
                                 LT -> if tokenIndentation == previousIndent 
                                         then Right (reverse acc, remaining)
-                                        else do
-                                            (nextNewline, _) <- runParser (findPositionOfNext nextNewlineCount TokenNewline) tokens
-                                            Left $ ExpectedDifferentIndentation tok indentation tokenIndentation (nextNewline-1)
-                                GT -> do
-                                    (nextNewline, _) <- runParser (findPositionOfNext nextNewlineCount TokenNewline) tokens
-                                    Left $ ExpectedDifferentIndentation tok indentation tokenIndentation (nextNewline-1)
+                                        else Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
+                                GT -> Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
                    else Left $ UnseparatedStatements tok
     parseNext [] tokens
 
