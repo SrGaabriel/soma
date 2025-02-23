@@ -9,7 +9,7 @@ data ParsingError
       , received :: Token 
       }
   | InvalidTokenForType Token
-  | ExpectedIndentation Token -- for when a token isn't indented
+  | ExpectedIndentation Token Int -- for when a token isn't indented (int is the next newline)
   | ExpectedDifferentIndentation Token Int Int -- for when the indentation is wrong
   | UnseparatedStatements Token -- for when two statements are on the same line
   | InvalidIdentifierFollowup Token
@@ -21,7 +21,7 @@ instance Show ParsingError where
     show (UnexpectedToken t) = "Unexpected token " ++ referenceToken t
     show (ExpectedDifferentToken tExpected tReceived) = "Expected " ++ referenceTokenKind tExpected ++ " but received " ++ referenceToken tReceived
     show (InvalidTokenForType t) = "Invalid token for type: " ++ referenceToken t
-    show (ExpectedIndentation _) = "Expected indentation"
+    show (ExpectedIndentation t _) = "Expected indentation for " ++ referenceToken t
     show (UnseparatedStatements t) = "Unseparated statements by newline at " ++ referenceToken t
     show (InvalidIdentifierFollowup t) = "Invalid identifier follow-up: " ++ referenceToken t
     show (ExpectedDifferentIndentation _ expc recv) = "Expected indentation of " ++ show expc ++ " spaces but received " ++ show recv
@@ -31,13 +31,13 @@ instance Show ParsingError where
 instance PrintableError ParsingError where
     errorMessage err = show err
 
-    errorStart (ExpectedIndentation t) = tokenPos t - 2 -- TODO: remove workaround
+    errorStart (ExpectedIndentation t _) = tokenPos t + 1
     errorStart (ExpectedDifferentIndentation t _ _) = tokenPos t + 1
     errorStart err = case getErrorToken err of
         Just t -> tokenPos t
         Nothing -> error "End of input has no position" 
 
-    errorEnd (ExpectedIndentation t) = tokenPos t + length (tokenValue t) - 1
+    errorEnd (ExpectedIndentation t end) = end
     errorEnd (ExpectedDifferentIndentation t _ _) = tokenPos t + length (tokenValue t) - 1
     errorEnd err = case getErrorToken err of
         Just t -> tokenPos t + length (tokenValue t) - 1
@@ -47,7 +47,7 @@ getErrorToken :: ParsingError -> Maybe Token
 getErrorToken (UnexpectedToken t) = Just t
 getErrorToken (ExpectedDifferentToken _ t) = Just t
 getErrorToken (InvalidTokenForType t) = Just t
-getErrorToken (ExpectedIndentation t) = Just t
+getErrorToken (ExpectedIndentation t _) = Just t
 getErrorToken (InvalidIdentifierFollowup t) = Just t
 getErrorToken (ExpectedDifferentIndentation t _ _) = Just t
 getErrorToken (UnseparatedStatements t) = Just t

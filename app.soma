@@ -10,4 +10,5 @@ fn nothing () :: Int = do
     6+5
 
 fn hello () :: String = do
-    "Hello, World!"
+"Hello, " + "World!"
+"s"

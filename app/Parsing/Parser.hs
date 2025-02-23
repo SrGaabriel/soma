@@ -7,6 +7,7 @@ import Parsing.Errors (ParsingError(..))
 import Parsing.Tree (ExpressionKind(..), Expression(..))
 import Parsing.Ops (BinaryOp(..))
 import Parsing.Type (Type (..))
+import qualified Debug.Trace as Debug
 
 newtype Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -232,6 +233,20 @@ ignoreLine = Parser $ \tokens -> do
   let (_ignored, rest) = span (\t -> tokenKind t /= TokenNewline) tokens
   Right ((), rest)
 
+findPositionOfNext :: TokenKind -> Parser Int
+findPositionOfNext kind = Parser $ \tokens -> do
+    let findPositionOfNext' :: Bool -> [Token] -> Either ParsingError Int
+        findPositionOfNext' _ [] = Left EndOfInput
+        findPositionOfNext' firstFound (t:ts) 
+            | tokenKind t == kind && not firstFound = 
+                findPositionOfNext' True ts
+            | tokenKind t == kind && firstFound = 
+                Right (tokenPos t)
+            | otherwise = 
+                findPositionOfNext' firstFound ts
+    rest <- findPositionOfNext' False tokens
+    return (rest, tokens)
+
 parseSequence :: Show a => TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do
     parseNext [] tokens
@@ -284,8 +299,10 @@ parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
         [] -> Left EndOfInput
         (t@Token { tokenKind = TokenNewline }:_) ->
             if length (tokenValue t) > previousIndent
-                then Right $ length (tokenValue t)
-                else Left $ ExpectedIndentation t
+                then Right $ length $ tokenValue t
+                else do
+                    (nextNewline, _) <- runParser (findPositionOfNext TokenNewline) tokens
+                    Left $ ExpectedIndentation t (nextNewline - 1)
         (t:_) -> Left $ ExpectedDifferentToken TokenNewline t
 
     let parseNext acc remaining = case remaining of

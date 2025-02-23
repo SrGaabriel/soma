@@ -26,7 +26,7 @@ quickInferExpr expr = case exprKind expr of
         let t = STypeLiteral StringType
         storeType expr t
         return $ Just t
-    BinaryOpExpr left right _ -> do
+    BinaryOpExpr left right _ -> do 
         opLeft <- quickInferExpr left
         opRight <- quickInferExpr right
         if (opLeft /= opRight && opLeft /= Nothing && opRight /= Nothing)
