@@ -235,7 +235,11 @@ ignoreLine = Parser $ \tokens -> do
 findPositionOfNext :: TokenKind -> Parser Int
 findPositionOfNext kind = Parser $ \tokens -> do
     let findPositionOfNext' :: Bool -> [Token] -> Either ParsingError Int
-        findPositionOfNext' _ [] = Left EndOfInput
+        findPositionOfNext' _ [] = case tokens of
+            [] -> Left EndOfInput
+            ts -> 
+                let lastToken = (last ts) in
+                Right $ tokenPos lastToken + length (tokenValue lastToken)
         findPositionOfNext' firstFound (t:ts) 
             | tokenKind t == kind && not firstFound = 
                 findPositionOfNext' True ts

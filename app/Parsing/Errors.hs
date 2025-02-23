@@ -33,12 +33,16 @@ instance PrintableError ParsingError where
 
     errorStart (ExpectedIndentation t _) = tokenPos t + 1
     errorStart (ExpectedDifferentIndentation t _ _) = tokenPos t + 1
+    errorStart (EndOfInput) = -1 -- todo: remove workaround
+    errorStart (Debug) = -1
     errorStart err = case getErrorToken err of
         Just t -> tokenPos t
         Nothing -> error "End of input has no position" 
 
     errorEnd (ExpectedIndentation _ end) = end
     errorEnd (ExpectedDifferentIndentation t _ _) = tokenPos t + length (tokenValue t) - 1
+    errorEnd (EndOfInput) = -1
+    errorEnd (Debug) = -1
     errorEnd err = case getErrorToken err of
         Just t -> tokenPos t + length (tokenValue t) - 1
         Nothing -> error "End of input has no position"
@@ -51,5 +55,5 @@ getErrorToken (ExpectedIndentation t _) = Just t
 getErrorToken (InvalidIdentifierFollowup t) = Just t
 getErrorToken (ExpectedDifferentIndentation t _ _) = Just t
 getErrorToken (UnseparatedStatements t) = Just t
-getErrorToken (EndOfInput) = Nothing -- TODO: replace with EOF token
+getErrorToken (EndOfInput) = Nothing
 getErrorToken Debug = Nothing

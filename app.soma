@@ -11,4 +11,3 @@ fn nothing () :: Int = do
 
 fn hello () :: String = do
 "Hello, " + "World!"
-"s"

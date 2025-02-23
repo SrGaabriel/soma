@@ -67,20 +67,23 @@ printError err fileName code prefix = do
 
 findRowOfIndex :: [String] -> Int -> Maybe RowInfo
 findRowOfIndex rows idx = do
-  let codeContent = unlines rows
-      fixedIndex = if idx >= length codeContent && not (null codeContent)
-                      then length codeContent - 1
-                      else idx
-  if fixedIndex < 0 || fixedIndex >= length codeContent
-    then Nothing
-    else do
-      let rowStartIndex = lastIndexOf '\n' codeContent (fixedIndex - 1)
-          rowEndIndex = findIndex (=='\n') $ drop fixedIndex codeContent
-          actualRowEndIndex = maybe (length codeContent) (+ fixedIndex) rowEndIndex
-          rowContent = take (actualRowEndIndex - rowStartIndex - 1) $ drop (rowStartIndex + 1) codeContent
-          relativeIndexInRow = fixedIndex - (rowStartIndex + 1)
-          rowNumber = length (filter (=='\n') $ take fixedIndex codeContent) + 1
-      Just $ RowInfo rowContent relativeIndexInRow rowNumber
+    if idx == -1 && not (null rows)
+        then Just $ RowInfo "" 0 (length rows)
+        else do
+            let codeContent = unlines rows
+                fixedIndex = if idx >= length codeContent && not (null codeContent)
+                                then length codeContent - 1
+                                else idx
+            if fixedIndex < 0 || fixedIndex >= length codeContent
+                then Nothing
+                else do
+                let rowStartIndex = lastIndexOf '\n' codeContent (fixedIndex - 1)
+                    rowEndIndex = findIndex (=='\n') $ drop fixedIndex codeContent
+                    actualRowEndIndex = maybe (length codeContent) (+ fixedIndex) rowEndIndex
+                    rowContent = take (actualRowEndIndex - rowStartIndex - 1) $ drop (rowStartIndex + 1) codeContent
+                    relativeIndexInRow = fixedIndex - (rowStartIndex + 1)
+                    rowNumber = length (filter (=='\n') $ take fixedIndex codeContent) + 1
+                Just $ RowInfo rowContent relativeIndexInRow rowNumber
 
 trimIndentReturningWidth :: String -> (String, Int)
 trimIndentReturningWidth str =

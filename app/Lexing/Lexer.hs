@@ -65,8 +65,9 @@ tokenize (c:cs) i indent
         in consToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
     | c == '"' =
         let (text, rest) = span (/= '"') cs
+            quotedText = c : text ++ "\""
         in case rest of
-            '"' : rest' -> consToken (Token TokenString text i indent) (tokenize rest' (i + 2 + length text) indent)
+            '"' : rest' -> consToken (Token TokenString quotedText i indent) (tokenize rest' (i + length quotedText) indent)
             _ -> Left $ UnexpectedCharacter c i
     | isDigit c =
         let (numberToken, rest) = span isDigit (c:cs)
