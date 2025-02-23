@@ -55,6 +55,18 @@ peek = Parser $ \case
   [] -> Left EndOfInput
   (t : ts) -> Right (t, t:ts)
 
+peekRelevantSkipping :: Int -> Parser Token
+peekRelevantSkipping minIndent = go False
+  where
+    go sawNewline = Parser $ \case
+      [] -> Left EndOfInput
+      (t : ts)
+        | tokenKind t == TokenNewline -> runParser (go True) ts
+        | not sawNewline -> Right (t, t:ts)
+        | otherwise -> case compare (tokenIndent t) minIndent of
+            LT -> Left $ ExpectedIndentation t
+            _ -> Right (t, t:ts)
+
 peekNext :: Parser Token
 peekNext = Parser $ \case
   [] -> Left EndOfInput
@@ -167,7 +179,7 @@ parseTerm = parseBinaryOp
 
 parseFactor :: Parser Expression
 parseFactor = do
-    token <- peek
+    token <- peekRelevantSkipping 1
     case tokenKind token of
         TokenNumber -> do
             _ <- next

@@ -40,7 +40,7 @@ instance PrintableError ParsingError where
     errorEnd (EndOfInput) = -1
     errorEnd (Debug) = -1
     errorEnd err = case getErrorToken err of
-        Just t -> tokenPos t + length (tokenValue t) - 1
+        Just t -> tokenPos t + length (tokenValue t)
         Nothing -> error $ "Unreachable errorEnd case reached: " ++ show err
 
 getErrorToken :: ParsingError -> Maybe Token
