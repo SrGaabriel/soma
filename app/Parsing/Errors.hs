@@ -37,7 +37,7 @@ instance PrintableError ParsingError where
         Just t -> tokenPos t
         Nothing -> error "End of input has no position" 
 
-    errorEnd (ExpectedIndentation t end) = end
+    errorEnd (ExpectedIndentation _ end) = end
     errorEnd (ExpectedDifferentIndentation t _ _) = tokenPos t + length (tokenValue t) - 1
     errorEnd err = case getErrorToken err of
         Just t -> tokenPos t + length (tokenValue t) - 1

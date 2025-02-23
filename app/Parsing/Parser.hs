@@ -7,7 +7,6 @@ import Parsing.Errors (ParsingError(..))
 import Parsing.Tree (ExpressionKind(..), Expression(..))
 import Parsing.Ops (BinaryOp(..))
 import Parsing.Type (Type (..))
-import qualified Debug.Trace as Debug
 
 newtype Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])

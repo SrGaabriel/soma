@@ -42,9 +42,6 @@ printError err fileName code prefix = do
             setSGR [Reset]
 
             putStrLn "|"
-            putStrLn $ "start: " ++ show start
-            putStrLn $ "end: " ++ show end
-
 
             putStr "| row: "
             if contentTrim == "" then putStrLn "<empty row>"
