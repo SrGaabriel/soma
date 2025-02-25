@@ -59,7 +59,7 @@ tokenize (c:cs) i indent
         '>' : rest -> consToken (Token TokenRightArrow "->" i indent) (tokenize rest (i + 2) indent)
         _ -> consToken (Token TokenMinus "-" i indent) (tokenize cs (i + 1) indent)
     | c == '\n' =
-        let (spaces, rest) = span (\w -> w == ' ' || w == '\t') cs
+        let (spaces, rest) = span isSpace cs
             indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
             newIndent = length spaces
         in consToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)

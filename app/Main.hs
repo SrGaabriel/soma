@@ -7,7 +7,6 @@ import Lexing.Lexer (tokenizeFile)
 import Parsing.Tree (Expression(..), getChildren)
 import Logging.ErrorPrinter (printError)
 import System.Exit (exitFailure)
-import Parsing.Errors (getErrorToken)
 
 main :: IO ()
 main = do
@@ -23,7 +22,6 @@ main = do
 
     tree <- either
         (\err -> do
-            putStrLn $ show $ getErrorToken err
             printError err "app.soma" content "PARSING"
             exitFailure
         )

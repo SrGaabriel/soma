@@ -7,6 +7,7 @@ import Parsing.Errors (ParsingError(..))
 import Parsing.Tree (ExpressionKind(..), Expression(..))
 import Parsing.Ops (BinaryOp(..))
 import Parsing.Type (Type (..))
+import Control.Applicative ((<|>), Alternative(..))
 
 newtype Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -29,6 +30,12 @@ instance Monad Parser where
     (x, rest) <- p tokens
     let Parser p2 = f x
     p2 rest
+
+instance Alternative Parser where
+    empty = Parser $ \_ -> Left EndOfInput
+    Parser p1 <|> Parser p2 = Parser $ \tokens -> case p1 tokens of
+        Left _ -> p2 tokens
+        Right x -> Right x
 
 consume :: TokenKind -> Parser Token
 consume expectedKind = Parser $ \case
@@ -89,19 +96,17 @@ expr :: Token -> ExpressionKind -> Expression
 expr token kind = Expression token kind
 
 optional :: Parser Token -> Parser (Maybe Token)
-optional parser = Parser $ \tokens -> case runParser parser tokens of
-  Right (token, rest) -> Right (Just token, rest)
-  Left _ -> Right (Nothing, tokens)
+optional parser = (Just <$> parser) <|> pure Nothing
 
 parse :: [Token] -> Either ParsingError Expression
 parse tokens = do
     (root, _) <- runParser parser tokens
-    return root
+    pure root
   where
     parser = do
       declarations <- parseExhaustiveSequence TokenNewline parseDeclaration
       let bof = Token TokenNewline "" 0 0 -- todo: improve this
-      return $ expr bof (RootExpr declarations)
+      pure $ expr bof (RootExpr declarations)
 
 parseDeclaration :: Parser Expression
 parseDeclaration = do
@@ -117,17 +122,26 @@ parseFunction = do
   nameToken <- consume TokenIdentifier
   _args 
     <- consumeRelevant TokenLeftParenthesis 
-    >> parseFluidSequence TokenRightParenthesis (consume TokenIdentifier)
+    >> parseFluidSequence TokenRightParenthesis (parseFunctionParameter)
     <* consumeRelevant TokenRightParenthesis
 
-  _returnTypeToken <- consume TokenReturns
-  fnReturnType <- parseType
+  _pureTypeToken <- consume TokenReturns
+  fnpureType <- parseType
 
   body <- parseFunctionBody
 
   let name = tokenValue nameToken
 
-  return $ Expression fnToken (FunctionExpr name fnReturnType body)
+  pure $ Expression fnToken (FunctionExpr name fnpureType body)
+
+parseFunctionParameter :: Parser Expression
+parseFunctionParameter = do
+  incoming <- peek
+  case tokenKind incoming of
+    TokenIdentifier -> do
+      token <- next
+      pure $ expr token (VariablePatternExpr $ tokenValue token)
+    _ -> failParser $ UnexpectedToken incoming
 
 parseFunctionBody :: Parser Expression
 parseFunctionBody = do
@@ -135,11 +149,11 @@ parseFunctionBody = do
   case tokenKind incoming of
     TokenNewline -> do
         cases <- parseIndentedBlock 0 parsePatternMatchCase
-        return $ Expression incoming (PatternMatchExpr cases)
+        pure $ Expression incoming (PatternMatchExpr cases)
     TokenEquals -> do
         _ <- next
         expression <- parseExpression
-        return expression
+        pure expression
     _ -> failParser $ UnexpectedToken incoming
 
 parsePatternMatchCase :: Parser Expression
@@ -149,7 +163,7 @@ parsePatternMatchCase = do
 
   _arrow <- consumeRelevant TokenRightArrow
   _body <- parseExpression
-  return $ Expression prefix (PatternHandlerExpr pattern)
+  pure $ Expression prefix (PatternHandlerExpr pattern)
 
 parsePattern :: Parser Expression
 parsePattern = do
@@ -157,10 +171,10 @@ parsePattern = do
   case tokenKind incoming of
     TokenIdentifier -> do
       token <- next
-      return $ expr token (VariablePatternExpr $ tokenValue token)
+      pure $ expr token (VariablePatternExpr $ tokenValue token)
     TokenNumber -> do
       token <- next
-      return $ expr token (NumberPatternExpr $ tokenValue token)
+      pure $ expr token (NumberPatternExpr $ tokenValue token)
     _ -> failParser $ UnexpectedToken incoming
 
 parseExpression :: Parser Expression
@@ -183,21 +197,21 @@ parseFactor = do
     case tokenKind token of
         TokenNumber -> do
             _ <- next
-            return $ expr token NumberExpr
+            pure $ expr token NumberExpr
         TokenLeftParenthesis -> do
             _ <- next
             numericExpr <- parseNumericExpression
             _ <- consume TokenRightParenthesis
-            return numericExpr
+            pure numericExpr
         TokenIdentifier -> parseIdentifierExpression
         TokenDo -> do
             doToken <- next
             let indent = tokenIndent doToken
             block <- parseIndentedBlock indent parseExpression
-            return $ expr doToken (BlockExpr block)
+            pure $ expr doToken (BlockExpr block)
         TokenString -> do
             stringToken <- next
-            return $ expr stringToken (StringExpr $ tokenValue stringToken)
+            pure $ expr stringToken (StringExpr $ tokenValue stringToken)
         _ -> failParser $ UnexpectedToken token
 
 parseIdentifierExpression :: Parser Expression
@@ -207,7 +221,7 @@ parseIdentifierExpression = do
         TokenLeftParenthesis -> parseFunctionCall
         _ -> do
             token <- next
-            return $ expr token (VariableReferenceExpr $ tokenValue token)
+            pure $ expr token (VariableReferenceExpr $ tokenValue token)
 
 parseFunctionCall :: Parser Expression
 parseFunctionCall = do
@@ -216,7 +230,7 @@ parseFunctionCall = do
     args <- parseFluidSequence TokenRightParenthesis parseExpression
     _ <- consume TokenRightParenthesis
     let fnName = tokenValue identifier
-    return $ expr identifier (FunctionCallExpr fnName args)
+    pure $ expr identifier (FunctionCallExpr fnName args)
 
 parseType :: Parser Type
 parseType = do
@@ -226,10 +240,10 @@ parseType = do
       _ <- consume TokenLeftParenthesis
       types <- parseFluidSequence TokenRightParenthesis (parseType)
       _ <- consume TokenRightParenthesis  
-      return $ TupleType types
+      pure $ TupleType types
     TokenIdentifier -> do
       typeToken <- consume TokenIdentifier
-      return $ case tokenValue typeToken of
+      pure $ case tokenValue typeToken of
         "Int" -> IntType
         "String" -> StringType
         "Bool" -> BoolType
@@ -260,7 +274,7 @@ ignoreLine = Parser $ \tokens -> do
 --             | otherwise = 
 --                 findPositionOfNext' skipped ts
 --     rest <- findPositionOfNext' 0 tokens
---     return (rest, tokens)
+--     pure (rest, tokens)
 
 parseSequence :: Show a => TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do
@@ -355,7 +369,7 @@ parseBinaryOp term operatorTokens = do
               _ <- next
               right <- term
               loop $ expr t (BinaryOpExpr left right op)
-          _ -> return left
+          _ -> pure left
 
 toBinaryOp :: TokenKind -> Maybe BinaryOp
 toBinaryOp = \case
