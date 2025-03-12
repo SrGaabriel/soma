@@ -4,7 +4,7 @@ import Data.Map as Map
 import Analysis.Tree (runInference, TypeMap)
 import Parsing.Parser (parse)
 import Lexing.Lexer (tokenizeFile)
-import Parsing.Tree (Expression(..), getChildren)
+import Parsing.Tree (Expression(..), exprChildren)
 import Logging.ErrorPrinter (printError)
 import System.Exit (exitFailure)
 
@@ -42,7 +42,7 @@ prettyPrintAst root = prettyPrintAst' root 0
   where
     prettyPrintAst' expr indent = do
       putStrLn $ replicate indent ' ' ++ show expr
-      mapM_ (\child -> prettyPrintAst' child (indent + 2)) (getChildren $ exprKind expr)
+      mapM_ (\child -> prettyPrintAst' child (indent + 2)) (exprChildren $ exprKind expr)
 
 prettyPrintTypeState :: TypeMap -> IO ()
 prettyPrintTypeState typeMap = do

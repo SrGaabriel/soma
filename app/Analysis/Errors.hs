@@ -1,7 +1,10 @@
+{-# LANGUAGE InstanceSigs #-}
 module Analysis.Errors where
-import Parsing.Tree (Expression (exprToken))
+import Parsing.Tree (Expression (exprToken, exprKind), exprChildren)
 import Logging.ErrorPrinter (PrintableError(..))
-import Lexing.Lexer (Token(tokenPos))
+import Lexing.Lexer (Token(tokenPos, tokenValue))
+import Data.Foldable (minimumBy, maximumBy)
+import Data.Ord (comparing)
 
 data AnalysisError 
     = UnificationError Expression
@@ -15,8 +18,20 @@ instance PrintableError AnalysisError where
     errorMessage (CannotConcretize expr) = "Cannot concretize at " ++ show expr
     errorMessage (BinaryOpTypeMismatch expr) = "Binary operation type mismatch at " ++ show expr
 
-    errorStart err = tokenPos $ exprToken $ getExpression err
-    errorEnd err = tokenPos $ exprToken $ getExpression err -- TODO: use leftmost and rightmost tokens
+    errorStart err =
+        let expr = getExpression err
+            tokens = exprToken expr : map exprToken (exprChildren (exprKind expr))
+            minToken = minimumBy (comparing tokenPos) tokens
+        in tokenPos minToken
+
+    errorEnd :: AnalysisError -> Int
+    errorEnd err =
+        let expr = getExpression err
+            tokens = exprToken expr : map exprToken (exprChildren (exprKind expr))
+            maxToken = maximumBy (comparing tokenPos) tokens
+        in tokenPos maxToken + length (tokenValue maxToken)
+
+
 
 getExpression :: AnalysisError -> Expression
 getExpression (UnificationError expr) = expr

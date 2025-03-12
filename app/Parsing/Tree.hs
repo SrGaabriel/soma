@@ -1,4 +1,4 @@
-module Parsing.Tree where
+module Parsing.Tree (Expression(..), ExpressionKind(..), exprChildren) where
 
 import Lexing.Lexer (Token(..))
 import Parsing.Type (Type)
@@ -42,8 +42,8 @@ data ExpressionKind
     { variableReferenceName :: String }
   deriving (Eq, Ord)
 
-getChildren :: ExpressionKind -> [Expression]
-getChildren kind = case kind of
+exprChildren :: ExpressionKind -> [Expression]
+exprChildren kind = case kind of
     RootExpr leaves -> leaves
     FunctionExpr _ _ body -> [body]
     FunctionParamExpr _ _ -> []

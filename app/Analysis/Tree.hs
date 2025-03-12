@@ -3,7 +3,7 @@ module Analysis.Tree where
 import Data.Map as Map
 import Control.Monad.State
 import Control.Monad.Except
-import Parsing.Tree (Expression(..), ExpressionKind(..), getChildren)
+import Parsing.Tree (Expression(..), ExpressionKind(..), exprChildren)
 import Analysis.Inference (TypeScheme(..), InferState(..), InferM (runInfer), concretize)
 import Parsing.Type (Type(..))
 import Data.Maybe (fromJust)
@@ -47,7 +47,7 @@ inferExpr expr = do
     case scheme of
         Just t -> return $ Just t
         Nothing -> do
-            let children = getChildren $ exprKind expr
+            let children = exprChildren $ exprKind expr
             _childrenTypes <- mapM inferExpr children
             return $ Nothing
 
