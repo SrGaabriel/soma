@@ -216,9 +216,9 @@ parseFactor = do
 
 parseIdentifierExpression :: Parser Expression
 parseIdentifierExpression = do
-    incoming <- peekNext
-    case tokenKind incoming of
-        TokenLeftParenthesis -> parseFunctionCall
+    incoming <- optional peekNext
+    case incoming of
+        Just Token { tokenKind = TokenLeftParenthesis } -> parseFunctionCall
         _ -> do
             token <- next
             pure $ expr token (VariableReferenceExpr $ tokenValue token)

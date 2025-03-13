@@ -4,7 +4,7 @@ import Data.Map as Map
 import Control.Monad.State
 import Control.Monad.Except
 import Parsing.Tree (Expression(..), ExpressionKind(..), exprChildren)
-import Analysis.Inference (TypeScheme(..), InferState(..), InferM (runInfer), concretize)
+import Analysis.Inference (TypeScheme(..), InferState(..), InferM (runInfer), concretize, fresh)
 import Parsing.Type (Type(..))
 import Data.Maybe (fromJust)
 import Analysis.Errors (AnalysisError (BinaryOpTypeMismatch))
@@ -28,17 +28,19 @@ quickInferExpr expr = case exprKind expr of
         return $ Just t
     BinaryOpExpr left right _ -> do 
         opLeft <- quickInferExpr left
-        opRight <- quickInferExpr right
-        if (opLeft /= opRight && opLeft /= Nothing && opRight /= Nothing)
-            then throwError $ BinaryOpTypeMismatch expr
-            else do
-                let opLeft' = fromJust opLeft
-                storeType expr opLeft'
-                return opLeft
+        _opRight <- quickInferExpr right
+        -- todo add constraint for opLeft = opRight
+        let opLeft' = fromJust opLeft
+        storeType expr opLeft'
+        return opLeft
     BlockExpr expressions -> do
         lastExprT <- foldM (\_ express -> quickInferExpr express) Nothing expressions
         forM_ lastExprT (storeType expr)
         return lastExprT
+    VariableReferenceExpr _ -> do
+        t <- fresh
+        storeType expr t
+        return $ Just t
     _ -> return Nothing
 
 inferExpr :: Expression -> InferM (Maybe TypeScheme)
