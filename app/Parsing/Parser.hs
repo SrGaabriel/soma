@@ -95,7 +95,7 @@ expect kind = Parser $ \case
 expr :: Token -> ExpressionKind -> Expression
 expr token kind = Expression token kind
 
-optional :: Parser Token -> Parser (Maybe Token)
+optional :: Parser a -> Parser (Maybe a)
 optional parser = (Just <$> parser) <|> pure Nothing
 
 parse :: [Token] -> Either ParsingError Expression
@@ -118,21 +118,21 @@ parseDeclaration = do
 
 parseFunction :: Parser Expression
 parseFunction = do
-  fnToken <- consume TokenFn
-  nameToken <- consume TokenIdentifier
-  _args 
-    <- consumeRelevant TokenLeftParenthesis 
-    >> parseFluidSequence TokenRightParenthesis (parseFunctionParameter)
-    <* consumeRelevant TokenRightParenthesis
+    fnToken <- consume TokenFn
+    nameToken <- consume TokenIdentifier
+    argNames <- parseFluidSequence TokenReturns (consume TokenIdentifier) <* consume TokenReturns
 
-  _pureTypeToken <- consume TokenReturns
-  fnpureType <- parseType
+    mParens <- optional (consume TokenLeftParenthesis)
+    argTypes <- case mParens of
+        Just _  -> parseFluidSequence TokenRightParenthesis parseType <* consume TokenRightParenthesis <* consume TokenRightArrow
+        Nothing -> pure []
+    
+    returnType <- parseType
 
-  body <- parseFunctionBody
+    body <- parseFunctionBody
 
-  let name = tokenValue nameToken
-
-  pure $ Expression fnToken (FunctionExpr name fnpureType body)
+    let name = tokenValue nameToken
+    pure $ Expression fnToken (FunctionExpr name returnType body)
 
 parseFunctionParameter :: Parser Expression
 parseFunctionParameter = do
@@ -309,7 +309,7 @@ parseExhaustiveSequence separator itemParser = Parser $ \tokens -> do
                           parseNext (item:acc) rest
                         | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
 
-parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
+parseFluidSequence :: Show a => TokenKind -> Parser a -> Parser [a]
 parseFluidSequence  end itemParser = Parser $ \tokens -> do
     let parseNext acc remaining = case runParser (expect end) remaining of
             Right (_, rest) -> Right (reverse acc, rest)
@@ -318,9 +318,12 @@ parseFluidSequence  end itemParser = Parser $ \tokens -> do
                 case rest' of
                     [] -> Right (reverse (item:acc), [])
                     _ -> case parseNext (item:acc) rest' of
-                        Right (_, rest2) -> Right (reverse acc, rest2)
+                        Right (parsed, rest2) -> Right (parsed, rest2)
                         Left err -> Left err
-    parseNext [] tokens
+    let value = parseNext [] tokens
+    case value of
+        Right (a, b) -> Right (a, b)
+        Left err -> Left err
 
 parseIndentedBlock :: Int -> Parser a -> Parser [a]
 parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do

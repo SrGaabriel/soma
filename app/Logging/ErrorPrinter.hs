@@ -72,8 +72,11 @@ printError err fileName code prefix = do
 
         Nothing -> error "Error while finding the line of the error"
     where
-        start = errorStart err
-        end = errorEnd err
+        start' = errorStart err
+        end' = errorEnd err
+        (start, end) = if start' < 0 && end' < 0 then 
+            let codeLength = length code
+            in (codeLength, codeLength) else (start', end')
         message = errorMessage err
 
 findRowOfIndex :: [String] -> Int -> Maybe RowInfo
