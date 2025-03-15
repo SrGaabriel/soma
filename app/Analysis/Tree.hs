@@ -3,7 +3,7 @@ import Data.Map as Map
 import Control.Monad.State
 import Control.Monad.Except
 import Parsing.Tree (Expression(..), ExpressionKind(..), exprChildren)
-import Analysis.Inference (InferState(..), InferM, TypeMap, Substitution, composeS, Substitutable (apply), cleanRunInferM)
+import Analysis.Inference (InferState(..), InferM, TypeMap, Substitution, composeS, Substitutable (apply), cleanRunInferM, unify)
 import Parsing.Type (Type(..))
 import Analysis.Errors (AnalysisError(..))
 import Control.Monad (foldM)
@@ -31,12 +31,12 @@ inferExpr env expr = case exprKind expr of
     BinaryOpExpr left right _ -> do
         (s1, ty1) <- inferExpr env left
         (s2, ty2) <- inferExpr (Map.map (apply s1) env) right
-        if ty1 /= ty2
-            then throwError $ BinaryOpTypeMismatch expr ty1 ty2
-            else do
-                let s3 = composeS s2 s1
-                recordType expr ty1
-                pure (s3, ty1)
+
+        s3 <- unify left ty1 right ty2
+        let finalSubst = composeS s3 (composeS s2 s1)
+        let resultType = apply finalSubst ty1
+        recordType expr resultType
+        pure (s3, resultType)
    
     FunctionExpr name params returnType body -> do
         let funcType = FunctionType (Prelude.map snd (Map.toList params)) returnType
@@ -86,8 +86,8 @@ traverseExpr env expr = do
             let env' = Map.map (apply s) env
             childSubst <- traverseChildren env' expr
             return (composeS childSubst s)
-            
-        Left UntypedExpression{} -> traverseChildren env expr
+
+        Left UntypedExpression {} -> traverseChildren env expr
         Left err -> throwError err
 
 traverseChildren :: TypeEnv -> Expression -> InferM Substitution
