@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 module Parsing.Parser where
 
 import Lexing.Lexer (Token(..), TokenKind(..))
@@ -8,6 +9,8 @@ import Parsing.Tree (ExpressionKind(..), Expression(..))
 import Parsing.Ops (BinaryOp(..))
 import Parsing.Type (Type (..))
 import Control.Applicative ((<|>), Alternative(..))
+import qualified Data.Map as Map
+import Control.Monad.Error.Class (MonadError(throwError, catchError))
 
 newtype Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -35,6 +38,12 @@ instance Alternative Parser where
     empty = Parser $ \_ -> Left EndOfInput
     Parser p1 <|> Parser p2 = Parser $ \tokens -> case p1 tokens of
         Left _ -> p2 tokens
+        Right x -> Right x
+
+instance MonadError ParsingError Parser where
+    throwError = Parser . const . Left
+    catchError (Parser p) handler = Parser $ \tokens -> case p tokens of
+        Left err -> runParser (handler err) tokens
         Right x -> Right x
 
 consume :: TokenKind -> Parser Token
@@ -120,19 +129,21 @@ parseFunction :: Parser Expression
 parseFunction = do
     fnToken <- consume TokenFn
     nameToken <- consume TokenIdentifier
-    _argNames <- parseFluidSequence TokenReturns (consume TokenIdentifier) <* consume TokenReturns
+    argNames <- parseFluidSequence TokenReturns (consume TokenIdentifier) <* consume TokenReturns
 
     mParens <- optional (consume TokenLeftParenthesis)
     argTypes <- case mParens of
         Just _  -> parseFluidSequence TokenRightParenthesis parseType <* consume TokenRightParenthesis <* consume TokenRightArrow
         Nothing -> pure []
+
+    argMappings <- ensureSameLengthMap argNames argTypes
     
     returnType <- parseType
 
     body <- parseFunctionBody
 
     let name = tokenValue nameToken
-    pure $ Expression fnToken (FunctionExpr name argTypes returnType body)
+    pure $ Expression fnToken (FunctionExpr name argMappings returnType body)
 
 parseFunctionParameter :: Parser Expression
 parseFunctionParameter = do
@@ -140,7 +151,7 @@ parseFunctionParameter = do
   case tokenKind current of
     TokenIdentifier -> do
       pure $ expr current (VariablePatternExpr $ tokenValue current)
-    _ -> failParser $ UnexpectedToken current
+    _ -> throwError $ UnexpectedToken current
 
 parseFunctionBody :: Parser Expression
 parseFunctionBody = do
@@ -153,7 +164,7 @@ parseFunctionBody = do
         _ <- next
         expression <- parseExpression
         pure expression
-    _ -> failParser $ UnexpectedToken incoming
+    _ -> throwError $ UnexpectedToken incoming
 
 parsePatternMatchCase :: Parser Expression
 parsePatternMatchCase = do
@@ -174,7 +185,7 @@ parsePattern = do
     TokenNumber -> do
       token <- next
       pure $ expr token (NumberPatternExpr $ tokenValue token)
-    _ -> failParser $ UnexpectedToken incoming
+    _ -> throwError $ UnexpectedToken incoming
 
 parseExpression :: Parser Expression
 parseExpression = do
@@ -211,7 +222,7 @@ parseFactor = do
         TokenString -> do
             stringToken <- next
             pure $ expr stringToken (StringExpr $ tokenValue stringToken)
-        _ -> failParser $ UnexpectedToken token
+        _ -> throwError $ UnexpectedToken token
 
 parseIdentifierExpression :: Parser Expression
 parseIdentifierExpression = do
@@ -247,10 +258,7 @@ parseType = do
         "String" -> StringType
         "Bool" -> BoolType
         other -> UnresolvedStructType other
-    _ -> failParser $ InvalidTokenForType nextToken
-
-failParser :: ParsingError -> Parser a
-failParser err = Parser $ \_ -> Left err
+    _ -> throwError $ InvalidTokenForType nextToken
 
 ignoreLine :: Parser ()
 ignoreLine = Parser $ \tokens -> do
@@ -380,3 +388,9 @@ toBinaryOp = \case
   TokenAsterisk -> Just BinaryMultiply
   TokenSlash -> Just BinaryDivide
   _ -> Nothing
+
+ensureSameLengthMap :: [Token] -> [Type] -> Parser (Map.Map String Type)
+ensureSameLengthMap names types
+    | length names < length types = pure . Map.fromList $ zip (map tokenValue names ++ replicate (length types - length names) "_") types
+    | length names > length types = throwError $ FunctionArgumentLengthMismatch (last names)
+    | otherwise                   = pure $ Map.fromList (zip (map tokenValue names) types)

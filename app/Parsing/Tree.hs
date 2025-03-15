@@ -3,6 +3,7 @@ module Parsing.Tree (Expression(..), ExpressionKind(..), exprChildren) where
 import Lexing.Lexer (Token(..))
 import Parsing.Type (Type)
 import Parsing.Ops (BinaryOp)
+import qualified Data.Map as Map
 
 data Expression = Expression 
   { exprToken :: Token
@@ -14,7 +15,7 @@ data ExpressionKind
     { rootLeaves :: [Expression] }
   | FunctionExpr
     { functionName :: String
-    , functionParamTypes :: [Type]
+    , functionParams :: Map.Map String Type
     , functionReturnType   :: Type
     , functionBody :: Expression }
   | FunctionParamExpr

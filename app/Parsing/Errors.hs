@@ -13,6 +13,7 @@ data ParsingError
     | ExpectedDifferentIndentation Token Int Int -- for when the indentation is wrong
     | UnseparatedStatements Token -- for when two statements are on the same line
     | InvalidIdentifierFollowup Token
+    | FunctionArgumentLengthMismatch Token
     | EndOfInput
     | Debug 
     deriving (Eq)
@@ -24,6 +25,7 @@ instance Show ParsingError where
     show (ExpectedIndentation t) = "Expected indentation for " ++ referenceToken t
     show (UnseparatedStatements t) = "Unseparated statements by newline at " ++ referenceToken t
     show (InvalidIdentifierFollowup t) = "Invalid identifier follow-up: " ++ referenceToken t
+    show (FunctionArgumentLengthMismatch _) = "The function has more arguments than declared"
     show (ExpectedDifferentIndentation _ expc recv) = "Expected indentation of " ++ show expc ++ " spaces but received " ++ show recv
     show (EndOfInput) = "End of input"
     show Debug = "Debug"
@@ -50,6 +52,7 @@ getErrorToken (InvalidTokenForType t) = Just t
 getErrorToken (ExpectedIndentation t) = Just t
 getErrorToken (InvalidIdentifierFollowup t) = Just t
 getErrorToken (ExpectedDifferentIndentation t _ _) = Just t
+getErrorToken (FunctionArgumentLengthMismatch t) = Just t
 getErrorToken (UnseparatedStatements t) = Just t
 getErrorToken (EndOfInput) = Nothing
 getErrorToken Debug = Nothing
