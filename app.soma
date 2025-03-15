@@ -5,6 +5,8 @@ fn fibonacci :: (Int) -> Int
 
 fn nothing :: Int = (5+5)*5
 
+fn nothing :: Int = 5+5*5
+
 fn hello :: String =
     "Hello, " + "World!"
 

@@ -1,4 +1,4 @@
-module Parsing.Type (Type(..)) where
+module Parsing.Type (Type(..), TypeVar(..)) where
 
 data Type
     = IntType
@@ -9,5 +9,10 @@ data Type
         { functionTypeArgs :: [Type]
         , functionTypeReturn :: Type
         }
-    | UnknownType String
+    | UnresolvedStructType String
+    | VarType TypeVar
+    | ForAll [TypeVar] Type
     deriving (Show, Eq, Ord)
+
+data TypeVar = TypeVar String Int
+  deriving (Show, Eq, Ord)

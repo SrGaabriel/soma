@@ -1,6 +1,7 @@
 {-# LANGUAGE InstanceSigs #-}
 module Analysis.Errors where
 import Parsing.Tree (Expression (exprToken, exprKind), exprChildren)
+import Parsing.Type (Type)
 import Logging.ErrorPrinter (PrintableError(..))
 import Lexing.Lexer (Token(tokenPos, tokenValue))
 import Data.Foldable (minimumBy, maximumBy)
@@ -8,15 +9,23 @@ import Data.Ord (comparing)
 
 data AnalysisError 
     = UnificationError Expression
-    | DifferentArgumentLengths Expression Expression
-    | CannotConcretize Expression
-    | BinaryOpTypeMismatch Expression
+    | FunctionArgumentLengthMismatch Expression Expression
+    | TupleLengthMismatch Expression Expression
+    | BinaryOpTypeMismatch Expression Type Type
+    | DifferentStructures Expression Expression
+    | CircularTypeDependency Expression
+    | UnboundVariable Expression String
+    | UntypedExpression Expression
 
 instance PrintableError AnalysisError where
     errorMessage (UnificationError expr) = "Unification error at " ++ show expr
-    errorMessage (DifferentArgumentLengths expr1 expr2) = "Different argument lengths at " ++ show expr1 ++ " and " ++ show expr2
-    errorMessage (CannotConcretize expr) = "Cannot concretize at " ++ show expr
-    errorMessage (BinaryOpTypeMismatch expr) = "Binary operation type mismatch at " ++ show expr
+    errorMessage (FunctionArgumentLengthMismatch expr1 expr2) = "Different argument lengths at " ++ show expr1 ++ " and " ++ show expr2
+    errorMessage (TupleLengthMismatch expr1 expr2) = "Tuple length mismatch at " ++ show expr1 ++ " and " ++ show expr2
+    errorMessage (BinaryOpTypeMismatch _ left right) = "Binary operation type mismatch (" ++ show left ++ " and " ++ show right ++ ")"
+    errorMessage (DifferentStructures expr1 expr2) = "Different structures at " ++ show expr1 ++ " and " ++ show expr2
+    errorMessage (CircularTypeDependency _) = "Circular type dependency"
+    errorMessage (UnboundVariable _ name) = "Unbound variable '" ++ name ++ "'"
+    errorMessage (UntypedExpression expr) = "The expression " ++ show expr ++ " is untyped"
 
     errorStart err =
         let expr = getExpression err
@@ -35,6 +44,10 @@ instance PrintableError AnalysisError where
 
 getExpression :: AnalysisError -> Expression
 getExpression (UnificationError expr) = expr
-getExpression (BinaryOpTypeMismatch expr) = expr
-getExpression (DifferentArgumentLengths expr1 _) = expr1
-getExpression (CannotConcretize expr) = expr
+getExpression (BinaryOpTypeMismatch expr _ _) = expr
+getExpression (FunctionArgumentLengthMismatch expr1 _) = expr1
+getExpression (TupleLengthMismatch expr1 _) = expr1
+getExpression (DifferentStructures expr1 _) = expr1
+getExpression (CircularTypeDependency expr) = expr
+getExpression (UnboundVariable expr _) = expr
+getExpression (UntypedExpression expr) = expr

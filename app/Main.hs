@@ -1,12 +1,13 @@
 module Main where
 
 import Data.Map as Map
-import Analysis.Tree (runInference, TypeMap)
 import Parsing.Parser (parse)
 import Lexing.Lexer (tokenizeFile)
 import Parsing.Tree (Expression(..), exprChildren)
 import Logging.ErrorPrinter (printError)
 import System.Exit (exitFailure)
+import Analysis.Inference (TypeMap)
+import Analysis.Tree (runAnalysis)
 
 main :: IO ()
 main = do
@@ -30,12 +31,14 @@ main = do
     putStrLn "Tree:"
     prettyPrintAst tree
 
-    inference <- either    
-        (\err -> printError err "app.soma" content "INFERENCE" >> exitFailure)
-        return (runInference tree)
-
-    putStrLn "Inference"
-    prettyPrintTypeState inference
+    inferenceResult <- runAnalysis tree
+    case inferenceResult of
+        Left err -> do
+            printError err "app.soma" content "ANALYSIS"
+            exitFailure
+        Right inference -> do
+            putStrLn "Inference"
+            prettyPrintTypeState inference
 
 prettyPrintAst :: Expression -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0

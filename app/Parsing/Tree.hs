@@ -14,6 +14,7 @@ data ExpressionKind
     { rootLeaves :: [Expression] }
   | FunctionExpr
     { functionName :: String
+    , functionParamTypes :: [Type]
     , functionReturnType   :: Type
     , functionBody :: Expression }
   | FunctionParamExpr
@@ -45,7 +46,7 @@ data ExpressionKind
 exprChildren :: ExpressionKind -> [Expression]
 exprChildren kind = case kind of
     RootExpr leaves -> leaves
-    FunctionExpr _ _ body -> [body]
+    FunctionExpr _ _ _ body -> [body]
     FunctionParamExpr _ _ -> []
     BinaryOpExpr left right _ -> [left, right]
     PatternMatchExpr patterns -> patterns
@@ -61,7 +62,7 @@ exprChildren kind = case kind of
 instance Show ExpressionKind where
     show kind = case kind of
         RootExpr _ -> "RootExpr"
-        FunctionExpr name returnType _ -> "FunctionExpr (" ++ name ++ " -> " ++ show returnType ++ ")"
+        FunctionExpr name params returnType _ -> "FunctionExpr (" ++ name ++ " :: " ++ show params ++ " -> " ++ show returnType ++ ")"
         FunctionParamExpr name paramType -> "FunctionParamExpr (" ++ show name ++ " :: " ++ show paramType ++ ")"
         BinaryOpExpr left right operator -> "BinaryOpExpr (" ++ show left ++ " " ++ show operator ++ " " ++ show right ++ ")"
         PatternMatchExpr _ -> "PatternMatchExpr"

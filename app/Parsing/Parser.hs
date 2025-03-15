@@ -120,7 +120,7 @@ parseFunction :: Parser Expression
 parseFunction = do
     fnToken <- consume TokenFn
     nameToken <- consume TokenIdentifier
-    argNames <- parseFluidSequence TokenReturns (consume TokenIdentifier) <* consume TokenReturns
+    _argNames <- parseFluidSequence TokenReturns (consume TokenIdentifier) <* consume TokenReturns
 
     mParens <- optional (consume TokenLeftParenthesis)
     argTypes <- case mParens of
@@ -132,16 +132,15 @@ parseFunction = do
     body <- parseFunctionBody
 
     let name = tokenValue nameToken
-    pure $ Expression fnToken (FunctionExpr name returnType body)
+    pure $ Expression fnToken (FunctionExpr name argTypes returnType body)
 
 parseFunctionParameter :: Parser Expression
 parseFunctionParameter = do
-  incoming <- peek
-  case tokenKind incoming of
+  current <- next
+  case tokenKind current of
     TokenIdentifier -> do
-      token <- next
-      pure $ expr token (VariablePatternExpr $ tokenValue token)
-    _ -> failParser $ UnexpectedToken incoming
+      pure $ expr current (VariablePatternExpr $ tokenValue current)
+    _ -> failParser $ UnexpectedToken current
 
 parseFunctionBody :: Parser Expression
 parseFunctionBody = do
@@ -247,7 +246,7 @@ parseType = do
         "Int" -> IntType
         "String" -> StringType
         "Bool" -> BoolType
-        other -> UnknownType other
+        other -> UnresolvedStructType other
     _ -> failParser $ InvalidTokenForType nextToken
 
 failParser :: ParsingError -> Parser a
