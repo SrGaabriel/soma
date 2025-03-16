@@ -8,7 +8,7 @@ import Data.Foldable (minimumBy, maximumBy)
 import Data.Ord (comparing)
 
 data AnalysisError 
-    = UnificationError Expression
+    = TypeMismatch Expression Type Type
     | FunctionArgumentLengthMismatch Expression Expression
     | TupleLengthMismatch Expression Expression
     | BinaryOpTypeMismatch Expression Type Type
@@ -18,7 +18,8 @@ data AnalysisError
     | UntypedExpression Expression
 
 instance PrintableError AnalysisError where
-    errorMessage (UnificationError expr) = "Unification error at " ++ show expr
+    errorMessage :: AnalysisError -> String
+    errorMessage (TypeMismatch _ t1 t2) = "Cannot conciliate types '" ++ show t1 ++ "' and '" ++ show t2 ++ "'"
     errorMessage (FunctionArgumentLengthMismatch expr1 expr2) = "Different argument lengths at " ++ show expr1 ++ " and " ++ show expr2
     errorMessage (TupleLengthMismatch expr1 expr2) = "Tuple length mismatch at " ++ show expr1 ++ " and " ++ show expr2
     errorMessage (BinaryOpTypeMismatch _ left right) = "Binary operation type mismatch (" ++ show left ++ " and " ++ show right ++ ")"
@@ -43,7 +44,7 @@ instance PrintableError AnalysisError where
 
 
 getExpression :: AnalysisError -> Expression
-getExpression (UnificationError expr) = expr
+getExpression (TypeMismatch expr _ _) = expr
 getExpression (BinaryOpTypeMismatch expr _ _) = expr
 getExpression (FunctionArgumentLengthMismatch expr1 _) = expr1
 getExpression (TupleLengthMismatch expr1 _) = expr1

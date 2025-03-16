@@ -79,7 +79,9 @@ unify expr t _ (VarType v) = bind expr v t
 unify expr (UnresolvedStructType n1) expr2 (UnresolvedStructType n2)
   | n1 == n2 = pure Map.empty
   | otherwise = throwError $ DifferentStructures expr expr2
-unify _ _ _ _ = pure Map.empty
+unify expr t1 _ t2
+  | t1 == t2 = pure Map.empty
+  | otherwise = throwError $ TypeMismatch expr t1 t2
 
 bind :: Expression -> TypeVar -> Type -> InferM Substitution
 bind expr v t 
