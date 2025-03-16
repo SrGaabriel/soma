@@ -7,7 +7,6 @@ import Analysis.Inference (InferState(..), InferM, TypeMap, Substitution, compos
 import Parsing.Type (Type(..))
 import Analysis.Errors (AnalysisError(..))
 import Control.Monad (foldM)
-import qualified Debug.Trace as Debug
 
 type TypeEnv = Map.Map String Type
 
@@ -43,20 +42,19 @@ inferExpr env expr = case exprKind expr of
         let env' = Map.insert name funcType env
         
         let env'' = Prelude.foldl (\acc (paramName, paramType) -> 
-                            Debug.trace ("Inserted " ++ paramName) $ 
                             Map.insert paramName paramType acc) 
                         env' (Map.toList params)
         
-        Debug.trace ("Final env " ++ show env'') $ pure ()
-        
-        (s, ty) <- inferExpr env'' body
-        recordType expr (FunctionType (Prelude.map snd (Map.toList params)) ty)
-        pure (s, funcType)
+        (s, bodyType) <- inferExpr env'' body
+        unifySubst <- unify expr returnType expr bodyType
+        let finalSubst = composeS unifySubst s
+
+        recordType expr (FunctionType (Prelude.map snd (Map.toList params)) returnType)
+        pure (finalSubst, funcType)
        
     VariableReferenceExpr name -> 
         case Map.lookup name env of
-            Nothing -> Debug.trace ("Environment for lookup: " ++ show env ++ ", looking for: " ++ name) $ 
-                       throwError $ UnboundVariable expr name
+            Nothing -> throwError $ UnboundVariable expr name
             Just ty -> do
                 recordType expr ty
                 pure (Map.empty, ty)
