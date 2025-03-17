@@ -45,7 +45,6 @@ tokenize (c:cs) i indent
     | isSpace c = tokenize cs (i + 1) indent
     | c == '+' = consToken (Token TokenPlus "+" i indent) (tokenize cs (i + 1) indent)
     | c == '*' = consToken (Token TokenAsterisk "*" i indent) (tokenize cs (i + 1) indent)
-    | c == '/' = consToken (Token TokenSlash "/" i indent) (tokenize cs (i + 1) indent)
     | c == '=' = consToken (Token TokenEquals "=" i indent) (tokenize cs (i + 1) indent)
     | c == '>' = consToken (Token TokenRightAngleBracket ">" i indent) (tokenize cs (i + 1) indent)
     | c == '<' = consToken (Token TokenLeftAngleBracket "<" i indent) (tokenize cs (i + 1) indent)
@@ -63,6 +62,12 @@ tokenize (c:cs) i indent
             indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
             newIndent = length spaces
         in consToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
+    | c == '/' = 
+        case cs of
+            '/' : rest -> do
+                let (comment, rest') = span (/= '\n') rest
+                tokenize rest' (i + 2 + length comment) indent
+            _ -> consToken (Token TokenSlash "/" i indent) (tokenize cs (i + 1) indent)
     | c == '"' =
         let (text, rest) = span (/= '"') cs
             quotedText = c : text ++ "\""

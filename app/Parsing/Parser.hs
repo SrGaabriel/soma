@@ -121,29 +121,28 @@ parseDeclaration :: Parser Expression
 parseDeclaration = do
   token <- peek
   case tokenKind token of
-    TokenFn -> parseFunction
+    TokenIdentifier -> parseBinding
     TokenNewline -> next >> parseDeclaration
     _ -> Parser $ \_ -> Left $ UnexpectedToken token
 
-parseFunction :: Parser Expression
-parseFunction = do
-    fnToken <- consume TokenFn
+parseBinding :: Parser Expression
+parseBinding = do
     nameToken <- consume TokenIdentifier
+    let name = tokenValue nameToken
     argNames <- parseFluidSequence TokenReturns (consume TokenIdentifier) <* consume TokenReturns
 
-    mParens <- optional (consume TokenLeftParenthesis)
-    argTypes <- case mParens of
-        Just _  -> parseFluidSequence TokenRightParenthesis parseType <* consume TokenRightParenthesis <* consume TokenRightArrow
-        Nothing -> pure []
-
-    argMappings <- ensureSameLengthMap argNames argTypes
-    
-    returnType <- parseType
-
-    body <- parseFunctionBody
-
-    let name = tokenValue nameToken
-    pure $ Expression fnToken (FunctionExpr name argMappings returnType body)
+    mParens <- optional (consume TokenLeftParenthesis) -- TODO: consider whether this is a tuple or a function
+    case mParens of
+        Just _  -> do
+            argTypes <- parseFluidSequence TokenRightParenthesis parseType <* consume TokenRightParenthesis <* consume TokenRightArrow
+            argMappings <- ensureSameLengthMap argNames argTypes
+            returnType <- parseType
+            body <- parseFunctionBody
+            pure $ Expression nameToken (FunctionExpr name argMappings returnType body)
+        Nothing -> do
+            constantType <- parseType
+            body <- parseFunctionBody
+            pure $ Expression nameToken (ConstantBindingExpr name constantType body)
 
 parseFunctionParameter :: Parser Expression
 parseFunctionParameter = do
@@ -181,7 +180,7 @@ parsePattern = do
   case tokenKind incoming of
     TokenIdentifier -> do
       token <- next
-      pure $ expr token (VariablePatternExpr $ tokenValue token)
+      pure $ expr token (ValueReferenceExpr $ tokenValue token)
     TokenNumber -> do
       token <- next
       pure $ expr token (NumberPatternExpr $ tokenValue token)
@@ -231,7 +230,7 @@ parseIdentifierExpression = do
         Just Token { tokenKind = TokenLeftParenthesis } -> parseFunctionCall
         _ -> do
             token <- next
-            pure $ expr token (VariableReferenceExpr $ tokenValue token)
+            pure $ expr token (ValueReferenceExpr $ tokenValue token)
 
 parseFunctionCall :: Parser Expression
 parseFunctionCall = do

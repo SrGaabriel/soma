@@ -1,14 +1,14 @@
-fn fibonacci :: (Int) -> Int
+fibonacci :: (Int) -> Int
   | 0 -> 0
   | 1 -> 1
-  | n -> fibonacci(n-1) + fibonacci(n-2)
+  // | n -> fibonacci(n-1) + fibonacci(n-2)
 
-fn nothing :: Int = (5+5)*5
+nothing :: Int = (5+5)*5
 
-fn nothing :: Int = 5+5*5
+nothing :: Int = 5+5*5
 
-fn hello :: String =
+hello :: String =
     "Hello, " + "World!"
 
-fn sum a b :: (Int Int) -> Int =
-    5 + a+ b + 6
+sum a b :: (Int Int) -> Int =
+    5 + a + b

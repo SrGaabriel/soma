@@ -18,6 +18,10 @@ data ExpressionKind
     , functionParams :: Map.Map String Type
     , functionReturnType   :: Type
     , functionBody :: Expression }
+  | ConstantBindingExpr
+    { constantBindingName :: String
+    , constantBindingType :: Type
+    , constantBindingValue :: Expression }
   | FunctionParamExpr
     { fnParamName :: Maybe String
     , fnParamType :: Type }
@@ -40,7 +44,7 @@ data ExpressionKind
   | FunctionCallExpr
     { functionCallName :: String
     , functionCallArgs :: [Expression] }
-  | VariableReferenceExpr
+  | ValueReferenceExpr
     { variableReferenceName :: String }
   deriving (Eq, Ord)
 
@@ -48,6 +52,7 @@ exprChildren :: ExpressionKind -> [Expression]
 exprChildren kind = case kind of
     RootExpr leaves -> leaves
     FunctionExpr _ _ _ body -> [body]
+    ConstantBindingExpr _ _ value -> [value]
     FunctionParamExpr _ _ -> []
     BinaryOpExpr left right _ -> [left, right]
     PatternMatchExpr patterns -> patterns
@@ -56,13 +61,14 @@ exprChildren kind = case kind of
     PatternHandlerExpr pattern -> [pattern]
     NumberExpr -> []
     FunctionCallExpr _ args -> args
-    VariableReferenceExpr _ -> []
+    ValueReferenceExpr _ -> []
     StringExpr _ -> []
     BlockExpr expressions -> expressions
 
 instance Show ExpressionKind where
     show kind = case kind of
         RootExpr _ -> "RootExpr"
+        ConstantBindingExpr name _ _ -> "ConstantBindingExpr (" ++ name ++ ")"
         FunctionExpr name params returnType _ -> "FunctionExpr (" ++ name ++ " :: " ++ show params ++ " -> " ++ show returnType ++ ")"
         FunctionParamExpr name paramType -> "FunctionParamExpr (" ++ show name ++ " :: " ++ show paramType ++ ")"
         BinaryOpExpr left right operator -> "BinaryOpExpr (" ++ show left ++ " " ++ show operator ++ " " ++ show right ++ ")"
@@ -72,7 +78,7 @@ instance Show ExpressionKind where
         PatternHandlerExpr pattern -> "PatternHandlerExpr (" ++ show pattern ++ ")"
         NumberExpr -> "NumberExpr"
         FunctionCallExpr name _ -> "FunctionCallExpr (" ++ name ++ ")"
-        VariableReferenceExpr name -> "VariableReferenceExpr (" ++ name ++ ")"
+        ValueReferenceExpr name -> "ValueReferenceExpr (" ++ name ++ ")"
         BlockExpr _ -> "BlockExpr"
         StringExpr value -> "StringExpr (" ++ value ++ ")"
 

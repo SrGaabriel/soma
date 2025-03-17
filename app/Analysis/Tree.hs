@@ -52,7 +52,7 @@ inferExpr env expr = case exprKind expr of
         recordType expr (FunctionType (Prelude.map snd (Map.toList params)) returnType)
         pure (finalSubst, funcType)
        
-    VariableReferenceExpr name -> 
+    ValueReferenceExpr name -> 
         case Map.lookup name env of
             Nothing -> throwError $ UnboundVariable expr name
             Just ty -> do
