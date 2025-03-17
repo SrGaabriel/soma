@@ -56,30 +56,30 @@ fresh = do
     put s { inferNextVar = i + 1 }
     pure $ VarType (TypeVar "t" i)
 
-unify :: Expression -> Type -> Expression -> Type -> InferM Substitution
-unify expr (TupleType ts1) expr2 (TupleType ts2)
+unify :: Expression -> Type -> Type -> InferM Substitution
+unify expr (TupleType ts1) (TupleType ts2)
   | length ts1 == length ts2 = do
       s <- (foldM (\s (t1, t2) -> do
-            s1 <- unify expr (apply s t1) expr2 (apply s t2)
+            s1 <- unify expr (apply s t1) (apply s t2)
             pure $ composeS s1 s
          ) Map.empty (ts1 `zip` ts2))
       pure s
-  | otherwise = throwError $ TupleLengthMismatch expr expr2
-unify expr (FunctionType args1 ret1) expr2 (FunctionType args2 ret2)
+  | otherwise = throwError $ TupleLengthMismatch expr
+unify expr (FunctionType args1 ret1) (FunctionType args2 ret2)
   | length args1 == length args2 = do
       s1 <- (foldM (\s (t1, t2) -> do
-            s1 <- unify expr (apply s t1) expr2 (apply s t2)
+            s1 <- unify expr (apply s t1) (apply s t2)
             pure $ composeS s1 s
          ) Map.empty (args1 `zip` args2))
-      s2 <- unify expr (apply s1 ret1) expr2 (apply s1 ret2)
+      s2 <- unify expr (apply s1 ret1) (apply s1 ret2)
       pure (composeS s2 s1)
-  | otherwise = throwError $ FunctionArgumentLengthMismatch expr expr
-unify expr (VarType v) _ t = bind expr v t
-unify expr t _ (VarType v) = bind expr v t
-unify expr (UnresolvedStructType n1) expr2 (UnresolvedStructType n2)
+  | otherwise = throwError $ FunctionArgumentLengthMismatch expr
+unify expr (VarType v) t = bind expr v t
+unify expr t (VarType v) = bind expr v t
+unify expr t1@(UnresolvedStructType n1) t2@(UnresolvedStructType n2)
   | n1 == n2 = pure Map.empty
-  | otherwise = throwError $ DifferentStructures expr expr2
-unify expr t1 _ t2
+  | otherwise = throwError $ TypeMismatch expr t1 t2
+unify expr t1 t2
   | t1 == t2 = pure Map.empty
   | otherwise = throwError $ TypeMismatch expr t1 t2
 

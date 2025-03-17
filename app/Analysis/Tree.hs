@@ -31,12 +31,12 @@ inferExpr env expr = case exprKind expr of
         (s1, ty1) <- inferExpr env left
         (s2, ty2) <- inferExpr (Map.map (apply s1) env) right
 
-        s3 <- unify left ty1 right ty2
+        s3 <- unify expr ty1 ty2
         let finalSubst = composeS s3 (composeS s2 s1)
         let resultType = apply finalSubst ty1
         recordType expr resultType
         pure (s3, resultType)
-   
+
     FunctionExpr name params returnType body -> do
         let funcType = FunctionType (Prelude.map snd (Map.toList params)) returnType
         let env' = Map.insert name funcType env
@@ -46,7 +46,7 @@ inferExpr env expr = case exprKind expr of
                         env' (Map.toList params)
         
         (s, bodyType) <- inferExpr env'' body
-        unifySubst <- unify expr returnType expr bodyType
+        unifySubst <- unify expr returnType bodyType
         let finalSubst = composeS unifySubst s
 
         recordType expr (FunctionType (Prelude.map snd (Map.toList params)) returnType)

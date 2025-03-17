@@ -11,4 +11,4 @@ fn hello :: String =
     "Hello, " + "World!"
 
 fn sum a b :: (Int Int) -> Int =
-    a+"b"
+    5 + a+ b + 6
