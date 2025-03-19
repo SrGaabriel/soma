@@ -3,12 +3,16 @@ import Data.Map as Map
 import Control.Monad.State
 import Control.Monad.Except
 import Parsing.Tree (Expression(..), ExpressionKind(..), exprChildren)
-import Analysis.Inference (InferState(..), InferM, TypeMap, Substitution, composeS, Substitutable (apply), cleanRunInferM, unify)
+import Analysis.Inference (InferState(..), InferM, TypeMap, TypeEnv, Substitution, composeS, Substitutable (apply), cleanRunInferM, unify)
 import Parsing.Type (Type(..))
 import Analysis.Errors (AnalysisError(..))
 import Control.Monad (foldM)
 
-type TypeEnv = Map.Map String Type
+addGlobalBinding :: String -> Type -> InferM ()
+addGlobalBinding name ty = do
+    s <- get
+    let globals = globalEnv s
+    put s { globalEnv = Map.insert name ty globals }
 
 recordType :: Expression -> Type -> InferM ()
 recordType expr ty = do
@@ -35,29 +39,48 @@ inferExpr env expr = case exprKind expr of
         let finalSubst = composeS s3 (composeS s2 s1)
         let resultType = apply finalSubst ty1
         recordType expr resultType
-        pure (s3, resultType)
+        pure (finalSubst, resultType)
 
     FunctionExpr name params returnType body -> do
         let funcType = FunctionType (Prelude.map snd (Map.toList params)) returnType
-        let env' = Map.insert name funcType env
         
-        let env'' = Prelude.foldl (\acc (paramName, paramType) -> 
+        addGlobalBinding name funcType
+        
+        let localEnv = Prelude.foldl (\acc (paramName, paramType) -> 
                             Map.insert paramName paramType acc) 
-                        env' (Map.toList params)
+                        env (Map.toList params)
         
-        (s, bodyType) <- inferExpr env'' body
-        unifySubst <- unify expr returnType bodyType
+        (s, bodyType) <- inferExpr localEnv body
+        unifySubst <- unify body returnType bodyType
         let finalSubst = composeS unifySubst s
 
         recordType expr (FunctionType (Prelude.map snd (Map.toList params)) returnType)
         pure (finalSubst, funcType)
+
+    ConstantBindingExpr name bindType body -> do
+        addGlobalBinding name bindType
+
+        let env' = Map.insert name bindType env
+        (s, bodyType) <- inferExpr env' body
+        unifySubst <- unify expr bindType bodyType
+        let finalSubst = composeS unifySubst s
+
+        recordType expr bindType
+        pure (finalSubst, bindType)
        
-    ValueReferenceExpr name -> 
+    ValueReferenceExpr name -> do
         case Map.lookup name env of
-            Nothing -> throwError $ UnboundVariable expr name
             Just ty -> do
                 recordType expr ty
                 pure (Map.empty, ty)
+            Nothing -> do
+                s <- get
+                let globals = globalEnv s
+                case Map.lookup name globals of
+                    Just ty -> do
+                        recordType expr ty
+                        pure (Map.empty, ty)
+                    Nothing -> throwError $ UnboundVariable expr name
     
     _ -> throwError $ UntypedExpression expr
 
@@ -68,10 +91,24 @@ inferExprs env (e:es) = do
     (s2, tys) <- inferExprs (Map.map (apply s1) env) es
     return (composeS s2 s1, ty1 : tys)
 
+collectGlobals :: Expression -> InferM ()
+collectGlobals expr = case exprKind expr of
+    FunctionExpr name params returnType _ -> do
+        let funcType = FunctionType (Prelude.map snd (Map.toList params)) returnType
+        addGlobalBinding name funcType
+        
+    ConstantBindingExpr name bindType _ -> do
+        addGlobalBinding name bindType
+        
+    _ -> pure ()
+    
+    >> mapM_ collectGlobals (exprChildren (exprKind expr))
+
 analyzeTree :: Expression -> InferM TypeMap
 analyzeTree root = do
-    let env = Map.empty
-    s <- traverseExpr env root
+    collectGlobals root
+    
+    s <- traverseExpr Map.empty root
     infState <- get
     let finalTypeMap = Map.map (apply s) (inferTypeMap infState)
     return finalTypeMap
@@ -91,14 +128,12 @@ traverseExpr env expr = do
 traverseChildren :: TypeEnv -> Expression -> InferM Substitution
 traverseChildren env expr = do
     let env' = case exprKind expr of
-            FunctionExpr name params _ _ -> 
-                let funcType = FunctionType (Prelude.map snd (Map.toList params)) IntType
-                    envWithFunc = Map.insert name funcType env
-                in Prelude.foldl (\acc (paramName, paramType) -> 
+            FunctionExpr _ params _ _ -> 
+                Prelude.foldl (\acc (paramName, paramType) -> 
                       Map.insert paramName paramType acc) 
-                    envWithFunc (Map.toList params)
+                    env (Map.toList params)
             _ -> env
-    
+
     let children = exprChildren (exprKind expr)
     foldM (\s child -> do
         let childEnv = Map.map (apply s) env'

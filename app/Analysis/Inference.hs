@@ -43,11 +43,13 @@ instance Substitutable Type where
 
 type TypeMap = Map.Map Expression Type
 
+type TypeEnv = Map.Map String Type
+
 data InferState = InferState
   { inferNextVar :: Int
   , inferTypeMap :: TypeMap
+  , globalEnv :: TypeEnv
   } deriving (Show)
-
 
 fresh :: InferM Type
 fresh = do
@@ -103,10 +105,10 @@ evalInferM :: InferM a -> InferState -> IO (Either AnalysisError a)
 evalInferM m st = pure $ evalState (runExceptT (runInfer m)) st
 
 cleanEvalInferM :: InferM a -> IO (Either AnalysisError a)
-cleanEvalInferM m = evalInferM m (InferState 0 Map.empty)
+cleanEvalInferM m = evalInferM m (InferState 0 Map.empty Map.empty)
 
 runInferM :: InferM a -> InferState -> IO (Either AnalysisError a, InferState)
 runInferM m st = pure $ runState (runExceptT (runInfer m)) st
 
 cleanRunInferM :: InferM a -> IO (Either AnalysisError a, InferState)
-cleanRunInferM m = runInferM m (InferState 0 Map.empty)
+cleanRunInferM m = runInferM m (InferState 0 Map.empty Map.empty)

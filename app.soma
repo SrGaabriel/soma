@@ -5,10 +5,8 @@ fibonacci :: (Int) -> Int
 
 nothing :: Int = (5+5)*5
 
-nothing :: Int = 5+5*5
-
 hello :: String =
     "Hello, " + "World!"
 
 sum a b :: (Int Int) -> Int =
-    5 + a + b
+    5 + a + nothing
