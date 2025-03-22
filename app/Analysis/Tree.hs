@@ -67,6 +67,20 @@ inferExpr env expr = case exprKind expr of
 
         recordType expr bindType
         pure (finalSubst, bindType)
+    
+    FunctionCallExpr fn arg -> do
+        (s1, fnType) <- inferExpr env fn
+        (s2, argType) <- inferExpr (Map.map (apply s1) env) arg
+        case fnType of
+            FunctionType (param : params) retType -> do
+                s3 <- unify arg param argType
+                let s = composeS s3 (composeS s2 s1)
+                let newFnType = if Prelude.null params 
+                                  then retType 
+                                  else FunctionType params retType
+                recordType expr newFnType
+                pure (s, newFnType)
+            _ -> throwError $ NotAFunction expr fnType
        
     ValueReferenceExpr name -> do
         case Map.lookup name env of

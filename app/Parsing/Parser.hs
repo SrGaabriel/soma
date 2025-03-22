@@ -225,21 +225,12 @@ parseFactor = do
 
 parseIdentifierExpression :: Parser Expression
 parseIdentifierExpression = do
-    incoming <- optional peekNext
-    case incoming of
-        Just Token { tokenKind = TokenLeftParenthesis } -> parseFunctionCall
-        _ -> do
-            token <- next
-            pure $ expr token (ValueReferenceExpr $ tokenValue token)
-
-parseFunctionCall :: Parser Expression
-parseFunctionCall = do
     identifier <- consume TokenIdentifier
-    _ <- consume TokenLeftParenthesis
-    args <- parseFluidSequence TokenRightParenthesis parseExpression
-    _ <- consume TokenRightParenthesis
+    args <- many parseFactor
     let fnName = tokenValue identifier
-    pure $ expr identifier (FunctionCallExpr fnName args)
+    pure $ foldl (\fn arg -> expr identifier (FunctionCallExpr fn arg)) 
+                 (expr identifier (ValueReferenceExpr fnName)) 
+                 args
 
 parseType :: Parser Type
 parseType = do

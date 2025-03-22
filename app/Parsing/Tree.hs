@@ -42,8 +42,8 @@ data ExpressionKind
   | BlockExpr
     { blockExpressions :: [Expression] }
   | FunctionCallExpr
-    { functionCallName :: String
-    , functionCallArgs :: [Expression] }
+    { functionCallFn :: Expression
+    , functionCallArg :: Expression }
   | ValueReferenceExpr
     { variableReferenceName :: String }
   deriving (Eq, Ord)
@@ -60,7 +60,7 @@ exprChildren kind = case kind of
     VariablePatternExpr _ -> []
     PatternHandlerExpr pattern -> [pattern]
     NumberExpr -> []
-    FunctionCallExpr _ args -> args
+    FunctionCallExpr fn arg -> [fn, arg] 
     ValueReferenceExpr _ -> []
     StringExpr _ -> []
     BlockExpr expressions -> expressions
@@ -77,7 +77,7 @@ instance Show ExpressionKind where
         VariablePatternExpr name -> "VariablePatternExpr (" ++ name ++ ")"
         PatternHandlerExpr pattern -> "PatternHandlerExpr (" ++ show pattern ++ ")"
         NumberExpr -> "NumberExpr"
-        FunctionCallExpr name _ -> "FunctionCallExpr (" ++ name ++ ")"
+        FunctionCallExpr fn arg -> "FunctionCallExpr (" ++ show fn ++ " " ++ show arg ++ ")"
         ValueReferenceExpr name -> "ValueReferenceExpr (" ++ name ++ ")"
         BlockExpr _ -> "BlockExpr"
         StringExpr value -> "StringExpr (" ++ value ++ ")"

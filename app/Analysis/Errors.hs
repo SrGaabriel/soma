@@ -15,6 +15,7 @@ data AnalysisError
     | CircularTypeDependency Expression
     | UnboundVariable Expression String
     | UntypedExpression Expression
+    | NotAFunction Expression Type
     deriving (Show, Eq)
 
 instance PrintableError AnalysisError where
@@ -26,7 +27,9 @@ instance PrintableError AnalysisError where
     errorMessage (CircularTypeDependency _) = "Circular type dependency"
     errorMessage (UnboundVariable _ name) = "Unbound variable '" ++ name ++ "'"
     errorMessage (UntypedExpression expr) = "The expression " ++ show expr ++ " is untyped"
+    errorMessage (NotAFunction _ ty) = "The type " ++ show ty ++ " does not support function application"
 
+    errorStart :: AnalysisError -> Int
     errorStart err =
         let expr = getExpression err
             tokens = getAllTokens expr
@@ -48,6 +51,7 @@ getExpression (TupleLengthMismatch expr) = expr
 getExpression (CircularTypeDependency expr) = expr
 getExpression (UnboundVariable expr _) = expr
 getExpression (UntypedExpression expr) = expr
+getExpression (NotAFunction expr _) = expr
 
 getAllTokens :: Expression -> [Token]
 getAllTokens expr = 
