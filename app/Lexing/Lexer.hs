@@ -23,6 +23,7 @@ data TokenKind
     | TokenIdentifier
     | TokenPipe
     | TokenLet
+    | TokenIn
     | TokenFn
     | TokenString
     deriving (Show, Eq, Ord)
@@ -81,6 +82,7 @@ tokenize (c:cs) i indent
         let (text, rest) = span isCharacter (c:cs)
             kind = case text of
                 "let" -> TokenLet
+                "in"  -> TokenIn
                 "fn"  -> TokenFn
                 "case" -> TokenCase
                 "do" -> TokenDo
@@ -133,4 +135,5 @@ referenceTokenKind kind = case kind of
     TokenPipe -> "a vertical bar"
     TokenLet -> "'let'"
     TokenFn -> "'fn'"
+    TokenIn -> "'in'"
     TokenString -> "a string"

@@ -187,50 +187,60 @@ parsePattern = do
     _ -> throwError $ UnexpectedToken incoming
 
 parseExpression :: Parser Expression
-parseExpression = do
-    parseNumericExpression
+parseExpression = parseNumericExpression
 
 parseNumericExpression :: Parser Expression
-parseNumericExpression = parseBinaryOp 
-  parseTerm 
-  [TokenPlus, TokenMinus]
+parseNumericExpression = parseBinaryOp parseTerm [TokenPlus, TokenMinus]
 
 parseTerm :: Parser Expression
-parseTerm = parseBinaryOp 
-  parseFactor 
-  [TokenAsterisk, TokenSlash]
+parseTerm = parseBinaryOp parseApplication [TokenAsterisk, TokenSlash]
 
-parseFactor :: Parser Expression
-parseFactor = do
+parseApplication :: Parser Expression
+parseApplication = do
+    atoms <- some parseAtom
+    pure $ foldl2 (\f arg -> expr (expressionToken f) (FunctionCallExpr f arg)) atoms
+  where
+    foldl2 _ [] = error "foldl1: empty list"
+    foldl2 _ [x] = x
+    foldl2 f (x:xs) = foldl f x xs
+    expressionToken (Expression t _) = t
+
+parseAtom :: Parser Expression
+parseAtom = do
     token <- peekRelevantSkipping 1
     case tokenKind token of
         TokenNumber -> do
-            _ <- next
-            pure $ expr token NumberExpr
+            numToken <- next
+            pure $ expr numToken NumberExpr
         TokenLeftParenthesis -> do
             _ <- next
-            numericExpr <- parseNumericExpression
+            expr' <- parseExpression
             _ <- consume TokenRightParenthesis
-            pure numericExpr
-        TokenIdentifier -> parseIdentifierExpression
+            pure expr'
+        TokenIdentifier -> do
+            idToken <- next
+            pure $ expr idToken (ValueReferenceExpr (tokenValue idToken))
+        TokenString -> do
+            stringToken <- next
+            pure $ expr stringToken (StringExpr (tokenValue stringToken))
+        TokenLet -> parseLetExpression
         TokenDo -> do
             doToken <- next
             let indent = tokenIndent doToken
             block <- parseIndentedBlock indent parseExpression
             pure $ expr doToken (BlockExpr block)
-        TokenString -> do
-            stringToken <- next
-            pure $ expr stringToken (StringExpr $ tokenValue stringToken)
         _ -> throwError $ UnexpectedToken token
 
-parseIdentifierExpression :: Parser Expression
-parseIdentifierExpression = do
+parseLetExpression :: Parser Expression
+parseLetExpression = do
+    letToken <- consume TokenLet
     identifier <- consume TokenIdentifier
-    args <- many parseFactor
-    let fnName = tokenValue identifier
-    pure $ foldl (\fn arg -> expr identifier (FunctionCallExpr fn arg)) 
-                 (expr identifier (ValueReferenceExpr fnName)) 
-                 args
+    let name = tokenValue identifier
+    _ <- consume TokenEquals
+    value <- parseExpression
+    _ <- consume TokenIn
+    body <- parseExpression
+    pure $ expr letToken (LetExpr name value body)
 
 parseType :: Parser Type
 parseType = do

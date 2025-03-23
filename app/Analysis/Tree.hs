@@ -67,7 +67,7 @@ inferExpr env expr = case exprKind expr of
 
         recordType expr bindType
         pure (finalSubst, bindType)
-    
+        
     FunctionCallExpr fn arg -> do
         (s1, fnType) <- inferExpr env fn
         (s2, argType) <- inferExpr (Map.map (apply s1) env) arg
@@ -96,6 +96,14 @@ inferExpr env expr = case exprKind expr of
                         pure (Map.empty, ty)
                     Nothing -> throwError $ UnboundVariable expr name
     
+    LetExpr name value body -> do
+        (s1, valueType) <- inferExpr env value
+        let env' = Map.insert name valueType (Map.map (apply s1) env)
+        (s2, bodyType) <- inferExpr env' body
+        let finalSubst = composeS s2 s1
+        recordType expr bodyType
+        pure (finalSubst, bodyType)
+
     _ -> throwError $ UntypedExpression expr
 
 inferExprs :: TypeEnv -> [Expression] -> InferM (Substitution, [Type])
@@ -122,38 +130,62 @@ analyzeTree :: Expression -> InferM TypeMap
 analyzeTree root = do
     collectGlobals root
     
-    s <- traverseExpr Map.empty root
+    s <- traverseTree Map.empty root
     infState <- get
     let finalTypeMap = Map.map (apply s) (inferTypeMap infState)
     return finalTypeMap
 
-traverseExpr :: TypeEnv -> Expression -> InferM Substitution
-traverseExpr env expr = do
-    result <- tryInferExpr env expr
-    case result of
+data EnvContext = EnvContext {
+    currentEnv :: TypeEnv,
+    currentSubst :: Substitution
+}
+
+traverseTree :: TypeEnv -> Expression -> InferM Substitution
+traverseTree env expr = evalNode EnvContext { currentEnv = env, currentSubst = Map.empty } expr
+
+evalNode :: EnvContext -> Expression -> InferM Substitution
+evalNode ctx expr = do
+    result <- tryInferExpr (currentEnv ctx) expr
+    
+    ctx' <- case result of
         Right (s, _) -> do
-            let env' = Map.map (apply s) env
-            childSubst <- traverseChildren env' expr
-            return (composeS childSubst s)
-
-        Left UntypedExpression {} -> traverseChildren env expr
-        Left err -> throwError err
-
-traverseChildren :: TypeEnv -> Expression -> InferM Substitution
-traverseChildren env expr = do
-    let env' = case exprKind expr of
-            FunctionExpr _ params _ _ -> 
-                Prelude.foldl (\acc (paramName, paramType) -> 
-                      Map.insert paramName paramType acc) 
-                    env (Map.toList params)
-            _ -> env
-
-    let children = exprChildren (exprKind expr)
-    foldM (\s child -> do
-        let childEnv = Map.map (apply s) env'
-        childSubst <- traverseExpr childEnv child
-        return (composeS childSubst s)
-      ) Map.empty children
+            let updatedSubst = composeS s (currentSubst ctx)
+            let updatedEnv = Map.map (apply s) (currentEnv ctx)
+            return ctx { currentEnv = updatedEnv, currentSubst = updatedSubst }
+        Left UntypedExpression {} -> 
+            return ctx
+        Left err -> 
+            throwError err
+    
+    childSubst <- case exprKind expr of
+        LetExpr name value body -> do
+            valueSubst <- evalNode ctx' value
+            
+            valueResult <- tryInferExpr (currentEnv ctx') value
+            
+            let bodyCtx = case valueResult of
+                    Right (_, valueType) -> 
+                        ctx' { 
+                            currentEnv = Map.insert name valueType (currentEnv ctx'),
+                            currentSubst = valueSubst
+                        }
+                    _ -> ctx' { currentSubst = valueSubst }
+            
+            evalNode bodyCtx body
+            
+        FunctionExpr _ params _ body -> do
+            let paramEnv = Prelude.foldl (\acc (paramName, paramType) -> 
+                              Map.insert paramName paramType acc)
+                            (currentEnv ctx') (Map.toList params)
+            
+            evalNode ctx' { currentEnv = paramEnv } body
+            
+        _ -> 
+            foldM (\s child -> 
+                evalNode ctx' { currentSubst = s } child
+            ) (currentSubst ctx') (exprChildren (exprKind expr))
+    
+    return childSubst
 
 tryInferExpr :: TypeEnv -> Expression -> InferM (Either AnalysisError (Substitution, Type))
 tryInferExpr env expr = catchError

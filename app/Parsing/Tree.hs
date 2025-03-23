@@ -46,6 +46,10 @@ data ExpressionKind
     , functionCallArg :: Expression }
   | ValueReferenceExpr
     { variableReferenceName :: String }
+  | LetExpr
+    { letName :: String
+    , letValue :: Expression
+    , letBody :: Expression }
   deriving (Eq, Ord)
 
 exprChildren :: ExpressionKind -> [Expression]
@@ -63,6 +67,7 @@ exprChildren kind = case kind of
     FunctionCallExpr fn arg -> [fn, arg] 
     ValueReferenceExpr _ -> []
     StringExpr _ -> []
+    LetExpr _ value body -> [value, body]
     BlockExpr expressions -> expressions
 
 instance Show ExpressionKind where
@@ -80,6 +85,7 @@ instance Show ExpressionKind where
         FunctionCallExpr fn arg -> "FunctionCallExpr (" ++ show fn ++ " " ++ show arg ++ ")"
         ValueReferenceExpr name -> "ValueReferenceExpr (" ++ name ++ ")"
         BlockExpr _ -> "BlockExpr"
+        LetExpr name value body -> "LetExpr (" ++ name ++ " = " ++ show value ++ " in " ++ show body ++ ")"
         StringExpr value -> "StringExpr (" ++ value ++ ")"
 
 instance Show Expression where

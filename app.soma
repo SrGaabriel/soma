@@ -9,7 +9,12 @@ hello :: String =
     "Hello, " + "World!"
 
 test :: Int =
-    5 + sum 5 6
+    5 + sum 5 6 + 7
+
+variables :: Int =
+    let first = 5 in
+    let second = 6 in
+    sum first second
 
 sum a b :: (Int Int) -> Int =
-    5 + a + nothing
+    a + b
