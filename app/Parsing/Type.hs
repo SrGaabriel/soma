@@ -9,6 +9,7 @@ data Type
         { functionTypeArgs :: [Type]
         , functionTypeReturn :: Type
         }
+    | GenericType String
     | UnresolvedStructType String
     | VarType TypeVar
     | ForAll [TypeVar] Type
@@ -23,6 +24,7 @@ instance Show Type where
     show BoolType = "Bool"
     show (TupleType ts) = "(" ++ unwords (map show ts) ++ ")"
     show (FunctionType args ret) = "(" ++ unwords (map show args) ++ " -> " ++ show ret ++ ")"
+    show (GenericType n) = "<" ++ n ++ ">"
     show (UnresolvedStructType n) = n
     show (VarType v) = show v
     show (ForAll vars t) = "forall " ++ unwords (map show vars) ++ ". " ++ show t

@@ -32,6 +32,7 @@ executable soma
                       Analysis.Errors
                       Logging.ErrorPrinter
                       Project.Module
+                      Utils.Lists
 
     build-depends:    base >= 4.19.2.0,
                       ansi-terminal >= 1.0,

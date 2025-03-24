@@ -16,9 +16,16 @@ variables :: Int =
     let second = 6 in
     identity $ do
         8 + 9 + 10
-        identity $ sum first $ second + first
+        genericId $ sum first $ second + first
 
 sum a b :: Int Int -> Int =
     a + b
 
 identity a :: Int -> Int = a
+
+genericId x :: a -> a = x
+
+genericTest :: Int =
+    right 5 6
+
+right a b :: gen gen -> gen = b

@@ -73,13 +73,25 @@ inferExpr env expr = case exprKind expr of
         (s2, argType) <- inferExpr (Map.map (apply s1) env) arg
         case fnType of
             FunctionType (param : params) retType -> do
-                s3 <- unify arg param argType
-                let s = composeS s3 (composeS s2 s1)
-                let newFnType = if Prelude.null params 
-                                  then retType 
-                                  else FunctionType params retType
-                recordType expr newFnType
-                pure (s, newFnType)
+                let s3 = composeS s2 s1
+                case param of 
+                        GenericType generic -> do
+                                let newParams = Prelude.map (\x -> if x == GenericType generic then argType else x) params
+                                let newRetType = if retType == GenericType generic then argType else retType
+                                let newFnType = if Prelude.null params 
+                                    then newRetType 
+                                    else FunctionType newParams newRetType
+                                recordType expr newFnType
+                                pure (s3, newFnType)
+                        _ -> do
+                            s4 <- unify arg param argType
+                            let finalSubst = composeS s4 s3
+                            let newFnType = if Prelude.null params 
+                                            then retType 
+                                            else FunctionType params retType
+                            recordType expr newFnType
+                            pure (finalSubst, newFnType)
+
             _ -> throwError $ NotAFunction expr fnType
        
     ValueReferenceExpr name -> do

@@ -13,7 +13,7 @@ import Control.Applicative ((<|>), Alternative(..))
 import qualified Data.Map as Map
 import Control.Monad.Error.Class (MonadError(throwError, catchError))
 import Control.Monad (when)
-import qualified Debug.Trace as Debug
+import Utils.Lists (hardHead)
 
 newtype Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -268,11 +268,14 @@ parseType = do
       pure $ TupleType types
     TokenIdentifier -> do
       typeToken <- consume TokenIdentifier
-      pure $ case tokenValue typeToken of
+      let name = tokenValue typeToken
+      pure $ case name of
         "Int" -> IntType
         "String" -> StringType
         "Bool" -> BoolType
-        other -> UnresolvedStructType other
+        other -> if hardHead other `elem` ['A'..'Z']
+          then UnresolvedStructType other
+          else GenericType other
     _ -> throwError $ InvalidTokenForType nextToken
 
 ignoreLine :: Parser ()
@@ -418,5 +421,5 @@ someAccepting parser predicate = Parser $ \tokens -> do
                     _ -> parseNext (item:acc) rest
                 Left err ->
                     if predicate err then Right (reverse acc, remaining)
-                    else Debug.trace ("Predicate false for " ++ show err) $ Left err
+                    else Left err
     parseNext [] tokens
