@@ -36,7 +36,9 @@ data ExpressionKind
   | VariablePatternExpr
     { variablePatternName :: String }
   | PatternHandlerExpr
-    { patternHandlerPattern :: Expression }
+    { patternHandlerPattern :: Expression
+    , patternHandlerBody :: Expression 
+    }
   | NumberExpr
   | StringExpr String
   | BlockExpr
@@ -62,7 +64,7 @@ exprChildren kind = case kind of
     PatternMatchExpr patterns -> patterns
     NumberPatternExpr _ -> []
     VariablePatternExpr _ -> []
-    PatternHandlerExpr pattern -> [pattern]
+    PatternHandlerExpr pattern handler -> [pattern, handler]
     NumberExpr -> []
     FunctionCallExpr fn arg -> [fn, arg] 
     ValueReferenceExpr _ -> []
@@ -80,7 +82,7 @@ instance Show ExpressionKind where
         PatternMatchExpr _ -> "PatternMatchExpr"
         NumberPatternExpr value -> "NumberPatternExpr (" ++ value ++ ")"
         VariablePatternExpr name -> "VariablePatternExpr (" ++ name ++ ")"
-        PatternHandlerExpr pattern -> "PatternHandlerExpr (" ++ show pattern ++ ")"
+        PatternHandlerExpr pattern _ -> "PatternHandlerExpr (" ++ show pattern ++ ")"
         NumberExpr -> "NumberExpr"
         FunctionCallExpr fn arg -> "FunctionCallExpr (" ++ show fn ++ " " ++ show arg ++ ")"
         ValueReferenceExpr name -> "ValueReferenceExpr (" ++ name ++ ")"

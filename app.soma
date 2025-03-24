@@ -1,7 +1,7 @@
-fibonacci n :: Int -> Int
+fibonacci n :: Int -> String
   | 0 -> 0
   | 1 -> 1
-  //| x -> fibonacci(n-1) + fibonacci(n-2)
+  | n -> fibonacci(n-1) + fibonacci(n-2)
 
 nothing :: Int = (5+5)*5
 
@@ -14,7 +14,9 @@ test :: Int =
 variables :: Int =
     let first = 5 in
     let second = 6 in
-    identity $ identity $ sum first $ first + second
+    identity $ do
+        8 + 9 + 10
+        identity $ sum first $ second + first
 
 sum a b :: Int Int -> Int =
     a + b

@@ -13,6 +13,7 @@ import Control.Applicative ((<|>), Alternative(..))
 import qualified Data.Map as Map
 import Control.Monad.Error.Class (MonadError(throwError, catchError))
 import Control.Monad (when)
+import qualified Debug.Trace as Debug
 
 newtype Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -82,7 +83,7 @@ peekRelevantSkipping minIndent = go False
         | tokenKind t == TokenNewline -> runParser (go True) ts
         | not sawNewline -> Right (t, t:ts)
         | otherwise -> case compare (tokenIndent t) minIndent of
-            LT -> Left $ ExpectedIndentation t
+            LT -> Left $ ExpectedAnExpression t
             _ -> Right (t, t:ts)
 
 peekNext :: Parser Token
@@ -160,7 +161,7 @@ parseFunctionBody = do
         cases <- parseIndentedBlock 0 parsePatternMatchCase
         pure $ Expression incoming (PatternMatchExpr cases)
     TokenEquals -> do
-        _ <- next
+        _ <- next <* (optional $ consume TokenNewline)
         expression <- parseExpression
         pure expression
     _ -> throwError $ UnexpectedToken incoming
@@ -171,8 +172,8 @@ parsePatternMatchCase = do
   pattern <- parsePattern
 
   _arrow <- consumeRelevant TokenRightArrow
-  _body <- parseExpression
-  pure $ Expression prefix (PatternHandlerExpr pattern)
+  body <- parseExpression
+  pure $ Expression prefix (PatternHandlerExpr pattern body)
 
 parsePattern :: Parser Expression
 parsePattern = do
@@ -180,7 +181,7 @@ parsePattern = do
   case tokenKind incoming of
     TokenIdentifier -> do
       token <- next
-      pure $ expr token (ValueReferenceExpr $ tokenValue token)
+      pure $ expr token (VariablePatternExpr $ tokenValue token)
     TokenNumber -> do
       token <- next
       pure $ expr token (NumberPatternExpr $ tokenValue token)
@@ -197,7 +198,10 @@ parseTerm = parseBinaryOp parseApplication [TokenAsterisk, TokenSlash]
 
 parseApplication :: Parser Expression
 parseApplication = do
-    atoms <- some parseAtom
+    atoms <- someAccepting parseAtom (\err -> case err of
+        NotAnExpression _ -> True
+        ExpectedAnExpression _ -> True
+        _ -> False)
     pure $ foldl2 (\f arg -> expr (exprToken f) (FunctionCallExpr f arg)) atoms
   where
     foldl2 _ [] = error "foldl1: empty list"
@@ -206,7 +210,7 @@ parseApplication = do
 
 parseAtom :: Parser Expression
 parseAtom = do
-    token <- peekRelevantSkipping 1
+    token <- peek
     case tokenKind token of
         TokenNumber -> do
             numToken <- next
@@ -214,7 +218,7 @@ parseAtom = do
         TokenLeftParenthesis -> do
             _ <- next
             expr' <- parseExpression
-            _ <- consume TokenRightParenthesis
+            _ <- consumeRelevant TokenRightParenthesis
             pure expr'
         TokenIdentifier -> do
             idToken <- next
@@ -231,7 +235,7 @@ parseAtom = do
             let indent = tokenIndent doToken
             block <- parseIndentedBlock indent parseExpression
             pure $ expr doToken (BlockExpr block)
-        _ -> throwError $ UnexpectedToken token
+        _ -> throwError $ NotAnExpression token
 
 parseLetExpression :: Parser Expression
 parseLetExpression = do
@@ -346,12 +350,12 @@ parseFluidSequence  end itemParser = Parser $ \tokens -> do
 parseIndentedBlock :: Int -> Parser a -> Parser [a]
 parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
     indentation <- case tokens of
-        [] -> Left EndOfInput
         (t@Token { tokenKind = TokenNewline }:_) ->
             if length (tokenValue t) > previousIndent
                 then Right $ length $ tokenValue t
                 else Left $ ExpectedIndentation t
         (t:_) -> Left $ ExpectedDifferentToken TokenNewline t
+        _ -> Left EndOfInput
 
     let parseNext acc remaining = case remaining of
            [] -> Right (reverse acc, [])
@@ -369,11 +373,9 @@ parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
                                 EQ -> do
                                     (item, rest') <- runParser itemParser rest
                                     parseNext (item:acc) rest'
-                                LT -> if tokenIndentation == previousIndent 
-                                        then Right (reverse acc, remaining)
-                                        else Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
+                                LT -> Right (reverse acc, remaining)
                                 GT -> Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
-                   else Left $ UnseparatedStatements tok
+                   else Right (reverse acc, remaining)
     parseNext [] tokens
 
 parseBinaryOp :: Parser Expression -> [TokenKind] -> Parser Expression
@@ -405,3 +407,16 @@ ensureSameLengthMap names types
     | length names < length types = pure . Map.fromList $ zip (map tokenValue names ++ replicate (length types - length names) "_") types
     | length names > length types = throwError $ FunctionArgumentLengthMismatch (last names)
     | otherwise                   = pure $ Map.fromList (zip (map tokenValue names) types)
+
+someAccepting :: Parser a -> (ParsingError -> Bool) -> Parser [a]
+someAccepting parser predicate = Parser $ \tokens -> do
+    let parseNext acc remaining =
+            let result = runParser parser remaining
+            in case result of
+                Right (item, rest) -> case rest of
+                    [] -> Right (reverse (item:acc), [])
+                    _ -> parseNext (item:acc) rest
+                Left err ->
+                    if predicate err then Right (reverse acc, remaining)
+                    else Debug.trace ("Predicate false for " ++ show err) $ Left err
+    parseNext [] tokens

@@ -101,7 +101,7 @@ isDigit :: Char -> Bool
 isDigit c = c `elem` ['0'..'9']
 
 isCharacter :: Char -> Bool
-isCharacter c = c `elem` ['a'..'z'] || c `elem` ['A'..'Z']
+isCharacter c = c `elem` ['a'..'z'] || c `elem` ['A'..'Z'] || c == '_'
 
 isSpace :: Char -> Bool
 isSpace c = c == ' ' || c == '\t'

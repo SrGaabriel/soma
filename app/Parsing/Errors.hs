@@ -14,6 +14,8 @@ data ParsingError
     | UnseparatedStatements Token -- for when two statements are on the same line
     | InvalidIdentifierFollowup Token
     | FunctionArgumentLengthMismatch Token
+    | NotAnExpression Token
+    | ExpectedAnExpression Token
     | EndOfInput
     | Debug 
     deriving (Eq)
@@ -27,6 +29,8 @@ instance Show ParsingError where
     show (InvalidIdentifierFollowup t) = "Invalid identifier follow-up: " ++ referenceToken t
     show (FunctionArgumentLengthMismatch _) = "The function has more arguments than declared"
     show (ExpectedDifferentIndentation _ expc recv) = "Expected indentation of " ++ show expc ++ " spaces but received " ++ show recv
+    show (NotAnExpression t) = "You can't use " ++ referenceToken t ++ " as an expression"
+    show (ExpectedAnExpression _) = "Expected an expression but received an abrupt end"
     show (EndOfInput) = "End of input"
     show Debug = "Debug"
 
@@ -54,5 +58,7 @@ getErrorToken (InvalidIdentifierFollowup t) = Just t
 getErrorToken (ExpectedDifferentIndentation t _ _) = Just t
 getErrorToken (FunctionArgumentLengthMismatch t) = Just t
 getErrorToken (UnseparatedStatements t) = Just t
+getErrorToken (NotAnExpression t) = Just t
+getErrorToken (ExpectedAnExpression t) = Just t
 getErrorToken (EndOfInput) = Nothing
 getErrorToken Debug = Nothing
