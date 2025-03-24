@@ -21,7 +21,7 @@ data ParsingError
 instance Show ParsingError where
     show (UnexpectedToken t) = "Unexpected token " ++ referenceToken t
     show (ExpectedDifferentToken tExpected tReceived) = "Expected " ++ referenceTokenKind tExpected ++ " but received " ++ referenceToken tReceived
-    show (InvalidTokenForType t) = "Invalid token for type: " ++ referenceToken t
+    show (InvalidTokenForType t) = "The token " ++ referenceToken t ++ " can't be used as a type"
     show (ExpectedIndentation t) = "Expected indentation for " ++ referenceToken t
     show (UnseparatedStatements t) = "Unseparated statements by newline at " ++ referenceToken t
     show (InvalidIdentifierFollowup t) = "Invalid identifier follow-up: " ++ referenceToken t

@@ -133,18 +133,16 @@ parseBinding = do
     let name = tokenValue nameToken
     argNames <- parseFluidSequence TokenReturns (consume TokenIdentifier) <* consume TokenReturns
 
-    mParens <- optional (consume TokenLeftParenthesis) -- TODO: consider whether this is a tuple or a function
-    case mParens of
-        Just _  -> do
-            argTypes <- parseFluidSequence TokenRightParenthesis parseType <* consume TokenRightParenthesis <* consume TokenRightArrow
-            argMappings <- ensureSameLengthMap argNames argTypes
-            returnType <- parseType
-            body <- parseFunctionBody
-            pure $ Expression nameToken (FunctionExpr name argMappings returnType body)
-        Nothing -> do
-            constantType <- parseType
-            body <- parseFunctionBody
-            pure $ Expression nameToken (ConstantBindingExpr name constantType body)
+    if (not $ null argNames) then do
+        argTypes <- parseFluidSequence TokenRightArrow parseType <* consume TokenRightArrow
+        argMappings <- ensureSameLengthMap argNames argTypes
+        returnType <- parseType
+        body <- parseFunctionBody
+        pure $ Expression nameToken (FunctionExpr name argMappings returnType body)
+    else do
+        constantType <- parseType
+        body <- parseFunctionBody
+        pure $ Expression nameToken (ConstantBindingExpr name constantType body)
 
 parseFunctionParameter :: Parser Expression
 parseFunctionParameter = do
@@ -200,12 +198,11 @@ parseTerm = parseBinaryOp parseApplication [TokenAsterisk, TokenSlash]
 parseApplication :: Parser Expression
 parseApplication = do
     atoms <- some parseAtom
-    pure $ foldl2 (\f arg -> expr (expressionToken f) (FunctionCallExpr f arg)) atoms
+    pure $ foldl2 (\f arg -> expr (exprToken f) (FunctionCallExpr f arg)) atoms
   where
     foldl2 _ [] = error "foldl1: empty list"
     foldl2 _ [x] = x
     foldl2 f (x:xs) = foldl f x xs
-    expressionToken (Expression t _) = t
 
 parseAtom :: Parser Expression
 parseAtom = do
@@ -226,6 +223,9 @@ parseAtom = do
             stringToken <- next
             pure $ expr stringToken (StringExpr (tokenValue stringToken))
         TokenLet -> parseLetExpression
+        TokenDollar -> do
+            _dollar <- next
+            parseExpression
         TokenDo -> do
             doToken <- next
             let indent = tokenIndent doToken

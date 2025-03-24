@@ -26,6 +26,7 @@ data TokenKind
     | TokenIn
     | TokenFn
     | TokenString
+    | TokenDollar
     deriving (Show, Eq, Ord)
 
 data Token = Token 
@@ -52,6 +53,7 @@ tokenize (c:cs) i indent
     | c == '(' = consToken (Token TokenLeftParenthesis "(" i indent) (tokenize cs (i + 1) indent)
     | c == ')' = consToken (Token TokenRightParenthesis ")" i indent) (tokenize cs (i + 1) indent)
     | c == '|' = consToken (Token TokenPipe "|" i indent) (tokenize cs (i + 1) indent)
+    | c == '$' = consToken (Token TokenDollar "$" i indent) (tokenize cs (i + 1) indent)
     | c == ':' = case cs of
         ':' : rest -> consToken (Token TokenReturns "::" i indent) (tokenize rest (i + 2) indent)
         _ -> consToken (Token TokenColon ":" i indent) (tokenize cs (i + 1) indent)
@@ -120,6 +122,7 @@ referenceTokenKind kind = case kind of
     TokenPlus -> "a plus sign"
     TokenMinus -> "a minus sign"
     TokenAsterisk -> "an asterisk"
+    TokenDollar -> "a dollar sign"
     TokenSlash -> "a slash"
     TokenEquals -> "an equals sign"
     TokenLeftAngleBracket -> "a left angle bracket"
