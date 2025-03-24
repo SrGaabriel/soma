@@ -27,7 +27,7 @@ instance PrintableError AnalysisError where
     errorMessage (CircularTypeDependency _) = "Circular type dependency"
     errorMessage (UnboundVariable _ name) = "Unbound variable '" ++ name ++ "'"
     errorMessage (UntypedExpression expr) = "The expression " ++ show expr ++ " is untyped"
-    errorMessage (NotAFunction expr ty) = "The type " ++ show ty ++ " does not support function application on " ++ show expr
+    errorMessage (NotAFunction _ ty) = "The type " ++ show ty ++ " does not support function application"
 
     errorStart :: AnalysisError -> Int
     errorStart err =

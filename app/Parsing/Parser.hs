@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleContexts #-}
 module Parsing.Parser where
 
 import Lexing.Lexer (Token(..), TokenKind(..))
@@ -11,6 +12,7 @@ import Parsing.Type (Type (..))
 import Control.Applicative ((<|>), Alternative(..))
 import qualified Data.Map as Map
 import Control.Monad.Error.Class (MonadError(throwError, catchError))
+import Control.Monad (when)
 
 newtype Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -235,12 +237,21 @@ parseLetExpression :: Parser Expression
 parseLetExpression = do
     letToken <- consume TokenLet
     identifier <- consume TokenIdentifier
-    let name = tokenValue identifier
     _ <- consume TokenEquals
     value <- parseExpression
     _ <- consume TokenIn
+    
+    mapM_ validateIndentation =<< optional (consume TokenNewline)
+    
     body <- parseExpression
-    pure $ expr letToken (LetExpr name value body)
+
+    pure $ expr letToken (LetExpr (tokenValue identifier) value body)
+  where
+    validateIndentation newline = 
+      let actualIndent = length (tokenValue newline)
+          expectedIndent = tokenIndent newline
+      in when (actualIndent /= expectedIndent) $
+           throwError $ ExpectedDifferentIndentation newline expectedIndent actualIndent
 
 parseType :: Parser Type
 parseType = do
