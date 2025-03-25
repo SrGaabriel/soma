@@ -4,7 +4,7 @@ import Control.Monad.State
 import Control.Monad.Except
 import Parsing.Tree (Expression(..), ExpressionKind(..), exprChildren)
 import Analysis.Inference (InferState(..), InferM, TypeMap, TypeEnv, Substitution, composeS, Substitutable (apply), cleanRunInferM, unify)
-import Parsing.Type (Type(..))
+import Parsing.Type (Type(..), StructVariant (StructVariant))
 import Analysis.Errors (AnalysisError(..))
 import Control.Monad (foldM)
 
@@ -115,6 +115,12 @@ inferExpr env expr = case exprKind expr of
         let finalSubst = composeS s2 s1
         recordType expr bodyType
         pure (finalSubst, bodyType)
+    
+    BlockExpr expressions -> do
+        (subs, tys) <- inferExprs env expressions
+        let resultType = last tys
+        recordType expr resultType
+        pure (subs, resultType)
 
     _ -> throwError $ UntypedExpression expr
 
@@ -133,6 +139,26 @@ collectGlobals expr = case exprKind expr of
         
     ConstantBindingExpr name bindType _ -> do
         addGlobalBinding name bindType
+    
+    StructExpr name constructors -> do
+        let variants = Prelude.map (\(Expression _ ek) -> case ek of
+                    StructConstructorExpr cName fields -> 
+                        StructVariant cName (Map.fromList $ Prelude.map (\x -> case x of
+                            Expression _ (StructFieldExpr fName ty) -> (fName, ty)
+                            _ -> error "Expected StructFieldExpr in struct definition"
+                        ) fields)
+                    recv -> error $ "Expected StructConstructorExpr in struct definition but got " ++ show recv
+                ) constructors
+
+        let structType = StructType name variants
+        s <- get
+        put s { structTypes = Map.insert name structType (structTypes s) }
+
+        _ <- mapM (\(StructVariant vName fields) -> do
+                let constructorType = FunctionType (Prelude.map snd (Map.toList fields)) structType
+                addGlobalBinding vName constructorType
+            ) variants
+        pure ()
         
     _ -> pure ()
     

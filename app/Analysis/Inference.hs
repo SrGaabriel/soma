@@ -39,6 +39,7 @@ class Substitutable a where
 
 instance Substitutable Type where
     apply subst (TupleType ts) = TupleType (Prelude.map (apply subst) ts)
+    apply subst (FunctionType args ret) = FunctionType (Prelude.map (apply subst) args) (apply subst ret)
     apply _ x = x
 
 type TypeMap = Map.Map Expression Type
@@ -46,17 +47,18 @@ type TypeMap = Map.Map Expression Type
 type TypeEnv = Map.Map String Type
 
 data InferState = InferState
-  { inferNextVar :: Int
-  , inferTypeMap :: TypeMap
-  , globalEnv :: TypeEnv
-  } deriving (Show)
+    { inferNextVar :: Int
+    , inferTypeMap :: TypeMap
+    , globalEnv :: TypeEnv
+    , structTypes :: Map.Map String Type
+    } deriving (Show)
 
 fresh :: InferM Type
 fresh = do
     s <- get
     let i = inferNextVar s
     put s { inferNextVar = i + 1 }
-    pure $ VarType (TypeVar "t" i)
+    pure $ UnresolvedVarType (TypeVar "t" i)
 
 unify :: Expression -> Type -> Type -> InferM Substitution
 unify expr (TupleType ts1) (TupleType ts2)
@@ -76,26 +78,31 @@ unify expr (FunctionType args1 ret1) (FunctionType args2 ret2)
       s2 <- unify expr (apply s1 ret1) (apply s1 ret2)
       pure (composeS s2 s1)
   | otherwise = throwError $ FunctionArgumentLengthMismatch expr
-unify expr (VarType v) t = bind expr v t
-unify expr t (VarType v) = bind expr v t
-unify expr t1@(UnresolvedStructType n1) t2@(UnresolvedStructType n2)
-  | n1 == n2 = pure Map.empty
-  | otherwise = throwError $ TypeMismatch expr t1 t2
+unify expr (UnresolvedVarType v) t = bind expr v t
+unify expr t (UnresolvedVarType v) = bind expr v t
+
+unify expr (UnboundedStructType name) t = do
+    s <- get
+    case Map.lookup name (structTypes s) of
+        Just structTy -> unify expr structTy t
+        Nothing -> throwError $ UnknownStruct expr name
+unify expr t (UnboundedStructType name) =
+    unify expr (UnboundedStructType name) t
+
 unify expr t1 t2
   | t1 == t2 = pure Map.empty
   | otherwise = throwError $ TypeMismatch expr t1 t2
 
 bind :: Expression -> TypeVar -> Type -> InferM Substitution
 bind expr v t 
-    | t == VarType v = pure Map.empty
+    | t == UnresolvedVarType v = pure Map.empty
     | occurs v t = throwError $ CircularTypeDependency expr
     | otherwise = pure $ Map.singleton v t
 
 occurs :: TypeVar -> Type -> Bool
-occurs v (VarType v') = v == v'
+occurs v (UnresolvedVarType v') = v == v'
 occurs v (TupleType ts) = any (occurs v) ts
 occurs v (FunctionType args ret) = any (occurs v) args || occurs v ret
-occurs v (ForAll vars t) = v `notElem` vars && occurs v t
 occurs _ _ = False
 
 composeS :: Substitution -> Substitution -> Substitution
@@ -105,10 +112,10 @@ evalInferM :: InferM a -> InferState -> IO (Either AnalysisError a)
 evalInferM m st = pure $ evalState (runExceptT (runInfer m)) st
 
 cleanEvalInferM :: InferM a -> IO (Either AnalysisError a)
-cleanEvalInferM m = evalInferM m (InferState 0 Map.empty Map.empty)
+cleanEvalInferM m = evalInferM m (InferState 0 Map.empty Map.empty Map.empty)
 
 runInferM :: InferM a -> InferState -> IO (Either AnalysisError a, InferState)
 runInferM m st = pure $ runState (runExceptT (runInfer m)) st
 
 cleanRunInferM :: InferM a -> IO (Either AnalysisError a, InferState)
-cleanRunInferM m = runInferM m (InferState 0 Map.empty Map.empty)
+cleanRunInferM m = runInferM m (InferState 0 Map.empty Map.empty Map.empty)

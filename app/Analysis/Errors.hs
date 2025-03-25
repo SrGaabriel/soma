@@ -16,6 +16,7 @@ data AnalysisError
     | UnboundVariable Expression String
     | UntypedExpression Expression
     | NotAFunction Expression Type
+    | UnknownStruct Expression String
     deriving (Show, Eq)
 
 instance PrintableError AnalysisError where
@@ -28,6 +29,7 @@ instance PrintableError AnalysisError where
     errorMessage (UnboundVariable _ name) = "Unbound variable '" ++ name ++ "'"
     errorMessage (UntypedExpression expr) = "The expression " ++ show expr ++ " is untyped"
     errorMessage (NotAFunction _ ty) = "The type " ++ show ty ++ " does not support function application"
+    errorMessage (UnknownStruct _ name) = "Unknown struct '" ++ name ++ "'"
 
     errorStart :: AnalysisError -> Int
     errorStart err =
@@ -52,6 +54,7 @@ getExpression (CircularTypeDependency expr) = expr
 getExpression (UnboundVariable expr _) = expr
 getExpression (UntypedExpression expr) = expr
 getExpression (NotAFunction expr _) = expr
+getExpression (UnknownStruct expr _) = expr
 
 getAllTokens :: Expression -> [Token]
 getAllTokens expr = 

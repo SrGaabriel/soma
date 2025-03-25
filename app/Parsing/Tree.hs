@@ -13,6 +13,17 @@ data Expression = Expression
 data ExpressionKind
   = RootExpr
     { rootLeaves :: [Expression] }
+  | StructExpr
+    { structName :: String
+    , structConstructors :: [Expression]
+    }
+  | StructConstructorExpr
+    { structConstructorName :: String
+    , structConstructorFields :: [Expression] }
+  | StructFieldExpr
+    { structFieldName :: String
+    , structFieldType :: Type
+    }
   | FunctionExpr
     { functionName :: String
     , functionParams :: Map.Map String Type
@@ -71,6 +82,10 @@ exprChildren kind = case kind of
     StringExpr _ -> []
     LetExpr _ value body -> [value, body]
     BlockExpr expressions -> expressions
+    StructExpr _ constructors -> constructors
+    StructConstructorExpr _ fields -> fields
+    StructFieldExpr _ _ -> []
+
 
 instance Show ExpressionKind where
     show kind = case kind of
@@ -89,6 +104,9 @@ instance Show ExpressionKind where
         BlockExpr _ -> "BlockExpr"
         LetExpr name value body -> "LetExpr (" ++ name ++ " = " ++ show value ++ " in " ++ show body ++ ")"
         StringExpr value -> "StringExpr (" ++ value ++ ")"
+        StructExpr name constructors -> "StructExpr (" ++ name ++ " :: " ++ show constructors ++ ")"
+        StructConstructorExpr name fields -> "StructConstructorExpr (" ++ name ++ " :: " ++ show fields ++ ")"
+        StructFieldExpr name fieldType -> "StructFieldExpr (" ++ name ++ " :: " ++ show fieldType ++ ")"
 
 instance Show Expression where
   show (Expression token kind) = (show kind) ++ " '" ++ tokenValue token ++ "'"

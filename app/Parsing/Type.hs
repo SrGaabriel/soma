@@ -1,4 +1,5 @@
-module Parsing.Type (Type(..), TypeVar(..)) where
+module Parsing.Type (Type(..), TypeVar(..), StructVariant(..)) where
+import qualified Data.Map as Map
 
 data Type
     = IntType
@@ -10,13 +11,19 @@ data Type
         , functionTypeReturn :: Type
         }
     | GenericType String
-    | UnresolvedStructType String
-    | VarType TypeVar
-    | ForAll [TypeVar] Type
+    | StructType
+        { structName :: String
+        , structVariants :: [StructVariant]
+        }
+    | UnboundedStructType String
+    | UnresolvedVarType TypeVar
     deriving (Eq, Ord)
 
 data TypeVar = TypeVar String Int
-  deriving (Show, Eq, Ord)
+    deriving (Show, Eq, Ord)
+
+data TypeStruct = TypeStruct String Int
+    deriving (Show, Eq, Ord)
 
 instance Show Type where
     show IntType = "Int"
@@ -25,6 +32,11 @@ instance Show Type where
     show (TupleType ts) = "(" ++ unwords (map show ts) ++ ")"
     show (FunctionType args ret) = "(" ++ unwords (map show args) ++ " -> " ++ show ret ++ ")"
     show (GenericType n) = "<" ++ n ++ ">"
-    show (UnresolvedStructType n) = n
-    show (VarType v) = show v
-    show (ForAll vars t) = "forall " ++ unwords (map show vars) ++ ". " ++ show t
+    show (StructType name _) = name
+    show (UnresolvedVarType v) = show v
+    show (UnboundedStructType s) = show s
+
+data StructVariant = StructVariant
+    { variantName :: String
+    , variantFields :: Map.Map String Type
+    } deriving (Show, Eq, Ord)

@@ -27,6 +27,7 @@ data TokenKind
     | TokenFn
     | TokenString
     | TokenDollar
+    | TokenStruct
     deriving (Show, Eq, Ord)
 
 data Token = Token 
@@ -88,6 +89,7 @@ tokenize (c:cs) i indent
                 "fn"  -> TokenFn
                 "case" -> TokenCase
                 "do" -> TokenDo
+                "struct" -> TokenStruct
                 _     -> TokenIdentifier
         in consToken (Token kind text i indent) (tokenize rest (i + length text) indent)
     | otherwise = Left $ UnexpectedCharacter c i
@@ -140,3 +142,4 @@ referenceTokenKind kind = case kind of
     TokenFn -> "'fn'"
     TokenIn -> "'in'"
     TokenString -> "a string"
+    TokenStruct -> "a struct"

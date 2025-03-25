@@ -125,6 +125,7 @@ parseDeclaration = do
   token <- peek
   case tokenKind token of
     TokenIdentifier -> parseBinding
+    TokenStruct -> parseStruct
     TokenNewline -> next >> parseDeclaration
     _ -> Parser $ \_ -> Left $ UnexpectedToken token
 
@@ -202,9 +203,12 @@ parseApplication = do
         NotAnExpression _ -> True
         ExpectedAnExpression _ -> True
         _ -> False)
-    pure $ foldl2 (\f arg -> expr (exprToken f) (FunctionCallExpr f arg)) atoms
+    if atoms == [] then do 
+        inc <- peek
+        throwError $ ExpectedAnExpression inc
+    else pure $ foldl2 (\f arg -> expr (exprToken f) (FunctionCallExpr f arg)) atoms
   where
-    foldl2 _ [] = error "foldl1: empty list"
+    foldl2 _ [] = error "foldl2: empty list"
     foldl2 _ [x] = x
     foldl2 f (x:xs) = foldl f x xs
 
@@ -243,7 +247,7 @@ parseLetExpression = do
     identifier <- consume TokenIdentifier
     _ <- consume TokenEquals
     value <- parseExpression
-    _ <- consume TokenIn
+    _ <- consumeRelevant TokenIn
     
     mapM_ validateIndentation =<< optional (consume TokenNewline)
     
@@ -256,6 +260,29 @@ parseLetExpression = do
           expectedIndent = tokenIndent newline
       in when (actualIndent /= expectedIndent) $
            throwError $ ExpectedDifferentIndentation newline expectedIndent actualIndent
+
+parseStruct :: Parser Expression
+parseStruct = do
+    structToken <- consume TokenStruct
+    nameToken <- consume TokenIdentifier
+    constructors <- parseIndexedIndentedBlock (tokenIndent nameToken) parseStructConstructor
+    let name = tokenValue nameToken
+    pure $ expr structToken $ StructExpr name constructors
+
+parseStructConstructor :: Int -> Parser Expression
+parseStructConstructor index = do
+    firstToken <- if index == 0 then consume TokenEquals
+                  else consume TokenPipe
+    nameToken <- consume TokenIdentifier
+    fields <- parseIndentedBlock (tokenIndent nameToken) parseStructField
+    pure $ expr firstToken $ StructConstructorExpr (tokenValue nameToken) fields
+
+parseStructField :: Parser Expression
+parseStructField = do
+    nameToken <- consume TokenIdentifier
+    _ <- consumeRelevant TokenReturns
+    typeExpr <- parseType
+    pure $ expr nameToken (StructFieldExpr (tokenValue nameToken) typeExpr)
 
 parseType :: Parser Type
 parseType = do
@@ -274,7 +301,7 @@ parseType = do
         "String" -> StringType
         "Bool" -> BoolType
         other -> if hardHead other `elem` ['A'..'Z']
-          then UnresolvedStructType other
+          then UnboundedStructType other
           else GenericType other
     _ -> throwError $ InvalidTokenForType nextToken
 
@@ -375,6 +402,39 @@ parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
                             in case compare tokenIndentation indentation of
                                 EQ -> do
                                     (item, rest') <- runParser itemParser rest
+                                    parseNext (item:acc) rest'
+                                LT -> Right (reverse acc, remaining)
+                                GT -> Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
+                   else Right (reverse acc, remaining)
+    parseNext [] tokens
+
+-- TODO: remove repeated code
+parseIndexedIndentedBlock :: Int -> (Int -> Parser a) -> Parser [a]
+parseIndexedIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
+    indentation <- case tokens of
+        (t@Token { tokenKind = TokenNewline }:_) ->
+            if length (tokenValue t) > previousIndent
+                then Right $ length $ tokenValue t
+                else Left $ ExpectedIndentation t
+        (t:_) -> Left $ ExpectedDifferentToken TokenNewline t
+        _ -> Left EndOfInput
+
+    let parseNext acc remaining = case remaining of
+           [] -> Right (reverse acc, [])
+           (tok:rest) ->
+                let isNewline = tokenKind tok == TokenNewline
+                in if isNewline then
+                    case rest of
+                        (nextTok:_) | tokenKind nextTok == TokenNewline ->
+                            parseNext acc rest
+                        [] ->
+                            parseNext acc rest
+                        _ ->
+                            let tokenIndentation = length (tokenValue tok)
+                            in case compare tokenIndentation indentation of
+                                EQ -> do
+                                    let index = length acc
+                                    (item, rest') <- runParser (itemParser index) rest
                                     parseNext (item:acc) rest'
                                 LT -> Right (reverse acc, remaining)
                                 GT -> Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
