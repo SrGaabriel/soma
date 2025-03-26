@@ -16,6 +16,7 @@ data ExpressionKind
   | StructExpr
     { structName :: String
     , structConstructors :: [Expression]
+    , structGenerics :: Maybe [String]
     }
   | StructConstructorExpr
     { structConstructorName :: String
@@ -82,7 +83,7 @@ exprChildren kind = case kind of
     StringExpr _ -> []
     LetExpr _ value body -> [value, body]
     BlockExpr expressions -> expressions
-    StructExpr _ constructors -> constructors
+    StructExpr _ constructors _ -> constructors
     StructConstructorExpr _ fields -> fields
     StructFieldExpr _ _ -> []
 
@@ -104,7 +105,7 @@ instance Show ExpressionKind where
         BlockExpr _ -> "BlockExpr"
         LetExpr name value body -> "LetExpr (" ++ name ++ " = " ++ show value ++ " in " ++ show body ++ ")"
         StringExpr value -> "StringExpr (" ++ value ++ ")"
-        StructExpr name constructors -> "StructExpr (" ++ name ++ " :: " ++ show constructors ++ ")"
+        StructExpr name constructors generics -> "StructExpr (" ++ name ++ " :: " ++ show constructors ++ " :: " ++ show generics ++ ")"
         StructConstructorExpr name fields -> "StructConstructorExpr (" ++ name ++ " :: " ++ show fields ++ ")"
         StructFieldExpr name fieldType -> "StructFieldExpr (" ++ name ++ " :: " ++ show fieldType ++ ")"
 

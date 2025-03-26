@@ -14,8 +14,9 @@ data Type
     | StructType
         { structName :: String
         , structVariants :: [StructVariant]
+        , structGenerics :: Maybe [Type]
         }
-    | UnboundedStructType String
+    | UnresolvedStructType String (Maybe [Type])
     | UnresolvedVarType TypeVar
     deriving (Eq, Ord)
 
@@ -31,10 +32,10 @@ instance Show Type where
     show BoolType = "Bool"
     show (TupleType ts) = "(" ++ unwords (map show ts) ++ ")"
     show (FunctionType args ret) = "(" ++ unwords (map show args) ++ " -> " ++ show ret ++ ")"
-    show (GenericType n) = "<" ++ n ++ ">"
-    show (StructType name _) = name
+    show (GenericType n) = "'" ++ n
+    show (StructType name _ generics) = name ++ maybe "" (\g -> "[" ++ unwords (map show g) ++ "]") generics
     show (UnresolvedVarType v) = show v
-    show (UnboundedStructType s) = show s
+    show (UnresolvedStructType name generics) = "@" ++ name ++ maybe "" (\g -> "[" ++ unwords (map show g) ++ "]") generics
 
 data StructVariant = StructVariant
     { variantName :: String

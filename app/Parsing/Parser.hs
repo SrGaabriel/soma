@@ -265,9 +265,17 @@ parseStruct :: Parser Expression
 parseStruct = do
     structToken <- consume TokenStruct
     nameToken <- consume TokenIdentifier
+
+    genericsDeclared <- optional $ consume TokenLeftBracket
+    generics <- case genericsDeclared of
+        Just _ -> do
+            genericTokens <- parseFluidSequence TokenRightBracket (consume TokenIdentifier) <* consume TokenRightBracket
+            pure $ Just $ map tokenValue genericTokens
+        Nothing -> pure Nothing
+
     constructors <- parseIndexedIndentedBlock (tokenIndent nameToken) parseStructConstructor
     let name = tokenValue nameToken
-    pure $ expr structToken $ StructExpr name constructors
+    pure $ expr structToken $ StructExpr name constructors generics
 
 parseStructConstructor :: Int -> Parser Expression
 parseStructConstructor index = do
@@ -296,13 +304,24 @@ parseType = do
     TokenIdentifier -> do
       typeToken <- consume TokenIdentifier
       let name = tokenValue typeToken
-      pure $ case name of
-        "Int" -> IntType
-        "String" -> StringType
-        "Bool" -> BoolType
+      case name of
+        "Int" -> pure IntType
+        "String" -> pure StringType
+        "Bool" -> pure BoolType
         other -> if hardHead other `elem` ['A'..'Z']
-          then UnboundedStructType other
-          else GenericType other
+            then do
+                genericTypes <- optional (
+                        consume TokenLeftBracket
+                        *> parseFluidSequence TokenRightBracket parseType
+                        <* consume TokenRightBracket
+                    )
+                generics <- case genericTypes of
+                        Just tokens
+                            | length tokens == 0 -> throwError $ InvalidGenericsList typeToken
+                            | otherwise -> pure $ Just $ tokens
+                        Nothing -> pure Nothing
+                pure $ UnresolvedStructType other generics
+            else pure $ GenericType other
     _ -> throwError $ InvalidTokenForType nextToken
 
 ignoreLine :: Parser ()
