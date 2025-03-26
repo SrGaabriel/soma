@@ -1,6 +1,8 @@
 module Lexing.Lexer (Token(..), TokenKind(..), tokenize, tokenizeFile, referenceToken, referenceTokenKind) where
 
 import Lexing.Errors (LexingError(..))
+import Data.Char (ord, generalCategory)
+import qualified Data.Char as C
 
 data TokenKind
     = TokenNumber
@@ -28,6 +30,7 @@ data TokenKind
     | TokenString
     | TokenDollar
     | TokenStruct
+    | TokenComma
     | TokenLeftBracket
     | TokenRightBracket
     deriving (Show, Eq, Ord)
@@ -59,6 +62,7 @@ tokenize (c:cs) i indent
     | c == '$' = consToken (Token TokenDollar "$" i indent) (tokenize cs (i + 1) indent)
     | c == '[' = consToken (Token TokenLeftBracket "[" i indent) (tokenize cs (i + 1) indent)
     | c == ']' = consToken (Token TokenRightBracket "]" i indent) (tokenize cs (i + 1) indent)
+    | c == ',' = consToken (Token TokenComma "," i indent) (tokenize cs (i + 1) indent)
     | c == ':' = case cs of
         ':' : rest -> consToken (Token TokenReturns "::" i indent) (tokenize rest (i + 2) indent)
         _ -> consToken (Token TokenColon ":" i indent) (tokenize cs (i + 1) indent)
@@ -107,7 +111,13 @@ isDigit :: Char -> Bool
 isDigit c = c `elem` ['0'..'9']
 
 isCharacter :: Char -> Bool
-isCharacter c = c `elem` ['a'..'z'] || c `elem` ['A'..'Z'] || c == '_'
+isCharacter c = c `elem` ['a'..'z'] || c `elem` ['A'..'Z'] || c == '_' || isEmoji c
+
+isEmoji :: Char -> Bool
+isEmoji c
+    | generalCategory c `elem` [C.OtherSymbol, C.MathSymbol, C.CurrencySymbol] = True
+    | ord c >= 0x1F000 = True  -- Most emojis are above this range
+    | otherwise = False
 
 isSpace :: Char -> Bool
 isSpace c = c == ' ' || c == '\t'
@@ -149,3 +159,4 @@ referenceTokenKind kind = case kind of
     TokenStruct -> "a struct"
     TokenLeftBracket -> "a left bracket"
     TokenRightBracket -> "a right bracket"
+    TokenComma -> "a comma"

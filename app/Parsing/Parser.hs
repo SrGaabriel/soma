@@ -220,10 +220,11 @@ parseAtom = do
             numToken <- next
             pure $ expr numToken NumberExpr
         TokenLeftParenthesis -> do
-            _ <- next
-            expr' <- parseExpression
-            _ <- consumeRelevant TokenRightParenthesis
-            pure expr'
+            lparen <- consume TokenLeftParenthesis
+            contents <- parseCommaSeparatedUntil TokenRightParenthesis parseExpression
+            case contents of 
+                (first:[]) -> pure first
+                _ -> pure $ expr lparen (TupleExpr contents)
         TokenIdentifier -> do
             idToken <- next
             pure $ expr idToken (ValueReferenceExpr (tokenValue idToken))
@@ -298,7 +299,7 @@ parseType = do
   case tokenKind nextToken of
     TokenLeftParenthesis -> do
       _ <- consume TokenLeftParenthesis
-      types <- parseFluidSequence TokenRightParenthesis (parseType)
+      types <- parseSequence TokenComma TokenRightParenthesis (parseType)
       _ <- consume TokenRightParenthesis  
       pure $ TupleType types
     TokenIdentifier -> do
@@ -359,10 +360,17 @@ parseSequence separator end itemParser = Parser $ \tokens -> do
                   (tokenPeek, _) <- runParser next rest
                   case tokenKind tokenPeek of
                       tk | tk == separator -> do
-                          _ <- runParser next rest
-                          parseNext (item:acc) rest
+                          (_, rest') <- runParser next rest
+                          parseNext (item:acc) rest'
                         | tk == end -> Right (reverse (item:acc), rest)
                         | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
+
+parseCommaSeparatedUntil :: TokenKind -> Parser a -> Parser [a]
+parseCommaSeparatedUntil end itemParser = parseList
+  where
+    parseList = (:) <$> itemParser <*> parseRest <|> checkEmpty
+    parseRest = (consume TokenComma *> parseList) <|> (consume end *> pure [])
+    checkEmpty = consume end *> pure []
 
 parseExhaustiveSequence :: Show a => TokenKind -> Parser a -> Parser [a]
 parseExhaustiveSequence separator itemParser = Parser $ \tokens -> do

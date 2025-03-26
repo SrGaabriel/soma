@@ -41,7 +41,7 @@ printError err fileName code prefix = do
                 positionIndicator = replicate relativeStart ' ' ++ replicate textLength '^'
 
             setSGR [SetColor Foreground Vivid Red]
-            putStr $ fileName ++ ":" ++ show (number rowInfo) ++ ":" ++ show (relativeStart + 1) ++ " "
+            putStr $ fileName ++ ":" ++ show (number rowInfo) ++ ":" ++ show (relativeIndex rowInfo + 1) ++ " "
             setSGR [Reset]
             setSGR [SetConsoleIntensity BoldIntensity]
             putStr $ "[" ++ prefix ++ "] "

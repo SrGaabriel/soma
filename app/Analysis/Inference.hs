@@ -12,6 +12,7 @@ import Parsing.Type (Type(..), TypeVar(..), StructVariant (variantFields))
 import Analysis.Errors (AnalysisError(..))
 import Control.Monad (foldM)
 import Data.List (nub)
+import Analysis.Generics (replaceGenerics, collectGenerics)
 
 newtype InferM a = InferM {
     runInfer :: ExceptT AnalysisError (State InferState) a
@@ -123,29 +124,6 @@ occurs v (UnresolvedVarType v') = v == v'
 occurs v (TupleType ts) = any (occurs v) ts
 occurs v (FunctionType args ret) = any (occurs v) args || occurs v ret
 occurs _ _ = False
-
-collectGenerics :: Type -> [String]
-collectGenerics (GenericType g) = [g]
-collectGenerics (TupleType ts) = concatMap collectGenerics ts
-collectGenerics (FunctionType args ret) = concatMap collectGenerics args ++ collectGenerics ret
-collectGenerics (StructType _ variants mgs) = 
-    concatMap (collectGenerics . snd) (concatMap Map.toList (Prelude.map variantFields variants)) ++ 
-    maybe [] (concatMap collectGenerics) mgs
-collectGenerics (UnresolvedStructType _ mgs) = maybe [] (concatMap collectGenerics) mgs
-collectGenerics _ = []
-
-replaceGenerics :: Map.Map String Type -> Type -> Type
-replaceGenerics subst (GenericType g) = Map.findWithDefault (GenericType g) g subst
-replaceGenerics subst (TupleType ts) = TupleType (Prelude.map (replaceGenerics subst) ts)
-replaceGenerics subst (FunctionType args ret) = 
-    FunctionType (Prelude.map (replaceGenerics subst) args) (replaceGenerics subst ret)
-replaceGenerics subst (StructType n variants mgs) = 
-    StructType n 
-               (Prelude.map (\v -> v { variantFields = Map.map (replaceGenerics subst) (variantFields v) }) variants)
-               (fmap (Prelude.map (replaceGenerics subst)) mgs)
-replaceGenerics subst (UnresolvedStructType n mgs) = 
-    UnresolvedStructType n (fmap (Prelude.map (replaceGenerics subst)) mgs)
-replaceGenerics _ t = t
 
 instantiate :: Type -> InferM Type
 instantiate ty = do

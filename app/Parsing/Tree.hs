@@ -53,6 +53,7 @@ data ExpressionKind
     }
   | NumberExpr
   | StringExpr String
+  | TupleExpr [Expression]
   | BlockExpr
     { blockExpressions :: [Expression] }
   | FunctionCallExpr
@@ -81,6 +82,7 @@ exprChildren kind = case kind of
     FunctionCallExpr fn arg -> [fn, arg] 
     ValueReferenceExpr _ -> []
     StringExpr _ -> []
+    TupleExpr expressions -> expressions
     LetExpr _ value body -> [value, body]
     BlockExpr expressions -> expressions
     StructExpr _ constructors _ -> constructors
@@ -103,6 +105,7 @@ instance Show ExpressionKind where
         FunctionCallExpr fn arg -> "FunctionCallExpr (" ++ show fn ++ " " ++ show arg ++ ")"
         ValueReferenceExpr name -> "ValueReferenceExpr (" ++ name ++ ")"
         BlockExpr _ -> "BlockExpr"
+        TupleExpr expressions -> "TupleExpr (" ++ show expressions ++ ")"
         LetExpr name value body -> "LetExpr (" ++ name ++ " = " ++ show value ++ " in " ++ show body ++ ")"
         StringExpr value -> "StringExpr (" ++ value ++ ")"
         StructExpr name constructors generics -> "StructExpr (" ++ name ++ " :: " ++ show constructors ++ " :: " ++ show generics ++ ")"

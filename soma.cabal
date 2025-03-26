@@ -29,6 +29,7 @@ executable soma
                       Parsing.Pattern
                       Analysis.Inference
                       Analysis.Tree
+                      Analysis.Generics
                       Analysis.Errors
                       Logging.ErrorPrinter
                       Project.Module

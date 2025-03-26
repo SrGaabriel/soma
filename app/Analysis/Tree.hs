@@ -20,98 +20,97 @@ recordType expr ty = do
     put s { inferTypeMap = Map.insert expr ty (inferTypeMap s) }
 
 inferExpr :: TypeEnv -> Expression -> InferM (Substitution, Type)
-inferExpr env expr = case exprKind expr of
-    NumberExpr -> do
-        let ty = IntType
-        recordType expr ty
-        pure (Map.empty, ty)
-       
-    StringExpr _ -> do
-        let ty = StringType
-        recordType expr ty
-        pure (Map.empty, ty)
+inferExpr _ expr@(Expression _ NumberExpr) = do
+    let ty = IntType
+    recordType expr ty
+    pure (Map.empty, ty)
+
+inferExpr _ expr@(Expression _ (StringExpr _)) = do
+    let ty = StringType
+    recordType expr ty
+    pure (Map.empty, ty)
+
+inferExpr env expr@(Expression _ (BinaryOpExpr left right _)) = do
+    (s1, ty1) <- inferExpr env left
+    (s2, ty2) <- inferExpr (Map.map (apply s1) env) right
+
+    s3 <- unify expr ty1 ty2
+    let finalSubst = composeS s3 (composeS s2 s1)
+    let resultType = apply finalSubst ty1
+    recordType expr resultType
+    pure (finalSubst, resultType)
+
+inferExpr env expr@(Expression _ (FunctionExpr name params returnType body)) = do
+    let funcType = FunctionType (Prelude.map snd (Map.toList params)) returnType
+    
+    addGlobalBinding name funcType
+    
+    let localEnv = Prelude.foldl (\acc (paramName, paramType) -> 
+                        Map.insert paramName paramType acc) 
+                    env (Map.toList params)
+    
+    (s, bodyType) <- inferExpr localEnv body
+    unifySubst <- unify body returnType bodyType
+    let finalSubst = composeS unifySubst s
+
+    recordType expr (FunctionType (Prelude.map snd (Map.toList params)) returnType)
+    pure (finalSubst, funcType)
+
+inferExpr env expr@(Expression _ (ConstantBindingExpr name bindType body)) = do
+    addGlobalBinding name bindType
+
+    let env' = Map.insert name bindType env
+    (s, bodyType) <- inferExpr env' body
+    unifySubst <- unify body bindType bodyType
+    let finalSubst = composeS unifySubst s
+
+    recordType expr bindType
+    pure (finalSubst, bindType)
+    
+inferExpr env expr@(Expression _ (FunctionCallExpr fn arg)) = do
+    (s1, fnType) <- inferExpr env fn
+    (s2, argType) <- inferExpr (Map.map (apply s1) env) arg
+    let s3 = composeS s2 s1
+    case fnType of
+        FunctionType (param : params) retType -> do
+            s4 <- unify arg param argType
+            let s5 = composeS s4 s3
+            let newRetType = apply s4 retType
+            let newFnType = if Prelude.null params then newRetType else FunctionType (Prelude.map (apply s4) params) newRetType
+            recordType expr newFnType
+            pure (s5, newFnType)
+        _ -> throwError $ NotAFunction expr fnType
    
-    BinaryOpExpr left right _ -> do
-        (s1, ty1) <- inferExpr env left
-        (s2, ty2) <- inferExpr (Map.map (apply s1) env) right
+inferExpr env expr@(Expression _ (ValueReferenceExpr name)) = do
+    case Map.lookup name env of
+        Just ty -> do
+            recordType expr ty
+            pure (Map.empty, ty)
+        Nothing -> do
+            s <- get
+            let globals = globalEnv s
+            case Map.lookup name globals of
+                Just ty -> do
+                    instantiatedTy <- instantiate ty
+                    recordType expr instantiatedTy
+                    pure (Map.empty, instantiatedTy)
+                Nothing -> throwError $ UnboundVariable expr name
 
-        s3 <- unify expr ty1 ty2
-        let finalSubst = composeS s3 (composeS s2 s1)
-        let resultType = apply finalSubst ty1
-        recordType expr resultType
-        pure (finalSubst, resultType)
+inferExpr env expr@(Expression _ (LetExpr name value body)) = do
+    (s1, valueType) <- inferExpr env value
+    let env' = Map.insert name valueType (Map.map (apply s1) env)
+    (s2, bodyType) <- inferExpr env' body
+    let finalSubst = composeS s2 s1
+    recordType expr bodyType
+    pure (finalSubst, bodyType)
 
-    FunctionExpr name params returnType body -> do
-        let funcType = FunctionType (Prelude.map snd (Map.toList params)) returnType
-        
-        addGlobalBinding name funcType
-        
-        let localEnv = Prelude.foldl (\acc (paramName, paramType) -> 
-                            Map.insert paramName paramType acc) 
-                        env (Map.toList params)
-        
-        (s, bodyType) <- inferExpr localEnv body
-        unifySubst <- unify body returnType bodyType
-        let finalSubst = composeS unifySubst s
+inferExpr env expr@(Expression _ (BlockExpr expressions)) = do
+    (subs, tys) <- inferExprs env expressions
+    let resultType = last tys
+    recordType expr resultType
+    pure (subs, resultType)
 
-        recordType expr (FunctionType (Prelude.map snd (Map.toList params)) returnType)
-        pure (finalSubst, funcType)
-
-    ConstantBindingExpr name bindType body -> do
-        addGlobalBinding name bindType
-
-        let env' = Map.insert name bindType env
-        (s, bodyType) <- inferExpr env' body
-        unifySubst <- unify expr bindType bodyType
-        let finalSubst = composeS unifySubst s
-
-        recordType expr bindType
-        pure (finalSubst, bindType)
-        
-    FunctionCallExpr fn arg -> do
-        (s1, fnType) <- inferExpr env fn
-        (s2, argType) <- inferExpr (Map.map (apply s1) env) arg
-        let s3 = composeS s2 s1
-        case fnType of
-            FunctionType (param : params) retType -> do
-                s4 <- unify arg param argType
-                let s5 = composeS s4 s3
-                let newRetType = apply s4 retType
-                let newFnType = if Prelude.null params then newRetType else FunctionType (Prelude.map (apply s4) params) newRetType
-                recordType expr newFnType
-                pure (s5, newFnType)
-            _ -> throwError $ NotAFunction expr fnType
-       
-    ValueReferenceExpr name -> do
-        case Map.lookup name env of
-            Just ty -> do
-                recordType expr ty
-                pure (Map.empty, ty)
-            Nothing -> do
-                s <- get
-                let globals = globalEnv s
-                case Map.lookup name globals of
-                    Just ty -> do
-                        instantiatedTy <- instantiate ty
-                        recordType expr instantiatedTy
-                        pure (Map.empty, instantiatedTy)
-                    Nothing -> throwError $ UnboundVariable expr name
-    
-    LetExpr name value body -> do
-        (s1, valueType) <- inferExpr env value
-        let env' = Map.insert name valueType (Map.map (apply s1) env)
-        (s2, bodyType) <- inferExpr env' body
-        let finalSubst = composeS s2 s1
-        recordType expr bodyType
-        pure (finalSubst, bodyType)
-    
-    BlockExpr expressions -> do
-        (subs, tys) <- inferExprs env expressions
-        let resultType = last tys
-        recordType expr resultType
-        pure (subs, resultType)
-
-    _ -> throwError $ UntypedExpression expr
+inferExpr _ expr = throwError $ UntypedExpression expr
 
 replaceGeneric :: Type -> Type -> Type -> Type
 replaceGeneric genType@(GenericType generic) newType ty = case ty of

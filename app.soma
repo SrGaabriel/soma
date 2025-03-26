@@ -32,16 +32,33 @@ structVariantTest :: Shape[Int] =
     (Point 5 12)
 
 complexStructTest :: Int = 
-    genericStructId (Point 5 12)
+    genericStructId (Point 20 32) 5
 
-genericStructId a :: Shape[c] -> c = a
+genericStructId a b :: Shape[c] c -> c = b
 
 identity a :: Int -> Int = a
 
 genericId x :: a -> a = x
 
-
 genericTest :: Int =
     genericId $ right 5 6
 
+emoji🤩Test :: Int =
+    let 💀 = 6 in
+    let ➕ = 12 in
+    let 😱wow😡 = 18 in
+    sum 💀 ➕ * 😱wow😡
+
 right lhs rhs :: a a -> a = genericId $ lhs
+
+tuplesTest :: (Int, String, Int) =
+    (0, "Hello, World!", 1)
+
+tripleTupleTest :: (Int, Int, Int) =
+    tripleTuple 5 6 7
+
+polymorphicTripleTupleTest value :: b -> (Int, b, Int) =
+    tripleTuple 21 value 24
+
+tripleTuple a b c :: first second third -> (first, second, third) =
+    (a, b, c)
