@@ -33,6 +33,8 @@ data TokenKind
     | TokenComma
     | TokenLeftBracket
     | TokenRightBracket
+    | TokenTrue
+    | TokenFalse
     deriving (Show, Eq, Ord)
 
 data Token = Token 
@@ -98,6 +100,8 @@ tokenize (c:cs) i indent
                 "case" -> TokenCase
                 "do" -> TokenDo
                 "struct" -> TokenStruct
+                "true" -> TokenTrue
+                "false" -> TokenFalse
                 _     -> TokenIdentifier
         in consToken (Token kind text i indent) (tokenize rest (i + length text) indent)
     | otherwise = Left $ UnexpectedCharacter c i
@@ -160,3 +164,5 @@ referenceTokenKind kind = case kind of
     TokenLeftBracket -> "a left bracket"
     TokenRightBracket -> "a right bracket"
     TokenComma -> "a comma"
+    TokenTrue -> "'true'"
+    TokenFalse -> "'false'"

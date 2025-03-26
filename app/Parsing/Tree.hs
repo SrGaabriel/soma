@@ -61,6 +61,7 @@ data ExpressionKind
     , functionCallArg :: Expression }
   | ValueReferenceExpr
     { variableReferenceName :: String }
+  | BoolExpr Bool
   | LetExpr
     { letName :: String
     , letValue :: Expression
@@ -88,6 +89,7 @@ exprChildren kind = case kind of
     StructExpr _ constructors _ -> constructors
     StructConstructorExpr _ fields -> fields
     StructFieldExpr _ _ -> []
+    BoolExpr _ -> []
 
 
 instance Show ExpressionKind where
@@ -111,6 +113,7 @@ instance Show ExpressionKind where
         StructExpr name constructors generics -> "StructExpr (" ++ name ++ " :: " ++ show constructors ++ " :: " ++ show generics ++ ")"
         StructConstructorExpr name fields -> "StructConstructorExpr (" ++ name ++ " :: " ++ show fields ++ ")"
         StructFieldExpr name fieldType -> "StructFieldExpr (" ++ name ++ " :: " ++ show fieldType ++ ")"
+        BoolExpr value -> "BoolExpr (" ++ show value ++ ")"
 
 instance Show Expression where
   show (Expression token kind) = (show kind) ++ " '" ++ tokenValue token ++ "'"

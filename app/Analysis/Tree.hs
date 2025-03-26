@@ -25,6 +25,11 @@ inferExpr _ expr@(Expression _ NumberExpr) = do
     recordType expr ty
     pure (Map.empty, ty)
 
+inferExpr _ expr@(Expression _ (BoolExpr _)) = do
+    let ty = BoolType
+    recordType expr ty
+    pure (Map.empty, ty)
+
 inferExpr _ expr@(Expression _ (StringExpr _)) = do
     let ty = StringType
     recordType expr ty

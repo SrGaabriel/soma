@@ -240,6 +240,12 @@ parseAtom = do
             let indent = tokenIndent doToken
             block <- parseIndentedBlock indent parseExpression
             pure $ expr doToken (BlockExpr block)
+        TokenTrue -> do
+            trueToken <- next
+            pure $ expr trueToken (BoolExpr True)
+        TokenFalse -> do
+            falseToken <- next
+            pure $ expr falseToken (BoolExpr False)
         _ -> throwError $ NotAnExpression token
 
 parseLetExpression :: Parser Expression
