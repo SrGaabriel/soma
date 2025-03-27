@@ -14,6 +14,7 @@ import qualified Data.Map as Map
 import Control.Monad.Error.Class (MonadError(throwError, catchError))
 import Control.Monad (when)
 import Utils.Lists (hardHead)
+import Utils.Currying (uncurryFunction)
 
 newtype Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -126,6 +127,7 @@ parseDeclaration = do
   case tokenKind token of
     TokenIdentifier -> parseBinding
     TokenStruct -> parseStruct
+    TokenClass -> parseTypeClass
     TokenNewline -> next >> parseDeclaration
     _ -> Parser $ \_ -> Left $ UnexpectedToken token
 
@@ -134,17 +136,17 @@ parseBinding = do
     nameToken <- consume TokenIdentifier
     let name = tokenValue nameToken
     argNames <- parseFluidSequence TokenReturns (consume TokenIdentifier) <* consume TokenReturns
+    bindingType <- parseType
 
-    if (not $ null argNames) then do
-        argTypes <- parseFluidSequence TokenRightArrow parseType <* consume TokenRightArrow
-        argMappings <- ensureSameLengthMap argNames argTypes
-        returnType <- parseType
-        body <- parseFunctionBody
-        pure $ Expression nameToken (FunctionExpr name argMappings returnType body)
-    else do
-        constantType <- parseType
-        body <- parseFunctionBody
-        pure $ Expression nameToken (ConstantBindingExpr name constantType body)
+    case bindingType of 
+        FunctionType arg ret -> do
+            let (argTypes, returnType) = uncurryFunction arg ret
+            argMappings <- ensureSameLengthMap argNames argTypes
+            body <- parseFunctionBody
+            pure $ Expression nameToken (FunctionExpr name argMappings returnType body)
+        _ -> do
+            body <- parseFunctionBody
+            pure $ Expression nameToken (ConstantBindingExpr name bindingType body)
 
 parseFunctionParameter :: Parser Expression
 parseFunctionParameter = do
@@ -299,37 +301,63 @@ parseStructField = do
     typeExpr <- parseType
     pure $ expr nameToken (StructFieldExpr (tokenValue nameToken) typeExpr)
 
+parseTypeClass :: Parser Expression
+parseTypeClass = do
+    classToken <- consume TokenClass
+    nameToken <- consume TokenIdentifier
+    genericToks <- parseFluidSequence TokenWhere (consume TokenIdentifier)
+    _where <- consume TokenWhere
+    methods <- parseIndentedBlock (tokenIndent nameToken) parseTypeClassMethod
+    let name = tokenValue nameToken
+    let generics = map tokenValue genericToks
+    pure $ expr classToken $ TypeClassExpr name generics methods
+
+parseTypeClassMethod :: Parser Expression
+parseTypeClassMethod = do
+    methodToken <- consume TokenIdentifier
+    _ <- consumeRelevant TokenReturns
+    methodType <- parseType
+    pure $ expr methodToken $ TypeClassMethodExpr (tokenValue methodToken) methodType
+
 parseType :: Parser Type
 parseType = do
-  nextToken <- peek
-  case tokenKind nextToken of
-    TokenLeftParenthesis -> do
-      _ <- consume TokenLeftParenthesis
-      types <- parseSequence TokenComma TokenRightParenthesis (parseType)
-      _ <- consume TokenRightParenthesis  
-      pure $ TupleType types
-    TokenIdentifier -> do
-      typeToken <- consume TokenIdentifier
-      let name = tokenValue typeToken
-      case name of
-        "Int" -> pure IntType
-        "String" -> pure StringType
-        "Bool" -> pure BoolType
-        other -> if hardHead other `elem` ['A'..'Z']
-            then do
-                genericTypes <- optional (
-                        consume TokenLeftBracket
-                        *> parseFluidSequence TokenRightBracket parseType
-                        <* consume TokenRightBracket
-                    )
-                generics <- case genericTypes of
-                        Just tokens
-                            | length tokens == 0 -> throwError $ InvalidGenericsList typeToken
-                            | otherwise -> pure $ Just $ tokens
-                        Nothing -> pure Nothing
-                pure $ UnresolvedStructType other generics
-            else pure $ GenericType other
-    _ -> throwError $ InvalidTokenForType nextToken
+    nextToken <- peek
+    initialType <- case tokenKind nextToken of
+        TokenLeftParenthesis -> do
+            _ <- consume TokenLeftParenthesis
+            types <- parseSequence TokenComma TokenRightParenthesis (parseType)
+            _ <- consume TokenRightParenthesis  
+            case types of
+                [singleType] -> pure singleType
+                _ -> pure $ TupleType types
+        TokenIdentifier -> do
+            typeToken <- consume TokenIdentifier
+            let name = tokenValue typeToken
+            case name of
+                "Int" -> pure IntType
+                "String" -> pure StringType
+                "Bool" -> pure BoolType
+                other -> if hardHead other `elem` ['A'..'Z']
+                    then do
+                        genericTypes <- optional (
+                                consume TokenLeftBracket
+                                *> parseFluidSequence TokenRightBracket parseType
+                                <* consume TokenRightBracket
+                            )
+                        generics <- case genericTypes of
+                                Just tokens
+                                    | length tokens == 0 -> throwError $ InvalidGenericsList typeToken
+                                    | otherwise -> pure $ Just $ tokens
+                                Nothing -> pure Nothing
+                        pure $ UnresolvedStructType other generics
+                    else pure $ GenericType other
+        _ -> throwError $ InvalidTokenForType nextToken
+    incoming <- peek
+    if tokenKind incoming == TokenRightArrow then do
+        _ <- consumeRelevant TokenRightArrow
+        returnType <- parseType
+        pure $ FunctionType initialType returnType
+    else pure initialType
 
 ignoreLine :: Parser ()
 ignoreLine = Parser $ \tokens -> do
@@ -359,17 +387,21 @@ parseSequence separator end itemParser = Parser $ \tokens -> do
     parseNext [] tokens
     where
         parseNext acc remaining = do
-            (item, rest) <- runParser itemParser remaining
-            case rest of 
-                [] -> Left EndOfInput
-                _ -> do
-                  (tokenPeek, _) <- runParser next rest
-                  case tokenKind tokenPeek of
-                      tk | tk == separator -> do
-                          (_, rest') <- runParser next rest
-                          parseNext (item:acc) rest'
-                        | tk == end -> Right (reverse (item:acc), rest)
-                        | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
+            endCheck <- runParser (peek) remaining
+            if tokenKind (fst endCheck) == end
+                then Right (reverse acc, remaining)
+                else do
+                    (item, rest) <- runParser itemParser remaining
+                    case rest of 
+                        [] -> Left EndOfInput
+                        _ -> do
+                            (tokenPeek, _) <- runParser peek rest
+                            case tokenKind tokenPeek of
+                                tk | tk == separator -> do
+                                    (_, rest') <- runParser next rest
+                                    parseNext (item:acc) rest'
+                                  | tk == end -> Right (reverse (item:acc), rest)
+                                  | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
 
 parseCommaSeparatedUntil :: TokenKind -> Parser a -> Parser [a]
 parseCommaSeparatedUntil end itemParser = parseList
@@ -500,9 +532,8 @@ toBinaryOp = \case
 
 ensureSameLengthMap :: [Token] -> [Type] -> Parser (Map.Map String Type)
 ensureSameLengthMap names types
-    | length names < length types = pure . Map.fromList $ zip (map tokenValue names ++ replicate (length types - length names) "_") types
-    | length names > length types = throwError $ FunctionArgumentLengthMismatch (last names)
-    | otherwise                   = pure $ Map.fromList (zip (map tokenValue names) types)
+    | length names == length types = pure . Map.fromList $ zip (map tokenValue names ++ replicate (length types - length names) "_") types
+    | otherwise = throwError $ FunctionArgumentLengthMismatch (last names)
 
 someAccepting :: Parser a -> (ParsingError -> Bool) -> Parser [a]
 someAccepting parser predicate = Parser $ \tokens -> do

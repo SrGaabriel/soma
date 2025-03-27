@@ -30,6 +30,9 @@ data TokenKind
     | TokenString
     | TokenDollar
     | TokenStruct
+    | TokenClass
+    | TokenWhere
+    | TokenInstance
     | TokenComma
     | TokenLeftBracket
     | TokenRightBracket
@@ -100,6 +103,9 @@ tokenize (c:cs) i indent
                 "case" -> TokenCase
                 "do" -> TokenDo
                 "struct" -> TokenStruct
+                "class" -> TokenClass
+                "where" -> TokenWhere
+                "instance" -> TokenInstance
                 "true" -> TokenTrue
                 "false" -> TokenFalse
                 _     -> TokenIdentifier
@@ -166,3 +172,6 @@ referenceTokenKind kind = case kind of
     TokenComma -> "a comma"
     TokenTrue -> "'true'"
     TokenFalse -> "'false'"
+    TokenClass -> "'class'"
+    TokenWhere -> "'where'"
+    TokenInstance -> "'instance'"

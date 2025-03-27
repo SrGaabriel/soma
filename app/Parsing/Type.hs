@@ -7,7 +7,7 @@ data Type
     | BoolType
     | TupleType [Type]
     | FunctionType
-        { functionTypeArgs :: [Type]
+        { functionTypeArg :: Type
         , functionTypeReturn :: Type
         }
     | GenericType String
@@ -31,7 +31,7 @@ instance Show Type where
     show StringType = "String"
     show BoolType = "Bool"
     show (TupleType ts) = "(" ++ unwords (map show ts) ++ ")"
-    show (FunctionType args ret) = "(" ++ unwords (map show args) ++ " -> " ++ show ret ++ ")"
+    show (FunctionType arg ret) = "(" ++ show arg ++ " -> " ++ show ret ++ ")"
     show (GenericType n) = "'" ++ n
     show (StructType name _ generics) = name ++ maybe "" (\g -> "[" ++ unwords (map show g) ++ "]") generics
     show (UnresolvedVarType v) = show v

@@ -45,7 +45,7 @@ instance Substitutable Type where
     apply subst t = case t of
         UnresolvedVarType v -> Map.findWithDefault t v subst
         TupleType ts -> TupleType (Prelude.map (apply subst) ts)
-        FunctionType args ret -> FunctionType (Prelude.map (apply subst) args) (apply subst ret)
+        FunctionType arg ret -> FunctionType (apply subst arg) (apply subst ret)
         StructType n variants mgs -> 
             StructType n 
                        (Prelude.map (\v -> v { variantFields = Map.map (apply subst) (variantFields v) }) variants)
@@ -72,6 +72,12 @@ fresh = do
     put s { inferNextVar = i + 1 }
     pure $ UnresolvedVarType (TypeVar "t" i)
 
+addGlobalBinding :: String -> Type -> InferM ()
+addGlobalBinding name ty = do
+    s <- get
+    let globals = globalEnv s
+    put s { globalEnv = Map.insert name ty globals }
+
 unify :: Expression -> Type -> Type -> InferM Substitution
 unify expr (StructType n1 vars1 mgs1) (StructType n2 vars2 mgs2)
     | n1 == n2 = case (mgs1, mgs2) of
@@ -92,15 +98,10 @@ unify expr u@(UnresolvedStructType _ _) t = do
 unify expr t u@(UnresolvedStructType _ _) =
     unify expr u t
 
-unify expr (FunctionType args1 ret1) (FunctionType args2 ret2)
-    | length args1 == length args2 = do
-        s1 <- foldM (\s (a1, a2) -> do
-            s' <- unify expr (apply s a1) (apply s a2)
-            pure (composeS s' s)
-            ) Map.empty (zip args1 args2)
-        s2 <- unify expr (apply s1 ret1) (apply s1 ret2)
-        pure (composeS s2 s1)
-    | otherwise = throwError $ TypeMismatch expr (FunctionType args1 ret1) (FunctionType args2 ret2)
+unify expr (FunctionType arg1 ret1) (FunctionType arg2 ret2) = do
+    s1 <- unify expr arg1 arg2
+    s2 <- unify expr (apply s1 ret1) (apply s1 ret2)
+    pure $ composeS s2 s1
 unify expr t1 t2
     | t1 == t2 = pure Map.empty
     | otherwise = throwError $ TypeMismatch expr t1 t2
@@ -122,7 +123,7 @@ bind expr v t
 occurs :: TypeVar -> Type -> Bool
 occurs v (UnresolvedVarType v') = v == v'
 occurs v (TupleType ts) = any (occurs v) ts
-occurs v (FunctionType args ret) = any (occurs v) args || occurs v ret
+occurs v (FunctionType arg ret) = occurs v arg || occurs v ret
 occurs _ _ = False
 
 instantiate :: Type -> InferM Type

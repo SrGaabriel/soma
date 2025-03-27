@@ -3,21 +3,11 @@ import Data.Map as Map
 import Control.Monad.State
 import Control.Monad.Except
 import Parsing.Tree (Expression(..), ExpressionKind(..), exprChildren)
-import Analysis.Inference (InferState(..), InferM, TypeMap, TypeEnv, Substitution, composeS, Substitutable (apply), cleanRunInferM, unify, instantiate)
+import Analysis.Inference (InferState(..), InferM, TypeMap, TypeEnv, Substitution, composeS, Substitutable (apply), cleanRunInferM, unify, instantiate, addGlobalBinding)
 import Parsing.Type (Type(..), StructVariant (StructVariant))
 import Analysis.Errors (AnalysisError(..))
 import Control.Monad (foldM)
-
-addGlobalBinding :: String -> Type -> InferM ()
-addGlobalBinding name ty = do
-    s <- get
-    let globals = globalEnv s
-    put s { globalEnv = Map.insert name ty globals }
-
-recordType :: Expression -> Type -> InferM ()
-recordType expr ty = do
-    s <- get
-    put s { inferTypeMap = Map.insert expr ty (inferTypeMap s) }
+import Utils.Currying (curryParams)
 
 inferExpr :: TypeEnv -> Expression -> InferM (Substitution, Type)
 inferExpr _ expr@(Expression _ NumberExpr) = do
@@ -46,7 +36,7 @@ inferExpr env expr@(Expression _ (BinaryOpExpr left right _)) = do
     pure (finalSubst, resultType)
 
 inferExpr env expr@(Expression _ (FunctionExpr name params returnType body)) = do
-    let funcType = FunctionType (Prelude.map snd (Map.toList params)) returnType
+    let funcType = curryParams params returnType
     
     addGlobalBinding name funcType
     
@@ -58,7 +48,7 @@ inferExpr env expr@(Expression _ (FunctionExpr name params returnType body)) = d
     unifySubst <- unify body returnType bodyType
     let finalSubst = composeS unifySubst s
 
-    recordType expr (FunctionType (Prelude.map snd (Map.toList params)) returnType)
+    recordType expr funcType
     pure (finalSubst, funcType)
 
 inferExpr env expr@(Expression _ (ConstantBindingExpr name bindType body)) = do
@@ -77,13 +67,12 @@ inferExpr env expr@(Expression _ (FunctionCallExpr fn arg)) = do
     (s2, argType) <- inferExpr (Map.map (apply s1) env) arg
     let s3 = composeS s2 s1
     case fnType of
-        FunctionType (param : params) retType -> do
+        FunctionType param retType -> do
             s4 <- unify arg param argType
             let s5 = composeS s4 s3
             let newRetType = apply s4 retType
-            let newFnType = if Prelude.null params then newRetType else FunctionType (Prelude.map (apply s4) params) newRetType
-            recordType expr newFnType
-            pure (s5, newFnType)
+            recordType expr newRetType
+            pure (s5, newRetType)
         _ -> throwError $ NotAFunction expr fnType
    
 inferExpr env expr@(Expression _ (ValueReferenceExpr name)) = do
@@ -117,19 +106,6 @@ inferExpr env expr@(Expression _ (BlockExpr expressions)) = do
 
 inferExpr _ expr = throwError $ UntypedExpression expr
 
-replaceGeneric :: Type -> Type -> Type -> Type
-replaceGeneric genType@(GenericType generic) newType ty = case ty of
-    GenericType g | g == generic -> newType
-    FunctionType args ret -> FunctionType (Prelude.map (replaceGeneric genType newType) args) (replaceGeneric genType newType ret)
-    StructType name variants (Just gs) | GenericType generic `elem` gs ->
-        StructType name (Prelude.map (replaceInVariant genType newType) variants) (Just $ Prelude.map (replaceGeneric genType newType) gs)
-    _ -> ty
-replaceGeneric _ _ ty = ty
-
-replaceInVariant :: Type -> Type -> StructVariant -> StructVariant
-replaceInVariant generic newType (StructVariant vName fields) =
-    StructVariant vName (Map.map (replaceGeneric generic newType) fields)
-
 inferExprs :: TypeEnv -> [Expression] -> InferM (Substitution, [Type])
 inferExprs _ [] = return (Map.empty, [])
 inferExprs env (e:es) = do
@@ -140,7 +116,7 @@ inferExprs env (e:es) = do
 collectGlobals :: Expression -> InferM ()
 collectGlobals expr = case exprKind expr of
     FunctionExpr name params returnType _ -> do
-        let funcType = FunctionType (Prelude.map snd (Map.toList params)) returnType
+        let funcType = (curryParams params) returnType
         addGlobalBinding name funcType
         
     ConstantBindingExpr name bindType _ -> do
@@ -161,7 +137,7 @@ collectGlobals expr = case exprKind expr of
         put s { structTypes = Map.insert name structType (structTypes s) }
 
         _ <- mapM (\(StructVariant vName fields) -> do
-                let constructorType = FunctionType (Prelude.map snd (Map.toList fields)) structType
+                let constructorType = (curryParams fields) structType
                 addGlobalBinding vName constructorType
             ) variants
         pure ()
@@ -243,3 +219,8 @@ runAnalysis :: Expression -> IO (Either AnalysisError TypeMap)
 runAnalysis expr = do
     (result, _) <- cleanRunInferM (analyzeTree expr)
     return result
+
+recordType :: Expression -> Type -> InferM ()
+recordType expr ty = do
+    s <- get
+    put s { inferTypeMap = Map.insert expr ty (inferTypeMap s) }

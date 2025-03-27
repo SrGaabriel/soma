@@ -66,6 +66,13 @@ data ExpressionKind
     { letName :: String
     , letValue :: Expression
     , letBody :: Expression }
+  | TypeClassExpr
+    { typeClassName :: String
+    , typeClassGenerics :: [String]
+    , typeClassMethods :: [Expression] }
+  | TypeClassMethodExpr
+    { typeClassFnName :: String
+    , typeClassFnType :: Type }
   deriving (Eq, Ord)
 
 exprChildren :: ExpressionKind -> [Expression]
@@ -90,7 +97,8 @@ exprChildren kind = case kind of
     StructConstructorExpr _ fields -> fields
     StructFieldExpr _ _ -> []
     BoolExpr _ -> []
-
+    TypeClassExpr _ _ methods -> methods
+    TypeClassMethodExpr _ _ -> []
 
 instance Show ExpressionKind where
     show kind = case kind of
@@ -114,6 +122,8 @@ instance Show ExpressionKind where
         StructConstructorExpr name fields -> "StructConstructorExpr (" ++ name ++ " :: " ++ show fields ++ ")"
         StructFieldExpr name fieldType -> "StructFieldExpr (" ++ name ++ " :: " ++ show fieldType ++ ")"
         BoolExpr value -> "BoolExpr (" ++ show value ++ ")"
+        TypeClassExpr name generics methods -> "TypeClassExpr (" ++ name ++ " :: " ++ show generics ++ " :: " ++ show methods ++ ")"
+        TypeClassMethodExpr name _ -> "TypeClassMethodExpr (" ++ name ++ ")"
 
 instance Show Expression where
   show (Expression token kind) = (show kind) ++ " '" ++ tokenValue token ++ "'"
