@@ -1,7 +1,7 @@
 module Lexing.Lexer (Token(..), TokenKind(..), tokenize, tokenizeFile, referenceToken, referenceTokenKind) where
 
 import Lexing.Errors (LexingError(..))
-import Data.Char (ord, generalCategory)
+import Data.Char (generalCategory)
 import qualified Data.Char as C
 
 data TokenKind
@@ -95,7 +95,7 @@ tokenize (c:cs) i indent
         let (numberToken, rest) = span isDigit (c:cs)
         in consToken (Token TokenNumber numberToken i indent) (tokenize rest (i + length numberToken) indent)
     | isCharacter c =
-        let (text, rest) = span isCharacter (c:cs)
+        let (text, rest) = span isAlphanumeric (c:cs)
             kind = case text of
                 "let" -> TokenLet
                 "in"  -> TokenIn
@@ -123,11 +123,11 @@ isDigit c = c `elem` ['0'..'9']
 isCharacter :: Char -> Bool
 isCharacter c = c `elem` ['a'..'z'] || c `elem` ['A'..'Z'] || c == '_' || isEmoji c
 
+isAlphanumeric :: Char -> Bool
+isAlphanumeric c = isCharacter c || isDigit c
+
 isEmoji :: Char -> Bool
-isEmoji c
-    | generalCategory c `elem` [C.OtherSymbol, C.MathSymbol, C.CurrencySymbol] = True
-    | ord c >= 0x1F000 = True  -- Most emojis are above this range
-    | otherwise = False
+isEmoji c = generalCategory c `elem` [C.OtherSymbol]
 
 isSpace :: Char -> Bool
 isSpace c = c == ' ' || c == '\t'
@@ -156,7 +156,7 @@ referenceTokenKind kind = case kind of
     TokenLeftArrow -> "a left arrow"
     TokenRightArrow -> "a right arrow"
     TokenColon -> "a colon"
-    TokenReturns -> "'returns'"
+    TokenReturns -> "'::'"
     TokenCase -> "'case'"
     TokenDo -> "'do'"
     TokenLeftParenthesis -> "a left parenthesis"

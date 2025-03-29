@@ -8,7 +8,7 @@ import Control.Monad.State
 import Control.Monad.Except
 import Parsing.Tree (Expression(..))
 
-import Parsing.Type (Type(..), TypeVar(..), StructVariant (variantFields))
+import Parsing.Type (Type(..), TypeVar(..), mapType, mapTypeM)
 import Analysis.Errors (AnalysisError(..))
 import Control.Monad (foldM)
 import Data.List (nub)
@@ -42,17 +42,10 @@ class Substitutable a where
     apply :: Substitution -> a -> a
 
 instance Substitutable Type where
-    apply subst t = case t of
-        UnresolvedVarType v -> Map.findWithDefault t v subst
-        TupleType ts -> TupleType (Prelude.map (apply subst) ts)
-        FunctionType arg ret -> FunctionType (apply subst arg) (apply subst ret)
-        StructType n variants mgs -> 
-            StructType n 
-                       (Prelude.map (\v -> v { variantFields = Map.map (apply subst) (variantFields v) }) variants)
-                       (fmap (Prelude.map (apply subst)) mgs)
-        UnresolvedStructType n mgs -> 
-            UnresolvedStructType n (fmap (Prelude.map (apply subst)) mgs)
-        _ -> t
+    apply subst ot = mapType (\ty -> case ty of
+        t@(UnresolvedVarType v) -> Map.findWithDefault t v subst
+        _ -> ty
+        ) ot
 
 type TypeMap = Map.Map Expression Type
 
@@ -107,12 +100,15 @@ unify expr t1 t2
     | otherwise = throwError $ TypeMismatch expr t1 t2
 
 replaceStruct :: Expression -> Type -> InferM Type
-replaceStruct expr (UnresolvedStructType name generics) = do
-    s <- get
-    case Map.lookup name (structTypes s) of
-        Just (StructType stName stVariants _) -> pure $ StructType stName stVariants generics
-        _ -> throwError $ UnknownStruct expr name
-replaceStruct _ t = pure t
+replaceStruct expr ty = do
+    st <- get
+    mapTypeM (\t -> case t of
+        UnresolvedStructType name generics -> do
+            case Map.lookup name (structTypes st) of
+                Just (StructType stName stVariants _) -> pure $ StructType stName stVariants generics
+                _ -> throwError $ UnknownStruct expr name
+        _ -> pure t
+        ) ty
 
 bind :: Expression -> TypeVar -> Type -> InferM Substitution
 bind expr v t 

@@ -16,7 +16,7 @@ data ExpressionKind
   | StructExpr
     { structName :: String
     , structConstructors :: [Expression]
-    , structGenerics :: Maybe [String]
+    , structGenerics :: Maybe [Type]
     }
   | StructConstructorExpr
     { structConstructorName :: String

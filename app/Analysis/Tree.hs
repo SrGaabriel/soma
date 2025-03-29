@@ -132,7 +132,7 @@ collectGlobals expr = case exprKind expr of
                     recv -> error $ "Expected StructConstructorExpr in struct definition but got " ++ show recv
                 ) constructors
 
-        let structType = StructType name variants (Prelude.map GenericType <$> generics)
+        let structType = StructType name variants generics
         s <- get
         put s { structTypes = Map.insert name structType (structTypes s) }
 
@@ -166,7 +166,7 @@ traverseTree env expr = evalNode EnvContext { currentEnv = env, currentSubst = M
 evalNode :: EnvContext -> Expression -> InferM Substitution
 evalNode ctx expr = do
     result <- tryInferExpr (currentEnv ctx) expr
-    
+
     ctx' <- case result of
         Right (s, _) -> do
             let updatedSubst = composeS s (currentSubst ctx)
@@ -176,11 +176,11 @@ evalNode ctx expr = do
             return ctx
         Left err -> 
             throwError err
-    
+
     childSubst <- case exprKind expr of
         LetExpr name value body -> do
             valueSubst <- evalNode ctx' value
-            
+
             valueResult <- tryInferExpr (currentEnv ctx') value
             
             let bodyCtx = case valueResult of
@@ -192,19 +192,19 @@ evalNode ctx expr = do
                     _ -> ctx' { currentSubst = valueSubst }
             
             evalNode bodyCtx body
-            
+
         FunctionExpr _ params _ body -> do
             let paramEnv = Prelude.foldl (\acc (paramName, paramType) -> 
                               Map.insert paramName paramType acc)
                             (currentEnv ctx') (Map.toList params)
             
             evalNode ctx' { currentEnv = paramEnv } body
-            
+
         _ -> 
             foldM (\s child -> 
                 evalNode ctx' { currentSubst = s } child
             ) (currentSubst ctx') (exprChildren (exprKind expr))
-    
+
     return childSubst
 
 tryInferExpr :: TypeEnv -> Expression -> InferM (Either AnalysisError (Substitution, Type))

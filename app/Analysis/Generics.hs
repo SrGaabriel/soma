@@ -4,7 +4,7 @@ import Parsing.Type (Type(..), StructVariant (variantFields, StructVariant))
 import qualified Data.Map as Map
 
 collectGenerics :: Type -> [String]
-collectGenerics (GenericType g) = [g]
+collectGenerics (GenericType g _) = [g]
 collectGenerics (TupleType ts) = concatMap collectGenerics ts
 collectGenerics (FunctionType arg ret) = collectGenerics arg ++ collectGenerics ret
 collectGenerics (StructType _ variants mgs) = 
@@ -14,7 +14,7 @@ collectGenerics (UnresolvedStructType _ mgs) = maybe [] (concatMap collectGeneri
 collectGenerics _ = []
 
 replaceGenerics :: Map.Map String Type -> Type -> Type
-replaceGenerics subst (GenericType g) = Map.findWithDefault (GenericType g) g subst
+replaceGenerics subst (GenericType g c) = Map.findWithDefault (GenericType g c) g subst
 replaceGenerics subst (TupleType ts) = TupleType (Prelude.map (replaceGenerics subst) ts)
 replaceGenerics subst (FunctionType arg ret) = 
     FunctionType (replaceGenerics subst arg) (replaceGenerics subst ret)
@@ -27,13 +27,24 @@ replaceGenerics subst (UnresolvedStructType n mgs) =
 replaceGenerics _ t = t
 
 replaceGeneric :: Type -> Type -> Type -> Type
-replaceGeneric genType@(GenericType generic) newType ty = case ty of
-    GenericType g | g == generic -> newType
+replaceGeneric genType@(GenericType generic _) newType ty = case ty of
+    GenericType g _ | g == generic -> newType
     FunctionType arg ret -> FunctionType (replaceGeneric genType newType arg) (replaceGeneric genType newType ret)
-    StructType name variants (Just gs) | GenericType generic `elem` gs ->
-        StructType name (Prelude.map (replaceInVariant genType newType) variants) (Just $ Prelude.map (replaceGeneric genType newType) gs)
+    TupleType ts -> TupleType (map (replaceGeneric genType newType) ts)
+    StructType name variants generics -> 
+        StructType name 
+                 (map (replaceInVariant genType newType) variants)
+                 (fmap (map (replaceGeneric genType newType)) generics)
+    UnresolvedStructType name generics ->
+        UnresolvedStructType name (fmap (map (replaceGeneric genType newType)) generics)
+    IntType -> IntType
+    StringType -> StringType
+    BoolType -> BoolType
     _ -> ty
 replaceGeneric _ _ ty = ty
+
+data Constraint = ClassConstraint String
+
 
 replaceInVariant :: Type -> Type -> StructVariant -> StructVariant
 replaceInVariant generic newType (StructVariant vName fields) =

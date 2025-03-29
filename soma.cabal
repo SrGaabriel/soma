@@ -35,6 +35,7 @@ executable soma
                       Project.Module
                       Utils.Lists
                       Utils.Currying
+                      Utils.Constraints
 
     build-depends:    base >= 4.19.2.0,
                       ansi-terminal >= 1.0,

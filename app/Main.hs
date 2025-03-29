@@ -37,7 +37,6 @@ main = do
             printError err "app.soma" content "ANALYSIS"
             exitFailure
         Right inference -> do
-            putStrLn "Inference:"
             prettyPrintTypeState inference
 
 prettyPrintAst :: Expression -> IO ()

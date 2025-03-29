@@ -8,13 +8,14 @@ import Lexing.Lexer (Token(..), TokenKind(..))
 import Parsing.Errors (ParsingError(..))
 import Parsing.Tree (ExpressionKind(..), Expression(..))
 import Parsing.Ops (BinaryOp(..))
-import Parsing.Type (Type (..))
+import Parsing.Type (Type (..), GenericConstraint(..))
 import Control.Applicative ((<|>), Alternative(..))
 import qualified Data.Map as Map
 import Control.Monad.Error.Class (MonadError(throwError, catchError))
 import Control.Monad (when)
 import Utils.Lists (hardHead)
 import Utils.Currying (uncurryFunction)
+import Utils.Constraints (applyClassConstraint)
 
 newtype Parser a = Parser {
   runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -135,10 +136,12 @@ parseBinding :: Parser Expression
 parseBinding = do
     nameToken <- consume TokenIdentifier
     let name = tokenValue nameToken
+    genericConstrants <- parseGenericConstraints
     argNames <- parseFluidSequence TokenReturns (consume TokenIdentifier) <* consume TokenReturns
-    bindingType <- parseType
+    freeType <- parseType
+    let constraintizedType = foldr applyClassConstraint freeType genericConstrants
 
-    case bindingType of 
+    case constraintizedType of 
         FunctionType arg ret -> do
             let (argTypes, returnType) = uncurryFunction arg ret
             argMappings <- ensureSameLengthMap argNames argTypes
@@ -146,7 +149,23 @@ parseBinding = do
             pure $ Expression nameToken (FunctionExpr name argMappings returnType body)
         _ -> do
             body <- parseFunctionBody
-            pure $ Expression nameToken (ConstantBindingExpr name bindingType body)
+            pure $ Expression nameToken (ConstantBindingExpr name freeType body)
+
+parseGenericConstraints :: Parser [GenericConstraint]
+parseGenericConstraints = do
+    left <- optional $ consume TokenLeftBracket
+    case left of
+        Just _ -> do
+            constraints <- parseFluidSequence TokenRightBracket parseGenericConstraint <* consume TokenRightBracket
+            pure constraints
+        Nothing -> pure []
+
+parseGenericConstraint :: Parser GenericConstraint
+parseGenericConstraint = do
+    generic <- consume TokenIdentifier
+    _ <- consumeRelevant TokenColon
+    constraint <- consume TokenIdentifier
+    pure $ GenericConstraint (tokenValue generic) (tokenValue constraint)
 
 parseFunctionParameter :: Parser Expression
 parseFunctionParameter = do
@@ -279,7 +298,7 @@ parseStruct = do
     generics <- case genericsDeclared of
         Just _ -> do
             genericTokens <- parseFluidSequence TokenRightBracket (consume TokenIdentifier) <* consume TokenRightBracket
-            pure $ Just $ map tokenValue genericTokens
+            pure $ Just $ map (\x -> GenericType (tokenValue x) []) genericTokens
         Nothing -> pure Nothing
 
     constructors <- parseIndexedIndentedBlock (tokenIndent nameToken) parseStructConstructor
@@ -350,7 +369,7 @@ parseType = do
                                     | otherwise -> pure $ Just $ tokens
                                 Nothing -> pure Nothing
                         pure $ UnresolvedStructType other generics
-                    else pure $ GenericType other
+                    else pure $ GenericType other []
         _ -> throwError $ InvalidTokenForType nextToken
     incoming <- peek
     if tokenKind incoming == TokenRightArrow then do

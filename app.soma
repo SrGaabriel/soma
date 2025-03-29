@@ -5,6 +5,10 @@ struct Shape[a]
     | Circle
         radius :: Int
 
+class Display a where
+    display :: a -> String
+    display2 :: a -> String
+
 fibonacci n :: Int -> String
   | 0 -> 0
   | 1 -> 1
@@ -66,3 +70,5 @@ tripleTuple a b c :: first -> second -> third -> (first, second, third) =
 groupingTest predicate :: (Int -> Int) -> Int = 0
 
 emptyTupleTest :: () = ()
+
+addNumbers[a : Type] value  :: Shape[a] -> String = ""
