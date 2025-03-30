@@ -45,7 +45,6 @@ replaceGeneric _ _ ty = ty
 
 data Constraint = ClassConstraint String
 
-
 replaceInVariant :: Type -> Type -> StructVariant -> StructVariant
 replaceInVariant generic newType (StructVariant vName fields) =
     StructVariant vName (Map.map (replaceGeneric generic newType) fields)

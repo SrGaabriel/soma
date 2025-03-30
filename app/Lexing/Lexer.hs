@@ -94,6 +94,12 @@ tokenize (c:cs) i indent
     | isDigit c =
         let (numberToken, rest) = span isDigit (c:cs)
         in consToken (Token TokenNumber numberToken i indent) (tokenize rest (i + length numberToken) indent)
+    | c == '`' = 
+        let (text, rest) = span (/= '`') cs
+            quotedText = c : text ++ "`"
+        in case rest of
+            '`' : rest' -> consToken (Token TokenIdentifier quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+            _ -> Left $ UnexpectedCharacter c i
     | isCharacter c =
         let (text, rest) = span isAlphanumeric (c:cs)
             kind = case text of

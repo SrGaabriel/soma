@@ -71,4 +71,6 @@ groupingTest predicate :: (Int -> Int) -> Int = 0
 
 emptyTupleTest :: () = ()
 
+`quoted name test` :: Int = 5
+
 addNumbers[a : Type] value  :: Shape[a] -> String = ""
