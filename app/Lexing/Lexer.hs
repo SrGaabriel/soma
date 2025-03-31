@@ -1,8 +1,8 @@
-module Lexing.Lexer (Token(..), TokenKind(..), tokenize, tokenizeFile, referenceToken, referenceTokenKind) where
+module Lexing.Lexer (Token (..), TokenKind (..), tokenize, tokenizeFile, referenceToken, referenceTokenKind) where
 
-import Lexing.Errors (LexingError(..))
 import Data.Char (generalCategory)
 import qualified Data.Char as C
+import Lexing.Errors (LexingError (..))
 
 data TokenKind
     = TokenNumber
@@ -40,12 +40,13 @@ data TokenKind
     | TokenFalse
     deriving (Show, Eq, Ord)
 
-data Token = Token 
+data Token = Token
     { tokenKind :: TokenKind
     , tokenValue :: String
     , tokenPos :: Int
     , tokenIndent :: Int
-    } deriving (Show, Eq, Ord)
+    }
+    deriving (Show, Eq, Ord)
 
 tokenizeFile :: String -> Either LexingError [Token]
 tokenizeFile content = do
@@ -54,7 +55,7 @@ tokenizeFile content = do
 
 tokenize :: String -> Int -> Int -> Either LexingError [Token]
 tokenize [] _ _ = Right []
-tokenize (c:cs) i indent
+tokenize (c : cs) i indent
     | isSpace c = tokenize cs (i + 1) indent
     | c == '+' = consToken (Token TokenPlus "+" i indent) (tokenize cs (i + 1) indent)
     | c == '*' = consToken (Token TokenAsterisk "*" i indent) (tokenize cs (i + 1) indent)
@@ -79,7 +80,7 @@ tokenize (c:cs) i indent
             indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
             newIndent = length spaces
         in consToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
-    | c == '/' = 
+    | c == '/' =
         case cs of
             '/' : rest -> do
                 let (comment, rest') = span (/= '\n') rest
@@ -92,20 +93,20 @@ tokenize (c:cs) i indent
             '"' : rest' -> consToken (Token TokenString quotedText i indent) (tokenize rest' (i + length quotedText) indent)
             _ -> Left $ UnexpectedCharacter c i
     | isDigit c =
-        let (numberToken, rest) = span isDigit (c:cs)
+        let (numberToken, rest) = span isDigit (c : cs)
         in consToken (Token TokenNumber numberToken i indent) (tokenize rest (i + length numberToken) indent)
-    | c == '`' = 
+    | c == '`' =
         let (text, rest) = span (/= '`') cs
             quotedText = c : text ++ "`"
         in case rest of
             '`' : rest' -> consToken (Token TokenIdentifier quotedText i indent) (tokenize rest' (i + length quotedText) indent)
             _ -> Left $ UnexpectedCharacter c i
     | isCharacter c =
-        let (text, rest) = span isAlphanumeric (c:cs)
+        let (text, rest) = span isAlphanumeric (c : cs)
             kind = case text of
                 "let" -> TokenLet
-                "in"  -> TokenIn
-                "fn"  -> TokenFn
+                "in" -> TokenIn
+                "fn" -> TokenFn
                 "case" -> TokenCase
                 "do" -> TokenDo
                 "struct" -> TokenStruct
@@ -114,7 +115,7 @@ tokenize (c:cs) i indent
                 "instance" -> TokenInstance
                 "true" -> TokenTrue
                 "false" -> TokenFalse
-                _     -> TokenIdentifier
+                _ -> TokenIdentifier
         in consToken (Token kind text i indent) (tokenize rest (i + length text) indent)
     | otherwise = Left $ UnexpectedCharacter c i
 
@@ -124,10 +125,10 @@ consToken token restTokens = do
     Right (token : rest)
 
 isDigit :: Char -> Bool
-isDigit c = c `elem` ['0'..'9']
+isDigit c = c `elem` ['0' .. '9']
 
 isCharacter :: Char -> Bool
-isCharacter c = c `elem` ['a'..'z'] || c `elem` ['A'..'Z'] || c == '_' || isEmoji c
+isCharacter c = c `elem` ['a' .. 'z'] || c `elem` ['A' .. 'Z'] || c == '_' || isEmoji c
 
 isAlphanumeric :: Char -> Bool
 isAlphanumeric c = isCharacter c || isDigit c

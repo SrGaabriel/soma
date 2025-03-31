@@ -1,4 +1,5 @@
 module Project.Module where
+
 import Parsing.Type (Type)
 
 data SomaModule = SomaModule

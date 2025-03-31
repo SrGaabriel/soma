@@ -1,8 +1,9 @@
-module Lexing.Errors (LexingError(..)) where
-import Logging.ErrorPrinter (PrintableError(..))
+module Lexing.Errors (LexingError (..)) where
+
+import Logging.ErrorPrinter (PrintableError (..))
 
 data LexingError
-  = UnexpectedCharacter Char Int
+    = UnexpectedCharacter Char Int
 
 instance PrintableError LexingError where
     errorMessage (UnexpectedCharacter c _) = "Unexpected character '" ++ [c] ++ "'"

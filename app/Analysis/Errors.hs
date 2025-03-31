@@ -1,13 +1,15 @@
 {-# LANGUAGE InstanceSigs #-}
-module Analysis.Errors where
-import Parsing.Tree (Expression (exprToken, exprKind), exprChildren)
-import Parsing.Type (Type)
-import Logging.ErrorPrinter (PrintableError(..))
-import Lexing.Lexer (Token(tokenPos, tokenValue))
-import Data.Foldable (minimumBy, maximumBy)
-import Data.Ord (comparing)
 
-data AnalysisError 
+module Analysis.Errors where
+
+import Data.Foldable (maximumBy, minimumBy)
+import Data.Ord (comparing)
+import Lexing.Lexer (Token (tokenPos, tokenValue))
+import Logging.ErrorPrinter (PrintableError (..))
+import Parsing.Tree (Expression (exprKind, exprToken), exprChildren)
+import Parsing.Type (Type)
+
+data AnalysisError
     = TypeMismatch Expression Type Type
     | FunctionArgumentLengthMismatch Expression
     | TupleLengthMismatch Expression
@@ -44,7 +46,6 @@ instance PrintableError AnalysisError where
             maxToken = maximumBy (comparing tokenPos) tokens
         in tokenPos maxToken + length (tokenValue maxToken)
 
-
 getExpression :: AnalysisError -> Expression
 getExpression (TypeMismatch expr _ _) = expr
 getExpression (BinaryOpTypeMismatch expr _ _) = expr
@@ -57,7 +58,7 @@ getExpression (NotAFunction expr _) = expr
 getExpression (UnknownStruct expr _) = expr
 
 getAllTokens :: Expression -> [Token]
-getAllTokens expr = 
+getAllTokens expr =
     let current = [exprToken expr]
         children = exprChildren (exprKind expr)
         childTokens = concatMap getAllTokens children

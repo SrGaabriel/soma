@@ -1,4 +1,4 @@
-module Logging.ErrorPrinter (PrintableError(..), printError) where
+module Logging.ErrorPrinter (PrintableError (..), printError) where
 
 import Data.List (findIndex)
 import Data.Maybe (fromMaybe)
@@ -10,32 +10,36 @@ class PrintableError a where
     errorEnd :: a -> Int
 
 data RowInfo = RowInfo
-  { content :: String
-  , relativeIndex :: Int
-  , number :: Int
-  }
+    { content :: String
+    , relativeIndex :: Int
+    , number :: Int
+    }
 
-printError :: PrintableError a => a -> FilePath -> String -> String -> IO ()
+printError :: (PrintableError a) => a -> FilePath -> String -> String -> IO ()
 printError err fileName code prefix = do
     let isNewline = start < length code && code !! start == '\n'
         adjustedStart = if isNewline then start + 1 else start
-        adjustedEnd = if isNewline
-            then case findIndex (=='\n') $ drop (start + 1) code of
-                Just nextNewline -> start + 1 + nextNewline
-                Nothing -> length code
-            else end
+        adjustedEnd =
+            if isNewline
+                then case findIndex (== '\n') $ drop (start + 1) code of
+                    Just nextNewline -> start + 1 + nextNewline
+                    Nothing -> length code
+                else end
 
     case findRowOfIndex (lines code) adjustedStart of
         Just rowInfo -> do
             let (contentTrim, trimWidth) = trimIndentReturningWidth (content rowInfo)
-                relativeStart = if isNewline 
-                    then 0
-                    else max 0 (relativeIndex rowInfo - trimWidth)
-                relativeEnd = if isNewline
-                    then length contentTrim
-                    else min
-                        (relativeIndex rowInfo + (adjustedEnd - adjustedStart) - trimWidth)
-                        (length contentTrim)
+                relativeStart =
+                    if isNewline
+                        then 0
+                        else max 0 (relativeIndex rowInfo - trimWidth)
+                relativeEnd =
+                    if isNewline
+                        then length contentTrim
+                        else
+                            min
+                                (relativeIndex rowInfo + (adjustedEnd - adjustedStart) - trimWidth)
+                                (length contentTrim)
                 textLength = relativeEnd - relativeStart
                 textToHighlight = take textLength $ drop relativeStart contentTrim
                 positionIndicator = replicate relativeStart ' ' ++ replicate textLength '^'
@@ -56,28 +60,32 @@ printError err fileName code prefix = do
             putStrLn "|"
 
             putStr "| row: "
-            if contentTrim == "" then putStrLn "<empty row>"
-            else do
-                putStr (take relativeStart contentTrim)
-                setSGR [SetColor Foreground Vivid Red]
-                putStr textToHighlight
-                setSGR [Reset]
-                putStrLn (drop (relativeStart + textLength) contentTrim)
+            if contentTrim == ""
+                then putStrLn "<empty row>"
+                else do
+                    putStr (take relativeStart contentTrim)
+                    setSGR [SetColor Foreground Vivid Red]
+                    putStr textToHighlight
+                    setSGR [Reset]
+                    putStrLn (drop (relativeStart + textLength) contentTrim)
 
-            if textLength > 0 then do
-                putStr $ "| pos: "
-                setSGR [SetColor Foreground Vivid Red]
-                putStrLn positionIndicator
-            else return ()
-
+            if textLength > 0
+                then do
+                    putStr $ "| pos: "
+                    setSGR [SetColor Foreground Vivid Red]
+                    putStrLn positionIndicator
+                else return ()
         Nothing -> error "Error while finding the line of the error"
-    where
-        start' = errorStart err
-        end' = errorEnd err
-        (start, end) = if start' < 0 && end' < 0 then 
-            let codeLength = length code
-            in (codeLength, codeLength) else (start', end')
-        message = errorMessage err
+  where
+    start' = errorStart err
+    end' = errorEnd err
+    (start, end) =
+        if start' < 0 && end' < 0
+            then
+                let codeLength = length code
+                in (codeLength, codeLength)
+            else (start', end')
+    message = errorMessage err
 
 findRowOfIndex :: [String] -> Int -> Maybe RowInfo
 findRowOfIndex rows idx = do
@@ -85,29 +93,30 @@ findRowOfIndex rows idx = do
         then Just $ RowInfo "" 0 (length rows)
         else do
             let codeContent = unlines rows
-                fixedIndex = if idx >= length codeContent && not (null codeContent)
-                                then length codeContent - 1
-                                else idx
+                fixedIndex =
+                    if idx >= length codeContent && not (null codeContent)
+                        then length codeContent - 1
+                        else idx
             if fixedIndex < 0 || fixedIndex >= length codeContent
                 then Nothing
                 else do
-                let rowStartIndex = lastIndexOf '\n' codeContent (fixedIndex - 1)
-                    rowEndIndex = findIndex (=='\n') $ drop fixedIndex codeContent
-                    actualRowEndIndex = maybe (length codeContent) (+ fixedIndex) rowEndIndex
-                    rowContent = take (actualRowEndIndex - rowStartIndex - 1) $ drop (rowStartIndex + 1) codeContent
-                    relativeIndexInRow = fixedIndex - (rowStartIndex + 1)
-                    rowNumber = length (filter (=='\n') $ take fixedIndex codeContent) + 1
-                Just $ RowInfo rowContent relativeIndexInRow rowNumber
+                    let rowStartIndex = lastIndexOf '\n' codeContent (fixedIndex - 1)
+                        rowEndIndex = findIndex (== '\n') $ drop fixedIndex codeContent
+                        actualRowEndIndex = maybe (length codeContent) (+ fixedIndex) rowEndIndex
+                        rowContent = take (actualRowEndIndex - rowStartIndex - 1) $ drop (rowStartIndex + 1) codeContent
+                        relativeIndexInRow = fixedIndex - (rowStartIndex + 1)
+                        rowNumber = length (filter (== '\n') $ take fixedIndex codeContent) + 1
+                    Just $ RowInfo rowContent relativeIndexInRow rowNumber
 
 trimIndentReturningWidth :: String -> (String, Int)
 trimIndentReturningWidth str =
-  let width = fromMaybe (length str) $ findIndex (/= ' ') str
-  in (drop width str, width)
+    let width = fromMaybe (length str) $ findIndex (/= ' ') str
+    in (drop width str, width)
 
 lastIndexOf :: Char -> String -> Int -> Int
 lastIndexOf c str maxIndex = go (min maxIndex (length str - 1))
   where
     go i
-      | i < 0 = -1
-      | str !! i == c = i
-      | otherwise = go (i - 1)
+        | i < 0 = -1
+        | str !! i == c = i
+        | otherwise = go (i - 1)

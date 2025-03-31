@@ -1,79 +1,89 @@
-module Parsing.Tree (Expression(..), ExpressionKind(..), exprChildren) where
+module Parsing.Tree (Expression (..), ExpressionKind (..), exprChildren) where
 
-import Lexing.Lexer (Token(..))
-import Parsing.Type (Type)
-import Parsing.Ops (BinaryOp)
 import qualified Data.Map as Map
+import Lexing.Lexer (Token (..))
+import Parsing.Ops (BinaryOp)
+import Parsing.Type (Type)
 
-data Expression = Expression 
-  { exprToken :: Token
-  , exprKind :: ExpressionKind
-  } deriving (Eq, Ord)
+data Expression = Expression
+    { exprToken :: Token
+    , exprKind :: ExpressionKind
+    }
+    deriving (Eq, Ord)
 
 data ExpressionKind
-  = RootExpr
-    { rootLeaves :: [Expression] }
-  | StructExpr
-    { structName :: String
-    , structConstructors :: [Expression]
-    , structGenerics :: Maybe [Type]
-    }
-  | StructConstructorExpr
-    { structConstructorName :: String
-    , structConstructorFields :: [Expression] }
-  | StructFieldExpr
-    { structFieldName :: String
-    , structFieldType :: Type
-    }
-  | FunctionExpr
-    { functionName :: String
-    , functionParams :: Map.Map String Type
-    , functionReturnType   :: Type
-    , functionBody :: Expression }
-  | ConstantBindingExpr
-    { constantBindingName :: String
-    , constantBindingType :: Type
-    , constantBindingValue :: Expression }
-  | FunctionParamExpr
-    { fnParamName :: Maybe String
-    , fnParamType :: Type }
-  | BinaryOpExpr
-    { binaryOpLeft :: Expression
-    , binaryOpRight :: Expression
-    , binaryOp :: BinaryOp }
-  | PatternMatchExpr
-    { patternMatchHandlers :: [Expression] }
-  | NumberPatternExpr 
-    { numberPatternValue :: String }
-  | VariablePatternExpr
-    { variablePatternName :: String }
-  | PatternHandlerExpr
-    { patternHandlerPattern :: Expression
-    , patternHandlerBody :: Expression 
-    }
-  | NumberExpr
-  | StringExpr String
-  | TupleExpr [Expression]
-  | BlockExpr
-    { blockExpressions :: [Expression] }
-  | FunctionCallExpr
-    { functionCallFn :: Expression
-    , functionCallArg :: Expression }
-  | ValueReferenceExpr
-    { variableReferenceName :: String }
-  | BoolExpr Bool
-  | LetExpr
-    { letName :: String
-    , letValue :: Expression
-    , letBody :: Expression }
-  | TypeClassExpr
-    { typeClassName :: String
-    , typeClassGenerics :: [String]
-    , typeClassMethods :: [Expression] }
-  | TypeClassMethodExpr
-    { typeClassFnName :: String
-    , typeClassFnType :: Type }
-  deriving (Eq, Ord)
+    = RootExpr
+        {rootLeaves :: [Expression]}
+    | StructExpr
+        { structName :: String
+        , structConstructors :: [Expression]
+        , structGenerics :: Maybe [Type]
+        }
+    | StructConstructorExpr
+        { structConstructorName :: String
+        , structConstructorFields :: [Expression]
+        }
+    | StructFieldExpr
+        { structFieldName :: String
+        , structFieldType :: Type
+        }
+    | FunctionExpr
+        { functionName :: String
+        , functionParams :: Map.Map String Type
+        , functionReturnType :: Type
+        , functionBody :: Expression
+        }
+    | ConstantBindingExpr
+        { constantBindingName :: String
+        , constantBindingType :: Type
+        , constantBindingValue :: Expression
+        }
+    | FunctionParamExpr
+        { fnParamName :: Maybe String
+        , fnParamType :: Type
+        }
+    | BinaryOpExpr
+        { binaryOpLeft :: Expression
+        , binaryOpRight :: Expression
+        , binaryOp :: BinaryOp
+        }
+    | PatternMatchExpr
+        {patternMatchHandlers :: [Expression]}
+    | NumberPatternExpr
+        {numberPatternValue :: String}
+    | VariablePatternExpr
+        {variablePatternName :: String}
+    | PatternHandlerExpr
+        { patternHandlerPattern :: Expression
+        , patternHandlerBody :: Expression
+        }
+    | NumberExpr
+    | StringExpr String
+    | TupleExpr [Expression]
+    | BlockExpr
+        {blockExpressions :: [Expression]}
+    | FunctionCallExpr
+        { functionCallFn :: Expression
+        , functionCallArg :: Expression
+        }
+    | ValueReferenceExpr
+        {variableReferenceName :: String}
+    | BoolExpr Bool
+    | LetExpr
+        { letName :: String
+        , letValue :: Expression
+        , letBody :: Expression
+        }
+    | TypeClassExpr
+        { typeClassName :: String
+        , typeClassGenerics :: [String]
+        , typeClassMethods :: [Expression]
+        }
+    | TypeClassMethodExpr
+        { typeClassFnName :: String
+        , typeClassFnType :: Type
+        }
+    deriving (Eq, Ord)
 
 exprChildren :: ExpressionKind -> [Expression]
 exprChildren kind = case kind of
@@ -87,7 +97,7 @@ exprChildren kind = case kind of
     VariablePatternExpr _ -> []
     PatternHandlerExpr pattern handler -> [pattern, handler]
     NumberExpr -> []
-    FunctionCallExpr fn arg -> [fn, arg] 
+    FunctionCallExpr fn arg -> [fn, arg]
     ValueReferenceExpr _ -> []
     StringExpr _ -> []
     TupleExpr expressions -> expressions
@@ -126,4 +136,4 @@ instance Show ExpressionKind where
         TypeClassMethodExpr name _ -> "TypeClassMethodExpr (" ++ name ++ ")"
 
 instance Show Expression where
-  show (Expression token kind) = (show kind) ++ " '" ++ tokenValue token ++ "'"
+    show (Expression token kind) = (show kind) ++ " '" ++ tokenValue token ++ "'"

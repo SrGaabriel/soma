@@ -1,4 +1,5 @@
-module Parsing.Type (Type(..), TypeVar(..), StructVariant(..), GenericConstraint(..), mapType, mapTypeM) where
+module Parsing.Type (Type (..), TypeVar (..), StructVariant (..), GenericConstraint (..), mapType, mapTypeM) where
+
 import qualified Data.Map as Map
 
 data Type
@@ -11,8 +12,8 @@ data Type
         , functionTypeReturn :: Type
         }
     | GenericType
-        { genericName :: String,
-          genericConstraints :: [String]
+        { genericName :: String
+        , genericConstraints :: [String]
         }
     | StructType
         { structName :: String
@@ -45,14 +46,15 @@ instance Show Type where
 mapType :: (Type -> Type) -> Type -> Type
 mapType f (TupleType ts) = TupleType (map (mapType f) ts)
 mapType f (FunctionType arg ret) = FunctionType (mapType f arg) (mapType f ret)
-mapType f (StructType name variants mgs) = 
-    StructType name 
-               (map (\v -> v { variantFields = Map.map (mapType f) (variantFields v) }) variants)
-               (fmap (map (mapType f)) mgs)
+mapType f (StructType name variants mgs) =
+    StructType
+        name
+        (map (\v -> v{variantFields = Map.map (mapType f) (variantFields v)}) variants)
+        (fmap (map (mapType f)) mgs)
 mapType f (UnresolvedStructType name mgs) = UnresolvedStructType name (fmap (map (mapType f)) mgs)
 mapType f t = f t
 
-mapTypeM :: Monad m => (Type -> m Type) -> Type -> m Type
+mapTypeM :: (Monad m) => (Type -> m Type) -> Type -> m Type
 mapTypeM f (TupleType ts) = do
     ts' <- mapM (mapTypeM f) ts
     f (TupleType ts')
@@ -61,9 +63,13 @@ mapTypeM f (FunctionType arg ret) = do
     ret' <- mapTypeM f ret
     f (FunctionType arg' ret')
 mapTypeM f (StructType name variants mgs) = do
-    variants' <- mapM (\v -> do
-                          newFields <- traverse (mapTypeM f) (variantFields v)
-                          return v { variantFields = newFields }) variants
+    variants' <-
+        mapM
+            ( \v -> do
+                newFields <- traverse (mapTypeM f) (variantFields v)
+                return v{variantFields = newFields}
+            )
+            variants
     mgs' <- mapM (mapM (mapTypeM f)) mgs
     f (StructType name variants' mgs')
 mapTypeM f (UnresolvedStructType name mgs) = do
@@ -74,9 +80,11 @@ mapTypeM f t = f t
 data StructVariant = StructVariant
     { variantName :: String
     , variantFields :: Map.Map String Type
-    } deriving (Show, Eq, Ord)
+    }
+    deriving (Show, Eq, Ord)
 
 data GenericConstraint = GenericConstraint
     { constraintGenericName :: String
     , constraintClassName :: String
-    } deriving (Show, Eq, Ord)
+    }
+    deriving (Show, Eq, Ord)

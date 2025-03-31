@@ -1,12 +1,13 @@
-module Parsing.Errors (ParsingError(..), getErrorToken) where
+module Parsing.Errors (ParsingError (..), getErrorToken) where
+
 import Lexing.Lexer (Token (..), TokenKind, referenceToken, referenceTokenKind)
-import Logging.ErrorPrinter (PrintableError(..))
+import Logging.ErrorPrinter (PrintableError (..))
 
 data ParsingError
     = UnexpectedToken Token
-    | ExpectedDifferentToken 
+    | ExpectedDifferentToken
         { expected :: TokenKind
-        , received :: Token 
+        , received :: Token
         }
     | InvalidTokenForType Token
     | ExpectedIndentation Token -- for when a token isn't indented (int is the next newline)
@@ -19,7 +20,7 @@ data ParsingError
     | ExpectedAGenericType Token
     | InvalidGenericsList Token
     | EndOfInput
-    | Debug 
+    | Debug
     deriving (Eq)
 
 instance Show ParsingError where
