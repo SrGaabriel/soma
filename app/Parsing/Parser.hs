@@ -139,7 +139,15 @@ parseBinding = do
     nameToken <- consume TokenIdentifier
     let name = tokenValue nameToken
     genericConstrants <- parseGenericConstraints
-    argNames <- parseFluidSequence TokenReturns (consume TokenIdentifier) <* consume TokenReturns
+    leftParenthesisArgStart <- optional $ consume TokenLeftParenthesis
+    argNames <- case leftParenthesisArgStart of
+        Just _ -> do
+            parseFluidSequence TokenRightParenthesis (consume TokenIdentifier)
+                <* consume TokenRightParenthesis
+        Nothing -> do
+            parseFluidSequence TokenReturns (consume TokenIdentifier)
+     <* consume TokenReturns
+
     freeType <- parseType
     let constraintizedType = foldr applyClassConstraint freeType genericConstrants
 
@@ -584,3 +592,13 @@ someAccepting parser predicate = Parser $ \tokens -> do
                         then Right (reverse acc, remaining)
                         else Left err
     parseNext [] tokens
+
+optionallySurrounded :: TokenKind -> TokenKind -> Parser a -> Parser a
+optionallySurrounded start end parser = do
+    startTok <- optional (consume start)
+    case startTok of
+        Just _ -> do
+            result <- parser
+            _ <- consume end
+            pure result
+        Nothing -> parser
