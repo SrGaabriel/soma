@@ -1,14 +1,17 @@
-module Utils.Currying (curryParams, uncurryFunction) where
+module Utils.Currying (curryParams, uncurryFunction, getParamTypes) where
 
-import qualified Data.Map as Map
 import Parsing.Type (Type (..))
 
-curryParams :: Map.Map String Type -> Type -> Type
+curryParams :: [(String, Type)] -> Type -> Type
 curryParams params returnType =
-    Prelude.foldr
-        (\paramType acc -> FunctionType paramType acc)
+    foldr
+        (\(_, paramType) acc -> FunctionType paramType acc)
         returnType
-        (Map.elems params)
+        params
+
+getParamTypes :: Type -> [Type]
+getParamTypes (FunctionType param ret) = param : getParamTypes ret
+getParamTypes _ = []
 
 uncurryFunction :: Type -> Type -> ([Type], Type)
 uncurryFunction a t =

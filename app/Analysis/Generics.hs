@@ -1,14 +1,14 @@
 module Analysis.Generics where
 
 import qualified Data.Map as Map
-import Parsing.Type (StructVariant (StructVariant, variantFields), Type (..))
+import Parsing.Type (StructConstructor (StructConstructor, constructorFields), Type (..))
 
 collectGenerics :: Type -> [String]
 collectGenerics (GenericType g _) = [g]
 collectGenerics (TupleType ts) = concatMap collectGenerics ts
 collectGenerics (FunctionType arg ret) = collectGenerics arg ++ collectGenerics ret
 collectGenerics (StructType _ variants mgs) =
-    concatMap (collectGenerics . snd) (concatMap Map.toList (Prelude.map variantFields variants))
+    concatMap (collectGenerics . snd) (concatMap Map.toList (Prelude.map constructorFields variants))
         ++ maybe [] (concatMap collectGenerics) mgs
 collectGenerics (UnresolvedStructType _ mgs) = maybe [] (concatMap collectGenerics) mgs
 collectGenerics _ = []
@@ -21,7 +21,7 @@ replaceGenerics subst (FunctionType arg ret) =
 replaceGenerics subst (StructType n variants mgs) =
     StructType
         n
-        (Prelude.map (\v -> v{variantFields = Map.map (replaceGenerics subst) (variantFields v)}) variants)
+        (Prelude.map (\v -> v{constructorFields = Map.map (replaceGenerics subst) (constructorFields v)}) variants)
         (fmap (Prelude.map (replaceGenerics subst)) mgs)
 replaceGenerics subst (UnresolvedStructType n mgs) =
     UnresolvedStructType n (fmap (Prelude.map (replaceGenerics subst)) mgs)
@@ -47,6 +47,6 @@ replaceGeneric _ _ ty = ty
 
 data Constraint = ClassConstraint String
 
-replaceInVariant :: Type -> Type -> StructVariant -> StructVariant
-replaceInVariant generic newType (StructVariant vName fields) =
-    StructVariant vName (Map.map (replaceGeneric generic newType) fields)
+replaceInVariant :: Type -> Type -> StructConstructor -> StructConstructor
+replaceInVariant generic newType (StructConstructor vName fields) =
+    StructConstructor vName (Map.map (replaceGeneric generic newType) fields)

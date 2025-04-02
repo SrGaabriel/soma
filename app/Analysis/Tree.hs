@@ -1,14 +1,14 @@
 module Analysis.Tree where
 
 import Analysis.Errors (AnalysisError (..))
-import Analysis.Inference (InferM, InferState (..), Substitutable (apply), Substitution, TypeEnv, TypeMap, addGlobalBinding, cleanRunInferM, composeS, instantiate, unify)
+import Analysis.Inference (InferM, InferState (..), Substitutable (apply), Substitution, TypeEnv, TypeMap, addGlobalBinding, cleanRunInferM, composeS, instantiate, unify, fresh)
 import Control.Monad (foldM)
 import Control.Monad.Except
 import Control.Monad.State
 import Data.Map as Map
 import Parsing.Tree (Expression (..), ExpressionKind (..), exprChildren)
-import Parsing.Type (StructVariant (StructVariant), Type (..))
-import Utils.Currying (curryParams)
+import Parsing.Type (StructConstructor (StructConstructor), Type (..))
+import Utils.Currying (curryParams, getParamTypes)
 
 inferExpr :: TypeEnv -> Expression -> InferM (Substitution, Type)
 inferExpr _ expr@(Expression _ NumberExpr) = do
@@ -43,7 +43,7 @@ inferExpr env expr@(Expression _ (FunctionExpr name params returnType body)) = d
                     Map.insert paramName paramType acc
                 )
                 env
-                (Map.toList params)
+                params
 
     (s, bodyType) <- inferExpr localEnv body
     unifySubst <- unify body returnType bodyType
@@ -94,6 +94,16 @@ inferExpr env expr@(Expression _ (LetExpr name value body)) = do
     let finalSubst = composeS s2 s1
     recordType expr bodyType
     pure (finalSubst, bodyType)
+inferExpr env expr@(Expression _ (LambdaExpr names body)) = do
+    typeVars <- Prelude.mapM (\_ -> fresh) names
+    let params = zip names typeVars
+
+    let localEnv = Map.union (Map.fromList params) env
+    (s, bodyType) <- inferExpr localEnv body
+    let finalSubst = s
+    let lambdaType = curryParams params bodyType
+    recordType expr lambdaType
+    pure (finalSubst, lambdaType)
 inferExpr env expr@(Expression _ (BlockExpr expressions)) = do
     (subs, tys) <- inferExprs env expressions
     let resultType = last tys
@@ -121,16 +131,15 @@ collectGlobals expr =
                     Prelude.map
                         ( \(Expression _ ek) -> case ek of
                             StructConstructorExpr cName fields ->
-                                StructVariant
+                                StructConstructor
                                     cName
-                                    ( Map.fromList
-                                        $ Prelude.map
+                                    (Map.fromList (Prelude.map
                                             ( \x -> case x of
                                                 Expression _ (StructFieldExpr fName ty) -> (fName, ty)
                                                 _ -> error "Expected StructFieldExpr in struct definition"
                                             )
                                             fields
-                                    )
+                                    ))
                             recv -> error $ "Expected StructConstructorExpr in struct definition but got " ++ show recv
                         )
                         constructors
@@ -141,8 +150,8 @@ collectGlobals expr =
 
             _ <-
                 mapM
-                    ( \(StructVariant vName fields) -> do
-                        let constructorType = (curryParams fields) structType
+                    ( \(StructConstructor vName fields) -> do
+                        let constructorType = (curryParams $ Map.toList fields) structType
                         addGlobalBinding vName constructorType
                     )
                     variants
@@ -203,9 +212,23 @@ evalNode ctx expr = do
                             Map.insert paramName paramType acc
                         )
                         (currentEnv ctx')
-                        (Map.toList params)
+                        params
 
             evalNode ctx'{currentEnv = paramEnv} body
+        LambdaExpr names body -> do
+            case result of 
+                Right (s, ty) -> do
+                    let updatedSubst = composeS s (currentSubst ctx)
+                    let updatedEnv = Map.map (apply s) (currentEnv ctx)
+                    let paramTypes = getParamTypes ty
+                    if length paramTypes /= length names
+                        then throwError $ ParamLengthMismatch expr
+                        else do
+                            let paramEnv = Map.fromList (zip names paramTypes)
+                            let localEnv = Map.union paramEnv updatedEnv
+                            evalNode ctx{currentEnv = localEnv, currentSubst = updatedSubst} body
+                Left err -> do
+                    throwError err
         _ ->
             foldM
                 ( \s child ->

@@ -73,4 +73,10 @@ emptyTupleTest :: () = ()
 
 `quoted name test` :: Int = 5
 
-addNumbers[a : Type] value  :: Shape[a] -> String = ""
+addNumbers[a : Type] value :: Shape[a] -> String = ""
+
+lambda :: (Int -> Int) = (\n -> n)
+
+predicate (val pred) :: a -> (a -> Bool) -> Bool = pred val
+
+predicateTest :: Bool = predicate 5 (\val -> true)

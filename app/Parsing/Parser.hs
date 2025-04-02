@@ -8,7 +8,6 @@ module Parsing.Parser where
 import Control.Applicative (Alternative (..), (<|>))
 import Control.Monad (when)
 import Control.Monad.Error.Class (MonadError (catchError, throwError))
-import qualified Data.Map as Map
 import Lexing.Lexer (Token (..), TokenKind (..))
 import Parsing.Errors (ParsingError (..))
 import Parsing.Ops (BinaryOp (..))
@@ -140,19 +139,20 @@ parseBinding = do
     let name = tokenValue nameToken
     genericConstrants <- parseGenericConstraints
     leftParenthesisArgStart <- optional $ consume TokenLeftParenthesis
-    argNames <- case leftParenthesisArgStart of
-        Just _ -> do
-            parseFluidSequence TokenRightParenthesis (consume TokenIdentifier)
-                <* consume TokenRightParenthesis
-        Nothing -> do
-            parseFluidSequence TokenReturns (consume TokenIdentifier)
-     <* consume TokenReturns
+    argNames <-
+        case leftParenthesisArgStart of
+            Just _ -> do
+                parseFluidSequence TokenRightParenthesis (consume TokenIdentifier)
+                    <* consume TokenRightParenthesis
+            Nothing -> do
+                parseFluidSequence TokenReturns (consume TokenIdentifier)
+            <* consume TokenReturns
 
     freeType <- parseType
     let constraintizedType = foldr applyClassConstraint freeType genericConstrants
 
     case constraintizedType of
-        FunctionType arg ret -> do
+        FunctionType arg ret | argNames /= [] -> do
             let (argTypes, returnType) = uncurryFunction arg ret
             argMappings <- ensureSameLengthMap argNames argTypes
             body <- parseFunctionBody
@@ -257,10 +257,22 @@ parseAtom = do
             pure $ expr numToken NumberExpr
         TokenLeftParenthesis -> do
             lparen <- consume TokenLeftParenthesis
-            contents <- parseCommaSeparatedUntil TokenRightParenthesis parseExpression
-            case contents of
-                (first : []) -> pure first
-                _ -> pure $ expr lparen (TupleExpr contents)
+            inc <- peek
+            case tokenKind inc of 
+                TokenLambda -> do
+                    _ <- next
+                    nameToks <- parseFluidSequence TokenRightArrow (consume TokenIdentifier)
+                    let names = map tokenValue nameToks
+                    _ <- consume TokenRightArrow
+                    body <- parseExpression
+                    _ <- consume TokenRightParenthesis
+
+                    pure $ expr lparen (LambdaExpr names body)
+                _ -> do
+                    contents <- parseCommaSeparatedUntil TokenRightParenthesis parseExpression
+                    case contents of
+                        (first : []) -> pure first
+                        _ -> pure $ expr lparen (TupleExpr contents)
         TokenIdentifier -> do
             idToken <- next
             pure $ expr idToken (ValueReferenceExpr (tokenValue idToken))
@@ -574,9 +586,9 @@ toBinaryOp = \case
     TokenSlash -> Just BinaryDivide
     _ -> Nothing
 
-ensureSameLengthMap :: [Token] -> [Type] -> Parser (Map.Map String Type)
+ensureSameLengthMap :: [Token] -> [Type] -> Parser [(String, Type)]
 ensureSameLengthMap names types
-    | length names == length types = pure . Map.fromList $ zip (map tokenValue names ++ replicate (length types - length names) "_") types
+    | length names == length types = pure $ zip (map tokenValue names ++ replicate (length types - length names) "_") types
     | otherwise = throwError $ FunctionArgumentLengthMismatch (last names)
 
 someAccepting :: Parser a -> (ParsingError -> Bool) -> Parser [a]

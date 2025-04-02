@@ -1,4 +1,4 @@
-module Parsing.Type (Type (..), TypeVar (..), StructVariant (..), GenericConstraint (..), mapType, mapTypeM) where
+module Parsing.Type (Type (..), TypeVar (..), StructConstructor (..), GenericConstraint (..), mapType, mapTypeM) where
 
 import qualified Data.Map as Map
 
@@ -17,7 +17,7 @@ data Type
         }
     | StructType
         { structName :: String
-        , structVariants :: [StructVariant]
+        , structConstructors :: [StructConstructor]
         , structGenerics :: Maybe [Type]
         }
     | ClassType String -- todo: maybe revise this approach later?
@@ -36,20 +36,20 @@ instance Show Type where
     show StringType = "String"
     show BoolType = "Bool"
     show (TupleType ts) = "(" ++ unwords (map show ts) ++ ")"
-    show (FunctionType arg ret) = "(" ++ show arg ++ " -> " ++ show ret ++ ")"
+    show (FunctionType arg ret) = show arg ++ " -> " ++ show ret
     show (GenericType name constraints) = "'" ++ name ++ unwords (map (\c -> " : " ++ c) constraints)
     show (StructType name _ generics) = name ++ maybe "" (\g -> "[" ++ unwords (map show g) ++ "]") generics
-    show (UnresolvedVarType v) = show v
+    show (UnresolvedVarType (TypeVar name _)) = "'" ++ name
     show (UnresolvedStructType name generics) = "@" ++ name ++ maybe "" (\g -> "[" ++ unwords (map show g) ++ "]") generics
     show (ClassType name) = name
 
 mapType :: (Type -> Type) -> Type -> Type
 mapType f (TupleType ts) = TupleType (map (mapType f) ts)
 mapType f (FunctionType arg ret) = FunctionType (mapType f arg) (mapType f ret)
-mapType f (StructType name variants mgs) =
+mapType f (StructType name constructors mgs) =
     StructType
         name
-        (map (\v -> v{variantFields = Map.map (mapType f) (variantFields v)}) variants)
+        (map (\v -> v{constructorFields = Map.map (mapType f) (constructorFields v)}) constructors)
         (fmap (map (mapType f)) mgs)
 mapType f (UnresolvedStructType name mgs) = UnresolvedStructType name (fmap (map (mapType f)) mgs)
 mapType f t = f t
@@ -62,24 +62,24 @@ mapTypeM f (FunctionType arg ret) = do
     arg' <- mapTypeM f arg
     ret' <- mapTypeM f ret
     f (FunctionType arg' ret')
-mapTypeM f (StructType name variants mgs) = do
-    variants' <-
+mapTypeM f (StructType name constructors mgs) = do
+    constructors' <-
         mapM
             ( \v -> do
-                newFields <- traverse (mapTypeM f) (variantFields v)
-                return v{variantFields = newFields}
+                newFields <- traverse (mapTypeM f) (constructorFields v)
+                return v{constructorFields = newFields}
             )
-            variants
+            constructors
     mgs' <- mapM (mapM (mapTypeM f)) mgs
-    f (StructType name variants' mgs')
+    f (StructType name constructors' mgs')
 mapTypeM f (UnresolvedStructType name mgs) = do
     mgs' <- mapM (mapM (mapTypeM f)) mgs
     f (UnresolvedStructType name mgs')
 mapTypeM f t = f t
 
-data StructVariant = StructVariant
-    { variantName :: String
-    , variantFields :: Map.Map String Type
+data StructConstructor = StructConstructor
+    { constructorName :: String
+    , constructorFields :: Map.Map String Type
     }
     deriving (Show, Eq, Ord)
 

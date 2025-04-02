@@ -38,6 +38,7 @@ data TokenKind
     | TokenRightBracket
     | TokenTrue
     | TokenFalse
+    | TokenLambda
     deriving (Show, Eq, Ord)
 
 data Token = Token
@@ -69,6 +70,7 @@ tokenize (c : cs) i indent
     | c == '[' = consToken (Token TokenLeftBracket "[" i indent) (tokenize cs (i + 1) indent)
     | c == ']' = consToken (Token TokenRightBracket "]" i indent) (tokenize cs (i + 1) indent)
     | c == ',' = consToken (Token TokenComma "," i indent) (tokenize cs (i + 1) indent)
+    | c == '\\' = consToken (Token TokenLambda "\\" i indent) (tokenize cs (i + 1) indent)
     | c == ':' = case cs of
         ':' : rest -> consToken (Token TokenReturns "::" i indent) (tokenize rest (i + 2) indent)
         _ -> consToken (Token TokenColon ":" i indent) (tokenize cs (i + 1) indent)
@@ -182,3 +184,4 @@ referenceTokenKind kind = case kind of
     TokenClass -> "'class'"
     TokenWhere -> "'where'"
     TokenInstance -> "'instance'"
+    TokenLambda -> "'\\'"

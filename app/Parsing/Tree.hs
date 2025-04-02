@@ -1,6 +1,5 @@
 module Parsing.Tree (Expression (..), ExpressionKind (..), exprChildren) where
 
-import qualified Data.Map as Map
 import Lexing.Lexer (Token (..))
 import Parsing.Ops (BinaryOp)
 import Parsing.Type (Type)
@@ -29,7 +28,7 @@ data ExpressionKind
         }
     | FunctionExpr
         { functionName :: String
-        , functionParams :: Map.Map String Type
+        , functionParams :: [(String, Type)]
         , functionReturnType :: Type
         , functionBody :: Expression
         }
@@ -83,6 +82,10 @@ data ExpressionKind
         { typeClassFnName :: String
         , typeClassFnType :: Type
         }
+    | LambdaExpr 
+        { lambdaParams :: [String]
+        , lambdaBody :: Expression
+        }
     deriving (Eq, Ord)
 
 exprChildren :: ExpressionKind -> [Expression]
@@ -109,6 +112,7 @@ exprChildren kind = case kind of
     BoolExpr _ -> []
     TypeClassExpr _ _ methods -> methods
     TypeClassMethodExpr _ _ -> []
+    LambdaExpr _ body -> [body]
 
 instance Show ExpressionKind where
     show kind = case kind of
@@ -134,6 +138,7 @@ instance Show ExpressionKind where
         BoolExpr value -> "BoolExpr (" ++ show value ++ ")"
         TypeClassExpr name generics methods -> "TypeClassExpr (" ++ name ++ " :: " ++ show generics ++ " :: " ++ show methods ++ ")"
         TypeClassMethodExpr name _ -> "TypeClassMethodExpr (" ++ name ++ ")"
+        LambdaExpr params body -> "LambdaExpr (" ++ show params ++ " -> " ++ show body ++ ")"
 
 instance Show Expression where
     show (Expression token kind) = (show kind) ++ " '" ++ tokenValue token ++ "'"

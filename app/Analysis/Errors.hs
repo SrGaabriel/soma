@@ -11,7 +11,7 @@ import Parsing.Type (Type)
 
 data AnalysisError
     = TypeMismatch Expression Type Type
-    | FunctionArgumentLengthMismatch Expression
+    | ParamLengthMismatch Expression
     | TupleLengthMismatch Expression
     | BinaryOpTypeMismatch Expression Type Type
     | CircularTypeDependency Expression
@@ -24,7 +24,7 @@ data AnalysisError
 instance PrintableError AnalysisError where
     errorMessage :: AnalysisError -> String
     errorMessage (TypeMismatch _ t1 t2) = "Cannot conciliate types '" ++ show t1 ++ "' and '" ++ show t2 ++ "'"
-    errorMessage (FunctionArgumentLengthMismatch _) = "The function has a different number of arguments than provided"
+    errorMessage (ParamLengthMismatch _) = "The function has a different number of arguments than provided"
     errorMessage (TupleLengthMismatch _) = "The tuple has a different number of elements than provided"
     errorMessage (BinaryOpTypeMismatch _ left right) = "Binary operation type mismatch (" ++ show left ++ " and " ++ show right ++ ")"
     errorMessage (CircularTypeDependency _) = "Circular type dependency"
@@ -49,7 +49,7 @@ instance PrintableError AnalysisError where
 getExpression :: AnalysisError -> Expression
 getExpression (TypeMismatch expr _ _) = expr
 getExpression (BinaryOpTypeMismatch expr _ _) = expr
-getExpression (FunctionArgumentLengthMismatch expr) = expr
+getExpression (ParamLengthMismatch expr) = expr
 getExpression (TupleLengthMismatch expr) = expr
 getExpression (CircularTypeDependency expr) = expr
 getExpression (UnboundVariable expr _) = expr
