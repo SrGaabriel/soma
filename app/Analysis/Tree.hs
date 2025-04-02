@@ -133,13 +133,13 @@ collectGlobals expr =
                             StructConstructorExpr cName fields ->
                                 StructConstructor
                                     cName
-                                    (Map.fromList (Prelude.map
+                                    (Prelude.map
                                             ( \x -> case x of
                                                 Expression _ (StructFieldExpr fName ty) -> (fName, ty)
                                                 _ -> error "Expected StructFieldExpr in struct definition"
                                             )
                                             fields
-                                    ))
+                                    )
                             recv -> error $ "Expected StructConstructorExpr in struct definition but got " ++ show recv
                         )
                         constructors
@@ -151,7 +151,7 @@ collectGlobals expr =
             _ <-
                 mapM
                     ( \(StructConstructor vName fields) -> do
-                        let constructorType = (curryParams $ Map.toList fields) structType
+                        let constructorType = (curryParams fields) structType
                         addGlobalBinding vName constructorType
                     )
                     variants

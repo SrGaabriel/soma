@@ -134,7 +134,7 @@ occurs _ _ = False
 instantiate :: Type -> InferM Type
 instantiate ty = do
     let generics = nub $ collectGenerics ty
-    subst <- Map.fromList <$> mapM (\g -> (g,) <$> fresh) generics
+    subst <- mapM (\g -> (g,) <$> fresh) generics
     pure $ replaceGenerics subst ty
 
 composeS :: Substitution -> Substitution -> Substitution

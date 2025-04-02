@@ -1,7 +1,5 @@
 module Parsing.Type (Type (..), TypeVar (..), StructConstructor (..), GenericConstraint (..), mapType, mapTypeM) where
 
-import qualified Data.Map as Map
-
 data Type
     = IntType
     | StringType
@@ -49,7 +47,7 @@ mapType f (FunctionType arg ret) = FunctionType (mapType f arg) (mapType f ret)
 mapType f (StructType name constructors mgs) =
     StructType
         name
-        (map (\v -> v{constructorFields = Map.map (mapType f) (constructorFields v)}) constructors)
+        (map (\v -> v{constructorFields = map (\(n, t) -> (n, mapType f t)) (constructorFields v)}) constructors)
         (fmap (map (mapType f)) mgs)
 mapType f (UnresolvedStructType name mgs) = UnresolvedStructType name (fmap (map (mapType f)) mgs)
 mapType f t = f t
@@ -66,7 +64,7 @@ mapTypeM f (StructType name constructors mgs) = do
     constructors' <-
         mapM
             ( \v -> do
-                newFields <- traverse (mapTypeM f) (constructorFields v)
+                newFields <- mapM (\(fName, typ) -> (,) fName <$> mapTypeM f typ) (constructorFields v)
                 return v{constructorFields = newFields}
             )
             constructors
@@ -79,7 +77,7 @@ mapTypeM f t = f t
 
 data StructConstructor = StructConstructor
     { constructorName :: String
-    , constructorFields :: Map.Map String Type
+    , constructorFields :: [(String, Type)]
     }
     deriving (Show, Eq, Ord)
 

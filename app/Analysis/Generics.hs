@@ -1,31 +1,21 @@
 module Analysis.Generics where
 
-import qualified Data.Map as Map
-import Parsing.Type (StructConstructor (StructConstructor, constructorFields), Type (..))
+import Control.Monad.Writer (Writer, tell, execWriter)
+import Parsing.Type (Type (..), StructConstructor(StructConstructor), mapTypeM, mapType)
+import Data.Maybe (fromMaybe)
 
 collectGenerics :: Type -> [String]
-collectGenerics (GenericType g _) = [g]
-collectGenerics (TupleType ts) = concatMap collectGenerics ts
-collectGenerics (FunctionType arg ret) = collectGenerics arg ++ collectGenerics ret
-collectGenerics (StructType _ variants mgs) =
-    concatMap (collectGenerics . snd) (concatMap Map.toList (Prelude.map constructorFields variants))
-        ++ maybe [] (concatMap collectGenerics) mgs
-collectGenerics (UnresolvedStructType _ mgs) = maybe [] (concatMap collectGenerics) mgs
-collectGenerics _ = []
+collectGenerics t = execWriter (mapTypeM collect t)
+  where
+    collect :: Type -> Writer [String] Type
+    collect ty@(GenericType g _) = tell [g] >> return ty
+    collect ty = return ty
 
-replaceGenerics :: Map.Map String Type -> Type -> Type
-replaceGenerics subst (GenericType g c) = Map.findWithDefault (GenericType g c) g subst
-replaceGenerics subst (TupleType ts) = TupleType (Prelude.map (replaceGenerics subst) ts)
-replaceGenerics subst (FunctionType arg ret) =
-    FunctionType (replaceGenerics subst arg) (replaceGenerics subst ret)
-replaceGenerics subst (StructType n variants mgs) =
-    StructType
-        n
-        (Prelude.map (\v -> v{constructorFields = Map.map (replaceGenerics subst) (constructorFields v)}) variants)
-        (fmap (Prelude.map (replaceGenerics subst)) mgs)
-replaceGenerics subst (UnresolvedStructType n mgs) =
-    UnresolvedStructType n (fmap (Prelude.map (replaceGenerics subst)) mgs)
-replaceGenerics _ t = t
+replaceGenerics :: [(String, Type)] -> Type -> Type
+replaceGenerics subst = mapType f
+  where
+    f (GenericType g c) = fromMaybe (GenericType g c) (lookup g subst)
+    f t = t
 
 replaceGeneric :: Type -> Type -> Type -> Type
 replaceGeneric genType@(GenericType generic _) newType ty = case ty of
@@ -49,4 +39,4 @@ data Constraint = ClassConstraint String
 
 replaceInVariant :: Type -> Type -> StructConstructor -> StructConstructor
 replaceInVariant generic newType (StructConstructor vName fields) =
-    StructConstructor vName (Map.map (replaceGeneric generic newType) fields)
+    StructConstructor vName (map (\(name, typ) -> (name, replaceGeneric generic newType typ)) fields)
