@@ -258,16 +258,15 @@ parseAtom = do
         TokenLeftParenthesis -> do
             lparen <- consume TokenLeftParenthesis
             inc <- peek
-            case tokenKind inc of 
+            case tokenKind inc of
                 TokenLambda -> do
-                    _ <- next
-                    nameToks <- parseFluidSequence TokenRightArrow (consume TokenIdentifier)
+                    lambdaTok <- next
+                    nameToks <- parseSequence TokenDot TokenRightArrow (consume TokenIdentifier)
                     let names = map tokenValue nameToks
                     _ <- consume TokenRightArrow
                     body <- parseExpression
                     _ <- consume TokenRightParenthesis
-
-                    pure $ expr lparen (LambdaExpr names body)
+                    pure $ expr lambdaTok (LambdaExpr names body)
                 _ -> do
                     contents <- parseCommaSeparatedUntil TokenRightParenthesis parseExpression
                     case contents of

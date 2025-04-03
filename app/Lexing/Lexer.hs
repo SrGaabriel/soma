@@ -20,6 +20,7 @@ data TokenKind
     | TokenNewline
     | TokenCase
     | TokenDo
+    | TokenDot
     | TokenLeftParenthesis
     | TokenRightParenthesis
     | TokenIdentifier
@@ -49,60 +50,69 @@ data Token = Token
     }
     deriving (Show, Eq, Ord)
 
-tokenizeFile :: String -> Either LexingError [Token]
-tokenizeFile content = do
-    tokens <- tokenize content 0 0
-    Right tokens
+tokenizeFile :: String -> ([Token], [LexingError])
+tokenizeFile content = tokenize content 0 0
 
-tokenize :: String -> Int -> Int -> Either LexingError [Token]
-tokenize [] _ _ = Right []
+tokenize :: String -> Int -> Int -> ([Token], [LexingError])
+tokenize [] _ _ = ([], [])
 tokenize (c : cs) i indent
     | isSpace c = tokenize cs (i + 1) indent
-    | c == '+' = consToken (Token TokenPlus "+" i indent) (tokenize cs (i + 1) indent)
-    | c == '*' = consToken (Token TokenAsterisk "*" i indent) (tokenize cs (i + 1) indent)
-    | c == '=' = consToken (Token TokenEquals "=" i indent) (tokenize cs (i + 1) indent)
-    | c == '>' = consToken (Token TokenRightAngleBracket ">" i indent) (tokenize cs (i + 1) indent)
-    | c == '<' = consToken (Token TokenLeftAngleBracket "<" i indent) (tokenize cs (i + 1) indent)
-    | c == '(' = consToken (Token TokenLeftParenthesis "(" i indent) (tokenize cs (i + 1) indent)
-    | c == ')' = consToken (Token TokenRightParenthesis ")" i indent) (tokenize cs (i + 1) indent)
-    | c == '|' = consToken (Token TokenPipe "|" i indent) (tokenize cs (i + 1) indent)
-    | c == '$' = consToken (Token TokenDollar "$" i indent) (tokenize cs (i + 1) indent)
-    | c == '[' = consToken (Token TokenLeftBracket "[" i indent) (tokenize cs (i + 1) indent)
-    | c == ']' = consToken (Token TokenRightBracket "]" i indent) (tokenize cs (i + 1) indent)
-    | c == ',' = consToken (Token TokenComma "," i indent) (tokenize cs (i + 1) indent)
-    | c == '\\' = consToken (Token TokenLambda "\\" i indent) (tokenize cs (i + 1) indent)
-    | c == ':' = case cs of
-        ':' : rest -> consToken (Token TokenReturns "::" i indent) (tokenize rest (i + 2) indent)
-        _ -> consToken (Token TokenColon ":" i indent) (tokenize cs (i + 1) indent)
+    | c `elem` "+*=<>()|$[],.λ\\" =
+        let kind = case c of
+                '+' -> TokenPlus
+                '*' -> TokenAsterisk
+                '=' -> TokenEquals
+                '<' -> TokenLeftAngleBracket
+                '>' -> TokenRightAngleBracket
+                '(' -> TokenLeftParenthesis
+                ')' -> TokenRightParenthesis
+                '|' -> TokenPipe
+                '$' -> TokenDollar
+                '[' -> TokenLeftBracket
+                ']' -> TokenRightBracket
+                ',' -> TokenComma
+                '.' -> TokenDot
+                'λ' -> TokenLambda
+                '\\' -> TokenLambda
+                _ -> error "Impossible case"
+        in addToken (Token kind [c] i indent) (tokenize cs (i + 1) indent)
     | c == '-' = case cs of
-        '>' : rest -> consToken (Token TokenRightArrow "->" i indent) (tokenize rest (i + 2) indent)
-        _ -> consToken (Token TokenMinus "-" i indent) (tokenize cs (i + 1) indent)
+        '>' : rest -> addToken (Token TokenRightArrow "->" i indent) (tokenize rest (i + 2) indent)
+        _ -> addToken (Token TokenMinus "-" i indent) (tokenize cs (i + 1) indent)
+    | c == ':' = case cs of
+        ':' : rest -> addToken (Token TokenReturns "::" i indent) (tokenize rest (i + 2) indent)
+        _ -> addToken (Token TokenColon ":" i indent) (tokenize cs (i + 1) indent)
+    | c == '/' = case cs of
+        '/' : rest ->
+            let (comment, rest') = span (/= '\n') rest
+            in tokenize rest' (i + 2 + length comment) indent
+        _ -> addToken (Token TokenSlash "/" i indent) (tokenize cs (i + 1) indent)
     | c == '\n' =
         let (spaces, rest) = span isSpace cs
             indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
             newIndent = length spaces
-        in consToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
-    | c == '/' =
-        case cs of
-            '/' : rest -> do
-                let (comment, rest') = span (/= '\n') rest
-                tokenize rest' (i + 2 + length comment) indent
-            _ -> consToken (Token TokenSlash "/" i indent) (tokenize cs (i + 1) indent)
+        in addToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
     | c == '"' =
         let (text, rest) = span (/= '"') cs
-            quotedText = c : text ++ "\""
         in case rest of
-            '"' : rest' -> consToken (Token TokenString quotedText i indent) (tokenize rest' (i + length quotedText) indent)
-            _ -> Left $ UnexpectedCharacter c i
-    | isDigit c =
-        let (numberToken, rest) = span isDigit (c : cs)
-        in consToken (Token TokenNumber numberToken i indent) (tokenize rest (i + length numberToken) indent)
+            '"' : rest' ->
+                let quotedText = c : text ++ "\""
+                in addToken (Token TokenString quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+            _ ->
+                let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
+                in (restTokens, UnterminatedString i : restErrors)
     | c == '`' =
         let (text, rest) = span (/= '`') cs
-            quotedText = c : text ++ "`"
         in case rest of
-            '`' : rest' -> consToken (Token TokenIdentifier quotedText i indent) (tokenize rest' (i + length quotedText) indent)
-            _ -> Left $ UnexpectedCharacter c i
+            '`' : rest' ->
+                let quotedText = c : text ++ "`"
+                in addToken (Token TokenIdentifier quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+            _ ->
+                let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
+                in (restTokens, UnterminatedIdentifier i : restErrors)
+    | isDigit c =
+        let (numberToken, rest) = span isDigit (c : cs)
+        in addToken (Token TokenNumber numberToken i indent) (tokenize rest (i + length numberToken) indent)
     | isCharacter c =
         let (text, rest) = span isAlphanumeric (c : cs)
             kind = case text of
@@ -118,13 +128,13 @@ tokenize (c : cs) i indent
                 "true" -> TokenTrue
                 "false" -> TokenFalse
                 _ -> TokenIdentifier
-        in consToken (Token kind text i indent) (tokenize rest (i + length text) indent)
-    | otherwise = Left $ UnexpectedCharacter c i
+        in addToken (Token kind text i indent) (tokenize rest (i + length text) indent)
+    | otherwise =
+        let (restTokens, restErrors) = tokenize cs (i + 1) indent
+        in (restTokens, UnexpectedCharacter c i : restErrors)
 
-consToken :: Token -> Either LexingError [Token] -> Either LexingError [Token]
-consToken token restTokens = do
-    rest <- restTokens
-    Right (token : rest)
+addToken :: Token -> ([Token], [LexingError]) -> ([Token], [LexingError])
+addToken token (tokens, errors) = (token : tokens, errors)
 
 isDigit :: Char -> Bool
 isDigit c = c `elem` ['0' .. '9']
@@ -179,6 +189,7 @@ referenceTokenKind kind = case kind of
     TokenLeftBracket -> "a left bracket"
     TokenRightBracket -> "a right bracket"
     TokenComma -> "a comma"
+    TokenDot -> "a dot"
     TokenTrue -> "'true'"
     TokenFalse -> "'false'"
     TokenClass -> "'class'"

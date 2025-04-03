@@ -79,4 +79,10 @@ lambda :: (Int -> Int) = (\n -> n)
 
 predicate (val pred) :: a -> (a -> Bool) -> Bool = pred val
 
-predicateTest :: Bool = predicate 5 (\val -> true)
+predicateTest :: Bool = predicate 5 (λval -> true)
+
+doublePredicate (x y pred) :: x -> y -> (x -> y -> Int) -> Int =
+    pred x y
+
+doublePredicateTest :: Int =
+    doublePredicate 5 6 (λx.y -> x + y)

@@ -1,4 +1,4 @@
-module Logging.ErrorPrinter (PrintableError (..), printError) where
+module Logging.ErrorPrinter (PrintableError (..), printError, printConclusionMessage) where
 
 import Data.List (findIndex)
 import Data.Maybe (fromMaybe)
@@ -14,6 +14,18 @@ data RowInfo = RowInfo
     , relativeIndex :: Int
     , number :: Int
     }
+
+printConclusionMessage :: String -> IO ()
+printConclusionMessage message = do
+    putStrLn ""
+    setSGR [SetConsoleIntensity BoldIntensity]
+    setSGR [SetColor Foreground Vivid Red]
+    setSGR [SetConsoleIntensity BoldIntensity]
+    putStr "OUTPUT: "
+    setSGR [SetColor Foreground Dull White]
+    setSGR [SetConsoleIntensity NormalIntensity]
+    putStrLn message
+    setSGR [Reset]
 
 printError :: (PrintableError a) => a -> FilePath -> String -> String -> IO ()
 printError err fileName code prefix = do

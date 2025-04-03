@@ -4,8 +4,16 @@ import Logging.ErrorPrinter (PrintableError (..))
 
 data LexingError
     = UnexpectedCharacter Char Int
+    | UnterminatedString Int
+    | UnterminatedIdentifier Int
 
 instance PrintableError LexingError where
     errorMessage (UnexpectedCharacter c _) = "Unexpected character '" ++ [c] ++ "'"
+    errorMessage (UnterminatedString _) = "Unterminated string"
+    errorMessage (UnterminatedIdentifier _) = "Unterminated identifier"
     errorStart (UnexpectedCharacter _ i) = i
+    errorStart (UnterminatedString i) = i
+    errorStart (UnterminatedIdentifier i) = i
     errorEnd (UnexpectedCharacter _ i) = i + 1
+    errorEnd (UnterminatedString i) = i + 1
+    errorEnd (UnterminatedIdentifier i) = i + 1

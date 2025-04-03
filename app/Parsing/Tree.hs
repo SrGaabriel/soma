@@ -82,7 +82,7 @@ data ExpressionKind
         { typeClassFnName :: String
         , typeClassFnType :: Type
         }
-    | LambdaExpr 
+    | LambdaExpr
         { lambdaParams :: [String]
         , lambdaBody :: Expression
         }

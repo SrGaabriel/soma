@@ -1,7 +1,7 @@
 module Analysis.Tree where
 
 import Analysis.Errors (AnalysisError (..))
-import Analysis.Inference (InferM, InferState (..), Substitutable (apply), Substitution, TypeEnv, TypeMap, addGlobalBinding, cleanRunInferM, composeS, instantiate, unify, fresh)
+import Analysis.Inference (InferM, InferState (..), Substitutable (apply), Substitution, TypeEnv, TypeMap, addGlobalBinding, cleanRunInferM, composeS, fresh, instantiate, unify)
 import Control.Monad (foldM)
 import Control.Monad.Except
 import Control.Monad.State
@@ -133,12 +133,12 @@ collectGlobals expr =
                             StructConstructorExpr cName fields ->
                                 StructConstructor
                                     cName
-                                    (Prelude.map
-                                            ( \x -> case x of
-                                                Expression _ (StructFieldExpr fName ty) -> (fName, ty)
-                                                _ -> error "Expected StructFieldExpr in struct definition"
-                                            )
-                                            fields
+                                    ( Prelude.map
+                                        ( \x -> case x of
+                                            Expression _ (StructFieldExpr fName ty) -> (fName, ty)
+                                            _ -> error "Expected StructFieldExpr in struct definition"
+                                        )
+                                        fields
                                     )
                             recv -> error $ "Expected StructConstructorExpr in struct definition but got " ++ show recv
                         )
@@ -216,7 +216,7 @@ evalNode ctx expr = do
 
             evalNode ctx'{currentEnv = paramEnv} body
         LambdaExpr names body -> do
-            case result of 
+            case result of
                 Right (s, ty) -> do
                     let updatedSubst = composeS s (currentSubst ctx)
                     let updatedEnv = Map.map (apply s) (currentEnv ctx)

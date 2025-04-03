@@ -1,8 +1,8 @@
 module Analysis.Generics where
 
-import Control.Monad.Writer (Writer, tell, execWriter)
-import Parsing.Type (Type (..), StructConstructor(StructConstructor), mapTypeM, mapType)
+import Control.Monad.Writer (Writer, execWriter, tell)
 import Data.Maybe (fromMaybe)
+import Parsing.Type (StructConstructor (StructConstructor), Type (..), mapType, mapTypeM)
 
 collectGenerics :: Type -> [String]
 collectGenerics t = execWriter (mapTypeM collect t)

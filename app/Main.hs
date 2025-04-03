@@ -4,7 +4,7 @@ import Analysis.Inference (TypeMap)
 import Analysis.Tree (runAnalysis)
 import Data.Map as Map
 import Lexing.Lexer (tokenizeFile)
-import Logging.ErrorPrinter (printError)
+import Logging.ErrorPrinter (printConclusionMessage, printError)
 import Parsing.Parser (parse)
 import Parsing.Tree (Expression (..), exprChildren)
 import System.Exit (exitFailure)
@@ -14,14 +14,17 @@ main = do
     putStrLn "Starting soma..."
     content <- readFile "app.soma"
 
-    tokens <-
-        either
-            ( \err -> do
-                printError err "app.soma" content "LEXING"
-                exitFailure
-            )
-            return
-            (tokenizeFile content)
+    let (tokens, errors) = tokenizeFile content
+    if not (Prelude.null errors)
+        then do
+            mapM_
+                ( \err -> do
+                    printError err "app.soma" content "LEXING"
+                )
+                errors
+            printConclusionMessage ("Could not compile because of the " ++ show (length errors) ++ " lexing errors above.")
+            exitFailure
+        else pure ()
 
     tree <-
         either
