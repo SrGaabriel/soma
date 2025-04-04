@@ -15,6 +15,9 @@ Current features:
 - [x] `let .. in` expressions
 - [x] Pretty error logging
 - [x] Strong & static type inference (Hindley-Milner)
+- [x] Lambdas
+- [x] Type classes (not instantiable yet)
+- [x] Multiline Strings
 - ... more!
 
 > To see some examples, check `app.soma`!

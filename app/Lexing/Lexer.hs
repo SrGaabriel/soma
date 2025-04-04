@@ -93,14 +93,29 @@ tokenize (c : cs) i indent
             newIndent = length spaces
         in addToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
     | c == '"' =
-        let (text, rest) = span (/= '"') cs
-        in case rest of
-            '"' : rest' ->
-                let quotedText = c : text ++ "\""
-                in addToken (Token TokenString quotedText i indent) (tokenize rest' (i + length quotedText) indent)
-            _ ->
-                let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
-                in (restTokens, UnterminatedString i : restErrors)
+        if take 2 cs == "\"\""
+            then
+                let restAfterOpening = drop 2 cs
+                    (text, rest) = breakTripleQuote restAfterOpening
+                in case rest of
+                    '"' : '"' : '"' : rest' ->
+                        let quotedText = "\"\"\"" ++ text ++ "\"\"\""
+                        in addToken (Token TokenString quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+                    _ ->
+                        let (restTokens, restErrors) = tokenize rest (i + length ("\"\"\"" ++ text)) indent
+                        in (restTokens, UnterminatedString i : restErrors)
+            else
+                let (text, rest) = span (\x -> x /= '"' && x /= '\n') cs
+                in case rest of
+                    '"' : rest' ->
+                        let quotedText = c : text ++ "\""
+                        in addToken (Token TokenString quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+                    '\n' : _ ->
+                        let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
+                        in (restTokens, UnterminatedString i : restErrors)
+                    _ ->
+                        let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
+                        in (restTokens, UnterminatedString i : restErrors)
     | c == '`' =
         let (text, rest) = span (/= '`') cs
         in case rest of
@@ -132,6 +147,16 @@ tokenize (c : cs) i indent
     | otherwise =
         let (restTokens, restErrors) = tokenize cs (i + 1) indent
         in (restTokens, UnexpectedCharacter c i : restErrors)
+
+breakTripleQuote :: String -> (String, String)
+breakTripleQuote s = go s ""
+  where
+    go [] acc = (acc, [])
+    go rest@(c1 : c2 : c3 : cs) acc
+        | c1 == '"' && c2 == '"' && c3 == '"' = (acc, rest)
+        | otherwise = go (c2 : c3 : cs) (acc ++ [c1])
+    go (c1 : c2 : []) acc = (acc ++ [c1, c2], [])
+    go (c1 : []) acc = (acc ++ [c1], [])
 
 addToken :: Token -> ([Token], [LexingError]) -> ([Token], [LexingError])
 addToken token (tokens, errors) = (token : tokens, errors)

@@ -81,8 +81,11 @@ predicate (val pred) :: a -> (a -> Bool) -> Bool = pred val
 
 predicateTest :: Bool = predicate 5 (λval -> true)
 
-doublePredicate (x y pred) :: x -> y -> (x -> y -> Int) -> Int =
+doublePredicate (x y pred) :: a -> b -> (a -> b -> Int) -> Int =
     pred x y
 
 doublePredicateTest :: Int =
     doublePredicate 5 6 (λx.y -> x + y)
+
+multilineStrings :: String = """Hello,
+World!"""
