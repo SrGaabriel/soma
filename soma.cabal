@@ -32,6 +32,7 @@ executable soma
                       Analysis.Generics
                       Analysis.Errors
                       Logging.ErrorPrinter
+                      Logging.Reporting
                       Project.Module
                       Utils.Lists
                       Utils.Currying

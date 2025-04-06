@@ -18,6 +18,7 @@ Current features:
 - [x] Lambdas
 - [x] Type classes (not instantiable yet)
 - [x] Multiline Strings
+- [x] Arrays
 - ... more!
 
 > To see some examples, check `app.soma`!

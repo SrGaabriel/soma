@@ -4,6 +4,7 @@ data Type
     = IntType
     | StringType
     | BoolType
+    | ArrayType Type
     | TupleType [Type]
     | FunctionType
         { functionTypeArg :: Type
@@ -33,6 +34,7 @@ instance Show Type where
     show IntType = "Int"
     show StringType = "String"
     show BoolType = "Bool"
+    show (ArrayType t) = "[" ++ show t ++ "]"
     show (TupleType ts) = "(" ++ unwords (map show ts) ++ ")"
     show (FunctionType arg ret) = show arg ++ " -> " ++ show ret
     show (GenericType name constraints) = "'" ++ name ++ unwords (map (\c -> " : " ++ c) constraints)
@@ -42,6 +44,7 @@ instance Show Type where
     show (ClassType name) = name
 
 mapType :: (Type -> Type) -> Type -> Type
+mapType f (ArrayType t) = ArrayType (mapType f t)
 mapType f (TupleType ts) = TupleType (map (mapType f) ts)
 mapType f (FunctionType arg ret) = FunctionType (mapType f arg) (mapType f ret)
 mapType f (StructType name constructors mgs) =
@@ -53,6 +56,9 @@ mapType f (UnresolvedStructType name mgs) = UnresolvedStructType name (fmap (map
 mapType f t = f t
 
 mapTypeM :: (Monad m) => (Type -> m Type) -> Type -> m Type
+mapTypeM f (ArrayType t) = do
+    t' <- mapTypeM f t
+    f (ArrayType t')
 mapTypeM f (TupleType ts) = do
     ts' <- mapM (mapTypeM f) ts
     f (TupleType ts')

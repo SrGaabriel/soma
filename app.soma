@@ -89,3 +89,7 @@ doublePredicateTest :: Int =
 
 multilineStrings :: String = """Hello,
 World!"""
+
+emptyArrayTest :: [String] = []
+
+arrayTest :: [Int] = [1, 2, 3]

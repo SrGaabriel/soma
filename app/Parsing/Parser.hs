@@ -272,6 +272,10 @@ parseAtom = do
                     case contents of
                         (first : []) -> pure first
                         _ -> pure $ expr lparen (TupleExpr contents)
+        TokenLeftBracket -> do
+            lbracket <- consume TokenLeftBracket
+            contents <- parseCommaSeparatedUntil TokenRightBracket parseExpression
+            pure $ expr lbracket (ArrayExpr contents)
         TokenIdentifier -> do
             idToken <- next
             pure $ expr idToken (ValueReferenceExpr (tokenValue idToken))
@@ -378,6 +382,11 @@ parseType = do
             case types of
                 [singleType] -> pure singleType
                 _ -> pure $ TupleType types
+        TokenLeftBracket -> do
+            _ <- consume TokenLeftBracket
+            innerType <- parseType
+            _ <- consume TokenRightBracket
+            pure $ ArrayType innerType
         TokenIdentifier -> do
             typeToken <- consume TokenIdentifier
             let name = tokenValue typeToken

@@ -109,6 +109,23 @@ inferExpr env expr@(Expression _ (BlockExpr expressions)) = do
     let resultType = last tys
     recordType expr resultType
     pure (subs, resultType)
+inferExpr env expr@(Expression _ (ArrayExpr expressions)) = do
+    (subs, tys) <- inferExprs env expressions
+    unifiedType <-
+        case tys of
+            [] -> fresh
+            (t : ts) ->
+                foldM
+                    ( \acc t -> do
+                        s <- unify expr acc t
+                        pure (apply s acc)
+                    )
+                    t
+                    ts
+
+    let resultType = ArrayType unifiedType
+    recordType expr resultType
+    pure (subs, resultType)
 inferExpr _ expr = throwError $ UntypedExpression expr
 
 inferExprs :: TypeEnv -> [Expression] -> InferM (Substitution, [Type])

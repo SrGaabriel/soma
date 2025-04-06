@@ -98,6 +98,7 @@ unify expr u@(UnresolvedStructType _ _) t = do
     unify expr replaced t
 unify expr t u@(UnresolvedStructType _ _) =
     unify expr u t
+unify expr (ArrayType t1) (ArrayType t2) = unify expr t1 t2 -- Added case
 unify expr (FunctionType arg1 ret1) (FunctionType arg2 ret2) = do
     s1 <- unify expr arg1 arg2
     s2 <- unify expr (apply s1 ret1) (apply s1 ret2)

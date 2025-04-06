@@ -86,6 +86,7 @@ data ExpressionKind
         { lambdaParams :: [String]
         , lambdaBody :: Expression
         }
+    | ArrayExpr [Expression]
     deriving (Eq, Ord)
 
 exprChildren :: ExpressionKind -> [Expression]
@@ -113,6 +114,7 @@ exprChildren kind = case kind of
     TypeClassExpr _ _ methods -> methods
     TypeClassMethodExpr _ _ -> []
     LambdaExpr _ body -> [body]
+    ArrayExpr expressions -> expressions
 
 instance Show ExpressionKind where
     show kind = case kind of
@@ -139,6 +141,7 @@ instance Show ExpressionKind where
         TypeClassExpr name generics methods -> "TypeClassExpr (" ++ name ++ " :: " ++ show generics ++ " :: " ++ show methods ++ ")"
         TypeClassMethodExpr name _ -> "TypeClassMethodExpr (" ++ name ++ ")"
         LambdaExpr params body -> "LambdaExpr (" ++ show params ++ " -> " ++ show body ++ ")"
+        ArrayExpr expressions -> "ArrayExpr (" ++ show expressions ++ ")"
 
 instance Show Expression where
     show (Expression token kind) = (show kind) ++ " '" ++ tokenValue token ++ "'"
