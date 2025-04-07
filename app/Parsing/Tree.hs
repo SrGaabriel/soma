@@ -1,3 +1,5 @@
+{-# LANGUAGE InstanceSigs #-}
+
 module Parsing.Tree (Expression (..), ExpressionKind (..), exprChildren) where
 
 import Lexing.Lexer (Token (..))
@@ -90,58 +92,57 @@ data ExpressionKind
     deriving (Eq, Ord)
 
 exprChildren :: ExpressionKind -> [Expression]
-exprChildren kind = case kind of
-    RootExpr leaves -> leaves
-    FunctionExpr _ _ _ body -> [body]
-    ConstantBindingExpr _ _ value -> [value]
-    FunctionParamExpr _ _ -> []
-    BinaryOpExpr left right _ -> [left, right]
-    PatternMatchExpr patterns -> patterns
-    NumberPatternExpr _ -> []
-    VariablePatternExpr _ -> []
-    PatternHandlerExpr pattern handler -> [pattern, handler]
-    NumberExpr -> []
-    FunctionCallExpr fn arg -> [fn, arg]
-    ValueReferenceExpr _ -> []
-    StringExpr _ -> []
-    TupleExpr expressions -> expressions
-    LetExpr _ value body -> [value, body]
-    BlockExpr expressions -> expressions
-    StructExpr _ constructors _ -> constructors
-    StructConstructorExpr _ fields -> fields
-    StructFieldExpr _ _ -> []
-    BoolExpr _ -> []
-    TypeClassExpr _ _ methods -> methods
-    TypeClassMethodExpr _ _ -> []
-    LambdaExpr _ body -> [body]
-    ArrayExpr expressions -> expressions
+exprChildren (RootExpr leaves) = leaves
+exprChildren (FunctionExpr _ _ _ body) = [body]
+exprChildren (ConstantBindingExpr _ _ value) = [value]
+exprChildren (FunctionParamExpr _ _) = []
+exprChildren (BinaryOpExpr left right _) = [left, right]
+exprChildren (PatternMatchExpr patterns) = patterns
+exprChildren (NumberPatternExpr _) = []
+exprChildren (VariablePatternExpr _) = []
+exprChildren (PatternHandlerExpr pattern handler) = [pattern, handler]
+exprChildren (NumberExpr) = []
+exprChildren (FunctionCallExpr fn arg) = [fn, arg]
+exprChildren (ValueReferenceExpr _) = []
+exprChildren (StringExpr _) = []
+exprChildren (TupleExpr expressions) = expressions
+exprChildren (LetExpr _ value body) = [value, body]
+exprChildren (BlockExpr expressions) = expressions
+exprChildren (StructExpr _ constructors _) = constructors
+exprChildren (StructConstructorExpr _ fields) = fields
+exprChildren (StructFieldExpr _ _) = []
+exprChildren (BoolExpr _) = []
+exprChildren (TypeClassExpr _ _ methods) = methods
+exprChildren (TypeClassMethodExpr _ _) = []
+exprChildren (LambdaExpr _ body) = [body]
+exprChildren (ArrayExpr expressions) = expressions
 
 instance Show ExpressionKind where
-    show kind = case kind of
-        RootExpr _ -> "RootExpr"
-        ConstantBindingExpr name _ _ -> "ConstantBindingExpr (" ++ name ++ ")"
-        FunctionExpr name params returnType _ -> "FunctionExpr (" ++ name ++ " :: " ++ show params ++ " -> " ++ show returnType ++ ")"
-        FunctionParamExpr name paramType -> "FunctionParamExpr (" ++ show name ++ " :: " ++ show paramType ++ ")"
-        BinaryOpExpr left right operator -> "BinaryOpExpr (" ++ show left ++ " " ++ show operator ++ " " ++ show right ++ ")"
-        PatternMatchExpr _ -> "PatternMatchExpr"
-        NumberPatternExpr value -> "NumberPatternExpr (" ++ value ++ ")"
-        VariablePatternExpr name -> "VariablePatternExpr (" ++ name ++ ")"
-        PatternHandlerExpr pattern _ -> "PatternHandlerExpr (" ++ show pattern ++ ")"
-        NumberExpr -> "NumberExpr"
-        FunctionCallExpr fn arg -> "FunctionCallExpr (" ++ show fn ++ " " ++ show arg ++ ")"
-        ValueReferenceExpr name -> "ValueReferenceExpr (" ++ name ++ ")"
-        BlockExpr _ -> "BlockExpr"
-        TupleExpr expressions -> "TupleExpr (" ++ show expressions ++ ")"
-        LetExpr name value body -> "LetExpr (" ++ name ++ " = " ++ show value ++ " in " ++ show body ++ ")"
-        StringExpr value -> "StringExpr (" ++ value ++ ")"
-        StructExpr name constructors generics -> "StructExpr (" ++ name ++ " :: " ++ show constructors ++ " :: " ++ show generics ++ ")"
-        StructConstructorExpr name fields -> "StructConstructorExpr (" ++ name ++ " :: " ++ show fields ++ ")"
-        StructFieldExpr name fieldType -> "StructFieldExpr (" ++ name ++ " :: " ++ show fieldType ++ ")"
-        BoolExpr value -> "BoolExpr (" ++ show value ++ ")"
-        TypeClassExpr name generics methods -> "TypeClassExpr (" ++ name ++ " :: " ++ show generics ++ " :: " ++ show methods ++ ")"
-        TypeClassMethodExpr name _ -> "TypeClassMethodExpr (" ++ name ++ ")"
-        LambdaExpr params body -> "LambdaExpr (" ++ show params ++ " -> " ++ show body ++ ")"
-        ArrayExpr expressions -> "ArrayExpr (" ++ show expressions ++ ")"
+    show :: ExpressionKind -> String
+    show (RootExpr _) = "RootExpr"
+    show (ConstantBindingExpr name _ _) = "ConstantBindingExpr (" ++ name ++ ")"
+    show (FunctionExpr name params returnType _) = "FunctionExpr (" ++ name ++ " :: " ++ show params ++ " -> " ++ show returnType ++ ")"
+    show (FunctionParamExpr name paramType) = "FunctionParamExpr (" ++ show name ++ " :: " ++ show paramType ++ ")"
+    show (BinaryOpExpr left right operator) = "BinaryOpExpr (" ++ show left ++ " " ++ show operator ++ " " ++ show right ++ ")"
+    show (PatternMatchExpr _) = "PatternMatchExpr"
+    show (NumberPatternExpr value) = "NumberPatternExpr (" ++ value ++ ")"
+    show (VariablePatternExpr name) = "VariablePatternExpr (" ++ name ++ ")"
+    show (PatternHandlerExpr pattern _) = "PatternHandlerExpr (" ++ show pattern ++ ")"
+    show (NumberExpr) = "NumberExpr"
+    show (FunctionCallExpr fn arg) = "FunctionCallExpr (" ++ show fn ++ " " ++ show arg ++ ")"
+    show (ValueReferenceExpr name) = "ValueReferenceExpr (" ++ name ++ ")"
+    show (BlockExpr _) = "BlockExpr"
+    show (TupleExpr expressions) = "TupleExpr (" ++ show expressions ++ ")"
+    show (LetExpr name value body) = "LetExpr (" ++ name ++ " = " ++ show value ++ " in " ++ show body ++ ")"
+    show (StringExpr value) = "StringExpr (" ++ value ++ ")"
+    show (StructExpr name constructors generics) = "StructExpr (" ++ name ++ " :: " ++ show constructors ++ " :: " ++ show generics ++ ")"
+    show (StructConstructorExpr name fields) = "StructConstructorExpr (" ++ name ++ " :: " ++ show fields ++ ")"
+    show (StructFieldExpr name fieldType) = "StructFieldExpr (" ++ name ++ " :: " ++ show fieldType ++ ")"
+    show (BoolExpr value) = "BoolExpr (" ++ show value ++ ")"
+    show (TypeClassExpr name generics methods) = "TypeClassExpr (" ++ name ++ " :: " ++ show generics ++ " :: " ++ show methods ++ ")"
+    show (TypeClassMethodExpr name _) = "TypeClassMethodExpr (" ++ name ++ ")"
+    show (LambdaExpr params body) = "LambdaExpr (" ++ show params ++ " -> " ++ show body ++ ")"
+    show (ArrayExpr expressions) = "ArrayExpr (" ++ show expressions ++ ")"
 
 instance Show Expression where
     show (Expression token kind) = (show kind) ++ " '" ++ tokenValue token ++ "'"
