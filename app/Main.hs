@@ -2,6 +2,7 @@ module Main where
 
 import Analysis.Inference (TypeMap)
 import Analysis.Tree (runAnalysis)
+import Config.Options (Options (optionsInput), extractOptions, formatError)
 import Data.Map as Map
 import Lexing.Lexer (tokenizeFile)
 import Logging.ErrorPrinter (printConclusionMessage, printError)
@@ -12,8 +13,14 @@ import System.Exit (exitFailure)
 main :: IO ()
 main = do
     putStrLn "Starting soma..."
-    content <- readFile "app.soma"
+    optionsResult <- extractOptions
+    options <- case optionsResult of
+        Right opts -> return opts
+        Left err -> do
+            putStrLn $ "Error parsing command line arguments: " ++ formatError err
+            exitFailure
 
+    content <- readFile (optionsInput options)
     let (tokens, errors) = tokenizeFile content
     if not (Prelude.null errors)
         then do
