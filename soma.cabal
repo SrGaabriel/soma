@@ -21,22 +21,11 @@ executable soma
     main-is:          Main.hs
     other-modules:    Lexing.Lexer
                       Lexing.Errors
-                      Parsing.Parser
                       Parsing.Errors
-                      Parsing.Tree
-                      Parsing.Type
-                      Parsing.Ops
-                      Parsing.Pattern
-                      Analysis.Inference
-                      Analysis.Tree
-                      Analysis.Generics
-                      Analysis.Errors
                       Logging.ErrorPrinter
                       Logging.Reporting
                       Project.Module
                       Utils.Lists
-                      Utils.Currying
-                      Utils.Constraints
                       Config.Options
 
     build-depends:    base >= 4.19.2.0,
