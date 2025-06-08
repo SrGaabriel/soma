@@ -2,8 +2,10 @@ module Main where
 
 import Config.Options (Options (optionsInput), extractOptions, formatError)
 import Lexing.Lexer (tokenizeFile)
+import Parsing.Ast (parse)
 import Logging.ErrorPrinter (printConclusionMessage, printError)
 import System.Exit (exitFailure)
+import Syntax.Tree (Expr, exprChildren)
 
 main :: IO ()
 main = do
@@ -27,4 +29,22 @@ main = do
             printConclusionMessage ("Could not compile because of the " ++ show (length errors) ++ " lexing errors above.")
             exitFailure
         else pure ()
-    putStrLn $ "Lexing completed successfully: " ++ show tokens
+
+    tree <-
+        either
+            ( \err -> do
+                printError err "app.soma" content "PARSING"
+                exitFailure
+            )
+            return
+            (parse tokens)
+
+    putStrLn "Tree:"
+    prettyPrintAst tree
+
+prettyPrintAst :: Expr -> IO ()
+prettyPrintAst root = prettyPrintAst' root 0
+  where
+    prettyPrintAst' expr indent = do
+        putStrLn $ replicate indent ' ' ++ show expr
+        mapM_ (\child -> prettyPrintAst' child (indent + 2)) (exprChildren expr)

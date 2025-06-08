@@ -1,8 +1,9 @@
-module Lexing.Lexer (Token (..), TokenKind (..), tokenize, tokenizeFile, referenceToken, referenceTokenKind) where
+module Lexing.Lexer (Token (..), TokenKind (..), tokenize, tokenizeFile, referenceToken, referenceTokenKind, tokenSpan, spanningTokens) where
 
 import Data.Char (generalCategory)
 import qualified Data.Char as C
 import Lexing.Errors (LexingError (..))
+import Lexing.Position (Span (Span))
 
 data TokenKind
     = TokenNumber
@@ -21,8 +22,8 @@ data TokenKind
     | TokenCase
     | TokenDo
     | TokenDot
-    | TokenLeftParenthesis
-    | TokenRightParenthesis
+    | TokenLeftParen
+    | TokenRightParen
     | TokenIdentifier
     | TokenPipe
     | TokenLet
@@ -40,6 +41,7 @@ data TokenKind
     | TokenTrue
     | TokenFalse
     | TokenLambda
+    | TokenForall
     deriving (Show, Eq, Ord)
 
 data Token = Token
@@ -64,8 +66,8 @@ tokenize (c : cs) i indent
                 '=' -> TokenEquals
                 '<' -> TokenLeftAngleBracket
                 '>' -> TokenRightAngleBracket
-                '(' -> TokenLeftParenthesis
-                ')' -> TokenRightParenthesis
+                '(' -> TokenLeftParen
+                ')' -> TokenRightParen
                 '|' -> TokenPipe
                 '$' -> TokenDollar
                 '[' -> TokenLeftBracket
@@ -73,6 +75,7 @@ tokenize (c : cs) i indent
                 ',' -> TokenComma
                 '.' -> TokenDot
                 'λ' -> TokenLambda
+                '∀' -> TokenForall
                 '\\' -> TokenLambda
                 _ -> error "Impossible case"
         in addToken (Token kind [c] i indent) (tokenize cs (i + 1) indent)
@@ -202,8 +205,8 @@ referenceTokenKind (TokenColon) = "a colon"
 referenceTokenKind (TokenReturns) = "'::'"
 referenceTokenKind (TokenCase) = "'case'"
 referenceTokenKind (TokenDo) = "'do'"
-referenceTokenKind (TokenLeftParenthesis) = "a left parenthesis"
-referenceTokenKind (TokenRightParenthesis) = "a right parenthesis"
+referenceTokenKind (TokenLeftParen) = "a left parenthesis"
+referenceTokenKind (TokenRightParen) = "a right parenthesis"
 referenceTokenKind (TokenPipe) = "a vertical bar"
 referenceTokenKind (TokenLet) = "'let'"
 referenceTokenKind (TokenFn) = "'fn'"
@@ -220,3 +223,11 @@ referenceTokenKind (TokenClass) = "'class'"
 referenceTokenKind (TokenWhere) = "'where'"
 referenceTokenKind (TokenInstance) = "'instance'"
 referenceTokenKind (TokenLambda) = "'\\'"
+referenceTokenKind (TokenForall) = "'∀'"
+
+tokenSpan :: Token -> Span
+tokenSpan token = Span (tokenPos token) (tokenPos token + length (tokenValue token))
+
+spanningTokens :: Token -> Token -> Span
+spanningTokens start end =
+    Span (tokenPos start) (tokenPos end + length (tokenValue end))
