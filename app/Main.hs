@@ -1,15 +1,15 @@
 module Main where
 
 import Config.Options (Options (optionsInput), extractOptions, formatError)
+import qualified Data.Map as Map
 import Lexing.Lexer (tokenizeFile)
 import Logging.ErrorPrinter (printConclusionMessage, printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Parsing.Ast (parse)
+import Semantic.Inference (TypeMap)
+import Semantic.TreeInference (runAnalysis)
 import Syntax.Tree (Expr, exprChildren)
 import System.Exit (exitFailure)
-import Semantic.TreeInference (runAnalysis)
-import Semantic.Inference (TypeMap)
-import qualified Data.Map as Map
 
 main :: IO ()
 main = do

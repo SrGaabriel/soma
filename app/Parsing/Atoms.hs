@@ -76,6 +76,9 @@ parseAtom = do
         TokenLowerIdentifier -> do
             idToken <- next
             pure $ ExprVar (tokenValue idToken) (tokenSpan idToken)
+        TokenUpperIdentifier -> do
+            idToken <- next
+            pure $ ExprVar (tokenValue idToken) (tokenSpan idToken)
         TokenString -> do
             stringToken <- next
             pure $ ExprStr (tokenValue stringToken) (tokenSpan stringToken)

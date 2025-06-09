@@ -38,7 +38,7 @@ instance TreeShow Type where
 
 instance TreeShow Constraint where
     treeShow :: Constraint -> String
-    treeShow (Constraint t cs) = treeShow t ++ " :: " ++ unwords (map treeShow cs)
+    treeShow (Constraint className varnames) = unwords (map treeShow varnames) ++ " : " ++ className
 
 instance (TreeShow a) => TreeShow [a] where
     treeShow :: (TreeShow a) => [a] -> String

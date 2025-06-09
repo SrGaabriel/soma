@@ -3,7 +3,16 @@ module Parsing.Types where
 import Control.Applicative (Alternative (many), (<|>))
 import Lexing.Lexer (Token (tokenValue), TokenKind (..))
 import Parsing.Parser (Parser, consume, optional, sepBy1)
-import Typing.Types (Constraint (Constraint), Kind (..), TyConstructor (TypeConstructor), TyVar (TypeVar), Type (..))
+import Typing.Types (
+    Constraint (..),
+    Kind (..),
+    TyConstructor (..),
+    TyVar (..),
+    Type (..),
+    boolType,
+    intType,
+    strType,
+ )
 
 parseKind :: Parser Kind
 parseKind = parseKindArrow
@@ -24,8 +33,7 @@ parseType = do
     baseType <- parseSimpleType
     maybeConstraints <- optional parseWhereConstraints
     case maybeConstraints of
-        Just constraints ->
-            pure $ TConstrained constraints baseType
+        Just constraints -> pure $ TConstrained constraints baseType
         Nothing -> pure baseType
 
 parseSimpleType :: Parser Type
@@ -56,7 +64,7 @@ parseAppType = do
 parseAtomType :: Parser Type
 parseAtomType =
     (TVar <$> parseTyVar)
-        <|> parseUnresolvedType
+        <|> parseUnresolvedOrPrimitiveType
         <|> parseParenthesizedType
   where
     parseParenthesizedType = do
@@ -68,59 +76,51 @@ parseAtomType =
             [] -> pure firstType
             _ -> pure $ TTuple (firstType : rest)
 
-parseUnresolvedType :: Parser Type
-parseUnresolvedType = do
+parseUnresolvedOrPrimitiveType :: Parser Type
+parseUnresolvedOrPrimitiveType = do
     name <- consume TokenUpperIdentifier
     kind <- optional (consume TokenReturns *> parseKind)
-    pure $ TUnresolved (tokenValue name) (maybe KindStar id kind)
+    let kind' = maybe KindStar id kind
+    case tokenValue name of
+        "Int" -> pure intType
+        "String" -> pure strType
+        "Bool" -> pure boolType
+        n -> pure $ TUnresolved n kind'
 
 parseWhereConstraints :: Parser [Constraint]
 parseWhereConstraints = do
     _ <- optional (consume TokenNewline)
     _ <- consume TokenWhere
-    concat <$> sepBy1 parseTypeVarConstraint parseConstraintSeparator
-  where
-    parseConstraintSeparator = consume TokenComma <|> consume TokenNewline
+    blocks <- sepBy1 parseVarClassConstraint (consume TokenComma <|> consume TokenNewline)
+    pure (concat blocks)
 
-parseTypeVarConstraint :: Parser [Constraint]
-parseTypeVarConstraint = do
-    tyVarName <- consume TokenLowerIdentifier
+parseVarClassConstraint :: Parser [Constraint]
+parseVarClassConstraint = do
+    varToks <- sepBy1 (consume TokenLowerIdentifier) (consume TokenComma)
+    let vars = map (TVar . (`TypeVar` KindStar) . tokenValue) varToks
     _ <- consume TokenColon
-    constraintType <- parseConstraintType
+    clsToks <- sepBy1 (consume TokenUpperIdentifier) (consume TokenComma)
+    let clsNames = map tokenValue clsToks
+    pure
+        [ Constraint cls [v]
+        | cls <- clsNames
+        , v <- vars
+        ]
 
-    let varAsType = TVar (TypeVar (tokenValue tyVarName) KindStar)
+parseConstraint :: Parser Constraint
+parseConstraint = do
+    conTk <- consume TokenUpperIdentifier
+    let clsName = tokenValue conTk
+    args <- many parseAtomType
+    pure $ Constraint clsName args
 
-    let classTypes = flattenConstraintType constraintType
-    pure $ map (\classType -> Constraint classType [varAsType]) classTypes
-
-flattenConstraintType :: Type -> [Type]
-flattenConstraintType (TTuple types) = types
-flattenConstraintType otherType = [otherType]
-
-parseConstraintType :: Parser Type
-parseConstraintType =
-    parseSimpleConstraint
-        <|> parseConstraintTuple
-  where
-    parseSimpleConstraint = do
-        className <- consume TokenUpperIdentifier
-        args <- many parseAtomType
-        let baseCon = TUnresolved (tokenValue className) KindStar
-        pure $ foldl TApp baseCon args
-
-    parseConstraintTuple = do
-        _ <- consume TokenLeftParen
-        firstConstraint <- parseConstraintType
-        restConstraints <- many (consume TokenComma *> parseConstraintType)
-        _ <- consume TokenRightParen
-        case restConstraints of
-            [] -> pure firstConstraint
-            _ ->
-                pure
-                    $ foldl
-                        TApp
-                        (TConstructor $ TypeConstructor "ConstraintTuple" KindStar)
-                        (firstConstraint : restConstraints)
+parseConstraintTuple :: Parser [Constraint]
+parseConstraintTuple = do
+    _ <- consume TokenLeftParen
+    c0 <- parseConstraint
+    cs <- many (consume TokenComma *> parseConstraint)
+    _ <- consume TokenRightParen
+    pure (c0 : cs)
 
 parseTyVar :: Parser TyVar
 parseTyVar = parseParenthesizedTyVar <|> parseSimpleTyVar

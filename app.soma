@@ -5,6 +5,9 @@ struct Shape a
     | Circle
         radius :: Int
 
+woww :: Shape Int =
+    Point 5 12
+
 struct Applier (a :: * -> *)
     = Applier
         func :: a Int
@@ -25,9 +28,13 @@ variables :: Int =
     let second = 6 in
     identity $ do
         8 + 9 + 10
-        right first $ genericId $ sum first $ second + first
+        right first $ sum first $ second + first
 
 sum (a b) :: Int -> Int -> Int = a + b
 
-combine :: f a -> g b -> h c
-  where f: Functor = 0
+exec func :: f Int -> f Int 
+    where f: Functor = fmap (\x -> x + 1) func
+
+identity value :: x -> x = value
+
+right (lhs rhs) :: a -> a -> a = rhs

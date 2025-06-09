@@ -86,7 +86,7 @@ exprSpan (ExprBool _ s) = s
 exprSpan (ExprBlock _ s) = s
 exprSpan (ExprArray _ s) = s
 exprSpan (ExprTuple _ s) = s
-exprSpan (ExprApp first second) = 
+exprSpan (ExprApp first second) =
     let Span start _ = exprSpan first
         Span _ end = exprSpan second
     in Span start end

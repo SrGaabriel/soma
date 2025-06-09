@@ -1,17 +1,19 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE FlexibleInstances #-}
+
 module Semantic.Inference where
 
+import Control.Monad (foldM)
 import Control.Monad.Except
 import Control.Monad.State
+import Data.List (find, nub)
 import Data.Map as Map
-import Semantic.Errors (SemanticError (..))
-import Typing.Types (Type (..), TyVar (TypeVar, tvKind), Constraint (..), Kind (..), TyConstructor (tcKind))
-import Syntax.Tree (Expr)
 import qualified Data.Set as Set
-import Data.List (nub, find)
-import Control.Monad (foldM)
+import Semantic.Errors (SemanticError (..))
+import Syntax.Tree (Expr)
+import Typing.Types (Constraint (..), Kind (..), TyConstructor (tcKind), TyVar (TypeVar, tvKind), Type (..))
+import Utils.Lists (hardHead)
 
 newtype InferM a = InferM
     { runInfer :: ExceptT SemanticError (State InferState) a
@@ -69,10 +71,10 @@ composeSubst :: Subst -> Subst -> Subst
 composeSubst s1 s2 = Map.map (apply s1) s2 `Map.union` s1
 
 instance Substitutable Constraint where
-    apply s (Constraint t ts) = Constraint (apply s t) (Prelude.map (apply s) ts)
-    ftv (Constraint t ts) = Set.unions (ftv t : Prelude.map ftv ts)
+    apply s (Constraint t ts) = Constraint t (Prelude.map (apply s) ts)
+    ftv (Constraint _ ts) = Set.unions $ Prelude.map ftv ts
 
-instance Substitutable a => Substitutable [a] where
+instance (Substitutable a) => Substitutable [a] where
     apply s = Prelude.map (apply s)
     ftv = Set.unions . Prelude.map ftv
 
@@ -87,7 +89,8 @@ type InstanceEnv = [Instance]
 data Instance = Instance
     { instConstraints :: [Constraint]
     , instHead :: Constraint
-    } deriving (Show, Eq)
+    }
+    deriving (Show, Eq)
 
 data Evidence
     = EvVar String
@@ -99,7 +102,7 @@ data InferState = InferState
     { inferNextVar :: Int
     , inferTypeMap :: TypeMap
     , globalEnv :: TypeEnv
-    , structTypes :: Map.Map String Type
+    , constructorsInScope :: Map.Map String Type
     , instanceEnv :: InstanceEnv
     , unsolvedConstraints :: [Constraint]
     }
@@ -126,37 +129,30 @@ addGlobalBinding name ty = do
 
 unify :: Expr -> Type -> Type -> InferM Subst
 unify _ t1 t2 | t1 == t2 = return nullSubst
-
 unify expr (TVar tv) t = bindVar expr tv t
 unify expr t (TVar tv) = bindVar expr tv t
-
 unify expr (TApp l r) (TApp l' r') = do
     s1 <- unify expr l l'
     s2 <- unify expr (apply s1 r) (apply s1 r')
     return (s1 `composeSubst` s2)
-
 unify expr (TArrow l r) (TArrow l' r') = do
     s1 <- unify expr l l'
     s2 <- unify expr (apply s1 r) (apply s1 r')
     return (s1 `composeSubst` s2)
-
-unify expr (TTuple ts1) (TTuple ts2) 
+unify expr (TTuple ts1) (TTuple ts2)
     | length ts1 == length ts2 = unifyList expr ts1 ts2
     | otherwise = throwError $ TupleLengthMismatch expr ts1 ts2
-
 unify expr (TConstrained cs1 t1) (TConstrained cs2 t2) = do
     s1 <- unify expr t1 t2
     s2 <- unifyConstraints (apply s1 cs1) (apply s1 cs2)
     return (s1 `composeSubst` s2)
-
 unify expr (TConstrained _ t1) t2 = unify expr t1 t2
 unify expr t1 (TConstrained _ t2) = unify expr t1 t2
-
 unify expr t1 t2 = throwError $ TypeMismatch expr t1 t2
 
 unifyList :: Expr -> [Type] -> [Type] -> InferM Subst
 unifyList _ [] [] = return nullSubst
-unifyList expr (t1:ts1) (t2:ts2) = do
+unifyList expr (t1 : ts1) (t2 : ts2) = do
     s1 <- unify expr t1 t2
     s2 <- unifyList expr (apply s1 ts1) (apply s1 ts2)
     return (s1 `composeSubst` s2)
@@ -183,12 +179,12 @@ kindOf (TUnresolved _ k) = k
 
 solveConstraints :: [Constraint] -> InferM Subst
 solveConstraints constraints = do
-    state <- get
-    let instances = instanceEnv state
+    cState <- get
+    let instances = instanceEnv cState
     result <- solveConstraintsWithInstances instances constraints
     case result of
         Left unsolved -> do
-            put state{unsolvedConstraints = unsolved ++ unsolvedConstraints state}
+            put cState{unsolvedConstraints = unsolved ++ unsolvedConstraints cState}
             return nullSubst
         Right subst -> return subst
 
@@ -198,9 +194,10 @@ solveConstraintsWithInstances instances constraints = do
     (solved, unsolved, subst) <- solveStep instances constraints nullSubst
     if Prelude.null solved && not (Prelude.null unsolved)
         then return (Left unsolved)
-        else if Prelude.null unsolved
-            then return (Right subst)
-            else solveConstraintsWithInstances instances unsolved
+        else
+            if Prelude.null unsolved
+                then return (Right subst)
+                else solveConstraintsWithInstances instances unsolved
 
 solveStep :: InstanceEnv -> [Constraint] -> Subst -> InferM ([Constraint], [Constraint], Subst)
 solveStep instances constraints currentSubst = do
@@ -215,13 +212,13 @@ solveStep instances constraints currentSubst = do
                 let solvedWithNew = constraint : solved
                 let resolvedNew = apply combinedSubst newConstraints
                 return (solvedWithNew, unsolved ++ resolvedNew, combinedSubst)
-            Nothing -> 
+            Nothing ->
                 return (solved, constraint : unsolved, subst)
 
 trysolveConstraint :: InstanceEnv -> Constraint -> InferM (Maybe ([Constraint], Subst))
-trysolveConstraint instances constraint@(Constraint classType argTypes) = do
+trysolveConstraint instances constraint@(Constraint _ _) = do
     case findMatchingInstance instances constraint of
-        Just (Instance prereqs (Constraint _ instArgTypes), matchSubst) -> do
+        Just (Instance prereqs (Constraint _ _), matchSubst) -> do
             let resolvedPrereqs = apply matchSubst prereqs
             return $ Just (resolvedPrereqs, matchSubst)
         Nothing -> do
@@ -229,12 +226,12 @@ trysolveConstraint instances constraint@(Constraint classType argTypes) = do
             return unificationResult
 
 findMatchingInstance :: InstanceEnv -> Constraint -> Maybe (Instance, Subst)
-findMatchingInstance instances target@(Constraint targetClass targetArgs) = 
+findMatchingInstance instances target@(Constraint _ _) =
     find isMatch (zip instances (Prelude.map (matchInstance target) instances)) >>= extractMatch
   where
     isMatch (_, Just _) = True
     isMatch (_, Nothing) = False
-    
+
     extractMatch (inst, Just subst) = Just (inst, subst)
     extractMatch _ = Nothing
 
@@ -246,7 +243,7 @@ matchInstance (Constraint targetClass targetArgs) (Instance _ (Constraint instCl
 
 tryUnifyTypes :: [Type] -> [Type] -> Maybe Subst
 tryUnifyTypes [] [] = Just nullSubst
-tryUnifyTypes (t1:ts1) (t2:ts2) = do
+tryUnifyTypes (t1 : ts1) (t2 : ts2) = do
     s1 <- tryUnifyType t1 t2
     s2 <- tryUnifyTypes (apply s1 ts1) (apply s1 ts2)
     return (s1 `composeSubst` s2)
@@ -274,11 +271,12 @@ tryBindVar tv t
     | otherwise = Just $ Map.singleton tv t
 
 tryUnificationSolve :: Constraint -> InferM (Maybe ([Constraint], Subst))
-tryUnificationSolve constraint@(Constraint classType argTypes) = do
-    result <- tryBuiltinConstraints constraint
-           `orElse` tryFunctionalDependencies constraint
-           `orElse` tryTypeVariableElimination constraint
-           `orElse` tryConstraintSimplification constraint
+tryUnificationSolve constraint@(Constraint _ _) = do
+    result <-
+        tryBuiltinConstraints constraint
+            `orElse` tryFunctionalDependencies constraint
+            `orElse` tryTypeVariableElimination constraint
+            `orElse` tryConstraintSimplification constraint
     return result
   where
     orElse :: InferM (Maybe a) -> InferM (Maybe a) -> InferM (Maybe a)
@@ -291,22 +289,21 @@ tryUnificationSolve constraint@(Constraint classType argTypes) = do
 tryBuiltinConstraints :: Constraint -> InferM (Maybe ([Constraint], Subst))
 tryBuiltinConstraints (Constraint classType argTypes) = do
     case (classType, argTypes) of
-        (TConstructor eqTc, [t1, t2]) | isEqualityClass eqTc -> do
+        (typeclass, [t1, t2]) | isEqualityClass typeclass -> do
             case tryUnifyType t1 t2 of
                 Just subst -> return $ Just ([], subst)
                 Nothing -> return Nothing
-        
         (_, [t1, t2]) | t1 == t2 -> return $ Just ([], nullSubst)
-        
-        (_, [TConstructor tc1, TConstructor tc2]) 
+        (_, [TConstructor tc1, TConstructor tc2])
             | tc1 == tc2 -> return $ Just ([], nullSubst)
-        
         _ -> return Nothing
   where
-    isEqualityClass tc = tcKind tc == KindArrow KindStar (KindArrow KindStar KindStar)
+    isEqualityClass :: String -> Bool -- todo: refine
+    isEqualityClass "Eq" = True
+    isEqualityClass _ = False
 
 tryFunctionalDependencies :: Constraint -> InferM (Maybe ([Constraint], Subst))
-tryFunctionalDependencies (Constraint classType argTypes) = do
+tryFunctionalDependencies (Constraint _ argTypes) = do
     case argTypes of
         [TApp (TConstructor f) a, TVar tv] -> do
             maybeResultType <- lookupTypeConstructorResult f a
@@ -323,26 +320,31 @@ tryFunctionalDependencies (Constraint classType argTypes) = do
 tryTypeVariableElimination :: Constraint -> InferM (Maybe ([Constraint], Subst))
 tryTypeVariableElimination (Constraint classType argTypes) = do
     case argTypes of
-        args | all (== head args) args && not (Prelude.null args) -> 
-            case head args of
+        args | all (== hardHead args) args && not (Prelude.null args) ->
+            case hardHead args of
                 TVar _ -> return $ Just ([], nullSubst)
                 _ -> return Nothing
-        
         _ -> do
-            state <- get
-            let allConstraints = unsolvedConstraints state
+            cState <- get
+            let allConstraints = unsolvedConstraints cState
             let thisConstraintVars = ftv (Constraint classType argTypes)
-            let otherConstraintVars = Set.unions $ Prelude.map ftv $ 
-                    Prelude.filter (/= Constraint classType argTypes) allConstraints
-            
+            let otherConstraintVars =
+                    Set.unions
+                        $ Prelude.map ftv
+                        $ Prelude.filter (/= Constraint classType argTypes) allConstraints
+
             let isolatedVars = thisConstraintVars `Set.difference` otherConstraintVars
-            
+
             if Set.null isolatedVars
                 then return Nothing
                 else do
-                    freshVars <- mapM (\tv -> do
-                        fresh' <- fresh (tvKind tv)
-                        return (tv, TVar fresh')) (Set.toList isolatedVars)
+                    freshVars <-
+                        mapM
+                            ( \tv -> do
+                                fresh' <- fresh (tvKind tv)
+                                return (tv, TVar fresh')
+                            )
+                            (Set.toList isolatedVars)
                     let subst = Map.fromList freshVars
                     return $ Just ([], subst)
 
@@ -359,10 +361,11 @@ tryConstraintSimplification (Constraint classType argTypes) = do
   where
     simplifyTypeInConstraint :: Type -> InferM Type
     simplifyTypeInConstraint t = case t of
-        TApp (TApp f a) b | isAssociativeOp f -> 
-            return $ TApp f (TApp (TApp f a) b)
+        TApp (TApp f a) b
+            | isAssociativeOp f ->
+                return $ TApp f (TApp (TApp f a) b)
         _ -> return t
-    
+
     isAssociativeOp _ = False
 
 unifyConstraints :: [Constraint] -> [Constraint] -> InferM Subst
@@ -374,12 +377,12 @@ unifyConstraints cs1 cs2 = do
 normalizeConstraints :: [Constraint] -> [Constraint]
 normalizeConstraints = nub . Prelude.map normalizeConstraint
 
-normalizeConstraint :: Constraint -> Constraint  
+normalizeConstraint :: Constraint -> Constraint
 normalizeConstraint c = c -- todo: implement normalization
 
 unifyConstraintLists :: [Constraint] -> [Constraint] -> InferM Subst
 unifyConstraintLists [] [] = return nullSubst
-unifyConstraintLists cs1 cs2 
+unifyConstraintLists cs1 cs2
     | length cs1 /= length cs2 = return nullSubst
     | otherwise = do
         substs <- mapM (uncurry unifyConstraintPair) (zip cs1 cs2)
@@ -399,32 +402,32 @@ solveConstraint constraint = do
 
 isConstraintSatisfiable :: Constraint -> InferM Bool
 isConstraintSatisfiable constraint = do
-    state <- get
-    result <- trysolveConstraint (instanceEnv state) constraint
+    cState <- get
+    result <- trysolveConstraint (instanceEnv cState) constraint
     return $ case result of
         Just _ -> True
         Nothing -> False
 
 getUnsolvedConstraints :: InferM [Constraint]
 getUnsolvedConstraints = do
-    state <- get
-    return $ unsolvedConstraints state
+    cState <- get
+    return $ unsolvedConstraints cState
 
 clearUnsolvedConstraints :: InferM ()
 clearUnsolvedConstraints = do
-    state <- get
-    put state{unsolvedConstraints = []}
+    cState <- get
+    put cState{unsolvedConstraints = []}
 
 deferConstraint :: Constraint -> InferM ()
 deferConstraint constraint = do
-    state <- get
-    put state{unsolvedConstraints = constraint : unsolvedConstraints state}
+    cState <- get
+    put cState{unsolvedConstraints = constraint : unsolvedConstraints cState}
 
 resolveDeferred :: InferM Subst
 resolveDeferred = do
-    state <- get
-    let deferred = unsolvedConstraints state
-    put state{unsolvedConstraints = []}
+    cState <- get
+    let deferred = unsolvedConstraints cState
+    put cState{unsolvedConstraints = []}
     solveConstraints deferred
 
 evalInferM :: InferM a -> InferState -> IO (Either SemanticError a)

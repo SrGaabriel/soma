@@ -32,6 +32,7 @@ executable soma
                       Logging.Reporting
                       Logging.PrettyTrees
                       Project.Module
+                      Project.Name
                       Syntax.Tree
                       Syntax.Ops
                       Utils.Lists

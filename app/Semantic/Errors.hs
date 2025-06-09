@@ -1,11 +1,12 @@
 {-# LANGUAGE InstanceSigs #-}
+
 module Semantic.Errors where
 
-import Typing.Types (Type, Kind)
-import Syntax.Tree (Expr, exprSpan)
-import Logging.ErrorPrinter (PrintableError (..))
-import Lexing.Lexer (tokenSpan)
 import Lexing.Position (Span (..))
+import Logging.ErrorPrinter (PrintableError (..))
+import Logging.PrettyTrees (TreeShow (treeShow))
+import Syntax.Tree (Expr, exprSpan)
+import Typing.Types (Kind, Type)
 
 data SemanticError
     = TypeMismatch Expr Type Type
@@ -18,9 +19,8 @@ data SemanticError
     | KindMismatch Expr Kind Kind
     | UntypedExpression Expr
     | NotAFunction Expr Type
-    | UnknownStruct Expr String
+    | UnknownTypeConstructor Expr String Kind
     deriving (Show, Eq)
-
 
 instance PrintableError SemanticError where
     errorMessage :: SemanticError -> String
@@ -32,9 +32,9 @@ instance PrintableError SemanticError where
     errorMessage (UnboundVariable _ name) = "Unbound variable '" ++ name ++ "'"
     errorMessage (UntypedExpression expr) = "The expression " ++ show expr ++ " is untyped"
     errorMessage (NotAFunction _ ty) = "The type " ++ show ty ++ " does not support function application"
-    errorMessage (UnknownStruct _ name) = "Unknown struct '" ++ name ++ "'"
+    errorMessage (UnknownTypeConstructor _ name kind) = "Unknown constructor '" ++ name ++ "' kinded " ++ treeShow kind
     errorMessage (ArityMismatch expr) = "The expression " ++ show expr ++ " has an incorrect arity"
-    errorMessage (KindMismatch _ k1 k2) = "Kind mismatch: expected " ++ show k1 ++ " but received " ++ show k2
+    errorMessage (KindMismatch _ k1 k2) = "Kind mismatch: expected " ++ treeShow k1 ++ " but received " ++ treeShow k2
 
     errorStart :: SemanticError -> Int
     errorStart err =
@@ -45,7 +45,6 @@ instance PrintableError SemanticError where
         let Span _ end = exprSpan (getExpression err)
         in end
 
-
 getExpression :: SemanticError -> Expr
 getExpression (TypeMismatch expr _ _) = expr
 getExpression (BinaryOpTypeMismatch expr _ _) = expr
@@ -55,7 +54,6 @@ getExpression (CircularTypeDependency expr) = expr
 getExpression (UnboundVariable expr _) = expr
 getExpression (UntypedExpression expr) = expr
 getExpression (NotAFunction expr _) = expr
-getExpression (UnknownStruct expr _) = expr
+getExpression (UnknownTypeConstructor expr _ _) = expr
 getExpression (ArityMismatch expr) = expr
 getExpression (KindMismatch expr _ _) = expr
-

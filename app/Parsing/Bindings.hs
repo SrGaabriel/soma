@@ -8,7 +8,7 @@ import Parsing.Parser (Parser, consume, optional, parseFluidSequence)
 import Parsing.Types (parseType)
 import Syntax.Tree (Expr (ExprConstantDef, ExprFunctionDef))
 import Typing.Currying (uncurryFunction)
-import Typing.Types (Type (..))
+import Typing.Types (Type (..), extractFunc, isFunc)
 
 parseBinding :: Parser Expr
 parseBinding = do
@@ -26,21 +26,25 @@ parseBinding = do
 
     bindType <- parseType
 
-    case bindType of
-        t@(TArrow _ _) | argNames /= [] -> do
-            let (argTypes, returnType) = uncurryFunction t
+    if isFunc bindType && argNames /= []
+        then do
+            let funcT = extractFunc bindType
+            let (argTypes, returnType) = uncurryFunction funcT
             argMappings <- ensureSameLengthMap argNames argTypes
             equals <- consume TokenEquals
             _ <- optional $ consume TokenNewline
             body <- parseExpression
             let spanning = spanningTokens nameToken equals
             pure $ ExprFunctionDef name argMappings returnType body spanning
-        _ -> do
-            equals <- consume TokenEquals
-            _ <- optional $ consume TokenNewline
-            body <- parseExpression
-            let spanning = spanningTokens nameToken equals
-            pure $ ExprConstantDef name bindType body spanning
+        else
+            if argNames /= []
+                then throwError $ FunctionArgumentLengthMismatch (last argNames)
+                else do
+                    equals <- consume TokenEquals
+                    _ <- optional $ consume TokenNewline
+                    body <- parseExpression
+                    let spanning = spanningTokens nameToken equals
+                    pure $ ExprConstantDef name bindType body spanning
 
 ensureSameLengthMap :: [Token] -> [Type] -> Parser [(String, Type)]
 ensureSameLengthMap names types
