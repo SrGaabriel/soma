@@ -1,12 +1,12 @@
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
 module Parsing.Parser where
 
 import Control.Applicative (Alternative (..))
+import Control.Monad.Error.Class (MonadError (..))
 import Lexing.Lexer (Token (..), TokenKind (..))
 import Parsing.Errors (ParsingError (..))
-import Control.Monad.Error.Class (MonadError (..))
 
 newtype Parser a = Parser
     { runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -53,7 +53,7 @@ confirm :: TokenKind -> Parser ()
 confirm expectedKind = Parser $ \case
     [] -> Left EndOfInput
     (t : ts)
-        | tokenKind t == expectedKind -> Right ((), t:ts)
+        | tokenKind t == expectedKind -> Right ((), t : ts)
         | otherwise -> Left $ ExpectedDifferentToken expectedKind t
 
 next :: Parser Token
@@ -130,7 +130,6 @@ parseSequence separator end itemParser = Parser $ \tokens -> do
                                 | tk == end -> Right (reverse (item : acc), rest)
                                 | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
 
-{-# DEPRECATED parseCommaSeparatedUntil "Consume end" #-}
 parseCommaSeparatedUntil :: TokenKind -> Parser a -> Parser [a]
 parseCommaSeparatedUntil end itemParser = parseList
   where
@@ -260,3 +259,6 @@ optionallySurrounded start end parser = do
             _ <- consume end
             pure result
         Nothing -> parser
+
+sepBy1 :: Parser a -> Parser b -> Parser [a]
+sepBy1 p sep = (:) <$> p <*> many (sep *> p)

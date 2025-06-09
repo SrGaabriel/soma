@@ -2,10 +2,11 @@ module Main where
 
 import Config.Options (Options (optionsInput), extractOptions, formatError)
 import Lexing.Lexer (tokenizeFile)
-import Parsing.Ast (parse)
 import Logging.ErrorPrinter (printConclusionMessage, printError)
-import System.Exit (exitFailure)
+import Logging.PrettyTrees (TreeShow (treeShow))
+import Parsing.Ast (parse)
 import Syntax.Tree (Expr, exprChildren)
+import System.Exit (exitFailure)
 
 main :: IO ()
 main = do
@@ -46,5 +47,5 @@ prettyPrintAst :: Expr -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0
   where
     prettyPrintAst' expr indent = do
-        putStrLn $ replicate indent ' ' ++ show expr
+        putStrLn $ replicate indent ' ' ++ treeShow expr
         mapM_ (\child -> prettyPrintAst' child (indent + 2)) (exprChildren expr)

@@ -1,3 +1,17 @@
+struct Shape a
+    = Point
+        x :: a
+        y :: a
+    | Circle
+        radius :: Int
+
+struct Applier (a :: * -> *)
+    = Applier
+        func :: a Int
+
+class Functor (f :: * -> *) specifies
+    fmap :: (a -> b) -> f a -> f b
+
 nothing :: Int = (5+5)*5
 
 hello :: String =
@@ -13,5 +27,7 @@ variables :: Int =
         8 + 9 + 10
         right first $ genericId $ sum first $ second + first
 
-sum (a b) :: Int -> Int -> Int =
-    a + b
+sum (a b) :: Int -> Int -> Int = a + b
+
+combine :: f a -> g b -> h c
+  where f: Functor = 0

@@ -1,6 +1,6 @@
 module Typing.Currying where
 
-import Typing.Types (Type(TArrow))
+import Typing.Types (Kind (KindArrow), Type (TArrow))
 
 curryParams :: [(String, Type)] -> Type -> Type
 curryParams params returnType =
@@ -13,10 +13,14 @@ getParamTypes :: Type -> [Type]
 getParamTypes (TArrow param ret) = param : getParamTypes ret
 getParamTypes _ = []
 
-uncurryFunction :: Type -> Type -> ([Type], Type)
-uncurryFunction a t =
-    case t of
-        TArrow b c ->
-            let (args, ret) = uncurryFunction b c
-            in (a : args, ret)
-        _ -> ([a], t)
+uncurryFunction :: Type -> ([Type], Type)
+uncurryFunction (TArrow a b) =
+    let (args, ret) = uncurryFunction b
+    in (a : args, ret)
+uncurryFunction t = ([], t)
+
+uncurryKind :: Kind -> ([Kind], Kind)
+uncurryKind (KindArrow k1 k2) =
+    let (args, ret) = uncurryKind k2
+    in (k1 : args, ret)
+uncurryKind k = ([], k)

@@ -24,7 +24,8 @@ data TokenKind
     | TokenDot
     | TokenLeftParen
     | TokenRightParen
-    | TokenIdentifier
+    | TokenLowerIdentifier
+    | TokenUpperIdentifier
     | TokenPipe
     | TokenLet
     | TokenIn
@@ -34,6 +35,7 @@ data TokenKind
     | TokenStruct
     | TokenClass
     | TokenWhere
+    | TokenSpecifies
     | TokenInstance
     | TokenComma
     | TokenLeftBracket
@@ -124,7 +126,11 @@ tokenize (c : cs) i indent
         in case rest of
             '`' : rest' ->
                 let quotedText = c : text ++ "`"
-                in addToken (Token TokenIdentifier quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+                    kind =
+                        if C.isLower c
+                            then TokenLowerIdentifier
+                            else TokenUpperIdentifier
+                in addToken (Token kind quotedText i indent) (tokenize rest' (i + length quotedText) indent)
             _ ->
                 let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
                 in (restTokens, UnterminatedIdentifier i : restErrors)
@@ -142,10 +148,14 @@ tokenize (c : cs) i indent
                 "struct" -> TokenStruct
                 "class" -> TokenClass
                 "where" -> TokenWhere
+                "specifies" -> TokenSpecifies
                 "instance" -> TokenInstance
                 "true" -> TokenTrue
                 "false" -> TokenFalse
-                _ -> TokenIdentifier
+                _ ->
+                    if C.isLower c
+                        then TokenLowerIdentifier
+                        else TokenUpperIdentifier
         in addToken (Token kind text i indent) (tokenize rest (i + length text) indent)
     | otherwise =
         let (restTokens, restErrors) = tokenize cs (i + 1) indent
@@ -183,14 +193,16 @@ referenceToken :: Token -> String
 referenceToken token = case tokenKind token of
     TokenNumber -> "number '" ++ tokenValue token ++ "'"
     TokenNewline -> "newline"
-    TokenIdentifier -> "identifier '" ++ tokenValue token ++ "'"
+    TokenLowerIdentifier -> "lower-case identifier '" ++ tokenValue token ++ "'"
+    TokenUpperIdentifier -> "upper-case identifier '" ++ tokenValue token ++ "'"
     TokenString -> "string '" ++ tokenValue token ++ "'"
     _ -> "'" ++ tokenValue token ++ "'"
 
 referenceTokenKind :: TokenKind -> String
 referenceTokenKind (TokenNumber) = "a number"
 referenceTokenKind (TokenNewline) = "a newline"
-referenceTokenKind (TokenIdentifier) = "an identifier"
+referenceTokenKind (TokenLowerIdentifier) = "a lower-case identifier"
+referenceTokenKind (TokenUpperIdentifier) = "an upper-case identifier"
 referenceTokenKind (TokenPlus) = "a plus sign"
 referenceTokenKind (TokenMinus) = "a minus sign"
 referenceTokenKind (TokenAsterisk) = "an asterisk"
@@ -221,6 +233,7 @@ referenceTokenKind (TokenTrue) = "'true'"
 referenceTokenKind (TokenFalse) = "'false'"
 referenceTokenKind (TokenClass) = "'class'"
 referenceTokenKind (TokenWhere) = "'where'"
+referenceTokenKind (TokenSpecifies) = "'specifies'"
 referenceTokenKind (TokenInstance) = "'instance'"
 referenceTokenKind (TokenLambda) = "'\\'"
 referenceTokenKind (TokenForall) = "'∀'"

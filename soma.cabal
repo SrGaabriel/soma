@@ -30,6 +30,7 @@ executable soma
                       Parsing.Atoms
                       Logging.ErrorPrinter
                       Logging.Reporting
+                      Logging.PrettyTrees
                       Project.Module
                       Syntax.Tree
                       Syntax.Ops

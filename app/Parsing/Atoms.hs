@@ -1,16 +1,16 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
+
 module Parsing.Atoms where
 
-import Parsing.Parser (Parser, peek, next, consume, parseSequence, parseCommaSeparatedUntil, parseIndentedBlock, someAccepting, optional, consumeRelevant)
-import Syntax.Tree (Expr (..))
-import Parsing.Errors (ParsingError(..))
-import Lexing.Lexer (TokenKind(..), Token (..), tokenSpan)
-import Control.Monad.Error.Class (MonadError(throwError))
-import Lexing.Position (Span(Span))
-import Syntax.Ops (BinaryOp(..))
-import qualified Debug.Trace as Debug
 import Control.Monad (when)
+import Control.Monad.Error.Class (MonadError (throwError))
+import Lexing.Lexer (Token (..), TokenKind (..), tokenSpan)
+import Lexing.Position (Span (Span))
+import Parsing.Errors (ParsingError (..))
+import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseCommaSeparatedUntil, parseIndentedBlock, parseSequence, peek, someAccepting)
+import Syntax.Ops (BinaryOp (..))
+import Syntax.Tree (Expr (..))
 
 parseExpression :: Parser Expr
 parseExpression = parseNumericExpression
@@ -47,14 +47,14 @@ parseAtom = do
     case tokenKind token of
         TokenNumber -> do
             numToken <- next
-            pure $ ExprNum (read $ tokenValue numToken) (tokenSpan numToken)
+            pure $ ExprNum (tokenValue numToken) (tokenSpan numToken)
         TokenLeftParen -> do
             lparen <- consume TokenLeftParen
             inc <- peek
             case tokenKind inc of
                 TokenLambda -> do
                     _ <- next
-                    nameToks <- parseSequence TokenDot TokenRightArrow (consume TokenIdentifier)
+                    nameToks <- parseSequence TokenDot TokenRightArrow (consume TokenLowerIdentifier)
                     let names = map tokenValue nameToks
                     _ <- consume TokenRightArrow
                     body <- parseExpression
@@ -73,7 +73,7 @@ parseAtom = do
             rbracket <- consume TokenRightBracket
             let spanning = Span (tokenPos lbracket) (tokenPos rbracket)
             pure $ ExprArray contents spanning
-        TokenIdentifier -> do
+        TokenLowerIdentifier -> do
             idToken <- next
             pure $ ExprVar (tokenValue idToken) (tokenSpan idToken)
         TokenString -> do
@@ -123,7 +123,7 @@ toBinaryOp = \case
 parseLetExpression :: Parser Expr
 parseLetExpression = do
     letToken <- consume TokenLet
-    identifier <- consume TokenIdentifier
+    identifier <- consume TokenLowerIdentifier
     _ <- consume TokenEquals
     value <- parseExpression
     inTok <- consumeRelevant TokenIn
@@ -132,12 +132,13 @@ parseLetExpression = do
 
     body <- parseExpression
 
-    pure $ ExprLet
-        { letName = tokenValue identifier
-        , letValue = value
-        , letBody = body
-        , letSpan = Span (tokenPos letToken) (tokenPos inTok)
-        }
+    pure
+        $ ExprLet
+            { letName = tokenValue identifier
+            , letValue = value
+            , letBody = body
+            , letSpan = Span (tokenPos letToken) (tokenPos inTok)
+            }
   where
     validateIndentation newline =
         let actualIndent = length (tokenValue newline)

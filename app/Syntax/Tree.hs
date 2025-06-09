@@ -2,7 +2,7 @@ module Syntax.Tree where
 
 import Lexing.Position (Span)
 import Syntax.Ops (BinaryOp)
-import Typing.Types (Type)
+import Typing.Types (TyVar, Type)
 
 data Expr
     = ExprRoot [Expr]
@@ -35,6 +35,30 @@ data Expr
         , constantValue :: Expr
         , constantSpan :: Span
         }
+    | ExprStructDef
+        { structName :: String
+        , structGenerics :: [TyVar]
+        , structConstructors :: [Expr]
+        , structSpan :: Span
+        }
+    | ExprStructConstructor
+        { structConstructorName :: String
+        , structConstructorArgs :: [(String, Type)]
+        , structConstructorSpan :: Span
+        }
+    | ExprTypeClassDef
+        { typeClassName :: String
+        , typeClassGenerics :: [TyVar]
+        , typeClassMethods :: [Expr]
+        , typeClassSpan :: Span
+        }
+    | ExprTypeClassMethod
+        { typeClassMethodName :: String
+        , typeClassMethodArgs :: [(String, Type)]
+        , typeClassMethodReturnType :: Type
+        , typeClassMethodDefaultImpl :: Maybe [Expr]
+        , typeClassMethodSpan :: Span
+        }
     deriving (Show, Eq, Ord)
 
 exprChildren :: Expr -> [Expr]
@@ -45,4 +69,10 @@ exprChildren (ExprTuple exprs _) = exprs
 exprChildren (ExprApp f arg) = [f, arg]
 exprChildren (ExprLambda _ body _) = [body]
 exprChildren (ExprBinaryOp _ left right) = [left, right]
+exprChildren (ExprLet _ value body _) = [value, body]
+exprChildren (ExprFunctionDef _ _ _ body _) = [body]
+exprChildren (ExprConstantDef _ _ value _) = [value]
+exprChildren (ExprStructDef _ _ constructors _) = constructors
+exprChildren (ExprTypeClassDef _ _ methods _) = methods
+exprChildren (ExprTypeClassMethod _ _ _ (Just impl) _) = impl
 exprChildren _ = []

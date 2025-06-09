@@ -1,34 +1,34 @@
 module Parsing.Bindings where
 
-import Parsing.Parser (Parser, consume, optional, parseFluidSequence)
-import Syntax.Tree (Expr (ExprFunctionDef, ExprConstantDef))
-import Typing.Types (Type (..))
-import Lexing.Lexer (Token(..), TokenKind (..), spanningTokens)
-import Parsing.Types (parseType)
-import Typing.Currying (uncurryFunction)
-import Control.Monad.Error.Class (MonadError(throwError))
-import Parsing.Errors (ParsingError(FunctionArgumentLengthMismatch))
+import Control.Monad.Error.Class (MonadError (throwError))
+import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
 import Parsing.Atoms (parseExpression)
+import Parsing.Errors (ParsingError (FunctionArgumentLengthMismatch))
+import Parsing.Parser (Parser, consume, optional, parseFluidSequence)
+import Parsing.Types (parseType)
+import Syntax.Tree (Expr (ExprConstantDef, ExprFunctionDef))
+import Typing.Currying (uncurryFunction)
+import Typing.Types (Type (..))
 
 parseBinding :: Parser Expr
 parseBinding = do
-    nameToken <- consume TokenIdentifier
+    nameToken <- consume TokenLowerIdentifier
     let name = tokenValue nameToken
     leftParenthesisArgStart <- optional $ consume TokenLeftParen
     argNames <-
         case leftParenthesisArgStart of
             Just _ -> do
-                parseFluidSequence TokenRightParen (consume TokenIdentifier)
+                parseFluidSequence TokenRightParen (consume TokenLowerIdentifier)
                     <* consume TokenRightParen
             Nothing -> do
-                parseFluidSequence TokenReturns (consume TokenIdentifier)
+                parseFluidSequence TokenReturns (consume TokenLowerIdentifier)
             <* consume TokenReturns
 
     bindType <- parseType
 
     case bindType of
-        TArrow arg ret | argNames /= [] -> do
-            let (argTypes, returnType) = uncurryFunction arg ret
+        t@(TArrow _ _) | argNames /= [] -> do
+            let (argTypes, returnType) = uncurryFunction t
             argMappings <- ensureSameLengthMap argNames argTypes
             equals <- consume TokenEquals
             _ <- optional $ consume TokenNewline
