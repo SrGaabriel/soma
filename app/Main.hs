@@ -7,6 +7,9 @@ import Logging.PrettyTrees (TreeShow (treeShow))
 import Parsing.Ast (parse)
 import Syntax.Tree (Expr, exprChildren)
 import System.Exit (exitFailure)
+import Semantic.TreeInference (runAnalysis)
+import Semantic.Inference (TypeMap)
+import qualified Data.Map as Map
 
 main :: IO ()
 main = do
@@ -43,9 +46,23 @@ main = do
     putStrLn "Tree:"
     prettyPrintAst tree
 
+    inferenceResult <- runAnalysis tree
+    case inferenceResult of
+        Left err -> do
+            printError err "app.soma" content "ANALYSIS"
+            exitFailure
+        Right inference -> do
+            prettyPrintTypeState inference
+
 prettyPrintAst :: Expr -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0
   where
     prettyPrintAst' expr indent = do
         putStrLn $ replicate indent ' ' ++ treeShow expr
         mapM_ (\child -> prettyPrintAst' child (indent + 2)) (exprChildren expr)
+
+prettyPrintTypeState :: TypeMap -> IO ()
+prettyPrintTypeState typeMap = do
+    putStrLn "Type state:"
+    mapM_ (\(expr, t) -> putStrLn $ show expr ++ " : " ++ show t) (Map.toList $ typeMap)
+    putStrLn "End of type state"

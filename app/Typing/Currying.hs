@@ -13,6 +13,11 @@ getParamTypes :: Type -> [Type]
 getParamTypes (TArrow param ret) = param : getParamTypes ret
 getParamTypes _ = []
 
+curryFunction :: [Type] -> Type -> Type
+curryFunction [] returnType = returnType
+curryFunction (paramType : rest) returnType =
+    TArrow paramType (curryFunction rest returnType)
+
 uncurryFunction :: Type -> ([Type], Type)
 uncurryFunction (TArrow a b) =
     let (args, ret) = uncurryFunction b

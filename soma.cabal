@@ -38,6 +38,9 @@ executable soma
                       Config.Options
                       Typing.Types
                       Typing.Currying
+                      Semantic.Errors
+                      Semantic.Inference
+                      Semantic.TreeInference
 
     build-depends:    base >= 4.19.2.0,
                       ansi-terminal >= 1.0,

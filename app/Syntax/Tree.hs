@@ -1,6 +1,6 @@
 module Syntax.Tree where
 
-import Lexing.Position (Span)
+import Lexing.Position (Span (..))
 import Syntax.Ops (BinaryOp)
 import Typing.Types (TyVar, Type)
 
@@ -76,3 +76,29 @@ exprChildren (ExprStructDef _ _ constructors _) = constructors
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprTypeClassMethod _ _ _ (Just impl) _) = impl
 exprChildren _ = []
+
+exprSpan :: Expr -> Span
+exprSpan (ExprRoot _) = error "Root expressions do not have a span"
+exprSpan (ExprNum _ s) = s
+exprSpan (ExprStr _ s) = s
+exprSpan (ExprVar _ s) = s
+exprSpan (ExprBool _ s) = s
+exprSpan (ExprBlock _ s) = s
+exprSpan (ExprArray _ s) = s
+exprSpan (ExprTuple _ s) = s
+exprSpan (ExprApp first second) = 
+    let Span start _ = exprSpan first
+        Span _ end = exprSpan second
+    in Span start end
+exprSpan (ExprLambda _ _ s) = s
+exprSpan (ExprBinaryOp _ first second) =
+    let Span start _ = exprSpan first
+        Span _ end = exprSpan second
+    in Span start end
+exprSpan (ExprLet _ _ _ s) = s
+exprSpan (ExprFunctionDef _ _ _ _ s) = s
+exprSpan (ExprConstantDef _ _ _ s) = s
+exprSpan (ExprStructDef _ _ _ s) = s
+exprSpan (ExprStructConstructor _ _ s) = s
+exprSpan (ExprTypeClassDef _ _ _ s) = s
+exprSpan (ExprTypeClassMethod _ _ _ _ s) = s
