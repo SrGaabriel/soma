@@ -1,7 +1,7 @@
 trait Eq a where
     def {==} :: a -> a -> Bool
 
-def sum(x: Int, y: Int) -> Int = x + y
+def {+}(x: Int, y: Int) -> Int = x + y
 
 instance Eq Int where
     def {==}(x: Int, y: Int) -> Bool = true
@@ -23,3 +23,7 @@ instance Eq Shape where
       | (Square x) (Square y) => x == y
       | (Circle x) (Square y) => x == y
       | (Square x) (Circle y) => x == y
+    
+def testSum(x: Int, y: Int) -> Int = x + y
+
+def testShape :: Shape = Circle 5

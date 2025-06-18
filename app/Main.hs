@@ -5,6 +5,7 @@ import Lexing.Lexer (tokenizeFile)
 import Logging.ErrorPrinter (printConclusionMessage, printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Parsing.Ast (parse)
+import Semantic.Resolver (runResolver)
 import Syntax.Tree (Expr, exprChildren)
 import System.Exit (exitFailure)
 
@@ -40,8 +41,18 @@ main = do
             return
             (parse tokens)
 
+    resolvedTreeIO <- runResolver tree
+    resolvedTree <-
+        either
+            ( \err -> do
+                printError err "app.soma" content "SEMANTIC RESOLUTION"
+                exitFailure
+            )
+            return
+            resolvedTreeIO
+
     putStrLn "Tree:"
-    prettyPrintAst tree
+    prettyPrintAst resolvedTree
 
 prettyPrintAst :: Expr -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0

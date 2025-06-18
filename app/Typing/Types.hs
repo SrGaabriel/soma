@@ -24,6 +24,7 @@ data Type
     | TConstructor TyConstructor
     | TApp Type Type
     | TArrow Type Type
+    | TUnresolved String
     deriving (Show, Eq, Ord)
 
 data Constraint = Constraint Name [Type] deriving (Show, Eq, Ord)
@@ -46,3 +47,10 @@ tupleType types = foldr1 TApp (map (\t -> TApp (TConstructor (TypeConstructor "T
 assignConstraints :: QualifiedType -> Type -> QualifiedType
 assignConstraints (Forall vars constraints _) t =
     Forall vars constraints t
+
+sumQualifiedTypes :: QualifiedType -> [QualifiedType] -> QualifiedType
+sumQualifiedTypes original [] = original
+sumQualifiedTypes (Forall vars constraints t) others =
+    let newVars = vars ++ concatMap (\(Forall v _ _) -> v) others
+        newConstraints = constraints ++ concatMap (\(Forall _ c _) -> c) others
+    in Forall newVars newConstraints t

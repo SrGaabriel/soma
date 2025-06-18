@@ -1,0 +1,129 @@
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
+
+module Semantic.Resolver where
+
+import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
+import Control.Monad.State (MonadState (get, put), State, evalState)
+import qualified Data.Map as Map
+import Semantic.Errors (SemanticError (..))
+import Semantic.Inference (TypeEnv)
+import Syntax.Tree (Expr (..))
+import Typing.Currying (curryFunction)
+import Typing.Types (Kind (..), QualifiedType (Forall), TyConstructor (TypeConstructor), TyVar (tvKind), Type (..), assignConstraints, sumQualifiedTypes)
+
+newtype ResolverM a = ResolverM
+    { runResolverM :: ExceptT SemanticError (State ResolverState) a
+    }
+    deriving (Functor, Applicative, Monad, MonadState ResolverState, MonadError SemanticError)
+
+data ResolverState = ResolverState
+    { globalBindings :: TypeEnv
+    }
+
+collectGlobals :: Expr -> ResolverM ()
+collectGlobals (ExprRoot children) = do
+    mapM_ collectGlobals children
+collectGlobals (ExprBindingDef name bindType _ _) = do
+    addGlobalBinding name bindType
+collectGlobals (ExprDataTypeDef name generics constraints constructors _) = do
+    let kind = foldr KindArrow KindStar (map tvKind generics)
+    let baseConstructor = TConstructor $ TypeConstructor name kind
+
+    let structType =
+            if null generics
+                then baseConstructor
+                else foldl TApp baseConstructor (map TVar generics)
+
+    let constrainedStructType = Forall generics constraints structType
+    addGlobalBinding name constrainedStructType
+
+    mapM_
+        ( \case
+            ExprDataConstructor cName fields _ ->
+                let fieldTypes = map snd fields
+                    curried = curryFunction fieldTypes structType
+                    qualified = assignConstraints constrainedStructType curried
+                in addGlobalBinding cName qualified
+            recv -> error $ "Expected StructConstructorExpr in struct definition but got " ++ show recv
+        )
+        constructors
+collectGlobals _ = pure ()
+
+resolveTReference :: Expr -> ResolverM Expr
+resolveTReference (ExprRoot children) = do
+    children' <- mapM resolveTReference children
+    pure $ ExprRoot children'
+resolveTReference (ExprDataTypeDef name generics constraints constructors s) = do
+    constructors' <- mapM resolveTReference constructors
+    pure $ ExprDataTypeDef name generics constraints constructors' s
+resolveTReference (ExprInstanceDef className dataNam binds s) = do
+    binds' <- mapM resolveTReference binds
+    pure $ ExprInstanceDef className dataNam binds' s
+resolveTReference expr@(ExprBindingDef a typ b c) = do
+    env <- getEnv
+    realTyp <- replaceAllUnresolvedQualified expr env typ
+    pure $ ExprBindingDef a realTyp b c
+resolveTReference expr = pure expr
+
+getEnv :: ResolverM TypeEnv
+getEnv = do
+    s <- get
+    pure $ globalBindings s
+
+getReference :: Expr -> String -> ResolverM QualifiedType
+getReference expr name = do
+    s <- get
+    case Map.lookup name (globalBindings s) of
+        Just ty -> pure ty
+        Nothing -> throwError $ UnknownTypeConstructor expr name
+
+analyzeTree :: Expr -> ResolverM Expr
+analyzeTree root = do
+    collectGlobals root
+    resolveTReference root
+
+addGlobalBinding :: String -> QualifiedType -> ResolverM ()
+addGlobalBinding name ty = do
+    s <- get
+    let globals = globalBindings s
+    put s{globalBindings = Map.insert name ty globals}
+
+runResolver :: Expr -> IO (Either SemanticError Expr)
+runResolver root = do
+    let initialState = ResolverState{globalBindings = Map.empty}
+    let resolverM = runResolverM (analyzeTree root)
+    return $ evalState (runExceptT resolverM) initialState
+
+-- i don't know whether I'm the world's biggest genius or biggest idiot but I think this works?
+replaceAllUnresolvedQualified :: Expr -> TypeEnv -> QualifiedType -> ResolverM QualifiedType
+replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
+    (finalTyp, qualifieds) <- replaceAllUnresolvedC t
+    case qualifieds of
+        [] -> pure $ Forall vars constraints finalTyp
+        otherQualifiedTypes -> do
+            let resolved = Forall vars constraints finalTyp
+            let resolvedQualified = sumQualifiedTypes resolved otherQualifiedTypes
+            pure resolvedQualified
+  where
+    replaceAllUnresolvedC :: Type -> ResolverM (Type, [QualifiedType])
+    replaceAllUnresolvedC (TUnresolved name) =
+        case Map.lookup name env of
+            Just qual@(Forall _ _ resolvedType) -> pure (resolvedType, [qual])
+            Nothing -> throwError $ UnknownTypeConstructor expr name
+    replaceAllUnresolvedC t'@(TVar _) = pure (t', [])
+    replaceAllUnresolvedC (TConstructor tc) =
+        pure (TConstructor tc, [])
+    replaceAllUnresolvedC (TApp t1 t2) = do
+        (t1', qu1) <- replaceAllUnresolvedC t1
+        (t2', qu2) <- replaceAllUnresolvedC t2
+        let newType = TApp t1' t2'
+        let qualifieds = mconcat [qu1, qu2]
+        pure (newType, qualifieds)
+    replaceAllUnresolvedC (TArrow t1 t2) = do
+        (t1', qu1) <- replaceAllUnresolvedC t1
+        (t2', qu2) <- replaceAllUnresolvedC t2
+        let newType = TArrow t1' t2'
+        let qualifieds = mconcat [qu1, qu2]
+        pure (newType, qualifieds)

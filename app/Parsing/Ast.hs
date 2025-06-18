@@ -8,7 +8,7 @@ import Lexing.Lexer (Token (tokenIndent, tokenKind, tokenValue), TokenKind (..),
 import Parsing.Bindings (parseBinding)
 import Parsing.Errors (ParsingError (UnexpectedToken))
 import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseFuncName, parseIndentedBlock, parseIndexedIndentedBlock, peek)
-import Parsing.Types (parseTyVar, parseType)
+import Parsing.Types (parseQualifiedType, parseTyVar, parseType)
 import Syntax.Tree (Expr (..))
 import Typing.Types (Type)
 
@@ -46,6 +46,7 @@ parseDataType = do
         $ ExprDataTypeDef
             { dataName = name
             , dataGenerics = tyVars
+            , dataConstraints = []
             , dataConstructors = constructors
             , dataSpan = spanning
             }
@@ -59,7 +60,7 @@ parseStructConstructor index = do
     nameToken <- consume TokenUpperIdentifier
     fields <- parseIndentedBlock (tokenIndent nameToken) parseStructField
     pure
-        $ ExprStructConstructor
+        $ ExprDataConstructor
             { structConstructorName = tokenValue nameToken
             , structConstructorArgs = fields
             , structConstructorSpan = spanningTokens firstToken nameToken
@@ -80,30 +81,29 @@ parseTypeClass = do
     tyVars <- many parseTyVar
 
     _where <- consume TokenWhere
-    methods <- parseIndentedBlock (tokenIndent nameToken) parseTypeClassMethod
+    bindings <- parseIndentedBlock (tokenIndent nameToken) parseTypeClassBinding
     let name = tokenValue nameToken
     pure
         $ ExprTypeClassDef
             { typeClassName = name
             , typeClassGenerics = tyVars
-            , typeClassMethods = methods
+            , typeClassBindings = bindings
             , typeClassSpan = spanningTokens classToken nameToken
             }
 
-parseTypeClassMethod :: Parser Expr
-parseTypeClassMethod = do
+parseTypeClassBinding :: Parser Expr
+parseTypeClassBinding = do
     defToken <- consume TokenDef
-    methodName <- parseFuncName
+    bindName <- parseFuncName
     retTok <- consumeRelevant TokenReturns
-    methodType <- parseType
+    bindTyp <- parseQualifiedType
 
     pure
-        $ ExprTypeClassMethod
-            { typeClassMethodName = methodName
-            , typeClassMethodArgs = []
-            , typeClassMethodReturnType = methodType
-            , typeClassMethodDefaultImpl = Nothing
-            , typeClassMethodSpan = spanningTokens defToken retTok
+        $ ExprTypeClassBinding
+            { typeClassBindName = bindName
+            , typeClassBindType = bindTyp
+            , typeClassBindDefaultImpl = Nothing
+            , typeClassBindSpan = spanningTokens defToken retTok
             }
 
 parseInstance :: Parser Expr

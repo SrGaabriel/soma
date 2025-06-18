@@ -2,7 +2,7 @@ module Syntax.Tree where
 
 import Lexing.Position (Span (..))
 import Syntax.Patterns (Pattern (..))
-import Typing.Types (QualifiedType, TyVar, Type)
+import Typing.Types (Constraint, QualifiedType, TyVar, Type)
 import Utils.Lists (hardHead)
 
 data Expr
@@ -33,10 +33,11 @@ data Expr
     | ExprDataTypeDef
         { dataName :: String
         , dataGenerics :: [TyVar]
+        , dataConstraints :: [Constraint]
         , dataConstructors :: [Expr]
         , dataSpan :: Span
         }
-    | ExprStructConstructor
+    | ExprDataConstructor
         { structConstructorName :: String
         , structConstructorArgs :: [(String, Type)]
         , structConstructorSpan :: Span
@@ -44,15 +45,14 @@ data Expr
     | ExprTypeClassDef
         { typeClassName :: String
         , typeClassGenerics :: [TyVar]
-        , typeClassMethods :: [Expr]
+        , typeClassBindings :: [Expr]
         , typeClassSpan :: Span
         }
-    | ExprTypeClassMethod
-        { typeClassMethodName :: String
-        , typeClassMethodArgs :: [(String, Type)]
-        , typeClassMethodReturnType :: Type
-        , typeClassMethodDefaultImpl :: Maybe [Expr]
-        , typeClassMethodSpan :: Span
+    | ExprTypeClassBinding
+        { typeClassBindName :: String
+        , typeClassBindType :: QualifiedType
+        , typeClassBindDefaultImpl :: Maybe [Expr]
+        , typeClassBindSpan :: Span
         }
     | ExprInstanceDef
         { instanceClassName :: String
@@ -76,9 +76,9 @@ exprChildren (ExprLet _ value body _) = [value, body]
 exprChildren (ExprPatternMatch expr arms _) = expr : map (\(SinglePatternArm _ arm) -> arm) arms
 exprChildren (ExprDerivedPatternMatch arms) = map (\(MultiPatternArm _ arm) -> arm) arms
 exprChildren (ExprBindingDef _ _ body _) = [body]
-exprChildren (ExprDataTypeDef _ _ constructors _) = constructors
+exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
-exprChildren (ExprTypeClassMethod _ _ _ (Just impl) _) = impl
+exprChildren (ExprTypeClassBinding _ _ (Just impl) _) = impl
 exprChildren (ExprInstanceDef _ _ methods _) = methods
 exprChildren _ = []
 
@@ -98,10 +98,10 @@ exprSpan (ExprApp first second) =
 exprSpan (ExprLambda _ _ s) = s
 exprSpan (ExprLet _ _ _ s) = s
 exprSpan (ExprBindingDef _ _ _ s) = s
-exprSpan (ExprDataTypeDef _ _ _ s) = s
-exprSpan (ExprStructConstructor _ _ s) = s
+exprSpan (ExprDataTypeDef _ _ _ _ s) = s
+exprSpan (ExprDataConstructor _ _ s) = s
 exprSpan (ExprTypeClassDef _ _ _ s) = s
-exprSpan (ExprTypeClassMethod _ _ _ _ s) = s
+exprSpan (ExprTypeClassBinding _ _ _ s) = s
 exprSpan (ExprPatternMatch _ _ s) = s
 exprSpan (ExprDerivedPatternMatch arms) =
     let spans = map (\(MultiPatternArm _ arm) -> exprSpan arm) arms

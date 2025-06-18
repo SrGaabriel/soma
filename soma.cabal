@@ -42,6 +42,8 @@ executable soma
                       Typing.Types
                       Typing.Currying
                       Semantic.Errors
+                      Semantic.Resolver
+                      Semantic.Inference
 
     build-depends:    base >= 4.19.2.0,
                       ansi-terminal >= 1.0,

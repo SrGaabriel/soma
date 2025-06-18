@@ -20,7 +20,7 @@ data SemanticError
     | UntypedExpression Expr
     | NotAFunction Expr Type
     | UnsatisfiedConstraints Expr [String]
-    | UnknownTypeConstructor Expr String Kind
+    | UnknownTypeConstructor Expr String
     deriving (Show, Eq)
 
 instance PrintableError SemanticError where
@@ -33,7 +33,7 @@ instance PrintableError SemanticError where
     errorMessage (UnboundVariable _ name) = "Unbound variable '" ++ name ++ "'"
     errorMessage (UntypedExpression expr) = "The expression " ++ show expr ++ " is untyped"
     errorMessage (NotAFunction _ ty) = "The type " ++ show ty ++ " does not support function application"
-    errorMessage (UnknownTypeConstructor _ name kind) = "Unknown constructor '" ++ name ++ "' kinded " ++ treeShow kind
+    errorMessage (UnknownTypeConstructor _ name) = "Unknown type constructor '" ++ name ++ "'"
     errorMessage (ArityMismatch expr) = "The expression " ++ show expr ++ " has an incorrect arity"
     errorMessage (KindMismatch _ k1 k2) = "Kind mismatch: expected " ++ treeShow k1 ++ " but received " ++ treeShow k2
     errorMessage (UnsatisfiedConstraints expr constraints) =
@@ -57,7 +57,7 @@ getExpression (CircularTypeDependency expr) = expr
 getExpression (UnboundVariable expr _) = expr
 getExpression (UntypedExpression expr) = expr
 getExpression (NotAFunction expr _) = expr
-getExpression (UnknownTypeConstructor expr _ _) = expr
+getExpression (UnknownTypeConstructor expr _) = expr
 getExpression (ArityMismatch expr) = expr
 getExpression (KindMismatch expr _ _) = expr
 getExpression (UnsatisfiedConstraints expr _) = expr

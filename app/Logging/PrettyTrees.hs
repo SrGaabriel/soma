@@ -29,6 +29,7 @@ instance TreeShow Type where
             else name ++ " " ++ treeShow kind
     treeShow (TApp t1 t2) = "(" ++ treeShow t1 ++ " " ++ treeShow t2 ++ ")"
     treeShow (TArrow t1 t2) = "(" ++ treeShow t1 ++ " -> " ++ treeShow t2 ++ ")"
+    treeShow (TUnresolved name) = "?" ++ name
 
 instance TreeShow Constraint where
     treeShow :: Constraint -> String
@@ -52,11 +53,11 @@ instance TreeShow Expr where
     treeShow (ExprLet name _ _ _) = "Let (" ++ name ++ "):"
     treeShow (ExprPatternMatch _ _ _) = "PatternMatch:"
     treeShow (ExprDerivedPatternMatch _) = "DerivedPatternMatch:"
-    treeShow (ExprBindingDef name qType _ _) = "FunctionDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
-    treeShow (ExprDataTypeDef name generics _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):"
-    treeShow (ExprStructConstructor name args _) = "StructConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
+    treeShow (ExprBindingDef name qType _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
+    treeShow (ExprDataTypeDef name generics _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
+    treeShow (ExprDataConstructor name args _) = "DataConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
     treeShow (ExprTypeClassDef name generics _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow generics ++ "):"
-    treeShow (ExprTypeClassMethod name args returnType _ _) = "TypeClassMethod (" ++ name ++ ": " ++ treeShowArgs args ++ " -> " ++ treeShow returnType ++ "):"
+    treeShow (ExprTypeClassBinding name qType _ _) = "TypeClassBinding (" ++ name ++ ": " ++ treeShow qType ++ "):"
     treeShow (ExprInstanceDef className _ _ _) = "InstanceDef (" ++ className ++ "):"
 
 instance TreeShow Pattern where
