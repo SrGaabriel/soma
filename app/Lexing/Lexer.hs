@@ -16,11 +16,13 @@ data TokenKind
     | TokenRightAngleBracket
     | TokenLeftArrow
     | TokenRightArrow
+    | TokenStrongRightArrow
     | TokenColon
     | TokenReturns
     | TokenNewline
     | TokenCase
     | TokenDo
+    | TokenDef
     | TokenDot
     | TokenLeftParen
     | TokenRightParen
@@ -33,9 +35,9 @@ data TokenKind
     | TokenString
     | TokenDollar
     | TokenStruct
+    | TokenData
     | TokenClass
     | TokenWhere
-    | TokenSpecifies
     | TokenInstance
     | TokenComma
     | TokenLeftBracket
@@ -61,11 +63,10 @@ tokenize :: String -> Int -> Int -> ([Token], [LexingError])
 tokenize [] _ _ = ([], [])
 tokenize (c : cs) i indent
     | isSpace c = tokenize cs (i + 1) indent
-    | c `elem` "+*=<>()|$[],.λ\\" =
+    | c `elem` "+*<>()|$[],.λ\\" =
         let kind = case c of
                 '+' -> TokenPlus
                 '*' -> TokenAsterisk
-                '=' -> TokenEquals
                 '<' -> TokenLeftAngleBracket
                 '>' -> TokenRightAngleBracket
                 '(' -> TokenLeftParen
@@ -84,6 +85,10 @@ tokenize (c : cs) i indent
     | c == '-' = case cs of
         '>' : rest -> addToken (Token TokenRightArrow "->" i indent) (tokenize rest (i + 2) indent)
         _ -> addToken (Token TokenMinus "-" i indent) (tokenize cs (i + 1) indent)
+    | c == '=' = case cs of
+        '=' : rest -> addToken (Token TokenEquals "==" i indent) (tokenize rest (i + 2) indent)
+        '>' : rest -> addToken (Token TokenStrongRightArrow "=>" i indent) (tokenize rest (i + 2) indent)
+        _ -> addToken (Token TokenEquals "=" i indent) (tokenize cs (i + 1) indent)
     | c == ':' = case cs of
         ':' : rest -> addToken (Token TokenReturns "::" i indent) (tokenize rest (i + 2) indent)
         _ -> addToken (Token TokenColon ":" i indent) (tokenize cs (i + 1) indent)
@@ -145,10 +150,11 @@ tokenize (c : cs) i indent
                 "fn" -> TokenFn
                 "case" -> TokenCase
                 "do" -> TokenDo
+                "def" -> TokenDef
+                "data" -> TokenData
                 "struct" -> TokenStruct
-                "class" -> TokenClass
+                "trait" -> TokenClass -- todo: rename
                 "where" -> TokenWhere
-                "specifies" -> TokenSpecifies
                 "instance" -> TokenInstance
                 "true" -> TokenTrue
                 "false" -> TokenFalse
@@ -213,10 +219,12 @@ referenceTokenKind (TokenLeftAngleBracket) = "a left angle bracket"
 referenceTokenKind (TokenRightAngleBracket) = "a right angle bracket"
 referenceTokenKind (TokenLeftArrow) = "a left arrow"
 referenceTokenKind (TokenRightArrow) = "a right arrow"
+referenceTokenKind (TokenStrongRightArrow) = "a double right arrow"
 referenceTokenKind (TokenColon) = "a colon"
 referenceTokenKind (TokenReturns) = "'::'"
 referenceTokenKind (TokenCase) = "'case'"
 referenceTokenKind (TokenDo) = "'do'"
+referenceTokenKind (TokenDef) = "'def'"
 referenceTokenKind (TokenLeftParen) = "a left parenthesis"
 referenceTokenKind (TokenRightParen) = "a right parenthesis"
 referenceTokenKind (TokenPipe) = "a vertical bar"
@@ -225,6 +233,7 @@ referenceTokenKind (TokenFn) = "'fn'"
 referenceTokenKind (TokenIn) = "'in'"
 referenceTokenKind (TokenString) = "a string"
 referenceTokenKind (TokenStruct) = "a struct"
+referenceTokenKind (TokenData) = "a data type"
 referenceTokenKind (TokenLeftBracket) = "a left bracket"
 referenceTokenKind (TokenRightBracket) = "a right bracket"
 referenceTokenKind (TokenComma) = "a comma"
@@ -233,7 +242,6 @@ referenceTokenKind (TokenTrue) = "'true'"
 referenceTokenKind (TokenFalse) = "'false'"
 referenceTokenKind (TokenClass) = "'class'"
 referenceTokenKind (TokenWhere) = "'where'"
-referenceTokenKind (TokenSpecifies) = "'specifies'"
 referenceTokenKind (TokenInstance) = "'instance'"
 referenceTokenKind (TokenLambda) = "'\\'"
 referenceTokenKind (TokenForall) = "'∀'"

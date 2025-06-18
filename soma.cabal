@@ -27,6 +27,7 @@ executable soma
                       Parsing.Ast
                       Parsing.Bindings
                       Parsing.Types
+                      Parsing.Patterns
                       Parsing.Atoms
                       Logging.ErrorPrinter
                       Logging.Reporting
@@ -35,13 +36,12 @@ executable soma
                       Project.Name
                       Syntax.Tree
                       Syntax.Ops
+                      Syntax.Patterns
                       Utils.Lists
                       Config.Options
                       Typing.Types
                       Typing.Currying
                       Semantic.Errors
-                      Semantic.Inference
-                      Semantic.TreeInference
 
     build-depends:    base >= 4.19.2.0,
                       ansi-terminal >= 1.0,

@@ -3,48 +3,58 @@ module Parsing.Bindings where
 import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
 import Parsing.Atoms (parseExpression)
-import Parsing.Errors (ParsingError (FunctionArgumentLengthMismatch))
-import Parsing.Parser (Parser, consume, optional, parseFluidSequence)
-import Parsing.Types (parseType)
-import Syntax.Tree (Expr (ExprConstantDef, ExprFunctionDef))
-import Typing.Currying (uncurryFunction)
-import Typing.Types (Type (..), extractFunc, isFunc)
+import Parsing.Errors (ParsingError (FunctionArgumentLengthMismatch, InvalidFunctionBody))
+import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseFluidSequence, peekRelevant)
+import Parsing.Patterns (parsePipePatternArms)
+import Parsing.Types (parseQualifiedType, parseType)
+import Syntax.Tree (Expr (..), exprSpan)
+import Typing.Currying (curryFunction)
+import Typing.Types (QualifiedType (..), Type (..))
 
 parseBinding :: Parser Expr
 parseBinding = do
+    defToken <- consume TokenDef
     nameToken <- consume TokenLowerIdentifier
     let name = tokenValue nameToken
     leftParenthesisArgStart <- optional $ consume TokenLeftParen
-    argNames <-
-        case leftParenthesisArgStart of
-            Just _ -> do
-                parseFluidSequence TokenRightParen (consume TokenLowerIdentifier)
+
+    case leftParenthesisArgStart of
+        Just _ -> do
+            params <-
+                parseFluidSequence TokenRightParen (parseImperativeBindingParam)
                     <* consume TokenRightParen
-            Nothing -> do
-                parseFluidSequence TokenReturns (consume TokenLowerIdentifier)
-            <* consume TokenReturns
-
-    bindType <- parseType
-
-    if isFunc bindType && argNames /= []
-        then do
-            let funcT = extractFunc bindType
-            let (argTypes, returnType) = uncurryFunction funcT
-            argMappings <- ensureSameLengthMap argNames argTypes
-            equals <- consume TokenEquals
-            _ <- optional $ consume TokenNewline
+            let (toks, types) = unzip params
+            mappings <- ensureSameLengthMap toks types
+            _ <- consume TokenReturns
+            returnType <- parseType
+            let bindingType = curryFunction types returnType
+            let bindingTypeS = Forall [] [] bindingType -- todo: support constraints in this def
+            eqTok <- consumeRelevant TokenEquals
             body <- parseExpression
-            let spanning = spanningTokens nameToken equals
-            pure $ ExprFunctionDef name argMappings returnType body spanning
-        else
-            if argNames /= []
-                then throwError $ FunctionArgumentLengthMismatch (last argNames)
-                else do
-                    equals <- consume TokenEquals
-                    _ <- optional $ consume TokenNewline
+            let argNames = Prelude.map Prelude.fst mappings
+            let defBody = ExprLambda argNames body (exprSpan body)
+            pure $ ExprBindingDef name bindingTypeS defBody (spanningTokens defToken eqTok)
+        Nothing -> do
+            _ <- consumeRelevant TokenReturns
+            bindingType <- parseQualifiedType
+            inc <- peekRelevant
+            case tokenKind inc of
+                TokenEquals -> do
+                    _ <- next
                     body <- parseExpression
-                    let spanning = spanningTokens nameToken equals
-                    pure $ ExprConstantDef name bindType body spanning
+                    pure $ ExprBindingDef name bindingType body (spanningTokens defToken inc)
+                TokenPipe -> do
+                    arms <- parsePipePatternArms
+                    let defBody = ExprDerivedPatternMatch arms
+                    pure $ ExprBindingDef name bindingType defBody (spanningTokens defToken inc)
+                _ -> throwError $ InvalidFunctionBody inc
+
+parseImperativeBindingParam :: Parser (Token, Type)
+parseImperativeBindingParam = do
+    nameToken <- consume TokenLowerIdentifier
+    _ <- consume TokenColon
+    typ <- parseType
+    pure (nameToken, typ)
 
 ensureSameLengthMap :: [Token] -> [Type] -> Parser [(String, Type)]
 ensureSameLengthMap names types

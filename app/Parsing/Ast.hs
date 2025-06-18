@@ -3,12 +3,13 @@
 module Parsing.Ast where
 
 import Control.Applicative (Alternative (many), optional)
-import Lexing.Lexer (Token (tokenIndent, tokenKind, tokenValue), TokenKind (..), spanningTokens, tokenSpan)
+import Control.Monad.Error.Class (MonadError (throwError))
+import Lexing.Lexer (Token (tokenIndent, tokenKind, tokenValue), TokenKind (..), spanningTokens)
 import Parsing.Atoms (parseExpression)
 import Parsing.Bindings (parseBinding)
 import Parsing.Errors (ParsingError (UnexpectedToken))
-import Parsing.Parser (Parser (Parser, runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseIndentedBlock, parseIndexedIndentedBlock, peek)
-import Parsing.Types (parseTyVarParam, parseType)
+import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseIndentedBlock, parseIndexedIndentedBlock, peek)
+import Parsing.Types (parseTyVar, parseType)
 import Syntax.Tree (Expr (..))
 import Typing.Types (Type)
 
@@ -25,28 +26,28 @@ parseDeclaration :: Parser Expr
 parseDeclaration = do
     token <- peek
     case tokenKind token of
-        TokenLowerIdentifier -> parseBinding
+        TokenDef -> parseBinding
         TokenNewline -> next >> parseDeclaration
-        TokenStruct -> parseStruct
+        TokenData -> parseDataType
         TokenClass -> parseTypeClass
-        _ -> Parser $ \_ -> Left $ UnexpectedToken token
+        _ -> throwError $ UnexpectedToken token
 
-parseStruct :: Parser Expr
-parseStruct = do
-    structToken <- consume TokenStruct
+parseDataType :: Parser Expr
+parseDataType = do
+    dataToken <- consume TokenData
     nameToken <- consume TokenUpperIdentifier
 
-    tyVars <- many parseTyVarParam
+    tyVars <- many parseTyVar
 
     let name = tokenValue nameToken
-    let spanning = spanningTokens structToken nameToken
+    let spanning = spanningTokens dataToken nameToken
     constructors <- parseIndexedIndentedBlock (tokenIndent nameToken) parseStructConstructor
     pure
-        $ ExprStructDef
-            { structName = name
-            , structGenerics = tyVars
-            , structConstructors = constructors
-            , structSpan = spanning
+        $ ExprDataTypeDef
+            { dataName = name
+            , dataGenerics = tyVars
+            , dataConstructors = constructors
+            , dataSpan = spanning
             }
 
 parseStructConstructor :: Int -> Parser Expr
@@ -76,9 +77,9 @@ parseTypeClass = do
     classToken <- consume TokenClass
     nameToken <- consume TokenUpperIdentifier
 
-    tyVars <- many parseTyVarParam
+    tyVars <- many parseTyVar
 
-    _where <- consume TokenSpecifies
+    _where <- consume TokenWhere
     methods <- parseIndentedBlock (tokenIndent nameToken) parseTypeClassMethod
     let name = tokenValue nameToken
     pure
@@ -91,6 +92,7 @@ parseTypeClass = do
 
 parseTypeClassMethod :: Parser Expr
 parseTypeClassMethod = do
+    defToken <- consume TokenDef
     methodToken <- consume TokenLowerIdentifier
     _ <- consumeRelevant TokenReturns
     methodType <- parseType
@@ -106,5 +108,5 @@ parseTypeClassMethod = do
             , typeClassMethodArgs = []
             , typeClassMethodReturnType = methodType
             , typeClassMethodDefaultImpl = defaultImpl
-            , typeClassMethodSpan = tokenSpan methodToken
+            , typeClassMethodSpan = spanningTokens defToken methodToken
             }

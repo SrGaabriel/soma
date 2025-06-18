@@ -4,9 +4,10 @@
 
 module Logging.PrettyTrees where
 
+import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..))
 import Typing.Currying (uncurryKind)
-import Typing.Types (Constraint (..), Kind (..), TyConstructor (..), TyVar (TypeVar, tvName), Type (..))
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), TyVar (TypeVar, tvName), Type (..))
 
 class TreeShow a where
     treeShow :: a -> String
@@ -28,13 +29,6 @@ instance TreeShow Type where
             else name ++ " " ++ treeShow kind
     treeShow (TApp t1 t2) = "(" ++ treeShow t1 ++ " " ++ treeShow t2 ++ ")"
     treeShow (TArrow t1 t2) = "(" ++ treeShow t1 ++ " -> " ++ treeShow t2 ++ ")"
-    treeShow (TForall tv t) = "∀ " ++ tvName tv ++ ". " ++ treeShow t
-    treeShow (TUnresolved name kind) =
-        if kind == KindStar
-            then "'" ++ name ++ "'"
-            else "'" ++ name ++ "' :: " ++ treeShow kind
-    treeShow (TTuple ts) = "(" ++ unwords (map treeShow ts) ++ ")"
-    treeShow (TConstrained t1 t2) = treeShow t1 ++ " : " ++ treeShow t2
 
 instance TreeShow Constraint where
     treeShow :: Constraint -> String
@@ -57,13 +51,30 @@ instance TreeShow Expr where
     treeShow (ExprLambda args _ _) = "Lambda (" ++ unwords args ++ "):"
     treeShow (ExprBinaryOp op _ _) = "BinaryOp (" ++ show op ++ "):"
     treeShow (ExprLet name _ _ _) = "Let (" ++ name ++ "):"
-    treeShow (ExprFunctionDef name args returns _ _) = "FunctionDef (" ++ name ++ ": " ++ treeShowArgs args ++ " -> " ++ treeShow returns ++ "):"
-    treeShow (ExprConstantDef name cType _ _) = "ConstantDef (" ++ name ++ ": " ++ treeShow cType ++ "):"
-    treeShow (ExprStructDef name generics _ _) = "StructDef (" ++ name ++ ": " ++ treeShow generics ++ "):"
+    treeShow (ExprPatternMatch _ _ _) = "PatternMatch:"
+    treeShow (ExprDerivedPatternMatch _) = "DerivedPatternMatch:"
+    treeShow (ExprBindingDef name qType _ _) = "FunctionDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
+    treeShow (ExprDataTypeDef name generics _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):"
     treeShow (ExprStructConstructor name args _) = "StructConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
     treeShow (ExprTypeClassDef name generics _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow generics ++ "):"
     treeShow (ExprTypeClassMethod name args returnType _ _) = "TypeClassMethod (" ++ name ++ ": " ++ treeShowArgs args ++ " -> " ++ treeShow returnType ++ "):"
 
+instance TreeShow Pattern where
+    treeShow (PVar name) = "Var (" ++ name ++ ")"
+    treeShow (PLit lit) = "Lit (" ++ show lit ++ ")"
+    treeShow (PConstructor name args) =
+        "Constructor (" ++ name ++ ": " ++ treeShow args ++ ")"
+    treeShow (PTuple patterns) = "Tuple (" ++ unwords (map treeShow patterns) ++ ")"
+    treeShow (PArray patterns) = "Array (" ++ unwords (map treeShow patterns) ++ ")"
+    treeShow (PWildcard) = "Wildcard"
+    treeShow (PAs name pattern) = "As (" ++ name ++ ": " ++ treeShow pattern ++ ")"
+
 treeShowArgs :: [(String, Type)] -> String
 treeShowArgs args =
     "(" ++ unwords (map (\(name, t) -> name ++ ": " ++ treeShow t) args) ++ ")"
+
+instance TreeShow QualifiedType where
+    treeShow (Forall vars constraints t) =
+        let varsStr = unwords (map tvName vars)
+            constraintsStr = if null constraints then "" else " | " ++ unwords (map treeShow constraints)
+        in "forall " ++ varsStr ++ constraintsStr ++ ". " ++ treeShow t

@@ -19,6 +19,8 @@ data ParsingError
     | ExpectedAnExpression Token
     | ExpectedAGenericType Token
     | InvalidGenericsList Token
+    | InvalidPattern Token
+    | InvalidFunctionBody Token
     | EndOfInput
     | Debug
     deriving (Eq)
@@ -36,6 +38,8 @@ instance Show ParsingError where
     show (ExpectedAnExpression _) = "Expected an expression but received an abrupt end"
     show (InvalidGenericsList t) = "Invalid generics list at " ++ referenceToken t
     show (ExpectedAGenericType t) = "Expected a generic type but received " ++ referenceToken t
+    show (InvalidPattern t) = "Invalid pattern at " ++ referenceToken t
+    show (InvalidFunctionBody t) = "Invalid function body at " ++ referenceToken t
     show (EndOfInput) = "End of input"
     show Debug = "Debug"
 
@@ -64,8 +68,10 @@ getErrorToken (ExpectedDifferentIndentation t _ _) = Just t
 getErrorToken (FunctionArgumentLengthMismatch t) = Just t
 getErrorToken (UnseparatedStatements t) = Just t
 getErrorToken (NotAnExpression t) = Just t
+getErrorToken (InvalidPattern t) = Just t
 getErrorToken (InvalidGenericsList t) = Just t
 getErrorToken (ExpectedAGenericType t) = Just t
 getErrorToken (ExpectedAnExpression t) = Just t
+getErrorToken (InvalidFunctionBody t) = Just t
 getErrorToken (EndOfInput) = Nothing
 getErrorToken Debug = Nothing

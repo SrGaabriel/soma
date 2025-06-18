@@ -19,6 +19,7 @@ data SemanticError
     | KindMismatch Expr Kind Kind
     | UntypedExpression Expr
     | NotAFunction Expr Type
+    | UnsatisfiedConstraints Expr [String]
     | UnknownTypeConstructor Expr String Kind
     deriving (Show, Eq)
 
@@ -35,6 +36,8 @@ instance PrintableError SemanticError where
     errorMessage (UnknownTypeConstructor _ name kind) = "Unknown constructor '" ++ name ++ "' kinded " ++ treeShow kind
     errorMessage (ArityMismatch expr) = "The expression " ++ show expr ++ " has an incorrect arity"
     errorMessage (KindMismatch _ k1 k2) = "Kind mismatch: expected " ++ treeShow k1 ++ " but received " ++ treeShow k2
+    errorMessage (UnsatisfiedConstraints expr constraints) =
+        "The expression " ++ show expr ++ " has unsatisfied constraints: " ++ unwords constraints
 
     errorStart :: SemanticError -> Int
     errorStart err =
@@ -57,3 +60,4 @@ getExpression (NotAFunction expr _) = expr
 getExpression (UnknownTypeConstructor expr _ _) = expr
 getExpression (ArityMismatch expr) = expr
 getExpression (KindMismatch expr _ _) = expr
+getExpression (UnsatisfiedConstraints expr _) = expr

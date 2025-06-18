@@ -14,7 +14,7 @@ data TyVar = TypeVar
     deriving (Show, Eq, Ord)
 
 data TyConstructor = TypeConstructor
-    { tcName :: String -- todo: use better names
+    { tcName :: String
     , tcKind :: Kind
     }
     deriving (Show, Eq, Ord)
@@ -24,29 +24,25 @@ data Type
     | TConstructor TyConstructor
     | TApp Type Type
     | TArrow Type Type
-    | TForall TyVar Type
-    | TTuple [Type]
-    | TConstrained [Constraint] Type
-    | TUnresolved String Kind
     deriving (Show, Eq, Ord)
 
 data Constraint = Constraint Name [Type] deriving (Show, Eq, Ord)
 
-intType :: Type
-intType = TConstructor (TypeConstructor "Int" (KindStar))
+data QualifiedType = Forall [TyVar] [Constraint] Type
+    deriving (Show, Eq, Ord)
 
-strType :: Type
-strType = TConstructor (TypeConstructor "String" (KindStar))
+intType, strType, boolType :: Type
+intType = TConstructor (TypeConstructor "Int" KindStar)
+strType = TConstructor (TypeConstructor "String" KindStar)
+boolType = TConstructor (TypeConstructor "Bool" KindStar)
 
-boolType :: Type
-boolType = TConstructor (TypeConstructor "Bool" (KindStar))
+arrayType :: Type -> Type
+arrayType elemType = TApp (TConstructor (TypeConstructor "Array" (KindArrow KindStar KindStar))) elemType
 
-isFunc :: Type -> Bool
-isFunc (TArrow _ _) = True
-isFunc (TConstrained _ (TArrow _ _)) = True
-isFunc _ = False
+tupleType :: [Type] -> Type
+tupleType [] = TConstructor (TypeConstructor "Unit" KindStar)
+tupleType types = foldr1 TApp (map (\t -> TApp (TConstructor (TypeConstructor "Tuple" KindStar)) t) types)
 
-extractFunc :: Type -> Type
-extractFunc (TArrow t1 t2) = TArrow t1 t2
-extractFunc (TConstrained _ (TArrow t1 t2)) = TArrow t1 t2
-extractFunc t = error $ "Expected function type, got: " ++ show t
+assignConstraints :: QualifiedType -> Type -> QualifiedType
+assignConstraints (Forall vars constraints _) t =
+    Forall vars constraints t

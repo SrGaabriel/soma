@@ -74,17 +74,18 @@ peek = Parser $ \case
     [] -> Left EndOfInput
     (t : ts) -> Right (t, t : ts)
 
-peekRelevantSkipping :: Int -> Parser Token
-peekRelevantSkipping minIndent = go False
+peekRelevant :: Parser Token
+peekRelevant = Parser $ \case
+    [] -> Left EndOfInput
+    (t : ts) -> case seeIfNewline (t : ts) of
+        Left err -> Left err
+        Right (token, _) -> Right (token, t : ts)
   where
-    go sawNewline = Parser $ \case
+    seeIfNewline = \case
         [] -> Left EndOfInput
         (t : ts)
-            | tokenKind t == TokenNewline -> runParser (go True) ts
-            | not sawNewline -> Right (t, t : ts)
-            | otherwise -> case compare (tokenIndent t) minIndent of
-                LT -> Left $ ExpectedAnExpression t
-                _ -> Right (t, t : ts)
+            | tokenKind t == TokenNewline -> runParser peekRelevant ts
+            | otherwise -> Right (t, t : ts)
 
 peekNext :: Parser Token
 peekNext = Parser $ \case
@@ -108,7 +109,7 @@ expect kind = Parser $ \case
 optional :: Parser a -> Parser (Maybe a)
 optional parser = (Just <$> parser) <|> pure Nothing
 
-parseSequence :: (Show a) => TokenKind -> TokenKind -> Parser a -> Parser [a]
+parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do
     parseNext [] tokens
   where
@@ -154,7 +155,7 @@ parseExhaustiveSequence separator itemParser = Parser $ \tokens -> do
                             parseNext (item : acc) rest
                         | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
 
-parseFluidSequence :: (Show a) => TokenKind -> Parser a -> Parser [a]
+parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
 parseFluidSequence end itemParser = Parser $ \tokens -> do
     let parseNext acc remaining = case runParser (expect end) remaining of
             Right (_, rest) -> Right (reverse acc, rest)
@@ -262,3 +263,9 @@ optionallySurrounded start end parser = do
 
 sepBy1 :: Parser a -> Parser b -> Parser [a]
 sepBy1 p sep = (:) <$> p <*> many (sep *> p)
+
+option :: a -> Parser a -> Parser a
+option def parser = Parser $ \tokens ->
+    case runParser parser tokens of
+        Right (result, rest) -> Right (result, rest)
+        Left _ -> Right (def, tokens)

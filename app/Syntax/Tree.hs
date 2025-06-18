@@ -2,7 +2,9 @@ module Syntax.Tree where
 
 import Lexing.Position (Span (..))
 import Syntax.Ops (BinaryOp)
-import Typing.Types (TyVar, Type)
+import Syntax.Patterns (Pattern (..))
+import Typing.Types (QualifiedType, TyVar, Type)
+import Utils.Lists (hardHead)
 
 data Expr
     = ExprRoot [Expr]
@@ -16,30 +18,25 @@ data Expr
     | ExprApp Expr Expr
     | ExprLambda [String] Expr Span
     | ExprBinaryOp BinaryOp Expr Expr
+    | ExprPatternMatch Expr [SinglePatternArm] Span
+    | ExprDerivedPatternMatch [MultiPatternArm]
     | ExprLet
         { letName :: String
         , letValue :: Expr
         , letBody :: Expr
         , letSpan :: Span
         }
-    | ExprFunctionDef
+    | ExprBindingDef
         { functionName :: String
-        , functionArgs :: [(String, Type)]
-        , functionReturnType :: Type
+        , functionType :: QualifiedType
         , functionBody :: Expr
         , functionSpan :: Span
         }
-    | ExprConstantDef
-        { constantName :: String
-        , constantType :: Type
-        , constantValue :: Expr
-        , constantSpan :: Span
-        }
-    | ExprStructDef
-        { structName :: String
-        , structGenerics :: [TyVar]
-        , structConstructors :: [Expr]
-        , structSpan :: Span
+    | ExprDataTypeDef
+        { dataName :: String
+        , dataGenerics :: [TyVar]
+        , dataConstructors :: [Expr]
+        , dataSpan :: Span
         }
     | ExprStructConstructor
         { structConstructorName :: String
@@ -59,7 +56,10 @@ data Expr
         , typeClassMethodDefaultImpl :: Maybe [Expr]
         , typeClassMethodSpan :: Span
         }
-    deriving (Show, Eq, Ord)
+    deriving (Show, Eq)
+
+data SinglePatternArm = SinglePatternArm Pattern Expr deriving (Show, Eq)
+data MultiPatternArm = MultiPatternArm [Pattern] Expr deriving (Show, Eq)
 
 exprChildren :: Expr -> [Expr]
 exprChildren (ExprRoot exprs) = exprs
@@ -70,9 +70,10 @@ exprChildren (ExprApp f arg) = [f, arg]
 exprChildren (ExprLambda _ body _) = [body]
 exprChildren (ExprBinaryOp _ left right) = [left, right]
 exprChildren (ExprLet _ value body _) = [value, body]
-exprChildren (ExprFunctionDef _ _ _ body _) = [body]
-exprChildren (ExprConstantDef _ _ value _) = [value]
-exprChildren (ExprStructDef _ _ constructors _) = constructors
+exprChildren (ExprPatternMatch expr arms _) = expr : map (\(SinglePatternArm _ arm) -> arm) arms
+exprChildren (ExprDerivedPatternMatch arms) = map (\(MultiPatternArm _ arm) -> arm) arms
+exprChildren (ExprBindingDef _ _ body _) = [body]
+exprChildren (ExprDataTypeDef _ _ constructors _) = constructors
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprTypeClassMethod _ _ _ (Just impl) _) = impl
 exprChildren _ = []
@@ -96,9 +97,17 @@ exprSpan (ExprBinaryOp _ first second) =
         Span _ end = exprSpan second
     in Span start end
 exprSpan (ExprLet _ _ _ s) = s
-exprSpan (ExprFunctionDef _ _ _ _ s) = s
-exprSpan (ExprConstantDef _ _ _ s) = s
-exprSpan (ExprStructDef _ _ _ s) = s
+exprSpan (ExprBindingDef _ _ _ s) = s
+exprSpan (ExprDataTypeDef _ _ _ s) = s
 exprSpan (ExprStructConstructor _ _ s) = s
 exprSpan (ExprTypeClassDef _ _ _ s) = s
 exprSpan (ExprTypeClassMethod _ _ _ _ s) = s
+exprSpan (ExprPatternMatch _ _ s) = s
+exprSpan (ExprDerivedPatternMatch arms) =
+    let spans = map (\(MultiPatternArm _ arm) -> exprSpan arm) arms
+    in case spans of
+        [] -> error "Derived pattern match arms cannot be empty"
+        _ ->
+            let Span start _ = hardHead spans
+                Span _ end = last spans
+            in Span start end
