@@ -49,7 +49,6 @@ instance TreeShow Expr where
     treeShow (ExprTuple _ _) = "Tuple:"
     treeShow (ExprApp _ _) = "App:"
     treeShow (ExprLambda args _ _) = "Lambda (" ++ unwords args ++ "):"
-    treeShow (ExprBinaryOp op _ _) = "BinaryOp (" ++ show op ++ "):"
     treeShow (ExprLet name _ _ _) = "Let (" ++ name ++ "):"
     treeShow (ExprPatternMatch _ _ _) = "PatternMatch:"
     treeShow (ExprDerivedPatternMatch _) = "DerivedPatternMatch:"
@@ -58,6 +57,7 @@ instance TreeShow Expr where
     treeShow (ExprStructConstructor name args _) = "StructConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
     treeShow (ExprTypeClassDef name generics _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow generics ++ "):"
     treeShow (ExprTypeClassMethod name args returnType _ _) = "TypeClassMethod (" ++ name ++ ": " ++ treeShowArgs args ++ " -> " ++ treeShow returnType ++ "):"
+    treeShow (ExprInstanceDef className _ _ _) = "InstanceDef (" ++ className ++ "):"
 
 instance TreeShow Pattern where
     treeShow (PVar name) = "Var (" ++ name ++ ")"

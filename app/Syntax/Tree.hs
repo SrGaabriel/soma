@@ -1,7 +1,6 @@
 module Syntax.Tree where
 
 import Lexing.Position (Span (..))
-import Syntax.Ops (BinaryOp)
 import Syntax.Patterns (Pattern (..))
 import Typing.Types (QualifiedType, TyVar, Type)
 import Utils.Lists (hardHead)
@@ -17,7 +16,6 @@ data Expr
     | ExprTuple [Expr] Span
     | ExprApp Expr Expr
     | ExprLambda [String] Expr Span
-    | ExprBinaryOp BinaryOp Expr Expr
     | ExprPatternMatch Expr [SinglePatternArm] Span
     | ExprDerivedPatternMatch [MultiPatternArm]
     | ExprLet
@@ -56,6 +54,12 @@ data Expr
         , typeClassMethodDefaultImpl :: Maybe [Expr]
         , typeClassMethodSpan :: Span
         }
+    | ExprInstanceDef
+        { instanceClassName :: String
+        , instanceDataTypeName :: String -- todo: change this to a single qualified type
+        , instanceMethods :: [Expr]
+        , instanceSpan :: Span
+        }
     deriving (Show, Eq)
 
 data SinglePatternArm = SinglePatternArm Pattern Expr deriving (Show, Eq)
@@ -68,7 +72,6 @@ exprChildren (ExprArray exprs _) = exprs
 exprChildren (ExprTuple exprs _) = exprs
 exprChildren (ExprApp f arg) = [f, arg]
 exprChildren (ExprLambda _ body _) = [body]
-exprChildren (ExprBinaryOp _ left right) = [left, right]
 exprChildren (ExprLet _ value body _) = [value, body]
 exprChildren (ExprPatternMatch expr arms _) = expr : map (\(SinglePatternArm _ arm) -> arm) arms
 exprChildren (ExprDerivedPatternMatch arms) = map (\(MultiPatternArm _ arm) -> arm) arms
@@ -76,6 +79,7 @@ exprChildren (ExprBindingDef _ _ body _) = [body]
 exprChildren (ExprDataTypeDef _ _ constructors _) = constructors
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprTypeClassMethod _ _ _ (Just impl) _) = impl
+exprChildren (ExprInstanceDef _ _ methods _) = methods
 exprChildren _ = []
 
 exprSpan :: Expr -> Span
@@ -92,10 +96,6 @@ exprSpan (ExprApp first second) =
         Span _ end = exprSpan second
     in Span start end
 exprSpan (ExprLambda _ _ s) = s
-exprSpan (ExprBinaryOp _ first second) =
-    let Span start _ = exprSpan first
-        Span _ end = exprSpan second
-    in Span start end
 exprSpan (ExprLet _ _ _ s) = s
 exprSpan (ExprBindingDef _ _ _ s) = s
 exprSpan (ExprDataTypeDef _ _ _ s) = s
@@ -111,3 +111,4 @@ exprSpan (ExprDerivedPatternMatch arms) =
             let Span start _ = hardHead spans
                 Span _ end = last spans
             in Span start end
+exprSpan (ExprInstanceDef _ _ _ s) = s

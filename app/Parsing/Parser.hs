@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
@@ -11,11 +12,7 @@ import Parsing.Errors (ParsingError (..))
 newtype Parser a = Parser
     { runParser :: [Token] -> Either ParsingError (a, [Token])
     }
-
-instance Functor Parser where
-    fmap f (Parser p) = Parser $ \tokens -> do
-        (x, rest) <- p tokens
-        Right (f x, rest)
+    deriving (Functor)
 
 instance Applicative Parser where
     pure x = Parser $ \tokens -> Right (x, tokens)
@@ -203,7 +200,7 @@ parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
                     else Right (reverse acc, remaining)
     parseNext [] tokens
 
--- TODO: remove repeated code
+-- TODO: remove duplicate code
 parseIndexedIndentedBlock :: Int -> (Int -> Parser a) -> Parser [a]
 parseIndexedIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
     indentation <- case tokens of
@@ -269,3 +266,17 @@ option def parser = Parser $ \tokens ->
     case runParser parser tokens of
         Right (result, rest) -> Right (result, rest)
         Left _ -> Right (def, tokens)
+
+parseFuncName :: Parser String
+parseFuncName = do
+    inc <- peek
+    case tokenKind inc of
+        TokenLowerIdentifier -> do
+            nameToken <- next
+            pure $ tokenValue nameToken
+        TokenLeftBraces -> do
+            _ <- next
+            nameToken <- consume TokenVarSymbol
+            _ <- consume TokenRightBraces
+            pure $ tokenValue nameToken
+        _ -> throwError $ InvalidFunctionName inc

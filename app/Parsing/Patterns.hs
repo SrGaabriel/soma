@@ -25,10 +25,13 @@ parseSinglePattern parentheziedConstructors = do
             numToken <- next
             pure $ PLit $ LitInt (read (tokenValue numToken) :: Integer)
         TokenLeftParen ->
-            parseSinglePattern False <* consume TokenRightParen
+            parseSinglePattern True <* consume TokenRightParen
+        TokenUnderscore -> do
+            _ <- next
+            pure PWildcard
         TokenUpperIdentifier | parentheziedConstructors -> do
             nameToken <- next
-            patterns <- parseMultiplePatterns
+            patterns <- parseFluidSequence TokenRightParen (parseSinglePattern False)
             pure $ PConstructor (tokenValue nameToken) patterns
         _ -> throwError $ InvalidPattern inc
 

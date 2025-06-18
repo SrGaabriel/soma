@@ -2,13 +2,12 @@
 
 module Parsing.Ast where
 
-import Control.Applicative (Alternative (many), optional)
+import Control.Applicative (Alternative (many))
 import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (tokenIndent, tokenKind, tokenValue), TokenKind (..), spanningTokens)
-import Parsing.Atoms (parseExpression)
 import Parsing.Bindings (parseBinding)
 import Parsing.Errors (ParsingError (UnexpectedToken))
-import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseIndentedBlock, parseIndexedIndentedBlock, peek)
+import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseFuncName, parseIndentedBlock, parseIndexedIndentedBlock, peek)
 import Parsing.Types (parseTyVar, parseType)
 import Syntax.Tree (Expr (..))
 import Typing.Types (Type)
@@ -30,6 +29,7 @@ parseDeclaration = do
         TokenNewline -> next >> parseDeclaration
         TokenData -> parseDataType
         TokenClass -> parseTypeClass
+        TokenInstance -> parseInstance
         _ -> throwError $ UnexpectedToken token
 
 parseDataType :: Parser Expr
@@ -93,20 +93,32 @@ parseTypeClass = do
 parseTypeClassMethod :: Parser Expr
 parseTypeClassMethod = do
     defToken <- consume TokenDef
-    methodToken <- consume TokenLowerIdentifier
-    _ <- consumeRelevant TokenReturns
+    methodName <- parseFuncName
+    retTok <- consumeRelevant TokenReturns
     methodType <- parseType
-
-    defaultImpl <-
-        (optional $ consume TokenEquals) >>= \case
-            Just _ -> Just <$> parseIndentedBlock (tokenIndent methodToken) parseExpression
-            Nothing -> pure Nothing
 
     pure
         $ ExprTypeClassMethod
-            { typeClassMethodName = tokenValue methodToken
+            { typeClassMethodName = methodName
             , typeClassMethodArgs = []
             , typeClassMethodReturnType = methodType
-            , typeClassMethodDefaultImpl = defaultImpl
-            , typeClassMethodSpan = spanningTokens defToken methodToken
+            , typeClassMethodDefaultImpl = Nothing
+            , typeClassMethodSpan = spanningTokens defToken retTok
+            }
+
+parseInstance :: Parser Expr
+parseInstance = do
+    instanceToken <- consume TokenInstance
+    classNameToken <- consume TokenUpperIdentifier
+    dataTypeToken <- consume TokenUpperIdentifier
+
+    _where <- consume TokenWhere
+    bindings <- parseIndentedBlock (tokenIndent classNameToken) parseBinding
+    let className = tokenValue classNameToken
+    pure
+        $ ExprInstanceDef
+            { instanceClassName = className
+            , instanceDataTypeName = tokenValue dataTypeToken
+            , instanceMethods = bindings
+            , instanceSpan = spanningTokens instanceToken dataTypeToken
             }

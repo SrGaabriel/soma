@@ -21,6 +21,7 @@ data ParsingError
     | InvalidGenericsList Token
     | InvalidPattern Token
     | InvalidFunctionBody Token
+    | InvalidFunctionName Token
     | EndOfInput
     | Debug
     deriving (Eq)
@@ -38,8 +39,9 @@ instance Show ParsingError where
     show (ExpectedAnExpression _) = "Expected an expression but received an abrupt end"
     show (InvalidGenericsList t) = "Invalid generics list at " ++ referenceToken t
     show (ExpectedAGenericType t) = "Expected a generic type but received " ++ referenceToken t
-    show (InvalidPattern t) = "Invalid pattern at " ++ referenceToken t
-    show (InvalidFunctionBody t) = "Invalid function body at " ++ referenceToken t
+    show (InvalidPattern t) = "The expression " ++ referenceToken t ++ " is not a valid pattern"
+    show (InvalidFunctionBody t) = "The expression " ++ referenceToken t ++ " is not a valid function body"
+    show (InvalidFunctionName t) = "The expression " ++ referenceToken t ++ " is not a valid function name"
     show (EndOfInput) = "End of input"
     show Debug = "Debug"
 
@@ -73,5 +75,6 @@ getErrorToken (InvalidGenericsList t) = Just t
 getErrorToken (ExpectedAGenericType t) = Just t
 getErrorToken (ExpectedAnExpression t) = Just t
 getErrorToken (InvalidFunctionBody t) = Just t
+getErrorToken (InvalidFunctionName t) = Just t
 getErrorToken (EndOfInput) = Nothing
 getErrorToken Debug = Nothing

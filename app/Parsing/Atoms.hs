@@ -9,17 +9,10 @@ import Lexing.Lexer (Token (..), TokenKind (..), tokenSpan)
 import Lexing.Position (Span (Span))
 import Parsing.Errors (ParsingError (..))
 import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseCommaSeparatedUntil, parseIndentedBlock, parseSequence, peek, someAccepting)
-import Syntax.Ops (BinaryOp (..))
 import Syntax.Tree (Expr (..))
 
 parseExpression :: Parser Expr
-parseExpression = parseNumericExpression
-
-parseNumericExpression :: Parser Expr
-parseNumericExpression = parseBinaryOp parseTerm [TokenPlus, TokenMinus]
-
-parseTerm :: Parser Expr
-parseTerm = parseBinaryOp parseApplication [TokenAsterisk, TokenSlash]
+parseExpression = parseExprPrec 0
 
 parseApplication :: Parser Expr
 parseApplication = do
@@ -99,30 +92,6 @@ parseAtom = do
             pure $ ExprBool False (tokenSpan falseToken)
         _ -> throwError $ NotAnExpression token
 
-parseBinaryOp :: Parser Expr -> [TokenKind] -> Parser Expr
-parseBinaryOp term operatorTokens = do
-    left <- term
-    loop left
-  where
-    loop left = do
-        mt <- optional peek
-        case mt of
-            Just t
-                | tokenKind t `elem` operatorTokens
-                , Just op <- toBinaryOp (tokenKind t) -> do
-                    _ <- next
-                    right <- term
-                    loop $ ExprBinaryOp op left right
-            _ -> pure left
-
-toBinaryOp :: TokenKind -> Maybe BinaryOp
-toBinaryOp = \case
-    TokenPlus -> Just BinaryAdd
-    TokenMinus -> Just BinarySubtract
-    TokenAsterisk -> Just BinaryMultiply
-    TokenSlash -> Just BinaryDivide
-    _ -> Nothing
-
 parseLetExpression :: Parser Expr
 parseLetExpression = do
     letToken <- consume TokenLet
@@ -149,3 +118,50 @@ parseLetExpression = do
         in when (actualIndent /= expectedIndent)
             $ throwError
             $ ExpectedDifferentIndentation newline expectedIndent actualIndent
+
+operatorPrecedenceTable :: [[String]]
+operatorPrecedenceTable =
+    [ ["*", "/"]
+    , ["+", "-"]
+    , ["==", "!=", "<", ">", "<=", ">="]
+    ]
+
+getOpPrecedence :: String -> Maybe (Int, Associativity)
+getOpPrecedence sym = go 0 operatorPrecedenceTable
+  where
+    go _ [] = Nothing
+    go i (level : rest)
+        | sym `elem` level = Just (length operatorPrecedenceTable - i, LeftAssoc)
+        | otherwise = go (i + 1) rest
+
+data Associativity = LeftAssoc | RightAssoc
+
+parseExprPrec :: Int -> Parser Expr
+parseExprPrec prec = do
+    lhs <- parseApplication
+    parseInfixRest lhs prec
+
+parseInfixRest :: Expr -> Int -> Parser Expr
+parseInfixRest lhs prec = do
+    mtok <- optional peek
+    case mtok of
+        Just tok
+            | TokenVarSymbol <- tokenKind tok
+            , let opStr = tokenValue tok
+            , Just (opPrec, assoc) <- getOpPrecedence opStr
+            , shouldContinue prec opPrec assoc -> do
+                _ <- next
+                rhs <- parseExprPrec (nextPrec assoc opPrec)
+                let op = ExprVar opStr (tokenSpan tok)
+                let appL = ExprApp op lhs
+                parseInfixRest (ExprApp appL rhs) prec
+        _ -> pure lhs
+  where
+    shouldContinue current nextOpPrec assoc =
+        case assoc of
+            LeftAssoc -> nextOpPrec >= current
+            RightAssoc -> nextOpPrec > current
+    nextPrec assoc opPrec =
+        case assoc of
+            LeftAssoc -> opPrec + 1
+            RightAssoc -> opPrec

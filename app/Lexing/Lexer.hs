@@ -7,11 +7,6 @@ import Lexing.Position (Span (Span))
 
 data TokenKind
     = TokenNumber
-    | TokenPlus
-    | TokenMinus
-    | TokenAsterisk
-    | TokenSlash
-    | TokenEquals
     | TokenLeftAngleBracket
     | TokenRightAngleBracket
     | TokenLeftArrow
@@ -28,13 +23,17 @@ data TokenKind
     | TokenRightParen
     | TokenLowerIdentifier
     | TokenUpperIdentifier
+    | TokenVarSymbol
     | TokenPipe
+    | TokenEquals
     | TokenLet
     | TokenIn
     | TokenFn
     | TokenString
     | TokenDollar
     | TokenStruct
+    | TokenLeftBraces
+    | TokenRightBraces
     | TokenData
     | TokenClass
     | TokenWhere
@@ -46,6 +45,7 @@ data TokenKind
     | TokenFalse
     | TokenLambda
     | TokenForall
+    | TokenUnderscore
     deriving (Show, Eq, Ord)
 
 data Token = Token
@@ -63,12 +63,14 @@ tokenize :: String -> Int -> Int -> ([Token], [LexingError])
 tokenize [] _ _ = ([], [])
 tokenize (c : cs) i indent
     | isSpace c = tokenize cs (i + 1) indent
-    | c `elem` "+*<>()|$[],.λ\\" =
+    | c `elem` "+*<>()|$[],.λ\\_{}" =
         let kind = case c of
-                '+' -> TokenPlus
-                '*' -> TokenAsterisk
+                '+' -> TokenVarSymbol
+                '*' -> TokenVarSymbol
                 '<' -> TokenLeftAngleBracket
                 '>' -> TokenRightAngleBracket
+                '{' -> TokenLeftBraces
+                '}' -> TokenRightBraces
                 '(' -> TokenLeftParen
                 ')' -> TokenRightParen
                 '|' -> TokenPipe
@@ -80,13 +82,14 @@ tokenize (c : cs) i indent
                 'λ' -> TokenLambda
                 '∀' -> TokenForall
                 '\\' -> TokenLambda
+                '_' -> TokenUnderscore
                 _ -> error "Impossible case"
         in addToken (Token kind [c] i indent) (tokenize cs (i + 1) indent)
     | c == '-' = case cs of
         '>' : rest -> addToken (Token TokenRightArrow "->" i indent) (tokenize rest (i + 2) indent)
-        _ -> addToken (Token TokenMinus "-" i indent) (tokenize cs (i + 1) indent)
+        _ -> addToken (Token TokenVarSymbol "-" i indent) (tokenize cs (i + 1) indent)
     | c == '=' = case cs of
-        '=' : rest -> addToken (Token TokenEquals "==" i indent) (tokenize rest (i + 2) indent)
+        '=' : rest -> addToken (Token TokenVarSymbol "==" i indent) (tokenize rest (i + 2) indent)
         '>' : rest -> addToken (Token TokenStrongRightArrow "=>" i indent) (tokenize rest (i + 2) indent)
         _ -> addToken (Token TokenEquals "=" i indent) (tokenize cs (i + 1) indent)
     | c == ':' = case cs of
@@ -96,7 +99,7 @@ tokenize (c : cs) i indent
         '/' : rest ->
             let (comment, rest') = span (/= '\n') rest
             in tokenize rest' (i + 2 + length comment) indent
-        _ -> addToken (Token TokenSlash "/" i indent) (tokenize cs (i + 1) indent)
+        _ -> addToken (Token TokenVarSymbol "/" i indent) (tokenize cs (i + 1) indent)
     | c == '\n' =
         let (spaces, rest) = span isSpace cs
             indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
@@ -209,14 +212,13 @@ referenceTokenKind (TokenNumber) = "a number"
 referenceTokenKind (TokenNewline) = "a newline"
 referenceTokenKind (TokenLowerIdentifier) = "a lower-case identifier"
 referenceTokenKind (TokenUpperIdentifier) = "an upper-case identifier"
-referenceTokenKind (TokenPlus) = "a plus sign"
-referenceTokenKind (TokenMinus) = "a minus sign"
-referenceTokenKind (TokenAsterisk) = "an asterisk"
+referenceTokenKind (TokenVarSymbol) = "a symbol"
 referenceTokenKind (TokenDollar) = "a dollar sign"
-referenceTokenKind (TokenSlash) = "a slash"
-referenceTokenKind (TokenEquals) = "an equals sign"
 referenceTokenKind (TokenLeftAngleBracket) = "a left angle bracket"
 referenceTokenKind (TokenRightAngleBracket) = "a right angle bracket"
+referenceTokenKind (TokenLeftBraces) = "a left brace"
+referenceTokenKind (TokenRightBraces) = "a right brace"
+referenceTokenKind (TokenEquals) = "an equals sign"
 referenceTokenKind (TokenLeftArrow) = "a left arrow"
 referenceTokenKind (TokenRightArrow) = "a right arrow"
 referenceTokenKind (TokenStrongRightArrow) = "a double right arrow"
@@ -245,6 +247,7 @@ referenceTokenKind (TokenWhere) = "'where'"
 referenceTokenKind (TokenInstance) = "'instance'"
 referenceTokenKind (TokenLambda) = "'\\'"
 referenceTokenKind (TokenForall) = "'∀'"
+referenceTokenKind (TokenUnderscore) = "an underscore"
 
 tokenSpan :: Token -> Span
 tokenSpan token = Span (tokenPos token) (tokenPos token + length (tokenValue token))

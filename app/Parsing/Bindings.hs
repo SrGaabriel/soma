@@ -4,7 +4,7 @@ import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
 import Parsing.Atoms (parseExpression)
 import Parsing.Errors (ParsingError (FunctionArgumentLengthMismatch, InvalidFunctionBody))
-import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseFluidSequence, peekRelevant)
+import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseFuncName, parseSequence, peekRelevant)
 import Parsing.Patterns (parsePipePatternArms)
 import Parsing.Types (parseQualifiedType, parseType)
 import Syntax.Tree (Expr (..), exprSpan)
@@ -14,18 +14,17 @@ import Typing.Types (QualifiedType (..), Type (..))
 parseBinding :: Parser Expr
 parseBinding = do
     defToken <- consume TokenDef
-    nameToken <- consume TokenLowerIdentifier
-    let name = tokenValue nameToken
+    name <- parseFuncName
     leftParenthesisArgStart <- optional $ consume TokenLeftParen
 
     case leftParenthesisArgStart of
         Just _ -> do
             params <-
-                parseFluidSequence TokenRightParen (parseImperativeBindingParam)
+                parseSequence TokenComma TokenRightParen (parseImperativeBindingParam)
                     <* consume TokenRightParen
             let (toks, types) = unzip params
             mappings <- ensureSameLengthMap toks types
-            _ <- consume TokenReturns
+            _ <- consume TokenRightArrow
             returnType <- parseType
             let bindingType = curryFunction types returnType
             let bindingTypeS = Forall [] [] bindingType -- todo: support constraints in this def

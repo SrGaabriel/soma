@@ -1,8 +1,10 @@
 trait Eq a where
-    def eq :: a -> a -> Bool
+    def {==} :: a -> a -> Bool
 
-// instance Eq Int where
-//     def eq(x: Int, y: Int) -> Int = x == y
+def sum(x: Int, y: Int) -> Int = x + y
+
+instance Eq Int where
+    def {==}(x: Int, y: Int) -> Bool = true
 
 def isZero :: Int -> Int -> Bool
   | a 0 => true
@@ -15,9 +17,9 @@ data Shape
     | Circle
         radius :: Int
 
-// instance Eq Shape where
-//     def eq :: Shape -> Shape -> Bool
-//       | (Circle x) (Circle y) => x == y
-//       | (Square x) (Square y) => x == y
-//       | (Circle x) (Square y) => x == y
-//       | (Square x) (Circle y) => x == y
+instance Eq Shape where
+    def eq :: Shape -> Shape -> Bool
+      | (Circle x) (Circle y) => x == y
+      | (Square x) (Square y) => x == y
+      | (Circle x) (Square y) => x == y
+      | (Square x) (Circle y) => x == y
