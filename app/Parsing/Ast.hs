@@ -1,5 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-
 module Parsing.Ast where
 
 import Control.Applicative (Alternative (many))
@@ -42,8 +40,8 @@ parseDataType = do
     let name = tokenValue nameToken
     let spanning = spanningTokens dataToken nameToken
     constructors <- parseIndexedIndentedBlock (tokenIndent nameToken) parseStructConstructor
-    pure
-        $ ExprDataTypeDef
+    pure $
+        ExprDataTypeDef
             { dataName = name
             , dataGenerics = tyVars
             , dataConstraints = []
@@ -59,8 +57,8 @@ parseStructConstructor index = do
             else consume TokenPipe
     nameToken <- consume TokenUpperIdentifier
     fields <- parseIndentedBlock (tokenIndent nameToken) parseStructField
-    pure
-        $ ExprDataConstructor
+    pure $
+        ExprDataConstructor
             { structConstructorName = tokenValue nameToken
             , structConstructorArgs = fields
             , structConstructorSpan = spanningTokens firstToken nameToken
@@ -71,7 +69,7 @@ parseStructField = do
     nameToken <- consume TokenLowerIdentifier
     _ <- consumeRelevant TokenReturns
     typeExpr <- parseType
-    pure $ (tokenValue nameToken, typeExpr)
+    pure (tokenValue nameToken, typeExpr)
 
 parseTypeClass :: Parser Expr
 parseTypeClass = do
@@ -83,8 +81,8 @@ parseTypeClass = do
     _where <- consume TokenWhere
     bindings <- parseIndentedBlock (tokenIndent nameToken) parseTypeClassBinding
     let name = tokenValue nameToken
-    pure
-        $ ExprTypeClassDef
+    pure $
+        ExprTypeClassDef
             { typeClassName = name
             , typeClassGenerics = tyVars
             , typeClassBindings = bindings
@@ -98,8 +96,8 @@ parseTypeClassBinding = do
     retTok <- consumeRelevant TokenReturns
     bindTyp <- parseQualifiedType
 
-    pure
-        $ ExprTypeClassBinding
+    pure $
+        ExprTypeClassBinding
             { typeClassBindName = bindName
             , typeClassBindType = bindTyp
             , typeClassBindDefaultImpl = Nothing
@@ -115,8 +113,8 @@ parseInstance = do
     _where <- consume TokenWhere
     bindings <- parseIndentedBlock (tokenIndent classNameToken) parseBinding
     let className = tokenValue classNameToken
-    pure
-        $ ExprInstanceDef
+    pure $
+        ExprInstanceDef
             { instanceClassName = className
             , instanceDataTypeName = tokenValue dataTypeToken
             , instanceMethods = bindings

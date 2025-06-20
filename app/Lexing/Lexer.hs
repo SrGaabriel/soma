@@ -177,8 +177,8 @@ breakTripleQuote s = go s ""
     go rest@(c1 : c2 : c3 : cs) acc
         | c1 == '"' && c2 == '"' && c3 == '"' = (acc, rest)
         | otherwise = go (c2 : c3 : cs) (acc ++ [c1])
-    go (c1 : c2 : []) acc = (acc ++ [c1, c2], [])
-    go (c1 : []) acc = (acc ++ [c1], [])
+    go [c1, c2] acc = (acc ++ [c1, c2], [])
+    go [c1] acc = (acc ++ [c1], [])
 
 addToken :: Token -> ([Token], [LexingError]) -> ([Token], [LexingError])
 addToken token (tokens, errors) = (token : tokens, errors)
@@ -193,7 +193,7 @@ isAlphanumeric :: Char -> Bool
 isAlphanumeric c = isCharacter c || isDigit c
 
 isEmoji :: Char -> Bool
-isEmoji c = generalCategory c `elem` [C.OtherSymbol]
+isEmoji c = generalCategory c == C.OtherSymbol
 
 isSpace :: Char -> Bool
 isSpace c = c == ' ' || c == '\t'
@@ -208,46 +208,46 @@ referenceToken token = case tokenKind token of
     _ -> "'" ++ tokenValue token ++ "'"
 
 referenceTokenKind :: TokenKind -> String
-referenceTokenKind (TokenNumber) = "a number"
-referenceTokenKind (TokenNewline) = "a newline"
-referenceTokenKind (TokenLowerIdentifier) = "a lower-case identifier"
-referenceTokenKind (TokenUpperIdentifier) = "an upper-case identifier"
-referenceTokenKind (TokenVarSymbol) = "a symbol"
-referenceTokenKind (TokenDollar) = "a dollar sign"
-referenceTokenKind (TokenLeftAngleBracket) = "a left angle bracket"
-referenceTokenKind (TokenRightAngleBracket) = "a right angle bracket"
-referenceTokenKind (TokenLeftBraces) = "a left brace"
-referenceTokenKind (TokenRightBraces) = "a right brace"
-referenceTokenKind (TokenEquals) = "an equals sign"
-referenceTokenKind (TokenLeftArrow) = "a left arrow"
-referenceTokenKind (TokenRightArrow) = "a right arrow"
-referenceTokenKind (TokenStrongRightArrow) = "a double right arrow"
-referenceTokenKind (TokenColon) = "a colon"
-referenceTokenKind (TokenReturns) = "'::'"
-referenceTokenKind (TokenCase) = "'case'"
-referenceTokenKind (TokenDo) = "'do'"
-referenceTokenKind (TokenDef) = "'def'"
-referenceTokenKind (TokenLeftParen) = "a left parenthesis"
-referenceTokenKind (TokenRightParen) = "a right parenthesis"
-referenceTokenKind (TokenPipe) = "a vertical bar"
-referenceTokenKind (TokenLet) = "'let'"
-referenceTokenKind (TokenFn) = "'fn'"
-referenceTokenKind (TokenIn) = "'in'"
-referenceTokenKind (TokenString) = "a string"
-referenceTokenKind (TokenStruct) = "a struct"
-referenceTokenKind (TokenData) = "a data type"
-referenceTokenKind (TokenLeftBracket) = "a left bracket"
-referenceTokenKind (TokenRightBracket) = "a right bracket"
-referenceTokenKind (TokenComma) = "a comma"
-referenceTokenKind (TokenDot) = "a dot"
-referenceTokenKind (TokenTrue) = "'true'"
-referenceTokenKind (TokenFalse) = "'false'"
-referenceTokenKind (TokenClass) = "'class'"
-referenceTokenKind (TokenWhere) = "'where'"
-referenceTokenKind (TokenInstance) = "'instance'"
-referenceTokenKind (TokenLambda) = "'\\'"
-referenceTokenKind (TokenForall) = "'∀'"
-referenceTokenKind (TokenUnderscore) = "an underscore"
+referenceTokenKind TokenNumber = "a number"
+referenceTokenKind TokenNewline = "a newline"
+referenceTokenKind TokenLowerIdentifier = "a lower-case identifier"
+referenceTokenKind TokenUpperIdentifier = "an upper-case identifier"
+referenceTokenKind TokenVarSymbol = "a symbol"
+referenceTokenKind TokenDollar = "a dollar sign"
+referenceTokenKind TokenLeftAngleBracket = "a left angle bracket"
+referenceTokenKind TokenRightAngleBracket = "a right angle bracket"
+referenceTokenKind TokenLeftBraces = "a left brace"
+referenceTokenKind TokenRightBraces = "a right brace"
+referenceTokenKind TokenEquals = "an equals sign"
+referenceTokenKind TokenLeftArrow = "a left arrow"
+referenceTokenKind TokenRightArrow = "a right arrow"
+referenceTokenKind TokenStrongRightArrow = "a double right arrow"
+referenceTokenKind TokenColon = "a colon"
+referenceTokenKind TokenReturns = "'::'"
+referenceTokenKind TokenCase = "'case'"
+referenceTokenKind TokenDo = "'do'"
+referenceTokenKind TokenDef = "'def'"
+referenceTokenKind TokenLeftParen = "a left parenthesis"
+referenceTokenKind TokenRightParen = "a right parenthesis"
+referenceTokenKind TokenPipe = "a vertical bar"
+referenceTokenKind TokenLet = "'let'"
+referenceTokenKind TokenFn = "'fn'"
+referenceTokenKind TokenIn = "'in'"
+referenceTokenKind TokenString = "a string"
+referenceTokenKind TokenStruct = "a struct"
+referenceTokenKind TokenData = "a data type"
+referenceTokenKind TokenLeftBracket = "a left bracket"
+referenceTokenKind TokenRightBracket = "a right bracket"
+referenceTokenKind TokenComma = "a comma"
+referenceTokenKind TokenDot = "a dot"
+referenceTokenKind TokenTrue = "'true'"
+referenceTokenKind TokenFalse = "'false'"
+referenceTokenKind TokenClass = "'class'"
+referenceTokenKind TokenWhere = "'where'"
+referenceTokenKind TokenInstance = "'instance'"
+referenceTokenKind TokenLambda = "'\\'"
+referenceTokenKind TokenForall = "'∀'"
+referenceTokenKind TokenUnderscore = "an underscore"
 
 tokenSpan :: Token -> Span
 tokenSpan token = Span (tokenPos token) (tokenPos token + length (tokenValue token))

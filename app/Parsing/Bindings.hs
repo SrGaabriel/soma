@@ -20,7 +20,7 @@ parseBinding = do
     case leftParenthesisArgStart of
         Just _ -> do
             params <-
-                parseSequence TokenComma TokenRightParen (parseImperativeBindingParam)
+                parseSequence TokenComma TokenRightParen parseImperativeBindingParam
                     <* consume TokenRightParen
             let (toks, types) = unzip params
             mappings <- ensureSameLengthMap toks types

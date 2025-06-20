@@ -1,6 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 module Logging.PrettyTrees where
 
@@ -13,7 +12,7 @@ class TreeShow a where
     treeShow :: a -> String
 
 instance TreeShow Kind where
-    treeShow (KindStar) = "*"
+    treeShow KindStar = "*"
     treeShow k@(KindArrow _ _) =
         let (args, ret) = uncurryKind k
         in "(" ++ unwords (map treeShow args) ++ " -> " ++ treeShow ret ++ ")"
@@ -51,7 +50,7 @@ instance TreeShow Expr where
     treeShow (ExprApp _ _) = "App:"
     treeShow (ExprLambda args _ _) = "Lambda (" ++ unwords args ++ "):"
     treeShow (ExprLet name _ _ _) = "Let (" ++ name ++ "):"
-    treeShow (ExprPatternMatch _ _ _) = "PatternMatch:"
+    treeShow (ExprPatternMatch{}) = "PatternMatch:"
     treeShow (ExprDerivedPatternMatch _) = "DerivedPatternMatch:"
     treeShow (ExprBindingDef name qType _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
     treeShow (ExprDataTypeDef name generics _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
@@ -67,8 +66,8 @@ instance TreeShow Pattern where
         "Constructor (" ++ name ++ ": " ++ treeShow args ++ ")"
     treeShow (PTuple patterns) = "Tuple (" ++ unwords (map treeShow patterns) ++ ")"
     treeShow (PArray patterns) = "Array (" ++ unwords (map treeShow patterns) ++ ")"
-    treeShow (PWildcard) = "Wildcard"
-    treeShow (PAs name pattern) = "As (" ++ name ++ ": " ++ treeShow pattern ++ ")"
+    treeShow PWildcard = "Wildcard"
+    treeShow (PAs name p) = "As (" ++ name ++ ": " ++ treeShow p ++ ")"
 
 treeShowArgs :: [(String, Type)] -> String
 treeShowArgs args =

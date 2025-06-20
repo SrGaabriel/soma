@@ -1,6 +1,7 @@
 module Main where
 
 import Config.Options (Options (optionsInput), extractOptions, formatError)
+import Control.Monad (unless)
 import Lexing.Lexer (tokenizeFile)
 import Logging.ErrorPrinter (printConclusionMessage, printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
@@ -21,16 +22,10 @@ main = do
 
     content <- readFile (optionsInput options)
     let (tokens, errors) = tokenizeFile content
-    if not (Prelude.null errors)
-        then do
-            mapM_
-                ( \err -> do
-                    printError err "app.soma" content "LEXING"
-                )
-                errors
-            printConclusionMessage ("Could not compile because of the " ++ show (length errors) ++ " lexing errors above.")
-            exitFailure
-        else pure ()
+    unless (Prelude.null errors) $ do
+        mapM_ (\err -> printError err "app.soma" content "LEXING") errors
+        printConclusionMessage ("Could not compile because of the " ++ show (length errors) ++ " lexing errors above.")
+        exitFailure
 
     tree <-
         either

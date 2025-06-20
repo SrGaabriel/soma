@@ -6,6 +6,7 @@ module Parsing.Parser where
 
 import Control.Applicative (Alternative (..))
 import Control.Monad.Error.Class (MonadError (..))
+import Data.Functor (($>))
 import Lexing.Lexer (Token (..), TokenKind (..))
 import Parsing.Errors (ParsingError (..))
 
@@ -111,7 +112,7 @@ parseSequence separator end itemParser = Parser $ \tokens -> do
     parseNext [] tokens
   where
     parseNext acc remaining = do
-        endCheck <- runParser (peek) remaining
+        endCheck <- runParser peek remaining
         if tokenKind (fst endCheck) == end
             then Right (reverse acc, remaining)
             else do
@@ -133,7 +134,7 @@ parseCommaSeparatedUntil end itemParser = parseList
   where
     parseList = (:) <$> itemParser <*> parseRest <|> checkEmpty
     parseRest = (consume TokenComma *> parseList) <|> checkEmpty
-    checkEmpty = confirm end *> pure []
+    checkEmpty = confirm end $> []
 
 parseExhaustiveSequence :: TokenKind -> Parser a -> Parser [a]
 parseExhaustiveSequence separator itemParser = Parser $ \tokens -> do
@@ -271,9 +272,8 @@ parseFuncName :: Parser String
 parseFuncName = do
     inc <- peek
     case tokenKind inc of
-        TokenLowerIdentifier -> do
-            nameToken <- next
-            pure $ tokenValue nameToken
+        TokenLowerIdentifier ->
+            tokenValue <$> next
         TokenLeftBraces -> do
             _ <- next
             nameToken <- consume TokenVarSymbol

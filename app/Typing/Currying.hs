@@ -14,9 +14,7 @@ getParamTypes (TArrow param ret) = param : getParamTypes ret
 getParamTypes _ = []
 
 curryFunction :: [Type] -> Type -> Type
-curryFunction [] returnType = returnType
-curryFunction (paramType : rest) returnType =
-    TArrow paramType (curryFunction rest returnType)
+curryFunction rest returnType = foldr TArrow returnType rest
 
 uncurryFunction :: Type -> ([Type], Type)
 uncurryFunction (TArrow a b) =

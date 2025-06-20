@@ -7,9 +7,8 @@ import Parsing.Parser (Parser, consume, consumeRelevant, next, parseSequence, pe
 import Typing.Types (Kind (KindStar), QualifiedType (Forall), TyVar (TypeVar), Type (TArrow, TUnresolved, TVar), arrayType, intType, strType, tupleType)
 
 parseQualifiedType :: Parser QualifiedType
-parseQualifiedType = do
-    typ <- parseType
-    pure $ Forall [] [] typ
+parseQualifiedType =
+    Forall [] [] <$> parseType
 
 parseType :: Parser Type
 parseType = do
@@ -17,7 +16,7 @@ parseType = do
     initialType <- case tokenKind nextToken of
         TokenLeftParen -> do
             _ <- next
-            types <- parseSequence TokenComma TokenRightParen (parseType)
+            types <- parseSequence TokenComma TokenRightParen parseType
             _ <- consume TokenRightParen
             case types of
                 [singleType] -> pure singleType
@@ -37,8 +36,7 @@ parseType = do
     if tokenKind incoming == TokenRightArrow
         then do
             _ <- consumeRelevant TokenRightArrow
-            returnType <- parseType
-            pure $ TArrow initialType returnType
+            TArrow initialType <$> parseType
         else pure initialType
 
 parseTyVar :: Parser TyVar

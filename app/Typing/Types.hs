@@ -38,15 +38,15 @@ strType = TConstructor (TypeConstructor "String" KindStar)
 boolType = TConstructor (TypeConstructor "Bool" KindStar)
 
 arrayType :: Type -> Type
-arrayType elemType = TApp (TConstructor (TypeConstructor "Array" (KindArrow KindStar KindStar))) elemType
+arrayType = TApp (TConstructor (TypeConstructor "Array" (KindArrow KindStar KindStar)))
 
 tupleType :: [Type] -> Type
 tupleType [] = TConstructor (TypeConstructor "Unit" KindStar)
-tupleType types = foldr1 TApp (map (\t -> TApp (TConstructor (TypeConstructor "Tuple" KindStar)) t) types)
+tupleType types = foldr1 TApp (map (TApp (TConstructor (TypeConstructor "Tuple" KindStar))) types)
 
 assignConstraints :: QualifiedType -> Type -> QualifiedType
-assignConstraints (Forall vars constraints _) t =
-    Forall vars constraints t
+assignConstraints (Forall vars constraints _) =
+    Forall vars constraints
 
 sumQualifiedTypes :: QualifiedType -> [QualifiedType] -> QualifiedType
 sumQualifiedTypes original [] = original

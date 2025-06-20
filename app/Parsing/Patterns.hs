@@ -18,9 +18,8 @@ parseSinglePattern :: Bool -> Parser Pattern
 parseSinglePattern parentheziedConstructors = do
     inc <- next
     case tokenKind inc of
-        TokenLowerIdentifier -> do
-            nameToken <- next
-            pure $ PVar (tokenValue nameToken)
+        TokenLowerIdentifier ->
+            PVar . tokenValue <$> next
         TokenNumber -> do
             numToken <- next
             pure $ PLit $ LitInt (read (tokenValue numToken) :: Integer)
@@ -52,5 +51,4 @@ parseMultiPatternArm multiAllowed = do
             else
                 (: []) <$> parseSinglePattern False
     _ <- consume TokenStrongRightArrow
-    body <- parseExpression
-    pure $ MultiPatternArm patterns body
+    MultiPatternArm patterns <$> parseExpression

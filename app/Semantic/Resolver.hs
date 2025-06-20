@@ -5,7 +5,7 @@
 module Semantic.Resolver where
 
 import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
-import Control.Monad.State (MonadState (get, put), State, evalState)
+import Control.Monad.State (MonadState (get, put), State, evalState, gets)
 import qualified Data.Map as Map
 import Semantic.Errors (SemanticError (..))
 import Semantic.Inference (TypeEnv)
@@ -18,7 +18,7 @@ newtype ResolverM a = ResolverM
     }
     deriving (Functor, Applicative, Monad, MonadState ResolverState, MonadError SemanticError)
 
-data ResolverState = ResolverState
+newtype ResolverState = ResolverState
     { globalBindings :: TypeEnv
     }
 
@@ -28,7 +28,7 @@ collectGlobals (ExprRoot children) = do
 collectGlobals (ExprBindingDef name bindType _ _) = do
     addGlobalBinding name bindType
 collectGlobals (ExprDataTypeDef name generics constraints constructors _) = do
-    let kind = foldr KindArrow KindStar (map tvKind generics)
+    let kind = foldr (KindArrow . tvKind) KindStar generics
     let baseConstructor = TConstructor $ TypeConstructor name kind
 
     let structType =
@@ -68,9 +68,7 @@ resolveTReference expr@(ExprBindingDef a typ b c) = do
 resolveTReference expr = pure expr
 
 getEnv :: ResolverM TypeEnv
-getEnv = do
-    s <- get
-    pure $ globalBindings s
+getEnv = gets globalBindings
 
 getReference :: Expr -> String -> ResolverM QualifiedType
 getReference expr name = do

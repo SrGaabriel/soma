@@ -19,16 +19,16 @@ parseApplication = do
     atoms <-
         someAccepting
             parseAtom
-            ( \err -> case err of
+            ( \case
                 NotAnExpression _ -> True
                 ExpectedAnExpression _ -> True
                 _ -> False
             )
-    if atoms == []
+    if null atoms
         then do
             inc <- peek
             throwError $ ExpectedAnExpression inc
-        else pure $ foldl2 (\f arg -> ExprApp f arg) atoms
+        else pure $ foldl2 ExprApp atoms
   where
     foldl2 _ [] = error "foldl2: empty list"
     foldl2 _ [x] = x
@@ -58,7 +58,7 @@ parseAtom = do
                     rb <- consume TokenRightParen
                     let spanning = Span (tokenPos lparen) (tokenPos rb)
                     case contents of
-                        (first : []) -> pure first
+                        [first] -> pure first
                         _ -> pure $ ExprTuple contents spanning
         TokenLeftBracket -> do
             lbracket <- consume TokenLeftBracket
@@ -85,11 +85,9 @@ parseAtom = do
             block <- parseIndentedBlock indent parseExpression
             pure $ ExprBlock block (tokenSpan doToken)
         TokenTrue -> do
-            trueToken <- next
-            pure $ ExprBool True (tokenSpan trueToken)
+            ExprBool True . tokenSpan <$> next
         TokenFalse -> do
-            falseToken <- next
-            pure $ ExprBool False (tokenSpan falseToken)
+            ExprBool False . tokenSpan <$> next
         _ -> throwError $ NotAnExpression token
 
 parseLetExpression :: Parser Expr
@@ -104,8 +102,8 @@ parseLetExpression = do
 
     body <- parseExpression
 
-    pure
-        $ ExprLet
+    pure $
+        ExprLet
             { letName = tokenValue identifier
             , letValue = value
             , letBody = body
@@ -115,9 +113,9 @@ parseLetExpression = do
     validateIndentation newline =
         let actualIndent = length (tokenValue newline)
             expectedIndent = tokenIndent newline
-        in when (actualIndent /= expectedIndent)
-            $ throwError
-            $ ExpectedDifferentIndentation newline expectedIndent actualIndent
+        in when (actualIndent /= expectedIndent) $
+            throwError $
+                ExpectedDifferentIndentation newline expectedIndent actualIndent
 
 operatorPrecedenceTable :: [[String]]
 operatorPrecedenceTable =
