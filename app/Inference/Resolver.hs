@@ -2,21 +2,21 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Semantic.Resolver where
+module Inference.Resolver where
 
 import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
-import Control.Monad.State (MonadState (get, put), State, evalState, gets)
+import Control.Monad.State (MonadState (get, put), State, gets, runState)
 import qualified Data.Map as Map
-import Semantic.Errors (SemanticError (..))
-import Semantic.Inference (TypeEnv)
+import Inference.Errors (InferenceError (..))
+import Inference.Core (TypeEnv)
 import Syntax.Tree (Expr (..))
 import Typing.Currying (curryFunction)
 import Typing.Types (Kind (..), QualifiedType (Forall), TyConstructor (TypeConstructor), TyVar (tvKind), Type (..), assignConstraints, sumQualifiedTypes)
 
 newtype ResolverM a = ResolverM
-    { runResolverM :: ExceptT SemanticError (State ResolverState) a
+    { runResolverM :: ExceptT InferenceError (State ResolverState) a
     }
-    deriving (Functor, Applicative, Monad, MonadState ResolverState, MonadError SemanticError)
+    deriving (Functor, Applicative, Monad, MonadState ResolverState, MonadError InferenceError)
 
 newtype ResolverState = ResolverState
     { globalBindings :: TypeEnv
@@ -61,10 +61,16 @@ resolveTReference (ExprDataTypeDef name generics constraints constructors s) = d
 resolveTReference (ExprInstanceDef className dataNam binds s) = do
     binds' <- mapM resolveTReference binds
     pure $ ExprInstanceDef className dataNam binds' s
-resolveTReference expr@(ExprBindingDef a typ b c) = do
+resolveTReference expr@(ExprBindingDef a typ body c) = do
     env <- getEnv
     realTyp <- replaceAllUnresolvedQualified expr env typ
-    pure $ ExprBindingDef a realTyp b c
+    body' <- resolveTReference body
+    addGlobalBinding a realTyp
+    pure $ ExprBindingDef a realTyp body' c
+resolveTReference expr@(ExprDerivedPatternMatch typs arms) = do
+    env <- getEnv
+    realTyps <- mapM (replaceAllUnresolvedQualified expr env) typs
+    pure $ ExprDerivedPatternMatch realTyps arms
 resolveTReference expr = pure expr
 
 getEnv :: ResolverM TypeEnv
@@ -88,11 +94,14 @@ addGlobalBinding name ty = do
     let globals = globalBindings s
     put s{globalBindings = Map.insert name ty globals}
 
-runResolver :: Expr -> IO (Either SemanticError Expr)
+runResolver :: Expr -> IO (Either InferenceError (Expr, TypeEnv))
 runResolver root = do
-    let initialState = ResolverState{globalBindings = Map.empty}
-    let resolverM = runResolverM (analyzeTree root)
-    return $ evalState (runExceptT resolverM) initialState
+        let initialState = ResolverState { globalBindings = Map.empty }
+        let resolverM = runResolverM (analyzeTree root)
+        let (result, finalState) = runState (runExceptT resolverM) initialState
+        pure $ case result of
+            Left err    -> Left err
+            Right expr -> Right (expr, globalBindings finalState)
 
 -- i don't know whether I'm the world's biggest genius or biggest idiot but I think this works?
 replaceAllUnresolvedQualified :: Expr -> TypeEnv -> QualifiedType -> ResolverM QualifiedType

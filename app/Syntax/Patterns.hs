@@ -4,7 +4,7 @@ data Literal
     = LitInt Integer
     | LitString String
     | LitBool Bool
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
 data Pattern
     = PVar String -- variable
@@ -14,4 +14,4 @@ data Pattern
     | PTuple [Pattern] -- (x, y, z)
     | PArray [Pattern] -- [x, y, z]
     | PAs String Pattern -- shape@(Circle x)
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)

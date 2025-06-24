@@ -14,40 +14,68 @@ extra-doc-files:    CHANGELOG.md
 -- extra-source-files:
 
 common warnings
-    ghc-options: -Wall
+    ghc-options:       -Wall -fprof-auto -rtsopts
+
+library
+  import:           warnings
+  exposed-modules:  Typing.Types
+                    Syntax.Patterns
+                    Syntax.Tree
+                    Syntax.Ops
+                    Project.Name
+                    Inference.Errors
+                    Inference.Resolver
+                    Inference.Core
+                    Inference.Gen
+                    Inference.Solving
+                    Inference.Tree
+                    Inference.Assembler
+                    Lexing.Lexer
+                    Lexing.Errors
+                    Lexing.Position
+                    Parsing.Errors
+                    Parsing.Parser
+                    Parsing.Ast
+                    Parsing.Bindings
+                    Parsing.Types
+                    Parsing.Patterns
+                    Parsing.Atoms
+                    Logging.ErrorPrinter
+                    Logging.Reporting
+                    Logging.PrettyTrees
+                    Project.Module
+                    Utils.Lists
+                    Config.Options
+                    Typing.Currying
+  hs-source-dirs:   app
+  build-depends:    base >= 4.19.2.0,
+                    ansi-terminal >= 1.0,
+                    containers >= 0.6,
+                    mtl >= 2.2
+  default-language: Haskell2010
 
 executable soma
-    import:           warnings
-    main-is:          Main.hs
-    other-modules:    Lexing.Lexer
-                      Lexing.Errors
-                      Lexing.Position
-                      Parsing.Errors
-                      Parsing.Parser
-                      Parsing.Ast
-                      Parsing.Bindings
-                      Parsing.Types
-                      Parsing.Patterns
-                      Parsing.Atoms
-                      Logging.ErrorPrinter
-                      Logging.Reporting
-                      Logging.PrettyTrees
-                      Project.Module
-                      Project.Name
-                      Syntax.Tree
-                      Syntax.Ops
-                      Syntax.Patterns
-                      Utils.Lists
-                      Config.Options
-                      Typing.Types
-                      Typing.Currying
-                      Semantic.Errors
-                      Semantic.Resolver
-                      Semantic.Inference
+  import:           warnings
+  main-is:          Main.hs
+  hs-source-dirs:   app
+  build-depends:    base,
+                    soma,
+                    ansi-terminal,
+                    containers,
+                    mtl
+  default-language: Haskell2010
 
-    build-depends:    base >= 4.19.2.0,
-                      ansi-terminal >= 1.0,
-                      containers >= 0.6,
-                      mtl >= 2.2,
-    hs-source-dirs:   app
-    default-language: Haskell2010
+
+test-suite spec-tests
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  main-is:          SpecMain.hs
+  build-depends:    base >=4.19.2.0 && <5,
+                    HUnit,
+                    hspec,
+                    containers,
+                    mtl,
+                    transformers,
+                    soma
+  other-modules:
+  default-language: Haskell2010

@@ -7,6 +7,8 @@ import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..))
 import Typing.Currying (uncurryKind)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), TyVar (TypeVar, tvName), Type (..))
+import Data.Map (Map)
+import qualified Data.Map as Map
 
 class TreeShow a where
     treeShow :: a -> String
@@ -51,7 +53,7 @@ instance TreeShow Expr where
     treeShow (ExprLambda args _ _) = "Lambda (" ++ unwords args ++ "):"
     treeShow (ExprLet name _ _ _) = "Let (" ++ name ++ "):"
     treeShow (ExprPatternMatch{}) = "PatternMatch:"
-    treeShow (ExprDerivedPatternMatch _) = "DerivedPatternMatch:"
+    treeShow (ExprDerivedPatternMatch typs _) = "DerivedPatternMatch (" ++ (unwords $ map treeShow typs) ++ "): "
     treeShow (ExprBindingDef name qType _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
     treeShow (ExprDataTypeDef name generics _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
     treeShow (ExprDataConstructor name args _) = "DataConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
@@ -68,6 +70,10 @@ instance TreeShow Pattern where
     treeShow (PArray patterns) = "Array (" ++ unwords (map treeShow patterns) ++ ")"
     treeShow PWildcard = "Wildcard"
     treeShow (PAs name p) = "As (" ++ name ++ ": " ++ treeShow p ++ ")"
+
+instance (TreeShow a) => TreeShow (Map String a) where
+    treeShow :: (TreeShow a) => Map String a -> String
+    treeShow m = "{" ++ unwords (map (\(k, v) -> k ++ ": " ++ treeShow v) (Map.toList m)) ++ "}"
 
 treeShowArgs :: [(String, Type)] -> String
 treeShowArgs args =

@@ -37,6 +37,9 @@ intType = TConstructor (TypeConstructor "Int" KindStar)
 strType = TConstructor (TypeConstructor "String" KindStar)
 boolType = TConstructor (TypeConstructor "Bool" KindStar)
 
+cleanQualified :: Type -> QualifiedType
+cleanQualified t = Forall [] [] t
+
 arrayType :: Type -> Type
 arrayType = TApp (TConstructor (TypeConstructor "Array" (KindArrow KindStar KindStar)))
 
@@ -54,3 +57,14 @@ sumQualifiedTypes (Forall vars constraints t) others =
     let newVars = vars ++ concatMap (\(Forall v _ _) -> v) others
         newConstraints = constraints ++ concatMap (\(Forall _ c _) -> c) others
     in Forall newVars newConstraints t
+
+substituteReturnType :: Type -> Type -> Type
+substituteReturnType (TArrow arg ret@(TArrow _ _)) new =
+    TArrow arg (substituteReturnType ret new)
+substituteReturnType (TArrow arg _) new =
+    TArrow arg new
+substituteReturnType t _ = t
+
+substituteReturnTypeQualified :: QualifiedType -> Type -> QualifiedType
+substituteReturnTypeQualified (Forall vars constraints t) new =
+    Forall vars constraints (substituteReturnType new t)

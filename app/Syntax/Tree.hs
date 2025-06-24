@@ -1,4 +1,4 @@
-module Syntax.Tree where
+module Syntax.Tree (Expr (..), SinglePatternArm (..), MultiPatternArm (..), exprChildren, exprSpan) where
 
 import Lexing.Position (Span (..))
 import Syntax.Patterns (Pattern (..))
@@ -17,7 +17,7 @@ data Expr
     | ExprApp Expr Expr
     | ExprLambda [String] Expr Span
     | ExprPatternMatch Expr [SinglePatternArm] Span
-    | ExprDerivedPatternMatch [MultiPatternArm]
+    | ExprDerivedPatternMatch [QualifiedType] [MultiPatternArm]
     | ExprLet
         { letName :: String
         , letValue :: Expr
@@ -60,10 +60,10 @@ data Expr
         , instanceMethods :: [Expr]
         , instanceSpan :: Span
         }
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
-data SinglePatternArm = SinglePatternArm Pattern Expr deriving (Show, Eq)
-data MultiPatternArm = MultiPatternArm [Pattern] Expr deriving (Show, Eq)
+data SinglePatternArm = SinglePatternArm Pattern Expr deriving (Show, Eq, Ord)
+data MultiPatternArm = MultiPatternArm [Pattern] Expr deriving (Show, Eq, Ord)
 
 exprChildren :: Expr -> [Expr]
 exprChildren (ExprRoot exprs) = exprs
@@ -74,7 +74,7 @@ exprChildren (ExprApp f arg) = [f, arg]
 exprChildren (ExprLambda _ body _) = [body]
 exprChildren (ExprLet _ value body _) = [value, body]
 exprChildren (ExprPatternMatch expr arms _) = expr : map (\(SinglePatternArm _ arm) -> arm) arms
-exprChildren (ExprDerivedPatternMatch arms) = map (\(MultiPatternArm _ arm) -> arm) arms
+exprChildren (ExprDerivedPatternMatch _ arms) = map (\(MultiPatternArm _ arm) -> arm) arms
 exprChildren (ExprBindingDef _ _ body _) = [body]
 exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
@@ -103,7 +103,7 @@ exprSpan (ExprDataConstructor _ _ s) = s
 exprSpan (ExprTypeClassDef _ _ _ s) = s
 exprSpan (ExprTypeClassBinding _ _ _ s) = s
 exprSpan (ExprPatternMatch _ _ s) = s
-exprSpan (ExprDerivedPatternMatch arms) =
+exprSpan (ExprDerivedPatternMatch _ arms) =
     let spans = map (\(MultiPatternArm _ arm) -> exprSpan arm) arms
     in case spans of
         [] -> error "Derived pattern match arms cannot be empty"

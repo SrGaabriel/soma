@@ -6,9 +6,11 @@ import Lexing.Lexer (tokenizeFile)
 import Logging.ErrorPrinter (printConclusionMessage, printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Parsing.Ast (parse)
-import Semantic.Resolver (runResolver)
+import Inference.Resolver (runResolver)
+import Inference.Tree (analyzeTreeT)
 import Syntax.Tree (Expr, exprChildren)
 import System.Exit (exitFailure)
+import qualified Data.Map as Map
 
 main :: IO ()
 main = do
@@ -37,17 +39,28 @@ main = do
             (parse tokens)
 
     resolvedTreeIO <- runResolver tree
-    resolvedTree <-
+    (resolvedTree, finalEnv) <-
         either
             ( \err -> do
-                printError err "app.soma" content "SEMANTIC RESOLUTION"
+                printError err "app.soma" content "ANALYSIS"
                 exitFailure
             )
             return
             resolvedTreeIO
+    putStrLn $ "Env: " ++ show finalEnv
 
     putStrLn "Tree:"
     prettyPrintAst resolvedTree
+
+    typeMap <-
+        either
+            ( \err -> do
+                printError err "app.soma" content "INFERENCE"
+                exitFailure
+            )
+            return
+            (analyzeTreeT finalEnv resolvedTree)
+    putStrLn $ "Type map: " ++ show typeMap
 
 prettyPrintAst :: Expr -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0

@@ -1,6 +1,6 @@
 module Typing.Currying where
 
-import Typing.Types (Kind (KindArrow), Type (TArrow))
+import Typing.Types (Kind (KindArrow), Type (TArrow), QualifiedType (Forall), assignConstraints)
 
 curryParams :: [(String, Type)] -> Type -> Type
 curryParams params returnType =
@@ -27,3 +27,11 @@ uncurryKind (KindArrow k1 k2) =
     let (args, ret) = uncurryKind k2
     in (k1 : args, ret)
 uncurryKind k = ([], k)
+
+uncurryQualified :: QualifiedType -> ([QualifiedType], QualifiedType)
+uncurryQualified qual@(Forall _ _ t@(TArrow _ _)) =
+    let (args, ret) = uncurryFunction t
+        constrainedArgs = map (assignConstraints qual) args
+        constrainedRet = assignConstraints qual ret
+    in (constrainedArgs, constrainedRet)
+uncurryQualified qual = ([], qual)
