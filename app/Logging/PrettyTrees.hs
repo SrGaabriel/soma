@@ -3,12 +3,13 @@
 
 module Logging.PrettyTrees where
 
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Inference.Core (TypeMap)
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..))
 import Typing.Currying (uncurryKind)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), TyVar (TypeVar, tvName), Type (..))
-import Data.Map (Map)
-import qualified Data.Map as Map
 
 class TreeShow a where
     treeShow :: a -> String
@@ -84,3 +85,10 @@ instance TreeShow QualifiedType where
         let varsStr = unwords (map tvName vars)
             constraintsStr = if null constraints then "" else " | " ++ unwords (map treeShow constraints)
         in "forall " ++ varsStr ++ constraintsStr ++ ". " ++ treeShow t
+
+instance TreeShow TypeMap where
+    treeShow :: TypeMap -> String
+    -- each line will have an element
+    treeShow tm =
+        "TypeMap:\n"
+            ++ unlines (map (\(k, v) -> "  " ++ show k ++ " : " ++ treeShow v) (Map.toList tm))

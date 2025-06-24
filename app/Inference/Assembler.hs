@@ -1,27 +1,34 @@
 module Inference.Assembler where
 
+import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Inference.Core (ClassEnv, TypeEnv)
-import Inference.Gen (ConstraintSet (csClassConstraints, csTypeConstraints), applyConstraintSubst, applyTySubst, generateConstraints, runGenM)
+import Inference.Core (ClassEnv, TypeEnv, TypeMap)
+import Inference.Errors (InferenceError)
+import Inference.Gen (ConstraintSet (csClassConstraints, csTypeConstraints), GenState (gsTypeMap), applyConstraintSubst, applyTySubst, generateConstraints, runGenM)
 import Inference.Solving (Substitutable (ftv), solveClassConstraints, solveTypeConstraints)
 import Syntax.Tree (Expr)
 import Typing.Types (Constraint, QualifiedType (Forall), TyVar, Type)
-import Inference.Errors (InferenceError)
 
-inferType :: TypeEnv -> ClassEnv -> Expr -> Either InferenceError (Maybe QualifiedType)
+inferType :: TypeEnv -> ClassEnv -> Expr -> Either InferenceError (Maybe QualifiedType, TypeMap)
 inferType env classEnv expr = do
-    case runGenM (generateConstraints env expr) of
-        (Nothing, _) -> pure Nothing
-        (Just ((exprType, constraintSet)), _) -> do
-            typeSubst <- solveTypeConstraints (csTypeConstraints constraintSet)
+    let ((maybeType, constraintSet), genState) = runGenM env (generateConstraints expr)
 
-            let classConstraints = map (applyConstraintSubst typeSubst) (csClassConstraints constraintSet)
-            solvedClassConstraints <- solveClassConstraints classEnv classConstraints
+    typeSubst <- solveTypeConstraints (csTypeConstraints constraintSet)
 
+    let classConstraints = map (applyConstraintSubst typeSubst) (csClassConstraints constraintSet)
+    solvedClassConstraints <- solveClassConstraints classEnv classConstraints
+
+    let substitutedTypeMap = Map.map (applyTySubst typeSubst) (gsTypeMap genState)
+
+    let qualifiedTypeMap = Map.map (generalize (ftv env) solvedClassConstraints) substitutedTypeMap
+
+    case maybeType of
+        Nothing ->
+            return (Nothing, qualifiedTypeMap)
+        Just exprType -> do
             let finalType = applyTySubst typeSubst exprType
-            let generalizedType = generalize (ftv env) solvedClassConstraints finalType
-
-            pure $ Just generalizedType
+            let rootQualifiedType = generalize (ftv env) solvedClassConstraints finalType
+            return (Just rootQualifiedType, qualifiedTypeMap)
 
 generalize :: Set.Set TyVar -> [Constraint] -> Type -> QualifiedType
 generalize envVars constraints t =

@@ -99,6 +99,14 @@ tokenize (c : cs) i indent
         '/' : rest ->
             let (comment, rest') = span (/= '\n') rest
             in tokenize rest' (i + 2 + length comment) indent
+        '*' : rest ->
+            let (comment, rest') = break (== '*') rest
+            in case rest' of
+                '*' : '/' : rest'' ->
+                    tokenize rest'' (i + 2 + length comment) indent
+                _ ->
+                    let (restTokens, restErrors) = tokenize rest' (i + 2 + length comment) indent
+                    in (restTokens, UnterminatedComment i : restErrors)
         _ -> addToken (Token TokenVarSymbol "/" i indent) (tokenize cs (i + 1) indent)
     | c == '\n' =
         let (spaces, rest) = span isSpace cs

@@ -4,7 +4,7 @@ import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..))
 import Parsing.Errors (ParsingError (InvalidTokenForType))
 import Parsing.Parser (Parser, consume, consumeRelevant, next, parseSequence, peek)
-import Typing.Types (Kind (KindStar), QualifiedType (Forall), TyVar (TypeVar), Type (TArrow, TUnresolved, TVar), arrayType, intType, strType, tupleType, boolType)
+import Typing.Types (Kind (KindStar), QualifiedType (Forall), TyVar (TypeVar), Type (TArrow, TUnresolved, TVar), arrayType, boolType, intType, strType, tupleType)
 
 parseQualifiedType :: Parser QualifiedType
 parseQualifiedType =

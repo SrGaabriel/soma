@@ -7,8 +7,8 @@ module Inference.Resolver where
 import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
 import Control.Monad.State (MonadState (get, put), State, gets, runState)
 import qualified Data.Map as Map
-import Inference.Errors (InferenceError (..))
 import Inference.Core (TypeEnv)
+import Inference.Errors (InferenceError (..))
 import Syntax.Tree (Expr (..))
 import Typing.Currying (curryFunction)
 import Typing.Types (Kind (..), QualifiedType (Forall), TyConstructor (TypeConstructor), TyVar (tvKind), Type (..), assignConstraints, sumQualifiedTypes)
@@ -96,12 +96,12 @@ addGlobalBinding name ty = do
 
 runResolver :: Expr -> IO (Either InferenceError (Expr, TypeEnv))
 runResolver root = do
-        let initialState = ResolverState { globalBindings = Map.empty }
-        let resolverM = runResolverM (analyzeTree root)
-        let (result, finalState) = runState (runExceptT resolverM) initialState
-        pure $ case result of
-            Left err    -> Left err
-            Right expr -> Right (expr, globalBindings finalState)
+    let initialState = ResolverState{globalBindings = Map.empty}
+    let resolverM = runResolverM (analyzeTree root)
+    let (result, finalState) = runState (runExceptT resolverM) initialState
+    pure $ case result of
+        Left err -> Left err
+        Right expr -> Right (expr, globalBindings finalState)
 
 -- i don't know whether I'm the world's biggest genius or biggest idiot but I think this works?
 replaceAllUnresolvedQualified :: Expr -> TypeEnv -> QualifiedType -> ResolverM QualifiedType

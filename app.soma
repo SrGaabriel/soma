@@ -12,11 +12,11 @@ data Shape
     | Circle
         radius :: Int
 
-instance Eq Shape where
+/* instance Eq Shape where
     def {==} :: Shape -> Shape -> Bool
         | (Circle r1) (Circle r2)   => r1 == r2
         | (Square s1) (Square s2)   => s1 == s2
-        | _         _               => false
+        | _         _               => false */
     
 def testSum(x: Int, y: Int) -> Int = x + y
 

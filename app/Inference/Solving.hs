@@ -6,6 +6,7 @@ module Inference.Solving where
 import Control.Monad (foldM)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import qualified Debug.Trace as Debug
 import Inference.Core (ClassEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
 import Inference.Gen (TypeConstraint (..))
@@ -94,4 +95,4 @@ solveTypeConstraints constraints = foldM solveOne Map.empty constraints
 
 solveClassConstraints :: ClassEnv -> [Constraint] -> Either InferenceError [Constraint]
 solveClassConstraints _classEnv constraints =
-    Right constraints
+    Debug.trace ("Now solving " ++ show constraints) $ Right constraints

@@ -1,6 +1,6 @@
 module Typing.Currying where
 
-import Typing.Types (Kind (KindArrow), Type (TArrow), QualifiedType (Forall), assignConstraints)
+import Typing.Types (Kind (KindArrow), QualifiedType (Forall), Type (TArrow), assignConstraints)
 
 curryParams :: [(String, Type)] -> Type -> Type
 curryParams params returnType =

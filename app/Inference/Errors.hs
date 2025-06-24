@@ -34,8 +34,14 @@ instance PrintableError InferenceError where
     errorMessage (CircularTypeDependency _) = "Circular type dependency"
     errorMessage (UnboundVariable _ name) = "Unbound variable '" ++ name ++ "'"
     errorMessage (KindedTypeMismatch _ typ1 knd1 typ2 knd2) =
-        "Type mismatch: expected " ++ treeShow typ1 ++ " " ++ treeShow knd1 ++
-        " but received " ++ treeShow typ2 ++ " " ++ treeShow knd2
+        "Type mismatch: expected "
+            ++ treeShow typ1
+            ++ " "
+            ++ treeShow knd1
+            ++ " but received "
+            ++ treeShow typ2
+            ++ " "
+            ++ treeShow knd2
     errorMessage (UntypedExpression expr) = "The expression " ++ show expr ++ " is untyped"
     errorMessage (NotAFunction _ ty) = "The type " ++ show ty ++ " does not support function application"
     errorMessage (UnknownTypeConstructor _ name) = "Unknown type constructor '" ++ name ++ "'"

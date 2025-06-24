@@ -2,15 +2,15 @@ module Main where
 
 import Config.Options (Options (optionsInput), extractOptions, formatError)
 import Control.Monad (unless)
+import qualified Data.Map as Map
+import Inference.Resolver (runResolver)
+import Inference.Tree (analyzeTreeT)
 import Lexing.Lexer (tokenizeFile)
 import Logging.ErrorPrinter (printConclusionMessage, printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Parsing.Ast (parse)
-import Inference.Resolver (runResolver)
-import Inference.Tree (analyzeTreeT)
 import Syntax.Tree (Expr, exprChildren)
 import System.Exit (exitFailure)
-import qualified Data.Map as Map
 
 main :: IO ()
 main = do
@@ -60,7 +60,7 @@ main = do
             )
             return
             (analyzeTreeT finalEnv resolvedTree)
-    putStrLn $ "Type map: " ++ show typeMap
+    putStrLn $ "Type map: " ++ treeShow typeMap
 
 prettyPrintAst :: Expr -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0

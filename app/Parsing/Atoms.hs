@@ -102,8 +102,8 @@ parseLetExpression = do
 
     body <- parseExpression
 
-    pure $
-        ExprLet
+    pure
+        $ ExprLet
             { letName = tokenValue identifier
             , letValue = value
             , letBody = body
@@ -113,9 +113,9 @@ parseLetExpression = do
     validateIndentation newline =
         let actualIndent = length (tokenValue newline)
             expectedIndent = tokenIndent newline
-        in when (actualIndent /= expectedIndent) $
-            throwError $
-                ExpectedDifferentIndentation newline expectedIndent actualIndent
+        in when (actualIndent /= expectedIndent)
+            $ throwError
+            $ ExpectedDifferentIndentation newline expectedIndent actualIndent
 
 operatorPrecedenceTable :: [[String]]
 operatorPrecedenceTable =

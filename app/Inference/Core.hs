@@ -1,8 +1,8 @@
 module Inference.Core where
 
 import Project.Name (Name)
-import Typing.Types (QualifiedType)
 import Syntax.Tree (Expr)
+import Typing.Types (QualifiedType)
 
 import qualified Data.Map as Map
 
