@@ -55,6 +55,8 @@ instance TreeShow Expr where
     treeShow (ExprLet name _ _ _) = "Let (" ++ name ++ "):"
     treeShow (ExprPatternMatch{}) = "PatternMatch:"
     treeShow (ExprDerivedPatternMatch typs _) = "DerivedPatternMatch (" ++ (unwords $ map treeShow typs) ++ "): "
+    treeShow (ExprPatternMatchArm p _ _ _) =
+        "PatternMatchArm: (" ++ unwords (map treeShow p) ++ "):"
     treeShow (ExprBindingDef name qType _ _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
     treeShow (ExprDataTypeDef name generics _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
     treeShow (ExprDataConstructor name args _) = "DataConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
@@ -67,8 +69,8 @@ instance TreeShow Pattern where
     treeShow (PLit lit) = "Lit (" ++ show lit ++ ")"
     treeShow (PConstructor name args) =
         "Constructor (" ++ name ++ ": " ++ treeShow args ++ ")"
-    treeShow (PTuple patterns) = "Tuple (" ++ unwords (map treeShow patterns) ++ ")"
-    treeShow (PArray patterns) = "Array (" ++ unwords (map treeShow patterns) ++ ")"
+    treeShow (PTuple p) = "Tuple (" ++ unwords (map treeShow p) ++ ")"
+    treeShow (PArray p) = "Array (" ++ unwords (map treeShow p) ++ ")"
     treeShow PWildcard = "Wildcard"
     treeShow (PAs name p) = "As (" ++ name ++ ": " ++ treeShow p ++ ")"
 

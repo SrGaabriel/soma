@@ -54,13 +54,14 @@ main = do
 
     typeMap <-
         either
-            ( \err -> do
-                printError err "app.soma" content "INFERENCE"
+            ( \errors -> do
+                mapM_ (\err -> printError err "app.soma" content "INFERENCE") errors
                 exitFailure
             )
             return
             (analyzeTreeT finalEnv resolvedTree)
     putStrLn $ "Type map: " ++ treeShow typeMap
+    putStrLn "Successfully compiled!"
 
 prettyPrintAst :: Expr -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0

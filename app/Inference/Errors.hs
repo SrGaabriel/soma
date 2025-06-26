@@ -12,14 +12,14 @@ data InferenceError
     = TypeMismatch Expr Type Type
     | ParamLengthMismatch Expr
     | TupleLengthMismatch Expr [Type] [Type]
-    | ArityMismatch Expr
+    | PatternArityMismatch Expr Int Int
     | BinaryOpTypeMismatch Expr Type Type
     | CircularTypeDependency Expr
     | UnboundVariable Expr String
     | KindedTypeMismatch Expr Type Kind Type Kind
     | KindMismatch Expr Kind Kind
-    | UntypedExpression Expr
     | NotAFunction Expr Type
+    | PatternMatchArmsTypeMismatch Expr Type Type
     | UnsatisfiedConstraints Expr [String]
     | UnknownTypeConstructor Expr String
     | Debug String
@@ -29,9 +29,11 @@ instance PrintableError InferenceError where
     errorMessage :: InferenceError -> String
     errorMessage (TypeMismatch _ t1 t2) = "Cannot conciliate types '" ++ treeShow t1 ++ "' and '" ++ treeShow t2 ++ "'"
     errorMessage (ParamLengthMismatch _) = "The function has a different number of arguments than provided"
-    errorMessage (TupleLengthMismatch _ typ1 typ2) = "The tuples have different lengths: " ++ show typ1 ++ " and " ++ show typ2
-    errorMessage (BinaryOpTypeMismatch _ left right) = "Binary operation type mismatch (" ++ show left ++ " and " ++ show right ++ ")"
+    errorMessage (TupleLengthMismatch _ typ1 typ2) = "The tuples have different lengths: " ++ treeShow typ1 ++ " and " ++ treeShow typ2
+    errorMessage (BinaryOpTypeMismatch _ left right) = "Binary operation type mismatch (" ++ treeShow left ++ " and " ++ treeShow right ++ ")"
     errorMessage (CircularTypeDependency _) = "Circular type dependency"
+    errorMessage (PatternMatchArmsTypeMismatch _ expected received) =
+        "Pattern match arms type mismatch, first is " ++ treeShow expected ++ " but this one is " ++ treeShow received
     errorMessage (UnboundVariable _ name) = "Unbound variable '" ++ name ++ "'"
     errorMessage (KindedTypeMismatch _ typ1 knd1 typ2 knd2) =
         "Type mismatch: expected "
@@ -42,13 +44,13 @@ instance PrintableError InferenceError where
             ++ treeShow typ2
             ++ " "
             ++ treeShow knd2
-    errorMessage (UntypedExpression expr) = "The expression " ++ show expr ++ " is untyped"
-    errorMessage (NotAFunction _ ty) = "The type " ++ show ty ++ " does not support function application"
+    errorMessage (NotAFunction _ ty) = "The type " ++ treeShow ty ++ " does not support function application"
     errorMessage (UnknownTypeConstructor _ name) = "Unknown type constructor '" ++ name ++ "'"
-    errorMessage (ArityMismatch expr) = "The expression " ++ show expr ++ " has an incorrect arity"
+    errorMessage (PatternArityMismatch _ expected received) =
+        "Pattern arity mismatch, expected " ++ show expected ++ "patterns but received " ++ show received
     errorMessage (KindMismatch _ k1 k2) = "Kind mismatch: expected " ++ treeShow k1 ++ " but received " ++ treeShow k2
-    errorMessage (UnsatisfiedConstraints expr constraints) =
-        "The expression " ++ show expr ++ " has unsatisfied constraints: " ++ unwords constraints
+    errorMessage (UnsatisfiedConstraints _ constraints) =
+        "The expression has unsatisfied constraints: " ++ unwords constraints
     errorMessage (Debug msg) = "Debug: " ++ msg
 
     errorStart :: InferenceError -> Int
@@ -78,11 +80,11 @@ getExpression' (ParamLengthMismatch expr) = expr
 getExpression' (TupleLengthMismatch expr _ _) = expr
 getExpression' (CircularTypeDependency expr) = expr
 getExpression' (UnboundVariable expr _) = expr
-getExpression' (UntypedExpression expr) = expr
 getExpression' (NotAFunction expr _) = expr
 getExpression' (UnknownTypeConstructor expr _) = expr
-getExpression' (ArityMismatch expr) = expr
+getExpression' (PatternArityMismatch expr _ _) = expr
 getExpression' (KindMismatch expr _ _) = expr
 getExpression' (UnsatisfiedConstraints expr _) = expr
 getExpression' (KindedTypeMismatch expr _ _ _ _) = expr
+getExpression' (PatternMatchArmsTypeMismatch expr _ _) = expr
 getExpression' (Debug _) = error "Debug error should not be used in production code"

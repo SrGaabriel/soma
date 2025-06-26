@@ -82,7 +82,13 @@ resolveTReference expr@(ExprBindingDef a typ body topLevel c) = do
 resolveTReference expr@(ExprDerivedPatternMatch typs arms) = do
     env <- getEnv
     realTyps <- mapM (replaceAllUnresolvedQualified expr env) typs
-    pure $ ExprDerivedPatternMatch realTyps arms
+    arms' <- mapM resolveTReference arms
+    pure $ ExprDerivedPatternMatch realTyps arms'
+resolveTReference (ExprPatternMatchArm patterns typs body s) = do
+    env <- getEnv
+    realTyps <- mapM (replaceAllUnresolvedQualified (ExprPatternMatchArm patterns typs body s) env) typs
+    body' <- resolveTReference body
+    pure $ ExprPatternMatchArm patterns realTyps body' s
 resolveTReference expr = pure expr
 
 getEnv :: ResolverM TypeEnv

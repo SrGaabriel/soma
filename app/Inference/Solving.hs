@@ -2,7 +2,6 @@
 
 module Inference.Solving where
 
-import Control.Monad (foldM)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Debug.Trace as Debug
@@ -11,6 +10,7 @@ import Inference.Errors (InferenceError (..))
 import Inference.Gen (TypeConstraint (..))
 import Syntax.Tree (Expr (..))
 import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..))
+import Utils.Lists (foldMWithErrors)
 
 type Subst = Map.Map TyVar Type
 
@@ -62,7 +62,7 @@ instance Substitutable TypeEnv where
 composeSubst :: Subst -> Subst -> Subst
 s1 `composeSubst` s2 = Map.map (apply s1) s2 `Map.union` s1
 
-unifyPure :: Expr -> Type -> Type -> Either InferenceError Subst
+unifyPure :: Expr -> Type -> Type -> Either [InferenceError] Subst
 unifyPure _ t1 t2 | t1 == t2 = Right Map.empty
 unifyPure expr (TVar tv) t = bind expr tv t
 unifyPure expr t (TVar tv) = bind expr tv t
@@ -74,24 +74,24 @@ unifyPure expr (TApp f1 a1) (TApp f2 a2) = do
     s1 <- unifyPure expr f1 f2
     s2 <- unifyPure expr (apply s1 a1) (apply s1 a2)
     return (composeSubst s2 s1)
-unifyPure expr t1 t2 = Left $ TypeMismatch expr t1 t2
+unifyPure expr t1 t2 = Left [TypeMismatch expr t1 t2]
 
-bind :: Expr -> TyVar -> Type -> Either InferenceError Subst
+bind :: Expr -> TyVar -> Type -> Either [InferenceError] Subst
 bind expr tv t
     | t == TVar tv = return Map.empty
-    | tv `Set.member` ftv t = Left $ CircularTypeDependency expr
+    | tv `Set.member` ftv t = Left [CircularTypeDependency expr]
     | otherwise = return $ Map.singleton tv t
 
-solveTypeConstraints :: [TypeConstraint] -> Either InferenceError Subst
-solveTypeConstraints = foldM solveOne Map.empty
+solveTypeConstraints :: [TypeConstraint] -> Either [InferenceError] Subst
+solveTypeConstraints = foldMWithErrors solveOne Map.empty
   where
-    solveOne :: Subst -> TypeConstraint -> Either InferenceError Subst
+    solveOne :: Subst -> TypeConstraint -> Either [InferenceError] Subst
     solveOne currentSubst (TypeConstraint expr expected actual) = do
         let expected' = apply currentSubst expected
         let actual' = apply currentSubst actual
         newSubst <- unifyPure expr expected' actual'
         return (composeSubst newSubst currentSubst)
 
-solveClassConstraints :: ClassEnv -> [Constraint] -> Either InferenceError [Constraint]
+solveClassConstraints :: ClassEnv -> [Constraint] -> Either [InferenceError] [Constraint]
 solveClassConstraints _classEnv constraints =
     Debug.trace ("Now solving " ++ show constraints) $ Right constraints

@@ -1,12 +1,13 @@
 module Parsing.Patterns where
 
 import Control.Monad.Error.Class (MonadError (throwError))
-import Lexing.Lexer (Token (..), TokenKind (..))
+import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
 import Parsing.Atoms (parseExpression)
 import Parsing.Errors (ParsingError (InvalidPattern))
 import Parsing.Parser (Parser, consume, next, parseFluidSequence, parseIndentedBlock, peek)
 import Syntax.Patterns (Literal (LitInt), Pattern (..))
-import Syntax.Tree (MultiPatternArm (MultiPatternArm))
+import Syntax.Tree (Expr (ExprPatternMatchArm))
+import Typing.Types (QualifiedType)
 
 parseMultiplePatterns :: Parser [Pattern]
 parseMultiplePatterns = parseFluidSequence TokenStrongRightArrow parseMultiPatternAtom
@@ -34,21 +35,23 @@ parseSinglePattern parentheziedConstructors = do
             pure $ PConstructor (tokenValue nameToken) patterns
         _ -> throwError $ InvalidPattern inc
 
-parsePipePatternArms :: Parser [MultiPatternArm]
-parsePipePatternArms = parseIndentedBlock 0 parsePipePatternArm
+parsePipePatternArms :: [QualifiedType] -> Parser [Expr]
+parsePipePatternArms typs = parseIndentedBlock 0 (parsePipePatternArm typs)
 
-parsePipePatternArm :: Parser MultiPatternArm
-parsePipePatternArm = do
+parsePipePatternArm :: [QualifiedType] -> Parser Expr
+parsePipePatternArm typs = do
     _ <- consume TokenPipe
-    parseMultiPatternArm True
+    parseMultiPatternArm typs True
 
-parseMultiPatternArm :: Bool -> Parser MultiPatternArm
-parseMultiPatternArm multiAllowed = do
+parseMultiPatternArm :: [QualifiedType] -> Bool -> Parser Expr
+parseMultiPatternArm typs multiAllowed = do
+    currentTok <- peek
     patterns <-
         if multiAllowed
             then do
                 parseMultiplePatterns
             else
                 (: []) <$> parseSinglePattern False
-    _ <- consume TokenStrongRightArrow
-    MultiPatternArm patterns <$> parseExpression
+    arrowTok <- consume TokenStrongRightArrow
+    body <- parseExpression
+    pure $ ExprPatternMatchArm patterns typs body (spanningTokens currentTok arrowTok)

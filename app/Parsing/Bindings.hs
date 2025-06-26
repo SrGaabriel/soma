@@ -43,8 +43,8 @@ parseBinding isTopLevel = do
                     body <- parseExpression
                     pure $ ExprBindingDef name bindingTyp body isTopLevel (spanningTokens defToken inc)
                 TokenPipe -> do
-                    arms <- parsePipePatternArms
                     let (args, _ret) = uncurryQualified bindingTyp
+                    arms <- parsePipePatternArms args
                     let defBody = ExprDerivedPatternMatch args arms
                     pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken inc)
                 _ -> throwError $ InvalidFunctionBody inc

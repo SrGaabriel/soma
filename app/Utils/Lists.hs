@@ -1,7 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
 
-module Utils.Lists (hardTail, hardHead, zipReturningRHSExcess, debugTrace) where
+module Utils.Lists (hardTail, hardHead, zipReturningRHSExcess, debugTrace, allEqual, foldMWithErrors) where
 
+import Data.List (group)
 import qualified Debug.Trace as Debug
 
 hardHead :: [a] -> a
@@ -19,3 +20,15 @@ zipReturningRHSExcess xs ys =
 
 debugTrace :: (Monad m) => String -> m ()
 debugTrace msg = let !_ = Debug.trace msg () in pure ()
+
+allEqual :: (Eq a) => [a] -> Bool
+allEqual xs = length (group xs) == 1
+
+foldMWithErrors :: (b -> a -> Either [err] b) -> b -> [a] -> Either [err] b
+foldMWithErrors f = go []
+  where
+    go errs acc [] = if null errs then Right acc else Left errs
+    go errs acc (x : xs) =
+        case f acc x of
+            Right acc' -> go errs acc' xs
+            Left newErrs -> go (errs ++ newErrs) acc xs

@@ -3,25 +3,35 @@
 
 module Inference.Gen where
 
+import Control.Monad (when)
 import Control.Monad.Reader
 import Control.Monad.State
+import Control.Monad.Writer
+import Data.List (group)
 import qualified Data.Map as Map
 import qualified Debug.Trace as Debug
 import Inference.Core (TypeEnv)
+import Inference.Errors (InferenceError (..))
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Syntax.Patterns (Pattern (..))
-import Syntax.Tree (Expr (..), MultiPatternArm (MultiPatternArm), exprChildren)
+import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAllQualified)
 import Utils.Lists (hardHead)
 
-newtype GenM a = GenM (StateT GenState (Reader TypeEnv) a)
-    deriving (Functor, Applicative, Monad, MonadState GenState, MonadReader TypeEnv)
+newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
+    deriving (Functor, Applicative, Monad, MonadState GenState, MonadReader TypeEnv, MonadWriter [InferenceError])
 
 data GenState = GenState
     { gsCounter :: Int
     , gsTypeMap :: Map.Map Expr Type
     }
     deriving (Show)
+
+reportError :: InferenceError -> GenM ()
+reportError err = tell [err]
+
+reportErrors :: [InferenceError] -> GenM ()
+reportErrors = tell
 
 data ConstraintSet = ConstraintSet
     { csTypeConstraints :: [TypeConstraint]
@@ -43,11 +53,6 @@ data TypeConstraint = TypeConstraint
     }
     deriving (Show)
 
-runGenM :: TypeEnv -> GenM a -> (a, GenState)
-runGenM env (GenM m) = runReader (runStateT m initialState) env
-  where
-    initialState = GenState 0 Map.empty
-
 freshTyVar :: Kind -> GenM TyVar
 freshTyVar k = do
     n <- gets gsCounter
@@ -62,15 +67,15 @@ generateConstraints expr = case expr of
     ExprNum _ _ -> do
         let ty = intType
         recordType expr ty
-        pure $ (Just ty, ConstraintSet [] [])
+        pure (Just ty, ConstraintSet [] [])
     ExprStr _ _ -> do
         let ty = strType
         recordType expr ty
-        pure $ (Just ty, ConstraintSet [] [])
+        pure (Just ty, ConstraintSet [] [])
     ExprBool _ _ -> do
         let ty = boolType
         recordType expr ty
-        pure $ (Just ty, ConstraintSet [] [])
+        pure (Just ty, ConstraintSet [] [])
     ExprVar name _ -> do
         env <- ask
         case Map.lookup name env of
@@ -80,30 +85,32 @@ generateConstraints expr = case expr of
                 let instType = applyTySubst subst t
                 let instConstraints = map (applyConstraintSubst subst) cs
                 recordType expr instType
-                return $ (Just instType, ConstraintSet [] instConstraints)
-            Nothing -> error $ "Unbound variable: " ++ show name
+                return (Just instType, ConstraintSet [] instConstraints)
+            Nothing -> do
+                reportError (UnboundVariable expr name)
+                errorVar <- freshTyVar KindStar
+                let errorType = TVar errorVar
+                recordType expr errorType
+                return (Just errorType, ConstraintSet [] [])
     ExprApp f a -> do
         (Just tf, cf) <- generateConstraints f
         (Just ta, ca) <- generateConstraints a
         retVar <- freshTyVar KindStar
         let retType = TVar retVar
-        let funConstraint = TypeConstraint expr (TArrow ta retType) tf -- todo: revise order
+        let funConstraint = TypeConstraint expr (TArrow ta retType) tf
         let combinedConstraints =
                 ConstraintSet
                     (funConstraint : csTypeConstraints cf ++ csTypeConstraints ca)
                     (csClassConstraints cf ++ csClassConstraints ca)
-
         recordType expr retType
         return (Just retType, combinedConstraints)
     ExprLambda paramNames body _ -> do
         paramVars <- mapM (const $ freshTyVar KindStar) paramNames
         let paramTypes = map TVar paramVars
-
         let paramBindings = Map.fromList (zip paramNames (map (cleanQualified . TVar) paramVars))
         let extendEnv = Map.union paramBindings
 
         (Just bodyType, bodyConstraints) <- local extendEnv (generateConstraints body)
-
         let funcType = foldr TArrow bodyType paramTypes
         recordType expr funcType
         return (Just funcType, bodyConstraints)
@@ -121,82 +128,70 @@ generateConstraints expr = case expr of
         let extendEnvF = Map.insert name bindType
         (Just bodyType, bodyConstraints) <- local extendEnvF (generateConstraints body)
         let Forall _ _ annType = bindType
-            sigConstraint = Debug.trace ("typ constraint is: " ++ treeShow annType ++ " to: " ++ treeShow bodyType) $ TypeConstraint expr annType bodyType
-            combinedConstraints =
+        let sigConstraint = TypeConstraint expr annType bodyType
+        let combinedConstraints =
                 ConstraintSet
                     (sigConstraint : csTypeConstraints bodyConstraints)
                     (csClassConstraints bodyConstraints)
-        Debug.trace ("Constraints for " ++ name ++ " are " ++ show combinedConstraints) $ recordType expr bodyType
+        recordType expr bodyType
         return (Just bodyType, combinedConstraints)
-    ExprDerivedPatternMatch armTypes arms -> do
-        mappedArms <- mapM processArm arms
-        let MultiPatternArm patterns patternBody = hardHead arms
-        let patternsLength = length patterns
+    ExprDerivedPatternMatch _armTypes arms -> do
+        mappedArms <- mapM generateConstraints arms
+        let (armExprTypes, armConstraintsList) = unzip mappedArms
+        let combinedBodyConstraints = mconcat armConstraintsList
 
-        let (providedTypes, missingBodyTypes) = splitAt patternsLength armTypes
+        let Just exprType = hardHead armExprTypes
+        mapM_
+            ( \(Just armType, armExpr) ->
+                when (armType /= exprType)
+                    $ reportError (PatternMatchArmsTypeMismatch armExpr exprType armType)
+            )
+            (zip armExprTypes arms)
 
-        let (bodyTypes, bodyConstraintsList) = unzip mappedArms
-        let bodyType = hardHead bodyTypes
+        recordType expr exprType
+        return (Just exprType, combinedBodyConstraints)
+    ExprPatternMatchArm patterns armTypes body _ -> do
+        currentEnv <- ask
+        (patternEnv, patternErrors) <- generatePatternBindings expr currentEnv patterns armTypes
+        reportErrors patternErrors
 
-        let combinedBodyConstraints = mconcat bodyConstraintsList
+        let extendWithPatterns = Map.union patternEnv
+        (Just bodyType, bodyConstraints) <- local extendWithPatterns (generateConstraints body)
+        let (providedTypes, missingBodyTypes) = splitAt (length patterns) armTypes
 
-        let Forall _ _ providedTyp =
-                Debug.trace ("Provided types: " ++ treeShow providedTypes)
-                    $ Debug.trace ("Missing types: " ++ treeShow missingBodyTypes)
-                    $ Debug.trace ("Arm types: " ++ treeShow armTypes)
-                    $ vectorizeAllQualified providedTypes
-
-        -- we take advantage that haskell is lazy and this shit isn't evaluated when null missingBodyTypes
         returnTypVar <- freshTyVar KindStar
-        let currentTypConstraints = (csTypeConstraints combinedBodyConstraints)
         let additionalConstraints =
                 if null missingBodyTypes
                     then []
                     else do
                         let Forall _ _ missingBodyType = vectorizeAllQualified missingBodyTypes
                         let expectedType = TArrow missingBodyType (TVar returnTypVar)
-                        [TypeConstraint patternBody expectedType bodyType]
+                        [TypeConstraint body expectedType bodyType]
 
         let finalConstraints =
                 ConstraintSet
-                    (currentTypConstraints ++ additionalConstraints)
-                    (csClassConstraints combinedBodyConstraints)
+                    (csTypeConstraints bodyConstraints ++ additionalConstraints)
+                    (csClassConstraints bodyConstraints)
 
+        let Forall _ _ providedTyp = vectorizeAllQualified providedTypes
         let exprType = vectorize providedTyp bodyType
 
-        recordType expr exprType
         return (Just exprType, finalConstraints)
-      where
-        processArm (MultiPatternArm patterns body) = do
-            currentEnv <- ask
-            patternEnv <- generatePatternBindings currentEnv patterns armTypes
-
-            let extendWithPatterns _ = patternEnv
-            (Just bodyType, bodyConstraints) <- local extendWithPatterns (generateConstraints body)
-
-            return (bodyType, bodyConstraints)
     u -> do
         let children = exprChildren expr
         results <- mapM generateConstraints children
         let combinedConstraints = mconcat (map snd results)
-        Debug.trace ("Generating constraints for unsupported expression: " ++ treeShow u)
+        Debug.trace ("Unsupported expression: " ++ treeShow u)
             $ return (Nothing, combinedConstraints)
 
-generatePatternBindings :: TypeEnv -> [Pattern] -> [QualifiedType] -> GenM TypeEnv
-generatePatternBindings env patterns armTypes = do
-    let zipped = zip patterns armTypes
-    bindings <- mapM (\(p, t) -> generatePatternBinding env p t) zipped
-    pure $ Map.unions (env : bindings)
-
-generatePatternBinding :: TypeEnv -> Pattern -> QualifiedType -> GenM TypeEnv
-generatePatternBinding _env (PVar name) armType = do
-    return $ Map.singleton name armType
-generatePatternBinding env (PAs name pat) armType = do
+generatePatternBinding :: Expr -> TypeEnv -> Pattern -> QualifiedType -> GenM (TypeEnv, [InferenceError])
+generatePatternBinding _expr _env (PVar name) armType = do
+    return (Map.singleton name armType, [])
+generatePatternBinding expr env (PAs name pat) armType = do
     let asBinding = Map.singleton name armType
-    nestedBinding <- generatePatternBinding env pat armType
-    return $ Map.union asBinding nestedBinding
-generatePatternBinding env (PConstructor name patterns) _armType = do
-    -- todo: use armType
+    (nestedBinding, errs) <- generatePatternBinding expr env pat armType
+    return (Map.union asBinding nestedBinding, errs)
+generatePatternBinding expr env (PConstructor name patterns) _armType = do
     currentEnv <- ask
     case Map.lookup name currentEnv of
         Just (Forall tvs cs t) -> do
@@ -208,11 +203,44 @@ generatePatternBinding env (PConstructor name patterns) _armType = do
             let argTypes = extractArgTypes instType (length patterns)
             let qualifiedArgTypes = map (Forall [] instConstraints) argTypes
 
-            generatePatternBindings env patterns qualifiedArgTypes
-        Nothing -> error $ "Unbound constructor: " ++ show name
-generatePatternBinding _env PWildcard _ = return Map.empty
-generatePatternBinding _env PLit{} _ = return Map.empty
-generatePatternBinding _env p _ = error $ "Unsupported pattern type in generatePatternBinding: " ++ show p
+            if length argTypes /= length patterns
+                then do
+                    let err = PatternArityMismatch expr (length patterns) (length argTypes)
+                    reportError err
+                    return (Map.empty, [err])
+                else do
+                    (bindings, errs) <- generatePatternBindings expr env patterns qualifiedArgTypes
+                    return (bindings, errs)
+        Nothing -> do
+            let err = UnknownTypeConstructor expr name
+            reportError err
+            return (Map.empty, [err])
+generatePatternBinding _expr _env PWildcard _ = return (Map.empty, [])
+generatePatternBinding _expr _env PLit{} _ = return (Map.empty, [])
+generatePatternBinding expr _env p _ = error $ "Unsupported pattern: " ++ show p ++ " in expression: " ++ show expr
+
+generatePatternBindings :: Expr -> TypeEnv -> [Pattern] -> [QualifiedType] -> GenM (TypeEnv, [InferenceError])
+generatePatternBindings expr env patterns armTypes = do
+    let zipped = zip patterns armTypes
+    results <- mapM (\(p, t) -> generatePatternBinding expr env p t) zipped
+    let (bindings, errorLists) = unzip results
+    let allErrors = concat errorLists
+    pure (Map.unions (env : bindings), allErrors)
+
+runGenM :: TypeEnv -> GenM a -> (a, GenState, [InferenceError])
+runGenM env (GenM m) =
+    let ((result, finalState), errors) = runWriter (runReaderT (runStateT m initialState) env)
+    in (result, finalState, errors)
+  where
+    initialState = GenState 0 Map.empty
+
+runGenMErrors :: TypeEnv -> GenM a -> [InferenceError]
+runGenMErrors env genM =
+    let (_, _, errors) = runGenM env genM
+    in errors
+
+isInferenceSuccess :: [InferenceError] -> Bool
+isInferenceSuccess = null
 
 extractArgTypes :: Type -> Int -> [Type]
 extractArgTypes _ty 0 = []

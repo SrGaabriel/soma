@@ -1,4 +1,4 @@
-module Syntax.Tree (Expr (..), SinglePatternArm (..), MultiPatternArm (..), exprChildren, exprSpan) where
+module Syntax.Tree (Expr (..), exprChildren, exprSpan) where
 
 import Lexing.Position (Span (..))
 import Syntax.Patterns (Pattern (..))
@@ -16,8 +16,14 @@ data Expr
     | ExprTuple [Expr] Span
     | ExprApp Expr Expr
     | ExprLambda [String] Expr Span
-    | ExprPatternMatch Expr [SinglePatternArm] Span
-    | ExprDerivedPatternMatch [QualifiedType] [MultiPatternArm]
+    | ExprPatternMatch Expr [Expr] Span
+    | ExprDerivedPatternMatch [QualifiedType] [Expr]
+    | ExprPatternMatchArm
+        { patternMatchArmPatterns :: [Pattern]
+        , patternMatchArmTypes :: [QualifiedType]
+        , patternMatchArmBody :: Expr
+        , patternMatchArmSpan :: Span
+        }
     | ExprLet
         { letName :: String
         , letValue :: Expr
@@ -63,9 +69,6 @@ data Expr
         }
     deriving (Show, Eq, Ord)
 
-data SinglePatternArm = SinglePatternArm Pattern Expr deriving (Show, Eq, Ord)
-data MultiPatternArm = MultiPatternArm [Pattern] Expr deriving (Show, Eq, Ord)
-
 exprChildren :: Expr -> [Expr]
 exprChildren (ExprRoot exprs) = exprs
 exprChildren (ExprBlock exprs _) = exprs
@@ -74,8 +77,8 @@ exprChildren (ExprTuple exprs _) = exprs
 exprChildren (ExprApp f arg) = [f, arg]
 exprChildren (ExprLambda _ body _) = [body]
 exprChildren (ExprLet _ value body _) = [value, body]
-exprChildren (ExprPatternMatch expr arms _) = expr : map (\(SinglePatternArm _ arm) -> arm) arms
-exprChildren (ExprDerivedPatternMatch _ arms) = map (\(MultiPatternArm _ arm) -> arm) arms
+exprChildren (ExprPatternMatch expr arms _) = expr : arms
+exprChildren (ExprDerivedPatternMatch _ arms) = arms
 exprChildren (ExprBindingDef _ _ body _ _) = [body]
 exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
@@ -105,11 +108,12 @@ exprSpan (ExprTypeClassDef _ _ _ s) = s
 exprSpan (ExprTypeClassBinding _ _ _ s) = s
 exprSpan (ExprPatternMatch _ _ s) = s
 exprSpan (ExprDerivedPatternMatch _ arms) =
-    let spans = map (\(MultiPatternArm _ arm) -> exprSpan arm) arms
+    let spans = map exprSpan arms
     in case spans of
         [] -> error "Derived pattern match arms cannot be empty"
         _ ->
             let Span start _ = hardHead spans
                 Span _ end = last spans
             in Span start end
+exprSpan (ExprPatternMatchArm _ _ _ s) = s
 exprSpan (ExprInstanceDef _ _ _ s) = s
