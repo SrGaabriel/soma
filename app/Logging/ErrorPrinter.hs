@@ -4,11 +4,7 @@ import Control.Monad (when)
 import Data.List (elemIndex, findIndex)
 import Data.Maybe (fromMaybe)
 import System.Console.ANSI
-
-class PrintableError a where
-    errorMessage :: a -> String
-    errorStart :: a -> Int
-    errorEnd :: a -> Int
+import Logging.Errors (PrintableError (..))
 
 data RowInfo = RowInfo
     { content :: String
@@ -86,6 +82,8 @@ printError err fileName code prefix = do
                 putStr "| pos: "
                 setSGR [SetColor Foreground Vivid Red]
                 putStrLn positionIndicator
+            setSGR [Reset]
+            putStrLn $ "| debug: " ++ (errorDebugDevDetails err)
         Nothing -> error "Error while finding the line of the error"
   where
     start' = errorStart err

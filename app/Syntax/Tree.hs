@@ -25,10 +25,11 @@ data Expr
         , letSpan :: Span
         }
     | ExprBindingDef
-        { functionName :: String
-        , functionType :: QualifiedType
-        , functionBody :: Expr
-        , functionSpan :: Span
+        { bindingName :: String
+        , bindingType :: QualifiedType
+        , bindingBody :: Expr
+        , bindingIsImpl :: Bool
+        , bindingSpan :: Span
         }
     | ExprDataTypeDef
         { dataName :: String
@@ -75,7 +76,7 @@ exprChildren (ExprLambda _ body _) = [body]
 exprChildren (ExprLet _ value body _) = [value, body]
 exprChildren (ExprPatternMatch expr arms _) = expr : map (\(SinglePatternArm _ arm) -> arm) arms
 exprChildren (ExprDerivedPatternMatch _ arms) = map (\(MultiPatternArm _ arm) -> arm) arms
-exprChildren (ExprBindingDef _ _ body _) = [body]
+exprChildren (ExprBindingDef _ _ body _ _) = [body]
 exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprTypeClassBinding _ _ (Just impl) _) = impl
@@ -97,7 +98,7 @@ exprSpan (ExprApp first second) =
     in Span start end
 exprSpan (ExprLambda _ _ s) = s
 exprSpan (ExprLet _ _ _ s) = s
-exprSpan (ExprBindingDef _ _ _ s) = s
+exprSpan (ExprBindingDef _ _ _ _ s) = s
 exprSpan (ExprDataTypeDef _ _ _ _ s) = s
 exprSpan (ExprDataConstructor _ _ s) = s
 exprSpan (ExprTypeClassDef _ _ _ s) = s

@@ -1,5 +1,4 @@
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 module Inference.Solving where
 
@@ -84,7 +83,7 @@ bind expr tv t
     | otherwise = return $ Map.singleton tv t
 
 solveTypeConstraints :: [TypeConstraint] -> Either InferenceError Subst
-solveTypeConstraints constraints = foldM solveOne Map.empty constraints
+solveTypeConstraints = foldM solveOne Map.empty
   where
     solveOne :: Subst -> TypeConstraint -> Either InferenceError Subst
     solveOne currentSubst (TypeConstraint expr expected actual) = do

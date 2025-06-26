@@ -8,12 +8,14 @@ import Inference.Gen (ConstraintSet (csClassConstraints, csTypeConstraints), Gen
 import Inference.Solving (Substitutable (ftv), solveClassConstraints, solveTypeConstraints)
 import Syntax.Tree (Expr)
 import Typing.Types (Constraint, QualifiedType (Forall), TyVar, Type)
+import qualified Debug.Trace as Debug
+import Logging.PrettyTrees (TreeShow(treeShow))
 
 inferType :: TypeEnv -> ClassEnv -> Expr -> Either InferenceError (Maybe QualifiedType, TypeMap)
 inferType env classEnv expr = do
     let ((maybeType, constraintSet), genState) = runGenM env (generateConstraints expr)
 
-    typeSubst <- solveTypeConstraints (csTypeConstraints constraintSet)
+    typeSubst <- Debug.trace ("XCXType map: " ++ treeShow (gsTypeMap genState)) $ solveTypeConstraints (csTypeConstraints constraintSet)
 
     let classConstraints = map (applyConstraintSubst typeSubst) (csClassConstraints constraintSet)
     solvedClassConstraints <- solveClassConstraints classEnv classConstraints

@@ -43,6 +43,7 @@ library
                     Logging.ErrorPrinter
                     Logging.Reporting
                     Logging.PrettyTrees
+                    Logging.Errors
                     Project.Module
                     Utils.Lists
                     Config.Options

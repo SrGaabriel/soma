@@ -3,6 +3,10 @@ trait Eq a where
 
 def {+}(lhs: Int, rhs: Int) -> Int = lhs + rhs
 
+def isZero :: Int -> Bool
+    | 0 => true
+    | _ => false
+
 instance Eq Int where
     def {==}(x: Int, y: Int) -> Bool = true
 
@@ -12,12 +16,14 @@ data Shape
     | Circle
         radius :: Int
 
-/* instance Eq Shape where
+instance Eq Shape where
     def {==} :: Shape -> Shape -> Bool
-        | (Circle r1) (Circle r2)   => r1 == r2
-        | (Square s1) (Square s2)   => s1 == s2
-        | _         _               => false */
+        | (Circle r1) (Circle r2)   => true
+        | (Square s1) (Square s2)   => true
+        | _         _               => false
     
 def testSum(x: Int, y: Int) -> Int = x + y
+
+def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
 
 def testShape :: Shape = Circle 5

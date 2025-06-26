@@ -23,7 +23,7 @@ parseDeclaration :: Parser Expr
 parseDeclaration = do
     token <- peek
     case tokenKind token of
-        TokenDef -> parseBinding
+        TokenDef -> parseBinding True
         TokenNewline -> next >> parseDeclaration
         TokenData -> parseDataType
         TokenClass -> parseTypeClass
@@ -111,7 +111,7 @@ parseInstance = do
     dataTypeToken <- consume TokenUpperIdentifier
 
     _where <- consume TokenWhere
-    bindings <- parseIndentedBlock (tokenIndent classNameToken) parseBinding
+    bindings <- parseIndentedBlock (tokenIndent classNameToken) (parseBinding False)
     let className = tokenValue classNameToken
     pure
         $ ExprInstanceDef

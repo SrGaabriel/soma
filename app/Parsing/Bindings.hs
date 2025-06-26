@@ -11,8 +11,8 @@ import Syntax.Tree (Expr (..), exprSpan)
 import Typing.Currying (curryFunction, uncurryQualified)
 import Typing.Types (QualifiedType (..), Type (..))
 
-parseBinding :: Parser Expr
-parseBinding = do
+parseBinding :: Bool -> Parser Expr
+parseBinding isTopLevel = do
     defToken <- consume TokenDef
     name <- parseFuncName
     leftParenthesisArgStart <- optional $ consume TokenLeftParen
@@ -26,27 +26,27 @@ parseBinding = do
             mappings <- ensureSameLengthMap toks types
             _ <- consume TokenRightArrow
             returnType <- parseType
-            let bindingType = curryFunction types returnType
-            let bindingTypeS = Forall [] [] bindingType -- todo: support constraints in this def
+            let bindingTyp = curryFunction types returnType
+            let bindingTypeS = Forall [] [] bindingTyp -- todo: support constraints in this def
             eqTok <- consumeRelevant TokenEquals
             body <- parseExpression
             let argNames = Prelude.map Prelude.fst mappings
             let defBody = ExprLambda argNames body (exprSpan body)
-            pure $ ExprBindingDef name bindingTypeS defBody (spanningTokens defToken eqTok)
+            pure $ ExprBindingDef name bindingTypeS defBody isTopLevel (spanningTokens defToken eqTok)
         Nothing -> do
             _ <- consumeRelevant TokenReturns
-            bindingType <- parseQualifiedType
+            bindingTyp <- parseQualifiedType
             inc <- peekRelevant
             case tokenKind inc of
                 TokenEquals -> do
                     _ <- next
                     body <- parseExpression
-                    pure $ ExprBindingDef name bindingType body (spanningTokens defToken inc)
+                    pure $ ExprBindingDef name bindingTyp body isTopLevel (spanningTokens defToken inc)
                 TokenPipe -> do
                     arms <- parsePipePatternArms
-                    let (args, _ret) = uncurryQualified bindingType
+                    let (args, _ret) = uncurryQualified bindingTyp
                     let defBody = ExprDerivedPatternMatch args arms
-                    pure $ ExprBindingDef name bindingType defBody (spanningTokens defToken inc)
+                    pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken inc)
                 _ -> throwError $ InvalidFunctionBody inc
 
 parseImperativeBindingParam :: Parser (Token, Type)

@@ -1,9 +1,9 @@
 {-# LANGUAGE InstanceSigs #-}
 
-module Inference.Errors where
+module Inference.Errors (InferenceError (..), getExpression) where
 
 import Lexing.Position (Span (..))
-import Logging.ErrorPrinter (PrintableError (..))
+import Logging.Errors (PrintableError (..))
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Syntax.Tree (Expr (ExprRoot), exprSpan)
 import Typing.Types (Kind, Type)
@@ -61,6 +61,8 @@ instance PrintableError InferenceError where
     errorEnd err =
         let Span _ end = exprSpan (getExpression err)
         in end
+
+    errorDebugDevDetails err = show $ getExpression err
 
 getExpression :: InferenceError -> Expr
 getExpression err =

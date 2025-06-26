@@ -11,7 +11,8 @@ import Inference.Core (TypeEnv)
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), MultiPatternArm (MultiPatternArm), exprChildren)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorizeQualified, vectorizeAllQualified, vectorize)
+import Utils.Lists (hardHead)
 
 newtype GenM a = GenM (StateT GenState (Reader TypeEnv) a)
     deriving (Functor, Applicative, Monad, MonadState GenState, MonadReader TypeEnv)
@@ -86,20 +87,20 @@ generateConstraints expr = case expr of
         (Just ta, ca) <- generateConstraints a
         retVar <- freshTyVar KindStar
         let retType = TVar retVar
-        let funConstraint = TypeConstraint expr tf (TArrow ta retType)
+        let funConstraint = TypeConstraint expr (TArrow ta retType) tf -- todo: revise order
         let combinedConstraints =
                 ConstraintSet
                     (funConstraint : csTypeConstraints cf ++ csTypeConstraints ca)
                     (csClassConstraints cf ++ csClassConstraints ca)
+
         recordType expr retType
         return (Just retType, combinedConstraints)
     ExprLambda paramNames body _ -> do
         paramVars <- mapM (const $ freshTyVar KindStar) paramNames
         let paramTypes = map TVar paramVars
-        let paramScheme t = Forall [] [] t
 
-        let paramBindings = Map.fromList (zip paramNames (map (paramScheme . TVar) paramVars))
-        let extendEnv currentEnv = Map.union paramBindings currentEnv
+        let paramBindings = Map.fromList (zip paramNames (map (cleanQualified . TVar) paramVars))
+        let extendEnv = Map.union paramBindings
 
         (Just bodyType, bodyConstraints) <- local extendEnv (generateConstraints body)
 
@@ -108,7 +109,7 @@ generateConstraints expr = case expr of
         return (Just funcType, bodyConstraints)
     ExprLet name value body _ -> do
         (Just valueType, valueConstraints) <- generateConstraints value
-        let extendEnv currentEnv = Map.insert name (cleanQualified valueType) currentEnv
+        let extendEnv = Map.insert name (cleanQualified valueType)
         (Just bodyType, bodyConstraints) <- local extendEnv (generateConstraints body)
         let combinedConstraints =
                 ConstraintSet
@@ -116,24 +117,53 @@ generateConstraints expr = case expr of
                     (csClassConstraints valueConstraints ++ csClassConstraints bodyConstraints)
         recordType expr bodyType
         return (Just bodyType, combinedConstraints)
-    ExprBindingDef name bindType body _ -> do
-        let extendEnv currentEnv = Map.insert name bindType currentEnv
-        (Just bodyType, bodyConstraints) <- local extendEnv (generateConstraints body)
-        let combinedConstraints =
+    ExprBindingDef name bindType body _ _ -> do
+        let extendEnvF = Map.insert name bindType
+        (Just bodyType, bodyConstraints) <- local extendEnvF (generateConstraints body)
+        let Forall _ _ annType = bindType
+            sigConstraint = Debug.trace ("typ constraint is: " ++ treeShow annType ++ " to: " ++ treeShow bodyType) $ TypeConstraint expr annType bodyType
+            combinedConstraints =
                 ConstraintSet
-                    (csTypeConstraints bodyConstraints)
+                    (sigConstraint : csTypeConstraints bodyConstraints)
                     (csClassConstraints bodyConstraints)
-        recordType expr bodyType
+        Debug.trace ("Constraints for " ++ name ++ " are " ++ show combinedConstraints) $ recordType expr bodyType
         return (Just bodyType, combinedConstraints)
     ExprDerivedPatternMatch armTypes arms -> do
         mappedArms <- mapM processArm arms
+        let MultiPatternArm patterns patternBody = hardHead arms
+        let patternsLength = length patterns
+
+        let (providedTypes, missingBodyTypes) = splitAt patternsLength armTypes
+        
         let (bodyTypes, bodyConstraintsList) = unzip mappedArms
+        let bodyType = hardHead bodyTypes
 
-        let combinedBodyType = foldr1 (\t1 t2 -> TArrow t1 t2) bodyTypes
-        let combinedConstraints = foldr (<>) (ConstraintSet [] []) bodyConstraintsList
+        let combinedBodyConstraints = mconcat bodyConstraintsList
 
-        recordType expr combinedBodyType
-        return (Just combinedBodyType, combinedConstraints)
+        let Forall _ _ providedTyp =
+                Debug.trace ("Provided types: " ++ treeShow providedTypes) $
+                Debug.trace ("Missing types: " ++ treeShow missingBodyTypes) $
+                Debug.trace ("Arm types: " ++ treeShow armTypes) $ vectorizeAllQualified providedTypes
+
+        -- we take advantage that haskell is lazy and this shit isn't evaluated when null missingBodyTypes
+        returnTypVar <- freshTyVar KindStar
+        let currentTypConstraints = (csTypeConstraints combinedBodyConstraints)
+        let additionalConstraints = if null missingBodyTypes
+            then []
+            else do
+                let Forall _ _ missingBodyType = vectorizeAllQualified missingBodyTypes
+                let expectedType = TArrow missingBodyType (TVar returnTypVar) 
+                [ TypeConstraint patternBody expectedType bodyType ]
+
+        
+        let finalConstraints = ConstraintSet
+                (currentTypConstraints ++ additionalConstraints)
+                (csClassConstraints combinedBodyConstraints)
+        
+        let exprType = vectorize providedTyp bodyType
+
+        recordType expr exprType
+        return (Just exprType, finalConstraints)
       where
         processArm (MultiPatternArm patterns body) = do
             currentEnv <- ask
@@ -147,8 +177,8 @@ generateConstraints expr = case expr of
         let children = exprChildren expr
         results <- mapM generateConstraints children
         let combinedConstraints = mconcat (map snd results)
-        Debug.trace ("Generating constraints for unsupported expression: " ++ treeShow u)
-            $ return (Nothing, combinedConstraints)
+        Debug.trace ("Generating constraints for unsupported expression: " ++ treeShow u) $
+            return (Nothing, combinedConstraints)
 
 generatePatternBindings :: TypeEnv -> [Pattern] -> [QualifiedType] -> GenM TypeEnv
 generatePatternBindings env patterns armTypes = do
@@ -159,11 +189,11 @@ generatePatternBindings env patterns armTypes = do
 generatePatternBinding :: TypeEnv -> Pattern -> QualifiedType -> GenM TypeEnv
 generatePatternBinding _env (PVar name) armType = do
     return $ Map.singleton name armType
-generatePatternBinding env (PAs name pattern) armType = do
+generatePatternBinding env (PAs name pat) armType = do
     let asBinding = Map.singleton name armType
-    nestedBinding <- generatePatternBinding env pattern armType
+    nestedBinding <- generatePatternBinding env pat armType
     return $ Map.union asBinding nestedBinding
-generatePatternBinding env (PConstructor name patterns) armType = do
+generatePatternBinding env (PConstructor name patterns) _armType = do -- todo: use armType
     currentEnv <- ask
     case Map.lookup name currentEnv of
         Just (Forall tvs cs t) -> do
@@ -173,11 +203,13 @@ generatePatternBinding env (PConstructor name patterns) armType = do
             let instConstraints = map (applyConstraintSubst subst) cs
 
             let argTypes = extractArgTypes instType (length patterns)
-            let qualifiedArgTypes = map (\t -> Forall [] instConstraints t) argTypes
+            let qualifiedArgTypes = map (Forall [] instConstraints) argTypes
 
             generatePatternBindings env patterns qualifiedArgTypes
         Nothing -> error $ "Unbound constructor: " ++ show name
-generatePatternBinding _env _ _ = error "Unsupported pattern type in generatePatternBinding"
+generatePatternBinding _env PWildcard _ = return Map.empty
+generatePatternBinding _env PLit {} _ = return Map.empty
+generatePatternBinding _env p _ = error $ "Unsupported pattern type in generatePatternBinding: " ++ show p
 
 extractArgTypes :: Type -> Int -> [Type]
 extractArgTypes _ty 0 = []
@@ -194,7 +226,7 @@ applyConstraintSubst :: Map.Map TyVar Type -> Constraint -> Constraint
 applyConstraintSubst s (Constraint n ts) = Constraint n (map (applyTySubst s) ts)
 
 noConstraints :: ConstraintSet
-noConstraints = ConstraintSet [] $ []
+noConstraints = ConstraintSet [] []
 
 instance MonadFail GenM where
     fail msg = error $ "GenM failed: " ++ msg

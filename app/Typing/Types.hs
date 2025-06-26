@@ -38,7 +38,7 @@ strType = TConstructor (TypeConstructor "String" KindStar)
 boolType = TConstructor (TypeConstructor "Bool" KindStar)
 
 cleanQualified :: Type -> QualifiedType
-cleanQualified t = Forall [] [] t
+cleanQualified = Forall [] []
 
 arrayType :: Type -> Type
 arrayType = TApp (TConstructor (TypeConstructor "Array" (KindArrow KindStar KindStar)))
@@ -68,3 +68,26 @@ substituteReturnType t _ = t
 substituteReturnTypeQualified :: QualifiedType -> Type -> QualifiedType
 substituteReturnTypeQualified (Forall vars constraints t) new =
     Forall vars constraints (substituteReturnType new t)
+
+-- you get a function and you add the return type at the back to it
+-- WHAT ISN'T CORRECT: input (A -> B) and C, outputting ((A -> B) -> C) -- this is as if you just added a TArrow last
+-- WHAT IS CORRECT: input (A -> B) and C, outputting (A -> B -> C)
+vectorize :: Type -> Type -> Type
+vectorize (TArrow arg ret) newRet = TArrow arg (vectorize ret newRet)
+vectorize t newRet = TArrow t newRet
+
+vectorizeQualified :: QualifiedType -> QualifiedType -> QualifiedType
+vectorizeQualified (Forall vars constraints t) (Forall vars' constraints' t') =
+    let newVars = vars ++ vars'
+        newConstraints = constraints ++ constraints'
+    in Forall newVars newConstraints (TArrow t t')
+
+vectorizeAllQualified :: [QualifiedType] -> QualifiedType
+vectorizeAllQualified [] = error "Cannot vectorize an empty list of types"
+vectorizeAllQualified [t] = t
+vectorizeAllQualified types = 
+    let allVars = concatMap (\(Forall vars _ _) -> vars) types
+        allConstraints = concatMap (\(Forall _ constraints _) -> constraints) types
+        typesList = map (\(Forall _ _ t) -> t) types
+        arrowType = foldr1 TArrow typesList
+    in Forall allVars allConstraints arrowType

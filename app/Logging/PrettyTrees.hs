@@ -55,7 +55,7 @@ instance TreeShow Expr where
     treeShow (ExprLet name _ _ _) = "Let (" ++ name ++ "):"
     treeShow (ExprPatternMatch{}) = "PatternMatch:"
     treeShow (ExprDerivedPatternMatch typs _) = "DerivedPatternMatch (" ++ (unwords $ map treeShow typs) ++ "): "
-    treeShow (ExprBindingDef name qType _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
+    treeShow (ExprBindingDef name qType _ _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
     treeShow (ExprDataTypeDef name generics _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
     treeShow (ExprDataConstructor name args _) = "DataConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
     treeShow (ExprTypeClassDef name generics _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow generics ++ "):"
@@ -88,7 +88,11 @@ instance TreeShow QualifiedType where
 
 instance TreeShow TypeMap where
     treeShow :: TypeMap -> String
-    -- each line will have an element
     treeShow tm =
         "TypeMap:\n"
             ++ unlines (map (\(k, v) -> "  " ++ show k ++ " : " ++ treeShow v) (Map.toList tm))
+
+instance TreeShow (Map.Map Expr Type) where
+    treeShow :: Map.Map Expr Type -> String
+    treeShow m = "Expr Type Map:\n"
+        ++ unlines (map (\(k, v) -> "  " ++ treeShow k ++ " : " ++ treeShow v) (Map.toList m))

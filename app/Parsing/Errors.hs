@@ -1,7 +1,7 @@
 module Parsing.Errors (ParsingError (..), getErrorToken) where
 
 import Lexing.Lexer (Token (..), TokenKind, referenceToken, referenceTokenKind)
-import Logging.ErrorPrinter (PrintableError (..))
+import Logging.Errors (PrintableError (..))
 
 data ParsingError
     = UnexpectedToken Token

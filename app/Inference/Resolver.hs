@@ -4,6 +4,7 @@
 
 module Inference.Resolver where
 
+import Control.Monad (when)
 import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
 import Control.Monad.State (MonadState (get, put), State, gets, runState)
 import qualified Data.Map as Map
@@ -25,8 +26,9 @@ newtype ResolverState = ResolverState
 collectGlobals :: Expr -> ResolverM ()
 collectGlobals (ExprRoot children) = do
     mapM_ collectGlobals children
-collectGlobals (ExprBindingDef name bindType _ _) = do
-    addGlobalBinding name bindType
+collectGlobals (ExprBindingDef name bindType _ topLevel _) =
+    when topLevel $ do
+        addGlobalBinding name bindType
 collectGlobals (ExprDataTypeDef name generics constraints constructors _) = do
     let kind = foldr (KindArrow . tvKind) KindStar generics
     let baseConstructor = TConstructor $ TypeConstructor name kind
@@ -58,15 +60,25 @@ resolveTReference (ExprRoot children) = do
 resolveTReference (ExprDataTypeDef name generics constraints constructors s) = do
     constructors' <- mapM resolveTReference constructors
     pure $ ExprDataTypeDef name generics constraints constructors' s
+resolveTReference (ExprTypeClassDef name generics methods s) = do
+    methods' <- mapM resolveTReference methods
+    pure $ ExprTypeClassDef name generics methods' s
+resolveTReference expr@(ExprTypeClassBinding name typ defaultV s) = do
+    env <- getEnv
+    realTyp <- replaceAllUnresolvedQualified expr env typ
+    addGlobalBinding name realTyp
+    pure $ ExprTypeClassBinding name realTyp defaultV s
 resolveTReference (ExprInstanceDef className dataNam binds s) = do
     binds' <- mapM resolveTReference binds
     pure $ ExprInstanceDef className dataNam binds' s
-resolveTReference expr@(ExprBindingDef a typ body c) = do
+resolveTReference expr@(ExprBindingDef a typ body topLevel c) = do
     env <- getEnv
     realTyp <- replaceAllUnresolvedQualified expr env typ
     body' <- resolveTReference body
-    addGlobalBinding a realTyp
-    pure $ ExprBindingDef a realTyp body' c
+    when topLevel $ do
+        addGlobalBinding a realTyp
+
+    pure $ ExprBindingDef a realTyp body' topLevel c
 resolveTReference expr@(ExprDerivedPatternMatch typs arms) = do
     env <- getEnv
     realTyps <- mapM (replaceAllUnresolvedQualified expr env) typs

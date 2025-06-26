@@ -4,7 +4,7 @@ import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (..), TokenKind (..))
 import Parsing.Atoms (parseExpression)
 import Parsing.Errors (ParsingError (InvalidPattern))
-import Parsing.Parser (Parser, consume, next, parseFluidSequence, parseIndentedBlock)
+import Parsing.Parser (Parser, consume, next, parseFluidSequence, parseIndentedBlock, peek)
 import Syntax.Patterns (Literal (LitInt), Pattern (..))
 import Syntax.Tree (MultiPatternArm (MultiPatternArm))
 
@@ -16,7 +16,7 @@ parseMultiPatternAtom = parseSinglePattern True
 
 parseSinglePattern :: Bool -> Parser Pattern
 parseSinglePattern parentheziedConstructors = do
-    inc <- next
+    inc <- peek
     case tokenKind inc of
         TokenLowerIdentifier ->
             PVar . tokenValue <$> next
@@ -24,7 +24,7 @@ parseSinglePattern parentheziedConstructors = do
             numToken <- next
             pure $ PLit $ LitInt (read (tokenValue numToken) :: Integer)
         TokenLeftParen ->
-            parseSinglePattern True <* consume TokenRightParen
+            next >> parseSinglePattern True <* consume TokenRightParen
         TokenUnderscore -> do
             _ <- next
             pure PWildcard
