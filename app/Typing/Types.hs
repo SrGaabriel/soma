@@ -85,7 +85,7 @@ vectorizeQualified (Forall vars constraints t) (Forall vars' constraints' t') =
 vectorizeAllQualified :: [QualifiedType] -> QualifiedType
 vectorizeAllQualified [] = error "Cannot vectorize an empty list of types"
 vectorizeAllQualified [t] = t
-vectorizeAllQualified types = 
+vectorizeAllQualified types =
     let allVars = concatMap (\(Forall vars _ _) -> vars) types
         allConstraints = concatMap (\(Forall _ constraints _) -> constraints) types
         typesList = map (\(Forall _ _ t) -> t) types

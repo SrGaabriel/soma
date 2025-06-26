@@ -94,5 +94,6 @@ instance TreeShow TypeMap where
 
 instance TreeShow (Map.Map Expr Type) where
     treeShow :: Map.Map Expr Type -> String
-    treeShow m = "Expr Type Map:\n"
-        ++ unlines (map (\(k, v) -> "  " ++ treeShow k ++ " : " ++ treeShow v) (Map.toList m))
+    treeShow m =
+        "Expr Type Map:\n"
+            ++ unlines (map (\(k, v) -> "  " ++ treeShow k ++ " : " ++ treeShow v) (Map.toList m))

@@ -3,8 +3,8 @@ module Logging.ErrorPrinter (PrintableError (..), printError, printConclusionMes
 import Control.Monad (when)
 import Data.List (elemIndex, findIndex)
 import Data.Maybe (fromMaybe)
-import System.Console.ANSI
 import Logging.Errors (PrintableError (..))
+import System.Console.ANSI
 
 data RowInfo = RowInfo
     { content :: String

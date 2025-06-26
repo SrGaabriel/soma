@@ -11,7 +11,7 @@ import Inference.Core (TypeEnv)
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), MultiPatternArm (MultiPatternArm), exprChildren)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorizeQualified, vectorizeAllQualified, vectorize)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAllQualified)
 import Utils.Lists (hardHead)
 
 newtype GenM a = GenM (StateT GenState (Reader TypeEnv) a)
@@ -134,32 +134,34 @@ generateConstraints expr = case expr of
         let patternsLength = length patterns
 
         let (providedTypes, missingBodyTypes) = splitAt patternsLength armTypes
-        
+
         let (bodyTypes, bodyConstraintsList) = unzip mappedArms
         let bodyType = hardHead bodyTypes
 
         let combinedBodyConstraints = mconcat bodyConstraintsList
 
         let Forall _ _ providedTyp =
-                Debug.trace ("Provided types: " ++ treeShow providedTypes) $
-                Debug.trace ("Missing types: " ++ treeShow missingBodyTypes) $
-                Debug.trace ("Arm types: " ++ treeShow armTypes) $ vectorizeAllQualified providedTypes
+                Debug.trace ("Provided types: " ++ treeShow providedTypes)
+                    $ Debug.trace ("Missing types: " ++ treeShow missingBodyTypes)
+                    $ Debug.trace ("Arm types: " ++ treeShow armTypes)
+                    $ vectorizeAllQualified providedTypes
 
         -- we take advantage that haskell is lazy and this shit isn't evaluated when null missingBodyTypes
         returnTypVar <- freshTyVar KindStar
         let currentTypConstraints = (csTypeConstraints combinedBodyConstraints)
-        let additionalConstraints = if null missingBodyTypes
-            then []
-            else do
-                let Forall _ _ missingBodyType = vectorizeAllQualified missingBodyTypes
-                let expectedType = TArrow missingBodyType (TVar returnTypVar) 
-                [ TypeConstraint patternBody expectedType bodyType ]
+        let additionalConstraints =
+                if null missingBodyTypes
+                    then []
+                    else do
+                        let Forall _ _ missingBodyType = vectorizeAllQualified missingBodyTypes
+                        let expectedType = TArrow missingBodyType (TVar returnTypVar)
+                        [TypeConstraint patternBody expectedType bodyType]
 
-        
-        let finalConstraints = ConstraintSet
-                (currentTypConstraints ++ additionalConstraints)
-                (csClassConstraints combinedBodyConstraints)
-        
+        let finalConstraints =
+                ConstraintSet
+                    (currentTypConstraints ++ additionalConstraints)
+                    (csClassConstraints combinedBodyConstraints)
+
         let exprType = vectorize providedTyp bodyType
 
         recordType expr exprType
@@ -177,8 +179,8 @@ generateConstraints expr = case expr of
         let children = exprChildren expr
         results <- mapM generateConstraints children
         let combinedConstraints = mconcat (map snd results)
-        Debug.trace ("Generating constraints for unsupported expression: " ++ treeShow u) $
-            return (Nothing, combinedConstraints)
+        Debug.trace ("Generating constraints for unsupported expression: " ++ treeShow u)
+            $ return (Nothing, combinedConstraints)
 
 generatePatternBindings :: TypeEnv -> [Pattern] -> [QualifiedType] -> GenM TypeEnv
 generatePatternBindings env patterns armTypes = do
@@ -193,7 +195,8 @@ generatePatternBinding env (PAs name pat) armType = do
     let asBinding = Map.singleton name armType
     nestedBinding <- generatePatternBinding env pat armType
     return $ Map.union asBinding nestedBinding
-generatePatternBinding env (PConstructor name patterns) _armType = do -- todo: use armType
+generatePatternBinding env (PConstructor name patterns) _armType = do
+    -- todo: use armType
     currentEnv <- ask
     case Map.lookup name currentEnv of
         Just (Forall tvs cs t) -> do
@@ -208,7 +211,7 @@ generatePatternBinding env (PConstructor name patterns) _armType = do -- todo: u
             generatePatternBindings env patterns qualifiedArgTypes
         Nothing -> error $ "Unbound constructor: " ++ show name
 generatePatternBinding _env PWildcard _ = return Map.empty
-generatePatternBinding _env PLit {} _ = return Map.empty
+generatePatternBinding _env PLit{} _ = return Map.empty
 generatePatternBinding _env p _ = error $ "Unsupported pattern type in generatePatternBinding: " ++ show p
 
 extractArgTypes :: Type -> Int -> [Type]

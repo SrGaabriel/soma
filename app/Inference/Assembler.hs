@@ -2,14 +2,14 @@ module Inference.Assembler where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import qualified Debug.Trace as Debug
 import Inference.Core (ClassEnv, TypeEnv, TypeMap)
 import Inference.Errors (InferenceError)
 import Inference.Gen (ConstraintSet (csClassConstraints, csTypeConstraints), GenState (gsTypeMap), applyConstraintSubst, applyTySubst, generateConstraints, runGenM)
 import Inference.Solving (Substitutable (ftv), solveClassConstraints, solveTypeConstraints)
+import Logging.PrettyTrees (TreeShow (treeShow))
 import Syntax.Tree (Expr)
 import Typing.Types (Constraint, QualifiedType (Forall), TyVar, Type)
-import qualified Debug.Trace as Debug
-import Logging.PrettyTrees (TreeShow(treeShow))
 
 inferType :: TypeEnv -> ClassEnv -> Expr -> Either InferenceError (Maybe QualifiedType, TypeMap)
 inferType env classEnv expr = do
