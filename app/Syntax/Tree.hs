@@ -16,6 +16,7 @@ data Expr
     | ExprTuple [Expr] Span
     | ExprApp Expr Expr
     | ExprLambda [String] Expr Span
+    | ExprImport String Span
     | ExprPatternMatch Expr [Expr] Span
     | ExprDerivedPatternMatch [QualifiedType] [Expr]
     | ExprPatternMatchArm
@@ -117,3 +118,4 @@ exprSpan (ExprDerivedPatternMatch _ arms) =
             in Span start end
 exprSpan (ExprPatternMatchArm _ _ _ s) = s
 exprSpan (ExprInstanceDef _ _ _ s) = s
+exprSpan (ExprImport _ s) = s

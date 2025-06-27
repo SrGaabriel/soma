@@ -8,8 +8,9 @@ import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (..), TokenKind (..), tokenSpan)
 import Lexing.Position (Span (Span))
 import Parsing.Errors (ParsingError (..))
-import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseCommaSeparatedUntil, parseIndentedBlock, parseSequence, peek, someAccepting)
+import Parsing.Parser
 import Syntax.Tree (Expr (..))
+import Control.Applicative ((<|>))
 
 parseExpression :: Parser Expr
 parseExpression = parseExprPrec 0
@@ -163,3 +164,8 @@ parseInfixRest lhs prec = do
         case assoc of
             LeftAssoc -> opPrec + 1
             RightAssoc -> opPrec
+
+parseModuleName :: Parser [String]
+parseModuleName = do
+    toks <- parseSequence TokenReturns TokenNewline (consume TokenVarSymbol <|> consume TokenLowerIdentifier)
+    pure $ map tokenValue toks

@@ -28,7 +28,7 @@ data TokenKind
     | TokenEquals
     | TokenLet
     | TokenIn
-    | TokenFn
+    | TokenImport
     | TokenString
     | TokenDollar
     | TokenStruct
@@ -158,10 +158,10 @@ tokenize (c : cs) i indent
             kind = case text of
                 "let" -> TokenLet
                 "in" -> TokenIn
-                "fn" -> TokenFn
                 "case" -> TokenCase
                 "do" -> TokenDo
                 "def" -> TokenDef
+                "import" -> TokenImport
                 "data" -> TokenData
                 "struct" -> TokenStruct
                 "trait" -> TokenClass -- todo: rename
@@ -235,11 +235,11 @@ referenceTokenKind TokenReturns = "'::'"
 referenceTokenKind TokenCase = "'case'"
 referenceTokenKind TokenDo = "'do'"
 referenceTokenKind TokenDef = "'def'"
+referenceTokenKind TokenImport = "'import'"
 referenceTokenKind TokenLeftParen = "a left parenthesis"
 referenceTokenKind TokenRightParen = "a right parenthesis"
 referenceTokenKind TokenPipe = "a vertical bar"
 referenceTokenKind TokenLet = "'let'"
-referenceTokenKind TokenFn = "'fn'"
 referenceTokenKind TokenIn = "'in'"
 referenceTokenKind TokenString = "a string"
 referenceTokenKind TokenStruct = "a struct"

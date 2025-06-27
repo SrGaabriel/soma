@@ -1,0 +1,3 @@
+import math::+
+
+def summing(x: Int, y: Int) -> Int = x + y

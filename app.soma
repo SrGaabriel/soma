@@ -1,3 +1,5 @@
+import stdlib
+
 trait Eq a where
     def {==} :: a -> a -> Bool
 
@@ -23,6 +25,8 @@ instance Eq Shape where
         | _         _               => false
     
 def testSum(x: Int, y: Int) -> Int = x + y
+
+def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
 
 def testShape :: Shape = Circle 5
 

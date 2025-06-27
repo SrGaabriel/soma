@@ -69,9 +69,6 @@ substituteReturnTypeQualified :: QualifiedType -> Type -> QualifiedType
 substituteReturnTypeQualified (Forall vars constraints t) new =
     Forall vars constraints (substituteReturnType new t)
 
--- you get a function and you add the return type at the back to it
--- WHAT ISN'T CORRECT: input (A -> B) and C, outputting ((A -> B) -> C) -- this is as if you just added a TArrow last
--- WHAT IS CORRECT: input (A -> B) and C, outputting (A -> B -> C)
 vectorize :: Type -> Type -> Type
 vectorize (TArrow arg ret) newRet = TArrow arg (vectorize ret newRet)
 vectorize t newRet = TArrow t newRet

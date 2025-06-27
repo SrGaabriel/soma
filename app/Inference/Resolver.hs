@@ -121,7 +121,15 @@ runResolver root = do
         Left err -> Left err
         Right expr -> Right (expr, globalBindings finalState)
 
--- i don't know whether I'm the world's biggest genius or biggest idiot but I think this works?
+runResolverWithEnv :: TypeEnv -> Expr -> IO (Either InferenceError (Expr, TypeEnv))
+runResolverWithEnv initialEnv root = do
+    let initialState = ResolverState{globalBindings = initialEnv}
+    let resolverM = runResolverM (analyzeTree root)
+    let (result, finalState) = runState (runExceptT resolverM) initialState
+    pure $ case result of
+        Left err -> Left err
+        Right expr -> Right (expr, globalBindings finalState)
+
 replaceAllUnresolvedQualified :: Expr -> TypeEnv -> QualifiedType -> ResolverM QualifiedType
 replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
     (finalTyp, qualifieds) <- replaceAllUnresolvedC t

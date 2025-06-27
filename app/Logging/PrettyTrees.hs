@@ -52,6 +52,7 @@ instance TreeShow Expr where
     treeShow (ExprTuple _ _) = "Tuple:"
     treeShow (ExprApp _ _) = "App:"
     treeShow (ExprLambda args _ _) = "Lambda (" ++ unwords args ++ "):"
+    treeShow (ExprImport moduleName _) = "Import: " ++ moduleName
     treeShow (ExprLet name _ _ _) = "Let (" ++ name ++ "):"
     treeShow (ExprPatternMatch{}) = "PatternMatch:"
     treeShow (ExprDerivedPatternMatch typs _) = "DerivedPatternMatch (" ++ (unwords $ map treeShow typs) ++ "): "

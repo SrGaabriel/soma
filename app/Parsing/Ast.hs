@@ -2,13 +2,16 @@ module Parsing.Ast where
 
 import Control.Applicative (Alternative (many))
 import Control.Monad.Error.Class (MonadError (throwError))
-import Lexing.Lexer (Token (tokenIndent, tokenKind, tokenValue), TokenKind (..), spanningTokens)
+import Lexing.Lexer (Token (tokenIndent, tokenKind, tokenValue), TokenKind (..), spanningTokens, tokenSpan)
 import Parsing.Bindings (parseBinding)
 import Parsing.Errors (ParsingError (UnexpectedToken))
 import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseFuncName, parseIndentedBlock, parseIndexedIndentedBlock, peek)
 import Parsing.Types (parseQualifiedType, parseTyVar, parseType)
 import Syntax.Tree (Expr (..))
 import Typing.Types (Type)
+import Lexing.Position (Span(Span))
+import Parsing.Atoms (parseModuleName)
+import Data.List (intercalate)
 
 parse :: [Token] -> Either ParsingError Expr
 parse tokens = do
@@ -28,6 +31,7 @@ parseDeclaration = do
         TokenData -> parseDataType
         TokenClass -> parseTypeClass
         TokenInstance -> parseInstance
+        TokenImport -> parseImport
         _ -> throwError $ UnexpectedToken token
 
 parseDataType :: Parser Expr
@@ -120,3 +124,12 @@ parseInstance = do
             , instanceMethods = bindings
             , instanceSpan = spanningTokens instanceToken dataTypeToken
             }
+
+parseImport :: Parser Expr
+parseImport = do
+    importToken <- consume TokenImport
+    moduleNameSegments <- parseModuleName
+    let moduleName = intercalate "::" moduleNameSegments
+    let Span importStart _ = tokenSpan importToken
+    let importEnd = importStart + length moduleNameSegments
+    pure $ ExprImport moduleName (Span importStart importEnd)

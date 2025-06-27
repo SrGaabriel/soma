@@ -3,7 +3,7 @@ module Main where
 import Config.Options (Options (optionsInput), extractOptions, formatError)
 import Control.Monad (unless)
 import qualified Data.Map as Map
-import Inference.Resolver (runResolver)
+import Inference.Resolver (runResolverWithEnv)
 import Inference.Tree (analyzeTreeT)
 import Lexing.Lexer (tokenizeFile)
 import Logging.ErrorPrinter (printConclusionMessage, printError)
@@ -11,6 +11,10 @@ import Logging.PrettyTrees (TreeShow (treeShow))
 import Parsing.Ast (parse)
 import Syntax.Tree (Expr, exprChildren)
 import System.Exit (exitFailure)
+import qualified Data.Set as Set
+import Project.Module
+import Project.Graph
+import Project.Processing
 
 main :: IO ()
 main = do
@@ -22,46 +26,25 @@ main = do
             putStrLn $ "Error parsing command line arguments: " ++ formatError err
             exitFailure
 
-    content <- readFile (optionsInput options)
-    let (tokens, errors) = tokenizeFile content
-    unless (Prelude.null errors) $ do
-        mapM_ (\err -> printError err "app.soma" content "LEXING") errors
-        printConclusionMessage ("Could not compile because of the " ++ show (length errors) ++ " lexing errors above.")
-        exitFailure
+    let rootDir = optionsInput options
 
-    tree <-
-        either
-            ( \err -> do
-                printError err "app.soma" content "PARSING"
-                exitFailure
-            )
-            return
-            (parse tokens)
+    discoveredModules <- findModules rootDir
+    putStrLn $ "Discovered modules: " ++ show (map fst discoveredModules)
 
-    resolvedTreeIO <- runResolver tree
-    (resolvedTree, finalEnv) <-
-        either
-            ( \err -> do
-                printError err "app.soma" content "ANALYSIS"
-                exitFailure
-            )
-            return
-            resolvedTreeIO
-    putStrLn $ "Env: " ++ show finalEnv
+    moduleGraph <- buildModuleGraph discoveredModules
 
-    putStrLn "Tree:"
-    prettyPrintAst resolvedTree
+    let depGraph = buildDependencyGraph moduleGraph
 
-    typeMap <-
-        either
-            ( \errors -> do
-                mapM_ (\err -> printError err "app.soma" content "INFERENCE") errors
-                exitFailure
-            )
-            return
-            (analyzeTreeT finalEnv resolvedTree)
-    putStrLn $ "Type map: " ++ treeShow typeMap
-    putStrLn "Successfully compiled!"
+    case topoSortModules depGraph of
+        Left cycles -> do
+            putStrLn "Error: Detected cyclic imports between modules:"
+            mapM_ (putStrLn . ("  " ++) . show) cycles
+            exitFailure
+        Right sortedModules -> do
+            putStrLn $ "Processing modules in order: " ++ show sortedModules
+            processModules sortedModules moduleGraph
+
+    putStrLn "✅ Successfully compiled all modules."
 
 prettyPrintAst :: Expr -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0
