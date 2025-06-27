@@ -24,6 +24,7 @@ instance Eq Shape where
     
 def testSum(x: Int, y: Int) -> Int = x + y
 
-def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
-
 def testShape :: Shape = Circle 5
+
+def polSum(x, y) :: a -> a -> a where a: Eq 
+    = x + y

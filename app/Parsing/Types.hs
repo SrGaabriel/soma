@@ -3,12 +3,28 @@ module Parsing.Types where
 import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..))
 import Parsing.Errors (ParsingError (InvalidTokenForType))
-import Parsing.Parser (Parser, consume, consumeRelevant, next, parseSequence, peek)
-import Typing.Types (Kind (KindStar), QualifiedType (Forall), TyVar (TypeVar), Type (TArrow, TUnresolved, TVar), arrayType, boolType, intType, strType, tupleType)
+import Parsing.Parser (Parser, consume, consumeRelevant, next, parseSequence, peek, parseExhaustiveSequence)
+import Typing.Types (Kind (KindStar), QualifiedType (Forall), TyVar (TypeVar, tvName), Type (TArrow, TUnresolved, TVar), arrayType, boolType, intType, strType, tupleType, Constraint (Constraint), extractTyVars)
+import Data.List (nubBy)
 
 parseQualifiedType :: Parser QualifiedType
-parseQualifiedType =
-    Forall [] [] <$> parseType
+parseQualifiedType = do
+    baseType <- parseType
+    incoming <- peek
+    if tokenKind incoming == TokenWhere
+        then do
+            _ <- consumeRelevant TokenWhere
+            constraints <- parseExhaustiveSequence TokenComma parseConstraint
+
+            let tyVarsFromType = extractTyVars baseType
+            let tyVarsFromConstraints = concatMap (\(Constraint _ tys) -> extractTyVarsFromTypes tys) constraints
+
+            let allVars = deduplicateTyVars (tyVarsFromType ++ tyVarsFromConstraints)
+
+            pure $ Forall allVars constraints baseType
+        else do
+            let tyVars = extractTyVars baseType
+            pure $ Forall tyVars [] baseType
 
 parseType :: Parser Type
 parseType = do
@@ -52,3 +68,16 @@ parseTypeConstructor = do
         "String" -> pure strType
         "Bool" -> pure boolType
         other -> pure $ TUnresolved other
+
+parseConstraint :: Parser Constraint
+parseConstraint = do
+    varName <- consume TokenLowerIdentifier
+    _ <- consume TokenColon
+    className <- consume TokenUpperIdentifier
+    pure $ Constraint (tokenValue className) [TVar (TypeVar (tokenValue varName) KindStar)]
+
+deduplicateTyVars :: [TyVar] -> [TyVar]
+deduplicateTyVars = nubBy (\a b -> tvName a == tvName b)
+
+extractTyVarsFromTypes :: [Type] -> [TyVar]
+extractTyVarsFromTypes = concatMap extractTyVars

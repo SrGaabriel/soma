@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
 module Inference.Gen where
 
@@ -7,7 +8,6 @@ import Control.Monad (when)
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
-import Data.List (group)
 import qualified Data.Map as Map
 import qualified Debug.Trace as Debug
 import Inference.Core (TypeEnv)
@@ -139,7 +139,7 @@ generateConstraints expr = case expr of
         mappedArms <- mapM generateConstraints arms
         let (armExprTypes, armConstraintsList) = unzip mappedArms
         let combinedBodyConstraints = mconcat armConstraintsList
-
+ 
         let Just exprType = hardHead armExprTypes
         mapM_
             ( \(Just armType, armExpr) ->

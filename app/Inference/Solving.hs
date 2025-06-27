@@ -45,10 +45,9 @@ instance Substitutable Constraint where
     ftv (Constraint _ ts) = Set.unions $ map ftv ts
 
 instance Substitutable QualifiedType where
-    apply s (Forall tvs cs t) = Forall tvs (apply s cs) (apply s s't)
-      where
-        s' = foldr Map.delete s tvs
-        s't = apply s' t
+    apply s (Forall tvs cs t) =
+        let s' = foldr Map.delete s tvs
+        in Forall tvs (apply s' cs) (apply s' t)
     ftv (Forall tvs cs t) = (ftv cs `Set.union` ftv t) `Set.difference` (Set.fromList tvs)
 
 instance (Substitutable a) => Substitutable [a] where

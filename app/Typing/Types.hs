@@ -91,3 +91,10 @@ vectorizeAllQualified types =
         typesList = map (\(Forall _ _ t) -> t) types
         arrowType = foldr1 TArrow typesList
     in Forall allVars allConstraints arrowType
+
+extractTyVars :: Type -> [TyVar]
+extractTyVars (TVar tv) = [tv]
+extractTyVars (TApp t1 t2) = extractTyVars t1 ++ extractTyVars t2
+extractTyVars (TArrow t1 t2) = extractTyVars t1 ++ extractTyVars t2
+extractTyVars (TConstructor _) = []
+extractTyVars (TUnresolved _) = []

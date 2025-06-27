@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 module Parsing.Bindings where
 
 import Control.Monad.Error.Class (MonadError (throwError))
@@ -19,20 +20,35 @@ parseBinding isTopLevel = do
 
     case leftParenthesisArgStart of
         Just _ -> do
-            params <-
+            impParams <-
                 parseSequence TokenComma TokenRightParen parseImperativeBindingParam
                     <* consume TokenRightParen
-            let (toks, types) = unzip params
-            mappings <- ensureSameLengthMap toks types
-            _ <- consume TokenRightArrow
-            returnType <- parseType
-            let bindingTyp = curryFunction types returnType
-            let bindingTypeS = Forall [] [] bindingTyp -- todo: support constraints in this def
-            eqTok <- consumeRelevant TokenEquals
-            body <- parseExpression
-            let argNames = Prelude.map Prelude.fst mappings
-            let defBody = ExprLambda argNames body (exprSpan body)
-            pure $ ExprBindingDef name bindingTypeS defBody isTopLevel (spanningTokens defToken eqTok)
+            
+            case impParams of
+                [] -> throwError $ FunctionArgumentLengthMismatch defToken
+                xs  | all isSimplyTyped xs -> do
+                        let params = Prelude.map (\(SimplyTypedParam (tok, typ)) -> (tok, typ)) xs
+                        let (toks, types) = unzip params
+                        mappings <- ensureSameLengthMap toks types
+                        _ <- consume TokenRightArrow
+                        returnType <- parseType
+                        let bindingTyp = curryFunction types returnType
+                        let bindingTypeS = Forall [] [] bindingTyp
+                        eqTok <- consumeRelevant TokenEquals
+                        body <- parseExpression
+                        let argNames = Prelude.map Prelude.fst mappings
+                        let defBody = ExprLambda argNames body (exprSpan body)
+                        pure $ ExprBindingDef name bindingTypeS defBody isTopLevel (spanningTokens defToken eqTok)
+                    | not (any isSimplyTyped xs) -> do
+                        let paramToks = Prelude.map (\(UntypedParam tok) -> tok) xs
+                        let paramNames = map tokenValue paramToks
+                        _ <- consume TokenReturns
+                        bindingTyp <- parseQualifiedType
+                        eqTok <- consumeRelevant TokenEquals
+                        body <- parseExpression
+                        let defBody = ExprLambda paramNames body (exprSpan body)
+                        pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken eqTok)
+                    | otherwise -> throwError $ FunctionArgumentLengthMismatch defToken
         Nothing -> do
             _ <- consumeRelevant TokenReturns
             bindingTyp <- parseQualifiedType
@@ -49,14 +65,26 @@ parseBinding isTopLevel = do
                     pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken inc)
                 _ -> throwError $ InvalidFunctionBody inc
 
-parseImperativeBindingParam :: Parser (Token, Type)
+parseImperativeBindingParam :: Parser ImperativeFuncParam
 parseImperativeBindingParam = do
     nameToken <- consume TokenLowerIdentifier
-    _ <- consume TokenColon
-    typ <- parseType
-    pure (nameToken, typ)
+    inc <- peekRelevant
+    case tokenKind inc of
+        TokenColon -> do
+            _ <- next
+            typ <- parseType
+            pure $ SimplyTypedParam (nameToken, typ)
+        _ -> do
+            pure $ UntypedParam nameToken
 
-ensureSameLengthMap :: [Token] -> [Type] -> Parser [(String, Type)]
+ensureSameLengthMap :: [Token] -> [b] -> Parser [(String, b)]
 ensureSameLengthMap names types
     | length names == length types = pure $ zip (map tokenValue names ++ replicate (length types - length names) "_") types
     | otherwise = throwError $ FunctionArgumentLengthMismatch (last names)
+
+data ImperativeFuncParam = SimplyTypedParam (Token, Type) | UntypedParam Token
+    deriving (Show, Eq)
+
+isSimplyTyped :: ImperativeFuncParam -> Bool
+isSimplyTyped (SimplyTypedParam _) = True
+isSimplyTyped (UntypedParam _) = False

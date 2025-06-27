@@ -151,7 +151,7 @@ parseExhaustiveSequence separator itemParser = Parser $ \tokens -> do
                         | tk == separator -> do
                             _ <- runParser next rest
                             parseNext (item : acc) rest
-                        | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
+                        | otherwise -> Right (reverse (item : acc), rest)
 
 parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
 parseFluidSequence end itemParser = Parser $ \tokens -> do
