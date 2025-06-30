@@ -5,8 +5,9 @@ import Lexing.Lexer (tokenizeFile)
 import Logging.ErrorPrinter (printError)
 import Parsing.Ast (parse)
 import Control.Monad (unless)
+import Parsing.Errors (ParsingError)
 
-parseModule :: (Name, FilePath) -> IO (Either () ModuleInfo)
+parseModule :: (Name, FilePath) -> IO (Either ParsingError ModuleInfo)
 parseModule (modName, path) = do
     content <- readFile path
     let (tokens, lexErrors) = tokenizeFile content
@@ -15,6 +16,6 @@ parseModule (modName, path) = do
     case parse tokens of
         Left err -> do
             printError err path content "PARSING"
-            return $ Left ()
+            return $ Left err
         Right ast ->
             return $ Right $ ModuleInfo modName path content tokens ast

@@ -10,6 +10,7 @@ import Project.Parsing (parseModule)
 import Syntax.Tree (Expr(..), exprChildren)
 import Data.Graph (SCC(AcyclicSCC, CyclicSCC), stronglyConnComp)
 import Data.Either (partitionEithers)
+import Parsing.Errors (ParsingError)
 
 type ModuleGraph = Map.Map Name ModuleInfo
 
@@ -32,10 +33,12 @@ findModules = go ""
     extendMod "" part = part
     extendMod prefix part = prefix ++ "." ++ part
 
-buildModuleGraph :: [(Name, FilePath)] -> IO ModuleGraph
+buildModuleGraph :: [(Name, FilePath)] -> IO (Either [ParsingError] ModuleGraph)
 buildModuleGraph modules = do
   results <- mapConcurrently parseModule modules
-  return $ Map.fromList [(moduleName m, m) | Right m <- results]
+  case partitionEithers results of
+    ([], parsedModules) -> return $ Right $ Map.fromList [(moduleName modInfo, modInfo) | modInfo <- parsedModules]
+    (errors, _) -> return $ Left errors
 
 type DependencyGraph = Map.Map Name [Name]
 

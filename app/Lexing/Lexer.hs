@@ -63,33 +63,27 @@ tokenize :: String -> Int -> Int -> ([Token], [LexingError])
 tokenize [] _ _ = ([], [])
 tokenize (c : cs) i indent
     | isSpace c = tokenize cs (i + 1) indent
-    | c `elem` "+*<>()|$[],.λ\\_{}" =
+    | c `elem` "()<>{}[],.λ\\∀_" =
         let kind = case c of
-                '+' -> TokenVarSymbol
-                '*' -> TokenVarSymbol
-                '<' -> TokenLeftAngleBracket
-                '>' -> TokenRightAngleBracket
-                '{' -> TokenLeftBraces
-                '}' -> TokenRightBraces
                 '(' -> TokenLeftParen
                 ')' -> TokenRightParen
-                '|' -> TokenPipe
-                '$' -> TokenDollar
+                '{' -> TokenLeftBraces
+                '}' -> TokenRightBraces
                 '[' -> TokenLeftBracket
                 ']' -> TokenRightBracket
                 ',' -> TokenComma
                 '.' -> TokenDot
                 'λ' -> TokenLambda
-                '∀' -> TokenForall
                 '\\' -> TokenLambda
+                '∀' -> TokenForall
                 '_' -> TokenUnderscore
                 _ -> error "Impossible case"
         in addToken (Token kind [c] i indent) (tokenize cs (i + 1) indent)
     | c == '-' = case cs of
         '>' : rest -> addToken (Token TokenRightArrow "->" i indent) (tokenize rest (i + 2) indent)
-        _ -> addToken (Token TokenVarSymbol "-" i indent) (tokenize cs (i + 1) indent)
+        _ -> tokenizeOperator
     | c == '=' = case cs of
-        '=' : rest -> addToken (Token TokenVarSymbol "==" i indent) (tokenize rest (i + 2) indent)
+        '=' : _rest -> tokenizeOperator
         '>' : rest -> addToken (Token TokenStrongRightArrow "=>" i indent) (tokenize rest (i + 2) indent)
         _ -> addToken (Token TokenEquals "=" i indent) (tokenize cs (i + 1) indent)
     | c == ':' = case cs of
@@ -107,12 +101,15 @@ tokenize (c : cs) i indent
                 _ ->
                     let (restTokens, restErrors) = tokenize rest' (i + 2 + length comment) indent
                     in (restTokens, UnterminatedComment i : restErrors)
-        _ -> addToken (Token TokenVarSymbol "/" i indent) (tokenize cs (i + 1) indent)
+        _ -> tokenizeOperator
     | c == '\n' =
         let (spaces, rest) = span isSpace cs
             indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
             newIndent = length spaces
         in addToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
+    | c == '|' = case cs of
+        ' ' : rest -> addToken (Token TokenPipe "|" i indent) (tokenize rest (i + 1) indent)
+        _ -> tokenizeOperator
     | c == '"' =
         if take 2 cs == "\"\""
             then
@@ -174,9 +171,14 @@ tokenize (c : cs) i indent
                         then TokenLowerIdentifier
                         else TokenUpperIdentifier
         in addToken (Token kind text i indent) (tokenize rest (i + length text) indent)
+    | isOperatorChar c = tokenizeOperator
     | otherwise =
         let (restTokens, restErrors) = tokenize cs (i + 1) indent
         in (restTokens, UnexpectedCharacter c i : restErrors)
+    where
+        tokenizeOperator =
+            let (ops, rest) = span isOperatorChar (c : cs)
+            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
 
 breakTripleQuote :: String -> (String, String)
 breakTripleQuote s = go s ""
@@ -263,3 +265,6 @@ tokenSpan token = Span (tokenPos token) (tokenPos token + length (tokenValue tok
 spanningTokens :: Token -> Token -> Span
 spanningTokens start end =
     Span (tokenPos start) (tokenPos end + length (tokenValue end))
+
+isOperatorChar :: Char -> Bool
+isOperatorChar c = c `elem` "!#$%&*+.-/<=>?@|"

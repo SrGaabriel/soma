@@ -23,7 +23,7 @@ parseBinding isTopLevel = do
             impParams <-
                 parseSequence TokenComma TokenRightParen parseImperativeBindingParam
                     <* consume TokenRightParen
-            
+
             case impParams of
                 [] -> throwError $ FunctionArgumentLengthMismatch defToken
                 xs  | all isSimplyTyped xs -> do

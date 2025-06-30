@@ -1,54 +1,70 @@
 module Main where
 
-import Config.Options (Options (optionsInput), extractOptions, formatError)
+import Config.Options
 import Control.Monad (unless)
 import qualified Data.Map as Map
-import Inference.Resolver (runResolverWithEnv)
-import Inference.Tree (analyzeTreeT)
-import Lexing.Lexer (tokenizeFile)
-import Logging.ErrorPrinter (printConclusionMessage, printError)
-import Logging.PrettyTrees (TreeShow (treeShow))
-import Parsing.Ast (parse)
-import Syntax.Tree (Expr, exprChildren)
-import System.Exit (exitFailure)
-import qualified Data.Set as Set
+import System.Directory (doesDirectoryExist, doesFileExist)
+import System.FilePath ((</>), takeFileName, dropExtension, takeExtension)
+import System.Exit (exitFailure, exitSuccess)
 import Project.Module
 import Project.Graph
 import Project.Processing
+import Project.Parsing
+import Logging.ErrorPrinter
 
 main :: IO ()
 main = do
-    putStrLn "Starting soma..."
-    optionsResult <- extractOptions
-    options <- case optionsResult of
-        Right opts -> return opts
-        Left err -> do
-            putStrLn $ "Error parsing command line arguments: " ++ formatError err
-            exitFailure
+    optionsE <- extractOptions
+    options  <- case optionsE of
+        Right o  -> return o
+        Left err -> putStrLn (formatError err) >> exitFailure
 
-    let rootDir = optionsInput options
+    let inp = optionsInput options
+    isFile <- doesFileExist inp
+    if isFile && takeExtension inp == ".soma" then
+        processSingle inp
+    else do
+        isDir <- doesDirectoryExist inp
+        unless isDir (putStrLn "Error: input is neither a .soma file nor a directory" >> exitFailure)
+        let srcDir = inp </> "src"
+        srcExists <- doesDirectoryExist srcDir
+        unless srcExists (putStrLn "Error: directory does not contain a src folder" >> exitFailure)
 
-    discoveredModules <- findModules rootDir
-    putStrLn $ "Discovered modules: " ++ show (map fst discoveredModules)
+        mods <- findModules srcDir
+        putStrLn $ "Discovered modules: " ++ show (map fst mods)
 
-    moduleGraph <- buildModuleGraph discoveredModules
+        graphE <- buildModuleGraph mods
+        graph  <- case graphE of
+            Left _errs -> putStrLn "❌ Failed to parse some modules" >> exitFailure
+            Right g   -> return g
 
-    let depGraph = buildDependencyGraph moduleGraph
+        let depGraph = buildDependencyGraph graph
+        case topoSortModules depGraph of
+            Left cycles -> do
+                putStrLn "Error: Detected cyclic imports between modules:"
+                mapM_ (putStrLn . ("  " ++) . show) cycles
+                exitFailure
+            Right sorted -> processModules sorted graph
 
+        putStrLn "✅ Successfully compiled all modules."
+        exitSuccess
+
+processSingle :: FilePath -> IO ()
+processSingle path = do
+    let name = dropExtension (takeFileName path)
+    parseE <- parseModule (name, path)
+    mi     <- case parseE of
+        Left err -> printError err path "" "PARSING" >> exitFailure
+        Right m  -> return m
+
+    let graph    = Map.singleton (moduleName mi) mi
+        depGraph = buildDependencyGraph graph
     case topoSortModules depGraph of
         Left cycles -> do
-            putStrLn "Error: Detected cyclic imports between modules:"
+            putStrLn "Error: Detected cyclic imports in module:"
             mapM_ (putStrLn . ("  " ++) . show) cycles
             exitFailure
-        Right sortedModules -> do
-            putStrLn $ "Processing modules in order: " ++ show sortedModules
-            processModules sortedModules moduleGraph
+        Right sorted -> processModules sorted graph
 
-    putStrLn "✅ Successfully compiled all modules."
-
-prettyPrintAst :: Expr -> IO ()
-prettyPrintAst root = prettyPrintAst' root 0
-  where
-    prettyPrintAst' expr indent = do
-        putStrLn $ replicate indent ' ' ++ treeShow expr
-        mapM_ (\child -> prettyPrintAst' child (indent + 2)) (exprChildren expr)
+    putStrLn "✅ Successfully compiled module."
+    exitSuccess
