@@ -4,7 +4,6 @@
 
 module Inference.Gen where
 
-import Control.Monad (when)
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
@@ -124,9 +123,8 @@ generateConstraints expr = case expr of
                     (csClassConstraints valueConstraints ++ csClassConstraints bodyConstraints)
         recordType expr bodyType
         return (Just bodyType, combinedConstraints)
-    ExprBindingDef name bindType body _ _ -> do
-        let extendEnvF = Map.insert name bindType
-        (Just bodyType, bodyConstraints) <- local extendEnvF (generateConstraints body)
+    ExprBindingDef _name bindType body _ _ -> do
+        (Just bodyType, bodyConstraints) <- generateConstraints body
         let Forall _ _ annType = bindType
         let sigConstraint = TypeConstraint expr annType bodyType
         let combinedConstraints =
@@ -141,15 +139,17 @@ generateConstraints expr = case expr of
         let combinedBodyConstraints = mconcat armConstraintsList
  
         let Just exprType = hardHead armExprTypes
-        mapM_
-            ( \(Just armType, armExpr) ->
-                when (armType /= exprType)
-                    $ reportError (PatternMatchArmsTypeMismatch armExpr exprType armType)
-            )
-            (zip armExprTypes arms)
+        let armTypeConstraints = map
+                ( \(Just armType, ExprPatternMatchArm _ _ armBody _) ->
+                    TypeConstraint armBody exprType armType
+                )
+                (zip armExprTypes arms)
+        let combinedTypeConstraints = ConstraintSet
+                (armTypeConstraints ++ csTypeConstraints combinedBodyConstraints)
+                (csClassConstraints combinedBodyConstraints)
 
         recordType expr exprType
-        return (Just exprType, combinedBodyConstraints)
+        return (Just exprType, combinedTypeConstraints)
     ExprPatternMatchArm patterns armTypes body _ -> do
         currentEnv <- ask
         (patternEnv, patternErrors) <- generatePatternBindings expr currentEnv patterns armTypes
@@ -157,7 +157,7 @@ generateConstraints expr = case expr of
 
         let extendWithPatterns = Map.union patternEnv
         (Just bodyType, bodyConstraints) <- local extendWithPatterns (generateConstraints body)
-        let (providedTypes, missingBodyTypes) = splitAt (length patterns) armTypes
+        let (providedTypes, missingBodyTypes) = Debug.trace ("The pattern env is: " ++ treeShow patternEnv) $  splitAt (length patterns) armTypes
 
         returnTypVar <- freshTyVar KindStar
         let additionalConstraints =

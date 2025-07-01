@@ -35,7 +35,7 @@ main = do
 
         graphE <- buildModuleGraph mods
         graph  <- case graphE of
-            Left _errs -> putStrLn "❌ Failed to parse some modules" >> exitFailure
+            Left _errs -> putStrLn "❌ Failed to parse at least one module" >> exitFailure
             Right g   -> return g
 
         let depGraph = buildDependencyGraph graph
@@ -56,9 +56,15 @@ processSingle path = do
     mi     <- case parseE of
         Left err -> printError err path "" "PARSING" >> exitFailure
         Right m  -> return m
-
-    let graph    = Map.singleton (moduleName mi) mi
+    
+    let ast = moduleAst mi
+        graph    = Map.singleton (moduleName mi) mi
         depGraph = buildDependencyGraph graph
+    let imports = extractSymbolImports ast
+
+    unless (null imports) $ do
+        putStrLn "Error: Standalone modules can't import other modules." >> exitFailure
+
     case topoSortModules depGraph of
         Left cycles -> do
             putStrLn "Error: Detected cyclic imports in module:"
