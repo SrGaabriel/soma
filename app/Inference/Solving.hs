@@ -4,7 +4,6 @@ module Inference.Solving where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import qualified Debug.Trace as Debug
 import Inference.Core (ClassEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
 import Inference.Gen (TypeConstraint (..))
@@ -26,11 +25,13 @@ instance Substitutable Type where
     apply s (TApp t1 t2) = TApp (apply s t1) (apply s t2)
     apply s (TArrow t1 t2) = TArrow (apply s t1) (apply s t2)
     apply _ (TUnresolved name) = error $ "Cannot apply substitution to an unresolved type. TUnresolved should not reach inference: " ++ name
+    apply _ (TSkolem sv)     = TSkolem sv
     ftv (TVar tv) = Set.singleton tv
     ftv (TConstructor _) = Set.empty
     ftv (TApp t1 t2) = ftv t1 `Set.union` ftv t2
     ftv (TArrow t1 t2) = ftv t1 `Set.union` ftv t2
     ftv (TUnresolved name) = error $ "Unresolved type found during free type variable computation. TUnresolved should not reach inference: " ++ name
+    ftv (TSkolem _)        = Set.empty
 
 instance Substitutable TyVar where
     apply s tv = case Map.lookup tv s of
@@ -92,5 +93,4 @@ solveTypeConstraints = foldMWithErrors solveOne Map.empty
         return (composeSubst newSubst currentSubst)
 
 solveClassConstraints :: ClassEnv -> [Constraint] -> Either [InferenceError] [Constraint]
-solveClassConstraints _classEnv constraints =
-    Debug.trace ("Now solving " ++ show constraints) $ Right constraints
+solveClassConstraints _classEnv = Right

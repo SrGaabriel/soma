@@ -48,7 +48,7 @@ parseAtom = do
             case tokenKind inc of
                 TokenLambda -> do
                     _ <- next
-                    nameToks <- parseSequence TokenDot TokenRightArrow (consume TokenLowerIdentifier)
+                    nameToks <- parseFluidSequence TokenRightArrow (consume TokenLowerIdentifier)
                     let names = map tokenValue nameToks
                     _ <- consume TokenRightArrow
                     body <- parseExpression

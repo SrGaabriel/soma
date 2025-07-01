@@ -146,6 +146,7 @@ replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
             Just qual@(Forall _ _ resolvedType) -> pure (resolvedType, [qual])
             Nothing -> throwError $ UnknownTypeConstructor expr name
     replaceAllUnresolvedC t'@(TVar _) = pure (t', [])
+    replaceAllUnresolvedC t'@(TSkolem _) = pure (t', [])
     replaceAllUnresolvedC (TConstructor tc) =
         pure (TConstructor tc, [])
     replaceAllUnresolvedC (TApp t1 t2) = do
@@ -160,3 +161,4 @@ replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
         let newType = TArrow t1' t2'
         let qualifieds = mconcat [qu1, qu2]
         pure (newType, qualifieds)
+

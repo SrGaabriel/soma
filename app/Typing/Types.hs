@@ -19,8 +19,26 @@ data TyConstructor = TypeConstructor
     }
     deriving (Show, Eq, Ord)
 
+data SkolemVar = SkolemVar
+  { skName :: String
+  , skKind :: Kind
+  , skUnique :: Int
+  , skRigidity :: Rigidity
+  } deriving (Eq, Ord, Show)
+
+data Rigidity 
+  = Rigid
+  | Flexible FlexInfo
+  deriving (Eq, Ord, Show)
+
+data FlexInfo = FlexInfo
+  { flexLevel :: Int
+  , flexOrigin :: String
+  } deriving (Eq, Ord, Show)
+
 data Type
     = TVar TyVar
+    | TSkolem SkolemVar
     | TConstructor TyConstructor
     | TApp Type Type
     | TArrow Type Type
@@ -91,6 +109,7 @@ vectorizeAllQualified types =
 
 extractTyVars :: Type -> [TyVar]
 extractTyVars (TVar tv) = [tv]
+extractTyVars (TSkolem _) = []  -- skolem variables are not considered type variables
 extractTyVars (TApp t1 t2) = extractTyVars t1 ++ extractTyVars t2
 extractTyVars (TArrow t1 t2) = extractTyVars t1 ++ extractTyVars t2
 extractTyVars (TConstructor _) = []

@@ -9,7 +9,7 @@ import Inference.Core (TypeMap)
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..))
 import Typing.Currying (uncurryKind)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), TyVar (TypeVar, tvName), Type (..))
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), TyVar (TypeVar, tvName), Type (..), SkolemVar (skName))
 
 class TreeShow a where
     treeShow :: a -> String
@@ -25,6 +25,7 @@ instance TreeShow TyVar where
 
 instance TreeShow Type where
     treeShow (TVar tv) = "<" ++ tvName tv ++ ">"
+    treeShow (TSkolem sv) = "«" ++ skName sv ++ "»" -- Skolem variables are shown as <name>
     treeShow (TConstructor (TypeConstructor name kind)) =
         if kind == KindStar
             then name
@@ -93,7 +94,7 @@ instance TreeShow TypeMap where
     treeShow :: TypeMap -> String
     treeShow tm =
         "TypeMap:\n"
-            ++ unlines (map (\(k, v) -> "  " ++ show k ++ " : " ++ treeShow v) (Map.toList tm))
+            ++ unlines (map (\(k, v) -> "  " ++ treeShow k ++ " :: " ++ treeShow v) (Map.toList tm))
 
 instance TreeShow (Map.Map Expr Type) where
     treeShow :: Map.Map Expr Type -> String

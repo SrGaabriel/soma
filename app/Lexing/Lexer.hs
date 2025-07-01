@@ -18,7 +18,6 @@ data TokenKind
     | TokenCase
     | TokenDo
     | TokenDef
-    | TokenDot
     | TokenLeftParen
     | TokenRightParen
     | TokenLowerIdentifier
@@ -63,7 +62,7 @@ tokenize :: String -> Int -> Int -> ([Token], [LexingError])
 tokenize [] _ _ = ([], [])
 tokenize (c : cs) i indent
     | isSpace c = tokenize cs (i + 1) indent
-    | c `elem` "()<>{}[],.λ\\∀_" =
+    | c `elem` "()<>{}[],λ\\∀_" =
         let kind = case c of
                 '(' -> TokenLeftParen
                 ')' -> TokenRightParen
@@ -72,7 +71,6 @@ tokenize (c : cs) i indent
                 '[' -> TokenLeftBracket
                 ']' -> TokenRightBracket
                 ',' -> TokenComma
-                '.' -> TokenDot
                 'λ' -> TokenLambda
                 '\\' -> TokenLambda
                 '∀' -> TokenForall
@@ -249,7 +247,6 @@ referenceTokenKind TokenData = "a data type"
 referenceTokenKind TokenLeftBracket = "a left bracket"
 referenceTokenKind TokenRightBracket = "a right bracket"
 referenceTokenKind TokenComma = "a comma"
-referenceTokenKind TokenDot = "a dot"
 referenceTokenKind TokenTrue = "'true'"
 referenceTokenKind TokenFalse = "'false'"
 referenceTokenKind TokenClass = "'class'"

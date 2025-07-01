@@ -8,13 +8,11 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
-import qualified Debug.Trace as Debug
 import Inference.Core (TypeEnv)
 import Inference.Errors (InferenceError (..))
-import Logging.PrettyTrees (TreeShow (treeShow))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAllQualified)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyVar (..), Type (..), SkolemVar(..), Rigidity(..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAllQualified)
 import Utils.Lists (hardHead)
 
 newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
@@ -57,6 +55,12 @@ freshTyVar k = do
     n <- gets gsCounter
     modify $ \s -> s{gsCounter = n + 1}
     return $ TypeVar ("t" ++ show n) k
+
+freshSkolemVar :: Kind -> GenM SkolemVar
+freshSkolemVar k = do
+    n <- gets gsCounter
+    modify $ \s -> s{gsCounter = n + 1}
+    return $ SkolemVar("s" ++ show n) k n Rigid
 
 recordType :: Expr -> Type -> GenM ()
 recordType expr ty = modify $ \s -> s{gsTypeMap = Map.insert expr ty (gsTypeMap s)}
@@ -123,14 +127,23 @@ generateConstraints expr = case expr of
                     (csClassConstraints valueConstraints ++ csClassConstraints bodyConstraints)
         recordType expr bodyType
         return (Just bodyType, combinedConstraints)
-    ExprBindingDef _name bindType body _ _ -> do
-        (Just bodyType, bodyConstraints) <- generateConstraints body
-        let Forall _ _ annType = bindType
-        let sigConstraint = TypeConstraint expr annType bodyType
+    ExprBindingDef name bindType body _ _ -> do
+        let Forall tyVars annCs annType = bindType
+        skVars <- mapM (freshSkolemVar . tvKind) tyVars
+        let skSubst = Map.fromList (zip tyVars (map TSkolem skVars))
+        let skType = applyTySubst skSubst annType
+        let skAnnCs = map (applyConstraintSubst skSubst) annCs
+        instVars <- mapM (freshTyVar . tvKind) tyVars
+        let instSubst = Map.fromList (zip tyVars (map TVar instVars))
+        let instType = applyTySubst instSubst annType
+        let instCs = map (applyConstraintSubst instSubst) annCs
+        let sigQual = Forall [] instCs instType
+        (Just bodyType, bodyCs) <- local (Map.insert name sigQual) (generateConstraints body)
+        let sigConstraint = TypeConstraint expr skType bodyType
         let combinedConstraints =
                 ConstraintSet
-                    (sigConstraint : csTypeConstraints bodyConstraints)
-                    (csClassConstraints bodyConstraints)
+                    (sigConstraint : csTypeConstraints bodyCs)
+                    (skAnnCs ++ csClassConstraints bodyCs)
         recordType expr bodyType
         return (Just bodyType, combinedConstraints)
     ExprDerivedPatternMatch _armTypes arms -> do
@@ -157,7 +170,7 @@ generateConstraints expr = case expr of
 
         let extendWithPatterns = Map.union patternEnv
         (Just bodyType, bodyConstraints) <- local extendWithPatterns (generateConstraints body)
-        let (providedTypes, missingBodyTypes) = Debug.trace ("The pattern env is: " ++ treeShow patternEnv) $  splitAt (length patterns) armTypes
+        let (providedTypes, missingBodyTypes) = splitAt (length patterns) armTypes
 
         returnTypVar <- freshTyVar KindStar
         let additionalConstraints =
@@ -177,12 +190,11 @@ generateConstraints expr = case expr of
         let exprType = vectorize providedTyp bodyType
 
         return (Just exprType, finalConstraints)
-    u -> do
+    _ -> do
         let children = exprChildren expr
         results <- mapM generateConstraints children
         let combinedConstraints = mconcat (map snd results)
-        Debug.trace ("Unsupported expression: " ++ treeShow u)
-            $ return (Nothing, combinedConstraints)
+        return (Nothing, combinedConstraints)
 
 generatePatternBinding :: Expr -> TypeEnv -> Pattern -> QualifiedType -> GenM (TypeEnv, [InferenceError])
 generatePatternBinding _expr _env (PVar name) armType = do
