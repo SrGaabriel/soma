@@ -14,6 +14,8 @@ import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyVar (..), Type (..), SkolemVar(..), Rigidity(..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAllQualified)
 import Utils.Lists (hardHead)
+import qualified Debug.Trace as Debug
+import Logging.PrettyTrees (TreeShow(treeShow))
 
 newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
     deriving (Functor, Applicative, Monad, MonadState GenState, MonadReader TypeEnv, MonadWriter [InferenceError])
@@ -100,7 +102,7 @@ generateConstraints expr = case expr of
         (Just tf, cf) <- generateConstraints f
         (Just ta, ca) <- generateConstraints a
         retVar <- freshTyVar KindStar
-        let retType = TVar retVar
+        let retType = Debug.trace ("Fn is: " ++ treeShow f ++ " typed: " ++ treeShow tf) $ TVar retVar
         let funConstraint = TypeConstraint expr (TArrow ta retType) tf UnifyFunctionApplication
         let combinedConstraints =
                 ConstraintSet
@@ -128,18 +130,18 @@ generateConstraints expr = case expr of
                     (csClassConstraints valueConstraints ++ csClassConstraints bodyConstraints)
         recordType expr bodyType
         return (Just bodyType, combinedConstraints)
-    ExprBindingDef name bindType body _ _ -> do
+    ExprBindingDef _name bindType body _ _ -> do
         let Forall tyVars annCs annType = bindType
         skVars <- mapM (\(TypeVar tyName kind) -> freshSkolemVar tyName kind) tyVars
         let skSubst = Map.fromList (zip tyVars (map TSkolem skVars))
         let skType = applyTySubst skSubst annType
         let skAnnCs = map (applyConstraintSubst skSubst) annCs
-        instVars <- mapM (freshTyVar . tvKind) tyVars
-        let instSubst = Map.fromList (zip tyVars (map TVar instVars))
-        let instType = applyTySubst instSubst annType
-        let instCs = map (applyConstraintSubst instSubst) annCs
-        let sigQual = Forall [] instCs instType
-        (Just bodyType, bodyCs) <- local (Map.insert name sigQual) (generateConstraints body)
+        -- instVars <- mapM (freshTyVar . tvKind) tyVars
+        -- let instSubst = Map.fromList (zip tyVars (map TVar instVars))
+        -- let instType = applyTySubst instSubst annType
+        -- let instCs = map (applyConstraintSubst instSubst) annCs
+        -- let sigQual = Forall [] instCs instType
+        (Just bodyType, bodyCs) <- generateConstraints body -- todo: pass the actual type downwards
         let sigConstraint = TypeConstraint expr skType bodyType UnifyFunctionBody
         let combinedConstraints =
                 ConstraintSet

@@ -1,7 +1,7 @@
 trait Eq a where
     def {==} :: a -> a -> Bool
 
-def {+}(lhs: Int, rhs: Int) -> Int = lhs + rhs
+def {+}(lhs: a, rhs: a) -> a = lhs + rhs
 
 def isZero :: Int -> Bool
     | 0 => true
@@ -28,7 +28,6 @@ def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
 
 def testShape :: Shape = Circle 5
 
-def polSum(x, y) :: a -> a -> a where a: Eq 
-    = x + y
+def polTest(x: String, y: String) -> Bool = x == y
 
 def testTypeVarSolvingLocality(x: String, y: String) -> Bool = x == y

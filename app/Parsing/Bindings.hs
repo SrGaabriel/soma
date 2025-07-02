@@ -10,7 +10,7 @@ import Parsing.Patterns (parsePipePatternArms)
 import Parsing.Types (parseQualifiedType, parseType)
 import Syntax.Tree (Expr (..), exprSpan)
 import Typing.Currying (curryFunction, uncurryQualified)
-import Typing.Types (QualifiedType (..), Type (..))
+import Typing.Types (QualifiedType (..), Type (..), extractTyVars)
 
 parseBinding :: Bool -> Parser Expr
 parseBinding isTopLevel = do
@@ -33,7 +33,8 @@ parseBinding isTopLevel = do
                         _ <- consume TokenRightArrow
                         returnType <- parseType
                         let bindingTyp = curryFunction types returnType
-                        let bindingTypeS = Forall [] [] bindingTyp
+                        let tyVars = extractTyVars bindingTyp
+                        let bindingTypeS = Forall tyVars [] bindingTyp
                         eqTok <- consumeRelevant TokenEquals
                         body <- parseExpression
                         let argNames = Prelude.map Prelude.fst mappings
