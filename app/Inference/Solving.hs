@@ -4,8 +4,8 @@ module Inference.Solving where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Inference.Core (ClassEnv, TypeEnv)
-import Inference.Errors (InferenceError (..))
+import Inference.Core (ClassEnv, TypeEnv, UnificationPurpose)
+import Inference.Errors (InferenceError (..), generateErrorForPurpose)
 import Inference.Gen (TypeConstraint (..))
 import Syntax.Tree (Expr (..))
 import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..))
@@ -62,19 +62,19 @@ instance Substitutable TypeEnv where
 composeSubst :: Subst -> Subst -> Subst
 s1 `composeSubst` s2 = Map.map (apply s1) s2 `Map.union` s1
 
-unifyPure :: Expr -> Type -> Type -> Either [InferenceError] Subst
-unifyPure _ t1 t2 | t1 == t2 = Right Map.empty
-unifyPure expr (TVar tv) t = bind expr tv t
-unifyPure expr t (TVar tv) = bind expr tv t
-unifyPure expr (TArrow l1 r1) (TArrow l2 r2) = do
-    s1 <- unifyPure expr l1 l2
-    s2 <- unifyPure expr (apply s1 r1) (apply s1 r2)
+unifyPure :: Expr -> UnificationPurpose -> Type -> Type -> Either [InferenceError] Subst
+unifyPure _ _ t1 t2 | t1 == t2 = Right Map.empty
+unifyPure expr _ (TVar tv) t = bind expr tv t
+unifyPure expr _ t (TVar tv) = bind expr tv t
+unifyPure expr p (TArrow l1 r1) (TArrow l2 r2) = do
+    s1 <- unifyPure expr p l1 l2
+    s2 <- unifyPure expr p (apply s1 r1) (apply s1 r2)
     return (composeSubst s2 s1)
-unifyPure expr (TApp f1 a1) (TApp f2 a2) = do
-    s1 <- unifyPure expr f1 f2
-    s2 <- unifyPure expr (apply s1 a1) (apply s1 a2)
+unifyPure expr p (TApp f1 a1) (TApp f2 a2) = do
+    s1 <- unifyPure expr p f1 f2
+    s2 <- unifyPure expr p (apply s1 a1) (apply s1 a2)
     return (composeSubst s2 s1)
-unifyPure expr t1 t2 = Left [TypeMismatch expr t1 t2]
+unifyPure expr p t1 t2 = Left [generateErrorForPurpose p expr t1 t2]
 
 bind :: Expr -> TyVar -> Type -> Either [InferenceError] Subst
 bind expr tv t
@@ -86,10 +86,10 @@ solveTypeConstraints :: [TypeConstraint] -> Either [InferenceError] Subst
 solveTypeConstraints = foldMWithErrors solveOne Map.empty
   where
     solveOne :: Subst -> TypeConstraint -> Either [InferenceError] Subst
-    solveOne currentSubst (TypeConstraint expr expected actual) = do
+    solveOne currentSubst (TypeConstraint expr expected actual purpose) = do
         let expected' = apply currentSubst expected
         let actual' = apply currentSubst actual
-        newSubst <- unifyPure expr expected' actual'
+        newSubst <- unifyPure expr purpose expected' actual'
         return (composeSubst newSubst currentSubst)
 
 solveClassConstraints :: ClassEnv -> [Constraint] -> Either [InferenceError] [Constraint]

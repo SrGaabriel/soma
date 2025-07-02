@@ -5,12 +5,13 @@ module Parsing.Atoms where
 
 import Control.Monad (when)
 import Control.Monad.Error.Class (MonadError (throwError))
-import Lexing.Lexer (Token (..), TokenKind (..), tokenSpan)
+import Lexing.Lexer (Token (..), TokenKind (..), tokenSpan, spanningTokens)
 import Lexing.Position (Span (Span))
 import Parsing.Errors (ParsingError (..))
 import Parsing.Parser
-import Syntax.Tree (Expr (..))
+import Syntax.Tree (Expr (..), modifySpan)
 import Control.Applicative ((<|>))
+import qualified Debug.Trace as Debug
 
 parseExpression :: Parser Expr
 parseExpression = parseExprPrec 0
@@ -56,10 +57,10 @@ parseAtom = do
                     pure $ ExprLambda names body (Span (tokenPos lparen) (tokenPos rparen))
                 _ -> do
                     contents <- parseCommaSeparatedUntil TokenRightParen parseExpression
-                    rb <- consume TokenRightParen
-                    let spanning = Span (tokenPos lparen) (tokenPos rb)
+                    rparen <- consume TokenRightParen
+                    let spanning = spanningTokens lparen rparen
                     case contents of
-                        [first] -> pure first
+                        [first] -> Debug.trace ("First: " ++ show first) pure $ modifySpan first spanning
                         _ -> pure $ ExprTuple contents spanning
         TokenLeftBracket -> do
             lbracket <- consume TokenLeftBracket

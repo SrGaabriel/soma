@@ -9,7 +9,7 @@ import Inference.Core (TypeMap)
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..))
 import Typing.Currying (uncurryKind)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), TyVar (TypeVar, tvName), Type (..), SkolemVar (skName))
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), TyVar (TypeVar, tvId), Type (..), SkolemVar (skName))
 
 class TreeShow a where
     treeShow :: a -> String
@@ -24,8 +24,8 @@ instance TreeShow TyVar where
     treeShow (TypeVar name kind) = name ++ " :: " ++ treeShow kind
 
 instance TreeShow Type where
-    treeShow (TVar tv) = "<" ++ tvName tv ++ ">"
-    treeShow (TSkolem sv) = "«" ++ skName sv ++ "»" -- Skolem variables are shown as <name>
+    treeShow (TVar tv) = "<" ++ tvId tv ++ ">"
+    treeShow (TSkolem sv) = "«" ++ skName sv ++ "»"
     treeShow (TConstructor (TypeConstructor name kind)) =
         if kind == KindStar
             then name
@@ -86,7 +86,7 @@ treeShowArgs args =
 
 instance TreeShow QualifiedType where
     treeShow (Forall vars constraints t) =
-        let varsStr = unwords (map tvName vars)
+        let varsStr = unwords (map tvId vars)
             constraintsStr = if null constraints then "" else " | " ++ unwords (map treeShow constraints)
         in "forall " ++ varsStr ++ constraintsStr ++ ". " ++ treeShow t
 

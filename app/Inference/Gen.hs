@@ -8,7 +8,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
-import Inference.Core (TypeEnv)
+import Inference.Core (TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
@@ -47,6 +47,7 @@ data TypeConstraint = TypeConstraint
     { tcExpr :: Expr
     , tcExpected :: Type
     , tcActual :: Type
+    , tcPurpose :: UnificationPurpose
     }
     deriving (Show)
 
@@ -56,11 +57,11 @@ freshTyVar k = do
     modify $ \s -> s{gsCounter = n + 1}
     return $ TypeVar ("t" ++ show n) k
 
-freshSkolemVar :: Kind -> GenM SkolemVar
-freshSkolemVar k = do
+freshSkolemVar :: String -> Kind -> GenM SkolemVar
+freshSkolemVar name k = do
     n <- gets gsCounter
     modify $ \s -> s{gsCounter = n + 1}
-    return $ SkolemVar("s" ++ show n) k n Rigid
+    return $ SkolemVar("s" ++ show n) k n name Rigid
 
 recordType :: Expr -> Type -> GenM ()
 recordType expr ty = modify $ \s -> s{gsTypeMap = Map.insert expr ty (gsTypeMap s)}
@@ -100,7 +101,7 @@ generateConstraints expr = case expr of
         (Just ta, ca) <- generateConstraints a
         retVar <- freshTyVar KindStar
         let retType = TVar retVar
-        let funConstraint = TypeConstraint expr (TArrow ta retType) tf
+        let funConstraint = TypeConstraint expr (TArrow ta retType) tf UnifyFunctionApplication
         let combinedConstraints =
                 ConstraintSet
                     (funConstraint : csTypeConstraints cf ++ csTypeConstraints ca)
@@ -129,7 +130,7 @@ generateConstraints expr = case expr of
         return (Just bodyType, combinedConstraints)
     ExprBindingDef name bindType body _ _ -> do
         let Forall tyVars annCs annType = bindType
-        skVars <- mapM (freshSkolemVar . tvKind) tyVars
+        skVars <- mapM (\(TypeVar tyName kind) -> freshSkolemVar tyName kind) tyVars
         let skSubst = Map.fromList (zip tyVars (map TSkolem skVars))
         let skType = applyTySubst skSubst annType
         let skAnnCs = map (applyConstraintSubst skSubst) annCs
@@ -139,7 +140,7 @@ generateConstraints expr = case expr of
         let instCs = map (applyConstraintSubst instSubst) annCs
         let sigQual = Forall [] instCs instType
         (Just bodyType, bodyCs) <- local (Map.insert name sigQual) (generateConstraints body)
-        let sigConstraint = TypeConstraint expr skType bodyType
+        let sigConstraint = TypeConstraint expr skType bodyType UnifyFunctionBody
         let combinedConstraints =
                 ConstraintSet
                     (sigConstraint : csTypeConstraints bodyCs)
@@ -154,7 +155,7 @@ generateConstraints expr = case expr of
         let Just exprType = hardHead armExprTypes
         let armTypeConstraints = map
                 ( \(Just armType, ExprPatternMatchArm _ _ armBody _) ->
-                    TypeConstraint armBody exprType armType
+                    TypeConstraint armBody exprType armType UnifyPatternMatchArms
                 )
                 (zip armExprTypes arms)
         let combinedTypeConstraints = ConstraintSet
@@ -179,7 +180,7 @@ generateConstraints expr = case expr of
                     else do
                         let Forall _ _ missingBodyType = vectorizeAllQualified missingBodyTypes
                         let expectedType = TArrow missingBodyType (TVar returnTypVar)
-                        [TypeConstraint body expectedType bodyType]
+                        [TypeConstraint body expectedType bodyType UnifyPatternMatchArmBody]
 
         let finalConstraints =
                 ConstraintSet

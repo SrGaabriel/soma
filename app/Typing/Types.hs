@@ -8,7 +8,7 @@ data Kind
     deriving (Show, Eq, Ord)
 
 data TyVar = TypeVar
-    { tvName :: String
+    { tvId :: String
     , tvKind :: Kind
     }
     deriving (Show, Eq, Ord)
@@ -20,9 +20,10 @@ data TyConstructor = TypeConstructor
     deriving (Show, Eq, Ord)
 
 data SkolemVar = SkolemVar
-  { skName :: String
+  { skId :: String
   , skKind :: Kind
   , skUnique :: Int
+  , skName :: String
   , skRigidity :: Rigidity
   } deriving (Eq, Ord, Show)
 

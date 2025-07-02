@@ -1,4 +1,4 @@
-module Syntax.Tree (Expr (..), exprChildren, exprSpan) where
+module Syntax.Tree (Expr (..), exprChildren, exprSpan, modifySpan) where
 
 import Lexing.Position (Span (..))
 import Syntax.Patterns (Pattern (..))
@@ -119,3 +119,41 @@ exprSpan (ExprDerivedPatternMatch _ arms) =
 exprSpan (ExprPatternMatchArm _ _ _ s) = s
 exprSpan (ExprInstanceDef _ _ _ s) = s
 exprSpan (ExprImport _ s) = s
+
+modifySpan :: Expr -> Span -> Expr
+modifySpan e@(ExprRoot _) _ = e
+modifySpan (ExprNum n _) s = ExprNum n s
+modifySpan (ExprStr s _) newSpan = ExprStr s newSpan
+modifySpan (ExprVar v _) newSpan = ExprVar v newSpan
+modifySpan (ExprBool b _) newSpan = ExprBool b newSpan
+modifySpan (ExprBlock exprs _) newSpan = ExprBlock exprs newSpan
+modifySpan (ExprArray exprs _) newSpan = ExprArray exprs newSpan
+modifySpan (ExprTuple exprs _) newSpan = ExprTuple exprs newSpan
+modifySpan (ExprApp f arg) newSpan =
+    let Span _fStart fEnd = exprSpan f
+        Span argStart _argEnd = exprSpan arg
+        Span newStart newEnd = newSpan
+    in ExprApp (modifySpan f (Span newStart fEnd)) (modifySpan arg (Span argStart newEnd))
+modifySpan (ExprLambda args body _) newSpan =
+    ExprLambda args body newSpan
+modifySpan (ExprLet name value body _) newSpan =
+    ExprLet name value body newSpan
+modifySpan (ExprBindingDef name bindType body isImpl _) newSpan =
+    ExprBindingDef name bindType body isImpl newSpan
+modifySpan (ExprDataTypeDef name generics constraints constructors _) newSpan =
+    ExprDataTypeDef name generics constraints constructors newSpan
+modifySpan (ExprDataConstructor name args _) newSpan =
+    ExprDataConstructor name args newSpan
+modifySpan (ExprTypeClassDef name generics bindings _) newSpan =
+    ExprTypeClassDef name generics bindings newSpan
+modifySpan (ExprTypeClassBinding name bindType defaultImpl _) newSpan =
+    ExprTypeClassBinding name bindType defaultImpl newSpan
+modifySpan (ExprPatternMatch expr arms _) newSpan =
+    ExprPatternMatch expr arms newSpan
+modifySpan e@(ExprDerivedPatternMatch _ _) _ = e
+modifySpan (ExprPatternMatchArm patterns types body _) newSpan =
+    ExprPatternMatchArm patterns types body newSpan
+modifySpan (ExprInstanceDef className dataTypeName methods _) newSpan =
+    ExprInstanceDef className dataTypeName methods newSpan
+modifySpan (ExprImport moduleName _) newSpan =
+    ExprImport moduleName newSpan

@@ -4,7 +4,7 @@ import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..))
 import Parsing.Errors (ParsingError (InvalidTokenForType))
 import Parsing.Parser (Parser, consume, consumeRelevant, next, parseSequence, peek, parseExhaustiveSequence)
-import Typing.Types (Kind (KindStar), QualifiedType (Forall), TyVar (TypeVar, tvName), Type (TArrow, TUnresolved, TVar), arrayType, boolType, intType, strType, tupleType, Constraint (Constraint), extractTyVars)
+import Typing.Types (Kind (KindStar), QualifiedType (Forall), TyVar (TypeVar, tvId), Type (TArrow, TUnresolved, TVar), arrayType, boolType, intType, strType, tupleType, Constraint (Constraint), extractTyVars)
 import Data.List (nubBy)
 
 parseQualifiedType :: Parser QualifiedType
@@ -57,8 +57,9 @@ parseType = do
 
 parseTyVar :: Parser TyVar
 parseTyVar = do
-    name <- consume TokenLowerIdentifier
-    pure $ TypeVar (tokenValue name) KindStar
+    nameTok <- consume TokenLowerIdentifier
+    let name = (tokenValue nameTok)
+    pure $ TypeVar name KindStar
 
 parseTypeConstructor :: Parser Type
 parseTypeConstructor = do
@@ -74,10 +75,11 @@ parseConstraint = do
     varName <- consume TokenLowerIdentifier
     _ <- consume TokenColon
     className <- consume TokenUpperIdentifier
-    pure $ Constraint (tokenValue className) [TVar (TypeVar (tokenValue varName) KindStar)]
+    let name = (tokenValue varName)
+    pure $ Constraint (tokenValue className) [TVar (TypeVar name KindStar)]
 
 deduplicateTyVars :: [TyVar] -> [TyVar]
-deduplicateTyVars = nubBy (\a b -> tvName a == tvName b)
+deduplicateTyVars = nubBy (\a b -> tvId a == tvId b)
 
 extractTyVarsFromTypes :: [Type] -> [TyVar]
 extractTyVarsFromTypes = concatMap extractTyVars

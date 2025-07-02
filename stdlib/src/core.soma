@@ -4,3 +4,5 @@ def summing(x: Int, y: Int) -> Int = x + y
 
 def {.}(fn1, fn2):: (b -> c) -> (a -> b) -> (a -> c)
     = (\a -> fn1 (fn2 a))
+
+def id(value) :: x -> x = value
