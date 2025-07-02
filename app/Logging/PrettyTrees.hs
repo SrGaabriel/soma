@@ -9,7 +9,7 @@ import Inference.Core (TypeMap)
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..))
 import Typing.Currying (uncurryKind)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), TyVar (TypeVar, tvId), Type (..), SkolemVar (skName))
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), SkolemVar (skName), TyConstructor (..), TyVar (TypeVar, tvId), Type (..))
 
 class TreeShow a where
     treeShow :: a -> String

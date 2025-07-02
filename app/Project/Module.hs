@@ -5,9 +5,9 @@ import Syntax.Tree (Expr)
 
 type ModuleName = String
 data ModuleInfo = ModuleInfo
-  { moduleName :: ModuleName
-  , modulePath :: FilePath
-  , moduleContent :: String
-  , moduleTokens :: [Token]
-  , moduleAst :: Expr
-  }
+    { moduleName :: ModuleName
+    , modulePath :: FilePath
+    , moduleContent :: String
+    , moduleTokens :: [Token]
+    , moduleAst :: Expr
+    }

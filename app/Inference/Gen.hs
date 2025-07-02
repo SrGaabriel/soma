@@ -8,14 +8,14 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
+import qualified Debug.Trace as Debug
 import Inference.Core (TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
+import Logging.PrettyTrees (TreeShow (treeShow))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyVar (..), Type (..), SkolemVar(..), Rigidity(..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAllQualified)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAllQualified)
 import Utils.Lists (hardHead)
-import qualified Debug.Trace as Debug
-import Logging.PrettyTrees (TreeShow(treeShow))
 
 newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
     deriving (Functor, Applicative, Monad, MonadState GenState, MonadReader TypeEnv, MonadWriter [InferenceError])
@@ -63,7 +63,7 @@ freshSkolemVar :: String -> Kind -> GenM SkolemVar
 freshSkolemVar name k = do
     n <- gets gsCounter
     modify $ \s -> s{gsCounter = n + 1}
-    return $ SkolemVar("s" ++ show n) k n name Rigid
+    return $ SkolemVar ("s" ++ show n) k n name Rigid
 
 recordType :: Expr -> Type -> GenM ()
 recordType expr ty = modify $ \s -> s{gsTypeMap = Map.insert expr ty (gsTypeMap s)}
@@ -153,16 +153,18 @@ generateConstraints expr = case expr of
         mappedArms <- mapM generateConstraints arms
         let (armExprTypes, armConstraintsList) = unzip mappedArms
         let combinedBodyConstraints = mconcat armConstraintsList
- 
+
         let Just exprType = hardHead armExprTypes
-        let armTypeConstraints = map
-                ( \(Just armType, ExprPatternMatchArm _ _ armBody _) ->
-                    TypeConstraint armBody exprType armType UnifyPatternMatchArms
-                )
-                (zip armExprTypes arms)
-        let combinedTypeConstraints = ConstraintSet
-                (armTypeConstraints ++ csTypeConstraints combinedBodyConstraints)
-                (csClassConstraints combinedBodyConstraints)
+        let armTypeConstraints =
+                map
+                    ( \(Just armType, ExprPatternMatchArm _ _ armBody _) ->
+                        TypeConstraint armBody exprType armType UnifyPatternMatchArms
+                    )
+                    (zip armExprTypes arms)
+        let combinedTypeConstraints =
+                ConstraintSet
+                    (armTypeConstraints ++ csTypeConstraints combinedBodyConstraints)
+                    (csClassConstraints combinedBodyConstraints)
 
         recordType expr exprType
         return (Just exprType, combinedTypeConstraints)

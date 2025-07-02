@@ -173,10 +173,10 @@ tokenize (c : cs) i indent
     | otherwise =
         let (restTokens, restErrors) = tokenize cs (i + 1) indent
         in (restTokens, UnexpectedCharacter c i : restErrors)
-    where
-        tokenizeOperator =
-            let (ops, rest) = span isOperatorChar (c : cs)
-            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
+  where
+    tokenizeOperator =
+        let (ops, rest) = span isOperatorChar (c : cs)
+        in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
 
 breakTripleQuote :: String -> (String, String)
 breakTripleQuote s = go s ""

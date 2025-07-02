@@ -2,12 +2,12 @@
 
 module Inference.Errors (InferenceError (..), getExpression, generateErrorForPurpose) where
 
+import Inference.Core (UnificationPurpose (..))
 import Lexing.Position (Span (..))
 import Logging.Errors (PrintableError (..))
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Syntax.Tree (Expr (ExprRoot), exprSpan)
 import Typing.Types (Kind, Type)
-import Inference.Core (UnificationPurpose (..))
 
 data InferenceError
     = FunctionBodyTypeMismatch Expr Type Type

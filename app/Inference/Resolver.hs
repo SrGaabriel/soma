@@ -161,4 +161,3 @@ replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
         let newType = TArrow t1' t2'
         let qualifieds = mconcat [qu1, qu2]
         pure (newType, qualifieds)
-

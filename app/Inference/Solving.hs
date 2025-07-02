@@ -25,13 +25,13 @@ instance Substitutable Type where
     apply s (TApp t1 t2) = TApp (apply s t1) (apply s t2)
     apply s (TArrow t1 t2) = TArrow (apply s t1) (apply s t2)
     apply _ (TUnresolved name) = error $ "Cannot apply substitution to an unresolved type. TUnresolved should not reach inference: " ++ name
-    apply _ (TSkolem sv)     = TSkolem sv
+    apply _ (TSkolem sv) = TSkolem sv
     ftv (TVar tv) = Set.singleton tv
     ftv (TConstructor _) = Set.empty
     ftv (TApp t1 t2) = ftv t1 `Set.union` ftv t2
     ftv (TArrow t1 t2) = ftv t1 `Set.union` ftv t2
     ftv (TUnresolved name) = error $ "Unresolved type found during free type variable computation. TUnresolved should not reach inference: " ++ name
-    ftv (TSkolem _)        = Set.empty
+    ftv (TSkolem _) = Set.empty
 
 instance Substitutable TyVar where
     apply s tv = case Map.lookup tv s of

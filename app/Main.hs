@@ -3,62 +3,63 @@ module Main where
 import Config.Options
 import Control.Monad (unless)
 import qualified Data.Map as Map
-import System.Directory (doesDirectoryExist, doesFileExist)
-import System.FilePath ((</>), takeFileName, dropExtension, takeExtension)
-import System.Exit (exitFailure, exitSuccess)
-import Project.Module
-import Project.Graph
-import Project.Processing
-import Project.Parsing
 import Logging.ErrorPrinter
+import Project.Graph
+import Project.Module
+import Project.Parsing
+import Project.Processing
+import System.Directory (doesDirectoryExist, doesFileExist)
+import System.Exit (exitFailure, exitSuccess)
+import System.FilePath (dropExtension, takeExtension, takeFileName, (</>))
 
 main :: IO ()
 main = do
     optionsE <- extractOptions
-    options  <- case optionsE of
-        Right o  -> return o
+    options <- case optionsE of
+        Right o -> return o
         Left err -> putStrLn (formatError err) >> exitFailure
 
     let inp = optionsInput options
     isFile <- doesFileExist inp
-    if isFile && takeExtension inp == ".soma" then
-        processSingle inp
-    else do
-        isDir <- doesDirectoryExist inp
-        unless isDir (putStrLn "Error: input is neither a .soma file nor a directory" >> exitFailure)
-        let srcDir = inp </> "src"
-        srcExists <- doesDirectoryExist srcDir
-        unless srcExists (putStrLn "Error: directory does not contain a src folder" >> exitFailure)
+    if isFile && takeExtension inp == ".soma"
+        then
+            processSingle inp
+        else do
+            isDir <- doesDirectoryExist inp
+            unless isDir (putStrLn "Error: input is neither a .soma file nor a directory" >> exitFailure)
+            let srcDir = inp </> "src"
+            srcExists <- doesDirectoryExist srcDir
+            unless srcExists (putStrLn "Error: directory does not contain a src folder" >> exitFailure)
 
-        mods <- findModules srcDir
-        putStrLn $ "Discovered modules: " ++ show (map fst mods)
+            mods <- findModules srcDir
+            putStrLn $ "Discovered modules: " ++ show (map fst mods)
 
-        graphE <- buildModuleGraph mods
-        graph  <- case graphE of
-            Left _errs -> putStrLn "❌ Failed to parse at least one module" >> exitFailure
-            Right g   -> return g
+            graphE <- buildModuleGraph mods
+            graph <- case graphE of
+                Left _errs -> putStrLn "❌ Failed to parse at least one module" >> exitFailure
+                Right g -> return g
 
-        let depGraph = buildDependencyGraph graph
-        case topoSortModules depGraph of
-            Left cycles -> do
-                putStrLn "Error: Detected cyclic imports between modules:"
-                mapM_ (putStrLn . ("  " ++) . show) cycles
-                exitFailure
-            Right sorted -> processModules sorted graph
+            let depGraph = buildDependencyGraph graph
+            case topoSortModules depGraph of
+                Left cycles -> do
+                    putStrLn "Error: Detected cyclic imports between modules:"
+                    mapM_ (putStrLn . ("  " ++) . show) cycles
+                    exitFailure
+                Right sorted -> processModules sorted graph
 
-        putStrLn "✅ Successfully compiled all modules."
-        exitSuccess
+            putStrLn "✅ Successfully compiled all modules."
+            exitSuccess
 
 processSingle :: FilePath -> IO ()
 processSingle path = do
     let name = dropExtension (takeFileName path)
     parseE <- parseModule (name, path)
-    mi     <- case parseE of
+    mi <- case parseE of
         Left err -> printError err path "" "PARSING" >> exitFailure
-        Right m  -> return m
-    
+        Right m -> return m
+
     let ast = moduleAst mi
-        graph    = Map.singleton (moduleName mi) mi
+        graph = Map.singleton (moduleName mi) mi
         depGraph = buildDependencyGraph graph
     let imports = extractSymbolImports ast
 

@@ -1,4 +1,5 @@
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+
 module Parsing.Bindings where
 
 import Control.Monad.Error.Class (MonadError (throwError))
@@ -26,7 +27,8 @@ parseBinding isTopLevel = do
 
             case impParams of
                 [] -> throwError $ FunctionArgumentLengthMismatch defToken
-                xs  | all isSimplyTyped xs -> do
+                xs
+                    | all isSimplyTyped xs -> do
                         let params = Prelude.map (\(SimplyTypedParam (tok, typ)) -> (tok, typ)) xs
                         let (toks, types) = unzip params
                         mappings <- ensureSameLengthMap toks types

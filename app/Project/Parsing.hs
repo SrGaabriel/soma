@@ -1,11 +1,12 @@
 module Project.Parsing where
-import Project.Name (Name)
-import Project.Module (ModuleInfo (..))
+
+import Control.Monad (unless)
 import Lexing.Lexer (tokenizeFile)
 import Logging.ErrorPrinter (printError)
 import Parsing.Ast (parse)
-import Control.Monad (unless)
 import Parsing.Errors (ParsingError)
+import Project.Module (ModuleInfo (..))
+import Project.Name (Name)
 
 parseModule :: (Name, FilePath) -> IO (Either ParsingError ModuleInfo)
 parseModule (modName, path) = do

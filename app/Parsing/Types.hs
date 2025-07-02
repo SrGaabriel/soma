@@ -1,11 +1,11 @@
 module Parsing.Types where
 
 import Control.Monad.Error.Class (MonadError (throwError))
+import Data.List (nubBy)
 import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..))
 import Parsing.Errors (ParsingError (InvalidTokenForType))
-import Parsing.Parser (Parser, consume, consumeRelevant, next, parseSequence, peek, parseExhaustiveSequence)
-import Typing.Types (Kind (KindStar), QualifiedType (Forall), TyVar (TypeVar, tvId), Type (TArrow, TUnresolved, TVar), arrayType, boolType, intType, strType, tupleType, Constraint (Constraint), extractTyVars)
-import Data.List (nubBy)
+import Parsing.Parser (Parser, consume, consumeRelevant, next, parseExhaustiveSequence, parseSequence, peek)
+import Typing.Types (Constraint (Constraint), Kind (KindStar), QualifiedType (Forall), TyVar (TypeVar, tvId), Type (TArrow, TUnresolved, TVar), arrayType, boolType, extractTyVars, intType, strType, tupleType)
 
 parseQualifiedType :: Parser QualifiedType
 parseQualifiedType = do

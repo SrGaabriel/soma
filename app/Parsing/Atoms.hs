@@ -3,15 +3,15 @@
 
 module Parsing.Atoms where
 
+import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Control.Monad.Error.Class (MonadError (throwError))
-import Lexing.Lexer (Token (..), TokenKind (..), tokenSpan, spanningTokens)
+import qualified Debug.Trace as Debug
+import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens, tokenSpan)
 import Lexing.Position (Span (Span))
 import Parsing.Errors (ParsingError (..))
 import Parsing.Parser
 import Syntax.Tree (Expr (..), modifySpan)
-import Control.Applicative ((<|>))
-import qualified Debug.Trace as Debug
 
 parseExpression :: Parser Expr
 parseExpression = parseExprPrec 0
