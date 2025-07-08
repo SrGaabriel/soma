@@ -1,5 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE BlockArguments #-}
 
 module Logging.PrettyTrees where
 
@@ -7,9 +8,10 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Inference.Core (TypeMap)
 import Syntax.Patterns (Pattern (..))
-import Syntax.Tree (Expr (..))
+import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (uncurryKind)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), SkolemVar (skName), TyConstructor (..), TyVar (TypeVar, tvId), Type (..))
+import Data.List (intercalate)
 
 class TreeShow a where
     treeShow :: a -> String
@@ -86,9 +88,12 @@ treeShowArgs args =
 
 instance TreeShow QualifiedType where
     treeShow (Forall vars constraints t) =
-        let varsStr = unwords (map tvId vars)
-            constraintsStr = if null constraints then "" else " | " ++ unwords (map treeShow constraints)
-        in "forall " ++ varsStr ++ constraintsStr ++ ". " ++ treeShow t
+        if null vars
+            then treeShow t
+            else
+                let varsStr = unwords (map tvId vars)
+                    constraintsStr = if null constraints then "" else " where (" ++ intercalate " | " (map treeShow constraints) ++ ")"
+                in "∀(" ++ varsStr ++ ")" ++ constraintsStr ++ ". " ++ treeShow t
 
 instance TreeShow TypeMap where
     treeShow :: TypeMap -> String
@@ -101,3 +106,15 @@ instance TreeShow (Map.Map Expr Type) where
     treeShow m =
         "Expr Type Map:\n"
             ++ unlines (map (\(k, v) -> "  " ++ treeShow k ++ " : " ++ treeShow v) (Map.toList m))
+
+treeShowTypeMapL :: Expr -> TypeMap -> String
+treeShowTypeMapL expr typeMap = go expr 0
+    where
+        go e indent =
+                let typeStr = case Map.lookup e typeMap of
+                            Just t -> " : \ESC[33m" ++ treeShow t ++ "\ESC[0m"
+                            Nothing -> ""
+                    indentStr = replicate indent ' '
+                    children = exprChildren e
+                    childLines = concatMap (\c -> go c (indent + 2)) children
+                in indentStr ++ treeShow e ++ typeStr ++ "\n" ++ childLines

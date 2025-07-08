@@ -111,9 +111,14 @@ vectorizeAllQualified types =
     in Forall allVars allConstraints arrowType
 
 extractTyVars :: Type -> [TyVar]
-extractTyVars (TVar tv) = [tv]
-extractTyVars (TSkolem _) = [] -- skolem variables are not considered type variables
-extractTyVars (TApp t1 t2) = extractTyVars t1 ++ extractTyVars t2
-extractTyVars (TArrow t1 t2) = extractTyVars t1 ++ extractTyVars t2
-extractTyVars (TConstructor _) = []
-extractTyVars (TUnresolved _) = []
+extractTyVars t = nubTyVars (extractTyVars' t)
+    where
+        extractTyVars' (TVar tv) = [tv]
+        extractTyVars' (TSkolem _) = []
+        extractTyVars' (TApp t1 t2) = extractTyVars' t1 ++ extractTyVars' t2
+        extractTyVars' (TArrow t1 t2) = extractTyVars' t1 ++ extractTyVars' t2
+        extractTyVars' (TConstructor _) = []
+        extractTyVars' (TUnresolved _) = []
+
+        nubTyVars [] = []
+        nubTyVars (x:xs) = x : nubTyVars (filter (/= x) xs)

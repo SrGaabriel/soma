@@ -1,4 +1,4 @@
-module Utils.Lists (hardTail, hardHead, zipReturningRHSExcess, allEqual, foldMWithErrors) where
+module Utils.Lists (hardTail, hardHead, zipReturningRHSExcess, allEqual, foldMWithErrors, mapIndexed) where
 
 import Data.List (group)
 
@@ -26,3 +26,6 @@ foldMWithErrors f = go []
         case f acc x of
             Right acc' -> go errs acc' xs
             Left newErrs -> go (errs ++ newErrs) acc xs
+
+mapIndexed :: (Int -> a -> b) -> [a] -> [b]
+mapIndexed f = zipWith f [0 ..]

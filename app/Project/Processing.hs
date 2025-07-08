@@ -6,7 +6,7 @@ import qualified Data.Map as Map
 import Inference.Resolver (runResolverWithEnv)
 import Inference.Tree (analyzeTreeT)
 import Logging.ErrorPrinter (printError)
-import Logging.PrettyTrees (TreeShow (treeShow))
+import Logging.PrettyTrees (treeShowTypeMapL)
 import Project.Graph (ModuleGraph)
 import Project.Module (ModuleInfo (..))
 import Project.Name (Name)
@@ -58,5 +58,5 @@ processModules sorted graph = go Map.empty sorted
         types <- case analyzeTreeT fullEnv resolvedAst of
             Left errs -> mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") errs >> exitFailure
             Right t -> return t
-        putStrLn $ "Module " ++ modName ++ " inferred types:\n" ++ treeShow types
+        putStrLn $ "Module " ++ modName ++ " inferred types:\n" ++ treeShowTypeMapL ast types
         go (Map.insert modName newDefs modulesEnv) rest

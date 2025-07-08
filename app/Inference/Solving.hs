@@ -4,7 +4,7 @@ module Inference.Solving where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Inference.Core (ClassEnv, TypeEnv, UnificationPurpose)
+import Inference.Core (ClassEnv, TypeEnv, UnificationPurpose(..))
 import Inference.Errors (InferenceError (..), generateErrorForPurpose)
 import Inference.Gen (TypeConstraint (..))
 import Syntax.Tree (Expr (..))

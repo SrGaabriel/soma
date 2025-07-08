@@ -26,6 +26,8 @@ inferType env classEnv expr =
 
 generalize :: Set.Set TyVar -> [Constraint] -> Type -> QualifiedType
 generalize envVars constraints t =
-    let freeInType = ftv t `Set.difference` envVars
-        quantifiedVars = Set.toList freeInType
-    in Forall quantifiedVars constraints t
+    let freeInType        = ftv t `Set.difference` envVars
+        quantifiedVars    = Set.toList freeInType
+        relevant          = filter (\c -> not (Set.null (ftv c `Set.intersection` freeInType))) constraints
+        uniqueConstraints = Set.toList (Set.fromList relevant)
+    in Forall quantifiedVars uniqueConstraints t

@@ -1,6 +1,9 @@
 trait Eq a where
     def {==} :: a -> a -> Bool
 
+def chooseRight :: a -> a -> a
+    | lhs rhs => rhs
+
 def {+}(lhs: a, rhs: a) -> a = lhs + rhs
 
 def isZero :: Int -> Bool
@@ -31,3 +34,14 @@ def testShape :: Shape = Circle 5
 def polTest(x: String, y: String) -> Bool = x == y
 
 def testTypeVarSolvingLocality(x: String, y: String) -> Bool = x == y
+
+def testSkolem :: a -> b -> Bool
+    | left right => left == right
+
+def testNoConstraints :: a -> a -> Bool
+    | left right => testSkolem left right
+
+def testPoly :: Bool = "a" == "a"
+
+def testChoose :: a -> b -> b
+    | lhs rhs => chooseRight lhs rhs

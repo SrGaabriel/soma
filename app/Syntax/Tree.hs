@@ -79,13 +79,20 @@ exprChildren (ExprApp f arg) = [f, arg]
 exprChildren (ExprLambda _ body _) = [body]
 exprChildren (ExprLet _ value body _) = [value, body]
 exprChildren (ExprPatternMatch expr arms _) = expr : arms
+exprChildren (ExprPatternMatchArm _ _ body _) = [body]
+exprChildren (ExprDataConstructor _ _ _) = []
+exprChildren (ExprImport _ _) = []
+exprChildren (ExprNum _ _) = []
+exprChildren (ExprStr _ _) = []
+exprChildren (ExprVar _ _) = []
+exprChildren (ExprBool _ _) = []
+exprChildren (ExprTypeClassBinding _ _ (Just impl) _) = impl
+exprChildren (ExprTypeClassBinding _ _ Nothing _) = []
 exprChildren (ExprDerivedPatternMatch _ arms) = arms
 exprChildren (ExprBindingDef _ _ body _ _) = [body]
 exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
-exprChildren (ExprTypeClassBinding _ _ (Just impl) _) = impl
 exprChildren (ExprInstanceDef _ _ methods _) = methods
-exprChildren _ = []
 
 exprSpan :: Expr -> Span
 exprSpan (ExprRoot _) = error "Root expressions do not have a span"

@@ -23,6 +23,7 @@ newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError]
 data GenState = GenState
     { gsCounter :: Int
     , gsTypeMap :: Map.Map Expr Type
+    , gsSkolemEnv :: Map.Map String SkolemVar
     }
     deriving (Show)
 
@@ -64,6 +65,16 @@ freshSkolemVar name k = do
     n <- gets gsCounter
     modify $ \s -> s{gsCounter = n + 1}
     return $ SkolemVar ("s" ++ show n) k n name Rigid
+
+getSkolemVar :: String -> Kind -> GenM SkolemVar
+getSkolemVar name k = do
+    skolemEnv <- gets gsSkolemEnv
+    case Map.lookup name skolemEnv of
+        Just skVar -> return skVar
+        Nothing -> do
+            skVar <- freshSkolemVar name k
+            modify $ \s -> s{gsSkolemEnv = Map.insert name skVar (gsSkolemEnv s)}
+            return skVar
 
 recordType :: Expr -> Type -> GenM ()
 recordType expr ty = modify $ \s -> s{gsTypeMap = Map.insert expr ty (gsTypeMap s)}
@@ -132,7 +143,7 @@ generateConstraints expr = case expr of
         return (Just bodyType, combinedConstraints)
     ExprBindingDef _name bindType body _ _ -> do
         let Forall tyVars annCs annType = bindType
-        skVars <- mapM (\(TypeVar tyName kind) -> freshSkolemVar tyName kind) tyVars
+        skVars <- mapM (\(TypeVar tyName kind) -> getSkolemVar tyName kind) tyVars
         let skSubst = Map.fromList (zip tyVars (map TSkolem skVars))
         let skType = applyTySubst skSubst annType
         let skAnnCs = map (applyConstraintSubst skSubst) annCs
@@ -248,8 +259,8 @@ runGenM :: TypeEnv -> GenM a -> (a, GenState, [InferenceError])
 runGenM env (GenM m) =
     let ((result, finalState), errors) = runWriter (runReaderT (runStateT m initialState) env)
     in (result, finalState, errors)
-  where
-    initialState = GenState 0 Map.empty
+    where
+        initialState = GenState 0 Map.empty Map.empty
 
 runGenMErrors :: TypeEnv -> GenM a -> [InferenceError]
 runGenMErrors env genM =

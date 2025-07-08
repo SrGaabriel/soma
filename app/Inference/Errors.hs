@@ -31,7 +31,7 @@ data InferenceError
 instance PrintableError InferenceError where
     errorMessage :: InferenceError -> String
     errorMessage (FunctionBodyTypeMismatch _ expected actual) =
-        "Function is typed '" ++ treeShow expected ++ "' but its body returns '" ++ treeShow actual ++ "'"
+        "Function is typed '" ++ show expected ++ "' but its body returns '" ++ show actual ++ "'"
     errorMessage (FunctionApplicationTypeMismatch _ expected actual) =
         "The function call expected the type '" ++ treeShow expected ++ "' but received '" ++ treeShow actual ++ "'"
     errorMessage (PatternMatchArmTypeMismatch _ expected actual) =
