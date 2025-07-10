@@ -1,9 +1,10 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE BlockArguments #-}
 
 module Logging.PrettyTrees where
 
+import Data.List (intercalate)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Inference.Core (TypeMap)
@@ -11,7 +12,6 @@ import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (uncurryKind)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), SkolemVar (skName), TyConstructor (..), TyVar (TypeVar, tvId), Type (..))
-import Data.List (intercalate)
 
 class TreeShow a where
     treeShow :: a -> String
@@ -58,8 +58,8 @@ instance TreeShow Expr where
     treeShow (ExprImport moduleName _) = "Import: " ++ moduleName
     treeShow (ExprLet name _ _ _) = "Let (" ++ name ++ "):"
     treeShow (ExprPatternMatch{}) = "PatternMatch:"
-    treeShow (ExprDerivedPatternMatch typs _) = "DerivedPatternMatch (" ++ (unwords $ map treeShow typs) ++ "): "
-    treeShow (ExprPatternMatchArm p _ _ _) =
+    treeShow (ExprDerivedPatternMatch _) = "DerivedPatternMatch: "
+    treeShow (ExprPatternMatchArm p _ _) =
         "PatternMatchArm: (" ++ unwords (map treeShow p) ++ "):"
     treeShow (ExprBindingDef name qType _ _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
     treeShow (ExprDataTypeDef name generics _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
@@ -109,12 +109,12 @@ instance TreeShow (Map.Map Expr Type) where
 
 treeShowTypeMapL :: Expr -> TypeMap -> String
 treeShowTypeMapL expr typeMap = go expr 0
-    where
-        go e indent =
-                let typeStr = case Map.lookup e typeMap of
-                            Just t -> " : \ESC[33m" ++ treeShow t ++ "\ESC[0m"
-                            Nothing -> ""
-                    indentStr = replicate indent ' '
-                    children = exprChildren e
-                    childLines = concatMap (\c -> go c (indent + 2)) children
-                in indentStr ++ treeShow e ++ typeStr ++ "\n" ++ childLines
+  where
+    go e indent =
+        let typeStr = case Map.lookup e typeMap of
+                Just t -> " : \ESC[33m" ++ treeShow t ++ "\ESC[0m"
+                Nothing -> ""
+            indentStr = replicate indent ' '
+            children = exprChildren e
+            childLines = concatMap (\c -> go c (indent + 2)) children
+        in indentStr ++ treeShow e ++ typeStr ++ "\n" ++ childLines

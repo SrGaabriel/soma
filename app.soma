@@ -35,7 +35,7 @@ def polTest(x: String, y: String) -> Bool = x == y
 
 def testTypeVarSolvingLocality(x: String, y: String) -> Bool = x == y
 
-def testSkolem :: a -> b -> Bool
+def testSkolem :: a -> a -> Bool
     | left right => left == right
 
 def testNoConstraints :: a -> a -> Bool
@@ -43,5 +43,8 @@ def testNoConstraints :: a -> a -> Bool
 
 def testPoly :: Bool = "a" == "a"
 
-def testChoose :: a -> b -> b
-    | lhs rhs => chooseRight lhs rhs
+def experimentChooseRight :: a -> b -> b
+    | lhs rhs => rhs
+
+def testChoose :: a -> b -> c
+    | lhs rhs => experimentChooseRight lhs rhs

@@ -58,7 +58,7 @@ parseType = do
 parseTyVar :: Parser TyVar
 parseTyVar = do
     nameTok <- consume TokenLowerIdentifier
-    let name = (tokenValue nameTok)
+    let name = tokenValue nameTok
     pure $ TypeVar name KindStar
 
 parseTypeConstructor :: Parser Type
@@ -75,7 +75,7 @@ parseConstraint = do
     varName <- consume TokenLowerIdentifier
     _ <- consume TokenColon
     className <- consume TokenUpperIdentifier
-    let name = (tokenValue varName)
+    let name = tokenValue varName
     pure $ Constraint (tokenValue className) [TVar (TypeVar name KindStar)]
 
 deduplicateTyVars :: [TyVar] -> [TyVar]

@@ -4,7 +4,7 @@ module Inference.Solving where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Inference.Core (ClassEnv, TypeEnv, UnificationPurpose(..))
+import Inference.Core (ClassEnv, TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..), generateErrorForPurpose)
 import Inference.Gen (TypeConstraint (..))
 import Syntax.Tree (Expr (..))
@@ -49,7 +49,7 @@ instance Substitutable QualifiedType where
     apply s (Forall tvs cs t) =
         let s' = foldr Map.delete s tvs
         in Forall tvs (apply s' cs) (apply s' t)
-    ftv (Forall tvs cs t) = (ftv cs `Set.union` ftv t) `Set.difference` (Set.fromList tvs)
+    ftv (Forall tvs cs t) = (ftv cs `Set.union` ftv t) `Set.difference` Set.fromList tvs
 
 instance (Substitutable a) => Substitutable [a] where
     apply s = Prelude.map (apply s)

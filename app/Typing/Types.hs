@@ -61,6 +61,11 @@ boolType = TConstructor (TypeConstructor "Bool" KindStar)
 cleanQualified :: Type -> QualifiedType
 cleanQualified = Forall [] []
 
+cleanQualifiedCollectingTyvars :: Type -> QualifiedType
+cleanQualifiedCollectingTyvars t =
+    let tyVars = extractTyVars t
+    in Forall tyVars [] t
+
 arrayType :: Type -> Type
 arrayType = TApp (TConstructor (TypeConstructor "Array" (KindArrow KindStar KindStar)))
 
@@ -94,6 +99,11 @@ vectorize :: Type -> Type -> Type
 vectorize (TArrow arg ret) newRet = TArrow arg (vectorize ret newRet)
 vectorize t newRet = TArrow t newRet
 
+vectorizeAll :: [Type] -> Type
+vectorizeAll [] = error "Cannot vectorize an empty list of types"
+vectorizeAll [t] = t
+vectorizeAll types = foldr1 TArrow types
+
 vectorizeQualified :: QualifiedType -> QualifiedType -> QualifiedType
 vectorizeQualified (Forall vars constraints t) (Forall vars' constraints' t') =
     let newVars = vars ++ vars'
@@ -112,13 +122,13 @@ vectorizeAllQualified types =
 
 extractTyVars :: Type -> [TyVar]
 extractTyVars t = nubTyVars (extractTyVars' t)
-    where
-        extractTyVars' (TVar tv) = [tv]
-        extractTyVars' (TSkolem _) = []
-        extractTyVars' (TApp t1 t2) = extractTyVars' t1 ++ extractTyVars' t2
-        extractTyVars' (TArrow t1 t2) = extractTyVars' t1 ++ extractTyVars' t2
-        extractTyVars' (TConstructor _) = []
-        extractTyVars' (TUnresolved _) = []
+  where
+    extractTyVars' (TVar tv) = [tv]
+    extractTyVars' (TSkolem _) = []
+    extractTyVars' (TApp t1 t2) = extractTyVars' t1 ++ extractTyVars' t2
+    extractTyVars' (TArrow t1 t2) = extractTyVars' t1 ++ extractTyVars' t2
+    extractTyVars' (TConstructor _) = []
+    extractTyVars' (TUnresolved _) = []
 
-        nubTyVars [] = []
-        nubTyVars (x:xs) = x : nubTyVars (filter (/= x) xs)
+    nubTyVars [] = []
+    nubTyVars (x : xs) = x : nubTyVars (filter (/= x) xs)

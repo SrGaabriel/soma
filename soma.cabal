@@ -41,7 +41,6 @@ library
                     Parsing.Patterns
                     Parsing.Atoms
                     Logging.ErrorPrinter
-                    Logging.Reporting
                     Logging.PrettyTrees
                     Logging.Errors
                     Project.Module

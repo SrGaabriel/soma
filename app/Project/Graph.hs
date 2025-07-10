@@ -19,7 +19,7 @@ findModules = go ""
   where
     go prefix dir = do
         entries <- listDirectory dir
-        fmap concat $ mapM (handleEntry prefix dir) entries
+        concat <$> mapM (handleEntry prefix dir) entries
 
     handleEntry prefix dir entry = do
         let fullPath = dir </> entry

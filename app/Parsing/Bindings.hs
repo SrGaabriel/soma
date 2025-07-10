@@ -10,7 +10,7 @@ import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseFu
 import Parsing.Patterns (parsePipePatternArms)
 import Parsing.Types (parseQualifiedType, parseType)
 import Syntax.Tree (Expr (..), exprSpan)
-import Typing.Currying (curryFunction, uncurryQualified)
+import Typing.Currying (curryFunction)
 import Typing.Types (QualifiedType (..), Type (..), extractTyVars)
 
 parseBinding :: Bool -> Parser Expr
@@ -62,9 +62,8 @@ parseBinding isTopLevel = do
                     body <- parseExpression
                     pure $ ExprBindingDef name bindingTyp body isTopLevel (spanningTokens defToken inc)
                 TokenPipe -> do
-                    let (args, _ret) = uncurryQualified bindingTyp
-                    arms <- parsePipePatternArms args
-                    let defBody = ExprDerivedPatternMatch args arms
+                    arms <- parsePipePatternArms
+                    let defBody = ExprDerivedPatternMatch arms
                     pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken inc)
                 _ -> throwError $ InvalidFunctionBody inc
 

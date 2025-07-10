@@ -83,7 +83,7 @@ printError err fileName code prefix = do
                 setSGR [SetColor Foreground Vivid Red]
                 putStrLn positionIndicator
             setSGR [Reset]
-            putStrLn $ "| debug: " ++ (errorDebugDevDetails err)
+            putStrLn $ "| debug: " ++ errorDebugDevDetails err
         Nothing -> error "Error while finding the line of the error"
   where
     start' = errorStart err

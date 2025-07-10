@@ -8,13 +8,11 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
-import qualified Debug.Trace as Debug
 import Inference.Core (TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
-import Logging.PrettyTrees (TreeShow (treeShow))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAllQualified)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAll)
 import Utils.Lists (hardHead)
 
 newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
@@ -113,7 +111,7 @@ generateConstraints expr = case expr of
         (Just tf, cf) <- generateConstraints f
         (Just ta, ca) <- generateConstraints a
         retVar <- freshTyVar KindStar
-        let retType = Debug.trace ("Fn is: " ++ treeShow f ++ " typed: " ++ treeShow tf) $ TVar retVar
+        let retType = TVar retVar
         let funConstraint = TypeConstraint expr (TArrow ta retType) tf UnifyFunctionApplication
         let combinedConstraints =
                 ConstraintSet
@@ -160,18 +158,21 @@ generateConstraints expr = case expr of
                     (skAnnCs ++ csClassConstraints bodyCs)
         recordType expr bodyType
         return (Just bodyType, combinedConstraints)
-    ExprDerivedPatternMatch _armTypes arms -> do
+    ExprDerivedPatternMatch arms -> do
         mappedArms <- mapM generateConstraints arms
         let (armExprTypes, armConstraintsList) = unzip mappedArms
         let combinedBodyConstraints = mconcat armConstraintsList
 
         let Just exprType = hardHead armExprTypes
         let armTypeConstraints =
-                map
-                    ( \(Just armType, ExprPatternMatchArm _ _ armBody _) ->
-                        TypeConstraint armBody exprType armType UnifyPatternMatchArms
+                zipWith
+                    ( curry
+                        ( \(Just armType, ExprPatternMatchArm _ armBody _) ->
+                            TypeConstraint armBody exprType armType UnifyPatternMatchArms
+                        )
                     )
-                    (zip armExprTypes arms)
+                    armExprTypes
+                    arms
         let combinedTypeConstraints =
                 ConstraintSet
                     (armTypeConstraints ++ csTypeConstraints combinedBodyConstraints)
@@ -179,9 +180,13 @@ generateConstraints expr = case expr of
 
         recordType expr exprType
         return (Just exprType, combinedTypeConstraints)
-    ExprPatternMatchArm patterns armTypes body _ -> do
+    ExprPatternMatchArm patterns body _ -> do
+        armTyVars <- mapM (const $ freshTyVar KindStar) patterns
+        let armTypes = map TVar armTyVars
+        let qualifiedArmTypes = map cleanQualified armTypes
+
         currentEnv <- ask
-        (patternEnv, patternErrors) <- generatePatternBindings expr currentEnv patterns armTypes
+        (patternEnv, patternErrors) <- generatePatternBindings expr currentEnv patterns qualifiedArmTypes
         reportErrors patternErrors
 
         let extendWithPatterns = Map.union patternEnv
@@ -193,7 +198,7 @@ generateConstraints expr = case expr of
                 if null missingBodyTypes
                     then []
                     else do
-                        let Forall _ _ missingBodyType = vectorizeAllQualified missingBodyTypes
+                        let missingBodyType = vectorizeAll missingBodyTypes
                         let expectedType = TArrow missingBodyType (TVar returnTypVar)
                         [TypeConstraint body expectedType bodyType UnifyPatternMatchArmBody]
 
@@ -202,7 +207,7 @@ generateConstraints expr = case expr of
                     (csTypeConstraints bodyConstraints ++ additionalConstraints)
                     (csClassConstraints bodyConstraints)
 
-        let Forall _ _ providedTyp = vectorizeAllQualified providedTypes
+        let providedTyp = vectorizeAll providedTypes
         let exprType = vectorize providedTyp bodyType
 
         return (Just exprType, finalConstraints)
@@ -250,7 +255,7 @@ generatePatternBinding expr _env p _ = error $ "Unsupported pattern: " ++ show p
 generatePatternBindings :: Expr -> TypeEnv -> [Pattern] -> [QualifiedType] -> GenM (TypeEnv, [InferenceError])
 generatePatternBindings expr env patterns armTypes = do
     let zipped = zip patterns armTypes
-    results <- mapM (\(p, t) -> generatePatternBinding expr env p t) zipped
+    results <- mapM (uncurry (generatePatternBinding expr env)) zipped
     let (bindings, errorLists) = unzip results
     let allErrors = concat errorLists
     pure (Map.unions (env : bindings), allErrors)
@@ -259,8 +264,8 @@ runGenM :: TypeEnv -> GenM a -> (a, GenState, [InferenceError])
 runGenM env (GenM m) =
     let ((result, finalState), errors) = runWriter (runReaderT (runStateT m initialState) env)
     in (result, finalState, errors)
-    where
-        initialState = GenState 0 Map.empty Map.empty
+  where
+    initialState = GenState 0 Map.empty Map.empty
 
 runGenMErrors :: TypeEnv -> GenM a -> [InferenceError]
 runGenMErrors env genM =

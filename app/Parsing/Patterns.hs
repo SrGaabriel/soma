@@ -7,7 +7,6 @@ import Parsing.Errors (ParsingError (InvalidPattern))
 import Parsing.Parser (Parser, consume, next, parseFluidSequence, parseIndentedBlock, peek)
 import Syntax.Patterns (Literal (LitInt), Pattern (..))
 import Syntax.Tree (Expr (ExprPatternMatchArm))
-import Typing.Types (QualifiedType)
 
 parseMultiplePatterns :: Parser [Pattern]
 parseMultiplePatterns = parseFluidSequence TokenStrongRightArrow parseMultiPatternAtom
@@ -35,16 +34,16 @@ parseSinglePattern parentheziedConstructors = do
             pure $ PConstructor (tokenValue nameToken) patterns
         _ -> throwError $ InvalidPattern inc
 
-parsePipePatternArms :: [QualifiedType] -> Parser [Expr]
-parsePipePatternArms typs = parseIndentedBlock 0 (parsePipePatternArm typs)
+parsePipePatternArms :: Parser [Expr]
+parsePipePatternArms = parseIndentedBlock 0 parsePipePatternArm
 
-parsePipePatternArm :: [QualifiedType] -> Parser Expr
-parsePipePatternArm typs = do
+parsePipePatternArm :: Parser Expr
+parsePipePatternArm = do
     _ <- consume TokenPipe
-    parseMultiPatternArm typs True
+    parseMultiPatternArm True
 
-parseMultiPatternArm :: [QualifiedType] -> Bool -> Parser Expr
-parseMultiPatternArm typs multiAllowed = do
+parseMultiPatternArm :: Bool -> Parser Expr
+parseMultiPatternArm multiAllowed = do
     currentTok <- peek
     patterns <-
         if multiAllowed
@@ -54,4 +53,4 @@ parseMultiPatternArm typs multiAllowed = do
                 (: []) <$> parseSinglePattern False
     arrowTok <- consume TokenStrongRightArrow
     body <- parseExpression
-    pure $ ExprPatternMatchArm patterns typs body (spanningTokens currentTok arrowTok)
+    pure $ ExprPatternMatchArm patterns body (spanningTokens currentTok arrowTok)
