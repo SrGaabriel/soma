@@ -6,7 +6,7 @@ module Parsing.Atoms where
 import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Control.Monad.Error.Class (MonadError (throwError))
-import qualified Debug.Trace as Debug
+import Data.Maybe (fromMaybe)
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens, tokenSpan)
 import Lexing.Position (Span (Span))
 import Parsing.Errors (ParsingError (..))
@@ -60,7 +60,7 @@ parseAtom = do
                     rparen <- consume TokenRightParen
                     let spanning = spanningTokens lparen rparen
                     case contents of
-                        [first] -> Debug.trace ("First: " ++ show first) pure $ modifySpan first spanning
+                        [first] -> pure $ modifySpan first spanning
                         _ -> pure $ ExprTuple contents spanning
         TokenLeftBracket -> do
             lbracket <- consume TokenLeftBracket
@@ -147,14 +147,16 @@ parseInfixRest lhs prec = do
     case mtok of
         Just tok
             | TokenVarSymbol <- tokenKind tok
-            , let opStr = tokenValue tok
-            , Just (opPrec, assoc) <- getOpPrecedence opStr
-            , shouldContinue prec opPrec assoc -> do
-                _ <- next
-                rhs <- parseExprPrec (nextPrec assoc opPrec)
-                let op = ExprVar opStr (tokenSpan tok)
-                let appL = ExprApp op lhs
-                parseInfixRest (ExprApp appL rhs) prec
+            , let opStr = tokenValue tok -> do
+                let (opPrec, assoc) = fromMaybe (0, LeftAssoc) (getOpPrecedence opStr)
+                if shouldContinue prec opPrec assoc
+                    then do
+                        _ <- next
+                        rhs <- parseExprPrec (nextPrec assoc opPrec)
+                        let op = ExprVar opStr (tokenSpan tok)
+                        let appL = ExprApp op lhs
+                        parseInfixRest (ExprApp appL rhs) prec
+                    else pure lhs
         _ -> pure lhs
   where
     shouldContinue current nextOpPrec assoc =
