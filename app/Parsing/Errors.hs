@@ -60,6 +60,8 @@ instance PrintableError ParsingError where
         Just t -> tokenPos t + length (tokenValue t)
         Nothing -> error $ "Unreachable errorEnd case reached: " ++ show err
 
+    errorDebugDevDetails = show . getErrorToken
+
 getErrorToken :: ParsingError -> Maybe Token
 getErrorToken (UnexpectedToken t) = Just t
 getErrorToken (ExpectedDifferentToken _ t) = Just t

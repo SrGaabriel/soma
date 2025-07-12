@@ -62,7 +62,7 @@ tokenize :: String -> Int -> Int -> ([Token], [LexingError])
 tokenize [] _ _ = ([], [])
 tokenize (c : cs) i indent
     | isSpace c = tokenize cs (i + 1) indent
-    | c `elem` "()<>{}[],λ\\∀_" =
+    | c `elem` "(){}[],λ\\∀_" =
         let kind = case c of
                 '(' -> TokenLeftParen
                 ')' -> TokenRightParen
@@ -79,9 +79,13 @@ tokenize (c : cs) i indent
         in addToken (Token kind [c] i indent) (tokenize cs (i + 1) indent)
     | c == '-' = case cs of
         '>' : rest -> addToken (Token TokenRightArrow "->" i indent) (tokenize rest (i + 2) indent)
-        _ -> tokenizeOperator
+        _ -> 
+            let (ops, rest) = span isOperatorChar (c : cs)
+            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
     | c == '=' = case cs of
-        '=' : _rest -> tokenizeOperator
+        '=' : _rest -> 
+            let (ops, rest) = span isOperatorChar (c : cs)
+            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
         '>' : rest -> addToken (Token TokenStrongRightArrow "=>" i indent) (tokenize rest (i + 2) indent)
         _ -> addToken (Token TokenEquals "=" i indent) (tokenize cs (i + 1) indent)
     | c == ':' = case cs of
@@ -95,19 +99,23 @@ tokenize (c : cs) i indent
             let (comment, rest') = break (== '*') rest
             in case rest' of
                 '*' : '/' : rest'' ->
-                    tokenize rest'' (i + 2 + length comment) indent
+                    tokenize rest'' (i + 4 + length comment) indent
                 _ ->
                     let (restTokens, restErrors) = tokenize rest' (i + 2 + length comment) indent
                     in (restTokens, UnterminatedComment i : restErrors)
-        _ -> tokenizeOperator
+        _ -> 
+            let (ops, rest) = span isOperatorChar (c : cs)
+            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
     | c == '\n' =
         let (spaces, rest) = span isSpace cs
             indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
             newIndent = length spaces
         in addToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
     | c == '|' = case cs of
-        ' ' : rest -> addToken (Token TokenPipe "|" i indent) (tokenize rest (i + 1) indent)
-        _ -> tokenizeOperator
+        ' ' : rest -> addToken (Token TokenPipe "|" i indent) (tokenize rest (i + 2) indent)
+        _ -> 
+            let (ops, rest) = span isOperatorChar (c : cs)
+            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
     | c == '"' =
         if take 2 cs == "\"\""
             then
@@ -137,10 +145,11 @@ tokenize (c : cs) i indent
         in case rest of
             '`' : rest' ->
                 let quotedText = c : text ++ "`"
-                    kind =
-                        if C.isLower c
-                            then TokenLowerIdentifier
-                            else TokenUpperIdentifier
+                    kind = case text of
+                        [] -> TokenLowerIdentifier -- default for empty backticks
+                        (x:_) -> if C.isLower x
+                                then TokenLowerIdentifier
+                                else TokenUpperIdentifier
                 in addToken (Token kind quotedText i indent) (tokenize rest' (i + length quotedText) indent)
             _ ->
                 let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
@@ -169,14 +178,12 @@ tokenize (c : cs) i indent
                         then TokenLowerIdentifier
                         else TokenUpperIdentifier
         in addToken (Token kind text i indent) (tokenize rest (i + length text) indent)
-    | isOperatorChar c = tokenizeOperator
+    | isOperatorChar c = 
+        let (ops, rest) = span isOperatorChar (c : cs)
+        in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
     | otherwise =
         let (restTokens, restErrors) = tokenize cs (i + 1) indent
         in (restTokens, UnexpectedCharacter c i : restErrors)
-  where
-    tokenizeOperator =
-        let (ops, rest) = span isOperatorChar (c : cs)
-        in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
 
 breakTripleQuote :: String -> (String, String)
 breakTripleQuote s = go s ""

@@ -7,6 +7,7 @@ data LexingError
     | UnterminatedString Int
     | UnterminatedIdentifier Int
     | UnterminatedComment Int
+    deriving (Show, Eq)
 
 instance PrintableError LexingError where
     errorMessage (UnexpectedCharacter c _) = "Unexpected character '" ++ [c] ++ "'"

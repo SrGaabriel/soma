@@ -5,6 +5,7 @@ import Data.List (elemIndex, findIndex)
 import Data.Maybe (fromMaybe)
 import Logging.Errors (PrintableError (..))
 import System.Console.ANSI
+import qualified Debug.Trace as Debug
 
 data RowInfo = RowInfo
     { content :: String
@@ -24,8 +25,9 @@ printConclusionMessage message = do
     putStrLn message
     setSGR [Reset]
 
-printError :: (PrintableError a) => a -> FilePath -> String -> String -> IO ()
+printError :: (PrintableError a) => Show a => a -> FilePath -> String -> String -> IO ()
 printError err fileName code prefix = do
+    Debug.traceM ("Printing error: " ++ show err ++ " in file: " ++ prefix)
     let isNewline = start < length code && code !! start == '\n'
         adjustedStart = if isNewline then start + 1 else start
         adjustedEnd =
@@ -84,7 +86,7 @@ printError err fileName code prefix = do
                 putStrLn positionIndicator
             setSGR [Reset]
             putStrLn $ "| debug: " ++ errorDebugDevDetails err
-        Nothing -> error "Error while finding the line of the error"
+        Nothing -> error $ "Error while finding the line of the error: " ++ errorMessage err
   where
     start' = errorStart err
     end' = errorEnd err
