@@ -1,66 +1,16 @@
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase, FlexibleInstances #-}
 
 module Inference.Solving where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Inference.Core (ClassEnv, TypeEnv, UnificationPurpose (..))
+import Inference.Core (ClassEnv, InstanceEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..), generateErrorForPurpose)
-import Inference.Gen (TypeConstraint (..))
+import Inference.Gen (TypeConstraint (..), ClassConstraintWithSource (..))
+import Inference.Substitution (Subst, Substitutable(apply, ftv), composeSubst)
 import Syntax.Tree (Expr (..))
-import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..))
+import Typing.Types (Constraint (..), TyVar (..), Type (..))
 import Utils.Lists (foldMWithErrors)
-
-type Subst = Map.Map TyVar Type
-
-class Substitutable a where
-    apply :: Subst -> a -> a
-    ftv :: a -> Set.Set TyVar
-
-instance Substitutable Type where
-    apply s (TVar tv) = case Map.lookup tv s of
-        Nothing -> TVar tv
-        Just t -> t
-    apply _ (TConstructor tc) = TConstructor tc
-    apply s (TApp t1 t2) = TApp (apply s t1) (apply s t2)
-    apply s (TArrow t1 t2) = TArrow (apply s t1) (apply s t2)
-    apply _ (TUnresolved name) = error $ "Cannot apply substitution to an unresolved type. TUnresolved should not reach inference: " ++ name
-    apply _ (TSkolem sv) = TSkolem sv
-    ftv (TVar tv) = Set.singleton tv
-    ftv (TConstructor _) = Set.empty
-    ftv (TApp t1 t2) = ftv t1 `Set.union` ftv t2
-    ftv (TArrow t1 t2) = ftv t1 `Set.union` ftv t2
-    ftv (TUnresolved name) = error $ "Unresolved type found during free type variable computation. TUnresolved should not reach inference: " ++ name
-    ftv (TSkolem _) = Set.empty
-
-instance Substitutable TyVar where
-    apply s tv = case Map.lookup tv s of
-        Nothing -> tv
-        Just t -> case t of
-            TVar tv' -> tv'
-            _ -> error "Attempted to apply substitution that maps TyVar to non-TVar type during TyVar substitution (should return a TyVar)"
-    ftv = Set.singleton
-
-instance Substitutable Constraint where
-    apply s (Constraint n ts) = Constraint n (map (apply s) ts)
-    ftv (Constraint _ ts) = Set.unions $ map ftv ts
-
-instance Substitutable QualifiedType where
-    apply s (Forall tvs cs t) =
-        let s' = foldr Map.delete s tvs
-        in Forall tvs (apply s' cs) (apply s' t)
-    ftv (Forall tvs cs t) = (ftv cs `Set.union` ftv t) `Set.difference` Set.fromList tvs
-
-instance (Substitutable a) => Substitutable [a] where
-    apply s = Prelude.map (apply s)
-    ftv = Set.unions . Prelude.map ftv
-
-instance Substitutable TypeEnv where
-    apply s = Map.map (apply s)
-    ftv = ftv . Map.elems
-
-composeSubst :: Subst -> Subst -> Subst
-s1 `composeSubst` s2 = Map.map (apply s1) s2 `Map.union` s1
 
 unifyPure :: Expr -> UnificationPurpose -> Type -> Type -> Either [InferenceError] Subst
 unifyPure _ _ t1 t2 | t1 == t2 = Right Map.empty
@@ -93,4 +43,41 @@ solveTypeConstraints = foldMWithErrors solveOne Map.empty
         return (composeSubst newSubst currentSubst)
 
 solveClassConstraints :: ClassEnv -> [Constraint] -> Either [InferenceError] [Constraint]
-solveClassConstraints _classEnv = Right
+solveClassConstraints _classEnv constraints = do
+    Right constraints
+
+checkConstraintEntailment :: InstanceEnv -> [Constraint] -> [ClassConstraintWithSource] -> Subst -> Either [InferenceError] ()
+checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSource typeSubst = do
+    let inferredConstraints = map (\ccs -> (apply typeSubst (ccsConstraint ccs), ccsSourceExpr ccs)) classConstraintsWithSource
+    let unsatisfiedConstraints = filter (not . isConstraintSatisfied) inferredConstraints
+    case unsatisfiedConstraints of
+        [] -> Right ()
+        ((constraint, sourceExpr):_) -> Left [MissingClassConstraint sourceExpr constraint]
+  where
+    isConstraintSatisfied (constraint, _) = 
+        isEntailedByInstanceEnv instanceEnv constraint || isEntailedBy declaredConstraints constraint
+
+isEntailedByInstanceEnv :: InstanceEnv -> Constraint -> Bool
+isEntailedByInstanceEnv instanceEnv (Constraint className [typ]) =
+    case className of
+        "Eq" -> Map.lookup ("Eq", typ) instanceEnv == Just True
+        _ -> False
+isEntailedByInstanceEnv _ _ = False
+
+hasEqualityFromConstraints :: [Constraint] -> Type -> Bool
+hasEqualityFromConstraints constraints targetType =
+    any (\case
+        Constraint cname [ctype] -> 
+            cname == "Eq" && (ctype == targetType || isTypeVarMatch ctype targetType)
+        _ -> False) constraints
+
+isTypeVarMatch :: Type -> Type -> Bool
+isTypeVarMatch (TVar _) _ = True
+isTypeVarMatch (TSkolem _) _ = True
+isTypeVarMatch _ _ = False
+
+isEntailedBy :: [Constraint] -> Constraint -> Bool
+isEntailedBy declaredCs (Constraint name typs) =
+    any (\(Constraint declName declTyps) -> 
+        declName == name && length declTyps == length typs && 
+        and (zipWith (==) declTyps typs)) declaredCs

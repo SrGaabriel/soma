@@ -11,7 +11,7 @@ import Parsing.Errors (ParsingError (UnexpectedToken))
 import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseFuncName, parseIndentedBlock, parseIndexedIndentedBlock, peek)
 import Parsing.Types (parseQualifiedType, parseTyVar, parseType)
 import Syntax.Tree (Expr (..))
-import Typing.Types (Type)
+import Typing.Types (Type (TVar), QualifiedType (Forall), Constraint (Constraint))
 
 parse :: [Token] -> Either ParsingError Expr
 parse tokens = do
@@ -83,8 +83,10 @@ parseTypeClass = do
     tyVars <- many parseTyVar
 
     _where <- consume TokenWhere
-    bindings <- parseIndentedBlock (tokenIndent nameToken) parseTypeClassBinding
     let name = tokenValue nameToken
+    let typeClassConstraint = Constraint name (map TVar tyVars)
+
+    bindings <- parseIndentedBlock (tokenIndent nameToken) (parseTypeClassBinding typeClassConstraint)
     pure
         $ ExprTypeClassDef
             { typeClassName = name
@@ -93,12 +95,13 @@ parseTypeClass = do
             , typeClassSpan = spanningTokens classToken nameToken
             }
 
-parseTypeClassBinding :: Parser Expr
-parseTypeClassBinding = do
+parseTypeClassBinding :: Constraint -> Parser Expr
+parseTypeClassBinding typeClassConstraint = do
     defToken <- consume TokenDef
     bindName <- parseFuncName
     retTok <- consumeRelevant TokenReturns
-    bindTyp <- parseQualifiedType
+    Forall tyVars baseConstraints baseType <- parseQualifiedType
+    let bindTyp = Forall tyVars (typeClassConstraint : baseConstraints) baseType
 
     pure
         $ ExprTypeClassBinding

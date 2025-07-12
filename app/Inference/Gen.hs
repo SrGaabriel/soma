@@ -10,6 +10,7 @@ import Control.Monad.Writer
 import qualified Data.Map as Map
 import Inference.Core (TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
+import Inference.Substitution (Substitutable(apply))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAll)
@@ -31,18 +32,41 @@ reportError err = tell [err]
 reportErrors :: [InferenceError] -> GenM ()
 reportErrors = tell
 
+data ClassConstraintWithSource = ClassConstraintWithSource
+    { ccsConstraint :: Constraint
+    , ccsSourceExpr :: Expr
+    }
+    deriving (Show)
+
 data ConstraintSet = ConstraintSet
     { csTypeConstraints :: [TypeConstraint]
-    , csClassConstraints :: [Constraint]
+    , csClassConstraints :: [ClassConstraintWithSource]
+    , csDeclaredConstraints :: [Constraint]
     }
     deriving (Show)
 
 instance Semigroup ConstraintSet where
-    (ConstraintSet ts1 cs1) <> (ConstraintSet ts2 cs2) =
-        ConstraintSet (ts1 ++ ts2) (cs1 ++ cs2)
+    (ConstraintSet ts1 cs1 dc1) <> (ConstraintSet ts2 cs2 dc2) =
+        ConstraintSet (ts1 ++ ts2) (cs1 ++ cs2) (dc1 ++ dc2)
 
 instance Monoid ConstraintSet where
-    mempty = ConstraintSet [] []
+    mempty = ConstraintSet [] [] []
+
+-- Helper functions for cleaner ConstraintSet construction
+emptyConstraints :: ConstraintSet
+emptyConstraints = mempty
+
+typeConstraints :: [TypeConstraint] -> ConstraintSet
+typeConstraints tcs = ConstraintSet tcs [] []
+
+classConstraints :: [ClassConstraintWithSource] -> ConstraintSet
+classConstraints ccs = ConstraintSet [] ccs []
+
+declaredConstraints :: [Constraint] -> ConstraintSet
+declaredConstraints = ConstraintSet [] []
+
+combineConstraints :: [ConstraintSet] -> ConstraintSet
+combineConstraints = mconcat
 
 data TypeConstraint = TypeConstraint
     { tcExpr :: Expr
@@ -82,41 +106,44 @@ generateConstraints expr = case expr of
     ExprNum _ _ -> do
         let ty = intType
         recordType expr ty
-        pure (Just ty, ConstraintSet [] [])
+        pure (Just ty, emptyConstraints)
     ExprStr _ _ -> do
         let ty = strType
         recordType expr ty
-        pure (Just ty, ConstraintSet [] [])
+        pure (Just ty, emptyConstraints)
     ExprBool _ _ -> do
         let ty = boolType
         recordType expr ty
-        pure (Just ty, ConstraintSet [] [])
+        pure (Just ty, emptyConstraints)
     ExprVar name _ -> do
         env <- ask
         case Map.lookup name env of
             Just (Forall tvs cs t) -> do
                 freshVars <- mapM (freshTyVar . tvKind) tvs
                 let subst = Map.fromList (zip tvs (map TVar freshVars))
-                let instType = applyTySubst subst t
-                let instConstraints = map (applyConstraintSubst subst) cs
+                let instType = apply subst t
+                let instConstraints = map (apply subst) cs
+                let instConstraintsWithSource = map (`ClassConstraintWithSource` expr) instConstraints
                 recordType expr instType
-                return (Just instType, ConstraintSet [] instConstraints)
+                return (Just instType, classConstraints instConstraintsWithSource)
             Nothing -> do
                 reportError (UnboundVariable expr name)
                 errorVar <- freshTyVar KindStar
                 let errorType = TVar errorVar
                 recordType expr errorType
-                return (Just errorType, ConstraintSet [] [])
+                return (Just errorType, emptyConstraints)
     ExprApp f a -> do
         (Just tf, cf) <- generateConstraints f
         (Just ta, ca) <- generateConstraints a
         retVar <- freshTyVar KindStar
         let retType = TVar retVar
         let funConstraint = TypeConstraint expr (TArrow ta retType) tf UnifyFunctionApplication
+        
         let combinedConstraints =
                 ConstraintSet
                     (funConstraint : csTypeConstraints cf ++ csTypeConstraints ca)
                     (csClassConstraints cf ++ csClassConstraints ca)
+                    (csDeclaredConstraints cf ++ csDeclaredConstraints ca)
         recordType expr retType
         return (Just retType, combinedConstraints)
     ExprLambda paramNames body _ -> do
@@ -137,25 +164,23 @@ generateConstraints expr = case expr of
                 ConstraintSet
                     (csTypeConstraints valueConstraints ++ csTypeConstraints bodyConstraints)
                     (csClassConstraints valueConstraints ++ csClassConstraints bodyConstraints)
+                    (csDeclaredConstraints valueConstraints ++ csDeclaredConstraints bodyConstraints)
         recordType expr bodyType
         return (Just bodyType, combinedConstraints)
     ExprBindingDef _name bindType body _ _ -> do
         let Forall tyVars annCs annType = bindType
         skVars <- mapM (\(TypeVar tyName kind) -> getSkolemVar tyName kind) tyVars
         let skSubst = Map.fromList (zip tyVars (map TSkolem skVars))
-        let skType = applyTySubst skSubst annType
-        let skAnnCs = map (applyConstraintSubst skSubst) annCs
-        -- instVars <- mapM (freshTyVar . tvKind) tyVars
-        -- let instSubst = Map.fromList (zip tyVars (map TVar instVars))
-        -- let instType = applyTySubst instSubst annType
-        -- let instCs = map (applyConstraintSubst instSubst) annCs
-        -- let sigQual = Forall [] instCs instType
-        (Just bodyType, bodyCs) <- generateConstraints body -- todo: pass the actual type downwards
+        let skType = apply skSubst annType
+        let skAnnCs = map (apply skSubst) annCs
+        (Just bodyType, bodyCs) <- generateConstraints body
+        
         let sigConstraint = TypeConstraint expr skType bodyType UnifyFunctionBody
         let combinedConstraints =
                 ConstraintSet
                     (sigConstraint : csTypeConstraints bodyCs)
-                    (skAnnCs ++ csClassConstraints bodyCs)
+                    (csClassConstraints bodyCs)
+                    skAnnCs
         recordType expr bodyType
         return (Just bodyType, combinedConstraints)
     ExprDerivedPatternMatch arms -> do
@@ -177,6 +202,7 @@ generateConstraints expr = case expr of
                 ConstraintSet
                     (armTypeConstraints ++ csTypeConstraints combinedBodyConstraints)
                     (csClassConstraints combinedBodyConstraints)
+                    (csDeclaredConstraints combinedBodyConstraints)
 
         recordType expr exprType
         return (Just exprType, combinedTypeConstraints)
@@ -206,6 +232,7 @@ generateConstraints expr = case expr of
                 ConstraintSet
                     (csTypeConstraints bodyConstraints ++ additionalConstraints)
                     (csClassConstraints bodyConstraints)
+                    (csDeclaredConstraints bodyConstraints)
 
         let providedTyp = vectorizeAll providedTypes
         let exprType = vectorize providedTyp bodyType
@@ -230,8 +257,8 @@ generatePatternBinding expr env (PConstructor name patterns) _armType = do
         Just (Forall tvs cs t) -> do
             freshVars <- mapM (freshTyVar . tvKind) tvs
             let subst = Map.fromList (zip tvs (map TVar freshVars))
-            let instType = applyTySubst subst t
-            let instConstraints = map (applyConstraintSubst subst) cs
+            let instType = apply subst t
+            let instConstraints = map (apply subst) cs
 
             let argTypes = extractArgTypes instType (length patterns)
             let qualifiedArgTypes = map (Forall [] instConstraints) argTypes
@@ -272,25 +299,10 @@ runGenMErrors env genM =
     let (_, _, errors) = runGenM env genM
     in errors
 
-isInferenceSuccess :: [InferenceError] -> Bool
-isInferenceSuccess = null
-
 extractArgTypes :: Type -> Int -> [Type]
 extractArgTypes _ty 0 = []
 extractArgTypes (TArrow arg rest) n = arg : extractArgTypes rest (n - 1)
 extractArgTypes _ _ = error "Constructor type doesn't match pattern arity"
-
-applyTySubst :: Map.Map TyVar Type -> Type -> Type
-applyTySubst s (TVar tv) = Map.findWithDefault (TVar tv) tv s
-applyTySubst s (TApp t1 t2) = TApp (applyTySubst s t1) (applyTySubst s t2)
-applyTySubst s (TArrow t1 t2) = TArrow (applyTySubst s t1) (applyTySubst s t2)
-applyTySubst _ t = t
-
-applyConstraintSubst :: Map.Map TyVar Type -> Constraint -> Constraint
-applyConstraintSubst s (Constraint n ts) = Constraint n (map (applyTySubst s) ts)
-
-noConstraints :: ConstraintSet
-noConstraints = ConstraintSet [] []
 
 instance MonadFail GenM where
     fail msg = error $ "GenM failed: " ++ msg

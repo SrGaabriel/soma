@@ -13,17 +13,17 @@ def isZero :: Int -> Bool
 instance Eq Int where
     def {==}(x: Int, y: Int) -> Bool = true
 
-data Shape
-    = Square
-        length :: Int
-    | Circle
-        radius :: Int
-
 instance Eq Shape where
     def {==} :: Shape -> Shape -> Bool
         | (Circle r1) (Circle r2) => r1 == r2
         | (Square s1) (Square s2) => true
         | _         _             => false
+
+data Shape
+    = Square
+        length :: Int
+    | Circle
+        radius :: Int
 
 def testSum(x: Int, y: Int) -> Int = x + y
 
@@ -31,20 +31,14 @@ def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
 
 def testShape :: Shape = Circle 5
 
-def polTest(x: String, y: String) -> Bool = x == y
-
-def testTypeVarSolvingLocality(x: String, y: String) -> Bool = x == y
-
-def testSkolem :: a -> a -> Bool
-    | left right => left == right
-
-def testNoConstraints :: a -> a -> Bool
-    | left right => testSkolem left right
-
-def testPoly :: Bool = "a" == "a"
-
 def experimentChooseRight :: a -> b -> b
     | lhs rhs => rhs
 
-def testChoose :: a -> b -> c
+def testChoose :: a -> b -> b
     | lhs rhs => experimentChooseRight lhs rhs
+
+def genericEq :: a -> a -> Bool where a: Eq
+    | x y => x == y
+
+def genericEqTest :: b -> b -> Bool where b: Eq
+    | x y => genericEq x y

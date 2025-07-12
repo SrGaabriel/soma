@@ -28,6 +28,7 @@ library
                     Inference.Core
                     Inference.Gen
                     Inference.Solving
+                    Inference.Substitution
                     Inference.Tree
                     Inference.Assembler
                     Lexing.Lexer
