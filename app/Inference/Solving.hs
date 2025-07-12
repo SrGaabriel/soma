@@ -6,8 +6,8 @@ import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Inference.Core (InstanceEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..), generateErrorForPurpose)
-import Inference.Gen (TypeConstraint (..), ClassConstraintWithSource (..))
-import Inference.Substitution (Subst, Substitutable(apply, ftv), composeSubst)
+import Inference.Gen (ClassConstraintWithSource (..), TypeConstraint (..))
+import Inference.Substitution (Subst, Substitutable (apply, ftv), composeSubst)
 import Syntax.Tree (Expr (..))
 import Typing.Types (Constraint (..), TyVar (..), Type (..))
 import Utils.Lists (foldMWithErrors)
@@ -48,9 +48,9 @@ checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSo
     let unsatisfiedConstraints = filter (not . isConstraintSatisfied) inferredConstraints
     case unsatisfiedConstraints of
         [] -> Right ()
-        ((constraint, sourceExpr):_) -> Left [MissingClassConstraint sourceExpr constraint]
+        ((constraint, sourceExpr) : _) -> Left [MissingClassConstraint sourceExpr constraint]
   where
-    isConstraintSatisfied (constraint, _) = 
+    isConstraintSatisfied (constraint, _) =
         isEntailedByInstanceEnv instanceEnv constraint || isEntailedBy declaredConstraints constraint
 
 isEntailedByInstanceEnv :: InstanceEnv -> Constraint -> Bool
@@ -60,6 +60,10 @@ isEntailedByInstanceEnv _ _ = False
 
 isEntailedBy :: [Constraint] -> Constraint -> Bool
 isEntailedBy declaredCs (Constraint name typs) =
-    any (\(Constraint declName declTyps) -> 
-        declName == name && length declTyps == length typs && 
-        and (zipWith (==) declTyps typs)) declaredCs
+    any
+        ( \(Constraint declName declTyps) ->
+            declName == name
+                && length declTyps == length typs
+                && and (zipWith (==) declTyps typs)
+        )
+        declaredCs

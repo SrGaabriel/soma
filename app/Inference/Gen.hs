@@ -10,7 +10,7 @@ import Control.Monad.Writer
 import qualified Data.Map as Map
 import Inference.Core (TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
-import Inference.Substitution (Substitutable(apply))
+import Inference.Substitution (Substitutable (apply))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAll)
@@ -88,16 +88,6 @@ freshSkolemVar name k = do
     modify $ \s -> s{gsCounter = n + 1}
     return $ SkolemVar ("s" ++ show n) k n name Rigid
 
-getSkolemVar :: String -> Kind -> GenM SkolemVar
-getSkolemVar name k = do
-    skolemEnv <- gets gsSkolemEnv
-    case Map.lookup name skolemEnv of
-        Just skVar -> return skVar
-        Nothing -> do
-            skVar <- freshSkolemVar name k
-            modify $ \s -> s{gsSkolemEnv = Map.insert name skVar (gsSkolemEnv s)}
-            return skVar
-
 recordType :: Expr -> Type -> GenM ()
 recordType expr ty = modify $ \s -> s{gsTypeMap = Map.insert expr ty (gsTypeMap s)}
 
@@ -138,7 +128,7 @@ generateConstraints expr = case expr of
         retVar <- freshTyVar KindStar
         let retType = TVar retVar
         let funConstraint = TypeConstraint expr (TArrow ta retType) tf UnifyFunctionApplication
-        
+
         let combinedConstraints =
                 ConstraintSet
                     (funConstraint : csTypeConstraints cf ++ csTypeConstraints ca)
@@ -169,12 +159,12 @@ generateConstraints expr = case expr of
         return (Just bodyType, combinedConstraints)
     ExprBindingDef _name bindType body _ _ -> do
         let Forall tyVars annCs annType = bindType
-        skVars <- mapM (\(TypeVar tyName kind) -> getSkolemVar tyName kind) tyVars
+        skVars <- mapM (\(TypeVar tyName kind) -> freshSkolemVar tyName kind) tyVars
         let skSubst = Map.fromList (zip tyVars (map TSkolem skVars))
         let skType = apply skSubst annType
         let skAnnCs = map (apply skSubst) annCs
         (Just bodyType, bodyCs) <- generateConstraints body
-        
+
         let sigConstraint = TypeConstraint expr skType bodyType UnifyFunctionBody
         let combinedConstraints =
                 ConstraintSet

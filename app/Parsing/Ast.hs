@@ -11,7 +11,7 @@ import Parsing.Errors (ParsingError (UnexpectedToken))
 import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseFuncName, parseIndentedBlock, parseIndexedIndentedBlock, peek)
 import Parsing.Types (parseQualifiedType, parseTyVar, parseType)
 import Syntax.Tree (Expr (..))
-import Typing.Types (Type (TVar), QualifiedType (Forall), Constraint (Constraint))
+import Typing.Types (Constraint (Constraint), QualifiedType (Forall), Type (TVar))
 
 parse :: [Token] -> Either ParsingError Expr
 parse tokens = do

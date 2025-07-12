@@ -17,5 +17,5 @@ analyzeTreeT tEnv root = do
     resolverResult <- runResolverWithEnv tEnv root
     case resolverResult of
         Left err -> pure $ Left [err]
-        Right (_resolvedExpr, finalTypeEnv, instanceEnv) -> 
+        Right (_resolvedExpr, finalTypeEnv, instanceEnv) ->
             pure $ analyzeTree finalTypeEnv instanceEnv root

@@ -8,7 +8,7 @@ import Control.Monad (when)
 import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
 import Control.Monad.State (MonadState (get, put), State, gets, runState)
 import qualified Data.Map as Map
-import Inference.Core (TypeEnv, InstanceEnv)
+import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (curryFunction)

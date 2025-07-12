@@ -79,11 +79,11 @@ tokenize (c : cs) i indent
         in addToken (Token kind [c] i indent) (tokenize cs (i + 1) indent)
     | c == '-' = case cs of
         '>' : rest -> addToken (Token TokenRightArrow "->" i indent) (tokenize rest (i + 2) indent)
-        _ -> 
+        _ ->
             let (ops, rest) = span isOperatorChar (c : cs)
             in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
     | c == '=' = case cs of
-        '=' : _rest -> 
+        '=' : _rest ->
             let (ops, rest) = span isOperatorChar (c : cs)
             in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
         '>' : rest -> addToken (Token TokenStrongRightArrow "=>" i indent) (tokenize rest (i + 2) indent)
@@ -103,7 +103,7 @@ tokenize (c : cs) i indent
                 _ ->
                     let (restTokens, restErrors) = tokenize rest' (i + 2 + length comment) indent
                     in (restTokens, UnterminatedComment i : restErrors)
-        _ -> 
+        _ ->
             let (ops, rest) = span isOperatorChar (c : cs)
             in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
     | c == '\n' =
@@ -113,7 +113,7 @@ tokenize (c : cs) i indent
         in addToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
     | c == '|' = case cs of
         ' ' : rest -> addToken (Token TokenPipe "|" i indent) (tokenize rest (i + 2) indent)
-        _ -> 
+        _ ->
             let (ops, rest) = span isOperatorChar (c : cs)
             in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
     | c == '"' =
@@ -147,7 +147,8 @@ tokenize (c : cs) i indent
                 let quotedText = c : text ++ "`"
                     kind = case text of
                         [] -> TokenLowerIdentifier -- default for empty backticks
-                        (x:_) -> if C.isLower x
+                        (x : _) ->
+                            if C.isLower x
                                 then TokenLowerIdentifier
                                 else TokenUpperIdentifier
                 in addToken (Token kind quotedText i indent) (tokenize rest' (i + length quotedText) indent)
@@ -178,7 +179,7 @@ tokenize (c : cs) i indent
                         then TokenLowerIdentifier
                         else TokenUpperIdentifier
         in addToken (Token kind text i indent) (tokenize rest (i + length text) indent)
-    | isOperatorChar c = 
+    | isOperatorChar c =
         let (ops, rest) = span isOperatorChar (c : cs)
         in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
     | otherwise =

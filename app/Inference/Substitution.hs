@@ -4,8 +4,8 @@ module Inference.Substitution where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..))
 import Inference.Core (TypeEnv)
+import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..))
 
 type Subst = Map.Map TyVar Type
 

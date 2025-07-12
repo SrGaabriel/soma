@@ -40,5 +40,5 @@ def testChoose :: a -> b -> b
 def genericEq :: a -> a -> Bool where a: Eq
     | x y => x == y
 
-def genericEqTest :: b -> b -> Bool where b: Eq
+def genericEqTest :: a -> a -> Bool
     | x y => genericEq x y

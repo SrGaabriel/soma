@@ -2,11 +2,11 @@ module Inference.Assembler where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Inference.Core ( InstanceEnv, TypeEnv, TypeMap)
+import Inference.Core (InstanceEnv, TypeEnv, TypeMap)
 import Inference.Errors (InferenceError (..))
-import Inference.Gen (ConstraintSet (csClassConstraints, csTypeConstraints, csDeclaredConstraints), GenState (gsTypeMap), ClassConstraintWithSource (..), generateConstraints, runGenM)
-import Inference.Substitution (Substitutable (ftv, apply))
+import Inference.Gen (ClassConstraintWithSource (..), ConstraintSet (csClassConstraints, csDeclaredConstraints, csTypeConstraints), GenState (gsTypeMap), generateConstraints, runGenM)
 import Inference.Solving (checkConstraintEntailment, solveTypeConstraints)
+import Inference.Substitution (Substitutable (apply, ftv))
 import Syntax.Tree (Expr)
 import Typing.Types (Constraint (..), QualifiedType (Forall), TyVar, Type (..))
 
@@ -19,7 +19,7 @@ inferType env instanceEnv expr =
             let classConstraintsWithSource = csClassConstraints constraintSet
             let classConstraints = map (apply typeSubst . ccsConstraint) classConstraintsWithSource
             let declaredConstraints = map (apply typeSubst) (csDeclaredConstraints constraintSet)
-            
+
             case checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSource typeSubst of
                 Left constraintErrors -> Left constraintErrors
                 Right () -> do
