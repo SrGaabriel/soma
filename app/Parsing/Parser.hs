@@ -1,30 +1,19 @@
-{-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
 module Parsing.Parser where
 
-import Control.Applicative (Alternative (..), (<|>))
-import Control.Monad (when)
-import Control.Monad.Error.Class (MonadError (catchError, throwError))
+import Control.Applicative (Alternative (..))
+import Control.Monad.Error.Class (MonadError (..))
+import Data.Functor (($>))
 import Lexing.Lexer (Token (..), TokenKind (..))
 import Parsing.Errors (ParsingError (..))
-import Parsing.Ops (BinaryOp (..))
-import Parsing.Tree (Expression (..), ExpressionKind (..))
-import Parsing.Type (GenericConstraint (..), Type (..))
-import Utils.Constraints (applyClassConstraint)
-import Utils.Currying (uncurryFunction)
-import Utils.Lists (hardHead)
 
 newtype Parser a = Parser
     { runParser :: [Token] -> Either ParsingError (a, [Token])
     }
-
-instance Functor Parser where
-    fmap f (Parser p) = Parser $ \tokens -> do
-        (x, rest) <- p tokens
-        Right (f x, rest)
+    deriving (Functor)
 
 instance Applicative Parser where
     pure x = Parser $ \tokens -> Right (x, tokens)
@@ -58,6 +47,13 @@ consume expectedKind = Parser $ \case
         | tokenKind t == expectedKind -> Right (t, ts)
         | otherwise -> Left $ ExpectedDifferentToken expectedKind t
 
+confirm :: TokenKind -> Parser ()
+confirm expectedKind = Parser $ \case
+    [] -> Left EndOfInput
+    (t : ts)
+        | tokenKind t == expectedKind -> Right ((), t : ts)
+        | otherwise -> Left $ ExpectedDifferentToken expectedKind t
+
 next :: Parser Token
 next = Parser $ \case
     [] -> Left EndOfInput
@@ -76,17 +72,18 @@ peek = Parser $ \case
     [] -> Left EndOfInput
     (t : ts) -> Right (t, t : ts)
 
-peekRelevantSkipping :: Int -> Parser Token
-peekRelevantSkipping minIndent = go False
+peekRelevant :: Parser Token
+peekRelevant = Parser $ \case
+    [] -> Left EndOfInput
+    (t : ts) -> case seeIfNewline (t : ts) of
+        Left err -> Left err
+        Right (token, _) -> Right (token, t : ts)
   where
-    go sawNewline = Parser $ \case
+    seeIfNewline = \case
         [] -> Left EndOfInput
         (t : ts)
-            | tokenKind t == TokenNewline -> runParser (go True) ts
-            | not sawNewline -> Right (t, t : ts)
-            | otherwise -> case compare (tokenIndent t) minIndent of
-                LT -> Left $ ExpectedAnExpression t
-                _ -> Right (t, t : ts)
+            | tokenKind t == TokenNewline -> runParser peekRelevant ts
+            | otherwise -> Right (t, t : ts)
 
 peekNext :: Parser Token
 peekNext = Parser $ \case
@@ -107,347 +104,15 @@ expect kind = Parser $ \case
             then Right (t, t : ts)
             else Left $ ExpectedDifferentToken kind t
 
-expr :: Token -> ExpressionKind -> Expression
-expr token kind = Expression token kind
-
 optional :: Parser a -> Parser (Maybe a)
 optional parser = (Just <$> parser) <|> pure Nothing
 
-parse :: [Token] -> Either ParsingError Expression
-parse tokens = do
-    (root, _) <- runParser parser tokens
-    pure root
-  where
-    parser = do
-        declarations <- parseExhaustiveSequence TokenNewline parseDeclaration
-        let bof = Token TokenNewline "" 0 0 -- todo: improve this
-        pure $ expr bof (RootExpr declarations)
-
-parseDeclaration :: Parser Expression
-parseDeclaration = do
-    token <- peek
-    case tokenKind token of
-        TokenIdentifier -> parseBinding
-        TokenStruct -> parseStruct
-        TokenClass -> parseTypeClass
-        TokenNewline -> next >> parseDeclaration
-        _ -> Parser $ \_ -> Left $ UnexpectedToken token
-
-parseBinding :: Parser Expression
-parseBinding = do
-    nameToken <- consume TokenIdentifier
-    let name = tokenValue nameToken
-    genericConstrants <- parseGenericConstraints
-    leftParenthesisArgStart <- optional $ consume TokenLeftParenthesis
-    argNames <-
-        case leftParenthesisArgStart of
-            Just _ -> do
-                parseFluidSequence TokenRightParenthesis (consume TokenIdentifier)
-                    <* consume TokenRightParenthesis
-            Nothing -> do
-                parseFluidSequence TokenReturns (consume TokenIdentifier)
-            <* consume TokenReturns
-
-    freeType <- parseType
-    let constraintizedType = foldr applyClassConstraint freeType genericConstrants
-
-    case constraintizedType of
-        FunctionType arg ret | argNames /= [] -> do
-            let (argTypes, returnType) = uncurryFunction arg ret
-            argMappings <- ensureSameLengthMap argNames argTypes
-            body <- parseFunctionBody
-            pure $ Expression nameToken (FunctionExpr name argMappings returnType body)
-        _ -> do
-            body <- parseFunctionBody
-            pure $ Expression nameToken (ConstantBindingExpr name freeType body)
-
-parseGenericConstraints :: Parser [GenericConstraint]
-parseGenericConstraints = do
-    left <- optional $ consume TokenLeftBracket
-    case left of
-        Just _ -> do
-            constraints <- parseFluidSequence TokenRightBracket parseGenericConstraint <* consume TokenRightBracket
-            pure constraints
-        Nothing -> pure []
-
-parseGenericConstraint :: Parser GenericConstraint
-parseGenericConstraint = do
-    generic <- consume TokenIdentifier
-    _ <- consumeRelevant TokenColon
-    constraint <- consume TokenIdentifier
-    pure $ GenericConstraint (tokenValue generic) (tokenValue constraint)
-
-parseFunctionParameter :: Parser Expression
-parseFunctionParameter = do
-    current <- next
-    case tokenKind current of
-        TokenIdentifier -> do
-            pure $ expr current (VariablePatternExpr $ tokenValue current)
-        _ -> throwError $ UnexpectedToken current
-
-parseFunctionBody :: Parser Expression
-parseFunctionBody = do
-    incoming <- peek
-    case tokenKind incoming of
-        TokenNewline -> do
-            cases <- parseIndentedBlock 0 parsePatternMatchCase
-            pure $ Expression incoming (PatternMatchExpr cases)
-        TokenEquals -> do
-            _ <- next <* (optional $ consume TokenNewline)
-            expression <- parseExpression
-            pure expression
-        _ -> throwError $ UnexpectedToken incoming
-
-parsePatternMatchCase :: Parser Expression
-parsePatternMatchCase = do
-    prefix <- consume TokenPipe
-    pattern <- parsePattern
-
-    _arrow <- consumeRelevant TokenRightArrow
-    body <- parseExpression
-    pure $ Expression prefix (PatternHandlerExpr pattern body)
-
-parsePattern :: Parser Expression
-parsePattern = do
-    incoming <- peek
-    case tokenKind incoming of
-        TokenIdentifier -> do
-            token <- next
-            pure $ expr token (VariablePatternExpr $ tokenValue token)
-        TokenNumber -> do
-            token <- next
-            pure $ expr token (NumberPatternExpr $ tokenValue token)
-        _ -> throwError $ UnexpectedToken incoming
-
-parseExpression :: Parser Expression
-parseExpression = parseNumericExpression
-
-parseNumericExpression :: Parser Expression
-parseNumericExpression = parseBinaryOp parseTerm [TokenPlus, TokenMinus]
-
-parseTerm :: Parser Expression
-parseTerm = parseBinaryOp parseApplication [TokenAsterisk, TokenSlash]
-
-parseApplication :: Parser Expression
-parseApplication = do
-    atoms <-
-        someAccepting
-            parseAtom
-            ( \err -> case err of
-                NotAnExpression _ -> True
-                ExpectedAnExpression _ -> True
-                _ -> False
-            )
-    if atoms == []
-        then do
-            inc <- peek
-            throwError $ ExpectedAnExpression inc
-        else pure $ foldl2 (\f arg -> expr (exprToken f) (FunctionCallExpr f arg)) atoms
-  where
-    foldl2 _ [] = error "foldl2: empty list"
-    foldl2 _ [x] = x
-    foldl2 f (x : xs) = foldl f x xs
-
-parseAtom :: Parser Expression
-parseAtom = do
-    token <- peek
-    case tokenKind token of
-        TokenNumber -> do
-            numToken <- next
-            pure $ expr numToken NumberExpr
-        TokenLeftParenthesis -> do
-            lparen <- consume TokenLeftParenthesis
-            inc <- peek
-            case tokenKind inc of
-                TokenLambda -> do
-                    lambdaTok <- next
-                    nameToks <- parseSequence TokenDot TokenRightArrow (consume TokenIdentifier)
-                    let names = map tokenValue nameToks
-                    _ <- consume TokenRightArrow
-                    body <- parseExpression
-                    _ <- consume TokenRightParenthesis
-                    pure $ expr lambdaTok (LambdaExpr names body)
-                _ -> do
-                    contents <- parseCommaSeparatedUntil TokenRightParenthesis parseExpression
-                    case contents of
-                        (first : []) -> pure first
-                        _ -> pure $ expr lparen (TupleExpr contents)
-        TokenLeftBracket -> do
-            lbracket <- consume TokenLeftBracket
-            contents <- parseCommaSeparatedUntil TokenRightBracket parseExpression
-            pure $ expr lbracket (ArrayExpr contents)
-        TokenIdentifier -> do
-            idToken <- next
-            pure $ expr idToken (ValueReferenceExpr (tokenValue idToken))
-        TokenString -> do
-            stringToken <- next
-            pure $ expr stringToken (StringExpr (tokenValue stringToken))
-        TokenLet -> parseLetExpression
-        TokenDollar -> do
-            _dollar <- next
-            parseExpression
-        TokenDo -> do
-            doToken <- next
-            let indent = tokenIndent doToken
-            block <- parseIndentedBlock indent parseExpression
-            pure $ expr doToken (BlockExpr block)
-        TokenTrue -> do
-            trueToken <- next
-            pure $ expr trueToken (BoolExpr True)
-        TokenFalse -> do
-            falseToken <- next
-            pure $ expr falseToken (BoolExpr False)
-        _ -> throwError $ NotAnExpression token
-
-parseLetExpression :: Parser Expression
-parseLetExpression = do
-    letToken <- consume TokenLet
-    identifier <- consume TokenIdentifier
-    _ <- consume TokenEquals
-    value <- parseExpression
-    _ <- consumeRelevant TokenIn
-
-    mapM_ validateIndentation =<< optional (consume TokenNewline)
-
-    body <- parseExpression
-
-    pure $ expr letToken (LetExpr (tokenValue identifier) value body)
-  where
-    validateIndentation newline =
-        let actualIndent = length (tokenValue newline)
-            expectedIndent = tokenIndent newline
-        in when (actualIndent /= expectedIndent)
-            $ throwError
-            $ ExpectedDifferentIndentation newline expectedIndent actualIndent
-
-parseStruct :: Parser Expression
-parseStruct = do
-    structToken <- consume TokenStruct
-    nameToken <- consume TokenIdentifier
-
-    genericsDeclared <- optional $ consume TokenLeftBracket
-    generics <- case genericsDeclared of
-        Just _ -> do
-            genericTokens <- parseFluidSequence TokenRightBracket (consume TokenIdentifier) <* consume TokenRightBracket
-            pure $ Just $ map (\x -> GenericType (tokenValue x) []) genericTokens
-        Nothing -> pure Nothing
-
-    constructors <- parseIndexedIndentedBlock (tokenIndent nameToken) parseStructConstructor
-    let name = tokenValue nameToken
-    pure $ expr structToken $ StructExpr name constructors generics
-
-parseStructConstructor :: Int -> Parser Expression
-parseStructConstructor index = do
-    firstToken <-
-        if index == 0
-            then consume TokenEquals
-            else consume TokenPipe
-    nameToken <- consume TokenIdentifier
-    fields <- parseIndentedBlock (tokenIndent nameToken) parseStructField
-    pure $ expr firstToken $ StructConstructorExpr (tokenValue nameToken) fields
-
-parseStructField :: Parser Expression
-parseStructField = do
-    nameToken <- consume TokenIdentifier
-    _ <- consumeRelevant TokenReturns
-    typeExpr <- parseType
-    pure $ expr nameToken (StructFieldExpr (tokenValue nameToken) typeExpr)
-
-parseTypeClass :: Parser Expression
-parseTypeClass = do
-    classToken <- consume TokenClass
-    nameToken <- consume TokenIdentifier
-    genericToks <- parseFluidSequence TokenWhere (consume TokenIdentifier)
-    _where <- consume TokenWhere
-    methods <- parseIndentedBlock (tokenIndent nameToken) parseTypeClassMethod
-    let name = tokenValue nameToken
-    let generics = map tokenValue genericToks
-    pure $ expr classToken $ TypeClassExpr name generics methods
-
-parseTypeClassMethod :: Parser Expression
-parseTypeClassMethod = do
-    methodToken <- consume TokenIdentifier
-    _ <- consumeRelevant TokenReturns
-    methodType <- parseType
-    pure $ expr methodToken $ TypeClassMethodExpr (tokenValue methodToken) methodType
-
-parseType :: Parser Type
-parseType = do
-    nextToken <- peek
-    initialType <- case tokenKind nextToken of
-        TokenLeftParenthesis -> do
-            _ <- consume TokenLeftParenthesis
-            types <- parseSequence TokenComma TokenRightParenthesis (parseType)
-            _ <- consume TokenRightParenthesis
-            case types of
-                [singleType] -> pure singleType
-                _ -> pure $ TupleType types
-        TokenLeftBracket -> do
-            _ <- consume TokenLeftBracket
-            innerType <- parseType
-            _ <- consume TokenRightBracket
-            pure $ ArrayType innerType
-        TokenIdentifier -> do
-            typeToken <- consume TokenIdentifier
-            let name = tokenValue typeToken
-            case name of
-                "Int" -> pure IntType
-                "String" -> pure StringType
-                "Bool" -> pure BoolType
-                other ->
-                    if hardHead other `elem` ['A' .. 'Z']
-                        then do
-                            genericTypes <-
-                                optional
-                                    ( consume TokenLeftBracket
-                                        *> parseFluidSequence TokenRightBracket parseType
-                                        <* consume TokenRightBracket
-                                    )
-                            generics <- case genericTypes of
-                                Just tokens
-                                    | length tokens == 0 -> throwError $ InvalidGenericsList typeToken
-                                    | otherwise -> pure $ Just $ tokens
-                                Nothing -> pure Nothing
-                            pure $ UnresolvedStructType other generics
-                        else pure $ GenericType other []
-        _ -> throwError $ InvalidTokenForType nextToken
-    incoming <- peek
-    if tokenKind incoming == TokenRightArrow
-        then do
-            _ <- consumeRelevant TokenRightArrow
-            returnType <- parseType
-            pure $ FunctionType initialType returnType
-        else pure initialType
-
-ignoreLine :: Parser ()
-ignoreLine = Parser $ \tokens -> do
-    let (_ignored, rest) = span (\t -> tokenKind t /= TokenNewline) tokens
-    Right ((), rest)
-
--- findPositionOfNext :: Int -> TokenKind -> Parser Int
--- findPositionOfNext offset kind = Parser $ \tokens -> do
---     let findPositionOfNext' :: Int -> [Token] -> Either ParsingError Int
---         findPositionOfNext' _ [] = case tokens of
---             [] -> Left EndOfInput
---             ts ->
---                 let lastToken = last ts in
---                 Right $ tokenPos lastToken + length (tokenValue lastToken)
---         findPositionOfNext' skipped (t:ts)
---             | tokenKind t == kind && skipped < offset =
---                 findPositionOfNext' (skipped + 1) ts
---             | tokenKind t == kind =
---                 Right (tokenPos t)
---             | otherwise =
---                 findPositionOfNext' skipped ts
---     rest <- findPositionOfNext' 0 tokens
---     pure (rest, tokens)
-
-parseSequence :: (Show a) => TokenKind -> TokenKind -> Parser a -> Parser [a]
+parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = Parser $ \tokens -> do
     parseNext [] tokens
   where
     parseNext acc remaining = do
-        endCheck <- runParser (peek) remaining
+        endCheck <- runParser peek remaining
         if tokenKind (fst endCheck) == end
             then Right (reverse acc, remaining)
             else do
@@ -468,10 +133,10 @@ parseCommaSeparatedUntil :: TokenKind -> Parser a -> Parser [a]
 parseCommaSeparatedUntil end itemParser = parseList
   where
     parseList = (:) <$> itemParser <*> parseRest <|> checkEmpty
-    parseRest = (consume TokenComma *> parseList) <|> (consume end *> pure [])
-    checkEmpty = consume end *> pure []
+    parseRest = (consume TokenComma *> parseList) <|> checkEmpty
+    checkEmpty = confirm end $> []
 
-parseExhaustiveSequence :: (Show a) => TokenKind -> Parser a -> Parser [a]
+parseExhaustiveSequence :: TokenKind -> Parser a -> Parser [a]
 parseExhaustiveSequence separator itemParser = Parser $ \tokens -> do
     parseNext [] tokens
   where
@@ -486,9 +151,9 @@ parseExhaustiveSequence separator itemParser = Parser $ \tokens -> do
                         | tk == separator -> do
                             _ <- runParser next rest
                             parseNext (item : acc) rest
-                        | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
+                        | otherwise -> Right (reverse (item : acc), rest)
 
-parseFluidSequence :: (Show a) => TokenKind -> Parser a -> Parser [a]
+parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
 parseFluidSequence end itemParser = Parser $ \tokens -> do
     let parseNext acc remaining = case runParser (expect end) remaining of
             Right (_, rest) -> Right (reverse acc, rest)
@@ -536,7 +201,7 @@ parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
                     else Right (reverse acc, remaining)
     parseNext [] tokens
 
--- TODO: remove repeated code
+-- TODO: remove duplicate code
 parseIndexedIndentedBlock :: Int -> (Int -> Parser a) -> Parser [a]
 parseIndexedIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
     indentation <- case tokens of
@@ -570,35 +235,6 @@ parseIndexedIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
                     else Right (reverse acc, remaining)
     parseNext [] tokens
 
-parseBinaryOp :: Parser Expression -> [TokenKind] -> Parser Expression
-parseBinaryOp term operatorTokens = do
-    left <- term
-    loop left
-  where
-    loop left = do
-        mt <- optional peek
-        case mt of
-            Just t
-                | tokenKind t `elem` operatorTokens
-                , Just op <- toBinaryOp (tokenKind t) -> do
-                    _ <- next
-                    right <- term
-                    loop $ expr t (BinaryOpExpr left right op)
-            _ -> pure left
-
-toBinaryOp :: TokenKind -> Maybe BinaryOp
-toBinaryOp = \case
-    TokenPlus -> Just BinaryAdd
-    TokenMinus -> Just BinarySubtract
-    TokenAsterisk -> Just BinaryMultiply
-    TokenSlash -> Just BinaryDivide
-    _ -> Nothing
-
-ensureSameLengthMap :: [Token] -> [Type] -> Parser [(String, Type)]
-ensureSameLengthMap names types
-    | length names == length types = pure $ zip (map tokenValue names ++ replicate (length types - length names) "_") types
-    | otherwise = throwError $ FunctionArgumentLengthMismatch (last names)
-
 someAccepting :: Parser a -> (ParsingError -> Bool) -> Parser [a]
 someAccepting parser predicate = Parser $ \tokens -> do
     let parseNext acc remaining =
@@ -622,3 +258,25 @@ optionallySurrounded start end parser = do
             _ <- consume end
             pure result
         Nothing -> parser
+
+sepBy1 :: Parser a -> Parser b -> Parser [a]
+sepBy1 p sep = (:) <$> p <*> many (sep *> p)
+
+option :: a -> Parser a -> Parser a
+option def parser = Parser $ \tokens ->
+    case runParser parser tokens of
+        Right (result, rest) -> Right (result, rest)
+        Left _ -> Right (def, tokens)
+
+parseFuncName :: Parser String
+parseFuncName = do
+    inc <- peek
+    case tokenKind inc of
+        TokenLowerIdentifier ->
+            tokenValue <$> next
+        TokenLeftBraces -> do
+            _ <- next
+            nameToken <- consume TokenVarSymbol
+            _ <- consume TokenRightBraces
+            pure $ tokenValue nameToken
+        _ -> throwError $ InvalidFunctionName inc

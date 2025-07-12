@@ -1,13 +1,10 @@
 module Logging.ErrorPrinter (PrintableError (..), printError, printConclusionMessage) where
 
-import Data.List (findIndex)
+import Control.Monad (when)
+import Data.List (elemIndex, findIndex)
 import Data.Maybe (fromMaybe)
+import Logging.Errors (PrintableError (..))
 import System.Console.ANSI
-
-class PrintableError a where
-    errorMessage :: a -> String
-    errorStart :: a -> Int
-    errorEnd :: a -> Int
 
 data RowInfo = RowInfo
     { content :: String
@@ -33,7 +30,7 @@ printError err fileName code prefix = do
         adjustedStart = if isNewline then start + 1 else start
         adjustedEnd =
             if isNewline
-                then case findIndex (== '\n') $ drop (start + 1) code of
+                then case elemIndex '\n' $ drop (start + 1) code of
                     Just nextNewline -> start + 1 + nextNewline
                     Nothing -> length code
                 else end
@@ -81,13 +78,13 @@ printError err fileName code prefix = do
                     setSGR [Reset]
                     putStrLn (drop (relativeStart + textLength) contentTrim)
 
-            if textLength > 0
-                then do
-                    putStr $ "| pos: "
-                    setSGR [SetColor Foreground Vivid Red]
-                    putStrLn positionIndicator
-                else return ()
-        Nothing -> error "Error while finding the line of the error"
+            when (textLength > 0) $ do
+                putStr "| pos: "
+                setSGR [SetColor Foreground Vivid Red]
+                putStrLn positionIndicator
+            setSGR [Reset]
+            putStrLn $ "| debug: " ++ errorDebugDevDetails err
+        Nothing -> error $ "Error while finding the line of the error: " ++ errorMessage err
   where
     start' = errorStart err
     end' = errorEnd err
@@ -113,7 +110,7 @@ findRowOfIndex rows idx = do
                 then Nothing
                 else do
                     let rowStartIndex = lastIndexOf '\n' codeContent (fixedIndex - 1)
-                        rowEndIndex = findIndex (== '\n') $ drop fixedIndex codeContent
+                        rowEndIndex = elemIndex '\n' $ drop fixedIndex codeContent
                         actualRowEndIndex = maybe (length codeContent) (+ fixedIndex) rowEndIndex
                         rowContent = take (actualRowEndIndex - rowStartIndex - 1) $ drop (rowStartIndex + 1) codeContent
                         relativeIndexInRow = fixedIndex - (rowStartIndex + 1)

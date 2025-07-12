@@ -1,36 +1,39 @@
-module Lexing.Lexer (Token (..), TokenKind (..), tokenize, tokenizeFile, referenceToken, referenceTokenKind) where
+module Lexing.Lexer (Token (..), TokenKind (..), tokenize, tokenizeFile, referenceToken, referenceTokenKind, tokenSpan, spanningTokens) where
 
 import Data.Char (generalCategory)
 import qualified Data.Char as C
 import Lexing.Errors (LexingError (..))
+import Lexing.Position (Span (Span))
 
 data TokenKind
     = TokenNumber
-    | TokenPlus
-    | TokenMinus
-    | TokenAsterisk
-    | TokenSlash
-    | TokenEquals
     | TokenLeftAngleBracket
     | TokenRightAngleBracket
     | TokenLeftArrow
     | TokenRightArrow
+    | TokenStrongRightArrow
     | TokenColon
     | TokenReturns
     | TokenNewline
     | TokenCase
     | TokenDo
-    | TokenDot
-    | TokenLeftParenthesis
-    | TokenRightParenthesis
-    | TokenIdentifier
+    | TokenDef
+    | TokenLeftParen
+    | TokenRightParen
+    | TokenLowerIdentifier
+    | TokenUpperIdentifier
+    | TokenVarSymbol
     | TokenPipe
+    | TokenEquals
     | TokenLet
     | TokenIn
-    | TokenFn
+    | TokenImport
     | TokenString
     | TokenDollar
     | TokenStruct
+    | TokenLeftBraces
+    | TokenRightBraces
+    | TokenData
     | TokenClass
     | TokenWhere
     | TokenInstance
@@ -40,6 +43,8 @@ data TokenKind
     | TokenTrue
     | TokenFalse
     | TokenLambda
+    | TokenForall
+    | TokenUnderscore
     deriving (Show, Eq, Ord)
 
 data Token = Token
@@ -57,28 +62,32 @@ tokenize :: String -> Int -> Int -> ([Token], [LexingError])
 tokenize [] _ _ = ([], [])
 tokenize (c : cs) i indent
     | isSpace c = tokenize cs (i + 1) indent
-    | c `elem` "+*=<>()|$[],.λ\\" =
+    | c `elem` "(){}[],λ\\∀_" =
         let kind = case c of
-                '+' -> TokenPlus
-                '*' -> TokenAsterisk
-                '=' -> TokenEquals
-                '<' -> TokenLeftAngleBracket
-                '>' -> TokenRightAngleBracket
-                '(' -> TokenLeftParenthesis
-                ')' -> TokenRightParenthesis
-                '|' -> TokenPipe
-                '$' -> TokenDollar
+                '(' -> TokenLeftParen
+                ')' -> TokenRightParen
+                '{' -> TokenLeftBraces
+                '}' -> TokenRightBraces
                 '[' -> TokenLeftBracket
                 ']' -> TokenRightBracket
                 ',' -> TokenComma
-                '.' -> TokenDot
                 'λ' -> TokenLambda
                 '\\' -> TokenLambda
+                '∀' -> TokenForall
+                '_' -> TokenUnderscore
                 _ -> error "Impossible case"
         in addToken (Token kind [c] i indent) (tokenize cs (i + 1) indent)
     | c == '-' = case cs of
         '>' : rest -> addToken (Token TokenRightArrow "->" i indent) (tokenize rest (i + 2) indent)
-        _ -> addToken (Token TokenMinus "-" i indent) (tokenize cs (i + 1) indent)
+        _ ->
+            let (ops, rest) = span isOperatorChar (c : cs)
+            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
+    | c == '=' = case cs of
+        '=' : _rest ->
+            let (ops, rest) = span isOperatorChar (c : cs)
+            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
+        '>' : rest -> addToken (Token TokenStrongRightArrow "=>" i indent) (tokenize rest (i + 2) indent)
+        _ -> addToken (Token TokenEquals "=" i indent) (tokenize cs (i + 1) indent)
     | c == ':' = case cs of
         ':' : rest -> addToken (Token TokenReturns "::" i indent) (tokenize rest (i + 2) indent)
         _ -> addToken (Token TokenColon ":" i indent) (tokenize cs (i + 1) indent)
@@ -86,12 +95,27 @@ tokenize (c : cs) i indent
         '/' : rest ->
             let (comment, rest') = span (/= '\n') rest
             in tokenize rest' (i + 2 + length comment) indent
-        _ -> addToken (Token TokenSlash "/" i indent) (tokenize cs (i + 1) indent)
+        '*' : rest ->
+            let (comment, rest') = break (== '*') rest
+            in case rest' of
+                '*' : '/' : rest'' ->
+                    tokenize rest'' (i + 4 + length comment) indent
+                _ ->
+                    let (restTokens, restErrors) = tokenize rest' (i + 2 + length comment) indent
+                    in (restTokens, UnterminatedComment i : restErrors)
+        _ ->
+            let (ops, rest) = span isOperatorChar (c : cs)
+            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
     | c == '\n' =
         let (spaces, rest) = span isSpace cs
             indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
             newIndent = length spaces
         in addToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
+    | c == '|' = case cs of
+        ' ' : rest -> addToken (Token TokenPipe "|" i indent) (tokenize rest (i + 2) indent)
+        _ ->
+            let (ops, rest) = span isOperatorChar (c : cs)
+            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
     | c == '"' =
         if take 2 cs == "\"\""
             then
@@ -121,7 +145,13 @@ tokenize (c : cs) i indent
         in case rest of
             '`' : rest' ->
                 let quotedText = c : text ++ "`"
-                in addToken (Token TokenIdentifier quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+                    kind = case text of
+                        [] -> TokenLowerIdentifier -- default for empty backticks
+                        (x : _) ->
+                            if C.isLower x
+                                then TokenLowerIdentifier
+                                else TokenUpperIdentifier
+                in addToken (Token kind quotedText i indent) (tokenize rest' (i + length quotedText) indent)
             _ ->
                 let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
                 in (restTokens, UnterminatedIdentifier i : restErrors)
@@ -133,17 +163,25 @@ tokenize (c : cs) i indent
             kind = case text of
                 "let" -> TokenLet
                 "in" -> TokenIn
-                "fn" -> TokenFn
                 "case" -> TokenCase
                 "do" -> TokenDo
+                "def" -> TokenDef
+                "import" -> TokenImport
+                "data" -> TokenData
                 "struct" -> TokenStruct
-                "class" -> TokenClass
+                "trait" -> TokenClass -- todo: rename
                 "where" -> TokenWhere
                 "instance" -> TokenInstance
                 "true" -> TokenTrue
                 "false" -> TokenFalse
-                _ -> TokenIdentifier
+                _ ->
+                    if C.isLower c
+                        then TokenLowerIdentifier
+                        else TokenUpperIdentifier
         in addToken (Token kind text i indent) (tokenize rest (i + length text) indent)
+    | isOperatorChar c =
+        let (ops, rest) = span isOperatorChar (c : cs)
+        in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
     | otherwise =
         let (restTokens, restErrors) = tokenize cs (i + 1) indent
         in (restTokens, UnexpectedCharacter c i : restErrors)
@@ -155,8 +193,8 @@ breakTripleQuote s = go s ""
     go rest@(c1 : c2 : c3 : cs) acc
         | c1 == '"' && c2 == '"' && c3 == '"' = (acc, rest)
         | otherwise = go (c2 : c3 : cs) (acc ++ [c1])
-    go (c1 : c2 : []) acc = (acc ++ [c1, c2], [])
-    go (c1 : []) acc = (acc ++ [c1], [])
+    go [c1, c2] acc = (acc ++ [c1, c2], [])
+    go [c1] acc = (acc ++ [c1], [])
 
 addToken :: Token -> ([Token], [LexingError]) -> ([Token], [LexingError])
 addToken token (tokens, errors) = (token : tokens, errors)
@@ -171,7 +209,7 @@ isAlphanumeric :: Char -> Bool
 isAlphanumeric c = isCharacter c || isDigit c
 
 isEmoji :: Char -> Bool
-isEmoji c = generalCategory c `elem` [C.OtherSymbol]
+isEmoji c = generalCategory c == C.OtherSymbol
 
 isSpace :: Char -> Bool
 isSpace c = c == ' ' || c == '\t'
@@ -180,43 +218,58 @@ referenceToken :: Token -> String
 referenceToken token = case tokenKind token of
     TokenNumber -> "number '" ++ tokenValue token ++ "'"
     TokenNewline -> "newline"
-    TokenIdentifier -> "identifier '" ++ tokenValue token ++ "'"
+    TokenLowerIdentifier -> "lower-case identifier '" ++ tokenValue token ++ "'"
+    TokenUpperIdentifier -> "upper-case identifier '" ++ tokenValue token ++ "'"
     TokenString -> "string '" ++ tokenValue token ++ "'"
     _ -> "'" ++ tokenValue token ++ "'"
 
 referenceTokenKind :: TokenKind -> String
-referenceTokenKind (TokenNumber) = "a number"
-referenceTokenKind (TokenNewline) = "a newline"
-referenceTokenKind (TokenIdentifier) = "an identifier"
-referenceTokenKind (TokenPlus) = "a plus sign"
-referenceTokenKind (TokenMinus) = "a minus sign"
-referenceTokenKind (TokenAsterisk) = "an asterisk"
-referenceTokenKind (TokenDollar) = "a dollar sign"
-referenceTokenKind (TokenSlash) = "a slash"
-referenceTokenKind (TokenEquals) = "an equals sign"
-referenceTokenKind (TokenLeftAngleBracket) = "a left angle bracket"
-referenceTokenKind (TokenRightAngleBracket) = "a right angle bracket"
-referenceTokenKind (TokenLeftArrow) = "a left arrow"
-referenceTokenKind (TokenRightArrow) = "a right arrow"
-referenceTokenKind (TokenColon) = "a colon"
-referenceTokenKind (TokenReturns) = "'::'"
-referenceTokenKind (TokenCase) = "'case'"
-referenceTokenKind (TokenDo) = "'do'"
-referenceTokenKind (TokenLeftParenthesis) = "a left parenthesis"
-referenceTokenKind (TokenRightParenthesis) = "a right parenthesis"
-referenceTokenKind (TokenPipe) = "a vertical bar"
-referenceTokenKind (TokenLet) = "'let'"
-referenceTokenKind (TokenFn) = "'fn'"
-referenceTokenKind (TokenIn) = "'in'"
-referenceTokenKind (TokenString) = "a string"
-referenceTokenKind (TokenStruct) = "a struct"
-referenceTokenKind (TokenLeftBracket) = "a left bracket"
-referenceTokenKind (TokenRightBracket) = "a right bracket"
-referenceTokenKind (TokenComma) = "a comma"
-referenceTokenKind (TokenDot) = "a dot"
-referenceTokenKind (TokenTrue) = "'true'"
-referenceTokenKind (TokenFalse) = "'false'"
-referenceTokenKind (TokenClass) = "'class'"
-referenceTokenKind (TokenWhere) = "'where'"
-referenceTokenKind (TokenInstance) = "'instance'"
-referenceTokenKind (TokenLambda) = "'\\'"
+referenceTokenKind TokenNumber = "a number"
+referenceTokenKind TokenNewline = "a newline"
+referenceTokenKind TokenLowerIdentifier = "a lower-case identifier"
+referenceTokenKind TokenUpperIdentifier = "an upper-case identifier"
+referenceTokenKind TokenVarSymbol = "a symbol"
+referenceTokenKind TokenDollar = "a dollar sign"
+referenceTokenKind TokenLeftAngleBracket = "a left angle bracket"
+referenceTokenKind TokenRightAngleBracket = "a right angle bracket"
+referenceTokenKind TokenLeftBraces = "a left brace"
+referenceTokenKind TokenRightBraces = "a right brace"
+referenceTokenKind TokenEquals = "an equals sign"
+referenceTokenKind TokenLeftArrow = "a left arrow"
+referenceTokenKind TokenRightArrow = "a right arrow"
+referenceTokenKind TokenStrongRightArrow = "a double right arrow"
+referenceTokenKind TokenColon = "a colon"
+referenceTokenKind TokenReturns = "'::'"
+referenceTokenKind TokenCase = "'case'"
+referenceTokenKind TokenDo = "'do'"
+referenceTokenKind TokenDef = "'def'"
+referenceTokenKind TokenImport = "'import'"
+referenceTokenKind TokenLeftParen = "a left parenthesis"
+referenceTokenKind TokenRightParen = "a right parenthesis"
+referenceTokenKind TokenPipe = "a vertical bar"
+referenceTokenKind TokenLet = "'let'"
+referenceTokenKind TokenIn = "'in'"
+referenceTokenKind TokenString = "a string"
+referenceTokenKind TokenStruct = "a struct"
+referenceTokenKind TokenData = "a data type"
+referenceTokenKind TokenLeftBracket = "a left bracket"
+referenceTokenKind TokenRightBracket = "a right bracket"
+referenceTokenKind TokenComma = "a comma"
+referenceTokenKind TokenTrue = "'true'"
+referenceTokenKind TokenFalse = "'false'"
+referenceTokenKind TokenClass = "'class'"
+referenceTokenKind TokenWhere = "'where'"
+referenceTokenKind TokenInstance = "'instance'"
+referenceTokenKind TokenLambda = "'\\'"
+referenceTokenKind TokenForall = "'∀'"
+referenceTokenKind TokenUnderscore = "an underscore"
+
+tokenSpan :: Token -> Span
+tokenSpan token = Span (tokenPos token) (tokenPos token + length (tokenValue token))
+
+spanningTokens :: Token -> Token -> Span
+spanningTokens start end =
+    Span (tokenPos start) (tokenPos end + length (tokenValue end))
+
+isOperatorChar :: Char -> Bool
+isOperatorChar c = c `elem` "!#$%&*+.-/<=>?@|"

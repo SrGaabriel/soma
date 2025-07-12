@@ -1,14 +1,13 @@
 module Project.Module where
 
-import Parsing.Type (Type)
+import Lexing.Lexer (Token)
+import Syntax.Tree (Expr)
 
-data SomaModule = SomaModule
-    { moduleName :: String
-    , moduleFunctions :: [ModuleFunction]
-    }
-
-data ModuleFunction = ModuleFunction
-    { moduleFunctionName :: String
-    , moduleFunctionReturnType :: Type
-    , moduleFunctionParameters :: [Type]
+type ModuleName = String
+data ModuleInfo = ModuleInfo
+    { moduleName :: ModuleName
+    , modulePath :: FilePath
+    , moduleContent :: String
+    , moduleTokens :: [Token]
+    , moduleAst :: Expr
     }

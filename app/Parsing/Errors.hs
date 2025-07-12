@@ -1,7 +1,7 @@
 module Parsing.Errors (ParsingError (..), getErrorToken) where
 
 import Lexing.Lexer (Token (..), TokenKind, referenceToken, referenceTokenKind)
-import Logging.ErrorPrinter (PrintableError (..))
+import Logging.Errors (PrintableError (..))
 
 data ParsingError
     = UnexpectedToken Token
@@ -19,6 +19,9 @@ data ParsingError
     | ExpectedAnExpression Token
     | ExpectedAGenericType Token
     | InvalidGenericsList Token
+    | InvalidPattern Token
+    | InvalidFunctionBody Token
+    | InvalidFunctionName Token
     | EndOfInput
     | Debug
     deriving (Eq)
@@ -36,23 +39,28 @@ instance Show ParsingError where
     show (ExpectedAnExpression _) = "Expected an expression but received an abrupt end"
     show (InvalidGenericsList t) = "Invalid generics list at " ++ referenceToken t
     show (ExpectedAGenericType t) = "Expected a generic type but received " ++ referenceToken t
-    show (EndOfInput) = "End of input"
+    show (InvalidPattern t) = "The expression " ++ referenceToken t ++ " is not a valid pattern"
+    show (InvalidFunctionBody t) = "The expression " ++ referenceToken t ++ " is not a valid function body"
+    show (InvalidFunctionName t) = "The expression " ++ referenceToken t ++ " is not a valid function name"
+    show EndOfInput = "End of input"
     show Debug = "Debug"
 
 instance PrintableError ParsingError where
-    errorMessage err = show err
+    errorMessage = show
 
-    errorStart (EndOfInput) = -1 -- todo: remove workaround
-    errorStart (Debug) = -1
+    errorStart EndOfInput = -1 -- todo: remove workaround
+    errorStart Debug = -1
     errorStart err = case getErrorToken err of
         Just t -> tokenPos t
         Nothing -> error $ "Unreachable errorStart case reached: " ++ show err
 
-    errorEnd (EndOfInput) = -1
-    errorEnd (Debug) = -1
+    errorEnd EndOfInput = -1
+    errorEnd Debug = -1
     errorEnd err = case getErrorToken err of
         Just t -> tokenPos t + length (tokenValue t)
         Nothing -> error $ "Unreachable errorEnd case reached: " ++ show err
+
+    errorDebugDevDetails = show . getErrorToken
 
 getErrorToken :: ParsingError -> Maybe Token
 getErrorToken (UnexpectedToken t) = Just t
@@ -64,8 +72,11 @@ getErrorToken (ExpectedDifferentIndentation t _ _) = Just t
 getErrorToken (FunctionArgumentLengthMismatch t) = Just t
 getErrorToken (UnseparatedStatements t) = Just t
 getErrorToken (NotAnExpression t) = Just t
+getErrorToken (InvalidPattern t) = Just t
 getErrorToken (InvalidGenericsList t) = Just t
 getErrorToken (ExpectedAGenericType t) = Just t
 getErrorToken (ExpectedAnExpression t) = Just t
-getErrorToken (EndOfInput) = Nothing
+getErrorToken (InvalidFunctionBody t) = Just t
+getErrorToken (InvalidFunctionName t) = Just t
+getErrorToken EndOfInput = Nothing
 getErrorToken Debug = Nothing

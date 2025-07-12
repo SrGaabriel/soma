@@ -14,34 +14,63 @@ extra-doc-files:    CHANGELOG.md
 -- extra-source-files:
 
 common warnings
-    ghc-options: -Wall
+    ghc-options:       -Wall -fprof-auto -rtsopts
+
+library
+  import:           warnings
+  exposed-modules:  Typing.Types
+                    Syntax.Patterns
+                    Syntax.Tree
+                    Syntax.Ops
+                    Project.Name
+                    Inference.Errors
+                    Inference.Resolver
+                    Inference.Core
+                    Inference.Gen
+                    Inference.Solving
+                    Inference.Substitution
+                    Inference.Tree
+                    Inference.Assembler
+                    Lexing.Lexer
+                    Lexing.Errors
+                    Lexing.Position
+                    Parsing.Errors
+                    Parsing.Parser
+                    Parsing.Ast
+                    Parsing.Bindings
+                    Parsing.Types
+                    Parsing.Patterns
+                    Parsing.Atoms
+                    Logging.ErrorPrinter
+                    Logging.PrettyTrees
+                    Logging.Errors
+                    Project.Module
+                    Project.Graph
+                    Project.Parsing
+                    Project.Processing
+                    Utils.Lists
+                    Config.Options
+                    Typing.Currying
+  hs-source-dirs:   app
+  build-depends:    base >= 4.19.2.0,
+                    ansi-terminal >= 1.0,
+                    containers >= 0.6,
+                    mtl >= 2.2,
+                    directory >= 1.3.8.3,
+                    filepath >= 1.5.2.0,
+                    async >= 2.2.5
+  default-language: Haskell2010
 
 executable soma
-    import:           warnings
-    main-is:          Main.hs
-    other-modules:    Lexing.Lexer
-                      Lexing.Errors
-                      Parsing.Parser
-                      Parsing.Errors
-                      Parsing.Tree
-                      Parsing.Type
-                      Parsing.Ops
-                      Parsing.Pattern
-                      Analysis.Inference
-                      Analysis.Tree
-                      Analysis.Generics
-                      Analysis.Errors
-                      Logging.ErrorPrinter
-                      Logging.Reporting
-                      Project.Module
-                      Utils.Lists
-                      Utils.Currying
-                      Utils.Constraints
-                      Config.Options
-
-    build-depends:    base >= 4.19.2.0,
-                      ansi-terminal >= 1.0,
-                      containers >= 0.6,
-                      mtl >= 2.2,
-    hs-source-dirs:   app
-    default-language: Haskell2010
+  import:           warnings
+  main-is:          Main.hs
+  hs-source-dirs:   app
+  build-depends:    base,
+                    soma,
+                    ansi-terminal,
+                    containers,
+                    mtl,
+                    directory,
+                    filepath,
+                    async
+  default-language: Haskell2010

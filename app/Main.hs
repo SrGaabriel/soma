@@ -1,67 +1,77 @@
 module Main where
 
-import Analysis.Inference (TypeMap)
-import Analysis.Tree (runAnalysis)
-import Config.Options (Options (optionsInput), extractOptions, formatError)
-import Data.Map as Map
-import Lexing.Lexer (tokenizeFile)
-import Logging.ErrorPrinter (printConclusionMessage, printError)
-import Parsing.Parser (parse)
-import Parsing.Tree (Expression (..), exprChildren)
-import System.Exit (exitFailure)
+import Config.Options
+import Control.Monad (unless)
+import qualified Data.Map as Map
+import Logging.ErrorPrinter
+import Project.Graph
+import Project.Module
+import Project.Parsing
+import Project.Processing
+import System.Directory (doesDirectoryExist, doesFileExist)
+import System.Exit (exitFailure, exitSuccess)
+import System.FilePath (dropExtension, takeExtension, takeFileName, (</>))
 
 main :: IO ()
 main = do
-    putStrLn "Starting soma..."
-    optionsResult <- extractOptions
-    options <- case optionsResult of
-        Right opts -> return opts
-        Left err -> do
-            putStrLn $ "Error parsing command line arguments: " ++ formatError err
+    optionsE <- extractOptions
+    options <- case optionsE of
+        Right o -> return o
+        Left err -> putStrLn (formatError err) >> exitFailure
+
+    let inp = optionsInput options
+    isFile <- doesFileExist inp
+    if isFile && takeExtension inp == ".soma"
+        then
+            processSingle inp
+        else do
+            isDir <- doesDirectoryExist inp
+            unless isDir (putStrLn "Error: input is neither a .soma file nor a directory" >> exitFailure)
+            let srcDir = inp </> "src"
+            srcExists <- doesDirectoryExist srcDir
+            unless srcExists (putStrLn "Error: directory does not contain a src folder" >> exitFailure)
+
+            mods <- findModules srcDir
+            putStrLn $ "Discovered modules: " ++ show (map fst mods)
+
+            graphE <- buildModuleGraph mods
+            graph <- case graphE of
+                Left _errs -> putStrLn "❌ Failed to parse at least one module" >> exitFailure
+                Right g -> return g
+
+            let depGraph = buildDependencyGraph graph
+            case topoSortModules depGraph of
+                Left cycles -> do
+                    putStrLn "Error: Detected cyclic imports between modules:"
+                    mapM_ (putStrLn . ("  " ++) . show) cycles
+                    exitFailure
+                Right sorted -> processModules sorted graph
+
+            putStrLn "✅ Successfully compiled all modules."
+            exitSuccess
+
+processSingle :: FilePath -> IO ()
+processSingle path = do
+    let name = dropExtension (takeFileName path)
+    parseE <- parseModule (name, path)
+    mi <- case parseE of
+        Left _ -> exitFailure
+        Right m -> return m
+
+    let ast = moduleAst mi
+        graph = Map.singleton (moduleName mi) mi
+        depGraph = buildDependencyGraph graph
+    let imports = extractSymbolImports ast
+
+    unless (null imports) $ do
+        putStrLn "Error: Standalone modules can't import other modules." >> exitFailure
+
+    case topoSortModules depGraph of
+        Left cycles -> do
+            putStrLn "Error: Detected cyclic imports in module:"
+            mapM_ (putStrLn . ("  " ++) . show) cycles
             exitFailure
+        Right sorted -> processModules sorted graph
 
-    content <- readFile (optionsInput options)
-    let (tokens, errors) = tokenizeFile content
-    if not (Prelude.null errors)
-        then do
-            mapM_
-                ( \err -> do
-                    printError err "app.soma" content "LEXING"
-                )
-                errors
-            printConclusionMessage ("Could not compile because of the " ++ show (length errors) ++ " lexing errors above.")
-            exitFailure
-        else pure ()
-
-    tree <-
-        either
-            ( \err -> do
-                printError err "app.soma" content "PARSING"
-                exitFailure
-            )
-            return
-            (parse tokens)
-
-    putStrLn "Tree:"
-    prettyPrintAst tree
-
-    inferenceResult <- runAnalysis tree
-    case inferenceResult of
-        Left err -> do
-            printError err "app.soma" content "ANALYSIS"
-            exitFailure
-        Right inference -> do
-            prettyPrintTypeState inference
-
-prettyPrintAst :: Expression -> IO ()
-prettyPrintAst root = prettyPrintAst' root 0
-  where
-    prettyPrintAst' expr indent = do
-        putStrLn $ replicate indent ' ' ++ show expr
-        mapM_ (\child -> prettyPrintAst' child (indent + 2)) (exprChildren $ exprKind expr)
-
-prettyPrintTypeState :: TypeMap -> IO ()
-prettyPrintTypeState typeMap = do
-    putStrLn "Type state:"
-    mapM_ (\(expr, t) -> putStrLn $ show expr ++ " : " ++ show t) (Map.toList $ typeMap)
-    putStrLn "End of type state"
+    putStrLn "✅ Successfully compiled module."
+    exitSuccess
