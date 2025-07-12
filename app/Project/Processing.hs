@@ -51,11 +51,12 @@ processModules sorted graph = go Map.empty sorted
                         )
                         imports
         resolvedResult <- runResolverWithEnv seedEnv ast
-        (resolvedAst, fullEnv) <- case resolvedResult of
+        (resolvedAst, fullEnv, _instanceEnv) <- case resolvedResult of
             Left err -> printError err (modulePath modInfo) (moduleContent modInfo) "ANALYSIS" >> exitFailure
             Right res -> return res
         let newDefs = Map.difference fullEnv seedEnv
-        types <- case analyzeTreeT fullEnv resolvedAst of
+        typesResult <- analyzeTreeT fullEnv resolvedAst
+        types <- case typesResult of
             Left errs -> mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") errs >> exitFailure
             Right t -> return t
         putStrLn $ "Module " ++ modName ++ " inferred types:\n" ++ treeShowTypeMapL ast types

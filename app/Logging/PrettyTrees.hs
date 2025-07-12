@@ -33,7 +33,11 @@ instance TreeShow Type where
             then name
             else name ++ " " ++ treeShow kind
     treeShow (TApp t1 t2) = "(" ++ treeShow t1 ++ " " ++ treeShow t2 ++ ")"
-    treeShow (TArrow t1 t2) = "(" ++ treeShow t1 ++ " -> " ++ treeShow t2 ++ ")"
+    treeShow (TArrow t1 t2) =
+        let left = case t1 of
+                TArrow _ _ -> "(" ++ treeShow t1 ++ ")"
+                _ -> treeShow t1
+        in left ++ " -> " ++ treeShow t2
     treeShow (TUnresolved name) = "?" ++ name
 
 instance TreeShow Constraint where

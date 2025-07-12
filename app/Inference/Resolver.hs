@@ -8,9 +8,9 @@ import Control.Monad (when)
 import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
 import Control.Monad.State (MonadState (get, put), State, gets, runState)
 import qualified Data.Map as Map
-import Inference.Core (TypeEnv)
+import Inference.Core (TypeEnv, InstanceEnv)
 import Inference.Errors (InferenceError (..))
-import Syntax.Tree (Expr (..))
+import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (curryFunction)
 import Typing.Types (Kind (..), QualifiedType (Forall), TyConstructor (TypeConstructor), TyVar (tvKind), Type (..), assignConstraints, sumQualifiedTypes)
 
@@ -19,8 +19,9 @@ newtype ResolverM a = ResolverM
     }
     deriving (Functor, Applicative, Monad, MonadState ResolverState, MonadError InferenceError)
 
-newtype ResolverState = ResolverState
+data ResolverState = ResolverState
     { globalBindings :: TypeEnv
+    , instanceBindings :: InstanceEnv
     }
 
 collectGlobals :: Expr -> ResolverM ()
@@ -53,6 +54,15 @@ collectGlobals (ExprDataTypeDef name generics constraints constructors _) = do
         constructors
 collectGlobals _ = pure ()
 
+collectInstances :: Expr -> ResolverM ()
+collectInstances (ExprRoot children) = do
+    mapM_ collectInstances children
+collectInstances (ExprInstanceDef className dataTypeName _ _) = do
+    let instanceType = TConstructor (TypeConstructor dataTypeName KindStar)
+    addInstanceBinding className instanceType
+collectInstances expr = do
+    mapM_ collectInstances (exprChildren expr)
+
 resolveTReference :: Expr -> ResolverM Expr
 resolveTReference (ExprRoot children) = do
     children' <- mapM resolveTReference children
@@ -84,6 +94,9 @@ resolveTReference expr = pure expr
 getEnv :: ResolverM TypeEnv
 getEnv = gets globalBindings
 
+getInstanceEnv :: ResolverM InstanceEnv
+getInstanceEnv = gets instanceBindings
+
 getReference :: Expr -> String -> ResolverM QualifiedType
 getReference expr name = do
     s <- get
@@ -94,6 +107,7 @@ getReference expr name = do
 analyzeTree :: Expr -> ResolverM Expr
 analyzeTree root = do
     collectGlobals root
+    collectInstances root
     resolveTReference root
 
 addGlobalBinding :: String -> QualifiedType -> ResolverM ()
@@ -102,23 +116,29 @@ addGlobalBinding name ty = do
     let globals = globalBindings s
     put s{globalBindings = Map.insert name ty globals}
 
-runResolver :: Expr -> IO (Either InferenceError (Expr, TypeEnv))
-runResolver root = do
-    let initialState = ResolverState{globalBindings = Map.empty}
-    let resolverM = runResolverM (analyzeTree root)
-    let (result, finalState) = runState (runExceptT resolverM) initialState
-    pure $ case result of
-        Left err -> Left err
-        Right expr -> Right (expr, globalBindings finalState)
+addInstanceBinding :: String -> Type -> ResolverM ()
+addInstanceBinding className instanceType = do
+    s <- get
+    let instances = instanceBindings s
+    put s{instanceBindings = Map.insert (className, instanceType) True instances}
 
-runResolverWithEnv :: TypeEnv -> Expr -> IO (Either InferenceError (Expr, TypeEnv))
-runResolverWithEnv initialEnv root = do
-    let initialState = ResolverState{globalBindings = initialEnv}
+runResolver :: Expr -> IO (Either InferenceError (Expr, TypeEnv, InstanceEnv))
+runResolver root = do
+    let initialState = ResolverState{globalBindings = Map.empty, instanceBindings = Map.empty}
     let resolverM = runResolverM (analyzeTree root)
     let (result, finalState) = runState (runExceptT resolverM) initialState
     pure $ case result of
         Left err -> Left err
-        Right expr -> Right (expr, globalBindings finalState)
+        Right expr -> Right (expr, globalBindings finalState, instanceBindings finalState)
+
+runResolverWithEnv :: TypeEnv -> Expr -> IO (Either InferenceError (Expr, TypeEnv, InstanceEnv))
+runResolverWithEnv initialEnv root = do
+    let initialState = ResolverState{globalBindings = initialEnv, instanceBindings = Map.empty}
+    let resolverM = runResolverM (analyzeTree root)
+    let (result, finalState) = runState (runExceptT resolverM) initialState
+    pure $ case result of
+        Left err -> Left err
+        Right expr -> Right (expr, globalBindings finalState, instanceBindings finalState)
 
 replaceAllUnresolvedQualified :: Expr -> TypeEnv -> QualifiedType -> ResolverM QualifiedType
 replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do

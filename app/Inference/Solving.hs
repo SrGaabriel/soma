@@ -1,10 +1,10 @@
-{-# LANGUAGE LambdaCase, FlexibleInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Inference.Solving where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Inference.Core (ClassEnv, InstanceEnv, UnificationPurpose (..))
+import Inference.Core (InstanceEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..), generateErrorForPurpose)
 import Inference.Gen (TypeConstraint (..), ClassConstraintWithSource (..))
 import Inference.Substitution (Subst, Substitutable(apply, ftv), composeSubst)
@@ -42,10 +42,6 @@ solveTypeConstraints = foldMWithErrors solveOne Map.empty
         newSubst <- unifyPure expr purpose expected' actual'
         return (composeSubst newSubst currentSubst)
 
-solveClassConstraints :: ClassEnv -> [Constraint] -> Either [InferenceError] [Constraint]
-solveClassConstraints _classEnv constraints = do
-    Right constraints
-
 checkConstraintEntailment :: InstanceEnv -> [Constraint] -> [ClassConstraintWithSource] -> Subst -> Either [InferenceError] ()
 checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSource typeSubst = do
     let inferredConstraints = map (\ccs -> (apply typeSubst (ccsConstraint ccs), ccsSourceExpr ccs)) classConstraintsWithSource
@@ -59,22 +55,8 @@ checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSo
 
 isEntailedByInstanceEnv :: InstanceEnv -> Constraint -> Bool
 isEntailedByInstanceEnv instanceEnv (Constraint className [typ]) =
-    case className of
-        "Eq" -> Map.lookup ("Eq", typ) instanceEnv == Just True
-        _ -> False
+    Map.lookup (className, typ) instanceEnv == Just True
 isEntailedByInstanceEnv _ _ = False
-
-hasEqualityFromConstraints :: [Constraint] -> Type -> Bool
-hasEqualityFromConstraints constraints targetType =
-    any (\case
-        Constraint cname [ctype] -> 
-            cname == "Eq" && (ctype == targetType || isTypeVarMatch ctype targetType)
-        _ -> False) constraints
-
-isTypeVarMatch :: Type -> Type -> Bool
-isTypeVarMatch (TVar _) _ = True
-isTypeVarMatch (TSkolem _) _ = True
-isTypeVarMatch _ _ = False
 
 isEntailedBy :: [Constraint] -> Constraint -> Bool
 isEntailedBy declaredCs (Constraint name typs) =
