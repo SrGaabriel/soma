@@ -9,6 +9,7 @@ import Inference.Solving (checkConstraintEntailment, solveTypeConstraints)
 import Inference.Substitution (Substitutable (apply, ftv))
 import Syntax.Tree (Expr)
 import Typing.Types (Constraint (..), QualifiedType (Forall), TyVar, Type (..))
+import Inference.Resolver (runResolverWithEnv)
 
 inferType :: TypeEnv -> InstanceEnv -> Expr -> Either [InferenceError] (Maybe QualifiedType, TypeMap)
 inferType env instanceEnv expr =
@@ -37,3 +38,17 @@ generalize envVars constraints t =
         relevant = filter (\c -> not (Set.null (ftv c `Set.intersection` freeInType))) constraints
         uniqueConstraints = Set.toList (Set.fromList relevant)
     in Forall quantifiedVars uniqueConstraints t
+
+inferTree :: TypeEnv -> InstanceEnv -> Expr -> Either [InferenceError] TypeMap
+inferTree tEnv iEnv root = do
+    case inferType tEnv iEnv root of
+        Left err -> Left err
+        Right (_rootType, typeMap) -> Right typeMap
+
+inferTreeT :: TypeEnv -> Expr -> IO (Either [InferenceError] TypeMap)
+inferTreeT tEnv root = do
+    resolverResult <- runResolverWithEnv tEnv root
+    case resolverResult of
+        Left err -> pure $ Left [err]
+        Right (_resolvedExpr, finalTypeEnv, instanceEnv) ->
+            pure $ inferTree finalTypeEnv instanceEnv root

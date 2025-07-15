@@ -4,7 +4,6 @@ module Project.Processing where
 
 import qualified Data.Map as Map
 import Inference.Resolver (runResolverWithEnv)
-import Inference.Tree (analyzeTreeT)
 import Logging.ErrorPrinter (printError)
 import Logging.PrettyTrees (treeShowTypeMapL)
 import Project.Graph (ModuleGraph)
@@ -12,6 +11,7 @@ import Project.Module (ModuleInfo (..))
 import Project.Name (Name)
 import Syntax.Tree (Expr (..), exprChildren)
 import System.Directory.Internal.Prelude (exitFailure)
+import Inference.Assembler (inferTreeT)
 
 extractSymbolImports :: Expr -> [(Name, Maybe [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
@@ -55,7 +55,7 @@ processModules sorted graph = go Map.empty sorted
             Left err -> printError err (modulePath modInfo) (moduleContent modInfo) "ANALYSIS" >> exitFailure
             Right res -> return res
         let newDefs = Map.difference fullEnv seedEnv
-        typesResult <- analyzeTreeT fullEnv resolvedAst
+        typesResult <- inferTreeT fullEnv resolvedAst
         types <- case typesResult of
             Left errs -> mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") errs >> exitFailure
             Right t -> return t

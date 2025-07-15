@@ -1,0 +1,9 @@
+intrinsic def {+} :: a -> a -> a
+
+def isZero :: Int -> Bool
+    | 0 => true
+    | _ => false
+
+def testSum(x: Int, y: Int) -> Int = x + y
+
+def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2

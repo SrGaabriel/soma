@@ -51,6 +51,14 @@ library
                     Utils.Lists
                     Config.Options
                     Typing.Currying
+                    Llvm.Types
+                    Llvm.Instructions
+                    Llvm.Values
+                    Llvm.Ir
+                    Llvm.Modules
+                    Llvm.Gen.Core
+                    Llvm.Gen.Value
+                    Llvm.Gen.Types
   hs-source-dirs:   app
   build-depends:    base >= 4.19.2.0,
                     ansi-terminal >= 1.0,
