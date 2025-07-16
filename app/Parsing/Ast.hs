@@ -27,6 +27,7 @@ parseDeclaration = do
     token <- peek
     case tokenKind token of
         TokenDef -> parseBinding True
+        TokenIntrinsic -> parseIntrinsicDef
         TokenNewline -> next >> parseDeclaration
         TokenData -> parseDataType
         TokenClass -> parseTypeClass
@@ -136,3 +137,13 @@ parseImport = do
     let Span importStart _ = tokenSpan importToken
     let importEnd = importStart + length moduleNameSegments
     pure $ ExprImport moduleName (Span importStart importEnd)
+
+parseIntrinsicDef :: Parser Expr
+parseIntrinsicDef = do
+    intrinsicToken <- consume TokenIntrinsic
+    _ <- consume TokenDef
+    name <- parseFuncName
+    _ <- consumeRelevant TokenReturns
+    typ <- parseQualifiedType
+    let spanning = spanningTokens intrinsicToken intrinsicToken
+    pure $ ExprIntrinsicDef name typ spanning

@@ -12,3 +12,9 @@ data LlvmValue
 getRegName :: LlvmValue -> String
 getRegName (LlvmRegister _ name) = name
 getRegName _ = error "LlvmValue is not a register"
+
+getValueType :: LlvmValue -> LlvmType
+getValueType (LlvmLiteral ty _) = ty
+getValueType (LlvmRegister ty _) = ty
+getValueType (LlvmGlobal ty _) = ty
+getValueType (LlvmUndef ty) = ty

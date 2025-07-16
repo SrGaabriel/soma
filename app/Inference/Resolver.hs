@@ -30,6 +30,8 @@ collectGlobals (ExprRoot children) = do
 collectGlobals (ExprBindingDef name bindType _ topLevel _) =
     when topLevel $ do
         addGlobalBinding name bindType
+collectGlobals (ExprIntrinsicDef name bindType _) = do
+    addGlobalBinding name bindType
 collectGlobals (ExprDataTypeDef name generics constraints constructors _) = do
     let kind = foldr (KindArrow . tvKind) KindStar generics
     let baseConstructor = TConstructor $ TypeConstructor name kind
@@ -89,6 +91,11 @@ resolveTReference expr@(ExprBindingDef a typ body topLevel c) = do
         addGlobalBinding a realTyp
 
     pure $ ExprBindingDef a realTyp body' topLevel c
+resolveTReference expr@(ExprIntrinsicDef name typ s) = do
+    env <- getEnv
+    realTyp <- replaceAllUnresolvedQualified expr env typ
+    addGlobalBinding name realTyp
+    pure $ ExprIntrinsicDef name realTyp s
 resolveTReference expr = pure expr
 
 getEnv :: ResolverM TypeEnv

@@ -36,6 +36,11 @@ data Expr
         , bindingIsImpl :: Bool
         , bindingSpan :: Span
         }
+    | ExprIntrinsicDef
+        { intrinsicName :: String
+        , intrinsicType :: QualifiedType
+        , intrinsicSpan :: Span
+        }
     | ExprDataTypeDef
         { dataName :: String
         , dataGenerics :: [TyVar]
@@ -88,6 +93,7 @@ exprChildren (ExprTypeClassBinding _ _ (Just impl) _) = impl
 exprChildren (ExprTypeClassBinding _ _ Nothing _) = []
 exprChildren (ExprDerivedPatternMatch arms) = arms
 exprChildren (ExprBindingDef _ _ body _ _) = [body]
+exprChildren (ExprIntrinsicDef _ _ _) = []
 exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprInstanceDef _ _ methods _) = methods
@@ -105,6 +111,7 @@ exprSpan (ExprApp first second) = spanningExprs [first, second]
 exprSpan (ExprLambda _ _ s) = s
 exprSpan (ExprLet _ _ _ s) = s
 exprSpan (ExprBindingDef _ _ _ _ s) = s
+exprSpan (ExprIntrinsicDef _ _ s) = s
 exprSpan (ExprDataTypeDef _ _ _ _ s) = s
 exprSpan (ExprDataConstructor _ _ s) = s
 exprSpan (ExprTypeClassDef _ _ _ s) = s
@@ -135,6 +142,8 @@ modifySpan (ExprLet name value body _) newSpan =
     ExprLet name value body newSpan
 modifySpan (ExprBindingDef name bindType body isImpl _) newSpan =
     ExprBindingDef name bindType body isImpl newSpan
+modifySpan (ExprIntrinsicDef name typ _) newSpan =
+    ExprIntrinsicDef name typ newSpan
 modifySpan (ExprDataTypeDef name generics constraints constructors _) newSpan =
     ExprDataTypeDef name generics constraints constructors newSpan
 modifySpan (ExprDataConstructor name args _) newSpan =

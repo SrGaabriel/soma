@@ -12,6 +12,7 @@ import Project.Name (Name)
 import Syntax.Tree (Expr (..), exprChildren)
 import System.Directory.Internal.Prelude (exitFailure)
 import Inference.Assembler (inferTreeT)
+import Llvm.Gen.Entry (runLlvmCodeGen, runLlvmCodeGenAndTranscribe)
 
 extractSymbolImports :: Expr -> [(Name, Maybe [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
@@ -22,6 +23,7 @@ extractSymbolImports (ExprImport name _) =
             let syms = drop 2 rest
             in [(m, Just (wordsWhen (== ',') syms))]
         else [(name, Nothing)]
+extractSymbolImports (ExprIntrinsicDef _ _ _) = []  -- Intrinsics don't import symbols
 extractSymbolImports e = concatMap extractSymbolImports (exprChildren e)
 
 wordsWhen :: (Char -> Bool) -> String -> [String]
@@ -61,3 +63,6 @@ processModules sorted graph = go Map.empty sorted
             Right t -> return t
         putStrLn $ "Module " ++ modName ++ " inferred types:\n" ++ treeShowTypeMapL ast types
         go (Map.insert modName newDefs modulesEnv) rest
+        let llvmIr = runLlvmCodeGenAndTranscribe modName resolvedAst
+        putStrLn $ "Generated LLVM IR for module " ++ modName ++ ":"
+        putStrLn llvmIr

@@ -1,84 +1,112 @@
+{-# LANGUAGE FlexibleContexts #-}
 module Llvm.Gen.Core where
 
-import Control.Monad.State (State, gets, modify)
-import Llvm.Modules (LlvmFunction (..), LlvmBlock (LlvmBlock))
-import Llvm.Instructions (LlvmStatement (..), LlvmInstruction (..))
-import Llvm.Values (LlvmValue (..), getRegName)
-import Llvm.Types (LlvmType (..))
+import Control.Monad.Reader
+import Control.Monad.State
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Inference.Core (TypeMap)
+import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
+import Llvm.Types (LlvmType (..))
+import Llvm.Values (LlvmValue (..), getRegName)
+import Control.Monad.Writer
+
+data IrGenEnv = IrGenEnv
+    { currentScope :: MemoryScope
+    , currentFunction :: Maybe String
+    }
 
 data IrGenState = IrGenState
-  { nextRegister :: Int
-  , nextBlock :: Int
-  , typeMap :: TypeMap
-  , currentBlock :: Maybe String
-  , functions :: Map String LlvmFunction
-  , currentFunction :: Maybe String
-  , memoryReferences :: Map String (Map String LlvmValue)
-  , statements :: [LlvmStatement]
-  } deriving (Show)
+    { nextRegister :: Int
+    , nextBlock :: Int
+    , typeMap :: TypeMap
+    , currentBlock :: Maybe String
+    }
+    deriving (Show)
 
-type IrGen = State IrGenState
+globalDefaultState :: IrGenState
+globalDefaultState = IrGenState
+    { nextRegister = 0
+    , nextBlock = 0
+    , typeMap = Map.empty
+    , currentBlock = Nothing
+    }
+
+globalDefaultEnv :: IrGenEnv
+globalDefaultEnv = IrGenEnv
+    { currentScope = MemoryScope
+        { blockName = "global"
+        , blockValues = Map.empty
+        , blockParent = Nothing
+        }
+    , currentFunction = Nothing
+    }
+
+type IrGen = ReaderT IrGenEnv (WriterT [LlvmStatement] (State IrGenState))
+
+runIrGen :: IrGenEnv -> IrGenState -> IrGen a -> ((a, [LlvmStatement]), IrGenState)
+runIrGen env st action =
+  runState (runWriterT (runReaderT action env)) st
 
 freshReg :: LlvmType -> IrGen LlvmValue
 freshReg ty = do
-  n <- gets nextRegister
-  modify $ \s -> s { nextRegister = n + 1 }
-  return $ LlvmRegister ty ("reg_" ++ show n)
+    n <- gets nextRegister
+    modify $ \s -> s { nextRegister = n + 1 }
+    return $ LlvmRegister ty ("reg_" ++ show n)
 
-emit :: LlvmStatement -> IrGen ()
-emit stmt = modify $ \s -> s { statements = stmt : statements s }
-
-addInstr :: LlvmValue -> LlvmValue -> IrGen LlvmValue
+addInstr :: LlvmValue -> LlvmValue -> IrGen LlvmStatement
 addInstr left right = do
-  result <- freshReg LlvmI32
-  emit $ LlvmAssign (getRegName result) (LlvmAdd left right)
-  return result
+    result <- freshReg LlvmI32
+    return $ LlvmAssign (getRegName result) (LlvmAdd left right)
 
-callInstr :: String -> [LlvmValue] -> LlvmType -> IrGen LlvmValue
+callInstr :: String -> [LlvmValue] -> LlvmType -> IrGen LlvmStatement
 callInstr name args retType = do
-  result <- freshReg retType
-  emit $ LlvmAssign (getRegName result) (LlvmCall name args)
-  return result
+    result <- freshReg retType
+    return $ LlvmAssign (getRegName result) (LlvmCall name args)
 
-insertMemory :: String -> String -> LlvmValue -> IrGen ()
-insertMemory scope name value = do
-  refs <- gets memoryReferences
-  let scopeMap = Map.findWithDefault Map.empty scope refs
-  let newScopeMap = Map.insert name value scopeMap
-  modify $ \s -> s { memoryReferences = Map.insert scope newScopeMap refs }
+data MemoryScope = MemoryScope
+    { blockName :: String
+    , blockValues :: Map String LlvmValue
+    , blockParent :: Maybe MemoryScope
+    }
+    deriving (Show)
 
-lookupMemory :: String -> String -> IrGen (Maybe LlvmValue)
-lookupMemory scope name = do
-  refs <- gets memoryReferences
-  return $ Map.lookup scope refs >>= Map.lookup name
+insertMemory :: String -> LlvmValue -> IrGen ()
+insertMemory name value = do
+    env <- ask
+    let scope = currentScope env
+        newValues = Map.insert name value (blockValues scope)
+        newScope = scope { blockValues = newValues }
+    local (\e -> e { currentScope = newScope }) (return ())
 
-createBlock :: IrGen String
-createBlock = do
-  n <- gets nextBlock
-  modify $ \s -> s { nextBlock = n + 1 }
-  let blockName = "block_" ++ show n
-  currentFunc <- gets currentFunction
-  case currentFunc of
-    Just funcName -> do
-      funcs <- gets functions
-      case Map.lookup funcName funcs of
-        Just func -> do
-          let newBlock = LlvmBlock blockName []
-          let updatedFunc = func { functionBlocks = Map.insert blockName newBlock (functionBlocks func) }
-          modify $ \s -> s { functions = Map.insert funcName updatedFunc funcs }
-        Nothing -> return ()
-    Nothing -> return ()
-  return blockName
+lookupMemory :: MonadReader IrGenEnv m => String -> m (Maybe LlvmValue)
+lookupMemory name = do
+  scope <- asks currentScope
+  return $ getMem scope name
 
-switchToBlock :: String -> IrGen ()
-switchToBlock blockName = modify $ \s -> s { currentBlock = Just blockName }
+freshScope :: String -> IrGen MemoryScope
+freshScope name = do
+    parent <- asks currentScope
+    return MemoryScope
+        { blockName = name
+        , blockValues = Map.empty
+        , blockParent = Just parent
+        }
 
-branch :: String -> IrGen ()
-branch blockName = emit $ LlvmBr blockName
+getMem :: MemoryScope -> String -> Maybe LlvmValue
+getMem (MemoryScope _ values parent) name =
+    case Map.lookup name values of
+        Just v -> Just v
+        Nothing -> case parent of
+            Just p -> getMem p name
+            Nothing -> Nothing
 
-branchCond :: LlvmValue -> String -> String -> IrGen ()
-branchCond cond trueBlock falseBlock = 
-  emit $ LlvmBrCond cond trueBlock falseBlock
+withScope :: MemoryScope -> IrGen a -> IrGen a
+withScope newScope = local (\env -> env { currentScope = newScope })
+
+scopedState :: IrGen a -> IrGen a
+scopedState action = do
+    st <- get
+    result <- action
+    put st
+    return result

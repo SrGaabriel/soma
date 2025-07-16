@@ -1,8 +1,9 @@
 intrinsic def {+} :: a -> a -> a
+intrinsic def {==} :: a -> a -> Bool
 
-def isZero :: Int -> Bool
+/*def isZero :: Int -> Bool
     | 0 => true
-    | _ => false
+    | _ => false*/
 
 def testSum(x: Int, y: Int) -> Int = x + y
 

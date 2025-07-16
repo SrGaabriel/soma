@@ -8,4 +8,5 @@ toAllocationLlvmType (TConstructor (TypeConstructor name _)) =
         "Int" -> LlvmI32
         "String" -> LlvmArray 0 LlvmI8
         "Bool" -> LlvmI1
-toAllocationLlvmType (TSkolem _) = LlvmI32
+        u -> error $ "Unsupported type for allocation: " ++ show u
+toAllocationLlvmType u = error $ "Unsupported type for allocation: " ++ show u

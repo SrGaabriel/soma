@@ -18,6 +18,7 @@ data TokenKind
     | TokenCase
     | TokenDo
     | TokenDef
+    | TokenIntrinsic
     | TokenLeftParen
     | TokenRightParen
     | TokenLowerIdentifier
@@ -166,6 +167,7 @@ tokenize (c : cs) i indent
                 "case" -> TokenCase
                 "do" -> TokenDo
                 "def" -> TokenDef
+                "intrinsic" -> TokenIntrinsic
                 "import" -> TokenImport
                 "data" -> TokenData
                 "struct" -> TokenStruct
@@ -243,6 +245,7 @@ referenceTokenKind TokenReturns = "'::'"
 referenceTokenKind TokenCase = "'case'"
 referenceTokenKind TokenDo = "'do'"
 referenceTokenKind TokenDef = "'def'"
+referenceTokenKind TokenIntrinsic = "'intrinsic'"
 referenceTokenKind TokenImport = "'import'"
 referenceTokenKind TokenLeftParen = "a left parenthesis"
 referenceTokenKind TokenRightParen = "a right parenthesis"

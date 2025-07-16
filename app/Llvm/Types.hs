@@ -11,6 +11,7 @@ data LlvmType
     | LlvmFloat
     | LlvmDouble
     | LlvmPtr LlvmType
+    | LlvmPointer LlvmType  -- Alternative pointer syntax
     | LlvmArray Int LlvmType
     | LlvmStruct String
     deriving (Show, Eq)
@@ -25,5 +26,6 @@ instance IR LlvmType where
     toLlvm LlvmFloat = "float"
     toLlvm LlvmDouble = "double"
     toLlvm (LlvmPtr t) = toLlvm t ++ "*"
+    toLlvm (LlvmPointer t) = toLlvm t ++ "*"
     toLlvm (LlvmArray n t) = "[" ++ show n ++ " x " ++ toLlvm t ++ "]"
     toLlvm (LlvmStruct name) = "%" ++ name

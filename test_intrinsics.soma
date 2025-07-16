@@ -1,0 +1,7 @@
+intrinsic def print_int :: Int -> Unit
+intrinsic def add_numbers :: Int -> Int -> Int
+
+def main :: Unit
+main = 
+    let x = add_numbers 5 3
+    print_int x
