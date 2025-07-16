@@ -10,6 +10,7 @@ import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getRegName)
 import Control.Monad.Writer
+import Llvm.Modules (LlvmFunction)
 
 data IrGenEnv = IrGenEnv
     { currentScope :: MemoryScope
@@ -21,6 +22,7 @@ data IrGenState = IrGenState
     , nextBlock :: Int
     , typeMap :: TypeMap
     , currentBlock :: Maybe String
+    , irFunctions :: [LlvmFunction]
     }
     deriving (Show)
 
@@ -30,6 +32,16 @@ globalDefaultState = IrGenState
     , nextBlock = 0
     , typeMap = Map.empty
     , currentBlock = Nothing
+    , irFunctions = []
+    }
+
+cleanGlobalState :: TypeMap -> IrGenState
+cleanGlobalState tM = IrGenState
+    { nextRegister = 0
+    , nextBlock = 0
+    , typeMap = tM
+    , currentBlock = Nothing
+    , irFunctions = []
     }
 
 globalDefaultEnv :: IrGenEnv
@@ -42,13 +54,13 @@ globalDefaultEnv = IrGenEnv
     , currentFunction = Nothing
     }
 
-type IrGen = ReaderT IrGenEnv (WriterT [LlvmStatement] (State IrGenState))
+type IrGen a = ReaderT IrGenEnv (WriterT [LlvmStatement] (State IrGenState)) a
 
 runIrGen :: IrGenEnv -> IrGenState -> IrGen a -> ((a, [LlvmStatement]), IrGenState)
 runIrGen env st action =
   runState (runWriterT (runReaderT action env)) st
 
-freshReg :: LlvmType -> IrGen LlvmValue
+freshReg :: MonadState IrGenState m => LlvmType -> m LlvmValue
 freshReg ty = do
     n <- gets nextRegister
     modify $ \s -> s { nextRegister = n + 1 }
@@ -58,11 +70,6 @@ addInstr :: LlvmValue -> LlvmValue -> IrGen LlvmStatement
 addInstr left right = do
     result <- freshReg LlvmI32
     return $ LlvmAssign (getRegName result) (LlvmAdd left right)
-
-callInstr :: String -> [LlvmValue] -> LlvmType -> IrGen LlvmStatement
-callInstr name args retType = do
-    result <- freshReg retType
-    return $ LlvmAssign (getRegName result) (LlvmCall name args)
 
 data MemoryScope = MemoryScope
     { blockName :: String
@@ -103,6 +110,12 @@ getMem (MemoryScope _ values parent) name =
 
 withScope :: MemoryScope -> IrGen a -> IrGen a
 withScope newScope = local (\env -> env { currentScope = newScope })
+
+saveInstruction :: MonadState IrGenState m => MonadWriter [LlvmStatement] m => LlvmInstruction -> LlvmType -> m LlvmValue
+saveInstruction instr ty = do
+    reg <- freshReg ty
+    tell [LlvmAssign (getRegName reg) instr]
+    return reg
 
 scopedState :: IrGen a -> IrGen a
 scopedState action = do

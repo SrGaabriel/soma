@@ -3,6 +3,7 @@ module Llvm.Intrinsics where
 import qualified Data.Map as Map
 import Llvm.Instructions (LlvmInstruction (..))
 import Llvm.Values (LlvmValue (..))
+import Llvm.Types (LlvmType(LlvmI32))
 
 type IntrinsicRegistry = Map.Map String IntrinsicImpl
 
@@ -31,7 +32,7 @@ eqIntIntrinsic = IntrinsicImpl
     { intrinsicName = "=="
     , intrinsicCodeGen = \args -> case args of
         [lhs, rhs] -> 
-            LlvmCall "llvm.icmp.eq.i32" [lhs, rhs]
+            LlvmCall "llvm.icmp.eq.i32" LlvmI32 [lhs, rhs]
         _ -> error "eq_int intrinsic expects exactly 2 arguments"
     }
 

@@ -10,7 +10,7 @@ data LlvmType
     | LlvmI64
     | LlvmFloat
     | LlvmDouble
-    | LlvmPtr LlvmType
+    | LlvmPtr
     | LlvmPointer LlvmType  -- Alternative pointer syntax
     | LlvmArray Int LlvmType
     | LlvmStruct String
@@ -25,7 +25,7 @@ instance IR LlvmType where
     toLlvm LlvmI64 = "i64"
     toLlvm LlvmFloat = "float"
     toLlvm LlvmDouble = "double"
-    toLlvm (LlvmPtr t) = toLlvm t ++ "*"
+    toLlvm LlvmPtr = "ptr"
     toLlvm (LlvmPointer t) = toLlvm t ++ "*"
     toLlvm (LlvmArray n t) = "[" ++ show n ++ " x " ++ toLlvm t ++ "]"
     toLlvm (LlvmStruct name) = "%" ++ name

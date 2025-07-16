@@ -1,29 +1,28 @@
 {-# LANGUAGE LambdaCase #-}
 module Llvm.Gen.Entry (compileLlvmModule, runLlvmCodeGen, runLlvmCodeGenAndTranscribe) where
-import Llvm.Gen.Core (IrGen, runIrGen, globalDefaultState, globalDefaultEnv)
+import Llvm.Gen.Core (IrGen, runIrGen, globalDefaultEnv, IrGenState (irFunctions), cleanGlobalState)
 import Syntax.Tree (Expr (..), exprChildren)
 import Llvm.Modules (LlvmModule (..))
 import Llvm.Gen.Bindings (compileBindingDef)
 import Llvm.Ir (IR(toLlvm))
 import Data.Maybe (mapMaybe)
-compileLlvmModule :: String -> Expr -> IrGen LlvmModule
-compileLlvmModule name root = do
+import Inference.Core (TypeMap)
+
+compileLlvmModule :: String -> Expr -> IrGen ()
+compileLlvmModule _ root = do
     let topLevelMembers = exprChildren root
-    fns <- sequence $ mapMaybe (\case
+    sequence_ $ mapMaybe (\case
                 binding@(ExprBindingDef {}) -> Just (compileBindingDef binding)
-                u -> Nothing
+                _ -> Nothing
             ) topLevelMembers
-    return $ LlvmModule 
-        { moduleName = name
-        , moduleFunctions = fns
-        }
 
-runLlvmCodeGen :: String -> Expr -> LlvmModule
-runLlvmCodeGen name root = 
-    let ((moduleResult, _collectedStatements), _finalStat) = runIrGen globalDefaultEnv globalDefaultState (compileLlvmModule name root)
-    in moduleResult
+runLlvmCodeGen :: String -> Expr -> TypeMap -> LlvmModule
+runLlvmCodeGen name root typeMap =
+    let ((_, _collectedStatements), finalStat) = runIrGen globalDefaultEnv (cleanGlobalState typeMap) (compileLlvmModule name root)
+        fns = irFunctions finalStat
+    in LlvmModule name fns
 
-runLlvmCodeGenAndTranscribe :: String -> Expr -> String
-runLlvmCodeGenAndTranscribe name root =
-    let moduleResult = runLlvmCodeGen name root
+runLlvmCodeGenAndTranscribe :: String -> Expr -> TypeMap -> String
+runLlvmCodeGenAndTranscribe name root typeMap =
+    let moduleResult = runLlvmCodeGen name root typeMap
     in toLlvm moduleResult

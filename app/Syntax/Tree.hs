@@ -1,4 +1,4 @@
-module Syntax.Tree (Expr (..), exprChildren, exprSpan, modifySpan) where
+module Syntax.Tree (Expr (..), exprChildren, exprSpan, modifySpan, uncurryApp) where
 
 import Lexing.Position (Span (..))
 import Syntax.Patterns (Pattern (..))
@@ -169,3 +169,10 @@ spanningExprs exprs =
         leftmostStart = minimum $ map (\(Span start _) -> start) spans
         rightmostEnd = maximum $ map (\(Span _ end) -> end) spans
     in Span leftmostStart rightmostEnd
+
+-- returns the base (first non-app expression) and a list of arguments
+uncurryApp :: Expr -> (Expr, [Expr])
+uncurryApp (ExprApp f arg) =
+    let (base, args) = uncurryApp f
+    in (base, args ++ [arg])
+uncurryApp base = (base, [])

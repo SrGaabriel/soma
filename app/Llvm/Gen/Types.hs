@@ -9,4 +9,5 @@ toAllocationLlvmType (TConstructor (TypeConstructor name _)) =
         "String" -> LlvmArray 0 LlvmI8
         "Bool" -> LlvmI1
         u -> error $ "Unsupported type for allocation: " ++ show u
+toAllocationLlvmType (TArrow _ _) = LlvmPtr
 toAllocationLlvmType u = error $ "Unsupported type for allocation: " ++ show u

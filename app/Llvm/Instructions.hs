@@ -1,13 +1,15 @@
 module Llvm.Instructions where
 
-import Llvm.Values (LlvmValue)
+import Llvm.Values (LlvmValue, getValueType)
 import Llvm.Ir (IR (toLlvm))
+import Data.List (intercalate)
+import Llvm.Types (LlvmType)
 
 data LlvmInstruction
     = LlvmAdd LlvmValue LlvmValue
     | LlvmSub LlvmValue LlvmValue
     | LlvmMul LlvmValue LlvmValue
-    | LlvmCall String [LlvmValue]
+    | LlvmCall String LlvmType [LlvmValue]
     | LlvmLoad LlvmValue
     | LlvmGep LlvmValue [LlvmValue]
     deriving (Show, Eq)
@@ -15,26 +17,26 @@ data LlvmInstruction
 data LlvmStatement
     = LlvmAssign String LlvmInstruction
     | LlvmStore LlvmValue LlvmValue
-    | LlvmRet (Maybe LlvmValue)
+    | LlvmRet LlvmType (Maybe LlvmValue)
     | LlvmBr String
     | LlvmBrCond LlvmValue String String
     | LlvmLabel String
     deriving (Show, Eq)
 
 instance IR LlvmInstruction where
-    toLlvm (LlvmAdd lhs rhs) = "add " ++ show lhs ++ ", " ++ show rhs
-    toLlvm (LlvmSub lhs rhs) = "sub " ++ show lhs ++ ", " ++ show rhs
-    toLlvm (LlvmMul lhs rhs) = "mul " ++ show lhs ++ ", " ++ show rhs
-    toLlvm (LlvmCall name args) = "call " ++ name ++ "(" ++ unwords (map show args) ++ ")"
-    toLlvm (LlvmLoad value) = "load " ++ show value
-    toLlvm (LlvmGep base indices) = "getelementptr " ++ show base ++ ", " ++ unwords (map show indices)
+    toLlvm (LlvmAdd lhs rhs) = "add " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmSub lhs rhs) = "sub " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmMul lhs rhs) = "mul " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmCall name retType args) = "call " ++ toLlvm retType ++ " @" ++ name ++ "(" ++ intercalate "," (map (\val -> (toLlvm $ getValueType val) ++ " " ++ toLlvm val) args) ++ ")"
+    toLlvm (LlvmLoad value) = "load " ++ toLlvm value
+    toLlvm (LlvmGep base indices) = "getelementptr " ++ toLlvm base ++ ", " ++ unwords (map toLlvm indices)
 
 instance IR LlvmStatement where
-    toLlvm (LlvmAssign name instr) = name ++ " = " ++ toLlvm instr
-    toLlvm (LlvmStore value target) = "store " ++ show value ++ ", " ++ show target
-    toLlvm (LlvmRet Nothing) = "ret void"
-    toLlvm (LlvmRet (Just value)) = "ret " ++ show value
+    toLlvm (LlvmAssign name instr) = "%" ++ name ++ " = " ++ toLlvm instr
+    toLlvm (LlvmStore value target) = "store " ++ toLlvm value ++ ", " ++ toLlvm target
+    toLlvm (LlvmRet typ Nothing) = "ret " ++ toLlvm typ
+    toLlvm (LlvmRet typ (Just value)) = "ret " ++ toLlvm typ ++ " " ++ toLlvm value
     toLlvm (LlvmBr label) = "br " ++ label
     toLlvm (LlvmBrCond cond trueLabel falseLabel) =
-        "br " ++ show cond ++ ", label " ++ trueLabel ++ ", label " ++ falseLabel
+        "br " ++ toLlvm cond ++ ", label " ++ trueLabel ++ ", label " ++ falseLabel
     toLlvm (LlvmLabel label) = label ++ ":"
