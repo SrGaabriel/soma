@@ -1,11 +1,11 @@
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Project.Processing where
 
 import qualified Data.Map as Map
 import Inference.Resolver (runResolverWithEnv)
 import Logging.ErrorPrinter (printError)
-import Logging.PrettyTrees (treeShowTypeMapL)
 import Project.Graph (ModuleGraph)
 import Project.Module (ModuleInfo (..))
 import Project.Name (Name)
@@ -13,6 +13,12 @@ import Syntax.Tree (Expr (..), exprChildren)
 import System.Directory.Internal.Prelude (exitFailure)
 import Inference.Assembler (inferTreeT)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
+import Inference.Core (TypeMap)
+import Typing.Types (QualifiedType)
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath (takeFileName, (</>))
+import System.Process (callProcess)
+import Control.Exception (catch, SomeException)
 
 extractSymbolImports :: Expr -> [(Name, Maybe [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
@@ -23,7 +29,6 @@ extractSymbolImports (ExprImport name _) =
             let syms = drop 2 rest
             in [(m, Just (wordsWhen (== ',') syms))]
         else [(name, Nothing)]
-extractSymbolImports (ExprIntrinsicDef _ _ _) = []  -- Intrinsics don't import symbols
 extractSymbolImports e = concatMap extractSymbolImports (exprChildren e)
 
 wordsWhen :: (Char -> Bool) -> String -> [String]
@@ -33,36 +38,74 @@ wordsWhen p s = case dropWhile p s of
       where
         (w, s'') = break p s'
 
-processModules :: [Name] -> ModuleGraph -> IO ()
-processModules sorted graph = go Map.empty sorted
-  where
-    go _modulesEnv [] = putStrLn "All modules processed"
-    go modulesEnv (modName : rest) = do
-        let Just modInfo = Map.lookup modName graph
-            ast = moduleAst modInfo
-        let imports = extractSymbolImports ast
-            seedEnv =
-                Map.unions
-                    $ map
-                        ( \(impMod, mSyms) ->
-                            case Map.lookup impMod modulesEnv of
-                                Just modEnv -> case mSyms of
-                                    Just syms -> Map.filterWithKey (\k _ -> k `elem` syms) modEnv
-                                    Nothing -> modEnv
-                                Nothing -> Map.empty
-                        )
-                        imports
-        resolvedResult <- runResolverWithEnv seedEnv ast
-        (resolvedAst, fullEnv, _instanceEnv) <- case resolvedResult of
-            Left err -> printError err (modulePath modInfo) (moduleContent modInfo) "ANALYSIS" >> exitFailure
-            Right res -> return res
-        let newDefs = Map.difference fullEnv seedEnv
-        typesResult <- inferTreeT fullEnv resolvedAst
-        types <- case typesResult of
-            Left errs -> mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") errs >> exitFailure
-            Right t -> return t
-        putStrLn $ "Module " ++ modName ++ " inferred types:\n" ++ treeShowTypeMapL ast types
-        go (Map.insert modName newDefs modulesEnv) rest
-        let llvmIr = runLlvmCodeGenAndTranscribe modName resolvedAst types
-        putStrLn $ "Generated LLVM IR for module " ++ modName ++ ":"
-        putStrLn llvmIr
+processModules :: [Name] -> ModuleGraph -> FilePath -> IO ()
+processModules sorted graph inputPath = do
+    (allModules, fusedTypeMap) <- processAllModules sorted graph Map.empty Map.empty
+    
+    let fusedAst = createFusedAst allModules
+    let llvmIr = runLlvmCodeGenAndTranscribe "program" fusedAst fusedTypeMap
+    
+    let buildDir = inputPath </> "build"
+    createDirectoryIfMissing True buildDir
+    
+    let projectName = takeFileName inputPath
+    let llFile = buildDir </> (projectName ++ ".ll")
+    let exeFile = buildDir </> projectName
+    
+    writeFile llFile llvmIr
+    putStrLn $ "Generated LLVM IR file: " ++ llFile
+    
+    result <- catch (do
+        callProcess "clang" ["-o", exeFile, llFile]
+        putStrLn $ "Successfully compiled executable: " ++ exeFile
+        return True
+        ) (\(_ :: SomeException) -> do
+            putStrLn $ "clang not found or compilation failed. To compile manually, run:"
+            putStrLn $ "clang -o " ++ exeFile ++ " " ++ llFile
+            return False
+        )
+
+    if result
+        then putStrLn "✅ Build completed successfully."
+        else putStrLn "❌ LLVM IR generated. Internal build failure." >> exitFailure
+
+processAllModules :: [Name] -> ModuleGraph -> Map.Map Name (Expr, TypeMap, Map.Map Name QualifiedType) -> TypeMap -> IO (Map.Map Name (Expr, TypeMap, Map.Map Name QualifiedType), TypeMap)
+processAllModules [] _graph allModules fusedTypeMap = return (allModules, fusedTypeMap)
+processAllModules (modName : rest) graph allModules fusedTypeMap = do
+    let Just modInfo = Map.lookup modName graph
+        ast = moduleAst modInfo
+    
+    let imports = extractSymbolImports ast
+        seedEnv = Map.unions $ map
+            (\(impMod, mSyms) ->
+                case Map.lookup impMod allModules of
+                    Just (_, _, modEnv) -> case mSyms of
+                        Just syms -> Map.filterWithKey (\k _ -> k `elem` syms) modEnv
+                        Nothing -> modEnv
+                    Nothing -> Map.empty
+            ) imports
+    
+    resolvedResult <- runResolverWithEnv seedEnv ast
+    (resolvedAst, fullEnv, _instanceEnv) <- case resolvedResult of
+        Left err -> printError err (modulePath modInfo) (moduleContent modInfo) "ANALYSIS" >> exitFailure
+        Right res -> return res
+    
+    let newDefs = Map.difference fullEnv seedEnv
+    
+    typesResult <- inferTreeT fullEnv resolvedAst
+    types <- case typesResult of
+        Left errs -> mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") errs >> exitFailure
+        Right t -> return t
+    
+    putStrLn $ "Module " ++ modName ++ " processed successfully"
+    
+    let newAllModules = Map.insert modName (resolvedAst, types, newDefs) allModules
+        newFusedTypeMap = Map.union types fusedTypeMap
+    processAllModules rest graph newAllModules newFusedTypeMap
+
+createFusedAst :: Map.Map Name (Expr, TypeMap, Map.Map Name QualifiedType) -> Expr
+createFusedAst allModules = 
+    let allExprs = concatMap (\(ast, _, _) -> case ast of
+            ExprRoot exprs -> exprs
+            singleExpr -> [singleExpr]) (Map.elems allModules)
+    in ExprRoot allExprs
