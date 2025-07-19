@@ -5,10 +5,12 @@ import Llvm.Ir (IR (toLlvm))
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.List (intercalate)
+import Llvm.Dependencies (LlvmDependency)
 
 data LlvmModule = LlvmModule
   { moduleName :: String
   , moduleFunctions :: [LlvmFunction]
+  , moduleDependencies :: [LlvmDependency]
   } deriving (Show)
 
 data LlvmFunction = LlvmFunction
@@ -25,7 +27,9 @@ data LlvmBlock = LlvmBlock
   } deriving (Show)
 
 instance IR LlvmModule where
-    toLlvm (LlvmModule _ functions) =
+    toLlvm (LlvmModule _ functions dependencies) =
+        unlines (map toLlvm dependencies) ++
+        "\n\n" ++
         unlines (map toLlvm functions)
 
 instance IR LlvmFunction where

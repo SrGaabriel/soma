@@ -1,6 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 module Llvm.Gen.Entry (compileLlvmModule, runLlvmCodeGen, runLlvmCodeGenAndTranscribe) where
-import Llvm.Gen.Core (IrGen, runIrGen, globalDefaultEnv, IrGenState (irFunctions), cleanGlobalState)
+import Llvm.Gen.Core (IrGen, runIrGen, globalDefaultEnv, IrGenState (irFunctions, irDependencies), cleanGlobalState)
 import Syntax.Tree (Expr (..), exprChildren)
 import Llvm.Modules (LlvmModule (..))
 import Llvm.Gen.Bindings (compileBindingDef)
@@ -20,7 +20,8 @@ runLlvmCodeGen :: String -> Expr -> TypeMap -> LlvmModule
 runLlvmCodeGen name root typeMap =
     let ((_, _collectedStatements), finalStat) = runIrGen globalDefaultEnv (cleanGlobalState typeMap) (compileLlvmModule name root)
         fns = irFunctions finalStat
-    in LlvmModule name fns
+        deps = irDependencies finalStat
+    in LlvmModule name fns deps
 
 runLlvmCodeGenAndTranscribe :: String -> Expr -> TypeMap -> String
 runLlvmCodeGenAndTranscribe name root typeMap =

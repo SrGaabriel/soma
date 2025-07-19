@@ -57,6 +57,7 @@ library
                     Llvm.Ir
                     Llvm.Modules
                     Llvm.Intrinsics
+                    Llvm.Dependencies
                     Llvm.Gen.Entry
                     Llvm.Gen.Core
                     Llvm.Gen.Value

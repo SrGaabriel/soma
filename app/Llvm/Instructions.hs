@@ -9,7 +9,7 @@ data LlvmInstruction
     = LlvmAdd LlvmValue LlvmValue
     | LlvmSub LlvmValue LlvmValue
     | LlvmMul LlvmValue LlvmValue
-    | LlvmCall String LlvmType [LlvmValue]
+    | LlvmCall LlvmValue LlvmType [LlvmValue]
     | LlvmLoad LlvmValue
     | LlvmGep LlvmValue [LlvmValue]
     deriving (Show, Eq)
@@ -27,7 +27,7 @@ instance IR LlvmInstruction where
     toLlvm (LlvmAdd lhs rhs) = "add " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmSub lhs rhs) = "sub " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmMul lhs rhs) = "mul " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
-    toLlvm (LlvmCall name retType args) = "call " ++ toLlvm retType ++ " @" ++ name ++ "(" ++ intercalate "," (map (\val -> (toLlvm $ getValueType val) ++ " " ++ toLlvm val) args) ++ ")"
+    toLlvm (LlvmCall callee retType args) = "call " ++ toLlvm retType ++ " " ++ toLlvm callee ++ "(" ++ intercalate "," (map (\val -> (toLlvm $ getValueType val) ++ " " ++ toLlvm val) args) ++ ")"
     toLlvm (LlvmLoad value) = "load " ++ toLlvm value
     toLlvm (LlvmGep base indices) = "getelementptr " ++ toLlvm base ++ ", " ++ unwords (map toLlvm indices)
 

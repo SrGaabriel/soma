@@ -11,6 +11,7 @@ import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getRegName)
 import Control.Monad.Writer
 import Llvm.Modules (LlvmFunction)
+import Llvm.Dependencies (LlvmDependency)
 
 data IrGenEnv = IrGenEnv
     { currentScope :: MemoryScope
@@ -23,6 +24,7 @@ data IrGenState = IrGenState
     , typeMap :: TypeMap
     , currentBlock :: Maybe String
     , irFunctions :: [LlvmFunction]
+    , irDependencies :: [LlvmDependency]
     }
     deriving (Show)
 
@@ -33,6 +35,7 @@ globalDefaultState = IrGenState
     , typeMap = Map.empty
     , currentBlock = Nothing
     , irFunctions = []
+    , irDependencies = []
     }
 
 cleanGlobalState :: TypeMap -> IrGenState
@@ -42,6 +45,7 @@ cleanGlobalState tM = IrGenState
     , typeMap = tM
     , currentBlock = Nothing
     , irFunctions = []
+    , irDependencies = []
     }
 
 globalDefaultEnv :: IrGenEnv

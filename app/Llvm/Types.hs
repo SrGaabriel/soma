@@ -14,6 +14,7 @@ data LlvmType
     | LlvmPointer LlvmType  -- Alternative pointer syntax
     | LlvmArray Int LlvmType
     | LlvmStruct String
+    | LlvmFn -- placeholder, not used in this context
     deriving (Show, Eq)
 
 instance IR LlvmType where
@@ -29,3 +30,4 @@ instance IR LlvmType where
     toLlvm (LlvmPointer t) = toLlvm t ++ "*"
     toLlvm (LlvmArray n t) = "[" ++ show n ++ " x " ++ toLlvm t ++ "]"
     toLlvm (LlvmStruct name) = "%" ++ name
+    toLlvm LlvmFn = "|fn|"

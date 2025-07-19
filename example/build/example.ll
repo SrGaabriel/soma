@@ -1,3 +1,5 @@
+
+
 define i1 @areNumEqual(i32 %reg_3,i32 %reg_4) {
 %reg_5 = call i1 @==(i32 %reg_4,i32 %reg_3)
 ret i1 %reg_5

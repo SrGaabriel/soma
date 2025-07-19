@@ -31,7 +31,7 @@ compileValue expr = case expr of
         let (_fnIntermediateTys, fnRetType) = uncurryFunction refType
         let callName = getApplicableFnName callBase
         let llvmFnType = toAllocationLlvmType fnRetType
-        let call = LlvmCall callName llvmFnType argVals
+        let call = LlvmCall (LlvmGlobal LlvmFn callName) llvmFnType argVals
         saveInstruction call llvmFnType
     _ -> error $ "Unsupported llvm value expression type: " ++ show expr
 
