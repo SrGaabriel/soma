@@ -1,7 +1,5 @@
 module Typing.Types where
 
-import Project.Name (Name)
-
 data Kind
     = KindStar
     | KindArrow Kind Kind
@@ -48,7 +46,7 @@ data Type
     | TUnresolved String
     deriving (Show, Eq, Ord)
 
-data Constraint = Constraint Name [Type] deriving (Show, Eq, Ord)
+data Constraint = Constraint String [Type] deriving (Show, Eq, Ord)
 
 data QualifiedType = Forall [TyVar] [Constraint] Type
     deriving (Show, Eq, Ord)

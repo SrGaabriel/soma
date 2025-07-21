@@ -2,8 +2,7 @@ module Llvm.Intrinsics where
 
 import qualified Data.Map as Map
 import Llvm.Instructions (LlvmInstruction (..))
-import Llvm.Values (LlvmValue (..))
-import Llvm.Types (LlvmType(LlvmI32, LlvmFn))
+import Llvm.Values (LlvmValue (..), getValueType)
 
 type IntrinsicRegistry = Map.Map String IntrinsicImpl
 
@@ -23,7 +22,8 @@ addIntIntrinsic = IntrinsicImpl
     { intrinsicName = "+"
     , intrinsicCodeGen = \args -> case args of
         [lhs, rhs] -> 
-            LlvmAdd lhs rhs
+            let lhsType = getValueType lhs
+            in LlvmAdd lhsType lhs rhs
         _ -> error "add_int intrinsic expects exactly 2 arguments"
     }
 
@@ -32,7 +32,8 @@ eqIntIntrinsic = IntrinsicImpl
     { intrinsicName = "=="
     , intrinsicCodeGen = \args -> case args of
         [lhs, rhs] -> 
-            LlvmCall (LlvmGlobal LlvmFn "llvm.icmp.eq.i32") LlvmI32 [lhs, rhs]
+            let lhsType = getValueType lhs
+            in LlvmICmpEq lhsType lhs rhs
         _ -> error "eq_int intrinsic expects exactly 2 arguments"
     }
 
@@ -41,3 +42,8 @@ isIntrinsic registry name = Map.member name registry
 
 getIntrinsicNames :: IntrinsicRegistry -> [String]
 getIntrinsicNames = Map.keys
+
+getIntrinsic :: String -> IntrinsicImpl
+getIntrinsic "==" = eqIntIntrinsic
+getIntrinsic "+" = addIntIntrinsic
+getIntrinsic u = error $ "Unknown intrinsic function: " ++ u

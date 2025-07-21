@@ -22,7 +22,6 @@ library
                     Syntax.Patterns
                     Syntax.Tree
                     Syntax.Ops
-                    Project.Name
                     Inference.Errors
                     Inference.Resolver
                     Inference.Core
@@ -44,6 +43,7 @@ library
                     Logging.ErrorPrinter
                     Logging.PrettyTrees
                     Logging.Errors
+                    Project.Symbols
                     Project.Module
                     Project.Graph
                     Project.Parsing
@@ -63,6 +63,7 @@ library
                     Llvm.Gen.Value
                     Llvm.Gen.Bindings
                     Llvm.Gen.Types
+                    Analysis.Symbol
   hs-source-dirs:   app
   build-depends:    base >= 4.19.2.0,
                     ansi-terminal >= 1.0,

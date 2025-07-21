@@ -11,9 +11,9 @@ import Syntax.Tree (Expr)
 import Typing.Types (Constraint (..), QualifiedType (Forall), TyVar, Type (..))
 import Inference.Resolver (runResolverWithEnv)
 
-inferType :: TypeEnv -> InstanceEnv -> Expr -> Either [InferenceError] (Maybe QualifiedType, TypeMap)
-inferType env instanceEnv expr =
-    let ((maybeType, constraintSet), genState, genErrors) = runGenM env (generateConstraints expr)
+inferType :: String -> TypeEnv -> InstanceEnv -> Expr -> Either [InferenceError] (Maybe QualifiedType, TypeMap)
+inferType currentModule env instanceEnv expr =
+    let ((maybeType, constraintSet), genState, genErrors) = runGenM currentModule env (generateConstraints expr)
         typeSubstResult = solveTypeConstraints (csTypeConstraints constraintSet)
     in case (genErrors, typeSubstResult) of
         ([], Right typeSubst) -> do
@@ -39,16 +39,16 @@ generalize envVars constraints t =
         uniqueConstraints = Set.toList (Set.fromList relevant)
     in Forall quantifiedVars uniqueConstraints t
 
-inferTree :: TypeEnv -> InstanceEnv -> Expr -> Either [InferenceError] TypeMap
-inferTree tEnv iEnv root = do
-    case inferType tEnv iEnv root of
+inferTree :: String -> TypeEnv -> InstanceEnv -> Expr -> Either [InferenceError] TypeMap
+inferTree currentModule tEnv iEnv root = do
+    case inferType currentModule tEnv iEnv root of
         Left err -> Left err
         Right (_rootType, typeMap) -> Right typeMap
 
-inferTreeT :: TypeEnv -> Expr -> IO (Either [InferenceError] TypeMap)
-inferTreeT tEnv root = do
-    resolverResult <- runResolverWithEnv tEnv root
+inferTreeT :: String -> TypeEnv -> Expr -> IO (Either [InferenceError] TypeMap)
+inferTreeT currentModule tEnv root = do
+    resolverResult <- runResolverWithEnv currentModule tEnv root
     case resolverResult of
         Left err -> pure $ Left [err]
         Right (_resolvedExpr, finalTypeEnv, instanceEnv) ->
-            pure $ inferTree finalTypeEnv instanceEnv root
+            pure $ inferTree currentModule finalTypeEnv instanceEnv root

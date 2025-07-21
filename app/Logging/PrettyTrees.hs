@@ -52,7 +52,8 @@ instance TreeShow Expr where
     treeShow (ExprRoot _) = "Root:"
     treeShow (ExprNum n _) = "Num: " ++ n
     treeShow (ExprStr s _) = "Str: " ++ s
-    treeShow (ExprVar v _) = "Var: " ++ v
+    treeShow (ExprUVar v _) = "UVar: " ++ v
+    treeShow (ExprVar sym _) = "Var: " ++ show sym
     treeShow (ExprBool b _) = "Bool: " ++ show b
     treeShow (ExprBlock _ _) = "Block:"
     treeShow (ExprArray _ _) = "Array:"

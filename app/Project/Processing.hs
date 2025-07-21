@@ -8,7 +8,6 @@ import Inference.Resolver (runResolverWithEnv)
 import Logging.ErrorPrinter (printError)
 import Project.Graph (ModuleGraph)
 import Project.Module (ModuleInfo (..))
-import Project.Name (Name)
 import Syntax.Tree (Expr (..), exprChildren)
 import System.Directory.Internal.Prelude (exitFailure)
 import Inference.Assembler (inferTreeT)
@@ -18,9 +17,10 @@ import Typing.Types (QualifiedType)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeFileName, (</>))
 import System.Process (callProcess)
+import Project.Symbols (Symbol(..))
 import Control.Exception (catch, SomeException)
 
-extractSymbolImports :: Expr -> [(Name, Maybe [String])]
+extractSymbolImports :: Expr -> [(String, Maybe [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
 extractSymbolImports (ExprImport name _) =
     let (m, rest) = break (== ':') name
@@ -38,7 +38,11 @@ wordsWhen p s = case dropWhile p s of
       where
         (w, s'') = break p s'
 
-processModules :: [Name] -> ModuleGraph -> FilePath -> IO ()
+filterSymbolsByNames :: [String] -> Map.Map Symbol QualifiedType -> Map.Map Symbol QualifiedType
+filterSymbolsByNames names = 
+    Map.filterWithKey (\sym _ -> resolvedSymbolName sym `elem` names)
+
+processModules :: [String] -> ModuleGraph -> FilePath -> IO ()
 processModules sorted graph inputPath = do
     (allModules, fusedTypeMap) <- processAllModules sorted graph Map.empty Map.empty
     
@@ -69,7 +73,7 @@ processModules sorted graph inputPath = do
         then putStrLn "✅ Build completed successfully."
         else putStrLn "❌ LLVM IR generated. Internal build failure." >> exitFailure
 
-processAllModules :: [Name] -> ModuleGraph -> Map.Map Name (Expr, TypeMap, Map.Map Name QualifiedType) -> TypeMap -> IO (Map.Map Name (Expr, TypeMap, Map.Map Name QualifiedType), TypeMap)
+processAllModules :: [String] -> ModuleGraph -> Map.Map String (Expr, TypeMap, Map.Map Symbol QualifiedType) -> TypeMap -> IO (Map.Map String (Expr, TypeMap, Map.Map Symbol QualifiedType), TypeMap)
 processAllModules [] _graph allModules fusedTypeMap = return (allModules, fusedTypeMap)
 processAllModules (modName : rest) graph allModules fusedTypeMap = do
     let Just modInfo = Map.lookup modName graph
@@ -80,19 +84,19 @@ processAllModules (modName : rest) graph allModules fusedTypeMap = do
             (\(impMod, mSyms) ->
                 case Map.lookup impMod allModules of
                     Just (_, _, modEnv) -> case mSyms of
-                        Just syms -> Map.filterWithKey (\k _ -> k `elem` syms) modEnv
+                        Just syms -> filterSymbolsByNames syms modEnv
                         Nothing -> modEnv
                     Nothing -> Map.empty
             ) imports
     
-    resolvedResult <- runResolverWithEnv seedEnv ast
+    resolvedResult <- runResolverWithEnv modName seedEnv ast
     (resolvedAst, fullEnv, _instanceEnv) <- case resolvedResult of
         Left err -> printError err (modulePath modInfo) (moduleContent modInfo) "ANALYSIS" >> exitFailure
         Right res -> return res
     
     let newDefs = Map.difference fullEnv seedEnv
     
-    typesResult <- inferTreeT fullEnv resolvedAst
+    typesResult <- inferTreeT modName fullEnv resolvedAst
     types <- case typesResult of
         Left errs -> mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") errs >> exitFailure
         Right t -> return t
@@ -103,7 +107,7 @@ processAllModules (modName : rest) graph allModules fusedTypeMap = do
         newFusedTypeMap = Map.union types fusedTypeMap
     processAllModules rest graph newAllModules newFusedTypeMap
 
-createFusedAst :: Map.Map Name (Expr, TypeMap, Map.Map Name QualifiedType) -> Expr
+createFusedAst :: Map.Map String (Expr, TypeMap, Map.Map Symbol QualifiedType) -> Expr
 createFusedAst allModules = 
     let allExprs = concatMap (\(ast, _, _) -> case ast of
             ExprRoot exprs -> exprs

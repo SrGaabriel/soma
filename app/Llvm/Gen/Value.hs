@@ -5,6 +5,7 @@ import Llvm.Gen.Core (lookupMemory, IrGenEnv, IrGenState (typeMap), saveInstruct
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..))
 import Syntax.Tree (Expr (..), uncurryApp)
+import Project.Symbols (Symbol(ResolvedSymbol), SymbolKind (..))
 import Control.Monad.Writer (WriterT)
 import Llvm.Instructions (LlvmStatement, LlvmInstruction (..))
 import Control.Monad.Reader (ReaderT)
@@ -13,11 +14,12 @@ import Llvm.Gen.Types (toAllocationLlvmType)
 import qualified Data.Map as Map
 import Typing.Types (QualifiedType(Forall))
 import Typing.Currying (uncurryFunction)
+import Llvm.Intrinsics (getIntrinsic, IntrinsicImpl (intrinsicCodeGen))
 
 compileValue :: Expr -> WriterT [LlvmStatement] (ReaderT IrGenEnv (State IrGenState)) LlvmValue
 compileValue expr = case expr of
     ExprNum n _ -> return $ LlvmLiteral LlvmI32 n
-    ExprVar name _ -> do
+    ExprUVar name _ -> do
         maybeMem <- lookupMemory name
         case maybeMem of
             Just mem -> return mem
@@ -31,10 +33,16 @@ compileValue expr = case expr of
         let (_fnIntermediateTys, fnRetType) = uncurryFunction refType
         let callName = getApplicableFnName callBase
         let llvmFnType = toAllocationLlvmType fnRetType
-        let call = LlvmCall (LlvmGlobal LlvmFn callName) llvmFnType argVals
+
+        let call = case callName of
+                ResolvedSymbol name IntrinsicBindingSymbol _ _ -> do
+                    let intrinsic = getIntrinsic name
+                    intrinsicCodeGen intrinsic argVals
+                ResolvedSymbol name _ _ _ -> do
+                    LlvmCall (LlvmGlobal LlvmFn name) llvmFnType argVals
         saveInstruction call llvmFnType
     _ -> error $ "Unsupported llvm value expression type: " ++ show expr
 
-getApplicableFnName :: Expr -> String
-getApplicableFnName (ExprVar name _) = name
+getApplicableFnName :: Expr -> Symbol
+getApplicableFnName (ExprVar r@(ResolvedSymbol {}) _) = r
 getApplicableFnName u = error (show u)

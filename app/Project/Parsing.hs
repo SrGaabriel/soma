@@ -6,9 +6,8 @@ import Logging.ErrorPrinter (printError)
 import Parsing.Ast (parse)
 import Parsing.Errors (ParsingError)
 import Project.Module (ModuleInfo (..))
-import Project.Name (Name)
 
-parseModule :: (Name, FilePath) -> IO (Either ParsingError ModuleInfo)
+parseModule :: (String, FilePath) -> IO (Either ParsingError ModuleInfo)
 parseModule (modName, path) = do
     content <- readFile path
     let (tokens, lexErrors) = tokenizeFile content

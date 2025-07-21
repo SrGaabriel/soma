@@ -70,11 +70,6 @@ freshReg ty = do
     modify $ \s -> s { nextRegister = n + 1 }
     return $ LlvmRegister ty ("reg_" ++ show n)
 
-addInstr :: LlvmValue -> LlvmValue -> IrGen LlvmStatement
-addInstr left right = do
-    result <- freshReg LlvmI32
-    return $ LlvmAssign (getRegName result) (LlvmAdd left right)
-
 data MemoryScope = MemoryScope
     { blockName :: String
     , blockValues :: Map String LlvmValue

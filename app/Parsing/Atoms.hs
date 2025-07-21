@@ -70,10 +70,10 @@ parseAtom = do
             pure $ ExprArray contents spanning
         TokenLowerIdentifier -> do
             idToken <- next
-            pure $ ExprVar (tokenValue idToken) (tokenSpan idToken)
+            pure $ ExprUVar (tokenValue idToken) (tokenSpan idToken)
         TokenUpperIdentifier -> do
             idToken <- next
-            pure $ ExprVar (tokenValue idToken) (tokenSpan idToken)
+            pure $ ExprUVar (tokenValue idToken) (tokenSpan idToken)
         TokenString -> do
             stringToken <- next
             pure $ ExprStr (tokenValue stringToken) (tokenSpan stringToken)
@@ -153,7 +153,7 @@ parseInfixRest lhs prec = do
                     then do
                         _ <- next
                         rhs <- parseExprPrec (nextPrec assoc opPrec)
-                        let op = ExprVar opStr (tokenSpan tok)
+                        let op = ExprUVar opStr (tokenSpan tok)
                         let appL = ExprApp op lhs
                         parseInfixRest (ExprApp appL rhs) prec
                     else pure lhs

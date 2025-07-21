@@ -3,12 +3,14 @@ module Syntax.Tree (Expr (..), exprChildren, exprSpan, modifySpan, uncurryApp) w
 import Lexing.Position (Span (..))
 import Syntax.Patterns (Pattern (..))
 import Typing.Types (Constraint, QualifiedType, TyVar, Type)
+import Project.Symbols (Symbol)
 
 data Expr
     = ExprRoot [Expr]
     | ExprNum String Span
     | ExprStr String Span
-    | ExprVar String Span
+    | ExprUVar String Span
+    | ExprVar Symbol Span
     | ExprBool Bool Span
     | ExprBlock [Expr] Span
     | ExprArray [Expr] Span
@@ -87,7 +89,8 @@ exprChildren (ExprDataConstructor{}) = []
 exprChildren (ExprImport _ _) = []
 exprChildren (ExprNum _ _) = []
 exprChildren (ExprStr _ _) = []
-exprChildren (ExprVar _ _) = []
+exprChildren (ExprUVar _ _) = []
+exprChildren (ExprVar {}) = []
 exprChildren (ExprBool _ _) = []
 exprChildren (ExprTypeClassBinding _ _ (Just impl) _) = impl
 exprChildren (ExprTypeClassBinding _ _ Nothing _) = []
@@ -102,6 +105,7 @@ exprSpan :: Expr -> Span
 exprSpan (ExprRoot _) = error "Root expressions do not have a span"
 exprSpan (ExprNum _ s) = s
 exprSpan (ExprStr _ s) = s
+exprSpan (ExprUVar _ s) = s
 exprSpan (ExprVar _ s) = s
 exprSpan (ExprBool _ s) = s
 exprSpan (ExprBlock _ s) = s
@@ -126,7 +130,8 @@ modifySpan :: Expr -> Span -> Expr
 modifySpan e@(ExprRoot _) _ = e
 modifySpan (ExprNum n _) s = ExprNum n s
 modifySpan (ExprStr s _) newSpan = ExprStr s newSpan
-modifySpan (ExprVar v _) newSpan = ExprVar v newSpan
+modifySpan (ExprUVar v _) newSpan = ExprUVar v newSpan
+modifySpan (ExprVar sym _) newSpan = ExprVar sym newSpan
 modifySpan (ExprBool b _) newSpan = ExprBool b newSpan
 modifySpan (ExprBlock exprs _) newSpan = ExprBlock exprs newSpan
 modifySpan (ExprArray exprs _) newSpan = ExprArray exprs newSpan

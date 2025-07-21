@@ -6,12 +6,13 @@ import Data.List (intercalate)
 import Llvm.Types (LlvmType)
 
 data LlvmInstruction
-    = LlvmAdd LlvmValue LlvmValue
-    | LlvmSub LlvmValue LlvmValue
-    | LlvmMul LlvmValue LlvmValue
+    = LlvmAdd LlvmType LlvmValue LlvmValue
+    | LlvmSub LlvmType LlvmValue LlvmValue
+    | LlvmMul LlvmType LlvmValue LlvmValue
     | LlvmCall LlvmValue LlvmType [LlvmValue]
     | LlvmLoad LlvmValue
     | LlvmGep LlvmValue [LlvmValue]
+    | LlvmICmpEq LlvmType LlvmValue LlvmValue
     deriving (Show, Eq)
 
 data LlvmStatement
@@ -24,12 +25,13 @@ data LlvmStatement
     deriving (Show, Eq)
 
 instance IR LlvmInstruction where
-    toLlvm (LlvmAdd lhs rhs) = "add " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
-    toLlvm (LlvmSub lhs rhs) = "sub " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
-    toLlvm (LlvmMul lhs rhs) = "mul " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmAdd typ lhs rhs) = "add " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmSub typ lhs rhs) = "sub " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmMul typ lhs rhs) = "mul " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmCall callee retType args) = "call " ++ toLlvm retType ++ " " ++ toLlvm callee ++ "(" ++ intercalate "," (map (\val -> (toLlvm $ getValueType val) ++ " " ++ toLlvm val) args) ++ ")"
     toLlvm (LlvmLoad value) = "load " ++ toLlvm value
     toLlvm (LlvmGep base indices) = "getelementptr " ++ toLlvm base ++ ", " ++ unwords (map toLlvm indices)
+    toLlvm (LlvmICmpEq typ lhs rhs) = "icmp eq " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
 
 instance IR LlvmStatement where
     toLlvm (LlvmAssign name instr) = "%" ++ name ++ " = " ++ toLlvm instr
