@@ -9,7 +9,7 @@ import Parsing.Atoms (parseModuleName)
 import Parsing.Bindings (parseBinding)
 import Parsing.Errors (ParsingError (UnexpectedToken))
 import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseFuncName, parseIndentedBlock, parseIndexedIndentedBlock, peek)
-import Parsing.Types (parseQualifiedType, parseTyVar, parseType)
+import Parsing.Types (parseQualifiedType, parseTyVar, parseType, parseKind)
 import Syntax.Tree (Expr (..))
 import Typing.Types (Constraint (Constraint), QualifiedType (Forall), Type (TVar))
 
@@ -141,9 +141,19 @@ parseImport = do
 parseIntrinsicDef :: Parser Expr
 parseIntrinsicDef = do
     intrinsicToken <- consume TokenIntrinsic
-    _ <- consume TokenDef
-    name <- parseFuncName
-    _ <- consumeRelevant TokenReturns
-    typ <- parseQualifiedType
-    let spanning = spanningTokens intrinsicToken intrinsicToken
-    pure $ ExprIntrinsicDef name typ spanning
+    inc <- next
+    case tokenKind inc of
+        TokenDef -> do
+            name <- parseFuncName
+            _ <- consumeRelevant TokenReturns
+            typ <- parseQualifiedType
+            let spanning = spanningTokens intrinsicToken intrinsicToken
+            pure $ ExprIntrinsicDef name typ spanning
+        TokenData -> do
+            nameToken <- consume TokenUpperIdentifier
+            _ <- consumeRelevant TokenReturns
+            kind <- parseKind
+            let name = tokenValue nameToken
+            let spanning = spanningTokens intrinsicToken nameToken
+            pure $ ExprIntrinsicDataTypeDef name kind spanning
+        _ -> throwError $ UnexpectedToken inc

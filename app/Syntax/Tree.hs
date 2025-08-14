@@ -2,7 +2,7 @@ module Syntax.Tree (Expr (..), exprChildren, exprSpan, modifySpan, uncurryApp) w
 
 import Lexing.Position (Span (..))
 import Syntax.Patterns (Pattern (..))
-import Typing.Types (Constraint, QualifiedType, TyVar, Type)
+import Typing.Types (Constraint, QualifiedType, TyVar, Type, Kind)
 import Project.Symbols (Symbol)
 
 data Expr
@@ -49,6 +49,11 @@ data Expr
         , dataConstraints :: [Constraint]
         , dataConstructors :: [Expr]
         , dataSpan :: Span
+        }
+    | ExprIntrinsicDataTypeDef
+        { intrinsicDataTypeName :: String
+        , intrinsicDataTypeKind :: Kind
+        , intrinsicDataTypeSpan :: Span
         }
     | ExprDataConstructor
         { structConstructorName :: String
@@ -98,6 +103,7 @@ exprChildren (ExprDerivedPatternMatch arms) = arms
 exprChildren (ExprBindingDef _ _ body _ _) = [body]
 exprChildren (ExprIntrinsicDef _ _ _) = []
 exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
+exprChildren (ExprIntrinsicDataTypeDef _ _ _) = []
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprInstanceDef _ _ methods _) = methods
 
@@ -117,6 +123,7 @@ exprSpan (ExprLet _ _ _ s) = s
 exprSpan (ExprBindingDef _ _ _ _ s) = s
 exprSpan (ExprIntrinsicDef _ _ s) = s
 exprSpan (ExprDataTypeDef _ _ _ _ s) = s
+exprSpan (ExprIntrinsicDataTypeDef _ _ s) = s
 exprSpan (ExprDataConstructor _ _ s) = s
 exprSpan (ExprTypeClassDef _ _ _ s) = s
 exprSpan (ExprTypeClassBinding _ _ _ s) = s
@@ -151,6 +158,8 @@ modifySpan (ExprIntrinsicDef name typ _) newSpan =
     ExprIntrinsicDef name typ newSpan
 modifySpan (ExprDataTypeDef name generics constraints constructors _) newSpan =
     ExprDataTypeDef name generics constraints constructors newSpan
+modifySpan (ExprIntrinsicDataTypeDef name kind _) newSpan =
+    ExprIntrinsicDataTypeDef name kind newSpan
 modifySpan (ExprDataConstructor name args _) newSpan =
     ExprDataConstructor name args newSpan
 modifySpan (ExprTypeClassDef name generics bindings _) newSpan =

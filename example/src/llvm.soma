@@ -8,3 +8,6 @@ intrinsic def {==} :: a -> a -> Bool
 def testSum(x: Int, y: Int) -> Int = x + y
 
 def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
+
+intrinsic data IO :: * -> *
+def testBox(box: IO Int) -> IO Int = box

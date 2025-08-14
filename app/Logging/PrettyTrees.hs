@@ -26,13 +26,13 @@ instance TreeShow TyVar where
     treeShow (TypeVar name kind) = name ++ " :: " ++ treeShow kind
 
 instance TreeShow Type where
-    treeShow (TVar tv) = "<" ++ tvId tv ++ ">"
+    treeShow (TVar tv) = tvId tv
     treeShow (TSkolem sv) = "«" ++ skName sv ++ "»"
     treeShow (TConstructor (TypeConstructor name kind)) =
         if kind == KindStar
             then name
             else name ++ " " ++ treeShow kind
-    treeShow (TApp t1 t2) = "(" ++ treeShow t1 ++ " " ++ treeShow t2 ++ ")"
+    treeShow (TApp t1 t2) = "(" ++ treeShow t1 ++ ") <" ++ treeShow t2 ++ ">"
     treeShow (TArrow t1 t2) =
         let left = case t1 of
                 TArrow _ _ -> "(" ++ treeShow t1 ++ ")"
@@ -73,6 +73,8 @@ instance TreeShow Expr where
     treeShow (ExprTypeClassDef name generics _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow generics ++ "):"
     treeShow (ExprTypeClassBinding name qType _ _) = "TypeClassBinding (" ++ name ++ ": " ++ treeShow qType ++ "):"
     treeShow (ExprInstanceDef className _ _ _) = "InstanceDef (" ++ className ++ "):"
+    treeShow (ExprIntrinsicDataTypeDef name kind _) =
+        "IntrinsicDataTypeDef (" ++ name ++ ": " ++ treeShow kind ++ "):"
 
 instance TreeShow Pattern where
     treeShow (PVar name) = "Var (" ++ name ++ ")"

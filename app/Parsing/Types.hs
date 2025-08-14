@@ -5,7 +5,7 @@ import Data.List (nubBy)
 import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..))
 import Parsing.Errors (ParsingError (InvalidTokenForType))
 import Parsing.Parser (Parser, consume, consumeRelevant, next, parseExhaustiveSequence, parseSequence, peek)
-import Typing.Types (Constraint (Constraint), Kind (KindStar), QualifiedType (Forall), TyVar (TypeVar, tvId), Type (TArrow, TUnresolved, TVar), arrayType, boolType, extractTyVars, intType, strType, tupleType)
+import Typing.Types (Constraint (Constraint), Kind (KindStar, KindArrow), QualifiedType (Forall), TyVar (TypeVar, tvId), Type (TArrow, TUnresolved, TVar, TApp), arrayType, boolType, extractTyVars, intType, strType, tupleType)
 
 parseQualifiedType :: Parser QualifiedType
 parseQualifiedType = do
@@ -29,31 +29,50 @@ parseQualifiedType = do
 parseType :: Parser Type
 parseType = do
     nextToken <- peek
-    initialType <- case tokenKind nextToken of
+    baseType <- do
+        maybeType <- tryParseBaseType
+        case maybeType of
+            Just t -> pure t
+            Nothing -> throwError $ InvalidTokenForType nextToken
+    parseTypeRest baseType
+
+parseTypeRest :: Type -> Parser Type
+parseTypeRest baseType = do
+    incoming <- peek
+    case tokenKind incoming of
+        TokenRightArrow -> do
+            _ <- consumeRelevant TokenRightArrow
+            TArrow baseType <$> parseType
+        _ -> do
+            appType <- tryParseBaseType
+            case appType of
+                Nothing -> pure baseType
+                Just appType' -> do
+                    let appliedType = TApp baseType appType'
+                    parseTypeRest appliedType
+
+tryParseBaseType :: Parser (Maybe Type)
+tryParseBaseType = do
+    nextToken <- peek
+    case tokenKind nextToken of
         TokenLeftParen -> do
             _ <- next
             types <- parseSequence TokenComma TokenRightParen parseType
             _ <- consume TokenRightParen
             case types of
-                [singleType] -> pure singleType
-                _ -> pure $ tupleType types
+                [singleType] -> pure $ Just singleType
+                _ -> pure $ Just $ tupleType types
         TokenLeftBracket -> do
             _ <- next
             innerType <- parseType
             _ <- consume TokenRightBracket
-            pure $ arrayType innerType
-        TokenUpperIdentifier -> parseTypeConstructor
+            pure $ Just $ arrayType innerType
+        TokenUpperIdentifier -> Just <$> parseTypeConstructor
         TokenLowerIdentifier -> do
             _ <- next
             let name = tokenValue nextToken
-            pure $ TVar (TypeVar name KindStar)
-        _ -> throwError $ InvalidTokenForType nextToken
-    incoming <- peek
-    if tokenKind incoming == TokenRightArrow
-        then do
-            _ <- consumeRelevant TokenRightArrow
-            TArrow initialType <$> parseType
-        else pure initialType
+            pure $ Just $ TVar (TypeVar name KindStar)
+        _ -> pure Nothing
 
 parseTyVar :: Parser TyVar
 parseTyVar = do
@@ -77,6 +96,20 @@ parseConstraint = do
     className <- consume TokenUpperIdentifier
     let name = tokenValue varName
     pure $ Constraint (tokenValue className) [TVar (TypeVar name KindStar)]
+
+parseKind :: Parser Kind
+parseKind = do
+    nextToken <- peek
+    case tokenKind nextToken of
+        TokenVarSymbol | tokenValue nextToken == "*" -> do
+            _ <- next
+            incoming <- peek
+            case tokenKind incoming of
+                TokenRightArrow -> do
+                    _ <- consumeRelevant TokenRightArrow
+                    KindArrow KindStar <$> parseKind
+                _ -> pure KindStar
+        _ -> throwError $ InvalidTokenForType nextToken
 
 deduplicateTyVars :: [TyVar] -> [TyVar]
 deduplicateTyVars = nubBy (\a b -> tvId a == tvId b)

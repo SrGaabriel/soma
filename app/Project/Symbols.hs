@@ -18,4 +18,5 @@ data SymbolKind
     | InstanceMethodSymbol { methodInstance :: String, methodClass :: String }
     | LocalVariableSymbol
     | IntrinsicBindingSymbol
+    | IntrinsicTypeSymbol
     deriving (Show, Eq, Ord)

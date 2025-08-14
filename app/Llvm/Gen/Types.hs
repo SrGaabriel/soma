@@ -1,6 +1,7 @@
 module Llvm.Gen.Types where
 import Llvm.Types (LlvmType (..))
 import Typing.Types (Type(..), TyConstructor (TypeConstructor))
+import Logging.PrettyTrees (TreeShow(treeShow))
 
 toAllocationLlvmType :: Type -> LlvmType
 toAllocationLlvmType (TConstructor (TypeConstructor name _)) =
@@ -10,4 +11,4 @@ toAllocationLlvmType (TConstructor (TypeConstructor name _)) =
         "Bool" -> LlvmI1
         u -> error $ "Unsupported type for allocation: " ++ show u
 toAllocationLlvmType (TArrow _ _) = LlvmPtr
-toAllocationLlvmType u = error $ "Unsupported type for allocation: " ++ show u
+toAllocationLlvmType u = error $ "Unsupported type for allocation: " ++ show u ++ " | " ++ treeShow u

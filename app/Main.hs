@@ -47,7 +47,7 @@ main = do
                     exitFailure
                 Right sorted -> do
                     let outputBaseName = takeFileName inp
-                    _ <- processModules sorted graph outputBaseName
+                    _ <- processModules sorted graph outputBaseName outputBaseName
                     return ()
 
             putStrLn "✅ Successfully compiled all modules."
@@ -75,8 +75,7 @@ processSingle path = do
             mapM_ (putStrLn . ("  " ++) . show) cycles
             exitFailure
         Right sorted -> do
-            let outputBaseName = dropExtension (takeFileName path)
-            _ <- processModules sorted graph outputBaseName
+            _ <- processModules sorted graph name "."
             return ()
 
     putStrLn "✅ Successfully compiled module."

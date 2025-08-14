@@ -12,6 +12,7 @@ import Parsing.Types (parseQualifiedType, parseType)
 import Syntax.Tree (Expr (..), exprSpan)
 import Typing.Currying (curryFunction)
 import Typing.Types (QualifiedType (..), Type (..), extractTyVars)
+import qualified Debug.Trace as Debug
 
 parseBinding :: Bool -> Parser Expr
 parseBinding isTopLevel = do
@@ -53,6 +54,7 @@ parseBinding isTopLevel = do
                         pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken eqTok)
                     | otherwise -> throwError $ FunctionArgumentLengthMismatch defToken
         Nothing -> do
+            Debug.traceM $ "Parsing simple binding for " ++ name
             _ <- consumeRelevant TokenReturns
             bindingTyp <- parseQualifiedType
             inc <- peekRelevant

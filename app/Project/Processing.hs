@@ -15,10 +15,11 @@ import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Inference.Core (TypeMap)
 import Typing.Types (QualifiedType)
 import System.Directory (createDirectoryIfMissing)
-import System.FilePath (takeFileName, (</>))
+import System.FilePath ((</>))
 import System.Process (callProcess)
 import Project.Symbols (Symbol(..))
 import Control.Exception (catch, SomeException)
+import Logging.PrettyTrees (TreeShow(treeShow))
 
 extractSymbolImports :: Expr -> [(String, Maybe [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
@@ -42,20 +43,19 @@ filterSymbolsByNames :: [String] -> Map.Map Symbol QualifiedType -> Map.Map Symb
 filterSymbolsByNames names = 
     Map.filterWithKey (\sym _ -> resolvedSymbolName sym `elem` names)
 
-processModules :: [String] -> ModuleGraph -> FilePath -> IO ()
-processModules sorted graph inputPath = do
+processModules :: [String] -> ModuleGraph -> String -> FilePath -> IO ()
+processModules sorted graph outputBaseName inputPath = do
     (allModules, fusedTypeMap) <- processAllModules sorted graph Map.empty Map.empty
     
     let fusedAst = createFusedAst allModules
-    let llvmIr = runLlvmCodeGenAndTranscribe "program" fusedAst fusedTypeMap
+    let llvmIr = runLlvmCodeGenAndTranscribe outputBaseName fusedAst fusedTypeMap
     
     let buildDir = inputPath </> "build"
     createDirectoryIfMissing True buildDir
-    
-    let projectName = takeFileName inputPath
-    let llFile = buildDir </> (projectName ++ ".ll")
-    let exeFile = buildDir </> projectName
-    
+
+    let llFile = buildDir </> (outputBaseName ++ ".ll")
+    let exeFile = buildDir </> outputBaseName
+
     writeFile llFile llvmIr
     putStrLn $ "Generated LLVM IR file: " ++ llFile
     
@@ -101,8 +101,9 @@ processAllModules (modName : rest) graph allModules fusedTypeMap = do
         Left errs -> mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") errs >> exitFailure
         Right t -> return t
     
-    putStrLn $ "Module " ++ modName ++ " processed successfully"
-    
+    putStrLn $ "Module " ++ modName ++ " processed successfully: "
+    putStrLn $ treeShow types
+
     let newAllModules = Map.insert modName (resolvedAst, types, newDefs) allModules
         newFusedTypeMap = Map.union types fusedTypeMap
     processAllModules rest graph newAllModules newFusedTypeMap

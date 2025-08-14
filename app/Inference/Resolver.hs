@@ -10,6 +10,7 @@ import Control.Monad.State (MonadState (get, put), State, gets, runState, modify
 import qualified Data.Map as Map
 import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
+import Inference.Substitution (Substitutable (apply))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (curryFunction)
 import Typing.Types (Kind (..), QualifiedType (Forall), TyConstructor (TypeConstructor), TyVar (tvKind), Type (..), assignConstraints, sumQualifiedTypes)
@@ -53,6 +54,10 @@ collectGlobals (ExprBindingDef name bindType _ topLevel _) =
         addGlobalBinding name bindType BindingSymbol
 collectGlobals (ExprIntrinsicDef name bindType _) = do
     addGlobalBinding name bindType IntrinsicBindingSymbol
+collectGlobals (ExprIntrinsicDataTypeDef name kind _) = do
+    let baseConstructor = TConstructor $ TypeConstructor name kind
+    let constrainedType = Forall [] [] baseConstructor
+    addGlobalBinding name constrainedType IntrinsicTypeSymbol
 collectGlobals (ExprDataTypeDef name generics constraints constructors _) = do
     let kind = foldr (KindArrow . tvKind) KindStar generics
     let baseConstructor = TConstructor $ TypeConstructor name kind
@@ -235,9 +240,16 @@ replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
     replaceAllUnresolvedC (TApp t1 t2) = do
         (t1', qu1) <- replaceAllUnresolvedC t1
         (t2', qu2) <- replaceAllUnresolvedC t2
-        let newType = TApp t1' t2'
-        let qualifieds = mconcat [qu1, qu2]
-        pure (newType, qualifieds)
+
+        case (t1, qu1) of
+            (TUnresolved _, [Forall (tv:_) _ _]) -> do
+                let subst = Map.singleton tv t2'
+                let instantiatedType = apply subst t1'
+                pure (instantiatedType, [])
+            _ -> do
+                let newType = TApp t1' t2'
+                let qualifieds = mconcat [qu1, qu2]
+                pure (newType, qualifieds)
     replaceAllUnresolvedC (TArrow t1 t2) = do
         (t1', qu1) <- replaceAllUnresolvedC t1
         (t2', qu2) <- replaceAllUnresolvedC t2

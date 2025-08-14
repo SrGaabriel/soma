@@ -12,6 +12,7 @@ data Options = Options
     , optionsOutput :: Maybe String
     , optionsLlvmOnly :: Bool
     , optionsKeepAll :: Bool
+    , optionsEmitTypes :: Bool
     , optionsRun :: Bool
     }
     deriving (Show)
@@ -24,6 +25,7 @@ defaultOptions =
         , optionsLlvmOnly = False
         , optionsKeepAll = False
         , optionsRun = False
+        , optionsEmitTypes = True
         }
 
 getInputFile :: Options -> String
@@ -54,6 +56,8 @@ processArgs (arg : rest) opts
     | arg == "--run" = processArgs rest (opts{optionsRun = True})
     | arg == "-output" && not (null rest) =
         processArgs (hardTail rest) (opts{optionsOutput = Just (hardHead rest)})
+    | arg == "--emit-types" =
+        processArgs rest (opts{optionsEmitTypes = True})
     | "--output=" `isPrefixOf` arg =
         let value = drop (length "--output=") arg
         in processArgs rest (opts{optionsOutput = Just value})
