@@ -1,44 +1,70 @@
 module Llvm.Modules where
-import Llvm.Types (LlvmType)
-import Llvm.Instructions (LlvmStatement)
-import Llvm.Ir (IR (toLlvm))
+
+import Data.List (intercalate)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.List (intercalate)
 import Llvm.Dependencies (LlvmDependency)
+import Llvm.Instructions (LlvmStatement)
+import Llvm.Ir (IR (toLlvm))
+import Llvm.Types (LlvmType)
 
 data LlvmModule = LlvmModule
-  { moduleName :: String
-  , moduleFunctions :: [LlvmFunction]
-  , moduleDependencies :: [LlvmDependency]
-  } deriving (Show)
+  { moduleName :: String,
+    moduleFunctions :: [LlvmFunction],
+    moduleStructs :: [LlvmStruct],
+    moduleDependencies :: [LlvmDependency]
+  }
+  deriving (Show)
 
 data LlvmFunction = LlvmFunction
-  { functionName :: String
-  , functionParams :: Map String LlvmType
-  , functionReturnType :: LlvmType
-  , functionBlocks :: [LlvmBlock]
-  , functionStatements :: [LlvmStatement]
-  } deriving (Show)
+  { functionName :: String,
+    functionParams :: Map String LlvmType,
+    functionReturnType :: LlvmType,
+    functionBlocks :: [LlvmBlock],
+    functionStatements :: [LlvmStatement]
+  }
+  deriving (Show)
+
+data LlvmStruct = LlvmStruct
+  { structName :: String,
+    structFields :: [LlvmType]
+  }
+  deriving (Show)
 
 data LlvmBlock = LlvmBlock
-  { blockName :: String
-  , blockStatements :: [LlvmStatement]
-  } deriving (Show)
+  { blockName :: String,
+    blockStatements :: [LlvmStatement]
+  }
+  deriving (Show)
 
 instance IR LlvmModule where
-    toLlvm (LlvmModule _ functions dependencies) =
-        unlines (map toLlvm dependencies) ++
-        "\n\n" ++
-        unlines (map toLlvm functions)
+  toLlvm (LlvmModule _ functions structs dependencies) =
+    unlines (map toLlvm dependencies)
+      ++ "\n\n"
+      ++ unlines (map toLlvm structs)
+      ++ "\n\n"
+      ++ unlines (map toLlvm functions)
 
 instance IR LlvmFunction where
-    toLlvm (LlvmFunction name params retType blocks stmts) =
-        "define " ++ toLlvm retType ++ " @" ++ name ++ "(" ++
-        intercalate "," (map (\(n, t) -> toLlvm t ++ " %" ++ n) (Map.toList params)) ++ ") {\n" ++
-        unlines (map toLlvm blocks) ++
-        unlines (map toLlvm stmts) ++
-        "}"
+  toLlvm (LlvmFunction name params retType blocks stmts) =
+    "define "
+      ++ toLlvm retType
+      ++ " @"
+      ++ name
+      ++ "("
+      ++ intercalate "," (map (\(n, t) -> toLlvm t ++ " %" ++ n) (Map.toList params))
+      ++ ") {\n"
+      ++ unlines (map toLlvm blocks)
+      ++ unlines (map toLlvm stmts)
+      ++ "}"
+
+instance IR LlvmStruct where
+  toLlvm (LlvmStruct name fields) =
+    "%"
+      ++ name
+      ++ " = type {"
+      ++ intercalate ", " (map toLlvm fields)
+      ++ "}"
 
 instance IR LlvmBlock where
-    toLlvm (LlvmBlock name stmts) = name ++ ":\n" ++ unlines (map toLlvm stmts)
+  toLlvm (LlvmBlock name stmts) = name ++ ":\n" ++ unlines (map toLlvm stmts)

@@ -10,8 +10,11 @@ import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getRegName)
 import Control.Monad.Writer
-import Llvm.Modules (LlvmFunction)
+import Llvm.Modules (LlvmFunction, LlvmStruct)
 import Llvm.Dependencies (LlvmDependency)
+import Syntax.Tree (Expr)
+import Typing.Types (QualifiedType)
+import Llvm.Gen.Metadata (ConstructorMetadata)
 
 data IrGenEnv = IrGenEnv
     { currentScope :: MemoryScope
@@ -24,6 +27,8 @@ data IrGenState = IrGenState
     , typeMap :: TypeMap
     , currentBlock :: Maybe String
     , irFunctions :: [LlvmFunction]
+    , constructorMap :: Map String ConstructorMetadata
+    , irStructs :: [LlvmStruct]
     , irDependencies :: [LlvmDependency]
     }
     deriving (Show)
@@ -33,8 +38,10 @@ globalDefaultState = IrGenState
     { nextRegister = 0
     , nextBlock = 0
     , typeMap = Map.empty
+    , constructorMap = Map.empty
     , currentBlock = Nothing
     , irFunctions = []
+    , irStructs = []
     , irDependencies = []
     }
 
@@ -43,8 +50,10 @@ cleanGlobalState tM = IrGenState
     { nextRegister = 0
     , nextBlock = 0
     , typeMap = tM
+    , constructorMap = Map.empty
     , currentBlock = Nothing
     , irFunctions = []
+    , irStructs = []
     , irDependencies = []
     }
 
@@ -122,3 +131,23 @@ scopedState action = do
     result <- action
     put st
     return result
+
+getType :: MonadState IrGenState m => Expr -> m QualifiedType
+getType expr = do
+    st <- get
+    let tyMap = typeMap st
+    case Map.lookup expr tyMap of
+        Just ty -> return ty
+        Nothing -> error $ "Type not found for expression: " ++ show expr
+
+irGenToWriterOuter :: IrGen a 
+                   -> WriterT [LlvmStatement] (ReaderT IrGenEnv (State IrGenState)) a
+irGenToWriterOuter action = WriterT $ ReaderT $ \env -> StateT $ \st ->
+    let ((result, stmts), st') = runState (runWriterT (runReaderT action env)) st
+    in return ((result, stmts), st')
+
+writerOuterToIrGen :: WriterT [LlvmStatement] (ReaderT IrGenEnv (State IrGenState)) a 
+                   -> IrGen a
+writerOuterToIrGen action = ReaderT $ \env -> WriterT $ StateT $ \st ->
+    let ((result, stmts), st') = runState (runReaderT (runWriterT action) env) st
+    in return ((result, stmts), st')

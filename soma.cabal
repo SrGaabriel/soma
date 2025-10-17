@@ -63,6 +63,8 @@ library
                     Llvm.Gen.Value
                     Llvm.Gen.Bindings
                     Llvm.Gen.Types
+                    Llvm.Gen.DataTypes
+                    Llvm.Gen.Metadata
                     Analysis.Symbol
   hs-source-dirs:   app
   build-depends:    base >= 4.19.2.0,

@@ -4,12 +4,12 @@ import Control.Monad.RWS
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
-import Llvm.Gen.Core (IrGen, IrGenState (irFunctions), freshReg, freshScope, IrGenEnv (..), MemoryScope (..))
+import Llvm.Gen.Core (IrGen, IrGenState (..), freshReg, freshScope, IrGenEnv (..), MemoryScope (..))
 import Llvm.Gen.Types (toAllocationLlvmType)
 import Llvm.Gen.Value (compileValue)
-import Llvm.Instructions (LlvmStatement (LlvmRet))
+import Llvm.Instructions (LlvmStatement (..), LlvmInstruction (..))
 import Llvm.Modules (LlvmFunction (..))
-import Llvm.Types (LlvmType (LlvmVoid))
+import Llvm.Types (LlvmType (..))
 import Llvm.Values (getValueType, LlvmValue(..))
 import Syntax.Tree (Expr (..))
 import Typing.Currying (uncurryFunction)
@@ -23,7 +23,6 @@ compileBindingDef (ExprBindingDef name (Forall _ _ bindingTyp) body _ _) = do
     fnArgRegs <- mapM (freshReg . toAllocationLlvmType) fnArgs
     newScope <- freshScope name
     st <- get
-
     let (newEnv, action) = case body of
             ExprLambda args lambdaBody _ -> do
                 let argBindings = zip args fnArgRegs
@@ -34,29 +33,42 @@ compileBindingDef (ExprBindingDef name (Forall _ _ bindingTyp) body _ _) = do
                 let updatedEnv = env { currentScope = updatedScope, currentFunction = Just name }
                 (updatedEnv, compileValue lambdaBody)
             u -> error $ "Unsupported body expression: " ++ show u
-
-    let ((retVal, stmts), st') = runState (runReaderT (runWriterT action) newEnv) st
-
+    let ((retVal, stmts), st') = runState (runWriterT (runReaderT action newEnv)) st
     let llvmFnArgTypes = map toAllocationLlvmType fnArgs
     let llvmFnRetType = toAllocationLlvmType fnRetType
     let llvmFnArgs = Map.fromList [(case argName of LlvmRegister _ n -> n; _ -> error "Expected LlvmRegister", argType) | (argName, argType) <- (zip fnArgRegs llvmFnArgTypes)]
-
-    let finalStatement =
-            LlvmRet
-                llvmFnRetType
-                ( case getValueType retVal of
-                    LlvmVoid -> Nothing
-                    _ -> Just retVal
-                )
-
-    put st'
+    
+    let (finalRetVal, additionalStmts) = case getValueType retVal of
+            LlvmVoid -> (Nothing, [])
+            LlvmPointer innerType@(LlvmNamedType _) -> 
+                if isADTReturnedByValue llvmFnRetType then
+                    let loadReg = LlvmRegister innerType ("reg_" ++ show (nextRegister st'))
+                        loadStmt = LlvmAssign (getRegName loadReg) (LlvmLoad retVal)
+                    in (Just loadReg, [loadStmt])
+                else
+                    (Just retVal, [])
+            _ -> (Just retVal, [])
+    
+    let finalStatement = LlvmRet llvmFnRetType finalRetVal
+    
+    put st' { nextRegister = nextRegister st' + length additionalStmts }
+    
     let llvmFunction =
             LlvmFunction
                 { functionName = name
                 , functionParams = llvmFnArgs
                 , functionReturnType = llvmFnRetType
                 , functionBlocks = []
-                , functionStatements = stmts ++ [finalStatement]
+                , functionStatements = stmts ++ additionalStmts ++ [finalStatement]
                 }
     modify $ \s -> s { irFunctions = llvmFunction : irFunctions s }
 compileBindingDef _ = error "Unsupported binding definition expression"
+
+isADTReturnedByValue :: LlvmType -> Bool
+isADTReturnedByValue (LlvmNamedType _) = True  
+isADTReturnedByValue (LlvmPointer _) = False   
+isADTReturnedByValue _ = False                 
+
+getRegName :: LlvmValue -> String
+getRegName (LlvmRegister _ name) = name
+getRegName _ = error "Expected register"

@@ -1,6 +1,14 @@
 intrinsic def {+} :: a -> a -> a
 intrinsic def {==} :: a -> a -> Bool
 
+data MaybeInt
+    = Just
+        value :: Int
+    | Nothing
+        
+
+def giveMaybeInt(value: Int) -> MaybeInt = Just value
+
 /*def isZero :: Int -> Bool
     | 0 => true
     | _ => false*/
@@ -8,6 +16,3 @@ intrinsic def {==} :: a -> a -> Bool
 def testSum(x: Int, y: Int) -> Int = x + y
 
 def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
-
-intrinsic data IO :: * -> *
-def testBox(box: IO Int) -> IO Int = box

@@ -13,7 +13,7 @@ data LlvmType
     | LlvmPtr
     | LlvmPointer LlvmType  -- Alternative pointer syntax
     | LlvmArray Int LlvmType
-    | LlvmStruct String
+    | LlvmNamedType String
     | LlvmFn -- placeholder, not used in this context
     deriving (Show, Eq)
 
@@ -29,5 +29,24 @@ instance IR LlvmType where
     toLlvm LlvmPtr = "ptr"
     toLlvm (LlvmPointer t) = toLlvm t ++ "*"
     toLlvm (LlvmArray n t) = "[" ++ show n ++ " x " ++ toLlvm t ++ "]"
-    toLlvm (LlvmStruct name) = "%" ++ name
+    toLlvm (LlvmNamedType name) = "%" ++ name
     toLlvm LlvmFn = "|fn|"
+
+getLlvmTypeSize :: LlvmType -> Int
+getLlvmTypeSize LlvmVoid = 0
+getLlvmTypeSize LlvmI1 = 1
+getLlvmTypeSize LlvmI8 = 1
+getLlvmTypeSize LlvmI16 = 2
+getLlvmTypeSize LlvmI32 = 4
+getLlvmTypeSize LlvmI64 = 8
+getLlvmTypeSize LlvmFloat = 4
+getLlvmTypeSize LlvmDouble = 8
+getLlvmTypeSize LlvmPtr = 8
+getLlvmTypeSize (LlvmPointer t) = getLlvmTypeSize t
+getLlvmTypeSize (LlvmArray n t) = n * getLlvmTypeSize t
+getLlvmTypeSize (LlvmNamedType _) = error "Named types do not have a fixed size"
+getLlvmTypeSize LlvmFn = error "Function types do not have a fixed size"
+
+deref :: LlvmType -> LlvmType
+deref (LlvmPointer t) = t
+deref u = error $ "Cannot dereference non-pointer type: " ++ show u
