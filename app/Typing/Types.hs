@@ -130,3 +130,11 @@ extractTyVars t = nubTyVars (extractTyVars' t)
 
     nubTyVars [] = []
     nubTyVars (x : xs) = x : nubTyVars (filter (/= x) xs)
+
+isPolymorphic :: Type -> Bool
+isPolymorphic (TVar _) = True
+isPolymorphic (TSkolem _) = False
+isPolymorphic (TApp t1 t2) = isPolymorphic t1 || isPolymorphic t2
+isPolymorphic (TArrow t1 t2) = isPolymorphic t1 || isPolymorphic t2
+isPolymorphic (TConstructor _) = False
+isPolymorphic (TUnresolved _) = False

@@ -3,7 +3,7 @@ import Typing.Types (Type)
 
 data ConstructorMetadata = ConstructorMetadata
     {
-    typeName :: String,
-    tag :: Int,
-    args :: [Type]
+    constructorMetadataTypeName :: String,
+    constructorMetadataTag :: Int,
+    constructorMetadataArgs :: [Type]
     } deriving (Show, Eq)

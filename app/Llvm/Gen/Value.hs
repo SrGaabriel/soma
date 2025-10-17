@@ -4,23 +4,23 @@
 module Llvm.Gen.Value where
 
 import Control.Monad (unless)
-import Control.Monad.Reader (ReaderT)
-import Control.Monad.State (MonadState (..), State, gets)
-import Control.Monad.Writer (MonadWriter (..), WriterT)
+import Control.Monad.State (MonadState (..), gets, modify)
+import Control.Monad.Writer (MonadWriter (..))
+import Data.List (find)
 import qualified Data.Map as Map
-import Llvm.Gen.Core (IrGen, IrGenEnv, IrGenState (constructorMap, typeMap, irStructs), lookupMemory, saveInstruction)
+import Llvm.Gen.Core (IrGen, IrGenState (constructorMap, irStructs, typeMap), lookupMemory, saveInstruction)
 import Llvm.Gen.Metadata (ConstructorMetadata (..))
-import Llvm.Gen.Types (toAllocationLlvmType)
+import Llvm.Gen.Types (toAllocationLlvmType, llvmTypeToMonomorphicName)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (LlvmStore))
 import Llvm.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
-import Llvm.Types (LlvmType (..), getLlvmTypeSize, deref)
+import Llvm.Modules (LlvmStruct (LlvmStruct))
+import Llvm.Types (LlvmType (..), deref, getLlvmTypeSize)
 import Llvm.Values (LlvmValue (..), getValueType, intLiteral)
-import Project.Symbols (Symbol (ResolvedSymbol), SymbolKind (..), resolvedSymbolKind)
+import Project.Symbols (Symbol (ResolvedSymbol), SymbolKind (..))
 import Syntax.Tree (Expr (..), uncurryApp)
 import Typing.Currying (uncurryFunction)
-import Typing.Types (QualifiedType (Forall))
-import Llvm.Modules (LlvmStruct(LlvmStruct))
-import Data.List (find)
+import Typing.Types (QualifiedType (Forall), isPolymorphic)
+import GHC.Base (when)
 
 compileValue :: Expr -> IrGen LlvmValue
 compileValue expr = case expr of
@@ -38,7 +38,6 @@ compileValue expr = case expr of
 
                 compileConstructorApp ctorName args
             else do
-                -- Regular function call
                 tyMap <- gets typeMap
                 let (callBase, nestedCallArgs) = uncurryApp fn
                 let callArgs = arg : nestedCallArgs
@@ -58,18 +57,37 @@ compileValue expr = case expr of
 
 compileConstructorApp :: String -> [Expr] -> IrGen LlvmValue
 compileConstructorApp ctorName args = do
-    ConstructorMetadata typeName tag _ <- getConstructorInfo ctorName
+    ConstructorMetadata baseTypeName tag argTypes <- getConstructorInfo ctorName
 
-    let structType = LlvmNamedType typeName
+    argVals <- mapM compileValue args
+    let concreteArgTypes = map getValueType argVals
+    let isConstructorPolymorphic = any isPolymorphic argTypes
+
+    let monomorphicName = if not isConstructorPolymorphic
+                          then baseTypeName
+                          else baseTypeName ++ concatMap (("_" ++) . llvmTypeToMonomorphicName) concreteArgTypes
+
+    let structType = LlvmNamedType monomorphicName
     structPtr <- saveInstruction (LlvmAlloca structType) (LlvmPointer structType)
-
     writeTag structPtr tag
-
-    unless (null args) $ do
-        dataPtr <- getUnionDataPtr structPtr typeName
+    when isConstructorPolymorphic $ do
+        ensureMonomorphicStructExists monomorphicName concreteArgTypes
+        dataPtr <- getUnionDataPtr structPtr monomorphicName
         writeConstructorData dataPtr args
-
     return structPtr
+
+ensureMonomorphicStructExists :: String -> [LlvmType] -> IrGen ()
+ensureMonomorphicStructExists monomorphicName concreteArgTypes = do
+    st <- get
+    let exists = any (\(LlvmStruct name _) -> name == monomorphicName) (irStructs st)
+
+    unless exists $ do
+        let variantSizes = map getLlvmTypeSize concreteArgTypes
+        let maxSize = if null variantSizes then 0 else maximum variantSizes
+        let fields = [LlvmI8, LlvmArray maxSize LlvmI8]
+        let structDef = LlvmStruct monomorphicName fields
+
+        modify $ \s -> s { irStructs = structDef : irStructs s }
 
 getUnionDataPtr :: LlvmValue -> String -> IrGen LlvmValue
 getUnionDataPtr structPtr typeName = do

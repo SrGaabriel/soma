@@ -1,13 +1,21 @@
 intrinsic def {+} :: a -> a -> a
 intrinsic def {==} :: a -> a -> Bool
 
-data MaybeInt
+data Maybe a
     = Just
+        value :: a
+    | Nothing
+        
+
+def pureMaybeInt(value: Int) -> Maybe Int = Just value
+
+data Optional
+    = Some
         value :: Int
     | Nothing
         
 
-def giveMaybeInt(value: Int) -> MaybeInt = Just value
+def pureOptionalInt(value: Int) -> Optional = Some value
 
 /*def isZero :: Int -> Bool
     | 0 => true

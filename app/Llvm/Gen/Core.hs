@@ -1,20 +1,21 @@
 {-# LANGUAGE FlexibleContexts #-}
+
 module Llvm.Gen.Core where
 
 import Control.Monad.Reader
 import Control.Monad.State
+import Control.Monad.Writer
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Inference.Core (TypeMap)
+import Llvm.Dependencies (LlvmDependency)
+import Llvm.Gen.Metadata (ConstructorMetadata)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
+import Llvm.Modules (LlvmFunction, LlvmStruct)
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getRegName)
-import Control.Monad.Writer
-import Llvm.Modules (LlvmFunction, LlvmStruct)
-import Llvm.Dependencies (LlvmDependency)
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType)
-import Llvm.Gen.Metadata (ConstructorMetadata)
 
 data IrGenEnv = IrGenEnv
     { currentScope :: MemoryScope
@@ -34,49 +35,53 @@ data IrGenState = IrGenState
     deriving (Show)
 
 globalDefaultState :: IrGenState
-globalDefaultState = IrGenState
-    { nextRegister = 0
-    , nextBlock = 0
-    , typeMap = Map.empty
-    , constructorMap = Map.empty
-    , currentBlock = Nothing
-    , irFunctions = []
-    , irStructs = []
-    , irDependencies = []
-    }
+globalDefaultState =
+    IrGenState
+        { nextRegister = 0
+        , nextBlock = 0
+        , typeMap = Map.empty
+        , constructorMap = Map.empty
+        , currentBlock = Nothing
+        , irFunctions = []
+        , irStructs = []
+        , irDependencies = []
+        }
 
 cleanGlobalState :: TypeMap -> IrGenState
-cleanGlobalState tM = IrGenState
-    { nextRegister = 0
-    , nextBlock = 0
-    , typeMap = tM
-    , constructorMap = Map.empty
-    , currentBlock = Nothing
-    , irFunctions = []
-    , irStructs = []
-    , irDependencies = []
-    }
+cleanGlobalState tM =
+    IrGenState
+        { nextRegister = 0
+        , nextBlock = 0
+        , typeMap = tM
+        , constructorMap = Map.empty
+        , currentBlock = Nothing
+        , irFunctions = []
+        , irStructs = []
+        , irDependencies = []
+        }
 
 globalDefaultEnv :: IrGenEnv
-globalDefaultEnv = IrGenEnv
-    { currentScope = MemoryScope
-        { blockName = "global"
-        , blockValues = Map.empty
-        , blockParent = Nothing
+globalDefaultEnv =
+    IrGenEnv
+        { currentScope =
+            MemoryScope
+                { blockName = "global"
+                , blockValues = Map.empty
+                , blockParent = Nothing
+                }
+        , currentFunction = Nothing
         }
-    , currentFunction = Nothing
-    }
 
 type IrGen a = ReaderT IrGenEnv (WriterT [LlvmStatement] (State IrGenState)) a
 
 runIrGen :: IrGenEnv -> IrGenState -> IrGen a -> ((a, [LlvmStatement]), IrGenState)
 runIrGen env st action =
-  runState (runWriterT (runReaderT action env)) st
+    runState (runWriterT (runReaderT action env)) st
 
-freshReg :: MonadState IrGenState m => LlvmType -> m LlvmValue
+freshReg :: (MonadState IrGenState m) => LlvmType -> m LlvmValue
 freshReg ty = do
     n <- gets nextRegister
-    modify $ \s -> s { nextRegister = n + 1 }
+    modify $ \s -> s{nextRegister = n + 1}
     return $ LlvmRegister ty ("reg_" ++ show n)
 
 data MemoryScope = MemoryScope
@@ -91,22 +96,23 @@ insertMemory name value = do
     env <- ask
     let scope = currentScope env
         newValues = Map.insert name value (blockValues scope)
-        newScope = scope { blockValues = newValues }
-    local (\e -> e { currentScope = newScope }) (return ())
+        newScope = scope{blockValues = newValues}
+    local (\e -> e{currentScope = newScope}) (return ())
 
-lookupMemory :: MonadReader IrGenEnv m => String -> m (Maybe LlvmValue)
+lookupMemory :: (MonadReader IrGenEnv m) => String -> m (Maybe LlvmValue)
 lookupMemory name = do
-  scope <- asks currentScope
-  return $ getMem scope name
+    scope <- asks currentScope
+    return $ getMem scope name
 
 freshScope :: String -> IrGen MemoryScope
 freshScope name = do
     parent <- asks currentScope
-    return MemoryScope
-        { blockName = name
-        , blockValues = Map.empty
-        , blockParent = Just parent
-        }
+    return
+        MemoryScope
+            { blockName = name
+            , blockValues = Map.empty
+            , blockParent = Just parent
+            }
 
 getMem :: MemoryScope -> String -> Maybe LlvmValue
 getMem (MemoryScope _ values parent) name =
@@ -117,9 +123,9 @@ getMem (MemoryScope _ values parent) name =
             Nothing -> Nothing
 
 withScope :: MemoryScope -> IrGen a -> IrGen a
-withScope newScope = local (\env -> env { currentScope = newScope })
+withScope newScope = local (\env -> env{currentScope = newScope})
 
-saveInstruction :: MonadState IrGenState m => MonadWriter [LlvmStatement] m => LlvmInstruction -> LlvmType -> m LlvmValue
+saveInstruction :: (MonadState IrGenState m) => (MonadWriter [LlvmStatement] m) => LlvmInstruction -> LlvmType -> m LlvmValue
 saveInstruction instr ty = do
     reg <- freshReg ty
     tell [LlvmAssign (getRegName reg) instr]
@@ -132,7 +138,7 @@ scopedState action = do
     put st
     return result
 
-getType :: MonadState IrGenState m => Expr -> m QualifiedType
+getType :: (MonadState IrGenState m) => Expr -> m QualifiedType
 getType expr = do
     st <- get
     let tyMap = typeMap st
@@ -140,14 +146,16 @@ getType expr = do
         Just ty -> return ty
         Nothing -> error $ "Type not found for expression: " ++ show expr
 
-irGenToWriterOuter :: IrGen a 
-                   -> WriterT [LlvmStatement] (ReaderT IrGenEnv (State IrGenState)) a
+irGenToWriterOuter ::
+    IrGen a ->
+    WriterT [LlvmStatement] (ReaderT IrGenEnv (State IrGenState)) a
 irGenToWriterOuter action = WriterT $ ReaderT $ \env -> StateT $ \st ->
     let ((result, stmts), st') = runState (runWriterT (runReaderT action env)) st
     in return ((result, stmts), st')
 
-writerOuterToIrGen :: WriterT [LlvmStatement] (ReaderT IrGenEnv (State IrGenState)) a 
-                   -> IrGen a
+writerOuterToIrGen ::
+    WriterT [LlvmStatement] (ReaderT IrGenEnv (State IrGenState)) a ->
+    IrGen a
 writerOuterToIrGen action = ReaderT $ \env -> WriterT $ StateT $ \st ->
     let ((result, stmts), st') = runState (runReaderT (runWriterT action) env) st
     in return ((result, stmts), st')
