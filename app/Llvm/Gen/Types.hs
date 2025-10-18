@@ -4,6 +4,9 @@ import Typing.Types (Type(..), TyConstructor (TypeConstructor), TyVar (TypeVar),
 
 toAllocationLlvmType :: Type -> LlvmType
 toAllocationLlvmType t = case flattenTypeApp t of
+    (TConstructor (TypeConstructor "IO" _), [innerType]) -> 
+        toAllocationLlvmType innerType
+    (TConstructor (TypeConstructor "Unit" _), []) -> LlvmVoid
     (TConstructor (TypeConstructor "Int" _), []) -> LlvmI32
     (TConstructor (TypeConstructor "Float" _), []) -> LlvmFloat
     (TConstructor (TypeConstructor "String" _), []) -> LlvmArray 0 LlvmI8

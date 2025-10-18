@@ -1,12 +1,13 @@
 intrinsic def {+} :: a -> a -> a
 intrinsic def {==} :: a -> a -> Bool
+intrinsic def println :: String -> IO ()
+intrinsic data IO :: * -> *
 
 data Maybe a
     = Just
         value :: a
     | Nothing
         
-
 def pureMaybeInt(value: Int) -> Maybe Int = Just value
 
 data Optional
@@ -24,3 +25,5 @@ def pureOptionalInt(value: Int) -> Optional = Some value
 def testSum(x: Int, y: Int) -> Int = x + y
 
 def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
+
+def main :: IO () = println "Hello, World!"

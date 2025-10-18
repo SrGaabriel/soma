@@ -27,7 +27,6 @@ parseBinding isTopLevel = do
                     <* consume TokenRightParen
 
             case impParams of
-                [] -> throwError $ FunctionArgumentLengthMismatch defToken
                 xs
                     | all isSimplyTyped xs -> do
                         let params = Prelude.map (\(SimplyTypedParam (tok, typ)) -> (tok, typ)) xs

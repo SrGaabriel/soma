@@ -74,9 +74,8 @@ parseAtom = do
         TokenUpperIdentifier -> do
             idToken <- next
             pure $ ExprUVar (tokenValue idToken) (tokenSpan idToken)
-        TokenString -> do
-            stringToken <- next
-            pure $ ExprStr (tokenValue stringToken) (tokenSpan stringToken)
+        TokenString str -> do
+            ExprStr str . tokenSpan <$> next
         TokenLet -> parseLetExpression
         TokenDollar -> do
             _dollar <- next

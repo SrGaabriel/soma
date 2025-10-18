@@ -15,6 +15,7 @@ data LlvmType
     | LlvmArray Int LlvmType
     | LlvmNamedType String
     | LlvmFn -- placeholder, not used in this context
+    | LlvmVararg
     deriving (Show, Eq)
 
 instance IR LlvmType where
@@ -31,6 +32,7 @@ instance IR LlvmType where
     toLlvm (LlvmArray n t) = "[" ++ show n ++ " x " ++ toLlvm t ++ "]"
     toLlvm (LlvmNamedType name) = "%" ++ name
     toLlvm LlvmFn = "|fn|"
+    toLlvm LlvmVararg = "..."
 
 getLlvmTypeSize :: LlvmType -> Int
 getLlvmTypeSize LlvmVoid = 0
@@ -46,6 +48,7 @@ getLlvmTypeSize (LlvmPointer t) = getLlvmTypeSize t
 getLlvmTypeSize (LlvmArray n t) = n * getLlvmTypeSize t
 getLlvmTypeSize (LlvmNamedType _) = error "Named types do not have a fixed size"
 getLlvmTypeSize LlvmFn = error "Function types do not have a fixed size"
+getLlvmTypeSize LlvmVararg = error "Vararg types do not have a fixed size"
 
 deref :: LlvmType -> LlvmType
 deref (LlvmPointer t) = t

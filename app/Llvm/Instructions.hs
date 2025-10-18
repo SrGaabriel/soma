@@ -13,7 +13,7 @@ data LlvmInstruction
     | LlvmLoad LlvmValue
     | LlvmAlloca LlvmType
     | LlvmICmpEq LlvmType LlvmValue LlvmValue
-    | LlvmGetElementPtr LlvmType LlvmValue [LlvmValue]
+    | LlvmGetElementPtr LlvmType LlvmValue [LlvmValue] Bool
     | LlvmBitcast LlvmValue LlvmType
     | LlvmSwitch LlvmValue String [(LlvmValue, String)]
     deriving (Show, Eq)
@@ -35,13 +35,13 @@ instance IR LlvmInstruction where
     toLlvm (LlvmLoad value) = "load " ++ toLlvm (deref $ getValueType value) ++ ", ptr " ++ toLlvm value
     toLlvm (LlvmAlloca typ) = "alloca " ++ toLlvm typ
     toLlvm (LlvmICmpEq typ lhs rhs) = "icmp eq " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
-    toLlvm (LlvmGetElementPtr structType basePtr indices) =
+    toLlvm (LlvmGetElementPtr structType basePtr indices inbounds) =
         "getelementptr "
+            ++ (if inbounds then "inbounds " else "")
             ++ toLlvm structType
             ++ ", ptr "
             ++ toLlvm basePtr
-            ++ ", "
-            ++ intercalate ", " (map (\idx -> toLlvm (getValueType idx) ++ " " ++ toLlvm idx) indices)
+            ++ concatMap (\idx -> ", " ++ toLlvm (getValueType idx) ++ " " ++ toLlvm idx) indices
     toLlvm (LlvmBitcast value targetType) =
         "bitcast " ++ toLlvm (getValueType value) ++ " " ++ toLlvm value ++ " to " ++ toLlvm targetType
     toLlvm (LlvmSwitch scrutinee defaultLabel cases) =

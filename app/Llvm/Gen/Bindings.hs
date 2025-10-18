@@ -32,7 +32,7 @@ compileBindingDef (ExprBindingDef name (Forall _ _ bindingTyp) body _ _) = do
                         }
                 let updatedEnv = env { currentScope = updatedScope, currentFunction = Just name }
                 (updatedEnv, compileValue lambdaBody)
-            u -> error $ "Unsupported body expression: " ++ show u
+            u -> (env, compileValue u)
     let ((retVal, stmts), st') = runState (runWriterT (runReaderT action newEnv)) st
     let llvmFnArgTypes = map toAllocationLlvmType fnArgs
     let llvmFnRetType = toAllocationLlvmType fnRetType

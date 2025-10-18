@@ -29,7 +29,7 @@ data TokenKind
     | TokenLet
     | TokenIn
     | TokenImport
-    | TokenString
+    | TokenString String
     | TokenDollar
     | TokenStruct
     | TokenLeftBraces
@@ -125,7 +125,7 @@ tokenize (c : cs) i indent
                 in case rest of
                     '"' : '"' : '"' : rest' ->
                         let quotedText = "\"\"\"" ++ text ++ "\"\"\""
-                        in addToken (Token TokenString quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+                        in addToken (Token (TokenString text) quotedText i indent) (tokenize rest' (i + length quotedText) indent)
                     _ ->
                         let (restTokens, restErrors) = tokenize rest (i + length ("\"\"\"" ++ text)) indent
                         in (restTokens, UnterminatedString i : restErrors)
@@ -134,7 +134,7 @@ tokenize (c : cs) i indent
                 in case rest of
                     '"' : rest' ->
                         let quotedText = c : text ++ "\""
-                        in addToken (Token TokenString quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+                        in addToken (Token (TokenString text) quotedText i indent) (tokenize rest' (i + length quotedText) indent)
                     '\n' : _ ->
                         let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
                         in (restTokens, UnterminatedString i : restErrors)
@@ -222,7 +222,7 @@ referenceToken token = case tokenKind token of
     TokenNewline -> "newline"
     TokenLowerIdentifier -> "lower-case identifier '" ++ tokenValue token ++ "'"
     TokenUpperIdentifier -> "upper-case identifier '" ++ tokenValue token ++ "'"
-    TokenString -> "string '" ++ tokenValue token ++ "'"
+    TokenString str -> "string '" ++ str ++ "'"
     _ -> "'" ++ tokenValue token ++ "'"
 
 referenceTokenKind :: TokenKind -> String
@@ -252,7 +252,7 @@ referenceTokenKind TokenRightParen = "a right parenthesis"
 referenceTokenKind TokenPipe = "a vertical bar"
 referenceTokenKind TokenLet = "'let'"
 referenceTokenKind TokenIn = "'in'"
-referenceTokenKind TokenString = "a string"
+referenceTokenKind (TokenString _) = "a string"
 referenceTokenKind TokenStruct = "a struct"
 referenceTokenKind TokenData = "a data type"
 referenceTokenKind TokenLeftBracket = "a left bracket"
