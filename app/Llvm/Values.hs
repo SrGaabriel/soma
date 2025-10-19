@@ -1,13 +1,12 @@
 module Llvm.Values where
 
-import Llvm.Types (LlvmType (LlvmI32))
 import Llvm.Ir (IR (toLlvm))
+import Llvm.Types (LlvmType (LlvmI32))
 
 data LlvmValue
     = LlvmLiteral LlvmType String
     | LlvmRegister LlvmType String
     | LlvmGlobal LlvmType String
-    
     deriving (Show, Eq)
 
 getRegName :: LlvmValue -> String

@@ -6,7 +6,7 @@ import Control.Monad.State (modify)
 import qualified Data.Map as Map
 import Llvm.Gen.Bindings (compileFunction)
 import Llvm.Gen.Core
-import Llvm.Gen.Mangling (mangleInstanceMethod, extractConstraintParts)
+import Llvm.Gen.Mangling (extractConstraintParts, mangleInstanceMethod)
 import Llvm.Gen.Metadata (InstanceMetadata (..), TypeClassMetadata (..))
 import Llvm.Instructions (LlvmInstruction (..))
 import Llvm.Types (LlvmType (..))
@@ -25,7 +25,7 @@ compileTypeClassDef (ExprTypeClassDef className generics bindings _span) = do
                 , tcMethods = methods
                 }
 
-    modify $ \s -> s{typeclasses = tcInfo:typeclasses s}
+    modify $ \s -> s{typeclasses = tcInfo : typeclasses s}
 compileTypeClassDef _ = error "Expected ExprTypeClassDef"
 
 extractMethodSignature :: Expr -> (String, QualifiedType)

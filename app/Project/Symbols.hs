@@ -7,15 +7,16 @@ data Symbol = ResolvedSymbol
     , resolvedSymbolKind :: SymbolKind
     , resolvedSymbolModule :: String
     , resolvedSymbolSpan :: Span
-    } deriving (Show, Eq, Ord)
+    }
+    deriving (Show, Eq, Ord)
 
-data SymbolKind 
+data SymbolKind
     = BindingSymbol
-    | DataConstructorSymbol { constructorParent :: String }
-    | TypeSymbol { typeArity :: Int }
+    | DataConstructorSymbol {constructorParent :: String}
+    | TypeSymbol {typeArity :: Int}
     | TypeClassSymbol
-    | TypeClassMethodSymbol { methodClass :: String }
-    | InstanceMethodSymbol { methodInstance :: String, methodClass :: String }
+    | TypeClassMethodSymbol {methodClass :: String}
+    | InstanceMethodSymbol {methodInstance :: String, methodClass :: String}
     | LocalVariableSymbol
     | IntrinsicBindingSymbol
     | IntrinsicTypeSymbol

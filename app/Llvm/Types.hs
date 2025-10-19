@@ -1,4 +1,5 @@
 module Llvm.Types where
+
 import Llvm.Ir (IR (toLlvm))
 
 data LlvmType
@@ -11,7 +12,7 @@ data LlvmType
     | LlvmFloat
     | LlvmDouble
     | LlvmPtr
-    | LlvmPointer LlvmType  -- Alternative pointer syntax
+    | LlvmPointer LlvmType -- Alternative pointer syntax
     | LlvmArray Int LlvmType
     | LlvmNamedType String
     | LlvmFn -- placeholder, not used in this context

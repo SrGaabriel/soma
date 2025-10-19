@@ -1,6 +1,7 @@
 module Llvm.Gen.Mangling where
-import Typing.Types (Type (TConstructor, TApp), TyConstructor (tcName))
+
 import Llvm.Gen.Types (typeToMonomorphicName)
+import Typing.Types (TyConstructor (tcName), Type (TApp, TConstructor))
 
 mangleInstanceMethod :: String -> Type -> String -> String
 mangleInstanceMethod className concreteType methodName =

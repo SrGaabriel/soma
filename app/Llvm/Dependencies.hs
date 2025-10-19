@@ -1,9 +1,9 @@
 module Llvm.Dependencies where
 
-import Llvm.Types (LlvmType)
-import Llvm.Ir (IR (toLlvm))
-import Llvm.Values (LlvmValue, getValueType)
 import Data.List (intercalate)
+import Llvm.Ir (IR (toLlvm))
+import Llvm.Types (LlvmType)
+import Llvm.Values (LlvmValue, getValueType)
 
 data LlvmDependency
     = LlvmFunctionDependency
@@ -34,8 +34,13 @@ data LinkageType
 
 instance IR LlvmDependency where
     toLlvm (LlvmFunctionDependency name retType params) =
-        "declare " ++ toLlvm retType ++ " @" ++ name ++ "(" ++
-        intercalate "," (map toLlvm params) ++ ")"
+        "declare "
+            ++ toLlvm retType
+            ++ " @"
+            ++ name
+            ++ "("
+            ++ intercalate "," (map toLlvm params)
+            ++ ")"
     toLlvm (LlvmConstantDependency name value linkage) =
         "@" ++ name ++ "=" ++ maybe "" toLlvm linkage ++ " unnamed_addr constant " ++ toLlvm (getValueType value) ++ " " ++ toLlvm value
     toLlvm (LlvmStructDependency name fields) =

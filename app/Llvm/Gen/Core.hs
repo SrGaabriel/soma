@@ -7,6 +7,8 @@ import Control.Monad.State
 import Control.Monad.Writer
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Inference.Core (TypeMap)
 import Llvm.Dependencies (LlvmDependency)
 import Llvm.Gen.Metadata (ConstructorMetadata, InstanceMetadata, TypeClassMetadata)
@@ -22,6 +24,13 @@ data IrGenEnv = IrGenEnv
     , currentFunction :: Maybe String
     }
 
+data PolymorphicFunction = PolymorphicFunction
+    { polyFuncName :: String
+    , polyFuncType :: QualifiedType
+    , polyFuncBody :: Expr
+    }
+    deriving (Show)
+
 data IrGenState = IrGenState
     { nextRegister :: Int
     , nextBlock :: Int
@@ -33,6 +42,8 @@ data IrGenState = IrGenState
     , irDependencies :: [LlvmDependency]
     , typeclasses :: [TypeClassMetadata]
     , instances :: [InstanceMetadata]
+    , polymorphicFunctions :: Map String PolymorphicFunction
+    , monomorphizedFunctions :: Set String
     }
     deriving (Show)
 
@@ -49,6 +60,8 @@ globalDefaultState =
         , irFunctions = []
         , irStructs = []
         , irDependencies = []
+        , polymorphicFunctions = Map.empty
+        , monomorphizedFunctions = Set.empty
         }
 
 cleanGlobalState :: TypeMap -> IrGenState
@@ -64,6 +77,8 @@ cleanGlobalState tM =
         , irFunctions = []
         , irStructs = []
         , irDependencies = []
+        , polymorphicFunctions = Map.empty
+        , monomorphizedFunctions = Set.empty
         }
 
 globalDefaultEnv :: IrGenEnv

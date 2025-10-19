@@ -13,10 +13,11 @@ import Data.List (find)
 import qualified Data.Map as Map
 import GHC.Base (when)
 import Llvm.Dependencies (LinkageType (PrivateLinkage), LlvmDependency (LlvmConstantDependency, constantLinkage, constantName, constantValue))
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irDependencies, irStructs, typeMap), MemoryScope (..), freshScope, lookupMemory, saveInstruction)
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irDependencies, irStructs, polymorphicFunctions, typeMap), MemoryScope (..), freshScope, lookupMemory, saveInstruction)
 import Llvm.Gen.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
 import Llvm.Gen.Mangling (mangleInstanceMethod)
 import Llvm.Gen.Metadata (ConstructorMetadata (..))
+import Llvm.Gen.Monomorphize (monomorphizeAndCompile)
 import Llvm.Gen.Types (llvmTypeToMonomorphicName, toAllocationLlvmType)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (LlvmStore))
 import Llvm.Modules (LlvmStruct (LlvmStruct))
@@ -25,7 +26,7 @@ import Llvm.Values (LlvmValue (..), getValueType, intLiteral)
 import Project.Symbols (Symbol (ResolvedSymbol, resolvedSymbolKind, resolvedSymbolName), SymbolKind (..))
 import Syntax.Tree (Expr (..), uncurryApp)
 import Typing.Currying (uncurryFunction)
-import Typing.Types (Constraint (..), QualifiedType (Forall), Type, constraintClassName, constraintTypes, isPolymorphic)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), Type (..), constraintClassName, constraintTypes, isPolymorphic)
 import Utils.Lists (hardHead)
 
 compileValue :: Expr -> IrGen LlvmValue
@@ -68,15 +69,17 @@ compileValue expr = case expr of
                 compileConstructorApp resolvedSymbolName allArgs
             ExprVar symbol@(ResolvedSymbol{resolvedSymbolName}) _ | isTypeclassMethod symbol -> do
                 let TypeClassMethodSymbol className = resolvedSymbolKind symbol
-                tyMap <- gets typeMap
-                let Just (Forall _ constraints _) = Map.lookup base tyMap
-
-                let concreteType = extractConcreteTypeFromConstraint constraints className
-                let mangledName = mangleInstanceMethod className concreteType resolvedSymbolName
 
                 argVals <- mapM compileValue allArgs
 
-                let Just (Forall _ _ methodType) = Map.lookup base tyMap
+                let concreteType = case argVals of
+                        (firstArg : _) -> llvmTypeToType (getValueType firstArg)
+                        [] -> error $ "No arguments in typeclass method: " ++ resolvedSymbolName
+
+                let mangledName = mangleInstanceMethod className concreteType resolvedSymbolName
+
+                tyMap <- gets typeMap
+                let Just (Forall _ _ methodType) = Map.lookup expr tyMap
                 let (_argTypes, retType) = uncurryFunction methodType
                 let llvmRetType = toAllocationLlvmType retType
 
@@ -96,6 +99,15 @@ compileValue expr = case expr of
                     ResolvedSymbol name IntrinsicBindingSymbol _ _ -> do
                         let intrinsic = getIntrinsic name
                         intrinsicCodeGen intrinsic argVals
+                    ResolvedSymbol name BindingSymbol _ _ -> do
+                        polyFuncs <- gets polymorphicFunctions
+                        case Map.lookup name polyFuncs of
+                            Just _ -> do
+                                let concreteTypes = map (llvmTypeToType . getValueType) argVals
+                                mangledName <- monomorphizeAndCompile name concreteTypes compileValue
+                                pure $ LlvmCall (LlvmGlobal LlvmFn mangledName) llvmFnType argVals
+                            Nothing -> do
+                                pure $ LlvmCall (LlvmGlobal LlvmFn name) llvmFnType argVals
                     ResolvedSymbol name _ _ _ -> do
                         pure $ LlvmCall (LlvmGlobal LlvmFn name) llvmFnType argVals
                 saveInstruction call llvmFnType
@@ -222,3 +234,11 @@ extractConcreteTypeFromConstraint constraints className =
             [concreteType] -> concreteType
             types -> hardHead types
         Nothing -> error $ "Constraint not found for class: " ++ className ++ " in: " ++ show constraints
+
+llvmTypeToType :: LlvmType -> Type
+llvmTypeToType (LlvmNamedType name) = TConstructor (TypeConstructor name KindStar)
+llvmTypeToType LlvmI32 = TConstructor (TypeConstructor "Int" KindStar)
+llvmTypeToType LlvmI1 = TConstructor (TypeConstructor "Bool" KindStar)
+llvmTypeToType LlvmFloat = TConstructor (TypeConstructor "Float" KindStar)
+llvmTypeToType (LlvmPointer inner) = llvmTypeToType inner
+llvmTypeToType t = error $ "Cannot convert LLVM type to Type: " ++ show t

@@ -7,16 +7,16 @@ module Inference.Gen where
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
+import qualified Data.Map as Map
 import Inference.Core (TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
 import Inference.Substitution (Substitutable (apply))
+import Lexing.Position (Span (..))
+import Project.Symbols (Symbol (..), SymbolKind (..))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAll)
 import Utils.Lists (hardHead)
-import Project.Symbols (Symbol(..), SymbolKind(..))
-import Lexing.Position (Span(..))
-import qualified Data.Map as Map
 
 newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
     deriving (Functor, Applicative, Monad, MonadState GenState, MonadReader TypeEnv, MonadWriter [InferenceError])
@@ -96,18 +96,19 @@ recordType expr ty = modify $ \s -> s{gsTypeMap = Map.insert expr ty (gsTypeMap 
 createLocalSymbol :: String -> GenM Symbol
 createLocalSymbol name = do
     currentModule <- gets gsCurrentModule
-    return $ ResolvedSymbol
-        { resolvedSymbolName = name
-        , resolvedSymbolKind = LocalVariableSymbol
-        , resolvedSymbolModule = currentModule
-        , resolvedSymbolSpan = Span 0 0
-        }
+    return
+        $ ResolvedSymbol
+            { resolvedSymbolName = name
+            , resolvedSymbolKind = LocalVariableSymbol
+            , resolvedSymbolModule = currentModule
+            , resolvedSymbolSpan = Span 0 0
+            }
 
 findSymbolByName :: String -> TypeEnv -> Maybe (Symbol, QualifiedType)
-findSymbolByName name env = 
+findSymbolByName name env =
     let matches = [(sym, qual) | (sym, qual) <- Map.toList env, resolvedSymbolName sym == name]
     in case matches of
-        (sym, qual):_ -> Just (sym, qual)
+        (sym, qual) : _ -> Just (sym, qual)
         [] -> Nothing
 
 generateConstraints :: Expr -> GenM (Maybe Type, ConstraintSet)
@@ -175,7 +176,7 @@ generateConstraints expr = case expr of
     ExprLambda paramNames body _ -> do
         paramVars <- mapM (const $ freshTyVar KindStar) paramNames
         let paramTypes = map TVar paramVars
-        
+
         paramSymbols <- mapM createLocalSymbol paramNames
         let paramBindings = Map.fromList (zip paramSymbols (map cleanQualified paramTypes))
         let extendEnv = Map.union paramBindings

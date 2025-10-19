@@ -1,25 +1,30 @@
 {-# LANGUAGE LambdaCase #-}
+
 module Llvm.Gen.Entry (compileLlvmModule, runLlvmCodeGen, runLlvmCodeGenAndTranscribe) where
-import Llvm.Gen.Core (IrGen, runIrGen, globalDefaultEnv, IrGenState (irFunctions, irStructs, irDependencies), cleanGlobalState)
-import Syntax.Tree (Expr (..), exprChildren)
-import Llvm.Modules (LlvmModule (..))
-import Llvm.Gen.Bindings (compileBindingDef)
-import Llvm.Ir (IR(toLlvm))
+
 import Data.Maybe (mapMaybe)
 import Inference.Core (TypeMap)
+import Llvm.Gen.Bindings (compileBindingDef)
+import Llvm.Gen.Core (IrGen, IrGenState (irDependencies, irFunctions, irStructs), cleanGlobalState, globalDefaultEnv, runIrGen)
 import Llvm.Gen.DataTypes (compileDataTypeDef)
-import Llvm.Gen.TypeClasses (compileTypeClassDef, compileInstanceDef)
+import Llvm.Gen.TypeClasses (compileInstanceDef, compileTypeClassDef)
+import Llvm.Ir (IR (toLlvm))
+import Llvm.Modules (LlvmModule (..))
+import Syntax.Tree (Expr (..), exprChildren)
 
 compileLlvmModule :: String -> Expr -> IrGen ()
 compileLlvmModule _ root = do
     let topLevelMembers = exprChildren root
-    sequence_ $ mapMaybe (\case
-                binding@(ExprBindingDef {}) -> Just (compileBindingDef binding)
-                datatype@(ExprDataTypeDef {}) -> Just (compileDataTypeDef datatype)
-                typeclass@(ExprTypeClassDef {}) -> Just (compileTypeClassDef typeclass)
-                instanc@(ExprInstanceDef {}) -> Just (compileInstanceDef instanc)
+    sequence_
+        $ mapMaybe
+            ( \case
+                binding@(ExprBindingDef{}) -> Just (compileBindingDef binding)
+                datatype@(ExprDataTypeDef{}) -> Just (compileDataTypeDef datatype)
+                typeclass@(ExprTypeClassDef{}) -> Just (compileTypeClassDef typeclass)
+                instanc@(ExprInstanceDef{}) -> Just (compileInstanceDef instanc)
                 _ -> Nothing
-            ) topLevelMembers
+            )
+            topLevelMembers
 
 runLlvmCodeGen :: String -> Expr -> TypeMap -> LlvmModule
 runLlvmCodeGen name root typeMap =

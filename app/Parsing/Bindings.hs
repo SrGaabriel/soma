@@ -37,6 +37,7 @@ parseBinding isTopLevel = do
                         let tyVars = extractTyVars bindingTyp
                         let bindingTypeS = Forall tyVars [] bindingTyp
                         eqTok <- consumeRelevant TokenEquals
+                        skipNewlines
                         body <- parseExpression
                         let argNames = Prelude.map Prelude.fst mappings
                         let defBody = ExprLambda argNames body (exprSpan body)
@@ -47,6 +48,7 @@ parseBinding isTopLevel = do
                         _ <- consume TokenReturns
                         bindingTyp <- parseQualifiedType
                         eqTok <- consumeRelevant TokenEquals
+                        skipNewlines
                         body <- parseExpression
                         let defBody = ExprLambda paramNames body (exprSpan body)
                         pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken eqTok)

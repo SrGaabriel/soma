@@ -19,8 +19,14 @@ data Optional
 trait Eq a where
     def equals :: a -> a -> Bool
 
+trait Display a where
+    def display :: a -> String
+
 instance Eq Optional where
     def equals(x: Optional, y: Optional) -> Bool = true     
+
+instance Display Optional where
+    def display(optional: Optional) -> String = "Optional!"
 
 def pureOptionalInt(value: Int) -> Optional = Some value
 
@@ -31,7 +37,14 @@ def testOptionalEqGen :: Bool =
     let second = pureOptionalInt 5 in
     equals first second
 
-test totallyGenericEqGen :: 
+def totallyGenericEqGen(left, right) :: a -> a -> Bool where a: Eq =
+    equals left right
+    
+def testTotallyGenericEqGen(left, right) :: a -> a -> Bool where a: Eq =
+    totallyGenericEqGen left right
+
+def testTotallyGenericEqGenOptional(left: Optional, right: Optional) -> Bool =
+    totallyGenericEqGen left right
 
 /*def isZero :: Int -> Bool
     | 0 => true
@@ -41,4 +54,8 @@ def testSum(x: Int, y: Int) -> Int = x + y
 
 def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
 
-def main :: IO () = println "Hello, World!"
+
+def main :: IO () =
+    let optional = Some 5 in
+    let text = display optional in
+    println text
