@@ -3,6 +3,8 @@
 
 module Parsing.Atoms where
 
+import qualified Debug.Trace as Debug
+
 import Control.Applicative ((<|>))
 import Control.Monad (when)
 import Control.Monad.Error.Class (MonadError (throwError))
@@ -95,13 +97,17 @@ parseLetExpression :: Parser Expr
 parseLetExpression = do
     letToken <- consume TokenLet
     identifier <- consume TokenLowerIdentifier
+    Debug.traceM $ "Parsing let expression for: " ++ tokenValue identifier
     _ <- consume TokenEquals
     value <- parseExpression
+    Debug.traceM $ "Parsed value: " ++ show value
     inTok <- consumeRelevant TokenIn
+    Debug.traceM $ "Found 'in' token"
 
     mapM_ validateIndentation =<< optional (consume TokenNewline)
 
     body <- parseExpression
+    Debug.traceM $ "Parsed body: " ++ show body
 
     pure
         $ ExprLet

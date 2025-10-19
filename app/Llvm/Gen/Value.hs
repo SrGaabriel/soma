@@ -25,8 +25,7 @@ import Project.Symbols (Symbol (ResolvedSymbol, resolvedSymbolKind, resolvedSymb
 import Syntax.Tree (Expr (..), uncurryApp)
 import Typing.Currying (uncurryFunction)
 import Typing.Types (Constraint (..), QualifiedType (Forall), Type, constraintClassName, constraintTypes, isPolymorphic)
-import qualified Debug.Trace as Debug
-import Logging.PrettyTrees (treeShow)
+import Utils.Lists (hardHead)
 
 compileValue :: Expr -> IrGen LlvmValue
 compileValue expr = case expr of
@@ -58,8 +57,7 @@ compileValue expr = case expr of
             ExprVar symbol@(ResolvedSymbol{resolvedSymbolName}) _ | isTypeclassMethod symbol -> do
                 let TypeClassMethodSymbol className = resolvedSymbolKind symbol
                 tyMap <- gets typeMap
-                let Just ty@(Forall _ constraints _) = Map.lookup base tyMap
-                Debug.traceM $ "The type for " ++ show base ++ ": " ++ treeShow ty
+                let Just (Forall _ constraints _) = Map.lookup base tyMap
 
                 let concreteType = extractConcreteTypeFromConstraint constraints className
                 let mangledName = mangleInstanceMethod className concreteType resolvedSymbolName
@@ -210,5 +208,5 @@ extractConcreteTypeFromConstraint constraints className =
     case find (\c -> constraintClassName c == className) constraints of
         Just constraint -> case constraintTypes constraint of
             [concreteType] -> concreteType
-            types -> head types
+            types -> hardHead types
         Nothing -> error $ "Constraint not found for class: " ++ className ++ " in: " ++ show constraints

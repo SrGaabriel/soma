@@ -6,13 +6,12 @@ import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
 import Parsing.Atoms (parseExpression)
 import Parsing.Errors (ParsingError (FunctionArgumentLengthMismatch, InvalidFunctionBody))
-import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseFuncName, parseSequence, peekRelevant)
+import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseFuncName, parseSequence, peekRelevant, skipNewlines)
 import Parsing.Patterns (parsePipePatternArms)
 import Parsing.Types (parseQualifiedType, parseType)
 import Syntax.Tree (Expr (..), exprSpan)
 import Typing.Currying (curryFunction)
 import Typing.Types (QualifiedType (..), Type (..), extractTyVars)
-import qualified Debug.Trace as Debug
 
 parseBinding :: Bool -> Parser Expr
 parseBinding isTopLevel = do
@@ -53,15 +52,15 @@ parseBinding isTopLevel = do
                         pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken eqTok)
                     | otherwise -> throwError $ FunctionArgumentLengthMismatch defToken
         Nothing -> do
-            Debug.traceM $ "Parsing simple binding for " ++ name
             _ <- consumeRelevant TokenReturns
             bindingTyp <- parseQualifiedType
             inc <- peekRelevant
             case tokenKind inc of
                 TokenEquals -> do
-                    _ <- next
+                    eqTok <- next
+                    skipNewlines
                     body <- parseExpression
-                    pure $ ExprBindingDef name bindingTyp body isTopLevel (spanningTokens defToken inc)
+                    pure $ ExprBindingDef name bindingTyp body isTopLevel (spanningTokens defToken eqTok)
                 TokenPipe -> do
                     arms <- parsePipePatternArms
                     let defBody = ExprDerivedPatternMatch arms

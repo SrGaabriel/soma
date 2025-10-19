@@ -26,6 +26,11 @@ def pureOptionalInt(value: Int) -> Optional = Some value
 
 def testOptionalEq(x: Optional, y: Optional) -> Bool = equals x y
 
+def testOptionalEqGen :: Bool =
+    let first = Some 5 in
+    let second = pureOptionalInt 5 in
+    equals first second
+
 /*def isZero :: Int -> Bool
     | 0 => true
     | _ => false*/
