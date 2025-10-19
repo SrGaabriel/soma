@@ -31,6 +31,8 @@ def testOptionalEqGen :: Bool =
     let second = pureOptionalInt 5 in
     equals first second
 
+test totallyGenericEqGen :: 
+
 /*def isZero :: Int -> Bool
     | 0 => true
     | _ => false*/

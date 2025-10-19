@@ -5,14 +5,15 @@
 module Llvm.Gen.Value where
 
 import Control.Monad (unless)
-import Control.Monad.State (MonadState (..), gets, modify)
-import Control.Monad.Writer (MonadWriter (..))
+import Control.Monad.Reader (MonadReader (ask), ReaderT (..))
+import Control.Monad.State (MonadState (..), gets, modify, runState)
+import Control.Monad.Writer (MonadWriter (..), WriterT (..))
 import Data.Hashable (hash)
 import Data.List (find)
 import qualified Data.Map as Map
 import GHC.Base (when)
 import Llvm.Dependencies (LinkageType (PrivateLinkage), LlvmDependency (LlvmConstantDependency, constantLinkage, constantName, constantValue))
-import Llvm.Gen.Core (IrGen, IrGenState (constructorMap, irDependencies, irStructs, typeMap), lookupMemory, saveInstruction)
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irDependencies, irStructs, typeMap), MemoryScope (..), freshScope, lookupMemory, saveInstruction)
 import Llvm.Gen.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
 import Llvm.Gen.Mangling (mangleInstanceMethod)
 import Llvm.Gen.Metadata (ConstructorMetadata (..))
@@ -49,6 +50,17 @@ compileValue expr = case expr of
 
         let ptrInstr = LlvmGetElementPtr depType (LlvmGlobal depType depName) [intLiteral 0, intLiteral 0] True
         saveInstruction ptrInstr (LlvmPointer LlvmI8)
+    ExprLet name valueExpr bodyExpr _ -> do
+        compiledValue <- compileValue valueExpr
+        newScope <- freshScope name
+        let updatedScope = newScope{blockValues = Map.singleton name compiledValue}
+        env <- ask
+        let newEnv = env{currentScope = updatedScope}
+        st <- get
+        let ((returningValue, stmts), st') = runState (runWriterT (runReaderT (compileValue bodyExpr) newEnv)) st
+        put st'
+        tell stmts
+        return returningValue
     ExprApp fn arg -> do
         let (base, allArgs) = uncurryApp expr
         case base of
