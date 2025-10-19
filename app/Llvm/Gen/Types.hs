@@ -42,7 +42,7 @@ typeToMonomorphicName t = case flattenTypeApp t of
     (TConstructor (TypeConstructor baseName _), args) ->
         baseName ++ concatMap (("_" ++) . typeToMonomorphicName) args
     (TVar (TypeVar name _), _) -> name
-    _ -> "Unknown"
+    u -> "Unknown: " ++ show u
 
 llvmTypeToMonomorphicName :: LlvmType -> String
 llvmTypeToMonomorphicName LlvmI32 = "Int"

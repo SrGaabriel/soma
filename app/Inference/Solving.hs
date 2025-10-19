@@ -9,7 +9,7 @@ import Inference.Errors (InferenceError (..), generateErrorForPurpose)
 import Inference.Gen (ClassConstraintWithSource (..), TypeConstraint (..))
 import Inference.Substitution (Subst, Substitutable (apply, ftv), composeSubst)
 import Syntax.Tree (Expr (..))
-import Typing.Types (Constraint (..), TyVar (..), Type (..))
+import Typing.Types (Constraint (..), TyVar (..), Type (..), constraintType)
 import Utils.Lists (foldMWithErrors)
 
 unifyPure :: Expr -> UnificationPurpose -> Type -> Type -> Either [InferenceError] Subst
@@ -54,16 +54,11 @@ checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSo
         isEntailedByInstanceEnv instanceEnv constraint || isEntailedBy declaredConstraints constraint
 
 isEntailedByInstanceEnv :: InstanceEnv -> Constraint -> Bool
-isEntailedByInstanceEnv instanceEnv (Constraint className [typ]) =
-    Map.lookup (className, typ) instanceEnv == Just True
-isEntailedByInstanceEnv _ _ = False
+isEntailedByInstanceEnv instanceEnv constraint =
+    let constraintTy = constraintType constraint
+    in Map.lookup constraintTy instanceEnv == Just True
 
 isEntailedBy :: [Constraint] -> Constraint -> Bool
-isEntailedBy declaredCs (Constraint name typs) =
-    any
-        ( \(Constraint declName declTyps) ->
-            declName == name
-                && length declTyps == length typs
-                && and (zipWith (==) declTyps typs)
-        )
-        declaredCs
+isEntailedBy declaredCs constraint =
+    let constraintTy = constraintType constraint
+    in any (\declaredC -> constraintType declaredC == constraintTy) declaredCs

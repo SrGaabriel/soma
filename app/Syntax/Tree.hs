@@ -1,9 +1,9 @@
 module Syntax.Tree (Expr (..), exprChildren, exprSpan, modifySpan, uncurryApp) where
 
 import Lexing.Position (Span (..))
-import Syntax.Patterns (Pattern (..))
-import Typing.Types (Constraint, QualifiedType, TyVar, Type, Kind)
 import Project.Symbols (Symbol)
+import Syntax.Patterns (Pattern (..))
+import Typing.Types (Constraint, Kind, QualifiedType, TyVar, Type)
 
 data Expr
     = ExprRoot [Expr]
@@ -73,8 +73,7 @@ data Expr
         , typeClassBindSpan :: Span
         }
     | ExprInstanceDef
-        { instanceClassName :: String
-        , instanceDataTypeName :: String -- todo: change this to a single qualified type
+        { instanceConstraint :: Type
         , instanceMethods :: [Expr]
         , instanceSpan :: Span
         }
@@ -95,7 +94,7 @@ exprChildren (ExprImport _ _) = []
 exprChildren (ExprNum _ _) = []
 exprChildren (ExprStr _ _) = []
 exprChildren (ExprUVar _ _) = []
-exprChildren (ExprVar {}) = []
+exprChildren (ExprVar{}) = []
 exprChildren (ExprBool _ _) = []
 exprChildren (ExprTypeClassBinding _ _ (Just impl) _) = impl
 exprChildren (ExprTypeClassBinding _ _ Nothing _) = []
@@ -105,7 +104,7 @@ exprChildren (ExprIntrinsicDef _ _ _) = []
 exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
 exprChildren (ExprIntrinsicDataTypeDef _ _ _) = []
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
-exprChildren (ExprInstanceDef _ _ methods _) = methods
+exprChildren (ExprInstanceDef _ methods _) = methods
 
 exprSpan :: Expr -> Span
 exprSpan (ExprRoot _) = error "Root expressions do not have a span"
@@ -130,7 +129,7 @@ exprSpan (ExprTypeClassBinding _ _ _ s) = s
 exprSpan (ExprPatternMatch _ _ s) = s
 exprSpan (ExprDerivedPatternMatch arms) = spanningExprs arms
 exprSpan (ExprPatternMatchArm _ _ s) = s
-exprSpan (ExprInstanceDef _ _ _ s) = s
+exprSpan (ExprInstanceDef _ _ s) = s
 exprSpan (ExprImport _ s) = s
 
 modifySpan :: Expr -> Span -> Expr
@@ -171,8 +170,8 @@ modifySpan (ExprPatternMatch expr arms _) newSpan =
 modifySpan e@(ExprDerivedPatternMatch _) _ = e
 modifySpan (ExprPatternMatchArm patterns body _) newSpan =
     ExprPatternMatchArm patterns body newSpan
-modifySpan (ExprInstanceDef className dataTypeName methods _) newSpan =
-    ExprInstanceDef className dataTypeName methods newSpan
+modifySpan (ExprInstanceDef constraintType methods _) newSpan =
+    ExprInstanceDef constraintType methods newSpan
 modifySpan (ExprImport moduleName _) newSpan =
     ExprImport moduleName newSpan
 

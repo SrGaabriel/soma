@@ -1,3 +1,4 @@
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
@@ -13,20 +14,24 @@ import GHC.Base (when)
 import Llvm.Dependencies (LinkageType (PrivateLinkage), LlvmDependency (LlvmConstantDependency, constantLinkage, constantName, constantValue))
 import Llvm.Gen.Core (IrGen, IrGenState (constructorMap, irDependencies, irStructs, typeMap), lookupMemory, saveInstruction)
 import Llvm.Gen.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
+import Llvm.Gen.Mangling (mangleInstanceMethod)
 import Llvm.Gen.Metadata (ConstructorMetadata (..))
 import Llvm.Gen.Types (llvmTypeToMonomorphicName, toAllocationLlvmType)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (LlvmStore))
 import Llvm.Modules (LlvmStruct (LlvmStruct))
 import Llvm.Types (LlvmType (..), deref, getLlvmTypeSize)
 import Llvm.Values (LlvmValue (..), getValueType, intLiteral)
-import Project.Symbols (Symbol (ResolvedSymbol), SymbolKind (..))
+import Project.Symbols (Symbol (ResolvedSymbol, resolvedSymbolKind, resolvedSymbolName), SymbolKind (..))
 import Syntax.Tree (Expr (..), uncurryApp)
 import Typing.Currying (uncurryFunction)
-import Typing.Types (QualifiedType (Forall), isPolymorphic)
+import Typing.Types (Constraint (..), QualifiedType (Forall), Type, constraintClassName, constraintTypes, isPolymorphic)
+import qualified Debug.Trace as Debug
+import Logging.PrettyTrees (treeShow)
 
 compileValue :: Expr -> IrGen LlvmValue
 compileValue expr = case expr of
     ExprNum n _ -> return $ LlvmLiteral LlvmI32 n
+    ExprBool b _ -> return $ LlvmLiteral LlvmI1 (if b then "1" else "0")
     ExprUVar name _ -> do
         maybeMem <- lookupMemory name
         case maybeMem of
@@ -46,13 +51,29 @@ compileValue expr = case expr of
         let ptrInstr = LlvmGetElementPtr depType (LlvmGlobal depType depName) [intLiteral 0, intLiteral 0] True
         saveInstruction ptrInstr (LlvmPointer LlvmI8)
     ExprApp fn arg -> do
-        if isConstructor fn
-            then do
-                let (ctorExpr, args) = uncurryApp expr
-                let ctorName = getConstructorName ctorExpr
+        let (base, allArgs) = uncurryApp expr
+        case base of
+            ExprVar symbol@(ResolvedSymbol{resolvedSymbolName}) _ | isDataConstructor symbol -> do
+                compileConstructorApp resolvedSymbolName allArgs
+            ExprVar symbol@(ResolvedSymbol{resolvedSymbolName}) _ | isTypeclassMethod symbol -> do
+                let TypeClassMethodSymbol className = resolvedSymbolKind symbol
+                tyMap <- gets typeMap
+                let Just ty@(Forall _ constraints _) = Map.lookup base tyMap
+                Debug.traceM $ "The type for " ++ show base ++ ": " ++ treeShow ty
 
-                compileConstructorApp ctorName args
-            else do
+                let concreteType = extractConcreteTypeFromConstraint constraints className
+                let mangledName = mangleInstanceMethod className concreteType resolvedSymbolName
+
+                argVals <- mapM compileValue allArgs
+
+                let Just (Forall _ _ methodType) = Map.lookup base tyMap
+                let (_argTypes, retType) = uncurryFunction methodType
+                let llvmRetType = toAllocationLlvmType retType
+
+                saveInstruction
+                    (LlvmCall (LlvmGlobal LlvmFn mangledName) llvmRetType argVals)
+                    llvmRetType
+            _ -> do
                 tyMap <- gets typeMap
                 let (callBase, nestedCallArgs) = uncurryApp fn
                 let callArgs = arg : nestedCallArgs
@@ -137,9 +158,15 @@ getApplicableFnName :: Expr -> Symbol
 getApplicableFnName (ExprVar r@(ResolvedSymbol{}) _) = r
 getApplicableFnName u = error (show u)
 
-isConstructor :: Expr -> Bool
-isConstructor (ExprVar (ResolvedSymbol _ (DataConstructorSymbol{}) _ _) _) = True
-isConstructor _ = False
+isDataConstructor :: Symbol -> Bool
+isDataConstructor symbol = case resolvedSymbolKind symbol of
+    DataConstructorSymbol _ -> True
+    _ -> False
+
+isTypeclassMethod :: Symbol -> Bool
+isTypeclassMethod symbol = case resolvedSymbolKind symbol of
+    TypeClassMethodSymbol _ -> True
+    _ -> False
 
 getConstructorName :: Expr -> String
 getConstructorName (ExprVar (ResolvedSymbol name _ _ _) _) = name
@@ -177,3 +204,11 @@ getFieldPtrAtOffset dataPtr offset = do
             False
         )
         (LlvmPointer LlvmI8)
+
+extractConcreteTypeFromConstraint :: [Constraint] -> String -> Type
+extractConcreteTypeFromConstraint constraints className =
+    case find (\c -> constraintClassName c == className) constraints of
+        Just constraint -> case constraintTypes constraint of
+            [concreteType] -> concreteType
+            types -> head types
+        Nothing -> error $ "Constraint not found for class: " ++ className ++ " in: " ++ show constraints

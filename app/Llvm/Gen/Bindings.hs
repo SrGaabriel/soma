@@ -13,11 +13,16 @@ import Llvm.Types (LlvmType (..))
 import Llvm.Values (getValueType, LlvmValue(..))
 import Syntax.Tree (Expr (..))
 import Typing.Currying (uncurryFunction)
-import Typing.Types (QualifiedType (Forall))
+import Typing.Types (QualifiedType (Forall), Type)
 import qualified Data.Map as Map
 
 compileBindingDef :: Expr -> IrGen ()
 compileBindingDef (ExprBindingDef name (Forall _ _ bindingTyp) body _ _) = do
+    compileFunction name bindingTyp body
+compileBindingDef _ = error "Unsupported binding definition expression"
+
+compileFunction :: String -> Type -> Expr -> IrGen ()
+compileFunction name bindingTyp body = do
     env <- ask
     let (fnArgs, fnRetType) = uncurryFunction bindingTyp
     fnArgRegs <- mapM (freshReg . toAllocationLlvmType) fnArgs
@@ -62,7 +67,6 @@ compileBindingDef (ExprBindingDef name (Forall _ _ bindingTyp) body _ _) = do
                 , functionStatements = stmts ++ additionalStmts ++ [finalStatement]
                 }
     modify $ \s -> s { irFunctions = llvmFunction : irFunctions s }
-compileBindingDef _ = error "Unsupported binding definition expression"
 
 isADTReturnedByValue :: LlvmType -> Bool
 isADTReturnedByValue (LlvmNamedType _) = True  

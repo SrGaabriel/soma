@@ -16,7 +16,15 @@ data Optional
     | Nothing
         
 
+trait Eq a where
+    def equals :: a -> a -> Bool
+
+instance Eq Optional where
+    def equals(x: Optional, y: Optional) -> Bool = true     
+
 def pureOptionalInt(value: Int) -> Optional = Some value
+
+def testOptionalEq(x: Optional, y: Optional) -> Bool = equals x y
 
 /*def isZero :: Int -> Bool
     | 0 => true

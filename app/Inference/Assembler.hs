@@ -5,11 +5,11 @@ import qualified Data.Set as Set
 import Inference.Core (InstanceEnv, TypeEnv, TypeMap)
 import Inference.Errors (InferenceError (..))
 import Inference.Gen (ClassConstraintWithSource (..), ConstraintSet (csClassConstraints, csDeclaredConstraints, csTypeConstraints), GenState (gsTypeMap), generateConstraints, runGenM)
+import Inference.Resolver (runResolverWithEnv)
 import Inference.Solving (checkConstraintEntailment, solveTypeConstraints)
 import Inference.Substitution (Substitutable (apply, ftv))
 import Syntax.Tree (Expr)
 import Typing.Types (Constraint (..), QualifiedType (Forall), TyVar, Type (..))
-import Inference.Resolver (runResolverWithEnv)
 
 inferType :: String -> TypeEnv -> InstanceEnv -> Expr -> Either [InferenceError] (Maybe QualifiedType, TypeMap)
 inferType currentModule env instanceEnv expr =
@@ -35,7 +35,13 @@ generalize :: Set.Set TyVar -> [Constraint] -> Type -> QualifiedType
 generalize envVars constraints t =
     let freeInType = ftv t `Set.difference` envVars
         quantifiedVars = Set.toList freeInType
-        relevant = filter (\c -> not (Set.null (ftv c `Set.intersection` freeInType))) constraints
+        relevant =
+            filter
+                ( \c ->
+                    let constraintFreeVars = ftv c `Set.intersection` freeInType
+                    in not (Set.null constraintFreeVars) || Set.null (ftv c `Set.difference` envVars)
+                )
+                constraints
         uniqueConstraints = Set.toList (Set.fromList relevant)
     in Forall quantifiedVars uniqueConstraints t
 

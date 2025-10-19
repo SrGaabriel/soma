@@ -9,7 +9,7 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Inference.Core (TypeMap)
 import Llvm.Dependencies (LlvmDependency)
-import Llvm.Gen.Metadata (ConstructorMetadata)
+import Llvm.Gen.Metadata (ConstructorMetadata, InstanceMetadata, TypeClassMetadata)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Modules (LlvmFunction, LlvmStruct)
 import Llvm.Types (LlvmType (..))
@@ -31,6 +31,8 @@ data IrGenState = IrGenState
     , constructorMap :: Map String ConstructorMetadata
     , irStructs :: [LlvmStruct]
     , irDependencies :: [LlvmDependency]
+    , typeclasses :: [TypeClassMetadata]
+    , instances :: [InstanceMetadata]
     }
     deriving (Show)
 
@@ -41,6 +43,8 @@ globalDefaultState =
         , nextBlock = 0
         , typeMap = Map.empty
         , constructorMap = Map.empty
+        , typeclasses = []
+        , instances = []
         , currentBlock = Nothing
         , irFunctions = []
         , irStructs = []
@@ -54,6 +58,8 @@ cleanGlobalState tM =
         , nextBlock = 0
         , typeMap = tM
         , constructorMap = Map.empty
+        , typeclasses = []
+        , instances = []
         , currentBlock = Nothing
         , irFunctions = []
         , irStructs = []

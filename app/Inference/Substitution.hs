@@ -1,11 +1,11 @@
 {-# LANGUAGE FlexibleInstances #-}
 
-module Inference.Substitution where
+module Inference.Substitution (Subst, Substitutable (apply, ftv), composeSubst) where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Inference.Core (TypeEnv)
-import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..))
+import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..), constraintType)
 
 type Subst = Map.Map TyVar Type
 
@@ -38,8 +38,11 @@ instance Substitutable TyVar where
     ftv = Set.singleton
 
 instance Substitutable Constraint where
-    apply s (Constraint n ts) = Constraint n (map (apply s) ts)
-    ftv (Constraint _ ts) = Set.unions $ map ftv ts
+    apply s constraint =
+        let t = constraintType constraint
+            t' = apply s t
+        in Constraint t'
+    ftv constraint = ftv (constraintType constraint)
 
 instance Substitutable QualifiedType where
     apply s (Forall tvs cs t) =

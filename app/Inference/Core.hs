@@ -9,7 +9,7 @@ import Project.Symbols (Symbol)
 type TypeEnv = Map.Map Symbol QualifiedType
 type TypeMap = Map.Map Expr QualifiedType
 
-type InstanceEnv = Map.Map (String, Type) Bool
+type InstanceEnv = Map.Map Type Bool
 
 data UnificationPurpose
     = UnifyFunctionBody

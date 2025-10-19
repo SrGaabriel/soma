@@ -8,6 +8,7 @@ import Llvm.Ir (IR(toLlvm))
 import Data.Maybe (mapMaybe)
 import Inference.Core (TypeMap)
 import Llvm.Gen.DataTypes (compileDataTypeDef)
+import Llvm.Gen.TypeClasses (compileTypeClassDef, compileInstanceDef)
 
 compileLlvmModule :: String -> Expr -> IrGen ()
 compileLlvmModule _ root = do
@@ -15,6 +16,8 @@ compileLlvmModule _ root = do
     sequence_ $ mapMaybe (\case
                 binding@(ExprBindingDef {}) -> Just (compileBindingDef binding)
                 datatype@(ExprDataTypeDef {}) -> Just (compileDataTypeDef datatype)
+                typeclass@(ExprTypeClassDef {}) -> Just (compileTypeClassDef typeclass)
+                instanc@(ExprInstanceDef {}) -> Just (compileInstanceDef instanc)
                 _ -> Nothing
             ) topLevelMembers
 

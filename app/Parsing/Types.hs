@@ -5,7 +5,7 @@ import Data.List (nubBy)
 import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..))
 import Parsing.Errors (ParsingError (InvalidTokenForType))
 import Parsing.Parser (Parser, consume, consumeRelevant, next, parseExhaustiveSequence, parseSequence, peek)
-import Typing.Types (Constraint (Constraint), Kind (KindStar, KindArrow), QualifiedType (Forall), TyVar (TypeVar, tvId), Type (TArrow, TUnresolved, TVar, TApp), arrayType, boolType, extractTyVars, intType, strType, tupleType)
+import Typing.Types (Constraint, Kind (KindArrow, KindStar), QualifiedType (Forall), TyVar (TypeVar, tvId), Type (TApp, TArrow, TUnresolved, TVar), arrayType, boolType, constraintTypes, extractTyVars, intType, mkConstraint, strType, tupleType)
 
 parseQualifiedType :: Parser QualifiedType
 parseQualifiedType = do
@@ -17,7 +17,7 @@ parseQualifiedType = do
             constraints <- parseExhaustiveSequence TokenComma parseConstraint
 
             let tyVarsFromType = extractTyVars baseType
-            let tyVarsFromConstraints = concatMap (\(Constraint _ tys) -> extractTyVarsFromTypes tys) constraints
+            let tyVarsFromConstraints = concatMap (extractTyVarsFromTypes . constraintTypes) constraints
 
             let allVars = deduplicateTyVars (tyVarsFromType ++ tyVarsFromConstraints)
 
@@ -95,7 +95,7 @@ parseConstraint = do
     _ <- consume TokenColon
     className <- consume TokenUpperIdentifier
     let name = tokenValue varName
-    pure $ Constraint (tokenValue className) [TVar (TypeVar name KindStar)]
+    pure $ mkConstraint (tokenValue className) [TVar (TypeVar name KindStar)]
 
 parseKind :: Parser Kind
 parseKind = do

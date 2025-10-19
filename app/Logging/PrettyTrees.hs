@@ -12,6 +12,7 @@ import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (uncurryKind)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), SkolemVar (skName), TyConstructor (..), TyVar (TypeVar, tvId), Type (..))
+import qualified Typing.Types as TT
 
 class TreeShow a where
     treeShow :: a -> String
@@ -42,7 +43,10 @@ instance TreeShow Type where
 
 instance TreeShow Constraint where
     treeShow :: Constraint -> String
-    treeShow (Constraint className varnames) = unwords (map treeShow varnames) ++ " : " ++ className
+    treeShow constraint =
+        let className = TT.constraintClassName constraint
+            types = TT.constraintTypes constraint
+        in unwords (map treeShow types) ++ " : " ++ className
 
 instance (TreeShow a) => TreeShow [a] where
     treeShow :: (TreeShow a) => [a] -> String
@@ -72,7 +76,7 @@ instance TreeShow Expr where
     treeShow (ExprDataConstructor name args _) = "DataConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
     treeShow (ExprTypeClassDef name generics _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow generics ++ "):"
     treeShow (ExprTypeClassBinding name qType _ _) = "TypeClassBinding (" ++ name ++ ": " ++ treeShow qType ++ "):"
-    treeShow (ExprInstanceDef className _ _ _) = "InstanceDef (" ++ className ++ "):"
+    treeShow (ExprInstanceDef constraintType _ _) = "InstanceDef (" ++ treeShow constraintType ++ "):"
     treeShow (ExprIntrinsicDataTypeDef name kind _) =
         "IntrinsicDataTypeDef (" ++ name ++ ": " ++ treeShow kind ++ "):"
 
