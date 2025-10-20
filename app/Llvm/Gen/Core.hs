@@ -22,13 +22,13 @@ import Typing.Types (QualifiedType)
 data IrGenEnv = IrGenEnv
     { currentScope :: MemoryScope
     , currentFunction :: Maybe String
+    , currentBlock :: Maybe String
     }
 
 data IrGenState = IrGenState
     { nextRegister :: Int
     , nextBlock :: Int
     , typeMap :: TypeMap
-    , currentBlock :: Maybe String
     , irFunctions :: [LlvmFunction]
     , constructorMap :: Map String ConstructorMetadata
     , irStructs :: [LlvmStruct]
@@ -49,7 +49,6 @@ globalDefaultState =
         , constructorMap = Map.empty
         , typeclasses = []
         , instances = []
-        , currentBlock = Nothing
         , irFunctions = []
         , irStructs = []
         , irDependencies = []
@@ -66,7 +65,6 @@ cleanGlobalState tM =
         , constructorMap = Map.empty
         , typeclasses = []
         , instances = []
-        , currentBlock = Nothing
         , irFunctions = []
         , irStructs = []
         , irDependencies = []
@@ -84,6 +82,7 @@ globalDefaultEnv =
                 , blockParent = Nothing
                 }
         , currentFunction = Nothing
+        , currentBlock = Nothing
         }
 
 type IrGen a = ReaderT IrGenEnv (WriterT [LlvmStatement] (State IrGenState)) a
@@ -173,3 +172,8 @@ writerOuterToIrGen ::
 writerOuterToIrGen action = ReaderT $ \env -> WriterT $ StateT $ \st ->
     let ((result, stmts), st') = runState (runReaderT (runWriterT action) env) st
     in return ((result, stmts), st')
+
+enterNewBlock :: String -> IrGen a -> IrGen a
+enterNewBlock name generation = do
+    newScope <- freshScope name
+    local (\env -> env{currentScope = newScope, currentBlock = Just name}) generation

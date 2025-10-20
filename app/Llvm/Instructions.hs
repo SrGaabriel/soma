@@ -27,6 +27,7 @@ data LlvmStatement
     | LlvmBr String
     | LlvmBrCond LlvmValue String String
     | LlvmLabel String
+    | LlvmCallStmt LlvmValue LlvmType [LlvmValue]
     deriving (Show, Eq)
 
 instance IR LlvmInstruction where
@@ -73,3 +74,5 @@ instance IR LlvmStatement where
     toLlvm (LlvmBrCond cond trueLabel falseLabel) =
         "br " ++ toLlvm (getValueType cond) ++ " " ++ toLlvm cond ++ ", label %" ++ trueLabel ++ ", label %" ++ falseLabel
     toLlvm (LlvmLabel label) = label ++ ":"
+    toLlvm (LlvmCallStmt callee retType args) =
+        "call " ++ toLlvm retType ++ " " ++ toLlvm callee ++ "(" ++ intercalate ", " (map (\val -> toLlvm (getValueType val) ++ " " ++ toLlvm val) args) ++ ")"

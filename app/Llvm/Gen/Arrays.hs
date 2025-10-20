@@ -29,13 +29,18 @@ extractSliceLen :: LlvmValue -> IrGen LlvmValue
 extractSliceLen slice = do
     saveInstruction (LlvmExtractValue sliceType slice 1) LlvmI64
 
-createRefCountedHeapArray :: LlvmType -> Int -> IrGen LlvmValue
-createRefCountedHeapArray elemType len = do
-    let bytesPerElem = getLlvmTypeSize elemType
-    let headerSize = 16
-    let totalBytes = headerSize + len * bytesPerElem
+heapArrayHeaderSize :: Int
+heapArrayHeaderSize = 16
 
-    rawPtr <- saveInstruction (LlvmCall (LlvmGlobal LlvmFn "malloc") LlvmPtr [longLiteral totalBytes]) LlvmPtr
+createTypedRefCountedHeapArray :: LlvmType -> Int -> IrGen LlvmValue
+createTypedRefCountedHeapArray elemType len = do
+    let bytesPerElem = getLlvmTypeSize elemType
+    let totalBytes = heapArrayHeaderSize + len * bytesPerElem
+    createRefCountedHeapArray totalBytes len
+
+createRefCountedHeapArray :: Int -> Int -> IrGen LlvmValue
+createRefCountedHeapArray initialSize len = do
+    rawPtr <- saveInstruction (LlvmCall (LlvmGlobal LlvmFn "malloc") LlvmPtr [longLiteral initialSize]) LlvmPtr
     let mallocDependency = LlvmFunctionDependency "malloc" (LlvmPointer LlvmI8) [LlvmI64]
     modify $ \s -> s{irDependencies = mallocDependency : irDependencies s}
 
@@ -45,7 +50,7 @@ createRefCountedHeapArray elemType len = do
     lenOffsetPtr <- saveInstruction (LlvmGetElementPtr LlvmI64 castedRawPtr [intLiteral 1] True) (LlvmPointer LlvmI64)
     tell [LlvmStore LlvmI64 (longLiteral (fromIntegral len)) lenOffsetPtr]
 
-    saveInstruction (LlvmGetElementPtr LlvmI8 rawPtr [longLiteral headerSize] True) LlvmPtr
+    saveInstruction (LlvmGetElementPtr LlvmI8 rawPtr [longLiteral heapArrayHeaderSize] True) LlvmPtr
 
 storeArrayElement :: LlvmValue -> LlvmValue -> LlvmValue -> LlvmType -> IrGen ()
 storeArrayElement arrayPtr index value elemType = do

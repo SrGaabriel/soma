@@ -69,6 +69,7 @@ library
                     Llvm.Gen.Mangling
                     Llvm.Gen.TypeClasses
                     Llvm.Gen.Monomorphize
+                    Llvm.Gen.Templates
                     Analysis.Symbol
   hs-source-dirs:   app
   build-depends:    base >= 4.19.2.0,

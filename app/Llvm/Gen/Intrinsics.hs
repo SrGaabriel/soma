@@ -9,6 +9,7 @@ import Llvm.Gen.Core (IrGen, IrGenState (irDependencies))
 import Llvm.Instructions (LlvmInstruction (..))
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getValueType)
+import Llvm.Gen.Templates (newStrTemplate)
 
 data IntrinsicImpl = IntrinsicImpl
     { intrinsicName :: String
@@ -54,8 +55,15 @@ printlnIntrinsic =
         { intrinsicName = "println"
         , intrinsicCodeGen = \case
             [arg] -> do
-                modify $ \state -> state{irDependencies = putsDependency : irDependencies state}
-                pure $ LlvmCall (LlvmGlobal LlvmFn "puts") LlvmI32 [arg]
+                case getValueType arg of
+                    LlvmPointer LlvmI8 -> do
+                        modify $ \state -> state{irDependencies = putsDependency : irDependencies state}
+                        pure $ LlvmCall (LlvmGlobal LlvmFn "puts") LlvmI32 [arg]
+                    LlvmI32 -> do
+                        formatStr <- newStrTemplate "%d\\0A" 3
+                        modify $ \state -> state{irDependencies = printfDependency : irDependencies state}
+                        pure $ LlvmCall (LlvmGlobal LlvmFn "printf") LlvmI32 [formatStr, arg]
+                    u -> error $ "println intrinsic does not support type: " ++ show u
             _ -> error "print intrinsic expects exactly 1 argument"
         }
 

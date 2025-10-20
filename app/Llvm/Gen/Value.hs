@@ -8,12 +8,10 @@ import Control.Monad (unless)
 import Control.Monad.Reader (MonadReader (ask), ReaderT (..))
 import Control.Monad.State (MonadState (..), gets, modify, runState)
 import Control.Monad.Writer (MonadWriter (..), WriterT (..))
-import Data.Hashable (hash)
 import Data.List (find)
 import qualified Data.Map as Map
 import GHC.Base (when)
-import Llvm.Dependencies (LinkageType (PrivateLinkage), LlvmDependency (LlvmConstantDependency, constantLinkage, constantName, constantValue))
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irDependencies, irStructs, polymorphicFunctions, typeMap), MemoryScope (..), freshScope, lookupMemory, saveInstruction)
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irStructs, polymorphicFunctions, typeMap), MemoryScope (..), freshScope, lookupMemory, saveInstruction)
 import Llvm.Gen.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
 import Llvm.Gen.Mangling (mangleInstanceMethod)
 import Llvm.Gen.Metadata (ConstructorMetadata (..))
@@ -28,8 +26,9 @@ import Syntax.Tree (Expr (..), uncurryApp)
 import Typing.Currying (uncurryFunction)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), Type (..), constraintClassName, constraintTypes, isPolymorphic)
 import Utils.Lists (hardHead)
-import Llvm.Gen.Arrays (createRefCountedHeapArray, storeArrayElement, createSlice)
+import Llvm.Gen.Arrays (createTypedRefCountedHeapArray, storeArrayElement, createSlice)
 import Data.Foldable (forM_)
+import Llvm.Gen.Templates (newStrTemplate)
 
 compileValue :: Expr -> IrGen LlvmValue
 compileValue expr = case expr of
@@ -41,19 +40,7 @@ compileValue expr = case expr of
             Just mem -> return mem
             Nothing -> error $ "Undefined variable: " ++ name
     ExprArray elements _ -> compileArrayLiteral expr elements
-    ExprStr str _ -> do
-        let depName = "str_" ++ show (hash str)
-        let depType = LlvmArray (length str + 1) LlvmI8
-        let dependency =
-                LlvmConstantDependency
-                    { constantName = depName
-                    , constantValue = LlvmLiteral depType ("c\"" ++ str ++ "\00\"")
-                    , constantLinkage = Just PrivateLinkage
-                    }
-        modify $ \s -> s{irDependencies = dependency : irDependencies s}
-
-        let ptrInstr = LlvmGetElementPtr depType (LlvmGlobal depType depName) [intLiteral 0, intLiteral 0] True
-        saveInstruction ptrInstr (LlvmPointer LlvmI8)
+    ExprStr str _ -> newStrTemplate str (length str)
     ExprLet name valueExpr bodyExpr _ -> do
         compiledValue <- compileValue valueExpr
         newScope <- freshScope name
@@ -253,7 +240,7 @@ compileArrayLiteral arrayExpr elements = do
     let llvmElemType = toAllocationLlvmType elemType
     
     -- todo: don't heap allocate all arrays
-    arrayPtr <- createRefCountedHeapArray llvmElemType len
+    arrayPtr <- createTypedRefCountedHeapArray llvmElemType len
     
     compiledElems <- mapM compileValue elements
     forM_ (zip [0..] compiledElems) $ \(idx, elemValue) -> do
