@@ -11,7 +11,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Inference.Core (TypeMap)
 import Llvm.Dependencies (LlvmDependency)
-import Llvm.Gen.Metadata (ConstructorMetadata, InstanceMetadata, TypeClassMetadata)
+import Llvm.Gen.Metadata (ConstructorMetadata, InstanceMetadata, TypeClassMetadata, PolymorphicFunctionMetadata)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Modules (LlvmFunction, LlvmStruct)
 import Llvm.Types (LlvmType (..))
@@ -24,13 +24,6 @@ data IrGenEnv = IrGenEnv
     , currentFunction :: Maybe String
     }
 
-data PolymorphicFunction = PolymorphicFunction
-    { polyFuncName :: String
-    , polyFuncType :: QualifiedType
-    , polyFuncBody :: Expr
-    }
-    deriving (Show)
-
 data IrGenState = IrGenState
     { nextRegister :: Int
     , nextBlock :: Int
@@ -42,7 +35,7 @@ data IrGenState = IrGenState
     , irDependencies :: [LlvmDependency]
     , typeclasses :: [TypeClassMetadata]
     , instances :: [InstanceMetadata]
-    , polymorphicFunctions :: Map String PolymorphicFunction
+    , polymorphicFunctions :: Map String PolymorphicFunctionMetadata
     , monomorphizedFunctions :: Set String
     }
     deriving (Show)

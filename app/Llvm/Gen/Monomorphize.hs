@@ -5,7 +5,7 @@ import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), MemoryScope (..), PolymorphicFunction (..), freshReg, freshScope)
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), MemoryScope (..), freshReg, freshScope)
 import Llvm.Gen.Types (toAllocationLlvmType, typeToMonomorphicName)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Modules (LlvmFunction (..))
@@ -14,6 +14,7 @@ import Llvm.Values (LlvmValue (..), getValueType)
 import Syntax.Tree (Expr (..))
 import Typing.Currying (uncurryFunction)
 import Typing.Types (Kind (..), QualifiedType (Forall), TyVar (..), Type (..))
+import Llvm.Gen.Metadata (PolymorphicFunctionMetadata(..))
 
 monomorphizeAndCompile :: String -> [Type] -> (Expr -> IrGen LlvmValue) -> IrGen String
 monomorphizeAndCompile funcName concreteTypes compileValueFunc = do

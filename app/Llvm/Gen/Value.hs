@@ -18,16 +18,18 @@ import Llvm.Gen.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
 import Llvm.Gen.Mangling (mangleInstanceMethod)
 import Llvm.Gen.Metadata (ConstructorMetadata (..))
 import Llvm.Gen.Monomorphize (monomorphizeAndCompile)
-import Llvm.Gen.Types (llvmTypeToMonomorphicName, toAllocationLlvmType)
+import Llvm.Gen.Types (llvmTypeToMonomorphicName, toAllocationLlvmType, getArrayElementType)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (LlvmStore))
 import Llvm.Modules (LlvmStruct (LlvmStruct))
 import Llvm.Types (LlvmType (..), deref, getLlvmTypeSize)
-import Llvm.Values (LlvmValue (..), getValueType, intLiteral)
+import Llvm.Values (LlvmValue (..), getValueType, intLiteral, longLiteral)
 import Project.Symbols (Symbol (ResolvedSymbol, resolvedSymbolKind, resolvedSymbolName), SymbolKind (..))
 import Syntax.Tree (Expr (..), uncurryApp)
 import Typing.Currying (uncurryFunction)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), Type (..), constraintClassName, constraintTypes, isPolymorphic)
 import Utils.Lists (hardHead)
+import Llvm.Gen.Arrays (createRefCountedHeapArray, storeArrayElement, createSlice)
+import Data.Foldable (forM_)
 
 compileValue :: Expr -> IrGen LlvmValue
 compileValue expr = case expr of
@@ -38,6 +40,7 @@ compileValue expr = case expr of
         case maybeMem of
             Just mem -> return mem
             Nothing -> error $ "Undefined variable: " ++ name
+    ExprArray elements _ -> compileArrayLiteral expr elements
     ExprStr str _ -> do
         let depName = "str_" ++ show (hash str)
         let depType = LlvmArray (length str + 1) LlvmI8
@@ -127,7 +130,7 @@ compileConstructorApp ctorName args = do
                 else baseTypeName ++ concatMap (("_" ++) . llvmTypeToMonomorphicName) concreteArgTypes
 
     let structType = LlvmNamedType monomorphicName
-    structPtr <- saveInstruction (LlvmAlloca structType) (LlvmPointer structType)
+    structPtr <- saveInstruction (LlvmAlloca structType Nothing) (LlvmPointer structType)
     writeTag structPtr tag
     when isConstructorPolymorphic $ do
         ensureMonomorphicStructExists monomorphicName concreteArgTypes
@@ -234,6 +237,29 @@ extractConcreteTypeFromConstraint constraints className =
             [concreteType] -> concreteType
             types -> hardHead types
         Nothing -> error $ "Constraint not found for class: " ++ className ++ " in: " ++ show constraints
+
+compileArrayLiteral :: Expr -> [Expr] -> IrGen LlvmValue
+compileArrayLiteral arrayExpr elements = do
+    when (null elements) $ 
+        error "Empty arrays not yet supported"
+    let len = length elements
+
+    tyMap <- gets typeMap
+    let arrayType = case Map.lookup arrayExpr tyMap of
+            Just (Forall _ _ ty) -> ty
+            Nothing -> error $ "Array expression not in type map: " ++ show arrayExpr
+    
+    let elemType = getArrayElementType arrayType
+    let llvmElemType = toAllocationLlvmType elemType
+    
+    -- todo: don't heap allocate all arrays
+    arrayPtr <- createRefCountedHeapArray llvmElemType len
+    
+    compiledElems <- mapM compileValue elements
+    forM_ (zip [0..] compiledElems) $ \(idx, elemValue) -> do
+        storeArrayElement arrayPtr (longLiteral idx) elemValue llvmElemType
+    
+    createSlice arrayPtr len        
 
 llvmTypeToType :: LlvmType -> Type
 llvmTypeToType (LlvmNamedType name) = TConstructor (TypeConstructor name KindStar)

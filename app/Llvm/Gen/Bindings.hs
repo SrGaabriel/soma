@@ -5,7 +5,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), MemoryScope (..), PolymorphicFunction (..), freshReg, freshScope)
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), MemoryScope (..), freshReg, freshScope)
 import Llvm.Gen.Types (toAllocationLlvmType)
 import Llvm.Gen.Value (compileValue)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
@@ -15,6 +15,7 @@ import Llvm.Values (LlvmValue (..), getValueType)
 import Syntax.Tree (Expr (..))
 import Typing.Currying (uncurryFunction)
 import Typing.Types (QualifiedType (Forall), Type, isPolymorphic)
+import Llvm.Gen.Metadata (PolymorphicFunctionMetadata(..))
 
 compileBindingDef :: Expr -> IrGen ()
 compileBindingDef (ExprBindingDef name qualType@(Forall _ constraints bindingTyp) body _ _) = do

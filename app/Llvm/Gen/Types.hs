@@ -12,6 +12,7 @@ toAllocationLlvmType t = case flattenTypeApp t of
     (TConstructor (TypeConstructor "Float" _), []) -> LlvmFloat
     (TConstructor (TypeConstructor "String" _), []) -> LlvmPointer LlvmI8
     (TConstructor (TypeConstructor "Bool" _), []) -> LlvmI1
+    (TConstructor (TypeConstructor "Array" _), _) -> sliceType
     (TConstructor (TypeConstructor baseName _), args)
         | not (null args) ->
             let argNames = map typeToMonomorphicName args
@@ -35,6 +36,8 @@ flattenTypeApp t = (t, [])
 
 typeToMonomorphicName :: Type -> String
 typeToMonomorphicName t = case flattenTypeApp t of
+    (TConstructor (TypeConstructor "Array" _), [elemType]) ->
+        "Array_" ++ typeToMonomorphicName elemType
     (TConstructor (TypeConstructor name _), []) -> name
     (TConstructor (TypeConstructor baseName _), args) ->
         baseName ++ concatMap (("_" ++) . typeToMonomorphicName) args
@@ -52,3 +55,11 @@ llvmTypeToMonomorphicName (LlvmNamedType name) = name
 llvmTypeToMonomorphicName (LlvmPointer _) = "Ptr"
 llvmTypeToMonomorphicName (LlvmArray _ _) = "Array"
 llvmTypeToMonomorphicName _ = "Unknown"
+
+sliceType :: LlvmType
+sliceType = LlvmAnonymous [LlvmPtr, LlvmI64]
+
+getArrayElementType :: Type -> Type
+getArrayElementType t = case flattenTypeApp t of
+    (TConstructor (TypeConstructor "Array" _), [elemType]) -> elemType
+    _ -> error $ "Not an array type: " ++ show t

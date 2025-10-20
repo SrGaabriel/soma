@@ -54,6 +54,7 @@ def testSum(x: Int, y: Int) -> Int = x + y
 
 def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
 
+def primeNumbers :: [Int] = [2,3,5,7]
 
 def main :: IO () =
     let optional = Some 5 in

@@ -1,6 +1,7 @@
 module Llvm.Types where
 
 import Llvm.Ir (IR (toLlvm))
+import Data.List (intercalate)
 
 data LlvmType
     = LlvmVoid
@@ -16,6 +17,7 @@ data LlvmType
     | LlvmArray Int LlvmType
     | LlvmNamedType String
     | LlvmFn -- placeholder, not used in this context
+    | LlvmAnonymous [LlvmType]
     | LlvmVararg
     deriving (Show, Eq)
 
@@ -32,6 +34,7 @@ instance IR LlvmType where
     toLlvm (LlvmPointer t) = toLlvm t ++ "*"
     toLlvm (LlvmArray n t) = "[" ++ show n ++ " x " ++ toLlvm t ++ "]"
     toLlvm (LlvmNamedType name) = "%" ++ name
+    toLlvm (LlvmAnonymous types) = "{" ++ intercalate ", " (map toLlvm types) ++ "}"
     toLlvm LlvmFn = "|fn|"
     toLlvm LlvmVararg = "..."
 
@@ -47,6 +50,7 @@ getLlvmTypeSize LlvmDouble = 8
 getLlvmTypeSize LlvmPtr = 8
 getLlvmTypeSize (LlvmPointer t) = getLlvmTypeSize t
 getLlvmTypeSize (LlvmArray n t) = n * getLlvmTypeSize t
+getLlvmTypeSize (LlvmAnonymous types) = sum (map getLlvmTypeSize types)
 getLlvmTypeSize (LlvmNamedType _) = error "Named types do not have a fixed size"
 getLlvmTypeSize LlvmFn = error "Function types do not have a fixed size"
 getLlvmTypeSize LlvmVararg = error "Vararg types do not have a fixed size"

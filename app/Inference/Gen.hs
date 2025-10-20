@@ -15,7 +15,7 @@ import Lexing.Position (Span (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAll)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyVar (..), Type (..), arrayType, boolType, cleanQualified, intType, strType, vectorize, vectorizeAll)
 import Utils.Lists (hardHead)
 
 newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
@@ -287,6 +287,37 @@ generateConstraints expr = case expr of
                 let errorType = TVar errorVar
                 recordType expr errorType
                 return (Just errorType, bodyConstraints)
+    ExprArray elements _ -> do
+        if null elements
+            then do
+                elemVar <- freshTyVar KindStar
+                let elemType = TVar elemVar
+                let arrType = arrayType elemType
+                recordType expr arrType
+                return (Just arrType, emptyConstraints)
+            else do
+                results <- mapM generateConstraints elements
+                let (maybeElemTypes, elemConstraints) = unzip results
+
+                let (Just firstElemType : _) = maybeElemTypes
+
+                let elemTypeConstraints =
+                        zipWith
+                            ( \(Just elemType) elemExpr ->
+                                TypeConstraint elemExpr firstElemType elemType UnifyPatternMatchArms
+                            )
+                            maybeElemTypes
+                            elements
+
+                let combinedConstraints =
+                        ConstraintSet
+                            (elemTypeConstraints ++ concatMap csTypeConstraints elemConstraints)
+                            (concatMap csClassConstraints elemConstraints)
+                            (concatMap csDeclaredConstraints elemConstraints)
+
+                let arrType = arrayType firstElemType
+                recordType expr arrType
+                return (Just arrType, combinedConstraints)
     _ -> do
         let children = exprChildren expr
         results <- mapM generateConstraints children

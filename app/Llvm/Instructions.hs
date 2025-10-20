@@ -11,11 +11,13 @@ data LlvmInstruction
     | LlvmMul LlvmType LlvmValue LlvmValue
     | LlvmCall LlvmValue LlvmType [LlvmValue]
     | LlvmLoad LlvmValue
-    | LlvmAlloca LlvmType
+    | LlvmAlloca LlvmType (Maybe LlvmValue)
     | LlvmICmpEq LlvmType LlvmValue LlvmValue
     | LlvmGetElementPtr LlvmType LlvmValue [LlvmValue] Bool
     | LlvmBitcast LlvmValue LlvmType
     | LlvmSwitch LlvmValue String [(LlvmValue, String)]
+    | LlvmExtractValue LlvmType LlvmValue Int
+    | LlvmInsertValue LlvmType LlvmValue LlvmValue Int
     deriving (Show, Eq)
 
 data LlvmStatement
@@ -33,7 +35,8 @@ instance IR LlvmInstruction where
     toLlvm (LlvmMul typ lhs rhs) = "mul " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmCall callee retType args) = "call " ++ toLlvm retType ++ " " ++ toLlvm callee ++ "(" ++ intercalate ", " (map (\val -> toLlvm (getValueType val) ++ " " ++ toLlvm val) args) ++ ")"
     toLlvm (LlvmLoad value) = "load " ++ toLlvm (deref $ getValueType value) ++ ", ptr " ++ toLlvm value
-    toLlvm (LlvmAlloca typ) = "alloca " ++ toLlvm typ
+    toLlvm (LlvmAlloca typ Nothing) = "alloca " ++ toLlvm typ
+    toLlvm (LlvmAlloca typ (Just count)) = "alloca " ++ toLlvm typ ++ ", " ++ toLlvm (getValueType count) ++ " " ++ toLlvm count
     toLlvm (LlvmICmpEq typ lhs rhs) = "icmp eq " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmGetElementPtr structType basePtr indices inbounds) =
         "getelementptr "
@@ -54,6 +57,11 @@ instance IR LlvmInstruction where
             ++ " ["
             ++ unwords (map (\(val, lbl) -> toLlvm (getValueType val) ++ " " ++ toLlvm val ++ ", label %" ++ lbl) cases)
             ++ "]"
+    toLlvm (LlvmExtractValue structType value idx) = 
+        "extractvalue " ++ toLlvm structType ++ " " ++ toLlvm value ++ ", " ++ show idx
+    toLlvm (LlvmInsertValue structType base new idx) = 
+        "insertvalue " ++ toLlvm structType ++ " " ++ toLlvm base ++ ", " ++ 
+        toLlvm (getValueType new) ++ " " ++ toLlvm new ++ ", " ++ show idx
 
 instance IR LlvmStatement where
     toLlvm (LlvmAssign name instr) = "%" ++ name ++ " = " ++ toLlvm instr
