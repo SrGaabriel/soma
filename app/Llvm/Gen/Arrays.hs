@@ -8,18 +8,20 @@ import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Types (LlvmType (..), getLlvmTypeSize)
 import Llvm.Values (LlvmValue (..), intLiteral, longLiteral)
 import Llvm.Dependencies (LlvmDependency (LlvmFunctionDependency))
+import Llvm.Gen.Context
 
 createStackArray :: LlvmType -> Int -> IrGen LlvmValue
 createStackArray elemType len = do
     let arrayType = LlvmArray len elemType
     saveInstruction (LlvmAlloca arrayType Nothing) LlvmPtr
 
-createSlice :: LlvmValue -> Int -> IrGen LlvmValue
+createSlice :: GenValue -> Int -> IrGen GenValue
 createSlice dataPtr len = do
     let lenValue = LlvmLiteral LlvmI64 (show len)
 
-    reg1 <- saveInstruction (LlvmInsertValue sliceType LlvmUndef dataPtr 0) sliceType
-    saveInstruction (LlvmInsertValue sliceType reg1 lenValue 1) sliceType
+    reg1 <- saveInstruction (LlvmInsertValue sliceType LlvmUndef (gvw dataPtr) 0) sliceType
+    Contextualized (ArrayOperation SliceDeconstruction) <$>
+        saveInstruction (LlvmInsertValue sliceType reg1 lenValue 1) sliceType
 
 extractSlicePtr :: LlvmValue -> IrGen LlvmValue
 extractSlicePtr slice = do
@@ -32,13 +34,13 @@ extractSliceLen slice = do
 heapArrayHeaderSize :: Int
 heapArrayHeaderSize = 16
 
-createTypedRefCountedHeapArray :: LlvmType -> Int -> IrGen LlvmValue
+createTypedRefCountedHeapArray :: LlvmType -> Int -> IrGen GenValue
 createTypedRefCountedHeapArray elemType len = do
     let bytesPerElem = getLlvmTypeSize elemType
     let totalBytes = heapArrayHeaderSize + len * bytesPerElem
     createRefCountedHeapArray totalBytes len
 
-createRefCountedHeapArray :: Int -> Int -> IrGen LlvmValue
+createRefCountedHeapArray :: Int -> Int -> IrGen GenValue
 createRefCountedHeapArray initialSize len = do
     rawPtr <- saveInstruction (LlvmCall (LlvmGlobal LlvmFn "malloc") LlvmPtr [longLiteral initialSize]) LlvmPtr
     let mallocDependency = LlvmFunctionDependency "malloc" (LlvmPointer LlvmI8) [LlvmI64]
@@ -50,23 +52,25 @@ createRefCountedHeapArray initialSize len = do
     lenOffsetPtr <- saveInstruction (LlvmGetElementPtr LlvmI64 castedRawPtr [intLiteral 1] True) (LlvmPointer LlvmI64)
     tell [LlvmStore LlvmI64 (longLiteral (fromIntegral len)) lenOffsetPtr]
 
-    saveInstruction (LlvmGetElementPtr LlvmI8 rawPtr [longLiteral heapArrayHeaderSize] True) LlvmPtr
+    Contextualized (MemoryAccess ArrayHeaderOffset) <$>
+        saveInstruction (LlvmGetElementPtr LlvmI8 rawPtr [longLiteral heapArrayHeaderSize] True) LlvmPtr
 
-storeArrayElement :: LlvmValue -> LlvmValue -> LlvmValue -> LlvmType -> IrGen ()
+storeArrayElement :: GenValue -> GenValue -> GenValue -> LlvmType -> IrGen ()
 storeArrayElement arrayPtr index value elemType = do
     elemPtr <-
         saveInstruction
-            (LlvmGetElementPtr elemType arrayPtr [index] True)
+            (LlvmGetElementPtr elemType (gvw arrayPtr) [gvw index] True)
             LlvmPtr
-    tell [LlvmStore elemType value elemPtr]
+    tell [LlvmStore elemType (gvw value) elemPtr]
 
-loadArrayElement :: LlvmValue -> LlvmValue -> LlvmType -> IrGen LlvmValue
+loadArrayElement :: GenValue -> GenValue -> LlvmType -> IrGen GenValue
 loadArrayElement arrayPtr index elemType = do
-    elemPtr <-
+    elemPtr <- Contextualized (MemoryAccess ArrayElementAccess) <$>
         saveInstruction
-            (LlvmGetElementPtr elemType arrayPtr [index] True)
+            (LlvmGetElementPtr elemType (gvw arrayPtr) [gvw index] True)
             LlvmPtr
-    saveInstruction (LlvmLoad elemPtr) elemType
+    Contextualized (ValueLoad ArrayElementLoad) <$>
+        saveInstruction (LlvmLoad (gvw elemPtr)) elemType
 
 getStackArrayDataPtr :: LlvmValue -> LlvmType -> IrGen LlvmValue
 getStackArrayDataPtr stackPtr arrayType = do

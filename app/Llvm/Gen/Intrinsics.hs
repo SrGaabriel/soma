@@ -8,12 +8,13 @@ import Llvm.Dependencies (LlvmDependency (..))
 import Llvm.Gen.Core (IrGen, IrGenState (irDependencies))
 import Llvm.Instructions (LlvmInstruction (..))
 import Llvm.Types (LlvmType (..))
-import Llvm.Values (LlvmValue (..), getValueType)
+import Llvm.Values (LlvmValue (..))
 import Llvm.Gen.Templates (newStrTemplate)
+import Llvm.Gen.Context (GenValue (..), getGenValueType)
 
 data IntrinsicImpl = IntrinsicImpl
     { intrinsicName :: String
-    , intrinsicCodeGen :: [LlvmValue] -> IrGen LlvmInstruction
+    , intrinsicCodeGen :: [GenValue] -> IrGen LlvmInstruction
     }
 
 addIntIntrinsic :: IntrinsicImpl
@@ -22,8 +23,8 @@ addIntIntrinsic =
         { intrinsicName = "+"
         , intrinsicCodeGen = \case
             [lhs, rhs] ->
-                let lhsType = getValueType lhs
-                in pure $ LlvmAdd lhsType lhs rhs
+                let lhsType = getGenValueType lhs
+                in pure $ LlvmAdd lhsType (gvw lhs) (gvw rhs)
             _ -> error "add_int intrinsic expects exactly 2 arguments"
         }
 
@@ -33,8 +34,8 @@ eqIntIntrinsic =
         { intrinsicName = "=="
         , intrinsicCodeGen = \case
             [lhs, rhs] ->
-                let lhsType = getValueType lhs
-                in pure $ LlvmICmpEq lhsType lhs rhs
+                let lhsType = getGenValueType lhs
+                in pure $ LlvmICmpEq lhsType (gvw lhs) (gvw rhs)
             _ -> error "eq_int intrinsic expects exactly 2 arguments"
         }
 
@@ -45,7 +46,7 @@ printIntrinsic =
         , intrinsicCodeGen = \case
             [arg] -> do
                 modify $ \state -> state{irDependencies = printfDependency : irDependencies state}
-                pure $ LlvmCall (LlvmGlobal LlvmFn "printf") LlvmI32 [arg]
+                pure $ LlvmCall (LlvmGlobal LlvmFn "printf") LlvmI32 [gvw arg]
             _ -> error "print intrinsic expects exactly 1 argument"
         }
 
@@ -55,14 +56,14 @@ printlnIntrinsic =
         { intrinsicName = "println"
         , intrinsicCodeGen = \case
             [arg] -> do
-                case getValueType arg of
+                case getGenValueType arg of
                     LlvmPointer LlvmI8 -> do
                         modify $ \state -> state{irDependencies = putsDependency : irDependencies state}
-                        pure $ LlvmCall (LlvmGlobal LlvmFn "puts") LlvmI32 [arg]
+                        pure $ LlvmCall (LlvmGlobal LlvmFn "puts") LlvmI32 [gvw arg]
                     LlvmI32 -> do
                         formatStr <- newStrTemplate "%d\\0A" 3
                         modify $ \state -> state{irDependencies = printfDependency : irDependencies state}
-                        pure $ LlvmCall (LlvmGlobal LlvmFn "printf") LlvmI32 [formatStr, arg]
+                        pure $ LlvmCall (LlvmGlobal LlvmFn "printf") LlvmI32 [formatStr, gvw arg]
                     u -> error $ "println intrinsic does not support type: " ++ show u
             _ -> error "print intrinsic expects exactly 1 argument"
         }

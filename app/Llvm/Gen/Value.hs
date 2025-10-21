@@ -20,7 +20,7 @@ import Llvm.Gen.Types (llvmTypeToMonomorphicName, toAllocationLlvmType, getArray
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (LlvmStore))
 import Llvm.Modules (LlvmStruct (LlvmStruct))
 import Llvm.Types (LlvmType (..), deref, getLlvmTypeSize)
-import Llvm.Values (LlvmValue (..), getValueType, intLiteral, longLiteral)
+import Llvm.Values (LlvmValue (..), getValueType, intLiteral)
 import Project.Symbols (Symbol (ResolvedSymbol, resolvedSymbolKind, resolvedSymbolName), SymbolKind (..))
 import Syntax.Tree (Expr (..), uncurryApp)
 import Typing.Currying (uncurryFunction)
@@ -29,18 +29,19 @@ import Utils.Lists (hardHead)
 import Llvm.Gen.Arrays (createTypedRefCountedHeapArray, storeArrayElement, createSlice)
 import Data.Foldable (forM_)
 import Llvm.Gen.Templates (newStrTemplate)
+import Llvm.Gen.Context
 
-compileValue :: Expr -> IrGen LlvmValue
+compileValue :: Expr -> IrGen GenValue
 compileValue expr = case expr of
-    ExprNum n _ -> return $ LlvmLiteral LlvmI32 n
-    ExprBool b _ -> return $ LlvmLiteral LlvmI1 (if b then "1" else "0")
+    ExprNum n _ -> return $ Contextualized (LiteralValue NumLit) (LlvmLiteral LlvmI32 n)
+    ExprBool b _ -> return $ Contextualized (LiteralValue BoolLit) (LlvmLiteral LlvmI1 (if b then "1" else "0"))
     ExprUVar name _ -> do
         maybeMem <- lookupMemory name
         case maybeMem of
             Just mem -> return mem
             Nothing -> error $ "Undefined variable: " ++ name
     ExprArray elements _ -> compileArrayLiteral expr elements
-    ExprStr str _ -> newStrTemplate str (length str)
+    ExprStr str _ -> Contextualized (LiteralValue StringLit) <$> newStrTemplate str (length str)
     ExprLet name valueExpr bodyExpr _ -> do
         compiledValue <- compileValue valueExpr
         newScope <- freshScope name
@@ -63,7 +64,7 @@ compileValue expr = case expr of
                 argVals <- mapM compileValue allArgs
 
                 let concreteType = case argVals of
-                        (firstArg : _) -> llvmTypeToType (getValueType firstArg)
+                        (firstArg : _) -> llvmTypeToType (getGenValueType firstArg)
                         [] -> error $ "No arguments in typeclass method: " ++ resolvedSymbolName
 
                 let mangledName = mangleInstanceMethod className concreteType resolvedSymbolName
@@ -73,8 +74,9 @@ compileValue expr = case expr of
                 let (_argTypes, retType) = uncurryFunction methodType
                 let llvmRetType = toAllocationLlvmType retType
 
-                saveInstruction
-                    (LlvmCall (LlvmGlobal LlvmFn mangledName) llvmRetType argVals)
+                let rawArgs = map gvw argVals
+                Contextualized (FunctionCall DirectCall) <$> saveInstruction
+                    (LlvmCall (LlvmGlobal LlvmFn mangledName) llvmRetType rawArgs)
                     llvmRetType
             _ -> do
                 tyMap <- gets typeMap
@@ -85,6 +87,7 @@ compileValue expr = case expr of
                 let (_fnIntermediateTys, fnRetType) = uncurryFunction refType
                 let callName = getApplicableFnName callBase
                 let llvmFnType = toAllocationLlvmType fnRetType
+                let argValsRaw = map gvw argVals
                 call <- case callName of
                     ResolvedSymbol name IntrinsicBindingSymbol _ _ -> do
                         let intrinsic = getIntrinsic name
@@ -93,22 +96,22 @@ compileValue expr = case expr of
                         polyFuncs <- gets polymorphicFunctions
                         case Map.lookup name polyFuncs of
                             Just _ -> do
-                                let concreteTypes = map (llvmTypeToType . getValueType) argVals
+                                let concreteTypes = map (llvmTypeToType . getValueType) argValsRaw
                                 mangledName <- monomorphizeAndCompile name concreteTypes compileValue
-                                pure $ LlvmCall (LlvmGlobal LlvmFn mangledName) llvmFnType argVals
+                                pure $ LlvmCall (LlvmGlobal LlvmFn mangledName) llvmFnType argValsRaw
                             Nothing -> do
-                                pure $ LlvmCall (LlvmGlobal LlvmFn name) llvmFnType argVals
+                                pure $ LlvmCall (LlvmGlobal LlvmFn name) llvmFnType argValsRaw
                     ResolvedSymbol name _ _ _ -> do
-                        pure $ LlvmCall (LlvmGlobal LlvmFn name) llvmFnType argVals
-                saveInstruction call llvmFnType
+                        pure $ LlvmCall (LlvmGlobal LlvmFn name) llvmFnType argValsRaw
+                Contextualized (FunctionCall DirectCall) <$> saveInstruction call llvmFnType
     _ -> error $ "Unsupported llvm value expression type: " ++ show expr
 
-compileConstructorApp :: String -> [Expr] -> IrGen LlvmValue
+compileConstructorApp :: String -> [Expr] -> IrGen GenValue
 compileConstructorApp ctorName args = do
     ConstructorMetadata baseTypeName tag argTypes <- getConstructorInfo ctorName
 
     argVals <- mapM compileValue args
-    let concreteArgTypes = map getValueType argVals
+    let concreteArgTypes = map getGenValueType argVals
     let isConstructorPolymorphic = any isPolymorphic argTypes
 
     let monomorphicName =
@@ -119,11 +122,12 @@ compileConstructorApp ctorName args = do
     let structType = LlvmNamedType monomorphicName
     structPtr <- saveInstruction (LlvmAlloca structType Nothing) (LlvmPointer structType)
     writeTag structPtr tag
+    let cStructPtr = Contextualized (MemoryAllocation StackStructAlloc) structPtr
     when isConstructorPolymorphic $ do
         ensureMonomorphicStructExists monomorphicName concreteArgTypes
-        dataPtr <- getUnionDataPtr structPtr monomorphicName
+        dataPtr <- getUnionDataPtr cStructPtr monomorphicName
         writeConstructorData dataPtr args
-    return structPtr
+    return cStructPtr
 
 ensureMonomorphicStructExists :: String -> [LlvmType] -> IrGen ()
 ensureMonomorphicStructExists monomorphicName concreteArgTypes = do
@@ -138,7 +142,7 @@ ensureMonomorphicStructExists monomorphicName concreteArgTypes = do
 
         modify $ \s -> s{irStructs = structDef : irStructs s}
 
-getUnionDataPtr :: LlvmValue -> String -> IrGen LlvmValue
+getUnionDataPtr :: GenValue -> String -> IrGen GenValue
 getUnionDataPtr structPtr typeName = do
     let structType = LlvmNamedType typeName
     st <- get
@@ -146,8 +150,8 @@ getUnionDataPtr structPtr typeName = do
     let LlvmStruct _ fields = structDef
     let arrayType = fields !! 1
 
-    saveInstruction
-        (LlvmGetElementPtr structType structPtr [intLiteral 0, intLiteral 1] False)
+    Contextualized (MemoryAccess ADTUnionDataAccess)  <$> saveInstruction
+        (LlvmGetElementPtr structType (gvw structPtr) [intLiteral 0, intLiteral 1] False)
         (LlvmPointer arrayType)
 
 getConstructorInfo :: String -> IrGen ConstructorMetadata
@@ -184,15 +188,15 @@ getConstructorName :: Expr -> String
 getConstructorName (ExprVar (ResolvedSymbol name _ _ _) _) = name
 getConstructorName _ = error "Not a constructor"
 
-writeConstructorData :: LlvmValue -> [Expr] -> IrGen ()
+writeConstructorData :: GenValue -> [Expr] -> IrGen ()
 writeConstructorData dataPtr args = do
     writeFieldsSequentially dataPtr args 0
 
-writeFieldsSequentially :: LlvmValue -> [Expr] -> Int -> IrGen ()
+writeFieldsSequentially :: GenValue -> [Expr] -> Int -> IrGen ()
 writeFieldsSequentially _ [] _ = return ()
 writeFieldsSequentially dataPtr (arg : rest) offset = do
     argVal <- compileValue arg
-    let argType = getValueType argVal
+    let argType = getGenValueType argVal
 
     fieldPtr <- getFieldPtrAtOffset dataPtr offset
 
@@ -201,17 +205,17 @@ writeFieldsSequentially dataPtr (arg : rest) offset = do
             (LlvmBitcast fieldPtr (LlvmPointer argType))
             (LlvmPointer argType)
 
-    tell [LlvmStore argType argVal typedPtr]
+    tell [LlvmStore argType (gvw argVal) typedPtr]
 
     let fieldSize = getLlvmTypeSize argType
     writeFieldsSequentially dataPtr rest (offset + fieldSize)
 
-getFieldPtrAtOffset :: LlvmValue -> Int -> IrGen LlvmValue
+getFieldPtrAtOffset :: GenValue -> Int -> IrGen LlvmValue
 getFieldPtrAtOffset dataPtr offset = do
     saveInstruction
         ( LlvmGetElementPtr
-            (deref $ getValueType dataPtr)
-            dataPtr
+            (deref $ getGenValueType dataPtr)
+            (gvw dataPtr)
             [intLiteral 0, intLiteral offset]
             False
         )
@@ -225,9 +229,9 @@ extractConcreteTypeFromConstraint constraints className =
             types -> hardHead types
         Nothing -> error $ "Constraint not found for class: " ++ className ++ " in: " ++ show constraints
 
-compileArrayLiteral :: Expr -> [Expr] -> IrGen LlvmValue
+compileArrayLiteral :: Expr -> [Expr] -> IrGen GenValue
 compileArrayLiteral arrayExpr elements = do
-    when (null elements) $ 
+    when (null elements) $
         error "Empty arrays not yet supported"
     let len = length elements
 
@@ -235,18 +239,18 @@ compileArrayLiteral arrayExpr elements = do
     let arrayType = case Map.lookup arrayExpr tyMap of
             Just (Forall _ _ ty) -> ty
             Nothing -> error $ "Array expression not in type map: " ++ show arrayExpr
-    
+
     let elemType = getArrayElementType arrayType
     let llvmElemType = toAllocationLlvmType elemType
-    
+
     -- todo: don't heap allocate all arrays
     arrayPtr <- createTypedRefCountedHeapArray llvmElemType len
-    
+
     compiledElems <- mapM compileValue elements
     forM_ (zip [0..] compiledElems) $ \(idx, elemValue) -> do
-        storeArrayElement arrayPtr (longLiteral idx) elemValue llvmElemType
-    
-    createSlice arrayPtr len        
+        storeArrayElement arrayPtr (cLongLiteral idx) elemValue llvmElemType
+
+    createSlice arrayPtr len
 
 llvmTypeToType :: LlvmType -> Type
 llvmTypeToType (LlvmNamedType name) = TConstructor (TypeConstructor name KindStar)

@@ -18,6 +18,7 @@ import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getRegName)
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType)
+import Llvm.Gen.Context (GenValue (..), GenCtx)
 
 data IrGenEnv = IrGenEnv
     { currentScope :: MemoryScope
@@ -97,14 +98,19 @@ freshReg ty = do
     modify $ \s -> s{nextRegister = n + 1}
     return $ LlvmRegister ty ("reg_" ++ show n)
 
+ctxFreshReg :: (MonadState IrGenState m) => GenCtx -> LlvmType -> m GenValue
+ctxFreshReg ctx ty = do
+    fresh <- freshReg ty
+    return $ Contextualized ctx fresh
+
 data MemoryScope = MemoryScope
     { blockName :: String
-    , blockValues :: Map String LlvmValue
+    , blockValues :: Map String GenValue
     , blockParent :: Maybe MemoryScope
     }
     deriving (Show)
 
-insertMemory :: String -> LlvmValue -> IrGen ()
+insertMemory :: String -> GenValue -> IrGen ()
 insertMemory name value = do
     env <- ask
     let scope = currentScope env
@@ -112,7 +118,7 @@ insertMemory name value = do
         newScope = scope{blockValues = newValues}
     local (\e -> e{currentScope = newScope}) (return ())
 
-lookupMemory :: (MonadReader IrGenEnv m) => String -> m (Maybe LlvmValue)
+lookupMemory :: (MonadReader IrGenEnv m) => String -> m (Maybe GenValue)
 lookupMemory name = do
     scope <- asks currentScope
     return $ getMem scope name
@@ -127,7 +133,7 @@ freshScope name = do
             , blockParent = Just parent
             }
 
-getMem :: MemoryScope -> String -> Maybe LlvmValue
+getMem :: MemoryScope -> String -> Maybe GenValue
 getMem (MemoryScope _ values parent) name =
     case Map.lookup name values of
         Just v -> Just v
