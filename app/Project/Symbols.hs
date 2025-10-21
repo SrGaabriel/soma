@@ -1,6 +1,7 @@
 module Project.Symbols where
 
 import Lexing.Position (Span)
+import Typing.Types (QualifiedType)
 
 data Symbol = ResolvedSymbol
     { resolvedSymbolName :: String
@@ -11,7 +12,7 @@ data Symbol = ResolvedSymbol
     deriving (Show, Eq, Ord)
 
 data SymbolKind
-    = BindingSymbol
+    = BindingSymbol {bindingType :: QualifiedType}
     | DataConstructorSymbol {constructorParent :: String}
     | TypeSymbol {typeArity :: Int}
     | TypeClassSymbol

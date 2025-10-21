@@ -5,12 +5,12 @@ module Llvm.Gen.Intrinsics where
 
 import Control.Monad.State (modify)
 import Llvm.Dependencies (LlvmDependency (..))
-import Llvm.Gen.Core (IrGen, IrGenState (irDependencies))
+import Llvm.Gen.Context (GenValue (..), getGenValueType)
+import Llvm.Gen.Core (IrGen, IrGenState (irDependencies), mkFnCall)
+import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Instructions (LlvmInstruction (..))
 import Llvm.Types (LlvmType (..))
-import Llvm.Values (LlvmValue (..))
-import Llvm.Gen.Templates (newStrTemplate)
-import Llvm.Gen.Context (GenValue (..), getGenValueType)
+import Llvm.Values (intLiteral)
 
 data IntrinsicImpl = IntrinsicImpl
     { intrinsicName :: String
@@ -46,7 +46,7 @@ printIntrinsic =
         , intrinsicCodeGen = \case
             [arg] -> do
                 modify $ \state -> state{irDependencies = printfDependency : irDependencies state}
-                pure $ LlvmCall (LlvmGlobal LlvmFn "printf") LlvmI32 [gvw arg]
+                pure $ mkFnCall "printf" [arg] LlvmI32
             _ -> error "print intrinsic expects exactly 1 argument"
         }
 
@@ -59,13 +59,23 @@ printlnIntrinsic =
                 case getGenValueType arg of
                     LlvmPointer LlvmI8 -> do
                         modify $ \state -> state{irDependencies = putsDependency : irDependencies state}
-                        pure $ LlvmCall (LlvmGlobal LlvmFn "puts") LlvmI32 [gvw arg]
+                        pure $ mkFnCall "puts" [arg] LlvmI32
                     LlvmI32 -> do
                         formatStr <- newStrTemplate "%d\\0A" 3
                         modify $ \state -> state{irDependencies = printfDependency : irDependencies state}
-                        pure $ LlvmCall (LlvmGlobal LlvmFn "printf") LlvmI32 [formatStr, gvw arg]
+                        pure $  mkFnCall "printf" [formatStr, arg] LlvmI32
                     u -> error $ "println intrinsic does not support type: " ++ show u
             _ -> error "print intrinsic expects exactly 1 argument"
+        }
+
+mapIntrinsic :: IntrinsicImpl
+mapIntrinsic =
+    IntrinsicImpl
+        { intrinsicName = "map"
+        , intrinsicCodeGen = \case
+            [lambda, array] -> do
+                pure $ LlvmAdd LlvmI32 (intLiteral 5) (intLiteral 5)
+            _ -> error "map intrinsic expects exactly 2 arguments"
         }
 
 getIntrinsic :: String -> IntrinsicImpl
@@ -73,6 +83,7 @@ getIntrinsic "==" = eqIntIntrinsic
 getIntrinsic "+" = addIntIntrinsic
 getIntrinsic "print" = printIntrinsic
 getIntrinsic "println" = printlnIntrinsic
+getIntrinsic "map" = mapIntrinsic
 getIntrinsic u = error $ "Unknown intrinsic function: " ++ u
 
 printfDependency :: LlvmDependency

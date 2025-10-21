@@ -4,162 +4,171 @@ import Llvm.Types (LlvmType)
 import Llvm.Values (LlvmValue, getValueType, intLiteral, longLiteral)
 
 data GenValue = Contextualized
-  { genValueContext :: GenCtx,
-    gvw :: LlvmValue
-  }
-  deriving (Show, Eq)
+    { genValueContext :: GenCtx
+    , gvw :: LlvmValue
+    }
+    deriving (Show, Eq)
 
 data GenCtx
-  = LiteralValue LitCtx
-  | FunctionArg
-      { argPosition :: Int,
-        argFunctionName :: Maybe String
-      }
-  | MemoryAllocation MemAllocCtx
-  | MemoryAccess MemAccessCtx
-  | FunctionCall FunctionCallCtx
-  | ValueLoad LoadCtx
-  | ArrayOperation ArrayOpCtx
-  | ArithmeticOp ArithOpCtx
-  | ComparisonOp CmpOpCtx
-  | TypeConversion ConversionCtx
-  | StructOperation StructOpCtx
-  deriving (Show, Eq)
+    = LiteralValue LitCtx
+    | FunctionArg
+        { argPosition :: Int
+        , argFunctionName :: Maybe String
+        }
+    | MemoryAllocation MemAllocCtx
+    | MemoryAccess MemAccessCtx
+    | FunctionCall FunctionCallCtx
+    | ValueLoad LoadCtx
+    | ArrayOperation ArrayOpCtx
+    | ArithmeticOp ArithOpCtx
+    | ComparisonOp CmpOpCtx
+    | TypeConversion ConversionCtx
+    | StructOperation StructOpCtx
+    deriving (Show, Eq)
 
 data LitCtx
-  = StringLit
-  | NumLit
-  | BoolLit
-  deriving (Show, Eq)
+    = StringLit
+    | NumLit
+    | BoolLit
+    deriving (Show, Eq)
 
 data MemAllocCtx
-  = StackStructAlloc
-      { allocatedType :: LlvmType
-      }
-  | StackArrayAlloc
-      { allocatedType :: LlvmType,
-        arraySize :: Maybe Int
-      }
-  | HeapAlloc
-      { allocatedType :: LlvmType,
-        heapSize :: Int
-      }
-  deriving (Show, Eq)
+    = StackStructAlloc
+        { allocatedType :: LlvmType
+        }
+    | StackArrayAlloc
+        { allocatedType :: LlvmType
+        , arraySize :: Maybe Int
+        }
+    | HeapAlloc
+        { allocatedType :: LlvmType
+        , heapSize :: Int
+        }
+    | LambdaPtrAlloc
+        { lambdaFunctionName :: String
+        }
+    deriving (Show, Eq)
 
 data MemAccessCtx
-  = ADTTagAccess
-      { basePointer :: GenValue
-      }
-  | ADTUnionDataAccess
-      { basePointer :: GenValue
-      }
-  | StructFieldAccess
-      { basePointer :: GenValue,
-        structFieldIndex :: Int
-      }
-  | ArrayElementAccess
-      { arrayPointer :: GenValue,
-        indexValue :: GenValue
-      }
-  | ArrayHeaderOffset
-      { rawPointer :: GenValue
-      }
-  deriving (Show, Eq)
+    = ADTTagAccess
+        { basePointer :: GenValue
+        }
+    | ADTUnionDataAccess
+        { basePointer :: GenValue
+        }
+    | StructFieldAccess
+        { basePointer :: GenValue
+        , structFieldIndex :: Int
+        }
+    | ArrayElementAccess
+        { arrayPointer :: GenValue
+        , indexValue :: GenValue
+        }
+    | ArrayHeaderOffset
+        { rawPointer :: GenValue
+        }
+    | GlobalConstantAccess
+        { globalName :: String
+        , globalType :: LlvmType
+        , indices :: [Int]
+        , inbounds :: Bool
+        }
+    deriving (Show, Eq)
 
 data FunctionCallCtx
-  = DirectCall
-      { calledFunction :: String,
-        callArguments :: [GenValue]
-      }
-  | IndirectCall
-      { functionPointer :: GenValue,
-        callArguments :: [GenValue]
-      }
-  deriving (Show, Eq)
+    = DirectCall
+        { calledFunction :: String
+        , callArguments :: [GenValue]
+        }
+    | IndirectCall
+        { functionPointer :: GenValue
+        , callArguments :: [GenValue]
+        }
+    deriving (Show, Eq)
 
 data LoadCtx
-  = StructValueLoad
-      { sourcePointer :: GenValue
-      }
-  | ArrayElementLoad
-      { sourcePointer :: GenValue,
-        elementIndex :: GenValue
-      }
-  | VariableLoad
-      { sourcePointer :: GenValue,
-        variableName :: Maybe String
-      }
-  | FieldLoad
-      { sourcePointer :: GenValue,
-        loadFieldIndex :: Int
-      }
-  deriving (Show, Eq)
+    = StructValueLoad
+        { sourcePointer :: GenValue
+        }
+    | ArrayElementLoad
+        { sourcePointer :: GenValue
+        , elementIndex :: GenValue
+        }
+    | VariableLoad
+        { sourcePointer :: GenValue
+        , variableName :: Maybe String
+        }
+    | FieldLoad
+        { sourcePointer :: GenValue
+        , loadFieldIndex :: Int
+        }
+    deriving (Show, Eq)
 
 data ArrayOpCtx
-  = SliceConstruction
-      { sliceDataPtr :: GenValue,
-        sliceLength :: Int
-      }
-  | SliceDeconstruction
-      { originalSlice :: Maybe GenValue
-      }
-  deriving (Show, Eq)
+    = SliceConstruction
+        { sliceDataPtr :: GenValue
+        , sliceLength :: Int
+        }
+    | SliceDeconstruction
+        { originalSlice :: Maybe GenValue
+        }
+    deriving (Show, Eq)
 
 data ArithOpCtx
-  = BinaryArith
-      { arithOperation :: String, -- "add", "sub", "mul", "div", "mod"
-        leftOperand :: GenValue,
-        rightOperand :: GenValue
-      }
-  | UnaryArith
-      { arithOperation :: String, -- "neg" or "not"
-        operand :: GenValue
-      }
-  deriving (Show, Eq)
+    = BinaryArith
+        { arithOperation :: String -- "add", "sub", "mul", "div", "mod"
+        , leftOperand :: GenValue
+        , rightOperand :: GenValue
+        }
+    | UnaryArith
+        { arithOperation :: String -- "neg" or "not"
+        , operand :: GenValue
+        }
+    deriving (Show, Eq)
 
 data CmpOpCtx
-  = Comparison
-  { comparisonOp :: String,
-    cmpLeftOperand :: GenValue,
-    cmpRightOperand :: GenValue
-  }
-  deriving (Show, Eq)
+    = Comparison
+    { comparisonOp :: String
+    , cmpLeftOperand :: GenValue
+    , cmpRightOperand :: GenValue
+    }
+    deriving (Show, Eq)
 
 data ConversionCtx
-  = Bitcast
-      { sourceValue :: GenValue,
-        targetType :: LlvmType
-      }
-  | IntToPtr
-      { sourceValue :: GenValue,
-        targetType :: LlvmType
-      }
-  | PtrToInt
-      { sourceValue :: GenValue,
-        targetType :: LlvmType
-      }
-  | Truncate
-      { sourceValue :: GenValue,
-        targetType :: LlvmType
-      }
-  | Extend
-      { sourceValue :: GenValue,
-        targetType :: LlvmType,
-        isSigned :: Bool
-      }
-  deriving (Show, Eq)
+    = Bitcast
+        { sourceValue :: GenValue
+        , targetType :: LlvmType
+        }
+    | IntToPtr
+        { sourceValue :: GenValue
+        , targetType :: LlvmType
+        }
+    | PtrToInt
+        { sourceValue :: GenValue
+        , targetType :: LlvmType
+        }
+    | Truncate
+        { sourceValue :: GenValue
+        , targetType :: LlvmType
+        }
+    | Extend
+        { sourceValue :: GenValue
+        , targetType :: LlvmType
+        , isSigned :: Bool
+        }
+    deriving (Show, Eq)
 
 data StructOpCtx
-  = InsertValue
-      { targetStruct :: Maybe GenValue,
-        insertedValue :: GenValue,
-        insertIndex :: Int
-      }
-  | ExtractValue
-      { sourceStruct :: GenValue,
-        extractIndex :: Int
-      }
-  deriving (Show, Eq)
+    = InsertValue
+        { targetStruct :: Maybe GenValue
+        , insertedValue :: GenValue
+        , insertIndex :: Int
+        }
+    | ExtractValue
+        { sourceStruct :: GenValue
+        , extractIndex :: Int
+        }
+    deriving (Show, Eq)
 
 getGenValueType :: GenValue -> LlvmType
 getGenValueType (Contextualized _ raw) = getValueType raw
@@ -182,6 +191,9 @@ mkStackArrayAlloc ty size = Contextualized (MemoryAllocation (StackArrayAlloc ty
 mkHeapAlloc :: LlvmType -> Int -> LlvmValue -> GenValue
 mkHeapAlloc ty size = Contextualized (MemoryAllocation (HeapAlloc ty size))
 
+mkLambdaPtrAlloc :: String -> LlvmValue -> GenValue
+mkLambdaPtrAlloc fname = Contextualized (MemoryAllocation (LambdaPtrAlloc fname))
+
 mkADTTagAccess :: GenValue -> LlvmValue -> GenValue
 mkADTTagAccess base = Contextualized (MemoryAccess (ADTTagAccess base))
 
@@ -196,6 +208,9 @@ mkArrayElementAccess arr idx = Contextualized (MemoryAccess (ArrayElementAccess 
 
 mkArrayHeaderOffset :: GenValue -> LlvmValue -> GenValue
 mkArrayHeaderOffset raw = Contextualized (MemoryAccess (ArrayHeaderOffset raw))
+
+mkGlobalConstantAccess :: String -> LlvmType -> [Int] -> Bool -> LlvmValue -> GenValue
+mkGlobalConstantAccess name ty idxs inb = Contextualized (MemoryAccess (GlobalConstantAccess name ty idxs inb))
 
 mkDirectCall :: String -> [GenValue] -> LlvmValue -> GenValue
 mkDirectCall fname args = Contextualized (FunctionCall (DirectCall fname args))

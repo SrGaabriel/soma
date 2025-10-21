@@ -53,7 +53,7 @@ collectGlobals (ExprRoot children) = do
     mapM_ collectGlobals children
 collectGlobals (ExprBindingDef name bindType _ topLevel _) =
     when topLevel $ do
-        addGlobalBinding name bindType BindingSymbol
+        addGlobalBinding name bindType (BindingSymbol bindType)
 collectGlobals (ExprIntrinsicDef name bindType _) = do
     addGlobalBinding name bindType IntrinsicBindingSymbol
 collectGlobals (ExprIntrinsicDataTypeDef name kind _) = do
@@ -121,7 +121,7 @@ resolveTReference expr@(ExprBindingDef a typ body topLevel c) = do
     realTyp <- replaceAllUnresolvedQualified expr env typ
     body' <- resolveTReference body
     when topLevel $ do
-        addGlobalBinding a realTyp BindingSymbol
+        addGlobalBinding a realTyp (BindingSymbol realTyp)
 
     pure $ ExprBindingDef a realTyp body' topLevel c
 resolveTReference expr@(ExprIntrinsicDef name typ s) = do

@@ -1,20 +1,14 @@
 module Llvm.Gen.Monomorphize (monomorphizeAndCompile) where
 
-import Control.Monad.Reader
 import Control.Monad.State
-import Control.Monad.Writer
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Llvm.Gen.Context
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), MemoryScope (..), ctxFreshReg, freshScope)
+import Llvm.Gen.Core (IrGen, IrGenState (..))
+import Llvm.Gen.Functions (compileFunction)
 import Llvm.Gen.Metadata (PolymorphicFunctionMetadata (..))
-import Llvm.Gen.Types (toAllocationLlvmType, typeToMonomorphicName)
-import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
-import Llvm.Modules (LlvmFunction (..))
-import Llvm.Types (LlvmType (..))
-import Llvm.Values (LlvmValue (..), getValueType)
+import Llvm.Gen.Types (typeToMonomorphicName)
 import Syntax.Tree (Expr (..))
-import Typing.Currying (uncurryFunction)
 import Typing.Types (Kind (..), QualifiedType (Forall), TyVar (..), Type (..))
 
 monomorphizeAndCompile :: String -> [Type] -> (Expr -> IrGen GenValue) -> IrGen String
@@ -34,59 +28,7 @@ monomorphizeAndCompile funcName concreteTypes compileValueFunc = do
 
                     modify $ \s -> s{monomorphizedFunctions = Set.insert mangledName (monomorphizedFunctions s)}
 
-                    env <- ask
-                    let (fnArgs, fnRetType) = uncurryFunction monomorphicType
-                    fnArgRegs <-
-                        sequence
-                            [ ctxFreshReg (mkFunctionArg pos (Just mangledName)) (toAllocationLlvmType ty)
-                            | (pos, ty) <- zip [0 ..] fnArgs
-                            ]
-                    newScope <- freshScope mangledName
-                    st' <- get
-                    let (newEnv, action) = case body of
-                            ExprLambda args lambdaBody _ -> do
-                                let argBindings = zip args fnArgRegs
-                                let updatedScope =
-                                        newScope
-                                            { blockValues =
-                                                Map.fromList (map (\(nam, val) -> (nam, val)) argBindings)
-                                                    `Map.union` blockValues newScope
-                                            }
-                                let updatedEnv = env{currentScope = updatedScope, currentFunction = Just mangledName}
-                                (updatedEnv, compileValueFunc lambdaBody)
-                            u -> (env, compileValueFunc u)
-                    let ((retVal, stmts), st'') = runState (runWriterT (runReaderT action newEnv)) st'
-                    let llvmFnArgTypes = map toAllocationLlvmType fnArgs
-                    let llvmFnRetType = toAllocationLlvmType fnRetType
-                    let llvmFnArgs = Map.fromList [(case gvw argName of LlvmRegister _ n -> n; _ -> error "Expected LlvmRegister", argType) | (argName, argType) <- zip fnArgRegs llvmFnArgTypes]
-
-                    let rRetVal = gvw retVal
-                    let (finalRetVal, additionalStmts) = case getValueType rRetVal of
-                            LlvmVoid -> (Nothing, [])
-                            LlvmPointer innerType@(LlvmNamedType _) ->
-                                if isADTReturnedByValue llvmFnRetType
-                                    then
-                                        let loadReg = LlvmRegister innerType ("reg_" ++ show (nextRegister st''))
-                                            loadStmt = LlvmAssign (getRegName loadReg) (LlvmLoad rRetVal)
-                                            cLoadReg = mkFunctionArg 0 Nothing loadReg
-                                        in (Just cLoadReg, [loadStmt])
-                                    else
-                                        (Just retVal, [])
-                            _ -> (Just retVal, [])
-
-                    let finalStatement = LlvmRet llvmFnRetType (gvw <$> finalRetVal)
-
-                    put st''{nextRegister = nextRegister st'' + length additionalStmts}
-
-                    let llvmFunction =
-                            LlvmFunction
-                                { functionName = mangledName
-                                , functionParams = llvmFnArgs
-                                , functionReturnType = llvmFnRetType
-                                , functionBlocks = []
-                                , functionStatements = stmts ++ additionalStmts ++ [finalStatement]
-                                }
-                    modify $ \s -> s{irFunctions = llvmFunction : irFunctions s}
+                    compileFunction mangledName monomorphicType body compileValueFunc
 
                     return mangledName
 
@@ -100,12 +42,3 @@ substituteType subst (TApp t1 t2) =
 substituteType subst (TArrow t1 t2) =
     TArrow (substituteType subst t1) (substituteType subst t2)
 substituteType _ t = t
-
-isADTReturnedByValue :: LlvmType -> Bool
-isADTReturnedByValue (LlvmNamedType _) = True
-isADTReturnedByValue (LlvmPointer _) = False
-isADTReturnedByValue _ = False
-
-getRegName :: LlvmValue -> String
-getRegName (LlvmRegister _ name) = name
-getRegName _ = error "Expected register"

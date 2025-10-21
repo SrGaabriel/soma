@@ -4,7 +4,7 @@ import Control.Monad.State (modify)
 import Control.Monad.Writer (tell)
 import Llvm.Dependencies (LlvmDependency (LlvmFunctionDependency))
 import Llvm.Gen.Context
-import Llvm.Gen.Core (IrGen, IrGenState (..), saveInstruction)
+import Llvm.Gen.Core (IrGen, IrGenState (..), saveInstruction, mkFnCall)
 import Llvm.Gen.Types (sliceType)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Types (LlvmType (..), getLlvmTypeSize)
@@ -42,7 +42,7 @@ createTypedRefCountedHeapArray elemType len = do
 
 createRefCountedHeapArray :: Int -> Int -> IrGen GenValue
 createRefCountedHeapArray initialSize len = do
-    rawPtr <- saveInstruction (LlvmCall (LlvmGlobal LlvmFn "malloc") LlvmPtr [longLiteral initialSize]) LlvmPtr
+    rawPtr <- saveInstruction (mkFnCall "malloc" [cLongLiteral initialSize] LlvmPtr) LlvmPtr
     let mallocDependency = LlvmFunctionDependency "malloc" (LlvmPointer LlvmI8) [LlvmI64]
     modify $ \s -> s{irDependencies = mallocDependency : irDependencies s}
 

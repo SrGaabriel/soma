@@ -4,10 +4,11 @@ module Llvm.Gen.TypeClasses where
 
 import Control.Monad.State (modify)
 import qualified Data.Map as Map
-import Llvm.Gen.Bindings (compileFunction)
 import Llvm.Gen.Core
+import Llvm.Gen.Functions (compileFunction)
 import Llvm.Gen.Mangling (extractConstraintParts, mangleInstanceMethod)
 import Llvm.Gen.Metadata (InstanceMetadata (..), TypeClassMetadata (..))
+import Llvm.Gen.Value (compileValue)
 import Llvm.Instructions (LlvmInstruction (..))
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue, getValueType, intLiteral)
@@ -51,7 +52,7 @@ compileInstanceMethod className concreteType methodExpr = do
     case methodExpr of
         ExprBindingDef methodName (Forall _ _ methodType) body _ _ -> do
             let mangledName = mangleInstanceMethod className concreteType methodName
-            compileFunction mangledName methodType body
+            compileFunction mangledName methodType body compileValue
         _ -> error "Expected ExprBindingDef in instance method"
 
 callVTableMethod :: LlvmValue -> Int -> [LlvmValue] -> LlvmType -> IrGen LlvmValue

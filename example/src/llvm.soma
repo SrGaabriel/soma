@@ -2,6 +2,7 @@ intrinsic def {+} :: a -> a -> a
 intrinsic def {==} :: a -> a -> Bool
 intrinsic def println :: a -> IO () where a: Display
 intrinsic data IO :: * -> *
+intrinsic def map :: (a -> b) -> [a] -> [b]
 intrinsic def for :: (a -> ()) -> [a] -> ()
 
 data Maybe a
@@ -64,6 +65,6 @@ def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
 def primeNumbers :: [Int] = [2,3,5,7]
 
 def main :: IO () =
-    let optional = Some 5 in
-    let text = display optional in
-    println 5
+    let primes = primeNumbers in
+    let primesPlusOne = map (\x -> x + 1) primes in
+    println "Hello, World!"

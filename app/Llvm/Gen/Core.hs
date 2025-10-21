@@ -11,7 +11,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Inference.Core (TypeMap)
 import Llvm.Dependencies (LlvmDependency)
-import Llvm.Gen.Context (GenValue (..))
+import Llvm.Gen.Context (GenValue (..), getGenValueType)
 import Llvm.Gen.Metadata (ConstructorMetadata, InstanceMetadata, PolymorphicFunctionMetadata, TypeClassMetadata)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Modules (LlvmFunction, LlvmStruct)
@@ -183,3 +183,9 @@ enterNewBlock :: String -> IrGen a -> IrGen a
 enterNewBlock name generation = do
     newScope <- freshScope name
     local (\env -> env{currentScope = newScope, currentBlock = Just name}) generation
+
+mkFnCall :: String -> [GenValue] -> LlvmType -> LlvmInstruction
+mkFnCall name args retType =
+    let argTypes = map getGenValueType args in 
+    let argsRaw = map gvw args
+    in LlvmCall (LlvmGlobal (LlvmFn retType argTypes) name) retType argsRaw
