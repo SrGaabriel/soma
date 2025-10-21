@@ -9,9 +9,6 @@ import Llvm.Gen.Functions (compileFunction)
 import Llvm.Gen.Mangling (extractConstraintParts, mangleInstanceMethod)
 import Llvm.Gen.Metadata (InstanceMetadata (..), TypeClassMetadata (..))
 import Llvm.Gen.Value (compileValue)
-import Llvm.Instructions (LlvmInstruction (..))
-import Llvm.Types (LlvmType (..))
-import Llvm.Values (LlvmValue, getValueType, intLiteral)
 import Syntax.Tree (Expr (ExprBindingDef, ExprInstanceDef, ExprTypeClassBinding, ExprTypeClassDef))
 import Typing.Types (QualifiedType (..), Type (..))
 
@@ -54,19 +51,3 @@ compileInstanceMethod className concreteType methodExpr = do
             let mangledName = mangleInstanceMethod className concreteType methodName
             compileFunction mangledName methodType body compileValue
         _ -> error "Expected ExprBindingDef in instance method"
-
-callVTableMethod :: LlvmValue -> Int -> [LlvmValue] -> LlvmType -> IrGen LlvmValue
-callVTableMethod vtablePtr methodIndex args retType = do
-    funcPtrPtr <-
-        saveInstruction
-            ( LlvmGetElementPtr
-                (getValueType vtablePtr)
-                vtablePtr
-                [intLiteral 0, intLiteral methodIndex]
-                False
-            )
-            (LlvmPointer LlvmPtr)
-
-    funcPtr <- saveInstruction (LlvmLoad funcPtrPtr) LlvmPtr
-
-    saveInstruction (LlvmCall funcPtr retType args) retType

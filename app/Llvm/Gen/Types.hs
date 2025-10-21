@@ -2,6 +2,7 @@ module Llvm.Gen.Types where
 
 import Llvm.Types (LlvmType (..))
 import Typing.Types (SkolemVar (SkolemVar), TyConstructor (TypeConstructor), TyVar (TypeVar), Type (..))
+import Typing.Currying (uncurryFunction)
 
 toAllocationLlvmType :: Type -> LlvmType
 toAllocationLlvmType t = case flattenTypeApp t of
@@ -19,7 +20,12 @@ toAllocationLlvmType t = case flattenTypeApp t of
                 monomorphicName = baseName ++ concatMap ("_" ++) argNames
             in LlvmNamedType monomorphicName
     (TConstructor (TypeConstructor name _), []) -> LlvmNamedType name
-    (TArrow _ _, _) -> LlvmPtr
+    (TArrow _ _, _) ->
+        let (args, base) = uncurryFunction t
+            baseLlvm = toAllocationLlvmType base
+            argLlvmTypes = map toAllocationLlvmType args
+            funcType = LlvmFn baseLlvm argLlvmTypes
+        in LlvmPointer funcType
     (TVar (TypeVar varName _), _) ->
         error $ "Uninstantiated type variable in codegen: " ++ varName
     (TSkolem (SkolemVar _ _ _ name _), _) ->
@@ -57,7 +63,7 @@ llvmTypeToMonomorphicName (LlvmArray _ _) = "Array"
 llvmTypeToMonomorphicName _ = "Unknown"
 
 sliceType :: LlvmType
-sliceType = LlvmAnonymous [LlvmPtr, LlvmI32]
+sliceType = LlvmAnonymous [LlvmPointer LlvmI8, LlvmI32]
 
 getArrayElementType :: Type -> Type
 getArrayElementType t = case flattenTypeApp t of

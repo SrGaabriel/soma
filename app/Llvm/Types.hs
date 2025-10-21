@@ -12,7 +12,6 @@ data LlvmType
     | LlvmI64
     | LlvmFloat
     | LlvmDouble
-    | LlvmPtr
     | LlvmPointer LlvmType -- Alternative pointer syntax
     | LlvmArray Int LlvmType
     | LlvmNamedType String
@@ -30,8 +29,7 @@ instance IR LlvmType where
     toLlvm LlvmI64 = "i64"
     toLlvm LlvmFloat = "float"
     toLlvm LlvmDouble = "double"
-    toLlvm LlvmPtr = "ptr"
-    toLlvm (LlvmPointer t) = toLlvm t ++ "*"
+    toLlvm (LlvmPointer _) = "ptr"
     toLlvm (LlvmArray n t) = "[" ++ show n ++ " x " ++ toLlvm t ++ "]"
     toLlvm (LlvmNamedType name) = "%" ++ name
     toLlvm (LlvmAnonymous types) = "{" ++ intercalate ", " (map toLlvm types) ++ "}"
@@ -48,7 +46,6 @@ getLlvmTypeSize LlvmI32 = 4
 getLlvmTypeSize LlvmI64 = 8
 getLlvmTypeSize LlvmFloat = 4
 getLlvmTypeSize LlvmDouble = 8
-getLlvmTypeSize LlvmPtr = 8
 getLlvmTypeSize (LlvmPointer _) = 8
 getLlvmTypeSize (LlvmArray n t) = n * getLlvmTypeSize t
 getLlvmTypeSize (LlvmAnonymous types) = sum (map getLlvmTypeSize types)
