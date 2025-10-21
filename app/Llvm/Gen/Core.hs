@@ -11,14 +11,14 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Inference.Core (TypeMap)
 import Llvm.Dependencies (LlvmDependency)
-import Llvm.Gen.Metadata (ConstructorMetadata, InstanceMetadata, TypeClassMetadata, PolymorphicFunctionMetadata)
+import Llvm.Gen.Context (GenValue (..))
+import Llvm.Gen.Metadata (ConstructorMetadata, InstanceMetadata, PolymorphicFunctionMetadata, TypeClassMetadata)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Modules (LlvmFunction, LlvmStruct)
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getRegName)
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType)
-import Llvm.Gen.Context (GenValue (..), GenCtx)
 
 data IrGenEnv = IrGenEnv
     { currentScope :: MemoryScope
@@ -98,10 +98,10 @@ freshReg ty = do
     modify $ \s -> s{nextRegister = n + 1}
     return $ LlvmRegister ty ("reg_" ++ show n)
 
-ctxFreshReg :: (MonadState IrGenState m) => GenCtx -> LlvmType -> m GenValue
-ctxFreshReg ctx ty = do
+ctxFreshReg :: (MonadState IrGenState m) => (LlvmValue -> GenValue) -> LlvmType -> m GenValue
+ctxFreshReg mkCtx ty = do
     fresh <- freshReg ty
-    return $ Contextualized ctx fresh
+    return $ mkCtx fresh
 
 data MemoryScope = MemoryScope
     { blockName :: String

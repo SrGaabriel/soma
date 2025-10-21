@@ -5,7 +5,9 @@ import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), MemoryScope (..), freshScope, ctxFreshReg)
+import Llvm.Gen.Context
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), MemoryScope (..), ctxFreshReg, freshScope)
+import Llvm.Gen.Metadata (PolymorphicFunctionMetadata (..))
 import Llvm.Gen.Types (toAllocationLlvmType, typeToMonomorphicName)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Modules (LlvmFunction (..))
@@ -14,8 +16,6 @@ import Llvm.Values (LlvmValue (..), getValueType)
 import Syntax.Tree (Expr (..))
 import Typing.Currying (uncurryFunction)
 import Typing.Types (Kind (..), QualifiedType (Forall), TyVar (..), Type (..))
-import Llvm.Gen.Metadata (PolymorphicFunctionMetadata(..))
-import Llvm.Gen.Context
 
 monomorphizeAndCompile :: String -> [Type] -> (Expr -> IrGen GenValue) -> IrGen String
 monomorphizeAndCompile funcName concreteTypes compileValueFunc = do
@@ -36,7 +36,11 @@ monomorphizeAndCompile funcName concreteTypes compileValueFunc = do
 
                     env <- ask
                     let (fnArgs, fnRetType) = uncurryFunction monomorphicType
-                    fnArgRegs <- mapM (ctxFreshReg FunctionArg . toAllocationLlvmType) fnArgs
+                    fnArgRegs <-
+                        sequence
+                            [ ctxFreshReg (mkFunctionArg pos (Just mangledName)) (toAllocationLlvmType ty)
+                            | (pos, ty) <- zip [0 ..] fnArgs
+                            ]
                     newScope <- freshScope mangledName
                     st' <- get
                     let (newEnv, action) = case body of
@@ -64,7 +68,7 @@ monomorphizeAndCompile funcName concreteTypes compileValueFunc = do
                                     then
                                         let loadReg = LlvmRegister innerType ("reg_" ++ show (nextRegister st''))
                                             loadStmt = LlvmAssign (getRegName loadReg) (LlvmLoad rRetVal)
-                                            cLoadReg = Contextualized FunctionArg loadReg
+                                            cLoadReg = mkFunctionArg 0 Nothing loadReg
                                         in (Just cLoadReg, [loadStmt])
                                     else
                                         (Just retVal, [])

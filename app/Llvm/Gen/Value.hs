@@ -8,15 +8,19 @@ import Control.Monad (unless)
 import Control.Monad.Reader (MonadReader (ask), ReaderT (..))
 import Control.Monad.State (MonadState (..), gets, modify, runState)
 import Control.Monad.Writer (MonadWriter (..), WriterT (..))
+import Data.Foldable (forM_)
 import Data.List (find)
 import qualified Data.Map as Map
 import GHC.Base (when)
+import Llvm.Gen.Arrays (createSlice, createTypedRefCountedHeapArray, storeArrayElement)
+import Llvm.Gen.Context
 import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irStructs, polymorphicFunctions, typeMap), MemoryScope (..), freshScope, lookupMemory, saveInstruction)
 import Llvm.Gen.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
 import Llvm.Gen.Mangling (mangleInstanceMethod)
 import Llvm.Gen.Metadata (ConstructorMetadata (..))
 import Llvm.Gen.Monomorphize (monomorphizeAndCompile)
-import Llvm.Gen.Types (llvmTypeToMonomorphicName, toAllocationLlvmType, getArrayElementType)
+import Llvm.Gen.Templates (newStrTemplate)
+import Llvm.Gen.Types (getArrayElementType, llvmTypeToMonomorphicName, toAllocationLlvmType)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (LlvmStore))
 import Llvm.Modules (LlvmStruct (LlvmStruct))
 import Llvm.Types (LlvmType (..), deref, getLlvmTypeSize)
@@ -26,10 +30,6 @@ import Syntax.Tree (Expr (..), uncurryApp)
 import Typing.Currying (uncurryFunction)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), Type (..), constraintClassName, constraintTypes, isPolymorphic)
 import Utils.Lists (hardHead)
-import Llvm.Gen.Arrays (createTypedRefCountedHeapArray, storeArrayElement, createSlice)
-import Data.Foldable (forM_)
-import Llvm.Gen.Templates (newStrTemplate)
-import Llvm.Gen.Context
 
 compileValue :: Expr -> IrGen GenValue
 compileValue expr = case expr of
@@ -75,9 +75,10 @@ compileValue expr = case expr of
                 let llvmRetType = toAllocationLlvmType retType
 
                 let rawArgs = map gvw argVals
-                Contextualized (FunctionCall DirectCall) <$> saveInstruction
-                    (LlvmCall (LlvmGlobal LlvmFn mangledName) llvmRetType rawArgs)
-                    llvmRetType
+                mkDirectCall mangledName argVals
+                    <$> saveInstruction
+                        (LlvmCall (LlvmGlobal LlvmFn mangledName) llvmRetType rawArgs)
+                        llvmRetType
             _ -> do
                 tyMap <- gets typeMap
                 let (callBase, nestedCallArgs) = uncurryApp fn
@@ -103,7 +104,10 @@ compileValue expr = case expr of
                                 pure $ LlvmCall (LlvmGlobal LlvmFn name) llvmFnType argValsRaw
                     ResolvedSymbol name _ _ _ -> do
                         pure $ LlvmCall (LlvmGlobal LlvmFn name) llvmFnType argValsRaw
-                Contextualized (FunctionCall DirectCall) <$> saveInstruction call llvmFnType
+                callResult <- saveInstruction call llvmFnType
+                let callFnName = case callName of
+                        ResolvedSymbol name _ _ _ -> name
+                return $ mkDirectCall callFnName argVals callResult
     _ -> error $ "Unsupported llvm value expression type: " ++ show expr
 
 compileConstructorApp :: String -> [Expr] -> IrGen GenValue
@@ -122,7 +126,7 @@ compileConstructorApp ctorName args = do
     let structType = LlvmNamedType monomorphicName
     structPtr <- saveInstruction (LlvmAlloca structType Nothing) (LlvmPointer structType)
     writeTag structPtr tag
-    let cStructPtr = Contextualized (MemoryAllocation StackStructAlloc) structPtr
+    let cStructPtr = mkStackStructAlloc structType structPtr
     when isConstructorPolymorphic $ do
         ensureMonomorphicStructExists monomorphicName concreteArgTypes
         dataPtr <- getUnionDataPtr cStructPtr monomorphicName
@@ -150,9 +154,10 @@ getUnionDataPtr structPtr typeName = do
     let LlvmStruct _ fields = structDef
     let arrayType = fields !! 1
 
-    Contextualized (MemoryAccess ADTUnionDataAccess)  <$> saveInstruction
-        (LlvmGetElementPtr structType (gvw structPtr) [intLiteral 0, intLiteral 1] False)
-        (LlvmPointer arrayType)
+    mkADTUnionDataAccess structPtr
+        <$> saveInstruction
+            (LlvmGetElementPtr structType (gvw structPtr) [intLiteral 0, intLiteral 1] False)
+            (LlvmPointer arrayType)
 
 getConstructorInfo :: String -> IrGen ConstructorMetadata
 getConstructorInfo ctorName = do
@@ -231,8 +236,8 @@ extractConcreteTypeFromConstraint constraints className =
 
 compileArrayLiteral :: Expr -> [Expr] -> IrGen GenValue
 compileArrayLiteral arrayExpr elements = do
-    when (null elements) $
-        error "Empty arrays not yet supported"
+    when (null elements)
+        $ error "Empty arrays not yet supported"
     let len = length elements
 
     tyMap <- gets typeMap
@@ -247,7 +252,7 @@ compileArrayLiteral arrayExpr elements = do
     arrayPtr <- createTypedRefCountedHeapArray llvmElemType len
 
     compiledElems <- mapM compileValue elements
-    forM_ (zip [0..] compiledElems) $ \(idx, elemValue) -> do
+    forM_ (zip [0 ..] compiledElems) $ \(idx, elemValue) -> do
         storeArrayElement arrayPtr (cLongLiteral idx) elemValue llvmElemType
 
     createSlice arrayPtr len

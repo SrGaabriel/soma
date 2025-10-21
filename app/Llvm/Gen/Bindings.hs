@@ -6,7 +6,7 @@ import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
 import Llvm.Gen.Context
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), MemoryScope (..), freshScope, ctxFreshReg)
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), MemoryScope (..), ctxFreshReg, freshScope)
 import Llvm.Gen.Metadata (PolymorphicFunctionMetadata (..))
 import Llvm.Gen.Types (toAllocationLlvmType)
 import Llvm.Gen.Value (compileValue)
@@ -36,7 +36,11 @@ compileFunction :: String -> Type -> Expr -> IrGen ()
 compileFunction name bindingTyp body = do
     env <- ask
     let (fnArgs, fnRetType) = uncurryFunction bindingTyp
-    fnArgRegs <- mapM (ctxFreshReg FunctionArg . toAllocationLlvmType) fnArgs
+    fnArgRegs <-
+        sequence
+            [ ctxFreshReg (mkFunctionArg pos (Just name)) (toAllocationLlvmType ty)
+            | (pos, ty) <- zip [0 ..] fnArgs
+            ]
     newScope <- freshScope name
     st <- get
     let (newEnv, action) = case body of
@@ -63,7 +67,7 @@ compileFunction name bindingTyp body = do
                     then
                         let loadReg = LlvmRegister innerType ("reg_" ++ show (nextRegister st'))
                             loadStmt = LlvmAssign (getRegName loadReg) (LlvmLoad $ gvw retVal)
-                            cLoadReg = Contextualized (ValueLoad StructValueLoad) loadReg
+                            cLoadReg = mkStructValueLoad retVal loadReg
                         in (Just cLoadReg, [loadStmt])
                     else
                         (Just retVal, [])
