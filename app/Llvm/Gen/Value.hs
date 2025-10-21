@@ -41,7 +41,7 @@ compileValue expr = case expr of
         case maybeMem of
             Just mem -> return mem
             Nothing -> error $ "Undefined variable: " ++ name
-    ExprVar (ResolvedSymbol {resolvedSymbolName, resolvedSymbolKind}) _ -> do
+    ExprVar (ResolvedSymbol{resolvedSymbolName, resolvedSymbolKind}) _ -> do
         case resolvedSymbolKind of
             BindingSymbol bindingTyp -> do
                 compileApp expr [] bindingTyp
@@ -63,7 +63,7 @@ compileValue expr = case expr of
         put st'
         tell stmts
         return returningValue
-    ExprLambda {} -> do
+    ExprLambda{} -> do
         let fnName = "lambda" -- todo: mangle name
         tyEnv <- gets typeMap
         let Just (Forall _ _ fnType) = Map.lookup expr tyEnv
@@ -75,7 +75,8 @@ compileValue expr = case expr of
         let fnPointerTyp = LlvmPointer $ LlvmFn llvmFnType llvmArgTypes
         funcPtr <- saveInstruction (LlvmAlloca fnPointerTyp Nothing) (LlvmPointer fnPointerTyp)
         tell [LlvmStore fnPointerTyp (LlvmGlobal fnPointerTyp "lambda") funcPtr]
-        pure $ mkLambdaPtrAlloc fnName funcPtr
+        loaded <- saveInstruction (LlvmLoad funcPtr) fnPointerTyp
+        pure $ mkLambdaPtrLoad (mkLambdaPtrAlloc fnName funcPtr) loaded
     ExprApp _ _ -> do
         let (base, args) = uncurryApp expr
         tyEnv <- gets typeMap
@@ -90,20 +91,21 @@ compileApp base args (Forall _ _ methodType) = do
             compileConstructorApp resolvedSymbolName args
         ExprVar symbol@(ResolvedSymbol{resolvedSymbolName}) _ | isTypeclassMethod symbol -> do
             let TypeClassMethodSymbol className = resolvedSymbolKind symbol
-    
+
             argVals <- mapM compileValue args
-    
+
             let concreteType = case argVals of
                     (firstArg : _) -> llvmTypeToType (getGenValueType firstArg)
                     [] -> error $ "No arguments in typeclass method: " ++ resolvedSymbolName
-    
+
             let mangledName = mangleInstanceMethod className concreteType resolvedSymbolName
-    
+
             let (_argTypes, retType) = uncurryFunction methodType
             let llvmRetType = toAllocationLlvmType retType
-    
+
             let callInstr = mkFnCall mangledName argVals llvmRetType
-            mkDirectCall mangledName argVals <$> saveInstruction callInstr llvmRetType
+            mkDirectCall mangledName argVals retType 
+                <$> saveInstruction callInstr llvmRetType
         _ -> do
             tyMap <- gets typeMap
             argVals <- mapM compileValue args
@@ -130,7 +132,7 @@ compileApp base args (Forall _ _ methodType) = do
             callResult <- saveInstruction call llvmFnType
             let callFnName = case callName of
                     ResolvedSymbol name _ _ _ -> name
-            return $ mkDirectCall callFnName argVals callResult
+            return $ mkDirectCall callFnName argVals fnRetType callResult
 
 compileConstructorApp :: String -> [Expr] -> IrGen GenValue
 compileConstructorApp ctorName args = do

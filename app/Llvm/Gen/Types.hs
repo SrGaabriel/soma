@@ -57,7 +57,7 @@ llvmTypeToMonomorphicName (LlvmArray _ _) = "Array"
 llvmTypeToMonomorphicName _ = "Unknown"
 
 sliceType :: LlvmType
-sliceType = LlvmAnonymous [LlvmPtr, LlvmI64]
+sliceType = LlvmAnonymous [LlvmPtr, LlvmI32]
 
 getArrayElementType :: Type -> Type
 getArrayElementType t = case flattenTypeApp t of

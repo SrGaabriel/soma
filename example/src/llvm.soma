@@ -4,6 +4,7 @@ intrinsic def println :: a -> IO () where a: Display
 intrinsic data IO :: * -> *
 intrinsic def map :: (a -> b) -> [a] -> [b]
 intrinsic def for :: (a -> ()) -> [a] -> ()
+intrinsic def debug :: String -> ()
 
 data Maybe a
     = Just

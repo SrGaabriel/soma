@@ -181,11 +181,19 @@ writerOuterToIrGen action = ReaderT $ \env -> WriterT $ StateT $ \st ->
 
 enterNewBlock :: String -> IrGen a -> IrGen a
 enterNewBlock name generation = do
+    tell [LlvmLabel name]
     newScope <- freshScope name
     local (\env -> env{currentScope = newScope, currentBlock = Just name}) generation
 
+setNewBlock :: String -> IrGen ()
+setNewBlock name =
+    tell [LlvmLabel name] 
+
 mkFnCall :: String -> [GenValue] -> LlvmType -> LlvmInstruction
 mkFnCall name args retType =
-    let argTypes = map getGenValueType args in 
-    let argsRaw = map gvw args
-    in LlvmCall (LlvmGlobal (LlvmFn retType argTypes) name) retType argsRaw
+    let argTypes = map getGenValueType args
+    in let argsRaw = map gvw args
+       in LlvmCall (LlvmGlobal (LlvmFn retType argTypes) name) retType argsRaw
+
+alloca :: LlvmType -> IrGen LlvmValue
+alloca ty = saveInstruction (LlvmAlloca ty Nothing) (LlvmPointer ty)

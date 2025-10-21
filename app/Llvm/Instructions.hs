@@ -12,7 +12,7 @@ data LlvmInstruction
     | LlvmCall LlvmValue LlvmType [LlvmValue]
     | LlvmLoad LlvmValue
     | LlvmAlloca LlvmType (Maybe LlvmValue)
-    | LlvmICmpEq LlvmType LlvmValue LlvmValue
+    | LlvmICmp LlvmType String LlvmValue LlvmValue
     | LlvmGetElementPtr LlvmType LlvmValue [LlvmValue] Bool
     | LlvmBitcast LlvmValue LlvmType
     | LlvmSwitch LlvmValue String [(LlvmValue, String)]
@@ -38,7 +38,7 @@ instance IR LlvmInstruction where
     toLlvm (LlvmLoad value) = "load " ++ toLlvm (deref $ getValueType value) ++ ", ptr " ++ toLlvm value
     toLlvm (LlvmAlloca typ Nothing) = "alloca " ++ toLlvm typ
     toLlvm (LlvmAlloca typ (Just count)) = "alloca " ++ toLlvm typ ++ ", " ++ toLlvm (getValueType count) ++ " " ++ toLlvm count
-    toLlvm (LlvmICmpEq typ lhs rhs) = "icmp eq " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmICmp typ op lhs rhs) = "icmp " ++ op ++ " " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmGetElementPtr structType basePtr indices inbounds) =
         "getelementptr "
             ++ (if inbounds then "inbounds " else "")

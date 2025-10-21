@@ -2,6 +2,7 @@ module Llvm.Gen.Context where
 
 import Llvm.Types (LlvmType)
 import Llvm.Values (LlvmValue, getValueType, intLiteral, longLiteral)
+import Typing.Types (Type)
 
 data GenValue = Contextualized
     { genValueContext :: GenCtx
@@ -42,11 +43,12 @@ data MemAllocCtx
         }
     | HeapAlloc
         { allocatedType :: LlvmType
-        , heapSize :: Int
+        , heapSize :: GenValue
         }
     | LambdaPtrAlloc
         { lambdaFunctionName :: String
         }
+    | IterationIndexAlloc
     deriving (Show, Eq)
 
 data MemAccessCtx
@@ -66,6 +68,7 @@ data MemAccessCtx
         }
     | ArrayHeaderOffset
         { rawPointer :: GenValue
+        , headerArrayType :: LlvmType
         }
     | GlobalConstantAccess
         { globalName :: String
@@ -79,10 +82,12 @@ data FunctionCallCtx
     = DirectCall
         { calledFunction :: String
         , callArguments :: [GenValue]
+        , callReturnType :: Type
         }
     | IndirectCall
         { functionPointer :: GenValue
         , callArguments :: [GenValue]
+        , callReturnType :: Type
         }
     deriving (Show, Eq)
 
@@ -101,6 +106,9 @@ data LoadCtx
     | FieldLoad
         { sourcePointer :: GenValue
         , loadFieldIndex :: Int
+        }
+    | LambdaPtrLoad
+        { sourcePointer :: GenValue
         }
     deriving (Show, Eq)
 
@@ -188,11 +196,14 @@ mkStackStructAlloc ty = Contextualized (MemoryAllocation (StackStructAlloc ty))
 mkStackArrayAlloc :: LlvmType -> Maybe Int -> LlvmValue -> GenValue
 mkStackArrayAlloc ty size = Contextualized (MemoryAllocation (StackArrayAlloc ty size))
 
-mkHeapAlloc :: LlvmType -> Int -> LlvmValue -> GenValue
+mkHeapAlloc :: LlvmType -> GenValue -> LlvmValue -> GenValue
 mkHeapAlloc ty size = Contextualized (MemoryAllocation (HeapAlloc ty size))
 
 mkLambdaPtrAlloc :: String -> LlvmValue -> GenValue
 mkLambdaPtrAlloc fname = Contextualized (MemoryAllocation (LambdaPtrAlloc fname))
+
+mkIterationIndexAlloc :: LlvmValue -> GenValue
+mkIterationIndexAlloc = Contextualized (MemoryAllocation IterationIndexAlloc)
 
 mkADTTagAccess :: GenValue -> LlvmValue -> GenValue
 mkADTTagAccess base = Contextualized (MemoryAccess (ADTTagAccess base))
@@ -206,17 +217,17 @@ mkStructFieldAccess base idx = Contextualized (MemoryAccess (StructFieldAccess b
 mkArrayElementAccess :: GenValue -> GenValue -> LlvmValue -> GenValue
 mkArrayElementAccess arr idx = Contextualized (MemoryAccess (ArrayElementAccess arr idx))
 
-mkArrayHeaderOffset :: GenValue -> LlvmValue -> GenValue
-mkArrayHeaderOffset raw = Contextualized (MemoryAccess (ArrayHeaderOffset raw))
+mkArrayHeaderOffset :: GenValue -> LlvmType -> LlvmValue -> GenValue
+mkArrayHeaderOffset raw arrayType = Contextualized (MemoryAccess (ArrayHeaderOffset raw arrayType))
 
 mkGlobalConstantAccess :: String -> LlvmType -> [Int] -> Bool -> LlvmValue -> GenValue
 mkGlobalConstantAccess name ty idxs inb = Contextualized (MemoryAccess (GlobalConstantAccess name ty idxs inb))
 
-mkDirectCall :: String -> [GenValue] -> LlvmValue -> GenValue
-mkDirectCall fname args = Contextualized (FunctionCall (DirectCall fname args))
+mkDirectCall :: String -> [GenValue] -> Type -> LlvmValue -> GenValue
+mkDirectCall fname args fret = Contextualized (FunctionCall (DirectCall fname args fret))
 
-mkIndirectCall :: GenValue -> [GenValue] -> LlvmValue -> GenValue
-mkIndirectCall fptr args = Contextualized (FunctionCall (IndirectCall fptr args))
+mkIndirectCall :: GenValue -> [GenValue] -> Type -> LlvmValue -> GenValue
+mkIndirectCall fptr args fret = Contextualized (FunctionCall (IndirectCall fptr args fret))
 
 mkStructValueLoad :: GenValue -> LlvmValue -> GenValue
 mkStructValueLoad ptr = Contextualized (ValueLoad (StructValueLoad ptr))
@@ -229,6 +240,9 @@ mkVariableLoad ptr name = Contextualized (ValueLoad (VariableLoad ptr name))
 
 mkFieldLoad :: GenValue -> Int -> LlvmValue -> GenValue
 mkFieldLoad ptr idx = Contextualized (ValueLoad (FieldLoad ptr idx))
+
+mkLambdaPtrLoad :: GenValue -> LlvmValue -> GenValue
+mkLambdaPtrLoad ptr = Contextualized (ValueLoad (LambdaPtrLoad ptr))
 
 mkSliceConstruction :: GenValue -> Int -> LlvmValue -> GenValue
 mkSliceConstruction ptr len = Contextualized (ArrayOperation (SliceConstruction ptr len))

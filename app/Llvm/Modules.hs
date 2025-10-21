@@ -1,6 +1,6 @@
 module Llvm.Modules where
 
-import Data.List (intercalate)
+import Data.List (intercalate, nub)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Llvm.Dependencies (LlvmDependency)
@@ -29,7 +29,7 @@ data LlvmStruct = LlvmStruct
     { structName :: String
     , structFields :: [LlvmType]
     }
-    deriving (Show)
+    deriving (Show, Eq)
 
 data LlvmBlock = LlvmBlock
     { blockName :: String
@@ -39,9 +39,9 @@ data LlvmBlock = LlvmBlock
 
 instance IR LlvmModule where
     toLlvm (LlvmModule _ functions structs dependencies) =
-        unlines (map toLlvm dependencies)
+        unlines (map toLlvm $ nub dependencies)
             ++ "\n\n"
-            ++ unlines (map toLlvm structs)
+            ++ unlines (map toLlvm $ nub structs)
             ++ "\n\n"
             ++ unlines (map toLlvm functions)
 
