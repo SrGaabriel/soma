@@ -11,7 +11,8 @@ import Parsing.Errors (ParsingError (UnexpectedToken))
 import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseFuncName, parseIndentedBlock, parseIndexedIndentedBlock, peek)
 import Parsing.Types (parseKind, parseQualifiedType, parseTyVar, parseType)
 import Syntax.Tree (Expr (..))
-import Typing.Types (Constraint, Kind (KindArrow, KindStar), QualifiedType (Forall), TyConstructor (TypeConstructor), Type (TApp, TConstructor, TVar), mkConstraint)
+import Typing.Types (Constraint, QualifiedType (Forall), Type (TVar), mkConstraint)
+import qualified Debug.Trace as Debug
 
 parse :: [Token] -> Either ParsingError Expr
 parse tokens = do
@@ -115,22 +116,16 @@ parseTypeClassBinding typeClassConstraint = do
 parseInstance :: Parser Expr
 parseInstance = do
     instanceToken <- consume TokenInstance
-    classNameToken <- consume TokenUpperIdentifier
-    dataTypeToken <- consume TokenUpperIdentifier
+    constraintType <- parseType
 
-    _where <- consume TokenWhere
-    bindings <- parseIndentedBlock (tokenIndent classNameToken) (parseBinding False)
-    let className = tokenValue classNameToken
-    let dataTypeName = tokenValue dataTypeToken
-    let classKind = KindArrow KindStar KindStar -- Simple assumption for now
-    let classCon = TConstructor (TypeConstructor className classKind)
-    let dataCon = TConstructor (TypeConstructor dataTypeName KindStar)
-    let constraintType = TApp classCon dataCon
+    whereTok <- consume TokenWhere
+    bindings <- parseIndentedBlock (tokenIndent whereTok) (parseBinding False)
+    Debug.traceM $ "Type instantiated: " ++ show constraintType
     pure
         $ ExprInstanceDef
             { instanceConstraint = constraintType
             , instanceMethods = bindings
-            , instanceSpan = spanningTokens instanceToken dataTypeToken
+            , instanceSpan = spanningTokens instanceToken whereTok
             }
 
 parseImport :: Parser Expr

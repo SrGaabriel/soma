@@ -1,12 +1,23 @@
 module Llvm.Gen.Mangling where
 
-import Llvm.Gen.Types (typeToMonomorphicName)
+import Data.Hashable (Hashable (hash))
+import Llvm.Types (LlvmType)
 import Typing.Types (TyConstructor (tcName), Type (TApp, TConstructor))
 
-mangleInstanceMethod :: String -> Type -> String -> String
+mangleDataTypeName :: String -> String
+mangleDataTypeName typeName = typeName ++ "_dt" -- todo mangle
+
+manglePolymorphicName :: String -> [LlvmType] -> String
+manglePolymorphicName baseName typeArgs =
+    baseName ++ concatMap (("_" ++) . show . hash) typeArgs
+
+mangleInstanceMethod :: String -> LlvmType -> String -> String
 mangleInstanceMethod className concreteType methodName =
-    className ++ "_" ++ typeToMonomorphicName concreteType ++ "_" ++ methodName
+    className ++ "_" ++ llvmTypeToMonomorphicName concreteType ++ "_" ++ methodName
 
 extractConstraintParts :: Type -> (String, Type)
 extractConstraintParts (TApp (TConstructor tc) concreteType) = (tcName tc, concreteType)
 extractConstraintParts t = error $ "Invalid constraint type: " ++ show t
+
+llvmTypeToMonomorphicName :: LlvmType -> String
+llvmTypeToMonomorphicName = show . hash

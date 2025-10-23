@@ -19,17 +19,20 @@ data Optional
     | Nothing
         
 
+trait Display a where
+    def display :: a -> String
+
 instance Display String where
     def display(str: String) -> String = str
 
 instance Display Int where
     def display(num: Int) -> String = "<unimplemented>"
 
+instance Display [a] where
+    def display(lst: [a]) -> String = "<list>"
+
 trait Eq a where
     def equals :: a -> a -> Bool
-
-trait Display a where
-    def display :: a -> String
 
 instance Eq Optional where
     def equals(x: Optional, y: Optional) -> Bool = true     
@@ -68,4 +71,4 @@ def primeNumbers :: [Int] = [2,3,5,7]
 def main :: IO () =
     let primes = primeNumbers in
     let primesPlusOne = map (\x -> x + 1) primes in
-    println "Hello, World!"
+    println primesPlusOne

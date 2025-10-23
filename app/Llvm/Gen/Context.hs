@@ -2,7 +2,6 @@ module Llvm.Gen.Context where
 
 import Llvm.Types (LlvmType)
 import Llvm.Values (LlvmValue, getValueType, intLiteral, longLiteral)
-import Typing.Types (Type)
 
 data GenValue = Contextualized
     { genValueContext :: GenCtx
@@ -82,12 +81,12 @@ data FunctionCallCtx
     = DirectCall
         { calledFunction :: String
         , callArguments :: [GenValue]
-        , callReturnType :: Type
+        , callReturnType :: LlvmType
         }
     | IndirectCall
         { functionPointer :: GenValue
         , callArguments :: [GenValue]
-        , callReturnType :: Type
+        , callReturnType :: LlvmType
         }
     deriving (Show, Eq)
 
@@ -223,10 +222,10 @@ mkArrayHeaderOffset raw arrayType = Contextualized (MemoryAccess (ArrayHeaderOff
 mkGlobalConstantAccess :: String -> LlvmType -> [Int] -> Bool -> LlvmValue -> GenValue
 mkGlobalConstantAccess name ty idxs inb = Contextualized (MemoryAccess (GlobalConstantAccess name ty idxs inb))
 
-mkDirectCall :: String -> [GenValue] -> Type -> LlvmValue -> GenValue
+mkDirectCall :: String -> [GenValue] -> LlvmType -> LlvmValue -> GenValue
 mkDirectCall fname args fret = Contextualized (FunctionCall (DirectCall fname args fret))
 
-mkIndirectCall :: GenValue -> [GenValue] -> Type -> LlvmValue -> GenValue
+mkIndirectCall :: GenValue -> [GenValue] -> LlvmType -> LlvmValue -> GenValue
 mkIndirectCall fptr args fret = Contextualized (FunctionCall (IndirectCall fptr args fret))
 
 mkStructValueLoad :: GenValue -> LlvmValue -> GenValue

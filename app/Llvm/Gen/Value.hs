@@ -17,14 +17,14 @@ import Llvm.Gen.Context
 import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irStructs, polymorphicFunctions, typeMap), MemoryScope (..), freshScope, lookupMemory, mkFnCall, saveInstruction)
 import Llvm.Gen.Functions (compileFunction)
 import Llvm.Gen.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
-import Llvm.Gen.Mangling (mangleInstanceMethod)
+import Llvm.Gen.Mangling (mangleDataTypeName, mangleInstanceMethod, manglePolymorphicName)
 import Llvm.Gen.Metadata (ConstructorMetadata (..))
 import Llvm.Gen.Monomorphize (monomorphizeAndCompile)
 import Llvm.Gen.Templates (newStrTemplate)
-import Llvm.Gen.Types (getArrayElementType, llvmTypeToMonomorphicName, toAllocationLlvmType)
+import Llvm.Gen.Types (getArrayElementType, toAllocationLlvmType)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (LlvmStore))
 import Llvm.Modules (LlvmStruct (LlvmStruct))
-import Llvm.Types (LlvmType (..), deref, getLlvmTypeSize)
+import Llvm.Types (LlvmType (..), deref, getLlvmTypeSize, normalizeType)
 import Llvm.Values (LlvmValue (..), getValueType, intLiteral)
 import Project.Symbols (Symbol (ResolvedSymbol, resolvedSymbolKind, resolvedSymbolName), SymbolKind (..))
 import Syntax.Tree (Expr (..), uncurryApp)
@@ -91,21 +91,10 @@ compileApp base args (Forall _ _ methodType) = do
             compileConstructorApp resolvedSymbolName args
         ExprVar symbol@(ResolvedSymbol{resolvedSymbolName}) _ | isTypeclassMethod symbol -> do
             let TypeClassMethodSymbol className = resolvedSymbolKind symbol
-
             argVals <- mapM compileValue args
-
-            let concreteType = case argVals of
-                    (firstArg : _) -> llvmTypeToType (getGenValueType firstArg)
-                    [] -> error $ "No arguments in typeclass method: " ++ resolvedSymbolName
-
-            let mangledName = mangleInstanceMethod className concreteType resolvedSymbolName
-
-            let (_argTypes, retType) = uncurryFunction methodType
-            let llvmRetType = toAllocationLlvmType retType
-
-            let callInstr = mkFnCall mangledName argVals llvmRetType
-            mkDirectCall mangledName argVals retType 
-                <$> saveInstruction callInstr llvmRetType
+            let retType = case uncurryFunction methodType of
+                    (_argTypes, retTy) -> retTy
+            mkTypeclassMethodCall className resolvedSymbolName argVals (toAllocationLlvmType retType)
         _ -> do
             tyMap <- gets typeMap
             argVals <- mapM compileValue args
@@ -132,7 +121,16 @@ compileApp base args (Forall _ _ methodType) = do
             callResult <- saveInstruction call llvmFnType
             let callFnName = case callName of
                     ResolvedSymbol name _ _ _ -> name
-            return $ mkDirectCall callFnName argVals fnRetType callResult
+            return $ mkDirectCall callFnName argVals (toAllocationLlvmType fnRetType) callResult
+
+mkTypeclassMethodCall :: String -> String -> [GenValue] -> LlvmType -> IrGen GenValue
+mkTypeclassMethodCall className methodName argVals llvmRetType = do
+    let firstArgType = getGenValueType (hardHead argVals)
+    let normalizedType = normalizeType firstArgType
+    let mangledName = mangleInstanceMethod className normalizedType methodName
+    let callInstr = mkFnCall mangledName argVals llvmRetType
+    mkDirectCall mangledName argVals llvmRetType
+        <$> saveInstruction callInstr llvmRetType
 
 compileConstructorApp :: String -> [Expr] -> IrGen GenValue
 compileConstructorApp ctorName args = do
@@ -142,11 +140,9 @@ compileConstructorApp ctorName args = do
     let concreteArgTypes = map getGenValueType argVals
     let isConstructorPolymorphic = any isPolymorphic argTypes
 
-    let monomorphicName =
-            if not isConstructorPolymorphic
-                then baseTypeName
-                else baseTypeName ++ concatMap (("_" ++) . llvmTypeToMonomorphicName) concreteArgTypes
-
+    let monomorphicName = case isConstructorPolymorphic of
+            True -> manglePolymorphicName baseTypeName concreteArgTypes
+            False -> mangleDataTypeName baseTypeName
     let structType = LlvmNamedType monomorphicName
     structPtr <- saveInstruction (LlvmAlloca structType Nothing) (LlvmPointer structType)
     writeTag structPtr tag
@@ -272,7 +268,6 @@ compileArrayLiteral arrayExpr elements = do
     let elemType = getArrayElementType arrayType
     let llvmElemType = toAllocationLlvmType elemType
 
-    -- todo: don't heap allocate all arrays
     arrayPtr <- createTypedRefCountedHeapArray llvmElemType len
 
     compiledElems <- mapM compileValue elements

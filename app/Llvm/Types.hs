@@ -1,7 +1,12 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
+
 module Llvm.Types where
 
 import Llvm.Ir (IR (toLlvm))
 import Data.List (intercalate)
+import Data.Hashable (Hashable)
+import GHC.Generics (Generic)
 
 data LlvmType
     = LlvmVoid
@@ -18,7 +23,7 @@ data LlvmType
     | LlvmFn LlvmType [LlvmType]
     | LlvmAnonymous [LlvmType]
     | LlvmVararg
-    deriving (Show, Eq)
+    deriving (Show, Eq, Generic, Hashable)
 
 instance IR LlvmType where
     toLlvm LlvmVoid = "void"
@@ -56,3 +61,7 @@ getLlvmTypeSize LlvmVararg = error "Vararg types do not have a fixed size"
 deref :: LlvmType -> LlvmType
 deref (LlvmPointer t) = t
 deref u = error $ "Cannot dereference non-pointer type: " ++ show u
+
+normalizeType :: LlvmType -> LlvmType
+normalizeType (LlvmPointer t) = t
+normalizeType t = t

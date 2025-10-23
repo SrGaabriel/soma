@@ -7,14 +7,13 @@ import Control.Monad.State (modify)
 import Control.Monad.Writer (tell)
 import Llvm.Dependencies (LlvmDependency (..))
 import Llvm.Gen.Arrays (createTypedDynamicSizedRefCountedHeapArray, extractSliceLen, loadArrayElement)
-import Llvm.Gen.Context (GenCtx (..), GenValue (..), MemAccessCtx (..), getGenValueType, mkIterationIndexAlloc, mkVariableLoad, FunctionCallCtx (..))
+import Llvm.Gen.Calls (mkTypeclassMethodCall)
+import Llvm.Gen.Context (FunctionCallCtx (..), GenCtx (..), GenValue (..), MemAccessCtx (..), getGenValueType, mkIterationIndexAlloc, mkVariableLoad)
 import Llvm.Gen.Core (IrGen, IrGenState (irDependencies), alloca, enterNewBlock, mkFnCall, saveInstruction, setNewBlock)
 import Llvm.Gen.Templates (newStrTemplate)
-import Llvm.Gen.Types (toAllocationLlvmType)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Types (LlvmType (..))
-import Llvm.Values (intLiteral)
-import Typing.Types (Type (..))
+import Llvm.Values (LlvmValue (..), intLiteral)
 
 data IntrinsicImpl = IntrinsicImpl
     { intrinsicName :: String
@@ -68,8 +67,11 @@ printlnIntrinsic =
                         formatStr <- newStrTemplate "%d\\0A" 3
                         modify $ \state -> state{irDependencies = printfDependency : irDependencies state}
                         pure $ mkFnCall "printf" [formatStr, arg] LlvmI32
-                    u -> error $ "println intrinsic does not support type: " ++ show u
-            _ -> error "print intrinsic expects exactly 1 argument"
+                    u -> do
+                        displayFn <- mkTypeclassMethodCall "Display" "display" [arg] u
+                        modify $ \state -> state{irDependencies = putsDependency : irDependencies state}
+                        pure $ mkFnCall "puts" [displayFn] LlvmI32
+            _ -> error "println intrinsic expects exactly 1 argument"
         }
 
 debugIntrinsic :: IntrinsicImpl
@@ -92,12 +94,12 @@ mapIntrinsic =
                 index <- alloca LlvmI32 -- todo: use phi nodes
                 let ctxIndex = mkIterationIndexAlloc index
                 tell [LlvmStore LlvmI32 (intLiteral 0) index]
-                
+
                 let (LlvmPointer (LlvmFn fnRetType _)) = getGenValueType lambda
                 arrayLen <- extractSliceLen array
                 let elemType = case genValueContext array of
                         MemoryAccess (ArrayHeaderOffset _ elType) -> elType
-                        FunctionCall (DirectCall _ _ (TApp _ elType)) -> toAllocationLlvmType elType
+                        FunctionCall (DirectCall _ _ elType) -> elType
                         u -> error $ "map intrinsic received unsupported array gen value context: " ++ show u
                 newArray <- createTypedDynamicSizedRefCountedHeapArray fnRetType arrayLen -- todo: not make this heap allocated
                 tell [LlvmBr "map.cond"]
@@ -124,7 +126,9 @@ mapIntrinsic =
                             tell [LlvmBr "map.cond"]
                         )
                 _ <- setNewBlock "map.end"
-                pure $ LlvmBitcast (gvw newArray) (getGenValueType newArray)
+                let arrayStructType = LlvmAnonymous [LlvmPointer elemType, LlvmI32]
+                undefStruct <- saveInstruction (LlvmInsertValue arrayStructType LlvmUndef (gvw newArray) 0) arrayStructType
+                pure $ LlvmInsertValue arrayStructType undefStruct (gvw arrayLen) 1
             _ -> error "map intrinsic expects exactly 2 arguments"
         }
 

@@ -1,8 +1,11 @@
 module Llvm.Gen.Types where
 
+import Data.Hashable (Hashable (hash))
+import Data.List (isSuffixOf)
+import Llvm.Gen.Mangling (mangleDataTypeName, manglePolymorphicName)
 import Llvm.Types (LlvmType (..))
-import Typing.Types (SkolemVar (SkolemVar), TyConstructor (TypeConstructor), TyVar (TypeVar), Type (..))
 import Typing.Currying (uncurryFunction)
+import Typing.Types (SkolemVar (SkolemVar), TyConstructor (TypeConstructor), TyVar (TypeVar), Type (..))
 
 toAllocationLlvmType :: Type -> LlvmType
 toAllocationLlvmType t = case flattenTypeApp t of
@@ -16,10 +19,10 @@ toAllocationLlvmType t = case flattenTypeApp t of
     (TConstructor (TypeConstructor "Array" _), _) -> sliceType
     (TConstructor (TypeConstructor baseName _), args)
         | not (null args) ->
-            let argNames = map typeToMonomorphicName args
-                monomorphicName = baseName ++ concatMap ("_" ++) argNames
+            let monomorphicName = manglePolymorphicName baseName (map toAllocationLlvmType args)
             in LlvmNamedType monomorphicName
-    (TConstructor (TypeConstructor name _), []) -> LlvmNamedType name
+    (TConstructor (TypeConstructor name _), []) ->
+        LlvmNamedType (if isSuffixOf "_dt" name then name else mangleDataTypeName name)
     (TArrow _ _, _) ->
         let (args, base) = uncurryFunction t
             baseLlvm = toAllocationLlvmType base
@@ -51,16 +54,7 @@ typeToMonomorphicName t = case flattenTypeApp t of
     u -> "Unknown: " ++ show u
 
 llvmTypeToMonomorphicName :: LlvmType -> String
-llvmTypeToMonomorphicName LlvmI32 = "Int"
-llvmTypeToMonomorphicName LlvmI64 = "Int64"
-llvmTypeToMonomorphicName LlvmFloat = "Float"
-llvmTypeToMonomorphicName LlvmDouble = "Double"
-llvmTypeToMonomorphicName LlvmI1 = "Bool"
-llvmTypeToMonomorphicName LlvmI8 = "Byte"
-llvmTypeToMonomorphicName (LlvmNamedType name) = name
-llvmTypeToMonomorphicName (LlvmPointer _) = "Ptr"
-llvmTypeToMonomorphicName (LlvmArray _ _) = "Array"
-llvmTypeToMonomorphicName _ = "Unknown"
+llvmTypeToMonomorphicName = show . hash
 
 sliceType :: LlvmType
 sliceType = LlvmAnonymous [LlvmPointer LlvmI8, LlvmI32]

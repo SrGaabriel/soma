@@ -25,6 +25,7 @@ data InferenceError
     | NotAFunction Expr Type
     | MissingClassConstraint Expr Constraint
     | UnknownTypeConstructor Expr String
+    | InvalidTypeInstantiation Expr Type
     | Debug String
     deriving (Show, Eq)
 
@@ -63,6 +64,7 @@ instance PrintableError InferenceError where
         in case typs of
             [typ] -> "Missing instance: no '" ++ name ++ "' instance for type '" ++ treeShow typ ++ "'"
             _ -> "Missing instance: no '" ++ name ++ "' instance for types (" ++ unwords (map treeShow typs) ++ ")"
+    errorMessage (InvalidTypeInstantiation _ ty) = "Invalid type instantiation for type '" ++ treeShow ty ++ "'"
     errorMessage (Debug msg) = "Debug: " ++ msg
 
     errorStart :: InferenceError -> Int
@@ -101,6 +103,7 @@ getExpression' (PatternArityMismatch expr _ _) = expr
 getExpression' (KindMismatch expr _ _) = expr
 getExpression' (MissingClassConstraint expr _) = expr
 getExpression' (KindedTypeMismatch expr _ _ _ _) = expr
+getExpression' (InvalidTypeInstantiation expr _) = expr
 getExpression' (Debug _) = error "Debug error should not be used in production code"
 
 generateErrorForPurpose :: UnificationPurpose -> Expr -> Type -> Type -> InferenceError

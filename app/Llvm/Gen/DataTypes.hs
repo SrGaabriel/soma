@@ -9,6 +9,7 @@ import Llvm.Gen.Types (toAllocationLlvmType)
 import Llvm.Modules (LlvmStruct (LlvmStruct))
 import Llvm.Types
 import Syntax.Tree (Expr (..))
+import Llvm.Gen.Mangling (mangleDataTypeName)
 
 compileDataTypeDef :: Expr -> IrGen ()
 compileDataTypeDef (ExprDataTypeDef name generics _constraints constructors _span) = do
@@ -24,7 +25,8 @@ computeUnifiedLayout typeName constructors =
     let variantSizes = map getConstructorDataSize constructors
         maxSize = if null variantSizes then 0 else maximum variantSizes
         fields = [LlvmI8, LlvmArray maxSize LlvmI8]
-    in LlvmStruct typeName fields
+        mangledName = mangleDataTypeName typeName
+    in LlvmStruct mangledName fields
 
 getConstructorDataSize :: Expr -> Int
 getConstructorDataSize (ExprDataConstructor _name args _) = do

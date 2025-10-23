@@ -11,6 +11,7 @@ import Llvm.Gen.Metadata (InstanceMetadata (..), TypeClassMetadata (..))
 import Llvm.Gen.Value (compileValue)
 import Syntax.Tree (Expr (ExprBindingDef, ExprInstanceDef, ExprTypeClassBinding, ExprTypeClassDef))
 import Typing.Types (QualifiedType (..), Type (..))
+import Llvm.Gen.Types (toAllocationLlvmType)
 
 compileTypeClassDef :: Expr -> IrGen ()
 compileTypeClassDef (ExprTypeClassDef className generics bindings _span) = do
@@ -48,6 +49,6 @@ compileInstanceMethod :: String -> Type -> Expr -> IrGen ()
 compileInstanceMethod className concreteType methodExpr = do
     case methodExpr of
         ExprBindingDef methodName (Forall _ _ methodType) body _ _ -> do
-            let mangledName = mangleInstanceMethod className concreteType methodName
+            let mangledName = mangleInstanceMethod className (toAllocationLlvmType concreteType) methodName
             compileFunction mangledName methodType body compileValue
         _ -> error "Expected ExprBindingDef in instance method"

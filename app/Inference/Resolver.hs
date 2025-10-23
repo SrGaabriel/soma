@@ -8,6 +8,7 @@ import Control.Monad (when)
 import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
 import Control.Monad.State (MonadState (get, put), State, gets, modify, runState)
 import qualified Data.Map as Map
+import qualified Debug.Trace as Debug
 import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
 import Inference.Substitution (Substitutable (apply))
@@ -69,7 +70,7 @@ collectGlobals (ExprDataTypeDef name generics constraints constructors _) = do
                 then baseConstructor
                 else foldl TApp baseConstructor (map TVar generics)
 
-    let constrainedStructType = Forall generics constraints structType
+    let constrainedStructType = Forall generics constraints baseConstructor
     addGlobalBinding name constrainedStructType (TypeSymbol (length generics))
 
     mapM_
@@ -82,6 +83,11 @@ collectGlobals (ExprDataTypeDef name generics constraints constructors _) = do
             recv -> error $ "Expected StructConstructorExpr in struct definition but got " ++ show recv
         )
         constructors
+collectGlobals (ExprTypeClassDef className generics _ _) = do
+    let kind = foldr (KindArrow . tvKind) KindStar generics
+    let baseConstructor = TConstructor $ TypeConstructor className kind
+    Debug.traceM $ "Adding type class " ++ className ++ " with type " ++ show baseConstructor
+    addGlobalBinding className (Forall generics [] baseConstructor) TypeClassSymbol
 collectGlobals _ = pure ()
 
 collectInstances :: Expr -> ResolverM ()
@@ -113,9 +119,11 @@ resolveTReference expr@(ExprTypeClassBinding name typ defaultV s) = do
             Nothing -> TypeClassMethodSymbol "Unknown"
     addGlobalBinding name realTyp symbolKind
     pure $ ExprTypeClassBinding name realTyp defaultV s
-resolveTReference (ExprInstanceDef constraintType binds s) = do
+resolveTReference expr@(ExprInstanceDef constraintType binds s) = do
+    env <- getEnv
     binds' <- mapM resolveTReference binds
-    pure $ ExprInstanceDef constraintType binds' s
+    Forall _ _ constraintType' <- replaceAllUnresolvedQualified expr env (Forall [] [] constraintType)
+    pure $ ExprInstanceDef constraintType' binds' s
 resolveTReference expr@(ExprBindingDef a typ body topLevel c) = do
     env <- getEnv
     realTyp <- replaceAllUnresolvedQualified expr env typ
@@ -191,8 +199,9 @@ getReference expr name = do
 analyzeTree :: Expr -> ResolverM Expr
 analyzeTree root = do
     collectGlobals root
-    collectInstances root
-    resolveTReference root
+    resolved <- resolveTReference root
+    collectInstances resolved
+    pure resolved
 
 addGlobalBinding :: String -> QualifiedType -> SymbolKind -> ResolverM ()
 addGlobalBinding name ty kind = do
@@ -252,7 +261,7 @@ replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
             (TUnresolved _, [Forall (tv : _) _ _]) -> do
                 let subst = Map.singleton tv t2'
                 let instantiatedType = apply subst t1'
-                pure (instantiatedType, [])
+                pure (TApp instantiatedType t2', [])
             _ -> do
                 let newType = TApp t1' t2'
                 let qualifieds = mconcat [qu1, qu2]

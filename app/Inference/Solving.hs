@@ -4,6 +4,7 @@ module Inference.Solving where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import qualified Debug.Trace as Debug
 import Inference.Core (InstanceEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..), generateErrorForPurpose)
 import Inference.Gen (ClassConstraintWithSource (..), TypeConstraint (..))
@@ -46,6 +47,8 @@ checkConstraintEntailment :: InstanceEnv -> [Constraint] -> [ClassConstraintWith
 checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSource typeSubst = do
     let inferredConstraints = map (\ccs -> (apply typeSubst (ccsConstraint ccs), ccsSourceExpr ccs)) classConstraintsWithSource
     let unsatisfiedConstraints = filter (not . isConstraintSatisfied) inferredConstraints
+    Debug.traceM $ "Missing constraints: " ++ show (map fst unsatisfiedConstraints)
+    Debug.traceM $ "Instance env: " ++ show instanceEnv
     case unsatisfiedConstraints of
         [] -> Right ()
         ((constraint, sourceExpr) : _) -> Left [MissingClassConstraint sourceExpr constraint]
@@ -56,7 +59,11 @@ checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSo
 isEntailedByInstanceEnv :: InstanceEnv -> Constraint -> Bool
 isEntailedByInstanceEnv instanceEnv constraint =
     let constraintTy = constraintType constraint
-    in Map.lookup constraintTy instanceEnv == Just True
+    in any (\(instanceTy, _) -> canUnify instanceTy constraintTy) (Map.toList instanceEnv)
+  where
+    canUnify ty1 ty2 = case unifyPure (ExprRoot []) UnifyFunctionApplication ty1 ty2 of
+        Right _ -> True
+        Left _ -> False
 
 isEntailedBy :: [Constraint] -> Constraint -> Bool
 isEntailedBy declaredCs constraint =
