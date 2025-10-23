@@ -17,20 +17,21 @@ import Llvm.Gen.Context
 import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irStructs, polymorphicFunctions, typeMap), MemoryScope (..), freshScope, lookupMemory, mkFnCall, saveInstruction)
 import Llvm.Gen.Functions (compileFunction)
 import Llvm.Gen.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
-import Llvm.Gen.Mangling (mangleDataTypeName, mangleInstanceMethod, manglePolymorphicName)
+import Llvm.Gen.Mangling (mangleDataTypeName, manglePolymorphicName)
 import Llvm.Gen.Metadata (ConstructorMetadata (..))
 import Llvm.Gen.Monomorphize (monomorphizeAndCompile)
 import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Gen.Types (getArrayElementType, toAllocationLlvmType)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (LlvmStore))
 import Llvm.Modules (LlvmStruct (LlvmStruct))
-import Llvm.Types (LlvmType (..), deref, getLlvmTypeSize, normalizeType)
+import Llvm.Types (LlvmType (..), deref, getLlvmTypeSize)
 import Llvm.Values (LlvmValue (..), getValueType, intLiteral)
 import Project.Symbols (Symbol (ResolvedSymbol, resolvedSymbolKind, resolvedSymbolName), SymbolKind (..))
 import Syntax.Tree (Expr (..), uncurryApp)
 import Typing.Currying (uncurryFunction)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (..), Type (..), constraintClassName, constraintTypes, isPolymorphic)
+import Typing.Types (Constraint (..), QualifiedType (Forall), Type (..), constraintClassName, constraintTypes, isPolymorphic)
 import Utils.Lists (hardHead)
+import Llvm.Gen.Calls (mkTypeclassMethodCall)
 
 compileValue :: Expr -> IrGen GenValue
 compileValue expr = case expr of
@@ -110,9 +111,11 @@ compileApp base args (Forall _ _ methodType) = do
                     polyFuncs <- gets polymorphicFunctions
                     case Map.lookup name polyFuncs of
                         Just _ -> do
-                            let argValsRaw = map gvw argVals
-                            let concreteTypes = map (llvmTypeToType . getValueType) argValsRaw
-                            mangledName <- monomorphizeAndCompile name concreteTypes compileValue
+                            let argTypes = map (\arg -> 
+                                    let Just (Forall _ _ typ) = Map.lookup arg tyMap
+                                    in typ
+                                    ) args
+                            mangledName <- monomorphizeAndCompile name argTypes compileValue
                             pure $ mkFnCall mangledName argVals llvmFnType
                         Nothing -> do
                             pure $ mkFnCall name argVals llvmFnType
@@ -122,15 +125,6 @@ compileApp base args (Forall _ _ methodType) = do
             let callFnName = case callName of
                     ResolvedSymbol name _ _ _ -> name
             return $ mkDirectCall callFnName argVals (toAllocationLlvmType fnRetType) callResult
-
-mkTypeclassMethodCall :: String -> String -> [GenValue] -> LlvmType -> IrGen GenValue
-mkTypeclassMethodCall className methodName argVals llvmRetType = do
-    let firstArgType = getGenValueType (hardHead argVals)
-    let normalizedType = normalizeType firstArgType
-    let mangledName = mangleInstanceMethod className normalizedType methodName
-    let callInstr = mkFnCall mangledName argVals llvmRetType
-    mkDirectCall mangledName argVals llvmRetType
-        <$> saveInstruction callInstr llvmRetType
 
 compileConstructorApp :: String -> [Expr] -> IrGen GenValue
 compileConstructorApp ctorName args = do
@@ -275,11 +269,3 @@ compileArrayLiteral arrayExpr elements = do
         storeArrayElement arrayPtr (cLongLiteral idx) elemValue llvmElemType
 
     createSlice arrayPtr len
-
-llvmTypeToType :: LlvmType -> Type
-llvmTypeToType (LlvmNamedType name) = TConstructor (TypeConstructor name KindStar)
-llvmTypeToType LlvmI32 = TConstructor (TypeConstructor "Int" KindStar)
-llvmTypeToType LlvmI1 = TConstructor (TypeConstructor "Bool" KindStar)
-llvmTypeToType LlvmFloat = TConstructor (TypeConstructor "Float" KindStar)
-llvmTypeToType (LlvmPointer inner) = llvmTypeToType inner
-llvmTypeToType t = error $ "Cannot convert LLVM type to Type: " ++ show t

@@ -14,6 +14,7 @@ import Typing.Types (Kind (..), QualifiedType (Forall), TyVar (..), Type (..))
 monomorphizeAndCompile :: String -> [Type] -> (Expr -> IrGen GenValue) -> IrGen String
 monomorphizeAndCompile funcName concreteTypes compileValueFunc = do
     st <- get
+    -- todo move this mangling
     let mangledName = funcName ++ concatMap (("_" ++) . typeToMonomorphicName) concreteTypes
 
     if Set.member mangledName (monomorphizedFunctions st)

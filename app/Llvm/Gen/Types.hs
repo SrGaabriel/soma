@@ -1,7 +1,6 @@
 module Llvm.Gen.Types where
 
 import Data.Hashable (Hashable (hash))
-import Data.List (isSuffixOf)
 import Llvm.Gen.Mangling (mangleDataTypeName, manglePolymorphicName)
 import Llvm.Types (LlvmType (..))
 import Typing.Currying (uncurryFunction)
@@ -22,7 +21,7 @@ toAllocationLlvmType t = case flattenTypeApp t of
             let monomorphicName = manglePolymorphicName baseName (map toAllocationLlvmType args)
             in LlvmNamedType monomorphicName
     (TConstructor (TypeConstructor name _), []) ->
-        LlvmNamedType (if isSuffixOf "_dt" name then name else mangleDataTypeName name)
+        LlvmNamedType $ mangleDataTypeName name
     (TArrow _ _, _) ->
         let (args, base) = uncurryFunction t
             baseLlvm = toAllocationLlvmType base

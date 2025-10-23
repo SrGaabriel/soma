@@ -8,7 +8,7 @@ import Control.Monad.Writer (tell)
 import Llvm.Dependencies (LlvmDependency (..))
 import Llvm.Gen.Arrays (createTypedDynamicSizedRefCountedHeapArray, extractSliceLen, loadArrayElement)
 import Llvm.Gen.Calls (mkTypeclassMethodCall)
-import Llvm.Gen.Context (FunctionCallCtx (..), GenCtx (..), GenValue (..), MemAccessCtx (..), getGenValueType, mkIterationIndexAlloc, mkVariableLoad)
+import Llvm.Gen.Context (ArrayOpCtx (..), FunctionCallCtx (..), GenCtx (..), GenValue (..), MemAccessCtx (..), getGenValueType, mkIterationIndexAlloc, mkVariableLoad)
 import Llvm.Gen.Core (IrGen, IrGenState (irDependencies), alloca, enterNewBlock, mkFnCall, saveInstruction, setNewBlock)
 import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
@@ -67,8 +67,8 @@ printlnIntrinsic =
                         formatStr <- newStrTemplate "%d\\0A" 3
                         modify $ \state -> state{irDependencies = printfDependency : irDependencies state}
                         pure $ mkFnCall "printf" [formatStr, arg] LlvmI32
-                    u -> do
-                        displayFn <- mkTypeclassMethodCall "Display" "display" [arg] u
+                    _ -> do
+                        displayFn <- mkTypeclassMethodCall "Display" "display" [arg] (LlvmPointer LlvmI8)
                         modify $ \state -> state{irDependencies = putsDependency : irDependencies state}
                         pure $ mkFnCall "puts" [displayFn] LlvmI32
             _ -> error "println intrinsic expects exactly 1 argument"
