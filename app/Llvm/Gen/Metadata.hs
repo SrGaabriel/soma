@@ -1,14 +1,16 @@
 module Llvm.Gen.Metadata where
 
 import Data.Map (Map)
-import Typing.Types (QualifiedType, TyVar, Type)
-import Syntax.Tree (Expr)
 import Llvm.Types (LlvmType)
+import Syntax.Tree (Expr)
+import Typing.Types (QualifiedType, TyVar, Type)
 
 data ConstructorMetadata = ConstructorMetadata
     { constructorMetadataTypeName :: String
     , constructorMetadataTag :: Int
     , constructorMetadataArgs :: [Type]
+    , constructorMetadataFieldLlvmTypes :: [LlvmType]
+    , constructorMetadataFieldOffsets :: [Int]
     }
     deriving (Show, Eq)
 
@@ -24,7 +26,6 @@ data InstanceMetadata = InstanceMetadata
     , instType :: Type
     }
     deriving (Show)
-
 
 data PolymorphicFunctionMetadata = PolymorphicFunction
     { polyFuncName :: String

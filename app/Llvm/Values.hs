@@ -1,7 +1,7 @@
 module Llvm.Values where
 
 import Llvm.Ir (IR (toLlvm))
-import Llvm.Types (LlvmType (LlvmI32, LlvmI64))
+import Llvm.Types (LlvmType (LlvmI32, LlvmI64, LlvmI8))
 
 data LlvmValue
     = LlvmLiteral LlvmType String
@@ -31,3 +31,6 @@ intLiteral val = LlvmLiteral LlvmI32 (show val)
 
 longLiteral :: Int -> LlvmValue
 longLiteral val = LlvmLiteral LlvmI64 (show val)
+
+byteLiteral :: Int -> LlvmValue
+byteLiteral val = LlvmLiteral LlvmI8 (show val)

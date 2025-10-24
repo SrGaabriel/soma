@@ -13,8 +13,9 @@ import Data.List (find)
 import qualified Data.Map as Map
 import GHC.Base (when)
 import Llvm.Gen.Arrays (createSlice, createTypedRefCountedHeapArray, storeArrayElement)
+import Llvm.Gen.Calls (mkTypeclassMethodCall)
 import Llvm.Gen.Context
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irStructs, polymorphicFunctions, typeMap), MemoryScope (..), freshScope, lookupMemory, mkFnCall, saveInstruction)
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irStructs, polymorphicFunctions, typeMap), MemoryScope (..), coerceArgsForCall, freshScope, lookupMemory, mkFnCall, saveInstruction)
 import Llvm.Gen.Functions (compileFunction)
 import Llvm.Gen.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
 import Llvm.Gen.Mangling (mangleDataTypeName, manglePolymorphicName)
@@ -31,7 +32,6 @@ import Syntax.Tree (Expr (..), uncurryApp)
 import Typing.Currying (uncurryFunction)
 import Typing.Types (Constraint (..), QualifiedType (Forall), Type (..), constraintClassName, constraintTypes, isPolymorphic)
 import Utils.Lists (hardHead)
-import Llvm.Gen.Calls (mkTypeclassMethodCall)
 
 compileValue :: Expr -> IrGen GenValue
 compileValue expr = case expr of
@@ -93,42 +93,47 @@ compileApp base args (Forall _ _ methodType) = do
         ExprVar symbol@(ResolvedSymbol{resolvedSymbolName}) _ | isTypeclassMethod symbol -> do
             let TypeClassMethodSymbol className = resolvedSymbolKind symbol
             argVals <- mapM compileValue args
-            let retType = case uncurryFunction methodType of
-                    (_argTypes, retTy) -> retTy
-            mkTypeclassMethodCall className resolvedSymbolName argVals (toAllocationLlvmType retType)
+            let (paramTypes, retType) = uncurryFunction methodType
+            let llvmParamTypes = map toAllocationLlvmType paramTypes
+            mkTypeclassMethodCall className resolvedSymbolName argVals llvmParamTypes (toAllocationLlvmType retType)
         _ -> do
             tyMap <- gets typeMap
             argVals <- mapM compileValue args
             let Just (Forall _ _ refType) = Map.lookup base tyMap
-            let (_fnIntermediateTys, fnRetType) = uncurryFunction refType
+            let (fnParamTys, fnRetType) = uncurryFunction refType
             let callName = getApplicableFnName base
             let llvmFnType = toAllocationLlvmType fnRetType
+            let llvmParamTypes = map toAllocationLlvmType fnParamTys
+            coercedArgVals <- coerceArgsForCall argVals llvmParamTypes
             call <- case callName of
                 ResolvedSymbol name IntrinsicBindingSymbol _ _ -> do
                     let intrinsic = getIntrinsic name
-                    intrinsicCodeGen intrinsic argVals
+                    intrinsicCodeGen intrinsic coercedArgVals
                 ResolvedSymbol name (BindingSymbol _) _ _ -> do
                     polyFuncs <- gets polymorphicFunctions
                     case Map.lookup name polyFuncs of
                         Just _ -> do
-                            let argTypes = map (\arg -> 
-                                    let Just (Forall _ _ typ) = Map.lookup arg tyMap
-                                    in typ
-                                    ) args
+                            let argTypes =
+                                    map
+                                        ( \arg ->
+                                            let Just (Forall _ _ typ) = Map.lookup arg tyMap
+                                            in typ
+                                        )
+                                        args
                             mangledName <- monomorphizeAndCompile name argTypes compileValue
-                            pure $ mkFnCall mangledName argVals llvmFnType
+                            pure $ mkFnCall mangledName coercedArgVals llvmFnType
                         Nothing -> do
-                            pure $ mkFnCall name argVals llvmFnType
+                            pure $ mkFnCall name coercedArgVals llvmFnType
                 ResolvedSymbol name _ _ _ -> do
-                    pure $ mkFnCall name argVals llvmFnType
+                    pure $ mkFnCall name coercedArgVals llvmFnType
             callResult <- saveInstruction call llvmFnType
             let callFnName = case callName of
                     ResolvedSymbol name _ _ _ -> name
-            return $ mkDirectCall callFnName argVals (toAllocationLlvmType fnRetType) callResult
+            return $ mkDirectCall callFnName coercedArgVals (toAllocationLlvmType fnRetType) callResult
 
 compileConstructorApp :: String -> [Expr] -> IrGen GenValue
 compileConstructorApp ctorName args = do
-    ConstructorMetadata baseTypeName tag argTypes <- getConstructorInfo ctorName
+    ConstructorMetadata{constructorMetadataTypeName = baseTypeName, constructorMetadataTag = tag, constructorMetadataArgs = argTypes} <- getConstructorInfo ctorName
 
     argVals <- mapM compileValue args
     let concreteArgTypes = map getGenValueType argVals

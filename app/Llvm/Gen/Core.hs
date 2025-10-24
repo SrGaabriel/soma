@@ -11,13 +11,17 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Inference.Core (TypeMap)
 import Llvm.Dependencies (LlvmDependency)
-import Llvm.Gen.Context (GenValue (..), getGenValueType)
+import Llvm.Gen.Context (GenValue (..), getGenValueType, mkStackStructAlloc, mkVariableLoad)
 import Llvm.Gen.Metadata (ConstructorMetadata, InstanceMetadata, PolymorphicFunctionMetadata, TypeClassMetadata)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Modules (LlvmFunction, LlvmStruct)
+
 import Llvm.Types (LlvmType (..))
+
 import Llvm.Values (LlvmValue (..), getRegName)
+
 import Syntax.Tree (Expr)
+
 import Typing.Types (QualifiedType)
 
 data IrGenEnv = IrGenEnv
@@ -187,13 +191,26 @@ enterNewBlock name generation = do
 
 setNewBlock :: String -> IrGen ()
 setNewBlock name =
-    tell [LlvmLabel name] 
+    tell [LlvmLabel name]
 
 mkFnCall :: String -> [GenValue] -> LlvmType -> LlvmInstruction
 mkFnCall name args retType =
     let argTypes = map getGenValueType args
-    in let argsRaw = map gvw args
-       in LlvmCall (LlvmGlobal (LlvmFn retType argTypes) name) retType argsRaw
+        argsRaw = map gvw args
+    in LlvmCall (LlvmGlobal (LlvmFn retType argTypes) name) retType argsRaw
+
+coerceArgsForCall :: [GenValue] -> [LlvmType] -> IrGen [GenValue]
+coerceArgsForCall argVals expectedParamTypes = do
+    sequence [coerceArg argVal expectedTy | (argVal, expectedTy) <- zip argVals expectedParamTypes]
+  where
+    coerceArg :: GenValue -> LlvmType -> IrGen GenValue
+    coerceArg argVal expectedTy =
+        let actualTy = getGenValueType argVal
+        in case (actualTy, expectedTy) of
+            (LlvmPointer (LlvmNamedType _), LlvmNamedType _) | actualTy == LlvmPointer expectedTy -> do
+                loaded <- saveInstruction (LlvmLoad (gvw argVal)) expectedTy
+                return $ mkVariableLoad (mkStackStructAlloc expectedTy (gvw argVal)) Nothing loaded
+            _ -> return argVal
 
 alloca :: LlvmType -> IrGen LlvmValue
 alloca ty = saveInstruction (LlvmAlloca ty Nothing) (LlvmPointer ty)

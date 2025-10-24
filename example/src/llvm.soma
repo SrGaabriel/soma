@@ -6,6 +6,12 @@ intrinsic def map :: (a -> b) -> [a] -> [b]
 intrinsic def for :: (a -> ()) -> [a] -> ()
 intrinsic def debug :: String -> ()
 
+data Shape
+    = Square
+        length :: Int
+    | Circle
+        radius :: Int
+
 data Maybe a
     = Just
         value :: a
@@ -58,9 +64,9 @@ def testTotallyGenericEqGen(left, right) :: a -> a -> Bool where a: Eq =
 def testTotallyGenericEqGenOptional(left: Optional, right: Optional) -> Bool =
     totallyGenericEqGen left right
 
-/*def isZero :: Int -> Bool
+def isZero :: Int -> Bool
     | 0 => true
-    | _ => false*/
+    | _ => false
 
 def testSum(x: Int, y: Int) -> Int = x + y
 
@@ -72,3 +78,9 @@ def main :: IO () =
     let primes = primeNumbers in
     let primesPlusOne = map (\x -> x + 1) primes in
     println primesPlusOne
+
+instance Display Shape where
+    def display :: Shape -> String
+        | (Circle r1) => display r1
+        | (Square s1) => display s1
+        | _ => "<unknown shape>"

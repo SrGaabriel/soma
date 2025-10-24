@@ -3,13 +3,18 @@
 
 module Llvm.Gen.Intrinsics where
 
-import Control.Monad.State (modify)
+import Control.Monad.State (gets, modify)
+
+import Control.Monad.Reader (asks)
 import Control.Monad.Writer (tell)
+
+import Data.Maybe (fromMaybe)
 import Llvm.Dependencies (LlvmDependency (..))
+
 import Llvm.Gen.Arrays (createTypedDynamicSizedRefCountedHeapArray, extractSliceLen, loadArrayElement)
 import Llvm.Gen.Calls (mkTypeclassMethodCall)
-import Llvm.Gen.Context (ArrayOpCtx (..), FunctionCallCtx (..), GenCtx (..), GenValue (..), MemAccessCtx (..), getGenValueType, mkIterationIndexAlloc, mkVariableLoad)
-import Llvm.Gen.Core (IrGen, IrGenState (irDependencies), alloca, enterNewBlock, mkFnCall, saveInstruction, setNewBlock)
+import Llvm.Gen.Context (FunctionCallCtx (..), GenCtx (..), GenValue (..), MemAccessCtx (..), getGenValueType, mkIterationIndexAlloc, mkVariableLoad)
+import Llvm.Gen.Core (IrGen, IrGenEnv (currentFunction), IrGenState (irDependencies, nextBlock), alloca, enterNewBlock, mkFnCall, saveInstruction, setNewBlock)
 import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Types (LlvmType (..))
@@ -68,7 +73,8 @@ printlnIntrinsic =
                         modify $ \state -> state{irDependencies = printfDependency : irDependencies state}
                         pure $ mkFnCall "printf" [formatStr, arg] LlvmI32
                     _ -> do
-                        displayFn <- mkTypeclassMethodCall "Display" "display" [arg] (LlvmPointer LlvmI8)
+                        let argType = getGenValueType arg
+                        displayFn <- mkTypeclassMethodCall "Display" "display" [arg] [argType] (LlvmPointer LlvmI8)
                         modify $ \state -> state{irDependencies = putsDependency : irDependencies state}
                         pure $ mkFnCall "puts" [displayFn] LlvmI32
             _ -> error "println intrinsic expects exactly 1 argument"
@@ -102,30 +108,47 @@ mapIntrinsic =
                         FunctionCall (DirectCall _ _ elType) -> elType
                         u -> error $ "map intrinsic received unsupported array gen value context: " ++ show u
                 newArray <- createTypedDynamicSizedRefCountedHeapArray fnRetType arrayLen -- todo: not make this heap allocated
-                tell [LlvmBr "map.cond"]
+                currentFn <- asks currentFunction
+                blkNum <- gets nextBlock
+                let fnPrefix = fromMaybe "map" currentFn
+                let condLabel = fnPrefix ++ ".map.cond." ++ show blkNum
+                let bodyLabel = fnPrefix ++ ".map.body." ++ show (blkNum + 1)
+                let endLabel = fnPrefix ++ ".map.end." ++ show (blkNum + 2)
+                modify $ \s -> s{nextBlock = blkNum + 3}
+                tell [LlvmBr condLabel]
+
                 _ <-
                     enterNewBlock
-                        -- todo: mangle name
-                        "map.cond"
+                        condLabel
                         ( do
                             loadedIndex <- saveInstruction (LlvmLoad index) LlvmI32
                             cmp <- saveInstruction (LlvmICmp LlvmI32 "slt" loadedIndex (gvw arrayLen)) LlvmI1
-                            tell [LlvmBrCond cmp "map.body" "map.end"]
+                            tell [LlvmBrCond cmp bodyLabel endLabel]
                         )
+
                 _ <-
                     enterNewBlock
-                        "map.body"
+                        bodyLabel
                         ( do
                             loadedIndex <- mkVariableLoad ctxIndex Nothing <$> saveInstruction (LlvmLoad index) LlvmI32
+
                             element <- loadArrayElement array loadedIndex elemType
+
                             mappedElement <- saveInstruction (LlvmCall (gvw lambda) fnRetType [gvw element]) fnRetType
+
                             newElementPtr <- saveInstruction (LlvmGetElementPtr fnRetType (gvw newArray) [gvw loadedIndex] True) fnRetType
+
                             tell [LlvmStore fnRetType mappedElement newElementPtr]
+
                             incrementedIndex <- saveInstruction (LlvmAdd LlvmI32 (gvw loadedIndex) (intLiteral 1)) LlvmI32
+
                             tell [LlvmStore LlvmI32 incrementedIndex index]
-                            tell [LlvmBr "map.cond"]
+
+                            tell [LlvmBr condLabel]
                         )
-                _ <- setNewBlock "map.end"
+
+                _ <- setNewBlock endLabel
+
                 let arrayStructType = LlvmAnonymous [LlvmPointer elemType, LlvmI32]
                 undefStruct <- saveInstruction (LlvmInsertValue arrayStructType LlvmUndef (gvw newArray) 0) arrayStructType
                 pure $ LlvmInsertValue arrayStructType undefStruct (gvw arrayLen) 1

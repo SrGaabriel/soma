@@ -17,7 +17,7 @@ data LlvmType
     | LlvmI64
     | LlvmFloat
     | LlvmDouble
-    | LlvmPointer LlvmType -- Alternative pointer syntax
+    | LlvmPointer LlvmType
     | LlvmArray Int LlvmType
     | LlvmNamedType String
     | LlvmFn LlvmType [LlvmType]
@@ -65,3 +65,22 @@ deref u = error $ "Cannot dereference non-pointer type: " ++ show u
 normalizeType :: LlvmType -> LlvmType
 normalizeType (LlvmPointer t) = t
 normalizeType t = t
+
+naturalAlignment :: LlvmType -> Int
+naturalAlignment LlvmI1 = 1
+naturalAlignment LlvmI8 = 1
+naturalAlignment LlvmI16 = 2
+naturalAlignment LlvmI32 = 4
+naturalAlignment LlvmI64 = 8
+naturalAlignment LlvmFloat = 4
+naturalAlignment LlvmDouble = 8
+naturalAlignment (LlvmPointer _) = 8
+naturalAlignment (LlvmArray _ t) = naturalAlignment t
+naturalAlignment (LlvmAnonymous ts) =
+    case ts of
+        [] -> 1
+        _ -> maximum (map naturalAlignment ts)
+naturalAlignment (LlvmNamedType _) = 8
+naturalAlignment (LlvmFn _ _) = 8
+naturalAlignment LlvmVararg = 8
+naturalAlignment LlvmVoid = 1

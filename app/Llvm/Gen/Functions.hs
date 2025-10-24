@@ -7,6 +7,7 @@ import Control.Monad.Writer
 import qualified Data.Map as Map
 import Llvm.Gen.Context
 import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), MemoryScope (..), ctxFreshReg, freshScope)
+import Llvm.Gen.PatternMatch (compileDerivedPatternMatch)
 import Llvm.Gen.Types (toAllocationLlvmType)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Modules (LlvmFunction (..))
@@ -38,6 +39,7 @@ compileFunction name bindingTyp fn compileValueFunc = do
                             }
                 let updatedEnv = env{currentScope = updatedScope, currentFunction = Just name}
                 (updatedEnv, compileValueFunc body)
+            ExprDerivedPatternMatch{} -> compileDerivedPatternMatch env compileValueFunc fn fnArgRegs
             _ -> (env, compileValueFunc fn)
     let ((retVal, stmts), st') = runState (runWriterT (runReaderT action newEnv)) st
     let llvmFnArgTypes = map toAllocationLlvmType fnArgs

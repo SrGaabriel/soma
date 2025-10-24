@@ -43,6 +43,7 @@ library
                     Logging.ErrorPrinter
                     Logging.PrettyTrees
                     Logging.Errors
+                    Decisions.Model
                     Project.Symbols
                     Project.Module
                     Project.Graph
@@ -73,6 +74,8 @@ library
                     Llvm.Gen.Monomorphize
                     Llvm.Gen.Templates
                     Llvm.Gen.Calls
+                    Llvm.Gen.PatternMatch
+                    Llvm.Gen.Panic
                     Analysis.Symbol
   hs-source-dirs:   app
   build-depends:    base >= 4.19.2.0,
