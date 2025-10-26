@@ -254,10 +254,30 @@ jobs:
               shell: msys2 {0}
               run: cargo build --verbose --all-features --target ${{ matrix.target }}
 
+            - name: Debug PATH before build (macOS)
+              if: "!matrix.cross && !contains(matrix.target, 'windows-gnu') && runner.os == 'macOS'"
+              run: |
+                  echo "=== PATH at build time ==="
+                  echo "$PATH"
+                  echo "=== Which cargo ==="
+                  which cargo || echo "cargo not found in PATH"
+                  echo "=== Trying cargo --version ==="
+                  cargo --version || echo "cargo command failed"
+                  echo "=== Trying /Users/runner/.cargo/bin/cargo --version ==="
+                  /Users/runner/.cargo/bin/cargo --version || echo "full path failed"
+              shell: bash
+
             - name: Build project (native - other)
               if: "!matrix.cross && !contains(matrix.target, 'windows-gnu')"
               working-directory: haoma
-              run: cargo build --verbose --all-features --target ${{ matrix.target }}
+              run: |
+                  echo "=== DEBUG: Inside build step ==="
+                  echo "PWD: $(pwd)"
+                  echo "PATH: $PATH"
+                  which cargo || echo "cargo not in PATH"
+                  /Users/runner/.cargo/bin/cargo --version || echo "full path failed"
+                  echo "=== Starting actual build ==="
+                  cargo build --verbose --all-features --target ${{ matrix.target }}
               shell: bash
 
             - name: Run tests
