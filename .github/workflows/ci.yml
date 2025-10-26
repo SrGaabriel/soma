@@ -211,67 +211,52 @@ jobs:
                   update: true
                   path-type: inherit
 
-            - name: Setup cross-compilation linker (Linux ARM)
-              if: matrix.cross && runner.os == 'Linux'
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
-            - name: Configure cross-compilation
-              if: matrix.cross
-              working-directory: haoma
-              run: |
-                  mkdir -p .cargo
-                  cat > .cargo/config.toml << EOF
-                  [target.aarch64-unknown-linux-gnu]
-                  linker = "aarch64-linux-gnu-gcc"
-                  EOF
-
             - name: Install cross-compilation tools
               if: matrix.cross
-              run: |
-                  cargo install cross --git https://github.com/cross-rs/cross
+              uses: taiki-e/install-action@v2
+              with:
+                  tool: cross
 
             - name: Build project (cross)
               if: matrix.cross
               working-directory: haoma
-              run: cross build --verbose --all-features --target ${{ matrix.target }}
+              run: $HOME/.cargo/bin/cross build --verbose --all-features --target ${{ matrix.target }}
               shell: bash
 
             - name: Build project (native - Windows GNU)
               if: "!matrix.cross && contains(matrix.target, 'windows-gnu')"
               working-directory: haoma
               shell: msys2 {0}
-              run: cargo build --verbose --all-features --target ${{ matrix.target }}
+              run: $HOME/.cargo/bin/cargo build --verbose --all-features --target ${{ matrix.target }}
 
             - name: Build project (native - other)
               if: "!matrix.cross && !contains(matrix.target, 'windows-gnu')"
               working-directory: haoma
-              run: cargo build --verbose --all-features --target ${{ matrix.target }}
+              run: $HOME/.cargo/bin/cargo build --verbose --all-features --target ${{ matrix.target }}
               shell: bash
 
             - name: Run tests
               if: "!matrix.cross"
               working-directory: haoma
-              run: cargo test --verbose --all-features --target ${{ matrix.target }}
+              run: $HOME/.cargo/bin/cargo test --verbose --all-features --target ${{ matrix.target }}
               continue-on-error: true
 
             - name: Build release (cross)
               if: matrix.cross
               working-directory: haoma
-              run: cross build --release --verbose --target ${{ matrix.target }}
+              run: $HOME/.cargo/bin/cross build --release --verbose --target ${{ matrix.target }}
               shell: bash
 
             - name: Build release (native - Windows GNU)
               if: "!matrix.cross && contains(matrix.target, 'windows-gnu')"
               working-directory: haoma
               shell: msys2 {0}
-              run: cargo build --release --verbose --target ${{ matrix.target }}
+              run: $HOME/.cargo/bin/cargo build --release --verbose --target ${{ matrix.target }}
 
             - name: Build release (native - other)
               if: "!matrix.cross && !contains(matrix.target, 'windows-gnu')"
               working-directory: haoma
-              run: cargo build --release --verbose --target ${{ matrix.target }}
+              run: $HOME/.cargo/bin/cargo build --release --verbose --target ${{ matrix.target }}
               shell: bash
 
             - name: Prepare executable (Unix)
@@ -336,11 +321,11 @@ jobs:
 
             - name: Check Rust formatting
               working-directory: haoma
-              run: cargo fmt --all -- --check
+              run: $HOME/.cargo/bin/cargo fmt --all -- --check
 
             - name: Run Clippy
               working-directory: haoma
-              run: cargo clippy --all-targets --all-features
+              run: $HOME/.cargo/bin/cargo clippy --all-targets --all-features
               continue-on-error: true
 
     check-all:
