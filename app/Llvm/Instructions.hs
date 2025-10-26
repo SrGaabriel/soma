@@ -108,7 +108,7 @@ instance IR LlvmStatement where
             ++ ", label %"
             ++ defaultLabel
             ++ " ["
-            ++ intercalate " " (map (\(val, lbl) -> toLlvm (getValueType val) ++ " " ++ toLlvm val ++ ", label %" ++ lbl) cases)
+            ++ unwords (map (\(val, lbl) -> toLlvm (getValueType val) ++ " " ++ toLlvm val ++ ", label %" ++ lbl) cases)
             ++ "]"
     toLlvm LlvmUnreachable =
         "unreachable"

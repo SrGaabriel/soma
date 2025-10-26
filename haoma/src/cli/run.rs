@@ -1,9 +1,11 @@
+use std::path::Path;
+
 use crate::{
     cli::{output_debug, output_err, output_ok},
-    config::manifest::{Manifest, MANIFEST_NAME},
+    config::manifest::{MANIFEST_NAME, Manifest},
 };
 
-pub fn execute(path: &std::path::PathBuf) {
+pub fn execute(path: &Path) {
     let manifest = path.join(MANIFEST_NAME);
     if !manifest.exists() {
         output_err(&format!(

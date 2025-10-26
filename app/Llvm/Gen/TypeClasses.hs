@@ -8,10 +8,10 @@ import Llvm.Gen.Core
 import Llvm.Gen.Functions (compileFunction)
 import Llvm.Gen.Mangling (extractConstraintParts, mangleInstanceMethod)
 import Llvm.Gen.Metadata (InstanceMetadata (..), TypeClassMetadata (..))
+import Llvm.Gen.Types (toAllocationLlvmType)
 import Llvm.Gen.Value (compileValue)
 import Syntax.Tree (Expr (ExprBindingDef, ExprInstanceDef, ExprTypeClassBinding, ExprTypeClassDef))
 import Typing.Types (QualifiedType (..), Type (..))
-import Llvm.Gen.Types (toAllocationLlvmType)
 
 compileTypeClassDef :: Expr -> IrGen ()
 compileTypeClassDef (ExprTypeClassDef className generics bindings _span) = do

@@ -7,5 +7,5 @@ pub struct Manifest {
     pub name: String,
     pub version: String,
     #[serde(default)]
-    pub authors: Option<Vec<String>>
+    pub authors: Option<Vec<String>>,
 }

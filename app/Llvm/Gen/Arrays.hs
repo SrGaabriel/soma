@@ -8,7 +8,7 @@ import Llvm.Gen.Core (IrGen, IrGenState (..), mkFnCall, saveInstruction)
 import Llvm.Gen.Types (sliceType)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Types (LlvmType (..), getLlvmTypeSize)
-import Llvm.Values (LlvmValue (..), intLiteral, intLiteral)
+import Llvm.Values (LlvmValue (..), intLiteral)
 
 createStackArray :: LlvmType -> Int -> IrGen LlvmValue
 createStackArray elemType len = do

@@ -1,9 +1,9 @@
-mod run;
 mod create;
+mod run;
 
-use std::path::PathBuf;
 use clap::Parser;
 use colored::{Color, Colorize};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "builder")]
@@ -17,12 +17,12 @@ pub struct Cli {
 pub enum Commands {
     Run {
         #[arg(short, long, default_value = ".")]
-        path: PathBuf
+        path: PathBuf,
     },
     Create {
         #[arg(short, long)]
-        path: PathBuf
-    }
+        path: PathBuf,
+    },
 }
 
 pub fn parse_and_execute() {
@@ -30,7 +30,7 @@ pub fn parse_and_execute() {
     match &cli.command {
         Commands::Run { path } => {
             run::execute(path);
-        },
+        }
         Commands::Create { path } => {
             create::execute(path);
         }
@@ -41,6 +41,7 @@ pub fn output_err(text: &str) {
     output_pretty("error", "⛔", Color::Red, text);
 }
 
+#[allow(dead_code)]
 pub fn output_warning(text: &str) {
     output_pretty("warn", "⚠️", Color::Yellow, text);
 }
@@ -53,13 +54,9 @@ pub fn output_ok(text: &str) {
     output_pretty("success", "✅", Color::Green, text);
 }
 
-pub fn output_pretty(
-    prefix: &str,
-    emoji: &str,
-    color: Color,
-    text: &str
-) {
-    println!("{} {} {}",
+pub fn output_pretty(prefix: &str, emoji: &str, color: Color, text: &str) {
+    println!(
+        "{} {} {}",
         format!("[{prefix}]").color(color).bold(),
         emoji,
         text

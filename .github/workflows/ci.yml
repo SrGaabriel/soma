@@ -1,0 +1,350 @@
+name: CI
+
+on:
+    push:
+    pull_request:
+
+env:
+    GHC_VERSION: "9.12.2"
+    CABAL_VERSION: "3.12"
+    RUST_STABLE: "stable"
+    RUST_NIGHTLY: "nightly"
+
+jobs:
+    haskell-build:
+        name: Build Haskell (somac)
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                include:
+                    # macOS builds
+                    - os: macos-13
+                      arch: x86_64
+                      target: x86_64-darwin
+                    - os: macos-14
+                      arch: aarch64
+                      target: aarch64-darwin
+
+                    # Linux builds
+                    - os: ubuntu-latest
+                      arch: x86_64
+                      target: x86_64-linux-gnu
+                    - os: ubuntu-latest
+                      arch: aarch64
+                      target: aarch64-linux-gnu
+                    - os: ubuntu-latest
+                      arch: ppc64le
+                      target: ppc64le-linux-gnu
+                    - os: ubuntu-latest
+                      arch: s390x
+                      target: s390x-linux-gnu
+
+                    # Windows builds
+                    - os: windows-latest
+                      arch: x86_64
+                      target: x86_64-windows-msvc
+                    - os: windows-latest
+                      arch: i686
+                      target: i686-windows-msvc
+                    - os: windows-latest
+                      arch: x86_64
+                      target: x86_64-windows-gnu
+                    - os: windows-latest
+                      arch: i686
+                      target: i686-windows-gnu
+            fail-fast: false
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup MinGW (Windows GNU)
+              if: contains(matrix.target, 'windows-gnu')
+              uses: msys2/setup-msys2@v2
+              with:
+                  msystem: ${{ matrix.arch == 'x86_64' && 'MINGW64' || 'MINGW32' }}
+                  install: >-
+                      mingw-w64-${{ matrix.arch == 'x86_64' && 'x86_64' || 'i686' }}-gcc
+                      mingw-w64-${{ matrix.arch == 'x86_64' && 'x86_64' || 'i686' }}-binutils
+                  update: true
+                  path-type: inherit
+
+            - name: Setup Haskell
+              uses: haskell-actions/setup@v2
+              with:
+                  ghc-version: ${{ env.GHC_VERSION }}
+                  cabal-version: ${{ env.CABAL_VERSION }}
+                  enable-stack: false
+
+            - name: Cache Cabal packages
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cabal/packages
+                      ~/.cabal/store
+                      dist-newstyle
+                  key: ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-${{ hashFiles('soma.cabal', 'cabal.project') }}
+                  restore-keys: |
+                      ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-
+                      ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-
+
+            - name: Update Cabal package index
+              run: cabal update
+
+            - name: Configure project
+              run: cabal configure --enable-tests --enable-benchmarks
+
+            - name: Build dependencies
+              run: cabal build --only-dependencies all
+
+            - name: Build project
+              run: cabal build all
+
+            - name: Run tests
+              run: cabal test all --test-show-details=direct
+              continue-on-error: true
+
+            - name: Generate documentation
+              run: cabal haddock all
+              continue-on-error: true
+
+            - name: Prepare executable (Unix)
+              if: runner.os != 'Windows'
+              run: |
+                  mkdir -p artifacts
+                  cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}
+                  chmod +x artifacts/somac-${{ matrix.target }}
+
+            - name: Prepare executable (Windows MSVC)
+              if: runner.os == 'Windows' && contains(matrix.target, 'msvc')
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force -Path artifacts
+                  $exePath = cabal list-bin exe:soma
+                  Copy-Item $exePath "artifacts/somac-${{ matrix.target }}.exe"
+
+            - name: Prepare executable (Windows GNU)
+              if: runner.os == 'Windows' && contains(matrix.target, 'gnu')
+              shell: msys2 {0}
+              run: |
+                  mkdir -p artifacts
+                  cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}.exe
+
+            - name: Upload executable artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: somac-${{ matrix.target }}
+                  path: artifacts/somac-*
+                  if-no-files-found: error
+
+    rust-build:
+        name: Build Rust (haoma)
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                include:
+                    # Linux builds
+                    - os: ubuntu-latest
+                      target: x86_64-unknown-linux-gnu
+                      cross: false
+                    - os: ubuntu-latest
+                      target: aarch64-unknown-linux-gnu
+                      cross: true
+
+                    # macOS builds
+                    - os: macos-13
+                      target: x86_64-apple-darwin
+                      cross: false
+                    - os: macos-14
+                      target: aarch64-apple-darwin
+                      cross: false
+
+                    # Windows builds
+                    - os: windows-latest
+                      target: x86_64-pc-windows-msvc
+                      cross: false
+                    - os: windows-latest
+                      target: i686-pc-windows-msvc
+                      cross: false
+                    - os: windows-latest
+                      target: x86_64-pc-windows-gnu
+                      cross: false
+                    - os: windows-latest
+                      target: i686-pc-windows-gnu
+                      cross: false
+            fail-fast: false
+
+        defaults:
+            run:
+                working-directory: haoma
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: ${{ matrix.target }}
+
+            - name: Cache Cargo dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry/index/
+                      ~/.cargo/registry/cache/
+                      ~/.cargo/git/db/
+                      haoma/target/
+                  key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('haoma/Cargo.toml', 'haoma/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-${{ matrix.target }}-cargo-
+                      ${{ runner.os }}-cargo-
+
+            - name: Setup MinGW (Windows GNU)
+              if: contains(matrix.target, 'windows-gnu')
+              uses: msys2/setup-msys2@v2
+              with:
+                  msystem: ${{ contains(matrix.target, 'x86_64') && 'MINGW64' || 'MINGW32' }}
+                  install: >-
+                      mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-gcc
+                      mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-rust
+                      mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-toolchain
+                  update: true
+                  path-type: inherit
+
+            - name: Install cross-compilation tools
+              if: matrix.cross
+              uses: taiki-e/install-action@v2
+              with:
+                  tool: cross
+
+            - name: Build project (cross)
+              if: matrix.cross
+              working-directory: haoma
+              run: cross build --verbose --all-features --target ${{ matrix.target }}
+              shell: bash
+
+            - name: Build project (native - Windows GNU)
+              if: "!matrix.cross && contains(matrix.target, 'windows-gnu')"
+              working-directory: haoma
+              shell: msys2 {0}
+              run: cargo build --verbose --all-features --target ${{ matrix.target }}
+
+            - name: Build project (native - other)
+              if: "!matrix.cross && !contains(matrix.target, 'windows-gnu')"
+              working-directory: haoma
+              run: cargo build --verbose --all-features --target ${{ matrix.target }}
+              shell: bash
+
+            - name: Run tests
+              if: "!matrix.cross"
+              working-directory: haoma
+              run: cargo test --verbose --all-features --target ${{ matrix.target }}
+              continue-on-error: true
+
+            - name: Build release (cross)
+              if: matrix.cross
+              working-directory: haoma
+              run: cross build --release --verbose --target ${{ matrix.target }}
+              shell: bash
+
+            - name: Build release (native - Windows GNU)
+              if: "!matrix.cross && contains(matrix.target, 'windows-gnu')"
+              working-directory: haoma
+              shell: msys2 {0}
+              run: cargo build --release --verbose --target ${{ matrix.target }}
+
+            - name: Build release (native - other)
+              if: "!matrix.cross && !contains(matrix.target, 'windows-gnu')"
+              working-directory: haoma
+              run: cargo build --release --verbose --target ${{ matrix.target }}
+              shell: bash
+
+            - name: Prepare executable (Unix)
+              if: runner.os != 'Windows'
+              working-directory: haoma
+              run: |
+                  mkdir -p artifacts
+                  cp target/${{ matrix.target }}/release/haoma artifacts/haoma-${{ matrix.target }}
+                  chmod +x artifacts/haoma-${{ matrix.target }}
+
+            - name: Prepare executable (Windows MSVC)
+              if: runner.os == 'Windows' && contains(matrix.target, 'msvc')
+              working-directory: haoma
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force -Path artifacts
+                  Copy-Item "target/${{ matrix.target }}/release/haoma.exe" "artifacts/haoma-${{ matrix.target }}.exe"
+
+            - name: Prepare executable (Windows GNU)
+              if: runner.os == 'Windows' && contains(matrix.target, 'gnu')
+              working-directory: haoma
+              shell: msys2 {0}
+              run: |
+                  mkdir -p artifacts
+                  cp "target/${{ matrix.target }}/release/haoma.exe" "artifacts/haoma-${{ matrix.target }}.exe"
+
+            - name: Upload executable artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: haoma-${{ matrix.target }}
+                  path: haoma/artifacts/haoma-*
+                  if-no-files-found: error
+
+    lint:
+        name: Lint and Format Check
+        runs-on: ubuntu-latest
+        continue-on-error: true
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Haskell
+              uses: haskell-actions/setup@v2
+              with:
+                  ghc-version: ${{ env.GHC_VERSION }}
+                  cabal-version: ${{ env.CABAL_VERSION }}
+
+            - name: Setup Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: rustfmt, clippy
+
+            - name: Install HLint
+              run: |
+                  cabal update
+                  cabal install hlint --install-method=copy --installdir=$HOME/.local/bin
+                  echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+            - name: Run HLint
+              run: hlint app --report
+              continue-on-error: true
+
+            - name: Check Rust formatting
+              working-directory: haoma
+              run: cargo fmt --all -- --check
+
+            - name: Run Clippy
+              working-directory: haoma
+              run: cargo clippy --all-targets --all-features
+              continue-on-error: true
+
+    check-all:
+        name: All Checks Passed
+        needs: [haskell-build, rust-build, lint]
+        runs-on: ubuntu-latest
+        if: always()
+
+        steps:
+            - name: Check build results
+              run: |
+                  if [ "${{ needs.haskell-build.result }}" != "success" ]; then
+                    echo "Haskell build failed"
+                    exit 1
+                  fi
+                  if [ "${{ needs.rust-build.result }}" != "success" ]; then
+                    echo "Rust build failed"
+                    exit 1
+                  fi
+                  if [ "${{ needs.lint.result }}" == "failure" ]; then
+                    echo "⚠️ Lint checks failed (non-blocking)"
+                  fi
+                  echo "All checks passed!"

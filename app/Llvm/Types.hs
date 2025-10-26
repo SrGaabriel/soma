@@ -1,12 +1,12 @@
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 module Llvm.Types where
 
-import Llvm.Ir (IR (toLlvm))
-import Data.List (intercalate)
 import Data.Hashable (Hashable)
+import Data.List (intercalate)
 import GHC.Generics (Generic)
+import Llvm.Ir (IR (toLlvm))
 
 data LlvmType
     = LlvmVoid

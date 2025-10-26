@@ -1,8 +1,7 @@
 module Decisions.Model where
 
-import Data.List (groupBy, nub, partition, sortBy)
+import Data.List (groupBy, nub, partition, sortOn)
 import qualified Data.Map.Strict as Map
-import Data.Ord (comparing)
 import Syntax.Patterns
 import qualified Syntax.Tree as AST
 
@@ -94,7 +93,7 @@ isDefaultPattern _ = False
 
 groupByConstructor :: Int -> [MatrixRow] -> [(Constructor, [MatrixRow])]
 groupByConstructor col rows =
-    let sorted = sortBy (comparing (patternConstructor . (!! col) . rowPatterns)) rows
+    let sorted = sortOn (patternConstructor . (!! col) . rowPatterns) rows
         grouped =
             groupBy
                 ( \r1 r2 ->

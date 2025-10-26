@@ -67,7 +67,7 @@ processModules sorted graph outputBaseName inputPath = do
                 return True
             )
             ( \(_ :: SomeException) -> do
-                putStrLn $ "clang not found or compilation failed. To compile manually, run:"
+                putStrLn "clang not found or compilation failed. To compile manually, run:"
                 putStrLn $ "clang -o " ++ exeFile ++ " " ++ llFile
                 return False
             )
