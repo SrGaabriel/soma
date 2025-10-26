@@ -1,0 +1,24 @@
+module Project.Symbols where
+
+import Lexing.Position (Span)
+import Typing.Types (QualifiedType)
+
+data Symbol = ResolvedSymbol
+    { resolvedSymbolName :: String
+    , resolvedSymbolKind :: SymbolKind
+    , resolvedSymbolModule :: String
+    , resolvedSymbolSpan :: Span
+    }
+    deriving (Show, Eq, Ord)
+
+data SymbolKind
+    = BindingSymbol {bindingType :: QualifiedType}
+    | DataConstructorSymbol {constructorParent :: String}
+    | TypeSymbol {typeArity :: Int}
+    | TypeClassSymbol
+    | TypeClassMethodSymbol {methodClass :: String}
+    | InstanceMethodSymbol {methodInstance :: String, methodClass :: String}
+    | LocalVariableSymbol
+    | IntrinsicBindingSymbol
+    | IntrinsicTypeSymbol
+    deriving (Show, Eq, Ord)

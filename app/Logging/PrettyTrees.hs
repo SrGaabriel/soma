@@ -12,6 +12,7 @@ import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (uncurryKind)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), SkolemVar (skName), TyConstructor (..), TyVar (TypeVar, tvId), Type (..))
+import qualified Typing.Types as TT
 
 class TreeShow a where
     treeShow :: a -> String
@@ -26,13 +27,13 @@ instance TreeShow TyVar where
     treeShow (TypeVar name kind) = name ++ " :: " ++ treeShow kind
 
 instance TreeShow Type where
-    treeShow (TVar tv) = "<" ++ tvId tv ++ ">"
+    treeShow (TVar tv) = tvId tv
     treeShow (TSkolem sv) = "«" ++ skName sv ++ "»"
     treeShow (TConstructor (TypeConstructor name kind)) =
         if kind == KindStar
             then name
             else name ++ " " ++ treeShow kind
-    treeShow (TApp t1 t2) = "(" ++ treeShow t1 ++ " " ++ treeShow t2 ++ ")"
+    treeShow (TApp t1 t2) = "(" ++ treeShow t1 ++ ") <" ++ treeShow t2 ++ ">"
     treeShow (TArrow t1 t2) =
         let left = case t1 of
                 TArrow _ _ -> "(" ++ treeShow t1 ++ ")"
@@ -42,7 +43,10 @@ instance TreeShow Type where
 
 instance TreeShow Constraint where
     treeShow :: Constraint -> String
-    treeShow (Constraint className varnames) = unwords (map treeShow varnames) ++ " : " ++ className
+    treeShow constraint =
+        let className = TT.constraintClassName constraint
+            types = TT.constraintTypes constraint
+        in unwords (map treeShow types) ++ " : " ++ className
 
 instance (TreeShow a) => TreeShow [a] where
     treeShow :: (TreeShow a) => [a] -> String
@@ -52,7 +56,8 @@ instance TreeShow Expr where
     treeShow (ExprRoot _) = "Root:"
     treeShow (ExprNum n _) = "Num: " ++ n
     treeShow (ExprStr s _) = "Str: " ++ s
-    treeShow (ExprVar v _) = "Var: " ++ v
+    treeShow (ExprUVar v _) = "UVar: " ++ v
+    treeShow (ExprVar sym _) = "Var: " ++ show sym
     treeShow (ExprBool b _) = "Bool: " ++ show b
     treeShow (ExprBlock _ _) = "Block:"
     treeShow (ExprArray _ _) = "Array:"
@@ -66,11 +71,14 @@ instance TreeShow Expr where
     treeShow (ExprPatternMatchArm p _ _) =
         "PatternMatchArm: (" ++ unwords (map treeShow p) ++ "):"
     treeShow (ExprBindingDef name qType _ _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
+    treeShow (ExprIntrinsicDef name qType _) = "IntrinsicDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
     treeShow (ExprDataTypeDef name generics _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
     treeShow (ExprDataConstructor name args _) = "DataConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
     treeShow (ExprTypeClassDef name generics _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow generics ++ "):"
     treeShow (ExprTypeClassBinding name qType _ _) = "TypeClassBinding (" ++ name ++ ": " ++ treeShow qType ++ "):"
-    treeShow (ExprInstanceDef className _ _ _) = "InstanceDef (" ++ className ++ "):"
+    treeShow (ExprInstanceDef constraintType _ _) = "InstanceDef (" ++ treeShow constraintType ++ "):"
+    treeShow (ExprIntrinsicDataTypeDef name kind _) =
+        "IntrinsicDataTypeDef (" ++ name ++ ": " ++ treeShow kind ++ "):"
 
 instance TreeShow Pattern where
     treeShow (PVar name) = "Var (" ++ name ++ ")"

@@ -45,7 +45,10 @@ main = do
                     putStrLn "Error: Detected cyclic imports between modules:"
                     mapM_ (putStrLn . ("  " ++) . show) cycles
                     exitFailure
-                Right sorted -> processModules sorted graph
+                Right sorted -> do
+                    let outputBaseName = takeFileName inp
+                    _ <- processModules sorted graph outputBaseName outputBaseName
+                    return ()
 
             putStrLn "✅ Successfully compiled all modules."
             exitSuccess
@@ -71,7 +74,9 @@ processSingle path = do
             putStrLn "Error: Detected cyclic imports in module:"
             mapM_ (putStrLn . ("  " ++) . show) cycles
             exitFailure
-        Right sorted -> processModules sorted graph
+        Right sorted -> do
+            _ <- processModules sorted graph name "."
+            return ()
 
     putStrLn "✅ Successfully compiled module."
     exitSuccess

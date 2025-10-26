@@ -4,12 +4,13 @@ module Inference.Solving where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import qualified Debug.Trace as Debug
 import Inference.Core (InstanceEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..), generateErrorForPurpose)
 import Inference.Gen (ClassConstraintWithSource (..), TypeConstraint (..))
 import Inference.Substitution (Subst, Substitutable (apply, ftv), composeSubst)
 import Syntax.Tree (Expr (..))
-import Typing.Types (Constraint (..), TyVar (..), Type (..))
+import Typing.Types (Constraint (..), TyVar (..), Type (..), constraintType)
 import Utils.Lists (foldMWithErrors)
 
 unifyPure :: Expr -> UnificationPurpose -> Type -> Type -> Either [InferenceError] Subst
@@ -46,6 +47,8 @@ checkConstraintEntailment :: InstanceEnv -> [Constraint] -> [ClassConstraintWith
 checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSource typeSubst = do
     let inferredConstraints = map (\ccs -> (apply typeSubst (ccsConstraint ccs), ccsSourceExpr ccs)) classConstraintsWithSource
     let unsatisfiedConstraints = filter (not . isConstraintSatisfied) inferredConstraints
+    Debug.traceM $ "Missing constraints: " ++ show (map fst unsatisfiedConstraints)
+    Debug.traceM $ "Instance env: " ++ show instanceEnv
     case unsatisfiedConstraints of
         [] -> Right ()
         ((constraint, sourceExpr) : _) -> Left [MissingClassConstraint sourceExpr constraint]
@@ -54,16 +57,15 @@ checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSo
         isEntailedByInstanceEnv instanceEnv constraint || isEntailedBy declaredConstraints constraint
 
 isEntailedByInstanceEnv :: InstanceEnv -> Constraint -> Bool
-isEntailedByInstanceEnv instanceEnv (Constraint className [typ]) =
-    Map.lookup (className, typ) instanceEnv == Just True
-isEntailedByInstanceEnv _ _ = False
+isEntailedByInstanceEnv instanceEnv constraint =
+    let constraintTy = constraintType constraint
+    in any (\(instanceTy, _) -> canUnify instanceTy constraintTy) (Map.toList instanceEnv)
+  where
+    canUnify ty1 ty2 = case unifyPure (ExprRoot []) UnifyFunctionApplication ty1 ty2 of
+        Right _ -> True
+        Left _ -> False
 
 isEntailedBy :: [Constraint] -> Constraint -> Bool
-isEntailedBy declaredCs (Constraint name typs) =
-    any
-        ( \(Constraint declName declTyps) ->
-            declName == name
-                && length declTyps == length typs
-                && and (zipWith (==) declTyps typs)
-        )
-        declaredCs
+isEntailedBy declaredCs constraint =
+    let constraintTy = constraintType constraint
+    in any (\declaredC -> constraintType declaredC == constraintTy) declaredCs

@@ -7,7 +7,7 @@ import Lexing.Position (Span (..))
 import Logging.Errors (PrintableError (..))
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Syntax.Tree (Expr (ExprRoot), exprSpan)
-import Typing.Types (Constraint (Constraint), Kind, Type)
+import Typing.Types (Constraint, Kind, Type, constraintClassName, constraintTypes)
 
 data InferenceError
     = FunctionBodyTypeMismatch Expr Type Type
@@ -25,6 +25,7 @@ data InferenceError
     | NotAFunction Expr Type
     | MissingClassConstraint Expr Constraint
     | UnknownTypeConstructor Expr String
+    | InvalidTypeInstantiation Expr Type
     | Debug String
     deriving (Show, Eq)
 
@@ -57,10 +58,13 @@ instance PrintableError InferenceError where
     errorMessage (PatternArityMismatch _ expected received) =
         "Pattern arity mismatch, expected " ++ show expected ++ "patterns but received " ++ show received
     errorMessage (KindMismatch _ k1 k2) = "Kind mismatch: expected " ++ treeShow k1 ++ " but received " ++ treeShow k2
-    errorMessage (MissingClassConstraint _ (Constraint name [typ])) =
-        "Missing instance: no '" ++ name ++ "' instance for type '" ++ treeShow typ ++ "'"
-    errorMessage (MissingClassConstraint _ (Constraint name typs)) =
-        "Missing instance: no '" ++ name ++ "' instance for types (" ++ unwords (map treeShow typs) ++ ")"
+    errorMessage (MissingClassConstraint _ constraint) =
+        let name = constraintClassName constraint
+            typs = constraintTypes constraint
+        in case typs of
+            [typ] -> "Missing instance: no '" ++ name ++ "' instance for type '" ++ treeShow typ ++ "'"
+            _ -> "Missing instance: no '" ++ name ++ "' instance for types (" ++ unwords (map treeShow typs) ++ ")"
+    errorMessage (InvalidTypeInstantiation _ ty) = "Invalid type instantiation for type '" ++ treeShow ty ++ "'"
     errorMessage (Debug msg) = "Debug: " ++ msg
 
     errorStart :: InferenceError -> Int
@@ -99,6 +103,7 @@ getExpression' (PatternArityMismatch expr _ _) = expr
 getExpression' (KindMismatch expr _ _) = expr
 getExpression' (MissingClassConstraint expr _) = expr
 getExpression' (KindedTypeMismatch expr _ _ _ _) = expr
+getExpression' (InvalidTypeInstantiation expr _) = expr
 getExpression' (Debug _) = error "Debug error should not be used in production code"
 
 generateErrorForPurpose :: UnificationPurpose -> Expr -> Type -> Type -> InferenceError

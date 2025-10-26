@@ -6,7 +6,7 @@ import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
 import Parsing.Atoms (parseExpression)
 import Parsing.Errors (ParsingError (FunctionArgumentLengthMismatch, InvalidFunctionBody))
-import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseFuncName, parseSequence, peekRelevant)
+import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseFuncName, parseSequence, peekRelevant, skipNewlines)
 import Parsing.Patterns (parsePipePatternArms)
 import Parsing.Types (parseQualifiedType, parseType)
 import Syntax.Tree (Expr (..), exprSpan)
@@ -26,7 +26,6 @@ parseBinding isTopLevel = do
                     <* consume TokenRightParen
 
             case impParams of
-                [] -> throwError $ FunctionArgumentLengthMismatch defToken
                 xs
                     | all isSimplyTyped xs -> do
                         let params = Prelude.map (\(SimplyTypedParam (tok, typ)) -> (tok, typ)) xs
@@ -38,6 +37,7 @@ parseBinding isTopLevel = do
                         let tyVars = extractTyVars bindingTyp
                         let bindingTypeS = Forall tyVars [] bindingTyp
                         eqTok <- consumeRelevant TokenEquals
+                        skipNewlines
                         body <- parseExpression
                         let argNames = Prelude.map Prelude.fst mappings
                         let defBody = ExprLambda argNames body (exprSpan body)
@@ -48,6 +48,7 @@ parseBinding isTopLevel = do
                         _ <- consume TokenReturns
                         bindingTyp <- parseQualifiedType
                         eqTok <- consumeRelevant TokenEquals
+                        skipNewlines
                         body <- parseExpression
                         let defBody = ExprLambda paramNames body (exprSpan body)
                         pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken eqTok)
@@ -58,9 +59,10 @@ parseBinding isTopLevel = do
             inc <- peekRelevant
             case tokenKind inc of
                 TokenEquals -> do
-                    _ <- next
+                    eqTok <- next
+                    skipNewlines
                     body <- parseExpression
-                    pure $ ExprBindingDef name bindingTyp body isTopLevel (spanningTokens defToken inc)
+                    pure $ ExprBindingDef name bindingTyp body isTopLevel (spanningTokens defToken eqTok)
                 TokenPipe -> do
                     arms <- parsePipePatternArms
                     let defBody = ExprDerivedPatternMatch arms

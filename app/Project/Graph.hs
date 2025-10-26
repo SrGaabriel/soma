@@ -6,15 +6,14 @@ import Data.Graph (SCC (AcyclicSCC, CyclicSCC), stronglyConnComp)
 import qualified Data.Map as Map
 import Parsing.Errors (ParsingError)
 import Project.Module (ModuleInfo (moduleAst), ModuleName, moduleName)
-import Project.Name (Name)
 import Project.Parsing (parseModule)
 import Syntax.Tree (Expr (..), exprChildren)
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath (dropExtension, takeExtension, (</>))
 
-type ModuleGraph = Map.Map Name ModuleInfo
+type ModuleGraph = Map.Map String ModuleInfo
 
-findModules :: FilePath -> IO [(Name, FilePath)]
+findModules :: FilePath -> IO [(String, FilePath)]
 findModules = go ""
   where
     go prefix dir = do
@@ -34,14 +33,14 @@ findModules = go ""
     extendMod "" part = part
     extendMod prefix part = prefix ++ "." ++ part
 
-buildModuleGraph :: [(Name, FilePath)] -> IO (Either [ParsingError] ModuleGraph)
+buildModuleGraph :: [(String, FilePath)] -> IO (Either [ParsingError] ModuleGraph)
 buildModuleGraph modules = do
     results <- mapConcurrently parseModule modules
     case partitionEithers results of
         ([], parsedModules) -> return $ Right $ Map.fromList [(moduleName modInfo, modInfo) | modInfo <- parsedModules]
         (errors, _) -> return $ Left errors
 
-type DependencyGraph = Map.Map Name [Name]
+type DependencyGraph = Map.Map String [String]
 
 buildDependencyGraph :: ModuleGraph -> DependencyGraph
 buildDependencyGraph =

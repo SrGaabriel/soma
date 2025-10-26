@@ -11,9 +11,11 @@ import qualified Data.Map as Map
 import Inference.Core (TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
 import Inference.Substitution (Substitutable (apply))
+import Lexing.Position (Span (..))
+import Project.Symbols (Symbol (..), SymbolKind (..))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (Expr (..), exprChildren)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyVar (..), Type (..), boolType, cleanQualified, intType, strType, vectorize, vectorizeAll)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyVar (..), Type (..), arrayType, boolType, cleanQualified, intType, strType, vectorize, vectorizeAll)
 import Utils.Lists (hardHead)
 
 newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
@@ -23,6 +25,7 @@ data GenState = GenState
     { gsCounter :: Int
     , gsTypeMap :: Map.Map Expr Type
     , gsSkolemEnv :: Map.Map String SkolemVar
+    , gsCurrentModule :: String
     }
     deriving (Show)
 
@@ -52,7 +55,6 @@ instance Semigroup ConstraintSet where
 instance Monoid ConstraintSet where
     mempty = ConstraintSet [] [] []
 
--- Helper functions for cleaner ConstraintSet construction
 emptyConstraints :: ConstraintSet
 emptyConstraints = mempty
 
@@ -91,6 +93,24 @@ freshSkolemVar name k = do
 recordType :: Expr -> Type -> GenM ()
 recordType expr ty = modify $ \s -> s{gsTypeMap = Map.insert expr ty (gsTypeMap s)}
 
+createLocalSymbol :: String -> GenM Symbol
+createLocalSymbol name = do
+    currentModule <- gets gsCurrentModule
+    return
+        $ ResolvedSymbol
+            { resolvedSymbolName = name
+            , resolvedSymbolKind = LocalVariableSymbol
+            , resolvedSymbolModule = currentModule
+            , resolvedSymbolSpan = Span 0 0
+            }
+
+findSymbolByName :: String -> TypeEnv -> Maybe (Symbol, QualifiedType)
+findSymbolByName name env =
+    let matches = [(sym, qual) | (sym, qual) <- Map.toList env, resolvedSymbolName sym == name]
+    in case matches of
+        (sym, qual) : _ -> Just (sym, qual)
+        [] -> Nothing
+
 generateConstraints :: Expr -> GenM (Maybe Type, ConstraintSet)
 generateConstraints expr = case expr of
     ExprNum _ _ -> do
@@ -105,9 +125,26 @@ generateConstraints expr = case expr of
         let ty = boolType
         recordType expr ty
         pure (Just ty, emptyConstraints)
-    ExprVar name _ -> do
+    ExprUVar name varSpan -> do
         env <- ask
-        case Map.lookup name env of
+        case findSymbolByName name env of
+            Just (_, Forall tvs cs t) -> do
+                freshVars <- mapM (freshTyVar . tvKind) tvs
+                let subst = Map.fromList (zip tvs (map TVar freshVars))
+                let instType = apply subst t
+                let instConstraints = map (apply subst) cs
+                let instConstraintsWithSource = map (`ClassConstraintWithSource` expr) instConstraints
+                recordType expr instType
+                return (Just instType, classConstraints instConstraintsWithSource)
+            Nothing -> do
+                reportError (UnboundVariable (ExprUVar name varSpan) name)
+                errorVar <- freshTyVar KindStar
+                let errorType = TVar errorVar
+                recordType expr errorType
+                return (Just errorType, emptyConstraints)
+    ExprVar symbol _ -> do
+        env <- ask
+        case Map.lookup symbol env of
             Just (Forall tvs cs t) -> do
                 freshVars <- mapM (freshTyVar . tvKind) tvs
                 let subst = Map.fromList (zip tvs (map TVar freshVars))
@@ -117,7 +154,7 @@ generateConstraints expr = case expr of
                 recordType expr instType
                 return (Just instType, classConstraints instConstraintsWithSource)
             Nothing -> do
-                reportError (UnboundVariable expr name)
+                reportError (UnboundVariable expr (resolvedSymbolName symbol))
                 errorVar <- freshTyVar KindStar
                 let errorType = TVar errorVar
                 recordType expr errorType
@@ -139,7 +176,9 @@ generateConstraints expr = case expr of
     ExprLambda paramNames body _ -> do
         paramVars <- mapM (const $ freshTyVar KindStar) paramNames
         let paramTypes = map TVar paramVars
-        let paramBindings = Map.fromList (zip paramNames (map (cleanQualified . TVar) paramVars))
+
+        paramSymbols <- mapM createLocalSymbol paramNames
+        let paramBindings = Map.fromList (zip paramSymbols (map cleanQualified paramTypes))
         let extendEnv = Map.union paramBindings
 
         (Just bodyType, bodyConstraints) <- local extendEnv (generateConstraints body)
@@ -148,7 +187,8 @@ generateConstraints expr = case expr of
         return (Just funcType, bodyConstraints)
     ExprLet name value body _ -> do
         (Just valueType, valueConstraints) <- generateConstraints value
-        let extendEnv = Map.insert name (cleanQualified valueType)
+        letSymbol <- createLocalSymbol name
+        let extendEnv = Map.insert letSymbol (cleanQualified valueType)
         (Just bodyType, bodyConstraints) <- local extendEnv (generateConstraints body)
         let combinedConstraints =
                 ConstraintSet
@@ -163,16 +203,28 @@ generateConstraints expr = case expr of
         let skSubst = Map.fromList (zip tyVars (map TSkolem skVars))
         let skType = apply skSubst annType
         let skAnnCs = map (apply skSubst) annCs
-        (Just bodyType, bodyCs) <- generateConstraints body
+        (maybeBodyType, bodyCs) <- generateConstraints body
 
-        let sigConstraint = TypeConstraint expr skType bodyType UnifyFunctionBody
-        let combinedConstraints =
-                ConstraintSet
-                    (sigConstraint : csTypeConstraints bodyCs)
-                    (csClassConstraints bodyCs)
-                    skAnnCs
-        recordType expr bodyType
-        return (Just bodyType, combinedConstraints)
+        case maybeBodyType of
+            Just bodyType -> do
+                let sigConstraint = TypeConstraint expr skType bodyType UnifyFunctionBody
+                let combinedConstraints =
+                        ConstraintSet
+                            (sigConstraint : csTypeConstraints bodyCs)
+                            (csClassConstraints bodyCs)
+                            skAnnCs
+                recordType expr bodyType
+                return (Just bodyType, combinedConstraints)
+            Nothing -> do
+                errorVar <- freshTyVar KindStar
+                let errorType = TVar errorVar
+                recordType expr errorType
+                let combinedConstraints =
+                        ConstraintSet
+                            (csTypeConstraints bodyCs)
+                            (csClassConstraints bodyCs)
+                            skAnnCs
+                return (Just errorType, combinedConstraints)
     ExprDerivedPatternMatch arms -> do
         mappedArms <- mapM generateConstraints arms
         let (armExprTypes, armConstraintsList) = unzip mappedArms
@@ -206,28 +258,66 @@ generateConstraints expr = case expr of
         reportErrors patternErrors
 
         let extendWithPatterns = Map.union patternEnv
-        (Just bodyType, bodyConstraints) <- local extendWithPatterns (generateConstraints body)
-        let (providedTypes, missingBodyTypes) = splitAt (length patterns) armTypes
+        (maybeBodyType, bodyConstraints) <- local extendWithPatterns (generateConstraints body)
+        case maybeBodyType of
+            Just bodyType -> do
+                let (providedTypes, missingBodyTypes) = splitAt (length patterns) armTypes
 
-        returnTypVar <- freshTyVar KindStar
-        let additionalConstraints =
-                if null missingBodyTypes
-                    then []
-                    else do
-                        let missingBodyType = vectorizeAll missingBodyTypes
-                        let expectedType = TArrow missingBodyType (TVar returnTypVar)
-                        [TypeConstraint body expectedType bodyType UnifyPatternMatchArmBody]
+                returnTypVar <- freshTyVar KindStar
+                let additionalConstraints =
+                        if null missingBodyTypes
+                            then []
+                            else do
+                                let missingBodyType = vectorizeAll missingBodyTypes
+                                let expectedType = TArrow missingBodyType (TVar returnTypVar)
+                                [TypeConstraint body expectedType bodyType UnifyPatternMatchArmBody]
 
-        let finalConstraints =
-                ConstraintSet
-                    (csTypeConstraints bodyConstraints ++ additionalConstraints)
-                    (csClassConstraints bodyConstraints)
-                    (csDeclaredConstraints bodyConstraints)
+                let finalConstraints =
+                        ConstraintSet
+                            (csTypeConstraints bodyConstraints ++ additionalConstraints)
+                            (csClassConstraints bodyConstraints)
+                            (csDeclaredConstraints bodyConstraints)
 
-        let providedTyp = vectorizeAll providedTypes
-        let exprType = vectorize providedTyp bodyType
+                let providedTyp = vectorizeAll providedTypes
+                let exprType = vectorize providedTyp bodyType
 
-        return (Just exprType, finalConstraints)
+                return (Just exprType, finalConstraints)
+            Nothing -> do
+                errorVar <- freshTyVar KindStar
+                let errorType = TVar errorVar
+                recordType expr errorType
+                return (Just errorType, bodyConstraints)
+    ExprArray elements _ -> do
+        if null elements
+            then do
+                elemVar <- freshTyVar KindStar
+                let elemType = TVar elemVar
+                let arrType = arrayType elemType
+                recordType expr arrType
+                return (Just arrType, emptyConstraints)
+            else do
+                results <- mapM generateConstraints elements
+                let (maybeElemTypes, elemConstraints) = unzip results
+
+                let (Just firstElemType : _) = maybeElemTypes
+
+                let elemTypeConstraints =
+                        zipWith
+                            ( \(Just elemType) elemExpr ->
+                                TypeConstraint elemExpr firstElemType elemType UnifyPatternMatchArms
+                            )
+                            maybeElemTypes
+                            elements
+
+                let combinedConstraints =
+                        ConstraintSet
+                            (elemTypeConstraints ++ concatMap csTypeConstraints elemConstraints)
+                            (concatMap csClassConstraints elemConstraints)
+                            (concatMap csDeclaredConstraints elemConstraints)
+
+                let arrType = arrayType firstElemType
+                recordType expr arrType
+                return (Just arrType, combinedConstraints)
     _ -> do
         let children = exprChildren expr
         results <- mapM generateConstraints children
@@ -236,14 +326,18 @@ generateConstraints expr = case expr of
 
 generatePatternBinding :: Expr -> TypeEnv -> Pattern -> QualifiedType -> GenM (TypeEnv, [InferenceError])
 generatePatternBinding _expr _env (PVar name) armType = do
-    return (Map.singleton name armType, [])
+    symbol <- createLocalSymbol name
+    return (Map.singleton symbol armType, [])
 generatePatternBinding expr env (PAs name pat) armType = do
-    let asBinding = Map.singleton name armType
+    asSymbol <- createLocalSymbol name
+    let asBinding = Map.singleton asSymbol armType
     (nestedBinding, errs) <- generatePatternBinding expr env pat armType
     return (Map.union asBinding nestedBinding, errs)
 generatePatternBinding expr env (PConstructor name patterns) _armType = do
     currentEnv <- ask
-    case Map.lookup name currentEnv of
+    let constructorLookup = Map.toList currentEnv
+    let maybeConstructor = lookup name [(resolvedSymbolName sym, qual) | (sym, qual) <- constructorLookup]
+    case maybeConstructor of
         Just (Forall tvs cs t) -> do
             freshVars <- mapM (freshTyVar . tvKind) tvs
             let subst = Map.fromList (zip tvs (map TVar freshVars))
@@ -277,16 +371,16 @@ generatePatternBindings expr env patterns armTypes = do
     let allErrors = concat errorLists
     pure (Map.unions (env : bindings), allErrors)
 
-runGenM :: TypeEnv -> GenM a -> (a, GenState, [InferenceError])
-runGenM env (GenM m) =
-    let ((result, finalState), errors) = runWriter (runReaderT (runStateT m initialState) env)
+runGenM :: String -> TypeEnv -> GenM a -> (a, GenState, [InferenceError])
+runGenM currentModule env (GenM m) =
+    let ((result, finalState), errors) = runWriter (runReaderT (runStateT m (initialState currentModule)) env)
     in (result, finalState, errors)
   where
     initialState = GenState 0 Map.empty Map.empty
 
-runGenMErrors :: TypeEnv -> GenM a -> [InferenceError]
-runGenMErrors env genM =
-    let (_, _, errors) = runGenM env genM
+runGenMErrors :: String -> TypeEnv -> GenM a -> [InferenceError]
+runGenMErrors currentModule env genM =
+    let (_, _, errors) = runGenM currentModule env genM
     in errors
 
 extractArgTypes :: Type -> Int -> [Type]

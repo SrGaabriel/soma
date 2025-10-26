@@ -1,0 +1,88 @@
+import id::id;
+
+intrinsic def {+} :: a -> a -> a
+intrinsic def {==} :: a -> a -> Bool
+intrinsic def println :: a -> IO () where a: Display
+intrinsic data IO :: * -> *
+intrinsic def map :: (a -> b) -> [a] -> [b]
+intrinsic def for :: (a -> ()) -> [a] -> ()
+intrinsic def debug :: String -> ()
+
+data Shape
+    = Square
+        length :: Int
+    | Circle
+        radius :: Int
+
+data Maybe a
+    = Just
+        value :: a
+    | Nothing
+        
+def pureMaybeInt(value: Int) -> Maybe Int = Just value
+
+data Optional
+    = Some
+        value :: Int
+    | Nothing
+        
+
+trait Display a where
+    def display :: a -> String
+
+instance Display String where
+    def display(str: String) -> String = str
+
+instance Display Int where
+    def display(num: Int) -> String = "<unimplemented>"
+
+instance Display [a] where
+    def display(lst: [a]) -> String = "<list>"
+
+trait Eq a where
+    def equals :: a -> a -> Bool
+
+instance Eq Optional where
+    def equals(x: Optional, y: Optional) -> Bool = true     
+
+instance Display Optional where
+    def display(optional: Optional) -> String = "Optional!"
+
+def pureOptionalInt(value: Int) -> Optional = Some value
+
+def testOptionalEq(x: Optional, y: Optional) -> Bool = equals x y
+
+def testOptionalEqGen :: Bool =
+    let first = Some 5 in
+    let second = pureOptionalInt 5 in
+    equals first second
+
+def totallyGenericEqGen(left, right) :: a -> a -> Bool where a: Eq =
+    equals left right
+    
+def testTotallyGenericEqGen(left, right) :: a -> a -> Bool where a: Eq =
+    totallyGenericEqGen left right
+
+def testTotallyGenericEqGenOptional(left: Optional, right: Optional) -> Bool =
+    totallyGenericEqGen left right
+
+def isZero :: Int -> Bool
+    | 0 => true
+    | _ => false
+
+def testSum(x: Int, y: Int) -> Int = x + y
+
+def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
+
+def primeNumbers :: [Int] = [2,3,5,7]
+
+def main :: IO () =
+    let primes = primeNumbers in
+    let primesPlusOne = map (\x -> x + 1) primes in
+    println (id primesPlusOne)
+
+instance Display Shape where
+    def display :: Shape -> String
+        | (Circle r1) => display r1
+        | (Square s1) => display s1
+        | _ => "<unknown shape>"

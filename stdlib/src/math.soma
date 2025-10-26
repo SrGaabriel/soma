@@ -1,5 +1,0 @@
-def {+}(x: a, y: a) -> a = x + y
-
-def {-}(x: a, y: a) -> a = x - y
-
-def {===} :: h -> h = (\val -> val)

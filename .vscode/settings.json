@@ -1,4 +1,8 @@
 {
     "editor.detectIndentation": false,
-    "editor.tabSize": 4
+    "editor.tabSize": 4,
+    "haskell.maxCompletions": 20,
+    "haskell.plugin.tactics.config.timeout_duration": 2,
+    "haskell.plugin.ghcide-type-lenses.globalOn": false,
+    "haskell.plugin.importLens.globalOn": false
 }

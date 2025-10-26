@@ -1,7 +1,5 @@
 module Typing.Types where
 
-import Project.Name (Name)
-
 data Kind
     = KindStar
     | KindArrow Kind Kind
@@ -48,7 +46,31 @@ data Type
     | TUnresolved String
     deriving (Show, Eq, Ord)
 
-data Constraint = Constraint Name [Type] deriving (Show, Eq, Ord)
+newtype Constraint = Constraint Type deriving (Show, Eq, Ord)
+
+mkConstraint :: String -> [Type] -> Constraint
+mkConstraint className typs =
+    let classKind = foldr (const $ KindArrow KindStar) KindStar typs
+        classCon = TConstructor (TypeConstructor className classKind)
+        appliedType = foldl TApp classCon typs
+    in Constraint appliedType
+
+constraintClassName :: Constraint -> String
+constraintClassName (Constraint typ) = getClassName typ
+  where
+    getClassName (TConstructor tc) = tcName tc
+    getClassName (TApp t _) = getClassName t
+    getClassName _ = error "Invalid constraint type"
+
+constraintTypes :: Constraint -> [Type]
+constraintTypes (Constraint typ) = getTypes typ []
+  where
+    getTypes (TApp l r) acc = getTypes l (r : acc)
+    getTypes (TConstructor _) acc = acc
+    getTypes _ acc = acc
+
+constraintType :: Constraint -> Type
+constraintType (Constraint t) = t
 
 data QualifiedType = Forall [TyVar] [Constraint] Type
     deriving (Show, Eq, Ord)
@@ -132,3 +154,11 @@ extractTyVars t = nubTyVars (extractTyVars' t)
 
     nubTyVars [] = []
     nubTyVars (x : xs) = x : nubTyVars (filter (/= x) xs)
+
+isPolymorphic :: Type -> Bool
+isPolymorphic (TVar _) = True
+isPolymorphic (TSkolem _) = False
+isPolymorphic (TApp t1 t2) = isPolymorphic t1 || isPolymorphic t2
+isPolymorphic (TArrow t1 t2) = isPolymorphic t1 || isPolymorphic t2
+isPolymorphic (TConstructor _) = False
+isPolymorphic (TUnresolved _) = False

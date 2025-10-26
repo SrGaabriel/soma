@@ -72,6 +72,15 @@ peek = Parser $ \case
     [] -> Left EndOfInput
     (t : ts) -> Right (t, t : ts)
 
+skipNewlines :: Parser ()
+skipNewlines = Parser $ \tokens ->
+    let skipNext = \case
+            [] -> Right ((), [])
+            (t : ts)
+                | tokenKind t == TokenNewline -> skipNext ts
+                | otherwise -> Right ((), t : ts)
+    in skipNext tokens
+
 peekRelevant :: Parser Token
 peekRelevant = Parser $ \case
     [] -> Left EndOfInput
