@@ -1,13 +1,17 @@
 use colored::Color;
+use std::path::Path;
 
-use crate::{cli::{output_debug, output_err, output_pretty}, config::manifest::{Manifest, MANIFEST_NAME}};
+use crate::{
+    cli::{output_debug, output_err, output_pretty},
+    config::manifest::{MANIFEST_NAME, Manifest},
+};
 
-pub fn execute(path: &std::path::PathBuf) {
+pub fn execute(path: &Path) {
     if path.exists() {
         output_err("The specified path already exists.");
         std::process::exit(1);
     }
-    if let Err(e) = std::fs::create_dir_all(&path) {
+    if let Err(e) = std::fs::create_dir_all(path) {
         output_err(&format!(
             "Failed to create directory at '{}': {}",
             path.display(),
@@ -27,15 +31,15 @@ pub fn execute(path: &std::path::PathBuf) {
         output_err("Project name contains invalid UTF-8 characters.");
         std::process::exit(1);
     }
-    
+
     let manifest = Manifest {
         name: project_name.unwrap().to_owned(),
         version: "0.1.0".to_string(),
-        authors: None
+        authors: None,
     };
-    let manifest_content = toml::to_string(&manifest)
-        .expect("Failed to serialize manifest to TOML");
-    
+    let manifest_content =
+        toml::to_string(&manifest).expect("Failed to serialize manifest to TOML");
+
     let manifest_path = path.join(MANIFEST_NAME);
     if let Err(e) = std::fs::write(&manifest_path, manifest_content) {
         output_err(&format!(
@@ -45,16 +49,14 @@ pub fn execute(path: &std::path::PathBuf) {
         ));
         std::process::exit(1);
     }
-    
+
     output_debug(&format!(
         "Successfully created manifest file at '{}'",
         manifest_path.display()
     ));
-    
-    let main = path
-        .join("src")
-        .join("main.soma");
-    
+
+    let main = path.join("src").join("main.soma");
+
     if let Err(e) = std::fs::create_dir_all(main.parent().unwrap()) {
         output_err(&format!(
             "Failed to create source directory at '{}': {}",
@@ -75,7 +77,7 @@ pub fn execute(path: &std::path::PathBuf) {
         "Successfully created main source file at '{}'",
         main.display()
     ));
-    
+
     output_pretty(
         "welcome",
         "🚀",
