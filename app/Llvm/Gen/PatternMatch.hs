@@ -1,4 +1,3 @@
-{-# LANGUAGE NamedFieldPuns #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
 module Llvm.Gen.PatternMatch where

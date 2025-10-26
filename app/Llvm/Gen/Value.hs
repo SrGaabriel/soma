@@ -139,9 +139,10 @@ compileConstructorApp ctorName args = do
     let concreteArgTypes = map getGenValueType argVals
     let isConstructorPolymorphic = any isPolymorphic argTypes
 
-    let monomorphicName = case isConstructorPolymorphic of
-            True -> manglePolymorphicName baseTypeName concreteArgTypes
-            False -> mangleDataTypeName baseTypeName
+    let monomorphicName = if isConstructorPolymorphic then
+            manglePolymorphicName baseTypeName concreteArgTypes
+        else
+            mangleDataTypeName baseTypeName
     let structType = LlvmNamedType monomorphicName
     structPtr <- saveInstruction (LlvmAlloca structType Nothing) (LlvmPointer structType)
     writeTag structPtr tag
