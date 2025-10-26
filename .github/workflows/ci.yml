@@ -185,29 +185,6 @@ jobs:
               with:
                   targets: ${{ matrix.target }}
 
-            - name: Setup Rust environment (macOS)
-              if: runner.os == 'macOS'
-              run: |
-                  echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-                  source "$HOME/.cargo/env"
-
-            - name: Setup MinGW (Windows GNU)
-              if: contains(matrix.target, 'windows-gnu')
-              uses: msys2/setup-msys2@v2
-              with:
-                  msystem: ${{ contains(matrix.target, 'x86_64') && 'MINGW64' || 'MINGW32' }}
-                  install: >-
-                      mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-gcc
-                      mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-rust
-                  update: true
-                  path-type: inherit
-
-            - name: Install cross-compilation tools
-              if: matrix.cross
-              run: |
-                  cargo install cross --git https://github.com/cross-rs/cross
-              continue-on-error: true
-
             - name: Cache Cargo dependencies
               uses: actions/cache@v4
               with:
@@ -222,14 +199,55 @@ jobs:
                       ${{ runner.os }}-${{ matrix.target }}-cargo-
                       ${{ runner.os }}-cargo-
 
-            - name: Build project
+            - name: Setup MinGW (Windows GNU)
+              if: contains(matrix.target, 'windows-gnu')
+              uses: msys2/setup-msys2@v2
+              with:
+                  msystem: ${{ contains(matrix.target, 'x86_64') && 'MINGW64' || 'MINGW32' }}
+                  install: >-
+                      mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-gcc
+                      mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-rust
+                      mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-toolchain
+                  update: true
+                  path-type: inherit
+
+            - name: Setup cross-compilation linker (Linux ARM)
+              if: matrix.cross && runner.os == 'Linux'
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+            - name: Configure cross-compilation
+              if: matrix.cross
               working-directory: haoma
               run: |
-                  if [ "${{ matrix.cross }}" = "true" ]; then
-                    cross build --verbose --all-features --target ${{ matrix.target }} || cargo build --verbose --all-features --target ${{ matrix.target }}
-                  else
-                    cargo build --verbose --all-features --target ${{ matrix.target }}
-                  fi
+                  mkdir -p .cargo
+                  cat > .cargo/config.toml << EOF
+                  [target.aarch64-unknown-linux-gnu]
+                  linker = "aarch64-linux-gnu-gcc"
+                  EOF
+
+            - name: Install cross-compilation tools
+              if: matrix.cross
+              run: |
+                  cargo install cross --git https://github.com/cross-rs/cross
+
+            - name: Build project (cross)
+              if: matrix.cross
+              working-directory: haoma
+              run: cross build --verbose --all-features --target ${{ matrix.target }}
+              shell: bash
+
+            - name: Build project (native - Windows GNU)
+              if: "!matrix.cross && contains(matrix.target, 'windows-gnu')"
+              working-directory: haoma
+              shell: msys2 {0}
+              run: cargo build --verbose --all-features --target ${{ matrix.target }}
+
+            - name: Build project (native - other)
+              if: "!matrix.cross && !contains(matrix.target, 'windows-gnu')"
+              working-directory: haoma
+              run: cargo build --verbose --all-features --target ${{ matrix.target }}
               shell: bash
 
             - name: Run tests
@@ -238,14 +256,22 @@ jobs:
               run: cargo test --verbose --all-features --target ${{ matrix.target }}
               continue-on-error: true
 
-            - name: Build release
+            - name: Build release (cross)
+              if: matrix.cross
               working-directory: haoma
-              run: |
-                  if [ "${{ matrix.cross }}" = "true" ]; then
-                    cross build --release --verbose --target ${{ matrix.target }} || cargo build --release --verbose --target ${{ matrix.target }}
-                  else
-                    cargo build --release --verbose --target ${{ matrix.target }}
-                  fi
+              run: cross build --release --verbose --target ${{ matrix.target }}
+              shell: bash
+
+            - name: Build release (native - Windows GNU)
+              if: "!matrix.cross && contains(matrix.target, 'windows-gnu')"
+              working-directory: haoma
+              shell: msys2 {0}
+              run: cargo build --release --verbose --target ${{ matrix.target }}
+
+            - name: Build release (native - other)
+              if: "!matrix.cross && !contains(matrix.target, 'windows-gnu')"
+              working-directory: haoma
+              run: cargo build --release --verbose --target ${{ matrix.target }}
               shell: bash
 
             - name: Prepare executable (Unix)
