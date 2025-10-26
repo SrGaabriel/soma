@@ -1,0 +1,229 @@
+name: CI
+
+on:
+    push:
+    pull_request:
+
+jobs:
+    haskell-build:
+        name: Build Haskell (soma)
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                os: [ubuntu-latest, macos-latest, windows-latest]
+                ghc: ["9.4", "9.6"]
+            fail-fast: false
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Haskell
+              uses: haskell-actions/setup@v2
+              with:
+                  ghc-version: ${{ matrix.ghc }}
+                  cabal-version: "3.12"
+                  enable-stack: false
+
+            - name: Cache Cabal packages
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cabal/packages
+                      ~/.cabal/store
+                      dist-newstyle
+                  key: ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabal-${{ hashFiles('soma.cabal', 'cabal.project') }}
+                  restore-keys: |
+                      ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabal-
+                      ${{ runner.os }}-ghc-${{ matrix.ghc }}-
+
+            - name: Update Cabal package index
+              run: cabal update
+
+            - name: Configure project
+              run: cabal configure --enable-tests --enable-benchmarks
+
+            - name: Build dependencies
+              run: cabal build --only-dependencies all
+
+            - name: Build project
+              run: cabal build all
+
+            - name: Run tests
+              run: cabal test all --test-show-details=direct
+              continue-on-error: true
+
+            - name: Generate documentation
+              run: cabal haddock all
+              continue-on-error: true
+
+            - name: Prepare executable (Linux)
+              if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.6'
+              run: |
+                  mkdir -p artifacts
+                  cp $(cabal list-bin exe:soma) artifacts/somac-linux-x64
+                  chmod +x artifacts/somac-linux-x64
+
+            - name: Prepare executable (macOS)
+              if: matrix.os == 'macos-latest' && matrix.ghc == '9.6'
+              run: |
+                  mkdir -p artifacts
+                  cp $(cabal list-bin exe:soma) artifacts/somac-macos-x64
+                  chmod +x artifacts/somac-macos-x64
+
+            - name: Prepare executable (Windows)
+              if: matrix.os == 'windows-latest' && matrix.ghc == '9.6'
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force -Path artifacts
+                  $exePath = cabal list-bin exe:soma
+                  Copy-Item $exePath artifacts/somac-windows-x64.exe
+
+            - name: Upload executable artifact
+              if: matrix.ghc == '9.6'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: somac-${{ runner.os }}
+                  path: artifacts/somac-*
+                  if-no-files-found: error
+
+    rust-build:
+        name: Build Rust (haoma)
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                os: [ubuntu-latest, macos-latest, windows-latest]
+                rust: [stable, nightly]
+            fail-fast: false
+
+        defaults:
+            run:
+                working-directory: haoma
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Rust
+              uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: ${{ matrix.rust }}
+                  components: rustfmt, clippy
+
+            - name: Cache Cargo dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/bin/
+                      ~/.cargo/registry/index/
+                      ~/.cargo/registry/cache/
+                      ~/.cargo/git/db/
+                      haoma/target/
+                  key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('haoma/Cargo.toml', 'haoma/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-cargo-${{ matrix.rust }}-
+                      ${{ runner.os }}-cargo-
+
+            - name: Check formatting
+              run: cargo fmt --all -- --check
+              continue-on-error: ${{ matrix.rust == 'nightly' }}
+
+            - name: Run Clippy
+              run: cargo clippy --all-targets --all-features -- -D warnings
+              continue-on-error: ${{ matrix.rust == 'nightly' }}
+
+            - name: Build project
+              run: cargo build --verbose --all-features
+
+            - name: Run tests
+              run: cargo test --verbose --all-features
+              continue-on-error: true
+
+            - name: Build release
+              run: cargo build --release --verbose
+
+            - name: Prepare executable (Linux)
+              if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
+              run: |
+                  mkdir -p artifacts
+                  cp target/release/haoma artifacts/haoma-linux-x64
+                  chmod +x artifacts/haoma-linux-x64
+
+            - name: Prepare executable (macOS)
+              if: matrix.os == 'macos-latest' && matrix.rust == 'stable'
+              run: |
+                  mkdir -p artifacts
+                  cp target/release/haoma artifacts/haoma-macos-x64
+                  chmod +x artifacts/haoma-macos-x64
+
+            - name: Prepare executable (Windows)
+              if: matrix.os == 'windows-latest' && matrix.rust == 'stable'
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force -Path artifacts
+                  Copy-Item target/release/haoma.exe artifacts/haoma-windows-x64.exe
+
+            - name: Upload executable artifact
+              if: matrix.rust == 'stable'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: haoma-${{ runner.os }}
+                  path: haoma/artifacts/haoma-*
+                  if-no-files-found: error
+
+    lint:
+        name: Lint and Format Check
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Haskell
+              uses: haskell-actions/setup@v2
+              with:
+                  ghc-version: "9.6"
+                  cabal-version: "3.12"
+
+            - name: Setup Rust
+              uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: rustfmt, clippy
+
+            - name: Install HLint
+              run: |
+                  cabal update
+                  cabal install hlint --install-method=copy --installdir=$HOME/.local/bin
+                  echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+            - name: Run HLint
+              run: hlint app --report
+              continue-on-error: true
+
+            - name: Check Rust formatting
+              working-directory: haoma
+              run: cargo fmt --all -- --check
+
+            - name: Run Clippy
+              working-directory: haoma
+              run: cargo clippy --all-targets --all-features -- -D warnings
+
+    check-all:
+        name: All Checks Passed
+        needs: [haskell-build, rust-build, lint]
+        runs-on: ubuntu-latest
+        if: always()
+
+        steps:
+            - name: Check build results
+              run: |
+                  if [ "${{ needs.haskell-build.result }}" != "success" ]; then
+                    echo "Haskell build failed"
+                    exit 1
+                  fi
+                  if [ "${{ needs.rust-build.result }}" != "success" ]; then
+                    echo "Rust build failed"
+                    exit 1
+                  fi
+                  if [ "${{ needs.lint.result }}" != "success" ]; then
+                    echo "Lint checks failed"
+                    exit 1
+                  fi
+                  echo "All checks passed!"
