@@ -1,0 +1,1 @@
+def id(value: a) -> a = value

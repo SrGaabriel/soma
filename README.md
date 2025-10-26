@@ -1,6 +1,6 @@
 # ➕ soma
 
-A prototype programming language to learn Haskell and delve deeper into functional programming & FP language design 
+A pure functional programming language with strong static type inference and type classes made with performance in mind.
 
 Current features:
 
@@ -21,4 +21,4 @@ Current features:
 - [x] Arrays
 - ... more!
 
-> To see some examples, check `app.soma`!
+> To see some examples, check the `examples` folder!
