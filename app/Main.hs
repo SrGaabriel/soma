@@ -10,7 +10,7 @@ import Project.Parsing
 import Project.Processing
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure, exitSuccess)
-import System.FilePath (dropExtension, takeExtension, takeFileName, (</>))
+import System.FilePath (dropExtension, takeExtension, takeFileName)
 
 main :: IO ()
 main = do
@@ -18,20 +18,19 @@ main = do
     options <- case optionsE of
         Right o -> return o
         Left err -> putStrLn (formatError err) >> exitFailure
+    putStrLn $ "Compiling with options: " ++ show options
 
     let inp = optionsInput options
+    let out = optionsOutput options
     isFile <- doesFileExist inp
     if isFile && takeExtension inp == ".soma"
         then
-            processSingle inp
+            processSingle inp out
         else do
             isDir <- doesDirectoryExist inp
             unless isDir (putStrLn "Error: input is neither a .soma file nor a directory" >> exitFailure)
-            let srcDir = inp </> "src"
-            srcExists <- doesDirectoryExist srcDir
-            unless srcExists (putStrLn "Error: directory does not contain a src folder" >> exitFailure)
 
-            mods <- findModules srcDir
+            mods <- findModules inp
             putStrLn $ "Discovered modules: " ++ show (map fst mods)
 
             graphE <- buildModuleGraph mods
@@ -46,15 +45,15 @@ main = do
                     mapM_ (putStrLn . ("  " ++) . show) cycles
                     exitFailure
                 Right sorted -> do
-                    let outputBaseName = takeFileName inp
-                    _ <- processModules sorted graph outputBaseName outputBaseName
+                    let moduleName = "app" -- todo: use better logic
+                    _ <- processModules sorted graph moduleName out
                     return ()
 
             putStrLn "✅ Successfully compiled all modules."
             exitSuccess
 
-processSingle :: FilePath -> IO ()
-processSingle path = do
+processSingle :: FilePath -> Maybe FilePath -> IO ()
+processSingle path output = do
     let name = dropExtension (takeFileName path)
     parseE <- parseModule (name, path)
     mi <- case parseE of
@@ -75,7 +74,7 @@ processSingle path = do
             mapM_ (putStrLn . ("  " ++) . show) cycles
             exitFailure
         Right sorted -> do
-            _ <- processModules sorted graph name "."
+            _ <- processModules sorted graph name output
             return ()
 
     putStrLn "✅ Successfully compiled module."

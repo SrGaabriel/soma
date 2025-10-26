@@ -2,8 +2,8 @@ use colored::Color;
 use std::path::Path;
 
 use crate::{
-    cli::{output_debug, output_err, output_pretty},
     config::manifest::{MANIFEST_NAME, Manifest},
+    logging::{output_debug, output_err, pretty_print},
 };
 
 pub fn execute(path: &Path) {
@@ -78,7 +78,8 @@ pub fn execute(path: &Path) {
         main.display()
     ));
 
-    output_pretty(
+    tracing::info!("The Soma project has been initialized successfully.");
+    pretty_print(
         "welcome",
         "🚀",
         Color::Magenta,

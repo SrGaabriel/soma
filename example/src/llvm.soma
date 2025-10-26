@@ -1,4 +1,4 @@
-import id::id;
+import id::id
 
 intrinsic def {+} :: a -> a -> a
 intrinsic def {==} :: a -> a -> Bool
@@ -7,6 +7,9 @@ intrinsic data IO :: * -> *
 intrinsic def map :: (a -> b) -> [a] -> [b]
 intrinsic def for :: (a -> ()) -> [a] -> ()
 intrinsic def debug :: String -> ()
+
+trait Monad m where
+    def pure :: a -> m a
 
 data Shape
     = Square

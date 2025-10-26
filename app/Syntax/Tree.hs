@@ -100,9 +100,9 @@ exprChildren (ExprTypeClassBinding _ _ (Just impl) _) = impl
 exprChildren (ExprTypeClassBinding _ _ Nothing _) = []
 exprChildren (ExprDerivedPatternMatch arms) = arms
 exprChildren (ExprBindingDef _ _ body _ _) = [body]
-exprChildren (ExprIntrinsicDef {}) = []
+exprChildren (ExprIntrinsicDef{}) = []
 exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
-exprChildren (ExprIntrinsicDataTypeDef {}) = []
+exprChildren (ExprIntrinsicDataTypeDef{}) = []
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprInstanceDef _ methods _) = methods
 

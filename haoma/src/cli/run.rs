@@ -1,36 +1,30 @@
-use std::path::Path;
+use std::{path::Path, process::Command};
 
 use crate::{
-    cli::{output_debug, output_err, output_ok},
-    config::manifest::{MANIFEST_NAME, Manifest},
+    build::build_src,
+    cli::parse_manifest,
+    logging::{output_debug, output_err, output_ok},
 };
 
-pub fn execute(path: &Path) {
-    let manifest = path.join(MANIFEST_NAME);
-    if !manifest.exists() {
-        output_err(&format!(
-            "Manifest file '{}' not found in path '{}'",
-            MANIFEST_NAME,
-            path.display()
-        ));
-        std::process::exit(1);
-    }
-    output_debug(&format!("Found manifest file at '{}'", manifest.display()));
-
-    let parsing_result = std::fs::read_to_string(&manifest).and_then(|content| {
-        toml::from_str::<Manifest>(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-    });
-    if let Err(e) = parsing_result {
-        output_err(&format!("Failed to parse manifest file: {}", e));
-        std::process::exit(1);
-    }
-
+pub fn execute(path: &Path, args: &Vec<String>) {
+    let manifest = parse_manifest(path);
     output_debug("Successfully read manifest file");
-    let manifest = parsing_result.unwrap();
+    let executable = build_src(path, &manifest);
+    output_ok("Executable built successfully. Now executing...");
 
-    output_ok(&format!(
-        "Running project '{}' version '{}'",
-        manifest.name, manifest.version
-    ));
+    let exit_status = Command::new(executable)
+        .args(args)
+        .status()
+        .expect("Failed to execute process");
+    println!();
+    if !exit_status.success() {
+        let exit_code = exit_status.code().map(|x| x.to_string());
+        output_err(&format!(
+            "Process exited with status: {}",
+            exit_code.unwrap_or("?".to_string())
+        ));
+        std::process::exit(exit_status.code().unwrap_or(1));
+    } else {
+        output_ok("Process executed successfully");
+    }
 }

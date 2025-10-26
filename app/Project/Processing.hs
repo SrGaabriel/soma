@@ -5,6 +5,7 @@ module Project.Processing where
 
 import Control.Exception (SomeException, catch)
 import qualified Data.Map as Map
+import Data.Maybe (fromMaybe)
 import Inference.Assembler (inferTreeT)
 import Inference.Core (TypeMap)
 import Inference.Resolver (runResolverWithEnv)
@@ -17,7 +18,7 @@ import Project.Symbols (Symbol (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import System.Directory (createDirectoryIfMissing)
 import System.Directory.Internal.Prelude (exitFailure)
-import System.FilePath ((</>))
+import System.FilePath (takeBaseName, takeDirectory, takeExtension, (<.>), (</>))
 import System.Process (callProcess)
 import Typing.Types (QualifiedType)
 
@@ -43,38 +44,57 @@ filterSymbolsByNames :: [String] -> Map.Map Symbol QualifiedType -> Map.Map Symb
 filterSymbolsByNames names =
     Map.filterWithKey (\sym _ -> resolvedSymbolName sym `elem` names)
 
-processModules :: [String] -> ModuleGraph -> String -> FilePath -> IO ()
-processModules sorted graph outputBaseName inputPath = do
+processModules :: [String] -> ModuleGraph -> String -> Maybe FilePath -> IO ()
+processModules sorted graph inputName mOutputFile = do
     (allModules, fusedTypeMap) <- processAllModules sorted graph Map.empty Map.empty
-
     let fusedAst = createFusedAst allModules
-    let llvmIr = runLlvmCodeGenAndTranscribe outputBaseName fusedAst fusedTypeMap
+    let llvmIr = runLlvmCodeGenAndTranscribe inputName fusedAst fusedTypeMap
 
-    let buildDir = inputPath </> "build"
-    createDirectoryIfMissing True buildDir
+    let outputFile = fromMaybe inputName mOutputFile
+    let outputName = takeBaseName outputFile
 
-    let llFile = buildDir </> (outputBaseName ++ ".ll")
-    let exeFile = buildDir </> outputBaseName
+    let outputExt = takeExtension outputFile
+    let outputDir = takeDirectory outputFile
 
-    writeFile llFile llvmIr
-    putStrLn $ "Generated LLVM IR file: " ++ llFile
+    createDirectoryIfMissing True outputDir
 
-    result <-
-        catch
-            ( do
-                callProcess "clang" ["-o", exeFile, llFile]
-                putStrLn $ "Successfully compiled executable: " ++ exeFile
-                return True
-            )
-            ( \(_ :: SomeException) -> do
-                putStrLn "clang not found or compilation failed. To compile manually, run:"
-                putStrLn $ "clang -o " ++ exeFile ++ " " ++ llFile
-                return False
-            )
+    case outputExt of
+        ".ll" -> do
+            writeFile outputFile llvmIr
+            putStrLn $ "Generated LLVM IR file: " ++ outputFile
+        ".o" -> do
+            let llTemp = outputDir </> outputName <.> "ll"
+            writeFile llTemp llvmIr
+            putStrLn $ "Generated temporary LLVM IR file: " ++ llTemp
+            catch
+                ( do
+                    callProcess "llc" ["-filetype=obj", llTemp, "-o", outputFile]
+                    putStrLn $ "Generated object file: " ++ outputFile
+                )
+                ( \(_ :: SomeException) -> do
+                    putStrLn "llc not found or object compilation failed. To compile manually, run:"
+                    putStrLn $ "llc -filetype=obj " ++ llTemp ++ " -o " ++ outputFile
+                    exitFailure
+                )
+        "" -> do
+            let llTemp = outputFile <.> "ll"
+            writeFile llTemp llvmIr
+            putStrLn $ "Generated temporary LLVM IR file: " ++ llTemp
+            catch
+                ( do
+                    callProcess "clang" ["-o", outputFile, llTemp]
+                    putStrLn $ "Successfully compiled executable: " ++ outputFile
+                )
+                ( \(_ :: SomeException) -> do
+                    putStrLn "clang not found or compilation failed. To compile manually, run:"
+                    putStrLn $ "clang -o " ++ outputFile ++ " " ++ llTemp
+                    exitFailure
+                )
+        ext -> do
+            putStrLn $ "Unknown output extension: " ++ ext
+            exitFailure
 
-    if result
-        then putStrLn "✅ Build completed successfully."
-        else putStrLn "❌ LLVM IR generated. Internal build failure." >> exitFailure
+    putStrLn "✅ Build process completed."
 
 processAllModules :: [String] -> ModuleGraph -> Map.Map String (Expr, TypeMap, Map.Map Symbol QualifiedType) -> TypeMap -> IO (Map.Map String (Expr, TypeMap, Map.Map Symbol QualifiedType), TypeMap)
 processAllModules [] _graph allModules fusedTypeMap = return (allModules, fusedTypeMap)

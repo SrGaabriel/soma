@@ -46,7 +46,7 @@ parseCommandLine args = do
     let indArgs = findIndependentArgs args
     if null indArgs
         then Left NoInputFile
-        else Right opts{optionsInput = unwords indArgs}
+        else Right opts{optionsInput = hardHead indArgs}
 
 processArgs :: [String] -> Options -> Options
 processArgs [] opts = opts
@@ -54,13 +54,10 @@ processArgs (arg : rest) opts
     | arg == "--llvm-only" = processArgs rest (opts{optionsLlvmOnly = True})
     | arg == "--keep" = processArgs rest (opts{optionsKeepAll = True})
     | arg == "--run" = processArgs rest (opts{optionsRun = True})
-    | arg == "-output" && not (null rest) =
+    | arg == "--out" && not (null rest) =
         processArgs (hardTail rest) (opts{optionsOutput = Just (hardHead rest)})
     | arg == "--emit-types" =
         processArgs rest (opts{optionsEmitTypes = True})
-    | "--output=" `isPrefixOf` arg =
-        let value = drop (length "--output=") arg
-        in processArgs rest (opts{optionsOutput = Just value})
     | otherwise = processArgs rest opts
 
 findIndependentArgs :: [String] -> [String]
