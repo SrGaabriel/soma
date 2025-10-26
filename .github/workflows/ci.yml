@@ -49,15 +49,24 @@ jobs:
                     - os: windows-latest
                       arch: x86_64
                       target: x86_64-windows-gnu
-                      msystem: MINGW64
                     - os: windows-latest
                       arch: i686
                       target: i686-windows-gnu
-                      msystem: MINGW32
             fail-fast: false
 
         steps:
             - uses: actions/checkout@v4
+
+            - name: Setup MinGW (Windows GNU)
+              if: contains(matrix.target, 'windows-gnu')
+              uses: msys2/setup-msys2@v2
+              with:
+                  msystem: ${{ matrix.arch == 'x86_64' && 'MINGW64' || 'MINGW32' }}
+                  install: >-
+                      mingw-w64-${{ matrix.arch == 'x86_64' && 'x86_64' || 'i686' }}-gcc
+                      mingw-w64-${{ matrix.arch == 'x86_64' && 'x86_64' || 'i686' }}-binutils
+                  update: true
+                  path-type: inherit
 
             - name: Setup Haskell
               uses: haskell-actions/setup@v2
@@ -107,11 +116,15 @@ jobs:
 
             - name: Prepare executable (Windows)
               if: runner.os == 'Windows'
-              shell: pwsh
+              shell: ${{ contains(matrix.target, 'windows-gnu') && 'msys2 {0}' || 'pwsh' }}
               run: |
-                  New-Item -ItemType Directory -Force -Path artifacts
-                  $exePath = cabal list-bin exe:soma
-                  Copy-Item $exePath "artifacts/somac-${{ matrix.target }}.exe"
+                  mkdir -p artifacts
+                  if [ "${{ contains(matrix.target, 'windows-gnu') }}" = "true" ]; then
+                    cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}.exe
+                  else
+                    exePath=$(cabal list-bin exe:soma)
+                    cp "$exePath" "artifacts/somac-${{ matrix.target }}.exe"
+                  fi
 
             - name: Upload executable artifact
               uses: actions/upload-artifact@v4
@@ -169,10 +182,28 @@ jobs:
               with:
                   targets: ${{ matrix.target }}
 
+            - name: Setup Rust environment (macOS)
+              if: runner.os == 'macOS'
+              run: |
+                  echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+                  source "$HOME/.cargo/env"
+
+            - name: Setup MinGW (Windows GNU)
+              if: contains(matrix.target, 'windows-gnu')
+              uses: msys2/setup-msys2@v2
+              with:
+                  msystem: ${{ contains(matrix.target, 'x86_64') && 'MINGW64' || 'MINGW32' }}
+                  install: >-
+                      mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-gcc
+                      mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-rust
+                  update: true
+                  path-type: inherit
+
             - name: Install cross-compilation tools
               if: matrix.cross
               run: |
                   cargo install cross --git https://github.com/cross-rs/cross
+              continue-on-error: true
 
             - name: Cache Cargo dependencies
               uses: actions/cache@v4
@@ -189,9 +220,10 @@ jobs:
                       ${{ runner.os }}-cargo-
 
             - name: Build project
+              working-directory: haoma
               run: |
                   if [ "${{ matrix.cross }}" = "true" ]; then
-                    cross build --verbose --all-features --target ${{ matrix.target }}
+                    cross build --verbose --all-features --target ${{ matrix.target }} || cargo build --verbose --all-features --target ${{ matrix.target }}
                   else
                     cargo build --verbose --all-features --target ${{ matrix.target }}
                   fi
@@ -199,13 +231,15 @@ jobs:
 
             - name: Run tests
               if: "!matrix.cross"
+              working-directory: haoma
               run: cargo test --verbose --all-features --target ${{ matrix.target }}
               continue-on-error: true
 
             - name: Build release
+              working-directory: haoma
               run: |
                   if [ "${{ matrix.cross }}" = "true" ]; then
-                    cross build --release --verbose --target ${{ matrix.target }}
+                    cross build --release --verbose --target ${{ matrix.target }} || cargo build --release --verbose --target ${{ matrix.target }}
                   else
                     cargo build --release --verbose --target ${{ matrix.target }}
                   fi
@@ -213,6 +247,7 @@ jobs:
 
             - name: Prepare executable (Unix)
               if: runner.os != 'Windows'
+              working-directory: haoma
               run: |
                   mkdir -p artifacts
                   cp target/${{ matrix.target }}/release/haoma artifacts/haoma-${{ matrix.target }}
@@ -220,10 +255,15 @@ jobs:
 
             - name: Prepare executable (Windows)
               if: runner.os == 'Windows'
-              shell: pwsh
+              working-directory: haoma
+              shell: ${{ contains(matrix.target, 'windows-gnu') && 'msys2 {0}' || 'pwsh' }}
               run: |
-                  New-Item -ItemType Directory -Force -Path artifacts
-                  Copy-Item "target/${{ matrix.target }}/release/haoma.exe" "artifacts/haoma-${{ matrix.target }}.exe"
+                  mkdir -p artifacts
+                  if [ "${{ contains(matrix.target, 'windows-gnu') }}" = "true" ]; then
+                    cp "target/${{ matrix.target }}/release/haoma.exe" "artifacts/haoma-${{ matrix.target }}.exe"
+                  else
+                    Copy-Item "target/${{ matrix.target }}/release/haoma.exe" "artifacts/haoma-${{ matrix.target }}.exe"
+                  fi
 
             - name: Upload executable artifact
               uses: actions/upload-artifact@v4
