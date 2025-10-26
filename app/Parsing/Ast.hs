@@ -3,6 +3,7 @@ module Parsing.Ast where
 import Control.Applicative (Alternative (many))
 import Control.Monad.Error.Class (MonadError (throwError))
 import Data.List (intercalate)
+import qualified Debug.Trace as Debug
 import Lexing.Lexer (Token (tokenIndent, tokenKind, tokenValue), TokenKind (..), spanningTokens, tokenSpan)
 import Lexing.Position (Span (Span))
 import Parsing.Atoms (parseModuleName)
@@ -12,7 +13,6 @@ import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parse
 import Parsing.Types (parseKind, parseQualifiedType, parseTyVar, parseType)
 import Syntax.Tree (Expr (..))
 import Typing.Types (Constraint, QualifiedType (Forall), Type (TVar), mkConstraint)
-import qualified Debug.Trace as Debug
 
 parse :: [Token] -> Either ParsingError Expr
 parse tokens = do
