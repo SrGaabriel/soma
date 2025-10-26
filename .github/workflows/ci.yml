@@ -185,36 +185,10 @@ jobs:
               with:
                   targets: ${{ matrix.target }}
 
-            - name: Debug Rust installation (macOS)
-              if: runner.os == 'macOS'
-              run: |
-                  echo "=== Checking rustup location ==="
-                  which rustup || echo "rustup not in PATH"
-                  echo "=== Checking rustc location ==="
-                  which rustc || echo "rustc not in PATH"
-                  echo "=== Checking cargo location ==="
-                  which cargo || echo "cargo not in PATH"
-                  echo "=== Checking HOME directory ==="
-                  echo "HOME: $HOME"
-                  echo "=== Listing $HOME/.cargo ==="
-                  ls -la $HOME/.cargo/ || echo "$HOME/.cargo does not exist"
-                  echo "=== Listing $HOME/.cargo/bin ==="
-                  ls -la $HOME/.cargo/bin/ || echo "$HOME/.cargo/bin does not exist"
-                  echo "=== Checking /Users/runner/.cargo/bin ==="
-                  ls -la /Users/runner/.cargo/bin/ || echo "/Users/runner/.cargo/bin does not exist"
-                  echo "=== Current PATH ==="
-                  echo "$PATH"
-                  echo "=== Trying to run cargo with full path ==="
-                  $HOME/.cargo/bin/cargo --version || echo "Failed with \$HOME/.cargo/bin/cargo"
-                  /Users/runner/.cargo/bin/cargo --version || echo "Failed with /Users/runner/.cargo/bin/cargo"
-                  ~/.cargo/bin/cargo --version || echo "Failed with ~/.cargo/bin/cargo"
-              shell: bash
-
             - name: Cache Cargo dependencies
               uses: actions/cache@v4
               with:
                   path: |
-                      ~/.cargo/bin/
                       ~/.cargo/registry/index/
                       ~/.cargo/registry/cache/
                       ~/.cargo/git/db/
@@ -254,30 +228,10 @@ jobs:
               shell: msys2 {0}
               run: cargo build --verbose --all-features --target ${{ matrix.target }}
 
-            - name: Debug PATH before build (macOS)
-              if: "!matrix.cross && !contains(matrix.target, 'windows-gnu') && runner.os == 'macOS'"
-              run: |
-                  echo "=== PATH at build time ==="
-                  echo "$PATH"
-                  echo "=== Which cargo ==="
-                  which cargo || echo "cargo not found in PATH"
-                  echo "=== Trying cargo --version ==="
-                  cargo --version || echo "cargo command failed"
-                  echo "=== Trying /Users/runner/.cargo/bin/cargo --version ==="
-                  /Users/runner/.cargo/bin/cargo --version || echo "full path failed"
-              shell: bash
-
             - name: Build project (native - other)
               if: "!matrix.cross && !contains(matrix.target, 'windows-gnu')"
               working-directory: haoma
-              run: |
-                  echo "=== DEBUG: Inside build step ==="
-                  echo "PWD: $(pwd)"
-                  echo "PATH: $PATH"
-                  which cargo || echo "cargo not in PATH"
-                  /Users/runner/.cargo/bin/cargo --version || echo "full path failed"
-                  echo "=== Starting actual build ==="
-                  cargo build --verbose --all-features --target ${{ matrix.target }}
+              run: cargo build --verbose --all-features --target ${{ matrix.target }}
               shell: bash
 
             - name: Run tests
