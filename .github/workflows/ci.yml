@@ -114,17 +114,20 @@ jobs:
                   cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}
                   chmod +x artifacts/somac-${{ matrix.target }}
 
-            - name: Prepare executable (Windows)
-              if: runner.os == 'Windows'
-              shell: ${{ contains(matrix.target, 'windows-gnu') && 'msys2 {0}' || 'pwsh' }}
+            - name: Prepare executable (Windows MSVC)
+              if: runner.os == 'Windows' && contains(matrix.target, 'msvc')
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force -Path artifacts
+                  $exePath = cabal list-bin exe:soma
+                  Copy-Item $exePath "artifacts/somac-${{ matrix.target }}.exe"
+
+            - name: Prepare executable (Windows GNU)
+              if: runner.os == 'Windows' && contains(matrix.target, 'gnu')
+              shell: msys2 {0}
               run: |
                   mkdir -p artifacts
-                  if [ "${{ contains(matrix.target, 'windows-gnu') }}" = "true" ]; then
-                    cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}.exe
-                  else
-                    exePath=$(cabal list-bin exe:soma)
-                    cp "$exePath" "artifacts/somac-${{ matrix.target }}.exe"
-                  fi
+                  cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}.exe
 
             - name: Upload executable artifact
               uses: actions/upload-artifact@v4
@@ -253,17 +256,21 @@ jobs:
                   cp target/${{ matrix.target }}/release/haoma artifacts/haoma-${{ matrix.target }}
                   chmod +x artifacts/haoma-${{ matrix.target }}
 
-            - name: Prepare executable (Windows)
-              if: runner.os == 'Windows'
+            - name: Prepare executable (Windows MSVC)
+              if: runner.os == 'Windows' && contains(matrix.target, 'msvc')
               working-directory: haoma
-              shell: ${{ contains(matrix.target, 'windows-gnu') && 'msys2 {0}' || 'pwsh' }}
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force -Path artifacts
+                  Copy-Item "target/${{ matrix.target }}/release/haoma.exe" "artifacts/haoma-${{ matrix.target }}.exe"
+
+            - name: Prepare executable (Windows GNU)
+              if: runner.os == 'Windows' && contains(matrix.target, 'gnu')
+              working-directory: haoma
+              shell: msys2 {0}
               run: |
                   mkdir -p artifacts
-                  if [ "${{ contains(matrix.target, 'windows-gnu') }}" = "true" ]; then
-                    cp "target/${{ matrix.target }}/release/haoma.exe" "artifacts/haoma-${{ matrix.target }}.exe"
-                  else
-                    Copy-Item "target/${{ matrix.target }}/release/haoma.exe" "artifacts/haoma-${{ matrix.target }}.exe"
-                  fi
+                  cp "target/${{ matrix.target }}/release/haoma.exe" "artifacts/haoma-${{ matrix.target }}.exe"
 
             - name: Upload executable artifact
               uses: actions/upload-artifact@v4
