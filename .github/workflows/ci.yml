@@ -12,11 +12,48 @@ env:
 
 jobs:
     haskell-build:
-        name: Build Haskell (soma)
+        name: Build Haskell (somac)
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
-                os: [ubuntu-latest, macos-latest, windows-latest]
+                include:
+                    # macOS builds
+                    - os: macos-13
+                      arch: x86_64
+                      target: x86_64-darwin
+                    - os: macos-14
+                      arch: aarch64
+                      target: aarch64-darwin
+
+                    # Linux builds
+                    - os: ubuntu-latest
+                      arch: x86_64
+                      target: x86_64-linux-gnu
+                    - os: ubuntu-latest
+                      arch: aarch64
+                      target: aarch64-linux-gnu
+                    - os: ubuntu-latest
+                      arch: ppc64le
+                      target: ppc64le-linux-gnu
+                    - os: ubuntu-latest
+                      arch: s390x
+                      target: s390x-linux-gnu
+
+                    # Windows builds
+                    - os: windows-latest
+                      arch: x86_64
+                      target: x86_64-windows-msvc
+                    - os: windows-latest
+                      arch: i686
+                      target: i686-windows-msvc
+                    - os: windows-latest
+                      arch: x86_64
+                      target: x86_64-windows-gnu
+                      msystem: MINGW64
+                    - os: windows-latest
+                      arch: i686
+                      target: i686-windows-gnu
+                      msystem: MINGW32
             fail-fast: false
 
         steps:
@@ -36,10 +73,10 @@ jobs:
                       ~/.cabal/packages
                       ~/.cabal/store
                       dist-newstyle
-                  key: ${{ runner.os }}-ghc-${{ env.GHC_VERSION }}-cabal-${{ hashFiles('soma.cabal', 'cabal.project') }}
+                  key: ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-${{ hashFiles('soma.cabal', 'cabal.project') }}
                   restore-keys: |
-                      ${{ runner.os }}-ghc-${{ env.GHC_VERSION }}-cabal-
-                      ${{ runner.os }}-ghc-${{ env.GHC_VERSION }}-
+                      ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-
+                      ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-
 
             - name: Update Cabal package index
               run: cabal update
@@ -61,38 +98,25 @@ jobs:
               run: cabal haddock all
               continue-on-error: true
 
-            - name: Prepare executable (Linux)
-              if: matrix.os == 'ubuntu-latest'
+            - name: Prepare executable (Unix)
+              if: runner.os != 'Windows'
               run: |
-                  ARCH=$(uname -m)
-                  TARGET="${ARCH}-unknown-linux-gnu"
                   mkdir -p artifacts
-                  cp $(cabal list-bin exe:soma) artifacts/somac-${TARGET}
-                  chmod +x artifacts/somac-${TARGET}
-
-            - name: Prepare executable (macOS)
-              if: matrix.os == 'macos-latest'
-              run: |
-                  ARCH=$(uname -m)
-                  TARGET="${ARCH}-apple-darwin"
-                  mkdir -p artifacts
-                  cp $(cabal list-bin exe:soma) artifacts/somac-${TARGET}
-                  chmod +x artifacts/somac-${TARGET}
+                  cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}
+                  chmod +x artifacts/somac-${{ matrix.target }}
 
             - name: Prepare executable (Windows)
-              if: matrix.os == 'windows-latest'
+              if: runner.os == 'Windows'
               shell: pwsh
               run: |
-                  $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") { "x86_64" } else { $env:PROCESSOR_ARCHITECTURE.ToLower() }
-                  $target = "$arch-pc-windows-msvc"
                   New-Item -ItemType Directory -Force -Path artifacts
                   $exePath = cabal list-bin exe:soma
-                  Copy-Item $exePath "artifacts/somac-$target.exe"
+                  Copy-Item $exePath "artifacts/somac-${{ matrix.target }}.exe"
 
             - name: Upload executable artifact
               uses: actions/upload-artifact@v4
               with:
-                  name: somac-${{ runner.os }}-${{ runner.arch }}
+                  name: somac-${{ matrix.target }}
                   path: artifacts/somac-*
                   if-no-files-found: error
 
@@ -101,8 +125,36 @@ jobs:
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
-                os: [ubuntu-latest, macos-latest, windows-latest]
-                rust: [stable, nightly]
+                include:
+                    # Linux builds
+                    - os: ubuntu-latest
+                      target: x86_64-unknown-linux-gnu
+                      cross: false
+                    - os: ubuntu-latest
+                      target: aarch64-unknown-linux-gnu
+                      cross: true
+
+                    # macOS builds
+                    - os: macos-13
+                      target: x86_64-apple-darwin
+                      cross: false
+                    - os: macos-14
+                      target: aarch64-apple-darwin
+                      cross: false
+
+                    # Windows builds
+                    - os: windows-latest
+                      target: x86_64-pc-windows-msvc
+                      cross: false
+                    - os: windows-latest
+                      target: i686-pc-windows-msvc
+                      cross: false
+                    - os: windows-latest
+                      target: x86_64-pc-windows-gnu
+                      cross: false
+                    - os: windows-latest
+                      target: i686-pc-windows-gnu
+                      cross: false
             fail-fast: false
 
         defaults:
@@ -113,10 +165,14 @@ jobs:
             - uses: actions/checkout@v4
 
             - name: Setup Rust
-              uses: dtolnay/rust-toolchain@master
+              uses: dtolnay/rust-toolchain@stable
               with:
-                  toolchain: ${{ matrix.rust }}
-                  components: rustfmt, clippy
+                  targets: ${{ matrix.target }}
+
+            - name: Install cross-compilation tools
+              if: matrix.cross
+              run: |
+                  cargo install cross --git https://github.com/cross-rs/cross
 
             - name: Cache Cargo dependencies
               uses: actions/cache@v4
@@ -127,50 +183,52 @@ jobs:
                       ~/.cargo/registry/cache/
                       ~/.cargo/git/db/
                       haoma/target/
-                  key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('haoma/Cargo.toml', 'haoma/Cargo.lock') }}
+                  key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('haoma/Cargo.toml', 'haoma/Cargo.lock') }}
                   restore-keys: |
-                      ${{ runner.os }}-cargo-${{ matrix.rust }}-
+                      ${{ runner.os }}-${{ matrix.target }}-cargo-
                       ${{ runner.os }}-cargo-
 
             - name: Build project
-              run: cargo build --verbose --all-features
+              run: |
+                  if [ "${{ matrix.cross }}" = "true" ]; then
+                    cross build --verbose --all-features --target ${{ matrix.target }}
+                  else
+                    cargo build --verbose --all-features --target ${{ matrix.target }}
+                  fi
+              shell: bash
 
             - name: Run tests
-              run: cargo test --verbose --all-features
+              if: "!matrix.cross"
+              run: cargo test --verbose --all-features --target ${{ matrix.target }}
               continue-on-error: true
 
             - name: Build release
-              run: cargo build --release --verbose
-
-            - name: Prepare executable (Linux)
-              if: matrix.os == 'ubuntu-latest' && matrix.rust == 'stable'
               run: |
-                  TARGET=$(rustc -vV | grep host | cut -d' ' -f2)
-                  mkdir -p artifacts
-                  cp target/release/haoma artifacts/haoma-${TARGET}
-                  chmod +x artifacts/haoma-${TARGET}
+                  if [ "${{ matrix.cross }}" = "true" ]; then
+                    cross build --release --verbose --target ${{ matrix.target }}
+                  else
+                    cargo build --release --verbose --target ${{ matrix.target }}
+                  fi
+              shell: bash
 
-            - name: Prepare executable (macOS)
-              if: matrix.os == 'macos-latest' && matrix.rust == 'stable'
+            - name: Prepare executable (Unix)
+              if: runner.os != 'Windows'
               run: |
-                  TARGET=$(rustc -vV | grep host | cut -d' ' -f2)
                   mkdir -p artifacts
-                  cp target/release/haoma artifacts/haoma-${TARGET}
-                  chmod +x artifacts/haoma-${TARGET}
+                  cp target/${{ matrix.target }}/release/haoma artifacts/haoma-${{ matrix.target }}
+                  chmod +x artifacts/haoma-${{ matrix.target }}
 
             - name: Prepare executable (Windows)
-              if: matrix.os == 'windows-latest' && matrix.rust == 'stable'
+              if: runner.os == 'Windows'
               shell: pwsh
               run: |
-                  $target = rustc -vV | Select-String "host:" | ForEach-Object { $_.Line.Split()[1] }
                   New-Item -ItemType Directory -Force -Path artifacts
-                  Copy-Item target/release/haoma.exe "artifacts/haoma-$target.exe"
+                  Copy-Item "target/${{ matrix.target }}/release/haoma.exe" "artifacts/haoma-${{ matrix.target }}.exe"
 
             - name: Upload executable artifact
-              if: matrix.rust == 'stable'
               uses: actions/upload-artifact@v4
               with:
-                  name: haoma-${{ runner.os }}-${{ runner.arch }}
+                  name: haoma-${{ matrix.target }}
                   path: haoma/artifacts/haoma-*
                   if-no-files-found: error
 
