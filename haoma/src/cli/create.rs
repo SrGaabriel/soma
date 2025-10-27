@@ -2,7 +2,7 @@ use colored::Color;
 use std::path::Path;
 
 use crate::{
-    config::manifest::{MANIFEST_NAME, Manifest},
+    config::manifest::{Manifest, ManifestDependencies, MANIFEST_NAME},
     logging::{output_debug, output_err, pretty_print},
 };
 
@@ -36,6 +36,7 @@ pub fn execute(path: &Path) {
         name: project_name.unwrap().to_owned(),
         version: "0.1.0".to_string(),
         authors: None,
+        dependencies: ManifestDependencies::new()
     };
     let manifest_content =
         toml::to_string(&manifest).expect("Failed to serialize manifest to TOML");

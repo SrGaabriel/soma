@@ -18,11 +18,12 @@ fileExt = ".soma"
 data Options = Options
     { optionsInput :: String
     , optionsOutput :: Maybe String
+    , optionsName :: Maybe String
     , optionsLib :: Bool
     , optionsLlvmOnly :: Bool
     , optionsKeepAll :: Bool
     , optionsEmitLib :: Bool
-    , optionsExterns :: [(String, String)]
+    , optionsDeps :: [(String, String)]
     , optionsRun :: Bool
     }
     deriving (Show)
@@ -67,6 +68,13 @@ optionsParser =
                     <> help "Output file path"
                 )
             )
+        <*> optional
+            ( strOption
+                ( long "name"
+                    <> metavar "NAME"
+                    <> help "Name of the compiled program or library"
+                )
+            )
         <*> switch
             ( long "lib"
                 <> help "Compile as a Soma library"
@@ -86,9 +94,9 @@ optionsParser =
         <*> many
             ( option
                 (eitherReader parseExtern)
-                ( long "extern"
+                ( long "dep"
                     <> metavar "NAME=PATH"
-                    <> help "Link external library (e.g. --extern foo=src/lib/foo.toria)"
+                    <> help "Link external library (e.g. --dep foo=src/lib/foo.toria)"
                 )
             )
         <*> switch

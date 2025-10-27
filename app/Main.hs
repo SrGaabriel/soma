@@ -3,7 +3,6 @@ module Main where
 import Config.Options
 import Control.Monad (unless)
 import qualified Data.Map as Map
-import Logging.ErrorPrinter
 import Project.Graph
 import Project.Module
 import Project.Parsing
@@ -11,6 +10,7 @@ import Project.Processing
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath (dropExtension, takeExtension, takeFileName)
+import Data.Maybe (fromMaybe)
 
 main :: IO ()
 main = do
@@ -21,11 +21,10 @@ main = do
     putStrLn $ "Compiling with options: " ++ show options
 
     let inp = optionsInput options
-    let out = optionsOutput options
     isFile <- doesFileExist inp
     if isFile && takeExtension inp == ".soma"
         then
-            processSingle inp out
+            processSingle options
         else do
             isDir <- doesDirectoryExist inp
             unless isDir (putStrLn "Error: input is neither a .soma file nor a directory" >> exitFailure)
@@ -45,15 +44,19 @@ main = do
                     mapM_ (putStrLn . ("  " ++) . show) cycles
                     exitFailure
                 Right sorted -> do
-                    let moduleName = "app" -- todo: use better logic
-                    _ <- processModules sorted graph moduleName out
+                    let mName = fromMaybe "app" $ optionsName options
+                    let out = optionsOutput options
+                    let isLib = optionsLib options
+                    _ <- processModules sorted graph mName out isLib
                     return ()
 
             putStrLn "✅ Successfully compiled all modules."
             exitSuccess
 
-processSingle :: FilePath -> Maybe FilePath -> IO ()
-processSingle path output = do
+processSingle :: Options -> IO ()
+processSingle options = do
+    let path = optionsInput options
+    let output = optionsOutput options
     let name = dropExtension (takeFileName path)
     parseE <- parseModule (name, path)
     mi <- case parseE of
@@ -74,7 +77,8 @@ processSingle path output = do
             mapM_ (putStrLn . ("  " ++) . show) cycles
             exitFailure
         Right sorted -> do
-            _ <- processModules sorted graph name output
+            let isLib = optionsLib options
+            _ <- processModules sorted graph name output isLib
             return ()
 
     putStrLn "✅ Successfully compiled module."

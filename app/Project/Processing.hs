@@ -47,8 +47,8 @@ filterSymbolsByNames :: [String] -> Map.Map Symbol QualifiedType -> Map.Map Symb
 filterSymbolsByNames names =
     Map.filterWithKey (\sym _ -> resolvedSymbolName sym `elem` names)
 
-processModules :: [String] -> ModuleGraph -> String -> Maybe FilePath -> IO ()
-processModules sorted graph inputName mOutputFile = do
+processModules :: [String] -> ModuleGraph -> String -> Maybe FilePath -> Bool -> IO ()
+processModules sorted graph inputName mOutputFile isLib = do
     (allModules, fusedTypeMap) <- processAllModules sorted graph Map.empty Map.empty
     let fusedAst = createFusedAst allModules
     let llvmIr = runLlvmCodeGenAndTranscribe inputName fusedAst fusedTypeMap
@@ -122,20 +122,23 @@ processModules sorted graph inputName mOutputFile = do
 
             catch (removeFile llFile) (\(_ :: SomeException) -> return ())
             catch (removeFile objFile) (\(_ :: SomeException) -> return ())
-        "" -> do
-            let llTemp = outputFile <.> "ll"
-            writeFile llTemp llvmIr
-            putStrLn $ "Generated temporary LLVM IR file: " ++ llTemp
-            catch
-                ( do
-                    callProcess "clang" ["-o", outputFile, llTemp]
-                    putStrLn $ "Successfully compiled executable: " ++ outputFile
-                )
-                ( \(_ :: SomeException) -> do
-                    putStrLn "clang not found or compilation failed. To compile manually, run:"
-                    putStrLn $ "clang -o " ++ outputFile ++ " " ++ llTemp
-                    exitFailure
-                )
+        ""  | isLib -> do
+                putStrLn "Can't build executable for library"
+                exitFailure
+            | not isLib -> do
+                let llTemp = outputFile <.> "ll"
+                writeFile llTemp llvmIr
+                putStrLn $ "Generated temporary LLVM IR file: " ++ llTemp
+                catch
+                    ( do
+                        callProcess "clang" ["-o", outputFile, llTemp]
+                        putStrLn $ "Successfully compiled executable: " ++ outputFile
+                    )
+                    ( \(_ :: SomeException) -> do
+                        putStrLn "clang not found or compilation failed. To compile manually, run:"
+                        putStrLn $ "clang -o " ++ outputFile ++ " " ++ llTemp
+                        exitFailure
+                    )
         ext -> do
             putStrLn $ "Unknown output extension: " ++ ext
             exitFailure

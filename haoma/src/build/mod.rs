@@ -1,3 +1,6 @@
+mod deps;
+mod metadata;
+
 use std::{
     ops::Deref,
     path::{Path, PathBuf},
@@ -9,7 +12,7 @@ use std::{
 use colored::{Color, Colorize};
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::{config::manifest::Manifest, logging::output_ok};
+use crate::{build::deps::{DependencyAction, extract_deps}, config::manifest::Manifest, logging::output_ok};
 
 pub fn build_src(module_path: &Path, manifest: &Manifest) -> PathBuf {
     let src_path = module_path.join("src");
@@ -20,6 +23,18 @@ pub fn build_src(module_path: &Path, manifest: &Manifest) -> PathBuf {
     } else {
         build_path.join(&manifest.name)
     };
+    let deps = extract_deps(manifest.name.to_string(), &manifest.dependencies);
+    
+    let dep_additions =
+        deps
+            .into_iter()
+            .map(|dep| match dep {
+                DependencyAction::Include { name, tarball } => {
+                    (name, tarball)
+                },
+                _ => todo!(),
+            })
+            .collect::<Vec<(String, PathBuf)>>();
 
     output_ok(&format!(
         "Running project '{}' version '{}'",
@@ -48,6 +63,11 @@ pub fn build_src(module_path: &Path, manifest: &Manifest) -> PathBuf {
                 .arg(src_path)
                 .arg("--out")
                 .arg(output_object);
+            
+            for (dep_name, toria_path) in dep_additions {
+                command.arg("--dep")
+                    .arg(format!("{}={}", dep_name, toria_path.display()));
+            }
 
             command.status().expect("failed to run command");
         })
