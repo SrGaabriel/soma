@@ -1,14 +1,16 @@
 use tracing_appender::rolling;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt};
 
+mod build;
 mod cli;
 mod config;
+mod logging;
 
 fn main() {
     let cli = cli::parse();
     let _guard = if let Some(log_file) = cli.log_file {
         if log_file.exists() {
-            cli::output_err(
+            logging::output_err(
                 "Log file already exists. Please remove it or choose a different file.",
             );
             std::process::exit(1);

@@ -2,8 +2,8 @@ use colored::Color;
 use std::path::Path;
 
 use crate::{
-    cli::{output_debug, output_err, pretty_print},
     config::manifest::{MANIFEST_NAME, Manifest},
+    logging::{output_debug, output_err, pretty_print},
 };
 
 pub fn execute(path: &Path) {

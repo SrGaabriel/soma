@@ -1,10 +1,14 @@
+mod build;
 mod create;
 mod run;
 
 use clap::Parser;
-use colored::{Color, Colorize};
-use std::path::PathBuf;
-use tracing::{debug, error, info, warn};
+use std::path::{Path, PathBuf};
+
+use crate::{
+    config::manifest::{MANIFEST_NAME, Manifest},
+    logging::{output_debug, output_err},
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "builder")]
@@ -18,13 +22,19 @@ pub struct Cli {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Commands {
-    Run {
+    Build {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
     },
     Create {
         #[arg(value_name = "path", default_value = ".")]
         path: PathBuf,
+    },
+    Run {
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -34,40 +44,37 @@ pub fn parse() -> Cli {
 
 pub fn execute(command: &Commands) {
     match &command {
-        Commands::Run { path } => {
-            run::execute(path);
+        Commands::Build { path } => {
+            build::execute(path);
         }
         Commands::Create { path } => {
             create::execute(path);
         }
+        Commands::Run { path, args } => {
+            run::execute(path, args);
+        }
     }
 }
 
-pub fn output_err(text: &str) {
-    pretty_print("error", "⛔", colored::Color::Red, text);
-    error!("{}", text);
-}
+pub fn parse_manifest(path: &Path) -> Manifest {
+    let manifest = path.join(MANIFEST_NAME);
+    if !manifest.exists() {
+        output_err(&format!(
+            "Manifest file '{}' not found in path '{}'",
+            MANIFEST_NAME,
+            path.display()
+        ));
+        std::process::exit(1);
+    }
+    output_debug(&format!("Found manifest file at '{}'", manifest.display()));
 
-#[allow(dead_code)]
-pub fn output_warning(text: &str) {
-    pretty_print("warn", "⚠️", colored::Color::Yellow, text);
-    warn!("{}", text);
-}
-
-pub fn output_debug(text: &str) {
-    debug!("{}", text);
-}
-
-pub fn output_ok(text: &str) {
-    pretty_print("success", "✅", colored::Color::Green, text);
-    info!("{}", text);
-}
-
-fn pretty_print(prefix: &str, emoji: &str, color: Color, text: &str) {
-    println!(
-        "{} {} {}",
-        format!("[{prefix}]").color(color).bold(),
-        emoji,
-        text
-    );
+    let parsing_result = std::fs::read_to_string(&manifest).and_then(|content| {
+        toml::from_str::<Manifest>(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    });
+    if let Err(e) = parsing_result {
+        output_err(&format!("Failed to parse manifest file: {}", e));
+        std::process::exit(1);
+    }
+    parsing_result.unwrap()
 }
