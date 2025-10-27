@@ -6,22 +6,36 @@ pub const MANIFEST_NAME: &str = "haoma.toml";
 pub struct Manifest {
     pub name: String,
     pub version: String,
+    #[serde(rename = "type")]
+    pub module_type: ManifestModuleType,
     #[serde(default)]
     pub authors: Option<Vec<String>>,
     #[serde(default)]
-    pub dependencies: ManifestDependencies
+    pub dependencies: ManifestDependencies,
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum ManifestModuleType {
+    #[serde(rename = "library")]
+    Library,
+    #[serde(rename = "binary")]
+    Binary,
 }
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct ManifestDependencies {
-    #[serde(flatten, skip_serializing_if = "std::collections::HashMap::is_empty", default)]
-    pub dependencies: std::collections::HashMap<String, ManifestDependencyValue>
+    #[serde(
+        flatten,
+        skip_serializing_if = "std::collections::HashMap::is_empty",
+        default
+    )]
+    pub dependencies: std::collections::HashMap<String, ManifestDependencyValue>,
 }
 
 impl ManifestDependencies {
     pub fn new() -> Self {
         Self {
-            dependencies: std::collections::HashMap::new()
+            dependencies: std::collections::HashMap::new(),
         }
     }
 }
@@ -33,6 +47,6 @@ pub enum ManifestDependencyValue {
     Version(String),
     Custom {
         path: String,
-        version: Option<String>
-    }
+        version: Option<String>,
+    },
 }

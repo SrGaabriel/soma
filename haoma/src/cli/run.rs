@@ -1,7 +1,7 @@
 use std::{path::Path, process::Command};
 
 use crate::{
-    build::build_src,
+    build::{BuildOutput, build_src},
     cli::parse_manifest,
     logging::{output_debug, output_err, output_ok},
 };
@@ -9,7 +9,7 @@ use crate::{
 pub fn execute(path: &Path, args: &Vec<String>) {
     let manifest = parse_manifest(path);
     output_debug("Successfully read manifest file");
-    let executable = build_src(path, &manifest);
+    let executable = build_src(path, &manifest, BuildOutput::Object);
     output_ok("Executable built successfully. Now executing...");
 
     let exit_status = Command::new(executable)
