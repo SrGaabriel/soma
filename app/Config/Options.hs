@@ -1,8 +1,16 @@
-module Config.Options where
+module Config.Options (
+    Options (..),
+    extractOptions,
+    CommandLineError (..),
+    formatError,
+    fileExt,
+    getInputFile,
+    getInputName,
+) where
 
 import Data.List (isPrefixOf)
+import Options.Applicative
 import System.Environment (getArgs)
-import Utils.Lists (hardHead, hardTail)
 
 fileExt :: String
 fileExt = ".soma"
@@ -10,23 +18,14 @@ fileExt = ".soma"
 data Options = Options
     { optionsInput :: String
     , optionsOutput :: Maybe String
+    , optionsLib :: Bool
     , optionsLlvmOnly :: Bool
     , optionsKeepAll :: Bool
-    , optionsEmitTypes :: Bool
+    , optionsEmitLib :: Bool
+    , optionsExterns :: [(String, String)]
     , optionsRun :: Bool
     }
     deriving (Show)
-
-defaultOptions :: Options
-defaultOptions =
-    Options
-        { optionsInput = "app.soma"
-        , optionsOutput = Nothing
-        , optionsLlvmOnly = False
-        , optionsKeepAll = False
-        , optionsRun = False
-        , optionsEmitTypes = True
-        }
 
 getInputFile :: Options -> String
 getInputFile opts =
@@ -40,32 +39,6 @@ getInputName opts =
         (name, ext) | ext == fileExt -> Just name
         _ -> Nothing
 
-parseCommandLine :: [String] -> Either CommandLineError Options
-parseCommandLine args = do
-    let opts = processArgs args defaultOptions
-    let indArgs = findIndependentArgs args
-    if null indArgs
-        then Left NoInputFile
-        else Right opts{optionsInput = hardHead indArgs}
-
-processArgs :: [String] -> Options -> Options
-processArgs [] opts = opts
-processArgs (arg : rest) opts
-    | arg == "--llvm-only" = processArgs rest (opts{optionsLlvmOnly = True})
-    | arg == "--keep" = processArgs rest (opts{optionsKeepAll = True})
-    | arg == "--run" = processArgs rest (opts{optionsRun = True})
-    | arg == "--out" && not (null rest) =
-        processArgs (hardTail rest) (opts{optionsOutput = Just (hardHead rest)})
-    | arg == "--emit-types" =
-        processArgs rest (opts{optionsEmitTypes = True})
-    | otherwise = processArgs rest opts
-
-findIndependentArgs :: [String] -> [String]
-findIndependentArgs = filter (not . isPrefixOf "-")
-
-extractOptions :: IO (Either CommandLineError Options)
-extractOptions = parseCommandLine <$> getArgs
-
 data CommandLineError
     = NoInputFile
     | InvalidArgument String
@@ -78,3 +51,69 @@ formatError NoInputFile =
         ++ " extension."
 formatError (InvalidArgument arg) =
     "Error: Invalid argument: " ++ arg
+
+optionsParser :: Parser Options
+optionsParser =
+    Options
+        <$> argument
+            str
+            ( metavar "INPUT"
+                <> help ("Input source file (" ++ fileExt ++ ")")
+            )
+        <*> optional
+            ( strOption
+                ( long "out"
+                    <> metavar "OUTPUT"
+                    <> help "Output file path"
+                )
+            )
+        <*> switch
+            ( long "lib"
+                <> help "Compile as a Soma library"
+            )
+        <*> switch
+            ( long "llvm-only"
+                <> help "Emit LLVM IR only (no compilation or run)"
+            )
+        <*> switch
+            ( long "keep"
+                <> help "Keep intermediate compilation files"
+            )
+        <*> switch
+            ( long "emit-lib"
+                <> help "Emit output as a shared library"
+            )
+        <*> many
+            ( option
+                (eitherReader parseExtern)
+                ( long "extern"
+                    <> metavar "NAME=PATH"
+                    <> help "Link external library (e.g. --extern foo=src/lib/foo.toria)"
+                )
+            )
+        <*> switch
+            ( long "run"
+                <> help "Run the compiled program immediately"
+            )
+
+parseExtern :: String -> Either String (String, String)
+parseExtern s =
+  case break (== '=') s of
+    (k, '=':v) | not (null k) && not (null v) -> Right (k, v)
+    _ -> Left "Expected format NAME=PATH"
+
+optsInfo :: ParserInfo Options
+optsInfo =
+    info
+        (optionsParser <**> helper)
+        ( fullDesc
+            <> progDesc "Compile and/or run Soma source files"
+            <> header "soma-compiler - a compiler for the Soma language"
+        )
+
+extractOptions :: IO (Either CommandLineError Options)
+extractOptions = do
+    args <- getArgs
+    if all (isPrefixOf "-") args
+        then pure (Left NoInputFile)
+        else Right <$> execParser optsInfo

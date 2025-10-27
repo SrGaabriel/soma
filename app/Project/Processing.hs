@@ -4,6 +4,8 @@
 module Project.Processing where
 
 import Control.Exception (SomeException, catch)
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString.Lazy.Char8 as BLC
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import Inference.Assembler (inferTreeT)
@@ -12,11 +14,12 @@ import Inference.Resolver (runResolverWithEnv)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.ErrorPrinter (printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
-import Project.Graph (ModuleGraph)
+import Project.Graph (ModuleGraph, buildDependencyGraph)
 import Project.Module (ModuleInfo (..))
 import Project.Symbols (Symbol (..))
+import Project.Tarball (createProjectTarball, defaultTarballOptions, tarballExtension)
 import Syntax.Tree (Expr (..), exprChildren)
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude (exitFailure)
 import System.FilePath (takeBaseName, takeDirectory, takeExtension, (<.>), (</>))
 import System.Process (callProcess)
@@ -76,6 +79,49 @@ processModules sorted graph inputName mOutputFile = do
                     putStrLn $ "llc -filetype=obj " ++ llTemp ++ " -o " ++ outputFile
                     exitFailure
                 )
+        ext | ext == tarballExtension -> do
+            let llFile = outputDir </> outputName <.> "ll"
+            let objFile = outputDir </> outputName <.> "o"
+
+            writeFile llFile llvmIr
+            putStrLn $ "Generated LLVM IR file: " ++ llFile
+
+            objFileExists <-
+                catch
+                    ( do
+                        callProcess "llc" ["-filetype=obj", llFile, "-o", objFile]
+                        putStrLn $ "Generated object file: " ++ objFile
+                        return True
+                    )
+                    ( \(_ :: SomeException) -> do
+                        putStrLn "Warning: llc not found, tarball will not include object file"
+                        return False
+                    )
+
+            objContentBS <-
+                if objFileExists
+                    then BL.readFile objFile
+                    else return BL.empty
+            let objContent = BLC.unpack objContentBS
+
+            let publicSymbols = Map.unions [syms | (_, _, syms) <- Map.elems allModules]
+            let depGraph = buildDependencyGraph graph
+            let sourceFiles = [modulePath info | info <- Map.elems graph]
+
+            let objFiles = ([(objFile, objContent) | objFileExists])
+            createProjectTarball
+                outputFile
+                defaultTarballOptions
+                inputName
+                "0.1.0"
+                sourceFiles
+                publicSymbols
+                depGraph
+                objFiles
+                [(llFile, llvmIr)]
+
+            catch (removeFile llFile) (\(_ :: SomeException) -> return ())
+            catch (removeFile objFile) (\(_ :: SomeException) -> return ())
         "" -> do
             let llTemp = outputFile <.> "ll"
             writeFile llTemp llvmIr
