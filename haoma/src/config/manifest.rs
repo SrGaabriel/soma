@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub const MANIFEST_NAME: &str = "haoma.toml";
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
     pub name: String,
     pub version: String,
@@ -14,7 +14,7 @@ pub struct Manifest {
     pub dependencies: ManifestDependencies,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ManifestModuleType {
     #[serde(rename = "library")]
     Library,
@@ -22,7 +22,7 @@ pub enum ManifestModuleType {
     Binary,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct ManifestDependencies {
     #[serde(
         flatten,
@@ -40,7 +40,7 @@ impl ManifestDependencies {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum ManifestDependencyValue {
     #[serde(rename = "version")]
