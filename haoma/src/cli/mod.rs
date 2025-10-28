@@ -1,6 +1,7 @@
 mod build;
 mod create;
 mod run;
+mod clean;
 
 use clap::Parser;
 use std::path::{Path, PathBuf};
@@ -30,6 +31,10 @@ pub enum Commands {
         #[arg(value_name = "path", default_value = ".")]
         path: PathBuf,
     },
+    Clean {
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
     Run {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
@@ -52,6 +57,9 @@ pub fn execute(command: &Commands) {
         }
         Commands::Run { path, args } => {
             run::execute(path, args);
+        },
+        Commands::Clean { path } => {
+            clean::execute(path);
         }
     }
 }

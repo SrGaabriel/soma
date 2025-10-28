@@ -6,7 +6,8 @@ mod orchestrator;
 mod resolve;
 mod scheduler;
 
-use orchestrator::{BuildOrchestrator, BuildStats};
+use orchestrator::BuildOrchestrator;
+pub use orchestrator::BuildStats; // just so it's prettier
 use std::path::Path;
 
 use crate::{build::errors::BuildError, config::manifest::Manifest};

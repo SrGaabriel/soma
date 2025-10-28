@@ -4,6 +4,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use colored::Colorize;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+
 use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, HashCalculator};
 use crate::build::compile::compile_module;
@@ -68,7 +71,7 @@ impl BuildScheduler {
     }
 
     fn worker_loop(
-        worker_id: usize,
+        _worker_id: usize,
         work_receiver: Arc<Mutex<Receiver<WorkerMessage>>>,
         result_sender: Sender<BuildResults>,
     ) {
@@ -80,20 +83,13 @@ impl BuildScheduler {
 
             match message {
                 Ok(WorkerMessage::Build(work_item)) => {
-                    println!(
-                        "[Worker {}] Building module '{}'",
-                        worker_id, work_item.node.name
-                    );
-
                     let result = Self::execute_build(work_item);
 
                     if result_sender.send(result).is_err() {
-                        eprintln!("[Worker {}] Failed to send result", worker_id);
                         break;
                     }
                 }
                 Ok(WorkerMessage::Shutdown) => {
-                    println!("[Worker {}] Shutting down", worker_id);
                     break;
                 }
                 Err(_) => {
@@ -188,23 +184,32 @@ impl LayeredBuilder {
         nodes: &HashMap<String, BuildNode>,
         skip_modules: &HashMap<String, (String, String)>,
         cache: &BuildCache,
+        multi_progress: &MultiProgress,
     ) -> BuildResult<HashMap<String, BuildResults>> {
         let mut results = HashMap::new();
         let mut hashes: HashMap<String, String> = HashMap::new();
 
         for (layer_idx, layer) in layers.iter().enumerate() {
-            println!(
-                "\n=== Building Layer {} ({} modules) ===",
-                layer_idx + 1,
-                layer.len()
+            let layer_pb = multi_progress.add(ProgressBar::new(layer.len() as u64));
+            layer_pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                    .unwrap()
+                    .progress_chars("█▓▒░  "),
             );
+            layer_pb.set_message(format!("Layer {}", layer_idx + 1));
 
             let mut pending = layer.len();
             let mut layer_failed = false;
 
             for module_name in layer {
                 if let Some((source_hash, dep_hash)) = skip_modules.get(module_name) {
-                    println!("  ⚡ Skipping '{}' (up-to-date)", module_name);
+                    layer_pb.set_message(format!(
+                        "Layer {} | {} {}",
+                        layer_idx + 1,
+                        "⚡".yellow(),
+                        module_name.dimmed()
+                    ));
                     hashes.insert(module_name.clone(), source_hash.clone());
 
                     if let Some(cache_entry) = cache.get(module_name) {
@@ -220,6 +225,7 @@ impl LayeredBuilder {
                         results.insert(module_name.clone(), cached_result);
                     }
 
+                    layer_pb.inc(1);
                     pending -= 1;
                     continue;
                 }
@@ -248,16 +254,27 @@ impl LayeredBuilder {
                     pending -= 1;
 
                     if result.success {
-                        println!("  ✓ Built '{}'", result.module_name);
+                        layer_pb.set_message(format!(
+                            "Layer {} | {} {}",
+                            layer_idx + 1,
+                            "✓".green(),
+                            result.module_name
+                        ));
                         hashes.insert(result.module_name.clone(), result.source_hash.clone());
                     } else {
-                        println!("  ✗ Failed to build '{}'", result.module_name);
+                        layer_pb.set_message(format!(
+                            "Layer {} | {} {}",
+                            layer_idx + 1,
+                            "✗".red(),
+                            result.module_name
+                        ));
                         if let Some(error) = &result.error {
-                            eprintln!("    Error: {}", error);
+                            layer_pb.println(format!("    Error: {}", error));
                         }
                         layer_failed = true;
                     }
 
+                    layer_pb.inc(1);
                     results.insert(result.module_name.clone(), result);
                 } else {
                     return Err(BuildError::Internal(
@@ -266,7 +283,20 @@ impl LayeredBuilder {
                 }
             }
 
+            layer_pb.finish_with_message(format!(
+                "Layer {} {} {}",
+                layer_idx + 1,
+                "✓".green(),
+                "complete".dimmed()
+            ));
+
             if layer_failed {
+                layer_pb.finish_with_message(format!(
+                    "Layer {} {} {}",
+                    layer_idx + 1,
+                    "✗".red(),
+                    "failed".red()
+                ));
                 self.scheduler.shutdown();
                 return Err(BuildError::Internal(
                     InternalBuildError::UnexpectedLayerBuildFailure(layer_idx + 1),

@@ -2,6 +2,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use colored::Colorize;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+
 use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, CacheEntry, HashCalculator};
 use crate::build::compile::link_executable;
@@ -47,111 +50,99 @@ impl BuildOrchestrator {
 
     pub fn build(&mut self, manifest: &Manifest) -> BuildResult<BuildStats> {
         let build_start = Instant::now();
+        let multi_progress = MultiProgress::new();
 
-        println!("╔═══════════════════════════════════════════════════════╗");
-        println!("║           Build Orchestrator - Modern Build          ║");
-        println!("╚═══════════════════════════════════════════════════════╝\n");
-
-        println!("┌─────────────────────────────────────────────────────┐");
-        println!("│ Phase 1: Dependency Resolution                      │");
-        println!("└─────────────────────────────────────────────────────┘");
+        let resolution_pb = multi_progress.add(ProgressBar::new_spinner());
+        resolution_pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
+        );
+        resolution_pb.set_message(format!("{}", "Resolving dependencies...".cyan()));
+        resolution_pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
         let resolution_start = Instant::now();
         let graph = self.resolve_dependencies(manifest)?;
         let resolution_time = resolution_start.elapsed().as_millis();
 
-        println!("  ✓ Resolved {} modules", graph.len());
-        println!("  ⏱  {}ms\n", resolution_time);
+        resolution_pb.finish_with_message(format!(
+            "{} {} {}",
+            "✓".green(),
+            "Resolved dependencies".dimmed(),
+            format!("({}ms)", resolution_time).dimmed()
+        ));
 
-        println!("┌─────────────────────────────────────────────────────┐");
-        println!("│ Phase 2: Incremental Analysis                       │");
-        println!("└─────────────────────────────────────────────────────┘");
+        let analysis_pb = multi_progress.add(ProgressBar::new_spinner());
+        analysis_pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
+        );
+        analysis_pb.set_message(format!("{}", "Analyzing build cache...".cyan()));
+        analysis_pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
         let analysis_start = Instant::now();
         let analysis = self.analyze_incremental_builds(&graph)?;
         let analysis_time = analysis_start.elapsed().as_millis();
 
-        let modules_to_build = analysis.layers.iter().flatten().count() - analysis.skip_modules.len();
-        println!("  ✓ {} modules need rebuilding", modules_to_build);
-        println!("  ⚡ {} modules cached (up-to-date)", analysis.skip_modules.len());
-        println!("  📊 {} parallel layers", analysis.layers.len());
-        println!("  ⏱  {}ms\n", analysis_time);
+        let modules_to_build =
+            analysis.layers.iter().flatten().count() - analysis.skip_modules.len();
 
-        println!("┌─────────────────────────────────────────────────────┐");
-        println!(
-            "│ Phase 3: Parallel Execution ({} workers)              │",
-            self.num_workers
-        );
-        println!("└─────────────────────────────────────────────────────┘");
+        analysis_pb.finish_with_message(format!(
+            "{} {} {} {}",
+            "✓".green(),
+            "Cache analysis complete".dimmed(),
+            format!(
+                "({} to build, {} cached)",
+                modules_to_build,
+                analysis.skip_modules.len()
+            )
+            .bright_blue(),
+            format!("({}ms)", analysis_time).dimmed()
+        ));
 
         let execution_start = Instant::now();
-        let build_results = self.execute_builds(analysis.layers, &graph, &analysis.skip_modules)?;
+        let build_results = self.execute_builds(
+            analysis.layers,
+            &graph,
+            &analysis.skip_modules,
+            &multi_progress,
+        )?;
         let execution_time = execution_start.elapsed().as_millis();
-
-        println!("\n  ⏱  {}ms\n", execution_time);
 
         let mut final_binary_path = None;
         let linking_time = if matches!(manifest.module_type, ManifestModuleType::Binary) {
-            println!("┌─────────────────────────────────────────────────────┐");
-            println!("│ Phase 4: Linking                                    │");
-            println!("└─────────────────────────────────────────────────────┘");
+            let linking_pb = multi_progress.add(ProgressBar::new_spinner());
+            linking_pb.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{spinner:.cyan} {msg}")
+                    .unwrap()
+                    .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
+            );
+            linking_pb.set_message(format!("{}", "Linking executable...".cyan()));
+            linking_pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
             let linking_start = Instant::now();
             final_binary_path = Some(self.link_binary(manifest, &build_results)?);
             let linking_time = linking_start.elapsed().as_millis();
 
-            println!("  ✓ Executable created: {}", manifest.name);
-            println!("  ⏱  {}ms\n", linking_time);
+            linking_pb.finish_with_message(format!(
+                "{} {} {}",
+                "✓".green(),
+                "Linking complete".dimmed(),
+                format!("({}ms)", linking_time).dimmed()
+            ));
+
             linking_time
         } else {
-            println!("┌─────────────────────────────────────────────────────┐");
-            println!("│ Phase 4: Linking (skipped - library)               │");
-            println!("└─────────────────────────────────────────────────────┘\n");
             0
         };
 
         self.update_cache(&build_results, &analysis.module_hashes)?;
 
         let total_time = build_start.elapsed().as_millis();
-
-        println!("┌═══════════════════════════════════════════════════════┐");
-        println!("│ Build Summary                                         │");
-        println!("├───────────────────────────────────────────────────────┤");
-        println!(
-            "│ Total modules:    {:>6}                            │",
-            graph.len()
-        );
-        println!(
-            "│ Built:            {:>6}                            │",
-            modules_to_build
-        );
-        println!(
-            "│ Cached:           {:>6}                            │",
-            analysis.skip_modules.len()
-        );
-        println!("├───────────────────────────────────────────────────────┤");
-        println!(
-            "│ Resolution:       {:>6}ms                          │",
-            resolution_time
-        );
-        println!(
-            "│ Analysis:         {:>6}ms                          │",
-            analysis_time
-        );
-        println!(
-            "│ Execution:        {:>6}ms                          │",
-            execution_time
-        );
-        println!(
-            "│ Linking:          {:>6}ms                          │",
-            linking_time
-        );
-        println!("├───────────────────────────────────────────────────────┤");
-        println!(
-            "│ Total:            {:>6}ms                          │",
-            total_time
-        );
-        println!("└═══════════════════════════════════════════════════════┘\n");
 
         Ok(BuildStats {
             final_binary_path,
@@ -183,9 +174,11 @@ impl BuildOrchestrator {
 
         for layer in &layers {
             for module_name in layer {
-                let node = graph
-                    .get_node(module_name)
-                    .ok_or_else(|| BuildError::Internal(InternalBuildError::BuildNodeNotFound(module_name.to_string())))?;
+                let node = graph.get_node(module_name).ok_or_else(|| {
+                    BuildError::Internal(InternalBuildError::BuildNodeNotFound(
+                        module_name.to_string(),
+                    ))
+                })?;
 
                 let src_path = node.path.join("src");
                 let source_hash = HashCalculator::hash_directory(&src_path)
@@ -224,9 +217,16 @@ impl BuildOrchestrator {
         layers: Vec<Vec<String>>,
         graph: &DependencyGraph,
         skip_modules: &HashMap<String, (String, String)>,
+        multi_progress: &MultiProgress,
     ) -> BuildResult<HashMap<String, BuildResults>> {
         let builder = LayeredBuilder::new(self.num_workers);
-        builder.build_layers(layers, graph.nodes(), skip_modules, &self.cache)
+        builder.build_layers(
+            layers,
+            graph.nodes(),
+            skip_modules,
+            &self.cache,
+            multi_progress,
+        )
     }
 
     fn link_binary(
@@ -307,7 +307,6 @@ impl BuildOrchestrator {
         Ok(())
     }
 }
-
 
 struct IncrementalBuildAnalysis {
     layers: Vec<Vec<String>>,
