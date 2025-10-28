@@ -4,7 +4,6 @@ module Inference.Solving where
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import qualified Debug.Trace as Debug
 import Inference.Core (InstanceEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..), generateErrorForPurpose)
 import Inference.Gen (ClassConstraintWithSource (..), TypeConstraint (..))
@@ -47,8 +46,6 @@ checkConstraintEntailment :: InstanceEnv -> [Constraint] -> [ClassConstraintWith
 checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSource typeSubst = do
     let inferredConstraints = map (\ccs -> (apply typeSubst (ccsConstraint ccs), ccsSourceExpr ccs)) classConstraintsWithSource
     let unsatisfiedConstraints = filter (not . isConstraintSatisfied) inferredConstraints
-    Debug.traceM $ "Missing constraints: " ++ show (map fst unsatisfiedConstraints)
-    Debug.traceM $ "Instance env: " ++ show instanceEnv
     case unsatisfiedConstraints of
         [] -> Right ()
         ((constraint, sourceExpr) : _) -> Left [MissingClassConstraint sourceExpr constraint]

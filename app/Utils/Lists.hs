@@ -1,4 +1,12 @@
-module Utils.Lists (hardTail, hardHead, zipReturningRHSExcess, allEqual, foldMWithErrors, mapIndexed) where
+module Utils.Lists (
+    hardTail,
+    hardHead,
+    zipReturningRHSExcess,
+    allEqual,
+    foldMWithErrors,
+    mapIndexed,
+    breakLast,
+) where
 
 import Data.List (group)
 
@@ -9,6 +17,12 @@ hardHead (x : _) = x
 hardTail :: [a] -> [a]
 hardTail [] = error "Empty list"
 hardTail xs = take (length xs - 1) xs
+
+breakLast :: (Eq a) => a -> [a] -> ([a], [a])
+breakLast c =
+    (\(x, y) -> (reverse y, reverse x))
+        . span (/= c)
+        . reverse
 
 zipReturningRHSExcess :: [a] -> [b] -> ([(a, b)], [b])
 zipReturningRHSExcess xs ys =

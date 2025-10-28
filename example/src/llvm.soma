@@ -1,4 +1,4 @@
-use stdlib/summing
+use stdlib/core/summing
 
 intrinsic def {+} :: a -> a -> a
 intrinsic def {==} :: a -> a -> Bool

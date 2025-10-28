@@ -27,16 +27,15 @@ import System.Directory.Internal.Prelude (exitFailure)
 import System.FilePath (takeBaseName, takeDirectory, takeExtension, (<.>), (</>))
 import System.Process (callProcess)
 import Typing.Types (QualifiedType)
+import Utils.Lists (breakLast)
 
 extractSymbolImports :: Expr -> [(String, Maybe [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
 extractSymbolImports (ExprImport name _) =
-    let (m, rest) = break (== '/') name
-    in if take 1 rest == "/"
-        then
-            let syms = drop 1 rest
-            in [(m, Just (wordsWhen (== ',') syms))]
-        else [(name, Nothing)]
+    let (m, rest) = breakLast '/' name
+    in if null rest
+        then [(name, Nothing)]
+        else [(m, Just (wordsWhen (== ',') rest))]
 extractSymbolImports e = concatMap extractSymbolImports (exprChildren e)
 
 wordsWhen :: (Char -> Bool) -> String -> [String]
@@ -156,7 +155,7 @@ processModules sorted graph compileOptions = do
 
     putStrLn "✅ Build process completed."
 
-processAllModules :: String -> [String] -> ModuleGraph -> AllModuleElements -> Map.Map Symbol QualifiedType -> TypeMap -> IO (AllModuleElements, TypeMap)
+processAllModules :: String -> [String] -> ModuleGraph -> AllModuleElements -> Map.Map String (Map.Map Symbol QualifiedType) -> TypeMap -> IO (AllModuleElements, TypeMap)
 processAllModules _ [] _ allModules _ fusedTypeMap = return (allModules, fusedTypeMap)
 processAllModules packageName (modName : rest) graph allModules deps fusedTypeMap = do
     let Just modInfo = Map.lookup modName graph
@@ -164,15 +163,20 @@ processAllModules packageName (modName : rest) graph allModules deps fusedTypeMa
 
     let imports = extractSymbolImports ast
         seedEnv =
-            Map.union deps
-                $ Map.unions
+            Map.unions
                 $ map
                     ( \(impMod, mSyms) ->
                         case Map.lookup impMod allModules of
                             Just (_, _, modEnv) -> case mSyms of
                                 Just syms -> filterSymbolsByNames syms modEnv
                                 Nothing -> modEnv
-                            Nothing -> Map.empty
+                            Nothing ->
+                                let properModuleName = takeWhile (/= '/') impMod
+                                in -- best haskell code i've ever written:
+                                   maybe
+                                    Map.empty
+                                    (maybe id filterSymbolsByNames mSyms)
+                                    (Map.lookup properModuleName deps)
                     )
                     imports
 
@@ -206,7 +210,7 @@ createFusedAst allModules =
                 (Map.elems allModules)
     in ExprRoot allExprs
 
-processExternalDependencies :: [(String, String)] -> IO (Map.Map Symbol QualifiedType)
+processExternalDependencies :: [(String, String)] -> IO (Map.Map String (Map.Map Symbol QualifiedType))
 processExternalDependencies externals = do
     list <-
         mapM
@@ -216,7 +220,7 @@ processExternalDependencies externals = do
                     Left err -> error $ "Failed to extract external dependency " ++ name ++ ": " ++ err
                     Right (TarballContents{tcMetadata}) -> do
                         let exports = projectMetadataPublicSymbols tcMetadata
-                        pure exports
+                        pure (name, exports)
             )
             externals
-    pure $ Map.unions list
+    pure $ Map.fromList list

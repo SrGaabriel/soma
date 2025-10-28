@@ -3,7 +3,6 @@ module Parsing.Ast where
 import Control.Applicative (Alternative (many))
 import Control.Monad.Error.Class (MonadError (throwError))
 import Data.List (intercalate)
-import qualified Debug.Trace as Debug
 import Lexing.Lexer (Token (tokenIndent, tokenKind, tokenValue), TokenKind (..), spanningTokens, tokenSpan)
 import Lexing.Position (Span (Span))
 import Parsing.Atoms (parseModuleName)
@@ -120,7 +119,6 @@ parseInstance = do
 
     whereTok <- consume TokenWhere
     bindings <- parseIndentedBlock (tokenIndent whereTok) (parseBinding False)
-    Debug.traceM $ "Type instantiated: " ++ show constraintType
     pure
         $ ExprInstanceDef
             { instanceConstraint = constraintType

@@ -13,8 +13,8 @@ import System.FilePath (dropExtension, takeExtension, (</>))
 
 type ModuleGraph = Map.Map String ModuleInfo
 
-findModules :: FilePath -> IO [(String, FilePath)]
-findModules = go ""
+findModules :: String -> FilePath -> IO [(String, FilePath)]
+findModules packageName = go ""
   where
     go prefix dir = do
         entries <- listDirectory dir
@@ -27,11 +27,11 @@ findModules = go ""
             then go (extendMod prefix entry) fullPath
             else
                 if takeExtension entry == ".soma"
-                    then return [(extendMod prefix (dropExtension entry), fullPath)]
+                    then return [(packageName ++ "/" ++ extendMod prefix (dropExtension entry), fullPath)]
                     else return []
 
     extendMod "" part = part
-    extendMod prefix part = prefix ++ "." ++ part
+    extendMod prefix part = prefix ++ "/" ++ part
 
 buildModuleGraph :: [(String, FilePath)] -> IO (Either [ParsingError] ModuleGraph)
 buildModuleGraph modules = do

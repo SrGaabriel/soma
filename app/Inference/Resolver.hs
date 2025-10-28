@@ -8,7 +8,6 @@ import Control.Monad (when)
 import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
 import Control.Monad.State (MonadState (get, put), State, gets, modify, runState)
 import qualified Data.Map as Map
-import qualified Debug.Trace as Debug
 import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
 import Inference.Substitution (Substitutable (apply))
@@ -89,7 +88,6 @@ collectGlobals (ExprDataTypeDef name generics constraints constructors _) = do
 collectGlobals (ExprTypeClassDef className generics _ _) = do
     let kind = foldr (KindArrow . tvKind) KindStar generics
     let baseConstructor = TConstructor $ TypeConstructor className kind
-    Debug.traceM $ "Adding type class " ++ className ++ " with type " ++ show baseConstructor
     addGlobalBinding className (Forall generics [] baseConstructor) TypeClassSymbol
 collectGlobals _ = pure ()
 

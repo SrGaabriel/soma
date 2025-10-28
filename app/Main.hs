@@ -29,7 +29,8 @@ main = do
             isDir <- doesDirectoryExist inp
             unless isDir (putStrLn "Error: input is neither a .soma file nor a directory" >> exitFailure)
 
-            mods <- findModules inp
+            let name = fromMaybe (error "Error: please pass --name to the compiler") (optionsName options)
+            mods <- findModules name inp
             putStrLn $ "Discovered modules: " ++ show (map fst mods)
 
             graphE <- buildModuleGraph mods
