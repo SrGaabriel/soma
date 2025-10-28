@@ -1,4 +1,4 @@
-use stdlib/core/summing
+use stdlib/core.{summing,Optional,Some}
 
 intrinsic def {+} :: a -> a -> a
 intrinsic def {==} :: a -> a -> Bool
@@ -22,13 +22,8 @@ data Maybe a
         value :: a
     | Nothing
         
-def pureMaybeInt(value: Int) -> Maybe Int = Just value
 
-data Optional
-    = Some
-        value :: Int
-    | Nothing
-        
+def pureMaybeInt(value: Int) -> Maybe Int = Just value
 
 trait Display a where
     def display :: a -> String
@@ -46,7 +41,7 @@ trait Eq a where
     def equals :: a -> a -> Bool
 
 instance Eq Optional where
-    def equals(x: Optional, y: Optional) -> Bool = true     
+    def equals(x: Optional, y: Optional) -> Bool = true
 
 instance Display Optional where
     def display(optional: Optional) -> String = "Optional!"
@@ -62,7 +57,7 @@ def testOptionalEqGen :: Bool =
 
 def totallyGenericEqGen(left, right) :: a -> a -> Bool where a: Eq =
     equals left right
-    
+
 def testTotallyGenericEqGen(left, right) :: a -> a -> Bool where a: Eq =
     totallyGenericEqGen left right
 

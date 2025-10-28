@@ -27,15 +27,11 @@ import System.Directory.Internal.Prelude (exitFailure)
 import System.FilePath (takeBaseName, takeDirectory, takeExtension, (<.>), (</>))
 import System.Process (callProcess)
 import Typing.Types (QualifiedType)
-import Utils.Lists (breakLast)
 
-extractSymbolImports :: Expr -> [(String, Maybe [String])]
+extractSymbolImports :: Expr -> [(String, [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
-extractSymbolImports (ExprImport name _) =
-    let (m, rest) = breakLast '/' name
-    in if null rest
-        then [(name, Nothing)]
-        else [(m, Just (wordsWhen (== ',') rest))]
+extractSymbolImports (ExprImport name elements _) =
+    [(name, elements)]
 extractSymbolImports e = concatMap extractSymbolImports (exprChildren e)
 
 wordsWhen :: (Char -> Bool) -> String -> [String]
@@ -167,15 +163,13 @@ processAllModules packageName (modName : rest) graph allModules deps fusedTypeMa
                 $ map
                     ( \(impMod, mSyms) ->
                         case Map.lookup impMod allModules of
-                            Just (_, _, modEnv) -> case mSyms of
-                                Just syms -> filterSymbolsByNames syms modEnv
-                                Nothing -> modEnv
+                            Just (_, _, modEnv) -> filterSymbolsByNames mSyms modEnv
                             Nothing ->
                                 let properModuleName = takeWhile (/= '/') impMod
-                                in -- best haskell code i've ever written:
+                                in
                                    maybe
                                     Map.empty
-                                    (maybe id filterSymbolsByNames mSyms)
+                                    (filterSymbolsByNames mSyms)
                                     (Map.lookup properModuleName deps)
                     )
                     imports

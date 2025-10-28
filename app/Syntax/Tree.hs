@@ -17,7 +17,7 @@ data Expr
     | ExprTuple [Expr] Span
     | ExprApp Expr Expr
     | ExprLambda [String] Expr Span
-    | ExprImport String Span
+    | ExprImport String [String] Span
     | ExprPatternMatch Expr [Expr] Span
     | ExprDerivedPatternMatch [Expr]
     | ExprPatternMatchArm
@@ -90,7 +90,7 @@ exprChildren (ExprLet _ value body _) = [value, body]
 exprChildren (ExprPatternMatch expr arms _) = expr : arms
 exprChildren (ExprPatternMatchArm _ body _) = [body]
 exprChildren (ExprDataConstructor{}) = []
-exprChildren (ExprImport _ _) = []
+exprChildren (ExprImport {}) = []
 exprChildren (ExprNum _ _) = []
 exprChildren (ExprStr _ _) = []
 exprChildren (ExprUVar _ _) = []
@@ -130,7 +130,7 @@ exprSpan (ExprPatternMatch _ _ s) = s
 exprSpan (ExprDerivedPatternMatch arms) = spanningExprs arms
 exprSpan (ExprPatternMatchArm _ _ s) = s
 exprSpan (ExprInstanceDef _ _ s) = s
-exprSpan (ExprImport _ s) = s
+exprSpan (ExprImport _ _ s) = s
 
 modifySpan :: Expr -> Span -> Expr
 modifySpan e@(ExprRoot _) _ = e
@@ -172,8 +172,8 @@ modifySpan (ExprPatternMatchArm patterns body _) newSpan =
     ExprPatternMatchArm patterns body newSpan
 modifySpan (ExprInstanceDef constraintType methods _) newSpan =
     ExprInstanceDef constraintType methods newSpan
-modifySpan (ExprImport moduleName _) newSpan =
-    ExprImport moduleName newSpan
+modifySpan (ExprImport moduleName elements _) newSpan =
+    ExprImport moduleName elements newSpan
 
 spanningExprs :: [Expr] -> Span
 spanningExprs [] = error "Cannot create a span from an empty list of expressions"

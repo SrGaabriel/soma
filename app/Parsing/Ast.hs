@@ -1,6 +1,7 @@
 module Parsing.Ast where
 
-import Control.Applicative (Alternative (many))
+import Control.Applicative (Alternative (many, (<|>)))
+import Control.Monad (unless)
 import Control.Monad.Error.Class (MonadError (throwError))
 import Data.List (intercalate)
 import Lexing.Lexer (Token (tokenIndent, tokenKind, tokenValue), TokenKind (..), spanningTokens, tokenSpan)
@@ -8,7 +9,7 @@ import Lexing.Position (Span (Span))
 import Parsing.Atoms (parseModuleName)
 import Parsing.Bindings (parseBinding)
 import Parsing.Errors (ParsingError (UnexpectedToken))
-import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseFuncName, parseIndentedBlock, parseIndexedIndentedBlock, peek)
+import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseFuncName, parseIndentedBlock, parseIndexedIndentedBlock, parseSequence, peek)
 import Parsing.Types (parseKind, parseQualifiedType, parseTyVar, parseType)
 import Syntax.Tree (Expr (..))
 import Typing.Types (Constraint, QualifiedType (Forall), Type (TVar), mkConstraint)
@@ -130,10 +131,25 @@ parseImport :: Parser Expr
 parseImport = do
     importToken <- consume TokenImport
     moduleNameSegments <- parseModuleName
+    separator <- consume TokenVarSymbol
+    unless (tokenValue separator == ".") $ do
+        throwError $ UnexpectedToken separator
+
+    _ <- consume TokenLeftBraces
+    imports <-
+        parseSequence
+            TokenComma
+            TokenRightBraces
+            ( do
+                nameToken <- consume TokenUpperIdentifier <|> consume TokenLowerIdentifier <|> consume TokenVarSymbol
+                pure $ tokenValue nameToken
+            )
+    _ <- consume TokenRightBraces
+
     let moduleName = intercalate "/" moduleNameSegments
     let Span importStart _ = tokenSpan importToken
     let importEnd = importStart + length moduleNameSegments
-    pure $ ExprImport moduleName (Span importStart importEnd)
+    pure $ ExprImport moduleName imports (Span importStart importEnd)
 
 parseIntrinsicDef :: Parser Expr
 parseIntrinsicDef = do

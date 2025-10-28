@@ -1,3 +1,9 @@
+data Optional
+    = Some
+        value :: Int
+    | Nothing
+        
+
 intrinsic def {+} :: Int -> Int -> Int
 
 def summing(x: Int, y: Int) -> Int = x + y

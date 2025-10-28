@@ -158,8 +158,8 @@ parseExhaustiveSequence separator itemParser = Parser $ \tokens -> do
                 case tokenKind tokenPeek of
                     tk
                         | tk == separator -> do
-                            _ <- runParser next rest
-                            parseNext (item : acc) rest
+                            (_, afterSeparator) <- runParser next rest
+                            parseNext (item : acc) afterSeparator
                         | otherwise -> Right (reverse (item : acc), rest)
 
 parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
