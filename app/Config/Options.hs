@@ -106,9 +106,9 @@ optionsParser =
 
 parseExtern :: String -> Either String (String, String)
 parseExtern s =
-  case break (== '=') s of
-    (k, '=':v) | not (null k) && not (null v) -> Right (k, v)
-    _ -> Left "Expected format NAME=PATH"
+    case break (== '=') s of
+        (k, '=' : v) | not (null k) && not (null v) -> Right (k, v)
+        _ -> Left "Expected format NAME=PATH"
 
 optsInfo :: ParserInfo Options
 optsInfo =

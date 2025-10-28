@@ -5,7 +5,7 @@
 module Llvm.Gen.Value where
 
 import Control.Monad (unless)
-import Control.Monad.Reader (MonadReader (ask), ReaderT (..))
+import Control.Monad.Reader (MonadReader (ask), ReaderT (..), asks)
 import Control.Monad.State (MonadState (..), gets, modify, runState)
 import Control.Monad.Writer (MonadWriter (..), WriterT (..))
 import Data.Foldable (forM_)
@@ -16,6 +16,7 @@ import Llvm.Gen.Arrays (createSlice, createTypedRefCountedHeapArray, storeArrayE
 import Llvm.Gen.Calls (mkTypeclassMethodCall)
 import Llvm.Gen.Context
 import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irStructs, polymorphicFunctions, typeMap), MemoryScope (..), coerceArgsForCall, freshScope, lookupMemory, mkFnCall, saveInstruction)
+import Llvm.Gen.Externals (importExternalDependency)
 import Llvm.Gen.Functions (compileFunction)
 import Llvm.Gen.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
 import Llvm.Gen.Mangling (mangleDataTypeName, manglePolymorphicName)
@@ -27,7 +28,7 @@ import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (LlvmStore))
 import Llvm.Modules (LlvmStruct (LlvmStruct))
 import Llvm.Types (LlvmType (..), deref, getLlvmTypeSize)
 import Llvm.Values (LlvmValue (..), getValueType, intLiteral)
-import Project.Symbols (Symbol (ResolvedSymbol, resolvedSymbolKind, resolvedSymbolName), SymbolKind (..))
+import Project.Symbols (Symbol (..), SymbolKind (..))
 import Syntax.Tree (Expr (..), uncurryApp)
 import Typing.Currying (uncurryFunction)
 import Typing.Types (Constraint (..), QualifiedType (Forall), Type (..), constraintClassName, constraintTypes, isPolymorphic)
@@ -42,7 +43,10 @@ compileValue expr = case expr of
         case maybeMem of
             Just mem -> return mem
             Nothing -> error $ "Undefined variable: " ++ name
-    ExprVar (ResolvedSymbol{resolvedSymbolName, resolvedSymbolKind}) _ -> do
+    ExprVar s@(ResolvedSymbol{resolvedSymbolName, resolvedSymbolKind, resolvedSymbolPackage}) _ -> do
+        packageName <- asks currentPackage
+        when (resolvedSymbolPackage /= packageName) $ importExternalDependency s
+
         case resolvedSymbolKind of
             BindingSymbol bindingTyp -> do
                 compileApp expr [] bindingTyp
@@ -106,11 +110,13 @@ compileApp base args (Forall _ _ methodType) = do
             let llvmParamTypes = map toAllocationLlvmType fnParamTys
             coercedArgVals <- coerceArgsForCall argVals llvmParamTypes
             call <- case callName of
-                ResolvedSymbol name IntrinsicBindingSymbol _ _ -> do
+                ResolvedSymbol name IntrinsicBindingSymbol _ _ _ -> do
                     let intrinsic = getIntrinsic name
                     intrinsicCodeGen intrinsic coercedArgVals
-                ResolvedSymbol name (BindingSymbol _) _ _ -> do
+                ResolvedSymbol name (BindingSymbol _) _ packageName _ -> do
+                    currentPckg <- asks currentPackage
                     polyFuncs <- gets polymorphicFunctions
+                    when (packageName /= currentPckg) $ importExternalDependency callName
                     case Map.lookup name polyFuncs of
                         Just _ -> do
                             let argTypes =
@@ -124,11 +130,11 @@ compileApp base args (Forall _ _ methodType) = do
                             pure $ mkFnCall mangledName coercedArgVals llvmFnType
                         Nothing -> do
                             pure $ mkFnCall name coercedArgVals llvmFnType
-                ResolvedSymbol name _ _ _ -> do
+                ResolvedSymbol name _ _ _ _ -> do
                     pure $ mkFnCall name coercedArgVals llvmFnType
             callResult <- saveInstruction call llvmFnType
             let callFnName = case callName of
-                    ResolvedSymbol name _ _ _ -> name
+                    ResolvedSymbol name _ _ _ _ -> name
             return $ mkDirectCall callFnName coercedArgVals (toAllocationLlvmType fnRetType) callResult
 
 compileConstructorApp :: String -> [Expr] -> IrGen GenValue
@@ -212,7 +218,7 @@ isTypeclassMethod symbol = case resolvedSymbolKind symbol of
     _ -> False
 
 getConstructorName :: Expr -> String
-getConstructorName (ExprVar (ResolvedSymbol name _ _ _) _) = name
+getConstructorName (ExprVar (ResolvedSymbol name _ _ _ _) _) = name
 getConstructorName _ = error "Not a constructor"
 
 writeConstructorData :: GenValue -> [Expr] -> IrGen ()

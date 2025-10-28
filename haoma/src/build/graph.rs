@@ -106,10 +106,8 @@ impl DependencyGraph {
             in_degree.insert(node_name.clone(), 0);
         }
 
-        for deps in adjacency.values() {
-            for dep in deps {
-                *in_degree.get_mut(dep).unwrap() += 1;
-            }
+        for (node_name, deps) in &adjacency {
+            *in_degree.get_mut(node_name).unwrap() = deps.len();
         }
 
         let mut queue: VecDeque<String> = in_degree
@@ -129,12 +127,12 @@ impl DependencyGraph {
                     current_layer.push(node.clone());
                     processed += 1;
 
-                    if let Some(deps) = adjacency.get(&node) {
-                        for dep in deps {
-                            let degree = in_degree.get_mut(dep).unwrap();
+                    for (other_node, other_deps) in &adjacency {
+                        if other_deps.contains(&node) {
+                            let degree = in_degree.get_mut(other_node).unwrap();
                             *degree -= 1;
                             if *degree == 0 {
-                                queue.push_back(dep.clone());
+                                queue.push_back(other_node.clone());
                             }
                         }
                     }

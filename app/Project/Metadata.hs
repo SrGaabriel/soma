@@ -51,6 +51,7 @@ data SerializableSymbol = SerializableSymbol
     { ssName :: String
     , ssKind :: SerializableSymbolKind
     , ssModule :: String
+    , ssPackage :: String
     }
     deriving (Show, Eq, Generic)
 
@@ -156,19 +157,21 @@ serializableToSymbolKind SIntrinsicBindingSymbol = IntrinsicBindingSymbol
 serializableToSymbolKind SIntrinsicTypeSymbol = IntrinsicTypeSymbol
 
 symbolToSerializable :: Symbol -> SerializableSymbol
-symbolToSerializable (ResolvedSymbol name kind modName _) =
+symbolToSerializable (ResolvedSymbol name kind modName pName _) =
     SerializableSymbol
         { ssName = name
         , ssKind = symbolKindToSerializable kind
         , ssModule = modName
+        , ssPackage = pName
         }
 
 serializableToSymbol :: SerializableSymbol -> Symbol
-serializableToSymbol (SerializableSymbol name kind modName) =
+serializableToSymbol (SerializableSymbol name kind modName pName) =
     ResolvedSymbol
         { resolvedSymbolName = name
         , resolvedSymbolKind = serializableToSymbolKind kind
         , resolvedSymbolModule = modName
+        , resolvedSymbolPackage = pName
         , resolvedSymbolSpan = Span 0 0
         }
 
@@ -186,7 +189,7 @@ extractPublicSymbols symMap =
     , not (isLocalSymbol sym)
     ]
   where
-    isLocalSymbol (ResolvedSymbol _ LocalVariableSymbol _ _) = True
+    isLocalSymbol (ResolvedSymbol _ LocalVariableSymbol _ _ _) = True
     isLocalSymbol _ = False
 
 createProjectMetadata ::
@@ -209,3 +212,12 @@ createProjectMetadata modName version sourceFiles publicSyms depGraph =
         , pmPublicSymbols = extractPublicSymbols publicSyms
         , pmDependencyGraph = depGraph
         }
+
+projectMetadataPublicSymbols :: ProjectMetadata -> Map.Map Symbol QualifiedType
+projectMetadataPublicSymbols pm =
+    Map.fromList
+        [ ( serializableToSymbol (psSymbol ps)
+          , serializableToQualType (psTypeSignature ps)
+          )
+        | ps <- pmPublicSymbols pm
+        ]

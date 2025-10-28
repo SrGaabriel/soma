@@ -50,7 +50,7 @@ buildDependencyGraph =
 
 extractImports :: Expr -> [ModuleName]
 extractImports expr = case expr of
-    ExprImport name _ -> [takeWhile (/= ':') name]
+    ExprImport name _ -> [takeWhile (/= '/') name]
     _ -> concatMap extractImports (exprChildren expr)
 
 topoSortModules :: DependencyGraph -> Either [[ModuleName]] [ModuleName]

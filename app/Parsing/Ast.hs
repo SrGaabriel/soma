@@ -132,7 +132,7 @@ parseImport :: Parser Expr
 parseImport = do
     importToken <- consume TokenImport
     moduleNameSegments <- parseModuleName
-    let moduleName = intercalate "::" moduleNameSegments
+    let moduleName = intercalate "/" moduleNameSegments
     let Span importStart _ = tokenSpan importToken
     let importEnd = importStart + length moduleNameSegments
     pure $ ExprImport moduleName (Span importStart importEnd)

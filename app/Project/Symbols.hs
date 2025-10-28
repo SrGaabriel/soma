@@ -7,6 +7,7 @@ data Symbol = ResolvedSymbol
     { resolvedSymbolName :: String
     , resolvedSymbolKind :: SymbolKind
     , resolvedSymbolModule :: String
+    , resolvedSymbolPackage :: String
     , resolvedSymbolSpan :: Span
     }
     deriving (Show, Eq, Ord)

@@ -19,6 +19,7 @@ pub struct BuildResults {
     pub success: bool,
     pub tarball_path: Option<PathBuf>,
     pub object_paths: Vec<PathBuf>,
+    #[allow(dead_code)]
     pub source_hash: String,
     #[allow(dead_code)]
     pub dependency_hash: String,
@@ -28,7 +29,7 @@ pub struct BuildResults {
 #[derive(Debug, Clone)]
 struct WorkItem {
     node: BuildNode,
-    dependency_hashes: HashMap<String, String>,
+    dependency_tarballs: HashMap<String, PathBuf>,
 }
 
 enum WorkerMessage {
@@ -107,10 +108,14 @@ impl BuildScheduler {
         let source_hash =
             HashCalculator::hash_directory(&src_path).unwrap_or_else(|_| String::from("unknown"));
 
-        let dep_hash_values: Vec<String> = work_item.dependency_hashes.values().cloned().collect();
+        let dep_hash_values: Vec<String> = work_item
+            .dependency_tarballs
+            .keys()
+            .map(|_| source_hash.clone())
+            .collect();
         let dependency_hash = HashCalculator::hash_dependencies(&dep_hash_values);
 
-        match compile_module(&node, &work_item.dependency_hashes) {
+        match compile_module(&node, &work_item.dependency_tarballs) {
             Ok((tarball, objects)) => BuildResults {
                 module_name,
                 success: true,
@@ -135,12 +140,12 @@ impl BuildScheduler {
     pub fn submit(
         &self,
         node: BuildNode,
-        dependency_hashes: HashMap<String, String>,
+        dependency_tarballs: HashMap<String, PathBuf>,
     ) -> BuildResult<()> {
         let node_name = node.name.clone();
         let work_item = WorkItem {
             node,
-            dependency_hashes,
+            dependency_tarballs,
         };
 
         self.work_sender
@@ -187,7 +192,7 @@ impl LayeredBuilder {
         multi_progress: &MultiProgress,
     ) -> BuildResult<HashMap<String, BuildResults>> {
         let mut results = HashMap::new();
-        let mut hashes: HashMap<String, String> = HashMap::new();
+        let mut tarball_paths: HashMap<String, PathBuf> = HashMap::new();
 
         for (layer_idx, layer) in layers.iter().enumerate() {
             let layer_pb = multi_progress.add(ProgressBar::new(layer.len() as u64));
@@ -210,9 +215,9 @@ impl LayeredBuilder {
                         "⚡".yellow(),
                         module_name.dimmed()
                     ));
-                    hashes.insert(module_name.clone(), source_hash.clone());
 
                     if let Some(cache_entry) = cache.get(module_name) {
+                        tarball_paths.insert(module_name.clone(), cache_entry.tarball_path.clone());
                         let cached_result = BuildResults {
                             module_name: module_name.clone(),
                             success: true,
@@ -239,14 +244,14 @@ impl LayeredBuilder {
                     })?
                     .clone();
 
-                let mut dependency_hashes = HashMap::new();
+                let mut dependency_tarballs = HashMap::new();
                 for dep_name in &node.dependencies {
-                    if let Some(dep_hash) = hashes.get(dep_name) {
-                        dependency_hashes.insert(dep_name.clone(), dep_hash.clone());
+                    if let Some(dep_tarball) = tarball_paths.get(dep_name) {
+                        dependency_tarballs.insert(dep_name.clone(), dep_tarball.clone());
                     }
                 }
 
-                self.scheduler.submit(node, dependency_hashes)?;
+                self.scheduler.submit(node, dependency_tarballs)?;
             }
 
             while pending > 0 {
@@ -260,7 +265,9 @@ impl LayeredBuilder {
                             "✓".green(),
                             result.module_name
                         ));
-                        hashes.insert(result.module_name.clone(), result.source_hash.clone());
+                        if let Some(tarball) = &result.tarball_path {
+                            tarball_paths.insert(result.module_name.clone(), tarball.clone());
+                        }
                     } else {
                         layer_pb.set_message(format!(
                             "Layer {} | {} {}",

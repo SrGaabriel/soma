@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use crate::{build::clean_project, logging::{output_err, output_ok}};
+use crate::{
+    build::clean_project,
+    logging::{output_err, output_ok},
+};
 
 pub fn execute(path: &Path) {
     if !path.exists() {

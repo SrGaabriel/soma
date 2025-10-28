@@ -9,7 +9,7 @@ use crate::build::graph::BuildNode;
 
 pub fn compile_module(
     node: &BuildNode,
-    _dependency_info: &HashMap<String, String>,
+    dependency_tarballs: &HashMap<String, PathBuf>,
 ) -> Result<(PathBuf, Vec<PathBuf>), String> {
     let module_path = &node.path;
     let manifest = &node.manifest;
@@ -33,15 +33,8 @@ pub fn compile_module(
         .arg(&output_tarball);
 
     for dep_name in &node.dependencies {
-        let dep_tarball = node
-            .path
-            .parent()
-            .map(|parent_dir| {
-                parent_dir
-                    .join(dep_name)
-                    .join("build")
-                    .join(format!("{}.toria", dep_name))
-            })
+        let dep_tarball = dependency_tarballs
+            .get(dep_name)
             .ok_or_else(|| format!("Dependency tarball not found for '{}'", dep_name))?;
 
         command

@@ -26,6 +26,7 @@ data GenState = GenState
     , gsTypeMap :: Map.Map Expr Type
     , gsSkolemEnv :: Map.Map String SkolemVar
     , gsCurrentModule :: String
+    , gsCurrentPackage :: String
     }
     deriving (Show)
 
@@ -96,11 +97,13 @@ recordType expr ty = modify $ \s -> s{gsTypeMap = Map.insert expr ty (gsTypeMap 
 createLocalSymbol :: String -> GenM Symbol
 createLocalSymbol name = do
     currentModule <- gets gsCurrentModule
+    currentPackage <- gets gsCurrentPackage
     return
         $ ResolvedSymbol
             { resolvedSymbolName = name
             , resolvedSymbolKind = LocalVariableSymbol
             , resolvedSymbolModule = currentModule
+            , resolvedSymbolPackage = currentPackage
             , resolvedSymbolSpan = Span 0 0
             }
 
@@ -371,16 +374,16 @@ generatePatternBindings expr env patterns armTypes = do
     let allErrors = concat errorLists
     pure (Map.unions (env : bindings), allErrors)
 
-runGenM :: String -> TypeEnv -> GenM a -> (a, GenState, [InferenceError])
-runGenM currentModule env (GenM m) =
-    let ((result, finalState), errors) = runWriter (runReaderT (runStateT m (initialState currentModule)) env)
+runGenM :: String -> String -> TypeEnv -> GenM a -> (a, GenState, [InferenceError])
+runGenM currentPackage currentModule env (GenM m) =
+    let ((result, finalState), errors) = runWriter (runReaderT (runStateT m (initialState currentModule currentPackage)) env)
     in (result, finalState, errors)
   where
     initialState = GenState 0 Map.empty Map.empty
 
-runGenMErrors :: String -> TypeEnv -> GenM a -> [InferenceError]
-runGenMErrors currentModule env genM =
-    let (_, _, errors) = runGenM currentModule env genM
+runGenMErrors :: String -> String -> TypeEnv -> GenM a -> [InferenceError]
+runGenMErrors currentModule currentPackage env genM =
+    let (_, _, errors) = runGenM currentPackage currentModule env genM
     in errors
 
 extractArgTypes :: Type -> Int -> [Type]

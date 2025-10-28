@@ -27,6 +27,7 @@ data ResolverState = ResolverState
     { globalBindings :: TypeEnv
     , instanceBindings :: InstanceEnv
     , currentModule :: String
+    , currentPackage :: String
     , localScope :: [String]
     , currentTypeClass :: Maybe String
     }
@@ -34,11 +35,13 @@ data ResolverState = ResolverState
 createGlobalSymbol :: String -> SymbolKind -> ResolverM Symbol
 createGlobalSymbol name kind = do
     moduleName <- gets currentModule
+    packageName <- gets currentPackage
     return
         $ ResolvedSymbol
             { resolvedSymbolName = name
             , resolvedSymbolKind = kind
             , resolvedSymbolModule = moduleName
+            , resolvedSymbolPackage = packageName
             , resolvedSymbolSpan = Span 0 0
             }
 
@@ -216,18 +219,34 @@ addInstanceBindingFromType constraintType = do
     let instances = instanceBindings s
     put s{instanceBindings = Map.insert constraintType True instances}
 
-runResolver :: String -> Expr -> IO (Either InferenceError (Expr, TypeEnv, InstanceEnv))
-runResolver moduleName root = do
-    let initialState = ResolverState{globalBindings = Map.empty, instanceBindings = Map.empty, currentModule = moduleName, localScope = [], currentTypeClass = Nothing}
+runResolver :: String -> String -> Expr -> IO (Either InferenceError (Expr, TypeEnv, InstanceEnv))
+runResolver packageName moduleName root = do
+    let initialState =
+            ResolverState
+                { globalBindings = Map.empty
+                , instanceBindings = Map.empty
+                , currentModule = moduleName
+                , currentPackage = packageName
+                , localScope = []
+                , currentTypeClass = Nothing
+                }
     let resolverM = runResolverM (analyzeTree root)
     let (result, finalState) = runState (runExceptT resolverM) initialState
     pure $ case result of
         Left err -> Left err
         Right expr -> Right (expr, globalBindings finalState, instanceBindings finalState)
 
-runResolverWithEnv :: String -> TypeEnv -> Expr -> IO (Either InferenceError (Expr, TypeEnv, InstanceEnv))
-runResolverWithEnv moduleName initialEnv root = do
-    let initialState = ResolverState{globalBindings = initialEnv, instanceBindings = Map.empty, currentModule = moduleName, localScope = [], currentTypeClass = Nothing}
+runResolverWithEnv :: String -> String -> TypeEnv -> Expr -> IO (Either InferenceError (Expr, TypeEnv, InstanceEnv))
+runResolverWithEnv packageName moduleName initialEnv root = do
+    let initialState =
+            ResolverState
+                { globalBindings = initialEnv
+                , instanceBindings = Map.empty
+                , currentModule = moduleName
+                , currentPackage = packageName
+                , localScope = []
+                , currentTypeClass = Nothing
+                }
     let resolverM = runResolverM (analyzeTree root)
     let (result, finalState) = runState (runExceptT resolverM) initialState
     pure $ case result of

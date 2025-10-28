@@ -1,8 +1,10 @@
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
 module Project.Processing where
 
+import Config.Options (Options (..))
 import Control.Exception (SomeException, catch)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
@@ -15,9 +17,10 @@ import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.ErrorPrinter (printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Project.Graph (ModuleGraph, buildDependencyGraph)
+import Project.Metadata (projectMetadataPublicSymbols)
 import Project.Module (ModuleInfo (..))
 import Project.Symbols (Symbol (..))
-import Project.Tarball (createProjectTarball, defaultTarballOptions, tarballExtension)
+import Project.Tarball (TarballContents (..), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
 import Syntax.Tree (Expr (..), exprChildren)
 import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude (exitFailure)
@@ -28,10 +31,10 @@ import Typing.Types (QualifiedType)
 extractSymbolImports :: Expr -> [(String, Maybe [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
 extractSymbolImports (ExprImport name _) =
-    let (m, rest) = break (== ':') name
-    in if take 2 rest == "::"
+    let (m, rest) = break (== '/') name
+    in if take 1 rest == "/"
         then
-            let syms = drop 2 rest
+            let syms = drop 1 rest
             in [(m, Just (wordsWhen (== ',') syms))]
         else [(name, Nothing)]
 extractSymbolImports e = concatMap extractSymbolImports (exprChildren e)
@@ -47,9 +50,16 @@ filterSymbolsByNames :: [String] -> Map.Map Symbol QualifiedType -> Map.Map Symb
 filterSymbolsByNames names =
     Map.filterWithKey (\sym _ -> resolvedSymbolName sym `elem` names)
 
-processModules :: [String] -> ModuleGraph -> String -> Maybe FilePath -> Bool -> IO ()
-processModules sorted graph inputName mOutputFile isLib = do
-    (allModules, fusedTypeMap) <- processAllModules sorted graph Map.empty Map.empty
+type AllModuleElements = Map.Map String (Expr, TypeMap, Map.Map Symbol QualifiedType)
+
+processModules :: [String] -> ModuleGraph -> Options -> IO ()
+processModules sorted graph compileOptions = do
+    let inputName = fromMaybe "app" $ optionsName compileOptions
+    let mOutputFile = optionsOutput compileOptions
+    let isLib = optionsLib compileOptions
+    deps <- processExternalDependencies (optionsDeps compileOptions)
+
+    (allModules, fusedTypeMap) <- processAllModules inputName sorted graph Map.empty deps Map.empty
     let fusedAst = createFusedAst allModules
     let llvmIr = runLlvmCodeGenAndTranscribe inputName fusedAst fusedTypeMap
 
@@ -122,7 +132,8 @@ processModules sorted graph inputName mOutputFile isLib = do
 
             catch (removeFile llFile) (\(_ :: SomeException) -> return ())
             catch (removeFile objFile) (\(_ :: SomeException) -> return ())
-        ""  | isLib -> do
+        ""
+            | isLib -> do
                 putStrLn "Can't build executable for library"
                 exitFailure
             | not isLib -> do
@@ -145,15 +156,16 @@ processModules sorted graph inputName mOutputFile isLib = do
 
     putStrLn "✅ Build process completed."
 
-processAllModules :: [String] -> ModuleGraph -> Map.Map String (Expr, TypeMap, Map.Map Symbol QualifiedType) -> TypeMap -> IO (Map.Map String (Expr, TypeMap, Map.Map Symbol QualifiedType), TypeMap)
-processAllModules [] _graph allModules fusedTypeMap = return (allModules, fusedTypeMap)
-processAllModules (modName : rest) graph allModules fusedTypeMap = do
+processAllModules :: String -> [String] -> ModuleGraph -> AllModuleElements -> Map.Map Symbol QualifiedType -> TypeMap -> IO (AllModuleElements, TypeMap)
+processAllModules _ [] _ allModules _ fusedTypeMap = return (allModules, fusedTypeMap)
+processAllModules packageName (modName : rest) graph allModules deps fusedTypeMap = do
     let Just modInfo = Map.lookup modName graph
         ast = moduleAst modInfo
 
     let imports = extractSymbolImports ast
         seedEnv =
-            Map.unions
+            Map.union deps
+                $ Map.unions
                 $ map
                     ( \(impMod, mSyms) ->
                         case Map.lookup impMod allModules of
@@ -164,14 +176,14 @@ processAllModules (modName : rest) graph allModules fusedTypeMap = do
                     )
                     imports
 
-    resolvedResult <- runResolverWithEnv modName seedEnv ast
+    resolvedResult <- runResolverWithEnv packageName modName seedEnv ast
     (resolvedAst, fullEnv, _instanceEnv) <- case resolvedResult of
         Left err -> printError err (modulePath modInfo) (moduleContent modInfo) "ANALYSIS" >> exitFailure
         Right res -> return res
 
     let newDefs = Map.difference fullEnv seedEnv
 
-    typesResult <- inferTreeT modName fullEnv resolvedAst
+    typesResult <- inferTreeT packageName modName fullEnv resolvedAst
     types <- case typesResult of
         Left errs -> mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") errs >> exitFailure
         Right t -> return t
@@ -181,7 +193,7 @@ processAllModules (modName : rest) graph allModules fusedTypeMap = do
 
     let newAllModules = Map.insert modName (resolvedAst, types, newDefs) allModules
         newFusedTypeMap = Map.union types fusedTypeMap
-    processAllModules rest graph newAllModules newFusedTypeMap
+    processAllModules packageName rest graph newAllModules deps newFusedTypeMap
 
 createFusedAst :: Map.Map String (Expr, TypeMap, Map.Map Symbol QualifiedType) -> Expr
 createFusedAst allModules =
@@ -193,3 +205,18 @@ createFusedAst allModules =
                 )
                 (Map.elems allModules)
     in ExprRoot allExprs
+
+processExternalDependencies :: [(String, String)] -> IO (Map.Map Symbol QualifiedType)
+processExternalDependencies externals = do
+    list <-
+        mapM
+            ( \(name, path) -> do
+                tarball <- extractProjectTarball path
+                case tarball of
+                    Left err -> error $ "Failed to extract external dependency " ++ name ++ ": " ++ err
+                    Right (TarballContents{tcMetadata}) -> do
+                        let exports = projectMetadataPublicSymbols tcMetadata
+                        pure exports
+            )
+            externals
+    pure $ Map.unions list

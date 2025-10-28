@@ -169,5 +169,5 @@ parseInfixRest lhs prec = do
 
 parseModuleName :: Parser [String]
 parseModuleName = do
-    toks <- parseSequence TokenReturns TokenNewline (consume TokenVarSymbol <|> consume TokenLowerIdentifier)
+    toks <- parseSequence TokenSlash TokenNewline (consume TokenVarSymbol <|> consume TokenLowerIdentifier)
     pure $ map tokenValue toks

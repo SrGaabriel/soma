@@ -3,6 +3,7 @@ module Main where
 import Config.Options
 import Control.Monad (unless)
 import qualified Data.Map as Map
+import Data.Maybe (fromMaybe)
 import Project.Graph
 import Project.Module
 import Project.Parsing
@@ -10,7 +11,6 @@ import Project.Processing
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath (dropExtension, takeExtension, takeFileName)
-import Data.Maybe (fromMaybe)
 
 main :: IO ()
 main = do
@@ -44,10 +44,7 @@ main = do
                     mapM_ (putStrLn . ("  " ++) . show) cycles
                     exitFailure
                 Right sorted -> do
-                    let mName = fromMaybe "app" $ optionsName options
-                    let out = optionsOutput options
-                    let isLib = optionsLib options
-                    _ <- processModules sorted graph mName out isLib
+                    _ <- processModules sorted graph options
                     return ()
 
             putStrLn "✅ Successfully compiled all modules."
@@ -56,7 +53,6 @@ main = do
 processSingle :: Options -> IO ()
 processSingle options = do
     let path = optionsInput options
-    let output = optionsOutput options
     let name = dropExtension (takeFileName path)
     parseE <- parseModule (name, path)
     mi <- case parseE of
@@ -78,7 +74,7 @@ processSingle options = do
             exitFailure
         Right sorted -> do
             let isLib = optionsLib options
-            _ <- processModules sorted graph name output isLib
+            _ <- processModules sorted graph options{optionsName = Just name}
             return ()
 
     putStrLn "✅ Successfully compiled module."

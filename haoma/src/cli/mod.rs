@@ -1,7 +1,7 @@
 mod build;
+mod clean;
 mod create;
 mod run;
-mod clean;
 
 use clap::Parser;
 use std::path::{Path, PathBuf};
@@ -57,7 +57,7 @@ pub fn execute(command: &Commands) {
         }
         Commands::Run { path, args } => {
             run::execute(path, args);
-        },
+        }
         Commands::Clean { path } => {
             clean::execute(path);
         }

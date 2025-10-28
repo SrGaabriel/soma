@@ -28,6 +28,7 @@ data IrGenEnv = IrGenEnv
     { currentScope :: MemoryScope
     , currentFunction :: Maybe String
     , currentBlock :: Maybe String
+    , currentPackage :: String
     }
 
 data IrGenState = IrGenState
@@ -77,8 +78,8 @@ cleanGlobalState tM =
         , monomorphizedFunctions = Set.empty
         }
 
-globalDefaultEnv :: IrGenEnv
-globalDefaultEnv =
+namedDefaultEnv :: String -> IrGenEnv
+namedDefaultEnv name =
     IrGenEnv
         { currentScope =
             MemoryScope
@@ -88,6 +89,7 @@ globalDefaultEnv =
                 }
         , currentFunction = Nothing
         , currentBlock = Nothing
+        , currentPackage = name
         }
 
 type IrGen a = ReaderT IrGenEnv (WriterT [LlvmStatement] (State IrGenState)) a

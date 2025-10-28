@@ -46,6 +46,7 @@ data TokenKind
     | TokenLambda
     | TokenForall
     | TokenUnderscore
+    | TokenSlash
     deriving (Show, Eq, Ord)
 
 data Token = Token
@@ -104,9 +105,11 @@ tokenize (c : cs) i indent
                 _ ->
                     let (restTokens, restErrors) = tokenize rest' (i + 2 + length comment) indent
                     in (restTokens, UnterminatedComment i : restErrors)
-        _ ->
+        ' ' : _ ->
             let (ops, rest) = span isOperatorChar (c : cs)
             in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
+        _ ->
+            addToken (Token TokenSlash "/" i indent) (tokenize cs (i + 1) indent)
     | c == '\n' =
         let (spaces, rest) = span isSpace cs
             indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
@@ -168,7 +171,7 @@ tokenize (c : cs) i indent
                 "do" -> TokenDo
                 "def" -> TokenDef
                 "intrinsic" -> TokenIntrinsic
-                "import" -> TokenImport
+                "use" -> TokenImport
                 "data" -> TokenData
                 "struct" -> TokenStruct
                 "trait" -> TokenClass -- todo: rename
@@ -247,6 +250,7 @@ referenceTokenKind TokenDo = "'do'"
 referenceTokenKind TokenDef = "'def'"
 referenceTokenKind TokenIntrinsic = "'intrinsic'"
 referenceTokenKind TokenImport = "'import'"
+referenceTokenKind TokenSlash = "a slash"
 referenceTokenKind TokenLeftParen = "a left parenthesis"
 referenceTokenKind TokenRightParen = "a right parenthesis"
 referenceTokenKind TokenPipe = "a vertical bar"

@@ -72,6 +72,7 @@ library
                     Llvm.Gen.Metadata
                     Llvm.Gen.Mangling
                     Llvm.Gen.Functions
+                    Llvm.Gen.Externals
                     Llvm.Gen.TypeClasses
                     Llvm.Gen.Monomorphize
                     Llvm.Gen.Templates
