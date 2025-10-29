@@ -1,4 +1,4 @@
-use stdlib/core.{summing}
+use stdlib/core.{id}
 
 intrinsic def {+} :: a -> a -> a
 intrinsic def {==} :: a -> a -> Bool
@@ -83,8 +83,7 @@ def primeNumbers :: [Int] = [2,3,5,7]
 def main :: IO () =
     let primes = primeNumbers in
     let primesPlusOne = map (\x -> x + 1) primes in
-    let number = summing 1 4 in
-    println number
+    println (id primesPlusOne)
 
 instance Display Shape where
     def display :: Shape -> String

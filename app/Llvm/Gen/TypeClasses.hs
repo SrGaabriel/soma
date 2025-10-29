@@ -34,15 +34,15 @@ extractMethodSignature _ = error "Expected ExprTypeClassBinding"
 
 compileInstanceDef :: Expr -> IrGen ()
 compileInstanceDef (ExprInstanceDef constraintType methods _span) = do
-    let (className, concreteType) = extractConstraintParts constraintType
+    let (className, instantiatedType) = extractConstraintParts constraintType
     let instInfo =
             InstanceMetadata
                 { instClassName = className
-                , instType = concreteType
+                , instType = instantiatedType
                 }
     modify $ \s -> s{instances = instInfo : instances s}
 
-    mapM_ (compileInstanceMethod className concreteType) methods
+    mapM_ (compileInstanceMethod className instantiatedType) methods
 compileInstanceDef _ = error "Expected ExprInstanceDef"
 
 compileInstanceMethod :: String -> Type -> Expr -> IrGen ()

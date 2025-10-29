@@ -101,6 +101,13 @@ compileApp base args (Forall _ _ methodType) = do
             let (paramTypes, retType) = uncurryFunction methodType
             let llvmParamTypes = map toAllocationLlvmType paramTypes
             mkTypeclassMethodCall className resolvedSymbolName argVals llvmParamTypes (toAllocationLlvmType retType)
+        ExprUVar _ _ -> do
+            basePtr <- compileValue base
+            argVals <- mapM compileValue args
+            let (_paramTypes, retType) = uncurryFunction methodType
+            let llvmRetType = toAllocationLlvmType retType
+            Contextualized (FunctionCall $ IndirectCall basePtr argVals llvmRetType)
+                <$> saveInstruction (LlvmCall (gvw basePtr) llvmRetType (map gvw argVals)) llvmRetType
         _ -> do
             tyMap <- gets typeMap
             argVals <- mapM compileValue args
@@ -217,7 +224,7 @@ writeTag structPtr t = do
 
 getApplicableFnName :: Expr -> Symbol
 getApplicableFnName (ExprVar r@(ResolvedSymbol{}) _) = r
-getApplicableFnName u = error (show u)
+getApplicableFnName u = error $ "Cannot get function name from expression: " ++ show u
 
 isDataConstructor :: Symbol -> Bool
 isDataConstructor symbol = case resolvedSymbolKind symbol of

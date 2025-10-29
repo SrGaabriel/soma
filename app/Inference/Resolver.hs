@@ -138,51 +138,48 @@ resolveTReference expr@(ExprIntrinsicDef name typ s) = do
     realTyp <- replaceAllUnresolvedQualified expr env typ
     addGlobalBinding name realTyp IntrinsicBindingSymbol
     pure $ ExprIntrinsicDef name realTyp s
-resolveTReference (ExprUVar name varSpan) = do
+resolveTReference expr@(ExprUVar name varSpan) = do
     state <- get
     if name `elem` localScope state
-        then pure $ ExprUVar name varSpan
+        then pure expr
         else do
             env <- getEnv
             case findSymbolByName name env of
                 Just (symbol, _) -> pure $ ExprVar symbol varSpan
-                Nothing ->
-                    pure $ ExprUVar name varSpan
-resolveTReference expr = do
-    case expr of
-        ExprApp f a -> do
-            f' <- resolveTReference f
-            a' <- resolveTReference a
-            pure $ ExprApp f' a'
-        ExprLambda args body exprSpan -> do
-            modify $ \s -> s{localScope = localScope s ++ args}
-            body' <- resolveTReference body
-            modify $ \s -> s{localScope = drop (length args) (localScope s)}
-            pure $ ExprLambda args body' exprSpan
-        ExprLet name value body exprSpan -> do
-            value' <- resolveTReference value
-            body' <- resolveTReference body
-            pure $ ExprLet name value' body' exprSpan
-        ExprPatternMatch scrutinee arms exprSpan -> do
-            scrutinee' <- resolveTReference scrutinee
-            arms' <- mapM resolveTReference arms
-            pure $ ExprPatternMatch scrutinee' arms' exprSpan
-        ExprDerivedPatternMatch arms -> do
-            arms' <- mapM resolveTReference arms
-            pure $ ExprDerivedPatternMatch arms'
-        ExprPatternMatchArm patterns body exprSpan -> do
-            body' <- resolveTReference body
-            pure $ ExprPatternMatchArm patterns body' exprSpan
-        ExprBlock exprs exprSpan -> do
-            exprs' <- mapM resolveTReference exprs
-            pure $ ExprBlock exprs' exprSpan
-        ExprArray exprs exprSpan -> do
-            exprs' <- mapM resolveTReference exprs
-            pure $ ExprArray exprs' exprSpan
-        ExprTuple exprs exprSpan -> do
-            exprs' <- mapM resolveTReference exprs
-            pure $ ExprTuple exprs' exprSpan
-        _ -> pure expr
+                Nothing -> pure expr
+resolveTReference (ExprApp f a) = do
+    f' <- resolveTReference f
+    a' <- resolveTReference a
+    pure $ ExprApp f' a'
+resolveTReference (ExprLambda args body exprSpan) = do
+    modify $ \s -> s{localScope = localScope s ++ args}
+    body' <- resolveTReference body
+    modify $ \s -> s{localScope = drop (length args) (localScope s)}
+    pure $ ExprLambda args body' exprSpan
+resolveTReference (ExprLet name value body exprSpan) = do
+    value' <- resolveTReference value
+    body' <- resolveTReference body
+    pure $ ExprLet name value' body' exprSpan
+resolveTReference (ExprPatternMatch scrutinee arms exprSpan) = do
+    scrutinee' <- resolveTReference scrutinee
+    arms' <- mapM resolveTReference arms
+    pure $ ExprPatternMatch scrutinee' arms' exprSpan
+resolveTReference (ExprDerivedPatternMatch arms) = do
+    arms' <- mapM resolveTReference arms
+    pure $ ExprDerivedPatternMatch arms'
+resolveTReference (ExprPatternMatchArm patterns body exprSpan) = do
+    body' <- resolveTReference body
+    pure $ ExprPatternMatchArm patterns body' exprSpan
+resolveTReference (ExprBlock exprs exprSpan) = do
+    exprs' <- mapM resolveTReference exprs
+    pure $ ExprBlock exprs' exprSpan
+resolveTReference (ExprArray exprs exprSpan) = do
+    exprs' <- mapM resolveTReference exprs
+    pure $ ExprArray exprs' exprSpan
+resolveTReference (ExprTuple exprs exprSpan) = do
+    exprs' <- mapM resolveTReference exprs
+    pure $ ExprTuple exprs' exprSpan
+resolveTReference expr = pure expr
 
 getEnv :: ResolverM TypeEnv
 getEnv = gets globalBindings

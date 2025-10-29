@@ -28,10 +28,8 @@ toAllocationLlvmType t = case flattenTypeApp t of
             argLlvmTypes = map toAllocationLlvmType args
             funcType = LlvmFn baseLlvm argLlvmTypes
         in LlvmPointer funcType
-    (TVar (TypeVar varName _), _) ->
-        error $ "Uninstantiated type variable in codegen: " ++ varName
-    (TSkolem (SkolemVar _ _ _ name _), _) ->
-        error $ "Skolem variable in codegen: " ++ name
+    (TVar (TypeVar _ _), _) -> LlvmPointer LlvmSkolem
+    (TSkolem (SkolemVar {}), _) -> LlvmPointer LlvmSkolem
     (TUnresolved name, _) ->
         error $ "Unresolved type in codegen: " ++ name
     _ -> error $ "Unsupported type for allocation: " ++ show t

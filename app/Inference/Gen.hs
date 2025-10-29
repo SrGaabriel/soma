@@ -101,7 +101,7 @@ createLocalSymbol name = do
     return
         $ ResolvedSymbol
             { resolvedSymbolName = name
-            , resolvedSymbolKind = LocalVariableSymbol
+            , resolvedSymbolKind = LocalVariableSymbol name
             , resolvedSymbolModule = currentModule
             , resolvedSymbolPackage = currentPackage
             , resolvedSymbolSpan = Span 0 0

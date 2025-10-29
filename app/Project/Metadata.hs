@@ -42,7 +42,7 @@ data SerializableSymbolKind
     | STypeClassSymbol
     | STypeClassMethodSymbol String
     | SInstanceMethodSymbol String String
-    | SLocalVariableSymbol
+    | SLocalVariableSymbol String
     | SIntrinsicBindingSymbol
     | SIntrinsicTypeSymbol
     deriving (Show, Eq, Generic)
@@ -141,7 +141,7 @@ symbolKindToSerializable (TypeSymbol arity) = STypeSymbol arity
 symbolKindToSerializable TypeClassSymbol = STypeClassSymbol
 symbolKindToSerializable (TypeClassMethodSymbol cls) = STypeClassMethodSymbol cls
 symbolKindToSerializable (InstanceMethodSymbol inst cls) = SInstanceMethodSymbol inst cls
-symbolKindToSerializable LocalVariableSymbol = SLocalVariableSymbol
+symbolKindToSerializable (LocalVariableSymbol name) = SLocalVariableSymbol name
 symbolKindToSerializable IntrinsicBindingSymbol = SIntrinsicBindingSymbol
 symbolKindToSerializable IntrinsicTypeSymbol = SIntrinsicTypeSymbol
 
@@ -152,7 +152,7 @@ serializableToSymbolKind (STypeSymbol arity) = TypeSymbol arity
 serializableToSymbolKind STypeClassSymbol = TypeClassSymbol
 serializableToSymbolKind (STypeClassMethodSymbol cls) = TypeClassMethodSymbol cls
 serializableToSymbolKind (SInstanceMethodSymbol inst cls) = InstanceMethodSymbol inst cls
-serializableToSymbolKind SLocalVariableSymbol = LocalVariableSymbol
+serializableToSymbolKind (SLocalVariableSymbol name) = LocalVariableSymbol name
 serializableToSymbolKind SIntrinsicBindingSymbol = IntrinsicBindingSymbol
 serializableToSymbolKind SIntrinsicTypeSymbol = IntrinsicTypeSymbol
 
@@ -189,7 +189,7 @@ extractPublicSymbols symMap =
     , not (isLocalSymbol sym)
     ]
   where
-    isLocalSymbol (ResolvedSymbol _ LocalVariableSymbol _ _ _) = True
+    isLocalSymbol (ResolvedSymbol _ (LocalVariableSymbol _) _ _ _) = True
     isLocalSymbol _ = False
 
 createProjectMetadata ::

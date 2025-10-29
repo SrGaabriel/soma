@@ -79,6 +79,7 @@ library
                     Llvm.Gen.Calls
                     Llvm.Gen.PatternMatch
                     Llvm.Gen.Panic
+                    Llvm.Gen.Virtual
                     Analysis.Symbol
   hs-source-dirs:   app
   build-depends:    base >= 4.19.2.0,

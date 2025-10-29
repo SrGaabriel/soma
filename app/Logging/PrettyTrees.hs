@@ -13,6 +13,7 @@ import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (uncurryKind)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), SkolemVar (skName), TyConstructor (..), TyVar (TypeVar, tvId), Type (..))
 import qualified Typing.Types as TT
+import qualified Debug.Trace as Debug
 
 class TreeShow a where
     treeShow :: a -> String
@@ -131,3 +132,10 @@ treeShowTypeMapL expr typeMap = go expr 0
             children = exprChildren e
             childLines = concatMap (\c -> go c (indent + 2)) children
         in indentStr ++ treeShow e ++ typeStr ++ "\n" ++ childLines
+
+prettyDebugAst :: Monad m => Expr -> m ()
+prettyDebugAst root = prettyDebugAst' root 0
+  where
+    prettyDebugAst' expr indent = do
+        Debug.traceM $ replicate indent ' ' ++ treeShow expr
+        mapM_ (\child -> prettyDebugAst' child (indent + 2)) (exprChildren expr)

@@ -23,6 +23,7 @@ data LlvmType
     | LlvmFn LlvmType [LlvmType]
     | LlvmAnonymous [LlvmType]
     | LlvmVararg
+    | LlvmSkolem -- only for prod usage
     deriving (Show, Eq, Generic, Hashable)
 
 instance IR LlvmType where
@@ -41,6 +42,7 @@ instance IR LlvmType where
     toLlvm (LlvmFn retType argTypes) =
         toLlvm retType ++ " (" ++ intercalate ", " (map toLlvm argTypes) ++ ")"
     toLlvm LlvmVararg = "..."
+    toLlvm LlvmSkolem = error "Cannot convert LlvmSkolem to LLVM IR"
 
 getLlvmTypeSize :: LlvmType -> Int
 getLlvmTypeSize LlvmVoid = 0
@@ -57,6 +59,7 @@ getLlvmTypeSize (LlvmAnonymous types) = sum (map getLlvmTypeSize types)
 getLlvmTypeSize (LlvmNamedType _) = error "Named types do not have a fixed size"
 getLlvmTypeSize (LlvmFn _ _) = error "Function types do not have a fixed size"
 getLlvmTypeSize LlvmVararg = error "Vararg types do not have a fixed size"
+getLlvmTypeSize LlvmSkolem = error "Skolem types do not have a fixed size"
 
 deref :: LlvmType -> LlvmType
 deref (LlvmPointer t) = t
@@ -84,3 +87,4 @@ naturalAlignment (LlvmNamedType _) = 8
 naturalAlignment (LlvmFn _ _) = 8
 naturalAlignment LlvmVararg = 8
 naturalAlignment LlvmVoid = 1
+naturalAlignment LlvmSkolem = 8

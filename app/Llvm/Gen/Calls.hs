@@ -8,7 +8,7 @@ import Utils.Lists (hardHead)
 
 mkTypeclassMethodCall :: String -> String -> [GenValue] -> [LlvmType] -> LlvmType -> IrGen GenValue
 mkTypeclassMethodCall className methodName argVals expectedParamTypes llvmRetType = do
-    let firstArgType = getGenValueType (hardHead argVals)
+    let firstArgType = getGenValueType (hardHead argVals) -- urgent todo: review this shit code
     let normalizedType = normalizeType firstArgType
     let mangledName = mangleInstanceMethod className normalizedType methodName
 
