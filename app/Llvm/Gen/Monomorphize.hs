@@ -6,16 +6,17 @@ import qualified Data.Set as Set
 import Llvm.Gen.Context
 import Llvm.Gen.Core (IrGen, IrGenState (..))
 import Llvm.Gen.Functions (compileFunction)
+import Llvm.Gen.Mangling (mangleMonomorphizedName)
 import Llvm.Gen.Metadata (PolymorphicFunctionMetadata (..))
-import Llvm.Gen.Types (typeToMonomorphicName)
+import Llvm.Gen.Types (toAllocationLlvmType)
 import Syntax.Tree (Expr (..))
 import Typing.Types (Kind (..), QualifiedType (Forall), TyVar (..), Type (..))
 
 monomorphizeAndCompile :: String -> [Type] -> (Expr -> IrGen GenValue) -> IrGen String
-monomorphizeAndCompile funcName concreteTypes compileValueFunc = do
+monomorphizeAndCompile funcName argTypes compileValueFunc = do
     st <- get
-    -- todo move this mangling
-    let mangledName = funcName ++ concatMap (("_" ++) . typeToMonomorphicName) concreteTypes
+    let llvmArgTypes = map toAllocationLlvmType argTypes
+    let mangledName = mangleMonomorphizedName funcName llvmArgTypes
 
     if Set.member mangledName (monomorphizedFunctions st)
         then return mangledName
@@ -24,7 +25,7 @@ monomorphizeAndCompile funcName concreteTypes compileValueFunc = do
                 Nothing -> error $ "Polymorphic function not found: " ++ funcName
                 Just (PolymorphicFunction _ (Forall typeVars _ originalType) body) -> do
                     let typeVarNames = map (\(TypeVar name _) -> name) typeVars
-                    let substitution = Map.fromList $ zip typeVarNames concreteTypes
+                    let substitution = Map.fromList $ zip typeVarNames argTypes
                     let monomorphicType = substituteType substitution originalType
 
                     modify $ \s -> s{monomorphizedFunctions = Set.insert mangledName (monomorphizedFunctions s)}

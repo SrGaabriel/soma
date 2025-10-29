@@ -5,7 +5,7 @@ module Llvm.Gen.Entry (compileLlvmModule, runLlvmCodeGen, runLlvmCodeGenAndTrans
 import Data.Maybe (mapMaybe)
 import Inference.Core (TypeMap)
 import Llvm.Gen.Bindings (compileBindingDef)
-import Llvm.Gen.Core (IrGen, IrGenState (irDependencies, irFunctions, irStructs), cleanGlobalState, namedDefaultEnv, runIrGen)
+import Llvm.Gen.Core (IrGen, IrGenState (irDependencies, irFunctions), cleanGlobalState, namedDefaultEnv, runIrGen)
 import Llvm.Gen.DataTypes (compileDataTypeDef)
 import Llvm.Gen.TypeClasses (compileInstanceDef, compileTypeClassDef)
 import Llvm.Ir (IR (toLlvm))
@@ -30,9 +30,8 @@ runLlvmCodeGen :: String -> Expr -> TypeMap -> LlvmModule
 runLlvmCodeGen name root typeMap =
     let ((_, _collectedStatements), finalStat) = runIrGen (namedDefaultEnv name) (cleanGlobalState typeMap) (compileLlvmModule name root)
         fns = irFunctions finalStat
-        structs = irStructs finalStat
         deps = irDependencies finalStat
-    in LlvmModule name fns structs deps
+    in LlvmModule name fns deps
 
 runLlvmCodeGenAndTranscribe :: String -> Expr -> TypeMap -> String
 runLlvmCodeGenAndTranscribe name root typeMap =

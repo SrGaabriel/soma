@@ -125,7 +125,7 @@ processModules sorted graph compileOptions = do
                 objFiles
                 [(llFile, llvmIr)]
 
-            catch (removeFile llFile) (\(_ :: SomeException) -> return ())
+            -- todo: undoc catch (removeFile llFile) (\(_ :: SomeException) -> return ())
             catch (removeFile objFile) (\(_ :: SomeException) -> return ())
         ""
             | isLib -> do

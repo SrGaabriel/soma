@@ -1,4 +1,4 @@
-use stdlib/core.{summing,Optional,Some}
+use stdlib/core.{summing}
 
 intrinsic def {+} :: a -> a -> a
 intrinsic def {==} :: a -> a -> Bool
@@ -24,6 +24,12 @@ data Maybe a
         
 
 def pureMaybeInt(value: Int) -> Maybe Int = Just value
+
+data Optional
+    = Some
+        value :: Int
+    | Nothing
+        
 
 trait Display a where
     def display :: a -> String

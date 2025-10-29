@@ -1,22 +1,22 @@
 {
   "stdlib": {
-    "source_hash": "106f1c71ddcf41dff439aa5c28bac3f455a14ef76ab56b368b709e2f9317510a",
+    "source_hash": "92d356cd9ff8937237bb8159ad5ebd43fdcb14f98a66cc6dc0e207888ee0facb",
     "dependency_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "artifact_path": "/home/gabriel/Developer/soma/stdlib/build/stdlib.toria",
     "tarball_path": "/home/gabriel/Developer/soma/stdlib/build/stdlib.toria",
     "object_paths": [
       "/home/gabriel/Developer/soma/stdlib/build/objects/objects/stdlib.o"
     ],
-    "build_timestamp": 1761677584
+    "build_timestamp": 1761690098
   },
   "example": {
-    "source_hash": "a14c9553a44f02c770f1d70b73ec293d575a781f8a026077812c1a4acabcd359",
-    "dependency_hash": "bd8a67fd9ab343fc77c923fe373c63e44985895673daac8f6a270ac79ffca4f6",
+    "source_hash": "bec1a923aaf4dc365cfc7f148882ff2d4603dc0d1318ab286339a66c2027fb71",
+    "dependency_hash": "291ac502c360021f383c165f7212522d3bc2cb1a6f619848fc803a9c53bb1842",
     "artifact_path": "../example/build/example.toria",
     "tarball_path": "../example/build/example.toria",
     "object_paths": [
       "../example/build/objects/objects/example.o"
     ],
-    "build_timestamp": 1761677584
+    "build_timestamp": 1761690098
   }
 }

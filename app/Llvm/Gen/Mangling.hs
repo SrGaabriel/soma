@@ -7,9 +7,9 @@ import Typing.Types (TyConstructor (tcName), Type (TApp, TConstructor))
 mangleDataTypeName :: String -> String
 mangleDataTypeName typeName = typeName ++ "_dt" -- todo mangle
 
-manglePolymorphicName :: String -> [LlvmType] -> String
-manglePolymorphicName baseName typeArgs =
-    baseName ++ concatMap (("_" ++) . show . hash) typeArgs
+mangleMonomorphizedName :: String -> [LlvmType] -> String
+mangleMonomorphizedName baseName typeArgs =
+    "mono_" ++ baseName ++ concatMap (("_" ++) . show . hash) typeArgs
 
 mangleInstanceMethod :: String -> LlvmType -> String -> String
 mangleInstanceMethod className concreteType methodName =

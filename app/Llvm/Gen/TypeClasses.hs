@@ -46,9 +46,9 @@ compileInstanceDef (ExprInstanceDef constraintType methods _span) = do
 compileInstanceDef _ = error "Expected ExprInstanceDef"
 
 compileInstanceMethod :: String -> Type -> Expr -> IrGen ()
-compileInstanceMethod className concreteType methodExpr = do
+compileInstanceMethod className instanceType methodExpr = do
     case methodExpr of
         ExprBindingDef methodName (Forall _ _ methodType) body _ _ -> do
-            let mangledName = mangleInstanceMethod className (toAllocationLlvmType concreteType) methodName
+            let mangledName = mangleInstanceMethod className (toAllocationLlvmType instanceType) methodName
             compileFunction mangledName methodType body compileValue
         _ -> error "Expected ExprBindingDef in instance method"

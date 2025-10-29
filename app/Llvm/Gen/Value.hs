@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
@@ -12,20 +13,20 @@ import Data.Foldable (forM_)
 import Data.List (find)
 import qualified Data.Map as Map
 import GHC.Base (when)
+import Llvm.Dependencies (LlvmDependency (LlvmStructDependency))
 import Llvm.Gen.Arrays (createSlice, createTypedRefCountedHeapArray, storeArrayElement)
 import Llvm.Gen.Calls (mkTypeclassMethodCall)
 import Llvm.Gen.Context
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irStructs, polymorphicFunctions, typeMap), MemoryScope (..), coerceArgsForCall, freshScope, lookupMemory, mkFnCall, saveInstruction)
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (constructorMap, irDependencies, polymorphicFunctions, typeMap), MemoryScope (..), coerceArgsForCall, freshScope, lookupMemory, mkFnCall, saveInstruction)
 import Llvm.Gen.Externals (importExternalDependency)
 import Llvm.Gen.Functions (compileFunction)
 import Llvm.Gen.Intrinsics (IntrinsicImpl (intrinsicCodeGen), getIntrinsic)
-import Llvm.Gen.Mangling (mangleDataTypeName, manglePolymorphicName)
+import Llvm.Gen.Mangling (mangleDataTypeName, mangleMonomorphizedName)
 import Llvm.Gen.Metadata (ConstructorMetadata (..))
 import Llvm.Gen.Monomorphize (monomorphizeAndCompile)
 import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Gen.Types (getArrayElementType, toAllocationLlvmType)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (LlvmStore))
-import Llvm.Modules (LlvmStruct (LlvmStruct))
 import Llvm.Types (LlvmType (..), deref, getLlvmTypeSize)
 import Llvm.Values (LlvmValue (..), getValueType, intLiteral)
 import Project.Symbols (Symbol (..), SymbolKind (..))
@@ -148,7 +149,7 @@ compileConstructorApp ctorName args = do
     let monomorphicName =
             if isConstructorPolymorphic
                 then
-                    manglePolymorphicName baseTypeName concreteArgTypes
+                    mangleMonomorphizedName baseTypeName concreteArgTypes
                 else
                     mangleDataTypeName baseTypeName
     let structType = LlvmNamedType monomorphicName
@@ -164,22 +165,33 @@ compileConstructorApp ctorName args = do
 ensureMonomorphicStructExists :: String -> [LlvmType] -> IrGen ()
 ensureMonomorphicStructExists monomorphicName concreteArgTypes = do
     st <- get
-    let exists = any (\(LlvmStruct name _) -> name == monomorphicName) (irStructs st)
+    let exists =
+            any
+                ( \case
+                    (LlvmStructDependency name _) -> name == monomorphicName
+                    _ -> False
+                )
+                (irDependencies st)
 
     unless exists $ do
         let variantSizes = map getLlvmTypeSize concreteArgTypes
         let maxSize = if null variantSizes then 0 else maximum variantSizes
         let fields = [LlvmI8, LlvmArray maxSize LlvmI8]
-        let structDef = LlvmStruct monomorphicName fields
+        let structDef = LlvmStructDependency monomorphicName fields
 
-        modify $ \s -> s{irStructs = structDef : irStructs s}
+        modify $ \s -> s{irDependencies = structDef : irDependencies s}
 
 getUnionDataPtr :: GenValue -> String -> IrGen GenValue
 getUnionDataPtr structPtr typeName = do
     let structType = LlvmNamedType typeName
     st <- get
-    let Just structDef = find (\(LlvmStruct name _) -> name == typeName) (irStructs st)
-    let LlvmStruct _ fields = structDef
+    let Just (LlvmStructDependency _ fields) =
+            find
+                ( \case
+                    (LlvmStructDependency name _) -> name == typeName
+                    _ -> False
+                )
+                (irDependencies st)
     let arrayType = fields !! 1
 
     mkADTUnionDataAccess structPtr

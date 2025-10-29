@@ -1,7 +1,7 @@
 module Llvm.Gen.Types where
 
 import Data.Hashable (Hashable (hash))
-import Llvm.Gen.Mangling (mangleDataTypeName, manglePolymorphicName)
+import Llvm.Gen.Mangling (mangleDataTypeName, mangleMonomorphizedName)
 import Llvm.Types (LlvmType (..))
 import Typing.Currying (uncurryFunction)
 import Typing.Types (SkolemVar (SkolemVar), TyConstructor (TypeConstructor), TyVar (TypeVar), Type (..))
@@ -18,7 +18,7 @@ toAllocationLlvmType t = case flattenTypeApp t of
     (TConstructor (TypeConstructor "Array" _), _) -> sliceType
     (TConstructor (TypeConstructor baseName _), args)
         | not (null args) ->
-            let monomorphicName = manglePolymorphicName baseName (map toAllocationLlvmType args)
+            let monomorphicName = mangleMonomorphizedName baseName (map toAllocationLlvmType args) -- todo: review this
             in LlvmNamedType monomorphicName
     (TConstructor (TypeConstructor name _), []) ->
         LlvmNamedType $ mangleDataTypeName name

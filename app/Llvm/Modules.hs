@@ -11,7 +11,6 @@ import Llvm.Types (LlvmType)
 data LlvmModule = LlvmModule
     { moduleName :: String
     , moduleFunctions :: [LlvmFunction]
-    , moduleStructs :: [LlvmStruct]
     , moduleDependencies :: [LlvmDependency]
     }
     deriving (Show)
@@ -25,12 +24,6 @@ data LlvmFunction = LlvmFunction
     }
     deriving (Show)
 
-data LlvmStruct = LlvmStruct
-    { structName :: String
-    , structFields :: [LlvmType]
-    }
-    deriving (Show, Eq)
-
 data LlvmBlock = LlvmBlock
     { blockName :: String
     , blockStatements :: [LlvmStatement]
@@ -38,10 +31,8 @@ data LlvmBlock = LlvmBlock
     deriving (Show)
 
 instance IR LlvmModule where
-    toLlvm (LlvmModule _ functions structs dependencies) =
+    toLlvm (LlvmModule _ functions dependencies) =
         unlines (map toLlvm $ nub dependencies)
-            ++ "\n\n"
-            ++ unlines (map toLlvm $ nub structs)
             ++ "\n\n"
             ++ unlines (map toLlvm functions)
 
@@ -56,14 +47,6 @@ instance IR LlvmFunction where
             ++ ") {\n"
             ++ unlines (map toLlvm blocks)
             ++ unlines (map toLlvm stmts)
-            ++ "}"
-
-instance IR LlvmStruct where
-    toLlvm (LlvmStruct name fields) =
-        "%"
-            ++ name
-            ++ " = type {"
-            ++ intercalate ", " (map toLlvm fields)
             ++ "}"
 
 instance IR LlvmBlock where

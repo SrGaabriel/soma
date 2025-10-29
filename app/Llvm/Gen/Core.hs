@@ -14,7 +14,7 @@ import Llvm.Dependencies (LlvmDependency)
 import Llvm.Gen.Context (GenValue (..), getGenValueType, mkStackStructAlloc, mkVariableLoad)
 import Llvm.Gen.Metadata (ConstructorMetadata, InstanceMetadata, PolymorphicFunctionMetadata, TypeClassMetadata)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
-import Llvm.Modules (LlvmFunction, LlvmStruct)
+import Llvm.Modules (LlvmFunction)
 
 import Llvm.Types (LlvmType (..))
 
@@ -37,7 +37,6 @@ data IrGenState = IrGenState
     , typeMap :: TypeMap
     , irFunctions :: [LlvmFunction]
     , constructorMap :: Map String ConstructorMetadata
-    , irStructs :: [LlvmStruct]
     , irDependencies :: [LlvmDependency]
     , typeclasses :: [TypeClassMetadata]
     , instances :: [InstanceMetadata]
@@ -56,7 +55,6 @@ globalDefaultState =
         , typeclasses = []
         , instances = []
         , irFunctions = []
-        , irStructs = []
         , irDependencies = []
         , polymorphicFunctions = Map.empty
         , monomorphizedFunctions = Set.empty
@@ -72,7 +70,6 @@ cleanGlobalState tM =
         , typeclasses = []
         , instances = []
         , irFunctions = []
-        , irStructs = []
         , irDependencies = []
         , polymorphicFunctions = Map.empty
         , monomorphizedFunctions = Set.empty

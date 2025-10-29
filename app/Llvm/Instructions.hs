@@ -29,6 +29,7 @@ data LlvmStatement
     | LlvmCallStmt LlvmValue LlvmType [LlvmValue]
     | LlvmSwitch LlvmValue String [(LlvmValue, String)]
     | LlvmUnreachable
+    | LlvmComment String
     deriving (Show, Eq)
 
 instance IR LlvmInstruction where
@@ -112,3 +113,5 @@ instance IR LlvmStatement where
             ++ "]"
     toLlvm LlvmUnreachable =
         "unreachable"
+    toLlvm (LlvmComment comment) =
+        "; " ++ comment

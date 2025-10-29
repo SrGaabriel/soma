@@ -3,11 +3,11 @@ module Llvm.Gen.DataTypes where
 import Control.Monad
 import Control.Monad.State
 import qualified Data.Map as Map
+import Llvm.Dependencies (LlvmDependency (LlvmStructDependency))
 import Llvm.Gen.Core
 import Llvm.Gen.Mangling (mangleDataTypeName)
 import Llvm.Gen.Metadata (ConstructorMetadata (ConstructorMetadata))
 import Llvm.Gen.Types (toAllocationLlvmType)
-import Llvm.Modules (LlvmStruct (LlvmStruct))
 import Llvm.Types
 import Syntax.Tree (Expr (..))
 
@@ -15,12 +15,12 @@ compileDataTypeDef :: Expr -> IrGen ()
 compileDataTypeDef (ExprDataTypeDef name generics _constraints constructors _span) = do
     when (null generics) $ do
         let structDef = computeUnifiedLayout name constructors
-        modify $ \s -> s{irStructs = structDef : irStructs s}
+        modify $ \s -> s{irDependencies = structDef : irDependencies s}
 
     mapM_ (registerConstructorMetadata name) (zip [0 ..] constructors)
 compileDataTypeDef _ = error "Expected ExprDataTypeDef"
 
-computeUnifiedLayout :: String -> [Expr] -> LlvmStruct
+computeUnifiedLayout :: String -> [Expr] -> LlvmDependency
 computeUnifiedLayout typeName constructors =
     let variantSizes = map getADTConstructorSize constructors
 
@@ -29,7 +29,7 @@ computeUnifiedLayout typeName constructors =
         fields = [LlvmI8, LlvmArray maxSize LlvmI8]
 
         mangledName = mangleDataTypeName typeName
-    in LlvmStruct mangledName fields
+    in LlvmStructDependency mangledName fields
 
 getConstructorDataSize :: Expr -> Int
 getConstructorDataSize = getADTConstructorSize
