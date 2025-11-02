@@ -13,30 +13,14 @@ data MetallicExpr
     | MIndirectCall MetallicExpr [MetallicExpr] Type
     deriving (Show, Eq)
 
-data MetallicTypeDef
-    = MAlgebraicType
-        { mtName :: String
-        , mtConstructors :: [MetallicConstructor]
-        }
-    | MRecordType
-        { mrName :: String
-        , mrFields :: [(String, Type)]
-        }
-
-data MetallicConstructor = MetallicConstructor
-    { mcName :: String
-    , mcTag :: Int
-    , mcFields :: [Type]
-    }
-
-data MetallicStatement
-    = MAssign String MetallicExpr
-    | MStore MetallicExpr MetallicExpr
-    deriving (Show)
-
 data MetallicLiteral
     = MInt Integer
     | MBool Bool
     | MFloat Double
     | MString String
     deriving (Show, Eq)
+
+data MetallicStatement
+    = MAssign String MetallicExpr
+    | MStore MetallicExpr MetallicExpr
+    deriving (Show)

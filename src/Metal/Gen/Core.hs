@@ -7,9 +7,9 @@ import Control.Monad.State
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Inference.Core (TypeMap)
-import Metal.Expr
 import Metal.Function (MetallicFunction)
 import Metal.Metadata (MetallicConstructorMetadata)
+import Metal.Module (MetallicTypeDef)
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType (Forall), Type)
 
@@ -24,6 +24,7 @@ data MetalGenState = MetalGenState
     { metalNextTmp :: Int
     , metalFunctions :: Map String MetallicFunction
     , metalTypes :: Map String MetallicTypeDef
+    , metalInstanceMethods :: Map (String, Type, String) MetallicFunction
     }
 
 data MetalScope = MetalScope
@@ -46,6 +47,15 @@ defaultMetalEnv packageName tyMap =
         , metalConstructors = Map.empty
         }
 
+defaultMetalState :: MetalGenState
+defaultMetalState =
+    MetalGenState
+        { metalNextTmp = 0
+        , metalFunctions = Map.empty
+        , metalTypes = Map.empty
+        , metalInstanceMethods = Map.empty
+        }
+
 freshTmp :: (MonadState MetalGenState m) => m String
 freshTmp = do
     n <- gets metalNextTmp
@@ -53,7 +63,7 @@ freshTmp = do
     return $ "tmp_" ++ show n
 
 withScope :: MetalScope -> MetalGen a -> MetalGen a
-withScope newScope = local (\env -> env { metalCurrentScope = newScope })
+withScope newScope = local (\env -> env{metalCurrentScope = newScope})
 
 addFunction :: String -> MetallicFunction -> MetalGen ()
 addFunction name func =

@@ -3,7 +3,7 @@
 module Metal.Function where
 
 import Metal.Expr (MetallicExpr)
-import Typing.Types (Constraint, Type, TyVar)
+import Typing.Types (Constraint, TyVar, Type)
 
 data MetallicFunction
     = MPolymorphic
@@ -16,6 +16,16 @@ data MetallicFunction
         }
     | MMonomorphic
         { mfName :: String
+        , mfParams :: [(String, Type)]
+        , mfReturnType :: Type
+        , mfBody :: MetallicExpr
+        }
+    | MInstanceMethod
+        { mfName :: String
+        , mfClassName :: String
+        , mfInstanceType :: Type
+        , mfTypeParams :: [TyVar]
+        , mfConstraints :: [Constraint]
         , mfParams :: [(String, Type)]
         , mfReturnType :: Type
         , mfBody :: MetallicExpr

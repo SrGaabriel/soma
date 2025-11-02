@@ -1,128 +1,129 @@
 cabal-version:      3.12
 name:               soma
 version:            0.1.0.0
--- synopsis:
--- description:
 license:            MIT
 license-file:       LICENSE
 author:             Gabriel
 maintainer:         gabriel@minatel.dev
--- copyright:
 category:           Programming Language
 build-type:         Simple
 extra-doc-files:    CHANGELOG.md
--- extra-source-files:
 
 common warnings
-    ghc-options:       -Wall -fprof-auto -rtsopts
+  ghc-options:       -Wall -fprof-auto -rtsopts
 
 library
   import:           warnings
-  exposed-modules:  Typing.Types
-                    Syntax.Patterns
-                    Syntax.Tree
-                    Syntax.Ops
-                    Inference.Errors
-                    Inference.Resolver
-                    Inference.Core
-                    Inference.Gen
-                    Inference.Solving
-                    Inference.Substitution
-                    Inference.Tree
-                    Inference.Assembler
-                    Lexing.Lexer
-                    Lexing.Errors
-                    Lexing.Position
-                    Parsing.Errors
-                    Parsing.Parser
-                    Parsing.Ast
-                    Parsing.Bindings
-                    Parsing.Types
-                    Parsing.Patterns
-                    Parsing.Atoms
-                    Logging.ErrorPrinter
-                    Logging.PrettyTrees
-                    Logging.Errors
-                    Decisions.Model
-                    Project.Symbols
-                    Project.Module
-                    Project.Graph
-                    Project.Parsing
-                    Project.Processing
-                    Project.Tarball
-                    Project.Metadata
-                    Utils.Lists
-                    Config.Options
-                    Typing.Currying
-                    Llvm.Types
-                    Llvm.Instructions
-                    Llvm.Values
-                    Llvm.Ir
-                    Llvm.Modules
-                    Llvm.Dependencies
-                    Llvm.Gen.Arrays
-                    Llvm.Gen.Intrinsics
-                    Llvm.Gen.Entry
-                    Llvm.Gen.Core
-                    Llvm.Gen.Context
-                    Llvm.Gen.Value
-                    Llvm.Gen.Bindings
-                    Llvm.Gen.Types
-                    Llvm.Gen.DataTypes
-                    Llvm.Gen.Metadata
-                    Llvm.Gen.Mangling
-                    Llvm.Gen.Functions
-                    Llvm.Gen.Externals
-                    Llvm.Gen.TypeClasses
-                    Llvm.Gen.Monomorphize
-                    Llvm.Gen.Templates
-                    Llvm.Gen.Calls
-                    Llvm.Gen.PatternMatch
-                    Llvm.Gen.Panic
-                    Llvm.Gen.Virtual
-                    Metal.Expr
-                    Metal.Function
-                    Metal.Metadata
-                    Metal.Gen.Binding
-                    Metal.Gen.Core
-                    Metal.Gen.Extracts
-                    Metal.Gen.Value
-                    Metal.Gen.Metadata
-                    Analysis.Symbol
-  hs-source-dirs:   app
-  build-depends:    base >= 4.19.2.0,
-                    ansi-terminal >= 1.0,
-                    containers >= 0.6,
-                    mtl >= 2.2,
-                    directory >= 1.3.8.3,
-                    filepath >= 1.5.2.0,
-                    async >= 2.2.5,
-                    process >= 1.6,
-                    hashable >= 1.5.0.0,
-                    tar >= 0.7.0.0,
-                    zlib >= 0.7.0.0,
-                    aeson >= 2.2.3.0,
-                    bytestring >= 0.12.0.0,
-                    optparse-applicative >= 0.19.0.0
+  exposed-modules:
+      Typing.Types
+      Syntax.Patterns
+      Syntax.Tree
+      Syntax.Ops
+      Inference.Errors
+      Inference.Resolver
+      Inference.Core
+      Inference.Gen
+      Inference.Solving
+      Inference.Substitution
+      Inference.Tree
+      Inference.Assembler
+      Lexing.Lexer
+      Lexing.Errors
+      Lexing.Position
+      Parsing.Errors
+      Parsing.Parser
+      Parsing.Ast
+      Parsing.Bindings
+      Parsing.Types
+      Parsing.Patterns
+      Parsing.Atoms
+      Logging.ErrorPrinter
+      Logging.PrettyTrees
+      Logging.Errors
+      Decisions.Model
+      Project.Symbols
+      Project.Module
+      Project.Graph
+      Project.Parsing
+      Project.Processing
+      Project.Tarball
+      Project.Metadata
+      Utils.Lists
+      Config.Options
+      Typing.Currying
+      Llvm.Types
+      Llvm.Instructions
+      Llvm.Values
+      Llvm.Ir
+      Llvm.Modules
+      Llvm.Dependencies
+      Llvm.Gen.Arrays
+      Llvm.Gen.Intrinsics
+      Llvm.Gen.Entry
+      Llvm.Gen.Core
+      Llvm.Gen.Context
+      Llvm.Gen.Value
+      Llvm.Gen.Bindings
+      Llvm.Gen.Types
+      Llvm.Gen.DataTypes
+      Llvm.Gen.Metadata
+      Llvm.Gen.Mangling
+      Llvm.Gen.Functions
+      Llvm.Gen.Externals
+      Llvm.Gen.TypeClasses
+      Llvm.Gen.Monomorphize
+      Llvm.Gen.Templates
+      Llvm.Gen.Calls
+      Llvm.Gen.PatternMatch
+      Llvm.Gen.Panic
+      Llvm.Gen.Virtual
+      Metal.Expr
+      Metal.Module
+      Metal.Function
+      Metal.Metadata
+      Metal.Gen.Binding
+      Metal.Gen.Core
+      Metal.Gen.Extracts
+      Metal.Gen.Value
+      Metal.Gen.Entry
+      Metal.Gen.Metadata
+      Analysis.Symbol
+  hs-source-dirs:   src
+  build-depends:
+      base >= 4.19.2.0,
+      ansi-terminal >= 1.0,
+      containers >= 0.6,
+      mtl >= 2.2,
+      directory >= 1.3.8.3,
+      filepath >= 1.5.2.0,
+      async >= 2.2.5,
+      process >= 1.6,
+      hashable >= 1.5.0.0,
+      tar >= 0.7.0.0,
+      zlib >= 0.7.0.0,
+      aeson >= 2.2.3.0,
+      bytestring >= 0.12.0.0,
+      optparse-applicative >= 0.19.0.0
   default-language: Haskell2010
 
 executable soma
   import:           warnings
   main-is:          Main.hs
   hs-source-dirs:   app
-  build-depends:    base,
-                    soma,
-                    ansi-terminal,
-                    containers,
-                    mtl,
-                    directory,
-                    filepath,
-                    async,
-                    process,
-                    hashable,
-                    tar,
-                    zlib,
-                    aeson,
-                    bytestring,
-                    optparse-applicative
+  build-depends:
+      base,
+      soma,
+      ansi-terminal,
+      containers,
+      mtl,
+      directory,
+      filepath,
+      async,
+      process,
+      hashable,
+      tar,
+      zlib,
+      aeson,
+      bytestring,
+      optparse-applicative
   default-language: Haskell2010

@@ -27,6 +27,8 @@ import System.Directory.Internal.Prelude (exitFailure)
 import System.FilePath (takeBaseName, takeDirectory, takeExtension, (<.>), (</>))
 import System.Process (callProcess)
 import Typing.Types (QualifiedType)
+import qualified System.Exit as System
+import Metal.Gen.Entry (compileMetalModule)
 
 extractSymbolImports :: Expr -> [(String, [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
@@ -56,6 +58,11 @@ processModules sorted graph compileOptions = do
 
     (allModules, fusedTypeMap) <- processAllModules inputName sorted graph Map.empty deps Map.empty
     let fusedAst = createFusedAst allModules
+    let metallic = compileMetalModule inputName fusedAst fusedTypeMap
+    putStrLn $ "Metal module compiled:\n" ++ show metallic
+    
+    -- exit
+    _ <- System.exitSuccess
     let llvmIr = runLlvmCodeGenAndTranscribe inputName fusedAst fusedTypeMap
 
     let outputFile = fromMaybe inputName mOutputFile
