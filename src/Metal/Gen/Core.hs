@@ -12,6 +12,7 @@ import Metal.Metadata (MetallicConstructorMetadata)
 import Metal.Module (MetallicTypeDef)
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType (Forall), Type)
+import qualified Debug.Trace as Debug
 
 data MetalGenEnv = MetalGenEnv
     { metalCurrentScope :: MetalScope
@@ -80,9 +81,10 @@ lookupVar name = do
   where
     lookupInScope :: MetalScope -> String -> Maybe Type
     lookupInScope (MetalScope _ vars parent) n =
-        case Map.lookup n vars of
-            Just ty -> Just ty
-            Nothing -> parent >>= \p -> lookupInScope p n
+        Debug.trace ("Looking up variable: " ++ name ++ " in scope: "++ show (Map.keys (vars)))
+                $ case Map.lookup n vars of
+                    Just ty -> Just ty
+                    Nothing -> parent >>= \p -> lookupInScope p n
 
 lookupConstructor :: String -> MetalGen MetallicConstructorMetadata
 lookupConstructor name = do

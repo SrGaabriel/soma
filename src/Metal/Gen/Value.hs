@@ -10,6 +10,8 @@ import Control.Monad.Reader (asks)
 import qualified Data.Map as Map
 import Typing.Types
 import Data.Map (Map)
+import Decisions.Model
+import Metal.Gen.Patterns (metallizeDag)
 
 metallizeValue :: Expr -> MetalGen MetallicExpr
 metallizeValue (ExprNum n _) = pure $ MLit (MInt $ read n)
@@ -47,7 +49,23 @@ metallizeValue (ExprLet { letName, letValue, letBody }) = do
         bodyTy <- getExprType letBody
         
         return $ MLet letName metalValue metalBody bodyTy
+metallizeValue (ExprPatternMatch scrutinee arms _) = do
+    metalScrutinee <- metallizeValue scrutinee
+    resultTy <- getExprType (ExprPatternMatch scrutinee arms undefined)
+    metallizePatternMatch metalScrutinee arms resultTy
 metallizeValue u = error $ "Cannot metallize value: " ++ show u
+
+metallizePatternMatch :: MetallicExpr -> [Expr] -> Type -> MetalGen MetallicExpr
+metallizePatternMatch scrutinee arms resultTy = do
+    let armData = [(pats, body) | ExprPatternMatchArm pats body _ <- arms]
+        patterns = map fst armData
+        clauses = zip patterns [0..length patterns - 1]
+        matrix = mkPatternMatrix clauses
+        tree = compile matrix
+        dag = buildDAG tree
+    bodies <- mapM (metallizeValue . snd) armData
+    
+    pure $ metallizeDag scrutinee dag bodies resultTy
 
 metallizeApp :: Expr -> [Expr] -> MetalGen MetallicExpr
 metallizeApp base args = do
@@ -77,7 +95,6 @@ metallizeApp base args = do
         _ -> do
             metalBase <- metallizeValue base
             return $ MIndirectCall metalBase metalArgs resultTy
-    
 
 isDataConstructor :: Symbol -> Bool
 isDataConstructor symbol = case resolvedSymbolKind symbol of
