@@ -80,6 +80,14 @@ library
                     Llvm.Gen.PatternMatch
                     Llvm.Gen.Panic
                     Llvm.Gen.Virtual
+                    Metal.Expr
+                    Metal.Function
+                    Metal.Metadata
+                    Metal.Gen.Binding
+                    Metal.Gen.Core
+                    Metal.Gen.Extracts
+                    Metal.Gen.Value
+                    Metal.Gen.Metadata
                     Analysis.Symbol
   hs-source-dirs:   app
   build-depends:    base >= 4.19.2.0,
