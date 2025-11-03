@@ -1,5 +1,6 @@
 module Metal.Metadata where
-import Typing.Types
+
+import Typing.Types (Constraint, QualifiedType, TyVar, Type)
 
 data MetallicConstructorMetadata = MetallicConstructorMetadata
     { mcmTypeName :: String
@@ -13,4 +14,18 @@ data MetallicTypeClassMetadata = MetallicTypeClassMetadata
     , mtcTypeVars :: [TyVar]
     , mtcMethods :: [(String, QualifiedType)]
     }
-    deriving (Show)
+    deriving (Show, Eq)
+
+data MetallicFunctionMetadata = MetallicFunctionMetadata
+    { fmOriginalName :: [TyVar]
+    , mfmConstraints :: [Constraint]
+    , fmInstanceInfo :: Maybe MetallicInstanceInfo
+    }
+    deriving (Show, Eq)
+
+data MetallicInstanceInfo = InstanceInfo
+    { iiClassName :: String
+    , iiInstanceType :: String
+    , iiMethodName :: String
+    }
+    deriving (Show, Eq)

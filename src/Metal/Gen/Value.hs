@@ -1,71 +1,76 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+
 module Metal.Gen.Value where
+
+import Control.Monad.Reader (asks)
+import Data.Map (Map)
+import qualified Data.Map as Map
+
 import Metal.Expr
 import Metal.Gen.Core
-import Syntax.Tree
-import Project.Symbols
 import Metal.Metadata
-import Control.Monad.Reader (asks)
-import qualified Data.Map as Map
+import Project.Symbols
+import Syntax.Tree
+import Typing.Currying (uncurryFunction)
 import Typing.Types
-import Data.Map (Map)
-import Decisions.Model
-import Metal.Gen.Patterns (metallizeDag)
 
 metallizeValue :: Expr -> MetalGen MetallicExpr
 metallizeValue (ExprNum n _) = pure $ MLit (MInt $ read n)
 metallizeValue (ExprStr s _) = pure $ MLit (MString s)
 metallizeValue (ExprBool b _) = pure $ MLit (MBool b)
 metallizeValue (ExprUVar name _) = do
-        maybeTy <- lookupVar name
-        case maybeTy of
-            Just ty -> return $ MVar name ty
-            Nothing -> error $ "Undefined variable: " ++ name
-metallizeValue expr@(ExprVar symbol@(ResolvedSymbol { resolvedSymbolName }) _) = do
-        ty <- getExprType expr
-        
-        case resolvedSymbolKind symbol of
-            DataConstructorSymbol _ -> do
-                meta <- lookupConstructor resolvedSymbolName
-                pure $ MConstruct resolvedSymbolName (mcmTag meta) [] ty
-            
-            _ -> pure $ MVar resolvedSymbolName ty
+    maybeTy <- lookupVar name
+    case maybeTy of
+        Just ty -> pure $ MVar name ty
+        Nothing -> error $ "Undefined variable: " ++ name
+metallizeValue expr@(ExprVar (ResolvedSymbol{resolvedSymbolName}) _) = do
+    ty <- getExprType expr
+    -- full construction happens in metallizeApp
+    pure $ MVar resolvedSymbolName ty
 metallizeValue expr@(ExprApp _ _) = do
-        let (base, args) = uncurryApp expr
-        metallizeApp base args
+    let (base, args) = uncurryApp expr
+    metallizeApp base args
 metallizeValue expr@(ExprArray elements _) = do
-        ty <- getExprType expr
-        metalElems <- mapM metallizeValue elements
-        return $ MArrayLit metalElems ty
-metallizeValue (ExprLet { letName, letValue, letBody }) = do
-        valueTy <- getExprType letValue
-        metalValue <- metallizeValue letValue
-        
-        parentScope <- asks metalCurrentScope
-        let newScope = MetalScope letName (Map.insert letName valueTy (scopeVars parentScope)) (Just parentScope)
-        
-        metalBody <- withScope newScope $ metallizeValue letBody
-        bodyTy <- getExprType letBody
-        
-        return $ MLet letName metalValue metalBody bodyTy
-metallizeValue (ExprPatternMatch scrutinee arms _) = do
-    metalScrutinee <- metallizeValue scrutinee
-    resultTy <- getExprType (ExprPatternMatch scrutinee arms undefined)
-    metallizePatternMatch metalScrutinee arms resultTy
-metallizeValue u = error $ "Cannot metallize value: " ++ show u
+    ty <- getExprType expr
+    metalElems <- mapM metallizeValue elements
+    pure $ MArrayLit metalElems ty
+metallizeValue expr@(ExprTuple elements _) = do
+    ty <- getExprType expr
+    metalElems <- mapM metallizeValue elements
+    pure $ MTuple metalElems ty
+metallizeValue (ExprLet{letName, letValue, letBody}) = do
+    valueTy <- getExprType letValue
+    metalValue <- metallizeValue letValue
 
-metallizePatternMatch :: MetallicExpr -> [Expr] -> Type -> MetalGen MetallicExpr
-metallizePatternMatch scrutinee arms resultTy = do
-    let armData = [(pats, body) | ExprPatternMatchArm pats body _ <- arms]
-        patterns = map fst armData
-        clauses = zip patterns [0..length patterns - 1]
-        matrix = mkPatternMatrix clauses
-        tree = compile matrix
-        dag = buildDAG tree
-    bodies <- mapM (metallizeValue . snd) armData
-    
-    pure $ metallizeDag scrutinee dag bodies resultTy
+    parentScope <- asks metalCurrentScope
+    let newScope =
+            MetalScope letName (Map.insert letName valueTy (scopeVars parentScope)) (Just parentScope)
+
+    metalBody <- withScope newScope $ metallizeValue letBody
+    bodyTy <- getExprType letBody
+
+    pure $ MLet letName metalValue metalBody bodyTy
+metallizeValue expr@(ExprPatternMatch scrutinee arms _) = do
+    metalScrutinee <- metallizeValue scrutinee
+    resultTy <- getExprType expr
+    arms' <- mapM metallizeArm arms
+    pure $ MCase [metalScrutinee] arms' Nothing resultTy
+  where
+    metallizeArm :: Expr -> MetalGen MCaseArm
+    metallizeArm (ExprPatternMatchArm pats body _) = do
+        mbody <- metallizeValue body
+        pure MCaseArm{mcaPatterns = pats, mcaBody = mbody}
+    metallizeArm other = error $ "Invalid pattern match arm: " ++ show other
+metallizeValue expr@(ExprLambda paramNames body _) = do
+    ty <- getExprType expr
+    let (paramTypes, _retType) = uncurryFunction ty
+    parentScope <- asks metalCurrentScope
+    let paramBindings = Map.fromList (zip paramNames paramTypes)
+        lambdaScope = MetalScope "lambda" paramBindings (Just parentScope)
+    metalBody <- withScope lambdaScope $ metallizeValue body
+    pure $ MLambda paramNames metalBody ty
+metallizeValue u = error $ "Cannot metallize value: " ++ show u
 
 metallizeApp :: Expr -> [Expr] -> MetalGen MetallicExpr
 metallizeApp base args = do
@@ -73,28 +78,29 @@ metallizeApp base args = do
     let appExpr = foldl ExprApp base args
     resultTy <- getExprType appExpr
     metalArgs <- mapM metallizeValue args
-    
+
     case base of
-        ExprVar symbol@(ResolvedSymbol { resolvedSymbolName }) _
-            | isTypeclassMethod symbol -> do
-                -- let TypeClassMethodSymbol className = resolvedSymbolKind symbol
-                
-                typeArgs <- extractTypeArgs base args
-                
-                return $ MPolyApp resolvedSymbolName typeArgs metalArgs resultTy
-        
-        ExprVar (ResolvedSymbol { resolvedSymbolName }) _ -> do
-            let Just (Forall typeVars _ _) = Map.lookup base tyMap
-            
-            if null typeVars
-                then return $ MApp resolvedSymbolName metalArgs resultTy
-                else do
-                    typeArgs <- extractTypeArgs base args
-                    return $ MPolyApp resolvedSymbolName typeArgs metalArgs resultTy
-        
+        ExprVar symbol@(ResolvedSymbol{resolvedSymbolName}) _
+            | isDataConstructor symbol -> do
+                meta <- lookupConstructor resolvedSymbolName
+                pure $ MConstruct resolvedSymbolName (mcmTag meta) metalArgs resultTy
+        ExprVar (ResolvedSymbol{resolvedSymbolName}) _ -> do
+            let mbScheme = Map.lookup base tyMap
+            case mbScheme of
+                Just (Forall baseTypeVars _ _)
+                    | not (null baseTypeVars) -> do
+                        typeArgs <- extractTypeArgs base args
+                        baseTy <- getExprType base
+                        let calleePoly = MVar resolvedSymbolName baseTy
+                            callee = MTypeApp calleePoly typeArgs resultTy
+                        pure $ MCall callee metalArgs resultTy
+                _ -> do
+                    baseTy <- getExprType base
+                    let callee = MVar resolvedSymbolName baseTy
+                    pure $ MCall callee metalArgs resultTy
         _ -> do
             metalBase <- metallizeValue base
-            return $ MIndirectCall metalBase metalArgs resultTy
+            pure $ MCall metalBase metalArgs resultTy
 
 isDataConstructor :: Symbol -> Bool
 isDataConstructor symbol = case resolvedSymbolKind symbol of
@@ -110,15 +116,13 @@ extractTypeArgs :: Expr -> [Expr] -> MetalGen [Type]
 extractTypeArgs base args = do
     tyMap <- asks metalTypeMap
     let Just (Forall baseTypeVars _ baseFuncType) = Map.lookup base tyMap
-    
     if null baseTypeVars
-        then return []
+        then pure []
         else do
             let appExpr = foldl ExprApp base args
-            let Just (Forall _ _ instantiatedType) = Map.lookup appExpr tyMap
-            
-            let subst = matchPolyWithConcrete baseFuncType instantiatedType
-            return [Map.findWithDefault (TVar tv) tv subst | tv <- baseTypeVars]
+                Just (Forall _ _ instantiatedType) = Map.lookup appExpr tyMap
+                subst = matchPolyWithConcrete baseFuncType instantiatedType
+            pure [Map.findWithDefault (TVar tv) tv subst | tv <- baseTypeVars]
 
 matchPolyWithConcrete :: Type -> Type -> Map TyVar Type
 matchPolyWithConcrete poly concrete = go poly concrete Map.empty

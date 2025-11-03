@@ -4,6 +4,9 @@
 
 module Project.Processing where
 
+import Alloy.Lower (lowerAlloyModule)
+import Alloy.Monomorphize (monomorphizeModule)
+import Alloy.Simplify (simplifyModule)
 import Config.Options (Options (..))
 import Control.Exception (SomeException, catch)
 import qualified Data.ByteString.Lazy as BL
@@ -16,6 +19,8 @@ import Inference.Resolver (runResolverWithEnv)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.ErrorPrinter (printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
+import Metal.Gen.Entry (compileMetalModule)
+import Metal.Lift (liftLambdas)
 import Project.Graph (ModuleGraph, buildDependencyGraph)
 import Project.Metadata (projectMetadataPublicSymbols)
 import Project.Module (ModuleInfo (..))
@@ -24,11 +29,10 @@ import Project.Tarball (TarballContents (..), createProjectTarball, defaultTarba
 import Syntax.Tree (Expr (..), exprChildren)
 import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude (exitFailure)
+import qualified System.Exit as System
 import System.FilePath (takeBaseName, takeDirectory, takeExtension, (<.>), (</>))
 import System.Process (callProcess)
 import Typing.Types (QualifiedType)
-import qualified System.Exit as System
-import Metal.Gen.Entry (compileMetalModule)
 
 extractSymbolImports :: Expr -> [(String, [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
@@ -59,10 +63,20 @@ processModules sorted graph compileOptions = do
     (allModules, fusedTypeMap) <- processAllModules inputName sorted graph Map.empty deps Map.empty
     let fusedAst = createFusedAst allModules
     let metallic = compileMetalModule inputName fusedAst fusedTypeMap
-    putStrLn $ "Metal module compiled:\n" ++ show metallic
-    
-    -- exit
+    putStrLn $ "Metal module compiled:\n" ++ treeShow metallic
+
+    let metallicLifted = liftLambdas metallic
+    putStrLn $ "Metal module after lambda lifting:\n" ++ treeShow metallicLifted
+
+    let alloy = lowerAlloyModule inputName metallicLifted
+
+    let alloyMono = monomorphizeModule alloy
+    let alloyOpt = simplifyModule alloyMono
+    putStrLn $ "Alloy module (MIR) compiled (pre-mono):\n" ++ treeShow alloy
+    putStrLn $ "Alloy module (MIR) monomorphized + simplified:\n" ++ treeShow alloyOpt
+
     _ <- System.exitSuccess
+
     let llvmIr = runLlvmCodeGenAndTranscribe inputName fusedAst fusedTypeMap
 
     let outputFile = fromMaybe inputName mOutputFile
@@ -173,8 +187,7 @@ processAllModules packageName (modName : rest) graph allModules deps fusedTypeMa
                             Just (_, _, modEnv) -> filterSymbolsByNames mSyms modEnv
                             Nothing ->
                                 let properModuleName = takeWhile (/= '/') impMod
-                                in
-                                   maybe
+                                in maybe
                                     Map.empty
                                     (filterSymbolsByNames mSyms)
                                     (Map.lookup properModuleName deps)

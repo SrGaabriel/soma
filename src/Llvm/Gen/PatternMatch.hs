@@ -9,7 +9,8 @@ import qualified Data.Map as Map
 
 import Data.Maybe (fromMaybe, mapMaybe)
 
-import Decisions.Model
+import Alloy.Decisions
+
 import Llvm.Gen.Context
 import Llvm.Gen.Core
 import Llvm.Gen.Metadata (ConstructorMetadata (..))

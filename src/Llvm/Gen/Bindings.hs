@@ -1,5 +1,6 @@
 module Llvm.Gen.Bindings where
 
+import Control.Monad (when)
 import Control.Monad.RWS
 import qualified Data.Map as Map
 import Llvm.Gen.Core (IrGen, IrGenState (..))
@@ -8,7 +9,6 @@ import Llvm.Gen.Metadata (PolymorphicFunctionMetadata (..))
 import Llvm.Gen.Value (compileValue)
 import Syntax.Tree (Expr (..))
 import Typing.Types (QualifiedType (Forall), isPolymorphic)
-import Control.Monad (when)
 
 compileBindingDef :: Expr -> IrGen ()
 compileBindingDef (ExprBindingDef name qualType@(Forall _ constraints bindingTyp) body _ _) = do
@@ -20,6 +20,6 @@ compileBindingDef (ExprBindingDef name qualType@(Forall _ constraints bindingTyp
                     , polyFuncBody = body
                     }
         modify $ \s -> s{polymorphicFunctions = Map.insert name polyFunc (polymorphicFunctions s)}
-    when (null constraints) $
-        compileFunction name bindingTyp body compileValue
+    when (null constraints)
+        $ compileFunction name bindingTyp body compileValue
 compileBindingDef _ = error "Unsupported binding definition expression"

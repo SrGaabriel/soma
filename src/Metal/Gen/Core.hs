@@ -8,11 +8,11 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Inference.Core (TypeMap)
 import Metal.Function (MetallicFunction)
+import Metal.Gen.Metadata (extractConstructorMetadata)
 import Metal.Metadata (MetallicConstructorMetadata)
 import Metal.Module (MetallicTypeDef)
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType (Forall), Type)
-import qualified Debug.Trace as Debug
 
 data MetalGenEnv = MetalGenEnv
     { metalCurrentScope :: MetalScope
@@ -48,6 +48,15 @@ defaultMetalEnv packageName tyMap =
         , metalConstructors = Map.empty
         }
 
+envWithConstructorsFrom :: String -> TypeMap -> Expr -> MetalGenEnv
+envWithConstructorsFrom packageName tyMap root =
+    (defaultMetalEnv packageName tyMap)
+        { metalConstructors = extractConstructorMetadata root
+        }
+
+withConstructors :: Map String MetallicConstructorMetadata -> MetalGen a -> MetalGen a
+withConstructors ctors = local (\env -> env{metalConstructors = ctors})
+
 defaultMetalState :: MetalGenState
 defaultMetalState =
     MetalGenState
@@ -61,7 +70,7 @@ freshTmp :: (MonadState MetalGenState m) => m String
 freshTmp = do
     n <- gets metalNextTmp
     modify $ \s -> s{metalNextTmp = n + 1}
-    return $ "tmp_" ++ show n
+    pure $ "tmp_" ++ show n
 
 withScope :: MetalScope -> MetalGen a -> MetalGen a
 withScope newScope = local (\env -> env{metalCurrentScope = newScope})
@@ -77,25 +86,25 @@ addType name tyDef =
 lookupVar :: String -> MetalGen (Maybe Type)
 lookupVar name = do
     scope <- asks metalCurrentScope
-    return $ lookupInScope scope name
-  where
-    lookupInScope :: MetalScope -> String -> Maybe Type
-    lookupInScope (MetalScope _ vars parent) n =
-        Debug.trace ("Looking up variable: " ++ name ++ " in scope: "++ show (Map.keys (vars)))
-                $ case Map.lookup n vars of
-                    Just ty -> Just ty
-                    Nothing -> parent >>= \p -> lookupInScope p n
+    let go :: MetalScope -> MetalGen (Maybe Type)
+        go (MetalScope _ vars parent) =
+            case Map.lookup name vars of
+                Just ty -> pure (Just ty)
+                Nothing -> case parent of
+                    Just p -> go p
+                    Nothing -> pure Nothing
+    go scope
 
 lookupConstructor :: String -> MetalGen MetallicConstructorMetadata
 lookupConstructor name = do
     ctors <- asks metalConstructors
     case Map.lookup name ctors of
-        Just meta -> return meta
+        Just meta -> pure meta
         Nothing -> error $ "Constructor not found: " ++ name
 
 getExprType :: Expr -> MetalGen Type
 getExprType expr = do
     tyMap <- asks metalTypeMap
     case Map.lookup expr tyMap of
-        Just (Forall _ _ ty) -> return ty
+        Just (Forall _ _ ty) -> pure ty
         Nothing -> error $ "Type not found for expression: " ++ show expr

@@ -1,12 +1,11 @@
-module Decisions.Model where
+module Alloy.Decisions where
 
 import Data.List (groupBy, nub, partition, sortOn)
 import qualified Data.Map.Strict as Map
-import Syntax.Patterns
-import qualified Syntax.Tree as AST
+import Syntax.Patterns (Literal (..), Pattern (..))
+import qualified Syntax.Tree as AST (Expr (..))
 
 type Action = Int
-
 type Var = String
 
 data Accessor

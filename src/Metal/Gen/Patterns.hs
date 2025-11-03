@@ -1,39 +1,63 @@
-{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
+module Metal.Gen.Patterns (
+    stripAs,
+    isDefaultPattern,
+    constructorArity,
+    collectBinders,
+    validateArity,
+    validateNoDuplicateBinders,
+    hasWildcardLike,
+) where
 
-module Metal.Gen.Patterns where
+import qualified Data.Set as Set
+import Syntax.Patterns (
+    Pattern (..),
+ )
 
-import qualified Data.Map as Map
-import Decisions.Model
-import Metal.Expr
-import Typing.Types
+stripAs :: Pattern -> Pattern
+stripAs (PAs _ p) = stripAs p
+stripAs p = p
 
-metallizeDag :: MetallicExpr -> DAG -> [MetallicExpr] -> Type -> MetallicExpr
-metallizeDag scrutinee dag = metallizeDagNode scrutinee dag (dagRoot dag)
+isDefaultPattern :: Pattern -> Bool
+isDefaultPattern PVar{} = True
+isDefaultPattern PWildcard = True
+isDefaultPattern (PAs _ _) = True
+isDefaultPattern _ = False
 
-metallizeDagNode :: MetallicExpr -> DAG -> NodeId -> [MetallicExpr] -> Type -> MetallicExpr
-metallizeDagNode scrutinee dag nodeId bodies resultTy =
-    let Just node = Map.lookup nodeId (dagNodes dag)
-    in case node of
-        DAGLeaf action ->
-            bodies !! action
-        DAGFail ->
-            MPanic "Pattern match failure" resultTy
-        DAGSwitch accessor branches defaultCase ->
-            let metalAccessor = accessorToMetallic scrutinee accessor
-                metalBranches =
-                    [ (ctor, metallizeDagNode scrutinee dag targetId bodies resultTy)
-                    | (ctor, targetId) <- branches
-                    ]
-                metalDefault =
-                    fmap
-                        (\defId -> metallizeDagNode scrutinee dag defId bodies resultTy)
-                        defaultCase
-            in MSwitch metalAccessor metalBranches metalDefault resultTy
+hasWildcardLike :: Pattern -> Bool
+hasWildcardLike PWildcard = True
+hasWildcardLike (PAs _ p) = hasWildcardLike p
+hasWildcardLike _ = False
 
-accessorToMetallic :: MetallicExpr -> Accessor -> MetallicExpr
-accessorToMetallic base (Root _n) = base
-accessorToMetallic base (Field accessor fieldIdx) =
-    let baseAccess = accessorToMetallic base accessor
-        ty = getMetallicExprType baseAccess
-    in MFieldAccess baseAccess fieldIdx ty
-accessorToMetallic _base _accessor = error "TODO: other accessors"
+constructorArity :: Pattern -> Int
+constructorArity (PLit _) = 0
+constructorArity (PConstructor _ ps) = length ps
+constructorArity (PTuple ps) = length ps
+constructorArity (PArray ps) = length ps
+constructorArity (PAs _ p) = constructorArity p
+constructorArity _ = 0
+
+collectBinders :: Pattern -> [String]
+collectBinders (PVar v) = [v]
+collectBinders (PAs v p) = v : collectBinders p
+collectBinders (PConstructor _ ps) = concatMap collectBinders ps
+collectBinders (PTuple ps) = concatMap collectBinders ps
+collectBinders (PArray ps) = concatMap collectBinders ps
+collectBinders _ = []
+
+validateArity :: [[Pattern]] -> Bool
+validateArity [] = True
+validateArity (r : rs) =
+    let n = length r
+    in all ((== n) . length) rs
+
+validateNoDuplicateBinders :: [[Pattern]] -> Bool
+validateNoDuplicateBinders = all rowOk
+  where
+    rowOk ps =
+        let vs = concatMap collectBinders ps
+        in noDups vs
+    noDups xs =
+        let s = Set.fromList xs
+        in Set.size s == length xs
+
+-- todo: maranget-style pat

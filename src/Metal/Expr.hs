@@ -1,20 +1,27 @@
 module Metal.Expr where
 
-import qualified Decisions.Model as DAG
+import Syntax.Patterns (Pattern)
 import Typing.Types (Type, boolType, intType, strType)
 
 data MetallicExpr
     = MVar String Type
     | MLit MetallicLiteral
-    | MApp String [MetallicExpr] Type
-    | MPolyApp String [Type] [MetallicExpr] Type
+    | MCall MetallicExpr [MetallicExpr] Type
+    | MTypeApp MetallicExpr [Type] Type
     | MLet String MetallicExpr MetallicExpr Type
+    | MLambda [String] MetallicExpr Type
     | MConstruct String Int [MetallicExpr] Type
     | MArrayLit [MetallicExpr] Type
-    | MIndirectCall MetallicExpr [MetallicExpr] Type
-    | MSwitch MetallicExpr [(DAG.Constructor, MetallicExpr)] (Maybe MetallicExpr) Type
+    | MTuple [MetallicExpr] Type
+    | MCase [MetallicExpr] [MCaseArm] (Maybe MetallicExpr) Type
     | MFieldAccess MetallicExpr Int Type
     | MPanic String Type
+    deriving (Show, Eq)
+
+data MCaseArm = MCaseArm
+    { mcaPatterns :: [Pattern]
+    , mcaBody :: MetallicExpr
+    }
     deriving (Show, Eq)
 
 data MetallicLiteral
@@ -26,18 +33,19 @@ data MetallicLiteral
 data MetallicStatement
     = MAssign String MetallicExpr
     | MStore MetallicExpr MetallicExpr
-    deriving (Show)
+    deriving (Show, Eq)
 
 getMetallicExprType :: MetallicExpr -> Type
 getMetallicExprType (MVar _ t) = t
 getMetallicExprType (MLit lit) = getMetallicLiteralType lit
-getMetallicExprType (MApp _ _ t) = t
-getMetallicExprType (MPolyApp _ _ _ t) = t
+getMetallicExprType (MCall _ _ t) = t
+getMetallicExprType (MTypeApp _ _ t) = t
 getMetallicExprType (MLet _ _ _ t) = t
+getMetallicExprType (MLambda _ _ t) = t
 getMetallicExprType (MConstruct _ _ _ t) = t
 getMetallicExprType (MArrayLit _ t) = t
-getMetallicExprType (MIndirectCall _ _ t) = t
-getMetallicExprType (MSwitch _ _ _ t) = t
+getMetallicExprType (MTuple _ t) = t
+getMetallicExprType (MCase _ _ _ t) = t
 getMetallicExprType (MFieldAccess _ _ t) = t
 getMetallicExprType (MPanic _ t) = t
 

@@ -3,31 +3,14 @@
 module Metal.Function where
 
 import Metal.Expr (MetallicExpr)
-import Typing.Types (Constraint, TyVar, Type)
+import Metal.Metadata
+import Typing.Types (Type)
 
-data MetallicFunction
-    = MPolymorphic
-        { mfName :: String
-        , mfTypeParams :: [TyVar]
-        , mfConstraints :: [Constraint]
-        , mfParams :: [(String, Type)]
-        , mfReturnType :: Type
-        , mfBody :: MetallicExpr
-        }
-    | MMonomorphic
-        { mfName :: String
-        , mfParams :: [(String, Type)]
-        , mfReturnType :: Type
-        , mfBody :: MetallicExpr
-        }
-    | MInstanceMethod
-        { mfName :: String
-        , mfClassName :: String
-        , mfInstanceType :: Type
-        , mfTypeParams :: [TyVar]
-        , mfConstraints :: [Constraint]
-        , mfParams :: [(String, Type)]
-        , mfReturnType :: Type
-        , mfBody :: MetallicExpr
-        }
+data MetallicFunction = MetallicFunction
+    { mfName :: String
+    , mfParams :: [(String, Type)]
+    , mfReturnType :: Type
+    , mfBody :: MetallicExpr
+    , mfMetadata :: MetallicFunctionMetadata
+    }
     deriving (Show, Eq)
