@@ -114,8 +114,31 @@ liftExprLambdas bound (MCase scrutinees arms mdef ty) = do
             pure MCaseArm{mcaPatterns = mcaPatterns, mcaBody = body'}
 liftExprLambdas bound (MFieldAccess e idx ty) = do
     e' <- liftExprLambdas bound e
+
     pure (MFieldAccess e' idx ty)
+liftExprLambdas bound (MCompose stmts ty) = do
+    (stmts', _) <- liftComposeLambdas bound stmts
+    pure (MCompose stmts' ty)
 liftExprLambdas _ (MPanic msg ty) = pure (MPanic msg ty)
+
+liftComposeLambdas :: Set.Set String -> [MetallicComposeStmt] -> LiftM ([MetallicComposeStmt], Set.Set String)
+liftComposeLambdas bound [] = pure ([], bound)
+liftComposeLambdas bound (stmt : rest) =
+    case stmt of
+        MCBind name e -> do
+            e' <- liftExprLambdas bound e
+            let bound' = Set.insert name bound
+            (rest', bound'') <- liftComposeLambdas bound' rest
+            pure (MCBind name e' : rest', bound'')
+        MCLet name e -> do
+            e' <- liftExprLambdas bound e
+            let bound' = Set.insert name bound
+            (rest', bound'') <- liftComposeLambdas bound' rest
+            pure (MCLet name e' : rest', bound'')
+        MCExpr e -> do
+            e' <- liftExprLambdas bound e
+            (rest', bound'') <- liftComposeLambdas bound rest
+            pure (MCExpr e' : rest', bound'')
 
 freshLambdaId :: LiftM Int
 freshLambdaId = do
@@ -145,6 +168,17 @@ computeFreeVars (MCase scrutinees arms mdef _) =
         defFree = maybe Set.empty computeFreeVars mdef
     in Set.unions [scrFree, armsFree, defFree]
 computeFreeVars (MFieldAccess e _ _) = computeFreeVars e
+computeFreeVars (MCompose stmts _) =
+    let step (acc, bound) stmt =
+            case stmt of
+                MCBind name e ->
+                    (acc `Set.union` (computeFreeVars e Set.\\ bound), Set.insert name bound)
+                MCLet name e ->
+                    (acc `Set.union` (computeFreeVars e Set.\\ bound), Set.insert name bound)
+                MCExpr e ->
+                    (acc `Set.union` (computeFreeVars e Set.\\ bound), bound)
+        (fv, _) = foldl step (Set.empty, Set.empty) stmts
+    in fv
 computeFreeVars (MPanic _ _) = Set.empty
 
 collectBinders :: Pattern -> [String]

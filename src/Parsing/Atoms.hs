@@ -11,7 +11,7 @@ import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens, tokenSpan)
 import Lexing.Position (Span (Span))
 import Parsing.Errors (ParsingError (..))
 import Parsing.Parser
-import Syntax.Tree (Expr (..), modifySpan)
+import Syntax.Tree (ComposeStmt (..), Expr (..), exprSpan, modifySpan)
 
 parseExpression :: Parser Expr
 parseExpression = parseExprPrec 0
@@ -80,15 +80,11 @@ parseAtom = do
         TokenDollar -> do
             _dollar <- next
             parseExpression
-        TokenDo -> do
-            doToken <- next
-            let indent = tokenIndent doToken
-            block <- parseIndentedBlock indent parseExpression
-            pure $ ExprBlock block (tokenSpan doToken)
         TokenTrue -> do
             ExprBool True . tokenSpan <$> next
         TokenFalse -> do
             ExprBool False . tokenSpan <$> next
+        TokenCompose -> parseCompose
         _ -> throwError $ NotAnExpression token
 
 parseLetExpression :: Parser Expr
@@ -171,3 +167,29 @@ parseModuleName :: Parser [String]
 parseModuleName = do
     toks <- parseExhaustiveSequence TokenSlash (consume TokenVarSymbol <|> consume TokenLowerIdentifier)
     pure $ map tokenValue toks
+
+parseCompose :: Parser Expr
+parseCompose = do
+    composeTok <- consume TokenCompose
+    stmts <- parseIndentedBlock (tokenIndent composeTok) parseComposeStmt
+    pure $ ExprCompose stmts (tokenSpan composeTok)
+
+parseComposeStmt :: Parser ComposeStmt
+parseComposeStmt = do
+    tok <- peek
+    case tokenKind tok of
+        TokenBind -> do
+            bindTok <- next
+            nameTok <- consume TokenLowerIdentifier
+            _ <- consume TokenLeftArrow
+            val <- parseExpression
+            pure $ CSBind (tokenValue nameTok) val (spanningTokens bindTok nameTok)
+        TokenLet -> do
+            letTok <- next
+            nameTok <- consume TokenLowerIdentifier
+            _ <- consume TokenEquals
+            val <- parseExpression
+            pure $ CSLet (tokenValue nameTok) val (spanningTokens letTok nameTok)
+        _ -> do
+            e <- parseExpression
+            pure $ CSExpr e (exprSpan e)

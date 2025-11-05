@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
@@ -10,10 +11,9 @@ import Control.Monad.State (MonadState (get, put), State, gets, modify, runState
 import qualified Data.Map as Map
 import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
-import Inference.Substitution (Substitutable (apply))
 import Lexing.Position (Span (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
-import Syntax.Tree (Expr (..), exprChildren)
+import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
 import Typing.Currying (curryFunction)
 import Typing.Types (Kind (..), QualifiedType (Forall), TyConstructor (TypeConstructor), TyVar (tvKind), Type (..), assignConstraints, sumQualifiedTypes)
 
@@ -178,7 +178,21 @@ resolveTReference (ExprArray exprs exprSpan) = do
     pure $ ExprArray exprs' exprSpan
 resolveTReference (ExprTuple exprs exprSpan) = do
     exprs' <- mapM resolveTReference exprs
+
     pure $ ExprTuple exprs' exprSpan
+resolveTReference (ExprCompose stmts exprSpan) = do
+    let go :: ComposeStmt -> ResolverM ComposeStmt
+        go (CSBind n e s) = do
+            e' <- resolveTReference e
+            pure (CSBind n e' s)
+        go (CSLet n e s) = do
+            e' <- resolveTReference e
+            pure (CSLet n e' s)
+        go (CSExpr e s) = do
+            e' <- resolveTReference e
+            pure (CSExpr e' s)
+    stmts' <- mapM go stmts
+    pure $ ExprCompose stmts' exprSpan
 resolveTReference expr = pure expr
 
 getEnv :: ResolverM TypeEnv
@@ -206,7 +220,8 @@ addGlobalBinding name ty kind = do
     s <- get
     let globals = globalBindings s
     symbol <- createGlobalSymbol name kind
-    put s{globalBindings = Map.insert symbol ty globals}
+    let globals' = Map.filterWithKey (\sym _ -> resolvedSymbolName sym /= name) globals
+    put s{globalBindings = Map.insert symbol ty globals'}
 
 addInstanceBindingFromType :: Type -> ResolverM ()
 addInstanceBindingFromType constraintType = do
@@ -271,15 +286,9 @@ replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
         (t1', qu1) <- replaceAllUnresolvedC t1
         (t2', qu2) <- replaceAllUnresolvedC t2
 
-        case (t1, qu1) of
-            (TUnresolved _, [Forall (tv : _) _ _]) -> do
-                let subst = Map.singleton tv t2'
-                let instantiatedType = apply subst t1'
-                pure (TApp instantiatedType t2', [])
-            _ -> do
-                let newType = TApp t1' t2'
-                let qualifieds = mconcat [qu1, qu2]
-                pure (newType, qualifieds)
+        let newType = TApp t1' t2'
+        let qualifieds = mconcat [qu1, qu2]
+        pure (newType, qualifieds)
     replaceAllUnresolvedC (TArrow t1 t2) = do
         (t1', qu1) <- replaceAllUnresolvedC t1
         (t2', qu2) <- replaceAllUnresolvedC t2

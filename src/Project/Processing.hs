@@ -4,8 +4,15 @@
 
 module Project.Processing where
 
+import Alloy.Defunc (defunctionalizeModule)
 import Alloy.Lower (lowerAlloyModule)
 import Alloy.Monomorphize (monomorphizeModule)
+
+import Alloy.CSE (cseModuleGlobal)
+import Alloy.HoistAllocas (hoistAllocasModule)
+import Alloy.MonadicInline (monadicInlineModule)
+import Alloy.PromoteRefs (promoteRefsModule)
+import Alloy.ReaderRewrite (readerRewriteModule)
 import Alloy.Simplify (simplifyModule)
 import Config.Options (Options (..))
 import Control.Exception (SomeException, catch)
@@ -21,6 +28,7 @@ import Logging.ErrorPrinter (printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Metal.Gen.Entry (compileMetalModule)
 import Metal.Lift (liftLambdas)
+import Metal.MonadNormalize (normalizeModule)
 import Project.Graph (ModuleGraph, buildDependencyGraph)
 import Project.Metadata (projectMetadataPublicSymbols)
 import Project.Module (ModuleInfo (..))
@@ -68,12 +76,19 @@ processModules sorted graph compileOptions = do
     let metallicLifted = liftLambdas metallic
     putStrLn $ "Metal module after lambda lifting:\n" ++ treeShow metallicLifted
 
-    let alloy = lowerAlloyModule inputName metallicLifted
-
+    let metallicNormalized = normalizeModule metallicLifted
+    let alloy = lowerAlloyModule inputName metallicNormalized
     let alloyMono = monomorphizeModule alloy
-    let alloyOpt = simplifyModule alloyMono
+    let alloyDefunc = defunctionalizeModule alloyMono
+    let alloyReader = readerRewriteModule alloyDefunc
+    let alloyInlined = monadicInlineModule alloyReader
+    let alloyHoisted = hoistAllocasModule alloyInlined
+    let alloyCse = cseModuleGlobal alloyHoisted
+    let alloyPromoted = promoteRefsModule alloyCse
+    let alloyOpt = simplifyModule alloyPromoted
     putStrLn $ "Alloy module (MIR) compiled (pre-mono):\n" ++ treeShow alloy
-    putStrLn $ "Alloy module (MIR) monomorphized + simplified:\n" ++ treeShow alloyOpt
+
+    putStrLn $ "Alloy module (MIR) monomorphized + inlined + simplified:\n" ++ treeShow alloyOpt
 
     _ <- System.exitSuccess
 

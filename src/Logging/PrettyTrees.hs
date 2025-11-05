@@ -11,7 +11,7 @@ import qualified Data.Map as Map
 import qualified Debug.Trace as Debug
 import Inference.Core (TypeMap)
 import Syntax.Patterns (Pattern (..))
-import Syntax.Tree (Expr (..), exprChildren)
+import Syntax.Tree (Expr (..), exprChildren, ComposeStmt (..))
 import Typing.Currying (uncurryKind)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), SkolemVar (skName), TyConstructor (..), TyVar (TypeVar, tvId), Type (..))
 import qualified Typing.Types as TT
@@ -87,6 +87,13 @@ instance TreeShow Expr where
     treeShow (ExprInstanceDef constraintType _ _) = "InstanceDef (" ++ treeShow constraintType ++ "):"
     treeShow (ExprIntrinsicDataTypeDef name kind _) =
         "IntrinsicDataTypeDef (" ++ name ++ ": " ++ treeShow kind ++ "):"
+    treeShow (ExprCompose stms _) =
+        "MonadComposition (" ++ intercalate " -> " (map treeShow stms) ++ ")"
+
+instance TreeShow ComposeStmt where
+    treeShow (CSBind name _ _) = "Bind(" ++ name ++ ")"
+    treeShow (CSLet name _ _) = "Let(" ++ name ++ ")"
+    treeShow (CSExpr _ _) = "Op"
 
 instance TreeShow Pattern where
     treeShow (PVar name) = "Var (" ++ name ++ ")"
@@ -187,7 +194,15 @@ instance TreeShow MetallicExpr where
         treeShow e ++ "." ++ show ix
     treeShow (MLambda params body _) =
         "(\\" ++ commaSep params ++ " -> " ++ treeShow body ++ ")"
+    treeShow (MCompose stms _) =
+        "compose: " ++ intercalate "\n|>" (map treeShow stms)
     treeShow (MPanic msg _) = "panic " ++ show msg
+
+instance TreeShow MetallicComposeStmt where
+    treeShow (MCBind name expr) = "bind " ++ name ++ " <- " ++ treeShow expr
+    treeShow (MCLet name expr) = "let " ++ name ++ " = " ++ treeShow expr
+    treeShow (MCExpr expr) = "chain " ++ treeShow expr
+    
 
 instance TreeShow MetallicFunction where
     treeShow (MetallicFunction name params ret body _) =

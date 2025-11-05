@@ -33,12 +33,22 @@ import Alloy.Ir
 
 import Metal.Expr (
     MCaseArm (..),
+    MetallicComposeStmt (..),
     MetallicExpr (..),
     MetallicLiteral (..),
+    getMetallicExprType,
  )
+
 import Metal.Function (
     MetallicFunction (..),
  )
+import Metal.MonadProfile (
+    MonadProfile (..),
+    MonadProfiles,
+    buildMonadProfiles,
+    lookupProfile,
+ )
+
 import Metal.Module (
     MetallicConstructor (..),
     MetallicModule (..),
@@ -48,8 +58,10 @@ import Syntax.Patterns (
     Literal (..),
     Pattern (..),
  )
+
 import Typing.Types (
-    Type,
+    TyConstructor (..),
+    Type (..),
     boolType,
     intType,
     strType,
@@ -58,6 +70,8 @@ import Typing.Types (
 data LEnv = LEnv
     { leVars :: Map.Map String AOperand
     , leCtorTags :: Map.Map String Integer
+    , leCtorFields :: Map.Map String [Type]
+    , leProfiles :: MonadProfiles
     }
 
 type Lower a = StateT LEnv AlloyBuilder a
@@ -65,12 +79,16 @@ type Lower a = StateT LEnv AlloyBuilder a
 lowerAlloyModule :: String -> MetallicModule -> AlloyModule
 lowerAlloyModule modName mm =
     let ctorTags = buildCtorTagMap mm
-        action = mapM_ (lowerFunction ctorTags) (mmFunctions mm)
+
+        ctorFields = buildCtorFieldMap mm
+        profiles = buildMonadProfiles mm
+        action = mapM_ (lowerFunction ctorTags ctorFields profiles) (mmFunctions mm)
+
         (_unit, mdl) = runAlloyBuilder modName action
     in mdl
 
-lowerFunction :: Map.Map String Integer -> MetallicFunction -> AlloyBuilder ()
-lowerFunction ctorTags MetallicFunction{mfName, mfParams, mfReturnType, mfBody} = do
+lowerFunction :: Map.Map String Integer -> Map.Map String [Type] -> MonadProfiles -> MetallicFunction -> AlloyBuilder ()
+lowerFunction ctorTags ctorFields profiles MetallicFunction{mfName, mfParams, mfReturnType, mfBody} = do
     beginFunction mfName mfParams mfReturnType
     let entryName = "entry"
     beginBlock entryName []
@@ -79,6 +97,8 @@ lowerFunction ctorTags MetallicFunction{mfName, mfParams, mfReturnType, mfBody} 
             LEnv
                 { leVars = Map.fromList [(pname, OpVar pname) | (pname, _pty) <- mfParams]
                 , leCtorTags = ctorTags
+                , leCtorFields = ctorFields
+                , leProfiles = profiles
                 }
 
     retval <- evalStateT (lowerExpr mfBody) initialEnv
@@ -118,9 +138,14 @@ lowerExpr (MArrayLit elems ty) = do
     pure (OpVar tmp)
 lowerExpr (MTuple elems ty) = do
     ops <- mapM lowerExpr elems
+
     tmp <- lift $ emitLetTmp ty (OpMakeTuple ops)
+
     pure (OpVar tmp)
+lowerExpr (MCompose stmts ty) =
+    lowerCompose stmts ty
 -- Full pattern match lowering using decision trees and CFG.
+
 lowerExpr (MCase scrutinees arms _defaultExpr resultTy) = do
     scrOps <- mapM lowerExpr scrutinees
     lowerCase scrOps arms resultTy
@@ -135,6 +160,152 @@ lowerLiteral :: MetallicLiteral -> AConst
 lowerLiteral (MInt i) = CInt i
 lowerLiteral (MBool b) = CBool b
 lowerLiteral (MString s) = CString s
+
+-- Lower a composition block to CFG with short-circuiting for Option/Either.
+
+-- - MCBind x e:
+
+--     * If e has type Option a:
+--         - switch on tag(e): None -> short-circuit to join with e
+
+--                             Some v -> bind x = v and continue
+
+--     * If e has type Either l r:
+
+--         - switch on tag(e): Left l  -> short-circuit to join with e
+
+--                             Right v -> bind x = v and continue
+
+--     * Otherwise: strict let-binding x = e and continue
+
+-- - MCLet x e: strict let-binding x = e and continue
+-- - MCExpr e: evaluate strictly, discard (unless last), continue
+-- Final statement:
+--   * If the result type is Optional t: wrap final value as Some (or pass through Optional on short-circuit)
+--   * If the result type is Either l r: wrap final value as Right (or pass through Either on short-circuit)
+--   * Otherwise: return the plain final value
+lowerCompose :: [MetallicComposeStmt] -> Type -> Lower AOperand
+lowerCompose [] _ =
+    failLower "Alloy.Lower: compose block must contain at least one statement"
+lowerCompose stmts resultTy = do
+    rootName <- lift freshBlockName
+    joinName <- lift freshBlockName
+    lift $ terminate (ABr rootName [])
+    lift $ beginBlock rootName []
+    seqBuild stmts joinName resultTy
+    let resParam = "res"
+    lift $ beginBlock joinName [(resParam, resultTy)]
+    pure (OpVar resParam)
+  where
+    seqBuild :: [MetallicComposeStmt] -> BlockName -> Type -> Lower ()
+
+    seqBuild [] _ _ = failLower "Alloy.Lower: empty compose sequence after normalization"
+    seqBuild [MCExpr e] joinNm resTy = do
+        v <- lowerExpr e
+        let eTy = getMetallicExprType e
+        mProf <- resultProfile resTy
+
+        case mProf of
+            Just (ProfileShortCircuit{mpSuccessCtor}) -> do
+                -- If the final expression already yields the monadic result type,
+                -- do not wrap again. Only wrap when the expression is the payload.
+                let eCtor = getTypeCtorName eTy
+                let rCtor = getTypeCtorName resTy
+                case (eCtor, rCtor) of
+                    (Just ec, Just rc)
+                        | ec == rc ->
+                            lift $ terminate (ABr joinNm [v])
+                    _ -> do
+                        sTag <- mustTag mpSuccessCtor
+                        let ctorName = mpSuccessCtor
+                        tmp <- lift $ emitLetTmp resTy (OpConstruct ctorName (fromIntegral sTag) [v])
+                        lift $ terminate (ABr joinNm [OpVar tmp])
+            _ -> lift $ terminate (ABr joinNm [v])
+    seqBuild (MCBind n e : rest) joinNm resTy = do
+        v <- lowerExpr e
+
+        let eTy = getMetallicExprType e
+
+        mEProf <- resultProfile eTy
+        case mEProf of
+            Just (ProfileShortCircuit{mpSuccessCtor = succCtor, mpFailCtor = failCtor}) -> do
+                sTag <- mustTag succCtor
+                fTag <- mustTag failCtor
+                tagNm <- lift $ emitLetTmp intType (OpTagOf v)
+
+                onFail <- lift freshBlockName
+
+                onOk <- lift freshBlockName
+
+                lift $ terminate (ASwitch (OpVar tagNm) [(fTag, onFail), (sTag, onOk)] Nothing)
+                lift $ beginBlock onFail []
+                mRProf <- resultProfile resTy
+                case mRProf of
+                    Just (ProfileShortCircuit{}) -> lift $ terminate (ABr joinNm [v])
+                    _ -> failLower "Alloy.Lower: bind short-circuit but compose result is not short-circuiting"
+
+                lift $ beginBlock onOk []
+                aTy <- payloadType succCtor
+                payNm <- lift $ emitLetTmp aTy (OpProject v 0)
+                modify (\st -> st{leVars = Map.insert n (OpVar payNm) (leVars st)})
+
+                seqBuild rest joinNm resTy
+            _ -> do
+                modify (\st -> st{leVars = Map.insert n v (leVars st)})
+                seqBuild rest joinNm resTy
+    seqBuild (MCLet n e : rest) joinNm resTy = do
+        v <- lowerExpr e
+
+        modify (\st -> st{leVars = Map.insert n v (leVars st)})
+        seqBuild rest joinNm resTy
+
+    -- MCExpr (non-final): evaluate strictly, discard result
+    seqBuild (MCExpr e : rest) joinNm resTy = do
+        _ <- lowerExpr e
+
+        seqBuild rest joinNm resTy
+
+    mustTag :: String -> Lower Integer
+    mustTag ctor = do
+        env <- get
+
+        case Map.lookup ctor (leCtorTags env) of
+            Just n -> pure n
+            Nothing -> failLower ("Alloy.Lower: missing constructor tag for " ++ ctor)
+
+    mustTypeConName :: Type -> Lower String
+    mustTypeConName t =
+        case getTypeCtorName t of
+            Just nm -> pure nm
+            Nothing -> failLower "Alloy.Lower: cannot determine result type constructor name for compose"
+
+    payloadType :: String -> Lower Type
+    payloadType ctor = do
+        env <- get
+        case Map.lookup ctor (leCtorFields env) of
+            Just (t : _) -> pure t
+            Just [] -> failLower ("Alloy.Lower: constructor " ++ ctor ++ " has no fields")
+            Nothing -> failLower ("Alloy.Lower: missing constructor fields for " ++ ctor)
+    resultProfile :: Type -> Lower (Maybe MonadProfile)
+    resultProfile t = do
+        env <- get
+        case getTypeCtorName t of
+            Just tn -> pure (lookupProfile (leProfiles env) tn)
+            Nothing -> pure Nothing
+    getTypeCtorName :: Type -> Maybe String
+    getTypeCtorName t =
+        case t of
+            TApp l _ -> getTypeCtorName l
+            TConstructor (TypeConstructor nm _) -> Just nm
+            _ -> Nothing
+
+buildCtorFieldMap :: MetallicModule -> Map.Map String [Type]
+buildCtorFieldMap mm =
+    Map.fromList
+        [ (mcName c, mcFields c)
+        | MAlgebraicType{mtConstructors = ctors} <- mmTypes mm
+        , c <- ctors
+        ]
 
 buildCtorTagMap :: MetallicModule -> Map.Map String Integer
 buildCtorTagMap mm =

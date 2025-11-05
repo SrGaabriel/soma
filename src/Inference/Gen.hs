@@ -8,14 +8,15 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
+import qualified Debug.Trace as Debug
 import Inference.Core (TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
 import Inference.Substitution (Substitutable (apply))
 import Lexing.Position (Span (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
 import Syntax.Patterns (Pattern (..))
-import Syntax.Tree (Expr (..), exprChildren)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyVar (..), Type (..), arrayType, boolType, cleanQualified, intType, strType, vectorize, vectorizeAll)
+import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyConstructor (..), TyVar (..), Type (..), arrayType, boolType, cleanQualified, intType, strType, tupleType, vectorize, vectorizeAll)
 import Utils.Lists (hardHead)
 
 newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
@@ -290,6 +291,45 @@ generateConstraints expr = case expr of
                 let errorType = TVar errorVar
                 recordType expr errorType
                 return (Just errorType, bodyConstraints)
+    ExprCompose stmts _ -> do
+        let combine cs1 cs2 =
+                ConstraintSet
+                    (csTypeConstraints cs1 ++ csTypeConstraints cs2)
+                    (csClassConstraints cs1 ++ csClassConstraints cs2)
+                    (csDeclaredConstraints cs1 ++ csDeclaredConstraints cs2)
+
+        let process [] = do
+                tv <- freshTyVar KindStar
+
+                let ty = TVar tv
+                recordType expr ty
+                pure (Just ty, emptyConstraints)
+            process (CSLet name val _ : rest) = do
+                (Just vty, vcs) <- generateConstraints val
+                sym <- createLocalSymbol name
+                let ext = Map.insert sym (cleanQualified vty)
+                (mrt, rcs) <- local ext (process rest)
+                pure (mrt, combine vcs rcs)
+            process (CSBind name act _ : rest) = do
+                (_mty, acs) <- generateConstraints act
+                btv <- freshTyVar KindStar
+                sym <- createLocalSymbol name
+                let ext = Map.insert sym (cleanQualified (TVar btv))
+                (mrt, rcs) <- local ext (process rest)
+                pure (mrt, combine acs rcs)
+            process [CSExpr e _] = do
+                (mt, cs) <- generateConstraints e
+                case mt of
+                    Just t -> do
+                        recordType expr t
+                        pure (Just t, cs)
+                    Nothing -> pure (Nothing, cs)
+            process (CSExpr e _ : rest) = do
+                (_mt, cs1) <- generateConstraints e
+                (mrt, cs2) <- process rest
+                pure (mrt, combine cs1 cs2)
+
+        process stmts
     ExprArray elements _ -> do
         if null elements
             then do
@@ -321,6 +361,27 @@ generateConstraints expr = case expr of
                 let arrType = arrayType firstElemType
                 recordType expr arrType
                 return (Just arrType, combinedConstraints)
+    ExprTuple elements _ -> do
+        if null elements
+            then do
+                let unitType = TConstructor (TypeConstructor "Unit" KindStar)
+                recordType expr unitType
+                return (Just unitType, emptyConstraints)
+            else do
+                results <- mapM generateConstraints elements
+                let (maybeElemTypes, elemConstraints) = unzip results
+
+                let elemTypes = [t | Just t <- maybeElemTypes]
+
+                let combinedConstraints =
+                        ConstraintSet
+                            (concatMap csTypeConstraints elemConstraints)
+                            (concatMap csClassConstraints elemConstraints)
+                            (concatMap csDeclaredConstraints elemConstraints)
+
+                let tupleTy = tupleType elemTypes
+                recordType expr tupleTy
+                return (Just tupleTy, combinedConstraints)
     _ -> do
         let children = exprChildren expr
         results <- mapM generateConstraints children

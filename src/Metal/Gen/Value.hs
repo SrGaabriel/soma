@@ -70,7 +70,55 @@ metallizeValue expr@(ExprLambda paramNames body _) = do
         lambdaScope = MetalScope "lambda" paramBindings (Just parentScope)
     metalBody <- withScope lambdaScope $ metallizeValue body
     pure $ MLambda paramNames metalBody ty
+metallizeValue expr@(ExprCompose stmts _) = do
+    ty <- getExprType expr
+    metalStmts <- metallizeComposeStmtsInScope stmts
+    pure $ MCompose metalStmts ty
 metallizeValue u = error $ "Cannot metallize value: " ++ show u
+
+metallizeComposeStmt :: ComposeStmt -> MetalGen MetallicComposeStmt
+metallizeComposeStmt (CSBind name e _) = do
+    me <- metallizeValue e
+    pure (MCBind name me)
+metallizeComposeStmt (CSLet name e _) = do
+    me <- metallizeValue e
+
+    pure (MCLet name me)
+metallizeComposeStmt (CSExpr e _) = do
+    me <- metallizeValue e
+
+    pure (MCExpr me)
+
+metallizeComposeStmtsInScope :: [ComposeStmt] -> MetalGen [MetallicComposeStmt]
+metallizeComposeStmtsInScope [] = pure []
+metallizeComposeStmtsInScope (stmt : rest) = do
+    case stmt of
+        CSBind name e _ -> do
+            me <- metallizeValue e
+            eTy <- getExprType e
+            parentScope <- asks metalCurrentScope
+            let newScope =
+                    MetalScope
+                        name
+                        (Map.insert name eTy (scopeVars parentScope))
+                        (Just parentScope)
+            restStmts <- withScope newScope $ metallizeComposeStmtsInScope rest
+            pure (MCBind name me : restStmts)
+        CSLet name e _ -> do
+            me <- metallizeValue e
+            eTy <- getExprType e
+            parentScope <- asks metalCurrentScope
+            let newScope =
+                    MetalScope
+                        name
+                        (Map.insert name eTy (scopeVars parentScope))
+                        (Just parentScope)
+            restStmts <- withScope newScope $ metallizeComposeStmtsInScope rest
+            pure (MCLet name me : restStmts)
+        CSExpr e _ -> do
+            me <- metallizeValue e
+            restStmts <- metallizeComposeStmtsInScope rest
+            pure (MCExpr me : restStmts)
 
 metallizeApp :: Expr -> [Expr] -> MetalGen MetallicExpr
 metallizeApp base args = do

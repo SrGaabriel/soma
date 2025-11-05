@@ -3,6 +3,8 @@
 module Alloy.Monomorphize (
     monomorphizeModule,
     monomorphizeFunction,
+    InstKey (..),
+    TySubst,
 ) where
 
 import Alloy.Ir
@@ -24,9 +26,12 @@ import Typing.Types (
 monomorphizeModule :: AlloyModule -> AlloyModule
 monomorphizeModule m@AlloyModule{amFunctions = baseFns} =
     let baseFnMap = toFnMap baseFns
+
         (allFns, instCache) = monoFixpoint baseFnMap baseFns Map.empty
-        rwMap = computeRewriteMap baseFnMap instCache allFns
-        finalFns = map (applyRewrites rwMap) allFns
+
+        dedupedFns = dedupByName allFns
+        rwMap = computeRewriteMap baseFnMap instCache dedupedFns
+        finalFns = map (applyRewrites rwMap) dedupedFns
     in m{amFunctions = finalFns}
 
 monomorphizeFunction :: Map String AlloyFunction -> AlloyFunction -> (AlloyFunction, [AlloyFunction])
@@ -52,6 +57,10 @@ type RewriteMap = Map (String, CallSiteId) String
 
 toFnMap :: [AlloyFunction] -> Map String AlloyFunction
 toFnMap = Map.fromList . map (\f -> (afName f, f))
+
+-- Deduplicate functions by name (last wins) to avoid duplicate specialized symbols
+dedupByName :: [AlloyFunction] -> [AlloyFunction]
+dedupByName fns = Map.elems (Map.fromList [(afName f, f) | f <- fns])
 
 monoFixpoint ::
     Map String AlloyFunction -> -- base functions (eligible for specialization)

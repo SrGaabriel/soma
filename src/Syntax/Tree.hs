@@ -1,4 +1,4 @@
-module Syntax.Tree (Expr (..), exprChildren, exprSpan, modifySpan, uncurryApp) where
+module Syntax.Tree (Expr (..), exprChildren, exprSpan, modifySpan, uncurryApp, ComposeStmt (..)) where
 
 import Lexing.Position (Span (..))
 import Project.Symbols (Symbol)
@@ -77,6 +77,13 @@ data Expr
         , instanceMethods :: [Expr]
         , instanceSpan :: Span
         }
+    | ExprCompose [ComposeStmt] Span
+    deriving (Show, Eq, Ord)
+
+data ComposeStmt
+    = CSBind String Expr Span
+    | CSLet String Expr Span
+    | CSExpr Expr Span
     deriving (Show, Eq, Ord)
 
 exprChildren :: Expr -> [Expr]
@@ -105,6 +112,12 @@ exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
 exprChildren (ExprIntrinsicDataTypeDef{}) = []
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprInstanceDef _ methods _) = methods
+exprChildren (ExprCompose stmts _) = concatMap stmtChildren stmts
+
+stmtChildren :: ComposeStmt -> [Expr]
+stmtChildren (CSBind _ e _) = [e]
+stmtChildren (CSLet _ e _) = [e]
+stmtChildren (CSExpr e _) = [e]
 
 exprSpan :: Expr -> Span
 exprSpan (ExprRoot _) = error "Root expressions do not have a span"
@@ -131,6 +144,7 @@ exprSpan (ExprDerivedPatternMatch arms) = spanningExprs arms
 exprSpan (ExprPatternMatchArm _ _ s) = s
 exprSpan (ExprInstanceDef _ _ s) = s
 exprSpan (ExprImport _ _ s) = s
+exprSpan (ExprCompose _ s) = s
 
 modifySpan :: Expr -> Span -> Expr
 modifySpan e@(ExprRoot _) _ = e
@@ -174,6 +188,8 @@ modifySpan (ExprInstanceDef constraintType methods _) newSpan =
     ExprInstanceDef constraintType methods newSpan
 modifySpan (ExprImport moduleName elements _) newSpan =
     ExprImport moduleName elements newSpan
+modifySpan (ExprCompose stmts _) newSpan =
+    ExprCompose stmts newSpan
 
 spanningExprs :: [Expr] -> Span
 spanningExprs [] = error "Cannot create a span from an empty list of expressions"

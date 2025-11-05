@@ -16,7 +16,6 @@ data TokenKind
     | TokenReturns
     | TokenNewline
     | TokenCase
-    | TokenDo
     | TokenDef
     | TokenIntrinsic
     | TokenLeftParen
@@ -47,6 +46,8 @@ data TokenKind
     | TokenForall
     | TokenUnderscore
     | TokenSlash
+    | TokenCompose
+    | TokenBind
     deriving (Show, Eq, Ord)
 
 data Token = Token
@@ -84,6 +85,8 @@ tokenize (c : cs) i indent
         _ ->
             let (ops, rest) = span isOperatorChar (c : cs)
             in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
+    | c == '<', ('-':' ':cs') <- cs =
+        addToken (Token TokenLeftArrow "<- " i indent) (tokenize cs' (i + 3) indent)
     | c == '=' = case cs of
         '=' : _rest ->
             let (ops, rest) = span isOperatorChar (c : cs)
@@ -168,7 +171,6 @@ tokenize (c : cs) i indent
                 "let" -> TokenLet
                 "in" -> TokenIn
                 "case" -> TokenCase
-                "do" -> TokenDo
                 "def" -> TokenDef
                 "intrinsic" -> TokenIntrinsic
                 "use" -> TokenImport
@@ -179,6 +181,8 @@ tokenize (c : cs) i indent
                 "instance" -> TokenInstance
                 "true" -> TokenTrue
                 "false" -> TokenFalse
+                "bind" -> TokenBind
+                "compose" -> TokenCompose
                 _ ->
                     if C.isLower c
                         then TokenLowerIdentifier
@@ -246,7 +250,6 @@ referenceTokenKind TokenStrongRightArrow = "a double right arrow"
 referenceTokenKind TokenColon = "a colon"
 referenceTokenKind TokenReturns = "'::'"
 referenceTokenKind TokenCase = "'case'"
-referenceTokenKind TokenDo = "'do'"
 referenceTokenKind TokenDef = "'def'"
 referenceTokenKind TokenIntrinsic = "'intrinsic'"
 referenceTokenKind TokenImport = "'import'"
@@ -270,6 +273,8 @@ referenceTokenKind TokenInstance = "'instance'"
 referenceTokenKind TokenLambda = "'\\'"
 referenceTokenKind TokenForall = "'∀'"
 referenceTokenKind TokenUnderscore = "an underscore"
+referenceTokenKind TokenBind = "'bind'"
+referenceTokenKind TokenCompose = "'compose'"
 
 tokenSpan :: Token -> Span
 tokenSpan token = Span (tokenPos token) (tokenPos token + length (tokenValue token))

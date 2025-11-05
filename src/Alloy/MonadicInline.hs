@@ -1,0 +1,270 @@
+{-# LANGUAGE NamedFieldPuns #-}
+
+-- todo: improve everything here
+
+module Alloy.MonadicInline (
+    monadicInlineModule,
+    monadicInlineFunction,
+    MonadicOps (..),
+    defaultMonadicOps,
+) where
+
+import Alloy.Ir
+
+import Data.Map.Strict (Map)
+
+import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
+import Typing.Types (TyConstructor (..), Type (..))
+
+data MonadicOps = MonadicOps
+    { ioPure :: [Name]
+    , ioBind :: [Name]
+    , readerPure :: [Name]
+    , readerBind :: [Name]
+    , readerAsk :: [Name]
+    , statePure :: [Name]
+    , stateBind :: [Name]
+    , stateGet :: [Name]
+    , statePut :: [Name]
+    , maybePure :: [Name]
+    , maybeBind :: [Name]
+    , eitherPure :: [Name]
+    , eitherBind :: [Name]
+    , refNew :: [Name]
+    , refRead :: [Name]
+    , refModify :: [Name]
+    , allowLazyList :: Bool
+    , ioPureIsPhantom :: Bool
+    , readerPureIsPhantom :: Bool
+    , statePureIsPhantom :: Bool
+    , maybePureIsPhantom :: Bool
+    , eitherPureIsPhantom :: Bool
+    }
+
+defaultMonadicOps :: MonadicOps
+defaultMonadicOps =
+    MonadicOps
+        { ioPure = ["IO.pure", "IO$pure"]
+        , ioBind = ["IO.bind", "IO$bind"]
+        , readerPure = ["Reader.pure", "Reader$pure"]
+        , readerBind = ["Reader.bind", "Reader$bind"]
+        , readerAsk = ["Reader.ask", "Reader$ask"]
+        , statePure = ["State.pure", "State$pure"]
+        , stateBind = ["State.bind", "State$bind"]
+        , stateGet = ["State.get", "State$get"]
+        , statePut = ["State.put", "State$put"]
+        , maybePure = ["Maybe.pure", "Optional.pure", "Maybe$pure", "Optional$pure", "Either.right", "Either$right"]
+        , maybeBind = ["Maybe.bind", "Optional.bind", "Maybe$bind", "Optional$bind"]
+        , eitherPure = ["Either.pure", "Either$pure", "Right", "Either.right", "Either$right"]
+        , eitherBind = ["Either.bind", "Either$bind"]
+        , refNew = ["newRef", "Ref.new"]
+        , refRead = ["readRef", "Ref.read"]
+        , refModify = ["modifyRef", "Ref.modify"]
+        , allowLazyList = False
+        , ioPureIsPhantom = True
+        , readerPureIsPhantom = True
+        , statePureIsPhantom = False
+        , maybePureIsPhantom = False
+        , eitherPureIsPhantom = False
+        }
+
+monadicInlineModule :: AlloyModule -> AlloyModule
+monadicInlineModule = monadicInlineModuleWith defaultMonadicOps
+
+monadicInlineFunction :: AlloyFunction -> AlloyFunction
+monadicInlineFunction = monadicInlineFunctionWith defaultMonadicOps
+
+monadicInlineModuleWith :: MonadicOps -> AlloyModule -> AlloyModule
+monadicInlineModuleWith ops m@AlloyModule{amFunctions} =
+    m{amFunctions = map (monadicInlineFunctionWith ops) amFunctions}
+
+monadicInlineFunctionWith :: MonadicOps -> AlloyFunction -> AlloyFunction
+monadicInlineFunctionWith ops fn@AlloyFunction{afBlocks} =
+    let blocks' = rewireBlocks ops fn afBlocks
+    in fn{afBlocks = blocks'}
+
+rewireBlocks :: MonadicOps -> AlloyFunction -> [ABlock] -> [ABlock]
+rewireBlocks ops _fn = map (rewireBlock ops)
+
+rewireBlock :: MonadicOps -> ABlock -> ABlock
+rewireBlock ops blk@ABlock{abInstrs, abTerminator} =
+    let (instrs', subst) = foldl (rewireInstr ops) ([], Map.empty) abInstrs
+        term' = substTerminator subst abTerminator
+    in blk{abInstrs = reverse instrs', abTerminator = term'}
+
+type Subst = Map Name AOperand
+
+rewireInstr :: MonadicOps -> ([AInstr], Subst) -> AInstr -> ([AInstr], Subst)
+rewireInstr ops (acc, env) instr =
+    case instr of
+        ILet n ty (OpCall (Direct callee) args)
+            | isIoPure ops callee
+            , ioPureIsPhantom ops
+            , [v] <- args ->
+                let v' = substOperand env v
+                in (acc, Map.insert n v' env)
+            | isReaderPure ops callee
+            , readerPureIsPhantom ops
+            , [v] <- args ->
+                let v' = substOperand env v
+                in (acc, Map.insert n v' env)
+            | isStatePure ops callee
+            , statePureIsPhantom ops
+            , [v] <- args ->
+                let v' = substOperand env v
+                in (acc, Map.insert n v' env)
+            | isMaybePure ops callee
+            , maybePureIsPhantom ops
+            , [v] <- args ->
+                let v' = substOperand env v
+                in (acc, Map.insert n v' env)
+            | isEitherPure ops callee
+            , eitherPureIsPhantom ops
+            , [v] <- args ->
+                let v' = substOperand env v
+                in (acc, Map.insert n v' env)
+            | isReaderAsk ops callee
+            , [envArg] <- args ->
+                let envOp = substOperand env envArg
+                in (acc, Map.insert n envOp env)
+            | isRefRead ops callee
+            , [r] <- args ->
+                let r' = substOperand env r
+                    op' = OpLoad r'
+                in (ILet n ty op' : acc, env)
+            | isRefModify ops callee
+            , [r, v] <- args ->
+                let r' = substOperand env r
+                    v' = substOperand env v
+                    eff = EffStore r' v'
+                in (IEffect eff : acc, Map.insert n r' env)
+            | isRefNew ops callee
+            , [v] <- args ->
+                let v' = substOperand env v
+                    elemTy = fromMaybe ty (refInner ty)
+                    allocInstr = ILet n ty (OpAllocStack elemTy)
+                    storeInstr = IEffect (EffStore (OpVar n) v')
+                in (storeInstr : allocInstr : acc, env)
+            | isMaybeBind ops callee
+                || isEitherBind ops callee
+                || isIoBind ops callee
+                || isReaderBind ops callee
+                || isStateBind ops callee ->
+                let op' = OpCall (Direct callee) (map (substOperand env) args)
+                in (ILet n ty op' : acc, env)
+            | isStateGet ops callee
+                || isStatePut ops callee ->
+                let op' = OpCall (Direct callee) (map (substOperand env) args)
+                in (ILet n ty op' : acc, env)
+            | otherwise ->
+                let op' = OpCall (Direct callee) (map (substOperand env) args)
+                in (ILet n ty op' : acc, env)
+        ILet n ty op ->
+            let op' = substOp env op
+            in (ILet n ty op' : acc, env)
+        IEffect eff ->
+            let eff' = substEffect env eff
+            in (IEffect eff' : acc, env)
+
+substOperand :: Subst -> AOperand -> AOperand
+substOperand env (OpVar v) = Map.findWithDefault (OpVar v) v env
+substOperand _ c@(OpConst _) = c
+
+substOp :: Subst -> AOp -> AOp
+substOp env op =
+    case op of
+        OpBin k a b -> OpBin k (substOperand env a) (substOperand env b)
+        OpUnary k a -> OpUnary k (substOperand env a)
+        OpCmp k a b -> OpCmp k (substOperand env a) (substOperand env b)
+        OpLoad a -> OpLoad (substOperand env a)
+        OpAllocStack t -> OpAllocStack t
+        OpAllocHeap t -> OpAllocHeap t
+        OpCall callee args -> OpCall (substCallable env callee) (map (substOperand env) args)
+        OpConstruct tn tag fields -> OpConstruct tn tag (map (substOperand env) fields)
+        OpTagOf a -> OpTagOf (substOperand env a)
+        OpProject a i -> OpProject (substOperand env a) i
+        OpIndex a i -> OpIndex (substOperand env a) (substOperand env i)
+        OpMakeArray xs -> OpMakeArray (map (substOperand env) xs)
+        OpMakeTuple xs -> OpMakeTuple (map (substOperand env) xs)
+
+substCallable :: Subst -> ACallable -> ACallable
+substCallable _ (Direct n) = Direct n
+substCallable env (Indirect a) = Indirect (substOperand env a)
+
+substEffect :: Subst -> AEffect -> AEffect
+substEffect env eff =
+    case eff of
+        EffStore p v -> EffStore (substOperand env p) (substOperand env v)
+        EffStoreIndex a i v -> EffStoreIndex (substOperand env a) (substOperand env i) (substOperand env v)
+        EffDrop a -> EffDrop (substOperand env a)
+
+substTerminator :: Subst -> ATerminator -> ATerminator
+substTerminator env t =
+    case t of
+        ABr b args -> ABr b (map (substOperand env) args)
+        ACondBr c tb ta fb fa ->
+            ACondBr
+                (substOperand env c)
+                tb
+                (map (substOperand env) ta)
+                fb
+                (map (substOperand env) fa)
+        ASwitch v cases mdef ->
+            ASwitch (substOperand env v) cases mdef
+        ARet mv -> ARet (fmap (substOperand env) mv)
+        AUnreachable -> AUnreachable
+
+isIoPure :: MonadicOps -> Name -> Bool
+isIoPure MonadicOps{ioPure} n = n `elem` ioPure
+
+isIoBind :: MonadicOps -> Name -> Bool
+isIoBind MonadicOps{ioBind} n = n `elem` ioBind
+
+isReaderPure :: MonadicOps -> Name -> Bool
+isReaderPure MonadicOps{readerPure} n = n `elem` readerPure
+
+isReaderBind :: MonadicOps -> Name -> Bool
+isReaderBind MonadicOps{readerBind} n = n `elem` readerBind
+
+isReaderAsk :: MonadicOps -> Name -> Bool
+isReaderAsk MonadicOps{readerAsk} n = n `elem` readerAsk
+
+isRefNew :: MonadicOps -> Name -> Bool
+isRefNew MonadicOps{refNew} n = n `elem` refNew
+
+isRefRead :: MonadicOps -> Name -> Bool
+isRefRead MonadicOps{refRead} n = n `elem` refRead
+
+isRefModify :: MonadicOps -> Name -> Bool
+isRefModify MonadicOps{refModify} n = n `elem` refModify
+
+isStatePure :: MonadicOps -> Name -> Bool
+isStatePure MonadicOps{statePure} n = n `elem` statePure
+
+isStateBind :: MonadicOps -> Name -> Bool
+isStateBind MonadicOps{stateBind} n = n `elem` stateBind
+
+isStateGet :: MonadicOps -> Name -> Bool
+isStateGet MonadicOps{stateGet} n = n `elem` stateGet
+
+isStatePut :: MonadicOps -> Name -> Bool
+isStatePut MonadicOps{statePut} n = n `elem` statePut
+
+isMaybePure :: MonadicOps -> Name -> Bool
+isMaybePure MonadicOps{maybePure} n = n `elem` maybePure
+
+isMaybeBind :: MonadicOps -> Name -> Bool
+isMaybeBind MonadicOps{maybeBind} n = n `elem` maybeBind
+
+isEitherPure :: MonadicOps -> Name -> Bool
+isEitherPure MonadicOps{eitherPure} n = n `elem` eitherPure
+
+isEitherBind :: MonadicOps -> Name -> Bool
+isEitherBind MonadicOps{eitherBind} n = n `elem` eitherBind
+
+refInner :: Type -> Maybe Type
+refInner t =
+    case t of
+        TApp (TConstructor (TypeConstructor "Ref" _)) a -> Just a
+        _ -> Nothing

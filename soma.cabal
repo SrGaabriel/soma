@@ -19,11 +19,19 @@ library
   import: warnings
   exposed-modules:
     Alloy.Build
+    Alloy.CSE
     Alloy.Decisions
+    Alloy.Defunc
+    Alloy.HoistAllocas
     Alloy.Ir
     Alloy.Lower
+    Alloy.MonadicInline
     Alloy.Monomorphize
+    Alloy.PromoteRefs
+    Alloy.ReaderRewrite
     Alloy.Simplify
+    Alloy.Uniqueness
+    Alloy.Verify
     Analysis.Symbol
     Config.Options
     Inference.Assembler
@@ -79,6 +87,8 @@ library
     Metal.Lift
     Metal.Metadata
     Metal.Module
+    Metal.MonadNormalize
+    Metal.MonadProfile
     Parsing.Ast
     Parsing.Atoms
     Parsing.Bindings

@@ -110,9 +110,9 @@ data ACmpOp
     | CUlt
     | CUle
     | CUgt
-    | CUge -- unsigned
+    | CUge
     | CSlt
     | CSle
     | CSgt
-    | CSge -- signed
+    | CSge
     deriving (Show, Eq, Ord)

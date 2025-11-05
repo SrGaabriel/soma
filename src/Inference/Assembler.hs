@@ -56,5 +56,5 @@ inferTreeT currentPackage currentModule tEnv root = do
     resolverResult <- runResolverWithEnv currentPackage currentModule tEnv root
     case resolverResult of
         Left err -> pure $ Left [err]
-        Right (_resolvedExpr, finalTypeEnv, instanceEnv) ->
-            pure $ inferTree currentPackage currentModule finalTypeEnv instanceEnv root
+        Right (resolvedExpr, finalTypeEnv, instanceEnv) ->
+            pure $ inferTree currentPackage currentModule finalTypeEnv instanceEnv resolvedExpr

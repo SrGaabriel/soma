@@ -16,6 +16,13 @@ data MetallicExpr
     | MCase [MetallicExpr] [MCaseArm] (Maybe MetallicExpr) Type
     | MFieldAccess MetallicExpr Int Type
     | MPanic String Type
+    | MCompose [MetallicComposeStmt] Type
+    deriving (Show, Eq)
+
+data MetallicComposeStmt
+    = MCBind String MetallicExpr
+    | MCLet String MetallicExpr
+    | MCExpr MetallicExpr
     deriving (Show, Eq)
 
 data MCaseArm = MCaseArm
@@ -48,6 +55,7 @@ getMetallicExprType (MTuple _ t) = t
 getMetallicExprType (MCase _ _ _ t) = t
 getMetallicExprType (MFieldAccess _ _ t) = t
 getMetallicExprType (MPanic _ t) = t
+getMetallicExprType (MCompose _ t) = t
 
 getMetallicLiteralType :: MetallicLiteral -> Type
 getMetallicLiteralType (MInt _) = intType
