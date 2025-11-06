@@ -273,12 +273,6 @@ lowerCompose stmts resultTy = do
             Just n -> pure n
             Nothing -> failLower ("Alloy.Lower: missing constructor tag for " ++ ctor)
 
-    mustTypeConName :: Type -> Lower String
-    mustTypeConName t =
-        case getTypeCtorName t of
-            Just nm -> pure nm
-            Nothing -> failLower "Alloy.Lower: cannot determine result type constructor name for compose"
-
     payloadType :: String -> Lower Type
     payloadType ctor = do
         env <- get

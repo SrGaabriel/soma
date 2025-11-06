@@ -8,7 +8,6 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
-import qualified Debug.Trace as Debug
 import Inference.Core (TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
 import Inference.Substitution (Substitutable (apply))
@@ -18,6 +17,7 @@ import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyConstructor (..), TyVar (..), Type (..), arrayType, boolType, cleanQualified, intType, strType, tupleType, vectorize, vectorizeAll)
 import Utils.Lists (hardHead)
+import Data.Maybe (catMaybes)
 
 newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
     deriving (Functor, Applicative, Monad, MonadState GenState, MonadReader TypeEnv, MonadWriter [InferenceError])
@@ -371,7 +371,7 @@ generateConstraints expr = case expr of
                 results <- mapM generateConstraints elements
                 let (maybeElemTypes, elemConstraints) = unzip results
 
-                let elemTypes = [t | Just t <- maybeElemTypes]
+                let elemTypes = catMaybes maybeElemTypes
 
                 let combinedConstraints =
                         ConstraintSet

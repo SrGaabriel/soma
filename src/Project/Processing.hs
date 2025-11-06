@@ -83,12 +83,16 @@ processModules sorted graph compileOptions = do
     let alloyReader = readerRewriteModule alloyDefunc
     let alloyInlined = monadicInlineModule alloyReader
     let alloyHoisted = hoistAllocasModule alloyInlined
-    let alloyCse = cseModuleGlobal alloyHoisted
-    let alloyPromoted = promoteRefsModule alloyCse
-    let alloyOpt = simplifyModule alloyPromoted
-    putStrLn $ "Alloy module (MIR) compiled (pre-mono):\n" ++ treeShow alloy
 
-    putStrLn $ "Alloy module (MIR) monomorphized + inlined + simplified:\n" ++ treeShow alloyOpt
+    let optimizeFixpoint m =
+            let step x = simplifyModule (promoteRefsModule (cseModuleGlobal x))
+                x' = step m
+            in if x' == m then m else optimizeFixpoint x'
+
+    let alloyOpt = optimizeFixpoint alloyHoisted
+
+    putStrLn $ "Alloy module (MIR) compiled (pre-mono):\n" ++ treeShow alloy
+    putStrLn $ "Alloy module (MIR) monomorphized + inlined + simplified (fixpoint):\n" ++ treeShow alloyOpt
 
     _ <- System.exitSuccess
 

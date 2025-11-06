@@ -30,7 +30,7 @@ data LocalUniq = LocalUniq
     }
     deriving (Eq, Show)
 
-data Decision
+newtype Decision -- todo make this an ADT
     = MutateInPlace Name
     deriving (Eq, Ord, Show)
 
@@ -41,12 +41,12 @@ data FunctionReport = FunctionReport
     }
     deriving (Eq, Show)
 
-data ModuleReport = ModuleReport
+newtype ModuleReport = ModuleReport
     { mrFunctions :: Map Name FunctionReport
     }
     deriving (Eq, Show)
 
-data Policy = Policy
+newtype Policy = Policy
     { allowAllocStackInPlace :: Bool
     }
     deriving (Eq, Show)

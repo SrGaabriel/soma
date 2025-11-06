@@ -1,5 +1,4 @@
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE TupleSections #-}
 
 {- | Alloy.PromoteRefs
 A conservative, SSA-style "mem2reg" promotion for unique stack-allocated refs.
@@ -43,12 +42,13 @@ module Alloy.PromoteRefs (
 
 import Alloy.Ir
 import Alloy.Uniqueness (FunctionReport (..), LocalUniq (..), Uniqueness (..), analyzeFunction)
-import Data.List (sort)
+import Data.List (findIndex, sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
-import Typing.Types (TyConstructor (..), Type (..))
+import Typing.Types (Type (..))
+import Utils.Lists (hardHead)
 
 promoteRefsModule :: AlloyModule -> AlloyModule
 promoteRefsModule m@AlloyModule{amFunctions} =
@@ -56,12 +56,10 @@ promoteRefsModule m@AlloyModule{amFunctions} =
 
 promoteRefsFunction :: AlloyFunction -> AlloyFunction
 promoteRefsFunction fn =
-    let candidates = findAllocaCandidates fn
-
-        uniqueSet = uniqueLocals fn
-
-        okUses = filter (\(n, _, _) -> uniqueOk n uniqueSet && usesOnlyLoadStore n fn) candidates
-
+    let fn0 = trivialRefPeephole fn
+        candidates = findAllocaCandidates fn0
+        uniqueSet = uniqueLocals fn0
+        okUses = filter (\(n, _, _) -> uniqueOk n uniqueSet && usesOnlyLoadStore n fn0) candidates
         promotables =
             [ (n, refTy, elemTy)
             | (n, refTy, elemTy) <- okUses
@@ -304,7 +302,7 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
 
 entryNoLoadBeforeStore :: Name -> AlloyFunction -> Bool
 entryNoLoadBeforeStore r AlloyFunction{afEntry, afBlocks} =
-    let blk = head [b | b@ABlock{abName} <- afBlocks, abName == afEntry]
+    let blk = hardHead [b | b@ABlock{abName} <- afBlocks, abName == afEntry]
     in not (loadBeforeStore r (abInstrs blk))
 
 loadBeforeStore :: Name -> [AInstr] -> Bool
@@ -318,11 +316,9 @@ loadBeforeStore r = go False
             _ -> go seenStore rest
 
 dominatedOnAllEdges :: Name -> AlloyFunction -> Bool
-dominatedOnAllEdges r fn@AlloyFunction{afEntry, afBlocks} =
+dominatedOnAllEdges r AlloyFunction{afEntry, afBlocks} =
     let blocks = afBlocks
-        nameSet = Set.fromList (map abName blocks)
         succs = succMap blocks
-        preds = predMap succs
 
         hasStore :: Map BlockName Bool
         hasStore = Map.fromList [(abName b, blockHasStore r b) | b <- blocks]
@@ -330,7 +326,7 @@ dominatedOnAllEdges r fn@AlloyFunction{afEntry, afBlocks} =
         initIn :: Map BlockName Bool
         initIn =
             Map.fromList
-                [ (abName b, not (abName b == afEntry))
+                [ (abName b, abName b /= afEntry)
                 | b <- blocks
                 ]
 
@@ -383,16 +379,95 @@ succMap blks =
             ARet _ -> []
             AUnreachable -> []
 
-predMap :: Map BlockName [BlockName] -> Map BlockName [BlockName]
-predMap succs =
-    let add m (fromB, tos) = foldl' (\acc toB -> Map.insertWith (++) toB [fromB] acc) m tos
-    in foldl' add Map.empty (Map.toList succs)
-
 paramName :: Name -> BlockName -> Name
 paramName r blk = r ++ "$in$" ++ blk
 
-refInner :: Type -> Maybe Type
-refInner t =
-    case t of
-        TApp (TConstructor (TypeConstructor "Ref" _)) a -> Just a
+trivialRefPeephole :: AlloyFunction -> AlloyFunction
+trivialRefPeephole fn@AlloyFunction{afParams, afBlocks} =
+    let paramNames = map fst afParams
+        cands =
+            [ (n, v)
+            | (n, _refTy, _ety) <- findAllocaCandidates fn
+            , usesOnlyLoadStore n fn
+            , entryNoLoadBeforeStore n fn
+            , Just v <- [exactlyOneStoreValue n fn]
+            , isGlobalishOperand paramNames v
+            , dominatedOnAllEdges n fn || loadsAfterStoreSameBlock n fn
+            ]
+        trivialSet = Set.fromList (map fst cands)
+        valueMap = Map.fromList cands
+
+        rewriteBlk :: ABlock -> ABlock
+        rewriteBlk ABlock{abName, abParams, abInstrs, abTerminator} =
+            let
+                step :: ([AInstr], Map Name AOperand) -> AInstr -> ([AInstr], Map Name AOperand)
+                step (acc, subst) ins =
+                    case ins of
+                        -- Drop promoted alloca
+                        ILet n _ (OpAllocStack _)
+                            | n `Set.member` trivialSet -> (acc, subst)
+                        -- Drop the single store
+                        IEffect (EffStore (OpVar r) _)
+                            | r `Set.member` trivialSet -> (acc, subst)
+                        -- Replace loads with the stored value via substitution
+                        ILet n _ (OpLoad (OpVar r))
+                            | r `Set.member` trivialSet
+                            , Just v <- Map.lookup r valueMap ->
+                                (acc, Map.insert n v subst)
+                        -- Default: propagate substitutions
+                        ILet n t op ->
+                            let op' = substOp subst op
+                            in (ILet n t op' : acc, subst)
+                        IEffect eff ->
+                            let eff' = substEffect subst eff
+                            in (IEffect eff' : acc, subst)
+
+                (instrs', subst') = foldl' step ([], Map.empty) abInstrs
+                term' = substTerminator subst' abTerminator
+            in
+                ABlock{abName, abParams, abInstrs = reverse instrs', abTerminator = term'}
+    in if Map.null valueMap
+        then fn
+        else fn{afBlocks = map rewriteBlk afBlocks}
+
+exactlyOneStoreValue :: Name -> AlloyFunction -> Maybe AOperand
+exactlyOneStoreValue r AlloyFunction{afBlocks} =
+    let vals =
+            [ v
+            | ABlock{abInstrs} <- afBlocks
+            , IEffect (EffStore (OpVar p) v) <- abInstrs
+            , p == r
+            ]
+    in case vals of
+        [v] -> Just v
         _ -> Nothing
+
+isGlobalishOperand :: [Name] -> AOperand -> Bool
+isGlobalishOperand _ (OpConst _) = True
+isGlobalishOperand params (OpVar n) = n `elem` params
+
+loadsAfterStoreSameBlock :: Name -> AlloyFunction -> Bool
+loadsAfterStoreSameBlock r AlloyFunction{afBlocks} =
+    case [ (abName b, b, idx)
+         | b@ABlock{abInstrs} <- afBlocks
+         , Just idx <- [firstStoreIndex r abInstrs]
+         ] of
+        [(storeBlkName, storeBlk, _idx)] ->
+            let okInStoreBlk = not (loadBeforeStore r (abInstrs storeBlk))
+                noLoadsElsewhere =
+                    all (noLoads r) [b | b@ABlock{abName} <- afBlocks, abName /= storeBlkName]
+            in okInStoreBlk && noLoadsElsewhere
+        _ -> False
+
+firstStoreIndex :: Name -> [AInstr] -> Maybe Int
+firstStoreIndex r = findIndex isStore
+  where
+    isStore (IEffect (EffStore (OpVar p) _)) | p == r = True
+    isStore _ = False
+
+noLoads :: Name -> ABlock -> Bool
+noLoads r ABlock{abInstrs} =
+    not (any isLoad abInstrs)
+  where
+    isLoad (ILet _ _ (OpLoad (OpVar p))) | p == r = True
+    isLoad _ = False

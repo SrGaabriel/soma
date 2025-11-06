@@ -14,7 +14,6 @@ module Alloy.Verify (
 import Alloy.Ir
 import Data.Char (toLower)
 import Data.List (isInfixOf)
-import qualified Data.Map.Strict as Map
 import Typing.Types (Type)
 
 data VerificationConfig = VerificationConfig
@@ -80,7 +79,7 @@ data VerificationError
         }
     deriving (Eq, Show)
 
-data VerificationReport = VerificationReport
+newtype VerificationReport = VerificationReport
     { vrErrors :: [VerificationError]
     }
     deriving (Eq, Show)
@@ -97,7 +96,7 @@ verifyModule cfg AlloyModule{amFunctions} =
     in VerificationReport{vrErrors = errs}
 
 verifyFunction :: VerificationConfig -> AlloyFunction -> [VerificationError]
-verifyFunction cfg fn@AlloyFunction{afName, afBlocks} =
+verifyFunction cfg AlloyFunction{afName, afBlocks} =
     concatMap (verifyBlock cfg afName) afBlocks
 
 verifyBlock :: VerificationConfig -> Name -> ABlock -> [VerificationError]
@@ -114,19 +113,13 @@ verifyOp :: VerificationConfig -> Name -> BlockName -> Int -> AOp -> [Verificati
 verifyOp VerificationConfig{banHeapAllocOps, bannedCalleeSubstrings, bannedExactCallees, banIndirectCalls} funName blkName idx op =
     case op of
         OpAllocHeap ty ->
-            if banHeapAllocOps
-                then [HeapAllocFound funName blkName idx ty]
-                else []
+            ([HeapAllocFound funName blkName idx ty | banHeapAllocOps])
         OpCall callee _args ->
             case callee of
                 Direct name ->
-                    if isBannedCallee name
-                        then [BannedCallFound funName blkName idx name]
-                        else []
+                    ([BannedCallFound funName blkName idx name | isBannedCallee name])
                 Indirect _ ->
-                    if banIndirectCalls
-                        then [IndirectCallFound funName blkName idx]
-                        else []
+                    ([IndirectCallFound funName blkName idx | banIndirectCalls])
         _ -> []
   where
     lower = map toLower
@@ -135,6 +128,6 @@ verifyOp VerificationConfig{banHeapAllocOps, bannedCalleeSubstrings, bannedExact
     isBannedCallee :: Name -> Bool
     isBannedCallee nm =
         let nml = lname nm
-            bannedExact = any (== nml) bannedExactCallees
+            bannedExact = elem nml bannedExactCallees
             bannedSub = any (`isInfixOf` nml) bannedCalleeSubstrings
         in bannedExact || bannedSub

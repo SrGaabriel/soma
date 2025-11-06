@@ -43,6 +43,7 @@ import Metal.Module (
     MetallicModule (..),
     MetallicTypeDef (..),
  )
+import Utils.Lists (hardHead)
 
 data MonadProfile
     = ProfileShortCircuit
@@ -113,7 +114,7 @@ inferFromType (MAlgebraicType{mtName, mtConstructors}) =
                     ]
                 (1, 1) ->
                     let ordered = sortOn mcTag [c0, c1]
-                        failC = head ordered
+                        failC = hardHead ordered
                         succC = last ordered
                     in [
                            ( mtName

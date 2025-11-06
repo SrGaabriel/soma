@@ -9,7 +9,6 @@ module Alloy.CSE (
 
 import Alloy.Ir
 import Alloy.Uniqueness (FunctionReport (..), LocalUniq (..), Uniqueness (..), analyzeFunction)
-import Data.List (foldl')
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -24,7 +23,7 @@ import qualified Data.Set as Set
 -- Alloy.Uniqueness.analyzeFunction. We keep analysis conservative and per-block local
 cseModule :: AlloyModule -> AlloyModule
 cseModule m@AlloyModule{amFunctions} =
-    m{amFunctions = map (cseFunction . id) amFunctions}
+    m{amFunctions = map cseFunction amFunctions}
 
 cseFunction :: AlloyFunction -> AlloyFunction
 cseFunction fn =

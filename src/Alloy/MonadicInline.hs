@@ -11,6 +11,7 @@ module Alloy.MonadicInline (
 
 import Alloy.Ir
 
+import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 
 import qualified Data.Map.Strict as Map
@@ -99,7 +100,7 @@ rewireInstr :: MonadicOps -> ([AInstr], Subst) -> AInstr -> ([AInstr], Subst)
 rewireInstr ops (acc, env) instr =
     case instr of
         ILet n ty (OpCall (Direct callee) args)
-            | isIoPure ops callee
+            | isIoPure ops callee || isIoPureByType callee ty
             , ioPureIsPhantom ops
             , [v] <- args ->
                 let v' = substOperand env v
@@ -215,53 +216,67 @@ substTerminator env t =
         ARet mv -> ARet (fmap (substOperand env) mv)
         AUnreachable -> AUnreachable
 
+matches :: [Name] -> Name -> Bool
+matches candidates n = any (`isPrefixOf` n) candidates
+
 isIoPure :: MonadicOps -> Name -> Bool
-isIoPure MonadicOps{ioPure} n = n `elem` ioPure
+isIoPure MonadicOps{ioPure} = matches ioPure
 
 isIoBind :: MonadicOps -> Name -> Bool
-isIoBind MonadicOps{ioBind} n = n `elem` ioBind
+isIoBind MonadicOps{ioBind} = matches ioBind
 
 isReaderPure :: MonadicOps -> Name -> Bool
-isReaderPure MonadicOps{readerPure} n = n `elem` readerPure
+isReaderPure MonadicOps{readerPure} = matches readerPure
 
 isReaderBind :: MonadicOps -> Name -> Bool
-isReaderBind MonadicOps{readerBind} n = n `elem` readerBind
+isReaderBind MonadicOps{readerBind} = matches readerBind
 
 isReaderAsk :: MonadicOps -> Name -> Bool
-isReaderAsk MonadicOps{readerAsk} n = n `elem` readerAsk
+isReaderAsk MonadicOps{readerAsk} = matches readerAsk
 
 isRefNew :: MonadicOps -> Name -> Bool
-isRefNew MonadicOps{refNew} n = n `elem` refNew
+isRefNew MonadicOps{refNew} = matches refNew
 
 isRefRead :: MonadicOps -> Name -> Bool
-isRefRead MonadicOps{refRead} n = n `elem` refRead
+isRefRead MonadicOps{refRead} = matches refRead
 
 isRefModify :: MonadicOps -> Name -> Bool
-isRefModify MonadicOps{refModify} n = n `elem` refModify
+isRefModify MonadicOps{refModify} = matches refModify
 
 isStatePure :: MonadicOps -> Name -> Bool
-isStatePure MonadicOps{statePure} n = n `elem` statePure
+isStatePure MonadicOps{statePure} = matches statePure
 
 isStateBind :: MonadicOps -> Name -> Bool
-isStateBind MonadicOps{stateBind} n = n `elem` stateBind
+isStateBind MonadicOps{stateBind} = matches stateBind
 
 isStateGet :: MonadicOps -> Name -> Bool
-isStateGet MonadicOps{stateGet} n = n `elem` stateGet
+isStateGet MonadicOps{stateGet} = matches stateGet
 
 isStatePut :: MonadicOps -> Name -> Bool
-isStatePut MonadicOps{statePut} n = n `elem` statePut
+isStatePut MonadicOps{statePut} = matches statePut
 
 isMaybePure :: MonadicOps -> Name -> Bool
-isMaybePure MonadicOps{maybePure} n = n `elem` maybePure
+isMaybePure MonadicOps{maybePure} = matches maybePure
 
 isMaybeBind :: MonadicOps -> Name -> Bool
-isMaybeBind MonadicOps{maybeBind} n = n `elem` maybeBind
+isMaybeBind MonadicOps{maybeBind} = matches maybeBind
 
 isEitherPure :: MonadicOps -> Name -> Bool
-isEitherPure MonadicOps{eitherPure} n = n `elem` eitherPure
+isEitherPure MonadicOps{eitherPure} = matches eitherPure
 
 isEitherBind :: MonadicOps -> Name -> Bool
-isEitherBind MonadicOps{eitherBind} n = n `elem` eitherBind
+isEitherBind MonadicOps{eitherBind} = matches eitherBind
+
+isIoPureByType :: Name -> Type -> Bool
+isIoPureByType callee ty =
+    (callee == "pure" || callee == "pureIO") && returnsIo ty
+
+returnsIo :: Type -> Bool
+returnsIo t =
+    case t of
+        TApp (TConstructor (TypeConstructor "IO" _)) _ -> True
+        TApp l _ -> returnsIo l
+        _ -> False
 
 refInner :: Type -> Maybe Type
 refInner t =

@@ -1,4 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE GADTs #-}
 
 module Metal.MonadNormalize (
     normalizeModule,
@@ -82,6 +83,5 @@ normalizeExpr e = evalState (go e) initialState
 
 type NormalizeM = State NormalizeState
 
-data NormalizeState = NormalizeState
-    { nsCounter :: !Int
-    }
+data NormalizeState where
+  NormalizeState :: {nsCounter :: !Int} -> NormalizeState
