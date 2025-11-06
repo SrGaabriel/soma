@@ -1,7 +1,7 @@
 module Syntax.Patterns where
 
 data Literal
-    = LitInt Integer
+    = LitInt Int
     | LitString String
     | LitBool Bool
     deriving (Show, Eq, Ord)

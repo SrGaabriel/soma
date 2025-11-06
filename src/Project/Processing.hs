@@ -37,7 +37,6 @@ import Project.Tarball (TarballContents (..), createProjectTarball, defaultTarba
 import Syntax.Tree (Expr (..), exprChildren)
 import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude (exitFailure)
-import qualified System.Exit as System
 import System.FilePath (takeBaseName, takeDirectory, takeExtension, (<.>), (</>))
 import System.Process (callProcess)
 import Typing.Types (QualifiedType)
@@ -94,9 +93,7 @@ processModules sorted graph compileOptions = do
     putStrLn $ "Alloy module (MIR) compiled (pre-mono):\n" ++ treeShow alloy
     putStrLn $ "Alloy module (MIR) monomorphized + inlined + simplified (fixpoint):\n" ++ treeShow alloyOpt
 
-    _ <- System.exitSuccess
-
-    let llvmIr = runLlvmCodeGenAndTranscribe inputName fusedAst fusedTypeMap
+    let llvmIr = runLlvmCodeGenAndTranscribe alloyOpt
 
     let outputFile = fromMaybe inputName mOutputFile
     let outputName = takeBaseName outputFile

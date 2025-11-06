@@ -32,7 +32,7 @@ data MCaseArm = MCaseArm
     deriving (Show, Eq)
 
 data MetallicLiteral
-    = MInt Integer
+    = MInt Int
     | MBool Bool
     | MString String
     deriving (Show, Eq)

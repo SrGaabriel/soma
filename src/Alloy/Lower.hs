@@ -69,7 +69,7 @@ import Typing.Types (
 
 data LEnv = LEnv
     { leVars :: Map.Map String AOperand
-    , leCtorTags :: Map.Map String Integer
+    , leCtorTags :: Map.Map String Int
     , leCtorFields :: Map.Map String [Type]
     , leProfiles :: MonadProfiles
     }
@@ -87,7 +87,7 @@ lowerAlloyModule modName mm =
         (_unit, mdl) = runAlloyBuilder modName action
     in mdl
 
-lowerFunction :: Map.Map String Integer -> Map.Map String [Type] -> MonadProfiles -> MetallicFunction -> AlloyBuilder ()
+lowerFunction :: Map.Map String Int -> Map.Map String [Type] -> MonadProfiles -> MetallicFunction -> AlloyBuilder ()
 lowerFunction ctorTags ctorFields profiles MetallicFunction{mfName, mfParams, mfReturnType, mfBody} = do
     beginFunction mfName mfParams mfReturnType
     let entryName = "entry"
@@ -265,7 +265,7 @@ lowerCompose stmts resultTy = do
 
         seqBuild rest joinNm resTy
 
-    mustTag :: String -> Lower Integer
+    mustTag :: String -> Lower Int
     mustTag ctor = do
         env <- get
 
@@ -301,7 +301,7 @@ buildCtorFieldMap mm =
         , c <- ctors
         ]
 
-buildCtorTagMap :: MetallicModule -> Map.Map String Integer
+buildCtorTagMap :: MetallicModule -> Map.Map String Int
 buildCtorTagMap mm =
     Map.fromList
         [ (mcName c, fromIntegral (mcTag c))
@@ -309,7 +309,7 @@ buildCtorTagMap mm =
         , c <- ctors
         ]
 
-getCtorTag :: String -> Lower Integer
+getCtorTag :: String -> Lower Int
 getCtorTag ctor = do
     env <- get
     case Map.lookup ctor (leCtorTags env) of

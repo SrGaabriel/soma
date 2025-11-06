@@ -357,7 +357,7 @@ compareLiteral value lit = case lit of
                     loaded <- saveInstruction (LlvmLoad (gvw value)) innerTy
                     pure (loaded, innerTy)
                 _ -> pure (gvw value, valTy)
-        saveInstruction (LlvmICmp cmpTy "eq" lhs (intLiteral (fromInteger n))) LlvmI1
+        saveInstruction (LlvmICmp cmpTy "eq" lhs (intLiteral (fromInt n))) LlvmI1
     LitBool b -> do
         let boolVal = if b then "1" else "0"
         (lhs, _cmpTy) <-

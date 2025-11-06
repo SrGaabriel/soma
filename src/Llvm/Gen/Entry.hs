@@ -1,39 +1,31 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
+module Llvm.Gen.Entry (
+    compileLlvmModule,
+    runLlvmCodeGen,
+    runLlvmCodeGenAndTranscribe,
+) where
 
-module Llvm.Gen.Entry (compileLlvmModule, runLlvmCodeGen, runLlvmCodeGenAndTranscribe) where
-
-import Data.Maybe (mapMaybe)
-import Inference.Core (TypeMap)
-import Llvm.Gen.Bindings (compileBindingDef)
-import Llvm.Gen.Core (IrGen, IrGenState (irDependencies, irFunctions), cleanGlobalState, namedDefaultEnv, runIrGen)
-import Llvm.Gen.DataTypes (compileDataTypeDef)
-import Llvm.Gen.TypeClasses (compileInstanceDef, compileTypeClassDef)
+import Alloy.Ir (AlloyModule (amName, amFunctions, AlloyModule))
+import Llvm.Gen.Core (IrGen, globalDefaultState, irDependencies, irFunctions, runIrGen, namedDefaultEnv)
 import Llvm.Ir (IR (toLlvm))
 import Llvm.Modules (LlvmModule (..))
-import Syntax.Tree (Expr (..), exprChildren)
+import Llvm.Gen.Function (compileFunction)
 
-compileLlvmModule :: String -> Expr -> IrGen ()
-compileLlvmModule _ root = do
-    let topLevelMembers = exprChildren root
-    sequence_
-        $ mapMaybe
-            ( \case
-                binding@(ExprBindingDef{}) -> Just (compileBindingDef binding)
-                datatype@(ExprDataTypeDef{}) -> Just (compileDataTypeDef datatype)
-                typeclass@(ExprTypeClassDef{}) -> Just (compileTypeClassDef typeclass)
-                instanc@(ExprInstanceDef{}) -> Just (compileInstanceDef instanc)
-                _ -> Nothing
-            )
-            topLevelMembers
+compileLlvmModule :: AlloyModule -> IrGen ()
+compileLlvmModule AlloyModule{amFunctions} = do
+    mapM_ compileFunction amFunctions
 
-runLlvmCodeGen :: String -> Expr -> TypeMap -> LlvmModule
-runLlvmCodeGen name root typeMap =
-    let ((_, _collectedStatements), finalStat) = runIrGen (namedDefaultEnv name) (cleanGlobalState typeMap) (compileLlvmModule name root)
+runLlvmCodeGen :: AlloyModule -> LlvmModule
+runLlvmCodeGen alloyModule =
+    let name = amName alloyModule
+        env = namedDefaultEnv name
+        ((_, _collectedStatements), finalStat) =
+                runIrGen env globalDefaultState (compileLlvmModule alloyModule)
         fns = irFunctions finalStat
         deps = irDependencies finalStat
     in LlvmModule name fns deps
 
-runLlvmCodeGenAndTranscribe :: String -> Expr -> TypeMap -> String
-runLlvmCodeGenAndTranscribe name root typeMap =
-    let moduleResult = runLlvmCodeGen name root typeMap
+runLlvmCodeGenAndTranscribe :: AlloyModule -> String
+runLlvmCodeGenAndTranscribe alloy =
+    let moduleResult = runLlvmCodeGen alloy
     in toLlvm moduleResult

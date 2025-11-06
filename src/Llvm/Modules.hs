@@ -1,8 +1,6 @@
 module Llvm.Modules where
 
 import Data.List (intercalate, nub)
-import Data.Map (Map)
-import qualified Data.Map as Map
 import Llvm.Dependencies (LlvmDependency)
 import Llvm.Instructions (LlvmStatement)
 import Llvm.Ir (IR (toLlvm))
@@ -17,10 +15,9 @@ data LlvmModule = LlvmModule
 
 data LlvmFunction = LlvmFunction
     { functionName :: String
-    , functionParams :: Map String LlvmType
+    , functionParams :: [(String, LlvmType)]
     , functionReturnType :: LlvmType
     , functionBlocks :: [LlvmBlock]
-    , functionStatements :: [LlvmStatement]
     }
     deriving (Show)
 
@@ -37,16 +34,15 @@ instance IR LlvmModule where
             ++ unlines (map toLlvm functions)
 
 instance IR LlvmFunction where
-    toLlvm (LlvmFunction name params retType blocks stmts) =
+    toLlvm (LlvmFunction name params retType blocks) =
         "define "
             ++ toLlvm retType
             ++ " @"
             ++ name
             ++ "("
-            ++ intercalate "," (map (\(n, t) -> toLlvm t ++ " %" ++ n) (Map.toList params))
+            ++ intercalate "," (map (\(n, t) -> toLlvm t ++ " %" ++ n) params)
             ++ ") {\n"
             ++ unlines (map toLlvm blocks)
-            ++ unlines (map toLlvm stmts)
             ++ "}"
 
 instance IR LlvmBlock where

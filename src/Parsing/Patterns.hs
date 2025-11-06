@@ -22,7 +22,7 @@ parseSinglePattern parentheziedConstructors = do
             PVar . tokenValue <$> next
         TokenNumber -> do
             numToken <- next
-            pure $ PLit $ LitInt (read (tokenValue numToken) :: Integer)
+            pure $ PLit $ LitInt (read (tokenValue numToken) :: Int)
         TokenLeftParen ->
             next >> parseSinglePattern True <* consume TokenRightParen
         TokenUnderscore -> do

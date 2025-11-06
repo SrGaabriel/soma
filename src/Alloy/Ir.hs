@@ -40,7 +40,7 @@ data AOperand
     deriving (Show, Eq, Ord)
 
 data AConst
-    = CInt Integer
+    = CInt Int
     | CBool Bool
     | CString String
     | CUnit
@@ -52,7 +52,7 @@ data ACallable
     deriving (Show, Eq, Ord)
 
 data AOp
-    = OpBin ABinOpKind AOperand AOperand -- integer/arithmetic/bitwise binop
+    = OpBin ABinOpKind AOperand AOperand -- Int/arithmetic/bitwise binop
     | OpUnary AUnaryOpKind AOperand -- not/neg etc.
     | OpCmp ACmpOp AOperand AOperand -- comparisons
     | OpLoad AOperand -- load from pointer-like operand
@@ -74,13 +74,13 @@ data AOp
 data AEffect
     = EffStore AOperand AOperand -- store value at address
     | EffStoreIndex AOperand AOperand AOperand -- store at array[index] := value
-    | EffDrop AOperand -- language-defined destructor/drop if applicable
+    | EffDrop AOperand
     deriving (Show, Eq)
 
 data ATerminator
     = ABr BlockName [AOperand] -- branch to block with arguments
     | ACondBr AOperand BlockName [AOperand] BlockName [AOperand] -- conditional branch
-    | ASwitch AOperand [(Integer, BlockName)] (Maybe BlockName) -- switch on an integer-like operand
+    | ASwitch AOperand [(Int, BlockName)] (Maybe BlockName) -- switch on an Int-like operand
     | ARet (Maybe AOperand) -- return optional value (use unit type for void-like)
     | AUnreachable -- unreachable
     deriving (Show, Eq)
@@ -100,7 +100,7 @@ data ABinOpKind
     deriving (Show, Eq, Ord)
 
 data AUnaryOpKind
-    = Not -- boolean/integer bitwise not
+    = Not -- boolean/Int bitwise not
     | Neg -- arithmetic negation
     deriving (Show, Eq, Ord)
 

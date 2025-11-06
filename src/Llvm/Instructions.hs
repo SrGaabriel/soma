@@ -21,7 +21,7 @@ data LlvmInstruction
 
 data LlvmStatement
     = LlvmAssign String LlvmInstruction
-    | LlvmStore LlvmType LlvmValue LlvmValue
+    | LlvmStore LlvmValue LlvmValue
     | LlvmRet LlvmType (Maybe LlvmValue)
     | LlvmBr String
     | LlvmBrCond LlvmValue String String
@@ -81,8 +81,8 @@ instance IR LlvmInstruction where
 instance IR LlvmStatement where
     toLlvm (LlvmAssign name instr) =
         "%" ++ name ++ " = " ++ toLlvm instr
-    toLlvm (LlvmStore typ value target) =
-        "store " ++ toLlvm typ ++ " " ++ toLlvm value ++ ", ptr " ++ toLlvm target
+    toLlvm (LlvmStore value target) =
+        "store " ++ toLlvm (getValueType value) ++ " " ++ toLlvm value ++ ", ptr " ++ toLlvm target
     toLlvm (LlvmRet typ Nothing) =
         "ret " ++ toLlvm typ
     toLlvm (LlvmRet typ (Just value)) =

@@ -46,26 +46,14 @@ library
     Lexing.Lexer
     Lexing.Position
     Llvm.Dependencies
-    Llvm.Gen.Arrays
-    Llvm.Gen.Bindings
-    Llvm.Gen.Calls
-    Llvm.Gen.Context
     Llvm.Gen.Core
-    Llvm.Gen.DataTypes
     Llvm.Gen.Entry
-    Llvm.Gen.Externals
-    Llvm.Gen.Functions
-    Llvm.Gen.Intrinsics
-    Llvm.Gen.Mangling
-    Llvm.Gen.Metadata
-    Llvm.Gen.Monomorphize
-    Llvm.Gen.Panic
-    Llvm.Gen.PatternMatch
-    Llvm.Gen.Templates
-    Llvm.Gen.TypeClasses
-    Llvm.Gen.Types
-    Llvm.Gen.Value
-    Llvm.Gen.Virtual
+    Llvm.Gen.Function
+    Llvm.Gen.Instr
+    Llvm.Gen.Op
+    Llvm.Gen.OperandPass
+    Llvm.Gen.Operands
+    Llvm.Gen.TypeConversion
     Llvm.Instructions
     Llvm.Ir
     Llvm.Modules

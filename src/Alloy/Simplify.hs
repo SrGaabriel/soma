@@ -52,8 +52,8 @@ simplifyFunction fn0 =
           where
             foldBlock ::
                 Map.Map BlockName [BlockName] ->
-                Map.Map BlockName (Map.Map Name Integer) ->
-                Map.Map BlockName (Map.Map Name Integer) ->
+                Map.Map BlockName (Map.Map Name Int) ->
+                Map.Map BlockName (Map.Map Name Int) ->
                 [ABlock] ->
                 ABlock ->
                 ABlock
@@ -89,7 +89,7 @@ simplifyFunction fn0 =
                         ]
                 in Map.fromListWith (++) [(s, [p]) | (s, p) <- pairs]
 
-            constructTagMap :: [AInstr] -> Map.Map Name Integer
+            constructTagMap :: [AInstr] -> Map.Map Name Int
 
             constructTagMap instrs =
                 Map.fromList
@@ -97,7 +97,7 @@ simplifyFunction fn0 =
                     | ILet n _ (OpConstruct _ tag _) <- instrs
                     ]
 
-            tagOfMap :: Map.Map Name Integer -> [AInstr] -> Map.Map Name Integer
+            tagOfMap :: Map.Map Name Int -> [AInstr] -> Map.Map Name Int
 
             tagOfMap conTags instrs =
                 Map.fromList
@@ -110,12 +110,12 @@ simplifyFunction fn0 =
             -- If every predecessor supplies an argument whose tag is known and all tags are equal, return that tag.
             knownFromParams ::
                 Map.Map BlockName [BlockName] ->
-                Map.Map BlockName (Map.Map Name Integer) ->
-                Map.Map BlockName (Map.Map Name Integer) ->
+                Map.Map BlockName (Map.Map Name Int) ->
+                Map.Map BlockName (Map.Map Name Int) ->
                 [ABlock] ->
                 ABlock ->
                 Name ->
-                Maybe Integer
+                Maybe Int
             knownFromParams preds _conTagsPer tagOfPer allBlocks ABlock{abName = curName, abParams} tagVar =
                 case elemIndex tagVar (map fst abParams) of
                     Nothing -> Nothing
@@ -124,7 +124,7 @@ simplifyFunction fn0 =
                             tags = map (incomingTag idx) ps
                         in allEqualJust tags
               where
-                incomingTag :: Int -> BlockName -> Maybe Integer
+                incomingTag :: Int -> BlockName -> Maybe Int
                 incomingTag idx predName =
                     case findBlock predName allBlocks of
                         Nothing -> Nothing
@@ -143,7 +143,7 @@ simplifyFunction fn0 =
                                         tagOfOperand pblk (fa !! idx)
                                 _ -> Nothing
 
-                tagOfOperand :: ABlock -> AOperand -> Maybe Integer
+                tagOfOperand :: ABlock -> AOperand -> Maybe Int
                 tagOfOperand pblk (OpVar v) =
                     Map.lookup (abName pblk) tagOfPer >>= \m -> Map.lookup v m
                 tagOfOperand _ _ = Nothing
@@ -154,7 +154,7 @@ simplifyFunction fn0 =
                         (b : _) -> Just b
                         [] -> Nothing
 
-                allEqualJust :: [Maybe Integer] -> Maybe Integer
+                allEqualJust :: [Maybe Int] -> Maybe Int
                 allEqualJust xs =
                     case sequence xs of
                         Just (y : ys) | all (== y) ys -> Just y
@@ -259,7 +259,7 @@ simplifyFunction fn0 =
                     Nothing -> blk
             canonBlock blk = blk
 
-            unifyTarget :: [(Integer, BlockName)] -> Maybe BlockName -> Maybe BlockName
+            unifyTarget :: [(Int, BlockName)] -> Maybe BlockName -> Maybe BlockName
             unifyTarget cases mdef =
                 case cases of
                     [] -> Nothing
