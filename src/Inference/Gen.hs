@@ -8,6 +8,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
+import Data.Maybe (catMaybes)
 import Inference.Core (TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
 import Inference.Substitution (Substitutable (apply))
@@ -17,7 +18,6 @@ import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyConstructor (..), TyVar (..), Type (..), arrayType, boolType, cleanQualified, intType, strType, tupleType, vectorize, vectorizeAll)
 import Utils.Lists (hardHead)
-import Data.Maybe (catMaybes)
 
 newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
     deriving (Functor, Applicative, Monad, MonadState GenState, MonadReader TypeEnv, MonadWriter [InferenceError])
@@ -229,6 +229,34 @@ generateConstraints expr = case expr of
                             (csClassConstraints bodyCs)
                             skAnnCs
                 return (Just errorType, combinedConstraints)
+    ExprIf condition ifBlock elseBlock _ -> do
+        (Just condType, condConstraints) <- generateConstraints condition
+        let condTypeConstraint = TypeConstraint condition boolType condType UnifyIfCondition
+
+        (Just ifType, ifConstraints) <- generateConstraints ifBlock
+        (Just elseType, elseConstraints) <- generateConstraints elseBlock
+
+        let branchTypeConstraint = TypeConstraint expr ifType elseType UnifyIfElseBranches
+
+        let combinedConstraints =
+                ConstraintSet
+                    ( condTypeConstraint
+                        : branchTypeConstraint
+                        : csTypeConstraints condConstraints
+                        ++ csTypeConstraints ifConstraints
+                        ++ csTypeConstraints elseConstraints
+                    )
+                    ( csClassConstraints condConstraints
+                        ++ csClassConstraints ifConstraints
+                        ++ csClassConstraints elseConstraints
+                    )
+                    ( csDeclaredConstraints condConstraints
+                        ++ csDeclaredConstraints ifConstraints
+                        ++ csDeclaredConstraints elseConstraints
+                    )
+
+        recordType expr ifType
+        return (Just ifType, combinedConstraints)
     ExprDerivedPatternMatch arms -> do
         mappedArms <- mapM generateConstraints arms
         let (armExprTypes, armConstraintsList) = unzip mappedArms

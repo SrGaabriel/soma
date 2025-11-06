@@ -112,6 +112,11 @@ liftExprLambdas bound (MCase scrutinees arms mdef ty) = do
         in do
             body' <- liftExprLambdas boundInArm mcaBody
             pure MCaseArm{mcaPatterns = mcaPatterns, mcaBody = body'}
+liftExprLambdas bound (MIf ifCond ifBlock elseBlock ty) = do
+    ifCond' <- liftExprLambdas bound ifCond
+    ifBlock' <- liftExprLambdas bound ifBlock
+    elseBlock' <- liftExprLambdas bound elseBlock
+    pure (MIf ifCond' ifBlock' elseBlock' ty)
 liftExprLambdas bound (MFieldAccess e idx ty) = do
     e' <- liftExprLambdas bound e
 
@@ -179,6 +184,8 @@ computeFreeVars (MCompose stmts _) =
                     (acc `Set.union` (computeFreeVars e Set.\\ bound), bound)
         (fv, _) = foldl step (Set.empty, Set.empty) stmts
     in fv
+computeFreeVars (MIf cond ifB elseB _) =
+    Set.unions [computeFreeVars cond, computeFreeVars ifB, computeFreeVars elseB]
 computeFreeVars (MPanic _ _) = Set.empty
 
 collectBinders :: Pattern -> [String]

@@ -16,4 +16,6 @@ data UnificationPurpose
     | UnifyFunctionApplication
     | UnifyPatternMatchArmBody
     | UnifyPatternMatchArms
+    | UnifyIfCondition
+    | UnifyIfElseBranches
     deriving (Show, Eq)

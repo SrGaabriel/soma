@@ -13,6 +13,7 @@ data MetallicExpr
     | MConstruct String Int [MetallicExpr] Type
     | MArrayLit [MetallicExpr] Type
     | MTuple [MetallicExpr] Type
+    | MIf MetallicExpr MetallicExpr MetallicExpr Type
     | MCase [MetallicExpr] [MCaseArm] (Maybe MetallicExpr) Type
     | MFieldAccess MetallicExpr Int Type
     | MPanic String Type
@@ -48,6 +49,7 @@ getMetallicExprType (MLit lit) = getMetallicLiteralType lit
 getMetallicExprType (MCall _ _ t) = t
 getMetallicExprType (MTypeApp _ _ t) = t
 getMetallicExprType (MLet _ _ _ t) = t
+getMetallicExprType (MIf _ _ _ t) = t
 getMetallicExprType (MLambda _ _ t) = t
 getMetallicExprType (MConstruct _ _ _ t) = t
 getMetallicExprType (MArrayLit _ t) = t

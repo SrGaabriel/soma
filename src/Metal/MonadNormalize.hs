@@ -69,6 +69,11 @@ normalizeExpr e = evalState (go e) initialState
     go (MCompose stmts t) = do
         stmts' <- mapM normComposeStmt stmts
         pure (MCompose stmts' t)
+    go (MIf cond thenE elseE t) = do
+        cond' <- go cond
+        thenE' <- go thenE
+        elseE' <- go elseE
+        pure (MIf cond' thenE' elseE' t)
 
     normComposeStmt :: MetallicComposeStmt -> NormalizeM MetallicComposeStmt
     normComposeStmt (MCBind n e') = do

@@ -17,6 +17,7 @@ data LlvmInstruction
     | LlvmBitcast LlvmValue LlvmType
     | LlvmExtractValue LlvmType LlvmValue Int
     | LlvmInsertValue LlvmType LlvmValue LlvmValue Int
+    | LlvmTodoInstruction
     deriving (Show, Eq)
 
 data LlvmStatement
@@ -77,6 +78,7 @@ instance IR LlvmInstruction where
             ++ toLlvm new
             ++ ", "
             ++ show idx
+    toLlvm LlvmTodoInstruction = "todo"
 
 instance IR LlvmStatement where
     toLlvm (LlvmAssign name instr) =

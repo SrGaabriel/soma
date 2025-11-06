@@ -85,6 +85,7 @@ parseAtom = do
         TokenFalse -> do
             ExprBool False . tokenSpan <$> next
         TokenCompose -> parseCompose
+        TokenIf -> parseIf
         _ -> throwError $ NotAnExpression token
 
 parseLetExpression :: Parser Expr
@@ -193,3 +194,20 @@ parseComposeStmt = do
         _ -> do
             e <- parseExpression
             pure $ CSExpr e (exprSpan e)
+
+parseIf :: Parser Expr
+parseIf = do
+    ifToken <- consume TokenIf
+    condition <- parseExpression
+    _ <- consume TokenThen
+    body <- parseExpression
+    _ <- consume TokenElse
+    elseBody <- parseExpression
+    let Span _ elseEnd = exprSpan elseBody
+    pure
+        ExprIf
+            { ifCondition = condition
+            , ifBody = body
+            , ifElseBody = elseBody
+            , ifSpan = Span (tokenPos ifToken) elseEnd
+            }

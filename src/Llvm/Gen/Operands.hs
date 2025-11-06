@@ -16,11 +16,12 @@ import Llvm.Values
 compileOperand :: AOperand -> IrGen LlvmValue
 compileOperand (OpVar name) = do
     tEnv <- asks opTypeEnv
-    let Just opTy = Map.lookup name tEnv
+    let opTy = case Map.lookup name tEnv of
+            Just o -> o
+            Nothing -> error $ "Variable not found in type environment: " ++ name ++ " env: " ++ show tEnv
     pure $ LlvmRegister opTy name
 compileOperand (OpConst (CInt n)) = pure $ intLiteral n
 compileOperand (OpConst (CBool n)) = pure $ boolLiteral n
-compileOperand (OpConst CUnit) = error "Can't compile void"
 compileOperand (OpConst (CString str)) = do
     let dpName = "str_" ++ show (hash str)
     let depType = LlvmArray (length str + 1) LlvmI8
@@ -34,3 +35,4 @@ compileOperand (OpConst (CString str)) = do
 
     let ptrInstr = LlvmGetElementPtr depType (LlvmGlobal depType dpName) [intLiteral 0, intLiteral 0] True
     saveTmp ptrInstr (LlvmPointer LlvmI8)
+compileOperand (OpConst CUnit) = error "Can't compile void"

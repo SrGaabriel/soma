@@ -77,6 +77,12 @@ data Expr
         , instanceMethods :: [Expr]
         , instanceSpan :: Span
         }
+    | ExprIf
+        { ifCondition :: Expr
+        , ifBody :: Expr
+        , ifElseBody :: Expr
+        , ifSpan :: Span
+        }
     | ExprCompose [ComposeStmt] Span
     deriving (Show, Eq, Ord)
 
@@ -113,6 +119,7 @@ exprChildren (ExprIntrinsicDataTypeDef{}) = []
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprInstanceDef _ methods _) = methods
 exprChildren (ExprCompose stmts _) = concatMap stmtChildren stmts
+exprChildren (ExprIf cond ifBlock elseBlock _) = [cond, ifBlock, elseBlock]
 
 stmtChildren :: ComposeStmt -> [Expr]
 stmtChildren (CSBind _ e _) = [e]
@@ -145,6 +152,7 @@ exprSpan (ExprPatternMatchArm _ _ s) = s
 exprSpan (ExprInstanceDef _ _ s) = s
 exprSpan (ExprImport _ _ s) = s
 exprSpan (ExprCompose _ s) = s
+exprSpan (ExprIf _ _ _ s) = s
 
 modifySpan :: Expr -> Span -> Expr
 modifySpan e@(ExprRoot _) _ = e
@@ -190,6 +198,8 @@ modifySpan (ExprImport moduleName elements _) newSpan =
     ExprImport moduleName elements newSpan
 modifySpan (ExprCompose stmts _) newSpan =
     ExprCompose stmts newSpan
+modifySpan (ExprIf cond ifBlock elseBlock _) newSpan =
+    ExprIf cond ifBlock elseBlock newSpan
 
 spanningExprs :: [Expr] -> Span
 spanningExprs [] = error "Cannot create a span from an empty list of expressions"

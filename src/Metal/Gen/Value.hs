@@ -74,6 +74,12 @@ metallizeValue expr@(ExprCompose stmts _) = do
     ty <- getExprType expr
     metalStmts <- metallizeComposeStmtsInScope stmts
     pure $ MCompose metalStmts ty
+metallizeValue expr@(ExprIf condition ifBlock elseBlock _) = do
+    metalCondition <- metallizeValue condition
+    metalIfBlock <- metallizeValue ifBlock
+    metalElseBlock <- metallizeValue elseBlock
+    resultTy <- getExprType expr
+    pure $ MIf metalCondition metalIfBlock metalElseBlock resultTy
 metallizeValue u = error $ "Cannot metallize value: " ++ show u
 
 metallizeComposeStmt :: ComposeStmt -> MetalGen MetallicComposeStmt

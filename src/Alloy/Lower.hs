@@ -1,6 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
-{-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
 module Alloy.Lower (
@@ -105,7 +104,6 @@ lowerFunction ctorTags ctorFields profiles MetallicFunction{mfName, mfParams, mf
     terminate (ARet (Just retval))
     endFunction
 
--- Lower a HIR expression to an Alloy operand, emitting instructions as needed
 lowerExpr :: MetallicExpr -> Lower AOperand
 lowerExpr (MVar name _ty) = do
     env <- gets leVars
@@ -153,6 +151,26 @@ lowerExpr (MFieldAccess base idx ty) = do
     baseOp <- lowerExpr base
     tmp <- lift $ emitLetTmp ty (OpProject baseOp idx)
     pure (OpVar tmp)
+lowerExpr (MIf ifCond ifBlock elseBlock ty) = do
+    condOp <- lowerExpr ifCond
+
+    thenName <- lift freshBlockName
+    elseName <- lift freshBlockName
+    joinName <- lift freshBlockName
+
+    lift $ terminate (ACondBr condOp thenName [] elseName [])
+
+    lift $ beginBlock thenName []
+    thenVal <- lowerExpr ifBlock
+    lift $ terminate (ABr joinName [thenVal])
+
+    lift $ beginBlock elseName []
+    elseVal <- lowerExpr elseBlock
+    lift $ terminate (ABr joinName [elseVal])
+
+    let resParam = "res"
+    lift $ beginBlock joinName [(resParam, ty)]
+    pure (OpVar resParam)
 lowerExpr (MPanic msg _ty) =
     failLower ("Lowering of panic in expression position is not implemented: " ++ msg)
 

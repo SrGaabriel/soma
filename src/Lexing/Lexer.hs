@@ -48,6 +48,9 @@ data TokenKind
     | TokenSlash
     | TokenCompose
     | TokenBind
+    | TokenIf
+    | TokenThen
+    | TokenElse
     deriving (Show, Eq, Ord)
 
 data Token = Token
@@ -183,6 +186,9 @@ tokenize (c : cs) i indent
                 "false" -> TokenFalse
                 "bind" -> TokenBind
                 "compose" -> TokenCompose
+                "if" -> TokenIf
+                "then" -> TokenThen
+                "else" -> TokenElse
                 _ ->
                     if C.isLower c
                         then TokenLowerIdentifier
@@ -259,6 +265,7 @@ referenceTokenKind TokenRightParen = "a right parenthesis"
 referenceTokenKind TokenPipe = "a vertical bar"
 referenceTokenKind TokenLet = "'let'"
 referenceTokenKind TokenIn = "'in'"
+referenceTokenKind TokenThen = "'then'"
 referenceTokenKind (TokenString _) = "a string"
 referenceTokenKind TokenStruct = "a struct"
 referenceTokenKind TokenData = "a data type"
@@ -269,6 +276,8 @@ referenceTokenKind TokenTrue = "'true'"
 referenceTokenKind TokenFalse = "'false'"
 referenceTokenKind TokenClass = "'class'"
 referenceTokenKind TokenWhere = "'where'"
+referenceTokenKind TokenIf = "'if'"
+referenceTokenKind TokenElse = "'else'"
 referenceTokenKind TokenInstance = "'instance'"
 referenceTokenKind TokenLambda = "'\\'"
 referenceTokenKind TokenForall = "'∀'"

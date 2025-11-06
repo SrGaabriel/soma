@@ -26,6 +26,8 @@ data InferenceError
     | MissingClassConstraint Expr Constraint
     | UnknownTypeConstructor Expr String
     | InvalidTypeInstantiation Expr Type
+    | IfConditionShouldBeBool Expr Type
+    | IfElseBranchTypeMismatch Expr Type Type
     | Debug String
     deriving (Show, Eq)
 
@@ -64,7 +66,11 @@ instance PrintableError InferenceError where
         in case typs of
             [typ] -> "Missing instance: no '" ++ name ++ "' instance for type '" ++ treeShow typ ++ "'"
             _ -> "Missing instance: no '" ++ name ++ "' instance for types (" ++ unwords (map treeShow typs) ++ ")"
+    errorMessage (IfConditionShouldBeBool _ actualType) =
+        "If condition should be of type 'Bool' but is of type '" ++ treeShow actualType ++ "'"
     errorMessage (InvalidTypeInstantiation _ ty) = "Invalid type instantiation for type '" ++ treeShow ty ++ "'"
+    errorMessage (IfElseBranchTypeMismatch _ thenType elseType) =
+        "If-Else branches have mismatched types: then branch is '" ++ treeShow thenType ++ "' but else branch is '" ++ treeShow elseType ++ "'"
     errorMessage (Debug msg) = "Debug: " ++ msg
 
     errorStart :: InferenceError -> Int
@@ -86,25 +92,27 @@ getExpression err =
     in case expr of
         ExprRoot _ -> error $ "ROOT ERR: " ++ errorMessage err
         _ -> expr
-
-getExpression' :: InferenceError -> Expr
-getExpression' (FunctionBodyTypeMismatch expr _ _) = expr
-getExpression' (FunctionApplicationTypeMismatch expr _ _) = expr
-getExpression' (PatternMatchArmTypeMismatch expr _ _) = expr
-getExpression' (PatternMatchArmsTypeMismatch expr _ _) = expr
-getExpression' (BinaryOpTypeMismatch expr _ _) = expr
-getExpression' (ParamLengthMismatch expr) = expr
-getExpression' (TupleLengthMismatch expr _ _) = expr
-getExpression' (CircularTypeDependency expr) = expr
-getExpression' (UnboundVariable expr _) = expr
-getExpression' (NotAFunction expr _) = expr
-getExpression' (UnknownTypeConstructor expr _) = expr
-getExpression' (PatternArityMismatch expr _ _) = expr
-getExpression' (KindMismatch expr _ _) = expr
-getExpression' (MissingClassConstraint expr _) = expr
-getExpression' (KindedTypeMismatch expr _ _ _ _) = expr
-getExpression' (InvalidTypeInstantiation expr _) = expr
-getExpression' (Debug _) = error "Debug error should not be used in production code"
+  where
+    getExpression' :: InferenceError -> Expr
+    getExpression' (FunctionBodyTypeMismatch expr _ _) = expr
+    getExpression' (FunctionApplicationTypeMismatch expr _ _) = expr
+    getExpression' (PatternMatchArmTypeMismatch expr _ _) = expr
+    getExpression' (PatternMatchArmsTypeMismatch expr _ _) = expr
+    getExpression' (BinaryOpTypeMismatch expr _ _) = expr
+    getExpression' (ParamLengthMismatch expr) = expr
+    getExpression' (TupleLengthMismatch expr _ _) = expr
+    getExpression' (CircularTypeDependency expr) = expr
+    getExpression' (UnboundVariable expr _) = expr
+    getExpression' (NotAFunction expr _) = expr
+    getExpression' (UnknownTypeConstructor expr _) = expr
+    getExpression' (PatternArityMismatch expr _ _) = expr
+    getExpression' (KindMismatch expr _ _) = expr
+    getExpression' (MissingClassConstraint expr _) = expr
+    getExpression' (KindedTypeMismatch expr _ _ _ _) = expr
+    getExpression' (InvalidTypeInstantiation expr _) = expr
+    getExpression' (IfConditionShouldBeBool expr _) = expr
+    getExpression' (IfElseBranchTypeMismatch expr _ _) = expr
+    getExpression' (Debug _) = error "Debug error should not be used in production code"
 
 generateErrorForPurpose :: UnificationPurpose -> Expr -> Type -> Type -> InferenceError
 generateErrorForPurpose UnifyFunctionBody expr expected actual =
@@ -115,3 +123,7 @@ generateErrorForPurpose UnifyPatternMatchArmBody expr expected actual =
     PatternMatchArmTypeMismatch expr expected actual
 generateErrorForPurpose UnifyPatternMatchArms expr expected actual =
     PatternMatchArmsTypeMismatch expr expected actual
+generateErrorForPurpose UnifyIfCondition expr _ actual =
+    IfConditionShouldBeBool expr actual
+generateErrorForPurpose UnifyIfElseBranches expr thenType elseType =
+    IfElseBranchTypeMismatch expr thenType elseType
