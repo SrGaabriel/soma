@@ -7,7 +7,7 @@ data LlvmValue
     = LlvmLiteral LlvmType String
     | LlvmRegister LlvmType String
     | LlvmGlobal LlvmType String
-    | LlvmUndef
+    | LlvmUndef LlvmType
     deriving (Show, Eq)
 
 getRegName :: LlvmValue -> String
@@ -18,13 +18,13 @@ getValueType :: LlvmValue -> LlvmType
 getValueType (LlvmLiteral ty _) = ty
 getValueType (LlvmRegister ty _) = ty
 getValueType (LlvmGlobal ty _) = ty
-getValueType LlvmUndef = error "LlvmUndef has no type"
+getValueType (LlvmUndef ty) = ty
 
 instance IR LlvmValue where
     toLlvm (LlvmLiteral _ val) = val
     toLlvm (LlvmRegister _ name) = "%" ++ name
     toLlvm (LlvmGlobal _ name) = "@" ++ name
-    toLlvm LlvmUndef = "undef"
+    toLlvm (LlvmUndef _) = "undef"
 
 intLiteral :: Int -> LlvmValue
 intLiteral val = LlvmLiteral LlvmI32 (show val)
@@ -36,4 +36,5 @@ byteLiteral :: Int -> LlvmValue
 byteLiteral val = LlvmLiteral LlvmI8 (show val)
 
 boolLiteral :: Bool -> LlvmValue
-boolLiteral val = LlvmLiteral LlvmI1 (show val)
+boolLiteral True = LlvmLiteral LlvmI1 "1"
+boolLiteral False = LlvmLiteral LlvmI1 "0"

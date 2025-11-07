@@ -22,6 +22,7 @@ library
     Alloy.CSE
     Alloy.Decisions
     Alloy.Defunc
+    Alloy.ExpandIntrinsics
     Alloy.HoistAllocas
     Alloy.Ir
     Alloy.Lower

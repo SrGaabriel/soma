@@ -31,19 +31,20 @@ monomorphizeModule m@AlloyModule{amFunctions = baseFns} =
 
         dedupedFns = dedupByName allFns
         rwMap = computeRewriteMap baseFnMap instCache dedupedFns
-        finalFns = map (applyRewrites rwMap) dedupedFns
-    in m{amFunctions = finalFns}
+        finalFns = map (applyRewrites baseFnMap rwMap) dedupedFns
+        concretesFns = map eliminateAllTypeVars finalFns
+    in m{amFunctions = concretesFns}
 
 monomorphizeFunction :: Map String AlloyFunction -> AlloyFunction -> (AlloyFunction, [AlloyFunction])
 monomorphizeFunction baseFnMap fn =
     let (allFns, instCache) = monoFixpoint baseFnMap [fn] Map.empty
         rwMap = computeRewriteMap baseFnMap instCache allFns
-        rewrittenAll = map (applyRewrites rwMap) allFns
-    in case rewrittenAll of
+        rewrittenAll = map (applyRewrites baseFnMap rwMap) allFns
+        concreteAll = map eliminateAllTypeVars rewrittenAll
+    in case concreteAll of
         [] -> (fn, [])
         (f : cs) -> (f, cs)
 
--- todo: fuse this with type inference module
 type TySubst = Map TyVar Type
 
 data InstKey = InstKey
@@ -154,7 +155,10 @@ specializeBlock subst b@ABlock{abParams, abInstrs, abTerminator} =
 
 specializeInstr :: TySubst -> AInstr -> AInstr
 specializeInstr subst (ILet n t op) = ILet n (applySubst subst t) (specializeOp subst op)
-specializeInstr _ eff@(IEffect _) = eff
+specializeInstr subst (IEffect eff) = IEffect (specializeEffect subst eff)
+
+specializeEffect :: TySubst -> AEffect -> AEffect
+specializeEffect _ eff = eff
 
 specializeOp :: TySubst -> AOp -> AOp
 specializeOp subst op =
@@ -236,14 +240,16 @@ computeRewriteMap baseFnMap cache =
             (cid'', acc'', _) = foldl' step (cid, acc, env') abInstrs
         in (cid'', acc'')
 
-applyRewrites :: RewriteMap -> AlloyFunction -> AlloyFunction
-applyRewrites rwMap fn@AlloyFunction{afName = callerName, afBlocks} =
-    let (_, blocks') = foldl' rewriteBlock (0, []) afBlocks
+applyRewrites :: Map String AlloyFunction -> RewriteMap -> AlloyFunction -> AlloyFunction
+applyRewrites baseFnMap rwMap fn@AlloyFunction{afName = callerName, afBlocks, afParams = funParams} =
+    let env0 = Map.fromList funParams
+        (_, blocks') = foldl' (rewriteBlock env0) (0, []) afBlocks
     in fn{afBlocks = reverse blocks'}
   where
-    rewriteBlock :: (CallSiteId, [ABlock]) -> ABlock -> (CallSiteId, [ABlock])
-    rewriteBlock (cid, acc) blk@ABlock{abInstrs} =
-        let (cid', instrs') = foldl' rewriteInstr (cid, []) abInstrs
+    rewriteBlock :: Map String Type -> (CallSiteId, [ABlock]) -> ABlock -> (CallSiteId, [ABlock])
+    rewriteBlock env (cid, acc) blk@ABlock{abInstrs, abParams = blkParams} =
+        let env' = env `Map.union` Map.fromList blkParams
+            (cid', instrs', _) = foldl' rewriteInstr (cid, [], env') abInstrs
         in ( cid'
            , ABlock
                 { abName = abName blk
@@ -254,14 +260,39 @@ applyRewrites rwMap fn@AlloyFunction{afName = callerName, afBlocks} =
                 : acc
            )
 
-    rewriteInstr :: (CallSiteId, [AInstr]) -> AInstr -> (CallSiteId, [AInstr])
-    rewriteInstr (cid, acc) (ILet n t (OpCall (Direct callee) args)) =
+    rewriteInstr :: (CallSiteId, [AInstr], Map String Type) -> AInstr -> (CallSiteId, [AInstr], Map String Type)
+    rewriteInstr (cid, acc, env) (ILet n t (OpCall (Direct callee) args)) =
         let key = (callerName, cid)
             callee' = Map.findWithDefault callee key rwMap
-        in (cid + 1, ILet n t (OpCall (Direct callee') args) : acc)
-    rewriteInstr (cid, acc) (ILet n t (OpCall (Indirect op) args)) =
-        (cid + 1, ILet n t (OpCall (Indirect op) args) : acc)
-    rewriteInstr (cid, acc) instr = (cid, instr : acc)
+            t' = case Map.lookup callee baseFnMap of
+                Just calleeFn | callee' /= callee ->
+                    case mapM (operandType env) args of
+                        Just argTys ->
+                            case matchCalleeParams (afParams calleeFn) argTys of
+                                Just subst -> applySubst subst (afReturnType calleeFn)
+                                Nothing -> t
+                        Nothing -> t
+                _ -> t
+            env' = Map.insert n t' env
+        in (cid + 1, ILet n t' (OpCall (Direct callee') args) : acc, env')
+    rewriteInstr (cid, acc, env) (ILet n t (OpCall (Indirect op) args)) =
+        let env' = Map.insert n t env
+        in (cid + 1, ILet n t (OpCall (Indirect op) args) : acc, env')
+    rewriteInstr (cid, acc, env) (ILet n t op) =
+        let op' = specializeOpTypes env op t
+            env' = Map.insert n t env
+        in (cid, ILet n t op' : acc, env')
+    rewriteInstr (cid, acc, env) instr = (cid, instr : acc, env)
+
+    specializeOpTypes :: Map String Type -> AOp -> Type -> AOp
+    specializeOpTypes env op resultTy =
+        case op of
+            OpAllocStack ty -> OpAllocStack (specializeTypeFromEnv env ty)
+            OpAllocHeap ty -> OpAllocHeap (specializeTypeFromEnv env ty)
+            _ -> op
+
+    specializeTypeFromEnv :: Map String Type -> Type -> Type
+    specializeTypeFromEnv _ ty = eliminateTypeVarsWithDefaults ty
 
 operandType :: Map String Type -> AOperand -> Maybe Type
 operandType env (OpVar n) = Map.lookup n env
@@ -312,6 +343,39 @@ applySubst s t =
         TApp a b -> TApp (applySubst s a) (applySubst s b)
         TArrow a b -> TArrow (applySubst s a) (applySubst s b)
         _ -> t
+
+eliminateAllTypeVars :: AlloyFunction -> AlloyFunction
+eliminateAllTypeVars fn@AlloyFunction{afParams, afReturnType, afBlocks} =
+    let params' = [(n, eliminateTypeVarsWithDefaults t) | (n, t) <- afParams]
+        ret' = eliminateTypeVarsWithDefaults afReturnType
+        blocks' = map eliminateTypeVarsBlock afBlocks
+    in fn{afParams = params', afReturnType = ret', afBlocks = blocks'}
+
+eliminateTypeVarsBlock :: ABlock -> ABlock
+eliminateTypeVarsBlock b@ABlock{abParams, abInstrs} =
+    let params' = [(n, eliminateTypeVarsWithDefaults t) | (n, t) <- abParams]
+        instrs' = map eliminateTypeVarsInstr abInstrs
+    in b{abParams = params', abInstrs = instrs'}
+
+eliminateTypeVarsInstr :: AInstr -> AInstr
+eliminateTypeVarsInstr (ILet n t op) =
+    ILet n (eliminateTypeVarsWithDefaults t) (eliminateTypeVarsOp op)
+eliminateTypeVarsInstr eff = eff
+
+eliminateTypeVarsOp :: AOp -> AOp
+eliminateTypeVarsOp op =
+    case op of
+        OpAllocStack ty -> OpAllocStack (eliminateTypeVarsWithDefaults ty)
+        OpAllocHeap ty -> OpAllocHeap (eliminateTypeVarsWithDefaults ty)
+        _ -> op
+
+eliminateTypeVarsWithDefaults :: Type -> Type
+eliminateTypeVarsWithDefaults ty =
+    case ty of
+        TVar _ -> intType
+        TApp a b -> TApp (eliminateTypeVarsWithDefaults a) (eliminateTypeVarsWithDefaults b)
+        TArrow a b -> TArrow (eliminateTypeVarsWithDefaults a) (eliminateTypeVarsWithDefaults b)
+        _ -> ty
 
 allConcreteSubst :: TySubst -> Bool
 allConcreteSubst = all isConcreteType . Map.elems

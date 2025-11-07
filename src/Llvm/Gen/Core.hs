@@ -7,7 +7,9 @@ import Control.Monad.State (
     MonadState (get, put),
     State,
     StateT (StateT),
-    runState, gets, modify,
+    gets,
+    modify,
+    runState,
  )
 import Control.Monad.Writer (MonadWriter (tell), WriterT (..))
 import qualified Data.Map as Map
@@ -29,6 +31,7 @@ data IrGenState = IrGenState
     { irFunctions :: [LlvmFunction]
     , irDependencies :: [LlvmDependency]
     , nextRegister :: Int
+    , valueSubst :: Map.Map String LlvmValue
     }
     deriving (Show)
 
@@ -38,6 +41,7 @@ globalDefaultState =
         { nextRegister = 0
         , irDependencies = []
         , irFunctions = []
+        , valueSubst = Map.empty
         }
 
 namedDefaultEnv :: String -> IrGenEnv
@@ -63,7 +67,7 @@ freshTmpReg ty = do
 
 mkReg :: String -> LlvmType -> LlvmValue
 mkReg n t = LlvmRegister t n
-    
+
 saveToReg :: (MonadState IrGenState m) => (MonadWriter [LlvmStatement] m) => LlvmValue -> LlvmInstruction -> m LlvmValue
 saveToReg reg instr = do
     tell [LlvmAssign (getRegName reg) instr]
@@ -109,3 +113,15 @@ mkFnCall :: String -> [LlvmValue] -> LlvmType -> LlvmInstruction
 mkFnCall name args retType =
     let argTypes = map getValueType args
     in LlvmCall (LlvmGlobal (LlvmFn retType argTypes) name) retType args
+
+recordSubstitution :: (MonadState IrGenState m) => String -> LlvmValue -> m ()
+recordSubstitution name val = do
+    modify $ \s -> s{valueSubst = Map.insert name val (valueSubst s)}
+
+applySubstitutions :: (MonadState IrGenState m) => LlvmValue -> m LlvmValue
+applySubstitutions val@(LlvmRegister _ name) = do
+    st <- get
+    case Map.lookup name (valueSubst st) of
+        Just substituted -> return substituted
+        Nothing -> return val
+applySubstitutions val = return val

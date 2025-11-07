@@ -17,6 +17,13 @@ data LlvmInstruction
     | LlvmBitcast LlvmValue LlvmType
     | LlvmExtractValue LlvmType LlvmValue Int
     | LlvmInsertValue LlvmType LlvmValue LlvmValue Int
+    | LlvmPhi LlvmType [(LlvmValue, String)]
+    | LlvmZExt LlvmValue LlvmType
+    | LlvmSExt LlvmValue LlvmType
+    | LlvmTrunc LlvmValue LlvmType
+    | LlvmPtrToInt LlvmValue LlvmType
+    | LlvmIntToPtr LlvmValue LlvmType
+    | LlvmIdentityCast LlvmValue
     | LlvmTodoInstruction
     deriving (Show, Eq)
 
@@ -64,7 +71,11 @@ instance IR LlvmInstruction where
             ++ toLlvm basePtr
             ++ concatMap (\idx -> ", " ++ toLlvm (getValueType idx) ++ " " ++ toLlvm idx) indices
     toLlvm (LlvmBitcast value targetType) =
-        "bitcast " ++ toLlvm (getValueType value) ++ " " ++ toLlvm value ++ " to " ++ toLlvm targetType
+        let sourceType = getValueType value
+        in if sourceType == targetType
+            -- todo: block identities to make things more strict
+            then "select i1 true, " ++ toLlvm sourceType ++ " " ++ toLlvm value ++ ", " ++ toLlvm sourceType ++ " " ++ toLlvm value
+            else "bitcast " ++ toLlvm sourceType ++ " " ++ toLlvm value ++ " to " ++ toLlvm targetType
     toLlvm (LlvmExtractValue structType value idx) =
         "extractvalue " ++ toLlvm structType ++ " " ++ toLlvm value ++ ", " ++ show idx
     toLlvm (LlvmInsertValue structType base new idx) =
@@ -78,6 +89,24 @@ instance IR LlvmInstruction where
             ++ toLlvm new
             ++ ", "
             ++ show idx
+    toLlvm (LlvmPhi typ incoming) =
+        "phi "
+            ++ toLlvm typ
+            ++ " "
+            ++ intercalate ", " (map (\(val, label) -> "[ " ++ toLlvm val ++ ", %" ++ label ++ " ]") incoming)
+    toLlvm (LlvmZExt value targetType) =
+        "zext " ++ toLlvm (getValueType value) ++ " " ++ toLlvm value ++ " to " ++ toLlvm targetType
+    toLlvm (LlvmSExt value targetType) =
+        "sext " ++ toLlvm (getValueType value) ++ " " ++ toLlvm value ++ " to " ++ toLlvm targetType
+    toLlvm (LlvmTrunc value targetType) =
+        "trunc " ++ toLlvm (getValueType value) ++ " " ++ toLlvm value ++ " to " ++ toLlvm targetType
+    toLlvm (LlvmPtrToInt value targetType) =
+        "ptrtoint " ++ toLlvm (getValueType value) ++ " " ++ toLlvm value ++ " to " ++ toLlvm targetType
+    toLlvm (LlvmIntToPtr value targetType) =
+        "inttoptr " ++ toLlvm (getValueType value) ++ " " ++ toLlvm value ++ " to " ++ toLlvm targetType
+    toLlvm (LlvmIdentityCast value) =
+        let ty = getValueType value
+        in "select i1 true, " ++ toLlvm ty ++ " " ++ toLlvm value ++ ", " ++ toLlvm ty ++ " " ++ toLlvm value
     toLlvm LlvmTodoInstruction = "todo"
 
 instance IR LlvmStatement where

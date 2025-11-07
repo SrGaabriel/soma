@@ -19,7 +19,8 @@ compileOperand (OpVar name) = do
     let opTy = case Map.lookup name tEnv of
             Just o -> o
             Nothing -> error $ "Variable not found in type environment: " ++ name ++ " env: " ++ show tEnv
-    pure $ LlvmRegister opTy name
+    let reg = LlvmRegister opTy name
+    applySubstitutions reg
 compileOperand (OpConst (CInt n)) = pure $ intLiteral n
 compileOperand (OpConst (CBool n)) = pure $ boolLiteral n
 compileOperand (OpConst (CString str)) = do

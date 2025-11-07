@@ -9,6 +9,7 @@ import Alloy.Lower (lowerAlloyModule)
 import Alloy.Monomorphize (monomorphizeModule)
 
 import Alloy.CSE (cseModuleGlobal)
+import Alloy.ExpandIntrinsics (expandIntrinsicsModule)
 import Alloy.HoistAllocas (hoistAllocasModule)
 import Alloy.MonadicInline (monadicInlineModule)
 import Alloy.PromoteRefs (promoteRefsModule)
@@ -77,7 +78,8 @@ processModules sorted graph compileOptions = do
 
     let metallicNormalized = normalizeModule metallicLifted
     let alloy = lowerAlloyModule inputName metallicNormalized
-    let alloyMono = monomorphizeModule alloy
+    let alloyExpanded = expandIntrinsicsModule alloy
+    let alloyMono = monomorphizeModule alloyExpanded
     let alloyDefunc = defunctionalizeModule alloyMono
     let alloyReader = readerRewriteModule alloyDefunc
     let alloyInlined = monadicInlineModule alloyReader
