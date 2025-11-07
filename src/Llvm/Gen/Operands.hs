@@ -4,7 +4,7 @@ module Llvm.Gen.Operands where
 
 import Alloy.Ir
 import Control.Monad.Reader (asks)
-import Control.Monad.State (modify)
+import Control.Monad.State (gets, modify)
 import Data.Hashable (hash)
 import qualified Data.Map as Map
 import Llvm.Dependencies (LinkageType (PrivateLinkage), LlvmDependency (..))
@@ -16,11 +16,17 @@ import Llvm.Values
 compileOperand :: AOperand -> IrGen LlvmValue
 compileOperand (OpVar name) = do
     tEnv <- asks opTypeEnv
-    let opTy = case Map.lookup name tEnv of
-            Just o -> o
-            Nothing -> error $ "Variable not found in type environment: " ++ name ++ " env: " ++ show tEnv
-    let reg = LlvmRegister opTy name
-    applySubstitutions reg
+    case Map.lookup name tEnv of
+        Just opTy -> do
+            let reg = LlvmRegister opTy name
+            applySubstitutions reg
+        Nothing -> do
+            st <- gets valueSubst
+            case Map.lookup name st of
+                Just val -> pure val
+                Nothing ->
+                    -- todo: have a proper type here
+                    pure $ LlvmGlobal (LlvmPointer LlvmI8) name
 compileOperand (OpConst (CInt n)) = pure $ intLiteral n
 compileOperand (OpConst (CBool n)) = pure $ boolLiteral n
 compileOperand (OpConst (CString str)) = do

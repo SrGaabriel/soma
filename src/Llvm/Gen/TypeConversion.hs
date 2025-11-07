@@ -20,9 +20,11 @@ convertType (TApp (TConstructor (TypeConstructor "Ref" _)) innerTy) =
     LlvmPointer (convertType innerTy)
 convertType (TApp (TConstructor (TypeConstructor "IO" _)) innerTy) =
     convertType innerTy
-convertType (TApp (TConstructor (TypeConstructor "Option" _)) _innerTy) =
+convertType (TApp (TConstructor (TypeConstructor "Array" _)) innerTy) =
+    LlvmPointer (convertType innerTy)
+convertType (TApp (TConstructor (TypeConstructor _name _)) _arg) =
     LlvmAnonymous [LlvmI8, LlvmI64]
-convertType (TApp (TApp (TConstructor (TypeConstructor "Either" _)) _leftTy) _rightTy) =
+convertType (TApp (TApp (TConstructor (TypeConstructor _name _)) _leftArg) _rightArg) =
     LlvmAnonymous [LlvmI8, LlvmI64]
 convertType (TArrow argTy retTy) =
     let argTypes = collectArgTypes argTy
@@ -38,12 +40,20 @@ convertType tv@(TVar (TypeVar vid _)) =
 convertType (TUnresolved name) =
     error $ "Unresolved type " ++ name ++ " encountered during LLVM codegen."
 convertType (TApp constructor arg) =
-    case constructor of
-        TConstructor (TypeConstructor name _) ->
-            error $ "Unsupported type constructor in LLVM codegen: " ++ name ++ " applied to " ++ show arg
-        _ -> error $ "Unsupported complex type application in LLVM codegen: " ++ show (TApp constructor arg)
+    error $ "Unsupported complex type application in LLVM codegen: " ++ show constructor ++ " applied to " ++ show arg
 convertType (TConstructor (TypeConstructor name _)) =
-    error $ "Unsupported type constructor in LLVM codegen: " ++ name
+    case name of
+        "String" -> LlvmPointer LlvmI8
+        "Bool" -> LlvmI1
+        "Int" -> LlvmI32
+        "Float" -> LlvmFloat
+        "Double" -> LlvmDouble
+        "Long" -> LlvmI64
+        "Byte" -> LlvmI8
+        "Short" -> LlvmI16
+        "Unit" -> LlvmVoid
+        "()" -> LlvmVoid
+        _ -> LlvmAnonymous [LlvmI8, LlvmI64]
 
 sizeOfType :: LlvmType -> Int
 sizeOfType LlvmVoid = 0

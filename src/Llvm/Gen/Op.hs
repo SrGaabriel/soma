@@ -78,7 +78,11 @@ compileOp (OpCall callable aArgs) opType = do
     fn <- case callable of
         Direct fnName -> pure $ LlvmGlobal opType fnName
         Indirect operand -> compileOperand operand
-    saveTmp (LlvmCall fn opType args) opType
+    if opType == LlvmVoid
+        then do
+            tell [LlvmCallStmt fn opType args]
+            pure $ LlvmUndef LlvmVoid
+        else saveTmp (LlvmCall fn opType args) opType
 compileOp (OpConstruct _cName cTag cFields) resultTy = do
     fieldVals <- mapM compileOperand cFields
     let undefVal = LlvmUndef resultTy
