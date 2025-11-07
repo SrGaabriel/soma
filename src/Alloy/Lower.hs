@@ -123,11 +123,14 @@ lowerExpr (MConstruct typeName tag fields ty) = do
 lowerExpr (MCall callee args ty) = do
     calOp <- lowerExpr callee
     argOps <- mapM lowerExpr args
-    let callable = case callee of
+    let callable = case stripTypeApps callee of
             MVar fname _ -> Direct fname
             _ -> Indirect calOp
     tmp <- lift $ emitLetTmp ty (OpCall callable argOps)
     pure (OpVar tmp)
+  where
+    stripTypeApps (MTypeApp e _ _) = stripTypeApps e
+    stripTypeApps e = e
 lowerExpr (MTypeApp e _tys _ty) =
     lowerExpr e
 lowerExpr (MArrayLit elems ty) = do
