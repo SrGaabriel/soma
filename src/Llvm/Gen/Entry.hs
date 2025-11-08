@@ -1,15 +1,16 @@
 {-# LANGUAGE NamedFieldPuns #-}
+
 module Llvm.Gen.Entry (
     compileLlvmModule,
     runLlvmCodeGen,
     runLlvmCodeGenAndTranscribe,
 ) where
 
-import Alloy.Ir (AlloyModule (amName, amFunctions, AlloyModule))
-import Llvm.Gen.Core (IrGen, globalDefaultState, irDependencies, irFunctions, runIrGen, namedDefaultEnv)
+import Alloy.Ir (AlloyModule (AlloyModule, amFunctions, amName))
+import Llvm.Gen.Core (IrGen, globalDefaultState, irDependencies, irFunctions, namedDefaultEnv, runIrGen)
+import Llvm.Gen.Function (compileFunction)
 import Llvm.Ir (IR (toLlvm))
 import Llvm.Modules (LlvmModule (..))
-import Llvm.Gen.Function (compileFunction)
 
 compileLlvmModule :: AlloyModule -> IrGen ()
 compileLlvmModule AlloyModule{amFunctions} = do
@@ -20,7 +21,7 @@ runLlvmCodeGen alloyModule =
     let name = amName alloyModule
         env = namedDefaultEnv name
         ((_, _collectedStatements), finalStat) =
-                runIrGen env globalDefaultState (compileLlvmModule alloyModule)
+            runIrGen env globalDefaultState (compileLlvmModule alloyModule)
         fns = irFunctions finalStat
         deps = irDependencies finalStat
     in LlvmModule name fns deps

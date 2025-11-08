@@ -59,5 +59,3 @@ validateNoDuplicateBinders = all rowOk
     noDups xs =
         let s = Set.fromList xs
         in Set.size s == length xs
-
--- todo: maranget-style pat

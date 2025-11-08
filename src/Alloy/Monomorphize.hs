@@ -7,12 +7,45 @@ module Alloy.Monomorphize (
     TySubst,
 ) where
 
-import Alloy.Ir
+import Alloy.Ir (
+    ABlock (..),
+    ACallable (..),
+    AConst (CBool, CInt, CString, CUnit),
+    AEffect,
+    AInstr (..),
+    AOp (
+        OpAllocHeap,
+        OpAllocStack,
+        OpBin,
+        OpCall,
+        OpCmp,
+        OpConstruct,
+        OpIndex,
+        OpLoad,
+        OpMakeArray,
+        OpMakeTuple,
+        OpProject,
+        OpTagOf,
+        OpUnary
+    ),
+    AOperand (..),
+    ATerminator (..),
+    AlloyFunction (
+        AlloyFunction,
+        afBlocks,
+        afName,
+        afParams,
+        afReturnType
+    ),
+    AlloyModule (AlloyModule, amFunctions),
+    Name,
+ )
 import Data.Char (isAlphaNum)
 import Data.List (intercalate)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import qualified Data.Set as Set
 import Typing.Types (
     TyConstructor (..),
     TyVar (..),
@@ -32,7 +65,28 @@ monomorphizeModule m@AlloyModule{amFunctions = baseFns} =
         dedupedFns = dedupByName allFns
         rwMap = computeRewriteMap baseFnMap instCache dedupedFns
         finalFns = map (applyRewrites baseFnMap rwMap) dedupedFns
-        concretesFns = map eliminateAllTypeVars finalFns
+
+        -- Only emit monomorphized instances, not unused polymorphic base functions
+        -- instCache maps InstKey -> specialized function name
+        -- We want to keep specialized functions (those in the values of instCache)
+        -- and any concrete base functions
+        specializedNames = Set.fromList (Map.elems instCache)
+        isSpecialized fn = afName fn `Set.member` specializedNames
+
+        -- Keep functions that are specialized instances or concrete base functions
+        concretesFns = map eliminateAllTypeVars $ filter isMonomorphized finalFns
+
+        isMonomorphized fn =
+            isSpecialized fn || not (hasTypeVars fn)
+
+        hasTypeVars fn =
+            any (hasTypeVar . snd) (afParams fn) || hasTypeVar (afReturnType fn)
+
+        hasTypeVar ty = case ty of
+            TVar _ -> True
+            TApp a b -> hasTypeVar a || hasTypeVar b
+            TArrow a b -> hasTypeVar a || hasTypeVar b
+            _ -> False
     in m{amFunctions = concretesFns}
 
 monomorphizeFunction :: Map String AlloyFunction -> AlloyFunction -> (AlloyFunction, [AlloyFunction])
@@ -263,36 +317,60 @@ applyRewrites baseFnMap rwMap fn@AlloyFunction{afName = callerName, afBlocks, af
     rewriteInstr :: (CallSiteId, [AInstr], Map String Type) -> AInstr -> (CallSiteId, [AInstr], Map String Type)
     rewriteInstr (cid, acc, env) (ILet n t (OpCall (Direct callee) args)) =
         let key = (callerName, cid)
+            -- First try rewrite map (monomorphized functions)
             callee' = Map.findWithDefault callee key rwMap
-            t' = case Map.lookup callee baseFnMap of
-                Just calleeFn | callee' /= callee ->
+            -- Then try trait method resolution
+            callee'' = resolveTraitMethod env callee' args
+            t' = case Map.lookup callee'' baseFnMap of
+                Just calleeFn | callee' /= callee || callee'' /= callee ->
                     case mapM (operandType env) args of
                         Just argTys ->
                             case matchCalleeParams (afParams calleeFn) argTys of
-                                Just subst -> applySubst subst (afReturnType calleeFn)
-                                Nothing -> t
-                        Nothing -> t
+                                Just subst
+                                    | not (Map.null subst) && allConcreteSubst subst ->
+                                        let retTy = afReturnType calleeFn
+                                        in applySubst subst retTy
+                                _ -> t
+                        _ -> t
                 _ -> t
-            env' = Map.insert n t' env
-        in (cid + 1, ILet n t' (OpCall (Direct callee') args) : acc, env')
-    rewriteInstr (cid, acc, env) (ILet n t (OpCall (Indirect op) args)) =
-        let env' = Map.insert n t env
-        in (cid + 1, ILet n t (OpCall (Indirect op) args) : acc, env')
+        in (cid + 1, ILet n t' (OpCall (Direct callee'') args) : acc, Map.insert n t' env)
     rewriteInstr (cid, acc, env) (ILet n t op) =
-        let op' = specializeOpTypes env op t
-            env' = Map.insert n t env
-        in (cid, ILet n t op' : acc, env')
+        let t' = specializeTypeFromEnv env t
+            op' = specializeOpTypes env op t'
+        in (cid, ILet n t' op' : acc, Map.insert n t' env)
     rewriteInstr (cid, acc, env) instr = (cid, instr : acc, env)
 
+    -- Resolve trait method calls to instance implementations
+    -- e.g., equals(x: Optional, y: Optional) -> equals$Optional(x, y)
+    resolveTraitMethod :: Map String Type -> String -> [AOperand] -> String
+    resolveTraitMethod env methodName args
+        -- Check if this is a trait method call (not in baseFnMap but has a typed instance variant)
+        | Nothing <- Map.lookup methodName baseFnMap =
+            case mapM (operandType env) args of
+                Just (firstArgType : _rest) ->
+                    -- Try to find an instance implementation for the first argument's type
+                    let typeName = extractTypeName firstArgType
+                        instanceMethodName = methodName ++ "$" ++ typeName
+                    in if Map.member instanceMethodName baseFnMap
+                        then instanceMethodName
+                        else methodName
+                _ -> methodName
+        | otherwise = methodName
+      where
+        extractTypeName :: Type -> String
+        extractTypeName (TConstructor (TypeConstructor name _)) = name
+        extractTypeName (TApp _ ty) = extractTypeName ty
+        extractTypeName _ = "Unknown"
+
     specializeOpTypes :: Map String Type -> AOp -> Type -> AOp
-    specializeOpTypes env op resultTy =
+    specializeOpTypes env op _resultTy =
         case op of
             OpAllocStack ty -> OpAllocStack (specializeTypeFromEnv env ty)
             OpAllocHeap ty -> OpAllocHeap (specializeTypeFromEnv env ty)
             _ -> op
 
     specializeTypeFromEnv :: Map String Type -> Type -> Type
-    specializeTypeFromEnv _ ty = eliminateTypeVarsWithDefaults ty
+    specializeTypeFromEnv _ = eliminateTypeVarsWithDefaults
 
 operandType :: Map String Type -> AOperand -> Maybe Type
 operandType env (OpVar n) = Map.lookup n env

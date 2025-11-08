@@ -6,13 +6,15 @@ module Llvm.Gen.Op (
 
 import Alloy.Ir
 import Control.Monad (foldM)
-import Control.Monad.Writer.Class (tell)
+import Control.Monad.Writer.Class (MonadWriter (tell))
 import Llvm.Gen.Core
+import Llvm.Gen.Intrinsics (compileIntrinsic, isIntrinsic)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.TypeConversion (convertType)
 import Llvm.Instructions
 import Llvm.Types (LlvmType (..), deref)
 import Llvm.Values (LlvmValue (..), getValueType)
+import Utils.Lists (hardHead)
 
 compileOp :: AOp -> LlvmType -> IrGen LlvmValue
 compileOp (OpLoad rOperand) resultTy = do
@@ -74,15 +76,21 @@ compileOp (OpProject agg ix) resultTy = do
         | LlvmPointer _ <- targetTy = saveTmp (LlvmIntToPtr val targetTy) targetTy
         | otherwise = error $ "Unsupported type for payload extraction: " ++ show targetTy
 compileOp (OpCall callable aArgs) opType = do
-    args <- mapM compileOperand aArgs
-    fn <- case callable of
-        Direct fnName -> pure $ LlvmGlobal opType fnName
-        Indirect operand -> compileOperand operand
-    if opType == LlvmVoid
-        then do
-            tell [LlvmCallStmt fn opType args]
-            pure $ LlvmUndef LlvmVoid
-        else saveTmp (LlvmCall fn opType args) opType
+    case callable of
+        Direct fnName | isIntrinsic fnName -> do
+            -- Handle intrinsic functions specially
+            compileIntrinsic fnName aArgs opType
+        _ -> do
+            -- Regular function call
+            args <- mapM compileOperand aArgs
+            fn <- case callable of
+                Direct fnName -> pure $ LlvmGlobal opType fnName
+                Indirect operand -> compileOperand operand
+            if opType == LlvmVoid
+                then do
+                    tell [LlvmCallStmt fn opType args]
+                    pure $ LlvmUndef LlvmVoid
+                else saveTmp (LlvmCall fn opType args) opType
 compileOp (OpConstruct _cName cTag cFields) resultTy = do
     fieldVals <- mapM compileOperand cFields
     let undefVal = LlvmUndef resultTy
@@ -110,10 +118,11 @@ compileOp (OpTagOf agg) resultTy = do
     av <- compileOperand agg
     let aggTy = getValueType av
     saveTmp (LlvmExtractValue aggTy av 0) resultTy
-compileOp (OpMakeArray xs) resultTy = do
+compileOp (OpMakeArray xs) _resultTy = do
     compiledXs <- mapM compileOperand xs
-    let elemTy = if null compiledXs then LlvmI32 else getValueType (head compiledXs)
+    let elemTy = if null compiledXs then LlvmI32 else getValueType (hardHead compiledXs)
     let arraySize = length xs
+    -- todo: use resultTy instead
     let arrayTy = LlvmArray arraySize elemTy
 
     arrayPtr <- saveTmp (LlvmAlloca arrayTy Nothing) (LlvmPointer arrayTy)
@@ -121,6 +130,7 @@ compileOp (OpMakeArray xs) resultTy = do
     mapM_ (storeElem arrayPtr elemTy) (zip [0 ..] compiledXs)
     pure arrayPtr
   where
+    storeElem :: LlvmValue -> LlvmType -> (Int, LlvmValue) -> IrGen ()
     storeElem arrayPtr elemTy (idx, val) = do
         let idxVal = LlvmLiteral LlvmI32 (show idx)
         elemPtr <- saveTmp (LlvmGetElementPtr elemTy arrayPtr [idxVal] True) (LlvmPointer elemTy)
@@ -137,7 +147,6 @@ compileOp (OpMakeTuple xs) resultTy = do
 compileOp (OpAllocHeap ty) resultTy = do
     let llvmTy = convertType ty
     saveTmp (LlvmAlloca llvmTy Nothing) resultTy
-compileOp op _ = error $ "Unimplemented operation in LLVM codegen: " ++ show op
 
 cmpOpToLlvm :: ACmpOp -> String
 cmpOpToLlvm CEq = "eq"

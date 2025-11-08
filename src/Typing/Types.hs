@@ -75,10 +75,11 @@ constraintType (Constraint t) = t
 data QualifiedType = Forall [TyVar] [Constraint] Type
     deriving (Show, Eq, Ord)
 
-intType, strType, boolType :: Type
+intType, strType, boolType, byteType :: Type
 intType = TConstructor (TypeConstructor "Int" KindStar)
 strType = TConstructor (TypeConstructor "String" KindStar)
 boolType = TConstructor (TypeConstructor "Bool" KindStar)
+byteType = TConstructor (TypeConstructor "Byte" KindStar)
 
 cleanQualified :: Type -> QualifiedType
 cleanQualified = Forall [] []

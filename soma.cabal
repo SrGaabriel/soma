@@ -51,10 +51,12 @@ library
     Llvm.Gen.Entry
     Llvm.Gen.Function
     Llvm.Gen.Instr
+    Llvm.Gen.Intrinsics
     Llvm.Gen.Op
     Llvm.Gen.OperandPass
     Llvm.Gen.Operands
     Llvm.Gen.TypeConversion
+    Llvm.Gen.Templates
     Llvm.Instructions
     Llvm.Ir
     Llvm.Modules

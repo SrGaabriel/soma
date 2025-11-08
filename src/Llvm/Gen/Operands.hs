@@ -1,17 +1,30 @@
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
-module Llvm.Gen.Operands where
+module Llvm.Gen.Operands (compileOperand) where
 
-import Alloy.Ir
+import Alloy.Ir (
+    AConst (CBool, CInt, CString, CUnit),
+    AOperand (..),
+ )
 import Control.Monad.Reader (asks)
 import Control.Monad.State (gets, modify)
 import Data.Hashable (hash)
 import qualified Data.Map as Map
 import Llvm.Dependencies (LinkageType (PrivateLinkage), LlvmDependency (..))
-import Llvm.Gen.Core
+import Llvm.Gen.Core (
+    IrGen,
+    IrGenEnv (opTypeEnv),
+    IrGenState (irDependencies, valueSubst),
+    applySubstitutions,
+    saveTmp,
+ )
 import Llvm.Instructions (LlvmInstruction (LlvmGetElementPtr))
 import Llvm.Types (LlvmType (LlvmArray, LlvmI8, LlvmPointer))
-import Llvm.Values
+import Llvm.Values (
+    LlvmValue (LlvmGlobal, LlvmLiteral, LlvmRegister),
+    boolLiteral,
+    intLiteral,
+ )
 
 compileOperand :: AOperand -> IrGen LlvmValue
 compileOperand (OpVar name) = do

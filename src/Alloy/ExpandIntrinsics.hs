@@ -4,8 +4,19 @@ module Alloy.ExpandIntrinsics (
     expandIntrinsicsModule,
 ) where
 
-import Alloy.Ir
-import Data.List (isPrefixOf)
+import Alloy.Ir (
+    ABinOpKind (And, IAdd, IDiv, IMod, IMul, ISub, Or, Xor),
+    ABlock (ABlock, abInstrs),
+    ACallable (Direct),
+    ACmpOp (CEq, CNe, CSge, CSgt, CSle, CSlt),
+    AInstr (ILet),
+    AOp (OpBin, OpCall, OpCmp, OpUnary),
+    AOperand,
+    AUnaryOpKind (Neg, Not),
+    AlloyFunction (AlloyFunction, afBlocks),
+    AlloyModule (AlloyModule, amFunctions),
+ )
+import Utils.Lists (hardHead)
 
 expandIntrinsicsModule :: AlloyModule -> AlloyModule
 expandIntrinsicsModule m@AlloyModule{amFunctions} =
@@ -34,35 +45,35 @@ expandIntrinsicsOp op = op
 expandIntrinsicCall :: String -> [AOperand] -> Maybe AOp
 expandIntrinsicCall callee args
     | callee == "+" && length args == 2 =
-        Just $ OpBin IAdd (args !! 0) (args !! 1)
+        Just $ OpBin IAdd (hardHead args) (args !! 1)
     | callee == "-" && length args == 2 =
-        Just $ OpBin ISub (args !! 0) (args !! 1)
+        Just $ OpBin ISub (hardHead args) (args !! 1)
     | callee == "*" && length args == 2 =
-        Just $ OpBin IMul (args !! 0) (args !! 1)
+        Just $ OpBin IMul (hardHead args) (args !! 1)
     | callee == "/" && length args == 2 =
-        Just $ OpBin IDiv (args !! 0) (args !! 1)
+        Just $ OpBin IDiv (hardHead args) (args !! 1)
     | callee == "%" && length args == 2 =
-        Just $ OpBin IMod (args !! 0) (args !! 1)
+        Just $ OpBin IMod (hardHead args) (args !! 1)
     | callee == "&" && length args == 2 =
-        Just $ OpBin And (args !! 0) (args !! 1)
+        Just $ OpBin And (hardHead args) (args !! 1)
     | callee == "|" && length args == 2 =
-        Just $ OpBin Or (args !! 0) (args !! 1)
+        Just $ OpBin Or (hardHead args) (args !! 1)
     | callee == "^" && length args == 2 =
-        Just $ OpBin Xor (args !! 0) (args !! 1)
+        Just $ OpBin Xor (hardHead args) (args !! 1)
     | callee == "==" && length args == 2 =
-        Just $ OpCmp CEq (args !! 0) (args !! 1)
+        Just $ OpCmp CEq (hardHead args) (args !! 1)
     | callee == "!=" && length args == 2 =
-        Just $ OpCmp CNe (args !! 0) (args !! 1)
+        Just $ OpCmp CNe (hardHead args) (args !! 1)
     | callee == "<" && length args == 2 =
-        Just $ OpCmp CSlt (args !! 0) (args !! 1)
+        Just $ OpCmp CSlt (hardHead args) (args !! 1)
     | callee == "<=" && length args == 2 =
-        Just $ OpCmp CSle (args !! 0) (args !! 1)
+        Just $ OpCmp CSle (hardHead args) (args !! 1)
     | callee == ">" && length args == 2 =
-        Just $ OpCmp CSgt (args !! 0) (args !! 1)
+        Just $ OpCmp CSgt (hardHead args) (args !! 1)
     | callee == ">=" && length args == 2 =
-        Just $ OpCmp CSge (args !! 0) (args !! 1)
+        Just $ OpCmp CSge (hardHead args) (args !! 1)
     | callee == "neg" && length args == 1 =
-        Just $ OpUnary Neg (args !! 0)
+        Just $ OpUnary Neg (hardHead args)
     | callee == "not" && length args == 1 =
-        Just $ OpUnary Not (args !! 0)
+        Just $ OpUnary Not (hardHead args)
     | otherwise = Nothing

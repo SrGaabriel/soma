@@ -31,6 +31,7 @@ data IrGenState = IrGenState
     { irFunctions :: [LlvmFunction]
     , irDependencies :: [LlvmDependency]
     , nextRegister :: Int
+    , nextStringId :: Int
     , valueSubst :: Map.Map String LlvmValue
     }
     deriving (Show)
@@ -39,6 +40,7 @@ globalDefaultState :: IrGenState
 globalDefaultState =
     IrGenState
         { nextRegister = 0
+        , nextStringId = 0
         , irDependencies = []
         , irFunctions = []
         , valueSubst = Map.empty
@@ -125,3 +127,8 @@ applySubstitutions val@(LlvmRegister _ name) = do
         Just substituted -> return substituted
         Nothing -> return val
 applySubstitutions val = return val
+
+addDependency ::
+    LlvmDependency ->
+    IrGen ()
+addDependency dep = modify $ \s -> s{irDependencies = dep : irDependencies s}

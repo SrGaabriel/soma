@@ -43,7 +43,7 @@ compileTerminator (ARet (Just operand)) = do
     if ty == LlvmVoid
         then tell [LlvmRet LlvmVoid Nothing]
         else tell [LlvmRet ty (Just llvmOp)]
-compileTerminator (ABr target args) = do
+compileTerminator (ABr target _args) = do
     -- todo: implement proper block parameter passing
     tell [LlvmBr target]
 compileTerminator (ACondBr cond trueBlock _trueArgs falseBlock _falseArgs) = do
@@ -52,7 +52,8 @@ compileTerminator (ACondBr cond trueBlock _trueArgs falseBlock _falseArgs) = do
     tell [LlvmBrCond llvmCond trueBlock falseBlock]
 compileTerminator (ASwitch scrutinee cases maybeDefault) = do
     llvmScrutinee <- compileOperand scrutinee
-    let llvmCases = [(LlvmLiteral LlvmI32 (show tag), label) | (tag, label) <- cases]
+    let scrutineeTy = getValueType llvmScrutinee
+    let llvmCases = [(LlvmLiteral scrutineeTy (show tag), label) | (tag, label) <- cases]
 
     let defaultLabel = case maybeDefault of
             Just lbl -> lbl

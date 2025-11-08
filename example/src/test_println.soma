@@ -1,0 +1,8 @@
+intrinsic def println :: a -> IO ()
+
+def testPrintString :: IO () = println "Hello, World!"
+
+def testPrintInt :: IO () = println 42
+
+def main :: IO () = testPrintString
+

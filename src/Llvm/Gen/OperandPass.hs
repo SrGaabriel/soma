@@ -1,10 +1,14 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
-module Llvm.Gen.OperandPass where
+module Llvm.Gen.OperandPass (buildOperandTypeEnv, OperandTypeEnv) where
 
-import Alloy.Ir
+import Alloy.Ir (
+    ABlock (ABlock, abInstrs, abParams),
+    AInstr (ILet),
+    AlloyFunction (AlloyFunction, afBlocks, afParams),
+ )
 import qualified Data.Map as Map
-import Llvm.Types
+import Llvm.Types (LlvmType)
 
 import Llvm.Gen.TypeConversion (convertType)
 
@@ -23,7 +27,3 @@ buildOperandTypeEnv AlloyFunction{afParams, afBlocks} =
                 Map.empty
                 afBlocks
     in Map.unions [fromParams, fromBlocks]
-
-lookupOperandType :: OperandTypeEnv -> AOperand -> Maybe LlvmType
-lookupOperandType env (OpVar n) = Map.lookup n env
-lookupOperandType _ _ = Nothing

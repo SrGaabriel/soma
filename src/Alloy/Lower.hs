@@ -62,6 +62,7 @@ import Typing.Types (
     TyConstructor (..),
     Type (..),
     boolType,
+    byteType,
     intType,
     strType,
  )
@@ -252,7 +253,7 @@ lowerCompose stmts resultTy = do
             Just (ProfileShortCircuit{mpSuccessCtor = succCtor, mpFailCtor = failCtor}) -> do
                 sTag <- mustTag succCtor
                 fTag <- mustTag failCtor
-                tagNm <- lift $ emitLetTmp intType (OpTagOf v)
+                tagNm <- lift $ emitLetTmp byteType (OpTagOf v)
 
                 onFail <- lift freshBlockName
 
@@ -456,7 +457,7 @@ lowerSwitch scrOps arms accessor branches defCase joinName resultTy = do
             case accessor of
                 Root i -> do
                     let rootOp = scrOps !! i
-                    tagOpName <- lift $ emitLetTmp intType (OpTagOf rootOp)
+                    tagOpName <- lift $ emitLetTmp byteType (OpTagOf rootOp)
                     let tagOp = OpVar tagOpName
                     cases <-
                         mapM
@@ -483,6 +484,15 @@ evalAccessorWithType scrOps (Field acc idx) (Just ty) = do
     base <- evalAccessorWithType scrOps acc Nothing
     tmp <- lift $ emitLetTmp ty (OpProject base idx)
     pure (OpVar tmp)
+evalAccessorWithType scrOps (TupleElem acc i) (Just ty) = do
+    base <- evalAccessorWithType scrOps acc Nothing
+    tmp <- lift $ emitLetTmp ty (OpProject base i)
+    pure (OpVar tmp)
+evalAccessorWithType scrOps (ArrayElem acc i) (Just ty) = do
+    base <- evalAccessorWithType scrOps acc Nothing
+    let idx = OpConst (CInt (fromIntegral i))
+    tmp <- lift $ emitLetTmp ty (OpIndex base idx)
+    pure (OpVar tmp)
 evalAccessorWithType _ _ Nothing =
     failLower "Cannot project field without knowing its type"
 
@@ -503,6 +513,12 @@ collectVarTypesFromBody = go Map.empty
             accArms = foldl (\a (MCaseArm{mcaBody = body}) -> go a body) acc' arms
         in maybe accArms (go accArms) mdef
     go acc (MFieldAccess e _ _) = go acc e
+    go acc (MIf c t f _) = go (go (go acc c) t) f
+    go acc (MCompose stmts _) = foldl goStmt acc stmts
+      where
+        goStmt a (MCBind _ e) = go a e
+        goStmt a (MCLet _ e) = go a e
+        goStmt a (MCExpr e) = go a e
     go acc (MPanic _ _) = acc
 
 patternHasBinder :: Pattern -> Bool
