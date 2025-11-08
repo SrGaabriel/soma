@@ -1,5 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE GADTs #-}
+{- HLINT ignore "Use newtype instead of data" -}
 
 module Metal.MonadNormalize (
     normalizeModule,
@@ -88,5 +88,6 @@ normalizeExpr e = evalState (go e) initialState
 
 type NormalizeM = State NormalizeState
 
-data NormalizeState where
-  NormalizeState :: {nsCounter :: !Int} -> NormalizeState
+data NormalizeState = NormalizeState
+    { nsCounter :: !Int
+    }

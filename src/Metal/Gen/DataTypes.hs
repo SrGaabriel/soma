@@ -24,27 +24,15 @@ compileDataTypeDef (ExprDataTypeDef{dataName, dataConstructors}) = do
 compileDataTypeDef _ = pure ()
 
 compileDataTypeDefsFromRoot :: Expr -> MetalGen ()
-compileDataTypeDefsFromRoot (ExprRoot decls) =
-    mapM_ compileDataTypeDef [d | d@(ExprDataTypeDef{}) <- decls]
+compileDataTypeDefsFromRoot (ExprRoot decls) = mapM_ compileDataTypeDef [d | d@(ExprDataTypeDef{}) <- decls]
 compileDataTypeDefsFromRoot _ = pure ()
 
 buildConstructors :: [Expr] -> [MetallicConstructor]
 buildConstructors ctors =
-    [ buildOne tag c
-    | (tag, c) <- zip [0 ..] ctors
-    , isDataConstructor c
+    [ MetallicConstructor
+        { mcName = structConstructorName
+        , mcTag = tag
+        , mcFields = map snd structConstructorArgs
+        }
+    | (tag, ExprDataConstructor{structConstructorName, structConstructorArgs}) <- zip [0 ..] ctors
     ]
-  where
-    isDataConstructor :: Expr -> Bool
-    isDataConstructor ExprDataConstructor{} = True
-    isDataConstructor _ = False
-
-    buildOne :: Int -> Expr -> MetallicConstructor
-    buildOne tag (ExprDataConstructor{structConstructorName, structConstructorArgs}) =
-        MetallicConstructor
-            { mcName = structConstructorName
-            , mcTag = tag
-            , mcFields = map snd structConstructorArgs
-            }
-    buildOne _ other =
-        error $ "Unexpected non-constructor in dataConstructors: " ++ show other

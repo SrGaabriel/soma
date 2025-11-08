@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Alloy.Build (
@@ -15,6 +16,7 @@ module Alloy.Build (
     module Alloy.Ir,
 ) where
 
+import Control.Monad (when)
 import Control.Monad.State.Strict
 import Typing.Types (Type)
 
@@ -69,99 +71,95 @@ runAlloyBuilder modName action =
 beginFunction :: Name -> [(Name, Type)] -> Type -> AlloyBuilder ()
 beginFunction name params retTy = do
     st@BuildState{..} <- get
-    case bsCurFun of
-        Just _ -> error "Alloy.Build: beginFunction called while another function is open"
-        Nothing -> do
-            let fb =
-                    FunBuild
-                        { fbName = name
-                        , fbParams = params
-                        , fbReturnType = retTy
-                        , fbEntry = Nothing
-                        , fbBlocks = []
-                        }
-            put st{bsCurFun = Just fb, bsCurBlk = Nothing}
+    when (isJust bsCurFun)
+        $ error "Alloy.Build: beginFunction called while another function is open"
+    let fb =
+            FunBuild
+                { fbName = name
+                , fbParams = params
+                , fbReturnType = retTy
+                , fbEntry = Nothing
+                , fbBlocks = []
+                }
+    put st{bsCurFun = Just fb, bsCurBlk = Nothing}
 
 endFunction :: AlloyBuilder ()
 endFunction = do
     st@BuildState{..} <- get
-    case bsCurFun of
-        Nothing -> error "Alloy.Build: endFunction called but no function is open"
-        Just FunBuild{..} -> do
-            case bsCurBlk of
-                Just _ -> error "Alloy.Build: endFunction called but current block is not terminated"
-                Nothing -> pure ()
-            entryName <- case fbEntry of
-                Nothing -> error "Alloy.Build: endFunction with no entry block"
-                Just e -> pure e
-            let fn =
-                    AlloyFunction
-                        { afName = fbName
-                        , afParams = fbParams
-                        , afReturnType = fbReturnType
-                        , afEntry = entryName
-                        , afBlocks = fbBlocks
-                        }
-            put
-                st
-                    { bsFunctions = bsFunctions ++ [fn]
-                    , bsCurFun = Nothing
-                    , bsCurBlk = Nothing
-                    }
+    FunBuild{..} <- requireOpenFunction "endFunction"
+
+    when (isJust bsCurBlk)
+        $ error "Alloy.Build: endFunction called but current block is not terminated"
+
+    entryName <- case fbEntry of
+        Nothing -> error "Alloy.Build: endFunction with no entry block"
+        Just e -> pure e
+
+    let fn =
+            AlloyFunction
+                { afName = fbName
+                , afParams = fbParams
+                , afReturnType = fbReturnType
+                , afEntry = entryName
+                , afBlocks = fbBlocks
+                }
+    put
+        st
+            { bsFunctions = bsFunctions ++ [fn]
+            , bsCurFun = Nothing
+            , bsCurBlk = Nothing
+            }
 
 beginBlock :: BlockName -> [(Name, Type)] -> AlloyBuilder ()
 beginBlock name params = do
     st@BuildState{..} <- get
-    case bsCurFun of
-        Nothing -> error "Alloy.Build: beginBlock called with no open function"
-        Just fb@FunBuild{..} -> do
-            case bsCurBlk of
-                Just BlockBuild{..} ->
-                    case bbTerminator of
-                        Nothing -> error "Alloy.Build: switching blocks before terminating the current block"
-                        Just _ -> pure ()
-                Nothing -> pure ()
-            let newBlk =
-                    BlockBuild
-                        { bbName = name
-                        , bbParams = params
-                        , bbInstrs = []
-                        , bbTerminator = Nothing
-                        }
-                fb' = if isNothing fbEntry then fb{fbEntry = Just name} else fb
-            put st{bsCurFun = Just fb', bsCurBlk = Just newBlk}
+    fb@FunBuild{..} <- requireOpenFunction "beginBlock"
+
+    -- Check current block is terminated if it exists
+    case bsCurBlk of
+        Just BlockBuild{bbTerminator = Nothing} ->
+            error "Alloy.Build: switching blocks before terminating the current block"
+        _ -> pure ()
+
+    let newBlk =
+            BlockBuild
+                { bbName = name
+                , bbParams = params
+                , bbInstrs = []
+                , bbTerminator = Nothing
+                }
+        fb' = if isNothing fbEntry then fb{fbEntry = Just name} else fb
+    put st{bsCurFun = Just fb', bsCurBlk = Just newBlk}
 
 terminate :: ATerminator -> AlloyBuilder ()
 terminate term = do
-    st@BuildState{..} <- get
-    case (bsCurFun, bsCurBlk) of
-        (Nothing, _) -> error "Alloy.Build: terminate called with no open function"
-        (_, Nothing) -> error "Alloy.Build: terminate called with no open block"
-        (Just fb@FunBuild{..}, Just BlockBuild{..}) -> do
-            case bbTerminator of
-                Just _ -> error "Alloy.Build: block already has a terminator"
-                Nothing -> do
-                    let finalized =
-                            ABlock
-                                { abName = bbName
-                                , abParams = bbParams
-                                , abInstrs = bbInstrs
-                                , abTerminator = term
-                                }
-                        fb' = fb{fbBlocks = fbBlocks ++ [finalized]}
-                    put st{bsCurFun = Just fb', bsCurBlk = Nothing}
+    st <- get
+    fb@FunBuild{..} <- requireOpenFunction "terminate"
+    BlockBuild{..} <- requireOpenBlock "terminate"
+
+    when (isJust bbTerminator)
+        $ error "Alloy.Build: block already has a terminator"
+
+    let finalized =
+            ABlock
+                { abName = bbName
+                , abParams = bbParams
+                , abInstrs = bbInstrs
+                , abTerminator = term
+                }
+        fb' = fb{fbBlocks = fbBlocks ++ [finalized]}
+    put st{bsCurFun = Just fb', bsCurBlk = Nothing}
 
 emitLetAs :: Name -> Type -> AOp -> AlloyBuilder ()
 emitLetAs name ty op = do
-    st@BuildState{..} <- get
-    case bsCurBlk of
-        Nothing -> error "Alloy.Build: emitLetAs called with no open block"
-        Just blk@BlockBuild{..} ->
-            case bbTerminator of
-                Just _ -> error "Alloy.Build: cannot emit instructions after terminator"
-                Nothing -> do
-                    let instr = ILet name ty op
-                    put st{bsCurBlk = Just blk{bbInstrs = bbInstrs ++ [instr]}}
+    st <- get
+    blk@BlockBuild{..} <- requireOpenBlock "emitLetAs"
+
+    when (isJust bbTerminator)
+        $ error "Alloy.Build: cannot emit instructions after terminator"
+
+    let instr = ILet name ty op
+    put st{bsCurBlk = Just blk{bbInstrs = bbInstrs ++ [instr]}}
 
 emitLetTmp :: Type -> AOp -> AlloyBuilder Name
 emitLetTmp ty op = do
@@ -171,15 +169,14 @@ emitLetTmp ty op = do
 
 emitEffect :: AEffect -> AlloyBuilder ()
 emitEffect eff = do
-    st@BuildState{..} <- get
-    case bsCurBlk of
-        Nothing -> error "Alloy.Build: emitEffect called with no open block"
-        Just blk@BlockBuild{..} ->
-            case bbTerminator of
-                Just _ -> error "Alloy.Build: cannot emit instructions after terminator"
-                Nothing -> do
-                    let instr = IEffect eff
-                    put st{bsCurBlk = Just blk{bbInstrs = bbInstrs ++ [instr]}}
+    st <- get
+    blk@BlockBuild{..} <- requireOpenBlock "emitEffect"
+
+    when (isJust bbTerminator)
+        $ error "Alloy.Build: cannot emit instructions after terminator"
+
+    let instr = IEffect eff
+    put st{bsCurBlk = Just blk{bbInstrs = bbInstrs ++ [instr]}}
 
 freshName :: AlloyBuilder Name
 freshName = do
@@ -192,3 +189,24 @@ freshBlockName = do
     st@BuildState{..} <- get
     put st{bsNextBlk = bsNextBlk + 1}
     pure $ "block" ++ show bsNextBlk
+
+-- | Helper to require an open function, throwing a descriptive error if none
+requireOpenFunction :: String -> AlloyBuilder FunBuild
+requireOpenFunction context = do
+    st <- get
+    case bsCurFun st of
+        Just fb -> pure fb
+        Nothing -> error $ "Alloy.Build: " ++ context ++ " called with no open function"
+
+-- | Helper to require an open block, throwing a descriptive error if none
+requireOpenBlock :: String -> AlloyBuilder BlockBuild
+requireOpenBlock context = do
+    st <- get
+    case bsCurBlk st of
+        Just blk -> pure blk
+        Nothing -> error $ "Alloy.Build: " ++ context ++ " called with no open block"
+
+-- | Helper to check if a Maybe value is Just
+isJust :: Maybe a -> Bool
+isJust (Just _) = True
+isJust Nothing = False

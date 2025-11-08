@@ -18,23 +18,23 @@ stripAs (PAs _ p) = stripAs p
 stripAs p = p
 
 isDefaultPattern :: Pattern -> Bool
-isDefaultPattern PVar{} = True
-isDefaultPattern PWildcard = True
-isDefaultPattern (PAs _ _) = True
-isDefaultPattern _ = False
+isDefaultPattern p = case stripAs p of
+    PVar{} -> True
+    PWildcard -> True
+    _ -> False
 
 hasWildcardLike :: Pattern -> Bool
-hasWildcardLike PWildcard = True
-hasWildcardLike (PAs _ p) = hasWildcardLike p
-hasWildcardLike _ = False
+hasWildcardLike p = case stripAs p of
+    PWildcard -> True
+    _ -> False
 
 constructorArity :: Pattern -> Int
-constructorArity (PLit _) = 0
-constructorArity (PConstructor _ ps) = length ps
-constructorArity (PTuple ps) = length ps
-constructorArity (PArray ps) = length ps
-constructorArity (PAs _ p) = constructorArity p
-constructorArity _ = 0
+constructorArity p = case stripAs p of
+    PLit _ -> 0
+    PConstructor _ ps -> length ps
+    PTuple ps -> length ps
+    PArray ps -> length ps
+    _ -> 0
 
 collectBinders :: Pattern -> [String]
 collectBinders (PVar v) = [v]
@@ -55,7 +55,5 @@ validateNoDuplicateBinders = all rowOk
   where
     rowOk ps =
         let vs = concatMap collectBinders ps
-        in noDups vs
-    noDups xs =
-        let s = Set.fromList xs
-        in Set.size s == length xs
+            s = Set.fromList vs
+        in Set.size s == length vs

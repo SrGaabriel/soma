@@ -1,3 +1,5 @@
+{-# LANGUAGE RecordWildCards #-}
+
 module Alloy.Decisions where
 
 import Data.List (groupBy, nub, partition, sortOn)
@@ -28,12 +30,12 @@ data PatternMatrix = PatternMatrix
     deriving (Show, Eq)
 
 mkPatternMatrix :: [([Pattern], Action)] -> PatternMatrix
-mkPatternMatrix [] = PatternMatrix [] []
+mkPatternMatrix [] = PatternMatrix{matrixRows = [], matrixVars = []}
 mkPatternMatrix clauses@((pats, _) : _) =
     let numArgs = length pats
         rows = [MatrixRow p act | (p, act) <- clauses]
         vars = [Root i | i <- [0 .. numArgs - 1]]
-    in PatternMatrix rows vars
+    in PatternMatrix{matrixRows = rows, matrixVars = vars}
 
 isEmptyMatrix :: PatternMatrix -> Bool
 isEmptyMatrix = null . matrixRows
@@ -56,10 +58,10 @@ data Constructor
     deriving (Show, Eq, Ord)
 
 compile :: PatternMatrix -> DecisionTree
-compile matrix
+compile matrix@PatternMatrix{..}
     | isEmptyMatrix matrix = Fail
     | hasNoColumns matrix =
-        case matrixRows matrix of
+        case matrixRows of
             [] -> Fail
             (r : _) -> Leaf (rowAction r)
     | otherwise =
@@ -70,10 +72,9 @@ chooseColumn :: PatternMatrix -> Int
 chooseColumn _matrix = 0
 
 compileColumn :: Int -> PatternMatrix -> DecisionTree
-compileColumn col matrix =
-    let accessor = matrixVars matrix !! col
-        rows = matrixRows matrix
-        (ctorRows, defaultRows) = partitionRows col rows
+compileColumn col matrix@PatternMatrix{..} =
+    let accessor = matrixVars !! col
+        (ctorRows, defaultRows) = partitionRows col matrixRows
     in if null ctorRows
         then compileDefault col accessor matrix defaultRows
         else compileSwitch col accessor matrix ctorRows defaultRows
@@ -134,13 +135,13 @@ compileSwitch col accessor matrix ctorGroups defaultRows =
     in Switch accessor branches defaultCase
 
 specializeConstructor :: Int -> Constructor -> PatternMatrix -> [MatrixRow] -> PatternMatrix
-specializeConstructor col ctor matrix rows =
+specializeConstructor col ctor PatternMatrix{..} rows =
     let arity = constructorArity ctor
-        accessor = matrixVars matrix !! col
+        accessor = matrixVars !! col
         newVars = [Field accessor i | i <- [0 .. arity - 1]]
-        allVars = take col (matrixVars matrix) ++ newVars ++ drop (col + 1) (matrixVars matrix)
+        allVars = take col matrixVars ++ newVars ++ drop (col + 1) matrixVars
         newRows = [specializeRow col ctor row | row <- rows]
-    in PatternMatrix newRows allVars
+    in PatternMatrix{matrixRows = newRows, matrixVars = allVars}
 
 constructorArity :: Constructor -> Int
 constructorArity (LitCtor _) = 0
@@ -173,17 +174,15 @@ extractSubPatterns PWildcard = []
 extractSubPatterns (PVar _) = []
 
 specializeDefault :: Int -> PatternMatrix -> [MatrixRow] -> PatternMatrix
-specializeDefault col matrix rows =
-    let
-        newVars = take col (matrixVars matrix) ++ drop (col + 1) (matrixVars matrix)
+specializeDefault col PatternMatrix{..} rows =
+    let newVars = take col matrixVars ++ drop (col + 1) matrixVars
         newRows =
             [ MatrixRow
                 (take col (rowPatterns row) ++ drop (col + 1) (rowPatterns row))
                 (rowAction row)
             | row <- rows
             ]
-    in
-        PatternMatrix newRows newVars
+    in PatternMatrix{matrixRows = newRows, matrixVars = newVars}
 
 data DecisionDAG
     = DAGLeaf Action
@@ -202,7 +201,8 @@ data DAG = DAG
 
 buildDAG :: DecisionTree -> DAG
 buildDAG tree =
-    let (rootId, dag) = buildDAGHelper tree (DAG Map.empty 0 0)
+    let initDag = DAG{dagNodes = Map.empty, dagRoot = 0, dagNextId = 0}
+        (rootId, dag) = buildDAGHelper tree initDag
     in dag{dagRoot = rootId}
 
 buildDAGHelper :: DecisionTree -> DAG -> (NodeId, DAG)
@@ -211,24 +211,15 @@ buildDAGHelper tree dag =
         Fail ->
             let nodeId = dagNextId dag
                 node = DAGFail
-                newDag =
-                    dag
-                        { dagNodes = Map.insert nodeId node (dagNodes dag)
-                        , dagNextId = nodeId + 1
-                        }
+                newDag = dag{dagNodes = Map.insert nodeId node (dagNodes dag), dagNextId = nodeId + 1}
             in (nodeId, newDag)
         Leaf action ->
             let nodeId = dagNextId dag
                 node = DAGLeaf action
-                newDag =
-                    dag
-                        { dagNodes = Map.insert nodeId node (dagNodes dag)
-                        , dagNextId = nodeId + 1
-                        }
+                newDag = dag{dagNodes = Map.insert nodeId node (dagNodes dag), dagNextId = nodeId + 1}
             in (nodeId, newDag)
         Switch accessor branches defaultCase ->
-            let
-                (branchIds, dag1) =
+            let (branchIds, dag1) =
                     foldl
                         ( \(ids, d) (ctor, subtree) ->
                             let (subId, d') = buildDAGHelper subtree d
@@ -243,13 +234,9 @@ buildDAGHelper tree dag =
                         in (Just subId, d')
                 nodeId = dagNextId dag2
                 node = DAGSwitch accessor branchIds defaultId
-                newDag =
-                    dag2
-                        { dagNodes = Map.insert nodeId node (dagNodes dag2)
-                        , dagNextId = nodeId + 1
-                        }
-            in
-                (nodeId, newDag)
+                newNodes = Map.insert nodeId node (dagNodes dag2)
+                newDag = dag2{dagNodes = newNodes, dagNextId = nodeId + 1}
+            in (nodeId, newDag)
         Guard _accessor _thenTree elseTree ->
             buildDAGHelper elseTree dag
 

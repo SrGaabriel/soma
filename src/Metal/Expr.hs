@@ -1,7 +1,33 @@
+{-# LANGUAGE FlexibleInstances #-}
+
 module Metal.Expr where
 
 import Syntax.Patterns (Pattern)
 import Typing.Types (Type, boolType, intType, strType)
+
+class HasType a where
+    getType :: a -> Type
+
+instance HasType MetallicExpr where
+    getType (MVar _ t) = t
+    getType (MLit lit) = getType lit
+    getType (MCall _ _ t) = t
+    getType (MTypeApp _ _ t) = t
+    getType (MLet _ _ _ t) = t
+    getType (MIf _ _ _ t) = t
+    getType (MLambda _ _ t) = t
+    getType (MConstruct _ _ _ t) = t
+    getType (MArrayLit _ t) = t
+    getType (MTuple _ t) = t
+    getType (MCase _ _ _ t) = t
+    getType (MFieldAccess _ _ t) = t
+    getType (MPanic _ t) = t
+    getType (MCompose _ t) = t
+
+instance HasType MetallicLiteral where
+    getType (MInt _) = intType
+    getType (MBool _) = boolType
+    getType (MString _) = strType
 
 data MetallicExpr
     = MVar String Type
@@ -44,22 +70,7 @@ data MetallicStatement
     deriving (Show, Eq)
 
 getMetallicExprType :: MetallicExpr -> Type
-getMetallicExprType (MVar _ t) = t
-getMetallicExprType (MLit lit) = getMetallicLiteralType lit
-getMetallicExprType (MCall _ _ t) = t
-getMetallicExprType (MTypeApp _ _ t) = t
-getMetallicExprType (MLet _ _ _ t) = t
-getMetallicExprType (MIf _ _ _ t) = t
-getMetallicExprType (MLambda _ _ t) = t
-getMetallicExprType (MConstruct _ _ _ t) = t
-getMetallicExprType (MArrayLit _ t) = t
-getMetallicExprType (MTuple _ t) = t
-getMetallicExprType (MCase _ _ _ t) = t
-getMetallicExprType (MFieldAccess _ _ t) = t
-getMetallicExprType (MPanic _ t) = t
-getMetallicExprType (MCompose _ t) = t
+getMetallicExprType = getType
 
 getMetallicLiteralType :: MetallicLiteral -> Type
-getMetallicLiteralType (MInt _) = intType
-getMetallicLiteralType (MBool _) = boolType
-getMetallicLiteralType (MString _) = strType
+getMetallicLiteralType = getType

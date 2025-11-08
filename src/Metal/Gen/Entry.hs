@@ -1,10 +1,7 @@
-{-# LANGUAGE LambdaCase #-}
-
 module Metal.Gen.Entry where
 
 import Control.Monad.State (gets, modify)
 import qualified Data.Map as Map
-import Data.Maybe (mapMaybe)
 
 import Inference.Core (TypeMap)
 import Metal.Function (MetallicFunction (..))
@@ -30,16 +27,9 @@ metallizeModule _ root = do
     compileDataTypeDefsFromRoot root
 
     let topLevelMembers = exprChildren root
-    sequence_
-        $ mapMaybe
-            ( \case
-                binding@(ExprBindingDef{}) -> Just (metallizeBinding binding)
-                _ -> Nothing
-            )
-            topLevelMembers
+    mapM_ metallizeBinding [b | b@(ExprBindingDef{}) <- topLevelMembers]
 
-    let instanceDefs = [inst | inst@(ExprInstanceDef{}) <- topLevelMembers]
-    mapM_ metallizeInstance instanceDefs
+    mapM_ metallizeInstance [inst | inst@(ExprInstanceDef{}) <- topLevelMembers]
 
     funcs <- gets metalFunctions
     types <- gets metalTypes
@@ -53,9 +43,8 @@ metallizeModule _ root = do
             }
 
 metallizeInstance :: Expr -> MetalGen ()
-metallizeInstance (ExprInstanceDef constraintType methods _) = do
-    let instanceTypeName = extractInstanceTypeName constraintType
-    mapM_ (metallizeInstanceMethod instanceTypeName) methods
+metallizeInstance (ExprInstanceDef constraintType methods _) =
+    mapM_ (metallizeInstanceMethod (extractInstanceTypeName constraintType)) methods
   where
     extractInstanceTypeName :: Type -> String
     extractInstanceTypeName (TApp _ ty) = extractInstanceTypeName ty
@@ -65,14 +54,17 @@ metallizeInstance (ExprInstanceDef constraintType methods _) = do
     metallizeInstanceMethod :: String -> Expr -> MetalGen ()
     metallizeInstanceMethod typeName bind@(ExprBindingDef name _ _ _ _) = do
         metallizeBinding bind
-
         let mangledName = name ++ "$" ++ typeName
-
         funcs <- gets metalFunctions
         case Map.lookup name funcs of
-            Just func -> do
-                modify $ \s -> s{metalFunctions = Map.delete name (metalFunctions s)}
-                modify $ \s -> s{metalFunctions = Map.insert mangledName (func{mfName = mangledName}) (metalFunctions s)}
+            Just func -> modify $ \s ->
+                s
+                    { metalFunctions =
+                        Map.insert
+                            mangledName
+                            (func{mfName = mangledName})
+                            (Map.delete name (metalFunctions s))
+                    }
             Nothing -> pure ()
     metallizeInstanceMethod _ _ = pure ()
 metallizeInstance _ = pure ()

@@ -7,21 +7,18 @@ import Alloy.Ir (
     AOperand (..),
  )
 import Control.Monad.Reader (asks)
-import Control.Monad.State (gets, modify)
-import Data.Hashable (hash)
+import Control.Monad.State (gets)
 import qualified Data.Map as Map
-import Llvm.Dependencies (LinkageType (PrivateLinkage), LlvmDependency (..))
 import Llvm.Gen.Core (
     IrGen,
     IrGenEnv (opTypeEnv),
-    IrGenState (irDependencies, valueSubst),
+    IrGenState (valueSubst),
     applySubstitutions,
-    saveTmp,
  )
-import Llvm.Instructions (LlvmInstruction (LlvmGetElementPtr))
-import Llvm.Types (LlvmType (LlvmArray, LlvmI8, LlvmPointer))
+import Llvm.Gen.Templates (newStrTemplate)
+import Llvm.Types (LlvmType (LlvmI8, LlvmPointer))
 import Llvm.Values (
-    LlvmValue (LlvmGlobal, LlvmLiteral, LlvmRegister),
+    LlvmValue (LlvmGlobal, LlvmRegister),
     boolLiteral,
     intLiteral,
  )
@@ -42,17 +39,5 @@ compileOperand (OpVar name) = do
                     pure $ LlvmGlobal (LlvmPointer LlvmI8) name
 compileOperand (OpConst (CInt n)) = pure $ intLiteral n
 compileOperand (OpConst (CBool n)) = pure $ boolLiteral n
-compileOperand (OpConst (CString str)) = do
-    let dpName = "str_" ++ show (hash str)
-    let depType = LlvmArray (length str + 1) LlvmI8
-    let dependency =
-            LlvmConstantDependency
-                { constantName = dpName
-                , constantValue = LlvmLiteral depType ("c\"" ++ str ++ "\00\"")
-                , constantLinkage = Just PrivateLinkage
-                }
-    modify $ \s -> s{irDependencies = dependency : irDependencies s}
-
-    let ptrInstr = LlvmGetElementPtr depType (LlvmGlobal depType dpName) [intLiteral 0, intLiteral 0] True
-    saveTmp ptrInstr (LlvmPointer LlvmI8)
+compileOperand (OpConst (CString str)) = newStrTemplate str
 compileOperand (OpConst CUnit) = error "Can't compile void"

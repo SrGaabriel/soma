@@ -1,6 +1,5 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
-
-{- HLINT ignore "Use lambda-case" -}
 
 module Metal.Gen.Binding where
 
@@ -42,9 +41,9 @@ metallizeBinding (ExprBindingDef name (Forall typeVars constraints bindingTyp) b
                 , mfBody = metalBody
                 , mfMetadata =
                     MetallicFunctionMetadata
-                        { fmOriginalName = typeVars
+                        { mfmOriginalName = typeVars
                         , mfmConstraints = constraints
-                        , fmInstanceInfo = Nothing
+                        , mfmInstanceInfo = Nothing
                         }
                 }
 
@@ -69,7 +68,7 @@ metallizeFnBody fnName body@(ExprDerivedPatternMatch arms) paramTypes retType = 
             ]
 
     mArms <-
-        forM arms $ \arm -> case arm of
+        forM arms $ \case
             ExprPatternMatchArm pats armBody _ -> do
                 let binderNames = concatMap collectBinders pats
                 binderTypes <- inferBinderTypesFromBody binderNames armBody

@@ -40,19 +40,14 @@ liftFunctionLambdas fn@MetallicFunction{mfBody} = do
     pure fn{mfBody = body'}
 
 liftExprLambdas :: Set.Set String -> MetallicExpr -> LiftM MetallicExpr
-liftExprLambdas _ (MVar v ty) = pure (MVar v ty)
-liftExprLambdas _ (MLit lit) = pure (MLit lit)
-liftExprLambdas bound (MCall callee args ty) = do
-    callee' <- liftExprLambdas bound callee
-    args' <- mapM (liftExprLambdas bound) args
-    pure (MCall callee' args' ty)
-liftExprLambdas bound (MTypeApp e tys ty) = do
-    e' <- liftExprLambdas bound e
-    pure (MTypeApp e' tys ty)
-liftExprLambdas bound (MLet name val body ty) = do
-    val' <- liftExprLambdas bound val
-    body' <- liftExprLambdas (Set.insert name bound) body
-    pure (MLet name val' body' ty)
+liftExprLambdas _ e@(MVar _ _) = pure e
+liftExprLambdas _ e@(MLit _) = pure e
+liftExprLambdas bound (MCall callee args ty) =
+    MCall <$> liftExprLambdas bound callee <*> mapM (liftExprLambdas bound) args <*> pure ty
+liftExprLambdas bound (MTypeApp e tys ty) =
+    (\e' -> MTypeApp e' tys ty) <$> liftExprLambdas bound e
+liftExprLambdas bound (MLet name val body ty) =
+    MLet name <$> liftExprLambdas bound val <*> liftExprLambdas (Set.insert name bound) body <*> pure ty
 liftExprLambdas bound (MLambda params body ty) = do
     let paramSet = Set.fromList params
         freeVars = computeFreeVars body Set.\\ paramSet Set.\\ bound
@@ -74,9 +69,9 @@ liftExprLambdas bound (MLambda params body ty) = do
                 , mfBody = body'
                 , mfMetadata =
                     MetallicFunctionMetadata
-                        { fmOriginalName = []
+                        { mfmOriginalName = []
                         , mfmConstraints = []
-                        , fmInstanceInfo = Nothing
+                        , mfmInstanceInfo = Nothing
                         }
                 }
 
@@ -90,60 +85,51 @@ liftExprLambdas bound (MLambda params body ty) = do
                     ++ "Lambda captures: "
                     ++ show freeVarsList
                     ++ ". Ensure lambdas are closed or implement closure construction."
-liftExprLambdas bound (MConstruct name tag args ty) = do
-    args' <- mapM (liftExprLambdas bound) args
-    pure (MConstruct name tag args' ty)
-liftExprLambdas bound (MArrayLit elems ty) = do
-    elems' <- mapM (liftExprLambdas bound) elems
-    pure (MArrayLit elems' ty)
-liftExprLambdas bound (MTuple elems ty) = do
-    elems' <- mapM (liftExprLambdas bound) elems
-    pure (MTuple elems' ty)
-liftExprLambdas bound (MCase scrutinees arms mdef ty) = do
-    scrutinees' <- mapM (liftExprLambdas bound) scrutinees
-    arms' <- mapM (liftArm bound) arms
-    mdef' <- mapM (liftExprLambdas bound) mdef
-    pure (MCase scrutinees' arms' mdef' ty)
+liftExprLambdas bound (MConstruct name tag args ty) =
+    MConstruct name tag <$> mapM (liftExprLambdas bound) args <*> pure ty
+liftExprLambdas bound (MArrayLit elems ty) =
+    MArrayLit <$> mapM (liftExprLambdas bound) elems <*> pure ty
+liftExprLambdas bound (MTuple elems ty) =
+    MTuple <$> mapM (liftExprLambdas bound) elems <*> pure ty
+liftExprLambdas bound (MCase scrutinees arms mdef ty) =
+    MCase
+        <$> mapM (liftExprLambdas bound) scrutinees
+        <*> mapM (liftArm bound) arms
+        <*> mapM (liftExprLambdas bound) mdef
+        <*> pure ty
   where
     liftArm :: Set.Set String -> MCaseArm -> LiftM MCaseArm
     liftArm boundVars MCaseArm{mcaPatterns, mcaBody} =
         let binders = concatMap collectBinders mcaPatterns
             boundInArm = Set.union boundVars (Set.fromList binders)
-        in do
-            body' <- liftExprLambdas boundInArm mcaBody
-            pure MCaseArm{mcaPatterns = mcaPatterns, mcaBody = body'}
-liftExprLambdas bound (MIf ifCond ifBlock elseBlock ty) = do
-    ifCond' <- liftExprLambdas bound ifCond
-    ifBlock' <- liftExprLambdas bound ifBlock
-    elseBlock' <- liftExprLambdas bound elseBlock
-    pure (MIf ifCond' ifBlock' elseBlock' ty)
-liftExprLambdas bound (MFieldAccess e idx ty) = do
-    e' <- liftExprLambdas bound e
-
-    pure (MFieldAccess e' idx ty)
-liftExprLambdas bound (MCompose stmts ty) = do
-    (stmts', _) <- liftComposeLambdas bound stmts
-    pure (MCompose stmts' ty)
-liftExprLambdas _ (MPanic msg ty) = pure (MPanic msg ty)
+        in MCaseArm mcaPatterns <$> liftExprLambdas boundInArm mcaBody
+liftExprLambdas bound (MIf ifCond ifBlock elseBlock ty) =
+    MIf
+        <$> liftExprLambdas bound ifCond
+        <*> liftExprLambdas bound ifBlock
+        <*> liftExprLambdas bound elseBlock
+        <*> pure ty
+liftExprLambdas bound (MFieldAccess e idx ty) =
+    (\e' -> MFieldAccess e' idx ty) <$> liftExprLambdas bound e
+liftExprLambdas bound (MCompose stmts ty) =
+    MCompose <$> fst <$> liftComposeLambdas bound stmts <*> pure ty
+liftExprLambdas _ e@(MPanic _ _) = pure e
 
 liftComposeLambdas :: Set.Set String -> [MetallicComposeStmt] -> LiftM ([MetallicComposeStmt], Set.Set String)
 liftComposeLambdas bound [] = pure ([], bound)
-liftComposeLambdas bound (stmt : rest) =
-    case stmt of
-        MCBind name e -> do
-            e' <- liftExprLambdas bound e
-            let bound' = Set.insert name bound
-            (rest', bound'') <- liftComposeLambdas bound' rest
-            pure (MCBind name e' : rest', bound'')
-        MCLet name e -> do
-            e' <- liftExprLambdas bound e
-            let bound' = Set.insert name bound
-            (rest', bound'') <- liftComposeLambdas bound' rest
-            pure (MCLet name e' : rest', bound'')
-        MCExpr e -> do
-            e' <- liftExprLambdas bound e
-            (rest', bound'') <- liftComposeLambdas bound rest
-            pure (MCExpr e' : rest', bound'')
+liftComposeLambdas bound (stmt : rest) = case stmt of
+    MCBind name e -> do
+        e' <- liftExprLambdas bound e
+        (rest', bound'') <- liftComposeLambdas (Set.insert name bound) rest
+        pure (MCBind name e' : rest', bound'')
+    MCLet name e -> do
+        e' <- liftExprLambdas bound e
+        (rest', bound'') <- liftComposeLambdas (Set.insert name bound) rest
+        pure (MCLet name e' : rest', bound'')
+    MCExpr e -> do
+        e' <- liftExprLambdas bound e
+        (rest', bound'') <- liftComposeLambdas bound rest
+        pure (MCExpr e' : rest', bound'')
 
 freshLambdaId :: LiftM Int
 freshLambdaId = do
@@ -184,8 +170,7 @@ computeFreeVars (MCompose stmts _) =
                     (acc `Set.union` (computeFreeVars e Set.\\ bound), bound)
         (fv, _) = foldl step (Set.empty, Set.empty) stmts
     in fv
-computeFreeVars (MIf cond ifB elseB _) =
-    Set.unions [computeFreeVars cond, computeFreeVars ifB, computeFreeVars elseB]
+computeFreeVars (MIf cond ifB elseB _) = Set.unions (map computeFreeVars [cond, ifB, elseB])
 computeFreeVars (MPanic _ _) = Set.empty
 
 collectBinders :: Pattern -> [String]

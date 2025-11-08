@@ -28,6 +28,7 @@ module Alloy.ReaderRewrite (
 ) where
 
 import Alloy.Ir
+import Alloy.Subst (Subst, substEffect, substOp, substTerminator)
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -72,12 +73,13 @@ discoverEligible ::
     Map Name (Type, Type, [(CallSiteId, Name, AOperand)]) -- f -> (envTy, aTy, callsites with env operand)
 discoverEligible cfg fnMap =
     Map.fromList
-        [(fname, (envTy, aTy, callsites)) |
-           (fname, f) <- Map.toList fnMap,
-           let callsites = findCallsitesWithEnv cfg fname fnMap,
-           not (null callsites),
-           allSitesHaveEnv callsites,
-           Just (envTy, aTy) <- [readerReturn cfg (afReturnType f)]]
+        [ (fname, (envTy, aTy, callsites))
+        | (fname, f) <- Map.toList fnMap
+        , let callsites = findCallsitesWithEnv cfg fname fnMap
+        , not (null callsites)
+        , allSitesHaveEnv callsites
+        , Just (envTy, aTy) <- [readerReturn cfg (afReturnType f)]
+        ]
 
 type CallSiteId = Int
 
@@ -126,7 +128,7 @@ scanBlock cfg callee caller (cid0, acc0) ABlock{abInstrs} =
                         case mEnv of
                             Just envOp -> (cid + 1, (cid, caller, envOp) : acc, mEnv)
                             Nothing -> (cid + 1, acc, mEnv)
-                ILet {} -> (cid, acc, mEnv)
+                ILet{} -> (cid, acc, mEnv)
                 IEffect _ -> (cid, acc, mEnv)
         (cid', acc', _) = foldl' step (cid0, acc0, Nothing) abInstrs
     in (cid', acc')
@@ -222,53 +224,3 @@ rewriteCalls _cfg rwMap fn@AlloyFunction{afName, afBlocks} =
                 (ILet n t op : acc, cid)
             IEffect eff ->
                 (IEffect eff : acc, cid)
-
-type Subst = Map Name AOperand
-
-substOperand :: Subst -> AOperand -> AOperand
-substOperand env (OpVar v) = Map.findWithDefault (OpVar v) v env
-substOperand _ c@(OpConst _) = c
-
-substCallable :: Subst -> ACallable -> ACallable
-substCallable _ (Direct n) = Direct n
-substCallable env (Indirect a) = Indirect (substOperand env a)
-
-substOp :: Subst -> AOp -> AOp
-substOp env op =
-    case op of
-        OpBin k a b -> OpBin k (substOperand env a) (substOperand env b)
-        OpUnary k a -> OpUnary k (substOperand env a)
-        OpCmp k a b -> OpCmp k (substOperand env a) (substOperand env b)
-        OpLoad a -> OpLoad (substOperand env a)
-        OpAllocStack t -> OpAllocStack t
-        OpAllocHeap t -> OpAllocHeap t
-        OpCall callee args -> OpCall (substCallable env callee) (map (substOperand env) args)
-        OpConstruct tn tag fields -> OpConstruct tn tag (map (substOperand env) fields)
-        OpTagOf a -> OpTagOf (substOperand env a)
-        OpProject a i -> OpProject (substOperand env a) i
-        OpIndex a i -> OpIndex (substOperand env a) (substOperand env i)
-        OpMakeArray xs -> OpMakeArray (map (substOperand env) xs)
-        OpMakeTuple xs -> OpMakeTuple (map (substOperand env) xs)
-
-substEffect :: Subst -> AEffect -> AEffect
-substEffect env eff =
-    case eff of
-        EffStore p v -> EffStore (substOperand env p) (substOperand env v)
-        EffStoreIndex a i v -> EffStoreIndex (substOperand env a) (substOperand env i) (substOperand env v)
-        EffDrop a -> EffDrop (substOperand env a)
-
-substTerminator :: Subst -> ATerminator -> ATerminator
-substTerminator env t =
-    case t of
-        ABr b args -> ABr b (map (substOperand env) args)
-        ACondBr c tb ta fb fa ->
-            ACondBr
-                (substOperand env c)
-                tb
-                (map (substOperand env) ta)
-                fb
-                (map (substOperand env) fa)
-        ASwitch v cases mdef ->
-            ASwitch (substOperand env v) cases mdef
-        ARet mv -> ARet (fmap (substOperand env) mv)
-        AUnreachable -> AUnreachable

@@ -32,6 +32,7 @@ library
     Alloy.ReaderRewrite
     Alloy.Simplify
     Alloy.Uniqueness
+    Alloy.Subst
     Alloy.Verify
     Analysis.Symbol
     Config.Options

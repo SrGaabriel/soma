@@ -1,4 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Alloy.Verify (
     VerificationConfig (..),
@@ -28,36 +29,34 @@ defaultVerificationConfig :: VerificationConfig
 defaultVerificationConfig =
     VerificationConfig
         { banHeapAllocOps = True
-        , bannedCalleeSubstrings =
-            map
-                lower
-                [ "malloc"
-                , "calloc"
-                , "realloc"
-                , "posix_memalign"
-                , "aligned_alloc"
-                , "valloc"
-                , "memalign"
-                , "_aligned_malloc"
-                , "heapalloc"
-                , "virtualalloc"
-                ]
-        , bannedExactCallees =
-            map
-                lower
-                [ "free"
-                , "_aligned_free"
-                , "heapfree" -- Win32
-                , "virtualfree" -- Win32
-                , "operator new"
-                , "operator delete"
-                , "new"
-                , "delete"
-                ]
+        , bannedCalleeSubstrings = toLowerList bannedSubstrings
+        , bannedExactCallees = toLowerList bannedExact
         , banIndirectCalls = False
         }
   where
-    lower = map toLower
+    toLowerList = map (map toLower)
+    bannedSubstrings =
+        [ "malloc"
+        , "calloc"
+        , "realloc"
+        , "posix_memalign"
+        , "aligned_alloc"
+        , "valloc"
+        , "memalign"
+        , "_aligned_malloc"
+        , "heapalloc"
+        , "virtualalloc"
+        ]
+    bannedExact =
+        [ "free"
+        , "_aligned_free"
+        , "heapfree"
+        , "virtualfree" -- Win32
+        , "operator new"
+        , "operator delete"
+        , "new"
+        , "delete"
+        ]
 
 data VerificationError
     = HeapAllocFound
@@ -92,15 +91,14 @@ errorCount = length . vrErrors
 
 verifyModule :: VerificationConfig -> AlloyModule -> VerificationReport
 verifyModule cfg AlloyModule{amFunctions} =
-    let errs = concatMap (verifyFunction cfg) amFunctions
-    in VerificationReport{vrErrors = errs}
+    VerificationReport{vrErrors = concatMap (verifyFunction cfg) amFunctions}
 
 verifyFunction :: VerificationConfig -> AlloyFunction -> [VerificationError]
 verifyFunction cfg AlloyFunction{afName, afBlocks} =
     concatMap (verifyBlock cfg afName) afBlocks
 
 verifyBlock :: VerificationConfig -> Name -> ABlock -> [VerificationError]
-verifyBlock cfg funName ABlock{abName, abInstrs} =
+verifyBlock cfg funName ABlock{..} =
     concat (zipWith (verifyInstr cfg funName abName) [0 ..] abInstrs)
 
 verifyInstr :: VerificationConfig -> Name -> BlockName -> Int -> AInstr -> [VerificationError]
@@ -110,24 +108,20 @@ verifyInstr cfg funName blkName idx instr =
         IEffect _ -> []
 
 verifyOp :: VerificationConfig -> Name -> BlockName -> Int -> AOp -> [VerificationError]
-verifyOp VerificationConfig{banHeapAllocOps, bannedCalleeSubstrings, bannedExactCallees, banIndirectCalls} funName blkName idx op =
+verifyOp VerificationConfig{..} funName blkName idx op =
     case op of
         OpAllocHeap ty ->
-            ([HeapAllocFound funName blkName idx ty | banHeapAllocOps])
+            [HeapAllocFound funName blkName idx ty | banHeapAllocOps]
         OpCall callee _args ->
             case callee of
                 Direct name ->
-                    ([BannedCallFound funName blkName idx name | isBannedCallee name])
+                    [BannedCallFound funName blkName idx name | isBannedCallee name]
                 Indirect _ ->
-                    ([IndirectCallFound funName blkName idx | banIndirectCalls])
+                    [IndirectCallFound funName blkName idx | banIndirectCalls]
         _ -> []
   where
-    lower = map toLower
-    lname = lower
-
     isBannedCallee :: Name -> Bool
     isBannedCallee nm =
-        let nml = lname nm
-            bannedExact = elem nml bannedExactCallees
-            bannedSub = any (`isInfixOf` nml) bannedCalleeSubstrings
-        in bannedExact || bannedSub
+        let lowerName = map toLower nm
+        in lowerName `elem` bannedExactCallees
+            || any (`isInfixOf` lowerName) bannedCalleeSubstrings

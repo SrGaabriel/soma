@@ -17,9 +17,9 @@ data MetallicTypeClassMetadata = MetallicTypeClassMetadata
     deriving (Show, Eq)
 
 data MetallicFunctionMetadata = MetallicFunctionMetadata
-    { fmOriginalName :: [TyVar]
+    { mfmOriginalName :: [TyVar]
     , mfmConstraints :: [Constraint]
-    , fmInstanceInfo :: Maybe MetallicInstanceInfo
+    , mfmInstanceInfo :: Maybe MetallicInstanceInfo
     }
     deriving (Show, Eq)
 

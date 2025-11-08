@@ -12,23 +12,22 @@ import qualified Data.Set as Set
 defunctionalizeModule :: AlloyModule -> AlloyModule
 defunctionalizeModule m@AlloyModule{amFunctions} =
     let fnNames = Set.fromList (map afName amFunctions)
-        amFunctions' = map (defunctionalizeFunction fnNames) amFunctions
-    in m{amFunctions = amFunctions'}
+    in m{amFunctions = map (defunctionalizeFunction fnNames) amFunctions}
 
 defunctionalizeFunction :: Set Name -> AlloyFunction -> AlloyFunction
 defunctionalizeFunction knownFns fn@AlloyFunction{afBlocks} =
-    let afBlocks' = map (rewriteBlock knownFns) afBlocks
-    in fn{afBlocks = afBlocks'}
+    fn{afBlocks = map (rewriteBlock knownFns) afBlocks}
 
 rewriteBlock :: Set Name -> ABlock -> ABlock
 rewriteBlock known b@ABlock{abInstrs, abTerminator} =
-    let abInstrs' = map (rewriteInstr known) abInstrs
-        abTerminator' = rewriteTerm known abTerminator
-    in b{abInstrs = abInstrs', abTerminator = abTerminator'}
+    b
+        { abInstrs = map (rewriteInstr known) abInstrs
+        , abTerminator = rewriteTerm known abTerminator
+        }
 
 rewriteInstr :: Set Name -> AInstr -> AInstr
 rewriteInstr known (ILet n ty op) = ILet n ty (rewriteOp known op)
-rewriteInstr _ eff@(IEffect _) = eff
+rewriteInstr _ instr@(IEffect _) = instr
 
 rewriteOp :: Set Name -> AOp -> AOp
 rewriteOp known op =
@@ -47,10 +46,11 @@ rewriteOp known op =
         OpMakeArray xs -> OpMakeArray xs
         OpMakeTuple xs -> OpMakeTuple xs
 
+-- | Convert indirect calls to direct calls when the target is a known function
 rewriteCallable :: Set Name -> ACallable -> ACallable
 rewriteCallable known (Indirect (OpVar n))
     | n `Set.member` known = Direct n
-rewriteCallable _ c = c
+rewriteCallable _ callable = callable
 
 rewriteTerm :: Set Name -> ATerminator -> ATerminator
 rewriteTerm _ t = t

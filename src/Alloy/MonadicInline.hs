@@ -10,10 +10,9 @@ module Alloy.MonadicInline (
 ) where
 
 import Alloy.Ir
+import Alloy.Subst (Subst, substEffect, substOp, substOperand, substTerminator)
 
 import Data.List (isPrefixOf)
-import Data.Map.Strict (Map)
-
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Typing.Types (TyConstructor (..), Type (..))
@@ -94,7 +93,7 @@ rewireBlock ops blk@ABlock{abInstrs, abTerminator} =
         term' = substTerminator subst abTerminator
     in blk{abInstrs = reverse instrs', abTerminator = term'}
 
-type Subst = Map Name AOperand
+-- Note: Subst type now imported from Alloy.Subst
 
 rewireInstr :: MonadicOps -> ([AInstr], Subst) -> AInstr -> ([AInstr], Subst)
 rewireInstr ops (acc, env) instr =
@@ -168,103 +167,28 @@ rewireInstr ops (acc, env) instr =
             let eff' = substEffect env eff
             in (IEffect eff' : acc, env)
 
-substOperand :: Subst -> AOperand -> AOperand
-substOperand env (OpVar v) = Map.findWithDefault (OpVar v) v env
-substOperand _ c@(OpConst _) = c
-
-substOp :: Subst -> AOp -> AOp
-substOp env op =
-    case op of
-        OpBin k a b -> OpBin k (substOperand env a) (substOperand env b)
-        OpUnary k a -> OpUnary k (substOperand env a)
-        OpCmp k a b -> OpCmp k (substOperand env a) (substOperand env b)
-        OpLoad a -> OpLoad (substOperand env a)
-        OpAllocStack t -> OpAllocStack t
-        OpAllocHeap t -> OpAllocHeap t
-        OpCall callee args -> OpCall (substCallable env callee) (map (substOperand env) args)
-        OpConstruct tn tag fields -> OpConstruct tn tag (map (substOperand env) fields)
-        OpTagOf a -> OpTagOf (substOperand env a)
-        OpProject a i -> OpProject (substOperand env a) i
-        OpIndex a i -> OpIndex (substOperand env a) (substOperand env i)
-        OpMakeArray xs -> OpMakeArray (map (substOperand env) xs)
-        OpMakeTuple xs -> OpMakeTuple (map (substOperand env) xs)
-
-substCallable :: Subst -> ACallable -> ACallable
-substCallable _ (Direct n) = Direct n
-substCallable env (Indirect a) = Indirect (substOperand env a)
-
-substEffect :: Subst -> AEffect -> AEffect
-substEffect env eff =
-    case eff of
-        EffStore p v -> EffStore (substOperand env p) (substOperand env v)
-        EffStoreIndex a i v -> EffStoreIndex (substOperand env a) (substOperand env i) (substOperand env v)
-        EffDrop a -> EffDrop (substOperand env a)
-
-substTerminator :: Subst -> ATerminator -> ATerminator
-substTerminator env t =
-    case t of
-        ABr b args -> ABr b (map (substOperand env) args)
-        ACondBr c tb ta fb fa ->
-            ACondBr
-                (substOperand env c)
-                tb
-                (map (substOperand env) ta)
-                fb
-                (map (substOperand env) fa)
-        ASwitch v cases mdef ->
-            ASwitch (substOperand env v) cases mdef
-        ARet mv -> ARet (fmap (substOperand env) mv)
-        AUnreachable -> AUnreachable
-
 matches :: [Name] -> Name -> Bool
 matches candidates n = any (`isPrefixOf` n) candidates
 
-isIoPure :: MonadicOps -> Name -> Bool
+isIoPure, isIoBind, isReaderPure, isReaderBind, isReaderAsk :: MonadicOps -> Name -> Bool
+isRefNew, isRefRead, isRefModify, isStatePure, isStateBind :: MonadicOps -> Name -> Bool
+isStateGet, isStatePut, isMaybePure, isMaybeBind :: MonadicOps -> Name -> Bool
+isEitherPure, isEitherBind :: MonadicOps -> Name -> Bool
 isIoPure MonadicOps{ioPure} = matches ioPure
-
-isIoBind :: MonadicOps -> Name -> Bool
 isIoBind MonadicOps{ioBind} = matches ioBind
-
-isReaderPure :: MonadicOps -> Name -> Bool
 isReaderPure MonadicOps{readerPure} = matches readerPure
-
-isReaderBind :: MonadicOps -> Name -> Bool
 isReaderBind MonadicOps{readerBind} = matches readerBind
-
-isReaderAsk :: MonadicOps -> Name -> Bool
 isReaderAsk MonadicOps{readerAsk} = matches readerAsk
-
-isRefNew :: MonadicOps -> Name -> Bool
 isRefNew MonadicOps{refNew} = matches refNew
-
-isRefRead :: MonadicOps -> Name -> Bool
 isRefRead MonadicOps{refRead} = matches refRead
-
-isRefModify :: MonadicOps -> Name -> Bool
 isRefModify MonadicOps{refModify} = matches refModify
-
-isStatePure :: MonadicOps -> Name -> Bool
 isStatePure MonadicOps{statePure} = matches statePure
-
-isStateBind :: MonadicOps -> Name -> Bool
 isStateBind MonadicOps{stateBind} = matches stateBind
-
-isStateGet :: MonadicOps -> Name -> Bool
 isStateGet MonadicOps{stateGet} = matches stateGet
-
-isStatePut :: MonadicOps -> Name -> Bool
 isStatePut MonadicOps{statePut} = matches statePut
-
-isMaybePure :: MonadicOps -> Name -> Bool
 isMaybePure MonadicOps{maybePure} = matches maybePure
-
-isMaybeBind :: MonadicOps -> Name -> Bool
 isMaybeBind MonadicOps{maybeBind} = matches maybeBind
-
-isEitherPure :: MonadicOps -> Name -> Bool
 isEitherPure MonadicOps{eitherPure} = matches eitherPure
-
-isEitherBind :: MonadicOps -> Name -> Bool
 isEitherBind MonadicOps{eitherBind} = matches eitherBind
 
 isIoPureByType :: Name -> Type -> Bool

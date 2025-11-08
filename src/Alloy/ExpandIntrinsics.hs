@@ -16,7 +16,8 @@ import Alloy.Ir (
     AlloyFunction (AlloyFunction, afBlocks),
     AlloyModule (AlloyModule, amFunctions),
  )
-import Utils.Lists (hardHead)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 
 expandIntrinsicsModule :: AlloyModule -> AlloyModule
 expandIntrinsicsModule m@AlloyModule{amFunctions} =
@@ -42,38 +43,37 @@ expandIntrinsicsOp (OpCall (Direct callee) args) =
         Nothing -> OpCall (Direct callee) args
 expandIntrinsicsOp op = op
 
+data IntrinsicSpec
+    = BinOp ABinOpKind
+    | CmpOp ACmpOp
+    | UnaryOp AUnaryOpKind
+
+intrinsicTable :: Map String IntrinsicSpec
+intrinsicTable =
+    Map.fromList
+        [ ("+", BinOp IAdd)
+        , ("-", BinOp ISub)
+        , ("*", BinOp IMul)
+        , ("/", BinOp IDiv)
+        , ("%", BinOp IMod)
+        , ("&", BinOp And)
+        , ("|", BinOp Or)
+        , ("^", BinOp Xor)
+        , ("==", CmpOp CEq)
+        , ("!=", CmpOp CNe)
+        , ("<", CmpOp CSlt)
+        , ("<=", CmpOp CSle)
+        , (">", CmpOp CSgt)
+        , (">=", CmpOp CSge)
+        , ("neg", UnaryOp Neg)
+        , ("not", UnaryOp Not)
+        ]
+
 expandIntrinsicCall :: String -> [AOperand] -> Maybe AOp
-expandIntrinsicCall callee args
-    | callee == "+" && length args == 2 =
-        Just $ OpBin IAdd (hardHead args) (args !! 1)
-    | callee == "-" && length args == 2 =
-        Just $ OpBin ISub (hardHead args) (args !! 1)
-    | callee == "*" && length args == 2 =
-        Just $ OpBin IMul (hardHead args) (args !! 1)
-    | callee == "/" && length args == 2 =
-        Just $ OpBin IDiv (hardHead args) (args !! 1)
-    | callee == "%" && length args == 2 =
-        Just $ OpBin IMod (hardHead args) (args !! 1)
-    | callee == "&" && length args == 2 =
-        Just $ OpBin And (hardHead args) (args !! 1)
-    | callee == "|" && length args == 2 =
-        Just $ OpBin Or (hardHead args) (args !! 1)
-    | callee == "^" && length args == 2 =
-        Just $ OpBin Xor (hardHead args) (args !! 1)
-    | callee == "==" && length args == 2 =
-        Just $ OpCmp CEq (hardHead args) (args !! 1)
-    | callee == "!=" && length args == 2 =
-        Just $ OpCmp CNe (hardHead args) (args !! 1)
-    | callee == "<" && length args == 2 =
-        Just $ OpCmp CSlt (hardHead args) (args !! 1)
-    | callee == "<=" && length args == 2 =
-        Just $ OpCmp CSle (hardHead args) (args !! 1)
-    | callee == ">" && length args == 2 =
-        Just $ OpCmp CSgt (hardHead args) (args !! 1)
-    | callee == ">=" && length args == 2 =
-        Just $ OpCmp CSge (hardHead args) (args !! 1)
-    | callee == "neg" && length args == 1 =
-        Just $ OpUnary Neg (hardHead args)
-    | callee == "not" && length args == 1 =
-        Just $ OpUnary Not (hardHead args)
-    | otherwise = Nothing
+expandIntrinsicCall callee args = do
+    spec <- Map.lookup callee intrinsicTable
+    case (spec, args) of
+        (BinOp op, [a, b]) -> Just $ OpBin op a b
+        (CmpOp op, [a, b]) -> Just $ OpCmp op a b
+        (UnaryOp op, [a]) -> Just $ OpUnary op a
+        _ -> Nothing
