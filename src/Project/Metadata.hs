@@ -10,6 +10,13 @@ import Lexing.Position (Span (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyConstructor (..), TyVar (..), Type (..), constraintType)
 
+data SerializableConstructorMetadata = SerializableConstructorMetadata
+    { scmTypeName :: String
+    , scmTag :: Int
+    , scmFields :: [SerializableType]
+    }
+    deriving (Show, Eq, Generic)
+
 data ModuleMetadata = ModuleMetadata
     { metaModuleName :: String
     , metaVersion :: String
@@ -65,6 +72,7 @@ data ProjectMetadata = ProjectMetadata
     { pmModuleMetadata :: ModuleMetadata
     , pmPublicSymbols :: [PublicSymbol]
     , pmDependencyGraph :: Map.Map String [String]
+    , pmConstructorMetadata :: Map.Map String SerializableConstructorMetadata
     }
     deriving (Show, Eq, Generic)
 
@@ -97,6 +105,11 @@ instance ToJSON PublicSymbol where
     toEncoding = genericToEncoding defaultOptions
 
 instance FromJSON PublicSymbol
+
+instance ToJSON SerializableConstructorMetadata where
+    toEncoding = genericToEncoding defaultOptions
+
+instance FromJSON SerializableConstructorMetadata
 
 instance ToJSON ProjectMetadata where
     toEncoding = genericToEncoding defaultOptions
@@ -198,8 +211,9 @@ createProjectMetadata ::
     [FilePath] ->
     Map.Map Symbol QualifiedType ->
     Map.Map String [String] ->
+    Map.Map String SerializableConstructorMetadata ->
     ProjectMetadata
-createProjectMetadata modName version sourceFiles publicSyms depGraph =
+createProjectMetadata modName version sourceFiles publicSyms depGraph constructors =
     ProjectMetadata
         { pmModuleMetadata =
             ModuleMetadata
@@ -211,6 +225,7 @@ createProjectMetadata modName version sourceFiles publicSyms depGraph =
                 }
         , pmPublicSymbols = extractPublicSymbols publicSyms
         , pmDependencyGraph = depGraph
+        , pmConstructorMetadata = constructors
         }
 
 projectMetadataPublicSymbols :: ProjectMetadata -> Map.Map Symbol QualifiedType
@@ -221,3 +236,6 @@ projectMetadataPublicSymbols pm =
           )
         | ps <- pmPublicSymbols pm
         ]
+
+projectMetadataConstructors :: ProjectMetadata -> Map.Map String SerializableConstructorMetadata
+projectMetadataConstructors = pmConstructorMetadata

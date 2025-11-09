@@ -1,12 +1,12 @@
 {
   "stdlib": {
-    "source_hash": "9aee6055ed6a276e1e46263db1bdfbba437b7d580b47ab534214a9dff0165fd0",
+    "source_hash": "4faf6d5ecf0fa20ee8a7f1584900cfe7116dee2e8ad998cdb6c132959f151259",
     "dependency_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "artifact_path": "../stdlib/build/stdlib.toria",
     "tarball_path": "../stdlib/build/stdlib.toria",
     "object_paths": [
       "../stdlib/build/objects/objects/stdlib.o"
     ],
-    "build_timestamp": 1761705274
+    "build_timestamp": 1762661891
   }
 }

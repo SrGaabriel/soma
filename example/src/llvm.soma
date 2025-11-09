@@ -1,3 +1,5 @@
+use stdlib.{id, Optional, Some}
+
 intrinsic def {+} :: a -> a -> a
 intrinsic def {==} :: a -> a -> Bool
 intrinsic def println :: a -> IO () where a: Display
@@ -26,12 +28,6 @@ data Maybe a
         
 
 def pureMaybeInt(value: Int) -> Maybe Int = Just value
-
-data Optional
-    = Some
-        value :: Int
-    | Nothing
-        
 
 trait Display a where
     def display :: a -> String
@@ -83,6 +79,7 @@ def areNumEqual(num1: Int, num2: Int) -> Bool = num1 == num2
 def primeNumbers :: [Int] = [2,3,5,7]
 
 def main :: IO Int =
+    let whew = id 5 in
     let primes = primeNumbers in
     let primesPlusOne = map (\x -> 1) primes in
     compose

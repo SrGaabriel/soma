@@ -5,6 +5,7 @@ module Metal.Gen.Metadata where
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Metal.Metadata
+import Project.Metadata (SerializableConstructorMetadata (..), serializableToType, typeToSerializable)
 import Syntax.Tree
 
 extractConstructorMetadata :: Expr -> Map String MetallicConstructorMetadata
@@ -24,3 +25,19 @@ extractConstructorMetadata (ExprRoot decls) =
         ]
     extractFromDataType _ = []
 extractConstructorMetadata _ = Map.empty
+
+constructorMetadataToSerializable :: MetallicConstructorMetadata -> SerializableConstructorMetadata
+constructorMetadataToSerializable (MetallicConstructorMetadata typeName tag fields) =
+    SerializableConstructorMetadata
+        { scmTypeName = typeName
+        , scmTag = tag
+        , scmFields = map typeToSerializable fields
+        }
+
+serializableToConstructorMetadata :: SerializableConstructorMetadata -> MetallicConstructorMetadata
+serializableToConstructorMetadata (SerializableConstructorMetadata typeName tag fields) =
+    MetallicConstructorMetadata
+        { mcmTypeName = typeName
+        , mcmTag = tag
+        , mcmFields = map serializableToType fields
+        }

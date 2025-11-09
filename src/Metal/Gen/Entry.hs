@@ -9,10 +9,11 @@ import Metal.Function (MetallicFunction (..))
 import Metal.Gen.Binding (metallizeBinding)
 import Metal.Gen.Core (
     MetalGen,
+    MetalGenEnv (..),
     MetalGenState (..),
     addTypeClass,
+    defaultMetalEnv,
     defaultMetalState,
-    envWithConstructorsFrom,
     metalFunctions,
     metalInstanceMethods,
     metalTypeClasses,
@@ -21,8 +22,10 @@ import Metal.Gen.Core (
  )
 import Metal.Gen.DataTypes (compileDataTypeDefsFromRoot)
 import Metal.Gen.Extracts (groupInstanceMethods)
+import Metal.Gen.Metadata (extractConstructorMetadata, serializableToConstructorMetadata)
 import Metal.Metadata (MetallicTypeClassMetadata (..))
 import Metal.Module (MetallicModule (..))
+import Project.Metadata (SerializableConstructorMetadata)
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (QualifiedType (..), TyConstructor (..), Type (..))
 
@@ -119,8 +122,11 @@ metallizeTypeClass (ExprTypeClassDef className generics methods _) = do
     extractMethodType _ = Forall [] [] (TConstructor (TypeConstructor "Unknown" undefined))
 metallizeTypeClass _ = pure ()
 
-compileMetalModule :: String -> Expr -> TypeMap -> MetallicModule
-compileMetalModule name root typeMap =
-    let env = envWithConstructorsFrom name typeMap root
+compileMetalModule :: String -> Expr -> TypeMap -> Map.Map String SerializableConstructorMetadata -> MetallicModule
+compileMetalModule name root typeMap externalConstructors =
+    let localConstructors = extractConstructorMetadata root
+        externalConstructorsMetal = Map.map serializableToConstructorMetadata externalConstructors
+        allConstructors = Map.union localConstructors externalConstructorsMetal
+        env = (defaultMetalEnv name typeMap){metalConstructors = allConstructors}
         (metalModule, _) = runMetalGen env defaultMetalState (metallizeModule name root)
     in metalModule

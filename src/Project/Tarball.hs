@@ -18,7 +18,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import qualified Data.Map as Map
 import Data.Maybe (mapMaybe)
-import Project.Metadata (ProjectMetadata, createProjectMetadata)
+import Project.Metadata (ProjectMetadata, SerializableConstructorMetadata, createProjectMetadata)
 import Project.Symbols (Symbol)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeFileName, (</>))
@@ -57,11 +57,12 @@ createProjectTarball ::
     [FilePath] ->
     Map.Map Symbol QualifiedType ->
     Map.Map String [String] ->
+    Map.Map String SerializableConstructorMetadata ->
     [(FilePath, String)] ->
     [(FilePath, String)] ->
     IO ()
-createProjectTarball outPath opts modName version srcFiles publicSyms depGraph objFiles llvmFiles = do
-    let metadata = createProjectMetadata modName version srcFiles publicSyms depGraph
+createProjectTarball outPath opts modName version srcFiles publicSyms depGraph constructors objFiles llvmFiles = do
+    let metadata = createProjectMetadata modName version srcFiles publicSyms depGraph constructors
     let metadataJson = encode metadata
 
     let objFilesBS = [(path, BLC.pack content) | (path, content) <- objFiles]

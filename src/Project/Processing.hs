@@ -29,10 +29,11 @@ import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.ErrorPrinter (printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Metal.Gen.Entry (compileMetalModule)
+import Metal.Gen.Metadata (constructorMetadataToSerializable, extractConstructorMetadata)
 import Metal.Lift (liftLambdas)
 import Metal.MonadNormalize (normalizeModule)
 import Project.Graph (ModuleGraph, buildDependencyGraph)
-import Project.Metadata (projectMetadataPublicSymbols)
+import Project.Metadata (SerializableConstructorMetadata, projectMetadataConstructors, projectMetadataPublicSymbols)
 import Project.Module (ModuleInfo (..))
 import Project.Symbols (Symbol (..))
 import Project.Tarball (TarballContents (..), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
@@ -67,11 +68,11 @@ processModules sorted graph compileOptions = do
     let inputName = fromMaybe "app" $ optionsName compileOptions
     let mOutputFile = optionsOutput compileOptions
     let isLib = optionsLib compileOptions
-    deps <- processExternalDependencies (optionsDeps compileOptions)
+    (deps, externalConstructors) <- processExternalDependencies (optionsDeps compileOptions)
 
     (allModules, fusedTypeMap) <- processAllModules inputName sorted graph Map.empty deps Map.empty
     let fusedAst = createFusedAst allModules
-    let metallic = compileMetalModule inputName fusedAst fusedTypeMap
+    let metallic = compileMetalModule inputName fusedAst fusedTypeMap externalConstructors
     putStrLn $ "Metal module compiled:\n" ++ treeShow metallic
 
     let metallicLifted = liftLambdas metallic
@@ -154,6 +155,9 @@ processModules sorted graph compileOptions = do
             let depGraph = buildDependencyGraph graph
             let sourceFiles = [modulePath info | info <- Map.elems graph]
 
+            let localConstructorsMeta = extractConstructorMetadata fusedAst
+            let serializableConstructors = Map.map constructorMetadataToSerializable localConstructorsMeta
+
             let objFiles = ([(objFile, objContent) | objFileExists])
             createProjectTarball
                 outputFile
@@ -163,6 +167,7 @@ processModules sorted graph compileOptions = do
                 sourceFiles
                 publicSymbols
                 depGraph
+                serializableConstructors
                 objFiles
                 [(llFile, llvmIr)]
 
@@ -244,7 +249,7 @@ createFusedAst allModules =
                 (Map.elems allModules)
     in ExprRoot allExprs
 
-processExternalDependencies :: [(String, String)] -> IO (Map.Map String (Map.Map Symbol QualifiedType))
+processExternalDependencies :: [(String, String)] -> IO (Map.Map String (Map.Map Symbol QualifiedType), Map.Map String SerializableConstructorMetadata)
 processExternalDependencies externals = do
     list <-
         mapM
@@ -254,7 +259,10 @@ processExternalDependencies externals = do
                     Left err -> error $ "Failed to extract external dependency " ++ name ++ ": " ++ err
                     Right (TarballContents{tcMetadata}) -> do
                         let exports = projectMetadataPublicSymbols tcMetadata
-                        pure (name, exports)
+                        let constructors = projectMetadataConstructors tcMetadata
+                        pure (name, exports, constructors)
             )
             externals
-    pure $ Map.fromList list
+    let symbols = Map.fromList [(name, exports) | (name, exports, _) <- list]
+    let constructors = Map.unions [ctors | (_, _, ctors) <- list]
+    pure (symbols, constructors)
