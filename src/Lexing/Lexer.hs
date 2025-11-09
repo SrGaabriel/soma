@@ -88,7 +88,8 @@ tokenize (c : cs) i indent
         _ ->
             let (ops, rest) = span isOperatorChar (c : cs)
             in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
-    | c == '<', ('-':' ':cs') <- cs =
+    | c == '<'
+    , ('-' : ' ' : cs') <- cs =
         addToken (Token TokenLeftArrow "<- " i indent) (tokenize cs' (i + 3) indent)
     | c == '=' = case cs of
         '=' : _rest ->

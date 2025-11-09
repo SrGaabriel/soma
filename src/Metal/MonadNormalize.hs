@@ -1,4 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
+
 {- HLINT ignore "Use newtype instead of data" -}
 
 module Metal.MonadNormalize (

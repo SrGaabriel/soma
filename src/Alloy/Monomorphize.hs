@@ -189,6 +189,19 @@ scanCallsInFunction baseFnMap AlloyFunction{afParams = funParams, afBlocks} =
                                     in (cid + 1, (afName calleeFn, subst, k) : reqs)
                             _ -> (cid + 1, reqs)
     scanOp _ s (OpCall (Indirect _) _) = s
+    scanOp env (cid, reqs) (OpDictCall _dict _idx methodName args) =
+        case Map.lookup methodName baseFnMap of
+            Nothing -> (cid + 1, reqs)
+            Just calleeFn ->
+                case mapM (operandType env) args of
+                    Nothing -> (cid + 1, reqs)
+                    Just argTys ->
+                        case matchCalleeParams (afParams calleeFn) argTys of
+                            Just subst
+                                | not (Map.null subst) && allConcreteSubst subst ->
+                                    let k = instKey calleeFn subst
+                                    in (cid + 1, (afName calleeFn, subst, k) : reqs)
+                            _ -> (cid + 1, reqs)
     scanOp _ s _ = s
 
 specializeFunction :: String -> AlloyFunction -> TySubst -> AlloyFunction

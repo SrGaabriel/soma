@@ -34,8 +34,12 @@ import Llvm.Modules (
 
 compileFunction :: AlloyFunction -> IrGen ()
 compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
-    modName <- asks moduleName
-    let qualifiedName = qualifyWithModule modName afName
+    name <-
+        if afName == "main"
+            then pure afName
+            else do
+                modName <- asks moduleName
+                pure $ qualifyWithModule modName afName
     let opEnv = buildOperandTypeEnv aFn
     let newEnvFn = local (\env -> env{opTypeEnv = opEnv})
     blocks <- mapM (newEnvFn . compileBlock) afBlocks
@@ -43,7 +47,7 @@ compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
     let retType = convertType afReturnType
     let fn =
             LlvmFunction
-                { functionName = qualifiedName
+                { functionName = name
                 , functionBlocks = blocks
                 , functionReturnType = retType
                 , functionParams = params

@@ -27,9 +27,10 @@ metallizeValue (ExprUVar name _) = do
 metallizeValue expr@(ExprVar symbol@(ResolvedSymbol{resolvedSymbolName}) _) = do
     exprType <- getExprType expr
     let var = MVar resolvedSymbolName exprType
-    pure $ if isBinding symbol
-        then MCall var [] exprType
-        else var
+    pure
+        $ if isBinding symbol
+            then MCall var [] exprType
+            else var
 metallizeValue expr@(ExprApp _ _) = do
     let (base, args) = uncurryApp expr
     metallizeApp base args
@@ -134,7 +135,7 @@ isTypeclassMethod symbol = case resolvedSymbolKind symbol of
     TypeClassMethodSymbol _ -> True
     _ -> False
 
-isBinding :: Symbol -> Bool    
+isBinding :: Symbol -> Bool
 isBinding symbol = case resolvedSymbolKind symbol of
     BindingSymbol _ -> True
     _ -> False

@@ -161,9 +161,23 @@ transformMonoFunction ::
 transformMonoFunction moduleName typeClasses _methodToClass classToMethods instanceMap funcSigMap func@AlloyFunction{afParams = params, afBlocks = blocks} =
     let
         initialTypeEnv = Map.fromList params
-        newBlocks = map (transformBlockForCalls moduleName funcSigMap instanceMap typeClasses classToMethods initialTypeEnv) blocks
+        completeTypeEnv = buildCompleteTypeEnv initialTypeEnv blocks
+        newBlocks = map (transformBlockForCalls moduleName funcSigMap instanceMap typeClasses classToMethods completeTypeEnv) blocks
     in
         func{afBlocks = newBlocks}
+
+buildCompleteTypeEnv :: TypeEnv -> [ABlock] -> TypeEnv
+buildCompleteTypeEnv = foldl addBlockVars
+  where
+    addBlockVars :: TypeEnv -> ABlock -> TypeEnv
+    addBlockVars env ABlock{abParams = blkParams, abInstrs = instrs} =
+        let envWithParams = Map.union (Map.fromList blkParams) env
+            envWithInstrs = foldl addInstrVars envWithParams instrs
+        in envWithInstrs
+
+    addInstrVars :: TypeEnv -> AInstr -> TypeEnv
+    addInstrVars env (ILet name ty _) = Map.insert name ty env
+    addInstrVars env (IEffect _) = env
 
 constraintToDictParams :: String -> Constraint -> [(Name, Type)]
 constraintToDictParams moduleName (Constraint constraintType) =
@@ -242,8 +256,9 @@ transformBlockForCalls ::
     TypeEnv ->
     ABlock ->
     ABlock
-transformBlockForCalls moduleName funcSigMap instanceMap typeClasses classToMethods typeEnv blk@ABlock{abInstrs = instrs} =
-    let (newInstrs, _) = transformInstrsForCalls moduleName funcSigMap instanceMap typeClasses classToMethods typeEnv instrs
+transformBlockForCalls moduleName funcSigMap instanceMap typeClasses classToMethods typeEnv blk@ABlock{abParams = blkParams, abInstrs = instrs} =
+    let extendedTypeEnv = Map.union (Map.fromList blkParams) typeEnv
+        (newInstrs, _) = transformInstrsForCalls moduleName funcSigMap instanceMap typeClasses classToMethods extendedTypeEnv instrs
     in blk{abInstrs = newInstrs}
 
 transformInstrsForCalls ::
@@ -292,21 +307,59 @@ transformOpForCalls ::
 transformOpForCalls moduleName funcSigMap instanceMap typeClasses _classToMethods typeEnv op =
     case op of
         OpCall (Direct callee) args ->
-            case Map.lookup callee funcSigMap of
-                Just (paramTypes, constraints)
-                    | not (null constraints) ->
-                        -- This is a call to a polymorphic function
-                        -- Infer actual types from arguments and pass dictionaries
-                        let argTypes = map (inferOperandType typeEnv) args
-                            dictArgs = buildDictArgsForCall moduleName constraints paramTypes argTypes instanceMap typeClasses
-                        in OpCall (Direct callee) (dictArgs ++ args)
-                _ -> op
+            case findMethodClass callee typeClasses of
+                Just className ->
+                    case args of
+                        (firstArg : _) ->
+                            case inferOperandType typeEnv firstArg of
+                                Just argType ->
+                                    case findInstanceForType className callee argType of
+                                        Just instanceFunc ->
+                                            OpCall (Direct instanceFunc) args
+                                        Nothing ->
+                                            op
+                                Nothing -> op
+                        [] -> op
+                Nothing ->
+                    case Map.lookup callee funcSigMap of
+                        Just (paramTypes, constraints)
+                            | not (null constraints) ->
+                                let argTypes = map (inferOperandType typeEnv) args
+                                    dictArgs = buildDictArgsForCall moduleName constraints paramTypes argTypes instanceMap typeClasses
+                                in OpCall (Direct callee) (dictArgs ++ args)
+                        _ -> op
         _ -> op
+  where
+    findMethodClass :: String -> [MetallicTypeClassMetadata] -> Maybe String
+    findMethodClass methodName tcs =
+        case [mtcName tc | tc <- tcs, (mname, _) <- mtcMethods tc, mname == methodName] of
+            (className : _) -> Just className
+            [] -> Nothing
+
+    findInstanceForType :: String -> String -> Type -> Maybe Name
+    findInstanceForType className methodName actualType =
+        case Map.lookup (className, actualType, methodName) instanceMap of
+            Just func -> Just func
+            Nothing ->
+                let typeConstructor = extractTypeConstructor actualType
+                    matches = [(func, instType) | ((cn, instType, mn), func) <- Map.toList instanceMap, cn == className, mn == methodName]
+                    validMatches = [(func, instType) | (func, instType) <- matches, typeConstructorsMatch typeConstructor (extractTypeConstructor instType)]
+                in case validMatches of
+                    ((func, _) : _) -> Just func
+                    [] -> Nothing
+
+    extractTypeConstructor :: Type -> Type
+    extractTypeConstructor (TApp tycon _) = tycon
+    extractTypeConstructor ty = ty
+
+    typeConstructorsMatch :: Type -> Type -> Bool
+    typeConstructorsMatch (TConstructor tc1) (TConstructor tc2) = tcName tc1 == tcName tc2
+    typeConstructorsMatch _ _ = False
 
 inferOperandType :: TypeEnv -> AOperand -> Maybe Type
 inferOperandType typeEnv = \case
     OpVar name -> Map.lookup name typeEnv
-    OpConst _ -> Nothing -- Could extract from const but not needed for dict inference
+    OpConst _ -> Nothing
 
 buildDictArgsForCall ::
     String ->
