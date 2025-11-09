@@ -74,7 +74,6 @@ processSingle options = do
             mapM_ (putStrLn . ("  " ++) . show) cycles
             exitFailure
         Right sorted -> do
-            let isLib = optionsLib options
             _ <- processModules sorted graph options{optionsName = Just name}
             return ()
 
