@@ -10,43 +10,24 @@ module Alloy.DictUtils (
     extractClassName,
     extractTypeArgs,
     extractInstanceType,
-    extractBaseTypeName, 
+    extractBaseTypeName,
     parseInstanceMethodName,
 ) where
 
+import Alloy.Naming (
+    makeDictGlobalName,
+    makeDictParamName,
+    makeDictStructTypeName,
+    makeInstanceMethodName,
+    nameSeparator,
+    sanitizeTypeName,
+ )
 import Typing.Types (
     SkolemVar (..),
     TyConstructor (..),
     TyVar (..),
     Type (..),
  )
-
-sanitizeTypeName :: Type -> String
-sanitizeTypeName = \case
-    TConstructor (TypeConstructor name _) -> name
-    TApp (TConstructor (TypeConstructor "Array" _)) elemTy ->
-        "Array$" ++ sanitizeTypeName elemTy
-    TApp f arg ->
-        sanitizeTypeName f ++ "$" ++ sanitizeTypeName arg
-    TArrow argTy retTy ->
-        "Fn$" ++ sanitizeTypeName argTy ++ "$" ++ sanitizeTypeName retTy
-    TVar (TypeVar tvId _) -> "T" ++ tvId
-    TSkolem (SkolemVar{skId}) -> "S" ++ skId
-    TUnresolved name -> "Unresolved$" ++ name
-
-makeDictParamName :: String -> Type -> String
-makeDictParamName className ty =
-    "dict$" ++ className ++ "$" ++ sanitizeTypeName ty
-
-makeDictGlobalName :: String -> Type -> String
-makeDictGlobalName className ty =
-    "dict$" ++ className ++ "$" ++ sanitizeTypeName ty
-
-makeDictStructTypeName :: String -> String
-makeDictStructTypeName className = className ++ "$Dict"
-
-makeInstanceMethodName :: String -> String -> String
-makeInstanceMethodName methodName typeName = methodName ++ "$" ++ typeName
 
 extractClassName :: Type -> Maybe String
 extractClassName = \case
@@ -76,8 +57,8 @@ extractBaseTypeName = \case
 
 parseInstanceMethodName :: String -> Maybe (String, String)
 parseInstanceMethodName name =
-    case break (== '$') name of
-        (methodName, '$' : typeName)
-            | not (null methodName) && not (null typeName) ->
+    case break (== head nameSeparator) name of
+        (methodName, sep : typeName)
+            | [head nameSeparator] == [sep] && not (null methodName) && not (null typeName) ->
                 Just (methodName, typeName)
         _ -> Nothing

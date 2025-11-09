@@ -40,11 +40,14 @@ import Alloy.Ir (
         afParams,
         afReturnType
     ),
-    AlloyModule (AlloyModule, amFunctions),
+    AlloyModule (AlloyModule, amFunctions, amName),
     Name,
  )
-import Data.Char (isAlphaNum)
-import Data.List (intercalate)
+import Alloy.Naming (
+    makeInstanceMethodName,
+    makeMonomorphicName,
+ )
+
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
@@ -60,18 +63,18 @@ import Typing.Types (
  )
 
 monomorphizeModule :: AlloyModule -> AlloyModule
-monomorphizeModule m@AlloyModule{amFunctions = baseFns} =
-    let baseFnMap = toFnMap baseFns
+monomorphizeModule m@AlloyModule{amName = moduleName, amFunctions = funcs} =
+    let baseFnMap = toFnMap funcs
 
-        (allFns, instCache) = monoFixpoint baseFnMap baseFns Map.empty
+        (allFns, instCache) = monoFixpoint moduleName baseFnMap funcs Map.empty
 
         dedupedFns = dedupByName allFns
-        rwMap = computeRewriteMap baseFnMap instCache dedupedFns
+        rwMap = computeRewriteMap moduleName baseFnMap instCache dedupedFns
         finalFns = map (applyRewrites baseFnMap rwMap) dedupedFns
 
         -- Keep all base functions (even polymorphic ones like display$Array)
         -- Only filter out unused generated clones
-        baseNames = Set.fromList (map afName baseFns)
+        baseNames = Set.fromList (map afName funcs)
         specializedNames = Set.fromList (Map.elems instCache)
 
         -- Keep function if:
@@ -84,10 +87,10 @@ monomorphizeModule m@AlloyModule{amFunctions = baseFns} =
         concretesFns = map eliminateAllTypeVars $ filter isKept finalFns
     in m{amFunctions = concretesFns}
 
-monomorphizeFunction :: Map String AlloyFunction -> AlloyFunction -> (AlloyFunction, [AlloyFunction])
-monomorphizeFunction baseFnMap fn =
-    let (allFns, instCache) = monoFixpoint baseFnMap [fn] Map.empty
-        rwMap = computeRewriteMap baseFnMap instCache allFns
+monomorphizeFunction :: String -> Map String AlloyFunction -> AlloyFunction -> (AlloyFunction, [AlloyFunction])
+monomorphizeFunction moduleName baseFnMap fn =
+    let (allFns, instCache) = monoFixpoint moduleName baseFnMap [fn] Map.empty
+        rwMap = computeRewriteMap moduleName baseFnMap instCache allFns
         rewrittenAll = map (applyRewrites baseFnMap rwMap) allFns
         concreteAll = map eliminateAllTypeVars rewrittenAll
     in case concreteAll of
@@ -113,16 +116,17 @@ dedupByName :: [AlloyFunction] -> [AlloyFunction]
 dedupByName fns = Map.elems (Map.fromList [(afName f, f) | f <- fns])
 
 monoFixpoint ::
+    String -> -- module name
     Map String AlloyFunction -> -- base functions (eligible for specialization)
     [AlloyFunction] -> -- current function set (grows with clones)
     Map InstKey String -> -- instantiation cache: key -> specialized name
     ([AlloyFunction], Map InstKey String)
-monoFixpoint baseFnMap fns0 cache0 =
+monoFixpoint moduleName baseFnMap fns0 cache0 =
     let reqs = scanForRequests baseFnMap fns0
         newReqs = [(b, s, k) | (b, s, k) <- reqs, Map.notMember k cache0]
         newClones =
             [ let base = fromMaybe (unknownBase b) (Map.lookup b baseFnMap)
-                  clone = specializeFunction base s
+                  clone = specializeFunction moduleName base s
               in (k, afName clone, clone)
             | (b, s, k) <- newReqs
             ]
@@ -130,7 +134,7 @@ monoFixpoint baseFnMap fns0 cache0 =
         fns1 = fns0 ++ [c | (_, _, c) <- newClones]
     in if null newClones
         then (fns0, cache0)
-        else monoFixpoint baseFnMap fns1 cache1
+        else monoFixpoint moduleName baseFnMap fns1 cache1
   where
     unknownBase n = error ("Alloy.Monomorphize: unknown base function " ++ n)
 
@@ -187,9 +191,9 @@ scanCallsInFunction baseFnMap AlloyFunction{afParams = funParams, afBlocks} =
     scanOp _ s (OpCall (Indirect _) _) = s
     scanOp _ s _ = s
 
-specializeFunction :: AlloyFunction -> TySubst -> AlloyFunction
-specializeFunction fn subst =
-    let mangledName = mangleInstance fn subst
+specializeFunction :: String -> AlloyFunction -> TySubst -> AlloyFunction
+specializeFunction moduleName fn subst =
+    let mangledName = mangleInstance moduleName fn subst
         params' = [(n, applySubst subst t) | (n, t) <- afParams fn]
         ret' = applySubst subst (afReturnType fn)
         blocks' = map (specializeBlock subst) (afBlocks fn)
@@ -242,11 +246,12 @@ specializeTerm term =
         AUnreachable -> AUnreachable
 
 computeRewriteMap ::
+    String ->
     Map String AlloyFunction -> -- base functions (only these are rewritten)
     Map InstKey String -> -- inst cache (key -> specialized name)
     [AlloyFunction] -> -- functions to scan for calls
     RewriteMap
-computeRewriteMap baseFnMap cache =
+computeRewriteMap _moduleName baseFnMap cache =
     foldl' goFn Map.empty
   where
     goFn :: RewriteMap -> AlloyFunction -> RewriteMap
@@ -348,13 +353,13 @@ applyRewrites baseFnMap rwMap fn@AlloyFunction{afName = callerName, afBlocks, af
                 Just (firstArgType : _rest) ->
                     -- Try to find an instance implementation for the first argument's type
                     let typeName = extractTypeName firstArgType
-                        instanceMethodName = methodName ++ "$" ++ typeName
+                        instanceMethodName = makeInstanceMethodName methodName typeName
                     in if Map.member instanceMethodName baseFnMap
                         then instanceMethodName
                         else
                             -- Try polymorphic version (e.g., display$Array for [a])
                             let baseTypeName = extractBaseTypeName firstArgType
-                                polyInstanceName = methodName ++ "$" ++ baseTypeName
+                                polyInstanceName = makeInstanceMethodName methodName baseTypeName
                             in if Map.member polyInstanceName baseFnMap
                                 then polyInstanceName
                                 else methodName
@@ -488,22 +493,8 @@ instKey fn subst =
         args = [applySubst subst (TVar tv) | tv <- tvs]
     in InstKey (afName fn) args
 
-mangleInstance :: AlloyFunction -> TySubst -> String
-mangleInstance AlloyFunction{afName = base, afParams = ps, afReturnType = ret} subst =
+mangleInstance :: String -> AlloyFunction -> TySubst -> String
+mangleInstance moduleName AlloyFunction{afName = base, afParams = ps, afReturnType = ret} subst =
     let tyvars = extractTyVars (foldr (TArrow . snd) ret ps)
         concreteArgs = [applySubst subst (TVar tv) | tv <- tyvars]
-        enc = intercalate "_" (map encodeType concreteArgs)
-    in if null concreteArgs then base else base ++ "$" ++ enc
-
-encodeType :: Type -> String
-encodeType t =
-    case t of
-        TVar (TypeVar v _) -> "v_" ++ sanitize v
-        TSkolem _ -> "sk"
-        TConstructor c -> sanitize (tcName c)
-        TApp a b -> encodeType a ++ "_" ++ encodeType b
-        TArrow a b -> "fn_" ++ encodeType a ++ "_to_" ++ encodeType b
-        TUnresolved s -> "u_" ++ sanitize s
-  where
-    sanitize :: String -> String
-    sanitize = map (\c -> if isAlphaNum c then c else '_')
+    in makeMonomorphicName moduleName base concreteArgs

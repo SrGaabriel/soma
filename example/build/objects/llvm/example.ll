@@ -1,5 +1,5 @@
-%Display$Dict = type { ptr (ptr)* }
-%Eq$Dict = type { i1 ({i8, i64}, {i8, i64})* }
+%Display$m55344248$Dict = type { ptr (ptr)* }
+%Eq$m55344248$Dict = type { i1 ({i8, i64}, {i8, i64})* }
 
 declare i32 @puts(ptr)
 @str_3=private unnamed_addr constant [16 x i8] c"<unknown shape>\00"
@@ -8,17 +8,17 @@ declare i32 @puts(ptr)
 @str_0=private unnamed_addr constant [7 x i8] c"<list>\00"
 
 
-@dict$Display$Array = internal constant %Display$Dict { ptr (ptr)* @display$Array }
-@dict$Display$Int = internal constant %Display$Dict { ptr (i32)* @display$Int }
-@dict$Display$Optional = internal constant %Display$Dict { ptr ({i8, i64})* @display$Optional }
-@dict$Display$Shape = internal constant %Display$Dict { ptr ({i8, i64})* @display$Shape }
-@dict$Display$String = internal constant %Display$Dict { ptr (ptr)* @display$String }
-@dict$Eq$Optional = internal constant %Eq$Dict { i1 ({i8, i64}, {i8, i64})* @equals$Optional }
+@dict$Display$Array$m55344248 = internal constant %Display$m55344248$Dict { ptr (ptr)* @display$Array }
+@dict$Display$Int$m55344248 = internal constant %Display$m55344248$Dict { ptr (i32)* @display$Int }
+@dict$Display$Optional$m55344248 = internal constant %Display$m55344248$Dict { ptr ({i8, i64})* @display$Optional }
+@dict$Display$Shape$m55344248 = internal constant %Display$m55344248$Dict { ptr ({i8, i64})* @display$Shape }
+@dict$Display$String$m55344248 = internal constant %Display$m55344248$Dict { ptr (ptr)* @display$String }
+@dict$Eq$Optional$m55344248 = internal constant %Eq$m55344248$Dict { i1 ({i8, i64}, {i8, i64})* @equals$Optional }
 
 
 define i1 @totallyGenericEqGen(ptr %dict$Eq$Ta,i32 %left,i32 %right) {
 entry:
-%tmp_reg_39 = getelementptr %Eq$Dict, ptr %dict$Eq$Ta, i32 0, i32 0
+%tmp_reg_39 = getelementptr %Eq$m55344248$Dict, ptr %dict$Eq$Ta, i32 0, i32 0
 %tmp_reg_40 = load i1 (i32, i32)*, ptr %tmp_reg_39
 %tmp_reg_41 = call i1 %tmp_reg_40(i32 %left, i32 %right)
 ret i1 %tmp_reg_41
@@ -26,7 +26,7 @@ ret i1 %tmp_reg_41
 }
 define i1 @testTotallyGenericEqGenOptional({i8, i64} %left,{i8, i64} %right) {
 entry:
-%tmp_reg_38 = call i1 @totallyGenericEqGen(ptr @dict$Eq$Optional, {i8, i64} %left, {i8, i64} %right)
+%tmp_reg_38 = call i1 @totallyGenericEqGen(ptr @dict$Eq$Optional$m55344248, {i8, i64} %left, {i8, i64} %right)
 ret i1 %tmp_reg_38
 
 }

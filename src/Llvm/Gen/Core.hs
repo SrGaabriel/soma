@@ -45,6 +45,7 @@ data IrGenEnv = IrGenEnv
     { currentFunction :: Maybe String
     , currentBlock :: Maybe String
     , currentPackage :: String
+    , moduleName :: String
     , opTypeEnv :: OperandTypeEnv
     , dictMap :: Map.Map (String, Type) String
     }
@@ -74,6 +75,7 @@ namedDefaultEnv name =
         { currentFunction = Nothing
         , currentBlock = Nothing
         , currentPackage = name
+        , moduleName = name
         , opTypeEnv = Map.empty
         , dictMap = Map.empty
         }

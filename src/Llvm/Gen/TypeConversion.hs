@@ -1,5 +1,7 @@
 module Llvm.Gen.TypeConversion where
 
+import Alloy.Naming (nameDictSuffix)
+import Data.List (isSuffixOf)
 import Llvm.Types
 import Typing.Types
 
@@ -43,14 +45,9 @@ convertType (TConstructor (TypeConstructor name _)) =
         "()" -> LlvmVoid
         _ ->
             --
-            if "$Dict" `isSuffixOf` name
+            if nameDictSuffix `isSuffixOf` name
                 then LlvmPointer (LlvmNamedType name)
                 else LlvmAnonymous [LlvmI8, LlvmI64]
-  where
-    isSuffixOf suffix str =
-        let suffixLen = length suffix
-            strLen = length str
-        in strLen >= suffixLen && drop (strLen - suffixLen) str == suffix
 
 sizeOfType :: LlvmType -> Int
 sizeOfType LlvmVoid = 0

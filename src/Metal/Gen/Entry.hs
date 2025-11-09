@@ -3,6 +3,7 @@ module Metal.Gen.Entry where
 import Control.Monad.State (gets, modify)
 import qualified Data.Map as Map
 
+import Alloy.Naming (makeInstanceMethodName, nameArrayPrefix)
 import Inference.Core (TypeMap)
 import Metal.Function (MetallicFunction (..))
 import Metal.Gen.Binding (metallizeBinding)
@@ -68,7 +69,7 @@ metallizeInstance (ExprInstanceDef constraintType methods _) =
     extractFullTypeName :: Type -> Maybe String
     extractFullTypeName (TApp (TConstructor (TypeConstructor "Array" _)) elemTy) =
         case extractFullTypeName elemTy of
-            Just elemName -> Just ("Array$" ++ elemName)
+            Just elemName -> Just (nameArrayPrefix ++ elemName)
             Nothing -> Nothing
     extractFullTypeName (TConstructor (TypeConstructor name _)) = Just name
     extractFullTypeName (TVar _) = Nothing
@@ -83,7 +84,7 @@ metallizeInstance (ExprInstanceDef constraintType methods _) =
     metallizeInstanceMethod :: String -> Expr -> MetalGen ()
     metallizeInstanceMethod typeName bind@(ExprBindingDef name _ _ _ _) = do
         metallizeBinding bind
-        let mangledName = name ++ "$" ++ typeName
+        let mangledName = makeInstanceMethodName name typeName
         funcs <- gets metalFunctions
         case Map.lookup name funcs of
             Just func -> modify $ \s ->

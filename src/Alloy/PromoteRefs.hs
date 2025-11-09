@@ -41,6 +41,7 @@ module Alloy.PromoteRefs (
 ) where
 
 import Alloy.Ir
+import Alloy.Naming (makeRefParamName)
 import Alloy.Uniqueness (FunctionReport (..), LocalUniq (..), Uniqueness (..), analyzeFunction)
 import Data.List (findIndex, sort)
 import Data.Map.Strict (Map)
@@ -384,7 +385,7 @@ succMap blks =
             AUnreachable -> []
 
 paramName :: Name -> BlockName -> Name
-paramName r blk = r ++ "$in$" ++ blk
+paramName = makeRefParamName
 
 trivialRefPeephole :: AlloyFunction -> AlloyFunction
 trivialRefPeephole fn@AlloyFunction{afParams, afBlocks} =

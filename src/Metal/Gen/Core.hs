@@ -17,6 +17,7 @@ import Typing.Types (QualifiedType (Forall), Type)
 data MetalGenEnv = MetalGenEnv
     { metalCurrentScope :: MetalScope
     , metalCurrentPackage :: String
+    , metalModuleName :: String
     , metalTypeMap :: TypeMap
     , metalConstructors :: Map String MetallicConstructorMetadata
     }
@@ -45,6 +46,7 @@ defaultMetalEnv packageName tyMap =
     MetalGenEnv
         { metalCurrentScope = MetalScope "global" Map.empty Nothing
         , metalCurrentPackage = packageName
+        , metalModuleName = packageName
         , metalTypeMap = tyMap
         , metalConstructors = Map.empty
         }

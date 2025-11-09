@@ -25,7 +25,7 @@ compileLlvmModule AlloyModule{amFunctions} = do
 runLlvmCodeGen :: AlloyModule -> LlvmModule
 runLlvmCodeGen alloyModule@AlloyModule{amName = name, amDictionaries = dicts, amFunctions = allFunctions} =
     let
-        (_typeStructDecls, dictGlobals, dictLookupMap) = compileDictionaries dicts allFunctions
+        (_typeStructDecls, dictGlobals, dictLookupMap) = compileDictionaries name dicts allFunctions
 
         env = (namedDefaultEnv name){dictMap = dictLookupMap}
 
@@ -41,7 +41,6 @@ runLlvmCodeGenAndTranscribe alloy@AlloyModule{amDictionaries = dicts, amFunction
     let moduleResult = runLlvmCodeGen alloy
         baseIR = toLlvm moduleResult
 
-        (typeStructDecls, _dictGlobals, _dictMap) = compileDictionaries dicts allFunctions
+        (typeStructDecls, _dictGlobals, _dictMap) = compileDictionaries (amName alloy) dicts allFunctions
         structDeclarations = unlines typeStructDecls
-    in
-       structDeclarations ++ "\n" ++ baseIR
+    in structDeclarations ++ "\n" ++ baseIR

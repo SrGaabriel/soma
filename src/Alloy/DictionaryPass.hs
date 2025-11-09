@@ -7,8 +7,6 @@ module Alloy.DictionaryPass (
 import Alloy.DictUtils (
     extractClassName,
     extractInstanceType,
-    makeDictGlobalName,
-    makeDictParamName,
     parseInstanceMethodName,
  )
 import Alloy.Ir (
@@ -21,6 +19,11 @@ import Alloy.Ir (
     AlloyModule (..),
     DictionaryDef (..),
     Name,
+ )
+import Alloy.Naming (
+    makeDictGlobalName,
+    makeDictParamName,
+    makeDictStructTypeName,
  )
 import Data.List (nub)
 import Data.Map.Strict (Map)
@@ -37,16 +40,16 @@ import Typing.Types (
 type TypeEnv = Map Name Type
 
 transformModuleWithDictionaries :: AlloyModule -> AlloyModule
-transformModuleWithDictionaries m@AlloyModule{amFunctions = funcs, amDictionaries = existingDicts, amTypeClasses = typeClasses} =
+transformModuleWithDictionaries m@AlloyModule{amName = moduleName, amFunctions = funcs, amDictionaries = existingDicts, amTypeClasses = typeClasses} =
     let
         instanceMap = buildInstanceMap funcs typeClasses
         methodToClass = buildMethodToClassMap typeClasses
         classToMethods = buildClassToMethodsMap typeClasses
         funcSigMap = buildFunctionSignatureMap funcs
-        newDictionaries = generateDictionaries typeClasses instanceMap
+        newDictionaries = generateDictionaries moduleName typeClasses instanceMap
         (polyFuncs, monoFuncs) = partitionFunctions funcs
-        transformedPolyFuncs = map (transformPolyFunction typeClasses methodToClass classToMethods) polyFuncs
-        transformedMonoFuncs = map (transformMonoFunction typeClasses methodToClass classToMethods instanceMap funcSigMap) monoFuncs
+        transformedPolyFuncs = map (transformPolyFunction moduleName typeClasses methodToClass classToMethods) polyFuncs
+        transformedMonoFuncs = map (transformMonoFunction moduleName typeClasses methodToClass classToMethods instanceMap funcSigMap) monoFuncs
         allFuncs = transformedMonoFuncs ++ transformedPolyFuncs
         allDicts = existingDicts ++ newDictionaries
     in
@@ -55,12 +58,15 @@ transformModuleWithDictionaries m@AlloyModule{amFunctions = funcs, amDictionarie
 buildInstanceMap :: [AlloyFunction] -> [MetallicTypeClassMetadata] -> Map (String, Type, String) Name
 buildInstanceMap funcs typeClasses =
     Map.fromList
-        [((className, instanceType, methodName), afName func) |
-           func <- funcs,
-           Just (methodName, typeName) <- [parseInstanceMethodName
-                                             (afName func)],
-           let instanceType = parseTypeFromName typeName,
-           Just className <- [findClassForMethod methodName typeClasses]]
+        [ ((className, instanceType, methodName), afName func)
+        | func <- funcs
+        , Just (methodName, typeName) <-
+            [ parseInstanceMethodName
+                (afName func)
+            ]
+        , let instanceType = parseTypeFromName typeName
+        , Just className <- [findClassForMethod methodName typeClasses]
+        ]
   where
     findClassForMethod :: String -> [MetallicTypeClassMetadata] -> Maybe String
     findClassForMethod methodName tcs =
@@ -101,8 +107,8 @@ buildFunctionSignatureMap funcs =
         | func <- funcs
         ]
 
-generateDictionaries :: [MetallicTypeClassMetadata] -> Map (String, Type, String) Name -> [DictionaryDef]
-generateDictionaries typeClasses instanceMap =
+generateDictionaries :: String -> [MetallicTypeClassMetadata] -> Map (String, Type, String) Name -> [DictionaryDef]
+generateDictionaries moduleName typeClasses instanceMap =
     [ DictionaryDef
         { ddClassName = mtcName tc
         , ddForType = instanceType
@@ -128,21 +134,23 @@ partitionFunctions funcs =
     in (polyFuncs, monoFuncs)
 
 transformPolyFunction ::
+    String ->
     [MetallicTypeClassMetadata] ->
     Map String String ->
     Map String [(Int, String)] ->
     AlloyFunction ->
     AlloyFunction
-transformPolyFunction typeClasses methodToClass classToMethods func@AlloyFunction{afConstraints = constraints, afParams = params, afBlocks = blocks} =
+transformPolyFunction moduleName typeClasses methodToClass classToMethods func@AlloyFunction{afConstraints = constraints, afParams = params, afBlocks = blocks} =
     let
-        dictParams = concatMap constraintToDictParams constraints
-        dictEnv = buildDictEnv constraints typeClasses classToMethods dictParams
+        dictParams = concatMap (constraintToDictParams moduleName) constraints
+        dictEnv = buildDictEnv moduleName constraints typeClasses classToMethods dictParams
         initialTypeEnv = Map.fromList (dictParams ++ params)
         newBlocks = map (transformBlock dictEnv methodToClass initialTypeEnv) blocks
     in
         func{afParams = dictParams ++ params, afBlocks = newBlocks}
 
 transformMonoFunction ::
+    String ->
     [MetallicTypeClassMetadata] ->
     Map String String ->
     Map String [(Int, String)] ->
@@ -150,39 +158,40 @@ transformMonoFunction ::
     Map Name ([Type], [Constraint]) ->
     AlloyFunction ->
     AlloyFunction
-transformMonoFunction typeClasses _methodToClass classToMethods instanceMap funcSigMap func@AlloyFunction{afParams = params, afBlocks = blocks} =
+transformMonoFunction moduleName typeClasses methodToClass classToMethods instanceMap funcSigMap func@AlloyFunction{afParams = params, afBlocks = blocks} =
     let
         initialTypeEnv = Map.fromList params
-        newBlocks = map (transformBlockForCalls funcSigMap instanceMap typeClasses classToMethods initialTypeEnv) blocks
+        newBlocks = map (transformBlockForCalls moduleName funcSigMap instanceMap typeClasses classToMethods initialTypeEnv) blocks
     in
         func{afBlocks = newBlocks}
 
-constraintToDictParams :: Constraint -> [(Name, Type)]
-constraintToDictParams (Constraint constraintType) =
+constraintToDictParams :: String -> Constraint -> [(Name, Type)]
+constraintToDictParams moduleName (Constraint constraintType) =
     case extractClassName constraintType of
         Just className ->
             case extractInstanceType constraintType of
                 Just instanceTy ->
                     let paramName = makeDictParamName className instanceTy
-                        paramType = TConstructor (TypeConstructor (className ++ "$Dict") KindStar)
+                        paramType = TConstructor (TypeConstructor (makeDictStructTypeName moduleName className) KindStar)
                     in [(paramName, paramType)]
                 Nothing -> []
         Nothing -> []
 
 buildDictEnv ::
+    String ->
     [Constraint] ->
     [MetallicTypeClassMetadata] ->
     Map String [(Int, String)] ->
     [(Name, Type)] ->
     Map String (Name, Int)
-buildDictEnv constraints _typeClasses classToMethods dictParams =
+buildDictEnv moduleName constraints typeClasses classToMethods dictParams =
     Map.fromList
         [ (methodName, (dictParamName, methodIdx))
         | Constraint cty <- constraints
         , Just className <- [extractClassName cty]
         , Just instanceTy <- [extractInstanceType cty]
         , let dictParamName = makeDictParamName className instanceTy
-        , let dictParamType = TConstructor (TypeConstructor (className ++ "$Dict") KindStar)
+        , let dictParamType = TConstructor (TypeConstructor (makeDictStructTypeName moduleName className) KindStar)
         , (dictParamName, dictParamType) `elem` dictParams
         , (methodIdx, methodName) <- fromMaybe [] (Map.lookup className classToMethods)
         ]
@@ -225,6 +234,7 @@ transformOp dictEnv _methodToClass op =
         _ -> op
 
 transformBlockForCalls ::
+    String ->
     Map Name ([Type], [Constraint]) ->
     Map (String, Type, String) Name ->
     [MetallicTypeClassMetadata] ->
@@ -232,14 +242,12 @@ transformBlockForCalls ::
     TypeEnv ->
     ABlock ->
     ABlock
-transformBlockForCalls funcSigMap instanceMap typeClasses classToMethods typeEnv block@ABlock{abInstrs = instrs, abParams = blockParams} =
-    let
-        extendedTypeEnv = Map.union (Map.fromList blockParams) typeEnv
-        (newInstrs, _finalTypeEnv) = transformInstrsForCalls funcSigMap instanceMap typeClasses classToMethods extendedTypeEnv instrs
-    in
-        block{abInstrs = newInstrs}
+transformBlockForCalls moduleName funcSigMap instanceMap typeClasses classToMethods typeEnv blk@ABlock{abInstrs = instrs} =
+    let (newInstrs, _) = transformInstrsForCalls moduleName funcSigMap instanceMap typeClasses classToMethods typeEnv instrs
+    in blk{abInstrs = newInstrs}
 
 transformInstrsForCalls ::
+    String ->
     Map Name ([Type], [Constraint]) ->
     Map (String, Type, String) Name ->
     [MetallicTypeClassMetadata] ->
@@ -247,14 +255,16 @@ transformInstrsForCalls ::
     TypeEnv ->
     [AInstr] ->
     ([AInstr], TypeEnv)
-transformInstrsForCalls funcSigMap instanceMap typeClasses classToMethods typeEnv = foldl
+transformInstrsForCalls moduleName funcSigMap instanceMap typeClasses classToMethods typeEnv =
+    foldl
         ( \(accInstrs, accEnv) instr ->
-            let (newInstr, newEnv) = transformInstrForCalls funcSigMap instanceMap typeClasses classToMethods accEnv instr
+            let (newInstr, newEnv) = transformInstrForCalls moduleName funcSigMap instanceMap typeClasses classToMethods accEnv instr
             in (accInstrs ++ [newInstr], newEnv)
         )
         ([], typeEnv)
 
 transformInstrForCalls ::
+    String ->
     Map Name ([Type], [Constraint]) ->
     Map (String, Type, String) Name ->
     [MetallicTypeClassMetadata] ->
@@ -262,15 +272,16 @@ transformInstrForCalls ::
     TypeEnv ->
     AInstr ->
     (AInstr, TypeEnv)
-transformInstrForCalls funcSigMap instanceMap typeClasses classToMethods typeEnv instr =
+transformInstrForCalls moduleName funcSigMap instanceMap typeClasses classToMethods typeEnv instr =
     case instr of
         ILet name ty op ->
-            let newOp = transformOpForCalls funcSigMap instanceMap typeClasses classToMethods typeEnv op
+            let newOp = transformOpForCalls moduleName funcSigMap instanceMap typeClasses classToMethods typeEnv op
                 newTypeEnv = Map.insert name ty typeEnv
             in (ILet name ty newOp, newTypeEnv)
         _ -> (instr, typeEnv)
 
 transformOpForCalls ::
+    String ->
     Map Name ([Type], [Constraint]) ->
     Map (String, Type, String) Name ->
     [MetallicTypeClassMetadata] ->
@@ -278,7 +289,7 @@ transformOpForCalls ::
     TypeEnv ->
     AOp ->
     AOp
-transformOpForCalls funcSigMap instanceMap typeClasses _classToMethods typeEnv op =
+transformOpForCalls moduleName funcSigMap instanceMap typeClasses _classToMethods typeEnv op =
     case op of
         OpCall (Direct callee) args ->
             case Map.lookup callee funcSigMap of
@@ -287,7 +298,7 @@ transformOpForCalls funcSigMap instanceMap typeClasses _classToMethods typeEnv o
                         -- This is a call to a polymorphic function
                         -- Infer actual types from arguments and pass dictionaries
                         let argTypes = map (inferOperandType typeEnv) args
-                            dictArgs = buildDictArgsForCall constraints paramTypes argTypes instanceMap typeClasses
+                            dictArgs = buildDictArgsForCall moduleName constraints paramTypes argTypes instanceMap typeClasses
                         in OpCall (Direct callee) (dictArgs ++ args)
                 _ -> op
         _ -> op
@@ -298,13 +309,14 @@ inferOperandType typeEnv = \case
     OpConst _ -> Nothing -- Could extract from const but not needed for dict inference
 
 buildDictArgsForCall ::
+    String ->
     [Constraint] ->
     [Type] ->
     [Maybe Type] ->
     Map (String, Type, String) Name ->
     [MetallicTypeClassMetadata] ->
     [AOperand]
-buildDictArgsForCall constraints paramTypes argTypes _instanceMap _typeClasses =
+buildDictArgsForCall moduleName constraints paramTypes argTypes _instanceMap _typeClasses =
     mapMaybe buildDictArg constraints
   where
     buildDictArg :: Constraint -> Maybe AOperand
@@ -312,7 +324,7 @@ buildDictArgsForCall constraints paramTypes argTypes _instanceMap _typeClasses =
         className <- extractClassName constraintType
         constraintInstanceType <- extractInstanceType constraintType
         concreteType <- resolveConstraintType constraintInstanceType paramTypes argTypes
-        let dictGlobalName = makeDictGlobalName className concreteType
+        let dictGlobalName = makeDictGlobalName moduleName className concreteType
         return $ OpVar dictGlobalName
 
     resolveConstraintType :: Type -> [Type] -> [Maybe Type] -> Maybe Type

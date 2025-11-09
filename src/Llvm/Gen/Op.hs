@@ -5,6 +5,7 @@ module Llvm.Gen.Op (
 ) where
 
 import Alloy.Ir
+import Alloy.Naming (makeDictStructTypeName, qualifyWithModule)
 import Control.Monad (foldM)
 import Control.Monad.Reader (asks)
 import Control.Monad.Writer.Class (MonadWriter (tell))
@@ -85,9 +86,10 @@ compileOp (OpCall callable aArgs) opType = do
             compileIntrinsic fnName aArgs opType
         _ -> do
             -- Regular function call
+            modName <- asks moduleName
             args <- mapM compileOperand aArgs
             fn <- case callable of
-                Direct fnName -> pure $ LlvmGlobal opType fnName
+                Direct fnName -> pure $ LlvmGlobal opType (qualifyWithModule modName fnName)
                 Indirect operand -> compileOperand operand
             if opType == LlvmVoid
                 then do
@@ -152,9 +154,10 @@ compileOp (OpAllocHeap ty) resultTy = do
     saveTmp (LlvmAlloca llvmTy Nothing) resultTy
 compileOp (OpGetDict className ty) _resultTy = do
     dMap <- asks dictMap
+    modName <- asks moduleName
     case Map.lookup (className, ty) dMap of
         Just dictGlobalName -> do
-            let dictStructType = LT.LlvmNamed (className ++ "$Dict")
+            let dictStructType = LT.LlvmNamed (makeDictStructTypeName modName className)
             pure $ LlvmGlobal (LT.LlvmPtr dictStructType) dictGlobalName
         Nothing -> error $ "Dictionary not found for class " ++ className ++ " and type " ++ show ty
 compileOp (OpDictCall dict methodIndex _methodName args) resultTy = do

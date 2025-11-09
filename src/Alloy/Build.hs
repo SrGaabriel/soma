@@ -18,6 +18,8 @@ module Alloy.Build (
 
 import Control.Monad (when)
 import Control.Monad.State.Strict
+
+import Alloy.Naming (nameBlockPrefix, nameTmpPrefix)
 import Typing.Types (Constraint, Type)
 
 import Alloy.Ir
@@ -206,13 +208,13 @@ freshName :: AlloyBuilder Name
 freshName = do
     st@BuildState{..} <- get
     put st{bsNextTmp = bsNextTmp + 1}
-    pure $ "t" ++ show bsNextTmp
+    pure $ nameTmpPrefix ++ show bsNextTmp
 
 freshBlockName :: AlloyBuilder BlockName
 freshBlockName = do
     st@BuildState{..} <- get
     put st{bsNextBlk = bsNextBlk + 1}
-    pure $ "block" ++ show bsNextBlk
+    pure $ nameBlockPrefix ++ show bsNextBlk
 
 -- | Helper to require an open function, throwing a descriptive error if none
 requireOpenFunction :: String -> AlloyBuilder FunBuild

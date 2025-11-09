@@ -4,6 +4,11 @@ module Llvm.Gen.Dictionary (
 ) where
 
 import Alloy.Ir (AlloyFunction (..), DictionaryDef (..), Name)
+import Alloy.Naming (
+    makeDictGlobalName,
+    makeDictStructTypeName,
+    qualifyWithModule,
+ )
 import Data.List (intercalate, nub)
 import qualified Data.Map.Strict as Map
 import Llvm.Gen.TypeConversion (convertType)
@@ -11,58 +16,52 @@ import Llvm.Ir (IR (toLlvm))
 import Llvm.Modules (LlvmGlobal (..))
 import Llvm.Types (LlvmType (..))
 import qualified Llvm.Types as LT
-import Typing.Types (SkolemVar (SkolemVar, skId), TyConstructor (TypeConstructor, tcName), TyVar (TypeVar, tvId), Type (..))
+import Typing.Types (Type)
 
 compileDictionaries ::
+    String ->
     [DictionaryDef] ->
     [AlloyFunction] ->
     ([String], [LlvmGlobal], Map.Map (String, Type) String)
-compileDictionaries dicts allFunctions =
+compileDictionaries moduleName dicts allFunctions =
     let
-        typeClassStructDecls = generateTypeClassStructDeclarations dicts allFunctions
-        (dictGlobals, dictMapEntries) = unzip [generateDictionaryGlobal dict allFunctions | dict <- dicts]
+        typeClassStructDecls = generateTypeClassStructDeclarations moduleName dicts allFunctions
+        (dictGlobals, dictMapEntries) = unzip [generateDictionaryGlobal moduleName dict | dict <- dicts]
         dictLookupMap = Map.fromList dictMapEntries
     in
         (typeClassStructDecls, dictGlobals, dictLookupMap)
 
-generateTypeClassStructDeclarations :: [DictionaryDef] -> [AlloyFunction] -> [String]
-generateTypeClassStructDeclarations dicts allFunctions =
+generateTypeClassStructDeclarations :: String -> [DictionaryDef] -> [AlloyFunction] -> [String]
+generateTypeClassStructDeclarations moduleName dicts allFunctions =
     let
         uniqueClasses = nub [ddClassName dict | dict <- dicts]
         classToDict = Map.fromList [(ddClassName dict, dict) | dict <- dicts]
     in
-        [generateTypeClassStructDecl className (classToDict Map.! className) allFunctions | className <- uniqueClasses]
+        [generateTypeClassStructDecl moduleName className (classToDict Map.! className) | className <- uniqueClasses]
 
-generateTypeClassStructDecl :: String -> DictionaryDef -> [AlloyFunction] -> String
-generateTypeClassStructDecl className dict allFunctions =
+generateTypeClassStructDecl :: String -> String -> DictionaryDef -> String
+generateTypeClassStructDecl moduleName className dict =
     let
-        structName = className ++ "$Dict"
+        structName = makeDictStructTypeName moduleName className
         methods = ddMethods dict
-        fieldTypes = [getFunctionPointerType methodImpl allFunctions | (_methodName, methodImpl) <- methods]
+        fieldTypes = [getFunctionPointerType methodImpl | (_methodName, methodImpl) <- methods]
         fieldsStr = intercalate ", " (map toLlvm fieldTypes)
     in
         "%" ++ structName ++ " = type { " ++ fieldsStr ++ " }"
 
-getFunctionPointerType :: Name -> [AlloyFunction] -> LlvmType
-getFunctionPointerType fnName allFunctions =
-    case [f | f <- allFunctions, afName f == fnName] of
-        (AlloyFunction{afParams = params, afReturnType = retType} : _) ->
-            let paramTypes = map (convertType . snd) params
-                llvmRetType = convertType retType
-            in LT.LlvmFunctionPtr llvmRetType paramTypes
-        [] ->
-            -- fallback: generic function pointer (i8*)
-            LT.LlvmPtr LlvmI8
+getFunctionPointerType :: Name -> LlvmType
+getFunctionPointerType _fnName =
+    LT.LlvmPtr LlvmI8
 
-generateDictionaryGlobal :: DictionaryDef -> [AlloyFunction] -> (LlvmGlobal, ((String, Type), String))
-generateDictionaryGlobal DictionaryDef{ddClassName = className, ddForType = forType, ddMethods = methods} allFunctions =
+generateDictionaryGlobal :: String -> DictionaryDef -> (LlvmGlobal, ((String, Type), String))
+generateDictionaryGlobal moduleName DictionaryDef{ddClassName = className, ddForType = forType, ddMethods = methods} =
     let
-        dictName = "dict$" ++ className ++ "$" ++ sanitizeType forType
-        structTypeName = className ++ "$Dict"
+        dictName = makeDictGlobalName moduleName className forType
+        structTypeName = makeDictStructTypeName moduleName className
         structType = LT.LlvmNamed structTypeName
 
         methodInitializers =
-            [ getFunctionPointerInitializer methodImpl allFunctions
+            [ getFunctionPointerInitializer moduleName methodImpl
             | (_methodName, methodImpl) <- methods
             ]
 
@@ -84,26 +83,10 @@ generateDictionaryGlobal DictionaryDef{ddClassName = className, ddForType = forT
     in
         (globalDef, lookupKey)
 
-getFunctionPointerInitializer :: Name -> [AlloyFunction] -> String
-getFunctionPointerInitializer fnName allFunctions =
-    case [f | f <- allFunctions, afName f == fnName] of
-        (AlloyFunction{afParams = params, afReturnType = retType} : _) ->
-            let paramTypes = map (convertType . snd) params
-                llvmRetType = convertType retType
-                paramTypesStr = intercalate ", " (map toLlvm paramTypes)
-                signature = toLlvm llvmRetType ++ " (" ++ paramTypesStr ++ ")"
-            in signature ++ "* @" ++ fnName
-        [] ->
-            "i8* null"
-
-sanitizeType :: Type -> String
-sanitizeType (TConstructor (TypeConstructor{tcName = name})) = name
-sanitizeType (TApp (TConstructor (TypeConstructor{tcName = "Array"})) elemTy) =
-    "Array$" ++ sanitizeType elemTy
-sanitizeType (TApp f arg) = sanitizeType f ++ "$" ++ sanitizeType arg
-sanitizeType (TVar (TypeVar{tvId = name})) = "T" ++ name
-sanitizeType (TSkolem (SkolemVar{skId = name})) = "S" ++ name
-sanitizeType _ = "Unknown"
+getFunctionPointerInitializer :: String -> Name -> String
+getFunctionPointerInitializer moduleName fnName =
+    let qualifiedName = qualifyWithModule moduleName fnName
+    in "i8* @" ++ qualifiedName
 
 getDictionaryGlobalName :: String -> Type -> Map.Map (String, Type) String -> Maybe String
 getDictionaryGlobalName className instanceType = Map.lookup (className, instanceType)

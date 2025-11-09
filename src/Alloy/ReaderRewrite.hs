@@ -28,6 +28,7 @@ module Alloy.ReaderRewrite (
 ) where
 
 import Alloy.Ir
+import Alloy.Naming (nameEnvParam)
 import Alloy.Subst (Subst, substEffect, substOp, substTerminator)
 
 import Data.Map.Strict (Map)
@@ -39,13 +40,14 @@ data ReaderConfig = ReaderConfig
     , readerAskNames :: [Name]
     , envParamName :: Name
     }
+    deriving (Show, Eq)
 
 defaultReaderConfig :: ReaderConfig
 defaultReaderConfig =
     ReaderConfig
         { readerTypeNames = ["Reader"]
         , readerAskNames = ["Reader.ask", "Reader$ask"]
-        , envParamName = "$env"
+        , envParamName = nameEnvParam
         }
 
 readerRewriteModule :: AlloyModule -> AlloyModule

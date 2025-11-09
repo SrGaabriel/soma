@@ -12,11 +12,12 @@ import Alloy.Ir (
         afReturnType
     ),
  )
-import Control.Monad.Reader (MonadReader (local))
+import Alloy.Naming (qualifyWithModule)
+import Control.Monad.Reader (MonadReader (local), asks)
 import Control.Monad.State (modify)
 import Control.Monad.Writer (listen)
 import Data.Bifunctor (Bifunctor (second))
-import Llvm.Gen.Core (IrGen, IrGenEnv (opTypeEnv), IrGenState (irFunctions))
+import Llvm.Gen.Core (IrGen, IrGenEnv (moduleName, opTypeEnv), IrGenState (irFunctions))
 import Llvm.Gen.Instr (compileInstr, compileTerminator)
 import Llvm.Gen.OperandPass (buildOperandTypeEnv)
 import Llvm.Gen.TypeConversion (convertType)
@@ -33,6 +34,8 @@ import Llvm.Modules (
 
 compileFunction :: AlloyFunction -> IrGen ()
 compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
+    modName <- asks moduleName
+    let qualifiedName = qualifyWithModule modName afName
     let opEnv = buildOperandTypeEnv aFn
     let newEnvFn = local (\env -> env{opTypeEnv = opEnv})
     blocks <- mapM (newEnvFn . compileBlock) afBlocks
@@ -40,7 +43,7 @@ compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
     let retType = convertType afReturnType
     let fn =
             LlvmFunction
-                { functionName = afName
+                { functionName = qualifiedName
                 , functionBlocks = blocks
                 , functionReturnType = retType
                 , functionParams = params

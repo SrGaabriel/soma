@@ -4,6 +4,7 @@
 
 module Inference.Gen where
 
+import Alloy.Naming (nameSkolemPrefix, nameTmpPrefix)
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
@@ -84,13 +85,13 @@ freshTyVar :: Kind -> GenM TyVar
 freshTyVar k = do
     n <- gets gsCounter
     modify $ \s -> s{gsCounter = n + 1}
-    return $ TypeVar ("t" ++ show n) k
+    return $ TypeVar (nameTmpPrefix ++ show n) k
 
 freshSkolemVar :: String -> Kind -> GenM SkolemVar
 freshSkolemVar name k = do
     n <- gets gsCounter
     modify $ \s -> s{gsCounter = n + 1}
-    return $ SkolemVar ("s" ++ show n) k n name Rigid
+    return $ SkolemVar (nameSkolemPrefix ++ show n) k n name Rigid
 
 recordType :: Expr -> Type -> GenM ()
 recordType expr ty = modify $ \s -> s{gsTypeMap = Map.insert expr ty (gsTypeMap s)}

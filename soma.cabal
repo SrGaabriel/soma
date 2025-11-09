@@ -30,6 +30,7 @@ library
     Alloy.Lower
     Alloy.MonadicInline
     Alloy.Monomorphize
+    Alloy.Naming
     Alloy.PromoteRefs
     Alloy.ReaderRewrite
     Alloy.Simplify
