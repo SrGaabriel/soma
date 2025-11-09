@@ -11,7 +11,6 @@ import Alloy.Naming (
  )
 import Data.List (intercalate, nub)
 import qualified Data.Map.Strict as Map
-import Llvm.Gen.TypeConversion (convertType)
 import Llvm.Ir (IR (toLlvm))
 import Llvm.Modules (LlvmGlobal (..))
 import Llvm.Types (LlvmType (..))
@@ -32,7 +31,7 @@ compileDictionaries moduleName dicts allFunctions =
         (typeClassStructDecls, dictGlobals, dictLookupMap)
 
 generateTypeClassStructDeclarations :: String -> [DictionaryDef] -> [AlloyFunction] -> [String]
-generateTypeClassStructDeclarations moduleName dicts allFunctions =
+generateTypeClassStructDeclarations moduleName dicts _allFunctions =
     let
         uniqueClasses = nub [ddClassName dict | dict <- dicts]
         classToDict = Map.fromList [(ddClassName dict, dict) | dict <- dicts]

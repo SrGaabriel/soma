@@ -1,5 +1,5 @@
-%Display$m55344248$Dict = type { ptr (ptr)* }
-%Eq$m55344248$Dict = type { i1 ({i8, i64}, {i8, i64})* }
+%Display$m55344248$Dict = type { ptr }
+%Eq$m55344248$Dict = type { ptr }
 
 declare i32 @puts(ptr)
 @str_3=private unnamed_addr constant [16 x i8] c"<unknown shape>\00"
@@ -8,15 +8,15 @@ declare i32 @puts(ptr)
 @str_0=private unnamed_addr constant [7 x i8] c"<list>\00"
 
 
-@dict$Display$Array$m55344248 = internal constant %Display$m55344248$Dict { ptr (ptr)* @display$Array }
-@dict$Display$Int$m55344248 = internal constant %Display$m55344248$Dict { ptr (i32)* @display$Int }
-@dict$Display$Optional$m55344248 = internal constant %Display$m55344248$Dict { ptr ({i8, i64})* @display$Optional }
-@dict$Display$Shape$m55344248 = internal constant %Display$m55344248$Dict { ptr ({i8, i64})* @display$Shape }
-@dict$Display$String$m55344248 = internal constant %Display$m55344248$Dict { ptr (ptr)* @display$String }
-@dict$Eq$Optional$m55344248 = internal constant %Eq$m55344248$Dict { i1 ({i8, i64}, {i8, i64})* @equals$Optional }
+@dict$Display$Array$m55344248 = internal constant %Display$m55344248$Dict { i8* @display$Array$m55344248 }
+@dict$Display$Int$m55344248 = internal constant %Display$m55344248$Dict { i8* @display$Int$m55344248 }
+@dict$Display$Optional$m55344248 = internal constant %Display$m55344248$Dict { i8* @display$Optional$m55344248 }
+@dict$Display$Shape$m55344248 = internal constant %Display$m55344248$Dict { i8* @display$Shape$m55344248 }
+@dict$Display$String$m55344248 = internal constant %Display$m55344248$Dict { i8* @display$String$m55344248 }
+@dict$Eq$Optional$m55344248 = internal constant %Eq$m55344248$Dict { i8* @equals$Optional$m55344248 }
 
 
-define i1 @totallyGenericEqGen(ptr %dict$Eq$Ta,i32 %left,i32 %right) {
+define i1 @totallyGenericEqGen$m55344248(ptr %dict$Eq$Ta,i32 %left,i32 %right) {
 entry:
 %tmp_reg_39 = getelementptr %Eq$m55344248$Dict, ptr %dict$Eq$Ta, i32 0, i32 0
 %tmp_reg_40 = load i1 (i32, i32)*, ptr %tmp_reg_39
@@ -24,41 +24,41 @@ entry:
 ret i1 %tmp_reg_41
 
 }
-define i1 @testTotallyGenericEqGenOptional({i8, i64} %left,{i8, i64} %right) {
+define i1 @testTotallyGenericEqGenOptional$m55344248({i8, i64} %left,{i8, i64} %right) {
 entry:
-%tmp_reg_38 = call i1 @totallyGenericEqGen(ptr @dict$Eq$Optional$m55344248, {i8, i64} %left, {i8, i64} %right)
+%tmp_reg_38 = call i1 @totallyGenericEqGen$m55344248(ptr @dict$Eq$Optional$m55344248, {i8, i64} %left, {i8, i64} %right)
 ret i1 %tmp_reg_38
 
 }
-define i1 @testTotallyGenericEqGen(ptr %dict$Eq$Ta,i32 %left,i32 %right) {
+define i1 @testTotallyGenericEqGen$m55344248(ptr %dict$Eq$Ta,i32 %left,i32 %right) {
 entry:
-%tmp_reg_37 = call i1 @totallyGenericEqGen(i32 %left, i32 %right)
+%tmp_reg_37 = call i1 @totallyGenericEqGen$m55344248(i32 %left, i32 %right)
 ret i1 %tmp_reg_37
 
 }
-define i32 @testSum(i32 %x,i32 %y) {
+define i32 @testSum$m55344248(i32 %x,i32 %y) {
 entry:
 %tmp_reg_36 = add i32 %x, %y
 ret i32 %tmp_reg_36
 
 }
-define i1 @testOptionalEqGen() {
+define i1 @testOptionalEqGen$m55344248() {
 entry:
 %tmp_reg_31 = insertvalue {i8, i64} undef, i8 0, 0
 %tmp_reg_32 = zext i32 5 to i64
 %tmp_reg_33 = insertvalue {i8, i64} %tmp_reg_31, i64 %tmp_reg_32, 1
-%tmp_reg_34 = call {i8, i64} @pureOptionalInt(i32 5)
-%tmp_reg_35 = call i1 @equals$Optional({i8, i64} %tmp_reg_33, {i8, i64} %tmp_reg_34)
+%tmp_reg_34 = call {i8, i64} @pureOptionalInt$m55344248(i32 5)
+%tmp_reg_35 = call i1 @equals$Optional$m55344248({i8, i64} %tmp_reg_33, {i8, i64} %tmp_reg_34)
 ret i1 %tmp_reg_35
 
 }
-define i1 @testOptionalEq({i8, i64} %x,{i8, i64} %y) {
+define i1 @testOptionalEq$m55344248({i8, i64} %x,{i8, i64} %y) {
 entry:
-%tmp_reg_30 = call i1 @equals$Optional({i8, i64} %x, {i8, i64} %y)
+%tmp_reg_30 = call i1 @equals$Optional$m55344248({i8, i64} %x, {i8, i64} %y)
 ret i1 %tmp_reg_30
 
 }
-define {i8, i64} @pureOptionalInt(i32 %value) {
+define {i8, i64} @pureOptionalInt$m55344248(i32 %value) {
 entry:
 %tmp_reg_27 = insertvalue {i8, i64} undef, i8 0, 0
 %tmp_reg_28 = zext i32 %value to i64
@@ -66,7 +66,7 @@ entry:
 ret {i8, i64} %tmp_reg_29
 
 }
-define {i8, i64} @pureMaybeInt(i32 %value) {
+define {i8, i64} @pureMaybeInt$m55344248(i32 %value) {
 entry:
 %tmp_reg_24 = insertvalue {i8, i64} undef, i8 0, 0
 %tmp_reg_25 = zext i32 %value to i64
@@ -74,7 +74,7 @@ entry:
 ret {i8, i64} %tmp_reg_26
 
 }
-define ptr @primeNumbers() {
+define ptr @primeNumbers$m55344248() {
 entry:
 %tmp_reg_19 = alloca [4 x i32]
 %tmp_reg_20 = getelementptr inbounds i32, ptr %tmp_reg_19, i32 0
@@ -88,7 +88,7 @@ store i32 7, ptr %tmp_reg_23
 ret ptr %tmp_reg_19
 
 }
-define void @main() {
+define void @main$m55344248() {
 entry:
 %tmp_reg_8 = alloca [4 x i32]
 %tmp_reg_9 = alloca i32
@@ -109,17 +109,17 @@ store i32 %tmp_reg_15, ptr %tmp_reg_16
 store i32 %tmp_reg_17, ptr %tmp_reg_9
 br label %map_cond_10
 map_end_12:
-%tmp_reg_18 = call ptr @display$Array(ptr %tmp_reg_8)
+%tmp_reg_18 = call ptr @display$Array$m55344248(ptr %tmp_reg_8)
 call i32 @puts(ptr %tmp_reg_18)
 ret void
 
 }
-define i32 @lambda$0(i32 %x) {
+define i32 @lambda$0$m55344248(i32 %x) {
 entry:
 ret i32 1
 
 }
-define i1 @isZero(i32 %arg0) {
+define i1 @isZero$m55344248(i32 %arg0) {
 block5:
 switch i32 %arg0, label %block8 [i32 0, label %block7]
 
@@ -130,17 +130,17 @@ block8:
 ret i1 0
 
 }
-define i1 @equals$Optional({i8, i64} %x,{i8, i64} %y) {
+define i1 @equals$Optional$m55344248({i8, i64} %x,{i8, i64} %y) {
 entry:
 ret i1 1
 
 }
-define ptr @display$String(ptr %str) {
+define ptr @display$String$m55344248(ptr %str) {
 entry:
 ret ptr %str
 
 }
-define ptr @display$Shape({i8, i64} %arg0) {
+define ptr @display$Shape$m55344248({i8, i64} %arg0) {
 block0:
 %tmp_reg_1 = extractvalue {i8, i64} %arg0, 0
 switch i8 %tmp_reg_1, label %block4 [i8 1, label %block2 i8 0, label %block3]
@@ -148,35 +148,35 @@ switch i8 %tmp_reg_1, label %block4 [i8 1, label %block2 i8 0, label %block3]
 block2:
 %tmp_reg_2 = extractvalue {i8, i64} %arg0, 1
 %tmp_reg_3 = trunc i64 %tmp_reg_2 to i32
-%tmp_reg_4 = call ptr @display$Int(i32 %tmp_reg_3)
+%tmp_reg_4 = call ptr @display$Int$m55344248(i32 %tmp_reg_3)
 ret ptr %tmp_reg_4
 
 block3:
 %tmp_reg_5 = extractvalue {i8, i64} %arg0, 1
 %tmp_reg_6 = trunc i64 %tmp_reg_5 to i32
-%tmp_reg_7 = call ptr @display$Int(i32 %tmp_reg_6)
+%tmp_reg_7 = call ptr @display$Int$m55344248(i32 %tmp_reg_6)
 ret ptr %tmp_reg_7
 
 block4:
 ret ptr @str_3
 
 }
-define ptr @display$Optional({i8, i64} %optional) {
+define ptr @display$Optional$m55344248({i8, i64} %optional) {
 entry:
 ret ptr @str_2
 
 }
-define ptr @display$Int(i32 %num) {
+define ptr @display$Int$m55344248(i32 %num) {
 entry:
 ret ptr @str_1
 
 }
-define ptr @display$Array(ptr %lst) {
+define ptr @display$Array$m55344248(ptr %lst) {
 entry:
 ret ptr @str_0
 
 }
-define i1 @areNumEqual(i32 %num1,i32 %num2) {
+define i1 @areNumEqual$m55344248(i32 %num1,i32 %num2) {
 entry:
 %tmp_reg_0 = icmp eq i32 %num1, %num2
 ret i1 %tmp_reg_0

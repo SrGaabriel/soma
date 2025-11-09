@@ -6,10 +6,12 @@ module Llvm.Gen.Intrinsics (
 ) where
 
 import Alloy.Ir (AOperand (..))
+import Alloy.Naming (qualifyWithModule)
+import Control.Monad.Reader (asks)
 import Control.Monad.State (gets)
 import Control.Monad.Writer.Class (tell)
 import Llvm.Dependencies (LlvmDependency (..))
-import Llvm.Gen.Core (IrGen, IrGenState (..), addDependency, saveTmp)
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), addDependency, saveTmp)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
@@ -61,6 +63,7 @@ compileMap ::
     IrGen LlvmValue
 compileMap [lambda, array] resultTy = do
     compiledArray <- compileOperand array
+    modName <- asks moduleName
 
     let (elemTy, fnRetType) = case resultTy of
             LlvmPointer (LlvmArray _ ty) -> (ty, ty) -- element type is result array element type
@@ -70,7 +73,8 @@ compileMap [lambda, array] resultTy = do
             _ -> error "map expects a function name as first argument"
 
     let fnType = LlvmFn fnRetType [elemTy]
-    let compiledLambda = LlvmGlobal fnType lambdaName
+    let qualifiedLambdaName = qualifyWithModule modName lambdaName
+    let compiledLambda = LlvmGlobal fnType qualifiedLambdaName
 
     -- todo: extract actual length from array metadata or type info
     let arrayLen = 4

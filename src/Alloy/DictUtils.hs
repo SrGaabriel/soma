@@ -23,11 +23,10 @@ import Alloy.Naming (
     sanitizeTypeName,
  )
 import Typing.Types (
-    SkolemVar (..),
     TyConstructor (..),
-    TyVar (..),
     Type (..),
  )
+import Utils.Lists (hardHead)
 
 extractClassName :: Type -> Maybe String
 extractClassName = \case
@@ -57,8 +56,8 @@ extractBaseTypeName = \case
 
 parseInstanceMethodName :: String -> Maybe (String, String)
 parseInstanceMethodName name =
-    case break (== head nameSeparator) name of
+    case break (== hardHead nameSeparator) name of
         (methodName, sep : typeName)
-            | [head nameSeparator] == [sep] && not (null methodName) && not (null typeName) ->
+            | [hardHead nameSeparator] == [sep] && not (null methodName) && not (null typeName) ->
                 Just (methodName, typeName)
         _ -> Nothing

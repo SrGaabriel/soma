@@ -108,7 +108,7 @@ buildFunctionSignatureMap funcs =
         ]
 
 generateDictionaries :: String -> [MetallicTypeClassMetadata] -> Map (String, Type, String) Name -> [DictionaryDef]
-generateDictionaries moduleName typeClasses instanceMap =
+generateDictionaries _moduleName typeClasses instanceMap =
     [ DictionaryDef
         { ddClassName = mtcName tc
         , ddForType = instanceType
@@ -158,7 +158,7 @@ transformMonoFunction ::
     Map Name ([Type], [Constraint]) ->
     AlloyFunction ->
     AlloyFunction
-transformMonoFunction moduleName typeClasses methodToClass classToMethods instanceMap funcSigMap func@AlloyFunction{afParams = params, afBlocks = blocks} =
+transformMonoFunction moduleName typeClasses _methodToClass classToMethods instanceMap funcSigMap func@AlloyFunction{afParams = params, afBlocks = blocks} =
     let
         initialTypeEnv = Map.fromList params
         newBlocks = map (transformBlockForCalls moduleName funcSigMap instanceMap typeClasses classToMethods initialTypeEnv) blocks
@@ -184,7 +184,7 @@ buildDictEnv ::
     Map String [(Int, String)] ->
     [(Name, Type)] ->
     Map String (Name, Int)
-buildDictEnv moduleName constraints typeClasses classToMethods dictParams =
+buildDictEnv moduleName constraints _typeClasses classToMethods dictParams =
     Map.fromList
         [ (methodName, (dictParamName, methodIdx))
         | Constraint cty <- constraints
