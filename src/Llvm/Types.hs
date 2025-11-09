@@ -1,7 +1,17 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE PatternSynonyms #-}
 
-module Llvm.Types where
+module Llvm.Types (
+    LlvmType (..),
+    pattern LlvmNamed,
+    pattern LlvmStruct,
+    pattern LlvmPtr,
+    getLlvmTypeSize,
+    deref,
+    normalizeType,
+    naturalAlignment,
+) where
 
 import Data.Hashable (Hashable)
 import Data.List (intercalate)
@@ -21,10 +31,21 @@ data LlvmType
     | LlvmArray Int LlvmType
     | LlvmNamedType String
     | LlvmFn LlvmType [LlvmType]
+    | LlvmFunctionPtr LlvmType [LlvmType] -- function pointer (ret type, param types)
     | LlvmAnonymous [LlvmType]
     | LlvmVararg
     | LlvmSkolem -- only for prod usage
     deriving (Show, Eq, Generic, Hashable)
+
+-- Type aliases for clarity
+pattern LlvmNamed :: String -> LlvmType
+pattern LlvmNamed name = LlvmNamedType name
+
+pattern LlvmStruct :: [LlvmType] -> LlvmType
+pattern LlvmStruct fields = LlvmAnonymous fields
+
+pattern LlvmPtr :: LlvmType -> LlvmType
+pattern LlvmPtr t = LlvmPointer t
 
 instance IR LlvmType where
     toLlvm LlvmVoid = "void"
@@ -41,6 +62,8 @@ instance IR LlvmType where
     toLlvm (LlvmAnonymous types) = "{" ++ intercalate ", " (map toLlvm types) ++ "}"
     toLlvm (LlvmFn retType argTypes) =
         toLlvm retType ++ " (" ++ intercalate ", " (map toLlvm argTypes) ++ ")"
+    toLlvm (LlvmFunctionPtr retType argTypes) =
+        toLlvm retType ++ " (" ++ intercalate ", " (map toLlvm argTypes) ++ ")*"
     toLlvm LlvmVararg = "..."
     toLlvm LlvmSkolem = error "Cannot convert LlvmSkolem to LLVM IR"
 
@@ -58,6 +81,7 @@ getLlvmTypeSize (LlvmArray n t) = n * getLlvmTypeSize t
 getLlvmTypeSize (LlvmAnonymous types) = sum (map getLlvmTypeSize types)
 getLlvmTypeSize (LlvmNamedType _) = error "Named types do not have a fixed size"
 getLlvmTypeSize (LlvmFn _ _) = error "Function types do not have a fixed size"
+getLlvmTypeSize (LlvmFunctionPtr _ _) = 8 -- Function pointers are pointer-sized
 getLlvmTypeSize LlvmVararg = error "Vararg types do not have a fixed size"
 getLlvmTypeSize LlvmSkolem = error "Skolem types do not have a fixed size"
 
@@ -85,6 +109,7 @@ naturalAlignment (LlvmAnonymous ts) =
         _ -> maximum (map naturalAlignment ts)
 naturalAlignment (LlvmNamedType _) = 8
 naturalAlignment (LlvmFn _ _) = 8
+naturalAlignment (LlvmFunctionPtr _ _) = 8
 naturalAlignment LlvmVararg = 8
 naturalAlignment LlvmVoid = 1
 naturalAlignment LlvmSkolem = 8

@@ -225,6 +225,8 @@ simplifyFunction fn0 =
                     OpIndex a i -> OpIndex (substOperand env a) (substOperand env i)
                     OpMakeArray xs -> OpMakeArray (map (substOperand env) xs)
                     OpMakeTuple xs -> OpMakeTuple (map (substOperand env) xs)
+                    OpGetDict className ty -> OpGetDict className ty
+                    OpDictCall dict methodIdx method args -> OpDictCall (substOperand env dict) methodIdx method (map (substOperand env) args)
 
             substEffect env eff =
                 case eff of
@@ -353,6 +355,8 @@ replaceLoadsAfterStores ABlock{abName, abParams, abInstrs, abTerminator} =
             OpIndex a i -> OpIndex (substOpd env a) (substOpd env i)
             OpMakeArray xs -> OpMakeArray (map (substOpd env) xs)
             OpMakeTuple xs -> OpMakeTuple (map (substOpd env) xs)
+            OpGetDict className ty -> OpGetDict className ty
+            OpDictCall dict methodIdx method args -> OpDictCall (substOpd env dict) methodIdx method (map (substOpd env) args)
     substEffAll env eff =
         case eff of
             EffStore p v -> EffStore (substOpd env p) (substOpd env v)

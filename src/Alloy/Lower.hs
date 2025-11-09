@@ -21,7 +21,7 @@ import Alloy.Decisions (
 import Alloy.Build (
     AlloyBuilder,
     beginBlock,
-    beginFunction,
+    beginFunctionWithConstraints,
     emitLetTmp,
     endFunction,
     freshBlockName,
@@ -40,6 +40,9 @@ import Metal.Expr (
 
 import Metal.Function (
     MetallicFunction (..),
+ )
+import Metal.Metadata (
+    MetallicFunctionMetadata (..),
  )
 import Metal.MonadProfile (
     MonadProfile (..),
@@ -84,12 +87,13 @@ lowerAlloyModule modName mm =
         profiles = buildMonadProfiles mm
         action = mapM_ (lowerFunction ctorTags ctorFields profiles) (mmFunctions mm)
 
-        (_unit, mdl) = runAlloyBuilder modName action
+        (_unit, mdl) = runAlloyBuilder modName (mmTypeClasses mm) action
     in mdl
 
 lowerFunction :: Map.Map String Int -> Map.Map String [Type] -> MonadProfiles -> MetallicFunction -> AlloyBuilder ()
-lowerFunction ctorTags ctorFields profiles MetallicFunction{mfName, mfParams, mfReturnType, mfBody} = do
-    beginFunction mfName mfParams mfReturnType
+lowerFunction ctorTags ctorFields profiles MetallicFunction{mfName, mfParams, mfReturnType, mfBody, mfMetadata} = do
+    let constraints = mfmConstraints mfMetadata
+    beginFunctionWithConstraints mfName mfParams mfReturnType constraints
     let entryName = "entry"
     beginBlock entryName []
 

@@ -62,7 +62,7 @@ readerRewriteModuleWith cfg m@AlloyModule{amFunctions} =
 
 readerRewriteFunction :: ReaderConfig -> AlloyFunction -> AlloyFunction
 readerRewriteFunction cfg fn =
-    let afs = readerRewriteModuleWith cfg (AlloyModule "" [fn])
+    let afs = readerRewriteModuleWith cfg (AlloyModule "" [fn] [] [])
     in case amFunctions afs of
         [f] -> f
         _ -> fn

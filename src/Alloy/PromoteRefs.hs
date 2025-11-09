@@ -204,6 +204,8 @@ substOp env op =
         OpIndex a i -> OpIndex (substOperand env a) (substOperand env i)
         OpMakeArray xs -> OpMakeArray (map (substOperand env) xs)
         OpMakeTuple xs -> OpMakeTuple (map (substOperand env) xs)
+        OpGetDict className ty -> OpGetDict className ty
+        OpDictCall dict methodIdx method args -> OpDictCall (substOperand env dict) methodIdx method (map (substOperand env) args)
 
 substEffect :: Subst -> AEffect -> AEffect
 substEffect env eff =
@@ -275,6 +277,8 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpIndex a i -> isVar r a || isVar r i
             OpMakeArray xs -> any (isVar r) xs
             OpMakeTuple xs -> any (isVar r) xs
+            OpGetDict _ _ -> False
+            OpDictCall dict _ _ args -> isVar r dict || any (isVar r) args
 
     appearsInEff :: Name -> AEffect -> Bool
     appearsInEff r eff =

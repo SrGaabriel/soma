@@ -1,6 +1,26 @@
 {-# LANGUAGE FlexibleContexts #-}
 
-module Llvm.Gen.Core where
+module Llvm.Gen.Core (
+    IrGen,
+    IrGenEnv (..),
+    IrGenState (..),
+    globalDefaultState,
+    namedDefaultEnv,
+    runIrGen,
+    freshTmpReg,
+    mkReg,
+    saveToReg,
+    saveTmp,
+    scopedState,
+    irGenToWriterOuter,
+    writerOuterToIrGen,
+    enterNewBlock,
+    setNewBlock,
+    mkFnCall,
+    recordSubstitution,
+    applySubstitutions,
+    addDependency,
+) where
 
 import Control.Monad.Reader (MonadReader (local), ReaderT (..))
 import Control.Monad.State (
@@ -19,12 +39,14 @@ import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Modules (LlvmFunction)
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getRegName, getValueType)
+import Typing.Types (Type)
 
 data IrGenEnv = IrGenEnv
     { currentFunction :: Maybe String
     , currentBlock :: Maybe String
     , currentPackage :: String
     , opTypeEnv :: OperandTypeEnv
+    , dictMap :: Map.Map (String, Type) String
     }
 
 data IrGenState = IrGenState
@@ -53,6 +75,7 @@ namedDefaultEnv name =
         , currentBlock = Nothing
         , currentPackage = name
         , opTypeEnv = Map.empty
+        , dictMap = Map.empty
         }
 
 type IrGen a = ReaderT IrGenEnv (WriterT [LlvmStatement] (State IrGenState)) a

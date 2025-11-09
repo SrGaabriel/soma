@@ -246,7 +246,7 @@ instance TreeShow MetallicInstance where
             ++ " }"
 
 instance TreeShow MetallicModule where
-    treeShow (MetallicModule funs tys insts) =
+    treeShow (MetallicModule funs tys insts tcs) =
         unlines
             $ ["-- Metal (HIR) Types:"]
                 ++ map (("  " ++) . treeShow) tys
@@ -254,6 +254,8 @@ instance TreeShow MetallicModule where
                 ++ map (("  " ++) . treeShow) funs
                 ++ ["-- Metal (HIR) Instances:"]
                 ++ map (("  " ++) . treeShow) insts
+                ++ ["-- Metal (HIR) TypeClasses:"]
+                ++ map (("  " ++) . show) tcs
 
 instance TreeShow AConst where
     treeShow (CInt i) = show i
@@ -294,6 +296,8 @@ instance TreeShow AOp where
     treeShow (OpIndex a ix) = treeShow a ++ "[" ++ treeShow ix ++ "]"
     treeShow (OpMakeArray xs) = "[" ++ commaSep (map treeShow xs) ++ "]"
     treeShow (OpMakeTuple xs) = "(" ++ commaSep (map treeShow xs) ++ ")"
+    treeShow (OpGetDict className ty) = "get_dict " ++ className ++ " for " ++ treeShow ty
+    treeShow (OpDictCall dict methodIdx method args) = "dict_call " ++ treeShow dict ++ "[" ++ show methodIdx ++ "]." ++ method ++ "(" ++ commaSep (map treeShow args) ++ ")"
 
 instance TreeShow AEffect where
     treeShow (EffStore dst v) = "store " ++ treeShow dst ++ " := " ++ treeShow v
@@ -345,7 +349,7 @@ instance TreeShow ABlock where
                 else "(" ++ commaSep [n ++ ": " ++ treeShow t | (n, t) <- params] ++ ")"
 
 instance TreeShow AlloyFunction where
-    treeShow (AlloyFunction nm params ret entry blks) =
+    treeShow (AlloyFunction nm params ret entry blks constraints) =
         "func "
             ++ nm
             ++ "("
@@ -353,6 +357,7 @@ instance TreeShow AlloyFunction where
             ++ ")"
             ++ " -> "
             ++ treeShow ret
+            ++ (if null constraints then "" else " where " ++ show constraints)
             ++ " {"
             ++ "\n  entry = "
             ++ entry
@@ -361,8 +366,10 @@ instance TreeShow AlloyFunction where
             ++ "}"
 
 instance TreeShow AlloyModule where
-    treeShow (AlloyModule nm fns) =
+    treeShow (AlloyModule nm fns dicts tcs) =
         "module "
             ++ nm
             ++ "\n"
+            ++ (if null dicts then "" else "-- Dictionaries:\n" ++ unlines (map (indent 2 . show) dicts) ++ "\n")
+            ++ (if null tcs then "" else "-- TypeClasses:\n" ++ unlines (map (indent 2 . show) tcs) ++ "\n")
             ++ unlines (map (indent 2 . treeShow) fns)

@@ -49,6 +49,8 @@ substOp env op =
         OpIndex a i -> OpIndex (substOperand env a) (substOperand env i)
         OpMakeArray xs -> OpMakeArray (map (substOperand env) xs)
         OpMakeTuple xs -> OpMakeTuple (map (substOperand env) xs)
+        OpGetDict className ty -> OpGetDict className ty
+        OpDictCall dict methodIdx method args -> OpDictCall (substOperand env dict) methodIdx method (map (substOperand env) args)
 
 substEffect :: Subst -> AEffect -> AEffect
 substEffect env eff =

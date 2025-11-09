@@ -161,6 +161,9 @@ usesFromOp blk idx op =
             mergeAll [singleUseIfVar a (UseAggValue blk idx) | a <- xs]
         OpMakeTuple xs ->
             mergeAll [singleUseIfVar a (UseAggValue blk idx) | a <- xs]
+        OpGetDict _ _ -> Map.empty
+        OpDictCall dict _ _ args ->
+            mergeAll (singleUseIfVar dict (UseCallArg blk idx 0) : [singleUseIfVar a (UseCallArg blk idx (j + 1)) | (j, a) <- zip [0 ..] args])
 
 usesFromEffect :: BlockName -> Int -> AEffect -> Map Name [UseKind]
 usesFromEffect blk idx eff =

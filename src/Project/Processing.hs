@@ -5,6 +5,7 @@
 module Project.Processing where
 
 import Alloy.Defunc (defunctionalizeModule)
+import Alloy.DictionaryPass (transformModuleWithDictionaries)
 import Alloy.Lower (lowerAlloyModule)
 import Alloy.Monomorphize (monomorphizeModule)
 
@@ -79,7 +80,8 @@ processModules sorted graph compileOptions = do
     let metallicNormalized = normalizeModule metallicLifted
     let alloy = lowerAlloyModule inputName metallicNormalized
     let alloyExpanded = expandIntrinsicsModule alloy
-    let alloyMono = monomorphizeModule alloyExpanded
+    let alloyWithDicts = transformModuleWithDictionaries alloyExpanded
+    let alloyMono = monomorphizeModule alloyWithDicts
     let alloyDefunc = defunctionalizeModule alloyMono
     let alloyReader = readerRewriteModule alloyDefunc
     let alloyInlined = monadicInlineModule alloyReader

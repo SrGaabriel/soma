@@ -49,7 +49,7 @@ compilePrintln [arg] = do
             tell [LlvmCallStmt (LlvmGlobal printfFnType "printf") LlvmI32 [formatStr, compiledArg]]
             pure $ LlvmUndef LlvmVoid
         _ -> do
-            formatStr <- newStrTemplate "<value>\\0A"
+            formatStr <- newStrTemplate "<value>\\0A" -- todo: handle this
             addDependency printfDependency
             tell [LlvmCallStmt (LlvmGlobal printfFnType "printf") LlvmI32 [formatStr]]
             pure $ LlvmUndef LlvmVoid

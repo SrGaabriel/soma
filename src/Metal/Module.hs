@@ -1,12 +1,14 @@
 module Metal.Module where
 
 import Metal.Function
+import Metal.Metadata (MetallicTypeClassMetadata)
 import Typing.Types
 
 data MetallicModule = MetallicModule
     { mmFunctions :: [MetallicFunction]
     , mmTypes :: [MetallicTypeDef]
     , mmInstances :: [MetallicInstance]
+    , mmTypeClasses :: [MetallicTypeClassMetadata]
     -- , metalExterns :: [MetallicExtern]
     }
     deriving (Show, Eq)

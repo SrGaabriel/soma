@@ -1,6 +1,7 @@
 module Alloy.Ir where
 
-import Typing.Types (Type)
+import Metal.Metadata (MetallicTypeClassMetadata)
+import Typing.Types (Constraint, Type)
 
 type Name = String
 type BlockName = String
@@ -9,6 +10,15 @@ type FieldIndex = Int
 data AlloyModule = AlloyModule
     { amName :: String
     , amFunctions :: [AlloyFunction]
+    , amDictionaries :: [DictionaryDef]
+    , amTypeClasses :: [MetallicTypeClassMetadata]
+    }
+    deriving (Show, Eq)
+
+data DictionaryDef = DictionaryDef
+    { ddClassName :: String
+    , ddForType :: Type
+    , ddMethods :: [(String, Name)]
     }
     deriving (Show, Eq)
 
@@ -18,6 +28,7 @@ data AlloyFunction = AlloyFunction
     , afReturnType :: Type
     , afEntry :: BlockName
     , afBlocks :: [ABlock]
+    , afConstraints :: [Constraint]
     }
     deriving (Show, Eq)
 
@@ -69,6 +80,8 @@ data AOp
     | OpIndex AOperand AOperand -- index into array/slice: base, idx
     | OpMakeArray [AOperand] -- array aggregate literal (element type dictated by ILet type)
     | OpMakeTuple [AOperand] -- tuple aggregate literal (shape dictated by ILet type)
+    | OpGetDict String Type -- get dictionary for typeclass + type
+    | OpDictCall AOperand Int String [AOperand] -- call method through dictionary: dict, method index, method name, args
     deriving (Show, Eq)
 
 data AEffect

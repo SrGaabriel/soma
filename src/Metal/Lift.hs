@@ -112,7 +112,7 @@ liftExprLambdas bound (MIf ifCond ifBlock elseBlock ty) =
 liftExprLambdas bound (MFieldAccess e idx ty) =
     (\e' -> MFieldAccess e' idx ty) <$> liftExprLambdas bound e
 liftExprLambdas bound (MCompose stmts ty) =
-    MCompose <$> fst <$> liftComposeLambdas bound stmts <*> pure ty
+    (MCompose . fst <$> liftComposeLambdas bound stmts) <*> pure ty
 liftExprLambdas _ e@(MPanic _ _) = pure e
 
 liftComposeLambdas :: Set.Set String -> [MetallicComposeStmt] -> LiftM ([MetallicComposeStmt], Set.Set String)

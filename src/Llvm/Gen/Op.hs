@@ -6,13 +6,16 @@ module Llvm.Gen.Op (
 
 import Alloy.Ir
 import Control.Monad (foldM)
+import Control.Monad.Reader (asks)
 import Control.Monad.Writer.Class (MonadWriter (tell))
+import qualified Data.Map as Map
 import Llvm.Gen.Core
 import Llvm.Gen.Intrinsics (compileIntrinsic, isIntrinsic)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.TypeConversion (convertType)
 import Llvm.Instructions
 import Llvm.Types (LlvmType (..), deref)
+import qualified Llvm.Types as LT
 import Llvm.Values (LlvmValue (..), getValueType)
 import Utils.Lists (hardHead)
 
@@ -147,6 +150,40 @@ compileOp (OpMakeTuple xs) resultTy = do
 compileOp (OpAllocHeap ty) resultTy = do
     let llvmTy = convertType ty
     saveTmp (LlvmAlloca llvmTy Nothing) resultTy
+compileOp (OpGetDict className ty) _resultTy = do
+    dMap <- asks dictMap
+    case Map.lookup (className, ty) dMap of
+        Just dictGlobalName -> do
+            let dictStructType = LT.LlvmNamed (className ++ "$Dict")
+            pure $ LlvmGlobal (LT.LlvmPtr dictStructType) dictGlobalName
+        Nothing -> error $ "Dictionary not found for class " ++ className ++ " and type " ++ show ty
+compileOp (OpDictCall dict methodIndex _methodName args) resultTy = do
+    dictVal <- compileOperand dict
+
+    compiledArgs <- mapM compileOperand args
+    let argTypes = map getValueType compiledArgs
+
+    let dictPtrType = getValueType dictVal
+    let dictType = case dictPtrType of
+            LlvmPointer t -> t
+            t -> error $ "Dictionary operand is not a pointer: " ++ show t ++ "\nFrom operand: " ++ show dict ++ "\nCompiled to: " ++ show dictVal
+
+    let indexZero = LlvmLiteral LlvmI32 "0"
+    let methodIndexVal = LlvmLiteral LlvmI32 (show methodIndex)
+
+    let fnPtrType = LT.LlvmFunctionPtr resultTy argTypes
+    methodFieldPtr <-
+        saveTmp
+            (LlvmGetElementPtr dictType dictVal [indexZero, methodIndexVal] False)
+            (LT.LlvmPtr fnPtrType)
+
+    fnPtr <- saveTmp (LlvmLoad methodFieldPtr) fnPtrType
+
+    if resultTy == LlvmVoid
+        then do
+            tell [LlvmCallStmt fnPtr resultTy compiledArgs]
+            pure $ LlvmUndef LlvmVoid
+        else saveTmp (LlvmCall fnPtr resultTy compiledArgs) resultTy
 
 cmpOpToLlvm :: ACmpOp -> String
 cmpOpToLlvm CEq = "eq"

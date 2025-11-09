@@ -45,6 +45,8 @@ rewriteOp known op =
         OpIndex a i -> OpIndex a i
         OpMakeArray xs -> OpMakeArray xs
         OpMakeTuple xs -> OpMakeTuple xs
+        OpGetDict className ty -> OpGetDict className ty
+        OpDictCall dict methodIdx method args -> OpDictCall dict methodIdx method args
 
 -- | Convert indirect calls to direct calls when the target is a known function
 rewriteCallable :: Set Name -> ACallable -> ACallable

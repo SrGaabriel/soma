@@ -1,10 +1,10 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Alloy.Build (
     AlloyBuilder,
     runAlloyBuilder,
     beginFunction,
+    beginFunctionWithConstraints,
     endFunction,
     beginBlock,
     terminate,
@@ -18,14 +18,16 @@ module Alloy.Build (
 
 import Control.Monad (when)
 import Control.Monad.State.Strict
-import Typing.Types (Type)
+import Typing.Types (Constraint, Type)
 
 import Alloy.Ir
 import Data.Maybe (isNothing)
+import qualified Metal.Metadata
 
 data BuildState = BuildState
     { bsModuleName :: String
     , bsFunctions :: [AlloyFunction]
+    , bsDictionaries :: [DictionaryDef]
     , bsNextTmp :: !Int
     , bsNextBlk :: !Int
     , bsCurFun :: Maybe FunBuild
@@ -38,6 +40,7 @@ data FunBuild = FunBuild
     , fbReturnType :: Type
     , fbEntry :: Maybe BlockName
     , fbBlocks :: [ABlock]
+    , fbConstraints :: [Constraint]
     }
 
 data BlockBuild = BlockBuild
@@ -49,12 +52,13 @@ data BlockBuild = BlockBuild
 
 type AlloyBuilder = State BuildState
 
-runAlloyBuilder :: String -> AlloyBuilder a -> (a, AlloyModule)
-runAlloyBuilder modName action =
+runAlloyBuilder :: String -> [Metal.Metadata.MetallicTypeClassMetadata] -> AlloyBuilder a -> (a, AlloyModule)
+runAlloyBuilder modName typeClasses action =
     let initState =
             BuildState
                 { bsModuleName = modName
                 , bsFunctions = []
+                , bsDictionaries = []
                 , bsNextTmp = 0
                 , bsNextBlk = 0
                 , bsCurFun = Nothing
@@ -65,6 +69,8 @@ runAlloyBuilder modName action =
             AlloyModule
                 { amName = bsModuleName st
                 , amFunctions = bsFunctions st
+                , amDictionaries = bsDictionaries st
+                , amTypeClasses = typeClasses
                 }
     in (res, mdl)
 
@@ -80,6 +86,23 @@ beginFunction name params retTy = do
                 , fbReturnType = retTy
                 , fbEntry = Nothing
                 , fbBlocks = []
+                , fbConstraints = []
+                }
+    put st{bsCurFun = Just fb, bsCurBlk = Nothing}
+
+beginFunctionWithConstraints :: Name -> [(Name, Type)] -> Type -> [Constraint] -> AlloyBuilder ()
+beginFunctionWithConstraints name params retTy constraints = do
+    st@BuildState{..} <- get
+    when (isJust bsCurFun)
+        $ error "Alloy.Build: beginFunctionWithConstraints called while another function is open"
+    let fb =
+            FunBuild
+                { fbName = name
+                , fbParams = params
+                , fbReturnType = retTy
+                , fbEntry = Nothing
+                , fbBlocks = []
+                , fbConstraints = constraints
                 }
     put st{bsCurFun = Just fb, bsCurBlk = Nothing}
 
@@ -102,6 +125,7 @@ endFunction = do
                 , afReturnType = fbReturnType
                 , afEntry = entryName
                 , afBlocks = fbBlocks
+                , afConstraints = fbConstraints
                 }
     put
         st

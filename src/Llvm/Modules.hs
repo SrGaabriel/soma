@@ -10,6 +10,16 @@ data LlvmModule = LlvmModule
     { moduleName :: String
     , moduleFunctions :: [LlvmFunction]
     , moduleDependencies :: [LlvmDependency]
+    , moduleGlobals :: [LlvmGlobal]
+    }
+    deriving (Show)
+
+data LlvmGlobal = LlvmGlobal
+    { globalName :: String
+    , globalType :: LlvmType
+    , globalConstant :: Bool
+    , globalInitializer :: String
+    , globalLinkage :: String
     }
     deriving (Show)
 
@@ -28,10 +38,24 @@ data LlvmBlock = LlvmBlock
     deriving (Show)
 
 instance IR LlvmModule where
-    toLlvm (LlvmModule _ functions dependencies) =
+    toLlvm (LlvmModule _ functions dependencies globals) =
         unlines (map toLlvm $ nub dependencies)
             ++ "\n\n"
+            ++ unlines (map toLlvm globals)
+            ++ "\n\n"
             ++ unlines (map toLlvm functions)
+
+instance IR LlvmGlobal where
+    toLlvm (LlvmGlobal name ty isConst initializer linkage) =
+        "@"
+            ++ name
+            ++ " = "
+            ++ linkage
+            ++ " "
+            ++ (if isConst then "constant " else "global ")
+            ++ toLlvm ty
+            ++ " "
+            ++ initializer
 
 instance IR LlvmFunction where
     toLlvm (LlvmFunction name params retType blocks) =

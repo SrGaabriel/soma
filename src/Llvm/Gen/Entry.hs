@@ -6,27 +6,42 @@ module Llvm.Gen.Entry (
     runLlvmCodeGenAndTranscribe,
 ) where
 
-import Alloy.Ir (AlloyModule (AlloyModule, amFunctions, amName))
-import Llvm.Gen.Core (IrGen, globalDefaultState, irDependencies, irFunctions, namedDefaultEnv, runIrGen)
+import Alloy.Ir (AlloyFunction (..), AlloyModule (AlloyModule, amDictionaries, amFunctions, amName))
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), globalDefaultState, irDependencies, irFunctions, namedDefaultEnv, runIrGen)
+import Llvm.Gen.Dictionary (compileDictionaries)
 import Llvm.Gen.Function (compileFunction)
 import Llvm.Ir (IR (toLlvm))
 import Llvm.Modules (LlvmModule (..))
 
 compileLlvmModule :: AlloyModule -> IrGen ()
 compileLlvmModule AlloyModule{amFunctions} = do
-    mapM_ compileFunction amFunctions
+    -- Only compile concrete monomorphized functions to LLVM
+    let concreteFunctions = filter isConcreteFunction amFunctions
+    mapM_ compileFunction concreteFunctions
+  where
+    isConcreteFunction :: AlloyFunction -> Bool
+    isConcreteFunction AlloyFunction{afConstraints = constraints} = null constraints
 
 runLlvmCodeGen :: AlloyModule -> LlvmModule
-runLlvmCodeGen alloyModule =
-    let name = amName alloyModule
-        env = namedDefaultEnv name
+runLlvmCodeGen alloyModule@AlloyModule{amName = name, amDictionaries = dicts, amFunctions = allFunctions} =
+    let
+        (_typeStructDecls, dictGlobals, dictLookupMap) = compileDictionaries dicts allFunctions
+
+        env = (namedDefaultEnv name){dictMap = dictLookupMap}
+
         ((_, _collectedStatements), finalStat) =
             runIrGen env globalDefaultState (compileLlvmModule alloyModule)
         fns = irFunctions finalStat
         deps = irDependencies finalStat
-    in LlvmModule name fns deps
+    in
+        LlvmModule name fns deps dictGlobals
 
 runLlvmCodeGenAndTranscribe :: AlloyModule -> String
-runLlvmCodeGenAndTranscribe alloy =
+runLlvmCodeGenAndTranscribe alloy@AlloyModule{amDictionaries = dicts, amFunctions = allFunctions} =
     let moduleResult = runLlvmCodeGen alloy
-    in toLlvm moduleResult
+        baseIR = toLlvm moduleResult
+
+        (typeStructDecls, _dictGlobals, _dictMap) = compileDictionaries dicts allFunctions
+        structDeclarations = unlines typeStructDecls
+    in
+       structDeclarations ++ "\n" ++ baseIR

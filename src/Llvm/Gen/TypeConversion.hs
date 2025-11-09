@@ -41,7 +41,16 @@ convertType (TConstructor (TypeConstructor name _)) =
         "Short" -> LlvmI16
         "Unit" -> LlvmVoid
         "()" -> LlvmVoid
-        _ -> LlvmAnonymous [LlvmI8, LlvmI64]
+        _ ->
+            --
+            if "$Dict" `isSuffixOf` name
+                then LlvmPointer (LlvmNamedType name)
+                else LlvmAnonymous [LlvmI8, LlvmI64]
+  where
+    isSuffixOf suffix str =
+        let suffixLen = length suffix
+            strLen = length str
+        in strLen >= suffixLen && drop (strLen - suffixLen) str == suffix
 
 sizeOfType :: LlvmType -> Int
 sizeOfType LlvmVoid = 0
@@ -56,6 +65,7 @@ sizeOfType (LlvmPointer _) = 8 -- todo: platform specific pointer size
 sizeOfType (LlvmArray n elemTy) = n * sizeOfType elemTy
 sizeOfType (LlvmAnonymous fields) = sum (map sizeOfType fields)
 sizeOfType (LlvmFn _ _) = 8 -- todo: platform specific pointer size
+sizeOfType (LlvmFunctionPtr _ _) = 8 -- function pointers are pointer-sized
 sizeOfType (LlvmNamedType _) = 8 -- todo: remove estimation
 sizeOfType LlvmVararg = 0
 sizeOfType LlvmSkolem = 0

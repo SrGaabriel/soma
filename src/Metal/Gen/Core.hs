@@ -9,7 +9,7 @@ import qualified Data.Map as Map
 import Inference.Core (TypeMap)
 import Metal.Function (MetallicFunction)
 import Metal.Gen.Metadata (extractConstructorMetadata)
-import Metal.Metadata (MetallicConstructorMetadata)
+import Metal.Metadata (MetallicConstructorMetadata, MetallicTypeClassMetadata)
 import Metal.Module (MetallicTypeDef)
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType (Forall), Type)
@@ -26,6 +26,7 @@ data MetalGenState = MetalGenState
     , metalFunctions :: Map String MetallicFunction
     , metalTypes :: Map String MetallicTypeDef
     , metalInstanceMethods :: Map (String, Type, String) MetallicFunction
+    , metalTypeClasses :: Map String MetallicTypeClassMetadata
     }
 
 data MetalScope = MetalScope
@@ -64,6 +65,7 @@ defaultMetalState =
         , metalFunctions = Map.empty
         , metalTypes = Map.empty
         , metalInstanceMethods = Map.empty
+        , metalTypeClasses = Map.empty
         }
 
 freshTmp :: (MonadState MetalGenState m) => m String
@@ -82,6 +84,10 @@ addFunction name func =
 addType :: String -> MetallicTypeDef -> MetalGen ()
 addType name tyDef =
     modify $ \s -> s{metalTypes = Map.insert name tyDef (metalTypes s)}
+
+addTypeClass :: String -> MetallicTypeClassMetadata -> MetalGen ()
+addTypeClass name tcMeta =
+    modify $ \s -> s{metalTypeClasses = Map.insert name tcMeta (metalTypeClasses s)}
 
 lookupVar :: String -> MetalGen (Maybe Type)
 lookupVar name = do
