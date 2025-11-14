@@ -1,0 +1,37 @@
+cabal-version: 3.12
+name: soma-lsp
+version: 0.1.0.0
+license: MIT
+license-file: ../LICENSE
+author: Gabriel
+maintainer: gabriel@minatel.dev
+category: Programming Language
+build-type: Simple
+
+common warnings
+  ghc-options:
+    -Wall
+    -fprof-auto
+    -rtsopts
+
+executable soma-lsp
+  import: warnings
+  main-is: Server.hs
+  hs-source-dirs: app
+  other-modules:
+    Incremental
+  build-depends:
+    base,
+    filepath,
+    soma,
+    containers,
+    stm >= 2.5,
+    lens >=5.3,
+    lsp >=2.7,
+    lsp-types >=2.3,
+    mtl >=2.3,
+    text >=2.1,
+    
+  
+
+  default-language: Haskell2010

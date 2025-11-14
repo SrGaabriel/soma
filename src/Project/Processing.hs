@@ -29,7 +29,7 @@ import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.ErrorPrinter (printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
 import Metal.Gen.Entry (compileMetalModule)
-import Metal.Gen.Metadata (constructorMetadataToSerializable, extractConstructorMetadata)
+import Metal.Gen.Metadata (constructorMetadataToSerializable, extractConstructorMetadata, serializableToConstructorMetadata)
 import Metal.Lift (liftLambdas)
 import Metal.MonadNormalize (normalizeModule)
 import Project.Graph (ModuleGraph, buildDependencyGraph)
@@ -72,7 +72,8 @@ processModules sorted graph compileOptions = do
 
     (allModules, fusedTypeMap) <- processAllModules inputName sorted graph Map.empty deps Map.empty
     let fusedAst = createFusedAst allModules
-    let metallic = compileMetalModule inputName fusedAst fusedTypeMap externalConstructors
+    let metallicExternalConstructors = Map.map serializableToConstructorMetadata externalConstructors
+    let metallic = compileMetalModule inputName fusedAst fusedTypeMap metallicExternalConstructors
     putStrLn $ "Metal module compiled:\n" ++ treeShow metallic
 
     let metallicLifted = liftLambdas metallic
@@ -149,7 +150,6 @@ processModules sorted graph compileOptions = do
                 if objFileExists
                     then BL.readFile objFile
                     else return BL.empty
-            let objContent = BLC.unpack objContentBS
 
             let publicSymbols = Map.unions [syms | (_, _, syms) <- Map.elems allModules]
             let depGraph = buildDependencyGraph graph
@@ -158,7 +158,7 @@ processModules sorted graph compileOptions = do
             let localConstructorsMeta = extractConstructorMetadata fusedAst
             let serializableConstructors = Map.map constructorMetadataToSerializable localConstructorsMeta
 
-            let objFiles = ([(objFile, objContent) | objFileExists])
+            let objFiles = ([(objFile, objContentBS) | objFileExists])
             createProjectTarball
                 outputFile
                 defaultTarballOptions
@@ -169,7 +169,7 @@ processModules sorted graph compileOptions = do
                 depGraph
                 serializableConstructors
                 objFiles
-                [(llFile, llvmIr)]
+                [(llFile, BLC.pack llvmIr)]
 
             -- todo: undoc catch (removeFile llFile) (\(_ :: SomeException) -> return ())
             catch (removeFile objFile) (\(_ :: SomeException) -> return ())

@@ -15,7 +15,6 @@ import qualified Codec.Archive.Tar.Entry as TarEntry
 import qualified Codec.Compression.GZip as GZip
 import Data.Aeson (decode, encode)
 import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Lazy.Char8 as BLC
 import qualified Data.Map as Map
 import Data.Maybe (mapMaybe)
 import Project.Metadata (ProjectMetadata, SerializableConstructorMetadata, createProjectMetadata)
@@ -58,15 +57,15 @@ createProjectTarball ::
     Map.Map Symbol QualifiedType ->
     Map.Map String [String] ->
     Map.Map String SerializableConstructorMetadata ->
-    [(FilePath, String)] ->
-    [(FilePath, String)] ->
+    [(FilePath, BL.ByteString)] ->
+    [(FilePath, BL.ByteString)] ->
     IO ()
 createProjectTarball outPath opts modName version srcFiles publicSyms depGraph constructors objFiles llvmFiles = do
     let metadata = createProjectMetadata modName version srcFiles publicSyms depGraph constructors
     let metadataJson = encode metadata
 
-    let objFilesBS = [(path, BLC.pack content) | (path, content) <- objFiles]
-    let llvmFilesBS = [(path, BLC.pack content) | (path, content) <- llvmFiles]
+    let objFilesBS = [(path, content) | (path, content) <- objFiles]
+    let llvmFilesBS = [(path, content) | (path, content) <- llvmFiles]
 
     let entries =
             concat

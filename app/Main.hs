@@ -8,6 +8,7 @@ import Project.Graph
 import Project.Module
 import Project.Parsing
 import Project.Processing
+import Project.Incremental (processModulesIncremental)
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath (dropExtension, takeExtension, takeFileName)
@@ -45,7 +46,7 @@ main = do
                     mapM_ (putStrLn . ("  " ++) . show) cycles
                     exitFailure
                 Right sorted -> do
-                    _ <- processModules sorted graph options
+                    _ <- processModulesIncremental sorted graph options
                     return ()
 
             putStrLn "✅ Successfully compiled all modules."

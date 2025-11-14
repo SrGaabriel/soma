@@ -22,10 +22,9 @@ import Metal.Gen.Core (
  )
 import Metal.Gen.DataTypes (compileDataTypeDefsFromRoot)
 import Metal.Gen.Extracts (groupInstanceMethods)
-import Metal.Gen.Metadata (extractConstructorMetadata, serializableToConstructorMetadata)
-import Metal.Metadata (MetallicTypeClassMetadata (..))
+import Metal.Gen.Metadata (extractConstructorMetadata)
+import Metal.Metadata (MetallicTypeClassMetadata (..), MetallicConstructorMetadata)
 import Metal.Module (MetallicModule (..))
-import Project.Metadata (SerializableConstructorMetadata)
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (QualifiedType (..), TyConstructor (..), Type (..))
 
@@ -122,11 +121,10 @@ metallizeTypeClass (ExprTypeClassDef className generics methods _) = do
     extractMethodType _ = Forall [] [] (TConstructor (TypeConstructor "Unknown" undefined))
 metallizeTypeClass _ = pure ()
 
-compileMetalModule :: String -> Expr -> TypeMap -> Map.Map String SerializableConstructorMetadata -> MetallicModule
+compileMetalModule :: String -> Expr -> TypeMap -> Map.Map String MetallicConstructorMetadata -> MetallicModule
 compileMetalModule name root typeMap externalConstructors =
     let localConstructors = extractConstructorMetadata root
-        externalConstructorsMetal = Map.map serializableToConstructorMetadata externalConstructors
-        allConstructors = Map.union localConstructors externalConstructorsMetal
+        allConstructors = Map.union localConstructors externalConstructors
         env = (defaultMetalEnv name typeMap){metalConstructors = allConstructors}
         (metalModule, _) = runMetalGen env defaultMetalState (metallizeModule name root)
     in metalModule

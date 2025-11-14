@@ -116,7 +116,7 @@ dedupByName :: [AlloyFunction] -> [AlloyFunction]
 dedupByName fns = Map.elems (Map.fromList [(afName f, f) | f <- fns])
 
 monoFixpoint ::
-    String -> -- module name
+    String ->
     Map String AlloyFunction -> -- base functions (eligible for specialization)
     [AlloyFunction] -> -- current function set (grows with clones)
     Map InstKey String -> -- instantiation cache: key -> specialized name
