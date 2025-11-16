@@ -11,7 +11,7 @@ pub fn compile_lib(
     dependency_tarballs: &HashMap<String, PathBuf>,
 ) -> BuildResult<PathBuf> {
     compile_module(
-        &node,
+        node,
         dependency_tarballs,
         format!("{}.toria", node.manifest.name),
     )
@@ -21,11 +21,7 @@ pub fn compile_binary(
     node: &BuildNode,
     dependency_tarballs: &HashMap<String, PathBuf>,
 ) -> BuildResult<PathBuf> {
-    compile_module(
-        node,
-        dependency_tarballs,
-        node.name.clone()
-    )
+    compile_module(node, dependency_tarballs, node.name.clone())
 }
 
 fn compile_module(
