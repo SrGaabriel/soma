@@ -2,9 +2,9 @@
 
 module Metal.Metadata where
 
-import Typing.Types (Constraint, QualifiedType, TyVar, Type)
-import GHC.Generics (Generic)
 import Data.Binary (Binary)
+import GHC.Generics (Generic)
+import Typing.Types (Constraint, QualifiedType, TyVar, Type)
 
 data MetallicConstructorMetadata = MetallicConstructorMetadata
     { mcmTypeName :: String

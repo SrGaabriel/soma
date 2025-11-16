@@ -5,13 +5,12 @@ import Control.Monad (unless)
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import Project.Graph
+import Project.Incremental (extractSymbolImports, processModulesIncremental)
 import Project.Module
 import Project.Parsing
-import Project.Incremental (processModulesIncremental)
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath (dropExtension, takeExtension, takeFileName)
-import Project.Incremental (extractSymbolImports)
 
 main :: IO ()
 main = do

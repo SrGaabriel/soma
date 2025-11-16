@@ -50,9 +50,8 @@ impl BuildOrchestrator {
 
     pub fn build(&mut self, manifest: &Manifest) -> BuildResult<BuildStats> {
         let build_start = Instant::now();
-        let multi_progress = MultiProgress::with_draw_target(
-            indicatif::ProgressDrawTarget::stdout(),
-        );
+        let multi_progress =
+            MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::stdout());
 
         let resolution_pb = multi_progress.add(ProgressBar::new_spinner());
         resolution_pb.set_style(
@@ -241,18 +240,11 @@ impl BuildOrchestrator {
             if result.success
                 && let Some(tarball_path) = &result.tarball_path
             {
-                all_dependencies.insert(
-                    result.module_name.clone(),
-                    tarball_path.clone(),
-                );
+                all_dependencies.insert(result.module_name.clone(), tarball_path.clone());
             }
         }
 
-        let output_executable = compile_binary(
-            &self.root_path,
-            &manifest,
-            &all_dependencies
-        )?;
+        let output_executable = compile_binary(&self.root_path, manifest, &all_dependencies)?;
 
         Ok(output_executable)
     }

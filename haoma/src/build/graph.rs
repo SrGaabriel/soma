@@ -10,7 +10,7 @@ pub struct BuildNode {
     pub name: String,
     pub path: PathBuf,
     pub manifest: Manifest,
-    pub dependencies: Vec<String>
+    pub dependencies: Vec<String>,
 }
 
 #[derive(Debug)]

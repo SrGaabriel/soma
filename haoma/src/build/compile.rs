@@ -4,7 +4,7 @@ use crate::build::graph::BuildNode;
 use crate::config::manifest::Manifest;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub fn compile_lib(
@@ -20,7 +20,7 @@ pub fn compile_lib(
 }
 
 pub fn compile_binary(
-    module_path: &PathBuf,
+    module_path: &Path,
     manifest: &Manifest,
     dependency_tarballs: &HashMap<String, PathBuf>,
 ) -> BuildResult<PathBuf> {
@@ -33,7 +33,7 @@ pub fn compile_binary(
 }
 
 fn compile_module(
-    module_path: &PathBuf,
+    module_path: &Path,
     manifest: &Manifest,
     dependency_tarballs: &HashMap<String, PathBuf>,
     output_filename: String,
@@ -55,7 +55,7 @@ fn compile_module(
         .arg(&manifest.name)
         .arg("--out")
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit()) 
+        .stderr(Stdio::inherit())
         .arg(&output_file);
 
     for (dep_name, dep_tarball) in dependency_tarballs {
@@ -64,9 +64,7 @@ fn compile_module(
             .arg(format!("{}={}", dep_name, dep_tarball.display()));
     }
 
-    let output = command
-        .output()
-        .map_err(BuildError::FailedToCallCompiler)?;
+    let output = command.output().map_err(BuildError::FailedToCallCompiler)?;
 
     if !output.status.success() {
         return Err(BuildError::CompilationFailed(manifest.name.clone()));

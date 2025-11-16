@@ -23,7 +23,7 @@ import Metal.Gen.Core (
 import Metal.Gen.DataTypes (compileDataTypeDefsFromRoot)
 import Metal.Gen.Extracts (groupInstanceMethods)
 import Metal.Gen.Metadata (extractConstructorMetadata)
-import Metal.Metadata (MetallicTypeClassMetadata (..), MetallicConstructorMetadata)
+import Metal.Metadata (MetallicConstructorMetadata, MetallicTypeClassMetadata (..))
 import Metal.Module (MetallicModule (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (QualifiedType (..), TyConstructor (..), Type (..))

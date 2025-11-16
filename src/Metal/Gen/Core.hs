@@ -56,8 +56,8 @@ envWithConstructorsFrom packageName tyMap root externalCtors =
     let localCtors = extractConstructorMetadata root
         allCtors = Map.union localCtors externalCtors
     in (defaultMetalEnv packageName tyMap)
-           { metalConstructors = allCtors
-           }
+        { metalConstructors = allCtors
+        }
 
 withConstructors :: Map String MetallicConstructorMetadata -> MetalGen a -> MetalGen a
 withConstructors ctors = local (\env -> env{metalConstructors = ctors})
