@@ -1,21 +1,28 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GADTs #-}
+
 module Typing.Types where
+
+import Data.Binary (Binary)
+import GHC.Generics (Generic)
 
 data Kind
     = KindStar
     | KindArrow Kind Kind
-    deriving (Show, Eq, Ord)
+    deriving (Generic, Show, Eq, Ord)
 
 data TyVar = TypeVar
     { tvId :: String
     , tvKind :: Kind
     }
-    deriving (Show, Eq, Ord)
+    deriving (Generic, Show, Eq, Ord)
 
 data TyConstructor = TypeConstructor
     { tcName :: String
     , tcKind :: Kind
     }
-    deriving (Show, Eq, Ord)
+    deriving (Generic, Show, Eq, Ord)
 
 data SkolemVar = SkolemVar
     { skId :: String
@@ -24,18 +31,18 @@ data SkolemVar = SkolemVar
     , skName :: String
     , skRigidity :: Rigidity
     }
-    deriving (Eq, Ord, Show)
+    deriving (Generic, Eq, Ord, Show)
 
 data Rigidity
     = Rigid
     | Flexible FlexInfo
-    deriving (Eq, Ord, Show)
+    deriving (Generic, Eq, Ord, Show)
 
 data FlexInfo = FlexInfo
     { flexLevel :: Int
     , flexOrigin :: String
     }
-    deriving (Eq, Ord, Show)
+    deriving (Generic, Eq, Ord, Show)
 
 data Type
     = TVar TyVar
@@ -44,9 +51,9 @@ data Type
     | TApp Type Type
     | TArrow Type Type
     | TUnresolved String
-    deriving (Show, Eq, Ord)
+    deriving (Generic, Show, Eq, Ord)
 
-newtype Constraint = Constraint Type deriving (Show, Eq, Ord)
+newtype Constraint = Constraint Type deriving (Generic, Show, Eq, Ord)
 
 mkConstraint :: String -> [Type] -> Constraint
 mkConstraint className typs =
@@ -73,7 +80,7 @@ constraintType :: Constraint -> Type
 constraintType (Constraint t) = t
 
 data QualifiedType = Forall [TyVar] [Constraint] Type
-    deriving (Show, Eq, Ord)
+    deriving (Generic, Show, Eq, Ord)
 
 intType, strType, boolType, byteType :: Type
 intType = TConstructor (TypeConstructor "Int" KindStar)
@@ -163,3 +170,13 @@ isPolymorphic (TApp t1 t2) = isPolymorphic t1 || isPolymorphic t2
 isPolymorphic (TArrow t1 t2) = isPolymorphic t1 || isPolymorphic t2
 isPolymorphic (TConstructor _) = False
 isPolymorphic (TUnresolved _) = False
+
+instance Binary FlexInfo
+instance Binary Rigidity
+instance Binary SkolemVar
+instance Binary TyConstructor
+instance Binary TyVar
+instance Binary Kind
+instance Binary Type
+instance Binary Constraint
+instance Binary QualifiedType

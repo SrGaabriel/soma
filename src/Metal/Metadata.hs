@@ -1,6 +1,10 @@
+{-# LANGUAGE DeriveGeneric #-}
+
 module Metal.Metadata where
 
 import Typing.Types (Constraint, QualifiedType, TyVar, Type)
+import GHC.Generics (Generic)
+import Data.Binary (Binary)
 
 data MetallicConstructorMetadata = MetallicConstructorMetadata
     { mcmTypeName :: String
@@ -14,7 +18,7 @@ data MetallicTypeClassMetadata = MetallicTypeClassMetadata
     , mtcTypeVars :: [TyVar]
     , mtcMethods :: [(String, QualifiedType)]
     }
-    deriving (Show, Eq)
+    deriving (Generic, Show, Eq)
 
 data MetallicFunctionMetadata = MetallicFunctionMetadata
     { mfmOriginalName :: [TyVar]
@@ -29,3 +33,5 @@ data MetallicInstanceInfo = InstanceInfo
     , iiMethodName :: String
     }
     deriving (Show, Eq)
+
+instance Binary MetallicTypeClassMetadata

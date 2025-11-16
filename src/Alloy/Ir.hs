@@ -1,5 +1,9 @@
+{-# LANGUAGE DeriveGeneric #-}
+
 module Alloy.Ir where
 
+import Data.Binary (Binary)
+import GHC.Generics (Generic)
 import Metal.Metadata (MetallicTypeClassMetadata)
 import Typing.Types (Constraint, Type)
 
@@ -13,14 +17,14 @@ data AlloyModule = AlloyModule
     , amDictionaries :: [DictionaryDef]
     , amTypeClasses :: [MetallicTypeClassMetadata]
     }
-    deriving (Show, Eq)
+    deriving (Generic, Show, Eq)
 
 data DictionaryDef = DictionaryDef
     { ddClassName :: String
     , ddForType :: Type
     , ddMethods :: [(String, Name)]
     }
-    deriving (Show, Eq)
+    deriving (Generic, Show, Eq)
 
 data AlloyFunction = AlloyFunction
     { afName :: Name
@@ -30,7 +34,7 @@ data AlloyFunction = AlloyFunction
     , afBlocks :: [ABlock]
     , afConstraints :: [Constraint]
     }
-    deriving (Show, Eq)
+    deriving (Generic, Show, Eq)
 
 data ABlock = ABlock
     { abName :: BlockName
@@ -38,29 +42,29 @@ data ABlock = ABlock
     , abInstrs :: [AInstr]
     , abTerminator :: ATerminator
     }
-    deriving (Show, Eq)
+    deriving (Generic, Show, Eq)
 
 data AInstr
     = ILet Name Type AOp
     | IEffect AEffect
-    deriving (Show, Eq)
+    deriving (Generic, Show, Eq)
 
 data AOperand
     = OpVar Name
     | OpConst AConst
-    deriving (Show, Eq, Ord)
+    deriving (Generic, Show, Eq, Ord)
 
 data AConst
     = CInt Int
     | CBool Bool
     | CString String
     | CUnit
-    deriving (Show, Eq, Ord)
+    deriving (Generic, Show, Eq, Ord)
 
 data ACallable
     = Direct Name
     | Indirect AOperand
-    deriving (Show, Eq, Ord)
+    deriving (Generic, Show, Eq, Ord)
 
 data AOp
     = OpBin ABinOpKind AOperand AOperand -- Int/arithmetic/bitwise binop
@@ -82,13 +86,13 @@ data AOp
     | OpMakeTuple [AOperand] -- tuple aggregate literal (shape dictated by ILet type)
     | OpGetDict String Type -- get dictionary for typeclass + type
     | OpDictCall AOperand Int String [AOperand] -- call method through dictionary: dict, method index, method name, args
-    deriving (Show, Eq)
+    deriving (Generic, Show, Eq)
 
 data AEffect
     = EffStore AOperand AOperand -- store value at address
     | EffStoreIndex AOperand AOperand AOperand -- store at array[index] := value
     | EffDrop AOperand
-    deriving (Show, Eq)
+    deriving (Generic, Show, Eq)
 
 data ATerminator
     = ABr BlockName [AOperand] -- branch to block with arguments
@@ -96,7 +100,7 @@ data ATerminator
     | ASwitch AOperand [(Int, BlockName)] (Maybe BlockName) -- switch on an Int-like operand
     | ARet (Maybe AOperand) -- return optional value (use unit type for void-like)
     | AUnreachable -- unreachable
-    deriving (Show, Eq)
+    deriving (Generic, Show, Eq)
 
 data ABinOpKind
     = IAdd
@@ -110,12 +114,12 @@ data ABinOpKind
     | Shl
     | LShr
     | AShr
-    deriving (Show, Eq, Ord)
+    deriving (Generic, Show, Eq, Ord)
 
 data AUnaryOpKind
     = Not -- boolean/Int bitwise not
     | Neg -- arithmetic negation
-    deriving (Show, Eq, Ord)
+    deriving (Generic, Show, Eq, Ord)
 
 data ACmpOp
     = CEq
@@ -128,4 +132,19 @@ data ACmpOp
     | CSle
     | CSgt
     | CSge
-    deriving (Show, Eq, Ord)
+    deriving (Generic, Show, Eq, Ord)
+
+instance Binary AlloyModule
+instance Binary DictionaryDef
+instance Binary AlloyFunction
+instance Binary ABlock
+instance Binary AInstr
+instance Binary AOperand
+instance Binary AConst
+instance Binary ACallable
+instance Binary AOp
+instance Binary AEffect
+instance Binary ATerminator
+instance Binary ABinOpKind
+instance Binary AUnaryOpKind
+instance Binary ACmpOp

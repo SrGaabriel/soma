@@ -3,23 +3,23 @@
 module Project.Tarball (
     createProjectTarball,
     extractProjectTarball,
-    writeTarballContents,
     TarballOptions (..),
     TarballContents (..),
     tarballExtension,
     defaultTarballOptions,
 ) where
 
+import Alloy.Ir (AlloyModule (amName))
 import qualified Codec.Archive.Tar as Tar
 import qualified Codec.Archive.Tar.Entry as TarEntry
 import qualified Codec.Compression.GZip as GZip
 import Data.Aeson (decode, encode)
+import qualified Data.Binary
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Map as Map
 import Data.Maybe (mapMaybe)
 import Project.Metadata (ProjectMetadata, SerializableConstructorMetadata, createProjectMetadata)
 import Project.Symbols (Symbol)
-import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeFileName, (</>))
 import Typing.Types (QualifiedType)
 
@@ -45,6 +45,7 @@ data TarballContents = TarballContents
     { tcMetadata :: ProjectMetadata
     , tcObjectFiles :: [(FilePath, BL.ByteString)]
     , tcLLVMFiles :: [(FilePath, BL.ByteString)]
+    , tcAlloyModules :: [AlloyModule]
     }
     deriving (Show)
 
@@ -59,8 +60,9 @@ createProjectTarball ::
     Map.Map String SerializableConstructorMetadata ->
     [(FilePath, BL.ByteString)] ->
     [(FilePath, BL.ByteString)] ->
+    [AlloyModule] ->
     IO ()
-createProjectTarball outPath opts modName version srcFiles publicSyms depGraph constructors objFiles llvmFiles = do
+createProjectTarball outPath opts modName version srcFiles publicSyms depGraph constructors objFiles llvmFiles alloyModules = do
     let metadata = createProjectMetadata modName version srcFiles publicSyms depGraph constructors
     let metadataJson = encode metadata
 
@@ -72,6 +74,7 @@ createProjectTarball outPath opts modName version srcFiles publicSyms depGraph c
                 [ [createMetadataEntry metadataJson]
                 , if includeObjects opts then map createObjectEntry objFilesBS else []
                 , if includeLLVM opts then map createLLVMEntry llvmFilesBS else []
+                , map createAlloyEntry alloyModules
                 ]
 
     let tarball = Tar.write entries
@@ -106,12 +109,14 @@ extractContents entries = do
             Just metadata -> do
                 let objFiles = extractFromDir "objects" entryList
                 let llvmFiles = extractFromDir "llvm" entryList
+                alloyModules <- extractAlloyModules entryList
                 return
                     $ Right
                         TarballContents
                             { tcMetadata = metadata
                             , tcObjectFiles = objFiles
                             , tcLLVMFiles = llvmFiles
+                            , tcAlloyModules = alloyModules
                             }
 
 findMetadata :: [Tar.Entry] -> Maybe BL.ByteString
@@ -131,6 +136,25 @@ extractFromDir dir = mapMaybe extractFile
                 content <- getContent entry
                 return (drop (length prefix) path, content)
             else Nothing
+
+extractAlloyModules :: [Tar.Entry] -> IO [AlloyModule]
+extractAlloyModules entries = do
+    let alloyEntries =
+            filter
+                ( \entry ->
+                    take 6 (Tar.entryPath entry)
+                        == "alloy/"
+                )
+                entries
+    let alloyModules = mapMaybe extractAlloyModule alloyEntries
+    return alloyModules
+
+extractAlloyModule :: Tar.Entry -> Maybe AlloyModule
+extractAlloyModule entry = do
+    content <- getContent entry
+    case Data.Binary.decodeOrFail content of
+        Left _ -> Nothing
+        Right (_, _, alloyModule) -> Just alloyModule
 
 getContent :: Tar.Entry -> Maybe BL.ByteString
 getContent entry = case Tar.entryContent entry of
@@ -162,28 +186,11 @@ createLLVMEntry (path, content) =
         Right tarPath ->
             TarEntry.simpleEntry tarPath (Tar.NormalFile content (fromIntegral $ BL.length content))
 
-writeTarballContents :: FilePath -> TarballContents -> IO ()
-writeTarballContents baseDir (TarballContents metadata objFiles llvmFiles) = do
-    createDirectoryIfMissing True baseDir
-    createDirectoryIfMissing True (baseDir </> "objects")
-    createDirectoryIfMissing True (baseDir </> "llvm")
-
-    let metadataPath = baseDir </> "metadata.json"
-    BL.writeFile metadataPath (encode metadata)
-    putStrLn $ "Wrote metadata: " ++ metadataPath
-
-    mapM_
-        ( \(name, content) -> do
-            let path = baseDir </> "objects" </> name
-            BL.writeFile path content
-        )
-        objFiles
-
-    mapM_
-        ( \(name, content) -> do
-            let path = baseDir </> "llvm" </> name
-            BL.writeFile path content
-        )
-        llvmFiles
-
-    putStrLn $ "✅ Extracted tarball contents to: " ++ baseDir
+createAlloyEntry :: AlloyModule -> Tar.Entry
+createAlloyEntry alloyMod =
+    let entryPath = "alloy" </> amName alloyMod ++ ".alloybin"
+        content = Data.Binary.encode alloyMod
+    in case TarEntry.toTarPath False entryPath of
+        Left err -> error $ "Invalid tar path for alloy: " ++ entryPath ++ ": " ++ err
+        Right tarPath ->
+            TarEntry.simpleEntry tarPath (Tar.NormalFile content (fromIntegral $ BL.length content))

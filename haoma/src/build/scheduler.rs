@@ -9,21 +9,20 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, HashCalculator};
-use crate::build::compile::compile_module;
+use crate::build::compile::compile_lib;
 use crate::build::errors::{BuildError, InternalBuildError};
 use crate::build::graph::BuildNode;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BuildResults {
     pub module_name: String,
     pub success: bool,
     pub tarball_path: Option<PathBuf>,
-    pub object_paths: Vec<PathBuf>,
     #[allow(dead_code)]
     pub source_hash: String,
     #[allow(dead_code)]
     pub dependency_hash: String,
-    pub error: Option<String>,
+    pub error: Option<BuildError>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,12 +114,11 @@ impl BuildScheduler {
             .collect();
         let dependency_hash = HashCalculator::hash_dependencies(&dep_hash_values);
 
-        match compile_module(&node, &work_item.dependency_tarballs) {
-            Ok((tarball, objects)) => BuildResults {
+        match compile_lib(&node, &work_item.dependency_tarballs) {
+            Ok(dep_tarall) => BuildResults {
                 module_name,
                 success: true,
-                tarball_path: Some(tarball),
-                object_paths: objects,
+                tarball_path: Some(dep_tarall),
                 source_hash,
                 dependency_hash,
                 error: None,
@@ -129,7 +127,6 @@ impl BuildScheduler {
                 module_name,
                 success: false,
                 tarball_path: None,
-                object_paths: Vec::new(),
                 source_hash,
                 dependency_hash,
                 error: Some(e),
@@ -222,7 +219,6 @@ impl LayeredBuilder {
                             module_name: module_name.clone(),
                             success: true,
                             tarball_path: Some(cache_entry.tarball_path.clone()),
-                            object_paths: cache_entry.object_paths.clone(),
                             source_hash: source_hash.clone(),
                             dependency_hash: dep_hash.clone(),
                             error: None,

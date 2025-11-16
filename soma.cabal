@@ -97,7 +97,6 @@ library
     Project.Metadata
     Project.Module
     Project.Parsing
-    Project.Processing
     Project.Symbols
     Project.Tarball
     Syntax.Ops

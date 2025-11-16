@@ -1,9 +1,5 @@
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
-    #[error("Failed to compile execute linker: {0}")]
-    FailedToExecuteLinker(std::io::Error),
-    #[error("Linking failed with exit code {0}: {1}")]
-    LinkingFailed(i32, String),
     #[error("Internal build error: {0}")]
     Internal(InternalBuildError),
     #[error("Failed to read cache: {0}")]
@@ -12,6 +8,10 @@ pub enum BuildError {
     FailedToCleanBuildArtifacts(std::io::Error),
     #[error("Build cache is unavailable: {0}")]
     UnavailableBuildCache(std::io::Error),
+    #[error("Failed to create build directory: {0}")]
+    FailedToCreateBuildDirectory(std::io::Error),
+    #[error("Compilation failed for module '{0}'")]
+    CompilationFailed(String),
     #[error("Circular dependency detected involving module '{0}'")]
     CircularDependencyDetected(String),
     #[error("The dependency '{missing_dependency}' required by module '{module}' was not found")]
@@ -61,6 +61,8 @@ pub enum BuildError {
         dep_path: String,
         err: std::io::Error,
     },
+    #[error("Failed to call compiler. Is it installed and in your PATH? Error: {0}")]
+    FailedToCallCompiler(std::io::Error),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -73,10 +75,8 @@ pub enum InternalBuildError {
     FailedToReceiveBuildResult,
     #[error("Unexpected layer build failure: {0}")]
     UnexpectedLayerBuildFailure(usize),
-    #[error("No objects to link")]
-    NoObjectsToLink,
-    #[error("Linking generated no output")]
-    LinkingGeneratedNoOutput,
     #[error("Module hash not found: {0}")]
     ModuleHashNotFound(String),
+    #[error("Compilation produced no output for module: {0}")]
+    CompilationProducedNoOutput(String),
 }

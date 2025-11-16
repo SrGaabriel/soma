@@ -20,44 +20,50 @@ declare i32 @puts(ptr)
 
 define i1 @totallyGenericEqGen$m55344248(ptr %dict$Eq$Ta,i32 %left,i32 %right) {
 entry:
-%tmp_reg_41 = getelementptr %Eq$m55344248$Dict, ptr %dict$Eq$Ta, i32 0, i32 0
-%tmp_reg_42 = load i1 (i32, i32)*, ptr %tmp_reg_41
-%tmp_reg_43 = call i1 %tmp_reg_42(i32 %left, i32 %right)
-ret i1 %tmp_reg_43
+%tmp_reg_42 = getelementptr %Eq$m55344248$Dict, ptr %dict$Eq$Ta, i32 0, i32 0
+%tmp_reg_43 = load i1 (i32, i32)*, ptr %tmp_reg_42
+%tmp_reg_44 = call i1 %tmp_reg_43(i32 %left, i32 %right)
+ret i1 %tmp_reg_44
 
 }
 define i1 @testTotallyGenericEqGenOptional$m55344248({i8, i64} %left,{i8, i64} %right) {
 entry:
-%tmp_reg_40 = call i1 @totallyGenericEqGen$m55344248(ptr @dict$Eq$Optional$m55344248, {i8, i64} %left, {i8, i64} %right)
-ret i1 %tmp_reg_40
+%tmp_reg_41 = call i1 @totallyGenericEqGen$m55344248(ptr @dict$Eq$Optional$m55344248, {i8, i64} %left, {i8, i64} %right)
+ret i1 %tmp_reg_41
 
 }
 define i1 @testTotallyGenericEqGen$m55344248(ptr %dict$Eq$Ta,i32 %left,i32 %right) {
 entry:
-%tmp_reg_39 = call i1 @totallyGenericEqGen$m55344248(i32 %left, i32 %right)
-ret i1 %tmp_reg_39
+%tmp_reg_40 = call i1 @totallyGenericEqGen$m55344248(i32 %left, i32 %right)
+ret i1 %tmp_reg_40
 
 }
 define i32 @testSum$m55344248(i32 %x,i32 %y) {
 entry:
-%tmp_reg_38 = add i32 %x, %y
-ret i32 %tmp_reg_38
+%tmp_reg_39 = add i32 %x, %y
+ret i32 %tmp_reg_39
 
 }
 define i1 @testOptionalEqGen$m55344248() {
 entry:
-%tmp_reg_33 = insertvalue {i8, i64} undef, i8 0, 0
-%tmp_reg_34 = zext i32 5 to i64
-%tmp_reg_35 = insertvalue {i8, i64} %tmp_reg_33, i64 %tmp_reg_34, 1
-%tmp_reg_36 = call {i8, i64} @pureOptionalInt$m55344248(i32 5)
-%tmp_reg_37 = call i1 @equals$Optional$m55344248({i8, i64} %tmp_reg_35, {i8, i64} %tmp_reg_36)
-ret i1 %tmp_reg_37
+%tmp_reg_34 = insertvalue {i8, i64} undef, i8 0, 0
+%tmp_reg_35 = zext i32 5 to i64
+%tmp_reg_36 = insertvalue {i8, i64} %tmp_reg_34, i64 %tmp_reg_35, 1
+%tmp_reg_37 = call {i8, i64} @pureOptionalInt$m55344248(i32 5)
+%tmp_reg_38 = call i1 @equals$Optional$m55344248({i8, i64} %tmp_reg_36, {i8, i64} %tmp_reg_37)
+ret i1 %tmp_reg_38
 
 }
 define i1 @testOptionalEq$m55344248({i8, i64} %x,{i8, i64} %y) {
 entry:
-%tmp_reg_32 = call i1 @equals$Optional$m55344248({i8, i64} %x, {i8, i64} %y)
-ret i1 %tmp_reg_32
+%tmp_reg_33 = call i1 @equals$Optional$m55344248({i8, i64} %x, {i8, i64} %y)
+ret i1 %tmp_reg_33
+
+}
+define i32 @summing$m55344248(i32 %x,i32 %y) {
+entry:
+%tmp_reg_32 = add i32 %x, %y
+ret i32 %tmp_reg_32
 
 }
 define {i8, i64} @pureOptionalInt$m55344248(i32 %value) {
@@ -97,7 +103,7 @@ ret ptr %tmp_reg_21
 }
 define i32 @main() {
 entry:
-%tmp_reg_8 = call i32 @id$m55344248(i32 5)
+%tmp_reg_8 = call i32 @id$Int$m55344248$m55344248(i32 5)
 %tmp_reg_9 = call ptr @primeNumbers$m55344248()
 %tmp_reg_10 = alloca [4 x i32]
 %tmp_reg_11 = alloca i32
@@ -140,6 +146,16 @@ ret i1 1
 
 block8:
 ret i1 0
+
+}
+define i32 @id$Int$m55344248$m55344248(i32 %value) {
+entry:
+ret i32 %value
+
+}
+define i32 @id$m55344248(i32 %value) {
+entry:
+ret i32 %value
 
 }
 define i1 @equals$Optional$m55344248({i8, i64} %x,{i8, i64} %y) {

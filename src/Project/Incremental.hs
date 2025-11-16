@@ -40,7 +40,7 @@ import Project.Graph
 import Project.Metadata (SerializableConstructorMetadata, projectMetadataConstructors, projectMetadataPublicSymbols)
 import Project.Module
 import Project.Symbols (Symbol (resolvedSymbolName))
-import Project.Tarball (TarballContents (TarballContents, tcMetadata), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
+import Project.Tarball (TarballContents (TarballContents, tcAlloyModules, tcMetadata), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
 import Syntax.Tree (Expr (ExprImport, ExprRoot), exprChildren)
 import System.Exit (exitFailure)
 import System.Process (callProcess)
@@ -119,17 +119,19 @@ linkCompiledModules ::
     String ->
     [CompiledModule] ->
     Map String SerializableConstructorMetadata ->
+    [AlloyModule] ->
     IO (AlloyModule, Map String SerializableConstructorMetadata)
-linkCompiledModules packageName compiledModules externalConstructors = do
+linkCompiledModules packageName compiledModules externalConstructors externalAlloyModules = do
     putStrLn "\n=== Starting link-time optimization phase ==="
 
-    let alloyModules = map cmAlloyExpanded compiledModules
+    let localAlloyModules = map cmAlloyExpanded compiledModules
+    let allAlloyModules = localAlloyModules ++ externalAlloyModules
 
     let fusedAst = createFusedAst [(cmResolvedAst cm, cmTypeMap cm, cmPublicSymbols cm) | cm <- compiledModules]
         localConstructors = extractConstructorMetadata fusedAst
         allConstructors = Map.union externalConstructors (Map.map constructorMetadataToSerializable localConstructors)
 
-    let fusedAlloy = concatenateAlloyModules packageName alloyModules
+    let fusedAlloy = concatenateAlloyModules packageName allAlloyModules
 
     let alloyWithDicts = transformModuleWithDictionaries fusedAlloy
         alloyMono = monomorphizeModule alloyWithDicts
@@ -173,20 +175,19 @@ processModulesIncremental :: [String] -> ModuleGraph -> Options -> IO ()
 processModulesIncremental sorted graph compileOptions = do
     let inputName = fromMaybe "app" $ optionsName compileOptions
 
-    (externalDeps, externalConstructors) <- processExternalDependencies (optionsDeps compileOptions)
+    (externalDeps, externalConstructors, externalAlloyModules) <- processExternalDependencies (optionsDeps compileOptions)
 
     compiledModules <- compileAllModulesInOrder sorted graph Map.empty externalDeps externalConstructors inputName
 
     putStrLn $ "\n✅ Compiled " ++ show (length compiledModules) ++ " modules separately"
 
-    (alloyOpt, allCtorsForCodeGen) <- linkCompiledModules inputName compiledModules externalConstructors
+    (alloyOpt, allCtorsForCodeGen) <- linkCompiledModules inputName compiledModules externalConstructors externalAlloyModules
 
     let llvmIr = runLlvmCodeGenAndTranscribe alloyOpt
 
     generateOutputFile inputName llvmIr compileOptions compiledModules graph allCtorsForCodeGen
 
     putStrLn "✅ Build process completed."
-
 compileAllModulesInOrder ::
     [ModuleName] ->
     ModuleGraph ->
@@ -259,6 +260,7 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                     (\(_ :: SomeException) -> return False)
 
             objContent <- BL.readFile objFile
+            let alloyModulesToSave = map cmAlloyExpanded compiledModules
 
             createProjectTarball
                 outputFile
@@ -271,6 +273,7 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                 allConstructors
                 [(objFile, objContent) | objFileExists]
                 [(llFile, BLC.pack llvmIr)]
+                alloyModulesToSave
 
             catch (removeFile objFile) (\(_ :: SomeException) -> return ())
         ""
@@ -311,7 +314,7 @@ filterSymbolsByNames :: [String] -> Map.Map Symbol QualifiedType -> Map.Map Symb
 filterSymbolsByNames names =
     Map.filterWithKey (\sym _ -> resolvedSymbolName sym `elem` names)
 
-processExternalDependencies :: [(String, String)] -> IO (Map.Map String (Map.Map Symbol QualifiedType), Map.Map String SerializableConstructorMetadata)
+processExternalDependencies :: [(String, String)] -> IO (Map.Map String (Map.Map Symbol QualifiedType), Map.Map String SerializableConstructorMetadata, [AlloyModule])
 processExternalDependencies externals = do
     list <-
         mapM
@@ -319,12 +322,13 @@ processExternalDependencies externals = do
                 tarball <- extractProjectTarball path
                 case tarball of
                     Left err -> error $ "Failed to extract external dependency " ++ name ++ ": " ++ err
-                    Right (TarballContents{tcMetadata}) -> do
+                    Right (TarballContents{tcMetadata, tcAlloyModules}) -> do
                         let exports = projectMetadataPublicSymbols tcMetadata
                         let constructors = projectMetadataConstructors tcMetadata
-                        pure (name, exports, constructors)
+                        pure (name, exports, constructors, tcAlloyModules)
             )
             externals
-    let symbols = Map.fromList [(name, exports) | (name, exports, _) <- list]
-    let constructors = Map.unions [ctors | (_, _, ctors) <- list]
-    pure (symbols, constructors)
+    let symbols = Map.fromList [(name, exports) | (name, exports, _, _) <- list]
+    let constructors = Map.unions [ctors | (_, _, ctors, _) <- list]
+    let externalAlloy = concat [modules | (_, _, _, modules) <- list]
+    pure (symbols, constructors, externalAlloy)

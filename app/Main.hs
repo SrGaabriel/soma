@@ -7,11 +7,11 @@ import Data.Maybe (fromMaybe)
 import Project.Graph
 import Project.Module
 import Project.Parsing
-import Project.Processing
 import Project.Incremental (processModulesIncremental)
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath (dropExtension, takeExtension, takeFileName)
+import Project.Incremental (extractSymbolImports)
 
 main :: IO ()
 main = do
@@ -75,7 +75,7 @@ processSingle options = do
             mapM_ (putStrLn . ("  " ++) . show) cycles
             exitFailure
         Right sorted -> do
-            _ <- processModules sorted graph options{optionsName = Just name}
+            _ <- processModulesIncremental sorted graph options{optionsName = Just name}
             return ()
 
     putStrLn "✅ Successfully compiled module."

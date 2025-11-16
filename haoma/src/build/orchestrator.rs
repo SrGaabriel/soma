@@ -7,7 +7,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, CacheEntry, HashCalculator};
-use crate::build::compile::link_executable;
+use crate::build::compile::compile_binary;
 use crate::build::errors::{BuildError, InternalBuildError};
 use crate::build::graph::DependencyGraph;
 use crate::build::resolve::DependencyResolver;
@@ -50,7 +50,9 @@ impl BuildOrchestrator {
 
     pub fn build(&mut self, manifest: &Manifest) -> BuildResult<BuildStats> {
         let build_start = Instant::now();
-        let multi_progress = MultiProgress::new();
+        let multi_progress = MultiProgress::with_draw_target(
+            indicatif::ProgressDrawTarget::stdout(),
+        );
 
         let resolution_pb = multi_progress.add(ProgressBar::new_spinner());
         resolution_pb.set_style(
@@ -125,7 +127,7 @@ impl BuildOrchestrator {
             linking_pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
             let linking_start = Instant::now();
-            final_binary_path = Some(self.link_binary(manifest, &build_results)?);
+            final_binary_path = Some(self.compile_final_binary(manifest, &build_results)?);
             let linking_time = linking_start.elapsed().as_millis();
 
             linking_pb.finish_with_message(format!(
@@ -229,27 +231,28 @@ impl BuildOrchestrator {
         )
     }
 
-    fn link_binary(
+    fn compile_final_binary(
         &self,
         manifest: &Manifest,
         build_results: &HashMap<String, BuildResults>,
     ) -> BuildResult<PathBuf> {
-        let build_path = self.root_path.join("build");
-        let output_executable = build_path.join(&manifest.name);
-
-        let mut all_objects = Vec::new();
-
+        let mut all_dependencies = HashMap::new();
         for result in build_results.values() {
-            if result.success {
-                all_objects.extend(result.object_paths.clone());
+            if result.success
+                && let Some(tarball_path) = &result.tarball_path
+            {
+                all_dependencies.insert(
+                    result.module_name.clone(),
+                    tarball_path.clone(),
+                );
             }
         }
 
-        if all_objects.is_empty() {
-            return Err(BuildError::Internal(InternalBuildError::NoObjectsToLink));
-        }
-
-        link_executable(all_objects, &output_executable)?;
+        let output_executable = compile_binary(
+            &self.root_path,
+            &manifest,
+            &all_dependencies
+        )?;
 
         Ok(output_executable)
     }
@@ -274,7 +277,6 @@ impl BuildOrchestrator {
                     dependency_hash: dep_hash.clone(),
                     artifact_path: tarball_path.clone(),
                     tarball_path: tarball_path.clone(),
-                    object_paths: result.object_paths.clone(),
                     build_timestamp: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()

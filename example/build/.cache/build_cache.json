@@ -1,1 +1,9 @@
-{}
+{
+  "stdlib": {
+    "source_hash": "4faf6d5ecf0fa20ee8a7f1584900cfe7116dee2e8ad998cdb6c132959f151259",
+    "dependency_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "artifact_path": "/home/gabriel/Developer/soma/stdlib/build/stdlib.toria",
+    "tarball_path": "/home/gabriel/Developer/soma/stdlib/build/stdlib.toria",
+    "build_timestamp": 1763256793
+  }
+}

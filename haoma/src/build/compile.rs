@@ -1,24 +1,48 @@
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use crate::build::BuildResult;
 use crate::build::errors::{BuildError, InternalBuildError};
 use crate::build::graph::BuildNode;
+use crate::config::manifest::Manifest;
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
-pub fn compile_module(
+pub fn compile_lib(
     node: &BuildNode,
     dependency_tarballs: &HashMap<String, PathBuf>,
-) -> Result<(PathBuf, Vec<PathBuf>), String> {
-    let module_path = &node.path;
-    let manifest = &node.manifest;
+) -> BuildResult<PathBuf> {
+    compile_module(
+        &node.path,
+        &node.manifest,
+        dependency_tarballs,
+        format!("{}.toria", node.manifest.name),
+    )
+}
+
+pub fn compile_binary(
+    module_path: &PathBuf,
+    manifest: &Manifest,
+    dependency_tarballs: &HashMap<String, PathBuf>,
+) -> BuildResult<PathBuf> {
+    compile_module(
+        module_path,
+        manifest,
+        dependency_tarballs,
+        manifest.name.clone(),
+    )
+}
+
+fn compile_module(
+    module_path: &PathBuf,
+    manifest: &Manifest,
+    dependency_tarballs: &HashMap<String, PathBuf>,
+    output_filename: String,
+) -> BuildResult<PathBuf> {
     let src_path = module_path.join("src");
     let build_path = module_path.join("build");
 
-    fs::create_dir_all(&build_path)
-        .map_err(|e| format!("Failed to create build directory: {}", e))?;
-    let output_tarball = build_path.join(format!("{}.toria", &manifest.name));
+    fs::create_dir_all(&build_path).map_err(BuildError::FailedToCreateBuildDirectory)?;
+    let output_file = build_path.join(output_filename);
 
     let mut command = Command::new("cabal");
     command
@@ -30,124 +54,29 @@ pub fn compile_module(
         .arg("--name")
         .arg(&manifest.name)
         .arg("--out")
-        .arg(&output_tarball);
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit()) 
+        .arg(&output_file);
 
-    for dep_name in &node.dependencies {
-        let dep_tarball = dependency_tarballs
-            .get(dep_name)
-            .ok_or_else(|| format!("Dependency tarball not found for '{}'", dep_name))?;
-
+    for (dep_name, dep_tarball) in dependency_tarballs {
         command
             .arg("--dep")
             .arg(format!("{}={}", dep_name, dep_tarball.display()));
     }
 
-    let status = command
-        .status()
-        .map_err(|e| format!("Failed to execute compiler: {}", e))?;
-
-    if !status.success() {
-        return Err(format!("Compilation failed for '{}'", manifest.name));
-    }
-
-    if !output_tarball.exists() {
-        return Err(format!(
-            "Compilation succeeded but output tarball not found: {}",
-            output_tarball.display()
-        ));
-    }
-
-    let objects_dir = build_path.join("objects");
-    fs::create_dir_all(&objects_dir)
-        .map_err(|e| format!("Failed to create objects directory: {}", e))?;
-
-    extract_tarball(&output_tarball, &objects_dir)?;
-
-    let object_paths = collect_object_files(&objects_dir)?;
-
-    Ok((output_tarball, object_paths))
-}
-
-fn extract_tarball(tarball_path: &Path, dest_dir: &Path) -> Result<(), String> {
-    use flate2::read::GzDecoder;
-    use std::fs::File;
-
-    let file = File::open(tarball_path).map_err(|e| format!("Failed to open tarball: {}", e))?;
-
-    let decompressed = GzDecoder::new(file);
-    let mut archive = tar::Archive::new(decompressed);
-
-    archive
-        .unpack(dest_dir)
-        .map_err(|e| format!("Failed to extract tarball: {}", e))?;
-
-    Ok(())
-}
-
-fn collect_object_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut objects = Vec::new();
-
-    if !dir.exists() {
-        return Ok(objects);
-    }
-
-    collect_object_files_recursive(dir, &mut objects)?;
-
-    Ok(objects)
-}
-
-fn collect_object_files_recursive(dir: &Path, objects: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries =
-        fs::read_dir(dir).map_err(|e| format!("Failed to read objects directory: {}", e))?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
-        let path = entry.path();
-
-        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("o") {
-            objects.push(path);
-        } else if path.is_dir() {
-            collect_object_files_recursive(&path, objects)?;
-        }
-    }
-
-    Ok(())
-}
-
-pub fn link_executable(object_files: Vec<PathBuf>, output_path: &Path) -> BuildResult<()> {
-    if object_files.is_empty() {
-        return Err(BuildError::Internal(InternalBuildError::NoObjectsToLink));
-    }
-
-    let mut command = Command::new("clang");
-
-    for object in &object_files {
-        command.arg(object);
-    }
-
-    command
-        .arg("-o")
-        .arg(output_path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
-
     let output = command
         .output()
-        .map_err(BuildError::FailedToExecuteLinker)?;
+        .map_err(BuildError::FailedToCallCompiler)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(BuildError::LinkingFailed(
-            output.status.code().unwrap(),
-            stderr.into_owned(),
-        ));
+        return Err(BuildError::CompilationFailed(manifest.name.clone()));
     }
 
-    if !output_path.exists() {
+    if !output_file.exists() {
         return Err(BuildError::Internal(
-            InternalBuildError::LinkingGeneratedNoOutput,
+            InternalBuildError::CompilationProducedNoOutput(manifest.name.clone()),
         ));
     }
 
-    Ok(())
+    Ok(output_file)
 }

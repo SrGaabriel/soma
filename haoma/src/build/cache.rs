@@ -14,7 +14,6 @@ pub struct CacheEntry {
     pub dependency_hash: String,
     pub artifact_path: PathBuf,
     pub tarball_path: PathBuf,
-    pub object_paths: Vec<PathBuf>,
     pub build_timestamp: u64,
 }
 
@@ -73,12 +72,6 @@ impl BuildCache {
 
             if !entry.tarball_path.exists() {
                 return false;
-            }
-
-            for obj in &entry.object_paths {
-                if !obj.exists() {
-                    return false;
-                }
             }
 
             true

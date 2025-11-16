@@ -23,7 +23,7 @@ impl DependencyResolver {
     pub fn resolve(&mut self, root_manifest: &Manifest) -> BuildResult<DependencyGraph> {
         let mut graph = DependencyGraph::new();
 
-        self.resolve_recursive(&self.root_path.clone(), root_manifest, &mut graph)?;
+        self.resolve_recursive(&self.root_path.clone(), root_manifest, &mut graph, true)?;
         graph.validate()?;
 
         Ok(graph)
@@ -34,6 +34,7 @@ impl DependencyResolver {
         module_path: &Path,
         manifest: &Manifest,
         graph: &mut DependencyGraph,
+        is_root: bool,
     ) -> BuildResult<()> {
         let module_name = manifest.name.clone();
 
@@ -89,7 +90,7 @@ impl DependencyResolver {
                     }
 
                     dependency_names.push(dep_name.clone());
-                    self.resolve_recursive(&dep_path, &dep_manifest, graph)?;
+                    self.resolve_recursive(&dep_path, &dep_manifest, graph, false)?;
                 }
                 ManifestDependencyValue::Version(_version) => {
                     return Err(BuildError::RegistryDependenciesNotSupported(
@@ -99,13 +100,15 @@ impl DependencyResolver {
             }
         }
 
-        let node = BuildNode {
-            name: module_name.clone(),
-            path: module_path.to_path_buf(),
-            manifest: manifest.clone(),
-            dependencies: dependency_names,
-        };
-        graph.add_node(node);
+        if !is_root {
+            let node = BuildNode {
+                name: module_name.clone(),
+                path: module_path.to_path_buf(),
+                manifest: manifest.clone(),
+                dependencies: dependency_names,
+            };
+            graph.add_node(node);
+        }
         Ok(())
     }
 
