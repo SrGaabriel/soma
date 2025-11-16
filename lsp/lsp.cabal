@@ -18,8 +18,6 @@ executable soma-lsp
   import: warnings
   main-is: Server.hs
   hs-source-dirs: app
-  other-modules:
-    Incremental
   build-depends:
     base,
     filepath,
@@ -31,6 +29,7 @@ executable soma-lsp
     lsp-types >=2.3,
     mtl >=2.3,
     text >=2.1,
+    directory >= 1.3,
     
   
 
