@@ -103,37 +103,38 @@ jobs:
               run: cabal test all --test-show-details=direct
               continue-on-error: true
 
-            - name: Generate documentation
-              run: cabal haddock all
-              continue-on-error: true
-
-            - name: Prepare executable (Unix)
+            - name: Prepare executables (Unix)
               if: runner.os != 'Windows'
               run: |
                   mkdir -p artifacts
                   cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}
+                  cp $(cabal list-bin exe:soma-lsp) artifacts/soma-lsp-${{ matrix.target }}
                   chmod +x artifacts/somac-${{ matrix.target }}
+                  chmod +x artifacts/soma-lsp-${{ matrix.target }}
 
-            - name: Prepare executable (Windows MSVC)
+            - name: Prepare executables (Windows MSVC)
               if: runner.os == 'Windows' && contains(matrix.target, 'msvc')
               shell: pwsh
               run: |
                   New-Item -ItemType Directory -Force -Path artifacts
-                  $exePath = cabal list-bin exe:soma
-                  Copy-Item $exePath "artifacts/somac-${{ matrix.target }}.exe"
+                  $somac = cabal list-bin exe:soma
+                  $somalsp = cabal list-bin exe:soma-lsp
+                  Copy-Item $somac "artifacts/somac-${{ matrix.target }}.exe"
+                  Copy-Item $somalsp "artifacts/soma-lsp-${{ matrix.target }}.exe"
 
-            - name: Prepare executable (Windows GNU)
+            - name: Prepare executables (Windows GNU)
               if: runner.os == 'Windows' && contains(matrix.target, 'gnu')
               shell: msys2 {0}
               run: |
                   mkdir -p artifacts
                   cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}.exe
+                  cp $(cabal list-bin exe:soma-lsp) artifacts/soma-lsp-${{ matrix.target }}.exe
 
             - name: Upload executable artifact
               uses: actions/upload-artifact@v4
               with:
                   name: somac-${{ matrix.target }}
-                  path: artifacts/somac-*
+                  path: artifacts/*
                   if-no-files-found: error
 
     rust-build:
