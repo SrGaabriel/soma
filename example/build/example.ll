@@ -3,10 +3,9 @@
 %Monad$m55344248$Dict = type { ptr }
 
 declare i32 @puts(ptr)
-@str_3=private unnamed_addr constant [16 x i8] c"<unknown shape>\00"
-@str_2=private unnamed_addr constant [10 x i8] c"Optional!\00"
-@str_1=private unnamed_addr constant [16 x i8] c"<unimplemented>\00"
-@str_0=private unnamed_addr constant [7 x i8] c"<list>\00"
+@str_2=private unnamed_addr constant [16 x i8] c"<unknown shape>\00"
+@str_1=private unnamed_addr constant [10 x i8] c"Optional!\00"
+@str_0=private unnamed_addr constant [16 x i8] c"<unimplemented>\00"
 
 
 @dict$Display$Array$m55344248 = internal constant %Display$m55344248$Dict { i8* @display$Array$m55344248 }
@@ -18,23 +17,9 @@ declare i32 @puts(ptr)
 @dict$Monad$IO$m55344248 = internal constant %Monad$m55344248$Dict { i8* @pure$IO$m55344248 }
 
 
-define i1 @totallyGenericEqGen$m55344248(ptr %dict$Eq$Ta,i32 %left,i32 %right) {
-entry:
-%tmp_reg_42 = getelementptr %Eq$m55344248$Dict, ptr %dict$Eq$Ta, i32 0, i32 0
-%tmp_reg_43 = load i1 (i32, i32)*, ptr %tmp_reg_42
-%tmp_reg_44 = call i1 %tmp_reg_43(i32 %left, i32 %right)
-ret i1 %tmp_reg_44
-
-}
 define i1 @testTotallyGenericEqGenOptional$m55344248({i8, i64} %left,{i8, i64} %right) {
 entry:
-%tmp_reg_41 = call i1 @totallyGenericEqGen$m55344248(ptr @dict$Eq$Optional$m55344248, {i8, i64} %left, {i8, i64} %right)
-ret i1 %tmp_reg_41
-
-}
-define i1 @testTotallyGenericEqGen$m55344248(ptr %dict$Eq$Ta,i32 %left,i32 %right) {
-entry:
-%tmp_reg_40 = call i1 @totallyGenericEqGen$m55344248(i32 %left, i32 %right)
+%tmp_reg_40 = call i1 @totallyGenericEqGen$m55344248(ptr @dict$Eq$Optional$m55344248, {i8, i64} %left, {i8, i64} %right)
 ret i1 %tmp_reg_40
 
 }
@@ -80,11 +65,6 @@ entry:
 %tmp_reg_27 = zext i32 %value to i64
 %tmp_reg_28 = insertvalue {i8, i64} %tmp_reg_26, i64 %tmp_reg_27, 1
 ret {i8, i64} %tmp_reg_28
-
-}
-define i32 @pure$IO$m55344248(i32 %value) {
-entry:
-ret i32 %value
 
 }
 define ptr @primeNumbers$m55344248() {
@@ -153,11 +133,6 @@ entry:
 ret i32 %value
 
 }
-define i32 @id$m55344248(i32 %value) {
-entry:
-ret i32 %value
-
-}
 define i1 @equals$Optional$m55344248({i8, i64} %x,{i8, i64} %y) {
 entry:
 ret i1 1
@@ -186,20 +161,15 @@ block3:
 ret ptr %tmp_reg_7
 
 block4:
-ret ptr @str_3
+ret ptr @str_2
 
 }
 define ptr @display$Optional$m55344248({i8, i64} %optional) {
 entry:
-ret ptr @str_2
-
-}
-define ptr @display$Int$m55344248(i32 %num) {
-entry:
 ret ptr @str_1
 
 }
-define ptr @display$Array$m55344248(ptr %lst) {
+define ptr @display$Int$m55344248(i32 %num) {
 entry:
 ret ptr @str_0
 

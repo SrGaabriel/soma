@@ -9,8 +9,3 @@ entry:
 ret i32 %tmp_reg_0
 
 }
-define i32 @id$m33972100(i32 %value) {
-entry:
-ret i32 %value
-
-}

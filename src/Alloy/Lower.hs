@@ -552,7 +552,7 @@ bindOne (PLit _) _ _ = pure []
 bindOne (PAs v p) op vt = do
     more <- bindOne p op vt
     pure ((v, op) : more)
-bindOne (PConstructor _ sub) op vt = bindPositional sub
+bindOne (PConstructor ctorName sub) op vt = bindPositional sub
   where
     bindPositional [] = pure []
     bindPositional ps = do
@@ -565,7 +565,14 @@ bindOne (PConstructor _ sub) op vt = bindPositional sub
                     mty = foldl (\acc v -> acc <|> Map.lookup v vt) Nothing vars
                 ty <- case mty of
                     Just t -> pure t
-                    Nothing -> failLower "Unable to infer field type for pattern binder"
+                    Nothing -> do
+                        env <- get
+                        case Map.lookup ctorName (leCtorFields env) of
+                            Just fields ->
+                                case drop idx fields of
+                                    (t : _) -> pure t
+                                    [] -> failLower ("Alloy.Lower: constructor " ++ ctorName ++ " has no field at index " ++ show idx)
+                            Nothing -> failLower ("Unable to infer field type for pattern binder for constructor " ++ ctorName)
                 tmp <- lift $ emitLetTmp ty (OpProject op idx)
                 bindOne sp (OpVar tmp) vt
             else pure []
