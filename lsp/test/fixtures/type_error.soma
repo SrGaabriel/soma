@@ -1,0 +1,1 @@
+def wrongType :: Int = "hello"
