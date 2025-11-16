@@ -12,7 +12,7 @@ env:
 
 jobs:
     haskell-build:
-        name: Build Haskell (somac)
+        name: Build Haskell
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
@@ -130,10 +130,17 @@ jobs:
                   cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}.exe
                   cp $(cabal list-bin exe:soma-lsp) artifacts/soma-lsp-${{ matrix.target }}.exe
 
-            - name: Upload executable artifact
+            - name: Upload somac artifact
               uses: actions/upload-artifact@v4
               with:
                   name: somac-${{ matrix.target }}
+                  path: artifacts/*
+                  if-no-files-found: error
+
+            - name: Upload soma-lsp artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: soma-lsp-${{ matrix.target }}
                   path: artifacts/*
                   if-no-files-found: error
 
