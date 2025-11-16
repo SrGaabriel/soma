@@ -7,12 +7,11 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, CacheEntry, HashCalculator};
-use crate::build::compile::compile_binary;
 use crate::build::errors::{BuildError, InternalBuildError};
 use crate::build::graph::DependencyGraph;
 use crate::build::resolve::DependencyResolver;
 use crate::build::scheduler::{BuildResults, LayeredBuilder};
-use crate::config::manifest::{Manifest, ManifestModuleType};
+use crate::config::manifest::Manifest;
 
 pub struct BuildOrchestrator {
     root_path: PathBuf,
@@ -112,34 +111,13 @@ impl BuildOrchestrator {
             &multi_progress,
         )?;
         let execution_time = execution_start.elapsed().as_millis();
-
-        let mut final_binary_path = None;
-        let linking_time = if matches!(manifest.module_type, ManifestModuleType::Binary) {
-            let linking_pb = multi_progress.add(ProgressBar::new_spinner());
-            linking_pb.set_style(
-                ProgressStyle::default_spinner()
-                    .template("{spinner:.cyan} {msg}")
-                    .unwrap()
-                    .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ "),
-            );
-            linking_pb.set_message(format!("{}", "Linking executable...".cyan()));
-            linking_pb.enable_steady_tick(std::time::Duration::from_millis(100));
-
-            let linking_start = Instant::now();
-            final_binary_path = Some(self.compile_final_binary(manifest, &build_results)?);
-            let linking_time = linking_start.elapsed().as_millis();
-
-            linking_pb.finish_with_message(format!(
-                "{} {} {}",
-                "✓".green(),
-                "Linking complete".dimmed(),
-                format!("({}ms)", linking_time).dimmed()
-            ));
-
-            linking_time
-        } else {
-            0
-        };
+        let final_binary_path = build_results.get(&manifest.name).and_then(|res| {
+            if res.success {
+                res.output_path.clone()
+            } else {
+                None
+            }
+        });
 
         self.update_cache(&build_results, &analysis.module_hashes)?;
 
@@ -154,7 +132,7 @@ impl BuildOrchestrator {
             resolution_time_ms: resolution_time,
             analysis_time_ms: analysis_time,
             execution_time_ms: execution_time,
-            linking_time_ms: linking_time,
+            linking_time_ms: 0,
         })
     }
 
@@ -230,25 +208,6 @@ impl BuildOrchestrator {
         )
     }
 
-    fn compile_final_binary(
-        &self,
-        manifest: &Manifest,
-        build_results: &HashMap<String, BuildResults>,
-    ) -> BuildResult<PathBuf> {
-        let mut all_dependencies = HashMap::new();
-        for result in build_results.values() {
-            if result.success
-                && let Some(tarball_path) = &result.tarball_path
-            {
-                all_dependencies.insert(result.module_name.clone(), tarball_path.clone());
-            }
-        }
-
-        let output_executable = compile_binary(&self.root_path, manifest, &all_dependencies)?;
-
-        Ok(output_executable)
-    }
-
     fn update_cache(
         &mut self,
         build_results: &HashMap<String, BuildResults>,
@@ -263,7 +222,7 @@ impl BuildOrchestrator {
                 BuildError::Internal(InternalBuildError::ModuleHashNotFound(module_name.clone()))
             })?;
 
-            if let Some(tarball_path) = &result.tarball_path {
+            if let Some(tarball_path) = &result.output_path {
                 let entry = CacheEntry {
                     source_hash: source_hash.clone(),
                     dependency_hash: dep_hash.clone(),

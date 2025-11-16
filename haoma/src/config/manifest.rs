@@ -14,7 +14,7 @@ pub struct Manifest {
     pub dependencies: ManifestDependencies,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum ManifestModuleType {
     #[serde(rename = "library")]
     Library,

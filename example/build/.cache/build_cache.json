@@ -1,9 +1,16 @@
 {
+  "example": {
+    "source_hash": "f455868bd8b9948a4bdef136d929a6fe784cc997342bedaf0b01b6599ff059e8",
+    "dependency_hash": "a51a58d3b5e9a33a3fa26a2c13a846808a507165341e0ca2f8db1ef8f6975f18",
+    "artifact_path": "../example/build/example",
+    "tarball_path": "../example/build/example",
+    "build_timestamp": 1763326559
+  },
   "stdlib": {
     "source_hash": "4faf6d5ecf0fa20ee8a7f1584900cfe7116dee2e8ad998cdb6c132959f151259",
     "dependency_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "artifact_path": "/home/gabriel/Developer/soma/stdlib/build/stdlib.toria",
     "tarball_path": "/home/gabriel/Developer/soma/stdlib/build/stdlib.toria",
-    "build_timestamp": 1763256793
+    "build_timestamp": 1763326559
   }
 }

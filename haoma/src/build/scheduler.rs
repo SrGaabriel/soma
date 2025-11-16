@@ -9,15 +9,16 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, HashCalculator};
-use crate::build::compile::compile_lib;
+use crate::build::compile::{compile_binary, compile_lib};
 use crate::build::errors::{BuildError, InternalBuildError};
 use crate::build::graph::BuildNode;
+use crate::config::manifest::ManifestModuleType;
 
 #[derive(Debug)]
 pub struct BuildResults {
     pub module_name: String,
     pub success: bool,
-    pub tarball_path: Option<PathBuf>,
+    pub output_path: Option<PathBuf>,
     #[allow(dead_code)]
     pub source_hash: String,
     #[allow(dead_code)]
@@ -113,12 +114,16 @@ impl BuildScheduler {
             .map(|_| source_hash.clone())
             .collect();
         let dependency_hash = HashCalculator::hash_dependencies(&dep_hash_values);
+        let compilation_result = match node.manifest.module_type {
+            ManifestModuleType::Binary => compile_binary(&node, &work_item.dependency_tarballs),
+            ManifestModuleType::Library => compile_lib(&node, &work_item.dependency_tarballs),
+        };
 
-        match compile_lib(&node, &work_item.dependency_tarballs) {
-            Ok(dep_tarall) => BuildResults {
+        match compilation_result {
+            Ok(compilation_output) => BuildResults {
                 module_name,
                 success: true,
-                tarball_path: Some(dep_tarall),
+                output_path: Some(compilation_output),
                 source_hash,
                 dependency_hash,
                 error: None,
@@ -126,7 +131,7 @@ impl BuildScheduler {
             Err(e) => BuildResults {
                 module_name,
                 success: false,
-                tarball_path: None,
+                output_path: None,
                 source_hash,
                 dependency_hash,
                 error: Some(e),
@@ -218,7 +223,7 @@ impl LayeredBuilder {
                         let cached_result = BuildResults {
                             module_name: module_name.clone(),
                             success: true,
-                            tarball_path: Some(cache_entry.tarball_path.clone()),
+                            output_path: Some(cache_entry.tarball_path.clone()),
                             source_hash: source_hash.clone(),
                             dependency_hash: dep_hash.clone(),
                             error: None,
@@ -261,7 +266,7 @@ impl LayeredBuilder {
                             "✓".green(),
                             result.module_name
                         ));
-                        if let Some(tarball) = &result.tarball_path {
+                        if let Some(tarball) = &result.output_path {
                             tarball_paths.insert(result.module_name.clone(), tarball.clone());
                         }
                     } else {

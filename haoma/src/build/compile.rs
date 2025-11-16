@@ -1,10 +1,9 @@
 use crate::build::BuildResult;
 use crate::build::errors::{BuildError, InternalBuildError};
 use crate::build::graph::BuildNode;
-use crate::config::manifest::Manifest;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 pub fn compile_lib(
@@ -12,32 +11,30 @@ pub fn compile_lib(
     dependency_tarballs: &HashMap<String, PathBuf>,
 ) -> BuildResult<PathBuf> {
     compile_module(
-        &node.path,
-        &node.manifest,
+        &node,
         dependency_tarballs,
         format!("{}.toria", node.manifest.name),
     )
 }
 
 pub fn compile_binary(
-    module_path: &Path,
-    manifest: &Manifest,
+    node: &BuildNode,
     dependency_tarballs: &HashMap<String, PathBuf>,
 ) -> BuildResult<PathBuf> {
     compile_module(
-        module_path,
-        manifest,
+        node,
         dependency_tarballs,
-        manifest.name.clone(),
+        node.name.clone()
     )
 }
 
 fn compile_module(
-    module_path: &Path,
-    manifest: &Manifest,
+    node: &BuildNode,
     dependency_tarballs: &HashMap<String, PathBuf>,
     output_filename: String,
 ) -> BuildResult<PathBuf> {
+    let module_path = &node.path;
+    let manifest = &node.manifest;
     let src_path = module_path.join("src");
     let build_path = module_path.join("build");
 
