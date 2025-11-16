@@ -134,14 +134,14 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: somac-${{ matrix.target }}
-                  path: artifacts/*
+                  path: artifacts/somac-*
                   if-no-files-found: error
 
             - name: Upload soma-lsp artifact
               uses: actions/upload-artifact@v4
               with:
                   name: soma-lsp-${{ matrix.target }}
-                  path: artifacts/*
+                  path: artifacts/soma-lsp-*
                   if-no-files-found: error
 
     rust-build:
