@@ -1,3 +1,5 @@
 packages:
   .
   lsp
+
+tests: True

@@ -113,7 +113,7 @@ analyzeFile LspState{..} fileUri = do
 
             case parse tokens of
                 Left parseErr -> do
-                    let diags = [errorToDiagnostic parseErr (virtualFileText vf)]
+                    let diags = [errorToDiagnostic parseErr]
                     Language.LSP.Server.publishDiagnostics 100 nUri Nothing (partitionBySource diags)
                 Right ast -> do
                     compiledMods <- liftIO $ readTVarIO stateModules
@@ -129,7 +129,7 @@ analyzeFile LspState{..} fileUri = do
 
                     case result of
                         Left errors -> do
-                            let diags = map errorToDiagnostic errors (virtualFileText vf)
+                            let diags = map errorToDiagnostic errors
                             Language.LSP.Server.publishDiagnostics 100 nUri Nothing (partitionBySource diags)
                         Right compiled -> do
                             liftIO
@@ -182,13 +182,13 @@ instance PrintableError SomeError where
     errorEnd (SomeError e) = errorEnd e
     errorMessage (SomeError e) = errorMessage e
 
-errorToDiagnostic :: (PrintableError e) => e -> T.Text -> Diagnostic
-errorToDiagnostic err fileContent =
+errorToDiagnostic :: (PrintableError e) => e -> Diagnostic
+errorToDiagnostic err =
     Diagnostic
         { _range =
             Range
-                (offsetToPosition fileContent (fromIntegral $ errorStart err))
-                (offsetToPosition fileContent (fromIntegral $ errorEnd err))
+                (offsetToPosition $ errorStart err)
+                (offsetToPosition $ errorEnd err)
         , _severity = Just DiagnosticSeverity_Error
         , _code = Nothing
         , _codeDescription = Nothing
