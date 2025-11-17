@@ -1,4 +1,13 @@
-module Lexing.Lexer (Token (..), TokenKind (..), tokenize, tokenizeFile, referenceToken, referenceTokenKind, tokenSpan, spanningTokens) where
+module Lexing.Lexer (
+    Token (..),
+    TokenKind (..),
+    tokenize,
+    tokenizeFile,
+    referenceToken,
+    referenceTokenKind,
+    tokenSpan,
+    spanningTokens,
+) where
 
 import Data.Char (generalCategory)
 import qualified Data.Char as C
@@ -53,6 +62,7 @@ data TokenKind
     | TokenLayoutStart
     | TokenLayoutSeparator
     | TokenLayoutEnd
+    | TokenEOF -- this token isn't actually produced by the lexer, but it's useful for parser error recovery
     deriving (Show, Eq, Ord)
 
 data Token = Token
@@ -125,25 +135,24 @@ tokenize (c : cs) i stack
             newIndent = length spaces
             newI = i + 1 + length spaces
             current = head stack
-            (layoutTokens, newStack, newErrors) =
-                if newIndent > current
-                    then
-                        ([Token TokenLayoutStart "" i], newIndent : stack, [])
-                    else
-                        if newIndent == current
+            (layoutTokens, newStack, newErrors)
+                | newIndent > current =
+                    ([Token TokenLayoutStart "" i], newIndent : stack, [])
+                | newIndent == current =
+                    if current > 0
+                        then
+                            ([Token TokenLayoutSeparator "" i], stack, [])
+                        else
+                            ([], stack, [])
+                | otherwise =
+                    let
+                        (dedentToks, remainingStack, isMatch) = dedentTo stack newIndent i
+                    in
+                        if isMatch
                             then
-                                if current > 0
-                                    then
-                                        ([Token TokenLayoutSeparator "" i], stack, [])
-                                    else
-                                        ([], stack, [])
+                                (dedentToks, remainingStack, [])
                             else
-                                let (dedentToks, remainingStack, isMatch) = dedentTo stack newIndent i
-                                in if isMatch
-                                    then
-                                        (dedentToks, remainingStack, [])
-                                    else
-                                        (dedentToks, newIndent : remainingStack, [InconsistentIndent i])
+                                (dedentToks, newIndent : remainingStack, [InconsistentIndent i])
             (restTokens, restErrors) = tokenize rest newI newStack
         in (layoutTokens ++ restTokens, newErrors ++ restErrors)
     | c == '|' = case cs of
@@ -323,6 +332,7 @@ referenceTokenKind TokenCompose = "'compose'"
 referenceTokenKind TokenLayoutStart = "layout start"
 referenceTokenKind TokenLayoutSeparator = "layout separator"
 referenceTokenKind TokenLayoutEnd = "layout end"
+referenceTokenKind TokenEOF = "end of file"
 
 tokenSpan :: Token -> Span
 tokenSpan token = Span (tokenPos token) (tokenPos token + length (tokenValue token))

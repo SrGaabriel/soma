@@ -1,235 +1,231 @@
-{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Parsing.Parser where
 
-import Control.Applicative (Alternative (..))
-import Control.Monad.Error.Class (MonadError (..))
+import Control.Monad (void)
+import Control.Monad.State
 import Data.Functor (($>))
-import Lexing.Lexer (Token (..), TokenKind (..))
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as NE
+import Data.Maybe (fromMaybe)
+import qualified Data.Set as Set
+import Lexing.Lexer (Token (..), TokenKind (..), tokenKind)
 import Parsing.Errors (ParsingError (..))
-import Control.Applicative.Combinators (manyTill)
+import Text.Megaparsec hiding (Token, anySingle, parse, satisfy, tokens, withRecovery)
+import qualified Text.Megaparsec as MP
 
-newtype Parser a = Parser
-    { runParser :: [Token] -> Either ParsingError (a, [Token])
+newtype TokenStream = TokenStream {unTokenStream :: [Token]}
+    deriving (Eq, Ord)
+
+instance Stream TokenStream where
+    type Token TokenStream = Token
+    type Tokens TokenStream = TokenStream
+    tokenToChunk _ t = TokenStream [t]
+    tokensToChunk _ = TokenStream
+    chunkToTokens _ = unTokenStream
+    chunkLength _ = length . unTokenStream
+    chunkEmpty _ = null . unTokenStream
+    take1_ (TokenStream []) = Nothing
+    take1_ (TokenStream (t : ts)) = Just (t, TokenStream ts)
+    takeN_ n (TokenStream s)
+        | n <= 0 = Just (TokenStream [], TokenStream s)
+        | null s = Nothing
+        | otherwise = let (pre, post) = splitAt n s in Just (TokenStream pre, TokenStream post)
+    takeWhile_ f (TokenStream s) = let (pre, post) = span f s in (TokenStream pre, TokenStream post)
+
+instance VisualStream TokenStream where
+    showTokens _ = unwords . map (show . tokenKind) . NE.toList
+
+instance TraversableStream TokenStream where
+    reachOffset offset pstate =
+        let tokens = unTokenStream (pstateInput pstate)
+            (pre, post) = splitAt (offset - pstateOffset pstate) tokens
+            newOffset = pstateOffset pstate + length pre
+            newState =
+                pstate
+                    { pstateOffset = newOffset
+                    , pstateInput = TokenStream post
+                    }
+            line = case post of
+                [] -> "<end of input>"
+                (t : _) -> "at " ++ show (tokenKind t)
+        in (Just line, newState)
+
+type Parser = StateT ParserState (Parsec ParsingError TokenStream)
+
+data ParserState = ParserState
+    { accumulatedErrors :: [ParseError TokenStream ParsingError]
+    , errorCount :: Int
     }
-    deriving (Functor)
 
-instance Applicative Parser where
-    pure x = Parser $ \tokens -> Right (x, tokens)
-    Parser p1 <*> Parser p2 = Parser $ \tokens -> do
-        (f, rest1) <- p1 tokens
-        (x, rest2) <- p2 rest1
-        Right (f x, rest2)
+initialParserState :: ParserState
+initialParserState = ParserState [] 0
 
-instance Monad Parser where
-    Parser p >>= f = Parser $ \tokens -> do
-        (x, rest) <- p tokens
-        let Parser p2 = f x
-        p2 rest
+recordError :: ParseError TokenStream ParsingError -> Parser ()
+recordError err = modify $ \s ->
+    s
+        { accumulatedErrors = err : accumulatedErrors s
+        , errorCount = errorCount s + 1
+        }
 
-instance Alternative Parser where
-    empty = Parser $ \_ -> Left EndOfInput
-    Parser p1 <|> Parser p2 = Parser $ \tokens -> case p1 tokens of
-        Left _ -> p2 tokens
-        Right x -> Right x
+withRecovery :: Parser a -> Parser a -> Parser a
+withRecovery parser recovery = do
+    observing parser >>= \case
+        Right result -> pure result
+        Left err -> do
+            recordError err
+            recovery
 
-instance MonadError ParsingError Parser where
-    throwError = Parser . const . Left
-    catchError (Parser p) handler = Parser $ \tokens -> case p tokens of
-        Left err -> runParser (handler err) tokens
-        Right x -> Right x
+skipUntilSync :: [TokenKind] -> Parser ()
+skipUntilSync syncTokens = void $ MP.manyTill anySingle (lookAhead syncPoint <|> eof)
+  where
+    syncPoint = MP.choice [void (satisfy (\t -> tokenKind t `elem` syncTokens))]
+
+recoverStatement :: Parser a -> a -> Parser a
+recoverStatement parser defaultValue =
+    withRecovery parser (skipUntilSync syncTokens $> defaultValue)
+  where
+    syncTokens =
+        [ TokenLayoutSeparator
+        , TokenLayoutEnd
+        , TokenLet
+        , TokenData
+        ]
+
+parseWithRecovery :: Parser a -> [Token] -> Either [ParseError TokenStream ParsingError] (a, [ParseError TokenStream ParsingError])
+parseWithRecovery parser tokens =
+    case runParser (runStateT parser initialParserState) "" (TokenStream tokens) of
+        Left bundle ->
+            let errs = NE.toList (MP.bundleErrors bundle)
+            in Left errs
+        Right (result, st) ->
+            let allErrors = reverse (accumulatedErrors st)
+            in Right (result, allErrors)
+
+satisfy :: (Token -> Bool) -> Parser Token
+satisfy f = token test Set.empty
+  where
+    test t
+        | f t = Just t
+        | otherwise = Nothing
+
+unrecoverableConsume :: TokenKind -> Parser Token
+unrecoverableConsume kind = label (show kind) (satisfy (\t -> tokenKind t == kind) <?> show kind)
 
 consume :: TokenKind -> Parser Token
-consume expectedKind = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts)
-        | tokenKind t == expectedKind -> Right (t, ts)
-        | otherwise -> Left $ ExpectedDifferentToken expectedKind t
-
-confirm :: TokenKind -> Parser ()
-confirm expectedKind = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts)
-        | tokenKind t == expectedKind -> Right ((), t : ts)
-        | otherwise -> Left $ ExpectedDifferentToken expectedKind t
-
-next :: Parser Token
-next = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts) -> Right (t, ts)
+consume kind = withRecovery (unrecoverableConsume kind) $ do
+    pos <- unPos . sourceLine <$> getSourcePos
+    actual <- tryPeekOrEOF
+    _ <- MP.customFailure $ UnexpectedToken actual
+    pure $ Token kind "" pos
 
 peek :: Parser Token
-peek = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts) -> Right (t, t : ts)
+peek = lookAhead anySingle
 
-peekInLayout :: Parser Token
-peekInLayout = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts) -> case seeIfLayout (t : ts) of
-        Left err -> Left err
-        Right (token, _) -> Right (token, t : ts)
-  where
-    seeIfLayout = \case
-        [] -> Left EndOfInput
-        (t : ts)
-            | tokenKind t == TokenLayoutStart -> runParser peekInLayout ts
-            | otherwise -> Right (t, t : ts)
+tryPeek :: Parser (Maybe Token)
+tryPeek = MP.optional (lookAhead anySingle)
 
-peekNext :: Parser Token
-peekNext = Parser $ \case
-    [] -> Left EndOfInput
-    (f : t : ts) -> Right (t, f : t : ts)
-    [_] -> Left EndOfInput
+tryPeekOrEOF :: Parser Token
+tryPeekOrEOF = fromMaybe (Token TokenEOF "" 0) <$> MP.optional (lookAhead anySingle)
 
-skipping :: Int -> Parser Token
-skipping n = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts) -> Right (t, drop n ts)
+anySingle :: Parser Token
+anySingle = satisfy (const True)
 
-expect :: TokenKind -> Parser Token
-expect kind = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts) ->
-        if tokenKind t == kind
-            then Right (t, t : ts)
-            else Left $ ExpectedDifferentToken kind t
-
-optional :: Parser a -> Parser (Maybe a)
-optional parser = (Just <$> parser) <|> pure Nothing
-
-parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
-parseSequence separator end itemParser = Parser $ \tokens -> do
-    parseNext [] tokens
-  where
-    parseNext acc remaining = do
-        endCheck <- runParser peek remaining
-        if tokenKind (fst endCheck) == end
-            then Right (reverse acc, remaining)
-            else do
-                (item, rest) <- runParser itemParser remaining
-                case rest of
-                    [] -> Left EndOfInput
-                    _ -> do
-                        (tokenPeek, _) <- runParser peek rest
-                        case tokenKind tokenPeek of
-                            tk
-                                | tk == separator -> do
-                                    (_, rest') <- runParser next rest
-                                    parseNext (item : acc) rest'
-                                | tk == end -> Right (reverse (item : acc), rest)
-                                | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
+confirm :: TokenKind -> Parser ()
+confirm kind = void $ lookAhead (consume kind)
 
 parseCommaSeparatedUntil :: TokenKind -> Parser a -> Parser [a]
 parseCommaSeparatedUntil end itemParser = parseList
   where
-    parseList = (:) <$> itemParser <*> parseRest <|> checkEmpty
+    parseList = (:) <$> itemWithRecovery <*> parseRest <|> checkEmpty
     parseRest = (consume TokenComma *> parseList) <|> checkEmpty
     checkEmpty = confirm end $> []
+    itemWithRecovery = withRecovery itemParser $ do
+        skipUntilSync [TokenComma, end]
+        MP.customFailure $ ExpectedAnExpression (Token end "" 0)
 
 parseExhaustiveSequence :: TokenKind -> Parser a -> Parser [a]
-parseExhaustiveSequence separator itemParser = Parser $ \tokens -> do
-    parseNext [] tokens
+parseExhaustiveSequence separator itemParser =
+    MP.sepBy itemWithRecovery (consume separator)
   where
-    parseNext acc remaining = do
-        (item, rest) <- runParser itemParser remaining
-        case rest of
-            [] -> Right (reverse (item : acc), [])
-            _ -> do
-                (tokenPeek, _) <- runParser next rest
-                case tokenKind tokenPeek of
-                    tk
-                        | tk == separator -> do
-                            (_, afterSeparator) <- runParser next rest
-                            parseNext (item : acc) afterSeparator
-                        | otherwise -> Right (reverse (item : acc), rest)
+    itemWithRecovery = withRecovery itemParser $ do
+        skipUntilSync [separator]
+        MP.customFailure $ ExpectedAnExpression (Token separator "" 0)
+
+parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
+parseSequence separator end itemParser = do
+    items <- MP.sepBy itemWithRecovery (consume separator)
+    _ <- MP.optional (consume end)
+    pure items
+  where
+    itemWithRecovery = withRecovery itemParser $ do
+        skipUntilSync [separator, end]
+        MP.customFailure $ ExpectedAnExpression (Token separator "" 0)
 
 parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
-parseFluidSequence end itemParser = Parser $ \tokens -> do
-    let parseNext acc remaining = case runParser (expect end) remaining of
-            Right (_, rest) -> Right (reverse acc, rest)
-            Left _ -> do
-                (item, rest') <- runParser itemParser remaining
-                case rest' of
-                    [] -> Right (reverse (item : acc), [])
-                    _ -> case parseNext (item : acc) rest' of
-                        Right (parsed, rest2) -> Right (parsed, rest2)
-                        Left err -> Left err
-    let value = parseNext [] tokens
-    case value of
-        Right (a, b) -> Right (a, b)
-        Left err -> Left err
+parseFluidSequence end itemParser = MP.manyTill itemWithRecovery (consume end)
+  where
+    itemWithRecovery = withRecovery itemParser $ do
+        skipUntilSync [end]
+        MP.customFailure $ ExpectedAnExpression (Token end "" 0)
 
 parseInLayout :: Parser a -> Parser a
-parseInLayout itemParser =
-    consume TokenLayoutStart >> itemParser <* consume TokenLayoutEnd
+parseInLayout = between (consume TokenLayoutStart) (consume TokenLayoutEnd)
 
 optionallyParseInLayout :: Parser a -> Parser a
-optionallyParseInLayout itemParser = do
-    start <- optional (consume TokenLayoutStart)
-    case start of
-        Just _ -> itemParser <* consume TokenLayoutEnd
-        Nothing -> itemParser
+optionallyParseInLayout p = parseInLayout p <|> p
 
 parseLayout :: Parser a -> Parser [a]
-parseLayout itemParser =
-    consume TokenLayoutStart >> sepBy1Until itemParser (consume TokenLayoutSeparator) (consume TokenLayoutEnd)
-
-someAccepting :: Parser a -> (ParsingError -> Bool) -> Parser [a]
-someAccepting parser predicate = Parser $ \tokens -> do
-    let parseNext acc remaining =
-            let result = runParser parser remaining
-            in case result of
-                Right (item, rest) -> case rest of
-                    [] -> Right (reverse (item : acc), [])
-                    _ -> parseNext (item : acc) rest
-                Left err ->
-                    if predicate err
-                        then Right (reverse acc, remaining)
-                        else Left err
-    parseNext [] tokens
-
-optionallySurrounded :: TokenKind -> TokenKind -> Parser a -> Parser a
-optionallySurrounded start end parser = do
-    startTok <- optional (consume start)
-    case startTok of
-        Just _ -> do
-            result <- parser
-            _ <- consume end
-            pure result
-        Nothing -> parser
-
-sepBy1Until :: Parser a -> Parser sep -> Parser end -> Parser [a]
-sepBy1Until p sep end = do
-    first <- p
-    rest <- manyTill (sep *> p) end
-    return (first : rest)
-
-indexedSepBy1Till :: (Int -> Parser a) -> Parser sep -> Parser end -> Parser [a]
-indexedSepBy1Till p sep end = go 0
+parseLayout itemParser = do
+    _ <- consume TokenLayoutStart
+    items <- MP.sepEndBy itemWithRecovery (consume TokenLayoutSeparator)
+    _ <- consume TokenLayoutEnd
+    pure items
   where
-    go n = do
-      x <- p n
-      xs <- manyTill (sep *> p (n + 1)) end
-      return (x : xs)
+    itemWithRecovery = withRecovery itemParser $ do
+        skipUntilSync [TokenLayoutSeparator, TokenLayoutEnd]
+        MP.customFailure $ ExpectedAnExpression (Token TokenLayoutSeparator "" 0)
 
-option :: a -> Parser a -> Parser a
-option def parser = Parser $ \tokens ->
-    case runParser parser tokens of
-        Right (result, rest) -> Right (result, rest)
-        Left _ -> Right (def, tokens)
+parseWithErrors :: Parser a -> [Token] -> Either (NonEmpty (ParseError TokenStream ParsingError)) (a, [ParseError TokenStream ParsingError])
+parseWithErrors parser tokens =
+    case parseWithRecovery parser tokens of
+        Left errs -> Left (NE.fromList errs)
+        Right (result, errs) -> Right (result, errs)
 
-parseFuncName :: Parser String
-parseFuncName = do
-    inc <- peek
-    case tokenKind inc of
-        TokenLowerIdentifier ->
-            tokenValue <$> next
-        TokenLeftBraces -> do
-            _ <- next
-            nameToken <- consume TokenVarSymbol
-            _ <- consume TokenRightBraces
-            pure $ tokenValue nameToken
-        _ -> throwError $ InvalidFunctionName inc
+parseStrict :: Parser a -> [Token] -> Either (ParseErrorBundle TokenStream ParsingError) a
+parseStrict parser tokens =
+    runParser (evalStateT parser initialParserState) "" (TokenStream tokens)
+
+runParserTokens :: Parser a -> [Token] -> Either (ParseErrorBundle TokenStream ParsingError) (a, [Token])
+runParserTokens parser tokens =
+    runParser action "" (TokenStream tokens)
+  where
+    action = do
+        (val, _ps) <- runStateT parser initialParserState
+        pstate <- MP.getParserState
+        let remaining = case MP.stateInput pstate of
+                TokenStream ts -> ts
+        pure (val, remaining)
+
+extractFromParseError :: ParseError TokenStream ParsingError -> [ParsingError]
+extractFromParseError pe =
+  case pe of
+    TrivialError {} -> []
+    FancyError _ fancySet ->
+      [ e | ErrorCustom e <- Set.toList fancySet ]
+        
+extractFromBundle :: ParseErrorBundle TokenStream ParsingError -> [ParsingError]
+extractFromBundle bundle =
+    concatMap extractFromParseError (NE.toList $ bundleErrors bundle)
+
+dropParsedTokens ::
+    Parser a ->
+    [Token] ->
+    [Token]
+dropParsedTokens parser tokens =
+    case runParserTokens parser tokens of
+        Right (_, leftover) -> leftover
+        Left _bundle -> []

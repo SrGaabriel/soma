@@ -20,6 +20,7 @@ fileExt = ".soma"
 data Command
     = Build Options
     | Lex String
+    | Parse String
     deriving (Show)
 
 data Options = Options
@@ -40,6 +41,7 @@ commandParser =
     hsubparser
         ( command "lex" (info (Lex <$> inputParser) (progDesc "Run the lexer"))
             <> command "build" (info (Build <$> optionsParser) (progDesc "Build the program"))
+            <> command "parse" (info (Parse <$> inputParser) (progDesc "Run the parser"))
         )
         <|> (Build <$> optionsParser)
 

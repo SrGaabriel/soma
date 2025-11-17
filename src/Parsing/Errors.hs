@@ -2,6 +2,7 @@ module Parsing.Errors (ParsingError (..), getErrorToken) where
 
 import Lexing.Lexer (Token (..), TokenKind, referenceToken, referenceTokenKind)
 import Logging.Errors (PrintableError (..))
+import Text.Megaparsec (ShowErrorComponent (showErrorComponent))
 
 data ParsingError
     = UnexpectedToken Token
@@ -24,7 +25,7 @@ data ParsingError
     | InvalidFunctionName Token
     | EndOfInput
     | Debug
-    deriving (Eq)
+    deriving (Eq, Ord)
 
 instance Show ParsingError where
     show (UnexpectedToken t) = "Unexpected token " ++ referenceToken t
@@ -61,6 +62,9 @@ instance PrintableError ParsingError where
         Nothing -> error $ "Unreachable errorEnd case reached: " ++ show err
 
     errorDebugDevDetails = show . getErrorToken
+
+instance ShowErrorComponent ParsingError where
+    showErrorComponent = show    
 
 getErrorToken :: ParsingError -> Maybe Token
 getErrorToken (UnexpectedToken t) = Just t

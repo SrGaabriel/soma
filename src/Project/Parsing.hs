@@ -9,16 +9,17 @@ import Parsing.Errors (ParsingError)
 import Project.Module (ModuleInfo (..))
 import Syntax.Tree (Expr, exprChildren)
 
-parseModule :: (String, FilePath) -> IO (Either ParsingError ModuleInfo)
+-- todo: fix this signature
+parseModule :: (String, FilePath) -> IO (Either [ParsingError] ModuleInfo)
 parseModule (modName, path) = do
     content <- readFile path
     let (tokens, lexErrors) = tokenizeFile content -- todo rename this fn
     unless (null lexErrors) $ do
         mapM_ (\e -> printError e path content "LEXING") lexErrors
     case parse tokens of
-        Left err -> do
-            printError err path content "PARSING"
-            return $ Left err
+        Left errors -> do
+            mapM_ (\err -> printError err path content "PARSING") errors
+            return $ Left errors
         Right ast -> do
             putStrLn "Parsed AST:"
             prettyPrintAst ast

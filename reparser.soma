@@ -1,0 +1,3 @@
+def testShape :s: Shape = Circle 5
+
+def testShape :s: Shape = Circle 5
