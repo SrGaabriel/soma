@@ -8,9 +8,8 @@ import Alloy.Ir (
     AlloyFunction (AlloyFunction, afBlocks, afParams),
  )
 import qualified Data.Map as Map
-import Llvm.Types (LlvmType)
-
 import Llvm.Gen.TypeConversion (convertType)
+import Llvm.Types (LlvmType)
 
 type OperandTypeEnv = Map.Map String LlvmType
 

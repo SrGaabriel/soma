@@ -6,7 +6,6 @@ module Metal.Lift (
 
 import Control.Monad.State.Strict
 import qualified Data.Set as Set
-
 import Metal.Expr
 import Metal.Function
 import Metal.Metadata

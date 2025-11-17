@@ -5,21 +5,20 @@
 
 module Logging.PrettyTrees where
 
+import Alloy.Ir
 import Data.List (intercalate)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Debug.Trace as Debug
 import Inference.Core (TypeMap)
+import Metal.Expr
+import Metal.Function
+import Metal.Module
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
 import Typing.Currying (uncurryKind)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), SkolemVar (skName), TyConstructor (..), TyVar (TypeVar, tvId), Type (..))
 import qualified Typing.Types as TT
-
-import Alloy.Ir
-import Metal.Expr
-import Metal.Function
-import Metal.Module
 
 class TreeShow a where
     treeShow :: a -> String
@@ -305,7 +304,7 @@ instance TreeShow AEffect where
     treeShow (EffDrop a) = "drop " ++ treeShow a
 
 instance TreeShow AInstr where
-    treeShow (ILet n _ op) = n ++ " = " ++ treeShow op
+    treeShow (ILet n ty op) = n ++ " = " ++ treeShow op ++ " (" ++ treeShow ty ++ ")"
     treeShow (IEffect eff) = treeShow eff
 
 instance TreeShow ATerminator where

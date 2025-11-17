@@ -105,3 +105,4 @@ $RECYCLE.BIN/
 # End of https://www.toptal.com/developers/gitignore/api/haskell,visualstudiocode,windows,linux,rust
 
 zlang/*
+report.html

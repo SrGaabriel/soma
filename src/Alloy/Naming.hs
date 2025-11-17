@@ -26,6 +26,8 @@ module Alloy.Naming (
     makeInstanceMethodName,
     makeMonomorphicName,
     makeRefParamName,
+    extractTypeName,
+    extractBaseTypeName,
 ) where
 
 import Data.Char (isAlphaNum)
@@ -129,12 +131,23 @@ makeInstanceMethodName :: String -> String -> String
 makeInstanceMethodName methodName typeName =
     methodName ++ nameSeparator ++ typeName
 
+-- todo: review
 makeMonomorphicName :: String -> String -> [Type] -> String
-makeMonomorphicName moduleName baseName typeArgs =
+makeMonomorphicName _moduleName baseName typeArgs =
     let enc = intercalate "_" (map encodeTypeName typeArgs)
         mangledBase = if null typeArgs then baseName else baseName ++ nameSeparator ++ enc
-    in qualifyWithModule moduleName mangledBase
+    in mangledBase
 
 makeRefParamName :: String -> String -> String
 makeRefParamName refName blockName =
     refName ++ nameParamSeparator ++ blockName
+
+extractTypeName :: Type -> String
+extractTypeName (TConstructor (TypeConstructor name _)) = name
+extractTypeName (TApp a b) = extractTypeName a ++ nameSeparator ++ extractTypeName b
+extractTypeName _ = "Unknown"
+
+extractBaseTypeName :: Type -> String
+extractBaseTypeName (TConstructor (TypeConstructor name _)) = name
+extractBaseTypeName (TApp a _) = extractBaseTypeName a
+extractBaseTypeName _ = "Unknown"

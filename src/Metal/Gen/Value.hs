@@ -7,7 +7,6 @@ module Metal.Gen.Value where
 import Control.Monad.Reader (asks)
 import Data.Map (Map)
 import qualified Data.Map as Map
-
 import Metal.Expr
 import Metal.Gen.Core
 import Metal.Metadata

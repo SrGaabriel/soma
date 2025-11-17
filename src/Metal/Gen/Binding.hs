@@ -3,12 +3,10 @@
 
 module Metal.Gen.Binding where
 
+import Alloy.Decisions (patternMatchArity)
 import Control.Monad (foldM, forM)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-
-import Alloy.Decisions (patternMatchArity)
-
 import Metal.Expr (MCaseArm (..), MetallicExpr (..))
 import Metal.Function (MetallicFunction (..))
 import Metal.Gen.Core (

@@ -6,18 +6,6 @@ module Alloy.Lower (
     lowerAlloyModule,
 ) where
 
-import Control.Applicative ((<|>))
-import Control.Monad.State.Strict
-import qualified Data.Map.Strict as Map
-
-import Alloy.Decisions (
-    Accessor (..),
-    Constructor (..),
-    DecisionTree (..),
-    compile,
-    mkPatternMatrix,
- )
-
 import Alloy.Build (
     AlloyBuilder,
     beginBlock,
@@ -28,8 +16,17 @@ import Alloy.Build (
     runAlloyBuilder,
     terminate,
  )
+import Alloy.Decisions (
+    Accessor (..),
+    Constructor (..),
+    DecisionTree (..),
+    compile,
+    mkPatternMatrix,
+ )
 import Alloy.Ir
-
+import Control.Applicative ((<|>))
+import Control.Monad.State.Strict
+import qualified Data.Map.Strict as Map
 import Metal.Expr (
     MCaseArm (..),
     MetallicComposeStmt (..),
@@ -37,12 +34,16 @@ import Metal.Expr (
     MetallicLiteral (..),
     getMetallicExprType,
  )
-
 import Metal.Function (
     MetallicFunction (..),
  )
 import Metal.Metadata (
     MetallicFunctionMetadata (..),
+ )
+import Metal.Module (
+    MetallicConstructor (..),
+    MetallicModule (..),
+    MetallicTypeDef (..),
  )
 import Metal.MonadProfile (
     MonadProfile (..),
@@ -50,17 +51,10 @@ import Metal.MonadProfile (
     buildMonadProfiles,
     lookupProfile,
  )
-
-import Metal.Module (
-    MetallicConstructor (..),
-    MetallicModule (..),
-    MetallicTypeDef (..),
- )
 import Syntax.Patterns (
     Literal (..),
     Pattern (..),
  )
-
 import Typing.Types (
     TyConstructor (..),
     Type (..),

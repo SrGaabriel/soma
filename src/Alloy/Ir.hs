@@ -8,7 +8,9 @@ import Metal.Metadata (MetallicTypeClassMetadata)
 import Typing.Types (Constraint, Type)
 
 type Name = String
+
 type BlockName = String
+
 type FieldIndex = Int
 
 data AlloyModule = AlloyModule
@@ -135,16 +137,29 @@ data ACmpOp
     deriving (Generic, Show, Eq, Ord)
 
 instance Binary AlloyModule
+
 instance Binary DictionaryDef
+
 instance Binary AlloyFunction
+
 instance Binary ABlock
+
 instance Binary AInstr
+
 instance Binary AOperand
+
 instance Binary AConst
+
 instance Binary ACallable
+
 instance Binary AOp
+
 instance Binary AEffect
+
 instance Binary ATerminator
+
 instance Binary ABinOpKind
+
 instance Binary AUnaryOpKind
+
 instance Binary ACmpOp

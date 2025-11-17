@@ -9,7 +9,6 @@ module Metal.MonadNormalize (
 ) where
 
 import Control.Monad.State.Strict
-
 import Metal.Expr
 import Metal.Function
 import Metal.Module

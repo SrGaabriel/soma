@@ -1,9 +1,8 @@
 module Metal.Gen.Entry where
 
+import Alloy.Naming (makeInstanceMethodName, nameArrayPrefix)
 import Control.Monad.State (gets, modify)
 import qualified Data.Map as Map
-
-import Alloy.Naming (makeInstanceMethodName, nameArrayPrefix)
 import Inference.Core (TypeMap)
 import Metal.Function (MetallicFunction (..))
 import Metal.Gen.Binding (metallizeBinding)

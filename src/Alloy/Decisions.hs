@@ -8,6 +8,7 @@ import Syntax.Patterns (Literal (..), Pattern (..))
 import qualified Syntax.Tree as AST (Expr (..))
 
 type Action = Int
+
 type Var = String
 
 data Accessor

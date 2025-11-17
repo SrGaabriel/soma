@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 
@@ -172,11 +171,19 @@ isPolymorphic (TConstructor _) = False
 isPolymorphic (TUnresolved _) = False
 
 instance Binary FlexInfo
+
 instance Binary Rigidity
+
 instance Binary SkolemVar
+
 instance Binary TyConstructor
+
 instance Binary TyVar
+
 instance Binary Kind
+
 instance Binary Type
+
 instance Binary Constraint
+
 instance Binary QualifiedType

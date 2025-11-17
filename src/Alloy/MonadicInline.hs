@@ -11,7 +11,6 @@ module Alloy.MonadicInline (
 
 import Alloy.Ir
 import Alloy.Subst (Subst, substEffect, substOp, substOperand, substTerminator)
-
 import Data.List (isPrefixOf)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
@@ -179,16 +178,27 @@ isIoBind MonadicOps{ioBind} = matches ioBind
 isReaderPure MonadicOps{readerPure} = matches readerPure
 isReaderBind MonadicOps{readerBind} = matches readerBind
 isReaderAsk MonadicOps{readerAsk} = matches readerAsk
+
 isRefNew MonadicOps{refNew} = matches refNew
+
 isRefRead MonadicOps{refRead} = matches refRead
+
 isRefModify MonadicOps{refModify} = matches refModify
+
 isStatePure MonadicOps{statePure} = matches statePure
+
 isStateBind MonadicOps{stateBind} = matches stateBind
+
 isStateGet MonadicOps{stateGet} = matches stateGet
+
 isStatePut MonadicOps{statePut} = matches statePut
+
 isMaybePure MonadicOps{maybePure} = matches maybePure
+
 isMaybeBind MonadicOps{maybeBind} = matches maybeBind
+
 isEitherPure MonadicOps{eitherPure} = matches eitherPure
+
 isEitherBind MonadicOps{eitherBind} = matches eitherBind
 
 isIoPureByType :: Name -> Type -> Bool

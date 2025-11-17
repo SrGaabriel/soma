@@ -37,7 +37,6 @@ module Metal.MonadProfile (
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-
 import Metal.Module (
     MetallicConstructor (..),
     MetallicModule (..),

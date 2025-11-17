@@ -16,15 +16,13 @@ module Alloy.Build (
     module Alloy.Ir,
 ) where
 
+import Alloy.Ir
+import Alloy.Naming (nameBlockPrefix, nameTmpPrefix)
 import Control.Monad (when)
 import Control.Monad.State.Strict
-
-import Alloy.Naming (nameBlockPrefix, nameTmpPrefix)
-import Typing.Types (Constraint, Type)
-
-import Alloy.Ir
 import Data.Maybe (isNothing)
 import qualified Metal.Metadata
+import Typing.Types (Constraint, Type)
 
 data BuildState = BuildState
     { bsModuleName :: String

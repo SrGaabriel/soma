@@ -4,12 +4,6 @@
 
 module Project.Incremental where
 
-import Control.Exception (SomeException, catch)
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
-import System.Directory
-import System.FilePath
-
 import Alloy.CSE (cseModuleGlobal)
 import Alloy.Defunc (defunctionalizeModule)
 import Alloy.DictionaryPass (transformModuleWithDictionaries)
@@ -23,14 +17,19 @@ import Alloy.PromoteRefs (promoteRefsModule)
 import Alloy.ReaderRewrite (readerRewriteModule)
 import Alloy.Simplify (simplifyModule)
 import Config.Options (Options (..))
+import Control.Exception (SomeException, catch)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import qualified Debug.Trace as Debug
 import Inference.Assembler (inferTreeT)
 import Inference.Core (TypeMap)
 import Inference.Resolver (runResolverWithEnv)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.ErrorPrinter (printError)
+import Logging.PrettyTrees (treeShow)
 import Metal.Gen.Entry (compileMetalModule)
 import Metal.Gen.Metadata (constructorMetadataToSerializable, extractConstructorMetadata, serializableToConstructorMetadata)
 import Metal.Lift (liftLambdas)
@@ -42,7 +41,9 @@ import Project.Module
 import Project.Symbols (Symbol (resolvedSymbolName))
 import Project.Tarball (TarballContents (TarballContents, tcAlloyModules, tcMetadata), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
 import Syntax.Tree (Expr (ExprImport, ExprRoot), exprChildren)
+import System.Directory
 import System.Exit (exitFailure)
+import System.FilePath
 import System.Process (callProcess)
 import Typing.Types (QualifiedType)
 
@@ -133,8 +134,10 @@ linkCompiledModules packageName compiledModules externalConstructors externalAll
 
     let fusedAlloy = concatenateAlloyModules packageName allAlloyModules
 
-    let alloyWithDicts = transformModuleWithDictionaries fusedAlloy
-        alloyMono = monomorphizeModule alloyWithDicts
+    -- todo: fix dicts
+    let
+        -- alloyWithDicts = transformModuleWithDictionaries fusedAlloy
+        alloyMono = monomorphizeModule fusedAlloy
         alloyDefunc = defunctionalizeModule alloyMono
         alloyReader = readerRewriteModule alloyDefunc
         alloyInlined = monadicInlineModule alloyReader
@@ -188,6 +191,7 @@ processModulesIncremental sorted graph compileOptions = do
     generateOutputFile inputName llvmIr compileOptions compiledModules graph allCtorsForCodeGen
 
     putStrLn "✅ Build process completed."
+
 compileAllModulesInOrder ::
     [ModuleName] ->
     ModuleGraph ->

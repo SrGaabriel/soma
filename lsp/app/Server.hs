@@ -228,6 +228,7 @@ getHoverAt pos LspCompiledModule{..} = do
                 MarkupKind_Markdown
                 (T.pack $ "```soma\n" ++ typeStr ++ "\n```")
     return $ Hover (InL markdown) Nothing
+
 handleGotoDefinition ::
     LspState ->
     TRequestMessage 'Method_TextDocumentDefinition ->

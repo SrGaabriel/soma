@@ -1,25 +1,22 @@
-%Display$m55344248$Dict = type { ptr }
-%Eq$m55344248$Dict = type { ptr }
-%Monad$m55344248$Dict = type { ptr }
 
 declare i32 @puts(ptr)
-@str_2=private unnamed_addr constant [16 x i8] c"<unknown shape>\00"
-@str_1=private unnamed_addr constant [10 x i8] c"Optional!\00"
-@str_0=private unnamed_addr constant [16 x i8] c"<unimplemented>\00"
+@str_3=private unnamed_addr constant [16 x i8] c"<unknown shape>\00"
+@str_2=private unnamed_addr constant [10 x i8] c"Optional!\00"
+@str_1=private unnamed_addr constant [16 x i8] c"<unimplemented>\00"
+@str_0=private unnamed_addr constant [7 x i8] c"<list>\00"
 
 
-@dict$Display$Array$m55344248 = internal constant %Display$m55344248$Dict { i8* @display$Array$m55344248 }
-@dict$Display$Int$m55344248 = internal constant %Display$m55344248$Dict { i8* @display$Int$m55344248 }
-@dict$Display$Optional$m55344248 = internal constant %Display$m55344248$Dict { i8* @display$Optional$m55344248 }
-@dict$Display$Shape$m55344248 = internal constant %Display$m55344248$Dict { i8* @display$Shape$m55344248 }
-@dict$Display$String$m55344248 = internal constant %Display$m55344248$Dict { i8* @display$String$m55344248 }
-@dict$Eq$Optional$m55344248 = internal constant %Eq$m55344248$Dict { i8* @equals$Optional$m55344248 }
-@dict$Monad$IO$m55344248 = internal constant %Monad$m55344248$Dict { i8* @pure$IO$m55344248 }
 
 
+define i1 @totallyGenericEqGen$Optional$m55344248({i8, i64} %left,{i8, i64} %right) {
+entry:
+%tmp_reg_41 = call i1 @equals$Optional$m55344248({i8, i64} %left, {i8, i64} %right)
+ret i1 %tmp_reg_41
+
+}
 define i1 @testTotallyGenericEqGenOptional$m55344248({i8, i64} %left,{i8, i64} %right) {
 entry:
-%tmp_reg_40 = call i1 @totallyGenericEqGen$m55344248(ptr @dict$Eq$Optional$m55344248, {i8, i64} %left, {i8, i64} %right)
+%tmp_reg_40 = call i1 @totallyGenericEqGen$Optional$m55344248({i8, i64} %left, {i8, i64} %right)
 ret i1 %tmp_reg_40
 
 }
@@ -83,7 +80,7 @@ ret ptr %tmp_reg_21
 }
 define i32 @main() {
 entry:
-%tmp_reg_8 = call i32 @id$Int$m55344248$m55344248(i32 5)
+%tmp_reg_8 = call i32 @id$Int$m55344248(i32 5)
 %tmp_reg_9 = call ptr @primeNumbers$m55344248()
 %tmp_reg_10 = alloca [4 x i32]
 %tmp_reg_11 = alloca i32
@@ -107,7 +104,7 @@ map_end_14:
 br label %block9
 
 block9:
-%tmp_reg_20 = call ptr @display$Array$m55344248(ptr %tmp_reg_10)
+%tmp_reg_20 = call ptr @display$Array$Int$m55344248(ptr %tmp_reg_10)
 call i32 @puts(ptr %tmp_reg_20)
 ret i32 0
 
@@ -128,7 +125,7 @@ block8:
 ret i1 0
 
 }
-define i32 @id$Int$m55344248$m55344248(i32 %value) {
+define i32 @id$Int$m55344248(i32 %value) {
 entry:
 ret i32 %value
 
@@ -161,15 +158,20 @@ block3:
 ret ptr %tmp_reg_7
 
 block4:
-ret ptr @str_2
+ret ptr @str_3
 
 }
 define ptr @display$Optional$m55344248({i8, i64} %optional) {
 entry:
-ret ptr @str_1
+ret ptr @str_2
 
 }
 define ptr @display$Int$m55344248(i32 %num) {
+entry:
+ret ptr @str_1
+
+}
+define ptr @display$Array$Int$m55344248(ptr %lst) {
 entry:
 ret ptr @str_0
 

@@ -30,7 +30,6 @@ module Alloy.ReaderRewrite (
 import Alloy.Ir
 import Alloy.Naming (nameEnvParam)
 import Alloy.Subst (Subst, substEffect, substOp, substTerminator)
-
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Typing.Types (TyConstructor (..), Type (..))
