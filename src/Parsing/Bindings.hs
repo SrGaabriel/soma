@@ -6,7 +6,7 @@ import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
 import Parsing.Atoms (parseExpression)
 import Parsing.Errors (ParsingError (FunctionArgumentLengthMismatch, InvalidFunctionBody))
-import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseFuncName, parseSequence, peekRelevant, skipNewlines)
+import Parsing.Parser (Parser, consume, next, optional, parseFuncName, parseSequence, peek, optionallyParseInLayout, peekInLayout)
 import Parsing.Patterns (parsePipePatternArms)
 import Parsing.Types (parseQualifiedType, parseType)
 import Syntax.Tree (Expr (..), exprSpan)
@@ -36,9 +36,8 @@ parseBinding isTopLevel = do
                         let bindingTyp = curryFunction types returnType
                         let tyVars = extractTyVars bindingTyp
                         let bindingTypeS = Forall tyVars [] bindingTyp
-                        eqTok <- consumeRelevant TokenEquals
-                        skipNewlines
-                        body <- parseExpression
+                        eqTok <- consume TokenEquals
+                        body <- optionallyParseInLayout parseExpression
                         let argNames = Prelude.map Prelude.fst mappings
                         let defBody = ExprLambda argNames body (exprSpan body)
                         pure $ ExprBindingDef name bindingTypeS defBody isTopLevel (spanningTokens defToken eqTok)
@@ -47,20 +46,18 @@ parseBinding isTopLevel = do
                         let paramNames = map tokenValue paramToks
                         _ <- consume TokenReturns
                         bindingTyp <- parseQualifiedType
-                        eqTok <- consumeRelevant TokenEquals
-                        skipNewlines
+                        eqTok <- consume TokenEquals
                         body <- parseExpression
                         let defBody = ExprLambda paramNames body (exprSpan body)
                         pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken eqTok)
                     | otherwise -> throwError $ FunctionArgumentLengthMismatch defToken
         Nothing -> do
-            _ <- consumeRelevant TokenReturns
+            _ <- consume TokenReturns
             bindingTyp <- parseQualifiedType
-            inc <- peekRelevant
+            inc <- peekInLayout
             case tokenKind inc of
                 TokenEquals -> do
                     eqTok <- next
-                    skipNewlines
                     body <- parseExpression
                     pure $ ExprBindingDef name bindingTyp body isTopLevel (spanningTokens defToken eqTok)
                 TokenPipe -> do
@@ -72,7 +69,7 @@ parseBinding isTopLevel = do
 parseImperativeBindingParam :: Parser ImperativeFuncParam
 parseImperativeBindingParam = do
     nameToken <- consume TokenLowerIdentifier
-    inc <- peekRelevant
+    inc <- peek
     case tokenKind inc of
         TokenColon -> do
             _ <- next

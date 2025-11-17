@@ -4,24 +4,46 @@ import Control.Applicative (Alternative (many, (<|>)))
 import Control.Monad (unless)
 import Control.Monad.Error.Class (MonadError (throwError))
 import Data.List (intercalate)
-import Lexing.Lexer (Token (tokenIndent, tokenKind, tokenValue), TokenKind (..), spanningTokens, tokenSpan)
+import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..), spanningTokens, tokenSpan)
 import Lexing.Position (Span (Span))
 import Parsing.Atoms (parseModuleName)
 import Parsing.Bindings (parseBinding)
 import Parsing.Errors (ParsingError (UnexpectedToken))
-import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseFuncName, parseIndentedBlock, parseIndexedIndentedBlock, parseSequence, peek)
+import Parsing.Parser (
+    Parser (runParser),
+    consume,
+    indexedSepBy1Till,
+    next,
+    optional,
+    parseFuncName,
+    parseInLayout,
+    parseLayout,
+    parseSequence,
+    peek,
+ )
 import Parsing.Types (parseKind, parseQualifiedType, parseTyVar, parseType)
 import Syntax.Tree (Expr (..))
 import Typing.Types (Constraint, QualifiedType (Forall), Type (TVar), mkConstraint)
 
 parse :: [Token] -> Either ParsingError Expr
 parse tokens = do
-    (root, _) <- runParser parser tokens
-    pure root
+    (root, remaining) <- runParser parser tokens
+    case remaining of
+        [] -> pure root
+        tok : _ -> throwError $ UnexpectedToken tok
   where
     parser = do
-        declarations <- parseExhaustiveSequence TokenNewline parseDeclaration
-        pure $ ExprRoot declarations
+        ExprRoot <$> someDeclarations
+
+someDeclarations :: Parser [Expr]
+someDeclarations = do
+    mtok <- optional peek
+    case mtok of
+        Nothing -> pure []
+        Just _ -> do
+            decl <- parseDeclaration
+            rest <- someDeclarations
+            pure (decl : rest)
 
 parseDeclaration :: Parser Expr
 parseDeclaration = do
@@ -29,7 +51,6 @@ parseDeclaration = do
     case tokenKind token of
         TokenDef -> parseBinding True
         TokenIntrinsic -> parseIntrinsicDef
-        TokenNewline -> next >> parseDeclaration
         TokenData -> parseDataType
         TokenClass -> parseTypeClass
         TokenInstance -> parseInstance
@@ -45,7 +66,7 @@ parseDataType = do
 
     let name = tokenValue nameToken
     let spanning = spanningTokens dataToken nameToken
-    constructors <- parseIndexedIndentedBlock (tokenIndent nameToken) parseStructConstructor
+    constructors <- parseInLayout $ indexedSepBy1Till parseStructConstructor (consume TokenPipe) (consume TokenLayoutEnd)
     pure
         $ ExprDataTypeDef
             { dataName = name
@@ -62,7 +83,7 @@ parseStructConstructor index = do
             then consume TokenEquals
             else consume TokenPipe
     nameToken <- consume TokenUpperIdentifier
-    fields <- parseIndentedBlock (tokenIndent nameToken) parseStructField
+    fields <- parseLayout parseStructField
     pure
         $ ExprDataConstructor
             { structConstructorName = tokenValue nameToken
@@ -73,7 +94,7 @@ parseStructConstructor index = do
 parseStructField :: Parser (String, Type)
 parseStructField = do
     nameToken <- consume TokenLowerIdentifier
-    _ <- consumeRelevant TokenReturns
+    _ <- consume TokenReturns
     typeExpr <- parseType
     pure (tokenValue nameToken, typeExpr)
 
@@ -88,7 +109,7 @@ parseTypeClass = do
     let name = tokenValue nameToken
     let typeClassConstraint = mkConstraint name (map TVar tyVars)
 
-    bindings <- parseIndentedBlock (tokenIndent nameToken) (parseTypeClassBinding typeClassConstraint)
+    bindings <- parseLayout (parseTypeClassBinding typeClassConstraint)
     pure
         $ ExprTypeClassDef
             { typeClassName = name
@@ -101,7 +122,7 @@ parseTypeClassBinding :: Typing.Types.Constraint -> Parser Expr
 parseTypeClassBinding typeClassConstraint = do
     defToken <- consume TokenDef
     bindName <- parseFuncName
-    retTok <- consumeRelevant TokenReturns
+    retTok <- consume TokenReturns
     Forall tyVars baseConstraints baseType <- parseQualifiedType
     let bindTyp = Forall tyVars (typeClassConstraint : baseConstraints) baseType
 
@@ -119,7 +140,7 @@ parseInstance = do
     constraintType <- parseType
 
     whereTok <- consume TokenWhere
-    bindings <- parseIndentedBlock (tokenIndent whereTok) (parseBinding False)
+    bindings <- parseLayout (parseBinding False)
     pure
         $ ExprInstanceDef
             { instanceConstraint = constraintType
@@ -158,13 +179,13 @@ parseIntrinsicDef = do
     case tokenKind inc of
         TokenDef -> do
             name <- parseFuncName
-            _ <- consumeRelevant TokenReturns
+            _ <- consume TokenReturns
             typ <- parseQualifiedType
             let spanning = spanningTokens intrinsicToken intrinsicToken
             pure $ ExprIntrinsicDef name typ spanning
         TokenData -> do
             nameToken <- consume TokenUpperIdentifier
-            _ <- consumeRelevant TokenReturns
+            _ <- consume TokenReturns
             kind <- parseKind
             let name = tokenValue nameToken
             let spanning = spanningTokens intrinsicToken nameToken

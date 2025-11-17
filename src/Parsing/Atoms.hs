@@ -4,7 +4,6 @@
 module Parsing.Atoms where
 
 import Control.Applicative ((<|>))
-import Control.Monad (when)
 import Control.Monad.Error.Class (MonadError (throwError))
 import Data.Maybe (fromMaybe)
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens, tokenSpan)
@@ -94,10 +93,7 @@ parseLetExpression = do
     identifier <- consume TokenLowerIdentifier
     _ <- consume TokenEquals
     value <- parseExpression
-    inTok <- consumeRelevant TokenIn
-
-    mapM_ validateIndentation =<< optional (consume TokenNewline)
-
+    inTok <- consume TokenIn
     body <- parseExpression
 
     pure
@@ -107,13 +103,6 @@ parseLetExpression = do
             , letBody = body
             , letSpan = Span (tokenPos letToken) (tokenPos inTok)
             }
-  where
-    validateIndentation newline =
-        let actualIndent = length (tokenValue newline)
-            expectedIndent = tokenIndent newline
-        in when (actualIndent /= expectedIndent)
-            $ throwError
-            $ ExpectedDifferentIndentation newline expectedIndent actualIndent
 
 operatorPrecedenceTable :: [[String]]
 operatorPrecedenceTable =
@@ -172,7 +161,7 @@ parseModuleName = do
 parseCompose :: Parser Expr
 parseCompose = do
     composeTok <- consume TokenCompose
-    stmts <- parseIndentedBlock (tokenIndent composeTok) parseComposeStmt
+    stmts <- parseLayout parseComposeStmt
     pure $ ExprCompose stmts (tokenSpan composeTok)
 
 parseComposeStmt :: Parser ComposeStmt

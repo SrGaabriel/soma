@@ -14,7 +14,6 @@ data TokenKind
     | TokenStrongRightArrow
     | TokenColon
     | TokenReturns
-    | TokenNewline
     | TokenCase
     | TokenDef
     | TokenIntrinsic
@@ -51,23 +50,27 @@ data TokenKind
     | TokenIf
     | TokenThen
     | TokenElse
+    | TokenLayoutStart
+    | TokenLayoutSeparator
+    | TokenLayoutEnd
     deriving (Show, Eq, Ord)
 
 data Token = Token
     { tokenKind :: TokenKind
     , tokenValue :: String
     , tokenPos :: Int
-    , tokenIndent :: Int
     }
     deriving (Show, Eq, Ord)
 
 tokenizeFile :: String -> ([Token], [LexingError])
-tokenizeFile content = tokenize content 0 0
+tokenizeFile content = tokenize content 0 [0]
 
-tokenize :: String -> Int -> Int -> ([Token], [LexingError])
-tokenize [] _ _ = ([], [])
-tokenize (c : cs) i indent
-    | isSpace c = tokenize cs (i + 1) indent
+tokenize :: String -> Int -> [Int] -> ([Token], [LexingError])
+tokenize [] i stack =
+    let dedentTokens = map (\_ -> Token TokenLayoutEnd "" i) (tail stack)
+    in (dedentTokens, [])
+tokenize (c : cs) i stack
+    | isSpace c = tokenize cs (i + 1) stack
     | c `elem` "(){}[],λ\\∀_" =
         let kind = case c of
                 '(' -> TokenLeftParen
@@ -82,51 +85,72 @@ tokenize (c : cs) i indent
                 '∀' -> TokenForall
                 '_' -> TokenUnderscore
                 _ -> error "Impossible case"
-        in addToken (Token kind [c] i indent) (tokenize cs (i + 1) indent)
+        in addToken (Token kind [c] i) (tokenize cs (i + 1) stack)
     | c == '-' = case cs of
-        '>' : rest -> addToken (Token TokenRightArrow "->" i indent) (tokenize rest (i + 2) indent)
+        '>' : rest -> addToken (Token TokenRightArrow "->" i) (tokenize rest (i + 2) stack)
         _ ->
             let (ops, rest) = span isOperatorChar (c : cs)
-            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
+            in addToken (Token TokenVarSymbol ops i) (tokenize rest (i + length ops) stack)
     | c == '<'
     , ('-' : ' ' : cs') <- cs =
-        addToken (Token TokenLeftArrow "<- " i indent) (tokenize cs' (i + 3) indent)
+        addToken (Token TokenLeftArrow "<- " i) (tokenize cs' (i + 3) stack)
     | c == '=' = case cs of
         '=' : _rest ->
             let (ops, rest) = span isOperatorChar (c : cs)
-            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
-        '>' : rest -> addToken (Token TokenStrongRightArrow "=>" i indent) (tokenize rest (i + 2) indent)
-        _ -> addToken (Token TokenEquals "=" i indent) (tokenize cs (i + 1) indent)
+            in addToken (Token TokenVarSymbol ops i) (tokenize rest (i + length ops) stack)
+        '>' : rest -> addToken (Token TokenStrongRightArrow "=>" i) (tokenize rest (i + 2) stack)
+        _ -> addToken (Token TokenEquals "=" i) (tokenize cs (i + 1) stack)
     | c == ':' = case cs of
-        ':' : rest -> addToken (Token TokenReturns "::" i indent) (tokenize rest (i + 2) indent)
-        _ -> addToken (Token TokenColon ":" i indent) (tokenize cs (i + 1) indent)
+        ':' : rest -> addToken (Token TokenReturns "::" i) (tokenize rest (i + 2) stack)
+        _ -> addToken (Token TokenColon ":" i) (tokenize cs (i + 1) stack)
     | c == '/' = case cs of
         '/' : rest ->
             let (comment, rest') = span (/= '\n') rest
-            in tokenize rest' (i + 2 + length comment) indent
+            in tokenize rest' (i + 2 + length comment) stack
         '*' : rest ->
             let (comment, rest') = break (== '*') rest
             in case rest' of
                 '*' : '/' : rest'' ->
-                    tokenize rest'' (i + 4 + length comment) indent
+                    tokenize rest'' (i + 4 + length comment) stack
                 _ ->
-                    let (restTokens, restErrors) = tokenize rest' (i + 2 + length comment) indent
+                    let (restTokens, restErrors) = tokenize rest' (i + 2 + length comment) stack
                     in (restTokens, UnterminatedComment i : restErrors)
         ' ' : _ ->
             let (ops, rest) = span isOperatorChar (c : cs)
-            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
+            in addToken (Token TokenVarSymbol ops i) (tokenize rest (i + length ops) stack)
         _ ->
-            addToken (Token TokenSlash "/" i indent) (tokenize cs (i + 1) indent)
+            addToken (Token TokenSlash "/" i) (tokenize cs (i + 1) stack)
     | c == '\n' =
         let (spaces, rest) = span isSpace cs
-            indentStr = spaces >>= (\w -> if w == '\t' then "    " else " ")
             newIndent = length spaces
-        in addToken (Token TokenNewline indentStr i indent) (tokenize rest (i + 1 + length spaces) newIndent)
+            newI = i + 1 + length spaces
+            current = head stack
+            (layoutTokens, newStack, newErrors) =
+                if newIndent > current
+                    then
+                        ([Token TokenLayoutStart "" i], newIndent : stack, [])
+                    else
+                        if newIndent == current
+                            then
+                                if current > 0
+                                    then
+                                        ([Token TokenLayoutSeparator "" i], stack, [])
+                                    else
+                                        ([], stack, [])
+                            else
+                                let (dedentToks, remainingStack, isMatch) = dedentTo stack newIndent i
+                                in if isMatch
+                                    then
+                                        (dedentToks, remainingStack, [])
+                                    else
+                                        (dedentToks, newIndent : remainingStack, [InconsistentIndent i])
+            (restTokens, restErrors) = tokenize rest newI newStack
+        in (layoutTokens ++ restTokens, newErrors ++ restErrors)
     | c == '|' = case cs of
-        ' ' : rest -> addToken (Token TokenPipe "|" i indent) (tokenize rest (i + 2) indent)
+        ' ' : rest -> addToken (Token TokenPipe "|" i) (tokenize rest (i + 2) stack)
         _ ->
             let (ops, rest) = span isOperatorChar (c : cs)
-            in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
+            in addToken (Token TokenVarSymbol ops i) (tokenize rest (i + length ops) stack)
     | c == '"' =
         if take 2 cs == "\"\""
             then
@@ -135,21 +159,21 @@ tokenize (c : cs) i indent
                 in case rest of
                     '"' : '"' : '"' : rest' ->
                         let quotedText = "\"\"\"" ++ text ++ "\"\"\""
-                        in addToken (Token (TokenString text) quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+                        in addToken (Token (TokenString text) quotedText i) (tokenize rest' (i + length quotedText) stack)
                     _ ->
-                        let (restTokens, restErrors) = tokenize rest (i + length ("\"\"\"" ++ text)) indent
+                        let (restTokens, restErrors) = tokenize rest (i + length ("\"\"\"" ++ text)) stack
                         in (restTokens, UnterminatedString i : restErrors)
             else
                 let (text, rest) = span (\x -> x /= '"' && x /= '\n') cs
                 in case rest of
                     '"' : rest' ->
                         let quotedText = c : text ++ "\""
-                        in addToken (Token (TokenString text) quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+                        in addToken (Token (TokenString text) quotedText i) (tokenize rest' (i + length quotedText) stack)
                     '\n' : _ ->
-                        let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
+                        let (restTokens, restErrors) = tokenize rest (i + length (c : text)) stack
                         in (restTokens, UnterminatedString i : restErrors)
                     _ ->
-                        let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
+                        let (restTokens, restErrors) = tokenize rest (i + length (c : text)) stack
                         in (restTokens, UnterminatedString i : restErrors)
     | c == '`' =
         let (text, rest) = span (/= '`') cs
@@ -162,13 +186,13 @@ tokenize (c : cs) i indent
                             if C.isLower x
                                 then TokenLowerIdentifier
                                 else TokenUpperIdentifier
-                in addToken (Token kind quotedText i indent) (tokenize rest' (i + length quotedText) indent)
+                in addToken (Token kind quotedText i) (tokenize rest' (i + length quotedText) stack)
             _ ->
-                let (restTokens, restErrors) = tokenize rest (i + length (c : text)) indent
+                let (restTokens, restErrors) = tokenize rest (i + length (c : text)) stack
                 in (restTokens, UnterminatedIdentifier i : restErrors)
     | isDigit c =
         let (numberToken, rest) = span isDigit (c : cs)
-        in addToken (Token TokenNumber numberToken i indent) (tokenize rest (i + length numberToken) indent)
+        in addToken (Token TokenNumber numberToken i) (tokenize rest (i + length numberToken) stack)
     | isCharacter c =
         let (text, rest) = span isAlphanumeric (c : cs)
             kind = case text of
@@ -194,13 +218,23 @@ tokenize (c : cs) i indent
                     if C.isLower c
                         then TokenLowerIdentifier
                         else TokenUpperIdentifier
-        in addToken (Token kind text i indent) (tokenize rest (i + length text) indent)
+        in addToken (Token kind text i) (tokenize rest (i + length text) stack)
     | isOperatorChar c =
         let (ops, rest) = span isOperatorChar (c : cs)
-        in addToken (Token TokenVarSymbol ops i indent) (tokenize rest (i + length ops) indent)
+        in addToken (Token TokenVarSymbol ops i) (tokenize rest (i + length ops) stack)
     | otherwise =
-        let (restTokens, restErrors) = tokenize cs (i + 1) indent
+        let (restTokens, restErrors) = tokenize cs (i + 1) stack
         in (restTokens, UnexpectedCharacter c i : restErrors)
+
+dedentTo :: [Int] -> Int -> Int -> ([Token], [Int], Bool)
+dedentTo stack target pos = go stack []
+  where
+    go s accToks =
+        if null s || head s <= target
+            then
+                (reverse accToks, s, not (null s) && head s == target)
+            else
+                go (tail s) (Token TokenLayoutEnd "" pos : accToks)
 
 breakTripleQuote :: String -> (String, String)
 breakTripleQuote s = go s ""
@@ -233,15 +267,16 @@ isSpace c = c == ' ' || c == '\t'
 referenceToken :: Token -> String
 referenceToken token = case tokenKind token of
     TokenNumber -> "number '" ++ tokenValue token ++ "'"
-    TokenNewline -> "newline"
     TokenLowerIdentifier -> "lower-case identifier '" ++ tokenValue token ++ "'"
     TokenUpperIdentifier -> "upper-case identifier '" ++ tokenValue token ++ "'"
     TokenString str -> "string '" ++ str ++ "'"
+    TokenLayoutStart -> "layout start"
+    TokenLayoutSeparator -> "layout separator"
+    TokenLayoutEnd -> "layout end"
     _ -> "'" ++ tokenValue token ++ "'"
 
 referenceTokenKind :: TokenKind -> String
 referenceTokenKind TokenNumber = "a number"
-referenceTokenKind TokenNewline = "a newline"
 referenceTokenKind TokenLowerIdentifier = "a lower-case identifier"
 referenceTokenKind TokenUpperIdentifier = "an upper-case identifier"
 referenceTokenKind TokenVarSymbol = "a symbol"
@@ -285,6 +320,9 @@ referenceTokenKind TokenForall = "'∀'"
 referenceTokenKind TokenUnderscore = "an underscore"
 referenceTokenKind TokenBind = "'bind'"
 referenceTokenKind TokenCompose = "'compose'"
+referenceTokenKind TokenLayoutStart = "layout start"
+referenceTokenKind TokenLayoutSeparator = "layout separator"
+referenceTokenKind TokenLayoutEnd = "layout end"
 
 tokenSpan :: Token -> Span
 tokenSpan token = Span (tokenPos token) (tokenPos token + length (tokenValue token))

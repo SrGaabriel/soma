@@ -1,11 +1,13 @@
 module Config.Options (
     Options (..),
-    extractOptions,
     CommandLineError (..),
     formatError,
     fileExt,
     getInputFile,
     getInputName,
+    Command (..),
+    commandParser,
+    extractCommand
 ) where
 
 import Data.List (isPrefixOf)
@@ -14,6 +16,11 @@ import System.Environment (getArgs)
 
 fileExt :: String
 fileExt = ".soma"
+
+data Command
+    = Build Options
+    | Lex String
+    deriving (Show)
 
 data Options = Options
     { optionsInput :: String
@@ -27,6 +34,22 @@ data Options = Options
     , optionsRun :: Bool
     }
     deriving (Show)
+
+commandParser :: Parser Command
+commandParser =
+    hsubparser
+        ( command "lex" (info (Lex <$> inputParser) (progDesc "Run the lexer"))
+            <> command "build" (info (Build <$> optionsParser) (progDesc "Build the program"))
+        )
+        <|> (Build <$> optionsParser)
+
+inputParser :: Parser String
+inputParser =
+    argument
+        str
+        ( metavar "INPUT"
+            <> help ("Input source file (" ++ fileExt ++ ")")
+        )
 
 getInputFile :: Options -> String
 getInputFile opts =
@@ -56,11 +79,7 @@ formatError (InvalidArgument arg) =
 optionsParser :: Parser Options
 optionsParser =
     Options
-        <$> argument
-            str
-            ( metavar "INPUT"
-                <> help ("Input source file (" ++ fileExt ++ ")")
-            )
+        <$> inputParser
         <*> optional
             ( strOption
                 ( long "out"
@@ -110,18 +129,18 @@ parseExtern s =
         (k, '=' : v) | not (null k) && not (null v) -> Right (k, v)
         _ -> Left "Expected format NAME=PATH"
 
-optsInfo :: ParserInfo Options
-optsInfo =
+commandInfo :: ParserInfo Command
+commandInfo =
     info
-        (optionsParser <**> helper)
+        (commandParser <**> helper)
         ( fullDesc
             <> progDesc "Compile and/or run Soma source files"
             <> header "soma-compiler - a compiler for the Soma language"
         )
 
-extractOptions :: IO (Either CommandLineError Options)
-extractOptions = do
+extractCommand :: IO (Either CommandLineError Command)
+extractCommand = do
     args <- getArgs
     if all (isPrefixOf "-") args
         then pure (Left NoInputFile)
-        else Right <$> execParser optsInfo
+        else Right <$> execParser commandInfo

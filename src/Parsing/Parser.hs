@@ -9,6 +9,7 @@ import Control.Monad.Error.Class (MonadError (..))
 import Data.Functor (($>))
 import Lexing.Lexer (Token (..), TokenKind (..))
 import Parsing.Errors (ParsingError (..))
+import Control.Applicative.Combinators (manyTill)
 
 newtype Parser a = Parser
     { runParser :: [Token] -> Either ParsingError (a, [Token])
@@ -59,39 +60,22 @@ next = Parser $ \case
     [] -> Left EndOfInput
     (t : ts) -> Right (t, ts)
 
-consumeRelevant :: TokenKind -> Parser Token
-consumeRelevant expectedKind = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts)
-        | tokenKind t == TokenNewline -> runParser (consumeRelevant expectedKind) ts
-        | tokenKind t == expectedKind -> Right (t, ts)
-        | otherwise -> Left $ ExpectedDifferentToken expectedKind t
-
 peek :: Parser Token
 peek = Parser $ \case
     [] -> Left EndOfInput
     (t : ts) -> Right (t, t : ts)
 
-skipNewlines :: Parser ()
-skipNewlines = Parser $ \tokens ->
-    let skipNext = \case
-            [] -> Right ((), [])
-            (t : ts)
-                | tokenKind t == TokenNewline -> skipNext ts
-                | otherwise -> Right ((), t : ts)
-    in skipNext tokens
-
-peekRelevant :: Parser Token
-peekRelevant = Parser $ \case
+peekInLayout :: Parser Token
+peekInLayout = Parser $ \case
     [] -> Left EndOfInput
-    (t : ts) -> case seeIfNewline (t : ts) of
+    (t : ts) -> case seeIfLayout (t : ts) of
         Left err -> Left err
         Right (token, _) -> Right (token, t : ts)
   where
-    seeIfNewline = \case
+    seeIfLayout = \case
         [] -> Left EndOfInput
         (t : ts)
-            | tokenKind t == TokenNewline -> runParser peekRelevant ts
+            | tokenKind t == TokenLayoutStart -> runParser peekInLayout ts
             | otherwise -> Right (t, t : ts)
 
 peekNext :: Parser Token
@@ -178,71 +162,20 @@ parseFluidSequence end itemParser = Parser $ \tokens -> do
         Right (a, b) -> Right (a, b)
         Left err -> Left err
 
-parseIndentedBlock :: Int -> Parser a -> Parser [a]
-parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
-    indentation <- case tokens of
-        (t@Token{tokenKind = TokenNewline} : _) ->
-            if length (tokenValue t) > previousIndent
-                then Right $ length $ tokenValue t
-                else Left $ ExpectedIndentation t
-        (t : _) -> Left $ ExpectedDifferentToken TokenNewline t
-        _ -> Left EndOfInput
+parseInLayout :: Parser a -> Parser a
+parseInLayout itemParser =
+    consume TokenLayoutStart >> itemParser <* consume TokenLayoutEnd
 
-    let parseNext acc remaining = case remaining of
-            [] -> Right (reverse acc, [])
-            (tok : rest) ->
-                let isNewline = tokenKind tok == TokenNewline
-                in if isNewline
-                    then case rest of
-                        (nextTok : _)
-                            | tokenKind nextTok == TokenNewline ->
-                                parseNext acc rest
-                        [] ->
-                            parseNext acc rest
-                        _ ->
-                            let tokenIndentation = length (tokenValue tok)
-                            in case compare tokenIndentation indentation of
-                                EQ -> do
-                                    (item, rest') <- runParser itemParser rest
-                                    parseNext (item : acc) rest'
-                                LT -> Right (reverse acc, remaining)
-                                GT -> Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
-                    else Right (reverse acc, remaining)
-    parseNext [] tokens
+optionallyParseInLayout :: Parser a -> Parser a
+optionallyParseInLayout itemParser = do
+    start <- optional (consume TokenLayoutStart)
+    case start of
+        Just _ -> itemParser <* consume TokenLayoutEnd
+        Nothing -> itemParser
 
--- TODO: remove duplicate code
-parseIndexedIndentedBlock :: Int -> (Int -> Parser a) -> Parser [a]
-parseIndexedIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
-    indentation <- case tokens of
-        (t@Token{tokenKind = TokenNewline} : _) ->
-            if length (tokenValue t) > previousIndent
-                then Right $ length $ tokenValue t
-                else Left $ ExpectedIndentation t
-        (t : _) -> Left $ ExpectedDifferentToken TokenNewline t
-        _ -> Left EndOfInput
-
-    let parseNext acc remaining = case remaining of
-            [] -> Right (reverse acc, [])
-            (tok : rest) ->
-                let isNewline = tokenKind tok == TokenNewline
-                in if isNewline
-                    then case rest of
-                        (nextTok : _)
-                            | tokenKind nextTok == TokenNewline ->
-                                parseNext acc rest
-                        [] ->
-                            parseNext acc rest
-                        _ ->
-                            let tokenIndentation = length (tokenValue tok)
-                            in case compare tokenIndentation indentation of
-                                EQ -> do
-                                    let index = length acc
-                                    (item, rest') <- runParser (itemParser index) rest
-                                    parseNext (item : acc) rest'
-                                LT -> Right (reverse acc, remaining)
-                                GT -> Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
-                    else Right (reverse acc, remaining)
-    parseNext [] tokens
+parseLayout :: Parser a -> Parser [a]
+parseLayout itemParser =
+    consume TokenLayoutStart >> sepBy1Until itemParser (consume TokenLayoutSeparator) (consume TokenLayoutEnd)
 
 someAccepting :: Parser a -> (ParsingError -> Bool) -> Parser [a]
 someAccepting parser predicate = Parser $ \tokens -> do
@@ -268,8 +201,19 @@ optionallySurrounded start end parser = do
             pure result
         Nothing -> parser
 
-sepBy1 :: Parser a -> Parser b -> Parser [a]
-sepBy1 p sep = (:) <$> p <*> many (sep *> p)
+sepBy1Until :: Parser a -> Parser sep -> Parser end -> Parser [a]
+sepBy1Until p sep end = do
+    first <- p
+    rest <- manyTill (sep *> p) end
+    return (first : rest)
+
+indexedSepBy1Till :: (Int -> Parser a) -> Parser sep -> Parser end -> Parser [a]
+indexedSepBy1Till p sep end = go 0
+  where
+    go n = do
+      x <- p n
+      xs <- manyTill (sep *> p (n + 1)) end
+      return (x : xs)
 
 option :: a -> Parser a -> Parser a
 option def parser = Parser $ \tokens ->

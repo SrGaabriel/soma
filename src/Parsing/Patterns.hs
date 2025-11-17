@@ -4,7 +4,7 @@ import Control.Monad.Error.Class (MonadError (throwError))
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
 import Parsing.Atoms (parseExpression)
 import Parsing.Errors (ParsingError (InvalidPattern))
-import Parsing.Parser (Parser, consume, next, parseFluidSequence, parseIndentedBlock, peek)
+import Parsing.Parser (Parser, consume, next, parseFluidSequence, peek, parseLayout)
 import Syntax.Patterns (Literal (LitInt), Pattern (..))
 import Syntax.Tree (Expr (ExprPatternMatchArm))
 
@@ -35,7 +35,7 @@ parseSinglePattern parentheziedConstructors = do
         _ -> throwError $ InvalidPattern inc
 
 parsePipePatternArms :: Parser [Expr]
-parsePipePatternArms = parseIndentedBlock 0 parsePipePatternArm
+parsePipePatternArms = parseLayout parsePipePatternArm
 
 parsePipePatternArm :: Parser Expr
 parsePipePatternArm = do

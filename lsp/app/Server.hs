@@ -21,7 +21,7 @@ import Language.LSP.Protocol.Message
 import Language.LSP.Protocol.Types
 import Language.LSP.Server
 import Language.LSP.VFS
-import Lexing.Lexer (tokenizeFile)
+import Lexing.Lexer (lexCode)
 import Lexing.Position (Span (..))
 import Logging.ErrorPrinter (PrintableError (..))
 import Logging.PrettyTrees (treeShow)
@@ -109,7 +109,7 @@ analyzeFile LspState{..} fileUri = do
             let content = T.unpack $ virtualFileText vf
                 modName = dropExtension $ takeFileName filePath
 
-            let (tokens, lexErrors) = tokenizeFile content
+            let (tokens, lexErrors) = lexCode content
 
             case parse tokens of
                 Left parseErr -> do

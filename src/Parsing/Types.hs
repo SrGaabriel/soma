@@ -4,7 +4,7 @@ import Control.Monad.Error.Class (MonadError (throwError))
 import Data.List (nubBy)
 import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..))
 import Parsing.Errors (ParsingError (InvalidTokenForType))
-import Parsing.Parser (Parser, consume, consumeRelevant, next, parseExhaustiveSequence, parseSequence, peek)
+import Parsing.Parser (Parser, consume, next, parseExhaustiveSequence, parseSequence, peek)
 import Typing.Types (Constraint, Kind (KindArrow, KindStar), QualifiedType (Forall), TyVar (TypeVar, tvId), Type (TApp, TArrow, TUnresolved, TVar), arrayType, boolType, constraintTypes, extractTyVars, intType, mkConstraint, strType, tupleType)
 
 parseQualifiedType :: Parser QualifiedType
@@ -13,7 +13,7 @@ parseQualifiedType = do
     incoming <- peek
     if tokenKind incoming == TokenWhere
         then do
-            _ <- consumeRelevant TokenWhere
+            _ <- consume TokenWhere
             constraints <- parseExhaustiveSequence TokenComma parseConstraint
 
             let tyVarsFromType = extractTyVars baseType
@@ -41,7 +41,7 @@ parseTypeRest baseType = do
     incoming <- peek
     case tokenKind incoming of
         TokenRightArrow -> do
-            _ <- consumeRelevant TokenRightArrow
+            _ <- consume TokenRightArrow
             TArrow baseType <$> parseType
         _ -> do
             appType <- tryParseBaseType
@@ -106,7 +106,7 @@ parseKind = do
             incoming <- peek
             case tokenKind incoming of
                 TokenRightArrow -> do
-                    _ <- consumeRelevant TokenRightArrow
+                    _ <- consume TokenRightArrow
                     KindArrow KindStar <$> parseKind
                 _ -> pure KindStar
         _ -> throwError $ InvalidTokenForType nextToken

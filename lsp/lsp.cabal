@@ -47,7 +47,7 @@ test-suite soma-lsp-test
     lsp,
     lsp-test >=0.17,
     lsp-types,
-    parser-combinators >=1.3,
+    parser-combinators,
     text,
 
   default-language: Haskell2010

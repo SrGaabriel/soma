@@ -12,7 +12,7 @@ import Syntax.Tree (Expr, exprChildren)
 parseModule :: (String, FilePath) -> IO (Either ParsingError ModuleInfo)
 parseModule (modName, path) = do
     content <- readFile path
-    let (tokens, lexErrors) = tokenizeFile content
+    let (tokens, lexErrors) = tokenizeFile content -- todo rename this fn
     unless (null lexErrors) $ do
         mapM_ (\e -> printError e path content "LEXING") lexErrors
     case parse tokens of
