@@ -113,13 +113,18 @@ satisfy f = token test Set.empty
         | otherwise = Nothing
 
 unrecoverableConsume :: TokenKind -> Parser Token
-unrecoverableConsume kind = label (show kind) (satisfy (\t -> tokenKind t == kind) <?> show kind)
+unrecoverableConsume kind = do
+    tok <- optional $ satisfy (\t -> tokenKind t == kind)
+    case tok of
+        Just t -> pure t
+        Nothing -> do
+            actual <- tryPeekOrEOF
+            MP.customFailure $ UnexpectedToken actual
 
 consume :: TokenKind -> Parser Token
 consume kind = withRecovery (unrecoverableConsume kind) $ do
+    _ <- anySingle
     pos <- unPos . sourceLine <$> getSourcePos
-    actual <- tryPeekOrEOF
-    _ <- MP.customFailure $ UnexpectedToken actual
     pure $ Token kind "" pos
 
 peek :: Parser Token
@@ -129,7 +134,7 @@ tryPeek :: Parser (Maybe Token)
 tryPeek = MP.optional (lookAhead anySingle)
 
 tryPeekOrEOF :: Parser Token
-tryPeekOrEOF = fromMaybe (Token TokenEOF "" 0) <$> MP.optional (lookAhead anySingle)
+tryPeekOrEOF = fromMaybe (Token TokenEOF "tryPeekOrEOF" 0) <$> MP.optional (lookAhead anySingle)
 
 anySingle :: Parser Token
 anySingle = satisfy (const True)
@@ -148,12 +153,16 @@ parseCommaSeparatedUntil end itemParser = parseList
         MP.customFailure $ ExpectedAnExpression (Token end "" 0)
 
 parseExhaustiveSequence :: TokenKind -> Parser a -> Parser [a]
-parseExhaustiveSequence separator itemParser =
-    MP.sepBy itemWithRecovery (consume separator)
-  where
-    itemWithRecovery = withRecovery itemParser $ do
-        skipUntilSync [separator]
-        MP.customFailure $ ExpectedAnExpression (Token separator "" 0)
+parseExhaustiveSequence separator itemParser = do
+    first <- itemParser
+    rest <- MP.many $ do
+        nextTok <- tryPeekOrEOF
+        if tokenKind nextTok == separator
+            then do
+                _ <- consume separator
+                itemParser
+            else MP.empty
+    pure (first : rest)
 
 parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = do

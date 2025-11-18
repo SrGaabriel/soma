@@ -12,6 +12,7 @@ import Text.Megaparsec (ParseError)
 import qualified Text.Megaparsec as MP
 import Text.Megaparsec.Error (ErrorFancy (..), ParseError (..))
 import Typing.Types (QualifiedType (Forall), intType)
+import Data.List (nub)
 
 parse :: [Token] -> Either [ParsingError] Expr
 parse tokens =
@@ -26,18 +27,18 @@ parse tokens =
         ExprRoot <$> someDeclarations
 
     convertErrors :: [ParseError TokenStream ParsingError] -> [ParsingError]
-    convertErrors = map convertError
+    convertErrors = nub . map convertError
 
     convertError :: ParseError TokenStream ParsingError -> ParsingError
     convertError err = case err of
         FancyError _ errSet ->
             case Set.toList errSet of
                 (ErrorCustom customErr : _) -> customErr
-                _ -> UnexpectedToken (Token TokenEOF "" 0)
+                _ -> UnexpectedToken (Token TokenEOF "fancy" 0)
         TrivialError _ unexpected _expected ->
             case unexpected of
                 Just (MP.Tokens (tok :| _)) -> UnexpectedToken tok
-                _ -> UnexpectedToken (Token TokenEOF "" 0)
+                _ -> UnexpectedToken (Token TokenEOF "trivial" 0)
 
 someDeclarations :: Parser [Expr]
 someDeclarations = do

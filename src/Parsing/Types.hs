@@ -1,0 +1,125 @@
+module Parsing.Types where
+
+import Data.List (nubBy)
+import Lexing.Lexer (Token (..), TokenKind (..))
+import Parsing.Errors (ParsingError (..))
+import Parsing.Parser (Parser, consume, parseExhaustiveSequence, parseSequence, peek, tryPeekOrEOF)
+import qualified Text.Megaparsec as MP
+import Typing.Types (Constraint, Kind (..), QualifiedType (..), TyVar (..), Type (..), arrayType, boolType, constraintTypes, extractTyVars, intType, mkConstraint, strType, tupleType)
+import Text.Megaparsec (anySingle)
+import Parsing.Parser (withRecovery)
+
+parseQualifiedType :: Parser QualifiedType
+parseQualifiedType = do
+    baseType <- parseType
+    incoming <- tryPeekOrEOF
+    if tokenKind incoming == TokenWhere
+        then do
+            _ <- consume TokenWhere
+            constraints <- parseExhaustiveSequence TokenComma parseConstraint
+            let tyVarsFromType = extractTyVars baseType
+            let tyVarsFromConstraints = concatMap (extractTyVarsFromTypes . constraintTypes) constraints
+            let allVars = deduplicateTyVars (tyVarsFromType ++ tyVarsFromConstraints)
+            pure $ Forall allVars constraints baseType
+        else do
+            let tyVars = extractTyVars baseType
+            pure $ Forall tyVars [] baseType
+
+parseType :: Parser Type
+parseType = do
+    baseType <- parseBaseType
+    parseTypeRest baseType
+
+parseTypeRest :: Type -> Parser Type
+parseTypeRest baseType = do
+    incoming <- tryPeekOrEOF
+    case tokenKind incoming of
+        TokenRightArrow -> do
+            _ <- consume TokenRightArrow
+            TArrow baseType <$> parseType
+        _ -> do
+            appType <- tryParseBaseType
+            case appType of
+                Nothing -> pure baseType
+                Just appType' -> do
+                    let appliedType = TApp baseType appType'
+                    parseTypeRest appliedType
+
+parseBaseType :: Parser Type
+parseBaseType = withRecovery tryParse recover
+  where
+    tryParse = do
+        maybeType <- tryParseBaseType
+        case maybeType of
+            Just t -> pure t
+            Nothing -> do
+                nextToken <- peek
+                MP.customFailure $ InvalidTokenForType nextToken
+    recover = do
+        _ <- anySingle
+        pure $ TUnresolved "[ERROR]"
+
+tryParseBaseType :: Parser (Maybe Type)
+tryParseBaseType = do
+    nextToken <- tryPeekOrEOF
+    case tokenKind nextToken of
+        TokenLeftParen -> do
+            _ <- consume TokenLeftParen
+            types <- parseSequence TokenComma TokenRightParen parseType
+            pure $ Just $ case types of
+                [singleType] -> singleType
+                _ -> tupleType types
+        TokenLeftBracket -> do
+            _ <- consume TokenLeftBracket
+            innerType <- parseType
+            _ <- consume TokenRightBracket
+            pure $ Just $ arrayType innerType
+        TokenUpperIdentifier -> Just <$> parseTypeConstructor
+        TokenLowerIdentifier -> do
+            _ <- consume TokenLowerIdentifier
+            let name = tokenValue nextToken
+            pure $ Just $ TVar (TypeVar name KindStar)
+        _ -> pure Nothing
+
+parseTyVar :: Parser TyVar
+parseTyVar = do
+    nameTok <- consume TokenLowerIdentifier
+    let name = tokenValue nameTok
+    pure $ TypeVar name KindStar
+
+parseTypeConstructor :: Parser Type
+parseTypeConstructor = do
+    name <- consume TokenUpperIdentifier
+    case tokenValue name of
+        "Int" -> pure intType
+        "String" -> pure strType
+        "Bool" -> pure boolType
+        other -> pure $ TUnresolved other
+
+parseConstraint :: Parser Constraint
+parseConstraint = do
+    varName <- consume TokenLowerIdentifier
+    _ <- consume TokenColon
+    className <- consume TokenUpperIdentifier
+    let name = tokenValue varName
+    pure $ mkConstraint (tokenValue className) [TVar (TypeVar name KindStar)]
+
+parseKind :: Parser Kind
+parseKind = do
+    nextToken <- tryPeekOrEOF
+    case tokenKind nextToken of
+        TokenVarSymbol | tokenValue nextToken == "*" -> do
+            _ <- consume TokenVarSymbol
+            incoming <- tryPeekOrEOF
+            case tokenKind incoming of
+                TokenRightArrow -> do
+                    _ <- consume TokenRightArrow
+                    KindArrow KindStar <$> parseKind
+                _ -> pure KindStar
+        _ -> MP.customFailure $ InvalidTokenForType nextToken
+
+deduplicateTyVars :: [TyVar] -> [TyVar]
+deduplicateTyVars = nubBy (\a b -> tvId a == tvId b)
+
+extractTyVarsFromTypes :: [Type] -> [TyVar]
+extractTyVarsFromTypes = concatMap extractTyVars

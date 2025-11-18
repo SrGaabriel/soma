@@ -89,6 +89,7 @@ library
     Parsing.Bindings
     Parsing.Errors
     Parsing.Parser
+    Parsing.Types
     Project.Graph
     Project.Incremental
     Project.Metadata
