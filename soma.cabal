@@ -86,6 +86,7 @@ library
     Metal.MonadNormalize
     Metal.MonadProfile
     Parsing.Ast
+    Parsing.Atoms
     Parsing.Bindings
     Parsing.Errors
     Parsing.Parser

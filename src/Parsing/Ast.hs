@@ -1,11 +1,10 @@
 module Parsing.Ast where
 
-import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.Set as Set
-import Lexing.Lexer (Token (Token, tokenKind), TokenKind (..))
+import Lexing.Lexer (Token (tokenKind), TokenKind (..))
 import Lexing.Position (Span (Span))
 import Parsing.Bindings (parseBinding)
-import Parsing.Errors (ParsingError (UnexpectedToken))
+import Parsing.Errors (ParsingError (InvalidTokenForTopLevelDeclaration))
 import Parsing.Parser (Parser, parseWithRecovery, peek, skipUntilSync, withRecovery, TokenStream)
 import Syntax.Tree (Expr (ExprBindingDef, ExprRoot))
 import Text.Megaparsec (ParseError)
@@ -13,6 +12,7 @@ import qualified Text.Megaparsec as MP
 import Text.Megaparsec.Error (ErrorFancy (..), ParseError (..))
 import Typing.Types (QualifiedType (Forall), intType)
 import Data.List (nub)
+import Data.Maybe (mapMaybe)
 
 parse :: [Token] -> Either [ParsingError] Expr
 parse tokens =
@@ -27,18 +27,15 @@ parse tokens =
         ExprRoot <$> someDeclarations
 
     convertErrors :: [ParseError TokenStream ParsingError] -> [ParsingError]
-    convertErrors = nub . map convertError
+    convertErrors = nub . mapMaybe convertError
 
-    convertError :: ParseError TokenStream ParsingError -> ParsingError
+    convertError :: ParseError TokenStream ParsingError -> Maybe ParsingError
     convertError err = case err of
         FancyError _ errSet ->
             case Set.toList errSet of
-                (ErrorCustom customErr : _) -> customErr
-                _ -> UnexpectedToken (Token TokenEOF "fancy" 0)
-        TrivialError _ unexpected _expected ->
-            case unexpected of
-                Just (MP.Tokens (tok :| _)) -> UnexpectedToken tok
-                _ -> UnexpectedToken (Token TokenEOF "trivial" 0)
+                (ErrorCustom customErr : _) -> Just customErr
+                _ -> Nothing
+        TrivialError _ _unexpected _expected -> Nothing
 
 someDeclarations :: Parser [Expr]
 someDeclarations = do
@@ -61,4 +58,4 @@ parseDeclaration = do
     token <- peek
     case tokenKind token of
         TokenDef -> parseBinding True
-        _ -> MP.customFailure $ UnexpectedToken token
+        _ -> MP.customFailure $ InvalidTokenForTopLevelDeclaration token

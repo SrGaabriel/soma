@@ -119,7 +119,11 @@ unrecoverableConsume kind = do
         Just t -> pure t
         Nothing -> do
             actual <- tryPeekOrEOF
-            MP.customFailure $ UnexpectedToken actual
+            MP.customFailure
+                $ ExpectedDifferentToken
+                    { expected = kind
+                    , received = actual
+                    }
 
 consume :: TokenKind -> Parser Token
 consume kind = withRecovery (unrecoverableConsume kind) $ do
@@ -221,11 +225,11 @@ runParserTokens parser tokens =
 
 extractFromParseError :: ParseError TokenStream ParsingError -> [ParsingError]
 extractFromParseError pe =
-  case pe of
-    TrivialError {} -> []
-    FancyError _ fancySet ->
-      [ e | ErrorCustom e <- Set.toList fancySet ]
-        
+    case pe of
+        TrivialError{} -> []
+        FancyError _ fancySet ->
+            [e | ErrorCustom e <- Set.toList fancySet]
+
 extractFromBundle :: ParseErrorBundle TokenStream ParsingError -> [ParsingError]
 extractFromBundle bundle =
     concatMap extractFromParseError (NE.toList $ bundleErrors bundle)

@@ -3,11 +3,18 @@ module Parsing.Types where
 import Data.List (nubBy)
 import Lexing.Lexer (Token (..), TokenKind (..))
 import Parsing.Errors (ParsingError (..))
-import Parsing.Parser (Parser, consume, parseExhaustiveSequence, parseSequence, peek, tryPeekOrEOF)
+import Parsing.Parser (
+    Parser,
+    consume,
+    parseExhaustiveSequence,
+    parseSequence,
+    peek,
+    tryPeekOrEOF,
+    withRecovery,
+ )
+import Text.Megaparsec (anySingle)
 import qualified Text.Megaparsec as MP
 import Typing.Types (Constraint, Kind (..), QualifiedType (..), TyVar (..), Type (..), arrayType, boolType, constraintTypes, extractTyVars, intType, mkConstraint, strType, tupleType)
-import Text.Megaparsec (anySingle)
-import Parsing.Parser (withRecovery)
 
 parseQualifiedType :: Parser QualifiedType
 parseQualifiedType = do
