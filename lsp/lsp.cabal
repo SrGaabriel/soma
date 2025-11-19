@@ -29,7 +29,7 @@ executable soma-lsp
     mtl >=2.3,
     soma,
     stm >=2.5,
-    text >=2.1,
+    text,
 
   default-language: Haskell2010
 
@@ -47,7 +47,7 @@ test-suite soma-lsp-test
     lsp,
     lsp-test >=0.17,
     lsp-types,
-    parser-combinators >= 1.3,
+    parser-combinators >=1.3,
     text,
 
   default-language: Haskell2010

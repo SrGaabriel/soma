@@ -16,6 +16,7 @@ import System.FilePath (dropExtension, takeExtension, takeFileName)
 main :: IO ()
 main = do
     command <- extractCommand
+    putStrLn "Soma Compiler v0.1.0"
     case command of
         Right (Build options) -> build options
         Right (Lex file) -> do
@@ -24,9 +25,9 @@ main = do
             case lexErrors of
                 [] -> do
                     putStrLn $ "Lexing succeeded with " ++ show (length lexed) ++ " tokens:"
-                    mapM_ (putStrLn . show) lexed
+                    mapM_ print lexed
                     exitSuccess
-                errs -> mapM_ (putStrLn . show) errs >> exitFailure
+                errs -> mapM_ print errs >> exitFailure
         Right (Parse file) -> do
             parseE <- parseModule (dropExtension (takeFileName file), file)
             case parseE of

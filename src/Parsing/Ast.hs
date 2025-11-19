@@ -1,18 +1,18 @@
 module Parsing.Ast where
 
+import Data.List (nub)
+import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
 import Lexing.Lexer (Token (tokenKind), TokenKind (..))
 import Lexing.Position (Span (Span))
 import Parsing.Bindings (parseBinding)
-import Parsing.Errors (ParsingError (InvalidTokenForTopLevelDeclaration))
-import Parsing.Parser (Parser, parseWithRecovery, peek, skipUntilSync, withRecovery, TokenStream)
+import Parsing.Errors (ParsingError (InvalidTokenForTopLevelDeclaration, UnexpectedParseFailure))
+import Parsing.Parser (Parser, TokenStream, parseWithRecovery, peek, skipUntilSync, withRecovery)
 import Syntax.Tree (Expr (ExprBindingDef, ExprRoot))
 import Text.Megaparsec (ParseError)
 import qualified Text.Megaparsec as MP
 import Text.Megaparsec.Error (ErrorFancy (..), ParseError (..))
 import Typing.Types (QualifiedType (Forall), intType)
-import Data.List (nub)
-import Data.Maybe (mapMaybe)
 
 parse :: [Token] -> Either [ParsingError] Expr
 parse tokens =
@@ -34,8 +34,12 @@ parse tokens =
         FancyError _ errSet ->
             case Set.toList errSet of
                 (ErrorCustom customErr : _) -> Just customErr
-                _ -> Nothing
-        TrivialError _ _unexpected _expected -> Nothing
+                _ -> Just $ UnexpectedParseFailure "Unknown fancy error"
+        TrivialError pos unexpected expected -> 
+            Just $ UnexpectedParseFailure $ 
+                "Parse error at " ++ show pos ++ 
+                ": unexpected " ++ show unexpected ++
+                ", expected " ++ show expected
 
 someDeclarations :: Parser [Expr]
 someDeclarations = do

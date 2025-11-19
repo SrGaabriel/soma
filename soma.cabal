@@ -122,7 +122,9 @@ library
     mtl >=2.2,
     optparse-applicative >=0.19.0.0,
     process >=1.6,
+    strict >=0.5,
     tar >=0.7.0.0,
+    text >=2.1,
     time >=1.8,
     zlib >=0.7.0.0,
 

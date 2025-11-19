@@ -5,7 +5,7 @@
 
 module Parsing.Parser where
 
-import Control.Monad (void)
+import Control.Monad (void, when)
 import Control.Monad.State
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
@@ -80,9 +80,14 @@ withRecovery parser recovery = do
             recovery
 
 skipUntilSync :: [TokenKind] -> Parser ()
-skipUntilSync syncTokens = void $ MP.manyTill anySingle (lookAhead syncPoint <|> eof)
+skipUntilSync syncTokens = void $ MP.manyTill skipOne (lookAhead syncPoint <|> eof)
   where
     syncPoint = MP.choice [void (satisfy (\t -> tokenKind t `elem` syncTokens))]
+    skipOne = do
+        tok <- anySingle
+        when (tokenKind tok == TokenLayoutStart)
+            $ void
+            $ MP.manyTill anySingle (satisfy (\t -> tokenKind t == TokenLayoutEnd))
 
 recoverStatement :: Parser a -> a -> Parser a
 recoverStatement parser defaultValue =
@@ -188,9 +193,6 @@ parseFluidSequence end itemParser = MP.manyTill itemWithRecovery (consume end)
 parseInLayout :: Parser a -> Parser a
 parseInLayout = between (consume TokenLayoutStart) (consume TokenLayoutEnd)
 
-optionallyParseInLayout :: Parser a -> Parser a
-optionallyParseInLayout p = parseInLayout p <|> p
-
 parseLayout :: Parser a -> Parser [a]
 parseLayout itemParser = do
     _ <- consume TokenLayoutStart
@@ -201,6 +203,14 @@ parseLayout itemParser = do
     itemWithRecovery = withRecovery itemParser $ do
         skipUntilSync [TokenLayoutSeparator, TokenLayoutEnd]
         MP.customFailure $ ExpectedAnExpression (Token TokenLayoutSeparator "" 0)
+
+parseOptionallyInLayout :: Parser a -> Parser a
+parseOptionallyInLayout p = do
+    inc <- tryPeek
+    case inc of
+        Just Token{tokenKind = TokenLayoutStart} -> do
+            consume TokenLayoutStart >> p <* consume TokenLayoutEnd
+        _ -> p
 
 parseWithErrors :: Parser a -> [Token] -> Either (NonEmpty (ParseError TokenStream ParsingError)) (a, [ParseError TokenStream ParsingError])
 parseWithErrors parser tokens =

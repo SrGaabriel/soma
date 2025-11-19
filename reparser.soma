@@ -1,7 +1,26 @@
+                                    
 
 
-def testShape :: a -> b -> Shape [a] where b: Eq, a: Ord ="" "" ""
 
-def testShape :: a -> b -> Shape [a] where b: Eq, a: Ord = ""
 
-def testShape :: a -> b -> Shape [a] where b: Eq, a: Ord = ""
+
+                        
+                        
+def testShape :: a -> b -> Shape [a] where b: Eq, a: Ord =
+    ""
+    
+        
+        
+        
+        
+        
+        
+            
+def testShape :: a -> b -> Shape [a] where b: Eq, a: Ord =
+    ""
+    
+        
+        
+        
+        
+        

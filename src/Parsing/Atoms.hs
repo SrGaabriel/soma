@@ -27,12 +27,12 @@ parseApplication = do
 
 parseAtom :: Parser Expr
 parseAtom = do
-    token <- peek
-    case tokenKind token of
-        TokenNumber -> do
+    token <- tryPeek
+    case tokenKind <$> token of
+        Just TokenNumber -> do
             numToken <- consume TokenNumber
             pure $ ExprNum (tokenValue numToken) (tokenSpan numToken)
-        TokenLeftParen -> do
+        Just TokenLeftParen -> do
             lparen <- consume TokenLeftParen
             inc <- peek
             case tokenKind inc of
@@ -51,33 +51,33 @@ parseAtom = do
                     case contents of
                         [first] -> pure $ modifySpan first spanning
                         _ -> pure $ ExprTuple contents spanning
-        TokenLeftBracket -> do
+        Just TokenLeftBracket -> do
             lbracket <- consume TokenLeftBracket
             contents <- parseCommaSeparatedUntil TokenRightBracket parseExpression
             rbracket <- consume TokenRightBracket
             let spanning = Span (tokenPos lbracket) (tokenPos rbracket)
             pure $ ExprArray contents spanning
-        TokenLowerIdentifier -> do
+        Just TokenLowerIdentifier -> do
             idToken <- consume TokenLowerIdentifier
             pure $ ExprUVar (tokenValue idToken) (tokenSpan idToken)
-        TokenUpperIdentifier -> do
+        Just TokenUpperIdentifier -> do
             idToken <- consume TokenUpperIdentifier
             pure $ ExprUVar (tokenValue idToken) (tokenSpan idToken)
-        TokenString str -> do
+        Just (TokenString str) -> do
             strToken <- consume (TokenString str)
             pure $ ExprStr str (tokenSpan strToken)
-        TokenLet -> parseLetExpression
-        TokenDollar -> do
+        Just TokenLet -> parseLetExpression
+        Just TokenDollar -> do
             _ <- consume TokenDollar
             parseExpression
-        TokenTrue -> do
+        Just TokenTrue -> do
             trueToken <- consume TokenTrue
             pure $ ExprBool True (tokenSpan trueToken)
-        TokenFalse -> do
+        Just TokenFalse -> do
             falseToken <- consume TokenFalse
             pure $ ExprBool False (tokenSpan falseToken)
-        TokenCompose -> parseCompose
-        TokenIf -> parseIf
+        Just TokenCompose -> parseCompose
+        Just TokenIf -> parseIf
         _ -> MP.empty
 
 parseLetExpression :: Parser Expr
@@ -159,15 +159,15 @@ parseCompose = do
 
 parseComposeStmt :: Parser ComposeStmt
 parseComposeStmt = do
-    tok <- peek
-    case tokenKind tok of
-        TokenBind -> do
+    tok <- tryPeek
+    case tokenKind <$> tok of
+        Just TokenBind -> do
             bindTok <- consume TokenBind
             nameTok <- consume TokenLowerIdentifier
             _ <- consume TokenLeftArrow
             val <- parseExpression
             pure $ CSBind (tokenValue nameTok) val (spanningTokens bindTok nameTok)
-        TokenLet -> do
+        Just TokenLet -> do
             letTok <- consume TokenLet
             nameTok <- consume TokenLowerIdentifier
             _ <- consume TokenEquals
@@ -176,7 +176,7 @@ parseComposeStmt = do
         _ -> do
             e <- parseExpression
             pure $ CSExpr e (exprSpan e)
-
+    
 parseIf :: Parser Expr
 parseIf = do
     ifToken <- consume TokenIf

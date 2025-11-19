@@ -24,6 +24,7 @@ data ParsingError
     | InvalidPattern Token
     | InvalidFunctionBody Token
     | InvalidFunctionName Token
+    | UnexpectedParseFailure String
     | EndOfInput
     | Debug
     deriving (Eq, Ord)
@@ -45,6 +46,7 @@ instance Show ParsingError where
     show (InvalidPattern t) = "The expression " ++ referenceToken t ++ " is not a valid pattern"
     show (InvalidFunctionBody t) = "The expression " ++ referenceToken t ++ " is not a valid function body"
     show (InvalidFunctionName t) = "The expression " ++ referenceToken t ++ " is not a valid function name"
+    show (UnexpectedParseFailure msg) = "Unexpected parse failure: " ++ msg
     show EndOfInput = "End of input"
     show Debug = "Debug"
 
@@ -53,12 +55,14 @@ instance PrintableError ParsingError where
 
     errorStart EndOfInput = -1 -- todo: remove workaround
     errorStart Debug = -1
+    errorStart UnexpectedParseFailure{} = -1
     errorStart err = case getErrorToken err of
         Just t -> tokenPos t
         Nothing -> error $ "Unreachable errorStart case reached: " ++ show err
 
     errorEnd EndOfInput = -1
     errorEnd Debug = -1
+    errorEnd UnexpectedParseFailure{} = -1
     errorEnd err = case getErrorToken err of
         Just t -> tokenPos t + length (tokenValue t)
         Nothing -> error $ "Unreachable errorEnd case reached: " ++ show err
@@ -85,5 +89,6 @@ getErrorToken (ExpectedAGenericType t) = Just t
 getErrorToken (ExpectedAnExpression t) = Just t
 getErrorToken (InvalidFunctionBody t) = Just t
 getErrorToken (InvalidFunctionName t) = Just t
+getErrorToken (UnexpectedParseFailure _) = Nothing
 getErrorToken EndOfInput = Nothing
 getErrorToken Debug = Nothing

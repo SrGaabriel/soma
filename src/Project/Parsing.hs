@@ -8,12 +8,16 @@ import Parsing.Ast (parse)
 import Parsing.Errors (ParsingError)
 import Project.Module (ModuleInfo (..))
 import Syntax.Tree (Expr, exprChildren)
+import qualified Data.ByteString as BS
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 
--- todo: fix this signature
+-- todo: fix signature
 parseModule :: (String, FilePath) -> IO (Either [ParsingError] ModuleInfo)
 parseModule (modName, path) = do
-    content <- readFile path
-    let (tokens, lexErrors) = tokenizeFile content -- todo rename this fn
+    bytes <- BS.readFile path
+    let content = T.unpack $ TE.decodeUtf8 bytes
+    let (tokens, lexErrors) = tokenizeFile content
     unless (null lexErrors) $ do
         mapM_ (\e -> printError e path content "LEXING") lexErrors
     case parse tokens of
