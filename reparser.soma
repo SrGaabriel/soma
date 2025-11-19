@@ -14,9 +14,24 @@ def testChoose :: a -> b -> b
 def genericEq :: a -> a -> Bool where a: Eq
     | x y => equals x y
 
+def isZero :: Int -> Bool
+    | 0 => true
+    | _ => false
+
 def genericEqTest :: a -> a -> Bool where a: Eq
     | x y => genericEq x y
 
+trait HasArea a where
+    def area :: a -> Int
+
+instance HasArea Shape where
+    def area(shape: Shape) -> Int = 0
+
+instance Eq Shape where
+    def equals :: Shape -> Shape -> Bool
+        | (Circle r1) (Circle r2) => equals r1 r2
+        | (Square s1) (Square s2) => true
+        | _         _             => false
 
 data Shape
     | Square

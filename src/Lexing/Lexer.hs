@@ -42,7 +42,7 @@ data TokenKind
     | TokenLeftBraces
     | TokenRightBraces
     | TokenData
-    | TokenClass
+    | TokenTrait
     | TokenWhere
     | TokenInstance
     | TokenComma
@@ -215,7 +215,7 @@ tokenize (c : cs) i stack
                 "use" -> TokenImport
                 "data" -> TokenData
                 "struct" -> TokenStruct
-                "trait" -> TokenClass -- todo: rename
+                "trait" -> TokenTrait
                 "where" -> TokenWhere
                 "instance" -> TokenInstance
                 "true" -> TokenTrue
@@ -321,7 +321,7 @@ referenceTokenKind TokenRightBracket = "a right bracket"
 referenceTokenKind TokenComma = "a comma"
 referenceTokenKind TokenTrue = "'true'"
 referenceTokenKind TokenFalse = "'false'"
-referenceTokenKind TokenClass = "'class'"
+referenceTokenKind TokenTrait = "'trait'"
 referenceTokenKind TokenWhere = "'where'"
 referenceTokenKind TokenIf = "'if'"
 referenceTokenKind TokenElse = "'else'"
