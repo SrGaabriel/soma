@@ -23,7 +23,9 @@ data ParsingError
     | InvalidGenericsList Token
     | InvalidPattern Token
     | InvalidFunctionBody Token
+    | InvalidFunctionSignature Token
     | InvalidFunctionName Token
+    | MixedParameterStyles Token
     | UnexpectedParseFailure String
     | EndOfInput
     | Debug
@@ -46,6 +48,8 @@ instance Show ParsingError where
     show (InvalidPattern t) = "The expression " ++ referenceToken t ++ " is not a valid pattern"
     show (InvalidFunctionBody t) = "The expression " ++ referenceToken t ++ " is not a valid function body"
     show (InvalidFunctionName t) = "The expression " ++ referenceToken t ++ " is not a valid function name"
+    show (InvalidFunctionSignature t) = "The expression " ++ referenceToken t ++ " is not valid for defining a function's signature"
+    show (MixedParameterStyles _) = "Parameter styles cannot be mixed"
     show (UnexpectedParseFailure msg) = "Unexpected parse failure: " ++ msg
     show EndOfInput = "End of input"
     show Debug = "Debug"
@@ -70,7 +74,7 @@ instance PrintableError ParsingError where
     errorDebugDevDetails = show . getErrorToken
 
 instance ShowErrorComponent ParsingError where
-    showErrorComponent = show    
+    showErrorComponent = show
 
 getErrorToken :: ParsingError -> Maybe Token
 getErrorToken (UnexpectedToken t) = Just t
@@ -88,7 +92,9 @@ getErrorToken (InvalidGenericsList t) = Just t
 getErrorToken (ExpectedAGenericType t) = Just t
 getErrorToken (ExpectedAnExpression t) = Just t
 getErrorToken (InvalidFunctionBody t) = Just t
+getErrorToken (InvalidFunctionSignature t) = Just t
 getErrorToken (InvalidFunctionName t) = Just t
+getErrorToken (MixedParameterStyles t) = Just t
 getErrorToken (UnexpectedParseFailure _) = Nothing
 getErrorToken EndOfInput = Nothing
 getErrorToken Debug = Nothing

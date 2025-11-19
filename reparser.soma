@@ -1,26 +1,18 @@
-                                    
 
+def testSum(x: Int, y: Int) -> Int = x + y
 
+def areNumEqual(num1: Int, num2: Int) -> Bool = equals num1 num2
 
+def testShape :: Shape = Circle 5
 
+def experimentChooseRight :: a -> b -> b
+    | lhs rhs => rhs
 
-                        
-                        
-def testShape :: a -> b -> Shape [a] where b: Eq, a: Ord =
-    ""
-    
-        
-        
-        
-        
-        
-        
-            
-def testShape :: a -> b -> Shape [a] where b: Eq, a: Ord =
-    ""
-    
-        
-        
-        
-        
-        
+def testChoose :: a -> b -> b
+    | lhs rhs => experimentChooseRight lhs rhs
+
+def genericEq :: a -> a -> Bool where a: Eq
+    | x y => equals x y
+
+def genericEqTest :: a -> a -> Bool where a: Eq
+    | x y => genericEq x y

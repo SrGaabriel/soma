@@ -152,14 +152,7 @@ confirm :: TokenKind -> Parser ()
 confirm kind = void $ lookAhead (consume kind)
 
 parseCommaSeparatedUntil :: TokenKind -> Parser a -> Parser [a]
-parseCommaSeparatedUntil end itemParser = parseList
-  where
-    parseList = (:) <$> itemWithRecovery <*> parseRest <|> checkEmpty
-    parseRest = (consume TokenComma *> parseList) <|> checkEmpty
-    checkEmpty = confirm end $> []
-    itemWithRecovery = withRecovery itemParser $ do
-        skipUntilSync [TokenComma, end]
-        MP.customFailure $ ExpectedAnExpression (Token end "" 0)
+parseCommaSeparatedUntil = parseSequence TokenComma
 
 parseExhaustiveSequence :: TokenKind -> Parser a -> Parser [a]
 parseExhaustiveSequence separator itemParser = do
@@ -175,20 +168,30 @@ parseExhaustiveSequence separator itemParser = do
 
 parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
 parseSequence separator end itemParser = do
-    items <- MP.sepBy itemWithRecovery (consume separator)
-    _ <- MP.optional (consume end)
-    pure items
-  where
-    itemWithRecovery = withRecovery itemParser $ do
-        skipUntilSync [separator, end]
-        MP.customFailure $ ExpectedAnExpression (Token separator "" 0)
+    inc <- tryPeekOrEOF
+    if tokenKind inc == end
+        then pure []
+        else do
+            first <- itemParser
+            rest <- MP.many $ do
+                nextTok <- tryPeekOrEOF
+                case tokenKind nextTok of
+                    k | k == separator -> do
+                        _ <- consume separator
+                        itemParser
+                    k | k == end -> MP.empty
+                    _ -> MP.customFailure $ ExpectedDifferentToken separator nextTok
+            pure (first : rest)
 
 parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
-parseFluidSequence end itemParser = MP.manyTill itemWithRecovery (consume end)
-  where
-    itemWithRecovery = withRecovery itemParser $ do
-        skipUntilSync [end]
-        MP.customFailure $ ExpectedAnExpression (Token end "" 0)
+parseFluidSequence end itemParser = do
+    first <- itemParser
+    rest <- MP.many $ do
+        nextTok <- tryPeekOrEOF
+        case tokenKind nextTok of
+            k | k == end -> MP.empty
+            _ -> itemParser
+    pure (first : rest)
 
 parseInLayout :: Parser a -> Parser a
 parseInLayout = between (consume TokenLayoutStart) (consume TokenLayoutEnd)
@@ -196,7 +199,7 @@ parseInLayout = between (consume TokenLayoutStart) (consume TokenLayoutEnd)
 parseLayout :: Parser a -> Parser [a]
 parseLayout itemParser = do
     _ <- consume TokenLayoutStart
-    items <- MP.sepEndBy itemWithRecovery (consume TokenLayoutSeparator)
+    items <- parseSequence TokenLayoutSeparator TokenLayoutEnd itemWithRecovery 
     _ <- consume TokenLayoutEnd
     pure items
   where
@@ -252,3 +255,20 @@ dropParsedTokens parser tokens =
     case runParserTokens parser tokens of
         Right (_, leftover) -> leftover
         Left _bundle -> []
+
+parseFuncName :: Parser String
+parseFuncName = withRecovery parseFuncName'
+    $ do
+        pure "@ERROR"
+  where
+    parseFuncName' = do
+        inc <- peek
+        case tokenKind inc of
+            TokenLowerIdentifier ->
+                tokenValue <$> consume TokenLowerIdentifier
+            TokenLeftBraces -> do
+                _ <- consume TokenLeftBraces
+                nameToken <- consume TokenVarSymbol
+                _ <- consume TokenRightBraces
+                pure $ tokenValue nameToken
+            _ -> MP.customFailure $ InvalidFunctionName inc

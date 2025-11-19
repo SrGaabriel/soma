@@ -90,6 +90,7 @@ library
     Parsing.Bindings
     Parsing.Errors
     Parsing.Parser
+    Parsing.Patterns
     Parsing.Types
     Project.Graph
     Project.Incremental
