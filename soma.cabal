@@ -88,9 +88,12 @@ library
     Parsing.Ast
     Parsing.Atoms
     Parsing.Bindings
+    Parsing.DataTypes
     Parsing.Errors
+    Parsing.Intrinsics
     Parsing.Parser
     Parsing.Patterns
+    Parsing.Traits
     Parsing.Types
     Project.Graph
     Project.Incremental

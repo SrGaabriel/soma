@@ -176,7 +176,7 @@ parseComposeStmt = do
         _ -> do
             e <- parseExpression
             pure $ CSExpr e (exprSpan e)
-    
+
 parseIf :: Parser Expr
 parseIf = do
     ifToken <- consume TokenIf

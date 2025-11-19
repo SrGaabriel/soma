@@ -185,13 +185,17 @@ parseSequence separator end itemParser = do
 
 parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
 parseFluidSequence end itemParser = do
-    first <- itemParser
-    rest <- MP.many $ do
-        nextTok <- tryPeekOrEOF
-        case tokenKind nextTok of
-            k | k == end -> MP.empty
-            _ -> itemParser
-    pure (first : rest)
+    inc <- tryPeekOrEOF
+    if tokenKind inc == end
+        then pure []
+        else do
+            first <- itemParser
+            rest <- MP.many $ do
+                nextTok <- tryPeekOrEOF
+                case tokenKind nextTok of
+                    k | k == end -> MP.empty
+                    _ -> itemParser
+            pure (first : rest)
 
 parseInLayout :: Parser a -> Parser a
 parseInLayout = between (consume TokenLayoutStart) (consume TokenLayoutEnd)
@@ -199,13 +203,20 @@ parseInLayout = between (consume TokenLayoutStart) (consume TokenLayoutEnd)
 parseLayout :: Parser a -> Parser [a]
 parseLayout itemParser = do
     _ <- consume TokenLayoutStart
-    items <- parseSequence TokenLayoutSeparator TokenLayoutEnd itemWithRecovery 
+    items <- parseSequence TokenLayoutSeparator TokenLayoutEnd itemWithRecovery
     _ <- consume TokenLayoutEnd
     pure items
   where
     itemWithRecovery = withRecovery itemParser $ do
         skipUntilSync [TokenLayoutSeparator, TokenLayoutEnd]
         MP.customFailure $ ExpectedAnExpression (Token TokenLayoutSeparator "" 0)
+
+parseOptionallyLayout :: Parser a -> Parser [a]
+parseOptionallyLayout p = do
+    inc <- tryPeek
+    case inc of
+        Just Token{tokenKind = TokenLayoutStart} -> parseLayout p
+        _ -> pure []
 
 parseOptionallyInLayout :: Parser a -> Parser a
 parseOptionallyInLayout p = do

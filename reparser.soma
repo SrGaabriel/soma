@@ -16,3 +16,14 @@ def genericEq :: a -> a -> Bool where a: Eq
 
 def genericEqTest :: a -> a -> Bool where a: Eq
     | x y => genericEq x y
+
+
+data Shape
+    | Square
+        length :: Int
+    | Circle
+        radius :: Int
+    | Atom
+    | Triangle
+        base :: Int
+        height :: Int

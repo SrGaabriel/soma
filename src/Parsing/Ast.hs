@@ -3,9 +3,11 @@ module Parsing.Ast where
 import Data.List (nub)
 import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
+import qualified Debug.Trace as Debug
 import Lexing.Lexer (Token (tokenKind), TokenKind (..))
 import Lexing.Position (Span (Span))
 import Parsing.Bindings (parseBinding)
+import Parsing.DataTypes (parseDataType)
 import Parsing.Errors (ParsingError (InvalidTokenForTopLevelDeclaration, UnexpectedParseFailure))
 import Parsing.Parser (Parser, TokenStream, parseWithRecovery, peek, skipUntilSync, withRecovery)
 import Syntax.Tree (Expr (ExprBindingDef, ExprRoot))
@@ -35,11 +37,15 @@ parse tokens =
             case Set.toList errSet of
                 (ErrorCustom customErr : _) -> Just customErr
                 _ -> Just $ UnexpectedParseFailure "Unknown fancy error"
-        TrivialError pos unexpected expected -> 
-            Just $ UnexpectedParseFailure $ 
-                "Parse error at " ++ show pos ++ 
-                ": unexpected " ++ show unexpected ++
-                ", expected " ++ show expected
+        TrivialError pos unexpected expected ->
+            Just
+                $ UnexpectedParseFailure
+                $ "Parse error at "
+                    ++ show pos
+                    ++ ": unexpected "
+                    ++ show unexpected
+                    ++ ", expected "
+                    ++ show expected
 
 someDeclarations :: Parser [Expr]
 someDeclarations = do
@@ -60,6 +66,8 @@ someDeclarations = do
 parseDeclaration :: Parser Expr
 parseDeclaration = do
     token <- peek
+    Debug.traceM $ "Parsing declaration starting with token: " ++ show token
     case tokenKind token of
         TokenDef -> parseBinding True
+        TokenData -> parseDataType
         _ -> MP.customFailure $ InvalidTokenForTopLevelDeclaration token

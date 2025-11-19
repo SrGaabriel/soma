@@ -1,6 +1,9 @@
 module Project.Parsing where
 
 import Control.Monad (unless)
+import qualified Data.ByteString as BS
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Lexing.Lexer (tokenizeFile)
 import Logging.ErrorPrinter (printError)
 import Logging.PrettyTrees (TreeShow (treeShow))
@@ -8,9 +11,6 @@ import Parsing.Ast (parse)
 import Parsing.Errors (ParsingError)
 import Project.Module (ModuleInfo (..))
 import Syntax.Tree (Expr, exprChildren)
-import qualified Data.ByteString as BS
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 
 -- todo: fix signature
 parseModule :: (String, FilePath) -> IO (Either [ParsingError] ModuleInfo)

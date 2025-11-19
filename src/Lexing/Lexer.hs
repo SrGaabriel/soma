@@ -130,34 +130,33 @@ tokenize (c : cs) i stack
             in addToken (Token TokenVarSymbol ops i) (tokenize rest (i + length ops) stack)
         _ ->
             addToken (Token TokenSlash "/" i) (tokenize cs (i + 1) stack)
-        | c == '\n' =
-                let (spaces, rest) = span isSpace cs
-                    newIndent = length spaces
-                    newI = i + 1 + length spaces
-                    current = head stack
-                    isEmpty = null rest || head rest == '\n' || all isSpace rest
-                    (layoutTokens, newStack, newErrors)
-                        | isEmpty = 
+    | c == '\n' =
+        let (spaces, rest) = span isSpace cs
+            newIndent = length spaces
+            newI = i + 1 + length spaces
+            current = head stack
+            isEmpty = null rest || head rest == '\n' || all isSpace rest
+            (layoutTokens, newStack, newErrors)
+                | isEmpty =
+                    ([], stack, [])
+                | newIndent > current =
+                    ([Token TokenLayoutStart "" i], newIndent : stack, [])
+                | newIndent == current =
+                    if current > 0
+                        then
+                            ([Token TokenLayoutSeparator "" i], stack, [])
+                        else
                             ([], stack, [])
-                        | newIndent > current =
-                            ([Token TokenLayoutStart "" i], newIndent : stack, [])
-                        | newIndent == current =
-                            if current > 0
-                                then
-                                    ([Token TokenLayoutSeparator "" i], stack, [])
-                                else
-                                    ([], stack, [])
-                        | otherwise =
-                            let
-                                (dedentToks, remainingStack, isMatch) = dedentTo stack newIndent i
-                            in
-                                if isMatch
-                                    then
-                                        (dedentToks, remainingStack, [])
-                                    else
-                                        (dedentToks, newIndent : remainingStack, [InconsistentIndent i])
-                    (restTokens, restErrors) = tokenize rest newI newStack
-                in (layoutTokens ++ restTokens, newErrors ++ restErrors)
+                | otherwise =
+                    let (dedentToks, remainingStack, isMatch) = dedentTo stack newIndent i
+                    in if isMatch
+                        then
+                            let separatorTok = ([Token TokenLayoutSeparator "" i | newIndent > 0])
+                            in (dedentToks ++ separatorTok, remainingStack, [])
+                        else
+                            (dedentToks, newIndent : remainingStack, [InconsistentIndent i])
+            (restTokens, restErrors) = tokenize rest newI newStack
+        in (layoutTokens ++ restTokens, newErrors ++ restErrors)
     | c == '|' = case cs of
         ' ' : rest -> addToken (Token TokenPipe "|" i) (tokenize rest (i + 2) stack)
         _ ->

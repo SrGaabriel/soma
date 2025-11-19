@@ -7,7 +7,7 @@ module Config.Options (
     getInputName,
     Command (..),
     commandParser,
-    extractCommand
+    extractCommand,
 ) where
 
 import Data.List (isPrefixOf)
