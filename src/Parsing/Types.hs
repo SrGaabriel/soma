@@ -73,6 +73,7 @@ tryParseBaseType = do
         TokenLeftParen -> do
             _ <- consume TokenLeftParen
             types <- parseSequence TokenComma TokenRightParen parseType
+            _ <- consume TokenRightParen
             pure $ Just $ case types of
                 [singleType] -> singleType
                 _ -> tupleType types

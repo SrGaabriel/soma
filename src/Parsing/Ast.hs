@@ -3,7 +3,6 @@ module Parsing.Ast where
 import Data.List (nub)
 import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
-import qualified Debug.Trace as Debug
 import Lexing.Lexer (Token (tokenKind), TokenKind (..))
 import Lexing.Position (Span (Span))
 import Parsing.Bindings (parseBinding)
@@ -69,7 +68,6 @@ someDeclarations = do
 parseDeclaration :: Parser Expr
 parseDeclaration = do
     token <- peek
-    Debug.traceM $ "Parsing declaration starting with token: " ++ show token
     case tokenKind token of
         TokenDef -> parseBinding True
         TokenData -> parseDataType

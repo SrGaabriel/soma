@@ -1,6 +1,5 @@
 module Parsing.DataTypes where
 
-import qualified Debug.Trace as Debug
 import Lexing.Lexer (Token (tokenValue), TokenKind (..), spanningTokens)
 import Parsing.Parser (Parser, consume, parseFluidSequence, parseLayout, parseOptionallyLayout)
 import Parsing.Types (parseTyVar, parseType)
@@ -39,11 +38,7 @@ parseDataTypeConstructor = do
 
 parseDataTypeConstructorField :: Parser (String, Type)
 parseDataTypeConstructorField = do
-    Debug.traceM "Parsing data type constructor field"
     nameToken <- consume TokenLowerIdentifier
-    Debug.traceM $ "Field name: " ++ tokenValue nameToken
     _ <- consume TokenReturns
-    Debug.traceM "Consumed '->' token"
     typeExpr <- parseType
-    Debug.traceM $ "Parsed field type: " ++ show typeExpr
     pure (tokenValue nameToken, typeExpr)

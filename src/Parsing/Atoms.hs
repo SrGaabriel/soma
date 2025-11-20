@@ -86,6 +86,7 @@ parseLetExpression = do
     _ <- consume TokenEquals
     value <- parseExpression
     inTok <- consume TokenIn
+    _ <- consume TokenLayoutSeparator
     body <- parseExpression
 
     pure

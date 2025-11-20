@@ -8,7 +8,6 @@ import Parsing.Parser (Parser, consume, parseCommaSeparatedUntil, parseFuncName,
 import Parsing.Patterns (parsePipePatternArms)
 import Parsing.Types (parseQualifiedType, parseType)
 import Syntax.Tree (Expr (..), exprSpan)
-import Text.Megaparsec (lookAhead)
 import qualified Text.Megaparsec as MP
 import Typing.Currying (curryFunction)
 import Typing.Types (QualifiedType (..), Type, extractTyVars)
@@ -87,9 +86,8 @@ parseFuncParam = do
     nameToken <- consume TokenLowerIdentifier
     let name = tokenValue nameToken
 
-    hasColon <- MP.option False (True <$ lookAhead (consume TokenColon))
-
-    if hasColon
+    inc <- peek
+    if tokenKind inc == TokenColon
         then do
             _ <- consume TokenColon
             TypedParam name <$> parseType
