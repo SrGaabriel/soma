@@ -2,9 +2,11 @@ module Main where
 
 import Config.Options
 import Control.Monad (unless)
+import qualified Data.ByteString as BS
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
-import Lexing.Lexer (tokenizeFile)
+import qualified Data.Text.Encoding as TE
+import Lexing.Lexer (lexCode)
 import Project.Graph
 import Project.Incremental (extractSymbolImports, processModulesIncremental)
 import Project.Module
@@ -20,8 +22,9 @@ main = do
     case command of
         Right (Build options) -> build options
         Right (Lex file) -> do
-            content <- readFile file
-            let (lexed, lexErrors) = tokenizeFile content
+            fileContents <- BS.readFile file
+            let content = TE.decodeUtf8 fileContents
+            let (lexed, lexErrors) = lexCode content
             case lexErrors of
                 [] -> do
                     putStrLn $ "Lexing succeeded with " ++ show (length lexed) ++ " tokens:"
