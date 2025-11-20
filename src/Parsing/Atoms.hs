@@ -1,6 +1,5 @@
 module Parsing.Atoms where
 
-import Control.Applicative ((<|>))
 import Data.Maybe (fromMaybe)
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens, tokenSpan)
 import Lexing.Position (Span (Span))
@@ -148,7 +147,7 @@ parseInfixRest lhs prec = do
 
 parseModuleName :: Parser [String]
 parseModuleName = do
-    toks <- parseExhaustiveSequence TokenSlash (consume TokenVarSymbol <|> consume TokenLowerIdentifier)
+    toks <- parseExhaustiveSequence TokenSlash (consumeAnyOf [TokenVarSymbol, TokenLowerIdentifier])
     pure $ map tokenValue toks
 
 parseCompose :: Parser Expr

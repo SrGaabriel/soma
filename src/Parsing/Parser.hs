@@ -16,6 +16,7 @@ import Lexing.Lexer (Token (..), TokenKind (..), tokenKind)
 import Parsing.Errors (ParsingError (..))
 import Text.Megaparsec hiding (Token, anySingle, parse, satisfy, tokens, withRecovery)
 import qualified Text.Megaparsec as MP
+import Utils.Lists (hardHead)
 
 newtype TokenStream = TokenStream {unTokenStream :: [Token]}
     deriving (Eq, Ord)
@@ -135,6 +136,24 @@ consume kind = withRecovery (unrecoverableConsume kind) $ do
     _ <- anySingle
     pos <- unPos . sourceLine <$> getSourcePos
     pure $ Token kind "" pos
+
+consumeAnyOf :: [TokenKind] -> Parser Token
+consumeAnyOf kinds = withRecovery parser recovery
+  where
+    parser = do
+        inc <- tryPeekOrEOF
+        if tokenKind inc `elem` kinds
+            then consume (tokenKind inc)
+            else
+                MP.customFailure
+                    $ ExpectedOneOfTokens
+                        { expectedTokens = kinds
+                        , receivedToken = inc
+                        }
+    recovery = do
+        _ <- anySingle
+        pos <- unPos . sourceLine <$> getSourcePos
+        pure $ Token (hardHead kinds) "" pos
 
 peek :: Parser Token
 peek = lookAhead anySingle

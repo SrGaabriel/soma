@@ -16,6 +16,8 @@ import qualified Text.Megaparsec as MP
 import Text.Megaparsec.Error (ErrorFancy (..), ParseError (..))
 import Typing.Types (QualifiedType (Forall), intType)
 import Parsing.Traits (parseTrait, parseInstance)
+import Parsing.Intrinsics (parseIntrinsic)
+import Parsing.Imports (parseImport)
 
 parse :: [Token] -> Either [ParsingError] Expr
 parse tokens =
@@ -73,4 +75,6 @@ parseDeclaration = do
         TokenData -> parseDataType
         TokenTrait -> parseTrait
         TokenInstance -> parseInstance
+        TokenIntrinsic -> parseIntrinsic
+        TokenImport -> parseImport
         _ -> MP.customFailure $ InvalidTokenForTopLevelDeclaration token

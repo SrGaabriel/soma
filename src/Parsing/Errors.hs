@@ -24,9 +24,14 @@ data ParsingError
     | InvalidPattern Token
     | InvalidFunctionBody Token
     | InvalidFunctionSignature Token
+    | InvalidIntrinsic Token
     | InvalidFunctionName Token
     | MixedParameterStyles Token
     | UnexpectedParseFailure String
+    | ExpectedOneOfTokens 
+        { expectedTokens :: [TokenKind]
+        , receivedToken :: Token
+        }
     | EndOfInput
     | Debug
     deriving (Eq, Ord)
@@ -50,6 +55,10 @@ instance Show ParsingError where
     show (InvalidFunctionName t) = "The expression " ++ referenceToken t ++ " is not a valid function name"
     show (InvalidFunctionSignature t) = "The expression " ++ referenceToken t ++ " is not valid for defining a function's signature"
     show (MixedParameterStyles _) = "Parameter styles cannot be mixed"
+    show (InvalidIntrinsic t) = "You can't declare an intrinsic " ++ referenceToken t
+    show (ExpectedOneOfTokens ex rc) =
+        "Expected one of: " ++ show (map referenceTokenKind ex) ++
+        " but received " ++ referenceToken rc
     show (UnexpectedParseFailure msg) = "Unexpected parse failure: " ++ msg
     show EndOfInput = "End of input"
     show Debug = "Debug"
@@ -90,11 +99,13 @@ getErrorToken (NotAnExpression t) = Just t
 getErrorToken (InvalidPattern t) = Just t
 getErrorToken (InvalidGenericsList t) = Just t
 getErrorToken (ExpectedAGenericType t) = Just t
+getErrorToken (InvalidIntrinsic t) = Just t
 getErrorToken (ExpectedAnExpression t) = Just t
 getErrorToken (InvalidFunctionBody t) = Just t
 getErrorToken (InvalidFunctionSignature t) = Just t
 getErrorToken (InvalidFunctionName t) = Just t
 getErrorToken (MixedParameterStyles t) = Just t
+getErrorToken (ExpectedOneOfTokens _ t) = Just t
 getErrorToken (UnexpectedParseFailure _) = Nothing
 getErrorToken EndOfInput = Nothing
 getErrorToken Debug = Nothing

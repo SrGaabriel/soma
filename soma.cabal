@@ -90,6 +90,7 @@ library
     Parsing.Bindings
     Parsing.DataTypes
     Parsing.Errors
+    Parsing.Imports
     Parsing.Intrinsics
     Parsing.Parser
     Parsing.Patterns
