@@ -20,7 +20,7 @@ import Test.Hspec
 import Prelude hiding (length)
 
 getLspCommand :: IO String
-getLspCommand = return "cabal run soma-lsp --"
+getLspCommand = return "cabal -v0 exec soma-lsp --"
 
 main :: IO ()
 main = do
@@ -36,7 +36,7 @@ main = do
 mkConfig :: String -> SessionConfig
 mkConfig _cmd =
     def
-        { messageTimeout = 10
+        { messageTimeout = 30
         , logStdErr = True
         , logMessages = True
         , logColor = True

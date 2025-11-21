@@ -28,10 +28,8 @@ import Logging.PrettyTrees (treeShow)
 import Parsing.Ast (parse)
 import Project.Graph
 import Project.Incremental
-import Project.Module
 import Project.Symbols (Symbol, resolvedSymbolName, resolvedSymbolSpan)
 import Syntax.Tree (Expr (..), exprChildren, exprSpan)
-import System.Directory
 import System.FilePath
 import Typing.Types (QualifiedType)
 
@@ -40,6 +38,7 @@ data LspCompiledModule = LspCompiledModule
     , lcmResolvedAst :: Expr
     , lcmTypeMap :: TypeMap
     , lcmPublicSymbols :: Map.Map Symbol QualifiedType
+    , lcmSourceContent :: T.Text
     }
 
 data LspState = LspState
@@ -112,7 +111,7 @@ analyzeFile LspState{..} fileUri = do
 
             case parse tokens of
                 Left parseErrs -> do
-                    let diags = map errorToDiagnostic lexErrors ++ map errorToDiagnostic parseErrs
+                    let diags = map (errorToDiagnostic content) lexErrors ++ map (errorToDiagnostic content) parseErrs
                     Language.LSP.Server.publishDiagnostics 100 nUri Nothing (partitionBySource diags)
                 Right ast -> do
                     compiledMods <- liftIO $ readTVarIO stateModules
@@ -128,7 +127,7 @@ analyzeFile LspState{..} fileUri = do
 
                     case result of
                         Left errors -> do
-                            let diags = map errorToDiagnostic errors
+                            let diags = map (errorToDiagnostic content) errors
                             Language.LSP.Server.publishDiagnostics 100 nUri Nothing (partitionBySource diags)
                         Right compiled -> do
                             liftIO
@@ -144,7 +143,7 @@ compileModuleForLSP ::
     Expr ->
     Map.Map FilePath LspCompiledModule ->
     IO (Either [SomeError] LspCompiledModule)
-compileModuleForLSP modName _path _content ast compiledDeps = do
+compileModuleForLSP modName _path content ast compiledDeps = do
     let imports = extractSymbolImports ast
         seedEnv = Map.unions $ map resolveImport imports
 
@@ -166,6 +165,7 @@ compileModuleForLSP modName _path _content ast compiledDeps = do
                             , lcmResolvedAst = resolvedAst
                             , lcmTypeMap = types
                             , lcmPublicSymbols = newDefs
+                            , lcmSourceContent = T.pack content
                             }
   where
     resolveImport (impMod, syms) =
@@ -181,13 +181,13 @@ instance PrintableError SomeError where
     errorEnd (SomeError e) = errorEnd e
     errorMessage (SomeError e) = errorMessage e
 
-errorToDiagnostic :: (PrintableError e) => e -> Diagnostic
-errorToDiagnostic err =
+errorToDiagnostic :: (PrintableError e) => T.Text -> e -> Diagnostic
+errorToDiagnostic code err =
     Diagnostic
         { _range =
             Range
-                (offsetToPosition $ errorStart err)
-                (offsetToPosition $ errorEnd err)
+                (offsetToPosition code (errorStart err))
+                (offsetToPosition code (errorEnd err))
         , _severity = Just DiagnosticSeverity_Error
         , _code = Nothing
         , _codeDescription = Nothing
@@ -219,7 +219,8 @@ handleHover LspState{..} req responder = do
 
 getHoverAt :: Position -> LspCompiledModule -> Maybe Hover
 getHoverAt pos LspCompiledModule{..} = do
-    expr <- findExprAtPos (lspPositionToOffset pos) lcmResolvedAst
+    let offset = lspPositionToOffset lcmSourceContent pos 
+    expr <- findExprAtPos offset lcmResolvedAst
     typ <- Map.lookup expr lcmTypeMap
     let typeStr = treeShow typ
         markdown =
@@ -258,12 +259,12 @@ getDefinitionAt ::
     Map.Map FilePath LspCompiledModule ->
     Maybe Location
 getDefinitionAt pos LspCompiledModule{..} allCompiled = do
-    sym <- findSymbolAtPos (lspPositionToOffset pos) lcmResolvedAst
+    sym <- findSymbolAtPos (lspPositionToOffset lcmSourceContent pos) lcmResolvedAst
 
     case Map.lookup sym lcmPublicSymbols of
         Just _ ->
             let span = resolvedSymbolSpan sym
-            in Just $ Location (filePathToUri "current") (spanToRange span)
+            in Just $ Location (filePathToUri "current") (spanToRange lcmSourceContent span)
         Nothing ->
             findSymbolInDeps sym allCompiled
 
@@ -274,7 +275,7 @@ findSymbolInDeps sym allCompiled =
     checkModule (path, LspCompiledModule{..}) = do
         _ <- Map.lookup sym lcmPublicSymbols
         let span = resolvedSymbolSpan sym
-        return $ Location (filePathToUri path) (spanToRange span)
+        return $ Location (filePathToUri path) (spanToRange lcmSourceContent span)
 
 handleCompletion ::
     LspState ->
@@ -339,15 +340,23 @@ symbolToItem sym =
         , _data_ = Nothing
         }
 
-spanToRange :: Span -> Range
-spanToRange (Span start end) =
-    Range (offsetToPosition start) (offsetToPosition end)
+spanToRange :: T.Text -> Span -> Range
+spanToRange code (Span start end) =
+    Range (offsetToPosition code start) (offsetToPosition code end)
 
-offsetToPosition :: Int -> Position
-offsetToPosition offset = Position 0 (fromIntegral offset) -- TODO: proper line/col
+lspPositionToOffset :: T.Text -> Position -> Int
+lspPositionToOffset text (Position line col) =
+    let linesList = T.lines text
+        precedingChars = sum $ map (\l -> T.length l + 1) (take (fromIntegral line) linesList)
+    in precedingChars + (fromIntegral col)
 
-lspPositionToOffset :: Position -> Int
-lspPositionToOffset (Position line col) = fromIntegral col -- TODO: proper conversion
+offsetToPosition :: T.Text -> Int -> Position
+offsetToPosition text offset =
+    let
+        (prefix, _) = T.splitAt offset text
+        line = fromIntegral $ T.count "\n" prefix
+        col = fromIntegral $ T.length $ T.takeWhileEnd (/= '\n') prefix
+    in Position line col
 
 findExprAtPos :: Int -> Expr -> Maybe Expr
 findExprAtPos offset expr =

@@ -1,7 +1,7 @@
 def testSum(x: Int, y: Int) -> Int = x + y
 
 data Shape
-    = Square
+    | Square
         length :: Int
     | Circle
         radius :: Int

@@ -2,13 +2,13 @@ trait Monad m where
     def pure :: a -> m a
 
 data Option a
-    = Some
+    | Some
         value :: a
     | None
         
 
 data Either l r
-    = Left
+    | Left
         error :: l
     | Right
         value :: r
