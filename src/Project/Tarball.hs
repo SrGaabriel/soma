@@ -81,7 +81,7 @@ createProjectTarball outPath opts modName version srcFiles publicSyms depGraph c
     let output = if compress opts then GZip.compress tarball else tarball
 
     BL.writeFile outPath output
-    putStrLn $ "✅ Created tarball: " ++ outPath
+    putStrLn $ "Created tarball: " ++ outPath
 
 extractProjectTarball :: FilePath -> IO (Either String TarballContents)
 extractProjectTarball tarPath = do

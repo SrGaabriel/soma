@@ -1,6 +1,8 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+{- HLINT ignore "Use lambda-case" -}
+
 module Main where
 
 import Control.Applicative.Combinators
@@ -15,12 +17,11 @@ import Language.LSP.Protocol.Message
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import qualified Language.LSP.Test as LSP
-import System.FilePath
 import Test.Hspec
 import Prelude hiding (length)
 
 getLspCommand :: IO String
-getLspCommand = return "cabal -v0 exec soma-lsp --"
+getLspCommand = return "cabal -v0 run soma-lsp --"
 
 main :: IO ()
 main = do
@@ -63,7 +64,7 @@ testDiagnostics lspCmd = describe "Diagnostics" $ do
     it "should report parse errors"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
-            doc <- openDoc "ParseError.soma" "soma"
+            doc <- openDoc "parse_error.soma" "soma"
             diags <- waitForDiagnostics
             liftIO $ length diags `shouldSatisfy` (> 0)
 
@@ -84,7 +85,7 @@ testDiagnostics lspCmd = describe "Diagnostics" $ do
             doc <- openDoc "fixable.soma" "soma"
             _ <- waitForDiagnostics
 
-            changeDoc doc [TextDocumentContentChangeEvent $ InR $ TextDocumentContentChangeWholeDocument "let x = 42\n"]
+            changeDoc doc [TextDocumentContentChangeEvent $ InR $ TextDocumentContentChangeWholeDocument "def x :: String = \"oops\"\n"]
 
             diags <- waitForDiagnostics
             liftIO $ diags `shouldBe` []
@@ -175,8 +176,8 @@ testGotoDefinition lspCmd = describe "Go to Definition" $ do
     it "should handle cross-file definitions"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
-            _doc1 <- openDoc "Module1.soma" "soma"
-            doc2 <- openDoc "Module2.soma" "soma"
+            _doc1 <- openDoc "module1.soma" "soma"
+            doc2 <- openDoc "module2.soma" "soma"
             defs <- getDefinitions doc2 (Position 2 10)
 
             case defs of
@@ -188,14 +189,14 @@ testGotoDefinition lspCmd = describe "Go to Definition" $ do
                             liftIO
                                 $ uriToFilePath locUri
                                     `shouldSatisfy` \mp -> case mp of
-                                        Just path -> "Module1.soma" `isInfixOf` path
+                                        Just path -> "module1.soma" `isInfixOf` path
                                         Nothing -> False
                         InR (loc : _) -> do
                             let locUri = loc ^. L.uri
                             liftIO
                                 $ uriToFilePath locUri
                                     `shouldSatisfy` \mp -> case mp of
-                                        Just path -> "Module1.soma" `isInfixOf` path
+                                        Just path -> "module1.soma" `isInfixOf` path
                                         Nothing -> False
                         InR [] -> liftIO $ expectationFailure "Expected at least one location"
                 InR (InL _links) -> return ()
@@ -217,7 +218,7 @@ testCompletion lspCmd = describe "Completion" $ do
     it "should include imported symbols"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
-            doc <- openDoc "WithImports.soma" "soma"
+            doc <- openDoc "with_imports.soma" "soma"
             items <- getCompletions doc (Position 5 0)
             liftIO $ length items `shouldSatisfy` (> 0)
 

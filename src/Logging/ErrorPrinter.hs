@@ -16,14 +16,14 @@ data RowInfo = RowInfo
 printConclusionMessage :: String -> IO ()
 printConclusionMessage message = do
     ePutStrLn ""
-    setSGR [SetConsoleIntensity BoldIntensity]
-    setSGR [SetColor Foreground Vivid Red]
-    setSGR [SetConsoleIntensity BoldIntensity]
+    eSetSGR [SetConsoleIntensity BoldIntensity]
+    eSetSGR [SetColor Foreground Vivid Red]
+    eSetSGR [SetConsoleIntensity BoldIntensity]
     ePutStr "OUTPUT: "
-    setSGR [SetColor Foreground Dull White]
-    setSGR [SetConsoleIntensity NormalIntensity]
+    eSetSGR [SetColor Foreground Dull White]
+    eSetSGR [SetConsoleIntensity NormalIntensity]
     ePutStrLn message
-    setSGR [Reset]
+    eSetSGR [Reset]
 
 printError :: (PrintableError a) => a -> FilePath -> String -> String -> IO ()
 printError err fileName code prefix = do
@@ -54,19 +54,19 @@ printError err fileName code prefix = do
                 textToHighlight = take textLength $ drop relativeStart contentTrim
                 positionIndicator = replicate relativeStart ' ' ++ replicate textLength '^'
 
-            setSGR [SetColor Foreground Vivid Red]
+            eSetSGR [SetColor Foreground Vivid Red]
             ePutStr $ fileName ++ ":" ++ show (number rowInfo) ++ ":" ++ show (relativeIndex rowInfo + 1) ++ " "
-            setSGR [Reset]
+            eSetSGR [Reset]
 
-            setSGR [SetConsoleIntensity BoldIntensity]
+            eSetSGR [SetConsoleIntensity BoldIntensity]
             ePutStr $ "[" ++ prefix ++ "] "
-            setSGR [SetColor Foreground Vivid Red]
-            setSGR [SetConsoleIntensity BoldIntensity]
+            eSetSGR [SetColor Foreground Vivid Red]
+            eSetSGR [SetConsoleIntensity BoldIntensity]
             ePutStr "error: "
-            setSGR [SetColor Foreground Dull White]
-            setSGR [SetConsoleIntensity NormalIntensity]
+            eSetSGR [SetColor Foreground Dull White]
+            eSetSGR [SetConsoleIntensity NormalIntensity]
             ePutStrLn message
-            setSGR [Reset]
+            eSetSGR [Reset]
 
             ePutStrLn "|"
 
@@ -75,17 +75,17 @@ printError err fileName code prefix = do
                 then ePutStrLn "<empty row>"
                 else do
                     ePutStr (take relativeStart contentTrim)
-                    setSGR [SetColor Foreground Vivid Red]
+                    eSetSGR [SetColor Foreground Vivid Red]
                     ePutStr textToHighlight
-                    setSGR [Reset]
+                    eSetSGR [Reset]
                     ePutStrLn (drop (relativeStart + textLength) contentTrim)
 
             when (textLength > 0) $ do
                 ePutStr "| pos: "
-                setSGR [SetColor Foreground Vivid Red]
+                eSetSGR [SetColor Foreground Vivid Red]
                 ePutStrLn positionIndicator
 
-            setSGR [Reset]
+            eSetSGR [Reset]
             ePutStrLn $ "| debug: " ++ errorDebugDevDetails err
         Nothing ->
             error $ "Error while finding the line of the error: " ++ errorMessage err
@@ -145,3 +145,6 @@ ePutStr = hPutStr stderr
 
 ePutStrLn :: String -> IO ()
 ePutStrLn = hPutStrLn stderr
+
+eSetSGR :: [SGR] -> IO ()
+eSetSGR = hSetSGR stderr

@@ -30,6 +30,7 @@ executable soma-lsp
     soma,
     stm >=2.5,
     text,
+    time
 
   default-language: Haskell2010
 

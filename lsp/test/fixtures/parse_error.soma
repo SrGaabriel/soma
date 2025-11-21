@@ -1,2 +1,4 @@
+intrinsic def {+} :: Int -> Int -> Int
+
 def brokenFunc( -> Int
     | x => x + 1

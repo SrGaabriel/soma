@@ -7,16 +7,21 @@
 module Main where
 
 import Control.Concurrent.STM
+import Control.Exception (bracket)
 import Control.Lens ((^.))
 import Control.Monad.IO.Class
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe, mapMaybe)
 import qualified Data.Text as T
+import Data.Time.Clock
+import Data.Time.Format
+import GHC.IO.Handle (hDuplicate, hDuplicateTo)
+import GHC.IO.IOMode (IOMode (WriteMode))
 import Inference.Assembler (inferTree)
 import Inference.Core (TypeMap)
 import Inference.Resolver (runResolverWithEnv)
 import Language.LSP.Diagnostics
-import Language.LSP.Protocol.Lens
+import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Message
 import Language.LSP.Protocol.Types
 import Language.LSP.Server
@@ -31,10 +36,35 @@ import Project.Incremental
 import Project.Symbols (Symbol, resolvedSymbolName, resolvedSymbolSpan)
 import Syntax.Tree (Expr (..), exprChildren, exprSpan)
 import System.FilePath
+import System.IO (hClose, hPutStr, openFile, stderr, stdout)
 import Typing.Types (QualifiedType)
+
+withConsoleSilenced :: IO a -> IO a
+withConsoleSilenced action =
+    bracket
+        ( do
+            origStdout <- hDuplicate stdout
+            origStderr <- hDuplicate stderr
+
+            nullH <- openFile "/dev/null" WriteMode
+
+            hDuplicateTo nullH stdout
+            hDuplicateTo nullH stderr
+            return (origStdout, origStderr, nullH)
+        )
+        ( \(origStdout, origStderr, nullH) -> do
+            hDuplicateTo origStdout stdout
+            hDuplicateTo origStderr stderr
+
+            hClose origStdout
+            hClose origStderr
+            hClose nullH
+        )
+        (const action)
 
 data LspCompiledModule = LspCompiledModule
     { lcmModuleName :: String
+    , lcmFilePath :: FilePath
     , lcmResolvedAst :: Expr
     , lcmTypeMap :: TypeMap
     , lcmPublicSymbols :: Map.Map Symbol QualifiedType
@@ -47,8 +77,33 @@ data LspState = LspState
     , stateModuleGraph :: TVar (Maybe ModuleGraph)
     }
 
+logFile :: FilePath
+logFile = "/tmp/soma-lsp-debug.log"
+
+timestamp :: IO String
+timestamp = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S%Q" <$> getCurrentTime
+
+appendLog :: String -> IO ()
+appendLog msg = do
+    ts <- timestamp
+    let line' = ts ++ " | " ++ msg ++ "\n"
+
+    hPutStr stderr line'
+
+    appendFile logFile line'
+
+logToClient :: T.Text -> LspM () ()
+logToClient msg = do
+    sendNotification SMethod_WindowLogMessage (LogMessageParams MessageType_Info msg)
+
+    sendNotification SMethod_WindowShowMessage (ShowMessageParams MessageType_Info msg)
+
+    let plain = T.unpack msg
+    liftIO $ appendLog ("LSP: " ++ plain)
+
 main :: IO Int
 main = do
+    appendLog "Starting soma-lsp server process"
     modulesVar <- newTVarIO Map.empty
     workspaceVar <- newTVarIO Nothing
     graphVar <- newTVarIO Nothing
@@ -62,14 +117,17 @@ main = do
             , configSection = T.pack "soma"
             , parseConfig = const $ const $ Right ()
             , doInitialize = \env req -> do
-                let mRootUri = req ^. params . rootUri
+                let mRootUri = req ^. L.params . L.rootUri
                 case mRootUri of
                     (InL uri) -> do
                         case uriToFilePath uri of
                             Just path -> liftIO $ do
                                 atomically $ writeTVar workspaceVar (Just path)
-                                mods <- findModules "workspace" path
-                                graphE <- buildModuleGraph mods
+                                appendLog $ "initialize: workspace root = " ++ path
+                                (_mods, graphE) <- withConsoleSilenced $ do
+                                    ms <- findModules "workspace" path
+                                    ge <- buildModuleGraph ms
+                                    return (ms, ge)
                                 case graphE of
                                     Right graph -> atomically $ writeTVar graphVar (Just graph)
                                     Left _ -> return ()
@@ -88,10 +146,12 @@ handlers state _caps =
             sendNotification SMethod_WindowShowMessage
                 $ ShowMessageParams MessageType_Info "Soma LSP initialized"
         , notificationHandler SMethod_TextDocumentDidOpen $ \msg -> do
-            let fileUri = msg ^. params . textDocument . uri
+            let fileUri = msg ^. L.params . L.textDocument . L.uri
+            logToClient $ "didOpen: " <> (T.pack . show) fileUri
             analyzeFile state fileUri
         , notificationHandler SMethod_TextDocumentDidChange $ \msg -> do
-            let fileUri = msg ^. params . textDocument . uri
+            let fileUri = msg ^. L.params . L.textDocument . L.uri
+            logToClient $ "didChange: " <> (T.pack . show) fileUri
             analyzeFile state fileUri
         , requestHandler SMethod_TextDocumentHover (handleHover state)
         , requestHandler SMethod_TextDocumentDefinition (handleGotoDefinition state)
@@ -107,12 +167,14 @@ analyzeFile LspState{..} fileUri = do
         (Just vf, Just filePath) -> do
             let content = virtualFileText vf
                 modName = dropExtension $ takeFileName filePath
+            logToClient $ "analyzeFile: " <> T.pack filePath <> " module=" <> T.pack modName
             let (tokens, lexErrors) = lexCode content
 
             case parse tokens of
                 Left parseErrs -> do
                     let diags = map (errorToDiagnostic content) lexErrors ++ map (errorToDiagnostic content) parseErrs
                     Language.LSP.Server.publishDiagnostics 100 nUri Nothing (partitionBySource diags)
+                    logToClient $ "parse errors published for " <> T.pack filePath
                 Right ast -> do
                     compiledMods <- liftIO $ readTVarIO stateModules
 
@@ -129,11 +191,13 @@ analyzeFile LspState{..} fileUri = do
                         Left errors -> do
                             let diags = map (errorToDiagnostic content) errors
                             Language.LSP.Server.publishDiagnostics 100 nUri Nothing (partitionBySource diags)
+                            logToClient $ "type/resolution errors published for " <> T.pack filePath
                         Right compiled -> do
                             liftIO
                                 $ atomically
                                 $ modifyTVar stateModules (Map.insert filePath compiled)
                             Language.LSP.Server.publishDiagnostics 100 nUri Nothing (partitionBySource [])
+                            logToClient $ "compiled and stored module: " <> T.pack (lcmModuleName compiled) <> " (" <> T.pack filePath <> ")"
         _ -> pure ()
 
 compileModuleForLSP ::
@@ -143,35 +207,41 @@ compileModuleForLSP ::
     Expr ->
     Map.Map FilePath LspCompiledModule ->
     IO (Either [SomeError] LspCompiledModule)
-compileModuleForLSP modName _path content ast compiledDeps = do
+compileModuleForLSP modName filePath content ast compiledDeps = do
+    appendLog $ "compileModuleForLSP: mod=" ++ modName ++ " path=" ++ filePath
     let imports = extractSymbolImports ast
         seedEnv = Map.unions $ map resolveImport imports
 
     resolvedResult <- runResolverWithEnv "lsp" modName seedEnv ast
     case resolvedResult of
-        Left err -> return $ Left [SomeError err]
+        Left err -> do
+            appendLog $ "resolver error for " ++ modName ++ ": " ++ errorMessage err
+            return $ Left [SomeError err]
         Right (resolvedAst, fullEnv, instanceEnv) -> do
             let typesResult = inferTree "lsp" modName fullEnv instanceEnv resolvedAst
 
             case typesResult of
-                Left errs -> return $ Left (map SomeError errs)
+                Left errs -> do
+                    appendLog $ "type infer errors for " ++ modName ++ " : " ++ show (Prelude.length errs) ++ " errors"
+                    return $ Left (map SomeError errs)
                 Right types -> do
                     let newDefs = Map.difference fullEnv seedEnv
-
+                    appendLog $ "compileModuleForLSP succeeded for " ++ modName ++ ", public defs: " ++ show (Map.size newDefs)
                     return
                         $ Right
                         $ LspCompiledModule
                             { lcmModuleName = modName
                             , lcmResolvedAst = resolvedAst
                             , lcmTypeMap = types
+                            , lcmFilePath = filePath
                             , lcmPublicSymbols = newDefs
                             , lcmSourceContent = T.pack content
                             }
   where
     resolveImport (impMod, syms) =
-        case Map.lookup impMod compiledDeps of
-            Just LspCompiledModule{..} ->
-                filterSymbolsByNames syms lcmPublicSymbols
+        case findModuleByName impMod compiledDeps of
+            Just matchedModule ->
+                filterSymbolsByNames syms (lcmPublicSymbols matchedModule)
             Nothing -> Map.empty
 
 data SomeError = forall e. (PrintableError e) => SomeError e
@@ -204,8 +274,8 @@ handleHover ::
     (Either (TResponseError 'Method_TextDocumentHover) (Hover |? Null) -> LspM () ()) ->
     LspM () ()
 handleHover LspState{..} req responder = do
-    let pos = req ^. params . position
-        fileUri = req ^. params . textDocument . uri
+    let pos = req ^. L.params . L.position
+        fileUri = req ^. L.params . L.textDocument . L.uri
 
     case uriToFilePath fileUri of
         Just filePath -> do
@@ -213,21 +283,30 @@ handleHover LspState{..} req responder = do
             case Map.lookup filePath compiled of
                 Just cm -> do
                     let mHover = getHoverAt pos cm
+                    case mHover of
+                        Just _ -> logToClient $ "hover: found hover at " <> T.pack (show pos) <> " in " <> T.pack filePath
+                        Nothing -> logToClient $ "hover: no hover at " <> T.pack (show pos) <> " in " <> T.pack filePath
                     responder $ Right $ maybe (InR Null) InL mHover
-                Nothing -> responder $ Right $ InR Null
-        Nothing -> responder $ Right $ InR Null
+                Nothing -> do
+                    logToClient $ "hover: no compiled module for " <> T.pack filePath
+                    responder $ Right $ InR Null
+        Nothing -> do
+            logToClient "hover: uriToFilePath failed"
+            responder $ Right $ InR Null
 
 getHoverAt :: Position -> LspCompiledModule -> Maybe Hover
 getHoverAt pos LspCompiledModule{..} = do
-    let offset = lspPositionToOffset lcmSourceContent pos 
+    let offset = lspPositionToOffset lcmSourceContent pos
     expr <- findExprAtPos offset lcmResolvedAst
-    typ <- Map.lookup expr lcmTypeMap
-    let typeStr = treeShow typ
-        markdown =
-            MarkupContent
-                MarkupKind_Markdown
-                (T.pack $ "```soma\n" ++ typeStr ++ "\n```")
-    return $ Hover (InL markdown) Nothing
+    case Map.lookup expr lcmTypeMap of
+        Just typ ->
+            let typeStr = treeShow typ
+                markdown =
+                    MarkupContent
+                        MarkupKind_Markdown
+                        (T.pack $ "```soma\n" ++ typeStr ++ "\n```")
+            in Just $ Hover (InL markdown) Nothing
+        Nothing -> Nothing
 
 handleGotoDefinition ::
     LspState ->
@@ -235,8 +314,8 @@ handleGotoDefinition ::
     (Either (TResponseError 'Method_TextDocumentDefinition) (Definition |? [DefinitionLink] |? Null) -> LspM () ()) ->
     LspM () ()
 handleGotoDefinition LspState{..} req responder = do
-    let pos = req ^. params . position
-        fileUri = req ^. params . textDocument . uri
+    let pos = req ^. L.params . L.position
+        fileUri = req ^. L.params . L.textDocument . L.uri
 
     case uriToFilePath fileUri of
         Just filePath -> do
@@ -244,14 +323,21 @@ handleGotoDefinition LspState{..} req responder = do
             case Map.lookup filePath compiled of
                 Just cm -> do
                     let mLoc = getDefinitionAt pos cm compiled
+                    case mLoc of
+                        Just loc -> logToClient $ "definition: returning location " <> T.pack (show loc)
+                        Nothing -> logToClient $ "definition: no location found at " <> T.pack (show pos) <> " in " <> T.pack filePath
                     responder
                         $ Right
                         $ maybe
                             (InR $ InR Null)
                             (InL . Definition . InL)
                             mLoc
-                Nothing -> responder $ Right $ InR $ InR Null
-        Nothing -> responder $ Right $ InR $ InR Null
+                Nothing -> do
+                    logToClient $ "definition: no compiled module for " <> T.pack filePath
+                    responder $ Right $ InR $ InR Null
+        Nothing -> do
+            logToClient "definition: uriToFilePath failed"
+            responder $ Right $ InR $ InR Null
 
 getDefinitionAt ::
     Position ->
@@ -260,11 +346,11 @@ getDefinitionAt ::
     Maybe Location
 getDefinitionAt pos LspCompiledModule{..} allCompiled = do
     sym <- findSymbolAtPos (lspPositionToOffset lcmSourceContent pos) lcmResolvedAst
-
     case Map.lookup sym lcmPublicSymbols of
         Just _ ->
-            let span = resolvedSymbolSpan sym
-            in Just $ Location (filePathToUri "current") (spanToRange lcmSourceContent span)
+            let span' = resolvedSymbolSpan sym
+                uri = filePathToUri lcmFilePath
+            in Just $ Location uri (spanToRange lcmSourceContent span')
         Nothing ->
             findSymbolInDeps sym allCompiled
 
@@ -274,8 +360,8 @@ findSymbolInDeps sym allCompiled =
   where
     checkModule (path, LspCompiledModule{..}) = do
         _ <- Map.lookup sym lcmPublicSymbols
-        let span = resolvedSymbolSpan sym
-        return $ Location (filePathToUri path) (spanToRange lcmSourceContent span)
+        let span' = resolvedSymbolSpan sym
+        return $ Location (filePathToUri path) (spanToRange lcmSourceContent span')
 
 handleCompletion ::
     LspState ->
@@ -283,7 +369,7 @@ handleCompletion ::
     (Either (TResponseError 'Method_TextDocumentCompletion) ([CompletionItem] |? CompletionList |? Null) -> LspM () ()) ->
     LspM () ()
 handleCompletion LspState{..} req responder = do
-    let fileUri = req ^. params . textDocument . uri
+    let fileUri = req ^. L.params . L.textDocument . L.uri
 
     case uriToFilePath fileUri of
         Just filePath -> do
@@ -291,11 +377,17 @@ handleCompletion LspState{..} req responder = do
             case Map.lookup filePath compiled of
                 Just cm -> do
                     let completions = getCompletions cm compiled
+                    logToClient $ "completion: " <> T.pack (show (Prelude.length (clItems completions))) <> " items for " <> T.pack filePath
                     responder $ Right $ InR (InL completions)
-                Nothing ->
+                Nothing -> do
+                    logToClient $ "completion: no compiled module for " <> T.pack filePath
                     responder $ Right $ InR (InL $ CompletionList False Nothing [])
-        Nothing ->
+        Nothing -> do
+            logToClient "completion: uriToFilePath failed"
             responder $ Right $ InR (InL $ CompletionList False Nothing [])
+
+clItems :: CompletionList -> [CompletionItem]
+clItems (CompletionList _ _ items) = items
 
 getCompletions :: LspCompiledModule -> Map.Map FilePath LspCompiledModule -> CompletionList
 getCompletions cm allCompiled =
@@ -341,38 +433,40 @@ symbolToItem sym =
         }
 
 spanToRange :: T.Text -> Span -> Range
-spanToRange code (Span start end) =
-    Range (offsetToPosition code start) (offsetToPosition code end)
+spanToRange code (Span start' end') =
+    Range (offsetToPosition code start') (offsetToPosition code end')
 
 lspPositionToOffset :: T.Text -> Position -> Int
-lspPositionToOffset text (Position line col) =
+lspPositionToOffset text (Position line' col) =
     let linesList = T.lines text
-        precedingChars = sum $ map (\l -> T.length l + 1) (take (fromIntegral line) linesList)
-    in precedingChars + (fromIntegral col)
+        precedingChars = sum $ map (\l -> T.length l + 1) (take (fromIntegral line') linesList)
+    in precedingChars + fromIntegral col
 
 offsetToPosition :: T.Text -> Int -> Position
 offsetToPosition text offset =
     let
         (prefix, _) = T.splitAt offset text
-        line = fromIntegral $ T.count "\n" prefix
+        line' = fromIntegral $ T.count "\n" prefix
         col = fromIntegral $ T.length $ T.takeWhileEnd (/= '\n') prefix
-    in Position line col
+    in
+        Position line' col
 
 findExprAtPos :: Int -> Expr -> Maybe Expr
 findExprAtPos offset expr =
-    case expr of
-        e | exprContainsOffset offset e -> Just e
-        _ -> listToMaybe $ mapMaybe (findExprAtPos offset) (exprChildren expr)
+    case listToMaybe (mapMaybe (findExprAtPos offset) (exprChildren expr)) of
+        Just e -> Just e
+        Nothing -> if exprContainsOffset offset expr then Just expr else Nothing
   where
     exprContainsOffset off e =
-        let Span start end = exprSpan e
-        in off >= start && off <= end
+        let Span start' end' = exprSpan e
+        in off >= start' && off < end'
 
 findSymbolAtPos :: Int -> Expr -> Maybe Symbol
-findSymbolAtPos offset = go
+findSymbolAtPos offset expr =
+    case listToMaybe (mapMaybe (findSymbolAtPos offset) (exprChildren expr)) of
+        Just s -> Just s
+        Nothing -> case expr of
+            ExprVar sym span' | offsetInSpan offset span' -> Just sym
+            _ -> Nothing
   where
-    go (ExprVar sym span)
-        | offsetInSpan offset span = Just sym
-    go expr = listToMaybe $ mapMaybe go (exprChildren expr)
-
-    offsetInSpan off (Span start end) = off >= start && off <= end
+    offsetInSpan off (Span start' end') = off >= start' && off < end'
