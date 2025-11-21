@@ -16,13 +16,13 @@ instance Monad IO where
     def pure(value: a) -> IO a = pureIO value
 
 data Shape
-    = Square
+    | Square
         length :: Int
     | Circle
         radius :: Int
 
 data Maybe a
-    = Just
+    | Just
         value :: a
     | Nothing
         

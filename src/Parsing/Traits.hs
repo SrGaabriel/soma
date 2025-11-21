@@ -1,11 +1,11 @@
 module Parsing.Traits where
 
-import Lexing.Lexer (TokenKind (..), spanningTokens, Token (..))
-import Parsing.Parser (Parser, consume, parseFuncName, parseOptionallyLayout, parseFluidSequence)
+import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
+import Parsing.Bindings (parseBinding)
+import Parsing.Parser (Parser, consume, parseFluidSequence, parseFuncName, parseOptionallyLayout)
 import Parsing.Types (parseQualifiedType, parseTyVar, parseType)
 import Syntax.Tree (Expr (..))
-import Typing.Types (Constraint, QualifiedType (Forall), mkConstraint, Type (..))
-import Parsing.Bindings (parseBinding)
+import Typing.Types (Constraint, QualifiedType (Forall), Type (..), mkConstraint)
 
 parseTrait :: Parser Expr
 parseTrait = do

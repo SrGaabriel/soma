@@ -118,9 +118,10 @@ lexCode' text i stack =
                         let (ops, rest) = T.span isOperatorChar text
                             opsStr = T.unpack ops
                         in addToken (Token TokenVarSymbol opsStr i) (lexCode' rest (i + T.length ops) stack)
-                    else if T.isPrefixOf (T.pack ">") cs
-                        then addToken (Token TokenStrongRightArrow "=>" i) (lexCode' (T.drop 1 cs) (i + 2) stack)
-                        else addToken (Token TokenEquals "=" i) (lexCode' cs (i + 1) stack)
+                    else
+                        if T.isPrefixOf (T.pack ">") cs
+                            then addToken (Token TokenStrongRightArrow "=>" i) (lexCode' (T.drop 1 cs) (i + 2) stack)
+                            else addToken (Token TokenEquals "=" i) (lexCode' cs (i + 1) stack)
             | c == ':' ->
                 if T.isPrefixOf (T.pack ":") cs
                     then addToken (Token TokenReturns "::" i) (lexCode' (T.drop 1 cs) (i + 2) stack)
@@ -130,21 +131,23 @@ lexCode' text i stack =
                     then
                         let (comment, rest') = T.span (/= '\n') (T.drop 1 cs)
                         in lexCode' rest' (i + 2 + T.length comment) stack
-                    else if T.isPrefixOf (T.pack "*") cs
-                        then
-                            let (comment, rest') = T.break (== '*') (T.drop 1 cs)
-                            in if T.isPrefixOf (T.pack "*/") rest'
-                                then lexCode' (T.drop 2 rest') (i + 4 + T.length comment) stack
-                                else
-                                    let (restTokens, restErrors) = lexCode' rest' (i + 2 + T.length comment) stack
-                                    in (restTokens, UnterminatedComment i : restErrors)
-                        else if T.isPrefixOf (T.pack " ") cs
+                    else
+                        if T.isPrefixOf (T.pack "*") cs
                             then
-                                let (ops, rest) = T.span isOperatorChar text
-                                    opsStr = T.unpack ops
-                                in addToken (Token TokenVarSymbol opsStr i) (lexCode' rest (i + T.length ops) stack)
+                                let (comment, rest') = T.break (== '*') (T.drop 1 cs)
+                                in if T.isPrefixOf (T.pack "*/") rest'
+                                    then lexCode' (T.drop 2 rest') (i + 4 + T.length comment) stack
+                                    else
+                                        let (restTokens, restErrors) = lexCode' rest' (i + 2 + T.length comment) stack
+                                        in (restTokens, UnterminatedComment i : restErrors)
                             else
-                                addToken (Token TokenSlash "/" i) (lexCode' cs (i + 1) stack)
+                                if T.isPrefixOf (T.pack " ") cs
+                                    then
+                                        let (ops, rest) = T.span isOperatorChar text
+                                            opsStr = T.unpack ops
+                                        in addToken (Token TokenVarSymbol opsStr i) (lexCode' rest (i + T.length ops) stack)
+                                    else
+                                        addToken (Token TokenSlash "/" i) (lexCode' cs (i + 1) stack)
             | c == '\n' ->
                 let (spaces, rest) = T.span isSpace cs
                     newIndent = T.length spaces
@@ -199,8 +202,9 @@ lexCode' text i stack =
                                 let textStr = T.unpack textContent
                                     quotedText = c : textStr ++ "\""
                                 in addToken (Token (TokenString textStr) quotedText i) (lexCode' (T.drop 1 rest) (i + length quotedText) stack)
-                            else let (restTokens, restErrors) = lexCode' rest (i + 1 + T.length textContent) stack
-                                 in (restTokens, UnterminatedString i : restErrors)
+                            else
+                                let (restTokens, restErrors) = lexCode' rest (i + 1 + T.length textContent) stack
+                                in (restTokens, UnterminatedString i : restErrors)
             | c == '`' ->
                 let (textContent, rest) = T.span (/= '`') cs
                 in if T.isPrefixOf (T.pack "`") rest
@@ -262,11 +266,10 @@ dedentTo stack target pos = go stack []
         if null s || hardHead s <= target
             then
                 (reverse accToks, s, not (null s) && hardHead s == target)
-            else case s
-                of
-                    [] -> (reverse accToks, s, False)
-                    (_ : t) ->
-                        go t (Token TokenLayoutEnd "" pos : accToks)
+            else case s of
+                [] -> (reverse accToks, s, False)
+                (_ : t) ->
+                    go t (Token TokenLayoutEnd "" pos : accToks)
 
 breakTripleQuote :: Text -> (Text, Text)
 breakTripleQuote s = go s T.empty

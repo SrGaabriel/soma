@@ -6,7 +6,7 @@ import Lexing.Lexer (Token (tokenValue), TokenKind (..), tokenSpan)
 import Lexing.Position (Span (..))
 import Parsing.Atoms (parseModuleName)
 import Parsing.Errors (ParsingError (UnexpectedToken))
-import Parsing.Parser (Parser, consume, parseSequence, consumeAnyOf)
+import Parsing.Parser (Parser, consume, consumeAnyOf, parseSequence)
 import Syntax.Tree (Expr (..))
 import qualified Text.Megaparsec as MP
 

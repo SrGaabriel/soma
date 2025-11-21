@@ -1,10 +1,10 @@
 module Parsing.Intrinsics (parseIntrinsic) where
 
 import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..), spanningTokens)
+import Parsing.Errors (ParsingError (..))
 import Parsing.Parser (Parser, consume, parseFuncName, tryPeekOrEOF)
 import Parsing.Types (parseKind, parseQualifiedType)
 import Syntax.Tree (Expr (..))
-import Parsing.Errors (ParsingError(..))
 import qualified Text.Megaparsec as MP
 
 parseIntrinsic :: Parser Expr

@@ -28,7 +28,7 @@ data ParsingError
     | InvalidFunctionName Token
     | MixedParameterStyles Token
     | UnexpectedParseFailure String
-    | ExpectedOneOfTokens 
+    | ExpectedOneOfTokens
         { expectedTokens :: [TokenKind]
         , receivedToken :: Token
         }
@@ -57,8 +57,10 @@ instance Show ParsingError where
     show (MixedParameterStyles _) = "Parameter styles cannot be mixed"
     show (InvalidIntrinsic t) = "You can't declare an intrinsic " ++ referenceToken t
     show (ExpectedOneOfTokens ex rc) =
-        "Expected one of: " ++ show (map referenceTokenKind ex) ++
-        " but received " ++ referenceToken rc
+        "Expected one of: "
+            ++ show (map referenceTokenKind ex)
+            ++ " but received "
+            ++ referenceToken rc
     show (UnexpectedParseFailure msg) = "Unexpected parse failure: " ++ msg
     show EndOfInput = "End of input"
     show Debug = "Debug"

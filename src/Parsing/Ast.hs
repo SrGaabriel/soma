@@ -8,15 +8,15 @@ import Lexing.Position (Span (Span))
 import Parsing.Bindings (parseBinding)
 import Parsing.DataTypes (parseDataType)
 import Parsing.Errors (ParsingError (InvalidTokenForTopLevelDeclaration, UnexpectedParseFailure))
-import Parsing.Parser (Parser, TokenStream, parseWithRecovery, peek, skipUntilSync, withRecovery)
+import Parsing.Imports (parseImport)
+import Parsing.Intrinsics (parseIntrinsic)
+import Parsing.Parser (Parser, TokenStream, isEOF, parseWithRecovery, peek, skipUntilSync, withRecovery)
+import Parsing.Traits (parseInstance, parseTrait)
 import Syntax.Tree (Expr (ExprBindingDef, ExprRoot))
 import Text.Megaparsec (ParseError)
 import qualified Text.Megaparsec as MP
 import Text.Megaparsec.Error (ErrorFancy (..), ParseError (..))
 import Typing.Types (QualifiedType (Forall), intType)
-import Parsing.Traits (parseTrait, parseInstance)
-import Parsing.Intrinsics (parseIntrinsic)
-import Parsing.Imports (parseImport)
 
 parse :: [Token] -> Either [ParsingError] Expr
 parse tokens =
@@ -29,10 +29,8 @@ parse tokens =
   where
     parser = do
         ExprRoot <$> someDeclarations
-
     convertErrors :: [ParseError TokenStream ParsingError] -> [ParsingError]
     convertErrors = nub . mapMaybe convertError
-
     convertError :: ParseError TokenStream ParsingError -> Maybe ParsingError
     convertError err = case err of
         FancyError _ errSet ->
@@ -49,19 +47,36 @@ parse tokens =
                     ++ ", expected "
                     ++ show expected
 
+-- FIXED: Use tail-recursive accumulator pattern instead of cons recursion
 someDeclarations :: Parser [Expr]
-someDeclarations = do
-    mtok <- MP.optional peek
-    case mtok of
-        Nothing -> pure []
-        Just _ -> do
-            decl <- recoverDeclaration
-            rest <- someDeclarations
-            pure (decl : rest)
+someDeclarations = go []
   where
+    go acc = do
+        atEnd <- isEOF
+        if atEnd
+            then pure (reverse acc)
+            else do
+                mtok <- MP.optional peek
+                case mtok of
+                    Nothing -> pure (reverse acc)
+                    Just _ -> do
+                        decl <- recoverDeclaration
+                        go (decl : acc)
+
     recoverDeclaration = withRecovery parseDeclaration $ do
-        skipUntilSync [TokenDef, TokenLayoutSeparator, TokenLayoutEnd]
+        skipUntilSync syncTokens
         pure defaultDecl
+
+    syncTokens =
+        [ TokenDef
+        , TokenData
+        , TokenTrait
+        , TokenInstance
+        , TokenIntrinsic
+        , TokenImport
+        , TokenLayoutSeparator
+        , TokenLayoutEnd
+        ]
 
     defaultDecl = ExprBindingDef "" (Forall [] [] intType) (ExprRoot []) False (Span 0 0)
 

@@ -5,7 +5,7 @@
 
 module Parsing.Parser where
 
-import Control.Monad (void, when)
+import Control.Monad (unless, void, when)
 import Control.Monad.State
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
@@ -60,10 +60,11 @@ type Parser = StateT ParserState (Parsec ParsingError TokenStream)
 data ParserState = ParserState
     { accumulatedErrors :: [ParseError TokenStream ParsingError]
     , errorCount :: Int
+    , lastConsumedPos :: Int
     }
 
 initialParserState :: ParserState
-initialParserState = ParserState [] 0
+initialParserState = ParserState [] 0 0
 
 recordError :: ParseError TokenStream ParsingError -> Parser ()
 recordError err = modify $ \s ->
@@ -72,23 +73,49 @@ recordError err = modify $ \s ->
         , errorCount = errorCount s + 1
         }
 
+updatePosition :: Parser ()
+updatePosition = do
+    offset <- getOffset
+    modify $ \s -> s{lastConsumedPos = offset}
+
 withRecovery :: Parser a -> Parser a -> Parser a
 withRecovery parser recovery = do
+    startPos <- getOffset
     observing parser >>= \case
         Right result -> pure result
         Left err -> do
             recordError err
-            recovery
+            currentPos <- getOffset
+            if currentPos == startPos
+                then do
+                    _ <- MP.optional anySingleInternal
+                    updatePosition
+                    recovery
+                else recovery
 
 skipUntilSync :: [TokenKind] -> Parser ()
-skipUntilSync syncTokens = void $ MP.manyTill skipOne (lookAhead syncPoint <|> eof)
+skipUntilSync syncTokens = do
+    startPos <- getOffset
+    void $ MP.manyTill skipOne (lookAhead syncPoint <|> eof)
+    endPos <- getOffset
+    when (startPos == endPos) $ do
+        isAtEnd <- isEOF
+        unless isAtEnd $ void anySingleInternal
   where
-    syncPoint = MP.choice [void (satisfy (\t -> tokenKind t `elem` syncTokens))]
+    syncPoint = MP.choice [void (satisfyInternal (\t -> tokenKind t `elem` syncTokens))]
     skipOne = do
-        tok <- anySingle
+        tok <- anySingleInternal
         when (tokenKind tok == TokenLayoutStart)
             $ void
-            $ MP.manyTill anySingle (satisfy (\t -> tokenKind t == TokenLayoutEnd))
+            $ MP.manyTill anySingleInternal (satisfyInternal (\t -> tokenKind t == TokenLayoutEnd))
+
+isEOF :: Parser Bool
+isEOF = do
+    mtok <- MP.optional (lookAhead anySingleInternal)
+    case mtok of
+        Nothing -> pure True
+        Just Token{tokenKind = TokenEOF} -> pure True
+        _ -> pure False
 
 recoverStatement :: Parser a -> a -> Parser a
 recoverStatement parser defaultValue =
@@ -99,6 +126,7 @@ recoverStatement parser defaultValue =
         , TokenLayoutEnd
         , TokenLet
         , TokenData
+        , TokenDef
         ]
 
 parseWithRecovery :: Parser a -> [Token] -> Either [ParseError TokenStream ParsingError] (a, [ParseError TokenStream ParsingError])
@@ -111,18 +139,31 @@ parseWithRecovery parser tokens =
             let allErrors = reverse (accumulatedErrors st)
             in Right (result, allErrors)
 
-satisfy :: (Token -> Bool) -> Parser Token
-satisfy f = token test Set.empty
+satisfyInternal :: (Token -> Bool) -> Parser Token
+satisfyInternal f = token test Set.empty
   where
     test t
         | f t = Just t
         | otherwise = Nothing
 
+anySingleInternal :: Parser Token
+anySingleInternal = satisfyInternal (const True)
+
+satisfy :: (Token -> Bool) -> Parser Token
+satisfy f = do
+    mtok <- MP.optional (satisfyInternal f)
+    case mtok of
+        Just tok -> updatePosition >> pure tok
+        Nothing -> do
+            actual <- tryPeekOrEOF
+            MP.customFailure
+                $ UnexpectedToken actual
+
 unrecoverableConsume :: TokenKind -> Parser Token
 unrecoverableConsume kind = do
-    tok <- optional $ satisfy (\t -> tokenKind t == kind)
+    tok <- MP.optional $ satisfyInternal (\t -> tokenKind t == kind)
     case tok of
-        Just t -> pure t
+        Just t -> updatePosition >> pure t
         Nothing -> do
             actual <- tryPeekOrEOF
             MP.customFailure
@@ -133,7 +174,8 @@ unrecoverableConsume kind = do
 
 consume :: TokenKind -> Parser Token
 consume kind = withRecovery (unrecoverableConsume kind) $ do
-    _ <- anySingle
+    _ <- anySingleInternal
+    updatePosition
     pos <- unPos . sourceLine <$> getSourcePos
     pure $ Token kind "" pos
 
@@ -151,21 +193,25 @@ consumeAnyOf kinds = withRecovery parser recovery
                         , receivedToken = inc
                         }
     recovery = do
-        _ <- anySingle
+        _ <- anySingleInternal
+        updatePosition
         pos <- unPos . sourceLine <$> getSourcePos
         pure $ Token (hardHead kinds) "" pos
 
 peek :: Parser Token
-peek = lookAhead anySingle
+peek = lookAhead anySingleInternal
 
 tryPeek :: Parser (Maybe Token)
-tryPeek = MP.optional (lookAhead anySingle)
+tryPeek = MP.optional (lookAhead anySingleInternal)
 
 tryPeekOrEOF :: Parser Token
-tryPeekOrEOF = fromMaybe (Token TokenEOF "tryPeekOrEOF" 0) <$> MP.optional (lookAhead anySingle)
+tryPeekOrEOF = fromMaybe (Token TokenEOF "tryPeekOrEOF" 0) <$> MP.optional (lookAhead anySingleInternal)
 
 anySingle :: Parser Token
-anySingle = satisfy (const True)
+anySingle = do
+    tok <- anySingleInternal
+    updatePosition
+    pure tok
 
 confirm :: TokenKind -> Parser ()
 confirm kind = void $ lookAhead (consume kind)
@@ -302,3 +348,26 @@ parseFuncName = withRecovery parseFuncName'
                 _ <- consume TokenRightBraces
                 pure $ tokenValue nameToken
             _ -> MP.customFailure $ InvalidFunctionName inc
+
+manyWithProgress :: Parser a -> Parser [a]
+manyWithProgress p = do
+    results <- go []
+    pure (reverse results)
+  where
+    go acc = do
+        startPos <- getOffset
+        isAtEnd <- isEOF
+        if isAtEnd
+            then pure acc
+            else do
+                result <- MP.optional p
+                case result of
+                    Nothing -> pure acc
+                    Just x -> do
+                        endPos <- getOffset
+                        if endPos <= startPos
+                            then do
+                                _ <- anySingleInternal
+                                updatePosition
+                                pure acc
+                            else go (x : acc)
