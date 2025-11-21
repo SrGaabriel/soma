@@ -1,291 +1,373 @@
-{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Parsing.Parser where
 
-import Control.Applicative (Alternative (..))
-import Control.Monad.Error.Class (MonadError (..))
+import Control.Monad (unless, void, when)
+import Control.Monad.State
 import Data.Functor (($>))
-import Lexing.Lexer (Token (..), TokenKind (..))
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as NE
+import Data.Maybe (fromMaybe)
+import qualified Data.Set as Set
+import Lexing.Lexer (Token (..), TokenKind (..), tokenKind)
 import Parsing.Errors (ParsingError (..))
+import Text.Megaparsec hiding (Token, anySingle, parse, satisfy, tokens, withRecovery)
+import qualified Text.Megaparsec as MP
+import Utils.Lists (hardHead)
 
-newtype Parser a = Parser
-    { runParser :: [Token] -> Either ParsingError (a, [Token])
+newtype TokenStream = TokenStream {unTokenStream :: [Token]}
+    deriving (Eq, Ord)
+
+instance Stream TokenStream where
+    type Token TokenStream = Token
+    type Tokens TokenStream = TokenStream
+    tokenToChunk _ t = TokenStream [t]
+    tokensToChunk _ = TokenStream
+    chunkToTokens _ = unTokenStream
+    chunkLength _ = length . unTokenStream
+    chunkEmpty _ = null . unTokenStream
+    take1_ (TokenStream []) = Nothing
+    take1_ (TokenStream (t : ts)) = Just (t, TokenStream ts)
+    takeN_ n (TokenStream s)
+        | n <= 0 = Just (TokenStream [], TokenStream s)
+        | null s = Nothing
+        | otherwise = let (pre, post) = splitAt n s in Just (TokenStream pre, TokenStream post)
+    takeWhile_ f (TokenStream s) = let (pre, post) = span f s in (TokenStream pre, TokenStream post)
+
+instance VisualStream TokenStream where
+    showTokens _ = unwords . map (show . tokenKind) . NE.toList
+
+instance TraversableStream TokenStream where
+    reachOffset offset pstate =
+        let tokens = unTokenStream (pstateInput pstate)
+            (pre, post) = splitAt (offset - pstateOffset pstate) tokens
+            newOffset = pstateOffset pstate + length pre
+            newState =
+                pstate
+                    { pstateOffset = newOffset
+                    , pstateInput = TokenStream post
+                    }
+            line = case post of
+                [] -> "<end of input>"
+                (t : _) -> "at " ++ show (tokenKind t)
+        in (Just line, newState)
+
+type Parser = StateT ParserState (Parsec ParsingError TokenStream)
+
+data ParserState = ParserState
+    { accumulatedErrors :: [ParseError TokenStream ParsingError]
+    , errorCount :: Int
+    , lastConsumedPos :: Int
     }
-    deriving (Functor)
 
-instance Applicative Parser where
-    pure x = Parser $ \tokens -> Right (x, tokens)
-    Parser p1 <*> Parser p2 = Parser $ \tokens -> do
-        (f, rest1) <- p1 tokens
-        (x, rest2) <- p2 rest1
-        Right (f x, rest2)
+initialParserState :: ParserState
+initialParserState = ParserState [] 0 0
 
-instance Monad Parser where
-    Parser p >>= f = Parser $ \tokens -> do
-        (x, rest) <- p tokens
-        let Parser p2 = f x
-        p2 rest
+recordError :: ParseError TokenStream ParsingError -> Parser ()
+recordError err = modify $ \s ->
+    s
+        { accumulatedErrors = err : accumulatedErrors s
+        , errorCount = errorCount s + 1
+        }
 
-instance Alternative Parser where
-    empty = Parser $ \_ -> Left EndOfInput
-    Parser p1 <|> Parser p2 = Parser $ \tokens -> case p1 tokens of
-        Left _ -> p2 tokens
-        Right x -> Right x
+updatePosition :: Parser ()
+updatePosition = do
+    offset <- getOffset
+    modify $ \s -> s{lastConsumedPos = offset}
 
-instance MonadError ParsingError Parser where
-    throwError = Parser . const . Left
-    catchError (Parser p) handler = Parser $ \tokens -> case p tokens of
-        Left err -> runParser (handler err) tokens
-        Right x -> Right x
+withRecovery :: Parser a -> Parser a -> Parser a
+withRecovery parser recovery = do
+    startPos <- getOffset
+    observing parser >>= \case
+        Right result -> pure result
+        Left err -> do
+            recordError err
+            currentPos <- getOffset
+            if currentPos == startPos
+                then do
+                    _ <- MP.optional anySingleInternal
+                    updatePosition
+                    recovery
+                else recovery
+
+skipUntilSync :: [TokenKind] -> Parser ()
+skipUntilSync syncTokens = do
+    startPos <- getOffset
+    void $ MP.manyTill skipOne (lookAhead syncPoint <|> eof)
+    endPos <- getOffset
+    when (startPos == endPos) $ do
+        isAtEnd <- isEOF
+        unless isAtEnd $ void anySingleInternal
+  where
+    syncPoint = MP.choice [void (satisfyInternal (\t -> tokenKind t `elem` syncTokens))]
+    skipOne = do
+        tok <- anySingleInternal
+        when (tokenKind tok == TokenLayoutStart)
+            $ void
+            $ MP.manyTill anySingleInternal (satisfyInternal (\t -> tokenKind t == TokenLayoutEnd))
+
+isEOF :: Parser Bool
+isEOF = do
+    mtok <- MP.optional (lookAhead anySingleInternal)
+    case mtok of
+        Nothing -> pure True
+        Just Token{tokenKind = TokenEOF} -> pure True
+        _ -> pure False
+
+recoverStatement :: Parser a -> a -> Parser a
+recoverStatement parser defaultValue =
+    withRecovery parser (skipUntilSync syncTokens $> defaultValue)
+  where
+    syncTokens =
+        [ TokenLayoutSeparator
+        , TokenLayoutEnd
+        , TokenLet
+        , TokenData
+        , TokenDef
+        ]
+
+parseWithRecovery :: Parser a -> [Token] -> Either [ParseError TokenStream ParsingError] (a, [ParseError TokenStream ParsingError])
+parseWithRecovery parser tokens =
+    case runParser (runStateT parser initialParserState) "" (TokenStream tokens) of
+        Left bundle ->
+            let errs = NE.toList (MP.bundleErrors bundle)
+            in Left errs
+        Right (result, st) ->
+            let allErrors = reverse (accumulatedErrors st)
+            in Right (result, allErrors)
+
+satisfyInternal :: (Token -> Bool) -> Parser Token
+satisfyInternal f = token test Set.empty
+  where
+    test t
+        | f t = Just t
+        | otherwise = Nothing
+
+anySingleInternal :: Parser Token
+anySingleInternal = satisfyInternal (const True)
+
+satisfy :: (Token -> Bool) -> Parser Token
+satisfy f = do
+    mtok <- MP.optional (satisfyInternal f)
+    case mtok of
+        Just tok -> updatePosition >> pure tok
+        Nothing -> do
+            actual <- tryPeekOrEOF
+            MP.customFailure
+                $ UnexpectedToken actual
+
+unrecoverableConsume :: TokenKind -> Parser Token
+unrecoverableConsume kind = do
+    tok <- MP.optional $ satisfyInternal (\t -> tokenKind t == kind)
+    case tok of
+        Just t -> updatePosition >> pure t
+        Nothing -> do
+            actual <- tryPeekOrEOF
+            MP.customFailure
+                $ ExpectedDifferentToken
+                    { expected = kind
+                    , received = actual
+                    }
 
 consume :: TokenKind -> Parser Token
-consume expectedKind = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts)
-        | tokenKind t == expectedKind -> Right (t, ts)
-        | otherwise -> Left $ ExpectedDifferentToken expectedKind t
+consume kind = withRecovery (unrecoverableConsume kind) $ do
+    _ <- anySingleInternal
+    updatePosition
+    pos <- unPos . sourceLine <$> getSourcePos
+    pure $ Token kind "" pos
 
-confirm :: TokenKind -> Parser ()
-confirm expectedKind = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts)
-        | tokenKind t == expectedKind -> Right ((), t : ts)
-        | otherwise -> Left $ ExpectedDifferentToken expectedKind t
-
-next :: Parser Token
-next = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts) -> Right (t, ts)
-
-consumeRelevant :: TokenKind -> Parser Token
-consumeRelevant expectedKind = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts)
-        | tokenKind t == TokenNewline -> runParser (consumeRelevant expectedKind) ts
-        | tokenKind t == expectedKind -> Right (t, ts)
-        | otherwise -> Left $ ExpectedDifferentToken expectedKind t
+consumeAnyOf :: [TokenKind] -> Parser Token
+consumeAnyOf kinds = withRecovery parser recovery
+  where
+    parser = do
+        inc <- tryPeekOrEOF
+        if tokenKind inc `elem` kinds
+            then consume (tokenKind inc)
+            else
+                MP.customFailure
+                    $ ExpectedOneOfTokens
+                        { expectedTokens = kinds
+                        , receivedToken = inc
+                        }
+    recovery = do
+        _ <- anySingleInternal
+        updatePosition
+        pos <- unPos . sourceLine <$> getSourcePos
+        pure $ Token (hardHead kinds) "" pos
 
 peek :: Parser Token
-peek = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts) -> Right (t, t : ts)
+peek = lookAhead anySingleInternal
 
-skipNewlines :: Parser ()
-skipNewlines = Parser $ \tokens ->
-    let skipNext = \case
-            [] -> Right ((), [])
-            (t : ts)
-                | tokenKind t == TokenNewline -> skipNext ts
-                | otherwise -> Right ((), t : ts)
-    in skipNext tokens
+tryPeek :: Parser (Maybe Token)
+tryPeek = MP.optional (lookAhead anySingleInternal)
 
-peekRelevant :: Parser Token
-peekRelevant = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts) -> case seeIfNewline (t : ts) of
-        Left err -> Left err
-        Right (token, _) -> Right (token, t : ts)
-  where
-    seeIfNewline = \case
-        [] -> Left EndOfInput
-        (t : ts)
-            | tokenKind t == TokenNewline -> runParser peekRelevant ts
-            | otherwise -> Right (t, t : ts)
+tryPeekOrEOF :: Parser Token
+tryPeekOrEOF = fromMaybe (Token TokenEOF "tryPeekOrEOF" 0) <$> MP.optional (lookAhead anySingleInternal)
 
-peekNext :: Parser Token
-peekNext = Parser $ \case
-    [] -> Left EndOfInput
-    (f : t : ts) -> Right (t, f : t : ts)
-    [_] -> Left EndOfInput
+anySingle :: Parser Token
+anySingle = do
+    tok <- anySingleInternal
+    updatePosition
+    pure tok
 
-skipping :: Int -> Parser Token
-skipping n = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts) -> Right (t, drop n ts)
-
-expect :: TokenKind -> Parser Token
-expect kind = Parser $ \case
-    [] -> Left EndOfInput
-    (t : ts) ->
-        if tokenKind t == kind
-            then Right (t, t : ts)
-            else Left $ ExpectedDifferentToken kind t
-
-optional :: Parser a -> Parser (Maybe a)
-optional parser = (Just <$> parser) <|> pure Nothing
-
-parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
-parseSequence separator end itemParser = Parser $ \tokens -> do
-    parseNext [] tokens
-  where
-    parseNext acc remaining = do
-        endCheck <- runParser peek remaining
-        if tokenKind (fst endCheck) == end
-            then Right (reverse acc, remaining)
-            else do
-                (item, rest) <- runParser itemParser remaining
-                case rest of
-                    [] -> Left EndOfInput
-                    _ -> do
-                        (tokenPeek, _) <- runParser peek rest
-                        case tokenKind tokenPeek of
-                            tk
-                                | tk == separator -> do
-                                    (_, rest') <- runParser next rest
-                                    parseNext (item : acc) rest'
-                                | tk == end -> Right (reverse (item : acc), rest)
-                                | otherwise -> Left $ ExpectedDifferentToken separator tokenPeek
+confirm :: TokenKind -> Parser ()
+confirm kind = void $ lookAhead (consume kind)
 
 parseCommaSeparatedUntil :: TokenKind -> Parser a -> Parser [a]
-parseCommaSeparatedUntil end itemParser = parseList
-  where
-    parseList = (:) <$> itemParser <*> parseRest <|> checkEmpty
-    parseRest = (consume TokenComma *> parseList) <|> checkEmpty
-    checkEmpty = confirm end $> []
+parseCommaSeparatedUntil = parseSequence TokenComma
 
 parseExhaustiveSequence :: TokenKind -> Parser a -> Parser [a]
-parseExhaustiveSequence separator itemParser = Parser $ \tokens -> do
-    parseNext [] tokens
-  where
-    parseNext acc remaining = do
-        (item, rest) <- runParser itemParser remaining
-        case rest of
-            [] -> Right (reverse (item : acc), [])
-            _ -> do
-                (tokenPeek, _) <- runParser next rest
-                case tokenKind tokenPeek of
-                    tk
-                        | tk == separator -> do
-                            (_, afterSeparator) <- runParser next rest
-                            parseNext (item : acc) afterSeparator
-                        | otherwise -> Right (reverse (item : acc), rest)
+parseExhaustiveSequence separator itemParser = do
+    first <- itemParser
+    rest <- MP.many $ do
+        nextTok <- tryPeekOrEOF
+        if tokenKind nextTok == separator
+            then do
+                _ <- consume separator
+                itemParser
+            else MP.empty
+    pure (first : rest)
+
+parseSequence :: TokenKind -> TokenKind -> Parser a -> Parser [a]
+parseSequence separator end itemParser = do
+    inc <- tryPeekOrEOF
+    if tokenKind inc == end
+        then pure []
+        else do
+            first <- itemParser
+            rest <- MP.many $ do
+                nextTok <- tryPeekOrEOF
+                case tokenKind nextTok of
+                    k | k == separator -> do
+                        _ <- consume separator
+                        itemParser
+                    k | k == end -> MP.empty
+                    _ -> MP.customFailure $ ExpectedDifferentToken separator nextTok
+            pure (first : rest)
 
 parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
-parseFluidSequence end itemParser = Parser $ \tokens -> do
-    let parseNext acc remaining = case runParser (expect end) remaining of
-            Right (_, rest) -> Right (reverse acc, rest)
-            Left _ -> do
-                (item, rest') <- runParser itemParser remaining
-                case rest' of
-                    [] -> Right (reverse (item : acc), [])
-                    _ -> case parseNext (item : acc) rest' of
-                        Right (parsed, rest2) -> Right (parsed, rest2)
-                        Left err -> Left err
-    let value = parseNext [] tokens
-    case value of
-        Right (a, b) -> Right (a, b)
-        Left err -> Left err
+parseFluidSequence end itemParser = do
+    inc <- tryPeekOrEOF
+    if tokenKind inc == end
+        then pure []
+        else do
+            first <- itemParser
+            rest <- MP.many $ do
+                nextTok <- tryPeekOrEOF
+                case tokenKind nextTok of
+                    k | k == end -> MP.empty
+                    _ -> itemParser
+            pure (first : rest)
 
-parseIndentedBlock :: Int -> Parser a -> Parser [a]
-parseIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
-    indentation <- case tokens of
-        (t@Token{tokenKind = TokenNewline} : _) ->
-            if length (tokenValue t) > previousIndent
-                then Right $ length $ tokenValue t
-                else Left $ ExpectedIndentation t
-        (t : _) -> Left $ ExpectedDifferentToken TokenNewline t
-        _ -> Left EndOfInput
+parseInLayout :: Parser a -> Parser a
+parseInLayout = between (consume TokenLayoutStart) (consume TokenLayoutEnd)
 
-    let parseNext acc remaining = case remaining of
-            [] -> Right (reverse acc, [])
-            (tok : rest) ->
-                let isNewline = tokenKind tok == TokenNewline
-                in if isNewline
-                    then case rest of
-                        (nextTok : _)
-                            | tokenKind nextTok == TokenNewline ->
-                                parseNext acc rest
-                        [] ->
-                            parseNext acc rest
-                        _ ->
-                            let tokenIndentation = length (tokenValue tok)
-                            in case compare tokenIndentation indentation of
-                                EQ -> do
-                                    (item, rest') <- runParser itemParser rest
-                                    parseNext (item : acc) rest'
-                                LT -> Right (reverse acc, remaining)
-                                GT -> Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
-                    else Right (reverse acc, remaining)
-    parseNext [] tokens
+parseLayout :: Parser a -> Parser [a]
+parseLayout itemParser = do
+    _ <- consume TokenLayoutStart
+    items <- parseSequence TokenLayoutSeparator TokenLayoutEnd itemWithRecovery
+    _ <- consume TokenLayoutEnd
+    pure items
+  where
+    itemWithRecovery = withRecovery itemParser $ do
+        skipUntilSync [TokenLayoutSeparator, TokenLayoutEnd]
+        MP.customFailure $ ExpectedAnExpression (Token TokenLayoutSeparator "" 0)
 
--- TODO: remove duplicate code
-parseIndexedIndentedBlock :: Int -> (Int -> Parser a) -> Parser [a]
-parseIndexedIndentedBlock previousIndent itemParser = Parser $ \tokens -> do
-    indentation <- case tokens of
-        (t@Token{tokenKind = TokenNewline} : _) ->
-            if length (tokenValue t) > previousIndent
-                then Right $ length $ tokenValue t
-                else Left $ ExpectedIndentation t
-        (t : _) -> Left $ ExpectedDifferentToken TokenNewline t
-        _ -> Left EndOfInput
+parseOptionallyLayout :: Parser a -> Parser [a]
+parseOptionallyLayout p = do
+    inc <- tryPeek
+    case inc of
+        Just Token{tokenKind = TokenLayoutStart} -> parseLayout p
+        _ -> pure []
 
-    let parseNext acc remaining = case remaining of
-            [] -> Right (reverse acc, [])
-            (tok : rest) ->
-                let isNewline = tokenKind tok == TokenNewline
-                in if isNewline
-                    then case rest of
-                        (nextTok : _)
-                            | tokenKind nextTok == TokenNewline ->
-                                parseNext acc rest
-                        [] ->
-                            parseNext acc rest
-                        _ ->
-                            let tokenIndentation = length (tokenValue tok)
-                            in case compare tokenIndentation indentation of
-                                EQ -> do
-                                    let index = length acc
-                                    (item, rest') <- runParser (itemParser index) rest
-                                    parseNext (item : acc) rest'
-                                LT -> Right (reverse acc, remaining)
-                                GT -> Left $ ExpectedDifferentIndentation tok indentation tokenIndentation
-                    else Right (reverse acc, remaining)
-    parseNext [] tokens
+parseOptionallyInLayout :: Parser a -> Parser a
+parseOptionallyInLayout p = do
+    inc <- tryPeek
+    case inc of
+        Just Token{tokenKind = TokenLayoutStart} -> do
+            consume TokenLayoutStart >> p <* consume TokenLayoutEnd
+        _ -> p
 
-someAccepting :: Parser a -> (ParsingError -> Bool) -> Parser [a]
-someAccepting parser predicate = Parser $ \tokens -> do
-    let parseNext acc remaining =
-            let result = runParser parser remaining
-            in case result of
-                Right (item, rest) -> case rest of
-                    [] -> Right (reverse (item : acc), [])
-                    _ -> parseNext (item : acc) rest
-                Left err ->
-                    if predicate err
-                        then Right (reverse acc, remaining)
-                        else Left err
-    parseNext [] tokens
+parseWithErrors :: Parser a -> [Token] -> Either (NonEmpty (ParseError TokenStream ParsingError)) (a, [ParseError TokenStream ParsingError])
+parseWithErrors parser tokens =
+    case parseWithRecovery parser tokens of
+        Left errs -> Left (NE.fromList errs)
+        Right (result, errs) -> Right (result, errs)
 
-optionallySurrounded :: TokenKind -> TokenKind -> Parser a -> Parser a
-optionallySurrounded start end parser = do
-    startTok <- optional (consume start)
-    case startTok of
-        Just _ -> do
-            result <- parser
-            _ <- consume end
-            pure result
-        Nothing -> parser
+parseStrict :: Parser a -> [Token] -> Either (ParseErrorBundle TokenStream ParsingError) a
+parseStrict parser tokens =
+    runParser (evalStateT parser initialParserState) "" (TokenStream tokens)
 
-sepBy1 :: Parser a -> Parser b -> Parser [a]
-sepBy1 p sep = (:) <$> p <*> many (sep *> p)
+runParserTokens :: Parser a -> [Token] -> Either (ParseErrorBundle TokenStream ParsingError) (a, [Token])
+runParserTokens parser tokens =
+    runParser action "" (TokenStream tokens)
+  where
+    action = do
+        (val, _ps) <- runStateT parser initialParserState
+        pstate <- MP.getParserState
+        let remaining = case MP.stateInput pstate of
+                TokenStream ts -> ts
+        pure (val, remaining)
 
-option :: a -> Parser a -> Parser a
-option def parser = Parser $ \tokens ->
-    case runParser parser tokens of
-        Right (result, rest) -> Right (result, rest)
-        Left _ -> Right (def, tokens)
+extractFromParseError :: ParseError TokenStream ParsingError -> [ParsingError]
+extractFromParseError pe =
+    case pe of
+        TrivialError{} -> []
+        FancyError _ fancySet ->
+            [e | ErrorCustom e <- Set.toList fancySet]
+
+extractFromBundle :: ParseErrorBundle TokenStream ParsingError -> [ParsingError]
+extractFromBundle bundle =
+    concatMap extractFromParseError (NE.toList $ bundleErrors bundle)
+
+dropParsedTokens ::
+    Parser a ->
+    [Token] ->
+    [Token]
+dropParsedTokens parser tokens =
+    case runParserTokens parser tokens of
+        Right (_, leftover) -> leftover
+        Left _bundle -> []
 
 parseFuncName :: Parser String
-parseFuncName = do
-    inc <- peek
-    case tokenKind inc of
-        TokenLowerIdentifier ->
-            tokenValue <$> next
-        TokenLeftBraces -> do
-            _ <- next
-            nameToken <- consume TokenVarSymbol
-            _ <- consume TokenRightBraces
-            pure $ tokenValue nameToken
-        _ -> throwError $ InvalidFunctionName inc
+parseFuncName = withRecovery parseFuncName'
+    $ do
+        pure "@ERROR"
+  where
+    parseFuncName' = do
+        inc <- peek
+        case tokenKind inc of
+            TokenLowerIdentifier ->
+                tokenValue <$> consume TokenLowerIdentifier
+            TokenLeftBraces -> do
+                _ <- consume TokenLeftBraces
+                nameToken <- consume TokenVarSymbol
+                _ <- consume TokenRightBraces
+                pure $ tokenValue nameToken
+            _ -> MP.customFailure $ InvalidFunctionName inc
+
+manyWithProgress :: Parser a -> Parser [a]
+manyWithProgress p = do
+    results <- go []
+    pure (reverse results)
+  where
+    go acc = do
+        startPos <- getOffset
+        isAtEnd <- isEOF
+        if isAtEnd
+            then pure acc
+            else do
+                result <- MP.optional p
+                case result of
+                    Nothing -> pure acc
+                    Just x -> do
+                        endPos <- getOffset
+                        if endPos <= startPos
+                            then do
+                                _ <- anySingleInternal
+                                updatePosition
+                                pure acc
+                            else go (x : acc)

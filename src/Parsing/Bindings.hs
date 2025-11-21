@@ -1,94 +1,153 @@
-{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
-
 module Parsing.Bindings where
 
-import Control.Monad.Error.Class (MonadError (throwError))
+import Control.Monad (unless)
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
 import Parsing.Atoms (parseExpression)
-import Parsing.Errors (ParsingError (FunctionArgumentLengthMismatch, InvalidFunctionBody))
-import Parsing.Parser (Parser, consume, consumeRelevant, next, optional, parseFuncName, parseSequence, peekRelevant, skipNewlines)
+import Parsing.Errors (ParsingError (..))
+import Parsing.Parser (Parser, consume, parseCommaSeparatedUntil, parseFuncName, parseOptionallyInLayout, peek)
 import Parsing.Patterns (parsePipePatternArms)
 import Parsing.Types (parseQualifiedType, parseType)
 import Syntax.Tree (Expr (..), exprSpan)
+import qualified Text.Megaparsec as MP
 import Typing.Currying (curryFunction)
-import Typing.Types (QualifiedType (..), Type (..), extractTyVars)
+import Typing.Types (QualifiedType (..), Type, extractTyVars)
+
+data FuncParam
+    = TypedParam String Type
+    | UntypedParam String
+    deriving (Show, Eq)
+
+data BindingSyntax
+    = ImperativeStyled [FuncParam] Type Token
+    | ImperativeUntyped [String] QualifiedType Token
+    | TraditionalStyled QualifiedType Token
+    deriving (Show, Eq)
 
 parseBinding :: Bool -> Parser Expr
 parseBinding isTopLevel = do
     defToken <- consume TokenDef
     name <- parseFuncName
-    leftParenthesisArgStart <- optional $ consume TokenLeftParen
+    syntax <- parseBindingSyntax
+    body <- parseBindingBody syntax
+    let bindType = getBindingType syntax
+    let styleToken = getStyleToken syntax
+    pure
+        $ ExprBindingDef
+            { bindingName = name
+            , bindingType = bindType
+            , bindingBody = wrapWithLambda syntax body
+            , bindingIsImpl = isTopLevel
+            , bindingSpan = spanningTokens defToken styleToken
+            }
 
-    case leftParenthesisArgStart of
-        Just _ -> do
-            impParams <-
-                parseSequence TokenComma TokenRightParen parseImperativeBindingParam
-                    <* consume TokenRightParen
+parseBindingSyntax :: Parser BindingSyntax
+parseBindingSyntax = do
+    nextTok <- peek
+    let hasParens = tokenKind nextTok == TokenLeftParen
 
-            case impParams of
-                xs
-                    | all isSimplyTyped xs -> do
-                        let params = Prelude.map (\(SimplyTypedParam (tok, typ)) -> (tok, typ)) xs
-                        let (toks, types) = unzip params
-                        mappings <- ensureSameLengthMap toks types
-                        _ <- consume TokenRightArrow
-                        returnType <- parseType
-                        let bindingTyp = curryFunction types returnType
-                        let tyVars = extractTyVars bindingTyp
-                        let bindingTypeS = Forall tyVars [] bindingTyp
-                        eqTok <- consumeRelevant TokenEquals
-                        skipNewlines
-                        body <- parseExpression
-                        let argNames = Prelude.map Prelude.fst mappings
-                        let defBody = ExprLambda argNames body (exprSpan body)
-                        pure $ ExprBindingDef name bindingTypeS defBody isTopLevel (spanningTokens defToken eqTok)
-                    | not (any isSimplyTyped xs) -> do
-                        let paramToks = Prelude.map (\(UntypedParam tok) -> tok) xs
-                        let paramNames = map tokenValue paramToks
-                        _ <- consume TokenReturns
-                        bindingTyp <- parseQualifiedType
-                        eqTok <- consumeRelevant TokenEquals
-                        skipNewlines
-                        body <- parseExpression
-                        let defBody = ExprLambda paramNames body (exprSpan body)
-                        pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken eqTok)
-                    | otherwise -> throwError $ FunctionArgumentLengthMismatch defToken
-        Nothing -> do
-            _ <- consumeRelevant TokenReturns
-            bindingTyp <- parseQualifiedType
-            inc <- peekRelevant
-            case tokenKind inc of
-                TokenEquals -> do
-                    eqTok <- next
-                    skipNewlines
-                    body <- parseExpression
-                    pure $ ExprBindingDef name bindingTyp body isTopLevel (spanningTokens defToken eqTok)
-                TokenPipe -> do
-                    arms <- parsePipePatternArms
-                    let defBody = ExprDerivedPatternMatch arms
-                    pure $ ExprBindingDef name bindingTyp defBody isTopLevel (spanningTokens defToken inc)
-                _ -> throwError $ InvalidFunctionBody inc
+    if hasParens
+        then parseImperativeStyle
+        else parseTraditionalStyle
 
-parseImperativeBindingParam :: Parser ImperativeFuncParam
-parseImperativeBindingParam = do
+parseImperativeStyle :: Parser BindingSyntax
+parseImperativeStyle = do
+    _ <- consume TokenLeftParen
+    params <- parseCommaSeparatedUntil TokenRightParen parseFuncParam
+    _ <- consume TokenRightParen
+
+    nextTok <- peek
+    case tokenKind nextTok of
+        TokenRightArrow -> do
+            _ <- consume TokenRightArrow
+            unless (all isTyped params)
+                $ MP.customFailure
+                $ MixedParameterStyles nextTok
+            returnType <- parseType
+            let types = map extractType params
+            return $ ImperativeStyled params (curryFunction types returnType) nextTok
+        TokenReturns -> do
+            _ <- consume TokenReturns
+            unless (all isUntyped params)
+                $ MP.customFailure
+                $ MixedParameterStyles nextTok
+            let names = map extractName params
+            paramType <- parseQualifiedType
+            return $ ImperativeUntyped names paramType nextTok
+        _ -> MP.customFailure $ InvalidFunctionSignature nextTok
+
+parseTraditionalStyle :: Parser BindingSyntax
+parseTraditionalStyle = do
+    returns <- consume TokenReturns
+    qty <- parseQualifiedType
+    return $ TraditionalStyled qty returns
+
+parseFuncParam :: Parser FuncParam
+parseFuncParam = do
     nameToken <- consume TokenLowerIdentifier
-    inc <- peekRelevant
-    case tokenKind inc of
-        TokenColon -> do
-            _ <- next
-            typ <- parseType
-            pure $ SimplyTypedParam (nameToken, typ)
-        _ -> do
-            pure $ UntypedParam nameToken
+    let name = tokenValue nameToken
 
-ensureSameLengthMap :: [Token] -> [b] -> Parser [(String, b)]
-ensureSameLengthMap names types
-    | length names == length types = pure $ zip (map tokenValue names ++ replicate (length types - length names) "_") types
-    | otherwise = throwError $ FunctionArgumentLengthMismatch (last names)
+    inc <- peek
+    if tokenKind inc == TokenColon
+        then do
+            _ <- consume TokenColon
+            TypedParam name <$> parseType
+        else return $ UntypedParam name
 
-data ImperativeFuncParam = SimplyTypedParam (Token, Type) | UntypedParam Token
-    deriving (Show, Eq)
+parseBindingBody :: BindingSyntax -> Parser Expr
+parseBindingBody syntax = do
+    case syntax of
+        TraditionalStyled{} -> parseTraditionalBody
+        ImperativeStyled{} -> parseSimpleBody
+        ImperativeUntyped{} -> parseSimpleBody
 
-isSimplyTyped :: ImperativeFuncParam -> Bool
-isSimplyTyped (SimplyTypedParam _) = True
-isSimplyTyped (UntypedParam _) = False
+parseTraditionalBody :: Parser Expr
+parseTraditionalBody = do
+    nextTok <- peek
+    case tokenKind nextTok of
+        TokenEquals -> parseSimpleBody
+        TokenLayoutStart -> do
+            ExprDerivedPatternMatch <$> parsePipePatternArms
+        _ -> MP.customFailure $ InvalidFunctionBody nextTok
+
+parseSimpleBody :: Parser Expr
+parseSimpleBody = do
+    _ <- consume TokenEquals
+    parseOptionallyInLayout parseExpression
+
+getBindingType :: BindingSyntax -> QualifiedType
+getBindingType syntax = case syntax of
+    ImperativeStyled _ funcType _ -> do
+        let tyVars = extractTyVars funcType
+        Forall tyVars [] funcType
+    ImperativeUntyped _ qty _ -> qty
+    TraditionalStyled qty _ -> qty
+
+wrapWithLambda :: BindingSyntax -> Expr -> Expr
+wrapWithLambda syntax body = case syntax of
+    ImperativeStyled params _ _ ->
+        let names = map extractName params
+        in ExprLambda names body (exprSpan body)
+    ImperativeUntyped names _ _ ->
+        ExprLambda names body (exprSpan body)
+    TraditionalStyled _ _ -> body
+
+-- Helper functions
+isTyped :: FuncParam -> Bool
+isTyped (TypedParam _ _) = True
+isTyped _ = False
+
+isUntyped :: FuncParam -> Bool
+isUntyped = not . isTyped
+
+extractName :: FuncParam -> String
+extractName (TypedParam name _) = name
+extractName (UntypedParam name) = name
+
+extractType :: FuncParam -> Type
+extractType (TypedParam _ typ) = typ
+extractType (UntypedParam _) = error "extractType called on untyped parameter"
+
+getStyleToken :: BindingSyntax -> Token
+getStyleToken (ImperativeStyled _ _ tok) = tok
+getStyleToken (ImperativeUntyped _ _ tok) = tok
+getStyleToken (TraditionalStyled _ tok) = tok

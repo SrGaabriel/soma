@@ -54,7 +54,6 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import Typing.Types (
-    TyConstructor (..),
     TyVar (..),
     Type (..),
     boolType,
@@ -70,7 +69,7 @@ monomorphizeModule m@AlloyModule{amName = moduleName, amFunctions = funcs} =
         dedupedFns = dedupByName allFns
         rwMap = computeRewriteMap moduleName baseFnMap instCache dedupedFns
         finalFns = map (applyRewrites baseFnMap rwMap) dedupedFns
-        baseNames = Set.fromList (map afName funcs)
+        _baseNames = Set.fromList (map afName funcs)
         specializedNames = Set.fromList (Map.elems instCache)
         isKept = isMonomorphized specializedNames
         isMonomorphized specNames fn =
@@ -165,7 +164,7 @@ scanCallsInFunction baseFnMap AlloyFunction{afParams = funParams, afBlocks} =
         let env0 = env `Map.union` Map.fromList blkParams
             step (cidAcc, reqsAcc) instr =
                 case instr of
-                    ILet name ty op ->
+                    ILet _name _ty op ->
                         let (cid'', reqs'') = scanOp env0 (cidAcc, reqsAcc) op
                         in (cid'', reqs'')
                     IEffect _ -> (cidAcc, reqsAcc)
@@ -311,7 +310,7 @@ computeRewriteMap _moduleName baseFnMap cache =
         let env' = env `Map.union` Map.fromList blkParams
             step (cidAcc, accAcc) instr =
                 case instr of
-                    ILet n t (OpCall (Direct callee) args) ->
+                    ILet _n _t (OpCall (Direct callee) args) ->
                         let cid' = cidAcc + 1
                             resolvedCallee = resolveTraitMethod baseFnMap env' callee args
                         in case Map.lookup resolvedCallee baseFnMap of
@@ -330,8 +329,7 @@ computeRewriteMap _moduleName baseFnMap cache =
                                                             in (cid', acc')
                                                         Nothing -> (cid', accAcc)
                                             _ -> (cid', accAcc)
-                    ILet n t _ -> (cidAcc, accAcc)
-                    IEffect _ -> (cidAcc, accAcc)
+                    _ -> (cidAcc, accAcc)
             (cid'', acc'') = foldl' step (cid, acc) abInstrs
         in (cid'', acc'')
 
@@ -381,7 +379,7 @@ applyRewrites baseFnMap rwMap fn@AlloyFunction{afName = callerName, afBlocks, af
         let t' = specializeTypeFromEnv env t
             op' = specializeOpTypes env op t'
         in (cid, ILet n t' op' : acc)
-    rewriteInstr env (cid, acc) instr = (cid, instr : acc)
+    rewriteInstr _ (cid, acc) instr = (cid, instr : acc)
     specializeOpTypes :: Map String Type -> AOp -> Type -> AOp
     specializeOpTypes env op _resultTy =
         case op of

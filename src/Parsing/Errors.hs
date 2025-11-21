@@ -2,6 +2,7 @@ module Parsing.Errors (ParsingError (..), getErrorToken) where
 
 import Lexing.Lexer (Token (..), TokenKind, referenceToken, referenceTokenKind)
 import Logging.Errors (PrintableError (..))
+import Text.Megaparsec (ShowErrorComponent (showErrorComponent))
 
 data ParsingError
     = UnexpectedToken Token
@@ -9,6 +10,7 @@ data ParsingError
         { expected :: TokenKind
         , received :: Token
         }
+    | InvalidTokenForTopLevelDeclaration Token
     | InvalidTokenForType Token
     | ExpectedIndentation Token -- for when a token isn't indented (int is the next newline)
     | ExpectedDifferentIndentation Token Int Int -- for when the indentation is wrong
@@ -21,10 +23,18 @@ data ParsingError
     | InvalidGenericsList Token
     | InvalidPattern Token
     | InvalidFunctionBody Token
+    | InvalidFunctionSignature Token
+    | InvalidIntrinsic Token
     | InvalidFunctionName Token
+    | MixedParameterStyles Token
+    | UnexpectedParseFailure String
+    | ExpectedOneOfTokens
+        { expectedTokens :: [TokenKind]
+        , receivedToken :: Token
+        }
     | EndOfInput
     | Debug
-    deriving (Eq)
+    deriving (Eq, Ord)
 
 instance Show ParsingError where
     show (UnexpectedToken t) = "Unexpected token " ++ referenceToken t
@@ -34,6 +44,7 @@ instance Show ParsingError where
     show (UnseparatedStatements t) = "Unseparated statements by newline at " ++ referenceToken t
     show (InvalidIdentifierFollowup t) = "Invalid identifier follow-up: " ++ referenceToken t
     show (FunctionArgumentLengthMismatch _) = "The function has more arguments than declared"
+    show (InvalidTokenForTopLevelDeclaration t) = "The token " ++ referenceToken t ++ " can't be used as a top-level declaration"
     show (ExpectedDifferentIndentation _ expc recv) = "Expected indentation of " ++ show expc ++ " spaces but received " ++ show recv
     show (NotAnExpression t) = "You can't use " ++ referenceToken t ++ " as an expression"
     show (ExpectedAnExpression _) = "Expected an expression but received an abrupt end"
@@ -42,6 +53,15 @@ instance Show ParsingError where
     show (InvalidPattern t) = "The expression " ++ referenceToken t ++ " is not a valid pattern"
     show (InvalidFunctionBody t) = "The expression " ++ referenceToken t ++ " is not a valid function body"
     show (InvalidFunctionName t) = "The expression " ++ referenceToken t ++ " is not a valid function name"
+    show (InvalidFunctionSignature t) = "The expression " ++ referenceToken t ++ " is not valid for defining a function's signature"
+    show (MixedParameterStyles _) = "Parameter styles cannot be mixed"
+    show (InvalidIntrinsic t) = "You can't declare an intrinsic " ++ referenceToken t
+    show (ExpectedOneOfTokens ex rc) =
+        "Expected one of: "
+            ++ show (map referenceTokenKind ex)
+            ++ " but received "
+            ++ referenceToken rc
+    show (UnexpectedParseFailure msg) = "Unexpected parse failure: " ++ msg
     show EndOfInput = "End of input"
     show Debug = "Debug"
 
@@ -50,17 +70,22 @@ instance PrintableError ParsingError where
 
     errorStart EndOfInput = -1 -- todo: remove workaround
     errorStart Debug = -1
+    errorStart UnexpectedParseFailure{} = -1
     errorStart err = case getErrorToken err of
         Just t -> tokenPos t
         Nothing -> error $ "Unreachable errorStart case reached: " ++ show err
 
     errorEnd EndOfInput = -1
     errorEnd Debug = -1
+    errorEnd UnexpectedParseFailure{} = -1
     errorEnd err = case getErrorToken err of
         Just t -> tokenPos t + length (tokenValue t)
         Nothing -> error $ "Unreachable errorEnd case reached: " ++ show err
 
     errorDebugDevDetails = show . getErrorToken
+
+instance ShowErrorComponent ParsingError where
+    showErrorComponent = show
 
 getErrorToken :: ParsingError -> Maybe Token
 getErrorToken (UnexpectedToken t) = Just t
@@ -71,12 +96,18 @@ getErrorToken (InvalidIdentifierFollowup t) = Just t
 getErrorToken (ExpectedDifferentIndentation t _ _) = Just t
 getErrorToken (FunctionArgumentLengthMismatch t) = Just t
 getErrorToken (UnseparatedStatements t) = Just t
+getErrorToken (InvalidTokenForTopLevelDeclaration t) = Just t
 getErrorToken (NotAnExpression t) = Just t
 getErrorToken (InvalidPattern t) = Just t
 getErrorToken (InvalidGenericsList t) = Just t
 getErrorToken (ExpectedAGenericType t) = Just t
+getErrorToken (InvalidIntrinsic t) = Just t
 getErrorToken (ExpectedAnExpression t) = Just t
 getErrorToken (InvalidFunctionBody t) = Just t
+getErrorToken (InvalidFunctionSignature t) = Just t
 getErrorToken (InvalidFunctionName t) = Just t
+getErrorToken (MixedParameterStyles t) = Just t
+getErrorToken (ExpectedOneOfTokens _ t) = Just t
+getErrorToken (UnexpectedParseFailure _) = Nothing
 getErrorToken EndOfInput = Nothing
 getErrorToken Debug = Nothing

@@ -1,8 +1,7 @@
 data Optional
-    = Some
+    | Some
         value :: Int
     | Nothing
-        
 
 intrinsic def {+} :: Int -> Int -> Int
 

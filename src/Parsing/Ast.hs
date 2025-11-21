@@ -1,172 +1,93 @@
 module Parsing.Ast where
 
-import Control.Applicative (Alternative (many, (<|>)))
-import Control.Monad (unless)
-import Control.Monad.Error.Class (MonadError (throwError))
-import Data.List (intercalate)
-import Lexing.Lexer (Token (tokenIndent, tokenKind, tokenValue), TokenKind (..), spanningTokens, tokenSpan)
+import Data.List (nub)
+import Data.Maybe (mapMaybe)
+import qualified Data.Set as Set
+import Lexing.Lexer (Token (tokenKind), TokenKind (..))
 import Lexing.Position (Span (Span))
-import Parsing.Atoms (parseModuleName)
 import Parsing.Bindings (parseBinding)
-import Parsing.Errors (ParsingError (UnexpectedToken))
-import Parsing.Parser (Parser (runParser), consume, consumeRelevant, next, parseExhaustiveSequence, parseFuncName, parseIndentedBlock, parseIndexedIndentedBlock, parseSequence, peek)
-import Parsing.Types (parseKind, parseQualifiedType, parseTyVar, parseType)
-import Syntax.Tree (Expr (..))
-import Typing.Types (Constraint, QualifiedType (Forall), Type (TVar), mkConstraint)
+import Parsing.DataTypes (parseDataType)
+import Parsing.Errors (ParsingError (InvalidTokenForTopLevelDeclaration, UnexpectedParseFailure))
+import Parsing.Imports (parseImport)
+import Parsing.Intrinsics (parseIntrinsic)
+import Parsing.Parser (Parser, TokenStream, isEOF, parseWithRecovery, peek, skipUntilSync, withRecovery)
+import Parsing.Traits (parseInstance, parseTrait)
+import Syntax.Tree (Expr (ExprBindingDef, ExprRoot))
+import Text.Megaparsec (ParseError)
+import qualified Text.Megaparsec as MP
+import Text.Megaparsec.Error (ErrorFancy (..), ParseError (..))
+import Typing.Types (QualifiedType (Forall), intType)
 
-parse :: [Token] -> Either ParsingError Expr
-parse tokens = do
-    (root, _) <- runParser parser tokens
-    pure root
+parse :: [Token] -> Either [ParsingError] Expr
+parse tokens =
+    case parseWithRecovery parser tokens of
+        Right (root, errs) ->
+            if null errs
+                then Right root
+                else Left (convertErrors errs)
+        Left errs -> Left (convertErrors errs)
   where
     parser = do
-        declarations <- parseExhaustiveSequence TokenNewline parseDeclaration
-        pure $ ExprRoot declarations
+        ExprRoot <$> someDeclarations
+    convertErrors :: [ParseError TokenStream ParsingError] -> [ParsingError]
+    convertErrors = nub . mapMaybe convertError
+    convertError :: ParseError TokenStream ParsingError -> Maybe ParsingError
+    convertError err = case err of
+        FancyError _ errSet ->
+            case Set.toList errSet of
+                (ErrorCustom customErr : _) -> Just customErr
+                _ -> Just $ UnexpectedParseFailure "Unknown fancy error"
+        TrivialError pos unexpected expected ->
+            Just
+                $ UnexpectedParseFailure
+                $ "Parse error at "
+                    ++ show pos
+                    ++ ": unexpected "
+                    ++ show unexpected
+                    ++ ", expected "
+                    ++ show expected
+
+-- FIXED: Use tail-recursive accumulator pattern instead of cons recursion
+someDeclarations :: Parser [Expr]
+someDeclarations = go []
+  where
+    go acc = do
+        atEnd <- isEOF
+        if atEnd
+            then pure (reverse acc)
+            else do
+                mtok <- MP.optional peek
+                case mtok of
+                    Nothing -> pure (reverse acc)
+                    Just _ -> do
+                        decl <- recoverDeclaration
+                        go (decl : acc)
+
+    recoverDeclaration = withRecovery parseDeclaration $ do
+        skipUntilSync syncTokens
+        pure defaultDecl
+
+    syncTokens =
+        [ TokenDef
+        , TokenData
+        , TokenTrait
+        , TokenInstance
+        , TokenIntrinsic
+        , TokenImport
+        , TokenLayoutSeparator
+        , TokenLayoutEnd
+        ]
+
+    defaultDecl = ExprBindingDef "" (Forall [] [] intType) (ExprRoot []) False (Span 0 0)
 
 parseDeclaration :: Parser Expr
 parseDeclaration = do
     token <- peek
     case tokenKind token of
         TokenDef -> parseBinding True
-        TokenIntrinsic -> parseIntrinsicDef
-        TokenNewline -> next >> parseDeclaration
         TokenData -> parseDataType
-        TokenClass -> parseTypeClass
+        TokenTrait -> parseTrait
         TokenInstance -> parseInstance
+        TokenIntrinsic -> parseIntrinsic
         TokenImport -> parseImport
-        _ -> throwError $ UnexpectedToken token
-
-parseDataType :: Parser Expr
-parseDataType = do
-    dataToken <- consume TokenData
-    nameToken <- consume TokenUpperIdentifier
-
-    tyVars <- many parseTyVar
-
-    let name = tokenValue nameToken
-    let spanning = spanningTokens dataToken nameToken
-    constructors <- parseIndexedIndentedBlock (tokenIndent nameToken) parseStructConstructor
-    pure
-        $ ExprDataTypeDef
-            { dataName = name
-            , dataGenerics = tyVars
-            , dataConstraints = []
-            , dataConstructors = constructors
-            , dataSpan = spanning
-            }
-
-parseStructConstructor :: Int -> Parser Expr
-parseStructConstructor index = do
-    firstToken <-
-        if index == 0
-            then consume TokenEquals
-            else consume TokenPipe
-    nameToken <- consume TokenUpperIdentifier
-    fields <- parseIndentedBlock (tokenIndent nameToken) parseStructField
-    pure
-        $ ExprDataConstructor
-            { structConstructorName = tokenValue nameToken
-            , structConstructorArgs = fields
-            , structConstructorSpan = spanningTokens firstToken nameToken
-            }
-
-parseStructField :: Parser (String, Type)
-parseStructField = do
-    nameToken <- consume TokenLowerIdentifier
-    _ <- consumeRelevant TokenReturns
-    typeExpr <- parseType
-    pure (tokenValue nameToken, typeExpr)
-
-parseTypeClass :: Parser Expr
-parseTypeClass = do
-    classToken <- consume TokenClass
-    nameToken <- consume TokenUpperIdentifier
-
-    tyVars <- many parseTyVar
-
-    _where <- consume TokenWhere
-    let name = tokenValue nameToken
-    let typeClassConstraint = mkConstraint name (map TVar tyVars)
-
-    bindings <- parseIndentedBlock (tokenIndent nameToken) (parseTypeClassBinding typeClassConstraint)
-    pure
-        $ ExprTypeClassDef
-            { typeClassName = name
-            , typeClassGenerics = tyVars
-            , typeClassBindings = bindings
-            , typeClassSpan = spanningTokens classToken nameToken
-            }
-
-parseTypeClassBinding :: Typing.Types.Constraint -> Parser Expr
-parseTypeClassBinding typeClassConstraint = do
-    defToken <- consume TokenDef
-    bindName <- parseFuncName
-    retTok <- consumeRelevant TokenReturns
-    Forall tyVars baseConstraints baseType <- parseQualifiedType
-    let bindTyp = Forall tyVars (typeClassConstraint : baseConstraints) baseType
-
-    pure
-        $ ExprTypeClassBinding
-            { typeClassBindName = bindName
-            , typeClassBindType = bindTyp
-            , typeClassBindDefaultImpl = Nothing
-            , typeClassBindSpan = spanningTokens defToken retTok
-            }
-
-parseInstance :: Parser Expr
-parseInstance = do
-    instanceToken <- consume TokenInstance
-    constraintType <- parseType
-
-    whereTok <- consume TokenWhere
-    bindings <- parseIndentedBlock (tokenIndent whereTok) (parseBinding False)
-    pure
-        $ ExprInstanceDef
-            { instanceConstraint = constraintType
-            , instanceMethods = bindings
-            , instanceSpan = spanningTokens instanceToken whereTok
-            }
-
-parseImport :: Parser Expr
-parseImport = do
-    importToken <- consume TokenImport
-    moduleNameSegments <- parseModuleName
-    separator <- consume TokenVarSymbol
-    unless (tokenValue separator == ".") $ do
-        throwError $ UnexpectedToken separator
-
-    _ <- consume TokenLeftBraces
-    imports <-
-        parseSequence
-            TokenComma
-            TokenRightBraces
-            ( do
-                nameToken <- consume TokenUpperIdentifier <|> consume TokenLowerIdentifier <|> consume TokenVarSymbol
-                pure $ tokenValue nameToken
-            )
-    _ <- consume TokenRightBraces
-
-    let moduleName = intercalate "/" moduleNameSegments
-    let Span importStart _ = tokenSpan importToken
-    let importEnd = importStart + length moduleNameSegments
-    pure $ ExprImport moduleName imports (Span importStart importEnd)
-
-parseIntrinsicDef :: Parser Expr
-parseIntrinsicDef = do
-    intrinsicToken <- consume TokenIntrinsic
-    inc <- next
-    case tokenKind inc of
-        TokenDef -> do
-            name <- parseFuncName
-            _ <- consumeRelevant TokenReturns
-            typ <- parseQualifiedType
-            let spanning = spanningTokens intrinsicToken intrinsicToken
-            pure $ ExprIntrinsicDef name typ spanning
-        TokenData -> do
-            nameToken <- consume TokenUpperIdentifier
-            _ <- consumeRelevant TokenReturns
-            kind <- parseKind
-            let name = tokenValue nameToken
-            let spanning = spanningTokens intrinsicToken nameToken
-            pure $ ExprIntrinsicDataTypeDef name kind spanning
-        _ -> throwError $ UnexpectedToken inc
+        _ -> MP.customFailure $ InvalidTokenForTopLevelDeclaration token

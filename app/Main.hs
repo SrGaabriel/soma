@@ -2,8 +2,11 @@ module Main where
 
 import Config.Options
 import Control.Monad (unless)
+import qualified Data.ByteString as BS
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
+import qualified Data.Text.Encoding as TE
+import Lexing.Lexer (lexCode)
 import Project.Graph
 import Project.Incremental (extractSymbolImports, processModulesIncremental)
 import Project.Module
@@ -14,10 +17,31 @@ import System.FilePath (dropExtension, takeExtension, takeFileName)
 
 main :: IO ()
 main = do
-    optionsE <- extractOptions
-    options <- case optionsE of
-        Right o -> return o
+    command <- extractCommand
+    putStrLn "Soma Compiler v0.1.0"
+    case command of
+        Right (Build options) -> build options
+        Right (Lex file) -> do
+            fileContents <- BS.readFile file
+            let content = TE.decodeUtf8 fileContents
+            let (lexed, lexErrors) = lexCode content
+            case lexErrors of
+                [] -> do
+                    putStrLn $ "Lexing succeeded with " ++ show (length lexed) ++ " tokens:"
+                    mapM_ print lexed
+                    exitSuccess
+                errs -> mapM_ print errs >> exitFailure
+        Right (Parse file) -> do
+            parseE <- parseModule (dropExtension (takeFileName file), file)
+            case parseE of
+                Right mi -> do
+                    putStrLn $ "Parsing succeeded for module: " ++ moduleName mi
+                    exitSuccess
+                Left _ -> exitFailure
         Left err -> putStrLn (formatError err) >> exitFailure
+
+build :: Options -> IO ()
+build options = do
     putStrLn $ "Compiling with options: " ++ show options
 
     let inp = optionsInput options
@@ -35,7 +59,7 @@ main = do
 
             graphE <- buildModuleGraph mods
             graph <- case graphE of
-                Left _errs -> putStrLn "❌ Failed to parse at least one module" >> exitFailure
+                Left _errs -> putStrLn "Failed to parse at least one module" >> exitFailure
                 Right g -> return g
 
             let depGraph = buildDependencyGraph graph
@@ -48,7 +72,7 @@ main = do
                     _ <- processModulesIncremental sorted graph options
                     return ()
 
-            putStrLn "✅ Successfully compiled all modules."
+            putStrLn "Successfully compiled all modules."
             exitSuccess
 
 processSingle :: Options -> IO ()
@@ -77,5 +101,5 @@ processSingle options = do
             _ <- processModulesIncremental sorted graph options{optionsName = Just name}
             return ()
 
-    putStrLn "✅ Successfully compiled module."
+    putStrLn "Successfully compiled module."
     exitSuccess

@@ -21,7 +21,7 @@ import Language.LSP.Protocol.Message
 import Language.LSP.Protocol.Types
 import Language.LSP.Server
 import Language.LSP.VFS
-import Lexing.Lexer (tokenizeFile)
+import Lexing.Lexer (lexCode)
 import Lexing.Position (Span (..))
 import Logging.ErrorPrinter (PrintableError (..))
 import Logging.PrettyTrees (treeShow)
@@ -106,14 +106,13 @@ analyzeFile LspState{..} fileUri = do
 
     case (mdoc, uriToFilePath fileUri) of
         (Just vf, Just filePath) -> do
-            let content = T.unpack $ virtualFileText vf
+            let content = virtualFileText vf
                 modName = dropExtension $ takeFileName filePath
-
-            let (tokens, lexErrors) = tokenizeFile content
+            let (tokens, lexErrors) = lexCode content
 
             case parse tokens of
-                Left parseErr -> do
-                    let diags = [errorToDiagnostic parseErr]
+                Left parseErrs -> do
+                    let diags = map errorToDiagnostic lexErrors ++ map errorToDiagnostic parseErrs
                     Language.LSP.Server.publishDiagnostics 100 nUri Nothing (partitionBySource diags)
                 Right ast -> do
                     compiledMods <- liftIO $ readTVarIO stateModules
@@ -123,7 +122,7 @@ analyzeFile LspState{..} fileUri = do
                             $ compileModuleForLSP
                                 modName
                                 filePath
-                                content
+                                (T.unpack content)
                                 ast
                                 compiledMods
 

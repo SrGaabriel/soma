@@ -38,7 +38,7 @@ buildModuleGraph modules = do
     results <- mapConcurrently parseModule modules
     case partitionEithers results of
         ([], parsedModules) -> return $ Right $ Map.fromList [(moduleName modInfo, modInfo) | modInfo <- parsedModules]
-        (errors, _) -> return $ Left errors
+        (errors, _) -> return $ Left $ concat errors
 
 type DependencyGraph = Map.Map String [String]
 

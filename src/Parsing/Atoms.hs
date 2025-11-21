@@ -1,35 +1,23 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
-
 module Parsing.Atoms where
 
-import Control.Applicative ((<|>))
-import Control.Monad (when)
-import Control.Monad.Error.Class (MonadError (throwError))
 import Data.Maybe (fromMaybe)
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens, tokenSpan)
 import Lexing.Position (Span (Span))
 import Parsing.Errors (ParsingError (..))
 import Parsing.Parser
-import Syntax.Tree (ComposeStmt (..), Expr (..), exprSpan, modifySpan)
+import Syntax.Tree
+import qualified Text.Megaparsec as MP
 
 parseExpression :: Parser Expr
 parseExpression = parseExprPrec 0
 
 parseApplication :: Parser Expr
 parseApplication = do
-    atoms <-
-        someAccepting
-            parseAtom
-            ( \case
-                NotAnExpression _ -> True
-                ExpectedAnExpression _ -> True
-                _ -> False
-            )
+    atoms <- MP.some parseAtom
     if null atoms
         then do
             inc <- peek
-            throwError $ ExpectedAnExpression inc
+            MP.customFailure $ ExpectedAnExpression inc
         else pure $ foldl2 ExprApp atoms
   where
     foldl2 _ [] = error "foldl2: empty list"
@@ -38,17 +26,17 @@ parseApplication = do
 
 parseAtom :: Parser Expr
 parseAtom = do
-    token <- peek
-    case tokenKind token of
-        TokenNumber -> do
-            numToken <- next
+    token <- tryPeek
+    case tokenKind <$> token of
+        Just TokenNumber -> do
+            numToken <- consume TokenNumber
             pure $ ExprNum (tokenValue numToken) (tokenSpan numToken)
-        TokenLeftParen -> do
+        Just TokenLeftParen -> do
             lparen <- consume TokenLeftParen
             inc <- peek
             case tokenKind inc of
                 TokenLambda -> do
-                    _ <- next
+                    _ <- consume TokenLambda
                     nameToks <- parseFluidSequence TokenRightArrow (consume TokenLowerIdentifier)
                     let names = map tokenValue nameToks
                     _ <- consume TokenRightArrow
@@ -62,31 +50,34 @@ parseAtom = do
                     case contents of
                         [first] -> pure $ modifySpan first spanning
                         _ -> pure $ ExprTuple contents spanning
-        TokenLeftBracket -> do
+        Just TokenLeftBracket -> do
             lbracket <- consume TokenLeftBracket
             contents <- parseCommaSeparatedUntil TokenRightBracket parseExpression
             rbracket <- consume TokenRightBracket
             let spanning = Span (tokenPos lbracket) (tokenPos rbracket)
             pure $ ExprArray contents spanning
-        TokenLowerIdentifier -> do
-            idToken <- next
+        Just TokenLowerIdentifier -> do
+            idToken <- consume TokenLowerIdentifier
             pure $ ExprUVar (tokenValue idToken) (tokenSpan idToken)
-        TokenUpperIdentifier -> do
-            idToken <- next
+        Just TokenUpperIdentifier -> do
+            idToken <- consume TokenUpperIdentifier
             pure $ ExprUVar (tokenValue idToken) (tokenSpan idToken)
-        TokenString str -> do
-            ExprStr str . tokenSpan <$> next
-        TokenLet -> parseLetExpression
-        TokenDollar -> do
-            _dollar <- next
+        Just (TokenString str) -> do
+            strToken <- consume (TokenString str)
+            pure $ ExprStr str (tokenSpan strToken)
+        Just TokenLet -> parseLetExpression
+        Just TokenDollar -> do
+            _ <- consume TokenDollar
             parseExpression
-        TokenTrue -> do
-            ExprBool True . tokenSpan <$> next
-        TokenFalse -> do
-            ExprBool False . tokenSpan <$> next
-        TokenCompose -> parseCompose
-        TokenIf -> parseIf
-        _ -> throwError $ NotAnExpression token
+        Just TokenTrue -> do
+            trueToken <- consume TokenTrue
+            pure $ ExprBool True (tokenSpan trueToken)
+        Just TokenFalse -> do
+            falseToken <- consume TokenFalse
+            pure $ ExprBool False (tokenSpan falseToken)
+        Just TokenCompose -> parseCompose
+        Just TokenIf -> parseIf
+        _ -> MP.empty
 
 parseLetExpression :: Parser Expr
 parseLetExpression = do
@@ -94,10 +85,8 @@ parseLetExpression = do
     identifier <- consume TokenLowerIdentifier
     _ <- consume TokenEquals
     value <- parseExpression
-    inTok <- consumeRelevant TokenIn
-
-    mapM_ validateIndentation =<< optional (consume TokenNewline)
-
+    inTok <- consume TokenIn
+    _ <- consume TokenLayoutSeparator
     body <- parseExpression
 
     pure
@@ -107,13 +96,6 @@ parseLetExpression = do
             , letBody = body
             , letSpan = Span (tokenPos letToken) (tokenPos inTok)
             }
-  where
-    validateIndentation newline =
-        let actualIndent = length (tokenValue newline)
-            expectedIndent = tokenIndent newline
-        in when (actualIndent /= expectedIndent)
-            $ throwError
-            $ ExpectedDifferentIndentation newline expectedIndent actualIndent
 
 operatorPrecedenceTable :: [[String]]
 operatorPrecedenceTable =
@@ -139,7 +121,7 @@ parseExprPrec prec = do
 
 parseInfixRest :: Expr -> Int -> Parser Expr
 parseInfixRest lhs prec = do
-    mtok <- optional peek
+    mtok <- tryPeek
     case mtok of
         Just tok
             | TokenVarSymbol <- tokenKind tok
@@ -147,7 +129,7 @@ parseInfixRest lhs prec = do
                 let (opPrec, assoc) = fromMaybe (0, LeftAssoc) (getOpPrecedence opStr)
                 if shouldContinue prec opPrec assoc
                     then do
-                        _ <- next
+                        _ <- consume TokenVarSymbol
                         rhs <- parseExprPrec (nextPrec assoc opPrec)
                         let op = ExprUVar opStr (tokenSpan tok)
                         let appL = ExprApp op lhs
@@ -166,27 +148,27 @@ parseInfixRest lhs prec = do
 
 parseModuleName :: Parser [String]
 parseModuleName = do
-    toks <- parseExhaustiveSequence TokenSlash (consume TokenVarSymbol <|> consume TokenLowerIdentifier)
+    toks <- parseExhaustiveSequence TokenSlash (consumeAnyOf [TokenVarSymbol, TokenLowerIdentifier])
     pure $ map tokenValue toks
 
 parseCompose :: Parser Expr
 parseCompose = do
     composeTok <- consume TokenCompose
-    stmts <- parseIndentedBlock (tokenIndent composeTok) parseComposeStmt
+    stmts <- parseLayout parseComposeStmt
     pure $ ExprCompose stmts (tokenSpan composeTok)
 
 parseComposeStmt :: Parser ComposeStmt
 parseComposeStmt = do
-    tok <- peek
-    case tokenKind tok of
-        TokenBind -> do
-            bindTok <- next
+    tok <- tryPeek
+    case tokenKind <$> tok of
+        Just TokenBind -> do
+            bindTok <- consume TokenBind
             nameTok <- consume TokenLowerIdentifier
             _ <- consume TokenLeftArrow
             val <- parseExpression
             pure $ CSBind (tokenValue nameTok) val (spanningTokens bindTok nameTok)
-        TokenLet -> do
-            letTok <- next
+        Just TokenLet -> do
+            letTok <- consume TokenLet
             nameTok <- consume TokenLowerIdentifier
             _ <- consume TokenEquals
             val <- parseExpression

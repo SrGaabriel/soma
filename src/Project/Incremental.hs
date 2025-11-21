@@ -6,7 +6,6 @@ module Project.Incremental where
 
 import Alloy.CSE (cseModuleGlobal)
 import Alloy.Defunc (defunctionalizeModule)
-import Alloy.DictionaryPass (transformModuleWithDictionaries)
 import Alloy.ExpandIntrinsics (expandIntrinsicsModule)
 import Alloy.HoistAllocas (hoistAllocasModule)
 import Alloy.Ir (AlloyModule (..))
@@ -23,13 +22,11 @@ import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import qualified Debug.Trace as Debug
 import Inference.Assembler (inferTreeT)
 import Inference.Core (TypeMap)
 import Inference.Resolver (runResolverWithEnv)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.ErrorPrinter (printError)
-import Logging.PrettyTrees (treeShow)
 import Metal.Gen.Entry (compileMetalModule)
 import Metal.Gen.Metadata (constructorMetadataToSerializable, extractConstructorMetadata, serializableToConstructorMetadata)
 import Metal.Lift (liftLambdas)
