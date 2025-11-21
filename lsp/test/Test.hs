@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# OPTIONS_GHC -Wno-x-partial #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {- HLINT ignore "Use lambda-case" -}
@@ -48,10 +49,10 @@ testInitialization lspCmd = describe "Initialization" $ do
     it "should initialize successfully"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
-            doc <- openDoc "sample.soma" "soma"
+            _doc <- openDoc "sample.soma" "soma"
             msg <- LSP.message SMethod_WindowShowMessage
-            let params = msg ^. L.params
-            liftIO $ T.unpack (params ^. L.message) `shouldBe` "Soma LSP initialized"
+            let params' = msg ^. L.params
+            liftIO $ T.unpack (params' ^. L.message) `shouldBe` "Soma LSP initialized"
 
     it "should accept workspace root"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
@@ -64,7 +65,7 @@ testDiagnostics lspCmd = describe "Diagnostics" $ do
     it "should report parse errors"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
-            doc <- openDoc "parse_error.soma" "soma"
+            _doc <- openDoc "parse_error.soma" "soma"
             diags <- waitForDiagnostics
             liftIO $ length diags `shouldSatisfy` (> 0)
 
@@ -75,7 +76,7 @@ testDiagnostics lspCmd = describe "Diagnostics" $ do
     it "should report type errors"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
-            doc <- openDoc "type_error.soma" "soma"
+            _doc <- openDoc "type_error.soma" "soma"
             diags <- waitForDiagnostics
             liftIO $ length diags `shouldSatisfy` (> 0)
 
@@ -93,7 +94,7 @@ testDiagnostics lspCmd = describe "Diagnostics" $ do
     it "should handle valid files without errors"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
-            doc <- openDoc "valid.soma" "soma"
+            _doc <- openDoc "valid.soma" "soma"
             diags <- waitForDiagnosticsFrom "soma"
             liftIO $ diags `shouldBe` []
 
@@ -103,9 +104,9 @@ testHover lspCmd = describe "Hover" $ do
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
             doc <- openDoc "valid.soma" "soma"
-            hover <- getHover doc (Position 2 5)
+            hover' <- getHover doc (Position 2 5)
 
-            case hover of
+            case hover' of
                 Just (Hover (InL content) _) -> do
                     liftIO $ content ^. kind `shouldBe` MarkupKind_Markdown
                     liftIO $ T.unpack (content ^. value) `shouldContain` "```soma"
@@ -115,17 +116,17 @@ testHover lspCmd = describe "Hover" $ do
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
             doc <- openDoc "valid.soma" "soma"
-            hover <- getHover doc (Position 100 100)
-            liftIO $ hover `shouldBe` Nothing
+            hover' <- getHover doc (Position 100 100)
+            liftIO $ hover' `shouldBe` Nothing
 
     it "should show type for expressions"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
             doc <- openDoc "expression.soma" "soma"
-            hover <- getHover doc (Position 3 10)
+            hover' <- getHover doc (Position 3 10)
 
             liftIO
-                $ hover `shouldSatisfy` \h -> case h of
+                $ hover' `shouldSatisfy` \h -> case h of
                     Just (Hover (InL _) _) -> True
                     _ -> False
 
@@ -208,28 +209,28 @@ testCompletion lspCmd = describe "Completion" $ do
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
             doc <- openDoc "valid.soma" "soma"
-            items <- getCompletions doc (Position 6 0)
+            items' <- getCompletions doc (Position 6 0)
 
-            liftIO $ length items `shouldSatisfy` (> 0)
+            liftIO $ length items' `shouldSatisfy` (> 0)
             liftIO
-                $ map (^. label) items
+                $ map (^. label) items'
                     `shouldSatisfy` \labels -> any (\l -> T.length l > 0) labels
 
     it "should include imported symbols"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
             doc <- openDoc "with_imports.soma" "soma"
-            items <- getCompletions doc (Position 5 0)
-            liftIO $ length items `shouldSatisfy` (> 0)
+            items' <- getCompletions doc (Position 5 0)
+            liftIO $ length items' `shouldSatisfy` (> 0)
 
     it "should provide function completions"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
             doc <- openDoc "valid.soma" "soma"
-            items <- getCompletions doc (Position 4 2)
+            items' <- getCompletions doc (Position 4 2)
 
             liftIO
-                $ any (\item -> item ^. kind == Just CompletionItemKind_Function) items
+                $ any (\item' -> item' ^. kind == Just CompletionItemKind_Function) items'
                     `shouldBe` True
 
     it "should handle completion in empty context"
@@ -242,8 +243,7 @@ testCompletion lspCmd = describe "Completion" $ do
 
 waitForDiagnosticsFrom :: T.Text -> Session [Diagnostic]
 waitForDiagnosticsFrom src = do
-    diags <- waitForDiagnostics
-    return $ filter (\d -> d ^. source == Just src) diags
+    filter (\d -> d ^. source == Just src) <$> waitForDiagnostics
 
 fullCaps :: ClientCapabilities
 fullCaps =
