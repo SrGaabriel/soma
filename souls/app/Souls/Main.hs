@@ -11,7 +11,12 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Message
-import Language.LSP.Protocol.Types
+import Language.LSP.Protocol.Types hiding (
+    DidChangeNotebookDocumentParams (..),
+    NotebookDocumentSyncOptions (..),
+    NotebookDocumentSyncRegistrationOptions (..),
+    TextDocumentSyncClientCapabilities (..),
+ )
 import Language.LSP.Server
 import Project.Graph
 import Souls.Analysis (analyzeFile)
@@ -52,7 +57,7 @@ main = do
                 pure $ Right env
             , staticHandlers = handlers state
             , interpretHandler = \env -> Iso (runLspT env) liftIO
-            , Language.LSP.Server.options = defaultOptions
+            , Language.LSP.Server.options = lspOptions
             }
 
 handlers :: LspState -> ClientCapabilities -> Handlers (LspM ())
@@ -73,3 +78,20 @@ handlers state _caps =
         , requestHandler SMethod_TextDocumentDefinition (handleGotoDefinition state)
         , requestHandler SMethod_TextDocumentCompletion (handleCompletion state)
         ]
+
+lspOptions :: Options
+lspOptions =
+    defaultOptions
+        { optTextDocumentSync = syncOptions
+        }
+
+syncOptions :: Maybe TextDocumentSyncOptions
+syncOptions =
+    Just
+        TextDocumentSyncOptions
+            { _openClose = Just True
+            , _change = Just TextDocumentSyncKind_Incremental
+            , _willSave = Just False
+            , _willSaveWaitUntil = Just False
+            , _save = Just (InL False)
+            }
