@@ -16,7 +16,15 @@ common warnings
 
 executable souls
   import: warnings
-  main-is: Server.hs
+  main-is: Souls/Main.hs
+  other-modules:
+    Souls.Loc
+    Souls.Symbols
+    Souls.Analysis
+    Souls.Server
+    Souls.Handlers.Hover
+    Souls.Handlers.Definition
+    Souls.Handlers.Completion
   hs-source-dirs: app
   build-depends:
     base,

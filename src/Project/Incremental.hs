@@ -32,12 +32,13 @@ import Metal.Gen.Metadata (constructorMetadataToSerializable, extractConstructor
 import Metal.Lift (liftLambdas)
 import Metal.Module
 import Metal.MonadNormalize (normalizeModule)
+import Project.Extracts (extractSymbolImports, filterSymbolsByNames)
 import Project.Graph
 import Project.Metadata (SerializableConstructorMetadata, projectMetadataConstructors, projectMetadataPublicSymbols)
 import Project.Module
-import Project.Symbols (Symbol (resolvedSymbolName))
+import Project.Symbols (Symbol)
 import Project.Tarball (TarballContents (TarballContents, tcAlloyModules, tcMetadata), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
-import Syntax.Tree (Expr (ExprImport, ExprRoot), exprChildren)
+import Syntax.Tree (Expr (ExprRoot))
 import System.Directory
 import System.Exit (exitFailure)
 import System.FilePath
@@ -297,23 +298,6 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
         ext -> do
             putStrLn $ "Unknown output extension: " ++ ext
             exitFailure
-
-extractSymbolImports :: Expr -> [(String, [String])]
-extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
-extractSymbolImports (ExprImport name elements _) =
-    [(name, elements)]
-extractSymbolImports e = concatMap extractSymbolImports (exprChildren e)
-
-wordsWhen :: (Char -> Bool) -> String -> [String]
-wordsWhen p s = case dropWhile p s of
-    "" -> []
-    s' -> w : wordsWhen p s''
-      where
-        (w, s'') = break p s'
-
-filterSymbolsByNames :: [String] -> Map.Map Symbol QualifiedType -> Map.Map Symbol QualifiedType
-filterSymbolsByNames names =
-    Map.filterWithKey (\sym _ -> resolvedSymbolName sym `elem` names)
 
 processExternalDependencies :: [(String, String)] -> IO (Map.Map String (Map.Map Symbol QualifiedType), Map.Map String SerializableConstructorMetadata, [AlloyModule])
 processExternalDependencies externals = do

@@ -8,7 +8,8 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text.Encoding as TE
 import Lexing.Lexer (lexCode)
 import Project.Graph
-import Project.Incremental (extractSymbolImports, processModulesIncremental)
+import Project.Incremental (processModulesIncremental)
+import Project.Extracts (extractSymbolImports)
 import Project.Module
 import Project.Parsing
 import System.Directory (doesDirectoryExist, doesFileExist)

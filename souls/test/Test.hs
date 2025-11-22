@@ -1,8 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# OPTIONS_GHC -Wno-x-partial #-}
 {-# LANGUAGE OverloadedStrings #-}
-
-{- HLINT ignore "Use lambda-case" -}
+{-# LANGUAGE LambdaCase #-}
 
 module Main where
 
@@ -126,7 +125,7 @@ testHover lspCmd = describe "Hover" $ do
             hover' <- getHover doc (Position 3 10)
 
             liftIO
-                $ hover' `shouldSatisfy` \h -> case h of
+                $ hover' `shouldSatisfy` \case
                     Just (Hover (InL _) _) -> True
                     _ -> False
 
@@ -189,14 +188,14 @@ testGotoDefinition lspCmd = describe "Go to Definition" $ do
                             let locUri = loc ^. L.uri
                             liftIO
                                 $ uriToFilePath locUri
-                                    `shouldSatisfy` \mp -> case mp of
+                                    `shouldSatisfy` \case
                                         Just path -> "module1.soma" `isInfixOf` path
                                         Nothing -> False
                         InR (loc : _) -> do
                             let locUri = loc ^. L.uri
                             liftIO
                                 $ uriToFilePath locUri
-                                    `shouldSatisfy` \mp -> case mp of
+                                    `shouldSatisfy` \case
                                         Just path -> "module1.soma" `isInfixOf` path
                                         Nothing -> False
                         InR [] -> liftIO $ expectationFailure "Expected at least one location"
@@ -331,7 +330,7 @@ fullCaps =
                     , _symbol = Nothing
                     , _executeCommand = Nothing
                     , _workspaceFolders = Just True
-                    , _configuration = Just True
+                    , _configuration = Just False
                     , _semanticTokens = Nothing
                     , _codeLens = Nothing
                     , _fileOperations = Nothing

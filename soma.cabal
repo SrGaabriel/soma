@@ -96,6 +96,7 @@ library
     Parsing.Patterns
     Parsing.Traits
     Parsing.Types
+    Project.Extracts
     Project.Graph
     Project.Incremental
     Project.Metadata
