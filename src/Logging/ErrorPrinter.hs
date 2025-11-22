@@ -1,5 +1,4 @@
 module Logging.ErrorPrinter (
-    PrintableError (..),
     printError,
     printConclusionMessage,
     printSomeError,

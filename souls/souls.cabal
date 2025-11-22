@@ -18,13 +18,15 @@ executable souls
   import: warnings
   main-is: Souls/Main.hs
   other-modules:
-    Souls.Loc
-    Souls.Symbols
     Souls.Analysis
-    Souls.Server
-    Souls.Handlers.Hover
-    Souls.Handlers.Definition
     Souls.Handlers.Completion
+    Souls.Handlers.Definition
+    Souls.Handlers.Hover
+    Souls.Loc
+    Souls.Logging
+    Souls.Server
+    Souls.Symbols
+
   hs-source-dirs: app
   build-depends:
     base,
@@ -38,7 +40,7 @@ executable souls
     soma,
     stm >=2.5,
     text,
-    time
+    time,
 
   default-language: Haskell2010
 

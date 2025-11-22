@@ -1,6 +1,5 @@
 module Lexing.Errors (LexingError (..)) where
-
-import Logging.ErrorPrinter (PrintableError (..))
+import Logging.Errors (PrintableError (..))
 
 data LexingError
     = UnexpectedCharacter Char Int

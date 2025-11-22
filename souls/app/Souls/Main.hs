@@ -25,8 +25,9 @@ main = do
     modulesVar <- newTVarIO Map.empty
     workspaceVar <- newTVarIO Nothing
     graphVar <- newTVarIO Nothing
+    fileVersionsVar <- newTVarIO Map.empty
 
-    let state = LspState modulesVar workspaceVar graphVar
+    let state = LspState modulesVar workspaceVar graphVar fileVersionsVar
 
     runServer
         $ ServerDefinition
@@ -62,10 +63,12 @@ handlers state _caps =
                 $ ShowMessageParams MessageType_Info "Soma LSP initialized"
         , notificationHandler SMethod_TextDocumentDidOpen $ \msg -> do
             let fileUri = msg ^. L.params . L.textDocument . L.uri
-            analyzeFile state fileUri
+            let fileVersion = msg ^. L.params . L.textDocument . L.version
+            analyzeFile state fileUri fileVersion
         , notificationHandler SMethod_TextDocumentDidChange $ \msg -> do
             let fileUri = msg ^. L.params . L.textDocument . L.uri
-            analyzeFile state fileUri
+            let fileVersion = msg ^. L.params . L.textDocument . L.version
+            analyzeFile state fileUri fileVersion
         , requestHandler SMethod_TextDocumentHover (handleHover state)
         , requestHandler SMethod_TextDocumentDefinition (handleGotoDefinition state)
         , requestHandler SMethod_TextDocumentCompletion (handleCompletion state)

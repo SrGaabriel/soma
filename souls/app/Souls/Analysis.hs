@@ -1,24 +1,26 @@
 {-# LANGUAGE RecordWildCards #-}
-module Souls.Analysis where
-import Souls.Server (LspState (..), compileModuleForLSP)
-import Language.LSP.Protocol.Types
-import Language.LSP.Server (LspM, publishDiagnostics, getVirtualFile)
-import Language.LSP.Diagnostics
-import qualified Data.Text as T
-import Souls.Loc (offsetToPosition)
-import Logging.Errors (PrintableError(..))
-import Language.LSP.VFS
-import System.FilePath (dropExtension, takeFileName)
-import Lexing.Lexer (lexCode)
-import Parsing.Ast (parse)
-import Control.Monad.IO.Class (liftIO)
-import GHC.Conc.Sync (readTVarIO)
-import GHC.Conc (atomically)
-import Control.Concurrent.STM (modifyTVar)
-import qualified Data.Map.Strict as Map
 
-analyzeFile :: LspState -> Uri -> LspM () ()
-analyzeFile LspState{..} fileUri = do
+module Souls.Analysis where
+
+import Control.Concurrent.STM (modifyTVar)
+import Control.Monad.IO.Class (liftIO)
+import qualified Data.Map.Strict as Map
+import qualified Data.Text as T
+import GHC.Conc (atomically)
+import GHC.Conc.Sync (readTVarIO)
+import Language.LSP.Diagnostics
+import Language.LSP.Protocol.Types
+import Language.LSP.Server (LspM, getVirtualFile, publishDiagnostics)
+import Language.LSP.VFS
+import Lexing.Lexer (lexCode)
+import Logging.Errors (PrintableError (..))
+import Parsing.Ast (parse)
+import Souls.Loc (offsetToPosition)
+import Souls.Server (LspState (..), compileModuleForLSP)
+import System.FilePath (dropExtension, takeFileName)
+
+analyzeFile :: LspState -> Uri -> Int32 -> LspM () ()
+analyzeFile LspState{..} fileUri fileVersion = do
     let nUri = toNormalizedUri fileUri
     mdoc <- getVirtualFile nUri
 
@@ -35,6 +37,8 @@ analyzeFile LspState{..} fileUri = do
                 Right ast -> do
                     compiledMods <- liftIO $ readTVarIO stateModules
 
+                    let depsOnly = Map.delete filePath compiledMods
+
                     result <-
                         liftIO
                             $ compileModuleForLSP
@@ -42,7 +46,7 @@ analyzeFile LspState{..} fileUri = do
                                 filePath
                                 (T.unpack content)
                                 ast
-                                compiledMods
+                                depsOnly
 
                     case result of
                         Left errors -> do
@@ -52,7 +56,8 @@ analyzeFile LspState{..} fileUri = do
                             liftIO
                                 $ atomically
                                 $ modifyTVar stateModules (Map.insert filePath compiled)
-                            publishDiagnostics 100 nUri Nothing (partitionBySource [])
+
+                            publishDiagnostics 100 nUri (Just fileVersion) (partitionBySource [])
         _ -> pure ()
 
 errorToDiagnostic :: (PrintableError e) => T.Text -> e -> Diagnostic
