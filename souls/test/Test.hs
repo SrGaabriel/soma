@@ -22,13 +22,13 @@ import Test.Hspec
 import Prelude hiding (length)
 
 getLspCommand :: IO String
-getLspCommand = return "cabal -v0 run soma-lsp --"
+getLspCommand = return "cabal -v0 run souls --"
 
 main :: IO ()
 main = do
     lspCmd <- getLspCommand
     hspec $ do
-        describe "Soma LSP Server" $ do
+        describe "SouLS (Soma Language Server) LSP Tests" $ do
             testInitialization lspCmd
             testDiagnostics lspCmd
             testHover lspCmd

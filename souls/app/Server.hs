@@ -89,7 +89,7 @@ main = do
     args <- getArgs
     let loggingEnabled = "--logging" `elem` args
     
-    appendLog loggingEnabled "Starting soma-lsp server process"
+    appendLog loggingEnabled "Starting soma language server process"
     modulesVar <- newTVarIO Map.empty
     workspaceVar <- newTVarIO Nothing
     graphVar <- newTVarIO Nothing

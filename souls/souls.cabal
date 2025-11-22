@@ -1,6 +1,6 @@
 cabal-version: 3.12
-name: soma-lsp
-version: 0.1.0.0
+name: souls
+version: 0.2.0.0
 license: MIT
 license-file: ../LICENSE
 author: Gabriel
@@ -14,7 +14,7 @@ common warnings
     -fprof-auto
     -rtsopts
 
-executable soma-lsp
+executable souls
   import: warnings
   main-is: Server.hs
   hs-source-dirs: app
@@ -34,7 +34,7 @@ executable soma-lsp
 
   default-language: Haskell2010
 
-test-suite soma-lsp-test
+test-suite souls-test
   import: warnings
   type: exitcode-stdio-1.0
   main-is: Test.hs

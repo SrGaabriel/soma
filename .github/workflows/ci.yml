@@ -108,9 +108,9 @@ jobs:
               run: |
                   mkdir -p artifacts
                   cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}
-                  cp $(cabal list-bin exe:soma-lsp) artifacts/soma-lsp-${{ matrix.target }}
+                  cp $(cabal list-bin exe:souls) artifacts/souls-${{ matrix.target }}
                   chmod +x artifacts/somac-${{ matrix.target }}
-                  chmod +x artifacts/soma-lsp-${{ matrix.target }}
+                  chmod +x artifacts/souls-${{ matrix.target }}
 
             - name: Prepare executables (Windows MSVC)
               if: runner.os == 'Windows' && contains(matrix.target, 'msvc')
@@ -118,9 +118,9 @@ jobs:
               run: |
                   New-Item -ItemType Directory -Force -Path artifacts
                   $somac = cabal list-bin exe:soma
-                  $somalsp = cabal list-bin exe:soma-lsp
+                  $souls = cabal list-bin exe:souls
                   Copy-Item $somac "artifacts/somac-${{ matrix.target }}.exe"
-                  Copy-Item $somalsp "artifacts/soma-lsp-${{ matrix.target }}.exe"
+                  Copy-Item $souls "artifacts/souls-${{ matrix.target }}.exe"
 
             - name: Prepare executables (Windows GNU)
               if: runner.os == 'Windows' && contains(matrix.target, 'gnu')
@@ -128,7 +128,7 @@ jobs:
               run: |
                   mkdir -p artifacts
                   cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}.exe
-                  cp $(cabal list-bin exe:soma-lsp) artifacts/soma-lsp-${{ matrix.target }}.exe
+                  cp $(cabal list-bin exe:souls) artifacts/souls-${{ matrix.target }}.exe
 
             - name: Upload somac artifact
               uses: actions/upload-artifact@v4
@@ -137,11 +137,11 @@ jobs:
                   path: artifacts/somac-*
                   if-no-files-found: error
 
-            - name: Upload soma-lsp artifact
+            - name: Upload souls artifact
               uses: actions/upload-artifact@v4
               with:
-                  name: soma-lsp-${{ matrix.target }}
-                  path: artifacts/soma-lsp-*
+                  name: souls-${{ matrix.target }}
+                  path: artifacts/souls-*
                   if-no-files-found: error
 
     rust-build:
