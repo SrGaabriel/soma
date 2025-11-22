@@ -35,6 +35,7 @@ import Project.Graph
 import Project.Incremental
 import Project.Symbols (Symbol, resolvedSymbolName, resolvedSymbolSpan)
 import Syntax.Tree (Expr (..), exprChildren, exprSpan)
+import System.Environment (getArgs)
 import System.FilePath
 import System.IO (hClose, hPutStr, openFile, stderr, stdout)
 import Typing.Types (QualifiedType)
@@ -75,6 +76,7 @@ data LspState = LspState
     { stateModules :: TVar (Map.Map FilePath LspCompiledModule)
     , stateWorkspaceRoot :: TVar (Maybe FilePath)
     , stateModuleGraph :: TVar (Maybe ModuleGraph)
+    , stateLoggingEnabled :: Bool
     }
 
 logFile :: FilePath
@@ -83,8 +85,8 @@ logFile = "/tmp/soma-lsp-debug.log"
 timestamp :: IO String
 timestamp = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S%Q" <$> getCurrentTime
 
-appendLog :: String -> IO ()
-appendLog msg = do
+appendLog :: Bool -> String -> IO ()
+appendLog enabled msg = when enabled $ do
     ts <- timestamp
     let line' = ts ++ " | " ++ msg ++ "\n"
 
@@ -92,23 +94,26 @@ appendLog msg = do
 
     appendFile logFile line'
 
-logToClient :: T.Text -> LspM () ()
-logToClient msg = do
+logToClient :: Bool -> T.Text -> LspM () ()
+logToClient enabled msg = when enabled $ do
     sendNotification SMethod_WindowLogMessage (LogMessageParams MessageType_Info msg)
 
     sendNotification SMethod_WindowShowMessage (ShowMessageParams MessageType_Info msg)
 
     let plain = T.unpack msg
-    liftIO $ appendLog ("LSP: " ++ plain)
+    liftIO $ appendLog enabled ("LSP: " ++ plain)
 
 main :: IO Int
 main = do
-    appendLog "Starting soma-lsp server process"
+    args <- getArgs
+    let loggingEnabled = "--logging" `elem` args
+    
+    appendLog loggingEnabled "Starting soma-lsp server process"
     modulesVar <- newTVarIO Map.empty
     workspaceVar <- newTVarIO Nothing
     graphVar <- newTVarIO Nothing
 
-    let state = LspState modulesVar workspaceVar graphVar
+    let state = LspState modulesVar workspaceVar graphVar loggingEnabled
 
     runServer
         $ ServerDefinition
@@ -123,7 +128,7 @@ main = do
                         case uriToFilePath uri of
                             Just path -> liftIO $ do
                                 atomically $ writeTVar workspaceVar (Just path)
-                                appendLog $ "initialize: workspace root = " ++ path
+                                appendLog loggingEnabled $ "initialize: workspace root = " ++ path
                                 (_mods, graphE) <- withConsoleSilenced $ do
                                     ms <- findModules "workspace" path
                                     ge <- buildModuleGraph ms
@@ -147,11 +152,11 @@ handlers state _caps =
                 $ ShowMessageParams MessageType_Info "Soma LSP initialized"
         , notificationHandler SMethod_TextDocumentDidOpen $ \msg -> do
             let fileUri = msg ^. L.params . L.textDocument . L.uri
-            logToClient $ "didOpen: " <> (T.pack . show) fileUri
+            logToClient (stateLoggingEnabled state) $ "didOpen: " <> (T.pack . show) fileUri
             analyzeFile state fileUri
         , notificationHandler SMethod_TextDocumentDidChange $ \msg -> do
             let fileUri = msg ^. L.params . L.textDocument . L.uri
-            logToClient $ "didChange: " <> (T.pack . show) fileUri
+            logToClient (stateLoggingEnabled state) $ "didChange: " <> (T.pack . show) fileUri
             analyzeFile state fileUri
         , requestHandler SMethod_TextDocumentHover (handleHover state)
         , requestHandler SMethod_TextDocumentDefinition (handleGotoDefinition state)
@@ -159,7 +164,7 @@ handlers state _caps =
         ]
 
 analyzeFile :: LspState -> Uri -> LspM () ()
-analyzeFile LspState{..} fileUri = do
+analyzeFile state@LspState{..} fileUri = do
     let nUri = toNormalizedUri fileUri
     mdoc <- getVirtualFile nUri
 
@@ -167,20 +172,21 @@ analyzeFile LspState{..} fileUri = do
         (Just vf, Just filePath) -> do
             let content = virtualFileText vf
                 modName = dropExtension $ takeFileName filePath
-            logToClient $ "analyzeFile: " <> T.pack filePath <> " module=" <> T.pack modName
+            logToClient stateLoggingEnabled $ "analyzeFile: " <> T.pack filePath <> " module=" <> T.pack modName
             let (tokens, lexErrors) = lexCode content
 
             case parse tokens of
                 Left parseErrs -> do
                     let diags = map (errorToDiagnostic content) lexErrors ++ map (errorToDiagnostic content) parseErrs
                     Language.LSP.Server.publishDiagnostics 100 nUri Nothing (partitionBySource diags)
-                    logToClient $ "parse errors published for " <> T.pack filePath
+                    logToClient stateLoggingEnabled $ "parse errors published for " <> T.pack filePath
                 Right ast -> do
                     compiledMods <- liftIO $ readTVarIO stateModules
 
                     result <-
                         liftIO
                             $ compileModuleForLSP
+                                stateLoggingEnabled
                                 modName
                                 filePath
                                 (T.unpack content)
@@ -191,42 +197,43 @@ analyzeFile LspState{..} fileUri = do
                         Left errors -> do
                             let diags = map (errorToDiagnostic content) errors
                             Language.LSP.Server.publishDiagnostics 100 nUri Nothing (partitionBySource diags)
-                            logToClient $ "type/resolution errors published for " <> T.pack filePath
+                            logToClient stateLoggingEnabled $ "type/resolution errors published for " <> T.pack filePath
                         Right compiled -> do
                             liftIO
                                 $ atomically
                                 $ modifyTVar stateModules (Map.insert filePath compiled)
                             Language.LSP.Server.publishDiagnostics 100 nUri Nothing (partitionBySource [])
-                            logToClient $ "compiled and stored module: " <> T.pack (lcmModuleName compiled) <> " (" <> T.pack filePath <> ")"
+                            logToClient stateLoggingEnabled $ "compiled and stored module: " <> T.pack (lcmModuleName compiled) <> " (" <> T.pack filePath <> ")"
         _ -> pure ()
 
 compileModuleForLSP ::
+    Bool ->
     String ->
     FilePath ->
     String ->
     Expr ->
     Map.Map FilePath LspCompiledModule ->
     IO (Either [SomeError] LspCompiledModule)
-compileModuleForLSP modName filePath content ast compiledDeps = do
-    appendLog $ "compileModuleForLSP: mod=" ++ modName ++ " path=" ++ filePath
+compileModuleForLSP loggingEnabled modName filePath content ast compiledDeps = do
+    appendLog loggingEnabled $ "compileModuleForLSP: mod=" ++ modName ++ " path=" ++ filePath
     let imports = extractSymbolImports ast
         seedEnv = Map.unions $ map resolveImport imports
 
     resolvedResult <- runResolverWithEnv "lsp" modName seedEnv ast
     case resolvedResult of
         Left err -> do
-            appendLog $ "resolver error for " ++ modName ++ ": " ++ errorMessage err
+            appendLog loggingEnabled $ "resolver error for " ++ modName ++ ": " ++ errorMessage err
             return $ Left [SomeError err]
         Right (resolvedAst, fullEnv, instanceEnv) -> do
             let typesResult = inferTree "lsp" modName fullEnv instanceEnv resolvedAst
 
             case typesResult of
                 Left errs -> do
-                    appendLog $ "type infer errors for " ++ modName ++ " : " ++ show (Prelude.length errs) ++ " errors"
+                    appendLog loggingEnabled $ "type infer errors for " ++ modName ++ " : " ++ show (Prelude.length errs) ++ " errors"
                     return $ Left (map SomeError errs)
                 Right types -> do
                     let newDefs = Map.difference fullEnv seedEnv
-                    appendLog $ "compileModuleForLSP succeeded for " ++ modName ++ ", public defs: " ++ show (Map.size newDefs)
+                    appendLog loggingEnabled $ "compileModuleForLSP succeeded for " ++ modName ++ ", public defs: " ++ show (Map.size newDefs)
                     return
                         $ Right
                         $ LspCompiledModule
@@ -273,7 +280,7 @@ handleHover ::
     TRequestMessage 'Method_TextDocumentHover ->
     (Either (TResponseError 'Method_TextDocumentHover) (Hover |? Null) -> LspM () ()) ->
     LspM () ()
-handleHover LspState{..} req responder = do
+handleHover state@LspState{..} req responder = do
     let pos = req ^. L.params . L.position
         fileUri = req ^. L.params . L.textDocument . L.uri
 
@@ -284,14 +291,14 @@ handleHover LspState{..} req responder = do
                 Just cm -> do
                     let mHover = getHoverAt pos cm
                     case mHover of
-                        Just _ -> logToClient $ "hover: found hover at " <> T.pack (show pos) <> " in " <> T.pack filePath
-                        Nothing -> logToClient $ "hover: no hover at " <> T.pack (show pos) <> " in " <> T.pack filePath
+                        Just _ -> logToClient stateLoggingEnabled $ "hover: found hover at " <> T.pack (show pos) <> " in " <> T.pack filePath
+                        Nothing -> logToClient stateLoggingEnabled $ "hover: no hover at " <> T.pack (show pos) <> " in " <> T.pack filePath
                     responder $ Right $ maybe (InR Null) InL mHover
                 Nothing -> do
-                    logToClient $ "hover: no compiled module for " <> T.pack filePath
+                    logToClient stateLoggingEnabled $ "hover: no compiled module for " <> T.pack filePath
                     responder $ Right $ InR Null
         Nothing -> do
-            logToClient "hover: uriToFilePath failed"
+            logToClient stateLoggingEnabled "hover: uriToFilePath failed"
             responder $ Right $ InR Null
 
 getHoverAt :: Position -> LspCompiledModule -> Maybe Hover
@@ -313,7 +320,7 @@ handleGotoDefinition ::
     TRequestMessage 'Method_TextDocumentDefinition ->
     (Either (TResponseError 'Method_TextDocumentDefinition) (Definition |? [DefinitionLink] |? Null) -> LspM () ()) ->
     LspM () ()
-handleGotoDefinition LspState{..} req responder = do
+handleGotoDefinition state@LspState{..} req responder = do
     let pos = req ^. L.params . L.position
         fileUri = req ^. L.params . L.textDocument . L.uri
 
@@ -324,8 +331,8 @@ handleGotoDefinition LspState{..} req responder = do
                 Just cm -> do
                     let mLoc = getDefinitionAt pos cm compiled
                     case mLoc of
-                        Just loc -> logToClient $ "definition: returning location " <> T.pack (show loc)
-                        Nothing -> logToClient $ "definition: no location found at " <> T.pack (show pos) <> " in " <> T.pack filePath
+                        Just loc -> logToClient stateLoggingEnabled $ "definition: returning location " <> T.pack (show loc)
+                        Nothing -> logToClient stateLoggingEnabled $ "definition: no location found at " <> T.pack (show pos) <> " in " <> T.pack filePath
                     responder
                         $ Right
                         $ maybe
@@ -333,10 +340,10 @@ handleGotoDefinition LspState{..} req responder = do
                             (InL . Definition . InL)
                             mLoc
                 Nothing -> do
-                    logToClient $ "definition: no compiled module for " <> T.pack filePath
+                    logToClient stateLoggingEnabled $ "definition: no compiled module for " <> T.pack filePath
                     responder $ Right $ InR $ InR Null
         Nothing -> do
-            logToClient "definition: uriToFilePath failed"
+            logToClient stateLoggingEnabled "definition: uriToFilePath failed"
             responder $ Right $ InR $ InR Null
 
 getDefinitionAt ::
@@ -368,7 +375,7 @@ handleCompletion ::
     TRequestMessage 'Method_TextDocumentCompletion ->
     (Either (TResponseError 'Method_TextDocumentCompletion) ([CompletionItem] |? CompletionList |? Null) -> LspM () ()) ->
     LspM () ()
-handleCompletion LspState{..} req responder = do
+handleCompletion state@LspState{..} req responder = do
     let fileUri = req ^. L.params . L.textDocument . L.uri
 
     case uriToFilePath fileUri of
@@ -377,13 +384,13 @@ handleCompletion LspState{..} req responder = do
             case Map.lookup filePath compiled of
                 Just cm -> do
                     let completions = getCompletions cm compiled
-                    logToClient $ "completion: " <> T.pack (show (Prelude.length (clItems completions))) <> " items for " <> T.pack filePath
+                    logToClient stateLoggingEnabled $ "completion: " <> T.pack (show (Prelude.length (clItems completions))) <> " items for " <> T.pack filePath
                     responder $ Right $ InR (InL completions)
                 Nothing -> do
-                    logToClient $ "completion: no compiled module for " <> T.pack filePath
+                    logToClient stateLoggingEnabled $ "completion: no compiled module for " <> T.pack filePath
                     responder $ Right $ InR (InL $ CompletionList False Nothing [])
         Nothing -> do
-            logToClient "completion: uriToFilePath failed"
+            logToClient stateLoggingEnabled "completion: uriToFilePath failed"
             responder $ Right $ InR (InL $ CompletionList False Nothing [])
 
 clItems :: CompletionList -> [CompletionItem]
