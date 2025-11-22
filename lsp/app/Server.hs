@@ -40,6 +40,7 @@ import System.FilePath
 import System.IO (hClose, hPutStr, openFile, stderr, stdout)
 import Typing.Types (QualifiedType)
 import Control.Monad (when)
+import System.Info (os)
 
 withConsoleSilenced :: IO a -> IO a
 withConsoleSilenced action =
@@ -48,7 +49,8 @@ withConsoleSilenced action =
             origStdout <- hDuplicate stdout
             origStderr <- hDuplicate stderr
 
-            nullH <- openFile "/dev/null" WriteMode
+            let nullDevice = if os == "mingw32" then "NUL" else "/dev/null"
+            nullH <- openFile nullDevice WriteMode
 
             hDuplicateTo nullH stdout
             hDuplicateTo nullH stderr
