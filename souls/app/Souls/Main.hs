@@ -30,9 +30,8 @@ main = do
     modulesVar <- newTVarIO Map.empty
     workspaceVar <- newTVarIO Nothing
     graphVar <- newTVarIO Nothing
-    fileVersionsVar <- newTVarIO Map.empty
 
-    let state = LspState modulesVar workspaceVar graphVar fileVersionsVar
+    let state = LspState modulesVar workspaceVar graphVar
 
     runServer
         $ ServerDefinition
@@ -70,6 +69,14 @@ handlers state _caps =
             let fileUri = msg ^. L.params . L.textDocument . L.uri
             let fileVersion = msg ^. L.params . L.textDocument . L.version
             analyzeFile state fileUri fileVersion
+        , notificationHandler SMethod_TextDocumentDidClose $ \msg -> do
+            let fileUri = msg ^. L.params . L.textDocument . L.uri
+                filePathRes = uriToFilePath fileUri
+            case filePathRes of
+                Just filePath -> liftIO $ do
+                    atomically $ do
+                        modifyTVar' (stateModules state) (Map.delete filePath)
+                Nothing -> pure ()
         , notificationHandler SMethod_TextDocumentDidChange $ \msg -> do
             let fileUri = msg ^. L.params . L.textDocument . L.uri
             let fileVersion = msg ^. L.params . L.textDocument . L.version
@@ -82,7 +89,8 @@ handlers state _caps =
 lspOptions :: Options
 lspOptions =
     defaultOptions
-        { optTextDocumentSync = syncOptions
+        { optServerInfo = Just (ServerInfo "soma-lsp" (Just "0.1.0"))
+        , optTextDocumentSync = syncOptions
         }
 
 syncOptions :: Maybe TextDocumentSyncOptions

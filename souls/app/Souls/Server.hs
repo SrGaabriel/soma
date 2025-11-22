@@ -31,7 +31,6 @@ data LspState = LspState
     { stateModules :: TVar (Map.Map FilePath LspCompiledModule)
     , stateWorkspaceRoot :: TVar (Maybe FilePath)
     , stateModuleGraph :: TVar (Maybe ModuleGraph)
-    , stateFileVersions :: TVar (Map.Map FilePath Int)
     }
 
 compileModuleForLSP ::
