@@ -18,17 +18,11 @@ parseModule (modName, path) = do
     bytes <- BS.readFile path
     let content = TE.decodeUtf8 bytes
     let (tokens, lexErrors) = lexCode content
-    unless (null lexErrors) $ do
-        let contentStr = T.unpack content
-        mapM_ (\e -> printError e path contentStr "LEXING") lexErrors
     case parse tokens of
         Left errors -> do
             let contentStr = T.unpack content
-            mapM_ (\err -> printError err path contentStr "PARSING") errors
             return $ Left errors
         Right ast -> do
-            putStrLn "Parsed AST:"
-            prettyPrintAst ast
             let contentStr = T.unpack content
             return $ Right $ ModuleInfo modName path contentStr tokens ast
 
