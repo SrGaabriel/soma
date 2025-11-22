@@ -39,6 +39,7 @@ import System.Environment (getArgs)
 import System.FilePath
 import System.IO (hClose, hPutStr, openFile, stderr, stdout)
 import Typing.Types (QualifiedType)
+import Control.Monad (when)
 
 withConsoleSilenced :: IO a -> IO a
 withConsoleSilenced action =
