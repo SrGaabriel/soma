@@ -14,6 +14,7 @@ import Project.Parsing
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath (dropExtension, takeExtension, takeFileName)
+import Logging.ErrorPrinter (printSomeError)
 
 main :: IO ()
 main = do
@@ -32,7 +33,7 @@ main = do
                     exitSuccess
                 errs -> mapM_ print errs >> exitFailure
         Right (Parse file) -> do
-            parseE <- parseModule (dropExtension (takeFileName file), file)
+            parseE <- parseModule (dropExtension (takeFileName file)) file
             case parseE of
                 Right mi -> do
                     putStrLn $ "Parsing succeeded for module: " ++ moduleName mi
@@ -47,8 +48,7 @@ build options = do
     let inp = optionsInput options
     isFile <- doesFileExist inp
     if isFile && takeExtension inp == ".soma"
-        then
-            processSingle options
+        then processSingle options
         else do
             isDir <- doesDirectoryExist inp
             unless isDir (putStrLn "Error: input is neither a .soma file nor a directory" >> exitFailure)
@@ -59,7 +59,9 @@ build options = do
 
             graphE <- buildModuleGraph mods
             graph <- case graphE of
-                Left _errs -> putStrLn "Failed to parse at least one module" >> exitFailure
+                Left errs -> do
+                    mapM_ printSomeError errs 
+                    putStrLn "Failed to parse at least one module" >> exitFailure
                 Right g -> return g
 
             let depGraph = buildDependencyGraph graph
@@ -79,7 +81,7 @@ processSingle :: Options -> IO ()
 processSingle options = do
     let path = optionsInput options
     let name = dropExtension (takeFileName path)
-    parseE <- parseModule (name, path)
+    parseE <- parseModule name path
     mi <- case parseE of
         Left _ -> exitFailure
         Right m -> return m

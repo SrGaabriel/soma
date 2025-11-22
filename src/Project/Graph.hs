@@ -4,7 +4,7 @@ import Control.Concurrent.Async (mapConcurrently)
 import Data.Either (partitionEithers)
 import Data.Graph (SCC (AcyclicSCC, CyclicSCC), stronglyConnComp)
 import qualified Data.Map as Map
-import Parsing.Errors (ParsingError)
+import Logging.Errors (SomeError)
 import Project.Module (ModuleInfo (moduleAst), ModuleName, moduleName)
 import Project.Parsing (parseModule)
 import Syntax.Tree (Expr (..), exprChildren)
@@ -33,9 +33,9 @@ findModules packageName = go ""
     extendMod "" part = part
     extendMod prefix part = prefix ++ "/" ++ part
 
-buildModuleGraph :: [(String, FilePath)] -> IO (Either [ParsingError] ModuleGraph)
+buildModuleGraph :: [(String, FilePath)] -> IO (Either [SomeError] ModuleGraph)
 buildModuleGraph modules = do
-    results <- mapConcurrently parseModule modules
+    results <- mapConcurrently (uncurry parseModule) modules
     case partitionEithers results of
         ([], parsedModules) -> return $ Right $ Map.fromList [(moduleName modInfo, modInfo) | modInfo <- parsedModules]
         (errors, _) -> return $ Left $ concat errors

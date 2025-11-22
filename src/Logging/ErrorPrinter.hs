@@ -1,9 +1,14 @@
-module Logging.ErrorPrinter (PrintableError (..), printError, printConclusionMessage) where
+module Logging.ErrorPrinter (
+    PrintableError (..),
+    printError,
+    printConclusionMessage,
+    printSomeError,
+) where
 
 import Control.Monad (when)
 import Data.List (elemIndex, findIndex)
 import Data.Maybe (fromMaybe)
-import Logging.Errors (PrintableError (..))
+import Logging.Errors (PrintableError (..), SomeError (..))
 import System.Console.ANSI
 import System.IO (hPutStr, hPutStrLn, stderr)
 
@@ -24,6 +29,10 @@ printConclusionMessage message = do
     eSetSGR [SetConsoleIntensity NormalIntensity]
     ePutStrLn message
     eSetSGR [Reset]
+
+printSomeError :: SomeError -> IO ()
+printSomeError (SomeError err fileName code prefix) =
+    printError err fileName code prefix
 
 printError :: (PrintableError a) => a -> FilePath -> String -> String -> IO ()
 printError err fileName code prefix = do

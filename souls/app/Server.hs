@@ -7,16 +7,12 @@
 module Main where
 
 import Control.Concurrent.STM
-import Control.Exception (bracket)
 import Control.Lens ((^.))
+import Control.Monad (when)
 import Control.Monad.IO.Class
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe, mapMaybe)
 import qualified Data.Text as T
-import Data.Time.Clock
-import Data.Time.Format
-import GHC.IO.Handle (hDuplicate, hDuplicateTo)
-import GHC.IO.IOMode (IOMode (WriteMode))
 import Inference.Assembler (inferTree)
 import Inference.Core (TypeMap)
 import Inference.Resolver (runResolverWithEnv)
@@ -29,6 +25,7 @@ import Language.LSP.VFS
 import Lexing.Lexer (lexCode)
 import Lexing.Position (Span (..))
 import Logging.ErrorPrinter (PrintableError (..))
+import Logging.Errors (SomeError (SomeError))
 import Logging.PrettyTrees (treeShow)
 import Parsing.Ast (parse)
 import Project.Graph
@@ -37,12 +34,8 @@ import Project.Symbols (Symbol, resolvedSymbolName, resolvedSymbolSpan)
 import Syntax.Tree (Expr (..), exprChildren, exprSpan)
 import System.Environment (getArgs)
 import System.FilePath
-import System.Directory (getHomeDirectory, createDirectoryIfMissing)
-import System.Directory (getHomeDirectory, createDirectoryIfMissing)
-import System.IO (hClose, hPutStr, openFile, stderr, stdout, IOMode (AppendMode))
+import System.IO (hPutStr, stderr)
 import Typing.Types (QualifiedType)
-import Control.Monad (when)
-import System.Info (os)
 
 data LspCompiledModule = LspCompiledModule
     { lcmModuleName :: String
@@ -60,20 +53,10 @@ data LspState = LspState
     , stateLoggingEnabled :: Bool
     }
 
-logFile :: FilePath
-logFile = "/tmp/soma-lsp-trlog"
-
-timestamp :: IO String
-timestamp = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S%Q" <$> getCurrentTime
-
 appendLog :: Bool -> String -> IO ()
-appendLog enabled msg = when enabled $ do
-    ts <- timestamp
-    let line' = ts ++ " | " ++ msg ++ "\n"
-
-    hPutStr stderr line'
-
-    appendFile logFile line'
+appendLog enabled msg = when enabled $
+    let line' = "LOG | " ++ msg ++ "\n"
+    in hPutStr stderr line'
 
 logToClient :: Bool -> T.Text -> LspM () ()
 logToClient enabled msg = when enabled $ do
@@ -88,7 +71,7 @@ main :: IO Int
 main = do
     args <- getArgs
     let loggingEnabled = "--logging" `elem` args
-    
+
     appendLog loggingEnabled "Starting soma language server process"
     modulesVar <- newTVarIO Map.empty
     workspaceVar <- newTVarIO Nothing
@@ -143,7 +126,7 @@ handlers state _caps =
         ]
 
 analyzeFile :: LspState -> Uri -> LspM () ()
-analyzeFile state@LspState{..} fileUri = do
+analyzeFile LspState{..} fileUri = do
     let nUri = toNormalizedUri fileUri
     mdoc <- getVirtualFile nUri
 
@@ -202,14 +185,14 @@ compileModuleForLSP loggingEnabled modName filePath content ast compiledDeps = d
     case resolvedResult of
         Left err -> do
             appendLog loggingEnabled $ "resolver error for " ++ modName ++ ": " ++ errorMessage err
-            return $ Left [SomeError err]
+            return $ Left [SomeError err filePath content "INFERENCE"]
         Right (resolvedAst, fullEnv, instanceEnv) -> do
             let typesResult = inferTree "lsp" modName fullEnv instanceEnv resolvedAst
 
             case typesResult of
                 Left errs -> do
                     appendLog loggingEnabled $ "type infer errors for " ++ modName ++ " : " ++ show (Prelude.length errs) ++ " errors"
-                    return $ Left (map SomeError errs)
+                    return $ Left $ map (\e -> SomeError e filePath content "INFERENCE") errs
                 Right types -> do
                     let newDefs = Map.difference fullEnv seedEnv
                     appendLog loggingEnabled $ "compileModuleForLSP succeeded for " ++ modName ++ ", public defs: " ++ show (Map.size newDefs)
@@ -229,13 +212,6 @@ compileModuleForLSP loggingEnabled modName filePath content ast compiledDeps = d
             Just matchedModule ->
                 filterSymbolsByNames syms (lcmPublicSymbols matchedModule)
             Nothing -> Map.empty
-
-data SomeError = forall e. (PrintableError e) => SomeError e
-
-instance PrintableError SomeError where
-    errorStart (SomeError e) = errorStart e
-    errorEnd (SomeError e) = errorEnd e
-    errorMessage (SomeError e) = errorMessage e
 
 errorToDiagnostic :: (PrintableError e) => T.Text -> e -> Diagnostic
 errorToDiagnostic code err =
@@ -259,7 +235,7 @@ handleHover ::
     TRequestMessage 'Method_TextDocumentHover ->
     (Either (TResponseError 'Method_TextDocumentHover) (Hover |? Null) -> LspM () ()) ->
     LspM () ()
-handleHover state@LspState{..} req responder = do
+handleHover LspState{..} req responder = do
     let pos = req ^. L.params . L.position
         fileUri = req ^. L.params . L.textDocument . L.uri
 
@@ -299,7 +275,7 @@ handleGotoDefinition ::
     TRequestMessage 'Method_TextDocumentDefinition ->
     (Either (TResponseError 'Method_TextDocumentDefinition) (Definition |? [DefinitionLink] |? Null) -> LspM () ()) ->
     LspM () ()
-handleGotoDefinition state@LspState{..} req responder = do
+handleGotoDefinition LspState{..} req responder = do
     let pos = req ^. L.params . L.position
         fileUri = req ^. L.params . L.textDocument . L.uri
 
@@ -354,7 +330,7 @@ handleCompletion ::
     TRequestMessage 'Method_TextDocumentCompletion ->
     (Either (TResponseError 'Method_TextDocumentCompletion) ([CompletionItem] |? CompletionList |? Null) -> LspM () ()) ->
     LspM () ()
-handleCompletion state@LspState{..} req responder = do
+handleCompletion LspState{..} req responder = do
     let fileUri = req ^. L.params . L.textDocument . L.uri
 
     case uriToFilePath fileUri of
