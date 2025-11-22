@@ -37,34 +37,12 @@ import Project.Symbols (Symbol, resolvedSymbolName, resolvedSymbolSpan)
 import Syntax.Tree (Expr (..), exprChildren, exprSpan)
 import System.Environment (getArgs)
 import System.FilePath
-import System.IO (hClose, hPutStr, openFile, stderr, stdout)
+import System.Directory (getHomeDirectory, createDirectoryIfMissing)
+import System.Directory (getHomeDirectory, createDirectoryIfMissing)
+import System.IO (hClose, hPutStr, openFile, stderr, stdout, IOMode (AppendMode))
 import Typing.Types (QualifiedType)
 import Control.Monad (when)
 import System.Info (os)
-
-withConsoleSilenced :: IO a -> IO a
-withConsoleSilenced action =
-    bracket
-        ( do
-            origStdout <- hDuplicate stdout
-            origStderr <- hDuplicate stderr
-
-            let nullDevice = if os == "mingw32" then "NUL" else "/dev/null"
-            nullH <- openFile nullDevice WriteMode
-
-            hDuplicateTo nullH stdout
-            hDuplicateTo nullH stderr
-            return (origStdout, origStderr, nullH)
-        )
-        ( \(origStdout, origStderr, nullH) -> do
-            hDuplicateTo origStdout stdout
-            hDuplicateTo origStderr stderr
-
-            hClose origStdout
-            hClose origStderr
-            hClose nullH
-        )
-        (const action)
 
 data LspCompiledModule = LspCompiledModule
     { lcmModuleName :: String
@@ -83,7 +61,7 @@ data LspState = LspState
     }
 
 logFile :: FilePath
-logFile = "/tmp/soma-lsp-debug.log"
+logFile = "/tmp/soma-lsp-trlog"
 
 timestamp :: IO String
 timestamp = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S%Q" <$> getCurrentTime
@@ -132,10 +110,8 @@ main = do
                             Just path -> liftIO $ do
                                 atomically $ writeTVar workspaceVar (Just path)
                                 appendLog loggingEnabled $ "initialize: workspace root = " ++ path
-                                (_mods, graphE) <- withConsoleSilenced $ do
-                                    ms <- findModules "workspace" path
-                                    ge <- buildModuleGraph ms
-                                    return (ms, ge)
+                                mods <- findModules "workspace" path
+                                graphE <- buildModuleGraph mods
                                 case graphE of
                                     Right graph -> atomically $ writeTVar graphVar (Just graph)
                                     Left _ -> return ()
