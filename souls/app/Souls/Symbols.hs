@@ -8,7 +8,7 @@ import Data.Maybe (listToMaybe, mapMaybe)
 import qualified Data.Text as T
 import Language.LSP.Protocol.Types (CompletionItem (..), CompletionItemKind (CompletionItemKind_Function), CompletionList (CompletionList), Hover (Hover), Location (..), MarkupContent (..), MarkupKind (..), Position, filePathToUri, type (|?) (InL))
 import Logging.PrettyTrees (treeShow)
-import Project.Extracts (filterSymbolsByNames, extractSymbolImports)
+import Project.Extracts (extractSymbolImports, filterSymbolsByNames)
 import Project.Symbols (Symbol (..))
 import Souls.Loc (findExprAtPos, findSymbolAtPos, lspPositionToOffset, spanToRange)
 import Souls.Server (LspCompiledModule (..), findModuleByName)

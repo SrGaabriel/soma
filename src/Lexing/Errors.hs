@@ -1,4 +1,5 @@
 module Lexing.Errors (LexingError (..)) where
+
 import Logging.Errors (PrintableError (..))
 
 data LexingError

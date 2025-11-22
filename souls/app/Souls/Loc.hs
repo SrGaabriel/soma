@@ -36,7 +36,7 @@ offsetToPosition text offset =
 findExprAtPos :: Int -> Expr -> Maybe Expr
 findExprAtPos offset expr =
     case expr of
-        ExprRoot {} -> 
+        ExprRoot{} ->
             listToMaybe (mapMaybe (findExprAtPos offset) (exprChildren expr))
         _ ->
             case listToMaybe (mapMaybe (findExprAtPos offset) (exprChildren expr)) of

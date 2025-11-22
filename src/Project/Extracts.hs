@@ -1,8 +1,9 @@
 module Project.Extracts where
-import Syntax.Tree (Expr(..), exprChildren)
-import Typing.Types (QualifiedType)
+
 import qualified Data.Map.Strict as Map
 import Project.Symbols (Symbol (resolvedSymbolName))
+import Syntax.Tree (Expr (..), exprChildren)
+import Typing.Types (QualifiedType)
 
 extractSymbolImports :: Expr -> [(String, [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs

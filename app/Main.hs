@@ -7,15 +7,15 @@ import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Text.Encoding as TE
 import Lexing.Lexer (lexCode)
+import Logging.ErrorPrinter (printSomeError)
+import Project.Extracts (extractSymbolImports)
 import Project.Graph
 import Project.Incremental (processModulesIncremental)
-import Project.Extracts (extractSymbolImports)
 import Project.Module
 import Project.Parsing
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath (dropExtension, takeExtension, takeFileName)
-import Logging.ErrorPrinter (printSomeError)
 
 main :: IO ()
 main = do
@@ -61,7 +61,7 @@ build options = do
             graphE <- buildModuleGraph mods
             graph <- case graphE of
                 Left errs -> do
-                    mapM_ printSomeError errs 
+                    mapM_ printSomeError errs
                     putStrLn "Failed to parse at least one module" >> exitFailure
                 Right g -> return g
 
