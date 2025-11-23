@@ -19,10 +19,6 @@ metallizeValue :: Expr -> MetalGen MetallicExpr
 metallizeValue (ExprNum n _) = pure $ MLit (MInt (read n))
 metallizeValue (ExprStr s _) = pure $ MLit (MString s)
 metallizeValue (ExprBool b _) = pure $ MLit (MBool b)
-metallizeValue (ExprUVar name _) = do
-    lookupVar name >>= \case
-        Just ty -> pure $ MVar name ty
-        Nothing -> error $ "Undefined variable: " ++ name
 metallizeValue expr@(ExprVar symbol@(ResolvedSymbol{resolvedSymbolName}) _) = do
     exprType <- getExprType expr
     let var = MVar resolvedSymbolName exprType

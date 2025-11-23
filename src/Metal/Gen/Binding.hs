@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 
 module Metal.Gen.Binding where
@@ -17,11 +18,12 @@ import Metal.Gen.Core (
     withScope,
  )
 import Metal.Gen.Value (metallizeValue)
+import Metal.Lift (collectBinders)
 import Metal.Metadata (MetallicFunctionMetadata (..))
+import Project.Symbols (Symbol (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (uncurryFunction)
 import Typing.Types (QualifiedType (Forall), Type)
-import Metal.Lift (collectBinders)
 
 metallizeBinding :: Expr -> MetalGen ()
 metallizeBinding (ExprBindingDef name (Forall typeVars constraints bindingTyp) body _isImpl _span) = do
@@ -85,8 +87,8 @@ inferBinderTypesFromBody names = go Map.empty
     go :: Map.Map String Type -> Expr -> MetalGen (Map.Map String Type)
     go acc e = do
         acc' <- case e of
-            ExprUVar v _ | v `Set.member` wanted && Map.notMember v acc -> do
+            ExprVar (ResolvedSymbol{resolvedSymbolName}) _ | resolvedSymbolName `Set.member` wanted && Map.notMember resolvedSymbolName acc -> do
                 ty <- getExprType e
-                pure (Map.insert v ty acc)
+                pure (Map.insert resolvedSymbolName ty acc)
             _ -> pure acc
         foldM go acc' (exprChildren e)

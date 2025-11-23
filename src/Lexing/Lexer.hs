@@ -14,7 +14,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Lexing.Errors (LexingError (..))
 import Lexing.Position (Span (Span))
-import Utils.Lists (hardHead)
+import Utils.Lists (hardHead, hardTail)
 
 data TokenKind
     = TokenNumber
@@ -80,7 +80,7 @@ lexCode content = lexCode' content 0 [0]
 lexCode' :: Text -> Int -> [Int] -> ([Token], [LexingError])
 lexCode' text i stack
     | T.null text =
-        let dedentTokens = map (\_ -> Token TokenLayoutEnd "" i) (tail stack)
+        let dedentTokens = map (\_ -> Token TokenLayoutEnd "" i) (hardTail stack)
         in (dedentTokens, [])
 lexCode' text i stack =
     let c = T.head text
@@ -152,7 +152,7 @@ lexCode' text i stack =
                 let (spaces, rest) = T.span isSpace cs
                     newIndent = T.length spaces
                     newI = i + 1 + T.length spaces
-                    current = head stack
+                    current = hardHead stack
                     isEmpty = T.null rest || T.head rest == '\n' || T.all isSpace rest
                     (layoutTokens, newStack, newErrors)
                         | isEmpty =
