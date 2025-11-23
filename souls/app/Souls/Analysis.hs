@@ -29,30 +29,31 @@ analyzeFile LspState{..} fileUri fileVersion = do
             let content = virtualFileText vf
                 modName = dropExtension $ takeFileName filePath
             let (tokens, lexErrors) = lexCode content
+            let lexDiagnostics = map (errorToDiagnostic content) lexErrors
 
             case parse tokens of
                 Left parseErrs -> do
-                    let diags = map (errorToDiagnostic content) lexErrors ++ map (errorToDiagnostic content) parseErrs
+                    let diags = map (errorToDiagnostic content) parseErrs ++ lexDiagnostics
                     publishDiagnostics 100 nUri Nothing (partitionBySource diags)
-                Right ast -> do
+                Right (parseErrors, ast) -> do
+                    let parseDiagnostics = map (errorToDiagnostic content) parseErrors
                     compiledMods <- liftIO $ readTVarIO stateModules
-
                     let depsOnly = Map.delete filePath compiledMods
-
-                    let (tyErrors, compiled) =
+                        (tyErrors, compiled) =
                             compileModuleForLSP
                                 modName
                                 filePath
                                 (T.unpack content)
                                 ast
                                 depsOnly
+                        tyDiagnostics = map (errorToDiagnostic content) tyErrors
+                        allDiagnostics = lexDiagnostics ++ parseDiagnostics ++ tyDiagnostics
 
-                    let diags = map (errorToDiagnostic content) tyErrors
                     liftIO
                         $ atomically
                         $ modifyTVar stateModules (Map.insert filePath compiled)
 
-                    publishDiagnostics 100 nUri (Just fileVersion) (partitionBySource diags)
+                    publishDiagnostics 100 nUri (Just fileVersion) (partitionBySource allDiagnostics)
         _ -> pure ()
 
 errorToDiagnostic :: (PrintableError e) => T.Text -> e -> Diagnostic

@@ -18,13 +18,10 @@ import qualified Text.Megaparsec as MP
 import Text.Megaparsec.Error (ErrorFancy (..), ParseError (..))
 import Typing.Types (QualifiedType (Forall), intType)
 
-parse :: [Token] -> Either [ParsingError] Expr
+parse :: [Token] -> Either [ParsingError] ([ParsingError], Expr)
 parse tokens =
     case parseWithRecovery parser tokens of
-        Right (root, errs) ->
-            if null errs
-                then Right root
-                else Left (convertErrors errs)
+        Right (root, errs) -> Right (convertErrors errs, root)
         Left errs -> Left (convertErrors errs)
   where
     parser = do

@@ -22,10 +22,10 @@ parseModule modName path = do
                 convertedParsingErrors = map (\e -> SomeError e path contentStr "LEXING") parsingErrors
                 allErrors = convertedLexErrors ++ convertedParsingErrors
             return $ Left allErrors
-        Right ast -> do
+        Right (parseErrors, ast) -> do
             case lexErrors of
                 [] -> return $ Right $ ModuleInfo modName path contentStr tokens ast
-                errs -> return $ Left $ map (\e -> SomeError e path contentStr "LEXING") errs
+                errs -> return $ Left $ map (\e -> SomeError e path contentStr "LEXING") errs ++ map (\e -> SomeError e path contentStr "PARSING") parseErrors
 
 prettyPrintAst :: Expr -> IO ()
 prettyPrintAst root = prettyPrintAst' root 0
