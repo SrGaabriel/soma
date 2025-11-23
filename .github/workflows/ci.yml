@@ -76,13 +76,14 @@ jobs:
                   enable-stack: false
 
             - name: Cache Cabal packages
+              if: matrix.os != 'macos-14'
               uses: actions/cache@v4
               with:
                   path: |
                       ~/.cabal/packages
                       ~/.cabal/store
                       dist-newstyle
-                  key: ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-${{ hashFiles('**/*.cabal') }}
+                  key: ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-${{ hashFiles('soma.cabal', 'cabal.project') }}
                   restore-keys: |
                       ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-
                       ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-
@@ -194,6 +195,7 @@ jobs:
                   targets: ${{ matrix.target }}
 
             - name: Cache Cargo dependencies
+              if: matrix.os != 'macos-14'
               uses: actions/cache@v4
               with:
                   path: |
@@ -201,7 +203,7 @@ jobs:
                       ~/.cargo/registry/cache/
                       ~/.cargo/git/db/
                       haoma/target/
-                  key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+                  key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('haoma/Cargo.toml', 'haoma/Cargo.lock') }}
                   restore-keys: |
                       ${{ runner.os }}-${{ matrix.target }}-cargo-
                       ${{ runner.os }}-cargo-
