@@ -5,10 +5,8 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Lexing.Lexer (lexCode)
 import Logging.Errors (SomeError (SomeError))
-import Logging.PrettyTrees (TreeShow (treeShow))
 import Parsing.Ast (parse)
 import Project.Module (ModuleInfo (..))
-import Syntax.Tree (Expr, exprChildren)
 
 parseModule :: String -> FilePath -> IO (Either [SomeError] ModuleInfo)
 parseModule modName path = do
@@ -23,13 +21,9 @@ parseModule modName path = do
                 allErrors = convertedLexErrors ++ convertedParsingErrors
             return $ Left allErrors
         Right (parseErrors, ast) -> do
-            case lexErrors of
-                [] -> return $ Right $ ModuleInfo modName path contentStr tokens ast
-                errs -> return $ Left $ map (\e -> SomeError e path contentStr "LEXING") errs ++ map (\e -> SomeError e path contentStr "PARSING") parseErrors
-
-prettyPrintAst :: Expr -> IO ()
-prettyPrintAst root = prettyPrintAst' root 0
-  where
-    prettyPrintAst' expr indent = do
-        putStrLn $ replicate indent ' ' ++ treeShow expr
-        mapM_ (\child -> prettyPrintAst' child (indent + 2)) (exprChildren expr)
+            let allErrors =
+                    map (\e -> SomeError e path contentStr "LEXING") lexErrors
+                        ++ map (\e -> SomeError e path contentStr "PARSING") parseErrors
+            if null allErrors
+                then return $ Right $ ModuleInfo modName path contentStr tokens ast
+                else return $ Left allErrors

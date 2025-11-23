@@ -92,9 +92,7 @@ printError err fileName code prefix = do
                 ePutStr "| pos: "
                 eSetSGR [SetColor Foreground Vivid Red]
                 ePutStrLn positionIndicator
-
             eSetSGR [Reset]
-            ePutStrLn $ "| debug: " ++ errorDebugDevDetails err
         Nothing ->
             error $ "Error while finding the line of the error: " ++ errorMessage err
   where

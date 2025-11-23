@@ -372,3 +372,10 @@ instance TreeShow AlloyModule where
             ++ (if null dicts then "" else "-- Dictionaries:\n" ++ unlines (map (indent 2 . show) dicts) ++ "\n")
             ++ (if null tcs then "" else "-- TypeClasses:\n" ++ unlines (map (indent 2 . show) tcs) ++ "\n")
             ++ unlines (map (indent 2 . treeShow) fns)
+
+prettyPrintAst :: Expr -> IO ()
+prettyPrintAst root = prettyPrintAst' root 0
+  where
+    prettyPrintAst' expr indent' = do
+        putStrLn $ replicate indent' ' ' ++ treeShow expr
+        mapM_ (\child -> prettyPrintAst' child (indent' + 2)) (exprChildren expr)

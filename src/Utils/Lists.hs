@@ -6,6 +6,7 @@ module Utils.Lists (
     foldMWithErrors,
     mapIndexed,
     breakLast,
+    hardLast
 ) where
 
 import Data.List (group)
@@ -17,6 +18,10 @@ hardHead (x : _) = x
 hardTail :: [a] -> [a]
 hardTail [] = error "Empty list"
 hardTail xs = take (length xs - 1) xs
+
+hardLast :: [a] -> a
+hardLast [] = error "Empty list"
+hardLast xs = xs !! (length xs - 1)
 
 breakLast :: (Eq a) => a -> [a] -> ([a], [a])
 breakLast c =

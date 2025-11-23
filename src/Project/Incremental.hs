@@ -45,6 +45,7 @@ import System.Exit (exitFailure)
 import System.FilePath
 import System.Process (callProcess)
 import Typing.Types (QualifiedType)
+import Logging.PrettyTrees (prettyPrintAst)
 
 data CompiledModule = CompiledModule
     { cmModuleName :: ModuleName
@@ -68,6 +69,8 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalCo
         ast = moduleAst modInfo
 
     putStrLn $ "Compiling module: " ++ modName
+    putStrLn $ "AST:"
+    prettyPrintAst ast
 
     let imports = extractSymbolImports ast
         seedEnv = Map.unions $ map resolveImport imports

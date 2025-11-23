@@ -84,7 +84,9 @@ processSingle options = do
     let name = dropExtension (takeFileName path)
     parseE <- parseModule name path
     mi <- case parseE of
-        Left _ -> exitFailure
+        Left errs -> do
+            mapM_ printSomeError errs
+            putStrLn "Failed to parse module." >> exitFailure
         Right m -> return m
 
     let ast = moduleAst mi
