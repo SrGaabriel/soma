@@ -170,6 +170,12 @@ isPolymorphic (TArrow t1 t2) = isPolymorphic t1 || isPolymorphic t2
 isPolymorphic (TConstructor _) = False
 isPolymorphic (TUnresolved _) = False
 
+errType :: Type
+errType = TUnresolved "ERROR"
+
+errQualifiedType :: QualifiedType
+errQualifiedType = Forall [] [] errType
+
 instance Binary FlexInfo
 
 instance Binary Rigidity

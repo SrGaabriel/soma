@@ -17,12 +17,13 @@ import Alloy.ReaderRewrite (readerRewriteModule)
 import Alloy.Simplify (simplifyModule)
 import Config.Options (Options (..))
 import Control.Exception (SomeException, catch)
+import Control.Monad (unless)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Inference.Assembler (inferTreeT)
+import Inference.Assembler (inferTree)
 import Inference.Core (TypeMap)
 import Inference.Resolver (runResolverWithEnv)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
@@ -71,17 +72,15 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalCo
     let imports = extractSymbolImports ast
         seedEnv = Map.unions $ map resolveImport imports
 
-    resolvedResult <- runResolverWithEnv packageName modName seedEnv ast
-    (resolvedAst, fullEnv, _instanceEnv) <- case resolvedResult of
-        Left err -> printError err (modulePath modInfo) (moduleContent modInfo) "ANALYSIS" >> exitFailure
-        Right res -> return res
-
+    let (resolverErrors, (resolvedAst, fullEnv, instanceEnv)) = runResolverWithEnv packageName modName seedEnv ast
+    let (inferenceErrors, types) = inferTree packageName modName fullEnv instanceEnv resolvedAst
     let newDefs = Map.difference fullEnv seedEnv
 
-    typesResult <- inferTreeT packageName modName fullEnv resolvedAst
-    types <- case typesResult of
-        Left errs -> mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") errs >> exitFailure
-        Right t -> return t
+    let allErrors = resolverErrors ++ inferenceErrors
+    unless (null allErrors) $ do
+        putStrLn $ "Errors while compiling module " ++ modName ++ ":"
+        mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") allErrors
+        exitFailure
 
     putStrLn $ "Module " ++ modName ++ " type checked"
 

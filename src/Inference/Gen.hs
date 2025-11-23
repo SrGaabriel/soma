@@ -130,6 +130,24 @@ generateConstraints expr = case expr of
         let ty = boolType
         recordType expr ty
         pure (Just ty, emptyConstraints)
+    -- usually this isn't supposed to be here, but we handle just in case the compiler wants to find more errors
+    ExprUVar name varSpan -> do
+        env <- ask
+        case findSymbolByName name env of
+            Just (_, Forall tvs cs t) -> do
+                freshVars <- mapM (freshTyVar . tvKind) tvs
+                let subst = Map.fromList (zip tvs (map TVar freshVars))
+                let instType = apply subst t
+                let instConstraints = map (apply subst) cs
+                let instConstraintsWithSource = map (`ClassConstraintWithSource` expr) instConstraints
+                recordType expr instType
+                return (Just instType, classConstraints instConstraintsWithSource)
+            Nothing -> do
+                reportError (UnboundVariable (ExprUVar name varSpan) name)
+                errorVar <- freshTyVar KindStar
+                let errorType = TVar errorVar
+                recordType expr errorType
+                return (Just errorType, emptyConstraints)
     ExprVar symbol _ -> do
         env <- ask
         case Map.lookup symbol env of

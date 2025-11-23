@@ -39,33 +39,28 @@ compileModuleForLSP ::
     String ->
     Expr ->
     Map.Map FilePath LspCompiledModule ->
-    IO (Either [SomeError] LspCompiledModule)
+    ([SomeError], LspCompiledModule)
 compileModuleForLSP modName filePath content ast compiledDeps = do
     let imports = extractSymbolImports ast
         seedEnv = Map.unions $ map resolveImport imports
 
-    resolvedResult <- runResolverWithEnv "lsp" modName seedEnv ast
-    case resolvedResult of
-        Left err -> do
-            return $ Left [SomeError err filePath content "INFERENCE"]
-        Right (resolvedAst, fullEnv, instanceEnv) -> do
-            let typesResult = inferTree "lsp" modName fullEnv instanceEnv resolvedAst
+    let (resolverErrors, (resolvedAst, fullEnv, instanceEnv)) = runResolverWithEnv "lsp" modName seedEnv ast
+    let (inferenceErrors, types) = inferTree "lsp" modName fullEnv instanceEnv resolvedAst
 
-            case typesResult of
-                Left errs -> do
-                    return $ Left $ map (\e -> SomeError e filePath content "INFERENCE") errs
-                Right types -> do
-                    let newDefs = Map.difference fullEnv seedEnv
-                    return
-                        $ Right
-                        $ LspCompiledModule
-                            { lcmModuleName = modName
-                            , lcmResolvedAst = resolvedAst
-                            , lcmTypeMap = types
-                            , lcmFilePath = filePath
-                            , lcmPublicSymbols = newDefs
-                            , lcmSourceContent = T.pack content
-                            }
+    let allErrors = map (\e -> SomeError e filePath content "INFERENCE") (resolverErrors ++ inferenceErrors)
+    let newDefs = Map.difference fullEnv seedEnv
+
+    let compiledModule =
+            LspCompiledModule
+                { lcmModuleName = modName
+                , lcmResolvedAst = resolvedAst
+                , lcmTypeMap = types
+                , lcmFilePath = filePath
+                , lcmPublicSymbols = newDefs
+                , lcmSourceContent = T.pack content
+                }
+
+    (allErrors, compiledModule)
   where
     resolveImport (impMod, syms) =
         case findModuleByName impMod compiledDeps of

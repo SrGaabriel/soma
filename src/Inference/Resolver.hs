@@ -6,7 +6,6 @@
 module Inference.Resolver where
 
 import Control.Monad (when)
-import Control.Monad.Except (ExceptT, MonadError (throwError), runExceptT)
 import Control.Monad.Reader (MonadReader (local), ReaderT (runReaderT), asks)
 import Control.Monad.State (MonadState (get, put), State, gets, runState)
 import qualified Data.Map as Map
@@ -19,16 +18,17 @@ import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
 import Typing.Currying (curryFunction)
 import Typing.Types (Kind (..), QualifiedType (Forall), TyConstructor (TypeConstructor), TyVar (tvKind), Type (..), assignConstraints, sumQualifiedTypes)
 import Data.Foldable (foldlM)
+import Control.Monad.Writer (WriterT (runWriterT), MonadWriter (tell))
 
 newtype ResolverM a = ResolverM
-    { runResolverM :: ReaderT ResolverEnv (ExceptT InferenceError (State ResolverState)) a
+    { runResolverM :: ReaderT ResolverEnv (WriterT [InferenceError] (State ResolverState)) a
     }
     deriving
         ( Functor
         , Applicative
         , Monad
         , MonadState ResolverState
-        , MonadError InferenceError
+        , MonadWriter [InferenceError]
         , MonadReader ResolverEnv
         )
 
@@ -161,7 +161,9 @@ resolveTReference expr@(ExprUVar name varSpan) = do
             tyEnv <- getEnv
             case findSymbolByName name tyEnv of
                 Just (symbol, _) -> pure $ ExprVar symbol varSpan
-                Nothing -> throwError $ UnboundVariable expr name
+                Nothing -> do
+                    tell [UnboundVariable expr name]
+                    pure expr
 resolveTReference (ExprApp f a) = do
     f' <- resolveTReference f
     a' <- resolveTReference a
@@ -222,7 +224,7 @@ resolveTReference (ExprCompose stmts eSpan) = do
             CSBind name body cSpan -> do
                 symbol <- mkSymbol name ComposeBindingSymbol cSpan
                 -- Use accMap to extend the environment when resolving body
-                body' <- local (\env -> env{localScope = Map.union accMap (localScope env)}) 
+                body' <- local (\env -> env{localScope = Map.union accMap (localScope env)})
                        $ resolveTReference body
                 let newMap = Map.insert name symbol accMap
                 pure (CSBind name body' cSpan : accStmts, newMap)
@@ -230,14 +232,14 @@ resolveTReference (ExprCompose stmts eSpan) = do
             CSLet name body cSpan -> do
                 symbol <- mkSymbol name LetBindingSymbol cSpan
                 -- Use accMap to extend the environment when resolving body
-                body' <- local (\env -> env{localScope = Map.union accMap (localScope env)}) 
+                body' <- local (\env -> env{localScope = Map.union accMap (localScope env)})
                        $ resolveTReference body
                 let newMap = Map.insert name symbol accMap
                 pure (CSLet name body' cSpan : accStmts, newMap)
 
             CSExpr e cSpan -> do
                 -- Use accMap to extend the environment when resolving expression
-                e' <- local (\env -> env{localScope = Map.union accMap (localScope env)}) 
+                e' <- local (\env -> env{localScope = Map.union accMap (localScope env)})
                     $ resolveTReference e
                 pure (CSExpr e' cSpan : accStmts, accMap)
 resolveTReference expr = pure expr
@@ -275,7 +277,9 @@ getReference expr name = do
     s <- get
     case findSymbolByName name (globalBindings s) of
         Just (_, ty) -> pure ty
-        Nothing -> throwError $ UnknownTypeConstructor expr name
+        Nothing -> do
+            tell [UnknownTypeConstructor expr name]
+            pure $ Forall [] [] (TUnresolved name)
 
 analyzeTree :: Expr -> ResolverM Expr
 analyzeTree root = do
@@ -298,27 +302,10 @@ addInstanceBindingFromType constraintType = do
     let instances = instanceBindings s
     put s{instanceBindings = Map.insert constraintType True instances}
 
-runResolver :: String -> String -> Expr -> IO (Either InferenceError (Expr, TypeEnv, InstanceEnv))
-runResolver packageName moduleName root = do
-    let initialState =
-            ResolverState
-                { globalBindings = Map.empty
-                , instanceBindings = Map.empty
-                , currentModule = moduleName
-                , currentPackage = packageName
-                }
-    let initialEnv =
-            ResolverEnv
-                { localScope = Map.empty
-                , currentTypeClass = Nothing
-                }
-    let resolverM = runResolverM (analyzeTree root)
-    let (result, finalState) = runState (runExceptT (runReaderT resolverM initialEnv)) initialState
-    pure $ case result of
-        Left err -> Left err
-        Right expr -> Right (expr, globalBindings finalState, instanceBindings finalState)
+runResolver :: String -> String -> Expr -> ([InferenceError], (Expr, TypeEnv, InstanceEnv))
+runResolver packageName moduleName = runResolverWithEnv packageName moduleName Map.empty
 
-runResolverWithEnv :: String -> String -> TypeEnv -> Expr -> IO (Either InferenceError (Expr, TypeEnv, InstanceEnv))
+runResolverWithEnv :: String -> String -> TypeEnv -> Expr -> ([InferenceError], (Expr, TypeEnv, InstanceEnv))
 runResolverWithEnv packageName moduleName initialTyEnv root = do
     let initialState =
             ResolverState
@@ -333,10 +320,8 @@ runResolverWithEnv packageName moduleName initialTyEnv root = do
                 , currentTypeClass = Nothing
                 }
     let resolverM = runResolverM (analyzeTree root)
-    let (result, finalState) = runState (runExceptT (runReaderT resolverM initialEnv)) initialState
-    pure $ case result of
-        Left err -> Left err
-        Right expr -> Right (expr, globalBindings finalState, instanceBindings finalState)
+    let ((expr, errors), finalState) = runState (runWriterT (runReaderT resolverM initialEnv)) initialState
+    (errors, (expr, globalBindings finalState, instanceBindings finalState))
 
 replaceAllUnresolvedQualified :: Expr -> TypeEnv -> QualifiedType -> ResolverM QualifiedType
 replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
@@ -352,7 +337,9 @@ replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
     replaceAllUnresolvedC (TUnresolved name) =
         case findSymbolByName name env of
             Just (_, qual@(Forall _ _ resolvedType)) -> pure (resolvedType, [qual])
-            Nothing -> throwError $ UnknownTypeConstructor expr name
+            Nothing -> do
+                tell [UnknownTypeConstructor expr name]
+                pure (TUnresolved name, [])
     replaceAllUnresolvedC t'@(TVar _) = pure (t', [])
     replaceAllUnresolvedC t'@(TSkolem _) = pure (t', [])
     replaceAllUnresolvedC (TConstructor tc) =

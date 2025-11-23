@@ -48,7 +48,7 @@ checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSo
     let unsatisfiedConstraints = filter (not . isConstraintSatisfied) inferredConstraints
     case unsatisfiedConstraints of
         [] -> Right ()
-        ((constraint, sourceExpr) : _) -> Left [MissingClassConstraint sourceExpr constraint]
+        _ -> Left [MissingClassConstraint sourceExpr constraint | (constraint, sourceExpr) <- unsatisfiedConstraints]
   where
     isConstraintSatisfied (constraint, _) =
         isEntailedByInstanceEnv instanceEnv constraint || isEntailedBy declaredConstraints constraint

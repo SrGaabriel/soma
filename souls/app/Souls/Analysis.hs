@@ -39,25 +39,20 @@ analyzeFile LspState{..} fileUri fileVersion = do
 
                     let depsOnly = Map.delete filePath compiledMods
 
-                    result <-
-                        liftIO
-                            $ compileModuleForLSP
+                    let (tyErrors, compiled) =
+                            compileModuleForLSP
                                 modName
                                 filePath
                                 (T.unpack content)
                                 ast
                                 depsOnly
 
-                    case result of
-                        Left errors -> do
-                            let diags = map (errorToDiagnostic content) errors
-                            publishDiagnostics 100 nUri Nothing (partitionBySource diags)
-                        Right compiled -> do
-                            liftIO
-                                $ atomically
-                                $ modifyTVar stateModules (Map.insert filePath compiled)
+                    let diags = map (errorToDiagnostic content) tyErrors
+                    liftIO
+                        $ atomically
+                        $ modifyTVar stateModules (Map.insert filePath compiled)
 
-                            publishDiagnostics 100 nUri (Just fileVersion) (partitionBySource [])
+                    publishDiagnostics 100 nUri (Just fileVersion) (partitionBySource diags)
         _ -> pure ()
 
 errorToDiagnostic :: (PrintableError e) => T.Text -> e -> Diagnostic
