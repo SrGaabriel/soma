@@ -5,6 +5,7 @@
 module Inference.Gen where
 
 import Alloy.Naming (nameSkolemPrefix, nameTmpPrefix)
+import Control.Monad (when)
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
@@ -150,6 +151,9 @@ generateConstraints expr = case expr of
                 return (Just errorType, emptyConstraints)
     ExprVar symbol _ -> do
         env <- ask
+        when (resolvedSymbolKind symbol == TypeSymbol)
+            $ reportError (ReferenceToTypeConstructor expr (resolvedSymbolName symbol))
+
         case Map.lookup symbol env of
             Just (Forall tvs cs t) -> do
                 freshVars <- mapM (freshTyVar . tvKind) tvs
@@ -213,7 +217,7 @@ generateConstraints expr = case expr of
 
         case maybeBodyType of
             Just bodyType -> do
-                let sigConstraint = TypeConstraint expr skType bodyType UnifyFunctionBody
+                let sigConstraint = TypeConstraint body skType bodyType UnifyFunctionBody
                 let combinedConstraints =
                         ConstraintSet
                             (sigConstraint : csTypeConstraints bodyCs)
@@ -322,6 +326,10 @@ generateConstraints expr = case expr of
                 recordType expr errorType
                 return (Just errorType, bodyConstraints)
     ExprCompose stmts _ -> do
+        case reverse stmts of
+            (CSExpr _ _) : _ -> return ()
+            _ -> reportError (ComposeBlockMustEndWithExpression expr)
+
         let combine cs1 cs2 =
                 ConstraintSet
                     (csTypeConstraints cs1 ++ csTypeConstraints cs2)

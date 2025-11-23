@@ -15,7 +15,7 @@ data Symbol = ResolvedSymbol
 data SymbolKind
     = BindingSymbol {bindingType :: QualifiedType}
     | DataConstructorSymbol {constructorParent :: String}
-    | TypeSymbol {typeArity :: Int}
+    | TypeSymbol
     | TypeClassSymbol
     | TypeClassMethodSymbol {methodClass :: String}
     | InstanceMethodSymbol {methodInstance :: String, methodClass :: String}

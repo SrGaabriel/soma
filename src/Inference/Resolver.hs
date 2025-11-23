@@ -8,6 +8,8 @@ module Inference.Resolver where
 import Control.Monad (when)
 import Control.Monad.Reader (MonadReader (local), ReaderT (runReaderT), asks)
 import Control.Monad.State (MonadState (get, put), State, gets, runState)
+import Control.Monad.Writer (MonadWriter (tell), WriterT (runWriterT))
+import Data.Foldable (foldlM)
 import qualified Data.Map as Map
 import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
@@ -17,8 +19,6 @@ import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
 import Typing.Currying (curryFunction)
 import Typing.Types (Kind (..), QualifiedType (Forall), TyConstructor (TypeConstructor), TyVar (tvKind), Type (..), assignConstraints, sumQualifiedTypes)
-import Data.Foldable (foldlM)
-import Control.Monad.Writer (WriterT (runWriterT), MonadWriter (tell))
 
 newtype ResolverM a = ResolverM
     { runResolverM :: ReaderT ResolverEnv (WriterT [InferenceError] (State ResolverState)) a
@@ -88,7 +88,7 @@ collectGlobals (ExprDataTypeDef name generics constraints constructors eSpan) = 
                 else foldl TApp baseConstructor (map TVar generics)
 
     let constrainedStructType = Forall generics constraints baseConstructor
-    addGlobalBinding name constrainedStructType (TypeSymbol (length generics)) eSpan
+    addGlobalBinding name constrainedStructType TypeSymbol eSpan
 
     mapM_
         ( \case
@@ -223,24 +223,22 @@ resolveTReference (ExprCompose stmts eSpan) = do
         case stmt of
             CSBind name body cSpan -> do
                 symbol <- mkSymbol name ComposeBindingSymbol cSpan
-                -- Use accMap to extend the environment when resolving body
-                body' <- local (\env -> env{localScope = Map.union accMap (localScope env)})
-                       $ resolveTReference body
+                body' <-
+                    local (\env -> env{localScope = Map.union accMap (localScope env)})
+                        $ resolveTReference body
                 let newMap = Map.insert name symbol accMap
                 pure (CSBind name body' cSpan : accStmts, newMap)
-
             CSLet name body cSpan -> do
                 symbol <- mkSymbol name LetBindingSymbol cSpan
-                -- Use accMap to extend the environment when resolving body
-                body' <- local (\env -> env{localScope = Map.union accMap (localScope env)})
-                       $ resolveTReference body
+                body' <-
+                    local (\env -> env{localScope = Map.union accMap (localScope env)})
+                        $ resolveTReference body
                 let newMap = Map.insert name symbol accMap
                 pure (CSLet name body' cSpan : accStmts, newMap)
-
             CSExpr e cSpan -> do
-                -- Use accMap to extend the environment when resolving expression
-                e' <- local (\env -> env{localScope = Map.union accMap (localScope env)})
-                    $ resolveTReference e
+                e' <-
+                    local (\env -> env{localScope = Map.union accMap (localScope env)})
+                        $ resolveTReference e
                 pure (CSExpr e' cSpan : accStmts, accMap)
 resolveTReference expr = pure expr
 
@@ -271,15 +269,6 @@ getEnv = gets globalBindings
 
 getInstanceEnv :: ResolverM InstanceEnv
 getInstanceEnv = gets instanceBindings
-
-getReference :: Expr -> String -> ResolverM QualifiedType
-getReference expr name = do
-    s <- get
-    case findSymbolByName name (globalBindings s) of
-        Just (_, ty) -> pure ty
-        Nothing -> do
-            tell [UnknownTypeConstructor expr name]
-            pure $ Forall [] [] (TUnresolved name)
 
 analyzeTree :: Expr -> ResolverM Expr
 analyzeTree root = do

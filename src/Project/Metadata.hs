@@ -45,7 +45,7 @@ data SerializableQualType = SerializableQualType
 data SerializableSymbolKind
     = SBindingSymbol SerializableQualType
     | SDataConstructorSymbol String
-    | STypeSymbol Int
+    | STypeSymbol
     | STypeClassSymbol
     | STypeClassMethodSymbol String
     | SInstanceMethodSymbol String String
@@ -155,7 +155,7 @@ serializableToQualType (SerializableQualType ty constraints forallVars) =
 symbolKindToSerializable :: SymbolKind -> SerializableSymbolKind
 symbolKindToSerializable (BindingSymbol ty) = SBindingSymbol (qualTypeToSerializable ty)
 symbolKindToSerializable (DataConstructorSymbol parent) = SDataConstructorSymbol parent
-symbolKindToSerializable (TypeSymbol arity) = STypeSymbol arity
+symbolKindToSerializable TypeSymbol = STypeSymbol
 symbolKindToSerializable TypeClassSymbol = STypeClassSymbol
 symbolKindToSerializable (TypeClassMethodSymbol cls) = STypeClassMethodSymbol cls
 symbolKindToSerializable (InstanceMethodSymbol inst cls) = SInstanceMethodSymbol inst cls
@@ -170,7 +170,7 @@ symbolKindToSerializable PatternAsSymbol = SPatternAsSymbol
 serializableToSymbolKind :: SerializableSymbolKind -> SymbolKind
 serializableToSymbolKind (SBindingSymbol ty) = BindingSymbol (serializableToQualType ty)
 serializableToSymbolKind (SDataConstructorSymbol parent) = DataConstructorSymbol parent
-serializableToSymbolKind (STypeSymbol arity) = TypeSymbol arity
+serializableToSymbolKind STypeSymbol = TypeSymbol
 serializableToSymbolKind STypeClassSymbol = TypeClassSymbol
 serializableToSymbolKind (STypeClassMethodSymbol cls) = TypeClassMethodSymbol cls
 serializableToSymbolKind (SInstanceMethodSymbol inst cls) = InstanceMethodSymbol inst cls

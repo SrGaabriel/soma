@@ -28,6 +28,8 @@ data InferenceError
     | InvalidTypeInstantiation Expr Type
     | IfConditionShouldBeBool Expr Type
     | IfElseBranchTypeMismatch Expr Type Type
+    | ReferenceToTypeConstructor Expr String
+    | ComposeBlockMustEndWithExpression Expr
     | Debug String
     deriving (Show, Eq)
 
@@ -71,6 +73,8 @@ instance PrintableError InferenceError where
     errorMessage (InvalidTypeInstantiation _ ty) = "Invalid type instantiation for type '" ++ treeShow ty ++ "'"
     errorMessage (IfElseBranchTypeMismatch _ thenType elseType) =
         "If-Else branches have mismatched types: then branch is '" ++ treeShow thenType ++ "' but else branch is '" ++ treeShow elseType ++ "'"
+    errorMessage (ReferenceToTypeConstructor _ name) = "Attempted to reference type constructor '" ++ name ++ "' as a value"
+    errorMessage (ComposeBlockMustEndWithExpression _) = "Compose block must end with an expression"
     errorMessage (Debug msg) = "Debug: " ++ msg
 
     errorStart :: InferenceError -> Int
@@ -111,6 +115,8 @@ getExpression err =
     getExpression' (KindedTypeMismatch expr _ _ _ _) = expr
     getExpression' (InvalidTypeInstantiation expr _) = expr
     getExpression' (IfConditionShouldBeBool expr _) = expr
+    getExpression' (ReferenceToTypeConstructor expr _) = expr
+    getExpression' (ComposeBlockMustEndWithExpression expr) = expr
     getExpression' (IfElseBranchTypeMismatch expr _ _) = expr
     getExpression' (Debug _) = error "Debug error should not be used in production code"
 
