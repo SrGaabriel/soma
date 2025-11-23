@@ -34,11 +34,11 @@ parse tokens =
     convertErrors = nub . map convertError
     convertError :: ParseError TokenStream ParsingError -> ParsingError
     convertError err = case err of
-        FancyError _pos errSet ->
+        FancyError pos errSet ->
             case Set.toList errSet of
                 (ErrorCustom customErr : _) -> customErr
-                _ -> UnexpectedParseFailure "Unknown fancy error" 0
-        TrivialError _pos unexpected expected' ->
+                _ -> UnexpectedParseFailure (tokens !! (pos-1)) "Unknown fancy error"
+        TrivialError pos unexpected expected' ->
             case (unexpected, Set.toList expected') of
                 (Just (Tokens (tok :| _)), expectedItems) ->
                     case extractExpectedTokens expectedItems of
@@ -52,13 +52,13 @@ parse tokens =
                         multiple@(_ : _) -> ExpectedOneOfTokens multiple (Token TokenEOF "" 0)
                         [] -> EndOfInput $ hardLast tokens
 
-                (Just (Label _), _) -> UnexpectedParseFailure "Unexpected label" 0
+                (Just (Label _), _) -> UnexpectedParseFailure (tokens !! (pos-1)) "Unexpected label"
 
                 (Nothing, expectedItems) ->
                     case extractExpectedTokens expectedItems of
                         [single] -> ExpectedDifferentToken single (Token TokenEOF "" 0)
                         multiple@(_ : _) -> ExpectedOneOfTokens multiple (Token TokenEOF "" 0)
-                        [] -> UnexpectedParseFailure "Parse error with no details" 0
+                        [] -> UnexpectedParseFailure (tokens !! (pos-1)) "Parse error with no details"
 
     extractExpectedTokens :: [ErrorItem Token] -> [TokenKind]
     extractExpectedTokens = mapMaybe extractTokenKind

@@ -10,7 +10,6 @@ import Control.Monad.State
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NE
-import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
 import Lexing.Lexer (Token (..), TokenKind (..), tokenKind)
 import Parsing.Errors (ParsingError (..))
@@ -204,8 +203,18 @@ peek = lookAhead anySingleInternal
 tryPeek :: Parser (Maybe Token)
 tryPeek = MP.optional (lookAhead anySingleInternal)
 
+-- todo: improve this
 tryPeekOrEOF :: Parser Token
-tryPeekOrEOF = fromMaybe (Token TokenEOF "tryPeekOrEOF" 0) <$> MP.optional (lookAhead anySingleInternal)
+tryPeekOrEOF = peek
+
+tryPeekOrPlaceholderEOF :: Parser Token
+tryPeekOrPlaceholderEOF = do
+    mtok <- MP.optional (lookAhead anySingleInternal)
+    case mtok of
+        Just tok -> pure tok
+        Nothing -> do
+            lastPos <- gets lastConsumedPos
+            pure $ Token TokenEOF "EOF" lastPos
 
 anySingle :: Parser Token
 anySingle = do

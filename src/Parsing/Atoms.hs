@@ -116,7 +116,9 @@ data Associativity = LeftAssoc | RightAssoc
 
 parseExprPrec :: Int -> Parser Expr
 parseExprPrec prec = do
-    lhs <- parseApplication
+    lhs <- withRecovery parseApplication $ do
+        actualToken <- tryPeekOrEOF
+        MP.customFailure $ ExpectedAnExpression actualToken
     parseInfixRest lhs prec
 
 parseInfixRest :: Expr -> Int -> Parser Expr

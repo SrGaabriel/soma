@@ -27,7 +27,7 @@ data ParsingError
     | InvalidIntrinsic Token
     | InvalidFunctionName Token
     | MixedParameterStyles Token
-    | UnexpectedParseFailure String Int
+    | UnexpectedParseFailure Token String
     | ExpectedOneOfTokens
         { expectedTokens :: [TokenKind]
         , receivedToken :: Token
@@ -61,7 +61,7 @@ instance Show ParsingError where
             ++ show (map referenceTokenKind ex)
             ++ " but received "
             ++ referenceToken rc
-    show (UnexpectedParseFailure msg _) = "Unexpected parse failure: " ++ msg
+    show (UnexpectedParseFailure _ msg) = "Unexpected parse failure: " ++ msg
     show EndOfInput{} = "Expected more input but reached end of input"
     show Debug = "Debug"
 
@@ -69,13 +69,11 @@ instance PrintableError ParsingError where
     errorMessage = show
 
     errorStart Debug = -1
-    errorStart (UnexpectedParseFailure _ p) = p
     errorStart err = case getErrorToken err of
         Just t -> tokenPos t
         Nothing -> error $ "Unreachable errorStart case reached: " ++ show err
 
     errorEnd Debug = -1
-    errorEnd (UnexpectedParseFailure _ p) = p + 1
     errorEnd err = case getErrorToken err of
         Just t -> tokenPos t + length (tokenValue t)
         Nothing -> error $ "Unreachable errorEnd case reached: " ++ show err
@@ -106,6 +104,6 @@ getErrorToken (InvalidFunctionSignature t) = Just t
 getErrorToken (InvalidFunctionName t) = Just t
 getErrorToken (MixedParameterStyles t) = Just t
 getErrorToken (ExpectedOneOfTokens _ t) = Just t
-getErrorToken (UnexpectedParseFailure _ _) = Nothing
+getErrorToken (UnexpectedParseFailure t _) = Just t
 getErrorToken (EndOfInput t) = Just t
 getErrorToken Debug = Nothing
