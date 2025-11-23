@@ -34,7 +34,7 @@ analyzeFile LspState{..} fileUri fileVersion = do
             case parse tokens of
                 Left parseErrs -> do
                     let diags = map (errorToDiagnostic content) parseErrs ++ lexDiagnostics
-                    publishDiagnostics 100 nUri Nothing (partitionBySource diags)
+                    publishDiagnostics 100 nUri (Just fileVersion) (partitionBySource diags)
                 Right (parseErrors, ast) -> do
                     let parseDiagnostics = map (errorToDiagnostic content) parseErrors
                     compiledMods <- liftIO $ readTVarIO stateModules
