@@ -103,14 +103,14 @@ instance TreeShow ComposeStmt where
     treeShow (CSExpr _ _) = "Op"
 
 instance TreeShow Pattern where
-    treeShow (PVar name) = "Var (" ++ name ++ ")"
-    treeShow (PLit lit) = "Lit (" ++ show lit ++ ")"
-    treeShow (PConstructor name args) =
+    treeShow (PVar name _) = "Var (" ++ name ++ ")"
+    treeShow (PLit lit _) = "Lit (" ++ show lit ++ ")"
+    treeShow (PConstructor name args _) =
         "Constructor (" ++ name ++ ": " ++ treeShow args ++ ")"
-    treeShow (PTuple p) = "Tuple (" ++ unwords (map treeShow p) ++ ")"
-    treeShow (PArray p) = "Array (" ++ unwords (map treeShow p) ++ ")"
-    treeShow PWildcard = "Wildcard"
-    treeShow (PAs name p) = "As (" ++ name ++ ": " ++ treeShow p ++ ")"
+    treeShow (PTuple p _) = "Tuple (" ++ unwords (map treeShow p) ++ ")"
+    treeShow (PArray p _) = "Array (" ++ unwords (map treeShow p) ++ ")"
+    treeShow PWildcard {} = "Wildcard"
+    treeShow (PAs name p _) = "As (" ++ name ++ ": " ++ treeShow p ++ ")"
 
 instance (TreeShow a) => TreeShow (Map String a) where
     treeShow :: (TreeShow a) => Map String a -> String

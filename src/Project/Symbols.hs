@@ -19,7 +19,11 @@ data SymbolKind
     | TypeClassSymbol
     | TypeClassMethodSymbol {methodClass :: String}
     | InstanceMethodSymbol {methodInstance :: String, methodClass :: String}
-    | LocalVariableSymbol {variableName :: String}
+    | LetBindingSymbol
+    | LambdaParameterSymbol
+    | PatternVariableSymbol
+    | PatternAsSymbol
+    | ComposeBindingSymbol
     | IntrinsicBindingSymbol
     | IntrinsicTypeSymbol
     deriving (Show, Eq, Ord)

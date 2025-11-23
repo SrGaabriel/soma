@@ -2,7 +2,6 @@ module Metal.Gen.Patterns (
     stripAs,
     isDefaultPattern,
     constructorArity,
-    collectBinders,
     validateArity,
     validateNoDuplicateBinders,
     hasWildcardLike,
@@ -12,37 +11,30 @@ import qualified Data.Set as Set
 import Syntax.Patterns (
     Pattern (..),
  )
+import Metal.Lift (collectBinders)
 
 stripAs :: Pattern -> Pattern
-stripAs (PAs _ p) = stripAs p
+stripAs (PAs _ p _) = stripAs p
 stripAs p = p
 
 isDefaultPattern :: Pattern -> Bool
 isDefaultPattern p = case stripAs p of
     PVar{} -> True
-    PWildcard -> True
+    PWildcard{} -> True
     _ -> False
 
 hasWildcardLike :: Pattern -> Bool
 hasWildcardLike p = case stripAs p of
-    PWildcard -> True
+    PWildcard{} -> True
     _ -> False
 
 constructorArity :: Pattern -> Int
 constructorArity p = case stripAs p of
-    PLit _ -> 0
-    PConstructor _ ps -> length ps
-    PTuple ps -> length ps
-    PArray ps -> length ps
+    PLit _ _ -> 0
+    PConstructor _ ps _ -> length ps
+    PTuple ps _ -> length ps
+    PArray ps _ -> length ps
     _ -> 0
-
-collectBinders :: Pattern -> [String]
-collectBinders (PVar v) = [v]
-collectBinders (PAs v p) = v : collectBinders p
-collectBinders (PConstructor _ ps) = concatMap collectBinders ps
-collectBinders (PTuple ps) = concatMap collectBinders ps
-collectBinders (PArray ps) = concatMap collectBinders ps
-collectBinders _ = []
 
 validateArity :: [[Pattern]] -> Bool
 validateArity [] = True

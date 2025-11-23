@@ -88,8 +88,8 @@ partitionRows col rows =
 
 isDefaultPattern :: Pattern -> Bool
 isDefaultPattern PVar{} = True
-isDefaultPattern PWildcard = True
-isDefaultPattern (PAs _ _) = True
+isDefaultPattern PWildcard{} = True
+isDefaultPattern PAs{} = True
 isDefaultPattern _ = False
 
 groupByConstructor :: Int -> [MatrixRow] -> [(Constructor, [MatrixRow])]
@@ -105,11 +105,11 @@ groupByConstructor col rows =
     in [(patternConstructor $ rowPatterns r !! col, g) | g@(r : _) <- grouped]
 
 patternConstructor :: Pattern -> Constructor
-patternConstructor (PLit lit) = LitCtor lit
-patternConstructor (PConstructor name pats) = DataCtor name (length pats)
-patternConstructor (PTuple pats) = TupleCtor (length pats)
-patternConstructor (PArray pats) = ArrayCtor (length pats)
-patternConstructor (PAs _ pat) = patternConstructor pat
+patternConstructor (PLit lit _) = LitCtor lit
+patternConstructor (PConstructor name pats _) = DataCtor name (length pats)
+patternConstructor (PTuple pats _) = TupleCtor (length pats)
+patternConstructor (PArray pats _) = ArrayCtor (length pats)
+patternConstructor (PAs _ pat _) = patternConstructor pat
 patternConstructor _ = error "Not a constructor pattern"
 
 compileDefault :: Int -> Accessor -> PatternMatrix -> [MatrixRow] -> DecisionTree
@@ -155,24 +155,24 @@ specializeRow col ctor row =
     let pats = rowPatterns row
         pat = pats !! col
         newPats = case pat of
-            PConstructor _ subPats -> subPats
-            PTuple subPats -> subPats
-            PArray subPats -> subPats
-            PLit _ -> []
-            PAs _ p -> extractSubPatterns p
-            PVar _ -> replicate (constructorArity ctor) PWildcard
-            PWildcard -> replicate (constructorArity ctor) PWildcard
+            PConstructor _ subPats _ -> subPats
+            PTuple subPats _ -> subPats
+            PArray subPats _ -> subPats
+            PLit{} -> []
+            PAs _ p _ -> extractSubPatterns p
+            PVar _ s -> replicate (constructorArity ctor) (PWildcard s)
+            PWildcard s -> replicate (constructorArity ctor) (PWildcard s)
         allPats = take col pats ++ newPats ++ drop (col + 1) pats
     in MatrixRow allPats (rowAction row)
 
 extractSubPatterns :: Pattern -> [Pattern]
-extractSubPatterns (PConstructor _ pats) = pats
-extractSubPatterns (PTuple pats) = pats
-extractSubPatterns (PArray pats) = pats
-extractSubPatterns (PLit _) = []
-extractSubPatterns (PAs _ p) = extractSubPatterns p
-extractSubPatterns PWildcard = []
-extractSubPatterns (PVar _) = []
+extractSubPatterns (PConstructor _ pats _) = pats
+extractSubPatterns (PTuple pats _) = pats
+extractSubPatterns (PArray pats _) = pats
+extractSubPatterns PLit{} = []
+extractSubPatterns (PAs _ p _) = extractSubPatterns p
+extractSubPatterns PWildcard{} = []
+extractSubPatterns PVar{} = []
 
 specializeDefault :: Int -> PatternMatrix -> [MatrixRow] -> PatternMatrix
 specializeDefault col PatternMatrix{..} rows =

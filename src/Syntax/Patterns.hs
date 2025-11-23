@@ -1,4 +1,5 @@
 module Syntax.Patterns where
+import Lexing.Position (Span)
 
 data Literal
     = LitInt Int
@@ -7,11 +8,11 @@ data Literal
     deriving (Show, Eq, Ord)
 
 data Pattern
-    = PVar String -- variable
-    | PWildcard -- _
-    | PLit Literal -- (42, "hello", True)
-    | PConstructor String [Pattern] -- (Circle x)
-    | PTuple [Pattern] -- (x, y, z)
-    | PArray [Pattern] -- [x, y, z]
-    | PAs String Pattern -- shape@(Circle x)
+    = PVar String Span -- variable
+    | PWildcard Span -- _
+    | PLit Literal Span -- (42, "hello", True)
+    | PConstructor String [Pattern] Span -- (Circle x)
+    | PTuple [Pattern] Span -- (x, y, z)
+    | PArray [Pattern] Span -- [x, y, z]
+    | PAs String Pattern Span -- shape@(Circle x)
     deriving (Show, Eq, Ord)

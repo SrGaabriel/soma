@@ -49,7 +49,11 @@ data SerializableSymbolKind
     | STypeClassSymbol
     | STypeClassMethodSymbol String
     | SInstanceMethodSymbol String String
-    | SLocalVariableSymbol String
+    | SLetBindingSymbol
+    | SLambdaParameterSymbol
+    | SComposeBindingSymbol
+    | SPatternVariableSymbol
+    | SPatternAsSymbol
     | SIntrinsicBindingSymbol
     | SIntrinsicTypeSymbol
     deriving (Show, Eq, Generic)
@@ -59,6 +63,7 @@ data SerializableSymbol = SerializableSymbol
     , ssKind :: SerializableSymbolKind
     , ssModule :: String
     , ssPackage :: String
+    , ssSpan :: Span
     }
     deriving (Show, Eq, Generic)
 
@@ -154,9 +159,13 @@ symbolKindToSerializable (TypeSymbol arity) = STypeSymbol arity
 symbolKindToSerializable TypeClassSymbol = STypeClassSymbol
 symbolKindToSerializable (TypeClassMethodSymbol cls) = STypeClassMethodSymbol cls
 symbolKindToSerializable (InstanceMethodSymbol inst cls) = SInstanceMethodSymbol inst cls
-symbolKindToSerializable (LocalVariableSymbol name) = SLocalVariableSymbol name
+symbolKindToSerializable LetBindingSymbol = SLetBindingSymbol
+symbolKindToSerializable LambdaParameterSymbol = SLambdaParameterSymbol
 symbolKindToSerializable IntrinsicBindingSymbol = SIntrinsicBindingSymbol
 symbolKindToSerializable IntrinsicTypeSymbol = SIntrinsicTypeSymbol
+symbolKindToSerializable ComposeBindingSymbol = SComposeBindingSymbol
+symbolKindToSerializable PatternVariableSymbol = SPatternVariableSymbol
+symbolKindToSerializable PatternAsSymbol = SPatternAsSymbol
 
 serializableToSymbolKind :: SerializableSymbolKind -> SymbolKind
 serializableToSymbolKind (SBindingSymbol ty) = BindingSymbol (serializableToQualType ty)
@@ -165,27 +174,32 @@ serializableToSymbolKind (STypeSymbol arity) = TypeSymbol arity
 serializableToSymbolKind STypeClassSymbol = TypeClassSymbol
 serializableToSymbolKind (STypeClassMethodSymbol cls) = TypeClassMethodSymbol cls
 serializableToSymbolKind (SInstanceMethodSymbol inst cls) = InstanceMethodSymbol inst cls
-serializableToSymbolKind (SLocalVariableSymbol name) = LocalVariableSymbol name
+serializableToSymbolKind SLetBindingSymbol = LetBindingSymbol
+serializableToSymbolKind SLambdaParameterSymbol = LambdaParameterSymbol
 serializableToSymbolKind SIntrinsicBindingSymbol = IntrinsicBindingSymbol
 serializableToSymbolKind SIntrinsicTypeSymbol = IntrinsicTypeSymbol
+serializableToSymbolKind SComposeBindingSymbol = ComposeBindingSymbol
+serializableToSymbolKind SPatternVariableSymbol = PatternVariableSymbol
+serializableToSymbolKind SPatternAsSymbol = PatternAsSymbol
 
 symbolToSerializable :: Symbol -> SerializableSymbol
-symbolToSerializable (ResolvedSymbol name kind modName pName _) =
+symbolToSerializable (ResolvedSymbol name kind modName pName sySpan) =
     SerializableSymbol
         { ssName = name
         , ssKind = symbolKindToSerializable kind
         , ssModule = modName
         , ssPackage = pName
+        , ssSpan = sySpan
         }
 
 serializableToSymbol :: SerializableSymbol -> Symbol
-serializableToSymbol (SerializableSymbol name kind modName pName) =
+serializableToSymbol (SerializableSymbol name kind modName pName sySpan) =
     ResolvedSymbol
         { resolvedSymbolName = name
         , resolvedSymbolKind = serializableToSymbolKind kind
         , resolvedSymbolModule = modName
         , resolvedSymbolPackage = pName
-        , resolvedSymbolSpan = Span 0 0
+        , resolvedSymbolSpan = sySpan
         }
 
 createPublicSymbol :: Symbol -> QualifiedType -> PublicSymbol
@@ -202,7 +216,7 @@ extractPublicSymbols symMap =
     , not (isLocalSymbol sym)
     ]
   where
-    isLocalSymbol (ResolvedSymbol _ (LocalVariableSymbol _) _ _ _) = True
+    isLocalSymbol (ResolvedSymbol _ LetBindingSymbol _ _ _) = True
     isLocalSymbol _ = False
 
 createProjectMetadata ::

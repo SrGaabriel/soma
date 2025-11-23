@@ -2,6 +2,7 @@
 
 module Metal.Lift (
     liftLambdas,
+    collectBinders,
 ) where
 
 import Control.Monad.State.Strict
@@ -173,13 +174,13 @@ computeFreeVars (MIf cond ifB elseB _) = Set.unions (map computeFreeVars [cond, 
 computeFreeVars (MPanic _ _) = Set.empty
 
 collectBinders :: Pattern -> [String]
-collectBinders (PVar v) = [v]
-collectBinders PWildcard = []
-collectBinders (PLit _) = []
-collectBinders (PAs v p) = v : collectBinders p
-collectBinders (PConstructor _ ps) = concatMap collectBinders ps
-collectBinders (PTuple ps) = concatMap collectBinders ps
-collectBinders (PArray ps) = concatMap collectBinders ps
+collectBinders (PVar v _) = [v]
+collectBinders PWildcard{} = []
+collectBinders PLit{} = []
+collectBinders (PAs v p _) = v : collectBinders p
+collectBinders (PConstructor _ ps _) = concatMap collectBinders ps
+collectBinders (PTuple ps _) = concatMap collectBinders ps
+collectBinders (PArray ps _) = concatMap collectBinders ps
 
 uncurryFunctionType :: Type -> ([Type], Type)
 uncurryFunctionType ty = go ty []

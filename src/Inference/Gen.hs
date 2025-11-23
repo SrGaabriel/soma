@@ -96,17 +96,17 @@ freshSkolemVar name k = do
 recordType :: Expr -> Type -> GenM ()
 recordType expr ty = modify $ \s -> s{gsTypeMap = Map.insert expr ty (gsTypeMap s)}
 
-createLocalSymbol :: String -> GenM Symbol
-createLocalSymbol name = do
+mkSymbol :: String -> SymbolKind -> Span -> GenM Symbol
+mkSymbol name kind sySpan = do
     currentModule <- gets gsCurrentModule
     currentPackage <- gets gsCurrentPackage
     return
         $ ResolvedSymbol
             { resolvedSymbolName = name
-            , resolvedSymbolKind = LocalVariableSymbol name
+            , resolvedSymbolKind = kind
             , resolvedSymbolModule = currentModule
             , resolvedSymbolPackage = currentPackage
-            , resolvedSymbolSpan = Span 0 0
+            , resolvedSymbolSpan = sySpan
             }
 
 findSymbolByName :: String -> TypeEnv -> Maybe (Symbol, QualifiedType)
@@ -178,11 +178,11 @@ generateConstraints expr = case expr of
                     (csDeclaredConstraints cf ++ csDeclaredConstraints ca)
         recordType expr retType
         return (Just retType, combinedConstraints)
-    ExprLambda paramNames body _ -> do
+    ExprLambda paramNames body eSpan -> do
         paramVars <- mapM (const $ freshTyVar KindStar) paramNames
         let paramTypes = map TVar paramVars
 
-        paramSymbols <- mapM createLocalSymbol paramNames
+        paramSymbols <- mapM (\n -> mkSymbol n LambdaParameterSymbol eSpan) paramNames
         let paramBindings = Map.fromList (zip paramSymbols (map cleanQualified paramTypes))
         let extendEnv = Map.union paramBindings
 
@@ -190,9 +190,9 @@ generateConstraints expr = case expr of
         let funcType = foldr TArrow bodyType paramTypes
         recordType expr funcType
         return (Just funcType, bodyConstraints)
-    ExprLet name value body _ -> do
+    ExprLet name value body eSpan -> do
         (Just valueType, valueConstraints) <- generateConstraints value
-        letSymbol <- createLocalSymbol name
+        letSymbol <- mkSymbol name LetBindingSymbol eSpan
         let extendEnv = Map.insert letSymbol (cleanQualified valueType)
         (Just bodyType, bodyConstraints) <- local extendEnv (generateConstraints body)
         let combinedConstraints =
@@ -333,16 +333,16 @@ generateConstraints expr = case expr of
                 let ty = TVar tv
                 recordType expr ty
                 pure (Just ty, emptyConstraints)
-            process (CSLet name val _ : rest) = do
+            process (CSLet name val cSpan : rest) = do
                 (Just vty, vcs) <- generateConstraints val
-                sym <- createLocalSymbol name
+                sym <- mkSymbol name LetBindingSymbol cSpan
                 let ext = Map.insert sym (cleanQualified vty)
                 (mrt, rcs) <- local ext (process rest)
                 pure (mrt, combine vcs rcs)
-            process (CSBind name act _ : rest) = do
+            process (CSBind name act cSpan : rest) = do
                 (_mty, acs) <- generateConstraints act
                 btv <- freshTyVar KindStar
-                sym <- createLocalSymbol name
+                sym <- mkSymbol name ComposeBindingSymbol cSpan
                 let ext = Map.insert sym (cleanQualified (TVar btv))
                 (mrt, rcs) <- local ext (process rest)
                 pure (mrt, combine acs rcs)
@@ -418,15 +418,15 @@ generateConstraints expr = case expr of
         return (Nothing, combinedConstraints)
 
 generatePatternBinding :: Expr -> TypeEnv -> Pattern -> QualifiedType -> GenM (TypeEnv, [InferenceError])
-generatePatternBinding _expr _env (PVar name) armType = do
-    symbol <- createLocalSymbol name
+generatePatternBinding _expr _env (PVar name pSpan) armType = do
+    symbol <- mkSymbol name PatternVariableSymbol pSpan
     return (Map.singleton symbol armType, [])
-generatePatternBinding expr env (PAs name pat) armType = do
-    asSymbol <- createLocalSymbol name
+generatePatternBinding expr env (PAs name pat pSpan) armType = do
+    asSymbol <- mkSymbol name PatternAsSymbol pSpan
     let asBinding = Map.singleton asSymbol armType
     (nestedBinding, errs) <- generatePatternBinding expr env pat armType
     return (Map.union asBinding nestedBinding, errs)
-generatePatternBinding expr env (PConstructor name patterns) _armType = do
+generatePatternBinding expr env (PConstructor name patterns _) _armType = do
     currentEnv <- ask
     let constructorLookup = Map.toList currentEnv
     let maybeConstructor = lookup name [(resolvedSymbolName sym, qual) | (sym, qual) <- constructorLookup]
@@ -452,7 +452,7 @@ generatePatternBinding expr env (PConstructor name patterns) _armType = do
             let err = UnknownTypeConstructor expr name
             reportError err
             return (Map.empty, [err])
-generatePatternBinding _expr _env PWildcard _ = return (Map.empty, [])
+generatePatternBinding _expr _env PWildcard{} _ = return (Map.empty, [])
 generatePatternBinding _expr _env PLit{} _ = return (Map.empty, [])
 generatePatternBinding expr _env p _ = error $ "Unsupported pattern: " ++ show p ++ " in expression: " ++ show expr
 

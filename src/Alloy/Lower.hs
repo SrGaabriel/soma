@@ -520,11 +520,11 @@ collectVarTypesFromBody = go Map.empty
     go acc (MPanic _ _) = acc
 
 patternHasBinder :: Pattern -> Bool
-patternHasBinder (PVar _) = True
-patternHasBinder (PAs _ p) = patternHasBinder p
-patternHasBinder (PConstructor _ ps) = any patternHasBinder ps
-patternHasBinder (PTuple ps) = any patternHasBinder ps
-patternHasBinder (PArray ps) = any patternHasBinder ps
+patternHasBinder (PVar {}) = True
+patternHasBinder (PAs _ p _) = patternHasBinder p
+patternHasBinder (PConstructor _ ps _) = any patternHasBinder ps
+patternHasBinder (PTuple ps _) = any patternHasBinder ps
+patternHasBinder (PArray ps _) = any patternHasBinder ps
 patternHasBinder _ = False
 
 bindPatterns ::
@@ -540,13 +540,13 @@ bindPatterns (p : ps) (o : os) varTypes = do
 bindPatterns _ _ _ = failLower "Arity mismatch in pattern binding"
 
 bindOne :: Pattern -> AOperand -> Map.Map String Type -> Lower [(String, AOperand)]
-bindOne (PVar v) op _ = pure [(v, op)]
-bindOne PWildcard _ _ = pure []
-bindOne (PLit _) _ _ = pure []
-bindOne (PAs v p) op vt = do
+bindOne (PVar v _) op _ = pure [(v, op)]
+bindOne PWildcard{} _ _ = pure []
+bindOne (PLit {}) _ _ = pure []
+bindOne (PAs v p _) op vt = do
     more <- bindOne p op vt
     pure ((v, op) : more)
-bindOne (PConstructor ctorName sub) op vt = bindPositional sub
+bindOne (PConstructor ctorName sub _) op vt = bindPositional sub
   where
     bindPositional [] = pure []
     bindPositional ps = do
@@ -570,14 +570,14 @@ bindOne (PConstructor ctorName sub) op vt = bindPositional sub
                 tmp <- lift $ emitLetTmp ty (OpProject op idx)
                 bindOne sp (OpVar tmp) vt
             else pure []
-    collectVars (PVar v) = [v]
-    collectVars (PAs v p) = v : collectVars p
-    collectVars (PConstructor _ ps) = concatMap collectVars ps
-    collectVars (PTuple ps) = concatMap collectVars ps
-    collectVars (PArray ps) = concatMap collectVars ps
+    collectVars (PVar v _) = [v]
+    collectVars (PAs v p _) = v : collectVars p
+    collectVars (PConstructor _ ps _) = concatMap collectVars ps
+    collectVars (PTuple ps _) = concatMap collectVars ps
+    collectVars (PArray ps _) = concatMap collectVars ps
     collectVars _ = []
-bindOne (PTuple sub) op vt = bindOne (PConstructor "" sub) op vt
-bindOne (PArray _) _ _ = pure []
+bindOne (PTuple sub s) op vt = bindOne (PConstructor "" sub s) op vt
+bindOne (PArray {}) _ _ = pure []
 
 withBinding :: String -> AOperand -> Lower a -> Lower a
 withBinding name op action = do

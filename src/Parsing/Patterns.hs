@@ -1,6 +1,6 @@
 module Parsing.Patterns where
 
-import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
+import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens, tokenSpan)
 import Parsing.Atoms (parseExpression)
 import Parsing.Errors (ParsingError (InvalidPattern))
 import Parsing.Parser (Parser, consume, parseFluidSequence, parseLayout, peek, withRecovery)
@@ -16,26 +16,26 @@ parseMultiPatternAtom = parseSinglePattern True
 
 parseSinglePattern :: Bool -> Parser Pattern
 parseSinglePattern parentheziedConstructors = withRecovery parseSinglePattern' $ do
-    pure PWildcard
+    PWildcard . tokenSpan <$> peek
   where
     parseSinglePattern' = do
         inc <- peek
         case tokenKind inc of
-            TokenLowerIdentifier ->
-                PVar . tokenValue <$> consume TokenLowerIdentifier
+            TokenLowerIdentifier -> do
+                varTok <- consume TokenLowerIdentifier
+                pure $ PVar (tokenValue varTok) (tokenSpan varTok)
             TokenNumber -> do
                 numToken <- consume TokenNumber
-                pure $ PLit $ LitInt (read (tokenValue numToken) :: Int)
+                pure $ PLit (LitInt (read (tokenValue numToken) :: Int)) (tokenSpan numToken)
             TokenLeftParen ->
                 consume TokenLeftParen
                     >> parseSinglePattern True <* consume TokenRightParen
             TokenUnderscore -> do
-                _ <- consume TokenUnderscore
-                pure PWildcard
+                PWildcard . tokenSpan <$> consume TokenUnderscore
             TokenUpperIdentifier | parentheziedConstructors -> do
                 nameToken <- consume TokenUpperIdentifier
                 patterns <- parseFluidSequence TokenRightParen (parseSinglePattern False)
-                pure $ PConstructor (tokenValue nameToken) patterns
+                pure $ PConstructor (tokenValue nameToken) patterns (tokenSpan nameToken)
             _ -> MP.customFailure $ InvalidPattern inc
 
 parsePipePatternArms :: Parser [Expr]

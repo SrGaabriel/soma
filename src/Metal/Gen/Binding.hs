@@ -16,12 +16,12 @@ import Metal.Gen.Core (
     getExprType,
     withScope,
  )
-import Metal.Gen.Patterns (collectBinders)
 import Metal.Gen.Value (metallizeValue)
 import Metal.Metadata (MetallicFunctionMetadata (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (uncurryFunction)
 import Typing.Types (QualifiedType (Forall), Type)
+import Metal.Lift (collectBinders)
 
 metallizeBinding :: Expr -> MetalGen ()
 metallizeBinding (ExprBindingDef name (Forall typeVars constraints bindingTyp) body _isImpl _span) = do
