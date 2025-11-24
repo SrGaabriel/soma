@@ -18,23 +18,17 @@ pub struct CraneliftBackend {
 
 impl CraneliftBackend {
     pub fn new(target: &str) -> Result<Self> {
-        println!("[DEBUG] Creating CraneliftBackend for target: {}", target);
-
         let mut flag_builder = settings::builder();
-        println!("[DEBUG] Setting flags...");
         flag_builder.set("use_colocated_libcalls", "false")?;
         flag_builder.set("is_pic", "false")?;
 
-        println!("[DEBUG] Looking up ISA for target: {}", target);
         let isa_builder = isa::lookup_by_name(target)?;
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .unwrap();
-        println!("[DEBUG] ISA created successfully");
 
         let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         let module = JITModule::new(builder);
-        println!("[DEBUG] JITModule created successfully");
 
         Ok(CraneliftBackend {
             module,
@@ -43,14 +37,11 @@ impl CraneliftBackend {
     }
 
     pub fn compile_module(&mut self, clif_text: &str) -> Result<Vec<String>> {
-        println!("[DEBUG] Compiling CLIF module...");
         let funcs = parse_functions(clif_text)?;
-        println!("[DEBUG] Parsed {} functions", funcs.len());
 
         let mut compiled_names = Vec::new();
         for func in funcs {
             let name = func.name.to_string();
-            println!("[DEBUG] Compiling function: {}", name);
             let sig = func.signature.clone();
 
             let id = self.module.declare_function(&name, Linkage::Export, &sig)?;
@@ -60,31 +51,20 @@ impl CraneliftBackend {
 
             self.functions.insert(name.clone(), id);
             compiled_names.push(name.clone());
-            println!("[DEBUG] Function {} compiled", name);
         }
 
-        println!("[DEBUG] Finalizing definitions...");
         self.module.finalize_definitions()?;
-        println!(
-            "[DEBUG] Compilation complete with {} functions",
-            compiled_names.len()
-        );
-
         Ok(compiled_names)
     }
 
     pub fn get_function_ptr(&self, name: &str) -> Option<*const ()> {
-        println!("[DEBUG] Getting function pointer for: {}", name);
-        self.functions.get(name).map(|&id| {
-            let ptr = self.module.get_finalized_function(id) as *const ();
-            println!("[DEBUG] Function pointer for {} = {:?}", name, ptr);
-            ptr
-        })
+        self.functions
+            .get(name)
+            .map(|&id| self.module.get_finalized_function(id) as *const ())
     }
 
     pub fn get_all_function_names(&self) -> Vec<String> {
         let names: Vec<String> = self.functions.keys().cloned().collect();
-        println!("[DEBUG] All function names: {:?}", names);
         names
     }
 }
@@ -101,49 +81,30 @@ pub unsafe extern "C" fn cranelift_compile(
     target: *const u8,
     target_len: usize,
 ) -> *mut BackendHandle {
-    println!("[DEBUG] cranelift_compile called");
     if clif_text.is_null() || target.is_null() {
-        println!("[DEBUG] Null pointer detected in input");
         return std::ptr::null_mut();
     }
 
     let clif_bytes = slice::from_raw_parts(clif_text, clif_len);
     let clif_str = match std::str::from_utf8(clif_bytes) {
         Ok(s) => s,
-        Err(e) => {
-            println!("[DEBUG] Failed to parse CLIF text as UTF-8: {:?}", e);
-            return std::ptr::null_mut();
-        }
+        Err(_) => return std::ptr::null_mut(),
     };
-    println!("[DEBUG] CLIF text length: {}", clif_str.len());
 
     let target_bytes = slice::from_raw_parts(target, target_len);
     let target_str = match std::str::from_utf8(target_bytes) {
         Ok(s) => s,
-        Err(e) => {
-            println!("[DEBUG] Failed to parse target as UTF-8: {:?}", e);
-            return std::ptr::null_mut();
-        }
+        Err(_) => return std::ptr::null_mut(),
     };
-    println!("[DEBUG] Target string: {}", target_str);
 
     let mut backend = match CraneliftBackend::new(target_str) {
         Ok(b) => b,
-        Err(e) => {
-            println!("[DEBUG] Failed to create CraneliftBackend: {:?}", e);
-            return std::ptr::null_mut();
-        }
+        Err(_) => return std::ptr::null_mut(),
     };
 
     match backend.compile_module(clif_str) {
-        Ok(funcs) => {
-            println!("[DEBUG] Successfully compiled module: {:?}", funcs);
-            Box::into_raw(Box::new(BackendHandle { backend }))
-        }
-        Err(e) => {
-            println!("[DEBUG] Failed to compile module: {:?}", e);
-            std::ptr::null_mut()
-        }
+        Ok(_) => Box::into_raw(Box::new(BackendHandle { backend })),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 
@@ -153,9 +114,7 @@ pub unsafe extern "C" fn cranelift_get_function(
     handle: *const BackendHandle,
     func_name: *const c_char,
 ) -> *const () {
-    println!("[DEBUG] cranelift_get_function called");
     if handle.is_null() || func_name.is_null() {
-        println!("[DEBUG] Null pointer in handle or function name");
         return std::ptr::null();
     }
 
@@ -163,17 +122,13 @@ pub unsafe extern "C" fn cranelift_get_function(
     let name_cstr = CStr::from_ptr(func_name);
     let name = match name_cstr.to_str() {
         Ok(s) => s,
-        Err(e) => {
-            println!("[DEBUG] Failed to convert C string: {:?}", e);
-            return std::ptr::null();
-        }
+        Err(_) => return std::ptr::null(),
     };
-    println!("[DEBUG] Looking up function: {}", name);
 
-    handle.backend.get_function_ptr(name).unwrap_or_else(|| {
-        println!("[DEBUG] Function not found: {}", name);
-        std::ptr::null()
-    })
+    handle
+        .backend
+        .get_function_ptr(name)
+        .unwrap_or(std::ptr::null())
 }
 
 #[unsafe(no_mangle)]
