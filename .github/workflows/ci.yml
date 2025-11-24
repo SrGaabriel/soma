@@ -69,7 +69,7 @@ jobs:
                   path-type: inherit
 
             - name: Install LLVM and Clang
-              if: matrix.os == 'macos-13'
+              if: startsWith(matrix.os, 'macos')
               uses: KyleMayes/install-llvm-action@v2
               with:
                 version: "20"
