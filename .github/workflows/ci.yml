@@ -72,7 +72,7 @@ jobs:
               if: startsWith(matrix.os, 'macos')
               uses: KyleMayes/install-llvm-action@v2
               with:
-                version: "20"
+                  version: "20"
 
             - name: Setup Haskell
               uses: haskell-actions/setup@v2
@@ -81,8 +81,14 @@ jobs:
                   cabal-version: ${{ env.CABAL_VERSION }}
                   enable-stack: false
               env:
-                  # Clear DYLD_LIBRARY_PATH to prevent conflicts with Node.js
                   DYLD_LIBRARY_PATH: ""
+
+            - name: Update Cabal package index
+              run: cabal update
+
+            - name: Set LLVM path for macOS
+              if: startsWith(matrix.os, 'macos')
+              run: echo "${{ github.workspace }}/llvm/bin" >> $GITHUB_PATH
 
             - name: Cache Cabal packages
               if: matrix.os != 'macos-14'
@@ -96,13 +102,6 @@ jobs:
                   restore-keys: |
                       ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-
                       ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-
-
-            - name: Update Cabal package index
-              run: cabal update
-
-            - name: Set LLVM path for macOS
-              if: startsWith(matrix.os, 'macos')
-              run: echo "${{ github.workspace }}/llvm/bin" >> $GITHUB_PATH
 
             - name: Configure project
               run: cabal configure --enable-tests --enable-benchmarks
