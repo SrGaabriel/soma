@@ -318,6 +318,9 @@ jobs:
               with:
                   ghc-version: ${{ env.GHC_VERSION }}
                   cabal-version: ${{ env.CABAL_VERSION }}
+              env:
+                PATH: /Users/runner/work/soma/soma/llvm/bin:$PATH
+                DYLD_LIBRARY_PATH: ""
 
             - name: Setup Rust
               uses: dtolnay/rust-toolchain@stable
