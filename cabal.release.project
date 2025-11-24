@@ -5,5 +5,5 @@ packages:
 with-compiler: ghc-9.12.2
 
 package *
-  ghc-options: -O2 -split-sections -fllvm -optl=-flto -optl=-O3
+  ghc-options: -O2 -split-sections -optl=-flto -optl=-O3
   executable-stripping: True

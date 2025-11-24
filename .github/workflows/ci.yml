@@ -68,6 +68,12 @@ jobs:
                   update: true
                   path-type: inherit
 
+            - name: Set up LLVM
+              if: startsWith(matrix.os, 'macos')
+              uses: llvm/llvm-project@v1
+              with:
+                  llvm-version: "17"
+
             - name: Setup Haskell
               uses: haskell-actions/setup@v2
               with:
