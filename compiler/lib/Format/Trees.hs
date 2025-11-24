@@ -76,7 +76,7 @@ instance TreeShow Expr where
     treeShow (ExprIntrinsicDef name qType _) = "IntrinsicDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
     treeShow (ExprDataTypeDef name generics _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
     treeShow (ExprDataConstructor name args _) = "DataConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
-    treeShow (ExprTypeClassDef name generics _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow generics ++ "):"
+    treeShow (ExprTypeClassDef name ty _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow ty ++ "):"
     treeShow (ExprTypeClassBinding name qType _ _) = "TypeClassBinding (" ++ name ++ ": " ++ treeShow qType ++ "):"
     treeShow (ExprInstanceDef constraintType _ _) = "InstanceDef (" ++ treeShow constraintType ++ "):"
     treeShow (ExprIntrinsicDataTypeDef name kind _) =

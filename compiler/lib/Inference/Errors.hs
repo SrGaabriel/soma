@@ -24,6 +24,7 @@ data InferenceError
     | KindMismatch Expr Kind Kind
     | NotAFunction Expr Type
     | MissingClassConstraint Expr Constraint
+    | UnknownTrait Expr String
     | UnknownTypeConstructor Expr String
     | InvalidTypeInstantiation Expr Type
     | IfConditionShouldBeBool Expr Type
@@ -59,6 +60,7 @@ instance PrintableError InferenceError where
             ++ treeShow knd2
     errorMessage (NotAFunction _ ty) = "The type " ++ treeShow ty ++ " does not support function application"
     errorMessage (UnknownTypeConstructor _ name) = "Unknown type constructor '" ++ name ++ "'"
+    errorMessage (UnknownTrait _ name) = "Unknown trait '" ++ name ++ "'"
     errorMessage (PatternArityMismatch _ expected received) =
         "Pattern arity mismatch, expected " ++ show expected ++ "patterns but received " ++ show received
     errorMessage (KindMismatch _ k1 k2) = "Kind mismatch: expected " ++ treeShow k1 ++ " but received " ++ treeShow k2
@@ -116,6 +118,7 @@ getExpression err =
     getExpression' (InvalidTypeInstantiation expr _) = expr
     getExpression' (IfConditionShouldBeBool expr _) = expr
     getExpression' (ReferenceToTypeConstructor expr _) = expr
+    getExpression' (UnknownTrait expr _) = expr
     getExpression' (ComposeBlockMustEndWithExpression expr) = expr
     getExpression' (IfElseBranchTypeMismatch expr _ _) = expr
     getExpression' (Debug _) = error "Debug error should not be used in production code"

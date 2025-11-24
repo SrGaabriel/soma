@@ -14,7 +14,6 @@ data MetallicConstructorMetadata = MetallicConstructorMetadata
 
 data MetallicTypeClassMetadata = MetallicTypeClassMetadata
     { mtcName :: String
-    , mtcTypeVars :: [TyVar]
     , mtcMethods :: [(String, QualifiedType)]
     }
     deriving (Generic, Show, Eq)

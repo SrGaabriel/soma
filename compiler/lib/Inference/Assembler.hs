@@ -5,7 +5,6 @@ import qualified Data.Set as Set
 import Inference.Core (InstanceEnv, TypeEnv, TypeMap)
 import Inference.Errors (InferenceError (..))
 import Inference.Gen (ClassConstraintWithSource (..), ConstraintSet (csClassConstraints, csDeclaredConstraints, csTypeConstraints), GenState (gsTypeMap), generateConstraints, runGenM)
-import Inference.Resolver (runResolverWithEnv)
 import Inference.Solving (checkConstraintEntailment, solveTypeConstraints)
 import Inference.Substitution (Substitutable (apply, ftv))
 import Syntax.Tree (Expr)
@@ -50,9 +49,3 @@ inferTree :: String -> String -> TypeEnv -> InstanceEnv -> Expr -> ([InferenceEr
 inferTree currentPackage currentModule tEnv iEnv root =
     let (errors, (_rootType, tyMap)) = inferType currentPackage currentModule tEnv iEnv root
     in (errors, tyMap)
-
-inferTreeT :: String -> String -> TypeEnv -> Expr -> ([InferenceError], TypeMap)
-inferTreeT currentPackage currentModule tEnv root =
-    let (resolverErrors, (resolvedExpr, finalTypeEnv, instanceEnv)) = runResolverWithEnv currentPackage currentModule tEnv root
-        (inferenceErrors, tyMap) = inferTree currentPackage currentModule finalTypeEnv instanceEnv resolvedExpr
-    in (resolverErrors ++ inferenceErrors, tyMap)

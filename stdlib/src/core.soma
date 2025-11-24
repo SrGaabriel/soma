@@ -1,10 +1,48 @@
-data Optional
-    | Some
-        value :: Int
-    | Nothing
-
 intrinsic def {+} :: Int -> Int -> Int
+intrinsic def {-} :: Int -> Int -> Int
+intrinsic def {*} :: Int -> Int -> Int
+intrinsic def {%} :: Int -> Int -> Int
 
-def summing(x: Int, y: Int) -> Int = x + y
+data Option a
+    | Some
+        value :: a
+    | None
 
-def id(value) :: x -> x = value
+data Result err ok
+    | Err
+        error :: err
+    | Ok
+        value :: ok
+
+trait Semigroup a where
+    def {<>} :: a -> a -> a
+
+trait Monoid a with (Semigroup a) where
+    def mempty :: a
+    def mconcat :: [a] -> a
+
+trait Functor f where
+    def {<$>} :: (a -> b) -> f a -> f b
+
+trait Applicative f with (Functor f) where
+    def pure :: a -> f a
+    def {<*>} :: f (a -> b) -> f a -> f b
+    
+    def {*>} :: f a -> f b -> f b
+    def {<*} :: f a -> f b -> f a
+
+trait Alternative f with (Applicative f) where
+    def empty :: f a
+    def {<|>} :: f a -> f a -> f a
+
+trait Monad m where
+    def {>>=} :: m a -> (a -> m b) -> m b
+    def {>>} :: m a -> m b -> m b
+
+trait Foldable t with (Monoid t) where
+    def foldMap :: (a -> m) -> t a -> m with (Monoid m)
+    def fold :: t m -> m
+
+trait Traversable t with (Functor t, Foldable t) where
+    def traverse :: (a -> f b) -> t a -> f (t b) with (Applicative f)
+    def sequenceA :: t (f a) -> f (t a) with (Applicative f)

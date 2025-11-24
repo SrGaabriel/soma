@@ -65,6 +65,7 @@ constraintClassName (Constraint typ) = getClassName typ
   where
     getClassName (TConstructor tc) = tcName tc
     getClassName (TApp t _) = getClassName t
+    getClassName (TUnresolved name) = name
     getClassName _ = error "Invalid constraint type"
 
 constraintTypes :: Constraint -> [Type]
@@ -174,3 +175,11 @@ errType = TUnresolved "ERROR"
 
 errQualifiedType :: QualifiedType
 errQualifiedType = Forall [] [] errType
+
+getUnknownTypeConstructorName :: QualifiedType -> Maybe String
+getUnknownTypeConstructorName (Forall _ _ t) = getConstructorName t
+  where
+    getConstructorName (TConstructor tc) = Just $ tcName tc
+    getConstructorName (TUnresolved name) = Just name
+    getConstructorName (TApp t' _) = getConstructorName t'
+    getConstructorName _ = Nothing

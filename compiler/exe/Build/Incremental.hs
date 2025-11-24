@@ -25,7 +25,6 @@ import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Format.Trees (prettyPrintAst)
 import Inference.Assembler (inferTree)
 import Inference.Core (TypeMap)
 import Inference.Resolver (runResolverWithEnv)
@@ -69,8 +68,6 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalCo
         ast = moduleAst modInfo
 
     putStrLn $ "Compiling module: " ++ modName
-    putStrLn "AST:"
-    prettyPrintAst ast
 
     let imports = extractSymbolImports ast
         seedEnv = Map.unions $ map resolveImport imports

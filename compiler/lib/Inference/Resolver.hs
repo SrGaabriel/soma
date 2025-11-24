@@ -18,7 +18,7 @@ import Project.Symbols (Symbol (..), SymbolKind (..))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
 import Typing.Currying (curryFunction)
-import Typing.Types (Kind (..), QualifiedType (Forall), TyConstructor (TypeConstructor), TyVar (tvKind), Type (..), assignConstraints, sumQualifiedTypes)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), TyConstructor (TypeConstructor), TyVar (tvKind), Type (..), assignConstraints, sumQualifiedTypes)
 
 newtype ResolverM a = ResolverM
     { runResolverM :: ReaderT ResolverEnv (WriterT [InferenceError] (State ResolverState)) a
@@ -100,10 +100,11 @@ collectGlobals (ExprDataTypeDef name generics constraints constructors eSpan) = 
             recv -> error $ "Expected StructConstructorExpr in struct definition but got " ++ show recv
         )
         constructors
-collectGlobals (ExprTypeClassDef className generics _ eSpan) = do
+collectGlobals (ExprTypeClassDef className ty@(Forall generics _ _) _ eSpan) = do
     let kind = foldr (KindArrow . tvKind) KindStar generics
     let baseConstructor = TConstructor $ TypeConstructor className kind
-    addGlobalBinding className (Forall generics [] baseConstructor) TypeClassSymbol eSpan
+    let finalTy = replaceUnresolvedWith ty baseConstructor
+    addGlobalBinding className finalTy TypeClassSymbol eSpan
 collectGlobals _ = pure ()
 
 collectInstances :: Expr -> ResolverM ()
@@ -121,14 +122,14 @@ resolveTReference (ExprRoot children) = do
 resolveTReference (ExprDataTypeDef name generics constraints constructors s) = do
     constructors' <- mapM resolveTReference constructors
     pure $ ExprDataTypeDef name generics constraints constructors' s
-resolveTReference (ExprTypeClassDef name generics methods s) = do
+resolveTReference expr@(ExprTypeClassDef name ty methods s) = do
+    ty' <- replaceAllUnresolvedQualified expr ty
     methods' <-
         local (\env -> env{currentTypeClass = Just name})
             $ mapM resolveTReference methods
-    pure $ ExprTypeClassDef name generics methods' s
+    pure $ ExprTypeClassDef name ty' methods' s
 resolveTReference expr@(ExprTypeClassBinding name typ defaultV eSpan) = do
-    env <- getEnv
-    realTyp <- replaceAllUnresolvedQualified expr env typ
+    realTyp <- replaceAllUnresolvedQualified expr typ
     className <- asks currentTypeClass
     let symbolKind = case className of
             Just cn -> TypeClassMethodSymbol cn
@@ -136,21 +137,18 @@ resolveTReference expr@(ExprTypeClassBinding name typ defaultV eSpan) = do
     addGlobalBinding name realTyp symbolKind eSpan
     pure $ ExprTypeClassBinding name realTyp defaultV eSpan
 resolveTReference expr@(ExprInstanceDef constraintType binds s) = do
-    env <- getEnv
     binds' <- mapM resolveTReference binds
-    Forall _ _ constraintType' <- replaceAllUnresolvedQualified expr env (Forall [] [] constraintType)
+    Forall _ _ constraintType' <- replaceAllUnresolvedQualified expr (Forall [] [] constraintType)
     pure $ ExprInstanceDef constraintType' binds' s
 resolveTReference expr@(ExprBindingDef name typ body topLevel eSpan) = do
-    env <- getEnv
-    realTyp <- replaceAllUnresolvedQualified expr env typ
+    realTyp <- replaceAllUnresolvedQualified expr typ
     body' <- resolveTReference body
     when topLevel $ do
         addGlobalBinding name realTyp (BindingSymbol realTyp) eSpan
 
     pure $ ExprBindingDef name realTyp body' topLevel eSpan
 resolveTReference expr@(ExprIntrinsicDef name typ eSpan) = do
-    env <- getEnv
-    realTyp <- replaceAllUnresolvedQualified expr env typ
+    realTyp <- replaceAllUnresolvedQualified expr typ
     addGlobalBinding name realTyp IntrinsicBindingSymbol eSpan
     pure $ ExprIntrinsicDef name realTyp eSpan
 resolveTReference expr@(ExprUVar name varSpan) = do
@@ -312,20 +310,54 @@ runResolverWithEnv packageName moduleName initialTyEnv root = do
     let ((expr, errors), finalState) = runState (runWriterT (runReaderT resolverM initialEnv)) initialState
     (errors, (expr, globalBindings finalState, instanceBindings finalState))
 
-replaceAllUnresolvedQualified :: Expr -> TypeEnv -> QualifiedType -> ResolverM QualifiedType
-replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
+replaceAllUnresolvedQualified :: Expr -> QualifiedType -> ResolverM QualifiedType
+replaceAllUnresolvedQualified expr (Forall vars constraints t) = do
     (finalTyp, qualifieds) <- replaceAllUnresolvedC t
+    resolvedConstraints <- mapM resolveConstraint constraints
+
     case qualifieds of
-        [] -> pure $ Forall vars constraints finalTyp
+        [] -> pure $ Forall vars resolvedConstraints finalTyp
         otherQualifiedTypes -> do
-            let resolved = Forall vars constraints finalTyp
+            let resolved = Forall vars resolvedConstraints finalTyp
             let resolvedQualified = sumQualifiedTypes resolved otherQualifiedTypes
             pure resolvedQualified
   where
+    resolveConstraint :: Constraint -> ResolverM Constraint
+    resolveConstraint (Constraint constraintType) = do
+        (resolvedType, _) <- replaceAllUnresolvedC constraintType
+        case containsUnresolved resolvedType of
+            Just unresolvedName -> do
+                tell [UnknownTrait expr unresolvedName]
+                pure $ Constraint resolvedType
+            Nothing -> pure $ Constraint resolvedType
+
+    containsUnresolved :: Type -> Maybe String
+    containsUnresolved (TUnresolved name) = Just name
+    containsUnresolved (TApp t1 t2) = containsUnresolved t1 `orElse` containsUnresolved t2
+    containsUnresolved (TArrow t1 t2) = containsUnresolved t1 `orElse` containsUnresolved t2
+    containsUnresolved _ = Nothing
+
+    orElse :: Maybe a -> Maybe a -> Maybe a
+    orElse (Just x) _ = Just x
+    orElse Nothing y = y
+
+    getHeadConstructor :: Type -> Type
+    getHeadConstructor (TApp t' _) = getHeadConstructor t'
+    getHeadConstructor t' = t'
+
     replaceAllUnresolvedC :: Type -> ResolverM (Type, [QualifiedType])
-    replaceAllUnresolvedC (TUnresolved name) =
+    replaceAllUnresolvedC (TUnresolved name) = do
+        env <- getEnv
         case findSymbolByName name env of
-            Just (_, qual@(Forall _ _ resolvedType)) -> pure (resolvedType, [qual])
+            Just (sym, qual@(Forall _ _ resolvedType)) -> do
+                case resolvedSymbolKind sym of
+                    TypeSymbol ->
+                        pure (getHeadConstructor resolvedType, [])
+                    TypeClassSymbol ->
+                        pure (getHeadConstructor resolvedType, [])
+                    IntrinsicTypeSymbol ->
+                        pure (getHeadConstructor resolvedType, [])
+                    _ -> pure (resolvedType, [qual])
             Nothing -> do
                 tell [UnknownTypeConstructor expr name]
                 pure (TUnresolved name, [])
@@ -336,7 +368,6 @@ replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
     replaceAllUnresolvedC (TApp t1 t2) = do
         (t1', qu1) <- replaceAllUnresolvedC t1
         (t2', qu2) <- replaceAllUnresolvedC t2
-
         let newType = TApp t1' t2'
         let qualifieds = mconcat [qu1, qu2]
         pure (newType, qualifieds)
@@ -346,3 +377,16 @@ replaceAllUnresolvedQualified expr env (Forall vars constraints t) = do
         let newType = TArrow t1' t2'
         let qualifieds = mconcat [qu1, qu2]
         pure (newType, qualifieds)
+
+replaceUnresolvedWith :: QualifiedType -> Type -> QualifiedType
+replaceUnresolvedWith (Forall vars constraints baseTy) r =
+    Forall vars constraints (replaceUnresolvedWith' baseTy r)
+  where
+    replaceUnresolvedWith' (TUnresolved{}) replacement = replacement
+    replaceUnresolvedWith' t@(TVar{}) _ = t
+    replaceUnresolvedWith' t@(TSkolem{}) _ = t
+    replaceUnresolvedWith' t@(TConstructor{}) _ = t
+    replaceUnresolvedWith' (TApp t1 t2) replacement =
+        TApp (replaceUnresolvedWith' t1 replacement) (replaceUnresolvedWith' t2 replacement)
+    replaceUnresolvedWith' (TArrow t1 t2) replacement =
+        TArrow (replaceUnresolvedWith' t1 replacement) (replaceUnresolvedWith' t2 replacement)

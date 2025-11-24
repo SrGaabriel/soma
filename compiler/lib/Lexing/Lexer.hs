@@ -46,6 +46,7 @@ data TokenKind
     | TokenData
     | TokenTrait
     | TokenWhere
+    | TokenWith
     | TokenInstance
     | TokenComma
     | TokenLeftBracket
@@ -238,6 +239,7 @@ lexCode' text i stack =
                         "struct" -> TokenStruct
                         "trait" -> TokenTrait
                         "where" -> TokenWhere
+                        "with" -> TokenWith
                         "instance" -> TokenInstance
                         "true" -> TokenTrue
                         "false" -> TokenFalse
@@ -325,6 +327,7 @@ referenceTokenKind TokenStrongRightArrow = "a double right arrow"
 referenceTokenKind TokenColon = "a colon"
 referenceTokenKind TokenReturns = "'::'"
 referenceTokenKind TokenCase = "'case'"
+referenceTokenKind TokenWith = "'with'"
 referenceTokenKind TokenDef = "'def'"
 referenceTokenKind TokenIntrinsic = "'intrinsic'"
 referenceTokenKind TokenImport = "'import'"

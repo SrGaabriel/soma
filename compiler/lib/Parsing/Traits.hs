@@ -1,39 +1,48 @@
 module Parsing.Traits where
 
-import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
+import Lexing.Lexer (TokenKind (..), spanningTokens)
 import Parsing.Bindings (parseBinding)
-import Parsing.Parser (Parser, consume, parseFluidSequence, parseFuncName, parseOptionallyLayout)
-import Parsing.Types (parseQualifiedType, parseTyVar, parseType)
+import Parsing.Errors (ParsingError (..))
+import Parsing.Parser (Parser, consume, parseFuncName, parseOptionallyLayout)
+import Parsing.Types (parseQualifiedType, parseType)
 import Syntax.Tree (Expr (..))
-import Typing.Types (Constraint, QualifiedType (Forall), Type (..), mkConstraint)
+import qualified Text.Megaparsec as MP
+import Typing.Types (Constraint (Constraint), QualifiedType (Forall), getUnknownTypeConstructorName)
 
 parseTrait :: Parser Expr
 parseTrait = do
     classToken <- consume TokenTrait
-    nameToken <- consume TokenUpperIdentifier
+    classType@(Forall _ _ traitType) <- parseQualifiedType
+    case getUnknownTypeConstructorName classType of
+        Nothing -> MP.customFailure $ InvalidTypeForTrait classToken traitType
+        Just name -> do
+            whereTok <- consume TokenWhere
 
-    tyVars <- parseFluidSequence TokenWhere parseTyVar
+            bindings <- parseOptionallyLayout (parseTraitBinding classType)
+            pure
+                $ ExprTypeClassDef
+                    { typeClassName = name
+                    , typeClassType = classType
+                    , typeClassBindings = bindings
+                    , typeClassSpan = spanningTokens classToken whereTok
+                    }
 
-    _where <- consume TokenWhere
-    let name = tokenValue nameToken
-    let typeClassConstraint = mkConstraint name (map TVar tyVars)
-
-    bindings <- parseOptionallyLayout (parseTraitBinding typeClassConstraint)
-    pure
-        $ ExprTypeClassDef
-            { typeClassName = name
-            , typeClassGenerics = tyVars
-            , typeClassBindings = bindings
-            , typeClassSpan = spanningTokens classToken nameToken
-            }
-
-parseTraitBinding :: Constraint -> Parser Expr
-parseTraitBinding typeClassConstraint = do
+parseTraitBinding :: QualifiedType -> Parser Expr
+parseTraitBinding (Forall typeClassTyVars typeClassConstraints typeClassConstraint) = do
     defToken <- consume TokenDef
     bindName <- parseFuncName
     retTok <- consume TokenReturns
     Forall tyVars baseConstraints baseType <- parseQualifiedType
-    let bindTyp = Forall tyVars (typeClassConstraint : baseConstraints) baseType
+    let allTyVars = typeClassTyVars ++ tyVars
+    let bindTyp =
+            Forall
+                allTyVars
+                ( Constraint
+                    typeClassConstraint
+                    : typeClassConstraints
+                    ++ baseConstraints
+                )
+                baseType
 
     pure
         $ ExprTypeClassBinding

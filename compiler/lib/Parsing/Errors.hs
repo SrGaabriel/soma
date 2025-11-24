@@ -1,8 +1,10 @@
 module Parsing.Errors (ParsingError (..), getErrorToken) where
 
 import Format.Errors (PrintableError (..))
+import Format.Trees (treeShow)
 import Lexing.Lexer (Token (..), TokenKind, referenceToken, referenceTokenKind)
 import Text.Megaparsec (ShowErrorComponent (showErrorComponent))
+import Typing.Types (Type)
 
 data ParsingError
     = UnexpectedToken Token
@@ -27,6 +29,7 @@ data ParsingError
     | InvalidIntrinsic Token
     | InvalidFunctionName Token
     | MixedParameterStyles Token
+    | InvalidTypeForTrait Token Type
     | UnexpectedParseFailure Token String
     | ExpectedOneOfTokens
         { expectedTokens :: [TokenKind]
@@ -62,6 +65,7 @@ instance Show ParsingError where
             ++ " but received "
             ++ referenceToken rc
     show (UnexpectedParseFailure _ msg) = "Unexpected parse failure: " ++ msg
+    show (InvalidTypeForTrait _ ty) = "Traits cannot be implemented for type: " ++ treeShow ty
     show EndOfInput{} = "Expected more input but reached end of input"
     show Debug = "Debug"
 
@@ -106,4 +110,5 @@ getErrorToken (MixedParameterStyles t) = Just t
 getErrorToken (ExpectedOneOfTokens _ t) = Just t
 getErrorToken (UnexpectedParseFailure t _) = Just t
 getErrorToken (EndOfInput t) = Just t
+getErrorToken (InvalidTypeForTrait t _) = Just t
 getErrorToken Debug = Nothing

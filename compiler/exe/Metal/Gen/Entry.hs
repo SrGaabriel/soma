@@ -101,12 +101,11 @@ metallizeInstance (ExprInstanceDef constraintType methods _) =
 metallizeInstance _ = pure ()
 
 metallizeTypeClass :: Expr -> MetalGen ()
-metallizeTypeClass (ExprTypeClassDef className generics methods _) = do
+metallizeTypeClass (ExprTypeClassDef className _generics methods _) = do
     let methodBindings = [(extractMethodName method, extractMethodType method) | method <- methods]
     let tcMeta =
             MetallicTypeClassMetadata
                 { mtcName = className
-                , mtcTypeVars = generics
                 , mtcMethods = methodBindings
                 }
     addTypeClass className tcMeta

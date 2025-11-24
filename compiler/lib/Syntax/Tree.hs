@@ -62,7 +62,7 @@ data Expr
         }
     | ExprTypeClassDef
         { typeClassName :: String
-        , typeClassGenerics :: [TyVar]
+        , typeClassType :: QualifiedType
         , typeClassBindings :: [Expr]
         , typeClassSpan :: Span
         }
@@ -183,8 +183,8 @@ modifySpan (ExprIntrinsicDataTypeDef name kind _) newSpan =
     ExprIntrinsicDataTypeDef name kind newSpan
 modifySpan (ExprDataConstructor name args _) newSpan =
     ExprDataConstructor name args newSpan
-modifySpan (ExprTypeClassDef name generics bindings _) newSpan =
-    ExprTypeClassDef name generics bindings newSpan
+modifySpan (ExprTypeClassDef name ty bindings _) newSpan =
+    ExprTypeClassDef name ty bindings newSpan
 modifySpan (ExprTypeClassBinding name bindType defaultImpl _) newSpan =
     ExprTypeClassBinding name bindType defaultImpl newSpan
 modifySpan (ExprPatternMatch expr arms _) newSpan =

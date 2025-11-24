@@ -14,15 +14,15 @@ import Parsing.Parser (
  )
 import Text.Megaparsec (anySingle)
 import qualified Text.Megaparsec as MP
-import Typing.Types (Constraint, Kind (..), QualifiedType (..), TyVar (..), Type (..), arrayType, boolType, constraintTypes, extractTyVars, intType, mkConstraint, strType, tupleType)
+import Typing.Types (Constraint (Constraint), Kind (..), QualifiedType (..), TyVar (..), Type (..), arrayType, boolType, constraintTypes, extractTyVars, intType, strType, tupleType)
 
 parseQualifiedType :: Parser QualifiedType
 parseQualifiedType = do
     baseType <- parseType
     incoming <- tryPeekOrEOF
-    if tokenKind incoming == TokenWhere
+    if tokenKind incoming == TokenWith
         then do
-            _ <- consume TokenWhere
+            _ <- consume TokenWith
             constraints <- parseExhaustiveSequence TokenComma parseConstraint
             let tyVarsFromType = extractTyVars baseType
             let tyVarsFromConstraints = concatMap (extractTyVarsFromTypes . constraintTypes) constraints
@@ -31,6 +31,17 @@ parseQualifiedType = do
         else do
             let tyVars = extractTyVars baseType
             pure $ Forall tyVars [] baseType
+
+parseWithClause :: Parser ([Constraint], [TyVar])
+parseWithClause = do
+    incoming <- tryPeekOrEOF
+    if tokenKind incoming == TokenWith
+        then do
+            _ <- consume TokenWith
+            constraints <- parseExhaustiveSequence TokenComma parseConstraint
+            let tyVarsFromConstraints = concatMap (extractTyVarsFromTypes . constraintTypes) constraints
+            pure (constraints, tyVarsFromConstraints)
+        else pure ([], [])
 
 parseType :: Parser Type
 parseType = do
@@ -105,12 +116,7 @@ parseTypeConstructor = do
         other -> pure $ TUnresolved other
 
 parseConstraint :: Parser Constraint
-parseConstraint = do
-    varName <- consume TokenLowerIdentifier
-    _ <- consume TokenColon
-    className <- consume TokenUpperIdentifier
-    let name = tokenValue varName
-    pure $ mkConstraint (tokenValue className) [TVar (TypeVar name KindStar)]
+parseConstraint = Constraint <$> parseType
 
 parseKind :: Parser Kind
 parseKind = do
