@@ -68,11 +68,11 @@ jobs:
                   update: true
                   path-type: inherit
 
-            - name: Set up LLVM
-              if: startsWith(matrix.os, 'macos')
-              uses: llvm/llvm-project@v1
+            - name: Install LLVM and Clang
+              if: matrix.os == 'macos-13'
+              uses: KyleMayes/install-llvm-action@v2
               with:
-                  llvm-version: "17"
+                version: "17.0"
 
             - name: Setup Haskell
               uses: haskell-actions/setup@v2
