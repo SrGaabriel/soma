@@ -68,27 +68,40 @@ jobs:
                   update: true
                   path-type: inherit
 
+            - name: Install LLVM and Clang
+              if: startsWith(matrix.os, 'macos')
+              uses: KyleMayes/install-llvm-action@v2
+              with:
+                  version: "20"
+
             - name: Setup Haskell
               uses: haskell-actions/setup@v2
               with:
                   ghc-version: ${{ env.GHC_VERSION }}
                   cabal-version: ${{ env.CABAL_VERSION }}
                   enable-stack: false
+              env:
+                  DYLD_LIBRARY_PATH: ""
+
+            - name: Update Cabal package index
+              run: cabal update
+
+            - name: Set LLVM path for macOS
+              if: startsWith(matrix.os, 'macos')
+              run: echo "${{ github.workspace }}/llvm/bin" >> $GITHUB_PATH
 
             - name: Cache Cabal packages
+              if: ${{ !startsWith(matrix.os, 'macos') }}
               uses: actions/cache@v4
               with:
                   path: |
                       ~/.cabal/packages
                       ~/.cabal/store
                       dist-newstyle
-                  key: ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-${{ hashFiles('soma.cabal', 'cabal.project') }}
+                  key: ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-${{ hashFiles('soma.cabal', 'cabal.release.project') }}
                   restore-keys: |
                       ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-
                       ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-
-
-            - name: Update Cabal package index
-              run: cabal update
 
             - name: Configure project
               run: cabal configure --enable-tests --enable-benchmarks
@@ -97,7 +110,7 @@ jobs:
               run: cabal build --only-dependencies all
 
             - name: Build project
-              run: cabal build all
+              run: cabal build --project-file=cabal.release.project
 
             - name: Run tests
               run: cabal test all --test-show-details=direct
@@ -107,28 +120,28 @@ jobs:
               if: runner.os != 'Windows'
               run: |
                   mkdir -p artifacts
-                  cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}
-                  cp $(cabal list-bin exe:soma-lsp) artifacts/soma-lsp-${{ matrix.target }}
+                  cp $(cabal list-bin soma:compiler) artifacts/somac-${{ matrix.target }}
+                  cp $(cabal list-bin exe:souls) artifacts/souls-${{ matrix.target }}
                   chmod +x artifacts/somac-${{ matrix.target }}
-                  chmod +x artifacts/soma-lsp-${{ matrix.target }}
+                  chmod +x artifacts/souls-${{ matrix.target }}
 
             - name: Prepare executables (Windows MSVC)
               if: runner.os == 'Windows' && contains(matrix.target, 'msvc')
               shell: pwsh
               run: |
                   New-Item -ItemType Directory -Force -Path artifacts
-                  $somac = cabal list-bin exe:soma
-                  $somalsp = cabal list-bin exe:soma-lsp
+                  $somac = cabal list-bin soma:compiler
+                  $souls = cabal list-bin exe:souls
                   Copy-Item $somac "artifacts/somac-${{ matrix.target }}.exe"
-                  Copy-Item $somalsp "artifacts/soma-lsp-${{ matrix.target }}.exe"
+                  Copy-Item $souls "artifacts/souls-${{ matrix.target }}.exe"
 
             - name: Prepare executables (Windows GNU)
               if: runner.os == 'Windows' && contains(matrix.target, 'gnu')
               shell: msys2 {0}
               run: |
                   mkdir -p artifacts
-                  cp $(cabal list-bin exe:soma) artifacts/somac-${{ matrix.target }}.exe
-                  cp $(cabal list-bin exe:soma-lsp) artifacts/soma-lsp-${{ matrix.target }}.exe
+                  cp $(cabal list-bin soma:compiler) artifacts/somac-${{ matrix.target }}.exe
+                  cp $(cabal list-bin exe:souls) artifacts/souls-${{ matrix.target }}.exe
 
             - name: Upload somac artifact
               uses: actions/upload-artifact@v4
@@ -137,11 +150,11 @@ jobs:
                   path: artifacts/somac-*
                   if-no-files-found: error
 
-            - name: Upload soma-lsp artifact
+            - name: Upload souls artifact
               uses: actions/upload-artifact@v4
               with:
-                  name: soma-lsp-${{ matrix.target }}
-                  path: artifacts/soma-lsp-*
+                  name: souls-${{ matrix.target }}
+                  path: artifacts/souls-*
                   if-no-files-found: error
 
     rust-build:
@@ -194,6 +207,7 @@ jobs:
                   targets: ${{ matrix.target }}
 
             - name: Cache Cargo dependencies
+              if: matrix.os != 'macos-14'
               uses: actions/cache@v4
               with:
                   path: |

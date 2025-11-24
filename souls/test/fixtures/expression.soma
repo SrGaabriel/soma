@@ -1,0 +1,4 @@
+intrinsic def {+} :: Int -> Int -> Int
+
+def addOne(x: Int) -> Int = x + 1
+def result :: Int = addOne 5

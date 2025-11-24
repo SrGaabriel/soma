@@ -1,0 +1,32 @@
+trait Monad m where
+    def pure :: a -> m a
+
+data Option a
+    | Some
+        value :: a
+    | None
+        
+
+data Either l r
+    | Left
+        error :: l
+    | Right
+        value :: r
+
+intrinsic def {+} :: Int -> Int -> Int
+intrinsic def {-} :: Int -> Int -> Bool
+intrinsic def {==} :: Int -> Int -> Bool
+intrinsic data IO :: * -> *
+
+instance Monad IO where
+    def pure(value: a) -> IO a = pureIO value
+
+intrinsic data Ref :: * -> *
+intrinsic def newRef :: a -> Ref a
+intrinsic def readRef :: Ref a -> a
+intrinsic def modifyRef :: Ref a -> a -> Ref a
+intrinsic def pureIO :: a -> IO a
+
+def main :: IO () =
+    compose
+        pure ()
