@@ -89,7 +89,7 @@ jobs:
                       ~/.cabal/packages
                       ~/.cabal/store
                       dist-newstyle
-                  key: ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-${{ hashFiles('soma.cabal', 'cabal.project') }}
+                  key: ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-${{ hashFiles('soma.cabal', 'cabal.release.project') }}
                   restore-keys: |
                       ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-cabal-
                       ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-
