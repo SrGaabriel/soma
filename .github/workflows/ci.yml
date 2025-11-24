@@ -100,27 +100,22 @@ jobs:
             - name: Update Cabal package index
               run: cabal update
 
+            - name: Set LLVM path for macOS
+              if: startsWith(matrix.os, 'macos')
+              run: echo "${{ github.workspace }}/llvm/bin" >> $GITHUB_PATH
+
             - name: Configure project
               run: cabal configure --enable-tests --enable-benchmarks
-              env:
-                  # Set PATH to include LLVM for compilation
-                  PATH: ${{ startsWith(matrix.os, 'macos') && format('{0}/llvm/bin:{1}', github.workspace, env.PATH) || env.PATH }}
 
             - name: Build dependencies
               run: cabal build --only-dependencies all
-              env:
-                  PATH: ${{ startsWith(matrix.os, 'macos') && format('{0}/llvm/bin:{1}', github.workspace, env.PATH) || env.PATH }}
 
             - name: Build project
               run: cabal build --project-file=cabal.release.project
-              env:
-                  PATH: ${{ startsWith(matrix.os, 'macos') && format('{0}/llvm/bin:{1}', github.workspace, env.PATH) || env.PATH }}
 
             - name: Run tests
               run: cabal test all --test-show-details=direct
               continue-on-error: true
-              env:
-                  PATH: ${{ startsWith(matrix.os, 'macos') && format('{0}/llvm/bin:{1}', github.workspace, env.PATH) || env.PATH }}
 
             - name: Prepare executables (Unix)
               if: runner.os != 'Windows'
