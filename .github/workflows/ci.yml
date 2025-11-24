@@ -72,7 +72,7 @@ jobs:
               if: matrix.os == 'macos-13'
               uses: KyleMayes/install-llvm-action@v2
               with:
-                version: "17.0"
+                version: "20"
 
             - name: Setup Haskell
               uses: haskell-actions/setup@v2
