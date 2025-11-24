@@ -8,10 +8,10 @@ import Control.Concurrent.STM
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import qualified Data.Text as T
+import Format.Errors (SomeError (SomeError))
 import Inference.Assembler (inferTree)
 import Inference.Core (TypeMap)
 import Inference.Resolver (runResolverWithEnv)
-import Logging.Errors (SomeError (SomeError))
 import Project.Extracts (extractSymbolImports, filterSymbolsByNames)
 import Project.Graph
 import Project.Symbols (Symbol)

@@ -6,8 +6,8 @@ module Souls.Symbols where
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe, mapMaybe)
 import qualified Data.Text as T
+import Format.Trees (treeShow)
 import Language.LSP.Protocol.Types (CompletionItem (..), CompletionItemKind (CompletionItemKind_Function), CompletionList (CompletionList), Hover (Hover), Location (..), MarkupContent (..), MarkupKind (..), Position, filePathToUri, type (|?) (InL))
-import Logging.PrettyTrees (treeShow)
 import Project.Extracts (extractSymbolImports, filterSymbolsByNames)
 import Project.Symbols (Symbol (..))
 import Souls.Loc (findExprAtPos, findSymbolAtPos, lspPositionToOffset, spanToRange)

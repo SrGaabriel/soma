@@ -6,6 +6,7 @@ import Control.Concurrent.STM (modifyTVar)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
+import Format.Errors (PrintableError (..))
 import GHC.Conc (atomically)
 import GHC.Conc.Sync (readTVarIO)
 import Language.LSP.Diagnostics
@@ -13,7 +14,6 @@ import Language.LSP.Protocol.Types
 import Language.LSP.Server (LspM, getVirtualFile, publishDiagnostics)
 import Language.LSP.VFS
 import Lexing.Lexer (lexCode)
-import Logging.Errors (PrintableError (..))
 import Parsing.Ast (parse)
 import Souls.Loc (offsetToPosition)
 import Souls.Server (LspState (..), compileModuleForLSP)
