@@ -1,4 +1,4 @@
-packages: 
+packages:
   .
   souls
 
@@ -9,9 +9,9 @@ package *
   executable-stripping: True
 
 package soma
-  ghc-options: -O2 -split-sections -split-objs -flto
+  ghc-options: -O2 -split-sections -optl=-flto
   executable-stripping: True
 
 package souls
-  ghc-options: -O2 -split-sections -split-objs -flto
+  ghc-options: -O2 -split-sections -optl=-flto
   executable-stripping: True
