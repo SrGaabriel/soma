@@ -1,0 +1,16 @@
+[package]
+name = "soma_cranelift_backend"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+cranelift-codegen = { version = "^0.126", features = ["all-native-arch"] }
+cranelift-jit = { version = "^0.126" }
+cranelift-codegen-meta = "^0.126"
+cranelift-reader = "^0.126"
+cranelift-module = "^0.126"
+cranelift-native = "^0.126"
+anyhow = "^1"
