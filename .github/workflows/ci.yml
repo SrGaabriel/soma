@@ -94,20 +94,11 @@ jobs:
             - name: Configure project
               run: cabal configure --enable-tests --enable-benchmarks
 
-            - name: Apply CI build optimizations
-              run: |
-                  cat <<EOF > cabal.project.local
-                  package *
-                    ghc-options:
-                      -O2
-                      -split-sections
-                  EOF
-
             - name: Build dependencies
               run: cabal build --only-dependencies all
 
-            - name: Build project (optimized)
-              run: cabal build --enable-executable-stripping all
+            - name: Build project
+              run: cabal build --project-file=cabal.release.project --enable-executable-stripping all
 
             - name: Run tests
               run: cabal test all --test-show-details=direct
