@@ -91,7 +91,7 @@ jobs:
               run: echo "${{ github.workspace }}/llvm/bin" >> $GITHUB_PATH
 
             - name: Cache Cabal packages
-              if: matrix.os != 'macos-14'
+              if: ${{ !startsWith(matrix.os, 'macos') }}
               uses: actions/cache@v4
               with:
                   path: |
