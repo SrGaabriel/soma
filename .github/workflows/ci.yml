@@ -80,6 +80,9 @@ jobs:
                   ghc-version: ${{ env.GHC_VERSION }}
                   cabal-version: ${{ env.CABAL_VERSION }}
                   enable-stack: false
+              env:
+                  # Clear DYLD_LIBRARY_PATH to prevent conflicts with Node.js
+                  DYLD_LIBRARY_PATH: ""
 
             - name: Cache Cabal packages
               if: matrix.os != 'macos-14'
@@ -99,16 +102,25 @@ jobs:
 
             - name: Configure project
               run: cabal configure --enable-tests --enable-benchmarks
+              env:
+                  # Set PATH to include LLVM for compilation
+                  PATH: ${{ startsWith(matrix.os, 'macos') && format('{0}/llvm/bin:{1}', github.workspace, env.PATH) || env.PATH }}
 
             - name: Build dependencies
               run: cabal build --only-dependencies all
+              env:
+                  PATH: ${{ startsWith(matrix.os, 'macos') && format('{0}/llvm/bin:{1}', github.workspace, env.PATH) || env.PATH }}
 
             - name: Build project
               run: cabal build --project-file=cabal.release.project
+              env:
+                  PATH: ${{ startsWith(matrix.os, 'macos') && format('{0}/llvm/bin:{1}', github.workspace, env.PATH) || env.PATH }}
 
             - name: Run tests
               run: cabal test all --test-show-details=direct
               continue-on-error: true
+              env:
+                  PATH: ${{ startsWith(matrix.os, 'macos') && format('{0}/llvm/bin:{1}', github.workspace, env.PATH) || env.PATH }}
 
             - name: Prepare executables (Unix)
               if: runner.os != 'Windows'
@@ -318,9 +330,6 @@ jobs:
               with:
                   ghc-version: ${{ env.GHC_VERSION }}
                   cabal-version: ${{ env.CABAL_VERSION }}
-              env:
-                PATH: /Users/runner/work/soma/soma/llvm/bin:$PATH
-                DYLD_LIBRARY_PATH: ""
 
             - name: Setup Rust
               uses: dtolnay/rust-toolchain@stable
