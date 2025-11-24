@@ -98,7 +98,7 @@ jobs:
               run: cabal build --only-dependencies all
 
             - name: Build project
-              run: cabal build --project-file=cabal.release.project --enable-executable-stripping all
+              run: cabal build --project-file=cabal.release.project
 
             - name: Run tests
               run: cabal test all --test-show-details=direct

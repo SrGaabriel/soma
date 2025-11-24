@@ -1,9 +1,17 @@
-packages:
+packages: 
   .
   souls
 
 with-compiler: ghc-9.12.2
 
 package *
+  ghc-options: -O2 -split-sections
+  executable-stripping: True
+
+package soma
+  ghc-options: -O2 -split-sections -split-objs -flto
+  executable-stripping: True
+
+package souls
   ghc-options: -O2 -split-sections -split-objs -flto
   executable-stripping: True
