@@ -380,3 +380,11 @@ manyWithProgress p = do
                                 updatePosition
                                 pure acc
                             else go (x : acc)
+
+optionallySurround :: TokenKind -> TokenKind -> Parser a -> Parser a
+optionallySurround openKind closeKind p = do
+    inc <- tryPeekOrEOF
+    if tokenKind inc == openKind
+        then do
+            consume openKind >> p <* consume closeKind
+        else p

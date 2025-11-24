@@ -10,7 +10,7 @@ import Parsing.Parser (
     parseSequence,
     peek,
     tryPeekOrEOF,
-    withRecovery,
+    withRecovery, optionallySurround,
  )
 import Text.Megaparsec (anySingle)
 import qualified Text.Megaparsec as MP
@@ -23,7 +23,8 @@ parseQualifiedType = do
     if tokenKind incoming == TokenWith
         then do
             _ <- consume TokenWith
-            constraints <- parseExhaustiveSequence TokenComma parseConstraint
+            let constraintsParser = parseExhaustiveSequence TokenComma parseConstraint
+            constraints <- optionallySurround TokenLeftParen TokenRightParen constraintsParser
             let tyVarsFromType = extractTyVars baseType
             let tyVarsFromConstraints = concatMap (extractTyVarsFromTypes . constraintTypes) constraints
             let allVars = deduplicateTyVars (tyVarsFromType ++ tyVarsFromConstraints)

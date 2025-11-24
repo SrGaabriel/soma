@@ -45,6 +45,7 @@ import System.Exit (exitFailure)
 import System.FilePath
 import System.Process (callProcess)
 import Typing.Types (QualifiedType)
+import Format.Trees (prettyPrintAst)
 
 data CompiledModule = CompiledModule
     { cmModuleName :: ModuleName
@@ -73,6 +74,8 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalCo
         seedEnv = Map.unions $ map resolveImport imports
 
     let (resolverErrors, (resolvedAst, fullEnv, instanceEnv)) = runResolverWithEnv packageName modName seedEnv ast
+    putStrLn "Resolved AST:"
+    prettyPrintAst resolvedAst
     let (inferenceErrors, types) = inferTree packageName modName fullEnv instanceEnv resolvedAst
     let newDefs = Map.difference fullEnv seedEnv
 
