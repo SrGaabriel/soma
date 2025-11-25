@@ -15,7 +15,7 @@ import Alloy.Monomorphize (monomorphizeModule)
 import Alloy.PromoteRefs (promoteRefsModule)
 import Alloy.ReaderRewrite (readerRewriteModule)
 import Alloy.Simplify (simplifyModule)
-import Build.Metadata (SerializableConstructorMetadata, projectMetadataConstructors, projectMetadataPublicSymbols)
+import Build.Metadata (SerializableConstructorMetadata, projectMetadataConstructors, projectMetadataInstances, projectMetadataPublicSymbols)
 import Build.Tarball (TarballContents (TarballContents, tcAlloyModules, tcMetadata), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
 import Config.Options (Options (..))
 import Control.Exception (SomeException, catch)
@@ -27,7 +27,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Format.Trees (prettyPrintAst, treeShow)
 import Inference.Assembler (inferTree)
-import Inference.Core (TypeMap)
+import Inference.Core (InstanceEnv, TypeMap)
 import Inference.Resolver (runResolverWithEnv)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.Errors (printError)
@@ -54,6 +54,7 @@ data CompiledModule = CompiledModule
     , cmAlloyExpanded :: AlloyModule -- after intrinsic expansion (pre-dictionary/mono)
     , cmTypeMap :: TypeMap
     , cmPublicSymbols :: Map Symbol QualifiedType
+    , cmPublicInstances :: InstanceEnv
     , cmResolvedAst :: Expr
     }
     deriving (Show)
@@ -63,18 +64,21 @@ compileModuleSeparately ::
     ModuleInfo ->
     Map ModuleName CompiledModule ->
     Map String (Map Symbol QualifiedType) ->
+    Map String InstanceEnv ->
     Map String SerializableConstructorMetadata ->
     IO CompiledModule
-compileModuleSeparately packageName modInfo compiledDeps externalDeps externalConstructors = do
+compileModuleSeparately packageName modInfo compiledDeps externalDeps externalInstances externalConstructors = do
     let modName = moduleName modInfo
         ast = moduleAst modInfo
 
     putStrLn $ "Compiling module: " ++ modName
 
     let imports = extractSymbolImports ast
-        seedEnv = Map.unions $ map resolveImport imports
+        importsResolved = map resolveImport imports
+        seedEnv = Map.unions $ map fst importsResolved
+        seedInstances = Map.unions $ map snd importsResolved
 
-    let (resolverErrors, (resolvedAst, fullEnv, instanceEnv)) = runResolverWithEnv packageName modName seedEnv ast
+    let (resolverErrors, (resolvedAst, fullEnv, instanceEnv)) = runResolverWithEnv packageName modName seedEnv seedInstances ast
     putStrLn "Resolved AST:"
     prettyPrintAst resolvedAst
     let (inferenceErrors, types) = inferTree packageName modName fullEnv instanceEnv resolvedAst
@@ -109,15 +113,18 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalCo
             , cmAlloyExpanded = alloyExpanded
             , cmTypeMap = types
             , cmPublicSymbols = newDefs
+            , cmPublicInstances = instanceEnv
             , cmResolvedAst = resolvedAst
             }
   where
     resolveImport (impMod, mSyms) =
         case Map.lookup impMod compiledDeps of
-            Just compiled -> filterSymbolsByNames mSyms (cmPublicSymbols compiled)
+            Just compiled -> (filterSymbolsByNames mSyms (cmPublicSymbols compiled), cmPublicInstances compiled)
             Nothing ->
                 let properModuleName = takeWhile (/= '/') impMod
-                in maybe Map.empty (filterSymbolsByNames mSyms) (Map.lookup properModuleName externalDeps)
+                    symbols = maybe Map.empty (filterSymbolsByNames mSyms) (Map.lookup properModuleName externalDeps)
+                    instances = maybe Map.empty id (Map.lookup properModuleName externalInstances)
+                in (symbols, instances)
 
 linkCompiledModules ::
     String ->
@@ -182,9 +189,9 @@ processModulesIncremental :: [String] -> ModuleGraph -> Options -> IO ()
 processModulesIncremental sorted graph compileOptions = do
     let inputName = fromMaybe "app" $ optionsName compileOptions
 
-    (externalDeps, externalConstructors, externalAlloyModules) <- processExternalDependencies (optionsDeps compileOptions)
+    (externalDeps, externalInstances, externalConstructors, externalAlloyModules) <- processExternalDependencies (optionsDeps compileOptions)
 
-    compiledModules <- compileAllModulesInOrder sorted graph Map.empty externalDeps externalConstructors inputName
+    compiledModules <- compileAllModulesInOrder sorted graph Map.empty externalDeps externalInstances externalConstructors inputName
 
     putStrLn $ "\n✅ Compiled " ++ show (length compiledModules) ++ " modules separately"
 
@@ -201,18 +208,19 @@ compileAllModulesInOrder ::
     ModuleGraph ->
     Map ModuleName CompiledModule ->
     Map String (Map Symbol QualifiedType) ->
+    Map String InstanceEnv ->
     Map String SerializableConstructorMetadata ->
     String ->
     IO [CompiledModule]
-compileAllModulesInOrder [] _ _ _ _ _ = return []
-compileAllModulesInOrder (modName : rest) graph compiled externalDeps externalConstructors packageName = do
+compileAllModulesInOrder [] _ _ _ _ _ _ = return []
+compileAllModulesInOrder (modName : rest) graph compiled externalDeps externalInstances externalConstructors packageName = do
     let Just modInfo = Map.lookup modName graph
 
-    compiledModule <- compileModuleSeparately packageName modInfo compiled externalDeps externalConstructors
+    compiledModule <- compileModuleSeparately packageName modInfo compiled externalDeps externalInstances externalConstructors
 
     let newCompiled = Map.insert modName compiledModule compiled
 
-    restModules <- compileAllModulesInOrder rest graph newCompiled externalDeps externalConstructors packageName
+    restModules <- compileAllModulesInOrder rest graph newCompiled externalDeps externalInstances externalConstructors packageName
     return (compiledModule : restModules)
 
 generateOutputFile ::
@@ -255,6 +263,7 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
             writeFile llFile llvmIr
 
             let publicSymbols = Map.unions [cmPublicSymbols cm | cm <- compiledModules]
+                publicInstances = Map.unions [cmPublicInstances cm | cm <- compiledModules]
                 depGraph = buildDependencyGraph graph
                 sourceFiles = [modulePath info | info <- Map.elems graph]
 
@@ -277,6 +286,7 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                 "0.1.0"
                 sourceFiles
                 publicSymbols
+                (Map.toList publicInstances)
                 depGraph
                 allConstructors
                 [(objFile, objContent) | objFileExists]
@@ -305,7 +315,7 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
             putStrLn $ "Unknown output extension: " ++ ext
             exitFailure
 
-processExternalDependencies :: [(String, String)] -> IO (Map.Map String (Map.Map Symbol QualifiedType), Map.Map String SerializableConstructorMetadata, [AlloyModule])
+processExternalDependencies :: [(String, String)] -> IO (Map.Map String (Map.Map Symbol QualifiedType), Map.Map String InstanceEnv, Map.Map String SerializableConstructorMetadata, [AlloyModule])
 processExternalDependencies externals = do
     list <-
         mapM
@@ -315,11 +325,13 @@ processExternalDependencies externals = do
                     Left err -> error $ "Failed to extract external dependency " ++ name ++ ": " ++ err
                     Right (TarballContents{tcMetadata, tcAlloyModules}) -> do
                         let exports = projectMetadataPublicSymbols tcMetadata
+                        let instances = projectMetadataInstances tcMetadata
                         let constructors = projectMetadataConstructors tcMetadata
-                        pure (name, exports, constructors, tcAlloyModules)
+                        pure (name, exports, instances, constructors, tcAlloyModules)
             )
             externals
-    let symbols = Map.fromList [(name, exports) | (name, exports, _, _) <- list]
-    let constructors = Map.unions [ctors | (_, _, ctors, _) <- list]
-    let externalAlloy = concat [modules | (_, _, _, modules) <- list]
-    pure (symbols, constructors, externalAlloy)
+    let symbols = Map.fromList [(name, exports) | (name, exports, _, _, _) <- list]
+    let instances = Map.fromList [(name, insts) | (name, _, insts, _, _) <- list]
+    let constructors = Map.unions [ctors | (_, _, _, ctors, _) <- list]
+    let externalAlloy = concat [modules | (_, _, _, _, modules) <- list]
+    pure (symbols, instances, constructors, externalAlloy)

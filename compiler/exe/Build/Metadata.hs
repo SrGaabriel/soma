@@ -77,6 +77,7 @@ data PublicSymbol = PublicSymbol
 data ProjectMetadata = ProjectMetadata
     { pmModuleMetadata :: ModuleMetadata
     , pmPublicSymbols :: [PublicSymbol]
+    , pmPublicInstances :: [SerializableType]
     , pmDependencyGraph :: Map.Map String [String]
     , pmConstructorMetadata :: Map.Map String SerializableConstructorMetadata
     }
@@ -230,10 +231,11 @@ createProjectMetadata ::
     String ->
     [FilePath] ->
     Map.Map Symbol QualifiedType ->
+    [(Type, Bool)] ->
     Map.Map String [String] ->
     Map.Map String SerializableConstructorMetadata ->
     ProjectMetadata
-createProjectMetadata modName version sourceFiles publicSyms depGraph constructors =
+createProjectMetadata modName version sourceFiles publicSyms publicInsts depGraph constructors =
     ProjectMetadata
         { pmModuleMetadata =
             ModuleMetadata
@@ -244,6 +246,7 @@ createProjectMetadata modName version sourceFiles publicSyms depGraph constructo
                 , metaDependencies = Map.keys depGraph
                 }
         , pmPublicSymbols = extractPublicSymbols publicSyms
+        , pmPublicInstances = map (typeToSerializable . fst) publicInsts
         , pmDependencyGraph = depGraph
         , pmConstructorMetadata = constructors
         }
@@ -259,3 +262,7 @@ projectMetadataPublicSymbols pm =
 
 projectMetadataConstructors :: ProjectMetadata -> Map.Map String SerializableConstructorMetadata
 projectMetadataConstructors = pmConstructorMetadata
+
+projectMetadataInstances :: ProjectMetadata -> Map.Map Type Bool
+projectMetadataInstances pm =
+    Map.fromList [(serializableToType inst, True) | inst <- pmPublicInstances pm]

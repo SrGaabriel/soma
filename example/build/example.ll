@@ -12,8 +12,8 @@ call i32 @puts(ptr @str_0)
 ret void
 
 }
-define ptr @"display$String$m55344248"(ptr %s) {
+define ptr @"display$String$m55344248"(ptr %str) {
 entry:
-ret ptr %s
+ret ptr %str
 
 }

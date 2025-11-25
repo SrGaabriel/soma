@@ -1,8 +1,5 @@
 use stdlib.{IO, +, println, Display}
 
-instance Display String where
-    def display(s: String) -> String = s
-
 def main :: IO () =
     let x = 10 in
     let y = 20 in

@@ -295,14 +295,14 @@ addInstanceBindingFromType constraintType = do
     put s{instanceBindings = Map.insert constraintType True instances}
 
 runResolver :: String -> String -> Expr -> ([InferenceError], (Expr, TypeEnv, InstanceEnv))
-runResolver packageName moduleName = runResolverWithEnv packageName moduleName Map.empty
+runResolver packageName moduleName = runResolverWithEnv packageName moduleName Map.empty Map.empty
 
-runResolverWithEnv :: String -> String -> TypeEnv -> Expr -> ([InferenceError], (Expr, TypeEnv, InstanceEnv))
-runResolverWithEnv packageName moduleName initialTyEnv root = do
+runResolverWithEnv :: String -> String -> TypeEnv -> InstanceEnv -> Expr -> ([InferenceError], (Expr, TypeEnv, InstanceEnv))
+runResolverWithEnv packageName moduleName initialTyEnv initialInstEnv root = do
     let initialState =
             ResolverState
                 { globalBindings = initialTyEnv
-                , instanceBindings = Map.empty
+                , instanceBindings = initialInstEnv
                 , currentModule = moduleName
                 , currentPackage = packageName
                 }

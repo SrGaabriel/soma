@@ -72,10 +72,3 @@ instance Display String where
 instance Display [a] where
     def display(list: [a]) -> String = "<list>"
     
-    
-def main :: IO () =
-    compose
-        let value = Some "5"
-        let result = fmap (\x -> "1") value
-        println (display [5,3,4])
-        println (display result)

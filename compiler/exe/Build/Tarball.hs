@@ -22,7 +22,7 @@ import Data.Maybe (mapMaybe)
 import Orphans.Binary ()
 import Project.Symbols (Symbol)
 import System.FilePath (takeFileName, (</>))
-import Typing.Types (QualifiedType)
+import Typing.Types (QualifiedType, Type)
 
 tarballExtension :: String
 tarballExtension = ".toria"
@@ -57,14 +57,15 @@ createProjectTarball ::
     String ->
     [FilePath] ->
     Map.Map Symbol QualifiedType ->
+    [(Type, Bool)] ->
     Map.Map String [String] ->
     Map.Map String SerializableConstructorMetadata ->
     [(FilePath, BL.ByteString)] ->
     [(FilePath, BL.ByteString)] ->
     [AlloyModule] ->
     IO ()
-createProjectTarball outPath opts modName version srcFiles publicSyms depGraph constructors objFiles llvmFiles alloyModules = do
-    let metadata = createProjectMetadata modName version srcFiles publicSyms depGraph constructors
+createProjectTarball outPath opts modName version srcFiles publicSyms publicInsts depGraph constructors objFiles llvmFiles alloyModules = do
+    let metadata = createProjectMetadata modName version srcFiles publicSyms publicInsts depGraph constructors
     let metadataJson = encode metadata
 
     let objFilesBS = [(path, content) | (path, content) <- objFiles]

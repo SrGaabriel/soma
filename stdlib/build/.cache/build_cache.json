@@ -1,9 +1,9 @@
 {
   "stdlib": {
-    "source_hash": "0eb140e7f67c0f74429b965f2d5506bdff823f29a6ba0fd3d831307a4222b85c",
+    "source_hash": "82b49d77cf31d371e11ea5420b501a441a98ba9bb03d4b5e634d97c939e8d4da",
     "dependency_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "artifact_path": "../stdlib/build/stdlib",
-    "tarball_path": "../stdlib/build/stdlib",
-    "build_timestamp": 1764044964
+    "artifact_path": "../stdlib/build/stdlib.toria",
+    "tarball_path": "../stdlib/build/stdlib.toria",
+    "build_timestamp": 1764090937
   }
 }
