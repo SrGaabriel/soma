@@ -6,11 +6,12 @@ import Parsing.Errors (ParsingError (..))
 import Parsing.Parser (
     Parser,
     consume,
+    optionallySurround,
     parseExhaustiveSequence,
     parseSequence,
     peek,
     tryPeekOrEOF,
-    withRecovery, optionallySurround,
+    withRecovery,
  )
 import Text.Megaparsec (anySingle)
 import qualified Text.Megaparsec as MP
@@ -101,6 +102,30 @@ tryParseBaseType = do
             pure $ Just $ TVar (TypeVar name KindStar)
         _ -> pure Nothing
 
+parseAtomicType :: Parser Type
+parseAtomicType = do
+    base <- parseAtomicBase
+    parseApps base
+  where
+    parseApps t = do
+        incoming <- tryPeekOrEOF
+        case tokenKind incoming of
+            TokenUpperIdentifier -> do
+                arg <- parseAtomicBase
+                parseApps (TApp t arg)
+            TokenLowerIdentifier -> do
+                arg <- parseAtomicBase
+                parseApps (TApp t arg)
+            _ -> pure t
+
+parseAtomicBase :: Parser Type
+parseAtomicBase = do
+    nextToken <- tryPeekOrEOF
+    case tokenKind nextToken of
+        TokenUpperIdentifier -> parseTypeConstructor
+        TokenLowerIdentifier -> TVar <$> parseTyVar
+        _ -> MP.customFailure $ InvalidTokenForType nextToken
+
 parseTyVar :: Parser TyVar
 parseTyVar = do
     nameTok <- consume TokenLowerIdentifier
@@ -117,7 +142,7 @@ parseTypeConstructor = do
         other -> pure $ TUnresolved other
 
 parseConstraint :: Parser Constraint
-parseConstraint = Constraint <$> parseType
+parseConstraint = Constraint <$> parseAtomicType
 
 parseKind :: Parser Kind
 parseKind = do

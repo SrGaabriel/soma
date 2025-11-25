@@ -9,6 +9,7 @@ import Inference.Solving (checkConstraintEntailment, solveTypeConstraints)
 import Inference.Substitution (Substitutable (apply, ftv))
 import Syntax.Tree (Expr)
 import Typing.Types (Constraint (..), QualifiedType (Forall), TyVar, Type (..))
+import Data.List (nub)
 
 inferType :: String -> String -> TypeEnv -> InstanceEnv -> Expr -> ([InferenceError], (Maybe QualifiedType, TypeMap))
 inferType currentPackage currentModule env instanceEnv expr =
@@ -48,4 +49,4 @@ generalize envVars constraints t =
 inferTree :: String -> String -> TypeEnv -> InstanceEnv -> Expr -> ([InferenceError], TypeMap)
 inferTree currentPackage currentModule tEnv iEnv root =
     let (errors, (_rootType, tyMap)) = inferType currentPackage currentModule tEnv iEnv root
-    in (errors, tyMap)
+    in (nub errors, tyMap)
