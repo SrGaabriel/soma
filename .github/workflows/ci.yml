@@ -18,12 +18,12 @@ jobs:
             matrix:
                 include:
                     # macOS builds
-                    - os: macos-13
-                      arch: x86_64
-                      target: x86_64-darwin
-                    - os: macos-14
+                    - os: macos-latest
                       arch: aarch64
                       target: aarch64-darwin
+                    - os: macos-15-intel
+                      arch: x86_64
+                      target: x86_64-darwin
 
                     # Linux builds
                     - os: ubuntu-latest
@@ -91,7 +91,6 @@ jobs:
               run: echo "${{ github.workspace }}/llvm/bin" >> $GITHUB_PATH
 
             - name: Cache Cabal packages
-              if: ${{ !startsWith(matrix.os, 'macos') }}
               uses: actions/cache@v4
               with:
                   path: |
@@ -207,7 +206,6 @@ jobs:
                   targets: ${{ matrix.target }}
 
             - name: Cache Cargo dependencies
-              if: matrix.os != 'macos-14'
               uses: actions/cache@v4
               with:
                   path: |
