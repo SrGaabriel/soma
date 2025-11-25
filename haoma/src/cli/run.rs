@@ -3,12 +3,18 @@ use std::{path::Path, process::Command};
 use crate::{
     build::build_project,
     cli::parse_manifest,
+    config::manifest::ManifestModuleType,
     logging::{output_debug, output_err, output_ok},
 };
 
 pub fn execute(path: &Path, args: &Vec<String>) {
     let manifest = parse_manifest(path);
     output_debug("Successfully read manifest file");
+    if manifest.module_type != ManifestModuleType::Binary {
+        output_err("The specified project is not a binary module.");
+        std::process::exit(1);
+    }
+
     let build = build_project(path, &manifest);
     if let Err(e) = build {
         output_err(&format!("Build failed: {}", e));

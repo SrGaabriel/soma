@@ -39,6 +39,14 @@ pub enum BuildError {
         dep_path: String,
     },
     #[error(
+        "The local dependency '{dependency}' is not a library (required by '{module}') at path '{dep_path}'"
+    )]
+    LocalDependencyNotALibrary {
+        module: String,
+        dependency: String,
+        dep_path: String,
+    },
+    #[error(
         "The local dependency '{dependency}' for module '{module}' has a version mismatch: expected '{expected_version}', found '{found_version}' at path '{dep_path}'"
     )]
     LocalDependencyModuleVersionMismatch {

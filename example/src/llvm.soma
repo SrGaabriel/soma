@@ -1,7 +1,8 @@
-use stdlib.{IO, +, println, Display}
+use stdlib.{IO, +, println, Display, display, Some, fmap}
 
 def main :: IO () =
-    let x = 10 in
-    let y = 20 in
-    let z = x + y in
-    println "H"
+    compose
+        let value = Some "5"
+        let result = fmap (\x -> "1") value
+        println (display [5,4,3,2,1])
+        println (display result)

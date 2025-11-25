@@ -1,5 +1,5 @@
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Alloy.Monomorphize (
@@ -9,36 +9,35 @@ module Alloy.Monomorphize (
     TySubst,
 ) where
 
-import Alloy.Ir
-    ( ABlock (..)
-    , ACallable (..)
-    , AConst (..)
-    , AInstr (..)
-    , AOp (..)
-    , AOperand (..)
-    , AlloyFunction (..)
-    , AlloyModule (..)
-    )
-import Alloy.Naming
-    ( extractBaseTypeName
-    , extractTypeName
-    , makeInstanceMethodName
-    , makeMonomorphicName
-    )
+import Alloy.Ir (
+    ABlock (..),
+    ACallable (..),
+    AConst (..),
+    AInstr (..),
+    AOp (..),
+    AOperand (..),
+    AlloyFunction (..),
+    AlloyModule (..),
+ )
+import Alloy.Naming (
+    extractBaseTypeName,
+    extractTypeName,
+    makeInstanceMethodName,
+    makeMonomorphicName,
+ )
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Set as Set
-import Typing.Types
-    ( TyVar (..)
-    , Type (..)
-    , boolType
-    , intType
-    , strType
-    , TyConstructor (..)
-    , SkolemVar (..)
-    )
-import Debug.Trace (trace)
+import Typing.Types (
+    SkolemVar (..),
+    TyConstructor (..),
+    TyVar (..),
+    Type (..),
+    boolType,
+    intType,
+    strType,
+ )
 
 type TySubst = Map TyVar Type
 
@@ -49,12 +48,12 @@ data InstKey = InstKey
     deriving (Eq, Ord, Show)
 
 type CallSiteId = Int
+
 type RewriteMap = Map (String, CallSiteId) String
 
 monomorphizeModule :: AlloyModule -> AlloyModule
 monomorphizeModule m@AlloyModule{amName = moduleName, amFunctions = funcs} =
     let baseFnMap = toFnMap funcs
-        !_ = trace "=== STARTING MONOMORPHIZATION ===" ()
 
         -- Phase 1: Fixpoint Scan
         (allFns, instCache) = monoFixpoint moduleName baseFnMap funcs Map.empty
@@ -68,13 +67,16 @@ monomorphizeModule m@AlloyModule{amName = moduleName, amFunctions = funcs} =
 
         -- Phase 3: Cleanup
         specializedNames = Set.fromList (Map.elems instCache)
-        isKept fn = afName fn `Set.member` specializedNames
-                 || afName fn == "main"
-                 || not (hasTypeVars fn)
+        -- Keep instance methods even if polymorphic, as they might be needed by other modules
+        isInstanceMethod name = '$' `Prelude.elem` name && not ('_' `Prelude.elem` name)
+        isKept fn =
+            afName fn `Set.member` specializedNames
+                || afName fn == "main"
+                || not (hasTypeVars fn)
+                || isInstanceMethod (afName fn)
 
         finalFns = map eliminateAllTypeVars $ filter isKept rewrittenFns
-
-    in m { amFunctions = finalFns }
+    in m{amFunctions = finalFns}
 
 monomorphizeFunction :: String -> Map String AlloyFunction -> AlloyFunction -> (AlloyFunction, [AlloyFunction])
 monomorphizeFunction moduleName baseFnMap fn =
@@ -86,19 +88,18 @@ monomorphizeFunction moduleName baseFnMap fn =
         [] -> (fn, [])
         (f : cs) -> (f, cs)
 
-
 data CallResolution = CallResolution
     { crTargetFn :: AlloyFunction
-    , crSubst    :: TySubst
-    , crKey      :: InstKey
+    , crSubst :: TySubst
+    , crKey :: InstKey
     }
 
 resolveCallTarget :: Map String AlloyFunction -> Map String Type -> AOp -> Maybe CallResolution
 resolveCallTarget baseFnMap env op =
     case op of
         OpCall (Direct calleeName) args -> resolveCommon calleeName args
-        OpDictCall _ _ methodName args  -> resolveCommon methodName args
-        _                               -> Nothing
+        OpDictCall _ _ methodName args -> resolveCommon methodName args
+        _ -> Nothing
   where
     resolveCommon name args =
         let resolvedName = resolveTraitMethod baseFnMap env name args
@@ -109,14 +110,15 @@ resolveCallTarget baseFnMap env op =
                     Nothing -> Nothing
                     Just argTys ->
                         case matchCalleeParams (afParams calleeFn) argTys of
-                            Just subst | not (Map.null subst) && allConcreteSubst subst ->
-                                Just CallResolution
-                                    { crTargetFn = calleeFn
-                                    , crSubst = subst
-                                    , crKey = InstKey (afName calleeFn) (map (substType subst . snd) (afParams calleeFn))
-                                    }
+                            Just subst
+                                | not (Map.null subst) && allConcreteSubst subst ->
+                                    Just
+                                        CallResolution
+                                            { crTargetFn = calleeFn
+                                            , crSubst = subst
+                                            , crKey = InstKey (afName calleeFn) (map (substType subst . snd) (afParams calleeFn))
+                                            }
                             _ -> Nothing
-
 
 resolveTraitMethod :: Map String AlloyFunction -> Map String Type -> String -> [AOperand] -> String
 resolveTraitMethod baseFnMap env methodName args
@@ -143,15 +145,15 @@ resolveTraitMethod baseFnMap env methodName args
             _ -> methodName
     | otherwise = methodName
 
-
-monoFixpoint :: String
-             -> Map String AlloyFunction
-             -> [AlloyFunction]
-             -> Map InstKey String
-             -> ([AlloyFunction], Map InstKey String)
+monoFixpoint ::
+    String ->
+    Map String AlloyFunction ->
+    [AlloyFunction] ->
+    Map InstKey String ->
+    ([AlloyFunction], Map InstKey String)
 monoFixpoint moduleName baseFnMap fns0 cache0 =
     let reqs = scanForRequests baseFnMap fns0
-        newReqs = [ (b, s, k) | (b, s, k) <- reqs, Map.notMember k cache0 ]
+        newReqs = [(b, s, k) | (b, s, k) <- reqs, Map.notMember k cache0]
 
         newClones =
             [ let baseFn = fromMaybe (error $ "Missing base fn: " ++ b) (Map.lookup b baseFnMap)
@@ -161,7 +163,7 @@ monoFixpoint moduleName baseFnMap fns0 cache0 =
             ]
 
         cache1 = foldl' (\acc (k, nm, _) -> Map.insert k nm acc) cache0 newClones
-        fns1 = fns0 ++ [ c | (_, _, c) <- newClones ]
+        fns1 = fns0 ++ [c | (_, _, c) <- newClones]
     in if null newClones
         then (fns0, cache0)
         else monoFixpoint moduleName baseFnMap fns1 cache1
@@ -188,10 +190,11 @@ scanCallsInFunction baseFnMap AlloyFunction{afParams, afBlocks} =
                     IEffect _ -> (currEnv, currReqs)
         in foldl' step (env', reqs) abInstrs
 
-computeRewriteMap :: Map String AlloyFunction
-                  -> Map InstKey String
-                  -> [AlloyFunction]
-                  -> RewriteMap
+computeRewriteMap ::
+    Map String AlloyFunction ->
+    Map InstKey String ->
+    [AlloyFunction] ->
+    RewriteMap
 computeRewriteMap baseFnMap instCache fns =
     Map.fromList $ concatMap processFn fns
   where
@@ -204,10 +207,10 @@ computeRewriteMap baseFnMap instCache fns =
     processBlock baseEnv (startCid, startAcc) ABlock{abParams, abInstrs} =
         let
             blockEnv = baseEnv `Map.union` Map.fromList abParams
-            
+
             -- we thread the environment strictly within the block, but pass Cid/Rewrites through
             initialState = (blockEnv, startCid, startAcc)
-            
+
             step (env, cid, acc) instr =
                 case instr of
                     ILet name ty op ->
@@ -215,34 +218,47 @@ computeRewriteMap baseFnMap instCache fns =
                                 Just CallResolution{crKey} ->
                                     case Map.lookup crKey instCache of
                                         Just specName -> (cid + 1, Just specName)
-                                        Nothing       -> (cid + 1, Nothing)
-                                Nothing -> 
-                                    -- if resolution fails but it's a Call op, we MUST increment cid to keep indices aligned with the Scan phase
-                                    (if isCallOp op then cid + 1 else cid, Nothing)
+                                        Nothing -> (cid + 1, Nothing)
+                                Nothing ->
+                                    -- Check if trait method was resolved to instance method
+                                    case op of
+                                        OpCall (Direct calleeName) args
+                                            | Map.notMember calleeName baseFnMap ->
+                                                let resolved = resolveTraitMethod baseFnMap env calleeName args
+                                                in if resolved /= calleeName && Map.member resolved baseFnMap
+                                                    then (cid + 1, Just resolved)
+                                                    else (if isCallOp op then cid + 1 else cid, Nothing)
+                                        OpDictCall _ _ methodName args
+                                            | Map.notMember methodName baseFnMap ->
+                                                let resolved = resolveTraitMethod baseFnMap env methodName args
+                                                in if resolved /= methodName && Map.member resolved baseFnMap
+                                                    then (cid + 1, Just resolved)
+                                                    else (if isCallOp op then cid + 1 else cid, Nothing)
+                                        _ -> (if isCallOp op then cid + 1 else cid, Nothing)
 
                             nextAcc = case hit of
                                 Just target -> (cid, target) : acc
-                                Nothing     -> acc
-                            
+                                Nothing -> acc
+
                             nextEnv = Map.insert name ty env
                         in (nextEnv, nextCid, nextAcc)
-
                     IEffect _ -> (env, cid, acc)
 
             (_, finalCid, finalAcc) = foldl' step initialState abInstrs
-        in (finalCid, finalAcc)
+        in
+            (finalCid, finalAcc)
 
     isCallOp (OpCall _ _) = True
-    isCallOp (OpDictCall {}) = True
+    isCallOp (OpDictCall{}) = True
     isCallOp _ = False
 
 applyRewrites :: RewriteMap -> AlloyFunction -> AlloyFunction
 applyRewrites rwMap fn@AlloyFunction{afName, afBlocks} =
-    fn { afBlocks = map rewriteBlock afBlocks }
+    fn{afBlocks = map rewriteBlock afBlocks}
   where
     rewriteBlock blk@ABlock{abInstrs} =
         let (newInstrs, _) = foldl' rewriteInstr ([], 0) abInstrs
-        in blk { abInstrs = reverse newInstrs }
+        in blk{abInstrs = reverse newInstrs}
 
     rewriteInstr (acc, cid) instr =
         case instr of
@@ -255,28 +271,30 @@ applyRewrites rwMap fn@AlloyFunction{afName, afBlocks} =
         OpCall (Direct _) args ->
             case Map.lookup (afName, cid) rwMap of
                 Just newName -> (OpCall (Direct newName) args, cid + 1)
-                Nothing      -> (op, cid + 1)
+                Nothing -> (op, cid + 1)
         OpDictCall _ _ _ args ->
             case Map.lookup (afName, cid) rwMap of
                 Just newName -> (OpCall (Direct newName) args, cid + 1)
-                Nothing      -> (op, cid + 1)
+                Nothing -> (op, cid + 1)
         _ -> (op, cid)
 
 specializeFunction :: String -> AlloyFunction -> TySubst -> AlloyFunction
 specializeFunction _ fn subst =
-    let newName   = makeMonomorphicName (afName fn) (map (substType subst . snd) (afParams fn))
-        newParams = [ (n, substType subst t) | (n, t) <- afParams fn ]
-        newRet    = substType subst (afReturnType fn)
+    let newName = makeMonomorphicName (afName fn) (map (substType subst . snd) (afParams fn))
+        newParams = [(n, substType subst t) | (n, t) <- afParams fn]
+        newRet = substType subst (afReturnType fn)
         newBlocks = map (substBlock subst) (afBlocks fn)
-    in fn { afName = newName
-          , afParams = newParams
-          , afReturnType = newRet
-          , afBlocks = newBlocks
-          }
+    in fn
+        { afName = newName
+        , afParams = newParams
+        , afReturnType = newRet
+        , afBlocks = newBlocks
+        }
 
 substBlock :: TySubst -> ABlock -> ABlock
 substBlock subst blk =
-    blk { abParams = [ (n, substType subst t) | (n, t) <- abParams blk ]
+    blk
+        { abParams = [(n, substType subst t) | (n, t) <- abParams blk]
         , abInstrs = map (substInstr subst) (abInstrs blk)
         }
 
@@ -287,16 +305,16 @@ substInstr _ (IEffect eff) = IEffect eff
 
 substOp :: TySubst -> AOp -> AOp
 substOp subst op = case op of
-    OpAllocStack ty           -> OpAllocStack (substType subst ty)
-    OpAllocHeap ty            -> OpAllocHeap (substType subst ty)
-    _                         -> op
+    OpAllocStack ty -> OpAllocStack (substType subst ty)
+    OpAllocHeap ty -> OpAllocHeap (substType subst ty)
+    _ -> op
 
 substType :: TySubst -> Type -> Type
 substType subst ty = case ty of
     TVar v -> fromMaybe ty (Map.lookup v subst)
     TSkolem s ->
         let match v = tvId v == skName s
-            found = listToMaybe [ t | (v, t) <- Map.toList subst, match v ]
+            found = listToMaybe [t | (v, t) <- Map.toList subst, match v]
         in fromMaybe ty found
     TApp t1 t2 -> TApp (substType subst t1) (substType subst t2)
     TArrow t1 t2 -> TArrow (substType subst t1) (substType subst t2)
@@ -308,7 +326,7 @@ matchCalleeParams params args =
 
 unifyTypes :: [Type] -> [Type] -> Maybe TySubst
 unifyTypes [] [] = Just Map.empty
-unifyTypes (p:ps) (a:as) = do
+unifyTypes (p : ps) (a : as) = do
     s1 <- unifyOne p a
     let ps' = map (substType s1) ps
     let as' = map (substType s1) as

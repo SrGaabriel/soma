@@ -5,7 +5,7 @@ use crate::build::BuildResult;
 use crate::build::errors::BuildError;
 use crate::build::graph::{BuildNode, DependencyGraph};
 use crate::cli::parse_manifest;
-use crate::config::manifest::{Manifest, ManifestDependencyValue};
+use crate::config::manifest::{Manifest, ManifestDependencyValue, ManifestModuleType};
 
 pub struct DependencyResolver {
     root_path: PathBuf,
@@ -75,6 +75,14 @@ impl DependencyResolver {
                             dep_path: dep_path.display().to_string(),
                         });
                     }
+                    
+                    if dep_manifest.module_type != ManifestModuleType::Library {
+                        return Err(BuildError::LocalDependencyNotALibrary {
+                            module: module_name.clone(),
+                            dependency: dep_name.clone(),
+                            dep_path: dep_path.display().to_string(),
+                        });
+                    }
 
                     if let Some(expected_version) = version
                         && dep_manifest.version != *expected_version
@@ -87,7 +95,7 @@ impl DependencyResolver {
                             dep_path: dep_path.display().to_string(),
                         });
                     }
-
+                    
                     dependency_names.push(dep_name.clone());
                     self.resolve_recursive(&dep_path, &dep_manifest, graph)?;
                 }

@@ -71,4 +71,3 @@ instance Display String where
 
 instance Display [a] where
     def display(list: [a]) -> String = "<list>"
-    

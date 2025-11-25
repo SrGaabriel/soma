@@ -9,7 +9,7 @@ import Inference.Errors (InferenceError (..), generateErrorForPurpose)
 import Inference.Gen (ClassConstraintWithSource (..), TypeConstraint (..))
 import Inference.Substitution (Subst, Substitutable (apply, ftv), composeSubst)
 import Syntax.Tree (Expr (..))
-import Typing.Types (Constraint (..), TyVar (..), Type (..), constraintType)
+import Typing.Types (Constraint (..), Kind (..), TyConstructor (..), TyVar (..), Type (..), constraintType)
 import Utils.Lists (foldMWithErrors)
 
 unifyPure :: Expr -> UnificationPurpose -> Type -> Type -> Either [InferenceError] Subst
@@ -56,11 +56,23 @@ checkConstraintEntailment instanceEnv declaredConstraints classConstraintsWithSo
 isEntailedByInstanceEnv :: InstanceEnv -> Constraint -> Bool
 isEntailedByInstanceEnv instanceEnv constraint =
     let constraintTy = constraintType constraint
-    in any (\(instanceTy, _) -> canUnify instanceTy constraintTy) (Map.toList instanceEnv)
+        instances = Map.toList instanceEnv
+        matches = filter (\(instanceTy, _) -> canUnify instanceTy constraintTy) instances
+    in not (null matches)
   where
-    canUnify ty1 ty2 = case unifyPure (ExprRoot []) UnifyFunctionApplication ty1 ty2 of
-        Right _ -> True
-        Left _ -> False
+    canUnify ty1 ty2 =
+        let ty1' = eraseKinds ty1
+            ty2' = eraseKinds ty2
+        in case unifyPure (ExprRoot []) UnifyFunctionApplication ty1' ty2' of
+            Right _ -> True
+            Left _ -> False
+
+    -- Erase kind annotations from types for more lenient matching
+    eraseKinds (TConstructor (TypeConstructor name _)) = TConstructor (TypeConstructor name KindStar)
+    eraseKinds (TVar tv) = TVar tv
+    eraseKinds (TApp f a) = TApp (eraseKinds f) (eraseKinds a)
+    eraseKinds (TArrow a b) = TArrow (eraseKinds a) (eraseKinds b)
+    eraseKinds t = t
 
 isEntailedBy :: [Constraint] -> Constraint -> Bool
 isEntailedBy declaredCs constraint =

@@ -24,9 +24,11 @@ convertType (TArrow argTy retTy) =
     collectArgTypes (TArrow a b) = convertType a : collectArgTypes b
     collectArgTypes t = [convertType t]
 convertType (TSkolem _) =
-    error "Skolem type encountered during LLVM codegen. Types should be monomorphized first."
-convertType tv@(TVar (TypeVar vid _)) =
-    error $ "Type variable '" ++ vid ++ "' encountered during LLVM codegen. Types should be monomorphized first. Full type: " ++ show tv
+    -- Skolem types are erased to generic pointers at runtime
+    LlvmPointer LlvmI8
+convertType tv@(TVar _) =
+    -- Type variables are erased to generic pointers at runtime
+    LlvmPointer LlvmI8
 convertType (TUnresolved name) =
     error $ "Unresolved type " ++ name ++ " encountered during LLVM codegen."
 convertType (TApp constructor arg) =
