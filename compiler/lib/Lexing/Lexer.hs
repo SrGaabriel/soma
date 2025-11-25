@@ -142,7 +142,7 @@ lexCode' text i stack =
                                         let (restTokens, restErrors) = lexCode' rest' (i + 2 + T.length comment) stack
                                         in (restTokens, UnterminatedComment i : restErrors)
                             else
-                                if T.isPrefixOf (T.pack " ") cs
+                                if not (isAlphanumeric (T.head cs))
                                     then
                                         let (ops, rest) = T.span isOperatorChar text
                                             opsStr = T.unpack ops

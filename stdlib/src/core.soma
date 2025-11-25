@@ -2,6 +2,7 @@ intrinsic def {+} :: Int -> Int -> Int
 intrinsic def {-} :: Int -> Int -> Int
 intrinsic def {*} :: Int -> Int -> Int
 intrinsic def {%} :: Int -> Int -> Int
+intrinsic def {/} :: Int -> Int -> Int
 
 intrinsic def println :: a -> IO () with (Display a)
 intrinsic def pureIO :: a -> IO a
