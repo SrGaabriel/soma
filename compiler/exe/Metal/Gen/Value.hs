@@ -13,6 +13,7 @@ import Project.Symbols
 import Syntax.Tree
 import Typing.Currying (uncurryFunction)
 import Typing.Types
+import Metal.Gen.Unique (sanitizeName)
 
 metallizeValue :: Expr -> MetalGen MetallicExpr
 metallizeValue (ExprNum n _) = pure $ MLit (MInt (read n))
@@ -114,7 +115,8 @@ metallizeApp base args = do
                 Just (Forall baseTypeVars _ _) | not (null baseTypeVars) -> do
                     typeArgs <- extractTypeArgs base args
                     baseTy <- getExprType base
-                    let callee = MTypeApp (MVar resolvedSymbolName baseTy) typeArgs resultTy
+                    let sanitized = sanitizeName resolvedSymbolName
+                    let callee = MTypeApp (MVar sanitized baseTy) typeArgs resultTy
                     pure $ MCall callee metalArgs resultTy
                 _ -> (MCall . MVar resolvedSymbolName <$> getExprType base) <*> pure metalArgs <*> pure resultTy
         _ -> MCall <$> metallizeValue base <*> pure metalArgs <*> pure resultTy

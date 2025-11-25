@@ -24,9 +24,11 @@ import Project.Symbols (Symbol (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (uncurryFunction)
 import Typing.Types (QualifiedType (Forall), Type)
+import Metal.Gen.Unique (sanitizeName)
 
 metallizeBinding :: Expr -> MetalGen ()
-metallizeBinding (ExprBindingDef name (Forall typeVars constraints bindingTyp) body _isImpl _span) = do
+metallizeBinding (ExprBindingDef dirtyName (Forall typeVars constraints bindingTyp) body _isImpl _span) = do
+    let name = sanitizeName dirtyName
     let (paramTypes, retType) = uncurryFunction bindingTyp
 
     (paramNames, metalBody) <- metallizeFnBody name body paramTypes retType

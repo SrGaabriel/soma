@@ -13,6 +13,7 @@ import Metal.Metadata (MetallicConstructorMetadata, MetallicTypeClassMetadata)
 import Metal.Module (MetallicTypeDef)
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType (Forall), Type)
+import Project.Symbols (Symbol)
 
 data MetalGenEnv = MetalGenEnv
     { metalCurrentScope :: MetalScope
@@ -28,6 +29,7 @@ data MetalGenState = MetalGenState
     , metalTypes :: Map String MetallicTypeDef
     , metalInstanceMethods :: Map (String, Type, String) MetallicFunction
     , metalTypeClasses :: Map String MetallicTypeClassMetadata
+    , metalUniques :: Map Symbol Int
     }
 
 data MetalScope = MetalScope
@@ -70,6 +72,7 @@ defaultMetalState =
         , metalTypes = Map.empty
         , metalInstanceMethods = Map.empty
         , metalTypeClasses = Map.empty
+        , metalUniques = Map.empty
         }
 
 freshTmp :: (MonadState MetalGenState m) => m String

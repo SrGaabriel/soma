@@ -47,7 +47,7 @@ compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
     let retType = convertType afReturnType
     let fn =
             LlvmFunction
-                { functionName = name
+                { functionName = "\"" ++ name ++ "\""
                 , functionBlocks = blocks
                 , functionReturnType = retType
                 , functionParams = params

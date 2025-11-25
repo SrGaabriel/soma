@@ -82,14 +82,12 @@ compileOp (OpProject agg ix) resultTy = do
 compileOp (OpCall callable aArgs) opType = do
     case callable of
         Direct fnName | isIntrinsic fnName -> do
-            -- Handle intrinsic functions specially
             compileIntrinsic fnName aArgs opType
         _ -> do
-            -- Regular function call
             modName <- asks moduleName
             args <- mapM compileOperand aArgs
             fn <- case callable of
-                Direct fnName -> pure $ LlvmGlobal opType (qualifyWithModule modName fnName)
+                Direct fnName -> pure $ LlvmGlobal opType ("\"" <> qualifyWithModule modName fnName <> "\"")
                 Indirect operand -> compileOperand operand
             if opType == LlvmVoid
                 then do

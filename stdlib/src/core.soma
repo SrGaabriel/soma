@@ -3,6 +3,17 @@ intrinsic def {-} :: Int -> Int -> Int
 intrinsic def {*} :: Int -> Int -> Int
 intrinsic def {%} :: Int -> Int -> Int
 
+intrinsic def println :: a -> () with (Display a)
+intrinsic def pureIO :: a -> IO a
+
+intrinsic data IO :: * -> *
+
+trait Display a where
+    def display :: a -> String
+
+instance Display Int where
+    def display(x: Int) -> String = "num"
+
 data Option a
     | Some
         value :: a
@@ -27,7 +38,7 @@ trait Functor f where
 trait Applicative f with (Functor f) where
     def pure :: a -> f a
     def {<*>} :: f (a -> b) -> f a -> f b
-    
+
     def {*>} :: f a -> f b -> f b
     def {<*} :: f a -> f b -> f a
 
@@ -46,3 +57,11 @@ trait Foldable t with (Monoid t) where
 trait Traversable t with (Functor t, Foldable t) where
     def traverse :: (a -> f b) -> t a -> f (t b) with (Applicative f)
     def sequenceA :: t (f a) -> f (t a) with (Applicative f)
+
+instance Semigroup Int where
+    def {<>}(x: Int, y: Int) -> Int = x + y
+
+def main :: IO () =
+    let a = 10 in
+    let b = 20 in
+    pureIO (println (a <> b))

@@ -141,6 +141,7 @@ executable compiler
     Metal.Gen.Entry
     Metal.Gen.Extracts
     Metal.Gen.Metadata
+    Metal.Gen.Unique
     Metal.Gen.Value
     Metal.Lift
     Metal.Metadata
