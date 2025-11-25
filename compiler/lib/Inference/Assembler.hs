@@ -1,5 +1,6 @@
 module Inference.Assembler where
 
+import Data.List (nub)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Inference.Core (InstanceEnv, TypeEnv, TypeMap)
@@ -9,7 +10,6 @@ import Inference.Solving (checkConstraintEntailment, solveTypeConstraints)
 import Inference.Substitution (Substitutable (apply, ftv))
 import Syntax.Tree (Expr)
 import Typing.Types (Constraint (..), QualifiedType (Forall), TyVar, Type (..))
-import Data.List (nub)
 
 inferType :: String -> String -> TypeEnv -> InstanceEnv -> Expr -> ([InferenceError], (Maybe QualifiedType, TypeMap))
 inferType currentPackage currentModule env instanceEnv expr =

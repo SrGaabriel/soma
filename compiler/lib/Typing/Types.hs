@@ -183,3 +183,8 @@ getUnknownTypeConstructorName (Forall _ _ t) = getConstructorName t
     getConstructorName (TUnresolved name) = Just name
     getConstructorName (TApp t' _) = getConstructorName t'
     getConstructorName _ = Nothing
+
+typesMatch :: Type -> Type -> Bool
+typesMatch (TConstructor tc1) (TConstructor tc2) = tc1 == tc2
+typesMatch (TApp f1 a1) (TApp f2 a2) = typesMatch f1 f2 && typesMatch a1 a2
+typesMatch _ _ = False

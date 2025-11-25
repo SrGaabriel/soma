@@ -64,7 +64,7 @@ metallizeInstance (ExprInstanceDef constraintType methods _) =
             Just argName -> Just argName
             Nothing -> extractPolyTypeName argTy
     extractInstanceTypeName (TConstructor (TypeConstructor name _)) = Just name
-    extractInstanceTypeName (TVar _) = Nothing -- Fully polymorphic instance (no type constructor)
+    extractInstanceTypeName (TVar _) = Nothing
     extractInstanceTypeName _ = Nothing
 
     extractFullTypeName :: Type -> Maybe String
@@ -76,7 +76,7 @@ metallizeInstance (ExprInstanceDef constraintType methods _) =
     extractFullTypeName (TVar _) = Nothing
     extractFullTypeName _ = Nothing
 
-    -- Extract polymorphic type constructor name (e.g., "Array" for [a])
+    -- Extract polymorphic type constructor name (for ex, "Array" for [a])
     extractPolyTypeName :: Type -> Maybe String
     extractPolyTypeName (TApp (TConstructor (TypeConstructor "Array" _)) (TVar _)) = Just "Array"
     extractPolyTypeName (TConstructor (TypeConstructor name _)) = Just name

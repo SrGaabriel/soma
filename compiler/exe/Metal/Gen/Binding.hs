@@ -17,6 +17,7 @@ import Metal.Gen.Core (
     getExprType,
     withScope,
  )
+import Metal.Gen.Unique (sanitizeName)
 import Metal.Gen.Value (metallizeValue)
 import Metal.Lift (collectBinders)
 import Metal.Metadata (MetallicFunctionMetadata (..))
@@ -24,7 +25,6 @@ import Project.Symbols (Symbol (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Currying (uncurryFunction)
 import Typing.Types (QualifiedType (Forall), Type)
-import Metal.Gen.Unique (sanitizeName)
 
 metallizeBinding :: Expr -> MetalGen ()
 metallizeBinding (ExprBindingDef dirtyName (Forall typeVars constraints bindingTyp) body _isImpl _span) = do

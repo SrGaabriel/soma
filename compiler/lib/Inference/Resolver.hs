@@ -13,6 +13,7 @@ import Data.Foldable (foldlM)
 import qualified Data.Map as Map
 import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
+import Inference.InstanceValidation (validateInstances)
 import Lexing.Position (Span (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
 import Syntax.Patterns (Pattern (..))
@@ -273,6 +274,10 @@ analyzeTree root = do
     collectGlobals root
     resolved <- resolveTReference root
     collectInstances resolved
+
+    instEnv <- getInstanceEnv
+    tell (validateInstances instEnv resolved)
+
     pure resolved
 
 addGlobalBinding :: String -> QualifiedType -> SymbolKind -> Span -> ResolverM ()

@@ -24,6 +24,7 @@ library
     Inference.Core
     Inference.Errors
     Inference.Gen
+    Inference.InstanceValidation
     Inference.Naming
     Inference.Resolver
     Inference.Solving

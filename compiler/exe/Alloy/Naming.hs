@@ -41,7 +41,6 @@ import Typing.Types (
     Type (..),
  )
 
-
 nameSeparator :: String
 nameSeparator = "$"
 

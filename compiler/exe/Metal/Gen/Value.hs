@@ -8,12 +8,12 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Metal.Expr
 import Metal.Gen.Core
+import Metal.Gen.Unique (sanitizeName)
 import Metal.Metadata
 import Project.Symbols
 import Syntax.Tree
 import Typing.Currying (uncurryFunction)
 import Typing.Types
-import Metal.Gen.Unique (sanitizeName)
 
 metallizeValue :: Expr -> MetalGen MetallicExpr
 metallizeValue (ExprNum n _) = pure $ MLit (MInt (read n))

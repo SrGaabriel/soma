@@ -18,7 +18,6 @@ distinguish s@ResolvedSymbol{resolvedSymbolName} = do
             pure $ show n
     pure $ resolvedSymbolName ++ "#" ++ unique
 
-    
 -- todo: implement proper sanitization
 sanitizeName :: String -> String
 sanitizeName a = a

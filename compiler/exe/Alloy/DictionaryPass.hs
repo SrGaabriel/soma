@@ -400,9 +400,3 @@ buildDictArgsForCall moduleName constraints paramTypes argTypes _instanceMap _ty
         | (paramType, Just actualType) <- zip paramTys argTys
         , typesMatch targetVar paramType
         ]
-
-    typesMatch :: Type -> Type -> Bool
-    typesMatch (TVar tv1) (TVar tv2) = tv1 == tv2
-    typesMatch (TConstructor tc1) (TConstructor tc2) = tc1 == tc2
-    typesMatch (TApp f1 a1) (TApp f2 a2) = typesMatch f1 f2 && typesMatch a1 a2
-    typesMatch _ _ = False

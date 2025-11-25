@@ -65,3 +65,15 @@ def main :: IO () =
     let a = 10 in
     let b = 20 in
     pureIO (println (a <> b))
+
+trait Vehicle w where
+    def numWheels :: w -> Int
+
+trait Car c with (Vehicle c) where
+    def numDoors :: c -> Int
+
+instance Vehicle Int where
+    def numWheels(x: Int) -> Int = x * 4
+
+instance Car Int where
+    def numDoors(x: Int) -> Int = x

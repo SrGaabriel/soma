@@ -11,9 +11,9 @@ import Metal.Function (MetallicFunction)
 import Metal.Gen.Metadata (extractConstructorMetadata)
 import Metal.Metadata (MetallicConstructorMetadata, MetallicTypeClassMetadata)
 import Metal.Module (MetallicTypeDef)
+import Project.Symbols (Symbol)
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType (Forall), Type)
-import Project.Symbols (Symbol)
 
 data MetalGenEnv = MetalGenEnv
     { metalCurrentScope :: MetalScope

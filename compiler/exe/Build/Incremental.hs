@@ -25,6 +25,7 @@ import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import Format.Trees (prettyPrintAst)
 import Inference.Assembler (inferTree)
 import Inference.Core (TypeMap)
 import Inference.Resolver (runResolverWithEnv)
@@ -45,7 +46,6 @@ import System.Exit (exitFailure)
 import System.FilePath
 import System.Process (callProcess)
 import Typing.Types (QualifiedType)
-import Format.Trees (prettyPrintAst)
 
 data CompiledModule = CompiledModule
     { cmModuleName :: ModuleName
