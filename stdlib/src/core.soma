@@ -3,16 +3,13 @@ intrinsic def {-} :: Int -> Int -> Int
 intrinsic def {*} :: Int -> Int -> Int
 intrinsic def {%} :: Int -> Int -> Int
 
-intrinsic def println :: a -> () with (Display a)
+intrinsic def println :: a -> IO () with (Display a)
 intrinsic def pureIO :: a -> IO a
 
 intrinsic data IO :: * -> *
 
 trait Display a where
     def display :: a -> String
-
-instance Display Int where
-    def display(x: Int) -> String = "num"
 
 data Option a
     | Some
@@ -33,7 +30,7 @@ trait Monoid a with (Semigroup a) where
     def mconcat :: [a] -> a
 
 trait Functor f where
-    def {<$>} :: (a -> b) -> f a -> f b
+    def fmap :: (a -> b) -> f a -> f b
 
 trait Applicative f with (Functor f) where
     def pure :: a -> f a
@@ -58,22 +55,26 @@ trait Traversable t with (Functor t, Foldable t) where
     def traverse :: (a -> f b) -> t a -> f (t b) with (Applicative f)
     def sequenceA :: t (f a) -> f (t a) with (Applicative f)
 
-instance Semigroup Int where
-    def {<>}(x: Int, y: Int) -> Int = x + y
+instance Functor Option where
+    def fmap :: (a -> b) -> Option a -> Option b
+        | f (Some value) => Some (f value)
+        | f (None) => None
 
+instance Display (Option a) where
+    def display :: Option a -> String
+        | (Some value) => value
+        | (None) => "None"
+
+instance Display String where
+    def display(str: String) -> String = str
+
+instance Display [a] where
+    def display(list: [a]) -> String = "<list>"
+    
+    
 def main :: IO () =
-    let a = 10 in
-    let b = 20 in
-    pureIO (println (a <> b))
-
-trait Vehicle w where
-    def numWheels :: w -> Int
-
-trait Car c with (Vehicle c) where
-    def numDoors :: c -> Int
-
-instance Vehicle Int where
-    def numWheels(x: Int) -> Int = x * 4
-
-instance Car Int where
-    def numDoors(x: Int) -> Int = x
+    compose
+        let value = Some "5"
+        let result = fmap (\x -> "1") value
+        println (display [5,3,4])
+        println (display result)

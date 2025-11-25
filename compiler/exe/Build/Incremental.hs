@@ -25,12 +25,13 @@ import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Format.Trees (prettyPrintAst)
+import Format.Trees (prettyPrintAst, treeShow)
 import Inference.Assembler (inferTree)
 import Inference.Core (TypeMap)
 import Inference.Resolver (runResolverWithEnv)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.Errors (printError)
+import Logging.Trees ()
 import Metal.Gen.Entry (compileMetalModule)
 import Metal.Gen.Metadata (constructorMetadataToSerializable, extractConstructorMetadata, serializableToConstructorMetadata)
 import Metal.Lift (liftLambdas)
@@ -93,11 +94,13 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalCo
         metallicNormalized = normalizeModule metallicLifted
 
     putStrLn $ "Metal (HIR) complete for " ++ modName
+    putStrLn $ treeShow metallicNormalized
 
     let alloyPreDictMono = lowerAlloyModule modName metallicNormalized
         alloyExpanded = expandIntrinsicsModule alloyPreDictMono
 
     putStrLn $ "Alloy (MIR) complete for " ++ modName
+    putStrLn $ treeShow alloyExpanded
 
     return
         $ CompiledModule
@@ -151,6 +154,7 @@ linkCompiledModules packageName compiledModules externalConstructors externalAll
     let alloyOpt = optimizeFixpoint alloyHoisted
 
     putStrLn "Link-time optimization complete"
+    putStrLn $ treeShow alloyOpt
 
     return (alloyOpt, allConstructors)
 

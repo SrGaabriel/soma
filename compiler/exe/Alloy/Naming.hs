@@ -126,9 +126,8 @@ makeInstanceMethodName :: String -> String -> String
 makeInstanceMethodName methodName typeName =
     methodName ++ nameSeparator ++ typeName
 
--- todo: review
-makeMonomorphicName :: String -> String -> [Type] -> String
-makeMonomorphicName _moduleName baseName typeArgs =
+makeMonomorphicName :: String -> [Type] -> String
+makeMonomorphicName baseName typeArgs =
     let enc = intercalate "_" (map encodeTypeName typeArgs)
         mangledBase = if null typeArgs then baseName else baseName ++ nameSeparator ++ enc
     in mangledBase

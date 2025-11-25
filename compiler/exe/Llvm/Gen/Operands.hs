@@ -9,16 +9,18 @@ import Alloy.Ir (
 import Control.Monad.Reader (asks)
 import Control.Monad.State (gets)
 import qualified Data.Map as Map
+import Alloy.Naming (qualifyWithModule)
 import Llvm.Gen.Core (
     IrGen,
-    IrGenEnv (opTypeEnv),
+    IrGenEnv (moduleName, opTypeEnv),
     IrGenState (valueSubst),
     applySubstitutions,
  )
 import Llvm.Gen.Templates (newStrTemplate)
-import Llvm.Types (LlvmType (LlvmI8, LlvmPointer))
+import Llvm.Gen.TypeConversion (getConstructorTag)
+import Llvm.Types (LlvmType (LlvmAnonymous, LlvmI64, LlvmI8, LlvmPointer))
 import Llvm.Values (
-    LlvmValue (LlvmGlobal, LlvmRegister),
+    LlvmValue (LlvmGlobal, LlvmLiteral, LlvmRegister),
     boolLiteral,
     intLiteral,
  )
@@ -35,8 +37,18 @@ compileOperand (OpVar name) = do
             case Map.lookup name st of
                 Just val -> pure val
                 Nothing ->
-                    -- todo: have a proper type here
-                    pure $ LlvmGlobal (LlvmPointer LlvmI8) name
+                    let tag = getConstructorTag name (-1)
+                    in if tag /= -1
+                        then
+                            let structTy = LlvmAnonymous [LlvmI8, LlvmI64]
+                                valStr = "{ i8 " ++ show tag ++ ", i64 0 }"
+                            in pure $ LlvmLiteral structTy valStr
+                        else do
+                            modName <- asks moduleName
+                            let finalName = if name == "main" then name else qualifyWithModule modName name
+                            let quotedName = "\"" ++ finalName ++ "\""
+                            -- todo: have a proper type here
+                            pure $ LlvmGlobal (LlvmPointer LlvmI8) quotedName
 compileOperand (OpConst (CInt n)) = pure $ intLiteral n
 compileOperand (OpConst (CBool n)) = pure $ boolLiteral n
 compileOperand (OpConst (CString str)) = newStrTemplate str
