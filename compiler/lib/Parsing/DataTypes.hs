@@ -1,8 +1,9 @@
 module Parsing.DataTypes where
 
 import Lexing.Lexer (Token (tokenValue), TokenKind (..), spanningTokens)
+import Lexing.Position (Located)
 import Parsing.Parser (Parser, consume, parseFluidSequence, parseLayout, parseOptionallyLayout)
-import Parsing.Types (parseTyVar, parseType)
+import Parsing.Types (parseLocatedType, parseTyVar)
 import Syntax.Tree (Expr (..))
 import Typing.Types (Type)
 
@@ -36,9 +37,9 @@ parseDataTypeConstructor = do
             , structConstructorSpan = spanningTokens firstToken nameToken
             }
 
-parseDataTypeConstructorField :: Parser (String, Type)
+parseDataTypeConstructorField :: Parser (String, Located Type)
 parseDataTypeConstructorField = do
     nameToken <- consume TokenLowerIdentifier
     _ <- consume TokenReturns
-    typeExpr <- parseType
+    typeExpr <- parseLocatedType
     pure (tokenValue nameToken, typeExpr)

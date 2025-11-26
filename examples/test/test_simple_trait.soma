@@ -1,0 +1,4 @@
+// Minimal trait test
+
+trait Eq a where
+    def {==} :: a -> a -> Bool

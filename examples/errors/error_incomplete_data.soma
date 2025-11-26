@@ -1,0 +1,15 @@
+// Error: Incomplete data type definition
+
+// Missing constructor body
+data Bad
+    | Constructor
+
+// Missing field type
+data AlsoBad
+    | MakeIt
+        field ::
+
+// This should parse
+data Good
+    | GoodCons
+        field :: Int

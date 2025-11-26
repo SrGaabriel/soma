@@ -1,7 +1,8 @@
 module Parsing.Types where
 
 import Data.List (nubBy)
-import Lexing.Lexer (Token (..), TokenKind (..))
+import Lexing.Lexer (Token (..), TokenKind (..), tokenSpan)
+import Lexing.Position (Located (..), Span (..))
 import Parsing.Errors (ParsingError (..))
 import Parsing.Parser (
     Parser,
@@ -16,6 +17,28 @@ import Parsing.Parser (
 import Text.Megaparsec (anySingle)
 import qualified Text.Megaparsec as MP
 import Typing.Types (Constraint (Constraint), Kind (..), QualifiedType (..), TyVar (..), Type (..), arrayType, boolType, constraintTypes, extractTyVars, intType, strType, tupleType)
+
+parseLocatedQualifiedType :: Parser (Located QualifiedType)
+parseLocatedQualifiedType = do
+    (qtype, span') <- parseQualifiedTypeWithSpan
+    pure $ Located span' qtype
+
+parseQualifiedTypeWithSpan :: Parser (QualifiedType, Span)
+parseQualifiedTypeWithSpan = do
+    (baseType, typeSpan) <- parseTypeWithSpan
+    incoming <- tryPeekOrEOF
+    if tokenKind incoming == TokenWith
+        then do
+            _ <- consume TokenWith
+            let constraintsParser = parseExhaustiveSequence TokenComma parseConstraint
+            constraints <- optionallySurround TokenLeftParen TokenRightParen constraintsParser
+            let tyVarsFromType = extractTyVars baseType
+            let tyVarsFromConstraints = concatMap (extractTyVarsFromTypes . constraintTypes) constraints
+            let allVars = deduplicateTyVars (tyVarsFromType ++ tyVarsFromConstraints)
+            pure (Forall allVars constraints baseType, typeSpan)
+        else do
+            let tyVars = extractTyVars baseType
+            pure (Forall tyVars [] baseType, typeSpan)
 
 parseQualifiedType :: Parser QualifiedType
 parseQualifiedType = do
@@ -44,6 +67,20 @@ parseWithClause = do
             let tyVarsFromConstraints = concatMap (extractTyVarsFromTypes . constraintTypes) constraints
             pure (constraints, tyVarsFromConstraints)
         else pure ([], [])
+
+parseLocatedType :: Parser (Located Type)
+parseLocatedType = do
+    (ty, span') <- parseTypeWithSpan
+    pure $ Located span' ty
+
+parseTypeWithSpan :: Parser (Type, Span)
+parseTypeWithSpan = do
+    firstTok <- peek
+    ty <- parseType
+    pure (ty, extractTypeSpan firstTok ty)
+  where
+    extractTypeSpan :: Token -> Type -> Span
+    extractTypeSpan tok _ = tokenSpan tok -- todo: parse type's span
 
 parseType :: Parser Type
 parseType = do

@@ -8,6 +8,9 @@ class PrintableError a where
     errorStart :: a -> Int
     errorEnd :: a -> Int
 
+    errorHint :: a -> Maybe String
+    errorHint _ = Nothing
+
     errorDebugDevDetails :: a -> String
     errorDebugDevDetails _ = "No debug details available"
 

@@ -2,11 +2,12 @@ module Parsing.Bindings where
 
 import Control.Monad (unless)
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
+import Lexing.Position (Located (..), dummySpan)
 import Parsing.Atoms (parseExpression)
 import Parsing.Errors (ParsingError (..))
-import Parsing.Parser (Parser, consume, parseCommaSeparatedUntil, parseFuncName, parseOptionallyInLayout, peek)
+import Parsing.Parser (Parser, ParserContext (..), consume, parseCommaSeparatedUntil, parseFuncName, parseOptionallyInLayout, peek, withinContext)
 import Parsing.Patterns (parsePipePatternArms)
-import Parsing.Types (parseQualifiedType, parseType)
+import Parsing.Types (parseLocatedQualifiedType, parseType)
 import Syntax.Tree (Expr (..), exprSpan)
 import qualified Text.Megaparsec as MP
 import Typing.Currying (curryFunction)
@@ -19,16 +20,16 @@ data FuncParam
 
 data BindingSyntax
     = ImperativeStyled [FuncParam] Type Token
-    | ImperativeUntyped [String] QualifiedType Token
-    | TraditionalStyled QualifiedType Token
+    | ImperativeUntyped [String] (Located QualifiedType) Token
+    | TraditionalStyled (Located QualifiedType) Token
     deriving (Show, Eq)
 
 parseBinding :: Bool -> Parser Expr
-parseBinding isTopLevel = do
+parseBinding isTopLevel = withinContext (InFunctionSignature "") $ do
     defToken <- consume TokenDef
     name <- parseFuncName
     syntax <- parseBindingSyntax
-    body <- parseBindingBody syntax
+    body <- withinContext (InFunctionBody name) $ parseBindingBody name syntax
     let bindType = getBindingType syntax
     let styleToken = getStyleToken syntax
     pure
@@ -71,14 +72,14 @@ parseImperativeStyle = do
                 $ MP.customFailure
                 $ MixedParameterStyles nextTok
             let names = map extractName params
-            paramType <- parseQualifiedType
+            paramType <- parseLocatedQualifiedType
             return $ ImperativeUntyped names paramType nextTok
         _ -> MP.customFailure $ InvalidFunctionSignature nextTok
 
 parseTraditionalStyle :: Parser BindingSyntax
 parseTraditionalStyle = do
     returns <- consume TokenReturns
-    qty <- parseQualifiedType
+    qty <- parseLocatedQualifiedType
     return $ TraditionalStyled qty returns
 
 parseFuncParam :: Parser FuncParam
@@ -93,20 +94,21 @@ parseFuncParam = do
             TypedParam name <$> parseType
         else return $ UntypedParam name
 
-parseBindingBody :: BindingSyntax -> Parser Expr
-parseBindingBody syntax = do
+parseBindingBody :: String -> BindingSyntax -> Parser Expr
+parseBindingBody funcName syntax = do
     case syntax of
-        TraditionalStyled{} -> parseTraditionalBody
+        TraditionalStyled{} -> parseTraditionalBody funcName
         ImperativeStyled{} -> parseSimpleBody
         ImperativeUntyped{} -> parseSimpleBody
 
-parseTraditionalBody :: Parser Expr
-parseTraditionalBody = do
+parseTraditionalBody :: String -> Parser Expr
+parseTraditionalBody funcName = do
     nextTok <- peek
     case tokenKind nextTok of
         TokenEquals -> parseSimpleBody
-        TokenLayoutStart -> do
+        TokenLayoutStart -> withinContext (InPatternMatch funcName) $ do
             ExprDerivedPatternMatch <$> parsePipePatternArms
+        TokenCompose -> MP.customFailure $ MissingEqualsBeforeExpression nextTok funcName
         _ -> MP.customFailure $ InvalidFunctionBody nextTok
 
 parseSimpleBody :: Parser Expr
@@ -114,11 +116,11 @@ parseSimpleBody = do
     _ <- consume TokenEquals
     parseOptionallyInLayout parseExpression
 
-getBindingType :: BindingSyntax -> QualifiedType
+getBindingType :: BindingSyntax -> Located QualifiedType
 getBindingType syntax = case syntax of
     ImperativeStyled _ funcType _ -> do
         let tyVars = extractTyVars funcType
-        Forall tyVars [] funcType
+        Located dummySpan (Forall tyVars [] funcType)
     ImperativeUntyped _ qty _ -> qty
     TraditionalStyled qty _ -> qty
 

@@ -1,0 +1,9 @@
+// Simplest pattern test
+
+data Bool
+    | True
+    | False
+
+def not :: Bool -> Bool
+    | (True) => False
+    | (False) => True

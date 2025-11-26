@@ -9,6 +9,7 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Debug.Trace as Debug
 import Inference.Core (TypeMap)
+import Lexing.Position (Located (..))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
 import Typing.Currying (uncurryKind)
@@ -72,12 +73,12 @@ instance TreeShow Expr where
     treeShow (ExprDerivedPatternMatch _) = "DerivedPatternMatch: "
     treeShow (ExprPatternMatchArm p _ _) =
         "PatternMatchArm: (" ++ unwords (map treeShow p) ++ "):"
-    treeShow (ExprBindingDef name qType _ _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
-    treeShow (ExprIntrinsicDef name qType _) = "IntrinsicDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
+    treeShow (ExprBindingDef name (Located _ qType) _ _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
+    treeShow (ExprIntrinsicDef name (Located _ qType) _) = "IntrinsicDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
     treeShow (ExprDataTypeDef name generics _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
     treeShow (ExprDataConstructor name args _) = "DataConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
-    treeShow (ExprTypeClassDef name ty _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow ty ++ "):"
-    treeShow (ExprTypeClassBinding name qType _ _) = "TypeClassBinding (" ++ name ++ ": " ++ treeShow qType ++ "):"
+    treeShow (ExprTypeClassDef name (Located _ ty) _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow ty ++ "):"
+    treeShow (ExprTypeClassBinding name (Located _ qType) _ _) = "TypeClassBinding (" ++ name ++ ": " ++ treeShow qType ++ "):"
     treeShow (ExprInstanceDef constraintType _ _) = "InstanceDef (" ++ treeShow constraintType ++ "):"
     treeShow (ExprIntrinsicDataTypeDef name kind _) =
         "IntrinsicDataTypeDef (" ++ name ++ ": " ++ treeShow kind ++ "):"
@@ -111,9 +112,9 @@ instance (TreeShow a) => TreeShow (Map String a) where
     treeShow :: (TreeShow a) => Map String a -> String
     treeShow m = "{" ++ unwords (map (\(k, v) -> k ++ ": " ++ treeShow v) (Map.toList m)) ++ "}"
 
-treeShowArgs :: [(String, Type)] -> String
+treeShowArgs :: [(String, Located Type)] -> String
 treeShowArgs args =
-    "(" ++ unwords (map (\(name, t) -> name ++ ": " ++ treeShow t) args) ++ ")"
+    "(" ++ unwords (map (\(name, Located _ t) -> name ++ ": " ++ treeShow t) args) ++ ")"
 
 instance TreeShow QualifiedType where
     treeShow (Forall vars constraints t) =

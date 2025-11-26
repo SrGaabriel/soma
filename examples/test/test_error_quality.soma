@@ -1,0 +1,9 @@
+// Test error message quality
+
+intrinsic def {+} :: Int -> Int -> Int
+
+// Missing closing paren - should point to the exact location
+def broken( -> Int = 5
+
+// This should still parse
+def good(x: Int) -> Int = x + 1

@@ -14,6 +14,12 @@ Put simply: write composable, declarative code; the compiler does the heavy lift
 
 ---
 
+## 💡 Examples
+
+You can find some examples in the `examples/` directory. They are not comprehensive, but should give you a taste of the language and its syntax.
+
+---
+
 ## 🛠️ Compiler backend breakdown
 
 1. Metal (HIR) 🧱: After inference the compiler produces a higher-level IR. This stage performs lambda-lifting (so nested functions become explicit top-level closures) and normalization to get a predictable, analyzable shape.

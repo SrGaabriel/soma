@@ -5,6 +5,7 @@ module Metal.Gen.DataTypes (
     compileDataTypeDefsFromRoot,
 ) where
 
+import Lexing.Position (Located (..))
 import Metal.Gen.Core (MetalGen, addType)
 import Metal.Module (
     MetallicConstructor (..),
@@ -32,7 +33,7 @@ buildConstructors ctors =
     [ MetallicConstructor
         { mcName = structConstructorName
         , mcTag = tag
-        , mcFields = map snd structConstructorArgs
+        , mcFields = map (lValue . snd) structConstructorArgs
         }
     | (tag, ExprDataConstructor{structConstructorName, structConstructorArgs}) <- zip [0 ..] ctors
     ]

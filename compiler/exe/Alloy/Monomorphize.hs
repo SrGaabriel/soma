@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -68,7 +67,7 @@ monomorphizeModule m@AlloyModule{amName = moduleName, amFunctions = funcs} =
         -- Phase 3: Cleanup
         specializedNames = Set.fromList (Map.elems instCache)
         -- Keep instance methods even if polymorphic, as they might be needed by other modules
-        isInstanceMethod name = '$' `Prelude.elem` name && not ('_' `Prelude.elem` name)
+        isInstanceMethod name = '$' `Prelude.elem` name && notElem '_' name
         isKept fn =
             afName fn `Set.member` specializedNames
                 || afName fn == "main"
@@ -321,8 +320,7 @@ substType subst ty = case ty of
     _ -> ty
 
 matchCalleeParams :: [(String, Type)] -> [Type] -> Maybe TySubst
-matchCalleeParams params args =
-    unifyTypes (map snd params) args
+matchCalleeParams params = unifyTypes (map snd params)
 
 unifyTypes :: [Type] -> [Type] -> Maybe TySubst
 unifyTypes [] [] = Just Map.empty

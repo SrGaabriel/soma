@@ -161,16 +161,12 @@ lexCode' text i stack =
                         | newIndent > current =
                             ([Token TokenLayoutStart "" i], newIndent : stack, [])
                         | newIndent == current =
-                            if current > 0
-                                then
-                                    ([Token TokenLayoutSeparator "" i], stack, [])
-                                else
-                                    ([], stack, [])
+                            ([Token TokenLayoutSeparator "" i], stack, [])
                         | otherwise =
                             let (dedentToks, remainingStack, isMatch) = dedentTo stack newIndent i
                             in if isMatch
                                 then
-                                    let separatorTok = ([Token TokenLayoutSeparator "" i | newIndent > 0])
+                                    let separatorTok = [Token TokenLayoutSeparator "" i]
                                     in (dedentToks ++ separatorTok, remainingStack, [])
                                 else
                                     (dedentToks, newIndent : remainingStack, [InconsistentIndent i])

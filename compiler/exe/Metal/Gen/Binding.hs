@@ -8,6 +8,7 @@ import Alloy.Decisions (patternMatchArity)
 import Control.Monad (foldM, forM)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import Lexing.Position (Located (..))
 import Metal.Expr (MCaseArm (..), MetallicExpr (..))
 import Metal.Function (MetallicFunction (..))
 import Metal.Gen.Core (
@@ -27,7 +28,7 @@ import Typing.Currying (uncurryFunction)
 import Typing.Types (QualifiedType (Forall), Type)
 
 metallizeBinding :: Expr -> MetalGen ()
-metallizeBinding (ExprBindingDef dirtyName (Forall typeVars constraints bindingTyp) body _isImpl _span) = do
+metallizeBinding (ExprBindingDef dirtyName (Located _ (Forall typeVars constraints bindingTyp)) body _isImpl _span) = do
     let name = sanitizeName dirtyName
     let (paramTypes, retType) = uncurryFunction bindingTyp
 

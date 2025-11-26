@@ -1,0 +1,9 @@
+// Pattern without parentheses - should give helpful error
+
+data Bool
+    | True
+    | False
+
+def not :: Bool -> Bool
+    | True => False
+    | False => True

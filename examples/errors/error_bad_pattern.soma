@@ -1,0 +1,16 @@
+// Error: Invalid pattern syntax
+
+data Maybe a
+    | Just
+        value :: a
+    | Nothing
+
+// Invalid pattern - using number instead of constructor
+def badPattern :: Maybe Int -> Int
+    | 123 => 0
+    | Nothing => 0
+
+// This should parse
+def goodPattern :: Maybe Int -> Int
+    | (Just x) => x
+    | Nothing => 0

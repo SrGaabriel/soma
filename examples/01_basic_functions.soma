@@ -1,0 +1,30 @@
+// Basic function examples
+
+intrinsic def {+} :: Int -> Int -> Int
+intrinsic def {*} :: Int -> Int -> Int
+intrinsic def {-} :: Int -> Int -> Int
+
+// Simple function with typed parameters
+def add(x: Int, y: Int) -> Int = x + y
+
+// Function with type inference
+def square(n: Int) -> Int = n * n
+
+// Traditional style function
+def double :: Int -> Int
+    | n => n + n
+
+// Multi-clause pattern matching
+def fibonacci :: Int -> Int
+    | 0 => 0
+    | 1 => 1
+    | n => fibonacci (n - 1) + fibonacci (n - 2)
+
+// Lambda expressions
+def applyTwice :: (Int -> Int) -> Int -> Int
+    | f x => f (f x)
+
+// Composition
+def composed(x: Int) -> Int =
+    let doubled = double x in
+    square doubled

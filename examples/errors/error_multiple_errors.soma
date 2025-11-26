@@ -1,0 +1,19 @@
+// Multiple errors to test recovery
+
+intrinsic def {+} :: Int -> Int -> Int
+
+// Error 1: Missing paren
+def bad1( -> Int = 5
+
+// Error 2: Missing arrow
+def bad2(x: Int) Int = x
+
+// Error 3: Invalid pattern
+def bad3 :: Int -> Int
+    | 999 => 0
+
+// Good function - should still parse
+def good(x: Int) -> Int = x + 1
+
+// Error 4: Another bad one
+def bad4(x: Int, y) -> Int = x

@@ -3,7 +3,9 @@ module Metal.Gen.Entry where
 import Alloy.Naming (makeInstanceMethodName, nameArrayPrefix)
 import Control.Monad.State (gets, modify)
 import qualified Data.Map as Map
+import Format.Trees (treeShow)
 import Inference.Core (TypeMap)
+import Lexing.Position (Located (..))
 import Metal.Function (MetallicFunction (..))
 import Metal.Gen.Binding (metallizeBinding)
 import Metal.Gen.Core (
@@ -26,7 +28,6 @@ import Metal.Metadata (MetallicConstructorMetadata, MetallicTypeClassMetadata (.
 import Metal.Module (MetallicModule (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (QualifiedType (..), TyConstructor (..), Type (..))
-import Format.Trees (treeShow)
 
 metallizeModule :: String -> Expr -> MetalGen MetallicModule
 metallizeModule _ root = do
@@ -73,8 +74,8 @@ metallizeInstance (ExprInstanceDef constraintType methods _) =
         case extractFullTypeName elemTy of
             Just elemName -> Just (nameArrayPrefix ++ elemName)
             Nothing -> Nothing
-    extractFullTypeName (TApp (TConstructor (TypeConstructor name _)) (TVar _)) = 
-        Just name  -- handle polymorphic types like Option a
+    extractFullTypeName (TApp (TConstructor (TypeConstructor name _)) (TVar _)) =
+        Just name -- handle polymorphic types like Option a
     extractFullTypeName (TConstructor (TypeConstructor name _)) = Just name
     extractFullTypeName (TVar _) = Nothing
     extractFullTypeName _ = Nothing
@@ -118,7 +119,7 @@ metallizeTypeClass (ExprTypeClassDef className _generics methods _) = do
     extractMethodName _ = ""
 
     extractMethodType :: Expr -> QualifiedType
-    extractMethodType (ExprTypeClassBinding _ qtype _ _) = qtype
+    extractMethodType (ExprTypeClassBinding _ (Located _ qtype) _ _) = qtype
     extractMethodType _ = Forall [] [] (TConstructor (TypeConstructor "Unknown" undefined))
 metallizeTypeClass _ = pure ()
 

@@ -3,7 +3,7 @@ module Parsing.Intrinsics (parseIntrinsic) where
 import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..), spanningTokens)
 import Parsing.Errors (ParsingError (..))
 import Parsing.Parser (Parser, consume, parseFuncName, tryPeekOrEOF)
-import Parsing.Types (parseKind, parseQualifiedType)
+import Parsing.Types (parseKind, parseLocatedQualifiedType)
 import Syntax.Tree (Expr (..))
 import qualified Text.Megaparsec as MP
 
@@ -21,7 +21,7 @@ parseIntrinsicDef = do
     defTok <- consume TokenDef
     name <- parseFuncName
     retTok <- consume TokenReturns
-    bindType <- parseQualifiedType
+    bindType <- parseLocatedQualifiedType
     pure
         $ ExprIntrinsicDef
             { intrinsicName = name

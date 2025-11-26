@@ -4,6 +4,7 @@ import qualified Data.Map as Map
 import Inference.Core (InstanceEnv)
 import Inference.Errors (InferenceError (..))
 import Inference.Substitution (Substitutable (apply))
+import Lexing.Position (Located (..))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (Constraint (..), QualifiedType (..), TyConstructor (..), TyVar (..), Type (..), constraintType)
 
@@ -16,7 +17,7 @@ validateInstances instEnv expr =
 collectTypeClassDefs :: Expr -> Map.Map String QualifiedType
 collectTypeClassDefs expr = Map.fromList (go expr)
   where
-    go (ExprTypeClassDef name ty _ _) = [(name, ty)]
+    go (ExprTypeClassDef name (Located _ ty) _ _) = [(name, ty)]
     go (ExprRoot children) = concatMap go children
     go e = concatMap go (exprChildren e)
 

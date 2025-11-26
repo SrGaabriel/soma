@@ -14,7 +14,7 @@ import qualified Data.Map as Map
 import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
 import Inference.InstanceValidation (validateInstances)
-import Lexing.Position (Span (..))
+import Lexing.Position (Located (..), Span (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
@@ -70,10 +70,10 @@ findSymbolByName name env =
 collectGlobals :: Expr -> ResolverM ()
 collectGlobals (ExprRoot children) = do
     mapM_ collectGlobals children
-collectGlobals (ExprBindingDef name bindType _ topLevel eSpan) =
+collectGlobals (ExprBindingDef name (Located _ bindType) _ topLevel eSpan) =
     when topLevel $ do
         addGlobalBinding name bindType (BindingSymbol bindType) eSpan
-collectGlobals (ExprIntrinsicDef name bindType eSpan) = do
+collectGlobals (ExprIntrinsicDef name (Located _ bindType) eSpan) = do
     addGlobalBinding name bindType IntrinsicBindingSymbol eSpan
 collectGlobals (ExprIntrinsicDataTypeDef name kind eSpan) = do
     let baseConstructor = TConstructor $ TypeConstructor name kind
@@ -94,14 +94,14 @@ collectGlobals (ExprDataTypeDef name generics constraints constructors eSpan) = 
     mapM_
         ( \case
             ExprDataConstructor cName fields eSpan' ->
-                let fieldTypes = map snd fields
+                let fieldTypes = map (lValue . snd) fields
                     curried = curryFunction fieldTypes structType
                     qualified = assignConstraints constrainedStructType curried
                 in addGlobalBinding cName qualified (DataConstructorSymbol name) eSpan'
             recv -> error $ "Expected StructConstructorExpr in struct definition but got " ++ show recv
         )
         constructors
-collectGlobals (ExprTypeClassDef className ty@(Forall generics _ _) _ eSpan) = do
+collectGlobals (ExprTypeClassDef className (Located _ ty@(Forall generics _ _)) _ eSpan) = do
     let kind = foldr (KindArrow . tvKind) KindStar generics
     let baseConstructor = TConstructor $ TypeConstructor className kind
     let finalTy = replaceUnresolvedWith ty baseConstructor
@@ -123,35 +123,39 @@ resolveTReference (ExprRoot children) = do
 resolveTReference (ExprDataTypeDef name generics constraints constructors s) = do
     constructors' <- mapM resolveTReference constructors
     pure $ ExprDataTypeDef name generics constraints constructors' s
-resolveTReference expr@(ExprTypeClassDef name ty methods s) = do
-    ty' <- replaceAllUnresolvedQualified expr ty
+resolveTReference (ExprTypeClassDef name (Located tySpan ty) methods s) = do
+    let typeExpr = ExprNum "" tySpan
+    ty' <- replaceAllUnresolvedQualified typeExpr ty
     methods' <-
         local (\env -> env{currentTypeClass = Just name})
             $ mapM resolveTReference methods
-    pure $ ExprTypeClassDef name ty' methods' s
-resolveTReference expr@(ExprTypeClassBinding name typ defaultV eSpan) = do
-    realTyp <- replaceAllUnresolvedQualified expr typ
+    pure $ ExprTypeClassDef name (Located tySpan ty') methods' s
+resolveTReference (ExprTypeClassBinding name (Located typSpan typ) defaultV eSpan) = do
+    let typeExpr = ExprNum "" typSpan
+    realTyp <- replaceAllUnresolvedQualified typeExpr typ
     className <- asks currentTypeClass
     let symbolKind = case className of
             Just cn -> TypeClassMethodSymbol cn
             Nothing -> TypeClassMethodSymbol "Unknown"
     addGlobalBinding name realTyp symbolKind eSpan
-    pure $ ExprTypeClassBinding name realTyp defaultV eSpan
+    pure $ ExprTypeClassBinding name (Located typSpan realTyp) defaultV eSpan
 resolveTReference expr@(ExprInstanceDef constraintType binds s) = do
     binds' <- mapM resolveTReference binds
     Forall _ _ constraintType' <- replaceAllUnresolvedQualified expr (Forall [] [] constraintType)
     pure $ ExprInstanceDef constraintType' binds' s
-resolveTReference expr@(ExprBindingDef name typ body topLevel eSpan) = do
-    realTyp <- replaceAllUnresolvedQualified expr typ
+resolveTReference (ExprBindingDef name (Located typSpan typ) body topLevel eSpan) = do
+    let typeExpr = ExprNum "" typSpan -- Dummy expression with the type's span
+    realTyp <- replaceAllUnresolvedQualified typeExpr typ
     body' <- resolveTReference body
     when topLevel $ do
         addGlobalBinding name realTyp (BindingSymbol realTyp) eSpan
 
-    pure $ ExprBindingDef name realTyp body' topLevel eSpan
-resolveTReference expr@(ExprIntrinsicDef name typ eSpan) = do
-    realTyp <- replaceAllUnresolvedQualified expr typ
+    pure $ ExprBindingDef name (Located typSpan realTyp) body' topLevel eSpan
+resolveTReference (ExprIntrinsicDef name (Located typSpan typ) eSpan) = do
+    let typeExpr = ExprNum "" typSpan
+    realTyp <- replaceAllUnresolvedQualified typeExpr typ
     addGlobalBinding name realTyp IntrinsicBindingSymbol eSpan
-    pure $ ExprIntrinsicDef name realTyp eSpan
+    pure $ ExprIntrinsicDef name (Located typSpan realTyp) eSpan
 resolveTReference expr@(ExprUVar name varSpan) = do
     scope <- asks localScope
     case Map.lookup name scope of

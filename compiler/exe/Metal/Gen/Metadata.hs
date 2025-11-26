@@ -5,6 +5,7 @@ module Metal.Gen.Metadata where
 import Build.Metadata (SerializableConstructorMetadata (..), serializableToType, typeToSerializable)
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Lexing.Position (Located (..))
 import Metal.Metadata
 import Syntax.Tree
 
@@ -21,7 +22,7 @@ extractConstructorMetadata (ExprRoot decls) =
                 }
             ) <-
             zip [0 ..] dataConstructors
-        , let fieldTypes = map snd fields
+        , let fieldTypes = map (lValue . snd) fields
         ]
     extractFromDataType _ = []
 extractConstructorMetadata _ = Map.empty

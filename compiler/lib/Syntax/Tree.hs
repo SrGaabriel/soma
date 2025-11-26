@@ -1,6 +1,6 @@
 module Syntax.Tree (Expr (..), exprChildren, exprSpan, modifySpan, uncurryApp, ComposeStmt (..)) where
 
-import Lexing.Position (Span (..))
+import Lexing.Position (Located (..), Span (..))
 import Project.Symbols (Symbol)
 import Syntax.Patterns (Pattern (..))
 import Typing.Types (Constraint, Kind, QualifiedType, TyVar, Type)
@@ -33,14 +33,14 @@ data Expr
         }
     | ExprBindingDef
         { bindingName :: String
-        , bindingType :: QualifiedType
+        , bindingType :: Located QualifiedType
         , bindingBody :: Expr
         , bindingIsImpl :: Bool
         , bindingSpan :: Span
         }
     | ExprIntrinsicDef
         { intrinsicName :: String
-        , intrinsicType :: QualifiedType
+        , intrinsicType :: Located QualifiedType
         , intrinsicSpan :: Span
         }
     | ExprDataTypeDef
@@ -57,18 +57,18 @@ data Expr
         }
     | ExprDataConstructor
         { structConstructorName :: String
-        , structConstructorArgs :: [(String, Type)]
+        , structConstructorArgs :: [(String, Located Type)]
         , structConstructorSpan :: Span
         }
     | ExprTypeClassDef
         { typeClassName :: String
-        , typeClassType :: QualifiedType
+        , typeClassType :: Located QualifiedType
         , typeClassBindings :: [Expr]
         , typeClassSpan :: Span
         }
     | ExprTypeClassBinding
         { typeClassBindName :: String
-        , typeClassBindType :: QualifiedType
+        , typeClassBindType :: Located QualifiedType
         , typeClassBindDefaultImpl :: Maybe [Expr]
         , typeClassBindSpan :: Span
         }

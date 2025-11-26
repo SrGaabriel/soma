@@ -75,7 +75,7 @@ impl DependencyResolver {
                             dep_path: dep_path.display().to_string(),
                         });
                     }
-                    
+
                     if dep_manifest.module_type != ManifestModuleType::Library {
                         return Err(BuildError::LocalDependencyNotALibrary {
                             module: module_name.clone(),
@@ -95,7 +95,7 @@ impl DependencyResolver {
                             dep_path: dep_path.display().to_string(),
                         });
                     }
-                    
+
                     dependency_names.push(dep_name.clone());
                     self.resolve_recursive(&dep_path, &dep_manifest, graph)?;
                 }

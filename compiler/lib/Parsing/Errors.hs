@@ -2,17 +2,19 @@ module Parsing.Errors (ParsingError (..), getErrorToken) where
 
 import Format.Errors (PrintableError (..))
 import Format.Trees (treeShow)
-import Lexing.Lexer (Token (..), TokenKind, referenceToken, referenceTokenKind)
+import Lexing.Lexer (Token (..), TokenKind (..), referenceToken, referenceTokenKind)
 import Text.Megaparsec (ShowErrorComponent (showErrorComponent))
 import Typing.Types (Type)
 
 data ParsingError
     = UnexpectedToken Token
     | ExpectedDifferentToken
-        { expected :: TokenKind
-        , received :: Token
+        { expectedTok :: TokenKind
+        , receivedTok :: Token
         }
     | InvalidTokenForTopLevelDeclaration Token
+    | PatternNeedsParentheses Token String
+    | MissingEqualsBeforeExpression Token String
     | InvalidTokenForType Token
     | ExpectedIndentation Token -- for when a token isn't indented (int is the next newline)
     | ExpectedDifferentIndentation Token Int Int -- for when the indentation is wrong
@@ -42,6 +44,8 @@ data ParsingError
 instance Show ParsingError where
     show (UnexpectedToken t) = "Unexpected token " ++ referenceToken t
     show (ExpectedDifferentToken tExpected tReceived) = "Expected " ++ referenceTokenKind tExpected ++ " but received " ++ referenceToken tReceived
+    show (PatternNeedsParentheses _ constructorName) = "Constructor pattern '" ++ constructorName ++ "' needs parentheses: (" ++ constructorName ++ ")"
+    show (MissingEqualsBeforeExpression _ funcName) = "Missing '=' before function body in '" ++ funcName ++ "'. Use '= <expression>' or pattern matching with '|'"
     show (InvalidTokenForType t) = "The token " ++ referenceToken t ++ " can't be used as a type"
     show (ExpectedIndentation t) = "Expected indentation for " ++ referenceToken t
     show (UnseparatedStatements t) = "Unseparated statements by newline at " ++ referenceToken t
@@ -82,6 +86,17 @@ instance PrintableError ParsingError where
         Just t -> tokenPos t + length (tokenValue t)
         Nothing -> error $ "Unreachable errorEnd case reached: " ++ show err
 
+    errorHint (PatternNeedsParentheses _ name) =
+        Just $ "wrap the pattern in parentheses → (" ++ name ++ ")"
+    errorHint (MissingEqualsBeforeExpression _ _) =
+        Just "add '=' before the expression, like 'def foo :: Type = <expr>'"
+    errorHint (ExpectedDifferentToken TokenEquals _) =
+        Just "function definitions with type signatures need '=' before the body"
+    errorHint (InvalidPattern tok)
+        | tokenKind tok == TokenUpperIdentifier =
+            Just $ "constructor patterns need parentheses → (" ++ tokenValue tok ++ ")"
+    errorHint _ = Nothing
+
     errorDebugDevDetails = show . getErrorToken
 
 instance ShowErrorComponent ParsingError where
@@ -90,6 +105,8 @@ instance ShowErrorComponent ParsingError where
 getErrorToken :: ParsingError -> Maybe Token
 getErrorToken (UnexpectedToken t) = Just t
 getErrorToken (ExpectedDifferentToken _ t) = Just t
+getErrorToken (PatternNeedsParentheses t _) = Just t
+getErrorToken (MissingEqualsBeforeExpression t _) = Just t
 getErrorToken (InvalidTokenForType t) = Just t
 getErrorToken (ExpectedIndentation t) = Just t
 getErrorToken (InvalidIdentifierFollowup t) = Just t

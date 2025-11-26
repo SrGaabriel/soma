@@ -39,7 +39,9 @@ main = do
                 Right mi -> do
                     putStrLn $ "Parsing succeeded for module: " ++ moduleName mi
                     exitSuccess
-                Left _ -> exitFailure
+                Left errs -> do
+                    mapM_ printSomeError errs
+                    exitFailure
         Left err -> putStrLn (formatError err) >> exitFailure
 
 build :: Options -> IO ()

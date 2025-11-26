@@ -46,7 +46,9 @@ printError err fileName code prefix = do
 
     case findRowOfIndex (lines code) adjustedStart of
         Just rowInfo -> do
-            let (contentTrim, trimWidth) = trimIndentReturningWidth (content rowInfo)
+            let allLines = lines code
+                errorLineNum = number rowInfo
+                (contentTrim, trimWidth) = trimIndentReturningWidth (content rowInfo)
                 relativeStart =
                     if isNewline
                         then 0
@@ -60,10 +62,9 @@ printError err fileName code prefix = do
                                 (length contentTrim)
                 textLength = relativeEnd - relativeStart
                 textToHighlight = take textLength $ drop relativeStart contentTrim
-                positionIndicator = replicate relativeStart ' ' ++ replicate textLength '^'
 
             eSetSGR [SetColor Foreground Vivid Red]
-            ePutStr $ fileName ++ ":" ++ show (number rowInfo) ++ ":" ++ show (relativeIndex rowInfo + 1) ++ " "
+            ePutStr $ fileName ++ ":" ++ show errorLineNum ++ ":" ++ show (relativeIndex rowInfo + 1) ++ " "
             eSetSGR [Reset]
 
             eSetSGR [SetConsoleIntensity BoldIntensity]
@@ -76,23 +77,75 @@ printError err fileName code prefix = do
             ePutStrLn message
             eSetSGR [Reset]
 
-            ePutStrLn "|"
+            let lineNumWidth = length (show (errorLineNum + 1))
+                gutterPad = replicate lineNumWidth ' '
 
-            ePutStr "| row: "
+            -- Top border
+            eSetSGR [SetColor Foreground Dull Cyan]
+            ePutStrLn $ gutterPad ++ " ┌─"
+            eSetSGR [Reset]
+
+            -- Show line before if exists
+            when (errorLineNum > 1 && errorLineNum - 1 <= length allLines) $ do
+                let prevLine = allLines !! (errorLineNum - 2)
+                    (prevTrimmed, _) = trimIndentReturningWidth prevLine
+                eSetSGR [SetColor Foreground Dull Cyan]
+                ePutStr $ gutterPad ++ " │ "
+                eSetSGR [SetColor Foreground Dull White]
+                ePutStrLn prevTrimmed
+                eSetSGR [Reset]
+
+            -- Show error line with highlighting
+            eSetSGR [SetColor Foreground Dull Cyan]
+            ePutStr $ gutterPad ++ " │ "
+            eSetSGR [SetConsoleIntensity BoldIntensity]
             if contentTrim == ""
                 then ePutStrLn "<empty row>"
                 else do
                     ePutStr (take relativeStart contentTrim)
                     eSetSGR [SetColor Foreground Vivid Red]
+                    eSetSGR [SetConsoleIntensity BoldIntensity]
                     ePutStr textToHighlight
                     eSetSGR [Reset]
+                    eSetSGR [SetConsoleIntensity BoldIntensity]
                     ePutStrLn (drop (relativeStart + textLength) contentTrim)
-
-            when (textLength > 0) $ do
-                ePutStr "| pos: "
-                eSetSGR [SetColor Foreground Vivid Red]
-                ePutStrLn positionIndicator
             eSetSGR [Reset]
+
+            -- Show position indicator with carets
+            when (textLength > 0) $ do
+                eSetSGR [SetColor Foreground Dull Cyan]
+                ePutStr $ gutterPad ++ " │ "
+                eSetSGR [SetColor Foreground Vivid Red]
+                eSetSGR [SetConsoleIntensity BoldIntensity]
+                ePutStr $ replicate relativeStart ' ' ++ replicate textLength '^'
+                eSetSGR [Reset]
+                ePutStrLn ""
+
+            -- Show line after if exists
+            when (errorLineNum < length allLines) $ do
+                let nextLine = allLines !! errorLineNum
+                    (nextTrimmed, _) = trimIndentReturningWidth nextLine
+                eSetSGR [SetColor Foreground Dull Cyan]
+                ePutStr $ gutterPad ++ " │ "
+                eSetSGR [SetColor Foreground Dull White]
+                ePutStrLn nextTrimmed
+                eSetSGR [Reset]
+
+            -- Bottom border
+            eSetSGR [SetColor Foreground Dull Cyan]
+            ePutStrLn $ gutterPad ++ " └─"
+            eSetSGR [Reset]
+
+            case errorHint err of
+                Just hint -> do
+                    ePutStrLn ""
+                    eSetSGR [SetColor Foreground Vivid Cyan]
+                    eSetSGR [SetConsoleIntensity BoldIntensity]
+                    ePutStr $ gutterPad ++ "hint: "
+                    eSetSGR [Reset]
+                    ePutStrLn hint
+                    eSetSGR [Reset]
+                Nothing -> pure ()
         Nothing ->
             error $ "Error while finding the line of the error: " ++ errorMessage err
   where

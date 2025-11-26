@@ -14,7 +14,7 @@ import Inference.Core (TypeEnv, UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
 import Inference.Naming (nameSkolemPrefix, nameTmpPrefix)
 import Inference.Substitution (Substitutable (apply))
-import Lexing.Position (Span (..))
+import Lexing.Position (Located (..), Span (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
 import Syntax.Patterns (Pattern (..))
 import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
@@ -207,7 +207,7 @@ generateConstraints expr = case expr of
                     (csDeclaredConstraints valueConstraints ++ csDeclaredConstraints bodyConstraints)
         recordType expr bodyType
         return (Just bodyType, combinedConstraints)
-    ExprBindingDef _name bindType body _ _ -> do
+    ExprBindingDef _name (Located _ bindType) body _ _ -> do
         let Forall tyVars annCs annType = bindType
         skVars <- mapM (\(TypeVar tyName kind) -> freshSkolemVar tyName kind) tyVars
         let skSubst = Map.fromList (zip tyVars (map TSkolem skVars))

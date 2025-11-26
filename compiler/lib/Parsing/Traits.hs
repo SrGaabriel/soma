@@ -1,10 +1,11 @@
 module Parsing.Traits where
 
 import Lexing.Lexer (TokenKind (..), spanningTokens)
+import Lexing.Position (Located (..))
 import Parsing.Bindings (parseBinding)
 import Parsing.Errors (ParsingError (..))
 import Parsing.Parser (Parser, consume, parseFuncName, parseOptionallyLayout)
-import Parsing.Types (parseQualifiedType, parseType)
+import Parsing.Types (parseLocatedQualifiedType, parseType)
 import Syntax.Tree (Expr (..))
 import qualified Text.Megaparsec as MP
 import Typing.Types (Constraint (Constraint), QualifiedType (Forall), getUnknownTypeConstructorName)
@@ -12,27 +13,27 @@ import Typing.Types (Constraint (Constraint), QualifiedType (Forall), getUnknown
 parseTrait :: Parser Expr
 parseTrait = do
     classToken <- consume TokenTrait
-    classType@(Forall _ _ traitType) <- parseQualifiedType
+    locClassType@(Located _ classType@(Forall _ _ traitType)) <- parseLocatedQualifiedType
     case getUnknownTypeConstructorName classType of
         Nothing -> MP.customFailure $ InvalidTypeForTrait classToken traitType
         Just name -> do
             whereTok <- consume TokenWhere
 
-            bindings <- parseOptionallyLayout (parseTraitBinding classType)
+            bindings <- parseOptionallyLayout (parseTraitBinding locClassType)
             pure
                 $ ExprTypeClassDef
                     { typeClassName = name
-                    , typeClassType = classType
+                    , typeClassType = locClassType
                     , typeClassBindings = bindings
                     , typeClassSpan = spanningTokens classToken whereTok
                     }
 
-parseTraitBinding :: QualifiedType -> Parser Expr
-parseTraitBinding (Forall typeClassTyVars typeClassConstraints typeClassConstraint) = do
+parseTraitBinding :: Located QualifiedType -> Parser Expr
+parseTraitBinding (Located typeSpan (Forall typeClassTyVars typeClassConstraints typeClassConstraint)) = do
     defToken <- consume TokenDef
     bindName <- parseFuncName
     retTok <- consume TokenReturns
-    Forall tyVars baseConstraints baseType <- parseQualifiedType
+    Located _ (Forall tyVars baseConstraints baseType) <- parseLocatedQualifiedType
     let allTyVars = typeClassTyVars ++ tyVars
     let bindTyp =
             Forall
@@ -47,7 +48,7 @@ parseTraitBinding (Forall typeClassTyVars typeClassConstraints typeClassConstrai
     pure
         $ ExprTypeClassBinding
             { typeClassBindName = bindName
-            , typeClassBindType = bindTyp
+            , typeClassBindType = Located typeSpan bindTyp
             , typeClassBindDefaultImpl = Nothing
             , typeClassBindSpan = spanningTokens defToken retTok
             }

@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveTraversable #-}
 
-module Lexing.Position (Span (..)) where
+module Lexing.Position (Span (..), Located (..), dummySpan) where
 
 import GHC.Generics (Generic)
 
@@ -11,7 +11,10 @@ data Span = Span SourcePos SourcePos
     deriving (Show, Eq, Ord, Generic)
 
 data Located a = Located
-    { location :: Span
-    , value :: a
+    { lLocation :: Span
+    , lValue :: a
     }
-    deriving (Show, Eq, Functor, Foldable, Traversable)
+    deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
+
+dummySpan :: Span
+dummySpan = Span (-1) (-1)

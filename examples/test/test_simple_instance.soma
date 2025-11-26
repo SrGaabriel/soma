@@ -1,0 +1,7 @@
+// Minimal instance test
+
+intrinsic def {==} :: Int -> Int -> Bool
+
+instance Eq Int where
+    def {==} :: Int -> Int -> Bool
+        | x y => x == y

@@ -1,0 +1,10 @@
+// Test pattern error message
+
+data Status
+    | Active
+    | Inactive
+
+// Missing parentheses around Active
+def test :: Status -> Bool
+    | Active => True
+    | Inactive => False

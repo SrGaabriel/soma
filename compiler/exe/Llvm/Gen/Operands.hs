@@ -6,10 +6,10 @@ import Alloy.Ir (
     AConst (CBool, CInt, CString, CUnit),
     AOperand (..),
  )
+import Alloy.Naming (qualifyWithModule)
 import Control.Monad.Reader (asks)
 import Control.Monad.State (gets)
 import qualified Data.Map as Map
-import Alloy.Naming (qualifyWithModule)
 import Llvm.Gen.Core (
     IrGen,
     IrGenEnv (moduleName, opTypeEnv),

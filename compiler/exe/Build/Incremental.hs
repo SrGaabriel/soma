@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
@@ -124,7 +123,7 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
             Nothing ->
                 let properModuleName = takeWhile (/= '/') impMod
                     symbols = maybe Map.empty (filterSymbolsByNames mSyms) (Map.lookup properModuleName externalDeps)
-                    instances = maybe Map.empty id (Map.lookup properModuleName externalInstances)
+                    instances = fromMaybe Map.empty (Map.lookup properModuleName externalInstances)
                 in (symbols, instances)
 
 linkCompiledModules ::
