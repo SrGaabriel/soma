@@ -97,7 +97,7 @@ jobs:
               run: cabal build --only-dependencies all
 
             - name: Build project
-              run: cabal build --project-file=cabal.release.project
+              run: cabal build --project-file=cabal.release.project all
 
             - name: Setup Rust for haoma
               uses: dtolnay/rust-toolchain@stable
