@@ -1,6 +1,7 @@
 packages:
   .
   souls
+  ide
 
 with-compiler: ghc-9.12.2
 
