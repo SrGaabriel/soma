@@ -1,0 +1,3 @@
+intrinsic def {+} :: Int -> Int -> Int
+
+def base_add(x: Int, y: Int) -> Int = x + y

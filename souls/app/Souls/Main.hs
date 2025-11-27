@@ -23,15 +23,17 @@ import Souls.Analysis (analyzeFile)
 import Souls.Handlers.Completion (handleCompletion)
 import Souls.Handlers.Definition (handleGotoDefinition)
 import Souls.Handlers.Hover (handleHover)
-import Souls.Server (LspState (..))
+import Souls.Server (LspState (..), emptyExternalDeps)
 
 main :: IO Int
 main = do
     modulesVar <- newTVarIO Map.empty
     workspaceVar <- newTVarIO Nothing
     graphVar <- newTVarIO Nothing
+    haomaProjectVar <- newTVarIO Nothing
+    externalDepsVar <- newTVarIO emptyExternalDeps
 
-    let state = LspState modulesVar workspaceVar graphVar
+    let state = LspState modulesVar workspaceVar graphVar haomaProjectVar externalDepsVar
 
     runServer
         $ ServerDefinition

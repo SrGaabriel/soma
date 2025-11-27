@@ -1,0 +1,3 @@
+use mylib.{add}
+
+def main :: Int = add 1 2

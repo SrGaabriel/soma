@@ -20,13 +20,23 @@ getDefinitionAt ::
     Maybe Location
 getDefinitionAt pos LspCompiledModule{..} allCompiled = do
     sym <- findSymbolAtPos (lspPositionToOffset lcmSourceContent pos) lcmResolvedAst
-    case Map.lookup sym lcmPublicSymbols of
-        Just _ ->
+    let defModule = resolvedSymbolModule sym
+        span' = resolvedSymbolSpan sym
+    if defModule == lcmModuleName
+        then
+            Just $ Location (filePathToUri lcmFilePath) (spanToRange lcmSourceContent span')
+        else
+            findSymbolModule sym defModule allCompiled
+
+findSymbolModule :: Symbol -> String -> Map.Map FilePath LspCompiledModule -> Maybe Location
+findSymbolModule sym defModuleName allCompiled =
+    listToMaybe $ mapMaybe checkModule $ Map.toList allCompiled
+  where
+    checkModule (path, LspCompiledModule{..})
+        | lcmModuleName == defModuleName =
             let span' = resolvedSymbolSpan sym
-                uri = filePathToUri lcmFilePath
-            in Just $ Location uri (spanToRange lcmSourceContent span')
-        Nothing ->
-            findSymbolInDeps sym allCompiled
+            in Just $ Location (filePathToUri path) (spanToRange lcmSourceContent span')
+        | otherwise = Nothing
 
 getHoverAt :: Position -> LspCompiledModule -> Maybe Hover
 getHoverAt pos LspCompiledModule{..} = do
@@ -56,15 +66,6 @@ getCompletions cm allCompiled =
                 let filtered = filterSymbolsByNames symNames (lcmPublicSymbols matchedModule)
                 in Map.keys filtered
             Nothing -> []
-
-findSymbolInDeps :: Symbol -> Map.Map FilePath LspCompiledModule -> Maybe Location
-findSymbolInDeps sym allCompiled =
-    listToMaybe $ mapMaybe checkModule $ Map.toList allCompiled
-  where
-    checkModule (path, LspCompiledModule{..}) = do
-        _ <- Map.lookup sym lcmPublicSymbols
-        let span' = resolvedSymbolSpan sym
-        return $ Location (filePathToUri path) (spanToRange lcmSourceContent span')
 
 symbolToItem :: Symbol -> CompletionItem
 symbolToItem sym =

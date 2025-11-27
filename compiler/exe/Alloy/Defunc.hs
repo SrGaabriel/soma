@@ -48,7 +48,6 @@ rewriteOp known op =
         OpGetDict className ty -> OpGetDict className ty
         OpDictCall dict methodIdx method args -> OpDictCall dict methodIdx method args
 
--- | Convert indirect calls to direct calls when the target is a known function
 rewriteCallable :: Set Name -> ACallable -> ACallable
 rewriteCallable known (Indirect (OpVar n))
     | n `Set.member` known = Direct n

@@ -1,9 +1,9 @@
 mod cache;
 mod compile;
 mod errors;
-mod graph;
+pub mod graph;
 mod orchestrator;
-mod resolve;
+pub mod resolve;
 mod scheduler;
 
 use orchestrator::BuildOrchestrator;

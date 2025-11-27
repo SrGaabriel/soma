@@ -1,5 +1,7 @@
 module Config.Options (
     Options (..),
+    CheckOptions (..),
+    OutputFormat (..),
     CommandLineError (..),
     formatError,
     fileExt,
@@ -19,8 +21,22 @@ fileExt = ".soma"
 
 data Command
     = Build Options
+    | Check CheckOptions
     | Lex String
     | Parse String
+    deriving (Show)
+
+data OutputFormat
+    = FormatHuman
+    | FormatJson
+    deriving (Show, Eq)
+
+data CheckOptions = CheckOptions
+    { checkInput :: String
+    , checkName :: Maybe String
+    , checkDeps :: [(String, String)]
+    , checkFormat :: OutputFormat
+    }
     deriving (Show)
 
 data Options = Options
@@ -41,9 +57,42 @@ commandParser =
     hsubparser
         ( command "lex" (info (Lex <$> inputParser) (progDesc "Run the lexer"))
             <> command "build" (info (Build <$> optionsParser) (progDesc "Build the program"))
+            <> command "check" (info (Check <$> checkOptionsParser) (progDesc "Check for errors without building (outputs JSON)"))
             <> command "parse" (info (Parse <$> inputParser) (progDesc "Run the parser"))
         )
         <|> (Build <$> optionsParser)
+
+checkOptionsParser :: Parser CheckOptions
+checkOptionsParser =
+    CheckOptions
+        <$> inputParser
+        <*> optional
+            ( strOption
+                ( long "name"
+                    <> metavar "NAME"
+                    <> help "Name of the module"
+                )
+            )
+        <*> many
+            ( option
+                (eitherReader parseExtern)
+                ( long "dep"
+                    <> metavar "NAME=PATH"
+                    <> help "External dependency (e.g. --dep foo=src/lib/foo.toria)"
+                )
+            )
+        <*> option
+            (eitherReader parseFormat)
+            ( long "format"
+                <> metavar "FORMAT"
+                <> value FormatJson
+                <> help "Output format: json (default) or human"
+            )
+
+parseFormat :: String -> Either String OutputFormat
+parseFormat "json" = Right FormatJson
+parseFormat "human" = Right FormatHuman
+parseFormat s = Left $ "Unknown format: " ++ s ++ ". Use 'json' or 'human'"
 
 inputParser :: Parser String
 inputParser =

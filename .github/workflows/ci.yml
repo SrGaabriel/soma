@@ -68,34 +68,18 @@ jobs:
                   update: true
                   path-type: inherit
 
-            - name: Install LLVM and Clang
-              if: startsWith(matrix.os, 'macos')
-              uses: KyleMayes/install-llvm-action@v2
-              with:
-                  version: "20"
-
             - name: Setup Haskell
               uses: haskell-actions/setup@v2
               with:
                   ghc-version: ${{ env.GHC_VERSION }}
                   cabal-version: ${{ env.CABAL_VERSION }}
                   enable-stack: false
-              env:
-                  DYLD_LIBRARY_PATH: "" # Explicitly unset for Haskell setup
 
             - name: Update Cabal package index
               run: cabal update
-              env:
-                  DYLD_LIBRARY_PATH: "" # Unset for cabal update
-
-            - name: Set LLVM path for macOS
-              if: startsWith(matrix.os, 'macos')
-              run: echo "${{ github.workspace }}/llvm/bin" >> $GITHUB_PATH
 
             - name: Cache Cabal packages
               uses: actions/cache@v4
-              env:
-                  DYLD_LIBRARY_PATH: "" # Unset for cache action
               with:
                   path: |
                       ~/.cabal/packages
@@ -108,24 +92,16 @@ jobs:
 
             - name: Configure project
               run: cabal configure --enable-tests --enable-benchmarks
-              env:
-                  DYLD_LIBRARY_PATH: "" # Unset for configure
 
             - name: Build dependencies
               run: cabal build --only-dependencies all
-              env:
-                  DYLD_LIBRARY_PATH: "" # Unset for dependencies
 
             - name: Build project
               run: cabal build --project-file=cabal.release.project
-              env:
-                  DYLD_LIBRARY_PATH: ${{ startsWith(matrix.os, 'macos') && format('{0}/llvm/lib', github.workspace) || '' }} # Only set for LLVM build
 
             - name: Run tests
               run: cabal test all --test-show-details=direct
               continue-on-error: true
-              env:
-                  DYLD_LIBRARY_PATH: "" # Unset for tests
 
             - name: Prepare executables (Unix)
               if: runner.os != 'Windows'

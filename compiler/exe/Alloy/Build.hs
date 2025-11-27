@@ -139,7 +139,6 @@ beginBlock name params = do
     st@BuildState{..} <- get
     fb@FunBuild{..} <- requireOpenFunction "beginBlock"
 
-    -- Check current block is terminated if it exists
     case bsCurBlk of
         Just BlockBuild{bbTerminator = Nothing} ->
             error "Alloy.Build: switching blocks before terminating the current block"
@@ -214,7 +213,6 @@ freshBlockName = do
     put st{bsNextBlk = bsNextBlk + 1}
     pure $ nameBlockPrefix ++ show bsNextBlk
 
--- | Helper to require an open function, throwing a descriptive error if none
 requireOpenFunction :: String -> AlloyBuilder FunBuild
 requireOpenFunction context = do
     st <- get
@@ -222,7 +220,6 @@ requireOpenFunction context = do
         Just fb -> pure fb
         Nothing -> error $ "Alloy.Build: " ++ context ++ " called with no open function"
 
--- | Helper to require an open block, throwing a descriptive error if none
 requireOpenBlock :: String -> AlloyBuilder BlockBuild
 requireOpenBlock context = do
     st <- get
@@ -230,7 +227,6 @@ requireOpenBlock context = do
         Just blk -> pure blk
         Nothing -> error $ "Alloy.Build: " ++ context ++ " called with no open block"
 
--- | Helper to check if a Maybe value is Just
 isJust :: Maybe a -> Bool
 isJust (Just _) = True
 isJust Nothing = False

@@ -35,6 +35,7 @@ import Typing.Types (
     Kind (..),
     TyConstructor (..),
     Type (..),
+    typesMatch,
  )
 
 type TypeEnv = Map Name Type

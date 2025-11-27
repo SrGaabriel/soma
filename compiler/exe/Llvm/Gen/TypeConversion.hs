@@ -26,7 +26,7 @@ convertType (TArrow argTy retTy) =
 convertType (TSkolem _) =
     -- Skolem types are erased to generic pointers at runtime
     LlvmPointer LlvmI8
-convertType tv@(TVar _) =
+convertType (TVar _) =
     -- Type variables are erased to generic pointers at runtime
     LlvmPointer LlvmI8
 convertType (TUnresolved name) =

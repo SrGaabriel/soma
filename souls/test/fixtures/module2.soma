@@ -1,1 +1,3 @@
-def hello :: String = ""
+use module1.{greet}
+
+def useGreet :: String = greet

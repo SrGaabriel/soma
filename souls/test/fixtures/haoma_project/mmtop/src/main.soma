@@ -1,0 +1,3 @@
+use aamid/utils.{aa_double}
+
+def main :: Int = aa_double 21

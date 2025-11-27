@@ -1,5 +1,6 @@
 packages:
   .
   souls
+  ide
 
 tests: True

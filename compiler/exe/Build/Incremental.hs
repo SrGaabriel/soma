@@ -37,7 +37,7 @@ import Metal.Gen.Metadata (constructorMetadataToSerializable, extractConstructor
 import Metal.Lift (liftLambdas)
 import Metal.Module
 import Metal.MonadNormalize (normalizeModule)
-import Project.Extracts (extractSymbolImports, filterSymbolsByNames)
+import Project.Extracts (extractSymbolImports, resolveImport)
 import Project.Graph
 import Project.Module
 import Project.Symbols (Symbol)
@@ -74,7 +74,9 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
     putStrLn $ "Compiling module: " ++ modName
 
     let imports = extractSymbolImports ast
-        importsResolved = map resolveImport imports
+        compiled = Map.map (\c -> (cmPublicSymbols c, cmPublicInstances c)) compiledDeps
+        resolve = resolveImport compiled externalDeps externalInstances
+        importsResolved = map resolve imports
         seedEnv = Map.unions $ map fst importsResolved
         seedInstances = Map.unions $ map snd importsResolved
 
@@ -116,15 +118,6 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
             , cmPublicInstances = instanceEnv
             , cmResolvedAst = resolvedAst
             }
-  where
-    resolveImport (impMod, mSyms) =
-        case Map.lookup impMod compiledDeps of
-            Just compiled -> (filterSymbolsByNames mSyms (cmPublicSymbols compiled), cmPublicInstances compiled)
-            Nothing ->
-                let properModuleName = takeWhile (/= '/') impMod
-                    symbols = maybe Map.empty (filterSymbolsByNames mSyms) (Map.lookup properModuleName externalDeps)
-                    instances = fromMaybe Map.empty (Map.lookup properModuleName externalInstances)
-                in (symbols, instances)
 
 linkCompiledModules ::
     String ->

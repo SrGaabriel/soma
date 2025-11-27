@@ -9,6 +9,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text.Encoding as TE
 import Lexing.Lexer (lexCode)
 import Logging.Errors (printSomeError)
+import Logging.Json (errorsToJsonOutput, failedJsonOutput, printJsonOutput)
 import Project.Extracts (extractSymbolImports)
 import Project.Graph
 import Project.Module
@@ -20,10 +21,13 @@ import System.FilePath (dropExtension, takeExtension, takeFileName)
 main :: IO ()
 main = do
     command <- extractCommand
-    putStrLn "Soma Compiler v0.1.0"
     case command of
-        Right (Build options) -> build options
+        Right (Check checkOpts) -> check checkOpts
+        Right (Build options) -> do
+            putStrLn "Soma Compiler v0.1.0"
+            build options
         Right (Lex file) -> do
+            putStrLn "Soma Compiler v0.1.0"
             fileContents <- BS.readFile file
             let content = TE.decodeUtf8 fileContents
             let (lexed, lexErrors) = lexCode content
@@ -34,6 +38,7 @@ main = do
                     exitSuccess
                 errs -> mapM_ print errs >> exitFailure
         Right (Parse file) -> do
+            putStrLn "Soma Compiler v0.1.0"
             parseE <- parseModule (dropExtension (takeFileName file)) file
             case parseE of
                 Right mi -> do
@@ -43,6 +48,70 @@ main = do
                     mapM_ printSomeError errs
                     exitFailure
         Left err -> putStrLn (formatError err) >> exitFailure
+
+check :: CheckOptions -> IO ()
+check opts = do
+    let path = checkInput opts
+
+    isFile <- doesFileExist path
+    if isFile && takeExtension path == ".soma"
+        then checkSingleFile opts path
+        else do
+            isDir <- doesDirectoryExist path
+            if isDir
+                then checkDirectory opts path
+                else do
+                    case checkFormat opts of
+                        FormatJson -> printJsonOutput (failedJsonOutput (checkName opts))
+                        FormatHuman -> putStrLn "Error: input is neither a .soma file nor a directory"
+                    exitFailure
+
+checkSingleFile :: CheckOptions -> FilePath -> IO ()
+checkSingleFile opts path = do
+    let name = fromMaybe (dropExtension (takeFileName path)) (checkName opts)
+
+    parseE <- parseModule name path
+    case parseE of
+        Left errs -> do
+            case checkFormat opts of
+                FormatJson -> do
+                    let output = errorsToJsonOutput (Just name) errs
+                    printJsonOutput output
+                FormatHuman -> mapM_ printSomeError errs
+            exitFailure
+        Right _mi -> do
+            case checkFormat opts of
+                FormatJson -> do
+                    let output = errorsToJsonOutput (Just name) []
+                    printJsonOutput output
+                FormatHuman -> putStrLn $ "Module " ++ name ++ " checked successfully."
+            exitSuccess
+
+checkDirectory :: CheckOptions -> FilePath -> IO ()
+checkDirectory opts path = do
+    let name = fromMaybe (error "Error: please pass --name when checking a directory") (checkName opts)
+
+    mods <- findModules name path
+    case checkFormat opts of
+        FormatHuman -> putStrLn $ "Discovered modules: " ++ show (map fst mods)
+        FormatJson -> return ()
+
+    graphE <- buildModuleGraph mods
+    case graphE of
+        Left errs -> do
+            case checkFormat opts of
+                FormatJson -> do
+                    let output = errorsToJsonOutput (Just name) errs
+                    printJsonOutput output
+                FormatHuman -> mapM_ printSomeError errs
+            exitFailure
+        Right _graph -> do
+            case checkFormat opts of
+                FormatJson -> do
+                    let output = errorsToJsonOutput (Just name) []
+                    printJsonOutput output
+                FormatHuman -> putStrLn $ "All modules in " ++ name ++ " checked successfully."
+            exitSuccess
 
 build :: Options -> IO ()
 build options = do

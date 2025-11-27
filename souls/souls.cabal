@@ -22,6 +22,7 @@ executable souls
     Souls.Handlers.Completion
     Souls.Handlers.Definition
     Souls.Handlers.Hover
+    Souls.Haoma
     Souls.Loc
     Souls.Logging
     Souls.Server
@@ -29,7 +30,9 @@ executable souls
 
   hs-source-dirs: app
   build-depends:
+    aeson >=2.2,
     base,
+    bytestring,
     containers,
     directory >=1.3,
     filepath,
@@ -37,7 +40,9 @@ executable souls
     lsp >=2.7,
     lsp-types >=2.3,
     mtl >=2.3,
+    process >=1.6,
     soma,
+    soma-ide,
     stm >=2.5,
     text,
     time,

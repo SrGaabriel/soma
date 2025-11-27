@@ -1,6 +1,8 @@
 mod build;
+mod check;
 mod clean;
 mod create;
+mod metadata;
 mod run;
 
 use clap::Parser;
@@ -27,6 +29,10 @@ pub enum Commands {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
     },
+    Check {
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
     Create {
         #[arg(value_name = "path", default_value = ".")]
         path: PathBuf,
@@ -41,6 +47,10 @@ pub enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    Metadata {
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 pub fn parse() -> Cli {
@@ -52,6 +62,9 @@ pub fn execute(command: &Commands) {
         Commands::Build { path } => {
             build::execute(path);
         }
+        Commands::Check { path } => {
+            check::execute(path);
+        }
         Commands::Create { path } => {
             create::execute(path);
         }
@@ -60,6 +73,9 @@ pub fn execute(command: &Commands) {
         }
         Commands::Clean { path } => {
             clean::execute(path);
+        }
+        Commands::Metadata { path } => {
+            metadata::execute(path);
         }
     }
 }

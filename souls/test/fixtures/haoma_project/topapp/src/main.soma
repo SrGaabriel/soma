@@ -1,0 +1,3 @@
+use midlib/utils.{mid_double}
+
+def main :: Int = mid_double 21
