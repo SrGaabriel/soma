@@ -99,8 +99,18 @@ jobs:
             - name: Build project
               run: cabal build --project-file=cabal.release.project
 
+            - name: Setup Rust for haoma
+              uses: dtolnay/rust-toolchain@stable
+
+            - name: Build haoma for tests
+              working-directory: haoma
+              run: cargo build --release
+
             - name: Run tests
-              run: cabal test all --test-show-details=direct
+              run: |
+                  export PATH="$PWD/haoma/target/release:$PATH"
+                  cabal test all --test-show-details=direct
+              shell: bash
               continue-on-error: true
 
             - name: Prepare executables (Unix)
