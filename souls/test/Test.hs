@@ -15,10 +15,14 @@ import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import Test.Hspec
+import System.Environment (lookupEnv)
 import Prelude hiding (length)
 
 getLspCommand :: IO String
-getLspCommand = return "cabal -v0 run souls --"
+getLspCommand = do
+    lookupEnv "SOULS_BIN" >>= \case
+        Just bin -> return bin
+        Nothing -> return "cabal -v0 run souls --"
 
 main :: IO ()
 main = do
