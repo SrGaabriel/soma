@@ -86,6 +86,10 @@ handlers state _caps =
         , requestHandler SMethod_TextDocumentHover (handleHover state)
         , requestHandler SMethod_TextDocumentDefinition (handleGotoDefinition state)
         , requestHandler SMethod_TextDocumentCompletion (handleCompletion state)
+        , notificationHandler SMethod_WorkspaceDidChangeConfiguration $ \_msg ->
+            pure ()
+        , notificationHandler SMethod_SetTrace $ \_msg ->
+            pure ()
         ]
 
 lspOptions :: Options

@@ -154,11 +154,8 @@ fn check_module(
         .canonicalize()
         .map_err(|e| format!("Failed to canonicalize src path: {}", e))?;
 
-    let mut command = Command::new("cabal");
+    let mut command = Command::new("somac");
     command
-        .arg("run")
-        .arg("compiler")
-        .arg("--")
         .arg("check")
         .arg(&src_path)
         .arg("--name")

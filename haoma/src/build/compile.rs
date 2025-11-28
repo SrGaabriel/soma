@@ -37,12 +37,8 @@ fn compile_module(
     fs::create_dir_all(&build_path).map_err(BuildError::FailedToCreateBuildDirectory)?;
     let output_file = build_path.join(output_filename);
 
-    let mut command = Command::new("cabal");
+    let mut command = Command::new("somac");
     command
-        .arg("run")
-        .arg("soma")
-        .arg("--project-dir=../")
-        .arg("--")
         .arg(&src_path)
         .arg("--name")
         .arg(&manifest.name)

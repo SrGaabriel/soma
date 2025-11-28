@@ -7,7 +7,6 @@ author: Gabriel
 maintainer: gabriel@minatel.dev
 category: Programming Language
 build-type: Simple
-extra-doc-files: CHANGELOG.md
 
 common warnings
   ghc-options:
@@ -83,7 +82,7 @@ library
 
   default-language: Haskell2010
 
-executable compiler
+executable somac
   import: warnings
   main-is: Main.hs
   hs-source-dirs: compiler/exe
