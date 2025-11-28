@@ -109,7 +109,7 @@ jobs:
             - name: Install binaries to PATH
               run: |
                   mkdir -p ~/.local/bin
-                  cp $(cabal --project-file=cabal.release.project list-bin soma:compiler) ~/.local/bin/somac
+                  cp $(cabal --project-file=cabal.release.project list-bin somac) ~/.local/bin/somac
                   cp $(cabal --project-file=cabal.release.project list-bin exe:souls) ~/.local/bin/souls
                   cp haoma/target/release/haoma ~/.local/bin/haoma
                   chmod +x ~/.local/bin/somac ~/.local/bin/souls ~/.local/bin/haoma
@@ -126,7 +126,7 @@ jobs:
               if: runner.os != 'Windows'
               run: |
                   mkdir -p artifacts
-                  cp $(cabal list-bin soma:compiler) artifacts/somac-${{ matrix.target }}
+                  cp $(cabal list-bin somac) artifacts/somac-${{ matrix.target }}
                   cp $(cabal list-bin exe:souls) artifacts/souls-${{ matrix.target }}
                   chmod +x artifacts/somac-${{ matrix.target }}
                   chmod +x artifacts/souls-${{ matrix.target }}
@@ -136,7 +136,7 @@ jobs:
               shell: pwsh
               run: |
                   New-Item -ItemType Directory -Force -Path artifacts
-                  $somac = cabal list-bin soma:compiler
+                  $somac = cabal list-bin somac
                   $souls = cabal list-bin exe:souls
                   Copy-Item $somac "artifacts/somac-${{ matrix.target }}.exe"
                   Copy-Item $souls "artifacts/souls-${{ matrix.target }}.exe"
@@ -146,7 +146,7 @@ jobs:
               shell: msys2 {0}
               run: |
                   mkdir -p artifacts
-                  cp $(cabal list-bin soma:compiler) artifacts/somac-${{ matrix.target }}.exe
+                  cp $(cabal list-bin somac) artifacts/somac-${{ matrix.target }}.exe
                   cp $(cabal list-bin exe:souls) artifacts/souls-${{ matrix.target }}.exe
 
             - name: Upload somac artifact
