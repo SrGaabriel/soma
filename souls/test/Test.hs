@@ -5,6 +5,8 @@
 
 module Main where
 
+import Control.Applicative.Combinators (skipManyTill)
+import Control.Concurrent (threadDelay)
 import Control.Lens hiding (List)
 import Control.Monad.IO.Class
 import Data.Default (def)
@@ -12,8 +14,10 @@ import Data.List (isInfixOf, length)
 import qualified Data.Text as T
 import Language.LSP.Protocol.Lens hiding (length, message)
 import qualified Language.LSP.Protocol.Lens as L
+import Language.LSP.Protocol.Message (SMethod (..), TResponseMessage (..))
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
+import System.Directory (makeAbsolute)
 import Test.Hspec
 import Prelude hiding (length)
 
@@ -38,6 +42,7 @@ mkConfig _cmd =
         , logStdErr = True
         , logMessages = True
         , logColor = True
+        , ignoreRegistrationRequests = False
         }
 
 testInitialization :: Spec
@@ -289,6 +294,48 @@ testHaomaProjects = describe "Haoma Project Integration" $ do
             let firstDiag = head diags
             liftIO $ firstDiag ^. severity `shouldBe` Just DiagnosticSeverity_Error
 
+    it "should reload deps and clear diagnostics when haoma.toml dependency added"
+        $ do
+            writeFile
+                "test/fixtures/haoma_project/dynapp/haoma.toml"
+                "name = \"dynapp\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\n"
+
+            runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures/haoma_project/dynapp"
+                $ do
+                    doc <- openDoc "src/main.soma" "soma"
+
+                    skipManyTill anyMessage $ do
+                        req <- message SMethod_ClientRegisterCapability
+                        let rspId = req ^. L.id
+                        sendResponse $ TResponseMessage "2.0" (Just rspId) (Right Null)
+
+                    liftIO $ threadDelay 100000 -- 100ms
+                    diags1 <- waitForDiagnosticsFrom "soma"
+                    liftIO $ length diags1 `shouldSatisfy` (> 0)
+
+                    liftIO
+                        $ writeFile
+                            "test/fixtures/haoma_project/dynapp/haoma.toml"
+                            "name = \"dynapp\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\nmylib = { path = \"../mylib\" }\n"
+
+                    liftIO $ threadDelay 100000 -- 100ms
+
+                    haomaAbsPath <- liftIO $ makeAbsolute "test/fixtures/haoma_project/dynapp/haoma.toml"
+                    let haomaUri = Uri $ T.pack $ "file://" ++ haomaAbsPath
+                        changeEvent = FileEvent haomaUri FileChangeType_Changed
+                        fileParams = DidChangeWatchedFilesParams [changeEvent]
+                    sendNotification SMethod_WorkspaceDidChangeWatchedFiles fileParams
+
+                    diags2 <- waitForDiagnosticsFrom "soma"
+                    liftIO $ diags2 `shouldBe` []
+
+                    closeDoc doc
+
+            -- Restore original haoma.toml
+            writeFile
+                "test/fixtures/haoma_project/dynapp/haoma.toml"
+                "name = \"dynapp\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\n"
+
 waitForDiagnosticsFrom :: T.Text -> Session [Diagnostic]
 waitForDiagnosticsFrom src = do
     filter (\d -> d ^. source == Just src) <$> waitForDiagnostics
@@ -375,7 +422,7 @@ fullCaps =
                     { _applyEdit = Just True
                     , _workspaceEdit = Nothing
                     , _didChangeConfiguration = Nothing
-                    , _didChangeWatchedFiles = Nothing
+                    , _didChangeWatchedFiles = Just $ DidChangeWatchedFilesClientCapabilities (Just True) (Just True)
                     , _symbol = Nothing
                     , _executeCommand = Nothing
                     , _workspaceFolders = Just True

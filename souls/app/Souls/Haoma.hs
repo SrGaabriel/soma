@@ -1,4 +1,7 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE ExplicitNamespaces #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -13,15 +16,23 @@ module Souls.Haoma (
     HaomaMetadata (..),
     HaomaPackageInfo (..),
     HaomaModuleInfo (..),
+    HaomaProjectCache (..),
+    ExternalDeps (..),
+    emptyExternalDeps,
     findHaomaProject,
     isHaomaProject,
     runHaomaCheck,
     runHaomaMetadata,
     haomaCheckFile,
     loadExternalDeps,
+    watchHaomaFiles,
+    handleHaomaFileChange,
 ) where
 
+import Control.Concurrent.STM (TVar, atomically, modifyTVar', readTVarIO)
 import Control.Exception (try)
+import Control.Monad (forM_)
+import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (FromJSON (..), eitherDecode, withObject, (.:), (.:?))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
@@ -32,6 +43,11 @@ import qualified Data.Text.Encoding as TE
 import GHC.Generics (Generic)
 import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Resolver (runResolverWithEnv)
+import Data.Aeson (toJSON)
+import Language.LSP.Protocol.Message (Method (..), SMethod (..))
+import Language.LSP.Protocol.Types (Registration (..), RegistrationParams (..))
+import Language.LSP.Protocol.Types (DidChangeWatchedFilesRegistrationOptions (..), FileEvent (..), FileSystemWatcher (..), GlobPattern (GlobPattern), Pattern (Pattern), Uri, WatchKind (..), uriToFilePath, type (|?) (InL))
+import Language.LSP.Server (LspM, sendRequest)
 import Lexing.Lexer (lexCode)
 import Parsing.Ast (parse)
 import Project.Extracts (extractSymbolImports, resolveImport)
@@ -39,7 +55,7 @@ import Project.Graph (extractImports, topoSortModules)
 import Syntax.Tree (Expr)
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.Process (readProcessWithExitCode)
 
 data HaomaProject = HaomaProject
@@ -331,3 +347,72 @@ compileExternalModuleAst pkgName modName ast existingTypes existingInstances = d
         else do
             let newDefs = Map.difference fullEnv seedEnv
             return $ Just (newDefs, instanceEnv)
+
+watchHaomaFiles :: LspM () ()
+watchHaomaFiles = do
+    let watcher =
+            FileSystemWatcher
+                { _globPattern = GlobPattern (InL (Pattern "**/haoma.toml"))
+                , _kind = Just $ WatchKind_Custom 7 -- Create | Change | Delete
+                }
+
+    let regOptions =
+            DidChangeWatchedFilesRegistrationOptions
+                { _watchers = [watcher]
+                }
+
+    let registration =
+            Registration
+                { _id = "haoma-watcher"
+                , _method = "workspace/didChangeWatchedFiles"
+                , _registerOptions = Just (toJSON regOptions)
+                }
+
+    let params = RegistrationParams {_registrations = [registration]}
+
+    _ <- sendRequest SMethod_ClientRegisterCapability params $ \_result -> pure ()
+
+    return ()
+
+handleHaomaFileChange ::
+    TVar (Map.Map FilePath HaomaProjectCache) ->
+    TVar (Map.Map FilePath FilePath) ->
+    TVar (Map.Map FilePath Uri) ->
+    (Uri -> LspM () ()) ->
+    [FileEvent] ->
+    LspM () ()
+handleHaomaFileChange haomaProjectsVar fileToProjectVar openFilesVar reanalyze events = do
+    forM_ events $ \(FileEvent eventUri _changeType) -> do
+        case uriToFilePath eventUri of
+            Nothing -> pure ()
+            Just filePath -> do
+                if takeFileName filePath == "haoma.toml"
+                    then do
+                        let projectRoot = takeDirectory filePath
+                        liftIO $ atomically $ do
+                            modifyTVar' haomaProjectsVar (Map.delete projectRoot)
+                            modifyTVar' fileToProjectVar (Map.filter (/= projectRoot))
+
+                        openFiles <- liftIO $ readTVarIO openFilesVar
+                        forM_ (Map.toList openFiles) $ \(openFilePath, openFileUri) -> do
+                            mProject <- liftIO $ findHaomaProject openFilePath
+                            case mProject of
+                                Just project | hpRoot project == projectRoot ->
+                                    reanalyze openFileUri
+                                _ -> pure ()
+                    else pure ()
+
+data HaomaProjectCache = HaomaProjectCache
+    { hpcProject :: HaomaProject
+    , hpcExternalDeps :: ExternalDeps
+    }
+    deriving (Show)
+
+data ExternalDeps = ExternalDeps
+    { edTypes :: Map.Map String TypeEnv
+    , edInstances :: Map.Map String InstanceEnv
+    }
+    deriving (Show)
+
+emptyExternalDeps :: ExternalDeps
+emptyExternalDeps = ExternalDeps Map.empty Map.empty

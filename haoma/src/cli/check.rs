@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
+use crate::build::build_project;
 use crate::build::graph::BuildNode;
 use crate::build::resolve::DependencyResolver;
 use crate::cli::parse_manifest;
@@ -79,6 +80,8 @@ pub fn execute(path: &Path) {
     let mut all_success = true;
     let mut built_tarballs: HashMap<String, PathBuf> = HashMap::new();
 
+    let root_module = layers.last().and_then(|l| l.last()).cloned();
+
     for layer in layers {
         for module_name in layer {
             if let Some(node) = graph.get_node(&module_name) {
@@ -88,44 +91,82 @@ pub fn execute(path: &Path) {
                     .filter_map(|dep| built_tarballs.get(dep).map(|p| (dep.clone(), p.clone())))
                     .collect();
 
-                match check_module(node, &dep_tarballs) {
-                    Ok(output) => {
-                        if !output.success {
-                            all_success = false;
-                        }
-                        all_outputs.push(output);
+                let is_root = root_module.as_ref() == Some(&module_name);
 
-                        let tarball_path = node
-                            .path
-                            .join("build")
-                            .join(format!("{}.toria", node.manifest.name));
-                        if tarball_path.exists() {
-                            built_tarballs.insert(module_name.clone(), tarball_path);
+                if is_root {
+                    match check_module(node, &dep_tarballs) {
+                        Ok(output) => {
+                            if !output.success {
+                                all_success = false;
+                            }
+                            all_outputs.push(output);
+                        }
+                        Err(e) => {
+                            all_success = false;
+                            all_outputs.push(CheckOutput {
+                                success: false,
+                                diagnostics: vec![Diagnostic {
+                                    file: node.path.join("src").to_string_lossy().to_string(),
+                                    range: Range {
+                                        start: Position {
+                                            line: 0,
+                                            character: 0,
+                                        },
+                                        end: Position {
+                                            line: 0,
+                                            character: 0,
+                                        },
+                                    },
+                                    severity: 1,
+                                    message: format!("Failed to check module: {}", e),
+                                    source: "haoma".to_string(),
+                                    code: None,
+                                }],
+                                module_name: Some(module_name.clone()),
+                            });
                         }
                     }
-                    Err(e) => {
-                        all_success = false;
-                        all_outputs.push(CheckOutput {
-                            success: false,
-                            diagnostics: vec![Diagnostic {
-                                file: node.path.join("src").to_string_lossy().to_string(),
-                                range: Range {
-                                    start: Position {
-                                        line: 0,
-                                        character: 0,
+                } else {
+                    match build_project(&node.path, &node.manifest) {
+                        Ok(_) => {
+                            all_outputs.push(CheckOutput {
+                                success: true,
+                                diagnostics: vec![],
+                                module_name: Some(module_name.clone()),
+                            });
+
+                            let tarball_path = node
+                                .path
+                                .join("build")
+                                .join(format!("{}.toria", node.manifest.name));
+                            if tarball_path.exists() {
+                                built_tarballs.insert(module_name.clone(), tarball_path);
+                            }
+                        }
+                        Err(e) => {
+                            all_success = false;
+                            all_outputs.push(CheckOutput {
+                                success: false,
+                                diagnostics: vec![Diagnostic {
+                                    file: node.path.join("src").to_string_lossy().to_string(),
+                                    range: Range {
+                                        start: Position {
+                                            line: 0,
+                                            character: 0,
+                                        },
+                                        end: Position {
+                                            line: 0,
+                                            character: 0,
+                                        },
                                     },
-                                    end: Position {
-                                        line: 0,
-                                        character: 0,
-                                    },
-                                },
-                                severity: 1,
-                                message: format!("Failed to check module: {}", e),
-                                source: "haoma".to_string(),
-                                code: None,
-                            }],
-                            module_name: Some(module_name.clone()),
-                        });
+                                    severity: 1,
+                                    message: format!("Failed to build dependency module: {}", e),
+                                    source: "haoma".to_string(),
+                                    code: None,
+                                }],
+                                module_name: Some(module_name.clone()),
+                            });
+                        }
                     }
                 }
             }

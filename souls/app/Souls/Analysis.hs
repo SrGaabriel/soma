@@ -1,8 +1,8 @@
 {-# LANGUAGE RecordWildCards #-}
 
-module Souls.Analysis where
+module Souls.Analysis (analyzeFile, reanalyzeFile) where
 
-import Control.Concurrent.STM (TVar, modifyTVar, writeTVar)
+import Control.Concurrent.STM (TVar, modifyTVar, modifyTVar')
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -15,19 +15,28 @@ import Language.LSP.Server (LspM, getVirtualFile, publishDiagnostics)
 import Language.LSP.VFS
 import Lexing.Lexer (lexCode)
 import Parsing.Ast (parse)
-import Souls.Haoma (HaomaProject, findHaomaProject, loadExternalDeps)
+import Souls.Haoma (ExternalDeps (..), HaomaProject (..), HaomaProjectCache (..), emptyExternalDeps, findHaomaProject, loadExternalDeps)
 import Souls.Loc (offsetToPosition)
-import Souls.Server (ExternalDeps (..), LspState (..), compileModuleForLSP, emptyExternalDeps)
+import Souls.Server (LspState (..), compileModuleForLSP)
 import System.FilePath (dropExtension, takeFileName)
 
+reanalyzeFile :: LspState -> Uri -> LspM () ()
+reanalyzeFile state fileUri = reanalyzeFileInternal state fileUri
+
 analyzeFile :: LspState -> Uri -> Int32 -> LspM () ()
-analyzeFile LspState{..} fileUri fileVersion = do
+analyzeFile state fileUri fileVersion = analyzeFileWithVersion state fileUri (Just fileVersion)
+
+reanalyzeFileInternal :: LspState -> Uri -> LspM () ()
+reanalyzeFileInternal state fileUri = analyzeFileWithVersion state fileUri Nothing
+
+analyzeFileWithVersion :: LspState -> Uri -> Maybe Int32 -> LspM () ()
+analyzeFileWithVersion LspState{..} fileUri fileVersion = do
     let nUri = toNormalizedUri fileUri
     mdoc <- getVirtualFile nUri
 
     case (mdoc, uriToFilePath fileUri) of
         (Just vf, Just filePath) -> do
-            extDeps <- liftIO $ ensureExternalDeps filePath stateHaomaProject stateExternalDeps
+            extDeps <- liftIO $ ensureExternalDeps filePath stateHaomaProjects stateFileToProject
 
             let content = virtualFileText vf
                 modName = dropExtension $ takeFileName filePath
@@ -37,7 +46,7 @@ analyzeFile LspState{..} fileUri fileVersion = do
             case parse tokens of
                 Left parseErrs -> do
                     let diags = map (errorToDiagnostic content) parseErrs ++ lexDiagnostics
-                    publishDiagnostics 100 nUri (Just fileVersion) (partitionBySource diags)
+                    publishDiagnostics 100 nUri fileVersion (partitionBySource diags)
                 Right (parseErrors, ast) -> do
                     let parseDiagnostics = map (errorToDiagnostic content) parseErrors
                     compiledMods <- liftIO $ readTVarIO stateModules
@@ -57,37 +66,47 @@ analyzeFile LspState{..} fileUri fileVersion = do
                         $ atomically
                         $ modifyTVar stateModules (Map.insert filePath compiled)
 
-                    publishDiagnostics 100 nUri (Just fileVersion) (partitionBySource allDiagnostics)
+                    publishDiagnostics 100 nUri fileVersion (partitionBySource allDiagnostics)
         _ -> pure ()
 
 ensureExternalDeps ::
     FilePath ->
-    TVar (Maybe HaomaProject) ->
-    TVar ExternalDeps ->
+    TVar (Map.Map FilePath HaomaProjectCache) ->
+    TVar (Map.Map FilePath FilePath) ->
     IO ExternalDeps
-ensureExternalDeps filePath haomaProjectVar externalDepsVar = do
-    cachedProject <- readTVarIO haomaProjectVar
-    cachedDeps <- readTVarIO externalDepsVar
-
-    case cachedProject of
-        Just _ ->
-            return cachedDeps
-        Nothing -> do
-            mProject <- findHaomaProject filePath
-            case mProject of
+ensureExternalDeps filePath haomaProjectsVar fileToProjectVar = do
+    fileToProject <- readTVarIO fileToProjectVar
+    case Map.lookup filePath fileToProject of
+        Just projectRoot -> do
+            projects <- readTVarIO haomaProjectsVar
+            case Map.lookup projectRoot projects of
+                Just cached -> return (hpcExternalDeps cached)
                 Nothing ->
-                    return emptyExternalDeps
-                Just project -> do
-                    result <- loadExternalDeps project
-                    case result of
-                        Left _err ->
-                            return emptyExternalDeps
-                        Right (types, instances) -> do
-                            let extDeps = ExternalDeps types instances
-                            atomically $ do
-                                writeTVar haomaProjectVar (Just project)
-                                writeTVar externalDepsVar extDeps
-                            return extDeps
+                    loadAndCacheProject filePath haomaProjectsVar fileToProjectVar
+        Nothing ->
+            loadAndCacheProject filePath haomaProjectsVar fileToProjectVar
+
+loadAndCacheProject ::
+    FilePath ->
+    TVar (Map.Map FilePath HaomaProjectCache) ->
+    TVar (Map.Map FilePath FilePath) ->
+    IO ExternalDeps
+loadAndCacheProject filePath haomaProjectsVar fileToProjectVar = do
+    mProject <- findHaomaProject filePath
+    case mProject of
+        Nothing -> return emptyExternalDeps
+        Just project -> do
+            let projectRoot = hpRoot project
+            result <- loadExternalDeps project
+            case result of
+                Left _err -> return emptyExternalDeps
+                Right (types, instances) -> do
+                    let extDeps = ExternalDeps types instances
+                        cache = HaomaProjectCache project extDeps
+                    atomically $ do
+                        modifyTVar' haomaProjectsVar (Map.insert projectRoot cache)
+                        modifyTVar' fileToProjectVar (Map.insert filePath projectRoot)
+                    return extDeps
 
 errorToDiagnostic :: (PrintableError e) => T.Text -> e -> Diagnostic
 errorToDiagnostic code err =

@@ -1,15 +1,17 @@
 module Main where
 
-import Build.Incremental (processModulesIncremental)
+import Build.Incremental (processExternalDependencies, processModulesIncremental)
 import Config.Options
 import Control.Monad (unless)
 import qualified Data.ByteString as BS
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Text.Encoding as TE
+import Format.Errors (CycleError (..), SomeError (..))
 import Lexing.Lexer (lexCode)
 import Logging.Errors (printSomeError)
 import Logging.Json (errorsToJsonOutput, failedJsonOutput, printJsonOutput)
+import Project.Check (checkModulesInOrder)
 import Project.Extracts (extractSymbolImports)
 import Project.Graph
 import Project.Module
@@ -79,13 +81,35 @@ checkSingleFile opts path = do
                     printJsonOutput output
                 FormatHuman -> mapM_ printSomeError errs
             exitFailure
-        Right _mi -> do
+        Right mi -> do
+            (externalDeps, externalInstances, _, _) <- processExternalDependencies (checkDeps opts)
+            let graph = Map.singleton name mi
+                (errors, _) = checkModulesInOrder [name] graph externalDeps externalInstances name
+
+            let allErrors =
+                    concatMap
+                        ( \(modName, errs) ->
+                            map
+                                ( \e -> case Map.lookup modName graph of
+                                    Just modInfo -> SomeError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE"
+                                    Nothing -> SomeError e "" "" "INFERENCE"
+                                )
+                                errs
+                        )
+                        errors
+
             case checkFormat opts of
                 FormatJson -> do
-                    let output = errorsToJsonOutput (Just name) []
+                    let output = errorsToJsonOutput (Just name) allErrors
                     printJsonOutput output
-                FormatHuman -> putStrLn $ "Module " ++ name ++ " checked successfully."
-            exitSuccess
+                FormatHuman ->
+                    if null allErrors
+                        then putStrLn $ "Module " ++ name ++ " checked successfully."
+                        else mapM_ printSomeError allErrors
+
+            if null allErrors
+                then exitSuccess
+                else exitFailure
 
 checkDirectory :: CheckOptions -> FilePath -> IO ()
 checkDirectory opts path = do
@@ -105,13 +129,48 @@ checkDirectory opts path = do
                     printJsonOutput output
                 FormatHuman -> mapM_ printSomeError errs
             exitFailure
-        Right _graph -> do
-            case checkFormat opts of
-                FormatJson -> do
-                    let output = errorsToJsonOutput (Just name) []
-                    printJsonOutput output
-                FormatHuman -> putStrLn $ "All modules in " ++ name ++ " checked successfully."
-            exitSuccess
+        Right graph -> do
+            let depGraph = buildDependencyGraph graph
+            case topoSortModules depGraph of
+                Left cycles -> do
+                    case checkFormat opts of
+                        FormatJson -> do
+                            let cycleErrs = map (\c -> SomeError (CycleError c) "" "" "CHECK") cycles
+                            let output = errorsToJsonOutput (Just name) cycleErrs
+                            printJsonOutput output
+                        FormatHuman -> do
+                            putStrLn "Error: Detected cyclic imports between modules:"
+                            mapM_ (putStrLn . ("  " ++) . show) cycles
+                    exitFailure
+                Right sorted -> do
+                    (externalDeps, externalInstances, _, _) <- processExternalDependencies (checkDeps opts)
+
+                    let (errors, _) = checkModulesInOrder sorted graph externalDeps externalInstances name
+
+                    let allErrors =
+                            concatMap
+                                ( \(modName, errs) ->
+                                    map
+                                        ( \e -> case Map.lookup modName graph of
+                                            Just mi -> SomeError e (modulePath mi) (moduleContent mi) "INFERENCE"
+                                            Nothing -> SomeError e "" "" "INFERENCE"
+                                        )
+                                        errs
+                                )
+                                errors
+
+                    case checkFormat opts of
+                        FormatJson -> do
+                            let output = errorsToJsonOutput (Just name) allErrors
+                            printJsonOutput output
+                        FormatHuman ->
+                            if null allErrors
+                                then putStrLn $ "All modules in " ++ name ++ " checked successfully."
+                                else mapM_ printSomeError allErrors
+
+                    if null allErrors
+                        then exitSuccess
+                        else exitFailure
 
 build :: Options -> IO ()
 build options = do

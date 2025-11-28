@@ -26,9 +26,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Format.Trees (prettyPrintAst, treeShow)
-import Inference.Assembler (inferTree)
 import Inference.Core (InstanceEnv, TypeMap)
-import Inference.Resolver (runResolverWithEnv)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.Errors (printError)
 import Logging.Trees ()
@@ -37,7 +35,8 @@ import Metal.Gen.Metadata (constructorMetadataToSerializable, extractConstructor
 import Metal.Lift (liftLambdas)
 import Metal.Module
 import Metal.MonadNormalize (normalizeModule)
-import Project.Extracts (extractSymbolImports, resolveImport)
+import Project.Check (CheckedModule (..), checkModule)
+import Project.Extracts ()
 import Project.Graph
 import Project.Module
 import Project.Symbols (Symbol)
@@ -69,30 +68,36 @@ compileModuleSeparately ::
     IO CompiledModule
 compileModuleSeparately packageName modInfo compiledDeps externalDeps externalInstances externalConstructors = do
     let modName = moduleName modInfo
-        ast = moduleAst modInfo
 
     putStrLn $ "Compiling module: " ++ modName
 
-    let imports = extractSymbolImports ast
-        compiled = Map.map (\c -> (cmPublicSymbols c, cmPublicInstances c)) compiledDeps
-        resolve = resolveImport compiled externalDeps externalInstances
-        importsResolved = map resolve imports
-        seedEnv = Map.unions $ map fst importsResolved
-        seedInstances = Map.unions $ map snd importsResolved
+    let checkedDeps =
+            Map.map
+                ( \c ->
+                    CheckedModule
+                        { checkedModuleName = cmModuleName c
+                        , checkedResolvedAst = cmResolvedAst c
+                        , checkedTypeMap = cmTypeMap c
+                        , checkedPublicSymbols = cmPublicSymbols c
+                        , checkedInstances = cmPublicInstances c
+                        }
+                )
+                compiledDeps
+    let (allErrors, checked) = checkModule packageName modInfo checkedDeps externalDeps externalInstances
 
-    let (resolverErrors, (resolvedAst, fullEnv, instanceEnv)) = runResolverWithEnv packageName modName seedEnv seedInstances ast
-    putStrLn "Resolved AST:"
-    prettyPrintAst resolvedAst
-    let (inferenceErrors, types) = inferTree packageName modName fullEnv instanceEnv resolvedAst
-    let newDefs = Map.difference fullEnv seedEnv
-
-    let allErrors = resolverErrors ++ inferenceErrors
     unless (null allErrors) $ do
         putStrLn $ "Errors while compiling module " ++ modName ++ ":"
         mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") allErrors
         exitFailure
 
+    putStrLn "Resolved AST:"
+    prettyPrintAst (checkedResolvedAst checked)
     putStrLn $ "Module " ++ modName ++ " type checked"
+
+    let resolvedAst = checkedResolvedAst checked
+        types = checkedTypeMap checked
+        newDefs = checkedPublicSymbols checked
+        instanceEnv = checkedInstances checked
 
     let metallicExternalConstructors = Map.map serializableToConstructorMetadata externalConstructors
     let metallic = compileMetalModule modName resolvedAst types metallicExternalConstructors

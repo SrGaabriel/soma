@@ -50,6 +50,7 @@ library
     Parsing.Patterns
     Parsing.Traits
     Parsing.Types
+    Project.Check
     Project.Extracts
     Project.Graph
     Project.Module

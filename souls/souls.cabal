@@ -57,6 +57,7 @@ test-suite souls-test
   build-depends:
     base,
     data-default >=0.8,
+    directory >=1.3,
     filepath,
     hspec >=2.11,
     lens,

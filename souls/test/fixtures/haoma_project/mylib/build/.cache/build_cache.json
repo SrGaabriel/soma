@@ -1,0 +1,9 @@
+{
+  "mylib": {
+    "source_hash": "3eca4a3a5264098e15a010728318de689425adc1856a8d6f6bf6aa78d3208fcb",
+    "dependency_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "artifact_path": "/home/gabriel/Developer/soma/souls/test/fixtures/haoma_project/mylib/build/mylib.toria",
+    "tarball_path": "/home/gabriel/Developer/soma/souls/test/fixtures/haoma_project/mylib/build/mylib.toria",
+    "build_timestamp": 1764363663
+  }
+}

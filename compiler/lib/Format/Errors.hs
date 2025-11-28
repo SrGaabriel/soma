@@ -23,3 +23,10 @@ instance PrintableError SomeError where
     errorStart (SomeError e _ _ _) = errorStart e
     errorEnd (SomeError e _ _ _) = errorEnd e
     errorMessage (SomeError e _ _ _) = errorMessage e
+
+newtype CycleError = CycleError [String]
+
+instance PrintableError CycleError where
+    errorMessage (CycleError modules) = "Cyclic import detected: " ++ unwords modules
+    errorStart _ = 0
+    errorEnd _ = 0

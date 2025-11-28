@@ -1,11 +1,13 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
 import Control.Concurrent.STM
 import Control.Lens ((^.))
+
 import Control.Monad.IO.Class
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -19,21 +21,23 @@ import Language.LSP.Protocol.Types hiding (
  )
 import Language.LSP.Server
 import Project.Graph
-import Souls.Analysis (analyzeFile)
+import Souls.Analysis (analyzeFile, reanalyzeFile)
 import Souls.Handlers.Completion (handleCompletion)
 import Souls.Handlers.Definition (handleGotoDefinition)
 import Souls.Handlers.Hover (handleHover)
-import Souls.Server (LspState (..), emptyExternalDeps)
+import Souls.Haoma (handleHaomaFileChange, watchHaomaFiles)
+import Souls.Server (LspState (..))
 
 main :: IO Int
 main = do
     modulesVar <- newTVarIO Map.empty
     workspaceVar <- newTVarIO Nothing
     graphVar <- newTVarIO Nothing
-    haomaProjectVar <- newTVarIO Nothing
-    externalDepsVar <- newTVarIO emptyExternalDeps
+    haomaProjectsVar <- newTVarIO Map.empty
+    fileToProjectVar <- newTVarIO Map.empty
+    openFilesVar <- newTVarIO Map.empty
 
-    let state = LspState modulesVar workspaceVar graphVar haomaProjectVar externalDepsVar
+    let state = LspState modulesVar workspaceVar graphVar haomaProjectsVar fileToProjectVar openFilesVar
 
     runServer
         $ ServerDefinition
@@ -64,13 +68,19 @@ main = do
 handlers :: LspState -> ClientCapabilities -> Handlers (LspM ())
 handlers state _caps =
     mconcat
-        [ notificationHandler SMethod_Initialized $ \_msg ->
+        [ notificationHandler SMethod_Initialized $ \_msg -> do
+            watchHaomaFiles
+
             sendNotification SMethod_WindowShowMessage
                 $ ShowMessageParams MessageType_Info "Soma LSP initialized"
         , notificationHandler SMethod_TextDocumentDidOpen $ \msg -> do
             let fileUri = msg ^. L.params . L.textDocument . L.uri
             let fileVersion = msg ^. L.params . L.textDocument . L.version
-            analyzeFile state fileUri fileVersion
+            case uriToFilePath fileUri of
+                Just filePath -> do
+                    liftIO $ atomically $ modifyTVar' (stateOpenFiles state) (Map.insert filePath fileUri)
+                    analyzeFile state fileUri fileVersion
+                Nothing -> pure ()
         , notificationHandler SMethod_TextDocumentDidClose $ \msg -> do
             let fileUri = msg ^. L.params . L.textDocument . L.uri
                 filePathRes = uriToFilePath fileUri
@@ -78,6 +88,7 @@ handlers state _caps =
                 Just filePath -> liftIO $ do
                     atomically $ do
                         modifyTVar' (stateModules state) (Map.delete filePath)
+                        modifyTVar' (stateOpenFiles state) (Map.delete filePath)
                 Nothing -> pure ()
         , notificationHandler SMethod_TextDocumentDidChange $ \msg -> do
             let fileUri = msg ^. L.params . L.textDocument . L.uri
@@ -88,6 +99,14 @@ handlers state _caps =
         , requestHandler SMethod_TextDocumentCompletion (handleCompletion state)
         , notificationHandler SMethod_WorkspaceDidChangeConfiguration $ \_msg ->
             pure ()
+        , notificationHandler SMethod_WorkspaceDidChangeWatchedFiles $ \msg -> do
+            let events = msg ^. L.params . L.changes
+            handleHaomaFileChange
+                (stateHaomaProjects state)
+                (stateFileToProject state)
+                (stateOpenFiles state)
+                (reanalyzeFile state)
+                events
         , notificationHandler SMethod_SetTrace $ \_msg ->
             pure ()
         ]
