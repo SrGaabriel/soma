@@ -15,23 +15,21 @@ import qualified Language.LSP.Protocol.Lens as L
 import Language.LSP.Protocol.Types
 import Language.LSP.Test
 import Test.Hspec
-import System.Environment (lookupEnv)
 import Prelude hiding (length)
 
-getLspCommand :: IO String
-getLspCommand = "souls"
+lspCmd :: String
+lspCmd = "souls"
 
 main :: IO ()
 main = do
-    lspCmd <- getLspCommand
     hspec $ do
         describe "SouLS (Soma Language Server) LSP Tests" $ do
-            testInitialization lspCmd
-            testDiagnostics lspCmd
-            testHover lspCmd
-            testGotoDefinition lspCmd
-            testCompletion lspCmd
-            testHaomaProjects lspCmd
+            testInitialization
+            testDiagnostics
+            testHover
+            testGotoDefinition
+            testCompletion
+            testHaomaProjects
 
 mkConfig :: String -> SessionConfig
 mkConfig _cmd =
@@ -42,8 +40,8 @@ mkConfig _cmd =
         , logColor = True
         }
 
-testInitialization :: String -> Spec
-testInitialization lspCmd = describe "Initialization" $ do
+testInitialization :: Spec
+testInitialization = describe "Initialization" $ do
     it "should initialize and open a document"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
@@ -51,8 +49,8 @@ testInitialization lspCmd = describe "Initialization" $ do
             -- just verify we can open a document without errors
             return ()
 
-testDiagnostics :: String -> Spec
-testDiagnostics lspCmd = describe "Diagnostics" $ do
+testDiagnostics :: Spec
+testDiagnostics = describe "Diagnostics" $ do
     it "should report parse errors"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
@@ -89,8 +87,8 @@ testDiagnostics lspCmd = describe "Diagnostics" $ do
             diags <- waitForDiagnosticsFrom "soma"
             liftIO $ diags `shouldBe` []
 
-testHover :: String -> Spec
-testHover lspCmd = describe "Hover" $ do
+testHover :: Spec
+testHover = describe "Hover" $ do
     it "should show type information on hover"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
@@ -121,8 +119,8 @@ testHover lspCmd = describe "Hover" $ do
                     Just (Hover (InL _) _) -> True
                     _ -> False
 
-testGotoDefinition :: String -> Spec
-testGotoDefinition lspCmd = describe "Go to Definition" $ do
+testGotoDefinition :: Spec
+testGotoDefinition = describe "Go to Definition" $ do
     it "should navigate to local definition"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
@@ -195,8 +193,8 @@ testGotoDefinition lspCmd = describe "Go to Definition" $ do
                 InR (InL _links) -> return ()
                 InR (InR Null) -> liftIO $ expectationFailure "Expected cross-file location"
 
-testCompletion :: String -> Spec
-testCompletion lspCmd = describe "Completion" $ do
+testCompletion :: Spec
+testCompletion = describe "Completion" $ do
     it "should provide completions for local symbols"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
@@ -233,8 +231,8 @@ testCompletion lspCmd = describe "Completion" $ do
 
             return ()
 
-testHaomaProjects :: String -> Spec
-testHaomaProjects lspCmd = describe "Haoma Project Integration" $ do
+testHaomaProjects :: Spec
+testHaomaProjects = describe "Haoma Project Integration" $ do
     it "should handle files in a haoma library project"
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures/haoma_project/mylib"
         $ do
