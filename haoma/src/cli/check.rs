@@ -220,7 +220,7 @@ fn check_module(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Parse JSON output from soma - find the first line that starts with '{'
+    // Parse JSON output from somac - find the first line that starts with '{'
     let json_line = stdout
         .lines()
         .find(|line| line.trim().starts_with('{'))

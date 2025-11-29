@@ -12,7 +12,7 @@ import GHC.Conc.Sync (readTVarIO)
 import Language.LSP.Diagnostics
 import Language.LSP.Protocol.Types
 import Language.LSP.Server (LspM, getVirtualFile, publishDiagnostics)
-import Language.LSP.VFS
+import Language.LSP.VFS (virtualFileText)
 import Lexing.Lexer (lexCode)
 import Parsing.Ast (parse)
 import Souls.Haoma (ExternalDeps (..), HaomaProject (..), HaomaProjectCache (..), emptyExternalDeps, findHaomaProject, loadExternalDeps)
@@ -21,7 +21,7 @@ import Souls.Server (LspState (..), compileModuleForLSP)
 import System.FilePath (dropExtension, takeFileName)
 
 reanalyzeFile :: LspState -> Uri -> LspM () ()
-reanalyzeFile state fileUri = reanalyzeFileInternal state fileUri
+reanalyzeFile = reanalyzeFileInternal
 
 analyzeFile :: LspState -> Uri -> Int32 -> LspM () ()
 analyzeFile state fileUri fileVersion = analyzeFileWithVersion state fileUri (Just fileVersion)
@@ -40,13 +40,25 @@ analyzeFileWithVersion LspState{..} fileUri fileVersion = do
 
             let content = virtualFileText vf
                 modName = dropExtension $ takeFileName filePath
+
+            version <- case fileVersion of
+                Just v -> do
+                    liftIO $ atomically $ modifyTVar' stateFileVersions (Map.insert filePath v)
+                    return $ Just v
+                Nothing -> do
+                    lastVersion <- liftIO $ readTVarIO stateFileVersions
+                    let currentVersion = Map.findWithDefault 0 filePath lastVersion
+                        newVersion = currentVersion + 1
+                    liftIO $ atomically $ modifyTVar' stateFileVersions (Map.insert filePath newVersion)
+                    return $ Just newVersion
+
             let (tokens, lexErrors) = lexCode content
             let lexDiagnostics = map (errorToDiagnostic content) lexErrors
 
             case parse tokens of
                 Left parseErrs -> do
                     let diags = map (errorToDiagnostic content) parseErrs ++ lexDiagnostics
-                    publishDiagnostics 100 nUri fileVersion (partitionBySource diags)
+                    publishDiagnostics 100 nUri version (partitionBySource diags)
                 Right (parseErrors, ast) -> do
                     let parseDiagnostics = map (errorToDiagnostic content) parseErrors
                     compiledMods <- liftIO $ readTVarIO stateModules
@@ -66,7 +78,7 @@ analyzeFileWithVersion LspState{..} fileUri fileVersion = do
                         $ atomically
                         $ modifyTVar stateModules (Map.insert filePath compiled)
 
-                    publishDiagnostics 100 nUri fileVersion (partitionBySource allDiagnostics)
+                    publishDiagnostics 100 nUri version (partitionBySource allDiagnostics)
         _ -> pure ()
 
 ensureExternalDeps ::
@@ -81,10 +93,8 @@ ensureExternalDeps filePath haomaProjectsVar fileToProjectVar = do
             projects <- readTVarIO haomaProjectsVar
             case Map.lookup projectRoot projects of
                 Just cached -> return (hpcExternalDeps cached)
-                Nothing ->
-                    loadAndCacheProject filePath haomaProjectsVar fileToProjectVar
-        Nothing ->
-            loadAndCacheProject filePath haomaProjectsVar fileToProjectVar
+                Nothing -> loadAndCacheProject filePath haomaProjectsVar fileToProjectVar
+        Nothing -> loadAndCacheProject filePath haomaProjectsVar fileToProjectVar
 
 loadAndCacheProject ::
     FilePath ->

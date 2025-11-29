@@ -5,6 +5,7 @@
 module Souls.Server (LspCompiledModule (..), LspState (..), compileModuleForLSP, findModuleByName) where
 
 import Control.Concurrent.STM
+import Data.Int (Int32)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import qualified Data.Text as T
@@ -38,6 +39,7 @@ data LspState = LspState
     , stateHaomaProjects :: TVar (Map.Map FilePath HaomaProjectCache)
     , stateFileToProject :: TVar (Map.Map FilePath FilePath)
     , stateOpenFiles :: TVar (Map.Map FilePath Uri)
+    , stateFileVersions :: TVar (Map.Map FilePath Int32)
     }
 
 compileModuleForLSP ::

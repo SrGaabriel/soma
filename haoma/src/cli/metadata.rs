@@ -6,45 +6,29 @@ use crate::build::resolve::DependencyResolver;
 use crate::cli::parse_manifest;
 use crate::logging::output_err;
 
-/// A resolved module in the project
 #[derive(Debug, Clone, Serialize)]
 pub struct ModuleInfo {
-    /// Full module name (e.g., "myapp/utils/io")
     pub name: String,
-    /// Absolute path to the .soma file
     pub path: String,
-    /// Package this module belongs to
     pub package: String,
 }
 
-/// A resolved package (the current project or a dependency)
 #[derive(Debug, Clone, Serialize)]
 pub struct PackageInfo {
-    /// Package name
     pub name: String,
-    /// Absolute path to package root
     pub root: String,
-    /// Package version
     pub version: String,
-    /// Whether this is the root package or a dependency
     pub is_root: bool,
-    /// Dependencies of this package
     pub dependencies: Vec<String>,
 }
 
-/// Full project metadata output
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectMetadata {
-    /// Whether metadata was successfully resolved
     pub success: bool,
-    /// Error message if resolution failed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Root package name
     pub root_package: String,
-    /// All packages (root + dependencies)
     pub packages: Vec<PackageInfo>,
-    /// All modules across all packages
     pub modules: Vec<ModuleInfo>,
 }
 
@@ -52,7 +36,6 @@ pub fn execute(path: &Path) {
     let manifest = parse_manifest(path);
     let root_name = manifest.name.clone();
 
-    // Resolve all dependencies to get the full module graph
     let mut resolver = DependencyResolver::new(path.to_path_buf());
     let graph = match resolver.resolve(&manifest) {
         Ok(g) => g,
@@ -70,7 +53,6 @@ pub fn execute(path: &Path) {
         }
     };
 
-    // Build package info from graph nodes
     let mut packages = Vec::new();
     let mut all_modules = Vec::new();
 
@@ -89,7 +71,6 @@ pub fn execute(path: &Path) {
             dependencies: node.dependencies.clone(),
         });
 
-        // Scan for modules in this package
         let src_dir = node.path.join("src");
         if src_dir.exists()
             && let Ok(modules) = scan_modules(name, &src_dir)
@@ -98,7 +79,6 @@ pub fn execute(path: &Path) {
         }
     }
 
-    // Sort for consistent output
     packages.sort_by(|a, b| a.name.cmp(&b.name));
     all_modules.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -113,7 +93,6 @@ pub fn execute(path: &Path) {
     println!("{}", serde_json::to_string(&output).unwrap());
 }
 
-/// Scan a src directory for .soma modules
 fn scan_modules(package_name: &str, src_dir: &Path) -> Result<Vec<ModuleInfo>, std::io::Error> {
     let mut modules = Vec::new();
     scan_modules_recursive(package_name, src_dir, "", &mut modules)?;

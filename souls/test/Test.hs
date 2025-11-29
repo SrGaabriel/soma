@@ -296,9 +296,10 @@ testHaomaProjects = describe "Haoma Project Integration" $ do
 
     it "should reload deps and clear diagnostics when haoma.toml dependency added"
         $ do
-            writeFile
-                "test/fixtures/haoma_project/dynapp/haoma.toml"
-                "name = \"dynapp\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\n"
+            liftIO
+                $ writeFile
+                    "test/fixtures/haoma_project/dynapp/haoma.toml"
+                    "name = \"dynapp\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\n"
 
             runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures/haoma_project/dynapp"
                 $ do
@@ -319,7 +320,6 @@ testHaomaProjects = describe "Haoma Project Integration" $ do
                             "name = \"dynapp\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\nmylib = { path = \"../mylib\" }\n"
 
                     liftIO $ threadDelay 100000 -- 100ms
-
                     haomaAbsPath <- liftIO $ makeAbsolute "test/fixtures/haoma_project/dynapp/haoma.toml"
                     let haomaUri = Uri $ T.pack $ "file://" ++ haomaAbsPath
                         changeEvent = FileEvent haomaUri FileChangeType_Changed
@@ -331,10 +331,122 @@ testHaomaProjects = describe "Haoma Project Integration" $ do
 
                     closeDoc doc
 
-            -- Restore original haoma.toml
-            writeFile
-                "test/fixtures/haoma_project/dynapp/haoma.toml"
-                "name = \"dynapp\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\n"
+            liftIO
+                $ writeFile
+                    "test/fixtures/haoma_project/dynapp/haoma.toml"
+                    "name = \"dynapp\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\n"
+    it "should break, reload deps and clear diagnostics when haoma.toml dependency added"
+        $ do
+            liftIO
+                $ writeFile
+                    "test/fixtures/haoma_project/dynapp2/haoma.toml"
+                    "name = \"dynapp2\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\nmylib = { path = \"../mylib\" }\n"
+
+            runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures/haoma_project/dynapp2"
+                $ do
+                    doc <- openDoc "src/main.soma" "soma"
+
+                    skipManyTill anyMessage $ do
+                        req <- message SMethod_ClientRegisterCapability
+                        let rspId = req ^. L.id
+                        sendResponse $ TResponseMessage "2.0" (Just rspId) (Right Null)
+
+                    liftIO $ threadDelay 100000 -- 100ms
+                    diags1 <- waitForDiagnosticsFrom "soma"
+                    liftIO $ diags1 `shouldBe` []
+
+                    liftIO
+                        $ writeFile
+                            "test/fixtures/haoma_project/dynapp2/haoma.toml"
+                            "name = \"dynapp2\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\n"
+
+                    liftIO $ threadDelay 100000 -- 100ms
+                    haomaAbsPath' <- liftIO $ makeAbsolute "test/fixtures/haoma_project/dynapp2/haoma.toml"
+                    let haomaUri' = Uri $ T.pack $ "file://" ++ haomaAbsPath'
+                        changeEvent' = FileEvent haomaUri' FileChangeType_Changed
+                        fileParams' = DidChangeWatchedFilesParams [changeEvent']
+                    sendNotification SMethod_WorkspaceDidChangeWatchedFiles fileParams'
+
+                    diags2 <- waitForDiagnosticsFrom "soma"
+                    liftIO $ length diags2 `shouldSatisfy` (> 0)
+
+                    liftIO
+                        $ writeFile
+                            "test/fixtures/haoma_project/dynapp2/haoma.toml"
+                            "name = \"dynapp2\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\nmylib = { path = \"../mylib\" }\n"
+
+                    liftIO $ threadDelay 100000 -- 100ms
+                    haomaAbsPath <- liftIO $ makeAbsolute "test/fixtures/haoma_project/dynapp2/haoma.toml"
+                    let haomaUri = Uri $ T.pack $ "file://" ++ haomaAbsPath
+                        changeEvent = FileEvent haomaUri FileChangeType_Changed
+                        fileParams = DidChangeWatchedFilesParams [changeEvent]
+                    sendNotification SMethod_WorkspaceDidChangeWatchedFiles fileParams
+
+                    diags3 <- waitForDiagnosticsFrom "soma"
+                    liftIO $ diags3 `shouldBe` []
+
+                    closeDoc doc
+
+    it "should handle haoma.toml changes after document edits"
+        $ do
+            liftIO
+                $ writeFile
+                    "test/fixtures/haoma_project/dynapp2/haoma.toml"
+                    "name = \"dynapp2\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\nmylib = { path = \"../mylib\" }\n"
+
+            runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures/haoma_project/dynapp2"
+                $ do
+                    doc <- openDoc "src/main.soma" "soma"
+
+                    skipManyTill anyMessage $ do
+                        req <- message SMethod_ClientRegisterCapability
+                        let rspId = req ^. L.id
+                        sendResponse $ TResponseMessage "2.0" (Just rspId) (Right Null)
+
+                    liftIO $ threadDelay 100000 -- 100ms
+                    diags1 <- waitForDiagnosticsFrom "soma"
+                    liftIO $ diags1 `shouldBe` []
+
+                    -- Make several document edits to increment the version
+                    changeDoc doc [TextDocumentContentChangeEvent $ InR $ TextDocumentContentChangeWholeDocument "use mylib.{add}\n\ndef main :: Int = add 1 2\n"]
+                    _ <- waitForDiagnosticsFrom "soma"
+
+                    changeDoc doc [TextDocumentContentChangeEvent $ InR $ TextDocumentContentChangeWholeDocument "use mylib.{add}\n\ndef main :: Int = add 2 3\n"]
+                    _ <- waitForDiagnosticsFrom "soma"
+
+                    changeDoc doc [TextDocumentContentChangeEvent $ InR $ TextDocumentContentChangeWholeDocument "use mylib.{add}\n\ndef main :: Int = add 3 4\n"]
+                    diags2 <- waitForDiagnosticsFrom "soma"
+                    liftIO $ diags2 `shouldBe` []
+
+                    liftIO
+                        $ writeFile
+                            "test/fixtures/haoma_project/dynapp2/haoma.toml"
+                            "name = \"dynapp2\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\n"
+
+                    liftIO $ threadDelay 100000 -- 100ms
+                    haomaAbsPath <- liftIO $ makeAbsolute "test/fixtures/haoma_project/dynapp2/haoma.toml"
+                    let haomaUri = Uri $ T.pack $ "file://" ++ haomaAbsPath
+                        changeEvent = FileEvent haomaUri FileChangeType_Changed
+                        fileParams = DidChangeWatchedFilesParams [changeEvent]
+                    sendNotification SMethod_WorkspaceDidChangeWatchedFiles fileParams
+
+                    diags3 <- waitForDiagnosticsFrom "soma"
+                    liftIO $ length diags3 `shouldSatisfy` (> 0)
+
+                    liftIO
+                        $ writeFile
+                            "test/fixtures/haoma_project/dynapp2/haoma.toml"
+                            "name = \"dynapp2\"\nversion = \"0.1.0\"\ntype = \"binary\"\n\n[dependencies]\nmylib = { path = \"../mylib\" }\n"
+
+                    liftIO $ threadDelay 100000 -- 100ms
+                    let changeEvent' = FileEvent haomaUri FileChangeType_Changed
+                        fileParams' = DidChangeWatchedFilesParams [changeEvent']
+                    sendNotification SMethod_WorkspaceDidChangeWatchedFiles fileParams'
+
+                    diags4 <- waitForDiagnosticsFrom "soma"
+                    liftIO $ diags4 `shouldBe` []
+
+                    closeDoc doc
 
 waitForDiagnosticsFrom :: T.Text -> Session [Diagnostic]
 waitForDiagnosticsFrom src = do

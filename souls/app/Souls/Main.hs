@@ -7,7 +7,6 @@ module Main where
 
 import Control.Concurrent.STM
 import Control.Lens ((^.))
-
 import Control.Monad.IO.Class
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
@@ -36,8 +35,9 @@ main = do
     haomaProjectsVar <- newTVarIO Map.empty
     fileToProjectVar <- newTVarIO Map.empty
     openFilesVar <- newTVarIO Map.empty
+    fileVersionsVar <- newTVarIO Map.empty
 
-    let state = LspState modulesVar workspaceVar graphVar haomaProjectsVar fileToProjectVar openFilesVar
+    let state = LspState modulesVar workspaceVar graphVar haomaProjectsVar fileToProjectVar openFilesVar fileVersionsVar
 
     runServer
         $ ServerDefinition

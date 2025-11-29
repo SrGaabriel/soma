@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ExplicitNamespaces #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -31,9 +30,9 @@ module Souls.Haoma (
 
 import Control.Concurrent.STM (TVar, atomically, modifyTVar', readTVarIO)
 import Control.Exception (try)
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import Control.Monad.IO.Class (liftIO)
-import Data.Aeson (FromJSON (..), eitherDecode, withObject, (.:), (.:?))
+import Data.Aeson (FromJSON (..), eitherDecode, toJSON, withObject, (.:), (.:?))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Map.Strict as Map
@@ -43,10 +42,8 @@ import qualified Data.Text.Encoding as TE
 import GHC.Generics (Generic)
 import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Resolver (runResolverWithEnv)
-import Data.Aeson (toJSON)
-import Language.LSP.Protocol.Message (Method (..), SMethod (..))
-import Language.LSP.Protocol.Types (Registration (..), RegistrationParams (..))
-import Language.LSP.Protocol.Types (DidChangeWatchedFilesRegistrationOptions (..), FileEvent (..), FileSystemWatcher (..), GlobPattern (GlobPattern), Pattern (Pattern), Uri, WatchKind (..), uriToFilePath, type (|?) (InL))
+import Language.LSP.Protocol.Message (SMethod (..))
+import Language.LSP.Protocol.Types (DidChangeWatchedFilesRegistrationOptions (..), FileEvent (..), FileSystemWatcher (..), GlobPattern (GlobPattern), Pattern (Pattern), Registration (..), RegistrationParams (..), Uri, WatchKind (..), uriToFilePath, type (|?) (InL))
 import Language.LSP.Server (LspM, sendRequest)
 import Lexing.Lexer (lexCode)
 import Parsing.Ast (parse)
@@ -368,7 +365,7 @@ watchHaomaFiles = do
                 , _registerOptions = Just (toJSON regOptions)
                 }
 
-    let params = RegistrationParams {_registrations = [registration]}
+    let params = RegistrationParams{_registrations = [registration]}
 
     _ <- sendRequest SMethod_ClientRegisterCapability params $ \_result -> pure ()
 
@@ -386,21 +383,20 @@ handleHaomaFileChange haomaProjectsVar fileToProjectVar openFilesVar reanalyze e
         case uriToFilePath eventUri of
             Nothing -> pure ()
             Just filePath -> do
-                if takeFileName filePath == "haoma.toml"
-                    then do
-                        let projectRoot = takeDirectory filePath
-                        liftIO $ atomically $ do
-                            modifyTVar' haomaProjectsVar (Map.delete projectRoot)
-                            modifyTVar' fileToProjectVar (Map.filter (/= projectRoot))
+                when (takeFileName filePath == "haoma.toml") $ do
+                    let projectRoot = takeDirectory filePath
+                    liftIO $ atomically $ do
+                        modifyTVar' haomaProjectsVar (Map.delete projectRoot)
+                        modifyTVar' fileToProjectVar (Map.filter (/= projectRoot))
 
-                        openFiles <- liftIO $ readTVarIO openFilesVar
-                        forM_ (Map.toList openFiles) $ \(openFilePath, openFileUri) -> do
-                            mProject <- liftIO $ findHaomaProject openFilePath
-                            case mProject of
-                                Just project | hpRoot project == projectRoot ->
+                    openFiles <- liftIO $ readTVarIO openFilesVar
+                    forM_ (Map.toList openFiles) $ \(openFilePath, openFileUri) -> do
+                        mProject <- liftIO $ findHaomaProject openFilePath
+                        case mProject of
+                            Just project
+                                | hpRoot project == projectRoot ->
                                     reanalyze openFileUri
-                                _ -> pure ()
-                    else pure ()
+                            _ -> pure ()
 
 data HaomaProjectCache = HaomaProjectCache
     { hpcProject :: HaomaProject
