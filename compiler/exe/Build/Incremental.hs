@@ -25,6 +25,7 @@ import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import qualified Data.Set as Set
 import Format.Trees (prettyPrintAst, treeShow)
 import Inference.Core (InstanceEnv, TypeMap)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
@@ -40,7 +41,7 @@ import Project.Extracts ()
 import Project.Graph
 import Project.Module
 import Project.Symbols (Symbol)
-import Syntax.Tree (Expr (ExprRoot))
+import Syntax.Tree (Expr (..), exprChildren)
 import System.Directory
 import System.Exit (exitFailure)
 import System.FilePath
@@ -100,8 +101,9 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
         instanceEnv = checkedInstances checked
 
     let metallicExternalConstructors = Map.map serializableToConstructorMetadata externalConstructors
+    let intrinsicNames = extractIntrinsicNames resolvedAst
     let metallic = compileMetalModule modName resolvedAst types metallicExternalConstructors
-        metallicLifted = liftLambdas metallic
+        metallicLifted = liftLambdas intrinsicNames metallic
         metallicNormalized = normalizeModule metallicLifted
 
     putStrLn $ "Metal (HIR) complete for " ++ modName
@@ -333,3 +335,7 @@ processExternalDependencies externals = do
     let constructors = Map.unions [ctors | (_, _, _, ctors, _) <- list]
     let externalAlloy = concat [modules | (_, _, _, _, modules) <- list]
     pure (symbols, instances, constructors, externalAlloy)
+
+extractIntrinsicNames :: Expr -> Set.Set String
+extractIntrinsicNames root =
+    Set.fromList [intrinsicName e | e@ExprIntrinsicDef{} <- exprChildren root]

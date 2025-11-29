@@ -1,0 +1,21 @@
+intrinsic def {+} :: Int -> Int -> Int
+intrinsic def {*} :: Int -> Int -> Int
+
+def testMultiCapture(a: Int, b: Int, c: Int) -> Int =
+    let compute = (\x -> a + b * x + c) in
+    compute 2
+
+def testNested(x: Int, y: Int) -> Int =
+    let outer = (\a -> (\b -> x + a + b) y) in
+    outer 100
+
+def testChained(n: Int) -> Int =
+    let double = (\x -> x + x) in
+    let addN = (\x -> x + n) in
+    addN (double 5)
+
+def main :: Int =
+    let r1 = testMultiCapture 10 3 1 in
+    let r2 = testNested 1000 1 in
+    let r3 = testChained 7 in
+    r1 + r2 + r3

@@ -1,0 +1,8 @@
+intrinsic def {+} :: Int -> Int -> Int
+intrinsic def {*} :: Int -> Int -> Int
+
+def testMultiCapture(a: Int, b: Int, c: Int) -> Int =
+    let compute = (\x -> a + b * x + c) in
+    compute 2
+
+def main :: Int = testMultiCapture 10 3 1
