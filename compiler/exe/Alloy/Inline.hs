@@ -335,7 +335,7 @@ renameInstrs :: Map Name AOperand -> [Name] -> [AInstr] -> [AInstr]
 renameInstrs _ _ [] = []
 renameInstrs subst freshNames (instr : rest) =
     case instr of
-        ILet oldName ty op ->
+        ILet _oldName ty op ->
             case freshNames of
                 (newName : remainingNames) ->
                     ILet newName ty (substOp subst op) : renameInstrs subst remainingNames rest
@@ -396,6 +396,9 @@ substOp subst op =
         OpParProj1 handle workEst -> OpParProj1 (substOperand subst handle) workEst
         OpParClosureProj0 handle envSz slotInfo workEst -> OpParClosureProj0 (substOperand subst handle) envSz slotInfo workEst
         OpParClosureProj1 handle envSz slotInfo workEst -> OpParClosureProj1 (substOperand subst handle) envSz slotInfo workEst
+        OpPanic msg -> OpPanic msg
+        OpFork fn args -> OpFork (substOperand subst fn) (map (substOperand subst) args)
+        OpJoin handle -> OpJoin (substOperand subst handle)
 
 -- | Substitute operands in an effect
 substEffect :: Map Name AOperand -> AEffect -> AEffect

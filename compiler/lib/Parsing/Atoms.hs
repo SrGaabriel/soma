@@ -40,12 +40,12 @@ parseAtom = do
                     nameToks <- parseFluidSequence TokenRightArrow (consume TokenLowerIdentifier)
                     let names = map tokenValue nameToks
                     _ <- consume TokenRightArrow
-                    body <- parseExpression
-                    rparen <- consume TokenRightParen
+                    body <- parseLambdaBody
+                    rparen <- consumeRelevant TokenRightParen
                     pure $ ExprLambda names body (Span (tokenPos lparen) (tokenPos rparen))
                 _ -> do
                     contents <- parseCommaSeparatedUntil TokenRightParen parseExpression
-                    rparen <- consume TokenRightParen
+                    rparen <- consumeRelevant TokenRightParen
                     let spanning = spanningTokens lparen rparen
                     case contents of
                         [first] -> pure $ modifySpan first spanning
@@ -86,7 +86,7 @@ parseLetExpression = do
     _ <- consume TokenEquals
     value <- parseExpression
     inTok <- consume TokenIn
-    _ <- consume TokenLayoutSeparator
+    _ <- MP.optional $ consume TokenLayoutSeparator
     body <- parseExpression
 
     pure
@@ -96,6 +96,31 @@ parseLetExpression = do
             , letBody = body
             , letSpan = Span (tokenPos letToken) (tokenPos inTok)
             }
+
+{- | Parse a lambda body, handling optional layout blocks that the lexer may insert
+after the arrow when the body is on a new indented line.
+-}
+parseLambdaBody :: Parser Expr
+parseLambdaBody = do
+    tok <- tryPeek
+    case tokenKind <$> tok of
+        Just TokenLayoutStart -> do
+            _ <- consume TokenLayoutStart
+            expr <- parseLayoutBody
+            _ <- consume TokenLayoutEnd
+            pure expr
+        _ -> parseExpression
+  where
+    -- Parse expressions within a layout block, consuming layout separators
+    parseLayoutBody :: Parser Expr
+    parseLayoutBody = do
+        expr <- parseExpression
+        next <- tryPeek
+        case tokenKind <$> next of
+            Just TokenLayoutSeparator -> do
+                _ <- consume TokenLayoutSeparator
+                parseLayoutBody
+            _ -> pure expr
 
 operatorPrecedenceTable :: [[String]]
 operatorPrecedenceTable =

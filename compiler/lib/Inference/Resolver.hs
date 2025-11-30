@@ -208,6 +208,11 @@ resolveTReference expr@(ExprPatternMatchArm patterns body eSpan) = do
     let extendEnv = Map.union symbols
     body' <- local (\env -> env{localScope = extendEnv (localScope env)}) $ resolveTReference body
     pure $ ExprPatternMatchArm patterns body' eSpan
+resolveTReference (ExprIf condition thenBranch elseBranch eSpan) = do
+    condition' <- resolveTReference condition
+    thenBranch' <- resolveTReference thenBranch
+    elseBranch' <- resolveTReference elseBranch
+    pure $ ExprIf condition' thenBranch' elseBranch' eSpan
 resolveTReference (ExprBlock exprs eSpan) = do
     exprs' <- mapM resolveTReference exprs
     pure $ ExprBlock exprs' eSpan

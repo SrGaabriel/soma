@@ -17,14 +17,14 @@ import Alloy.Build (
     runAlloyBuilder,
     terminate,
  )
-import Alloy.Decisions (
+import Alloy.Ir
+import Circuit.Decisions (
     Accessor (..),
     Constructor (..),
     DecisionTree (..),
     compile,
     mkPatternMatrix,
  )
-import Alloy.Ir
 import Control.Applicative ((<|>))
 import Control.Monad (forM)
 import Control.Monad.State.Strict

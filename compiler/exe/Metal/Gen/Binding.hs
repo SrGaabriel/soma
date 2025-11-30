@@ -4,7 +4,7 @@
 
 module Metal.Gen.Binding where
 
-import Alloy.Decisions (patternMatchArity)
+import Circuit.Decisions (patternMatchArity)
 import Control.Monad (foldM, forM)
 import qualified Data.Map as Map
 import qualified Data.Set as Set

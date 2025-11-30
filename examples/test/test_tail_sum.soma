@@ -1,0 +1,9 @@
+intrinsic def {+} :: Int -> Int -> Int
+intrinsic def {-} :: Int -> Int -> Int
+
+def sum_acc :: Int -> Int -> Int
+    | acc 0 => acc
+    | acc n => sum_acc (acc + n) (n - 1)
+
+def main :: Int = sum_acc 0 10
+

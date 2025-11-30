@@ -62,6 +62,11 @@ simplifyTerm = go
         CClosure{} -> term
         -- Closure env access: simplify the closure term
         CClosureGetEnv closure idx ty -> CClosureGetEnv (go closure) idx ty
+        -- Field projection: simplify the expression
+        CProject expr idx ty -> CProject (go expr) idx ty
+        -- Fork/Join: recursively simplify
+        CFork n ty comp body -> CFork n ty (go comp) (go body)
+        CJoin _ _ -> term
         -- Base cases: no simplification
         CVar _ _ -> term
         CDp0 _ _ -> term
@@ -71,6 +76,7 @@ simplifyTerm = go
         CInt _ -> term
         CBool _ -> term
         CStr _ -> term
+        CPanic _ _ -> term
 
 -- | Simplify a let binding based on usage
 simplifyLet :: Name -> Type -> CTerm -> CTerm -> Int -> CTerm
@@ -79,6 +85,8 @@ simplifyLet name ty val body uses
     | uses == 0 = body
     -- Let-var elimination: `let x = y in x` => `y`
     | CVar n _ <- body, n == name = val
+    -- Don't inline literals captured by closures (closures store names, not values)
+    | isCapturedByClosure name body, not (isVarOrProjection val) = CLet name ty val body
     -- Inline simple values used once
     | uses == 1, isSimpleValue val = substitute name val body
     -- Inline variables (always safe, no duplication)
@@ -101,17 +109,53 @@ isSimpleValue = \case
     CDp1 _ _ -> True
     _ -> False
 
+-- | Check if a term is a variable or projection (can be substituted into closures)
+isVarOrProjection :: CTerm -> Bool
+isVarOrProjection = \case
+    CVar _ _ -> True
+    CDp0 _ _ -> True
+    CDp1 _ _ -> True
+    _ -> False
+
+-- | Check if a variable is captured by any closure in a term
+isCapturedByClosure :: Name -> CTerm -> Bool
+isCapturedByClosure target = go
+  where
+    go (CClosure _ capturedVars _) = target `elem` map fst capturedVars
+    go (CVar _ _) = False
+    go (CLam _ _ body) = go body
+    go (CApp f x _) = go f || go x
+    go (CLet _ _ val body) = go val || go body
+    go (CSup _ a b _) = go a || go b
+    go (CDup _ _ _ val body) = go val || go body
+    go (CDp0 _ _) = False
+    go (CDp1 _ _) = False
+    go CEra = False
+    go (CRef _ _) = False
+    go (CInt _) = False
+    go (CBool _) = False
+    go (CStr _) = False
+    go (CTag _ fields _) = any go fields
+    go (CCase scrut arms mdef _) = go scrut || any (\(_, _, b) -> go b) arms || maybe False go mdef
+    go (CBinOp _ a b) = go a || go b
+    go (CCmpOp _ a b) = go a || go b
+    go (CUnaryOp _ a) = go a
+    go (CClosureGetEnv closure _ _) = go closure
+    go (CProject expr _ _) = go expr
+    go (CPanic _ _) = False
+    go (CFork _ _ comp body) = go comp || go body
+    go (CJoin _ _) = False
+
 -- | Simplify a case expression
 simplifyCase :: CTerm -> [(Int, [(Name, Type)], CTerm)] -> Maybe CTerm -> Type -> CTerm
 simplifyCase scrut arms mdef ty
     -- Single arm with single field that just returns the field
     -- `case x of { <t, y> -> y }` => project field from x
-    | [(_, [(fieldName, _)], CVar v _)] <- arms
+    | [(_, [(fieldName, fieldTy)], CVar v _)] <- arms
     , Nothing <- mdef
     , v == fieldName =
-        -- This is essentially a field projection
-        -- For now, keep it as is since we don't have a direct projection op
-        CCase scrut arms mdef ty
+        -- Replace with direct field projection (field index 0)
+        CProject scrut 0 fieldTy
     -- Case on a known tag value
     | CTag tag fields _ <- scrut
     , Just (_, fieldsWithTypes, body) <- lookupArm tag arms =
@@ -191,3 +235,7 @@ substitute target replacement = go
             CDp1 repName _ -> repName ++ ".1"
             _ -> target
     go (CClosureGetEnv closure idx ty) = CClosureGetEnv (go closure) idx ty
+    go (CProject expr idx ty) = CProject (go expr) idx ty
+    go (CPanic msg ty) = CPanic msg ty
+    go (CFork n ty comp body) = CFork n ty (go comp) (go body)
+    go (CJoin n ty) = CJoin n ty

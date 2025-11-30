@@ -215,6 +215,18 @@ analyzeTerm' = \case
     CClosure{} -> pure Map.empty
     -- Closure env access: analyze the closure term
     CClosureGetEnv closure _ _ -> analyzeTerm' closure
+    -- Field projection: analyze the expression
+    CProject expr _ _ -> analyzeTerm' expr
+    -- Panic: no bindings to analyze (never returns)
+    CPanic _ _ -> pure Map.empty
+    -- Fork: analyze computation and body, task name is bound in body
+    CFork taskName _ty comp body -> do
+        compBindings <- analyzeTerm' comp
+        -- The task handle is MaybeHeap (pointer to task struct)
+        bodyBindings <- local (extendAlloc taskName MaybeHeap) $ analyzeTerm' body
+        pure $ Map.insert taskName MaybeHeap $ Map.union compBindings bodyBindings
+    -- Join: no new bindings, just returns the result
+    CJoin _ _ -> pure Map.empty
 
 -- | Infer the allocation kind of a term (without looking at bindings)
 inferTermKind :: CTerm -> AllocKind
@@ -261,3 +273,11 @@ inferTermKind = \case
     CClosure{} -> MaybeHeap
     -- Closure env access: depends on the extracted value type
     CClosureGetEnv _ _ ty -> classifyType ty
+    -- Field projection: depends on the result type
+    CProject _ _ ty -> classifyType ty
+    -- Panic: never returns, use declared type
+    CPanic _ ty -> classifyType ty
+    -- Fork: body determines the kind (fork itself produces a task handle)
+    CFork _ _ _ body -> inferTermKind body
+    -- Join: result type determines the kind
+    CJoin _ ty -> classifyType ty

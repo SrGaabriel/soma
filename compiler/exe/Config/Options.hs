@@ -62,6 +62,7 @@ data Options = Options
     , optionsDeps :: [(String, String)]
     , optionsRun :: Bool
     , optionsSkipCircuit :: Bool
+    , optionsParallel :: Bool
     }
     deriving (Show)
 
@@ -219,6 +220,10 @@ optionsParser =
         <*> switch
             ( long "skip-circuit"
                 <> help "Do not use Circuit IR pipeline with interaction nets and C runtime"
+            )
+        <*> switch
+            ( long "parallel"
+                <> help "Enable automatic parallelization (fork-join)"
             )
 
 parseExtern :: String -> Either String (String, String)

@@ -42,6 +42,8 @@
 #define SUP_TAG_PROJ0   129   /* proj0 accessed first */
 #define SUP_TAG_PROJ1   130   /* proj1 accessed first */
 #define SUP_TAG_BOTH    131   /* Both accessed */
+#define SUP_TAG_PROJ0_CLONING 132  /* proj0 accessed, speculative clone in progress */
+#define SUP_TAG_PROJ1_CLONING 133  /* proj1 accessed, speculative clone in progress */
 
 /* Check if a tag indicates a SUP node */
 #define IS_SUP(tag) ((tag) >= SUP_TAG_BASE)
@@ -155,6 +157,9 @@ void soma_era_free(void* value);
 /* Generate a fresh unique label (thread-safe) */
 uint32_t soma_fresh_label(void);
 
+/* Panic: print error message and abort */
+void soma_panic(const char* msg);
+
 /*
  * Closure operations
  */
@@ -227,18 +232,18 @@ void* soma_pool_alloc_closure(uint16_t env_size);
 void soma_pool_free_sup(void* ptr);
 void soma_pool_free_closure(void* ptr, uint16_t env_size);
 
-/* Pool statistics (for debugging/profiling) */
+/* Pool statistics (for debugging/profiling) - atomic for thread-safety */
 typedef struct SomaPoolStats {
-    size_t sup_allocs;
-    size_t sup_frees;
-    size_t closure_small_allocs;
-    size_t closure_small_frees;
-    size_t closure_medium_allocs;
-    size_t closure_medium_frees;
-    size_t closure_large_allocs;
-    size_t closure_large_frees;
-    size_t blocks_allocated;
-    size_t bytes_allocated;
+    _Atomic size_t sup_allocs;
+    _Atomic size_t sup_frees;
+    _Atomic size_t closure_small_allocs;
+    _Atomic size_t closure_small_frees;
+    _Atomic size_t closure_medium_allocs;
+    _Atomic size_t closure_medium_frees;
+    _Atomic size_t closure_large_allocs;
+    _Atomic size_t closure_large_frees;
+    _Atomic size_t blocks_allocated;
+    _Atomic size_t bytes_allocated;
 } SomaPoolStats;
 
 extern SomaPoolStats soma_pool_stats;
@@ -299,8 +304,11 @@ typedef struct SomaTask SomaTask;
 typedef struct SomaWorker SomaWorker;
 typedef struct SomaParRuntime SomaParRuntime;
 
-/* Task function signature */
-typedef SomaValue (*SomaTaskFn)(void* env);
+/* Task function signatures */
+typedef SomaValue (*SomaTaskFn)(void* env);           /* Generic: env is opaque pointer */
+typedef SomaValue (*SomaDirectFn)(SomaValue arg);     /* Direct: single i64 argument */
+typedef SomaValue (*SomaClosureFn)(void* closure, SomaValue arg);  /* Closure: closure_self + arg */
+typedef SomaValue (*SomaTrampolineFn)(SomaValue* args);  /* Trampoline: takes ptr to args array */
 
 /* Task states */
 #define TASK_PENDING    0
@@ -308,11 +316,24 @@ typedef SomaValue (*SomaTaskFn)(void* env);
 #define TASK_DONE       2
 #define TASK_STOLEN     3
 
+/* Task kind */
+#define TASK_KIND_GENERIC   0   /* fn(env) - original API */
+#define TASK_KIND_DIRECT    1   /* fn(arg) - direct i64 call */
+#define TASK_KIND_CLOSURE   2   /* fn(closure, arg) - closure call */
+#define TASK_KIND_TRAMPOLINE 3  /* fn(args_ptr) - trampoline with args array pointer */
+
 /* Task structure */
 struct SomaTask {
     _Atomic int state;
-    SomaTaskFn fn;
-    void* env;
+    uint8_t kind;               /* TASK_KIND_* */
+    union {
+        SomaTaskFn generic;     /* For TASK_KIND_GENERIC */
+        SomaDirectFn direct;    /* For TASK_KIND_DIRECT */
+        SomaClosureFn closure;  /* For TASK_KIND_CLOSURE */
+        SomaTrampolineFn trampoline;  /* For TASK_KIND_TRAMPOLINE */
+    } fn;
+    void* env;                  /* env for generic, args array for trampoline */
+    SomaValue arg;              /* arg for direct/closure, num_args for trampoline */
     SomaValue result;
     uint32_t work_estimate;     /* Estimated work units */
 };
@@ -463,15 +484,62 @@ SomaValue soma_par_proj0(SomaValue sup_val, uint32_t work_hint);
 SomaValue soma_par_proj1(SomaValue sup_val, uint32_t work_hint);
 
 /*
- * Statistics
+ * Fork-Join Parallelism API
+ *
+ * Structured parallelism for independent computations in compose blocks.
+ * Zero overhead when SOMA_PARALLEL is not set (compiles to direct calls).
+ */
+
+/* Fork a computation - spawns task and returns immediately
+ * fn: function pointer taking env and returning SomaValue
+ * env: captured environment (moved to task, caller loses ownership)
+ * Returns: task handle (opaque pointer), or NULL if parallel disabled
+ */
+SomaTask* soma_fork(SomaTaskFn fn, void* env);
+
+/* Fork a direct function call - for functions taking single i64 argument
+ * fn: function pointer (SomaValue (*)(SomaValue))
+ * arg: the argument value
+ * Returns: task handle, or NULL if parallel disabled
+ */
+SomaTask* soma_fork_direct(SomaDirectFn fn, SomaValue arg);
+
+/* Fork a closure call - for closures with single argument
+ * fn: closure's function pointer (SomaValue (*)(void* closure, SomaValue arg))
+ * closure: the closure pointer (passed as first arg)
+ * arg: the argument value
+ * Returns: task handle, or NULL if parallel disabled
+ */
+SomaTask* soma_fork_closure(SomaClosureFn fn, void* closure, SomaValue arg);
+
+/* Fork with multiple arguments
+ * fn: function pointer (takes N i64 args, returns i64)
+ * args: array of arguments (copied by this function)
+ * num_args: number of arguments
+ * Returns: task handle, or NULL if parallel disabled
+ */
+SomaTask* soma_fork_multi(void* fn, SomaValue* args, int num_args);
+
+/* Join a task - blocks until complete, returns result
+ * task: handle from soma_fork*
+ * Returns: the computation's result (ownership transferred to caller)
+ * Note: task handle is freed after join
+ * Note: if task is NULL, returns 0 (caller should have executed inline)
+ */
+SomaValue soma_join(SomaTask* task);
+
+/*
+ * Statistics - atomic for thread-safety
  */
 typedef struct {
-    uint64_t tasks_spawned;
-    uint64_t tasks_run;
-    uint64_t tasks_stolen;
-    uint64_t spawn_skipped_trivial;     /* Skipped: work too small */
-    uint64_t spawn_skipped_saturated;   /* Skipped: pool saturated */
-    uint64_t spawn_skipped_no_hungry;   /* Skipped: no hungry workers */
+    _Atomic uint64_t tasks_spawned;
+    _Atomic uint64_t tasks_run;              /* Run by worker threads */
+    _Atomic uint64_t tasks_run_inline;       /* Run inline by joining thread */
+    _Atomic uint64_t tasks_stolen;
+    _Atomic uint64_t spawn_skipped_trivial;     /* Skipped: work too small */
+    _Atomic uint64_t spawn_skipped_saturated;   /* Skipped: pool saturated */
+    _Atomic uint64_t spawn_skipped_no_hungry;   /* Skipped: no hungry workers */
+    _Atomic uint64_t speculative_clones;        /* Speculative clone tasks spawned */
 } SomaParStats;
 
 extern SomaParStats soma_par_stats;

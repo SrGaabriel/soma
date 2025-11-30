@@ -3,6 +3,7 @@ module Main where
 import Build.Incremental (extractIntrinsicNames, processExternalDependencies, processModulesIncremental)
 import Circuit.Linearize (linearizeModule)
 import Circuit.Lower (lowerModule)
+import Circuit.Parallel (ParallelConfig (..), defaultParallelConfig, parallelizeModule)
 import Circuit.Simplify (simplifyModule)
 import Circuit.ToAlloy (lowerCircuitToAlloy)
 import Config.Options
@@ -12,7 +13,7 @@ import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Text.Encoding as TE
 import Format.Errors (CycleError (..), SomeError (..))
-import Format.Trees (treeShow)
+import Format.Trees (prettyPrintAst, treeShow)
 import Lexing.Lexer (lexCode)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.Errors (printError, printSomeError)
@@ -54,6 +55,7 @@ main = do
             parseE <- parseModule (dropExtension (takeFileName file)) file
             case parseE of
                 Right mi -> do
+                    prettyPrintAst (moduleAst mi)
                     putStrLn $ "Parsing succeeded for module: " ++ moduleName mi
                     exitSuccess
                 Left errs -> do
@@ -308,12 +310,15 @@ circuit opts = do
     alloyModule <-
         if showAlloy
             then do
-                -- For LLVM, we need linearization
+                -- For LLVM, we need linearization and parallelization
                 let linearizedModule =
                         if circuitLinearize opts
                             then finalModule
                             else linearizeModule circuitModule
-                let alloy = lowerCircuitToAlloy linearizedModule
+                    -- Disable parallelization in circuit command (use build --parallel for parallel code)
+                    parallelConfig = defaultParallelConfig{pcEnabled = False}
+                    parallelizedModule = parallelizeModule parallelConfig linearizedModule
+                let alloy = lowerCircuitToAlloy parallelizedModule
                 when (circuitToAlloy opts) $ do
                     putStrLn "=== Alloy MIR ==="
                     putStrLn $ treeShow alloy

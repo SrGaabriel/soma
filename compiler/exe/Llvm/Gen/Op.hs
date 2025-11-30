@@ -6,15 +6,18 @@ module Llvm.Gen.Op (
 
 import Alloy.Ir
 import Alloy.Naming (makeDictStructTypeName, qualifyWithModule)
-import Control.Monad (foldM, foldM_)
+import Control.Monad (foldM, foldM_, forM, forM_)
 import Control.Monad.Reader (asks)
+import Control.Monad.State (modify)
 import Control.Monad.Writer.Class (MonadWriter (tell))
 import qualified Data.Map as Map
 import Llvm.Gen.Core
 import Llvm.Gen.Intrinsics (compileIntrinsic, isIntrinsic)
 import Llvm.Gen.Operands (compileOperand)
+import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Gen.TypeConversion (convertType)
 import Llvm.Instructions
+import Llvm.Modules (LlvmBlock (..), LlvmFunction (..))
 import Llvm.Types (LlvmType (..), deref)
 import qualified Llvm.Types as LT
 import Llvm.Values (LlvmValue (..), getValueType)
@@ -35,6 +38,7 @@ compileOp (OpBin k a b) resultTy = do
             IAdd -> LlvmAdd ty lhs rhs
             ISub -> LlvmSub ty lhs rhs
             IMul -> LlvmMul ty lhs rhs
+            IDiv -> LlvmSDiv ty lhs rhs
             other -> error $ "Unsupported binary op in LLVM codegen: " ++ show other
     saveTmp instr resultTy
 compileOp (OpUnary k a) resultTy = do
@@ -68,6 +72,13 @@ compileOp (OpProject agg ix) resultTy = do
                     bitcastFromPayload payloadVal resultTy
                 else
                     error $ "Multi-field ADT projection not yet supported: index " ++ show ix
+        -- For primitive types (i32, i64, etc.), the value itself is the "payload"
+        -- This happens in pattern matching on Int literals where a variable binding
+        -- needs to capture the scrutinee value
+        LlvmI32 -> castPrimitive av aggTy resultTy
+        LlvmI64 -> castPrimitive av aggTy resultTy
+        LlvmI8 -> castPrimitive av aggTy resultTy
+        LlvmI1 -> castPrimitive av aggTy resultTy
         _ ->
             saveTmp (LlvmExtractValue aggTy av ix) resultTy
   where
@@ -79,6 +90,18 @@ compileOp (OpProject agg ix) resultTy = do
         | targetTy == LlvmI1 = saveTmp (LlvmTrunc val LlvmI1) LlvmI1
         | LlvmPointer _ <- targetTy = saveTmp (LlvmIntToPtr val targetTy) targetTy
         | otherwise = error $ "Unsupported type for payload extraction: " ++ show targetTy
+    -- Cast a primitive value to the result type (for pattern match variable bindings)
+    castPrimitive :: LlvmValue -> LlvmType -> LlvmType -> IrGen LlvmValue
+    castPrimitive val srcTy tgtTy
+        | srcTy == tgtTy = saveTmp (LlvmIdentityCast val) tgtTy
+        | otherwise = case (srcTy, tgtTy) of
+            (LlvmI32, LlvmI64) -> saveTmp (LlvmSExt val tgtTy) tgtTy
+            (LlvmI64, LlvmI32) -> saveTmp (LlvmTrunc val tgtTy) tgtTy
+            (LlvmI8, LlvmI32) -> saveTmp (LlvmSExt val tgtTy) tgtTy
+            (LlvmI8, LlvmI64) -> saveTmp (LlvmSExt val tgtTy) tgtTy
+            (LlvmI1, LlvmI32) -> saveTmp (LlvmZExt val tgtTy) tgtTy
+            (LlvmI1, LlvmI64) -> saveTmp (LlvmZExt val tgtTy) tgtTy
+            _ -> saveTmp (LlvmIdentityCast val) tgtTy
 compileOp (OpCall callable aArgs) opType = do
     case callable of
         Direct fnName | isIntrinsic fnName -> do
@@ -89,11 +112,15 @@ compileOp (OpCall callable aArgs) opType = do
             fn <- case callable of
                 Direct fnName -> pure $ LlvmGlobal opType ("\"" <> qualifyWithModule modName fnName <> "\"")
                 Indirect operand -> compileOperand operand
+            isTail <- isTailCallContext
             if opType == LlvmVoid
                 then do
                     tell [LlvmCallStmt fn opType args]
                     pure $ LlvmUndef LlvmVoid
-                else saveTmp (LlvmCall fn opType args) opType
+                else
+                    if isTail
+                        then saveTmp (LlvmTailCall fn opType args) opType
+                        else saveTmp (LlvmCall fn opType args) opType
 compileOp (OpConstruct _cName cTag cFields) resultTy = do
     fieldVals <- mapM compileOperand cFields
     let undefVal = LlvmUndef resultTy
@@ -120,7 +147,29 @@ compileOp (OpConstruct _cName cTag cFields) resultTy = do
 compileOp (OpTagOf agg) resultTy = do
     av <- compileOperand agg
     let aggTy = getValueType av
-    saveTmp (LlvmExtractValue aggTy av 0) resultTy
+    -- For primitive types like i1 (Bool), i8, i32, i64, the value IS the tag
+    -- Only extract from aggregate types (tagged ADTs)
+    case aggTy of
+        LlvmI1 ->
+            if resultTy == LlvmI1
+                then saveTmp (LlvmIdentityCast av) resultTy
+                else saveTmp (LlvmZExt av resultTy) resultTy
+        LlvmI8 ->
+            if resultTy == LlvmI8
+                then saveTmp (LlvmIdentityCast av) resultTy
+                else saveTmp (LlvmZExt av resultTy) resultTy
+        LlvmI32 ->
+            -- Primitive Int: the value itself is used for switching
+            if resultTy == LlvmI32
+                then saveTmp (LlvmIdentityCast av) resultTy
+                else saveTmp (LlvmSExt av resultTy) resultTy
+        LlvmI64 ->
+            -- Primitive 64-bit int: the value itself is used for switching
+            if resultTy == LlvmI64
+                then saveTmp (LlvmIdentityCast av) resultTy
+                else saveTmp (LlvmTrunc av resultTy) resultTy
+        LlvmAnonymous _ -> saveTmp (LlvmExtractValue aggTy av 0) resultTy
+        _ -> saveTmp (LlvmExtractValue aggTy av 0) resultTy
 compileOp (OpMakeArray xs) _resultTy = do
     compiledXs <- mapM compileOperand xs
     let elemTy = if null compiledXs then LlvmI32 else getValueType (hardHead compiledXs)
@@ -187,63 +236,99 @@ compileOp (OpDictCall dict methodIndex _methodName args) resultTy = do
         else saveTmp (LlvmCall fnPtr resultTy compiledArgs) resultTy
 
 -- Lazy duplication: create a SUP node that lazily clones when projections are used
--- soma_dup(label, value) -> SUP handle
+-- soma_dup(label, value) -> SUP handle (ptr)
+-- IMPORTANT: The SUP handle must be kept as i64 to preserve the full pointer value.
+-- The result type from the IR may be i32 (Int), but we return i64 and let the
+-- projection ops handle the final conversion after extracting the actual value.
+--
+-- Tagged pointer representation:
+-- - TAG_PTR (0): Heap pointer (8-byte aligned, so low 3 bits are 0)
+-- - TAG_INT (1): Small integer (value << 3) | 1
+-- Integers must be tagged so the runtime can distinguish them from pointers.
 compileOp (OpDup label value) resultTy = do
     llValue <- compileOperand value
     let valueTy = getValueType llValue
     -- Cast value to i8* (void*) for the generic dup function
+    -- For integers: create tagged representation (value << 3) | TAG_INT
     voidPtr <- case valueTy of
         LlvmPointer _ -> saveTmp (LlvmBitcast llValue (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
         _ -> do
-            -- For non-pointer types, we need to box them first
-            -- For now, just use inttoptr (the runtime will handle it)
-            saveTmp (LlvmIntToPtr llValue (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+            -- Non-pointer types (integers, bools) use tagged pointer representation.
+            -- TAG_INT = 1, so we do (value << 3) | 1
+            extended <- case valueTy of
+                LlvmI64 -> pure llValue
+                LlvmI32 -> saveTmp (LlvmSExt llValue LlvmI64) LlvmI64
+                LlvmI8 -> saveTmp (LlvmSExt llValue LlvmI64) LlvmI64
+                LlvmI1 -> saveTmp (LlvmZExt llValue LlvmI64) LlvmI64
+                _ -> saveTmp (LlvmSExt llValue LlvmI64) LlvmI64
+            -- Shift left by 3 and OR with TAG_INT (1)
+            shifted <- saveTmp (LlvmShl LlvmI64 extended (LlvmLiteral LlvmI64 "3")) LlvmI64
+            tagged <- saveTmp (LlvmAdd LlvmI64 shifted (LlvmLiteral LlvmI64 "1")) LlvmI64
+            saveTmp (LlvmIntToPtr tagged (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
     let labelVal = LlvmLiteral LlvmI32 (show label)
     -- Call soma_dup(label, value) -> returns SUP handle (i8*)
     let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
     supHandle <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [labelVal, voidPtr]) (LlvmPointer LlvmI8)
-    -- Cast to result type if needed
-    if resultTy == LlvmPointer LlvmI8
-        then pure supHandle
-        else saveTmp (LlvmBitcast supHandle resultTy) resultTy
+    -- Convert SUP handle to i64 to preserve full pointer value on 64-bit systems.
+    -- Do NOT truncate to i32 even if resultTy is i32 - the projections expect i64.
+    case resultTy of
+        LlvmPointer _ -> saveTmp (LlvmBitcast supHandle resultTy) resultTy
+        LlvmI64 -> saveTmp (LlvmPtrToInt supHandle LlvmI64) LlvmI64
+        -- For smaller int types, still return i64 to preserve the pointer
+        -- The projection ops will handle conversion to the actual value type
+        _ -> saveTmp (LlvmPtrToInt supHandle LlvmI64) LlvmI64
 
 -- First projection from SUP handle: soma_proj0(handle) -> value
+-- soma_proj0 takes i64 (SomaValue) and returns i64 (SomaValue)
 compileOp (OpDupProj0 handle) resultTy = do
     llHandle <- compileOperand handle
     let handleTy = getValueType llHandle
-    -- Ensure handle is i8*
-    voidHandle <- case handleTy of
-        LlvmPointer LlvmI8 -> pure llHandle
-        LlvmPointer _ -> saveTmp (LlvmBitcast llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
-        _ -> saveTmp (LlvmIntToPtr llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
-    -- Call soma_proj0(handle) -> value (i8*)
-    let proj0Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj0\""
-    result <- saveTmp (LlvmCall proj0Func (LlvmPointer LlvmI8) [voidHandle]) (LlvmPointer LlvmI8)
-    -- Cast to result type
-    if resultTy == LlvmPointer LlvmI8
-        then pure result
-        else case resultTy of
-            LlvmPointer _ -> saveTmp (LlvmBitcast result resultTy) resultTy
-            _ -> saveTmp (LlvmPtrToInt result resultTy) resultTy
+    -- Convert handle to i64 (SomaValue)
+    i64Handle <- case handleTy of
+        LlvmI64 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
+    -- Call soma_proj0(handle) -> value (i64)
+    let proj0Func = LlvmGlobal LlvmI64 "\"soma_proj0\""
+    result <- saveTmp (LlvmCall proj0Func LlvmI64 [i64Handle]) LlvmI64
+    -- Convert result to expected type
+    -- For pointers, use inttoptr directly (TAG_PTR = 0, so no shift needed)
+    -- For integers, untag by shifting right 3 (TAG_INT = 1, format is (value << 3) | 1)
+    case resultTy of
+        LlvmI64 -> do
+            -- Untag: shift right by 3 to recover the original integer
+            saveTmp (LlvmLShr LlvmI64 result (LlvmLiteral LlvmI64 "3")) LlvmI64
+        LlvmPointer _ -> saveTmp (LlvmIntToPtr result resultTy) resultTy
+        _ -> do
+            -- Untag: shift right by 3 first, then truncate
+            untagged <- saveTmp (LlvmLShr LlvmI64 result (LlvmLiteral LlvmI64 "3")) LlvmI64
+            saveTmp (LlvmTrunc untagged resultTy) resultTy
 
 -- Second projection from SUP handle: soma_proj1(handle) -> value
+-- soma_proj1 takes i64 (SomaValue) and returns i64 (SomaValue)
 compileOp (OpDupProj1 handle) resultTy = do
     llHandle <- compileOperand handle
     let handleTy = getValueType llHandle
-    -- Ensure handle is i8*
-    voidHandle <- case handleTy of
-        LlvmPointer LlvmI8 -> pure llHandle
-        LlvmPointer _ -> saveTmp (LlvmBitcast llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
-        _ -> saveTmp (LlvmIntToPtr llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
-    -- Call soma_proj1(handle) -> value (i8*)
-    let proj1Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj1\""
-    result <- saveTmp (LlvmCall proj1Func (LlvmPointer LlvmI8) [voidHandle]) (LlvmPointer LlvmI8)
-    -- Cast to result type
-    if resultTy == LlvmPointer LlvmI8
-        then pure result
-        else case resultTy of
-            LlvmPointer _ -> saveTmp (LlvmBitcast result resultTy) resultTy
-            _ -> saveTmp (LlvmPtrToInt result resultTy) resultTy
+    -- Convert handle to i64 (SomaValue)
+    i64Handle <- case handleTy of
+        LlvmI64 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
+    -- Call soma_proj1(handle) -> value (i64)
+    let proj1Func = LlvmGlobal LlvmI64 "\"soma_proj1\""
+    result <- saveTmp (LlvmCall proj1Func LlvmI64 [i64Handle]) LlvmI64
+    -- Convert result to expected type
+    -- For pointers, use inttoptr directly (TAG_PTR = 0, so no shift needed)
+    -- For integers, untag by shifting right 3 (TAG_INT = 1, format is (value << 3) | 1)
+    case resultTy of
+        LlvmI64 -> do
+            -- Untag: shift right by 3 to recover the original integer
+            saveTmp (LlvmLShr LlvmI64 result (LlvmLiteral LlvmI64 "3")) LlvmI64
+        LlvmPointer _ -> saveTmp (LlvmIntToPtr result resultTy) resultTy
+        _ -> do
+            -- Untag: shift right by 3 first, then truncate
+            untagged <- saveTmp (LlvmLShr LlvmI64 result (LlvmLiteral LlvmI64 "3")) LlvmI64
+            saveTmp (LlvmTrunc untagged resultTy) resultTy
 
 -- Wrap a function pointer in a SomaClosure structure
 -- This is used before duplicating function-typed values so the runtime
@@ -317,10 +402,10 @@ compileOp (OpClosureGetEnv closureOp idx) resultTy = do
 compileOp (OpClosureSetEnv{}) _ =
     error "OpClosureSetEnv should have been lowered to EffClosureSetEnv"
 -- Get function pointer from closure
+-- Direct GEP access is optimal: single pointer arithmetic + load, no call overhead.
+-- Closure structure: { i8 tag, i8 arity, i16 env_size, i32 padding, ptr func_ptr }
 compileOp (OpClosureGetFunc closureOp) resultTy = do
     llClosure <- compileOperand closureOp
-    -- For now, we access the func_ptr field directly (offset 8 in closure header)
-    -- The closure structure is: { i8 tag, i8 arity, i16 env_size, ptr func_ptr }
     voidClosure <- case getValueType llClosure of
         LlvmPointer LlvmI8 -> pure llClosure
         LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
@@ -337,79 +422,113 @@ compileOp (OpClosureGetFunc closureOp) resultTy = do
 -- Session 13: Specialized closure duplication operations
 
 -- OpDupClosure: Create a SUP node for closure duplication
--- This is semantically equivalent to OpDup but carries slot type info for
--- the specialized projections that follow.
--- For now, we implement it the same as OpDup (the specialization is in the projections)
+-- Semantically equivalent to OpDup but carries slot type info for specialized projections.
+-- The SUP creation is identical to OpDup - specialization happens in OpDupClosureProj0/1
+-- which use the slot info to generate inline cloning code with proper SUP wrapping.
+-- IMPORTANT: The SUP handle must be kept as i64 to preserve the full pointer value.
 compileOp (OpDupClosure label closureOp _slotInfo) resultTy = do
     llClosure <- compileOperand closureOp
     let closureTy = getValueType llClosure
     -- Cast closure to i8* (void*) for the generic dup function
+    -- For integers, we need to tag them: (value << 3) | TAG_INT where TAG_INT = 1
     voidPtr <- case closureTy of
         LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
-        _ -> saveTmp (LlvmIntToPtr llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> do
+            -- For integers: create tagged representation (value << 3) | TAG_INT
+            extended <- case closureTy of
+                LlvmI64 -> pure llClosure
+                LlvmI32 -> saveTmp (LlvmSExt llClosure LlvmI64) LlvmI64
+                LlvmI8 -> saveTmp (LlvmSExt llClosure LlvmI64) LlvmI64
+                LlvmI1 -> saveTmp (LlvmZExt llClosure LlvmI64) LlvmI64
+                _ -> saveTmp (LlvmSExt llClosure LlvmI64) LlvmI64
+            shifted <- saveTmp (LlvmShl LlvmI64 extended (LlvmLiteral LlvmI64 "3")) LlvmI64
+            tagged <- saveTmp (LlvmAdd LlvmI64 shifted (LlvmLiteral LlvmI64 "1")) LlvmI64
+            saveTmp (LlvmIntToPtr tagged (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
     let labelVal = LlvmLiteral LlvmI32 (show label)
     -- Call soma_dup(label, closure) -> returns SUP handle (i8*)
     let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
     supHandle <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [labelVal, voidPtr]) (LlvmPointer LlvmI8)
-    -- Cast to result type if needed
-    if resultTy == LlvmPointer LlvmI8
-        then pure supHandle
-        else saveTmp (LlvmBitcast supHandle resultTy) resultTy
+    -- Convert SUP handle to i64 to preserve full pointer value on 64-bit systems.
+    case resultTy of
+        LlvmPointer _ -> saveTmp (LlvmBitcast supHandle resultTy) resultTy
+        LlvmI64 -> saveTmp (LlvmPtrToInt supHandle LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmPtrToInt supHandle LlvmI64) LlvmI64
 
 -- OpDupClosureProj0: First projection of closure SUP
 -- Returns the original closure. This is the "happy path" - no cloning needed.
 -- The slotInfo is carried for consistency but not used here since we return original.
+-- soma_proj0 takes i64 (SomaValue) and returns i64 (SomaValue)
 compileOp (OpDupClosureProj0 handleOp _envSize _slotInfo) resultTy = do
     llHandle <- compileOperand handleOp
     let handleTy = getValueType llHandle
-    -- Ensure handle is i8*
-    voidHandle <- case handleTy of
-        LlvmPointer LlvmI8 -> pure llHandle
-        LlvmPointer _ -> saveTmp (LlvmBitcast llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
-        _ -> saveTmp (LlvmIntToPtr llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
-    -- Call soma_proj0(handle) -> value (i8*)
-    let proj0Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj0\""
-    result <- saveTmp (LlvmCall proj0Func (LlvmPointer LlvmI8) [voidHandle]) (LlvmPointer LlvmI8)
-    -- Cast to result type
-    if resultTy == LlvmPointer LlvmI8
-        then pure result
-        else case resultTy of
-            LlvmPointer _ -> saveTmp (LlvmBitcast result resultTy) resultTy
-            _ -> saveTmp (LlvmPtrToInt result resultTy) resultTy
+    -- Convert handle to i64 (SomaValue)
+    i64Handle <- case handleTy of
+        LlvmI64 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
+    -- Call soma_proj0(handle) -> value (i64)
+    let proj0Func = LlvmGlobal LlvmI64 "\"soma_proj0\""
+    result <- saveTmp (LlvmCall proj0Func LlvmI64 [i64Handle]) LlvmI64
+    -- Convert result to expected type
+    -- For pointers, use inttoptr directly (TAG_PTR = 0, so no shift needed)
+    -- For integers, untag by shifting right 3 (TAG_INT = 1, format is (value << 3) | 1)
+    case resultTy of
+        LlvmI64 -> do
+            -- Untag: shift right by 3 to recover the original integer
+            saveTmp (LlvmLShr LlvmI64 result (LlvmLiteral LlvmI64 "3")) LlvmI64
+        LlvmPointer _ -> saveTmp (LlvmIntToPtr result resultTy) resultTy
+        _ -> do
+            -- Untag: shift right by 3 first, then truncate
+            untagged <- saveTmp (LlvmLShr LlvmI64 result (LlvmLiteral LlvmI64 "3")) LlvmI64
+            saveTmp (LlvmTrunc untagged resultTy) resultTy
 
 -- OpDupClosureProj1: Second projection of closure SUP with HVM-style SUP propagation
 -- When both projections are accessed, we clone the closure and wrap closure-typed
 -- env slots in SUPs (using fresh labels) for lazy nested cloning.
 --
--- For now, we use the existing soma_proj1 which does full cloning.
--- TODO: In a future iteration, implement inline specialized cloning that:
--- 1. Allocates a new closure
--- 2. Copies header
--- 3. For each env slot:
---    - If isClosure: wrap in SUP with fresh label via soma_fresh_label + soma_dup
---    - If not: direct copy
+-- This generates fully inline specialized code that:
+-- 1. Checks SUP state and handles the state machine
+-- 2. Returns cached value if already accessed
+-- 3. For first proj1 access (after proj0): allocates new closure, copies header,
+--    and for each env slot either wraps in SUP (closure slot) or copies directly
+--
+-- Benefits over calling soma_proj1:
+-- - No function call overhead
+-- - Compile-time knowledge of slot types (no runtime tag checks per slot)
+-- - Unrolled loop over slots (no loop overhead)
+--
+-- IMPORTANT: When envSize is unknown (0) but we're duplicating a closure that might
+-- have env slots, we must fall back to soma_proj1 which reads env_size at runtime.
+-- The inline code only works when we know the exact env layout at compile time.
 compileOp (OpDupClosureProj1 handleOp envSize slotInfo) resultTy = do
     llHandle <- compileOperand handleOp
     let handleTy = getValueType llHandle
-    -- Ensure handle is i8*
-    voidHandle <- case handleTy of
-        LlvmPointer LlvmI8 -> pure llHandle
-        LlvmPointer _ -> saveTmp (LlvmBitcast llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
-        _ -> saveTmp (LlvmIntToPtr llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
 
-    -- For now, use the standard soma_proj1 which does full cloning
-    -- In the future, we'll generate inline specialized code here
-    if null [s | s@(_, True) <- slotInfo]
-        then do
-            -- No closure slots - standard cloning is fine
-            let proj1Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj1\""
-            result <- saveTmp (LlvmCall proj1Func (LlvmPointer LlvmI8) [voidHandle]) (LlvmPointer LlvmI8)
-            castResult result resultTy
-        else do
-            -- Has closure slots - use specialized inline cloning with SUP propagation
-            -- This is the HVM-style incremental cloning
-            result <- compileSpecializedClosureClone voidHandle envSize slotInfo
-            castResult result resultTy
+    -- When envSize is unknown (0), fall back to runtime function which reads
+    -- env_size from the closure header. This handles closures from function calls
+    -- where we don't have compile-time knowledge of the env layout.
+    -- When envSize > 0, we know the exact layout and can generate optimized inline code.
+    result <-
+        if envSize == 0 && null slotInfo
+            then do
+                -- Fall back to runtime - closure has unknown env layout
+                -- soma_proj1 takes i64 (SomaValue) and returns i64 (SomaValue)
+                i64Handle <- case handleTy of
+                    LlvmI64 -> pure llHandle
+                    LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
+                    _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
+                let proj1Func = LlvmGlobal LlvmI64 "\"soma_proj1\""
+                i64Result <- saveTmp (LlvmCall proj1Func LlvmI64 [i64Handle]) LlvmI64
+                -- Convert back to ptr for the rest of the code
+                saveTmp (LlvmIntToPtr i64Result (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+            else do
+                -- Generate inline specialized cloning code (needs ptr)
+                voidHandle <- case handleTy of
+                    LlvmPointer LlvmI8 -> pure llHandle
+                    LlvmPointer _ -> saveTmp (LlvmBitcast llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+                    _ -> saveTmp (LlvmIntToPtr llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+                compileInlineClosureProj1 voidHandle envSize slotInfo
+    castResult result resultTy
   where
     castResult result ty
         | ty == LlvmPointer LlvmI8 = pure result
@@ -417,44 +536,117 @@ compileOp (OpDupClosureProj1 handleOp envSize slotInfo) resultTy = do
             LlvmPointer _ -> saveTmp (LlvmBitcast result ty) ty
             _ -> saveTmp (LlvmPtrToInt result ty) ty
 
-    -- Helper: Generate inline specialized closure cloning with SUP propagation
-    -- This implements the HVM DUP-LAM rule: nested closures become SUPs
-    compileSpecializedClosureClone :: LlvmValue -> Int -> SlotInfo -> IrGen LlvmValue
-    compileSpecializedClosureClone supHandleArg envSizeArg slotInfoArg = do
-        -- Call soma_proj1 for the base cloning, then post-process closure slots
-        let proj1Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj1\""
-        baseResult <- saveTmp (LlvmCall proj1Func (LlvmPointer LlvmI8) [supHandleArg]) (LlvmPointer LlvmI8)
+    -- Generate inline specialized closure cloning for proj1
+    -- This implements the full SUP state machine inline:
+    --   if (tag == SUP_TAG_FRESH) -> mark PROJ1, return value
+    --   if (tag == SUP_TAG_PROJ0) -> mark BOTH, clone closure with SUP wrapping
+    --   else -> return cached proj1
+    compileInlineClosureProj1 :: LlvmValue -> Int -> SlotInfo -> IrGen LlvmValue
+    compileInlineClosureProj1 supHandle envSz slots = do
+        -- Load SUP tag (offset 0)
+        supTagPtr <- saveTmp (LlvmGetElementPtr LlvmI8 supHandle [LlvmLiteral LlvmI64 "0"] False) (LlvmPointer LlvmI8)
+        supTag <- saveTmp (LlvmLoad supTagPtr) LlvmI8
 
-        -- Wrap closure-typed slots in SUPs for lazy nested cloning
-        let closureSlots = [idx | (idx, isClosure) <- slotInfoArg, isClosure, idx < envSizeArg]
+        -- Load SUP value pointer (offset 8: after tag[1] + pad[3] + label[4])
+        supValuePtr <- saveTmp (LlvmGetElementPtr LlvmI8 supHandle [LlvmLiteral LlvmI64 "8"] False) (LlvmPointer (LlvmPointer LlvmI8))
+        supValue <- saveTmp (LlvmLoad supValuePtr) (LlvmPointer LlvmI8)
 
-        -- Process closure slots - wrap each in a SUP with fresh label
-        foldM_ wrapSlotInSUP baseResult closureSlots
+        -- Load SUP proj1 cache pointer (offset 24: after tag[1] + pad[3] + label[4] + value[8] + proj0[8])
+        supProj1Ptr <- saveTmp (LlvmGetElementPtr LlvmI8 supHandle [LlvmLiteral LlvmI64 "24"] False) (LlvmPointer (LlvmPointer LlvmI8))
 
-        pure baseResult
+        -- Check if tag == SUP_TAG_FRESH (128)
+        isFresh <- saveTmp (LlvmICmp LlvmI8 "eq" supTag (LlvmLiteral LlvmI8 "128")) LlvmI1
 
-    wrapSlotInSUP :: LlvmValue -> Int -> IrGen LlvmValue
-    wrapSlotInSUP closure slotIdx = do
-        -- Calculate slot offset: 16 (header) + slotIdx * 8
-        let offset = 16 + slotIdx * 8
-        let offsetVal = LlvmLiteral LlvmI64 (show offset)
-        slotPtr <- saveTmp (LlvmGetElementPtr LlvmI8 closure [offsetVal] False) (LlvmPointer LlvmI8)
+        -- Generate unique labels for branches
+        freshLabel <- freshBlockName "proj1_fresh"
+        checkProj0Label <- freshBlockName "proj1_check_proj0"
+        cloneLabel <- freshBlockName "proj1_clone"
+        cachedLabel <- freshBlockName "proj1_cached"
+        doneLabel <- freshBlockName "proj1_done"
 
-        -- Load current value
-        currentVal <- saveTmp (LlvmLoadTyped (LlvmPointer LlvmI8) slotPtr) (LlvmPointer LlvmI8)
+        -- Branch: if fresh, go to fresh path; else check proj0
+        tell [LlvmBrCond isFresh freshLabel checkProj0Label]
 
-        -- Generate fresh label
-        let freshLabelFunc = LlvmGlobal LlvmI32 "\"soma_fresh_label\""
-        freshLabel <- saveTmp (LlvmCall freshLabelFunc LlvmI32 []) LlvmI32
+        -- Fresh path: first access via proj1, mark PROJ1 and return value
+        tell [LlvmLabel freshLabel]
+        tell [LlvmStore (LlvmLiteral LlvmI8 "130") supTagPtr] -- SUP_TAG_PROJ1 = 130
+        tell [LlvmStore supValue supProj1Ptr] -- Cache the value
+        tell [LlvmBr doneLabel]
+        let freshResult = supValue
 
-        -- Create SUP for the nested closure
-        let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
-        supForSlot <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [freshLabel, currentVal]) (LlvmPointer LlvmI8)
+        -- Check proj0 path: if tag == SUP_TAG_PROJ0 (129), need to clone
+        tell [LlvmLabel checkProj0Label]
+        isProj0First <- saveTmp (LlvmICmp LlvmI8 "eq" supTag (LlvmLiteral LlvmI8 "129")) LlvmI1
+        tell [LlvmBrCond isProj0First cloneLabel cachedLabel]
 
-        -- Store SUP back into the slot
-        tell [LlvmStore supForSlot slotPtr]
+        -- Clone path: proj0 was accessed first, now we need to clone
+        tell [LlvmLabel cloneLabel]
+        tell [LlvmStore (LlvmLiteral LlvmI8 "131") supTagPtr] -- SUP_TAG_BOTH = 131
 
-        pure closure
+        -- Allocate new closure: 16 (header) + envSize * 8 bytes
+        let allocClosureFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_pool_alloc_closure\""
+        newClosure <- saveTmp (LlvmCall allocClosureFunc (LlvmPointer LlvmI8) [LlvmLiteral LlvmI16 (show envSz)]) (LlvmPointer LlvmI8)
+
+        -- Copy header (16 bytes) using memcpy
+        let memcpyFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"memcpy\""
+        _ <- saveTmp (LlvmCall memcpyFunc (LlvmPointer LlvmI8) [newClosure, supValue, LlvmLiteral LlvmI64 "16"]) (LlvmPointer LlvmI8)
+
+        -- Copy/wrap each env slot
+        -- For closure slots: wrap in SUP with fresh label
+        -- For non-closure slots: direct copy
+        mapM_ (copyOrWrapSlot supValue newClosure) [0 .. envSz - 1]
+
+        -- Cache the cloned closure
+        tell [LlvmStore newClosure supProj1Ptr]
+        tell [LlvmBr doneLabel]
+        let cloneResult = newClosure
+
+        -- Cached path: already accessed, return cached proj1
+        tell [LlvmLabel cachedLabel]
+        cachedValue <- saveTmp (LlvmLoad supProj1Ptr) (LlvmPointer LlvmI8)
+        tell [LlvmBr doneLabel]
+
+        -- Done: phi node to merge results
+        tell [LlvmLabel doneLabel]
+        saveTmp
+            ( LlvmPhi
+                (LlvmPointer LlvmI8)
+                [ (freshResult, freshLabel)
+                , (cloneResult, cloneLabel)
+                , (cachedValue, cachedLabel)
+                ]
+            )
+            (LlvmPointer LlvmI8)
+      where
+        -- Copy or wrap a single env slot
+        copyOrWrapSlot :: LlvmValue -> LlvmValue -> Int -> IrGen ()
+        copyOrWrapSlot srcClosure dstClosure slotIdx = do
+            let slotOffset = 16 + slotIdx * 8
+            let offsetVal = LlvmLiteral LlvmI64 (show slotOffset)
+
+            -- Get source and destination slot pointers
+            srcSlotPtr <- saveTmp (LlvmGetElementPtr LlvmI8 srcClosure [offsetVal] False) (LlvmPointer (LlvmPointer LlvmI8))
+            dstSlotPtr <- saveTmp (LlvmGetElementPtr LlvmI8 dstClosure [offsetVal] False) (LlvmPointer (LlvmPointer LlvmI8))
+
+            -- Load source value
+            srcVal <- saveTmp (LlvmLoad srcSlotPtr) (LlvmPointer LlvmI8)
+
+            -- Check if this slot is a closure type (from compile-time slotInfo)
+            let isClosureSlot = slotIdx `elem` [idx | (idx, True) <- slots]
+
+            if isClosureSlot
+                then do
+                    -- Closure slot: wrap in SUP for lazy nested cloning
+                    let freshLabelFunc = LlvmGlobal LlvmI32 "\"soma_fresh_label\""
+                    freshLbl <- saveTmp (LlvmCall freshLabelFunc LlvmI32 []) LlvmI32
+
+                    let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
+                    supForSlot <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [freshLbl, srcVal]) (LlvmPointer LlvmI8)
+
+                    tell [LlvmStore supForSlot dstSlotPtr]
+                else do
+                    -- Non-closure slot: direct copy
+                    tell [LlvmStore srcVal dstSlotPtr]
 
 -- OpClosureGetEnvDirect: Direct env slot access for original closures
 -- Single load, no SUP projection needed
@@ -622,6 +814,168 @@ compileOp (OpParClosureProj1 handleOp envSize slotInfo workEstimate) resultTy = 
         tell [LlvmStore supForSlot slotPtr]
         pure closure
 
+-- Fork: spawn a parallel task
+-- OpFork taskFn taskArgs: fork a function call with the given arguments
+--
+-- Design for optimal performance:
+-- - Sequential mode: call function directly with all args (zero overhead)
+-- - Parallel mode: generate a trampoline wrapper that converts i64 args to native types
+--
+-- The trampoline is necessary because:
+-- - The runtime calls functions with SomaValue (i64) arguments
+-- - But Soma functions may use i32, ptr, etc. as their native parameter types
+-- - The trampoline converts i64 -> native type for each arg, calls the real function,
+--   then converts the result back to i64
+--
+-- The result is encoded as:
+-- - Parallel: task handle pointer (low bit = 0)
+-- - Sequential: (result << 1) | 1 (low bit = 1 marks inline result)
+-- OpJoin decodes this to either wait for task or extract inline result.
+compileOp (OpFork taskFn taskArgs) resultTy = do
+    llFn <- compileOperand taskFn
+    llArgs <- mapM compileOperand taskArgs
+
+    -- Ensure fn is a pointer (function pointer)
+    fnPtr <- case getValueType llFn of
+        LlvmPointer _ -> pure llFn
+        _ -> saveTmp (LlvmIntToPtr llFn (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+
+    -- Get the native types of each argument
+    let argTypes = map getValueType llArgs
+
+    -- Convert all args to i64 (SomaValue convention) for the parallel path
+    i64Args <- forM llArgs $ \llArg -> case getValueType llArg of
+        LlvmI64 -> pure llArg
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llArg LlvmI64) LlvmI64
+        LlvmI32 -> saveTmp (LlvmSExt llArg LlvmI64) LlvmI64
+        LlvmI8 -> saveTmp (LlvmSExt llArg LlvmI64) LlvmI64
+        LlvmI1 -> saveTmp (LlvmZExt llArg LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt llArg LlvmI64) LlvmI64
+
+    -- Check if parallel is enabled
+    let parEnabledFunc = LlvmGlobal LlvmI32 "\"soma_par_enabled_export\""
+    parEnabled <- saveTmp (LlvmCall parEnabledFunc LlvmI32 []) LlvmI32
+    isParallel <- saveTmp (LlvmICmp LlvmI32 "ne" parEnabled (LlvmLiteral LlvmI32 "0")) LlvmI1
+
+    -- Branch: parallel fork vs sequential inline
+    parallelBlock <- freshBlockName "fork_parallel"
+    sequentialBlock <- freshBlockName "fork_sequential"
+    mergeBlock <- freshBlockName "fork_merge"
+
+    tell [LlvmBrCond isParallel parallelBlock sequentialBlock]
+
+    -- Parallel path
+    tell [LlvmLabel parallelBlock]
+    taskHandleI64 <- case i64Args of
+        -- Single argument with i64 type: use soma_fork_direct (no trampoline needed)
+        [singleArg] | hardHead argTypes == LlvmI64 -> do
+            let forkFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_fork_direct\""
+            taskHandle <- saveTmp (LlvmCall forkFunc (LlvmPointer LlvmI8) [fnPtr, singleArg]) (LlvmPointer LlvmI8)
+            saveTmp (LlvmPtrToInt taskHandle LlvmI64) LlvmI64
+        -- Multiple arguments or non-i64 single arg: generate trampoline and use soma_fork_multi
+        _ -> do
+            -- Generate a unique trampoline function name
+            trampolineName <- freshBlockName "fork_trampoline"
+
+            -- Generate and register the trampoline function
+            generateTrampoline trampolineName fnPtr argTypes resultTy
+
+            let numArgs = length i64Args
+            -- Allocate array on stack for arguments
+            let arrayTy = LlvmArray numArgs LlvmI64
+            argsArray <- saveTmp (LlvmAlloca arrayTy Nothing) (LlvmPointer arrayTy)
+            -- Store each argument into the array
+            forM_ (zip [(0 :: Integer) ..] i64Args) $ \(idx, arg) -> do
+                elemPtr <- saveTmp (LlvmGetElementPtr arrayTy argsArray [LlvmLiteral LlvmI32 "0", LlvmLiteral LlvmI32 (show idx)] True) (LlvmPointer LlvmI64)
+                tell [LlvmStore arg elemPtr]
+            -- Cast array pointer to i64* for the runtime call
+            argsPtr <- saveTmp (LlvmBitcast argsArray (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+            -- Get trampoline function pointer
+            let trampolinePtr = LlvmGlobal (LlvmPointer LlvmI8) ("\"" ++ trampolineName ++ "\"")
+            -- Call soma_fork_multi(trampoline, args, num_args)
+            let forkMultiFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_fork_multi\""
+            taskHandle <- saveTmp (LlvmCall forkMultiFunc (LlvmPointer LlvmI8) [trampolinePtr, argsPtr, LlvmLiteral LlvmI32 (show numArgs)]) (LlvmPointer LlvmI8)
+            saveTmp (LlvmPtrToInt taskHandle LlvmI64) LlvmI64
+    tell [LlvmBr mergeBlock]
+
+    -- Sequential path: call function directly with original args (not i64-converted)
+    tell [LlvmLabel sequentialBlock]
+    -- resultTy is already the LlvmType for the return
+    rawResult <- saveTmp (LlvmCall fnPtr resultTy llArgs) resultTy
+    -- Convert result to i64 for encoding
+    inlineResult <- case resultTy of
+        LlvmI64 -> pure rawResult
+        LlvmI32 -> saveTmp (LlvmSExt rawResult LlvmI64) LlvmI64
+        LlvmI8 -> saveTmp (LlvmSExt rawResult LlvmI64) LlvmI64
+        LlvmI1 -> saveTmp (LlvmZExt rawResult LlvmI64) LlvmI64
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt rawResult LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt rawResult LlvmI64) LlvmI64
+    -- Encode inline result: (result << 1) | 1
+    encodedInline <- saveTmp (LlvmShl LlvmI64 inlineResult (LlvmLiteral LlvmI64 "1")) LlvmI64
+    encodedInlineTagged <- saveTmp (LlvmAdd LlvmI64 encodedInline (LlvmLiteral LlvmI64 "1")) LlvmI64
+    tell [LlvmBr mergeBlock]
+
+    -- Merge
+    tell [LlvmLabel mergeBlock]
+    saveTmp (LlvmPhi LlvmI64 [(taskHandleI64, parallelBlock), (encodedInlineTagged, sequentialBlock)]) LlvmI64
+
+-- Join: wait for a forked task and get its result
+-- OpJoin taskHandle: if low bit is 1, decode inline result; else call soma_join(handle)
+compileOp (OpJoin taskHandle) resultTy = do
+    llHandle <- compileOperand taskHandle
+    -- Ensure handle is i64
+    i64Handle <- case getValueType llHandle of
+        LlvmI64 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
+
+    -- Check low bit: 1 = inline result, 0 = task handle
+    lowBit <- saveTmp (LlvmAnd LlvmI64 i64Handle (LlvmLiteral LlvmI64 "1")) LlvmI64
+    isInline <- saveTmp (LlvmICmp LlvmI64 "ne" lowBit (LlvmLiteral LlvmI64 "0")) LlvmI1
+
+    inlineBlock <- freshBlockName "join_inline"
+    parallelBlock <- freshBlockName "join_parallel"
+    mergeBlock <- freshBlockName "join_merge"
+
+    tell [LlvmBrCond isInline inlineBlock parallelBlock]
+
+    -- Inline path: decode result (value >> 1)
+    tell [LlvmLabel inlineBlock]
+    decodedResult <- saveTmp (LlvmLShr LlvmI64 i64Handle (LlvmLiteral LlvmI64 "1")) LlvmI64
+    tell [LlvmBr mergeBlock]
+
+    -- Parallel path: call soma_join
+    tell [LlvmLabel parallelBlock]
+    handlePtr <- saveTmp (LlvmIntToPtr i64Handle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    let joinFunc = LlvmGlobal LlvmI64 "\"soma_join\""
+    joinResult <- saveTmp (LlvmCall joinFunc LlvmI64 [handlePtr]) LlvmI64
+    tell [LlvmBr mergeBlock]
+
+    -- Merge
+    tell [LlvmLabel mergeBlock]
+    result <- saveTmp (LlvmPhi LlvmI64 [(decodedResult, inlineBlock), (joinResult, parallelBlock)]) LlvmI64
+
+    -- Cast to result type if needed
+    case resultTy of
+        LlvmI64 -> pure result
+        LlvmPointer _ -> saveTmp (LlvmIntToPtr result resultTy) resultTy
+        LlvmI32 -> saveTmp (LlvmTrunc result LlvmI32) LlvmI32
+        LlvmI8 -> saveTmp (LlvmTrunc result LlvmI8) LlvmI8
+        LlvmI1 -> saveTmp (LlvmTrunc result LlvmI1) LlvmI1
+        _ -> saveTmp (LlvmTrunc result resultTy) resultTy
+
+-- Panic: call soma_panic with message and emit unreachable
+compileOp (OpPanic msg) _resultTy = do
+    -- Create a global string constant for the panic message
+    msgPtr <- newStrTemplate msg
+    -- Call soma_panic(msg) - void function
+    let panicFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_panic\""
+    tell [LlvmCallStmt panicFunc LlvmVoid [msgPtr]]
+    -- Emit unreachable (panic never returns)
+    tell [LlvmUnreachable]
+    -- Return a dummy value (never reached) - use null pointer
+    pure (LlvmLiteral (LlvmPointer LlvmI8) "null")
+
 cmpOpToLlvm :: ACmpOp -> String
 cmpOpToLlvm CEq = "eq"
 cmpOpToLlvm CNe = "ne"
@@ -633,3 +987,151 @@ cmpOpToLlvm CSlt = "slt"
 cmpOpToLlvm CSle = "sle"
 cmpOpToLlvm CSgt = "sgt"
 cmpOpToLlvm CSge = "sge"
+
+{- | Generate a trampoline wrapper function for parallel fork
+The trampoline:
+1. Takes a pointer to an array of i64 (SomaValue) arguments
+2. Loads and converts each argument to its native type
+3. Calls the real function
+4. Converts the result back to i64 (SomaValue)
+-}
+generateTrampoline :: String -> LlvmValue -> [LlvmType] -> LlvmType -> IrGen ()
+generateTrampoline name targetFn argTypes retTy = do
+    -- The trampoline takes a single ptr argument (pointer to args array)
+    let paramName = "args_ptr"
+        params = [(paramName, LlvmPointer LlvmI64)]
+
+    -- Generate the function body statements
+    let argsPtr = LlvmRegister (LlvmPointer LlvmI64) paramName
+
+    -- Build statements to load and convert each argument
+    (convertedArgs, loadStmts) <- generateArgLoads argsPtr argTypes
+
+    -- Call the target function
+    let callInstr = LlvmCall targetFn retTy convertedArgs
+        callReg = LlvmRegister retTy "call_result"
+        callStmt = LlvmAssign "call_result" callInstr
+
+    -- Convert result to i64
+    (resultI64, resultStmts) <- generateResultConversion callReg retTy
+
+    -- Return the i64 result
+    let retStmt = LlvmRet LlvmI64 (Just resultI64)
+
+    -- Create the function
+    let allStmts = loadStmts ++ [callStmt] ++ resultStmts ++ [retStmt]
+        block = LlvmBlock{blockName = "entry", blockStatements = allStmts}
+        fn =
+            LlvmFunction
+                { functionName = "\"" ++ name ++ "\""
+                , functionParams = params
+                , functionReturnType = LlvmI64
+                , functionBlocks = [block]
+                }
+
+    -- Register the trampoline function
+    modify (\s -> s{irFunctions = fn : irFunctions s})
+
+-- | Generate statements to load arguments from the args array and convert to native types
+generateArgLoads :: LlvmValue -> [LlvmType] -> IrGen ([LlvmValue], [LlvmStatement])
+generateArgLoads argsPtr argTypes = do
+    results <- forM (zip [0 ..] argTypes) $ \(idx, argTy) -> do
+        let idxLit = LlvmLiteral LlvmI32 (show (idx :: Int))
+            gepReg = "arg_ptr_" ++ show idx
+            loadReg = "arg_i64_" ++ show idx
+            convReg = "arg_" ++ show idx
+
+        -- GEP to get pointer to this argument in the array
+        let gepInstr = LlvmGetElementPtr LlvmI64 argsPtr [idxLit] True
+            gepStmt = LlvmAssign gepReg gepInstr
+            gepVal = LlvmRegister (LlvmPointer LlvmI64) gepReg
+
+        -- Load the i64 value
+        let loadInstr = LlvmLoad gepVal
+            loadStmt = LlvmAssign loadReg loadInstr
+            loadVal = LlvmRegister LlvmI64 loadReg
+
+        -- Convert from i64 to the native type
+        (convVal, convStmts) <- generateArgConversion loadVal argTy convReg
+
+        pure (convVal, [gepStmt, loadStmt] ++ convStmts)
+
+    let (vals, stmtLists) = unzip results
+    pure (vals, concat stmtLists)
+
+-- | Generate statements to convert an i64 value to a native type
+generateArgConversion :: LlvmValue -> LlvmType -> String -> IrGen (LlvmValue, [LlvmStatement])
+generateArgConversion i64Val targetTy regName = case targetTy of
+    LlvmI64 ->
+        -- No conversion needed
+        pure (i64Val, [])
+    LlvmI32 -> do
+        -- Truncate i64 to i32
+        let instr = LlvmTrunc i64Val LlvmI32
+            stmt = LlvmAssign regName instr
+            result = LlvmRegister LlvmI32 regName
+        pure (result, [stmt])
+    LlvmI8 -> do
+        -- Truncate i64 to i8
+        let instr = LlvmTrunc i64Val LlvmI8
+            stmt = LlvmAssign regName instr
+            result = LlvmRegister LlvmI8 regName
+        pure (result, [stmt])
+    LlvmI1 -> do
+        -- Truncate i64 to i1
+        let instr = LlvmTrunc i64Val LlvmI1
+            stmt = LlvmAssign regName instr
+            result = LlvmRegister LlvmI1 regName
+        pure (result, [stmt])
+    LlvmPointer innerTy -> do
+        -- inttoptr i64 to pointer
+        let instr = LlvmIntToPtr i64Val (LlvmPointer innerTy)
+            stmt = LlvmAssign regName instr
+            result = LlvmRegister (LlvmPointer innerTy) regName
+        pure (result, [stmt])
+    _ -> do
+        -- Default: truncate to i32 (conservative)
+        let instr = LlvmTrunc i64Val LlvmI32
+            stmt = LlvmAssign regName instr
+            result = LlvmRegister LlvmI32 regName
+        pure (result, [stmt])
+
+-- | Generate statements to convert a native result to i64
+generateResultConversion :: LlvmValue -> LlvmType -> IrGen (LlvmValue, [LlvmStatement])
+generateResultConversion resultVal retTy = case retTy of
+    LlvmI64 ->
+        -- No conversion needed
+        pure (resultVal, [])
+    LlvmI32 -> do
+        -- Sign-extend i32 to i64
+        let instr = LlvmSExt resultVal LlvmI64
+            stmt = LlvmAssign "result_i64" instr
+            result = LlvmRegister LlvmI64 "result_i64"
+        pure (result, [stmt])
+    LlvmI8 -> do
+        -- Sign-extend i8 to i64
+        let instr = LlvmSExt resultVal LlvmI64
+            stmt = LlvmAssign "result_i64" instr
+            result = LlvmRegister LlvmI64 "result_i64"
+        pure (result, [stmt])
+    LlvmI1 -> do
+        -- Zero-extend i1 to i64
+        let instr = LlvmZExt resultVal LlvmI64
+            stmt = LlvmAssign "result_i64" instr
+            result = LlvmRegister LlvmI64 "result_i64"
+        pure (result, [stmt])
+    LlvmPointer _ -> do
+        -- ptrtoint pointer to i64
+        let instr = LlvmPtrToInt resultVal LlvmI64
+            stmt = LlvmAssign "result_i64" instr
+            result = LlvmRegister LlvmI64 "result_i64"
+        pure (result, [stmt])
+    LlvmVoid ->
+        -- Void return - return 0
+        pure (LlvmLiteral LlvmI64 "0", [])
+    _ -> do
+        -- Default: sign-extend to i64
+        let instr = LlvmSExt resultVal LlvmI64
+            stmt = LlvmAssign "result_i64" instr
+            result = LlvmRegister LlvmI64 "result_i64"
+        pure (result, [stmt])

@@ -2675,3 +2675,1202 @@ All runtime function parameters and returns use this i64 representation,
 NOT pointer types. The low 3 bits encode the type tag (TAG_INT=1, TAG_PTR=0, etc.),
 and the remaining 61 bits hold the payload. This must be matched exactly in
 LLVM codegen or values get corrupted.
+
+### Session 20 (2024)
+
+**Remaining TODOs: Field Projection, Nested Pattern Types, HVM-style SUP Wrapping**
+
+This session completed the remaining TODOs identified in the Circuit IR implementation.
+
+#### TODO #1: Field Projection via `CProject`
+
+Added a new Circuit IR constructor for projecting fields from tagged values (ADTs):
+
+```haskell
+-- In Circuit/Ir.hs:
+| CProject !CTerm !Int !Type  -- Project field at index from tagged value
+```
+
+**Changes across the pipeline:**
+
+| File | Changes |
+|------|---------|
+| `Circuit/Ir.hs` | Added `CProject` constructor; updated `getTermType`, `countVarUses`, `freeVars`, `freeVarsWithTypes`, `classifyTerm` |
+| `Circuit/Lower.hs` | Lower `MFieldAccess expr idx ty` to `CProject expr' idx ty` |
+| `Circuit/Linearize.hs` | Handle `CProject` in `linearizeTerm`, `substituteNth`, `substituteVar` |
+| `Circuit/Simplify.hs` | Handle `CProject` in `go` and `substitute` |
+| `Circuit/Alloc.hs` | Handle `CProject` in `analyzeTerm'` and `inferTermKind` |
+| `Circuit/Escape.hs` | Handle `CProject` in `analyzeTermEscapes` and `nameUsedInReturnPosition` |
+| `Circuit/ToAlloy.hs` | Lower `CProject` to `OpProject` (with idx+1 for 1-based indexing since slot 0 is tag) |
+| `Logging/Trees.hs` | Added `NProject` node type for pretty printing and graph visualization |
+
+**Performance:** This is entirely compile-time with zero runtime overhead. `CProject` compiles
+to `OpProject` which becomes a direct LLVM `getelementptr` instruction — just pointer arithmetic.
+
+#### TODO #2: Proper Field Types in Nested Pattern Matching
+
+The pattern matching lowering was using placeholder types for nested patterns. This session
+fixed the type propagation to use actual field types from constructor definitions.
+
+**Changes to `Circuit/Lower.hs`:**
+
+Extended `leConstructors` from `Map String (Int, Int)` to `Map String (Int, Int, [Type])`:
+```haskell
+-- Before:
+leConstructors :: Map String (Int, Int)  -- name -> (tag, arity)
+
+-- After:
+leConstructors :: Map String (Int, Int, [Type])  -- name -> (tag, arity, fieldTypes)
+```
+
+Updated `buildEnv` to store field types:
+```haskell
+[ (mcName c, (mcTag c, length (mcFields c), mcFields c))
+| c <- mtdConstructors td
+]
+```
+
+Fixed `extractPatternInfo` to use actual field types when matching constructor patterns:
+```haskell
+PCon conName subPats -> do
+    env <- ask
+    case Map.lookup conName (leConstructors env) of
+        Just (tag, _, fieldTypes) -> do
+            let typedSubPats = zip (fieldTypes ++ repeat scrutTy) subPats
+            fieldNamesAndTypes <- mapM (uncurry extractFieldNameAndType) typedSubPats
+            pure (tag, fieldNamesAndTypes)
+```
+
+Added helper functions for type extraction:
+```haskell
+extractTupleTypes :: Type -> [Type]
+extractTupleTypes (TApp (TApp (TConstructor tc) t1) t2)
+    | tcName tc == "Tuple2" = [t1, t2]
+-- ... handles Tuple3, Tuple4, etc.
+
+extractArrayElemType :: Type -> Type
+extractArrayElemType (TApp (TConstructor tc) elemTy)
+    | tcName tc == "Array" = elemTy
+extractArrayElemType ty = ty
+```
+
+Fixed `PLit` pattern type inference (was incorrectly pattern matching on `Maybe Type`):
+```haskell
+PLit lit _ -> do
+    let litTy = case lit of
+            LitInt _ -> intType
+            LitBool _ -> boolType
+            LitString _ -> TConstructor (TypeConstructor "String" KindStar)
+    name <- lift $ freshName "lit"
+    pure (0, [(name, litTy)])
+```
+
+**Performance:** This is purely compile-time type propagation with no runtime cost.
+It just enables better type information for downstream optimization passes.
+
+#### TODO #3: HVM-style SUP Wrapping in `soma_clone_closure`
+
+Implemented proper lazy cloning of nested closures in the C runtime.
+
+**Changes to `runtime/soma_runtime.c`:**
+
+```c
+void* soma_clone_closure(void* closure_ptr) {
+    SomaClosure* closure = (SomaClosure*)closure_ptr;
+    uint16_t env_size = closure->env_size;
+
+    /* Allocate new closure */
+    void* new_closure = soma_pool_alloc_closure(env_size);
+    
+    /* Copy header (tag, arity, env_size, func_ptr) */
+    memcpy(new_closure, closure, sizeof(SomaClosure));
+    
+    /* Copy env slots, wrapping closure/SUP-typed slots in fresh SUPs */
+    SomaValue* src_env = (SomaValue*)(closure + 1);
+    SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
+    
+    for (uint16_t i = 0; i < env_size; i++) {
+        SomaValue val = src_env[i];
+        
+        /* Check if this is a heap pointer that might need lazy cloning */
+        if (SOMA_IS_PTR(val) && val != 0) {
+            uint8_t tag = *(uint8_t*)SOMA_TO_PTR(val);
+            
+            if (tag == NODE_CLOSURE || IS_SUP(tag)) {
+                /* Wrap in SUP for lazy nested cloning */
+                uint32_t fresh_label = soma_fresh_label();
+                void* sup = soma_dup(fresh_label, SOMA_TO_PTR(val));
+                dst_env[i] = SOMA_PTR(sup);
+                continue;
+            }
+        }
+        
+        /* Non-closure value: direct copy */
+        dst_env[i] = val;
+    }
+
+    return new_closure;
+}
+```
+
+**How it works:**
+1. Allocate a new closure structure
+2. Copy the header (tag, arity, env_size, func_ptr)
+3. For each env slot:
+   - If it's a heap pointer to a closure or SUP → wrap in a fresh SUP for lazy cloning
+   - Otherwise → direct copy (primitives don't need lazy cloning)
+
+**Performance:** This adds a small runtime cost (tag check per env slot) but enables
+HVM-style lazy cloning: nested closures are only actually cloned when both projections
+of their containing SUP are accessed. The compiler already has specialized inline cloning
+via `OpDupClosureProj1` with `slotInfo` for the fast path — this runtime function is a
+fallback for dynamic cases.
+
+#### Summary of What Was Gained
+
+| Feature | Benefit |
+|---------|---------|
+| `CProject` | Direct field access without pattern matching overhead |
+| Proper nested pattern types | Correct type information enables better downstream optimizations |
+| HVM-style SUP wrapping | Lazy nested closure cloning reduces unnecessary allocations |
+
+All three changes preserve the core design principle: **GC-free optimal evaluation**.
+The first two are pure compile-time improvements with zero runtime overhead. The third
+adds minimal overhead (tag checks) to enable lazy cloning, which can be a net performance
+win when nested closures aren't always used.
+
+**Files Modified:**
+
+| File | Changes |
+|------|---------|
+| `Circuit/Ir.hs` | Added `CProject` constructor |
+| `Circuit/Lower.hs` | Field projection lowering, extended `leConstructors`, fixed nested pattern types |
+| `Circuit/Linearize.hs` | Handle `CProject` |
+| `Circuit/Simplify.hs` | Handle `CProject` |
+| `Circuit/Alloc.hs` | Handle `CProject` |
+| `Circuit/Escape.hs` | Handle `CProject` |
+| `Circuit/ToAlloy.hs` | Lower `CProject` to `OpProject` |
+| `Logging/Trees.hs` | Added `NProject` node type |
+| `runtime/soma_runtime.c` | HVM-style SUP wrapping in `soma_clone_closure` |
+
+**Test Verification:**
+
+Build and test pass with correct results:
+```bash
+$ cabal build somac
+$ ./test_closure_dup
+$ echo $?
+23  # Correct: 2839 % 256 = 23
+```
+
+### Session 21 (2024)
+
+**Inline Specialized Closure Cloning in `OpDupClosureProj1`**
+
+This session completed the TODO in `Llvm/Gen/Op.hs:385-391` by implementing fully inline
+specialized closure cloning, eliminating the function call overhead to `soma_proj1`.
+
+#### The Problem
+
+The previous implementation of `OpDupClosureProj1` was calling `soma_proj1` at runtime,
+which then called `soma_clone_closure`. This had several issues:
+1. Function call overhead
+2. Runtime tag checking per env slot in `soma_clone_closure`
+3. No use of compile-time slot type information
+
+#### The Solution: Fully Inline Code Generation
+
+Now `OpDupClosureProj1` generates all the code inline:
+
+1. **SUP state machine inline**: Checks tag and handles fresh/proj0/cached states
+2. **Direct memory operations**: Uses `getelementptr` and `load`/`store` directly
+3. **Compile-time slot dispatch**: Uses `slotInfo` to know which slots are closures
+4. **Unrolled slot copying**: No runtime loop, each slot is handled individually
+
+**Generated code structure:**
+```llvm
+; Check SUP tag
+%tag = load i8, ptr %sup
+%is_fresh = icmp eq i8 %tag, 128
+br i1 %is_fresh, label %fresh, label %check_proj0
+
+fresh:
+  store i8 130, ptr %sup_tag        ; Mark as PROJ1
+  store ptr %value, ptr %sup_proj1  ; Cache value
+  br label %done
+
+check_proj0:
+  %is_proj0 = icmp eq i8 %tag, 129
+  br i1 %is_proj0, label %clone, label %cached
+
+clone:
+  store i8 131, ptr %sup_tag        ; Mark as BOTH
+  %new_closure = call ptr @soma_pool_alloc_closure(i16 %env_size)
+  call ptr @memcpy(ptr %new_closure, ptr %original, i64 16)  ; Copy header
+  
+  ; For each slot (unrolled):
+  ; - Non-closure: direct copy
+  ; - Closure: wrap in SUP via soma_fresh_label + soma_dup
+  ...
+  
+  store ptr %new_closure, ptr %sup_proj1
+  br label %done
+
+cached:
+  %cached_val = load ptr, ptr %sup_proj1
+  br label %done
+
+done:
+  %result = phi ptr [ %value, %fresh ], [ %new_closure, %clone ], [ %cached_val, %cached ]
+```
+
+#### Benefits
+
+| Before | After |
+|--------|-------|
+| Call `soma_proj1` | Inline code |
+| Call `soma_clone_closure` | Inline allocation + memcpy |
+| Runtime tag check per slot | Compile-time slot type dispatch |
+| Loop over slots | Unrolled slot handling |
+
+**Eliminated overhead:**
+- 2 function calls per closure clone
+- Runtime type checking loop
+- Branch misprediction from generic loop
+
+**Remaining minimal overhead:**
+- Single tag check for SUP state (unavoidable)
+- `soma_fresh_label` + `soma_dup` calls for closure slots (required for lazy cloning)
+
+#### Implementation Details
+
+**New helper in `Llvm/Gen/Core.hs`:**
+```haskell
+-- Generate a fresh block label name with a given prefix
+freshBlockName :: (MonadState IrGenState m) => String -> m String
+freshBlockName prefix = do
+    n <- gets nextRegister
+    modify $ \s -> s{nextRegister = n + 1}
+    return $ prefix ++ "_" ++ show n
+```
+
+**Key code in `Llvm/Gen/Op.hs`:**
+```haskell
+compileInlineClosureProj1 :: LlvmValue -> Int -> SlotInfo -> IrGen LlvmValue
+compileInlineClosureProj1 supHandle envSz slots = do
+    -- Load SUP tag, value, proj1 cache pointers
+    -- Generate branch labels
+    -- Emit state machine with phi node for result
+    ...
+  where
+    copyOrWrapSlot srcClosure dstClosure slotIdx = do
+        -- Use compile-time slotInfo to determine if closure slot
+        let isClosureSlot = slotIdx `elem` [idx | (idx, True) <- slots]
+        if isClosureSlot
+            then do
+                -- Wrap in SUP for lazy nested cloning
+                freshLbl <- call soma_fresh_label
+                supForSlot <- call soma_dup(freshLbl, srcVal)
+                store supForSlot dstSlot
+            else do
+                -- Direct copy for non-closure slots
+                store srcVal dstSlot
+```
+
+#### Files Modified
+
+| File | Changes |
+|------|---------|
+| `Llvm/Gen/Core.hs` | Added `freshBlockName` function |
+| `Llvm/Gen/Op.hs` | Rewrote `OpDupClosureProj1` with inline code generation |
+
+#### Test Verification
+
+```bash
+$ cabal build somac
+$ ./test_closure_dup
+$ echo $?
+23  # Correct: 2839 % 256 = 23
+```
+
+All tests pass with the new inline implementation.
+
+**Bug Fix: Unknown Env Size Fallback**
+
+During testing, we discovered that when a closure comes from a function call (e.g., `let f = makeAdder 10`),
+the compiler doesn't know its env size at the DUP site. The inline code was incorrectly using `env=0`,
+which only copied the header without the env slots.
+
+**Fix:** When `envSize == 0 && null slotInfo`, fall back to calling `soma_proj1` which reads the
+env_size from the closure header at runtime. The inline code is only used when we have compile-time
+knowledge of the exact env layout (e.g., when the closure was created in the same function).
+
+```haskell
+result <- if envSize == 0 && null slotInfo
+    then do
+        -- Fall back to runtime - closure has unknown env layout
+        let proj1Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj1\""
+        saveTmp (LlvmCall proj1Func (LlvmPointer LlvmI8) [voidHandle]) (LlvmPointer LlvmI8)
+    else
+        -- Generate inline specialized cloning code
+        compileInlineClosureProj1 voidHandle envSize slotInfo
+```
+
+This ensures correctness while still providing the inline optimization when it's safe to use.
+
+---
+
+## Fork-Join Parallelism
+
+### Design Philosophy
+
+Soma's parallelism follows three core principles:
+
+1. **Zero overhead** - When running sequentially, parallel constructs compile to direct calls
+2. **Predictable** - No lazy evaluation, no thunks, no memoization surprises
+3. **Automatic** - The linearized IR is already a dependency graph; parallelism is extracted automatically
+ 
+### The Key Insight: Interaction Nets ARE Dependency Graphs
+
+After linearization, the Circuit IR has a crucial property: **every value is used exactly once**.
+This means the data flow through the program forms a directed acyclic graph where:
+- **Nodes** are let bindings and computations
+- **Edges** are variable uses (data dependencies)
+
+Independent computations have no edges between them and can run in parallel.
+
+### The Problem with Lazy Parallelism (Old Approach)
+
+The previous approach used "speculative cloning" via `soma_par_proj0/1`:
+- Created lazy SUP nodes that might spawn background tasks
+- Unpredictable: depends on runtime heuristics (worker hunger, adaptive thresholds)
+- Overhead: every value duplication went through the SUP machinery
+- Complex: required tracking task states, work estimates, cache coherence
+
+**Result:** In practice, 0 tasks were spawned because the heuristics were too conservative.
+
+### Fork-Join Model (New Approach)
+
+The new approach extracts parallelism directly from the linearized IR:
+
+```soma
+def example =
+    let a = expensive1 x in    -- Level 0
+    let b = expensive2 y in    -- Level 0 (independent of a)
+    let c = expensive3 z in    -- Level 0 (independent of a, b)
+    let d = a + b in           -- Level 1 (depends on a, b)
+    d + c                      -- Level 2 (depends on c, d)
+```
+
+The compiler analyzes dependencies:
+1. `a`, `b`, `c` are all independent → can run in parallel (Level 0)
+2. `d` depends on `a` and `b` → must wait for Level 0
+3. Final expression depends on `c` and `d`
+
+### Parallel Levels via Topological Sort
+
+The parallelization pass (`Circuit/Parallel.hs`):
+
+1. **Build dependency graph** from linearized Circuit IR
+2. **Topologically sort** bindings into levels
+3. **Fork** all bindings at each level
+4. **Join** all before proceeding to next level
+
+```
+Level 0: [a, b, c]  -- All independent, fork all three
+         ↓ join all
+Level 1: [d]        -- Depends on a, b
+         ↓ join
+Level 2: result     -- Depends on c, d
+```
+
+### Compilation Strategy
+
+**Parallel version** (when `SOMA_PARALLEL` is set):
+```llvm
+; Level 0: Fork all independent computations
+%task_a = call ptr @soma_fork(ptr @compute_a, ptr %env_a)
+%task_b = call ptr @soma_fork(ptr @compute_b, ptr %env_b)
+%task_c = call ptr @soma_fork(ptr @compute_c, ptr %env_c)
+
+; Join Level 0
+%a = call i64 @soma_join(ptr %task_a)
+%b = call i64 @soma_join(ptr %task_b)
+%c = call i64 @soma_join(ptr %task_c)
+
+; Level 1: Only one binding, no parallelism
+%d = add i64 %a, %b
+
+; Level 2: Final result
+%result = add i64 %d, %c
+```
+
+**Sequential version** (default, zero overhead):
+```llvm
+%a = call i64 @compute_a(ptr %env_a)
+%b = call i64 @compute_b(ptr %env_b)
+%c = call i64 @compute_c(ptr %env_c)
+%d = add i64 %a, %b
+%result = add i64 %d, %c
+```
+
+### Runtime API
+
+```c
+// Fork a computation - spawns task and returns immediately
+// fn: function pointer (SomaValue (*)(void* env))
+// env: captured environment (moved to task, caller loses ownership)
+SomaTask* soma_fork(SomaTaskFn fn, void* env);
+
+// Join a task - blocks until complete, returns result
+// task: handle from soma_fork (freed after join)
+SomaValue soma_join(SomaTask* task);
+
+// Check if parallel runtime is enabled
+int soma_par_enabled(void);
+```
+
+### Circuit IR Extensions
+
+New constructs for parallel execution:
+
+```haskell
+data CTerm
+    = ...
+    | CFork !Name !Type !CTerm !CTerm  -- Fork: taskName, resultType, computation, continuation
+    | CJoin !Name !Type                -- Join: taskName, resultType
+```
+
+**CFork semantics:**
+- `CFork taskName ty computation body` spawns `computation` as a task
+- Binds `taskName` to the task handle (not the result!)
+- Continues with `body` immediately (non-blocking)
+
+**CJoin semantics:**
+- `CJoin taskName ty` blocks until task `taskName` completes
+- Returns the result with type `ty`
+
+### Dependency Analysis Algorithm
+
+```haskell
+-- Build dependency graph from a function body
+buildDepGraph :: CTerm -> DepGraph
+
+-- A binding depends on variables it references
+-- that are defined by other bindings (not parameters)
+getDeps :: Name -> CTerm -> Set Name
+
+-- Topological sort into parallel levels
+-- Level n contains bindings whose deps are all in levels < n
+topoSort :: DepGraph -> [[Name]]
+
+-- Transform: insert CFork/CJoin based on levels
+parallelize :: CTerm -> CTerm
+```
+
+**Example:**
+```
+Input:
+  let a = f x in
+  let b = g y in
+  let c = a + b in
+  c
+
+Dependency Graph:
+  a -> {}        (no deps)
+  b -> {}        (no deps)
+  c -> {a, b}    (depends on a and b)
+
+Levels:
+  Level 0: [a, b]
+  Level 1: [c]
+
+Output:
+  CFork "task_a" Int (f x)
+    (CFork "task_b" Int (g y)
+      (CLet "a" Int (CJoin "task_a" Int)
+        (CLet "b" Int (CJoin "task_b" Int)
+          (CLet "c" Int (a + b)
+            c))))
+```
+
+### Work Threshold
+
+Not all computations benefit from parallelism. The compiler estimates work:
+
+```haskell
+-- Estimate computational cost
+estimateWork :: CTerm -> Int
+estimateWork (CApp (CRef name _) _ _) 
+    | isRecursive name = 100  -- Recursive calls are worth parallelizing
+estimateWork (CApp _ _ _) = 10
+estimateWork (CBinOp _ _ _) = 1
+estimateWork _ = 1
+
+-- Only fork if:
+-- 1. Estimated work exceeds threshold
+-- 2. There are multiple independent bindings at this level
+shouldFork :: [CTerm] -> Bool
+shouldFork terms = length terms > 1 && any (\t -> estimateWork t >= forkThreshold) terms
+
+forkThreshold :: Int
+forkThreshold = 50  -- Tune based on fork/join overhead
+```
+
+### Memory Model
+
+Fork-join preserves Soma's linear memory model:
+
+1. **Task environments are owned**: When forking, captured variables are moved to the task
+2. **Results are owned by joiner**: The join operation transfers ownership of the result
+3. **No sharing**: Each task operates on its own data (linearity guarantees this!)
+4. **Deterministic cleanup**: Task memory is freed after join
+
+### Implementation Plan
+
+1. **Runtime** (`runtime/soma_runtime.c`):
+   - [x] Task pool already exists
+   - [x] `soma_fork()` - allocate task, set fn/env, spawn
+   - [x] `soma_join()` - wait for completion, return result
+   - [x] `soma_par_enabled_export()` - callable from LLVM
+
+2. **Circuit IR** (`Circuit/Ir.hs`):
+   - [x] Add `CFork` and `CJoin` constructors
+   - [x] Update `getTermType`, `freeVars`, `countVarUses`
+
+3. **Parallelization Pass** (`Circuit/ToAlloy.hs`):
+   - [x] Identify single-argument function calls as forkable
+   - [x] Emit `OpFork`/`OpJoin` when `--parallel` flag is set
+   - [ ] (Future) Build full dependency graph for multi-level parallelism
+   - [ ] (Future) Topological sort into parallel levels
+
+4. **Circuit → Alloy** (`Circuit/ToAlloy.hs`):
+   - [x] Lower `CFork` to `OpFork`
+   - [x] Lower `CJoin` to `OpJoin`
+
+5. **Alloy IR** (`Alloy/Ir.hs`):
+   - [x] Add `OpFork` and `OpJoin` operations
+
+6. **LLVM Codegen** (`Llvm/Gen/Op.hs`):
+   - [x] Generate calls to `soma_fork_direct`/`soma_join`
+   - [x] Sequential fallback with tagged pointer encoding
+   - [x] Proper phi nodes for branch merging
+
+### Example: Full Pipeline
+
+**Source:**
+```soma
+def treeCompute(x: Int, levels: Int) -> Int =
+    if levels == 0 then x else
+        let left = treeCompute (x * 2) (levels - 1) in
+        let right = treeCompute (x * 2 + 1) (levels - 1) in
+        left + right
+```
+
+**After Linearization:**
+```
+CLet "left" Int (CApp treeCompute [...] Int)
+  (CLet "right" Int (CApp treeCompute [...] Int)
+    (CBinOp Add (CVar "left") (CVar "right")))
+```
+
+**Dependency Analysis:**
+- `left` depends on: `x`, `levels` (parameters, not bindings)
+- `right` depends on: `x`, `levels` (parameters, not bindings)
+- `left` and `right` are **independent**!
+
+**After Parallelization:**
+```
+CFork "task_left" Int (CApp treeCompute [...] Int)
+  (CFork "task_right" Int (CApp treeCompute [...] Int)
+    (CLet "left" Int (CJoin "task_left" Int)
+      (CLet "right" Int (CJoin "task_right" Int)
+        (CBinOp Add (CVar "left") (CVar "right")))))
+```
+
+### Comparison with Other Approaches
+
+| Approach | Overhead | Predictable | Automatic |
+|----------|----------|-------------|-----------|
+| Lazy SUPs (old) | Medium | No | Yes |
+| Manual `par` | Zero | Yes | No |
+| Fork-Join (new) | Zero* | Yes | Yes |
+| Cilk-style | Low | Mostly | No |
+
+*Zero overhead when running sequentially; fork/join cost when parallel.
+
+### Relation to DUP/SUP
+
+Fork-join parallelism is **orthogonal** to DUP/SUP:
+
+- **DUP/SUP**: Handle value duplication (when a variable is used multiple times)
+- **Fork-Join**: Handle parallel execution (when computations are independent)
+
+They compose naturally:
+```soma
+let f = (\x -> expensive x) in   -- f will be duplicated (DUP)
+let r1 = f a in                   -- } Independent computations
+let r2 = f b in                   -- } Can run in parallel (FORK)
+r1 + r2                           -- JOIN both results
+```
+
+The linearization pass inserts DUP for `f`. The parallelization pass sees `r1` and `r2` are independent and inserts FORK/JOIN.
+
+### Session 22 (2024)
+
+**Fork-Join Parallelism Implementation**
+
+This session completed the fork-join parallelism implementation, enabling automatic
+parallelization of independent computations via the `--parallel` compiler flag.
+
+#### Overview
+
+Fork-join parallelism spawns independent computations as tasks that can be stolen by
+worker threads. Unlike the previous speculative SUP-based approach, this is explicit
+and predictable: the compiler identifies single-argument function calls in the
+Circuit IR and emits fork/join operations.
+
+#### New Circuit IR Constructs
+
+Added `CFork` and `CJoin` to `Circuit/Ir.hs`:
+
+```haskell
+| CFork !Name !Type !CTerm !CTerm  -- Fork: taskName, resultType, computation, continuation
+| CJoin !Name !Type                -- Join: taskName, resultType
+```
+
+**CFork semantics:**
+- `CFork taskName ty computation body` spawns `computation` as a parallel task
+- Binds `taskName` to a task handle (not the result)
+- Continues with `body` immediately (non-blocking)
+
+**CJoin semantics:**
+- `CJoin taskName ty` blocks until task `taskName` completes
+- Returns the result value with type `ty`
+
+#### Compiler Flag: `--parallel`
+
+Added `--parallel` flag to enable fork-join parallelism:
+
+```bash
+# Compile with parallelization enabled
+somac build myfile.soma --parallel
+
+# Run with 64 worker threads and stats
+SOMA_PARALLEL=64 SOMA_PAR_STATS=1 ./myfile
+```
+
+**Changes to `Config/Options.hs`:**
+```haskell
+data Options = Options
+    { ...
+    , optionsParallel :: Bool  -- Enable automatic parallelization
+    }
+```
+
+The flag is threaded through `Build/Incremental.hs` to `Circuit/ToAlloy.hs` via
+`ParallelConfig`:
+
+```haskell
+data ParallelConfig = ParallelConfig
+    { pcEnabled :: Bool         -- Enable fork/join generation
+    , pcWorkThreshold :: Int    -- Minimum work estimate to fork
+    }
+```
+
+#### Alloy IR Operations
+
+Added `OpFork` and `OpJoin` to `Alloy/Ir.hs`:
+
+```haskell
+| OpFork AOperand AOperand      -- Fork: function, argument
+| OpJoin AOperand               -- Join: task handle
+```
+
+**OpFork** takes a function reference and a single argument, returning a task handle.
+**OpJoin** takes a task handle and returns the computed result.
+
+#### LLVM Codegen with Sequential Fallback
+
+The LLVM codegen in `Llvm/Gen/Op.hs` generates branching code that works correctly
+whether the parallel runtime is enabled or not:
+
+```llvm
+; Check if parallel runtime is active
+%par_enabled = call i32 @soma_par_enabled_export()
+%is_parallel = icmp ne i32 %par_enabled, 0
+br i1 %is_parallel, label %fork_parallel, label %fork_sequential
+
+fork_parallel:
+  ; Spawn task via runtime
+  %task = call ptr @soma_fork_direct(ptr @myfunction, i64 %arg)
+  %task_i64 = ptrtoint ptr %task to i64
+  br label %fork_merge
+
+fork_sequential:
+  ; Call function directly
+  %result = call i64 @myfunction(i64 %arg)
+  ; Encode result with tag bit: (result << 1) | 1
+  %shifted = shl i64 %result, 1
+  %tagged = add i64 %shifted, 1
+  br label %fork_merge
+
+fork_merge:
+  ; Phi selects between task handle and tagged inline result
+  %handle = phi i64 [ %task_i64, %fork_parallel ], [ %tagged, %fork_sequential ]
+```
+
+**OpJoin** decodes the result:
+
+```llvm
+; Check low bit: 1 = inline result, 0 = task handle
+%low_bit = and i64 %handle, 1
+%is_inline = icmp ne i64 %low_bit, 0
+br i1 %is_inline, label %join_inline, label %join_parallel
+
+join_inline:
+  ; Decode inline result: handle >> 1
+  %result = lshr i64 %handle, 1
+  br label %join_merge
+
+join_parallel:
+  ; Wait for task completion
+  %task_ptr = inttoptr i64 %handle to ptr
+  %result = call i64 @soma_join(ptr %task_ptr)
+  br label %join_merge
+
+join_merge:
+  %final = phi i64 [ %decoded, %join_inline ], [ %result, %join_parallel ]
+```
+
+This tagged-pointer encoding ensures:
+- **Zero overhead when parallel runtime is disabled**: Results computed inline
+- **Correct behavior with parallel runtime**: Tasks spawned and joined properly
+
+#### Runtime Changes
+
+**New function: `soma_par_enabled_export()`**
+
+The `soma_par_enabled()` function was `static inline` in the header, so LLVM couldn't
+call it. Added an exported wrapper in `soma_runtime.c`:
+
+```c
+int soma_par_enabled_export(void) {
+    return soma_par_enabled();
+}
+```
+
+**Fixed `soma_join()` to give workers a chance:**
+
+Previously, `soma_join()` would immediately execute a pending task inline, preventing
+actual parallelism. Added a brief yield loop:
+
+```c
+SomaValue soma_join(SomaTask* task) {
+    ...
+    if (state == TASK_PENDING) {
+        /* Give workers a brief chance to steal the task */
+        for (int i = 0; i < 100; i++) {
+            sched_yield();
+            state = atomic_load(&task->state);
+            if (state != TASK_PENDING) break;
+        }
+        
+        /* If still pending, run it ourselves */
+        if (state == TASK_PENDING) {
+            // ... execute inline
+        }
+    }
+    ...
+}
+```
+
+**Fixed double-counting in `tasks_spawned`:**
+
+The counter was being incremented in both `soma_par_spawn()` and `soma_fork_direct()`.
+Removed the duplicate increment in `soma_fork_direct()`.
+
+#### Circuit/ToAlloy.hs Changes
+
+When `pcEnabled = True`, the lowering pass identifies forkable calls and emits
+`CFork`/`CJoin` pairs:
+
+```haskell
+-- Check if a term is a simple forkable call (single-arg function call)
+extractForkableCall :: C.CTerm -> Maybe (C.Name, C.CTerm)
+extractForkableCall term =
+    let (fun, args) = collectArgs term
+    in case (fun, args) of
+        (C.CVar fnName _, [arg]) -> Just (fnName, arg)
+        (C.CRef fnName _, [arg]) -> Just (fnName, arg)
+        _ -> Nothing
+
+-- In lowerTerm for CLet:
+case extractForkableCall val of
+    Just (fnName, arg) | pcEnabled parallelConfig -> do
+        -- Emit fork
+        argOp <- lowerTerm env arg
+        let fnOp = OpVar fnName
+        taskHandle <- emitLetTmp ty (OpFork fnOp argOp)
+        
+        -- Lower body with task handle bound
+        let env' = extendOperand name (OpVar taskHandle) env
+        lowerTerm env' body
+        
+        -- Join will be emitted when the task handle is used
+    _ -> -- Normal lowering
+```
+
+#### Test Results
+
+Running with `SOMA_PARALLEL=64 SOMA_PAR_STATS=1`:
+
+```
+[soma_par] Workers: 64
+[soma_par] Tasks spawned: 2
+[soma_par] Tasks run: 2
+[soma_par] Tasks stolen: 2
+...
+[soma_par] Worker 8: run=1 stolen=1 attempts=460460
+[soma_par] Worker 11: run=1 stolen=1 attempts=267614
+```
+
+- **Tasks spawned: 2** - Two function calls were forked (`chainedClosures`, `nestedDupTest`)
+- **Tasks run: 2** - Both tasks were executed by workers
+- **Tasks stolen: 2** - Workers 8 and 11 stole and executed the tasks
+- **Result: 22** - Correct (matches sequential execution)
+
+#### Files Modified
+
+| File | Changes |
+|------|---------|
+| `Circuit/Ir.hs` | Added `CFork`, `CJoin` constructors |
+| `Circuit/Alloc.hs` | Handle `CFork`, `CJoin` in allocation analysis |
+| `Circuit/Escape.hs` | Handle `CFork`, `CJoin` in escape analysis |
+| `Circuit/ToAlloy.hs` | Emit `OpFork`/`OpJoin` for single-arg function calls |
+| `Config/Options.hs` | Added `--parallel` flag |
+| `Build/Incremental.hs` | Thread `enableParallel` through compilation |
+| `Main.hs` | Pass `optionsParallel` to build functions |
+| `Alloy/Ir.hs` | Added `OpFork`, `OpJoin` operations |
+| `Alloy/Subst.hs` | Handle new operations in substitution |
+| `Alloy/PromoteRefs.hs` | Handle new operations |
+| `Alloy/Uniqueness.hs` | Handle new operations |
+| `Alloy/Inline.hs` | Handle new operations |
+| `Llvm/Gen/Op.hs` | LLVM codegen for `OpFork`, `OpJoin` with sequential fallback |
+| `Llvm/Gen/CRuntime.hs` | Added `soma_par_enabled_export` declaration |
+| `Llvm/Instructions.hs` | Added `LlvmAnd` instruction |
+| `runtime/soma_runtime.c` | Added `soma_par_enabled_export`, fixed `soma_join` yield loop, fixed double-counting |
+
+#### Implementation Status Update
+
+The fork-join parallelism implementation is now complete:
+
+- [x] `CFork`/`CJoin` in Circuit IR
+- [x] `OpFork`/`OpJoin` in Alloy IR
+- [x] `--parallel` compiler flag
+- [x] LLVM codegen with sequential fallback
+- [x] Runtime `soma_fork_direct`, `soma_join` integration
+- [x] Tagged pointer encoding for inline vs task results
+- [x] Work stealing verification (tasks actually stolen and run by workers)
+
+#### Performance Characteristics
+
+| Mode | Fork Cost | Join Cost | Total Overhead |
+|------|-----------|-----------|----------------|
+| Sequential (`--parallel` not used) | N/A | N/A | Zero |
+| Parallel disabled at runtime | Branch + inline call | Branch + shift | ~2 instructions |
+| Parallel enabled | Task alloc + spawn | Wait + free | ~microseconds |
+
+The implementation achieves the design goal: **zero overhead when running sequentially**,
+with predictable parallel execution when enabled.
+
+### Session 22 (2024)
+
+**Multi-Argument Fork Support**
+
+This session extended the fork-join parallelism to support multi-argument function calls,
+not just single-argument calls.
+
+#### The Problem
+
+The initial fork implementation (Session 21) only handled single-argument function calls
+via `extractForkableCall`. Multi-argument calls like `computeLevel(5, 8)` or
+`treeCompute(left, levels - 1)` were being lowered sequentially despite being forkable.
+
+**Example from `test_parallel.soma`:**
+
+```soma
+def computeLevel(base: Int, depth: Int) -> Int = ...
+
+-- In main:
+let r1 = computeLevel(5, 8)  -- Was lowered sequentially!
+```
+
+The Circuit IR already represents this in curried form:
+```
+((computeLevel 5) 8)
+```
+
+But `extractForkableCall` only matched single-arg calls, missing these opportunities.
+
+#### The Solution: Multi-Arg OpFork
+
+**Changed `OpFork` signature in `Alloy/Ir.hs`:**
+
+```haskell
+-- Before:
+| OpFork AOperand AOperand      -- fn, single arg
+
+-- After:
+| OpFork AOperand [AOperand]    -- fn, list of args
+```
+
+**Changed CFork lowering in `Circuit/ToAlloy.hs`:**
+
+Instead of `extractForkableCall`, we now use `collectArgs` to uncurry any application:
+
+```haskell
+C.CFork taskName ty comp body -> do
+    let (fun, args) = collectArgs comp
+    case fun of
+        C.CRef fnName _ | not (null args) -> do
+            argOps <- mapM (lowerTerm env) args
+            taskHandle <- emitLetTmp ty (OpFork (OpVar fnName) argOps)
+            -- ... bind handle and lower body
+        _ -> -- fallback to sequential
+```
+
+**LLVM Codegen in `Llvm/Gen/Op.hs`:**
+
+- Single arg: uses `soma_fork_direct(fn, arg)` as before
+- Multiple args: uses new `soma_fork_multi(fn, args_array, num_args)`
+  - Stack-allocates array for args
+  - Copies i64-converted args into array
+  - Calls runtime with function pointer, args array, and count
+
+**Sequential fallback fix:**
+
+The sequential path was incorrectly calling functions with `i64` args when the
+actual function signature used `i32`. Fixed by using original `llArgs` (with
+correct types) instead of converted `i64Args`:
+
+```haskell
+-- Sequential path: call function directly with original args (not i64-converted)
+tell [LlvmLabel sequentialBlock]
+rawResult <- saveTmp (LlvmCall fnPtr resultTy llArgs) resultTy
+-- Convert result to i64 for encoding
+inlineResult <- case resultTy of
+    LlvmI64 -> pure rawResult
+    LlvmI32 -> saveTmp (LlvmSExt rawResult LlvmI64) LlvmI64
+    -- ... other type conversions
+```
+
+**Runtime changes in `soma_runtime.c`:**
+
+Added `soma_fork_multi`:
+
+```c
+SomaTask* soma_fork_multi(void* fn, SomaValue* args, int num_args) {
+    if (!soma_par_enabled()) return NULL;
+    
+    SomaTask* task = soma_task_alloc();
+    SomaValue* args_copy = malloc(num_args * sizeof(SomaValue));
+    memcpy(args_copy, args, num_args * sizeof(SomaValue));
+    
+    task->kind = TASK_KIND_MULTI;
+    task->fn.multi = fn;
+    task->env = args_copy;
+    task->arg = (SomaValue)num_args;
+    
+    soma_par_spawn(task);
+    return task;
+}
+```
+
+Added `TASK_KIND_MULTI` handling in `task_execute`:
+
+```c
+case TASK_KIND_MULTI: {
+    SomaValue* args = (SomaValue*)task->env;
+    int num_args = (int)task->arg;
+    void* fn = task->fn.multi;
+    SomaValue result;
+    switch (num_args) {
+        case 2: { typedef SomaValue (*Fn2)(SomaValue, SomaValue);
+                  result = ((Fn2)fn)(args[0], args[1]); break; }
+        case 3: { typedef SomaValue (*Fn3)(SomaValue, SomaValue, SomaValue);
+                  result = ((Fn3)fn)(args[0], args[1], args[2]); break; }
+        // ... cases 4, 5, 6
+    }
+    free(args);
+    return result;
+}
+```
+
+#### Updated Alloy Passes
+
+All passes updated for new `OpFork` signature:
+
+| File | Changes |
+|------|---------|
+| `Alloy/Uniqueness.hs` | Track uses of fn and all args |
+| `Alloy/PromoteRefs.hs` | Check fn and all args for variable refs |
+| `Alloy/Subst.hs` | Apply substitution to fn and all args |
+| `Alloy/Inline.hs` | Apply inlining substitution to fn and all args |
+| `Logging/Trees.hs` | Pretty print with comma-separated args |
+
+#### Current Status: Runtime Segfault
+
+The multi-arg fork implementation compiles correctly but has a runtime issue.
+When running with `SOMA_PARALLEL=64`, the program segfaults in `soma_fork_multi`
+after many successful calls.
+
+**Observed behavior:**
+- Many `soma_fork_multi` calls succeed (visible with debug tracing)
+- Crash occurs after ~50+ successful forks
+- Backtrace shows crash inside `soma_fork_multi`, called from `treeCompute`
+
+**Suspected causes:**
+1. **ABI mismatch**: Runtime expects `i64` args but functions are defined with `i32` params
+2. **Stack exhaustion**: Deep recursion with parallel tasks
+3. **Race condition**: Memory corruption in task allocation or work stealing
+
+The ABI mismatch is the most likely cause. Soma functions use `i32` for `Int` type,
+but the runtime's `task_execute` casts to functions expecting `SomaValue` (i64) args.
+On ARM64, this may work for some cases but cause corruption in others.
+
+**Potential fixes:**
+1. Change Soma's `Int` type to compile as `i64` instead of `i32`
+2. Generate wrapper trampolines that convert `i64` ↔ `i32`
+3. Store function signature info in tasks for proper dispatch
+
+#### Files Modified
+
+| File | Changes |
+|------|---------|
+| `Alloy/Ir.hs` | Changed `OpFork AOperand AOperand` to `OpFork AOperand [AOperand]` |
+| `Circuit/ToAlloy.hs` | Use `collectArgs` for multi-arg fork lowering |
+| `Llvm/Gen/Op.hs` | Multi-arg codegen with `soma_fork_multi`, fixed sequential path types |
+| `Llvm/Gen/CRuntime.hs` | Added `soma_fork_multi` declaration |
+| `Alloy/Uniqueness.hs` | Handle list of args in `OpFork` |
+| `Alloy/PromoteRefs.hs` | Handle list of args in `OpFork` |
+| `Alloy/Subst.hs` | Handle list of args in `OpFork` |
+| `Alloy/Inline.hs` | Handle list of args in `OpFork` |
+| `Logging/Trees.hs` | Pretty print multi-arg fork |
+| `runtime/soma_runtime.h` | Added `TASK_KIND_MULTI`, `SomaMultiFn`, `soma_fork_multi` |
+| `runtime/soma_runtime.c` | Implemented `soma_fork_multi`, `task_execute` for TASK_KIND_MULTI |
+
+#### Next Steps
+
+To fix the runtime segfault:
+
+1. **Investigate ABI mismatch**: The mismatch between Soma's `Int` (i32) and runtime's
+   `SomaValue` (i64) calling convention needs resolution. Either:
+   - Standardize on i64 for all values at the LLVM level
+   - Generate proper type-aware dispatch in the runtime
+
+2. **Add debugging**: More detailed tracing in `task_execute` to catch the exact
+   failure point
+
+3. **Test with fewer workers**: Try `SOMA_PARALLEL=1` to isolate concurrency issues
+
+### Session 23 (2024)
+
+**Goal**: Fix the multi-argument fork segfault from Session 22.
+
+#### Root Cause Analysis
+
+The segfault had two causes:
+
+1. **ABI Mismatch**: The runtime's `task_execute` was calling functions with `SomaValue` (i64)
+   arguments, but Soma functions are compiled with native types (e.g., `i32` for `Int`).
+   On ARM64, passing i64 values to functions expecting i32 parameters causes undefined behavior.
+
+2. **Stack Overflow**: Worker threads use the default pthread stack size (~2MB on Linux).
+   With 32+ threads and deep recursive parallel calls (like `treeCompute` with 6 levels),
+   the combined stack usage exceeded available memory, causing corruption.
+
+#### Solution: Trampoline Wrappers
+
+Instead of changing Soma's `Int` to i64 (which would affect all code), we generate
+**trampoline wrapper functions** at each fork site. The trampoline:
+
+1. Takes a pointer to an array of i64 (SomaValue) arguments
+2. Loads each argument and converts to the native type (truncate i64 → i32, inttoptr, etc.)
+3. Calls the actual function with correctly-typed arguments
+4. Converts the result back to i64 (SomaValue)
+
+**Generated LLVM IR example:**
+```llvm
+define i64 @"fork_trampoline_954"(ptr %args_ptr) {
+entry:
+  %arg_ptr_0 = getelementptr inbounds i64, ptr %args_ptr, i32 0
+  %arg_i64_0 = load i64, ptr %arg_ptr_0
+  %arg_0 = trunc i64 %arg_i64_0 to i32
+  %arg_ptr_1 = getelementptr inbounds i64, ptr %args_ptr, i32 1
+  %arg_i64_1 = load i64, ptr %arg_ptr_1
+  %arg_1 = trunc i64 %arg_i64_1 to i32
+  %call_result = call i32 @"treeCompute$m51113078"(i32 %arg_0, i32 %arg_1)
+  %result_i64 = sext i32 %call_result to i64
+  ret i64 %result_i64
+}
+```
+
+#### Implementation Details
+
+**Compiler changes (`Llvm/Gen/Op.hs`):**
+- `compileOp (OpFork ...)` now generates a unique trampoline function for each fork
+- Helper functions added: `generateTrampoline`, `generateArgLoads`, `generateArgConversion`, `generateResultConversion`
+- The trampoline is registered via `modify (\s -> s { irFunctions = fn : irFunctions s })`
+- `soma_fork_multi` is called with the trampoline pointer instead of the real function
+
+**Runtime changes:**
+- Renamed `TASK_KIND_MULTI` to `TASK_KIND_TRAMPOLINE`
+- Renamed `SomaMultiFn` to `SomaTrampolineFn` with signature `SomaValue (*)(SomaValue* args)`
+- Simplified `task_execute` - trampoline handles all type conversion
+- Added `pthread_attr_setstacksize(&attr, 512 * 1024)` for worker threads
+
+**Statistics fix:**
+- Added `tasks_run_inline` counter for tasks executed by the joining thread
+- Previously, tasks run inline in `soma_join` weren't counted, causing confusion
+
+#### Type Conversion Table
+
+| Soma Type | LLVM Type | i64 → Native | Native → i64 |
+|-----------|-----------|--------------|--------------|
+| Int       | i32       | trunc        | sext         |
+| Bool      | i1        | trunc        | zext         |
+| Char      | i8        | trunc        | sext         |
+| Ptr types | ptr       | inttoptr     | ptrtoint     |
+| SomaValue | i64       | (identity)   | (identity)   |
+
+#### Test Results
+
+```
+$ SOMA_PARALLEL=4 SOMA_PAR_STATS=1 ./test_parallel
+[soma_par] Workers: 4
+[soma_par] Tasks spawned: 4112
+[soma_par] Tasks run (workers): 72
+[soma_par] Tasks run (inline): 4040
+[soma_par] Tasks stolen: 373
+```
+
+The fix resolves the segfault for all tested thread counts (2, 4, 8, 16, 32).
+With 64 threads, stack space becomes a limiting factor (64 × 512KB = 32MB), 
+which may require OS-level tuning (`ulimit -s`) for very high thread counts.
+
+#### Files Modified
+
+| File | Changes |
+|------|---------|
+| `Llvm/Gen/Op.hs` | Trampoline generation for `OpFork`, added helper functions |
+| `runtime/soma_runtime.h` | Renamed `TASK_KIND_MULTI` → `TASK_KIND_TRAMPOLINE`, added `tasks_run_inline` stat |
+| `runtime/soma_runtime.c` | Simplified `task_execute`, 512KB worker stacks, inline task counting |
+
+#### Key Insight
+
+The trampoline approach is superior to changing Soma's `Int` to i64 because:
+1. **No code bloat**: Only parallel call sites get trampolines
+2. **Type safety**: Native types preserved throughout the codebase
+3. **Performance**: Non-parallel code remains optimal (no unnecessary widening)
+4. **Isolation**: The ABI translation is contained at fork boundaries

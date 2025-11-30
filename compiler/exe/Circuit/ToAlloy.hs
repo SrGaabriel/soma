@@ -137,9 +137,12 @@ estimateWorkFromType ty envSize slotInfo =
         nestedWork = closureSlots * 10
     in baseWork + envWork + nestedWork
 
--- | Work threshold for parallel reduction (matches runtime SOMA_WORK_THRESHOLD)
+{- | Work threshold for parallel reduction (matches runtime SOMA_WORK_THRESHOLD)
+NOTE: Set low (10) for testing. In production, should be higher or use
+smarter estimation that considers recursive call depth.
+-}
 parallelWorkThreshold :: Int
-parallelWorkThreshold = 50
+parallelWorkThreshold = 10
 
 -- | Check if work estimate justifies parallel reduction
 shouldUseParallel :: Int -> Bool
@@ -433,6 +436,67 @@ lowerTerm env term = case term of
         closureOp <- lowerTerm env closure
         result <- emitLetTmp ty (OpClosureGetEnv closureOp idx)
         pure (OpVar result)
+
+    -- Field projection from tagged values
+    C.CProject expr idx ty -> do
+        exprOp <- lowerTerm env expr
+        -- OpProject uses 1-based indexing for fields (0 is tag)
+        result <- emitLetTmp ty (OpProject exprOp (idx + 1))
+        pure (OpVar result)
+
+    -- Panic: emit call to soma_panic and unreachable
+    C.CPanic msg ty -> do
+        result <- emitLetTmp ty (OpPanic msg)
+        pure (OpVar result)
+
+    -- Fork: spawn a parallel task
+    -- Use collectArgs to extract the function and all arguments from curried applications
+    -- e.g., ((computeLevel 5) 8) becomes (computeLevel, [5, 8])
+    C.CFork taskName ty comp body -> do
+        let (fun, args) = collectArgs comp
+        case fun of
+            C.CRef fnName _ | not (null args) -> do
+                -- Direct function reference with arguments - can be forked
+                argOps <- mapM (lowerTerm env) args
+                taskHandle <- emitLetTmp ty (OpFork (OpVar fnName) argOps)
+                -- Store the task handle under a special name to mark it as a real fork
+                let forkMarker = "_forked_" ++ taskName
+                let env' =
+                        extendOperand taskName (OpVar forkMarker)
+                            $ extendOperand forkMarker (OpVar taskHandle) env
+                lowerTerm env' body
+            C.CVar fnName _ | not (null args) -> do
+                -- Variable reference (could be local function) with arguments
+                argOps <- mapM (lowerTerm env) args
+                taskHandle <- emitLetTmp ty (OpFork (OpVar fnName) argOps)
+                let forkMarker = "_forked_" ++ taskName
+                let env' =
+                        extendOperand taskName (OpVar forkMarker)
+                            $ extendOperand forkMarker (OpVar taskHandle) env
+                lowerTerm env' body
+            _ -> do
+                -- Not a simple function call - compute sequentially
+                compOp <- lowerTerm env comp
+                let env' = extendOperand taskName compOp env
+                lowerTerm env' body
+
+    -- Join: wait for a forked task and get result
+    -- If the task was forked (OpFork was emitted), call soma_join
+    -- If the task was computed sequentially (fallback), just return the value
+    C.CJoin taskName ty -> do
+        case lookupOperand taskName env of
+            Just taskOp -> do
+                -- Check if this is a real fork by looking for the marker
+                let forkMarker = "_forked_" ++ taskName
+                case lookupOperand forkMarker env of
+                    Just taskHandleOp -> do
+                        -- This came from OpFork - emit OpJoin to wait for the task
+                        result <- emitLetTmp ty (OpJoin taskHandleOp)
+                        pure (OpVar result)
+                    Nothing -> do
+                        -- Sequential fallback - the value is already computed
+                        pure taskOp
+            Nothing -> error $ "CJoin: unknown task " ++ taskName
   where
     countArityFromType :: Type -> Int
     countArityFromType (TArrow _ rest) = 1 + countArityFromType rest

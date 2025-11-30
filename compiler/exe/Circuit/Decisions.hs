@@ -1,6 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
 
-module Alloy.Decisions where
+module Circuit.Decisions where
 
 import Data.List (groupBy, nub, partition, sortOn)
 import qualified Data.Map.Strict as Map

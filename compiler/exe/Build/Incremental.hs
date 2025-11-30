@@ -20,6 +20,7 @@ import Build.Metadata (SerializableConstructorMetadata, projectMetadataConstruct
 import Build.Tarball (TarballContents (TarballContents, tcAlloyModules, tcMetadata), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
 import Circuit.Linearize (linearizeModule)
 import Circuit.Lower (lowerModule)
+import Circuit.Parallel (ParallelConfig (..), defaultParallelConfig, parallelizeModule)
 import qualified Circuit.Simplify as CS
 import Circuit.ToAlloy (lowerCircuitToAlloy)
 import Config.Options (Options (..))
@@ -90,15 +91,14 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
                 )
                 compiledDeps
     let (allErrors, checked) = checkModule packageName modInfo checkedDeps externalDeps externalInstances
+    putStrLn "Resolved AST:"
+    prettyPrintAst (checkedResolvedAst checked)
+    putStrLn $ "Module " ++ modName ++ " type checked"
 
     unless (null allErrors) $ do
         putStrLn $ "Errors while compiling module " ++ modName ++ ":"
         mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") allErrors
         exitFailure
-
-    putStrLn "Resolved AST:"
-    prettyPrintAst (checkedResolvedAst checked)
-    putStrLn $ "Module " ++ modName ++ " type checked"
 
     let resolvedAst = checkedResolvedAst checked
         types = checkedTypeMap checked
@@ -187,8 +187,9 @@ linkCompiledModulesCircuit ::
     String ->
     [CompiledModule] ->
     Map String SerializableConstructorMetadata ->
+    Bool -> -- enableParallel
     IO (AlloyModule, Map String SerializableConstructorMetadata)
-linkCompiledModulesCircuit packageName compiledModules externalConstructors = do
+linkCompiledModulesCircuit packageName compiledModules externalConstructors enableParallel = do
     putStrLn "\n=== Starting Circuit IR link-time phase ==="
 
     let fusedAst = createFusedAst [(cmResolvedAst cm, cmTypeMap cm, cmPublicSymbols cm) | cm <- compiledModules]
@@ -214,8 +215,15 @@ linkCompiledModulesCircuit packageName compiledModules externalConstructors = do
     putStrLn "=== Circuit IR (after linearization) ==="
     putStrLn $ prettyCircuit circuitLinearized
 
+    -- Parallelize (insert CFork/CJoin based on dependency analysis)
+    let parallelConfig = defaultParallelConfig{pcEnabled = enableParallel}
+        circuitParallelized = parallelizeModule parallelConfig circuitLinearized
+
+    putStrLn "=== Circuit IR (after parallelization) ==="
+    putStrLn $ prettyCircuit circuitParallelized
+
     -- Lower to Alloy MIR
-    let alloyFromCircuit = lowerCircuitToAlloy circuitLinearized
+    let alloyFromCircuit = lowerCircuitToAlloy circuitParallelized
         -- Expand intrinsics (convert + to IAdd, etc.)
         alloyExpanded = expandIntrinsicsModule alloyFromCircuit
 
@@ -277,7 +285,8 @@ processModulesIncremental sorted graph compileOptions = do
     (alloyOpt, allCtorsForCodeGen) <-
         if useCircuit
             then do
-                linkCompiledModulesCircuit inputName compiledModules externalConstructors
+                let enableParallel = optionsParallel compileOptions
+                linkCompiledModulesCircuit inputName compiledModules externalConstructors enableParallel
             else
                 linkCompiledModules inputName compiledModules externalConstructors externalAlloyModules
     let llvmIr = runLlvmCodeGenAndTranscribe alloyOpt

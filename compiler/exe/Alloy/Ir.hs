@@ -148,6 +148,23 @@ data AOp
       Like OpDupClosureProj1 but with parallel task spawning support.
       -}
       OpParClosureProj1 AOperand !Int !SlotInfo !Int
+    | {- | Panic: abort execution with an error message.
+      Calls soma_panic runtime function and is followed by unreachable.
+      -}
+      OpPanic !String
+    | {- | Fork: spawn a parallel task
+      OpFork taskFn taskArgs
+      - taskFn: function to execute (direct function reference)
+      - taskArgs: list of arguments for the function
+      Returns: task handle (opaque pointer) or encoded inline result if parallelism disabled
+      -}
+      OpFork AOperand [AOperand]
+    | {- | Join: wait for a forked task and get its result
+      OpJoin taskHandle
+      - taskHandle: the handle from OpFork
+      Returns: the computation's result
+      -}
+      OpJoin AOperand
     deriving (Generic, Show, Eq)
 
 data AEffect

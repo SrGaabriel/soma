@@ -1,0 +1,63 @@
+intrinsic def {+} :: Int -> Int -> Int
+intrinsic def {*} :: Int -> Int -> Int
+intrinsic def {-} :: Int -> Int -> Int
+intrinsic def {/} :: Int -> Int -> Int
+intrinsic def {==} :: a -> a -> Bool
+
+def computeLevel(base: Int, depth: Int) -> Int =
+    if depth == 0 then base else compose
+        let f = (\x ->
+            let a = x * 3 in
+            let b = a + base in
+            let c = b * 2 in
+            c + x
+        )
+        let r1 = f depth
+        let r2 = f (depth + 1)
+        let combined = r1 + r2
+        computeLevel combined (depth - 1)
+
+def treeCompute(x: Int, levels: Int) -> Int =
+    if levels == 0 then x else compose
+        let f = (\n -> n * x + n)
+        let left = f levels
+        let right = f (levels * 2)
+        let leftResult = treeCompute left (levels - 1)
+        let rightResult = treeCompute right (levels - 1)
+        leftResult + rightResult
+
+def chainedClosures(start: Int) -> Int =
+    let f1 = (\x -> x + start) in
+    let f2 = (\x -> x * 2) in
+    let f3 = (\x -> x + 10) in
+    let a1 = f1 1 in
+    let a2 = f1 2 in
+    let b1 = f2 a1 in
+    let b2 = f2 a2 in
+    let c1 = f3 b1 in
+    let c2 = f3 b2 in
+    c1 + c2
+
+def nestedDupTest(base: Int) -> Int = compose
+    let outer = (\a -> compose
+        let inner = (\b ->
+            let innermost = (\c -> a + b + c + base) in
+            let r1 = innermost 1 in
+            let r2 = innermost 2 in
+            r1 + r2
+        )
+        let s1 = inner 10
+        let s2 = inner 20
+        s1 + s2
+    )
+    let t1 = outer 100
+    let t2 = outer 200
+    t1 + t2
+
+def main :: Int =
+    let r1 = computeLevel 5 8 in
+    let r2 = treeCompute 3 6 in
+    let r3 = chainedClosures 50 in
+    let r4 = nestedDupTest 1000 in
+    let total = r1 + r2 + r3 + r4 in
+    total / 10000

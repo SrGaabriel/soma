@@ -184,6 +184,14 @@ linearizeTerm = \case
     CClosureGetEnv closure idx ty -> do
         closure' <- linearizeTerm closure
         pure $ CClosureGetEnv closure' idx ty
+    CProject expr idx ty -> do
+        expr' <- linearizeTerm expr
+        pure $ CProject expr' idx ty
+    CPanic msg ty -> pure $ CPanic msg ty
+    -- Fork/Join are inserted after linearization by the Parallel pass
+    -- They should not appear in input, but if they do, just recurse
+    CFork n ty comp body -> CFork n ty <$> linearizeTerm comp <*> linearizeTerm body
+    CJoin n ty -> pure $ CJoin n ty
 
 {- | Linearize field bindings in a case arm
 Returns updated field names with types and linearized body
@@ -375,6 +383,22 @@ substituteNth target n replacement _ty term =
     go idx (CClosureGetEnv closure envIdx ty) =
         let (closure', idx') = go idx closure
         in (CClosureGetEnv closure' envIdx ty, idx')
+    go idx (CProject expr projIdx ty) =
+        let (expr', idx') = go idx expr
+        in (CProject expr' projIdx ty, idx')
+    go idx (CPanic msg ty) = (CPanic msg ty, idx)
+    go idx (CFork n' forkTy comp body)
+        | n' == target =
+            let (comp', idx') = go idx comp
+            in (CFork n' forkTy comp' body, idx')
+        | otherwise =
+            let (comp', idx') = go idx comp
+                (body', idx'') = go idx' body
+            in (CFork n' forkTy comp' body', idx'')
+    go idx (CJoin n' joinTy)
+        | n' == target && idx == 0 = (replacement, -1)
+        | n' == target = (CJoin n' joinTy, idx - 1)
+        | otherwise = (CJoin n' joinTy, idx)
 
 -- | Substitute a variable with a term
 substituteVar :: Name -> CTerm -> Type -> CTerm -> CTerm
@@ -432,3 +456,11 @@ substituteVar target replacement _ty = go
             CDp1 repName _ -> repName ++ ".1"
             _ -> target -- fallback, keep original
     go (CClosureGetEnv closure envIdx envTy) = CClosureGetEnv (go closure) envIdx envTy
+    go (CProject expr projIdx projTy) = CProject (go expr) projIdx projTy
+    go (CPanic msg ty) = CPanic msg ty
+    go (CFork n forkTy comp body)
+        | n == target = CFork n forkTy (go comp) body
+        | otherwise = CFork n forkTy (go comp) (go body)
+    go (CJoin n joinTy)
+        | n == target = replacement
+        | otherwise = CJoin n joinTy

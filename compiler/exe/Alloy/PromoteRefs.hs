@@ -226,6 +226,9 @@ substOp env op =
         OpParProj1 handle workEst -> OpParProj1 (substOperand env handle) workEst
         OpParClosureProj0 handle envSz slotInfo workEst -> OpParClosureProj0 (substOperand env handle) envSz slotInfo workEst
         OpParClosureProj1 handle envSz slotInfo workEst -> OpParClosureProj1 (substOperand env handle) envSz slotInfo workEst
+        OpPanic msg -> OpPanic msg
+        OpFork fn args -> OpFork (substOperand env fn) (map (substOperand env) args)
+        OpJoin handle -> OpJoin (substOperand env handle)
 
 substEffect :: Subst -> AEffect -> AEffect
 substEffect env eff =
@@ -319,6 +322,9 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpParProj1 handle _ -> isVar r handle
             OpParClosureProj0 handle _ _ _ -> isVar r handle
             OpParClosureProj1 handle _ _ _ -> isVar r handle
+            OpPanic _ -> False
+            OpFork fn args -> isVar r fn || any (isVar r) args
+            OpJoin handle -> isVar r handle
 
     appearsInEff :: Name -> AEffect -> Bool
     appearsInEff r eff =

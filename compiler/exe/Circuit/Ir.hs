@@ -108,6 +108,30 @@ data CTerm
       Used to extract captured variables in lambda function bodies.
       -}
       CClosureGetEnv !CTerm !Int !Type
+    | {- | Project a field from a tagged value (record/tuple/constructor)
+      CProject expr fieldIndex resultType
+      -}
+      CProject !CTerm !Int !Type
+    | {- | Panic: abort execution with an error message
+      CPanic message resultType
+      The result type is needed for type consistency in expressions.
+      -}
+      CPanic !String !Type
+    | {- | Fork: spawn a computation as a parallel task
+      CFork taskName resultType computation continuation
+      - taskName: name for the task handle
+      - resultType: type of the computation's result
+      - computation: the expression to evaluate in parallel
+      - continuation: what to do after forking (doesn't wait)
+      -}
+      CFork !Name !Type !CTerm !CTerm
+    | {- | Join: wait for a forked task and get its result
+      CJoin taskName resultType
+      - taskName: the task handle from CFork
+      - resultType: type of the result
+      Blocks until the task completes, then returns its result.
+      -}
+      CJoin !Name !Type
     deriving (Show, Eq, Generic)
 
 -- | Binary operations on primitives
@@ -244,6 +268,10 @@ getTermType = \case
         OpNeg -> TConstructor (TypeConstructor "Int" KindStar)
     CClosure _ _ ty -> ty
     CClosureGetEnv _ _ ty -> ty
+    CProject _ _ ty -> ty
+    CPanic _ ty -> ty
+    CFork _ _ _ body -> getTermType body -- CFork continues with body
+    CJoin _ ty -> ty -- CJoin returns the result type
 
 -- ============================================================================
 -- Variable Analysis
@@ -274,6 +302,10 @@ countVarUses target = go
     go (CUnaryOp _ a) = go a
     go (CClosure _ captured _) = sum [if n == target then 1 else 0 | (n, _) <- captured]
     go (CClosureGetEnv closure _ _) = go closure
+    go (CProject expr _ _) = go expr
+    go (CPanic _ _) = 0
+    go (CFork n _ comp body) = go comp + if n == target then 0 else go body
+    go (CJoin n _) = if n == target then 1 else 0
 
 -- | Get all free variables in a term
 freeVars :: CTerm -> Set Name
@@ -303,6 +335,10 @@ freeVars = go Set.empty
     go bound (CClosure _ captured _) =
         Set.fromList [n | (n, _) <- captured, not (Set.member n bound)]
     go bound (CClosureGetEnv closure _ _) = go bound closure
+    go bound (CProject expr _ _) = go bound expr
+    go _ (CPanic _ _) = Set.empty
+    go bound (CFork n _ comp body) = go bound comp <> go (Set.insert n bound) body
+    go bound (CJoin n _) = if Set.member n bound then Set.empty else Set.singleton n
 
 -- | Get all free variables in a term with their types
 freeVarsWithTypes :: CTerm -> Map Name Type
@@ -332,6 +368,10 @@ freeVarsWithTypes = go Set.empty
     go bound (CClosure _ captured _) =
         Map.fromList [(n, ty) | (n, ty) <- captured, not (Set.member n bound)]
     go bound (CClosureGetEnv closure _ _) = go bound closure
+    go bound (CProject expr _ _) = go bound expr
+    go _ (CPanic _ _) = Map.empty
+    go bound (CFork n _ comp body) = go bound comp <> go (Set.insert n bound) body
+    go bound (CJoin n ty) = if Set.member n bound then Map.empty else Map.singleton n ty
 
 -- | Check if a term is linear (all variables used exactly once)
 isLinear :: CTerm -> Bool
@@ -430,6 +470,14 @@ classifyTerm = \case
     CClosure{} -> MaybeHeap
     -- Closure env access: use the result type annotation
     CClosureGetEnv _ _ ty -> classifyType ty
+    -- Field projection: use the result type annotation
+    CProject _ _ ty -> classifyType ty
+    -- Panic: never returns, but use the declared type for consistency
+    CPanic _ ty -> classifyType ty
+    -- Fork: the continuation determines allocation
+    CFork _ _ _ body -> classifyTerm body
+    -- Join: use the result type annotation
+    CJoin _ ty -> classifyType ty
 
 -- | Merge two allocation kinds (conservative: if either is MaybeHeap, result is MaybeHeap)
 mergeAllocKind :: AllocKind -> AllocKind -> AllocKind

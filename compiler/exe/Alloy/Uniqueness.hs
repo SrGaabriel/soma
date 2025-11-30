@@ -184,6 +184,9 @@ usesFromOp blk idx op =
         OpParProj1 handle _ -> singleUseIfVar handle (UseCallArg blk idx 0)
         OpParClosureProj0 handle _ _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
         OpParClosureProj1 handle _ _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpPanic _ -> Map.empty
+        OpFork fn args -> singleUseIfVar fn (UseCallArg blk idx 0) `Map.union` Map.unions [singleUseIfVar arg (UseCallArg blk idx (i + 1)) | (i, arg) <- zip [0 ..] args]
+        OpJoin handle -> singleUseIfVar handle (UseCallArg blk idx 0)
 
 usesFromEffect :: BlockName -> Int -> AEffect -> Map Name [UseKind]
 usesFromEffect blk idx eff =

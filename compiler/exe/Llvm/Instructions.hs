@@ -9,9 +9,13 @@ data LlvmInstruction
     = LlvmAdd LlvmType LlvmValue LlvmValue
     | LlvmSub LlvmType LlvmValue LlvmValue
     | LlvmMul LlvmType LlvmValue LlvmValue
+    | LlvmSDiv LlvmType LlvmValue LlvmValue
     | LlvmAShr LlvmType LlvmValue LlvmValue
+    | LlvmLShr LlvmType LlvmValue LlvmValue
     | LlvmShl LlvmType LlvmValue LlvmValue
+    | LlvmAnd LlvmType LlvmValue LlvmValue
     | LlvmCall LlvmValue LlvmType [LlvmValue]
+    | LlvmTailCall LlvmValue LlvmType [LlvmValue] -- tail call optimization
     | LlvmLoad LlvmValue
     | LlvmLoadTyped LlvmType LlvmValue -- explicit load type for opaque pointers
     | LlvmAlloca LlvmType (Maybe LlvmValue)
@@ -51,12 +55,26 @@ instance IR LlvmInstruction where
         "sub " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmMul typ lhs rhs) =
         "mul " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmSDiv typ lhs rhs) =
+        "sdiv " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmAShr typ lhs rhs) =
         "ashr " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmLShr typ lhs rhs) =
+        "lshr " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmShl typ lhs rhs) =
         "shl " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmAnd typ lhs rhs) =
+        "and " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmCall callee retType args) =
         "call "
+            ++ toLlvm retType
+            ++ " "
+            ++ toLlvm callee
+            ++ "("
+            ++ intercalate ", " (map (\v -> toLlvm (getValueType v) ++ " " ++ toLlvm v) args)
+            ++ ")"
+    toLlvm (LlvmTailCall callee retType args) =
+        "tail call "
             ++ toLlvm retType
             ++ " "
             ++ toLlvm callee

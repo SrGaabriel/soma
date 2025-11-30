@@ -90,6 +90,11 @@ substOp env = \case
         OpParClosureProj0 (sub handle) envSz slotInfo work
     OpParClosureProj1 handle envSz slotInfo work ->
         OpParClosureProj1 (sub handle) envSz slotInfo work
+    -- Panic (no operands to substitute)
+    OpPanic msg -> OpPanic msg
+    -- Fork/Join (Session 22)
+    OpFork fn args -> OpFork (sub fn) (map sub args)
+    OpJoin handle -> OpJoin (sub handle)
   where
     sub = substOperand env
 
@@ -178,6 +183,9 @@ opVars = \case
     OpParProj1 h _ -> vars h
     OpParClosureProj0 h _ _ _ -> vars h
     OpParClosureProj1 h _ _ _ -> vars h
+    OpPanic _ -> []
+    OpFork fn args -> vars fn ++ concatMap vars args
+    OpJoin h -> vars h
   where
     vars = operandVars
 

@@ -172,6 +172,9 @@ instance TreeShow AOp where
     treeShow (OpParProj1 handle workEst) = "par_proj1 " ++ treeShow handle ++ " work=" ++ show workEst
     treeShow (OpParClosureProj0 handle envSz slotInfo workEst) = "par_closure_proj0 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo ++ " work=" ++ show workEst
     treeShow (OpParClosureProj1 handle envSz slotInfo workEst) = "par_closure_proj1 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo ++ " work=" ++ show workEst
+    treeShow (OpPanic msg) = "panic \"" ++ msg ++ "\""
+    treeShow (OpFork fn args) = "fork(" ++ treeShow fn ++ ", " ++ intercalate ", " (map treeShow args) ++ ")"
+    treeShow (OpJoin handle) = "join(" ++ treeShow handle ++ ")"
 
 instance TreeShow AEffect where
     treeShow (EffStore dst v) = "store " ++ treeShow dst ++ " := " ++ treeShow v
@@ -331,6 +334,14 @@ prettyTerm = go 0
         "closure(" ++ liftedName ++ ", [" ++ intercalate ", " (map fst capturedVars) ++ "])"
     go d (CClosureGetEnv closure idx _) =
         "closure_get_env(" ++ go d closure ++ ", " ++ show idx ++ ")"
+    go d (CProject expr idx _) =
+        go d expr ++ "." ++ show idx
+    go _ (CPanic msg _) =
+        "panic \"" ++ msg ++ "\""
+    go d (CFork n _ comp body) =
+        "fork " ++ n ++ " = " ++ go d comp ++ " in " ++ go d body
+    go _ (CJoin n _) =
+        "join " ++ n
 
 -- | Pretty print binary operators
 prettyBinOp :: BinOp -> String
@@ -445,6 +456,8 @@ data NodeType
     | NUnaryOp UnaryOp -- Unary operation
     | NClosure Name [Name] -- Closure with lifted name and captured var names
     | NClosureGetEnv Int -- Closure env access with index
+    | NProject Int -- Field projection with index
+    | NPanic String -- Panic with message
     deriving (Show, Eq)
 
 -- | A node in the graph
@@ -600,6 +613,23 @@ buildGraph = \case
     CClosureGetEnv closure idx _ -> do
         closureId <- buildGraph closure
         addNode (NClosureGetEnv idx) [PNode closureId "closure", PFree "value"]
+    CProject expr idx _ -> do
+        exprId <- buildGraph expr
+        addNode (NProject idx) [PNode exprId "expr", PFree "value"]
+    CPanic msg _ -> do
+        addNode (NPanic msg) [PFree "unreachable"]
+    CFork n _ comp body -> do
+        compId <- buildGraph comp
+        forkId <- freshNodeId
+        bindVar n forkId
+        bodyId <- buildGraph body
+        modify $ \s -> s{gsNodes = GNode forkId (NLet n) [PNode compId "task", PNode bodyId "body"] : gsNodes s}
+        pure forkId
+    CJoin n _ -> do
+        mNode <- lookupVar n
+        case mNode of
+            Just nid -> pure nid
+            Nothing -> addNode (NVar n) [PFree "join"]
 
 -- | Pretty print a single node
 prettyNode :: GNode -> String
@@ -635,6 +665,8 @@ prettyNodeType = \case
     NUnaryOp op -> "UNOP(" ++ prettyUnaryOp op ++ ")"
     NClosure liftedName captures -> "CLOSURE(" ++ liftedName ++ ", [" ++ intercalate ", " captures ++ "])"
     NClosureGetEnv idx -> "CLOSURE_GET_ENV[" ++ show idx ++ "]"
+    NProject idx -> "PROJECT[" ++ show idx ++ "]"
+    NPanic msg -> "PANIC(\"" ++ msg ++ "\")"
 
 -- | Pretty print a port
 prettyPort :: Port -> String
