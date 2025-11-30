@@ -1,0 +1,10 @@
+// Test ADT pattern matching
+
+data Option a
+    | None
+    | Some
+        value :: a
+
+def unwrap :: Option Int -> Int
+    | (None) => 0
+    | (Some x) => x

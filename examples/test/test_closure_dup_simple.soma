@@ -1,0 +1,9 @@
+intrinsic def {+} :: Int -> Int -> Int
+
+def testSimpleDup(x: Int) -> Int =
+    let f = (\y -> x + y) in
+    let a = f 1 in
+    let b = f 2 in
+    a + b
+
+def main :: Int = testSimpleDup 100

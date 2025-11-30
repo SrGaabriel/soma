@@ -23,18 +23,37 @@ import Metal.Gen.Value (metallizeValue)
 import Metal.Lift (collectBinders)
 import Metal.Metadata (MetallicFunctionMetadata (..))
 import Project.Symbols (Symbol (..))
-import Syntax.Tree (Expr (..), exprChildren)
-import Typing.Currying (uncurryFunction)
-import Typing.Types (QualifiedType (Forall), Type)
+import Syntax.Tree (Expr (..), Modifier (..), exprChildren)
+import Typing.Types (QualifiedType (Forall), Type (..))
+
+-- | Get the arity (number of parameters) from a function body
+getBodyArity :: Expr -> Int
+getBodyArity (ExprLambda paramNames _ _) = length paramNames
+getBodyArity body@(ExprDerivedPatternMatch _) = patternMatchArity body
+getBodyArity _ = 0
+
+{- | Split a function type into parameter types and return type based on arity
+For example: splitFunctionType 1 (Int -> Int -> Int) = ([Int], Int -> Int)
+-}
+splitFunctionType :: Int -> Type -> ([Type], Type)
+splitFunctionType 0 ty = ([], ty)
+splitFunctionType n (TArrow argTy restTy) =
+    let (args, ret) = splitFunctionType (n - 1) restTy
+    in (argTy : args, ret)
+splitFunctionType _ ty = ([], ty) -- Type doesn't have enough arrows
 
 metallizeBinding :: Expr -> MetalGen ()
-metallizeBinding (ExprBindingDef dirtyName (Located _ (Forall typeVars constraints bindingTyp)) body _isImpl _span) = do
+metallizeBinding (ExprBindingDef dirtyName (Located _ (Forall typeVars constraints bindingTyp)) body _isImpl mods _span) = do
     let name = sanitizeName dirtyName
-    let (paramTypes, retType) = uncurryFunction bindingTyp
+    -- Get the actual arity from the body (lambda parameters or pattern match arity)
+    let arity = getBodyArity body
+    -- Split the type based on actual arity, not fully uncurrying
+    let (paramTypes, retType) = splitFunctionType arity bindingTyp
 
     (paramNames, metalBody) <- metallizeFnBody name body paramTypes retType
 
     let params = zip paramNames paramTypes
+    let isInline = ModInline `elem` mods
 
     let func =
             MetallicFunction
@@ -47,6 +66,8 @@ metallizeBinding (ExprBindingDef dirtyName (Located _ (Forall typeVars constrain
                         { mfmOriginalName = typeVars
                         , mfmConstraints = constraints
                         , mfmInstanceInfo = Nothing
+                        , mfmClosureInfo = Nothing
+                        , mfmIsInline = isInline
                         }
                 }
 

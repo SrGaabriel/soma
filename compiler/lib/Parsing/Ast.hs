@@ -8,7 +8,7 @@ import qualified Data.List.NonEmpty as NE
 import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
 import Lexing.Lexer (Token (..), TokenKind (..))
-import Parsing.Bindings (parseBinding)
+import Parsing.Bindings (parseBinding, parseInlineBinding)
 import Parsing.DataTypes (parseDataType)
 import Parsing.Errors (ParsingError (..))
 import Parsing.Imports (parseImport)
@@ -123,6 +123,7 @@ someDeclarations = go []
 
     syncTokens =
         [ TokenDef
+        , TokenInline
         , TokenData
         , TokenTrait
         , TokenInstance
@@ -137,6 +138,7 @@ parseDeclaration = do
     token <- peek
     case tokenKind token of
         TokenDef -> parseBinding True
+        TokenInline -> parseInlineBinding True
         TokenData -> parseDataType
         TokenTrait -> parseTrait
         TokenInstance -> parseInstance

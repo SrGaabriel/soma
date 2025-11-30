@@ -6,7 +6,7 @@ module Llvm.Gen.Op (
 
 import Alloy.Ir
 import Alloy.Naming (makeDictStructTypeName, qualifyWithModule)
-import Control.Monad (foldM)
+import Control.Monad (foldM, foldM_)
 import Control.Monad.Reader (asks)
 import Control.Monad.Writer.Class (MonadWriter (tell))
 import qualified Data.Map as Map
@@ -185,6 +185,442 @@ compileOp (OpDictCall dict methodIndex _methodName args) resultTy = do
             tell [LlvmCallStmt fnPtr resultTy compiledArgs]
             pure $ LlvmUndef LlvmVoid
         else saveTmp (LlvmCall fnPtr resultTy compiledArgs) resultTy
+
+-- Lazy duplication: create a SUP node that lazily clones when projections are used
+-- soma_dup(label, value) -> SUP handle
+compileOp (OpDup label value) resultTy = do
+    llValue <- compileOperand value
+    let valueTy = getValueType llValue
+    -- Cast value to i8* (void*) for the generic dup function
+    voidPtr <- case valueTy of
+        LlvmPointer _ -> saveTmp (LlvmBitcast llValue (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> do
+            -- For non-pointer types, we need to box them first
+            -- For now, just use inttoptr (the runtime will handle it)
+            saveTmp (LlvmIntToPtr llValue (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    let labelVal = LlvmLiteral LlvmI32 (show label)
+    -- Call soma_dup(label, value) -> returns SUP handle (i8*)
+    let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
+    supHandle <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [labelVal, voidPtr]) (LlvmPointer LlvmI8)
+    -- Cast to result type if needed
+    if resultTy == LlvmPointer LlvmI8
+        then pure supHandle
+        else saveTmp (LlvmBitcast supHandle resultTy) resultTy
+
+-- First projection from SUP handle: soma_proj0(handle) -> value
+compileOp (OpDupProj0 handle) resultTy = do
+    llHandle <- compileOperand handle
+    let handleTy = getValueType llHandle
+    -- Ensure handle is i8*
+    voidHandle <- case handleTy of
+        LlvmPointer LlvmI8 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmBitcast llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> saveTmp (LlvmIntToPtr llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    -- Call soma_proj0(handle) -> value (i8*)
+    let proj0Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj0\""
+    result <- saveTmp (LlvmCall proj0Func (LlvmPointer LlvmI8) [voidHandle]) (LlvmPointer LlvmI8)
+    -- Cast to result type
+    if resultTy == LlvmPointer LlvmI8
+        then pure result
+        else case resultTy of
+            LlvmPointer _ -> saveTmp (LlvmBitcast result resultTy) resultTy
+            _ -> saveTmp (LlvmPtrToInt result resultTy) resultTy
+
+-- Second projection from SUP handle: soma_proj1(handle) -> value
+compileOp (OpDupProj1 handle) resultTy = do
+    llHandle <- compileOperand handle
+    let handleTy = getValueType llHandle
+    -- Ensure handle is i8*
+    voidHandle <- case handleTy of
+        LlvmPointer LlvmI8 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmBitcast llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> saveTmp (LlvmIntToPtr llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    -- Call soma_proj1(handle) -> value (i8*)
+    let proj1Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj1\""
+    result <- saveTmp (LlvmCall proj1Func (LlvmPointer LlvmI8) [voidHandle]) (LlvmPointer LlvmI8)
+    -- Cast to result type
+    if resultTy == LlvmPointer LlvmI8
+        then pure result
+        else case resultTy of
+            LlvmPointer _ -> saveTmp (LlvmBitcast result resultTy) resultTy
+            _ -> saveTmp (LlvmPtrToInt result resultTy) resultTy
+
+-- Wrap a function pointer in a SomaClosure structure
+-- This is used before duplicating function-typed values so the runtime
+-- can detect closures (via NODE_CLOSURE tag) and clone them properly.
+-- soma_alloc_closure(func_ptr, arity=0, env_size=0) -> closure
+compileOp (OpWrapClosure funcOp) resultTy = do
+    llFunc <- compileOperand funcOp
+    let funcTy = getValueType llFunc
+    -- Ensure we have a pointer to the function
+    funcPtr <- case funcTy of
+        LlvmPointer _ -> pure llFunc
+        _ -> saveTmp (LlvmIntToPtr llFunc (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    -- Cast to i8* for the generic alloc_closure function
+    voidFuncPtr <- saveTmp (LlvmBitcast funcPtr (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    -- Call soma_alloc_closure(func_ptr, arity=0, env_size=0)
+    -- Arity 0 means it's a "thunk" or saturated closure wrapper
+    -- Env size 0 means no captured variables
+    let allocClosureFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_alloc_closure\""
+        arityVal = LlvmLiteral LlvmI8 "0"
+        envSizeVal = LlvmLiteral LlvmI16 "0"
+    closure <- saveTmp (LlvmCall allocClosureFunc (LlvmPointer LlvmI8) [voidFuncPtr, arityVal, envSizeVal]) (LlvmPointer LlvmI8)
+    -- Cast to result type if needed
+    if resultTy == LlvmPointer LlvmI8
+        then pure closure
+        else saveTmp (LlvmBitcast closure resultTy) resultTy
+
+-- Allocate a closure with captured environment
+-- soma_alloc_closure(func_ptr, arity, env_size) -> closure
+compileOp (OpAllocClosure funcOp arity envSize) resultTy = do
+    llFunc <- compileOperand funcOp
+    let funcTy = getValueType llFunc
+    -- Ensure we have a pointer to the function
+    funcPtr <- case funcTy of
+        LlvmPointer _ -> pure llFunc
+        _ -> saveTmp (LlvmIntToPtr llFunc (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    -- Cast to i8* for the generic alloc_closure function
+    voidFuncPtr <- saveTmp (LlvmBitcast funcPtr (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    -- Call soma_alloc_closure(func_ptr, arity, env_size)
+    let allocClosureFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_alloc_closure\""
+        arityVal = LlvmLiteral LlvmI8 (show arity)
+        envSizeVal = LlvmLiteral LlvmI16 (show envSize)
+    closure <- saveTmp (LlvmCall allocClosureFunc (LlvmPointer LlvmI8) [voidFuncPtr, arityVal, envSizeVal]) (LlvmPointer LlvmI8)
+    -- Cast to result type if needed
+    if resultTy == LlvmPointer LlvmI8
+        then pure closure
+        else saveTmp (LlvmBitcast closure resultTy) resultTy
+
+-- Get value from closure environment slot
+-- soma_closure_get_env(closure, index) -> value
+compileOp (OpClosureGetEnv closureOp idx) resultTy = do
+    llClosure <- compileOperand closureOp
+    -- Ensure closure is i8*
+    voidClosure <- case getValueType llClosure of
+        LlvmPointer LlvmI8 -> pure llClosure
+        LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> saveTmp (LlvmIntToPtr llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    -- Call soma_closure_get_env(closure, index) -> returns SomaValue (i64)
+    let getEnvFunc = LlvmGlobal LlvmI64 "\"soma_closure_get_env\""
+        idxVal = LlvmLiteral LlvmI16 (show idx)
+    result <- saveTmp (LlvmCall getEnvFunc LlvmI64 [voidClosure, idxVal]) LlvmI64
+    -- Cast SomaValue (i64) to result type
+    case resultTy of
+        LlvmPointer _ -> saveTmp (LlvmIntToPtr result resultTy) resultTy
+        _ -> do
+            -- Shift right by 3 to get the integer value from the tagged pointer
+            let shiftAmount = LlvmLiteral LlvmI64 "3"
+            shifted <- saveTmp (LlvmAShr LlvmI64 result shiftAmount) LlvmI64
+            saveTmp (LlvmTrunc shifted resultTy) resultTy
+
+-- OpClosureSetEnv should have been lowered to EffClosureSetEnv
+compileOp (OpClosureSetEnv{}) _ =
+    error "OpClosureSetEnv should have been lowered to EffClosureSetEnv"
+-- Get function pointer from closure
+compileOp (OpClosureGetFunc closureOp) resultTy = do
+    llClosure <- compileOperand closureOp
+    -- For now, we access the func_ptr field directly (offset 8 in closure header)
+    -- The closure structure is: { i8 tag, i8 arity, i16 env_size, ptr func_ptr }
+    voidClosure <- case getValueType llClosure of
+        LlvmPointer LlvmI8 -> pure llClosure
+        LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> saveTmp (LlvmIntToPtr llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    -- GEP to func_ptr field (index 4 in the padded struct)
+    let closureStructType = LlvmNamedType "SomaClosure"
+    funcPtrPtr <- saveTmp (LlvmGetElementPtr closureStructType voidClosure [LlvmLiteral LlvmI32 "0", LlvmLiteral LlvmI32 "4"] True) (LlvmPointer (LlvmPointer LlvmI8))
+    result <- saveTmp (LlvmLoad funcPtrPtr) (LlvmPointer LlvmI8)
+    -- Cast to result type if needed
+    if resultTy == LlvmPointer LlvmI8
+        then pure result
+        else saveTmp (LlvmBitcast result resultTy) resultTy
+
+-- Session 13: Specialized closure duplication operations
+
+-- OpDupClosure: Create a SUP node for closure duplication
+-- This is semantically equivalent to OpDup but carries slot type info for
+-- the specialized projections that follow.
+-- For now, we implement it the same as OpDup (the specialization is in the projections)
+compileOp (OpDupClosure label closureOp _slotInfo) resultTy = do
+    llClosure <- compileOperand closureOp
+    let closureTy = getValueType llClosure
+    -- Cast closure to i8* (void*) for the generic dup function
+    voidPtr <- case closureTy of
+        LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> saveTmp (LlvmIntToPtr llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    let labelVal = LlvmLiteral LlvmI32 (show label)
+    -- Call soma_dup(label, closure) -> returns SUP handle (i8*)
+    let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
+    supHandle <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [labelVal, voidPtr]) (LlvmPointer LlvmI8)
+    -- Cast to result type if needed
+    if resultTy == LlvmPointer LlvmI8
+        then pure supHandle
+        else saveTmp (LlvmBitcast supHandle resultTy) resultTy
+
+-- OpDupClosureProj0: First projection of closure SUP
+-- Returns the original closure. This is the "happy path" - no cloning needed.
+-- The slotInfo is carried for consistency but not used here since we return original.
+compileOp (OpDupClosureProj0 handleOp _envSize _slotInfo) resultTy = do
+    llHandle <- compileOperand handleOp
+    let handleTy = getValueType llHandle
+    -- Ensure handle is i8*
+    voidHandle <- case handleTy of
+        LlvmPointer LlvmI8 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmBitcast llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> saveTmp (LlvmIntToPtr llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    -- Call soma_proj0(handle) -> value (i8*)
+    let proj0Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj0\""
+    result <- saveTmp (LlvmCall proj0Func (LlvmPointer LlvmI8) [voidHandle]) (LlvmPointer LlvmI8)
+    -- Cast to result type
+    if resultTy == LlvmPointer LlvmI8
+        then pure result
+        else case resultTy of
+            LlvmPointer _ -> saveTmp (LlvmBitcast result resultTy) resultTy
+            _ -> saveTmp (LlvmPtrToInt result resultTy) resultTy
+
+-- OpDupClosureProj1: Second projection of closure SUP with HVM-style SUP propagation
+-- When both projections are accessed, we clone the closure and wrap closure-typed
+-- env slots in SUPs (using fresh labels) for lazy nested cloning.
+--
+-- For now, we use the existing soma_proj1 which does full cloning.
+-- TODO: In a future iteration, implement inline specialized cloning that:
+-- 1. Allocates a new closure
+-- 2. Copies header
+-- 3. For each env slot:
+--    - If isClosure: wrap in SUP with fresh label via soma_fresh_label + soma_dup
+--    - If not: direct copy
+compileOp (OpDupClosureProj1 handleOp envSize slotInfo) resultTy = do
+    llHandle <- compileOperand handleOp
+    let handleTy = getValueType llHandle
+    -- Ensure handle is i8*
+    voidHandle <- case handleTy of
+        LlvmPointer LlvmI8 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmBitcast llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> saveTmp (LlvmIntToPtr llHandle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+
+    -- For now, use the standard soma_proj1 which does full cloning
+    -- In the future, we'll generate inline specialized code here
+    if null [s | s@(_, True) <- slotInfo]
+        then do
+            -- No closure slots - standard cloning is fine
+            let proj1Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj1\""
+            result <- saveTmp (LlvmCall proj1Func (LlvmPointer LlvmI8) [voidHandle]) (LlvmPointer LlvmI8)
+            castResult result resultTy
+        else do
+            -- Has closure slots - use specialized inline cloning with SUP propagation
+            -- This is the HVM-style incremental cloning
+            result <- compileSpecializedClosureClone voidHandle envSize slotInfo
+            castResult result resultTy
+  where
+    castResult result ty
+        | ty == LlvmPointer LlvmI8 = pure result
+        | otherwise = case ty of
+            LlvmPointer _ -> saveTmp (LlvmBitcast result ty) ty
+            _ -> saveTmp (LlvmPtrToInt result ty) ty
+
+    -- Helper: Generate inline specialized closure cloning with SUP propagation
+    -- This implements the HVM DUP-LAM rule: nested closures become SUPs
+    compileSpecializedClosureClone :: LlvmValue -> Int -> SlotInfo -> IrGen LlvmValue
+    compileSpecializedClosureClone supHandleArg envSizeArg slotInfoArg = do
+        -- Call soma_proj1 for the base cloning, then post-process closure slots
+        let proj1Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj1\""
+        baseResult <- saveTmp (LlvmCall proj1Func (LlvmPointer LlvmI8) [supHandleArg]) (LlvmPointer LlvmI8)
+
+        -- Wrap closure-typed slots in SUPs for lazy nested cloning
+        let closureSlots = [idx | (idx, isClosure) <- slotInfoArg, isClosure, idx < envSizeArg]
+
+        -- Process closure slots - wrap each in a SUP with fresh label
+        foldM_ wrapSlotInSUP baseResult closureSlots
+
+        pure baseResult
+
+    wrapSlotInSUP :: LlvmValue -> Int -> IrGen LlvmValue
+    wrapSlotInSUP closure slotIdx = do
+        -- Calculate slot offset: 16 (header) + slotIdx * 8
+        let offset = 16 + slotIdx * 8
+        let offsetVal = LlvmLiteral LlvmI64 (show offset)
+        slotPtr <- saveTmp (LlvmGetElementPtr LlvmI8 closure [offsetVal] False) (LlvmPointer LlvmI8)
+
+        -- Load current value
+        currentVal <- saveTmp (LlvmLoadTyped (LlvmPointer LlvmI8) slotPtr) (LlvmPointer LlvmI8)
+
+        -- Generate fresh label
+        let freshLabelFunc = LlvmGlobal LlvmI32 "\"soma_fresh_label\""
+        freshLabel <- saveTmp (LlvmCall freshLabelFunc LlvmI32 []) LlvmI32
+
+        -- Create SUP for the nested closure
+        let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
+        supForSlot <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [freshLabel, currentVal]) (LlvmPointer LlvmI8)
+
+        -- Store SUP back into the slot
+        tell [LlvmStore supForSlot slotPtr]
+
+        pure closure
+
+-- OpClosureGetEnvDirect: Direct env slot access for original closures
+-- Single load, no SUP projection needed
+compileOp (OpClosureGetEnvDirect closureOp idx) resultTy = do
+    llClosure <- compileOperand closureOp
+    voidClosure <- case getValueType llClosure of
+        LlvmPointer LlvmI8 -> pure llClosure
+        LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> saveTmp (LlvmIntToPtr llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    -- Call soma_closure_get_env(closure, index) - same as OpClosureGetEnv
+    let getEnvFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_closure_get_env\""
+        idxVal = LlvmLiteral LlvmI16 (show idx)
+    result <- saveTmp (LlvmCall getEnvFunc (LlvmPointer LlvmI8) [voidClosure, idxVal]) (LlvmPointer LlvmI8)
+    -- Cast to result type if needed
+    if resultTy == LlvmPointer LlvmI8
+        then pure result
+        else case resultTy of
+            LlvmPointer _ -> saveTmp (LlvmBitcast result resultTy) resultTy
+            _ -> saveTmp (LlvmPtrToInt result resultTy) resultTy
+
+-- OpClosureGetEnvSUP: SUP env slot access for cloned closures
+-- The slot contains a SUP handle. We load it and project through using proj1
+-- (since the clone is the "second copy" of the original closure)
+compileOp (OpClosureGetEnvSUP closureOp idx) resultTy = do
+    llClosure <- compileOperand closureOp
+    voidClosure <- case getValueType llClosure of
+        LlvmPointer LlvmI8 -> pure llClosure
+        LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> saveTmp (LlvmIntToPtr llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    -- Load the SUP from the env slot
+    let getEnvFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_closure_get_env\""
+        idxVal = LlvmLiteral LlvmI16 (show idx)
+    supHandle <- saveTmp (LlvmCall getEnvFunc (LlvmPointer LlvmI8) [voidClosure, idxVal]) (LlvmPointer LlvmI8)
+    -- Project through the SUP using proj1 (clone is "second copy")
+    let proj1Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj1\""
+    result <- saveTmp (LlvmCall proj1Func (LlvmPointer LlvmI8) [supHandle]) (LlvmPointer LlvmI8)
+    -- Cast to result type if needed
+    if resultTy == LlvmPointer LlvmI8
+        then pure result
+        else case resultTy of
+            LlvmPointer _ -> saveTmp (LlvmBitcast result resultTy) resultTy
+            _ -> saveTmp (LlvmPtrToInt result resultTy) resultTy
+
+-- Session 19: Parallel projection operations
+-- These call soma_par_proj0/1 which may spawn the other branch as a parallel task
+-- when workers are hungry and the work estimate exceeds the threshold.
+
+-- OpParProj0: Parallel-aware first projection
+-- soma_par_proj0 takes (SomaValue, u32) -> SomaValue (i64)
+compileOp (OpParProj0 handleOp workEstimate) resultTy = do
+    llHandle <- compileOperand handleOp
+    let handleTy = getValueType llHandle
+    -- Convert handle to i64 (SomaValue)
+    i64Handle <- case handleTy of
+        LlvmI64 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
+    -- Call soma_par_proj0(handle, work_estimate)
+    let parProj0Func = LlvmGlobal LlvmI64 "\"soma_par_proj0\""
+        workVal = LlvmLiteral LlvmI32 (show workEstimate)
+    result <- saveTmp (LlvmCall parProj0Func LlvmI64 [i64Handle, workVal]) LlvmI64
+    -- Convert result back to expected type
+    case resultTy of
+        LlvmI64 -> pure result
+        LlvmPointer _ -> saveTmp (LlvmIntToPtr result resultTy) resultTy
+        _ -> saveTmp (LlvmTrunc result resultTy) resultTy
+
+-- OpParProj1: Parallel-aware second projection
+-- soma_par_proj1 takes (SomaValue, u32) -> SomaValue (i64)
+compileOp (OpParProj1 handleOp workEstimate) resultTy = do
+    llHandle <- compileOperand handleOp
+    let handleTy = getValueType llHandle
+    -- Convert handle to i64 (SomaValue)
+    i64Handle <- case handleTy of
+        LlvmI64 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
+    -- Call soma_par_proj1(handle, work_estimate)
+    let parProj1Func = LlvmGlobal LlvmI64 "\"soma_par_proj1\""
+        workVal = LlvmLiteral LlvmI32 (show workEstimate)
+    result <- saveTmp (LlvmCall parProj1Func LlvmI64 [i64Handle, workVal]) LlvmI64
+    -- Convert result back to expected type
+    case resultTy of
+        LlvmI64 -> pure result
+        LlvmPointer _ -> saveTmp (LlvmIntToPtr result resultTy) resultTy
+        _ -> saveTmp (LlvmTrunc result resultTy) resultTy
+
+-- OpParClosureProj0: Parallel-aware first projection for closures
+-- soma_par_proj0 takes (SomaValue, u32) -> SomaValue (i64)
+compileOp (OpParClosureProj0 handleOp _envSize _slotInfo workEstimate) resultTy = do
+    llHandle <- compileOperand handleOp
+    let handleTy = getValueType llHandle
+    -- Convert handle to i64 (SomaValue)
+    i64Handle <- case handleTy of
+        LlvmI64 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
+    -- Call soma_par_proj0(handle, work_estimate)
+    let parProj0Func = LlvmGlobal LlvmI64 "\"soma_par_proj0\""
+        workVal = LlvmLiteral LlvmI32 (show workEstimate)
+    result <- saveTmp (LlvmCall parProj0Func LlvmI64 [i64Handle, workVal]) LlvmI64
+    -- Convert result back to expected type
+    case resultTy of
+        LlvmI64 -> pure result
+        LlvmPointer _ -> saveTmp (LlvmIntToPtr result resultTy) resultTy
+        _ -> saveTmp (LlvmTrunc result resultTy) resultTy
+
+-- OpParClosureProj1: Parallel-aware second projection for closures
+-- Similar to OpDupClosureProj1 but uses parallel runtime functions
+-- soma_par_proj1 takes (SomaValue, u32) -> SomaValue (i64)
+compileOp (OpParClosureProj1 handleOp envSize slotInfo workEstimate) resultTy = do
+    llHandle <- compileOperand handleOp
+    let handleTy = getValueType llHandle
+    -- Convert handle to i64 (SomaValue)
+    i64Handle <- case handleTy of
+        LlvmI64 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
+
+    -- For closures with closure-typed slots, use specialized cloning with SUP propagation
+    -- For simple closures, use parallel proj1
+    if null [s | s@(_, True) <- slotInfo]
+        then do
+            -- No closure slots - use parallel proj1
+            let parProj1Func = LlvmGlobal LlvmI64 "\"soma_par_proj1\""
+                workVal = LlvmLiteral LlvmI32 (show workEstimate)
+            result <- saveTmp (LlvmCall parProj1Func LlvmI64 [i64Handle, workVal]) LlvmI64
+            castParResult result resultTy
+        else do
+            -- Has closure slots - use specialized cloning then parallel processing
+            result <- compileParallelClosureClone i64Handle envSize slotInfo workEstimate
+            castParResult result resultTy
+  where
+    castParResult result ty = case ty of
+        LlvmI64 -> pure result
+        LlvmPointer _ -> saveTmp (LlvmIntToPtr result ty) ty
+        _ -> saveTmp (LlvmTrunc result ty) ty
+
+    -- Specialized closure cloning with parallel awareness
+    compileParallelClosureClone :: LlvmValue -> Int -> SlotInfo -> Int -> IrGen LlvmValue
+    compileParallelClosureClone i64HandleArg envSizeArg slotInfoArg _workEst = do
+        -- Use parallel proj1 for the base cloning
+        let parProj1Func = LlvmGlobal LlvmI64 "\"soma_par_proj1\""
+            workVal = LlvmLiteral LlvmI32 (show workEstimate)
+        baseResultI64 <- saveTmp (LlvmCall parProj1Func LlvmI64 [i64HandleArg, workVal]) LlvmI64
+        -- Convert to ptr for slot manipulation
+        baseResult <- saveTmp (LlvmIntToPtr baseResultI64 (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+
+        -- Wrap closure-typed slots in SUPs for lazy nested cloning
+        let closureSlots = [idx | (idx, isClosure) <- slotInfoArg, isClosure, idx < envSizeArg]
+        foldM_ wrapParSlotInSUP baseResult closureSlots
+        -- Convert back to i64
+        saveTmp (LlvmPtrToInt baseResult LlvmI64) LlvmI64
+
+    wrapParSlotInSUP :: LlvmValue -> Int -> IrGen LlvmValue
+    wrapParSlotInSUP closure slotIdx = do
+        let offset = 16 + slotIdx * 8
+            offsetVal = LlvmLiteral LlvmI64 (show offset)
+        slotPtr <- saveTmp (LlvmGetElementPtr LlvmI8 closure [offsetVal] False) (LlvmPointer LlvmI8)
+        currentVal <- saveTmp (LlvmLoadTyped (LlvmPointer LlvmI8) slotPtr) (LlvmPointer LlvmI8)
+        let freshLabelFunc = LlvmGlobal LlvmI32 "\"soma_fresh_label\""
+        freshLabel <- saveTmp (LlvmCall freshLabelFunc LlvmI32 []) LlvmI32
+        let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
+        supForSlot <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [freshLabel, currentVal]) (LlvmPointer LlvmI8)
+        tell [LlvmStore supForSlot slotPtr]
+        pure closure
 
 cmpOpToLlvm :: ACmpOp -> String
 cmpOpToLlvm CEq = "eq"

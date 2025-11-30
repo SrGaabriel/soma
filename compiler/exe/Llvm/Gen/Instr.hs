@@ -31,8 +31,63 @@ compileInstr (IEffect (EffStoreIndex array index value)) = do
                 ptrTy -> deref ptrTy
     elemPtrReg <- saveTmp (LlvmGetElementPtr arrayPointeeTy llArray [llIndex] True) (getValueType llArray)
     tell [LlvmStore llValue elemPtrReg]
-compileInstr (IEffect (EffDrop _value)) =
-    pure ()
+compileInstr (IEffect (EffDrop value)) = do
+    -- ERA node: free heap-allocated value
+    -- Call runtime function that:
+    --   1. Checks if the value is heap-allocated (via type tag)
+    --   2. Recursively frees children
+    --   3. Frees the node itself
+    -- For stack values, the runtime function is a no-op
+    llValue <- compileOperand value
+    let valueTy = getValueType llValue
+    -- For pointer types, call the free function
+    -- For non-pointer types (stack allocated), skip
+    case valueTy of
+        LlvmPointer _ -> do
+            -- Cast to i8* (void*) for the generic free function
+            voidPtr <- saveTmp (LlvmBitcast llValue (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+            -- Call soma_era_free(ptr) - will recursively free heap nodes
+            let freeFunc = LlvmGlobal LlvmVoid "\"soma_era_free\""
+            tell [LlvmCallStmt freeFunc LlvmVoid [voidPtr]]
+        _ ->
+            -- Stack-allocated value, no free needed
+            pure ()
+compileInstr (IEffect (EffClosureSetEnv closure idx value)) = do
+    -- Set a closure environment slot
+    -- soma_closure_set_env(closure, index, value)
+    llClosure <- compileOperand closure
+    llValue <- compileOperand value
+    -- Ensure closure is i8*
+    voidClosure <- case getValueType llClosure of
+        LlvmPointer LlvmI8 -> pure llClosure
+        LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+        _ -> saveTmp (LlvmIntToPtr llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+
+    -- Tag the value to create a SomaValue (i64)
+    taggedValue <- case getValueType llValue of
+        LlvmPointer _ ->
+            -- Pointers have tag 0, just cast to i64
+            saveTmp (LlvmPtrToInt llValue LlvmI64) LlvmI64
+        LlvmI1 -> do
+            -- Booleans are TAG_BOOL (2) with payload 0 or 1
+            zext <- saveTmp (LlvmZExt llValue LlvmI64) LlvmI64
+            let shiftAmount = LlvmLiteral LlvmI64 "3"
+            shifted <- saveTmp (LlvmShl LlvmI64 zext shiftAmount) LlvmI64
+            let tag = LlvmLiteral LlvmI64 "2"
+            saveTmp (LlvmAdd LlvmI64 shifted tag) LlvmI64
+        _ -> do
+            -- Integers are TAG_INT (1)
+            -- Sign extend to i64, shift left by 3, then OR with tag 1
+            sext <- saveTmp (LlvmSExt llValue LlvmI64) LlvmI64
+            let shiftAmount = LlvmLiteral LlvmI64 "3"
+            shifted <- saveTmp (LlvmShl LlvmI64 sext shiftAmount) LlvmI64
+            let tag = LlvmLiteral LlvmI64 "1"
+            saveTmp (LlvmAdd LlvmI64 shifted tag) LlvmI64
+
+    -- Call soma_closure_set_env(closure, index, taggedValue)
+    let setEnvFunc = LlvmGlobal LlvmVoid "\"soma_closure_set_env\""
+        idxVal = LlvmLiteral LlvmI16 (show idx)
+    tell [LlvmCallStmt setEnvFunc LlvmVoid [voidClosure, idxVal, taggedValue]]
 
 compileTerminator :: ATerminator -> IrGen ()
 compileTerminator (ARet Nothing) = do

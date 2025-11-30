@@ -117,6 +117,7 @@ executable somac
     Alloy.DictionaryPass
     Alloy.ExpandIntrinsics
     Alloy.HoistAllocas
+    Alloy.Inline
     Alloy.Ir
     Alloy.Lower
     Alloy.MonadicInline
@@ -130,8 +131,17 @@ executable somac
     Build.Incremental
     Build.Metadata
     Build.Tarball
+    Circuit.Alloc
+    Circuit.Constants
+    Circuit.Escape
+    Circuit.Ir
+    Circuit.Linearize
+    Circuit.Lower
+    Circuit.Simplify
+    Circuit.ToAlloy
     Config.Options
     Llvm.Dependencies
+    Llvm.Gen.CRuntime
     Llvm.Gen.Core
     Llvm.Gen.Dictionary
     Llvm.Gen.Entry

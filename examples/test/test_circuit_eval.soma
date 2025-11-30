@@ -1,0 +1,4 @@
+// Simple lambda test
+
+def id :: Int -> Int
+    | x => x

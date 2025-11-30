@@ -36,7 +36,7 @@ compileFunction :: AlloyFunction -> IrGen ()
 compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
     name <-
         if afName == "main"
-            then pure afName
+            then pure "soma_main" -- Renamed so C runtime's main() can wrap it
             else do
                 modName <- asks moduleName
                 pure $ qualifyWithModule modName afName

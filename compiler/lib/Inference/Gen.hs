@@ -207,7 +207,7 @@ generateConstraints expr = case expr of
                     (csDeclaredConstraints valueConstraints ++ csDeclaredConstraints bodyConstraints)
         recordType expr bodyType
         return (Just bodyType, combinedConstraints)
-    ExprBindingDef _name (Located _ bindType) body _ _ -> do
+    ExprBindingDef _name (Located _ bindType) body _ _ _ -> do
         let Forall tyVars annCs annType = bindType
         skVars <- mapM (\(TypeVar tyName kind) -> freshSkolemVar tyName kind) tyVars
         let skSubst = Map.fromList (zip tyVars (map TSkolem skVars))

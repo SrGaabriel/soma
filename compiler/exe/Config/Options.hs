@@ -1,6 +1,7 @@
 module Config.Options (
     Options (..),
     CheckOptions (..),
+    CircuitOptions (..),
     OutputFormat (..),
     CommandLineError (..),
     formatError,
@@ -24,6 +25,17 @@ data Command
     | Check CheckOptions
     | Lex String
     | Parse String
+    | Circuit CircuitOptions
+    deriving (Show)
+
+data CircuitOptions = CircuitOptions
+    { circuitInput :: String
+    , circuitLinearize :: Bool
+    , circuitGraphFormat :: Bool
+    , circuitEval :: Bool
+    , circuitToAlloy :: Bool
+    , circuitToLlvm :: Bool
+    }
     deriving (Show)
 
 data OutputFormat
@@ -49,6 +61,7 @@ data Options = Options
     , optionsEmitLib :: Bool
     , optionsDeps :: [(String, String)]
     , optionsRun :: Bool
+    , optionsSkipCircuit :: Bool
     }
     deriving (Show)
 
@@ -59,8 +72,38 @@ commandParser =
             <> command "build" (info (Build <$> optionsParser) (progDesc "Build the program"))
             <> command "check" (info (Check <$> checkOptionsParser) (progDesc "Check for errors without building (outputs JSON)"))
             <> command "parse" (info (Parse <$> inputParser) (progDesc "Run the parser"))
+            <> command "circuit" (info (Circuit <$> circuitOptionsParser) (progDesc "Lower to Circuit IR (Interaction Nets)"))
         )
         <|> (Build <$> optionsParser)
+
+circuitOptionsParser :: Parser CircuitOptions
+circuitOptionsParser =
+    CircuitOptions
+        <$> inputParser
+        <*> switch
+            ( long "linearize"
+                <> short 'l'
+                <> help "Apply linearization pass (insert DUP/ERA nodes)"
+            )
+        <*> switch
+            ( long "graph"
+                <> short 'g'
+                <> help "Output in graph format (nodes and edges) instead of term format"
+            )
+        <*> switch
+            ( long "eval"
+                <> short 'e'
+                <> help "Evaluate the Circuit IR using interaction net reduction"
+            )
+        <*> switch
+            ( long "alloy"
+                <> short 'a'
+                <> help "Lower Circuit IR to Alloy MIR"
+            )
+        <*> switch
+            ( long "llvm"
+                <> help "Lower Circuit IR to LLVM IR (implies -l -a)"
+            )
 
 checkOptionsParser :: Parser CheckOptions
 checkOptionsParser =
@@ -172,6 +215,10 @@ optionsParser =
         <*> switch
             ( long "run"
                 <> help "Run the compiled program immediately"
+            )
+        <*> switch
+            ( long "skip-circuit"
+                <> help "Do not use Circuit IR pipeline with interaction nets and C runtime"
             )
 
 parseExtern :: String -> Either String (String, String)

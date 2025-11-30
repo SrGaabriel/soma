@@ -81,11 +81,17 @@ constraintType (Constraint t) = t
 data QualifiedType = Forall [TyVar] [Constraint] Type
     deriving (Generic, Show, Eq, Ord)
 
-intType, strType, boolType, byteType :: Type
+intType, strType, boolType, byteType, closurePtrType :: Type
 intType = TConstructor (TypeConstructor "Int" KindStar)
 strType = TConstructor (TypeConstructor "String" KindStar)
 boolType = TConstructor (TypeConstructor "Bool" KindStar)
 byteType = TConstructor (TypeConstructor "Byte" KindStar)
+
+{- | Opaque pointer to a SomaClosure runtime structure
+Used for uniform closure calling convention where all lifted functions
+take closure_self as their first parameter
+-}
+closurePtrType = TConstructor (TypeConstructor "ClosurePtr" KindStar)
 
 cleanQualified :: Type -> QualifiedType
 cleanQualified = Forall [] []

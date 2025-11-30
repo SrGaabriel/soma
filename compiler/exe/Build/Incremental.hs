@@ -8,15 +8,20 @@ import Alloy.CSE (cseModuleGlobal)
 import Alloy.Defunc (defunctionalizeModule)
 import Alloy.ExpandIntrinsics (expandIntrinsicsModule)
 import Alloy.HoistAllocas (hoistAllocasModule)
+import Alloy.Inline (defaultInlineConfig, inlineModule)
 import Alloy.Ir (AlloyModule (..))
 import Alloy.Lower (lowerAlloyModule)
 import Alloy.MonadicInline (monadicInlineModule)
 import Alloy.Monomorphize (monomorphizeModule)
 import Alloy.PromoteRefs (promoteRefsModule)
 import Alloy.ReaderRewrite (readerRewriteModule)
-import Alloy.Simplify (simplifyModule)
+import Alloy.Simplify (forwardClosureEnvValuesModule, simplifyModule)
 import Build.Metadata (SerializableConstructorMetadata, projectMetadataConstructors, projectMetadataInstances, projectMetadataPublicSymbols)
 import Build.Tarball (TarballContents (TarballContents, tcAlloyModules, tcMetadata), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
+import Circuit.Linearize (linearizeModule)
+import Circuit.Lower (lowerModule)
+import qualified Circuit.Simplify as CS
+import Circuit.ToAlloy (lowerCircuitToAlloy)
 import Config.Options (Options (..))
 import Control.Exception (SomeException, catch)
 import Control.Monad (unless)
@@ -30,11 +35,11 @@ import Format.Trees (prettyPrintAst, treeShow)
 import Inference.Core (InstanceEnv, TypeMap)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.Errors (printError)
-import Logging.Trees ()
+import Logging.Trees (prettyCircuit)
 import Metal.Gen.Entry (compileMetalModule)
 import Metal.Gen.Metadata (constructorMetadataToSerializable, extractConstructorMetadata, serializableToConstructorMetadata)
 import Metal.Lift (liftLambdas)
-import Metal.Module
+import Metal.Module (MetallicModule (..))
 import Metal.MonadNormalize (normalizeModule)
 import Project.Check (CheckedModule (..), checkModule)
 import Project.Extracts ()
@@ -149,12 +154,13 @@ linkCompiledModules packageName compiledModules externalConstructors externalAll
         -- alloyWithDicts = transformModuleWithDictionaries fusedAlloy
         alloyMono = monomorphizeModule fusedAlloy
         alloyDefunc = defunctionalizeModule alloyMono
-        alloyReader = readerRewriteModule alloyDefunc
+        alloyUserInlined = inlineModule defaultInlineConfig alloyDefunc
+        alloyReader = readerRewriteModule alloyUserInlined
         alloyInlined = monadicInlineModule alloyReader
         alloyHoisted = hoistAllocasModule alloyInlined
 
     let optimizeFixpoint m =
-            let step x = simplifyModule (promoteRefsModule (cseModuleGlobal x))
+            let step x = simplifyModule (forwardClosureEnvValuesModule (promoteRefsModule (cseModuleGlobal x)))
                 x' = step m
             in if x' == m then m else optimizeFixpoint x'
 
@@ -174,6 +180,78 @@ concatenateAlloyModules packageName modules =
         , amTypeClasses = concatMap amTypeClasses modules
         }
 
+{- | Link compiled modules using Circuit IR pipeline
+Goes through Metal -> Circuit -> linearize -> Alloy
+-}
+linkCompiledModulesCircuit ::
+    String ->
+    [CompiledModule] ->
+    Map String SerializableConstructorMetadata ->
+    IO (AlloyModule, Map String SerializableConstructorMetadata)
+linkCompiledModulesCircuit packageName compiledModules externalConstructors = do
+    putStrLn "\n=== Starting Circuit IR link-time phase ==="
+
+    let fusedAst = createFusedAst [(cmResolvedAst cm, cmTypeMap cm, cmPublicSymbols cm) | cm <- compiledModules]
+        localConstructors = extractConstructorMetadata fusedAst
+        allConstructors = Map.union externalConstructors (Map.map constructorMetadataToSerializable localConstructors)
+
+    -- Concatenate all Metal modules
+    let allMetalModules = map cmMetallicNormalized compiledModules
+        fusedMetal = concatenateMetalModules packageName allMetalModules
+
+    putStrLn "=== Metal HIR (fused) ==="
+    putStrLn $ treeShow fusedMetal
+
+    -- Lower to Circuit IR
+    let circuitModule = lowerModule fusedMetal
+        circuitSimplified = CS.simplifyModule circuitModule
+
+    putStrLn "=== Circuit IR (before linearization) ==="
+
+    -- Linearize (insert DUP/ERA nodes)
+    let circuitLinearized = linearizeModule circuitSimplified
+
+    putStrLn "=== Circuit IR (after linearization) ==="
+    putStrLn $ prettyCircuit circuitLinearized
+
+    -- Lower to Alloy MIR
+    let alloyFromCircuit = lowerCircuitToAlloy circuitLinearized
+        -- Expand intrinsics (convert + to IAdd, etc.)
+        alloyExpanded = expandIntrinsicsModule alloyFromCircuit
+
+    putStrLn "=== Alloy MIR (from Circuit) ==="
+    putStrLn $ treeShow alloyExpanded
+
+    -- Apply standard Alloy optimizations
+    let alloyMono = monomorphizeModule alloyExpanded
+        alloyDefunc = defunctionalizeModule alloyMono
+        alloyUserInlined = inlineModule defaultInlineConfig alloyDefunc
+        alloyReader = readerRewriteModule alloyUserInlined
+        alloyInlined = monadicInlineModule alloyReader
+        alloyHoisted = hoistAllocasModule alloyInlined
+
+    let optimizeFixpoint m =
+            let step x = simplifyModule (forwardClosureEnvValuesModule (promoteRefsModule (cseModuleGlobal x)))
+                x' = step m
+            in if x' == m then m else optimizeFixpoint x'
+
+    let alloyOpt = optimizeFixpoint alloyHoisted
+
+    putStrLn "=== Alloy MIR (optimized) ==="
+    putStrLn $ treeShow alloyOpt
+
+    return (alloyOpt, allConstructors)
+
+-- | Concatenate Metal modules
+concatenateMetalModules :: String -> [MetallicModule] -> MetallicModule
+concatenateMetalModules _name modules =
+    MetallicModule
+        { mmFunctions = concatMap mmFunctions modules
+        , mmTypes = concatMap mmTypes modules
+        , mmInstances = concatMap mmInstances modules
+        , mmTypeClasses = concatMap mmTypeClasses modules
+        }
+
 createFusedAst :: [(Expr, TypeMap, Map Symbol QualifiedType)] -> Expr
 createFusedAst allModules =
     let allExprs =
@@ -188,6 +266,7 @@ createFusedAst allModules =
 processModulesIncremental :: [String] -> ModuleGraph -> Options -> IO ()
 processModulesIncremental sorted graph compileOptions = do
     let inputName = fromMaybe "app" $ optionsName compileOptions
+        useCircuit = not $ optionsSkipCircuit compileOptions
 
     (externalDeps, externalInstances, externalConstructors, externalAlloyModules) <- processExternalDependencies (optionsDeps compileOptions)
 
@@ -195,10 +274,13 @@ processModulesIncremental sorted graph compileOptions = do
 
     putStrLn $ "\n✅ Compiled " ++ show (length compiledModules) ++ " modules separately"
 
-    (alloyOpt, allCtorsForCodeGen) <- linkCompiledModules inputName compiledModules externalConstructors externalAlloyModules
-
+    (alloyOpt, allCtorsForCodeGen) <-
+        if useCircuit
+            then do
+                linkCompiledModulesCircuit inputName compiledModules externalConstructors
+            else
+                linkCompiledModules inputName compiledModules externalConstructors externalAlloyModules
     let llvmIr = runLlvmCodeGenAndTranscribe alloyOpt
-
     generateOutputFile inputName llvmIr compileOptions compiledModules graph allCtorsForCodeGen
 
     putStrLn "✅ Build process completed."
@@ -299,16 +381,32 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                 putStrLn "Can't build executable for library"
                 exitFailure
             | not isLib -> do
+                let runtimeLibPath = "runtime/libsoma_runtime.a"
                 let llTemp = outputFile <.> "ll"
                 writeFile llTemp llvmIr
+
+                -- Check if runtime library exists
+                runtimeExists <- doesFileExist runtimeLibPath
+                unless runtimeExists $ do
+                    putStrLn $ "Warning: C runtime not found at " ++ runtimeLibPath
+                    putStrLn "Building runtime library..."
+                    catch
+                        (callProcess "make" ["-C", "runtime"])
+                        ( \(_ :: SomeException) -> do
+                            putStrLn "Failed to build runtime. Please run: cd runtime && make"
+                            exitFailure
+                        )
+
                 catch
                     ( do
-                        callProcess "clang" ["-o", outputFile, llTemp]
+                        -- Link against C runtime
+                        callProcess "clang" ["-o", outputFile, llTemp, runtimeLibPath]
                         putStrLn $ "Successfully compiled executable: " ++ outputFile
+                        putStrLn "(Linked with C runtime: libsoma_runtime.a)"
                     )
                     ( \(_ :: SomeException) -> do
                         putStrLn "clang not found. To compile manually:"
-                        putStrLn $ "clang -o " ++ outputFile ++ " " ++ llTemp
+                        putStrLn $ "clang -o " ++ outputFile ++ " " ++ llTemp ++ " " ++ runtimeLibPath
                         exitFailure
                     )
         ext -> do

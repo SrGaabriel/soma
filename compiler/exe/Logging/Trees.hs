@@ -1,10 +1,14 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Logging.Trees where
 
-import Alloy.Build
+import Alloy.Build hiding (Name)
+import Circuit.Ir
+import Control.Monad.State
 import Data.List (intercalate)
+import qualified Data.Map.Strict as Map
 import Format.Trees (TreeShow (..))
 import Metal.Expr
 import Metal.Function
@@ -56,6 +60,8 @@ instance TreeShow MetallicExpr where
     treeShow (MIf cond ifBranch elseBranch _) =
         "if " ++ treeShow cond ++ " then " ++ treeShow ifBranch ++ " else " ++ treeShow elseBranch
     treeShow (MPanic msg _) = "panic " ++ show msg
+    treeShow (MClosure liftedName captured _) =
+        "closure(" ++ liftedName ++ ", [" ++ commaSep (map fst captured) ++ "])"
 
 instance TreeShow MetallicComposeStmt where
     treeShow (MCBind name expr) = "bind " ++ name ++ " <- " ++ treeShow expr
@@ -107,8 +113,8 @@ instance TreeShow MetallicModule where
                 ++ map (("  " ++) . show) tcs
 
 instance TreeShow AConst where
-    treeShow (CInt i) = show i
-    treeShow (CBool b) = show b
+    treeShow (Alloy.Build.CInt i) = show i
+    treeShow (Alloy.Build.CBool b) = show b
     treeShow (CString s) = show s
     treeShow CUnit = "()"
 
@@ -147,11 +153,31 @@ instance TreeShow AOp where
     treeShow (OpMakeTuple xs) = "(" ++ commaSep (map treeShow xs) ++ ")"
     treeShow (OpGetDict className ty) = "get_dict " ++ className ++ " for " ++ treeShow ty
     treeShow (OpDictCall dict methodIdx method args) = "dict_call " ++ treeShow dict ++ "[" ++ show methodIdx ++ "]." ++ method ++ "(" ++ commaSep (map treeShow args) ++ ")"
+    treeShow (OpDup label val) = "dup[" ++ show label ++ "] " ++ treeShow val
+    treeShow (OpDupProj0 handle) = "proj0 " ++ treeShow handle
+    treeShow (OpDupProj1 handle) = "proj1 " ++ treeShow handle
+    treeShow (OpWrapClosure fn) = "wrap_closure " ++ treeShow fn
+    treeShow (OpAllocClosure fn arity envSz) = "alloc_closure " ++ treeShow fn ++ " arity=" ++ show arity ++ " env=" ++ show envSz
+    treeShow (OpClosureSetEnv closure idx val) = "closure_set_env " ++ treeShow closure ++ "[" ++ show idx ++ "] := " ++ treeShow val
+    treeShow (OpClosureGetEnv closure idx) = "closure_get_env " ++ treeShow closure ++ "[" ++ show idx ++ "]"
+    treeShow (OpClosureGetFunc closure) = "closure_get_func " ++ treeShow closure
+    -- Session 13: specialized closure duplication ops
+    treeShow (OpDupClosure label closure slotInfo) = "dup_closure[" ++ show label ++ "] " ++ treeShow closure ++ " slots=" ++ show slotInfo
+    treeShow (OpDupClosureProj0 handle envSz slotInfo) = "dup_closure_proj0 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo
+    treeShow (OpDupClosureProj1 handle envSz slotInfo) = "dup_closure_proj1 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo
+    treeShow (OpClosureGetEnvDirect closure idx) = "closure_get_env_direct " ++ treeShow closure ++ "[" ++ show idx ++ "]"
+    treeShow (OpClosureGetEnvSUP closure idx) = "closure_get_env_sup " ++ treeShow closure ++ "[" ++ show idx ++ "]"
+    -- Session 19: parallel projection ops
+    treeShow (OpParProj0 handle workEst) = "par_proj0 " ++ treeShow handle ++ " work=" ++ show workEst
+    treeShow (OpParProj1 handle workEst) = "par_proj1 " ++ treeShow handle ++ " work=" ++ show workEst
+    treeShow (OpParClosureProj0 handle envSz slotInfo workEst) = "par_closure_proj0 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo ++ " work=" ++ show workEst
+    treeShow (OpParClosureProj1 handle envSz slotInfo workEst) = "par_closure_proj1 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo ++ " work=" ++ show workEst
 
 instance TreeShow AEffect where
     treeShow (EffStore dst v) = "store " ++ treeShow dst ++ " := " ++ treeShow v
     treeShow (EffStoreIndex arr ix v) = "store " ++ treeShow arr ++ "[" ++ treeShow ix ++ "] := " ++ treeShow v
     treeShow (EffDrop a) = "drop " ++ treeShow a
+    treeShow (EffClosureSetEnv closure idx val) = "closure_set_env " ++ treeShow closure ++ "[" ++ show idx ++ "] := " ++ treeShow val
 
 instance TreeShow AInstr where
     treeShow (ILet n ty op) = n ++ " = " ++ treeShow op ++ " (" ++ treeShow ty ++ ")"
@@ -198,8 +224,9 @@ instance TreeShow ABlock where
                 else "(" ++ commaSep [n ++ ": " ++ treeShow t | (n, t) <- params] ++ ")"
 
 instance TreeShow AlloyFunction where
-    treeShow (AlloyFunction nm params ret entry blks constraints) =
-        "func "
+    treeShow (AlloyFunction nm params ret entry blks constraints isInline) =
+        (if isInline then "inline " else "")
+            ++ "func "
             ++ nm
             ++ "("
             ++ commaSep [n ++ ": " ++ treeShow t | (n, t) <- params]
@@ -222,3 +249,394 @@ instance TreeShow AlloyModule where
             ++ (if null dicts then "" else "-- Dictionaries:\n" ++ unlines (map (indent 2 . show) dicts) ++ "\n")
             ++ (if null tcs then "" else "-- TypeClasses:\n" ++ unlines (map (indent 2 . show) tcs) ++ "\n")
             ++ unlines (map (indent 2 . treeShow) fns)
+
+-- ============================================================================
+-- Circuit IR Pretty Printing
+-- ============================================================================
+
+-- | Pretty print a complete module
+prettyCircuit :: CModule -> String
+prettyCircuit m =
+    unlines
+        $ [ "-- Circuit Module: " ++ cmName m
+          , "-- Linearized: " ++ show (cmIsLinearized m)
+          , ""
+          , "-- Types"
+          ]
+            ++ map prettyTypeDef (cmTypes m)
+            ++ ["", "-- Functions"]
+            ++ map prettyFunction (cmFunctions m)
+
+-- | Pretty print a type definition
+prettyTypeDef :: CTypeDef -> String
+prettyTypeDef td =
+    "type "
+        ++ ctName td
+        ++ " = "
+        ++ intercalate " | " (map prettyCtor (ctConstructors td))
+  where
+    prettyCtor c = ccName c ++ "/" ++ show (ccArity c) ++ "#" ++ show (ccTag c)
+
+-- | Pretty print a function
+prettyFunction :: CFunction -> String
+prettyFunction f =
+    unlines
+        [ "@" ++ cfName f ++ " " ++ unwords (map fst (cfParams f)) ++ " ="
+        , "  " ++ prettyTerm (cfBody f)
+        ]
+
+-- | Pretty print a term
+prettyTerm :: CTerm -> String
+prettyTerm = go 0
+  where
+    go :: Int -> CTerm -> String
+    go _ (CVar n _) = n
+    go d (CLam n _ body) =
+        "λ" ++ n ++ ". " ++ go d body
+    go d (CApp f x _) =
+        "(" ++ go d f ++ " " ++ go d x ++ ")"
+    go d (CLet n _ val body) =
+        "let " ++ n ++ " = " ++ go d val ++ " in " ++ go d body
+    go d (CSup l a b _) =
+        "&" ++ show l ++ "{" ++ go d a ++ ", " ++ go d b ++ "}"
+    go d (CDup n _ l val body) =
+        "!" ++ n ++ " &" ++ show l ++ " = " ++ go d val ++ "; " ++ go d body
+    go _ (CDp0 n _) = n ++ "₀"
+    go _ (CDp1 n _) = n ++ "₁"
+    go _ CEra = "*"
+    go _ (CRef n _) = "@" ++ n
+    go _ (Circuit.Ir.CInt i) = show i
+    go _ (Circuit.Ir.CBool True) = "true"
+    go _ (Circuit.Ir.CBool False) = "false"
+    go _ (CStr s) = show s
+    go d (CTag tag fields _) =
+        "<" ++ show tag ++ concatMap (\f -> ", " ++ go d f) fields ++ ">"
+    go d (CCase scrut arms mdef _) =
+        "case "
+            ++ go d scrut
+            ++ " of { "
+            ++ intercalate "; " (map (prettyArm d) arms)
+            ++ maybe "" (\def -> "; _ -> " ++ go d def) mdef
+            ++ " }"
+      where
+        prettyArm dd (tag, fieldsWithTypes, body) =
+            "<" ++ show tag ++ concatMap (\(n, _) -> ", " ++ n) fieldsWithTypes ++ "> -> " ++ go dd body
+    go d (CBinOp op a b) =
+        "((" ++ prettyBinOp op ++ " " ++ go d a ++ ") " ++ go d b ++ ")"
+    go d (CCmpOp op a b) =
+        "((" ++ prettyCmpOp op ++ " " ++ go d a ++ ") " ++ go d b ++ ")"
+    go d (CUnaryOp op a) =
+        prettyUnaryOp op ++ go d a
+    go _ (CClosure liftedName capturedVars _) =
+        "closure(" ++ liftedName ++ ", [" ++ intercalate ", " (map fst capturedVars) ++ "])"
+    go d (CClosureGetEnv closure idx _) =
+        "closure_get_env(" ++ go d closure ++ ", " ++ show idx ++ ")"
+
+-- | Pretty print binary operators
+prettyBinOp :: BinOp -> String
+prettyBinOp = \case
+    OpAdd -> "+"
+    OpSub -> "-"
+    OpMul -> "*"
+    OpDiv -> "/"
+    OpMod -> "%"
+    OpAnd -> "&"
+    OpOr -> "|"
+    OpXor -> "^"
+    OpShl -> "<<"
+    OpShr -> ">>"
+
+-- | Pretty print comparison operators
+prettyCmpOp :: CmpOp -> String
+prettyCmpOp = \case
+    OpEq -> "=="
+    OpNe -> "!="
+    OpLt -> "<"
+    OpLe -> "<="
+    OpGt -> ">"
+    OpGe -> ">="
+
+-- | Pretty print unary operators
+prettyUnaryOp :: UnaryOp -> String
+prettyUnaryOp = \case
+    OpNot -> "!"
+    OpNeg -> "-"
+
+-- | Compact single-line representation
+prettyTermCompact :: CTerm -> String
+prettyTermCompact = prettyTerm
+
+-- | Multi-line indented representation for complex terms
+prettyTermIndented :: Int -> CTerm -> String
+prettyTermIndented = go
+  where
+    ind n = replicate (n * 2) ' '
+
+    go :: Int -> CTerm -> String
+    go n (CLet name _ val body) =
+        ind n
+            ++ "let "
+            ++ name
+            ++ " =\n"
+            ++ go (n + 1) val
+            ++ "\n"
+            ++ ind n
+            ++ "in\n"
+            ++ go (n + 1) body
+    go n (CLam name _ body) =
+        ind n
+            ++ "λ"
+            ++ name
+            ++ ".\n"
+            ++ go (n + 1) body
+    go n (CDup name _ l val body) =
+        ind n
+            ++ "!"
+            ++ name
+            ++ " &"
+            ++ show l
+            ++ " =\n"
+            ++ go (n + 1) val
+            ++ "\n"
+            ++ ind n
+            ++ "in\n"
+            ++ go (n + 1) body
+    go n (CCase scrut arms mdef _) =
+        ind n
+            ++ "case "
+            ++ prettyTerm scrut
+            ++ " of\n"
+            ++ concatMap (prettyArmIndented (n + 1)) arms
+            ++ maybe "" (\d -> ind (n + 1) ++ "_ ->\n" ++ go (n + 2) d ++ "\n") mdef
+    go n term = ind n ++ prettyTerm term
+
+    prettyArmIndented n (tag, fieldsWithTypes, body) =
+        ind n
+            ++ "<"
+            ++ show tag
+            ++ concatMap (\(name, _) -> ", " ++ name) fieldsWithTypes
+            ++ "> ->\n"
+            ++ go (n + 1) body
+            ++ "\n"
+
+-- ============================================================================
+-- Graph Format
+-- ============================================================================
+
+-- | Node types in the interaction net graph
+data NodeType
+    = NLam Name -- Lambda node with binder name
+    | NApp -- Application node
+    | NDup Label -- Duplication node with label
+    | NSup Label -- Superposition node with label
+    | NEra -- Erasure node
+    | NVar Name -- Variable reference
+    | NDp0 Name -- Dup projection 0
+    | NDp1 Name -- Dup projection 1
+    | NRef Name -- Function reference
+    | NInt Int -- Integer literal
+    | NBool Bool -- Boolean literal
+    | NStr String -- String literal
+    | NLet Name -- Let binding
+    | NTag Int -- Tagged value (constructor)
+    | NCase Int -- Case with n arms
+    | NBinOp BinOp -- Binary operation
+    | NCmpOp CmpOp -- Comparison operation
+    | NUnaryOp UnaryOp -- Unary operation
+    | NClosure Name [Name] -- Closure with lifted name and captured var names
+    | NClosureGetEnv Int -- Closure env access with index
+    deriving (Show, Eq)
+
+-- | A node in the graph
+data GNode = GNode
+    { gnId :: Int
+    , gnType :: NodeType
+    , gnPorts :: [Port]
+    }
+    deriving (Show, Eq)
+
+-- | A port connection
+data Port
+    = PNode Int String -- Connected to node ID at named port
+    | PFree String -- Free/unconnected port with name
+    deriving (Show, Eq)
+
+-- | State for graph building
+data GraphState = GraphState
+    { gsNextId :: Int
+    , gsNodes :: [GNode]
+    , gsVarMap :: Map.Map Name Int -- Variable name -> node ID that binds it
+    }
+
+type GraphM = State GraphState
+
+-- | Get a fresh node ID
+freshNodeId :: GraphM Int
+freshNodeId = do
+    s <- get
+    put s{gsNextId = gsNextId s + 1}
+    pure (gsNextId s)
+
+-- | Add a node to the graph
+addNode :: NodeType -> [Port] -> GraphM Int
+addNode ntype ports = do
+    nid <- freshNodeId
+    modify $ \s -> s{gsNodes = GNode nid ntype ports : gsNodes s}
+    pure nid
+
+-- | Register a variable binding
+bindVar :: Name -> Int -> GraphM ()
+bindVar name nid = modify $ \s -> s{gsVarMap = Map.insert name nid (gsVarMap s)}
+
+-- | Look up a variable
+lookupVar :: Name -> GraphM (Maybe Int)
+lookupVar name = gets (Map.lookup name . gsVarMap)
+
+-- | Pretty print a module in graph format
+prettyCircuitGraph :: CModule -> String
+prettyCircuitGraph m =
+    unlines
+        $ [ "-- Circuit Module: " ++ cmName m ++ " (Graph Format)"
+          , "-- Linearized: " ++ show (cmIsLinearized m)
+          , ""
+          ]
+            ++ concatMap (\f -> prettyFunctionGraph f ++ [""]) (cmFunctions m)
+
+-- | Pretty print a function in graph format
+prettyFunctionGraph :: CFunction -> [String]
+prettyFunctionGraph f =
+    ["=== Function: " ++ cfName f ++ " ==="]
+        ++ ["Parameters: " ++ unwords (map fst (cfParams f))]
+        ++ [""]
+        ++ prettyTermGraph (cfBody f)
+
+-- | Pretty print a term as a graph
+prettyTermGraph :: CTerm -> [String]
+prettyTermGraph term =
+    let initState = GraphState 0 [] Map.empty
+        (rootId, finalState) = runState (buildGraph term) initState
+        nodes = reverse (gsNodes finalState)
+    in ["Nodes:"]
+        ++ map prettyNode nodes
+        ++ ["", "Root: node_" ++ show rootId]
+
+-- | Build the graph from a term, returning the root node ID
+buildGraph :: CTerm -> GraphM Int
+buildGraph = \case
+    CVar n _ -> do
+        mNode <- lookupVar n
+        case mNode of
+            Just nid -> pure nid -- Reference to bound variable
+            Nothing -> addNode (NVar n) [PFree "value"]
+    CLam n _ body -> do
+        bodyId <- do
+            lamId <- freshNodeId -- Reserve ID for lambda
+            bindVar n lamId -- Bind parameter to lambda node
+            buildGraph body
+        addNode (NLam n) [PNode bodyId "body", PFree "param"]
+    CApp f x _ -> do
+        fId <- buildGraph f
+        xId <- buildGraph x
+        addNode NApp [PNode fId "func", PNode xId "arg", PFree "result"]
+    CLet n _ val body -> do
+        valId <- buildGraph val
+        letId <- freshNodeId
+        bindVar n letId
+        bodyId <- buildGraph body
+        modify $ \s -> s{gsNodes = GNode letId (NLet n) [PNode valId "value", PNode bodyId "body"] : gsNodes s}
+        pure letId
+    CSup l a b _ -> do
+        aId <- buildGraph a
+        bId <- buildGraph b
+        addNode (NSup l) [PNode aId "left", PNode bId "right", PFree "principal"]
+    CDup n _ l val body -> do
+        valId <- buildGraph val
+        dupId <- freshNodeId
+        bindVar n dupId
+        bodyId <- buildGraph body
+        modify $ \s -> s{gsNodes = GNode dupId (NDup l) [PNode valId "value", PFree "proj0", PFree "proj1", PNode bodyId "body"] : gsNodes s}
+        pure dupId
+    CDp0 n _ -> addNode (NDp0 n) [PFree "from_dup"]
+    CDp1 n _ -> addNode (NDp1 n) [PFree "from_dup"]
+    CEra -> addNode NEra []
+    CRef n _ -> addNode (NRef n) [PFree "value"]
+    Circuit.Ir.CInt i -> addNode (NInt i) [PFree "value"]
+    Circuit.Ir.CBool b -> addNode (NBool b) [PFree "value"]
+    CStr s -> addNode (NStr s) [PFree "value"]
+    CTag tag fields _ -> do
+        fieldIds <- mapM buildGraph fields
+        let fieldPorts = zipWith (\i fid -> PNode fid ("field" ++ show (i :: Integer))) [0 ..] fieldIds
+        addNode (NTag tag) (fieldPorts ++ [PFree "value"])
+    CCase scrut arms mdef _ -> do
+        scrutId <- buildGraph scrut
+        armIds <-
+            mapM
+                ( \(_, fieldsWithTypes, body) -> do
+                    caseId <- freshNodeId
+                    mapM_ (\(n, _) -> bindVar n caseId) fieldsWithTypes
+                    buildGraph body
+                )
+                arms
+        defId <- traverse buildGraph mdef
+        let armPorts = zipWith (\i aid -> PNode aid ("arm" ++ show (i :: Integer))) [0 ..] armIds
+        let defPort = maybe [] (\d -> [PNode d "default"]) defId
+        addNode (NCase (length arms)) ([PNode scrutId "scrutinee"] ++ armPorts ++ defPort)
+    CBinOp op a b -> do
+        aId <- buildGraph a
+        bId <- buildGraph b
+        addNode (NBinOp op) [PNode aId "left", PNode bId "right", PFree "result"]
+    CCmpOp op a b -> do
+        aId <- buildGraph a
+        bId <- buildGraph b
+        addNode (NCmpOp op) [PNode aId "left", PNode bId "right", PFree "result"]
+    CUnaryOp op a -> do
+        aId <- buildGraph a
+        addNode (NUnaryOp op) [PNode aId "operand", PFree "result"]
+    CClosure liftedName capturedVars _ -> do
+        -- For closures, we create captured var references
+        capturedIds <- mapM (\(n, _) -> lookupVar n >>= maybe (addNode (NVar n) [PFree "value"]) pure) capturedVars
+        let capturedPorts = zipWith (\i cid -> PNode cid ("capture" ++ show (i :: Integer))) [0 ..] capturedIds
+        addNode (NClosure liftedName (map fst capturedVars)) (capturedPorts ++ [PFree "value"])
+    CClosureGetEnv closure idx _ -> do
+        closureId <- buildGraph closure
+        addNode (NClosureGetEnv idx) [PNode closureId "closure", PFree "value"]
+
+-- | Pretty print a single node
+prettyNode :: GNode -> String
+prettyNode node =
+    "  node_"
+        ++ show (gnId node)
+        ++ ": "
+        ++ prettyNodeType (gnType node)
+        ++ " { "
+        ++ intercalate ", " (map prettyPort (gnPorts node))
+        ++ " }"
+
+-- | Pretty print a node type
+prettyNodeType :: NodeType -> String
+prettyNodeType = \case
+    NLam n -> "LAM(" ++ n ++ ")"
+    NApp -> "APP"
+    NDup l -> "DUP[" ++ show l ++ "]"
+    NSup l -> "SUP[" ++ show l ++ "]"
+    NEra -> "ERA"
+    NVar n -> "VAR(" ++ n ++ ")"
+    NDp0 n -> "DP0(" ++ n ++ ")"
+    NDp1 n -> "DP1(" ++ n ++ ")"
+    NRef n -> "REF(@" ++ n ++ ")"
+    NInt i -> "INT(" ++ show i ++ ")"
+    NBool b -> "BOOL(" ++ show b ++ ")"
+    NStr s -> "STR(" ++ show s ++ ")"
+    NLet n -> "LET(" ++ n ++ ")"
+    NTag t -> "TAG[" ++ show t ++ "]"
+    NCase n -> "CASE[" ++ show n ++ " arms]"
+    NBinOp op -> "BINOP(" ++ prettyBinOp op ++ ")"
+    NCmpOp op -> "CMPOP(" ++ prettyCmpOp op ++ ")"
+    NUnaryOp op -> "UNOP(" ++ prettyUnaryOp op ++ ")"
+    NClosure liftedName captures -> "CLOSURE(" ++ liftedName ++ ", [" ++ intercalate ", " captures ++ "])"
+    NClosureGetEnv idx -> "CLOSURE_GET_ENV[" ++ show idx ++ "]"
+
+-- | Pretty print a port
+prettyPort :: Port -> String
+prettyPort (PNode nid name) = name ++ "->node_" ++ show nid
+prettyPort (PFree name) = name ++ "->*"

@@ -45,6 +45,8 @@ convertType (TConstructor (TypeConstructor name _)) =
         "Short" -> LlvmI16
         "Unit" -> LlvmVoid
         "()" -> LlvmVoid
+        -- ClosurePtr is an opaque pointer to a SomaClosure runtime structure
+        "ClosurePtr" -> LlvmPointer LlvmI8
         _ ->
             --
             if nameDictSuffix `isSuffixOf` name

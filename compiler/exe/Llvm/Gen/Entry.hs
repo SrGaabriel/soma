@@ -7,6 +7,7 @@ module Llvm.Gen.Entry (
 ) where
 
 import Alloy.Ir (AlloyFunction (..), AlloyModule (AlloyModule, amDictionaries, amFunctions, amName))
+import Llvm.Gen.CRuntime (cRuntimeExternalDeclarations)
 import Llvm.Gen.Core (IrGen, IrGenEnv (..), globalDefaultState, irDependencies, irFunctions, namedDefaultEnv, runIrGen)
 import Llvm.Gen.Dictionary (compileDictionaries)
 import Llvm.Gen.Function (compileFunction)
@@ -43,4 +44,4 @@ runLlvmCodeGenAndTranscribe alloy@AlloyModule{amDictionaries = dicts, amFunction
 
         (typeStructDecls, _dictGlobals, _dictMap) = compileDictionaries (amName alloy) dicts allFunctions
         structDeclarations = unlines typeStructDecls
-    in structDeclarations ++ "\n" ++ baseIR
+    in cRuntimeExternalDeclarations ++ structDeclarations ++ "\n" ++ baseIR

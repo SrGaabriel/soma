@@ -12,6 +12,12 @@ type BlockName = String
 
 type FieldIndex = Int
 
+{- | Information about closure environment slots for specialized duplication.
+Each entry is (slotIndex, isClosureTyped) where isClosureTyped indicates
+whether the slot contains a closure that needs recursive duplication.
+-}
+type SlotInfo = [(Int, Bool)]
+
 data AlloyModule = AlloyModule
     { amName :: String
     , amFunctions :: [AlloyFunction]
@@ -34,6 +40,7 @@ data AlloyFunction = AlloyFunction
     , afEntry :: BlockName
     , afBlocks :: [ABlock]
     , afConstraints :: [Constraint]
+    , afIsInline :: Bool
     }
     deriving (Generic, Show, Eq)
 
@@ -87,12 +94,67 @@ data AOp
     | OpMakeTuple [AOperand] -- tuple aggregate literal (shape dictated by ILet type)
     | OpGetDict String Type -- get dictionary for typeclass + type
     | OpDictCall AOperand Int String [AOperand] -- call method through dictionary: dict, method index, method name, args
+    -- Lazy duplication operations (Interaction Net DUP/SUP)
+    | OpDup !Int AOperand -- create lazy duplication node: label, value -> SUP handle
+    | OpDupProj0 AOperand -- first projection from SUP handle (dp0)
+    | OpDupProj1 AOperand -- second projection from SUP handle (dp1)
+    -- Closure operations (for Path B runtime)
+    | OpWrapClosure AOperand -- wrap a function pointer in a SomaClosure (for DUP-LAM)
+    | OpAllocClosure AOperand !Int !Int -- allocate closure: func_ptr, arity, env_size
+    | OpClosureSetEnv AOperand !Int AOperand -- set env slot: closure, index, value
+    | OpClosureGetEnv AOperand !Int -- get env slot: closure, index
+    | OpClosureGetFunc AOperand -- get function pointer from closure
+    -- Session 13: Specialized closure duplication with HVM-style SUP propagation
+    -- These operations enable lazy cloning where nested closures in env slots
+    -- are wrapped in SUPs rather than eagerly cloned
+    | {- | Specialized DUP for closures: label, closure, slot_info
+      Creates a SUP handle like OpDup, but carries slot type info for specialized cloning
+      -}
+      OpDupClosure !Int AOperand !SlotInfo
+    | {- | First projection from closure SUP: sup_handle, env_size, slot_info
+      Returns original closure, marks state as "proj0 accessed"
+      -}
+      OpDupClosureProj0 AOperand !Int !SlotInfo
+    | {- | Second projection from closure SUP: sup_handle, env_size, slot_info
+      Creates clone with SUPs in closure-typed env slots (inline specialized code)
+      -}
+      OpDupClosureProj1 AOperand !Int !SlotInfo
+    | {- | Direct env slot access (for original closures): closure, index
+      Single load, no SUP projection needed
+      -}
+      OpClosureGetEnvDirect AOperand !Int
+    | {- | SUP env slot access (for cloned closures with closure-typed slots): closure, index
+      Loads SUP from slot, then projects through it (uses proj1 since clone is "second copy")
+      -}
+      OpClosureGetEnvSUP AOperand !Int
+    | -- Session 19: Parallel reduction support
+      -- These operations enable demand-driven parallel reduction of DUP projections
+
+      {- | Parallel-aware first projection: sup_handle, work_estimate
+      When workers are hungry and work_estimate >= threshold, may spawn the other branch
+      as a parallel task. Otherwise behaves like OpDupProj0.
+      -}
+      OpParProj0 AOperand !Int
+    | {- | Parallel-aware second projection: sup_handle, work_estimate
+      When workers are hungry and work_estimate >= threshold, may spawn the other branch
+      as a parallel task. Otherwise behaves like OpDupProj1.
+      -}
+      OpParProj1 AOperand !Int
+    | {- | Parallel-aware closure first projection: sup_handle, env_size, slot_info, work_estimate
+      Like OpDupClosureProj0 but with parallel task spawning support.
+      -}
+      OpParClosureProj0 AOperand !Int !SlotInfo !Int
+    | {- | Parallel-aware closure second projection: sup_handle, env_size, slot_info, work_estimate
+      Like OpDupClosureProj1 but with parallel task spawning support.
+      -}
+      OpParClosureProj1 AOperand !Int !SlotInfo !Int
     deriving (Generic, Show, Eq)
 
 data AEffect
     = EffStore AOperand AOperand -- store value at address
     | EffStoreIndex AOperand AOperand AOperand -- store at array[index] := value
-    | EffDrop AOperand
+    | EffDrop AOperand -- free heap-allocated value (ERA node)
+    | EffClosureSetEnv AOperand !Int AOperand -- set closure env slot: closure, index, value
     deriving (Generic, Show, Eq)
 
 data ATerminator

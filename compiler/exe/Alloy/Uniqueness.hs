@@ -164,6 +164,26 @@ usesFromOp blk idx op =
         OpGetDict _ _ -> Map.empty
         OpDictCall dict _ _ args ->
             mergeAll (singleUseIfVar dict (UseCallArg blk idx 0) : [singleUseIfVar a (UseCallArg blk idx (j + 1)) | (j, a) <- zip [0 ..] args])
+        OpDup _ val -> singleUseIfVar val (UseCallArg blk idx 0)
+        OpDupProj0 handle -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpDupProj1 handle -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpWrapClosure fn -> singleUseIfVar fn (UseCallArg blk idx 0)
+        OpAllocClosure fn _ _ -> singleUseIfVar fn (UseCallArg blk idx 0)
+        OpClosureSetEnv closure _ val ->
+            mergeAll [singleUseIfVar closure (UseCallArg blk idx 0), singleUseIfVar val (UseCallArg blk idx 1)]
+        OpClosureGetEnv closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
+        OpClosureGetFunc closure -> singleUseIfVar closure (UseCallArg blk idx 0)
+        -- Session 13: specialized closure duplication ops
+        OpDupClosure _ closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
+        OpDupClosureProj0 handle _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpDupClosureProj1 handle _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpClosureGetEnvDirect closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
+        OpClosureGetEnvSUP closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
+        -- Session 19: parallel projection ops
+        OpParProj0 handle _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpParProj1 handle _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpParClosureProj0 handle _ _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpParClosureProj1 handle _ _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
 
 usesFromEffect :: BlockName -> Int -> AEffect -> Map Name [UseKind]
 usesFromEffect blk idx eff =
@@ -177,6 +197,8 @@ usesFromEffect blk idx eff =
                 , singleUseIfVar v (UseStoreVal blk idx)
                 ]
         EffDrop a -> singleUseIfVar a (UseDrop blk idx)
+        EffClosureSetEnv closure _ val ->
+            mergeAll [singleUseIfVar closure (UseStorePtr blk idx), singleUseIfVar val (UseStoreVal blk idx)]
 
 data UseKind
     = UseCallArg BlockName Int Int

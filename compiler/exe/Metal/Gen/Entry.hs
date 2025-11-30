@@ -87,7 +87,7 @@ metallizeInstance (ExprInstanceDef constraintType methods _) =
     extractPolyTypeName _ = Nothing
 
     metallizeInstanceMethod :: String -> Expr -> MetalGen ()
-    metallizeInstanceMethod typeName bind@(ExprBindingDef name _ _ _ _) = do
+    metallizeInstanceMethod typeName bind@(ExprBindingDef name _ _ _ _ _) = do
         metallizeBinding bind
         let mangledName = makeInstanceMethodName name typeName
         funcs <- gets metalFunctions

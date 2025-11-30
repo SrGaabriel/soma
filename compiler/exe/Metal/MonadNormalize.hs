@@ -74,6 +74,8 @@ normalizeExpr e = evalState (go e) initialState
         thenE' <- go thenE
         elseE' <- go elseE
         pure (MIf cond' thenE' elseE' t)
+    go (MClosure liftedName capturedVars t) =
+        pure (MClosure liftedName capturedVars t)
 
     normComposeStmt :: MetallicComposeStmt -> NormalizeM MetallicComposeStmt
     normComposeStmt (MCBind n e') = do

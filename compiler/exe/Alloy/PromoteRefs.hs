@@ -207,6 +207,25 @@ substOp env op =
         OpMakeTuple xs -> OpMakeTuple (map (substOperand env) xs)
         OpGetDict className ty -> OpGetDict className ty
         OpDictCall dict methodIdx method args -> OpDictCall (substOperand env dict) methodIdx method (map (substOperand env) args)
+        OpDup label val -> OpDup label (substOperand env val)
+        OpDupProj0 handle -> OpDupProj0 (substOperand env handle)
+        OpDupProj1 handle -> OpDupProj1 (substOperand env handle)
+        OpWrapClosure fn -> OpWrapClosure (substOperand env fn)
+        OpAllocClosure fn arity envSz -> OpAllocClosure (substOperand env fn) arity envSz
+        OpClosureSetEnv closure idx val -> OpClosureSetEnv (substOperand env closure) idx (substOperand env val)
+        OpClosureGetEnv closure idx -> OpClosureGetEnv (substOperand env closure) idx
+        OpClosureGetFunc closure -> OpClosureGetFunc (substOperand env closure)
+        -- Session 13: specialized closure duplication ops
+        OpDupClosure label closure slotInfo -> OpDupClosure label (substOperand env closure) slotInfo
+        OpDupClosureProj0 handle envSz slotInfo -> OpDupClosureProj0 (substOperand env handle) envSz slotInfo
+        OpDupClosureProj1 handle envSz slotInfo -> OpDupClosureProj1 (substOperand env handle) envSz slotInfo
+        OpClosureGetEnvDirect closure idx -> OpClosureGetEnvDirect (substOperand env closure) idx
+        OpClosureGetEnvSUP closure idx -> OpClosureGetEnvSUP (substOperand env closure) idx
+        -- Session 19: parallel projection ops
+        OpParProj0 handle workEst -> OpParProj0 (substOperand env handle) workEst
+        OpParProj1 handle workEst -> OpParProj1 (substOperand env handle) workEst
+        OpParClosureProj0 handle envSz slotInfo workEst -> OpParClosureProj0 (substOperand env handle) envSz slotInfo workEst
+        OpParClosureProj1 handle envSz slotInfo workEst -> OpParClosureProj1 (substOperand env handle) envSz slotInfo workEst
 
 substEffect :: Subst -> AEffect -> AEffect
 substEffect env eff =
@@ -214,6 +233,7 @@ substEffect env eff =
         EffStore p v -> EffStore (substOperand env p) (substOperand env v)
         EffStoreIndex a i v -> EffStoreIndex (substOperand env a) (substOperand env i) (substOperand env v)
         EffDrop a -> EffDrop (substOperand env a)
+        EffClosureSetEnv closure idx val -> EffClosureSetEnv (substOperand env closure) idx (substOperand env val)
 
 substTerminator :: Subst -> ATerminator -> ATerminator
 substTerminator env t =
@@ -280,6 +300,25 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpMakeTuple xs -> any (isVar r) xs
             OpGetDict _ _ -> False
             OpDictCall dict _ _ args -> isVar r dict || any (isVar r) args
+            OpDup _ val -> isVar r val
+            OpDupProj0 handle -> isVar r handle
+            OpDupProj1 handle -> isVar r handle
+            OpWrapClosure fn -> isVar r fn
+            OpAllocClosure fn _ _ -> isVar r fn
+            OpClosureSetEnv closure _ val -> isVar r closure || isVar r val
+            OpClosureGetEnv closure _ -> isVar r closure
+            OpClosureGetFunc closure -> isVar r closure
+            -- Session 13: specialized closure duplication ops
+            OpDupClosure _ closure _ -> isVar r closure
+            OpDupClosureProj0 handle _ _ -> isVar r handle
+            OpDupClosureProj1 handle _ _ -> isVar r handle
+            OpClosureGetEnvDirect closure _ -> isVar r closure
+            OpClosureGetEnvSUP closure _ -> isVar r closure
+            -- Session 19: parallel projection ops
+            OpParProj0 handle _ -> isVar r handle
+            OpParProj1 handle _ -> isVar r handle
+            OpParClosureProj0 handle _ _ _ -> isVar r handle
+            OpParClosureProj1 handle _ _ _ -> isVar r handle
 
     appearsInEff :: Name -> AEffect -> Bool
     appearsInEff r eff =
@@ -287,6 +326,7 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             EffStore p v -> isVar r p || isVar r v
             EffStoreIndex a i v -> isVar r a || isVar r i || isVar r v
             EffDrop a -> isVar r a
+            EffClosureSetEnv closure _ val -> isVar r closure || isVar r val
 
     appearsInTerm :: Name -> ATerminator -> Bool
     appearsInTerm r t =

@@ -9,8 +9,11 @@ data LlvmInstruction
     = LlvmAdd LlvmType LlvmValue LlvmValue
     | LlvmSub LlvmType LlvmValue LlvmValue
     | LlvmMul LlvmType LlvmValue LlvmValue
+    | LlvmAShr LlvmType LlvmValue LlvmValue
+    | LlvmShl LlvmType LlvmValue LlvmValue
     | LlvmCall LlvmValue LlvmType [LlvmValue]
     | LlvmLoad LlvmValue
+    | LlvmLoadTyped LlvmType LlvmValue -- explicit load type for opaque pointers
     | LlvmAlloca LlvmType (Maybe LlvmValue)
     | LlvmICmp LlvmType String LlvmValue LlvmValue
     | LlvmGetElementPtr LlvmType LlvmValue [LlvmValue] Bool
@@ -24,6 +27,7 @@ data LlvmInstruction
     | LlvmPtrToInt LlvmValue LlvmType
     | LlvmIntToPtr LlvmValue LlvmType
     | LlvmIdentityCast LlvmValue
+    | LlvmAtomicRmw String LlvmValue LlvmValue String -- op, ptr, val, ordering (e.g., "add", ptr, 1, "seq_cst")
     | LlvmTodoInstruction
     deriving (Show, Eq)
 
@@ -47,6 +51,10 @@ instance IR LlvmInstruction where
         "sub " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmMul typ lhs rhs) =
         "mul " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmAShr typ lhs rhs) =
+        "ashr " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmShl typ lhs rhs) =
+        "shl " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmCall callee retType args) =
         "call "
             ++ toLlvm retType
@@ -57,6 +65,8 @@ instance IR LlvmInstruction where
             ++ ")"
     toLlvm (LlvmLoad ptrVal) =
         "load " ++ toLlvm (deref $ getValueType ptrVal) ++ ", ptr " ++ toLlvm ptrVal
+    toLlvm (LlvmLoadTyped loadTy ptrVal) =
+        "load " ++ toLlvm loadTy ++ ", ptr " ++ toLlvm ptrVal
     toLlvm (LlvmAlloca ty Nothing) =
         "alloca " ++ toLlvm ty
     toLlvm (LlvmAlloca ty (Just count)) =
@@ -107,6 +117,9 @@ instance IR LlvmInstruction where
     toLlvm (LlvmIdentityCast value) =
         let ty = getValueType value
         in "select i1 true, " ++ toLlvm ty ++ " " ++ toLlvm value ++ ", " ++ toLlvm ty ++ " " ++ toLlvm value
+    toLlvm (LlvmAtomicRmw op ptrVal val ordering) =
+        -- atomicrmw add ptr %ptr, i32 1 seq_cst
+        "atomicrmw " ++ op ++ " ptr " ++ toLlvm ptrVal ++ ", " ++ toLlvm (getValueType val) ++ " " ++ toLlvm val ++ " " ++ ordering
     toLlvm LlvmTodoInstruction = "todo"
 
 instance IR LlvmStatement where
