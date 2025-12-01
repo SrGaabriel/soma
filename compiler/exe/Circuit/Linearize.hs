@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
 
 {- | Linearization pass for Circuit IR.
 
@@ -274,182 +275,128 @@ buildDupChain origName ty uses body = do
         pure $ CDup dupName ty label (CVar src ty) inner'
     go _ _ b = pure b
 
--- | Substitute the nth occurrence (0-indexed) of a variable
+{- | Substitute the nth occurrence (0-indexed) of a variable.
+
+Uses State monad to track the occurrence index during traversal.
+This is binding-aware: occurrences under shadowing binders are skipped.
+-}
 substituteNth :: Name -> Int -> CTerm -> Type -> CTerm -> CTerm
 substituteNth target n replacement _ty term =
-    let (result, _) = go n term
-    in result
+    evalState (go term) n
   where
-    go :: Int -> CTerm -> (CTerm, Int)
-    go idx (CVar name varTy)
-        | name == target && idx == 0 = (replacement, -1)
-        | name == target = (CVar name varTy, idx - 1)
-        | otherwise = (CVar name varTy, idx)
-    go idx (CLam name lamTy b)
-        | name == target = (CLam name lamTy b, idx) -- Shadowed
-        | otherwise = let (b', idx') = go idx b in (CLam name lamTy b', idx')
-    go idx (CApp f x appTy) =
-        let (f', idx') = go idx f
-            (x', idx'') = go idx' x
-        in (CApp f' x' appTy, idx'')
-    go idx (CLet name letTy val b)
-        | name == target =
-            let (val', idx') = go idx val
-            in (CLet name letTy val' b, idx')
-        | otherwise =
-            let (val', idx') = go idx val
-                (b', idx'') = go idx' b
-            in (CLet name letTy val' b', idx'')
-    go idx (CSup l a b supTy) =
-        let (a', idx') = go idx a
-            (b', idx'') = go idx' b
-        in (CSup l a' b' supTy, idx'')
-    go idx (CDup name dupTy l val b)
-        | name == target =
-            let (val', idx') = go idx val
-            in (CDup name dupTy l val' b, idx')
-        | otherwise =
-            let (val', idx') = go idx val
-                (b', idx'') = go idx' b
-            in (CDup name dupTy l val' b', idx'')
-    go idx (CDp0 name dpTy)
-        | name == target && idx == 0 = (replacement, -1)
-        | name == target = (CDp0 name dpTy, idx - 1)
-        | otherwise = (CDp0 name dpTy, idx)
-    go idx (CDp1 name dpTy)
-        | name == target && idx == 0 = (replacement, -1)
-        | name == target = (CDp1 name dpTy, idx - 1)
-        | otherwise = (CDp1 name dpTy, idx)
-    go idx CEra = (CEra, idx)
-    go idx (CRef name refTy) = (CRef name refTy, idx)
-    go idx (CInt i) = (CInt i, idx)
-    go idx (CBool b) = (CBool b, idx)
-    go idx (CStr s) = (CStr s, idx)
-    go idx (CTag tag fields tagTy) =
-        let (fields', idx') = goFields idx fields
-        in (CTag tag fields' tagTy, idx')
-      where
-        goFields i [] = ([], i)
-        goFields i (f : fs) =
-            let (f', i') = go i f
-                (fs', i'') = goFields i' fs
-            in (f' : fs', i'')
-    go idx (CCase scrut arms mdef caseTy) =
-        let (scrut', idx') = go idx scrut
-            (arms', idx'') = goArms idx' arms
-            (mdef', idx''') = case mdef of
-                Nothing -> (Nothing, idx'')
-                Just d -> let (d', i) = go idx'' d in (Just d', i)
-        in (CCase scrut' arms' mdef' caseTy, idx''')
-      where
-        goArms i [] = ([], i)
-        goArms i ((tag, fieldsWithTypes, b) : rest)
-            | target `elem` map fst fieldsWithTypes =
-                let (rest', i') = goArms i rest
-                in ((tag, fieldsWithTypes, b) : rest', i')
-            | otherwise =
-                let (b', i') = go i b
-                    (rest', i'') = goArms i' rest
-                in ((tag, fieldsWithTypes, b') : rest', i'')
-    go idx (CBinOp op a b) =
-        let (a', idx') = go idx a
-            (b', idx'') = go idx' b
-        in (CBinOp op a' b', idx'')
-    go idx (CCmpOp op a b) =
-        let (a', idx') = go idx a
-            (b', idx'') = go idx' b
-        in (CCmpOp op a' b', idx'')
-    go idx (CUnaryOp op a) =
-        let (a', idx') = go idx a
-        in (CUnaryOp op a', idx')
-    go idx (CClosure liftedName capturedVars closureTy) =
-        -- Check if target is in captured vars
-        let (capturedVars', idx') = goCaptured idx capturedVars
-        in (CClosure liftedName capturedVars' closureTy, idx')
-      where
-        goCaptured i [] = ([], i)
-        goCaptured i ((n', t) : rest)
-            | n' == target && i == 0 =
-                -- Replace this capture with the replacement's name if it's a var
-                case replacement of
-                    CVar repName _ -> ((repName, t) : fst (goCaptured (-1) rest), -1)
-                    CDp0 repName _ -> ((repName ++ ".0", t) : fst (goCaptured (-1) rest), -1)
-                    CDp1 repName _ -> ((repName ++ ".1", t) : fst (goCaptured (-1) rest), -1)
-                    _ -> ((n', t) : fst (goCaptured (i - 1) rest), -1)
-            | n' == target = ((n', t) : fst (goCaptured (i - 1) rest), i - 1)
-            | otherwise =
-                let (rest', i') = goCaptured i rest
-                in ((n', t) : rest', i')
-    go idx (CClosureGetEnv closure envIdx ty) =
-        let (closure', idx') = go idx closure
-        in (CClosureGetEnv closure' envIdx ty, idx')
-    go idx (CProject expr projIdx ty) =
-        let (expr', idx') = go idx expr
-        in (CProject expr' projIdx ty, idx')
-    go idx (CPanic msg ty) = (CPanic msg ty, idx)
-    go idx (CFork n' ty comp body) =
-        let (comp', idx') = go idx comp
-            (body', idx'') = go idx' body
-        in (CFork n' ty comp' body', idx'')
-    go idx (CJoin n' ty) = (CJoin n' ty, idx)
+    -- Decrement counter and check if we should substitute
+    trySubst :: CTerm -> State Int CTerm
+    trySubst original = do
+        idx <- get
+        if idx == 0
+            then put (-1) >> pure replacement
+            else put (idx - 1) >> pure original
 
--- | Substitute a variable with a term
+    go :: CTerm -> State Int CTerm
+    go term' = case term' of
+        -- Variable references: check for match
+        CVar name varTy
+            | name == target -> trySubst (CVar name varTy)
+            | otherwise -> pure (CVar name varTy)
+        CDp0 name dpTy
+            | name == target -> trySubst (CDp0 name dpTy)
+            | otherwise -> pure (CDp0 name dpTy)
+        CDp1 name dpTy
+            | name == target -> trySubst (CDp1 name dpTy)
+            | otherwise -> pure (CDp1 name dpTy)
+        -- Binding forms: check for shadowing
+        CLam name lamTy body
+            | name == target -> pure (CLam name lamTy body) -- Shadowed
+            | otherwise -> CLam name lamTy <$> go body
+        CLet name letTy val body
+            | name == target -> CLet name letTy <$> go val <*> pure body -- Shadowed in body
+            | otherwise -> CLet name letTy <$> go val <*> go body
+        CDup name dupTy l val body
+            | name == target -> CDup name dupTy l <$> go val <*> pure body -- Shadowed
+            | otherwise -> CDup name dupTy l <$> go val <*> go body
+        CCase scrut arms mdef caseTy -> do
+            scrut' <- go scrut
+            arms' <- traverse goArm arms
+            mdef' <- traverse go mdef
+            pure $ CCase scrut' arms' mdef' caseTy
+          where
+            goArm (tag, fieldsWithTypes, body)
+                | target `elem` map fst fieldsWithTypes = pure (tag, fieldsWithTypes, body)
+                | otherwise = (tag,fieldsWithTypes,) <$> go body
+        -- CClosure: substitute in captured vars list
+        CClosure liftedName capturedVars closureTy -> do
+            capturedVars' <- goCaptured capturedVars
+            pure $ CClosure liftedName capturedVars' closureTy
+          where
+            goCaptured [] = pure []
+            goCaptured ((n', t) : rest)
+                | n' == target = do
+                    idx <- get
+                    if idx == 0
+                        then do
+                            put (-1)
+                            let newName = case replacement of
+                                    CVar repName _ -> repName
+                                    CDp0 repName _ -> repName ++ ".0"
+                                    CDp1 repName _ -> repName ++ ".1"
+                                    _ -> n'
+                            rest' <- goCaptured rest
+                            pure $ (newName, t) : rest'
+                        else do
+                            put (idx - 1)
+                            rest' <- goCaptured rest
+                            pure $ (n', t) : rest'
+                | otherwise = ((n', t) :) <$> goCaptured rest
+        -- All other nodes: traverse children using mapChildrenM
+        _ -> mapChildrenM go term'
+
+{- | Substitute a variable with a term.
+
+This is binding-aware: substitution stops at binders that shadow the target.
+Uses mapChildren for non-binding cases.
+-}
 substituteVar :: Name -> CTerm -> Type -> CTerm -> CTerm
 substituteVar target replacement _ty = go
   where
-    go (CVar n varTy)
-        | n == target = replacement
-        | otherwise = CVar n varTy
-    go (CLam n lamTy body)
-        | n == target = CLam n lamTy body
-        | otherwise = CLam n lamTy (go body)
-    go (CApp f x appTy) = CApp (go f) (go x) appTy
-    go (CLet n letTy val body)
-        | n == target = CLet n letTy (go val) body
-        | otherwise = CLet n letTy (go val) (go body)
-    go (CSup l a b supTy) = CSup l (go a) (go b) supTy
-    go (CDup n dupTy l val body)
-        | n == target = CDup n dupTy l (go val) body
-        | otherwise = CDup n dupTy l (go val) (go body)
-    go (CDp0 n dpTy)
-        | n == target = case replacement of
-            CDp0 m mTy -> CDp0 m mTy
-            CDp1 m mTy -> CDp1 m mTy
-            _ -> replacement
-        | otherwise = CDp0 n dpTy
-    go (CDp1 n dpTy)
-        | n == target = case replacement of
-            CDp0 m mTy -> CDp0 m mTy
-            CDp1 m mTy -> CDp1 m mTy
-            _ -> replacement
-        | otherwise = CDp1 n dpTy
-    go CEra = CEra
-    go (CRef n refTy) = CRef n refTy
-    go (CInt i) = CInt i
-    go (CBool b) = CBool b
-    go (CStr s) = CStr s
-    go (CTag tag fields tagTy) = CTag tag (map go fields) tagTy
-    go (CCase scrut arms mdef caseTy) =
-        CCase
-            (go scrut)
-            [(tag, fts, if target `elem` map fst fts then body else go body) | (tag, fts, body) <- arms]
-            (go <$> mdef)
-            caseTy
-    go (CBinOp op a b) = CBinOp op (go a) (go b)
-    go (CCmpOp op a b) = CCmpOp op (go a) (go b)
-    go (CUnaryOp op a) = CUnaryOp op (go a)
-    go (CClosure liftedName capturedVars closureTy) =
-        -- Substitute in captured vars list
-        let capturedVars' = [(if n == target then getReplacementName else n, t) | (n, t) <- capturedVars]
-        in CClosure liftedName capturedVars' closureTy
-      where
-        getReplacementName = case replacement of
-            CVar repName _ -> repName
-            CDp0 repName _ -> repName ++ ".0"
-            CDp1 repName _ -> repName ++ ".1"
-            _ -> target -- fallback, keep original
-    go (CClosureGetEnv closure envIdx envTy) = CClosureGetEnv (go closure) envIdx envTy
-    go (CProject expr projIdx projTy) = CProject (go expr) projIdx projTy
-    go (CPanic msg ty) = CPanic msg ty
-    go (CFork n ty comp body) = CFork n ty (go comp) (go body)
-    go (CJoin n ty) = CJoin n ty
+    go term = case term of
+        -- Variable references: substitute if matches
+        CVar n _
+            | n == target -> replacement
+        CDp0 n _
+            | n == target -> case replacement of
+                CDp0 m mTy -> CDp0 m mTy
+                CDp1 m mTy -> CDp1 m mTy
+                _ -> replacement
+        CDp1 n _
+            | n == target -> case replacement of
+                CDp0 m mTy -> CDp0 m mTy
+                CDp1 m mTy -> CDp1 m mTy
+                _ -> replacement
+        -- Binding forms: check for shadowing
+        CLam n lamTy body
+            | n == target -> CLam n lamTy body -- Shadowed
+            | otherwise -> CLam n lamTy (go body)
+        CLet n letTy val body
+            | n == target -> CLet n letTy (go val) body -- Shadowed in body
+            | otherwise -> CLet n letTy (go val) (go body)
+        CDup n dupTy l val body
+            | n == target -> CDup n dupTy l (go val) body -- Shadowed
+            | otherwise -> CDup n dupTy l (go val) (go body)
+        CCase scrut arms mdef caseTy ->
+            CCase
+                (go scrut)
+                [(tag, fts, if target `elem` map fst fts then body else go body) | (tag, fts, body) <- arms]
+                (go <$> mdef)
+                caseTy
+        -- CClosure: substitute in captured vars list
+        CClosure liftedName capturedVars closureTy ->
+            let capturedVars' = [(if n == target then getReplacementName else n, t) | (n, t) <- capturedVars]
+            in CClosure liftedName capturedVars' closureTy
+          where
+            getReplacementName = case replacement of
+                CVar repName _ -> repName
+                CDp0 repName _ -> repName ++ ".0"
+                CDp1 repName _ -> repName ++ ".1"
+                _ -> target -- fallback, keep original
+                -- All other terms: just recurse into children
+        _ -> mapChildren go term

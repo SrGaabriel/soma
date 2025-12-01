@@ -22,14 +22,13 @@ import Metal.Gen.Entry (compileMetalModule)
 import Metal.Lift (liftLambdas)
 import Metal.MonadNormalize (normalizeModule)
 import Project.Check (CheckedModule (..), checkModule, checkModulesInOrder)
-import Project.Extracts (extractSymbolImports)
+import Project.Extracts (extractIntrinsicNames, extractSymbolImports)
 import Project.Graph
 import Project.Module
 import Project.Parsing
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath (dropExtension, takeExtension, takeFileName)
-import Project.Extracts (extractIntrinsicNames)
 
 main :: IO ()
 main = do

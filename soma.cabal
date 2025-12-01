@@ -147,6 +147,7 @@ executable somac
     Llvm.Gen.Core
     Llvm.Gen.Dictionary
     Llvm.Gen.Entry
+    Llvm.Gen.Externals
     Llvm.Gen.Function
     Llvm.Gen.Instr
     Llvm.Gen.Intrinsics

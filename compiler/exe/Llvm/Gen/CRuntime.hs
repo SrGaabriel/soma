@@ -1,137 +1,206 @@
-{- | External C Runtime Declarations for Soma
-
-This module provides LLVM external declarations for linking against
-the C runtime library (libsoma_runtime.a).
-
-The INET runtime provides:
-- Parallel graph reduction with work-stealing
-- Lambda/closure support with shallow cloning
-- Tagged pointer representation for unboxed primitives
-- Chase-Lev deque for efficient parallelism
--}
 module Llvm.Gen.CRuntime (
-    cRuntimeExternalDeclarations,
-    cRuntimeDependencies,
-    cRuntimeStructs,
+    cruntimeInetInit,
+    cruntimeInetInitGlobals,
+    cruntimeInetFree,
+    cruntimeInetRegisterFunc,
+    cruntimeInetAlloc,
+    cruntimeInetSet,
+    cruntimeInetGet,
+    cruntimeInetSubst,
+    cruntimeInetNumExt,
+    cruntimeInetLam,
+    cruntimeInetApp,
+    cruntimeInetOpr,
+    cruntimeInetRef,
+    cruntimeInetCon,
+    cruntimeInetSup,
+    cruntimeInetDup,
+    cruntimeInetClosure,
+    cruntimeInetCloneClosure,
+    cruntimeInetClosureGetEnv,
+    cruntimeInetReduce,
+    cruntimeInetGetNumExt,
+    cruntimeInetPrintTerm,
+    cruntimeInetPrintStats,
+    cruntimeGInet,
+    cruntimeGInetTm,
+    cruntimeSomaPoolInit,
+    cruntimeSomaPoolCleanup,
+    cruntimeSomaDup,
+    cruntimeSomaProj0,
+    cruntimeSomaProj1,
+    cruntimeSomaParProj0,
+    cruntimeSomaParProj1,
+    cruntimeSomaForkDirect,
+    cruntimeSomaForkClosure,
+    cruntimeSomaForkMulti,
+    cruntimeSomaJoin,
+    cruntimeSomaParEnabledExport,
+    cruntimeSomaAllocClosure,
+    cruntimeSomaClosureSetEnv,
+    cruntimeSomaClosureGetEnv,
+    cruntimeSomaCloneClosure,
+    cruntimeSomaEraFree,
+    cruntimeSomaFreshLabel,
+    cruntimeSomaPoolAllocSup,
+    cruntimeSomaPoolAllocClosure,
+    cruntimeSomaPoolFreeSup,
+    cruntimeSomaPoolFreeClosure,
+    cruntimeSomaPanic
 ) where
 
 import Llvm.Dependencies (LlvmDependency (..))
-import Llvm.Ir (IR (toLlvm))
 import Llvm.Types (LlvmType (..))
 
--- | Opaque pointer type
 ptrType :: LlvmType
 ptrType = LlvmPointer LlvmI8
 
-{- | INET Term is i64 (64-bit encoded term)
-   [loc:32][aux:16][sub:1][reserved:7][tag:8]
--}
 termType :: LlvmType
 termType = LlvmI64
 
--- | Location type (32-bit)
 locType :: LlvmType
 locType = LlvmI32
 
--- | All struct definitions (INET uses flat encoding, minimal structs)
-cRuntimeStructs :: [LlvmDependency]
-cRuntimeStructs = []
+cruntimeInetInit :: LlvmDependency
+cruntimeInetInit = LlvmFunctionDependency "inet_init" ptrType [LlvmI32]
 
--- | External function declarations for INET runtime
-cRuntimeDependencies :: [LlvmDependency]
-cRuntimeDependencies =
-    [ -- INET lifecycle
-      LlvmFunctionDependency "inet_init" ptrType [LlvmI32] -- num_threads -> INet*
-    , LlvmFunctionDependency "inet_init_globals" LlvmVoid [LlvmI32] -- num_threads -> void (sets g_inet and g_inet_tm)
-    , LlvmFunctionDependency "inet_free" LlvmVoid [ptrType] -- INet* -> void
-    , -- Function registration
-      LlvmFunctionDependency "inet_register_func" LlvmVoid [ptrType, ptrType, LlvmI16, ptrType]
-    , -- INet*, name, arity, func_ptr
+cruntimeInetInitGlobals :: LlvmDependency
+cruntimeInetInitGlobals = LlvmFunctionDependency "inet_init_globals" LlvmVoid [LlvmI32]
 
-      -- Heap operations (thread-local)
-      LlvmFunctionDependency "inet_alloc" locType [ptrType, ptrType, LlvmI32]
-    , -- INet*, ThreadMem*, count -> Loc
-      LlvmFunctionDependency "inet_set" LlvmVoid [ptrType, locType, termType]
-    , -- INet*, Loc, Term -> void
-      LlvmFunctionDependency "inet_get" termType [ptrType, locType]
-    , -- INet*, Loc -> Term
-      LlvmFunctionDependency "inet_subst" LlvmVoid [ptrType, locType, termType]
-    , -- INet*, Loc, Term -> void (set with SUB bit)
+cruntimeInetFree :: LlvmDependency
+cruntimeInetFree = LlvmFunctionDependency "inet_free" LlvmVoid [ptrType]
 
-      -- Term constructors (using _ext wrappers for inline functions)
-      LlvmFunctionDependency "inet_num_ext" termType [LlvmI64]
-    , -- int64 -> Term (create NUM term)
-      LlvmFunctionDependency "inet_lam" termType [ptrType, ptrType, locType, termType]
-    , -- INet*, ThreadMem*, var_loc, body -> Term
-      LlvmFunctionDependency "inet_app" termType [ptrType, ptrType, termType, termType]
-    , -- INet*, ThreadMem*, fun, arg -> Term
-      LlvmFunctionDependency "inet_opr" termType [ptrType, ptrType, LlvmI16, termType, termType]
-    , -- INet*, ThreadMem*, op, a, b -> Term
-      LlvmFunctionDependency "inet_ref" termType [ptrType, ptrType, LlvmI16, termType]
-    , -- INet*, ThreadMem*, func_idx, arg -> Term
-      LlvmFunctionDependency "inet_con" termType [ptrType, ptrType, termType, termType]
-    , -- INet*, ThreadMem*, fst, snd -> Term (constructor/pair)
-      LlvmFunctionDependency "inet_sup" termType [ptrType, ptrType, LlvmI16, termType, termType]
-    , -- INet*, ThreadMem*, label, a, b -> Term (superposition)
-      LlvmFunctionDependency "inet_dup" termType [ptrType, ptrType, LlvmI16, termType]
-    , -- INet*, ThreadMem*, label, target -> Term (duplicator)
-      LlvmFunctionDependency "inet_closure" termType [ptrType, ptrType, LlvmI16, LlvmI16, ptrType, LlvmI16]
-    , -- INet*, ThreadMem*, func_idx, arity, env_ptr, env_size -> Term
+cruntimeInetRegisterFunc :: LlvmDependency
+cruntimeInetRegisterFunc = LlvmFunctionDependency "inet_register_func" LlvmVoid [ptrType, ptrType, LlvmI16, ptrType]
 
-      -- Closure operations
-      LlvmFunctionDependency "inet_clone_closure" termType [ptrType, ptrType, termType]
-    , -- INet*, ThreadMem*, closure -> Term (shallow copy)
-      LlvmFunctionDependency "inet_closure_get_env" termType [ptrType, termType, LlvmI16]
-    , -- INet*, closure_term, index -> Term (get env slot)
+cruntimeInetAlloc :: LlvmDependency
+cruntimeInetAlloc = LlvmFunctionDependency "inet_alloc" locType [ptrType, ptrType, LlvmI32]
 
-      -- Reduction
-      LlvmFunctionDependency "inet_reduce" LlvmI64 [ptrType, termType]
-    , -- INet*, root_term -> int64 (result)
+cruntimeInetSet :: LlvmDependency
+cruntimeInetSet = LlvmFunctionDependency "inet_set" LlvmVoid [ptrType, locType, termType]
 
-      -- Term accessors (using _ext wrappers for inline functions)
-      LlvmFunctionDependency "inet_get_num_ext" LlvmI64 [termType]
-    , -- Term -> int64 (extract number value)
+cruntimeInetGet :: LlvmDependency
+cruntimeInetGet = LlvmFunctionDependency "inet_get" termType [ptrType, locType]
 
-      -- Debug
-      LlvmFunctionDependency "inet_print_term" LlvmVoid [ptrType, termType]
-    , LlvmFunctionDependency "inet_print_stats" LlvmVoid [ptrType]
-    , -- Global INET pointer (set in main)
-      LlvmGlobalDependency "g_inet" ptrType
-    , LlvmGlobalDependency
-        "g_inet_tm"
-        ptrType -- Main thread's ThreadMem
-    , LlvmFunctionDependency
-        "soma_pool_init"
-        LlvmVoid
-        []
-    , LlvmFunctionDependency "soma_pool_cleanup" LlvmVoid []
-    , -- SUP operations
-      LlvmFunctionDependency "soma_dup" ptrType [LlvmI32, ptrType]
-    , LlvmFunctionDependency "soma_proj0" LlvmI64 [LlvmI64]
-    , LlvmFunctionDependency "soma_proj1" LlvmI64 [LlvmI64]
-    , -- Parallel SUP operations (SomaValue = i64)
-      LlvmFunctionDependency "soma_par_proj0" LlvmI64 [LlvmI64, LlvmI32]
-    , LlvmFunctionDependency "soma_par_proj1" LlvmI64 [LlvmI64, LlvmI32]
-    , -- Fork-join parallelism (returns ptr to SomaTask, or NULL if parallel disabled)
-      LlvmFunctionDependency "soma_fork_direct" ptrType [ptrType, LlvmI64] -- fn, arg
-    , LlvmFunctionDependency "soma_fork_closure" ptrType [ptrType, ptrType, LlvmI64] -- fn, closure, arg
-    , LlvmFunctionDependency "soma_fork_multi" ptrType [ptrType, LlvmPointer LlvmI64, LlvmI32] -- fn, args[], num_args
-    , LlvmFunctionDependency "soma_join" LlvmI64 [ptrType] -- task -> result
-    , LlvmFunctionDependency "soma_par_enabled_export" LlvmI32 [] -- check if parallel runtime enabled (exported wrapper)
-    , -- Closure operations
-      LlvmFunctionDependency "soma_alloc_closure" ptrType [ptrType, LlvmI8, LlvmI16]
-    , LlvmFunctionDependency "soma_closure_set_env" LlvmVoid [ptrType, LlvmI16, LlvmI64]
-    , LlvmFunctionDependency "soma_closure_get_env" LlvmI64 [ptrType, LlvmI16]
-    , LlvmFunctionDependency "soma_clone_closure" ptrType [ptrType]
-    , -- Memory management
-      LlvmFunctionDependency "soma_era_free" LlvmVoid [ptrType]
-    , LlvmFunctionDependency "soma_fresh_label" LlvmI32 []
-    , -- Pool allocation (for direct use)
-      LlvmFunctionDependency "soma_pool_alloc_sup" ptrType []
-    , LlvmFunctionDependency "soma_pool_alloc_closure" ptrType [LlvmI16]
-    , LlvmFunctionDependency "soma_pool_free_sup" LlvmVoid [ptrType]
-    , LlvmFunctionDependency "soma_pool_free_closure" LlvmVoid [ptrType, LlvmI16]
-    ]
+cruntimeInetSubst :: LlvmDependency
+cruntimeInetSubst = LlvmFunctionDependency "inet_subst" LlvmVoid [ptrType, locType, termType]
 
-cRuntimeExternalDeclarations :: String
-cRuntimeExternalDeclarations = unlines $ map toLlvm cRuntimeDependencies
+cruntimeInetNumExt :: LlvmDependency
+cruntimeInetNumExt = LlvmFunctionDependency "inet_num_ext" termType [LlvmI64]
+
+cruntimeInetLam :: LlvmDependency
+cruntimeInetLam = LlvmFunctionDependency "inet_lam" termType [ptrType, ptrType, locType, termType]
+
+cruntimeInetApp :: LlvmDependency
+cruntimeInetApp = LlvmFunctionDependency "inet_app" termType [ptrType, ptrType, termType, termType]
+
+cruntimeInetOpr :: LlvmDependency
+cruntimeInetOpr = LlvmFunctionDependency "inet_opr" termType [ptrType, ptrType, LlvmI16, termType, termType]
+
+cruntimeInetRef :: LlvmDependency
+cruntimeInetRef = LlvmFunctionDependency "inet_ref" termType [ptrType, ptrType, LlvmI16, termType]
+
+cruntimeInetCon :: LlvmDependency
+cruntimeInetCon = LlvmFunctionDependency "inet_con" termType [ptrType, ptrType, termType, termType]
+
+cruntimeInetSup :: LlvmDependency
+cruntimeInetSup = LlvmFunctionDependency "inet_sup" termType [ptrType, ptrType, LlvmI16, termType, termType]
+
+cruntimeInetDup :: LlvmDependency
+cruntimeInetDup = LlvmFunctionDependency "inet_dup" termType [ptrType, ptrType, LlvmI16, termType]
+
+cruntimeInetClosure :: LlvmDependency
+cruntimeInetClosure = LlvmFunctionDependency "inet_closure" termType [ptrType, ptrType, LlvmI16, LlvmI16, ptrType, LlvmI16]
+
+cruntimeInetCloneClosure :: LlvmDependency
+cruntimeInetCloneClosure = LlvmFunctionDependency "inet_clone_closure" termType [ptrType, ptrType, termType]
+
+cruntimeInetClosureGetEnv :: LlvmDependency
+cruntimeInetClosureGetEnv = LlvmFunctionDependency "inet_closure_get_env" termType [ptrType, termType, LlvmI16]
+
+cruntimeInetReduce :: LlvmDependency
+cruntimeInetReduce = LlvmFunctionDependency "inet_reduce" LlvmI64 [ptrType, termType]
+
+cruntimeInetGetNumExt :: LlvmDependency
+cruntimeInetGetNumExt = LlvmFunctionDependency "inet_get_num_ext" LlvmI64 [termType]
+
+cruntimeInetPrintTerm :: LlvmDependency
+cruntimeInetPrintTerm = LlvmFunctionDependency "inet_print_term" LlvmVoid [ptrType, termType]
+
+cruntimeInetPrintStats :: LlvmDependency
+cruntimeInetPrintStats = LlvmFunctionDependency "inet_print_stats" LlvmVoid [ptrType]
+
+cruntimeGInet :: LlvmDependency
+cruntimeGInet = LlvmGlobalDependency "g_inet" (LlvmPointer ptrType) -- pointer to pointer cuz why not
+
+cruntimeGInetTm :: LlvmDependency
+cruntimeGInetTm = LlvmGlobalDependency "g_inet_tm" (LlvmPointer ptrType)  -- pointer to pointer cuz why not
+
+cruntimeSomaPoolInit :: LlvmDependency
+cruntimeSomaPoolInit = LlvmFunctionDependency "soma_pool_init" LlvmVoid []
+
+cruntimeSomaPoolCleanup :: LlvmDependency
+cruntimeSomaPoolCleanup = LlvmFunctionDependency "soma_pool_cleanup" LlvmVoid []
+
+cruntimeSomaDup :: LlvmDependency
+cruntimeSomaDup = LlvmFunctionDependency "soma_dup" ptrType [LlvmI32, ptrType]
+
+cruntimeSomaProj0 :: LlvmDependency
+cruntimeSomaProj0 = LlvmFunctionDependency "soma_proj0" LlvmI64 [LlvmI64]
+
+cruntimeSomaProj1 :: LlvmDependency
+cruntimeSomaProj1 = LlvmFunctionDependency "soma_proj1" LlvmI64 [LlvmI64]
+
+cruntimeSomaParProj0 :: LlvmDependency
+cruntimeSomaParProj0 = LlvmFunctionDependency "soma_par_proj0" LlvmI64 [LlvmI64, LlvmI32]
+
+cruntimeSomaParProj1 :: LlvmDependency
+cruntimeSomaParProj1 = LlvmFunctionDependency "soma_par_proj1" LlvmI64 [LlvmI64, LlvmI32]
+
+cruntimeSomaForkDirect :: LlvmDependency
+cruntimeSomaForkDirect = LlvmFunctionDependency "soma_fork_direct" ptrType [ptrType, LlvmI64]
+
+cruntimeSomaForkClosure :: LlvmDependency
+cruntimeSomaForkClosure = LlvmFunctionDependency "soma_fork_closure" ptrType [ptrType, ptrType, LlvmI64]
+
+cruntimeSomaForkMulti :: LlvmDependency
+cruntimeSomaForkMulti = LlvmFunctionDependency "soma_fork_multi" ptrType [ptrType, LlvmPointer LlvmI64, LlvmI32]
+
+cruntimeSomaJoin :: LlvmDependency
+cruntimeSomaJoin = LlvmFunctionDependency "soma_join" LlvmI64 [ptrType]
+
+cruntimeSomaParEnabledExport :: LlvmDependency
+cruntimeSomaParEnabledExport = LlvmFunctionDependency "soma_par_enabled_export" LlvmI32 []
+
+cruntimeSomaAllocClosure :: LlvmDependency
+cruntimeSomaAllocClosure = LlvmFunctionDependency "soma_alloc_closure" ptrType [ptrType, LlvmI8, LlvmI16]
+
+cruntimeSomaClosureSetEnv :: LlvmDependency
+cruntimeSomaClosureSetEnv = LlvmFunctionDependency "soma_closure_set_env" LlvmVoid [ptrType, LlvmI16, LlvmI64]
+
+cruntimeSomaClosureGetEnv :: LlvmDependency
+cruntimeSomaClosureGetEnv = LlvmFunctionDependency "soma_closure_get_env" LlvmI64 [ptrType, LlvmI16]
+
+cruntimeSomaCloneClosure :: LlvmDependency
+cruntimeSomaCloneClosure = LlvmFunctionDependency "soma_clone_closure" ptrType [ptrType]
+
+cruntimeSomaEraFree :: LlvmDependency
+cruntimeSomaEraFree = LlvmFunctionDependency "soma_era_free" LlvmVoid [ptrType]
+
+cruntimeSomaFreshLabel :: LlvmDependency
+cruntimeSomaFreshLabel = LlvmFunctionDependency "soma_fresh_label" LlvmI32 []
+
+cruntimeSomaPoolAllocSup :: LlvmDependency
+cruntimeSomaPoolAllocSup = LlvmFunctionDependency "soma_pool_alloc_sup" ptrType []
+
+cruntimeSomaPoolAllocClosure :: LlvmDependency
+cruntimeSomaPoolAllocClosure = LlvmFunctionDependency "soma_pool_alloc_closure" ptrType [LlvmI16]
+
+cruntimeSomaPoolFreeSup :: LlvmDependency
+cruntimeSomaPoolFreeSup = LlvmFunctionDependency "soma_pool_free_sup" LlvmVoid [ptrType]
+
+cruntimeSomaPoolFreeClosure :: LlvmDependency
+cruntimeSomaPoolFreeClosure = LlvmFunctionDependency "soma_pool_free_closure" LlvmVoid [ptrType, LlvmI16]
+
+cruntimeSomaPanic :: LlvmDependency
+cruntimeSomaPanic = LlvmFunctionDependency "soma_panic" LlvmVoid [ptrType]

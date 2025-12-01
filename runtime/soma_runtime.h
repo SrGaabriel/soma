@@ -2,7 +2,7 @@
  * Soma Interaction Net Runtime
  * 
  * This runtime provides the core data structures and operations for
- * interaction net reduction with lazy duplication (HVM-style).
+ * interaction net reduction with lazy duplication.
  *
  * Memory Layout:
  * 
@@ -487,7 +487,7 @@ SomaValue soma_par_proj1(SomaValue sup_val, uint32_t work_hint);
  * Fork-Join Parallelism API
  *
  * Structured parallelism for independent computations in compose blocks.
- * Zero overhead when SOMA_PARALLEL is not set (compiles to direct calls).
+ * Zero overhead when SOMA_WORKERS is not set (compiles to direct calls).
  */
 
 /* Fork a computation - spawns task and returns immediately

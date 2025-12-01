@@ -11,7 +11,40 @@ import Control.Monad.Reader (asks)
 import Control.Monad.State (modify)
 import Control.Monad.Writer.Class (MonadWriter (tell))
 import qualified Data.Map as Map
+import Llvm.Gen.CRuntime (
+    cruntimeGInet,
+    cruntimeGInetTm,
+    cruntimeInetApp,
+    cruntimeInetClosure,
+    cruntimeInetClosureGetEnv,
+    cruntimeInetDup,
+    cruntimeInetFree,
+    cruntimeInetGetNumExt,
+    cruntimeInetInitGlobals,
+    cruntimeInetLam,
+    cruntimeInetNumExt,
+    cruntimeInetOpr,
+    cruntimeInetReduce,
+    cruntimeInetRef,
+    cruntimeInetRegisterFunc,
+    cruntimeInetSup,
+    cruntimeSomaAllocClosure,
+    cruntimeSomaClosureGetEnv,
+    cruntimeSomaDup,
+    cruntimeSomaForkDirect,
+    cruntimeSomaForkMulti,
+    cruntimeSomaFreshLabel,
+    cruntimeSomaJoin,
+    cruntimeSomaPanic,
+    cruntimeSomaParEnabledExport,
+    cruntimeSomaParProj0,
+    cruntimeSomaParProj1,
+    cruntimeSomaPoolAllocClosure,
+    cruntimeSomaProj0,
+    cruntimeSomaProj1,
+ )
 import Llvm.Gen.Core
+import Llvm.Gen.Externals (memcpyDependency, useDep)
 import Llvm.Gen.Intrinsics (compileIntrinsic, isIntrinsic)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.Templates (newStrTemplate)
@@ -42,9 +75,9 @@ getNetAndTm = do
             pure (net, tm)
         else do
             -- Load from globals
-            let globalNetPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_inet\""
+            globalNetPtr <- useDep cruntimeGInet
             net <- saveTmp (LlvmLoad globalNetPtr) (LlvmPointer LlvmI8)
-            let globalTmPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_inet_tm\""
+            globalTmPtr <- useDep cruntimeGInetTm
             tm <- saveTmp (LlvmLoad globalTmPtr) (LlvmPointer LlvmI8)
             pure (net, tm)
 
@@ -55,7 +88,7 @@ getNet = do
     if inGraphFn
         then pure $ LlvmRegister (LlvmPointer LlvmI8) "net"
         else do
-            let globalNetPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_inet\""
+            globalNetPtr <- useDep cruntimeGInet
             saveTmp (LlvmLoad globalNetPtr) (LlvmPointer LlvmI8)
 
 -- ============================================================================
@@ -251,7 +284,7 @@ compileOp (OpGetDict className ty) _resultTy = do
     case Map.lookup (className, ty) dMap of
         Just dictGlobalName -> do
             let dictStructType = LT.LlvmNamed (makeDictStructTypeName modName className)
-            pure $ LlvmGlobal (LT.LlvmPtr dictStructType) dictGlobalName
+            pure $ LlvmGlobal (LT.LlvmPointer dictStructType) dictGlobalName
         Nothing -> error $ "Dictionary not found for class " ++ className ++ " and type " ++ show ty
 compileOp (OpDictCall dict methodIndex _methodName args) resultTy = do
     dictVal <- compileOperand dict
@@ -271,7 +304,7 @@ compileOp (OpDictCall dict methodIndex _methodName args) resultTy = do
     methodFieldPtr <-
         saveTmp
             (LlvmGetElementPtr dictType dictVal [indexZero, methodIndexVal] False)
-            (LT.LlvmPtr fnPtrType)
+            (LlvmPointer fnPtrType)
 
     fnPtr <- saveTmp (LlvmLoad methodFieldPtr) fnPtrType
 
@@ -313,7 +346,7 @@ compileOp (OpDup label value) resultTy = do
             saveTmp (LlvmIntToPtr tagged (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
     let labelVal = LlvmLiteral LlvmI32 (show label)
     -- Call soma_dup(label, value) -> returns SUP handle (i8*)
-    let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
+    dupFunc <- useDep cruntimeSomaDup
     supHandle <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [labelVal, voidPtr]) (LlvmPointer LlvmI8)
     -- Convert SUP handle to i64 to preserve full pointer value on 64-bit systems.
     -- Do NOT truncate to i32 even if resultTy is i32 - the projections expect i64.
@@ -335,7 +368,7 @@ compileOp (OpDupProj0 handle) resultTy = do
         LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
         _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
     -- Call soma_proj0(handle) -> value (i64)
-    let proj0Func = LlvmGlobal LlvmI64 "\"soma_proj0\""
+    proj0Func <- useDep cruntimeSomaProj0
     result <- saveTmp (LlvmCall proj0Func LlvmI64 [i64Handle]) LlvmI64
     -- Convert result to expected type
     -- For pointers, use inttoptr directly (TAG_PTR = 0, so no shift needed)
@@ -361,7 +394,7 @@ compileOp (OpDupProj1 handle) resultTy = do
         LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
         _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
     -- Call soma_proj1(handle) -> value (i64)
-    let proj1Func = LlvmGlobal LlvmI64 "\"soma_proj1\""
+    proj1Func <- useDep cruntimeSomaProj1
     result <- saveTmp (LlvmCall proj1Func LlvmI64 [i64Handle]) LlvmI64
     -- Convert result to expected type
     -- For pointers, use inttoptr directly (TAG_PTR = 0, so no shift needed)
@@ -392,8 +425,8 @@ compileOp (OpWrapClosure funcOp) resultTy = do
     -- Call soma_alloc_closure(func_ptr, arity=0, env_size=0)
     -- Arity 0 means it's a "thunk" or saturated closure wrapper
     -- Env size 0 means no captured variables
-    let allocClosureFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_alloc_closure\""
-        arityVal = LlvmLiteral LlvmI8 "0"
+    allocClosureFunc <- useDep cruntimeSomaAllocClosure
+    let arityVal = LlvmLiteral LlvmI8 "0"
         envSizeVal = LlvmLiteral LlvmI16 "0"
     closure <- saveTmp (LlvmCall allocClosureFunc (LlvmPointer LlvmI8) [voidFuncPtr, arityVal, envSizeVal]) (LlvmPointer LlvmI8)
     -- Cast to result type if needed
@@ -413,8 +446,8 @@ compileOp (OpAllocClosure funcOp arity envSize) resultTy = do
     -- Cast to i8* for the generic alloc_closure function
     voidFuncPtr <- saveTmp (LlvmBitcast funcPtr (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
     -- Call soma_alloc_closure(func_ptr, arity, env_size)
-    let allocClosureFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_alloc_closure\""
-        arityVal = LlvmLiteral LlvmI8 (show arity)
+    allocClosureFunc <- useDep cruntimeSomaAllocClosure
+    let arityVal = LlvmLiteral LlvmI8 (show arity)
         envSizeVal = LlvmLiteral LlvmI16 (show envSize)
     closure <- saveTmp (LlvmCall allocClosureFunc (LlvmPointer LlvmI8) [voidFuncPtr, arityVal, envSizeVal]) (LlvmPointer LlvmI8)
     -- Cast to result type if needed
@@ -432,8 +465,8 @@ compileOp (OpClosureGetEnv closureOp idx) resultTy = do
         LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
         _ -> saveTmp (LlvmIntToPtr llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
     -- Call soma_closure_get_env(closure, index) -> returns SomaValue (i64)
-    let getEnvFunc = LlvmGlobal LlvmI64 "\"soma_closure_get_env\""
-        idxVal = LlvmLiteral LlvmI16 (show idx)
+    getEnvFunc <- useDep cruntimeSomaClosureGetEnv
+    let idxVal = LlvmLiteral LlvmI16 (show idx)
     result <- saveTmp (LlvmCall getEnvFunc LlvmI64 [voidClosure, idxVal]) LlvmI64
     -- Cast SomaValue (i64) to result type
     case resultTy of
@@ -492,8 +525,8 @@ compileOp (OpDupClosure label closureOp _slotInfo) resultTy = do
             saveTmp (LlvmIntToPtr tagged (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
     let labelVal = LlvmLiteral LlvmI32 (show label)
     -- Call soma_dup(label, closure) -> returns SUP handle (i8*)
-    let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
-    supHandle <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [labelVal, voidPtr]) (LlvmPointer LlvmI8)
+    somaDup <- useDep cruntimeSomaDup
+    supHandle <- saveTmp (LlvmCall somaDup (LlvmPointer LlvmI8) [labelVal, voidPtr]) (LlvmPointer LlvmI8)
     -- Convert SUP handle to i64 to preserve full pointer value on 64-bit systems.
     case resultTy of
         LlvmPointer _ -> saveTmp (LlvmBitcast supHandle resultTy) resultTy
@@ -513,7 +546,7 @@ compileOp (OpDupClosureProj0 handleOp _envSize _slotInfo) resultTy = do
         LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
         _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
     -- Call soma_proj0(handle) -> value (i64)
-    let proj0Func = LlvmGlobal LlvmI64 "\"soma_proj0\""
+    proj0Func <- useDep cruntimeSomaProj0
     result <- saveTmp (LlvmCall proj0Func LlvmI64 [i64Handle]) LlvmI64
     -- Convert result to expected type
     -- For pointers, use inttoptr directly (TAG_PTR = 0, so no shift needed)
@@ -563,7 +596,7 @@ compileOp (OpDupClosureProj1 handleOp envSize slotInfo) resultTy = do
                     LlvmI64 -> pure llHandle
                     LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
                     _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
-                let proj1Func = LlvmGlobal LlvmI64 "\"soma_proj1\""
+                proj1Func <- useDep cruntimeSomaProj1
                 i64Result <- saveTmp (LlvmCall proj1Func LlvmI64 [i64Handle]) LlvmI64
                 -- Convert back to ptr for the rest of the code
                 saveTmp (LlvmIntToPtr i64Result (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
@@ -630,11 +663,11 @@ compileOp (OpDupClosureProj1 handleOp envSize slotInfo) resultTy = do
         tell [LlvmStore (LlvmLiteral LlvmI8 "131") supTagPtr] -- SUP_TAG_BOTH = 131
 
         -- Allocate new closure: 16 (header) + envSize * 8 bytes
-        let allocClosureFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_pool_alloc_closure\""
+        allocClosureFunc <- useDep cruntimeSomaPoolAllocClosure
         newClosure <- saveTmp (LlvmCall allocClosureFunc (LlvmPointer LlvmI8) [LlvmLiteral LlvmI16 (show envSz)]) (LlvmPointer LlvmI8)
 
         -- Copy header (16 bytes) using memcpy
-        let memcpyFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"memcpy\""
+        memcpyFunc <- useDep memcpyDependency
         _ <- saveTmp (LlvmCall memcpyFunc (LlvmPointer LlvmI8) [newClosure, supValue, LlvmLiteral LlvmI64 "16"]) (LlvmPointer LlvmI8)
 
         -- Copy/wrap each env slot
@@ -683,10 +716,10 @@ compileOp (OpDupClosureProj1 handleOp envSize slotInfo) resultTy = do
             if isClosureSlot
                 then do
                     -- Closure slot: wrap in SUP for lazy nested cloning
-                    let freshLabelFunc = LlvmGlobal LlvmI32 "\"soma_fresh_label\""
+                    freshLabelFunc <- useDep cruntimeSomaFreshLabel
                     freshLbl <- saveTmp (LlvmCall freshLabelFunc LlvmI32 []) LlvmI32
 
-                    let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
+                    dupFunc <- useDep cruntimeSomaDup
                     supForSlot <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [freshLbl, srcVal]) (LlvmPointer LlvmI8)
 
                     tell [LlvmStore supForSlot dstSlotPtr]
@@ -703,8 +736,8 @@ compileOp (OpClosureGetEnvDirect closureOp idx) resultTy = do
         LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
         _ -> saveTmp (LlvmIntToPtr llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
     -- Call soma_closure_get_env(closure, index) - same as OpClosureGetEnv
-    let getEnvFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_closure_get_env\""
-        idxVal = LlvmLiteral LlvmI16 (show idx)
+    getEnvFunc <- useDep cruntimeSomaClosureGetEnv
+    let idxVal = LlvmLiteral LlvmI16 (show idx)
     result <- saveTmp (LlvmCall getEnvFunc (LlvmPointer LlvmI8) [voidClosure, idxVal]) (LlvmPointer LlvmI8)
     -- Cast to result type if needed
     if resultTy == LlvmPointer LlvmI8
@@ -723,11 +756,11 @@ compileOp (OpClosureGetEnvSUP closureOp idx) resultTy = do
         LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
         _ -> saveTmp (LlvmIntToPtr llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
     -- Load the SUP from the env slot
-    let getEnvFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_closure_get_env\""
-        idxVal = LlvmLiteral LlvmI16 (show idx)
+    getEnvFunc <- useDep cruntimeSomaClosureGetEnv
+    let idxVal = LlvmLiteral LlvmI16 (show idx)
     supHandle <- saveTmp (LlvmCall getEnvFunc (LlvmPointer LlvmI8) [voidClosure, idxVal]) (LlvmPointer LlvmI8)
     -- Project through the SUP using proj1 (clone is "second copy")
-    let proj1Func = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_proj1\""
+    proj1Func <- useDep cruntimeSomaProj1
     result <- saveTmp (LlvmCall proj1Func (LlvmPointer LlvmI8) [supHandle]) (LlvmPointer LlvmI8)
     -- Cast to result type if needed
     if resultTy == LlvmPointer LlvmI8
@@ -751,8 +784,8 @@ compileOp (OpParProj0 handleOp workEstimate) resultTy = do
         LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
         _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
     -- Call soma_par_proj0(handle, work_estimate)
-    let parProj0Func = LlvmGlobal LlvmI64 "\"soma_par_proj0\""
-        workVal = LlvmLiteral LlvmI32 (show workEstimate)
+    parProj0Func <- useDep cruntimeSomaParProj0
+    let workVal = LlvmLiteral LlvmI32 (show workEstimate)
     result <- saveTmp (LlvmCall parProj0Func LlvmI64 [i64Handle, workVal]) LlvmI64
     -- Convert result back to expected type
     case resultTy of
@@ -771,8 +804,8 @@ compileOp (OpParProj1 handleOp workEstimate) resultTy = do
         LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
         _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
     -- Call soma_par_proj1(handle, work_estimate)
-    let parProj1Func = LlvmGlobal LlvmI64 "\"soma_par_proj1\""
-        workVal = LlvmLiteral LlvmI32 (show workEstimate)
+    parProj1Func <- useDep cruntimeSomaParProj1
+    let workVal = LlvmLiteral LlvmI32 (show workEstimate)
     result <- saveTmp (LlvmCall parProj1Func LlvmI64 [i64Handle, workVal]) LlvmI64
     -- Convert result back to expected type
     case resultTy of
@@ -791,8 +824,8 @@ compileOp (OpParClosureProj0 handleOp _envSize _slotInfo workEstimate) resultTy 
         LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
         _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
     -- Call soma_par_proj0(handle, work_estimate)
-    let parProj0Func = LlvmGlobal LlvmI64 "\"soma_par_proj0\""
-        workVal = LlvmLiteral LlvmI32 (show workEstimate)
+    parProj0Func <- useDep cruntimeSomaParProj0
+    let workVal = LlvmLiteral LlvmI32 (show workEstimate)
     result <- saveTmp (LlvmCall parProj0Func LlvmI64 [i64Handle, workVal]) LlvmI64
     -- Convert result back to expected type
     case resultTy of
@@ -817,8 +850,8 @@ compileOp (OpParClosureProj1 handleOp envSize slotInfo workEstimate) resultTy = 
     if null [s | s@(_, True) <- slotInfo]
         then do
             -- No closure slots - use parallel proj1
-            let parProj1Func = LlvmGlobal LlvmI64 "\"soma_par_proj1\""
-                workVal = LlvmLiteral LlvmI32 (show workEstimate)
+            parProj1Func <- useDep cruntimeSomaParProj1
+            let workVal = LlvmLiteral LlvmI32 (show workEstimate)
             result <- saveTmp (LlvmCall parProj1Func LlvmI64 [i64Handle, workVal]) LlvmI64
             castParResult result resultTy
         else do
@@ -835,8 +868,8 @@ compileOp (OpParClosureProj1 handleOp envSize slotInfo workEstimate) resultTy = 
     compileParallelClosureClone :: LlvmValue -> Int -> SlotInfo -> Int -> IrGen LlvmValue
     compileParallelClosureClone i64HandleArg envSizeArg slotInfoArg _workEst = do
         -- Use parallel proj1 for the base cloning
-        let parProj1Func = LlvmGlobal LlvmI64 "\"soma_par_proj1\""
-            workVal = LlvmLiteral LlvmI32 (show workEstimate)
+        parProj1Func <- useDep cruntimeSomaParProj1
+        let workVal = LlvmLiteral LlvmI32 (show workEstimate)
         baseResultI64 <- saveTmp (LlvmCall parProj1Func LlvmI64 [i64HandleArg, workVal]) LlvmI64
         -- Convert to ptr for slot manipulation
         baseResult <- saveTmp (LlvmIntToPtr baseResultI64 (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
@@ -853,9 +886,9 @@ compileOp (OpParClosureProj1 handleOp envSize slotInfo workEstimate) resultTy = 
             offsetVal = LlvmLiteral LlvmI64 (show offset)
         slotPtr <- saveTmp (LlvmGetElementPtr LlvmI8 closure [offsetVal] False) (LlvmPointer LlvmI8)
         currentVal <- saveTmp (LlvmLoadTyped (LlvmPointer LlvmI8) slotPtr) (LlvmPointer LlvmI8)
-        let freshLabelFunc = LlvmGlobal LlvmI32 "\"soma_fresh_label\""
+        freshLabelFunc <- useDep cruntimeSomaFreshLabel
         freshLabel <- saveTmp (LlvmCall freshLabelFunc LlvmI32 []) LlvmI32
-        let dupFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_dup\""
+        dupFunc <- useDep cruntimeSomaDup
         supForSlot <- saveTmp (LlvmCall dupFunc (LlvmPointer LlvmI8) [freshLabel, currentVal]) (LlvmPointer LlvmI8)
         tell [LlvmStore supForSlot slotPtr]
         pure closure
@@ -864,8 +897,9 @@ compileOp (OpParClosureProj1 handleOp envSize slotInfo workEstimate) resultTy = 
 compileOp (OpPanic msg) _resultTy = do
     -- Create a global string constant for the panic message
     msgPtr <- newStrTemplate msg
-    -- Call soma_panic(msg) - void function
-    let panicFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_panic\""
+    -- Note: soma_panic is not in the runtime dependencies, so we use it as a hardcoded global
+    -- This is a special case for panic handling
+    panicFunc <- useDep cruntimeSomaPanic
     tell [LlvmCallStmt panicFunc LlvmVoid [msgPtr]]
     -- Emit unreachable (panic never returns)
     tell [LlvmUnreachable]
@@ -883,16 +917,16 @@ compileOp (OpPanic msg) _resultTy = do
 -- Returns INet* which we store in g_inet
 compileOp (OpGraphInit numWorkers) _resultTy = do
     -- Use inet_init_globals which sets both g_inet and g_inet_tm
-    let initFunc = LlvmGlobal LlvmVoid "\"inet_init_globals\""
-        numWorkersVal = LlvmLiteral LlvmI32 (show numWorkers)
+    initFunc <- useDep cruntimeInetInitGlobals
+    let numWorkersVal = LlvmLiteral LlvmI32 (show numWorkers)
     tell [LlvmCallStmt initFunc LlvmVoid [numWorkersVal]]
     pure (LlvmLiteral LlvmI32 "0")
 
 -- INET shutdown: call inet_free(g_inet)
 compileOp OpGraphShutdown _resultTy = do
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_inet\""
+    globalPtr <- useDep cruntimeGInet
     net <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let freeFunc = LlvmGlobal LlvmVoid "\"inet_free\""
+    freeFunc <- useDep cruntimeInetFree
     tell [LlvmCallStmt freeFunc LlvmVoid [net]]
     pure (LlvmLiteral LlvmI32 "0")
 
@@ -906,7 +940,7 @@ compileOp (OpGraphNum valOp) _resultTy = do
         LlvmI32 -> saveTmp (LlvmSExt llVal LlvmI64) LlvmI64
         _ -> saveTmp (LlvmSExt llVal LlvmI64) LlvmI64
     -- Call inet_num_ext(value) -> Term (i64)
-    let numFunc = LlvmGlobal LlvmI64 "\"inet_num_ext\""
+    numFunc <- useDep cruntimeInetNumExt
     saveTmp (LlvmCall numFunc LlvmI64 [i64Val]) LlvmI64
 
 -- INET add: create OPR term with OP_ADD (0x00)
@@ -915,8 +949,8 @@ compileOp (OpGraphAdd leftOp rightOp) _resultTy = do
     llLeft <- compileOperand leftOp
     llRight <- compileOperand rightOp
     (net, tm) <- getNetAndTm
-    let oprFunc = LlvmGlobal LlvmI64 "\"inet_opr\""
-        opAdd = LlvmLiteral LlvmI16 "0" -- OP_ADD
+    oprFunc <- useDep cruntimeInetOpr
+    let opAdd = LlvmLiteral LlvmI16 "0" -- OP_ADD
     saveTmp (LlvmCall oprFunc LlvmI64 [net, tm, opAdd, llLeft, llRight]) LlvmI64
 
 -- INET sub: create OPR term with OP_SUB (0x01)
@@ -924,8 +958,8 @@ compileOp (OpGraphSub leftOp rightOp) _resultTy = do
     llLeft <- compileOperand leftOp
     llRight <- compileOperand rightOp
     (net, tm) <- getNetAndTm
-    let oprFunc = LlvmGlobal LlvmI64 "\"inet_opr\""
-        opSub = LlvmLiteral LlvmI16 "1" -- OP_SUB
+    oprFunc <- useDep cruntimeInetOpr
+    let opSub = LlvmLiteral LlvmI16 "1" -- OP_SUB
     saveTmp (LlvmCall oprFunc LlvmI64 [net, tm, opSub, llLeft, llRight]) LlvmI64
 
 -- INET mul: create OPR term with OP_MUL (0x02)
@@ -933,8 +967,8 @@ compileOp (OpGraphMul leftOp rightOp) _resultTy = do
     llLeft <- compileOperand leftOp
     llRight <- compileOperand rightOp
     (net, tm) <- getNetAndTm
-    let oprFunc = LlvmGlobal LlvmI64 "\"inet_opr\""
-        opMul = LlvmLiteral LlvmI16 "2" -- OP_MUL
+    oprFunc <- useDep cruntimeInetOpr
+    let opMul = LlvmLiteral LlvmI16 "2" -- OP_MUL
     saveTmp (LlvmCall oprFunc LlvmI64 [net, tm, opMul, llLeft, llRight]) LlvmI64
 
 -- INET div: create OPR term with OP_DIV (0x03)
@@ -942,8 +976,8 @@ compileOp (OpGraphDiv leftOp rightOp) _resultTy = do
     llLeft <- compileOperand leftOp
     llRight <- compileOperand rightOp
     (net, tm) <- getNetAndTm
-    let oprFunc = LlvmGlobal LlvmI64 "\"inet_opr\""
-        opDiv = LlvmLiteral LlvmI16 "3" -- OP_DIV
+    oprFunc <- useDep cruntimeInetOpr
+    let opDiv = LlvmLiteral LlvmI16 "3" -- OP_DIV
     saveTmp (LlvmCall oprFunc LlvmI64 [net, tm, opDiv, llLeft, llRight]) LlvmI64
 
 -- INET mod: create OPR term with OP_MOD (0x04)
@@ -951,8 +985,8 @@ compileOp (OpGraphMod leftOp rightOp) _resultTy = do
     llLeft <- compileOperand leftOp
     llRight <- compileOperand rightOp
     (net, tm) <- getNetAndTm
-    let oprFunc = LlvmGlobal LlvmI64 "\"inet_opr\""
-        opMod = LlvmLiteral LlvmI16 "4" -- OP_MOD
+    oprFunc <- useDep cruntimeInetOpr
+    let opMod = LlvmLiteral LlvmI16 "4" -- OP_MOD
     saveTmp (LlvmCall oprFunc LlvmI64 [net, tm, opMod, llLeft, llRight]) LlvmI64
 
 -- INET call: in graph mode, we need to reduce args and call the native function directly
@@ -962,7 +996,7 @@ compileOp (OpGraphCall fnName argOps) _resultTy = do
     llArgs <- mapM compileOperand argOps
     net <- getNet
     -- Reduce each graph argument to get native Int values
-    let reduceFunc = LlvmGlobal LlvmI64 "\"inet_reduce\""
+    reduceFunc <- useDep cruntimeInetReduce
     reducedArgs <- forM llArgs $ \arg -> do
         i64Val <- saveTmp (LlvmCall reduceFunc LlvmI64 [net, arg]) LlvmI64
         saveTmp (LlvmTrunc i64Val LlvmI32) LlvmI32
@@ -976,7 +1010,7 @@ compileOp (OpGraphCall fnName argOps) _resultTy = do
 compileOp (OpGraphReduce rootOp) resultTy = do
     llRoot <- compileOperand rootOp
     net <- getNet
-    let reduceFunc = LlvmGlobal LlvmI64 "\"inet_reduce\""
+    reduceFunc <- useDep cruntimeInetReduce
     i64Result <- saveTmp (LlvmCall reduceFunc LlvmI64 [net, llRoot]) LlvmI64
     -- Truncate i64 result to target type (typically i32 for Int)
     case resultTy of
@@ -988,7 +1022,7 @@ compileOp (OpGraphReduce rootOp) resultTy = do
 -- Assumes term is already TAG_NUM. Calls inet_get_num_ext(term) -> i64
 compileOp (OpGraphExtractNum termOp) resultTy = do
     llTerm <- compileOperand termOp
-    let extractFunc = LlvmGlobal LlvmI64 "\"inet_get_num_ext\""
+    extractFunc <- useDep cruntimeInetGetNumExt
     i64Result <- saveTmp (LlvmCall extractFunc LlvmI64 [llTerm]) LlvmI64
     case resultTy of
         LlvmI64 -> pure i64Result
@@ -1002,8 +1036,8 @@ compileOp (OpGraphRegisterFunc name arity implOp) _resultTy = do
     -- Create string constant for function name
     namePtr <- newStrTemplate name
     net <- getNet
-    let registerFunc = LlvmGlobal LlvmVoid "\"inet_register_func\""
-        arityVal = LlvmLiteral LlvmI16 (show arity)
+    registerFunc <- useDep cruntimeInetRegisterFunc
+    let arityVal = LlvmLiteral LlvmI16 (show arity)
     -- Cast impl to ptr if needed
     implPtr <- case getValueType llImpl of
         LlvmPointer _ -> pure llImpl
@@ -1021,8 +1055,8 @@ compileOp (OpGraphRegisterFunc name arity implOp) _resultTy = do
 compileOp (OpGraphDup label targetOp) _resultTy = do
     llTarget <- compileOperand targetOp
     (net, tm) <- getNetAndTm
-    let dupFunc = LlvmGlobal LlvmI64 "\"inet_dup\""
-        labelVal = LlvmLiteral LlvmI16 (show label)
+    dupFunc <- useDep cruntimeInetDup
+    let labelVal = LlvmLiteral LlvmI16 (show label)
     saveTmp (LlvmCall dupFunc LlvmI64 [net, tm, labelVal, llTarget]) LlvmI64
 
 -- INET SUP: create a SUP term with two children
@@ -1031,8 +1065,8 @@ compileOp (OpGraphSup label leftOp rightOp) _resultTy = do
     llLeft <- compileOperand leftOp
     llRight <- compileOperand rightOp
     (net, tm) <- getNetAndTm
-    let supFunc = LlvmGlobal LlvmI64 "\"inet_sup\""
-        labelVal = LlvmLiteral LlvmI16 (show label)
+    supFunc <- useDep cruntimeInetSup
+    let labelVal = LlvmLiteral LlvmI16 (show label)
     saveTmp (LlvmCall supFunc LlvmI64 [net, tm, labelVal, llLeft, llRight]) LlvmI64
 
 -- INET LAM: create a LAM term (lambda abstraction)
@@ -1046,7 +1080,7 @@ compileOp (OpGraphLam varSlotOp bodyOp) _resultTy = do
         LlvmI32 -> pure llVarSlot
         LlvmI64 -> saveTmp (LlvmTrunc llVarSlot LlvmI32) LlvmI32
         _ -> saveTmp (LlvmTrunc llVarSlot LlvmI32) LlvmI32
-    let lamFunc = LlvmGlobal LlvmI64 "\"inet_lam\""
+    lamFunc <- useDep cruntimeInetLam
     saveTmp (LlvmCall lamFunc LlvmI64 [net, tm, varLoc, llBody]) LlvmI64
 
 -- INET APP: create an APP term (application)
@@ -1055,7 +1089,7 @@ compileOp (OpGraphApp fnOp argOp) _resultTy = do
     llFn <- compileOperand fnOp
     llArg <- compileOperand argOp
     (net, tm) <- getNetAndTm
-    let appFunc = LlvmGlobal LlvmI64 "\"inet_app\""
+    appFunc <- useDep cruntimeInetApp
     saveTmp (LlvmCall appFunc LlvmI64 [net, tm, llFn, llArg]) LlvmI64
 
 -- INET ERA: create an ERA term (erasure/unit)
@@ -1069,8 +1103,8 @@ compileOp OpGraphEra _resultTy = do
 compileOp (OpGraphRef _fnName funcIdx argOp) _resultTy = do
     llArg <- compileOperand argOp
     (net, tm) <- getNetAndTm
-    let refFunc = LlvmGlobal LlvmI64 "\"inet_ref\""
-        funcIdxVal = LlvmLiteral LlvmI16 (show funcIdx)
+    refFunc <- useDep cruntimeInetRef
+    let funcIdxVal = LlvmLiteral LlvmI16 (show funcIdx)
     saveTmp (LlvmCall refFunc LlvmI64 [net, tm, funcIdxVal, llArg]) LlvmI64
 
 -- INET DUP projection 0: get first copy from DUP node
@@ -1095,8 +1129,8 @@ compileOp (OpGraphClosure funcIdx arity envVals) _resultTy = do
     if envSize == 0
         then do
             -- No captures - create closure with empty env
-            let closureFunc = LlvmGlobal LlvmI64 "\"inet_closure\""
-                funcIdxVal = LlvmLiteral LlvmI16 (show funcIdx)
+            closureFunc <- useDep cruntimeInetClosure
+            let funcIdxVal = LlvmLiteral LlvmI16 (show funcIdx)
                 arityVal = LlvmLiteral LlvmI16 (show arity)
                 envPtr = LlvmLiteral (LlvmPointer LlvmI64) "null"
                 envSizeVal = LlvmLiteral LlvmI16 "0"
@@ -1111,8 +1145,8 @@ compileOp (OpGraphClosure funcIdx arity envVals) _resultTy = do
                 elemPtr <- saveTmp (LlvmGetElementPtr LlvmI64 envArrayPtr [LlvmLiteral LlvmI64 (show (i :: Int))] False) (LlvmPointer LlvmI64)
                 tell [LlvmStore llVal elemPtr]
             -- Call inet_closure
-            let closureFunc = LlvmGlobal LlvmI64 "\"inet_closure\""
-                funcIdxVal = LlvmLiteral LlvmI16 (show funcIdx)
+            closureFunc <- useDep cruntimeInetClosure
+            let funcIdxVal = LlvmLiteral LlvmI16 (show funcIdx)
                 arityVal = LlvmLiteral LlvmI16 (show arity)
                 envSizeVal = LlvmLiteral LlvmI16 (show envSize)
             saveTmp (LlvmCall closureFunc LlvmI64 [net, tm, funcIdxVal, arityVal, envArrayPtr, envSizeVal]) LlvmI64
@@ -1123,7 +1157,7 @@ compileOp (OpGraphClosureApp cloOp argOp) _resultTy = do
     llClo <- compileOperand cloOp
     llArg <- compileOperand argOp
     (net, tm) <- getNetAndTm
-    let appFunc = LlvmGlobal LlvmI64 "\"inet_app\""
+    appFunc <- useDep cruntimeInetApp
     saveTmp (LlvmCall appFunc LlvmI64 [net, tm, llClo, llArg]) LlvmI64
 
 -- INET Closure Get Env: get value from closure environment slot
@@ -1131,8 +1165,8 @@ compileOp (OpGraphClosureApp cloOp argOp) _resultTy = do
 compileOp (OpGraphClosureGetEnv cloOp idx) _resultTy = do
     llClo <- compileOperand cloOp
     net <- getNet
-    let getEnvFunc = LlvmGlobal LlvmI64 "\"inet_closure_get_env\""
-        idxVal = LlvmLiteral LlvmI16 (show idx)
+    getEnvFunc <- useDep cruntimeInetClosureGetEnv
+    let idxVal = LlvmLiteral LlvmI16 (show idx)
     saveTmp (LlvmCall getEnvFunc LlvmI64 [net, llClo, idxVal]) LlvmI64
 -- Fork: spawn a parallel task
 -- OpFork taskFn taskArgs: fork a function call with the given arguments
@@ -1173,7 +1207,7 @@ compileOp (OpFork taskFn taskArgs) resultTy = do
         _ -> saveTmp (LlvmSExt llArg LlvmI64) LlvmI64
 
     -- Check if parallel is enabled
-    let parEnabledFunc = LlvmGlobal LlvmI32 "\"soma_par_enabled_export\""
+    parEnabledFunc <- useDep cruntimeSomaParEnabledExport
     parEnabled <- saveTmp (LlvmCall parEnabledFunc LlvmI32 []) LlvmI32
     isParallel <- saveTmp (LlvmICmp LlvmI32 "ne" parEnabled (LlvmLiteral LlvmI32 "0")) LlvmI1
 
@@ -1189,7 +1223,7 @@ compileOp (OpFork taskFn taskArgs) resultTy = do
     taskHandleI64 <- case i64Args of
         -- Single argument with i64 type: use soma_fork_direct (no trampoline needed)
         [singleArg] | hardHead argTypes == LlvmI64 -> do
-            let forkFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_fork_direct\""
+            forkFunc <- useDep cruntimeSomaForkDirect
             taskHandle <- saveTmp (LlvmCall forkFunc (LlvmPointer LlvmI8) [fnPtr, singleArg]) (LlvmPointer LlvmI8)
             saveTmp (LlvmPtrToInt taskHandle LlvmI64) LlvmI64
         -- Multiple arguments or non-i64 single arg: generate trampoline and use soma_fork_multi
@@ -1213,7 +1247,7 @@ compileOp (OpFork taskFn taskArgs) resultTy = do
             -- Get trampoline function pointer
             let trampolinePtr = LlvmGlobal (LlvmPointer LlvmI8) ("\"" ++ trampolineName ++ "\"")
             -- Call soma_fork_multi(trampoline, args, num_args)
-            let forkMultiFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_fork_multi\""
+            forkMultiFunc <- useDep cruntimeSomaForkMulti
             taskHandle <- saveTmp (LlvmCall forkMultiFunc (LlvmPointer LlvmI8) [trampolinePtr, argsPtr, LlvmLiteral LlvmI32 (show numArgs)]) (LlvmPointer LlvmI8)
             saveTmp (LlvmPtrToInt taskHandle LlvmI64) LlvmI64
     tell [LlvmBr mergeBlock]
@@ -1267,7 +1301,7 @@ compileOp (OpJoin taskHandle) resultTy = do
     -- Parallel path: call soma_join
     tell [LlvmLabel parallelBlock]
     handlePtr <- saveTmp (LlvmIntToPtr i64Handle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
-    let joinFunc = LlvmGlobal LlvmI64 "\"soma_join\""
+    joinFunc <- useDep cruntimeSomaJoin
     joinResult <- saveTmp (LlvmCall joinFunc LlvmI64 [handlePtr]) LlvmI64
     tell [LlvmBr mergeBlock]
 

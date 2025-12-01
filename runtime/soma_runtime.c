@@ -1,7 +1,7 @@
 /*
  * Soma Interaction Net Runtime
  *
- * Implements lazy duplication with HVM-style label-based annihilation.
+ * Implements lazy duplication with label-based annihilation.
  * Features:
  * - Per-thread memory pools (TLS) for lock-free allocation
  * - SIMD-optimized bulk operations where applicable
@@ -1425,7 +1425,7 @@ void soma_panic(const char* msg) {
 extern int soma_main(void);
 
 int main(void) {
-    const char* par_env = getenv("SOMA_PARALLEL");
+    const char* par_env = getenv("SOMA_WORKERS");
     if (par_env != NULL) {
         int num_workers = atoi(par_env);
         soma_pool_init();

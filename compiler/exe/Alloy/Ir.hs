@@ -127,7 +127,7 @@ data AOp
       Loads SUP from slot, then projects through it (uses proj1 since clone is "second copy")
       -}
       OpClosureGetEnvSUP AOperand !Int
-      -- These operations enable demand-driven parallel reduction of DUP projections
+    | -- These operations enable demand-driven parallel reduction of DUP projections
 
       {- | Parallel-aware first projection: sup_handle, work_estimate
       When workers are hungry and work_estimate >= threshold, may spawn the other branch

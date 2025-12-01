@@ -7,7 +7,16 @@ import Alloy.Ir
 import Alloy.Naming (qualifyWithModule)
 import Control.Monad.Reader (asks)
 import Control.Monad.Writer.Class (MonadWriter (tell))
+import Llvm.Gen.CRuntime (
+    cruntimeGInet,
+    cruntimeInetFree,
+    cruntimeInetInitGlobals,
+    cruntimeInetRegisterFunc,
+    cruntimeSomaClosureSetEnv,
+    cruntimeSomaEraFree,
+ )
 import Llvm.Gen.Core
+import Llvm.Gen.Externals (useDep)
 import Llvm.Gen.Op (compileOp)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.Templates (newStrTemplate)
@@ -50,7 +59,7 @@ compileInstr (IEffect (EffDrop value)) = do
             -- Cast to i8* (void*) for the generic free function
             voidPtr <- saveTmp (LlvmBitcast llValue (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
             -- Call soma_era_free(ptr) - will recursively free heap nodes
-            let freeFunc = LlvmGlobal LlvmVoid "\"soma_era_free\""
+            freeFunc <- useDep cruntimeSomaEraFree
             tell [LlvmCallStmt freeFunc LlvmVoid [voidPtr]]
         _ ->
             -- Stack-allocated value, no free needed
@@ -88,32 +97,32 @@ compileInstr (IEffect (EffClosureSetEnv closure idx value)) = do
             saveTmp (LlvmAdd LlvmI64 shifted tag) LlvmI64
 
     -- Call soma_closure_set_env(closure, index, taggedValue)
-    let setEnvFunc = LlvmGlobal LlvmVoid "\"soma_closure_set_env\""
-        idxVal = LlvmLiteral LlvmI16 (show idx)
+    setEnvFunc <- useDep cruntimeSomaClosureSetEnv
+    let idxVal = LlvmLiteral LlvmI16 (show idx)
     tell [LlvmCallStmt setEnvFunc LlvmVoid [voidClosure, idxVal, taggedValue]]
 compileInstr (IEffect (EffGraphInit numWorkers)) = do
     -- Initialize INET runtime using inet_init_globals which sets both g_inet and g_inet_tm
-    let initFunc = LlvmGlobal LlvmVoid "\"inet_init_globals\""
-        numWorkersVal = LlvmLiteral LlvmI32 (show numWorkers)
+    initFunc <- useDep cruntimeInetInitGlobals
+    let numWorkersVal = LlvmLiteral LlvmI32 (show numWorkers)
     tell [LlvmCallStmt initFunc LlvmVoid [numWorkersVal]]
 compileInstr (IEffect EffGraphShutdown) = do
     -- Shutdown INET runtime
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "g_inet"
+    globalPtr <- useDep cruntimeGInet
     netPtr <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let freeFunc = LlvmGlobal LlvmVoid "\"inet_free\""
+    freeFunc <- useDep cruntimeInetFree
     tell [LlvmCallStmt freeFunc LlvmVoid [netPtr]]
 compileInstr (IEffect (EffGraphRegisterFunc name arity implOp)) = do
     -- Register a function with the INET runtime
     modName <- asks moduleName
     llImpl <- compileOperand implOp
     -- Get global net pointer
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_inet\""
+    globalPtr <- useDep cruntimeGInet
     netPtr <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
     -- Create string constant for function name using newStrTemplate
     let qualifiedName = qualifyWithModule modName name
     namePtr <- newStrTemplate qualifiedName
     let arityVal = LlvmLiteral LlvmI16 (show arity)
-        registerFunc = LlvmGlobal LlvmVoid "\"inet_register_func\""
+    registerFunc <- useDep cruntimeInetRegisterFunc
     -- Cast function pointer to i8*
     implPtr <- saveTmp (LlvmBitcast llImpl (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
     tell [LlvmCallStmt registerFunc LlvmVoid [netPtr, namePtr, arityVal, implPtr]]

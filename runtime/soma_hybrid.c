@@ -3,7 +3,7 @@
  *
  * This runtime wraps the base soma_runtime with:
  * - Memory pool initialization (always, for INETS memory management)
- * - Optional fork-join parallelism (via SOMA_PARALLEL env var)
+ * - Optional fork-join parallelism (via SOMA_WORKERS env var)
  *
  * Use this runtime for hybrid mode compilation (-m hybrid).
  *
@@ -11,7 +11,7 @@
  *   clang -O2 program.ll runtime/soma_hybrid.c -lpthread -o program
  *
  * Environment variables:
- *   SOMA_PARALLEL=N   Enable N worker threads for fork-join parallelism
+ *   SOMA_WORKERS=N   Enable N worker threads for fork-join parallelism
  *   SOMA_PAR_STATS=1  Print parallel runtime statistics on exit
  */
 
@@ -23,7 +23,7 @@
  * Main entry point for hybrid mode
  *
  * Always initializes memory pools (needed for lazy duplication).
- * Optionally initializes parallel runtime if SOMA_PARALLEL is set.
+ * Optionally initializes parallel runtime if SOMA_WORKERS is set.
  */
 extern int soma_main(void);
 
@@ -32,7 +32,7 @@ int main(void) {
     soma_pool_init();
 
     /* Optionally enable parallelism */
-    const char* par_env = getenv("SOMA_PARALLEL");
+    const char* par_env = getenv("SOMA_WORKERS");
     if (par_env != NULL) {
         int num_workers = atoi(par_env);
         if (num_workers > 0) {

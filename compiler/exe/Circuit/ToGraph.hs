@@ -1,5 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE LambdaCase #-}
+{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
 {- | Circuit to Graph Reduction lowering.
 
@@ -82,11 +83,6 @@ extendTermBinding name varName env =
 -- | Look up function index
 lookupFuncIndex :: C.Name -> GraphEnv -> Maybe Int
 lookupFuncIndex name = Map.lookup name . geFuncIndices
-
--- | Register a function index
-registerFuncIndex :: C.Name -> Int -> GraphEnv -> GraphEnv
-registerFuncIndex name idx env =
-    env{geFuncIndices = Map.insert name idx (geFuncIndices env)}
 
 -- | Lower a Circuit module to an Alloy module using graph reduction
 lowerCircuitToGraph :: C.CModule -> AlloyModule
@@ -276,6 +272,7 @@ lowerTermToGraph env = \case
                         C.OpMul -> IMul
                         C.OpDiv -> IDiv
                         C.OpMod -> IMod
+                        u -> error $ "Circuit.ToGraph: unsupported binary op in graph mode: " ++ show u
                 nativeResult <- emitLetTmp intType (OpBin binOp (OpVar aNative) (OpVar bNative))
                 emitLetTmp termType (OpGraphNum (OpVar nativeResult))
             _ -> do
@@ -288,12 +285,13 @@ lowerTermToGraph env = \case
                         C.OpMul -> OpGraphMul (OpVar aNode) (OpVar bNode)
                         C.OpDiv -> OpGraphDiv (OpVar aNode) (OpVar bNode)
                         C.OpMod -> OpGraphMod (OpVar aNode) (OpVar bNode)
+                        u -> error $ "Circuit.ToGraph: unsupported binary op in graph mode: " ++ show u
                 emitLetTmp termType nodeOp
 
     -- Function applications become REF or APP nodes
     -- CRITICAL: Do NOT reduce the argument here!
     -- Just build the node, let runtime reduce.
-    term@(C.CApp fun arg _resultTy) -> do
+    term@(C.CApp _fun _arg _resultTy) -> do
         let (f, args) = collectArgs term
         case f of
             C.CRef fName _ -> do

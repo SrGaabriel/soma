@@ -44,8 +44,8 @@ pattern LlvmNamed name = LlvmNamedType name
 pattern LlvmStruct :: [LlvmType] -> LlvmType
 pattern LlvmStruct fields = LlvmAnonymous fields
 
-pattern LlvmPtr :: LlvmType -> LlvmType
-pattern LlvmPtr t = LlvmPointer t
+pattern LlvmPtr :: LlvmType
+pattern LlvmPtr = LlvmPointer LlvmI8
 
 instance IR LlvmType where
     toLlvm LlvmVoid = "void"

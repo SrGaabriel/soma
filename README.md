@@ -60,7 +60,7 @@ Same as Native mode but with fork-join parallelism enabled via compiler analysis
 
 1-3. **Same as Native** (Metal → Circuit → Linearization)
 
-4. **Parallelization 🔀**: Before LTO, the compiler inserts fork/join operations at hot paths detected via work estimation heuristics. Enable at runtime with `SOMA_PARALLEL=N` where N is worker count.
+4. **Parallelization 🔀**: Before LTO, the compiler inserts fork/join operations at hot paths detected via work estimation heuristics. Enable at runtime with `SOMA_WORKERS=N` where N is worker count.
 
 5-7. **Same as Native** (Alloy → LTO → LLVM)
 

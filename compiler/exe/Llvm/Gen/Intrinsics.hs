@@ -10,13 +10,13 @@ import Alloy.Naming (qualifyWithModule)
 import Control.Monad.Reader (asks)
 import Control.Monad.State (gets)
 import Control.Monad.Writer.Class (tell)
-import Llvm.Dependencies (LlvmDependency (..))
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), addDependency, saveTmp)
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), saveTmp)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getValueType, intLiteral)
+import Llvm.Gen.Externals (putsDependency, printfDependency, useDep)
 
 isIntrinsic :: String -> Bool
 isIntrinsic "println" = True
@@ -42,18 +42,18 @@ compilePrintln [arg] = do
 
     case argType of
         LlvmPointer LlvmI8 -> do
-            addDependency putsDependency
-            tell [LlvmCallStmt (LlvmGlobal putsFnType "puts") LlvmI32 [compiledArg]]
+            puts <- useDep putsDependency
+            tell [LlvmCallStmt puts LlvmI32 [compiledArg]]
             pure $ LlvmUndef LlvmVoid
         LlvmI32 -> do
             formatStr <- newStrTemplate "%d\\0A"
-            addDependency printfDependency
-            tell [LlvmCallStmt (LlvmGlobal printfFnType "printf") LlvmI32 [formatStr, compiledArg]]
+            printf <- useDep printfDependency
+            tell [LlvmCallStmt printf LlvmI32 [formatStr, compiledArg]]
             pure $ LlvmUndef LlvmVoid
         _ -> do
             formatStr <- newStrTemplate "<value>\\0A" -- todo: handle this
-            addDependency printfDependency
-            tell [LlvmCallStmt (LlvmGlobal printfFnType "printf") LlvmI32 [formatStr]]
+            printf <- useDep printfDependency
+            tell [LlvmCallStmt printf LlvmI32 [formatStr]]
             pure $ LlvmUndef LlvmVoid
 compilePrintln _ = error "println intrinsic expects exactly 1 argument"
 
@@ -116,26 +116,3 @@ compileMap [lambda, array] resultTy = do
 
     pure newArrayPtr
 compileMap _ _ = error "map intrinsic expects exactly 2 arguments (function, array)"
-
--- External function dependencies
-putsDependency :: LlvmDependency
-putsDependency =
-    LlvmFunctionDependency
-        { depName = "puts"
-        , depReturnType = LlvmI32
-        , depParams = [LlvmPointer LlvmI8]
-        }
-
-printfDependency :: LlvmDependency
-printfDependency =
-    LlvmFunctionDependency
-        { depName = "printf"
-        , depReturnType = LlvmI32
-        , depParams = [LlvmPointer LlvmI8, LlvmVararg]
-        }
-
-putsFnType :: LlvmType
-putsFnType = LlvmFn LlvmI32 [LlvmPointer LlvmI8]
-
-printfFnType :: LlvmType
-printfFnType = LlvmFn LlvmI32 [LlvmPointer LlvmI8, LlvmVararg]

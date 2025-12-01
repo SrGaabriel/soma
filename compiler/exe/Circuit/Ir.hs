@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
 
 {- | Circuit IR: An Interaction Net-based intermediate representation.
 
@@ -18,6 +19,7 @@ module Circuit.Ir where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Monoid (Sum (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import GHC.Generics (Generic)
@@ -240,6 +242,166 @@ emptyModule name =
         }
 
 -- ============================================================================
+-- Term Traversal Helpers
+-- ============================================================================
+
+{- | Get all immediate child terms of a CTerm.
+
+This is the foundation for generic traversals. Note that this does NOT
+recurse into children - it only returns the direct children.
+
+For binding forms (CLam, CLet, CDup, CCase arms), children include
+the bodies where variables are bound.
+-}
+children :: CTerm -> [CTerm]
+children = \case
+    -- Leaf nodes (no children)
+    CVar{} -> []
+    CDp0{} -> []
+    CDp1{} -> []
+    CEra -> []
+    CRef{} -> []
+    CInt{} -> []
+    CBool{} -> []
+    CStr{} -> []
+    CPanic{} -> []
+    CJoin{} -> []
+    -- Single child
+    CLam _ _ body -> [body]
+    CUnaryOp _ a -> [a]
+    CClosureGetEnv e _ _ -> [e]
+    CProject e _ _ -> [e]
+    -- Two children
+    CApp f x _ -> [f, x]
+    CLet _ _ val body -> [val, body]
+    CSup _ a b _ -> [a, b]
+    CDup _ _ _ val body -> [val, body]
+    CBinOp _ a b -> [a, b]
+    CCmpOp _ a b -> [a, b]
+    CFork _ _ comp cont -> [comp, cont]
+    -- Multiple children
+    CTag _ fields _ -> fields
+    CCase scrut arms mdef _ ->
+        scrut : [body | (_, _, body) <- arms] ++ maybe [] pure mdef
+    -- CClosure has no CTerm children (captured vars are names, not terms)
+    CClosure{} -> []
+
+{- | Map a function over all immediate child terms.
+
+This reconstructs the term with transformed children. Use this for
+transformations that don't need binding context.
+
+For binding-aware transformations, you'll still need custom recursion
+to track which variables are in scope.
+-}
+mapChildren :: (CTerm -> CTerm) -> CTerm -> CTerm
+mapChildren f = \case
+    -- Leaf nodes (unchanged)
+    t@CVar{} -> t
+    t@CDp0{} -> t
+    t@CDp1{} -> t
+    t@CEra -> t
+    t@CRef{} -> t
+    t@CInt{} -> t
+    t@CBool{} -> t
+    t@CStr{} -> t
+    t@CPanic{} -> t
+    t@CJoin{} -> t
+    t@CClosure{} -> t
+    -- Single child
+    CLam n ty body -> CLam n ty (f body)
+    CUnaryOp op a -> CUnaryOp op (f a)
+    CClosureGetEnv e idx ty -> CClosureGetEnv (f e) idx ty
+    CProject e idx ty -> CProject (f e) idx ty
+    -- Two children
+    CApp fun arg ty -> CApp (f fun) (f arg) ty
+    CLet n ty val body -> CLet n ty (f val) (f body)
+    CSup l a b ty -> CSup l (f a) (f b) ty
+    CDup n ty l val body -> CDup n ty l (f val) (f body)
+    CBinOp op a b -> CBinOp op (f a) (f b)
+    CCmpOp op a b -> CCmpOp op (f a) (f b)
+    CFork n ty comp cont -> CFork n ty (f comp) (f cont)
+    -- Multiple children
+    CTag tag fields ty -> CTag tag (map f fields) ty
+    CCase scrut arms mdef ty ->
+        CCase (f scrut) [(t, ns, f body) | (t, ns, body) <- arms] (f <$> mdef) ty
+
+{- | Fold over all immediate child terms with a monoidal result.
+
+This is useful for collecting information from all children.
+For binding-aware collection, you'll still need custom recursion.
+-}
+foldChildren :: (Monoid m) => (CTerm -> m) -> CTerm -> m
+foldChildren f term = mconcat (map f (children term))
+
+{- | Monadic version of mapChildren for effectful traversals.
+
+Useful for transformations that need state (like fresh name generation)
+or other effects. Traverses children left-to-right.
+-}
+mapChildrenM :: (Monad m) => (CTerm -> m CTerm) -> CTerm -> m CTerm
+mapChildrenM f = \case
+    -- Leaf nodes (unchanged)
+    t@CVar{} -> pure t
+    t@CDp0{} -> pure t
+    t@CDp1{} -> pure t
+    t@CEra -> pure t
+    t@CRef{} -> pure t
+    t@CInt{} -> pure t
+    t@CBool{} -> pure t
+    t@CStr{} -> pure t
+    t@CPanic{} -> pure t
+    t@CJoin{} -> pure t
+    t@CClosure{} -> pure t
+    -- Single child
+    CLam n ty body -> CLam n ty <$> f body
+    CUnaryOp op a -> CUnaryOp op <$> f a
+    CClosureGetEnv e idx ty -> (\e' -> CClosureGetEnv e' idx ty) <$> f e
+    CProject e idx ty -> (\e' -> CProject e' idx ty) <$> f e
+    -- Two children
+    CApp fun arg ty -> CApp <$> f fun <*> f arg <*> pure ty
+    CLet n ty val body -> CLet n ty <$> f val <*> f body
+    CSup l a b ty -> CSup l <$> f a <*> f b <*> pure ty
+    CDup n ty l val body -> CDup n ty l <$> f val <*> f body
+    CBinOp op a b -> CBinOp op <$> f a <*> f b
+    CCmpOp op a b -> CCmpOp op <$> f a <*> f b
+    CFork n ty comp cont -> CFork n ty <$> f comp <*> f cont
+    -- Multiple children
+    CTag tag fields ty -> CTag tag <$> traverse f fields <*> pure ty
+    CCase scrut arms mdef ty -> do
+        scrut' <- f scrut
+        arms' <- traverse (\(t, ns, body) -> (t,ns,) <$> f body) arms
+        mdef' <- traverse f mdef
+        pure $ CCase scrut' arms' mdef' ty
+
+{- | Transform a term bottom-up (children first, then the term itself).
+
+Applies the function to all subterms, starting from the leaves.
+Useful for simplification passes that don't need binding context.
+-}
+transformBottomUp :: (CTerm -> CTerm) -> CTerm -> CTerm
+transformBottomUp f = go
+  where
+    go term = f (mapChildren go term)
+
+{- | Transform a term top-down (term first, then children).
+
+Applies the function to the term, then recursively to children.
+Useful when the transformation of children depends on the parent.
+-}
+transformTopDown :: (CTerm -> CTerm) -> CTerm -> CTerm
+transformTopDown f = go
+  where
+    go term = mapChildren go (f term)
+
+{- | Recursively collect all subterms (including the term itself).
+
+Returns a list of all terms in the tree, in pre-order traversal.
+-}
+universe :: CTerm -> [CTerm]
+universe term = term : concatMap universe (children term)
+
+-- ============================================================================
 -- Type Extraction
 -- ============================================================================
 
@@ -277,101 +439,84 @@ getTermType = \case
 -- Variable Analysis
 -- ============================================================================
 
--- | Count variable occurrences in a term
+{- | Count variable occurrences in a term.
+
+This is binding-aware: occurrences under a binder that shadows
+the target variable are not counted.
+-}
 countVarUses :: Name -> CTerm -> Int
 countVarUses target = go
   where
-    go (CVar n _) = if n == target then 1 else 0
-    go (CLam n _ body) = if n == target then 0 else go body
-    go (CApp f x _) = go f + go x
-    go (CLet n _ val body) = go val + if n == target then 0 else go body
-    go (CSup _ a b _) = go a + go b
-    go (CDup n _ _ val body) = go val + if n == target then 0 else go body
-    go (CDp0 n _) = if n == target then 1 else 0
-    go (CDp1 n _) = if n == target then 1 else 0
-    go CEra = 0
-    go (CRef _ _) = 0
-    go (CInt _) = 0
-    go (CBool _) = 0
-    go (CStr _) = 0
-    go (CTag _ fields _) = sum (map go fields)
-    go (CCase scrut arms def _) =
-        go scrut + sum [go body | (_, _, body) <- arms] + maybe 0 go def
-    go (CBinOp _ a b) = go a + go b
-    go (CCmpOp _ a b) = go a + go b
-    go (CUnaryOp _ a) = go a
-    go (CClosure _ captured _) = sum [if n == target then 1 else 0 | (n, _) <- captured]
-    go (CClosureGetEnv closure _ _) = go closure
-    go (CProject expr _ _) = go expr
-    go (CPanic _ _) = 0
-    go (CFork _ _ comp cont) = go comp + go cont
-    go (CJoin _ _) = 0
+    go term = case term of
+        -- Variable references
+        CVar n _ -> if n == target then 1 else 0
+        CDp0 n _ -> if n == target then 1 else 0
+        CDp1 n _ -> if n == target then 1 else 0
+        -- Binding forms: check for shadowing
+        CLam n _ body -> if n == target then 0 else go body
+        CLet n _ val body -> go val + if n == target then 0 else go body
+        CDup n _ _ val body -> go val + if n == target then 0 else go body
+        CCase scrut arms mdef _ ->
+            go scrut
+                + sum [if target `elem` map fst ns then 0 else go body | (_, ns, body) <- arms]
+                + maybe 0 go mdef
+        -- CClosure captures variables by name
+        CClosure _ captured _ -> sum [if n == target then 1 else 0 | (n, _) <- captured]
+        -- All other nodes: sum over children
+        _ -> getSum $ foldChildren (Sum . go) term
 
--- | Get all free variables in a term
+{- | Get all free variables in a term.
+
+This is binding-aware: variables bound by CLam, CLet, CDup, or CCase
+pattern bindings are not considered free in their scope.
+-}
 freeVars :: CTerm -> Set Name
 freeVars = go Set.empty
   where
-    go bound (CVar n _) = if Set.member n bound then Set.empty else Set.singleton n
-    go bound (CLam n _ body) = go (Set.insert n bound) body
-    go bound (CApp f x _) = go bound f <> go bound x
-    go bound (CLet n _ val body) = go bound val <> go (Set.insert n bound) body
-    go bound (CSup _ a b _) = go bound a <> go bound b
-    go bound (CDup n _ _ val body) = go bound val <> go (Set.insert n bound) body
-    go bound (CDp0 n _) = if Set.member n bound then Set.empty else Set.singleton n
-    go bound (CDp1 n _) = if Set.member n bound then Set.empty else Set.singleton n
-    go _ CEra = Set.empty
-    go _ (CRef _ _) = Set.empty
-    go _ (CInt _) = Set.empty
-    go _ (CBool _) = Set.empty
-    go _ (CStr _) = Set.empty
-    go bound (CTag _ fields _) = mconcat (map (go bound) fields)
-    go bound (CCase scrut arms def _) =
-        go bound scrut
-            <> mconcat [go (foldr (Set.insert . fst) bound ns) body | (_, ns, body) <- arms]
-            <> maybe Set.empty (go bound) def
-    go bound (CBinOp _ a b) = go bound a <> go bound b
-    go bound (CCmpOp _ a b) = go bound a <> go bound b
-    go bound (CUnaryOp _ a) = go bound a
-    go bound (CClosure _ captured _) =
-        Set.fromList [n | (n, _) <- captured, not (Set.member n bound)]
-    go bound (CClosureGetEnv closure _ _) = go bound closure
-    go bound (CProject expr _ _) = go bound expr
-    go _ (CPanic _ _) = Set.empty
-    go bound (CFork _ _ comp cont) = go bound comp <> go bound cont
-    go _ (CJoin _ _) = Set.empty
+    go bound term = case term of
+        -- Variable references
+        CVar n _ -> if Set.member n bound then Set.empty else Set.singleton n
+        CDp0 n _ -> if Set.member n bound then Set.empty else Set.singleton n
+        CDp1 n _ -> if Set.member n bound then Set.empty else Set.singleton n
+        -- Binding forms: extend bound set
+        CLam n _ body -> go (Set.insert n bound) body
+        CLet n _ val body -> go bound val <> go (Set.insert n bound) body
+        CDup n _ _ val body -> go bound val <> go (Set.insert n bound) body
+        CCase scrut arms mdef _ ->
+            go bound scrut
+                <> mconcat [go (foldr (Set.insert . fst) bound ns) body | (_, ns, body) <- arms]
+                <> maybe Set.empty (go bound) mdef
+        -- CClosure captures variables by name
+        CClosure _ captured _ ->
+            Set.fromList [n | (n, _) <- captured, not (Set.member n bound)]
+        -- All other nodes: union over children
+        _ -> foldChildren (go bound) term
 
--- | Get all free variables in a term with their types
+{- | Get all free variables in a term with their types.
+
+Same as 'freeVars' but also returns the type of each variable.
+-}
 freeVarsWithTypes :: CTerm -> Map Name Type
 freeVarsWithTypes = go Set.empty
   where
-    go bound (CVar n ty) = if Set.member n bound then Map.empty else Map.singleton n ty
-    go bound (CLam n _ body) = go (Set.insert n bound) body
-    go bound (CApp f x _) = go bound f <> go bound x
-    go bound (CLet n _ val body) = go bound val <> go (Set.insert n bound) body
-    go bound (CSup _ a b _) = go bound a <> go bound b
-    go bound (CDup n _ _ val body) = go bound val <> go (Set.insert n bound) body
-    go bound (CDp0 n ty) = if Set.member n bound then Map.empty else Map.singleton n ty
-    go bound (CDp1 n ty) = if Set.member n bound then Map.empty else Map.singleton n ty
-    go _ CEra = Map.empty
-    go _ (CRef _ _) = Map.empty
-    go _ (CInt _) = Map.empty
-    go _ (CBool _) = Map.empty
-    go _ (CStr _) = Map.empty
-    go bound (CTag _ fields _) = mconcat (map (go bound) fields)
-    go bound (CCase scrut arms def _) =
-        go bound scrut
-            <> mconcat [go (foldr (Set.insert . fst) bound ns) body | (_, ns, body) <- arms]
-            <> maybe Map.empty (go bound) def
-    go bound (CBinOp _ a b) = go bound a <> go bound b
-    go bound (CCmpOp _ a b) = go bound a <> go bound b
-    go bound (CUnaryOp _ a) = go bound a
-    go bound (CClosure _ captured _) =
-        Map.fromList [(n, ty) | (n, ty) <- captured, not (Set.member n bound)]
-    go bound (CClosureGetEnv closure _ _) = go bound closure
-    go bound (CProject expr _ _) = go bound expr
-    go _ (CPanic _ _) = Map.empty
-    go bound (CFork _ _ comp cont) = go bound comp <> go bound cont
-    go _ (CJoin _ _) = Map.empty
+    go bound term = case term of
+        -- Variable references with types
+        CVar n ty -> if Set.member n bound then Map.empty else Map.singleton n ty
+        CDp0 n ty -> if Set.member n bound then Map.empty else Map.singleton n ty
+        CDp1 n ty -> if Set.member n bound then Map.empty else Map.singleton n ty
+        -- Binding forms: extend bound set
+        CLam n _ body -> go (Set.insert n bound) body
+        CLet n _ val body -> go bound val <> go (Set.insert n bound) body
+        CDup n _ _ val body -> go bound val <> go (Set.insert n bound) body
+        CCase scrut arms mdef _ ->
+            go bound scrut
+                <> mconcat [go (foldr (Set.insert . fst) bound ns) body | (_, ns, body) <- arms]
+                <> maybe Map.empty (go bound) mdef
+        -- CClosure captures variables by name with types
+        CClosure _ captured _ ->
+            Map.fromList [(n, ty) | (n, ty) <- captured, not (Set.member n bound)]
+        -- All other nodes: union over children
+        _ -> foldChildren (go bound) term
 
 -- | Check if a term is linear (all variables used exactly once)
 isLinear :: CTerm -> Bool
