@@ -8,6 +8,7 @@ import Alloy.Ir
 import Alloy.Naming (makeDictStructTypeName, qualifyWithModule)
 import Control.Monad (foldM, foldM_, forM, forM_)
 import Control.Monad.Reader (asks)
+import Control.Monad.State (modify)
 import Control.Monad.Writer.Class (MonadWriter (tell))
 import qualified Data.Map as Map
 import Llvm.Gen.Core
@@ -464,7 +465,7 @@ compileOp (OpClosureGetFunc closureOp) resultTy = do
         then pure result
         else saveTmp (LlvmBitcast result resultTy) resultTy
 
--- Session 13: Specialized closure duplication operations
+-- Specialized closure duplication operations
 
 -- OpDupClosure: Create a SUP node for closure duplication
 -- Semantically equivalent to OpDup but carries slot type info for specialized projections.
@@ -735,7 +736,7 @@ compileOp (OpClosureGetEnvSUP closureOp idx) resultTy = do
             LlvmPointer _ -> saveTmp (LlvmBitcast result resultTy) resultTy
             _ -> saveTmp (LlvmPtrToInt result resultTy) resultTy
 
--- Session 19: Parallel projection operations
+-- Parallel projection operations
 -- These call soma_par_proj0/1 which may spawn the other branch as a parallel task
 -- when workers are hungry and the work estimate exceeds the threshold.
 
@@ -872,7 +873,7 @@ compileOp (OpPanic msg) _resultTy = do
     pure (LlvmLiteral (LlvmPointer LlvmI8) "null")
 
 -- ============================================================================
--- Session 31: INET Runtime Operations
+-- INET Runtime Operations
 --
 -- The INET runtime uses a 64-bit Term encoding and provides parallel
 -- graph reduction via work-stealing. Terms are returned directly (not indices).
@@ -1065,7 +1066,7 @@ compileOp OpGraphEra _resultTy = do
 
 -- INET REF: create a REF node for lazy function expansion
 -- REF nodes store the function index in aux and the argument at the location
-compileOp (OpGraphRef fnName funcIdx argOp) _resultTy = do
+compileOp (OpGraphRef _fnName funcIdx argOp) _resultTy = do
     llArg <- compileOperand argOp
     (net, tm) <- getNetAndTm
     let refFunc = LlvmGlobal LlvmI64 "\"inet_ref\""
@@ -1075,20 +1076,14 @@ compileOp (OpGraphRef fnName funcIdx argOp) _resultTy = do
 -- INET DUP projection 0: get first copy from DUP node
 -- For now, just return the target (DUP is transparent for integers)
 -- TODO: implement proper DUP-SUP interaction
-compileOp (OpGraphDupProj0 targetOp) _resultTy = do
-    llTarget <- compileOperand targetOp
-    -- For simple cases (integers), DUP proj just returns the value
-    -- The runtime will handle DUP-SUP interaction when needed
-    pure llTarget
-
+-- For simple cases (integers), DUP proj just returns the value
+-- The runtime will handle DUP-SUP interaction when needed
+compileOp (OpGraphDupProj0 targetOp) _resultTy = compileOperand targetOp
 -- INET DUP projection 1: get second copy from DUP node
 -- For now, just return the target (DUP is transparent for integers)
 -- TODO: implement proper DUP-SUP interaction
-compileOp (OpGraphDupProj1 targetOp) _resultTy = do
-    llTarget <- compileOperand targetOp
-    -- For simple cases (integers), DUP proj just returns the value
-    pure llTarget
-
+-- For simple cases (integers), DUP proj just returns the value
+compileOp (OpGraphDupProj1 targetOp) _resultTy = compileOperand targetOp
 -- INET Closure: create a closure with captured environment
 -- inet_closure(net, tm, func_idx, arity, env[], env_size) -> Term
 compileOp (OpGraphClosure funcIdx arity envVals) _resultTy = do
@@ -1139,6 +1134,155 @@ compileOp (OpGraphClosureGetEnv cloOp idx) _resultTy = do
     let getEnvFunc = LlvmGlobal LlvmI64 "\"inet_closure_get_env\""
         idxVal = LlvmLiteral LlvmI16 (show idx)
     saveTmp (LlvmCall getEnvFunc LlvmI64 [net, llClo, idxVal]) LlvmI64
+-- Fork: spawn a parallel task
+-- OpFork taskFn taskArgs: fork a function call with the given arguments
+--
+-- Design for optimal performance:
+-- - Sequential mode: call function directly with all args (zero overhead)
+-- - Parallel mode: generate a trampoline wrapper that converts i64 args to native types
+--
+-- The trampoline is necessary because:
+-- - The runtime calls functions with SomaValue (i64) arguments
+-- - But Soma functions may use i32, ptr, etc. as their native parameter types
+-- - The trampoline converts i64 -> native type for each arg, calls the real function,
+--   then converts the result back to i64
+--
+-- The result is encoded as:
+-- - Parallel: task handle pointer (low bit = 0)
+-- - Sequential: (result << 1) | 1 (low bit = 1 marks inline result)
+-- OpJoin decodes this to either wait for task or extract inline result.
+compileOp (OpFork taskFn taskArgs) resultTy = do
+    llFn <- compileOperand taskFn
+    llArgs <- mapM compileOperand taskArgs
+
+    -- Ensure fn is a pointer (function pointer)
+    fnPtr <- case getValueType llFn of
+        LlvmPointer _ -> pure llFn
+        _ -> saveTmp (LlvmIntToPtr llFn (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+
+    -- Get the native types of each argument
+    let argTypes = map getValueType llArgs
+
+    -- Convert all args to i64 (SomaValue convention) for the parallel path
+    i64Args <- forM llArgs $ \llArg -> case getValueType llArg of
+        LlvmI64 -> pure llArg
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llArg LlvmI64) LlvmI64
+        LlvmI32 -> saveTmp (LlvmSExt llArg LlvmI64) LlvmI64
+        LlvmI8 -> saveTmp (LlvmSExt llArg LlvmI64) LlvmI64
+        LlvmI1 -> saveTmp (LlvmZExt llArg LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt llArg LlvmI64) LlvmI64
+
+    -- Check if parallel is enabled
+    let parEnabledFunc = LlvmGlobal LlvmI32 "\"soma_par_enabled_export\""
+    parEnabled <- saveTmp (LlvmCall parEnabledFunc LlvmI32 []) LlvmI32
+    isParallel <- saveTmp (LlvmICmp LlvmI32 "ne" parEnabled (LlvmLiteral LlvmI32 "0")) LlvmI1
+
+    -- Branch: parallel fork vs sequential inline
+    parallelBlock <- freshBlockName "fork_parallel"
+    sequentialBlock <- freshBlockName "fork_sequential"
+    mergeBlock <- freshBlockName "fork_merge"
+
+    tell [LlvmBrCond isParallel parallelBlock sequentialBlock]
+
+    -- Parallel path
+    tell [LlvmLabel parallelBlock]
+    taskHandleI64 <- case i64Args of
+        -- Single argument with i64 type: use soma_fork_direct (no trampoline needed)
+        [singleArg] | hardHead argTypes == LlvmI64 -> do
+            let forkFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_fork_direct\""
+            taskHandle <- saveTmp (LlvmCall forkFunc (LlvmPointer LlvmI8) [fnPtr, singleArg]) (LlvmPointer LlvmI8)
+            saveTmp (LlvmPtrToInt taskHandle LlvmI64) LlvmI64
+        -- Multiple arguments or non-i64 single arg: generate trampoline and use soma_fork_multi
+        _ -> do
+            -- Generate a unique trampoline function name
+            trampolineName <- freshBlockName "fork_trampoline"
+
+            -- Generate and register the trampoline function
+            generateTrampoline trampolineName fnPtr argTypes resultTy
+
+            let numArgs = length i64Args
+            -- Allocate array on stack for arguments
+            let arrayTy = LlvmArray numArgs LlvmI64
+            argsArray <- saveTmp (LlvmAlloca arrayTy Nothing) (LlvmPointer arrayTy)
+            -- Store each argument into the array
+            forM_ (zip [(0 :: Integer) ..] i64Args) $ \(idx, arg) -> do
+                elemPtr <- saveTmp (LlvmGetElementPtr arrayTy argsArray [LlvmLiteral LlvmI32 "0", LlvmLiteral LlvmI32 (show idx)] True) (LlvmPointer LlvmI64)
+                tell [LlvmStore arg elemPtr]
+            -- Cast array pointer to i64* for the runtime call
+            argsPtr <- saveTmp (LlvmBitcast argsArray (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+            -- Get trampoline function pointer
+            let trampolinePtr = LlvmGlobal (LlvmPointer LlvmI8) ("\"" ++ trampolineName ++ "\"")
+            -- Call soma_fork_multi(trampoline, args, num_args)
+            let forkMultiFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_fork_multi\""
+            taskHandle <- saveTmp (LlvmCall forkMultiFunc (LlvmPointer LlvmI8) [trampolinePtr, argsPtr, LlvmLiteral LlvmI32 (show numArgs)]) (LlvmPointer LlvmI8)
+            saveTmp (LlvmPtrToInt taskHandle LlvmI64) LlvmI64
+    tell [LlvmBr mergeBlock]
+
+    -- Sequential path: call function directly with original args (not i64-converted)
+    tell [LlvmLabel sequentialBlock]
+    -- resultTy is already the LlvmType for the return
+    rawResult <- saveTmp (LlvmCall fnPtr resultTy llArgs) resultTy
+    -- Convert result to i64 for encoding
+    inlineResult <- case resultTy of
+        LlvmI64 -> pure rawResult
+        LlvmI32 -> saveTmp (LlvmSExt rawResult LlvmI64) LlvmI64
+        LlvmI8 -> saveTmp (LlvmSExt rawResult LlvmI64) LlvmI64
+        LlvmI1 -> saveTmp (LlvmZExt rawResult LlvmI64) LlvmI64
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt rawResult LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt rawResult LlvmI64) LlvmI64
+    -- Encode inline result: (result << 1) | 1
+    encodedInline <- saveTmp (LlvmShl LlvmI64 inlineResult (LlvmLiteral LlvmI64 "1")) LlvmI64
+    encodedInlineTagged <- saveTmp (LlvmAdd LlvmI64 encodedInline (LlvmLiteral LlvmI64 "1")) LlvmI64
+    tell [LlvmBr mergeBlock]
+
+    -- Merge
+    tell [LlvmLabel mergeBlock]
+    saveTmp (LlvmPhi LlvmI64 [(taskHandleI64, parallelBlock), (encodedInlineTagged, sequentialBlock)]) LlvmI64
+
+-- Join: wait for a forked task and get its result
+-- OpJoin taskHandle: if low bit is 1, decode inline result; else call soma_join(handle)
+compileOp (OpJoin taskHandle) resultTy = do
+    llHandle <- compileOperand taskHandle
+    -- Ensure handle is i64
+    i64Handle <- case getValueType llHandle of
+        LlvmI64 -> pure llHandle
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llHandle LlvmI64) LlvmI64
+        _ -> saveTmp (LlvmSExt llHandle LlvmI64) LlvmI64
+
+    -- Check low bit: 1 = inline result, 0 = task handle
+    lowBit <- saveTmp (LlvmAnd LlvmI64 i64Handle (LlvmLiteral LlvmI64 "1")) LlvmI64
+    isInline <- saveTmp (LlvmICmp LlvmI64 "ne" lowBit (LlvmLiteral LlvmI64 "0")) LlvmI1
+
+    inlineBlock <- freshBlockName "join_inline"
+    parallelBlock <- freshBlockName "join_parallel"
+    mergeBlock <- freshBlockName "join_merge"
+
+    tell [LlvmBrCond isInline inlineBlock parallelBlock]
+
+    -- Inline path: decode result (value >> 1)
+    tell [LlvmLabel inlineBlock]
+    decodedResult <- saveTmp (LlvmLShr LlvmI64 i64Handle (LlvmLiteral LlvmI64 "1")) LlvmI64
+    tell [LlvmBr mergeBlock]
+
+    -- Parallel path: call soma_join
+    tell [LlvmLabel parallelBlock]
+    handlePtr <- saveTmp (LlvmIntToPtr i64Handle (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    let joinFunc = LlvmGlobal LlvmI64 "\"soma_join\""
+    joinResult <- saveTmp (LlvmCall joinFunc LlvmI64 [handlePtr]) LlvmI64
+    tell [LlvmBr mergeBlock]
+
+    -- Merge
+    tell [LlvmLabel mergeBlock]
+    result <- saveTmp (LlvmPhi LlvmI64 [(decodedResult, inlineBlock), (joinResult, parallelBlock)]) LlvmI64
+
+    -- Cast to result type if needed
+    case resultTy of
+        LlvmI64 -> pure result
+        LlvmPointer _ -> saveTmp (LlvmIntToPtr result resultTy) resultTy
+        LlvmI32 -> saveTmp (LlvmTrunc result LlvmI32) LlvmI32
+        LlvmI8 -> saveTmp (LlvmTrunc result LlvmI8) LlvmI8
+        LlvmI1 -> saveTmp (LlvmTrunc result LlvmI1) LlvmI1
+        _ -> saveTmp (LlvmTrunc result resultTy) resultTy
 
 cmpOpToLlvm :: ACmpOp -> String
 cmpOpToLlvm CEq = "eq"
@@ -1151,3 +1295,151 @@ cmpOpToLlvm CSlt = "slt"
 cmpOpToLlvm CSle = "sle"
 cmpOpToLlvm CSgt = "sgt"
 cmpOpToLlvm CSge = "sge"
+
+{- | Generate a trampoline wrapper function for parallel fork
+The trampoline:
+1. Takes a pointer to an array of i64 (SomaValue) arguments
+2. Loads and converts each argument to its native type
+3. Calls the real function
+4. Converts the result back to i64 (SomaValue)
+-}
+generateTrampoline :: String -> LlvmValue -> [LlvmType] -> LlvmType -> IrGen ()
+generateTrampoline name targetFn argTypes retTy = do
+    -- The trampoline takes a single ptr argument (pointer to args array)
+    let paramName = "args_ptr"
+        params = [(paramName, LlvmPointer LlvmI64)]
+
+    -- Generate the function body statements
+    let argsPtr = LlvmRegister (LlvmPointer LlvmI64) paramName
+
+    -- Build statements to load and convert each argument
+    (convertedArgs, loadStmts) <- generateArgLoads argsPtr argTypes
+
+    -- Call the target function
+    let callInstr = LlvmCall targetFn retTy convertedArgs
+        callReg = LlvmRegister retTy "call_result"
+        callStmt = LlvmAssign "call_result" callInstr
+
+    -- Convert result to i64
+    (resultI64, resultStmts) <- generateResultConversion callReg retTy
+
+    -- Return the i64 result
+    let retStmt = LlvmRet LlvmI64 (Just resultI64)
+
+    -- Create the function
+    let allStmts = loadStmts ++ [callStmt] ++ resultStmts ++ [retStmt]
+        block = LlvmBlock{blockName = "entry", blockStatements = allStmts}
+        fn =
+            LlvmFunction
+                { functionName = "\"" ++ name ++ "\""
+                , functionParams = params
+                , functionReturnType = LlvmI64
+                , functionBlocks = [block]
+                }
+
+    -- Register the trampoline function
+    modify (\s -> s{irFunctions = fn : irFunctions s})
+
+-- | Generate statements to load arguments from the args array and convert to native types
+generateArgLoads :: LlvmValue -> [LlvmType] -> IrGen ([LlvmValue], [LlvmStatement])
+generateArgLoads argsPtr argTypes = do
+    results <- forM (zip [0 ..] argTypes) $ \(idx, argTy) -> do
+        let idxLit = LlvmLiteral LlvmI32 (show (idx :: Int))
+            gepReg = "arg_ptr_" ++ show idx
+            loadReg = "arg_i64_" ++ show idx
+            convReg = "arg_" ++ show idx
+
+        -- GEP to get pointer to this argument in the array
+        let gepInstr = LlvmGetElementPtr LlvmI64 argsPtr [idxLit] True
+            gepStmt = LlvmAssign gepReg gepInstr
+            gepVal = LlvmRegister (LlvmPointer LlvmI64) gepReg
+
+        -- Load the i64 value
+        let loadInstr = LlvmLoad gepVal
+            loadStmt = LlvmAssign loadReg loadInstr
+            loadVal = LlvmRegister LlvmI64 loadReg
+
+        -- Convert from i64 to the native type
+        (convVal, convStmts) <- generateArgConversion loadVal argTy convReg
+
+        pure (convVal, [gepStmt, loadStmt] ++ convStmts)
+
+    let (vals, stmtLists) = unzip results
+    pure (vals, concat stmtLists)
+
+-- | Generate statements to convert an i64 value to a native type
+generateArgConversion :: LlvmValue -> LlvmType -> String -> IrGen (LlvmValue, [LlvmStatement])
+generateArgConversion i64Val targetTy regName = case targetTy of
+    LlvmI64 ->
+        -- No conversion needed
+        pure (i64Val, [])
+    LlvmI32 -> do
+        -- Truncate i64 to i32
+        let instr = LlvmTrunc i64Val LlvmI32
+            stmt = LlvmAssign regName instr
+            result = LlvmRegister LlvmI32 regName
+        pure (result, [stmt])
+    LlvmI8 -> do
+        -- Truncate i64 to i8
+        let instr = LlvmTrunc i64Val LlvmI8
+            stmt = LlvmAssign regName instr
+            result = LlvmRegister LlvmI8 regName
+        pure (result, [stmt])
+    LlvmI1 -> do
+        -- Truncate i64 to i1
+        let instr = LlvmTrunc i64Val LlvmI1
+            stmt = LlvmAssign regName instr
+            result = LlvmRegister LlvmI1 regName
+        pure (result, [stmt])
+    LlvmPointer innerTy -> do
+        -- inttoptr i64 to pointer
+        let instr = LlvmIntToPtr i64Val (LlvmPointer innerTy)
+            stmt = LlvmAssign regName instr
+            result = LlvmRegister (LlvmPointer innerTy) regName
+        pure (result, [stmt])
+    _ -> do
+        -- Default: truncate to i32 (conservative)
+        let instr = LlvmTrunc i64Val LlvmI32
+            stmt = LlvmAssign regName instr
+            result = LlvmRegister LlvmI32 regName
+        pure (result, [stmt])
+
+-- | Generate statements to convert a native result to i64
+generateResultConversion :: LlvmValue -> LlvmType -> IrGen (LlvmValue, [LlvmStatement])
+generateResultConversion resultVal retTy = case retTy of
+    LlvmI64 ->
+        -- No conversion needed
+        pure (resultVal, [])
+    LlvmI32 -> do
+        -- Sign-extend i32 to i64
+        let instr = LlvmSExt resultVal LlvmI64
+            stmt = LlvmAssign "result_i64" instr
+            result = LlvmRegister LlvmI64 "result_i64"
+        pure (result, [stmt])
+    LlvmI8 -> do
+        -- Sign-extend i8 to i64
+        let instr = LlvmSExt resultVal LlvmI64
+            stmt = LlvmAssign "result_i64" instr
+            result = LlvmRegister LlvmI64 "result_i64"
+        pure (result, [stmt])
+    LlvmI1 -> do
+        -- Zero-extend i1 to i64
+        let instr = LlvmZExt resultVal LlvmI64
+            stmt = LlvmAssign "result_i64" instr
+            result = LlvmRegister LlvmI64 "result_i64"
+        pure (result, [stmt])
+    LlvmPointer _ -> do
+        -- ptrtoint pointer to i64
+        let instr = LlvmPtrToInt resultVal LlvmI64
+            stmt = LlvmAssign "result_i64" instr
+            result = LlvmRegister LlvmI64 "result_i64"
+        pure (result, [stmt])
+    LlvmVoid ->
+        -- Void return - return 0
+        pure (LlvmLiteral LlvmI64 "0", [])
+    _ -> do
+        -- Default: sign-extend to i64
+        let instr = LlvmSExt resultVal LlvmI64
+            stmt = LlvmAssign "result_i64" instr
+            result = LlvmRegister LlvmI64 "result_i64"
+        pure (result, [stmt])

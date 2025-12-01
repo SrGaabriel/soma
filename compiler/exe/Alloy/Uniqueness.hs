@@ -173,19 +173,19 @@ usesFromOp blk idx op =
             mergeAll [singleUseIfVar closure (UseCallArg blk idx 0), singleUseIfVar val (UseCallArg blk idx 1)]
         OpClosureGetEnv closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
         OpClosureGetFunc closure -> singleUseIfVar closure (UseCallArg blk idx 0)
-        -- Session 13: specialized closure duplication ops
+        -- Specialized closure duplication ops
         OpDupClosure _ closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
         OpDupClosureProj0 handle _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
         OpDupClosureProj1 handle _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
         OpClosureGetEnvDirect closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
         OpClosureGetEnvSUP closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
-        -- Session 19: parallel projection ops
+        -- Parallel projection ops
         OpParProj0 handle _ -> singleUseIfVar handle (UseCallArg blk idx 0)
         OpParProj1 handle _ -> singleUseIfVar handle (UseCallArg blk idx 0)
         OpParClosureProj0 handle _ _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
         OpParClosureProj1 handle _ _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
         OpPanic _ -> Map.empty
-        -- Session 27: graph reduction ops
+        -- Graph reduction ops
         OpGraphInit _ -> Map.empty
         OpGraphShutdown -> Map.empty
         OpGraphNum val -> singleUseIfVar val (UseCallArg blk idx 0)
@@ -196,7 +196,7 @@ usesFromOp blk idx op =
         OpGraphReduce root -> singleUseIfVar root (UseCallArg blk idx 0)
         OpGraphExtractNum term -> singleUseIfVar term (UseCallArg blk idx 0)
         OpGraphRegisterFunc _ _ impl -> singleUseIfVar impl (UseCallArg blk idx 0)
-        -- Session 29: interaction net operations
+        -- Interaction net operations
         OpGraphDup _ target -> singleUseIfVar target (UseCallArg blk idx 0)
         OpGraphSup _ l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
         OpGraphLam varSlot body -> mergeAll [singleUseIfVar varSlot (UseCallArg blk idx 0), singleUseIfVar body (UseCallArg blk idx 1)]

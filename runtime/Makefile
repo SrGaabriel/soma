@@ -1,41 +1,59 @@
 # Soma Runtime Makefile
 #
-# The INET runtime is the primary parallel reduction engine.
-# It uses a hybrid stack + work-stealing architecture for
-# maximum parallelism on tree-structured computations.
+# Three runtime modes:
+# 1. Native (native_soma.a)  - Pure stack-based, no pools, minimal overhead
+# 2. Hybrid (hybrid_soma.a)  - Stack + pools + optional fork-join parallelism
+# 3. Graph  (inets_soma.a)   - Full interaction net graph reduction
+#
+# Use -m native|hybrid|graph when compiling Soma programs.
 
 CC = clang
 CFLAGS = -O3 -Wall -Wextra -fPIC -std=c11 -pthread
 
-# Output
-LIB = libsoma_runtime.a
-OBJ = soma_inet.o
+# Output libraries
+NATIVE_LIB = native_soma.a
+HYBRID_LIB = hybrid_soma.a
+INETS_LIB  = inets_soma.a
 
-.PHONY: all clean test
+.PHONY: all clean test native hybrid inets
 
-all: $(LIB)
+all: $(NATIVE_LIB) $(HYBRID_LIB) $(INETS_LIB)
 
-$(LIB): $(OBJ)
+native: $(NATIVE_LIB)
+hybrid: $(HYBRID_LIB)
+inets: $(INETS_LIB)
+
+# Native runtime - pure stack-based, minimal overhead
+$(NATIVE_LIB): soma_runtime.o
 	ar rcs $@ $^
 
-# Core runtime
+soma_runtime.o: soma_runtime.c soma_runtime.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Hybrid runtime - pools + optional fork-join parallelism
+$(HYBRID_LIB): soma_hybrid.o
+	ar rcs $@ $^
+
+soma_hybrid.o: soma_hybrid.c soma_runtime.c soma_runtime.h
+	$(CC) $(CFLAGS) -c soma_hybrid.c -o $@
+
+# Graph runtime - full interaction net reduction
+$(INETS_LIB): soma_inet.o
+	ar rcs $@ $^
+
 soma_inet.o: soma_inet.c soma_inet.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Test program (compile runtime with SOMA_NO_MAIN to avoid main conflict)
+# Test programs
 test_inet: test_inet.c soma_inet.c soma_inet.h
 	$(CC) $(CFLAGS) -DSOMA_NO_MAIN test_inet.c soma_inet.c -o $@
 
-test: test_inet
 	./test_inet
 
-# Debug build
+# Debug builds
 test_inet_debug: test_inet.c soma_inet.c soma_inet.h
 	$(CC) -O0 -g -Wall -Wextra -std=c11 -pthread -DINET_DEBUG $< soma_inet.c -o $@
 
-# Benchmark
-bench: test_inet
-	./test_inet bench 25 8 4
 
 clean:
-	rm -f $(OBJ) $(LIB) test_inet test_inet_debug
+	rm -f *.o $(NATIVE_LIB) $(HYBRID_LIB) $(INETS_LIB) test_inet test_inet_debug

@@ -22,21 +22,21 @@ You can find some examples in the `examples/` directory. They are not comprehens
 
 ## 🛠️ Compiler backend breakdown
 
-The compiler provides two optimization paths: a traditional CFG-based path and an Interaction Net-based path for optimal evaluation.
+The compiler provides three compilation modes, each optimized for different use cases:
 
-### Traditional Path (Alloy-first)
+### Three Compilation Modes
 
-1. **Metal (HIR) 🧱**: After inference the compiler produces a higher-level IR. This stage performs lambda-lifting (so nested functions become explicit top-level closures) and normalization to get a predictable, analyzable shape.
+Use the `-m` / `--mode` flag to select:
 
-2. **Alloy (MIR) 📋**: Mid-level IR & transforms. The HIR is lowered to a mid-level IR where the bulk of optimizations happen. This is where polymorphism is prepared for specialization, monadic patterns are normalized, and candidate optimizations are applied.
+1. **Standard Mode** (`-m standard`) - Default, predictable runtime (no laziness or implicit parallelism)
+2. **Hybrid Mode** (`-m hybrid`) - Native but parallelized with fork-join on hot paths
+3. **Graph Mode** (`-m graph`) - Full interaction net reduction with work-stealing parallelism
 
-3. **LTO ⚡**: Separately-compiled modules are fused for whole-program passes. This LTO-style phase enables cross-module monomorphization, inlining, and aggressive specialization.
+### Native Mode Pipeline
 
-4. **LLVM 🛡️**: The optimized IR is translated to LLVM IR. From there you can use standard LLVM tools to produce object files or executables.
+The default compilation path for predictable, sequential execution:
 
-### Circuit Path (Interaction Nets)
-
-1. **Metal (HIR) 🧱**: Same high-level IR as above, preserving full System F-Omega polymorphism and higher-kinded types.
+1. **Metal (HIR) 🧱**: After inference, the compiler produces a higher-level IR. This stage performs lambda-lifting (nested functions become explicit top-level closures) and normalization to get a predictable, analyzable shape.
 
 2. **Circuit IR 🔄**: An Interaction Net-based intermediate representation that achieves optimal (Lamping-style) evaluation without garbage collection. The compiler:
    - Infers linearity automatically (no linear types required in source)
@@ -46,18 +46,49 @@ The compiler provides two optimization paths: a traditional CFG-based path and a
 
 3. **Linearization ✂️**: Transforms Circuit IR into affine form where each variable is used exactly once. This gives us precise lifetime information for free: no reference counting, no tracing GC, no cycles.
 
-4. **Alloy (MIR) 📋**: The linearized Circuit IR is lowered to Alloy's CFG-based representation for final codegen.
+4. **Alloy (MIR) 📋**: The linearized Circuit IR is lowered to Alloy's CFG-based representation. This mid-level IR applies optimizations: monomorphization, inlining, defunctionalization, CSE, and more.
 
-5. **LLVM 🛡️**: Translation to LLVM IR and native code generation.
+5. **LTO ⚡**: Separately-compiled modules are fused for whole-program passes. This LTO-style phase enables cross-module monomorphization, inlining, and aggressive specialization.
+
+6. **LLVM 🛡️**: The optimized IR is translated to LLVM IR. From there, standard LLVM tools produce object files or executables.
+
+**Runtime**: `native_soma.a` - Stack + memory pools, predictable sequential execution.
+
+### Hybrid Mode Pipeline
+
+Same as Native mode but with fork-join parallelism enabled via compiler analysis:
+
+1-3. **Same as Native** (Metal → Circuit → Linearization)
+
+4. **Parallelization 🔀**: Before LTO, the compiler inserts fork/join operations at hot paths detected via work estimation heuristics. Enable at runtime with `SOMA_PARALLEL=N` where N is worker count.
+
+5-7. **Same as Native** (Alloy → LTO → LLVM)
+
+**Runtime**: `hybrid_soma.a` - Wraps native runtime with optional parallel work-stealing scheduler.
+
+### Graph Mode Pipeline
+
+Full interaction net graph reduction with automatic parallelism:
+
+1. **Metal (HIR) 🧱**: Same high-level IR, preserving full System F-Omega polymorphism and higher-kinded types.
+
+2. **Circuit IR 🔄**: Same interaction net IR as Native mode, but **no linearization**. The Circuit IR remains non-affine; the runtime handles duplication lazily via graph reduction.
+
+3. **Graph Lowering 🕸️**: Circuit IR is lowered directly to Alloy's graph operations (`OpGraphNum`, `OpGraphRef`, `OpGraphAdd`, etc.). Functions build and return graph structures instead of computing values eagerly.
+
+4. **Alloy (MIR) 📋**: Graph-based Alloy IR is optimized (inlining, CSE, etc.).
+
+5. **LTO & LLVM**: Same whole-program optimization and LLVM codegen.
+
+**Runtime**: `inets_soma.a` - Pure interaction net runtime with work-stealing reduction. Achieves up to **8.77x speedup** (4 workers) on recursive workloads via automatic parallelism. Enable with `SOMA_WORKERS=N`.
 
 ### Key Benefits of Circuit IR
 
-- **No GC pauses**: Memory is freed deterministically at consumption points
-- **Optimal sharing**: Lazy duplication (HVM-style) avoids recomputation
-- **Free parallelism**: Independent subgraphs reduce in parallel without locks
-- **Predictable performance**: No unpredictable collection pauses, real-time safe
-
-The Circuit path is an alternative optimization strategy—the existing Metal → Alloy path is preserved for traditional compilation.
+- **No GC pauses**: Memory is freed deterministically at consumption points (Native/Hybrid)
+- **Optimal sharing**: Lazy duplication (HVM-style) avoids recomputation (all modes)
+- **Automatic parallelism**: Independent subgraphs reduce in parallel without locks (Graph mode)
+- **Predictable performance**: No unpredictable collection pauses, real-time safe (all modes)
+- **User choice**: Pick the right tradeoff between predictability (Native), optional parallelism (Hybrid), or automatic parallelism (Graph)
 
 ---
 

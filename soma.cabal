@@ -137,6 +137,7 @@ executable somac
     Circuit.Ir
     Circuit.Linearize
     Circuit.Lower
+    Circuit.Parallel
     Circuit.Simplify
     Circuit.ToAlloy
     Circuit.ToGraph

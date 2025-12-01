@@ -162,19 +162,19 @@ instance TreeShow AOp where
     treeShow (OpClosureSetEnv closure idx val) = "closure_set_env " ++ treeShow closure ++ "[" ++ show idx ++ "] := " ++ treeShow val
     treeShow (OpClosureGetEnv closure idx) = "closure_get_env " ++ treeShow closure ++ "[" ++ show idx ++ "]"
     treeShow (OpClosureGetFunc closure) = "closure_get_func " ++ treeShow closure
-    -- Session 13: specialized closure duplication ops
+    -- Specialized closure duplication ops
     treeShow (OpDupClosure label closure slotInfo) = "dup_closure[" ++ show label ++ "] " ++ treeShow closure ++ " slots=" ++ show slotInfo
     treeShow (OpDupClosureProj0 handle envSz slotInfo) = "dup_closure_proj0 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo
     treeShow (OpDupClosureProj1 handle envSz slotInfo) = "dup_closure_proj1 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo
     treeShow (OpClosureGetEnvDirect closure idx) = "closure_get_env_direct " ++ treeShow closure ++ "[" ++ show idx ++ "]"
     treeShow (OpClosureGetEnvSUP closure idx) = "closure_get_env_sup " ++ treeShow closure ++ "[" ++ show idx ++ "]"
-    -- Session 19: parallel projection ops
+    -- Parallel projection ops
     treeShow (OpParProj0 handle workEst) = "par_proj0 " ++ treeShow handle ++ " work=" ++ show workEst
     treeShow (OpParProj1 handle workEst) = "par_proj1 " ++ treeShow handle ++ " work=" ++ show workEst
     treeShow (OpParClosureProj0 handle envSz slotInfo workEst) = "par_closure_proj0 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo ++ " work=" ++ show workEst
     treeShow (OpParClosureProj1 handle envSz slotInfo workEst) = "par_closure_proj1 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo ++ " work=" ++ show workEst
     treeShow (OpPanic msg) = "panic \"" ++ msg ++ "\""
-    -- Session 27: graph reduction ops
+    -- Graph reduction ops
     treeShow (OpGraphInit n) = "graph_init workers=" ++ show n
     treeShow OpGraphShutdown = "graph_shutdown"
     treeShow (OpGraphNum v) = "graph_num " ++ treeShow v
@@ -199,6 +199,8 @@ instance TreeShow AOp where
         "graph_closure[" ++ show funcIdx ++ ", arity=" ++ show arity ++ "](" ++ intercalate ", " (map treeShow envVals) ++ ")"
     treeShow (OpGraphClosureApp clo arg) = "graph_closure_app " ++ treeShow clo ++ " @ " ++ treeShow arg
     treeShow (OpGraphClosureGetEnv clo idx) = "graph_closure_get_env " ++ treeShow clo ++ "[" ++ show idx ++ "]"
+    treeShow (OpFork term workEst) = "fork " ++ treeShow term ++ " work=" ++ show workEst
+    treeShow (OpJoin handle) = "join " ++ treeShow handle
 
 instance TreeShow AEffect where
     treeShow (EffStore dst v) = "store " ++ treeShow dst ++ " := " ++ treeShow v
@@ -365,6 +367,10 @@ prettyTerm = go 0
         go d expr ++ "." ++ show idx
     go _ (CPanic msg _) =
         "panic \"" ++ msg ++ "\""
+    go d (CFork n _ comp body) =
+        "fork " ++ n ++ " = " ++ go d comp ++ " in " ++ go d body
+    go _ (CJoin n _) =
+        "join " ++ n
 
 -- | Pretty print binary operators
 prettyBinOp :: BinOp -> String
@@ -641,6 +647,18 @@ buildGraph = \case
         addNode (NProject idx) [PNode exprId "expr", PFree "value"]
     CPanic msg _ -> do
         addNode (NPanic msg) [PFree "unreachable"]
+    CFork n _ comp body -> do
+        compId <- buildGraph comp
+        forkId <- freshNodeId
+        bindVar n forkId
+        bodyId <- buildGraph body
+        modify $ \s -> s{gsNodes = GNode forkId (NLet n) [PNode compId "task", PNode bodyId "body"] : gsNodes s}
+        pure forkId
+    CJoin n _ -> do
+        mNode <- lookupVar n
+        case mNode of
+            Just nid -> pure nid
+            Nothing -> addNode (NVar n) [PFree "join"]
 
 -- | Pretty print a single node
 prettyNode :: GNode -> String

@@ -117,6 +117,21 @@ data CTerm
       The result type is needed for type consistency in expressions.
       -}
       CPanic !String !Type
+    | {- | Fork: spawn a computation as a parallel task
+        CFork taskName resultType computation continuation
+        - taskName: name for the task handle
+        - resultType: type of the computation's result
+        - computation: the expression to evaluate in parallel
+        - continuation: what to do after forking (doesn't wait)
+      -}
+      CFork !Name !Type !CTerm !CTerm
+    | {- | Join: wait for a forked task and get its result
+        CJoin taskName resultType
+        - taskName: the task handle from CFork
+        - resultType: type of the result
+        Blocks until the task completes, then returns its result.
+      -}
+      CJoin !Name !Type
     deriving (Show, Eq, Generic)
 
 -- | Binary operations on primitives
@@ -255,6 +270,8 @@ getTermType = \case
     CClosureGetEnv _ _ ty -> ty
     CProject _ _ ty -> ty
     CPanic _ ty -> ty
+    CFork _ ty _ _ -> ty
+    CJoin _ ty -> ty
 
 -- ============================================================================
 -- Variable Analysis
@@ -287,6 +304,8 @@ countVarUses target = go
     go (CClosureGetEnv closure _ _) = go closure
     go (CProject expr _ _) = go expr
     go (CPanic _ _) = 0
+    go (CFork _ _ comp cont) = go comp + go cont
+    go (CJoin _ _) = 0
 
 -- | Get all free variables in a term
 freeVars :: CTerm -> Set Name
@@ -318,6 +337,8 @@ freeVars = go Set.empty
     go bound (CClosureGetEnv closure _ _) = go bound closure
     go bound (CProject expr _ _) = go bound expr
     go _ (CPanic _ _) = Set.empty
+    go bound (CFork _ _ comp cont) = go bound comp <> go bound cont
+    go _ (CJoin _ _) = Set.empty
 
 -- | Get all free variables in a term with their types
 freeVarsWithTypes :: CTerm -> Map Name Type
@@ -349,6 +370,8 @@ freeVarsWithTypes = go Set.empty
     go bound (CClosureGetEnv closure _ _) = go bound closure
     go bound (CProject expr _ _) = go bound expr
     go _ (CPanic _ _) = Map.empty
+    go bound (CFork _ _ comp cont) = go bound comp <> go bound cont
+    go _ (CJoin _ _) = Map.empty
 
 -- | Check if a term is linear (all variables used exactly once)
 isLinear :: CTerm -> Bool
@@ -451,6 +474,12 @@ classifyTerm = \case
     CProject _ _ ty -> classifyType ty
     -- Panic: never returns, but use the declared type for consistency
     CPanic _ ty -> classifyType ty
+    -- Fork: the continuation determines allocation
+    -- The forked computation runs in parallel, but the continuation's result type matters
+    CFork _ _ _ cont -> classifyTerm cont
+    -- Join: use the result type annotation
+    -- Blocks until the task completes, result type matters
+    CJoin _ ty -> classifyType ty
 
 -- | Merge two allocation kinds (conservative: if either is MaybeHeap, result is MaybeHeap)
 mergeAllocKind :: AllocKind -> AllocKind -> AllocKind

@@ -95,14 +95,42 @@ cRuntimeDependencies =
       -- Debug
       LlvmFunctionDependency "inet_print_term" LlvmVoid [ptrType, termType]
     , LlvmFunctionDependency "inet_print_stats" LlvmVoid [ptrType]
-    , -- Standard library dependencies
-      LlvmFunctionDependency "malloc" ptrType [LlvmI64]
-    , LlvmFunctionDependency "free" LlvmVoid [ptrType]
-    , LlvmFunctionDependency "memcpy" ptrType [ptrType, ptrType, LlvmI64]
-    , LlvmFunctionDependency "printf" LlvmI32 [ptrType] -- varargs, simplified
     , -- Global INET pointer (set in main)
       LlvmGlobalDependency "g_inet" ptrType
-    , LlvmGlobalDependency "g_inet_tm" ptrType -- Main thread's ThreadMem
+    , LlvmGlobalDependency
+        "g_inet_tm"
+        ptrType -- Main thread's ThreadMem
+    , LlvmFunctionDependency
+        "soma_pool_init"
+        LlvmVoid
+        []
+    , LlvmFunctionDependency "soma_pool_cleanup" LlvmVoid []
+    , -- SUP operations
+      LlvmFunctionDependency "soma_dup" ptrType [LlvmI32, ptrType]
+    , LlvmFunctionDependency "soma_proj0" LlvmI64 [LlvmI64]
+    , LlvmFunctionDependency "soma_proj1" LlvmI64 [LlvmI64]
+    , -- Parallel SUP operations (SomaValue = i64)
+      LlvmFunctionDependency "soma_par_proj0" LlvmI64 [LlvmI64, LlvmI32]
+    , LlvmFunctionDependency "soma_par_proj1" LlvmI64 [LlvmI64, LlvmI32]
+    , -- Fork-join parallelism (returns ptr to SomaTask, or NULL if parallel disabled)
+      LlvmFunctionDependency "soma_fork_direct" ptrType [ptrType, LlvmI64] -- fn, arg
+    , LlvmFunctionDependency "soma_fork_closure" ptrType [ptrType, ptrType, LlvmI64] -- fn, closure, arg
+    , LlvmFunctionDependency "soma_fork_multi" ptrType [ptrType, LlvmPointer LlvmI64, LlvmI32] -- fn, args[], num_args
+    , LlvmFunctionDependency "soma_join" LlvmI64 [ptrType] -- task -> result
+    , LlvmFunctionDependency "soma_par_enabled_export" LlvmI32 [] -- check if parallel runtime enabled (exported wrapper)
+    , -- Closure operations
+      LlvmFunctionDependency "soma_alloc_closure" ptrType [ptrType, LlvmI8, LlvmI16]
+    , LlvmFunctionDependency "soma_closure_set_env" LlvmVoid [ptrType, LlvmI16, LlvmI64]
+    , LlvmFunctionDependency "soma_closure_get_env" LlvmI64 [ptrType, LlvmI16]
+    , LlvmFunctionDependency "soma_clone_closure" ptrType [ptrType]
+    , -- Memory management
+      LlvmFunctionDependency "soma_era_free" LlvmVoid [ptrType]
+    , LlvmFunctionDependency "soma_fresh_label" LlvmI32 []
+    , -- Pool allocation (for direct use)
+      LlvmFunctionDependency "soma_pool_alloc_sup" ptrType []
+    , LlvmFunctionDependency "soma_pool_alloc_closure" ptrType [LlvmI16]
+    , LlvmFunctionDependency "soma_pool_free_sup" LlvmVoid [ptrType]
+    , LlvmFunctionDependency "soma_pool_free_closure" LlvmVoid [ptrType, LlvmI16]
     ]
 
 cRuntimeExternalDeclarations :: String

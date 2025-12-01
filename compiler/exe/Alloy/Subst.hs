@@ -78,13 +78,13 @@ substOp env = \case
     OpClosureSetEnv closure idx val -> OpClosureSetEnv (sub closure) idx (sub val)
     OpClosureGetEnv closure idx -> OpClosureGetEnv (sub closure) idx
     OpClosureGetFunc closure -> OpClosureGetFunc (sub closure)
-    -- Specialized closure duplication (Session 13)
+    -- Specialized closure duplication
     OpDupClosure label closure slotInfo -> OpDupClosure label (sub closure) slotInfo
     OpDupClosureProj0 handle envSz slotInfo -> OpDupClosureProj0 (sub handle) envSz slotInfo
     OpDupClosureProj1 handle envSz slotInfo -> OpDupClosureProj1 (sub handle) envSz slotInfo
     OpClosureGetEnvDirect closure idx -> OpClosureGetEnvDirect (sub closure) idx
     OpClosureGetEnvSUP closure idx -> OpClosureGetEnvSUP (sub closure) idx
-    -- Parallel projection (Session 19)
+    -- Parallel projection
     OpParProj0 handle work -> OpParProj0 (sub handle) work
     OpParProj1 handle work -> OpParProj1 (sub handle) work
     OpParClosureProj0 handle envSz slotInfo work ->
@@ -93,7 +93,7 @@ substOp env = \case
         OpParClosureProj1 (sub handle) envSz slotInfo work
     -- Panic (no operands to substitute)
     OpPanic msg -> OpPanic msg
-    -- Graph reduction operations (Session 27)
+    -- Graph reduction operations
     OpGraphInit n -> OpGraphInit n
     OpGraphShutdown -> OpGraphShutdown
     OpGraphNum v -> OpGraphNum (sub v)
@@ -106,7 +106,7 @@ substOp env = \case
     OpGraphReduce root -> OpGraphReduce (sub root)
     OpGraphExtractNum term -> OpGraphExtractNum (sub term)
     OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (sub impl)
-    -- Graph reduction interaction net operations (Session 29)
+    -- Graph reduction interaction net operations
     OpGraphDup label target -> OpGraphDup label (sub target)
     OpGraphSup label l r -> OpGraphSup label (sub l) (sub r)
     OpGraphLam varSlot body -> OpGraphLam (sub varSlot) (sub body)
@@ -118,6 +118,8 @@ substOp env = \case
     OpGraphClosure funcIdx arity envVals -> OpGraphClosure funcIdx arity (map sub envVals)
     OpGraphClosureApp clo arg -> OpGraphClosureApp (sub clo) (sub arg)
     OpGraphClosureGetEnv clo idx -> OpGraphClosureGetEnv (sub clo) idx
+    OpFork fn args -> OpFork (sub fn) (map sub args)
+    OpJoin handle -> OpJoin (sub handle)
   where
     sub = substOperand env
 
@@ -211,7 +213,6 @@ opVars = \case
     OpParClosureProj0 h _ _ _ -> vars h
     OpParClosureProj1 h _ _ _ -> vars h
     OpPanic _ -> []
-    -- Graph reduction operations (Session 27)
     OpGraphInit _ -> []
     OpGraphShutdown -> []
     OpGraphNum v -> vars v
@@ -224,7 +225,6 @@ opVars = \case
     OpGraphReduce root -> vars root
     OpGraphExtractNum term -> vars term
     OpGraphRegisterFunc _ _ impl -> vars impl
-    -- Graph reduction interaction net operations (Session 29)
     OpGraphDup _ target -> vars target
     OpGraphSup _ l r -> vars l ++ vars r
     OpGraphLam varSlot body -> vars varSlot ++ vars body
@@ -236,6 +236,8 @@ opVars = \case
     OpGraphClosure _ _ envVals -> concatMap vars envVals
     OpGraphClosureApp clo arg -> vars clo ++ vars arg
     OpGraphClosureGetEnv clo _ -> vars clo
+    OpFork fn args -> vars fn ++ concatMap vars args
+    OpJoin h -> vars h
   where
     vars = operandVars
 

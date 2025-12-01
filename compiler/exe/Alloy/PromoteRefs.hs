@@ -196,6 +196,7 @@ substOp env op =
         OpUnary k a -> OpUnary k (substOperand env a)
         OpCmp k a b -> OpCmp k (substOperand env a) (substOperand env b)
         OpLoad a -> OpLoad (substOperand env a)
+        OpSelect cond thenOp elseOp -> OpSelect (substOperand env cond) (substOperand env thenOp) (substOperand env elseOp)
         OpAllocStack t -> OpAllocStack t
         OpAllocHeap t -> OpAllocHeap t
         OpCall callee args -> OpCall (substCallable env callee) (map (substOperand env) args)
@@ -215,30 +216,28 @@ substOp env op =
         OpClosureSetEnv closure idx val -> OpClosureSetEnv (substOperand env closure) idx (substOperand env val)
         OpClosureGetEnv closure idx -> OpClosureGetEnv (substOperand env closure) idx
         OpClosureGetFunc closure -> OpClosureGetFunc (substOperand env closure)
-        -- Session 13: specialized closure duplication ops
         OpDupClosure label closure slotInfo -> OpDupClosure label (substOperand env closure) slotInfo
         OpDupClosureProj0 handle envSz slotInfo -> OpDupClosureProj0 (substOperand env handle) envSz slotInfo
         OpDupClosureProj1 handle envSz slotInfo -> OpDupClosureProj1 (substOperand env handle) envSz slotInfo
         OpClosureGetEnvDirect closure idx -> OpClosureGetEnvDirect (substOperand env closure) idx
         OpClosureGetEnvSUP closure idx -> OpClosureGetEnvSUP (substOperand env closure) idx
-        -- Session 19: parallel projection ops
         OpParProj0 handle workEst -> OpParProj0 (substOperand env handle) workEst
         OpParProj1 handle workEst -> OpParProj1 (substOperand env handle) workEst
         OpParClosureProj0 handle envSz slotInfo workEst -> OpParClosureProj0 (substOperand env handle) envSz slotInfo workEst
         OpParClosureProj1 handle envSz slotInfo workEst -> OpParClosureProj1 (substOperand env handle) envSz slotInfo workEst
         OpPanic msg -> OpPanic msg
-        -- Session 27: graph reduction ops
         OpGraphInit n -> OpGraphInit n
         OpGraphShutdown -> OpGraphShutdown
         OpGraphNum v -> OpGraphNum (substOperand env v)
         OpGraphAdd l r -> OpGraphAdd (substOperand env l) (substOperand env r)
         OpGraphSub l r -> OpGraphSub (substOperand env l) (substOperand env r)
         OpGraphMul l r -> OpGraphMul (substOperand env l) (substOperand env r)
+        OpGraphDiv l r -> OpGraphDiv (substOperand env l) (substOperand env r)
+        OpGraphMod l r -> OpGraphMod (substOperand env l) (substOperand env r)
         OpGraphCall fnIdx args -> OpGraphCall fnIdx (map (substOperand env) args)
         OpGraphReduce root -> OpGraphReduce (substOperand env root)
         OpGraphExtractNum term -> OpGraphExtractNum (substOperand env term)
         OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (substOperand env impl)
-        -- Session 29: interaction net operations
         OpGraphDup label target -> OpGraphDup label (substOperand env target)
         OpGraphSup label l r -> OpGraphSup label (substOperand env l) (substOperand env r)
         OpGraphLam varSlot body -> OpGraphLam (substOperand env varSlot) (substOperand env body)
@@ -250,6 +249,8 @@ substOp env op =
         OpGraphClosure funcIdx arity envVals -> OpGraphClosure funcIdx arity (map (substOperand env) envVals)
         OpGraphClosureApp clo arg -> OpGraphClosureApp (substOperand env clo) (substOperand env arg)
         OpGraphClosureGetEnv clo idx -> OpGraphClosureGetEnv (substOperand env clo) idx
+        OpFork fn args -> OpFork (substOperand env fn) (map (substOperand env) args)
+        OpJoin handle -> OpJoin (substOperand env handle)
 
 substEffect :: Subst -> AEffect -> AEffect
 substEffect env eff =
@@ -315,6 +316,7 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpUnary _ a -> isVar r a
             OpCmp _ a b -> isVar r a || isVar r b
             OpLoad a -> isVar r a
+            OpSelect cond thenOp elseOp -> isVar r cond || isVar r thenOp || isVar r elseOp
             OpAllocStack _ -> False
             OpAllocHeap _ -> False
             OpCall callee args ->
@@ -335,30 +337,28 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpClosureSetEnv closure _ val -> isVar r closure || isVar r val
             OpClosureGetEnv closure _ -> isVar r closure
             OpClosureGetFunc closure -> isVar r closure
-            -- Session 13: specialized closure duplication ops
             OpDupClosure _ closure _ -> isVar r closure
             OpDupClosureProj0 handle _ _ -> isVar r handle
             OpDupClosureProj1 handle _ _ -> isVar r handle
             OpClosureGetEnvDirect closure _ -> isVar r closure
             OpClosureGetEnvSUP closure _ -> isVar r closure
-            -- Session 19: parallel projection ops
             OpParProj0 handle _ -> isVar r handle
             OpParProj1 handle _ -> isVar r handle
             OpParClosureProj0 handle _ _ _ -> isVar r handle
             OpParClosureProj1 handle _ _ _ -> isVar r handle
             OpPanic _ -> False
-            -- Session 27: graph reduction ops
             OpGraphInit _ -> False
             OpGraphShutdown -> False
             OpGraphNum v -> isVar r v
             OpGraphAdd l rhs -> isVar r l || isVar r rhs
             OpGraphSub l rhs -> isVar r l || isVar r rhs
             OpGraphMul l rhs -> isVar r l || isVar r rhs
+            OpGraphDiv l rhs -> isVar r l || isVar r rhs
+            OpGraphMod l rhs -> isVar r l || isVar r rhs
             OpGraphCall _ args -> any (isVar r) args
             OpGraphReduce root -> isVar r root
             OpGraphExtractNum term -> isVar r term
             OpGraphRegisterFunc _ _ impl -> isVar r impl
-            -- Session 29: interaction net operations
             OpGraphDup _ target -> isVar r target
             OpGraphSup _ l rhs -> isVar r l || isVar r rhs
             OpGraphLam varSlot body -> isVar r varSlot || isVar r body
@@ -370,6 +370,8 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpGraphClosure _ _ envVals -> any (isVar r) envVals
             OpGraphClosureApp clo arg -> isVar r clo || isVar r arg
             OpGraphClosureGetEnv clo _ -> isVar r clo
+            OpFork fn args -> isVar r fn || any (isVar r) args
+            OpJoin handle -> isVar r handle
 
     appearsInEff :: Name -> AEffect -> Bool
     appearsInEff r eff =

@@ -188,6 +188,10 @@ linearizeTerm = \case
         expr' <- linearizeTerm expr
         pure $ CProject expr' idx ty
     CPanic msg ty -> pure $ CPanic msg ty
+    -- Fork/Join are inserted after linearization by the Parallel pass
+    -- They should not appear in input, but if they do, just recurse
+    CFork n ty comp body -> CFork n ty <$> linearizeTerm comp <*> linearizeTerm body
+    CJoin n ty -> pure $ CJoin n ty
 
 {- | Linearize field bindings in a case arm
 Returns updated field names with types and linearized body
@@ -383,6 +387,11 @@ substituteNth target n replacement _ty term =
         let (expr', idx') = go idx expr
         in (CProject expr' projIdx ty, idx')
     go idx (CPanic msg ty) = (CPanic msg ty, idx)
+    go idx (CFork n' ty comp body) =
+        let (comp', idx') = go idx comp
+            (body', idx'') = go idx' body
+        in (CFork n' ty comp' body', idx'')
+    go idx (CJoin n' ty) = (CJoin n' ty, idx)
 
 -- | Substitute a variable with a term
 substituteVar :: Name -> CTerm -> Type -> CTerm -> CTerm
@@ -442,3 +451,5 @@ substituteVar target replacement _ty = go
     go (CClosureGetEnv closure envIdx envTy) = CClosureGetEnv (go closure) envIdx envTy
     go (CProject expr projIdx projTy) = CProject (go expr) projIdx projTy
     go (CPanic msg ty) = CPanic msg ty
+    go (CFork n ty comp body) = CFork n ty (go comp) (go body)
+    go (CJoin n ty) = CJoin n ty

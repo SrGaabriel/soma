@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE LambdaCase #-}
 
 {- | Circuit to Graph Reduction lowering.
 
@@ -90,8 +91,7 @@ registerFuncIndex name idx env =
 -- | Lower a Circuit module to an Alloy module using graph reduction
 lowerCircuitToGraph :: C.CModule -> AlloyModule
 lowerCircuitToGraph cmod =
-    let (_, alloyMod) = runAlloyBuilder (C.cmName cmod) [] $ do
-            lowerToGraphMain cmod
+    let (_, alloyMod) = runAlloyBuilder (C.cmName cmod) [] $ lowerToGraphMain cmod
     in alloyMod
 
 -- | Generate the main entry point and all functions for graph reduction
@@ -232,10 +232,9 @@ rather than building graph nodes. This matches the HVM/test_inet.c pattern.
 Returns the name of the variable holding the graph node (Term).
 -}
 lowerTermToGraph :: GraphEnv -> C.CTerm -> AlloyBuilder String
-lowerTermToGraph env term = case term of
+lowerTermToGraph env = \case
     -- Integer literals become NUM nodes
-    C.CInt n -> do
-        emitLetTmp termType (OpGraphNum (OpConst (CInt n)))
+    C.CInt n -> emitLetTmp termType (OpGraphNum (OpConst (CInt n)))
 
     -- Variables: check if term binding (closure) or native value
     C.CVar name _ ->
@@ -294,7 +293,7 @@ lowerTermToGraph env term = case term of
     -- Function applications become REF or APP nodes
     -- CRITICAL: Do NOT reduce the argument here!
     -- Just build the node, let runtime reduce.
-    C.CApp fun arg _resultTy -> do
+    term@(C.CApp fun arg _resultTy) -> do
         let (f, args) = collectArgs term
         case f of
             C.CRef fName _ -> do
@@ -360,8 +359,7 @@ lowerTermToGraph env term = case term of
         emitLetTmp termType (OpGraphNum (OpConst (CInt n)))
 
     -- Erasure - ERA node (shouldn't appear without linearization, but handle it)
-    C.CEra -> do
-        emitLetTmp termType OpGraphEra
+    C.CEra -> emitLetTmp termType OpGraphEra
 
     -- Superposition (shouldn't appear without linearization)
     C.CSup _label _left _right _ty ->
@@ -403,7 +401,7 @@ lowerTermToGraph env term = case term of
                 emitLetTmp intType (OpGraphReduce (OpVar scrutNode))
 
         caseResultBlock <- freshBlockName
-        armBlocks <- forM arms $ \_ -> freshBlockName
+        armBlocks <- forM arms $ const freshBlockName
         defaultBlock <- case mDefault of
             Just _ -> freshBlockName
             Nothing -> case armBlocks of
@@ -420,13 +418,13 @@ lowerTermToGraph env term = case term of
             -- For integer patterns, the value is the scrutinee itself
             let env' = foldr (\(n, _) e -> extendBinding n scrutVal e) env bindings
             result <- lowerTermToGraph env' body
-            terminate (ABr caseResultBlock [(OpVar result)])
+            terminate (ABr caseResultBlock [OpVar result])
 
         case mDefault of
             Just defBody -> do
                 beginBlock defaultBlock []
                 result <- lowerTermToGraph env defBody
-                terminate (ABr caseResultBlock [(OpVar result)])
+                terminate (ABr caseResultBlock [OpVar result])
             Nothing -> pure ()
 
         beginBlock caseResultBlock [("case_result_val", termType)]
@@ -528,12 +526,16 @@ lowerTermToGraph env term = case term of
         -- Extract env value at index - this reads from the closure's env array
         -- The result is a Term (graph node)
         emitLetTmp termType (OpGraphClosureGetEnv (OpVar closureVar) idx)
-    C.CProject _ _ _ ->
+    C.CProject {} ->
         error "Circuit.ToGraph: field projection not yet supported in graph mode"
     C.CStr _ ->
         error "Circuit.ToGraph: strings not yet supported in graph mode"
     C.CPanic msg _ ->
         error $ "Circuit.ToGraph: panic: " ++ msg
+    C.CFork {} ->
+        error "Circuit.ToGraph: forking not supported in graph mode"
+    C.CJoin {} ->
+        error "Circuit.ToGraph: joining not supported in graph mode"
 
 {- | Try to get a native int value for a term without building graph nodes.
 Returns Just varName if the term is a simple var/literal, Nothing otherwise.

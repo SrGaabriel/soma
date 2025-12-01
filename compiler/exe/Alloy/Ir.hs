@@ -105,7 +105,6 @@ data AOp
     | OpClosureSetEnv AOperand !Int AOperand -- set env slot: closure, index, value
     | OpClosureGetEnv AOperand !Int -- get env slot: closure, index
     | OpClosureGetFunc AOperand -- get function pointer from closure
-    -- Session 13: Specialized closure duplication with HVM-style SUP propagation
     -- These operations enable lazy cloning where nested closures in env slots
     -- are wrapped in SUPs rather than eagerly cloned
     | {- | Specialized DUP for closures: label, closure, slot_info
@@ -128,7 +127,6 @@ data AOp
       Loads SUP from slot, then projects through it (uses proj1 since clone is "second copy")
       -}
       OpClosureGetEnvSUP AOperand !Int
-    | -- Session 19: Parallel reduction support
       -- These operations enable demand-driven parallel reduction of DUP projections
 
       {- | Parallel-aware first projection: sup_handle, work_estimate
@@ -153,10 +151,20 @@ data AOp
       Calls soma_panic runtime function and is followed by unreachable.
       -}
       OpPanic !String
-    | -- Session 27: Graph reduction operations for massive parallelism
-      -- These operations build computation graphs that can be reduced in parallel
-
-      {- | Initialize graph runtime: num_workers
+    | {- | Fork: spawn a parallel task
+      OpFork taskFn taskArgs
+      - taskFn: function to execute (direct function reference)
+      - taskArgs: list of arguments for the function
+      Returns: task handle (opaque pointer) or encoded inline result if parallelism disabled
+      -}
+      OpFork AOperand [AOperand]
+    | {- | Join: wait for a forked task and get its result
+        OpJoin taskHandle
+        - taskHandle: the handle from OpFork
+        Returns: the computation's result
+      -}
+      OpJoin AOperand
+    | {- | Initialize graph runtime: num_workers
       Returns a pointer to the GraphRuntime (stored in a global typically)
       -}
       OpGraphInit !Int

@@ -8,12 +8,17 @@ import Project.Module (ModuleName)
 import Project.Symbols (Symbol (resolvedSymbolName))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (QualifiedType)
+import qualified Data.Set as Set
 
 extractSymbolImports :: Expr -> [(String, [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
 extractSymbolImports (ExprImport name elements _) =
     [(name, elements)]
 extractSymbolImports e = concatMap extractSymbolImports (exprChildren e)
+
+extractIntrinsicNames :: Expr -> Set.Set String
+extractIntrinsicNames root =
+    Set.fromList [intrinsicName e | e@ExprIntrinsicDef{} <- exprChildren root]
 
 filterSymbolsByNames :: [String] -> Map.Map Symbol QualifiedType -> Map.Map Symbol QualifiedType
 filterSymbolsByNames names =

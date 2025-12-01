@@ -103,7 +103,7 @@ rewriteOp :: OptEnv -> Name -> AOp -> (AOp, OptEnv)
 rewriteOp env resultName op =
     case op of
         -- Track closure allocations
-        OpAllocClosure (OpVar funcName) arity envSize ->
+        OpAllocClosure (OpVar funcName) _arity envSize ->
             let info = ClosureInfo funcName envSize
                 env' = env{oeClosures = Map.insert resultName info (oeClosures env)}
             in (op, env')

@@ -64,6 +64,9 @@ simplifyTerm = go
         CClosureGetEnv closure idx ty -> CClosureGetEnv (go closure) idx ty
         -- Field projection: simplify the expression
         CProject expr idx ty -> CProject (go expr) idx ty
+        -- Fork/Join: recursively simplify
+        CFork n ty comp body -> CFork n ty (go comp) (go body)
+        CJoin _ _ -> term
         -- Base cases: no simplification
         CVar _ _ -> term
         CDp0 _ _ -> term
@@ -140,6 +143,8 @@ isCapturedByClosure target = go
     go (CClosureGetEnv closure _ _) = go closure
     go (CProject expr _ _) = go expr
     go (CPanic _ _) = False
+    go (CFork _ _ comp body) = go comp || go body
+    go (CJoin _ _) = False
 
 -- | Simplify a case expression
 simplifyCase :: CTerm -> [(Int, [(Name, Type)], CTerm)] -> Maybe CTerm -> Type -> CTerm
@@ -232,3 +237,5 @@ substitute target replacement = go
     go (CClosureGetEnv closure idx ty) = CClosureGetEnv (go closure) idx ty
     go (CProject expr idx ty) = CProject (go expr) idx ty
     go (CPanic msg ty) = CPanic msg ty
+    go (CFork n ty comp body) = CFork n ty (go comp) (go body)
+    go (CJoin n ty) = CJoin n ty

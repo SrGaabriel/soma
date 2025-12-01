@@ -2,7 +2,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
-module Build.Incremental where
+module Build.Incremental (
+    processModulesIncremental,
+    processExternalDependencies,
+) where
 
 import Alloy.CSE (cseModuleGlobal)
 import Alloy.Defunc (defunctionalizeModule)
@@ -10,7 +13,6 @@ import Alloy.ExpandIntrinsics (expandIntrinsicsModule)
 import Alloy.HoistAllocas (hoistAllocasModule)
 import Alloy.Inline (defaultInlineConfig, inlineModule)
 import Alloy.Ir (AlloyModule (..))
-import Alloy.Lower (lowerAlloyModule)
 import Alloy.MonadicInline (monadicInlineModule)
 import Alloy.Monomorphize (monomorphizeModule)
 import Alloy.PromoteRefs (promoteRefsModule)
@@ -20,6 +22,7 @@ import Build.Metadata (SerializableConstructorMetadata, projectMetadataConstruct
 import Build.Tarball (TarballContents (TarballContents, tcAlloyModules, tcMetadata), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
 import Circuit.Linearize (linearizeModule)
 import Circuit.Lower (lowerModule)
+import Circuit.Parallel (defaultParallelConfig, parallelizeModule)
 import qualified Circuit.Simplify as CS
 import Circuit.ToAlloy (lowerCircuitToAlloy)
 import Circuit.ToGraph (lowerCircuitToGraph)
@@ -31,7 +34,6 @@ import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import qualified Data.Set as Set
 import Format.Trees (prettyPrintAst, treeShow)
 import Inference.Core (InstanceEnv, TypeMap)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
@@ -43,11 +45,11 @@ import Metal.Lift (liftLambdas)
 import Metal.Module (MetallicModule (..))
 import Metal.MonadNormalize (normalizeModule)
 import Project.Check (CheckedModule (..), checkModule)
-import Project.Extracts ()
+import Project.Extracts (extractIntrinsicNames)
 import Project.Graph
 import Project.Module
 import Project.Symbols (Symbol)
-import Syntax.Tree (Expr (..), exprChildren)
+import Syntax.Tree (Expr (..))
 import System.Directory
 import System.Exit (exitFailure)
 import System.FilePath
@@ -72,8 +74,9 @@ compileModuleSeparately ::
     Map String (Map Symbol QualifiedType) ->
     Map String InstanceEnv ->
     Map String SerializableConstructorMetadata ->
+    Options ->
     IO CompiledModule
-compileModuleSeparately packageName modInfo compiledDeps externalDeps externalInstances externalConstructors = do
+compileModuleSeparately packageName modInfo compiledDeps externalDeps externalInstances externalConstructors options = do
     let modName = moduleName modInfo
 
     putStrLn $ "Compiling module: " ++ modName
@@ -114,8 +117,36 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
     putStrLn $ "Metal (HIR) complete for " ++ modName
     putStrLn $ treeShow metallicNormalized
 
-    let alloyPreDictMono = lowerAlloyModule modName metallicNormalized
-        alloyExpanded = expandIntrinsicsModule alloyPreDictMono
+    -- Lower to Circuit IR
+    let circuitModule = lowerModule metallicNormalized
+        circuitSimplified = CS.simplifyModule circuitModule
+
+    -- Lower to Alloy MIR
+    -- If graph mode enabled, skip linearization and use graph reduction
+    -- Otherwise, linearize (insert DUP/ERA nodes) and use standard lowering
+    let enableGraph = optionsMode options == ModeGraph
+    let (circuitForAlloy, alloyFromCircuit) = case optionsMode options of
+            ModeGraph ->
+                -- Graph mode: skip linearization, use non-linear Circuit IR directly
+                -- The runtime handles duplication lazily via graph reduction
+                (circuitSimplified, lowerCircuitToGraph circuitSimplified)
+            ModeStandard ->
+                -- Standard mode: linearize for compile-time memory management
+                let circuitLinearized = linearizeModule circuitSimplified
+                in (circuitLinearized, lowerCircuitToAlloy circuitLinearized)
+            ModeHybrid ->
+                -- Hybrid mode: linearize for compile-time memory management and then parallelize
+                let circuitLinearized = linearizeModule circuitSimplified
+                    parallelConfig = defaultParallelConfig
+                    circuitParallelized = parallelizeModule parallelConfig circuitLinearized
+                in (circuitLinearized, lowerCircuitToAlloy circuitParallelized)
+
+        alloyExpanded = expandIntrinsicsModule alloyFromCircuit
+
+    if enableGraph
+        then putStrLn "=== Circuit IR (graph mode - no linearization) ==="
+        else putStrLn "=== Circuit IR (after linearization) ==="
+    putStrLn $ prettyCircuit circuitForAlloy
 
     putStrLn $ "Alloy (MIR) complete for " ++ modName
     putStrLn $ treeShow alloyExpanded
@@ -180,88 +211,6 @@ concatenateAlloyModules packageName modules =
         , amTypeClasses = concatMap amTypeClasses modules
         }
 
-{- | Link compiled modules using Circuit IR pipeline
-Goes through Metal -> Circuit -> linearize -> Alloy
--}
-linkCompiledModulesCircuit ::
-    String ->
-    [CompiledModule] ->
-    Map String SerializableConstructorMetadata ->
-    Bool -> -- enableGraph (graph reduction)
-    IO (AlloyModule, Map String SerializableConstructorMetadata)
-linkCompiledModulesCircuit packageName compiledModules externalConstructors enableGraph = do
-    putStrLn "\n=== Starting Circuit IR link-time phase ==="
-
-    let fusedAst = createFusedAst [(cmResolvedAst cm, cmTypeMap cm, cmPublicSymbols cm) | cm <- compiledModules]
-        localConstructors = extractConstructorMetadata fusedAst
-        allConstructors = Map.union externalConstructors (Map.map constructorMetadataToSerializable localConstructors)
-
-    -- Concatenate all Metal modules
-    let allMetalModules = map cmMetallicNormalized compiledModules
-        fusedMetal = concatenateMetalModules packageName allMetalModules
-
-    putStrLn "=== Metal HIR (fused) ==="
-    putStrLn $ treeShow fusedMetal
-
-    -- Lower to Circuit IR
-    let circuitModule = lowerModule fusedMetal
-        circuitSimplified = CS.simplifyModule circuitModule
-
-    -- Lower to Alloy MIR
-    -- If graph mode enabled, skip linearization and use graph reduction
-    -- Otherwise, linearize (insert DUP/ERA nodes) and use standard lowering
-    let (circuitForAlloy, alloyFromCircuit) =
-            if enableGraph
-                then
-                    -- Graph mode: skip linearization, use non-linear Circuit IR directly
-                    -- The runtime handles duplication lazily via graph reduction
-                    (circuitSimplified, lowerCircuitToGraph circuitSimplified)
-                else
-                    -- Standard mode: linearize for compile-time memory management
-                    let circuitLinearized = linearizeModule circuitSimplified
-                    in (circuitLinearized, lowerCircuitToAlloy circuitLinearized)
-
-    if enableGraph
-        then putStrLn "=== Circuit IR (graph mode - no linearization) ==="
-        else putStrLn "=== Circuit IR (after linearization) ==="
-    putStrLn $ prettyCircuit circuitForAlloy
-
-    -- Expand intrinsics (convert + to IAdd, etc.)
-    let alloyExpanded = expandIntrinsicsModule alloyFromCircuit
-
-    putStrLn "=== Alloy MIR (from Circuit) ==="
-    putStrLn $ treeShow alloyExpanded
-
-    -- Apply standard Alloy optimizations
-    let alloyMono = monomorphizeModule alloyExpanded
-        alloyDefunc = defunctionalizeModule alloyMono
-        alloyUserInlined = inlineModule defaultInlineConfig alloyDefunc
-        alloyReader = readerRewriteModule alloyUserInlined
-        alloyInlined = monadicInlineModule alloyReader
-        alloyHoisted = hoistAllocasModule alloyInlined
-
-    let optimizeFixpoint m =
-            let step x = simplifyModule (forwardClosureEnvValuesModule (promoteRefsModule (cseModuleGlobal x)))
-                x' = step m
-            in if x' == m then m else optimizeFixpoint x'
-
-    let alloyOpt = optimizeFixpoint alloyHoisted
-
-    putStrLn "=== Alloy MIR (optimized) ==="
-    putStrLn $ treeShow alloyOpt
-
-    return (alloyOpt, allConstructors)
-
--- | Concatenate Metal modules
-concatenateMetalModules :: String -> [MetallicModule] -> MetallicModule
-concatenateMetalModules _name modules =
-    MetallicModule
-        { mmFunctions = concatMap mmFunctions modules
-        , mmTypes = concatMap mmTypes modules
-        , mmInstances = concatMap mmInstances modules
-        , mmTypeClasses = concatMap mmTypeClasses modules
-        }
-
 createFusedAst :: [(Expr, TypeMap, Map Symbol QualifiedType)] -> Expr
 createFusedAst allModules =
     let allExprs =
@@ -276,21 +225,24 @@ createFusedAst allModules =
 processModulesIncremental :: [String] -> ModuleGraph -> Options -> IO ()
 processModulesIncremental sorted graph compileOptions = do
     let inputName = fromMaybe "app" $ optionsName compileOptions
-        useCircuit = not $ optionsSkipCircuit compileOptions
 
-    (externalDeps, externalInstances, externalConstructors, externalAlloyModules) <- processExternalDependencies (optionsDeps compileOptions)
+    (externalDeps, externalInstances, externalConstructors, externalAlloyModules) <-
+        processExternalDependencies (optionsDeps compileOptions)
 
-    compiledModules <- compileAllModulesInOrder sorted graph Map.empty externalDeps externalInstances externalConstructors inputName
+    compiledModules <-
+        compileAllModulesInOrder
+            sorted
+            graph
+            Map.empty
+            externalDeps
+            externalInstances
+            externalConstructors
+            inputName
+            compileOptions
 
     putStrLn $ "\n✅ Compiled " ++ show (length compiledModules) ++ " modules separately"
+    (alloyOpt, allCtorsForCodeGen) <- linkCompiledModules inputName compiledModules externalConstructors externalAlloyModules
 
-    (alloyOpt, allCtorsForCodeGen) <-
-        if useCircuit
-            then do
-                let enableGraph = optionsMode compileOptions == ModeGraph
-                linkCompiledModulesCircuit inputName compiledModules externalConstructors enableGraph
-            else
-                linkCompiledModules inputName compiledModules externalConstructors externalAlloyModules
     let llvmIr = runLlvmCodeGenAndTranscribe alloyOpt
     generateOutputFile inputName llvmIr compileOptions compiledModules graph allCtorsForCodeGen
 
@@ -304,16 +256,34 @@ compileAllModulesInOrder ::
     Map String InstanceEnv ->
     Map String SerializableConstructorMetadata ->
     String ->
+    Options ->
     IO [CompiledModule]
-compileAllModulesInOrder [] _ _ _ _ _ _ = return []
-compileAllModulesInOrder (modName : rest) graph compiled externalDeps externalInstances externalConstructors packageName = do
+compileAllModulesInOrder [] _ _ _ _ _ _ _ = return []
+compileAllModulesInOrder (modName : rest) graph compiled externalDeps externalInstances externalConstructors packageName options = do
     let Just modInfo = Map.lookup modName graph
 
-    compiledModule <- compileModuleSeparately packageName modInfo compiled externalDeps externalInstances externalConstructors
+    compiledModule <-
+        compileModuleSeparately
+            packageName
+            modInfo
+            compiled
+            externalDeps
+            externalInstances
+            externalConstructors
+            options
 
     let newCompiled = Map.insert modName compiledModule compiled
 
-    restModules <- compileAllModulesInOrder rest graph newCompiled externalDeps externalInstances externalConstructors packageName
+    restModules <-
+        compileAllModulesInOrder
+            rest
+            graph
+            newCompiled
+            externalDeps
+            externalInstances
+            externalConstructors
+            packageName
+            options
     return (compiledModule : restModules)
 
 generateOutputFile ::
@@ -392,7 +362,10 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                 putStrLn "Can't build executable for library"
                 exitFailure
             | not isLib -> do
-                let runtimeLibPath = "runtime/libsoma_runtime.a"
+                let runtimeLibPath = case optionsMode compileOptions of
+                        ModeGraph -> "runtime/inets_soma.a"
+                        ModeHybrid -> "runtime/hybrid_soma.a"
+                        _ -> "runtime/native_soma.a"
                 let llTemp = outputFile <.> "ll"
                 writeFile llTemp llvmIr
 
@@ -413,7 +386,7 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                         -- Link against C runtime
                         callProcess "clang" ["-o", outputFile, llTemp, runtimeLibPath]
                         putStrLn $ "Successfully compiled executable: " ++ outputFile
-                        putStrLn "(Linked with C runtime: libsoma_runtime.a)"
+                        putStrLn $ "(Linked with C runtime: " ++ runtimeLibPath ++ ")"
                     )
                     ( \(_ :: SomeException) -> do
                         putStrLn "clang not found. To compile manually:"
@@ -444,7 +417,3 @@ processExternalDependencies externals = do
     let constructors = Map.unions [ctors | (_, _, _, ctors, _) <- list]
     let externalAlloy = concat [modules | (_, _, _, _, modules) <- list]
     pure (symbols, instances, constructors, externalAlloy)
-
-extractIntrinsicNames :: Expr -> Set.Set String
-extractIntrinsicNames root =
-    Set.fromList [intrinsicName e | e@ExprIntrinsicDef{} <- exprChildren root]

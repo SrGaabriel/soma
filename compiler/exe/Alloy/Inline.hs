@@ -171,7 +171,6 @@ processInstr config (accInstrs, state) instr =
                     in (instr : accInstrs, state')
                 Nothing ->
                     (instr : accInstrs, state)
-        -- Session 14: Track closure DUP operations (SUP creation preserves target)
         ILet name _ (OpDupClosure _ (OpVar closureName) _) ->
             case Map.lookup closureName (isClosureTargets state) of
                 Just targetFunc ->
@@ -179,7 +178,6 @@ processInstr config (accInstrs, state) instr =
                     in (instr : accInstrs, state')
                 Nothing ->
                     (instr : accInstrs, state)
-        -- Session 14: Track closure DUP projections (inherit target from SUP)
         ILet name _ (OpDupClosureProj0 (OpVar supHandle) _ _) ->
             case Map.lookup supHandle (isClosureTargets state) of
                 Just targetFunc ->
@@ -216,7 +214,6 @@ processInstr config (accInstrs, state) instr =
                     in (instr : accInstrs, state')
                 Nothing ->
                     (instr : accInstrs, state)
-        -- Session 19: Track parallel projection ops
         ILet name _ (OpParProj0 (OpVar supHandle) _) ->
             case Map.lookup supHandle (isClosureTargets state) of
                 Just targetFunc ->
@@ -364,6 +361,8 @@ substOp subst op =
         OpUnary k a -> OpUnary k (substOperand subst a)
         OpCmp k a b -> OpCmp k (substOperand subst a) (substOperand subst b)
         OpLoad a -> OpLoad (substOperand subst a)
+        OpSelect cond thenOp elseOp ->
+            OpSelect (substOperand subst cond) (substOperand subst thenOp) (substOperand subst elseOp)
         OpAllocStack t -> OpAllocStack t
         OpAllocHeap t -> OpAllocHeap t
         OpCall callee args -> OpCall (substCallable subst callee) (map (substOperand subst) args)
@@ -385,30 +384,28 @@ substOp subst op =
             OpClosureSetEnv (substOperand subst closure) idx (substOperand subst val)
         OpClosureGetEnv closure idx -> OpClosureGetEnv (substOperand subst closure) idx
         OpClosureGetFunc closure -> OpClosureGetFunc (substOperand subst closure)
-        -- Session 13: specialized closure duplication ops
         OpDupClosure label closure slotInfo -> OpDupClosure label (substOperand subst closure) slotInfo
         OpDupClosureProj0 handle envSz slotInfo -> OpDupClosureProj0 (substOperand subst handle) envSz slotInfo
         OpDupClosureProj1 handle envSz slotInfo -> OpDupClosureProj1 (substOperand subst handle) envSz slotInfo
         OpClosureGetEnvDirect closure idx -> OpClosureGetEnvDirect (substOperand subst closure) idx
         OpClosureGetEnvSUP closure idx -> OpClosureGetEnvSUP (substOperand subst closure) idx
-        -- Session 19: parallel projection ops
         OpParProj0 handle workEst -> OpParProj0 (substOperand subst handle) workEst
         OpParProj1 handle workEst -> OpParProj1 (substOperand subst handle) workEst
         OpParClosureProj0 handle envSz slotInfo workEst -> OpParClosureProj0 (substOperand subst handle) envSz slotInfo workEst
         OpParClosureProj1 handle envSz slotInfo workEst -> OpParClosureProj1 (substOperand subst handle) envSz slotInfo workEst
         OpPanic msg -> OpPanic msg
-        -- Session 27: graph reduction ops
         OpGraphInit n -> OpGraphInit n
         OpGraphShutdown -> OpGraphShutdown
         OpGraphNum v -> OpGraphNum (substOperand subst v)
         OpGraphAdd l r -> OpGraphAdd (substOperand subst l) (substOperand subst r)
         OpGraphSub l r -> OpGraphSub (substOperand subst l) (substOperand subst r)
         OpGraphMul l r -> OpGraphMul (substOperand subst l) (substOperand subst r)
+        OpGraphDiv l r -> OpGraphDiv (substOperand subst l) (substOperand subst r)
+        OpGraphMod l r -> OpGraphMod (substOperand subst l) (substOperand subst r)
         OpGraphCall fnIdx args -> OpGraphCall fnIdx (map (substOperand subst) args)
         OpGraphReduce root -> OpGraphReduce (substOperand subst root)
         OpGraphExtractNum term -> OpGraphExtractNum (substOperand subst term)
         OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (substOperand subst impl)
-        -- Session 29: interaction net operations
         OpGraphDup label target -> OpGraphDup label (substOperand subst target)
         OpGraphSup label l r -> OpGraphSup label (substOperand subst l) (substOperand subst r)
         OpGraphLam varSlot body -> OpGraphLam (substOperand subst varSlot) (substOperand subst body)
@@ -420,6 +417,8 @@ substOp subst op =
         OpGraphClosure funcIdx arity envVals -> OpGraphClosure funcIdx arity (map (substOperand subst) envVals)
         OpGraphClosureApp clo arg -> OpGraphClosureApp (substOperand subst clo) (substOperand subst arg)
         OpGraphClosureGetEnv clo idx -> OpGraphClosureGetEnv (substOperand subst clo) idx
+        OpFork fn args -> OpFork (substOperand subst fn) (map (substOperand subst) args)
+        OpJoin handle -> OpJoin (substOperand subst handle)
 
 -- | Substitute operands in an effect
 substEffect :: Map Name AOperand -> AEffect -> AEffect
