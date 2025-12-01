@@ -185,8 +185,22 @@ usesFromOp blk idx op =
         OpParClosureProj0 handle _ _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
         OpParClosureProj1 handle _ _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
         OpPanic _ -> Map.empty
-        OpFork fn args -> singleUseIfVar fn (UseCallArg blk idx 0) `Map.union` Map.unions [singleUseIfVar arg (UseCallArg blk idx (i + 1)) | (i, arg) <- zip [0 ..] args]
-        OpJoin handle -> singleUseIfVar handle (UseCallArg blk idx 0)
+        -- Session 27: graph reduction ops
+        OpGraphInit _ -> Map.empty
+        OpGraphShutdown -> Map.empty
+        OpGraphNum val -> singleUseIfVar val (UseCallArg blk idx 0)
+        OpGraphAdd l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
+        OpGraphSub l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
+        OpGraphMul l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
+        OpGraphCall _ args -> mergeAll [singleUseIfVar a (UseCallArg blk idx j) | (j, a) <- zip [0 ..] args]
+        OpGraphReduce root -> singleUseIfVar root (UseCallArg blk idx 0)
+        OpGraphRegisterFunc _ _ impl -> singleUseIfVar impl (UseCallArg blk idx 0)
+        -- Session 29: interaction net operations
+        OpGraphDup _ target -> singleUseIfVar target (UseCallArg blk idx 0)
+        OpGraphSup _ l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
+        OpGraphLam varSlot body -> mergeAll [singleUseIfVar varSlot (UseCallArg blk idx 0), singleUseIfVar body (UseCallArg blk idx 1)]
+        OpGraphApp fn arg -> mergeAll [singleUseIfVar fn (UseCallArg blk idx 0), singleUseIfVar arg (UseCallArg blk idx 1)]
+        OpGraphEra -> Map.empty
 
 usesFromEffect :: BlockName -> Int -> AEffect -> Map Name [UseKind]
 usesFromEffect blk idx eff =
@@ -202,6 +216,8 @@ usesFromEffect blk idx eff =
         EffDrop a -> singleUseIfVar a (UseDrop blk idx)
         EffClosureSetEnv closure _ val ->
             mergeAll [singleUseIfVar closure (UseStorePtr blk idx), singleUseIfVar val (UseStoreVal blk idx)]
+        EffGraphInit _ -> Map.empty
+        EffGraphShutdown -> Map.empty
 
 data UseKind
     = UseCallArg BlockName Int Int

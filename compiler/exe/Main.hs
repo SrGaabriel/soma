@@ -3,7 +3,6 @@ module Main where
 import Build.Incremental (extractIntrinsicNames, processExternalDependencies, processModulesIncremental)
 import Circuit.Linearize (linearizeModule)
 import Circuit.Lower (lowerModule)
-import Circuit.Parallel (ParallelConfig (..), defaultParallelConfig, parallelizeModule)
 import Circuit.Simplify (simplifyModule)
 import Circuit.ToAlloy (lowerCircuitToAlloy)
 import Config.Options
@@ -310,15 +309,12 @@ circuit opts = do
     alloyModule <-
         if showAlloy
             then do
-                -- For LLVM, we need linearization and parallelization
+                -- For LLVM, we need linearization
                 let linearizedModule =
                         if circuitLinearize opts
                             then finalModule
                             else linearizeModule circuitModule
-                    -- Disable parallelization in circuit command (use build --parallel for parallel code)
-                    parallelConfig = defaultParallelConfig{pcEnabled = False}
-                    parallelizedModule = parallelizeModule parallelConfig linearizedModule
-                let alloy = lowerCircuitToAlloy parallelizedModule
+                let alloy = lowerCircuitToAlloy linearizedModule
                 when (circuitToAlloy opts) $ do
                     putStrLn "=== Alloy MIR ==="
                     putStrLn $ treeShow alloy

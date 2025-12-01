@@ -173,14 +173,24 @@ instance TreeShow AOp where
     treeShow (OpParClosureProj0 handle envSz slotInfo workEst) = "par_closure_proj0 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo ++ " work=" ++ show workEst
     treeShow (OpParClosureProj1 handle envSz slotInfo workEst) = "par_closure_proj1 " ++ treeShow handle ++ " env=" ++ show envSz ++ " slots=" ++ show slotInfo ++ " work=" ++ show workEst
     treeShow (OpPanic msg) = "panic \"" ++ msg ++ "\""
-    treeShow (OpFork fn args) = "fork(" ++ treeShow fn ++ ", " ++ intercalate ", " (map treeShow args) ++ ")"
-    treeShow (OpJoin handle) = "join(" ++ treeShow handle ++ ")"
+    -- Session 27: graph reduction ops
+    treeShow (OpGraphInit n) = "graph_init workers=" ++ show n
+    treeShow OpGraphShutdown = "graph_shutdown"
+    treeShow (OpGraphNum v) = "graph_num " ++ treeShow v
+    treeShow (OpGraphAdd l r) = "graph_add " ++ treeShow l ++ " " ++ treeShow r
+    treeShow (OpGraphSub l r) = "graph_sub " ++ treeShow l ++ " " ++ treeShow r
+    treeShow (OpGraphMul l r) = "graph_mul " ++ treeShow l ++ " " ++ treeShow r
+    treeShow (OpGraphCall fnName args) = "graph_call fn=\"" ++ fnName ++ "\" args=[" ++ intercalate ", " (map treeShow args) ++ "]"
+    treeShow (OpGraphReduce root) = "graph_reduce " ++ treeShow root
+    treeShow (OpGraphRegisterFunc name arity impl) = "graph_register_func \"" ++ name ++ "\" arity=" ++ show arity ++ " impl=" ++ treeShow impl
 
 instance TreeShow AEffect where
     treeShow (EffStore dst v) = "store " ++ treeShow dst ++ " := " ++ treeShow v
     treeShow (EffStoreIndex arr ix v) = "store " ++ treeShow arr ++ "[" ++ treeShow ix ++ "] := " ++ treeShow v
     treeShow (EffDrop a) = "drop " ++ treeShow a
     treeShow (EffClosureSetEnv closure idx val) = "closure_set_env " ++ treeShow closure ++ "[" ++ show idx ++ "] := " ++ treeShow val
+    treeShow (EffGraphInit n) = "graph_init workers=" ++ show n
+    treeShow EffGraphShutdown = "graph_shutdown"
 
 instance TreeShow AInstr where
     treeShow (ILet n ty op) = n ++ " = " ++ treeShow op ++ " (" ++ treeShow ty ++ ")"
@@ -338,10 +348,6 @@ prettyTerm = go 0
         go d expr ++ "." ++ show idx
     go _ (CPanic msg _) =
         "panic \"" ++ msg ++ "\""
-    go d (CFork n _ comp body) =
-        "fork " ++ n ++ " = " ++ go d comp ++ " in " ++ go d body
-    go _ (CJoin n _) =
-        "join " ++ n
 
 -- | Pretty print binary operators
 prettyBinOp :: BinOp -> String
@@ -618,18 +624,6 @@ buildGraph = \case
         addNode (NProject idx) [PNode exprId "expr", PFree "value"]
     CPanic msg _ -> do
         addNode (NPanic msg) [PFree "unreachable"]
-    CFork n _ comp body -> do
-        compId <- buildGraph comp
-        forkId <- freshNodeId
-        bindVar n forkId
-        bodyId <- buildGraph body
-        modify $ \s -> s{gsNodes = GNode forkId (NLet n) [PNode compId "task", PNode bodyId "body"] : gsNodes s}
-        pure forkId
-    CJoin n _ -> do
-        mNode <- lookupVar n
-        case mNode of
-            Just nid -> pure nid
-            Nothing -> addNode (NVar n) [PFree "join"]
 
 -- | Pretty print a single node
 prettyNode :: GNode -> String

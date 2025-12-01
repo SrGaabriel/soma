@@ -63,6 +63,7 @@ data Options = Options
     , optionsRun :: Bool
     , optionsSkipCircuit :: Bool
     , optionsParallel :: Bool
+    , optionsGraph :: Bool
     }
     deriving (Show)
 
@@ -224,6 +225,10 @@ optionsParser =
         <*> switch
             ( long "parallel"
                 <> help "Enable automatic parallelization (fork-join)"
+            )
+        <*> switch
+            ( long "graph"
+                <> help "Enable graph reduction for massive parallelism (interaction nets)"
             )
 
 parseExtern :: String -> Either String (String, String)

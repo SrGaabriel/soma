@@ -92,9 +92,22 @@ substOp env = \case
         OpParClosureProj1 (sub handle) envSz slotInfo work
     -- Panic (no operands to substitute)
     OpPanic msg -> OpPanic msg
-    -- Fork/Join (Session 22)
-    OpFork fn args -> OpFork (sub fn) (map sub args)
-    OpJoin handle -> OpJoin (sub handle)
+    -- Graph reduction operations (Session 27)
+    OpGraphInit n -> OpGraphInit n
+    OpGraphShutdown -> OpGraphShutdown
+    OpGraphNum v -> OpGraphNum (sub v)
+    OpGraphAdd l r -> OpGraphAdd (sub l) (sub r)
+    OpGraphSub l r -> OpGraphSub (sub l) (sub r)
+    OpGraphMul l r -> OpGraphMul (sub l) (sub r)
+    OpGraphCall fnIdx args -> OpGraphCall fnIdx (map sub args)
+    OpGraphReduce root -> OpGraphReduce (sub root)
+    OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (sub impl)
+    -- Graph reduction interaction net operations (Session 29)
+    OpGraphDup label target -> OpGraphDup label (sub target)
+    OpGraphSup label l r -> OpGraphSup label (sub l) (sub r)
+    OpGraphLam varSlot body -> OpGraphLam (sub varSlot) (sub body)
+    OpGraphApp fn arg -> OpGraphApp (sub fn) (sub arg)
+    OpGraphEra -> OpGraphEra
   where
     sub = substOperand env
 
@@ -105,6 +118,8 @@ substEffect env = \case
     EffStoreIndex a i v -> EffStoreIndex (sub a) (sub i) (sub v)
     EffDrop a -> EffDrop (sub a)
     EffClosureSetEnv closure idx val -> EffClosureSetEnv (sub closure) idx (sub val)
+    EffGraphInit n -> EffGraphInit n
+    EffGraphShutdown -> EffGraphShutdown
   where
     sub = substOperand env
 
@@ -184,8 +199,22 @@ opVars = \case
     OpParClosureProj0 h _ _ _ -> vars h
     OpParClosureProj1 h _ _ _ -> vars h
     OpPanic _ -> []
-    OpFork fn args -> vars fn ++ concatMap vars args
-    OpJoin h -> vars h
+    -- Graph reduction operations (Session 27)
+    OpGraphInit _ -> []
+    OpGraphShutdown -> []
+    OpGraphNum v -> vars v
+    OpGraphAdd l r -> vars l ++ vars r
+    OpGraphSub l r -> vars l ++ vars r
+    OpGraphMul l r -> vars l ++ vars r
+    OpGraphCall _ args -> concatMap vars args
+    OpGraphReduce root -> vars root
+    OpGraphRegisterFunc _ _ impl -> vars impl
+    -- Graph reduction interaction net operations (Session 29)
+    OpGraphDup _ target -> vars target
+    OpGraphSup _ l r -> vars l ++ vars r
+    OpGraphLam varSlot body -> vars varSlot ++ vars body
+    OpGraphApp fn arg -> vars fn ++ vars arg
+    OpGraphEra -> []
   where
     vars = operandVars
 
@@ -196,6 +225,8 @@ effectVars = \case
     EffStoreIndex a i v -> operandVars a ++ operandVars i ++ operandVars v
     EffDrop a -> operandVars a
     EffClosureSetEnv c _ v -> operandVars c ++ operandVars v
+    EffGraphInit _ -> []
+    EffGraphShutdown -> []
 
 -- | Get all variables referenced in a terminator
 terminatorVars :: ATerminator -> [Name]

@@ -152,19 +152,69 @@ data AOp
       Calls soma_panic runtime function and is followed by unreachable.
       -}
       OpPanic !String
-    | {- | Fork: spawn a parallel task
-      OpFork taskFn taskArgs
-      - taskFn: function to execute (direct function reference)
-      - taskArgs: list of arguments for the function
-      Returns: task handle (opaque pointer) or encoded inline result if parallelism disabled
+    | -- Session 27: Graph reduction operations for massive parallelism
+      -- These operations build computation graphs that can be reduced in parallel
+
+      {- | Initialize graph runtime: num_workers
+      Returns a pointer to the GraphRuntime (stored in a global typically)
       -}
-      OpFork AOperand [AOperand]
-    | {- | Join: wait for a forked task and get its result
-      OpJoin taskHandle
-      - taskHandle: the handle from OpFork
-      Returns: the computation's result
+      OpGraphInit !Int
+    | -- | Shutdown graph runtime
+      OpGraphShutdown
+    | {- | Create a NUM node in the graph: value
+      Returns node index (u32)
       -}
-      OpJoin AOperand
+      OpGraphNum AOperand
+    | {- | Create an ADD node in the graph: left_idx, right_idx
+      Returns node index (u32)
+      -}
+      OpGraphAdd AOperand AOperand
+    | {- | Create a SUB node in the graph: left_idx, right_idx
+      Returns node index (u32)
+      -}
+      OpGraphSub AOperand AOperand
+    | {- | Create a MUL node in the graph: left_idx, right_idx
+      Returns node index (u32)
+      -}
+      OpGraphMul AOperand AOperand
+    | {- | Create a CALL node in the graph: fn_idx, arg_indices
+      The function index refers to a registered graph function.
+      Returns node index (u32)
+      -}
+      OpGraphCall !String [AOperand]
+    | {- | Reduce a graph to a value: root_idx
+      Returns the final i64 value after reduction.
+      Uses parallel reduction if workers > 1.
+      -}
+      OpGraphReduce AOperand
+    | {- | Register a function for graph reduction: name, arity, impl_ptr
+      Returns function index (u16) for use in OpGraphCall.
+      -}
+      OpGraphRegisterFunc !String !Int AOperand
+    | {- | Create a DUP node in the graph: label, target_idx
+      For duplicating values in interaction nets.
+      Returns node index (u32)
+      -}
+      OpGraphDup !Int AOperand
+    | {- | Create a SUP node in the graph: label, left_idx, right_idx
+      Superposition node for interaction nets.
+      Returns node index (u32)
+      -}
+      OpGraphSup !Int AOperand AOperand
+    | {- | Create a LAM node in the graph: var_slot_idx, body_idx
+      Lambda abstraction for higher-order functions.
+      Returns node index (u32)
+      -}
+      OpGraphLam AOperand AOperand
+    | {- | Create an APP node in the graph: fn_idx, arg_idx
+      Function application for beta reduction.
+      Returns node index (u32)
+      -}
+      OpGraphApp AOperand AOperand
+    | {- | Create an ERA node in the graph (erasure/unit)
+      Returns node index (u32)
+      -}
+      OpGraphEra
     deriving (Generic, Show, Eq)
 
 data AEffect
@@ -172,6 +222,9 @@ data AEffect
     | EffStoreIndex AOperand AOperand AOperand -- store at array[index] := value
     | EffDrop AOperand -- free heap-allocated value (ERA node)
     | EffClosureSetEnv AOperand !Int AOperand -- set closure env slot: closure, index, value
+    -- Graph reduction effects
+    | EffGraphInit !Int -- initialize graph runtime with N workers
+    | EffGraphShutdown -- shutdown graph runtime
     deriving (Generic, Show, Eq)
 
 data ATerminator

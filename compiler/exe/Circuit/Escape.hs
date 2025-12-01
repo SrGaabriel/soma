@@ -247,14 +247,6 @@ analyzeTermEscapes ctx term st = case term of
         analyzeTermEscapes CtxLocal expr st
     -- Panic: no escapes (never returns)
     CPanic _ _ -> st
-    -- Fork: analyze computation and body
-    CFork taskName _ comp body ->
-        let st1 = analyzeTermEscapes CtxLocal comp st
-            st2 = analyzeTermEscapes ctx body st1
-        in updateEscape taskName NoEscape st2 -- task handle is used locally
-        -- Join: task handle is used locally
-    CJoin taskName _ ->
-        updateEscape taskName NoEscape st
 
 -- | Convert context to escape kind
 contextToEscape :: EscapeContext -> EscapeKind
@@ -302,8 +294,6 @@ nameUsedInReturnPosition target = go
     go (CClosureGetEnv{}) = False
     go (CProject{}) = False
     go (CPanic{}) = False
-    go (CFork _ _ _ body) = go body
-    go (CJoin n _) = n == target
 
 -- ============================================================================
 -- Query Functions

@@ -110,7 +110,6 @@ executable somac
   other-modules:
     Alloy.Build
     Alloy.CSE
-    Circuit.Decisions
     Alloy.Defunc
     Alloy.DictUtils
     Alloy.Dictionary
@@ -133,13 +132,14 @@ executable somac
     Build.Tarball
     Circuit.Alloc
     Circuit.Constants
+    Circuit.Decisions
     Circuit.Escape
     Circuit.Ir
     Circuit.Linearize
     Circuit.Lower
-    Circuit.Parallel
     Circuit.Simplify
     Circuit.ToAlloy
+    Circuit.ToGraph
     Config.Options
     Llvm.Dependencies
     Llvm.Gen.CRuntime

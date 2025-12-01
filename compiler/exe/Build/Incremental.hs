@@ -20,9 +20,9 @@ import Build.Metadata (SerializableConstructorMetadata, projectMetadataConstruct
 import Build.Tarball (TarballContents (TarballContents, tcAlloyModules, tcMetadata), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
 import Circuit.Linearize (linearizeModule)
 import Circuit.Lower (lowerModule)
-import Circuit.Parallel (ParallelConfig (..), defaultParallelConfig, parallelizeModule)
 import qualified Circuit.Simplify as CS
 import Circuit.ToAlloy (lowerCircuitToAlloy)
+import Circuit.ToGraph (lowerCircuitToGraph)
 import Config.Options (Options (..))
 import Control.Exception (SomeException, catch)
 import Control.Monad (unless)
@@ -187,9 +187,10 @@ linkCompiledModulesCircuit ::
     String ->
     [CompiledModule] ->
     Map String SerializableConstructorMetadata ->
-    Bool -> -- enableParallel
+    Bool -> -- enableParallel (fork-join)
+    Bool -> -- enableGraph (graph reduction)
     IO (AlloyModule, Map String SerializableConstructorMetadata)
-linkCompiledModulesCircuit packageName compiledModules externalConstructors enableParallel = do
+linkCompiledModulesCircuit packageName compiledModules externalConstructors enableParallel enableGraph = do
     putStrLn "\n=== Starting Circuit IR link-time phase ==="
 
     let fusedAst = createFusedAst [(cmResolvedAst cm, cmTypeMap cm, cmPublicSymbols cm) | cm <- compiledModules]
@@ -215,15 +216,13 @@ linkCompiledModulesCircuit packageName compiledModules externalConstructors enab
     putStrLn "=== Circuit IR (after linearization) ==="
     putStrLn $ prettyCircuit circuitLinearized
 
-    -- Parallelize (insert CFork/CJoin based on dependency analysis)
-    let parallelConfig = defaultParallelConfig{pcEnabled = enableParallel}
-        circuitParallelized = parallelizeModule parallelConfig circuitLinearized
-
-    putStrLn "=== Circuit IR (after parallelization) ==="
-    putStrLn $ prettyCircuit circuitParallelized
-
     -- Lower to Alloy MIR
-    let alloyFromCircuit = lowerCircuitToAlloy circuitParallelized
+    -- If graph mode enabled, use graph reduction; otherwise use standard lowering
+    let _ = enableParallel -- fork-join parallelism (future: can combine with graph)
+        alloyFromCircuit =
+            if enableGraph
+                then lowerCircuitToGraph circuitLinearized
+                else lowerCircuitToAlloy circuitLinearized
         -- Expand intrinsics (convert + to IAdd, etc.)
         alloyExpanded = expandIntrinsicsModule alloyFromCircuit
 
@@ -286,7 +285,8 @@ processModulesIncremental sorted graph compileOptions = do
         if useCircuit
             then do
                 let enableParallel = optionsParallel compileOptions
-                linkCompiledModulesCircuit inputName compiledModules externalConstructors enableParallel
+                    enableGraph = optionsGraph compileOptions
+                linkCompiledModulesCircuit inputName compiledModules externalConstructors enableParallel enableGraph
             else
                 linkCompiledModules inputName compiledModules externalConstructors externalAlloyModules
     let llvmIr = runLlvmCodeGenAndTranscribe alloyOpt

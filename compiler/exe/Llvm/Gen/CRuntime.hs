@@ -52,12 +52,6 @@ cRuntimeDependencies =
     , -- Session 19: Parallel SUP operations (SomaValue = i64)
       LlvmFunctionDependency "soma_par_proj0" LlvmI64 [LlvmI64, LlvmI32]
     , LlvmFunctionDependency "soma_par_proj1" LlvmI64 [LlvmI64, LlvmI32]
-    , -- Fork-join parallelism (returns ptr to SomaTask, or NULL if parallel disabled)
-      LlvmFunctionDependency "soma_fork_direct" ptrType [ptrType, LlvmI64] -- fn, arg
-    , LlvmFunctionDependency "soma_fork_closure" ptrType [ptrType, ptrType, LlvmI64] -- fn, closure, arg
-    , LlvmFunctionDependency "soma_fork_multi" ptrType [ptrType, LlvmPointer LlvmI64, LlvmI32] -- fn, args[], num_args
-    , LlvmFunctionDependency "soma_join" LlvmI64 [ptrType] -- task -> result
-    , LlvmFunctionDependency "soma_par_enabled_export" LlvmI32 [] -- check if parallel runtime enabled (exported wrapper)
     , -- Closure operations
       LlvmFunctionDependency "soma_alloc_closure" ptrType [ptrType, LlvmI8, LlvmI16]
     , LlvmFunctionDependency "soma_closure_set_env" LlvmVoid [ptrType, LlvmI16, LlvmI64]
@@ -75,6 +69,26 @@ cRuntimeDependencies =
       LlvmFunctionDependency "malloc" ptrType [LlvmI64]
     , LlvmFunctionDependency "free" LlvmVoid [ptrType]
     , LlvmFunctionDependency "memcpy" ptrType [ptrType, ptrType, LlvmI64]
+    , -- Session 27: Graph reduction runtime
+      LlvmFunctionDependency "soma_graph_init" ptrType [LlvmI32]
+    , LlvmFunctionDependency "soma_graph_shutdown" LlvmVoid [ptrType]
+    , LlvmFunctionDependency "soma_graph_num" LlvmI32 [ptrType, LlvmI64]
+    , LlvmFunctionDependency "soma_graph_add" LlvmI32 [ptrType, LlvmI32, LlvmI32]
+    , LlvmFunctionDependency "soma_graph_sub" LlvmI32 [ptrType, LlvmI32, LlvmI32]
+    , LlvmFunctionDependency "soma_graph_mul" LlvmI32 [ptrType, LlvmI32, LlvmI32]
+    , LlvmFunctionDependency "soma_graph_call1" LlvmI32 [ptrType, LlvmI16, LlvmI32]
+    , LlvmFunctionDependency "soma_graph_call2" LlvmI32 [ptrType, LlvmI16, LlvmI32, LlvmI32]
+    , LlvmFunctionDependency "soma_graph_reduce_fast" LlvmI64 [ptrType, LlvmI32]
+    , LlvmFunctionDependency "soma_graph_reduce_parallel" LlvmI64 [ptrType, LlvmI32]
+    , LlvmFunctionDependency "soma_graph_register_func" LlvmI16 [ptrType, ptrType, LlvmI8, LlvmI8, ptrType]
+    , -- Session 29: Interaction net graph operations
+      LlvmFunctionDependency "soma_graph_dup" LlvmI32 [ptrType, LlvmI32, LlvmI32]
+    , LlvmFunctionDependency "soma_graph_sup" LlvmI32 [ptrType, LlvmI16, LlvmI32, LlvmI32]
+    , LlvmFunctionDependency "soma_graph_lam" LlvmI32 [ptrType, LlvmI32, LlvmI32]
+    , LlvmFunctionDependency "soma_graph_app" LlvmI32 [ptrType, LlvmI32, LlvmI32]
+    , LlvmFunctionDependency "soma_graph_era" LlvmI32 [ptrType]
+    , -- Global graph runtime pointer
+      LlvmGlobalDependency "g_graph_rt" ptrType
     ]
 
 cRuntimeExternalDeclarations :: String

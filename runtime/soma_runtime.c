@@ -14,6 +14,18 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
+/* Debug flag - set via SOMA_DEBUG env var */
+static int soma_debug = -1;  /* -1 = uninitialized */
+
+static inline int soma_debug_enabled(void) {
+    if (soma_debug < 0) {
+        soma_debug = (getenv("SOMA_DEBUG") != NULL) ? 1 : 0;
+    }
+    return soma_debug;
+}
+
+#define DEBUG_PRINT(...) do { if (soma_debug_enabled()) { fprintf(stderr, __VA_ARGS__); } } while(0)
+
 /* Global label counter (atomic for future parallel support) */
 _Atomic uint32_t soma_label_counter = 0;
 
@@ -249,72 +261,95 @@ static inline int is_heap_closure(SomaValue value) {
  * - If proj1 was first: check for annihilation or clone
  * - If already accessed: return cached value
  *
+ * THREAD SAFETY: Uses atomic CAS on tag to prevent race conditions.
+ * HVM3-style optimization: single atomic operation for state transition.
+ *
  * Note: Values can be tagged pointers (ints, bools, chars) which don't
  * need cloning, or heap pointers (closures, SUPs) which may need special handling.
  */
 SomaValue soma_proj0(SomaValue sup_val) {
     SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sup_val);
-    uint8_t tag = sup->tag;
+    _Atomic uint8_t* tag_ptr = (_Atomic uint8_t*)&sup->tag;
+    
+    /* Single atomic load for tag - HVM3 style */
+    uint8_t tag = atomic_load_explicit(tag_ptr, memory_order_acquire);
 
     /* Fresh - first access via proj0 */
     if (tag == SUP_TAG_FRESH) {
-        sup->tag = SUP_TAG_PROJ0;
-        SomaValue value = (SomaValue)sup->value;
+        /* Atomic CAS to claim this SUP - prevents race with proj1 */
+        uint8_t expected = SUP_TAG_FRESH;
+        if (atomic_compare_exchange_strong_explicit(tag_ptr, &expected, SUP_TAG_PROJ0,
+                                                     memory_order_acq_rel, memory_order_acquire)) {
+            /* Won the race - we're first */
+            SomaValue value = (SomaValue)sup->value;
 
-        /* Check for annihilation: is value a SUP with same label? */
-        if (is_heap_sup(value)) {
-            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
-            if (inner->label == sup->label) {
-                /* Annihilate: return inner's value directly */
-                sup->proj0 = inner->value;
-                return (SomaValue)inner->value;
+            /* Check for annihilation: is value a SUP with same label? */
+            if (SOMA_IS_PTR(value) && value != 0) {
+                uint8_t inner_tag = *(uint8_t*)SOMA_TO_PTR(value);
+                if (IS_SUP(inner_tag)) {
+                    SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
+                    if (inner->label == sup->label) {
+                        /* Annihilate: return inner's value directly */
+                        sup->proj0 = inner->value;
+                        return (SomaValue)inner->value;
+                    }
+                }
             }
-        }
 
-        /* No annihilation - cache and return value */
-        sup->proj0 = (void*)value;
-        return value;
+            /* No annihilation - cache and return value */
+            sup->proj0 = (void*)value;
+            return value;
+        }
+        /* Lost race - reload tag and fall through */
+        tag = expected;
     }
 
     /* proj1 was accessed first - need to handle second access */
     if (tag == SUP_TAG_PROJ1) {
-        sup->tag = SUP_TAG_BOTH;
-        SomaValue value = (SomaValue)sup->value;
+        /* Atomic CAS to transition to BOTH */
+        uint8_t expected = SUP_TAG_PROJ1;
+        if (atomic_compare_exchange_strong_explicit(tag_ptr, &expected, SUP_TAG_BOTH,
+                                                     memory_order_acq_rel, memory_order_acquire)) {
+            SomaValue value = (SomaValue)sup->value;
 
-        /* Tagged values (int, bool, char) don't need cloning */
-        if (!SOMA_IS_PTR(value) || value == 0) {
-            sup->proj0 = (void*)value;
-            return value;
-        }
-
-        /* Check for annihilation */
-        if (is_heap_sup(value)) {
-            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
-            if (inner->label == sup->label) {
-                /* Annihilate: return inner's value */
-                sup->proj0 = inner->value;
-                return (SomaValue)inner->value;
+            /* Tagged values (int, bool, char) don't need cloning */
+            if (!SOMA_IS_PTR(value) || value == 0) {
+                sup->proj0 = (void*)value;
+                return value;
             }
-            /* Different label - pass through (implicit commutation) */
+
+            /* Check for annihilation */
+            uint8_t inner_tag = *(uint8_t*)SOMA_TO_PTR(value);
+            if (IS_SUP(inner_tag)) {
+                SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
+                if (inner->label == sup->label) {
+                    /* Annihilate: return inner's value */
+                    sup->proj0 = inner->value;
+                    return (SomaValue)inner->value;
+                }
+                /* Different label - pass through (implicit commutation) */
+                sup->proj0 = (void*)value;
+                return value;
+            }
+
+            /* Check if closure - need to clone */
+            if (inner_tag == NODE_CLOSURE) {
+                void* cloned = soma_clone_closure(SOMA_TO_PTR(value));
+                sup->proj0 = cloned;
+                return SOMA_PTR(cloned);
+            }
+
+            /* Unknown heap object - shallow copy */
             sup->proj0 = (void*)value;
             return value;
         }
-
-        /* Check if closure - need to clone */
-        if (is_heap_closure(value)) {
-            void* cloned = soma_clone_closure(SOMA_TO_PTR(value));
-            sup->proj0 = cloned;
-            return SOMA_PTR(cloned);
-        }
-
-        /* Unknown heap object - shallow copy */
-        sup->proj0 = (void*)value;
-        return value;
+        /* Lost race - someone else transitioned, reload */
+        tag = expected;
     }
 
     /* proj1 was accessed first with speculative cloning - wait for clone */
     if (tag == SUP_TAG_PROJ1_CLONING) {
-        sup->tag = SUP_TAG_BOTH;
+        atomic_store_explicit(tag_ptr, SUP_TAG_BOTH, memory_order_release);
         SomaTask* task = (SomaTask*)sup->proj0;
         
         /* Wait for the clone task to complete and get result */
@@ -331,70 +366,91 @@ SomaValue soma_proj0(SomaValue sup_val) {
  * soma_proj1 - Get second projection from SUP
  *
  * Symmetric to soma_proj0.
+ * THREAD SAFETY: Uses atomic CAS on tag to prevent race conditions.
  */
 SomaValue soma_proj1(SomaValue sup_val) {
     SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sup_val);
-    uint8_t tag = sup->tag;
+    _Atomic uint8_t* tag_ptr = (_Atomic uint8_t*)&sup->tag;
+    
+    /* Single atomic load for tag - HVM3 style */
+    uint8_t tag = atomic_load_explicit(tag_ptr, memory_order_acquire);
 
     /* Fresh - first access via proj1 */
     if (tag == SUP_TAG_FRESH) {
-        sup->tag = SUP_TAG_PROJ1;
-        SomaValue value = (SomaValue)sup->value;
+        /* Atomic CAS to claim this SUP - prevents race with proj0 */
+        uint8_t expected = SUP_TAG_FRESH;
+        if (atomic_compare_exchange_strong_explicit(tag_ptr, &expected, SUP_TAG_PROJ1,
+                                                     memory_order_acq_rel, memory_order_acquire)) {
+            /* Won the race - we're first */
+            SomaValue value = (SomaValue)sup->value;
 
-        /* Check for annihilation */
-        if (is_heap_sup(value)) {
-            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
-            if (inner->label == sup->label) {
-                /* Annihilate: return inner's value */
-                sup->proj1 = inner->value;
-                return (SomaValue)inner->value;
+            /* Check for annihilation */
+            if (SOMA_IS_PTR(value) && value != 0) {
+                uint8_t inner_tag = *(uint8_t*)SOMA_TO_PTR(value);
+                if (IS_SUP(inner_tag)) {
+                    SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
+                    if (inner->label == sup->label) {
+                        /* Annihilate: return inner's value */
+                        sup->proj1 = inner->value;
+                        return (SomaValue)inner->value;
+                    }
+                }
             }
-        }
 
-        /* No annihilation - cache and return value */
-        sup->proj1 = (void*)value;
-        return value;
+            /* No annihilation - cache and return value */
+            sup->proj1 = (void*)value;
+            return value;
+        }
+        /* Lost race - reload tag and fall through */
+        tag = expected;
     }
 
     /* proj0 was accessed first - need to handle second access */
     if (tag == SUP_TAG_PROJ0) {
-        sup->tag = SUP_TAG_BOTH;
-        SomaValue value = (SomaValue)sup->value;
+        /* Atomic CAS to transition to BOTH */
+        uint8_t expected = SUP_TAG_PROJ0;
+        if (atomic_compare_exchange_strong_explicit(tag_ptr, &expected, SUP_TAG_BOTH,
+                                                     memory_order_acq_rel, memory_order_acquire)) {
+            SomaValue value = (SomaValue)sup->value;
 
-        /* Tagged values (int, bool, char) don't need cloning */
-        if (!SOMA_IS_PTR(value) || value == 0) {
-            sup->proj1 = (void*)value;
-            return value;
-        }
-
-        /* Check for annihilation */
-        if (is_heap_sup(value)) {
-            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
-            if (inner->label == sup->label) {
-                /* Annihilate: return inner's value */
-                sup->proj1 = inner->value;
-                return (SomaValue)inner->value;
+            /* Tagged values (int, bool, char) don't need cloning */
+            if (!SOMA_IS_PTR(value) || value == 0) {
+                sup->proj1 = (void*)value;
+                return value;
             }
-            /* Different label - pass through */
+
+            /* Check for annihilation */
+            uint8_t inner_tag = *(uint8_t*)SOMA_TO_PTR(value);
+            if (IS_SUP(inner_tag)) {
+                SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
+                if (inner->label == sup->label) {
+                    /* Annihilate: return inner's value */
+                    sup->proj1 = inner->value;
+                    return (SomaValue)inner->value;
+                }
+                /* Different label - pass through */
+                sup->proj1 = (void*)value;
+                return value;
+            }
+
+            /* Check if closure - need to clone */
+            if (inner_tag == NODE_CLOSURE) {
+                void* cloned = soma_clone_closure(SOMA_TO_PTR(value));
+                sup->proj1 = cloned;
+                return SOMA_PTR(cloned);
+            }
+
+            /* Unknown heap object - shallow copy */
             sup->proj1 = (void*)value;
             return value;
         }
-
-        /* Check if closure - need to clone */
-        if (is_heap_closure(value)) {
-            void* cloned = soma_clone_closure(SOMA_TO_PTR(value));
-            sup->proj1 = cloned;
-            return SOMA_PTR(cloned);
-        }
-
-        /* Unknown heap object - shallow copy */
-        sup->proj1 = (void*)value;
-        return value;
+        /* Lost race - someone else transitioned, reload */
+        tag = expected;
     }
 
     /* proj0 was accessed first with speculative cloning - wait for clone */
     if (tag == SUP_TAG_PROJ0_CLONING) {
-        sup->tag = SUP_TAG_BOTH;
+        atomic_store_explicit(tag_ptr, SUP_TAG_BOTH, memory_order_release);
         SomaTask* task = (SomaTask*)sup->proj1;
         
         /* Wait for the clone task to complete and get result */
@@ -657,13 +713,21 @@ __thread SomaWorker* soma_current_worker = NULL;
 #define ADAPTIVE_THRESHOLD_DEFAULT  50   /* Normal operation */
 #define ADAPTIVE_THRESHOLD_MAX      200  /* Conservative when busy */
 
-static inline uint32_t get_adaptive_threshold(void) {
-    if (!soma_par_enabled()) {
-        return ADAPTIVE_THRESHOLD_DEFAULT;
-    }
-    
-    size_t hungry = atomic_load_explicit(&soma_par.hungry_count, memory_order_relaxed);
+/* Cached threshold to avoid recalculating on every call */
+#define THRESHOLD_CACHE_INTERVAL 1000  /* Recalculate every 1000 calls */
+static __thread uint32_t tls_cached_threshold = ADAPTIVE_THRESHOLD_DEFAULT;
+static __thread uint32_t tls_threshold_call_count = 0;
+
+static uint32_t compute_adaptive_threshold(void) {
     int num_workers = soma_par.num_workers;
+    
+    /* Count hungry workers by scanning per-worker flags */
+    size_t hungry = 0;
+    for (int i = 0; i < num_workers; i++) {
+        if (atomic_load_explicit(&soma_par.workers[i].hungry, memory_order_relaxed)) {
+            hungry++;
+        }
+    }
     
     if (num_workers == 0) {
         return ADAPTIVE_THRESHOLD_DEFAULT;
@@ -696,6 +760,21 @@ static inline uint32_t get_adaptive_threshold(void) {
                (ADAPTIVE_THRESHOLD_MAX - ADAPTIVE_THRESHOLD_DEFAULT) * 
                (25 - hunger_percent) / 25;
     }
+}
+
+static inline uint32_t get_adaptive_threshold(void) {
+    if (!soma_par_enabled()) {
+        return ADAPTIVE_THRESHOLD_DEFAULT;
+    }
+    
+    /* Use cached value most of the time */
+    tls_threshold_call_count++;
+    if (tls_threshold_call_count >= THRESHOLD_CACHE_INTERVAL) {
+        tls_threshold_call_count = 0;
+        tls_cached_threshold = compute_adaptive_threshold();
+    }
+    
+    return tls_cached_threshold;
 }
 
 /*
@@ -775,14 +854,71 @@ static SomaTask* deque_steal(SomaDeque* d) {
  * Task Pool (simple free-list for task recycling)
  */
 
-#define TASK_POOL_INITIAL_SIZE 256
+/* Use larger pool from header, or default to 65536 for massive parallelism */
+#ifndef TASK_POOL_INITIAL_SIZE
+#define TASK_POOL_INITIAL_SIZE SOMA_TASK_POOL_SIZE
+#endif
+
+/* Per-worker task free lists for lock-free allocation */
+#define WORKER_POOL_SIZE 256
+#define BATCH_ALLOC_SIZE 64  /* Grab 64 tasks at once from global array */
+
+typedef struct {
+    SomaTask* free_list;
+    int count;
+    /* Local batch from global array */
+    SomaTask* batch_start;
+    SomaTask* batch_end;
+    SomaTask* batch_current;
+} WorkerTaskPool;
+
+static __thread WorkerTaskPool tls_task_pool = {NULL, 0, NULL, NULL, NULL};
+
+/* Pre-allocated global task array for initial pool */
+static SomaTask* global_task_array = NULL;
+static _Atomic size_t global_task_index = 0;
+static size_t global_task_capacity = 0;
 
 SomaTask* soma_task_alloc(void) {
-    /* Try pool first */
+    /* Try thread-local free list first - no locks! */
+    if (tls_task_pool.free_list != NULL) {
+        SomaTask* task = tls_task_pool.free_list;
+        tls_task_pool.free_list = *(SomaTask**)task;
+        tls_task_pool.count--;
+        return task;
+    }
+    
+    /* Try local batch from global array - no atomics! */
+    if (tls_task_pool.batch_current != NULL && 
+        tls_task_pool.batch_current < tls_task_pool.batch_end) {
+        SomaTask* task = tls_task_pool.batch_current;
+        tls_task_pool.batch_current++;
+        return task;
+    }
+    
+    /* Grab a new batch from global array - one atomic for BATCH_ALLOC_SIZE tasks */
+    if (global_task_array != NULL) {
+        size_t idx = atomic_fetch_add(&global_task_index, BATCH_ALLOC_SIZE);
+        if (idx + BATCH_ALLOC_SIZE <= global_task_capacity) {
+            /* Got a full batch */
+            tls_task_pool.batch_start = &global_task_array[idx];
+            tls_task_pool.batch_end = &global_task_array[idx + BATCH_ALLOC_SIZE];
+            tls_task_pool.batch_current = tls_task_pool.batch_start + 1;
+            return tls_task_pool.batch_start;
+        } else if (idx < global_task_capacity) {
+            /* Partial batch at end of array */
+            tls_task_pool.batch_start = &global_task_array[idx];
+            tls_task_pool.batch_end = &global_task_array[global_task_capacity];
+            tls_task_pool.batch_current = tls_task_pool.batch_start + 1;
+            return tls_task_pool.batch_start;
+        }
+    }
+    
+    /* Fall back to global pool with lock (rare path) */
     pthread_mutex_lock(&soma_par.task_pool_lock);
     if (soma_par.task_pool != NULL) {
         SomaTask* task = soma_par.task_pool;
-        soma_par.task_pool = *(SomaTask**)task;  /* Next pointer stored in task */
+        soma_par.task_pool = *(SomaTask**)task;
         pthread_mutex_unlock(&soma_par.task_pool_lock);
         return task;
     }
@@ -793,6 +929,21 @@ SomaTask* soma_task_alloc(void) {
 }
 
 void soma_task_free(SomaTask* task) {
+    /* Check if task is from global array - don't free those, they're reused via index */
+    if (global_task_array != NULL && 
+        task >= global_task_array && 
+        task < global_task_array + global_task_capacity) {
+        /* From global array - add to thread-local pool for fast reuse */
+        if (tls_task_pool.count < WORKER_POOL_SIZE) {
+            *(SomaTask**)task = tls_task_pool.free_list;
+            tls_task_pool.free_list = task;
+            tls_task_pool.count++;
+            return;
+        }
+        /* TLS pool full - return to global pool */
+    }
+    
+    /* Return to global pool */
     pthread_mutex_lock(&soma_par.task_pool_lock);
     *(SomaTask**)task = soma_par.task_pool;
     soma_par.task_pool = task;
@@ -803,41 +954,60 @@ void soma_task_free(SomaTask* task) {
  * Task Execution Helper
  */
 
+/* Thread-local fork depth - declared later but needed here */
+extern __thread uint8_t soma_fork_depth;
+
 static inline SomaValue task_execute(SomaTask* task) {
+    /* Set thread-local fork depth from task's depth.
+     * This allows nested forks to know their depth in the fork tree. */
+    uint8_t saved_depth = soma_fork_depth;
+    soma_fork_depth = task->depth;
+    
+    SomaValue result;
     switch (task->kind) {
         case TASK_KIND_DIRECT:
-            return task->fn.direct(task->arg);
+            result = task->fn.direct(task->arg);
+            break;
         case TASK_KIND_CLOSURE:
-            return task->fn.closure(task->env, task->arg);
+            result = task->fn.closure(task->env, task->arg);
+            break;
         case TASK_KIND_TRAMPOLINE: {
             /* Trampoline call: the trampoline function handles type conversion.
              * The trampoline takes a pointer to the args array and returns SomaValue.
              * This is safe because the compiler generates the trampoline with the
              * correct argument unpacking and type conversions. */
-            SomaValue* args = (SomaValue*)task->env;
-            SomaValue result = task->fn.trampoline(args);
+            SomaValue* args = task->args_inline ? task->inline_args : (SomaValue*)task->env;
+            result = task->fn.trampoline(args);
             
-            /* Free the copied args array */
-            free(args);
-            return result;
+            /* Free heap-allocated args array if not inline */
+            if (!task->args_inline && task->env != NULL) {
+                free(task->env);
+            }
+            break;
         }
         case TASK_KIND_GENERIC:
         default:
-            return task->fn.generic(task->env);
+            result = task->fn.generic(task->env);
+            break;
     }
+    
+    /* Restore previous depth */
+    soma_fork_depth = saved_depth;
+    return result;
 }
 
 /*
  * Worker Thread
  */
 
-static void worker_set_hungry(SomaWorker* w, int hungry) {
-    int was_hungry = atomic_exchange(&w->hungry, hungry);
-    if (hungry && !was_hungry) {
-        atomic_fetch_add(&soma_par.hungry_count, 1);
-    } else if (!hungry && was_hungry) {
-        atomic_fetch_sub(&soma_par.hungry_count, 1);
-    }
+/* Hungry state tracking - per-worker flag only, no global counter.
+ * 
+ * Each worker has its own hungry flag on its own cache line.
+ * No global counter means no cache-line ping-pong between workers.
+ * Spawning decisions scan per-worker flags directly.
+ */
+static inline void worker_set_hungry(SomaWorker* w, int hungry) {
+    atomic_store_explicit(&w->hungry, hungry, memory_order_relaxed);
 }
 
 static void* worker_main(void* arg) {
@@ -847,6 +1017,11 @@ static void* worker_main(void* arg) {
     /* Initialize per-thread memory pools */
     tls_pool_init();
     
+    /* Exponential backoff state for failed steals */
+    int backoff = 0;
+    const int BACKOFF_MIN = 1;
+    const int BACKOFF_MAX = 64;
+    
     while (!atomic_load(&soma_par.shutdown)) {
         /* Try to pop from own deque first */
         SomaTask* task = deque_pop(&self->deque);
@@ -855,30 +1030,57 @@ static void* worker_main(void* arg) {
             /* Mark as hungry and try to steal */
             worker_set_hungry(self, 1);
             
-            /* Try stealing from random victim */
-            int victim_id = (self->id + 1) % soma_par.num_workers;
-            for (int attempts = 0; attempts < soma_par.num_workers; attempts++) {
-                if (victim_id != self->id) {
-                    SomaWorker* victim = &soma_par.workers[victim_id];
-                    task = deque_steal(&victim->deque);
-                    self->steal_attempts++;
-                    if (task != NULL) {
-                        self->tasks_stolen++;
-                        atomic_fetch_add(&soma_par_stats.tasks_stolen, 1);
-                        worker_set_hungry(self, 0);
-                        break;
-                    }
-                }
-                victim_id = (victim_id + 1) % soma_par.num_workers;
-            }
+            /* First, try stealing from main thread's deque (most likely to have work) */
+            task = deque_steal(&soma_par.main_deque);
+            self->steal_attempts++;
             
             if (task == NULL) {
-                /* No work available, yield CPU */
-                sched_yield();
+                /* Try stealing from ONE random victim, not all */
+                int victim_id = (self->id + backoff) % soma_par.num_workers;
+                if (victim_id == self->id) {
+                    victim_id = (victim_id + 1) % soma_par.num_workers;
+                }
+                
+                SomaWorker* victim = &soma_par.workers[victim_id];
+                task = deque_steal(&victim->deque);
+                self->steal_attempts++;
+            }
+            
+            if (task != NULL) {
+                /* Found work - reset backoff */
+                self->tasks_stolen++;
+                atomic_fetch_add(&soma_par_stats.tasks_stolen, 1);
+                worker_set_hungry(self, 0);
+                backoff = 0;
+            } else {
+                /* No work - exponential backoff before next steal attempt */
+                if (backoff < BACKOFF_MIN) {
+                    backoff = BACKOFF_MIN;
+                } else if (backoff < BACKOFF_MAX) {
+                    backoff *= 2;
+                }
+                
+                /* Spin-wait with backoff instead of immediate retry */
+                for (int i = 0; i < backoff; i++) {
+#if defined(__x86_64__) || defined(__i386__)
+                    __asm__ volatile("pause" ::: "memory");
+#elif defined(__aarch64__)
+                    __asm__ volatile("yield" ::: "memory");
+#else
+                    /* Generic: compiler barrier */
+                    __asm__ volatile("" ::: "memory");
+#endif
+                }
+                
+                /* Occasionally yield to OS after many failed attempts */
+                if (backoff >= BACKOFF_MAX) {
+                    sched_yield();
+                }
                 continue;
             }
         } else {
             worker_set_hungry(self, 0);
+            backoff = 0;  /* Reset backoff on successful pop */
         }
         
         /* Execute the task */
@@ -915,15 +1117,17 @@ void soma_par_init(int num_workers) {
     soma_par.num_workers = num_workers;
     atomic_store(&soma_par.shutdown, 0);
     atomic_store(&soma_par.pending_tasks, 0);
-    atomic_store(&soma_par.hungry_count, 0);
+    /* hungry_count removed - using per-worker flags instead */
     soma_par.task_pool = NULL;
     pthread_mutex_init(&soma_par.task_pool_lock, NULL);
     
-    /* Pre-allocate task pool */
-    for (int i = 0; i < TASK_POOL_INITIAL_SIZE; i++) {
-        SomaTask* t = (SomaTask*)malloc(sizeof(SomaTask));
-        soma_task_free(t);
-    }
+    /* Initialize main thread's deque */
+    deque_init(&soma_par.main_deque);
+    
+    /* Pre-allocate global task array for lock-free allocation */
+    global_task_capacity = TASK_POOL_INITIAL_SIZE;
+    global_task_array = (SomaTask*)calloc(global_task_capacity, sizeof(SomaTask));
+    atomic_store(&global_task_index, 0);
     
     /* Start worker threads with larger stack for deep recursion */
     pthread_attr_t attr;
@@ -958,7 +1162,14 @@ void soma_par_shutdown(void) {
         pthread_join(soma_par.workers[i].thread, NULL);
     }
     
-    /* Free task pool */
+    /* Free global task array */
+    if (global_task_array != NULL) {
+        free(global_task_array);
+        global_task_array = NULL;
+        global_task_capacity = 0;
+    }
+    
+    /* Free overflow task pool */
     pthread_mutex_lock(&soma_par.task_pool_lock);
     while (soma_par.task_pool != NULL) {
         SomaTask* next = *(SomaTask**)soma_par.task_pool;
@@ -986,8 +1197,9 @@ void soma_par_spawn(SomaTask* task) {
         /* Push to current worker's deque */
         deque_push(&w->deque, task);
     } else {
-        /* Main thread: push to worker 0's deque */
-        deque_push(&soma_par.workers[0].deque, task);
+        /* Main thread: push to main thread's own deque.
+         * Workers will steal from this deque. */
+        deque_push(&soma_par.main_deque, task);
     }
 }
 
@@ -1058,6 +1270,17 @@ SomaTask* soma_fork_direct(SomaDirectFn fn, SomaValue arg) {
         return NULL;
     }
     
+    int worker_id = soma_current_worker ? soma_current_worker->id : -1;
+    uint8_t current_depth = soma_fork_depth;
+    
+    /* DEPTH-LIMITED NESTED FORKING:
+     * Allow forking up to depth limit to enable exponential parallelism. */
+    if (current_depth >= SOMA_MAX_FORK_DEPTH) {
+        DEBUG_PRINT("[fork_direct] worker=%d depth=%d SKIPPING fork (depth limit)\n", 
+                    worker_id, current_depth);
+        return NULL;
+    }
+    
     SomaTask* task = soma_task_alloc();
     if (!task) {
         return NULL;
@@ -1069,6 +1292,7 @@ SomaTask* soma_fork_direct(SomaDirectFn fn, SomaValue arg) {
     task->arg = arg;
     task->work_estimate = 0;
     task->result = 0;
+    task->depth = current_depth + 1;  /* Child task is one level deeper */
     
     soma_par_spawn(task);
     /* Note: tasks_spawned is incremented in soma_par_spawn */
@@ -1106,33 +1330,74 @@ SomaTask* soma_fork_multi(void* fn, SomaValue* args, int num_args) {
         return NULL;
     }
     
+    int is_worker_thread = (soma_current_worker != NULL);
+    int worker_id = is_worker_thread ? soma_current_worker->id : -1;
+    uint8_t current_depth = soma_fork_depth;
+    
+    /* DEPTH-LIMITED NESTED FORKING:
+     * Allow both main thread and workers to fork, but only up to a depth limit.
+     * This enables exponential parallelism (2^depth tasks) while preventing
+     * stack overflow by falling back to sequential execution at deep levels.
+     * 
+     * At depth 30, we can have up to ~1 billion parallel tasks. */
+    if (current_depth >= SOMA_MAX_FORK_DEPTH) {
+        DEBUG_PRINT("[fork_multi] worker=%d depth=%d SKIPPING fork (depth limit)\n", 
+                    worker_id, current_depth);
+        return NULL;  /* Caller will execute inline */
+    }
+    
+    DEBUG_PRINT("[fork_multi] worker=%d depth=%d fn=%p num_args=%d\n", 
+                worker_id, current_depth, fn, num_args);
+    
     SomaTask* task = soma_task_alloc();
     if (!task) {
         return NULL;
     }
     
-    /* Copy args to heap (caller's stack array may be deallocated) */
-    SomaValue* args_copy = (SomaValue*)malloc(num_args * sizeof(SomaValue));
-    if (!args_copy) {
-        soma_task_free(task);
-        return NULL;
+    /* Store args - use inline storage if possible to avoid malloc */
+    task->num_args = (uint8_t)num_args;
+    if (num_args <= SOMA_TASK_INLINE_ARGS) {
+        /* Use inline storage - no malloc! */
+        memcpy(task->inline_args, args, num_args * sizeof(SomaValue));
+        task->args_inline = 1;
+        task->env = NULL;
+    } else {
+        /* Too many args - fall back to heap allocation */
+        SomaValue* args_copy = (SomaValue*)malloc(num_args * sizeof(SomaValue));
+        if (!args_copy) {
+            soma_task_free(task);
+            return NULL;
+        }
+        memcpy(args_copy, args, num_args * sizeof(SomaValue));
+        task->env = args_copy;
+        task->args_inline = 0;
     }
-    memcpy(args_copy, args, num_args * sizeof(SomaValue));
     
     /* fn is now a trampoline function that takes a pointer to the args array.
      * The trampoline handles all type conversions (i64 -> native types) and
      * calls the real function with the correct argument types. */
     task->kind = TASK_KIND_TRAMPOLINE;
     task->fn.trampoline = (SomaTrampolineFn)fn;
-    task->env = args_copy;          /* args array */
-    task->arg = (SomaValue)num_args; /* number of args (for debugging) */
     task->work_estimate = 0;
     task->result = 0;
+    task->depth = current_depth + 1;  /* Child task is one level deeper */
     
     soma_par_spawn(task);
     
+    DEBUG_PRINT("[fork_multi] worker=%d depth=%d spawned task=%p pending=%zu\n", 
+                worker_id, current_depth, (void*)task, atomic_load(&soma_par.pending_tasks));
+    
     return task;
 }
+
+/* Thread-local inline execution depth counter to prevent stack overflow */
+__thread int soma_join_depth = 0;
+
+/* Thread-local fork depth for depth-limited nested forking */
+__thread uint8_t soma_fork_depth = 0;
+
+/* Maximum inline execution depth for worker threads (main thread has no limit) */
+#define SOMA_MAX_WORKER_JOIN_DEPTH 8
 
 SomaValue soma_join(SomaTask* task) {
     /* If task is NULL, the computation was run inline (sequential mode) */
@@ -1145,50 +1410,60 @@ SomaValue soma_join(SomaTask* task) {
     SomaValue result;
     int state = atomic_load(&task->state);
     
+    /* Check if we're on a worker thread or the main thread. */
+    int is_worker_thread = (soma_current_worker != NULL);
+    int worker_id = is_worker_thread ? soma_current_worker->id : -1;
+    
+    DEBUG_PRINT("[join] worker=%d depth=%d state=%d task=%p\n", 
+                worker_id, soma_join_depth, state, (void*)task);
+    
     if (state == TASK_PENDING) {
-        /* Task hasn't started yet - give workers a brief chance to steal it
-         * before we run it ourselves. This enables actual parallelism. */
+        /* Task hasn't started yet - give workers a brief chance to steal it. */
         for (int i = 0; i < 100; i++) {
             sched_yield();
             state = atomic_load(&task->state);
             if (state != TASK_PENDING) break;
         }
         
-        /* If still pending after giving workers a chance, run it ourselves */
+        DEBUG_PRINT("[join] worker=%d after yield state=%d\n", worker_id, state);
+        
+        /* If still pending and we're allowed to execute inline, do so.
+         * Workers should execute inline to make progress.
+         * Main thread only executes inline if workers aren't picking up work. */
         if (state == TASK_PENDING) {
             int expected = TASK_PENDING;
             if (atomic_compare_exchange_strong(&task->state, &expected, TASK_RUNNING)) {
+                DEBUG_PRINT("[join] worker=%d executing inline depth=%d\n", worker_id, soma_join_depth);
+                soma_join_depth++;
                 task->result = task_execute(task);
+                soma_join_depth--;
                 atomic_store(&task->state, TASK_DONE);
                 atomic_fetch_sub(&soma_par.pending_tasks, 1);
                 atomic_fetch_add(&soma_par_stats.tasks_run_inline, 1);
                 result = task->result;
                 soma_task_free(task);
+                DEBUG_PRINT("[join] worker=%d inline done result=%ld\n", worker_id, (long)result);
                 return result;
             }
         }
     }
     
-    /* Wait for task to complete */
+    /* Wait for task to complete (task was stolen or already running) */
+    DEBUG_PRINT("[join] worker=%d waiting for task=%p state=%d\n", worker_id, (void*)task, atomic_load(&task->state));
+    int wait_count = 0;
     while (atomic_load(&task->state) != TASK_DONE) {
-        /* Help out by trying to run other tasks while waiting */
-        SomaWorker* w = soma_current_worker;
-        if (w != NULL) {
-            SomaTask* other = deque_pop(&w->deque);
-            if (other != NULL) {
-                int exp = TASK_PENDING;
-                if (atomic_compare_exchange_strong(&other->state, &exp, TASK_RUNNING)) {
-                    other->result = task_execute(other);
-                    atomic_store(&other->state, TASK_DONE);
-                    atomic_fetch_sub(&soma_par.pending_tasks, 1);
-                }
-            }
-        }
         sched_yield();
+        wait_count++;
+        if (wait_count % 10000 == 0) {
+            DEBUG_PRINT("[join] worker=%d still waiting count=%d state=%d pending=%zu\n", 
+                        worker_id, wait_count, atomic_load(&task->state),
+                        atomic_load(&soma_par.pending_tasks));
+        }
     }
     
     result = task->result;
     soma_task_free(task);
+    DEBUG_PRINT("[join] worker=%d wait done result=%ld\n", worker_id, (long)result);
     return result;
 }
 
@@ -1254,54 +1529,77 @@ SomaValue soma_par_proj0(SomaValue sup_val, uint32_t work_hint) {
     }
     
     SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sup_val);
-    uint8_t tag = sup->tag;
+    _Atomic uint8_t* tag_ptr = (_Atomic uint8_t*)&sup->tag;
+    
+    /* Single atomic load - HVM3 style */
+    uint8_t tag = atomic_load_explicit(tag_ptr, memory_order_acquire);
     
     /* Only handle fresh SUPs for speculative cloning */
     if (tag != SUP_TAG_FRESH) {
         return soma_proj0(sup_val);
     }
     
+    /* Atomic CAS to claim this SUP - prevents race with proj1 */
+    uint8_t expected = SUP_TAG_FRESH;
     SomaValue value = (SomaValue)sup->value;
     
     /* Check for annihilation first */
     if (is_heap_sup(value)) {
         SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
         if (inner->label == sup->label) {
-            /* Annihilate: return inner's value */
-            sup->tag = SUP_TAG_PROJ0;
-            sup->proj0 = inner->value;
-            return (SomaValue)inner->value;
+            /* Annihilate: try to claim with CAS */
+            if (atomic_compare_exchange_strong_explicit(tag_ptr, &expected, SUP_TAG_PROJ0,
+                                                         memory_order_acq_rel, memory_order_acquire)) {
+                sup->proj0 = inner->value;
+                return (SomaValue)inner->value;
+            }
+            /* Lost race - fall through to regular proj0 */
+            return soma_proj0(sup_val);
         }
     }
     
     /* Check if we should speculatively clone for proj1 */
     if (should_speculative_clone(work_hint, value)) {
-        /* Spawn a clone task - result will go in proj1 */
-        SomaTask* task = soma_task_alloc();
-        if (task) {
-            task->kind = TASK_KIND_GENERIC;
-            task->fn.generic = soma_clone_task_fn;
-            task->env = SOMA_TO_PTR(value);
-            task->arg = 0;
-            task->work_estimate = work_hint;
-            
-            /* Store task pointer in proj1 slot temporarily */
-            sup->proj1 = task;
+        /* Try to claim with CAS for speculative cloning */
+        if (atomic_compare_exchange_strong_explicit(tag_ptr, &expected, SUP_TAG_PROJ0_CLONING,
+                                                     memory_order_acq_rel, memory_order_acquire)) {
+            /* Spawn a clone task - result will go in proj1 */
+            SomaTask* task = soma_task_alloc();
+            if (task) {
+                task->kind = TASK_KIND_GENERIC;
+                task->fn.generic = soma_clone_task_fn;
+                task->env = SOMA_TO_PTR(value);
+                task->arg = 0;
+                task->work_estimate = work_hint;
+                
+                /* Store task pointer in proj1 slot temporarily */
+                sup->proj1 = task;
+                sup->proj0 = (void*)value;
+                
+                /* Spawn the task */
+                soma_par_spawn(task);
+                atomic_fetch_add(&soma_par_stats.speculative_clones, 1);
+                
+                return value;
+            }
+            /* Task alloc failed - downgrade to normal PROJ0 */
+            atomic_store_explicit(tag_ptr, SUP_TAG_PROJ0, memory_order_release);
             sup->proj0 = (void*)value;
-            sup->tag = SUP_TAG_PROJ0_CLONING;
-            
-            /* Spawn the task */
-            soma_par_spawn(task);
-            atomic_fetch_add(&soma_par_stats.speculative_clones, 1);
-            
             return value;
         }
+        /* Lost race - fall through to regular proj0 */
+        return soma_proj0(sup_val);
     }
     
-    /* Normal path: just mark as accessed */
-    sup->tag = SUP_TAG_PROJ0;
-    sup->proj0 = (void*)value;
-    return value;
+    /* Normal path: try to claim with CAS */
+    if (atomic_compare_exchange_strong_explicit(tag_ptr, &expected, SUP_TAG_PROJ0,
+                                                 memory_order_acq_rel, memory_order_acquire)) {
+        sup->proj0 = (void*)value;
+        return value;
+    }
+    
+    /* Lost race - fall through to regular proj0 */
+    return soma_proj0(sup_val);
 }
 
 SomaValue soma_par_proj1(SomaValue sup_val, uint32_t work_hint) {
@@ -1310,54 +1608,77 @@ SomaValue soma_par_proj1(SomaValue sup_val, uint32_t work_hint) {
     }
     
     SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sup_val);
-    uint8_t tag = sup->tag;
+    _Atomic uint8_t* tag_ptr = (_Atomic uint8_t*)&sup->tag;
+    
+    /* Single atomic load - HVM3 style */
+    uint8_t tag = atomic_load_explicit(tag_ptr, memory_order_acquire);
     
     /* Only handle fresh SUPs for speculative cloning */
     if (tag != SUP_TAG_FRESH) {
         return soma_proj1(sup_val);
     }
     
+    /* Atomic CAS to claim this SUP - prevents race with proj0 */
+    uint8_t expected = SUP_TAG_FRESH;
     SomaValue value = (SomaValue)sup->value;
     
     /* Check for annihilation first */
     if (is_heap_sup(value)) {
         SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
         if (inner->label == sup->label) {
-            /* Annihilate: return inner's value */
-            sup->tag = SUP_TAG_PROJ1;
-            sup->proj1 = inner->value;
-            return (SomaValue)inner->value;
+            /* Annihilate: try to claim with CAS */
+            if (atomic_compare_exchange_strong_explicit(tag_ptr, &expected, SUP_TAG_PROJ1,
+                                                         memory_order_acq_rel, memory_order_acquire)) {
+                sup->proj1 = inner->value;
+                return (SomaValue)inner->value;
+            }
+            /* Lost race - fall through to regular proj1 */
+            return soma_proj1(sup_val);
         }
     }
     
     /* Check if we should speculatively clone for proj0 */
     if (should_speculative_clone(work_hint, value)) {
-        /* Spawn a clone task - result will go in proj0 */
-        SomaTask* task = soma_task_alloc();
-        if (task) {
-            task->kind = TASK_KIND_GENERIC;
-            task->fn.generic = soma_clone_task_fn;
-            task->env = SOMA_TO_PTR(value);
-            task->arg = 0;
-            task->work_estimate = work_hint;
-            
-            /* Store task pointer in proj0 slot temporarily */
-            sup->proj0 = task;
+        /* Try to claim with CAS for speculative cloning */
+        if (atomic_compare_exchange_strong_explicit(tag_ptr, &expected, SUP_TAG_PROJ1_CLONING,
+                                                     memory_order_acq_rel, memory_order_acquire)) {
+            /* Spawn a clone task - result will go in proj0 */
+            SomaTask* task = soma_task_alloc();
+            if (task) {
+                task->kind = TASK_KIND_GENERIC;
+                task->fn.generic = soma_clone_task_fn;
+                task->env = SOMA_TO_PTR(value);
+                task->arg = 0;
+                task->work_estimate = work_hint;
+                
+                /* Store task pointer in proj0 slot temporarily */
+                sup->proj0 = task;
+                sup->proj1 = (void*)value;
+                
+                /* Spawn the task */
+                soma_par_spawn(task);
+                atomic_fetch_add(&soma_par_stats.speculative_clones, 1);
+                
+                return value;
+            }
+            /* Task alloc failed - downgrade to normal PROJ1 */
+            atomic_store_explicit(tag_ptr, SUP_TAG_PROJ1, memory_order_release);
             sup->proj1 = (void*)value;
-            sup->tag = SUP_TAG_PROJ1_CLONING;
-            
-            /* Spawn the task */
-            soma_par_spawn(task);
-            atomic_fetch_add(&soma_par_stats.speculative_clones, 1);
-            
             return value;
         }
+        /* Lost race - fall through to regular proj1 */
+        return soma_proj1(sup_val);
     }
     
-    /* Normal path: just mark as accessed */
-    sup->tag = SUP_TAG_PROJ1;
-    sup->proj1 = (void*)value;
-    return value;
+    /* Normal path: try to claim with CAS */
+    if (atomic_compare_exchange_strong_explicit(tag_ptr, &expected, SUP_TAG_PROJ1,
+                                                 memory_order_acq_rel, memory_order_acquire)) {
+        sup->proj1 = (void*)value;
+        return value;
+    }
+    
+    /* Lost race - fall through to regular proj1 */
+    return soma_proj1(sup_val);
 }
 
 /*
@@ -1380,8 +1701,16 @@ void soma_par_print_stats(void) {
     fprintf(stderr, "[soma_par] Skipped (not hungry): %lu\n", (unsigned long)atomic_load(&soma_par_stats.spawn_skipped_no_hungry));
     fprintf(stderr, "[soma_par] Skipped (saturated): %lu\n", (unsigned long)atomic_load(&soma_par_stats.spawn_skipped_saturated));
     fprintf(stderr, "[soma_par] Current adaptive threshold: %u\n", get_adaptive_threshold());
-    fprintf(stderr, "[soma_par] Current hungry workers: %lu/%d\n", 
-            (unsigned long)atomic_load(&soma_par.hungry_count), soma_par.num_workers);
+    
+    /* Count hungry workers by scanning per-worker flags */
+    int hungry_count = 0;
+    for (int i = 0; i < soma_par.num_workers; i++) {
+        if (atomic_load_explicit(&soma_par.workers[i].hungry, memory_order_relaxed)) {
+            hungry_count++;
+        }
+    }
+    fprintf(stderr, "[soma_par] Current hungry workers: %d/%d\n", 
+            hungry_count, soma_par.num_workers);
     
     for (int i = 0; i < soma_par.num_workers; i++) {
         SomaWorker* w = &soma_par.workers[i];

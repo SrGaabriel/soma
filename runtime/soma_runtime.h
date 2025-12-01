@@ -299,6 +299,14 @@ extern SomaPoolStats soma_pool_stats;
 #define SOMA_MAX_PENDING_TASKS 1024  /* Don't spawn if more than this pending */
 #endif
 
+#ifndef SOMA_MAX_FORK_DEPTH
+#define SOMA_MAX_FORK_DEPTH 5  /* Maximum depth for nested forking (2^5 = 32 tasks max) */
+#endif
+
+#ifndef SOMA_TASK_POOL_SIZE
+#define SOMA_TASK_POOL_SIZE 65536  /* Pre-allocated task pool size */
+#endif
+
 /* Forward declarations */
 typedef struct SomaTask SomaTask;
 typedef struct SomaWorker SomaWorker;
@@ -322,20 +330,27 @@ typedef SomaValue (*SomaTrampolineFn)(SomaValue* args);  /* Trampoline: takes pt
 #define TASK_KIND_CLOSURE   2   /* fn(closure, arg) - closure call */
 #define TASK_KIND_TRAMPOLINE 3  /* fn(args_ptr) - trampoline with args array pointer */
 
+/* Maximum inline args to avoid malloc (covers most cases) */
+#define SOMA_TASK_INLINE_ARGS 4
+
 /* Task structure */
 struct SomaTask {
     _Atomic int state;
     uint8_t kind;               /* TASK_KIND_* */
+    uint8_t depth;              /* Fork depth (for depth-limited nested forking) */
+    uint8_t num_args;           /* Number of arguments for trampoline */
+    uint8_t args_inline;        /* 1 if args stored inline, 0 if heap allocated */
     union {
         SomaTaskFn generic;     /* For TASK_KIND_GENERIC */
         SomaDirectFn direct;    /* For TASK_KIND_DIRECT */
         SomaClosureFn closure;  /* For TASK_KIND_CLOSURE */
         SomaTrampolineFn trampoline;  /* For TASK_KIND_TRAMPOLINE */
     } fn;
-    void* env;                  /* env for generic, args array for trampoline */
-    SomaValue arg;              /* arg for direct/closure, num_args for trampoline */
+    void* env;                  /* env for generic, heap args for trampoline (if not inline) */
+    SomaValue arg;              /* arg for direct/closure */
     SomaValue result;
     uint32_t work_estimate;     /* Estimated work units */
+    SomaValue inline_args[SOMA_TASK_INLINE_ARGS];  /* Inline storage for small arg counts */
 };
 
 /* Chase-Lev work-stealing deque */
@@ -368,6 +383,9 @@ struct SomaParRuntime {
     _Atomic size_t pending_tasks;
     _Atomic size_t hungry_count;  /* How many workers are hungry */
     
+    /* Main thread's deque - workers steal from here */
+    SomaDeque main_deque;
+    
     /* Task pool for recycling */
     SomaTask* task_pool;
     _Atomic size_t task_pool_size;
@@ -398,9 +416,23 @@ static inline int soma_par_enabled(void) {
  * This avoids the overhead of task creation when there's no benefit.
  */
 
-/* Check if any worker is hungry (needs work) */
+/* Check if any worker is hungry (needs work)
+ * 
+ * Scans per-worker hungry flags directly instead of maintaining a
+ * global counter. This eliminates cache-line bouncing that causes
+ * contention collapse at higher thread counts.
+ * 
+ * O(num_workers) scan but each load is on a different cache line
+ * and uses relaxed ordering since we only need approximate info.
+ */
 static inline int soma_par_workers_hungry(void) {
-    return atomic_load_explicit(&soma_par.hungry_count, memory_order_relaxed) > 0;
+    int n = soma_par.num_workers;
+    for (int i = 0; i < n; i++) {
+        if (atomic_load_explicit(&soma_par.workers[i].hungry, memory_order_relaxed)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* Check if we should spawn a parallel task for given work estimate */

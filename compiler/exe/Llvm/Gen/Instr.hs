@@ -88,6 +88,20 @@ compileInstr (IEffect (EffClosureSetEnv closure idx value)) = do
     let setEnvFunc = LlvmGlobal LlvmVoid "\"soma_closure_set_env\""
         idxVal = LlvmLiteral LlvmI16 (show idx)
     tell [LlvmCallStmt setEnvFunc LlvmVoid [voidClosure, idxVal, taggedValue]]
+compileInstr (IEffect (EffGraphInit numWorkers)) = do
+    -- Initialize graph reduction runtime
+    let initFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_graph_init\""
+        numWorkersVal = LlvmLiteral LlvmI32 (show numWorkers)
+    result <- saveTmp (LlvmCall initFunc (LlvmPointer LlvmI8) [numWorkersVal]) (LlvmPointer LlvmI8)
+    -- Store in global g_graph_rt
+    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "g_graph_rt"
+    tell [LlvmStore result globalPtr]
+compileInstr (IEffect EffGraphShutdown) = do
+    -- Shutdown graph reduction runtime
+    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "g_graph_rt"
+    rtPtr <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
+    let shutdownFunc = LlvmGlobal LlvmVoid "\"soma_graph_shutdown\""
+    tell [LlvmCallStmt shutdownFunc LlvmVoid [rtPtr]]
 
 compileTerminator :: ATerminator -> IrGen ()
 compileTerminator (ARet Nothing) = do

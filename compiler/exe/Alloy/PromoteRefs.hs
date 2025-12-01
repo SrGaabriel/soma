@@ -227,8 +227,22 @@ substOp env op =
         OpParClosureProj0 handle envSz slotInfo workEst -> OpParClosureProj0 (substOperand env handle) envSz slotInfo workEst
         OpParClosureProj1 handle envSz slotInfo workEst -> OpParClosureProj1 (substOperand env handle) envSz slotInfo workEst
         OpPanic msg -> OpPanic msg
-        OpFork fn args -> OpFork (substOperand env fn) (map (substOperand env) args)
-        OpJoin handle -> OpJoin (substOperand env handle)
+        -- Session 27: graph reduction ops
+        OpGraphInit n -> OpGraphInit n
+        OpGraphShutdown -> OpGraphShutdown
+        OpGraphNum v -> OpGraphNum (substOperand env v)
+        OpGraphAdd l r -> OpGraphAdd (substOperand env l) (substOperand env r)
+        OpGraphSub l r -> OpGraphSub (substOperand env l) (substOperand env r)
+        OpGraphMul l r -> OpGraphMul (substOperand env l) (substOperand env r)
+        OpGraphCall fnIdx args -> OpGraphCall fnIdx (map (substOperand env) args)
+        OpGraphReduce root -> OpGraphReduce (substOperand env root)
+        OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (substOperand env impl)
+        -- Session 29: interaction net operations
+        OpGraphDup label target -> OpGraphDup label (substOperand env target)
+        OpGraphSup label l r -> OpGraphSup label (substOperand env l) (substOperand env r)
+        OpGraphLam varSlot body -> OpGraphLam (substOperand env varSlot) (substOperand env body)
+        OpGraphApp fn arg -> OpGraphApp (substOperand env fn) (substOperand env arg)
+        OpGraphEra -> OpGraphEra
 
 substEffect :: Subst -> AEffect -> AEffect
 substEffect env eff =
@@ -237,6 +251,8 @@ substEffect env eff =
         EffStoreIndex a i v -> EffStoreIndex (substOperand env a) (substOperand env i) (substOperand env v)
         EffDrop a -> EffDrop (substOperand env a)
         EffClosureSetEnv closure idx val -> EffClosureSetEnv (substOperand env closure) idx (substOperand env val)
+        EffGraphInit n -> EffGraphInit n
+        EffGraphShutdown -> EffGraphShutdown
 
 substTerminator :: Subst -> ATerminator -> ATerminator
 substTerminator env t =
@@ -323,8 +339,22 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpParClosureProj0 handle _ _ _ -> isVar r handle
             OpParClosureProj1 handle _ _ _ -> isVar r handle
             OpPanic _ -> False
-            OpFork fn args -> isVar r fn || any (isVar r) args
-            OpJoin handle -> isVar r handle
+            -- Session 27: graph reduction ops
+            OpGraphInit _ -> False
+            OpGraphShutdown -> False
+            OpGraphNum v -> isVar r v
+            OpGraphAdd l rhs -> isVar r l || isVar r rhs
+            OpGraphSub l rhs -> isVar r l || isVar r rhs
+            OpGraphMul l rhs -> isVar r l || isVar r rhs
+            OpGraphCall _ args -> any (isVar r) args
+            OpGraphReduce root -> isVar r root
+            OpGraphRegisterFunc _ _ impl -> isVar r impl
+            -- Session 29: interaction net operations
+            OpGraphDup _ target -> isVar r target
+            OpGraphSup _ l rhs -> isVar r l || isVar r rhs
+            OpGraphLam varSlot body -> isVar r varSlot || isVar r body
+            OpGraphApp fn arg -> isVar r fn || isVar r arg
+            OpGraphEra -> False
 
     appearsInEff :: Name -> AEffect -> Bool
     appearsInEff r eff =
@@ -333,6 +363,8 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             EffStoreIndex a i v -> isVar r a || isVar r i || isVar r v
             EffDrop a -> isVar r a
             EffClosureSetEnv closure _ val -> isVar r closure || isVar r val
+            EffGraphInit _ -> False
+            EffGraphShutdown -> False
 
     appearsInTerm :: Name -> ATerminator -> Bool
     appearsInTerm r t =

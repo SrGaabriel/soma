@@ -397,8 +397,22 @@ substOp subst op =
         OpParClosureProj0 handle envSz slotInfo workEst -> OpParClosureProj0 (substOperand subst handle) envSz slotInfo workEst
         OpParClosureProj1 handle envSz slotInfo workEst -> OpParClosureProj1 (substOperand subst handle) envSz slotInfo workEst
         OpPanic msg -> OpPanic msg
-        OpFork fn args -> OpFork (substOperand subst fn) (map (substOperand subst) args)
-        OpJoin handle -> OpJoin (substOperand subst handle)
+        -- Session 27: graph reduction ops
+        OpGraphInit n -> OpGraphInit n
+        OpGraphShutdown -> OpGraphShutdown
+        OpGraphNum v -> OpGraphNum (substOperand subst v)
+        OpGraphAdd l r -> OpGraphAdd (substOperand subst l) (substOperand subst r)
+        OpGraphSub l r -> OpGraphSub (substOperand subst l) (substOperand subst r)
+        OpGraphMul l r -> OpGraphMul (substOperand subst l) (substOperand subst r)
+        OpGraphCall fnIdx args -> OpGraphCall fnIdx (map (substOperand subst) args)
+        OpGraphReduce root -> OpGraphReduce (substOperand subst root)
+        OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (substOperand subst impl)
+        -- Session 29: interaction net operations
+        OpGraphDup label target -> OpGraphDup label (substOperand subst target)
+        OpGraphSup label l r -> OpGraphSup label (substOperand subst l) (substOperand subst r)
+        OpGraphLam varSlot body -> OpGraphLam (substOperand subst varSlot) (substOperand subst body)
+        OpGraphApp fn arg -> OpGraphApp (substOperand subst fn) (substOperand subst arg)
+        OpGraphEra -> OpGraphEra
 
 -- | Substitute operands in an effect
 substEffect :: Map Name AOperand -> AEffect -> AEffect
@@ -410,6 +424,8 @@ substEffect subst eff =
         EffDrop a -> EffDrop (substOperand subst a)
         EffClosureSetEnv closure idx val ->
             EffClosureSetEnv (substOperand subst closure) idx (substOperand subst val)
+        EffGraphInit n -> EffGraphInit n
+        EffGraphShutdown -> EffGraphShutdown
 
 -- | Substitute an operand
 substOperand :: Map Name AOperand -> AOperand -> AOperand
