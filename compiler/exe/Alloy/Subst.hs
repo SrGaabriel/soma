@@ -101,6 +101,7 @@ substOp env = \case
     OpGraphMul l r -> OpGraphMul (sub l) (sub r)
     OpGraphCall fnIdx args -> OpGraphCall fnIdx (map sub args)
     OpGraphReduce root -> OpGraphReduce (sub root)
+    OpGraphExtractNum term -> OpGraphExtractNum (sub term)
     OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (sub impl)
     -- Graph reduction interaction net operations (Session 29)
     OpGraphDup label target -> OpGraphDup label (sub target)
@@ -108,6 +109,9 @@ substOp env = \case
     OpGraphLam varSlot body -> OpGraphLam (sub varSlot) (sub body)
     OpGraphApp fn arg -> OpGraphApp (sub fn) (sub arg)
     OpGraphEra -> OpGraphEra
+    OpGraphRef name arg -> OpGraphRef name (sub arg)
+    OpGraphDupProj0 target -> OpGraphDupProj0 (sub target)
+    OpGraphDupProj1 target -> OpGraphDupProj1 (sub target)
   where
     sub = substOperand env
 
@@ -120,6 +124,7 @@ substEffect env = \case
     EffClosureSetEnv closure idx val -> EffClosureSetEnv (sub closure) idx (sub val)
     EffGraphInit n -> EffGraphInit n
     EffGraphShutdown -> EffGraphShutdown
+    EffGraphRegisterFunc name arity impl -> EffGraphRegisterFunc name arity (sub impl)
   where
     sub = substOperand env
 
@@ -208,6 +213,7 @@ opVars = \case
     OpGraphMul l r -> vars l ++ vars r
     OpGraphCall _ args -> concatMap vars args
     OpGraphReduce root -> vars root
+    OpGraphExtractNum term -> vars term
     OpGraphRegisterFunc _ _ impl -> vars impl
     -- Graph reduction interaction net operations (Session 29)
     OpGraphDup _ target -> vars target
@@ -215,6 +221,9 @@ opVars = \case
     OpGraphLam varSlot body -> vars varSlot ++ vars body
     OpGraphApp fn arg -> vars fn ++ vars arg
     OpGraphEra -> []
+    OpGraphRef _ arg -> vars arg
+    OpGraphDupProj0 target -> vars target
+    OpGraphDupProj1 target -> vars target
   where
     vars = operandVars
 
@@ -227,6 +236,7 @@ effectVars = \case
     EffClosureSetEnv c _ v -> operandVars c ++ operandVars v
     EffGraphInit _ -> []
     EffGraphShutdown -> []
+    EffGraphRegisterFunc _ _ impl -> operandVars impl
 
 -- | Get all variables referenced in a terminator
 terminatorVars :: ATerminator -> [Name]

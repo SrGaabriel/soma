@@ -1,48 +1,41 @@
 # Soma Runtime Makefile
+#
+# The INET runtime is the primary parallel reduction engine.
+# It uses a hybrid stack + work-stealing architecture for
+# maximum parallelism on tree-structured computations.
 
 CC = clang
 CFLAGS = -O3 -Wall -Wextra -fPIC -std=c11 -pthread
 
 # Output
 LIB = libsoma_runtime.a
-OBJ = soma_runtime.o soma_graph.o
+OBJ = soma_inet.o
 
-.PHONY: all clean test_graph
+.PHONY: all clean test
 
 all: $(LIB)
 
 $(LIB): $(OBJ)
 	ar rcs $@ $^
 
-soma_runtime.o: soma_runtime.c soma_runtime.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-soma_graph.o: soma_graph.c soma_graph.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Test program for graph reduction
-test_graph: test_graph.c soma_graph.o
-	$(CC) $(CFLAGS) $^ -o $@
-
-# HVM-style runtime
-soma_hvm.o: soma_hvm.c soma_hvm.h
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Test program for HVM-style reduction
-test_hvm: test_hvm.c soma_hvm.o
-	$(CC) $(CFLAGS) $^ -o $@
-
-# Pure interaction net runtime (maximum parallelism)
+# Core runtime
 soma_inet.o: soma_inet.c soma_inet.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Test program for pure inet reduction
+# Test program
 test_inet: test_inet.c soma_inet.o
 	$(CC) $(CFLAGS) $^ -o $@
 
-# Debug build with assertions
+test: test_inet
+	./test_inet
+
+# Debug build
 test_inet_debug: test_inet.c soma_inet.c soma_inet.h
 	$(CC) -O0 -g -Wall -Wextra -std=c11 -pthread -DINET_DEBUG $< soma_inet.c -o $@
 
+# Benchmark
+bench: test_inet
+	./test_inet bench 25 8 4
+
 clean:
-	rm -f $(OBJ) $(LIB) test_graph soma_hvm.o test_hvm soma_inet.o test_inet test_inet_debug
+	rm -f $(OBJ) $(LIB) test_inet test_inet_debug

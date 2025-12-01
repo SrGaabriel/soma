@@ -23,7 +23,7 @@ import Circuit.Lower (lowerModule)
 import qualified Circuit.Simplify as CS
 import Circuit.ToAlloy (lowerCircuitToAlloy)
 import Circuit.ToGraph (lowerCircuitToGraph)
-import Config.Options (Options (..))
+import Config.Options (CompilationMode (..), Options (..))
 import Control.Exception (SomeException, catch)
 import Control.Monad (unless)
 import qualified Data.ByteString.Lazy as BL
@@ -187,10 +187,9 @@ linkCompiledModulesCircuit ::
     String ->
     [CompiledModule] ->
     Map String SerializableConstructorMetadata ->
-    Bool -> -- enableParallel (fork-join)
     Bool -> -- enableGraph (graph reduction)
     IO (AlloyModule, Map String SerializableConstructorMetadata)
-linkCompiledModulesCircuit packageName compiledModules externalConstructors enableParallel enableGraph = do
+linkCompiledModulesCircuit packageName compiledModules externalConstructors enableGraph = do
     putStrLn "\n=== Starting Circuit IR link-time phase ==="
 
     let fusedAst = createFusedAst [(cmResolvedAst cm, cmTypeMap cm, cmPublicSymbols cm) | cm <- compiledModules]
@@ -208,23 +207,27 @@ linkCompiledModulesCircuit packageName compiledModules externalConstructors enab
     let circuitModule = lowerModule fusedMetal
         circuitSimplified = CS.simplifyModule circuitModule
 
-    putStrLn "=== Circuit IR (before linearization) ==="
-
-    -- Linearize (insert DUP/ERA nodes)
-    let circuitLinearized = linearizeModule circuitSimplified
-
-    putStrLn "=== Circuit IR (after linearization) ==="
-    putStrLn $ prettyCircuit circuitLinearized
-
     -- Lower to Alloy MIR
-    -- If graph mode enabled, use graph reduction; otherwise use standard lowering
-    let _ = enableParallel -- fork-join parallelism (future: can combine with graph)
-        alloyFromCircuit =
+    -- If graph mode enabled, skip linearization and use graph reduction
+    -- Otherwise, linearize (insert DUP/ERA nodes) and use standard lowering
+    let (circuitForAlloy, alloyFromCircuit) =
             if enableGraph
-                then lowerCircuitToGraph circuitLinearized
-                else lowerCircuitToAlloy circuitLinearized
-        -- Expand intrinsics (convert + to IAdd, etc.)
-        alloyExpanded = expandIntrinsicsModule alloyFromCircuit
+                then
+                    -- Graph mode: skip linearization, use non-linear Circuit IR directly
+                    -- The runtime handles duplication lazily via graph reduction
+                    (circuitSimplified, lowerCircuitToGraph circuitSimplified)
+                else
+                    -- Standard mode: linearize for compile-time memory management
+                    let circuitLinearized = linearizeModule circuitSimplified
+                    in (circuitLinearized, lowerCircuitToAlloy circuitLinearized)
+
+    if enableGraph
+        then putStrLn "=== Circuit IR (graph mode - no linearization) ==="
+        else putStrLn "=== Circuit IR (after linearization) ==="
+    putStrLn $ prettyCircuit circuitForAlloy
+
+    -- Expand intrinsics (convert + to IAdd, etc.)
+    let alloyExpanded = expandIntrinsicsModule alloyFromCircuit
 
     putStrLn "=== Alloy MIR (from Circuit) ==="
     putStrLn $ treeShow alloyExpanded
@@ -284,9 +287,8 @@ processModulesIncremental sorted graph compileOptions = do
     (alloyOpt, allCtorsForCodeGen) <-
         if useCircuit
             then do
-                let enableParallel = optionsParallel compileOptions
-                    enableGraph = optionsGraph compileOptions
-                linkCompiledModulesCircuit inputName compiledModules externalConstructors enableParallel enableGraph
+                let enableGraph = optionsMode compileOptions == ModeGraph
+                linkCompiledModulesCircuit inputName compiledModules externalConstructors enableGraph
             else
                 linkCompiledModules inputName compiledModules externalConstructors externalAlloyModules
     let llvmIr = runLlvmCodeGenAndTranscribe alloyOpt

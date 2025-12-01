@@ -22,6 +22,45 @@ import qualified Llvm.Types as LT
 import Llvm.Values (LlvmValue (..), getValueType)
 import Utils.Lists (hardHead)
 
+-- ============================================================================
+-- Helper functions for INET graph operations
+-- ============================================================================
+
+{- | Get the net and tm pointers for INET operations.
+Inside graph functions (with net, tm params), use the parameters.
+Otherwise, load from globals.
+-}
+getNetAndTm :: IrGen (LlvmValue, LlvmValue)
+getNetAndTm = do
+    inGraphFn <- isInGraphFunction
+    if inGraphFn
+        then do
+            -- Use function parameters directly
+            let net = LlvmRegister (LlvmPointer LlvmI8) "net"
+                tm = LlvmRegister (LlvmPointer LlvmI8) "tm"
+            pure (net, tm)
+        else do
+            -- Load from globals
+            let globalNetPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_inet\""
+            net <- saveTmp (LlvmLoad globalNetPtr) (LlvmPointer LlvmI8)
+            let globalTmPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_inet_tm\""
+            tm <- saveTmp (LlvmLoad globalTmPtr) (LlvmPointer LlvmI8)
+            pure (net, tm)
+
+-- | Get just the net pointer (for inet_reduce which only needs net)
+getNet :: IrGen LlvmValue
+getNet = do
+    inGraphFn <- isInGraphFunction
+    if inGraphFn
+        then pure $ LlvmRegister (LlvmPointer LlvmI8) "net"
+        else do
+            let globalNetPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_inet\""
+            saveTmp (LlvmLoad globalNetPtr) (LlvmPointer LlvmI8)
+
+-- ============================================================================
+-- Op compilation
+-- ============================================================================
+
 compileOp :: AOp -> LlvmType -> IrGen LlvmValue
 compileOp (OpLoad rOperand) resultTy = do
     operand <- compileOperand rOperand
@@ -826,28 +865,31 @@ compileOp (OpPanic msg) _resultTy = do
     pure (LlvmLiteral (LlvmPointer LlvmI8) "null")
 
 -- ============================================================================
--- Session 27: Graph Reduction Operations
+-- Session 31: INET Runtime Operations
+--
+-- The INET runtime uses a 64-bit Term encoding and provides parallel
+-- graph reduction via work-stealing. Terms are returned directly (not indices).
 -- ============================================================================
 
--- Graph init: call soma_graph_init(num_workers) and store in global
+-- INET init: call inet_init(num_threads) and store in globals
+-- Returns INet* which we store in g_inet
 compileOp (OpGraphInit numWorkers) _resultTy = do
-    let initFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_graph_init\""
+    -- Use inet_init_globals which sets both g_inet and g_inet_tm
+    let initFunc = LlvmGlobal LlvmVoid "\"inet_init_globals\""
         numWorkersVal = LlvmLiteral LlvmI32 (show numWorkers)
-    result <- saveTmp (LlvmCall initFunc (LlvmPointer LlvmI8) [numWorkersVal]) (LlvmPointer LlvmI8)
-    -- Store in global g_graph_rt
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    tell [LlvmStore result globalPtr]
-    pure result
-
--- Graph shutdown: call soma_graph_shutdown(g_graph_rt)
-compileOp OpGraphShutdown _resultTy = do
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let shutdownFunc = LlvmGlobal LlvmVoid "\"soma_graph_shutdown\""
-    tell [LlvmCallStmt shutdownFunc LlvmVoid [rt]]
+    tell [LlvmCallStmt initFunc LlvmVoid [numWorkersVal]]
     pure (LlvmLiteral LlvmI32 "0")
 
--- Graph num: call soma_graph_num(g_graph_rt, value)
+-- INET shutdown: call inet_free(g_inet)
+compileOp OpGraphShutdown _resultTy = do
+    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_inet\""
+    net <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
+    let freeFunc = LlvmGlobal LlvmVoid "\"inet_free\""
+    tell [LlvmCallStmt freeFunc LlvmVoid [net]]
+    pure (LlvmLiteral LlvmI32 "0")
+
+-- INET num: create a NUM term using inet_num_ext (non-inline wrapper)
+-- inet_num packs the 48-bit value into aux+loc of the term
 compileOp (OpGraphNum valOp) _resultTy = do
     llVal <- compileOperand valOp
     -- Convert to i64 if needed
@@ -855,143 +897,176 @@ compileOp (OpGraphNum valOp) _resultTy = do
         LlvmI64 -> pure llVal
         LlvmI32 -> saveTmp (LlvmSExt llVal LlvmI64) LlvmI64
         _ -> saveTmp (LlvmSExt llVal LlvmI64) LlvmI64
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let numFunc = LlvmGlobal LlvmI32 "\"soma_graph_num\""
-    saveTmp (LlvmCall numFunc LlvmI32 [rt, i64Val]) LlvmI32
+    -- Call inet_num_ext(value) -> Term (i64)
+    let numFunc = LlvmGlobal LlvmI64 "\"inet_num_ext\""
+    saveTmp (LlvmCall numFunc LlvmI64 [i64Val]) LlvmI64
 
--- Graph add: call soma_graph_add(g_graph_rt, left, right)
+-- INET add: create OPR term with OP_ADD (0x00)
+-- inet_opr(net, tm, op, a, b) -> Term
 compileOp (OpGraphAdd leftOp rightOp) _resultTy = do
     llLeft <- compileOperand leftOp
     llRight <- compileOperand rightOp
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let addFunc = LlvmGlobal LlvmI32 "\"soma_graph_add\""
-    saveTmp (LlvmCall addFunc LlvmI32 [rt, llLeft, llRight]) LlvmI32
+    (net, tm) <- getNetAndTm
+    let oprFunc = LlvmGlobal LlvmI64 "\"inet_opr\""
+        opAdd = LlvmLiteral LlvmI16 "0" -- OP_ADD
+    saveTmp (LlvmCall oprFunc LlvmI64 [net, tm, opAdd, llLeft, llRight]) LlvmI64
 
--- Graph sub: call soma_graph_sub(g_graph_rt, left, right)
+-- INET sub: create OPR term with OP_SUB (0x01)
 compileOp (OpGraphSub leftOp rightOp) _resultTy = do
     llLeft <- compileOperand leftOp
     llRight <- compileOperand rightOp
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let subFunc = LlvmGlobal LlvmI32 "\"soma_graph_sub\""
-    saveTmp (LlvmCall subFunc LlvmI32 [rt, llLeft, llRight]) LlvmI32
+    (net, tm) <- getNetAndTm
+    let oprFunc = LlvmGlobal LlvmI64 "\"inet_opr\""
+        opSub = LlvmLiteral LlvmI16 "1" -- OP_SUB
+    saveTmp (LlvmCall oprFunc LlvmI64 [net, tm, opSub, llLeft, llRight]) LlvmI64
 
--- Graph mul: call soma_graph_mul(g_graph_rt, left, right)
+-- INET mul: create OPR term with OP_MUL (0x02)
 compileOp (OpGraphMul leftOp rightOp) _resultTy = do
     llLeft <- compileOperand leftOp
     llRight <- compileOperand rightOp
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let mulFunc = LlvmGlobal LlvmI32 "\"soma_graph_mul\""
-    saveTmp (LlvmCall mulFunc LlvmI32 [rt, llLeft, llRight]) LlvmI32
+    (net, tm) <- getNetAndTm
+    let oprFunc = LlvmGlobal LlvmI64 "\"inet_opr\""
+        opMul = LlvmLiteral LlvmI16 "2" -- OP_MUL
+    saveTmp (LlvmCall oprFunc LlvmI64 [net, tm, opMul, llLeft, llRight]) LlvmI64
 
--- Graph call: call soma_graph_call1 or soma_graph_call2 based on arity
--- For now, we use a simple hash of the function name as func_id
--- TODO: proper function registration with soma_graph_register_func
+-- INET call: in graph mode, we need to reduce args and call the native function directly
+-- The function returns a Term (i64) that represents the graph result
 compileOp (OpGraphCall fnName argOps) _resultTy = do
+    modName <- asks moduleName
     llArgs <- mapM compileOperand argOps
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    -- Simple hash of function name for func_id (temporary)
-    let fnIdxVal = LlvmLiteral LlvmI16 (show (hashFuncName fnName `mod` 65536))
-    case llArgs of
-        [arg0] -> do
-            let call1Func = LlvmGlobal LlvmI32 "\"soma_graph_call1\""
-            saveTmp (LlvmCall call1Func LlvmI32 [rt, fnIdxVal, arg0]) LlvmI32
-        [arg0, arg1] -> do
-            let call2Func = LlvmGlobal LlvmI32 "\"soma_graph_call2\""
-            saveTmp (LlvmCall call2Func LlvmI32 [rt, fnIdxVal, arg0, arg1]) LlvmI32
-        _ -> error $ "OpGraphCall: unsupported arity " ++ show (length llArgs)
-  where
-    -- Simple djb2 hash for function names
-    hashFuncName :: String -> Int
-    hashFuncName = foldl (\h c -> h * 33 + fromEnum c) 5381
+    net <- getNet
+    -- Reduce each graph argument to get native Int values
+    let reduceFunc = LlvmGlobal LlvmI64 "\"inet_reduce\""
+    reducedArgs <- forM llArgs $ \arg -> do
+        i64Val <- saveTmp (LlvmCall reduceFunc LlvmI64 [net, arg]) LlvmI64
+        saveTmp (LlvmTrunc i64Val LlvmI32) LlvmI32
+    -- Call the compiled function directly (it takes Int args and returns Term)
+    -- Use qualified name to match the function's actual LLVM name
+    let qualifiedName = qualifyWithModule modName fnName
+        fnGlobal = LlvmGlobal LlvmI64 ("\"" ++ qualifiedName ++ "\"")
+    saveTmp (LlvmCall fnGlobal LlvmI64 reducedArgs) LlvmI64
 
--- Graph reduce: call soma_graph_reduce_fast or soma_graph_reduce_parallel
+-- INET reduce: call inet_reduce(net, root) -> i64 result
 compileOp (OpGraphReduce rootOp) resultTy = do
     llRoot <- compileOperand rootOp
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    -- Use reduce_fast for single-threaded, reduce_parallel for multi-threaded
-    -- For now, just use reduce_fast (parallel decided at runtime based on num_workers)
-    let reduceFunc = LlvmGlobal LlvmI64 "\"soma_graph_reduce_fast\""
-    i64Result <- saveTmp (LlvmCall reduceFunc LlvmI64 [rt, llRoot]) LlvmI64
+    net <- getNet
+    let reduceFunc = LlvmGlobal LlvmI64 "\"inet_reduce\""
+    i64Result <- saveTmp (LlvmCall reduceFunc LlvmI64 [net, llRoot]) LlvmI64
     -- Truncate i64 result to target type (typically i32 for Int)
     case resultTy of
         LlvmI64 -> pure i64Result
         LlvmI32 -> saveTmp (LlvmTrunc i64Result LlvmI32) LlvmI32
         _ -> saveTmp (LlvmTrunc i64Result resultTy) resultTy
 
--- Graph register func: call soma_graph_register_func(rt, name, arity, flags, impl)
+-- INET extract num: get integer from a NUM term without reducing
+-- Assumes term is already TAG_NUM. Calls inet_get_num_ext(term) -> i64
+compileOp (OpGraphExtractNum termOp) resultTy = do
+    llTerm <- compileOperand termOp
+    let extractFunc = LlvmGlobal LlvmI64 "\"inet_get_num_ext\""
+    i64Result <- saveTmp (LlvmCall extractFunc LlvmI64 [llTerm]) LlvmI64
+    case resultTy of
+        LlvmI64 -> pure i64Result
+        LlvmI32 -> saveTmp (LlvmTrunc i64Result LlvmI32) LlvmI32
+        _ -> saveTmp (LlvmTrunc i64Result resultTy) resultTy
+
+-- INET register func: call inet_register_func(net, name, arity, impl)
+-- Note: This is only called from soma_main, so we use globals here
 compileOp (OpGraphRegisterFunc name arity implOp) _resultTy = do
     llImpl <- compileOperand implOp
     -- Create string constant for function name
     namePtr <- newStrTemplate name
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let registerFunc = LlvmGlobal LlvmI16 "\"soma_graph_register_func\""
-        arityVal = LlvmLiteral LlvmI8 (show arity)
-        flagsVal = LlvmLiteral LlvmI8 "2" -- GFUNC_RECURSIVE
-        -- Cast impl to ptr if needed
+    net <- getNet
+    let registerFunc = LlvmGlobal LlvmVoid "\"inet_register_func\""
+        arityVal = LlvmLiteral LlvmI16 (show arity)
+    -- Cast impl to ptr if needed
     implPtr <- case getValueType llImpl of
         LlvmPointer _ -> pure llImpl
         _ -> saveTmp (LlvmIntToPtr llImpl (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
-    saveTmp (LlvmCall registerFunc LlvmI16 [rt, namePtr, arityVal, flagsVal, implPtr]) LlvmI16
+    tell [LlvmCallStmt registerFunc LlvmVoid [net, namePtr, arityVal, implPtr]]
+    -- Return dummy value (register doesn't return)
+    pure (LlvmLiteral LlvmI16 "0")
 
 -- ============================================================================
--- Session 29: Interaction Net Graph Operations
+-- INET Interaction Net Node Operations
 -- ============================================================================
 
--- Graph DUP: create a DUP node pointing at target
--- soma_graph_dup(rt, label, target_idx) -> node_idx
+-- INET DUP: create a DUP term pointing at target
+-- inet_dup(net, tm, label, target) -> Term
 compileOp (OpGraphDup label targetOp) _resultTy = do
     llTarget <- compileOperand targetOp
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let dupFunc = LlvmGlobal LlvmI32 "\"soma_graph_dup\""
-        labelVal = LlvmLiteral LlvmI32 (show label)
-    saveTmp (LlvmCall dupFunc LlvmI32 [rt, labelVal, llTarget]) LlvmI32
+    (net, tm) <- getNetAndTm
+    let dupFunc = LlvmGlobal LlvmI64 "\"inet_dup\""
+        labelVal = LlvmLiteral LlvmI16 (show label)
+    saveTmp (LlvmCall dupFunc LlvmI64 [net, tm, labelVal, llTarget]) LlvmI64
 
--- Graph SUP: create a SUP node with two children
--- soma_graph_sup(rt, label, left_idx, right_idx) -> node_idx
+-- INET SUP: create a SUP term with two children
+-- inet_sup(net, tm, label, a, b) -> Term
 compileOp (OpGraphSup label leftOp rightOp) _resultTy = do
     llLeft <- compileOperand leftOp
     llRight <- compileOperand rightOp
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let supFunc = LlvmGlobal LlvmI32 "\"soma_graph_sup\""
-        labelVal = LlvmLiteral LlvmI32 (show label)
-    saveTmp (LlvmCall supFunc LlvmI32 [rt, labelVal, llLeft, llRight]) LlvmI32
+    (net, tm) <- getNetAndTm
+    let supFunc = LlvmGlobal LlvmI64 "\"inet_sup\""
+        labelVal = LlvmLiteral LlvmI16 (show label)
+    saveTmp (LlvmCall supFunc LlvmI64 [net, tm, labelVal, llLeft, llRight]) LlvmI64
 
--- Graph LAM: create a LAM node (lambda abstraction)
--- soma_graph_lam(rt, var_slot_idx, body_idx) -> node_idx
+-- INET LAM: create a LAM term (lambda abstraction)
+-- inet_lam(net, tm, var_loc, body) -> Term
 compileOp (OpGraphLam varSlotOp bodyOp) _resultTy = do
     llVarSlot <- compileOperand varSlotOp
     llBody <- compileOperand bodyOp
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let lamFunc = LlvmGlobal LlvmI32 "\"soma_graph_lam\""
-    saveTmp (LlvmCall lamFunc LlvmI32 [rt, llVarSlot, llBody]) LlvmI32
+    (net, tm) <- getNetAndTm
+    -- Convert varSlot to Loc (u32)
+    varLoc <- case getValueType llVarSlot of
+        LlvmI32 -> pure llVarSlot
+        LlvmI64 -> saveTmp (LlvmTrunc llVarSlot LlvmI32) LlvmI32
+        _ -> saveTmp (LlvmTrunc llVarSlot LlvmI32) LlvmI32
+    let lamFunc = LlvmGlobal LlvmI64 "\"inet_lam\""
+    saveTmp (LlvmCall lamFunc LlvmI64 [net, tm, varLoc, llBody]) LlvmI64
 
--- Graph APP: create an APP node (application)
--- soma_graph_app(rt, fn_idx, arg_idx) -> node_idx
+-- INET APP: create an APP term (application)
+-- inet_app(net, tm, fun, arg) -> Term
 compileOp (OpGraphApp fnOp argOp) _resultTy = do
     llFn <- compileOperand fnOp
     llArg <- compileOperand argOp
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let appFunc = LlvmGlobal LlvmI32 "\"soma_graph_app\""
-    saveTmp (LlvmCall appFunc LlvmI32 [rt, llFn, llArg]) LlvmI32
+    (net, tm) <- getNetAndTm
+    let appFunc = LlvmGlobal LlvmI64 "\"inet_app\""
+    saveTmp (LlvmCall appFunc LlvmI64 [net, tm, llFn, llArg]) LlvmI64
 
--- Graph ERA: create an ERA node (erasure/unit)
--- soma_graph_era(rt) -> node_idx
+-- INET ERA: create an ERA term (erasure/unit)
+-- Just return the ERA constant (no heap allocation needed)
 compileOp OpGraphEra _resultTy = do
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_graph_rt\""
-    rt <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let eraFunc = LlvmGlobal LlvmI32 "\"soma_graph_era\""
-    saveTmp (LlvmCall eraFunc LlvmI32 [rt]) LlvmI32
+    -- ERA is just term_new(TAG_ERA, 0, 0) = 0x14
+    pure (LlvmLiteral LlvmI64 "20") -- TAG_ERA = 0x14 = 20
+
+-- INET REF: create a REF node for lazy function expansion
+-- REF nodes store the function index in aux and the argument at the location
+compileOp (OpGraphRef fnName argOp) _resultTy = do
+    modName <- asks moduleName
+    llArg <- compileOperand argOp
+    (net, tm) <- getNetAndTm
+    -- Look up function index - for now use 0 (fib is first registered function)
+    -- TODO: proper function index lookup
+    let qualifiedName = qualifyWithModule modName fnName
+        refFunc = LlvmGlobal LlvmI64 "\"inet_ref\""
+        funcIdx = LlvmLiteral LlvmI16 "0" -- TODO: get actual function index
+    saveTmp (LlvmCall refFunc LlvmI64 [net, tm, funcIdx, llArg]) LlvmI64
+
+-- INET DUP projection 0: get first copy from DUP node
+-- For now, just return the target (DUP is transparent for integers)
+-- TODO: implement proper DUP-SUP interaction
+compileOp (OpGraphDupProj0 targetOp) _resultTy = do
+    llTarget <- compileOperand targetOp
+    -- For simple cases (integers), DUP proj just returns the value
+    -- The runtime will handle DUP-SUP interaction when needed
+    pure llTarget
+
+-- INET DUP projection 1: get second copy from DUP node
+-- For now, just return the target (DUP is transparent for integers)
+-- TODO: implement proper DUP-SUP interaction
+compileOp (OpGraphDupProj1 targetOp) _resultTy = do
+    llTarget <- compileOperand targetOp
+    -- For simple cases (integers), DUP proj just returns the value
+    pure llTarget
 
 cmpOpToLlvm :: ACmpOp -> String
 cmpOpToLlvm CEq = "eq"

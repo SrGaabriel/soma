@@ -23,6 +23,8 @@ module Llvm.Gen.Core (
     addDependency,
     setTailCallContext,
     isTailCallContext,
+    setGraphFunctionContext,
+    isInGraphFunction,
 ) where
 
 import Control.Monad.Reader (MonadReader (local), ReaderT (..), asks)
@@ -53,6 +55,8 @@ data IrGenEnv = IrGenEnv
     , dictMap :: Map.Map (String, Type) String
     , isTailCall :: Bool
     -- ^ Whether current instruction is in tail call position
+    , isGraphFunction :: Bool
+    -- ^ Whether we're inside a graph function that has (net, tm, arg) params
     }
 
 data IrGenState = IrGenState
@@ -84,6 +88,7 @@ namedDefaultEnv name =
         , opTypeEnv = Map.empty
         , dictMap = Map.empty
         , isTailCall = False
+        , isGraphFunction = False
         }
 
 type IrGen a = ReaderT IrGenEnv (WriterT [LlvmStatement] (State IrGenState)) a
@@ -178,3 +183,11 @@ setTailCallContext tc = local (\env -> env{isTailCall = tc})
 -- | Check if we're currently in a tail call context
 isTailCallContext :: IrGen Bool
 isTailCallContext = asks isTailCall
+
+-- | Set the graph function context for the enclosed computation
+setGraphFunctionContext :: Bool -> IrGen a -> IrGen a
+setGraphFunctionContext gf = local (\env -> env{isGraphFunction = gf})
+
+-- | Check if we're currently inside a graph function (has net, tm params)
+isInGraphFunction :: IrGen Bool
+isInGraphFunction = asks isGraphFunction

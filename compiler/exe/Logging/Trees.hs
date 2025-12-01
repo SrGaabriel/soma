@@ -182,7 +182,16 @@ instance TreeShow AOp where
     treeShow (OpGraphMul l r) = "graph_mul " ++ treeShow l ++ " " ++ treeShow r
     treeShow (OpGraphCall fnName args) = "graph_call fn=\"" ++ fnName ++ "\" args=[" ++ intercalate ", " (map treeShow args) ++ "]"
     treeShow (OpGraphReduce root) = "graph_reduce " ++ treeShow root
+    treeShow (OpGraphExtractNum term) = "graph_extract_num " ++ treeShow term
     treeShow (OpGraphRegisterFunc name arity impl) = "graph_register_func \"" ++ name ++ "\" arity=" ++ show arity ++ " impl=" ++ treeShow impl
+    treeShow (OpGraphDup label val) = "graph_dup[" ++ show label ++ "] " ++ treeShow val
+    treeShow (OpGraphSup label left right) = "graph_sup[" ++ show label ++ "] " ++ treeShow left ++ " " ++ treeShow right
+    treeShow OpGraphEra = "graph_era"
+    treeShow (OpGraphLam param body) = "graph_lam " ++ treeShow param ++ " -> " ++ treeShow body
+    treeShow (OpGraphRef fnName arg) = "graph_ref \"" ++ fnName ++ "\" " ++ treeShow arg
+    treeShow (OpGraphDupProj0 target) = "graph_dup_proj0 " ++ treeShow target
+    treeShow (OpGraphDupProj1 target) = "graph_dup_proj1 " ++ treeShow target
+    treeShow (OpGraphApp fn arg) = "graph_app " ++ treeShow fn ++ " @ " ++ treeShow arg
 
 instance TreeShow AEffect where
     treeShow (EffStore dst v) = "store " ++ treeShow dst ++ " := " ++ treeShow v
@@ -191,6 +200,7 @@ instance TreeShow AEffect where
     treeShow (EffClosureSetEnv closure idx val) = "closure_set_env " ++ treeShow closure ++ "[" ++ show idx ++ "] := " ++ treeShow val
     treeShow (EffGraphInit n) = "graph_init workers=" ++ show n
     treeShow EffGraphShutdown = "graph_shutdown"
+    treeShow (EffGraphRegisterFunc name arity impl) = "graph_register_func \"" ++ name ++ "\" arity=" ++ show arity ++ " impl=" ++ treeShow impl
 
 instance TreeShow AInstr where
     treeShow (ILet n ty op) = n ++ " = " ++ treeShow op ++ " (" ++ treeShow ty ++ ")"

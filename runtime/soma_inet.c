@@ -196,6 +196,95 @@ Term inet_ref(INet* net, ThreadMem* tm, uint16_t func_idx, Term arg) {
 }
 
 /*============================================================================
+ * Closure Construction and Manipulation
+ * 
+ * Closure layout in heap:
+ *   [0]: func_idx (stored in aux of the CLO term itself)
+ *   [0]: arity remaining (as NUM)
+ *   [1]: env_size (as NUM)
+ *   [2..2+env_size): captured environment values
+ *
+ * The func_idx is stored in the Term's aux field for efficiency.
+ *===========================================================================*/
+
+Term inet_closure(INet* net, ThreadMem* tm, uint16_t func_idx, uint16_t arity,
+                  Term* env, uint16_t env_size) {
+    Loc loc = inet_alloc(net, tm, 2 + env_size);
+    inet_set(net, loc, inet_num(arity));
+    inet_set(net, loc + 1, inet_num(env_size));
+    for (uint16_t i = 0; i < env_size; i++) {
+        inet_set(net, loc + 2 + i, env[i]);
+    }
+    return term_new(TAG_CLO, func_idx, loc);
+}
+
+/* Clone a closure - shallow copy of the entire structure */
+Term inet_clone_closure(INet* net, ThreadMem* tm, Term clo) {
+    if (term_tag(clo) != TAG_CLO) return clo;  /* Not a closure, return as-is */
+    
+    uint16_t func_idx = term_aux(clo);
+    Loc src_loc = term_loc(clo);
+    
+    /* Read arity and env_size */
+    int64_t arity = inet_get_num(inet_get(net, src_loc));
+    int64_t env_size = inet_get_num(inet_get(net, src_loc + 1));
+    
+    /* Allocate new closure */
+    Loc dst_loc = inet_alloc(net, tm, 2 + (uint32_t)env_size);
+    
+    /* Copy all slots */
+    inet_set(net, dst_loc, inet_num(arity));
+    inet_set(net, dst_loc + 1, inet_num(env_size));
+    for (int64_t i = 0; i < env_size; i++) {
+        inet_set(net, dst_loc + 2 + i, inet_get(net, src_loc + 2 + i));
+    }
+    
+    return term_new(TAG_CLO, func_idx, dst_loc);
+}
+
+/* Apply one argument to a closure, returns new closure or result */
+static Term apply_closure(INet* net, ThreadMem* tm, Term clo, Term arg) {
+    uint16_t func_idx = term_aux(clo);
+    Loc loc = term_loc(clo);
+    
+    int64_t arity = inet_get_num(inet_get(net, loc));
+    int64_t env_size = inet_get_num(inet_get(net, loc + 1));
+    
+    if (arity <= 1) {
+        /* Fully saturated - call the function */
+        /* Build argument array: env + this arg */
+        if (func_idx >= net->num_funcs || !net->funcs[func_idx].impl) {
+            return term_new(TAG_ERA, 0, 0);
+        }
+        
+        /* For now, pass the closure location as the "arg" - 
+         * the function can read env from there, and arg is the last element */
+        /* Store arg at the end of env temporarily */
+        Loc call_loc = inet_alloc(net, tm, 2 + (uint32_t)env_size + 1);
+        inet_set(net, call_loc, inet_num(0));  /* arity = 0 */
+        inet_set(net, call_loc + 1, inet_num(env_size + 1));
+        for (int64_t i = 0; i < env_size; i++) {
+            inet_set(net, call_loc + 2 + i, inet_get(net, loc + 2 + i));
+        }
+        inet_set(net, call_loc + 2 + env_size, arg);
+        
+        Term call_term = term_new(TAG_CLO, func_idx, call_loc);
+        return net->funcs[func_idx].impl(net, tm, call_term);
+    } else {
+        /* Partial application - create new closure with arg added to env */
+        Loc new_loc = inet_alloc(net, tm, 2 + (uint32_t)env_size + 1);
+        inet_set(net, new_loc, inet_num(arity - 1));
+        inet_set(net, new_loc + 1, inet_num(env_size + 1));
+        for (int64_t i = 0; i < env_size; i++) {
+            inet_set(net, new_loc + 2 + i, inet_get(net, loc + 2 + i));
+        }
+        inet_set(net, new_loc + 2 + env_size, arg);
+        
+        return term_new(TAG_CLO, func_idx, new_loc);
+    }
+}
+
+/*============================================================================
  * Chase-Lev Work-Stealing Deque
  *===========================================================================*/
 
@@ -328,7 +417,12 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
         Tag tag = term_tag(term);
         
         /* If it's a value, unwind stack */
-        if (tag == TAG_NUM || tag == TAG_ERA) {
+        if (tag == TAG_NUM || tag == TAG_ERA || tag == TAG_LAM || tag == TAG_CLO) {
+            /* LAM/CLO are values - if stack is empty, return */
+            if ((tag == TAG_LAM || tag == TAG_CLO) && sp == 0) {
+                return term;
+            }
+            
             while (sp > 0) {
                 Frame* f = &stack[--sp];
                 
@@ -402,6 +496,51 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
                 break;
             }
             
+            case TAG_APP: {
+                /* Application - reduce function, then apply */
+                Loc loc = term_loc(term);
+                Term fun = inet_get(net, loc);
+                Term arg = inet_get(net, loc + 1);
+                
+                /* First reduce the function to get LAM or CLO */
+                fun = reduce_term(net, tm, fun);
+                Tag fun_tag = term_tag(fun);
+                
+                if (fun_tag == TAG_LAM) {
+                    /* APP-LAM: beta reduction */
+                    /* LAM layout: [var_loc_ptr, body] */
+                    Loc lam_loc = term_loc(fun);
+                    Term var_ptr = inet_get(net, lam_loc);
+                    Loc var_loc = term_loc(var_ptr);
+                    Term body = inet_get(net, lam_loc + 1);
+                    
+                    /* Substitute arg for the variable */
+                    inet_subst(net, var_loc, arg);
+                    
+                    /* Continue reducing body */
+                    term = body;
+                    tm->interactions++;
+                } else if (fun_tag == TAG_CLO) {
+                    /* APP-CLO: apply arg to closure */
+                    term = apply_closure(net, tm, fun, arg);
+                    tm->interactions++;
+                } else if (fun_tag == TAG_ERA) {
+                    /* Applying ERA - result is ERA */
+                    term = term_new(TAG_ERA, 0, 0);
+                } else {
+                    /* Can't apply non-function */
+                    IDEBUG("APP to non-function: tag=%02x\n", fun_tag);
+                    term = term_new(TAG_ERA, 0, 0);
+                }
+                break;
+            }
+            
+            case TAG_LAM:
+            case TAG_CLO: {
+                /* Lambda/Closure is already a value */
+                return term;
+            }
+            
             case TAG_NIL:
             case TAG_SUB: {
                 /* Variable - read its value */
@@ -448,7 +587,12 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
         
         Tag tag = term_tag(term);
         
-        if (tag == TAG_NUM || tag == TAG_ERA) {
+        if (tag == TAG_NUM || tag == TAG_ERA || tag == TAG_LAM || tag == TAG_CLO) {
+            /* For LAM/CLO, just return - they're values in non-OPR context */
+            if ((tag == TAG_LAM || tag == TAG_CLO) && sp == 0) {
+                return term;
+            }
+            
             while (sp > 0) {
                 PFrame* f = &stack[--sp];
                 
@@ -542,6 +686,48 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
                 term = net->funcs[func_idx].impl(net, tm, arg);
                 tm->interactions++;
                 break;
+            }
+            
+            case TAG_APP: {
+                /* Application - reduce function, then apply */
+                Loc loc = term_loc(term);
+                Term fun = inet_get(net, loc);
+                Term arg = inet_get(net, loc + 1);
+                
+                /* First reduce the function to get LAM or CLO */
+                fun = reduce_parallel(net, tm, fun, depth + 1);
+                Tag fun_tag = term_tag(fun);
+                
+                if (fun_tag == TAG_LAM) {
+                    /* APP-LAM: beta reduction */
+                    Loc lam_loc = term_loc(fun);
+                    Term var_ptr = inet_get(net, lam_loc);
+                    Loc var_loc = term_loc(var_ptr);
+                    Term body = inet_get(net, lam_loc + 1);
+                    
+                    /* Substitute arg for the variable */
+                    inet_subst(net, var_loc, arg);
+                    
+                    /* Continue reducing body */
+                    term = body;
+                    tm->interactions++;
+                } else if (fun_tag == TAG_CLO) {
+                    /* APP-CLO: apply arg to closure */
+                    term = apply_closure(net, tm, fun, arg);
+                    tm->interactions++;
+                } else if (fun_tag == TAG_ERA) {
+                    term = term_new(TAG_ERA, 0, 0);
+                } else {
+                    IDEBUG("APP to non-function: tag=%02x\n", fun_tag);
+                    term = term_new(TAG_ERA, 0, 0);
+                }
+                break;
+            }
+            
+            case TAG_LAM:
+            case TAG_CLO: {
+                /* Lambda/Closure is already a value */
+                return term;
             }
             
             case TAG_NIL:
@@ -777,3 +963,95 @@ void inet_print_stats(INet* net) {
                 ? 100.0 * total_steals / (total_steals + total_fails) : 0.0);
     fprintf(stderr, "==================\n");
 }
+
+/*============================================================================
+ * Non-inline Wrappers for LLVM Codegen
+ * 
+ * These functions provide external linkage for inline functions defined
+ * in soma_inet.h, so LLVM-generated code can call them.
+ *===========================================================================*/
+
+Term inet_num_ext(int64_t n) {
+    return inet_num(n);
+}
+
+int64_t inet_get_num_ext(Term t) {
+    return inet_get_num(t);
+}
+
+/*============================================================================
+ * Global Runtime State (for compiled programs)
+ * 
+ * These globals are referenced by LLVM-generated code.
+ *===========================================================================*/
+
+INet* g_inet = NULL;
+ThreadMem* g_inet_tm = NULL;
+
+/*============================================================================
+ * Initialization helper for LLVM codegen
+ * 
+ * Initializes the runtime and sets both g_inet and g_inet_tm globals.
+ *===========================================================================*/
+
+void inet_init_globals(int num_threads) {
+    g_inet = inet_init(num_threads);
+    if (g_inet) {
+        g_inet_tm = g_inet->threads[0];
+    }
+}
+
+/*============================================================================
+ * Main Entry Point
+ * 
+ * Compiled Soma programs define `soma_main()` which returns an Int.
+ * This main() initializes the runtime, calls soma_main, prints result.
+ *===========================================================================*/
+
+#ifndef SOMA_NO_MAIN
+/* Forward declaration of compiled soma_main */
+extern int32_t soma_main(void);
+
+int main(int argc, char** argv) {
+    (void)argc;
+    (void)argv;
+    
+    /* Get number of threads from SOMA_WORKERS env var, default to 1 */
+    int num_threads = 1;
+    const char* workers_env = getenv("SOMA_WORKERS");
+    if (workers_env) {
+        int n = atoi(workers_env);
+        if (n > 0 && n <= INET_MAX_THREADS) {
+            num_threads = n;
+        } else if (n > INET_MAX_THREADS) {
+            fprintf(stderr, "Warning: SOMA_WORKERS=%d exceeds max %d, using %d\n",
+                    n, INET_MAX_THREADS, INET_MAX_THREADS);
+            num_threads = INET_MAX_THREADS;
+        }
+    }
+
+    /* Initialize runtime */
+    g_inet = inet_init(num_threads);
+    if (!g_inet) {
+        fprintf(stderr, "Failed to initialize INET runtime\n");
+        return 1;
+    }
+    
+    /* Set main thread's ThreadMem */
+    g_inet_tm = g_inet->threads[0];
+    
+    /* Call the compiled program */
+    int32_t result = soma_main();
+    
+    /* Print result */
+    printf("%d\n", result);
+    
+    /* Cleanup */
+    inet_free(g_inet);
+    g_inet = NULL;
+    g_inet_tm = NULL;
+    
+    return 0;
+}
+#endif /* SOMA_NO_MAIN */
+

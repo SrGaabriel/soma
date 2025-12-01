@@ -185,8 +185,15 @@ data AOp
     | {- | Reduce a graph to a value: root_idx
       Returns the final i64 value after reduction.
       Uses parallel reduction if workers > 1.
+      NOTE: Only call from top-level (soma_main), never from graph functions!
       -}
       OpGraphReduce AOperand
+    | {- | Extract integer from a NUM term.
+      Assumes the term is already a TAG_NUM. Does NOT reduce.
+      Use this in graph functions to extract arg values.
+      Calls inet_get_num_ext(term) -> i64
+      -}
+      OpGraphExtractNum AOperand
     | {- | Register a function for graph reduction: name, arity, impl_ptr
       Returns function index (u16) for use in OpGraphCall.
       -}
@@ -215,6 +222,19 @@ data AOp
       Returns node index (u32)
       -}
       OpGraphEra
+    | {- | Create a REF node in the graph: func_name, arg_term
+      Function reference that will be expanded lazily by the runtime.
+      Returns Term (u64)
+      -}
+      OpGraphRef !String AOperand
+    | {- | Project first element from DUP node
+      Returns the first copy of the duplicated value.
+      -}
+      OpGraphDupProj0 AOperand
+    | {- | Project second element from DUP node
+      Returns the second copy of the duplicated value.
+      -}
+      OpGraphDupProj1 AOperand
     deriving (Generic, Show, Eq)
 
 data AEffect
@@ -225,6 +245,7 @@ data AEffect
     -- Graph reduction effects
     | EffGraphInit !Int -- initialize graph runtime with N workers
     | EffGraphShutdown -- shutdown graph runtime
+    | EffGraphRegisterFunc !String !Int AOperand -- register function: name, arity, impl_ptr
     deriving (Generic, Show, Eq)
 
 data ATerminator

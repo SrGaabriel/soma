@@ -84,12 +84,13 @@ static inline Term term_clr_sub(Term t) { return t & ~TERM_SUB_BIT; }
 #define TAG_SUB  0x01  /* Substitution (value stored at location) */
 
 /* Constructors (positive polarity) */
-#define TAG_LAM  0x10  /* Lambda: \x.body */
-#define TAG_CON  0x11  /* Constructor/Pair: (a, b) */
-#define TAG_NUM  0x12  /* Number (48-bit in aux+loc) */
-#define TAG_ERA  0x13  /* Eraser */
-#define TAG_SUP  0x14  /* Superposition: {a b} with label */
-#define TAG_REF  0x15  /* Function reference */
+#define TAG_LAM  0x10  /* Lambda: \x.body (arity 0 closure) */
+#define TAG_CLO  0x11  /* Closure: func_ptr + environment */
+#define TAG_CON  0x12  /* Constructor/Pair: (a, b) */
+#define TAG_NUM  0x13  /* Number (48-bit in aux+loc) */
+#define TAG_ERA  0x14  /* Eraser */
+#define TAG_SUP  0x15  /* Superposition: {a b} with label */
+#define TAG_REF  0x16  /* Function reference (known at compile time) */
 
 /* Eliminators (negative polarity) */
 #define TAG_APP  0x20  /* Application: (f x) */
@@ -99,6 +100,7 @@ static inline Term term_clr_sub(Term t) { return t & ~TERM_SUB_BIT; }
 
 /* Intermediate states */
 #define TAG_OP1  0x30  /* Operator with first arg: (op x _) */
+#define TAG_PAP  0x31  /* Partial application: closure waiting for more args */
 
 /* Operators (stored in aux for OPR/OP1) */
 #define OP_ADD  0x00
@@ -258,6 +260,25 @@ Term inet_sup(INet* net, ThreadMem* tm, Lab label, Term a, Term b);
 Term inet_dup(INet* net, ThreadMem* tm, Lab label, Term target);
 Term inet_opr(INet* net, ThreadMem* tm, Lab op, Term a, Term b);
 Term inet_ref(INet* net, ThreadMem* tm, uint16_t func_idx, Term arg);
+
+/*
+ * Closure construction and manipulation
+ * 
+ * Closure layout in heap:
+ *   [0]: func_idx (as Term with TAG_REF) - which function to call
+ *   [1]: arity (as NUM) - how many args needed
+ *   [2]: env_size (as NUM) - number of captured variables
+ *   [3..3+env_size): captured environment values
+ *
+ * When applied:
+ *   - If arity > 1: create PAP (partial application) with arg added to env
+ *   - If arity == 1: call function with full environment
+ */
+Term inet_closure(INet* net, ThreadMem* tm, uint16_t func_idx, uint16_t arity, 
+                  Term* env, uint16_t env_size);
+
+/* Clone a closure (shallow copy) - used for DUP */
+Term inet_clone_closure(INet* net, ThreadMem* tm, Term clo);
 
 /* Redex deque operations (Chase-Lev) */
 void inet_push(INet* net, ThreadMem* tm, Term a, Term b);

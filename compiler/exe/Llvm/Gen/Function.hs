@@ -22,7 +22,7 @@ import Control.Monad.Reader (MonadReader (local), asks)
 import Control.Monad.State (modify)
 import Control.Monad.Writer (listen)
 import Data.Bifunctor (Bifunctor (second))
-import Llvm.Gen.Core (IrGen, IrGenEnv (moduleName, opTypeEnv), IrGenState (irFunctions), setTailCallContext)
+import Llvm.Gen.Core (IrGen, IrGenEnv (moduleName, opTypeEnv), IrGenState (irFunctions), setGraphFunctionContext, setTailCallContext)
 import Llvm.Gen.Instr (compileInstr, compileTerminator)
 import Llvm.Gen.OperandPass (buildOperandTypeEnv)
 import Llvm.Gen.TypeConversion (convertType)
@@ -46,8 +46,12 @@ compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
                 modName <- asks moduleName
                 pure $ qualifyWithModule modName afName
     let opEnv = buildOperandTypeEnv aFn
+    -- Detect if this is a graph function (has net, tm, arg params)
+    let isGraphFn = case afParams of
+            (("net", _) : ("tm", _) : _) -> True
+            _ -> False
     let newEnvFn = local (\env -> env{opTypeEnv = opEnv})
-    blocks <- mapM (newEnvFn . compileBlock) afBlocks
+    blocks <- mapM (newEnvFn . setGraphFunctionContext isGraphFn . compileBlock) afBlocks
     let params = map (second convertType) afParams
     let retType = convertType afReturnType
     let fn =

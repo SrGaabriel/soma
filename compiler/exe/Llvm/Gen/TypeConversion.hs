@@ -47,6 +47,8 @@ convertType (TConstructor (TypeConstructor name _)) =
         "()" -> LlvmVoid
         -- ClosurePtr is an opaque pointer to a SomaClosure runtime structure
         "ClosurePtr" -> LlvmPointer LlvmI8
+        -- Ptr is a generic opaque pointer (used for C interop, e.g., INet*, ThreadMem*)
+        "Ptr" -> LlvmPointer LlvmI8
         _ ->
             --
             if nameDictSuffix `isSuffixOf` name

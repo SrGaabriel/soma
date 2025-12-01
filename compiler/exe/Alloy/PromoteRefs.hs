@@ -236,6 +236,7 @@ substOp env op =
         OpGraphMul l r -> OpGraphMul (substOperand env l) (substOperand env r)
         OpGraphCall fnIdx args -> OpGraphCall fnIdx (map (substOperand env) args)
         OpGraphReduce root -> OpGraphReduce (substOperand env root)
+        OpGraphExtractNum term -> OpGraphExtractNum (substOperand env term)
         OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (substOperand env impl)
         -- Session 29: interaction net operations
         OpGraphDup label target -> OpGraphDup label (substOperand env target)
@@ -243,6 +244,9 @@ substOp env op =
         OpGraphLam varSlot body -> OpGraphLam (substOperand env varSlot) (substOperand env body)
         OpGraphApp fn arg -> OpGraphApp (substOperand env fn) (substOperand env arg)
         OpGraphEra -> OpGraphEra
+        OpGraphRef name arg -> OpGraphRef name (substOperand env arg)
+        OpGraphDupProj0 target -> OpGraphDupProj0 (substOperand env target)
+        OpGraphDupProj1 target -> OpGraphDupProj1 (substOperand env target)
 
 substEffect :: Subst -> AEffect -> AEffect
 substEffect env eff =
@@ -253,6 +257,7 @@ substEffect env eff =
         EffClosureSetEnv closure idx val -> EffClosureSetEnv (substOperand env closure) idx (substOperand env val)
         EffGraphInit n -> EffGraphInit n
         EffGraphShutdown -> EffGraphShutdown
+        EffGraphRegisterFunc name arity impl -> EffGraphRegisterFunc name arity (substOperand env impl)
 
 substTerminator :: Subst -> ATerminator -> ATerminator
 substTerminator env t =
@@ -348,6 +353,7 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpGraphMul l rhs -> isVar r l || isVar r rhs
             OpGraphCall _ args -> any (isVar r) args
             OpGraphReduce root -> isVar r root
+            OpGraphExtractNum term -> isVar r term
             OpGraphRegisterFunc _ _ impl -> isVar r impl
             -- Session 29: interaction net operations
             OpGraphDup _ target -> isVar r target
@@ -355,6 +361,9 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpGraphLam varSlot body -> isVar r varSlot || isVar r body
             OpGraphApp fn arg -> isVar r fn || isVar r arg
             OpGraphEra -> False
+            OpGraphRef _ arg -> isVar r arg
+            OpGraphDupProj0 target -> isVar r target
+            OpGraphDupProj1 target -> isVar r target
 
     appearsInEff :: Name -> AEffect -> Bool
     appearsInEff r eff =
@@ -365,6 +374,7 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             EffClosureSetEnv closure _ val -> isVar r closure || isVar r val
             EffGraphInit _ -> False
             EffGraphShutdown -> False
+            EffGraphRegisterFunc _ _ impl -> isVar r impl
 
     appearsInTerm :: Name -> ATerminator -> Bool
     appearsInTerm r t =

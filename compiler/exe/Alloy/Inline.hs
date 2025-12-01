@@ -406,6 +406,7 @@ substOp subst op =
         OpGraphMul l r -> OpGraphMul (substOperand subst l) (substOperand subst r)
         OpGraphCall fnIdx args -> OpGraphCall fnIdx (map (substOperand subst) args)
         OpGraphReduce root -> OpGraphReduce (substOperand subst root)
+        OpGraphExtractNum term -> OpGraphExtractNum (substOperand subst term)
         OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (substOperand subst impl)
         -- Session 29: interaction net operations
         OpGraphDup label target -> OpGraphDup label (substOperand subst target)
@@ -413,6 +414,9 @@ substOp subst op =
         OpGraphLam varSlot body -> OpGraphLam (substOperand subst varSlot) (substOperand subst body)
         OpGraphApp fn arg -> OpGraphApp (substOperand subst fn) (substOperand subst arg)
         OpGraphEra -> OpGraphEra
+        OpGraphRef name arg -> OpGraphRef name (substOperand subst arg)
+        OpGraphDupProj0 target -> OpGraphDupProj0 (substOperand subst target)
+        OpGraphDupProj1 target -> OpGraphDupProj1 (substOperand subst target)
 
 -- | Substitute operands in an effect
 substEffect :: Map Name AOperand -> AEffect -> AEffect
@@ -426,6 +430,7 @@ substEffect subst eff =
             EffClosureSetEnv (substOperand subst closure) idx (substOperand subst val)
         EffGraphInit n -> EffGraphInit n
         EffGraphShutdown -> EffGraphShutdown
+        EffGraphRegisterFunc name arity impl -> EffGraphRegisterFunc name arity (substOperand subst impl)
 
 -- | Substitute an operand
 substOperand :: Map Name AOperand -> AOperand -> AOperand

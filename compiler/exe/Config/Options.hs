@@ -3,6 +3,7 @@ module Config.Options (
     CheckOptions (..),
     CircuitOptions (..),
     OutputFormat (..),
+    CompilationMode (..),
     CommandLineError (..),
     formatError,
     fileExt,
@@ -43,6 +44,22 @@ data OutputFormat
     | FormatJson
     deriving (Show, Eq)
 
+-- | Compilation mode determines the execution model and optimization strategy
+data CompilationMode
+    = {- | Standard compilation: Circuit IR → linearize → Alloy → LLVM
+      Deterministic, single-threaded, compile-time memory management via DUP/ERA
+      -}
+      ModeStandard
+    | {- | Graph reduction: Circuit IR (no linearization) → graph-building Alloy → LLVM + INET runtime
+      Parallel, lazy evaluation, runtime graph reduction with work-stealing
+      -}
+      ModeGraph
+    | {- | Hybrid mode (future): Graph reduction for parallelizable sections,
+      standard compilation for sequential hot paths
+      -}
+      ModeHybrid
+    deriving (Show, Eq)
+
 data CheckOptions = CheckOptions
     { checkInput :: String
     , checkName :: Maybe String
@@ -62,8 +79,7 @@ data Options = Options
     , optionsDeps :: [(String, String)]
     , optionsRun :: Bool
     , optionsSkipCircuit :: Bool
-    , optionsParallel :: Bool
-    , optionsGraph :: Bool
+    , optionsMode :: CompilationMode
     }
     deriving (Show)
 
@@ -222,14 +238,20 @@ optionsParser =
             ( long "skip-circuit"
                 <> help "Do not use Circuit IR pipeline with interaction nets and C runtime"
             )
-        <*> switch
-            ( long "parallel"
-                <> help "Enable automatic parallelization (fork-join)"
+        <*> option
+            (eitherReader parseMode)
+            ( long "mode"
+                <> short 'm'
+                <> metavar "MODE"
+                <> value ModeStandard
+                <> help "Compilation mode: standard (default), graph (parallel reduction), or hybrid"
             )
-        <*> switch
-            ( long "graph"
-                <> help "Enable graph reduction for massive parallelism (interaction nets)"
-            )
+
+parseMode :: String -> Either String CompilationMode
+parseMode "standard" = Right ModeStandard
+parseMode "graph" = Right ModeGraph
+parseMode "hybrid" = Right ModeHybrid
+parseMode s = Left $ "Unknown mode: " ++ s ++ ". Use 'standard', 'graph', or 'hybrid'"
 
 parseExtern :: String -> Either String (String, String)
 parseExtern s =

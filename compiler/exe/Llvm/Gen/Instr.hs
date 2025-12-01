@@ -4,10 +4,13 @@ module Llvm.Gen.Instr (
 ) where
 
 import Alloy.Ir
+import Alloy.Naming (qualifyWithModule)
+import Control.Monad.Reader (asks)
 import Control.Monad.Writer.Class (MonadWriter (tell))
 import Llvm.Gen.Core
 import Llvm.Gen.Op (compileOp)
 import Llvm.Gen.Operands (compileOperand)
+import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Gen.TypeConversion (convertType)
 import Llvm.Instructions
 import Llvm.Types (LlvmType (..), deref)
@@ -89,19 +92,31 @@ compileInstr (IEffect (EffClosureSetEnv closure idx value)) = do
         idxVal = LlvmLiteral LlvmI16 (show idx)
     tell [LlvmCallStmt setEnvFunc LlvmVoid [voidClosure, idxVal, taggedValue]]
 compileInstr (IEffect (EffGraphInit numWorkers)) = do
-    -- Initialize graph reduction runtime
-    let initFunc = LlvmGlobal (LlvmPointer LlvmI8) "\"soma_graph_init\""
+    -- Initialize INET runtime using inet_init_globals which sets both g_inet and g_inet_tm
+    let initFunc = LlvmGlobal LlvmVoid "\"inet_init_globals\""
         numWorkersVal = LlvmLiteral LlvmI32 (show numWorkers)
-    result <- saveTmp (LlvmCall initFunc (LlvmPointer LlvmI8) [numWorkersVal]) (LlvmPointer LlvmI8)
-    -- Store in global g_graph_rt
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "g_graph_rt"
-    tell [LlvmStore result globalPtr]
+    tell [LlvmCallStmt initFunc LlvmVoid [numWorkersVal]]
 compileInstr (IEffect EffGraphShutdown) = do
-    -- Shutdown graph reduction runtime
-    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "g_graph_rt"
-    rtPtr <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
-    let shutdownFunc = LlvmGlobal LlvmVoid "\"soma_graph_shutdown\""
-    tell [LlvmCallStmt shutdownFunc LlvmVoid [rtPtr]]
+    -- Shutdown INET runtime
+    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "g_inet"
+    netPtr <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
+    let freeFunc = LlvmGlobal LlvmVoid "\"inet_free\""
+    tell [LlvmCallStmt freeFunc LlvmVoid [netPtr]]
+compileInstr (IEffect (EffGraphRegisterFunc name arity implOp)) = do
+    -- Register a function with the INET runtime
+    modName <- asks moduleName
+    llImpl <- compileOperand implOp
+    -- Get global net pointer
+    let globalPtr = LlvmGlobal (LlvmPointer (LlvmPointer LlvmI8)) "\"g_inet\""
+    netPtr <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
+    -- Create string constant for function name using newStrTemplate
+    let qualifiedName = qualifyWithModule modName name
+    namePtr <- newStrTemplate qualifiedName
+    let arityVal = LlvmLiteral LlvmI16 (show arity)
+        registerFunc = LlvmGlobal LlvmVoid "\"inet_register_func\""
+    -- Cast function pointer to i8*
+    implPtr <- saveTmp (LlvmBitcast llImpl (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    tell [LlvmCallStmt registerFunc LlvmVoid [netPtr, namePtr, arityVal, implPtr]]
 
 compileTerminator :: ATerminator -> IrGen ()
 compileTerminator (ARet Nothing) = do

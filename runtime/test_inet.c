@@ -321,6 +321,146 @@ void benchmark_tree_sum(int depth, int max_workers) {
 }
 
 /*============================================================================
+ * Lambda/Closure Tests
+ *===========================================================================*/
+
+void test_lambda_identity(void) {
+    printf("=== Test: Lambda Identity ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test: (λx.x) 42 = 42 */
+    /* Build: APP(LAM(x, x), 42) */
+    
+    /* Allocate variable slot */
+    Loc var_slot = inet_alloc(net, tm, 1);
+    inet_set(net, var_slot, term_new(TAG_NIL, 0, 0));
+    
+    /* Create lambda: λx.x (body is just the variable) */
+    Term var_ref = term_new(TAG_NIL, 0, var_slot);
+    Term lam = inet_lam(net, tm, var_slot, var_ref);
+    
+    /* Create application: (λx.x) 42 */
+    Term app = inet_app(net, tm, lam, inet_num(42));
+    
+    int64_t result = inet_reduce(net, app);
+    
+    printf("(λx.x) 42 = %ld (expected 42)\n", result);
+    printf("Status: %s\n\n", result == 42 ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+void test_lambda_const(void) {
+    printf("=== Test: Lambda Const ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test: (λx.λy.x) 1 2 = 1 */
+    /* This tests nested lambdas and ignoring an argument */
+    
+    /* Allocate variable slots */
+    Loc var_x = inet_alloc(net, tm, 1);
+    Loc var_y = inet_alloc(net, tm, 1);
+    inet_set(net, var_x, term_new(TAG_NIL, 0, 0));
+    inet_set(net, var_y, term_new(TAG_NIL, 0, 0));
+    
+    /* Inner lambda: λy.x (returns x, ignores y) */
+    Term inner_lam = inet_lam(net, tm, var_y, term_new(TAG_NIL, 0, var_x));
+    
+    /* Outer lambda: λx.(λy.x) */
+    Term outer_lam = inet_lam(net, tm, var_x, inner_lam);
+    
+    /* Apply twice: ((λx.λy.x) 1) 2 */
+    Term app1 = inet_app(net, tm, outer_lam, inet_num(1));
+    Term app2 = inet_app(net, tm, app1, inet_num(2));
+    
+    int64_t result = inet_reduce(net, app2);
+    
+    printf("(λx.λy.x) 1 2 = %ld (expected 1)\n", result);
+    printf("Status: %s\n\n", result == 1 ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+void test_lambda_add(void) {
+    printf("=== Test: Lambda with Arithmetic ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test: (λx. x + x) 21 = 42 */
+    
+    /* Allocate variable slot */
+    Loc var_x = inet_alloc(net, tm, 1);
+    inet_set(net, var_x, term_new(TAG_NIL, 0, 0));
+    
+    /* Body: x + x */
+    Term x_ref1 = term_new(TAG_NIL, 0, var_x);
+    Term x_ref2 = term_new(TAG_NIL, 0, var_x);
+    Term body = inet_opr(net, tm, OP_ADD, x_ref1, x_ref2);
+    
+    /* Lambda: λx. x + x */
+    Term lam = inet_lam(net, tm, var_x, body);
+    
+    /* Application: (λx. x + x) 21 */
+    Term app = inet_app(net, tm, lam, inet_num(21));
+    
+    int64_t result = inet_reduce(net, app);
+    
+    printf("(λx. x + x) 21 = %ld (expected 42)\n", result);
+    printf("Status: %s\n\n", result == 42 ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+void test_closure(void) {
+    printf("=== Test: Closure ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test a closure with captured environment */
+    /* We'll create: let add = λx.λy. x + y in (add 10) 32 = 42 */
+    
+    /* For this test, we'll use the CLO representation directly */
+    /* Create a closure that adds its environment to its argument */
+    
+    /* Register a function that reads env[0] + arg */
+    /* add_closure(clo) where clo has env = [x], returns x + arg */
+    
+    /* For simplicity, test identity closure first */
+    Term env[1] = { inet_num(10) };
+    
+    /* Create closure: func_idx=0, arity=1, env=[10] */
+    /* We need a function that does: env[0] + arg */
+    
+    /* Actually let's just verify closure creation/cloning works */
+    Term clo = inet_closure(net, tm, 0, 1, env, 1);
+    Term clo_copy = inet_clone_closure(net, tm, clo);
+    
+    /* Verify both are CLO tags */
+    int pass = (term_tag(clo) == TAG_CLO && term_tag(clo_copy) == TAG_CLO);
+    
+    /* Verify they have different locations (shallow copy) */
+    pass = pass && (term_loc(clo) != term_loc(clo_copy));
+    
+    /* Verify env was copied */
+    Loc loc1 = term_loc(clo);
+    Loc loc2 = term_loc(clo_copy);
+    Term env1 = inet_get(net, loc1 + 2);
+    Term env2 = inet_get(net, loc2 + 2);
+    pass = pass && (inet_get_num(env1) == 10 && inet_get_num(env2) == 10);
+    
+    printf("Closure creation and cloning: %s\n", pass ? "PASS" : "FAIL");
+    printf("Status: %s\n\n", pass ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+/*============================================================================
  * Main
  *===========================================================================*/
 
@@ -363,6 +503,14 @@ int main(int argc, char** argv) {
     /* Run basic tests */
     test_basic();
     test_nested();
+    
+    /* Lambda tests */
+    test_lambda_identity();
+    test_lambda_const();
+    test_lambda_add();
+    test_closure();
+    
+    /* Fib tests */
     test_fib(10);
     test_fib(20);
     

@@ -194,6 +194,7 @@ usesFromOp blk idx op =
         OpGraphMul l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
         OpGraphCall _ args -> mergeAll [singleUseIfVar a (UseCallArg blk idx j) | (j, a) <- zip [0 ..] args]
         OpGraphReduce root -> singleUseIfVar root (UseCallArg blk idx 0)
+        OpGraphExtractNum term -> singleUseIfVar term (UseCallArg blk idx 0)
         OpGraphRegisterFunc _ _ impl -> singleUseIfVar impl (UseCallArg blk idx 0)
         -- Session 29: interaction net operations
         OpGraphDup _ target -> singleUseIfVar target (UseCallArg blk idx 0)
@@ -201,6 +202,9 @@ usesFromOp blk idx op =
         OpGraphLam varSlot body -> mergeAll [singleUseIfVar varSlot (UseCallArg blk idx 0), singleUseIfVar body (UseCallArg blk idx 1)]
         OpGraphApp fn arg -> mergeAll [singleUseIfVar fn (UseCallArg blk idx 0), singleUseIfVar arg (UseCallArg blk idx 1)]
         OpGraphEra -> Map.empty
+        OpGraphRef _ arg -> singleUseIfVar arg (UseCallArg blk idx 0)
+        OpGraphDupProj0 target -> singleUseIfVar target (UseCallArg blk idx 0)
+        OpGraphDupProj1 target -> singleUseIfVar target (UseCallArg blk idx 0)
 
 usesFromEffect :: BlockName -> Int -> AEffect -> Map Name [UseKind]
 usesFromEffect blk idx eff =
@@ -218,6 +222,7 @@ usesFromEffect blk idx eff =
             mergeAll [singleUseIfVar closure (UseStorePtr blk idx), singleUseIfVar val (UseStoreVal blk idx)]
         EffGraphInit _ -> Map.empty
         EffGraphShutdown -> Map.empty
+        EffGraphRegisterFunc _ _ impl -> singleUseIfVar impl (UseCallArg blk idx 0)
 
 data UseKind
     = UseCallArg BlockName Int Int
