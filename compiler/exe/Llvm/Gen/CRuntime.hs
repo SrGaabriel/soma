@@ -81,6 +81,8 @@ cRuntimeDependencies =
       -- Closure operations
       LlvmFunctionDependency "inet_clone_closure" termType [ptrType, ptrType, termType]
     , -- INet*, ThreadMem*, closure -> Term (shallow copy)
+      LlvmFunctionDependency "inet_closure_get_env" termType [ptrType, termType, LlvmI16]
+    , -- INet*, closure_term, index -> Term (get env slot)
 
       -- Reduction
       LlvmFunctionDependency "inet_reduce" LlvmI64 [ptrType, termType]

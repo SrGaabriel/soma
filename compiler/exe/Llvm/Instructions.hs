@@ -10,6 +10,7 @@ data LlvmInstruction
     | LlvmSub LlvmType LlvmValue LlvmValue
     | LlvmMul LlvmType LlvmValue LlvmValue
     | LlvmSDiv LlvmType LlvmValue LlvmValue
+    | LlvmSRem LlvmType LlvmValue LlvmValue
     | LlvmAShr LlvmType LlvmValue LlvmValue
     | LlvmLShr LlvmType LlvmValue LlvmValue
     | LlvmShl LlvmType LlvmValue LlvmValue
@@ -32,6 +33,7 @@ data LlvmInstruction
     | LlvmIntToPtr LlvmValue LlvmType
     | LlvmIdentityCast LlvmValue
     | LlvmAtomicRmw String LlvmValue LlvmValue String -- op, ptr, val, ordering (e.g., "add", ptr, 1, "seq_cst")
+    | LlvmSelect LlvmValue LlvmValue LlvmValue LlvmType -- cond, trueVal, falseVal, resultType
     | LlvmTodoInstruction
     deriving (Show, Eq)
 
@@ -57,6 +59,8 @@ instance IR LlvmInstruction where
         "mul " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmSDiv typ lhs rhs) =
         "sdiv " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmSRem typ lhs rhs) =
+        "srem " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmAShr typ lhs rhs) =
         "ashr " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmLShr typ lhs rhs) =
@@ -138,6 +142,9 @@ instance IR LlvmInstruction where
     toLlvm (LlvmAtomicRmw op ptrVal val ordering) =
         -- atomicrmw add ptr %ptr, i32 1 seq_cst
         "atomicrmw " ++ op ++ " ptr " ++ toLlvm ptrVal ++ ", " ++ toLlvm (getValueType val) ++ " " ++ toLlvm val ++ " " ++ ordering
+    toLlvm (LlvmSelect cond trueVal falseVal ty) =
+        -- select i1 %cond, i32 %true, i32 %false
+        "select " ++ toLlvm (getValueType cond) ++ " " ++ toLlvm cond ++ ", " ++ toLlvm ty ++ " " ++ toLlvm trueVal ++ ", " ++ toLlvm ty ++ " " ++ toLlvm falseVal
     toLlvm LlvmTodoInstruction = "todo"
 
 instance IR LlvmStatement where

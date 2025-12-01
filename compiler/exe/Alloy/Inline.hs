@@ -414,9 +414,12 @@ substOp subst op =
         OpGraphLam varSlot body -> OpGraphLam (substOperand subst varSlot) (substOperand subst body)
         OpGraphApp fn arg -> OpGraphApp (substOperand subst fn) (substOperand subst arg)
         OpGraphEra -> OpGraphEra
-        OpGraphRef name arg -> OpGraphRef name (substOperand subst arg)
+        OpGraphRef name idx arg -> OpGraphRef name idx (substOperand subst arg)
         OpGraphDupProj0 target -> OpGraphDupProj0 (substOperand subst target)
         OpGraphDupProj1 target -> OpGraphDupProj1 (substOperand subst target)
+        OpGraphClosure funcIdx arity envVals -> OpGraphClosure funcIdx arity (map (substOperand subst) envVals)
+        OpGraphClosureApp clo arg -> OpGraphClosureApp (substOperand subst clo) (substOperand subst arg)
+        OpGraphClosureGetEnv clo idx -> OpGraphClosureGetEnv (substOperand subst clo) idx
 
 -- | Substitute operands in an effect
 substEffect :: Map Name AOperand -> AEffect -> AEffect

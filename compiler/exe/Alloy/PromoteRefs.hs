@@ -244,9 +244,12 @@ substOp env op =
         OpGraphLam varSlot body -> OpGraphLam (substOperand env varSlot) (substOperand env body)
         OpGraphApp fn arg -> OpGraphApp (substOperand env fn) (substOperand env arg)
         OpGraphEra -> OpGraphEra
-        OpGraphRef name arg -> OpGraphRef name (substOperand env arg)
+        OpGraphRef name idx arg -> OpGraphRef name idx (substOperand env arg)
         OpGraphDupProj0 target -> OpGraphDupProj0 (substOperand env target)
         OpGraphDupProj1 target -> OpGraphDupProj1 (substOperand env target)
+        OpGraphClosure funcIdx arity envVals -> OpGraphClosure funcIdx arity (map (substOperand env) envVals)
+        OpGraphClosureApp clo arg -> OpGraphClosureApp (substOperand env clo) (substOperand env arg)
+        OpGraphClosureGetEnv clo idx -> OpGraphClosureGetEnv (substOperand env clo) idx
 
 substEffect :: Subst -> AEffect -> AEffect
 substEffect env eff =
@@ -361,9 +364,12 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpGraphLam varSlot body -> isVar r varSlot || isVar r body
             OpGraphApp fn arg -> isVar r fn || isVar r arg
             OpGraphEra -> False
-            OpGraphRef _ arg -> isVar r arg
+            OpGraphRef _ _ arg -> isVar r arg
             OpGraphDupProj0 target -> isVar r target
             OpGraphDupProj1 target -> isVar r target
+            OpGraphClosure _ _ envVals -> any (isVar r) envVals
+            OpGraphClosureApp clo arg -> isVar r clo || isVar r arg
+            OpGraphClosureGetEnv clo _ -> isVar r clo
 
     appearsInEff :: Name -> AEffect -> Bool
     appearsInEff r eff =

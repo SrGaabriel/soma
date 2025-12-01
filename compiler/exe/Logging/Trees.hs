@@ -139,6 +139,7 @@ instance TreeShow AOp where
     treeShow (OpBin k a b) = "(" ++ treeShow a ++ " " ++ treeShow k ++ " " ++ treeShow b ++ ")"
     treeShow (OpUnary k a) = "(" ++ treeShow k ++ " " ++ treeShow a ++ ")"
     treeShow (OpCmp k a b) = "(" ++ treeShow a ++ " " ++ treeShow k ++ " " ++ treeShow b ++ ")"
+    treeShow (OpSelect cond t f) = "select " ++ treeShow cond ++ " ? " ++ treeShow t ++ " : " ++ treeShow f
     treeShow (OpLoad a) = "load " ++ treeShow a
     treeShow (OpAllocStack t) = "alloca[stack] " ++ treeShow t
     treeShow (OpAllocHeap t) = "alloca[heap] " ++ treeShow t
@@ -180,6 +181,8 @@ instance TreeShow AOp where
     treeShow (OpGraphAdd l r) = "graph_add " ++ treeShow l ++ " " ++ treeShow r
     treeShow (OpGraphSub l r) = "graph_sub " ++ treeShow l ++ " " ++ treeShow r
     treeShow (OpGraphMul l r) = "graph_mul " ++ treeShow l ++ " " ++ treeShow r
+    treeShow (OpGraphDiv l r) = "graph_div " ++ treeShow l ++ " " ++ treeShow r
+    treeShow (OpGraphMod l r) = "graph_mod " ++ treeShow l ++ " " ++ treeShow r
     treeShow (OpGraphCall fnName args) = "graph_call fn=\"" ++ fnName ++ "\" args=[" ++ intercalate ", " (map treeShow args) ++ "]"
     treeShow (OpGraphReduce root) = "graph_reduce " ++ treeShow root
     treeShow (OpGraphExtractNum term) = "graph_extract_num " ++ treeShow term
@@ -188,10 +191,14 @@ instance TreeShow AOp where
     treeShow (OpGraphSup label left right) = "graph_sup[" ++ show label ++ "] " ++ treeShow left ++ " " ++ treeShow right
     treeShow OpGraphEra = "graph_era"
     treeShow (OpGraphLam param body) = "graph_lam " ++ treeShow param ++ " -> " ++ treeShow body
-    treeShow (OpGraphRef fnName arg) = "graph_ref \"" ++ fnName ++ "\" " ++ treeShow arg
+    treeShow (OpGraphRef fnName idx arg) = "graph_ref[" ++ show idx ++ "] \"" ++ fnName ++ "\" " ++ treeShow arg
     treeShow (OpGraphDupProj0 target) = "graph_dup_proj0 " ++ treeShow target
     treeShow (OpGraphDupProj1 target) = "graph_dup_proj1 " ++ treeShow target
     treeShow (OpGraphApp fn arg) = "graph_app " ++ treeShow fn ++ " @ " ++ treeShow arg
+    treeShow (OpGraphClosure funcIdx arity envVals) =
+        "graph_closure[" ++ show funcIdx ++ ", arity=" ++ show arity ++ "](" ++ intercalate ", " (map treeShow envVals) ++ ")"
+    treeShow (OpGraphClosureApp clo arg) = "graph_closure_app " ++ treeShow clo ++ " @ " ++ treeShow arg
+    treeShow (OpGraphClosureGetEnv clo idx) = "graph_closure_get_env " ++ treeShow clo ++ "[" ++ show idx ++ "]"
 
 instance TreeShow AEffect where
     treeShow (EffStore dst v) = "store " ++ treeShow dst ++ " := " ++ treeShow v

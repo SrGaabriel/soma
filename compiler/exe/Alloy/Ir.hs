@@ -78,6 +78,7 @@ data AOp
     = OpBin ABinOpKind AOperand AOperand -- Int/arithmetic/bitwise binop
     | OpUnary AUnaryOpKind AOperand -- not/neg etc.
     | OpCmp ACmpOp AOperand AOperand -- comparisons
+    | OpSelect AOperand AOperand AOperand -- select cond trueVal falseVal (ternary)
     | OpLoad AOperand -- load from pointer-like operand
     | OpAllocStack Type -- allocate stack storage; returns address
     | OpAllocHeap Type -- allocate heap storage; returns address
@@ -177,6 +178,14 @@ data AOp
       Returns node index (u32)
       -}
       OpGraphMul AOperand AOperand
+    | {- | Create a DIV node in the graph: left_idx, right_idx
+      Returns node index (u32)
+      -}
+      OpGraphDiv AOperand AOperand
+    | {- | Create a MOD node in the graph: left_idx, right_idx
+      Returns node index (u32)
+      -}
+      OpGraphMod AOperand AOperand
     | {- | Create a CALL node in the graph: fn_idx, arg_indices
       The function index refers to a registered graph function.
       Returns node index (u32)
@@ -226,7 +235,7 @@ data AOp
       Function reference that will be expanded lazily by the runtime.
       Returns Term (u64)
       -}
-      OpGraphRef !String AOperand
+      OpGraphRef !String !Int AOperand -- func_name, func_index, arg
     | {- | Project first element from DUP node
       Returns the first copy of the duplicated value.
       -}
@@ -235,6 +244,22 @@ data AOp
       Returns the second copy of the duplicated value.
       -}
       OpGraphDupProj1 AOperand
+    | {- | Create a closure in the graph: func_idx, arity, env_values
+      Closures capture environment values and are applied incrementally.
+      Returns Term (u64)
+      -}
+      OpGraphClosure !Int !Int [AOperand]
+    | {- | Apply a closure to an argument
+      If arity > 1: creates partial application (new closure with arg added to env)
+      If arity == 1: calls the function with full environment
+      Returns Term (u64)
+      -}
+      OpGraphClosureApp AOperand AOperand
+    | {- | Extract a value from a closure's environment
+      OpGraphClosureGetEnv closure index
+      Returns the Term at env[index]
+      -}
+      OpGraphClosureGetEnv AOperand !Int
     deriving (Generic, Show, Eq)
 
 data AEffect

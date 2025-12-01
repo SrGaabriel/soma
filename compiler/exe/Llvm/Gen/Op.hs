@@ -77,6 +77,7 @@ compileOp (OpBin k a b) resultTy = do
             ISub -> LlvmSub ty lhs rhs
             IMul -> LlvmMul ty lhs rhs
             IDiv -> LlvmSDiv ty lhs rhs
+            IMod -> LlvmSRem ty lhs rhs
             other -> error $ "Unsupported binary op in LLVM codegen: " ++ show other
     saveTmp instr resultTy
 compileOp (OpUnary k a) resultTy = do
@@ -94,6 +95,12 @@ compileOp (OpCmp c a b) resultTy = do
     rhs <- compileOperand b
     let ty = getValueType lhs
     saveTmp (LlvmICmp ty (cmpOpToLlvm c) lhs rhs) resultTy
+compileOp (OpSelect cond trueVal falseVal) resultTy = do
+    c <- compileOperand cond
+    t <- compileOperand trueVal
+    f <- compileOperand falseVal
+    let ty = getValueType t
+    saveTmp (LlvmSelect c t f ty) resultTy
 compileOp (OpIndex base idx) resultTy = do
     b <- compileOperand base
     i <- compileOperand idx
@@ -929,6 +936,24 @@ compileOp (OpGraphMul leftOp rightOp) _resultTy = do
         opMul = LlvmLiteral LlvmI16 "2" -- OP_MUL
     saveTmp (LlvmCall oprFunc LlvmI64 [net, tm, opMul, llLeft, llRight]) LlvmI64
 
+-- INET div: create OPR term with OP_DIV (0x03)
+compileOp (OpGraphDiv leftOp rightOp) _resultTy = do
+    llLeft <- compileOperand leftOp
+    llRight <- compileOperand rightOp
+    (net, tm) <- getNetAndTm
+    let oprFunc = LlvmGlobal LlvmI64 "\"inet_opr\""
+        opDiv = LlvmLiteral LlvmI16 "3" -- OP_DIV
+    saveTmp (LlvmCall oprFunc LlvmI64 [net, tm, opDiv, llLeft, llRight]) LlvmI64
+
+-- INET mod: create OPR term with OP_MOD (0x04)
+compileOp (OpGraphMod leftOp rightOp) _resultTy = do
+    llLeft <- compileOperand leftOp
+    llRight <- compileOperand rightOp
+    (net, tm) <- getNetAndTm
+    let oprFunc = LlvmGlobal LlvmI64 "\"inet_opr\""
+        opMod = LlvmLiteral LlvmI16 "4" -- OP_MOD
+    saveTmp (LlvmCall oprFunc LlvmI64 [net, tm, opMod, llLeft, llRight]) LlvmI64
+
 -- INET call: in graph mode, we need to reduce args and call the native function directly
 -- The function returns a Term (i64) that represents the graph result
 compileOp (OpGraphCall fnName argOps) _resultTy = do
@@ -1040,16 +1065,12 @@ compileOp OpGraphEra _resultTy = do
 
 -- INET REF: create a REF node for lazy function expansion
 -- REF nodes store the function index in aux and the argument at the location
-compileOp (OpGraphRef fnName argOp) _resultTy = do
-    modName <- asks moduleName
+compileOp (OpGraphRef fnName funcIdx argOp) _resultTy = do
     llArg <- compileOperand argOp
     (net, tm) <- getNetAndTm
-    -- Look up function index - for now use 0 (fib is first registered function)
-    -- TODO: proper function index lookup
-    let qualifiedName = qualifyWithModule modName fnName
-        refFunc = LlvmGlobal LlvmI64 "\"inet_ref\""
-        funcIdx = LlvmLiteral LlvmI16 "0" -- TODO: get actual function index
-    saveTmp (LlvmCall refFunc LlvmI64 [net, tm, funcIdx, llArg]) LlvmI64
+    let refFunc = LlvmGlobal LlvmI64 "\"inet_ref\""
+        funcIdxVal = LlvmLiteral LlvmI16 (show funcIdx)
+    saveTmp (LlvmCall refFunc LlvmI64 [net, tm, funcIdxVal, llArg]) LlvmI64
 
 -- INET DUP projection 0: get first copy from DUP node
 -- For now, just return the target (DUP is transparent for integers)
@@ -1067,6 +1088,57 @@ compileOp (OpGraphDupProj1 targetOp) _resultTy = do
     llTarget <- compileOperand targetOp
     -- For simple cases (integers), DUP proj just returns the value
     pure llTarget
+
+-- INET Closure: create a closure with captured environment
+-- inet_closure(net, tm, func_idx, arity, env[], env_size) -> Term
+compileOp (OpGraphClosure funcIdx arity envVals) _resultTy = do
+    (net, tm) <- getNetAndTm
+    -- Compile all environment values
+    llEnvVals <- mapM compileOperand envVals
+    let envSize = length envVals
+
+    if envSize == 0
+        then do
+            -- No captures - create closure with empty env
+            let closureFunc = LlvmGlobal LlvmI64 "\"inet_closure\""
+                funcIdxVal = LlvmLiteral LlvmI16 (show funcIdx)
+                arityVal = LlvmLiteral LlvmI16 (show arity)
+                envPtr = LlvmLiteral (LlvmPointer LlvmI64) "null"
+                envSizeVal = LlvmLiteral LlvmI16 "0"
+            saveTmp (LlvmCall closureFunc LlvmI64 [net, tm, funcIdxVal, arityVal, envPtr, envSizeVal]) LlvmI64
+        else do
+            -- Allocate stack space for env array
+            let envSizeLit = LlvmLiteral LlvmI32 (show envSize)
+            envArrayPtr <- saveTmp (LlvmAlloca LlvmI64 (Just envSizeLit)) (LlvmPointer LlvmI64)
+            -- Store each env value
+            forM_ (zip [0 ..] llEnvVals) $ \(i, llVal) -> do
+                -- Get pointer to env[i]
+                elemPtr <- saveTmp (LlvmGetElementPtr LlvmI64 envArrayPtr [LlvmLiteral LlvmI64 (show (i :: Int))] False) (LlvmPointer LlvmI64)
+                tell [LlvmStore llVal elemPtr]
+            -- Call inet_closure
+            let closureFunc = LlvmGlobal LlvmI64 "\"inet_closure\""
+                funcIdxVal = LlvmLiteral LlvmI16 (show funcIdx)
+                arityVal = LlvmLiteral LlvmI16 (show arity)
+                envSizeVal = LlvmLiteral LlvmI16 (show envSize)
+            saveTmp (LlvmCall closureFunc LlvmI64 [net, tm, funcIdxVal, arityVal, envArrayPtr, envSizeVal]) LlvmI64
+
+-- INET Closure App: apply a closure to an argument
+-- This is handled by the runtime via inet_app - APP-CLO interaction
+compileOp (OpGraphClosureApp cloOp argOp) _resultTy = do
+    llClo <- compileOperand cloOp
+    llArg <- compileOperand argOp
+    (net, tm) <- getNetAndTm
+    let appFunc = LlvmGlobal LlvmI64 "\"inet_app\""
+    saveTmp (LlvmCall appFunc LlvmI64 [net, tm, llClo, llArg]) LlvmI64
+
+-- INET Closure Get Env: get value from closure environment slot
+-- inet_closure_get_env(net, closure_term, index) -> Term
+compileOp (OpGraphClosureGetEnv cloOp idx) _resultTy = do
+    llClo <- compileOperand cloOp
+    net <- getNet
+    let getEnvFunc = LlvmGlobal LlvmI64 "\"inet_closure_get_env\""
+        idxVal = LlvmLiteral LlvmI16 (show idx)
+    saveTmp (LlvmCall getEnvFunc LlvmI64 [net, llClo, idxVal]) LlvmI64
 
 cmpOpToLlvm :: ACmpOp -> String
 cmpOpToLlvm CEq = "eq"

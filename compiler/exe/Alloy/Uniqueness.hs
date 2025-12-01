@@ -202,9 +202,15 @@ usesFromOp blk idx op =
         OpGraphLam varSlot body -> mergeAll [singleUseIfVar varSlot (UseCallArg blk idx 0), singleUseIfVar body (UseCallArg blk idx 1)]
         OpGraphApp fn arg -> mergeAll [singleUseIfVar fn (UseCallArg blk idx 0), singleUseIfVar arg (UseCallArg blk idx 1)]
         OpGraphEra -> Map.empty
-        OpGraphRef _ arg -> singleUseIfVar arg (UseCallArg blk idx 0)
+        OpGraphRef _ _ arg -> singleUseIfVar arg (UseCallArg blk idx 0)
         OpGraphDupProj0 target -> singleUseIfVar target (UseCallArg blk idx 0)
         OpGraphDupProj1 target -> singleUseIfVar target (UseCallArg blk idx 0)
+        OpGraphClosure _ _ envVals ->
+            Map.unionsWith (++) [singleUseIfVar v (UseCallArg blk idx i) | (i, v) <- zip [0 ..] envVals]
+        OpGraphClosureApp clo arg ->
+            mergeAll [singleUseIfVar clo (UseCallArg blk idx 0), singleUseIfVar arg (UseCallArg blk idx 1)]
+        OpGraphClosureGetEnv clo _ ->
+            singleUseIfVar clo (UseCallArg blk idx 0)
 
 usesFromEffect :: BlockName -> Int -> AEffect -> Map Name [UseKind]
 usesFromEffect blk idx eff =

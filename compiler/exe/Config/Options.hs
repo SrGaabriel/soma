@@ -73,12 +73,8 @@ data Options = Options
     , optionsOutput :: Maybe String
     , optionsName :: Maybe String
     , optionsLib :: Bool
-    , optionsLlvmOnly :: Bool
-    , optionsKeepAll :: Bool
-    , optionsEmitLib :: Bool
     , optionsDeps :: [(String, String)]
-    , optionsRun :: Bool
-    , optionsSkipCircuit :: Bool
+    , optionsSkipCircuit :: Bool -- todo: remove
     , optionsMode :: CompilationMode
     }
     deriving (Show)
@@ -195,6 +191,7 @@ optionsParser =
         <*> optional
             ( strOption
                 ( long "out"
+                    <> short 'o'
                     <> metavar "OUTPUT"
                     <> help "Output file path"
                 )
@@ -210,18 +207,6 @@ optionsParser =
             ( long "lib"
                 <> help "Compile as a Soma library"
             )
-        <*> switch
-            ( long "llvm-only"
-                <> help "Emit LLVM IR only (no compilation or run)"
-            )
-        <*> switch
-            ( long "keep"
-                <> help "Keep intermediate compilation files"
-            )
-        <*> switch
-            ( long "emit-lib"
-                <> help "Emit output as a shared library"
-            )
         <*> many
             ( option
                 (eitherReader parseExtern)
@@ -229,10 +214,6 @@ optionsParser =
                     <> metavar "NAME=PATH"
                     <> help "Link external library (e.g. --dep foo=src/lib/foo.toria)"
                 )
-            )
-        <*> switch
-            ( long "run"
-                <> help "Run the compiled program immediately"
             )
         <*> switch
             ( long "skip-circuit"

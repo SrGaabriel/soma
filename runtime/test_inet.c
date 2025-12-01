@@ -321,6 +321,309 @@ void benchmark_tree_sum(int depth, int max_workers) {
 }
 
 /*============================================================================
+ * Interaction Calculus Tests
+ *===========================================================================*/
+
+void test_dup_num(void) {
+    printf("=== Test: DUP-NUM (duplicate a number) ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test: !{a b} &1 = 42; a + b = 84 */
+    
+    /* Create DUP node for 42 */
+    Loc proj0_slot, proj1_slot;
+    Term dup = inet_dup_with_projs(net, tm, 1, inet_num(42), &proj0_slot, &proj1_slot);
+    (void)dup;
+    
+    /* Manually trigger the interaction */
+    inet_interact_dup_num(net, tm, dup, inet_num(42));
+    
+    /* Read proj0 and proj1 */
+    Term proj0 = inet_get(net, proj0_slot);
+    Term proj1 = inet_get(net, proj1_slot);
+    
+    /* Both should be 42 (with SUB flag) */
+    int64_t val0 = inet_get_num(term_clr_sub(proj0));
+    int64_t val1 = inet_get_num(term_clr_sub(proj1));
+    
+    printf("DUP-NUM: proj0=%ld, proj1=%ld (expected 42, 42)\n", val0, val1);
+    printf("Status: %s\n\n", (val0 == 42 && val1 == 42) ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+void test_dup_era(void) {
+    printf("=== Test: DUP-ERA (duplicate erasure) ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test: !{a b} &1 = *; a = *, b = * */
+    
+    Term era = term_new(TAG_ERA, 0, 0);
+    Loc proj0_slot, proj1_slot;
+    Term dup = inet_dup_with_projs(net, tm, 1, era, &proj0_slot, &proj1_slot);
+    
+    inet_interact_dup_era(net, tm, dup);
+    
+    Term proj0 = inet_get(net, proj0_slot);
+    Term proj1 = inet_get(net, proj1_slot);
+    
+    int pass = (term_tag(term_clr_sub(proj0)) == TAG_ERA && 
+                term_tag(term_clr_sub(proj1)) == TAG_ERA);
+    
+    printf("DUP-ERA: proj0=ERA?%d, proj1=ERA?%d\n", 
+           term_tag(term_clr_sub(proj0)) == TAG_ERA,
+           term_tag(term_clr_sub(proj1)) == TAG_ERA);
+    printf("Status: %s\n\n", pass ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+void test_dup_sup_annihilate(void) {
+    printf("=== Test: DUP-SUP Annihilation (same label) ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test: !{a b} &1 = &1{10, 20}; a = 10, b = 20 */
+    
+    /* Create SUP{10, 20} with label 1 */
+    Term sup = inet_sup(net, tm, 1, inet_num(10), inet_num(20));
+    
+    /* Create DUP with same label 1 */
+    Loc proj0_slot, proj1_slot;
+    Term dup = inet_dup_with_projs(net, tm, 1, sup, &proj0_slot, &proj1_slot);
+    
+    inet_interact_dup_sup(net, tm, dup, sup);
+    
+    Term proj0 = inet_get(net, proj0_slot);
+    Term proj1 = inet_get(net, proj1_slot);
+    
+    int64_t val0 = inet_get_num(term_clr_sub(proj0));
+    int64_t val1 = inet_get_num(term_clr_sub(proj1));
+    
+    printf("DUP-SUP annihilate: proj0=%ld, proj1=%ld (expected 10, 20)\n", val0, val1);
+    printf("Status: %s\n\n", (val0 == 10 && val1 == 20) ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+void test_dup_sup_commute(void) {
+    printf("=== Test: DUP-SUP Commutation (different labels) ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test: !{a b} &1 = &2{10, 20}
+     * Result: a = &2{x0, y0}, b = &2{x1, y1}
+     *         where !{x0 x1} &1 = 10, !{y0 y1} &1 = 20
+     */
+    
+    /* Create SUP{10, 20} with label 2 */
+    Term sup = inet_sup(net, tm, 2, inet_num(10), inet_num(20));
+    
+    /* Create DUP with label 1 (different from SUP's label 2) */
+    Loc proj0_slot, proj1_slot;
+    Term dup = inet_dup_with_projs(net, tm, 1, sup, &proj0_slot, &proj1_slot);
+    
+    inet_interact_dup_sup(net, tm, dup, sup);
+    
+    Term proj0 = inet_get(net, proj0_slot);
+    Term proj1 = inet_get(net, proj1_slot);
+    
+    /* Both projections should be SUPs with label 2 */
+    proj0 = term_clr_sub(proj0);
+    proj1 = term_clr_sub(proj1);
+    
+    int pass = (term_tag(proj0) == TAG_SUP && term_aux(proj0) == 2 &&
+                term_tag(proj1) == TAG_SUP && term_aux(proj1) == 2);
+    
+    printf("DUP-SUP commute: proj0=SUP[%d]? proj1=SUP[%d]?\n",
+           term_aux(proj0), term_aux(proj1));
+    printf("Status: %s\n\n", pass ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+void test_app_sup(void) {
+    printf("=== Test: APP-SUP (apply superposition) ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test: (&1{λx.x+1, λx.x+2}) 10
+     * 
+     * For this test, we'll verify APP-SUP creates the right structure
+     * by applying to simple numbers instead of lambdas, since full 
+     * reduction requires internal reduce_term which is static.
+     * 
+     * Alternative test: ((&1{1, 2}) + 10) should give us &1{11, 12}
+     * But OPR doesn't distribute over SUP by default.
+     * 
+     * So we'll test that APP-SUP at least produces the right structure.
+     */
+    
+    /* Create λx.x+1 */
+    Loc var1_slot = inet_alloc(net, tm, 1);
+    inet_set(net, var1_slot, term_new(TAG_NIL, 0, 0));
+    Term body1 = inet_opr(net, tm, OP_ADD, term_new(TAG_NIL, 0, var1_slot), inet_num(1));
+    Term lam1 = inet_lam(net, tm, var1_slot, body1);
+    
+    /* Create λx.x+2 */
+    Loc var2_slot = inet_alloc(net, tm, 1);
+    inet_set(net, var2_slot, term_new(TAG_NIL, 0, 0));
+    Term body2 = inet_opr(net, tm, OP_ADD, term_new(TAG_NIL, 0, var2_slot), inet_num(2));
+    Term lam2 = inet_lam(net, tm, var2_slot, body2);
+    
+    /* Create SUP{lam1, lam2} */
+    Term sup = inet_sup(net, tm, 1, lam1, lam2);
+    
+    /* Test inet_interact_app_sup directly */
+    Term result = inet_interact_app_sup(net, tm, sup, inet_num(10), 1);
+    
+    /* Result should be SUP{APP(lam1, arg0), APP(lam2, arg1)} */
+    int pass = 0;
+    if (term_tag(result) == TAG_SUP) {
+        Loc sup_loc = term_loc(result);
+        Term left = inet_get(net, sup_loc);
+        Term right = inet_get(net, sup_loc + 1);
+        
+        /* Both should be APP nodes */
+        pass = (term_tag(left) == TAG_APP && term_tag(right) == TAG_APP);
+        printf("APP-SUP: result=SUP{APP, APP}? left=%02x, right=%02x\n",
+               term_tag(left), term_tag(right));
+    } else {
+        printf("APP-SUP: result tag=%02x (expected SUP)\n", term_tag(result));
+    }
+    
+    printf("Status: %s\n\n", pass ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+void test_dup_lam(void) {
+    printf("=== Test: DUP-LAM (duplicate lambda) ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test: !{f0 f1} &1 = λx.x; both f0 and f1 should be lambdas */
+    
+    /* Create λx.x */
+    Loc var_slot = inet_alloc(net, tm, 1);
+    inet_set(net, var_slot, term_new(TAG_NIL, 0, 0));
+    Term lam = inet_lam(net, tm, var_slot, term_new(TAG_NIL, 0, var_slot));
+    
+    /* Create DUP */
+    Loc proj0_slot, proj1_slot;
+    Term dup = inet_dup_with_projs(net, tm, 1, lam, &proj0_slot, &proj1_slot);
+    
+    inet_interact_dup_lam(net, tm, dup, lam);
+    
+    /* Get the two lambdas */
+    Term lam0 = inet_get(net, proj0_slot);
+    Term lam1 = inet_get(net, proj1_slot);
+    
+    lam0 = term_clr_sub(lam0);
+    lam1 = term_clr_sub(lam1);
+    
+    /* Both should be lambdas */
+    int pass = (term_tag(lam0) == TAG_LAM && term_tag(lam1) == TAG_LAM);
+    
+    printf("DUP-LAM: proj0 tag=%02x (LAM=%02x), proj1 tag=%02x (LAM=%02x)\n",
+           term_tag(lam0), TAG_LAM, term_tag(lam1), TAG_LAM);
+    printf("Status: %s\n\n", pass ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+void test_dup_in_reduction(void) {
+    printf("=== Test: DUP in reduction (x + x where x = 21) ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test: Manually trigger DUP-NUM and then use the results in addition.
+     * 
+     * The DUP interaction needs to happen first before we can use the projections.
+     * In a real compiler-generated graph, the DUP would be properly linked.
+     */
+    
+    /* Create DUP of 21 */
+    Loc a_slot, b_slot;
+    Term dup = inet_dup_with_projs(net, tm, 1, inet_num(21), &a_slot, &b_slot);
+    
+    /* Trigger the DUP-NUM interaction */
+    inet_interact_dup_num(net, tm, dup, inet_num(21));
+    
+    /* Now the projection slots have the duplicated values */
+    Term a_val = inet_get(net, a_slot);
+    Term b_val = inet_get(net, b_slot);
+    
+    /* Create a + b using the actual values */
+    Term add = inet_opr(net, tm, OP_ADD, a_val, b_val);
+    
+    /* Reduce */
+    int64_t result = inet_reduce(net, add);
+    
+    printf("(!{a b} &1 = 21; a + b) = %ld (expected 42)\n", result);
+    printf("Status: %s\n\n", result == 42 ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+void test_nested_dup(void) {
+    printf("=== Test: Nested DUP (x + x + x + x) ===\n");
+    
+    INet* net = inet_init(1);
+    ThreadMem* tm = net->threads[0];
+    
+    /* Test: let x = 10 in x + x + x + x = 40
+     * This requires multiple DUPs, each manually triggered.
+     */
+    
+    /* Start with x = 10 */
+    Term x = inet_num(10);
+    
+    /* First DUP: !{a b} = x */
+    Loc a_slot, b_slot;
+    Term dup1 = inet_dup_with_projs(net, tm, 1, x, &a_slot, &b_slot);
+    inet_interact_dup_num(net, tm, dup1, x);
+    
+    /* Second DUP: !{c d} = a (which is now 10) */
+    Term a_val = inet_get(net, a_slot);
+    Loc c_slot, d_slot;
+    Term dup2 = inet_dup_with_projs(net, tm, 2, a_val, &c_slot, &d_slot);
+    inet_interact_dup_num(net, tm, dup2, term_clr_sub(a_val));
+    
+    /* Third DUP: !{e f} = b (which is now 10) */
+    Term b_val = inet_get(net, b_slot);
+    Loc e_slot, f_slot;
+    Term dup3 = inet_dup_with_projs(net, tm, 3, b_val, &e_slot, &f_slot);
+    inet_interact_dup_num(net, tm, dup3, term_clr_sub(b_val));
+    
+    /* Build: (c + d) + (e + f) */
+    Term c_val = inet_get(net, c_slot);
+    Term d_val = inet_get(net, d_slot);
+    Term e_val = inet_get(net, e_slot);
+    Term f_val = inet_get(net, f_slot);
+    
+    Term add1 = inet_opr(net, tm, OP_ADD, c_val, d_val);
+    Term add2 = inet_opr(net, tm, OP_ADD, e_val, f_val);
+    Term add3 = inet_opr(net, tm, OP_ADD, add1, add2);
+    
+    int64_t result = inet_reduce(net, add3);
+    
+    printf("Nested DUP: x + x + x + x = %ld (expected 40)\n", result);
+    printf("Status: %s\n\n", result == 40 ? "PASS" : "FAIL");
+    
+    inet_free(net);
+}
+
+/*============================================================================
  * Lambda/Closure Tests
  *===========================================================================*/
 
@@ -503,6 +806,16 @@ int main(int argc, char** argv) {
     /* Run basic tests */
     test_basic();
     test_nested();
+    
+    /* Interaction Calculus tests */
+    test_dup_num();
+    test_dup_era();
+    test_dup_sup_annihilate();
+    test_dup_sup_commute();
+    test_dup_lam();
+    test_app_sup();
+    test_dup_in_reduction();
+    test_nested_dup();
     
     /* Lambda tests */
     test_lambda_identity();

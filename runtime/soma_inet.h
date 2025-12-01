@@ -280,6 +280,98 @@ Term inet_closure(INet* net, ThreadMem* tm, uint16_t func_idx, uint16_t arity,
 /* Clone a closure (shallow copy) - used for DUP */
 Term inet_clone_closure(INet* net, ThreadMem* tm, Term clo);
 
+/* Get a value from closure environment by index */
+Term inet_closure_get_env(INet* net, Term clo, uint16_t idx);
+
+/*============================================================================
+ * Interaction Calculus Operations
+ * 
+ * These implement the core interaction rules from the Interaction Calculus:
+ *   - DUP-SUP: Duplication meets superposition (annihilate or commute)
+ *   - DUP-LAM: Duplication of a lambda
+ *   - DUP-ERA: Duplication of erasure
+ *   - APP-SUP: Application to a superposition
+ *   - DUP-NUM: Duplication of a number
+ *===========================================================================*/
+
+/*
+ * Create a DUP node and get projection references
+ * 
+ * DUP layout in heap:
+ *   [0]: target term to duplicate
+ *   [1]: slot for proj0 value (TAG_NIL initially)
+ *   [2]: slot for proj1 value (TAG_NIL initially)
+ * 
+ * Returns the DUP term. Use inet_dup_proj0/proj1 to get projection terms.
+ */
+Term inet_dup_with_projs(INet* net, ThreadMem* tm, Lab label, Term target,
+                         Loc* out_proj0_slot, Loc* out_proj1_slot);
+
+/* Get projection slots from a DUP node */
+static inline Loc inet_dup_proj0_slot(INet* net, Term dup) {
+    (void)net;
+    return term_loc(dup) + 1;
+}
+
+static inline Loc inet_dup_proj1_slot(INet* net, Term dup) {
+    (void)net;
+    return term_loc(dup) + 2;
+}
+
+/*
+ * Perform DUP-SUP interaction
+ * 
+ * When a DUP with label L meets a SUP:
+ *   - Same label: annihilate (proj0 = sup.left, proj1 = sup.right)
+ *   - Different label: commute (create nested structure)
+ * 
+ * This writes the results to the DUP's projection slots.
+ */
+void inet_interact_dup_sup(INet* net, ThreadMem* tm, Term dup, Term sup);
+
+/*
+ * Perform DUP-LAM interaction
+ * 
+ * When duplicating a lambda λx.body:
+ *   1. Create two fresh variable slots (x0, x1)
+ *   2. Substitute x with SUP{x0, x1}
+ *   3. Duplicate the body
+ *   4. Create λx0.body0 and λx1.body1
+ * 
+ * This writes the results to the DUP's projection slots.
+ */
+void inet_interact_dup_lam(INet* net, ThreadMem* tm, Term dup, Term lam);
+
+/*
+ * Perform DUP-ERA interaction
+ * 
+ * Duplicating erasure yields two erasures.
+ */
+void inet_interact_dup_era(INet* net, ThreadMem* tm, Term dup);
+
+/*
+ * Perform DUP-NUM interaction
+ * 
+ * Duplicating a number yields two copies of the same number.
+ */
+void inet_interact_dup_num(INet* net, ThreadMem* tm, Term dup, Term num);
+
+/*
+ * Perform APP-SUP interaction
+ * 
+ * When applying a SUP{f0, f1} to an argument:
+ *   1. Duplicate the argument into arg0, arg1
+ *   2. Create SUP{(f0 arg0), (f1 arg1)}
+ */
+Term inet_interact_app_sup(INet* net, ThreadMem* tm, Term sup_fun, Term arg, Lab sup_label);
+
+/*
+ * Perform DUP-CLO interaction
+ * 
+ * Similar to DUP-LAM but for closures with environments.
+ */
+void inet_interact_dup_clo(INet* net, ThreadMem* tm, Term dup, Term clo);
+
 /* Redex deque operations (Chase-Lev) */
 void inet_push(INet* net, ThreadMem* tm, Term a, Term b);
 bool inet_pop(INet* net, ThreadMem* tm, Redex* out);

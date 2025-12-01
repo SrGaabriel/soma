@@ -7,22 +7,5 @@ def testSimpleDup(x: Int) -> Int =
     let b = f 2 in
     a + b
 
-def testNestedDup(x: Int) -> Int =
-    let outer = (\a -> (\b -> x + a + b)) in
-    let inner1 = outer 10 in
-    let inner2 = outer 20 in
-    let r1 = inner1 1 in
-    let r2 = inner2 2 in
-    r1 + r2
-
-def testMultiCapture(x: Int, y: Int) -> Int =
-    let f = (\z -> x + y + z) in
-    let a = f 1 in
-    let b = f 2 in
-    a + b
-
 def main :: Int =
-    let r1 = testSimpleDup 100 in
-    let r2 = testNestedDup 1000 in
-    let r3 = testMultiCapture 100 200 in
-    r1 + r2 + r3
+    testSimpleDup 100

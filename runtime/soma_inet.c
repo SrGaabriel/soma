@@ -242,6 +242,14 @@ Term inet_clone_closure(INet* net, ThreadMem* tm, Term clo) {
     return term_new(TAG_CLO, func_idx, dst_loc);
 }
 
+/* Get a value from closure environment by index */
+Term inet_closure_get_env(INet* net, Term clo, uint16_t idx) {
+    if (term_tag(clo) != TAG_CLO) return term_new(TAG_ERA, 0, 0);
+    Loc loc = term_loc(clo);
+    /* Closure layout: [arity, env_size, env[0], env[1], ...] */
+    return inet_get(net, loc + 2 + idx);
+}
+
 /* Apply one argument to a closure, returns new closure or result */
 static Term apply_closure(INet* net, ThreadMem* tm, Term clo, Term arg) {
     uint16_t func_idx = term_aux(clo);
@@ -281,6 +289,296 @@ static Term apply_closure(INet* net, ThreadMem* tm, Term clo, Term arg) {
         inet_set(net, new_loc + 2 + env_size, arg);
         
         return term_new(TAG_CLO, func_idx, new_loc);
+    }
+}
+
+/*============================================================================
+ * Interaction Calculus Operations
+ * 
+ * These implement the core interaction rules from the Interaction Calculus.
+ *===========================================================================*/
+
+/* Global label counter for fresh labels */
+static _Atomic(uint32_t) g_label_counter = 1;
+
+static inline Lab fresh_label(void) {
+    return (Lab)atomic_fetch_add_explicit(&g_label_counter, 1, memory_order_relaxed);
+}
+
+Term inet_dup_with_projs(INet* net, ThreadMem* tm, Lab label, Term target,
+                         Loc* out_proj0_slot, Loc* out_proj1_slot) {
+    Loc loc = inet_alloc(net, tm, 3);
+    inet_set(net, loc, target);
+    inet_set(net, loc + 1, term_new(TAG_NIL, 0, 0));  /* proj0 slot */
+    inet_set(net, loc + 2, term_new(TAG_NIL, 0, 0));  /* proj1 slot */
+    
+    if (out_proj0_slot) *out_proj0_slot = loc + 1;
+    if (out_proj1_slot) *out_proj1_slot = loc + 2;
+    
+    return term_new(TAG_DUP, label, loc);
+}
+
+/*
+ * DUP-SUP Interaction
+ * 
+ * Case 1: Same label (annihilation)
+ *   !{a b} &L = &L{x y}  =>  a = x, b = y
+ * 
+ * Case 2: Different labels (commutation)
+ *   !{a b} &L = &M{x y}  =>  
+ *     a = &M{x0 y0}, b = &M{x1 y1}
+ *     where !{x0 x1} &L = x, !{y0 y1} &L = y
+ */
+void inet_interact_dup_sup(INet* net, ThreadMem* tm, Term dup, Term sup) {
+    Lab dup_label = term_aux(dup);
+    Lab sup_label = term_aux(sup);
+    Loc dup_loc = term_loc(dup);
+    Loc sup_loc = term_loc(sup);
+    
+    Term sup_left = inet_get(net, sup_loc);
+    Term sup_right = inet_get(net, sup_loc + 1);
+    
+    Loc proj0_slot = dup_loc + 1;
+    Loc proj1_slot = dup_loc + 2;
+    
+    if (dup_label == sup_label) {
+        /* Annihilation: proj0 = left, proj1 = right */
+        inet_subst(net, proj0_slot, sup_left);
+        inet_subst(net, proj1_slot, sup_right);
+    } else {
+        /* Commutation: create nested structure */
+        /* 
+         * We need:
+         *   proj0 = &M{x0, y0}
+         *   proj1 = &M{x1, y1}
+         * Where:
+         *   !{x0 x1} &L = sup_left
+         *   !{y0 y1} &L = sup_right
+         */
+        
+        /* Create DUP for left element */
+        Loc x0_slot, x1_slot;
+        Term dup_left = inet_dup_with_projs(net, tm, dup_label, sup_left, &x0_slot, &x1_slot);
+        (void)dup_left;
+        
+        /* Create DUP for right element */
+        Loc y0_slot, y1_slot;
+        Term dup_right = inet_dup_with_projs(net, tm, dup_label, sup_right, &y0_slot, &y1_slot);
+        (void)dup_right;
+        
+        /* Create references to the projection slots */
+        Term x0_ref = term_new(TAG_NIL, 0, x0_slot);
+        Term x1_ref = term_new(TAG_NIL, 0, x1_slot);
+        Term y0_ref = term_new(TAG_NIL, 0, y0_slot);
+        Term y1_ref = term_new(TAG_NIL, 0, y1_slot);
+        
+        /* Create the two new SUPs with the original SUP's label */
+        Term new_sup0 = inet_sup(net, tm, sup_label, x0_ref, y0_ref);
+        Term new_sup1 = inet_sup(net, tm, sup_label, x1_ref, y1_ref);
+        
+        /* Write results to DUP's projection slots */
+        inet_subst(net, proj0_slot, new_sup0);
+        inet_subst(net, proj1_slot, new_sup1);
+    }
+}
+
+/*
+ * DUP-LAM Interaction
+ * 
+ * !{a b} &L = λx.body  =>
+ *   a = λx0.body0, b = λx1.body1
+ *   where x = &L{x0 x1}, !{body0 body1} &L = body
+ */
+void inet_interact_dup_lam(INet* net, ThreadMem* tm, Term dup, Term lam) {
+    Lab label = term_aux(dup);
+    Loc dup_loc = term_loc(dup);
+    Loc lam_loc = term_loc(lam);
+    
+    /* Read lambda structure */
+    Term var_ptr = inet_get(net, lam_loc);      /* Contains var slot location */
+    Loc orig_var_slot = term_loc(var_ptr);
+    Term body = inet_get(net, lam_loc + 1);
+    
+    Loc proj0_slot = dup_loc + 1;
+    Loc proj1_slot = dup_loc + 2;
+    
+    /* Create two fresh variable slots for x0 and x1 */
+    Loc var0_slot = inet_alloc(net, tm, 1);
+    Loc var1_slot = inet_alloc(net, tm, 1);
+    inet_set(net, var0_slot, term_new(TAG_NIL, 0, 0));
+    inet_set(net, var1_slot, term_new(TAG_NIL, 0, 0));
+    
+    /* Substitute original var with SUP{x0_ref, x1_ref} */
+    Term x0_ref = term_new(TAG_NIL, 0, var0_slot);
+    Term x1_ref = term_new(TAG_NIL, 0, var1_slot);
+    Term var_sup = inet_sup(net, tm, label, x0_ref, x1_ref);
+    inet_subst(net, orig_var_slot, var_sup);
+    
+    /* Create DUP for the body */
+    Loc body0_slot, body1_slot;
+    Term body_dup = inet_dup_with_projs(net, tm, label, body, &body0_slot, &body1_slot);
+    (void)body_dup;
+    
+    /* Create the two new lambdas */
+    /* λx0.body0 and λx1.body1 */
+    Term body0_ref = term_new(TAG_NIL, 0, body0_slot);
+    Term body1_ref = term_new(TAG_NIL, 0, body1_slot);
+    
+    Term lam0 = inet_lam(net, tm, var0_slot, body0_ref);
+    Term lam1 = inet_lam(net, tm, var1_slot, body1_ref);
+    
+    /* Write results to DUP's projection slots */
+    inet_subst(net, proj0_slot, lam0);
+    inet_subst(net, proj1_slot, lam1);
+}
+
+/*
+ * DUP-ERA Interaction
+ * 
+ * !{a b} &L = *  =>  a = *, b = *
+ */
+void inet_interact_dup_era(INet* net, ThreadMem* tm, Term dup) {
+    (void)tm;
+    Loc dup_loc = term_loc(dup);
+    
+    Loc proj0_slot = dup_loc + 1;
+    Loc proj1_slot = dup_loc + 2;
+    
+    Term era = term_new(TAG_ERA, 0, 0);
+    inet_subst(net, proj0_slot, era);
+    inet_subst(net, proj1_slot, era);
+}
+
+/*
+ * DUP-NUM Interaction
+ * 
+ * !{a b} &L = n  =>  a = n, b = n
+ */
+void inet_interact_dup_num(INet* net, ThreadMem* tm, Term dup, Term num) {
+    (void)tm;
+    Loc dup_loc = term_loc(dup);
+    
+    Loc proj0_slot = dup_loc + 1;
+    Loc proj1_slot = dup_loc + 2;
+    
+    /* Numbers can be freely copied */
+    inet_subst(net, proj0_slot, num);
+    inet_subst(net, proj1_slot, num);
+}
+
+/*
+ * APP-SUP Interaction
+ * 
+ * (&L{f0 f1} arg)  =>  &L{(f0 arg0) (f1 arg1)}
+ * where !{arg0 arg1} &L = arg
+ */
+Term inet_interact_app_sup(INet* net, ThreadMem* tm, Term sup_fun, Term arg, Lab sup_label) {
+    Loc sup_loc = term_loc(sup_fun);
+    Term f0 = inet_get(net, sup_loc);
+    Term f1 = inet_get(net, sup_loc + 1);
+    
+    /* Create DUP for the argument */
+    Loc arg0_slot, arg1_slot;
+    Term arg_dup = inet_dup_with_projs(net, tm, sup_label, arg, &arg0_slot, &arg1_slot);
+    (void)arg_dup;
+    
+    /* Create references to the projection slots */
+    Term arg0_ref = term_new(TAG_NIL, 0, arg0_slot);
+    Term arg1_ref = term_new(TAG_NIL, 0, arg1_slot);
+    
+    /* Create the two applications */
+    Term app0 = inet_app(net, tm, f0, arg0_ref);
+    Term app1 = inet_app(net, tm, f1, arg1_ref);
+    
+    /* Return SUP of the applications */
+    return inet_sup(net, tm, sup_label, app0, app1);
+}
+
+/*
+ * DUP-CLO Interaction
+ * 
+ * Similar to DUP-LAM but handles closure environment.
+ * Each captured variable in the env needs to be duplicated.
+ */
+void inet_interact_dup_clo(INet* net, ThreadMem* tm, Term dup, Term clo) {
+    Lab label = term_aux(dup);
+    Loc dup_loc = term_loc(dup);
+    
+    uint16_t func_idx = term_aux(clo);
+    Loc clo_loc = term_loc(clo);
+    
+    int64_t arity = inet_get_num(inet_get(net, clo_loc));
+    int64_t env_size = inet_get_num(inet_get(net, clo_loc + 1));
+    
+    Loc proj0_slot = dup_loc + 1;
+    Loc proj1_slot = dup_loc + 2;
+    
+    /* For each env variable, create a DUP */
+    /* Then create two closures with the duplicated env */
+    
+    /* Allocate env0 and env1 arrays */
+    Loc env0_slots[64];  /* Max env size */
+    Loc env1_slots[64];
+    
+    for (int64_t i = 0; i < env_size && i < 64; i++) {
+        Term env_val = inet_get(net, clo_loc + 2 + i);
+        Loc slot0, slot1;
+        Term env_dup = inet_dup_with_projs(net, tm, label, env_val, &slot0, &slot1);
+        (void)env_dup;
+        env0_slots[i] = slot0;
+        env1_slots[i] = slot1;
+    }
+    
+    /* Create closure 0 */
+    Loc clo0_loc = inet_alloc(net, tm, 2 + (uint32_t)env_size);
+    inet_set(net, clo0_loc, inet_num(arity));
+    inet_set(net, clo0_loc + 1, inet_num(env_size));
+    for (int64_t i = 0; i < env_size && i < 64; i++) {
+        inet_set(net, clo0_loc + 2 + i, term_new(TAG_NIL, 0, env0_slots[i]));
+    }
+    Term clo0 = term_new(TAG_CLO, func_idx, clo0_loc);
+    
+    /* Create closure 1 */
+    Loc clo1_loc = inet_alloc(net, tm, 2 + (uint32_t)env_size);
+    inet_set(net, clo1_loc, inet_num(arity));
+    inet_set(net, clo1_loc + 1, inet_num(env_size));
+    for (int64_t i = 0; i < env_size && i < 64; i++) {
+        inet_set(net, clo1_loc + 2 + i, term_new(TAG_NIL, 0, env1_slots[i]));
+    }
+    Term clo1 = term_new(TAG_CLO, func_idx, clo1_loc);
+    
+    /* Write results */
+    inet_subst(net, proj0_slot, clo0);
+    inet_subst(net, proj1_slot, clo1);
+}
+
+/*
+ * Perform a DUP interaction based on the target's type
+ */
+static void perform_dup_interaction(INet* net, ThreadMem* tm, Term dup, Term target) {
+    Tag target_tag = term_tag(target);
+    
+    switch (target_tag) {
+        case TAG_SUP:
+            inet_interact_dup_sup(net, tm, dup, target);
+            break;
+        case TAG_LAM:
+            inet_interact_dup_lam(net, tm, dup, target);
+            break;
+        case TAG_CLO:
+            inet_interact_dup_clo(net, tm, dup, target);
+            break;
+        case TAG_ERA:
+            inet_interact_dup_era(net, tm, dup);
+            break;
+        case TAG_NUM:
+            inet_interact_dup_num(net, tm, dup, target);
+            break;
+        default:
+            /* Unknown target - treat as ERA */
+            IDEBUG("DUP on unknown tag: %02x\n", target_tag);
+            inet_interact_dup_era(net, tm, dup);
+            break;
     }
 }
 
@@ -399,10 +697,10 @@ typedef struct {
 #define MAX_STACK 65536
 
 /*
- * reduce_term: Reduce a term to a value (NUM or ERA)
+ * reduce_term: Reduce a term to a value (NUM, ERA, LAM, CLO, or SUP)
  * 
  * Returns the reduced term.
- * Pushes parallel work as redexes.
+ * Handles all interaction calculus rules.
  */
 static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
     Frame stack[MAX_STACK];
@@ -417,9 +715,9 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
         Tag tag = term_tag(term);
         
         /* If it's a value, unwind stack */
-        if (tag == TAG_NUM || tag == TAG_ERA || tag == TAG_LAM || tag == TAG_CLO) {
-            /* LAM/CLO are values - if stack is empty, return */
-            if ((tag == TAG_LAM || tag == TAG_CLO) && sp == 0) {
+        if (tag == TAG_NUM || tag == TAG_ERA || tag == TAG_LAM || tag == TAG_CLO || tag == TAG_SUP) {
+            /* These are all values - if stack is empty, return */
+            if (sp == 0) {
                 return term;
             }
             
@@ -429,24 +727,43 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
                 if (f->op == TAG_OPR) {
                     if (f->state == 0) {
                         /* Got first operand, now need second */
-                        f->val = inet_get_num(term);
-                        f->state = 1;
-                        
-                        /* Get second operand and reduce it */
-                        term = inet_get(net, f->loc + 1);
-                        while (term_is_sub(term)) term = term_clr_sub(term);
-                        sp++;  /* Keep frame on stack */
-                        break;  /* Continue reducing */
+                        if (tag == TAG_NUM) {
+                            f->val = inet_get_num(term);
+                            f->state = 1;
+                            
+                            /* Get second operand and reduce it */
+                            term = inet_get(net, f->loc + 1);
+                            while (term_is_sub(term)) term = term_clr_sub(term);
+                            sp++;  /* Keep frame on stack */
+                            break;  /* Continue reducing */
+                        } else {
+                            /* First operand is not a number - error */
+                            IDEBUG("OPR first arg not NUM: tag=%02x\n", tag);
+                            term = term_new(TAG_ERA, 0, 0);
+                        }
                     } else {
                         /* Got second operand, compute result */
-                        int64_t result = compute_op(f->aux, f->val, inet_get_num(term));
-                        term = inet_num(result);
-                        tm->interactions++;
+                        if (tag == TAG_NUM) {
+                            int64_t result = compute_op(f->aux, f->val, inet_get_num(term));
+                            term = inet_num(result);
+                            tm->interactions++;
+                        } else {
+                            IDEBUG("OPR second arg not NUM: tag=%02x\n", tag);
+                            term = term_new(TAG_ERA, 0, 0);
+                        }
                         /* Continue unwinding */
                     }
-                } else if (f->op == TAG_REF) {
-                    /* Function call completed - shouldn't happen here */
-                    /* Functions expand inline, don't return through stack */
+                } else if (f->op == TAG_DUP) {
+                    /* DUP waiting for its target value */
+                    Term dup_term = term_new(TAG_DUP, f->aux, f->loc);
+                    perform_dup_interaction(net, tm, dup_term, term);
+                    tm->interactions++;
+                    
+                    /* Now read the projection we need */
+                    /* f->state: 0 = need proj0, 1 = need proj1 */
+                    Loc proj_slot = f->loc + 1 + f->state;
+                    term = inet_get(net, proj_slot);
+                    /* Continue unwinding - term should now be substituted */
                 }
             }
             
@@ -502,7 +819,7 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
                 Term fun = inet_get(net, loc);
                 Term arg = inet_get(net, loc + 1);
                 
-                /* First reduce the function to get LAM or CLO */
+                /* First reduce the function to get LAM, CLO, or SUP */
                 fun = reduce_term(net, tm, fun);
                 Tag fun_tag = term_tag(fun);
                 
@@ -524,6 +841,11 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
                     /* APP-CLO: apply arg to closure */
                     term = apply_closure(net, tm, fun, arg);
                     tm->interactions++;
+                } else if (fun_tag == TAG_SUP) {
+                    /* APP-SUP: distribute application over superposition */
+                    Lab sup_label = term_aux(fun);
+                    term = inet_interact_app_sup(net, tm, fun, arg, sup_label);
+                    tm->interactions++;
                 } else if (fun_tag == TAG_ERA) {
                     /* Applying ERA - result is ERA */
                     term = term_new(TAG_ERA, 0, 0);
@@ -535,9 +857,50 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
                 break;
             }
             
+            case TAG_DUP: {
+                /* Duplication - reduce target, then perform interaction */
+                Loc loc = term_loc(term);
+                Lab label = term_aux(term);
+                Term target = inet_get(net, loc);
+                
+                /* Check if target is already a value */
+                while (term_is_sub(target)) {
+                    target = term_clr_sub(target);
+                }
+                
+                Tag target_tag = term_tag(target);
+                if (target_tag == TAG_NUM || target_tag == TAG_ERA || 
+                    target_tag == TAG_LAM || target_tag == TAG_CLO || target_tag == TAG_SUP) {
+                    /* Target is a value - perform interaction immediately */
+                    perform_dup_interaction(net, tm, term, target);
+                    tm->interactions++;
+                    
+                    /* For now, return proj0 - caller should handle which proj they need */
+                    /* This is a simplification; in practice, the caller knows which proj */
+                    term = inet_get(net, loc + 1);  /* proj0 */
+                } else {
+                    /* Need to reduce target first */
+                    if (sp >= MAX_STACK - 1) {
+                        fprintf(stderr, "Stack overflow in reduce_term (DUP)\n");
+                        return inet_num(0);
+                    }
+                    
+                    stack[sp].op = TAG_DUP;
+                    stack[sp].state = 0;  /* Will need proj0 */
+                    stack[sp].aux = label;
+                    stack[sp].loc = loc;
+                    stack[sp].out = 0;
+                    sp++;
+                    
+                    term = target;
+                }
+                break;
+            }
+            
             case TAG_LAM:
-            case TAG_CLO: {
-                /* Lambda/Closure is already a value */
+            case TAG_CLO:
+            case TAG_SUP: {
+                /* Already a value */
                 return term;
             }
             
@@ -563,6 +926,7 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
  * 
  * Similar to reduce_term but pushes right subtrees as redexes
  * that can be stolen by other threads.
+ * Handles all interaction calculus rules.
  */
 typedef struct {
     uint8_t  op;
@@ -587,9 +951,9 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
         
         Tag tag = term_tag(term);
         
-        if (tag == TAG_NUM || tag == TAG_ERA || tag == TAG_LAM || tag == TAG_CLO) {
-            /* For LAM/CLO, just return - they're values in non-OPR context */
-            if ((tag == TAG_LAM || tag == TAG_CLO) && sp == 0) {
+        if (tag == TAG_NUM || tag == TAG_ERA || tag == TAG_LAM || tag == TAG_CLO || tag == TAG_SUP) {
+            /* All are values - if stack is empty, return */
+            if (sp == 0) {
                 return term;
             }
             
@@ -598,6 +962,11 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
                 
                 if (f->op == TAG_OPR) {
                     if (f->state == 0) {
+                        if (tag != TAG_NUM) {
+                            IDEBUG("OPR first arg not NUM: tag=%02x\n", tag);
+                            term = term_new(TAG_ERA, 0, 0);
+                            continue;
+                        }
                         f->val = inet_get_num(term);
                         f->state = 1;
                         
@@ -626,10 +995,24 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
                             break;
                         }
                     } else {
+                        if (tag != TAG_NUM) {
+                            IDEBUG("OPR second arg not NUM: tag=%02x\n", tag);
+                            term = term_new(TAG_ERA, 0, 0);
+                            continue;
+                        }
                         int64_t result = compute_op(f->aux, f->val, inet_get_num(term));
                         term = inet_num(result);
                         tm->interactions++;
                     }
+                } else if (f->op == TAG_DUP) {
+                    /* DUP waiting for its target value */
+                    Term dup_term = term_new(TAG_DUP, f->aux, f->loc);
+                    perform_dup_interaction(net, tm, dup_term, term);
+                    tm->interactions++;
+                    
+                    /* Read the projection we need */
+                    Loc proj_slot = f->loc + 1 + f->state;
+                    term = inet_get(net, proj_slot);
                 }
             }
             
@@ -694,7 +1077,7 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
                 Term fun = inet_get(net, loc);
                 Term arg = inet_get(net, loc + 1);
                 
-                /* First reduce the function to get LAM or CLO */
+                /* First reduce the function to get LAM, CLO, or SUP */
                 fun = reduce_parallel(net, tm, fun, depth + 1);
                 Tag fun_tag = term_tag(fun);
                 
@@ -715,6 +1098,11 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
                     /* APP-CLO: apply arg to closure */
                     term = apply_closure(net, tm, fun, arg);
                     tm->interactions++;
+                } else if (fun_tag == TAG_SUP) {
+                    /* APP-SUP: distribute application over superposition */
+                    Lab sup_label = term_aux(fun);
+                    term = inet_interact_app_sup(net, tm, fun, arg, sup_label);
+                    tm->interactions++;
                 } else if (fun_tag == TAG_ERA) {
                     term = term_new(TAG_ERA, 0, 0);
                 } else {
@@ -724,9 +1112,48 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
                 break;
             }
             
+            case TAG_DUP: {
+                /* Duplication - reduce target, then perform interaction */
+                Loc loc = term_loc(term);
+                Lab label = term_aux(term);
+                Term target = inet_get(net, loc);
+                
+                /* Check if target is already a value */
+                while (term_is_sub(target)) {
+                    target = term_clr_sub(target);
+                }
+                
+                Tag target_tag = term_tag(target);
+                if (target_tag == TAG_NUM || target_tag == TAG_ERA ||
+                    target_tag == TAG_LAM || target_tag == TAG_CLO || target_tag == TAG_SUP) {
+                    /* Target is a value - perform interaction immediately */
+                    perform_dup_interaction(net, tm, term, target);
+                    tm->interactions++;
+                    
+                    term = inet_get(net, loc + 1);  /* proj0 */
+                } else {
+                    /* Need to reduce target first */
+                    if (sp >= MAX_STACK - 1) {
+                        fprintf(stderr, "Stack overflow in reduce_parallel (DUP)\n");
+                        return inet_num(0);
+                    }
+                    
+                    stack[sp].op = TAG_DUP;
+                    stack[sp].state = 0;
+                    stack[sp].aux = label;
+                    stack[sp].loc = loc;
+                    stack[sp].result_slot = 0;
+                    sp++;
+                    
+                    term = target;
+                }
+                break;
+            }
+            
             case TAG_LAM:
-            case TAG_CLO: {
-                /* Lambda/Closure is already a value */
+            case TAG_CLO:
+            case TAG_SUP: {
+                /* Already a value */
                 return term;
             }
             

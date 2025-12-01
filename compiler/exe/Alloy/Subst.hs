@@ -54,6 +54,7 @@ substOp env = \case
     OpBin k a b -> OpBin k (sub a) (sub b)
     OpUnary k a -> OpUnary k (sub a)
     OpCmp k a b -> OpCmp k (sub a) (sub b)
+    OpSelect c t f -> OpSelect (sub c) (sub t) (sub f)
     OpLoad a -> OpLoad (sub a)
     OpAllocStack t -> OpAllocStack t
     OpAllocHeap t -> OpAllocHeap t
@@ -99,6 +100,8 @@ substOp env = \case
     OpGraphAdd l r -> OpGraphAdd (sub l) (sub r)
     OpGraphSub l r -> OpGraphSub (sub l) (sub r)
     OpGraphMul l r -> OpGraphMul (sub l) (sub r)
+    OpGraphDiv l r -> OpGraphDiv (sub l) (sub r)
+    OpGraphMod l r -> OpGraphMod (sub l) (sub r)
     OpGraphCall fnIdx args -> OpGraphCall fnIdx (map sub args)
     OpGraphReduce root -> OpGraphReduce (sub root)
     OpGraphExtractNum term -> OpGraphExtractNum (sub term)
@@ -109,9 +112,12 @@ substOp env = \case
     OpGraphLam varSlot body -> OpGraphLam (sub varSlot) (sub body)
     OpGraphApp fn arg -> OpGraphApp (sub fn) (sub arg)
     OpGraphEra -> OpGraphEra
-    OpGraphRef name arg -> OpGraphRef name (sub arg)
+    OpGraphRef name idx arg -> OpGraphRef name idx (sub arg)
     OpGraphDupProj0 target -> OpGraphDupProj0 (sub target)
     OpGraphDupProj1 target -> OpGraphDupProj1 (sub target)
+    OpGraphClosure funcIdx arity envVals -> OpGraphClosure funcIdx arity (map sub envVals)
+    OpGraphClosureApp clo arg -> OpGraphClosureApp (sub clo) (sub arg)
+    OpGraphClosureGetEnv clo idx -> OpGraphClosureGetEnv (sub clo) idx
   where
     sub = substOperand env
 
@@ -174,6 +180,7 @@ opVars = \case
     OpBin _ a b -> vars a ++ vars b
     OpUnary _ a -> vars a
     OpCmp _ a b -> vars a ++ vars b
+    OpSelect c t f -> vars c ++ vars t ++ vars f
     OpLoad a -> vars a
     OpAllocStack _ -> []
     OpAllocHeap _ -> []
@@ -211,6 +218,8 @@ opVars = \case
     OpGraphAdd l r -> vars l ++ vars r
     OpGraphSub l r -> vars l ++ vars r
     OpGraphMul l r -> vars l ++ vars r
+    OpGraphDiv l r -> vars l ++ vars r
+    OpGraphMod l r -> vars l ++ vars r
     OpGraphCall _ args -> concatMap vars args
     OpGraphReduce root -> vars root
     OpGraphExtractNum term -> vars term
@@ -221,9 +230,12 @@ opVars = \case
     OpGraphLam varSlot body -> vars varSlot ++ vars body
     OpGraphApp fn arg -> vars fn ++ vars arg
     OpGraphEra -> []
-    OpGraphRef _ arg -> vars arg
+    OpGraphRef _ _ arg -> vars arg
     OpGraphDupProj0 target -> vars target
     OpGraphDupProj1 target -> vars target
+    OpGraphClosure _ _ envVals -> concatMap vars envVals
+    OpGraphClosureApp clo arg -> vars clo ++ vars arg
+    OpGraphClosureGetEnv clo _ -> vars clo
   where
     vars = operandVars
 

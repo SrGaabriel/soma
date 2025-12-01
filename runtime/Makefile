@@ -22,9 +22,9 @@ $(LIB): $(OBJ)
 soma_inet.o: soma_inet.c soma_inet.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Test program
-test_inet: test_inet.c soma_inet.o
-	$(CC) $(CFLAGS) $^ -o $@
+# Test program (compile runtime with SOMA_NO_MAIN to avoid main conflict)
+test_inet: test_inet.c soma_inet.c soma_inet.h
+	$(CC) $(CFLAGS) -DSOMA_NO_MAIN test_inet.c soma_inet.c -o $@
 
 test: test_inet
 	./test_inet
