@@ -50,8 +50,9 @@ data CompilationMode
       Deterministic, single-threaded, compile-time memory management via DUP/ERA
       -}
       ModeStandard
-    | {- | Graph reduction: Circuit IR (no linearization) → graph-building Alloy → LLVM + INET runtime
-      Parallel, lazy evaluation, runtime graph reduction with work-stealing
+    | {- | Linearized graph mode: Circuit IR → linearize → graph Alloy → LLVM + INET runtime
+      Parallel, lazy evaluation, runtime graph reduction with work-stealing. DUP nodes are explicit
+      in the Circuit IR, enabling compile-time optimizations like DUP-NUM elision.
       -}
       ModeGraph
     | {- | Hybrid mode (future): Graph reduction for parallelizable sections,
@@ -232,7 +233,7 @@ parseMode :: String -> Either String CompilationMode
 parseMode "standard" = Right ModeStandard
 parseMode "graph" = Right ModeGraph
 parseMode "hybrid" = Right ModeHybrid
-parseMode s = Left $ "Unknown mode: " ++ s ++ ". Use 'standard', 'graph', or 'hybrid'"
+parseMode s = Left $ "Unknown mode: " ++ s ++ ". Use 'standard', 'graph', 'lgraph', or 'hybrid'"
 
 parseExtern :: String -> Either String (String, String)
 parseExtern s =

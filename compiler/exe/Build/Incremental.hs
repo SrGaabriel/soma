@@ -124,28 +124,26 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
     -- Lower to Alloy MIR
     -- If graph mode enabled, skip linearization and use graph reduction
     -- Otherwise, linearize (insert DUP/ERA nodes) and use standard lowering
-    let enableGraph = optionsMode options == ModeGraph
-    let (circuitForAlloy, alloyFromCircuit) = case optionsMode options of
+    let circuitForAlloy = linearizeModule circuitSimplified
+    let alloyFromCircuit = case optionsMode options of
             ModeGraph ->
-                -- Graph mode: skip linearization, use non-linear Circuit IR directly
-                -- The runtime handles duplication lazily via graph reduction
-                (circuitSimplified, lowerCircuitToGraph circuitSimplified)
+                -- Linearized graph mode: linearize first, then use graph reduction
+                -- This enables compile-time DUP optimization (e.g., eliding DUP for primitives)
+                lowerCircuitToGraph circuitForAlloy
             ModeStandard ->
                 -- Standard mode: linearize for compile-time memory management
-                let circuitLinearized = linearizeModule circuitSimplified
-                in (circuitLinearized, lowerCircuitToAlloy circuitLinearized)
+                lowerCircuitToAlloy circuitForAlloy
             ModeHybrid ->
                 -- Hybrid mode: linearize for compile-time memory management and then parallelize
-                let circuitLinearized = linearizeModule circuitSimplified
-                    parallelConfig = defaultParallelConfig
-                    circuitParallelized = parallelizeModule parallelConfig circuitLinearized
-                in (circuitLinearized, lowerCircuitToAlloy circuitParallelized)
+                let parallelConfig = defaultParallelConfig
+                    circuitParallelized = parallelizeModule parallelConfig circuitForAlloy
+                in lowerCircuitToAlloy circuitParallelized
 
         alloyExpanded = expandIntrinsicsModule alloyFromCircuit
 
-    if enableGraph
-        then putStrLn "=== Circuit IR (graph mode - no linearization) ==="
-        else putStrLn "=== Circuit IR (after linearization) ==="
+    case optionsMode options of
+        ModeGraph -> putStrLn "=== Circuit IR (graph mode - linearized) ==="
+        _ -> putStrLn "=== Circuit IR (after linearization) ==="
     putStrLn $ prettyCircuit circuitForAlloy
 
     putStrLn $ "Alloy (MIR) complete for " ++ modName
@@ -365,7 +363,7 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                 let runtimeLibPath = case optionsMode compileOptions of
                         ModeGraph -> "runtime/inets_soma.a"
                         ModeHybrid -> "runtime/hybrid_soma.a"
-                        _ -> "runtime/native_soma.a"
+                        ModeStandard -> "runtime/native_soma.a"
                 let llTemp = outputFile <.> "ll"
                 writeFile llTemp llvmIr
 

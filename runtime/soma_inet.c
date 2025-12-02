@@ -182,6 +182,30 @@ Term inet_dup(INet* net, ThreadMem* tm, Lab label, Term target) {
     return term_new(TAG_DUP, label, loc);
 }
 
+/* Forward declaration for perform_dup_interaction */
+static void perform_dup_interaction(INet* net, ThreadMem* tm, Term dup, Term target);
+
+/*
+ * inet_dup_eager: Create a DUP and immediately trigger the interaction
+ * 
+ * This is used in lgraph mode where we need both projections immediately.
+ * Returns the DUP term; the proj0/proj1 slots are filled after the call.
+ * Caller can use inet_dup_proj0_slot/inet_dup_proj1_slot to get slot locations,
+ * then inet_get to read the results.
+ */
+Term inet_dup_eager(INet* net, ThreadMem* tm, Lab label, Term target) {
+    Loc loc = inet_alloc(net, tm, 3);
+    inet_set(net, loc, target);
+    inet_set(net, loc + 1, term_new(TAG_NIL, 0, 0));
+    inet_set(net, loc + 2, term_new(TAG_NIL, 0, 0));
+    Term dup = term_new(TAG_DUP, label, loc);
+    
+    /* Immediately trigger the DUP interaction */
+    perform_dup_interaction(net, tm, dup, target);
+    
+    return dup;
+}
+
 Term inet_opr(INet* net, ThreadMem* tm, Lab op, Term a, Term b) {
     Loc loc = inet_alloc(net, tm, 2);
     inet_set(net, loc, a);
@@ -499,6 +523,9 @@ Term inet_interact_app_sup(INet* net, ThreadMem* tm, Term sup_fun, Term arg, Lab
  *
  * Similar to DUP-LAM but handles closure environment.
  * Each captured variable in the env needs to be duplicated.
+ * 
+ * For primitive values (NUM), we copy them directly.
+ * For complex values, we create lazy DUP references.
  */
 void inet_interact_dup_clo(INet* net, ThreadMem* tm, Term dup, Term clo) {
     Lab label = term_aux(dup);
@@ -513,20 +540,34 @@ void inet_interact_dup_clo(INet* net, ThreadMem* tm, Term dup, Term clo) {
     Loc proj0_slot = dup_loc + 1;
     Loc proj1_slot = dup_loc + 2;
 
-    /* For each env variable, create a DUP */
-    /* Then create two closures with the duplicated env */
+    /* For each env variable, duplicate it */
+    /* Primitives (NUM) are copied directly; complex values use lazy DUP */
 
-    /* Allocate env0 and env1 arrays */
-    Loc env0_slots[64];  /* Max env size */
-    Loc env1_slots[64];
+    /* Arrays to hold duplicated env values for each closure */
+    Term env0_vals[64];  /* Max env size */
+    Term env1_vals[64];
 
     for (int64_t i = 0; i < env_size && i < 64; i++) {
         Term env_val = inet_get(net, clo_loc + 2 + i);
-        Loc slot0, slot1;
-        Term env_dup = inet_dup_with_projs(net, tm, label, env_val, &slot0, &slot1);
-        (void)env_dup;
-        env0_slots[i] = slot0;
-        env1_slots[i] = slot1;
+        Tag env_tag = term_tag(env_val);
+        
+        if (env_tag == TAG_NUM) {
+            /* Primitive: copy directly to both closures */
+            env0_vals[i] = env_val;
+            env1_vals[i] = env_val;
+        } else if (env_tag == TAG_ERA) {
+            /* Eraser: copy directly */
+            env0_vals[i] = env_val;
+            env1_vals[i] = env_val;
+        } else {
+            /* Complex value: create DUP with lazy references */
+            Loc slot0, slot1;
+            Term env_dup = inet_dup_with_projs(net, tm, label, env_val, &slot0, &slot1);
+            (void)env_dup;
+            /* Store references to DUP projection slots */
+            env0_vals[i] = term_new(TAG_SUB, 0, slot0);
+            env1_vals[i] = term_new(TAG_SUB, 0, slot1);
+        }
     }
 
     /* Create closure 0 */
@@ -534,7 +575,7 @@ void inet_interact_dup_clo(INet* net, ThreadMem* tm, Term dup, Term clo) {
     inet_set(net, clo0_loc, inet_num(arity));
     inet_set(net, clo0_loc + 1, inet_num(env_size));
     for (int64_t i = 0; i < env_size && i < 64; i++) {
-        inet_set(net, clo0_loc + 2 + i, term_new(TAG_NIL, 0, env0_slots[i]));
+        inet_set(net, clo0_loc + 2 + i, env0_vals[i]);
     }
     Term clo0 = term_new(TAG_CLO, func_idx, clo0_loc);
 
@@ -543,7 +584,7 @@ void inet_interact_dup_clo(INet* net, ThreadMem* tm, Term dup, Term clo) {
     inet_set(net, clo1_loc, inet_num(arity));
     inet_set(net, clo1_loc + 1, inet_num(env_size));
     for (int64_t i = 0; i < env_size && i < 64; i++) {
-        inet_set(net, clo1_loc + 2 + i, term_new(TAG_NIL, 0, env1_slots[i]));
+        inet_set(net, clo1_loc + 2 + i, env1_vals[i]);
     }
     Term clo1 = term_new(TAG_CLO, func_idx, clo1_loc);
 

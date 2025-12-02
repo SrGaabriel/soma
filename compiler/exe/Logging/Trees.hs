@@ -188,6 +188,8 @@ instance TreeShow AOp where
     treeShow (OpGraphExtractNum term) = "graph_extract_num " ++ treeShow term
     treeShow (OpGraphRegisterFunc name arity impl) = "graph_register_func \"" ++ name ++ "\" arity=" ++ show arity ++ " impl=" ++ treeShow impl
     treeShow (OpGraphDup label val) = "graph_dup[" ++ show label ++ "] " ++ treeShow val
+    treeShow (OpGraphDupGetProj0 dup) = "graph_dup_proj0 " ++ treeShow dup
+    treeShow (OpGraphDupGetProj1 dup) = "graph_dup_proj1 " ++ treeShow dup
     treeShow (OpGraphSup label left right) = "graph_sup[" ++ show label ++ "] " ++ treeShow left ++ " " ++ treeShow right
     treeShow OpGraphEra = "graph_era"
     treeShow (OpGraphLam param body) = "graph_lam " ++ treeShow param ++ " -> " ++ treeShow body

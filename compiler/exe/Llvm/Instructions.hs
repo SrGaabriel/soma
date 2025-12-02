@@ -15,6 +15,7 @@ data LlvmInstruction
     | LlvmLShr LlvmType LlvmValue LlvmValue
     | LlvmShl LlvmType LlvmValue LlvmValue
     | LlvmAnd LlvmType LlvmValue LlvmValue
+    | LlvmOr LlvmType LlvmValue LlvmValue
     | LlvmCall LlvmValue LlvmType [LlvmValue]
     | LlvmTailCall LlvmValue LlvmType [LlvmValue] -- tail call optimization
     | LlvmLoad LlvmValue
@@ -69,6 +70,8 @@ instance IR LlvmInstruction where
         "shl " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmAnd typ lhs rhs) =
         "and " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+    toLlvm (LlvmOr typ lhs rhs) =
+        "or " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmCall callee retType args) =
         "call "
             ++ toLlvm retType

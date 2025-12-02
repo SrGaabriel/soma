@@ -17,8 +17,9 @@ import Llvm.Gen.CRuntime (
     cruntimeInetApp,
     cruntimeInetClosure,
     cruntimeInetClosureGetEnv,
-    cruntimeInetDup,
+    cruntimeInetDupEager,
     cruntimeInetFree,
+    cruntimeInetGet,
     cruntimeInetGetNumExt,
     cruntimeInetInitGlobals,
     cruntimeInetLam,
@@ -1050,14 +1051,45 @@ compileOp (OpGraphRegisterFunc name arity implOp) _resultTy = do
 -- INET Interaction Net Node Operations
 -- ============================================================================
 
--- INET DUP: create a DUP term pointing at target
--- inet_dup(net, tm, label, target) -> Term
+-- INET DUP: create a DUP term and eagerly trigger interaction
+-- inet_dup_eager(net, tm, label, target) -> Term (with proj slots already filled)
 compileOp (OpGraphDup label targetOp) _resultTy = do
     llTarget <- compileOperand targetOp
     (net, tm) <- getNetAndTm
-    dupFunc <- useDep cruntimeInetDup
+    dupFunc <- useDep cruntimeInetDupEager
     let labelVal = LlvmLiteral LlvmI16 (show label)
     saveTmp (LlvmCall dupFunc LlvmI64 [net, tm, labelVal, llTarget]) LlvmI64
+
+-- INET DUP Get Proj0: read proj0 value from DUP node
+-- After inet_dup_eager, the projection slots are filled.
+-- proj0 slot = term_loc(dup) + 1, then inet_get(net, slot)
+compileOp (OpGraphDupGetProj0 dupOp) _resultTy = do
+    llDup <- compileOperand dupOp
+    net <- getNet
+    -- Extract location: loc = dup >> 32
+    loc <- saveTmp (LlvmLShr LlvmI64 llDup (LlvmLiteral LlvmI64 "32")) LlvmI64
+    -- proj0 slot = loc + 1
+    proj0Slot <- saveTmp (LlvmAdd LlvmI64 loc (LlvmLiteral LlvmI64 "1")) LlvmI64
+    -- Truncate to u32 (Loc type)
+    proj0SlotU32 <- saveTmp (LlvmTrunc proj0Slot LlvmI32) LlvmI32
+    -- Call inet_get(net, slot) -> Term
+    getFunc <- useDep cruntimeInetGet
+    saveTmp (LlvmCall getFunc LlvmI64 [net, proj0SlotU32]) LlvmI64
+
+-- INET DUP Get Proj1: read proj1 value from DUP node
+-- proj1 slot = term_loc(dup) + 2, then inet_get(net, slot)
+compileOp (OpGraphDupGetProj1 dupOp) _resultTy = do
+    llDup <- compileOperand dupOp
+    net <- getNet
+    -- Extract location: loc = dup >> 32
+    loc <- saveTmp (LlvmLShr LlvmI64 llDup (LlvmLiteral LlvmI64 "32")) LlvmI64
+    -- proj1 slot = loc + 2
+    proj1Slot <- saveTmp (LlvmAdd LlvmI64 loc (LlvmLiteral LlvmI64 "2")) LlvmI64
+    -- Truncate to u32 (Loc type)
+    proj1SlotU32 <- saveTmp (LlvmTrunc proj1Slot LlvmI32) LlvmI32
+    -- Call inet_get(net, slot) -> Term
+    getFunc <- useDep cruntimeInetGet
+    saveTmp (LlvmCall getFunc LlvmI64 [net, proj1SlotU32]) LlvmI64
 
 -- INET SUP: create a SUP term with two children
 -- inet_sup(net, tm, label, a, b) -> Term

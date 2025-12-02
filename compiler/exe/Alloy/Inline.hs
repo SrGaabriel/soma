@@ -33,6 +33,7 @@ module Alloy.Inline (
 ) where
 
 import Alloy.Ir
+import Alloy.Subst
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -352,95 +353,6 @@ generateFreshNamesExcept counter names returnedVar resultName =
                 else name ++ "_inl" ++ show (counter + i)
         freshNames = [makeFreshName (name, i) | (name, i) <- zip names [0 ..]]
     in (freshNames, counter + length names)
-
--- | Substitute operands in an operation
-substOp :: Map Name AOperand -> AOp -> AOp
-substOp subst op =
-    case op of
-        OpBin k a b -> OpBin k (substOperand subst a) (substOperand subst b)
-        OpUnary k a -> OpUnary k (substOperand subst a)
-        OpCmp k a b -> OpCmp k (substOperand subst a) (substOperand subst b)
-        OpLoad a -> OpLoad (substOperand subst a)
-        OpSelect cond thenOp elseOp ->
-            OpSelect (substOperand subst cond) (substOperand subst thenOp) (substOperand subst elseOp)
-        OpAllocStack t -> OpAllocStack t
-        OpAllocHeap t -> OpAllocHeap t
-        OpCall callee args -> OpCall (substCallable subst callee) (map (substOperand subst) args)
-        OpConstruct tn tag fields -> OpConstruct tn tag (map (substOperand subst) fields)
-        OpTagOf a -> OpTagOf (substOperand subst a)
-        OpProject a i -> OpProject (substOperand subst a) i
-        OpIndex a i -> OpIndex (substOperand subst a) (substOperand subst i)
-        OpMakeArray xs -> OpMakeArray (map (substOperand subst) xs)
-        OpMakeTuple xs -> OpMakeTuple (map (substOperand subst) xs)
-        OpGetDict className ty -> OpGetDict className ty
-        OpDictCall dict methodIdx method args ->
-            OpDictCall (substOperand subst dict) methodIdx method (map (substOperand subst) args)
-        OpDup label val -> OpDup label (substOperand subst val)
-        OpDupProj0 handle -> OpDupProj0 (substOperand subst handle)
-        OpDupProj1 handle -> OpDupProj1 (substOperand subst handle)
-        OpWrapClosure fn -> OpWrapClosure (substOperand subst fn)
-        OpAllocClosure fn arity envSz -> OpAllocClosure (substOperand subst fn) arity envSz
-        OpClosureSetEnv closure idx val ->
-            OpClosureSetEnv (substOperand subst closure) idx (substOperand subst val)
-        OpClosureGetEnv closure idx -> OpClosureGetEnv (substOperand subst closure) idx
-        OpClosureGetFunc closure -> OpClosureGetFunc (substOperand subst closure)
-        OpDupClosure label closure slotInfo -> OpDupClosure label (substOperand subst closure) slotInfo
-        OpDupClosureProj0 handle envSz slotInfo -> OpDupClosureProj0 (substOperand subst handle) envSz slotInfo
-        OpDupClosureProj1 handle envSz slotInfo -> OpDupClosureProj1 (substOperand subst handle) envSz slotInfo
-        OpClosureGetEnvDirect closure idx -> OpClosureGetEnvDirect (substOperand subst closure) idx
-        OpClosureGetEnvSUP closure idx -> OpClosureGetEnvSUP (substOperand subst closure) idx
-        OpParProj0 handle workEst -> OpParProj0 (substOperand subst handle) workEst
-        OpParProj1 handle workEst -> OpParProj1 (substOperand subst handle) workEst
-        OpParClosureProj0 handle envSz slotInfo workEst -> OpParClosureProj0 (substOperand subst handle) envSz slotInfo workEst
-        OpParClosureProj1 handle envSz slotInfo workEst -> OpParClosureProj1 (substOperand subst handle) envSz slotInfo workEst
-        OpPanic msg -> OpPanic msg
-        OpGraphInit n -> OpGraphInit n
-        OpGraphShutdown -> OpGraphShutdown
-        OpGraphNum v -> OpGraphNum (substOperand subst v)
-        OpGraphAdd l r -> OpGraphAdd (substOperand subst l) (substOperand subst r)
-        OpGraphSub l r -> OpGraphSub (substOperand subst l) (substOperand subst r)
-        OpGraphMul l r -> OpGraphMul (substOperand subst l) (substOperand subst r)
-        OpGraphDiv l r -> OpGraphDiv (substOperand subst l) (substOperand subst r)
-        OpGraphMod l r -> OpGraphMod (substOperand subst l) (substOperand subst r)
-        OpGraphCall fnIdx args -> OpGraphCall fnIdx (map (substOperand subst) args)
-        OpGraphReduce root -> OpGraphReduce (substOperand subst root)
-        OpGraphExtractNum term -> OpGraphExtractNum (substOperand subst term)
-        OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (substOperand subst impl)
-        OpGraphDup label target -> OpGraphDup label (substOperand subst target)
-        OpGraphSup label l r -> OpGraphSup label (substOperand subst l) (substOperand subst r)
-        OpGraphLam varSlot body -> OpGraphLam (substOperand subst varSlot) (substOperand subst body)
-        OpGraphApp fn arg -> OpGraphApp (substOperand subst fn) (substOperand subst arg)
-        OpGraphEra -> OpGraphEra
-        OpGraphRef name idx arg -> OpGraphRef name idx (substOperand subst arg)
-        OpGraphClosure funcIdx arity envVals -> OpGraphClosure funcIdx arity (map (substOperand subst) envVals)
-        OpGraphClosureApp clo arg -> OpGraphClosureApp (substOperand subst clo) (substOperand subst arg)
-        OpGraphClosureGetEnv clo idx -> OpGraphClosureGetEnv (substOperand subst clo) idx
-        OpFork fn args -> OpFork (substOperand subst fn) (map (substOperand subst) args)
-        OpJoin handle -> OpJoin (substOperand subst handle)
-
--- | Substitute operands in an effect
-substEffect :: Map Name AOperand -> AEffect -> AEffect
-substEffect subst eff =
-    case eff of
-        EffStore p v -> EffStore (substOperand subst p) (substOperand subst v)
-        EffStoreIndex a i v ->
-            EffStoreIndex (substOperand subst a) (substOperand subst i) (substOperand subst v)
-        EffDrop a -> EffDrop (substOperand subst a)
-        EffClosureSetEnv closure idx val ->
-            EffClosureSetEnv (substOperand subst closure) idx (substOperand subst val)
-        EffGraphInit n -> EffGraphInit n
-        EffGraphShutdown -> EffGraphShutdown
-        EffGraphRegisterFunc name arity impl -> EffGraphRegisterFunc name arity (substOperand subst impl)
-
--- | Substitute an operand
-substOperand :: Map Name AOperand -> AOperand -> AOperand
-substOperand subst (OpVar n) = Map.findWithDefault (OpVar n) n subst
-substOperand _ c@(OpConst _) = c
-
--- | Substitute in a callable
-substCallable :: Map Name AOperand -> ACallable -> ACallable
-substCallable _ (Direct n) = Direct n
-substCallable subst (Indirect op) = Indirect (substOperand subst op)
 
 -- | Create an identity operation for a variable (x + 0 for Int)
 identityOp :: AOperand -> AOp

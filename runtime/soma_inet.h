@@ -258,6 +258,7 @@ Term inet_app(INet* net, ThreadMem* tm, Term fun, Term arg);
 Term inet_con(INet* net, ThreadMem* tm, Term fst, Term snd);
 Term inet_sup(INet* net, ThreadMem* tm, Lab label, Term a, Term b);
 Term inet_dup(INet* net, ThreadMem* tm, Lab label, Term target);
+Term inet_dup_eager(INet* net, ThreadMem* tm, Lab label, Term target);
 Term inet_opr(INet* net, ThreadMem* tm, Lab op, Term a, Term b);
 Term inet_ref(INet* net, ThreadMem* tm, uint16_t func_idx, Term arg);
 

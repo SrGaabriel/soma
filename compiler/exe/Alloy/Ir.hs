@@ -217,9 +217,19 @@ data AOp
       OpGraphRegisterFunc !String !Int AOperand
     | {- | Create a DUP node in the graph: label, target_idx
       For duplicating values in interaction nets.
-      Returns node index (u32)
+      Returns the DUP term (u64). Use OpGraphDupGetProj0/1 to get projections.
       -}
       OpGraphDup !Int AOperand
+    | {- | Get first projection from a DUP node: dup_term
+      Reads from proj0 slot of the DUP node.
+      Returns Term (u64)
+      -}
+      OpGraphDupGetProj0 AOperand
+    | {- | Get second projection from a DUP node: dup_term
+      Reads from proj1 slot of the DUP node.
+      Returns Term (u64)
+      -}
+      OpGraphDupGetProj1 AOperand
     | {- | Create a SUP node in the graph: label, left_idx, right_idx
       Superposition node for interaction nets.
       Returns node index (u32)

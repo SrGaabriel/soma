@@ -56,7 +56,7 @@ data ParallelConfig = ParallelConfig
 defaultParallelConfig :: ParallelConfig
 defaultParallelConfig =
     ParallelConfig
-        { pcWorkThreshold = 1
+        { pcWorkThreshold = 100
         , pcMinParallelBindings = 2
         , pcEnabled = True
         }

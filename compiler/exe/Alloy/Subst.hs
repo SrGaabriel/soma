@@ -108,6 +108,8 @@ substOp env = \case
     OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (sub impl)
     -- Graph reduction interaction net operations
     OpGraphDup label target -> OpGraphDup label (sub target)
+    OpGraphDupGetProj0 dup -> OpGraphDupGetProj0 (sub dup)
+    OpGraphDupGetProj1 dup -> OpGraphDupGetProj1 (sub dup)
     OpGraphSup label l r -> OpGraphSup label (sub l) (sub r)
     OpGraphLam varSlot body -> OpGraphLam (sub varSlot) (sub body)
     OpGraphApp fn arg -> OpGraphApp (sub fn) (sub arg)
@@ -224,6 +226,8 @@ opVars = \case
     OpGraphExtractNum term -> vars term
     OpGraphRegisterFunc _ _ impl -> vars impl
     OpGraphDup _ target -> vars target
+    OpGraphDupGetProj0 dup -> vars dup
+    OpGraphDupGetProj1 dup -> vars dup
     OpGraphSup _ l r -> vars l ++ vars r
     OpGraphLam varSlot body -> vars varSlot ++ vars body
     OpGraphApp fn arg -> vars fn ++ vars arg

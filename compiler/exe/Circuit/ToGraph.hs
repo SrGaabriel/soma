@@ -2,10 +2,19 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
-{- | Circuit to Graph Reduction lowering.
+{- | Circuit to Linearized Graph Reduction lowering.
 
-This module lowers NON-LINEARIZED Circuit IR to Alloy MIR that uses the
+This module lowers LINEARIZED Circuit IR to Alloy MIR that uses the
 INET C runtime for parallel graph reduction.
+
+1. Every variable is used exactly once (affine)
+2. DUP/ERA nodes are explicit in the IR
+3. The compiler has already decided where duplication happens
+
+This enables compile-time optimizations:
+- DUP on primitive types (Int, Bool) can be elided (just copy the value)
+- The exact duplication structure is known at compile time
+- No runtime sharing detection needed
 
 == PURE GRAPH MODEL ==
 
@@ -17,18 +26,7 @@ Key principles:
 2. The runtime calls registered functions when it encounters REF nodes
 3. All computation is represented as graph nodes
 4. Only the final result is reduced to a value
-
-== NO LINEARIZATION ==
-
-Unlike standard mode, graph mode does NOT use the linearization pass.
-Variables can be used multiple times - the runtime handles duplication
-lazily via graph reduction rules.
-
-For integer arguments, we reduce once and use the native value directly.
-This is efficient because:
-- Native arithmetic is faster than graph operations
-- We only wrap in inet_num() when building graph nodes for recursive calls
-- This matches what HVM and test_inet.c do
+5. DUP/SUP nodes are explicit from linearization
 -}
 module Circuit.ToGraph (
     lowerCircuitToGraph,
@@ -46,53 +44,79 @@ import Typing.Types (Kind (..), TyConstructor (..), Type (..), boolType, intType
 termType :: Type
 termType = TConstructor (TypeConstructor "Long" KindStar)
 
--- | Environment for graph lowering
-data GraphEnv = GraphEnv
-    { geBindings :: Map C.Name String
+-- | Check if a type is a primitive (can be copied without DUP node)
+isPrimitiveType :: Type -> Bool
+isPrimitiveType (TConstructor tc) =
+    tcName tc `elem` ["Int", "Bool", "Byte", "Char", "Unit", "Long"]
+isPrimitiveType _ = False
+
+-- | Environment for linearized graph lowering
+data LGraphEnv = LGraphEnv
+    { lgeBindings :: Map C.Name String
     -- ^ Circuit name -> Alloy variable name (holding native Int value or Term)
-    , geFuncIndices :: Map C.Name Int
+    , lgeFuncIndices :: Map C.Name Int
     -- ^ Function name -> runtime function index
-    , geIsTermBinding :: Map C.Name Bool
+    , lgeIsTermBinding :: Map C.Name Bool
     -- ^ Whether the binding holds a Term (graph node) vs native Int
+    , lgeDupProjections :: Map C.Name (String, String)
+    -- ^ DUP name -> (proj0 var, proj1 var) for accessing projected values
+    , lgeDupNodes :: Map C.Name String
+    {- ^ DUP name -> Alloy var holding the DUP node (for non-primitive DUP)
+    Used by CDp0/CDp1 to emit OpGraphDupGetProj0/1
+    -}
     }
 
-emptyGraphEnv :: GraphEnv
-emptyGraphEnv = GraphEnv Map.empty Map.empty Map.empty
+emptyLGraphEnv :: LGraphEnv
+emptyLGraphEnv = LGraphEnv Map.empty Map.empty Map.empty Map.empty Map.empty
 
 -- | Look up a binding
-lookupBinding :: C.Name -> GraphEnv -> Maybe String
-lookupBinding name = Map.lookup name . geBindings
+lookupBinding :: C.Name -> LGraphEnv -> Maybe String
+lookupBinding name = Map.lookup name . lgeBindings
 
 -- | Check if a binding holds a Term (vs native Int)
-isTermBinding :: C.Name -> GraphEnv -> Bool
-isTermBinding name env = Map.findWithDefault False name (geIsTermBinding env)
+isTermBinding :: C.Name -> LGraphEnv -> Bool
+isTermBinding name env = Map.findWithDefault False name (lgeIsTermBinding env)
 
 -- | Extend environment with a native Int binding
-extendBinding :: C.Name -> String -> GraphEnv -> GraphEnv
+extendBinding :: C.Name -> String -> LGraphEnv -> LGraphEnv
 extendBinding name varName env =
-    env{geBindings = Map.insert name varName (geBindings env)}
+    env{lgeBindings = Map.insert name varName (lgeBindings env)}
 
 -- | Extend environment with a Term binding (graph node)
-extendTermBinding :: C.Name -> String -> GraphEnv -> GraphEnv
+extendTermBinding :: C.Name -> String -> LGraphEnv -> LGraphEnv
 extendTermBinding name varName env =
     env
-        { geBindings = Map.insert name varName (geBindings env)
-        , geIsTermBinding = Map.insert name True (geIsTermBinding env)
+        { lgeBindings = Map.insert name varName (lgeBindings env)
+        , lgeIsTermBinding = Map.insert name True (lgeIsTermBinding env)
         }
 
 -- | Look up function index
-lookupFuncIndex :: C.Name -> GraphEnv -> Maybe Int
-lookupFuncIndex name = Map.lookup name . geFuncIndices
+lookupFuncIndex :: C.Name -> LGraphEnv -> Maybe Int
+lookupFuncIndex name = Map.lookup name . lgeFuncIndices
 
--- | Lower a Circuit module to an Alloy module using graph reduction
+-- | Record DUP projections
+recordDupProj :: C.Name -> String -> String -> LGraphEnv -> LGraphEnv
+recordDupProj name proj0 proj1 env =
+    env{lgeDupProjections = Map.insert name (proj0, proj1) (lgeDupProjections env)}
+
+-- | Record a DUP node for non-primitive duplication
+recordDupNode :: C.Name -> String -> LGraphEnv -> LGraphEnv
+recordDupNode name dupVar env =
+    env{lgeDupNodes = Map.insert name dupVar (lgeDupNodes env)}
+
+-- | Look up a DUP node
+lookupDupNode :: C.Name -> LGraphEnv -> Maybe String
+lookupDupNode name = Map.lookup name . lgeDupNodes
+
+-- | Lower a Circuit module to an Alloy module using linearized graph reduction
 lowerCircuitToGraph :: C.CModule -> AlloyModule
 lowerCircuitToGraph cmod =
-    let (_, alloyMod) = runAlloyBuilder (C.cmName cmod) [] $ lowerToGraphMain cmod
+    let (_, alloyMod) = runAlloyBuilder (C.cmName cmod) [] $ lowerToLGraphMain cmod
     in alloyMod
 
--- | Generate the main entry point and all functions for graph reduction
-lowerToGraphMain :: C.CModule -> AlloyBuilder ()
-lowerToGraphMain cmod = do
+-- | Generate the main entry point and all functions for linearized graph reduction
+lowerToLGraphMain :: C.CModule -> AlloyBuilder ()
+lowerToLGraphMain cmod = do
     let mainFuncs = filter (\f -> C.cfName f == "main") (C.cmFunctions cmod)
         otherFuncs = filter (\f -> C.cfName f /= "main") (C.cmFunctions cmod)
 
@@ -103,16 +127,13 @@ lowerToGraphMain cmod = do
         [] -> error "Circuit.ToGraph: no main function found"
         (mainFunc : _) -> do
             -- Generate graph-building functions for each non-main function
-            forM_ otherFuncs $ \f -> lowerFunctionForGraph funcIndexMap f
+            forM_ otherFuncs $ \f -> lowerFunctionForLGraph funcIndexMap f
 
             -- Generate the main function
             beginFunction "main" [] intType
 
             entryBlock <- freshBlockName
             beginBlock entryBlock []
-
-            -- NOTE: The C runtime's main() in soma_inet.c handles inet_init/free.
-            -- We only need to register functions and build/reduce the graph.
 
             -- Register all functions with the runtime
             forM_ otherFuncs $ \f -> do
@@ -121,8 +142,8 @@ lowerToGraphMain cmod = do
                 emitEffect (EffGraphRegisterFunc fname arity (OpVar fname))
 
             -- Build the graph for the main function body with function indices
-            let env = emptyGraphEnv{geFuncIndices = funcIndexMap}
-            resultNode <- lowerTermToGraph env (C.cfBody mainFunc)
+            let env = emptyLGraphEnv{lgeFuncIndices = funcIndexMap}
+            resultNode <- lowerTermToLGraph env (C.cfBody mainFunc)
 
             -- Reduce the graph and get result
             resultVal <- emitLetTmp intType (OpGraphReduce (OpVar resultNode))
@@ -130,22 +151,12 @@ lowerToGraphMain cmod = do
             terminate (ARet (Just (OpVar resultVal)))
             endFunction
 
-{- | Lower a function to be callable from graph reduction.
+{- | Lower a function to be callable from linearized graph reduction.
 
-The function receives (net, tm, arg) and returns a Term.
-The runtime calls these functions as INetFunc: (INet*, ThreadMem*, Term) -> Term
-
-For regular functions: arg is a NUM, we extract the int value.
-For closure functions: arg is a CLO, we extract env values from it.
-
-CRITICAL: We use OpGraphExtractNum to get the native int from arg.
-The runtime has ALREADY reduced the arg to a NUM before calling us.
-We must NOT call inet_reduce internally - that causes nested parallel reductions!
+Similar to ToGraph.hs but handles linearized Circuit IR with explicit DUP nodes.
 -}
-lowerFunctionForGraph :: Map C.Name Int -> C.CFunction -> AlloyBuilder ()
-lowerFunctionForGraph funcIndexMap C.CFunction{..} = do
-    -- Function signature: (net: ptr, tm: ptr, arg: Term) -> Term
-    -- This matches the INetFunc typedef in soma_inet.h
+lowerFunctionForLGraph :: Map C.Name Int -> C.CFunction -> AlloyBuilder ()
+lowerFunctionForLGraph funcIndexMap C.CFunction{..} = do
     let ptrType = TConstructor (TypeConstructor "Ptr" KindStar)
     beginFunction cfName [("net", ptrType), ("tm", ptrType), ("arg", termType)] termType
 
@@ -160,42 +171,24 @@ lowerFunctionForGraph funcIndexMap C.CFunction{..} = do
     env <-
         if isClosureFunc
             then do
-                -- For closure functions, arg is the closure itself (CLO term)
-                -- containing [captured_vars..., applied_arg]
-                -- We bind closure_self to the raw term for CClosureGetEnv to use
                 let baseEnv =
                         extendTermBinding "closure_self" "arg"
-                            $ emptyGraphEnv{geFuncIndices = funcIndexMap}
-                -- The second parameter (e.g., 'y') is the applied argument
-                -- It's stored as the LAST element in the closure's env
-                -- Count captured vars by finding max CClosureGetEnv index in body
+                            $ emptyLGraphEnv{lgeFuncIndices = funcIndexMap}
                 let numCaptured = countCapturedVars cfBody
                 case cfParams of
                     [_, (argName, _)] -> do
-                        -- Extract the applied arg from the last env slot
-                        -- It's a Term (graph node), need to reduce to get native int
                         argTerm <- emitLetTmp termType (OpGraphClosureGetEnv (OpVar "arg") numCaptured)
                         argVal <- emitLetTmp intType (OpGraphExtractNum (OpVar argTerm))
                         pure $ extendBinding argName argVal baseEnv
                     _ -> pure baseEnv
             else do
-                -- For regular functions, the arg is the FIRST parameter.
-                -- Multi-arg functions are curried: f(a,b,c) becomes a closure
-                -- that captures earlier args. But at the Circuit level, all params
-                -- are listed. We need to bind ALL params from the closure's env.
-                --
-                -- If there's only 1 param: arg is the value directly
-                -- If there are N params: arg is a closure with [param0..paramN-2, paramN-1]
-                let baseEnv = emptyGraphEnv{geFuncIndices = funcIndexMap}
+                let baseEnv = emptyLGraphEnv{lgeFuncIndices = funcIndexMap}
                 case cfParams of
                     [] -> pure baseEnv
                     [(pname, _)] -> do
-                        -- Single param: extract directly from arg
                         argVal <- emitLetTmp intType (OpGraphExtractNum (OpVar "arg"))
                         pure $ extendBinding pname argVal baseEnv
                     params -> do
-                        -- Multi-param: arg is a closure containing all params
-                        -- Layout: [param0, param1, ..., paramN-1]
                         let numParams = length params
                         foldM
                             ( \e (idx, (pname, _)) -> do
@@ -207,89 +200,153 @@ lowerFunctionForGraph funcIndexMap C.CFunction{..} = do
                             (zip [0 .. numParams - 1] params)
 
     -- Lower the body - this returns a graph node (Term)
-    result <- lowerTermToGraph env cfBody
+    result <- lowerTermToLGraph env cfBody
 
     -- Return the term (graph node) - NOT reduced!
     terminate (ARet (Just (OpVar result)))
     endFunction
 
-{- | Lower a Circuit term to graph construction.
+{- | Lower a linearized Circuit term to graph construction.
 
-CRITICAL: Graph functions must NOT call inet_reduce internally!
-They receive a native int (from OpGraphExtractNum) and return a graph node.
-The runtime handles all reduction via redexes.
-
-Variables are bound to native Int values.
-When building graph nodes, wrap native values with inet_num() (OpGraphNum).
-
-For efficiency, simple arithmetic on native values is computed natively
-rather than building graph nodes. This matches the HVM/test_inet.c pattern.
+CRITICAL DIFFERENCE FROM ToGraph.hs:
+- Handles CDup, CDp0, CDp1 nodes from linearization
+- Can optimize DUP for primitive types (no graph DUP node needed)
+- Uses explicit duplication structure from the compiler
 
 Returns the name of the variable holding the graph node (Term).
 -}
-lowerTermToGraph :: GraphEnv -> C.CTerm -> AlloyBuilder String
-lowerTermToGraph env = \case
+lowerTermToLGraph :: LGraphEnv -> C.CTerm -> AlloyBuilder String
+lowerTermToLGraph env = \case
     -- Integer literals become NUM nodes
     C.CInt n -> emitLetTmp termType (OpGraphNum (OpConst (CInt n)))
     -- Variables: check if term binding (closure) or native value
     C.CVar name _ ->
         if isTermBinding name env
             then do
-                -- Term binding (closure) - return as-is, no wrapping
                 case lookupBinding name env of
                     Just varName -> pure varName
                     Nothing -> error $ "Circuit.ToGraph: term binding not found: " ++ name
             else case lookupBinding name env of
                 Just varName -> do
-                    -- Native value -> wrap in graph node
                     emitLetTmp termType (OpGraphNum (OpVar varName))
                 Nothing -> error $ "Circuit.ToGraph: unbound variable: " ++ name
     -- Let bindings
     C.CLet name _ty val body -> do
-        -- Build graph for val
-        valNode <- lowerTermToGraph env val
-        -- CRITICAL: In graph mode, NEVER call inet_reduce internally!
-        -- All values stay as graph Terms. The runtime reduces lazily.
-        -- This is essential for parallel correctness - nested inet_reduce
-        -- corrupts global parallel state.
+        valNode <- lowerTermToLGraph env val
         let env' = extendTermBinding name valNode env
-        lowerTermToGraph env' body
+        lowerTermToLGraph env' body
 
-    -- Binary operations: compute natively when operands are simple (vars/literals)
-    -- This is critical for fib-like patterns where we do (n - 1), (n - 2)
-    -- and pass results to recursive calls.
+    -- Binary operations: compute natively when operands are simple
     C.CBinOp op a b -> do
-        -- Try to get native values for operands
         maNative <- tryGetNative env a
         mbNative <- tryGetNative env b
         case (maNative, mbNative) of
             (Just aNative, Just bNative) -> do
-                -- Both operands are native - compute natively, wrap result
                 let binOp = case op of
                         C.OpAdd -> IAdd
                         C.OpSub -> ISub
                         C.OpMul -> IMul
                         C.OpDiv -> IDiv
                         C.OpMod -> IMod
-                        u -> error $ "Circuit.ToGraph: unsupported binary op in graph mode: " ++ show u
+                        u -> error $ "Circuit.ToGraph: unsupported binary op: " ++ show u
                 nativeResult <- emitLetTmp intType (OpBin binOp (OpVar aNative) (OpVar bNative))
                 emitLetTmp termType (OpGraphNum (OpVar nativeResult))
             _ -> do
-                -- Fall back to building graph nodes
-                aNode <- lowerTermToGraph env a
-                bNode <- lowerTermToGraph env b
+                aNode <- lowerTermToLGraph env a
+                bNode <- lowerTermToLGraph env b
                 let nodeOp = case op of
                         C.OpAdd -> OpGraphAdd (OpVar aNode) (OpVar bNode)
                         C.OpSub -> OpGraphSub (OpVar aNode) (OpVar bNode)
                         C.OpMul -> OpGraphMul (OpVar aNode) (OpVar bNode)
                         C.OpDiv -> OpGraphDiv (OpVar aNode) (OpVar bNode)
                         C.OpMod -> OpGraphMod (OpVar aNode) (OpVar bNode)
-                        u -> error $ "Circuit.ToGraph: unsupported binary op in graph mode: " ++ show u
+                        u -> error $ "Circuit.ToGraph: unsupported binary op: " ++ show u
                 emitLetTmp termType nodeOp
 
+    -- Duplication node (from linearization)
+    -- KEY OPTIMIZATION: For primitive types, we keep the native value directly
+    -- without creating a DUP graph node. This is critical for performance!
+    C.CDup name valTy label val body -> do
+        if isPrimitiveType valTy
+            then do
+                -- Primitive type: try to get native value directly
+                -- Don't lower to graph node - keep as native int for efficient ops
+                mNative <- tryGetNative env val
+                case mNative of
+                    Just nativeVal -> do
+                        -- Keep as native binding for both projections
+                        let env' =
+                                recordDupProj name nativeVal nativeVal
+                                    $ extendBinding (name ++ ".0") nativeVal
+                                    $ extendBinding (name ++ ".1") nativeVal env
+                        lowerTermToLGraph env' body
+                    Nothing -> do
+                        -- Value is a Term - extract the native value
+                        valNode <- lowerTermToLGraph env val
+                        nativeVal <- emitLetTmp intType (OpGraphExtractNum (OpVar valNode))
+                        let env' =
+                                recordDupProj name nativeVal nativeVal
+                                    $ extendBinding (name ++ ".0") nativeVal
+                                    $ extendBinding (name ++ ".1") nativeVal env
+                        lowerTermToLGraph env' body
+            else do
+                -- Non-primitive type: create actual DUP graph node
+                -- The DUP node will be resolved during graph reduction
+                valNode <- lowerTermToLGraph env val
+                dupNode <- emitLetTmp termType (OpGraphDup label (OpVar valNode))
+                -- Record the DUP node so CDp0/CDp1 can emit projection ops
+                let env' = recordDupNode name dupNode env
+                lowerTermToLGraph env' body
+
+    -- First projection from DUP
+    -- For non-primitive DUP, emit OpGraphDupGetProj0 to get the projected value
+    C.CDp0 name ty ->
+        -- First check if this is a non-primitive DUP (recorded in lgeDupNodes)
+        case lookupDupNode name env of
+            Just dupVar ->
+                -- Non-primitive DUP: emit projection operation
+                emitLetTmp termType (OpGraphDupGetProj0 (OpVar dupVar))
+            Nothing ->
+                -- Primitive DUP or direct binding
+                case lookupBinding (name ++ ".0") env of
+                    Just varName ->
+                        if isTermBinding (name ++ ".0") env
+                            then pure varName -- Already a Term
+                            else
+                                -- Native value - wrap in graph_num for graph context
+                                if isPrimitiveType ty
+                                    then emitLetTmp termType (OpGraphNum (OpVar varName))
+                                    else pure varName
+                    Nothing -> error $ "Circuit.ToLGraph: unbound projection: " ++ name ++ ".0"
+    -- Second projection from DUP
+    -- For non-primitive DUP, emit OpGraphDupGetProj1 to get the projected value
+    C.CDp1 name ty ->
+        -- First check if this is a non-primitive DUP (recorded in lgeDupNodes)
+        case lookupDupNode name env of
+            Just dupVar ->
+                -- Non-primitive DUP: emit projection operation
+                emitLetTmp termType (OpGraphDupGetProj1 (OpVar dupVar))
+            Nothing ->
+                -- Primitive DUP or direct binding
+                case lookupBinding (name ++ ".1") env of
+                    Just varName ->
+                        if isTermBinding (name ++ ".1") env
+                            then pure varName -- Already a Term
+                            else
+                                -- Native value - wrap in graph_num for graph context
+                                if isPrimitiveType ty
+                                    then emitLetTmp termType (OpGraphNum (OpVar varName))
+                                    else pure varName
+                    Nothing -> error $ "Circuit.ToGraph: unbound projection: " ++ name ++ ".1"
+    -- Superposition node (from linearization)
+    C.CSup label left right _ty -> do
+        leftNode <- lowerTermToLGraph env left
+        rightNode <- lowerTermToLGraph env right
+        emitLetTmp termType (OpGraphSup label (OpVar leftNode) (OpVar rightNode))
+
+    -- Erasure node
+    C.CEra -> emitLetTmp termType OpGraphEra
     -- Function applications become REF or APP nodes
-    -- CRITICAL: Do NOT reduce the argument here!
-    -- Just build the node, let runtime reduce.
     term@(C.CApp _fun _arg _resultTy) -> do
         let (f, args) = collectArgs term
         case f of
@@ -298,51 +355,37 @@ lowerTermToGraph env = \case
                     Nothing -> error $ "Circuit.ToGraph: function not registered: " ++ fName
                     Just funcIdx -> case args of
                         [singleArg] -> do
-                            -- Single arg: build graph and pass directly to REF
-                            argNode <- lowerTermToGraph env singleArg
+                            argNode <- lowerTermToLGraph env singleArg
                             emitLetTmp termType (OpGraphRef fName funcIdx (OpVar argNode))
                         multiArgs -> do
-                            -- Multi-arg: bundle all args into a closure, pass to REF
-                            -- The function will extract args from the closure's env
-                            argNodes <- mapM (lowerTermToGraph env) multiArgs
+                            argNodes <- mapM (lowerTermToLGraph env) multiArgs
                             let argOps = map OpVar argNodes
-                            -- Create a closure containing all args
                             argsClosure <- emitLetTmp termType (OpGraphClosure funcIdx 0 argOps)
                             emitLetTmp termType (OpGraphRef fName funcIdx (OpVar argsClosure))
             C.CVar fName _ ->
                 case lookupBinding fName env of
                     Nothing -> do
-                        -- Check if this is a closure function (lambda$N pattern)
-                        -- Closure functions take (closure_self, arg) - 2 args
                         if "lambda$" `isPrefixOf` fName && length args == 2
                             then do
-                                -- Closure function call: lambda$N closure arg
-                                -- The closure already contains the function reference
-                                -- Just create APP(closure, arg) - runtime handles APP-CLO
                                 let [closureArg, actualArg] = args
-                                closureNode <- lowerTermToGraph env closureArg
-                                argNode <- lowerTermToGraph env actualArg
+                                closureNode <- lowerTermToLGraph env closureArg
+                                argNode <- lowerTermToLGraph env actualArg
                                 emitLetTmp termType (OpGraphClosureApp (OpVar closureNode) (OpVar argNode))
                             else case lookupFuncIndex fName env of
                                 Nothing -> error $ "Circuit.ToGraph: function not registered: " ++ fName
                                 Just funcIdx -> case args of
                                     [singleArg] -> do
-                                        argNode <- lowerTermToGraph env singleArg
-                                        -- NO REDUCE - just pass the graph node
+                                        argNode <- lowerTermToLGraph env singleArg
                                         emitLetTmp termType (OpGraphRef fName funcIdx (OpVar argNode))
                                     multiArgs -> do
-                                        -- Multi-arg: bundle all args into a closure, pass to REF
-                                        -- Same as CRef case for recursive calls
-                                        argNodes <- mapM (lowerTermToGraph env) multiArgs
+                                        argNodes <- mapM (lowerTermToLGraph env) multiArgs
                                         let argOps = map OpVar argNodes
                                         argsClosure <- emitLetTmp termType (OpGraphClosure funcIdx 0 argOps)
                                         emitLetTmp termType (OpGraphRef fName funcIdx (OpVar argsClosure))
                     Just funNode -> do
-                        -- Higher-order function (variable holds closure)
-                        -- Create APP(closure, arg)
                         case args of
                             [singleArg] -> do
-                                argNode <- lowerTermToGraph env singleArg
+                                argNode <- lowerTermToLGraph env singleArg
                                 emitLetTmp termType (OpGraphClosureApp (OpVar funNode) (OpVar argNode))
                             _ -> error "Circuit.ToGraph: multi-arg higher-order calls not supported"
             _ -> error "Circuit.ToGraph: complex function expressions not supported"
@@ -355,46 +398,47 @@ lowerTermToGraph env = \case
         let n = if b then 1 else 0
         emitLetTmp termType (OpGraphNum (OpConst (CInt n)))
 
-    -- Erasure - ERA node (shouldn't appear without linearization, but handle it)
-    C.CEra -> emitLetTmp termType OpGraphEra
-    -- Superposition (shouldn't appear without linearization)
-    C.CSup _label _left _right _ty ->
-        error "Circuit.ToGraph: SUP nodes should not appear without linearization"
-    -- Duplication (shouldn't appear without linearization)
-    C.CDup _name _valTy _label _val _body ->
-        error "Circuit.ToGraph: DUP nodes should not appear without linearization"
-    -- Dup projections (shouldn't appear without linearization)
-    C.CDp0 _name _ty ->
-        error "Circuit.ToGraph: CDp0 should not appear without linearization"
-    C.CDp1 _name _ty ->
-        error "Circuit.ToGraph: CDp1 should not appear without linearization"
     -- Lambda: create LAM node
     C.CLam paramName _paramTy body -> do
-        -- Allocate a slot for the variable
         varSlot <- emitLetTmp termType (OpGraphNum (OpConst (CInt 0)))
         let env' = extendBinding paramName varSlot env
-        bodyNode <- lowerTermToGraph env' body
+        bodyNode <- lowerTermToLGraph env' body
         emitLetTmp termType (OpGraphLam (OpVar varSlot) (OpVar bodyNode))
 
     -- Case expressions on integers
     C.CCase scrut arms mDefault _resultTy -> do
-        -- Get native int for switching
-        -- If scrutinee is a variable, we already have the native int
-        -- Otherwise we'd need to reduce a graph node (but this shouldn't happen
-        -- in well-formed graph code for fib-like patterns)
+        -- CRITICAL: We must NOT call OpGraphReduce inside graph functions!
+        -- Use OpGraphExtractNum to get native int from a Term (assumes already reduced)
+        -- or use the native value directly if available
         scrutVal <- case scrut of
             C.CVar name _ ->
                 case lookupBinding name env of
-                    Just varName -> pure varName -- Already a native int
+                    Just varName ->
+                        if isTermBinding name env
+                            then emitLetTmp intType (OpGraphExtractNum (OpVar varName))
+                            else pure varName -- Already a native int
                     Nothing -> error $ "Circuit.ToGraph: unbound scrutinee: " ++ name
             C.CInt n -> do
-                -- Literal - just use it directly for the switch
                 emitLetTmp intType (OpBin IAdd (OpConst (CInt n)) (OpConst (CInt 0)))
+            C.CDp0 name _ ->
+                case lookupBinding (name ++ ".0") env of
+                    Just varName ->
+                        if isTermBinding (name ++ ".0") env
+                            then emitLetTmp intType (OpGraphExtractNum (OpVar varName))
+                            else pure varName -- Already a native int
+                    Nothing -> error $ "Circuit.ToGraph: unbound projection: " ++ name ++ ".0"
+            C.CDp1 name _ ->
+                case lookupBinding (name ++ ".1") env of
+                    Just varName ->
+                        if isTermBinding (name ++ ".1") env
+                            then emitLetTmp intType (OpGraphExtractNum (OpVar varName))
+                            else pure varName -- Already a native int
+                    Nothing -> error $ "Circuit.ToGraph: unbound projection: " ++ name ++ ".1"
             _ -> do
-                -- Complex scrutinee - build graph and reduce
-                -- This is less efficient but handles general cases
-                scrutNode <- lowerTermToGraph env scrut
-                emitLetTmp intType (OpGraphReduce (OpVar scrutNode))
+                -- For complex scrutinees, build the graph node and extract
+                -- This should be rare - most scrutinees are variables or projections
+                scrutNode <- lowerTermToLGraph env scrut
+                emitLetTmp intType (OpGraphExtractNum (OpVar scrutNode))
 
         caseResultBlock <- freshBlockName
         armBlocks <- forM arms $ const freshBlockName
@@ -410,16 +454,14 @@ lowerTermToGraph env = \case
 
         forM_ (zip armBlocks arms) $ \(blockName, (_tag, bindings, body)) -> do
             beginBlock blockName []
-            -- Bind pattern variables to the scrutinee value
-            -- For integer patterns, the value is the scrutinee itself
             let env' = foldr (\(n, _) e -> extendBinding n scrutVal e) env bindings
-            result <- lowerTermToGraph env' body
+            result <- lowerTermToLGraph env' body
             terminate (ABr caseResultBlock [OpVar result])
 
         case mDefault of
             Just defBody -> do
                 beginBlock defaultBlock []
-                result <- lowerTermToGraph env defBody
+                result <- lowerTermToLGraph env defBody
                 terminate (ABr caseResultBlock [OpVar result])
             Nothing -> pure ()
 
@@ -434,7 +476,6 @@ lowerTermToGraph env = \case
 
     -- Comparison operations
     C.CCmpOp op a b -> do
-        -- Try to get native values for comparison (avoid graph_reduce inside graph functions!)
         maNative <- tryGetNative env a
         mbNative <- tryGetNative env b
         let cmpOp = case op of
@@ -446,33 +487,27 @@ lowerTermToGraph env = \case
                 C.OpGe -> CSge
         (aVal, bVal) <- case (maNative, mbNative) of
             (Just aNative, Just bNative) ->
-                -- Both are native - compare directly
                 pure (aNative, bNative)
             (Just aNative, Nothing) -> do
-                -- a is native, b needs extraction from graph
-                bNode <- lowerTermToGraph env b
+                bNode <- lowerTermToLGraph env b
                 bExtracted <- emitLetTmp intType (OpGraphExtractNum (OpVar bNode))
                 pure (aNative, bExtracted)
             (Nothing, Just bNative) -> do
-                -- b is native, a needs extraction from graph
-                aNode <- lowerTermToGraph env a
+                aNode <- lowerTermToLGraph env a
                 aExtracted <- emitLetTmp intType (OpGraphExtractNum (OpVar aNode))
                 pure (aExtracted, bNative)
             (Nothing, Nothing) -> do
-                -- Both need extraction - build graph nodes and extract
-                aNode <- lowerTermToGraph env a
-                bNode <- lowerTermToGraph env b
+                aNode <- lowerTermToLGraph env a
+                bNode <- lowerTermToLGraph env b
                 aExtracted <- emitLetTmp intType (OpGraphExtractNum (OpVar aNode))
                 bExtracted <- emitLetTmp intType (OpGraphExtractNum (OpVar bNode))
                 pure (aExtracted, bExtracted)
         boolResult <- emitLetTmp boolType (OpCmp cmpOp (OpVar aVal) (OpVar bVal))
-        -- Convert bool to int: select between 1 and 0
-        -- NOTE: Return native int, not graph node! Case expressions need native ints for switching.
         emitLetTmp intType (OpSelect (OpVar boolResult) (OpConst (CInt 1)) (OpConst (CInt 0)))
 
     -- Unary operations
     C.CUnaryOp op a -> do
-        aNode <- lowerTermToGraph env a
+        aNode <- lowerTermToLGraph env a
         case op of
             C.OpNeg -> do
                 zeroNode <- emitLetTmp termType (OpGraphNum (OpConst (CInt 0)))
@@ -480,76 +515,76 @@ lowerTermToGraph env = \case
             C.OpNot -> do
                 aVal <- emitLetTmp intType (OpGraphReduce (OpVar aNode))
                 notVal <- emitLetTmp boolType (OpCmp CEq (OpVar aVal) (OpConst (CInt 0)))
-                -- Convert bool to int: select between 1 and 0
                 intVal <- emitLetTmp intType (OpSelect (OpVar notVal) (OpConst (CInt 1)) (OpConst (CInt 0)))
                 emitLetTmp termType (OpGraphNum (OpVar intVal))
 
     -- Closures with captured environment
     C.CClosure liftedName capturedVars _ty -> do
-        -- Look up the function index for the lifted function
         case lookupFuncIndex liftedName env of
             Nothing -> error $ "Circuit.ToGraph: unknown lifted function: " ++ liftedName
             Just funcIdx -> do
                 if null capturedVars
                     then do
-                        -- No captures - create closure with empty env, arity 1
                         emitLetTmp termType (OpGraphClosure funcIdx 1 [])
                     else do
-                        -- Build graph nodes for each captured variable
                         envNodes <- forM capturedVars $ \(varName, _varTy) -> do
                             case lookupBinding varName env of
                                 Nothing -> error $ "Circuit.ToGraph: unbound captured var: " ++ varName
                                 Just boundName -> do
                                     if isTermBinding varName env
-                                        then pure (OpVar boundName) -- Already a Term
+                                        then pure (OpVar boundName)
                                         else do
-                                            -- Native int -> wrap in graph node
                                             node <- emitLetTmp termType (OpGraphNum (OpVar boundName))
                                             pure (OpVar node)
-                        -- Create closure with captured environment, arity 1
-                        -- (closure functions take one more arg after the captured env is applied)
                         emitLetTmp termType (OpGraphClosure funcIdx 1 envNodes)
 
     -- Extract captured variable from closure's environment
     C.CClosureGetEnv closureExpr idx _ty -> do
-        -- Get the closure term
         closureVar <- case closureExpr of
             C.CVar name _ ->
                 case lookupBinding name env of
                     Just varName -> pure varName
                     Nothing -> error $ "Circuit.ToGraph: unbound closure: " ++ name
             _ -> error "Circuit.ToGraph: CClosureGetEnv expects a variable"
-        -- Extract env value at index - this reads from the closure's env array
-        -- The result is a Term (graph node)
         emitLetTmp termType (OpGraphClosureGetEnv (OpVar closureVar) idx)
     C.CProject{} ->
-        error "Circuit.ToGraph: field projection not yet supported in graph mode"
+        error "Circuit.ToGraph: field projection not yet supported in lgraph mode"
     C.CStr _ ->
-        error "Circuit.ToGraph: strings not yet supported in graph mode"
+        error "Circuit.ToGraph: strings not yet supported in lgraph mode"
     C.CPanic msg _ ->
         error $ "Circuit.ToGraph: panic: " ++ msg
     C.CFork{} ->
-        error "Circuit.ToGraph: forking not supported in graph mode"
+        error "Circuit.ToGraph: forking not supported in lgraph mode"
     C.CJoin{} ->
-        error "Circuit.ToGraph: joining not supported in graph mode"
+        error "Circuit.ToGraph: joining not supported in lgraph mode"
 
 {- | Try to get a native int value for a term without building graph nodes.
-Returns Just varName if the term is a simple var/literal, Nothing otherwise.
+Returns Just varName if the term is a simple var/literal or DUP projection, Nothing otherwise.
 -}
-tryGetNative :: GraphEnv -> C.CTerm -> AlloyBuilder (Maybe String)
+tryGetNative :: LGraphEnv -> C.CTerm -> AlloyBuilder (Maybe String)
 tryGetNative env term = case term of
     C.CVar name _ ->
-        -- Only return native value if it's NOT a term binding
-        -- Term bindings hold graph Terms, not native ints
         if isTermBinding name env
             then pure Nothing
             else case lookupBinding name env of
                 Just varName -> pure (Just varName)
                 Nothing -> pure Nothing
     C.CInt n -> do
-        -- Emit a constant as a native int
         tmp <- emitLetTmp intType (OpBin IAdd (OpConst (CInt n)) (OpConst (CInt 0)))
         pure (Just tmp)
+    -- Handle DUP projections - check if they're native bindings
+    C.CDp0 name _ ->
+        if isTermBinding (name ++ ".0") env
+            then pure Nothing
+            else case lookupBinding (name ++ ".0") env of
+                Just varName -> pure (Just varName)
+                Nothing -> pure Nothing
+    C.CDp1 name _ ->
+        if isTermBinding (name ++ ".1") env
+            then pure Nothing
+            else case lookupBinding (name ++ ".1") env of
+                Just varName -> pure (Just varName)
+                Nothing -> pure Nothing
     _ -> pure Nothing
 
 -- | Helper to collect function and arguments from nested CApp

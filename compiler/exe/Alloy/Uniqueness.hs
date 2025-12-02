@@ -202,6 +202,8 @@ usesFromOp blk idx op =
         OpGraphRegisterFunc _ _ impl -> singleUseIfVar impl (UseCallArg blk idx 0)
         -- Interaction net operations
         OpGraphDup _ target -> singleUseIfVar target (UseCallArg blk idx 0)
+        OpGraphDupGetProj0 dup -> singleUseIfVar dup (UseCallArg blk idx 0)
+        OpGraphDupGetProj1 dup -> singleUseIfVar dup (UseCallArg blk idx 0)
         OpGraphSup _ l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
         OpGraphLam varSlot body -> mergeAll [singleUseIfVar varSlot (UseCallArg blk idx 0), singleUseIfVar body (UseCallArg blk idx 1)]
         OpGraphApp fn arg -> mergeAll [singleUseIfVar fn (UseCallArg blk idx 0), singleUseIfVar arg (UseCallArg blk idx 1)]

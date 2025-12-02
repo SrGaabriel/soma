@@ -15,6 +15,7 @@ module Llvm.Gen.CRuntime (
     cruntimeInetCon,
     cruntimeInetSup,
     cruntimeInetDup,
+    cruntimeInetDupEager,
     cruntimeInetClosure,
     cruntimeInetCloneClosure,
     cruntimeInetClosureGetEnv,
@@ -108,6 +109,9 @@ cruntimeInetSup = LlvmFunctionDependency "inet_sup" termType [ptrType, ptrType, 
 
 cruntimeInetDup :: LlvmDependency
 cruntimeInetDup = LlvmFunctionDependency "inet_dup" termType [ptrType, ptrType, LlvmI16, termType]
+
+cruntimeInetDupEager :: LlvmDependency
+cruntimeInetDupEager = LlvmFunctionDependency "inet_dup_eager" termType [ptrType, ptrType, LlvmI16, termType]
 
 cruntimeInetClosure :: LlvmDependency
 cruntimeInetClosure = LlvmFunctionDependency "inet_closure" termType [ptrType, ptrType, LlvmI16, LlvmI16, ptrType, LlvmI16]

@@ -42,6 +42,7 @@ module Alloy.PromoteRefs (
 
 import Alloy.Ir
 import Alloy.Naming (makeRefParamName)
+import Alloy.Subst
 import Alloy.Uniqueness (FunctionReport (..), LocalUniq (..), Uniqueness (..), analyzeFunction)
 import Data.List (findIndex, sort)
 import Data.Map.Strict (Map)
@@ -179,104 +180,6 @@ augmentTerm entry promoted needs curr term =
         , let v = Map.lookup r curr
         ]
 
-type Subst = Map Name AOperand
-
-substOperand :: Subst -> AOperand -> AOperand
-substOperand env (OpVar n) = Map.findWithDefault (OpVar n) n env
-substOperand _ a@(OpConst _) = a
-
-substCallable :: Subst -> ACallable -> ACallable
-substCallable _ (Direct n) = Direct n
-substCallable env (Indirect a) = Indirect (substOperand env a)
-
-substOp :: Subst -> AOp -> AOp
-substOp env op =
-    case op of
-        OpBin k a b -> OpBin k (substOperand env a) (substOperand env b)
-        OpUnary k a -> OpUnary k (substOperand env a)
-        OpCmp k a b -> OpCmp k (substOperand env a) (substOperand env b)
-        OpLoad a -> OpLoad (substOperand env a)
-        OpSelect cond thenOp elseOp -> OpSelect (substOperand env cond) (substOperand env thenOp) (substOperand env elseOp)
-        OpAllocStack t -> OpAllocStack t
-        OpAllocHeap t -> OpAllocHeap t
-        OpCall callee args -> OpCall (substCallable env callee) (map (substOperand env) args)
-        OpConstruct tn tag fields -> OpConstruct tn tag (map (substOperand env) fields)
-        OpTagOf a -> OpTagOf (substOperand env a)
-        OpProject a i -> OpProject (substOperand env a) i
-        OpIndex a i -> OpIndex (substOperand env a) (substOperand env i)
-        OpMakeArray xs -> OpMakeArray (map (substOperand env) xs)
-        OpMakeTuple xs -> OpMakeTuple (map (substOperand env) xs)
-        OpGetDict className ty -> OpGetDict className ty
-        OpDictCall dict methodIdx method args -> OpDictCall (substOperand env dict) methodIdx method (map (substOperand env) args)
-        OpDup label val -> OpDup label (substOperand env val)
-        OpDupProj0 handle -> OpDupProj0 (substOperand env handle)
-        OpDupProj1 handle -> OpDupProj1 (substOperand env handle)
-        OpWrapClosure fn -> OpWrapClosure (substOperand env fn)
-        OpAllocClosure fn arity envSz -> OpAllocClosure (substOperand env fn) arity envSz
-        OpClosureSetEnv closure idx val -> OpClosureSetEnv (substOperand env closure) idx (substOperand env val)
-        OpClosureGetEnv closure idx -> OpClosureGetEnv (substOperand env closure) idx
-        OpClosureGetFunc closure -> OpClosureGetFunc (substOperand env closure)
-        OpDupClosure label closure slotInfo -> OpDupClosure label (substOperand env closure) slotInfo
-        OpDupClosureProj0 handle envSz slotInfo -> OpDupClosureProj0 (substOperand env handle) envSz slotInfo
-        OpDupClosureProj1 handle envSz slotInfo -> OpDupClosureProj1 (substOperand env handle) envSz slotInfo
-        OpClosureGetEnvDirect closure idx -> OpClosureGetEnvDirect (substOperand env closure) idx
-        OpClosureGetEnvSUP closure idx -> OpClosureGetEnvSUP (substOperand env closure) idx
-        OpParProj0 handle workEst -> OpParProj0 (substOperand env handle) workEst
-        OpParProj1 handle workEst -> OpParProj1 (substOperand env handle) workEst
-        OpParClosureProj0 handle envSz slotInfo workEst -> OpParClosureProj0 (substOperand env handle) envSz slotInfo workEst
-        OpParClosureProj1 handle envSz slotInfo workEst -> OpParClosureProj1 (substOperand env handle) envSz slotInfo workEst
-        OpPanic msg -> OpPanic msg
-        OpGraphInit n -> OpGraphInit n
-        OpGraphShutdown -> OpGraphShutdown
-        OpGraphNum v -> OpGraphNum (substOperand env v)
-        OpGraphAdd l r -> OpGraphAdd (substOperand env l) (substOperand env r)
-        OpGraphSub l r -> OpGraphSub (substOperand env l) (substOperand env r)
-        OpGraphMul l r -> OpGraphMul (substOperand env l) (substOperand env r)
-        OpGraphDiv l r -> OpGraphDiv (substOperand env l) (substOperand env r)
-        OpGraphMod l r -> OpGraphMod (substOperand env l) (substOperand env r)
-        OpGraphCall fnIdx args -> OpGraphCall fnIdx (map (substOperand env) args)
-        OpGraphReduce root -> OpGraphReduce (substOperand env root)
-        OpGraphExtractNum term -> OpGraphExtractNum (substOperand env term)
-        OpGraphRegisterFunc name arity impl -> OpGraphRegisterFunc name arity (substOperand env impl)
-        OpGraphDup label target -> OpGraphDup label (substOperand env target)
-        OpGraphSup label l r -> OpGraphSup label (substOperand env l) (substOperand env r)
-        OpGraphLam varSlot body -> OpGraphLam (substOperand env varSlot) (substOperand env body)
-        OpGraphApp fn arg -> OpGraphApp (substOperand env fn) (substOperand env arg)
-        OpGraphEra -> OpGraphEra
-        OpGraphRef name idx arg -> OpGraphRef name idx (substOperand env arg)
-        OpGraphClosure funcIdx arity envVals -> OpGraphClosure funcIdx arity (map (substOperand env) envVals)
-        OpGraphClosureApp clo arg -> OpGraphClosureApp (substOperand env clo) (substOperand env arg)
-        OpGraphClosureGetEnv clo idx -> OpGraphClosureGetEnv (substOperand env clo) idx
-        OpFork fn args -> OpFork (substOperand env fn) (map (substOperand env) args)
-        OpJoin handle -> OpJoin (substOperand env handle)
-
-substEffect :: Subst -> AEffect -> AEffect
-substEffect env eff =
-    case eff of
-        EffStore p v -> EffStore (substOperand env p) (substOperand env v)
-        EffStoreIndex a i v -> EffStoreIndex (substOperand env a) (substOperand env i) (substOperand env v)
-        EffDrop a -> EffDrop (substOperand env a)
-        EffClosureSetEnv closure idx val -> EffClosureSetEnv (substOperand env closure) idx (substOperand env val)
-        EffGraphInit n -> EffGraphInit n
-        EffGraphShutdown -> EffGraphShutdown
-        EffGraphRegisterFunc name arity impl -> EffGraphRegisterFunc name arity (substOperand env impl)
-
-substTerminator :: Subst -> ATerminator -> ATerminator
-substTerminator env t =
-    case t of
-        ABr b args -> ABr b (map (substOperand env) args)
-        ACondBr c tb ta fb fa ->
-            ACondBr
-                (substOperand env c)
-                tb
-                (map (substOperand env) ta)
-                fb
-                (map (substOperand env) fa)
-        ASwitch v cases mdef ->
-            ASwitch (substOperand env v) cases mdef
-        ARet mv -> ARet (fmap (substOperand env) mv)
-        AUnreachable -> AUnreachable
-
 findAllocaCandidates :: AlloyFunction -> [(Name, Type, Type)]
 findAllocaCandidates AlloyFunction{afBlocks} =
     let step acc ABlock{abInstrs} = foldl' collect acc abInstrs
@@ -368,6 +271,8 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpGraphClosureGetEnv clo _ -> isVar r clo
             OpFork fn args -> isVar r fn || any (isVar r) args
             OpJoin handle -> isVar r handle
+            OpGraphDupGetProj0 dupNode -> isVar r dupNode
+            OpGraphDupGetProj1 dupNode -> isVar r dupNode
 
     appearsInEff :: Name -> AEffect -> Bool
     appearsInEff r eff =
