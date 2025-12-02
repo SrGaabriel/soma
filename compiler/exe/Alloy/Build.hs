@@ -122,6 +122,7 @@ endFunction = do
                 , afConstraints = fbConstraints
                 , afIsInline = fbIsInline
                 }
+
     put
         st
             { bsFunctions = bsFunctions ++ [fn]

@@ -132,7 +132,6 @@ data LlvmFnAttr
     | FnAttrMinSize
     | FnAttrCold
     | FnAttrHot
-    | FnAttrReadNone
     deriving (Show, Eq, Generic, Hashable)
 
 data LlvmMemoryEffect
@@ -160,7 +159,6 @@ fnAttrToLlvm FnAttrOptSize = "optsize"
 fnAttrToLlvm FnAttrMinSize = "minsize"
 fnAttrToLlvm FnAttrCold = "cold"
 fnAttrToLlvm FnAttrHot = "hot"
-fnAttrToLlvm FnAttrReadNone = "readnone"
 
 memEffectToLlvm :: LlvmMemoryEffect -> String
 memEffectToLlvm MemNone = "none"

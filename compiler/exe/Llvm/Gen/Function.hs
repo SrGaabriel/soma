@@ -1,4 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Llvm.Gen.Function where
 
@@ -22,6 +23,7 @@ import Control.Monad.Reader (MonadReader (local), asks)
 import Control.Monad.State (modify)
 import Control.Monad.Writer (listen)
 import Data.Bifunctor (Bifunctor (second))
+import Llvm.Gen.Attributes (FunctionAttrs (..), analyzeFunctionAttrs)
 import Llvm.Gen.Core (IrGen, IrGenEnv (moduleName, opTypeEnv), IrGenState (irFunctions), setGraphFunctionContext, setTailCallContext)
 import Llvm.Gen.Instr (compileInstr, compileTerminator)
 import Llvm.Gen.OperandPass (buildOperandTypeEnv)
@@ -56,10 +58,8 @@ compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
     blocks <- mapM (newEnvFn . setGraphFunctionContext isGraphFn . compileBlock) afBlocks
     let params = map (second convertType) afParams
     let retType = convertType afReturnType
-    -- TODO: adjust function attributes based on analysis
-    let attrs = if isGraphFn
-            then [FnAttrNoUnwind]
-            else [FnAttrNoUnwind, FnAttrNoSync, FnAttrNoFree, FnAttrMemory MemNone, FnAttrReadNone, FnAttrWillReturn]
+    let provenAttrs = analyzeFunctionAttrs aFn
+    let attrs = buildLlvmAttrs isGraphFn provenAttrs
     let fn =
             LlvmFunction
                 { functionName = "\"" ++ name ++ "\""
@@ -70,6 +70,28 @@ compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
                 }
     modify (\s -> s{irFunctions = fn : irFunctions s})
     pure ()
+
+{- | Build LLVM function attributes from proven analysis attributes
+
+For graph functions, we're conservative since they interact with the
+parallel runtime. For regular functions, we use the proven attributes.
+-}
+buildLlvmAttrs :: Bool -> FunctionAttrs -> [LlvmFnAttr]
+buildLlvmAttrs isGraphFn FunctionAttrs{..}
+    | isGraphFn =
+        -- Graph functions interact with the parallel runtime, so we're conservative.
+        -- Only nounwind is safe since Soma doesn't have exceptions.
+        [FnAttrNoUnwind | attrNoUnwind]
+    | otherwise =
+        -- Regular functions use all proven attributes
+        concat
+            [ [FnAttrNoUnwind | attrNoUnwind]
+            , [FnAttrNoSync | attrNoSync]
+            , [FnAttrNoFree | attrNoFree]
+            , [FnAttrMemory MemNone | attrMemoryNone]
+            , [FnAttrWillReturn | attrWillReturn]
+            , [FnAttrNoRecurse | attrNoRecurse]
+            ]
 
 compileBlock :: ABlock -> IrGen LlvmBlock
 compileBlock aBlock = do

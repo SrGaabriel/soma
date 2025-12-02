@@ -53,7 +53,7 @@ import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Gen.TypeConversion (convertType)
 import Llvm.Instructions
 import Llvm.Modules (LlvmBlock (..), LlvmFunction (..))
-import Llvm.Types (LlvmType (..), LlvmFnAttr (..), deref)
+import Llvm.Types (LlvmFnAttr (..), LlvmType (..), deref)
 import qualified Llvm.Types as LT
 import Llvm.Values (LlvmValue (..), getValueType)
 import Utils.Lists (hardHead)
@@ -233,7 +233,7 @@ compileOp (OpConstruct _cName cTag cFields) resultTy = do
             -- Bitcast to i64*
             arrPtr <- saveTmp (LlvmBitcast rawPtr (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
             -- Store each field at its index
-            forM_ (zip [0 ..] fieldVals) $ \(idx, fieldVal) -> do
+            forM_ (zip [(0 :: Integer) ..] fieldVals) $ \(idx, fieldVal) -> do
                 let fieldTy = getValueType fieldVal
                 fieldAsI64 <- bitcastToPayload fieldVal fieldTy
                 fieldPtr <- saveTmp (LlvmGetElementPtr LlvmI64 arrPtr [LlvmLiteral LlvmI64 (show idx)] True) (LlvmPointer LlvmI64)

@@ -143,6 +143,7 @@ executable somac
     Circuit.ToGraph
     Config.Options
     Llvm.Dependencies
+    Llvm.Gen.Attributes
     Llvm.Gen.CRuntime
     Llvm.Gen.Core
     Llvm.Gen.Dictionary
