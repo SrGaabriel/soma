@@ -192,6 +192,8 @@ instance TreeShow AOp where
     treeShow (OpGraphDupGetProj1 dup) = "graph_dup_proj1 " ++ treeShow dup
     treeShow (OpGraphSup label left right) = "graph_sup[" ++ show label ++ "] " ++ treeShow left ++ " " ++ treeShow right
     treeShow OpGraphEra = "graph_era"
+    treeShow (OpGraphCon fst snd) = "graph_con " ++ treeShow fst ++ " " ++ treeShow snd
+    treeShow (OpGraphConGet con idx) = "graph_con_get " ++ treeShow con ++ "[" ++ show idx ++ "]"
     treeShow (OpGraphLam param body) = "graph_lam " ++ treeShow param ++ " -> " ++ treeShow body
     treeShow (OpGraphRef fnName idx arg) = "graph_ref[" ++ show idx ++ "] \"" ++ fnName ++ "\" " ++ treeShow arg
     treeShow (OpGraphApp fn arg) = "graph_app " ++ treeShow fn ++ " @ " ++ treeShow arg

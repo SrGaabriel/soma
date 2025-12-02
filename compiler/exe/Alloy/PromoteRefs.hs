@@ -265,6 +265,8 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpGraphLam varSlot body -> isVar r varSlot || isVar r body
             OpGraphApp fn arg -> isVar r fn || isVar r arg
             OpGraphEra -> False
+            OpGraphCon fstOp sndOp -> isVar r fstOp || isVar r sndOp
+            OpGraphConGet conOp _ -> isVar r conOp
             OpGraphRef _ _ arg -> isVar r arg
             OpGraphClosure _ _ envVals -> any (isVar r) envVals
             OpGraphClosureApp clo arg -> isVar r clo || isVar r arg

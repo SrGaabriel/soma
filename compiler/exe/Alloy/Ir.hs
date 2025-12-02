@@ -270,6 +270,17 @@ data AOp
       Returns the Term at env[index]
       -}
       OpGraphClosureGetEnv AOperand !Int
+    | {- | Create a CON (constructor/pair) node in the graph: fst, snd
+      Creates a pair of two terms. For ADT constructors with fields,
+      chain multiple CON nodes: CON(tag, CON(field0, CON(field1, ERA)))
+      Returns Term (u64)
+      -}
+      OpGraphCon AOperand AOperand
+    | {- | Get a field from a CON node: con_term, field_index
+      field_index 0 = first element, 1 = second element
+      Returns Term (u64)
+      -}
+      OpGraphConGet AOperand !Int
     deriving (Generic, Show, Eq)
 
 data AEffect

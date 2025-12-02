@@ -114,6 +114,8 @@ substOp env = \case
     OpGraphLam varSlot body -> OpGraphLam (sub varSlot) (sub body)
     OpGraphApp fn arg -> OpGraphApp (sub fn) (sub arg)
     OpGraphEra -> OpGraphEra
+    OpGraphCon fstOp sndOp -> OpGraphCon (sub fstOp) (sub sndOp)
+    OpGraphConGet conOp idx -> OpGraphConGet (sub conOp) idx
     OpGraphRef name idx arg -> OpGraphRef name idx (sub arg)
     OpGraphClosure funcIdx arity envVals -> OpGraphClosure funcIdx arity (map sub envVals)
     OpGraphClosureApp clo arg -> OpGraphClosureApp (sub clo) (sub arg)
@@ -232,6 +234,8 @@ opVars = \case
     OpGraphLam varSlot body -> vars varSlot ++ vars body
     OpGraphApp fn arg -> vars fn ++ vars arg
     OpGraphEra -> []
+    OpGraphCon fstOp sndOp -> vars fstOp ++ vars sndOp
+    OpGraphConGet conOp _ -> vars conOp
     OpGraphRef _ _ arg -> vars arg
     OpGraphClosure _ _ envVals -> concatMap vars envVals
     OpGraphClosureApp clo arg -> vars clo ++ vars arg

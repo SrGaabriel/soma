@@ -17,6 +17,7 @@ import Llvm.Gen.CRuntime (
     cruntimeInetApp,
     cruntimeInetClosure,
     cruntimeInetClosureGetEnv,
+    cruntimeInetCon,
     cruntimeInetDupEager,
     cruntimeInetFree,
     cruntimeInetGet,
@@ -45,7 +46,7 @@ import Llvm.Gen.CRuntime (
     cruntimeSomaProj1,
  )
 import Llvm.Gen.Core
-import Llvm.Gen.Externals (memcpyDependency, useDep)
+import Llvm.Gen.Externals (mallocDependency, memcpyDependency, useDep)
 import Llvm.Gen.Intrinsics (compileIntrinsic, isIntrinsic)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.Templates (newStrTemplate)
@@ -146,12 +147,21 @@ compileOp (OpProject agg ix) resultTy = do
     let aggTy = getValueType av
     case aggTy of
         LlvmAnonymous _ -> do
+            -- Extract the payload (always at index 1 in {i8, i64} struct)
+            payloadVal <- saveTmp (LlvmExtractValue aggTy av 1) LlvmI64
             if ix == 0
-                then do
-                    payloadVal <- saveTmp (LlvmExtractValue aggTy av 1) LlvmI64
+                then
+                    -- Single-field: payload IS the value
                     bitcastFromPayload payloadVal resultTy
-                else
-                    error $ "Multi-field ADT projection not yet supported: index " ++ show ix
+                else do
+                    -- Multi-field: payload is a pointer to array of i64
+                    -- Convert i64 payload back to pointer
+                    payloadPtr <- saveTmp (LlvmIntToPtr payloadVal (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+                    -- GEP to the field at index ix
+                    fieldPtr <- saveTmp (LlvmGetElementPtr LlvmI64 payloadPtr [LlvmLiteral LlvmI64 (show ix)] True) (LlvmPointer LlvmI64)
+                    -- Load the field value
+                    fieldVal <- saveTmp (LlvmLoadTyped LlvmI64 fieldPtr) LlvmI64
+                    bitcastFromPayload fieldVal resultTy
         -- For primitive types (i32, i64, etc.), the value itself is the "payload"
         -- This happens in pattern matching on Int literals where a variable binding
         -- needs to capture the scrutinee value
@@ -214,7 +224,23 @@ compileOp (OpConstruct _cName cTag cFields) resultTy = do
             let fieldTy = getValueType fieldVal
             payloadVal <- bitcastToPayload fieldVal fieldTy
             saveTmp (LlvmInsertValue resultTy withTag payloadVal 1) resultTy
-        _ -> error "Multi-field constructors not yet supported in universal payload representation"
+        _ -> do
+            -- Multi-field constructor: allocate array of i64 on heap
+            let numFields = length fieldVals
+            let allocSize = LlvmLiteral LlvmI64 (show (numFields * 8)) -- 8 bytes per i64
+            mallocFn <- useDep mallocDependency
+            rawPtr <- saveTmp (LlvmCall mallocFn (LlvmPointer LlvmI8) [allocSize]) (LlvmPointer LlvmI8)
+            -- Bitcast to i64*
+            arrPtr <- saveTmp (LlvmBitcast rawPtr (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+            -- Store each field at its index
+            forM_ (zip [0 ..] fieldVals) $ \(idx, fieldVal) -> do
+                let fieldTy = getValueType fieldVal
+                fieldAsI64 <- bitcastToPayload fieldVal fieldTy
+                fieldPtr <- saveTmp (LlvmGetElementPtr LlvmI64 arrPtr [LlvmLiteral LlvmI64 (show idx)] True) (LlvmPointer LlvmI64)
+                tell [LlvmStore fieldAsI64 fieldPtr]
+            -- Convert pointer to i64 for payload
+            payloadVal <- saveTmp (LlvmPtrToInt arrPtr LlvmI64) LlvmI64
+            saveTmp (LlvmInsertValue resultTy withTag payloadVal 1) resultTy
   where
     bitcastToPayload :: LlvmValue -> LlvmType -> IrGen LlvmValue
     bitcastToPayload val valTy
@@ -933,12 +959,14 @@ compileOp OpGraphShutdown _resultTy = do
 
 -- INET num: create a NUM term using inet_num_ext (non-inline wrapper)
 -- inet_num packs the 48-bit value into aux+loc of the term
+-- Supports both integer and pointer values (pointers are converted via ptrtoint)
 compileOp (OpGraphNum valOp) _resultTy = do
     llVal <- compileOperand valOp
-    -- Convert to i64 if needed
+    -- Convert to i64 if needed (handles both integers and pointers)
     i64Val <- case getValueType llVal of
         LlvmI64 -> pure llVal
         LlvmI32 -> saveTmp (LlvmSExt llVal LlvmI64) LlvmI64
+        LlvmPointer _ -> saveTmp (LlvmPtrToInt llVal LlvmI64) LlvmI64
         _ -> saveTmp (LlvmSExt llVal LlvmI64) LlvmI64
     -- Call inet_num_ext(value) -> Term (i64)
     numFunc <- useDep cruntimeInetNumExt
@@ -1188,6 +1216,32 @@ compileOp (OpGraphClosureGetEnv cloOp idx) _resultTy = do
     getEnvFunc <- useDep cruntimeInetClosureGetEnv
     let idxVal = LlvmLiteral LlvmI16 (show idx)
     saveTmp (LlvmCall getEnvFunc LlvmI64 [net, llClo, idxVal]) LlvmI64
+
+-- INET CON: create a constructor/pair node
+-- inet_con(net, tm, fst, snd) -> Term
+compileOp (OpGraphCon fstOp sndOp) _resultTy = do
+    llFst <- compileOperand fstOp
+    llSnd <- compileOperand sndOp
+    (net, tm) <- getNetAndTm
+    conFunc <- useDep cruntimeInetCon
+    saveTmp (LlvmCall conFunc LlvmI64 [net, tm, llFst, llSnd]) LlvmI64
+
+-- INET CON Get: extract a field from a CON node
+-- CON layout: [fst @ loc, snd @ loc+1]
+-- term_loc(con) gives the base location, then inet_get(net, loc + idx)
+compileOp (OpGraphConGet conOp fieldIdx) _resultTy = do
+    llCon <- compileOperand conOp
+    net <- getNet
+    -- Extract location from the CON term: loc = term >> 32 (TERM_LOC_SHIFT)
+    loc <- saveTmp (LlvmLShr LlvmI64 llCon (LlvmLiteral LlvmI64 "32")) LlvmI64
+    -- Add field index to get the slot
+    fieldLoc <- saveTmp (LlvmAdd LlvmI64 loc (LlvmLiteral LlvmI64 (show fieldIdx))) LlvmI64
+    -- Truncate to u32 (Loc type)
+    fieldLocU32 <- saveTmp (LlvmTrunc fieldLoc LlvmI32) LlvmI32
+    -- Call inet_get(net, loc) -> Term
+    getFunc <- useDep cruntimeInetGet
+    saveTmp (LlvmCall getFunc LlvmI64 [net, fieldLocU32]) LlvmI64
+
 -- Fork: spawn a parallel task
 -- OpFork taskFn taskArgs: fork a function call with the given arguments
 --

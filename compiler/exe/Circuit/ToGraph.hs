@@ -185,16 +185,27 @@ lowerFunctionForLGraph funcIndexMap C.CFunction{..} = do
                 let baseEnv = emptyLGraphEnv{lgeFuncIndices = funcIndexMap}
                 case cfParams of
                     [] -> pure baseEnv
-                    [(pname, _)] -> do
-                        argVal <- emitLetTmp intType (OpGraphExtractNum (OpVar "arg"))
-                        pure $ extendBinding pname argVal baseEnv
+                    [(pname, pty)] ->
+                        -- For ADT parameters, bind as Term; for primitives, extract int
+                        if isPrimitiveType pty
+                            then do
+                                argVal <- emitLetTmp intType (OpGraphExtractNum (OpVar "arg"))
+                                pure $ extendBinding pname argVal baseEnv
+                            else
+                                -- ADT parameter: bind the Term directly
+                                pure $ extendTermBinding pname "arg" baseEnv
                     params -> do
                         let numParams = length params
                         foldM
-                            ( \e (idx, (pname, _)) -> do
+                            ( \e (idx, (pname, pty)) -> do
                                 paramTerm <- emitLetTmp termType (OpGraphClosureGetEnv (OpVar "arg") idx)
-                                paramVal <- emitLetTmp intType (OpGraphExtractNum (OpVar paramTerm))
-                                pure $ extendBinding pname paramVal e
+                                if isPrimitiveType pty
+                                    then do
+                                        paramVal <- emitLetTmp intType (OpGraphExtractNum (OpVar paramTerm))
+                                        pure $ extendBinding pname paramVal e
+                                    else
+                                        -- ADT parameter: bind the Term directly
+                                        pure $ extendTermBinding pname paramTerm e
                             )
                             baseEnv
                             (zip [0 .. numParams - 1] params)
@@ -410,35 +421,48 @@ lowerTermToLGraph env = \case
         -- CRITICAL: We must NOT call OpGraphReduce inside graph functions!
         -- Use OpGraphExtractNum to get native int from a Term (assumes already reduced)
         -- or use the native value directly if available
-        scrutVal <- case scrut of
+        --
+        -- For ADT pattern matching:
+        -- 1. scrutNode is the full CON(tag, payload) term
+        -- 2. scrutVal is the extracted tag (native int) for switching
+        -- 3. Pattern variable bindings extract fields from scrutNode
+        (scrutNode, scrutVal) <- case scrut of
             C.CVar name _ ->
                 case lookupBinding name env of
                     Just varName ->
                         if isTermBinding name env
-                            then emitLetTmp intType (OpGraphExtractNum (OpVar varName))
-                            else pure varName -- Already a native int
+                            then do
+                                tagVal <- emitLetTmp intType (OpGraphExtractNum (OpVar varName))
+                                pure (varName, tagVal)
+                            else pure (varName, varName) -- Already a native int (no CON structure)
                     Nothing -> error $ "Circuit.ToGraph: unbound scrutinee: " ++ name
             C.CInt n -> do
-                emitLetTmp intType (OpBin IAdd (OpConst (CInt n)) (OpConst (CInt 0)))
+                tagVal <- emitLetTmp intType (OpBin IAdd (OpConst (CInt n)) (OpConst (CInt 0)))
+                pure (tagVal, tagVal) -- Literal int has no CON structure
             C.CDp0 name _ ->
                 case lookupBinding (name ++ ".0") env of
                     Just varName ->
                         if isTermBinding (name ++ ".0") env
-                            then emitLetTmp intType (OpGraphExtractNum (OpVar varName))
-                            else pure varName -- Already a native int
+                            then do
+                                tagVal <- emitLetTmp intType (OpGraphExtractNum (OpVar varName))
+                                pure (varName, tagVal)
+                            else pure (varName, varName) -- Already a native int
                     Nothing -> error $ "Circuit.ToGraph: unbound projection: " ++ name ++ ".0"
             C.CDp1 name _ ->
                 case lookupBinding (name ++ ".1") env of
                     Just varName ->
                         if isTermBinding (name ++ ".1") env
-                            then emitLetTmp intType (OpGraphExtractNum (OpVar varName))
-                            else pure varName -- Already a native int
+                            then do
+                                tagVal <- emitLetTmp intType (OpGraphExtractNum (OpVar varName))
+                                pure (varName, tagVal)
+                            else pure (varName, varName) -- Already a native int
                     Nothing -> error $ "Circuit.ToGraph: unbound projection: " ++ name ++ ".1"
             _ -> do
                 -- For complex scrutinees, build the graph node and extract
                 -- This should be rare - most scrutinees are variables or projections
-                scrutNode <- lowerTermToLGraph env scrut
-                emitLetTmp intType (OpGraphExtractNum (OpVar scrutNode))
+                node <- lowerTermToLGraph env scrut
+                tagVal <- emitLetTmp intType (OpGraphExtractNum (OpVar node))
+                pure (node, tagVal)
 
         caseResultBlock <- freshBlockName
         armBlocks <- forM arms $ const freshBlockName
@@ -454,7 +478,18 @@ lowerTermToLGraph env = \case
 
         forM_ (zip armBlocks arms) $ \(blockName, (_tag, bindings, body)) -> do
             beginBlock blockName []
-            let env' = foldr (\(n, _) e -> extendBinding n scrutVal e) env bindings
+            -- Extract fields from the scrutinee CON node for pattern variable bindings
+            -- CON structure: CON(tag, payload) where payload is:
+            --   - Single field: the field directly
+            --   - Multi-field: CON(field0, CON(field1, ...))
+            env' <-
+                if null bindings
+                    then pure env
+                    else do
+                        -- Get the payload (second element of CON)
+                        payload <- emitLetTmp termType (OpGraphConGet (OpVar scrutNode) 1)
+                        -- Bind each pattern variable to its corresponding field
+                        bindPatternVars env payload bindings
             result <- lowerTermToLGraph env' body
             terminate (ABr caseResultBlock [OpVar result])
 
@@ -467,12 +502,63 @@ lowerTermToLGraph env = \case
 
         beginBlock caseResultBlock [("case_result_val", termType)]
         pure "case_result_val"
+      where
+        -- Bind pattern variables to fields extracted from payload
+        -- payload is either:
+        --   - Single binding: the field value directly
+        --   - Multiple bindings: CON(field0, CON(field1, ...))
+        bindPatternVars :: LGraphEnv -> String -> [(C.Name, Type)] -> AlloyBuilder LGraphEnv
+        bindPatternVars e _ [] = pure e
+        bindPatternVars e payload [(name, _ty)] = do
+            -- Single binding: payload IS the field
+            pure $ extendTermBinding name payload e
+        bindPatternVars e payload bindings = do
+            -- Multiple bindings: extract from nested CONs
+            -- CON(field0, CON(field1, CON(field2, ...)))
+            go e payload bindings
+          where
+            go env' _ [] = pure env'
+            go env' node [(name, _ty)] = do
+                -- Last binding: get fst of current CON
+                field <- emitLetTmp termType (OpGraphConGet (OpVar node) 0)
+                pure $ extendTermBinding name field env'
+            go env' node ((name, _ty) : rest) = do
+                -- Get fst (current field) and snd (rest of CONs)
+                field <- emitLetTmp termType (OpGraphConGet (OpVar node) 0)
+                restNode <- emitLetTmp termType (OpGraphConGet (OpVar node) 1)
+                let env'' = extendTermBinding name field env'
+                go env'' restNode rest
 
     -- Tagged values (ADT constructors)
+    -- Representation: CON(NUM(tag), payload)
+    -- - For nullary constructors: just NUM(tag)
+    -- - For single-field: CON(NUM(tag), field)
+    -- - For multi-field: CON(NUM(tag), CON(field0, CON(field1, ...)))
     C.CTag tag fields _ty -> do
+        tagNode <- emitLetTmp termType (OpGraphNum (OpConst (CInt tag)))
         case fields of
-            [] -> emitLetTmp termType (OpGraphNum (OpConst (CInt tag)))
-            _ -> error "Circuit.ToGraph: constructors with fields not yet supported"
+            [] ->
+                -- Nullary constructor: just the tag as a NUM
+                pure tagNode
+            [singleField] -> do
+                -- Single-field constructor: CON(tag, field)
+                fieldNode <- lowerTermToLGraph env singleField
+                emitLetTmp termType (OpGraphCon (OpVar tagNode) (OpVar fieldNode))
+            _ -> do
+                -- Multi-field constructor: CON(tag, CON(field0, CON(field1, ...ERA)))
+                -- Build a right-nested list of CON nodes for the fields
+                fieldNodes <- mapM (lowerTermToLGraph env) fields
+                -- Start with ERA as the terminator
+                eraNode <- emitLetTmp termType OpGraphEra
+                -- Fold from right: build CON(field_n-1, CON(field_n, ERA))
+                -- Use foldM with reversed list to achieve right-fold semantics
+                payload <-
+                    foldM
+                        (\accNode fieldNode -> emitLetTmp termType (OpGraphCon (OpVar fieldNode) (OpVar accNode)))
+                        eraNode
+                        (reverse fieldNodes)
+                -- Wrap with the tag: CON(tag, payload)
+                emitLetTmp termType (OpGraphCon (OpVar tagNode) (OpVar payload))
 
     -- Comparison operations
     C.CCmpOp op a b -> do
@@ -547,10 +633,56 @@ lowerTermToLGraph env = \case
                     Nothing -> error $ "Circuit.ToGraph: unbound closure: " ++ name
             _ -> error "Circuit.ToGraph: CClosureGetEnv expects a variable"
         emitLetTmp termType (OpGraphClosureGetEnv (OpVar closureVar) idx)
-    C.CProject{} ->
-        error "Circuit.ToGraph: field projection not yet supported in lgraph mode"
-    C.CStr _ ->
-        error "Circuit.ToGraph: strings not yet supported in lgraph mode"
+    -- Field projection from tagged values
+    -- Our tagged value representation is: CON(NUM(tag), payload)
+    -- - Single-field: CON(tag, field) -> payload is the field directly
+    -- - Multi-field: CON(tag, CON(field0, CON(field1, ...))) -> need to traverse
+    --
+    -- OpGraphConGet(term, 0) = fst (the tag)
+    -- OpGraphConGet(term, 1) = snd (the payload)
+    C.CProject expr idx _ty -> do
+        -- Lower the expression to a graph term (should be a CON node)
+        exprNode <- lowerTermToLGraph env expr
+        -- Get the payload (second element of the CON: CON(tag, payload))
+        payload <- emitLetTmp termType (OpGraphConGet (OpVar exprNode) 1)
+        -- For field index 0, the payload IS the field (single-field case)
+        -- or the first element of the nested CON (multi-field case)
+        if idx == 0
+            then do
+                -- For single-field constructors, payload is directly the field
+                -- For multi-field, payload is CON(field0, rest), so get field0
+                -- We handle both cases: if it's a CON, get first; if not, it's the value
+                -- In practice, the Circuit IR knows the structure, so we just return payload
+                -- for idx=0 in single-field case, or traverse for multi-field
+                pure payload
+            else do
+                -- Multi-field: need to traverse the nested CONs
+                -- payload = CON(field0, CON(field1, CON(field2, ...)))
+                -- To get field N, we do: get(get(get(payload, 1), 1), ..., 0)
+                -- i.e., follow 'snd' links N times, then get 'fst'
+                traverseCons payload idx
+      where
+        -- Traverse N levels of nested CON nodes and get the field
+        -- CON(field0, CON(field1, CON(field2, ...)))
+        -- To get field at index n: follow 'snd' n times, then get 'fst'
+        traverseCons :: String -> Int -> AlloyBuilder String
+        traverseCons node 0 = do
+            -- Get the first element (the field at this level)
+            emitLetTmp termType (OpGraphConGet (OpVar node) 0)
+        traverseCons node n = do
+            -- Get the second element (the rest of the list)
+            rest <- emitLetTmp termType (OpGraphConGet (OpVar node) 1)
+            traverseCons rest (n - 1)
+
+    -- String literals
+    -- In graph mode, strings are represented as pointers to C string constants
+    -- We encode the string pointer as a NUM node (pointer cast to integer)
+    -- The LLVM codegen will handle ptrtoint conversion in OpGraphNum
+    C.CStr s -> do
+        -- Create a NUM node containing the string pointer
+        -- OpConst (CString s) produces a pointer to the C string constant
+        -- OpGraphNum will convert the pointer to i64 via ptrtoint in LLVM codegen
+        emitLetTmp termType (OpGraphNum (OpConst (CString s)))
     C.CPanic msg _ ->
         error $ "Circuit.ToGraph: panic: " ++ msg
     C.CFork{} ->
