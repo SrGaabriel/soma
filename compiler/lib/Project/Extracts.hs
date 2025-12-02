@@ -3,12 +3,12 @@ module Project.Extracts where
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import qualified Data.Set as Set
 import Inference.Core (InstanceEnv, TypeEnv)
 import Project.Module (ModuleName)
 import Project.Symbols (Symbol (resolvedSymbolName))
 import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (QualifiedType)
-import qualified Data.Set as Set
 
 extractSymbolImports :: Expr -> [(String, [String])]
 extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs

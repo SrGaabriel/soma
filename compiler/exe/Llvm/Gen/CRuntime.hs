@@ -46,7 +46,7 @@ module Llvm.Gen.CRuntime (
     cruntimeSomaPoolAllocClosure,
     cruntimeSomaPoolFreeSup,
     cruntimeSomaPoolFreeClosure,
-    cruntimeSomaPanic
+    cruntimeSomaPanic,
 ) where
 
 import Llvm.Dependencies (LlvmDependency (..))
@@ -134,7 +134,7 @@ cruntimeGInet :: LlvmDependency
 cruntimeGInet = LlvmGlobalDependency "g_inet" (LlvmPointer ptrType) -- pointer to pointer cuz why not
 
 cruntimeGInetTm :: LlvmDependency
-cruntimeGInetTm = LlvmGlobalDependency "g_inet_tm" (LlvmPointer ptrType)  -- pointer to pointer cuz why not
+cruntimeGInetTm = LlvmGlobalDependency "g_inet_tm" (LlvmPointer ptrType) -- pointer to pointer cuz why not
 
 cruntimeSomaPoolInit :: LlvmDependency
 cruntimeSomaPoolInit = LlvmFunctionDependency "soma_pool_init" LlvmVoid []

@@ -30,7 +30,7 @@ import Syntax.Tree (Expr (..), exprChildren)
 import Typing.Types (QualifiedType (..), TyConstructor (..), Type (..))
 
 metallizeModule :: String -> Expr -> MetalGen MetallicModule
-metallizeModule _ root = do
+metallizeModule name root = do
     compileDataTypeDefsFromRoot root
 
     let topLevelMembers = exprChildren root
@@ -48,7 +48,8 @@ metallizeModule _ root = do
 
     pure
         MetallicModule
-            { mmFunctions = Map.elems funcs
+            { mmName = name
+            , mmFunctions = Map.elems funcs
             , mmTypes = Map.elems types
             , mmInstances = groupInstanceMethods instances
             , mmTypeClasses = Map.elems typeClasses

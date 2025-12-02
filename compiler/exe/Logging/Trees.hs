@@ -101,9 +101,9 @@ instance TreeShow MetallicInstance where
             ++ " }"
 
 instance TreeShow MetallicModule where
-    treeShow (MetallicModule funs tys insts tcs) =
+    treeShow (MetallicModule name funs tys insts tcs) =
         unlines
-            $ ["-- Metal (HIR) Types:"]
+            $ ["-- Metal module: " ++ name]
                 ++ map (("  " ++) . treeShow) tys
                 ++ ["-- Metal (HIR) Functions:"]
                 ++ map (("  " ++) . treeShow) funs
@@ -192,8 +192,6 @@ instance TreeShow AOp where
     treeShow OpGraphEra = "graph_era"
     treeShow (OpGraphLam param body) = "graph_lam " ++ treeShow param ++ " -> " ++ treeShow body
     treeShow (OpGraphRef fnName idx arg) = "graph_ref[" ++ show idx ++ "] \"" ++ fnName ++ "\" " ++ treeShow arg
-    treeShow (OpGraphDupProj0 target) = "graph_dup_proj0 " ++ treeShow target
-    treeShow (OpGraphDupProj1 target) = "graph_dup_proj1 " ++ treeShow target
     treeShow (OpGraphApp fn arg) = "graph_app " ++ treeShow fn ++ " @ " ++ treeShow arg
     treeShow (OpGraphClosure funcIdx arity envVals) =
         "graph_closure[" ++ show funcIdx ++ ", arity=" ++ show arity ++ "](" ++ intercalate ", " (map treeShow envVals) ++ ")"

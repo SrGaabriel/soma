@@ -1106,18 +1106,6 @@ compileOp (OpGraphRef _fnName funcIdx argOp) _resultTy = do
     refFunc <- useDep cruntimeInetRef
     let funcIdxVal = LlvmLiteral LlvmI16 (show funcIdx)
     saveTmp (LlvmCall refFunc LlvmI64 [net, tm, funcIdxVal, llArg]) LlvmI64
-
--- INET DUP projection 0: get first copy from DUP node
--- For now, just return the target (DUP is transparent for integers)
--- TODO: implement proper DUP-SUP interaction
--- For simple cases (integers), DUP proj just returns the value
--- The runtime will handle DUP-SUP interaction when needed
-compileOp (OpGraphDupProj0 targetOp) _resultTy = compileOperand targetOp
--- INET DUP projection 1: get second copy from DUP node
--- For now, just return the target (DUP is transparent for integers)
--- TODO: implement proper DUP-SUP interaction
--- For simple cases (integers), DUP proj just returns the value
-compileOp (OpGraphDupProj1 targetOp) _resultTy = compileOperand targetOp
 -- INET Closure: create a closure with captured environment
 -- inet_closure(net, tm, func_idx, arity, env[], env_size) -> Term
 compileOp (OpGraphClosure funcIdx arity envVals) _resultTy = do

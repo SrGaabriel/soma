@@ -3,7 +3,7 @@ module Llvm.Gen.Externals (
     printfDependency,
     memcpyDependency,
     mallocDependency,
-    useDep
+    useDep,
 ) where
 
 import Llvm.Dependencies (LlvmDependency (..))

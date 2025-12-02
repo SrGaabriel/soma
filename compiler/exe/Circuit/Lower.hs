@@ -109,7 +109,7 @@ lowerModule m =
         functions = evalState (runReaderT (mapM lowerFunction (mmFunctions m)) env) initLowerState
         types = map convertTypeDef (mmTypes m)
     in CModule
-        { cmName = "main" -- TODO: get from module
+        { cmName = mmName m
         , cmFunctions = functions
         , cmTypes = types
         , cmIsLinearized = False

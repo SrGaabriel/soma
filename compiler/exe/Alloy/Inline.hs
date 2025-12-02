@@ -412,8 +412,6 @@ substOp subst op =
         OpGraphApp fn arg -> OpGraphApp (substOperand subst fn) (substOperand subst arg)
         OpGraphEra -> OpGraphEra
         OpGraphRef name idx arg -> OpGraphRef name idx (substOperand subst arg)
-        OpGraphDupProj0 target -> OpGraphDupProj0 (substOperand subst target)
-        OpGraphDupProj1 target -> OpGraphDupProj1 (substOperand subst target)
         OpGraphClosure funcIdx arity envVals -> OpGraphClosure funcIdx arity (map (substOperand subst) envVals)
         OpGraphClosureApp clo arg -> OpGraphClosureApp (substOperand subst clo) (substOperand subst arg)
         OpGraphClosureGetEnv clo idx -> OpGraphClosureGetEnv (substOperand subst clo) idx

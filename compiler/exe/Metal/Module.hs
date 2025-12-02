@@ -5,7 +5,8 @@ import Metal.Metadata (MetallicTypeClassMetadata)
 import Typing.Types
 
 data MetallicModule = MetallicModule
-    { mmFunctions :: [MetallicFunction]
+    { mmName :: String
+    , mmFunctions :: [MetallicFunction]
     , mmTypes :: [MetallicTypeDef]
     , mmInstances :: [MetallicInstance]
     , mmTypeClasses :: [MetallicTypeClassMetadata]

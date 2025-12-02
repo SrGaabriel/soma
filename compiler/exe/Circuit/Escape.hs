@@ -252,7 +252,7 @@ analyzeTermEscapes ctx term st = case term of
         let st1 = analyzeTermEscapes CtxLocal comp st
             st2 = analyzeTermEscapes ctx body st1
         in updateEscape taskName NoEscape st2 -- task handle is used locally
-    -- Join: task handle is used locally
+        -- Join: task handle is used locally
     CJoin taskName _ ->
         updateEscape taskName NoEscape st
 

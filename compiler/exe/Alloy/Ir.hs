@@ -244,14 +244,6 @@ data AOp
       Returns Term (u64)
       -}
       OpGraphRef !String !Int AOperand -- func_name, func_index, arg
-    | {- | Project first element from DUP node
-      Returns the first copy of the duplicated value.
-      -}
-      OpGraphDupProj0 AOperand
-    | {- | Project second element from DUP node
-      Returns the second copy of the duplicated value.
-      -}
-      OpGraphDupProj1 AOperand
     | {- | Create a closure in the graph: func_idx, arity, env_values
       Closures capture environment values and are applied incrementally.
       Returns Term (u64)

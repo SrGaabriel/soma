@@ -113,8 +113,6 @@ substOp env = \case
     OpGraphApp fn arg -> OpGraphApp (sub fn) (sub arg)
     OpGraphEra -> OpGraphEra
     OpGraphRef name idx arg -> OpGraphRef name idx (sub arg)
-    OpGraphDupProj0 target -> OpGraphDupProj0 (sub target)
-    OpGraphDupProj1 target -> OpGraphDupProj1 (sub target)
     OpGraphClosure funcIdx arity envVals -> OpGraphClosure funcIdx arity (map sub envVals)
     OpGraphClosureApp clo arg -> OpGraphClosureApp (sub clo) (sub arg)
     OpGraphClosureGetEnv clo idx -> OpGraphClosureGetEnv (sub clo) idx
@@ -231,8 +229,6 @@ opVars = \case
     OpGraphApp fn arg -> vars fn ++ vars arg
     OpGraphEra -> []
     OpGraphRef _ _ arg -> vars arg
-    OpGraphDupProj0 target -> vars target
-    OpGraphDupProj1 target -> vars target
     OpGraphClosure _ _ envVals -> concatMap vars envVals
     OpGraphClosureApp clo arg -> vars clo ++ vars arg
     OpGraphClosureGetEnv clo _ -> vars clo

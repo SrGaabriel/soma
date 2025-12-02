@@ -227,7 +227,7 @@ analyzeTerm' = \case
         pure $ Map.insert taskName MaybeHeap $ Map.union compBindings bodyBindings
     -- Join: no new bindings, just returns the result
     CJoin _ _ -> pure Map.empty
-    
+
 -- | Infer the allocation kind of a term (without looking at bindings)
 inferTermKind :: CTerm -> AllocKind
 inferTermKind = \case

@@ -448,8 +448,7 @@ lowerTerm env term = case term of
     C.CPanic msg ty -> do
         result <- emitLetTmp ty (OpPanic msg)
         pure (OpVar result)
-    
-    
+
     -- Fork: spawn a parallel task
     -- Use collectArgs to extract the function and all arguments from curried applications
     -- e.g., ((computeLevel 5) 8) becomes (computeLevel, [5, 8])

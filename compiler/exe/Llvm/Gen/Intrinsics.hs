@@ -11,12 +11,12 @@ import Control.Monad.Reader (asks)
 import Control.Monad.State (gets)
 import Control.Monad.Writer.Class (tell)
 import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), saveTmp)
+import Llvm.Gen.Externals (printfDependency, putsDependency, useDep)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getValueType, intLiteral)
-import Llvm.Gen.Externals (putsDependency, printfDependency, useDep)
 
 isIntrinsic :: String -> Bool
 isIntrinsic "println" = True

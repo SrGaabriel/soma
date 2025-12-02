@@ -1,5 +1,5 @@
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
 {- | Circuit to Graph Reduction lowering.
@@ -231,7 +231,6 @@ lowerTermToGraph :: GraphEnv -> C.CTerm -> AlloyBuilder String
 lowerTermToGraph env = \case
     -- Integer literals become NUM nodes
     C.CInt n -> emitLetTmp termType (OpGraphNum (OpConst (CInt n)))
-
     -- Variables: check if term binding (closure) or native value
     C.CVar name _ ->
         if isTermBinding name env
@@ -358,7 +357,6 @@ lowerTermToGraph env = \case
 
     -- Erasure - ERA node (shouldn't appear without linearization, but handle it)
     C.CEra -> emitLetTmp termType OpGraphEra
-
     -- Superposition (shouldn't appear without linearization)
     C.CSup _label _left _right _ty ->
         error "Circuit.ToGraph: SUP nodes should not appear without linearization"
@@ -524,15 +522,15 @@ lowerTermToGraph env = \case
         -- Extract env value at index - this reads from the closure's env array
         -- The result is a Term (graph node)
         emitLetTmp termType (OpGraphClosureGetEnv (OpVar closureVar) idx)
-    C.CProject {} ->
+    C.CProject{} ->
         error "Circuit.ToGraph: field projection not yet supported in graph mode"
     C.CStr _ ->
         error "Circuit.ToGraph: strings not yet supported in graph mode"
     C.CPanic msg _ ->
         error $ "Circuit.ToGraph: panic: " ++ msg
-    C.CFork {} ->
+    C.CFork{} ->
         error "Circuit.ToGraph: forking not supported in graph mode"
-    C.CJoin {} ->
+    C.CJoin{} ->
         error "Circuit.ToGraph: joining not supported in graph mode"
 
 {- | Try to get a native int value for a term without building graph nodes.
