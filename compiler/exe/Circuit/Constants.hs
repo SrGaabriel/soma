@@ -72,7 +72,7 @@ poolClosureMedium = 112
 
 -- | Minimum estimated work to consider parallel reduction
 parallelWorkThreshold :: Int
-parallelWorkThreshold = 50
+parallelWorkThreshold = 200
 
 -- | Maximum number of worker threads
 maxParallelWorkers :: Int

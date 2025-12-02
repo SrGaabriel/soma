@@ -30,12 +30,14 @@ import Llvm.Modules (
     LlvmBlock (..),
     LlvmFunction (
         LlvmFunction,
+        functionAttributes,
         functionBlocks,
         functionName,
         functionParams,
         functionReturnType
     ),
  )
+import Llvm.Types (LlvmFnAttr (..), LlvmMemoryEffect (..))
 
 compileFunction :: AlloyFunction -> IrGen ()
 compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
@@ -54,12 +56,17 @@ compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
     blocks <- mapM (newEnvFn . setGraphFunctionContext isGraphFn . compileBlock) afBlocks
     let params = map (second convertType) afParams
     let retType = convertType afReturnType
+    -- TODO: adjust function attributes based on analysis
+    let attrs = if isGraphFn
+            then [FnAttrNoUnwind]
+            else [FnAttrNoUnwind, FnAttrNoSync, FnAttrNoFree, FnAttrMemory MemNone, FnAttrReadNone, FnAttrWillReturn]
     let fn =
             LlvmFunction
                 { functionName = "\"" ++ name ++ "\""
                 , functionBlocks = blocks
                 , functionReturnType = retType
                 , functionParams = params
+                , functionAttributes = attrs
                 }
     modify (\s -> s{irFunctions = fn : irFunctions s})
     pure ()

@@ -15,6 +15,16 @@
 #include <sched.h>
 #include <sys/mman.h>
 
+/* Portable CPU pause/yield for spin loops */
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#define cpu_pause() _mm_pause()
+#elif defined(__aarch64__)
+#define cpu_pause() __asm__ __volatile__("yield" ::: "memory")
+#else
+#define cpu_pause() ((void)0)
+#endif
+
 /*============================================================================
  * Debug
  *===========================================================================*/
@@ -120,8 +130,8 @@ void inet_register_func(INet* net, const char* name, uint16_t arity, INetFunc im
 
 Loc inet_alloc(INet* net, ThreadMem* tm, uint32_t count) {
     (void)net;
-    Loc base = (Loc)tm->tid * INET_HEAP_SIZE;
-    Loc offset = tm->alloc;
+    const Loc base = (Loc)tm->tid * INET_HEAP_SIZE;
+    const Loc offset = tm->alloc;
     tm->alloc += count;
     return base + offset;
 }
@@ -139,46 +149,53 @@ Term inet_exchange(INet* net, Loc loc, Term val) {
 }
 
 void inet_subst(INet* net, Loc loc, Term val) {
-    inet_set(net, loc, term_set_sub(val));
+    atomic_store_explicit(&net->heap[loc], term_set_sub(val), memory_order_relaxed);
 }
 
 /*============================================================================
  * Node Construction
+ * 
+ * Direct heap access using cached pointer where possible
  *===========================================================================*/
 
 Term inet_lam(INet* net, ThreadMem* tm, Loc var_loc, Term body) {
-    Loc loc = inet_alloc(net, tm, 2);
-    inet_set(net, loc, term_new(TAG_NIL, 0, var_loc));
-    inet_set(net, loc + 1, body);
+    const Loc loc = inet_alloc(net, tm, 2);
+    ATerm* const heap = net->heap;
+    atomic_store_explicit(&heap[loc], term_new(TAG_NIL, 0, var_loc), memory_order_relaxed);
+    atomic_store_explicit(&heap[loc + 1], body, memory_order_relaxed);
     return term_new(TAG_LAM, 0, loc);
 }
 
 Term inet_app(INet* net, ThreadMem* tm, Term fun, Term arg) {
-    Loc loc = inet_alloc(net, tm, 2);
-    inet_set(net, loc, fun);
-    inet_set(net, loc + 1, arg);
+    const Loc loc = inet_alloc(net, tm, 2);
+    ATerm* const heap = net->heap;
+    atomic_store_explicit(&heap[loc], fun, memory_order_relaxed);
+    atomic_store_explicit(&heap[loc + 1], arg, memory_order_relaxed);
     return term_new(TAG_APP, 0, loc);
 }
 
 Term inet_con(INet* net, ThreadMem* tm, Term fst, Term snd) {
-    Loc loc = inet_alloc(net, tm, 2);
-    inet_set(net, loc, fst);
-    inet_set(net, loc + 1, snd);
+    const Loc loc = inet_alloc(net, tm, 2);
+    ATerm* const heap = net->heap;
+    atomic_store_explicit(&heap[loc], fst, memory_order_relaxed);
+    atomic_store_explicit(&heap[loc + 1], snd, memory_order_relaxed);
     return term_new(TAG_CON, 0, loc);
 }
 
 Term inet_sup(INet* net, ThreadMem* tm, Lab label, Term a, Term b) {
-    Loc loc = inet_alloc(net, tm, 2);
-    inet_set(net, loc, a);
-    inet_set(net, loc + 1, b);
+    const Loc loc = inet_alloc(net, tm, 2);
+    ATerm* const heap = net->heap;
+    atomic_store_explicit(&heap[loc], a, memory_order_relaxed);
+    atomic_store_explicit(&heap[loc + 1], b, memory_order_relaxed);
     return term_new(TAG_SUP, label, loc);
 }
 
 Term inet_dup(INet* net, ThreadMem* tm, Lab label, Term target) {
-    Loc loc = inet_alloc(net, tm, 3);
-    inet_set(net, loc, target);
-    inet_set(net, loc + 1, term_new(TAG_NIL, 0, 0));
-    inet_set(net, loc + 2, term_new(TAG_NIL, 0, 0));
+    const Loc loc = inet_alloc(net, tm, 3);
+    ATerm* const heap = net->heap;
+    atomic_store_explicit(&heap[loc], target, memory_order_relaxed);
+    atomic_store_explicit(&heap[loc + 1], term_new(TAG_NIL, 0, 0), memory_order_relaxed);
+    atomic_store_explicit(&heap[loc + 2], term_new(TAG_NIL, 0, 0), memory_order_relaxed);
     return term_new(TAG_DUP, label, loc);
 }
 
@@ -352,6 +369,8 @@ Term inet_dup_with_projs(INet* net, ThreadMem* tm, Lab label, Term target,
  *   !{a b} &L = &M{x y}  =>
  *     a = &M{x0 y0}, b = &M{x1 y1}
  *     where !{x0 x1} &L = x, !{y0 y1} &L = y
+ *
+ * For primitives (NUM, ERA) inside SUP, duplicate directly.
  */
 void inet_interact_dup_sup(INet* net, ThreadMem* tm, Term dup, Term sup) {
     Lab dup_label = term_aux(dup);
@@ -380,25 +399,34 @@ void inet_interact_dup_sup(INet* net, ThreadMem* tm, Term dup, Term sup) {
          *   !{y0 y1} &L = sup_right
          */
 
-        /* Create DUP for left element */
-        Loc x0_slot, x1_slot;
-        Term dup_left = inet_dup_with_projs(net, tm, dup_label, sup_left, &x0_slot, &x1_slot);
-        (void)dup_left;
+        Term x0, x1, y0, y1;
+        Tag left_tag = term_tag(sup_left);
+        Tag right_tag = term_tag(sup_right);
 
-        /* Create DUP for right element */
-        Loc y0_slot, y1_slot;
-        Term dup_right = inet_dup_with_projs(net, tm, dup_label, sup_right, &y0_slot, &y1_slot);
-        (void)dup_right;
+        /* Primitives can be duplicated directly */
+        if (left_tag == TAG_NUM || left_tag == TAG_ERA) {
+            x0 = sup_left;
+            x1 = sup_left;
+        } else {
+            Loc x0_slot, x1_slot;
+            inet_dup_with_projs(net, tm, dup_label, sup_left, &x0_slot, &x1_slot);
+            x0 = term_new(TAG_NIL, 0, x0_slot);
+            x1 = term_new(TAG_NIL, 0, x1_slot);
+        }
 
-        /* Create references to the projection slots */
-        Term x0_ref = term_new(TAG_NIL, 0, x0_slot);
-        Term x1_ref = term_new(TAG_NIL, 0, x1_slot);
-        Term y0_ref = term_new(TAG_NIL, 0, y0_slot);
-        Term y1_ref = term_new(TAG_NIL, 0, y1_slot);
+        if (right_tag == TAG_NUM || right_tag == TAG_ERA) {
+            y0 = sup_right;
+            y1 = sup_right;
+        } else {
+            Loc y0_slot, y1_slot;
+            inet_dup_with_projs(net, tm, dup_label, sup_right, &y0_slot, &y1_slot);
+            y0 = term_new(TAG_NIL, 0, y0_slot);
+            y1 = term_new(TAG_NIL, 0, y1_slot);
+        }
 
         /* Create the two new SUPs with the original SUP's label */
-        Term new_sup0 = inet_sup(net, tm, sup_label, x0_ref, y0_ref);
-        Term new_sup1 = inet_sup(net, tm, sup_label, x1_ref, y1_ref);
+        Term new_sup0 = inet_sup(net, tm, sup_label, x0, y0);
+        Term new_sup1 = inet_sup(net, tm, sup_label, x1, y1);
 
         /* Write results to DUP's projection slots */
         inet_subst(net, proj0_slot, new_sup0);
@@ -495,24 +523,34 @@ void inet_interact_dup_num(INet* net, ThreadMem* tm, Term dup, Term num) {
  *
  * (&L{f0 f1} arg)  =>  &L{(f0 arg0) (f1 arg1)}
  * where !{arg0 arg1} &L = arg
+ *
+ * If arg is a primitive (NUM, ERA), duplicate directly without DUP node.
+ * This is a key optimization for numeric code like fib.
  */
 Term inet_interact_app_sup(INet* net, ThreadMem* tm, Term sup_fun, Term arg, Lab sup_label) {
     Loc sup_loc = term_loc(sup_fun);
     Term f0 = inet_get(net, sup_loc);
     Term f1 = inet_get(net, sup_loc + 1);
 
-    /* Create DUP for the argument */
-    Loc arg0_slot, arg1_slot;
-    Term arg_dup = inet_dup_with_projs(net, tm, sup_label, arg, &arg0_slot, &arg1_slot);
-    (void)arg_dup;
+    Term arg0, arg1;
+    Tag arg_tag = term_tag(arg);
 
-    /* Create references to the projection slots */
-    Term arg0_ref = term_new(TAG_NIL, 0, arg0_slot);
-    Term arg1_ref = term_new(TAG_NIL, 0, arg1_slot);
+    /* Fast path: primitives can be duplicated directly without DUP nodes */
+    if (__builtin_expect(arg_tag == TAG_NUM || arg_tag == TAG_ERA, 1)) {
+        /* NUM and ERA can be freely copied */
+        arg0 = arg;
+        arg1 = arg;
+    } else {
+        /* Complex value: create lazy DUP */
+        Loc arg0_slot, arg1_slot;
+        inet_dup_with_projs(net, tm, sup_label, arg, &arg0_slot, &arg1_slot);
+        arg0 = term_new(TAG_NIL, 0, arg0_slot);
+        arg1 = term_new(TAG_NIL, 0, arg1_slot);
+    }
 
     /* Create the two applications */
-    Term app0 = inet_app(net, tm, f0, arg0_ref);
-    Term app1 = inet_app(net, tm, f1, arg1_ref);
+    Term app0 = inet_app(net, tm, f0, arg0);
+    Term app1 = inet_app(net, tm, f1, arg1);
 
     /* Return SUP of the applications */
     return inet_sup(net, tm, sup_label, app0, app1);
@@ -697,19 +735,20 @@ static inline int64_t deque_size(ThreadMem* tm) {
  * Compute binary operation
  *===========================================================================*/
 
-static inline int64_t compute_op(Lab op, int64_t x, int64_t y) {
+static __attribute__((always_inline)) inline int64_t compute_op(Lab op, int64_t x, int64_t y) {
+    /* Use a jump table for fast dispatch - compiler will optimize this */
     switch (op) {
         case OP_ADD: return x + y;
         case OP_SUB: return x - y;
         case OP_MUL: return x * y;
-        case OP_DIV: return y != 0 ? x / y : 0;
-        case OP_MOD: return y != 0 ? x % y : 0;
-        case OP_EQ:  return x == y ? 1 : 0;
-        case OP_NE:  return x != y ? 1 : 0;
-        case OP_LT:  return x < y ? 1 : 0;
-        case OP_GT:  return x > y ? 1 : 0;
-        case OP_LE:  return x <= y ? 1 : 0;
-        case OP_GE:  return x >= y ? 1 : 0;
+        case OP_DIV: return __builtin_expect(y != 0, 1) ? x / y : 0;
+        case OP_MOD: return __builtin_expect(y != 0, 1) ? x % y : 0;
+        case OP_EQ:  return x == y;
+        case OP_NE:  return x != y;
+        case OP_LT:  return x < y;
+        case OP_GT:  return x > y;
+        case OP_LE:  return x <= y;
+        case OP_GE:  return x >= y;
         default:     return 0;
     }
 }
@@ -742,86 +781,108 @@ typedef struct {
  *
  * Returns the reduced term.
  * Handles all interaction calculus rules.
+ *
+ * Cached heap pointer to reduce indirection and inlined tag checks with unlikely/likely hints
  */
-static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
+static __attribute__((hot)) Term reduce_term(INet* net, ThreadMem* tm, Term term) {
     Frame stack[MAX_STACK];
     int sp = 0;
 
-    while (1) {
-        /* Follow substitutions */
-        while (term_is_sub(term)) {
+    /* Cache heap pointer locally - reduces pointer chasing */
+    ATerm* const __restrict__ heap = net->heap;
+
+    for (;;) {
+        /* Follow substitutions - use unlikely since most terms aren't subs */
+        while (__builtin_expect(term_is_sub(term), 0)) {
             term = term_clr_sub(term);
         }
 
-        Tag tag = term_tag(term);
+        const Tag tag = term_tag(term);
 
-        /* If it's a value, unwind stack */
-        if (tag == TAG_NUM || tag == TAG_ERA || tag == TAG_LAM || tag == TAG_CLO || tag == TAG_SUP) {
-            /* These are all values - if stack is empty, return */
-            if (sp == 0) {
+        /* Fast path: check if it's a value type (most common case) */
+        /* Values are: NUM(0x13), ERA(0x14), LAM(0x10), CLO(0x11), SUP(0x15) */
+        const int is_value = (tag == TAG_NUM) | (tag == TAG_ERA) | 
+                             (tag == TAG_LAM) | (tag == TAG_CLO) | (tag == TAG_SUP);
+        
+        if (__builtin_expect(is_value, 1)) {
+            /* It's a value - unwind stack or return */
+            if (__builtin_expect(sp == 0, 0)) {
                 return term;
             }
 
             while (sp > 0) {
-                Frame* f = &stack[--sp];
+                Frame* const f = &stack[--sp];
 
                 if (f->op == TAG_OPR) {
                     if (f->state == 0) {
                         /* Got first operand, now need second */
-                        if (tag == TAG_NUM) {
+                        if (__builtin_expect(tag == TAG_NUM, 1)) {
                             f->val = inet_get_num(term);
                             f->state = 1;
 
-                            /* Get second operand and reduce it */
-                            term = inet_get(net, f->loc + 1);
-                            while (term_is_sub(term)) term = term_clr_sub(term);
+                            /* Get second operand directly from cached heap */
+                            term = atomic_load_explicit(&heap[f->loc + 1], memory_order_relaxed);
+                            while (__builtin_expect(term_is_sub(term), 0)) {
+                                term = term_clr_sub(term);
+                            }
                             sp++;  /* Keep frame on stack */
-                            break;  /* Continue reducing */
+                            goto next_iter;  /* Continue reducing */
                         } else {
-                            /* First operand is not a number - error */
                             IDEBUG("OPR first arg not NUM: tag=%02x\n", tag);
                             term = term_new(TAG_ERA, 0, 0);
                         }
                     } else {
                         /* Got second operand, compute result */
-                        if (tag == TAG_NUM) {
-                            int64_t result = compute_op(f->aux, f->val, inet_get_num(term));
+                        if (__builtin_expect(tag == TAG_NUM, 1)) {
+                            const int64_t result = compute_op(f->aux, f->val, inet_get_num(term));
                             term = inet_num(result);
                             tm->interactions++;
                         } else {
                             IDEBUG("OPR second arg not NUM: tag=%02x\n", tag);
                             term = term_new(TAG_ERA, 0, 0);
                         }
-                        /* Continue unwinding */
                     }
                 } else if (f->op == TAG_DUP) {
                     /* DUP waiting for its target value */
-                    Term dup_term = term_new(TAG_DUP, f->aux, f->loc);
+                    const Term dup_term = term_new(TAG_DUP, f->aux, f->loc);
                     perform_dup_interaction(net, tm, dup_term, term);
                     tm->interactions++;
 
-                    /* Now read the projection we need */
-                    /* f->state: 0 = need proj0, 1 = need proj1 */
-                    Loc proj_slot = f->loc + 1 + f->state;
-                    term = inet_get(net, proj_slot);
-                    /* Continue unwinding - term should now be substituted */
+                    /* Read the projection we need directly */
+                    const Loc proj_slot = f->loc + 1 + f->state;
+                    term = atomic_load_explicit(&heap[proj_slot], memory_order_relaxed);
                 }
             }
 
             if (sp == 0) {
-                return term;  /* Done! */
+                return term;
             }
             continue;
         }
 
-        /* Handle different node types */
+        /* Handle non-value node types */
         switch (tag) {
             case TAG_OPR: {
-                /* Binary operator - push frame, reduce first operand */
-                Loc loc = term_loc(term);
-                Lab op = term_aux(term);
+                const Loc loc = term_loc(term);
+                const Lab op = term_aux(term);
 
-                if (sp >= MAX_STACK - 1) {
+                /* Check if both operands are already NUMs */
+                Term left = atomic_load_explicit(&heap[loc], memory_order_relaxed);
+                Term right = atomic_load_explicit(&heap[loc + 1], memory_order_relaxed);
+                
+                /* Follow substitutions for both */
+                while (__builtin_expect(term_is_sub(left), 0)) left = term_clr_sub(left);
+                while (__builtin_expect(term_is_sub(right), 0)) right = term_clr_sub(right);
+
+                /* Fast path: both are NUMs - compute immediately without stack */
+                if (__builtin_expect(term_tag(left) == TAG_NUM && term_tag(right) == TAG_NUM, 1)) {
+                    const int64_t result = compute_op(op, inet_get_num(left), inet_get_num(right));
+                    term = inet_num(result);
+                    tm->interactions++;
+                    break;
+                }
+
+                if (__builtin_expect(sp >= MAX_STACK - 1, 0)) {
                     fprintf(stderr, "Stack overflow in reduce_term\n");
                     return inet_num(0);
                 }
@@ -834,64 +895,53 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
                 sp++;
 
                 /* Reduce first operand */
-                term = inet_get(net, loc);
+                term = left;
                 break;
             }
 
             case TAG_REF: {
-                /* Function call - inline expansion */
-                uint16_t func_idx = term_aux(term);
-                Loc loc = term_loc(term);
+                const uint16_t func_idx = term_aux(term);
+                const Loc loc = term_loc(term);
 
-                if (func_idx >= net->num_funcs || !net->funcs[func_idx].impl) {
+                if (__builtin_expect(func_idx >= net->num_funcs || !net->funcs[func_idx].impl, 0)) {
                     term = term_new(TAG_ERA, 0, 0);
                     break;
                 }
 
-                Term arg = inet_get(net, loc);
+                const Term arg = atomic_load_explicit(&heap[loc], memory_order_relaxed);
                 term = net->funcs[func_idx].impl(net, tm, arg);
                 tm->interactions++;
                 break;
             }
 
             case TAG_APP: {
-                /* Application - reduce function, then apply */
-                Loc loc = term_loc(term);
-                Term fun = inet_get(net, loc);
-                Term arg = inet_get(net, loc + 1);
+                const Loc loc = term_loc(term);
+                Term fun = atomic_load_explicit(&heap[loc], memory_order_relaxed);
+                const Term arg = atomic_load_explicit(&heap[loc + 1], memory_order_relaxed);
 
-                /* First reduce the function to get LAM, CLO, or SUP */
+                /* Reduce function first */
                 fun = reduce_term(net, tm, fun);
-                Tag fun_tag = term_tag(fun);
+                const Tag fun_tag = term_tag(fun);
 
                 if (fun_tag == TAG_LAM) {
-                    /* APP-LAM: beta reduction */
-                    /* LAM layout: [var_loc_ptr, body] */
-                    Loc lam_loc = term_loc(fun);
-                    Term var_ptr = inet_get(net, lam_loc);
-                    Loc var_loc = term_loc(var_ptr);
-                    Term body = inet_get(net, lam_loc + 1);
+                    const Loc lam_loc = term_loc(fun);
+                    const Term var_ptr = atomic_load_explicit(&heap[lam_loc], memory_order_relaxed);
+                    const Loc var_loc = term_loc(var_ptr);
+                    const Term body = atomic_load_explicit(&heap[lam_loc + 1], memory_order_relaxed);
 
-                    /* Substitute arg for the variable */
                     inet_subst(net, var_loc, arg);
-
-                    /* Continue reducing body */
                     term = body;
                     tm->interactions++;
                 } else if (fun_tag == TAG_CLO) {
-                    /* APP-CLO: apply arg to closure */
                     term = apply_closure(net, tm, fun, arg);
                     tm->interactions++;
                 } else if (fun_tag == TAG_SUP) {
-                    /* APP-SUP: distribute application over superposition */
-                    Lab sup_label = term_aux(fun);
+                    const Lab sup_label = term_aux(fun);
                     term = inet_interact_app_sup(net, tm, fun, arg, sup_label);
                     tm->interactions++;
                 } else if (fun_tag == TAG_ERA) {
-                    /* Applying ERA - result is ERA */
                     term = term_new(TAG_ERA, 0, 0);
                 } else {
-                    /* Can't apply non-function */
                     IDEBUG("APP to non-function: tag=%02x\n", fun_tag);
                     term = term_new(TAG_ERA, 0, 0);
                 }
@@ -899,35 +949,31 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
             }
 
             case TAG_DUP: {
-                /* Duplication - reduce target, then perform interaction */
-                Loc loc = term_loc(term);
-                Lab label = term_aux(term);
-                Term target = inet_get(net, loc);
+                const Loc loc = term_loc(term);
+                const Lab label = term_aux(term);
+                Term target = atomic_load_explicit(&heap[loc], memory_order_relaxed);
 
-                /* Check if target is already a value */
-                while (term_is_sub(target)) {
+                while (__builtin_expect(term_is_sub(target), 0)) {
                     target = term_clr_sub(target);
                 }
 
-                Tag target_tag = term_tag(target);
-                if (target_tag == TAG_NUM || target_tag == TAG_ERA ||
-                    target_tag == TAG_LAM || target_tag == TAG_CLO || target_tag == TAG_SUP) {
-                    /* Target is a value - perform interaction immediately */
+                const Tag target_tag = term_tag(target);
+                const int target_is_value = (target_tag == TAG_NUM) | (target_tag == TAG_ERA) |
+                                            (target_tag == TAG_LAM) | (target_tag == TAG_CLO) | 
+                                            (target_tag == TAG_SUP);
+                
+                if (__builtin_expect(target_is_value, 1)) {
                     perform_dup_interaction(net, tm, term, target);
                     tm->interactions++;
-
-                    /* For now, return proj0 - caller should handle which proj they need */
-                    /* This is a simplification; in practice, the caller knows which proj */
-                    term = inet_get(net, loc + 1);  /* proj0 */
+                    term = atomic_load_explicit(&heap[loc + 1], memory_order_relaxed);
                 } else {
-                    /* Need to reduce target first */
-                    if (sp >= MAX_STACK - 1) {
+                    if (__builtin_expect(sp >= MAX_STACK - 1, 0)) {
                         fprintf(stderr, "Stack overflow in reduce_term (DUP)\n");
                         return inet_num(0);
                     }
 
                     stack[sp].op = TAG_DUP;
-                    stack[sp].state = 0;  /* Will need proj0 */
+                    stack[sp].state = 0;
                     stack[sp].aux = label;
                     stack[sp].loc = loc;
                     stack[sp].out = 0;
@@ -940,25 +986,22 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
 
             case TAG_LAM:
             case TAG_CLO:
-            case TAG_SUP: {
-                /* Already a value */
+            case TAG_SUP:
                 return term;
-            }
 
             case TAG_NIL:
             case TAG_SUB: {
-                /* Variable - read its value */
-                Loc loc = term_loc(term);
-                term = inet_get(net, loc);
+                const Loc loc = term_loc(term);
+                term = atomic_load_explicit(&heap[loc], memory_order_relaxed);
                 break;
             }
 
             default:
-                /* Unknown - treat as ERA */
                 IDEBUG("Unknown tag in reduce_term: %02x\n", tag);
                 term = term_new(TAG_ERA, 0, 0);
                 break;
         }
+        next_iter:;
     }
 }
 
@@ -967,7 +1010,11 @@ static Term reduce_term(INet* net, ThreadMem* tm, Term term) {
  *
  * Similar to reduce_term but pushes right subtrees as redexes
  * that can be stolen by other threads.
- * Handles all interaction calculus rules.
+ *
+ * OPTIMIZATIONS:
+ * - Only push parallel work for REF nodes (function calls) to reduce overhead
+ * - Use cached heap pointer
+ * - Branch prediction hints
  */
 typedef struct {
     uint8_t  op;
@@ -975,35 +1022,39 @@ typedef struct {
     Lab      aux;
     Loc      loc;
     int64_t  val;
-    Loc      result_slot;  /* Where the second operand result will be written */
+    Loc      result_slot;
 } PFrame;
 
-static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
+static __attribute__((hot)) Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
     PFrame stack[MAX_STACK];
     int sp = 0;
 
-    /* Depth limit for pushing parallel work */
-    const int PARALLEL_DEPTH = 4;
+    /* Cache heap pointer */
+    ATerm* const __restrict__ heap = net->heap;
 
-    while (1) {
-        while (term_is_sub(term)) {
+    /* Only push parallel work at shallow depths to avoid overhead */
+    const int PARALLEL_DEPTH = 3;
+
+    for (;;) {
+        while (__builtin_expect(term_is_sub(term), 0)) {
             term = term_clr_sub(term);
         }
 
-        Tag tag = term_tag(term);
+        const Tag tag = term_tag(term);
+        const int is_value = (tag == TAG_NUM) | (tag == TAG_ERA) | 
+                             (tag == TAG_LAM) | (tag == TAG_CLO) | (tag == TAG_SUP);
 
-        if (tag == TAG_NUM || tag == TAG_ERA || tag == TAG_LAM || tag == TAG_CLO || tag == TAG_SUP) {
-            /* All are values - if stack is empty, return */
-            if (sp == 0) {
+        if (__builtin_expect(is_value, 1)) {
+            if (__builtin_expect(sp == 0, 0)) {
                 return term;
             }
 
             while (sp > 0) {
-                PFrame* f = &stack[--sp];
+                PFrame* const f = &stack[--sp];
 
                 if (f->op == TAG_OPR) {
                     if (f->state == 0) {
-                        if (tag != TAG_NUM) {
+                        if (__builtin_expect(tag != TAG_NUM, 0)) {
                             IDEBUG("OPR first arg not NUM: tag=%02x\n", tag);
                             term = term_new(TAG_ERA, 0, 0);
                             continue;
@@ -1012,48 +1063,49 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
                         f->state = 1;
 
                         if (f->result_slot != 0) {
-                            /* Second operand was pushed as parallel work */
-                            /* Wait for it by reading the slot */
-                            Term slot_val = inet_get(net, f->result_slot);
+                            /* Wait for parallel result - but help out */
+                            Term slot_val = atomic_load_explicit(&heap[f->result_slot], memory_order_acquire);
+                            int spins = 0;
                             while (!term_is_sub(slot_val)) {
-                                /* Spin-wait or do other work */
                                 Redex r;
                                 if (inet_pop(net, tm, &r)) {
-                                    /* Do some other work while waiting */
                                     Term res = reduce_parallel(net, tm, r.a, depth + 1);
                                     inet_subst(net, term_loc(r.b), res);
+                                } else if (++spins > 64) {
+                                    /* Avoid spinning too long */
+                                    cpu_pause();
+                                    spins = 0;
                                 }
-                                slot_val = inet_get(net, f->result_slot);
+                                slot_val = atomic_load_explicit(&heap[f->result_slot], memory_order_acquire);
                             }
                             term = term_clr_sub(slot_val);
                             sp++;
-                            break;
+                            goto next_iter;
                         } else {
-                            /* Reduce second operand locally */
-                            term = inet_get(net, f->loc + 1);
-                            while (term_is_sub(term)) term = term_clr_sub(term);
+                            term = atomic_load_explicit(&heap[f->loc + 1], memory_order_relaxed);
+                            while (__builtin_expect(term_is_sub(term), 0)) {
+                                term = term_clr_sub(term);
+                            }
                             sp++;
-                            break;
+                            goto next_iter;
                         }
                     } else {
-                        if (tag != TAG_NUM) {
+                        if (__builtin_expect(tag != TAG_NUM, 0)) {
                             IDEBUG("OPR second arg not NUM: tag=%02x\n", tag);
                             term = term_new(TAG_ERA, 0, 0);
                             continue;
                         }
-                        int64_t result = compute_op(f->aux, f->val, inet_get_num(term));
+                        const int64_t result = compute_op(f->aux, f->val, inet_get_num(term));
                         term = inet_num(result);
                         tm->interactions++;
                     }
                 } else if (f->op == TAG_DUP) {
-                    /* DUP waiting for its target value */
-                    Term dup_term = term_new(TAG_DUP, f->aux, f->loc);
+                    const Term dup_term = term_new(TAG_DUP, f->aux, f->loc);
                     perform_dup_interaction(net, tm, dup_term, term);
                     tm->interactions++;
 
-                    /* Read the projection we need */
-                    Loc proj_slot = f->loc + 1 + f->state;
-                    term = inet_get(net, proj_slot);
+                    const Loc proj_slot = f->loc + 1 + f->state;
+                    term = atomic_load_explicit(&heap[proj_slot], memory_order_relaxed);
                 }
             }
 
@@ -1065,10 +1117,25 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
 
         switch (tag) {
             case TAG_OPR: {
-                Loc loc = term_loc(term);
-                Lab op = term_aux(term);
+                const Loc loc = term_loc(term);
+                const Lab op = term_aux(term);
 
-                if (sp >= MAX_STACK - 1) {
+                /* Check if both operands are already NUMs */
+                Term left = atomic_load_explicit(&heap[loc], memory_order_relaxed);
+                Term right = atomic_load_explicit(&heap[loc + 1], memory_order_relaxed);
+                
+                while (__builtin_expect(term_is_sub(left), 0)) left = term_clr_sub(left);
+                while (__builtin_expect(term_is_sub(right), 0)) right = term_clr_sub(right);
+
+                /* Fast path: both are NUMs - compute immediately */
+                if (__builtin_expect(term_tag(left) == TAG_NUM && term_tag(right) == TAG_NUM, 1)) {
+                    const int64_t result = compute_op(op, inet_get_num(left), inet_get_num(right));
+                    term = inet_num(result);
+                    tm->interactions++;
+                    break;
+                }
+
+                if (__builtin_expect(sp >= MAX_STACK - 1, 0)) {
                     fprintf(stderr, "Stack overflow\n");
                     return inet_num(0);
                 }
@@ -1079,69 +1146,58 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
                 stack[sp].loc = loc;
                 stack[sp].result_slot = 0;
 
-                /* Push right subtree as parallel work if shallow enough */
-                Term right = inet_get(net, loc + 1);
-                if (depth < PARALLEL_DEPTH && !term_is_sub(right) && term_tag(right) != TAG_NUM) {
-                    /* Allocate slot for result */
-                    Loc slot = inet_alloc(net, tm, 1);
-                    inet_set(net, slot, term_new(TAG_NIL, 0, 0));
+                /* Only push parallel work for REF (function calls) at shallow depth */
+                const Tag right_tag = term_tag(right);
+                if (depth < PARALLEL_DEPTH && right_tag == TAG_REF) {
+                    const Loc slot = inet_alloc(net, tm, 1);
+                    atomic_store_explicit(&heap[slot], term_new(TAG_NIL, 0, 0), memory_order_relaxed);
                     stack[sp].result_slot = slot;
-
-                    /* Push as redex: (right_subtree, result_slot) */
                     inet_push(net, tm, right, term_new(TAG_NIL, 0, slot));
                 }
 
                 sp++;
-                term = inet_get(net, loc);  /* Reduce left */
+                term = left;
                 depth++;
                 break;
             }
 
             case TAG_REF: {
-                uint16_t func_idx = term_aux(term);
-                Loc loc = term_loc(term);
+                const uint16_t func_idx = term_aux(term);
+                const Loc loc = term_loc(term);
 
-                if (func_idx >= net->num_funcs || !net->funcs[func_idx].impl) {
+                if (__builtin_expect(func_idx >= net->num_funcs || !net->funcs[func_idx].impl, 0)) {
                     term = term_new(TAG_ERA, 0, 0);
                     break;
                 }
 
-                Term arg = inet_get(net, loc);
+                const Term arg = atomic_load_explicit(&heap[loc], memory_order_relaxed);
                 term = net->funcs[func_idx].impl(net, tm, arg);
                 tm->interactions++;
                 break;
             }
 
             case TAG_APP: {
-                /* Application - reduce function, then apply */
-                Loc loc = term_loc(term);
-                Term fun = inet_get(net, loc);
-                Term arg = inet_get(net, loc + 1);
+                const Loc loc = term_loc(term);
+                Term fun = atomic_load_explicit(&heap[loc], memory_order_relaxed);
+                const Term arg = atomic_load_explicit(&heap[loc + 1], memory_order_relaxed);
 
-                /* First reduce the function to get LAM, CLO, or SUP */
                 fun = reduce_parallel(net, tm, fun, depth + 1);
-                Tag fun_tag = term_tag(fun);
+                const Tag fun_tag = term_tag(fun);
 
                 if (fun_tag == TAG_LAM) {
-                    /* APP-LAM: beta reduction */
-                    Loc lam_loc = term_loc(fun);
-                    Term var_ptr = inet_get(net, lam_loc);
-                    Loc var_loc = term_loc(var_ptr);
-                    Term body = inet_get(net, lam_loc + 1);
+                    const Loc lam_loc = term_loc(fun);
+                    const Term var_ptr = atomic_load_explicit(&heap[lam_loc], memory_order_relaxed);
+                    const Loc var_loc = term_loc(var_ptr);
+                    const Term body = atomic_load_explicit(&heap[lam_loc + 1], memory_order_relaxed);
 
-                    /* Substitute arg for the variable */
                     inet_subst(net, var_loc, arg);
-
-                    /* Continue reducing body */
                     term = body;
                     tm->interactions++;
                 } else if (fun_tag == TAG_CLO) {
-                    /* APP-CLO: apply arg to closure */
                     term = apply_closure(net, tm, fun, arg);
                     tm->interactions++;
                 } else if (fun_tag == TAG_SUP) {
-                    /* APP-SUP: distribute application over superposition */
-                    Lab sup_label = term_aux(fun);
+                    const Lab sup_label = term_aux(fun);
                     term = inet_interact_app_sup(net, tm, fun, arg, sup_label);
                     tm->interactions++;
                 } else if (fun_tag == TAG_ERA) {
@@ -1154,27 +1210,25 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
             }
 
             case TAG_DUP: {
-                /* Duplication - reduce target, then perform interaction */
-                Loc loc = term_loc(term);
-                Lab label = term_aux(term);
-                Term target = inet_get(net, loc);
+                const Loc loc = term_loc(term);
+                const Lab label = term_aux(term);
+                Term target = atomic_load_explicit(&heap[loc], memory_order_relaxed);
 
-                /* Check if target is already a value */
-                while (term_is_sub(target)) {
+                while (__builtin_expect(term_is_sub(target), 0)) {
                     target = term_clr_sub(target);
                 }
 
-                Tag target_tag = term_tag(target);
-                if (target_tag == TAG_NUM || target_tag == TAG_ERA ||
-                    target_tag == TAG_LAM || target_tag == TAG_CLO || target_tag == TAG_SUP) {
-                    /* Target is a value - perform interaction immediately */
+                const Tag target_tag = term_tag(target);
+                const int target_is_value = (target_tag == TAG_NUM) | (target_tag == TAG_ERA) |
+                                            (target_tag == TAG_LAM) | (target_tag == TAG_CLO) | 
+                                            (target_tag == TAG_SUP);
+
+                if (__builtin_expect(target_is_value, 1)) {
                     perform_dup_interaction(net, tm, term, target);
                     tm->interactions++;
-
-                    term = inet_get(net, loc + 1);  /* proj0 */
+                    term = atomic_load_explicit(&heap[loc + 1], memory_order_relaxed);
                 } else {
-                    /* Need to reduce target first */
-                    if (sp >= MAX_STACK - 1) {
+                    if (__builtin_expect(sp >= MAX_STACK - 1, 0)) {
                         fprintf(stderr, "Stack overflow in reduce_parallel (DUP)\n");
                         return inet_num(0);
                     }
@@ -1193,15 +1247,13 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
 
             case TAG_LAM:
             case TAG_CLO:
-            case TAG_SUP: {
-                /* Already a value */
+            case TAG_SUP:
                 return term;
-            }
 
             case TAG_NIL:
             case TAG_SUB: {
-                Loc loc = term_loc(term);
-                term = inet_get(net, loc);
+                const Loc loc = term_loc(term);
+                term = atomic_load_explicit(&heap[loc], memory_order_relaxed);
                 break;
             }
 
@@ -1210,6 +1262,7 @@ static Term reduce_parallel(INet* net, ThreadMem* tm, Term term, int depth) {
                 term = term_new(TAG_ERA, 0, 0);
                 break;
         }
+        next_iter:;
     }
 }
 
@@ -1227,18 +1280,18 @@ static void* worker_thread(void* arg) {
     WorkerArg* wa = (WorkerArg*)arg;
     INet* net = wa->net;
     ThreadMem* tm = wa->tm;
-    int num_threads = wa->num_threads;
+    const int num_threads = wa->num_threads;
 
     uint32_t idle_spins = 0;
-    const uint32_t MAX_IDLE_SPINS = 1000;
+    const uint32_t MAX_IDLE_SPINS = 256;  /* Reduced for faster termination detection */
+    const uint32_t PAUSE_SPINS = 32;      /* Use pause instruction instead of busy loop */
 
-    while (!atomic_load_explicit(&net->done, memory_order_relaxed)) {
+    while (__builtin_expect(!atomic_load_explicit(&net->done, memory_order_relaxed), 1)) {
         Redex r;
 
-        /* Try local pop */
-        if (inet_pop(net, tm, &r)) {
-            Term result = reduce_parallel(net, tm, r.a, 0);
-            /* r.b is the slot to write result */
+        /* Try local pop first - most likely to succeed */
+        if (__builtin_expect(inet_pop(net, tm, &r), 1)) {
+            const Term result = reduce_parallel(net, tm, r.a, 0);
             if (term_tag(r.b) == TAG_NIL) {
                 inet_subst(net, term_loc(r.b), result);
             }
@@ -1246,15 +1299,18 @@ static void* worker_thread(void* arg) {
             continue;
         }
 
-        /* Try stealing */
+        /* Try stealing from other threads */
         bool stolen = false;
-        for (int i = 1; i < num_threads && !stolen; i++) {
-            int victim_id = (tm->tid + i) % num_threads;
-            ThreadMem* victim = net->threads[victim_id];
-
+        /* Start from a random offset to avoid contention */
+        const int start = (tm->tid + 1) % num_threads;
+        for (int i = 0; i < num_threads - 1 && !stolen; i++) {
+            const int victim_id = (start + i) % num_threads;
+            if (victim_id == (int)tm->tid) continue;
+            
+            ThreadMem* const victim = net->threads[victim_id];
             if (inet_steal(net, tm, victim, &r)) {
                 tm->steals++;
-                Term result = reduce_parallel(net, tm, r.a, 0);
+                const Term result = reduce_parallel(net, tm, r.a, 0);
                 if (term_tag(r.b) == TAG_NIL) {
                     inet_subst(net, term_loc(r.b), result);
                 }
@@ -1268,10 +1324,11 @@ static void* worker_thread(void* arg) {
         if (!stolen) {
             idle_spins++;
 
-            if (idle_spins > MAX_IDLE_SPINS) {
-                atomic_fetch_add_explicit(&net->idle_count, 1, memory_order_relaxed);
+            if (__builtin_expect(idle_spins > MAX_IDLE_SPINS, 0)) {
+                atomic_fetch_add_explicit(&net->idle_count, 1, memory_order_release);
 
-                while (!atomic_load_explicit(&net->done, memory_order_relaxed)) {
+                /* Wait for work or termination */
+                while (!atomic_load_explicit(&net->done, memory_order_acquire)) {
                     bool any_work = false;
                     for (int i = 0; i < num_threads && !any_work; i++) {
                         if (deque_size(net->threads[i]) > 0) {
@@ -1280,13 +1337,13 @@ static void* worker_thread(void* arg) {
                     }
 
                     if (any_work) {
-                        atomic_fetch_sub_explicit(&net->idle_count, 1, memory_order_relaxed);
+                        atomic_fetch_sub_explicit(&net->idle_count, 1, memory_order_release);
                         break;
                     }
 
-                    uint32_t idle = atomic_load_explicit(&net->idle_count, memory_order_relaxed);
+                    const uint32_t idle = atomic_load_explicit(&net->idle_count, memory_order_acquire);
                     if (idle >= (uint32_t)num_threads) {
-                        atomic_store_explicit(&net->done, 1, memory_order_relaxed);
+                        atomic_store_explicit(&net->done, 1, memory_order_release);
                         break;
                     }
 
@@ -1294,8 +1351,11 @@ static void* worker_thread(void* arg) {
                 }
 
                 idle_spins = 0;
-            } else {
-                for (volatile int i = 0; i < 100; i++);
+            } else if (idle_spins > PAUSE_SPINS) {
+                /* Use CPU pause instruction for light spinning */
+                for (int i = 0; i < 8; i++) {
+                    cpu_pause();
+                }
             }
         }
     }

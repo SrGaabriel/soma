@@ -4,7 +4,7 @@ import Data.List (intercalate, nub)
 import Llvm.Dependencies (LlvmDependency)
 import Llvm.Instructions (LlvmStatement)
 import Llvm.Ir (IR (toLlvm))
-import Llvm.Types (LlvmType)
+import Llvm.Types (LlvmType, LlvmFnAttr, fnAttrToLlvm)
 
 data LlvmModule = LlvmModule
     { moduleName :: String
@@ -28,6 +28,7 @@ data LlvmFunction = LlvmFunction
     , functionParams :: [(String, LlvmType)]
     , functionReturnType :: LlvmType
     , functionBlocks :: [LlvmBlock]
+    , functionAttributes :: [LlvmFnAttr]
     }
     deriving (Show)
 
@@ -58,14 +59,16 @@ instance IR LlvmGlobal where
             ++ initializer
 
 instance IR LlvmFunction where
-    toLlvm (LlvmFunction name params retType blocks) =
+    toLlvm (LlvmFunction name params retType blocks attrs) =
         "define "
             ++ toLlvm retType
             ++ " @"
             ++ name
             ++ "("
             ++ intercalate "," (map (\(n, t) -> toLlvm t ++ " %" ++ n) params)
-            ++ ") {\n"
+            ++ ")"
+            ++ (if null attrs then "" else " " ++ unwords (map fnAttrToLlvm attrs))
+            ++ " {\n"
             ++ unlines (map toLlvm blocks)
             ++ "}"
 

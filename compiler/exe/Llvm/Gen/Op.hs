@@ -53,7 +53,7 @@ import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Gen.TypeConversion (convertType)
 import Llvm.Instructions
 import Llvm.Modules (LlvmBlock (..), LlvmFunction (..))
-import Llvm.Types (LlvmType (..), deref)
+import Llvm.Types (LlvmType (..), LlvmFnAttr (..), deref)
 import qualified Llvm.Types as LT
 import Llvm.Values (LlvmValue (..), getValueType)
 import Utils.Lists (hardHead)
@@ -1443,6 +1443,7 @@ generateTrampoline name targetFn argTypes retTy = do
                 , functionParams = params
                 , functionReturnType = LlvmI64
                 , functionBlocks = [block]
+                , functionAttributes = [FnAttrNoUnwind]
                 }
 
     -- Register the trampoline function

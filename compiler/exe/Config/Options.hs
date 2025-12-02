@@ -77,6 +77,7 @@ data Options = Options
     , optionsDeps :: [(String, String)]
     , optionsSkipCircuit :: Bool -- todo: remove
     , optionsMode :: CompilationMode
+    , optionsOptimizationLevel :: Maybe Int
     }
     deriving (Show)
 
@@ -227,6 +228,15 @@ optionsParser =
                 <> metavar "MODE"
                 <> value ModeStandard
                 <> help "Compilation mode: standard (default), graph (parallel reduction), or hybrid"
+            )
+        <*> optional
+            ( option
+                auto
+                ( long "opt-level"
+                    <> short 'O'
+                    <> metavar "LEVEL"
+                    <> help "Optimization level (0-3)"
+                )
             )
 
 parseMode :: String -> Either String CompilationMode

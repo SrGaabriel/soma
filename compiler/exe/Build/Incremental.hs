@@ -381,8 +381,19 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
 
                 catch
                     ( do
-                        -- Link against C runtime
-                        callProcess "clang" ["-o", outputFile, llTemp, runtimeLibPath]
+                        let optimizationArgs = case optionsOptimizationLevel compileOptions of
+                                Just 3 -> [ "-O3"
+                                  , "-march=native"
+                                  , "-mtune=native"
+                                  , "-flto"
+                                  , "-fomit-frame-pointer"
+                                  , "-fno-exceptions"
+                                  , "-fno-unwind-tables"
+                                  ]
+                                _ -> []
+                        let commandArgs = optimizationArgs ++ ["-o", outputFile, llTemp, runtimeLibPath]
+                        callProcess "clang" commandArgs
+                        putStrLn $ "Ran: " ++ unwords ("clang" : commandArgs)
                         putStrLn $ "Successfully compiled executable: " ++ outputFile
                         putStrLn $ "(Linked with C runtime: " ++ runtimeLibPath ++ ")"
                     )

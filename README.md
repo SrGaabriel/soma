@@ -14,6 +14,22 @@ Put simply: write composable, declarative code; the compiler does the heavy lift
 
 ---
 
+## 📚 User Guide
+
+Clone the repository and run:
+
+```bash
+./install.sh
+```
+
+Then:
+
+```bash
+somac <source-file>.soma -m <mode>
+```
+
+---
+
 ## 💡 Examples
 
 You can find some examples in the `examples/` directory. They are not comprehensive, but should give you a taste of the language and its syntax.
@@ -197,6 +213,14 @@ Soma is for developers who want:
 2. **No garbage collection** (like Rust/Zig)
 3. **Strict evaluation** (like OCaml/ML)
 4. **Predictable performance** (like Go/Rust)
+
+---
+
+# 🎨 Branding
+
+**Color scheme:**
+1. **Primary:** Teal `#1ABC9C`: Not too bright (immature), not too dark (ancient)—represents clarity and balance.
+2. **Secondary:** Cerulean Blue `#34495E`: Professional, trustworthy, stable.
 
 ---
 

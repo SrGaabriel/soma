@@ -119,10 +119,15 @@ saveToReg reg instr = do
     return reg
 
 saveTmp :: (MonadState IrGenState m) => (MonadWriter [LlvmStatement] m) => LlvmInstruction -> LlvmType -> m LlvmValue
-saveTmp instr ty = do
-    reg <- freshTmpReg ty
-    tell [LlvmAssign (getRegName reg) instr]
-    return reg
+-- todo: improve this workaround
+saveTmp instr ty = case instr of
+    -- Identity cast is a no-op - just return the original value
+    LlvmIdentityCast val -> return val
+    -- For all other instructions, emit the assignment
+    _ -> do
+        reg <- freshTmpReg ty
+        tell [LlvmAssign (getRegName reg) instr]
+        return reg
 
 scopedState :: IrGen a -> IrGen a
 scopedState action = do

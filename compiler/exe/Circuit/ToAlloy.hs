@@ -31,6 +31,7 @@ module Circuit.ToAlloy (
 import Alloy.Build
 import Circuit.Alloc (AllocEnv, AllocKind (..), analyzeFunction, lookupAlloc)
 import Circuit.Escape (EscapeEnv, analyzeFunctionEscapes, canElideClone)
+import Circuit.Constants (parallelWorkThreshold)
 import qualified Circuit.Ir as C
 import Control.Monad (forM, forM_, when)
 import Data.List (isPrefixOf)
@@ -136,13 +137,6 @@ estimateWorkFromType ty envSize slotInfo =
         closureSlots = length [() | (_, True) <- slotInfo]
         nestedWork = closureSlots * 10
     in baseWork + envWork + nestedWork
-
-{- | Work threshold for parallel reduction (matches runtime SOMA_WORK_THRESHOLD)
-NOTE: Set low (10) for testing. In production, should be higher or use
-smarter estimation that considers recursive call depth.
--}
-parallelWorkThreshold :: Int
-parallelWorkThreshold = 10
 
 -- | Check if work estimate justifies parallel reduction
 shouldUseParallel :: Int -> Bool

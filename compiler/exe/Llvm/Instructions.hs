@@ -2,7 +2,7 @@ module Llvm.Instructions where
 
 import Data.List (intercalate)
 import Llvm.Ir (IR (toLlvm))
-import Llvm.Types (LlvmType, deref)
+import Llvm.Types (LlvmType (..), deref)
 import Llvm.Values (LlvmValue, getValueType)
 
 data LlvmInstruction
@@ -53,11 +53,11 @@ data LlvmStatement
 
 instance IR LlvmInstruction where
     toLlvm (LlvmAdd typ lhs rhs) =
-        "add " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+        "add nsw " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmSub typ lhs rhs) =
-        "sub " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+        "sub nsw " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmMul typ lhs rhs) =
-        "mul " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
+        "mul nsw " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmSDiv typ lhs rhs) =
         "sdiv " ++ toLlvm typ ++ " " ++ toLlvm lhs ++ ", " ++ toLlvm rhs
     toLlvm (LlvmSRem typ lhs rhs) =
@@ -108,8 +108,10 @@ instance IR LlvmInstruction where
     toLlvm (LlvmBitcast value targetType) =
         let sourceType = getValueType value
         in if sourceType == targetType
-            -- todo: block identities to make things more strict
-            then "select i1 true, " ++ toLlvm sourceType ++ " " ++ toLlvm value ++ ", " ++ toLlvm sourceType ++ " " ++ toLlvm value
+            -- Identity cast - use bitcast ptr to ptr for pointers, add 0 for integers
+            then case sourceType of
+                LlvmPointer _ -> "bitcast " ++ toLlvm sourceType ++ " " ++ toLlvm value ++ " to " ++ toLlvm targetType
+                _ -> "add " ++ toLlvm sourceType ++ " " ++ toLlvm value ++ ", 0"
             else "bitcast " ++ toLlvm sourceType ++ " " ++ toLlvm value ++ " to " ++ toLlvm targetType
     toLlvm (LlvmExtractValue structType value idx) =
         "extractvalue " ++ toLlvm structType ++ " " ++ toLlvm value ++ ", " ++ show idx
@@ -140,8 +142,11 @@ instance IR LlvmInstruction where
     toLlvm (LlvmIntToPtr value targetType) =
         "inttoptr " ++ toLlvm (getValueType value) ++ " " ++ toLlvm value ++ " to " ++ toLlvm targetType
     toLlvm (LlvmIdentityCast value) =
+        -- identity cast - use appropriate no-op for the type
         let ty = getValueType value
-        in "select i1 true, " ++ toLlvm ty ++ " " ++ toLlvm value ++ ", " ++ toLlvm ty ++ " " ++ toLlvm value
+        in case ty of
+            LlvmPointer _ -> "bitcast " ++ toLlvm ty ++ " " ++ toLlvm value ++ " to " ++ toLlvm ty
+            _ -> "add " ++ toLlvm ty ++ " " ++ toLlvm value ++ ", 0"
     toLlvm (LlvmAtomicRmw op ptrVal val ordering) =
         -- atomicrmw add ptr %ptr, i32 1 seq_cst
         "atomicrmw " ++ op ++ " ptr " ++ toLlvm ptrVal ++ ", " ++ toLlvm (getValueType val) ++ " " ++ toLlvm val ++ " " ++ ordering
