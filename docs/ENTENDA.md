@@ -1,23 +1,25 @@
 # Entendendo Soma
 
+> Note: This is an AI-generated translation of the [original English document](UNDERSTAND.md).
+
 Este documento tem como objetivo fornecer uma compreensão abrangente dos fundamentos teóricos por trás de Soma, uma linguagem de programação baseada em combinadores de interação. Exploraremos o contexto histórico das linguagens de programação, os princípios da lógica linear, o conceito de redes de interação e, finalmente, as especificidades dos combinadores de interação.
 
 Então, discutiremos como Soma aproveita esses conceitos para oferecer uma experiência de programação única, focando em suas aplicações práticas e vantagens.
 
 Índice:
 1. [Contexto Histórico](#contexto-histórico)
-  1.1 [Modelos de Computação](#modelos-de-computação)
-  1.2 [Lógica Linear](#lógica-linear)
-  1.3 [Redes de Interação](#redes-de-interação)
-  1.4 [Combinadores de Interação](#combinadores-de-interação)
-  1.5 [Cálculo de Interação](#cálculo-de-interação)
-  1.6 [Resumo](#resumo)
+  - 1.1 [Modelos de Computação](#modelos-de-computação)
+  - 1.2 [Lógica Linear](#lógica-linear)
+  - 1.3 [Redes de Interação](#redes-de-interação)
+  - 1.4 [Combinadores de Interação](#combinadores-de-interação)
+  - 1.5 [Cálculo de Interação](#cálculo-de-interação)
+  - 1.6 [Resumo](#resumo)
 2. [Onde o Soma Entra](#onde-o-soma-entra)
-  2.1 [Uma Linguagem que Você Pode Realmente Usar](#uma-linguagem-que-você-pode-realmente-usar)
-  2.2 [Sem Coletor de Lixo](#sem-coletor-de-lixo)
-  2.3 [Avaliação Estrita com Compartilhamento Ótimo](#avaliação-estrita-com-compartilhamento-ótimo)
-  2.4 [Paralelismo de Graça](#paralelismo-de-graça)
-  2.5 [Por que Isso Importa para Você](#por-que-isso-importa-para-você)
+  - 2.1 [Uma Linguagem que Você Pode Realmente Usar](#uma-linguagem-que-você-pode-realmente-usar)
+  - 2.2 [Sem Coletor de Lixo](#sem-coletor-de-lixo)
+  - 2.3 [Avaliação Estrita com Compartilhamento Ótimo](#avaliação-estrita-com-compartilhamento-ótimo)
+  - 2.4 [Paralelismo de Graça](#paralelismo-de-graça)
+  - 2.5 [Por que Isso Importa para Você](#por-que-isso-importa-para-você)
 3. [Agradecimentos](#-agradecimentos)
 
 # Contexto Histórico
