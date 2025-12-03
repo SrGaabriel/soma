@@ -2,6 +2,8 @@
 
 This document aims to provide a comprehensive understanding of the theoretical foundations behind Soma, a programming language based on interaction combinators. We will explore the historical context of programming languages, the principles of linear logic, the concept of interaction nets, and finally, the specifics of interaction combinators.
 
+Then, we will discuss how Soma leverages these concepts to offer a unique programming experience, focusing on its practical applications and advantages.
+
 Table of contents:
 1. [Historical Context](#historical-context)
   1.1 [Models of Computation](#models-of-computation)
