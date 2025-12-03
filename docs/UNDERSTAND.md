@@ -146,23 +146,23 @@ But that is a conceptual simplification. A more accurate interaction net represe
 
 **Nodes (detailed view):**
 1. **ROOT**
-   * Principal port: connected to `@` (auxiliary port — the "result" port)
+   * Principal port: connected to `@`
 2. **@** (application)
-   * Principal port: connected to `λx` (principal port)
+   * Principal port: connected to `λx` ('s principal port)
    * Auxiliary ports: connected to `ROOT` (result) and `5` (argument)
 3. **λx** (lambda/let binder)
-   * Principal port: connected to `@` (principal port)
+   * Principal port: connected to `@`'s principal port
    * Auxiliary ports: connected to `+` (body) and `x` (binding)
 4. **+** (addition)
-   * Principal port: connected to `λx` (auxiliary port — body)
+   * Principal port: connected to `λx`'s auxiliary port
    * Auxiliary ports: connected to `x` (left operand) and `10` (right operand)
 5. **x** (variable)
-   * Principal port: connected to `+` (auxiliary port — left operand)
-   * Auxiliary port: connected to `λx` (auxiliary port — binding)
+   * Principal port: connected to `+`'s auxiliary port
+   * Auxiliary port: connected to `λx`'s auxiliary port
 6. **5** (integer literal)
-   * Principal port: connected to `@` (auxiliary port — argument)
+   * Principal port: connected to `@`'s auxiliary port
 7. **10** (integer literal)
-   * Principal port: connected to `+` (auxiliary port — right operand)
+   * Principal port: connected to `+`'s auxiliary port
 
 Here, we can see that `@` and `λx` are connected via their principal ports. This means an interaction can occur:
 
@@ -191,9 +191,9 @@ After the interaction, we get:
    * Principal port: connected to `ROOT`
    * Auxiliary ports: connected to `5` and `10`
 3. **5** (integer literal)
-   * Principal port: connected to `+` (auxiliary port — left operand)
+   * Principal port: connected to `+`'s auxiliary port
 4. **10** (integer literal)
-   * Principal port: connected to `+` (auxiliary port — right operand)
+   * Principal port: connected to `+`'s auxiliary port
 
 An evaluator would then reduce this net to the final result `15`.
 
@@ -225,25 +225,31 @@ To quote Victor Taelin's (Soma is only possible because of his research and publ
 
 This is my favourite quote about Interaction Combinators because it perfectly summarizes why I believe they are the future of computation.
 
+## Elementary Affine Logic (EAL) 
+
+[TODO]
+
 ## Interaction Calculus
 
-While interaction combinators are universal and elegant, they're low-level—like writing assembly for computation graphs. Programming directly with γ, δ, and ε is tedious. What we need is a higher-level language that compiles down to interaction combinators.
+Interaction calculus is a higher-level language that maps onto interaction nets. Simultanealy, it took the key idea from EAL: controlled duplication is the key to optimal computational complexity.
 
 This is where the Interaction Calculus (IC), also developed by Victor Taelin, comes in. It's essentially lambda calculus redesigned from the ground up to map naturally onto interaction nets. The result is a calculus that looks familiar to functional programmers but has radically different semantics.
 
 Three key changes distinguish IC from traditional lambda calculus:
 
-1. **Affine variables:** Each variable can be used at most once. This directly reflects the linear logic foundation—every value is a resource that must be consumed exactly once (or explicitly discarded).
+1. **Affine variables:** Each variable can be used at most once (either once or explicitly discarded). This enforces linearity at the variable level, ensuring that resources are managed correctly.
 
-2. **Global scoping:** Variables aren't bound to their lexical scope. They can appear anywhere in the program. This sounds chaotic, but it's actually what enables optimal sharing.
+2. **Global scoping:** Variables aren't bound to their lexical scope. They can appear anywhere in the program.
 
-3. **Superpositions and duplications:** When you need to use a value more than once, you don't just copy it. Instead, you create a *superposition*—a value that exists in multiple "branches" simultaneously. A *duplication* then collapses these branches when needed.
+3. **Superpositions:** Superpositions are fan nodes that connect the result of one computation to multiple consumers. When a superposition is evaluated, it creates duplications of the underlying value as needed.
 
-The superposition/duplication mechanism is what makes IC special. In normal lambda calculus, if you write `let x = expensive() in x + x`, the term `expensive()` might be computed twice. Optimal evaluators solve this through complex bookkeeping. In IC, the solution is built into the language itself: `expensive()` becomes a superposition that's shared between both uses, and duplication happens lazily (or in Soma's case, eagerly) only when the values actually need to diverge.
+The superposition/duplication mechanism is what makes IC special. In normal lambda calculus, if you write `let x = expensive() in x + x`, the term `expensive()` might be computed twice. Optimal evaluators solve this through complex bookkeeping. In IC, the solution is built into the model itself: `expensive()` becomes a superposition that's shared between both uses, and duplication happens lazily (or in Soma's case, eagerly) only when the values actually need to diverge.
 
 This gives IC something remarkable: *optimal evaluation* by construction. The interaction net representation automatically shares computation in the most efficient way possible, avoiding redundant work that plagues traditional functional languages.
 
-The tradeoff is that IC can't express certain lambda calculus terms—notably self-application like `λx.(x x)`, since that would require using `x` twice. But in practice, this restriction eliminates the patterns that cause exponential blowup in evaluation, turning them into the efficient shared computation that interaction nets excel at.
+The tradeoff is that IC can't express certain lambda calculus terms. For example, consider a function like `enumerate : A → List A` (that takes a type and produces all values of that type) is extremely powerful. If you could feed it to itself, you'd get an enumeration of all enumerators, which leads to diagonal arguments and paradoxes, similar to how unrestricted self-application leads to the halting problem.
+
+> Thanks to [Kart](https://github.com/kartva) for pointing this out and the correlation to EAL!
 
 ## TL;DR
 
@@ -255,13 +261,11 @@ The tradeoff is that IC can't express certain lambda calculus terms—notably se
 
 # Where Soma Comes In
 
-Everything above: linear logic, interaction nets, interaction combinators, interaction calculus—is beautiful theory. But theory doesn't ship products, you can't tell a company "just rewrite your codebase in interaction combinators bro trust me". The gap between theoretical elegance and practical programming has kept these ideas confined to academic papers for decades.
-
-Soma bridges that gap.
+Soma bridges the gap between the theoretical elegance of interaction nets and practical programming needs. It leverages the principles of interaction combinators and interaction calculus to create a language that is both expressive and efficient. It reads like a Haskell but runs/has potential to run as fast as equivalent C code, with no garbage collector and automatic parallelism.
 
 ## A Language You Can Actually Use
 
-Soma is a statically-typed, pure functional language with Hindley-Milner type inference. If you've used Haskell, OCaml, or even TypeScript with strict settings, you'll feel at home. You write normal functional code: pattern matching, higher-order functions, algebraic data types—and the compiler handles everything else.
+Soma is a statically typed, pure functional programming language with Hindley-Milner type inference. If you've used Haskell, OCaml, or even TypeScript with strict settings, you'll feel at home. Even if you haven't, the learning curve is not very steep. You write normal functional code: pattern matching, higher-order functions, algebraic data types. and the compiler handles everything else.
 
 The key insight is that *you never see the interaction nets*. You don't write DUP nodes or think about superpositions. The compiler analyzes your code, infers where values need to be duplicated or erased, and generates the optimal interaction net representation automatically. It's the difference between writing assembly and writing Python. Except here, you get Python's expressiveness with assembly's performance.
 
@@ -301,8 +305,6 @@ The language has three modes:
 3. **hybrid:** same runtime as the standard mode but with fork-join parallelism for expensive computations
 
 In graph mode, the compiler generates code that runs on a work-stealing parallel runtime. Independent parts of your computation (branches of a recursive tree, elements of a map operation, etc.) are automatically distributed across CPU cores. No threads to manage, no locks to debug, no race conditions to fear.
-
-On a simple fibonacci benchmark, Soma achieves **8.77x speedup with 4 workers**—that's super-linear scaling, better than the theoretical maximum, because the distributed workload fits better in per-core caches. And you didn't write a single line of parallel code.
 
 This is simply the natural consequence of building on interaction nets. When your computation model is inherently local and interference-free, parallelism becomes a free bonus rather than a hard problem.
 
