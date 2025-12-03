@@ -1,3 +1,5 @@
+<p style="text-align: center"><img src="docs/assets/icon.png" alt="Soma Logo" width="1024" height="1024"/></p>
+
 # 🚀 soma
 
 Soma is a statically-typed, pure functional language with Hindley–Milner style type inference and a practical, performance-minded compiler.
@@ -226,4 +228,4 @@ Soma is for developers who want:
 
 # 🙏 Acknowledgments
 
-Special thanks to **HigherOrderCo** (HOC) and **Victor Taelin** for their groundbreaking research and development in Interaction Nets and Interaction Calculus. Their work on optimal evaluation, the HVM runtime, and the theoretical foundations of interaction-based computation has been instrumental in shaping Soma's Circuit IR and its approach to GC-free functional programming. The insights from their research have made it possible to achieve optimal reduction without garbage collection while maintaining the expressiveness of pure functional code.
+Special thanks to **HigherOrderCo** (HOC) and **Victor Taelin** for their groundbreaking research and development in Interaction Nets and Interaction Calculus. Their work on optimal evaluation, the HVM runtime, and the theoretical foundations of interaction-based computation has been instrumental in developing Soma's Circuit IR and runtime system.
