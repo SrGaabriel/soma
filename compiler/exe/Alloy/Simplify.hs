@@ -4,12 +4,14 @@
 module Alloy.Simplify (
     simplifyModule,
     simplifyFunction,
+    forwardClosureEnvValuesModule,
 ) where
 
 import Alloy.Ir
+import Alloy.Subst (effectVars, opVars, operandVars, substEffect, substOp, substOperand, substTerminator, terminatorVars)
 import Data.List (elemIndex)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
 import Typing.Types
 
@@ -31,7 +33,9 @@ simplifyFunction fn0 =
             fnC = foldSwitchOnKnownTag fnB1
             fnC1 = canonicalizeSwitches fnC
             fnC2 = eliminateTrivialReadOnlyRefs fnC1
-            fnD = dropUnreachableBlocks fnC2
+            fnC3 = eliminateDeadLets fnC2
+            fnC4 = eliminateDeadClosures fnC3
+            fnD = dropUnreachableBlocks fnC4
         in fnD
       where
         foldSwitchOnKnownTag :: AlloyFunction -> AlloyFunction
@@ -198,57 +202,6 @@ simplifyFunction fn0 =
                         let eff' = substEffect subst eff
                         in (IEffect eff' : acc, ctors, subst)
 
-            substOperand :: Map.Map Name AOperand -> AOperand -> AOperand
-
-            substOperand env (OpVar n) = Map.findWithDefault (OpVar n) n env
-            substOperand _ c@(OpConst _) = c
-
-            substCallable :: Map.Map Name AOperand -> ACallable -> ACallable
-
-            substCallable _ (Direct n) = Direct n
-            substCallable env (Indirect a) = Indirect (substOperand env a)
-
-            substOp :: Map.Map Name AOperand -> AOp -> AOp
-
-            substOp env op =
-                case op of
-                    OpBin k a b -> OpBin k (substOperand env a) (substOperand env b)
-                    OpUnary k a -> OpUnary k (substOperand env a)
-                    OpCmp k a b -> OpCmp k (substOperand env a) (substOperand env b)
-                    OpLoad a -> OpLoad (substOperand env a)
-                    OpAllocStack t -> OpAllocStack t
-                    OpAllocHeap t -> OpAllocHeap t
-                    OpCall callee args -> OpCall (substCallable env callee) (map (substOperand env) args)
-                    OpConstruct tn tag fields -> OpConstruct tn tag (map (substOperand env) fields)
-                    OpTagOf a -> OpTagOf (substOperand env a)
-                    OpProject a i -> OpProject (substOperand env a) i
-                    OpIndex a i -> OpIndex (substOperand env a) (substOperand env i)
-                    OpMakeArray xs -> OpMakeArray (map (substOperand env) xs)
-                    OpMakeTuple xs -> OpMakeTuple (map (substOperand env) xs)
-                    OpGetDict className ty -> OpGetDict className ty
-                    OpDictCall dict methodIdx method args -> OpDictCall (substOperand env dict) methodIdx method (map (substOperand env) args)
-
-            substEffect env eff =
-                case eff of
-                    EffStore p v -> EffStore (substOperand env p) (substOperand env v)
-                    EffStoreIndex a i v -> EffStoreIndex (substOperand env a) (substOperand env i) (substOperand env v)
-                    EffDrop a -> EffDrop (substOperand env a)
-
-            substTerminator :: Map.Map Name AOperand -> ATerminator -> ATerminator
-            substTerminator env t =
-                case t of
-                    ABr b args -> ABr b (map (substOperand env) args)
-                    ACondBr c tb ta fb fa ->
-                        ACondBr
-                            (substOperand env c)
-                            tb
-                            (map (substOperand env) ta)
-                            fb
-                            (map (substOperand env) fa)
-                    ASwitch v cases mdef -> ASwitch (substOperand env v) cases mdef
-                    ARet mv -> ARet (fmap (substOperand env) mv)
-                    AUnreachable -> AUnreachable
-
         canonicalizeSwitches :: AlloyFunction -> AlloyFunction
         canonicalizeSwitches f@AlloyFunction{afBlocks} =
             let bs' = map canonBlock afBlocks
@@ -271,6 +224,96 @@ simplifyFunction fn0 =
                                 Nothing -> Just firstTgt
                                 Just defTgt -> if defTgt == firstTgt then Just firstTgt else Nothing
                             else Nothing
+
+-- Eliminate dead let bindings: variables that are defined but never used
+eliminateDeadLets :: AlloyFunction -> AlloyFunction
+eliminateDeadLets f@AlloyFunction{afBlocks} =
+    let
+        -- Collect all used variables using imported functions from Alloy.Subst
+        usedVars =
+            Set.fromList
+                [ n
+                | ABlock{abInstrs, abTerminator} <- afBlocks
+                , n <- concatMap instrVars abInstrs ++ terminatorVars abTerminator
+                ]
+          where
+            instrVars (ILet _ _ op) = opVars op
+            instrVars (IEffect eff) = effectVars eff
+
+        -- Check if an op has side effects (can't be eliminated even if result unused)
+        hasSideEffects op = case op of
+            OpCall _ _ -> True -- Calls may have side effects
+            OpDictCall{} -> True
+            _ -> False
+
+        -- Drop unused let bindings (unless they have side effects)
+        dropDeadLet :: AInstr -> Maybe AInstr
+        dropDeadLet (ILet n _ op)
+            | not (Set.member n usedVars) && not (hasSideEffects op) = Nothing
+        dropDeadLet i = Just i
+
+        blocks' =
+            [ blk{abInstrs = mapMaybe dropDeadLet (abInstrs blk)}
+            | blk <- afBlocks
+            ]
+    in
+        f{afBlocks = blocks'}
+
+{- | Eliminate dead closures: closures that are allocated but never used
+(not called, not returned, not stored in escaping locations).
+
+Note: This uses specialized liveness analysis where:
+- closure_set_env does NOT count as a use (it's just setup)
+- EffDrop does NOT count as a use (it's just cleanup)
+If a closure is only set up and dropped, we eliminate both.
+-}
+eliminateDeadClosures :: AlloyFunction -> AlloyFunction
+eliminateDeadClosures f@AlloyFunction{afBlocks} =
+    let
+        -- Find all closure names that are actually used (not just set_env'd)
+        usedClosures =
+            Set.fromList
+                [ n
+                | ABlock{abInstrs, abTerminator} <- afBlocks
+                , n <- concatMap closureUsedInInstr abInstrs ++ closureUsedInTerm abTerminator
+                ]
+
+        -- Special liveness for closures: closure_set_env doesn't count as a use
+        closureUsedInInstr (ILet _ _ op) = closureUsedInOp op
+        closureUsedInInstr (IEffect eff) = closureUsedInEffect eff
+
+        closureUsedInOp op = case op of
+            -- closure_set_env does NOT count as a use - it's setting up the closure
+            OpClosureSetEnv{} -> []
+            -- For other ops, use the generic opVars from Alloy.Subst
+            _ -> opVars op
+
+        closureUsedInEffect eff = case eff of
+            -- closure_set_env: the closure isn't "used", but the value stored IS
+            EffClosureSetEnv _ _ v -> operandVars v
+            -- EffDrop does NOT count as a use
+            EffDrop _ -> []
+            -- For other effects, use generic effectVars
+            _ -> effectVars eff
+
+        closureUsedInTerm = terminatorVars
+
+        -- Drop dead closure allocations, their set_env effects, and their drops
+        dropDeadClosure :: AInstr -> Maybe AInstr
+        dropDeadClosure (ILet n _ (OpAllocClosure{}))
+            | not (Set.member n usedClosures) = Nothing
+        dropDeadClosure (IEffect (EffClosureSetEnv (OpVar c) _ _))
+            | not (Set.member c usedClosures) = Nothing
+        dropDeadClosure (IEffect (EffDrop (OpVar c)))
+            | not (Set.member c usedClosures) = Nothing
+        dropDeadClosure i = Just i
+
+        blocks' =
+            [ blk{abInstrs = mapMaybe dropDeadClosure (abInstrs blk)}
+            | blk <- afBlocks
+            ]
+    in
+        f{afBlocks = blocks'}
 
 -- Eliminate trivial read-only refs after previous simplifications:
 -- 1) Replace loads that occur after a store in the same block with the stored value
@@ -321,62 +364,68 @@ replaceLoadsAfterStores ABlock{abName, abParams, abInstrs, abTerminator} =
     let step (acc, storeMap, subst) ins =
             case ins of
                 IEffect (EffStore (OpVar r) v) ->
-                    let v' = substOpd subst v
+                    let v' = substOperand subst v
                     in (IEffect (EffStore (OpVar r) v') : acc, Map.insert r v' storeMap, subst)
                 ILet n _ (OpLoad (OpVar r))
                     | Just v <- Map.lookup r storeMap ->
                         (acc, storeMap, Map.insert n v subst)
                 ILet n t op ->
-                    let op' = substOpAll subst op
+                    let op' = substOp subst op
                     in (ILet n t op' : acc, storeMap, subst)
                 IEffect eff ->
-                    let eff' = substEffAll subst eff
+                    let eff' = substEffect subst eff
                     in (IEffect eff' : acc, storeMap, subst)
         (instrs', _stores, substMap) = foldl step ([], Map.empty, Map.empty) abInstrs
         term' = substTerminator substMap abTerminator
     in ABlock{abName, abParams, abInstrs = reverse instrs', abTerminator = term'}
-  where
-    substOpd env (OpVar n) = Map.findWithDefault (OpVar n) n env
-    substOpd _ c@(OpConst _) = c
-    substCall _ (Direct n) = Direct n
-    substCall env (Indirect a) = Indirect (substOpd env a)
-    substOpAll env op =
-        case op of
-            OpBin k a b -> OpBin k (substOpd env a) (substOpd env b)
-            OpUnary k a -> OpUnary k (substOpd env a)
-            OpCmp k a b -> OpCmp k (substOpd env a) (substOpd env b)
-            OpLoad a -> OpLoad (substOpd env a)
-            OpAllocStack t -> OpAllocStack t
-            OpAllocHeap t -> OpAllocHeap t
-            OpCall callee args -> OpCall (substCall env callee) (map (substOpd env) args)
-            OpConstruct tn tag fields -> OpConstruct tn tag (map (substOpd env) fields)
-            OpTagOf a -> OpTagOf (substOpd env a)
-            OpProject a i -> OpProject (substOpd env a) i
-            OpIndex a i -> OpIndex (substOpd env a) (substOpd env i)
-            OpMakeArray xs -> OpMakeArray (map (substOpd env) xs)
-            OpMakeTuple xs -> OpMakeTuple (map (substOpd env) xs)
-            OpGetDict className ty -> OpGetDict className ty
-            OpDictCall dict methodIdx method args -> OpDictCall (substOpd env dict) methodIdx method (map (substOpd env) args)
-    substEffAll env eff =
-        case eff of
-            EffStore p v -> EffStore (substOpd env p) (substOpd env v)
-            EffStoreIndex a i v -> EffStoreIndex (substOpd env a) (substOpd env i) (substOpd env v)
-            EffDrop a -> EffDrop (substOpd env a)
 
-    substTerminator :: Map.Map Name AOperand -> ATerminator -> ATerminator
-    substTerminator env t =
-        case t of
-            ABr b args -> ABr b (map (substOpd env) args)
-            ACondBr c tb ta fb fa ->
-                ACondBr
-                    (substOpd env c)
-                    tb
-                    (map (substOpd env) ta)
-                    fb
-                    (map (substOpd env) fa)
-            ASwitch v cases mdef -> ASwitch (substOpd env v) cases mdef
-            ARet mv -> ARet (fmap (substOpd env) mv)
-            AUnreachable -> AUnreachable
+-- | Forward closure environment values at module level
+forwardClosureEnvValuesModule :: AlloyModule -> AlloyModule
+forwardClosureEnvValuesModule m@AlloyModule{amFunctions} =
+    m{amFunctions = map forwardClosureEnvValues amFunctions}
+
+{- | Forward closure environment values: replace closure_get_env with the value
+that was stored via closure_set_env, eliminating redundant env access.
+This is crucial for optimizing inlined closure calls.
+-}
+forwardClosureEnvValues :: AlloyFunction -> AlloyFunction
+forwardClosureEnvValues f@AlloyFunction{afBlocks} =
+    f{afBlocks = map forwardInBlock afBlocks}
+  where
+    forwardInBlock :: ABlock -> ABlock
+    forwardInBlock blk@ABlock{abInstrs, abTerminator} =
+        let (instrs', _envMap, subst) = foldl step ([], Map.empty, Map.empty) abInstrs
+            term' = substTerminator subst abTerminator
+        in blk{abInstrs = reverse instrs', abTerminator = term'}
+
+    -- Map from (closure_name, index) -> stored value
+    -- EnvMap = Map.Map (Name, Int) AOperand
+
+    step :: ([AInstr], Map.Map (Name, Int) AOperand, Map.Map Name AOperand) -> AInstr -> ([AInstr], Map.Map (Name, Int) AOperand, Map.Map Name AOperand)
+    step (acc, envMap, subst) instr =
+        case instr of
+            -- Track closure_set_env: record the value stored at each slot
+            IEffect (EffClosureSetEnv (OpVar closureName) idx val) ->
+                let val' = substOperand subst val
+                    envMap' = Map.insert (closureName, idx) val' envMap
+                in (IEffect (EffClosureSetEnv (OpVar closureName) idx val') : acc, envMap', subst)
+            -- Forward closure_get_env: if we know the value, substitute it
+            ILet name _ (OpClosureGetEnv (OpVar closureName) idx) ->
+                case Map.lookup (closureName, idx) envMap of
+                    Just val ->
+                        -- We know the value - don't emit the get, just substitute
+                        (acc, envMap, Map.insert name val subst)
+                    Nothing ->
+                        -- Unknown - keep the instruction
+                        (instr : acc, envMap, subst)
+            -- For other ILet, apply substitution to the operands
+            ILet name ty op ->
+                let op' = substOp subst op
+                in (ILet name ty op' : acc, envMap, subst)
+            -- For effects, apply substitution
+            IEffect eff ->
+                let eff' = substEffect subst eff
+                in (IEffect eff' : acc, envMap, subst)
 
 fixpoint :: (Eq a) => (a -> a) -> a -> a
 fixpoint f x =
@@ -512,7 +561,3 @@ inlineForwardBlocks fn =
                         else (fb, fa)
             in ACondBr c tb' ta' fb' fa'
         rewriteTerm t = t
-
-    substOperand :: Map.Map Name AOperand -> AOperand -> AOperand
-    substOperand env (OpVar n) = fromMaybe (OpVar n) (Map.lookup n env)
-    substOperand _ c@(OpConst _) = c

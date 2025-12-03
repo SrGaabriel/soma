@@ -16,6 +16,7 @@ instance HasType MetallicExpr where
     getType (MLet _ _ _ t) = t
     getType (MIf _ _ _ t) = t
     getType (MLambda _ _ t) = t
+    getType (MClosure _ _ t) = t
     getType (MConstruct _ _ _ t) = t
     getType (MArrayLit _ t) = t
     getType (MTuple _ t) = t
@@ -36,6 +37,10 @@ data MetallicExpr
     | MTypeApp MetallicExpr [Type] Type
     | MLet String MetallicExpr MetallicExpr Type
     | MLambda [String] MetallicExpr Type
+    | {- | MClosure liftedFuncName capturedVars closureType
+      Represents a closure: a lifted function + captured environment
+      -}
+      MClosure String [(String, Type)] Type
     | MConstruct String Int [MetallicExpr] Type
     | MArrayLit [MetallicExpr] Type
     | MTuple [MetallicExpr] Type

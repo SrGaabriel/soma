@@ -3,6 +3,7 @@ module Project.Extracts where
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import qualified Data.Set as Set
 import Inference.Core (InstanceEnv, TypeEnv)
 import Project.Module (ModuleName)
 import Project.Symbols (Symbol (resolvedSymbolName))
@@ -14,6 +15,10 @@ extractSymbolImports (ExprRoot cs) = concatMap extractSymbolImports cs
 extractSymbolImports (ExprImport name elements _) =
     [(name, elements)]
 extractSymbolImports e = concatMap extractSymbolImports (exprChildren e)
+
+extractIntrinsicNames :: Expr -> Set.Set String
+extractIntrinsicNames root =
+    Set.fromList [intrinsicName e | e@ExprIntrinsicDef{} <- exprChildren root]
 
 filterSymbolsByNames :: [String] -> Map.Map Symbol QualifiedType -> Map.Map Symbol QualifiedType
 filterSymbolsByNames names =

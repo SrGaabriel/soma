@@ -1,7 +1,9 @@
 module Config.Options (
     Options (..),
     CheckOptions (..),
+    CircuitOptions (..),
     OutputFormat (..),
+    CompilationMode (..),
     CommandLineError (..),
     formatError,
     fileExt,
@@ -24,11 +26,39 @@ data Command
     | Check CheckOptions
     | Lex String
     | Parse String
+    | Circuit CircuitOptions
+    deriving (Show)
+
+data CircuitOptions = CircuitOptions
+    { circuitInput :: String
+    , circuitLinearize :: Bool
+    , circuitGraphFormat :: Bool
+    , circuitEval :: Bool
+    , circuitToAlloy :: Bool
+    , circuitToLlvm :: Bool
+    }
     deriving (Show)
 
 data OutputFormat
     = FormatHuman
     | FormatJson
+    deriving (Show, Eq)
+
+-- | Compilation mode determines the execution model and optimization strategy
+data CompilationMode
+    = {- | Standard compilation: Circuit IR → linearize → Alloy → LLVM
+      Deterministic, single-threaded, compile-time memory management via DUP/ERA
+      -}
+      ModeStandard
+    | {- | Linearized graph mode: Circuit IR → linearize → graph Alloy → LLVM + INET runtime
+      Parallel, lazy evaluation, runtime graph reduction with work-stealing. DUP nodes are explicit
+      in the Circuit IR, enabling compile-time optimizations like DUP-NUM elision.
+      -}
+      ModeGraph
+    | {- | Hybrid mode (future): Graph reduction for parallelizable sections,
+      standard compilation for sequential hot paths
+      -}
+      ModeHybrid
     deriving (Show, Eq)
 
 data CheckOptions = CheckOptions
@@ -44,11 +74,10 @@ data Options = Options
     , optionsOutput :: Maybe String
     , optionsName :: Maybe String
     , optionsLib :: Bool
-    , optionsLlvmOnly :: Bool
-    , optionsKeepAll :: Bool
-    , optionsEmitLib :: Bool
     , optionsDeps :: [(String, String)]
-    , optionsRun :: Bool
+    , optionsSkipCircuit :: Bool -- todo: remove
+    , optionsMode :: CompilationMode
+    , optionsOptimizationLevel :: Maybe Int
     }
     deriving (Show)
 
@@ -59,8 +88,38 @@ commandParser =
             <> command "build" (info (Build <$> optionsParser) (progDesc "Build the program"))
             <> command "check" (info (Check <$> checkOptionsParser) (progDesc "Check for errors without building (outputs JSON)"))
             <> command "parse" (info (Parse <$> inputParser) (progDesc "Run the parser"))
+            <> command "circuit" (info (Circuit <$> circuitOptionsParser) (progDesc "Lower to Circuit IR (Interaction Nets)"))
         )
         <|> (Build <$> optionsParser)
+
+circuitOptionsParser :: Parser CircuitOptions
+circuitOptionsParser =
+    CircuitOptions
+        <$> inputParser
+        <*> switch
+            ( long "linearize"
+                <> short 'l'
+                <> help "Apply linearization pass (insert DUP/ERA nodes)"
+            )
+        <*> switch
+            ( long "graph"
+                <> short 'g'
+                <> help "Output in graph format (nodes and edges) instead of term format"
+            )
+        <*> switch
+            ( long "eval"
+                <> short 'e'
+                <> help "Evaluate the Circuit IR using interaction net reduction"
+            )
+        <*> switch
+            ( long "alloy"
+                <> short 'a'
+                <> help "Lower Circuit IR to Alloy MIR"
+            )
+        <*> switch
+            ( long "llvm"
+                <> help "Lower Circuit IR to LLVM IR (implies -l -a)"
+            )
 
 checkOptionsParser :: Parser CheckOptions
 checkOptionsParser =
@@ -134,6 +193,7 @@ optionsParser =
         <*> optional
             ( strOption
                 ( long "out"
+                    <> short 'o'
                     <> metavar "OUTPUT"
                     <> help "Output file path"
                 )
@@ -149,18 +209,6 @@ optionsParser =
             ( long "lib"
                 <> help "Compile as a Soma library"
             )
-        <*> switch
-            ( long "llvm-only"
-                <> help "Emit LLVM IR only (no compilation or run)"
-            )
-        <*> switch
-            ( long "keep"
-                <> help "Keep intermediate compilation files"
-            )
-        <*> switch
-            ( long "emit-lib"
-                <> help "Emit output as a shared library"
-            )
         <*> many
             ( option
                 (eitherReader parseExtern)
@@ -170,9 +218,32 @@ optionsParser =
                 )
             )
         <*> switch
-            ( long "run"
-                <> help "Run the compiled program immediately"
+            ( long "skip-circuit"
+                <> help "Do not use Circuit IR pipeline with interaction nets and C runtime"
             )
+        <*> option
+            (eitherReader parseMode)
+            ( long "mode"
+                <> short 'm'
+                <> metavar "MODE"
+                <> value ModeStandard
+                <> help "Compilation mode: standard (default), graph (parallel reduction), or hybrid"
+            )
+        <*> optional
+            ( option
+                auto
+                ( long "opt-level"
+                    <> short 'O'
+                    <> metavar "LEVEL"
+                    <> help "Optimization level (0-3)"
+                )
+            )
+
+parseMode :: String -> Either String CompilationMode
+parseMode "standard" = Right ModeStandard
+parseMode "graph" = Right ModeGraph
+parseMode "hybrid" = Right ModeHybrid
+parseMode s = Left $ "Unknown mode: " ++ s ++ ". Use 'standard', 'graph', 'lgraph', or 'hybrid'"
 
 parseExtern :: String -> Either String (String, String)
 parseExtern s =

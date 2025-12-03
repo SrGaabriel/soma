@@ -70,7 +70,7 @@ findSymbolByName name env =
 collectGlobals :: Expr -> ResolverM ()
 collectGlobals (ExprRoot children) = do
     mapM_ collectGlobals children
-collectGlobals (ExprBindingDef name (Located _ bindType) _ topLevel eSpan) =
+collectGlobals (ExprBindingDef name (Located _ bindType) _ topLevel _ eSpan) =
     when topLevel $ do
         addGlobalBinding name bindType (BindingSymbol bindType) eSpan
 collectGlobals (ExprIntrinsicDef name (Located _ bindType) eSpan) = do
@@ -143,14 +143,14 @@ resolveTReference expr@(ExprInstanceDef constraintType binds s) = do
     binds' <- mapM resolveTReference binds
     Forall _ _ constraintType' <- replaceAllUnresolvedQualified expr (Forall [] [] constraintType)
     pure $ ExprInstanceDef constraintType' binds' s
-resolveTReference (ExprBindingDef name (Located typSpan typ) body topLevel eSpan) = do
+resolveTReference (ExprBindingDef name (Located typSpan typ) body topLevel mods eSpan) = do
     let typeExpr = ExprNum "" typSpan -- Dummy expression with the type's span
     realTyp <- replaceAllUnresolvedQualified typeExpr typ
     body' <- resolveTReference body
     when topLevel $ do
         addGlobalBinding name realTyp (BindingSymbol realTyp) eSpan
 
-    pure $ ExprBindingDef name (Located typSpan realTyp) body' topLevel eSpan
+    pure $ ExprBindingDef name (Located typSpan realTyp) body' topLevel mods eSpan
 resolveTReference (ExprIntrinsicDef name (Located typSpan typ) eSpan) = do
     let typeExpr = ExprNum "" typSpan
     realTyp <- replaceAllUnresolvedQualified typeExpr typ
@@ -208,6 +208,11 @@ resolveTReference expr@(ExprPatternMatchArm patterns body eSpan) = do
     let extendEnv = Map.union symbols
     body' <- local (\env -> env{localScope = extendEnv (localScope env)}) $ resolveTReference body
     pure $ ExprPatternMatchArm patterns body' eSpan
+resolveTReference (ExprIf condition thenBranch elseBranch eSpan) = do
+    condition' <- resolveTReference condition
+    thenBranch' <- resolveTReference thenBranch
+    elseBranch' <- resolveTReference elseBranch
+    pure $ ExprIf condition' thenBranch' elseBranch' eSpan
 resolveTReference (ExprBlock exprs eSpan) = do
     exprs' <- mapM resolveTReference exprs
     pure $ ExprBlock exprs' eSpan

@@ -8,6 +8,7 @@ module Llvm.Gen.Core (
     namedDefaultEnv,
     runIrGen,
     freshTmpReg,
+    freshBlockName,
     mkReg,
     saveToReg,
     saveTmp,
@@ -20,9 +21,13 @@ module Llvm.Gen.Core (
     recordSubstitution,
     applySubstitutions,
     addDependency,
+    setTailCallContext,
+    isTailCallContext,
+    setGraphFunctionContext,
+    isInGraphFunction,
 ) where
 
-import Control.Monad.Reader (MonadReader (local), ReaderT (..))
+import Control.Monad.Reader (MonadReader (local), ReaderT (..), asks)
 import Control.Monad.State (
     MonadState (get, put),
     State,
@@ -48,6 +53,10 @@ data IrGenEnv = IrGenEnv
     , moduleName :: String
     , opTypeEnv :: OperandTypeEnv
     , dictMap :: Map.Map (String, Type) String
+    , isTailCall :: Bool
+    -- ^ Whether current instruction is in tail call position
+    , isGraphFunction :: Bool
+    -- ^ Whether we're inside a graph function that has (net, tm, arg) params
     }
 
 data IrGenState = IrGenState
@@ -78,6 +87,8 @@ namedDefaultEnv name =
         , moduleName = name
         , opTypeEnv = Map.empty
         , dictMap = Map.empty
+        , isTailCall = False
+        , isGraphFunction = False
         }
 
 type IrGen a = ReaderT IrGenEnv (WriterT [LlvmStatement] (State IrGenState)) a
@@ -92,6 +103,13 @@ freshTmpReg ty = do
     modify $ \s -> s{nextRegister = n + 1}
     return $ LlvmRegister ty ("tmp_reg_" ++ show n)
 
+-- Generate a fresh block label name with a given prefix
+freshBlockName :: (MonadState IrGenState m) => String -> m String
+freshBlockName prefix = do
+    n <- gets nextRegister
+    modify $ \s -> s{nextRegister = n + 1}
+    return $ prefix ++ "_" ++ show n
+
 mkReg :: String -> LlvmType -> LlvmValue
 mkReg n t = LlvmRegister t n
 
@@ -101,10 +119,15 @@ saveToReg reg instr = do
     return reg
 
 saveTmp :: (MonadState IrGenState m) => (MonadWriter [LlvmStatement] m) => LlvmInstruction -> LlvmType -> m LlvmValue
-saveTmp instr ty = do
-    reg <- freshTmpReg ty
-    tell [LlvmAssign (getRegName reg) instr]
-    return reg
+-- todo: improve this workaround
+saveTmp instr ty = case instr of
+    -- Identity cast is a no-op - just return the original value
+    LlvmIdentityCast val -> return val
+    -- For all other instructions, emit the assignment
+    _ -> do
+        reg <- freshTmpReg ty
+        tell [LlvmAssign (getRegName reg) instr]
+        return reg
 
 scopedState :: IrGen a -> IrGen a
 scopedState action = do
@@ -157,3 +180,19 @@ addDependency ::
     LlvmDependency ->
     IrGen ()
 addDependency dep = modify $ \s -> s{irDependencies = dep : irDependencies s}
+
+-- | Set the tail call context for the enclosed computation
+setTailCallContext :: Bool -> IrGen a -> IrGen a
+setTailCallContext tc = local (\env -> env{isTailCall = tc})
+
+-- | Check if we're currently in a tail call context
+isTailCallContext :: IrGen Bool
+isTailCallContext = asks isTailCall
+
+-- | Set the graph function context for the enclosed computation
+setGraphFunctionContext :: Bool -> IrGen a -> IrGen a
+setGraphFunctionContext gf = local (\env -> env{isGraphFunction = gf})
+
+-- | Check if we're currently inside a graph function (has net, tm params)
+isInGraphFunction :: IrGen Bool
+isInGraphFunction = asks isGraphFunction

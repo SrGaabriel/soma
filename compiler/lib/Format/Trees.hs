@@ -73,7 +73,7 @@ instance TreeShow Expr where
     treeShow (ExprDerivedPatternMatch _) = "DerivedPatternMatch: "
     treeShow (ExprPatternMatchArm p _ _) =
         "PatternMatchArm: (" ++ unwords (map treeShow p) ++ "):"
-    treeShow (ExprBindingDef name (Located _ qType) _ _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
+    treeShow (ExprBindingDef name (Located _ qType) _ _ _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
     treeShow (ExprIntrinsicDef name (Located _ qType) _) = "IntrinsicDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
     treeShow (ExprDataTypeDef name generics _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
     treeShow (ExprDataConstructor name args _) = "DataConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"

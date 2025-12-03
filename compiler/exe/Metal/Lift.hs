@@ -61,10 +61,13 @@ liftExprLambdas available bound (MCall callee args ty) = do
         MVar varName _ -> do
             closures <- gets lsClosures
             case Map.lookup varName closures of
-                Just (ClosureInfo liftedName capturedVars) -> do
-                    let capturedArgs = [MVar n t | (n, t) <- capturedVars]
-                        allArgs = capturedArgs ++ args'
-                        liftedFnType = foldr TArrow ty (map snd capturedVars ++ map getType args')
+                Just (ClosureInfo liftedName _capturedVars) -> do
+                    -- Uniform calling convention: pass closure as first arg
+                    -- The lifted function will extract env values from closure_self
+                    let closureArg = MVar varName closurePtrType
+                        allArgs = closureArg : args'
+                        -- Function type: ClosurePtr -> original params -> return
+                        liftedFnType = foldr TArrow ty (closurePtrType : map getType args')
                     pure $ MCall (MVar liftedName liftedFnType) allArgs ty
                 Nothing -> do
                     callee' <- liftExprLambdas available bound callee
@@ -87,10 +90,12 @@ liftExprLambdas available bound (MCall callee args ty) = do
             lambdaId <- freshLambdaId
             let liftedName = "lambda$" ++ show lambdaId
 
-            let (paramTypes, retType) = uncurryFunctionType lambdaTy
-                freeVarParams = freeVarsList
+            -- Use splitFunctionType with actual param count, not full uncurrying
+            let (paramTypes, retType) = splitFunctionType (length params) lambdaTy
                 originalParams = zip params paramTypes
-                liftedParams = freeVarParams ++ originalParams
+                -- Uniform calling convention: closure_self is first param
+                -- Captured vars are extracted from closure_self by the lowering phase
+                liftedParams = ("closure_self", closurePtrType) : originalParams
                 liftedFn =
                     MetallicFunction
                         { mfName = liftedName
@@ -102,15 +107,23 @@ liftExprLambdas available bound (MCall callee args ty) = do
                                 { mfmOriginalName = []
                                 , mfmConstraints = []
                                 , mfmInstanceInfo = Nothing
+                                , mfmClosureInfo = Just (ClosureFunctionInfo freeVarsList)
+                                , mfmIsInline = False
                                 }
                         }
 
             addLiftedFunction liftedFn
 
-            let capturedArgs = [MVar n t | (n, t) <- freeVarsList]
-                allArgs = capturedArgs ++ args'
-                fullType = foldr TArrow retType (map snd liftedParams)
-            pure $ MCall (MVar liftedName fullType) allArgs ty
+            -- Immediately applied lambda: allocate closure and call
+            let closureExpr = MClosure liftedName freeVarsList lambdaTy
+            -- Create a temporary for the closure and call with it
+            -- For immediate application, we generate: let tmp = closure in call(tmp, args)
+            tmpName <- freshTmpName
+            let closureArg = MVar tmpName closurePtrType
+                allArgs = closureArg : args'
+                fullType = foldr TArrow retType (closurePtrType : map snd originalParams)
+                callExpr = MCall (MVar liftedName fullType) allArgs ty
+            pure $ MLet tmpName closureExpr callExpr ty
         _ -> do
             callee' <- liftExprLambdas available bound callee
             pure $ MCall callee' args' ty
@@ -122,11 +135,15 @@ liftExprLambdas available bound (MLet name val body ty) = do
             globals <- gets lsGlobalNames
             let paramSet = Set.fromList params
                 freeVarsWithTypes = computeFreeVarsWithTypes lambdaBody
+                -- For closures, we capture all free variables except:
+                -- - lambda's own parameters (paramSet)
+                -- - global function names (globals)
+                -- Note: we DO capture variables from enclosing scopes (available + bound)
+                -- because the closure may escape and outlive the current scope.
                 freeVarsList =
                     [ (n, varTy)
                     | (n, varTy) <- Map.toList freeVarsWithTypes
                     , not (Set.member n paramSet)
-                    , not (Set.member n bound)
                     , not (Set.member n globals)
                     ]
 
@@ -136,10 +153,11 @@ liftExprLambdas available bound (MLet name val body ty) = do
             lambdaId <- freshLambdaId
             let liftedName = "lambda$" ++ show lambdaId
 
-            let (paramTypes, retType) = uncurryFunctionType lambdaTy
-                freeVarParams = freeVarsList
+            -- Use splitFunctionType with actual param count, not full uncurrying
+            let (paramTypes, retType) = splitFunctionType (length params) lambdaTy
                 originalParams = zip params paramTypes
-                liftedParams = freeVarParams ++ originalParams
+                -- Uniform calling convention: closure_self is first param
+                liftedParams = ("closure_self", closurePtrType) : originalParams
                 liftedFn =
                     MetallicFunction
                         { mfName = liftedName
@@ -151,21 +169,20 @@ liftExprLambdas available bound (MLet name val body ty) = do
                                 { mfmOriginalName = []
                                 , mfmConstraints = []
                                 , mfmInstanceInfo = Nothing
+                                , mfmClosureInfo = Just (ClosureFunctionInfo freeVarsList)
+                                , mfmIsInline = False
                                 }
                         }
 
             addLiftedFunction liftedFn
 
-            if null freeVarsList
-                then do
-                    body' <- liftExprLambdas available (Set.insert name bound) body
-                    pure $ MLet name (MVar liftedName lambdaTy) body' ty
-                else do
-                    let closureInfo = ClosureInfo liftedName freeVarsList
-                    modify $ \st -> st{lsClosures = Map.insert name closureInfo (lsClosures st)}
-                    body' <- liftExprLambdas available (Set.insert name bound) body
-                    modify $ \st -> st{lsClosures = Map.delete name (lsClosures st)}
-                    pure body'
+            -- Register this closure for later call sites
+            modify $ \st -> st{lsClosures = Map.insert name (ClosureInfo liftedName freeVarsList) (lsClosures st)}
+
+            -- Uniform closure calling convention: ALL lambdas become closures
+            let closureExpr = MClosure liftedName freeVarsList lambdaTy
+            body' <- liftExprLambdas available (Set.insert name bound) body
+            pure $ MLet name closureExpr body' ty
         _ -> do
             val' <- liftExprLambdas available bound val
             body' <- liftExprLambdas available (Set.insert name bound) body
@@ -174,12 +191,13 @@ liftExprLambdas available bound (MLambda params body ty) = do
     globals <- gets lsGlobalNames
     let paramSet = Set.fromList params
         freeVarsWithTypes = computeFreeVarsWithTypes body
+        -- For closures, we capture all free variables except:
+        -- - lambda's own parameters (paramSet)
+        -- - global function names (globals)
         freeVarsList =
             [ (name, varTy)
             | (name, varTy) <- Map.toList freeVarsWithTypes
             , not (Set.member name paramSet)
-            , not (Set.member name available)
-            , not (Set.member name bound)
             , not (Set.member name globals)
             ]
 
@@ -189,10 +207,11 @@ liftExprLambdas available bound (MLambda params body ty) = do
     lambdaId <- freshLambdaId
     let liftedName = "lambda$" ++ show lambdaId
 
-    let (paramTypes, retType) = uncurryFunctionType ty
-        freeVarParams = freeVarsList
+    -- Use splitFunctionType with actual param count, not full uncurrying
+    let (paramTypes, retType) = splitFunctionType (length params) ty
         originalParams = zip params paramTypes
-        liftedParams = freeVarParams ++ originalParams
+        -- Uniform calling convention: closure_self is first param
+        liftedParams = ("closure_self", closurePtrType) : originalParams
         liftedFn =
             MetallicFunction
                 { mfName = liftedName
@@ -204,18 +223,15 @@ liftExprLambdas available bound (MLambda params body ty) = do
                         { mfmOriginalName = []
                         , mfmConstraints = []
                         , mfmInstanceInfo = Nothing
+                        , mfmClosureInfo = Just (ClosureFunctionInfo freeVarsList)
+                        , mfmIsInline = False
                         }
                 }
 
     addLiftedFunction liftedFn
 
-    if null freeVarsList
-        then pure (MVar liftedName ty)
-        else
-            error
-                $ "Standalone lambda with free variables passed as value is not supported. "
-                    ++ "Lambda captures: "
-                    ++ show (map fst freeVarsList)
+    -- Uniform closure calling convention: ALL lambdas become closures
+    pure (MClosure liftedName freeVarsList ty)
 liftExprLambdas available bound (MConstruct name tag args ty) =
     MConstruct name tag <$> mapM (liftExprLambdas available bound) args <*> pure ty
 liftExprLambdas available bound (MArrayLit elems ty) =
@@ -245,6 +261,8 @@ liftExprLambdas available bound (MFieldAccess e idx ty) =
 liftExprLambdas available bound (MCompose stmts ty) =
     (MCompose . fst <$> liftComposeLambdas available bound stmts) <*> pure ty
 liftExprLambdas _ _ e@(MPanic _ _) = pure e
+-- MClosure is already lifted, just pass through
+liftExprLambdas _ _ e@(MClosure{}) = pure e
 
 liftComposeLambdas :: Set.Set String -> Set.Set String -> [MetallicComposeStmt] -> LiftM ([MetallicComposeStmt], Set.Set String)
 liftComposeLambdas _ bound [] = pure ([], bound)
@@ -269,15 +287,17 @@ freshLambdaId = do
     put st{lsNextLambdaId = i + 1}
     pure i
 
+freshTmpName :: LiftM String
+freshTmpName = do
+    i <- freshLambdaId
+    pure $ "closure_tmp$" ++ show i
+
 addLiftedFunction :: MetallicFunction -> LiftM ()
 addLiftedFunction fn = modify $ \st ->
     st
         { lsLiftedFunctions = fn : lsLiftedFunctions st
         , lsGlobalNames = Set.insert (mfName fn) (lsGlobalNames st)
         }
-
-computeFreeVars :: MetallicExpr -> Set.Set String
-computeFreeVars = Map.keysSet . computeFreeVarsWithTypes
 
 computeFreeVarsWithTypes :: MetallicExpr -> Map.Map String Type
 computeFreeVarsWithTypes (MVar v t) = Map.singleton v t
@@ -322,6 +342,8 @@ computeFreeVarsWithTypes (MCompose stmts _) =
 computeFreeVarsWithTypes (MIf cond ifB elseB _) =
     Map.unions (map computeFreeVarsWithTypes [cond, ifB, elseB])
 computeFreeVarsWithTypes (MPanic _ _) = Map.empty
+computeFreeVarsWithTypes (MClosure _ capturedVars _) =
+    Map.fromList capturedVars
 
 collectBinders :: Pattern -> [String]
 collectBinders (PVar v _) = [v]
@@ -332,8 +354,12 @@ collectBinders (PConstructor _ ps _) = concatMap collectBinders ps
 collectBinders (PTuple ps _) = concatMap collectBinders ps
 collectBinders (PArray ps _) = concatMap collectBinders ps
 
-uncurryFunctionType :: Type -> ([Type], Type)
-uncurryFunctionType ty = go ty []
-  where
-    go (TArrow t1 t2) acc = go t2 (acc ++ [t1])
-    go t acc = (acc, t)
+{- | Split a function type based on a specific arity (number of parameters)
+Unlike uncurryFunctionType, this stops after taking n parameters
+-}
+splitFunctionType :: Int -> Type -> ([Type], Type)
+splitFunctionType 0 ty = ([], ty)
+splitFunctionType n (TArrow argTy restTy) =
+    let (args, ret) = splitFunctionType (n - 1) restTy
+    in (argTy : args, ret)
+splitFunctionType _ ty = ([], ty)

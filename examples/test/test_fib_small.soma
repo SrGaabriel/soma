@@ -1,0 +1,9 @@
+intrinsic def {+} :: Int -> Int -> Int
+intrinsic def {-} :: Int -> Int -> Int
+
+def fib :: Int -> Int
+    | 0 => 0
+    | 1 => 1
+    | n => fib (n - 1) + fib (n - 2)
+
+def main :: Int = fib 10

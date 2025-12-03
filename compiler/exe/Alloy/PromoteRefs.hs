@@ -42,6 +42,7 @@ module Alloy.PromoteRefs (
 
 import Alloy.Ir
 import Alloy.Naming (makeRefParamName)
+import Alloy.Subst
 import Alloy.Uniqueness (FunctionReport (..), LocalUniq (..), Uniqueness (..), analyzeFunction)
 import Data.List (findIndex, sort)
 import Data.Map.Strict (Map)
@@ -179,58 +180,6 @@ augmentTerm entry promoted needs curr term =
         , let v = Map.lookup r curr
         ]
 
-type Subst = Map Name AOperand
-
-substOperand :: Subst -> AOperand -> AOperand
-substOperand env (OpVar n) = Map.findWithDefault (OpVar n) n env
-substOperand _ a@(OpConst _) = a
-
-substCallable :: Subst -> ACallable -> ACallable
-substCallable _ (Direct n) = Direct n
-substCallable env (Indirect a) = Indirect (substOperand env a)
-
-substOp :: Subst -> AOp -> AOp
-substOp env op =
-    case op of
-        OpBin k a b -> OpBin k (substOperand env a) (substOperand env b)
-        OpUnary k a -> OpUnary k (substOperand env a)
-        OpCmp k a b -> OpCmp k (substOperand env a) (substOperand env b)
-        OpLoad a -> OpLoad (substOperand env a)
-        OpAllocStack t -> OpAllocStack t
-        OpAllocHeap t -> OpAllocHeap t
-        OpCall callee args -> OpCall (substCallable env callee) (map (substOperand env) args)
-        OpConstruct tn tag fields -> OpConstruct tn tag (map (substOperand env) fields)
-        OpTagOf a -> OpTagOf (substOperand env a)
-        OpProject a i -> OpProject (substOperand env a) i
-        OpIndex a i -> OpIndex (substOperand env a) (substOperand env i)
-        OpMakeArray xs -> OpMakeArray (map (substOperand env) xs)
-        OpMakeTuple xs -> OpMakeTuple (map (substOperand env) xs)
-        OpGetDict className ty -> OpGetDict className ty
-        OpDictCall dict methodIdx method args -> OpDictCall (substOperand env dict) methodIdx method (map (substOperand env) args)
-
-substEffect :: Subst -> AEffect -> AEffect
-substEffect env eff =
-    case eff of
-        EffStore p v -> EffStore (substOperand env p) (substOperand env v)
-        EffStoreIndex a i v -> EffStoreIndex (substOperand env a) (substOperand env i) (substOperand env v)
-        EffDrop a -> EffDrop (substOperand env a)
-
-substTerminator :: Subst -> ATerminator -> ATerminator
-substTerminator env t =
-    case t of
-        ABr b args -> ABr b (map (substOperand env) args)
-        ACondBr c tb ta fb fa ->
-            ACondBr
-                (substOperand env c)
-                tb
-                (map (substOperand env) ta)
-                fb
-                (map (substOperand env) fa)
-        ASwitch v cases mdef ->
-            ASwitch (substOperand env v) cases mdef
-        ARet mv -> ARet (fmap (substOperand env) mv)
-        AUnreachable -> AUnreachable
-
 findAllocaCandidates :: AlloyFunction -> [(Name, Type, Type)]
 findAllocaCandidates AlloyFunction{afBlocks} =
     let step acc ABlock{abInstrs} = foldl' collect acc abInstrs
@@ -268,6 +217,7 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpUnary _ a -> isVar r a
             OpCmp _ a b -> isVar r a || isVar r b
             OpLoad a -> isVar r a
+            OpSelect cond thenOp elseOp -> isVar r cond || isVar r thenOp || isVar r elseOp
             OpAllocStack _ -> False
             OpAllocHeap _ -> False
             OpCall callee args ->
@@ -280,6 +230,51 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             OpMakeTuple xs -> any (isVar r) xs
             OpGetDict _ _ -> False
             OpDictCall dict _ _ args -> isVar r dict || any (isVar r) args
+            OpDup _ val -> isVar r val
+            OpDupProj0 handle -> isVar r handle
+            OpDupProj1 handle -> isVar r handle
+            OpWrapClosure fn -> isVar r fn
+            OpAllocClosure fn _ _ -> isVar r fn
+            OpClosureSetEnv closure _ val -> isVar r closure || isVar r val
+            OpClosureGetEnv closure _ -> isVar r closure
+            OpClosureGetFunc closure -> isVar r closure
+            OpDupClosure _ closure _ -> isVar r closure
+            OpDupClosureProj0 handle _ _ -> isVar r handle
+            OpDupClosureProj1 handle _ _ -> isVar r handle
+            OpClosureGetEnvDirect closure _ -> isVar r closure
+            OpClosureGetEnvSUP closure _ -> isVar r closure
+            OpParProj0 handle _ -> isVar r handle
+            OpParProj1 handle _ -> isVar r handle
+            OpParClosureProj0 handle _ _ _ -> isVar r handle
+            OpParClosureProj1 handle _ _ _ -> isVar r handle
+            OpPanic _ -> False
+            OpGraphInit _ -> False
+            OpGraphShutdown -> False
+            OpGraphNum v -> isVar r v
+            OpGraphAdd l rhs -> isVar r l || isVar r rhs
+            OpGraphSub l rhs -> isVar r l || isVar r rhs
+            OpGraphMul l rhs -> isVar r l || isVar r rhs
+            OpGraphDiv l rhs -> isVar r l || isVar r rhs
+            OpGraphMod l rhs -> isVar r l || isVar r rhs
+            OpGraphCall _ args -> any (isVar r) args
+            OpGraphReduce root -> isVar r root
+            OpGraphExtractNum term -> isVar r term
+            OpGraphRegisterFunc _ _ impl -> isVar r impl
+            OpGraphDup _ target -> isVar r target
+            OpGraphSup _ l rhs -> isVar r l || isVar r rhs
+            OpGraphLam varSlot body -> isVar r varSlot || isVar r body
+            OpGraphApp fn arg -> isVar r fn || isVar r arg
+            OpGraphEra -> False
+            OpGraphCon fstOp sndOp -> isVar r fstOp || isVar r sndOp
+            OpGraphConGet conOp _ -> isVar r conOp
+            OpGraphRef _ _ arg -> isVar r arg
+            OpGraphClosure _ _ envVals -> any (isVar r) envVals
+            OpGraphClosureApp clo arg -> isVar r clo || isVar r arg
+            OpGraphClosureGetEnv clo _ -> isVar r clo
+            OpFork fn args -> isVar r fn || any (isVar r) args
+            OpJoin handle -> isVar r handle
+            OpGraphDupGetProj0 dupNode -> isVar r dupNode
+            OpGraphDupGetProj1 dupNode -> isVar r dupNode
 
     appearsInEff :: Name -> AEffect -> Bool
     appearsInEff r eff =
@@ -287,6 +282,10 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
             EffStore p v -> isVar r p || isVar r v
             EffStoreIndex a i v -> isVar r a || isVar r i || isVar r v
             EffDrop a -> isVar r a
+            EffClosureSetEnv closure _ val -> isVar r closure || isVar r val
+            EffGraphInit _ -> False
+            EffGraphShutdown -> False
+            EffGraphRegisterFunc _ _ impl -> isVar r impl
 
     appearsInTerm :: Name -> ATerminator -> Bool
     appearsInTerm r t =

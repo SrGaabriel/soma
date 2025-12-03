@@ -141,6 +141,8 @@ usesFromOp blk idx op =
         OpCmp _ a b ->
             mergeAll [singleUseIfVar a (UseCmpArg blk idx), singleUseIfVar b (UseCmpArg blk idx)]
         OpLoad a -> singleUseIfVar a (UseLoadPtr blk idx)
+        OpSelect cond a b ->
+            mergeAll [singleUseIfVar cond (UseCond blk), singleUseIfVar a (UseBrArg blk), singleUseIfVar b (UseBrArg blk)]
         OpAllocStack _ -> Map.empty
         OpAllocHeap _ -> Map.empty
         OpCall callee args ->
@@ -164,6 +166,59 @@ usesFromOp blk idx op =
         OpGetDict _ _ -> Map.empty
         OpDictCall dict _ _ args ->
             mergeAll (singleUseIfVar dict (UseCallArg blk idx 0) : [singleUseIfVar a (UseCallArg blk idx (j + 1)) | (j, a) <- zip [0 ..] args])
+        OpDup _ val -> singleUseIfVar val (UseCallArg blk idx 0)
+        OpDupProj0 handle -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpDupProj1 handle -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpWrapClosure fn -> singleUseIfVar fn (UseCallArg blk idx 0)
+        OpAllocClosure fn _ _ -> singleUseIfVar fn (UseCallArg blk idx 0)
+        OpClosureSetEnv closure _ val ->
+            mergeAll [singleUseIfVar closure (UseCallArg blk idx 0), singleUseIfVar val (UseCallArg blk idx 1)]
+        OpClosureGetEnv closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
+        OpClosureGetFunc closure -> singleUseIfVar closure (UseCallArg blk idx 0)
+        -- Specialized closure duplication ops
+        OpDupClosure _ closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
+        OpDupClosureProj0 handle _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpDupClosureProj1 handle _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpClosureGetEnvDirect closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
+        OpClosureGetEnvSUP closure _ -> singleUseIfVar closure (UseCallArg blk idx 0)
+        -- Parallel projection ops
+        OpParProj0 handle _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpParProj1 handle _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpParClosureProj0 handle _ _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpParClosureProj1 handle _ _ _ -> singleUseIfVar handle (UseCallArg blk idx 0)
+        OpPanic _ -> Map.empty
+        -- Graph reduction ops
+        OpGraphInit _ -> Map.empty
+        OpGraphShutdown -> Map.empty
+        OpGraphNum val -> singleUseIfVar val (UseCallArg blk idx 0)
+        OpGraphAdd l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
+        OpGraphSub l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
+        OpGraphMul l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
+        OpGraphDiv l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
+        OpGraphMod l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
+        OpGraphCall _ args -> mergeAll [singleUseIfVar a (UseCallArg blk idx j) | (j, a) <- zip [0 ..] args]
+        OpGraphReduce root -> singleUseIfVar root (UseCallArg blk idx 0)
+        OpGraphExtractNum term -> singleUseIfVar term (UseCallArg blk idx 0)
+        OpGraphRegisterFunc _ _ impl -> singleUseIfVar impl (UseCallArg blk idx 0)
+        -- Interaction net operations
+        OpGraphDup _ target -> singleUseIfVar target (UseCallArg blk idx 0)
+        OpGraphDupGetProj0 dup -> singleUseIfVar dup (UseCallArg blk idx 0)
+        OpGraphDupGetProj1 dup -> singleUseIfVar dup (UseCallArg blk idx 0)
+        OpGraphSup _ l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
+        OpGraphLam varSlot body -> mergeAll [singleUseIfVar varSlot (UseCallArg blk idx 0), singleUseIfVar body (UseCallArg blk idx 1)]
+        OpGraphApp fn arg -> mergeAll [singleUseIfVar fn (UseCallArg blk idx 0), singleUseIfVar arg (UseCallArg blk idx 1)]
+        OpGraphEra -> Map.empty
+        OpGraphRef _ _ arg -> singleUseIfVar arg (UseCallArg blk idx 0)
+        OpGraphClosure _ _ envVals ->
+            Map.unionsWith (++) [singleUseIfVar v (UseCallArg blk idx i) | (i, v) <- zip [0 ..] envVals]
+        OpGraphClosureApp clo arg ->
+            mergeAll [singleUseIfVar clo (UseCallArg blk idx 0), singleUseIfVar arg (UseCallArg blk idx 1)]
+        OpGraphClosureGetEnv clo _ ->
+            singleUseIfVar clo (UseCallArg blk idx 0)
+        OpFork fn args ->
+            mergeAll [singleUseIfVar fn (UseCallArg blk idx 0)]
+                <> mergeAll [singleUseIfVar a (UseCallArg blk idx (j + 1)) | (j, a) <- zip [0 ..] args]
+        OpJoin handle -> singleUseIfVar handle (UseCallArg blk idx 0)
 
 usesFromEffect :: BlockName -> Int -> AEffect -> Map Name [UseKind]
 usesFromEffect blk idx eff =
@@ -177,6 +232,11 @@ usesFromEffect blk idx eff =
                 , singleUseIfVar v (UseStoreVal blk idx)
                 ]
         EffDrop a -> singleUseIfVar a (UseDrop blk idx)
+        EffClosureSetEnv closure _ val ->
+            mergeAll [singleUseIfVar closure (UseStorePtr blk idx), singleUseIfVar val (UseStoreVal blk idx)]
+        EffGraphInit _ -> Map.empty
+        EffGraphShutdown -> Map.empty
+        EffGraphRegisterFunc _ _ impl -> singleUseIfVar impl (UseCallArg blk idx 0)
 
 data UseKind
     = UseCallArg BlockName Int Int

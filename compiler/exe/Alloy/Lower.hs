@@ -9,22 +9,24 @@ module Alloy.Lower (
 import Alloy.Build (
     AlloyBuilder,
     beginBlock,
-    beginFunctionWithConstraints,
+    beginFunctionFull,
+    emitEffect,
     emitLetTmp,
     endFunction,
     freshBlockName,
     runAlloyBuilder,
     terminate,
  )
-import Alloy.Decisions (
+import Alloy.Ir
+import Circuit.Decisions (
     Accessor (..),
     Constructor (..),
     DecisionTree (..),
     compile,
     mkPatternMatrix,
  )
-import Alloy.Ir
 import Control.Applicative ((<|>))
+import Control.Monad (forM)
 import Control.Monad.State.Strict
 import qualified Data.Map.Strict as Map
 import Metal.Expr (
@@ -38,6 +40,7 @@ import Metal.Function (
     MetallicFunction (..),
  )
 import Metal.Metadata (
+    ClosureFunctionInfo (..),
     MetallicFunctionMetadata (..),
  )
 import Metal.Module (
@@ -64,8 +67,17 @@ import Typing.Types (
     strType,
  )
 
+-- | Info about a closure binding
+data ClosureInfo = ClosureInfo
+    { ciEnvSize :: !Int -- number of captured env values
+    , ciFuncName :: !String -- underlying lifted function name
+    }
+    deriving (Show, Eq)
+
 data LEnv = LEnv
     { leVars :: Map.Map String AOperand
+    , leClosures :: Map.Map String ClosureInfo -- variable name -> closure info
+    , leClosureReturningFns :: Map.Map String ClosureReturnInfo -- function name -> closure return info
     , leCtorTags :: Map.Map String Int
     , leCtorFields :: Map.Map String [Type]
     , leProfiles :: MonadProfiles
@@ -76,24 +88,58 @@ type Lower a = StateT LEnv AlloyBuilder a
 lowerAlloyModule :: String -> MetallicModule -> AlloyModule
 lowerAlloyModule modName mm =
     let ctorTags = buildCtorTagMap mm
-
         ctorFields = buildCtorFieldMap mm
         profiles = buildMonadProfiles mm
-        action = mapM_ (lowerFunction ctorTags ctorFields profiles) (mmFunctions mm)
-
+        closureRetFns = buildClosureReturningFnsMap (mmFunctions mm)
+        action = mapM_ (lowerFunction ctorTags ctorFields profiles closureRetFns) (mmFunctions mm)
         (_unit, mdl) = runAlloyBuilder modName (mmTypeClasses mm) action
     in mdl
 
-lowerFunction :: Map.Map String Int -> Map.Map String [Type] -> MonadProfiles -> MetallicFunction -> AlloyBuilder ()
-lowerFunction ctorTags ctorFields profiles MetallicFunction{mfName, mfParams, mfReturnType, mfBody, mfMetadata} = do
+-- | Info about what a function returns if it returns a closure
+data ClosureReturnInfo = ClosureReturnInfo
+    { criEnvSize :: !Int -- env size of the returned closure
+    , criLiftedFn :: !String -- the lifted function the closure points to
+    }
+    deriving (Show, Eq)
+
+-- | Build a map of function names to info about closures they return
+buildClosureReturningFnsMap :: [MetallicFunction] -> Map.Map String ClosureReturnInfo
+buildClosureReturningFnsMap fns =
+    Map.fromList
+        [ (mfName fn, info)
+        | fn <- fns
+        , Just info <- [getClosureReturnInfo (mfBody fn)]
+        ]
+  where
+    getClosureReturnInfo :: MetallicExpr -> Maybe ClosureReturnInfo
+    getClosureReturnInfo (MClosure liftedName capturedVars _) =
+        Just $ ClosureReturnInfo (length capturedVars) liftedName
+    getClosureReturnInfo _ = Nothing
+
+lowerFunction :: Map.Map String Int -> Map.Map String [Type] -> MonadProfiles -> Map.Map String ClosureReturnInfo -> MetallicFunction -> AlloyBuilder ()
+lowerFunction ctorTags ctorFields profiles closureRetFns MetallicFunction{mfName, mfParams, mfReturnType, mfBody, mfMetadata} = do
     let constraints = mfmConstraints mfMetadata
-    beginFunctionWithConstraints mfName mfParams mfReturnType constraints
+    let isInline = mfmIsInline mfMetadata
+    beginFunctionFull mfName mfParams mfReturnType constraints isInline
     let entryName = "entry"
     beginBlock entryName []
 
+    -- For lifted lambdas with closure_self parameter, extract captured env vars
+    envBindings <- case mfmClosureInfo mfMetadata of
+        Just (ClosureFunctionInfo capturedVars) -> do
+            -- closure_self is the first parameter
+            let closureSelfOp = OpVar "closure_self"
+            -- Extract each captured variable from the closure environment
+            forM (zip [0 ..] capturedVars) $ \(idx, (varName, varTy)) -> do
+                extractedName <- emitLetTmp varTy (OpClosureGetEnv closureSelfOp idx)
+                pure (varName, OpVar extractedName)
+        Nothing -> pure []
+
     let initialEnv =
             LEnv
-                { leVars = Map.fromList [(pname, OpVar pname) | (pname, _pty) <- mfParams]
+                { leVars = Map.fromList ([(pname, OpVar pname) | (pname, _pty) <- mfParams] ++ envBindings)
+                , leClosures = Map.empty
+                , leClosureReturningFns = closureRetFns
                 , leCtorTags = ctorTags
                 , leCtorFields = ctorFields
                 , leProfiles = profiles
@@ -111,26 +157,102 @@ lowerExpr (MLit lit) =
     pure $ OpConst (lowerLiteral lit)
 lowerExpr (MLet name valExpr bodyExpr _ty) = do
     v <- lowerExpr valExpr
-    withBinding name v (lowerExpr bodyExpr)
+    -- Track closures for proper call handling
+    case valExpr of
+        MClosure liftedName capturedVars _ ->
+            withClosureBinding name liftedName (length capturedVars) v (lowerExpr bodyExpr)
+        MCall callee _ _ -> do
+            closureRetFns <- gets leClosureReturningFns
+            closureEnv <- gets leClosures
+            case stripTypeApps callee of
+                MVar fnName _ | Map.notMember fnName closureEnv -> do
+                    -- Direct call to a known function - check if it returns a closure
+                    case Map.lookup fnName closureRetFns of
+                        Just (ClosureReturnInfo envSize liftedFn) ->
+                            withClosureBinding name liftedFn envSize v (lowerExpr bodyExpr)
+                        Nothing -> withBinding name v (lowerExpr bodyExpr)
+                MVar fnName _ | Just (ClosureInfo _ funcName) <- Map.lookup fnName closureEnv -> do
+                    -- Call to a closure - check if the underlying func returns a closure
+                    case Map.lookup funcName closureRetFns of
+                        Just (ClosureReturnInfo envSize liftedFn) ->
+                            withClosureBinding name liftedFn envSize v (lowerExpr bodyExpr)
+                        Nothing -> withBinding name v (lowerExpr bodyExpr)
+                _ -> withBinding name v (lowerExpr bodyExpr)
+        _ -> withBinding name v (lowerExpr bodyExpr)
+  where
+    stripTypeApps (MTypeApp e _ _) = stripTypeApps e
+    stripTypeApps e = e
 lowerExpr (MLambda _paramNames _body ty) = do
     -- todo: create a closure value, allocate env, etc etc
     failLower ("Lambda lowering requires closure conversion; lambdas should be lifted to top-level before Alloy lowering. Lambda type: " ++ show ty)
+lowerExpr (MClosure liftedName capturedVars ty) = do
+    -- Allocate closure with the lifted function and captured environment
+    capturedOps <- mapM (\(n, _t) -> lowerExpr (MVar n _t)) capturedVars
+    let arity = countArityFromType ty
+        envSize = length capturedVars
+    closureName <- lift $ emitLetTmp ty (OpAllocClosure (OpVar liftedName) arity envSize)
+    -- Set each captured variable in the closure's environment
+    mapM_
+        ( \(idx, capturedOp) ->
+            lift $ emitEffect (EffClosureSetEnv (OpVar closureName) idx capturedOp)
+        )
+        (zip [0 ..] capturedOps)
+    pure (OpVar closureName)
+  where
+    countArityFromType :: Type -> Int
+    countArityFromType (TArrow _ rest) = 1 + countArityFromType rest
+    countArityFromType _ = 0
 lowerExpr (MConstruct typeName tag fields ty) = do
     ops <- mapM lowerExpr fields
     tmp <- lift $ emitLetTmp ty (OpConstruct typeName tag ops)
     pure (OpVar tmp)
 lowerExpr (MCall callee args ty) = do
-    calOp <- lowerExpr callee
     argOps <- mapM lowerExpr args
     env <- gets leVars
-    let callable = case stripTypeApps callee of
-            MVar fname _ | Map.notMember fname env -> Direct fname
-            _ -> Indirect calOp
-    tmp <- lift $ emitLetTmp ty (OpCall callable argOps)
-    pure (OpVar tmp)
+    closureEnv <- gets leClosures
+    case stripTypeApps callee of
+        MVar fname _ | Map.notMember fname env -> do
+            -- Direct call to a known function (not a local variable)
+            tmp <- lift $ emitLetTmp ty (OpCall (Direct fname) argOps)
+            pure (OpVar tmp)
+        MVar fname _ | Just (ClosureInfo _envSize funcName) <- Map.lookup fname closureEnv -> do
+            -- Uniform calling convention: pass closure as first arg
+            -- The lifted function extracts its own env from closure_self
+            closureOp <- lowerExpr callee
+            -- Get function pointer from closure
+            funcPtrName <- lift $ emitLetTmp (TArrow intType intType) (OpClosureGetFunc closureOp)
+            -- Call with closure as first arg (uniform convention)
+            tmp <- lift $ emitLetTmp ty (OpCall (Indirect (OpVar funcPtrName)) (closureOp : argOps))
+            -- Check if the underlying function returns a closure - if so, track it
+            closureRetFns <- gets leClosureReturningFns
+            case Map.lookup funcName closureRetFns of
+                Just (ClosureReturnInfo retEnvSize retLiftedFn) -> do
+                    -- The result is a closure - add to tracking
+                    let info = ClosureInfo retEnvSize retLiftedFn
+                    modify (\st -> st{leClosures = Map.insert tmp info (leClosures st)})
+                Nothing -> pure ()
+            pure (OpVar tmp)
+        MVar fname calleeTy
+            | Map.member fname env
+            , isFunctionType calleeTy -> do
+                -- Indirect call through function-typed variable (e.g., higher-order function parameter)
+                -- Uniform calling convention: treat as closure, pass as first arg
+                closureOp <- lowerExpr callee
+                -- Get function pointer from closure
+                funcPtrName <- lift $ emitLetTmp (TArrow intType intType) (OpClosureGetFunc closureOp)
+                -- Call with closure as first arg
+                tmp <- lift $ emitLetTmp ty (OpCall (Indirect (OpVar funcPtrName)) (closureOp : argOps))
+                pure (OpVar tmp)
+        _ -> do
+            -- Other indirect calls (shouldn't happen in well-formed code)
+            calOp <- lowerExpr callee
+            tmp <- lift $ emitLetTmp ty (OpCall (Indirect calOp) argOps)
+            pure (OpVar tmp)
   where
     stripTypeApps (MTypeApp e _ _) = stripTypeApps e
     stripTypeApps e = e
+    isFunctionType (TArrow _ _) = True
+    isFunctionType _ = False
 lowerExpr (MTypeApp e _tys _ty) =
     lowerExpr e
 lowerExpr (MArrayLit elems ty) = do
@@ -519,6 +641,8 @@ collectVarTypesFromBody = go Map.empty
         goStmt a (MCLet _ e) = go a e
         goStmt a (MCExpr e) = go a e
     go acc (MPanic _ _) = acc
+    go acc (MClosure _ capturedVars _) =
+        foldl (\a (n, ty) -> Map.insertWith (\_ old -> old) n ty a) acc capturedVars
 
 patternHasBinder :: Pattern -> Bool
 patternHasBinder (PVar{}) = True
@@ -585,6 +709,16 @@ withBinding name op action = do
     old <- get
     let newEnv = Map.insert name op (leVars old)
     put old{leVars = newEnv}
+    res <- action
+    modify (const old)
+    pure res
+
+withClosureBinding :: String -> String -> Int -> AOperand -> Lower a -> Lower a
+withClosureBinding name funcName envSize op action = do
+    old <- get
+    let newVars = Map.insert name op (leVars old)
+        newClosures = Map.insert name (ClosureInfo envSize funcName) (leClosures old)
+    put old{leVars = newVars, leClosures = newClosures}
     res <- action
     modify (const old)
     pure res

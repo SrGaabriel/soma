@@ -11,6 +11,9 @@ module Llvm.Types (
     deref,
     normalizeType,
     naturalAlignment,
+    LlvmFnAttr (..),
+    LlvmMemoryEffect (..),
+    fnAttrToLlvm,
 ) where
 
 import Data.Hashable (Hashable)
@@ -44,8 +47,8 @@ pattern LlvmNamed name = LlvmNamedType name
 pattern LlvmStruct :: [LlvmType] -> LlvmType
 pattern LlvmStruct fields = LlvmAnonymous fields
 
-pattern LlvmPtr :: LlvmType -> LlvmType
-pattern LlvmPtr t = LlvmPointer t
+pattern LlvmPtr :: LlvmType
+pattern LlvmPtr = LlvmPointer LlvmI8
 
 instance IR LlvmType where
     toLlvm LlvmVoid = "void"
@@ -113,3 +116,55 @@ naturalAlignment (LlvmFunctionPtr _ _) = 8
 naturalAlignment LlvmVararg = 8
 naturalAlignment LlvmVoid = 1
 naturalAlignment LlvmSkolem = 8
+
+data LlvmFnAttr
+    = FnAttrNoUnwind
+    | FnAttrNoSync
+    | FnAttrNoFree
+    | FnAttrWillReturn
+    | FnAttrNoRecurse
+    | FnAttrMustProgress
+    | FnAttrMemory LlvmMemoryEffect
+    | FnAttrNoInline
+    | FnAttrAlwaysInline
+    | FnAttrInlineHint
+    | FnAttrOptSize
+    | FnAttrMinSize
+    | FnAttrCold
+    | FnAttrHot
+    deriving (Show, Eq, Generic, Hashable)
+
+data LlvmMemoryEffect
+    = MemNone
+    | MemRead
+    | MemWrite
+    | MemReadWrite
+    | MemArgMemOnly
+    | MemArgMemRead
+    | MemInaccessibleMemOnly
+    deriving (Show, Eq, Generic, Hashable)
+
+fnAttrToLlvm :: LlvmFnAttr -> String
+fnAttrToLlvm FnAttrNoUnwind = "nounwind"
+fnAttrToLlvm FnAttrNoSync = "nosync"
+fnAttrToLlvm FnAttrNoFree = "nofree"
+fnAttrToLlvm FnAttrWillReturn = "willreturn"
+fnAttrToLlvm FnAttrNoRecurse = "norecurse"
+fnAttrToLlvm FnAttrMustProgress = "mustprogress"
+fnAttrToLlvm (FnAttrMemory eff) = "memory(" ++ memEffectToLlvm eff ++ ")"
+fnAttrToLlvm FnAttrNoInline = "noinline"
+fnAttrToLlvm FnAttrAlwaysInline = "alwaysinline"
+fnAttrToLlvm FnAttrInlineHint = "inlinehint"
+fnAttrToLlvm FnAttrOptSize = "optsize"
+fnAttrToLlvm FnAttrMinSize = "minsize"
+fnAttrToLlvm FnAttrCold = "cold"
+fnAttrToLlvm FnAttrHot = "hot"
+
+memEffectToLlvm :: LlvmMemoryEffect -> String
+memEffectToLlvm MemNone = "none"
+memEffectToLlvm MemRead = "read"
+memEffectToLlvm MemWrite = "write"
+memEffectToLlvm MemReadWrite = "readwrite"
+memEffectToLlvm MemArgMemOnly = "argmem: readwrite"
+memEffectToLlvm MemArgMemRead = "argmem: read"
+memEffectToLlvm MemInaccessibleMemOnly = "inaccessiblemem: readwrite"

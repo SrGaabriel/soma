@@ -6,6 +6,7 @@ module Parsing.Parser (
     Parser,
     TokenStream (..),
     ParserContext (..),
+    consumeRelevant,
     initialErrorState,
     recordError,
     getErrors,
@@ -149,6 +150,21 @@ consume kind = do
     tok <- optional $ satisfy (\t -> tokenKind t == kind)
     case tok of
         Just t -> pure t
+        Nothing -> do
+            actual <- tryPeekOrEOF
+            customFailure
+                $ ExpectedDifferentToken
+                    { expectedTok = kind
+                    , receivedTok = actual
+                    }
+
+consumeRelevant :: TokenKind -> Parser Token
+consumeRelevant kind = do
+    tok <- optional $ satisfy (\t -> tokenKind t == kind || tokenKind t == TokenLayoutSeparator)
+    case tok of
+        Just t -> case tokenKind t of
+            TokenLayoutSeparator -> consumeRelevant kind
+            _ -> pure t
         Nothing -> do
             actual <- tryPeekOrEOF
             customFailure

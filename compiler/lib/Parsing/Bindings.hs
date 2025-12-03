@@ -1,4 +1,4 @@
-module Parsing.Bindings where
+module Parsing.Bindings (parseBinding, parseInlineBinding) where
 
 import Control.Monad (unless)
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
@@ -8,7 +8,7 @@ import Parsing.Errors (ParsingError (..))
 import Parsing.Parser (Parser, ParserContext (..), consume, parseCommaSeparatedUntil, parseFuncName, parseOptionallyInLayout, peek, withinContext)
 import Parsing.Patterns (parsePipePatternArms)
 import Parsing.Types (parseLocatedQualifiedType, parseType)
-import Syntax.Tree (Expr (..), exprSpan)
+import Syntax.Tree (Expr (..), Modifier (..), exprSpan)
 import qualified Text.Megaparsec as MP
 import Typing.Currying (curryFunction)
 import Typing.Types (QualifiedType (..), Type, extractTyVars)
@@ -25,7 +25,10 @@ data BindingSyntax
     deriving (Show, Eq)
 
 parseBinding :: Bool -> Parser Expr
-parseBinding isTopLevel = withinContext (InFunctionSignature "") $ do
+parseBinding isTopLevel = parseBindingWithModifiers isTopLevel []
+
+parseBindingWithModifiers :: Bool -> [Modifier] -> Parser Expr
+parseBindingWithModifiers isTopLevel modifiers = withinContext (InFunctionSignature "") $ do
     defToken <- consume TokenDef
     name <- parseFuncName
     syntax <- parseBindingSyntax
@@ -38,8 +41,14 @@ parseBinding isTopLevel = withinContext (InFunctionSignature "") $ do
             , bindingType = bindType
             , bindingBody = wrapWithLambda syntax body
             , bindingIsImpl = isTopLevel
+            , bindingModifiers = modifiers
             , bindingSpan = spanningTokens defToken styleToken
             }
+
+parseInlineBinding :: Bool -> Parser Expr
+parseInlineBinding isTopLevel = do
+    _ <- consume TokenInline
+    parseBindingWithModifiers isTopLevel [ModInline]
 
 parseBindingSyntax :: Parser BindingSyntax
 parseBindingSyntax = do

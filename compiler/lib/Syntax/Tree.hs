@@ -1,9 +1,13 @@
-module Syntax.Tree (Expr (..), exprChildren, exprSpan, modifySpan, uncurryApp, ComposeStmt (..)) where
+module Syntax.Tree (Expr (..), Modifier (..), exprChildren, exprSpan, modifySpan, uncurryApp, ComposeStmt (..)) where
 
 import Lexing.Position (Located (..), Span (..))
 import Project.Symbols (Symbol)
 import Syntax.Patterns (Pattern (..))
 import Typing.Types (Constraint, Kind, QualifiedType, TyVar, Type)
+
+data Modifier
+    = ModInline
+    deriving (Show, Eq, Ord)
 
 data Expr
     = ExprRoot [Expr]
@@ -36,6 +40,7 @@ data Expr
         , bindingType :: Located QualifiedType
         , bindingBody :: Expr
         , bindingIsImpl :: Bool
+        , bindingModifiers :: [Modifier]
         , bindingSpan :: Span
         }
     | ExprIntrinsicDef
@@ -112,7 +117,7 @@ exprChildren (ExprBool _ _) = []
 exprChildren (ExprTypeClassBinding _ _ (Just impl) _) = impl
 exprChildren (ExprTypeClassBinding _ _ Nothing _) = []
 exprChildren (ExprDerivedPatternMatch arms) = arms
-exprChildren (ExprBindingDef _ _ body _ _) = [body]
+exprChildren (ExprBindingDef _ _ body _ _ _) = [body]
 exprChildren (ExprIntrinsicDef{}) = []
 exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
 exprChildren (ExprIntrinsicDataTypeDef{}) = []
@@ -139,7 +144,7 @@ exprSpan (ExprTuple _ s) = s
 exprSpan (ExprApp first second) = spanningExprs [first, second]
 exprSpan (ExprLambda _ _ s) = s
 exprSpan (ExprLet _ _ _ s) = s
-exprSpan (ExprBindingDef _ _ _ _ s) = s
+exprSpan (ExprBindingDef _ _ _ _ _ s) = s
 exprSpan (ExprIntrinsicDef _ _ s) = s
 exprSpan (ExprDataTypeDef _ _ _ _ s) = s
 exprSpan (ExprIntrinsicDataTypeDef _ _ s) = s
@@ -173,8 +178,8 @@ modifySpan (ExprLambda args body _) newSpan =
     ExprLambda args body newSpan
 modifySpan (ExprLet name value body _) newSpan =
     ExprLet name value body newSpan
-modifySpan (ExprBindingDef name bindType body isImpl _) newSpan =
-    ExprBindingDef name bindType body isImpl newSpan
+modifySpan (ExprBindingDef name bindType body isImpl mods _) newSpan =
+    ExprBindingDef name bindType body isImpl mods newSpan
 modifySpan (ExprIntrinsicDef name typ _) newSpan =
     ExprIntrinsicDef name typ newSpan
 modifySpan (ExprDataTypeDef name generics constraints constructors _) newSpan =

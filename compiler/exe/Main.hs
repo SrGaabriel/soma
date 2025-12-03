@@ -1,18 +1,28 @@
 module Main where
 
 import Build.Incremental (processExternalDependencies, processModulesIncremental)
+import Circuit.Linearize (linearizeModule)
+import Circuit.Lower (lowerModule)
+import Circuit.Simplify (simplifyModule)
+import Circuit.ToAlloy (lowerCircuitToAlloy)
 import Config.Options
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import qualified Data.ByteString as BS
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Text.Encoding as TE
 import Format.Errors (CycleError (..), SomeError (..))
+import Format.Trees (prettyPrintAst, treeShow)
 import Lexing.Lexer (lexCode)
-import Logging.Errors (printSomeError)
+import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
+import Logging.Errors (printError, printSomeError)
 import Logging.Json (errorsToJsonOutput, failedJsonOutput, printJsonOutput)
-import Project.Check (checkModulesInOrder)
-import Project.Extracts (extractSymbolImports)
+import Logging.Trees (prettyCircuit, prettyCircuitGraph)
+import Metal.Gen.Entry (compileMetalModule)
+import Metal.Lift (liftLambdas)
+import Metal.MonadNormalize (normalizeModule)
+import Project.Check (CheckedModule (..), checkModule, checkModulesInOrder)
+import Project.Extracts (extractIntrinsicNames, extractSymbolImports)
 import Project.Graph
 import Project.Module
 import Project.Parsing
@@ -44,11 +54,15 @@ main = do
             parseE <- parseModule (dropExtension (takeFileName file)) file
             case parseE of
                 Right mi -> do
+                    prettyPrintAst (moduleAst mi)
                     putStrLn $ "Parsing succeeded for module: " ++ moduleName mi
                     exitSuccess
                 Left errs -> do
                     mapM_ printSomeError errs
                     exitFailure
+        Right (Circuit circuitOpts) -> do
+            putStrLn "Soma Compiler v0.1.0 - Circuit IR"
+            circuit circuitOpts
         Left err -> putStrLn (formatError err) >> exitFailure
 
 check :: CheckOptions -> IO ()
@@ -237,4 +251,82 @@ processSingle options = do
             return ()
 
     putStrLn "Successfully compiled module."
+    exitSuccess
+
+-- | Lower a single file to Circuit IR and print the result
+circuit :: CircuitOptions -> IO ()
+circuit opts = do
+    let path = circuitInput opts
+        name = dropExtension (takeFileName path)
+
+    parseE <- parseModule name path
+    mi <- case parseE of
+        Left errs -> do
+            mapM_ printSomeError errs
+            putStrLn "Failed to parse module." >> exitFailure
+        Right m -> return m
+
+    -- Type check the module
+    let (allErrors, checked) = checkModule name mi Map.empty Map.empty Map.empty
+
+    unless (null allErrors) $ do
+        putStrLn $ "Errors while type checking module " ++ name ++ ":"
+        mapM_ (\e -> printError e (modulePath mi) (moduleContent mi) "INFERENCE") allErrors
+        exitFailure
+
+    let resolvedAst = checkedResolvedAst checked
+        types = checkedTypeMap checked
+
+    -- Compile to Metal
+    let metallic = compileMetalModule name resolvedAst types Map.empty
+        intrinsics = extractIntrinsicNames resolvedAst
+        metallicLifted = liftLambdas intrinsics metallic
+        metallicNormalized = normalizeModule metallicLifted
+
+    putStrLn "=== Metal HIR ==="
+    putStrLn $ treeShow metallicNormalized
+    putStrLn ""
+
+    let circuitLowered = lowerModule metallicNormalized
+        circuitModule = simplifyModule circuitLowered
+        printer = if circuitGraphFormat opts then prettyCircuitGraph else prettyCircuit
+
+    putStrLn "=== Circuit IR (before linearization) ==="
+    putStrLn $ printer circuitModule
+
+    -- Optionally linearize
+    let finalModule =
+            if circuitLinearize opts
+                then linearizeModule circuitModule
+                else circuitModule
+
+    when (circuitLinearize opts) $ do
+        putStrLn "=== Circuit IR (after linearization) ==="
+        putStrLn $ printer finalModule
+
+    -- Optionally lower to Alloy
+    let showAlloy = circuitToAlloy opts || circuitToLlvm opts
+    alloyModule <-
+        if showAlloy
+            then do
+                -- For LLVM, we need linearization
+                let linearizedModule =
+                        if circuitLinearize opts
+                            then finalModule
+                            else linearizeModule circuitModule
+                let alloy = lowerCircuitToAlloy linearizedModule
+                when (circuitToAlloy opts) $ do
+                    putStrLn "=== Alloy MIR ==="
+                    putStrLn $ treeShow alloy
+                pure (Just alloy)
+            else pure Nothing
+
+    -- Optionally lower to LLVM
+    when (circuitToLlvm opts) $ case alloyModule of
+        Just alloy -> do
+            putStrLn "=== LLVM IR ==="
+            let llvmIR = runLlvmCodeGenAndTranscribe alloy
+            putStrLn llvmIR
+        Nothing -> pure ()
+
     exitSuccess

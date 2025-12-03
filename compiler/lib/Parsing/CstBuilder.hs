@@ -33,9 +33,6 @@ import Syntax.CST.SyntaxKind
 import Text.Megaparsec (Parsec)
 import qualified Text.Megaparsec as MP
 
--- Stream instances are already defined in Parsing.Parser, but we need them here
--- We'll reuse TokenStream from Parsing.Parser
-
 data BuilderFrame = BuilderFrame
     { bfKind :: !SyntaxKind
     , bfChildren :: ![GreenElement]

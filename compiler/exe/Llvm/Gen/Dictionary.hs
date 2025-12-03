@@ -50,7 +50,7 @@ generateTypeClassStructDecl moduleName className dict =
 
 getFunctionPointerType :: Name -> LlvmType
 getFunctionPointerType _fnName =
-    LT.LlvmPtr LlvmI8
+    LT.LlvmPointer LlvmI8
 
 generateDictionaryGlobal :: String -> DictionaryDef -> (LlvmGlobal, ((String, Type), String))
 generateDictionaryGlobal moduleName DictionaryDef{ddClassName = className, ddForType = forType, ddMethods = methods} =

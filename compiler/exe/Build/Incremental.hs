@@ -2,22 +2,32 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
-module Build.Incremental where
+module Build.Incremental (
+    processModulesIncremental,
+    processExternalDependencies,
+) where
 
 import Alloy.CSE (cseModuleGlobal)
 import Alloy.Defunc (defunctionalizeModule)
 import Alloy.ExpandIntrinsics (expandIntrinsicsModule)
 import Alloy.HoistAllocas (hoistAllocasModule)
+import Alloy.Inline (defaultInlineConfig, inlineModule)
 import Alloy.Ir (AlloyModule (..))
-import Alloy.Lower (lowerAlloyModule)
 import Alloy.MonadicInline (monadicInlineModule)
 import Alloy.Monomorphize (monomorphizeModule)
 import Alloy.PromoteRefs (promoteRefsModule)
 import Alloy.ReaderRewrite (readerRewriteModule)
-import Alloy.Simplify (simplifyModule)
+import Alloy.Simplify (forwardClosureEnvValuesModule, simplifyModule)
 import Build.Metadata (SerializableConstructorMetadata, projectMetadataConstructors, projectMetadataInstances, projectMetadataPublicSymbols)
 import Build.Tarball (TarballContents (TarballContents, tcAlloyModules, tcMetadata), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
-import Config.Options (Options (..))
+import Circuit.Linearize (linearizeModule)
+import Circuit.Lower (lowerModule)
+import Circuit.Parallel (defaultParallelConfig, parallelizeModule)
+import qualified Circuit.Simplify as CS
+import Circuit.ToAlloy (lowerCircuitToAlloy)
+import Circuit.ToGraph (lowerCircuitToGraph)
+import Circuit.Validate (validateModule)
+import Config.Options (CompilationMode (..), Options (..))
 import Control.Exception (SomeException, catch)
 import Control.Monad (unless)
 import qualified Data.ByteString.Lazy as BL
@@ -25,23 +35,22 @@ import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import qualified Data.Set as Set
 import Format.Trees (prettyPrintAst, treeShow)
 import Inference.Core (InstanceEnv, TypeMap)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.Errors (printError)
-import Logging.Trees ()
+import Logging.Trees (prettyCircuit)
 import Metal.Gen.Entry (compileMetalModule)
 import Metal.Gen.Metadata (constructorMetadataToSerializable, extractConstructorMetadata, serializableToConstructorMetadata)
 import Metal.Lift (liftLambdas)
-import Metal.Module
+import Metal.Module (MetallicModule (..))
 import Metal.MonadNormalize (normalizeModule)
 import Project.Check (CheckedModule (..), checkModule)
-import Project.Extracts ()
+import Project.Extracts (extractIntrinsicNames)
 import Project.Graph
 import Project.Module
 import Project.Symbols (Symbol)
-import Syntax.Tree (Expr (..), exprChildren)
+import Syntax.Tree (Expr (..))
 import System.Directory
 import System.Exit (exitFailure)
 import System.FilePath
@@ -66,8 +75,9 @@ compileModuleSeparately ::
     Map String (Map Symbol QualifiedType) ->
     Map String InstanceEnv ->
     Map String SerializableConstructorMetadata ->
+    Options ->
     IO CompiledModule
-compileModuleSeparately packageName modInfo compiledDeps externalDeps externalInstances externalConstructors = do
+compileModuleSeparately packageName modInfo compiledDeps externalDeps externalInstances externalConstructors options = do
     let modName = moduleName modInfo
 
     putStrLn $ "Compiling module: " ++ modName
@@ -85,15 +95,14 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
                 )
                 compiledDeps
     let (allErrors, checked) = checkModule packageName modInfo checkedDeps externalDeps externalInstances
+    putStrLn "Resolved AST:"
+    prettyPrintAst (checkedResolvedAst checked)
+    putStrLn $ "Module " ++ modName ++ " type checked"
 
     unless (null allErrors) $ do
         putStrLn $ "Errors while compiling module " ++ modName ++ ":"
         mapM_ (\e -> printError e (modulePath modInfo) (moduleContent modInfo) "INFERENCE") allErrors
         exitFailure
-
-    putStrLn "Resolved AST:"
-    prettyPrintAst (checkedResolvedAst checked)
-    putStrLn $ "Module " ++ modName ++ " type checked"
 
     let resolvedAst = checkedResolvedAst checked
         types = checkedTypeMap checked
@@ -109,8 +118,38 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
     putStrLn $ "Metal (HIR) complete for " ++ modName
     putStrLn $ treeShow metallicNormalized
 
-    let alloyPreDictMono = lowerAlloyModule modName metallicNormalized
-        alloyExpanded = expandIntrinsicsModule alloyPreDictMono
+    -- Lower to Circuit IR
+    let circuitModule = lowerModule metallicNormalized
+        circuitSimplified = CS.simplifyModule circuitModule
+
+    -- Lower to Alloy MIR
+    let linearizedCircuit = linearizeModule circuitSimplified
+    case optionsMode options of
+        ModeGraph -> putStrLn "=== Circuit IR (graph mode - linearized) ==="
+        _ -> putStrLn "=== Circuit IR (after linearization) ==="
+    putStrLn $ prettyCircuit linearizedCircuit
+
+    let validationErrors = validateModule linearizedCircuit
+    unless (null validationErrors) $ do
+        putStrLn $ "Circuit validation errors in module " ++ modName ++ ":"
+        mapM_ (putStrLn . ("- " ++) . show) validationErrors
+        exitFailure
+
+    let alloyFromCircuit = case optionsMode options of
+            ModeGraph ->
+                -- Linearized graph mode: linearize first, then use graph reduction
+                -- This enables compile-time DUP optimization (e.g., eliding DUP for primitives)
+                lowerCircuitToGraph linearizedCircuit
+            ModeStandard ->
+                -- Standard mode: linearize for compile-time memory management
+                lowerCircuitToAlloy linearizedCircuit
+            ModeHybrid ->
+                -- Hybrid mode: linearize for compile-time memory management and then parallelize
+                let parallelConfig = defaultParallelConfig
+                    circuitParallelized = parallelizeModule parallelConfig linearizedCircuit
+                in lowerCircuitToAlloy circuitParallelized
+
+        alloyExpanded = expandIntrinsicsModule alloyFromCircuit
 
     putStrLn $ "Alloy (MIR) complete for " ++ modName
     putStrLn $ treeShow alloyExpanded
@@ -149,12 +188,13 @@ linkCompiledModules packageName compiledModules externalConstructors externalAll
         -- alloyWithDicts = transformModuleWithDictionaries fusedAlloy
         alloyMono = monomorphizeModule fusedAlloy
         alloyDefunc = defunctionalizeModule alloyMono
-        alloyReader = readerRewriteModule alloyDefunc
+        alloyUserInlined = inlineModule defaultInlineConfig alloyDefunc
+        alloyReader = readerRewriteModule alloyUserInlined
         alloyInlined = monadicInlineModule alloyReader
         alloyHoisted = hoistAllocasModule alloyInlined
 
     let optimizeFixpoint m =
-            let step x = simplifyModule (promoteRefsModule (cseModuleGlobal x))
+            let step x = simplifyModule (forwardClosureEnvValuesModule (promoteRefsModule (cseModuleGlobal x)))
                 x' = step m
             in if x' == m then m else optimizeFixpoint x'
 
@@ -189,16 +229,24 @@ processModulesIncremental :: [String] -> ModuleGraph -> Options -> IO ()
 processModulesIncremental sorted graph compileOptions = do
     let inputName = fromMaybe "app" $ optionsName compileOptions
 
-    (externalDeps, externalInstances, externalConstructors, externalAlloyModules) <- processExternalDependencies (optionsDeps compileOptions)
+    (externalDeps, externalInstances, externalConstructors, externalAlloyModules) <-
+        processExternalDependencies (optionsDeps compileOptions)
 
-    compiledModules <- compileAllModulesInOrder sorted graph Map.empty externalDeps externalInstances externalConstructors inputName
+    compiledModules <-
+        compileAllModulesInOrder
+            sorted
+            graph
+            Map.empty
+            externalDeps
+            externalInstances
+            externalConstructors
+            inputName
+            compileOptions
 
     putStrLn $ "\n✅ Compiled " ++ show (length compiledModules) ++ " modules separately"
-
     (alloyOpt, allCtorsForCodeGen) <- linkCompiledModules inputName compiledModules externalConstructors externalAlloyModules
 
     let llvmIr = runLlvmCodeGenAndTranscribe alloyOpt
-
     generateOutputFile inputName llvmIr compileOptions compiledModules graph allCtorsForCodeGen
 
     putStrLn "✅ Build process completed."
@@ -211,16 +259,34 @@ compileAllModulesInOrder ::
     Map String InstanceEnv ->
     Map String SerializableConstructorMetadata ->
     String ->
+    Options ->
     IO [CompiledModule]
-compileAllModulesInOrder [] _ _ _ _ _ _ = return []
-compileAllModulesInOrder (modName : rest) graph compiled externalDeps externalInstances externalConstructors packageName = do
+compileAllModulesInOrder [] _ _ _ _ _ _ _ = return []
+compileAllModulesInOrder (modName : rest) graph compiled externalDeps externalInstances externalConstructors packageName options = do
     let Just modInfo = Map.lookup modName graph
 
-    compiledModule <- compileModuleSeparately packageName modInfo compiled externalDeps externalInstances externalConstructors
+    compiledModule <-
+        compileModuleSeparately
+            packageName
+            modInfo
+            compiled
+            externalDeps
+            externalInstances
+            externalConstructors
+            options
 
     let newCompiled = Map.insert modName compiledModule compiled
 
-    restModules <- compileAllModulesInOrder rest graph newCompiled externalDeps externalInstances externalConstructors packageName
+    restModules <-
+        compileAllModulesInOrder
+            rest
+            graph
+            newCompiled
+            externalDeps
+            externalInstances
+            externalConstructors
+            packageName
+            options
     return (compiledModule : restModules)
 
 generateOutputFile ::
@@ -299,16 +365,47 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                 putStrLn "Can't build executable for library"
                 exitFailure
             | not isLib -> do
+                let runtimeLibPath = case optionsMode compileOptions of
+                        ModeGraph -> "runtime/inets_soma.a"
+                        ModeHybrid -> "runtime/hybrid_soma.a"
+                        ModeStandard -> "runtime/native_soma.a"
                 let llTemp = outputFile <.> "ll"
                 writeFile llTemp llvmIr
+
+                -- Check if runtime library exists
+                runtimeExists <- doesFileExist runtimeLibPath
+                unless runtimeExists $ do
+                    putStrLn $ "Warning: C runtime not found at " ++ runtimeLibPath
+                    putStrLn "Building runtime library..."
+                    catch
+                        (callProcess "make" ["-C", "runtime"])
+                        ( \(_ :: SomeException) -> do
+                            putStrLn "Failed to build runtime. Please run: cd runtime && make"
+                            exitFailure
+                        )
+
                 catch
                     ( do
-                        callProcess "clang" ["-o", outputFile, llTemp]
+                        let optimizationArgs = case optionsOptimizationLevel compileOptions of
+                                Just 3 ->
+                                    [ "-O3"
+                                    , "-march=native"
+                                    , "-mtune=native"
+                                    , "-flto"
+                                    , "-fomit-frame-pointer"
+                                    , "-fno-exceptions"
+                                    , "-fno-unwind-tables"
+                                    ]
+                                _ -> []
+                        let commandArgs = optimizationArgs ++ ["-o", outputFile, llTemp, runtimeLibPath]
+                        callProcess "clang" commandArgs
+                        putStrLn $ "Ran: " ++ unwords ("clang" : commandArgs)
                         putStrLn $ "Successfully compiled executable: " ++ outputFile
+                        putStrLn $ "(Linked with C runtime: " ++ runtimeLibPath ++ ")"
                     )
                     ( \(_ :: SomeException) -> do
                         putStrLn "clang not found. To compile manually:"
-                        putStrLn $ "clang -o " ++ outputFile ++ " " ++ llTemp
+                        putStrLn $ "clang -o " ++ outputFile ++ " " ++ llTemp ++ " " ++ runtimeLibPath
                         exitFailure
                     )
         ext -> do
@@ -335,7 +432,3 @@ processExternalDependencies externals = do
     let constructors = Map.unions [ctors | (_, _, _, ctors, _) <- list]
     let externalAlloy = concat [modules | (_, _, _, _, modules) <- list]
     pure (symbols, instances, constructors, externalAlloy)
-
-extractIntrinsicNames :: Expr -> Set.Set String
-extractIntrinsicNames root =
-    Set.fromList [intrinsicName e | e@ExprIntrinsicDef{} <- exprChildren root]

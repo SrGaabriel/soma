@@ -80,6 +80,7 @@ lowerBindingWithImpl isImpl node = do
             , bindingType = Located (toSpan node) qualType
             , bindingBody = body
             , bindingIsImpl = isImpl
+            , bindingModifiers = []
             , bindingSpan = toSpan node
             }
 

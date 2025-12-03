@@ -27,6 +27,7 @@ data TokenKind
     | TokenReturns
     | TokenCase
     | TokenDef
+    | TokenInline
     | TokenIntrinsic
     | TokenLeftParen
     | TokenRightParen
@@ -229,6 +230,7 @@ lexCode' text i stack =
                         "in" -> TokenIn
                         "case" -> TokenCase
                         "def" -> TokenDef
+                        "inline" -> TokenInline
                         "intrinsic" -> TokenIntrinsic
                         "use" -> TokenImport
                         "data" -> TokenData
@@ -325,6 +327,7 @@ referenceTokenKind TokenReturns = "'::'"
 referenceTokenKind TokenCase = "'case'"
 referenceTokenKind TokenWith = "'with'"
 referenceTokenKind TokenDef = "'def'"
+referenceTokenKind TokenInline = "'inline'"
 referenceTokenKind TokenIntrinsic = "'intrinsic'"
 referenceTokenKind TokenImport = "'import'"
 referenceTokenKind TokenSlash = "a slash"

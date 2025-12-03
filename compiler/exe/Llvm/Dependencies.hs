@@ -20,6 +20,10 @@ data LlvmDependency
         { structName :: String
         , structFields :: [LlvmType]
         }
+    | LlvmGlobalDependency
+        { globalName :: String
+        , globalType :: LlvmType
+        }
     deriving (Show, Eq)
 
 data LinkageType
@@ -45,6 +49,8 @@ instance IR LlvmDependency where
         "@" ++ name ++ "=" ++ maybe "" toLlvm linkage ++ " unnamed_addr constant " ++ toLlvm (getValueType value) ++ " " ++ toLlvm value
     toLlvm (LlvmStructDependency name fields) =
         "%" ++ name ++ " = type {" ++ intercalate ", " (map toLlvm fields) ++ "}"
+    toLlvm (LlvmGlobalDependency name ty) =
+        "@" ++ name ++ " = external global " ++ toLlvm ty
 
 instance IR LinkageType where
     toLlvm ExternalLinkage = "external"

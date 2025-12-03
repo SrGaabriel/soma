@@ -110,13 +110,13 @@ executable somac
   other-modules:
     Alloy.Build
     Alloy.CSE
-    Alloy.Decisions
     Alloy.Defunc
     Alloy.DictUtils
     Alloy.Dictionary
     Alloy.DictionaryPass
     Alloy.ExpandIntrinsics
     Alloy.HoistAllocas
+    Alloy.Inline
     Alloy.Ir
     Alloy.Lower
     Alloy.MonadicInline
@@ -130,11 +130,26 @@ executable somac
     Build.Incremental
     Build.Metadata
     Build.Tarball
+    Circuit.Alloc
+    Circuit.Constants
+    Circuit.Decisions
+    Circuit.Escape
+    Circuit.Ir
+    Circuit.Linearize
+    Circuit.Lower
+    Circuit.Parallel
+    Circuit.Simplify
+    Circuit.ToAlloy
+    Circuit.ToGraph
+    Circuit.Validate
     Config.Options
     Llvm.Dependencies
+    Llvm.Gen.Attributes
+    Llvm.Gen.CRuntime
     Llvm.Gen.Core
     Llvm.Gen.Dictionary
     Llvm.Gen.Entry
+    Llvm.Gen.Externals
     Llvm.Gen.Function
     Llvm.Gen.Instr
     Llvm.Gen.Intrinsics
