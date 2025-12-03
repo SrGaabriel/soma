@@ -36,7 +36,7 @@ Along the history of computer science, programming languages have revolved aroun
 
 However, there are significant downsides to both. Turing machine-based languages can lead to complex state management and side effects, making reasoning about programs difficult. On the other hand, while lambda calculus-based languages promote cleaner abstractions, they can struggle with side effects and stateful computations, which are often necessary in real-world applications.
 
-That is because functional programming languages are very inspired by the Curry-Howard correspondence, which establishes a direct relationship between computer programs and mathematical proofs. In Curry-Howard, types are propositions and functions are proofs. For ex, `id : A -> A` is a proof that from proposition A, we can derive proposition A. This correspondence encourages a view of programming as constructing proofs, leading to a focus on pure functions and immutability.
+That is because functional programming languages are very inspired by the Curry-Howard correspondence, which establishes a direct relationship between computer programs and mathematical proofs. In Curry-Howard, types are propositions and functions are proofs. For ex, `id : A -> A` is a proof that from proposition A, we can derive A. This correspondence encourages a view of programming as constructing proofs, leading to a focus on pure functions and immutability.
 
 But there have been significant criticisms of classical and intuitionistic logic, which underpin much of functional programming. That is because they assume no resource management!
 
@@ -65,27 +65,139 @@ The key link to linear logic is that interaction nets can naturally encode linea
 Interaction nets are basically:
 1. A set of agents (nodes) with ports
 2. A set of wires connecting the ports
-3. An evaluator that applies interaction rules to pairs of connected agents
 
 If two agents are connected via their principal ports, they can interact according to predefined rules, transforming the net.
 
 Think of it like this: principal ports represent how a node is used by other nodes and show the flow of computation that depends on this node. Auxiliary ports, on the other hand, carry the information the node needs to exist or compute, encoding the inputs required for the node to do its work.
 
+
+Below is an example of how a simple expression can be represented as an interaction net. This is a bit technical so if you're here just for a high-level understanding or the lore, feel free to skip to the next section.
+
+But before, keep in mind that interaction nets are an abstract formalism: they don't define any specific agents or interaction rules by themselves. With that said, here's a simple example of a let expression in Haskell:
+
 ```Haskell
 let x = 5 in x + 10
 ```
 
-Here, the interaction nets visualization is:
+(for imperative programmers, this is similar to `int x = 5; return x + 10;`)
+
+Here is an example of how a possible interaction net representation of that expression might look like.
 
 ```
-  [let]
-  /   \ 
-[5]    [+]
-       / \
-    (x)   [10]
-     |
-    [5]
+           ┌─────────┐
+           │   +     │
+           │  (add)  │
+           └────┬────┘
+                │ result
+                │
+     ┌──────────┴──────────┐
+     │                     │
+┌────┴────┐           ┌────┴────┐
+│    x    │           │   10    │
+│ (var)   │           │  (int)  │
+└────┬────┘           └─────────┘
+     │
+┌────┴────┐
+│    5    │
+│  (int)  │
+└─────────┘
 ```
+
+**Nodes (simplified conceptual view):**
+1. **+** (addition)
+   * Principal port: connected to `ROOT` (the result of the addition)
+   * Auxiliary ports: connected to `x` (left operand) and `10` (right operand)
+2. **x** (variable)
+   * Principal port: connected to `+` (where the variable is used)
+   * Auxiliary port: connected to `5` (the value bound to `x`)
+3. **5** (integer literal)
+   * Principal port: connected to `x` (via binding edge)
+4. **10** (integer literal)
+   * Principal port: connected to `+` (second operand)
+
+But that is a conceptual simplification. A more accurate interaction net representation would include application and lambda nodes to represent the `let` binding properly. Here's a more detailed version:
+
+```
+        ┌──────┐
+        │ ROOT │
+        └───┬──┘
+            │
+        ┌───┴───┐
+        │   @   │
+        └┬─────┬┘
+         │     │
+    ┌────┴──┐  │
+    │  λx   │  │
+    └┬────┬─┘  │
+     │    │    │
+     │ ┌──┴──┐ │
+     │ │  +  │ │
+     │ └┬───┬┘ │
+     │  │   │  │
+     │ ┌┴┐ ┌┴─┐│
+     │ │x│ │10││
+     │ └┬┘ └──┘│
+     │  │      │
+     └──┘      │
+           ┌───┴──┐
+           │  5   │
+           └──────┘
+```
+
+**Nodes (detailed view):**
+1. **ROOT**
+   * Principal port: connected to `@` (auxiliary port — the "result" port)
+2. **@** (application)
+   * Principal port: connected to `λx` (principal port)
+   * Auxiliary ports: connected to `ROOT` (result) and `5` (argument)
+3. **λx** (lambda/let binder)
+   * Principal port: connected to `@` (principal port)
+   * Auxiliary ports: connected to `+` (body) and `x` (binding)
+4. **+** (addition)
+   * Principal port: connected to `λx` (auxiliary port — body)
+   * Auxiliary ports: connected to `x` (left operand) and `10` (right operand)
+5. **x** (variable)
+   * Principal port: connected to `+` (auxiliary port — left operand)
+   * Auxiliary port: connected to `λx` (auxiliary port — binding)
+6. **5** (integer literal)
+   * Principal port: connected to `@` (auxiliary port — argument)
+7. **10** (integer literal)
+   * Principal port: connected to `+` (auxiliary port — right operand)
+
+Here, we can see that `@` and `λx` are connected via their principal ports. This means an interaction can occur:
+
+1. **`@` ↔ `λx`**: The application node and lambda node are connected via their principal ports. This triggers β-reduction: the argument `5` (at `@`'s auxiliary port) gets substituted for the variable `x` (at `λx`'s binding auxiliary port). Both `@` and `λx` are eliminated, and the wires are reconnected: `ROOT` now connects to `+`, and `x` is replaced by `5`.
+
+After the interaction, we get:
+
+```
+           ┌─────────┐
+           │   +     │
+           │  (add)  │
+           └────┬────┘
+                │
+                │
+     ┌──────────┴──────────┐
+     │                     │
+┌────┴────┐           ┌────┴────┐
+│    5    │           │   10    │
+│ (int)   │           │  (int)  │
+└─────────┘           └─────────┘
+```
+
+1. **ROOT**
+   * Principal port: connected to `+` (principal port)
+2. **+** (addition)
+   * Principal port: connected to `ROOT`
+   * Auxiliary ports: connected to `5` and `10`
+3. **5** (integer literal)
+   * Principal port: connected to `+` (auxiliary port — left operand)
+4. **10** (integer literal)
+   * Principal port: connected to `+` (auxiliary port — right operand)
+
+An evaluator would then reduce this net to the final result `15`.
+
+AGAIN, These are examples of POSSIBLE interaction net encodings. Different implementations may vary in how they represent variables, bindings, and applications. This only serves for the reader to understand what principal and auxiliary ports are and how nodes interact via their principal ports. **Interaction nets are an abstract formalism: they don't define any specific agents or interaction rules by themselves.**
 
 ## Interaction Combinators
 
