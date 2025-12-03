@@ -141,6 +141,7 @@ executable somac
     Circuit.Simplify
     Circuit.ToAlloy
     Circuit.ToGraph
+    Circuit.Validate
     Config.Options
     Llvm.Dependencies
     Llvm.Gen.Attributes

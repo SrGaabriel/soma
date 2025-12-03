@@ -4,7 +4,7 @@ import Data.List (intercalate, nub)
 import Llvm.Dependencies (LlvmDependency)
 import Llvm.Instructions (LlvmStatement)
 import Llvm.Ir (IR (toLlvm))
-import Llvm.Types (LlvmType, LlvmFnAttr, fnAttrToLlvm)
+import Llvm.Types (LlvmFnAttr, LlvmType, fnAttrToLlvm)
 
 data LlvmModule = LlvmModule
     { moduleName :: String

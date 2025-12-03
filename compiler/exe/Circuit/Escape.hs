@@ -23,6 +23,14 @@ escapes, we can:
   1. Skip OpDupClosure/OpDupClosureProj* entirely
   2. Use direct closure copying (memcpy-style)
   3. Avoid SUP allocation overhead for nested closure slots
+
+  Precision:
+  - Known-safe functions: Intrinsics, arithmetic, and comparison operations
+    are recognized as non-escaping for their arguments.
+  - Self-closure patterns: When a lifted lambda calls itself with its closure
+    as the first argument (the "self" pattern), the closure doesn't escape.
+  - Local function applications: When calling a locally-defined closure,
+    we track that arguments stay within the local scope.
 -}
 module Circuit.Escape (
     -- * Escape Analysis
@@ -38,6 +46,7 @@ module Circuit.Escape (
 ) where
 
 import Circuit.Ir
+import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -77,10 +86,14 @@ data AnalysisState = AnalysisState
     -- ^ Names that are bound to closures
     , asDupProjections :: Map Name Name
     -- ^ Maps projection names (x.0, x.1) to their DUP source
+    , asLocalFunctions :: Set Name
+    -- ^ Names that are local function bindings (safe to call without escape)
+    , asCurrentFunction :: Maybe Name
+    -- ^ Name of the function currently being analyzed (for self-calls)
     }
 
 emptyState :: AnalysisState
-emptyState = AnalysisState Map.empty Set.empty Map.empty
+emptyState = AnalysisState Map.empty Set.empty Map.empty Set.empty Nothing
 
 -- | Merge two escape kinds (conservative: take the "more escaped" one)
 mergeEscape :: EscapeKind -> EscapeKind -> EscapeKind
@@ -106,6 +119,18 @@ registerProjection :: Name -> Name -> AnalysisState -> AnalysisState
 registerProjection projName srcName st =
     st{asDupProjections = Map.insert projName srcName (asDupProjections st)}
 
+-- | Mark a name as a local function
+markLocalFunction :: Name -> AnalysisState -> AnalysisState
+markLocalFunction name st = st{asLocalFunctions = Set.insert name (asLocalFunctions st)}
+
+-- | Check if a name is a known local function
+isLocalFunction :: Name -> AnalysisState -> Bool
+isLocalFunction name st = Set.member name (asLocalFunctions st)
+
+-- | Set the current function name (for self-call detection)
+setCurrentFunction :: Name -> AnalysisState -> AnalysisState
+setCurrentFunction name st = st{asCurrentFunction = Just name}
+
 -- | Analyze escape status for all bindings in a module
 analyzeEscapes :: CModule -> EscapeEnv
 analyzeEscapes CModule{..} =
@@ -114,7 +139,7 @@ analyzeEscapes CModule{..} =
 -- | Analyze escape status for bindings in a function
 analyzeFunctionEscapes :: CFunction -> EscapeEnv
 analyzeFunctionEscapes CFunction{..} =
-    let initState = emptyState
+    let initState = setCurrentFunction cfName emptyState
         -- Analyze the body in return context (function result escapes)
         finalState = analyzeTermEscapes CtxReturn cfBody initState
     in asEscapes finalState
@@ -136,15 +161,10 @@ analyzeTermEscapes ctx term st = case term of
     -- because the lifted function uses it locally.
     CApp f x _ ->
         let
-            -- Check if this is a call to a known function (not indirect)
-            isDirectCall = case f of
-                CRef _ _ -> True
-                CVar _ _ -> True
-                CApp{} -> True -- Curried application
-                _ -> False
-            -- For direct calls, arguments are used locally (don't escape)
-            -- For indirect calls, arguments may escape anywhere
-            argCtx = if isDirectCall then CtxLocal else CtxArg
+            -- Collect the full application chain to analyze the callee
+            (callee, _args) = collectAppChain term
+            -- Determine if arguments escape based on the callee
+            argCtx = determineArgContext callee st
             st1 = analyzeTermEscapes CtxLocal f st -- function ref is used locally
             st2 = analyzeTermEscapes argCtx x st1 -- arg context depends on call type
         in
@@ -155,12 +175,14 @@ analyzeTermEscapes ctx term st = case term of
             -- Check if this binding is a closure
             isClosure = isClosureType ty || isClosureTerm val
             st0 = if isClosure then markClosure name st else st
+            -- Mark as local function if it's a closure (enables better arg analysis)
+            st0' = if isClosure then markLocalFunction name st0 else st0
             -- Value context depends on whether body returns it
             valCtx =
                 if nameUsedInReturnPosition name body
                     then CtxReturn
                     else CtxLocal
-            st1 = analyzeTermEscapes valCtx val st0
+            st1 = analyzeTermEscapes valCtx val st0'
             -- Body is in the same context as the let
             st2 = analyzeTermEscapes ctx body st1
             -- If name isn't used, it doesn't escape
@@ -274,6 +296,84 @@ isClosureTerm (CClosure{}) = True
 isClosureTerm (CLam{}) = True
 isClosureTerm (CClosureGetEnv{}) = False
 isClosureTerm _ = False
+
+-- | Collect the application chain: (f x y z) -> (f, [x, y, z])
+collectAppChain :: CTerm -> (CTerm, [CTerm])
+collectAppChain = go []
+  where
+    go args (CApp f x _) = go (x : args) f
+    go args other = (other, args)
+
+{- | Determine argument escape context based on the callee
+This is the key function for improved precision:
+  - Known-safe intrinsics: arguments don't escape
+  - Self-recursive calls: the "self" closure argument doesn't escape
+  - Local function calls: arguments stay local
+  - Unknown functions: conservative, assume escape
+-}
+determineArgContext :: CTerm -> AnalysisState -> EscapeContext
+determineArgContext callee st = case callee of
+    -- Direct reference to a known function
+    CRef name _ ->
+        if isKnownSafeFunction name || isSelfCall name st
+            then CtxLocal
+            else CtxArg
+    CVar name _ ->
+        if isLocalFunction name st
+            then CtxLocal -- Local function, args stay in scope
+            else CtxArg -- Unknown closure
+            -- Curried application - check the innermost callee
+    CApp f _ _ -> determineArgContext f st
+    -- Other expressions as callees - conservative
+    _ -> CtxArg
+
+{- | Check if a function name refers to a known-safe intrinsic or builtin
+These functions don't store or return their arguments in ways that escape
+-}
+isKnownSafeFunction :: Name -> Bool
+isKnownSafeFunction name
+    -- Arithmetic and comparison intrinsics
+    | "llvm." `isPrefixOf` name = True
+    | "soma_" `isPrefixOf` name = isSafeSomaFunction name
+    -- Common pure functions that don't escape args
+    | name `elem` safePureFunctions = True
+    | otherwise = False
+  where
+    -- Safe soma runtime functions (don't store closures)
+    isSafeSomaFunction n =
+        n
+            `elem` [ "soma_print_int"
+                   , "soma_print_str"
+                   , "soma_panic"
+                   , "soma_trace"
+                   ]
+    -- Known pure functions in the standard library
+    safePureFunctions =
+        [ "add"
+        , "sub"
+        , "mul"
+        , "div"
+        , "mod"
+        , "eq"
+        , "ne"
+        , "lt"
+        , "le"
+        , "gt"
+        , "ge"
+        , "and"
+        , "or"
+        , "not"
+        , "neg"
+        , "min"
+        , "max"
+        , "abs"
+        ]
+
+-- | Check if a call is a self-recursive call (to the current function)
+isSelfCall :: Name -> AnalysisState -> Bool
+isSelfCall name st = case asCurrentFunction st of
+    Just currentFn -> name == currentFn || (currentFn ++ "_lifted") `isPrefixOf` name
+    Nothing -> False
 
 -- | Check if a name is used in return position within a term
 nameUsedInReturnPosition :: Name -> CTerm -> Bool

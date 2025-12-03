@@ -30,8 +30,8 @@ module Circuit.ToAlloy (
 
 import Alloy.Build
 import Circuit.Alloc (AllocEnv, AllocKind (..), analyzeFunction, lookupAlloc)
-import Circuit.Escape (EscapeEnv, analyzeFunctionEscapes, canElideClone)
 import Circuit.Constants (parallelWorkThreshold)
+import Circuit.Escape (EscapeEnv, analyzeFunctionEscapes, canElideClone)
 import qualified Circuit.Ir as C
 import Control.Monad (forM, forM_, when)
 import Data.List (isPrefixOf)

@@ -30,6 +30,7 @@ import Control.Monad (foldM)
 import Control.Monad.State
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Typing.Types (Type)
 
 -- | State for linearization
@@ -237,43 +238,164 @@ Returns the modified body where origName occurrences are replaced
 with the appropriate dup projections.
 -}
 linearizeBinding :: Name -> Type -> Int -> CTerm -> LinearM CTerm
-linearizeBinding origName ty uses body = do
+linearizeBinding origName ty uses body =
     if uses <= 1
         then pure body
         else buildDupChain origName ty uses body
 
 {- | Build a chain of DUP nodes for a variable used multiple times.
 
+ٍٍSingle-pass algorithm that collects all occurrences and builds
+the DUP chain in one traversal.
+
 Strategy: right-leaning chain of DUPs
   - For 2 uses: !d &L = x; body[x₁ -> d₀, x₂ -> d₁]
   - For 3 uses: !d0 &L0 = x; !d1 &L1 = d0₁; body[x₁ -> d0₀, x₂ -> d1₀, x₃ -> d1₁]
   - For n uses: chain of n-1 DUPs
+
+The algorithm:
+1. Generate all (n-1) DUP names and labels upfront
+2. Build a substitution map: occurrence index -> projection term
+3. Apply all substitutions in a single traversal
+4. Wrap with the DUP chain from outside-in
 -}
 buildDupChain :: Name -> Type -> Int -> CTerm -> LinearM CTerm
 buildDupChain origName ty uses body = do
-    go origName uses body
+    dupInfos <- generateDupChainInfo (uses - 1)
+    let substMap = buildSubstitutionMap ty dupInfos uses
+    let body' = substituteAllOccurrences origName substMap ty body
+    pure $ wrapWithDupChain origName ty dupInfos body'
+
+data DupInfo = DupInfo
+    { diName :: !Name
+    , diLabel :: !Label
+    }
+    deriving (Show)
+
+generateDupChainInfo :: Int -> LinearM [DupInfo]
+generateDupChainInfo 0 = pure []
+generateDupChainInfo n = do
+    -- Generate from innermost to outermost
+    mapM
+        ( \_ -> do
+            name <- freshName "dup"
+            DupInfo name <$> freshLabel
+        )
+        [1 .. n]
+
+{- | Build the substitution map for all occurrences.
+
+For n uses with DUPs [d0, d1, ..., d(n-2)]:
+  - Occurrence 0 -> CDp0 d0       (first DUP's left projection)
+  - Occurrence 1 -> CDp0 d1       (second DUP's left projection)
+  - Occurrence n-2 -> CDp0 d(n-2) (last DUP's left projection)
+  - Occurrence n-1 -> CDp1 d(n-2) (last DUP's right projection)
+-}
+buildSubstitutionMap :: Type -> [DupInfo] -> Int -> Map Int CTerm
+buildSubstitutionMap ty dupInfos uses =
+    Map.fromList $ zipWith makeSubst [0 ..] [0 .. uses - 1]
   where
-    go :: Name -> Int -> CTerm -> LinearM CTerm
-    go src 2 b = do
-        -- Base case: one DUP producing two projections
-        label <- freshLabel
-        dupName <- freshName "dup"
-        -- Replace first two occurrences of src with d₀ and d₁
-        let b' = substituteNth src 0 (CDp0 dupName ty) ty $ substituteNth src 0 (CDp1 dupName ty) ty b
-        pure $ CDup dupName ty label (CVar src ty) b'
-    go src n b | n > 2 = do
-        -- Recursive case: one DUP, dp0 goes to first use, dp1 continues chain
-        label <- freshLabel
-        dupName <- freshName "dup"
-        -- First occurrence gets dp0
-        let b' = substituteNth src 0 (CDp0 dupName ty) ty b
-        -- Remaining (n-1) occurrences will be handled by recursion
-        inner <- go src (n - 1) b'
-        -- Now wrap with the DUP, but the inner chain uses src still
-        -- We need to replace src with CDp1 in the inner result
-        let inner' = substituteVar src (CDp1 dupName ty) ty inner
-        pure $ CDup dupName ty label (CVar src ty) inner'
-    go _ _ b = pure b
+    makeSubst :: Int -> Int -> (Int, CTerm)
+    makeSubst _ occIdx
+        | occIdx < length dupInfos =
+            -- All but last occurrence: use CDp0 of the corresponding DUP
+            let dupInfo = dupInfos !! occIdx
+            in (occIdx, CDp0 (diName dupInfo) ty)
+        | otherwise =
+            -- Last occurrence: use CDp1 of the last DUP
+            let lastDup = last dupInfos
+            in (occIdx, CDp1 (diName lastDup) ty)
+
+{- | Substitute all occurrences of a variable in a single pass.
+
+Uses an occurrence counter to look up the appropriate replacement
+from the substitution map.
+-}
+substituteAllOccurrences :: Name -> Map Int CTerm -> Type -> CTerm -> CTerm
+substituteAllOccurrences target substMap _ty term =
+    evalState (go term) 0
+  where
+    getNextReplacement :: State Int (Maybe CTerm)
+    getNextReplacement = do
+        idx <- get
+        put (idx + 1)
+        pure $ Map.lookup idx substMap
+
+    go :: CTerm -> State Int CTerm
+    go t = case t of
+        CVar name varTy
+            | name == target -> fromMaybe (CVar name varTy) <$> getNextReplacement
+            | otherwise -> pure (CVar name varTy)
+        CDp0 name dpTy
+            | name == target -> fromMaybe (CDp0 name dpTy) <$> getNextReplacement
+            | otherwise -> pure (CDp0 name dpTy)
+        CDp1 name dpTy
+            | name == target -> fromMaybe (CDp1 name dpTy) <$> getNextReplacement
+            | otherwise -> pure (CDp1 name dpTy)
+        CLam name lamTy body
+            | name == target -> pure (CLam name lamTy body) -- Shadowed
+            | otherwise -> CLam name lamTy <$> go body
+        CLet name letTy val body
+            | name == target -> CLet name letTy <$> go val <*> pure body
+            | otherwise -> CLet name letTy <$> go val <*> go body
+        CDup name dupTy l val body
+            | name == target -> CDup name dupTy l <$> go val <*> pure body
+            | otherwise -> CDup name dupTy l <$> go val <*> go body
+        CCase scrut arms mdef caseTy -> do
+            scrut' <- go scrut
+            arms' <- traverse goArm arms
+            mdef' <- traverse go mdef
+            pure $ CCase scrut' arms' mdef' caseTy
+          where
+            goArm (tag, fieldsWithTypes, body)
+                | target `elem` map fst fieldsWithTypes = pure (tag, fieldsWithTypes, body)
+                | otherwise = (tag,fieldsWithTypes,) <$> go body
+        CClosure liftedName capturedVars closureTy -> do
+            capturedVars' <- goCaptured capturedVars
+            pure $ CClosure liftedName capturedVars' closureTy
+          where
+            goCaptured [] = pure []
+            goCaptured ((n, ty') : rest)
+                | n == target = do
+                    mRepl <- getNextReplacement
+                    let newName = case mRepl of
+                            Just (CVar repName _) -> repName
+                            Just (CDp0 repName _) -> repName ++ ".0"
+                            Just (CDp1 repName _) -> repName ++ ".1"
+                            _ -> n
+                    rest' <- goCaptured rest
+                    pure $ (newName, ty') : rest'
+                | otherwise = ((n, ty') :) <$> goCaptured rest
+        _ -> mapChildrenM go t
+
+{- | Wrap a body with the DUP chain.
+
+For DUPs [d0, d1, d2] with original variable x:
+  CDup d0 (CVar x) $
+    CDup d1 (CDp1 d0) $
+      CDup d2 (CDp1 d1) $
+        body
+
+The source of each DUP is:
+  - d0: the original variable x
+  - d1: CDp1 of d0
+  - d2: CDp1 of d1
+  - etc.
+-}
+wrapWithDupChain :: Name -> Type -> [DupInfo] -> CTerm -> CTerm
+wrapWithDupChain origName ty dupInfos body =
+    case dupInfos of
+        [] -> body
+        (first : rest) ->
+            CDup (diName first) ty (diLabel first) (CVar origName ty)
+                $ wrapRest first rest
+  where
+    wrapRest :: DupInfo -> [DupInfo] -> CTerm
+    wrapRest _ [] = body
+    wrapRest prev (curr : rest) =
+        -- Each subsequent DUP sources from the previous DUP's CDp1
+        CDup (diName curr) ty (diLabel curr) (CDp1 (diName prev) ty)
+            $ wrapRest curr rest
 
 {- | Substitute the nth occurrence (0-indexed) of a variable.
 

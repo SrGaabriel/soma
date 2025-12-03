@@ -26,6 +26,7 @@ import Circuit.Parallel (defaultParallelConfig, parallelizeModule)
 import qualified Circuit.Simplify as CS
 import Circuit.ToAlloy (lowerCircuitToAlloy)
 import Circuit.ToGraph (lowerCircuitToGraph)
+import Circuit.Validate (validateModule)
 import Config.Options (CompilationMode (..), Options (..))
 import Control.Exception (SomeException, catch)
 import Control.Monad (unless)
@@ -122,29 +123,33 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
         circuitSimplified = CS.simplifyModule circuitModule
 
     -- Lower to Alloy MIR
-    -- If graph mode enabled, skip linearization and use graph reduction
-    -- Otherwise, linearize (insert DUP/ERA nodes) and use standard lowering
-    let circuitForAlloy = linearizeModule circuitSimplified
+    let linearizedCircuit = linearizeModule circuitSimplified
+    case optionsMode options of
+        ModeGraph -> putStrLn "=== Circuit IR (graph mode - linearized) ==="
+        _ -> putStrLn "=== Circuit IR (after linearization) ==="
+    putStrLn $ prettyCircuit linearizedCircuit
+
+    let validationErrors = validateModule linearizedCircuit
+    unless (null validationErrors) $ do
+        putStrLn $ "Circuit validation errors in module " ++ modName ++ ":"
+        mapM_ (putStrLn . ("- " ++) . show) validationErrors
+        exitFailure
+
     let alloyFromCircuit = case optionsMode options of
             ModeGraph ->
                 -- Linearized graph mode: linearize first, then use graph reduction
                 -- This enables compile-time DUP optimization (e.g., eliding DUP for primitives)
-                lowerCircuitToGraph circuitForAlloy
+                lowerCircuitToGraph linearizedCircuit
             ModeStandard ->
                 -- Standard mode: linearize for compile-time memory management
-                lowerCircuitToAlloy circuitForAlloy
+                lowerCircuitToAlloy linearizedCircuit
             ModeHybrid ->
                 -- Hybrid mode: linearize for compile-time memory management and then parallelize
                 let parallelConfig = defaultParallelConfig
-                    circuitParallelized = parallelizeModule parallelConfig circuitForAlloy
+                    circuitParallelized = parallelizeModule parallelConfig linearizedCircuit
                 in lowerCircuitToAlloy circuitParallelized
 
         alloyExpanded = expandIntrinsicsModule alloyFromCircuit
-
-    case optionsMode options of
-        ModeGraph -> putStrLn "=== Circuit IR (graph mode - linearized) ==="
-        _ -> putStrLn "=== Circuit IR (after linearization) ==="
-    putStrLn $ prettyCircuit circuitForAlloy
 
     putStrLn $ "Alloy (MIR) complete for " ++ modName
     putStrLn $ treeShow alloyExpanded
@@ -382,14 +387,15 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                 catch
                     ( do
                         let optimizationArgs = case optionsOptimizationLevel compileOptions of
-                                Just 3 -> [ "-O3"
-                                  , "-march=native"
-                                  , "-mtune=native"
-                                  , "-flto"
-                                  , "-fomit-frame-pointer"
-                                  , "-fno-exceptions"
-                                  , "-fno-unwind-tables"
-                                  ]
+                                Just 3 ->
+                                    [ "-O3"
+                                    , "-march=native"
+                                    , "-mtune=native"
+                                    , "-flto"
+                                    , "-fomit-frame-pointer"
+                                    , "-fno-exceptions"
+                                    , "-fno-unwind-tables"
+                                    ]
                                 _ -> []
                         let commandArgs = optimizationArgs ++ ["-o", outputFile, llTemp, runtimeLibPath]
                         callProcess "clang" commandArgs
