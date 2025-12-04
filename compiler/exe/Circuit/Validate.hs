@@ -134,7 +134,9 @@ countProjectionUses baseName projIdx = go
 validateModule :: CModule -> ValidationResult
 validateModule CModule{..} = execWriter $ do
     let funcNames = Set.fromList $ map cfName cmFunctions
-        ctx = emptyCtx{vcFunctions = funcNames, vcLinear = cmIsLinearized}
+        externalNames = Set.fromList cmExternalRefs
+        allFuncs = Set.union funcNames externalNames
+        ctx = emptyCtx{vcFunctions = allFuncs, vcLinear = cmIsLinearized}
 
     forM_ cmFunctions $ \func -> do
         let funcCtx = withPath (cfName func) ctx
@@ -234,6 +236,10 @@ validateTermM ctx term = case term of
             $ report
             $ OrphanProjection projName (vcPath ctx ++ ": no matching DUP")
     CEra -> pure ()
+    CErase val body -> do
+        -- Validate the value being erased and the continuation body
+        validateTermM ctx val
+        validateTermM ctx body
     CRef name _ ->
         -- Function references (CRef) are top-level function references.
         -- They are valid if they refer to a known function OR if we don't

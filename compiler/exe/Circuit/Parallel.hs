@@ -144,6 +144,7 @@ varRefs = go Set.empty
         CDp0 n _ -> if Set.member n bound then Set.empty else Set.singleton (VarDp0 n)
         CDp1 n _ -> if Set.member n bound then Set.empty else Set.singleton (VarDp1 n)
         CEra -> Set.empty
+        CErase val body -> go bound val <> go bound body
         CRef _ _ -> Set.empty
         CInt _ -> Set.empty
         CBool _ -> Set.empty
@@ -394,6 +395,8 @@ parallelizeTerm config params = go
         CClosureGetEnv c i ty -> CClosureGetEnv <$> go c <*> pure i <*> pure ty
         CProject e i ty -> CProject <$> go e <*> pure i <*> pure ty
         CFork n ty comp body -> CFork n ty <$> go comp <*> go body
+        -- Erase: recurse into both parts
+        CErase val body -> CErase <$> go val <*> go body
         -- Leaves - no recursion needed
         CVar{} -> return term
         CDp0{} -> return term
@@ -553,6 +556,7 @@ estimateWork = go
         CVar{} -> 0
         CRef{} -> 0
         CEra -> 0
+        CErase val body -> go val + go body
         -- Other constructs
         CLam _ _ body -> go body
         CSup _ a b _ -> go a + go b

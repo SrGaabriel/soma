@@ -38,7 +38,7 @@ import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Typing.Types (Type (..), tupleType, isFunctionType)
+import Typing.Types (Type (..), byteType, isFunctionType, tupleType)
 
 {- | Environment for lowering, containing:
   - Operand bindings (name -> Alloy operand)
@@ -186,8 +186,16 @@ lowerTerm env term = case term of
     C.CStr s -> pure (OpConst (CString s))
     -- Function references
     C.CRef name _ -> pure (OpVar name)
-    -- Erasure
+    -- Erasure (value)
     C.CEra -> pure (OpConst CUnit)
+    -- Erase/consume a value and continue with body
+    C.CErase val body -> do
+        valOp <- lowerTerm env val
+        -- Emit EffDrop if the value is heap-allocated
+        let valKind = C.classifyTerm val
+        when (valKind == C.MaybeHeap)
+            $ emitEffect (EffDrop valOp)
+        lowerTerm env body
     -- Let bindings
     C.CLet name _ty val body -> do
         valOp <- lowerTerm env val
@@ -350,8 +358,8 @@ lowerTerm env term = case term of
     -- Case expressions
     C.CCase scrut arms mdef resultTy -> do
         scrutOp <- lowerTerm env scrut
-        let scrutTy = C.getTermType scrut
-        tagName <- emitLetTmp scrutTy (OpTagOf scrutOp)
+        -- The tag extracted from an ADT is always a Byte
+        tagName <- emitLetTmp byteType (OpTagOf scrutOp)
         joinBlock <- freshBlockName
         resultName <- freshName
         armBlocks <- forM arms $ \(tag, boundNamesWithTypes, body) ->

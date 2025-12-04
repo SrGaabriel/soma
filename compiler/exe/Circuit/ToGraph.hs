@@ -357,6 +357,12 @@ lowerTermToLGraph env = \case
 
     -- Erasure node
     C.CEra -> emitLetTmp termType OpGraphEra
+    -- Erase a value and continue with body
+    C.CErase val body -> do
+        -- Lower the value (for side effects / freeing)
+        _ <- lowerTermToLGraph env val
+        -- Continue with the body
+        lowerTermToLGraph env body
     -- Function applications become REF or APP nodes
     term@(C.CApp _fun _arg _resultTy) -> do
         let (f, args) = collectArgs term

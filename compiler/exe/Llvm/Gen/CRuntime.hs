@@ -48,6 +48,7 @@ module Llvm.Gen.CRuntime (
     cruntimeSomaPoolFreeSup,
     cruntimeSomaPoolFreeClosure,
     cruntimeSomaPanic,
+    cruntimeSomaClosureType,
 ) where
 
 import Llvm.Dependencies (LlvmDependency (..))
@@ -208,3 +209,6 @@ cruntimeSomaPoolFreeClosure = LlvmFunctionDependency "soma_pool_free_closure" Ll
 
 cruntimeSomaPanic :: LlvmDependency
 cruntimeSomaPanic = LlvmFunctionDependency "soma_panic" LlvmVoid [ptrType]
+
+cruntimeSomaClosureType :: LlvmDependency
+cruntimeSomaClosureType = LlvmStructDependency "SomaClosure" [LlvmI8, LlvmI8, LlvmI16, LlvmI32, ptrType]

@@ -32,6 +32,7 @@ import Llvm.Gen.CRuntime (
     cruntimeInetSup,
     cruntimeSomaAllocClosure,
     cruntimeSomaClosureGetEnv,
+    cruntimeSomaClosureType,
     cruntimeSomaDup,
     cruntimeSomaForkDirect,
     cruntimeSomaForkMulti,
@@ -511,6 +512,8 @@ compileOp (OpClosureSetEnv{}) _ =
 -- Direct GEP access is optimal: single pointer arithmetic + load, no call overhead.
 -- Closure structure: { i8 tag, i8 arity, i16 env_size, i32 padding, ptr func_ptr }
 compileOp (OpClosureGetFunc closureOp) resultTy = do
+    -- Register the SomaClosure struct type dependency
+    _ <- useDep cruntimeSomaClosureType
     llClosure <- compileOperand closureOp
     voidClosure <- case getValueType llClosure of
         LlvmPointer LlvmI8 -> pure llClosure

@@ -74,6 +74,12 @@ data CTerm
       When something is duplicated but one copy isn't used.
       -}
       CEra
+    | {- | Erase/consume a value and continue with body.
+      CErase valueToDiscard body
+      Used to linearly consume unused variables (e.g., unused function parameters).
+      The value is evaluated/consumed, then the body is evaluated.
+      -}
+      CErase !CTerm !CTerm
     | {- | Function reference: @name with type
       References a top-level definition.
       -}
@@ -209,6 +215,8 @@ data CModule = CModule
     , cmTypes :: ![CTypeDef]
     , cmIsLinearized :: !Bool
     -- ^ Whether the module has gone through linearization
+    , cmExternalRefs :: ![Name]
+    -- ^ External function references that are valid but not defined in this module
     }
     deriving (Show, Eq, Generic)
 
@@ -239,6 +247,7 @@ emptyModule name =
         , cmFunctions = []
         , cmTypes = []
         , cmIsLinearized = False
+        , cmExternalRefs = []
         }
 
 -- ============================================================================
@@ -276,6 +285,7 @@ children = \case
     CLet _ _ val body -> [val, body]
     CSup _ a b _ -> [a, b]
     CDup _ _ _ val body -> [val, body]
+    CErase val body -> [val, body]
     CBinOp _ a b -> [a, b]
     CCmpOp _ a b -> [a, b]
     CFork _ _ comp cont -> [comp, cont]
@@ -318,6 +328,7 @@ mapChildren f = \case
     CLet n ty val body -> CLet n ty (f val) (f body)
     CSup l a b ty -> CSup l (f a) (f b) ty
     CDup n ty l val body -> CDup n ty l (f val) (f body)
+    CErase val body -> CErase (f val) (f body)
     CBinOp op a b -> CBinOp op (f a) (f b)
     CCmpOp op a b -> CCmpOp op (f a) (f b)
     CFork n ty comp cont -> CFork n ty (f comp) (f cont)
@@ -363,6 +374,7 @@ mapChildrenM f = \case
     CLet n ty val body -> CLet n ty <$> f val <*> f body
     CSup l a b ty -> CSup l <$> f a <*> f b <*> pure ty
     CDup n ty l val body -> CDup n ty l <$> f val <*> f body
+    CErase val body -> CErase <$> f val <*> f body
     CBinOp op a b -> CBinOp op <$> f a <*> f b
     CCmpOp op a b -> CCmpOp op <$> f a <*> f b
     CFork n ty comp cont -> CFork n ty <$> f comp <*> f cont
@@ -414,6 +426,7 @@ getTermType = \case
     CLet _ _ _ body -> getTermType body
     CSup _ _ _ ty -> ty
     CDup _ _ _ _ body -> getTermType body
+    CErase _ body -> getTermType body
     CDp0 _ ty -> ty
     CDp1 _ ty -> ty
     CEra -> TConstructor (TypeConstructor "Unit" KindStar)
@@ -596,6 +609,8 @@ classifyTerm = \case
     CSup{} -> MaybeHeap
     -- Duplications: body determines the allocation
     CDup _ _ _ _ body -> classifyTerm body
+    -- Erasure: body determines the allocation
+    CErase _ body -> classifyTerm body
     -- Projections: use the type annotation
     CDp0 _ ty -> classifyType ty
     CDp1 _ ty -> classifyType ty

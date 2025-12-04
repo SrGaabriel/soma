@@ -135,6 +135,10 @@ analyzeTerm' = \case
     CBool _ -> pure Map.empty
     CStr _ -> pure Map.empty
     CEra -> pure Map.empty
+    CErase val body -> do
+        valBindings <- analyzeTerm' val
+        bodyBindings <- analyzeTerm' body
+        pure $ Map.union valBindings bodyBindings
     CRef _ _ -> pure Map.empty
     -- Variables: no new bindings
     CVar _ _ -> pure Map.empty
@@ -238,6 +242,8 @@ inferTermKind = \case
 
     -- Erasure produces nothing substantial
     CEra -> StackOnly
+    -- Erase: body determines kind
+    CErase _ body -> inferTermKind body
     -- Lambdas are closures -> heap
     CLam{} -> MaybeHeap
     -- Superpositions are heap

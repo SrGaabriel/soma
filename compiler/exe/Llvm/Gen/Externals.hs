@@ -53,4 +53,6 @@ mkValue (LlvmFunctionDependency name retType argTypes) =
     LlvmGlobal (LlvmFn retType argTypes) name
 mkValue (LlvmGlobalDependency name depType) =
     LlvmGlobal depType name
+mkValue (LlvmStructDependency name _fields) =
+    LlvmGlobal (LlvmNamedType name) name
 mkValue u = error $ "useDep: unsupported dependency " ++ show u

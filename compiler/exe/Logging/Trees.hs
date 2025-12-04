@@ -338,6 +338,7 @@ prettyTerm = go 0
     go _ (CDp0 n _) = n ++ "₀"
     go _ (CDp1 n _) = n ++ "₁"
     go _ CEra = "*"
+    go d (CErase val body) = "erase " ++ go d val ++ "; " ++ go d body
     go _ (CRef n _) = "@" ++ n
     go _ (Circuit.Ir.CInt i) = show i
     go _ (Circuit.Ir.CBool True) = "true"
@@ -471,7 +472,8 @@ data NodeType
     | NApp -- Application node
     | NDup Label -- Duplication node with label
     | NSup Label -- Superposition node with label
-    | NEra -- Erasure node
+    | NEra -- Erasure node (value)
+    | NErase -- Erase operation (consume value and continue)
     | NVar Name -- Variable reference
     | NDp0 Name -- Dup projection 0
     | NDp1 Name -- Dup projection 1
@@ -603,6 +605,10 @@ buildGraph = \case
     CDp0 n _ -> addNode (NDp0 n) [PFree "from_dup"]
     CDp1 n _ -> addNode (NDp1 n) [PFree "from_dup"]
     CEra -> addNode NEra []
+    CErase val body -> do
+        valId <- buildGraph val
+        bodyId <- buildGraph body
+        addNode NErase [PNode valId "erased", PNode bodyId "body"]
     CRef n _ -> addNode (NRef n) [PFree "value"]
     Circuit.Ir.CInt i -> addNode (NInt i) [PFree "value"]
     Circuit.Ir.CBool b -> addNode (NBool b) [PFree "value"]
@@ -681,6 +687,7 @@ prettyNodeType = \case
     NDup l -> "DUP[" ++ show l ++ "]"
     NSup l -> "SUP[" ++ show l ++ "]"
     NEra -> "ERA"
+    NErase -> "ERASE"
     NVar n -> "VAR(" ++ n ++ ")"
     NDp0 n -> "DP0(" ++ n ++ ")"
     NDp1 n -> "DP1(" ++ n ++ ")"

@@ -225,6 +225,10 @@ analyzeTermEscapes ctx term st = case term of
         in updateEscape projName kind st
     -- Erasure: nothing escapes
     CEra -> st
+    -- Erase a value: analyze the value and body
+    CErase val body ->
+        let st1 = analyzeTermEscapes CtxLocal val st
+        in analyzeTermEscapes ctx body st1
     -- Function reference: escapes based on context
     CRef name _ ->
         updateEscape name (contextToEscape ctx) st
@@ -379,6 +383,7 @@ nameUsedInReturnPosition target = go
     go (CDp0 n _) = n ++ ".0" == target
     go (CDp1 n _) = n ++ ".1" == target
     go CEra = False
+    go (CErase _ body) = go body
     go (CRef n _) = n == target
     go (CInt _) = False
     go (CBool _) = False

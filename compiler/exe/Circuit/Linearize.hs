@@ -108,10 +108,7 @@ linearizeFunctionBody params body = do
         let uses = countVarUses param b
         case uses of
             0 -> do
-                -- Parameter unused: insert erasure
-                label <- freshLabel
-                tmpName <- freshName "era"
-                pure $ CDup tmpName paramTy label (CVar param paramTy) b
+                pure $ CErase (CVar param paramTy) b
             1 -> pure b -- Already linear
             _ -> linearizeBinding param paramTy uses b -- Insert DUP chain
 
@@ -157,6 +154,7 @@ linearizeTerm = \case
     CDp0 n ty -> pure $ CDp0 n ty
     CDp1 n ty -> pure $ CDp1 n ty
     CEra -> pure CEra
+    CErase val body -> CErase <$> linearizeTerm val <*> linearizeTerm body
     CRef n ty -> pure $ CRef n ty
     CInt i -> pure $ CInt i
     CBool b -> pure $ CBool b

@@ -30,10 +30,10 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Metal.Expr
 import Metal.Function
-import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (..))
+import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (..), MetallicTypeClassMetadata (..))
 import Metal.Module
 import Syntax.Patterns (Literal (..), Pattern (..))
-import Typing.Types (Kind (..), TyConstructor (..), Type (..), boolType, closurePtrType, intType)
+import Typing.Types (Kind (..), QualifiedType (..), TyConstructor (..), Type (..), boolType, closurePtrType, intType)
 
 -- | Environment for lowering
 data LowerEnv = LowerEnv
@@ -41,6 +41,8 @@ data LowerEnv = LowerEnv
     -- ^ Constructor name -> (tag, arity, field types)
     , leTypeMap :: Map String CTypeDef
     -- ^ Type name -> type definition
+    , leFunctions :: Map String Type
+    -- ^ Top-level function name -> type (for distinguishing refs from local vars)
     }
     deriving (Show)
 
@@ -79,7 +81,23 @@ buildEnv m =
                 [ (ctName td, td)
                 | td <- map convertTypeDef (mmTypes m)
                 ]
+        , leFunctions =
+            Map.fromList
+                $ [ (mfName f, buildFunctionType f)
+                  | f <- mmFunctions m
+                  ]
+                    ++ [ (methodName, extractMethodType qualTy)
+                       | tc <- mmTypeClasses m
+                       , (methodName, qualTy) <- mtcMethods tc
+                       ]
         }
+
+buildFunctionType :: MetallicFunction -> Type
+buildFunctionType mf =
+    foldr TArrow (mfReturnType mf) (map snd (mfParams mf))
+
+extractMethodType :: QualifiedType -> Type
+extractMethodType (Forall _ _ ty) = ty
 
 -- | Convert a Metal type definition to Circuit
 convertTypeDef :: MetallicTypeDef -> CTypeDef
@@ -108,11 +126,18 @@ lowerModule m =
     let env = buildEnv m
         functions = evalState (runReaderT (mapM lowerFunction (mmFunctions m)) env) initLowerState
         types = map convertTypeDef (mmTypes m)
+        -- collect type class method names as external references
+        externalRefs =
+            [ methodName
+            | tc <- mmTypeClasses m
+            , (methodName, _) <- mtcMethods tc
+            ]
     in CModule
         { cmName = mmName m
         , cmFunctions = functions
         , cmTypes = types
         , cmIsLinearized = False
+        , cmExternalRefs = externalRefs
         }
 
 -- | Lower a Metal function to Circuit
@@ -153,8 +178,21 @@ wrapWithEnvBindings capturedVars body =
 -- | Lower a Metal expression to Circuit
 lowerExpr :: MetallicExpr -> LowerM CTerm
 lowerExpr = \case
-    MVar name ty ->
-        pure $ CVar name ty
+    MVar name ty -> do
+        env <- ask
+        -- Check if this is a nullary constructor
+        case Map.lookup name (leConstructors env) of
+            Just (tag, 0, _) ->
+                -- Nullary constructor: produce CTag with empty fields
+                pure $ CTag tag [] ty
+            Just _ ->
+                -- Constructor with fields: this shouldn't happen as MVar, but treat as a reference to the constructor function
+                pure $ CRef name ty
+            Nothing ->
+                -- Not a constructor: check if it's a top-level function
+                if Map.member name (leFunctions env)
+                    then pure $ CRef name ty
+                    else pure $ CVar name ty
     MLit lit ->
         lowerLiteral lit
     MCall func args resultTy -> do
@@ -272,30 +310,52 @@ lowerExpr = \case
                 -- becomes:
                 -- case e1 of { p1 -> case (e2, ...) of { (q1, ...) -> b1; ... }; ... }
                 --
-                -- Group arms by their first pattern's tag, then for each group,
-                -- create a nested case on the remaining scrutinees.
+                -- Special case: if ALL arms have a catch-all pattern (PVar/PWildcard)
+                -- as their first pattern, we don't need a case expression - just bind
+                -- the variable and continue with the rest.
                 let scrutTy = getMetallicExprType scrut
                 scrut' <- lowerExpr scrut
 
-                -- Group arms by the first pattern (tag-based grouping)
-                let groupedArms = groupArmsByFirstPattern arms
+                let firstPatterns = [head (mcaPatterns arm) | arm <- arms, not (null (mcaPatterns arm))]
+                    allCatchAll = all isCatchAllPattern firstPatterns
 
-                -- Lower each group to a case arm with nested case for remaining scrutinees
-                arms' <- forM groupedArms $ \(firstPat, armsInGroup) -> do
-                    (tag, fieldNamesAndTypes) <- extractPatternInfo scrutTy firstPat
-                    -- Create the nested case for remaining scrutinees
-                    let nestedArms =
-                            [ arm{mcaPatterns = drop 1 (mcaPatterns arm)}
-                            | arm <- armsInGroup
-                            ]
-                    nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy)
-                    pure (tag, fieldNamesAndTypes, nestedBody)
+                if allCatchAll && not (null arms)
+                    then do
+                        -- All first patterns are catch-all (PVar/PWildcard), so we Just bind the variable and continue with nested case!
+                        let firstArm = head arms
+                            firstPat = head (mcaPatterns firstArm)
+                        case firstPat of
+                            PVar name _ -> do
+                                -- Bind the scrutinee to the variable name
+                                let nestedArms = [arm{mcaPatterns = drop 1 (mcaPatterns arm)} | arm <- arms]
+                                nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy)
+                                pure $ CLet name scrutTy scrut' nestedBody
+                            _ -> do
+                                -- PWildcard or PAs: just continue without binding
+                                let nestedArms = [arm{mcaPatterns = drop 1 (mcaPatterns arm)} | arm <- arms]
+                                tmp <- freshTmp "wild"
+                                nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy)
+                                pure $ CLet tmp scrutTy scrut' nestedBody
+                    else do
+                        -- Group arms by their first pattern (tag-based grouping)
+                        let groupedArms = groupArmsByFirstPattern arms
 
-                tmp <- freshTmp "scrut"
-                default' <- traverse lowerExpr mdefault
-                pure
-                    $ CLet tmp scrutTy scrut'
-                    $ CCase (CVar tmp scrutTy) arms' default' resultTy
+                        -- Lower each group to a case arm with nested case for remaining scrutinees
+                        arms' <- forM groupedArms $ \(firstPat, armsInGroup) -> do
+                            (tag, fieldNamesAndTypes) <- extractPatternInfo scrutTy firstPat
+                            -- Create the nested case for remaining scrutinees
+                            let nestedArms =
+                                    [ arm{mcaPatterns = drop 1 (mcaPatterns arm)}
+                                    | arm <- armsInGroup
+                                    ]
+                            nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy)
+                            pure (tag, fieldNamesAndTypes, nestedBody)
+
+                        tmp <- freshTmp "scrut"
+                        default' <- traverse lowerExpr mdefault
+                        pure
+                            $ CLet tmp scrutTy scrut'
+                            $ CCase (CVar tmp scrutTy) arms' default' resultTy
             [] -> pure CEra
     MFieldAccess expr idx ty -> do
         -- Field access on a tagged value - project the field at the given index
