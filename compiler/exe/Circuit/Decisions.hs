@@ -4,6 +4,7 @@ module Circuit.Decisions where
 
 import Data.List (groupBy, nub, partition, sortOn)
 import qualified Data.Map.Strict as Map
+import Metal.Gen.Patterns (extractArms)
 import Syntax.Patterns (Literal (..), Pattern (..))
 import qualified Syntax.Tree as AST (Expr (..))
 
@@ -302,13 +303,6 @@ compilePatternsToDAG :: [([Pattern], Action)] -> DAG
 compilePatternsToDAG clauses =
     buildDAG $ compilePatterns clauses
 
-extractArm :: AST.Expr -> ([Pattern], AST.Expr)
-extractArm (AST.ExprPatternMatchArm pats body _) = (pats, body)
-extractArm _ = error "Not a pattern match arm"
-
-extractArms :: [AST.Expr] -> [([Pattern], AST.Expr)]
-extractArms = map extractArm
-
 compileExprPatternMatch :: AST.Expr -> (DecisionTree, [AST.Expr])
 compileExprPatternMatch (AST.ExprPatternMatch _matchExpr arms _span) =
     let armData = extractArms arms
@@ -338,17 +332,6 @@ compileExprDerivedPatternMatchToDAG :: AST.Expr -> (DAG, [AST.Expr])
 compileExprDerivedPatternMatchToDAG expr =
     let (tree, bodies) = compileExprDerivedPatternMatch expr
     in (buildDAG tree, bodies)
-
-patternMatchArity :: AST.Expr -> Int
-patternMatchArity (AST.ExprPatternMatch _ arms _) =
-    case extractArms arms of
-        [] -> error "No arms in pattern match"
-        ((pats, _) : _) -> length pats
-patternMatchArity (AST.ExprDerivedPatternMatch arms) =
-    case extractArms arms of
-        [] -> error "No arms in derived pattern match"
-        ((pats, _) : _) -> length pats
-patternMatchArity _ = error "Not a pattern match expression"
 
 validatePatternMatchArity :: AST.Expr -> Bool
 validatePatternMatchArity expr =

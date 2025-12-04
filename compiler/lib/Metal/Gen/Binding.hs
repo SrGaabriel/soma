@@ -4,7 +4,6 @@
 
 module Metal.Gen.Binding where
 
-import Circuit.Decisions (patternMatchArity)
 import Control.Monad (foldM, forM)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -20,13 +19,13 @@ import Metal.Gen.Core (
  )
 import Metal.Gen.Unique (sanitizeName)
 import Metal.Gen.Value (metallizeValue)
+import Metal.Gen.Patterns (patternMatchArity)
 import Metal.Lift (collectBinders)
 import Metal.Metadata (MetallicFunctionMetadata (..))
 import Project.Symbols (Symbol (..))
 import Syntax.Tree (Expr (..), Modifier (..), exprChildren)
 import Typing.Types (QualifiedType (Forall), Type (..))
 
--- | Get the arity (number of parameters) from a function body
 getBodyArity :: Expr -> Int
 getBodyArity (ExprLambda paramNames _ _) = length paramNames
 getBodyArity body@(ExprDerivedPatternMatch _) = patternMatchArity body

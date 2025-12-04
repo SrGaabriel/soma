@@ -2,7 +2,6 @@
 
 module Metal.Gen.Metadata where
 
-import Build.Metadata (SerializableConstructorMetadata (..), serializableToType, typeToSerializable)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Lexing.Position (Located (..))
@@ -26,19 +25,3 @@ extractConstructorMetadata (ExprRoot decls) =
         ]
     extractFromDataType _ = []
 extractConstructorMetadata _ = Map.empty
-
-constructorMetadataToSerializable :: MetallicConstructorMetadata -> SerializableConstructorMetadata
-constructorMetadataToSerializable (MetallicConstructorMetadata typeName tag fields) =
-    SerializableConstructorMetadata
-        { scmTypeName = typeName
-        , scmTag = tag
-        , scmFields = map typeToSerializable fields
-        }
-
-serializableToConstructorMetadata :: SerializableConstructorMetadata -> MetallicConstructorMetadata
-serializableToConstructorMetadata (SerializableConstructorMetadata typeName tag fields) =
-    MetallicConstructorMetadata
-        { mcmTypeName = typeName
-        , mcmTag = tag
-        , mcmFields = map serializableToType fields
-        }

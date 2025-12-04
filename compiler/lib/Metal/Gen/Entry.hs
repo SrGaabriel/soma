@@ -1,6 +1,6 @@
 module Metal.Gen.Entry where
 
-import Alloy.Naming (makeInstanceMethodName, nameArrayPrefix)
+import Metal.Naming (makeInstanceMethodName, nameArrayPrefix)
 import Control.Monad.State (gets, modify)
 import qualified Data.Map as Map
 import Format.Trees (treeShow)

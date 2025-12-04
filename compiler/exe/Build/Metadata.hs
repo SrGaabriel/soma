@@ -10,6 +10,7 @@ import GHC.Generics
 import Lexing.Position (Span (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyConstructor (..), TyVar (..), Type (..), constraintType)
+import Metal.Metadata
 
 data SerializableConstructorMetadata = SerializableConstructorMetadata
     { scmTypeName :: String
@@ -266,3 +267,19 @@ projectMetadataConstructors = pmConstructorMetadata
 projectMetadataInstances :: ProjectMetadata -> Map.Map QualifiedType Bool
 projectMetadataInstances pm =
     Map.fromList [(serializableToQualType inst, True) | inst <- pmPublicInstances pm]
+
+constructorMetadataToSerializable :: MetallicConstructorMetadata -> SerializableConstructorMetadata
+constructorMetadataToSerializable (MetallicConstructorMetadata typeName tag fields) =
+    SerializableConstructorMetadata
+        { scmTypeName = typeName
+        , scmTag = tag
+        , scmFields = map typeToSerializable fields
+        }
+
+serializableToConstructorMetadata :: SerializableConstructorMetadata -> MetallicConstructorMetadata
+serializableToConstructorMetadata (SerializableConstructorMetadata typeName tag fields) =
+    MetallicConstructorMetadata
+        { mcmTypeName = typeName
+        , mcmTag = tag
+        , mcmFields = map serializableToType fields
+        }

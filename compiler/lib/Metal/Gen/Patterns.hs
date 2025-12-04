@@ -5,6 +5,8 @@ module Metal.Gen.Patterns (
     validateArity,
     validateNoDuplicateBinders,
     hasWildcardLike,
+    extractArms,
+    patternMatchArity,
 ) where
 
 import qualified Data.Set as Set
@@ -12,6 +14,7 @@ import Metal.Lift (collectBinders)
 import Syntax.Patterns (
     Pattern (..),
  )
+import Syntax.Tree (Expr (..))
 
 stripAs :: Pattern -> Pattern
 stripAs (PAs _ p _) = stripAs p
@@ -49,3 +52,21 @@ validateNoDuplicateBinders = all rowOk
         let vs = concatMap collectBinders ps
             s = Set.fromList vs
         in Set.size s == length vs
+
+extractArms :: [Expr] -> [([Pattern], Expr)]
+extractArms = map extractArm
+  where
+    extractArm :: Expr -> ([Pattern], Expr)
+    extractArm (ExprPatternMatchArm pats body _) = (pats, body)
+    extractArm _ = error "Not a pattern match arm"
+
+patternMatchArity :: Expr -> Int
+patternMatchArity (ExprPatternMatch _ arms _) =
+    case extractArms arms of
+        [] -> error "No arms in pattern match"
+        ((pats, _) : _) -> length pats
+patternMatchArity (ExprDerivedPatternMatch arms) =
+    case extractArms arms of
+        [] -> error "No arms in derived pattern match"
+        ((pats, _) : _) -> length pats
+patternMatchArity _ = error "Not a pattern match expression"

@@ -1,8 +1,5 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
--- Phase-agnostic monad profile metadata and a builder that infers profiles
--- from module type definitions (no hardcoded names required).
---
 -- Motivation:
 -- - We want to eliminate monadic structure by lowering based on semantic shape,
 --   not stringly-typed names like Some/None or Left/Right.
@@ -14,17 +11,6 @@
 --   * Option-like: exactly two constructors; one has arity 0 (fail), the other arity 1 (success).
 --   * Either-like: exactly two constructors; both have arity 1. We assume a right-biased monad
 --     for performance/usability and choose the constructor with the highest tag as success.
---
--- Notes:
--- - This module intentionally avoids hardcoded constructor names. It relies on
---   constructor counts and arities (and tags for Either-like) to identify behavior.
--- - Reader/State/IO/List are not inferred from ADT shape; they require either instance
---   analysis or explicit user annotations. The profile type supports them so we can
---   extend inference/annotations later without changing downstream code.
--- - Short-circuit monads lower to direct tag checks and early returns (no closures).
--- - Right-biased Either provides ergonomics and aligns with typical usage, minimizing branches.
--- - This profile layer decouples MIR lowering from specific names and allows future
---   generalization through annotations or instance-body inspection.
 module Metal.MonadProfile (
     MonadProfile (..),
     MonadProfiles (..),

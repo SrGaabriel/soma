@@ -32,6 +32,23 @@ library
     Lexing.Errors
     Lexing.Lexer
     Lexing.Position
+    Metal.Expr
+    Metal.Function
+    Metal.Gen.Binding
+    Metal.Gen.Core
+    Metal.Gen.DataTypes
+    Metal.Gen.Entry
+    Metal.Gen.Extracts
+    Metal.Gen.Metadata
+    Metal.Gen.Patterns
+    Metal.Gen.Unique
+    Metal.Gen.Value
+    Metal.Lift
+    Metal.Metadata
+    Metal.Module
+    Metal.MonadNormalize
+    Metal.MonadProfile
+    Metal.Naming
     Parsing.Ast
     Parsing.Atoms
     Parsing.Bindings
@@ -166,21 +183,6 @@ executable somac
     Logging.Errors
     Logging.Json
     Logging.Trees
-    Metal.Expr
-    Metal.Function
-    Metal.Gen.Binding
-    Metal.Gen.Core
-    Metal.Gen.DataTypes
-    Metal.Gen.Entry
-    Metal.Gen.Extracts
-    Metal.Gen.Metadata
-    Metal.Gen.Unique
-    Metal.Gen.Value
-    Metal.Lift
-    Metal.Metadata
-    Metal.Module
-    Metal.MonadNormalize
-    Metal.MonadProfile
     Orphans.Binary
 
   default-language: Haskell2010

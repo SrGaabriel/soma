@@ -23,20 +23,12 @@ data MetallicFunctionMetadata = MetallicFunctionMetadata
     , mfmConstraints :: [Constraint]
     , mfmInstanceInfo :: Maybe MetallicInstanceInfo
     , mfmClosureInfo :: Maybe ClosureFunctionInfo
-    -- ^ If this function is a lifted lambda, contains info about captured vars
     , mfmIsInline :: Bool
-    -- ^ Whether this function is marked with the inline modifier
     }
     deriving (Show, Eq)
 
-{- | Info for lifted lambda functions (uniform closure calling convention)
-Lifted lambdas take closure_self as first param and extract env from it
--}
 newtype ClosureFunctionInfo = ClosureFunctionInfo
     { cfiCapturedVars :: [(String, Type)]
-    {- ^ Variables captured from enclosing scope, in order
-    These are extracted from closure_self at function entry
-    -}
     }
     deriving (Show, Eq)
 
