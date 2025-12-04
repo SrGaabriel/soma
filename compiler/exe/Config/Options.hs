@@ -126,6 +126,7 @@ checkOptionsParser =
             ( option
                 (eitherReader parseExtern)
                 ( long "dep"
+                    <> short 'd'
                     <> metavar "NAME=PATH"
                     <> help "External dependency (e.g. --dep foo=src/lib/foo.toria)"
                 )
@@ -203,6 +204,7 @@ optionsParser =
             ( option
                 (eitherReader parseExtern)
                 ( long "dep"
+                    <> short 'd'
                     <> metavar "NAME=PATH"
                     <> help "Link external library (e.g. --dep foo=src/lib/foo.toria)"
                 )
