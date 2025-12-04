@@ -1,6 +1,6 @@
 # Entendendo Soma
 
-> Note: This is an AI-generated translation of the [original English document](UNDERSTAND.md). The translation may not be perfect, and some technical terms might not have direct equivalents in Portuguese. For the most accurate information, please refer to the original English version. It also might be outdated compared to the latest English version.
+> Note: This is an AI-generated translation of the [original English document](../UNDERSTAND.md). The translation may not be perfect, and some technical terms might not have direct equivalents in Portuguese. For the most accurate information, please refer to the original English version. It also might be outdated compared to the latest English version.
 
 Este documento visa fornecer uma compreensão abrangente dos fundamentos teóricos por trás de Soma, uma linguagem de programação baseada em combinadores de interação. Vamos explorar o contexto histórico das linguagens de programação, os princípios da lógica linear, o conceito de redes de interação e, finalmente, as especificidades dos combinadores de interação.
 
