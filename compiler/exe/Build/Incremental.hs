@@ -29,7 +29,7 @@ import Circuit.ToGraph (lowerCircuitToGraph)
 import Circuit.Validate (validateModule)
 import Config.Options (CompilationMode (..), Options (..))
 import Control.Exception (SomeException, catch)
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Map.Strict (Map)
@@ -98,7 +98,7 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
     putStrLn "Resolved AST:"
     prettyPrintAst (checkedResolvedAst checked)
     putStrLn $ "Module " ++ modName ++ " type checked"
-    
+
     putStrLn $ "Type Map:"
     putStrLn $ treeShow (checkedTypeMap checked)
 
@@ -132,11 +132,12 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
         _ -> putStrLn "=== Circuit IR (after linearization) ==="
     putStrLn $ prettyCircuit linearizedCircuit
 
-    let validationErrors = validateModule linearizedCircuit
-    unless (null validationErrors) $ do
-        putStrLn $ "Circuit validation errors in module " ++ modName ++ ":"
-        mapM_ (putStrLn . ("- " ++) . show) validationErrors
-        exitFailure
+    when (optionsValidateCircuit options)
+        $ let validationErrors = validateModule linearizedCircuit
+          in unless (null validationErrors) $ do
+                putStrLn $ "Circuit validation errors in module " ++ modName ++ ":"
+                mapM_ (putStrLn . ("- " ++) . show) validationErrors
+                exitFailure
 
     let alloyFromCircuit = case optionsMode options of
             ModeGraph ->

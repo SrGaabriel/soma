@@ -69,5 +69,8 @@ instance Display (Option a) with (Display a) where
 instance Display String where
     def display(str: String) -> String = str
 
+instance Display Int where
+    def display(n: Int) -> String = "<int>"
+
 instance Display [a] where
     def display(list: [a]) -> String = "<list>"

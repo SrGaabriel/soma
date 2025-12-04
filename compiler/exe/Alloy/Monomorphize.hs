@@ -67,12 +67,10 @@ monomorphizeModule m@AlloyModule{amName = moduleName, amFunctions = funcs} =
         -- Phase 3: Cleanup
         specializedNames = Set.fromList (Map.elems instCache)
         -- Keep instance methods even if polymorphic, as they might be needed by other modules
-        isInstanceMethod name = '$' `Prelude.elem` name && notElem '_' name
         isKept fn =
             afName fn `Set.member` specializedNames
                 || afName fn == "main"
                 || not (hasTypeVars fn)
-                || isInstanceMethod (afName fn)
 
         finalFns = map eliminateAllTypeVars $ filter isKept rewrittenFns
     in m{amFunctions = finalFns}

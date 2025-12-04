@@ -44,21 +44,10 @@ data OutputFormat
     | FormatJson
     deriving (Show, Eq)
 
--- | Compilation mode determines the execution model and optimization strategy
 data CompilationMode
-    = {- | Standard compilation: Circuit IR → linearize → Alloy → LLVM
-      Deterministic, single-threaded, compile-time memory management via DUP/ERA
-      -}
-      ModeStandard
-    | {- | Linearized graph mode: Circuit IR → linearize → graph Alloy → LLVM + INET runtime
-      Parallel, lazy evaluation, runtime graph reduction with work-stealing. DUP nodes are explicit
-      in the Circuit IR, enabling compile-time optimizations like DUP-NUM elision.
-      -}
-      ModeGraph
-    | {- | Hybrid mode (future): Graph reduction for parallelizable sections,
-      standard compilation for sequential hot paths
-      -}
-      ModeHybrid
+    = ModeStandard
+    | ModeGraph
+    | ModeHybrid
     deriving (Show, Eq)
 
 data CheckOptions = CheckOptions
@@ -78,6 +67,7 @@ data Options = Options
     , optionsSkipCircuit :: Bool -- todo: remove
     , optionsMode :: CompilationMode
     , optionsOptimizationLevel :: Maybe Int
+    , optionsValidateCircuit :: Bool
     }
     deriving (Show)
 
@@ -237,6 +227,10 @@ optionsParser =
                     <> metavar "LEVEL"
                     <> help "Optimization level (0-3)"
                 )
+            )
+        <*> switch
+            ( long "validate"
+                <> help "Validate the Circuit IR for correctness"
             )
 
 parseMode :: String -> Either String CompilationMode
