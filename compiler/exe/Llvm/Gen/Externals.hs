@@ -4,6 +4,7 @@ module Llvm.Gen.Externals (
     memcpyDependency,
     mallocDependency,
     useDep,
+    useType
 ) where
 
 import Llvm.Dependencies (LlvmDependency (..))
@@ -53,6 +54,14 @@ mkValue (LlvmFunctionDependency name retType argTypes) =
     LlvmGlobal (LlvmFn retType argTypes) name
 mkValue (LlvmGlobalDependency name depType) =
     LlvmGlobal depType name
-mkValue (LlvmStructDependency name _fields) =
-    LlvmGlobal (LlvmNamedType name) name
 mkValue u = error $ "useDep: unsupported dependency " ++ show u
+
+useType :: LlvmDependency -> IrGen LlvmType
+useType dep = do
+    addDependency dep
+    pure $ mkType dep
+
+mkType :: LlvmDependency -> LlvmType
+mkType (LlvmStructDependency name _) =
+    LlvmNamedType name
+mkType u = error $ "mkType: unsupported dependency " ++ show u

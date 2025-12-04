@@ -34,6 +34,7 @@ import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (..), 
 import Metal.Module
 import Syntax.Patterns (Literal (..), Pattern (..))
 import Typing.Types (Kind (..), QualifiedType (..), TyConstructor (..), Type (..), boolType, closurePtrType, intType)
+import Utils.Lists (hardHead)
 
 -- | Environment for lowering
 data LowerEnv = LowerEnv
@@ -316,14 +317,14 @@ lowerExpr = \case
                 let scrutTy = getMetallicExprType scrut
                 scrut' <- lowerExpr scrut
 
-                let firstPatterns = [head (mcaPatterns arm) | arm <- arms, not (null (mcaPatterns arm))]
+                let firstPatterns = [hardHead (mcaPatterns arm) | arm <- arms, not (null (mcaPatterns arm))]
                     allCatchAll = all isCatchAllPattern firstPatterns
 
                 if allCatchAll && not (null arms)
                     then do
                         -- All first patterns are catch-all (PVar/PWildcard), so we Just bind the variable and continue with nested case!
-                        let firstArm = head arms
-                            firstPat = head (mcaPatterns firstArm)
+                        let firstArm = hardHead arms
+                            firstPat = hardHead (mcaPatterns firstArm)
                         case firstPat of
                             PVar name _ -> do
                                 -- Bind the scrutinee to the variable name

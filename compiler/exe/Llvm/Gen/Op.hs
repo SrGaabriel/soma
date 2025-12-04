@@ -47,7 +47,7 @@ import Llvm.Gen.CRuntime (
     cruntimeSomaProj1,
  )
 import Llvm.Gen.Core
-import Llvm.Gen.Externals (mallocDependency, memcpyDependency, useDep)
+import Llvm.Gen.Externals (mallocDependency, memcpyDependency, useDep, useType)
 import Llvm.Gen.Intrinsics (compileIntrinsic, isIntrinsic)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.Templates (newStrTemplate)
@@ -512,15 +512,13 @@ compileOp (OpClosureSetEnv{}) _ =
 -- Direct GEP access is optimal: single pointer arithmetic + load, no call overhead.
 -- Closure structure: { i8 tag, i8 arity, i16 env_size, i32 padding, ptr func_ptr }
 compileOp (OpClosureGetFunc closureOp) resultTy = do
-    -- Register the SomaClosure struct type dependency
-    _ <- useDep cruntimeSomaClosureType
+    closureStructType <- useType cruntimeSomaClosureType
     llClosure <- compileOperand closureOp
     voidClosure <- case getValueType llClosure of
         LlvmPointer LlvmI8 -> pure llClosure
         LlvmPointer _ -> saveTmp (LlvmBitcast llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
         _ -> saveTmp (LlvmIntToPtr llClosure (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
     -- GEP to func_ptr field (index 4 in the padded struct)
-    let closureStructType = LlvmNamedType "SomaClosure"
     funcPtrPtr <- saveTmp (LlvmGetElementPtr closureStructType voidClosure [LlvmLiteral LlvmI32 "0", LlvmLiteral LlvmI32 "4"] True) (LlvmPointer (LlvmPointer LlvmI8))
     result <- saveTmp (LlvmLoad funcPtrPtr) (LlvmPointer LlvmI8)
     -- Cast to result type if needed
