@@ -356,11 +356,9 @@ generateFreshNamesExcept counter names returnedVar resultName =
 
 -- | Create an identity operation for a variable (x + 0 for Int)
 identityOp :: AOperand -> AOp
-identityOp op = OpBin IAdd op (OpConst (CInt 0))
+identityOp op = OpSelect (OpConst (CBool True)) op op
+
 
 -- | Create an operation from a constant
 constOp :: AConst -> AOp
-constOp (CInt i) = OpBin IAdd (OpConst (CInt i)) (OpConst (CInt 0))
-constOp (CBool b) = OpBin And (OpConst (CBool b)) (OpConst (CBool True))
-constOp (CString _) = OpMakeArray [] -- Placeholder - string constants need special handling
-constOp CUnit = OpMakeTuple []
+constOp c = OpSelect (OpConst (CBool True)) (OpConst c) (OpConst c)

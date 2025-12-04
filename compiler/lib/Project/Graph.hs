@@ -44,9 +44,7 @@ type DependencyGraph = Map.Map String [String]
 
 buildDependencyGraph :: ModuleGraph -> DependencyGraph
 buildDependencyGraph =
-    Map.map extract . Map.map moduleAst
-  where
-    extract = extractImports
+    Map.map extractImports . Map.map moduleAst
 
 extractImports :: Expr -> [ModuleName]
 extractImports expr = case expr of

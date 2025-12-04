@@ -373,10 +373,7 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                         ModeGraph -> "runtime/inets_soma.a"
                         ModeHybrid -> "runtime/hybrid_soma.a"
                         ModeStandard -> "runtime/native_soma.a"
-                let llTemp = outputFile <.> "ll"
-                writeFile llTemp llvmIr
 
-                -- Check if runtime library exists
                 runtimeExists <- doesFileExist runtimeLibPath
                 unless runtimeExists $ do
                     putStrLn $ "Warning: C runtime not found at " ++ runtimeLibPath
@@ -388,6 +385,8 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                             exitFailure
                         )
 
+                let llTemp = outputFile <.> "ll"
+                writeFile llTemp llvmIr
                 catch
                     ( do
                         let optimizationArgs = case optionsOptimizationLevel compileOptions of

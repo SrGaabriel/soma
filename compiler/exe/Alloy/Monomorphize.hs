@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -332,6 +333,9 @@ unifyTypes _ _ = Nothing
 
 unifyOne :: Type -> Type -> Maybe TySubst
 unifyOne (TVar v) concrete = Just (Map.singleton v concrete)
+unifyOne (TSkolem s) concrete =
+    let syntheticVar = TypeVar{tvId = skName s, tvKind = skKind s}
+    in Just (Map.singleton syntheticVar concrete)
 unifyOne (TApp p1 p2) (TApp a1 a2) = do
     s1 <- unifyOne p1 a1
     let p2' = substType s1 p2
@@ -345,7 +349,8 @@ unifyOne (TArrow p1 p2) (TArrow a1 a2) = do
     s2 <- unifyOne p2' a2'
     Just (Map.union s2 s1)
 unifyOne (TConstructor c1) (TConstructor c2)
-    | c1 == c2 = Just Map.empty
+    -- compare by name only, ignore kinds (they may differ due to partial application)
+    | tcName c1 == tcName c2 = Just Map.empty
 unifyOne _ _ = Nothing
 
 eliminateAllTypeVars :: AlloyFunction -> AlloyFunction

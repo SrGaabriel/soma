@@ -22,7 +22,7 @@ import Metal.Gen.Entry (compileMetalModule)
 import Metal.Lift (liftLambdas)
 import Metal.MonadNormalize (normalizeModule)
 import Project.Check (CheckedModule (..), checkModule, checkModulesInOrder)
-import Project.Extracts (extractIntrinsicNames, extractSymbolImports)
+import Project.Extracts (extractIntrinsicNames)
 import Project.Graph
 import Project.Module
 import Project.Parsing
@@ -233,13 +233,8 @@ processSingle options = do
             putStrLn "Failed to parse module." >> exitFailure
         Right m -> return m
 
-    let ast = moduleAst mi
-        graph = Map.singleton (moduleName mi) mi
+    let graph = Map.singleton (moduleName mi) mi
         depGraph = buildDependencyGraph graph
-    let imports = extractSymbolImports ast
-
-    unless (null imports) $ do
-        putStrLn "Error: Standalone modules can't import other modules." >> exitFailure
 
     case topoSortModules depGraph of
         Left cycles -> do

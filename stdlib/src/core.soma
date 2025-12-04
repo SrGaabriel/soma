@@ -74,3 +74,7 @@ instance Display Int where
 
 instance Display [a] where
     def display(list: [a]) -> String = "<list>"
+
+def test :: IO () =
+    let x = Some "42" in
+    println (display x)

@@ -1,16 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 
-{- | Substitution utilities for Alloy IR.
-
-This module provides functions for substituting operands in Alloy IR constructs.
-These are used by various optimization passes (Simplify, Inline, CSE, etc.)
-to avoid code duplication.
--}
 module Alloy.Subst (
-    -- * Type aliases
     Subst,
-
-    -- * Substitution functions
     substOperand,
     substCallable,
     substOp,
@@ -18,8 +9,6 @@ module Alloy.Subst (
     substTerminator,
     substInstr,
     substBlock,
-
-    -- * Variable extraction
     operandVars,
     opVars,
     effectVars,
@@ -33,10 +22,6 @@ import qualified Data.Map.Strict as Map
 
 -- | Substitution map from variable names to operands
 type Subst = Map Name AOperand
-
--- ============================================================================
--- Substitution Functions
--- ============================================================================
 
 -- | Substitute a variable in an operand
 substOperand :: Map Name AOperand -> AOperand -> AOperand
@@ -163,10 +148,6 @@ substBlock env blk =
         { abInstrs = map (substInstr env) (abInstrs blk)
         , abTerminator = substTerminator env (abTerminator blk)
         }
-
--- ============================================================================
--- Variable Extraction Functions
--- ============================================================================
 
 -- | Get variables referenced in an operand
 operandVars :: AOperand -> [Name]

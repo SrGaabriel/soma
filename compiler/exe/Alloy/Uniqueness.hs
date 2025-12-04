@@ -209,6 +209,8 @@ usesFromOp blk idx op =
         OpGraphApp fn arg -> mergeAll [singleUseIfVar fn (UseCallArg blk idx 0), singleUseIfVar arg (UseCallArg blk idx 1)]
         OpGraphEra -> Map.empty
         OpGraphRef _ _ arg -> singleUseIfVar arg (UseCallArg blk idx 0)
+        OpGraphCon l r -> mergeAll [singleUseIfVar l (UseCallArg blk idx 0), singleUseIfVar r (UseCallArg blk idx 1)]
+        OpGraphConGet con _ -> singleUseIfVar con (UseCallArg blk idx 0)
         OpGraphClosure _ _ envVals ->
             Map.unionsWith (++) [singleUseIfVar v (UseCallArg blk idx i) | (i, v) <- zip [0 ..] envVals]
         OpGraphClosureApp clo arg ->
