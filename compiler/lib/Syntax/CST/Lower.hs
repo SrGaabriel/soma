@@ -180,10 +180,10 @@ lowerInstance node = do
             , instanceSpan = toSpan node
             }
 
-lowerInstanceConstraint :: SyntaxNode -> Maybe Type
+lowerInstanceConstraint :: SyntaxNode -> Maybe QualifiedType
 lowerInstanceConstraint node = do
-    typeNode <- childOfKind (SK_Node NK_TYPE) node
-    lowerType typeNode
+    typeNode <- childOfKind (SK_Node NK_TYPE_SIGNATURE) node
+    lowerTypeSig typeNode
 
 lowerInstanceMethod :: SyntaxNode -> Maybe Expr
 lowerInstanceMethod = lowerBindingWithImpl False

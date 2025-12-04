@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-incomplete-record-updates #-}
 module Parsing.Traits where
 
 import Lexing.Lexer (TokenKind (..), spanningTokens)
@@ -5,7 +6,7 @@ import Lexing.Position (Located (..))
 import Parsing.Bindings (parseBinding)
 import Parsing.Errors (ParsingError (..))
 import Parsing.Parser (Parser, consume, parseFuncName, parseOptionallyLayout)
-import Parsing.Types (parseLocatedQualifiedType, parseType)
+import Parsing.Types (parseLocatedQualifiedType, parseQualifiedType)
 import Syntax.Tree (Expr (..))
 import qualified Text.Megaparsec as MP
 import Typing.Types (Constraint (Constraint), QualifiedType (Forall), getUnknownTypeConstructorName)
@@ -56,13 +57,20 @@ parseTraitBinding (Located typeSpan (Forall typeClassTyVars typeClassConstraints
 parseInstance :: Parser Expr
 parseInstance = do
     instanceToken <- consume TokenInstance
-    constraintType <- parseType
+    instanceType@(Forall _ instanceConstraints _) <- parseQualifiedType
 
     whereTok <- consume TokenWhere
     bindings <- parseOptionallyLayout (parseBinding False)
+    
+    let constrainedBindings = map (\b -> b{
+        bindingType = case bindingType b of
+            Located span' (Forall tyVars constraints baseType) ->
+                Located span' (Forall tyVars (instanceConstraints ++ constraints) baseType)
+        }) bindings
+
     pure
         $ ExprInstanceDef
-            { instanceConstraint = constraintType
-            , instanceMethods = bindings
+            { instanceConstraint = instanceType
+            , instanceMethods = constrainedBindings
             , instanceSpan = spanningTokens instanceToken whereTok
             }

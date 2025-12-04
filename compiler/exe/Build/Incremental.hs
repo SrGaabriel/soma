@@ -98,6 +98,9 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
     putStrLn "Resolved AST:"
     prettyPrintAst (checkedResolvedAst checked)
     putStrLn $ "Module " ++ modName ++ " type checked"
+    
+    putStrLn $ "Type Map:"
+    putStrLn $ treeShow (checkedTypeMap checked)
 
     unless (null allErrors) $ do
         putStrLn $ "Errors while compiling module " ++ modName ++ ":"

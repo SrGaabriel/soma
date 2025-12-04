@@ -14,6 +14,7 @@ data InferenceError
     | FunctionApplicationTypeMismatch Expr Type Type
     | PatternMatchArmTypeMismatch Expr Type Type
     | PatternMatchArmsTypeMismatch Expr Type Type
+    | PatternConstructorTypeMismatch Expr Type Type
     | ParamLengthMismatch Expr
     | TupleLengthMismatch Expr [Type] [Type]
     | PatternArityMismatch Expr Int Int
@@ -45,6 +46,8 @@ instance PrintableError InferenceError where
         "The pattern match arm should be typed '" ++ treeShow expected ++ "' but is instead '" ++ treeShow actual ++ "'"
     errorMessage (PatternMatchArmsTypeMismatch _ expected actual) =
         "Conflicting pattern match arm types, one is '" ++ treeShow expected ++ "' but this one is '" ++ treeShow actual ++ "'"
+    errorMessage (PatternConstructorTypeMismatch _ expected actual) =
+        "Pattern constructor produces type '" ++ treeShow actual ++ "' but expected '" ++ treeShow expected ++ "'"
     errorMessage (ParamLengthMismatch _) = "The function has a different number of arguments than provided"
     errorMessage (TupleLengthMismatch _ typ1 typ2) = "The tuples have different lengths: " ++ treeShow typ1 ++ " and " ++ treeShow typ2
     errorMessage (BinaryOpTypeMismatch _ left right) = "Binary operation type mismatch (" ++ treeShow left ++ " and " ++ treeShow right ++ ")"
@@ -108,6 +111,7 @@ getExpression err =
     getExpression' (FunctionApplicationTypeMismatch expr _ _) = expr
     getExpression' (PatternMatchArmTypeMismatch expr _ _) = expr
     getExpression' (PatternMatchArmsTypeMismatch expr _ _) = expr
+    getExpression' (PatternConstructorTypeMismatch expr _ _) = expr
     getExpression' (BinaryOpTypeMismatch expr _ _) = expr
     getExpression' (ParamLengthMismatch expr) = expr
     getExpression' (TupleLengthMismatch expr _ _) = expr
@@ -137,6 +141,8 @@ generateErrorForPurpose UnifyPatternMatchArmBody expr expected actual =
     PatternMatchArmTypeMismatch expr expected actual
 generateErrorForPurpose UnifyPatternMatchArms expr expected actual =
     PatternMatchArmsTypeMismatch expr expected actual
+generateErrorForPurpose UnifyPatternConstructor expr expected actual =
+    PatternConstructorTypeMismatch expr expected actual
 generateErrorForPurpose UnifyIfCondition expr _ actual =
     IfConditionShouldBeBool expr actual
 generateErrorForPurpose UnifyIfElseBranches expr thenType elseType =

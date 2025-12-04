@@ -22,14 +22,15 @@ collectTypeClassDefs expr = Map.fromList (go expr)
     go e = concatMap go (exprChildren e)
 
 validateInstance :: Map.Map String QualifiedType -> InstanceEnv -> Expr -> [InferenceError]
-validateInstance typeClassDefs instEnv expr@(ExprInstanceDef instanceConstraintType _ _) =
-    case getTypeClassName instanceConstraintType of
+validateInstance typeClassDefs instEnv expr@(ExprInstanceDef instanceQualType _ _) =
+    let Forall _ instanceConstraints instanceType = instanceQualType
+    in case getTypeClassName instanceType of
         Nothing -> []
         Just className ->
             case Map.lookup className typeClassDefs of
                 Nothing -> []
                 Just (Forall tvs superclassConstraints _) ->
-                    validateSuperclasses expr instanceConstraintType tvs superclassConstraints instEnv
+                    validateSuperclasses expr instanceQualType tvs superclassConstraints instanceConstraints instEnv
 validateInstance _ _ _ = []
 
 collectInstances :: Expr -> [Expr]
@@ -48,17 +49,20 @@ getInstanceType t = t
 
 validateSuperclasses ::
     Expr ->
-    Type ->
+    QualifiedType ->
     [TyVar] ->
+    [Constraint] ->
     [Constraint] ->
     InstanceEnv ->
     [InferenceError]
-validateSuperclasses instanceExpr instanceConstraintType tvs superclassConstraints instEnv =
-    let instanceType = getInstanceType instanceConstraintType
+validateSuperclasses instanceExpr instanceQualType tvs superclassConstraints instanceConstraints instEnv =
+    let Forall _ _ instanceConstraintType = instanceQualType
+        instanceType = getInstanceType instanceConstraintType
         subst = buildSubstitution tvs instanceType
         requiredConstraints = apply subst superclassConstraints
         requiredTypes = map constraintType requiredConstraints
-        unsatisfied = [Constraint ty | ty <- requiredTypes, not (Map.member ty instEnv)]
+        declaredConstraintTypes = map constraintType instanceConstraints
+        unsatisfied = [Constraint ty | ty <- requiredTypes, not (Map.member instanceQualType instEnv) && ty `notElem` declaredConstraintTypes]
     in map (MissingSuperclassInstance instanceExpr instanceType) unsatisfied
 
 buildSubstitution :: [TyVar] -> Type -> Map.Map TyVar Type

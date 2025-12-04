@@ -141,7 +141,7 @@ resolveTReference (ExprTypeClassBinding name (Located typSpan typ) defaultV eSpa
     pure $ ExprTypeClassBinding name (Located typSpan realTyp) defaultV eSpan
 resolveTReference expr@(ExprInstanceDef constraintType binds s) = do
     binds' <- mapM resolveTReference binds
-    Forall _ _ constraintType' <- replaceAllUnresolvedQualified expr (Forall [] [] constraintType)
+    constraintType' <- replaceAllUnresolvedQualified expr constraintType
     pure $ ExprInstanceDef constraintType' binds' s
 resolveTReference (ExprBindingDef name (Located typSpan typ) body topLevel mods eSpan) = do
     let typeExpr = ExprNum "" typSpan -- Dummy expression with the type's span
@@ -297,7 +297,7 @@ addGlobalBinding name ty kind sySpan = do
     let globals' = Map.filterWithKey (\sym _ -> resolvedSymbolName sym /= name) globals
     put s{globalBindings = Map.insert symbol ty globals'}
 
-addInstanceBindingFromType :: Type -> ResolverM ()
+addInstanceBindingFromType :: QualifiedType -> ResolverM ()
 addInstanceBindingFromType constraintType = do
     s <- get
     let instances = instanceBindings s

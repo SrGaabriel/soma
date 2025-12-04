@@ -33,14 +33,10 @@ escapes, we can:
     we track that arguments stay within the local scope.
 -}
 module Circuit.Escape (
-    -- * Escape Analysis
     EscapeKind (..),
     EscapeEnv,
     analyzeEscapes,
     analyzeFunctionEscapes,
-
-    -- * Environment operations
-    lookupEscape,
     doesEscape,
     canElideClone,
 ) where
@@ -51,7 +47,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Typing.Types (Type (..))
+import Typing.Types (isFunctionType)
 
 -- | Escape classification for a binding
 data EscapeKind
@@ -173,7 +169,7 @@ analyzeTermEscapes ctx term st = case term of
     CLet name ty val body ->
         let
             -- Check if this binding is a closure
-            isClosure = isClosureType ty || isClosureTerm val
+            isClosure = isFunctionType ty || isClosureTerm val
             st0 = if isClosure then markClosure name st else st
             -- Mark as local function if it's a closure (enables better arg analysis)
             st0' = if isClosure then markLocalFunction name st0 else st0
@@ -201,7 +197,7 @@ analyzeTermEscapes ctx term st = case term of
     CDup name ty _ val body ->
         let
             -- Register this as a closure if it has function type
-            isClosure = isClosureType ty
+            isClosure = isFunctionType ty
             st0 = if isClosure then markClosure name st else st
             -- Register the projections
             st1 =
@@ -284,11 +280,6 @@ contextToEscape CtxLocal = NoEscape
 contextToEscape CtxReturn = Escapes
 contextToEscape CtxArg = Escapes -- Conservative: args may escape
 contextToEscape CtxStore = Escapes
-
--- | Check if a type is a closure/function type
-isClosureType :: Type -> Bool
-isClosureType (TArrow _ _) = True
-isClosureType _ = False
 
 -- | Check if a term creates a closure
 isClosureTerm :: CTerm -> Bool

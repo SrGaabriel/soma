@@ -38,12 +38,7 @@ import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Typing.Types (Type (..), tupleType)
-
--- | Check if a type is a function type (closure)
-isFunctionType :: Type -> Bool
-isFunctionType (TArrow _ _) = True
-isFunctionType _ = False
+import Typing.Types (Type (..), tupleType, isFunctionType)
 
 {- | Environment for lowering, containing:
   - Operand bindings (name -> Alloy operand)
@@ -103,17 +98,12 @@ recordClosureEnvSize name size env =
 lookupClosureEnvSize :: C.Name -> LowerEnv -> Maybe Int
 lookupClosureEnvSize name = Map.lookup name . leClosureEnvSizes
 
--- | Check if a type is a closure/function type
-isClosureType :: Type -> Bool
-isClosureType (TArrow _ _) = True
-isClosureType _ = False
-
 {- | Compute slot info from captured variables
 Returns [(slotIdx, isClosureTyped)] for use with specialized DUP ops
 -}
 computeSlotInfo :: [(C.Name, Type)] -> SlotInfo
 computeSlotInfo capturedVars =
-    [(idx, isClosureType ty) | (idx, (_, ty)) <- zip [0 ..] capturedVars]
+    [(idx, isFunctionType ty) | (idx, (_, ty)) <- zip [0 ..] capturedVars]
 
 {- | Work estimation for parallel reduction.
 
@@ -290,7 +280,7 @@ lowerTerm env term = case term of
                 | canElide -> do
                     let env' = extendOperand (name ++ ".0") valOp $ extendOperand (name ++ ".1") valOp env
                     lowerTerm env' body
-                | isClosureType ty -> do
+                | isFunctionType ty -> do
                     let valName = case val of
                             C.CVar n _ -> Just n
                             C.CDp0 n _ -> Just (n ++ ".0")

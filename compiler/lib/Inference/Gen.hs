@@ -292,7 +292,7 @@ generateConstraints expr = case expr of
         let qualifiedArmTypes = map cleanQualified armTypes
 
         currentEnv <- ask
-        (patternEnv, patternErrors) <- generatePatternBindings expr currentEnv patterns qualifiedArmTypes
+        (patternEnv, patternConstraints, patternErrors) <- generatePatternBindings expr currentEnv patterns qualifiedArmTypes
         reportErrors patternErrors
 
         let extendWithPatterns = Map.union patternEnv
@@ -312,7 +312,7 @@ generateConstraints expr = case expr of
 
                 let finalConstraints =
                         ConstraintSet
-                            (csTypeConstraints bodyConstraints ++ additionalConstraints)
+                            (patternConstraints ++ csTypeConstraints bodyConstraints ++ additionalConstraints)
                             (csClassConstraints bodyConstraints)
                             (csDeclaredConstraints bodyConstraints)
 
@@ -426,16 +426,16 @@ generateConstraints expr = case expr of
         let combinedConstraints = mconcat (map snd results)
         return (Nothing, combinedConstraints)
 
-generatePatternBinding :: Expr -> TypeEnv -> Pattern -> QualifiedType -> GenM (TypeEnv, [InferenceError])
+generatePatternBinding :: Expr -> TypeEnv -> Pattern -> QualifiedType -> GenM (TypeEnv, [TypeConstraint], [InferenceError])
 generatePatternBinding _expr _env (PVar name pSpan) armType = do
     symbol <- mkSymbol name PatternVariableSymbol pSpan
-    return (Map.singleton symbol armType, [])
+    return (Map.singleton symbol armType, [], [])
 generatePatternBinding expr env (PAs name pat pSpan) armType = do
     asSymbol <- mkSymbol name PatternAsSymbol pSpan
     let asBinding = Map.singleton asSymbol armType
-    (nestedBinding, errs) <- generatePatternBinding expr env pat armType
-    return (Map.union asBinding nestedBinding, errs)
-generatePatternBinding expr env (PConstructor name patterns _) _armType = do
+    (nestedBinding, nestedConstraints, errs) <- generatePatternBinding expr env pat armType
+    return (Map.union asBinding nestedBinding, nestedConstraints, errs)
+generatePatternBinding expr env (PConstructor name patterns _) armType = do
     currentEnv <- ask
     let constructorLookup = Map.toList currentEnv
     let maybeConstructor = lookup name [(resolvedSymbolName sym, qual) | (sym, qual) <- constructorLookup]
@@ -449,29 +449,34 @@ generatePatternBinding expr env (PConstructor name patterns _) _armType = do
             let argTypes = extractArgTypes instType (length patterns)
             let qualifiedArgTypes = map (Forall [] instConstraints) argTypes
 
+            let expectedType = extractResultType instType
+            let Forall _ _ resultType = armType
+            let patternConstraint = TypeConstraint expr expectedType resultType UnifyPatternConstructor
+
             if length argTypes /= length patterns
                 then do
                     let err = PatternArityMismatch expr (length patterns) (length argTypes)
                     reportError err
-                    return (Map.empty, [err])
+                    return (Map.empty, [], [err])
                 else do
-                    (bindings, errs) <- generatePatternBindings expr env patterns qualifiedArgTypes
-                    return (bindings, errs)
+                    (bindings, nestedConstraints, errs) <- generatePatternBindings expr env patterns qualifiedArgTypes
+                    return (bindings, patternConstraint : nestedConstraints, errs)
         Nothing -> do
             let err = UnknownTypeConstructor expr name
             reportError err
-            return (Map.empty, [err])
-generatePatternBinding _expr _env PWildcard{} _ = return (Map.empty, [])
-generatePatternBinding _expr _env PLit{} _ = return (Map.empty, [])
+            return (Map.empty, [], [err])
+generatePatternBinding _expr _env PWildcard{} _ = return (Map.empty, [], [])
+generatePatternBinding _expr _env PLit{} _ = return (Map.empty, [], [])
 generatePatternBinding expr _env p _ = error $ "Unsupported pattern: " ++ show p ++ " in expression: " ++ show expr
 
-generatePatternBindings :: Expr -> TypeEnv -> [Pattern] -> [QualifiedType] -> GenM (TypeEnv, [InferenceError])
+generatePatternBindings :: Expr -> TypeEnv -> [Pattern] -> [QualifiedType] -> GenM (TypeEnv, [TypeConstraint], [InferenceError])
 generatePatternBindings expr env patterns armTypes = do
     let zipped = zip patterns armTypes
     results <- mapM (uncurry (generatePatternBinding expr env)) zipped
-    let (bindings, errorLists) = unzip results
+    let (bindings, constraintLists, errorLists) = unzip3 results
+    let allConstraints = concat constraintLists
     let allErrors = concat errorLists
-    pure (Map.unions (env : bindings), allErrors)
+    pure (Map.unions (env : bindings), allConstraints, allErrors)
 
 runGenM :: String -> String -> TypeEnv -> GenM a -> (a, GenState, [InferenceError])
 runGenM currentPackage currentModule env (GenM m) =
@@ -489,6 +494,10 @@ extractArgTypes :: Type -> Int -> [Type]
 extractArgTypes _ty 0 = []
 extractArgTypes (TArrow arg rest) n = arg : extractArgTypes rest (n - 1)
 extractArgTypes _ _ = error "Constructor type doesn't match pattern arity"
+
+extractResultType :: Type -> Type
+extractResultType (TArrow _ rest) = extractResultType rest
+extractResultType t = t
 
 instance MonadFail GenM where
     fail msg = error $ "GenM failed: " ++ msg

@@ -9,7 +9,7 @@ import Inference.Errors (InferenceError (..), generateErrorForPurpose)
 import Inference.Gen (ClassConstraintWithSource (..), TypeConstraint (..))
 import Inference.Substitution (Subst, Substitutable (apply, ftv), composeSubst)
 import Syntax.Tree (Expr (..))
-import Typing.Types (Constraint (..), Kind (..), TyConstructor (..), TyVar (..), Type (..), constraintType)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyConstructor (..), TyVar (..), Type (..), constraintType)
 import Utils.Lists (foldMWithErrors)
 
 unifyPure :: Expr -> UnificationPurpose -> Type -> Type -> Either [InferenceError] Subst
@@ -57,7 +57,7 @@ isEntailedByInstanceEnv :: InstanceEnv -> Constraint -> Bool
 isEntailedByInstanceEnv instanceEnv constraint =
     let constraintTy = constraintType constraint
         instances = Map.toList instanceEnv
-        matches = filter (\(instanceTy, _) -> canUnify instanceTy constraintTy) instances
+        matches = filter (\(Forall _ _ instanceTy, _) -> canUnify instanceTy constraintTy) instances
     in not (null matches)
   where
     canUnify ty1 ty2 =

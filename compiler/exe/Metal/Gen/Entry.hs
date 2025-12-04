@@ -56,10 +56,11 @@ metallizeModule name root = do
             }
 
 metallizeInstance :: Expr -> MetalGen ()
-metallizeInstance (ExprInstanceDef constraintType methods _) =
-    case extractInstanceTypeName constraintType of
+metallizeInstance (ExprInstanceDef qualType methods _) =
+    let Forall _ _ constraintType = qualType
+    in case extractInstanceTypeName constraintType of
         Just typeName -> mapM_ (metallizeInstanceMethod typeName) methods
-        Nothing -> error $ "Failed to extract instance type name for: " ++ treeShow constraintType
+        Nothing -> error $ "Failed to extract instance type name for: " ++ treeShow qualType
   where
     extractInstanceTypeName :: Type -> Maybe String
     extractInstanceTypeName (TApp (TConstructor (TypeConstructor _className _)) argTy) =

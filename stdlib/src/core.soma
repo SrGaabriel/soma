@@ -61,9 +61,9 @@ instance Functor Option where
         | f (Some value) => Some (f value)
         | f (None) => None
 
-instance Display (Option a) where
+instance Display (Option a) with (Display a) where
     def display :: Option a -> String
-        | (Some value) => value
+        | (Some value) => display value
         | (None) => "None"
 
 instance Display String where

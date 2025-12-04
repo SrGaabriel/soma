@@ -78,7 +78,7 @@ data Expr
         , typeClassBindSpan :: Span
         }
     | ExprInstanceDef
-        { instanceConstraint :: Type
+        { instanceConstraint :: QualifiedType
         , instanceMethods :: [Expr]
         , instanceSpan :: Span
         }

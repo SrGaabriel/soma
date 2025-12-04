@@ -22,7 +22,7 @@ import Data.Maybe (mapMaybe)
 import Orphans.Binary ()
 import Project.Symbols (Symbol)
 import System.FilePath (takeFileName, (</>))
-import Typing.Types (QualifiedType, Type)
+import Typing.Types (QualifiedType)
 
 tarballExtension :: String
 tarballExtension = ".toria"
@@ -57,7 +57,7 @@ createProjectTarball ::
     String ->
     [FilePath] ->
     Map.Map Symbol QualifiedType ->
-    [(Type, Bool)] ->
+    [(QualifiedType, Bool)] ->
     Map.Map String [String] ->
     Map.Map String SerializableConstructorMetadata ->
     [(FilePath, BL.ByteString)] ->

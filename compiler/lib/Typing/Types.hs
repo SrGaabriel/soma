@@ -194,3 +194,7 @@ typesMatch :: Type -> Type -> Bool
 typesMatch (TConstructor tc1) (TConstructor tc2) = tc1 == tc2
 typesMatch (TApp f1 a1) (TApp f2 a2) = typesMatch f1 f2 && typesMatch a1 a2
 typesMatch _ _ = False
+
+isFunctionType :: Type -> Bool
+isFunctionType (TArrow _ _) = True
+isFunctionType _ = False
