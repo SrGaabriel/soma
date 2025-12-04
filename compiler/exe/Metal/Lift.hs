@@ -258,27 +258,9 @@ liftExprLambdas available bound (MIf ifCond ifBlock elseBlock ty) =
         <*> pure ty
 liftExprLambdas available bound (MFieldAccess e idx ty) =
     (\e' -> MFieldAccess e' idx ty) <$> liftExprLambdas available bound e
-liftExprLambdas available bound (MCompose stmts ty) =
-    (MCompose . fst <$> liftComposeLambdas available bound stmts) <*> pure ty
 liftExprLambdas _ _ e@(MPanic _ _) = pure e
 -- MClosure is already lifted, just pass through
 liftExprLambdas _ _ e@(MClosure{}) = pure e
-
-liftComposeLambdas :: Set.Set String -> Set.Set String -> [MetallicComposeStmt] -> LiftM ([MetallicComposeStmt], Set.Set String)
-liftComposeLambdas _ bound [] = pure ([], bound)
-liftComposeLambdas available bound (stmt : rest) = case stmt of
-    MCBind name e -> do
-        e' <- liftExprLambdas available bound e
-        (rest', bound'') <- liftComposeLambdas available (Set.insert name bound) rest
-        pure (MCBind name e' : rest', bound'')
-    MCLet name e -> do
-        e' <- liftExprLambdas available bound e
-        (rest', bound'') <- liftComposeLambdas available (Set.insert name bound) rest
-        pure (MCLet name e' : rest', bound'')
-    MCExpr e -> do
-        e' <- liftExprLambdas available bound e
-        (rest', bound'') <- liftComposeLambdas available bound rest
-        pure (MCExpr e' : rest', bound'')
 
 freshLambdaId :: LiftM Int
 freshLambdaId = do
@@ -322,23 +304,6 @@ computeFreeVarsWithTypes (MCase scrutinees arms mdef _) =
         defFree = maybe Map.empty computeFreeVarsWithTypes mdef
     in Map.unions [scrFree, armsFree, defFree]
 computeFreeVarsWithTypes (MFieldAccess e _ _) = computeFreeVarsWithTypes e
-computeFreeVarsWithTypes (MCompose stmts _) =
-    let step (acc, bound) stmt =
-            case stmt of
-                MCBind name e ->
-                    let freeInE = computeFreeVarsWithTypes e
-                        filtered = foldr Map.delete freeInE (Set.toList bound)
-                    in (Map.union acc filtered, Set.insert name bound)
-                MCLet name e ->
-                    let freeInE = computeFreeVarsWithTypes e
-                        filtered = foldr Map.delete freeInE (Set.toList bound)
-                    in (Map.union acc filtered, Set.insert name bound)
-                MCExpr e ->
-                    let freeInE = computeFreeVarsWithTypes e
-                        filtered = foldr Map.delete freeInE (Set.toList bound)
-                    in (Map.union acc filtered, bound)
-        (fv, _) = foldl step (Map.empty, Set.empty) stmts
-    in fv
 computeFreeVarsWithTypes (MIf cond ifB elseB _) =
     Map.unions (map computeFreeVarsWithTypes [cond, ifB, elseB])
 computeFreeVarsWithTypes (MPanic _ _) = Map.empty

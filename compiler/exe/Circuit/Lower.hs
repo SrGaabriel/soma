@@ -365,9 +365,6 @@ lowerExpr = \case
     MPanic msg ty -> do
         -- Panic: abort execution with the error message
         pure $ CPanic msg ty
-    MCompose stmts ty -> do
-        -- Monadic composition: lower each statement
-        lowerCompose stmts ty
 
 {- | Build an application chain with proper types
 Given f : A -> B -> C and args [x : A, y : B], builds ((f x) y) : C
@@ -559,30 +556,6 @@ lookupUnaryOp name = case name of
     "!" -> Just OpNot
     "negate" -> Just OpNeg
     _ -> Nothing
-
--- | Lower monadic composition
-lowerCompose :: [MetallicComposeStmt] -> Type -> LowerM CTerm
-lowerCompose [] _ = pure CEra
-lowerCompose [MCExpr e] _ = lowerExpr e
-lowerCompose (stmt : rest) resultTy = case stmt of
-    MCBind name expr -> do
-        expr' <- lowerExpr expr
-        rest' <- lowerCompose rest resultTy
-        let exprTy = getTermType expr'
-        -- For strict evaluation, this is just a let binding
-        pure $ CLet name exprTy expr' rest'
-    MCLet name expr -> do
-        expr' <- lowerExpr expr
-        rest' <- lowerCompose rest resultTy
-        let exprTy = getTermType expr'
-        pure $ CLet name exprTy expr' rest'
-    MCExpr expr -> do
-        expr' <- lowerExpr expr
-        rest' <- lowerCompose rest resultTy
-        -- Sequence: evaluate expr for effect, continue with rest
-        tmp <- freshTmp "seq"
-        let exprTy = getTermType expr'
-        pure $ CLet tmp exprTy expr' rest'
 
 {- | Group case arms by their first pattern.
 Arms with the same first pattern constructor/literal are grouped together.

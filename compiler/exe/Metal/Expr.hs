@@ -23,7 +23,6 @@ instance HasType MetallicExpr where
     getType (MCase _ _ _ t) = t
     getType (MFieldAccess _ _ t) = t
     getType (MPanic _ t) = t
-    getType (MCompose _ t) = t
 
 instance HasType MetallicLiteral where
     getType (MInt _) = intType
@@ -37,10 +36,7 @@ data MetallicExpr
     | MTypeApp MetallicExpr [Type] Type
     | MLet String MetallicExpr MetallicExpr Type
     | MLambda [String] MetallicExpr Type
-    | {- | MClosure liftedFuncName capturedVars closureType
-      Represents a closure: a lifted function + captured environment
-      -}
-      MClosure String [(String, Type)] Type
+    | MClosure String [(String, Type)] Type
     | MConstruct String Int [MetallicExpr] Type
     | MArrayLit [MetallicExpr] Type
     | MTuple [MetallicExpr] Type
@@ -48,13 +44,6 @@ data MetallicExpr
     | MCase [MetallicExpr] [MCaseArm] (Maybe MetallicExpr) Type
     | MFieldAccess MetallicExpr Int Type
     | MPanic String Type
-    | MCompose [MetallicComposeStmt] Type
-    deriving (Show, Eq)
-
-data MetallicComposeStmt
-    = MCBind String MetallicExpr
-    | MCLet String MetallicExpr
-    | MCExpr MetallicExpr
     deriving (Show, Eq)
 
 data MCaseArm = MCaseArm

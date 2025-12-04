@@ -66,9 +66,6 @@ normalizeExpr e = evalState (go e) initialState
         e'' <- go e'
         pure (MFieldAccess e'' idx t)
     go (MPanic msg t) = pure (MPanic msg t)
-    go (MCompose stmts t) = do
-        stmts' <- mapM normComposeStmt stmts
-        pure (MCompose stmts' t)
     go (MIf cond thenE elseE t) = do
         cond' <- go cond
         thenE' <- go thenE
@@ -76,17 +73,6 @@ normalizeExpr e = evalState (go e) initialState
         pure (MIf cond' thenE' elseE' t)
     go (MClosure liftedName capturedVars t) =
         pure (MClosure liftedName capturedVars t)
-
-    normComposeStmt :: MetallicComposeStmt -> NormalizeM MetallicComposeStmt
-    normComposeStmt (MCBind n e') = do
-        e'' <- go e'
-        pure (MCBind n e'')
-    normComposeStmt (MCLet n e') = do
-        e'' <- go e'
-        pure (MCLet n e'')
-    normComposeStmt (MCExpr e') = do
-        e'' <- go e'
-        pure (MCExpr e'')
 
 type NormalizeM = State NormalizeState
 

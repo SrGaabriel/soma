@@ -55,18 +55,11 @@ instance TreeShow MetallicExpr where
         treeShow e ++ "." ++ show ix
     treeShow (MLambda params body _) =
         "(\\" ++ commaSep params ++ " -> " ++ treeShow body ++ ")"
-    treeShow (MCompose stms _) =
-        "compose: " ++ intercalate "\n|>" (map treeShow stms)
     treeShow (MIf cond ifBranch elseBranch _) =
         "if " ++ treeShow cond ++ " then " ++ treeShow ifBranch ++ " else " ++ treeShow elseBranch
     treeShow (MPanic msg _) = "panic " ++ show msg
     treeShow (MClosure liftedName captured _) =
         "closure(" ++ liftedName ++ ", [" ++ commaSep (map fst captured) ++ "])"
-
-instance TreeShow MetallicComposeStmt where
-    treeShow (MCBind name expr) = "bind " ++ name ++ " <- " ++ treeShow expr
-    treeShow (MCLet name expr) = "let " ++ name ++ " = " ++ treeShow expr
-    treeShow (MCExpr expr) = "chain " ++ treeShow expr
 
 instance TreeShow MetallicFunction where
     treeShow (MetallicFunction name params ret body _) =

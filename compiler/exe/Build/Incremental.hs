@@ -142,7 +142,6 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
     let alloyFromCircuit = case optionsMode options of
             ModeGraph ->
                 -- Linearized graph mode: linearize first, then use graph reduction
-                -- This enables compile-time DUP optimization (e.g., eliding DUP for primitives)
                 lowerCircuitToGraph linearizedCircuit
             ModeStandard ->
                 -- Standard mode: linearize for compile-time memory management

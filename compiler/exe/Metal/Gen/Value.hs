@@ -58,8 +58,9 @@ metallizeValue expr@(ExprLambda paramNames body _) = do
         lambdaScope = MetalScope "lambda" paramBindings (Just parentScope)
     metalBody <- withScope lambdaScope $ metallizeValue body
     pure $ MLambda paramNames metalBody ty
-metallizeValue expr@(ExprCompose stmts _) =
-    MCompose <$> metallizeComposeStmtsInScope stmts <*> getExprType expr
+metallizeValue expr@(ExprCompose stmts _) = do
+    resultTy <- getExprType expr
+    desugarCompose stmts resultTy
 metallizeValue expr@(ExprIf condition ifBlock elseBlock _) =
     MIf
         <$> metallizeValue condition
@@ -68,35 +69,66 @@ metallizeValue expr@(ExprIf condition ifBlock elseBlock _) =
         <*> getExprType expr
 metallizeValue u = error $ "Cannot metallize value: " ++ show u
 
-metallizeComposeStmt :: ComposeStmt -> MetalGen MetallicComposeStmt
-metallizeComposeStmt (CSBind name e _) = MCBind name <$> metallizeValue e
-metallizeComposeStmt (CSLet name e _) = MCLet name <$> metallizeValue e
-metallizeComposeStmt (CSExpr e _) = MCExpr <$> metallizeValue e
+{- | Desugar compose blocks into explicit monad operations.
 
-metallizeComposeStmtsInScope :: [ComposeStmt] -> MetalGen [MetallicComposeStmt]
-metallizeComposeStmtsInScope [] = pure []
-metallizeComposeStmtsInScope (stmt : rest) = do
-    (mStmt, mbBinding) <- case stmt of
-        CSBind name e _ -> do
-            me <- metallizeValue e
-            eTy <- getExprType e
-            pure (MCBind name me, Just (name, eTy))
-        CSLet name e _ -> do
-            me <- metallizeValue e
-            eTy <- getExprType e
-            pure (MCLet name me, Just (name, eTy))
-        CSExpr e _ -> do
-            me <- metallizeValue e
-            pure (MCExpr me, Nothing)
+   Desugaring rules:
+   - MCBind x <- action; rest  =>  >>= action (\x -> rest)
+   - MCLet x = expr; rest      =>  let x = expr in rest
+   - MCExpr action; rest       =>  >> action rest
+   - Final MCExpr action       =>  action
 
-    restStmts <- case mbBinding of
-        Just (name, eTy) -> do
-            parentScope <- asks metalCurrentScope
-            let newScope = MetalScope name (Map.insert name eTy (scopeVars parentScope)) (Just parentScope)
-            withScope newScope $ metallizeComposeStmtsInScope rest
-        Nothing -> metallizeComposeStmtsInScope rest
+   Types:
+   - >>=  :: m a -> (a -> m b) -> m b
+   - >>   :: m a -> m b -> m b
+-}
+desugarCompose :: [ComposeStmt] -> Type -> MetalGen MetallicExpr
+desugarCompose [] _ = error "Empty compose block"
+desugarCompose [CSExpr e _] _ = metallizeValue e
+desugarCompose (stmt : rest) resultTy = case stmt of
+    -- CSBind x <- action; rest  =>  >>= action (\x -> desugar rest)
+    CSBind name action _ -> do
+        metalAction <- metallizeValue action
+        let actionTy = getType metalAction
+        -- Extract the inner type 'a' from 'm a'
+        let innerTy = extractMonadInner actionTy
+        -- Build the continuation type: a -> m b (where m b is resultTy)
+        let contTy = TArrow innerTy resultTy
+        -- Build the bind operator type: m a -> (a -> m b) -> m b
+        let bindTy = TArrow actionTy (TArrow contTy resultTy)
+        -- Desugar rest in scope with x bound
+        parentScope <- asks metalCurrentScope
+        let newScope = MetalScope name (Map.insert name innerTy (scopeVars parentScope)) (Just parentScope)
+        restExpr <- withScope newScope $ desugarCompose rest resultTy
+        -- Build: >>= action (\x -> restExpr)
+        let bindVar = MVar ">>=" bindTy
+            lambda = MLambda [name] restExpr contTy
+        pure $ MCall bindVar [metalAction, lambda] resultTy
 
-    pure (mStmt : restStmts)
+    -- CSLet x = expr; rest  =>  let x = expr in (desugar rest)
+    CSLet name expr _ -> do
+        metalExpr <- metallizeValue expr
+        let exprTy = getType metalExpr
+        parentScope <- asks metalCurrentScope
+        let newScope = MetalScope name (Map.insert name exprTy (scopeVars parentScope)) (Just parentScope)
+        restExpr <- withScope newScope $ desugarCompose rest resultTy
+        pure $ MLet name metalExpr restExpr resultTy
+
+    -- CSExpr action; rest  =>  >> action (desugar rest)
+    CSExpr action _ -> do
+        metalAction <- metallizeValue action
+        let actionTy = getType metalAction
+        -- Build the then operator type: m a -> m b -> m b
+        let thenTy = TArrow actionTy (TArrow resultTy resultTy)
+        -- Desugar rest
+        restExpr <- desugarCompose rest resultTy
+        -- Build: >> action restExpr
+        let thenVar = MVar ">>" thenTy
+        pure $ MCall thenVar [metalAction, restExpr] resultTy
+
+-- | Extract the inner type from a monadic type (m a -> a)
+extractMonadInner :: Type -> Type
+extractMonadInner (TApp _ inner) = inner
+extractMonadInner t = t -- fallback for malformed types
 
 metallizeApp :: Expr -> [Expr] -> MetalGen MetallicExpr
 metallizeApp base args = do
