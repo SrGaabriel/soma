@@ -47,6 +47,7 @@ library
     Metal.Metadata
     Metal.Module
     Metal.MonadNormalize
+    Metal.Lower
     Metal.MonadProfile
     Metal.Naming
     Parsing.Ast

@@ -29,10 +29,13 @@ import Control.Applicative ((<|>))
 import Control.Monad (forM)
 import Control.Monad.State.Strict
 import qualified Data.Map.Strict as Map
+import Lexing.Position (dummySpan)
 import Metal.Expr (
     MCaseArm (..),
     MetallicExpr (..),
     MetallicLiteral (..),
+    TypedArm,
+    TypedExpr,
  )
 import Metal.Function (
     MetallicFunction (..),
@@ -106,8 +109,8 @@ buildClosureReturningFnsMap fns =
         , Just info <- [getClosureReturnInfo (mfBody fn)]
         ]
   where
-    getClosureReturnInfo :: MetallicExpr -> Maybe ClosureReturnInfo
-    getClosureReturnInfo (MClosure liftedName capturedVars _) =
+    getClosureReturnInfo :: TypedExpr -> Maybe ClosureReturnInfo
+    getClosureReturnInfo (MClosure liftedName capturedVars _ _) =
         Just $ ClosureReturnInfo (length capturedVars) liftedName
     getClosureReturnInfo _ = Nothing
 
@@ -144,29 +147,29 @@ lowerFunction ctorTags ctorFields profiles closureRetFns MetallicFunction{mfName
     terminate (ARet (Just retval))
     endFunction
 
-lowerExpr :: MetallicExpr -> Lower AOperand
-lowerExpr (MVar name _ty) = do
+lowerExpr :: TypedExpr -> Lower AOperand
+lowerExpr (MVar name _ty _) = do
     env <- gets leVars
     pure $ Map.findWithDefault (OpVar name) name env
-lowerExpr (MLit lit) =
+lowerExpr (MLit lit _) =
     pure $ OpConst (lowerLiteral lit)
-lowerExpr (MLet name valExpr bodyExpr _ty) = do
+lowerExpr (MLet name valExpr bodyExpr _ty _) = do
     v <- lowerExpr valExpr
     -- Track closures for proper call handling
     case valExpr of
-        MClosure liftedName capturedVars _ ->
+        MClosure liftedName capturedVars _ _ ->
             withClosureBinding name liftedName (length capturedVars) v (lowerExpr bodyExpr)
-        MCall callee _ _ -> do
+        MCall callee _ _ _ -> do
             closureRetFns <- gets leClosureReturningFns
             closureEnv <- gets leClosures
             case stripTypeApps callee of
-                MVar fnName _ | Map.notMember fnName closureEnv -> do
+                MVar fnName _ _ | Map.notMember fnName closureEnv -> do
                     -- Direct call to a known function - check if it returns a closure
                     case Map.lookup fnName closureRetFns of
                         Just (ClosureReturnInfo envSize liftedFn) ->
                             withClosureBinding name liftedFn envSize v (lowerExpr bodyExpr)
                         Nothing -> withBinding name v (lowerExpr bodyExpr)
-                MVar fnName _ | Just (ClosureInfo _ funcName) <- Map.lookup fnName closureEnv -> do
+                MVar fnName _ _ | Just (ClosureInfo _ funcName) <- Map.lookup fnName closureEnv -> do
                     -- Call to a closure - check if the underlying func returns a closure
                     case Map.lookup funcName closureRetFns of
                         Just (ClosureReturnInfo envSize liftedFn) ->
@@ -175,14 +178,14 @@ lowerExpr (MLet name valExpr bodyExpr _ty) = do
                 _ -> withBinding name v (lowerExpr bodyExpr)
         _ -> withBinding name v (lowerExpr bodyExpr)
   where
-    stripTypeApps (MTypeApp e _ _) = stripTypeApps e
+    stripTypeApps (MTypeApp e _ _ _) = stripTypeApps e
     stripTypeApps e = e
-lowerExpr (MLambda _paramNames _body ty) = do
+lowerExpr (MLambda _paramNames _body ty _) = do
     -- todo: create a closure value, allocate env, etc etc
     failLower ("Lambda lowering requires closure conversion; lambdas should be lifted to top-level before Alloy lowering. Lambda type: " ++ show ty)
-lowerExpr (MClosure liftedName capturedVars ty) = do
+lowerExpr (MClosure liftedName capturedVars ty _) = do
     -- Allocate closure with the lifted function and captured environment
-    capturedOps <- mapM (\(n, _t) -> lowerExpr (MVar n _t)) capturedVars
+    capturedOps <- mapM (\(n, t) -> lowerExpr (MVar n t dummySpan)) capturedVars
     let arity = countArityFromType ty
         envSize = length capturedVars
     closureName <- lift $ emitLetTmp ty (OpAllocClosure (OpVar liftedName) arity envSize)
@@ -197,20 +200,20 @@ lowerExpr (MClosure liftedName capturedVars ty) = do
     countArityFromType :: Type -> Int
     countArityFromType (TArrow _ rest) = 1 + countArityFromType rest
     countArityFromType _ = 0
-lowerExpr (MConstruct typeName tag fields ty) = do
+lowerExpr (MConstruct typeName tag fields ty _) = do
     ops <- mapM lowerExpr fields
     tmp <- lift $ emitLetTmp ty (OpConstruct typeName tag ops)
     pure (OpVar tmp)
-lowerExpr (MCall callee args ty) = do
+lowerExpr (MCall callee args ty _) = do
     argOps <- mapM lowerExpr args
     env <- gets leVars
     closureEnv <- gets leClosures
     case stripTypeApps callee of
-        MVar fname _ | Map.notMember fname env -> do
+        MVar fname _ _ | Map.notMember fname env -> do
             -- Direct call to a known function (not a local variable)
             tmp <- lift $ emitLetTmp ty (OpCall (Direct fname) argOps)
             pure (OpVar tmp)
-        MVar fname _ | Just (ClosureInfo _envSize funcName) <- Map.lookup fname closureEnv -> do
+        MVar fname _ _ | Just (ClosureInfo _envSize funcName) <- Map.lookup fname closureEnv -> do
             -- Uniform calling convention: pass closure as first arg
             -- The lifted function extracts its own env from closure_self
             closureOp <- lowerExpr callee
@@ -227,7 +230,7 @@ lowerExpr (MCall callee args ty) = do
                     modify (\st -> st{leClosures = Map.insert tmp info (leClosures st)})
                 Nothing -> pure ()
             pure (OpVar tmp)
-        MVar fname calleeTy
+        MVar fname calleeTy _
             | Map.member fname env
             , isFunctionType calleeTy -> do
                 -- Indirect call through function-typed variable (e.g., higher-order function parameter)
@@ -244,17 +247,17 @@ lowerExpr (MCall callee args ty) = do
             tmp <- lift $ emitLetTmp ty (OpCall (Indirect calOp) argOps)
             pure (OpVar tmp)
   where
-    stripTypeApps (MTypeApp e _ _) = stripTypeApps e
+    stripTypeApps (MTypeApp e _ _ _) = stripTypeApps e
     stripTypeApps e = e
     isFunctionType (TArrow _ _) = True
     isFunctionType _ = False
-lowerExpr (MTypeApp e _tys _ty) =
+lowerExpr (MTypeApp e _tys _ty _) =
     lowerExpr e
-lowerExpr (MArrayLit elems ty) = do
+lowerExpr (MArrayLit elems ty _) = do
     ops <- mapM lowerExpr elems
     tmp <- lift $ emitLetTmp ty (OpMakeArray ops)
     pure (OpVar tmp)
-lowerExpr (MTuple elems ty) = do
+lowerExpr (MTuple elems ty _) = do
     ops <- mapM lowerExpr elems
 
     tmp <- lift $ emitLetTmp ty (OpMakeTuple ops)
@@ -262,14 +265,14 @@ lowerExpr (MTuple elems ty) = do
     pure (OpVar tmp)
 -- Full pattern match lowering using decision trees and CFG.
 
-lowerExpr (MCase scrutinees arms _defaultExpr resultTy) = do
+lowerExpr (MCase scrutinees arms _defaultExpr resultTy _) = do
     scrOps <- mapM lowerExpr scrutinees
     lowerCase scrOps arms resultTy
-lowerExpr (MFieldAccess base idx ty) = do
+lowerExpr (MFieldAccess base idx ty _) = do
     baseOp <- lowerExpr base
     tmp <- lift $ emitLetTmp ty (OpProject baseOp idx)
     pure (OpVar tmp)
-lowerExpr (MIf ifCond ifBlock elseBlock ty) = do
+lowerExpr (MIf ifCond ifBlock elseBlock ty _) = do
     condOp <- lowerExpr ifCond
 
     thenName <- lift freshBlockName
@@ -289,7 +292,7 @@ lowerExpr (MIf ifCond ifBlock elseBlock ty) = do
     let resParam = "res"
     lift $ beginBlock joinName [(resParam, ty)]
     pure (OpVar resParam)
-lowerExpr (MPanic msg _ty) =
+lowerExpr (MPanic msg _ty _) =
     failLower ("Lowering of panic in expression position is not implemented: " ++ msg)
 
 lowerLiteral :: MetallicLiteral -> AConst
@@ -320,7 +323,7 @@ getCtorTag ctor = do
         Just n -> pure n
         Nothing -> failLower ("Unknown constructor tag for: " ++ ctor)
 
-lowerCase :: [AOperand] -> [MCaseArm] -> Type -> Lower AOperand
+lowerCase :: [AOperand] -> [TypedArm] -> Type -> Lower AOperand
 lowerCase scrOps arms resultTy = do
     let patterns = map mcaPatterns arms
         matrix = mkPatternMatrix (zip patterns [0 .. length patterns - 1])
@@ -334,7 +337,7 @@ lowerCase scrOps arms resultTy = do
     lift $ beginBlock joinName [(resParam, resultTy)]
     pure (OpVar resParam)
 
-codegenDecisionTree :: [AOperand] -> [MCaseArm] -> DecisionTree -> BlockName -> Type -> Lower ()
+codegenDecisionTree :: [AOperand] -> [TypedArm] -> DecisionTree -> BlockName -> Type -> Lower ()
 codegenDecisionTree scrOps arms node joinName resultTy =
     case node of
         Fail -> lift $ terminate AUnreachable
@@ -350,7 +353,7 @@ codegenDecisionTree scrOps arms node joinName resultTy =
 
 lowerSwitch ::
     [AOperand] ->
-    [MCaseArm] ->
+    [TypedArm] ->
     Accessor ->
     [(Constructor, DecisionTree)] ->
     Maybe DecisionTree ->
@@ -478,26 +481,26 @@ evalAccessorWithType scrOps (ArrayElem acc i) (Just ty) = do
 evalAccessorWithType _ _ Nothing =
     failLower "Cannot project field without knowing its type"
 
-collectVarTypesFromBody :: MetallicExpr -> Map.Map String Type
+collectVarTypesFromBody :: TypedExpr -> Map.Map String Type
 collectVarTypesFromBody = go Map.empty
   where
-    go acc (MVar v ty) = Map.insertWith (\_ old -> old) v ty acc
-    go acc (MLit _) = acc
-    go acc (MCall f args _ty) = foldl go (go acc f) args
-    go acc (MTypeApp e _ _) = go acc e
-    go acc (MLet _ v b _) = go (go acc v) b
-    go acc (MLambda _ body _) = go acc body
-    go acc (MConstruct _ _ fields _) = foldl go acc fields
-    go acc (MArrayLit elems _) = foldl go acc elems
-    go acc (MTuple elems _) = foldl go acc elems
-    go acc (MCase scr arms mdef _) =
+    go acc (MVar v ty _) = Map.insertWith (\_ old -> old) v ty acc
+    go acc (MLit _ _) = acc
+    go acc (MCall f args _ty _) = foldl go (go acc f) args
+    go acc (MTypeApp e _ _ _) = go acc e
+    go acc (MLet _ v b _ _) = go (go acc v) b
+    go acc (MLambda _ body _ _) = go acc body
+    go acc (MConstruct _ _ fields _ _) = foldl go acc fields
+    go acc (MArrayLit elems _ _) = foldl go acc elems
+    go acc (MTuple elems _ _) = foldl go acc elems
+    go acc (MCase scr arms mdef _ _) =
         let acc' = foldl go acc scr
             accArms = foldl (\a (MCaseArm{mcaBody = body}) -> go a body) acc' arms
         in maybe accArms (go accArms) mdef
-    go acc (MFieldAccess e _ _) = go acc e
-    go acc (MIf c t f _) = go (go (go acc c) t) f
-    go acc (MPanic _ _) = acc
-    go acc (MClosure _ capturedVars _) =
+    go acc (MFieldAccess e _ _ _) = go acc e
+    go acc (MIf c t f _ _) = go (go (go acc c) t) f
+    go acc (MPanic{}) = acc
+    go acc (MClosure _ capturedVars _ _) =
         foldl (\a (n, ty) -> Map.insertWith (\_ old -> old) n ty a) acc capturedVars
 
 patternHasBinder :: Pattern -> Bool

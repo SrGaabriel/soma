@@ -358,7 +358,6 @@ generateFreshNamesExcept counter names returnedVar resultName =
 identityOp :: AOperand -> AOp
 identityOp op = OpSelect (OpConst (CBool True)) op op
 
-
 -- | Create an operation from a constant
 constOp :: AConst -> AOp
 constOp c = OpSelect (OpConst (CBool True)) (OpConst c) (OpConst c)

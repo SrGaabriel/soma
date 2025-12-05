@@ -1,6 +1,7 @@
 module Main where
 
 import Build.Incremental (processExternalDependencies, processModulesIncremental)
+import Build.Metadata (serializableToConstructorMetadata)
 import Circuit.Linearize (linearizeModule)
 import Circuit.Lower (lowerModule)
 import Circuit.Simplify (simplifyModule)
@@ -18,8 +19,9 @@ import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.Errors (printError, printSomeError)
 import Logging.Json (errorsToJsonOutput, failedJsonOutput, printJsonOutput)
 import Logging.Trees (prettyCircuit, prettyCircuitGraph)
-import Metal.Gen.Entry (compileMetalModule)
+import Metal.Gen.Entry (TypedLowerResult (..), compileMetalModule)
 import Metal.Lift (liftLambdas)
+import Metal.Lower (LowerResult (..))
 import Metal.MonadNormalize (normalizeModule)
 import Project.Check (CheckedModule (..), checkModule, checkModulesInOrder)
 import Project.Extracts (extractIntrinsicNames)
@@ -96,9 +98,10 @@ checkSingleFile opts path = do
                 FormatHuman -> mapM_ printSomeError errs
             exitFailure
         Right mi -> do
-            (externalDeps, externalInstances, _, _) <- processExternalDependencies (checkDeps opts)
+            (externalDeps, externalInstances, externalConstructors, _) <- processExternalDependencies (checkDeps opts)
+            let metallicConstructors = Map.map serializableToConstructorMetadata externalConstructors
             let graph = Map.singleton name mi
-                (errors, _) = checkModulesInOrder [name] graph externalDeps externalInstances name
+                (errors, _) = checkModulesInOrder [name] graph externalDeps externalInstances metallicConstructors name
 
             let allErrors =
                     concatMap
@@ -157,9 +160,10 @@ checkDirectory opts path = do
                             mapM_ (putStrLn . ("  " ++) . show) cycles
                     exitFailure
                 Right sorted -> do
-                    (externalDeps, externalInstances, _, _) <- processExternalDependencies (checkDeps opts)
+                    (externalDeps, externalInstances, externalConstructors, _) <- processExternalDependencies (checkDeps opts)
+                    let metallicConstructors = Map.map serializableToConstructorMetadata externalConstructors
 
-                    let (errors, _) = checkModulesInOrder sorted graph externalDeps externalInstances name
+                    let (errors, _) = checkModulesInOrder sorted graph externalDeps externalInstances metallicConstructors name
 
                     let allErrors =
                             concatMap
@@ -262,7 +266,7 @@ circuit opts = do
         Right m -> return m
 
     -- Type check the module
-    let (allErrors, checked) = checkModule name mi Map.empty Map.empty Map.empty
+    let (allErrors, checked) = checkModule name mi Map.empty Map.empty Map.empty Map.empty
 
     unless (null allErrors) $ do
         putStrLn $ "Errors while type checking module " ++ name ++ ":"
@@ -270,10 +274,20 @@ circuit opts = do
         exitFailure
 
     let resolvedAst = checkedResolvedAst checked
-        types = checkedTypeMap checked
+        lowerResult = checkedLowerResult checked
+        typedBindings = checkedTypedBindings checked
+
+    -- Build TypedLowerResult from checked module
+    let typedLowerResult =
+            TypedLowerResult
+                { tlrBindings = typedBindings
+                , tlrTypes = lrTypes lowerResult
+                , tlrInstances = []
+                , tlrTypeClasses = lrTypeClasses lowerResult
+                }
 
     -- Compile to Metal
-    let metallic = compileMetalModule name resolvedAst types Map.empty
+    let metallic = compileMetalModule name typedLowerResult Map.empty
         intrinsics = extractIntrinsicNames resolvedAst
         metallicLifted = liftLambdas intrinsics metallic
         metallicNormalized = normalizeModule metallicLifted

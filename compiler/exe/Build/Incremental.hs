@@ -36,13 +36,14 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Format.Trees (prettyPrintAst, treeShow)
-import Inference.Core (InstanceEnv, TypeMap)
+import Inference.Core (InstanceEnv)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
 import Logging.Errors (printError)
 import Logging.Trees (prettyCircuit)
-import Metal.Gen.Entry (compileMetalModule)
+import Metal.Gen.Entry (TypedLowerResult (..), compileMetalModule)
 import Metal.Gen.Metadata (extractConstructorMetadata)
 import Metal.Lift (liftLambdas)
+import Metal.Lower (LowerResult (..))
 import Metal.Module (MetallicModule (..))
 import Metal.MonadNormalize (normalizeModule)
 import Project.Check (CheckedModule (..), checkModule)
@@ -59,9 +60,8 @@ import Typing.Types (QualifiedType)
 
 data CompiledModule = CompiledModule
     { cmModuleName :: ModuleName
-    , cmMetallicNormalized :: MetallicModule -- after lambda lifting & normalization
-    , cmAlloyExpanded :: AlloyModule -- after intrinsic expansion (pre-dictionary/mono)
-    , cmTypeMap :: TypeMap
+    , cmMetallicNormalized :: MetallicModule
+    , cmAlloyExpanded :: AlloyModule
     , cmPublicSymbols :: Map Symbol QualifiedType
     , cmPublicInstances :: InstanceEnv
     , cmResolvedAst :: Expr
@@ -88,19 +88,20 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
                     CheckedModule
                         { checkedModuleName = cmModuleName c
                         , checkedResolvedAst = cmResolvedAst c
-                        , checkedTypeMap = cmTypeMap c
+                        , checkedLowerResult = LowerResult [] [] [] []
+                        , checkedTypedBindings = []
                         , checkedPublicSymbols = cmPublicSymbols c
                         , checkedInstances = cmPublicInstances c
                         }
                 )
                 compiledDeps
-    let (allErrors, checked) = checkModule packageName modInfo checkedDeps externalDeps externalInstances
+
+    let metallicConstructors = Map.map serializableToConstructorMetadata externalConstructors
+    let (allErrors, checked) = checkModule packageName modInfo checkedDeps externalDeps externalInstances metallicConstructors
+
     putStrLn "Resolved AST:"
     prettyPrintAst (checkedResolvedAst checked)
     putStrLn $ "Module " ++ modName ++ " type checked"
-
-    putStrLn $ "Type Map:"
-    putStrLn $ treeShow (checkedTypeMap checked)
 
     unless (null allErrors) $ do
         putStrLn $ "Errors while compiling module " ++ modName ++ ":"
@@ -108,13 +109,22 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
         exitFailure
 
     let resolvedAst = checkedResolvedAst checked
-        types = checkedTypeMap checked
+        lowerResult = checkedLowerResult checked
+        typedBindings = checkedTypedBindings checked
         newDefs = checkedPublicSymbols checked
         instanceEnv = checkedInstances checked
 
+    let typedLowerResult =
+            TypedLowerResult
+                { tlrBindings = typedBindings
+                , tlrTypes = lrTypes lowerResult
+                , tlrInstances = []
+                , tlrTypeClasses = lrTypeClasses lowerResult
+                }
+
     let metallicExternalConstructors = Map.map serializableToConstructorMetadata externalConstructors
     let intrinsicNames = extractIntrinsicNames resolvedAst
-    let metallic = compileMetalModule modName resolvedAst types metallicExternalConstructors
+    let metallic = compileMetalModule modName typedLowerResult metallicExternalConstructors
         metallicLifted = liftLambdas intrinsicNames metallic
         metallicNormalized = normalizeModule metallicLifted
 
@@ -162,7 +172,6 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
             { cmModuleName = modName
             , cmMetallicNormalized = metallicNormalized
             , cmAlloyExpanded = alloyExpanded
-            , cmTypeMap = types
             , cmPublicSymbols = newDefs
             , cmPublicInstances = instanceEnv
             , cmResolvedAst = resolvedAst
@@ -180,16 +189,13 @@ linkCompiledModules packageName compiledModules externalConstructors externalAll
     let localAlloyModules = map cmAlloyExpanded compiledModules
     let allAlloyModules = localAlloyModules ++ externalAlloyModules
 
-    let fusedAst = createFusedAst [(cmResolvedAst cm, cmTypeMap cm, cmPublicSymbols cm) | cm <- compiledModules]
+    let fusedAst = createFusedAst [(cmResolvedAst cm, cmPublicSymbols cm) | cm <- compiledModules]
         localConstructors = extractConstructorMetadata fusedAst
         allConstructors = Map.union externalConstructors (Map.map constructorMetadataToSerializable localConstructors)
 
     let fusedAlloy = concatenateAlloyModules packageName allAlloyModules
 
-    -- todo: fix dicts
-    let
-        -- alloyWithDicts = transformModuleWithDictionaries fusedAlloy
-        alloyMono = monomorphizeModule fusedAlloy
+    let alloyMono = monomorphizeModule fusedAlloy
         alloyDefunc = defunctionalizeModule alloyMono
         alloyUserInlined = inlineModule defaultInlineConfig alloyDefunc
         alloyReader = readerRewriteModule alloyUserInlined
@@ -217,11 +223,11 @@ concatenateAlloyModules packageName modules =
         , amTypeClasses = concatMap amTypeClasses modules
         }
 
-createFusedAst :: [(Expr, TypeMap, Map Symbol QualifiedType)] -> Expr
+createFusedAst :: [(Expr, Map Symbol QualifiedType)] -> Expr
 createFusedAst allModules =
     let allExprs =
             concatMap
-                ( \(ast, _, _) -> case ast of
+                ( \(ast, _) -> case ast of
                     ExprRoot exprs -> exprs
                     singleExpr -> [singleExpr]
                 )
@@ -246,13 +252,13 @@ processModulesIncremental sorted graph compileOptions = do
             inputName
             compileOptions
 
-    putStrLn $ "\n✅ Compiled " ++ show (length compiledModules) ++ " modules separately"
+    putStrLn $ "\n Compiled " ++ show (length compiledModules) ++ " modules separately"
     (alloyOpt, allCtorsForCodeGen) <- linkCompiledModules inputName compiledModules externalConstructors externalAlloyModules
 
     let llvmIr = runLlvmCodeGenAndTranscribe alloyOpt
     generateOutputFile inputName llvmIr compileOptions compiledModules graph allCtorsForCodeGen
 
-    putStrLn "✅ Build process completed."
+    putStrLn "Build process completed."
 
 compileAllModulesInOrder ::
     [ModuleName] ->
@@ -327,42 +333,43 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                     putStrLn $ "llc -filetype=obj " ++ llTemp ++ " -o " ++ outputFile
                     exitFailure
                 )
-        ext | ext == tarballExtension -> do
-            let llFile = outputDir </> outputName <.> "ll"
-            writeFile llFile llvmIr
+        ext
+            | ext == tarballExtension -> do
+                let llFile = outputDir </> outputName <.> "ll"
+                writeFile llFile llvmIr
 
-            let publicSymbols = Map.unions [cmPublicSymbols cm | cm <- compiledModules]
-                publicInstances = Map.unions [cmPublicInstances cm | cm <- compiledModules]
-                depGraph = buildDependencyGraph graph
-                sourceFiles = [modulePath info | info <- Map.elems graph]
+                let publicSymbols = Map.unions [cmPublicSymbols cm | cm <- compiledModules]
+                    publicInstances = Map.unions [cmPublicInstances cm | cm <- compiledModules]
+                    depGraph = buildDependencyGraph graph
+                    sourceFiles = [modulePath info | info <- Map.elems graph]
 
-            let objFile = outputDir </> outputName <.> "o"
-            objFileExists <-
-                catch
-                    ( do
-                        callProcess "llc" ["-filetype=obj", llFile, "-o", objFile]
-                        return True
-                    )
-                    (\(_ :: SomeException) -> return False)
+                let objFile = outputDir </> outputName <.> "o"
+                objFileExists <-
+                    catch
+                        ( do
+                            callProcess "llc" ["-filetype=obj", llFile, "-o", objFile]
+                            return True
+                        )
+                        (\(_ :: SomeException) -> return False)
 
-            objContent <- BL.readFile objFile
-            let alloyModulesToSave = map cmAlloyExpanded compiledModules
+                objContent <- BL.readFile objFile
+                let alloyModulesToSave = map cmAlloyExpanded compiledModules
 
-            createProjectTarball
-                outputFile
-                defaultTarballOptions
-                inputName
-                "0.1.0"
-                sourceFiles
-                publicSymbols
-                (Map.toList publicInstances)
-                depGraph
-                allConstructors
-                [(objFile, objContent) | objFileExists]
-                [(llFile, BLC.pack llvmIr)]
-                alloyModulesToSave
+                createProjectTarball
+                    outputFile
+                    defaultTarballOptions
+                    inputName
+                    "0.1.0"
+                    sourceFiles
+                    publicSymbols
+                    (Map.toList publicInstances)
+                    depGraph
+                    allConstructors
+                    [(objFile, objContent) | objFileExists]
+                    [(llFile, BLC.pack llvmIr)]
+                    alloyModulesToSave
 
-            catch (removeFile objFile) (\(_ :: SomeException) -> return ())
+                catch (removeFile objFile) (\(_ :: SomeException) -> return ())
         ""
             | isLib -> do
                 putStrLn "Can't build executable for library"

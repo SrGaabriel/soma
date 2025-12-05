@@ -1,134 +1,92 @@
-module Metal.Gen.Entry where
+{-# LANGUAGE NamedFieldPuns #-}
 
-import Metal.Naming (makeInstanceMethodName, nameArrayPrefix)
-import Control.Monad.State (gets, modify)
+module Metal.Gen.Entry (
+    compileMetalModule,
+    TypedLowerResult (
+        TypedLowerResult,
+        tlrBindings,
+        tlrTypes,
+        tlrInstances,
+        tlrTypeClasses
+    ),
+) where
+
 import qualified Data.Map as Map
-import Format.Trees (treeShow)
-import Inference.Core (TypeMap)
-import Lexing.Position (Located (..))
+import Metal.Expr (TypedExpr)
 import Metal.Function (MetallicFunction (..))
-import Metal.Gen.Binding (metallizeBinding)
-import Metal.Gen.Core (
-    MetalGen,
-    MetalGenEnv (..),
-    MetalGenState (..),
-    addTypeClass,
-    defaultMetalEnv,
-    defaultMetalState,
-    metalFunctions,
-    metalInstanceMethods,
-    metalTypeClasses,
-    metalTypes,
-    runMetalGen,
- )
-import Metal.Gen.DataTypes (compileDataTypeDefsFromRoot)
-import Metal.Gen.Extracts (groupInstanceMethods)
-import Metal.Gen.Metadata (extractConstructorMetadata)
-import Metal.Metadata (MetallicConstructorMetadata, MetallicTypeClassMetadata (..))
-import Metal.Module (MetallicModule (..))
-import Syntax.Tree (Expr (..), exprChildren)
-import Typing.Types (QualifiedType (..), TyConstructor (..), Type (..))
+import Metal.Metadata (MetallicConstructorMetadata, MetallicFunctionMetadata (MetallicFunctionMetadata), MetallicTypeClassMetadata)
+import Metal.Module (MetallicInstance (..), MetallicModule (..), MetallicTypeDef)
+import Metal.Naming (makeInstanceMethodName, nameArrayPrefix)
+import Typing.Types (Constraint, QualifiedType (..), TyConstructor (..), TyVar, Type (..))
 
-metallizeModule :: String -> Expr -> MetalGen MetallicModule
-metallizeModule name root = do
-    compileDataTypeDefsFromRoot root
+data TypedLowerResult = TypedLowerResult
+    { tlrBindings :: [(String, TypedExpr, [Type], Type, [TyVar], [Constraint], Bool)]
+    , tlrTypes :: [MetallicTypeDef]
+    , tlrInstances :: [(QualifiedType, [(String, TypedExpr, [Type], Type)])]
+    , tlrTypeClasses :: [MetallicTypeClassMetadata]
+    }
+    deriving (Show)
 
-    let topLevelMembers = exprChildren root
+compileMetalModule ::
+    String ->
+    TypedLowerResult ->
+    Map.Map String MetallicConstructorMetadata ->
+    MetallicModule
+compileMetalModule name TypedLowerResult{tlrBindings, tlrTypes, tlrInstances, tlrTypeClasses} _externalConstructors =
+    let
+        functions = map bindingToFunction tlrBindings
 
-    mapM_ metallizeTypeClass [tc | tc@(ExprTypeClassDef{}) <- topLevelMembers]
-
-    mapM_ metallizeBinding [b | b@(ExprBindingDef{}) <- topLevelMembers]
-
-    mapM_ metallizeInstance [inst | inst@(ExprInstanceDef{}) <- topLevelMembers]
-
-    funcs <- gets metalFunctions
-    types <- gets metalTypes
-    instances <- gets metalInstanceMethods
-    typeClasses <- gets metalTypeClasses
-
-    pure
+        instances = concatMap instanceToMetallicInstance tlrInstances
+    in
         MetallicModule
             { mmName = name
-            , mmFunctions = Map.elems funcs
-            , mmTypes = Map.elems types
-            , mmInstances = groupInstanceMethods instances
-            , mmTypeClasses = Map.elems typeClasses
+            , mmFunctions = functions
+            , mmTypes = tlrTypes
+            , mmInstances = instances
+            , mmTypeClasses = tlrTypeClasses
             }
 
-metallizeInstance :: Expr -> MetalGen ()
-metallizeInstance (ExprInstanceDef qualType methods _) =
+bindingToFunction ::
+    (String, TypedExpr, [Type], Type, [TyVar], [Constraint], Bool) ->
+    MetallicFunction
+bindingToFunction (name, body, paramTypes, returnType, typeVars, constraints, isInline) =
+    let params = zipWith (\i t -> ("arg" ++ show i, t)) [0 :: Int ..] paramTypes
+        metadata = MetallicFunctionMetadata typeVars constraints Nothing Nothing isInline
+    in MetallicFunction name params returnType body metadata
+
+instanceToMetallicInstance ::
+    (QualifiedType, [(String, TypedExpr, [Type], Type)]) ->
+    [MetallicInstance]
+instanceToMetallicInstance (qualType, methods) =
     let Forall _ _ constraintType = qualType
-    in case extractInstanceTypeName constraintType of
-        Just typeName -> mapM_ (metallizeInstanceMethod typeName) methods
-        Nothing -> error $ "Failed to extract instance type name for: " ++ treeShow qualType
-  where
-    extractInstanceTypeName :: Type -> Maybe String
-    extractInstanceTypeName (TApp (TConstructor (TypeConstructor _className _)) argTy) =
-        case extractFullTypeName argTy of
-            Just argName -> Just argName
-            Nothing -> extractPolyTypeName argTy
-    extractInstanceTypeName (TConstructor (TypeConstructor name _)) = Just name
-    extractInstanceTypeName (TVar _) = Nothing
-    extractInstanceTypeName _ = Nothing
+        (mClassName, mInstanceType) = extractClassAndInstanceType constraintType
+    in case (mClassName, mInstanceType) of
+        (Just className, Just instanceType) ->
+            let methodFuncs = map (methodToFunction className instanceType) methods
+            in [MetallicInstance className instanceType methodFuncs]
+        _ -> []
 
-    extractFullTypeName :: Type -> Maybe String
-    extractFullTypeName (TApp (TConstructor (TypeConstructor "Array" _)) elemTy) =
-        case extractFullTypeName elemTy of
-            Just elemName -> Just (nameArrayPrefix ++ elemName)
-            Nothing -> Nothing
-    extractFullTypeName (TApp (TConstructor (TypeConstructor name _)) (TVar _)) =
-        Just name -- handle polymorphic types like Option a
-    extractFullTypeName (TConstructor (TypeConstructor name _)) = Just name
-    extractFullTypeName (TVar _) = Nothing
-    extractFullTypeName _ = Nothing
+extractClassAndInstanceType :: Type -> (Maybe String, Maybe Type)
+extractClassAndInstanceType (TApp (TConstructor (TypeConstructor className _)) argTy) =
+    (Just className, Just argTy)
+extractClassAndInstanceType _ = (Nothing, Nothing)
 
-    -- Extract polymorphic type constructor name (ex, "Array" for [a])
-    extractPolyTypeName :: Type -> Maybe String
-    extractPolyTypeName (TApp (TConstructor (TypeConstructor "Array" _)) (TVar _)) = Just "Array"
-    extractPolyTypeName (TConstructor (TypeConstructor name _)) = Just name
-    extractPolyTypeName _ = Nothing
+methodToFunction ::
+    String ->
+    Type ->
+    (String, TypedExpr, [Type], Type) ->
+    MetallicFunction
+methodToFunction _className instanceType (methodName, body, paramTypes, returnType) =
+    let typeName = extractTypeName instanceType
+        mangledName = makeInstanceMethodName methodName typeName
+        params = zipWith (\i t -> ("arg" ++ show i, t)) [0 :: Int ..] paramTypes
+        metadata = MetallicFunctionMetadata [] [] Nothing Nothing False
+    in MetallicFunction mangledName params returnType body metadata
 
-    metallizeInstanceMethod :: String -> Expr -> MetalGen ()
-    metallizeInstanceMethod typeName bind@(ExprBindingDef name _ _ _ _ _) = do
-        metallizeBinding bind
-        let mangledName = makeInstanceMethodName name typeName
-        funcs <- gets metalFunctions
-        case Map.lookup name funcs of
-            Just func -> modify $ \s ->
-                s
-                    { metalFunctions =
-                        Map.insert
-                            mangledName
-                            (func{mfName = mangledName})
-                            (Map.delete name (metalFunctions s))
-                    }
-            Nothing -> pure ()
-    metallizeInstanceMethod _ _ = pure ()
-metallizeInstance _ = pure ()
-
-metallizeTypeClass :: Expr -> MetalGen ()
-metallizeTypeClass (ExprTypeClassDef className _generics methods _) = do
-    let methodBindings = [(extractMethodName method, extractMethodType method) | method <- methods]
-    let tcMeta =
-            MetallicTypeClassMetadata
-                { mtcName = className
-                , mtcMethods = methodBindings
-                }
-    addTypeClass className tcMeta
-  where
-    extractMethodName :: Expr -> String
-    extractMethodName (ExprTypeClassBinding name _ _ _) = name
-    extractMethodName _ = ""
-
-    extractMethodType :: Expr -> QualifiedType
-    extractMethodType (ExprTypeClassBinding _ (Located _ qtype) _ _) = qtype
-    extractMethodType _ = Forall [] [] (TConstructor (TypeConstructor "Unknown" undefined))
-metallizeTypeClass _ = pure ()
-
-compileMetalModule :: String -> Expr -> TypeMap -> Map.Map String MetallicConstructorMetadata -> MetallicModule
-compileMetalModule name root typeMap externalConstructors =
-    let localConstructors = extractConstructorMetadata root
-        allConstructors = Map.union localConstructors externalConstructors
-        env = (defaultMetalEnv name typeMap){metalConstructors = allConstructors}
-        (metalModule, _) = runMetalGen env defaultMetalState (metallizeModule name root)
-    in metalModule
+extractTypeName :: Type -> String
+extractTypeName (TApp (TConstructor (TypeConstructor "Array" _)) elemTy) =
+    nameArrayPrefix ++ extractTypeName elemTy
+extractTypeName (TApp (TConstructor (TypeConstructor name _)) _) = name
+extractTypeName (TConstructor (TypeConstructor name _)) = name
+extractTypeName (TVar _) = "Poly"
+extractTypeName _ = "Unknown"

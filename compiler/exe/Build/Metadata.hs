@@ -8,9 +8,9 @@ import Data.Aeson
 import qualified Data.Map as Map
 import GHC.Generics
 import Lexing.Position (Span (..))
+import Metal.Metadata
 import Project.Symbols (Symbol (..), SymbolKind (..))
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyConstructor (..), TyVar (..), Type (..), constraintType)
-import Metal.Metadata
 
 data SerializableConstructorMetadata = SerializableConstructorMetadata
     { scmTypeName :: String

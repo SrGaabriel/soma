@@ -28,6 +28,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Lexing.Position (dummySpan)
 import Metal.Expr
 import Metal.Function
 import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (..), MetallicTypeClassMetadata (..))
@@ -94,8 +95,7 @@ buildEnv m =
         }
 
 buildFunctionType :: MetallicFunction -> Type
-buildFunctionType mf =
-    foldr TArrow (mfReturnType mf) (map snd (mfParams mf))
+buildFunctionType mf = foldr (TArrow . snd) (mfReturnType mf) (mfParams mf)
 
 extractMethodType :: QualifiedType -> Type
 extractMethodType (Forall _ _ ty) = ty
@@ -177,9 +177,9 @@ wrapWithEnvBindings capturedVars body =
     wrapOne (idx, (varName, varTy)) = CLet varName varTy (CClosureGetEnv (CVar "closure_self" closurePtrType) idx varTy)
 
 -- | Lower a Metal expression to Circuit
-lowerExpr :: MetallicExpr -> LowerM CTerm
+lowerExpr :: TypedExpr -> LowerM CTerm
 lowerExpr = \case
-    MVar name ty -> do
+    MVar name ty _ -> do
         env <- ask
         -- Check if this is a nullary constructor
         case Map.lookup name (leConstructors env) of
@@ -194,20 +194,20 @@ lowerExpr = \case
                 if Map.member name (leFunctions env)
                     then pure $ CRef name ty
                     else pure $ CVar name ty
-    MLit lit ->
+    MLit lit _ ->
         lowerLiteral lit
-    MCall func args resultTy -> do
+    MCall func args resultTy _ -> do
         -- Check for binary intrinsic pattern: MCall (MVar "+") [a, b]
         case (func, args) of
-            (MVar name _, [a, b]) | Just binOp <- lookupBinOp name -> do
+            (MVar name _ _, [a, b]) | Just binOp <- lookupBinOp name -> do
                 a' <- lowerExpr a
                 b' <- lowerExpr b
                 pure $ CBinOp binOp a' b'
-            (MVar name _, [a, b]) | Just cmpOp <- lookupCmpOp name -> do
+            (MVar name _ _, [a, b]) | Just cmpOp <- lookupCmpOp name -> do
                 a' <- lowerExpr a
                 b' <- lowerExpr b
                 pure $ CCmpOp cmpOp a' b'
-            (MVar name _, [a]) | Just unaryOp <- lookupUnaryOp name -> do
+            (MVar name _ _, [a]) | Just unaryOp <- lookupUnaryOp name -> do
                 a' <- lowerExpr a
                 pure $ CUnaryOp unaryOp a'
             _ -> do
@@ -218,34 +218,34 @@ lowerExpr = \case
                 -- For a chain f x y with result type R, we need intermediate types
                 -- f : A -> B -> R, (f x) : B -> R, ((f x) y) : R
                 pure $ buildAppChain func' args' resultTy
-    MTypeApp expr _ _ ->
+    MTypeApp expr _ _ _ ->
         -- Type applications are erased
         lowerExpr expr
-    MLet name val body _ -> do
+    MLet name val body _ _ -> do
         val' <- lowerExpr val
         body' <- lowerExpr body
         let valTy = getTermType val'
         pure $ CLet name valTy val' body'
-    MLambda params body lamTy -> do
+    MLambda params body lamTy _ -> do
         body' <- lowerExpr body
         -- Build nested lambdas with types extracted from the function type
-        pure $ buildLamChain params lamTy body'
-    MClosure liftedName capturedVars closureTy ->
+        pure $ buildLamChain (map fst params) lamTy body'
+    MClosure liftedName capturedVars closureTy _ ->
         -- Closure: a lifted function with captured environment
         pure $ CClosure liftedName capturedVars closureTy
-    MConstruct _ctorName tag fields resultTy -> do
+    MConstruct _ctorName tag fields resultTy _ -> do
         -- Convert to tagged value with all fields
         fields' <- mapM lowerExpr fields
         pure $ CTag tag fields' resultTy
-    MArrayLit elems ty -> do
+    MArrayLit elems ty _ -> do
         -- Arrays: encode as tagged value with tag -2 and all elements as fields
         elems' <- mapM lowerExpr elems
         pure $ CTag (-2) elems' ty
-    MTuple elems ty -> do
+    MTuple elems ty _ -> do
         -- Tuples: encode as tagged value with tag -1 and all elements as fields
         elems' <- mapM lowerExpr elems
         pure $ CTag (-1) elems' ty
-    MIf cond thenBr elseBr resultTy -> do
+    MIf cond thenBr elseBr resultTy _ -> do
         -- if cond then t else e
         -- Encode as: case cond of { 0 -> e; _ -> t }
         cond' <- lowerExpr cond
@@ -262,10 +262,10 @@ lowerExpr = \case
                 ]
                 Nothing
                 resultTy
-    MCase scrutinees arms mdefault resultTy -> do
+    MCase scrutinees arms mdefault resultTy _ -> do
         case scrutinees of
             [scrut] -> do
-                let scrutTy = getMetallicExprType scrut
+                let scrutTy = getType scrut
                 -- Check if this is a trivial variable binding pattern (just PVar or PWildcard)
                 -- If so, we can avoid the case expression entirely
                 case (arms, mdefault) of
@@ -314,7 +314,7 @@ lowerExpr = \case
                 -- Special case: if ALL arms have a catch-all pattern (PVar/PWildcard)
                 -- as their first pattern, we don't need a case expression - just bind
                 -- the variable and continue with the rest.
-                let scrutTy = getMetallicExprType scrut
+                let scrutTy = getType scrut
                 scrut' <- lowerExpr scrut
 
                 let firstPatterns = [hardHead (mcaPatterns arm) | arm <- arms, not (null (mcaPatterns arm))]
@@ -329,13 +329,13 @@ lowerExpr = \case
                             PVar name _ -> do
                                 -- Bind the scrutinee to the variable name
                                 let nestedArms = [arm{mcaPatterns = drop 1 (mcaPatterns arm)} | arm <- arms]
-                                nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy)
+                                nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy dummySpan)
                                 pure $ CLet name scrutTy scrut' nestedBody
                             _ -> do
                                 -- PWildcard or PAs: just continue without binding
                                 let nestedArms = [arm{mcaPatterns = drop 1 (mcaPatterns arm)} | arm <- arms]
                                 tmp <- freshTmp "wild"
-                                nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy)
+                                nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy dummySpan)
                                 pure $ CLet tmp scrutTy scrut' nestedBody
                     else do
                         -- Group arms by their first pattern (tag-based grouping)
@@ -349,7 +349,7 @@ lowerExpr = \case
                                     [ arm{mcaPatterns = drop 1 (mcaPatterns arm)}
                                     | arm <- armsInGroup
                                     ]
-                            nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy)
+                            nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy dummySpan)
                             pure (tag, fieldNamesAndTypes, nestedBody)
 
                         tmp <- freshTmp "scrut"
@@ -358,11 +358,11 @@ lowerExpr = \case
                             $ CLet tmp scrutTy scrut'
                             $ CCase (CVar tmp scrutTy) arms' default' resultTy
             [] -> pure CEra
-    MFieldAccess expr idx ty -> do
+    MFieldAccess expr idx ty _ -> do
         -- Field access on a tagged value - project the field at the given index
         expr' <- lowerExpr expr
         pure $ CProject expr' idx ty
-    MPanic msg ty -> do
+    MPanic msg ty _ -> do
         -- Panic: abort execution with the error message
         pure $ CPanic msg ty
 
@@ -398,7 +398,7 @@ lowerLiteral = \case
     MString s -> pure $ CStr s
 
 -- | Lower a case arm, given the scrutinee type for field type extraction
-lowerCaseArm :: Type -> MCaseArm -> LowerM (Int, [(Name, Type)], CTerm)
+lowerCaseArm :: Type -> TypedArm -> LowerM (Int, [(Name, Type)], CTerm)
 lowerCaseArm scrutTy arm = do
     -- Get the pattern (assuming single pattern for now)
     case mcaPatterns arm of
@@ -432,7 +432,7 @@ isCatchAllPattern _ = False
 Specific patterns (literals, constructors) become switch arms.
 Catch-all patterns (PVar, PWildcard) become the default case.
 -}
-partitionCaseArms :: [MCaseArm] -> ([MCaseArm], [MCaseArm])
+partitionCaseArms :: [TypedArm] -> ([TypedArm], [TypedArm])
 partitionCaseArms = foldr partition ([], [])
   where
     partition arm (specific, catchAll) =
@@ -570,13 +570,13 @@ Groups into:
   A -> [(A x, B y) -> e1, (A x, C z) -> e2]
   D -> [(D w, B y) -> e3]
 -}
-groupArmsByFirstPattern :: [MCaseArm] -> [(Pattern, [MCaseArm])]
+groupArmsByFirstPattern :: [TypedArm] -> [(Pattern, [TypedArm])]
 groupArmsByFirstPattern =
     -- Use a simple grouping: collect arms with equivalent first patterns
     -- Two patterns are equivalent if they have the same constructor/literal/variable form
     foldr insertArm []
   where
-    insertArm :: MCaseArm -> [(Pattern, [MCaseArm])] -> [(Pattern, [MCaseArm])]
+    insertArm :: TypedArm -> [(Pattern, [TypedArm])] -> [(Pattern, [TypedArm])]
     insertArm arm [] = case mcaPatterns arm of
         (p : _) -> [(p, [arm])]
         [] -> []

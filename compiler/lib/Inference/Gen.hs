@@ -1,503 +1,559 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 
-module Inference.Gen where
+module Inference.Gen (
+    generateConstraints,
+    generateBindingConstraints,
+    generateInstanceConstraints,
+    MetalGenM,
+    MetalGenState (..),
+    runMetalGenM,
+    MetalConstraintSet (..),
+    MetalTypeConstraint (..),
+    MetalClassConstraint (..),
+    emptyConstraints,
+    typeConstraints,
+    classConstraints,
+    declaredConstraints,
+    MetalTypeEnv,
+) where
 
-import Control.Monad (when)
+import Control.Monad (forM, when, zipWithM)
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
-import Data.Maybe (catMaybes)
-import Inference.Core (TypeEnv, UnificationPurpose (..))
+import Inference.Core (UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
 import Inference.Naming (nameSkolemPrefix, nameTmpPrefix)
 import Inference.Substitution (Substitutable (apply))
-import Lexing.Position (Located (..), Span (..))
-import Project.Symbols (Symbol (..), SymbolKind (..))
+import Lexing.Position (Span (..))
+import Metal.Expr
 import Syntax.Patterns (Pattern (..))
-import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyConstructor (..), TyVar (..), Type (..), arrayType, boolType, cleanQualified, intType, strType, tupleType, vectorize, vectorizeAll)
-import Utils.Lists (hardHead)
+import qualified Syntax.Tree
+import Typing.Types (
+    Constraint (..),
+    Kind (..),
+    QualifiedType (..),
+    Rigidity (..),
+    SkolemVar (..),
+    TyConstructor (..),
+    TyVar (..),
+    Type (..),
+    arrayType,
+    boolType,
+    cleanQualified,
+    tupleType,
+ )
+import Utils.Lists (hardHead, hardTail)
 
-newtype GenM a = GenM (StateT GenState (ReaderT TypeEnv (Writer [InferenceError])) a)
-    deriving (Functor, Applicative, Monad, MonadState GenState, MonadReader TypeEnv, MonadWriter [InferenceError])
+type MetalTypeEnv = Map.Map String QualifiedType
 
-data GenState = GenState
-    { gsCounter :: Int
-    , gsTypeMap :: Map.Map Expr Type
-    , gsSkolemEnv :: Map.Map String SkolemVar
-    , gsCurrentModule :: String
-    , gsCurrentPackage :: String
+newtype MetalGenM a = MetalGenM (StateT MetalGenState (ReaderT MetalTypeEnv (Writer [InferenceError])) a)
+    deriving (Functor, Applicative, Monad, MonadState MetalGenState, MonadReader MetalTypeEnv, MonadWriter [InferenceError])
+
+data MetalGenState = MetalGenState
+    { mgsCounter :: Int
+    , mgsSkolemEnv :: Map.Map String SkolemVar
+    , mgsCurrentModule :: String
+    , mgsCurrentPackage :: String
     }
     deriving (Show)
 
-reportError :: InferenceError -> GenM ()
-reportError err = tell [err]
-
-reportErrors :: [InferenceError] -> GenM ()
-reportErrors = tell
-
-data ClassConstraintWithSource = ClassConstraintWithSource
-    { ccsConstraint :: Constraint
-    , ccsSourceExpr :: Expr
+data MetalTypeConstraint = MetalTypeConstraint
+    { mtcSpan :: Span
+    , mtcExpected :: Type
+    , mtcActual :: Type
+    , mtcPurpose :: UnificationPurpose
     }
     deriving (Show)
 
-data ConstraintSet = ConstraintSet
-    { csTypeConstraints :: [TypeConstraint]
-    , csClassConstraints :: [ClassConstraintWithSource]
-    , csDeclaredConstraints :: [Constraint]
+data MetalClassConstraint = MetalClassConstraint
+    { mccConstraint :: Constraint
+    , mccSpan :: Span
     }
     deriving (Show)
 
-instance Semigroup ConstraintSet where
-    (ConstraintSet ts1 cs1 dc1) <> (ConstraintSet ts2 cs2 dc2) =
-        ConstraintSet (ts1 ++ ts2) (cs1 ++ cs2) (dc1 ++ dc2)
+data MetalConstraintSet = MetalConstraintSet
+    { mcsTypeConstraints :: [MetalTypeConstraint]
+    , mcsClassConstraints :: [MetalClassConstraint]
+    , mcsDeclaredConstraints :: [Constraint]
+    }
+    deriving (Show)
 
-instance Monoid ConstraintSet where
-    mempty = ConstraintSet [] [] []
+instance Semigroup MetalConstraintSet where
+    (MetalConstraintSet ts1 cs1 dc1) <> (MetalConstraintSet ts2 cs2 dc2) =
+        MetalConstraintSet (ts1 ++ ts2) (cs1 ++ cs2) (dc1 ++ dc2)
 
-emptyConstraints :: ConstraintSet
+instance Monoid MetalConstraintSet where
+    mempty = MetalConstraintSet [] [] []
+
+emptyConstraints :: MetalConstraintSet
 emptyConstraints = mempty
 
-typeConstraints :: [TypeConstraint] -> ConstraintSet
-typeConstraints tcs = ConstraintSet tcs [] []
+typeConstraints :: [MetalTypeConstraint] -> MetalConstraintSet
+typeConstraints tcs = MetalConstraintSet tcs [] []
 
-classConstraints :: [ClassConstraintWithSource] -> ConstraintSet
-classConstraints ccs = ConstraintSet [] ccs []
+classConstraints :: [MetalClassConstraint] -> MetalConstraintSet
+classConstraints ccs = MetalConstraintSet [] ccs []
 
-declaredConstraints :: [Constraint] -> ConstraintSet
-declaredConstraints = ConstraintSet [] []
+declaredConstraints :: [Constraint] -> MetalConstraintSet
+declaredConstraints = MetalConstraintSet [] []
 
-combineConstraints :: [ConstraintSet] -> ConstraintSet
-combineConstraints = mconcat
+runMetalGenM ::
+    String ->
+    String ->
+    MetalTypeEnv ->
+    MetalGenM a ->
+    (a, MetalGenState, [InferenceError])
+runMetalGenM pkg modName env (MetalGenM m) =
+    let initialState = MetalGenState 0 Map.empty modName pkg
+        ((result, finalState), errors) = runWriter (runReaderT (runStateT m initialState) env)
+    in (result, finalState, errors)
 
-data TypeConstraint = TypeConstraint
-    { tcExpr :: Expr
-    , tcExpected :: Type
-    , tcActual :: Type
-    , tcPurpose :: UnificationPurpose
-    }
-    deriving (Show)
+reportError :: InferenceError -> MetalGenM ()
+reportError = tell . (: [])
 
-freshTyVar :: Kind -> GenM TyVar
+freshTyVar :: Kind -> MetalGenM TyVar
 freshTyVar k = do
-    n <- gets gsCounter
-    modify $ \s -> s{gsCounter = n + 1}
-    return $ TypeVar (nameTmpPrefix ++ show n) k
+    n <- gets mgsCounter
+    modify $ \s -> s{mgsCounter = n + 1}
+    pure $ TypeVar (nameTmpPrefix ++ show n) k
 
-freshSkolemVar :: String -> Kind -> GenM SkolemVar
+freshSkolemVar :: String -> Kind -> MetalGenM SkolemVar
 freshSkolemVar name k = do
-    n <- gets gsCounter
-    modify $ \s -> s{gsCounter = n + 1}
-    return $ SkolemVar (nameSkolemPrefix ++ show n) k n name Rigid
+    n <- gets mgsCounter
+    modify $ \s -> s{mgsCounter = n + 1}
+    pure $ SkolemVar (nameSkolemPrefix ++ show n) k n name Rigid
 
-recordType :: Expr -> Type -> GenM ()
-recordType expr ty = modify $ \s -> s{gsTypeMap = Map.insert expr ty (gsTypeMap s)}
+slotType :: TypeSlot -> Type
+slotType (Known t) = t
+slotType (Hole tv) = TVar tv
 
-mkSymbol :: String -> SymbolKind -> Span -> GenM Symbol
-mkSymbol name kind sySpan = do
-    currentModule <- gets gsCurrentModule
-    currentPackage <- gets gsCurrentPackage
-    return
-        $ ResolvedSymbol
-            { resolvedSymbolName = name
-            , resolvedSymbolKind = kind
-            , resolvedSymbolModule = currentModule
-            , resolvedSymbolPackage = currentPackage
-            , resolvedSymbolSpan = sySpan
-            }
+generateBindingConstraints ::
+    String ->
+    InferenceExpr ->
+    [Type] ->
+    Type ->
+    [TyVar] ->
+    [Constraint] ->
+    MetalGenM (TypeSlot, MetalConstraintSet)
+generateBindingConstraints _name body paramTypes returnType tyVars annConstraints = do
+    skVars <- mapM (\(TypeVar tyName kind) -> freshSkolemVar tyName kind) tyVars
+    let skSubst = Map.fromList (zip tyVars (map TSkolem skVars))
 
-findSymbolByName :: String -> TypeEnv -> Maybe (Symbol, QualifiedType)
-findSymbolByName name env =
-    let matches = [(sym, qual) | (sym, qual) <- Map.toList env, resolvedSymbolName sym == name]
-    in case matches of
-        (sym, qual) : _ -> Just (sym, qual)
-        [] -> Nothing
+    let skParamTypes = map (apply skSubst) paramTypes
+    let skReturnType = apply skSubst returnType
+    let skAnnConstraints = map (apply skSubst) annConstraints
 
-generateConstraints :: Expr -> GenM (Maybe Type, ConstraintSet)
+    let expectedType = foldr TArrow skReturnType skParamTypes
+
+    (bodySlot, bodyCs) <- generateConstraints body
+
+    let sigConstraint =
+            MetalTypeConstraint
+                { mtcSpan = exprSpan body
+                , mtcExpected = expectedType
+                , mtcActual = slotType bodySlot
+                , mtcPurpose = UnifyFunctionBody
+                }
+
+    let combinedConstraints =
+            MetalConstraintSet
+                { mcsTypeConstraints = sigConstraint : mcsTypeConstraints bodyCs
+                , mcsClassConstraints = mcsClassConstraints bodyCs
+                , mcsDeclaredConstraints = skAnnConstraints
+                }
+
+    pure (bodySlot, combinedConstraints)
+
+generateInstanceConstraints ::
+    String ->
+    InferenceExpr ->
+    [Type] ->
+    Type ->
+    MetalGenM (TypeSlot, MetalConstraintSet)
+generateInstanceConstraints _name body paramTypes returnType = do
+    let expectedType = foldr TArrow returnType paramTypes
+
+    (bodySlot, bodyCs) <- generateConstraints body
+
+    let sigConstraint =
+            MetalTypeConstraint
+                { mtcSpan = exprSpan body
+                , mtcExpected = expectedType
+                , mtcActual = slotType bodySlot
+                , mtcPurpose = UnifyFunctionBody
+                }
+
+    let combinedConstraints =
+            MetalConstraintSet
+                { mcsTypeConstraints = sigConstraint : mcsTypeConstraints bodyCs
+                , mcsClassConstraints = mcsClassConstraints bodyCs
+                , mcsDeclaredConstraints = []
+                }
+
+    pure (bodySlot, combinedConstraints)
+
+generateConstraints :: InferenceExpr -> MetalGenM (TypeSlot, MetalConstraintSet)
 generateConstraints expr = case expr of
-    ExprNum _ _ -> do
-        let ty = intType
-        recordType expr ty
-        pure (Just ty, emptyConstraints)
-    ExprStr _ _ -> do
-        let ty = strType
-        recordType expr ty
-        pure (Just ty, emptyConstraints)
-    ExprBool _ _ -> do
-        let ty = boolType
-        recordType expr ty
-        pure (Just ty, emptyConstraints)
-    -- usually this isn't supposed to be here, but we handle just in case the compiler wants to find more errors
-    ExprUVar name varSpan -> do
+    MVar name slot span' -> do
         env <- ask
-        case findSymbolByName name env of
-            Just (_, Forall tvs cs t) -> do
-                freshVars <- mapM (freshTyVar . tvKind) tvs
-                let subst = Map.fromList (zip tvs (map TVar freshVars))
-                let instType = apply subst t
-                let instConstraints = map (apply subst) cs
-                let instConstraintsWithSource = map (`ClassConstraintWithSource` expr) instConstraints
-                recordType expr instType
-                return (Just instType, classConstraints instConstraintsWithSource)
-            Nothing -> do
-                reportError (UnboundVariable (ExprUVar name varSpan) name)
-                errorVar <- freshTyVar KindStar
-                let errorType = TVar errorVar
-                recordType expr errorType
-                return (Just errorType, emptyConstraints)
-    ExprVar symbol _ -> do
-        env <- ask
-        when (resolvedSymbolKind symbol == TypeSymbol)
-            $ reportError (ReferenceToTypeConstructor expr (resolvedSymbolName symbol))
-
-        case Map.lookup symbol env of
+        case Map.lookup name env of
             Just (Forall tvs cs t) -> do
                 freshVars <- mapM (freshTyVar . tvKind) tvs
                 let subst = Map.fromList (zip tvs (map TVar freshVars))
                 let instType = apply subst t
                 let instConstraints = map (apply subst) cs
-                let instConstraintsWithSource = map (`ClassConstraintWithSource` expr) instConstraints
-                recordType expr instType
-                return (Just instType, classConstraints instConstraintsWithSource)
+                let instClassConstraints = map (`MetalClassConstraint` span') instConstraints
+
+                let slotConstraint =
+                        MetalTypeConstraint
+                            { mtcSpan = span'
+                            , mtcExpected = instType
+                            , mtcActual = slotType slot
+                            , mtcPurpose = UnifyFunctionApplication
+                            }
+
+                pure (slot, typeConstraints [slotConstraint] <> classConstraints instClassConstraints)
             Nothing -> do
-                reportError (UnboundVariable expr (resolvedSymbolName symbol))
-                errorVar <- freshTyVar KindStar
-                let errorType = TVar errorVar
-                recordType expr errorType
-                return (Just errorType, emptyConstraints)
-    ExprApp f a -> do
-        (Just tf, cf) <- generateConstraints f
-        (Just ta, ca) <- generateConstraints a
-        retVar <- freshTyVar KindStar
-        let retType = TVar retVar
-        let funConstraint = TypeConstraint expr (TArrow ta retType) tf UnifyFunctionApplication
+                reportError (UnboundVariable (dummyExpr span') name)
+                pure (slot, emptyConstraints)
+    MLit lit _ -> do
+        let ty = literalType lit
+        pure (Known ty, emptyConstraints)
+    MCall func args resultSlot span' -> do
+        (funcSlot, funcCs) <- generateConstraints func
+        argResults <- mapM generateConstraints args
+        let (argSlots, argCsList) = unzip argResults
 
-        let combinedConstraints =
-                ConstraintSet
-                    (funConstraint : csTypeConstraints cf ++ csTypeConstraints ca)
-                    (csClassConstraints cf ++ csClassConstraints ca)
-                    (csDeclaredConstraints cf ++ csDeclaredConstraints ca)
-        recordType expr retType
-        return (Just retType, combinedConstraints)
-    ExprLambda paramNames body eSpan -> do
-        paramVars <- mapM (const $ freshTyVar KindStar) paramNames
-        let paramTypes = map TVar paramVars
+        let expectedFuncType = foldr (TArrow . slotType) (slotType resultSlot) argSlots
 
-        paramSymbols <- mapM (\n -> mkSymbol n LambdaParameterSymbol eSpan) paramNames
-        let paramBindings = Map.fromList (zip paramSymbols (map cleanQualified paramTypes))
-        let extendEnv = Map.union paramBindings
+        let callConstraint =
+                MetalTypeConstraint
+                    { mtcSpan = span'
+                    , mtcExpected = expectedFuncType
+                    , mtcActual = slotType funcSlot
+                    , mtcPurpose = UnifyFunctionApplication
+                    }
 
-        (Just bodyType, bodyConstraints) <- local extendEnv (generateConstraints body)
-        let funcType = foldr TArrow bodyType paramTypes
-        recordType expr funcType
-        return (Just funcType, bodyConstraints)
-    ExprLet name value body eSpan -> do
-        (Just valueType, valueConstraints) <- generateConstraints value
-        letSymbol <- mkSymbol name LetBindingSymbol eSpan
-        let extendEnv = Map.insert letSymbol (cleanQualified valueType)
-        (Just bodyType, bodyConstraints) <- local extendEnv (generateConstraints body)
-        let combinedConstraints =
-                ConstraintSet
-                    (csTypeConstraints valueConstraints ++ csTypeConstraints bodyConstraints)
-                    (csClassConstraints valueConstraints ++ csClassConstraints bodyConstraints)
-                    (csDeclaredConstraints valueConstraints ++ csDeclaredConstraints bodyConstraints)
-        recordType expr bodyType
-        return (Just bodyType, combinedConstraints)
-    ExprBindingDef _name (Located _ bindType) body _ _ _ -> do
-        let Forall tyVars annCs annType = bindType
-        skVars <- mapM (\(TypeVar tyName kind) -> freshSkolemVar tyName kind) tyVars
-        let skSubst = Map.fromList (zip tyVars (map TSkolem skVars))
-        let skType = apply skSubst annType
-        let skAnnCs = map (apply skSubst) annCs
-        (maybeBodyType, bodyCs) <- generateConstraints body
+        pure (resultSlot, mconcat (funcCs : argCsList) <> typeConstraints [callConstraint])
+    MTypeApp inner _typeArgs slot span' -> do
+        (innerSlot, innerCs) <- generateConstraints inner
 
-        case maybeBodyType of
-            Just bodyType -> do
-                let sigConstraint = TypeConstraint body skType bodyType UnifyFunctionBody
-                let combinedConstraints =
-                        ConstraintSet
-                            (sigConstraint : csTypeConstraints bodyCs)
-                            (csClassConstraints bodyCs)
-                            skAnnCs
-                recordType expr bodyType
-                return (Just bodyType, combinedConstraints)
+        let slotConstraint =
+                MetalTypeConstraint
+                    { mtcSpan = span'
+                    , mtcExpected = slotType innerSlot
+                    , mtcActual = slotType slot
+                    , mtcPurpose = UnifyFunctionApplication
+                    }
+
+        pure (slot, innerCs <> typeConstraints [slotConstraint])
+    MLambda params body funcSlot span' -> do
+        let paramBindings = Map.fromList [(name, cleanQualified (slotType slot)) | (name, slot) <- params]
+
+        (bodySlot, bodyCs) <- local (Map.union paramBindings) $ generateConstraints body
+
+        let paramTypes = map (slotType . snd) params
+        let expectedFuncType = foldr TArrow (slotType bodySlot) paramTypes
+
+        let funcConstraint =
+                MetalTypeConstraint
+                    { mtcSpan = span'
+                    , mtcExpected = expectedFuncType
+                    , mtcActual = slotType funcSlot
+                    , mtcPurpose = UnifyFunctionBody
+                    }
+
+        pure (funcSlot, bodyCs <> typeConstraints [funcConstraint])
+    MClosure _name _captured slot _span -> do
+        pure (slot, emptyConstraints)
+    MLet name value body resultSlot span' -> do
+        (valueSlot, valueCs) <- generateConstraints value
+
+        let letBinding = Map.singleton name (cleanQualified (slotType valueSlot))
+        (bodySlot, bodyCs) <- local (Map.union letBinding) $ generateConstraints body
+
+        let resultConstraint =
+                MetalTypeConstraint
+                    { mtcSpan = span'
+                    , mtcExpected = slotType bodySlot
+                    , mtcActual = slotType resultSlot
+                    , mtcPurpose = UnifyFunctionApplication
+                    }
+
+        pure (resultSlot, valueCs <> bodyCs <> typeConstraints [resultConstraint])
+    MConstruct ctorName _tag args slot span' -> do
+        env <- ask
+        case Map.lookup ctorName env of
+            Just (Forall tvs cs t) -> do
+                freshVars <- mapM (freshTyVar . tvKind) tvs
+                let subst = Map.fromList (zip tvs (map TVar freshVars))
+                let instType = apply subst t
+                let instConstraints = map (apply subst) cs
+                let instClassConstraints = map (`MetalClassConstraint` span') instConstraints
+
+                argResults <- mapM generateConstraints args
+                let (argSlots, argCsList) = unzip argResults
+
+                let (expectedArgTypes, expectedResultType) = splitFunctionType (length args) instType
+
+                let argConstraints =
+                        zipWith
+                            ( \argSlot expectedTy ->
+                                MetalTypeConstraint
+                                    { mtcSpan = span'
+                                    , mtcExpected = expectedTy
+                                    , mtcActual = slotType argSlot
+                                    , mtcPurpose = UnifyFunctionApplication
+                                    }
+                            )
+                            argSlots
+                            expectedArgTypes
+
+                let resultConstraint =
+                        MetalTypeConstraint
+                            { mtcSpan = span'
+                            , mtcExpected = expectedResultType
+                            , mtcActual = slotType slot
+                            , mtcPurpose = UnifyFunctionApplication
+                            }
+
+                pure
+                    ( slot
+                    , mconcat argCsList
+                        <> typeConstraints (resultConstraint : argConstraints)
+                        <> classConstraints instClassConstraints
+                    )
             Nothing -> do
-                errorVar <- freshTyVar KindStar
-                let errorType = TVar errorVar
-                recordType expr errorType
-                let combinedConstraints =
-                        ConstraintSet
-                            (csTypeConstraints bodyCs)
-                            (csClassConstraints bodyCs)
-                            skAnnCs
-                return (Just errorType, combinedConstraints)
-    ExprIf condition ifBlock elseBlock _ -> do
-        (Just condType, condConstraints) <- generateConstraints condition
-        let condTypeConstraint = TypeConstraint condition boolType condType UnifyIfCondition
-
-        (Just ifType, ifConstraints) <- generateConstraints ifBlock
-        (Just elseType, elseConstraints) <- generateConstraints elseBlock
-
-        let branchTypeConstraint = TypeConstraint expr ifType elseType UnifyIfElseBranches
-
-        let combinedConstraints =
-                ConstraintSet
-                    ( condTypeConstraint
-                        : branchTypeConstraint
-                        : csTypeConstraints condConstraints
-                        ++ csTypeConstraints ifConstraints
-                        ++ csTypeConstraints elseConstraints
-                    )
-                    ( csClassConstraints condConstraints
-                        ++ csClassConstraints ifConstraints
-                        ++ csClassConstraints elseConstraints
-                    )
-                    ( csDeclaredConstraints condConstraints
-                        ++ csDeclaredConstraints ifConstraints
-                        ++ csDeclaredConstraints elseConstraints
-                    )
-
-        recordType expr ifType
-        return (Just ifType, combinedConstraints)
-    ExprDerivedPatternMatch arms -> do
-        mappedArms <- mapM generateConstraints arms
-        let (armExprTypes, armConstraintsList) = unzip mappedArms
-        let combinedBodyConstraints = mconcat armConstraintsList
-
-        let Just exprType = hardHead armExprTypes
-        let armTypeConstraints =
-                zipWith
-                    ( curry
-                        ( \(Just armType, ExprPatternMatchArm _ armBody _) ->
-                            TypeConstraint armBody exprType armType UnifyPatternMatchArms
-                        )
-                    )
-                    armExprTypes
-                    arms
-        let combinedTypeConstraints =
-                ConstraintSet
-                    (armTypeConstraints ++ csTypeConstraints combinedBodyConstraints)
-                    (csClassConstraints combinedBodyConstraints)
-                    (csDeclaredConstraints combinedBodyConstraints)
-
-        recordType expr exprType
-        return (Just exprType, combinedTypeConstraints)
-    ExprPatternMatchArm patterns body _ -> do
-        armTyVars <- mapM (const $ freshTyVar KindStar) patterns
-        let armTypes = map TVar armTyVars
-        let qualifiedArmTypes = map cleanQualified armTypes
-
-        currentEnv <- ask
-        (patternEnv, patternConstraints, patternErrors) <- generatePatternBindings expr currentEnv patterns qualifiedArmTypes
-        reportErrors patternErrors
-
-        let extendWithPatterns = Map.union patternEnv
-        (maybeBodyType, bodyConstraints) <- local extendWithPatterns (generateConstraints body)
-        case maybeBodyType of
-            Just bodyType -> do
-                let (providedTypes, missingBodyTypes) = splitAt (length patterns) armTypes
-
-                returnTypVar <- freshTyVar KindStar
-                let additionalConstraints =
-                        if null missingBodyTypes
-                            then []
-                            else do
-                                let missingBodyType = vectorizeAll missingBodyTypes
-                                let expectedType = TArrow missingBodyType (TVar returnTypVar)
-                                [TypeConstraint body expectedType bodyType UnifyPatternMatchArmBody]
-
-                let finalConstraints =
-                        ConstraintSet
-                            (patternConstraints ++ csTypeConstraints bodyConstraints ++ additionalConstraints)
-                            (csClassConstraints bodyConstraints)
-                            (csDeclaredConstraints bodyConstraints)
-
-                let providedTyp = vectorizeAll providedTypes
-                let exprType = vectorize providedTyp bodyType
-
-                return (Just exprType, finalConstraints)
-            Nothing -> do
-                errorVar <- freshTyVar KindStar
-                let errorType = TVar errorVar
-                recordType expr errorType
-                return (Just errorType, bodyConstraints)
-    ExprCompose stmts _ -> do
-        case reverse stmts of
-            (CSExpr _ _) : _ -> return ()
-            _ -> reportError (ComposeBlockMustEndWithExpression expr)
-
-        let combine cs1 cs2 =
-                ConstraintSet
-                    (csTypeConstraints cs1 ++ csTypeConstraints cs2)
-                    (csClassConstraints cs1 ++ csClassConstraints cs2)
-                    (csDeclaredConstraints cs1 ++ csDeclaredConstraints cs2)
-
-        let process [] = do
-                tv <- freshTyVar KindStar
-
-                let ty = TVar tv
-                recordType expr ty
-                pure (Just ty, emptyConstraints)
-            process (CSLet name val cSpan : rest) = do
-                (Just vty, vcs) <- generateConstraints val
-                sym <- mkSymbol name LetBindingSymbol cSpan
-                let ext = Map.insert sym (cleanQualified vty)
-                (mrt, rcs) <- local ext (process rest)
-                pure (mrt, combine vcs rcs)
-            process (CSBind name act cSpan : rest) = do
-                (_mty, acs) <- generateConstraints act
-                btv <- freshTyVar KindStar
-                sym <- mkSymbol name ComposeBindingSymbol cSpan
-                let ext = Map.insert sym (cleanQualified (TVar btv))
-                (mrt, rcs) <- local ext (process rest)
-                pure (mrt, combine acs rcs)
-            process [CSExpr e _] = do
-                (mt, cs) <- generateConstraints e
-                case mt of
-                    Just t -> do
-                        recordType expr t
-                        pure (Just t, cs)
-                    Nothing -> pure (Nothing, cs)
-            process (CSExpr e _ : rest) = do
-                (_mt, cs1) <- generateConstraints e
-                (mrt, cs2) <- process rest
-                pure (mrt, combine cs1 cs2)
-
-        process stmts
-    ExprArray elements _ -> do
+                argResults <- mapM generateConstraints args
+                let argCsList = map snd argResults
+                pure (slot, mconcat argCsList)
+    MArrayLit elements slot span' -> do
         if null elements
             then do
                 elemVar <- freshTyVar KindStar
-                let elemType = TVar elemVar
-                let arrType = arrayType elemType
-                recordType expr arrType
-                return (Just arrType, emptyConstraints)
+                let arrType = arrayType (TVar elemVar)
+                let slotConstraint =
+                        MetalTypeConstraint
+                            { mtcSpan = span'
+                            , mtcExpected = arrType
+                            , mtcActual = slotType slot
+                            , mtcPurpose = UnifyFunctionApplication
+                            }
+                pure (slot, typeConstraints [slotConstraint])
             else do
                 results <- mapM generateConstraints elements
-                let (maybeElemTypes, elemConstraints) = unzip results
+                let (elemSlots, elemCsList) = unzip results
+                let firstElemType = slotType (hardHead elemSlots)
 
-                let (Just firstElemType : _) = maybeElemTypes
-
-                let elemTypeConstraints =
-                        zipWith
-                            ( \(Just elemType) elemExpr ->
-                                TypeConstraint elemExpr firstElemType elemType UnifyPatternMatchArms
-                            )
-                            maybeElemTypes
-                            elements
-
-                let combinedConstraints =
-                        ConstraintSet
-                            (elemTypeConstraints ++ concatMap csTypeConstraints elemConstraints)
-                            (concatMap csClassConstraints elemConstraints)
-                            (concatMap csDeclaredConstraints elemConstraints)
+                let elemConstraints =
+                        [ MetalTypeConstraint
+                            { mtcSpan = exprSpan el
+                            , mtcExpected = firstElemType
+                            , mtcActual = slotType elemSlot
+                            , mtcPurpose = UnifyPatternMatchArms
+                            }
+                        | (el, elemSlot) <- zip (hardTail elements) (hardTail elemSlots)
+                        ]
 
                 let arrType = arrayType firstElemType
-                recordType expr arrType
-                return (Just arrType, combinedConstraints)
-    ExprTuple elements _ -> do
+                let slotConstraint =
+                        MetalTypeConstraint
+                            { mtcSpan = span'
+                            , mtcExpected = arrType
+                            , mtcActual = slotType slot
+                            , mtcPurpose = UnifyFunctionApplication
+                            }
+
+                pure (slot, mconcat elemCsList <> typeConstraints (slotConstraint : elemConstraints))
+    MTuple elements slot span' -> do
         if null elements
             then do
                 let unitType = TConstructor (TypeConstructor "Unit" KindStar)
-                recordType expr unitType
-                return (Just unitType, emptyConstraints)
+                let slotConstraint =
+                        MetalTypeConstraint
+                            { mtcSpan = span'
+                            , mtcExpected = unitType
+                            , mtcActual = slotType slot
+                            , mtcPurpose = UnifyFunctionApplication
+                            }
+                pure (slot, typeConstraints [slotConstraint])
             else do
                 results <- mapM generateConstraints elements
-                let (maybeElemTypes, elemConstraints) = unzip results
+                let (elemSlots, elemCsList) = unzip results
+                let elemTypes = map slotType elemSlots
 
-                let elemTypes = catMaybes maybeElemTypes
+                let tupType = tupleType elemTypes
+                let slotConstraint =
+                        MetalTypeConstraint
+                            { mtcSpan = span'
+                            , mtcExpected = tupType
+                            , mtcActual = slotType slot
+                            , mtcPurpose = UnifyFunctionApplication
+                            }
 
-                let combinedConstraints =
-                        ConstraintSet
-                            (concatMap csTypeConstraints elemConstraints)
-                            (concatMap csClassConstraints elemConstraints)
-                            (concatMap csDeclaredConstraints elemConstraints)
+                pure (slot, mconcat elemCsList <> typeConstraints [slotConstraint])
+    MIf cond thenBranch elseBranch slot span' -> do
+        (condSlot, condCs) <- generateConstraints cond
+        (thenSlot, thenCs) <- generateConstraints thenBranch
+        (elseSlot, elseCs) <- generateConstraints elseBranch
 
-                let tupleTy = tupleType elemTypes
-                recordType expr tupleTy
-                return (Just tupleTy, combinedConstraints)
-    _ -> do
-        let children = exprChildren expr
-        results <- mapM generateConstraints children
-        let combinedConstraints = mconcat (map snd results)
-        return (Nothing, combinedConstraints)
+        let condConstraint =
+                MetalTypeConstraint
+                    { mtcSpan = exprSpan cond
+                    , mtcExpected = boolType
+                    , mtcActual = slotType condSlot
+                    , mtcPurpose = UnifyIfCondition
+                    }
 
-generatePatternBinding :: Expr -> TypeEnv -> Pattern -> QualifiedType -> GenM (TypeEnv, [TypeConstraint], [InferenceError])
-generatePatternBinding _expr _env (PVar name pSpan) armType = do
-    symbol <- mkSymbol name PatternVariableSymbol pSpan
-    return (Map.singleton symbol armType, [], [])
-generatePatternBinding expr env (PAs name pat pSpan) armType = do
-    asSymbol <- mkSymbol name PatternAsSymbol pSpan
-    let asBinding = Map.singleton asSymbol armType
-    (nestedBinding, nestedConstraints, errs) <- generatePatternBinding expr env pat armType
-    return (Map.union asBinding nestedBinding, nestedConstraints, errs)
-generatePatternBinding expr env (PConstructor name patterns _) armType = do
-    currentEnv <- ask
-    let constructorLookup = Map.toList currentEnv
-    let maybeConstructor = lookup name [(resolvedSymbolName sym, qual) | (sym, qual) <- constructorLookup]
-    case maybeConstructor of
-        Just (Forall tvs cs t) -> do
+        let branchConstraint =
+                MetalTypeConstraint
+                    { mtcSpan = span'
+                    , mtcExpected = slotType thenSlot
+                    , mtcActual = slotType elseSlot
+                    , mtcPurpose = UnifyIfElseBranches
+                    }
+
+        let resultConstraint =
+                MetalTypeConstraint
+                    { mtcSpan = span'
+                    , mtcExpected = slotType thenSlot
+                    , mtcActual = slotType slot
+                    , mtcPurpose = UnifyFunctionApplication
+                    }
+
+        pure
+            ( slot
+            , condCs <> thenCs <> elseCs <> typeConstraints [condConstraint, branchConstraint, resultConstraint]
+            )
+    MCase scrutinees arms mDefault slot span' -> do
+        scrutineeResults <- mapM generateConstraints scrutinees
+        let (scrutineeSlots, scrutineeCsList) = unzip scrutineeResults
+        let scrutineeTypes = map slotType scrutineeSlots
+
+        armResults <- forM arms $ \(MCaseArm patterns armBody) -> do
+            patternBindings <- generatePatternBindings span' patterns scrutineeTypes
+            local (Map.union patternBindings) $ generateConstraints armBody
+
+        let (armSlots, armCsList) = unzip armResults
+
+        let firstArmType = case armSlots of
+                (s : _) -> slotType s
+                [] -> slotType slot
+
+        let armTypeConstraints =
+                [ MetalTypeConstraint
+                    { mtcSpan = span'
+                    , mtcExpected = firstArmType
+                    , mtcActual = slotType armSlot
+                    , mtcPurpose = UnifyPatternMatchArms
+                    }
+                | armSlot <- drop 1 armSlots
+                ]
+
+        (defaultCs, defaultConstraints) <- case mDefault of
+            Just defaultExpr -> do
+                (defaultSlot, defCs) <- generateConstraints defaultExpr
+                let defConstraint =
+                        MetalTypeConstraint
+                            { mtcSpan = exprSpan defaultExpr
+                            , mtcExpected = firstArmType
+                            , mtcActual = slotType defaultSlot
+                            , mtcPurpose = UnifyPatternMatchArms
+                            }
+                pure (defCs, [defConstraint])
+            Nothing -> pure (emptyConstraints, [])
+
+        let resultConstraint =
+                MetalTypeConstraint
+                    { mtcSpan = span'
+                    , mtcExpected = firstArmType
+                    , mtcActual = slotType slot
+                    , mtcPurpose = UnifyFunctionApplication
+                    }
+
+        pure
+            ( slot
+            , mconcat scrutineeCsList
+                <> mconcat armCsList
+                <> defaultCs
+                <> typeConstraints (resultConstraint : armTypeConstraints ++ defaultConstraints)
+            )
+    MFieldAccess inner _fieldIdx slot span' -> do
+        (innerSlot, innerCs) <- generateConstraints inner
+
+        let fieldConstraint =
+                MetalTypeConstraint
+                    { mtcSpan = span'
+                    , mtcExpected = slotType innerSlot
+                    , mtcActual = slotType slot
+                    , mtcPurpose = UnifyFunctionApplication
+                    }
+
+        pure (slot, innerCs <> typeConstraints [fieldConstraint])
+    MPanic _msg slot _span -> do
+        pure (slot, emptyConstraints)
+
+generatePatternBindings :: Span -> [Pattern] -> [Type] -> MetalGenM MetalTypeEnv
+generatePatternBindings span' patterns types = do
+    when (length patterns /= length types) $ reportError (PatternArityMismatch (dummyExpr span') (length patterns) (length types))
+
+    bindings <- zipWithM (generatePatternBinding span') patterns types
+    pure $ Map.unions bindings
+
+generatePatternBinding :: Span -> Pattern -> Type -> MetalGenM MetalTypeEnv
+generatePatternBinding _span (PVar name _) ty =
+    pure $ Map.singleton name (cleanQualified ty)
+generatePatternBinding span' (PAs name inner _) ty = do
+    innerBindings <- generatePatternBinding span' inner ty
+    pure $ Map.insert name (cleanQualified ty) innerBindings
+generatePatternBinding span' (PConstructor ctorName innerPatterns _) _ = do
+    env <- ask
+    case Map.lookup ctorName env of
+        Just (Forall tvs _cs t) -> do
             freshVars <- mapM (freshTyVar . tvKind) tvs
             let subst = Map.fromList (zip tvs (map TVar freshVars))
             let instType = apply subst t
-            let instConstraints = map (apply subst) cs
 
-            let argTypes = extractArgTypes instType (length patterns)
-            let qualifiedArgTypes = map (Forall [] instConstraints) argTypes
+            let (argTypes, _resultType) = splitFunctionType (length innerPatterns) instType
 
-            let expectedType = extractResultType instType
-            let Forall _ _ resultType = armType
-            let patternConstraint = TypeConstraint expr expectedType resultType UnifyPatternConstructor
-
-            if length argTypes /= length patterns
-                then do
-                    let err = PatternArityMismatch expr (length patterns) (length argTypes)
-                    reportError err
-                    return (Map.empty, [], [err])
-                else do
-                    (bindings, nestedConstraints, errs) <- generatePatternBindings expr env patterns qualifiedArgTypes
-                    return (bindings, patternConstraint : nestedConstraints, errs)
+            innerBindings <- zipWithM (generatePatternBinding span') innerPatterns argTypes
+            pure $ Map.unions innerBindings
         Nothing -> do
-            let err = UnknownTypeConstructor expr name
-            reportError err
-            return (Map.empty, [], [err])
-generatePatternBinding _expr _env PWildcard{} _ = return (Map.empty, [], [])
-generatePatternBinding _expr _env PLit{} _ = return (Map.empty, [], [])
-generatePatternBinding expr _env p _ = error $ "Unsupported pattern: " ++ show p ++ " in expression: " ++ show expr
+            reportError (UnknownTypeConstructor (dummyExpr span') ctorName)
+            pure Map.empty
+generatePatternBinding span' (PTuple innerPatterns _) ty = do
+    let elemTypes = extractTupleTypes ty
+    when (length innerPatterns /= length elemTypes) $ reportError (PatternArityMismatch (dummyExpr span') (length innerPatterns) (length elemTypes))
 
-generatePatternBindings :: Expr -> TypeEnv -> [Pattern] -> [QualifiedType] -> GenM (TypeEnv, [TypeConstraint], [InferenceError])
-generatePatternBindings expr env patterns armTypes = do
-    let zipped = zip patterns armTypes
-    results <- mapM (uncurry (generatePatternBinding expr env)) zipped
-    let (bindings, constraintLists, errorLists) = unzip3 results
-    let allConstraints = concat constraintLists
-    let allErrors = concat errorLists
-    pure (Map.unions (env : bindings), allConstraints, allErrors)
+    innerBindings <- zipWithM (generatePatternBinding span') innerPatterns elemTypes
+    pure $ Map.unions innerBindings
+generatePatternBinding span' (PArray innerPatterns _) ty = do
+    let elemType = extractArrayElemType ty
+    innerBindings <- mapM (\p -> generatePatternBinding span' p elemType) innerPatterns
+    pure $ Map.unions innerBindings
+generatePatternBinding _ PWildcard{} _ = pure Map.empty
+generatePatternBinding _ PLit{} _ = pure Map.empty
 
-runGenM :: String -> String -> TypeEnv -> GenM a -> (a, GenState, [InferenceError])
-runGenM currentPackage currentModule env (GenM m) =
-    let ((result, finalState), errors) = runWriter (runReaderT (runStateT m (initialState currentModule currentPackage)) env)
-    in (result, finalState, errors)
-  where
-    initialState = GenState 0 Map.empty Map.empty
+extractTupleTypes :: Type -> [Type]
+extractTupleTypes (TApp (TApp (TConstructor (TypeConstructor "Tuple2" _)) t1) t2) = [t1, t2]
+extractTupleTypes (TApp (TApp (TApp (TConstructor (TypeConstructor "Tuple3" _)) t1) t2) t3) = [t1, t2, t3]
+extractTupleTypes (TApp t1 t2) = extractTupleTypes t1 ++ [t2]
+extractTupleTypes _ = []
 
-runGenMErrors :: String -> String -> TypeEnv -> GenM a -> [InferenceError]
-runGenMErrors currentModule currentPackage env genM =
-    let (_, _, errors) = runGenM currentPackage currentModule env genM
-    in errors
+extractArrayElemType :: Type -> Type
+extractArrayElemType (TApp (TConstructor (TypeConstructor "Array" _)) elemType) = elemType
+extractArrayElemType _ = TVar (TypeVar "a" KindStar)
 
-extractArgTypes :: Type -> Int -> [Type]
-extractArgTypes _ty 0 = []
-extractArgTypes (TArrow arg rest) n = arg : extractArgTypes rest (n - 1)
-extractArgTypes _ _ = error "Constructor type doesn't match pattern arity"
+splitFunctionType :: Int -> Type -> ([Type], Type)
+splitFunctionType 0 ty = ([], ty)
+splitFunctionType n (TArrow argTy restTy) =
+    let (args, ret) = splitFunctionType (n - 1) restTy
+    in (argTy : args, ret)
+splitFunctionType _ ty = ([], ty)
 
-extractResultType :: Type -> Type
-extractResultType (TArrow _ rest) = extractResultType rest
-extractResultType t = t
-
-instance MonadFail GenM where
-    fail msg = error $ "GenM failed: " ++ msg
+-- todo(magic-spans): remove workaround
+dummyExpr :: Span -> Syntax.Tree.Expr
+dummyExpr = Syntax.Tree.ExprNum "0"

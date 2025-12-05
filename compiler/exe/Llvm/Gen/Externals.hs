@@ -4,7 +4,7 @@ module Llvm.Gen.Externals (
     memcpyDependency,
     mallocDependency,
     useDep,
-    useType
+    useType,
 ) where
 
 import Llvm.Dependencies (LlvmDependency (..))

@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
@@ -25,40 +26,40 @@ instance TreeShow MetallicLiteral where
     treeShow (MBool b) = show b
     treeShow (MString s) = show s
 
-instance TreeShow MCaseArm where
+instance TreeShow TypedArm where
     treeShow (MCaseArm pats body) =
         "(" ++ unwords (map treeShow pats) ++ ") => " ++ treeShow body
 
-instance TreeShow MetallicExpr where
-    treeShow (MVar n _) = n
-    treeShow (MLit lit) = treeShow lit
-    treeShow (MCall f args _) =
+instance TreeShow TypedExpr where
+    treeShow (MVar n _ _) = n
+    treeShow (MLit lit _) = treeShow lit
+    treeShow (MCall f args _ _) =
         treeShow f ++ "(" ++ commaSep (map treeShow args) ++ ")"
-    treeShow (MTypeApp e tys _) =
+    treeShow (MTypeApp e tys _ _) =
         treeShow e ++ "[" ++ commaSep (map treeShow tys) ++ "]"
-    treeShow (MLet n v b _) =
+    treeShow (MLet n v b _ _) =
         "let " ++ n ++ " = " ++ treeShow v ++ " in " ++ treeShow b
-    treeShow (MConstruct cname _ fields _) =
+    treeShow (MConstruct cname _ fields _ _) =
         cname ++ " " ++ unwords (map treeShow fields)
-    treeShow (MArrayLit es _) =
+    treeShow (MArrayLit es _ _) =
         "[" ++ commaSep (map treeShow es) ++ "]"
-    treeShow (MTuple es _) =
+    treeShow (MTuple es _ _) =
         "(" ++ commaSep (map treeShow es) ++ ")"
-    treeShow (MCase scr arms mdef _) =
+    treeShow (MCase scr arms mdef _ _) =
         "case ("
             ++ commaSep (map treeShow scr)
             ++ ") of { "
             ++ intercalate " | " (map treeShow arms)
             ++ maybe "" (\d -> " | _ => " ++ treeShow d) mdef
             ++ " }"
-    treeShow (MFieldAccess e ix _) =
+    treeShow (MFieldAccess e ix _ _) =
         treeShow e ++ "." ++ show ix
-    treeShow (MLambda params body _) =
-        "(\\" ++ commaSep params ++ " -> " ++ treeShow body ++ ")"
-    treeShow (MIf cond ifBranch elseBranch _) =
+    treeShow (MLambda params body _ _) =
+        "(\\" ++ commaSep (map fst params) ++ " -> " ++ treeShow body ++ ")"
+    treeShow (MIf cond ifBranch elseBranch _ _) =
         "if " ++ treeShow cond ++ " then " ++ treeShow ifBranch ++ " else " ++ treeShow elseBranch
-    treeShow (MPanic msg _) = "panic " ++ show msg
-    treeShow (MClosure liftedName captured _) =
+    treeShow (MPanic msg _ _) = "panic " ++ show msg
+    treeShow (MClosure liftedName captured _ _) =
         "closure(" ++ liftedName ++ ", [" ++ commaSep (map fst captured) ++ "])"
 
 instance TreeShow MetallicFunction where
