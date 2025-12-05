@@ -18,12 +18,11 @@ data MetallicTypeClassMetadata = MetallicTypeClassMetadata
     }
     deriving (Generic, Show, Eq)
 
--- | Function attributes extracted from source-level @[...] annotations
 data FunctionAttributes = FunctionAttributes
-    { faInline :: !Bool      -- ^ @[inline] - hint to inline
-    , faNoInline :: !Bool    -- ^ @[noinline] - prevent inlining
-    , faDeprecated :: !(Maybe String)  -- ^ @[deprecated "msg"]
-    , faExtern :: !(Maybe String)      -- ^ @[extern "c_name"]
+    { faInline :: !Bool
+    , faNoInline :: !Bool
+    , faDeprecated :: !(Maybe String)
+    , faExtern :: !(Maybe String)
     }
     deriving (Generic, Show, Eq)
 

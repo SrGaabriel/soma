@@ -91,9 +91,4 @@ instance Applicative IO with (Functor IO) where
     def {<*}(ioA, ioB) :: IO a -> IO b -> IO a =
         ioA >>= (\a -> ioB >>= (\b -> pureIO a))
 
-instance Monad IO with (Applicative IO) where
-    def {>>=}(ioA, f) :: IO a -> (a -> IO b) -> IO b =
-        pureIOSeq ioA f
-
-    def {>>}(ioA, ioB) :: IO a -> IO b -> IO b =
-        ioA >>= (\a -> ioB)
+intrinsic instance Monad IO with (Applicative IO)

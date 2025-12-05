@@ -14,7 +14,7 @@ module Metal.Lower (
 import Control.Monad (zipWithM)
 import Control.Monad.State
 import qualified Data.Map as Map
-import Lexing.Position (Located (..), Span (..), dummySpan)
+import Lexing.Position (Located (..), Span (..), dummySpan, spanBetween)
 import Metal.Expr hiding (exprSpan)
 import Metal.Metadata (FunctionAttributes (..), MetallicConstructorMetadata (..), MetallicTypeClassMetadata (..), defaultFunctionAttributes)
 import Metal.Module (MetallicConstructor (..), MetallicTypeDef (..))
@@ -284,6 +284,9 @@ lowerExpr expr = case expr of
     ExprIntrinsicDataTypeDef{} -> do
         hole <- freshHole KindStar
         pure $ MTuple [] hole dummySpan
+    ExprIntrinsicInstanceDef{} -> do
+        hole <- freshHole KindStar
+        pure $ MTuple [] hole dummySpan
     ExprPatternMatchArm{} -> do
         hole <- freshHole KindStar
         pure $ MTuple [] hole dummySpan
@@ -368,7 +371,3 @@ lowerBlock (e : es) span' = do
     metalRest <- lowerBlock es span'
     hole <- freshHole KindStar
     pure $ MLet "_" metalE metalRest hole span'
-
--- | Combine two spans into one spanning both
-spanBetween :: Span -> Span -> Span
-spanBetween (Span s1 _) (Span _ e2) = Span s1 e2

@@ -80,6 +80,8 @@ instance TreeShow Expr where
     treeShow (ExprTypeClassDef name (Located _ ty) _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow ty ++ "):"
     treeShow (ExprTypeClassBinding name (Located _ qType) _ _) = "TypeClassBinding (" ++ name ++ ": " ++ treeShow qType ++ "):"
     treeShow (ExprInstanceDef constraintType _ _) = "InstanceDef (" ++ treeShow constraintType ++ "):"
+    treeShow (ExprIntrinsicInstanceDef (Located _ ty) _) =
+        "IntrinsicInstanceDef (" ++ treeShow ty ++ ")"
     treeShow (ExprIntrinsicDataTypeDef name kind _) =
         "IntrinsicDataTypeDef (" ++ name ++ ": " ++ treeShow kind ++ "):"
     treeShow (ExprCompose stms _) =

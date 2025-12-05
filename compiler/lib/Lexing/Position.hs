@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveTraversable #-}
 
-module Lexing.Position (Span (..), Located (..), dummySpan) where
+module Lexing.Position (Span (..), Located (..), dummySpan, spanBetween) where
 
 import GHC.Generics (Generic)
 
@@ -16,5 +16,9 @@ data Located a = Located
     }
     deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
+-- todo(magic-spans): remove workaround
 dummySpan :: Span
 dummySpan = Span (-1) (-1)
+
+spanBetween :: Span -> Span -> Span
+spanBetween (Span s1 _) (Span _ e2) = Span s1 e2

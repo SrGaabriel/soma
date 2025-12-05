@@ -86,6 +86,10 @@ data Expr
         , instanceMethods :: [Expr]
         , instanceSpan :: Span
         }
+    | ExprIntrinsicInstanceDef
+        { intrinsicInstanceConstraint :: Located QualifiedType
+        , intrinsicInstanceSpan :: Span
+        }
     | ExprIf
         { ifCondition :: Expr
         , ifBody :: Expr
@@ -127,6 +131,7 @@ exprChildren (ExprDataTypeDef _ _ _ constructors _ _) = constructors
 exprChildren (ExprIntrinsicDataTypeDef{}) = []
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprInstanceDef _ methods _) = methods
+exprChildren (ExprIntrinsicInstanceDef{}) = []
 exprChildren (ExprCompose stmts _) = concatMap stmtChildren stmts
 exprChildren (ExprIf cond ifBlock elseBlock _) = [cond, ifBlock, elseBlock]
 
@@ -159,6 +164,7 @@ exprSpan (ExprPatternMatch _ _ s) = s
 exprSpan (ExprDerivedPatternMatch arms) = spanningExprs arms
 exprSpan (ExprPatternMatchArm _ _ s) = s
 exprSpan (ExprInstanceDef _ _ s) = s
+exprSpan (ExprIntrinsicInstanceDef _ s) = s
 exprSpan (ExprImport _ _ s) = s
 exprSpan (ExprCompose _ s) = s
 exprSpan (ExprIf _ _ _ s) = s
@@ -203,6 +209,8 @@ modifySpan (ExprPatternMatchArm patterns body _) newSpan =
     ExprPatternMatchArm patterns body newSpan
 modifySpan (ExprInstanceDef constraintType methods _) newSpan =
     ExprInstanceDef constraintType methods newSpan
+modifySpan (ExprIntrinsicInstanceDef constraintType _) newSpan =
+    ExprIntrinsicInstanceDef constraintType newSpan
 modifySpan (ExprImport moduleName elements _) newSpan =
     ExprImport moduleName elements newSpan
 modifySpan (ExprCompose stmts _) newSpan =

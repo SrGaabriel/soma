@@ -113,6 +113,8 @@ collectInstances (ExprRoot children) = do
     mapM_ collectInstances children
 collectInstances (ExprInstanceDef constraintType _ _) = do
     addInstanceBindingFromType constraintType
+collectInstances (ExprIntrinsicInstanceDef (Located _ constraintType) _) = do
+    addInstanceBindingFromType constraintType
 collectInstances expr = do
     mapM_ collectInstances (exprChildren expr)
 
@@ -143,6 +145,9 @@ resolveTReference expr@(ExprInstanceDef constraintType binds s) = do
     binds' <- mapM resolveTReference binds
     constraintType' <- replaceAllUnresolvedQualified expr constraintType
     pure $ ExprInstanceDef constraintType' binds' s
+resolveTReference expr@(ExprIntrinsicInstanceDef (Located typSpan constraintType) s) = do
+    constraintType' <- replaceAllUnresolvedQualified expr constraintType
+    pure $ ExprIntrinsicInstanceDef (Located typSpan constraintType') s
 resolveTReference (ExprBindingDef name (Located typSpan typ) body topLevel mods eSpan) = do
     let typeExpr = ExprNum "" typSpan -- Dummy expression with the type's span
     realTyp <- replaceAllUnresolvedQualified typeExpr typ

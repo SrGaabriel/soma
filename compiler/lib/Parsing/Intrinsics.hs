@@ -1,11 +1,12 @@
 module Parsing.Intrinsics (parseIntrinsic) where
 
-import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..), spanningTokens)
+import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..), spanningTokens, tokenSpan)
 import Parsing.Errors (ParsingError (..))
 import Parsing.Parser (Parser, consume, parseFuncName, tryPeekOrEOF)
 import Parsing.Types (parseKind, parseLocatedQualifiedType)
 import Syntax.Tree (Expr (..))
 import qualified Text.Megaparsec as MP
+import Lexing.Position (Located(Located), spanBetween)
 
 parseIntrinsic :: Parser Expr
 parseIntrinsic = do
@@ -14,6 +15,7 @@ parseIntrinsic = do
     case tokenKind inc of
         TokenDef -> parseIntrinsicDef
         TokenData -> parseIntrinsicDataType
+        TokenInstance -> parseIntrinsicInstance
         _ -> MP.customFailure $ InvalidIntrinsic inc
 
 parseIntrinsicDef :: Parser Expr
@@ -40,4 +42,14 @@ parseIntrinsicDataType = do
             { intrinsicDataTypeName = name
             , intrinsicDataTypeKind = kind
             , intrinsicDataTypeSpan = spanningTokens dataTok retTok
+            }
+
+parseIntrinsicInstance :: Parser Expr
+parseIntrinsicInstance = do
+    instTok <- consume TokenInstance
+    bindType@(Located tySpan _) <- parseLocatedQualifiedType
+    pure
+        $ ExprIntrinsicInstanceDef
+            { intrinsicInstanceConstraint = bindType
+            , intrinsicInstanceSpan = spanBetween (tokenSpan instTok) tySpan
             }
