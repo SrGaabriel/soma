@@ -135,11 +135,17 @@ resolveTraitMethod baseFnMap env methodName args
                         in if Map.member instanceMethodName baseFnMap
                             then instanceMethodName
                             else
+                                -- todo: remove vomit-inducing workaround
                                 let baseTypeName = extractBaseTypeName firstArgType
-                                    polyInstanceName = makeInstanceMethodName methodName baseTypeName
+                                    polyInstanceName = makeInstanceMethodName methodName (baseTypeName ++ "$Poly")
                                 in if Map.member polyInstanceName baseFnMap
                                     then polyInstanceName
-                                    else methodName
+                                    else
+                                        -- fallback to simple instance name
+                                        let simpleInstanceName = makeInstanceMethodName methodName baseTypeName
+                                        in if Map.member simpleInstanceName baseFnMap
+                                            then simpleInstanceName
+                                            else methodName
                     Nothing -> methodName
             _ -> methodName
     | otherwise = methodName
@@ -191,9 +197,10 @@ scanCallsInFunction baseFnMap AlloyFunction{afParams = fnParams, afBlocks} =
                                     case Map.lookup lambdaName baseFnMap of
                                         Just lambdaFn ->
                                             case matchClosureType (afParams lambdaFn) ty of
-                                                Just subst | not (Map.null subst) && allConcreteSubst subst ->
-                                                    let key = InstKey lambdaName (map (substType subst . snd) (afParams lambdaFn))
-                                                    in (lambdaName, subst, key) : callReqs
+                                                Just subst
+                                                    | not (Map.null subst) && allConcreteSubst subst ->
+                                                        let key = InstKey lambdaName (map (substType subst . snd) (afParams lambdaFn))
+                                                        in (lambdaName, subst, key) : callReqs
                                                 _ -> callReqs
                                         Nothing -> callReqs
                                 _ -> callReqs
@@ -208,7 +215,7 @@ scanCallsInFunction baseFnMap AlloyFunction{afParams = fnParams, afBlocks} =
 
     matchFunctionParams :: [Type] -> Type -> Maybe TySubst
     matchFunctionParams [] _ = Just Map.empty
-    matchFunctionParams (p:ps) (TArrow argTy retTy) = do
+    matchFunctionParams (p : ps) (TArrow argTy retTy) = do
         s1 <- unifyOne p argTy
         let ps' = map (substType s1) ps
         s2 <- matchFunctionParams ps' retTy
@@ -312,11 +319,12 @@ applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afPar
             case Map.lookup lambdaName baseFnMap of
                 Just lambdaFn ->
                     case matchClosureType (afParams lambdaFn) ty of
-                        Just subst | not (Map.null subst) && allConcreteSubst subst ->
-                            let key = InstKey lambdaName (map (substType subst . snd) (afParams lambdaFn))
-                            in case Map.lookup key instCache of
-                                Just specName -> (OpAllocClosure (OpVar specName) envSize envTy, cid)
-                                Nothing -> (op, cid)
+                        Just subst
+                            | not (Map.null subst) && allConcreteSubst subst ->
+                                let key = InstKey lambdaName (map (substType subst . snd) (afParams lambdaFn))
+                                in case Map.lookup key instCache of
+                                    Just specName -> (OpAllocClosure (OpVar specName) envSize envTy, cid)
+                                    Nothing -> (op, cid)
                         _ -> (op, cid)
                 Nothing -> (op, cid)
         _ -> (op, cid)
@@ -328,7 +336,7 @@ applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afPar
 
     matchFunctionParams :: [Type] -> Type -> Maybe TySubst
     matchFunctionParams [] _ = Just Map.empty
-    matchFunctionParams (p:ps) (TArrow argTy retTy) = do
+    matchFunctionParams (p : ps) (TArrow argTy retTy) = do
         s1 <- unifyOne p argTy
         let ps' = map (substType s1) ps
         s2 <- matchFunctionParams ps' retTy
@@ -342,9 +350,9 @@ applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afPar
 
     rewriteOperand env (OpVar varName)
         | Map.notMember varName env
-        , Map.notMember varName baseFnMap
-        = -- todo: try to find an instance
-          OpVar varName
+        , Map.notMember varName baseFnMap =
+            -- todo: try to find an instance
+            OpVar varName
     rewriteOperand _ op = op
 
 specializeFunction :: String -> AlloyFunction -> TySubst -> AlloyFunction
@@ -381,14 +389,13 @@ substEffect subst eff = case eff of
 substOperand :: TySubst -> AOperand -> AOperand
 substOperand subst (OpVar varName)
     | '$' `notElem` varName -- todo: fix this HORRIBLE DISGUSTING workaround
-    , not (null subst)
-    =
-      case Map.toList subst of
-          [(_, concreteType)] ->
-              let typeName = extractTypeName concreteType
-                  instanceMethodName = makeInstanceMethodName varName typeName
-              in OpVar instanceMethodName
-          _ -> OpVar varName
+    , not (null subst) =
+        case Map.toList subst of
+            [(_, concreteType)] ->
+                let typeName = extractTypeName concreteType
+                    instanceMethodName = makeInstanceMethodName varName typeName
+                in OpVar instanceMethodName
+            _ -> OpVar varName
 substOperand _ op = op
 
 substOp :: TySubst -> AOp -> AOp

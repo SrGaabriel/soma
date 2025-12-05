@@ -42,13 +42,14 @@ emptyLiftState globals =
 
 liftLambdas :: Set.Set String -> MetallicModule -> MetallicModule
 liftLambdas extraGlobals m@MetallicModule{mmFunctions, mmInstances} =
-    let 
+    let
         instanceMethodNames = [mfName mf | inst <- mmInstances, mf <- miMethods inst]
         globalNames = Set.union extraGlobals (Set.fromList (map mfName mmFunctions ++ instanceMethodNames))
         (fns', st1) = runState (mapM liftFunctionLambdas mmFunctions) (emptyLiftState globalNames)
         (instances', st2) = runState (mapM liftInstanceLambdas mmInstances) st1
         allFns = fns' ++ lsLiftedFunctions st2
-    in m{mmFunctions = allFns, mmInstances = instances'}
+    in
+        m{mmFunctions = allFns, mmInstances = instances'}
 
 liftInstanceLambdas :: MetallicInstance -> LiftM MetallicInstance
 liftInstanceLambdas inst@MetallicInstance{miMethods} = do
@@ -58,8 +59,60 @@ liftInstanceLambdas inst@MetallicInstance{miMethods} = do
 liftFunctionLambdas :: MetallicFunction -> LiftM MetallicFunction
 liftFunctionLambdas fn@MetallicFunction{mfParams, mfBody} = do
     let paramNames = Set.fromList (map fst mfParams)
-    body' <- liftExprLambdas paramNames Set.empty mfBody
+    let unwrappedBody = unwrapRedundantLambda mfParams mfBody
+    body' <- liftExprLambdas paramNames Set.empty unwrappedBody
     pure fn{mfBody = body'}
+
+unwrapRedundantLambda :: [(String, Type)] -> TypedExpr -> TypedExpr
+unwrapRedundantLambda funcParams (MLambda lambdaParams innerBody _ _)
+    | length funcParams == length lambdaParams =
+        let substitution = Map.fromList $ zip (map fst lambdaParams) (map fst funcParams)
+        in substituteVars substitution innerBody
+unwrapRedundantLambda _ body = body
+
+substituteVars :: Map.Map String String -> TypedExpr -> TypedExpr
+substituteVars subst expr = case expr of
+    MVar name ty s ->
+        case Map.lookup name subst of
+            Just newName -> MVar newName ty s
+            Nothing -> expr
+    MLit{} -> expr
+    MCall callee args ty s ->
+        MCall (substituteVars subst callee) (map (substituteVars subst) args) ty s
+    MTypeApp e tys ty s ->
+        MTypeApp (substituteVars subst e) tys ty s
+    MLet name val body ty s ->
+        let subst' = Map.delete name subst
+        in MLet name (substituteVars subst val) (substituteVars subst' body) ty s
+    MLambda params body ty s ->
+        let subst' = foldr Map.delete subst (map fst params)
+        in MLambda params (substituteVars subst' body) ty s
+    MConstruct name tag args ty s ->
+        MConstruct name tag (map (substituteVars subst) args) ty s
+    MArrayLit elems ty s ->
+        MArrayLit (map (substituteVars subst) elems) ty s
+    MTuple elems ty s ->
+        MTuple (map (substituteVars subst) elems) ty s
+    MCase scrutinees arms mdef ty s ->
+        MCase
+            (map (substituteVars subst) scrutinees)
+            (map (substituteArm subst) arms)
+            (fmap (substituteVars subst) mdef)
+            ty
+            s
+    MIf cond ifB elseB ty s ->
+        MIf (substituteVars subst cond) (substituteVars subst ifB) (substituteVars subst elseB) ty s
+    MFieldAccess e idx ty s ->
+        MFieldAccess (substituteVars subst e) idx ty s
+    MPanic{} -> expr
+    MClosure name capturedVars ty s ->
+        let capturedVars' = [(Map.findWithDefault n n subst, t) | (n, t) <- capturedVars]
+        in MClosure name capturedVars' ty s
+  where
+    substituteArm subst' arm@MCaseArm{mcaPatterns, mcaBody} =
+        let boundNames = concatMap collectBinders mcaPatterns
+            subst'' = foldr Map.delete subst' boundNames
+        in arm{mcaBody = substituteVars subst'' mcaBody}
 
 liftExprLambdas :: Set.Set String -> Set.Set String -> TypedExpr -> LiftM TypedExpr
 liftExprLambdas _ _ e@(MVar{}) = pure e
