@@ -29,23 +29,25 @@ data LiftState = LiftState
     , lsLiftedFunctions :: [MetallicFunction]
     , lsGlobalNames :: Set.Set String
     , lsClosures :: Map.Map String ClosureInfo
+    , lsModuleName :: String
     }
 
-emptyLiftState :: Set.Set String -> LiftState
-emptyLiftState globals =
+emptyLiftState :: String -> Set.Set String -> LiftState
+emptyLiftState modName globals =
     LiftState
         { lsNextLambdaId = 0
         , lsLiftedFunctions = []
         , lsGlobalNames = globals
         , lsClosures = Map.empty
+        , lsModuleName = modName
         }
 
 liftLambdas :: Set.Set String -> MetallicModule -> MetallicModule
-liftLambdas extraGlobals m@MetallicModule{mmFunctions, mmInstances} =
+liftLambdas extraGlobals m@MetallicModule{mmName, mmFunctions, mmInstances} =
     let
         instanceMethodNames = [mfName mf | inst <- mmInstances, mf <- miMethods inst]
         globalNames = Set.union extraGlobals (Set.fromList (map mfName mmFunctions ++ instanceMethodNames))
-        (fns', st1) = runState (mapM liftFunctionLambdas mmFunctions) (emptyLiftState globalNames)
+        (fns', st1) = runState (mapM liftFunctionLambdas mmFunctions) (emptyLiftState mmName globalNames)
         (instances', st2) = runState (mapM liftInstanceLambdas mmInstances) st1
         allFns = fns' ++ lsLiftedFunctions st2
     in
@@ -149,8 +151,7 @@ liftExprLambdas available bound (MCall callee args ty s) = do
             let newAvailable = Set.union paramSet (Set.union available bound)
             body' <- liftExprLambdas newAvailable Set.empty body
 
-            lambdaId <- freshLambdaId
-            let liftedName = "lambda$" ++ show lambdaId
+            liftedName <- freshLambdaName
 
             -- Use splitFunctionType with actual param count, not full uncurrying
             let (paramTypes, retType) = splitFunctionType (length params) lambdaTy
@@ -204,8 +205,7 @@ liftExprLambdas available bound (MLet name val body ty s) = case val of
         let newAvailable = Set.union paramSet (Set.union available bound)
         lambdaBody' <- liftExprLambdas newAvailable Set.empty lambdaBody
 
-        lambdaId <- freshLambdaId
-        let liftedName = "lambda$" ++ show lambdaId
+        liftedName <- freshLambdaName
 
         let (paramTypes, retType) = splitFunctionType (length params) lambdaTy
             originalParams = zip (map fst params) paramTypes
@@ -247,8 +247,7 @@ liftExprLambdas available bound (MLambda params body ty s) = do
     let newAvailable = Set.union paramSet (Set.union available bound)
     body' <- liftExprLambdas newAvailable Set.empty body
 
-    lambdaId <- freshLambdaId
-    let liftedName = "lambda$" ++ show lambdaId
+    liftedName <- freshLambdaName
 
     let (paramTypes, retType) = splitFunctionType (length params) ty
         originalParams = zip (map fst params) paramTypes
@@ -305,10 +304,19 @@ freshLambdaId = do
     put st{lsNextLambdaId = i + 1}
     pure i
 
+freshLambdaName :: LiftM String
+freshLambdaName = do
+    st <- get
+    lambdaId <- freshLambdaId
+    let modName = lsModuleName st
+    pure $ modName ++ ".lambda$" ++ show lambdaId
+
 freshTmpName :: LiftM String
 freshTmpName = do
-    i <- freshLambdaId
-    pure $ "closure_tmp$" ++ show i
+    st <- get
+    lambdaId <- freshLambdaId
+    let modName = lsModuleName st
+    pure $ modName ++ ".closure_tmp$" ++ show lambdaId
 
 addLiftedFunction :: MetallicFunction -> LiftM ()
 addLiftedFunction fn = modify $ \st ->

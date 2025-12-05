@@ -50,6 +50,7 @@ library
     Metal.MonadNormalize
     Metal.MonadProfile
     Metal.Naming
+    Metal.Unique
     Parsing.Ast
     Parsing.Atoms
     Parsing.Attributes

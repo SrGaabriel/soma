@@ -3,6 +3,6 @@ use stdlib.{IO, >>, +, println, Display, display, Some, fmap}
 def main :: IO () =
     compose
         let value = Some "5"
-        let result = fmap (\x -> "1") value
+        let result = fmap (\x -> "30") value
         println (display [5,4,3,2,1])
         println (display result)

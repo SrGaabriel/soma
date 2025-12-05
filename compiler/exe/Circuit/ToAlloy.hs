@@ -370,7 +370,7 @@ lowerTerm env term = case term of
         terminate (ASwitch (OpVar tagName) switchArms defTarget)
         forM_ armBlocks $ \(_, blockName, boundNamesWithTypes, body) -> do
             beginBlock blockName []
-            fieldBindings <- forM (zip [1 ..] boundNamesWithTypes) $ \(idx, (boundName, fieldTy)) -> do
+            fieldBindings <- forM (zip [0 ..] boundNamesWithTypes) $ \(idx, (boundName, fieldTy)) -> do
                 fieldName <- emitLetTmp fieldTy (OpProject scrutOp idx)
                 when ("era_" `isPrefixOf` boundName && getAllocKind "scrut" env == MaybeHeap)
                     $ emitEffect (EffDrop (OpVar fieldName))
@@ -432,8 +432,7 @@ lowerTerm env term = case term of
     -- Field projection from tagged values
     C.CProject expr idx ty -> do
         exprOp <- lowerTerm env expr
-        -- OpProject uses 1-based indexing for fields (0 is tag)
-        result <- emitLetTmp ty (OpProject exprOp (idx + 1))
+        result <- emitLetTmp ty (OpProject exprOp idx)
         pure (OpVar result)
 
     -- Panic: emit call to soma_panic and unreachable

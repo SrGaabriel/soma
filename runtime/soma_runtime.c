@@ -1444,6 +1444,12 @@ void soma_panic(const char* msg) {
 extern int soma_main(void);
 
 int main(void) {
-    return soma_main();
+    /* Initialize memory pools - needed for closure allocation */
+    soma_pool_init();
+
+    int result = soma_main();
+
+    soma_pool_cleanup();
+    return result;
 }
 #endif

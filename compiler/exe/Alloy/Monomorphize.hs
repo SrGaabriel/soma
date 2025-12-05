@@ -25,6 +25,7 @@ import Alloy.Naming (
     extractTypeName,
     makeInstanceMethodName,
     makeMonomorphicName,
+    qualifyWithModule,
  )
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -356,17 +357,21 @@ applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afPar
     rewriteOperand _ op = op
 
 specializeFunction :: String -> AlloyFunction -> TySubst -> AlloyFunction
-specializeFunction _ fn subst =
-    let newName = makeMonomorphicName (afName fn) (map (substType subst . snd) (afParams fn))
+specializeFunction moduleName fn subst =
+    let
+        -- todo: remove qualification and newName after we have uniques
+        qualifiedBase = qualifyWithModule moduleName (afName fn)
+        newName = makeMonomorphicName qualifiedBase (map (substType subst . snd) (afParams fn))
         newParams = [(n, substType subst t) | (n, t) <- afParams fn]
         newRet = substType subst (afReturnType fn)
         newBlocks = map (substBlock subst) (afBlocks fn)
-    in fn
-        { afName = newName
-        , afParams = newParams
-        , afReturnType = newRet
-        , afBlocks = newBlocks
-        }
+    in
+        fn
+            { afName = newName
+            , afParams = newParams
+            , afReturnType = newRet
+            , afBlocks = newBlocks
+            }
 
 substBlock :: TySubst -> ABlock -> ABlock
 substBlock subst blk =
