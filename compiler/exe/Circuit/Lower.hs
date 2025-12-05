@@ -125,7 +125,9 @@ convertConstructor mc =
 lowerModule :: MetallicModule -> CModule
 lowerModule m =
     let env = buildEnv m
-        functions = evalState (runReaderT (mapM lowerFunction (mmFunctions m)) env) initLowerState
+        topLevelFunctions = evalState (runReaderT (mapM lowerFunction (mmFunctions m)) env) initLowerState
+        instanceMethods = evalState (runReaderT (mapM lowerFunction (concatMap miMethods (mmInstances m))) env) initLowerState
+        functions = topLevelFunctions ++ instanceMethods
         types = map convertTypeDef (mmTypes m)
         -- collect type class method names as external references
         externalRefs =

@@ -15,6 +15,10 @@ type InstanceEnv = Map.Map QualifiedType Bool
 
 type TypedBinding = (String, TypedExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)
 
+type TypedInstanceMethod = (String, TypedExpr, [Type], Type)
+
+type TypedInstance = (QualifiedType, [TypedInstanceMethod])
+
 data UnificationPurpose
     = UnifyFunctionBody
     | UnifyFunctionApplication

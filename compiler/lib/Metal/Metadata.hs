@@ -20,25 +20,20 @@ data MetallicTypeClassMetadata = MetallicTypeClassMetadata
 
 -- | Function attributes extracted from source-level @[...] annotations
 data FunctionAttributes = FunctionAttributes
-    { faInline :: !Bool
-    -- ^ @[inline] - hint to inline
-    , faNoInline :: !Bool
-    -- ^ @[noinline] - prevent inlining
-    , faDeprecated :: !(Maybe String)
-    -- ^ @[deprecated "msg"]
-    , faExtern :: !(Maybe String)
-    -- ^ @[extern "c_name"]
+    { faInline :: !Bool      -- ^ @[inline] - hint to inline
+    , faNoInline :: !Bool    -- ^ @[noinline] - prevent inlining
+    , faDeprecated :: !(Maybe String)  -- ^ @[deprecated "msg"]
+    , faExtern :: !(Maybe String)      -- ^ @[extern "c_name"]
     }
     deriving (Generic, Show, Eq)
 
 defaultFunctionAttributes :: FunctionAttributes
-defaultFunctionAttributes =
-    FunctionAttributes
-        { faInline = False
-        , faNoInline = False
-        , faDeprecated = Nothing
-        , faExtern = Nothing
-        }
+defaultFunctionAttributes = FunctionAttributes
+    { faInline = False
+    , faNoInline = False
+    , faDeprecated = Nothing
+    , faExtern = Nothing
+    }
 
 data MetallicFunctionMetadata = MetallicFunctionMetadata
     { mfmTypeVars :: [TyVar]

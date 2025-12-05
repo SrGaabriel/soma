@@ -41,11 +41,19 @@ emptyLiftState globals =
         }
 
 liftLambdas :: Set.Set String -> MetallicModule -> MetallicModule
-liftLambdas extraGlobals m@MetallicModule{mmFunctions} =
-    let globalNames = Set.union extraGlobals (Set.fromList (map mfName mmFunctions))
-        (fns', st) = runState (mapM liftFunctionLambdas mmFunctions) (emptyLiftState globalNames)
-        allFns = fns' ++ lsLiftedFunctions st
-    in m{mmFunctions = allFns}
+liftLambdas extraGlobals m@MetallicModule{mmFunctions, mmInstances} =
+    let 
+        instanceMethodNames = [mfName mf | inst <- mmInstances, mf <- miMethods inst]
+        globalNames = Set.union extraGlobals (Set.fromList (map mfName mmFunctions ++ instanceMethodNames))
+        (fns', st1) = runState (mapM liftFunctionLambdas mmFunctions) (emptyLiftState globalNames)
+        (instances', st2) = runState (mapM liftInstanceLambdas mmInstances) st1
+        allFns = fns' ++ lsLiftedFunctions st2
+    in m{mmFunctions = allFns, mmInstances = instances'}
+
+liftInstanceLambdas :: MetallicInstance -> LiftM MetallicInstance
+liftInstanceLambdas inst@MetallicInstance{miMethods} = do
+    methods' <- mapM liftFunctionLambdas miMethods
+    pure inst{miMethods = methods'}
 
 liftFunctionLambdas :: MetallicFunction -> LiftM MetallicFunction
 liftFunctionLambdas fn@MetallicFunction{mfParams, mfBody} = do

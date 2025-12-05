@@ -12,13 +12,13 @@ module Metal.Gen.Entry (
 ) where
 
 import qualified Data.Map as Map
-import Inference.Core (TypedBinding)
 import Metal.Expr (TypedExpr)
 import Metal.Function (MetallicFunction (..))
 import Metal.Metadata (MetallicConstructorMetadata, MetallicFunctionMetadata (MetallicFunctionMetadata), MetallicTypeClassMetadata, defaultFunctionAttributes)
 import Metal.Module (MetallicInstance (..), MetallicModule (..), MetallicTypeDef)
 import Metal.Naming (makeInstanceMethodName, nameArrayPrefix)
 import Typing.Types (QualifiedType (..), TyConstructor (..), Type (..))
+import Inference.Core (TypedBinding)
 
 data TypedLowerResult = TypedLowerResult
     { tlrBindings :: [TypedBinding]

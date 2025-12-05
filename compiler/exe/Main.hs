@@ -276,13 +276,13 @@ circuit opts = do
     let resolvedAst = checkedResolvedAst checked
         lowerResult = checkedLowerResult checked
         typedBindings = checkedTypedBindings checked
+        typedInstances = checkedTypedInstances checked
 
-    -- todo: review this
     let typedLowerResult =
             TypedLowerResult
                 { tlrBindings = typedBindings
                 , tlrTypes = lrTypes lowerResult
-                , tlrInstances = []
+                , tlrInstances = typedInstances
                 , tlrTypeClasses = lrTypeClasses lowerResult
                 }
 

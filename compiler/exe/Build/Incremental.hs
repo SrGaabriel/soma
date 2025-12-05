@@ -90,6 +90,7 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
                         , checkedResolvedAst = cmResolvedAst c
                         , checkedLowerResult = LowerResult [] [] [] []
                         , checkedTypedBindings = []
+                        , checkedTypedInstances = []
                         , checkedPublicSymbols = cmPublicSymbols c
                         , checkedInstances = cmPublicInstances c
                         }
@@ -111,6 +112,7 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
     let resolvedAst = checkedResolvedAst checked
         lowerResult = checkedLowerResult checked
         typedBindings = checkedTypedBindings checked
+        typedInstances = checkedTypedInstances checked
         newDefs = checkedPublicSymbols checked
         instanceEnv = checkedInstances checked
 
@@ -118,7 +120,7 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
             TypedLowerResult
                 { tlrBindings = typedBindings
                 , tlrTypes = lrTypes lowerResult
-                , tlrInstances = []
+                , tlrInstances = typedInstances
                 , tlrTypeClasses = lrTypeClasses lowerResult
                 }
 

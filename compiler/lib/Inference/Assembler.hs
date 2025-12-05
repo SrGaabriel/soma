@@ -7,7 +7,7 @@ module Inference.Assembler (
 
 import Data.List (nub)
 import qualified Data.Map as Map
-import Inference.Core (InstanceEnv, TypedBinding)
+import Inference.Core (InstanceEnv, TypedBinding, TypedInstance)
 import Inference.Errors (InferenceError (..))
 import Inference.Gen
 import Inference.Solving (checkMetalConstraintEntailment, solveMetalTypeConstraints)
@@ -23,7 +23,7 @@ inferModule ::
     MetalTypeEnv ->
     InstanceEnv ->
     LowerResult ->
-    ([InferenceError], [TypedBinding])
+    ([InferenceError], [TypedBinding], [TypedInstance])
 inferModule packageName moduleName typeEnv instanceEnv lowerResult = do
     let bindings = lrBindings lowerResult
     let instances = lrInstances lowerResult
@@ -34,14 +34,14 @@ inferModule packageName moduleName typeEnv instanceEnv lowerResult = do
                 | (name, body, paramTypes, retType, tyVars, constraints, attrs) <- bindings
                 ]
 
-    let (instanceErrors, _typedInstances) =
+    let (instanceErrors, typedInstances) =
             unzip
                 [ inferInstanceMethods packageName moduleName typeEnv instanceEnv constraintType methods
                 | (constraintType, methods) <- instances
                 ]
 
     let allErrors = concat bindingErrors ++ concat instanceErrors
-    (nub allErrors, typedBindings)
+    (nub allErrors, typedBindings, typedInstances)
 
 inferBinding ::
     String ->
@@ -90,14 +90,14 @@ inferInstanceMethods ::
     InstanceEnv ->
     QualifiedType ->
     [(String, InferenceExpr, [Type], Type)] ->
-    ([InferenceError], [(String, TypedExpr, [Type], Type)])
-inferInstanceMethods packageName moduleName typeEnv instanceEnv _constraintType methods =
+    ([InferenceError], TypedInstance)
+inferInstanceMethods packageName moduleName typeEnv instanceEnv constraintType methods =
     let results =
             [ inferInstanceMethod packageName moduleName typeEnv instanceEnv name body paramTypes retType
             | (name, body, paramTypes, retType) <- methods
             ]
         (errorLists, typedMethods) = unzip results
-    in (concat errorLists, typedMethods)
+    in (concat errorLists, (constraintType, typedMethods))
 
 inferInstanceMethod ::
     String ->

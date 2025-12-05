@@ -12,11 +12,13 @@ import Alloy.Ir (
     ABlock (..),
     ACallable (..),
     AConst (..),
+    AEffect (..),
     AInstr (..),
     AOp (..),
     AOperand (..),
     AlloyFunction (..),
     AlloyModule (..),
+    Name,
  )
 import Alloy.Naming (
     extractBaseTypeName,
@@ -62,7 +64,7 @@ monomorphizeModule m@AlloyModule{amName = moduleName, amFunctions = funcs} =
         rwMap = computeRewriteMap baseFnMap instCache dedupedFns
 
         -- Apply rewrites
-        rewrittenFns = map (applyRewrites rwMap) dedupedFns
+        rewrittenFns = map (applyRewrites rwMap instCache baseFnMap) dedupedFns
 
         -- Phase 3: Cleanup
         specializedNames = Set.fromList (Map.elems instCache)
@@ -79,7 +81,7 @@ monomorphizeFunction :: String -> Map String AlloyFunction -> AlloyFunction -> (
 monomorphizeFunction moduleName baseFnMap fn =
     let (allFns, instCache) = monoFixpoint moduleName baseFnMap [fn] Map.empty
         rwMap = computeRewriteMap baseFnMap instCache allFns
-        rewrittenAll = map (applyRewrites rwMap) allFns
+        rewrittenAll = map (applyRewrites rwMap instCache baseFnMap) allFns
         concreteAll = map eliminateAllTypeVars rewrittenAll
     in case concreteAll of
         [] -> (fn, [])
@@ -169,8 +171,8 @@ scanForRequests :: Map String AlloyFunction -> [AlloyFunction] -> [(String, TySu
 scanForRequests baseFnMap = concatMap (scanCallsInFunction baseFnMap)
 
 scanCallsInFunction :: Map String AlloyFunction -> AlloyFunction -> [(String, TySubst, InstKey)]
-scanCallsInFunction baseFnMap AlloyFunction{afParams, afBlocks} =
-    let baseEnv = Map.fromList afParams
+scanCallsInFunction baseFnMap AlloyFunction{afParams = fnParams, afBlocks} =
+    let baseEnv = Map.fromList fnParams
         (_, reqs) = foldl' scanBlock (baseEnv, []) afBlocks
     in reqs
   where
@@ -179,13 +181,39 @@ scanCallsInFunction baseFnMap AlloyFunction{afParams, afBlocks} =
             step (currEnv, currReqs) instr =
                 case instr of
                     ILet name ty op ->
-                        let nextReqs = case resolveCallTarget baseFnMap currEnv op of
+                        let callReqs = case resolveCallTarget baseFnMap currEnv op of
                                 Just CallResolution{crTargetFn, crSubst, crKey} ->
                                     (afName crTargetFn, crSubst, crKey) : currReqs
                                 Nothing -> currReqs
-                        in (Map.insert name ty currEnv, nextReqs)
+                            -- Also check for closure allocations that reference polymorphic lambdas
+                            closureReqs = case op of
+                                OpAllocClosure (OpVar lambdaName) _ _ ->
+                                    case Map.lookup lambdaName baseFnMap of
+                                        Just lambdaFn ->
+                                            case matchClosureType (afParams lambdaFn) ty of
+                                                Just subst | not (Map.null subst) && allConcreteSubst subst ->
+                                                    let key = InstKey lambdaName (map (substType subst . snd) (afParams lambdaFn))
+                                                    in (lambdaName, subst, key) : callReqs
+                                                _ -> callReqs
+                                        Nothing -> callReqs
+                                _ -> callReqs
+                        in (Map.insert name ty currEnv, closureReqs)
                     IEffect _ -> (currEnv, currReqs)
         in foldl' step (env', reqs) abInstrs
+
+    matchClosureType :: [(Name, Type)] -> Type -> Maybe TySubst
+    matchClosureType lambdaParams closureTy =
+        let lambdaParamTypes = map snd (drop 1 lambdaParams)
+        in matchFunctionParams lambdaParamTypes closureTy
+
+    matchFunctionParams :: [Type] -> Type -> Maybe TySubst
+    matchFunctionParams [] _ = Just Map.empty
+    matchFunctionParams (p:ps) (TArrow argTy retTy) = do
+        s1 <- unifyOne p argTy
+        let ps' = map (substType s1) ps
+        s2 <- matchFunctionParams ps' retTy
+        Just (Map.union s2 s1)
+    matchFunctionParams _ _ = Nothing
 
 computeRewriteMap ::
     Map String AlloyFunction ->
@@ -249,22 +277,28 @@ computeRewriteMap baseFnMap instCache fns =
     isCallOp (OpDictCall{}) = True
     isCallOp _ = False
 
-applyRewrites :: RewriteMap -> AlloyFunction -> AlloyFunction
-applyRewrites rwMap fn@AlloyFunction{afName, afBlocks} =
+applyRewrites :: RewriteMap -> Map InstKey String -> Map String AlloyFunction -> AlloyFunction -> AlloyFunction
+applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afParams = fnParams} =
     fn{afBlocks = map rewriteBlock afBlocks}
   where
-    rewriteBlock blk@ABlock{abInstrs} =
-        let (newInstrs, _) = foldl' rewriteInstr ([], 0) abInstrs
+    baseEnv = Map.fromList fnParams
+
+    rewriteBlock blk@ABlock{abInstrs, abParams} =
+        let blockEnv = baseEnv `Map.union` Map.fromList abParams
+            (newInstrs, _, _) = foldl' (rewriteInstr blockEnv) ([], 0, blockEnv) abInstrs
         in blk{abInstrs = reverse newInstrs}
 
-    rewriteInstr (acc, cid) instr =
+    rewriteInstr _env (acc, cid, currEnv) instr =
         case instr of
             ILet name ty op ->
-                let (newOp, nextCid) = rewriteOp cid op
-                in (ILet name ty newOp : acc, nextCid)
-            other -> (other : acc, cid)
+                let (newOp, nextCid) = rewriteOp currEnv ty cid op
+                    newEnv = Map.insert name ty currEnv
+                in (ILet name ty newOp : acc, nextCid, newEnv)
+            IEffect eff ->
+                let newEff = rewriteEffect currEnv eff
+                in (IEffect newEff : acc, cid, currEnv)
 
-    rewriteOp cid op = case op of
+    rewriteOp _env ty cid op = case op of
         OpCall (Direct _) args ->
             case Map.lookup (afName, cid) rwMap of
                 Just newName -> (OpCall (Direct newName) args, cid + 1)
@@ -273,7 +307,45 @@ applyRewrites rwMap fn@AlloyFunction{afName, afBlocks} =
             case Map.lookup (afName, cid) rwMap of
                 Just newName -> (OpCall (Direct newName) args, cid + 1)
                 Nothing -> (op, cid + 1)
+        OpAllocClosure (OpVar lambdaName) envSize envTy ->
+            -- Check if we need to rewrite the lambda name to a specialized version
+            case Map.lookup lambdaName baseFnMap of
+                Just lambdaFn ->
+                    case matchClosureType (afParams lambdaFn) ty of
+                        Just subst | not (Map.null subst) && allConcreteSubst subst ->
+                            let key = InstKey lambdaName (map (substType subst . snd) (afParams lambdaFn))
+                            in case Map.lookup key instCache of
+                                Just specName -> (OpAllocClosure (OpVar specName) envSize envTy, cid)
+                                Nothing -> (op, cid)
+                        _ -> (op, cid)
+                Nothing -> (op, cid)
         _ -> (op, cid)
+
+    matchClosureType :: [(Name, Type)] -> Type -> Maybe TySubst
+    matchClosureType lambdaParams closureTy =
+        let lambdaParamTypes = map snd (drop 1 lambdaParams)
+        in matchFunctionParams lambdaParamTypes closureTy
+
+    matchFunctionParams :: [Type] -> Type -> Maybe TySubst
+    matchFunctionParams [] _ = Just Map.empty
+    matchFunctionParams (p:ps) (TArrow argTy retTy) = do
+        s1 <- unifyOne p argTy
+        let ps' = map (substType s1) ps
+        s2 <- matchFunctionParams ps' retTy
+        Just (Map.union s2 s1)
+    matchFunctionParams _ _ = Nothing
+
+    rewriteEffect env eff = case eff of
+        EffClosureSetEnv closure idx val ->
+            EffClosureSetEnv closure idx (rewriteOperand env val)
+        other -> other
+
+    rewriteOperand env (OpVar varName)
+        | Map.notMember varName env
+        , Map.notMember varName baseFnMap
+        = -- todo: try to find an instance
+          OpVar varName
+    rewriteOperand _ op = op
 
 specializeFunction :: String -> AlloyFunction -> TySubst -> AlloyFunction
 specializeFunction _ fn subst =
@@ -298,7 +370,26 @@ substBlock subst blk =
 substInstr :: TySubst -> AInstr -> AInstr
 substInstr subst (ILet name ty op) =
     ILet name (substType subst ty) (substOp subst op)
-substInstr _ (IEffect eff) = IEffect eff
+substInstr subst (IEffect eff) = IEffect (substEffect subst eff)
+
+substEffect :: TySubst -> AEffect -> AEffect
+substEffect subst eff = case eff of
+    EffClosureSetEnv closure idx val ->
+        EffClosureSetEnv closure idx (substOperand subst val)
+    other -> other
+
+substOperand :: TySubst -> AOperand -> AOperand
+substOperand subst (OpVar varName)
+    | '$' `notElem` varName -- todo: fix this HORRIBLE DISGUSTING workaround
+    , not (null subst)
+    =
+      case Map.toList subst of
+          [(_, concreteType)] ->
+              let typeName = extractTypeName concreteType
+                  instanceMethodName = makeInstanceMethodName varName typeName
+              in OpVar instanceMethodName
+          _ -> OpVar varName
+substOperand _ op = op
 
 substOp :: TySubst -> AOp -> AOp
 substOp subst op = case op of

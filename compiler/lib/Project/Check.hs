@@ -8,7 +8,7 @@ module Project.Check (
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Inference.Assembler (MetalTypeEnv, inferModule)
-import Inference.Core (InstanceEnv, TypedBinding)
+import Inference.Core (InstanceEnv, TypedBinding, TypedInstance)
 import Inference.Errors (InferenceError)
 import Inference.Resolver (runResolverWithEnv)
 import Metal.Gen.Metadata (extractConstructorMetadata)
@@ -26,6 +26,7 @@ data CheckedModule = CheckedModule
     , checkedResolvedAst :: Expr
     , checkedLowerResult :: LowerResult
     , checkedTypedBindings :: [TypedBinding]
+    , checkedTypedInstances :: [TypedInstance]
     , checkedPublicSymbols :: Map Symbol QualifiedType
     , checkedInstances :: InstanceEnv
     }
@@ -66,7 +67,7 @@ checkModule packageName modInfo checkedDeps externalDeps externalInstances exter
         metalTypeEnv = symbolEnvToMetalEnv fullEnv
 
         -- Run Metal-based type inference
-        (inferenceErrors, typedBindings) =
+        (inferenceErrors, typedBindings, typedInstances) =
             inferModule packageName modName metalTypeEnv instanceEnv lowerResult
 
         -- Extract new definitions (public symbols)
@@ -80,6 +81,7 @@ checkModule packageName modInfo checkedDeps externalDeps externalInstances exter
                 , checkedResolvedAst = resolvedAst
                 , checkedLowerResult = lowerResult
                 , checkedTypedBindings = typedBindings
+                , checkedTypedInstances = typedInstances
                 , checkedPublicSymbols = newDefs
                 , checkedInstances = instanceEnv
                 }

@@ -214,34 +214,46 @@ compileOp (OpCall callable aArgs) opType = do
                         else saveTmp (LlvmCall fn opType args) opType
 compileOp (OpConstruct _cName cTag cFields) resultTy = do
     fieldVals <- mapM compileOperand cFields
-    let undefVal = LlvmUndef resultTy
 
-    let tagLiteral = LlvmLiteral LlvmI8 (show cTag)
-    withTag <- saveTmp (LlvmInsertValue resultTy undefVal tagLiteral 0) resultTy
-
-    case fieldVals of
-        [] -> pure withTag
-        [fieldVal] -> do
-            let fieldTy = getValueType fieldVal
-            payloadVal <- bitcastToPayload fieldVal fieldTy
-            saveTmp (LlvmInsertValue resultTy withTag payloadVal 1) resultTy
-        _ -> do
-            -- Multi-field constructor: allocate array of i64 on heap
-            let numFields = length fieldVals
-            let allocSize = LlvmLiteral LlvmI64 (show (numFields * 8)) -- 8 bytes per i64
+    -- Special case: Array literals use tag -2 and result in pointer types
+    case resultTy of
+        LlvmPointer elemTy | cTag == -2 -> do
+            let arraySize = length fieldVals
+            let arrayTy = LlvmArray arraySize elemTy
             mallocFn <- useDep mallocDependency
+            let allocSize = LlvmLiteral LlvmI64 (show (arraySize * 8)) -- 8 bytes per element
             rawPtr <- saveTmp (LlvmCall mallocFn (LlvmPointer LlvmI8) [allocSize]) (LlvmPointer LlvmI8)
-            -- Bitcast to i64*
-            arrPtr <- saveTmp (LlvmBitcast rawPtr (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
-            -- Store each field at its index
-            forM_ (zip [(0 :: Integer) ..] fieldVals) $ \(idx, fieldVal) -> do
-                let fieldTy = getValueType fieldVal
-                fieldAsI64 <- bitcastToPayload fieldVal fieldTy
-                fieldPtr <- saveTmp (LlvmGetElementPtr LlvmI64 arrPtr [LlvmLiteral LlvmI64 (show idx)] True) (LlvmPointer LlvmI64)
-                tell [LlvmStore fieldAsI64 fieldPtr]
-            -- Convert pointer to i64 for payload
-            payloadVal <- saveTmp (LlvmPtrToInt arrPtr LlvmI64) LlvmI64
-            saveTmp (LlvmInsertValue resultTy withTag payloadVal 1) resultTy
+            arrayPtr <- saveTmp (LlvmBitcast rawPtr (LlvmPointer arrayTy)) (LlvmPointer arrayTy)
+            forM_ (zip [0 ..] fieldVals) $ \(idx, val) -> do
+                let idxVal = LlvmLiteral LlvmI64 (show (idx :: Int))
+                elemPtr <- saveTmp (LlvmGetElementPtr elemTy arrayPtr [idxVal] True) (LlvmPointer elemTy)
+                tell [LlvmStore val elemPtr]
+            pure arrayPtr
+        _ -> do
+            let undefVal = LlvmUndef resultTy
+            let tagLiteral = LlvmLiteral LlvmI8 (show cTag)
+            withTag <- saveTmp (LlvmInsertValue resultTy undefVal tagLiteral 0) resultTy
+
+            case fieldVals of
+                [] -> pure withTag
+                [fieldVal] -> do
+                    let fieldTy = getValueType fieldVal
+                    payloadVal <- bitcastToPayload fieldVal fieldTy
+                    saveTmp (LlvmInsertValue resultTy withTag payloadVal 1) resultTy
+                _ -> do
+                    let numFields = length fieldVals
+                    let allocSize = LlvmLiteral LlvmI64 (show (numFields * 8)) -- 8 bytes per i64
+                    mallocFn <- useDep mallocDependency
+                    rawPtr <- saveTmp (LlvmCall mallocFn (LlvmPointer LlvmI8) [allocSize]) (LlvmPointer LlvmI8)
+                    arrPtr <- saveTmp (LlvmBitcast rawPtr (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+                    forM_ (zip [(0 :: Integer) ..] fieldVals) $ \(idx, fieldVal) -> do
+                        let fieldTy = getValueType fieldVal
+                        fieldAsI64 <- bitcastToPayload fieldVal fieldTy
+                        fieldPtr <- saveTmp (LlvmGetElementPtr LlvmI64 arrPtr [LlvmLiteral LlvmI64 (show idx)] True) (LlvmPointer LlvmI64)
+                        tell [LlvmStore fieldAsI64 fieldPtr]
+                    -- Convert pointer to i64 for payload
+                    payloadVal <- saveTmp (LlvmPtrToInt arrPtr LlvmI64) LlvmI64
+                    saveTmp (LlvmInsertValue resultTy withTag payloadVal 1) resultTy
   where
     bitcastToPayload :: LlvmValue -> LlvmType -> IrGen LlvmValue
     bitcastToPayload val valTy
