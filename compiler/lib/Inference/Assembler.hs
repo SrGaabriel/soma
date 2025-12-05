@@ -7,14 +7,17 @@ module Inference.Assembler (
 
 import Data.List (nub)
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Inference.Core (InstanceEnv, TypedBinding, TypedInstance)
 import Inference.Errors (InferenceError (..))
 import Inference.Gen
 import Inference.Solving (checkMetalConstraintEntailment, solveMetalTypeConstraints)
 import Inference.Substitution (Subst, Substitutable (apply))
+import Lexing.Position (Span)
 import Metal.Expr
 import Metal.Lower (LowerResult (..))
 import Metal.Metadata (FunctionAttributes)
+import qualified Syntax.Tree
 import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..))
 
 inferModule ::
@@ -81,7 +84,8 @@ inferBinding packageName moduleName typeEnv instanceEnv name body paramTypes ret
                             -- Apply substitution to param types and return type for consistency
                             typedParamTypes = map (apply typeSubst) paramTypes
                             typedRetType = apply typeSubst retType
-                        in (genErrors, (name, typedBody, typedParamTypes, typedRetType, tyVars, constraints, attrs))
+                            unresolvedErrors = checkUnresolvedTypeVars typedBody
+                        in (genErrors ++ unresolvedErrors, (name, typedBody, typedParamTypes, typedRetType, tyVars, constraints, attrs))
 
 inferInstanceMethods ::
     String ->
@@ -166,3 +170,41 @@ applySubstitution subst = go
 
     goArm :: InferenceArm -> TypedArm
     goArm (MCaseArm pats body) = MCaseArm pats (go body)
+
+checkUnresolvedTypeVars :: TypedExpr -> [InferenceError]
+checkUnresolvedTypeVars expr = nub $ go expr
+  where
+    go :: TypedExpr -> [InferenceError]
+    go (MVar _ ty span') = checkType span' ty
+    go (MLit _ _) = []
+    go (MCall callee args ty span') = go callee ++ concatMap go args ++ checkType span' ty
+    go (MTypeApp e _ ty span') = go e ++ checkType span' ty
+    go (MLet _ val body ty span') = go val ++ go body ++ checkType span' ty
+    go (MLambda params body ty span') = concatMap (checkType span' . snd) params ++ go body ++ checkType span' ty
+    go (MClosure _ captures ty span') = concatMap (checkType span' . snd) captures ++ checkType span' ty
+    go (MConstruct _ _ args ty span') = concatMap go args ++ checkType span' ty
+    go (MArrayLit elems ty span') = concatMap go elems ++ checkType span' ty
+    go (MTuple elems ty span') = concatMap go elems ++ checkType span' ty
+    go (MIf cond thenE elseE ty span') = go cond ++ go thenE ++ go elseE ++ checkType span' ty
+    go (MCase scruts arms mdef ty span') =
+        concatMap go scruts ++ concatMap goArm arms ++ maybe [] go mdef ++ checkType span' ty
+    go (MFieldAccess e _ ty span') = go e ++ checkType span' ty
+    go (MPanic _ ty span') = checkType span' ty
+
+    goArm :: TypedArm -> [InferenceError]
+    goArm (MCaseArm _ body) = go body
+
+    checkType :: Span -> Type -> [InferenceError]
+    checkType span' ty =
+        let vars = collectTypeVars ty
+        in [UnresolvedTypeVariable (dummyExpr span') (tvId v) ty | v <- Set.toList vars]
+
+    collectTypeVars :: Type -> Set.Set TyVar
+    collectTypeVars (TVar tv) = Set.singleton tv
+    collectTypeVars (TApp a b) = collectTypeVars a `Set.union` collectTypeVars b
+    collectTypeVars (TArrow a b) = collectTypeVars a `Set.union` collectTypeVars b
+    collectTypeVars _ = Set.empty
+
+    -- todo(magic-spans): remove workaround
+    dummyExpr :: Span -> Syntax.Tree.Expr
+    dummyExpr = Syntax.Tree.ExprNum "0"

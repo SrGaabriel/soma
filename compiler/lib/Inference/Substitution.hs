@@ -16,7 +16,7 @@ class Substitutable a where
 instance Substitutable Type where
     apply s (TVar tv) = case Map.lookup tv s of
         Nothing -> TVar tv
-        Just t -> t
+        Just t -> apply s t -- Recursively apply to follow type variable chains
     apply _ (TConstructor tc) = TConstructor tc
     apply s (TApp t1 t2) = TApp (apply s t1) (apply s t2)
     apply s (TArrow t1 t2) = TArrow (apply s t1) (apply s t2)

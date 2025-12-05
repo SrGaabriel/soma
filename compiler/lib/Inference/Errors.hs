@@ -33,6 +33,7 @@ data InferenceError
     | IfElseBranchTypeMismatch Expr Type Type
     | ReferenceToTypeConstructor Expr String
     | ComposeBlockMustEndWithExpression Expr
+    | UnresolvedTypeVariable Expr String Type
     | Debug String
     deriving (Show, Eq)
 
@@ -84,6 +85,8 @@ instance PrintableError InferenceError where
     errorMessage (MissingSuperclassInstance _ typ constraint) =
         let name = constraintClassName constraint
         in "Missing superclass instance: no '" ++ name ++ "' instance for type '" ++ treeShow typ ++ "'"
+    errorMessage (UnresolvedTypeVariable _ varName fullType) =
+        "Could not infer concrete type for type variable '" ++ varName ++ "' in type '" ++ treeShow fullType ++ "'. Consider adding a type annotation."
     errorMessage (Debug msg) = "Debug: " ++ msg
 
     errorStart :: InferenceError -> Int
@@ -130,6 +133,7 @@ getExpression err =
     getExpression' (MissingSuperclassInstance expr _ _) = expr
     getExpression' (ComposeBlockMustEndWithExpression expr) = expr
     getExpression' (IfElseBranchTypeMismatch expr _ _) = expr
+    getExpression' (UnresolvedTypeVariable expr _ _) = expr
     getExpression' (Debug _) = error "Debug error should not be used in production code"
 
 generateErrorForPurpose :: UnificationPurpose -> Expr -> Type -> Type -> InferenceError
