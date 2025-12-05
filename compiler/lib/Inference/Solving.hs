@@ -114,7 +114,7 @@ foldMWithErrors f acc (x : xs) = case f acc x of
         Right _ -> Left errs
     Right acc' -> foldMWithErrors f acc' xs
 
-    -- todo(magic-spans): remove workaround
+-- todo(magic-spans): remove workaround
 dummyExpr :: Span -> Syntax.Tree.Expr
 dummyExpr = Syntax.Tree.ExprNum "0"
 

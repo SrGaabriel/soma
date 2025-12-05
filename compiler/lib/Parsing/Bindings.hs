@@ -1,4 +1,4 @@
-module Parsing.Bindings (parseBinding, parseInlineBinding) where
+module Parsing.Bindings (parseBinding, parseBindingWithAttributes) where
 
 import Control.Monad (unless)
 import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens)
@@ -8,7 +8,7 @@ import Parsing.Errors (ParsingError (..))
 import Parsing.Parser (Parser, ParserContext (..), consume, parseCommaSeparatedUntil, parseFuncName, parseOptionallyInLayout, peek, withinContext)
 import Parsing.Patterns (parsePipePatternArms)
 import Parsing.Types (parseLocatedQualifiedType, parseType)
-import Syntax.Tree (Expr (..), Modifier (..), exprSpan)
+import Syntax.Tree (Attribute, Expr (..), exprSpan)
 import qualified Text.Megaparsec as MP
 import Typing.Currying (curryFunction)
 import Typing.Types (QualifiedType (..), Type, extractTyVars)
@@ -25,10 +25,10 @@ data BindingSyntax
     deriving (Show, Eq)
 
 parseBinding :: Bool -> Parser Expr
-parseBinding isTopLevel = parseBindingWithModifiers isTopLevel []
+parseBinding isTopLevel = parseBindingWithAttributes isTopLevel []
 
-parseBindingWithModifiers :: Bool -> [Modifier] -> Parser Expr
-parseBindingWithModifiers isTopLevel modifiers = withinContext (InFunctionSignature "") $ do
+parseBindingWithAttributes :: Bool -> [Located Attribute] -> Parser Expr
+parseBindingWithAttributes isTopLevel attrs = withinContext (InFunctionSignature "") $ do
     defToken <- consume TokenDef
     name <- parseFuncName
     syntax <- parseBindingSyntax
@@ -41,14 +41,9 @@ parseBindingWithModifiers isTopLevel modifiers = withinContext (InFunctionSignat
             , bindingType = bindType
             , bindingBody = wrapWithLambda syntax body
             , bindingIsImpl = isTopLevel
-            , bindingModifiers = modifiers
+            , bindingAttributes = attrs
             , bindingSpan = spanningTokens defToken styleToken
             }
-
-parseInlineBinding :: Bool -> Parser Expr
-parseInlineBinding isTopLevel = do
-    _ <- consume TokenInline
-    parseBindingWithModifiers isTopLevel [ModInline]
 
 parseBindingSyntax :: Parser BindingSyntax
 parseBindingSyntax = do

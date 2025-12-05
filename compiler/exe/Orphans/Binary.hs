@@ -4,7 +4,7 @@ module Orphans.Binary where
 
 import Alloy.Ir
 import Data.Binary (Binary)
-import Metal.Metadata (MetallicTypeClassMetadata)
+import Metal.Metadata (FunctionAttributes, MetallicTypeClassMetadata)
 import Typing.Types
 
 instance Binary FlexInfo
@@ -26,6 +26,8 @@ instance Binary Constraint
 instance Binary QualifiedType
 
 instance Binary MetallicTypeClassMetadata
+
+instance Binary FunctionAttributes
 
 instance Binary AlloyModule
 

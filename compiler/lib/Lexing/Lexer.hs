@@ -27,7 +27,7 @@ data TokenKind
     | TokenReturns
     | TokenCase
     | TokenDef
-    | TokenInline
+    | TokenAt
     | TokenIntrinsic
     | TokenLeftParen
     | TokenRightParen
@@ -90,7 +90,7 @@ lexCode' text i stack =
     in case () of
         _
             | isSpace c -> lexCode' cs (i + 1) stack
-            | c `elem` ("(){}[],λ\\∀_" :: String) ->
+            | c `elem` ("(){}[],λ\\∀_@" :: String) ->
                 let kind = case c of
                         '(' -> TokenLeftParen
                         ')' -> TokenRightParen
@@ -103,6 +103,7 @@ lexCode' text i stack =
                         '\\' -> TokenLambda
                         '∀' -> TokenForall
                         '_' -> TokenUnderscore
+                        '@' -> TokenAt
                         _ -> error "Impossible case"
                 in addToken (Token kind [c] i) (lexCode' cs (i + 1) stack)
             | c == '-' ->
@@ -230,7 +231,6 @@ lexCode' text i stack =
                         "in" -> TokenIn
                         "case" -> TokenCase
                         "def" -> TokenDef
-                        "inline" -> TokenInline
                         "intrinsic" -> TokenIntrinsic
                         "use" -> TokenImport
                         "data" -> TokenData
@@ -327,7 +327,7 @@ referenceTokenKind TokenReturns = "'::'"
 referenceTokenKind TokenCase = "'case'"
 referenceTokenKind TokenWith = "'with'"
 referenceTokenKind TokenDef = "'def'"
-referenceTokenKind TokenInline = "'inline'"
+referenceTokenKind TokenAt = "'@'"
 referenceTokenKind TokenIntrinsic = "'intrinsic'"
 referenceTokenKind TokenImport = "'import'"
 referenceTokenKind TokenSlash = "a slash"
@@ -368,4 +368,4 @@ spanningTokens start end =
     Span (tokenPos start) (tokenPos end + length (tokenValue end))
 
 isOperatorChar :: Char -> Bool
-isOperatorChar c = c `elem` ("!#$%&*+.-/<=>?@|" :: String)
+isOperatorChar c = c `elem` ("!#$%&*+.-/<=>?|" :: String)

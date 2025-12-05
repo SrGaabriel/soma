@@ -117,8 +117,8 @@ buildClosureReturningFnsMap fns =
 lowerFunction :: Map.Map String Int -> Map.Map String [Type] -> MonadProfiles -> Map.Map String ClosureReturnInfo -> MetallicFunction -> AlloyBuilder ()
 lowerFunction ctorTags ctorFields profiles closureRetFns MetallicFunction{mfName, mfParams, mfReturnType, mfBody, mfMetadata} = do
     let constraints = mfmConstraints mfMetadata
-    let isInline = mfmIsInline mfMetadata
-    beginFunctionFull mfName mfParams mfReturnType constraints isInline
+    let attrs = mfmAttributes mfMetadata
+    beginFunctionFull mfName mfParams mfReturnType constraints attrs
     let entryName = "entry"
     beginBlock entryName []
 

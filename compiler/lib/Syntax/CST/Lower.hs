@@ -80,7 +80,7 @@ lowerBindingWithImpl isImpl node = do
             , bindingType = Located (toSpan node) qualType
             , bindingBody = body
             , bindingIsImpl = isImpl
-            , bindingModifiers = []
+            , bindingAttributes = []
             , bindingSpan = toSpan node
             }
 
@@ -102,6 +102,7 @@ lowerDataDef node = do
             , dataGenerics = generics
             , dataConstraints = constraints
             , dataConstructors = constructors
+            , dataAttributes = []
             , dataSpan = toSpan node
             }
 

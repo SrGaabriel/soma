@@ -8,14 +8,16 @@ import qualified Data.List.NonEmpty as NE
 import Data.Maybe (mapMaybe)
 import qualified Data.Set as Set
 import Lexing.Lexer (Token (..), TokenKind (..))
-import Parsing.Bindings (parseBinding, parseInlineBinding)
-import Parsing.DataTypes (parseDataType)
+import Lexing.Position (Located)
+import Parsing.Attributes (parseAttributes)
+import Parsing.Bindings (parseBindingWithAttributes)
+import Parsing.DataTypes (parseDataTypeWithAttributes)
 import Parsing.Errors (ParsingError (..))
 import Parsing.Imports (parseImport)
 import Parsing.Intrinsics (parseIntrinsic)
 import Parsing.Parser (Parser, TokenStream (..), anySingle, consume, getErrors, initialErrorState, isEOF, peek, recordError, skipUntilSync, tryPeek)
 import Parsing.Traits (parseInstance, parseTrait)
-import Syntax.Tree (Expr (ExprRoot))
+import Syntax.Tree (Attribute, Expr (ExprRoot))
 import Text.Megaparsec (
     ErrorItem (Label, Tokens),
     MonadParsec (observing),
@@ -123,7 +125,7 @@ someDeclarations = go []
 
     syncTokens =
         [ TokenDef
-        , TokenInline
+        , TokenAt
         , TokenData
         , TokenTrait
         , TokenInstance
@@ -135,11 +137,15 @@ someDeclarations = go []
 
 parseDeclaration :: Parser Expr
 parseDeclaration = do
+    attrs <- parseAttributes
+    parseDeclarationWithAttributes attrs
+
+parseDeclarationWithAttributes :: [Located Attribute] -> Parser Expr
+parseDeclarationWithAttributes attrs = do
     token <- peek
     case tokenKind token of
-        TokenDef -> parseBinding True
-        TokenInline -> parseInlineBinding True
-        TokenData -> parseDataType
+        TokenDef -> parseBindingWithAttributes True attrs
+        TokenData -> parseDataTypeWithAttributes attrs
         TokenTrait -> parseTrait
         TokenInstance -> parseInstance
         TokenIntrinsic -> parseIntrinsic

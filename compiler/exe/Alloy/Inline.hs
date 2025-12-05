@@ -38,6 +38,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Metal.Metadata (FunctionAttributes (..))
 import Typing.Types (Type)
 
 -- | Configuration for the inliner
@@ -104,9 +105,9 @@ buildInlinableMap config funcs =
 
 -- | Try to make a function inlinable (returns Nothing if not eligible)
 tryMakeInlinable :: InlineConfig -> AlloyFunction -> Maybe InlinableFunc
-tryMakeInlinable config fn@AlloyFunction{afName, afIsInline}
-    -- Check if explicitly marked for inlining via IR flag
-    | afIsInline = singleBlockInlinable fn
+tryMakeInlinable config fn@AlloyFunction{afName, afAttributes}
+    | faNoInline afAttributes = Nothing
+    | faInline afAttributes = singleBlockInlinable fn
     -- Check if explicitly marked for inlining via config
     | afName `Set.member` icInlineFunctions config = singleBlockInlinable fn
     -- Check if small enough for auto-inlining

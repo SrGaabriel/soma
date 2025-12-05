@@ -38,6 +38,7 @@ data ParsingError
         , receivedToken :: Token
         }
     | EndOfInput Token
+    | UnknownAttribute Token
     | Debug
     deriving (Eq, Ord)
 
@@ -71,6 +72,7 @@ instance Show ParsingError where
     show (UnexpectedParseFailure _ msg) = "Unexpected parse failure: " ++ msg
     show (InvalidTypeForTrait _ ty) = "Traits cannot be implemented for type: " ++ treeShow ty
     show EndOfInput{} = "Expected more input but reached end of input"
+    show (UnknownAttribute t) = "Unknown attribute: " ++ tokenValue t
     show Debug = "Debug"
 
 instance PrintableError ParsingError where
@@ -128,4 +130,5 @@ getErrorToken (ExpectedOneOfTokens _ t) = Just t
 getErrorToken (UnexpectedParseFailure t _) = Just t
 getErrorToken (EndOfInput t) = Just t
 getErrorToken (InvalidTypeForTrait t _) = Just t
+getErrorToken (UnknownAttribute t) = Just t
 getErrorToken Debug = Nothing

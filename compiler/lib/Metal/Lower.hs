@@ -16,10 +16,10 @@ import Control.Monad.State
 import qualified Data.Map as Map
 import Lexing.Position (Located (..), Span (..), dummySpan)
 import Metal.Expr hiding (exprSpan)
-import Metal.Metadata (MetallicConstructorMetadata (..), MetallicTypeClassMetadata (..))
+import Metal.Metadata (FunctionAttributes (..), MetallicConstructorMetadata (..), MetallicTypeClassMetadata (..), defaultFunctionAttributes)
 import Metal.Module (MetallicConstructor (..), MetallicTypeDef (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
-import Syntax.Tree (ComposeStmt (..), Expr (..), Modifier (..), exprSpan, uncurryApp)
+import Syntax.Tree (Attribute (..), ComposeStmt (..), Expr (..), exprSpan, uncurryApp)
 import Typing.Types (Constraint, Kind (..), QualifiedType (..), TyConstructor (..), TyVar (..), Type (..))
 
 data LowerState = LowerState
@@ -44,7 +44,7 @@ lookupConstructor :: String -> LowerM (Maybe MetallicConstructorMetadata)
 lookupConstructor name = gets (Map.lookup name . lsConstructors)
 
 data LowerResult = LowerResult
-    { lrBindings :: [(String, InferenceExpr, [Type], Type, [TyVar], [Constraint], Bool)]
+    { lrBindings :: [(String, InferenceExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)]
     , lrTypes :: [MetallicTypeDef]
     , lrInstances :: [(QualifiedType, [(String, InferenceExpr, [Type], Type)])]
     , lrTypeClasses :: [MetallicTypeClassMetadata]
@@ -69,7 +69,7 @@ lowerModule expr = do
     body <- lowerExpr expr
     pure
         LowerResult
-            { lrBindings = [("main", body, [], slotToType (inferenceSlot body), [], [], False)]
+            { lrBindings = [("main", body, [], slotToType (inferenceSlot body), [], [], defaultFunctionAttributes)]
             , lrTypes = []
             , lrInstances = []
             , lrTypeClasses = []
@@ -79,7 +79,7 @@ lowerTypes :: [Expr] -> LowerM [MetallicTypeDef]
 lowerTypes exprs = mapM lowerType [e | e@ExprDataTypeDef{} <- exprs]
 
 lowerType :: Expr -> LowerM MetallicTypeDef
-lowerType (ExprDataTypeDef name _generics _constraints constructors _span) = do
+lowerType (ExprDataTypeDef name _generics _constraints constructors _attrs _span) = do
     ctors <- zipWithM lowerConstructor [0 ..] constructors
     pure $ MAlgebraicType name ctors
   where
@@ -109,15 +109,23 @@ lowerTypeClass (ExprTypeClassDef className _ methods _) = do
     extractMethodType _ = Forall [] [] (TConstructor (TypeConstructor "Unknown" KindStar))
 lowerTypeClass e = error $ "Expected type class definition, got: " ++ show e
 
-lowerBindings :: [Expr] -> LowerM [(String, InferenceExpr, [Type], Type, [TyVar], [Constraint], Bool)]
+lowerBindings :: [Expr] -> LowerM [(String, InferenceExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)]
 lowerBindings exprs = mapM lowerBinding [e | e@ExprBindingDef{} <- exprs]
 
-lowerBinding :: Expr -> LowerM (String, InferenceExpr, [Type], Type, [TyVar], [Constraint], Bool)
-lowerBinding (ExprBindingDef name (Located _ (Forall typeVars constraints bindingType)) body _isTopLevel mods _span) = do
-    let isInline = ModInline `elem` mods
+lowerBinding :: Expr -> LowerM (String, InferenceExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)
+lowerBinding (ExprBindingDef name (Located _ (Forall typeVars constraints bindingType)) body _isTopLevel attrs _span) = do
+    let funcAttrs = attributesToFunctionAttrs (map lValue attrs)
     (paramTypes, returnType, metalBody) <- lowerBindingBody bindingType body
-    pure (name, metalBody, paramTypes, returnType, typeVars, constraints, isInline)
+    pure (name, metalBody, paramTypes, returnType, typeVars, constraints, funcAttrs)
 lowerBinding e = error $ "Expected binding definition, got: " ++ show e
+
+attributesToFunctionAttrs :: [Attribute] -> FunctionAttributes
+attributesToFunctionAttrs = foldr apply defaultFunctionAttributes
+  where
+    apply AttrInline fa = fa{faInline = True}
+    apply AttrNoInline fa = fa{faNoInline = True}
+    apply (AttrDeprecated msg) fa = fa{faDeprecated = msg}
+    apply (AttrExtern n) fa = fa{faExtern = Just n}
 
 lowerBindingBody :: Type -> Expr -> LowerM ([Type], Type, InferenceExpr)
 lowerBindingBody bindingType body = case body of

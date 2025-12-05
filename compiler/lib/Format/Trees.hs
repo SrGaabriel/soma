@@ -75,7 +75,7 @@ instance TreeShow Expr where
         "PatternMatchArm: (" ++ unwords (map treeShow p) ++ "):"
     treeShow (ExprBindingDef name (Located _ qType) _ _ _ _) = "BindingDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
     treeShow (ExprIntrinsicDef name (Located _ qType) _) = "IntrinsicDef (" ++ name ++ " : " ++ treeShow qType ++ "):"
-    treeShow (ExprDataTypeDef name generics _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
+    treeShow (ExprDataTypeDef name generics _ _ _ _) = "DataDef (" ++ name ++ ": " ++ treeShow generics ++ "):" -- todo: show constraints
     treeShow (ExprDataConstructor name args _) = "DataConstructor (" ++ name ++ ": " ++ treeShowArgs args ++ "):"
     treeShow (ExprTypeClassDef name (Located _ ty) _ _) = "TypeClassDef (" ++ name ++ ": " ++ treeShow ty ++ "):"
     treeShow (ExprTypeClassBinding name (Located _ qType) _ _) = "TypeClassBinding (" ++ name ++ ": " ++ treeShow qType ++ "):"

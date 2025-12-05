@@ -1,12 +1,15 @@
-module Syntax.Tree (Expr (..), Modifier (..), exprChildren, exprSpan, modifySpan, uncurryApp, ComposeStmt (..)) where
+module Syntax.Tree (Expr (..), Attribute (..), exprChildren, exprSpan, modifySpan, uncurryApp, ComposeStmt (..)) where
 
 import Lexing.Position (Located (..), Span (..))
 import Project.Symbols (Symbol)
 import Syntax.Patterns (Pattern (..))
 import Typing.Types (Constraint, Kind, QualifiedType, TyVar, Type)
 
-data Modifier
-    = ModInline
+data Attribute
+    = AttrInline
+    | AttrNoInline
+    | AttrDeprecated (Maybe String)
+    | AttrExtern String
     deriving (Show, Eq, Ord)
 
 data Expr
@@ -40,7 +43,7 @@ data Expr
         , bindingType :: Located QualifiedType
         , bindingBody :: Expr
         , bindingIsImpl :: Bool
-        , bindingModifiers :: [Modifier]
+        , bindingAttributes :: [Located Attribute]
         , bindingSpan :: Span
         }
     | ExprIntrinsicDef
@@ -53,6 +56,7 @@ data Expr
         , dataGenerics :: [TyVar]
         , dataConstraints :: [Constraint]
         , dataConstructors :: [Expr]
+        , dataAttributes :: [Located Attribute]
         , dataSpan :: Span
         }
     | ExprIntrinsicDataTypeDef
@@ -119,7 +123,7 @@ exprChildren (ExprTypeClassBinding _ _ Nothing _) = []
 exprChildren (ExprDerivedPatternMatch arms) = arms
 exprChildren (ExprBindingDef _ _ body _ _ _) = [body]
 exprChildren (ExprIntrinsicDef{}) = []
-exprChildren (ExprDataTypeDef _ _ _ constructors _) = constructors
+exprChildren (ExprDataTypeDef _ _ _ constructors _ _) = constructors
 exprChildren (ExprIntrinsicDataTypeDef{}) = []
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprInstanceDef _ methods _) = methods
@@ -146,7 +150,7 @@ exprSpan (ExprLambda _ _ s) = s
 exprSpan (ExprLet _ _ _ s) = s
 exprSpan (ExprBindingDef _ _ _ _ _ s) = s
 exprSpan (ExprIntrinsicDef _ _ s) = s
-exprSpan (ExprDataTypeDef _ _ _ _ s) = s
+exprSpan (ExprDataTypeDef _ _ _ _ _ s) = s
 exprSpan (ExprIntrinsicDataTypeDef _ _ s) = s
 exprSpan (ExprDataConstructor _ _ s) = s
 exprSpan (ExprTypeClassDef _ _ _ s) = s
@@ -178,12 +182,12 @@ modifySpan (ExprLambda args body _) newSpan =
     ExprLambda args body newSpan
 modifySpan (ExprLet name value body _) newSpan =
     ExprLet name value body newSpan
-modifySpan (ExprBindingDef name bindType body isImpl mods _) newSpan =
-    ExprBindingDef name bindType body isImpl mods newSpan
+modifySpan (ExprBindingDef name bindType body isImpl attrs _) newSpan =
+    ExprBindingDef name bindType body isImpl attrs newSpan
 modifySpan (ExprIntrinsicDef name typ _) newSpan =
     ExprIntrinsicDef name typ newSpan
-modifySpan (ExprDataTypeDef name generics constraints constructors _) newSpan =
-    ExprDataTypeDef name generics constraints constructors newSpan
+modifySpan (ExprDataTypeDef name generics constraints constructors attrs _) newSpan =
+    ExprDataTypeDef name generics constraints constructors attrs newSpan
 modifySpan (ExprIntrinsicDataTypeDef name kind _) newSpan =
     ExprIntrinsicDataTypeDef name kind newSpan
 modifySpan (ExprDataConstructor name args _) newSpan =

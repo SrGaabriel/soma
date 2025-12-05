@@ -10,9 +10,8 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import qualified Data.Text as T
 import Format.Errors (SomeError (SomeError))
-import Inference.Core (InstanceEnv)
+import Inference.Core (InstanceEnv, TypedBinding)
 import Language.LSP.Protocol.Types (Uri)
-import Metal.Expr (TypedExpr)
 import Metal.Lower (lowerModule, runLower)
 import Project.Check (CheckedModule (..), checkModule)
 import Project.Graph
@@ -20,13 +19,13 @@ import Project.Module (ModuleInfo (..))
 import Project.Symbols (Symbol (..))
 import Souls.Haoma (ExternalDeps (..), HaomaProjectCache)
 import Syntax.Tree (Expr (..))
-import Typing.Types (Constraint, QualifiedType, TyVar, Type)
+import Typing.Types (QualifiedType)
 
 data LspCompiledModule = LspCompiledModule
     { lcmModuleName :: String
     , lcmFilePath :: FilePath
     , lcmResolvedAst :: Expr
-    , lcmTypedBindings :: [(String, TypedExpr, [Type], Type, [TyVar], [Constraint], Bool)]
+    , lcmTypedBindings :: [TypedBinding]
     , lcmPublicSymbols :: Map.Map Symbol QualifiedType
     , lcmInstances :: InstanceEnv
     , lcmSourceContent :: T.Text

@@ -4,7 +4,7 @@
 module Souls.Symbols where
 
 import qualified Data.Map.Strict as Map
-import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Maybe (listToMaybe, mapMaybe, maybeToList)
 import qualified Data.Text as T
 import Format.Trees (treeShow)
 import Language.LSP.Protocol.Types (CompletionItem (..), CompletionItemKind (CompletionItemKind_Function), CompletionList (CompletionList), Hover (Hover), Location (..), MarkupContent (..), MarkupKind (..), Position, filePathToUri, type (|?) (InL))
@@ -91,7 +91,7 @@ typedExprChildren expr = case expr of
     MTuple elems _ _ -> elems
     MIf cond thenE elseE _ _ -> [cond, thenE, elseE]
     MCase scruts arms mdef _ _ ->
-        scruts ++ map (\(MCaseArm _ b) -> b) arms ++ maybe [] (: []) mdef
+        scruts ++ map (\(MCaseArm _ b) -> b) arms ++ maybeToList mdef
     MFieldAccess e _ _ _ -> [e]
     MPanic{} -> []
 

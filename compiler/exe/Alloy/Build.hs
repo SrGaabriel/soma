@@ -22,6 +22,7 @@ import Alloy.Naming (nameBlockPrefix, nameTmpPrefix)
 import Control.Monad (when)
 import Control.Monad.State.Strict
 import Data.Maybe (isNothing)
+import Metal.Metadata (FunctionAttributes, defaultFunctionAttributes)
 import qualified Metal.Metadata
 import Typing.Types (Constraint, Type)
 
@@ -42,7 +43,7 @@ data FunBuild = FunBuild
     , fbEntry :: Maybe BlockName
     , fbBlocks :: [ABlock]
     , fbConstraints :: [Constraint]
-    , fbIsInline :: Bool
+    , fbAttributes :: FunctionAttributes
     }
 
 data BlockBuild = BlockBuild
@@ -77,14 +78,14 @@ runAlloyBuilder modName typeClasses action =
     in (res, mdl)
 
 beginFunction :: Name -> [(Name, Type)] -> Type -> AlloyBuilder ()
-beginFunction name params retTy = beginFunctionFull name params retTy [] False
+beginFunction name params retTy = beginFunctionFull name params retTy [] defaultFunctionAttributes
 
 beginFunctionWithConstraints :: Name -> [(Name, Type)] -> Type -> [Constraint] -> AlloyBuilder ()
 beginFunctionWithConstraints name params retTy constraints =
-    beginFunctionFull name params retTy constraints False
+    beginFunctionFull name params retTy constraints defaultFunctionAttributes
 
-beginFunctionFull :: Name -> [(Name, Type)] -> Type -> [Constraint] -> Bool -> AlloyBuilder ()
-beginFunctionFull name params retTy constraints isInline = do
+beginFunctionFull :: Name -> [(Name, Type)] -> Type -> [Constraint] -> FunctionAttributes -> AlloyBuilder ()
+beginFunctionFull name params retTy constraints attrs = do
     st@BuildState{..} <- get
     when (isJust bsCurFun)
         $ error "Alloy.Build: beginFunction called while another function is open"
@@ -96,7 +97,7 @@ beginFunctionFull name params retTy constraints isInline = do
                 , fbEntry = Nothing
                 , fbBlocks = []
                 , fbConstraints = constraints
-                , fbIsInline = isInline
+                , fbAttributes = attrs
                 }
     put st{bsCurFun = Just fb, bsCurBlk = Nothing}
 
@@ -120,7 +121,7 @@ endFunction = do
                 , afEntry = entryName
                 , afBlocks = fbBlocks
                 , afConstraints = fbConstraints
-                , afIsInline = fbIsInline
+                , afAttributes = fbAttributes
                 }
 
     put

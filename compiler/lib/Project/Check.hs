@@ -1,5 +1,6 @@
 module Project.Check (
     CheckedModule (..),
+    TypedBinding,
     checkModule,
     checkModulesInOrder,
 ) where
@@ -7,10 +8,9 @@ module Project.Check (
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Inference.Assembler (MetalTypeEnv, inferModule)
-import Inference.Core (InstanceEnv)
+import Inference.Core (InstanceEnv, TypedBinding)
 import Inference.Errors (InferenceError)
 import Inference.Resolver (runResolverWithEnv)
-import Metal.Expr (TypedExpr)
 import Metal.Gen.Metadata (extractConstructorMetadata)
 import Metal.Lower (LowerResult (..), lowerModule, runLower)
 import Metal.Metadata (MetallicConstructorMetadata)
@@ -18,13 +18,14 @@ import Project.Extracts (extractSymbolImports, resolveImport)
 import Project.Module (ModuleInfo (..), ModuleName)
 import Project.Symbols (Symbol (..))
 import Syntax.Tree (Expr)
-import Typing.Types (Constraint, QualifiedType (..), TyVar, Type)
+import Typing.Types (QualifiedType (..))
 
+-- | A typed binding with name, typed expression, param types, return type, type vars, constraints, and attributes
 data CheckedModule = CheckedModule
     { checkedModuleName :: ModuleName
     , checkedResolvedAst :: Expr
     , checkedLowerResult :: LowerResult
-    , checkedTypedBindings :: [(String, TypedExpr, [Type], Type, [TyVar], [Constraint], Bool)]
+    , checkedTypedBindings :: [TypedBinding]
     , checkedPublicSymbols :: Map Symbol QualifiedType
     , checkedInstances :: InstanceEnv
     }

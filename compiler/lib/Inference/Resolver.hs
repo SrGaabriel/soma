@@ -79,7 +79,7 @@ collectGlobals (ExprIntrinsicDataTypeDef name kind eSpan) = do
     let baseConstructor = TConstructor $ TypeConstructor name kind
     let constrainedType = Forall [] [] baseConstructor
     addGlobalBinding name constrainedType IntrinsicTypeSymbol eSpan
-collectGlobals (ExprDataTypeDef name generics constraints constructors eSpan) = do
+collectGlobals (ExprDataTypeDef name generics constraints constructors _attrs eSpan) = do
     let kind = foldr (KindArrow . tvKind) KindStar generics
     let baseConstructor = TConstructor $ TypeConstructor name kind
 
@@ -120,9 +120,9 @@ resolveTReference :: Expr -> ResolverM Expr
 resolveTReference (ExprRoot children) = do
     children' <- mapM resolveTReference children
     pure $ ExprRoot children'
-resolveTReference (ExprDataTypeDef name generics constraints constructors s) = do
+resolveTReference (ExprDataTypeDef name generics constraints constructors attrs s) = do
     constructors' <- mapM resolveTReference constructors
-    pure $ ExprDataTypeDef name generics constraints constructors' s
+    pure $ ExprDataTypeDef name generics constraints constructors' attrs s
 resolveTReference (ExprTypeClassDef name (Located tySpan ty) methods s) = do
     let typeExpr = ExprNum "" tySpan
     ty' <- replaceAllUnresolvedQualified typeExpr ty

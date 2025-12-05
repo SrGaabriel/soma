@@ -7,13 +7,14 @@ module Inference.Assembler (
 
 import Data.List (nub)
 import qualified Data.Map as Map
-import Inference.Core (InstanceEnv)
+import Inference.Core (InstanceEnv, TypedBinding)
 import Inference.Errors (InferenceError (..))
 import Inference.Gen
 import Inference.Solving (checkMetalConstraintEntailment, solveMetalTypeConstraints)
 import Inference.Substitution (Subst, Substitutable (apply))
 import Metal.Expr
 import Metal.Lower (LowerResult (..))
+import Metal.Metadata (FunctionAttributes)
 import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..))
 
 inferModule ::
@@ -22,15 +23,15 @@ inferModule ::
     MetalTypeEnv ->
     InstanceEnv ->
     LowerResult ->
-    ([InferenceError], [(String, TypedExpr, [Type], Type, [TyVar], [Constraint], Bool)])
+    ([InferenceError], [TypedBinding])
 inferModule packageName moduleName typeEnv instanceEnv lowerResult = do
     let bindings = lrBindings lowerResult
     let instances = lrInstances lowerResult
 
     let (bindingErrors, typedBindings) =
             unzip
-                [ inferBinding packageName moduleName typeEnv instanceEnv name body paramTypes retType tyVars constraints isInline
-                | (name, body, paramTypes, retType, tyVars, constraints, isInline) <- bindings
+                [ inferBinding packageName moduleName typeEnv instanceEnv name body paramTypes retType tyVars constraints attrs
+                | (name, body, paramTypes, retType, tyVars, constraints, attrs) <- bindings
                 ]
 
     let (instanceErrors, _typedInstances) =
@@ -53,9 +54,9 @@ inferBinding ::
     Type ->
     [TyVar] ->
     [Constraint] ->
-    Bool ->
-    ([InferenceError], (String, TypedExpr, [Type], Type, [TyVar], [Constraint], Bool))
-inferBinding packageName moduleName typeEnv instanceEnv name body paramTypes retType tyVars constraints isInline =
+    FunctionAttributes ->
+    ([InferenceError], TypedBinding)
+inferBinding packageName moduleName typeEnv instanceEnv name body paramTypes retType tyVars constraints attrs =
     let
         ((_, constraintSet), _genState, genErrors) =
             runMetalGenM packageName moduleName typeEnv
@@ -66,7 +67,7 @@ inferBinding packageName moduleName typeEnv instanceEnv name body paramTypes ret
         case solveResult of
             Left solveErrors ->
                 let typedBody = applySubstitution Map.empty body
-                in (genErrors ++ solveErrors, (name, typedBody, paramTypes, retType, tyVars, constraints, isInline))
+                in (genErrors ++ solveErrors, (name, typedBody, paramTypes, retType, tyVars, constraints, attrs))
             Right typeSubst ->
                 let classConstraints' = mcsClassConstraints constraintSet
                     declaredConstraints' = mcsDeclaredConstraints constraintSet
@@ -74,13 +75,13 @@ inferBinding packageName moduleName typeEnv instanceEnv name body paramTypes ret
                 in case entailmentResult of
                     Left entailmentErrors ->
                         let typedBody = applySubstitution typeSubst body
-                        in (genErrors ++ entailmentErrors, (name, typedBody, paramTypes, retType, tyVars, constraints, isInline))
+                        in (genErrors ++ entailmentErrors, (name, typedBody, paramTypes, retType, tyVars, constraints, attrs))
                     Right () ->
                         let typedBody = applySubstitution typeSubst body
                             -- Apply substitution to param types and return type for consistency
                             typedParamTypes = map (apply typeSubst) paramTypes
                             typedRetType = apply typeSubst retType
-                        in (genErrors, (name, typedBody, typedParamTypes, typedRetType, tyVars, constraints, isInline))
+                        in (genErrors, (name, typedBody, typedParamTypes, typedRetType, tyVars, constraints, attrs))
 
 inferInstanceMethods ::
     String ->

@@ -3,7 +3,7 @@
 module Alloy.Ir where
 
 import GHC.Generics (Generic)
-import Metal.Metadata (MetallicTypeClassMetadata)
+import Metal.Metadata (FunctionAttributes, MetallicTypeClassMetadata)
 import Typing.Types (Constraint, Type)
 
 type Name = String
@@ -40,7 +40,7 @@ data AlloyFunction = AlloyFunction
     , afEntry :: BlockName
     , afBlocks :: [ABlock]
     , afConstraints :: [Constraint]
-    , afIsInline :: Bool
+    , afAttributes :: FunctionAttributes
     }
     deriving (Generic, Show, Eq)
 

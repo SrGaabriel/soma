@@ -13,6 +13,7 @@ import qualified Data.Map.Strict as Map
 import Format.Trees (TreeShow (..))
 import Metal.Expr
 import Metal.Function
+import Metal.Metadata (FunctionAttributes (..))
 import Metal.Module
 
 indent :: Int -> String -> String
@@ -252,8 +253,8 @@ instance TreeShow ABlock where
                 else "(" ++ commaSep [n ++ ": " ++ treeShow t | (n, t) <- params] ++ ")"
 
 instance TreeShow AlloyFunction where
-    treeShow (AlloyFunction nm params ret entry blks constraints isInline) =
-        (if isInline then "inline " else "")
+    treeShow (AlloyFunction nm params ret entry blks constraints attrs) =
+        (if faInline attrs then "inline " else "")
             ++ "func "
             ++ nm
             ++ "("

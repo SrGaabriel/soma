@@ -1,14 +1,17 @@
-module Parsing.DataTypes where
+module Parsing.DataTypes (parseDataType, parseDataTypeWithAttributes) where
 
 import Lexing.Lexer (Token (tokenValue), TokenKind (..), spanningTokens)
 import Lexing.Position (Located)
 import Parsing.Parser (Parser, consume, parseFluidSequence, parseLayout, parseOptionallyLayout)
 import Parsing.Types (parseLocatedType, parseTyVar)
-import Syntax.Tree (Expr (..))
+import Syntax.Tree (Attribute, Expr (..))
 import Typing.Types (Type)
 
 parseDataType :: Parser Expr
-parseDataType = do
+parseDataType = parseDataTypeWithAttributes []
+
+parseDataTypeWithAttributes :: [Located Attribute] -> Parser Expr
+parseDataTypeWithAttributes attrs = do
     dataTok <- consume TokenData
     nameTok <- consume TokenUpperIdentifier
     tyVars <- parseFluidSequence TokenLayoutStart parseTyVar
@@ -22,6 +25,7 @@ parseDataType = do
             , dataGenerics = tyVars
             , dataConstraints = []
             , dataConstructors = constructors
+            , dataAttributes = attrs
             , dataSpan = spanning
             }
 

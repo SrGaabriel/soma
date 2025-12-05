@@ -12,15 +12,16 @@ module Metal.Gen.Entry (
 ) where
 
 import qualified Data.Map as Map
+import Inference.Core (TypedBinding)
 import Metal.Expr (TypedExpr)
 import Metal.Function (MetallicFunction (..))
-import Metal.Metadata (MetallicConstructorMetadata, MetallicFunctionMetadata (MetallicFunctionMetadata), MetallicTypeClassMetadata)
+import Metal.Metadata (MetallicConstructorMetadata, MetallicFunctionMetadata (MetallicFunctionMetadata), MetallicTypeClassMetadata, defaultFunctionAttributes)
 import Metal.Module (MetallicInstance (..), MetallicModule (..), MetallicTypeDef)
 import Metal.Naming (makeInstanceMethodName, nameArrayPrefix)
-import Typing.Types (Constraint, QualifiedType (..), TyConstructor (..), TyVar, Type (..))
+import Typing.Types (QualifiedType (..), TyConstructor (..), Type (..))
 
 data TypedLowerResult = TypedLowerResult
-    { tlrBindings :: [(String, TypedExpr, [Type], Type, [TyVar], [Constraint], Bool)]
+    { tlrBindings :: [TypedBinding]
     , tlrTypes :: [MetallicTypeDef]
     , tlrInstances :: [(QualifiedType, [(String, TypedExpr, [Type], Type)])]
     , tlrTypeClasses :: [MetallicTypeClassMetadata]
@@ -47,11 +48,11 @@ compileMetalModule name TypedLowerResult{tlrBindings, tlrTypes, tlrInstances, tl
             }
 
 bindingToFunction ::
-    (String, TypedExpr, [Type], Type, [TyVar], [Constraint], Bool) ->
+    TypedBinding ->
     MetallicFunction
-bindingToFunction (name, body, paramTypes, returnType, typeVars, constraints, isInline) =
+bindingToFunction (name, body, paramTypes, returnType, typeVars, constraints, attrs) =
     let params = zipWith (\i t -> ("arg" ++ show i, t)) [0 :: Int ..] paramTypes
-        metadata = MetallicFunctionMetadata typeVars constraints Nothing Nothing isInline
+        metadata = MetallicFunctionMetadata typeVars constraints Nothing Nothing attrs
     in MetallicFunction name params returnType body metadata
 
 instanceToMetallicInstance ::
@@ -80,7 +81,7 @@ methodToFunction _className instanceType (methodName, body, paramTypes, returnTy
     let typeName = extractTypeName instanceType
         mangledName = makeInstanceMethodName methodName typeName
         params = zipWith (\i t -> ("arg" ++ show i, t)) [0 :: Int ..] paramTypes
-        metadata = MetallicFunctionMetadata [] [] Nothing Nothing False
+        metadata = MetallicFunctionMetadata [] [] Nothing Nothing defaultFunctionAttributes
     in MetallicFunction mangledName params returnType body metadata
 
 extractTypeName :: Type -> String

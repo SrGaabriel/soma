@@ -11,7 +11,7 @@ import qualified Data.Set as Set
 import Lexing.Position (dummySpan)
 import Metal.Expr
 import Metal.Function
-import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (MetallicFunctionMetadata))
+import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (MetallicFunctionMetadata), defaultFunctionAttributes)
 import Metal.Module
 import Syntax.Patterns (Pattern (..))
 import Typing.Types
@@ -103,7 +103,7 @@ liftExprLambdas available bound (MCall callee args ty s) = do
                         , mfParams = liftedParams
                         , mfReturnType = retType
                         , mfBody = body'
-                        , mfMetadata = MetallicFunctionMetadata [] [] Nothing (Just (ClosureFunctionInfo freeVarsList)) False
+                        , mfMetadata = MetallicFunctionMetadata [] [] Nothing (Just (ClosureFunctionInfo freeVarsList)) defaultFunctionAttributes
                         }
 
             addLiftedFunction liftedFn
@@ -155,7 +155,7 @@ liftExprLambdas available bound (MLet name val body ty s) = case val of
                     , mfParams = liftedParams
                     , mfReturnType = retType
                     , mfBody = lambdaBody'
-                    , mfMetadata = MetallicFunctionMetadata [] [] Nothing (Just (ClosureFunctionInfo freeVarsList)) False
+                    , mfMetadata = MetallicFunctionMetadata [] [] Nothing (Just (ClosureFunctionInfo freeVarsList)) defaultFunctionAttributes
                     }
 
         addLiftedFunction liftedFn
@@ -198,12 +198,12 @@ liftExprLambdas available bound (MLambda params body ty s) = do
                 , mfParams = liftedParams
                 , mfReturnType = retType
                 , mfBody = body'
-                , mfMetadata = MetallicFunctionMetadata [] [] Nothing (Just (ClosureFunctionInfo freeVarsList)) False
+                , mfMetadata = MetallicFunctionMetadata [] [] Nothing (Just (ClosureFunctionInfo freeVarsList)) defaultFunctionAttributes
                 }
 
     addLiftedFunction liftedFn
 
-    --All lambdas become closures
+    -- All lambdas become closures
     pure (MClosure liftedName freeVarsList ty s)
 liftExprLambdas available bound (MConstruct name tag args ty s) =
     MConstruct name tag <$> mapM (liftExprLambdas available bound) args <*> pure ty <*> pure s

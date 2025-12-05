@@ -21,9 +21,9 @@ import Metal.Gen.Patterns (patternMatchArity)
 import Metal.Gen.Unique (sanitizeName)
 import Metal.Gen.Value (metallizeValue)
 import Metal.Lift (collectBinders)
-import Metal.Metadata (MetallicFunctionMetadata (..))
+import Metal.Metadata (FunctionAttributes (..), MetallicFunctionMetadata (..), defaultFunctionAttributes)
 import Project.Symbols (Symbol (..))
-import Syntax.Tree (Expr (..), Modifier (..), exprChildren)
+import Syntax.Tree (Attribute (..), Expr (..), exprChildren)
 import Typing.Types (QualifiedType (Forall), Type (..))
 
 getBodyArity :: Expr -> Int
@@ -42,7 +42,7 @@ splitFunctionType n (TArrow argTy restTy) =
 splitFunctionType _ ty = ([], ty) -- Type doesn't have enough arrows
 
 metallizeBinding :: Expr -> MetalGen ()
-metallizeBinding (ExprBindingDef dirtyName (Located _ (Forall typeVars constraints bindingTyp)) body _isImpl mods span') = do
+metallizeBinding (ExprBindingDef dirtyName (Located _ (Forall typeVars constraints bindingTyp)) body _isImpl attrs span') = do
     let name = sanitizeName dirtyName
     -- Get the actual arity from the body (lambda parameters or pattern match arity)
     let arity = getBodyArity body
@@ -52,7 +52,7 @@ metallizeBinding (ExprBindingDef dirtyName (Located _ (Forall typeVars constrain
     (paramNames, metalBody) <- metallizeFnBody name body paramTypes retType span'
 
     let params = zip paramNames paramTypes
-    let isInline = ModInline `elem` mods
+    let funcAttrs = attributesToFunctionAttrs (map lValue attrs)
 
     let func =
             MetallicFunction
@@ -62,16 +62,24 @@ metallizeBinding (ExprBindingDef dirtyName (Located _ (Forall typeVars constrain
                 , mfBody = metalBody
                 , mfMetadata =
                     MetallicFunctionMetadata
-                        { mfmOriginalName = typeVars
+                        { mfmTypeVars = typeVars
                         , mfmConstraints = constraints
                         , mfmInstanceInfo = Nothing
                         , mfmClosureInfo = Nothing
-                        , mfmIsInline = isInline
+                        , mfmAttributes = funcAttrs
                         }
                 }
 
     addFunction name func
 metallizeBinding _ = pure ()
+
+attributesToFunctionAttrs :: [Attribute] -> FunctionAttributes
+attributesToFunctionAttrs = foldr apply defaultFunctionAttributes
+  where
+    apply AttrInline fa = fa{faInline = True}
+    apply AttrNoInline fa = fa{faNoInline = True}
+    apply (AttrDeprecated msg) fa = fa{faDeprecated = msg}
+    apply (AttrExtern name) fa = fa{faExtern = Just name}
 
 metallizeFnBody :: String -> Expr -> [Type] -> Type -> Span -> MetalGen ([String], TypedExpr)
 metallizeFnBody fnName (ExprLambda paramNames body _) paramTypes _retType _span = do

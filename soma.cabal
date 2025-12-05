@@ -52,6 +52,7 @@ library
     Metal.Naming
     Parsing.Ast
     Parsing.Atoms
+    Parsing.Attributes
     Parsing.Bindings
     Parsing.Cst.Atoms
     Parsing.Cst.Declarations
