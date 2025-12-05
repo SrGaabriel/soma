@@ -19,6 +19,7 @@ import Typing.Types (TyConstructor (..), Type (..))
 data MonadicOps = MonadicOps
     { ioPure :: [Name]
     , ioBind :: [Name]
+    , ioSeq :: [Name]
     , readerPure :: [Name]
     , readerBind :: [Name]
     , readerAsk :: [Name]
@@ -46,6 +47,7 @@ defaultMonadicOps =
     MonadicOps
         { ioPure = ["IO.pure", "IO$pure"]
         , ioBind = ["IO.bind", "IO$bind"]
+        , ioSeq = [">>"]
         , readerPure = ["Reader.pure", "Reader$pure"]
         , readerBind = ["Reader.bind", "Reader$bind"]
         , readerAsk = ["Reader.ask", "Reader$ask"]
@@ -127,6 +129,11 @@ rewireInstr ops (acc, env) instr =
             , [envArg] <- args ->
                 let envOp = substOperand env envArg
                 in (acc, Map.insert n envOp env)
+            -- Both IO actions have already executed, so we just substitute with the second operand (or unit if both are void)
+            | isIoSeq ops callee
+            , [_a, b] <- args ->
+                let b' = substOperand env b
+                in (acc, Map.insert n b' env)
             | isRefRead ops callee
             , [r] <- args ->
                 let r' = substOperand env r
@@ -169,12 +176,13 @@ rewireInstr ops (acc, env) instr =
 matches :: [Name] -> Name -> Bool
 matches candidates n = any (`isPrefixOf` n) candidates
 
-isIoPure, isIoBind, isReaderPure, isReaderBind, isReaderAsk :: MonadicOps -> Name -> Bool
+isIoPure, isIoBind, isIoSeq, isReaderPure, isReaderBind, isReaderAsk :: MonadicOps -> Name -> Bool
 isRefNew, isRefRead, isRefModify, isStatePure, isStateBind :: MonadicOps -> Name -> Bool
 isStateGet, isStatePut, isMaybePure, isMaybeBind :: MonadicOps -> Name -> Bool
 isEitherPure, isEitherBind :: MonadicOps -> Name -> Bool
 isIoPure MonadicOps{ioPure} = matches ioPure
 isIoBind MonadicOps{ioBind} = matches ioBind
+isIoSeq MonadicOps{ioSeq} = matches ioSeq
 isReaderPure MonadicOps{readerPure} = matches readerPure
 isReaderBind MonadicOps{readerBind} = matches readerBind
 isReaderAsk MonadicOps{readerAsk} = matches readerAsk
