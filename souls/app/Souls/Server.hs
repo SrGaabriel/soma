@@ -10,24 +10,24 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (listToMaybe)
 import qualified Data.Text as T
 import Format.Errors (SomeError (SomeError))
-import Inference.Assembler (inferTree)
-import Inference.Core (InstanceEnv, TypeEnv, TypeMap)
-import Inference.Resolver (runResolverWithEnv)
+import Inference.Core (InstanceEnv)
 import Language.LSP.Protocol.Types (Uri)
-import Project.Extracts (
-    extractSymbolImports,
-    resolveImport,
- )
+import Metal.Expr (TypedExpr)
+import Metal.Lower (lowerModule, runLower)
+import Project.Check (CheckedModule (..), checkModule)
 import Project.Graph
+import Project.Module (ModuleInfo (..))
+import Project.Symbols (Symbol (..))
 import Souls.Haoma (ExternalDeps (..), HaomaProjectCache)
 import Syntax.Tree (Expr (..))
+import Typing.Types (Constraint, QualifiedType, TyVar, Type)
 
 data LspCompiledModule = LspCompiledModule
     { lcmModuleName :: String
     , lcmFilePath :: FilePath
     , lcmResolvedAst :: Expr
-    , lcmTypeMap :: TypeMap
-    , lcmPublicSymbols :: TypeEnv
+    , lcmTypedBindings :: [(String, TypedExpr, [Type], Type, [TyVar], [Constraint], Bool)]
+    , lcmPublicSymbols :: Map.Map Symbol QualifiedType
     , lcmInstances :: InstanceEnv
     , lcmSourceContent :: T.Text
     }
@@ -51,35 +51,45 @@ compileModuleForLSP ::
     ExternalDeps ->
     ([SomeError], LspCompiledModule)
 compileModuleForLSP modName filePath content ast compiledDeps externalDeps =
-    let imports = extractSymbolImports ast
-        compiledByName = Map.fromList [(lcmModuleName c, (lcmPublicSymbols c, lcmInstances c)) | c <- Map.elems compiledDeps]
-        resolve = resolveImport compiledByName (edTypes externalDeps) (edInstances externalDeps)
-        importsResolved = map resolve imports
-        seedEnv = Map.unions $ map fst importsResolved
-        seedInstances = Map.unions $ map snd importsResolved
-        (resolverErrors, (resolvedAst, fullEnv, instanceEnv)) =
-            runResolverWithEnv
-                "lsp"
-                modName
-                seedEnv
-                seedInstances
-                ast
-        (inferenceErrors, types) = inferTree "lsp" modName fullEnv instanceEnv resolvedAst
+    let
+        -- todo: review this, currently tokens are not needed by checkModule, so I'm passing empty list
+        modInfo = ModuleInfo modName filePath content [] ast
+        checkedByName = Map.fromList [(lcmModuleName c, toCheckedModule c) | c <- Map.elems compiledDeps]
 
-        allErrors = map (\e -> SomeError e filePath content "INFERENCE") (resolverErrors ++ inferenceErrors)
-        newDefs = Map.difference fullEnv seedEnv
+        (inferenceErrors, checked) =
+            checkModule
+                "lsp"
+                modInfo
+                checkedByName
+                (edTypes externalDeps)
+                (edInstances externalDeps)
+                Map.empty -- constructor metadata extracted internally by checkModule
+        allErrors = map (\e -> SomeError e filePath content "INFERENCE") inferenceErrors
 
         compiledModule =
             LspCompiledModule
                 { lcmModuleName = modName
-                , lcmResolvedAst = resolvedAst
-                , lcmTypeMap = types
+                , lcmResolvedAst = checkedResolvedAst checked
+                , lcmTypedBindings = checkedTypedBindings checked
                 , lcmFilePath = filePath
-                , lcmPublicSymbols = newDefs
-                , lcmInstances = instanceEnv
+                , lcmPublicSymbols = checkedPublicSymbols checked
+                , lcmInstances = checkedInstances checked
                 , lcmSourceContent = T.pack content
                 }
-    in (allErrors, compiledModule)
+    in
+        (allErrors, compiledModule)
+
+toCheckedModule :: LspCompiledModule -> CheckedModule
+toCheckedModule cm =
+    let lowerResult = runLower Map.empty (lowerModule (lcmResolvedAst cm))
+    in CheckedModule
+        { checkedModuleName = lcmModuleName cm
+        , checkedResolvedAst = lcmResolvedAst cm
+        , checkedLowerResult = lowerResult
+        , checkedTypedBindings = lcmTypedBindings cm
+        , checkedPublicSymbols = lcmPublicSymbols cm
+        , checkedInstances = lcmInstances cm
+        }
 
 findModuleByName :: String -> Map.Map FilePath LspCompiledModule -> Maybe LspCompiledModule
 findModuleByName name mods =

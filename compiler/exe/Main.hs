@@ -277,7 +277,7 @@ circuit opts = do
         lowerResult = checkedLowerResult checked
         typedBindings = checkedTypedBindings checked
 
-    -- Build TypedLowerResult from checked module
+    -- todo: review this
     let typedLowerResult =
             TypedLowerResult
                 { tlrBindings = typedBindings

@@ -44,10 +44,10 @@ library
     Metal.Gen.Unique
     Metal.Gen.Value
     Metal.Lift
+    Metal.Lower
     Metal.Metadata
     Metal.Module
     Metal.MonadNormalize
-    Metal.Lower
     Metal.MonadProfile
     Metal.Naming
     Parsing.Ast
