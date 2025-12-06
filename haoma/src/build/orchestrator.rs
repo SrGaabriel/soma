@@ -8,7 +8,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, CacheEntry, HashCalculator};
 use crate::build::errors::{BuildError, InternalBuildError};
-use crate::build::fs::{BUILD_FOLDER_NAME, CACHE_FOLDER_NAME, SRC_FOLDER_NAME};
+use crate::build::consts::{BUILD_FOLDER_NAME, CACHE_FOLDER_NAME, SRC_FOLDER_NAME};
 use crate::build::graph::DependencyGraph;
 use crate::build::resolve::DependencyResolver;
 use crate::build::scheduler::{BuildResults, LayeredBuilder};

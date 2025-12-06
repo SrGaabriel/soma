@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::build::fs::SRC_FOLDER_NAME;
+use crate::build::consts::SRC_FOLDER_NAME;
 use crate::build::resolve::DependencyResolver;
 use crate::cli::parse_manifest;
 use crate::logging::output_err;

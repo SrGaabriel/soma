@@ -10,8 +10,8 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, HashCalculator};
 use crate::build::compile::{compile_binary, compile_lib};
+use crate::build::consts::SRC_FOLDER_NAME;
 use crate::build::errors::{BuildError, InternalBuildError};
-use crate::build::fs::SRC_FOLDER_NAME;
 use crate::build::graph::BuildNode;
 use crate::config::manifest::ManifestModuleType;
 

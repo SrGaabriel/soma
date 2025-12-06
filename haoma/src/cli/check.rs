@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 
 use crate::build::build_project;
-use crate::build::fs::{BUILD_FOLDER_NAME, SRC_FOLDER_NAME};
+use crate::build::consts::{BUILD_FOLDER_NAME, SRC_FOLDER_NAME};
 use crate::build::graph::BuildNode;
 use crate::build::resolve::DependencyResolver;
 use crate::cli::parse_manifest;

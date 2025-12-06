@@ -1,11 +1,14 @@
 use crate::build::BuildResult;
+use crate::build::consts::{
+    BUILD_FOLDER_NAME, CONFIG_BUILD_FILE_NAME, CONFIG_FOLDER_NAME, SRC_FOLDER_NAME,
+};
 use crate::build::errors::{BuildError, InternalBuildError};
-use crate::build::fs::{BUILD_FOLDER_NAME, SRC_FOLDER_NAME};
 use crate::build::graph::BuildNode;
+use crate::config::build::BuildConfig;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 pub fn compile_lib(
     node: &BuildNode,
@@ -38,13 +41,30 @@ fn compile_module(
     fs::create_dir_all(&build_path).map_err(BuildError::FailedToCreateBuildDirectory)?;
     let output_file = build_path.join(output_filename);
 
-    let mut command = Command::new("somac");
+    let build_config_path = module_path
+        .join(CONFIG_FOLDER_NAME)
+        .join(CONFIG_BUILD_FILE_NAME);
+    let build_config = if build_config_path.exists() {
+        toml::from_str::<BuildConfig>(
+            &fs::read_to_string(&build_config_path)
+                .map_err(BuildError::FailedToReadBuildConfigFile)?,
+        )
+        .map_err(|_| BuildError::FailedToParseBuildConfigFile(build_config_path))?
+    } else {
+        println!(
+            "No build config found at: {}, using defaults",
+            build_config_path.display()
+        );
+        BuildConfig::default()
+    };
+
+    let mut command = build_config.somac.to_command();
     command
         .arg(&src_path)
         .arg("--name")
         .arg(&manifest.name)
         .arg("--out")
-        .stdout(Stdio::inherit())
+        .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .arg(&output_file);
 

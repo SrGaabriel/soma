@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 #[derive(Debug, thiserror::Error)]
 pub enum BuildError {
     #[error("Internal build error: {0}")]
@@ -6,6 +8,10 @@ pub enum BuildError {
     FailedToSaveCache(std::io::Error),
     #[error("Failed to write cache: {0}")]
     FailedToCleanBuildArtifacts(std::io::Error),
+    #[error("Failed to read build config file: {0}")]
+    FailedToReadBuildConfigFile(std::io::Error),
+    #[error("Failed to parse build config file: {0}")]
+    FailedToParseBuildConfigFile(PathBuf),
     #[error("Build cache is unavailable: {0}")]
     UnavailableBuildCache(std::io::Error),
     #[error("Failed to create build directory: {0}")]

@@ -2,7 +2,7 @@ use colored::Color;
 use std::path::Path;
 
 use crate::{
-    build::fs::SRC_FOLDER_NAME,
+    build::consts::SRC_FOLDER_NAME,
     config::manifest::{MANIFEST_NAME, Manifest, ManifestDependencies, ManifestModuleType},
     logging::{output_debug, output_err, pretty_print},
 };

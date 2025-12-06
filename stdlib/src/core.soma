@@ -91,4 +91,6 @@ instance Applicative IO with (Functor IO) where
     def {<*}(ioA, ioB) :: IO a -> IO b -> IO a =
         ioA >>= (\a -> ioB >>= (\b -> pureIO a))
 
+intrinsic instance Semigroup String        
+
 intrinsic instance Monad IO with (Applicative IO)
