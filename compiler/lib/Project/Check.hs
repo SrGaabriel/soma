@@ -20,7 +20,6 @@ import Project.Symbols (Symbol (..))
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType (..))
 
--- | A typed binding with name, typed expression, param types, return type, type vars, constraints, and attributes
 data CheckedModule = CheckedModule
     { checkedModuleName :: ModuleName
     , checkedResolvedAst :: Expr

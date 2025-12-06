@@ -20,12 +20,14 @@ import Project.Symbols (Symbol (..))
 import Souls.Haoma (ExternalDeps (..), HaomaProjectCache)
 import Syntax.Tree (Expr (..))
 import Typing.Types (QualifiedType)
+import Inference.Core (TypedInstance)
 
 data LspCompiledModule = LspCompiledModule
     { lcmModuleName :: String
     , lcmFilePath :: FilePath
     , lcmResolvedAst :: Expr
     , lcmTypedBindings :: [TypedBinding]
+    , lcmTypedInstances :: [TypedInstance]
     , lcmPublicSymbols :: Map.Map Symbol QualifiedType
     , lcmInstances :: InstanceEnv
     , lcmSourceContent :: T.Text
@@ -70,6 +72,7 @@ compileModuleForLSP modName filePath content ast compiledDeps externalDeps =
                 { lcmModuleName = modName
                 , lcmResolvedAst = checkedResolvedAst checked
                 , lcmTypedBindings = checkedTypedBindings checked
+                , lcmTypedInstances = checkedTypedInstances checked
                 , lcmFilePath = filePath
                 , lcmPublicSymbols = checkedPublicSymbols checked
                 , lcmInstances = checkedInstances checked
@@ -87,6 +90,7 @@ toCheckedModule cm =
         , checkedLowerResult = lowerResult
         , checkedTypedBindings = lcmTypedBindings cm
         , checkedPublicSymbols = lcmPublicSymbols cm
+        , checkedTypedInstances = lcmTypedInstances cm
         , checkedInstances = lcmInstances cm
         }
 
