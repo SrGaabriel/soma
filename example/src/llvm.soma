@@ -1,10 +1,12 @@
 intrinsic def {+} :: Int -> Int -> Int
 
-use stdlib/core.{IO, >>, +, println, Display, display, Some, fmap}
+use stdlib/core.{IO, >>, +, println, Display, display, Some, fmap, <>}
 
 def main :: IO () =
     compose
+        let str = "Hello, " <> "world!"
         let value = Some 5
         let result = fmap (\x -> 5 + 25) value
+        println str
         println (display [5,4,3,2,1])
         println (display result)

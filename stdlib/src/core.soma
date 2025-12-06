@@ -4,6 +4,9 @@ intrinsic def {*} :: Int -> Int -> Int
 intrinsic def {%} :: Int -> Int -> Int
 intrinsic def {/} :: Int -> Int -> Int
 
+intrinsic def strcat :: String -> String -> String
+intrinsic def int_to_string :: Int -> String
+
 intrinsic def println :: a -> IO () with (Display a)
 intrinsic def pureIO :: a -> IO a
 intrinsic def pureIOSeq :: IO a -> (a -> IO b) -> IO b
@@ -64,14 +67,14 @@ instance Functor Option where
 
 instance Display (Option a) with (Display a) where
     def display :: Option a -> String
-        | (Some value) => display value
+        | (Some value) => "Some(" <> display value <> ")"
         | (None) => "None"
 
 instance Display String where
     def display(str: String) -> String = str
 
 instance Display Int where
-    def display(n: Int) -> String = "<int>"
+    def display(n: Int) -> String = int_to_string n
 
 instance Display [a] where
     def display(list: [a]) -> String = "<list>"
@@ -91,6 +94,7 @@ instance Applicative IO with (Functor IO) where
     def {<*}(ioA, ioB) :: IO a -> IO b -> IO a =
         ioA >>= (\a -> ioB >>= (\b -> pureIO a))
 
-intrinsic instance Semigroup String        
+instance Semigroup String where
+    def {<>}(s1: String, s2: String) -> String = strcat s1 s2
 
 intrinsic instance Monad IO with (Applicative IO)

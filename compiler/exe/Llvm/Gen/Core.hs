@@ -9,8 +9,10 @@ module Llvm.Gen.Core (
     runIrGen,
     freshTmpReg,
     freshBlockName,
+    freshNamedReg,
     mkReg,
     saveToReg,
+    saveToNamedReg,
     saveTmp,
     scopedState,
     irGenToWriterOuter,
@@ -103,18 +105,29 @@ freshTmpReg ty = do
     modify $ \s -> s{nextRegister = n + 1}
     return $ LlvmRegister ty ("tmp_reg_" ++ show n)
 
--- Generate a fresh block label name with a given prefix
+-- todo(aggr): review
 freshBlockName :: (MonadState IrGenState m) => String -> m String
 freshBlockName prefix = do
     n <- gets nextRegister
     modify $ \s -> s{nextRegister = n + 1}
     return $ prefix ++ "_" ++ show n
 
+freshNamedReg :: (MonadState IrGenState m) => String -> LlvmType -> m LlvmValue
+freshNamedReg prefix ty = do
+    n <- gets nextRegister
+    modify $ \s -> s{nextRegister = n + 1}
+    return $ LlvmRegister ty (prefix ++ "_" ++ show n)
+
 mkReg :: String -> LlvmType -> LlvmValue
 mkReg n t = LlvmRegister t n
 
 saveToReg :: (MonadState IrGenState m) => (MonadWriter [LlvmStatement] m) => LlvmValue -> LlvmInstruction -> m LlvmValue
 saveToReg reg instr = do
+    tell [LlvmAssign (getRegName reg) instr]
+    return reg
+
+saveToNamedReg :: (MonadWriter [LlvmStatement] m) => LlvmValue -> LlvmInstruction -> m LlvmValue
+saveToNamedReg reg instr = do
     tell [LlvmAssign (getRegName reg) instr]
     return reg
 

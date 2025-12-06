@@ -64,9 +64,12 @@ fn compile_module(
         .arg("--name")
         .arg(&manifest.name)
         .arg("--out")
+        .arg(&output_file)
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .arg(&output_file);
+        .stderr(Stdio::inherit());
+    if let Some(debug_flag) = build_config.somac.debug && debug_flag {
+        command.stdout(Stdio::inherit());
+    }
 
     for (dep_name, dep_tarball) in dependency_tarballs {
         command

@@ -13,7 +13,10 @@ pub struct BuildConfig {
 pub struct SomacBuildConfig {
     #[serde(default = "compiler_name")]
     pub binary: String,
+    #[serde(default)]
     pub command: Option<String>,
+    #[serde(default)]
+    pub debug: Option<bool>,
 }
 
 impl SomacBuildConfig {
@@ -36,6 +39,7 @@ impl Default for SomacBuildConfig {
     fn default() -> Self {
         SomacBuildConfig {
             binary: compiler_name(),
+            debug: None,
             command: None,
         }
     }

@@ -1,8 +1,11 @@
 module Llvm.Gen.Externals (
     putsDependency,
     printfDependency,
+    sprintfDependency,
     memcpyDependency,
     mallocDependency,
+    strlenDependency,
+    strcpyDependency,
     useDep,
     useType,
 ) where
@@ -28,6 +31,14 @@ printfDependency =
         , depParams = [LlvmPointer LlvmI8, LlvmVararg]
         }
 
+sprintfDependency :: LlvmDependency
+sprintfDependency =
+    LlvmFunctionDependency
+        { depName = "sprintf"
+        , depReturnType = LlvmI32
+        , depParams = [LlvmPointer LlvmI8, LlvmPointer LlvmI8, LlvmVararg]
+        }
+
 memcpyDependency :: LlvmDependency
 memcpyDependency =
     LlvmFunctionDependency
@@ -42,6 +53,22 @@ mallocDependency =
         { depName = "malloc"
         , depReturnType = LlvmPointer LlvmI8
         , depParams = [LlvmI64]
+        }
+
+strlenDependency :: LlvmDependency
+strlenDependency =
+    LlvmFunctionDependency
+        { depName = "strlen"
+        , depReturnType = LlvmI64
+        , depParams = [LlvmPointer LlvmI8]
+        }
+
+strcpyDependency :: LlvmDependency
+strcpyDependency =
+    LlvmFunctionDependency
+        { depName = "strcpy"
+        , depReturnType = LlvmPointer LlvmI8
+        , depParams = [LlvmPointer LlvmI8, LlvmPointer LlvmI8]
         }
 
 useDep :: LlvmDependency -> IrGen LlvmValue
