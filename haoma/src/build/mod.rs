@@ -1,7 +1,7 @@
 mod cache;
 mod compile;
-mod errors;
 pub mod consts;
+mod errors;
 pub mod graph;
 mod orchestrator;
 pub mod resolve;

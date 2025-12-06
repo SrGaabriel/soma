@@ -219,7 +219,6 @@ compileIntToString [numOp] _retTy = do
 
     tell [LlvmLabel doneLabel]
     finalPos <- saveTmp (LlvmPhi LlvmI64 [(currentPos, afterLoopLabel), (minusPos, addMinusLabel)]) LlvmI64
-    resultPtr <- saveTmp (LlvmGetElementPtr LlvmI8 buffer [finalPos] False) (LlvmPointer LlvmI8)
-
-    pure resultPtr
+    
+    saveTmp (LlvmGetElementPtr LlvmI8 buffer [finalPos] False) (LlvmPointer LlvmI8)
 compileIntToString _ _ = error "int_to_string intrinsic expects exactly 1 argument"

@@ -95,6 +95,7 @@ instance Applicative IO with (Functor IO) where
         ioA >>= (\a -> ioB >>= (\b -> pureIO a))
 
 instance Semigroup String where
+    @[inline]
     def {<>}(s1: String, s2: String) -> String = strcat s1 s2
 
 intrinsic instance Monad IO with (Applicative IO)

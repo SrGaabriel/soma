@@ -49,4 +49,3 @@ impl Default for SomacBuildConfig {
 pub fn compiler_name() -> String {
     String::from(COMPILER_NAME)
 }
-

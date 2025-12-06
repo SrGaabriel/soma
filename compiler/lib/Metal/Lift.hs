@@ -87,7 +87,7 @@ substituteVars subst expr = case expr of
         let subst' = Map.delete name subst
         in MLet name (substituteVars subst val) (substituteVars subst' body) ty s
     MLambda params body ty s ->
-        let subst' = foldr Map.delete subst (map fst params)
+        let subst' = foldr (Map.delete . fst) subst params
         in MLambda params (substituteVars subst' body) ty s
     MConstruct name tag args ty s ->
         MConstruct name tag (map (substituteVars subst) args) ty s

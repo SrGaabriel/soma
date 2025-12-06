@@ -67,7 +67,9 @@ fn compile_module(
         .arg(&output_file)
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
-    if let Some(debug_flag) = build_config.somac.debug && debug_flag {
+    if let Some(debug_flag) = build_config.somac.debug
+        && debug_flag
+    {
         command.stdout(Stdio::inherit());
     }
 
