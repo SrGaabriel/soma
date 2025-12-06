@@ -34,15 +34,9 @@ library
     Lexing.Position
     Metal.Expr
     Metal.Function
-    Metal.Gen.Binding
-    Metal.Gen.Core
-    Metal.Gen.DataTypes
     Metal.Gen.Entry
-    Metal.Gen.Extracts
     Metal.Gen.Metadata
     Metal.Gen.Patterns
-    Metal.Gen.Unique
-    Metal.Gen.Value
     Metal.Lift
     Metal.Lower
     Metal.Metadata
