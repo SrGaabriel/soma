@@ -19,6 +19,7 @@ import Project.Module (ModuleInfo (..), ModuleName)
 import Project.Symbols (Symbol (..))
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType (..))
+import Data.List (nub)
 
 data CheckedModule = CheckedModule
     { checkedModuleName :: ModuleName
@@ -72,7 +73,7 @@ checkModule packageName modInfo checkedDeps externalDeps externalInstances exter
         -- Extract new definitions (public symbols)
         newDefs = Map.difference fullEnv seedEnv
 
-        allErrors = resolverErrors ++ inferenceErrors
+        allErrors = nub $ resolverErrors ++ inferenceErrors
 
         checkedModule =
             CheckedModule

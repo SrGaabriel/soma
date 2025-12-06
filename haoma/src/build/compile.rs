@@ -43,7 +43,7 @@ fn compile_module(
         .arg("--name")
         .arg(&manifest.name)
         .arg("--out")
-        .stdout(Stdio::null())
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .arg(&output_file);
 

@@ -318,8 +318,9 @@ compileExternalModules _rootPkg modules = do
             Nothing ->
                 compileModulesAccum types instances rest
             Just (newTypes, newInstances) -> do
-                let types' = Map.insertWith Map.union pkgName newTypes types
-                    instances' = Map.insertWith Map.union pkgName newInstances instances
+                -- Use full module path (e.g., "stdlib/core") instead of just package name
+                let types' = Map.insertWith Map.union modName newTypes types
+                    instances' = Map.insertWith Map.union modName newInstances instances
                 compileModulesAccum types' instances' rest
 
 compileExternalModuleAst ::

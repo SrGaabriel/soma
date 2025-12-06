@@ -1,16 +1,16 @@
 {
   "example": {
-    "source_hash": "ef14f781cd248eb15ca203a8816a3650dd0683f986845f5597580ec8d57b1456",
-    "dependency_hash": "1f9463715b4655990b295215880333b89d1e692be1e30342c8e41a1b215b939b",
-    "artifact_path": "./build/example",
-    "tarball_path": "./build/example",
-    "build_timestamp": 1764294354
+    "source_hash": "bda1f6eaf7233f0adc215db4314fc84f80820df81f2ea00cd930073d4a74992c",
+    "dependency_hash": "0217cead6d6b5f5f1f19659a91126066e8cc556a5655cee771057b1821be91bc",
+    "artifact_path": "example/build/example",
+    "tarball_path": "example/build/example",
+    "build_timestamp": 1764994048
   },
   "stdlib": {
-    "source_hash": "355e2236f9771785c4f827187c986564c282412c2f2d8ca69e8c4117562770be",
+    "source_hash": "c15109b6c7b8761bcb2ed9b8edfe02a0fedff0c26c18e4d079cc8089bbf4deec",
     "dependency_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "artifact_path": "/home/gabriel/Developer/soma/stdlib/build/stdlib.toria",
     "tarball_path": "/home/gabriel/Developer/soma/stdlib/build/stdlib.toria",
-    "build_timestamp": 1764294354
+    "build_timestamp": 1764994048
   }
 }

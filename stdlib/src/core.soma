@@ -18,7 +18,7 @@ data Option a
         value :: a
     | None
 
-data Result err ok
+data Either err ok
     | Err
         error :: err
     | Ok

@@ -306,6 +306,7 @@ impl LayeredBuilder {
                     "failed".red()
                 ));
                 self.scheduler.shutdown();
+                
                 return Err(BuildError::Internal(
                     InternalBuildError::UnexpectedLayerBuildFailure(layer_idx + 1),
                 ));

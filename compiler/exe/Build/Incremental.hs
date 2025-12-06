@@ -35,6 +35,7 @@ import qualified Data.ByteString.Lazy.Char8 as BLC
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import qualified Data.Set as Set
 import Format.Trees (prettyPrintAst, treeShow)
 import Inference.Core (InstanceEnv)
 import Llvm.Gen.Entry (runLlvmCodeGenAndTranscribe)
@@ -50,7 +51,7 @@ import Project.Check (CheckedModule (..), checkModule)
 import Project.Extracts (extractIntrinsicNames)
 import Project.Graph
 import Project.Module
-import Project.Symbols (Symbol)
+import Project.Symbols (Symbol (..))
 import Syntax.Tree (Expr (..))
 import System.Directory
 import System.Exit (exitFailure)
@@ -438,8 +439,17 @@ processExternalDependencies externals = do
                         pure (name, exports, instances, constructors, tcAlloyModules)
             )
             externals
-    let symbols = Map.fromList [(name, exports) | (name, exports, _, _, _) <- list]
-    let instances = Map.fromList [(name, insts) | (name, _, insts, _, _) <- list]
+    let allExports = Map.unions [exports | (_, exports, _, _, _) <- list]
+        groupedByModule = Map.fromListWith Map.union
+            [ (resolvedSymbolModule sym, Map.singleton sym ty)
+            | (sym, ty) <- Map.toList allExports
+            ]
+    let instancesByModule = Map.fromListWith Map.union
+            [ (modName, insts)
+            | (_, exports, insts, _, _) <- list
+            , let modNames = Set.toList $ Set.fromList [resolvedSymbolModule sym | sym <- Map.keys exports]
+            , modName <- modNames
+            ]
     let constructors = Map.unions [ctors | (_, _, _, ctors, _) <- list]
     let externalAlloy = concat [modules | (_, _, _, _, modules) <- list]
-    pure (symbols, instances, constructors, externalAlloy)
+    pure (groupedByModule, instancesByModule, constructors, externalAlloy)

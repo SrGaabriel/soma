@@ -250,7 +250,7 @@ allTokensInNode node = concatMap getToken (childrenWithTokens node)
 lowerImport :: SyntaxNode -> Maybe Expr
 lowerImport node = do
     let moduleNameParts = extractModuleName node
-    let moduleName = T.unpack $ T.intercalate "." moduleNameParts
+    let moduleName = T.unpack $ T.intercalate "/" moduleNameParts
 
     let importList = case childOfKind (SK_Node NK_IMPORT_LIST) node of
             Just list -> mapMaybe extractImportItem (children list)

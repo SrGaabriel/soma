@@ -35,7 +35,6 @@ resolveImport compiledDeps externalDeps externalInstances (impMod, mSyms) =
         Just (publicSymbols, publicInstances) ->
             (filterSymbolsByNames mSyms publicSymbols, publicInstances)
         Nothing ->
-            let properModuleName = takeWhile (/= '/') impMod
-                symbols = maybe Map.empty (filterSymbolsByNames mSyms) (Map.lookup properModuleName externalDeps)
-                instances = fromMaybe Map.empty (Map.lookup properModuleName externalInstances)
+            let symbols = maybe Map.empty (filterSymbolsByNames mSyms) (Map.lookup impMod externalDeps)
+                instances = fromMaybe Map.empty (Map.lookup impMod externalInstances)
             in (symbols, instances)
