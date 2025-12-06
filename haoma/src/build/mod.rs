@@ -1,6 +1,7 @@
 mod cache;
 mod compile;
 mod errors;
+pub mod fs;
 pub mod graph;
 mod orchestrator;
 pub mod resolve;

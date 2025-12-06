@@ -1,5 +1,6 @@
 use crate::build::BuildResult;
 use crate::build::errors::{BuildError, InternalBuildError};
+use crate::build::fs::{BUILD_FOLDER_NAME, SRC_FOLDER_NAME};
 use crate::build::graph::BuildNode;
 use std::collections::HashMap;
 use std::fs;
@@ -31,8 +32,8 @@ fn compile_module(
 ) -> BuildResult<PathBuf> {
     let module_path = &node.path;
     let manifest = &node.manifest;
-    let src_path = module_path.join("src");
-    let build_path = module_path.join("build");
+    let src_path = module_path.join(SRC_FOLDER_NAME);
+    let build_path = module_path.join(BUILD_FOLDER_NAME);
 
     fs::create_dir_all(&build_path).map_err(BuildError::FailedToCreateBuildDirectory)?;
     let output_file = build_path.join(output_filename);

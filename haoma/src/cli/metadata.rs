@@ -2,6 +2,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use crate::build::fs::SRC_FOLDER_NAME;
 use crate::build::resolve::DependencyResolver;
 use crate::cli::parse_manifest;
 use crate::logging::output_err;
@@ -71,7 +72,7 @@ pub fn execute(path: &Path) {
             dependencies: node.dependencies.clone(),
         });
 
-        let src_dir = node.path.join("src");
+        let src_dir = node.path.join(SRC_FOLDER_NAME);
         if src_dir.exists()
             && let Ok(modules) = scan_modules(name, &src_dir)
         {

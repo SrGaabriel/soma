@@ -5,6 +5,7 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 
 use crate::build::build_project;
+use crate::build::fs::{BUILD_FOLDER_NAME, SRC_FOLDER_NAME};
 use crate::build::graph::BuildNode;
 use crate::build::resolve::DependencyResolver;
 use crate::cli::parse_manifest;
@@ -106,7 +107,11 @@ pub fn execute(path: &Path) {
                             all_outputs.push(CheckOutput {
                                 success: false,
                                 diagnostics: vec![Diagnostic {
-                                    file: node.path.join("src").to_string_lossy().to_string(),
+                                    file: node
+                                        .path
+                                        .join(SRC_FOLDER_NAME)
+                                        .to_string_lossy()
+                                        .to_string(),
                                     range: Range {
                                         start: Position {
                                             line: 0,
@@ -137,7 +142,7 @@ pub fn execute(path: &Path) {
 
                             let tarball_path = node
                                 .path
-                                .join("build")
+                                .join(BUILD_FOLDER_NAME)
                                 .join(format!("{}.toria", node.manifest.name));
                             if tarball_path.exists() {
                                 built_tarballs.insert(module_name.clone(), tarball_path);
@@ -148,7 +153,11 @@ pub fn execute(path: &Path) {
                             all_outputs.push(CheckOutput {
                                 success: false,
                                 diagnostics: vec![Diagnostic {
-                                    file: node.path.join("src").to_string_lossy().to_string(),
+                                    file: node
+                                        .path
+                                        .join(SRC_FOLDER_NAME)
+                                        .to_string_lossy()
+                                        .to_string(),
                                     range: Range {
                                         start: Position {
                                             line: 0,
@@ -191,7 +200,7 @@ fn check_module(
 ) -> Result<CheckOutput, String> {
     let src_path = node
         .path
-        .join("src")
+        .join(SRC_FOLDER_NAME)
         .canonicalize()
         .map_err(|e| format!("Failed to canonicalize src path: {}", e))?;
 

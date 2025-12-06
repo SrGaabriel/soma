@@ -11,6 +11,7 @@ use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, HashCalculator};
 use crate::build::compile::{compile_binary, compile_lib};
 use crate::build::errors::{BuildError, InternalBuildError};
+use crate::build::fs::SRC_FOLDER_NAME;
 use crate::build::graph::BuildNode;
 use crate::config::manifest::ManifestModuleType;
 
@@ -104,7 +105,7 @@ impl BuildScheduler {
         let node = work_item.node;
         let module_name = node.name.clone();
 
-        let src_path = node.path.join("src");
+        let src_path = node.path.join(SRC_FOLDER_NAME);
         let source_hash =
             HashCalculator::hash_directory(&src_path).unwrap_or_else(|_| String::from("unknown"));
 
@@ -306,7 +307,7 @@ impl LayeredBuilder {
                     "failed".red()
                 ));
                 self.scheduler.shutdown();
-                
+
                 return Err(BuildError::Internal(
                     InternalBuildError::UnexpectedLayerBuildFailure(layer_idx + 1),
                 ));

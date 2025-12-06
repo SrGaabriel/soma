@@ -8,6 +8,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use crate::build::BuildResult;
 use crate::build::cache::{BuildCache, CacheEntry, HashCalculator};
 use crate::build::errors::{BuildError, InternalBuildError};
+use crate::build::fs::{BUILD_FOLDER_NAME, CACHE_FOLDER_NAME, SRC_FOLDER_NAME};
 use crate::build::graph::DependencyGraph;
 use crate::build::resolve::DependencyResolver;
 use crate::build::scheduler::{BuildResults, LayeredBuilder};
@@ -35,7 +36,7 @@ pub struct BuildStats {
 
 impl BuildOrchestrator {
     pub fn new(root_path: PathBuf) -> BuildResult<Self> {
-        let cache_dir = root_path.join("build").join(".cache");
+        let cache_dir = root_path.join(BUILD_FOLDER_NAME).join(CACHE_FOLDER_NAME);
         let cache = BuildCache::load(&cache_dir)?;
 
         let num_workers = num_cpus::get().max(1);
@@ -159,7 +160,7 @@ impl BuildOrchestrator {
                     ))
                 })?;
 
-                let src_path = node.path.join("src");
+                let src_path = node.path.join(SRC_FOLDER_NAME);
                 let source_hash = HashCalculator::hash_directory(&src_path)
                     .unwrap_or_else(|_| String::from("unknown"));
 
@@ -247,7 +248,7 @@ impl BuildOrchestrator {
     pub fn clean(&mut self) -> BuildResult<()> {
         println!("Cleaning build artifacts...");
 
-        let build_path = self.root_path.join("build");
+        let build_path = self.root_path.join(BUILD_FOLDER_NAME);
         if build_path.exists() {
             std::fs::remove_dir_all(&build_path)
                 .map_err(BuildError::FailedToCleanBuildArtifacts)?;

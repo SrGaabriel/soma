@@ -2,6 +2,7 @@ use colored::Color;
 use std::path::Path;
 
 use crate::{
+    build::fs::SRC_FOLDER_NAME,
     config::manifest::{MANIFEST_NAME, Manifest, ManifestDependencies, ManifestModuleType},
     logging::{output_debug, output_err, pretty_print},
 };
@@ -57,7 +58,7 @@ pub fn execute(path: &Path) {
         manifest_path.display()
     ));
 
-    let main = path.join("src").join("main.soma");
+    let main = path.join(SRC_FOLDER_NAME).join("main.soma");
 
     if let Err(e) = std::fs::create_dir_all(main.parent().unwrap()) {
         output_err(&format!(
