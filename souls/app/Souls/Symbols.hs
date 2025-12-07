@@ -9,6 +9,7 @@ import qualified Data.Text as T
 import Format.Trees (treeShow)
 import Language.LSP.Protocol.Types (CompletionItem (..), CompletionItemKind (CompletionItemKind_Function), CompletionList (CompletionList), Hover (Hover), Location (..), MarkupContent (..), MarkupKind (..), Position, filePathToUri, type (|?) (InL))
 import Lexing.Position (Span (..))
+import Project.Name (Name)
 import Metal.Expr (MCaseArm (..), MetallicExpr (..), TypedExpr, exprSpan, getMetallicExprType)
 import Project.Extracts (extractSymbolImports, filterSymbolsByNames)
 import Project.Symbols (Symbol (..))
@@ -54,11 +55,11 @@ getHoverAt pos LspCompiledModule{..} = do
     Just $ Hover (InL markdown) Nothing
 
 -- | Find the type of the innermost expression at a given offset
-findTypeAtOffset :: Int -> [(String, TypedExpr, [Type], Type, a, b, c)] -> Maybe QualifiedType
+findTypeAtOffset :: Int -> [(Name, TypedExpr, [Type], Type, a, b, c)] -> Maybe QualifiedType
 findTypeAtOffset offset bindings =
     listToMaybe $ mapMaybe (findInBinding offset) bindings
 
-findInBinding :: Int -> (String, TypedExpr, [Type], Type, a, b, c) -> Maybe QualifiedType
+findInBinding :: Int -> (Name, TypedExpr, [Type], Type, a, b, c) -> Maybe QualifiedType
 findInBinding offset (_, body, _, _, _, _, _) = findInTypedExpr offset body
 
 -- | Find the innermost TypedExpr containing the offset and return its type
