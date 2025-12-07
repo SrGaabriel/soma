@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -29,17 +28,15 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-
 import Lexing.Position (dummySpan)
 import Metal.Expr
 import Metal.Function
 import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (..), MetallicTypeClassMetadata (..))
 import Metal.Module
-import Project.Name (Name (..), LocalId (..), LocalPrefix (..), nameToString)
-import qualified Project.Name as PN
-import Syntax.Patterns (Literal (..), ResolvedPattern, Pattern (..))
-import Typing.Types (Kind (..), QualifiedType (..), TyConstructor (..), TyUnique (..), TyPrimitive (..), Type (..), boolType, closurePtrType, intType)
+import Project.Name (LocalId (..), LocalPrefix (..), Name (..), nameToString)
 import Project.Unique (Unique (..))
+import Syntax.Patterns (Literal (..), Pattern (..), ResolvedPattern)
+import Typing.Types (Kind (..), QualifiedType (..), TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..), boolType, closurePtrType, intType)
 import Utils.Lists (hardHead)
 
 -- | Environment for lowering
@@ -76,10 +73,11 @@ initLowerState = LowerState{lsNextTmp = 0}
 -- | Build environment from module
 buildEnv :: MetallicModule -> LowerEnv
 buildEnv m =
-    let ctors = [ (mcName c, (mcTag c, length (mcFields c), mcFields c))
-                | MAlgebraicType _ cs <- mmTypes m
-                , c <- cs
-                ]
+    let ctors =
+            [ (mcName c, (mcTag c, length (mcFields c), mcFields c))
+            | MAlgebraicType _ cs <- mmTypes m
+            , c <- cs
+            ]
     in LowerEnv
         { leConstructors = Map.fromList ctors
         , leTypeMap =

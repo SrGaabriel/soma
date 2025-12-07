@@ -25,11 +25,10 @@ import Metal.Lift (liftLambdas)
 import Metal.Lower (LowerResult (..), symbolToName)
 import Metal.MonadNormalize (normalizeModule)
 import Project.Check (CheckedModule (..), checkModule, checkModulesInOrder)
-
 import Project.Graph
 import Project.Module
-import Project.Symbols (resolvedSymbolKind, SymbolKind (..))
 import Project.Parsing
+import Project.Symbols (SymbolKind (..), resolvedSymbolKind)
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath (dropExtension, takeExtension, takeFileName)

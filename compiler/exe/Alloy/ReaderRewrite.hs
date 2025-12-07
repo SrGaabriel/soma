@@ -46,7 +46,7 @@ defaultReaderConfig =
     ReaderConfig
         { readerTypeNames = ["Reader"]
         , readerAskPatterns = ["Reader.ask", "Reader$ask"]
-        , envParamName = PN.NLocal (PN.LocalId PN.LPParam 0)  -- Use first param slot for env
+        , envParamName = PN.NLocal (PN.LocalId PN.LPParam 0) -- Use first param slot for env
         }
 
 readerRewriteModule :: AlloyModule -> AlloyModule

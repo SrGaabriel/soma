@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -12,7 +11,6 @@ import Control.Monad.State (MonadState (get, put), State, gets, modify', runStat
 import Control.Monad.Writer (MonadWriter (tell), WriterT (runWriterT))
 import Data.Foldable (foldlM)
 import qualified Data.Map as Map
-
 import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
 import Inference.InstanceValidation (validateInstances)
@@ -58,11 +56,12 @@ freshUnique originalName = do
     let uid = uniqueCounter st
     let moduleName = currentModule st
     put st{uniqueCounter = uid + 1}
-    pure Unique
-        { uniqueId = uid
-        , uniqueModule = moduleName
-        , uniqueOriginal = originalName
-        }
+    pure
+        Unique
+            { uniqueId = uid
+            , uniqueModule = moduleName
+            , uniqueOriginal = originalName
+            }
 
 mkSymbol :: String -> SymbolKind -> Span -> ResolverM Symbol
 mkSymbol name kind sySpan = do
@@ -89,9 +88,9 @@ findSymbolByName name env =
 collectGlobals :: Expr -> ResolverM ()
 collectGlobals (ExprRoot children) = do
     mapM_ collectGlobals children
-collectGlobals (ExprBindingDef _ _ _ _ _ _) =
+collectGlobals (ExprBindingDef{}) =
     pure ()
-collectGlobals (ExprIntrinsicDef _ _ _) = do
+collectGlobals (ExprIntrinsicDef{}) = do
     pure ()
 collectGlobals (ExprIntrinsicDataTypeDef name kind eSpan) = do
     tyUnique <- case primitiveFromName name of

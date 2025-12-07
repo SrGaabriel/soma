@@ -16,9 +16,8 @@ import Inference.Core (TypedBinding, TypedInstanceMethod)
 import Metal.Function (MetallicFunction (..))
 import Metal.Metadata (MetallicConstructorMetadata, MetallicFunctionMetadata (MetallicFunctionMetadata), MetallicTypeClassMetadata, defaultFunctionAttributes)
 import Metal.Module (MetallicInstance (..), MetallicModule (..), MetallicTypeDef)
-import Project.Name (Name (..), LocalId (..), LocalPrefix (..), SyntheticId (..), SyntheticKind (..))
-import Project.Unique (Unique (..))
-import Typing.Types (QualifiedType (..), TyConstructor (..), TyUnique (..), Type (..), tyUniqueName)
+import Project.Name (LocalId (..), LocalPrefix (..), Name (..), SyntheticId (..), SyntheticKind (..))
+import Typing.Types (QualifiedType (..), TyConstructor (..), Type (..), tyUniqueName)
 
 data TypedLowerResult = TypedLowerResult
     { tlrBindings :: [TypedBinding]

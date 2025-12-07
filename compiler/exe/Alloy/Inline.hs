@@ -42,7 +42,6 @@ import Metal.Metadata (FunctionAttributes (..))
 import Project.Name (LocalId (..), LocalPrefix (..), Name (..))
 import Typing.Types (Type)
 
-
 data InlineConfig = InlineConfig
     { icInlineFunctions :: !(Set Name)
     , icMaxInlineSize :: !Int

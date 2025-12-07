@@ -5,16 +5,16 @@
 module Build.Metadata where
 
 import Data.Aeson
-import Data.Aeson.Types (toJSONKeyText, Parser)
+import Data.Aeson.Types (Parser, toJSONKeyText)
 import qualified Data.Map as Map
 import qualified Data.Text as Text
 import GHC.Generics
 import Lexing.Position (Span (..))
 import Metal.Metadata
-import Project.Name (Name (..), SyntheticId (..), SyntheticKind (..), Intrinsic (..), RuntimeFn (..), PrimOp (..), LocalId (..), LocalPrefix (..), Projection (..), DictId (..), DictKind (..))
+import Project.Name (DictId (..), DictKind (..), Intrinsic (..), LocalId (..), LocalPrefix (..), Name (..), PrimOp (..), Projection (..), RuntimeFn (..), SyntheticId (..), SyntheticKind (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
 import Project.Unique (Unique (..))
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyConstructor (..), TyUnique (..), TyVar (..), Type (..), constraintType, primitiveName, primitiveFromName)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), Rigidity (..), SkolemVar (..), TyConstructor (..), TyUnique (..), TyVar (..), Type (..), constraintType, primitiveFromName, primitiveName)
 
 data SerializableConstructorMetadata = SerializableConstructorMetadata
     { scmTypeName :: SerializableName
@@ -444,32 +444,36 @@ serializableToName (SNProjection p) = NProjection (serializableToProjection p)
 serializableToName (SNDict d) = NDict (serializableToDictId d)
 
 uniqueToSerializable :: Unique -> SerializableUnique
-uniqueToSerializable u = SerializableUnique
-    { suId = uniqueId u
-    , suModule = uniqueModule u
-    , suOriginal = uniqueOriginal u
-    }
+uniqueToSerializable u =
+    SerializableUnique
+        { suId = uniqueId u
+        , suModule = uniqueModule u
+        , suOriginal = uniqueOriginal u
+        }
 
 serializableToUnique :: SerializableUnique -> Unique
-serializableToUnique su = Unique
-    { uniqueId = suId su
-    , uniqueModule = suModule su
-    , uniqueOriginal = suOriginal su
-    }
+serializableToUnique su =
+    Unique
+        { uniqueId = suId su
+        , uniqueModule = suModule su
+        , uniqueOriginal = suOriginal su
+        }
 
 syntheticIdToSerializable :: SyntheticId -> SerializableSyntheticId
-syntheticIdToSerializable s = SerializableSyntheticId
-    { ssidBase = uniqueToSerializable (synBase s)
-    , ssidKind = syntheticKindToSerializable (synKind s)
-    , ssidDiscriminator = synDiscriminator s
-    }
+syntheticIdToSerializable s =
+    SerializableSyntheticId
+        { ssidBase = uniqueToSerializable (synBase s)
+        , ssidKind = syntheticKindToSerializable (synKind s)
+        , ssidDiscriminator = synDiscriminator s
+        }
 
 serializableToSyntheticId :: SerializableSyntheticId -> SyntheticId
-serializableToSyntheticId ss = SyntheticId
-    { synBase = serializableToUnique (ssidBase ss)
-    , synKind = serializableToSyntheticKind (ssidKind ss)
-    , synDiscriminator = ssidDiscriminator ss
-    }
+serializableToSyntheticId ss =
+    SyntheticId
+        { synBase = serializableToUnique (ssidBase ss)
+        , synKind = serializableToSyntheticKind (ssidKind ss)
+        , synDiscriminator = ssidDiscriminator ss
+        }
 
 syntheticKindToSerializable :: SyntheticKind -> SerializableSyntheticKind
 syntheticKindToSerializable SKLiftedLambda = SSKLiftedLambda
@@ -554,16 +558,18 @@ stringToPrimOp "PrimNeg" = PrimNeg
 stringToPrimOp s = error ("Unknown PrimOp: " ++ s)
 
 localIdToSerializable :: LocalId -> SerializableLocalId
-localIdToSerializable l = SerializableLocalId
-    { slidPrefix = localPrefixToString (localPrefix l)
-    , slidIndex = localIndex l
-    }
+localIdToSerializable l =
+    SerializableLocalId
+        { slidPrefix = localPrefixToString (localPrefix l)
+        , slidIndex = localIndex l
+        }
 
 serializableToLocalId :: SerializableLocalId -> LocalId
-serializableToLocalId sl = LocalId
-    { localPrefix = stringToLocalPrefix (slidPrefix sl)
-    , localIndex = slidIndex sl
-    }
+serializableToLocalId sl =
+    LocalId
+        { localPrefix = stringToLocalPrefix (slidPrefix sl)
+        , localIndex = slidIndex sl
+        }
 
 localPrefixToString :: LocalPrefix -> String
 localPrefixToString LPTemp = "LPTemp"
@@ -591,32 +597,36 @@ stringToLocalPrefix "LPForkedTask" = LPForkedTask
 stringToLocalPrefix s = error ("Unknown LocalPrefix: " ++ s)
 
 projectionToSerializable :: Projection -> SerializableProjection
-projectionToSerializable p = SerializableProjection
-    { spBase = nameToSerializable (projectionBase p)
-    , spIndex = projectionIndex p
-    }
+projectionToSerializable p =
+    SerializableProjection
+        { spBase = nameToSerializable (projectionBase p)
+        , spIndex = projectionIndex p
+        }
 
 serializableToProjection :: SerializableProjection -> Projection
-serializableToProjection sp = Projection
-    { projectionBase = serializableToName (spBase sp)
-    , projectionIndex = spIndex sp
-    }
+serializableToProjection sp =
+    Projection
+        { projectionBase = serializableToName (spBase sp)
+        , projectionIndex = spIndex sp
+        }
 
 dictIdToSerializable :: DictId -> SerializableDictId
-dictIdToSerializable d = SerializableDictId
-    { sdModule = dictModule d
-    , sdClass = dictClass d
-    , sdInstanceType = typeToSerializable (dictInstanceType d)
-    , sdKind = dictKindToString (dictKind d)
-    }
+dictIdToSerializable d =
+    SerializableDictId
+        { sdModule = dictModule d
+        , sdClass = dictClass d
+        , sdInstanceType = typeToSerializable (dictInstanceType d)
+        , sdKind = dictKindToString (dictKind d)
+        }
 
 serializableToDictId :: SerializableDictId -> DictId
-serializableToDictId sd = DictId
-    { dictModule = sdModule sd
-    , dictClass = sdClass sd
-    , dictInstanceType = serializableToType (sdInstanceType sd)
-    , dictKind = stringToDictKind (sdKind sd)
-    }
+serializableToDictId sd =
+    DictId
+        { dictModule = sdModule sd
+        , dictClass = sdClass sd
+        , dictInstanceType = serializableToType (sdInstanceType sd)
+        , dictKind = stringToDictKind (sdKind sd)
+        }
 
 dictKindToString :: DictKind -> String
 dictKindToString DKGlobal = "global"

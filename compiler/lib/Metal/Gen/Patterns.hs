@@ -13,8 +13,8 @@ import qualified Data.Set as Set
 import Metal.Lift (collectBinders)
 import Syntax.Patterns (
     ParsedPattern,
-    ResolvedPattern,
     Pattern (..),
+    ResolvedPattern,
  )
 import Syntax.Tree (Expr (..))
 

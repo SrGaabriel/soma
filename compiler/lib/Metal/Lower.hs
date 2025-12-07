@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
@@ -16,17 +15,16 @@ module Metal.Lower (
 import Control.Monad (zipWithM)
 import Control.Monad.State
 import qualified Data.Map as Map
-
 import Lexing.Position (Located (..), Span (..), dummySpan, spanBetween)
 import Metal.Expr hiding (exprSpan)
 import Metal.Metadata (FunctionAttributes (..), MetallicConstructorMetadata (..), MetallicTypeClassMetadata (..), defaultFunctionAttributes)
 import Metal.Module (MetallicConstructor (..), MetallicTypeDef (..))
 import Project.Name (Name (..))
-import Syntax.Patterns (ParsedPattern, ResolvedPattern, Pattern (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
 import Project.Unique (Unique (..))
+import Syntax.Patterns (ParsedPattern, Pattern (..), ResolvedPattern)
 import Syntax.Tree (Attribute (..), ComposeStmt (..), Expr (..), exprSpan, uncurryApp)
-import Typing.Types (Constraint, Kind (..), QualifiedType (..), TyConstructor (..), TyVar (..), Type (..))
+import Typing.Types (Constraint, Kind (..), QualifiedType (..), TyVar (..), Type (..))
 
 data LowerState = LowerState
     { lsCounter :: Int
@@ -41,8 +39,8 @@ newtype LowerM a = LowerM (State LowerState a)
 
 runLower :: String -> Map.Map Name MetallicConstructorMetadata -> Map.Map Symbol QualifiedType -> LowerM a -> a
 runLower modName ctors symEnv (LowerM m) =
-    let state = LowerState 0 ctors modName symEnv
-    in evalState m state
+    let state' = LowerState 0 ctors modName symEnv
+    in evalState m state'
 
 freshHole :: Kind -> LowerM TypeSlot
 freshHole k = do
@@ -57,16 +55,18 @@ lookupSymbolByName :: String -> LowerM (Maybe Symbol)
 lookupSymbolByName name = do
     symEnv <- gets lsSymbolEnv
     pure $ case [sym | sym <- Map.keys symEnv, resolvedSymbolName sym == name] of
-        (sym:_) -> Just sym
+        (sym : _) -> Just sym
         [] -> Nothing
 
 lookupConstructorSymbol :: String -> String -> LowerM (Maybe Symbol)
 lookupConstructorSymbol ctorName parentTypeName = do
     symEnv <- gets lsSymbolEnv
-    pure $ case [sym | sym <- Map.keys symEnv
-                     , resolvedSymbolName sym == ctorName
-                     , resolvedSymbolKind sym == DataConstructorSymbol parentTypeName] of
-        (sym:_) -> Just sym
+    pure $ case [ sym
+                | sym <- Map.keys symEnv
+                , resolvedSymbolName sym == ctorName
+                , resolvedSymbolKind sym == DataConstructorSymbol parentTypeName
+                ] of
+        (sym : _) -> Just sym
         [] -> Nothing
 
 symbolToName :: Symbol -> Name
@@ -91,8 +91,13 @@ unresolvedName name = do
         Nothing -> do
             symEnv <- gets lsSymbolEnv
             let availableNames = map resolvedSymbolName (Map.keys symEnv)
-            error $ "unresolvedName: Unresolved variable not found in symbol environment: " ++ name ++
-                    "\nAvailable symbols (" ++ show (length availableNames) ++ " total): " ++ show availableNames
+            error
+                $ "unresolvedName: Unresolved variable not found in symbol environment: "
+                    ++ name
+                    ++ "\nAvailable symbols ("
+                    ++ show (length availableNames)
+                    ++ " total): "
+                    ++ show availableNames
 
 collectLocalSymbols :: Expr -> Map.Map String Symbol
 collectLocalSymbols = go
@@ -109,9 +114,10 @@ collectLocalSymbols = go
         ExprPatternMatch scrut arms _ -> go scrut `Map.union` Map.unions (map go arms)
         ExprDerivedPatternMatch arms -> Map.unions (map go arms)
         ExprPatternMatchArm _ body _ -> go body
-        ExprCompose stmts _ -> Map.unions [go e | CSExpr e _ <- stmts] `Map.union`
-                               Map.unions [go e | CSBind _ e _ <- stmts] `Map.union`
-                               Map.unions [go e | CSLet _ e _ <- stmts]
+        ExprCompose stmts _ ->
+            Map.unions [go e | CSExpr e _ <- stmts]
+                `Map.union` Map.unions [go e | CSBind _ e _ <- stmts]
+                `Map.union` Map.unions [go e | CSLet _ e _ <- stmts]
         _ -> Map.empty
 
 lookupLocalSymbol :: Map.Map String Symbol -> String -> LowerM Name
@@ -154,7 +160,7 @@ resolvePattern localSyms (PAs name pat span') = do
 findConstructorByString :: String -> Map.Map Name MetallicConstructorMetadata -> Maybe Name
 findConstructorByString str ctors =
     case [n | n <- Map.keys ctors, nameMatches n str] of
-        (n:_) -> Just n
+        (n : _) -> Just n
         [] -> Nothing
   where
     nameMatches (NUser u) s = uniqueOriginal u == s
@@ -202,7 +208,7 @@ lowerType (ExprDataTypeDef name _generics _constraints constructors _attrs _span
         mSymbol <- lookupSymbolByName name
         case mSymbol of
             Just symbol -> pure $ symbolToName symbol
-            Nothing -> freshLocalName name  -- Fallback for local types
+            Nothing -> freshLocalName name -- Fallback for local types
     ctors <- zipWithM (lowerConstructor name) [0 ..] constructors
     pure $ MAlgebraicType typeName ctors
   where
@@ -212,7 +218,7 @@ lowerType (ExprDataTypeDef name _generics _constraints constructors _attrs _span
             mSymbol <- lookupConstructorSymbol ctorName parentTypeName
             case mSymbol of
                 Just symbol -> pure $ symbolToName symbol
-                Nothing -> freshLocalName ctorName  -- Fallback
+                Nothing -> freshLocalName ctorName -- Fallback
         let fieldTypes = map (lValue . snd) fields
         pure $ MetallicConstructor ctorNameN tag fieldTypes
     lowerConstructor _ _ e = error $ "Expected data constructor, got: " ++ show e
@@ -238,7 +244,7 @@ lowerTypeClass (ExprTypeClassDef className _ methods _) = do
             mSymbol <- lookupSymbolByName name
             case mSymbol of
                 Just symbol -> pure $ symbolToName symbol
-                Nothing -> freshLocalName name  -- Fallback for local bindings
+                Nothing -> freshLocalName name -- Fallback for local bindings
         pure (methodName, ty)
     extractMethodBinding e = error $ "Expected type class binding, got: " ++ show e
 lowerTypeClass e = error $ "Expected type class definition, got: " ++ show e
@@ -252,7 +258,7 @@ lowerBinding (ExprBindingDef name (Located _ (Forall typeVars constraints bindin
         mSymbol <- lookupSymbolByName name
         case mSymbol of
             Just symbol -> pure $ symbolToName symbol
-            Nothing -> freshLocalName name  -- Fallback for local bindings
+            Nothing -> freshLocalName name -- Fallback for local bindings
     let funcAttrs = attributesToFunctionAttrs (map lValue attrs)
     (paramTypes, returnType, metalBody) <- lowerBindingBody bindingType body
     pure (bindingName, metalBody, paramTypes, returnType, typeVars, constraints, funcAttrs)
@@ -305,7 +311,7 @@ lowerInstance (ExprInstanceDef constraintType methods _) = do
             mSymbol <- lookupSymbolByName name
             case mSymbol of
                 Just symbol -> pure $ symbolToName symbol
-                Nothing -> freshLocalName name  -- Fallback for local bindings
+                Nothing -> freshLocalName name -- Fallback for local bindings
         (paramTypes, returnType, metalBody) <- lowerBindingBody methodType body
         pure (methodName, metalBody, paramTypes, returnType)
     lowerInstanceMethod e = error $ "Expected binding in instance, got: " ++ show e

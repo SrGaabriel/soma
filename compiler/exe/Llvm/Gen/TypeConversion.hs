@@ -48,9 +48,9 @@ convertType (TConstructor (TypeConstructor tyId _)) =
         TyPrim TPUnit -> LlvmVoid
         TyPrim TPClosurePtr -> LlvmPointer LlvmI8
         TyPrim TPPtr -> LlvmPointer LlvmI8
-        TyPrim TPArray -> LlvmPointer LlvmI8  -- Should not happen, handled above
-        TyPrim TPRef -> LlvmPointer LlvmI8    -- Should not happen, handled above
-        TyPrim TPIO -> LlvmVoid               -- Should not happen, handled above
+        TyPrim TPArray -> LlvmPointer LlvmI8 -- Should not happen, handled above
+        TyPrim TPRef -> LlvmPointer LlvmI8 -- Should not happen, handled above
+        TyPrim TPIO -> LlvmVoid -- Should not happen, handled above
         TyPrim (TPTuple _) -> LlvmAnonymous [LlvmI8, LlvmI64]
         TyUserDefined _ -> LlvmAnonymous [LlvmI8, LlvmI64]
 

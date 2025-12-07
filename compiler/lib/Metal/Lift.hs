@@ -13,9 +13,9 @@ import Metal.Expr
 import Metal.Function
 import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (MetallicFunctionMetadata), defaultFunctionAttributes)
 import Metal.Module
-import Project.Name (Name (..), LocalId (..), LocalPrefix (..), nameToString)
+import Project.Name (LocalId (..), LocalPrefix (..), Name (..), nameToString)
 import Project.Unique (Unique (..))
-import Syntax.Patterns (ResolvedPattern, Pattern (..))
+import Syntax.Patterns (Pattern (..), ResolvedPattern)
 import Typing.Types
 
 data ClosureInfo = ClosureInfo
@@ -322,8 +322,9 @@ freshTmpName = do
     let unique = Unique lambdaId modName ("closure_tmp$" ++ show lambdaId)
     pure $ NUser unique
 
--- | Create a Name for closure_self parameter
--- Uses index 0 since there's only ever one closure_self per lifted function
+{- | Create a Name for closure_self parameter
+Uses index 0 since there's only ever one closure_self per lifted function
+-}
 closureSelfName :: Name
 closureSelfName = NLocal (LocalId LPClosureSelf 0)
 

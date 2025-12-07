@@ -41,7 +41,6 @@ module Alloy.PromoteRefs (
 ) where
 
 import Alloy.Ir
-
 import Alloy.Subst
 import Alloy.Uniqueness (FunctionReport (..), LocalUniq (..), Uniqueness (..), analyzeFunction)
 import Data.List (findIndex, sort)
@@ -91,7 +90,7 @@ promoteMany refs fn@AlloyFunction{afEntry, afBlocks} =
             if abName == afEntry
                 then []
                 else
-                    [ (paramName r abName, ety)
+                    [ (PN.makeRefParam r abName, ety)
                     | (r, ety) <- promotedOrder
                     , let needSet = Map.findWithDefault Set.empty r needsMap
                     , Set.member abName needSet
@@ -106,7 +105,7 @@ promoteMany refs fn@AlloyFunction{afEntry, afBlocks} =
                         then Map.empty
                         else
                             Map.fromList
-                                [ (r, OpVar (paramName r abName))
+                                [ (r, OpVar (PN.makeRefParam r abName))
                                 | (r, _ety) <- promotedOrder
                                 , needsHere r
                                 ]
@@ -384,9 +383,6 @@ succMap blks =
                 in maybe base (: base) mdef
             ARet _ -> []
             AUnreachable -> []
-
-paramName :: Name -> Name -> Name
-paramName refN blockN = PN.makeRefParam refN blockN
 
 trivialRefPeephole :: AlloyFunction -> AlloyFunction
 trivialRefPeephole fn@AlloyFunction{afParams, afBlocks} =

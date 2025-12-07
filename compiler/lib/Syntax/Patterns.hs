@@ -1,18 +1,15 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Syntax.Patterns (
     PatternPhase (..),
-
     Pattern (..),
     ParsedPattern,
     ResolvedPattern,
-
     Literal (..),
-
     patternSpan,
 ) where
 
@@ -46,16 +43,21 @@ data Pattern (p :: PatternPhase)
 
 -- | Type aliases for convenience
 type ParsedPattern = Pattern 'Parsed
+
 type ResolvedPattern = Pattern 'Resolved
 
 -- Deriving instances for ParsedPattern (String-based)
 deriving instance Show ParsedPattern
+
 deriving instance Eq ParsedPattern
+
 deriving instance Ord ParsedPattern
 
 -- Deriving instances for ResolvedPattern (Name-based)
 deriving instance Show ResolvedPattern
+
 deriving instance Eq ResolvedPattern
+
 deriving instance Ord ResolvedPattern
 
 -- | Get the span from any pattern

@@ -5,7 +5,7 @@ module Circuit.Decisions where
 import Data.List (groupBy, nub, partition, sortOn)
 import qualified Data.Map.Strict as Map
 import Project.Name (Name)
-import Syntax.Patterns (Literal (..), ResolvedPattern, Pattern (..))
+import Syntax.Patterns (Literal (..), Pattern (..), ResolvedPattern)
 
 type Action = Int
 

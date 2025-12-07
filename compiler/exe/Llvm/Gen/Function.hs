@@ -18,12 +18,12 @@ import Alloy.Ir (
     ),
  )
 import Control.Monad (forM)
-import Control.Monad.Reader (MonadReader (local), asks)
+import Control.Monad.Reader (MonadReader (local))
 import Control.Monad.State (modify)
 import Control.Monad.Writer (listen)
-import Data.Bifunctor (Bifunctor (second))
+import Data.Bifunctor (bimap)
 import Llvm.Gen.Attributes (FunctionAttrs (..), analyzeFunctionAttrs)
-import Llvm.Gen.Core (IrGen, IrGenEnv (moduleName, opTypeEnv), IrGenState (irFunctions), setGraphFunctionContext, setTailCallContext)
+import Llvm.Gen.Core (IrGen, IrGenEnv (opTypeEnv), IrGenState (irFunctions), setGraphFunctionContext, setTailCallContext)
 import Llvm.Gen.Instr (compileInstr, compileTerminator)
 import Llvm.Gen.OperandPass (buildOperandTypeEnv)
 import Llvm.Gen.TypeConversion (convertType)
@@ -39,7 +39,7 @@ import Llvm.Modules (
     ),
  )
 import Llvm.Types (LlvmFnAttr (..), LlvmMemoryEffect (..))
-import Project.Name (Name (..), nameToString, nameToLLVM, nameOriginal)
+import Project.Name (Name (..), nameOriginal, nameToLLVM, nameToString)
 
 compileFunction :: AlloyFunction -> IrGen ()
 compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
@@ -54,7 +54,7 @@ compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
             _ -> False
     let newEnvFn = local (\env -> env{opTypeEnv = opEnv})
     blocks <- mapM (newEnvFn . setGraphFunctionContext isGraphFn . compileBlock) afBlocks
-    let params = map (\(n, t) -> (nameToString n, convertType t)) afParams
+    let params = map (bimap nameToString convertType) afParams
     let retType = convertType afReturnType
     let provenAttrs = analyzeFunctionAttrs aFn
     let attrs = buildLlvmAttrs isGraphFn provenAttrs

@@ -37,7 +37,7 @@ import Control.Monad (forM, forM_, when)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Project.Name (mkProj0, mkProj1, nameToString, isErasureName, mkForkedTaskName)
+import Project.Name (isErasureName, mkForkedTaskName, mkProj0, mkProj1, nameToString)
 import Typing.Types (Type (..), byteType, isFunctionType, tupleType)
 
 {- | Environment for lowering, containing:
@@ -59,7 +59,6 @@ data LowerEnv = LowerEnv
 -- | Empty lowering environment
 emptyLowerEnv :: LowerEnv
 emptyLowerEnv = LowerEnv Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty
-
 
 lookupOperand :: C.Name -> LowerEnv -> Maybe AOperand
 lookupOperand name = Map.lookup name . leOperands
@@ -345,13 +344,13 @@ lowerTerm env term = case term of
 
     -- Projections
     C.CDp0 name _ ->
-        let proj0Name = mkProj0 name in
-        case lookupOperand proj0Name env of
+        let proj0Name = mkProj0 name
+        in case lookupOperand proj0Name env of
             Just op -> pure op
             Nothing -> error $ "Circuit.ToAlloy: unbound projection: " ++ nameToString proj0Name
     C.CDp1 name _ ->
-        let proj1Name = mkProj1 name in
-        case lookupOperand proj1Name env of
+        let proj1Name = mkProj1 name
+        in case lookupOperand proj1Name env of
             Just op -> pure op
             Nothing -> error $ "Circuit.ToAlloy: unbound projection: " ++ nameToString proj1Name
     -- Tagged values (constructors)

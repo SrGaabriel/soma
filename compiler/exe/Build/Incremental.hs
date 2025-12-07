@@ -44,14 +44,13 @@ import Logging.Trees (prettyCircuit)
 import Metal.Gen.Entry (TypedLowerResult (..), compileMetalModule)
 import Metal.Gen.Metadata (extractConstructorMetadata)
 import Metal.Lift (liftLambdas)
-import Metal.Lower (LowerResult (..))
+import Metal.Lower (LowerResult (..), symbolToName)
 import Metal.Module (MetallicModule (..))
 import Metal.MonadNormalize (normalizeModule)
 import Project.Check (CheckedModule (..), checkModule)
 import Project.Graph
 import Project.Module
 import Project.Symbols (Symbol (..), SymbolKind (..))
-import Metal.Lower (symbolToName)
 import Syntax.Tree (Expr (..))
 import System.Directory
 import System.Exit (exitFailure)

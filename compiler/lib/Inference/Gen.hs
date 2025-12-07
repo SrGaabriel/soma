@@ -30,7 +30,7 @@ import Inference.Substitution (Substitutable (apply))
 import Lexing.Position (Span (..))
 import Metal.Expr
 import Project.Name (Name (..), nameToString)
-import Syntax.Patterns (ResolvedPattern, Pattern (..))
+import Syntax.Patterns (Pattern (..), ResolvedPattern)
 import qualified Syntax.Tree
 import Typing.Types (
     Constraint (..),

@@ -234,7 +234,7 @@ instance TreeShow ATerminator where
             ++ treeShow scr
             ++ " { "
             ++ intercalate ", " [show i ++ " -> " ++ nameToString lbl | (i, lbl) <- cases]
-            ++ maybe "" (", default -> " ++) (fmap nameToString mdef)
+            ++ maybe "" ((", default -> " ++) . nameToString) mdef
             ++ " }"
     treeShow (ARet Nothing) = "ret"
     treeShow (ARet (Just v)) = "ret " ++ treeShow v

@@ -1,12 +1,12 @@
 module Parsing.Intrinsics (parseIntrinsic) where
 
 import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..), spanningTokens, tokenSpan)
+import Lexing.Position (Located (Located), spanBetween)
 import Parsing.Errors (ParsingError (..))
 import Parsing.Parser (Parser, consume, parseFuncName, tryPeekOrEOF)
 import Parsing.Types (parseKind, parseLocatedQualifiedType)
 import Syntax.Tree (Expr (..))
 import qualified Text.Megaparsec as MP
-import Lexing.Position (Located(Located), spanBetween)
 
 parseIntrinsic :: Parser Expr
 parseIntrinsic = do

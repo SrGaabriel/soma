@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -20,13 +19,11 @@ import Alloy.Ir (
     AlloyFunction (..),
     AlloyModule (..),
  )
-
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import qualified Data.Set as Set
-
-import Project.Name (Name, nameToString, makeMonomorphized, nameBaseUnique)
+import Project.Name (Name, makeMonomorphized, nameBaseUnique, nameToString)
 import qualified Project.Name as PN
 import Project.Unique (Unique)
 import Typing.Types (
@@ -105,7 +102,7 @@ resolveCallTarget baseFnMap env op =
         let resolvedName = resolveTraitMethod baseFnMap env methodName args
         in case resolvedName of
             Just name -> resolveCommon name args
-            Nothing -> resolveCommon methodName args  -- Fallback to original name
+            Nothing -> resolveCommon methodName args -- Fallback to original name
     resolveCommon name args =
         case Map.lookup name baseFnMap of
             Nothing -> Nothing
@@ -123,6 +120,7 @@ resolveCallTarget baseFnMap env op =
                                             , crKey = InstKey (fnName calleeFn) (map (substType subst . snd) (afParams calleeFn))
                                             }
                             _ -> Nothing
+
 resolveTraitMethod :: Map Name AlloyFunction -> Map Name Type -> Name -> [AOperand] -> Maybe Name
 resolveTraitMethod baseFnMap env methodName args =
     case PN.nameBaseUnique methodName of
@@ -146,7 +144,7 @@ resolveTraitMethod baseFnMap env methodName args =
                             -- Look for an instance method with this base and type
                             case findInstanceMethod baseUnique instanceType baseFnMap of
                                 Just instanceMethodName -> Just instanceMethodName
-                                Nothing -> Just methodName  -- Fall back to base method
+                                Nothing -> Just methodName -- Fall back to base method
 
 findInstanceMethod :: Unique -> Type -> Map Name AlloyFunction -> Maybe Name
 findInstanceMethod baseUnique instanceType fnMap =
@@ -275,13 +273,15 @@ computeRewriteMap baseFnMap instCache fns =
                                         OpCall (Direct calleeName) args
                                             | Map.notMember calleeName baseFnMap ->
                                                 case resolveTraitMethod baseFnMap env calleeName args of
-                                                    Just resolved | resolved /= calleeName && Map.member resolved baseFnMap ->
-                                                        (cid + 1, Just resolved)
+                                                    Just resolved
+                                                        | resolved /= calleeName && Map.member resolved baseFnMap ->
+                                                            (cid + 1, Just resolved)
                                                     _ -> (if isCallOp op then cid + 1 else cid, Nothing)
                                         OpDictCall _ _ methodName args ->
                                             case resolveTraitMethod baseFnMap env methodName args of
-                                                Just resolved | Map.member resolved baseFnMap ->
-                                                    (cid + 1, Just resolved)
+                                                Just resolved
+                                                    | Map.member resolved baseFnMap ->
+                                                        (cid + 1, Just resolved)
                                                 _ -> (if isCallOp op then cid + 1 else cid, Nothing)
                                         _ -> (if isCallOp op then cid + 1 else cid, Nothing)
 
@@ -367,7 +367,8 @@ applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afPar
 
     rewriteOperand env (OpVar varName)
         | Map.notMember varName env
-        , Map.notMember varName baseFnMap = OpVar varName
+        , Map.notMember varName baseFnMap =
+            OpVar varName
     rewriteOperand _ op = op
 
 specializeFunction :: String -> AlloyFunction -> TySubst -> AlloyFunction

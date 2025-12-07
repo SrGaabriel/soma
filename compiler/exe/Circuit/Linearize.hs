@@ -31,7 +31,7 @@ import Control.Monad.State
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Project.Name (Name (..), LocalId (..), LocalPrefix (..), mkProj0, mkProj1)
+import Project.Name (LocalId (..), LocalPrefix (..), Name (..), mkProj0, mkProj1)
 import Typing.Types (Type)
 
 -- | State for linearization

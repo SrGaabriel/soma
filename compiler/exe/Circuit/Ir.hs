@@ -56,7 +56,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import GHC.Generics (Generic)
 import Project.Name (Name (..))
-import Typing.Types (TyConstructor (..), TyUnique (..), TyPrimitive (..), Type (..), intType, boolType, strType, unitType)
+import Typing.Types (TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..), boolType, intType, strType, unitType)
 
 {- | A label distinguishes different superposition/duplication pairs.
 When a DUP with label L meets a SUP with label L, they annihilate.
@@ -602,8 +602,8 @@ classifyTypeWithEnv env ty = case ty of
     -- Primitive types are always stack-allocated
     TConstructor tc -> case tcId tc of
         TyPrim prim | prim `elem` [TPInt, TPBool, TPByte, TPUnit] -> StackOnly
-        _ -> MaybeHeap  -- User-defined types may be heap-allocated
-    -- Function types are heap-allocated (closures)
+        _ -> MaybeHeap -- User-defined types may be heap-allocated
+        -- Function types are heap-allocated (closures)
     TArrow _ _ -> MaybeHeap
     -- Type variables are conservatively MaybeHeap (polymorphic)
     TVar _ -> MaybeHeap

@@ -16,8 +16,9 @@ import Data.Maybe (fromMaybe)
 import qualified Project.Name as PN
 import Typing.Types (TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..))
 
--- | Configuration for monadic inlining patterns
--- Uses string patterns matched against nameOriginal for stdlib functions
+{- | Configuration for monadic inlining patterns
+Uses string patterns matched against nameOriginal for stdlib functions
+-}
 data MonadicOps = MonadicOps
     { ioPurePatterns :: [String]
     , ioBindPatterns :: [String]

@@ -35,12 +35,11 @@ module Circuit.ToGraph (
 import Alloy.Build
 import qualified Circuit.Ir as C
 import Control.Monad (foldM, forM, forM_)
-
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Project.Name (LocalId (..), LocalPrefix (..), Name (..), SyntheticId (..), SyntheticKind (..), mkProj0, mkProj1, nameOriginal)
 import qualified Project.Name as PN
-import Project.Name (Name (..), LocalId (..), LocalPrefix (..), SyntheticId (..), SyntheticKind (..), mkProj0, mkProj1, nameOriginal, nameToString)
-import Typing.Types (Kind (..), TyConstructor (..), TyUnique (..), TyPrimitive (..), Type (..), boolType, intType)
+import Typing.Types (Kind (..), TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..), boolType, intType)
 
 isClosureSelf :: PN.Name -> Bool
 isClosureSelf (NLocal (LocalId LPClosureSelf _)) = True
@@ -182,7 +181,7 @@ Similar to ToGraph.hs but handles linearized Circuit IR with explicit DUP nodes.
 -}
 lowerFunctionForLGraph :: Map C.Name Int -> C.CFunction -> AlloyBuilder ()
 lowerFunctionForLGraph funcIndexMap C.CFunction{..} = do
-    let ptrType = intType  -- Use int type as placeholder for pointers
+    let ptrType = intType -- Use int type as placeholder for pointers
     beginFunction cfName [(graphNetName, ptrType), (graphTmName, ptrType), (graphArgName, termType)] termType
 
     entryBlock <- freshBlockName

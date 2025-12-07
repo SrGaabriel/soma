@@ -46,8 +46,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
-
-import Project.Name (Name (..), SyntheticId (..), SyntheticKind (..), Intrinsic (..), RuntimeFn (..), mkProj0, mkProj1)
+import Project.Name (Intrinsic (..), Name (..), RuntimeFn (..), SyntheticId (..), SyntheticKind (..), mkProj0, mkProj1)
 import Typing.Types (isFunctionType)
 
 -- | Escape classification for a binding
@@ -342,8 +341,8 @@ isKnownSafeFunction (NDict _) = False
 isSelfCall :: Name -> AnalysisState -> Bool
 isSelfCall name st = case asCurrentFunction st of
     Just currentFn ->
-        name == currentFn ||
-        isLiftedFrom name currentFn
+        name == currentFn
+            || isLiftedFrom name currentFn
     Nothing -> False
 
 isLiftedFrom :: Name -> Name -> Bool

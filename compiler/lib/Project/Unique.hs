@@ -3,16 +3,13 @@
 module Project.Unique (
     Unique (..),
     UniqueId,
-
     UniqueSupply,
     UniqueSupplyState (..),
     runUniqueSupply,
     evalUniqueSupply,
     execUniqueSupply,
-
     freshUnique,
     freshUniqueFrom,
-
     initialSupplyState,
 ) where
 

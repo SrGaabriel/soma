@@ -3,25 +3,20 @@
 
 module Typing.Types (
     Kind (..),
-
     TyVar (..),
     SkolemVar (..),
     Rigidity (..),
     FlexInfo (..),
-
     TyConstructor (..),
     tyUniqueName,
-
     TyUnique (..),
     TyPrimitive (..),
     primitiveName,
     isPrimitive,
     primitiveFromName,
-
     Type (..),
     Constraint (..),
     QualifiedType (..),
-
     intType,
     strType,
     boolType,
@@ -32,7 +27,6 @@ module Typing.Types (
     shortType,
     floatType,
     doubleType,
-
     arrayType,
     tupleType,
     mkPrimTyCon,
@@ -289,10 +283,10 @@ tupleType types =
     in foldr1 TApp (map (TApp (TConstructor (TypeConstructor (TyPrim (TPTuple n)) KindStar))) types)
 
 mkPrimTyCon :: TyPrimitive -> Kind -> TyConstructor
-mkPrimTyCon prim kind = TypeConstructor (TyPrim prim) kind
+mkPrimTyCon = TypeConstructor . TyPrim
 
 mkUserTyCon :: Unique -> Kind -> TyConstructor
-mkUserTyCon u kind = TypeConstructor (TyUserDefined u) kind
+mkUserTyCon = TypeConstructor . TyUserDefined
 
 assignConstraints :: QualifiedType -> Type -> QualifiedType
 assignConstraints (Forall vars constraints _) =

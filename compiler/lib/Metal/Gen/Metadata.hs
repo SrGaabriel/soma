@@ -11,15 +11,15 @@ import Lexing.Position (Located (..))
 import Metal.Metadata
 import Project.Name (Name (..))
 import Project.Symbols (Symbol (..), SymbolKind (..))
-import Project.Unique (Unique (..))
 import Syntax.Tree
 import Typing.Types (QualifiedType)
 
 -- | Symbol environment from the resolver
 type SymbolEnv = Map Symbol QualifiedType
 
--- | Extract constructor metadata from the AST
--- Takes the symbol environment to look up proper Names for types
+{- | Extract constructor metadata from the AST
+Takes the symbol environment to look up proper Names for types
+-}
 extractConstructorMetadata :: SymbolEnv -> Expr -> Map Name MetallicConstructorMetadata
 extractConstructorMetadata symEnv (ExprRoot decls) =
     Map.fromList $ concat [extractFromDataType dt | dt@(ExprDataTypeDef{}) <- decls]
@@ -28,12 +28,12 @@ extractConstructorMetadata symEnv (ExprRoot decls) =
         let typeName = lookupTypeName dataName symEnv
         in [ (ctorName', MetallicConstructorMetadata typeName tag fieldTypes)
            | ( tag
-             , ExprDataConstructor
-                 { structConstructorName = ctorName
-                 , structConstructorArgs = fields
-                 }
-             ) <-
-               zip [0 ..] dataConstructors
+                , ExprDataConstructor
+                    { structConstructorName = ctorName
+                    , structConstructorArgs = fields
+                    }
+                ) <-
+                zip [0 ..] dataConstructors
            , let fieldTypes = map (lValue . snd) fields
            , let ctorName' = lookupConstructorName ctorName dataName symEnv
            ]
@@ -55,13 +55,13 @@ lookupConstructorName ctorName parentTypeName env =
 findSymbolByName :: String -> SymbolKind -> SymbolEnv -> Maybe Symbol
 findSymbolByName name kind env =
     case [sym | sym <- Map.keys env, resolvedSymbolName sym == name, resolvedSymbolKind sym == kind] of
-        (sym:_) -> Just sym
+        (sym : _) -> Just sym
         [] -> Nothing
 
 findSymbolByNameAndKind :: String -> SymbolKind -> SymbolEnv -> Maybe Symbol
 findSymbolByNameAndKind name kind env =
     case [sym | sym <- Map.keys env, resolvedSymbolName sym == name, resolvedSymbolKind sym == kind] of
-        (sym:_) -> Just sym
+        (sym : _) -> Just sym
         [] -> Nothing
 
 symbolToName :: Symbol -> Name

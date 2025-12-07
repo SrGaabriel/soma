@@ -40,7 +40,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Project.Name (Name (..), LocalId (..), LocalPrefix (..))
+import Project.Name (LocalId (..), LocalPrefix (..), Name (..))
 import Typing.Types (Type (..))
 
 -- | Configuration for parallelization

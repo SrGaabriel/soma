@@ -11,7 +11,7 @@ import Control.Monad.State (gets)
 import qualified Data.Map as Map
 import Llvm.Gen.Core (
     IrGen,
-    IrGenEnv (moduleName, opTypeEnv),
+    IrGenEnv (opTypeEnv),
     IrGenState (valueSubst),
     applySubstitutions,
  )
@@ -23,7 +23,7 @@ import Llvm.Values (
     boolLiteral,
     intLiteral,
  )
-import Project.Name (Name (..), nameToString, nameToLLVM)
+import Project.Name (nameToLLVM, nameToString)
 
 compileOperand :: AOperand -> IrGen LlvmValue
 compileOperand (OpVar name) = do

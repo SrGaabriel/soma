@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
@@ -30,8 +29,8 @@ import Circuit.Decisions (
 import Control.Applicative ((<|>))
 import Control.Monad (forM)
 import Control.Monad.State.Strict
+import Data.Functor ((<&>))
 import qualified Data.Map.Strict as Map
-
 import Lexing.Position (dummySpan)
 import Metal.Expr (
     MCaseArm (..),
@@ -569,14 +568,18 @@ bindOne (PConstructor ctorName sub _) op vt = do
     collectVars (PTuple ps _) = concatMap collectVars ps
     collectVars (PArray ps _) = concatMap collectVars ps
     collectVars _ = []
-bindOne (PTuple sub s) op vt = do
-    forM (zip [0..] sub) $ \(idx, sp) -> do
-        if patternHasBinder sp
-            then do
-                tmp <- lift $ emitLetTmp unitType (OpProject op idx)  -- todo: proper type
-                bindOne sp (OpVar tmp) vt
-            else pure []
-    >>= pure . concat
+bindOne (PTuple sub _) op vt =
+    ( do forM (zip [0 ..] sub)
+      $ \(idx, sp) ->
+        do
+            if patternHasBinder sp
+                then do
+                    tmp <- lift $ emitLetTmp unitType (OpProject op idx)
+                    bindOne sp (OpVar tmp) vt
+                else
+                    pure []
+    )
+        <&> concat
 bindOne (PArray{}) _ _ = pure []
 
 withBinding :: PN.Name -> AOperand -> Lower a -> Lower a

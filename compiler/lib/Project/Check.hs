@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 module Project.Check (
     CheckedModule (..),
     TypedBinding,
@@ -9,7 +8,6 @@ module Project.Check (
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-
 import Inference.Assembler (MetalTypeEnv, inferModule)
 import Inference.Core (InstanceEnv, TypedBinding, TypedInstance)
 import Inference.Errors (InferenceError)
