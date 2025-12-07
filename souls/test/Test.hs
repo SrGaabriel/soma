@@ -98,7 +98,7 @@ testHover = describe "Hover" $ do
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
             doc <- openDoc "valid.soma" "soma"
-            hover' <- getHover doc (Position 2 5)
+            hover' <- getHover doc (Position 3 37)
 
             case hover' of
                 Just (Hover (InL content) _) -> do
@@ -117,7 +117,7 @@ testHover = describe "Hover" $ do
         $ runSessionWithConfig (mkConfig lspCmd) lspCmd fullCaps "test/fixtures"
         $ do
             doc <- openDoc "expression.soma" "soma"
-            hover' <- getHover doc (Position 3 10)
+            hover' <- getHover doc (Position 3 20)
 
             liftIO
                 $ hover' `shouldSatisfy` \case
@@ -408,13 +408,13 @@ testHaomaProjects = describe "Haoma Project Integration" $ do
                     liftIO $ diags1 `shouldBe` []
 
                     -- Make several document edits to increment the version
-                    changeDoc doc [TextDocumentContentChangeEvent $ InR $ TextDocumentContentChangeWholeDocument "use mylib.{add}\n\ndef main :: Int = add 1 2\n"]
+                    changeDoc doc [TextDocumentContentChangeEvent $ InR $ TextDocumentContentChangeWholeDocument "use mylib/core.{add}\n\ndef main :: Int = add 1 2\n"]
                     _ <- waitForDiagnosticsFrom "soma"
 
-                    changeDoc doc [TextDocumentContentChangeEvent $ InR $ TextDocumentContentChangeWholeDocument "use mylib.{add}\n\ndef main :: Int = add 2 3\n"]
+                    changeDoc doc [TextDocumentContentChangeEvent $ InR $ TextDocumentContentChangeWholeDocument "use mylib/core.{add}\n\ndef main :: Int = add 2 3\n"]
                     _ <- waitForDiagnosticsFrom "soma"
 
-                    changeDoc doc [TextDocumentContentChangeEvent $ InR $ TextDocumentContentChangeWholeDocument "use mylib.{add}\n\ndef main :: Int = add 3 4\n"]
+                    changeDoc doc [TextDocumentContentChangeEvent $ InR $ TextDocumentContentChangeWholeDocument "use mylib/core.{add}\n\ndef main :: Int = add 3 4\n"]
                     diags2 <- waitForDiagnosticsFrom "soma"
                     liftIO $ diags2 `shouldBe` []
 
