@@ -9,7 +9,7 @@ import qualified Data.Text as T
 import Format.Trees (treeShow)
 import Language.LSP.Protocol.Types (CompletionItem (..), CompletionItemKind (CompletionItemKind_Function), CompletionList (CompletionList), Hover (Hover), Location (..), MarkupContent (..), MarkupKind (..), Position, filePathToUri, type (|?) (InL))
 import Lexing.Position (Span (..))
-import Metal.Expr (MCaseArm (..), MetallicExpr (..), TypedExpr, exprSpan, getMetallicExprType)
+import Metal.Expr (MCaseArm (..), MetallicExpr (..), TypedExpr, exprSpan, getType)
 import Project.Extracts (extractSymbolImports, filterSymbolsByNames)
 import Project.Name (Name)
 import Project.Symbols (Symbol (..))
@@ -69,7 +69,7 @@ findInTypedExpr offset expr =
     in if offset >= start' && offset < end'
         then case findInChildren offset expr of
             Just t -> Just t
-            Nothing -> Just $ Forall [] [] (getMetallicExprType expr)
+            Nothing -> Just $ Forall [] [] (getType expr)
         else Nothing
 
 -- | Search children of a TypedExpr for a more specific match
