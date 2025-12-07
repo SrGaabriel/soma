@@ -6,10 +6,9 @@ module Llvm.Gen.Intrinsics (
 ) where
 
 import Alloy.Ir (AOperand (..))
-import Control.Monad.Reader (asks)
 import Control.Monad.State (gets)
 import Control.Monad.Writer.Class (tell)
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), freshBlockName, freshNamedReg, saveTmp, saveToNamedReg)
+import Llvm.Gen.Core (IrGen, IrGenState (..), freshBlockName, freshNamedReg, saveTmp, saveToNamedReg)
 import Llvm.Gen.Externals (mallocDependency, printfDependency, putsDependency, strcpyDependency, strlenDependency, useDep)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.Templates (newStrTemplate)

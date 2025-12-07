@@ -36,8 +36,6 @@ module Metal.Expr (
     TypedArm,
     InferenceArm,
     HasType (..),
-    getMetallicExprType,
-    getMetallicLiteralType,
     literalType,
     inferenceSlot,
     exprSpan,
@@ -286,9 +284,3 @@ inferenceSlot (MTuple _ slot _) = slot
 inferenceSlot (MCase _ _ _ slot _) = slot
 inferenceSlot (MFieldAccess _ _ slot _) = slot
 inferenceSlot (MPanic _ slot _) = slot
-
-getMetallicExprType :: TypedExpr -> Type
-getMetallicExprType = getType
-
-getMetallicLiteralType :: MetallicLiteral -> Type
-getMetallicLiteralType = literalType

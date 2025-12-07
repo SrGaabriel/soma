@@ -17,7 +17,7 @@ import Syntax.CST.RedTree hiding (tokens)
 import Syntax.CST.SyntaxKind
 import Syntax.Patterns (Literal (..), ParsedPattern, Pattern (..))
 import Syntax.Tree (ComposeStmt (..), Expr (..))
-import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyConstructor (..), TyVar (..), Type (..), tupleType)
+import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyVar (..), Type (..), tupleType)
 
 data LowerError
     = UnexpectedNodeKind !SyntaxKind !Text

@@ -4,7 +4,6 @@ module Llvm.Gen.Instr (
 ) where
 
 import Alloy.Ir
-import Control.Monad.Reader (asks)
 import Control.Monad.Writer.Class (MonadWriter (tell))
 import Llvm.Gen.CRuntime (
     cruntimeGInet,

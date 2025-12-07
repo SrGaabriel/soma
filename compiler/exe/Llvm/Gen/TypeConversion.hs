@@ -1,6 +1,5 @@
 module Llvm.Gen.TypeConversion (
     convertType,
-    sizeOfType,
     getConstructorTag,
 ) where
 
@@ -26,10 +25,10 @@ convertType (TArrow argTy retTy) =
     collectArgTypes (TArrow a b) = convertType a : collectArgTypes b
     collectArgTypes t = [convertType t]
 convertType (TSkolem _) =
-    -- Skolem types are erased to generic pointers at runtime
+-- todo(review): maybe throw an error here?
     LlvmPointer LlvmI8
 convertType (TVar _) =
-    -- Type variables are erased to generic pointers at runtime
+    -- todo(review): maybe throw an error here?
     LlvmPointer LlvmI8
 convertType (TUnresolved name) =
     error $ "Unresolved type " ++ name ++ " encountered during LLVM codegen."
@@ -53,22 +52,6 @@ convertType (TConstructor (TypeConstructor tyId _)) =
         TyPrim TPIO -> LlvmVoid -- Should not happen, handled above
         TyPrim (TPTuple _) -> LlvmAnonymous [LlvmI8, LlvmI64]
         TyUserDefined _ -> LlvmAnonymous [LlvmI8, LlvmI64]
-
-sizeOfType :: LlvmType -> Int
-sizeOfType LlvmVoid = 0
-sizeOfType LlvmI1 = 1
-sizeOfType LlvmI8 = 1
-sizeOfType LlvmI16 = 2
-sizeOfType LlvmI32 = 4
-sizeOfType LlvmI64 = 8
-sizeOfType LlvmFloat = 4
-sizeOfType LlvmDouble = 8
-sizeOfType (LlvmPointer _) = 8 -- todo: platform specific pointer size
-sizeOfType (LlvmArray n elemTy) = n * sizeOfType elemTy
-sizeOfType (LlvmAnonymous fields) = sum (map sizeOfType fields)
-sizeOfType (LlvmFn _ _) = 8 -- todo: platform specific pointer size
-sizeOfType (LlvmNamedType _) = 8 -- Assume pointer size for named types
-sizeOfType e = error $ "sizeOfType: Unsupported LlvmType " ++ show e
 
 -- todo(urgent): proper implementation would use constructor metadata
 getConstructorTag :: String -> Int -> Int

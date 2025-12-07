@@ -7,10 +7,7 @@ module Llvm.Types (
     pattern LlvmNamed,
     pattern LlvmStruct,
     pattern LlvmPtr,
-    getLlvmTypeSize,
     deref,
-    normalizeType,
-    naturalAlignment,
     LlvmFnAttr (..),
     LlvmMemoryEffect (..),
     fnAttrToLlvm,
@@ -70,52 +67,9 @@ instance IR LlvmType where
     toLlvm LlvmVararg = "..."
     toLlvm LlvmSkolem = error "Cannot convert LlvmSkolem to LLVM IR"
 
-getLlvmTypeSize :: LlvmType -> Int
-getLlvmTypeSize LlvmVoid = 0
-getLlvmTypeSize LlvmI1 = 1
-getLlvmTypeSize LlvmI8 = 1
-getLlvmTypeSize LlvmI16 = 2
-getLlvmTypeSize LlvmI32 = 4
-getLlvmTypeSize LlvmI64 = 8
-getLlvmTypeSize LlvmFloat = 4
-getLlvmTypeSize LlvmDouble = 8
-getLlvmTypeSize (LlvmPointer _) = 8
-getLlvmTypeSize (LlvmArray n t) = n * getLlvmTypeSize t
-getLlvmTypeSize (LlvmAnonymous types) = sum (map getLlvmTypeSize types)
-getLlvmTypeSize (LlvmNamedType _) = error "Named types do not have a fixed size"
-getLlvmTypeSize (LlvmFn _ _) = error "Function types do not have a fixed size"
-getLlvmTypeSize (LlvmFunctionPtr _ _) = 8 -- Function pointers are pointer-sized
-getLlvmTypeSize LlvmVararg = error "Vararg types do not have a fixed size"
-getLlvmTypeSize LlvmSkolem = error "Skolem types do not have a fixed size"
-
 deref :: LlvmType -> LlvmType
 deref (LlvmPointer t) = t
 deref u = error $ "Cannot dereference non-pointer type: " ++ show u
-
-normalizeType :: LlvmType -> LlvmType
-normalizeType (LlvmPointer t) = t
-normalizeType t = t
-
-naturalAlignment :: LlvmType -> Int
-naturalAlignment LlvmI1 = 1
-naturalAlignment LlvmI8 = 1
-naturalAlignment LlvmI16 = 2
-naturalAlignment LlvmI32 = 4
-naturalAlignment LlvmI64 = 8
-naturalAlignment LlvmFloat = 4
-naturalAlignment LlvmDouble = 8
-naturalAlignment (LlvmPointer _) = 8
-naturalAlignment (LlvmArray _ t) = naturalAlignment t
-naturalAlignment (LlvmAnonymous ts) =
-    case ts of
-        [] -> 1
-        _ -> maximum (map naturalAlignment ts)
-naturalAlignment (LlvmNamedType _) = 8
-naturalAlignment (LlvmFn _ _) = 8
-naturalAlignment (LlvmFunctionPtr _ _) = 8
-naturalAlignment LlvmVararg = 8
-naturalAlignment LlvmVoid = 1
-naturalAlignment LlvmSkolem = 8
 
 data LlvmFnAttr
     = FnAttrNoUnwind

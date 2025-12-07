@@ -36,7 +36,6 @@ library
     Metal.Function
     Metal.Gen.Entry
     Metal.Gen.Metadata
-    Metal.Gen.Patterns
     Metal.Lift
     Metal.Lower
     Metal.Metadata
@@ -129,7 +128,6 @@ executable somac
     Alloy.HoistAllocas
     Alloy.Inline
     Alloy.Ir
-    Alloy.Lower
     Alloy.MonadicInline
     Alloy.Monomorphize
     Alloy.PromoteRefs

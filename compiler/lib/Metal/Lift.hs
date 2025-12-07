@@ -13,7 +13,7 @@ import Metal.Expr
 import Metal.Function
 import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (MetallicFunctionMetadata), defaultFunctionAttributes)
 import Metal.Module
-import Project.Name (LocalId (..), LocalPrefix (..), Name (..), nameToString)
+import Project.Name (LocalId (..), LocalPrefix (..), Name (..))
 import Project.Unique (Unique (..))
 import Syntax.Patterns (Pattern (..), ResolvedPattern)
 import Typing.Types
