@@ -47,6 +47,7 @@ module Circuit.Ir (
     classifyTypeWithEnv,
     classifyTerm,
     mergeAllocKind,
+    collectArgs,
 ) where
 
 import Data.Map.Strict (Map)
@@ -673,3 +674,9 @@ classifyTerm = \case
 mergeAllocKind :: AllocKind -> AllocKind -> AllocKind
 mergeAllocKind StackOnly StackOnly = StackOnly
 mergeAllocKind _ _ = MaybeHeap
+
+collectArgs :: CTerm -> (CTerm, [CTerm])
+collectArgs (CApp f x _) =
+    let (fun, args) = collectArgs f
+    in (fun, args ++ [x])
+collectArgs other = (other, [])

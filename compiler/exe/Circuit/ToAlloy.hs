@@ -32,13 +32,14 @@ import Alloy.Build
 import Circuit.Alloc (AllocEnv, AllocKind (..), analyzeFunction, lookupAlloc)
 import Circuit.Constants (parallelWorkThreshold)
 import Circuit.Escape (EscapeEnv, analyzeFunctionEscapes, canElideClone)
+import Circuit.Ir (collectArgs)
 import qualified Circuit.Ir as C
 import Control.Monad (forM, forM_, when)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Project.Name (isErasureName, mkForkedTaskName, mkProj0, mkProj1, nameToString)
-import Typing.Types (Type (..), byteType, isFunctionType, tupleType)
+import Typing.Types (Type (..), byteType, countArityFromType, isFunctionType, tupleType)
 
 {- | Environment for lowering, containing:
   - Operand bindings (name -> Alloy operand)
@@ -491,14 +492,3 @@ lowerTerm env term = case term of
                         -- Sequential fallback - the value is already computed
                         pure taskOp
             Nothing -> error $ "CJoin: unknown task " ++ nameToString taskName
-  where
-    countArityFromType :: Type -> Int
-    countArityFromType (TArrow _ rest) = 1 + countArityFromType rest
-    countArityFromType _ = 0
-
-    -- Helper to collect function and arguments from nested CApp
-    collectArgs :: C.CTerm -> (C.CTerm, [C.CTerm])
-    collectArgs (C.CApp f x _) =
-        let (fun, args) = collectArgs f
-        in (fun, args ++ [x])
-    collectArgs other = (other, [])

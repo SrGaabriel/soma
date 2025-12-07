@@ -25,7 +25,7 @@ convertType (TArrow argTy retTy) =
     collectArgTypes (TArrow a b) = convertType a : collectArgTypes b
     collectArgTypes t = [convertType t]
 convertType (TSkolem _) =
--- todo(review): maybe throw an error here?
+    -- todo(review): maybe throw an error here?
     LlvmPointer LlvmI8
 convertType (TVar _) =
     -- todo(review): maybe throw an error here?

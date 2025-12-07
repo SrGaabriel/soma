@@ -224,20 +224,6 @@ scanCallsInFunction baseFnMap AlloyFunction{afParams = fnParams, afBlocks} =
                     IEffect _ -> (currEnv, currReqs)
         in foldl' step (env', reqs) abInstrs
 
-    matchClosureType :: [(Name, Type)] -> Type -> Maybe TySubst
-    matchClosureType lambdaParams closureTy =
-        let lambdaParamTypes = map snd (drop 1 lambdaParams)
-        in matchFunctionParams lambdaParamTypes closureTy
-
-    matchFunctionParams :: [Type] -> Type -> Maybe TySubst
-    matchFunctionParams [] _ = Just Map.empty
-    matchFunctionParams (p : ps) (TArrow argTy retTy) = do
-        s1 <- unifyOne p argTy
-        let ps' = map (substType s1) ps
-        s2 <- matchFunctionParams ps' retTy
-        Just (Map.union s2 s1)
-    matchFunctionParams _ _ = Nothing
-
 computeRewriteMap ::
     Map Name AlloyFunction ->
     Map InstKey Name ->
@@ -346,20 +332,6 @@ applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afPar
                 Nothing -> (op, cid)
         _ -> (op, cid)
 
-    matchClosureType :: [(Name, Type)] -> Type -> Maybe TySubst
-    matchClosureType lambdaParams closureTy =
-        let lambdaParamTypes = map snd (drop 1 lambdaParams)
-        in matchFunctionParams lambdaParamTypes closureTy
-
-    matchFunctionParams :: [Type] -> Type -> Maybe TySubst
-    matchFunctionParams [] _ = Just Map.empty
-    matchFunctionParams (p : ps) (TArrow argTy retTy) = do
-        s1 <- unifyOne p argTy
-        let ps' = map (substType s1) ps
-        s2 <- matchFunctionParams ps' retTy
-        Just (Map.union s2 s1)
-    matchFunctionParams _ _ = Nothing
-
     rewriteEffect env eff = case eff of
         EffClosureSetEnv closure idx val ->
             EffClosureSetEnv closure idx (rewriteOperand env val)
@@ -434,6 +406,20 @@ substType subst ty = case ty of
 
 matchCalleeParams :: [(Name, Type)] -> [Type] -> Maybe TySubst
 matchCalleeParams params = unifyTypes (map snd params)
+
+matchClosureType :: [(Name, Type)] -> Type -> Maybe TySubst
+matchClosureType lambdaParams closureTy =
+    let lambdaParamTypes = map snd (drop 1 lambdaParams)
+    in matchFunctionParams lambdaParamTypes closureTy
+
+matchFunctionParams :: [Type] -> Type -> Maybe TySubst
+matchFunctionParams [] _ = Just Map.empty
+matchFunctionParams (p : ps) (TArrow argTy retTy) = do
+    s1 <- unifyOne p argTy
+    let ps' = map (substType s1) ps
+    s2 <- matchFunctionParams ps' retTy
+    Just (Map.union s2 s1)
+matchFunctionParams _ _ = Nothing
 
 unifyTypes :: [Type] -> [Type] -> Maybe TySubst
 unifyTypes [] [] = Just Map.empty

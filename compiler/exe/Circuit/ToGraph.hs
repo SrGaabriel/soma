@@ -33,6 +33,7 @@ module Circuit.ToGraph (
 ) where
 
 import Alloy.Build
+import Circuit.Ir (collectArgs)
 import qualified Circuit.Ir as C
 import Control.Monad (foldM, forM, forM_)
 import Data.Map.Strict (Map)
@@ -780,13 +781,6 @@ tryGetNative env term = case term of
                 Just varName -> pure (Just varName)
                 Nothing -> pure Nothing
     _ -> pure Nothing
-
--- | Helper to collect function and arguments from nested CApp
-collectArgs :: C.CTerm -> (C.CTerm, [C.CTerm])
-collectArgs (C.CApp f x _) =
-    let (fun, args) = collectArgs f
-    in (fun, args ++ [x])
-collectArgs other = (other, [])
 
 {- | Count the number of captured variables in a closure function body.
 This finds the maximum index used in CClosureGetEnv + 1.

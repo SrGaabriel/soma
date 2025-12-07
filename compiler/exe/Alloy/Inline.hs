@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 {- | Function Inlining Pass for Alloy IR
@@ -140,96 +141,38 @@ processBlock config (accBlocks, state) block@ABlock{abInstrs} =
         block' = block{abInstrs = reverse instrs'}
     in (block' : accBlocks, state')
 
--- | Process a single instruction, potentially inlining calls
+closureSourceVar :: AOp -> Maybe Name
+closureSourceVar = \case
+    OpWrapClosure (OpVar n) -> Just n
+    OpDupClosure _ (OpVar n) _ -> Just n
+    OpDupClosureProj0 (OpVar n) _ _ -> Just n
+    OpDupClosureProj1 (OpVar n) _ _ -> Just n
+    OpDup _ (OpVar n) -> Just n
+    OpDupProj0 (OpVar n) -> Just n
+    OpDupProj1 (OpVar n) -> Just n
+    OpParProj0 (OpVar n) _ -> Just n
+    OpParProj1 (OpVar n) _ -> Just n
+    OpParClosureProj0 (OpVar n) _ _ _ -> Just n
+    OpParClosureProj1 (OpVar n) _ _ _ -> Just n
+    _ -> Nothing
+
+propagateClosureTarget :: Name -> Name -> InlineState -> InlineState
+propagateClosureTarget destName sourceName state =
+    case Map.lookup sourceName (isClosureTargets state) of
+        Just targetFunc -> state{isClosureTargets = Map.insert destName targetFunc (isClosureTargets state)}
+        Nothing -> state
+
 processInstr :: InlineConfig -> ([AInstr], InlineState) -> AInstr -> ([AInstr], InlineState)
 processInstr config (accInstrs, state) instr =
     case instr of
-        -- Track closure allocations (handle both OpVar and direct name references)
-        ILet name _ (OpAllocClosure funcOp _ _) ->
-            case funcOp of
-                OpVar funcName ->
-                    let state' = state{isClosureTargets = Map.insert name funcName (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                _ -> (instr : accInstrs, state)
-        -- Track closure wrapping (preserves target function knowledge)
-        ILet name _ (OpWrapClosure (OpVar closureName)) ->
-            case Map.lookup closureName (isClosureTargets state) of
-                Just targetFunc ->
-                    let state' = state{isClosureTargets = Map.insert name targetFunc (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                Nothing ->
-                    (instr : accInstrs, state)
-        ILet name _ (OpDupClosure _ (OpVar closureName) _) ->
-            case Map.lookup closureName (isClosureTargets state) of
-                Just targetFunc ->
-                    let state' = state{isClosureTargets = Map.insert name targetFunc (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                Nothing ->
-                    (instr : accInstrs, state)
-        ILet name _ (OpDupClosureProj0 (OpVar supHandle) _ _) ->
-            case Map.lookup supHandle (isClosureTargets state) of
-                Just targetFunc ->
-                    let state' = state{isClosureTargets = Map.insert name targetFunc (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                Nothing ->
-                    (instr : accInstrs, state)
-        ILet name _ (OpDupClosureProj1 (OpVar supHandle) _ _) ->
-            case Map.lookup supHandle (isClosureTargets state) of
-                Just targetFunc ->
-                    let state' = state{isClosureTargets = Map.insert name targetFunc (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                Nothing ->
-                    (instr : accInstrs, state)
-        -- Track generic DUP operations too (for non-closure SUPs that may contain closures)
-        ILet name _ (OpDup _ (OpVar valName)) ->
-            case Map.lookup valName (isClosureTargets state) of
-                Just targetFunc ->
-                    let state' = state{isClosureTargets = Map.insert name targetFunc (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                Nothing ->
-                    (instr : accInstrs, state)
-        ILet name _ (OpDupProj0 (OpVar supHandle)) ->
-            case Map.lookup supHandle (isClosureTargets state) of
-                Just targetFunc ->
-                    let state' = state{isClosureTargets = Map.insert name targetFunc (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                Nothing ->
-                    (instr : accInstrs, state)
-        ILet name _ (OpDupProj1 (OpVar supHandle)) ->
-            case Map.lookup supHandle (isClosureTargets state) of
-                Just targetFunc ->
-                    let state' = state{isClosureTargets = Map.insert name targetFunc (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                Nothing ->
-                    (instr : accInstrs, state)
-        ILet name _ (OpParProj0 (OpVar supHandle) _) ->
-            case Map.lookup supHandle (isClosureTargets state) of
-                Just targetFunc ->
-                    let state' = state{isClosureTargets = Map.insert name targetFunc (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                Nothing ->
-                    (instr : accInstrs, state)
-        ILet name _ (OpParProj1 (OpVar supHandle) _) ->
-            case Map.lookup supHandle (isClosureTargets state) of
-                Just targetFunc ->
-                    let state' = state{isClosureTargets = Map.insert name targetFunc (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                Nothing ->
-                    (instr : accInstrs, state)
-        ILet name _ (OpParClosureProj0 (OpVar supHandle) _ _ _) ->
-            case Map.lookup supHandle (isClosureTargets state) of
-                Just targetFunc ->
-                    let state' = state{isClosureTargets = Map.insert name targetFunc (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                Nothing ->
-                    (instr : accInstrs, state)
-        ILet name _ (OpParClosureProj1 (OpVar supHandle) _ _ _) ->
-            case Map.lookup supHandle (isClosureTargets state) of
-                Just targetFunc ->
-                    let state' = state{isClosureTargets = Map.insert name targetFunc (isClosureTargets state)}
-                    in (instr : accInstrs, state')
-                Nothing ->
-                    (instr : accInstrs, state)
+        -- Track closure allocations
+        ILet name _ (OpAllocClosure (OpVar funcName) _ _) ->
+            let state' = state{isClosureTargets = Map.insert name funcName (isClosureTargets state)}
+            in (instr : accInstrs, state')
+        -- Track operations that propagate closure targets
+        ILet name _ op
+            | Just sourceName <- closureSourceVar op ->
+                (instr : accInstrs, propagateClosureTarget name sourceName state)
         -- Track function pointer extractions
         ILet name _ (OpClosureGetFunc (OpVar closureName)) ->
             case Map.lookup closureName (isClosureTargets state) of

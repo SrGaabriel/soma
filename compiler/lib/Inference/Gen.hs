@@ -38,14 +38,14 @@ import Typing.Types (
     QualifiedType (..),
     Rigidity (..),
     SkolemVar (..),
-    TyConstructor (..),
-    TyPrimitive (..),
-    TyUnique (..),
     TyVar (..),
     Type (..),
     arrayType,
     boolType,
     cleanQualified,
+    extractArrayElemType,
+    extractTupleTypes,
+    splitFunctionType,
     tupleType,
     unitType,
  )
@@ -539,23 +539,6 @@ generatePatternBinding span' (PArray innerPatterns _) ty = do
     pure $ Map.unions innerBindings
 generatePatternBinding _ PWildcard{} _ = pure Map.empty
 generatePatternBinding _ PLit{} _ = pure Map.empty
-
-extractTupleTypes :: Type -> [Type]
-extractTupleTypes (TApp (TApp (TConstructor (TypeConstructor (TyPrim (TPTuple 2)) _)) t1) t2) = [t1, t2]
-extractTupleTypes (TApp (TApp (TApp (TConstructor (TypeConstructor (TyPrim (TPTuple 3)) _)) t1) t2) t3) = [t1, t2, t3]
-extractTupleTypes (TApp t1 t2) = extractTupleTypes t1 ++ [t2]
-extractTupleTypes _ = []
-
-extractArrayElemType :: Type -> Type
-extractArrayElemType (TApp (TConstructor (TypeConstructor (TyPrim TPArray) _)) elemType) = elemType
-extractArrayElemType _ = TVar (TypeVar "a" KindStar)
-
-splitFunctionType :: Int -> Type -> ([Type], Type)
-splitFunctionType 0 ty = ([], ty)
-splitFunctionType n (TArrow argTy restTy) =
-    let (args, ret) = splitFunctionType (n - 1) restTy
-    in (argTy : args, ret)
-splitFunctionType _ ty = ([], ty)
 
 -- todo(magic-spans): remove workaround
 dummyExpr :: Span -> Syntax.Tree.Expr

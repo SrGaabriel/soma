@@ -24,7 +24,7 @@ import Project.Symbols (Symbol (..), SymbolKind (..))
 import Project.Unique (Unique (..))
 import Syntax.Patterns (ParsedPattern, Pattern (..), ResolvedPattern)
 import Syntax.Tree (Attribute (..), ComposeStmt (..), Expr (..), exprSpan, uncurryApp)
-import Typing.Types (Constraint, Kind (..), QualifiedType (..), TyVar (..), Type (..))
+import Typing.Types (Constraint, Kind (..), QualifiedType (..), TyVar (..), Type (..), splitFunctionType)
 
 data LowerState = LowerState
     { lsCounter :: Int
@@ -313,13 +313,6 @@ lowerInstance (ExprInstanceDef constraintType methods _) = do
         pure (methodName, metalBody, paramTypes, returnType)
     lowerInstanceMethod e = error $ "Expected binding in instance, got: " ++ show e
 lowerInstance e = error $ "Expected instance definition, got: " ++ show e
-
-splitFunctionType :: Int -> Type -> ([Type], Type)
-splitFunctionType 0 ty = ([], ty)
-splitFunctionType n (TArrow argTy restTy) =
-    let (args, ret) = splitFunctionType (n - 1) restTy
-    in (argTy : args, ret)
-splitFunctionType _ ty = ([], ty)
 
 patternMatchArity :: Expr -> Int
 patternMatchArity (ExprDerivedPatternMatch (ExprPatternMatchArm pats _ _ : _)) = length pats

@@ -41,7 +41,7 @@ module Alloy.PromoteRefs (
 ) where
 
 import Alloy.Ir
-import Alloy.Subst
+import Alloy.Subst (effectVars, opVars, substEffect, substOp, substOperand, substTerminator, terminatorVars)
 import Alloy.Uniqueness (FunctionReport (..), LocalUniq (..), Uniqueness (..), analyzeFunction)
 import Data.List (findIndex, sort)
 import Data.Map.Strict (Map)
@@ -205,105 +205,15 @@ usesOnlyLoadStore n AlloyFunction{afBlocks} =
 
     okInstr (ILet _ _ (OpLoad (OpVar p))) | p == n = True
     okInstr (ILet _ _ (OpLoad a)) = not (isVar n a) -- any other load ptr usage is disqualifying if equals n
-    okInstr (ILet _ _ op) = not (appearsAs n op)
+    okInstr (ILet _ _ op) = n `notElem` opVars op
     okInstr (IEffect (EffStore (OpVar p) v)) | p == n = not (isVar n v)
-    okInstr (IEffect eff) = not (appearsInEff n eff)
+    okInstr (IEffect eff) = n `notElem` effectVars eff
 
-    okTerm t = not (appearsInTerm n t)
-
-    appearsAs :: Name -> AOp -> Bool
-    appearsAs r op =
-        case op of
-            OpBin _ a b -> isVar r a || isVar r b
-            OpUnary _ a -> isVar r a
-            OpCmp _ a b -> isVar r a || isVar r b
-            OpLoad a -> isVar r a
-            OpSelect cond thenOp elseOp -> isVar r cond || isVar r thenOp || isVar r elseOp
-            OpAllocStack _ -> False
-            OpAllocHeap _ -> False
-            OpCall callee args ->
-                any (isVar r) (calleeToOps callee ++ args)
-            OpConstruct _ _ fields -> any (isVar r) fields
-            OpTagOf a -> isVar r a
-            OpProject a _ -> isVar r a
-            OpIndex a i -> isVar r a || isVar r i
-            OpMakeArray xs -> any (isVar r) xs
-            OpMakeTuple xs -> any (isVar r) xs
-            OpGetDict _ _ -> False
-            OpDictCall dict _ _ args -> isVar r dict || any (isVar r) args
-            OpDup _ val -> isVar r val
-            OpDupProj0 handle -> isVar r handle
-            OpDupProj1 handle -> isVar r handle
-            OpWrapClosure fn -> isVar r fn
-            OpAllocClosure fn _ _ -> isVar r fn
-            OpClosureSetEnv closure _ val -> isVar r closure || isVar r val
-            OpClosureGetEnv closure _ -> isVar r closure
-            OpClosureGetFunc closure -> isVar r closure
-            OpDupClosure _ closure _ -> isVar r closure
-            OpDupClosureProj0 handle _ _ -> isVar r handle
-            OpDupClosureProj1 handle _ _ -> isVar r handle
-            OpClosureGetEnvDirect closure _ -> isVar r closure
-            OpClosureGetEnvSUP closure _ -> isVar r closure
-            OpParProj0 handle _ -> isVar r handle
-            OpParProj1 handle _ -> isVar r handle
-            OpParClosureProj0 handle _ _ _ -> isVar r handle
-            OpParClosureProj1 handle _ _ _ -> isVar r handle
-            OpPanic _ -> False
-            OpGraphInit _ -> False
-            OpGraphShutdown -> False
-            OpGraphNum v -> isVar r v
-            OpGraphAdd l rhs -> isVar r l || isVar r rhs
-            OpGraphSub l rhs -> isVar r l || isVar r rhs
-            OpGraphMul l rhs -> isVar r l || isVar r rhs
-            OpGraphDiv l rhs -> isVar r l || isVar r rhs
-            OpGraphMod l rhs -> isVar r l || isVar r rhs
-            OpGraphCall _ args -> any (isVar r) args
-            OpGraphReduce root -> isVar r root
-            OpGraphExtractNum term -> isVar r term
-            OpGraphRegisterFunc _ _ impl -> isVar r impl
-            OpGraphDup _ target -> isVar r target
-            OpGraphSup _ l rhs -> isVar r l || isVar r rhs
-            OpGraphLam varSlot body -> isVar r varSlot || isVar r body
-            OpGraphApp fn arg -> isVar r fn || isVar r arg
-            OpGraphEra -> False
-            OpGraphCon fstOp sndOp -> isVar r fstOp || isVar r sndOp
-            OpGraphConGet conOp _ -> isVar r conOp
-            OpGraphRef _ _ arg -> isVar r arg
-            OpGraphClosure _ _ envVals -> any (isVar r) envVals
-            OpGraphClosureApp clo arg -> isVar r clo || isVar r arg
-            OpGraphClosureGetEnv clo _ -> isVar r clo
-            OpFork fn args -> isVar r fn || any (isVar r) args
-            OpJoin handle -> isVar r handle
-            OpGraphDupGetProj0 dupNode -> isVar r dupNode
-            OpGraphDupGetProj1 dupNode -> isVar r dupNode
-
-    appearsInEff :: Name -> AEffect -> Bool
-    appearsInEff r eff =
-        case eff of
-            EffStore p v -> isVar r p || isVar r v
-            EffStoreIndex a i v -> isVar r a || isVar r i || isVar r v
-            EffDrop a -> isVar r a
-            EffClosureSetEnv closure _ val -> isVar r closure || isVar r val
-            EffGraphInit _ -> False
-            EffGraphShutdown -> False
-            EffGraphRegisterFunc _ _ impl -> isVar r impl
-
-    appearsInTerm :: Name -> ATerminator -> Bool
-    appearsInTerm r t =
-        case t of
-            ABr _ args -> any (isVar r) args
-            ACondBr c _ ta _ fa -> isVar r c || any (isVar r) (ta ++ fa)
-            ASwitch v _ _ -> isVar r v
-            ARet mv -> maybe False (isVar r) mv
-            AUnreachable -> False
+    okTerm t = n `notElem` terminatorVars t
 
     isVar :: Name -> AOperand -> Bool
     isVar r (OpVar x) = r == x
     isVar _ (OpConst _) = False
-
-    calleeToOps :: ACallable -> [AOperand]
-    calleeToOps (Direct _) = []
-    calleeToOps (Indirect a) = [a]
 
 entryNoLoadBeforeStore :: Name -> AlloyFunction -> Bool
 entryNoLoadBeforeStore r AlloyFunction{afEntry, afBlocks} =

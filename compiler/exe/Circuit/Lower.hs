@@ -34,9 +34,8 @@ import Metal.Function
 import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (..), MetallicTypeClassMetadata (..))
 import Metal.Module
 import Project.Name (LocalId (..), LocalPrefix (..), Name (..), nameToString)
-import Project.Unique (Unique (..))
 import Syntax.Patterns (Literal (..), Pattern (..), ResolvedPattern)
-import Typing.Types (Kind (..), QualifiedType (..), TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..), boolType, closurePtrType, intType)
+import Typing.Types (Kind (..), QualifiedType (..), TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..), boolType, closurePtrType, extractArrayElemType, extractTupleTypes, intType)
 import Utils.Lists (hardHead)
 
 -- | Environment for lowering
@@ -517,19 +516,6 @@ extractFieldNameAndType fieldTy = \case
         tmp <- freshTmp "array"
         pure (tmp, fieldTy)
     PAs name _ _ -> pure (name, fieldTy)
-
--- todo: review
-extractTupleTypes :: Type -> [Type]
-extractTupleTypes (TApp (TApp (TConstructor (TypeConstructor (TyUserDefined u) _)) t1) t2)
-    | uniqueOriginal u == "Tuple2" = [t1, t2]
-extractTupleTypes (TApp (TApp (TApp (TConstructor (TypeConstructor (TyUserDefined u) _)) t1) t2) t3)
-    | uniqueOriginal u == "Tuple3" = [t1, t2, t3]
-extractTupleTypes _ = [] -- Unknown tuple structure, fall back to empty
-
--- | Extract element type from an array type
-extractArrayElemType :: Type -> Type
-extractArrayElemType (TApp (TConstructor (TypeConstructor (TyPrim TPArray) _)) elemTy) = elemTy
-extractArrayElemType ty = ty -- Fall back to the original type
 
 -- | Lookup table for binary operators
 lookupBinOp :: String -> Maybe BinOp

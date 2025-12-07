@@ -372,13 +372,3 @@ collectBinders (PAs name p _) = name : collectBinders p
 collectBinders (PConstructor _ ps _) = concatMap collectBinders ps
 collectBinders (PTuple ps _) = concatMap collectBinders ps
 collectBinders (PArray ps _) = concatMap collectBinders ps
-
-{- | Split a function type based on a specific arity (number of parameters)
-Unlike uncurryFunctionType, this stops after taking n parameters
--}
-splitFunctionType :: Int -> Type -> ([Type], Type)
-splitFunctionType 0 ty = ([], ty)
-splitFunctionType n (TArrow argTy restTy) =
-    let (args, ret) = splitFunctionType (n - 1) restTy
-    in (argTy : args, ret)
-splitFunctionType _ ty = ([], ty)

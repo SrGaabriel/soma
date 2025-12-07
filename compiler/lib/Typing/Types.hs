@@ -32,7 +32,11 @@ module Typing.Types (
     extractTyVars,
     getUnknownTypeConstructorName,
     isFunctionType,
-    tupleType
+    tupleType,
+    splitFunctionType,
+    countArityFromType,
+    extractTupleTypes,
+    extractArrayElemType,
 ) where
 
 import GHC.Generics (Generic)
@@ -225,3 +229,24 @@ getUnknownTypeConstructorName (Forall _ _ t) = getConstructorName t
 isFunctionType :: Type -> Bool
 isFunctionType (TArrow _ _) = True
 isFunctionType _ = False
+
+splitFunctionType :: Int -> Type -> ([Type], Type)
+splitFunctionType 0 ty = ([], ty)
+splitFunctionType n (TArrow argTy restTy) =
+    let (args, ret) = splitFunctionType (n - 1) restTy
+    in (argTy : args, ret)
+splitFunctionType _ ty = ([], ty)
+
+countArityFromType :: Type -> Int
+countArityFromType (TArrow _ rest) = 1 + countArityFromType rest
+countArityFromType _ = 0
+
+extractTupleTypes :: Type -> [Type]
+extractTupleTypes (TApp (TApp (TConstructor (TypeConstructor (TyPrim (TPTuple 2)) _)) t1) t2) = [t1, t2]
+extractTupleTypes (TApp (TApp (TApp (TConstructor (TypeConstructor (TyPrim (TPTuple 3)) _)) t1) t2) t3) = [t1, t2, t3]
+extractTupleTypes (TApp t1 t2) = extractTupleTypes t1 ++ [t2]
+extractTupleTypes _ = []
+
+extractArrayElemType :: Type -> Type
+extractArrayElemType (TApp (TConstructor (TypeConstructor (TyPrim TPArray) _)) elemTy) = elemTy
+extractArrayElemType ty = ty
