@@ -17,6 +17,7 @@ import Lexing.Position (Span)
 import Metal.Expr
 import Metal.Lower (LowerResult (..))
 import Metal.Metadata (FunctionAttributes)
+import Project.Name (Name)
 import qualified Syntax.Tree
 import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..))
 
@@ -51,7 +52,7 @@ inferBinding ::
     String ->
     MetalTypeEnv ->
     InstanceEnv ->
-    String ->
+    Name ->
     InferenceExpr ->
     [Type] ->
     Type ->
@@ -93,7 +94,7 @@ inferInstanceMethods ::
     MetalTypeEnv ->
     InstanceEnv ->
     QualifiedType ->
-    [(String, InferenceExpr, [Type], Type)] ->
+    [(Name, InferenceExpr, [Type], Type)] ->
     ([InferenceError], TypedInstance)
 inferInstanceMethods packageName moduleName typeEnv instanceEnv constraintType methods =
     let results =
@@ -108,11 +109,11 @@ inferInstanceMethod ::
     String ->
     MetalTypeEnv ->
     InstanceEnv ->
-    String ->
+    Name ->
     InferenceExpr ->
     [Type] ->
     Type ->
-    ([InferenceError], (String, TypedExpr, [Type], Type))
+    ([InferenceError], (Name, TypedExpr, [Type], Type))
 inferInstanceMethod packageName moduleName typeEnv instanceEnv name body paramTypes retType =
     let
         ((_, constraintSet), _genState, genErrors) =

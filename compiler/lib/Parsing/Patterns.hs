@@ -4,17 +4,17 @@ import Lexing.Lexer (Token (..), TokenKind (..), spanningTokens, tokenSpan)
 import Parsing.Atoms (parseExpression)
 import Parsing.Errors (ParsingError (InvalidPattern, PatternNeedsParentheses))
 import Parsing.Parser (Parser, consume, parseFluidSequence, parseLayout, peek)
-import Syntax.Patterns (Literal (LitInt), Pattern (..))
+import Syntax.Patterns (Literal (LitInt), ParsedPattern, Pattern (..))
 import Syntax.Tree (Expr (ExprPatternMatchArm))
 import qualified Text.Megaparsec as MP
 
-parseMultiplePatterns :: Parser [Pattern]
+parseMultiplePatterns :: Parser [ParsedPattern]
 parseMultiplePatterns = parseFluidSequence TokenStrongRightArrow parseMultiPatternAtom
 
-parseMultiPatternAtom :: Parser Pattern
+parseMultiPatternAtom :: Parser ParsedPattern
 parseMultiPatternAtom = parseSinglePattern False
 
-parseSinglePattern :: Bool -> Parser Pattern
+parseSinglePattern :: Bool -> Parser ParsedPattern
 parseSinglePattern parentheziedConstructors = do
     inc <- peek
     case tokenKind inc of

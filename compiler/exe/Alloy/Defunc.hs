@@ -33,7 +33,17 @@ module Alloy.Defunc (
     defunctionalizeFunction,
 ) where
 
-import Alloy.Ir
+import Alloy.Ir (
+    ABlock (..),
+    ACallable (..),
+    AInstr (..),
+    AOp (..),
+    AOperand (..),
+    ATerminator,
+    AlloyFunction (..),
+    AlloyModule (..),
+    Name,
+ )
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)

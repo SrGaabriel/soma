@@ -35,32 +35,57 @@ module Circuit.ToGraph (
 import Alloy.Build
 import qualified Circuit.Ir as C
 import Control.Monad (foldM, forM, forM_)
-import Data.List (isPrefixOf)
+
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Typing.Types (Kind (..), TyConstructor (..), Type (..), boolType, intType)
+import qualified Project.Name as PN
+import Project.Name (Name (..), LocalId (..), LocalPrefix (..), SyntheticId (..), SyntheticKind (..), mkProj0, mkProj1, nameOriginal, nameToString)
+import Typing.Types (Kind (..), TyConstructor (..), TyUnique (..), TyPrimitive (..), Type (..), boolType, intType)
+
+isClosureSelf :: PN.Name -> Bool
+isClosureSelf (NLocal (LocalId LPClosureSelf _)) = True
+isClosureSelf _ = False
+
+isLiftedLambda :: PN.Name -> Bool
+isLiftedLambda (NSynthetic synId) = synKind synId == SKLiftedLambda
+isLiftedLambda _ = False
+
+graphArgName :: PN.Name
+graphArgName = NLocal (LocalId LPParam 0)
+
+graphNetName :: PN.Name
+graphNetName = NLocal (LocalId LPParam 1)
+
+graphTmName :: PN.Name
+graphTmName = NLocal (LocalId LPParam 2)
+
+graphCaseResultName :: PN.Name
+graphCaseResultName = NLocal (LocalId LPTemp 9999)
 
 -- | Term type for graph operations (64-bit)
 termType :: Type
-termType = TConstructor (TypeConstructor "Long" KindStar)
+termType = TConstructor (TypeConstructor (TyPrim TPInt) KindStar)
 
 -- | Check if a type is a primitive (can be copied without DUP node)
 isPrimitiveType :: Type -> Bool
-isPrimitiveType (TConstructor tc) =
-    tcName tc `elem` ["Int", "Bool", "Byte", "Char", "Unit", "Long"]
+isPrimitiveType (TConstructor (TypeConstructor tyId _)) = case tyId of
+    TyPrim TPInt -> True
+    TyPrim TPBool -> True
+    TyPrim TPUnit -> True
+    _ -> False
 isPrimitiveType _ = False
 
 -- | Environment for linearized graph lowering
 data LGraphEnv = LGraphEnv
-    { lgeBindings :: Map C.Name String
+    { lgeBindings :: Map C.Name PN.Name
     -- ^ Circuit name -> Alloy variable name (holding native Int value or Term)
     , lgeFuncIndices :: Map C.Name Int
     -- ^ Function name -> runtime function index
     , lgeIsTermBinding :: Map C.Name Bool
     -- ^ Whether the binding holds a Term (graph node) vs native Int
-    , lgeDupProjections :: Map C.Name (String, String)
+    , lgeDupProjections :: Map C.Name (PN.Name, PN.Name)
     -- ^ DUP name -> (proj0 var, proj1 var) for accessing projected values
-    , lgeDupNodes :: Map C.Name String
+    , lgeDupNodes :: Map C.Name PN.Name
     {- ^ DUP name -> Alloy var holding the DUP node (for non-primitive DUP)
     Used by CDp0/CDp1 to emit OpGraphDupGetProj0/1
     -}
@@ -70,7 +95,7 @@ emptyLGraphEnv :: LGraphEnv
 emptyLGraphEnv = LGraphEnv Map.empty Map.empty Map.empty Map.empty Map.empty
 
 -- | Look up a binding
-lookupBinding :: C.Name -> LGraphEnv -> Maybe String
+lookupBinding :: C.Name -> LGraphEnv -> Maybe PN.Name
 lookupBinding name = Map.lookup name . lgeBindings
 
 -- | Check if a binding holds a Term (vs native Int)
@@ -78,12 +103,12 @@ isTermBinding :: C.Name -> LGraphEnv -> Bool
 isTermBinding name env = Map.findWithDefault False name (lgeIsTermBinding env)
 
 -- | Extend environment with a native Int binding
-extendBinding :: C.Name -> String -> LGraphEnv -> LGraphEnv
+extendBinding :: C.Name -> PN.Name -> LGraphEnv -> LGraphEnv
 extendBinding name varName env =
     env{lgeBindings = Map.insert name varName (lgeBindings env)}
 
 -- | Extend environment with a Term binding (graph node)
-extendTermBinding :: C.Name -> String -> LGraphEnv -> LGraphEnv
+extendTermBinding :: C.Name -> PN.Name -> LGraphEnv -> LGraphEnv
 extendTermBinding name varName env =
     env
         { lgeBindings = Map.insert name varName (lgeBindings env)
@@ -95,17 +120,17 @@ lookupFuncIndex :: C.Name -> LGraphEnv -> Maybe Int
 lookupFuncIndex name = Map.lookup name . lgeFuncIndices
 
 -- | Record DUP projections
-recordDupProj :: C.Name -> String -> String -> LGraphEnv -> LGraphEnv
+recordDupProj :: C.Name -> PN.Name -> PN.Name -> LGraphEnv -> LGraphEnv
 recordDupProj name proj0 proj1 env =
     env{lgeDupProjections = Map.insert name (proj0, proj1) (lgeDupProjections env)}
 
 -- | Record a DUP node for non-primitive duplication
-recordDupNode :: C.Name -> String -> LGraphEnv -> LGraphEnv
+recordDupNode :: C.Name -> PN.Name -> LGraphEnv -> LGraphEnv
 recordDupNode name dupVar env =
     env{lgeDupNodes = Map.insert name dupVar (lgeDupNodes env)}
 
 -- | Look up a DUP node
-lookupDupNode :: C.Name -> LGraphEnv -> Maybe String
+lookupDupNode :: C.Name -> LGraphEnv -> Maybe PN.Name
 lookupDupNode name = Map.lookup name . lgeDupNodes
 
 -- | Lower a Circuit module to an Alloy module using linearized graph reduction
@@ -117,8 +142,8 @@ lowerCircuitToGraph cmod =
 -- | Generate the main entry point and all functions for linearized graph reduction
 lowerToLGraphMain :: C.CModule -> AlloyBuilder ()
 lowerToLGraphMain cmod = do
-    let mainFuncs = filter (\f -> C.cfName f == "main") (C.cmFunctions cmod)
-        otherFuncs = filter (\f -> C.cfName f /= "main") (C.cmFunctions cmod)
+    let mainFuncs = filter (\f -> nameOriginal (C.cfName f) == "main") (C.cmFunctions cmod)
+        otherFuncs = filter (\f -> nameOriginal (C.cfName f) /= "main") (C.cmFunctions cmod)
 
         -- Build function index map (function name -> index)
         funcIndexMap = Map.fromList $ zip (map C.cfName otherFuncs) [0 ..]
@@ -130,7 +155,7 @@ lowerToLGraphMain cmod = do
             forM_ otherFuncs $ \f -> lowerFunctionForLGraph funcIndexMap f
 
             -- Generate the main function
-            beginFunction "main" [] intType
+            beginFunction (C.cfName mainFunc) [] intType
 
             entryBlock <- freshBlockName
             beginBlock entryBlock []
@@ -157,29 +182,30 @@ Similar to ToGraph.hs but handles linearized Circuit IR with explicit DUP nodes.
 -}
 lowerFunctionForLGraph :: Map C.Name Int -> C.CFunction -> AlloyBuilder ()
 lowerFunctionForLGraph funcIndexMap C.CFunction{..} = do
-    let ptrType = TConstructor (TypeConstructor "Ptr" KindStar)
-    beginFunction cfName [("net", ptrType), ("tm", ptrType), ("arg", termType)] termType
+    let ptrType = intType  -- Use int type as placeholder for pointers
+    beginFunction cfName [(graphNetName, ptrType), (graphTmName, ptrType), (graphArgName, termType)] termType
 
     entryBlock <- freshBlockName
     beginBlock entryBlock []
 
     -- Check if this is a closure function (first param is closure_self)
     let isClosureFunc = case cfParams of
-            ((pname, _) : _) -> pname == "closure_self"
+            ((pname, _) : _) -> isClosureSelf pname
             [] -> False
 
     env <-
         if isClosureFunc
             then do
+                let closureSelfName = fst (head cfParams)
                 let baseEnv =
-                        extendTermBinding "closure_self" "arg"
+                        extendTermBinding closureSelfName graphArgName
                             $ emptyLGraphEnv{lgeFuncIndices = funcIndexMap}
                 let numCaptured = countCapturedVars cfBody
                 case cfParams of
-                    [_, (argName, _)] -> do
-                        argTerm <- emitLetTmp termType (OpGraphClosureGetEnv (OpVar "arg") numCaptured)
+                    [_, (paramArgName, _)] -> do
+                        argTerm <- emitLetTmp termType (OpGraphClosureGetEnv (OpVar graphArgName) numCaptured)
                         argVal <- emitLetTmp intType (OpGraphExtractNum (OpVar argTerm))
-                        pure $ extendBinding argName argVal baseEnv
+                        pure $ extendBinding paramArgName argVal baseEnv
                     _ -> pure baseEnv
             else do
                 let baseEnv = emptyLGraphEnv{lgeFuncIndices = funcIndexMap}
@@ -189,16 +215,16 @@ lowerFunctionForLGraph funcIndexMap C.CFunction{..} = do
                         -- For ADT parameters, bind as Term; for primitives, extract int
                         if isPrimitiveType pty
                             then do
-                                argVal <- emitLetTmp intType (OpGraphExtractNum (OpVar "arg"))
+                                argVal <- emitLetTmp intType (OpGraphExtractNum (OpVar graphArgName))
                                 pure $ extendBinding pname argVal baseEnv
                             else
                                 -- ADT parameter: bind the Term directly
-                                pure $ extendTermBinding pname "arg" baseEnv
+                                pure $ extendTermBinding pname graphArgName baseEnv
                     params -> do
                         let numParams = length params
                         foldM
                             ( \e (idx, (pname, pty)) -> do
-                                paramTerm <- emitLetTmp termType (OpGraphClosureGetEnv (OpVar "arg") idx)
+                                paramTerm <- emitLetTmp termType (OpGraphClosureGetEnv (OpVar graphArgName) idx)
                                 if isPrimitiveType pty
                                     then do
                                         paramVal <- emitLetTmp intType (OpGraphExtractNum (OpVar paramTerm))
@@ -226,7 +252,7 @@ CRITICAL DIFFERENCE FROM ToGraph.hs:
 
 Returns the name of the variable holding the graph node (Term).
 -}
-lowerTermToLGraph :: LGraphEnv -> C.CTerm -> AlloyBuilder String
+lowerTermToLGraph :: LGraphEnv -> C.CTerm -> AlloyBuilder PN.Name
 lowerTermToLGraph env = \case
     -- Integer literals become NUM nodes
     C.CInt n -> emitLetTmp termType (OpGraphNum (OpConst (CInt n)))
@@ -236,11 +262,11 @@ lowerTermToLGraph env = \case
             then do
                 case lookupBinding name env of
                     Just varName -> pure varName
-                    Nothing -> error $ "Circuit.ToGraph: term binding not found: " ++ name
+                    Nothing -> error $ "Circuit.ToGraph: term binding not found: " ++ show name
             else case lookupBinding name env of
                 Just varName -> do
                     emitLetTmp termType (OpGraphNum (OpVar varName))
-                Nothing -> error $ "Circuit.ToGraph: unbound variable: " ++ name
+                Nothing -> error $ "Circuit.ToGraph: unbound variable: " ++ show name
     -- Let bindings
     C.CLet name _ty val body -> do
         valNode <- lowerTermToLGraph env val
@@ -288,8 +314,8 @@ lowerTermToLGraph env = \case
                         -- Keep as native binding for both projections
                         let env' =
                                 recordDupProj name nativeVal nativeVal
-                                    $ extendBinding (name ++ ".0") nativeVal
-                                    $ extendBinding (name ++ ".1") nativeVal env
+                                    $ extendBinding (mkProj0 name) nativeVal
+                                    $ extendBinding (mkProj1 name) nativeVal env
                         lowerTermToLGraph env' body
                     Nothing -> do
                         -- Value is a Term - extract the native value
@@ -297,8 +323,8 @@ lowerTermToLGraph env = \case
                         nativeVal <- emitLetTmp intType (OpGraphExtractNum (OpVar valNode))
                         let env' =
                                 recordDupProj name nativeVal nativeVal
-                                    $ extendBinding (name ++ ".0") nativeVal
-                                    $ extendBinding (name ++ ".1") nativeVal env
+                                    $ extendBinding (mkProj0 name) nativeVal
+                                    $ extendBinding (mkProj1 name) nativeVal env
                         lowerTermToLGraph env' body
             else do
                 -- Non-primitive type: create actual DUP graph node
@@ -319,16 +345,16 @@ lowerTermToLGraph env = \case
                 emitLetTmp termType (OpGraphDupGetProj0 (OpVar dupVar))
             Nothing ->
                 -- Primitive DUP or direct binding
-                case lookupBinding (name ++ ".0") env of
+                case lookupBinding (mkProj0 name) env of
                     Just varName ->
-                        if isTermBinding (name ++ ".0") env
+                        if isTermBinding (mkProj0 name) env
                             then pure varName -- Already a Term
                             else
                                 -- Native value - wrap in graph_num for graph context
                                 if isPrimitiveType ty
                                     then emitLetTmp termType (OpGraphNum (OpVar varName))
                                     else pure varName
-                    Nothing -> error $ "Circuit.ToLGraph: unbound projection: " ++ name ++ ".0"
+                    Nothing -> error $ "Circuit.ToLGraph: unbound projection: " ++ show name ++ ".0"
     -- Second projection from DUP
     -- For non-primitive DUP, emit OpGraphDupGetProj1 to get the projected value
     C.CDp1 name ty ->
@@ -339,16 +365,16 @@ lowerTermToLGraph env = \case
                 emitLetTmp termType (OpGraphDupGetProj1 (OpVar dupVar))
             Nothing ->
                 -- Primitive DUP or direct binding
-                case lookupBinding (name ++ ".1") env of
+                case lookupBinding (mkProj1 name) env of
                     Just varName ->
-                        if isTermBinding (name ++ ".1") env
+                        if isTermBinding (mkProj1 name) env
                             then pure varName -- Already a Term
                             else
                                 -- Native value - wrap in graph_num for graph context
                                 if isPrimitiveType ty
                                     then emitLetTmp termType (OpGraphNum (OpVar varName))
                                     else pure varName
-                    Nothing -> error $ "Circuit.ToGraph: unbound projection: " ++ name ++ ".1"
+                    Nothing -> error $ "Circuit.ToGraph: unbound projection: " ++ show name ++ ".1"
     -- Superposition node (from linearization)
     C.CSup label left right _ty -> do
         leftNode <- lowerTermToLGraph env left
@@ -369,7 +395,7 @@ lowerTermToLGraph env = \case
         case f of
             C.CRef fName _ -> do
                 case lookupFuncIndex fName env of
-                    Nothing -> error $ "Circuit.ToGraph: function not registered: " ++ fName
+                    Nothing -> error $ "Circuit.ToGraph: function not registered: " ++ show fName
                     Just funcIdx -> case args of
                         [singleArg] -> do
                             argNode <- lowerTermToLGraph env singleArg
@@ -382,14 +408,14 @@ lowerTermToLGraph env = \case
             C.CVar fName _ ->
                 case lookupBinding fName env of
                     Nothing -> do
-                        if "lambda$" `isPrefixOf` fName && length args == 2
+                        if isLiftedLambda fName && length args == 2
                             then do
                                 let [closureArg, actualArg] = args
                                 closureNode <- lowerTermToLGraph env closureArg
                                 argNode <- lowerTermToLGraph env actualArg
                                 emitLetTmp termType (OpGraphClosureApp (OpVar closureNode) (OpVar argNode))
                             else case lookupFuncIndex fName env of
-                                Nothing -> error $ "Circuit.ToGraph: function not registered: " ++ fName
+                                Nothing -> error $ "Circuit.ToGraph: function not registered: " ++ show fName
                                 Just funcIdx -> case args of
                                     [singleArg] -> do
                                         argNode <- lowerTermToLGraph env singleArg
@@ -441,28 +467,28 @@ lowerTermToLGraph env = \case
                                 tagVal <- emitLetTmp intType (OpGraphExtractNum (OpVar varName))
                                 pure (varName, tagVal)
                             else pure (varName, varName) -- Already a native int (no CON structure)
-                    Nothing -> error $ "Circuit.ToGraph: unbound scrutinee: " ++ name
+                    Nothing -> error $ "Circuit.ToGraph: unbound scrutinee: " ++ show name
             C.CInt n -> do
                 tagVal <- emitLetTmp intType (OpBin IAdd (OpConst (CInt n)) (OpConst (CInt 0)))
                 pure (tagVal, tagVal) -- Literal int has no CON structure
             C.CDp0 name _ ->
-                case lookupBinding (name ++ ".0") env of
+                case lookupBinding (mkProj0 name) env of
                     Just varName ->
-                        if isTermBinding (name ++ ".0") env
+                        if isTermBinding (mkProj0 name) env
                             then do
                                 tagVal <- emitLetTmp intType (OpGraphExtractNum (OpVar varName))
                                 pure (varName, tagVal)
                             else pure (varName, varName) -- Already a native int
-                    Nothing -> error $ "Circuit.ToGraph: unbound projection: " ++ name ++ ".0"
+                    Nothing -> error $ "Circuit.ToGraph: unbound projection: " ++ show name ++ ".0"
             C.CDp1 name _ ->
-                case lookupBinding (name ++ ".1") env of
+                case lookupBinding (mkProj1 name) env of
                     Just varName ->
-                        if isTermBinding (name ++ ".1") env
+                        if isTermBinding (mkProj1 name) env
                             then do
                                 tagVal <- emitLetTmp intType (OpGraphExtractNum (OpVar varName))
                                 pure (varName, tagVal)
                             else pure (varName, varName) -- Already a native int
-                    Nothing -> error $ "Circuit.ToGraph: unbound projection: " ++ name ++ ".1"
+                    Nothing -> error $ "Circuit.ToGraph: unbound projection: " ++ show name ++ ".1"
             _ -> do
                 -- For complex scrutinees, build the graph node and extract
                 -- This should be rare - most scrutinees are variables or projections
@@ -506,14 +532,14 @@ lowerTermToLGraph env = \case
                 terminate (ABr caseResultBlock [OpVar result])
             Nothing -> pure ()
 
-        beginBlock caseResultBlock [("case_result_val", termType)]
-        pure "case_result_val"
+        beginBlock caseResultBlock [(graphCaseResultName, termType)]
+        pure graphCaseResultName
       where
         -- Bind pattern variables to fields extracted from payload
         -- payload is either:
         --   - Single binding: the field value directly
         --   - Multiple bindings: CON(field0, CON(field1, ...))
-        bindPatternVars :: LGraphEnv -> String -> [(C.Name, Type)] -> AlloyBuilder LGraphEnv
+        bindPatternVars :: LGraphEnv -> PN.Name -> [(C.Name, Type)] -> AlloyBuilder LGraphEnv
         bindPatternVars e _ [] = pure e
         bindPatternVars e payload [(name, _ty)] = do
             -- Single binding: payload IS the field
@@ -640,7 +666,7 @@ lowerTermToLGraph env = \case
     -- Closures with captured environment
     C.CClosure liftedName capturedVars _ty -> do
         case lookupFuncIndex liftedName env of
-            Nothing -> error $ "Circuit.ToGraph: unknown lifted function: " ++ liftedName
+            Nothing -> error $ "Circuit.ToGraph: unknown lifted function: " ++ show liftedName
             Just funcIdx -> do
                 if null capturedVars
                     then do
@@ -648,7 +674,7 @@ lowerTermToLGraph env = \case
                     else do
                         envNodes <- forM capturedVars $ \(varName, _varTy) -> do
                             case lookupBinding varName env of
-                                Nothing -> error $ "Circuit.ToGraph: unbound captured var: " ++ varName
+                                Nothing -> error $ "Circuit.ToGraph: unbound captured var: " ++ show varName
                                 Just boundName -> do
                                     if isTermBinding varName env
                                         then pure (OpVar boundName)
@@ -663,7 +689,7 @@ lowerTermToLGraph env = \case
             C.CVar name _ ->
                 case lookupBinding name env of
                     Just varName -> pure varName
-                    Nothing -> error $ "Circuit.ToGraph: unbound closure: " ++ name
+                    Nothing -> error $ "Circuit.ToGraph: unbound closure: " ++ show name
             _ -> error "Circuit.ToGraph: CClosureGetEnv expects a variable"
         emitLetTmp termType (OpGraphClosureGetEnv (OpVar closureVar) idx)
     -- Field projection from tagged values
@@ -693,7 +719,7 @@ lowerTermToLGraph env = \case
       where
         -- Project field at given index from payload
         -- Handles both small (≤3) and large (>3) constructor layouts
-        projectField :: String -> Int -> AlloyBuilder String
+        projectField :: PN.Name -> Int -> AlloyBuilder PN.Name
         projectField node 0 = do
             -- Index 0: the payload might be the field directly (1 field case)
             -- or CON(f0, ...) - get first element
@@ -730,7 +756,7 @@ lowerTermToLGraph env = \case
 {- | Try to get a native int value for a term without building graph nodes.
 Returns Just varName if the term is a simple var/literal or DUP projection, Nothing otherwise.
 -}
-tryGetNative :: LGraphEnv -> C.CTerm -> AlloyBuilder (Maybe String)
+tryGetNative :: LGraphEnv -> C.CTerm -> AlloyBuilder (Maybe PN.Name)
 tryGetNative env term = case term of
     C.CVar name _ ->
         if isTermBinding name env
@@ -743,15 +769,15 @@ tryGetNative env term = case term of
         pure (Just tmp)
     -- Handle DUP projections - check if they're native bindings
     C.CDp0 name _ ->
-        if isTermBinding (name ++ ".0") env
+        if isTermBinding (mkProj0 name) env
             then pure Nothing
-            else case lookupBinding (name ++ ".0") env of
+            else case lookupBinding (mkProj0 name) env of
                 Just varName -> pure (Just varName)
                 Nothing -> pure Nothing
     C.CDp1 name _ ->
-        if isTermBinding (name ++ ".1") env
+        if isTermBinding (mkProj1 name) env
             then pure Nothing
-            else case lookupBinding (name ++ ".1") env of
+            else case lookupBinding (mkProj1 name) env of
                 Just varName -> pure (Just varName)
                 Nothing -> pure Nothing
     _ -> pure Nothing

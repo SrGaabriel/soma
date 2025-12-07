@@ -11,29 +11,31 @@ module Alloy.MonadicInline (
 
 import Alloy.Ir
 import Alloy.Subst (Subst, substEffect, substOp, substOperand, substTerminator)
-import Data.List (isPrefixOf)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import Typing.Types (TyConstructor (..), Type (..))
+import qualified Project.Name as PN
+import Typing.Types (TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..))
 
+-- | Configuration for monadic inlining patterns
+-- Uses string patterns matched against nameOriginal for stdlib functions
 data MonadicOps = MonadicOps
-    { ioPure :: [Name]
-    , ioBind :: [Name]
-    , ioSeq :: [Name]
-    , readerPure :: [Name]
-    , readerBind :: [Name]
-    , readerAsk :: [Name]
-    , statePure :: [Name]
-    , stateBind :: [Name]
-    , stateGet :: [Name]
-    , statePut :: [Name]
-    , maybePure :: [Name]
-    , maybeBind :: [Name]
-    , eitherPure :: [Name]
-    , eitherBind :: [Name]
-    , refNew :: [Name]
-    , refRead :: [Name]
-    , refModify :: [Name]
+    { ioPurePatterns :: [String]
+    , ioBindPatterns :: [String]
+    , ioSeqPatterns :: [String]
+    , readerPurePatterns :: [String]
+    , readerBindPatterns :: [String]
+    , readerAskPatterns :: [String]
+    , statePurePatterns :: [String]
+    , stateBindPatterns :: [String]
+    , stateGetPatterns :: [String]
+    , statePutPatterns :: [String]
+    , maybePurePatterns :: [String]
+    , maybeBindPatterns :: [String]
+    , eitherPurePatterns :: [String]
+    , eitherBindPatterns :: [String]
+    , refNewPatterns :: [String]
+    , refReadPatterns :: [String]
+    , refModifyPatterns :: [String]
     , allowLazyList :: Bool
     , ioPureIsPhantom :: Bool
     , readerPureIsPhantom :: Bool
@@ -45,23 +47,23 @@ data MonadicOps = MonadicOps
 defaultMonadicOps :: MonadicOps
 defaultMonadicOps =
     MonadicOps
-        { ioPure = ["IO.pure", "IO$pure"]
-        , ioBind = ["IO.bind", "IO$bind"]
-        , ioSeq = [">>"]
-        , readerPure = ["Reader.pure", "Reader$pure"]
-        , readerBind = ["Reader.bind", "Reader$bind"]
-        , readerAsk = ["Reader.ask", "Reader$ask"]
-        , statePure = ["State.pure", "State$pure"]
-        , stateBind = ["State.bind", "State$bind"]
-        , stateGet = ["State.get", "State$get"]
-        , statePut = ["State.put", "State$put"]
-        , maybePure = ["Maybe.pure", "Optional.pure", "Maybe$pure", "Optional$pure", "Either.right", "Either$right"]
-        , maybeBind = ["Maybe.bind", "Optional.bind", "Maybe$bind", "Optional$bind"]
-        , eitherPure = ["Either.pure", "Either$pure", "Right", "Either.right", "Either$right"]
-        , eitherBind = ["Either.bind", "Either$bind"]
-        , refNew = ["newRef", "Ref.new"]
-        , refRead = ["readRef", "Ref.read"]
-        , refModify = ["modifyRef", "Ref.modify"]
+        { ioPurePatterns = ["IO.pure", "IO$pure", "pure", "pureIO"]
+        , ioBindPatterns = ["IO.bind", "IO$bind"]
+        , ioSeqPatterns = [">>"]
+        , readerPurePatterns = ["Reader.pure", "Reader$pure"]
+        , readerBindPatterns = ["Reader.bind", "Reader$bind"]
+        , readerAskPatterns = ["Reader.ask", "Reader$ask"]
+        , statePurePatterns = ["State.pure", "State$pure"]
+        , stateBindPatterns = ["State.bind", "State$bind"]
+        , stateGetPatterns = ["State.get", "State$get"]
+        , statePutPatterns = ["State.put", "State$put"]
+        , maybePurePatterns = ["Maybe.pure", "Optional.pure", "Maybe$pure", "Optional$pure", "Either.right", "Either$right"]
+        , maybeBindPatterns = ["Maybe.bind", "Optional.bind", "Maybe$bind", "Optional$bind"]
+        , eitherPurePatterns = ["Either.pure", "Either$pure", "Right", "Either.right", "Either$right"]
+        , eitherBindPatterns = ["Either.bind", "Either$bind"]
+        , refNewPatterns = ["newRef", "Ref.new"]
+        , refReadPatterns = ["readRef", "Ref.read"]
+        , refModifyPatterns = ["modifyRef", "Ref.modify"]
         , allowLazyList = False
         , ioPureIsPhantom = True
         , readerPureIsPhantom = True
@@ -100,7 +102,7 @@ rewireInstr :: MonadicOps -> ([AInstr], Subst) -> AInstr -> ([AInstr], Subst)
 rewireInstr ops (acc, env) instr =
     case instr of
         ILet n ty (OpCall (Direct callee) args)
-            | isIoPure ops callee || isIoPureByType callee ty
+            | isIoPure ops callee || isIoPureByType ops callee ty
             , ioPureIsPhantom ops
             , [v] <- args ->
                 let v' = substOperand env v
@@ -173,55 +175,56 @@ rewireInstr ops (acc, env) instr =
             let eff' = substEffect env eff
             in (IEffect eff' : acc, env)
 
-matches :: [Name] -> Name -> Bool
-matches candidates n = any (`isPrefixOf` n) candidates
+matchesStdlib :: [String] -> Name -> Bool
+matchesStdlib = PN.nameMatchesStdlib
 
 isIoPure, isIoBind, isIoSeq, isReaderPure, isReaderBind, isReaderAsk :: MonadicOps -> Name -> Bool
 isRefNew, isRefRead, isRefModify, isStatePure, isStateBind :: MonadicOps -> Name -> Bool
 isStateGet, isStatePut, isMaybePure, isMaybeBind :: MonadicOps -> Name -> Bool
 isEitherPure, isEitherBind :: MonadicOps -> Name -> Bool
-isIoPure MonadicOps{ioPure} = matches ioPure
-isIoBind MonadicOps{ioBind} = matches ioBind
-isIoSeq MonadicOps{ioSeq} = matches ioSeq
-isReaderPure MonadicOps{readerPure} = matches readerPure
-isReaderBind MonadicOps{readerBind} = matches readerBind
-isReaderAsk MonadicOps{readerAsk} = matches readerAsk
+isIoPure MonadicOps{ioPurePatterns} = matchesStdlib ioPurePatterns
+isIoBind MonadicOps{ioBindPatterns} = matchesStdlib ioBindPatterns
+isIoSeq MonadicOps{ioSeqPatterns} = matchesStdlib ioSeqPatterns
+isReaderPure MonadicOps{readerPurePatterns} = matchesStdlib readerPurePatterns
+isReaderBind MonadicOps{readerBindPatterns} = matchesStdlib readerBindPatterns
+isReaderAsk MonadicOps{readerAskPatterns} = matchesStdlib readerAskPatterns
 
-isRefNew MonadicOps{refNew} = matches refNew
+isRefNew MonadicOps{refNewPatterns} = matchesStdlib refNewPatterns
 
-isRefRead MonadicOps{refRead} = matches refRead
+isRefRead MonadicOps{refReadPatterns} = matchesStdlib refReadPatterns
 
-isRefModify MonadicOps{refModify} = matches refModify
+isRefModify MonadicOps{refModifyPatterns} = matchesStdlib refModifyPatterns
 
-isStatePure MonadicOps{statePure} = matches statePure
+isStatePure MonadicOps{statePurePatterns} = matchesStdlib statePurePatterns
 
-isStateBind MonadicOps{stateBind} = matches stateBind
+isStateBind MonadicOps{stateBindPatterns} = matchesStdlib stateBindPatterns
 
-isStateGet MonadicOps{stateGet} = matches stateGet
+isStateGet MonadicOps{stateGetPatterns} = matchesStdlib stateGetPatterns
 
-isStatePut MonadicOps{statePut} = matches statePut
+isStatePut MonadicOps{statePutPatterns} = matchesStdlib statePutPatterns
 
-isMaybePure MonadicOps{maybePure} = matches maybePure
+isMaybePure MonadicOps{maybePurePatterns} = matchesStdlib maybePurePatterns
 
-isMaybeBind MonadicOps{maybeBind} = matches maybeBind
+isMaybeBind MonadicOps{maybeBindPatterns} = matchesStdlib maybeBindPatterns
 
-isEitherPure MonadicOps{eitherPure} = matches eitherPure
+isEitherPure MonadicOps{eitherPurePatterns} = matchesStdlib eitherPurePatterns
 
-isEitherBind MonadicOps{eitherBind} = matches eitherBind
+isEitherBind MonadicOps{eitherBindPatterns} = matchesStdlib eitherBindPatterns
 
-isIoPureByType :: Name -> Type -> Bool
-isIoPureByType callee ty =
-    (callee == "pure" || callee == "pureIO") && returnsIo ty
+-- | Check if a call is IO.pure by checking pattern match AND return type
+isIoPureByType :: MonadicOps -> Name -> Type -> Bool
+isIoPureByType ops callee ty =
+    matchesStdlib (ioPurePatterns ops) callee && returnsIo ty
 
 returnsIo :: Type -> Bool
 returnsIo t =
     case t of
-        TApp (TConstructor (TypeConstructor "IO" _)) _ -> True
+        TApp (TConstructor (TypeConstructor (TyPrim TPIO) _)) _ -> True
         TApp l _ -> returnsIo l
         _ -> False
 
 refInner :: Type -> Maybe Type
 refInner t =
     case t of
-        TApp (TConstructor (TypeConstructor "Ref" _)) a -> Just a
+        TApp (TConstructor (TypeConstructor (TyPrim TPRef) _)) a -> Just a
         _ -> Nothing

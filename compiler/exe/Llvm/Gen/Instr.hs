@@ -4,7 +4,6 @@ module Llvm.Gen.Instr (
 ) where
 
 import Alloy.Ir
-import Alloy.Naming (qualifyWithModule)
 import Control.Monad.Reader (asks)
 import Control.Monad.Writer.Class (MonadWriter (tell))
 import Llvm.Gen.CRuntime (
@@ -24,12 +23,13 @@ import Llvm.Gen.TypeConversion (convertType)
 import Llvm.Instructions
 import Llvm.Types (LlvmType (..), deref)
 import Llvm.Values (LlvmValue (..), getValueType)
+import Project.Name (nameToLLVM, nameToString)
 
 compileInstr :: AInstr -> IrGen ()
 compileInstr (ILet letName letTy letOp) = do
     let llTy = convertType letTy
     resultVal <- compileOp letOp llTy
-    recordSubstitution letName resultVal
+    recordSubstitution (nameToString letName) resultVal
 compileInstr (IEffect (EffStore value addr)) = do
     llValue <- compileOperand value
     llAddr <- compileOperand addr
@@ -113,14 +113,12 @@ compileInstr (IEffect EffGraphShutdown) = do
     tell [LlvmCallStmt freeFunc LlvmVoid [netPtr]]
 compileInstr (IEffect (EffGraphRegisterFunc name arity implOp)) = do
     -- Register a function with the INET runtime
-    modName <- asks moduleName
     llImpl <- compileOperand implOp
     -- Get global net pointer
     globalPtr <- useDep cruntimeGInet
     netPtr <- saveTmp (LlvmLoad globalPtr) (LlvmPointer LlvmI8)
     -- Create string constant for function name using newStrTemplate
-    let qualifiedName = qualifyWithModule modName name
-    namePtr <- newStrTemplate qualifiedName
+    namePtr <- newStrTemplate (nameToLLVM name)
     let arityVal = LlvmLiteral LlvmI16 (show arity)
     registerFunc <- useDep cruntimeInetRegisterFunc
     -- Cast function pointer to i8*
@@ -138,20 +136,20 @@ compileTerminator (ARet (Just operand)) = do
         else tell [LlvmRet ty (Just llvmOp)]
 compileTerminator (ABr target _args) = do
     -- todo: implement proper block parameter passing
-    tell [LlvmBr target]
+    tell [LlvmBr (nameToString target)]
 compileTerminator (ACondBr cond trueBlock _trueArgs falseBlock _falseArgs) = do
     llvmCond <- compileOperand cond
     -- todo: handle block arguments
-    tell [LlvmBrCond llvmCond trueBlock falseBlock]
+    tell [LlvmBrCond llvmCond (nameToString trueBlock) (nameToString falseBlock)]
 compileTerminator (ASwitch scrutinee cases maybeDefault) = do
     llvmScrutinee <- compileOperand scrutinee
     let scrutineeTy = getValueType llvmScrutinee
-    let llvmCases = [(LlvmLiteral scrutineeTy (show tag), label) | (tag, label) <- cases]
+    let llvmCases = [(LlvmLiteral scrutineeTy (show tag), nameToString label) | (tag, label) <- cases]
 
     let defaultLabel = case maybeDefault of
-            Just lbl -> lbl
+            Just lbl -> nameToString lbl
             Nothing -> case cases of
-                (_, lbl) : _ -> lbl
+                (_, lbl) : _ -> nameToString lbl
                 [] -> "unreachable_default"
 
     tell [LlvmSwitch llvmScrutinee defaultLabel llvmCases]

@@ -39,7 +39,7 @@ partitionAllocas = go [] []
             ILet _ _ (OpAllocStack _) -> go (i : allocas) others is
             _ -> go allocas (i : others) is
 
-partitionAroundEntry :: BlockName -> [ABlock] -> ([ABlock], ABlock, [ABlock])
+partitionAroundEntry :: Name -> [ABlock] -> ([ABlock], ABlock, [ABlock])
 partitionAroundEntry entryName blks =
     let (prefix, rest) = break (\b -> abName b == entryName) blks
     in case rest of

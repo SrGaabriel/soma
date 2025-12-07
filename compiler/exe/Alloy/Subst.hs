@@ -20,6 +20,8 @@ import Alloy.Ir
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 
+-- Name is re-exported from Alloy.Ir
+
 -- | Substitution map from variable names to operands
 type Subst = Map Name AOperand
 

@@ -10,7 +10,7 @@ import qualified Data.Map as Map
 import qualified Debug.Trace as Debug
 import Inference.Core (TypeMap)
 import Lexing.Position (Located (..))
-import Syntax.Patterns (Pattern (..))
+import Syntax.Patterns (ParsedPattern, Pattern (..))
 import Syntax.Tree (ComposeStmt (..), Expr (..), exprChildren)
 import Typing.Currying (uncurryKind)
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (Forall), SkolemVar (skName), TyConstructor (..), TyVar (TypeVar, tvId), Type (..))
@@ -31,8 +31,9 @@ instance TreeShow TyVar where
 instance TreeShow Type where
     treeShow (TVar tv) = tvId tv
     treeShow (TSkolem sv) = "«" ++ skName sv ++ "»"
-    treeShow (TConstructor (TypeConstructor name kind)) =
-        if kind == KindStar
+    treeShow (TConstructor (TypeConstructor tyId kind)) =
+        let name = TT.tyUniqueName tyId
+        in if kind == KindStar
             then name
             else name ++ " " ++ treeShow kind
     treeShow (TApp t1 t2) = "(" ++ treeShow t1 ++ ") <" ++ treeShow t2 ++ ">"
@@ -100,7 +101,7 @@ instance TreeShow ComposeStmt where
     treeShow (CSLet name _ _) = "Let(" ++ name ++ ")"
     treeShow (CSExpr _ _) = "Op"
 
-instance TreeShow Pattern where
+instance TreeShow ParsedPattern where
     treeShow (PVar name _) = "Var (" ++ name ++ ")"
     treeShow (PLit lit _) = "Lit (" ++ show lit ++ ")"
     treeShow (PConstructor name args _) =

@@ -17,7 +17,6 @@ import Alloy.Ir (
         afReturnType
     ),
  )
-import Alloy.Naming (qualifyWithModule)
 import Control.Monad (forM)
 import Control.Monad.Reader (MonadReader (local), asks)
 import Control.Monad.State (modify)
@@ -40,23 +39,22 @@ import Llvm.Modules (
     ),
  )
 import Llvm.Types (LlvmFnAttr (..), LlvmMemoryEffect (..))
+import Project.Name (Name (..), nameToString, nameToLLVM, nameOriginal)
 
 compileFunction :: AlloyFunction -> IrGen ()
 compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
-    name <-
-        if afName == "main"
-            then pure "soma_main" -- Renamed so C runtime's main() can wrap it
-            else do
-                modName <- asks moduleName
-                pure $ qualifyWithModule modName afName
+    let name =
+            if nameOriginal afName == "main"
+                then "soma_main" -- Renamed so C runtime's main() can wrap it
+                else nameToLLVM afName
     let opEnv = buildOperandTypeEnv aFn
     -- Detect if this is a graph function (has net, tm, arg params)
     let isGraphFn = case afParams of
-            (("net", _) : ("tm", _) : _) -> True
+            ((n1, _) : (n2, _) : _) | nameToString n1 == "net" && nameToString n2 == "tm" -> True
             _ -> False
     let newEnvFn = local (\env -> env{opTypeEnv = opEnv})
     blocks <- mapM (newEnvFn . setGraphFunctionContext isGraphFn . compileBlock) afBlocks
-    let params = map (second convertType) afParams
+    let params = map (\(n, t) -> (nameToString n, convertType t)) afParams
     let retType = convertType afReturnType
     let provenAttrs = analyzeFunctionAttrs aFn
     let attrs = buildLlvmAttrs isGraphFn provenAttrs
@@ -118,7 +116,7 @@ compileBlock aBlock = do
     let stmts = instrStmts ++ termStmts
     let block =
             LlvmBlock
-                { blockName = abName aBlock
+                { blockName = nameToString (abName aBlock)
                 , blockStatements = stmts
                 }
     pure block
@@ -126,7 +124,7 @@ compileBlock aBlock = do
 {- | Detect if the block ends with a tail call pattern:
 Last instruction is ILet x _ (OpCall ...) and terminator is ARet (Just (OpVar x))
 -}
-detectTailCall :: [AInstr] -> ATerminator -> Maybe String
+detectTailCall :: [AInstr] -> ATerminator -> Maybe Name
 detectTailCall instrs (ARet (Just (OpVar retName))) =
     case reverse instrs of
         (ILet letName _ (OpCall _ _)) : _
@@ -135,6 +133,6 @@ detectTailCall instrs (ARet (Just (OpVar retName))) =
 detectTailCall _ _ = Nothing
 
 -- | Check if an instruction is the tail call we detected
-isTailCallOp :: String -> AInstr -> Bool
+isTailCallOp :: Name -> AInstr -> Bool
 isTailCallOp tcName (ILet letName _ (OpCall _ _)) = letName == tcName
 isTailCallOp _ _ = False

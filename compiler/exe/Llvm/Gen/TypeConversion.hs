@@ -1,20 +1,22 @@
-module Llvm.Gen.TypeConversion where
+module Llvm.Gen.TypeConversion (
+    convertType,
+    sizeOfType,
+    getConstructorTag,
+) where
 
-import Alloy.Naming (nameDictSuffix)
-import Data.List (isSuffixOf)
 import Llvm.Types
 import Typing.Types
 
 convertType :: Type -> LlvmType
-convertType (TApp (TConstructor (TypeConstructor "Ref" _)) innerTy) =
+convertType (TApp (TConstructor (TypeConstructor (TyPrim TPRef) _)) innerTy) =
     LlvmPointer (convertType innerTy)
-convertType (TApp (TConstructor (TypeConstructor "IO" _)) innerTy) =
+convertType (TApp (TConstructor (TypeConstructor (TyPrim TPIO) _)) innerTy) =
     convertType innerTy
-convertType (TApp (TConstructor (TypeConstructor "Array" _)) innerTy) =
+convertType (TApp (TConstructor (TypeConstructor (TyPrim TPArray) _)) innerTy) =
     LlvmPointer (convertType innerTy)
-convertType (TApp (TConstructor (TypeConstructor _name _)) _arg) =
+convertType (TApp (TConstructor (TypeConstructor _tyId _)) _arg) =
     LlvmAnonymous [LlvmI8, LlvmI64]
-convertType (TApp (TApp (TConstructor (TypeConstructor _name _)) _leftArg) _rightArg) =
+convertType (TApp (TApp (TConstructor (TypeConstructor _tyId _)) _leftArg) _rightArg) =
     LlvmAnonymous [LlvmI8, LlvmI64]
 convertType (TArrow argTy retTy) =
     let argTypes = collectArgTypes argTy
@@ -33,27 +35,24 @@ convertType (TUnresolved name) =
     error $ "Unresolved type " ++ name ++ " encountered during LLVM codegen."
 convertType (TApp constructor arg) =
     error $ "Unsupported complex type application in LLVM codegen: " ++ show constructor ++ " applied to " ++ show arg
-convertType (TConstructor (TypeConstructor name _)) =
-    case name of
-        "String" -> LlvmPointer LlvmI8
-        "Bool" -> LlvmI1
-        "Int" -> LlvmI32
-        "Float" -> LlvmFloat
-        "Double" -> LlvmDouble
-        "Long" -> LlvmI64
-        "Byte" -> LlvmI8
-        "Short" -> LlvmI16
-        "Unit" -> LlvmVoid
-        "()" -> LlvmVoid
-        -- ClosurePtr is an opaque pointer to a SomaClosure runtime structure
-        "ClosurePtr" -> LlvmPointer LlvmI8
-        -- Ptr is a generic opaque pointer (used for C interop, e.g., INet*, ThreadMem*)
-        "Ptr" -> LlvmPointer LlvmI8
-        _ ->
-            --
-            if nameDictSuffix `isSuffixOf` name
-                then LlvmPointer (LlvmNamedType name)
-                else LlvmAnonymous [LlvmI8, LlvmI64]
+convertType (TConstructor (TypeConstructor tyId _)) =
+    case tyId of
+        TyPrim TPString -> LlvmPointer LlvmI8
+        TyPrim TPBool -> LlvmI1
+        TyPrim TPInt -> LlvmI32
+        TyPrim TPFloat -> LlvmFloat
+        TyPrim TPDouble -> LlvmDouble
+        TyPrim TPLong -> LlvmI64
+        TyPrim TPByte -> LlvmI8
+        TyPrim TPShort -> LlvmI16
+        TyPrim TPUnit -> LlvmVoid
+        TyPrim TPClosurePtr -> LlvmPointer LlvmI8
+        TyPrim TPPtr -> LlvmPointer LlvmI8
+        TyPrim TPArray -> LlvmPointer LlvmI8  -- Should not happen, handled above
+        TyPrim TPRef -> LlvmPointer LlvmI8    -- Should not happen, handled above
+        TyPrim TPIO -> LlvmVoid               -- Should not happen, handled above
+        TyPrim (TPTuple _) -> LlvmAnonymous [LlvmI8, LlvmI64]
+        TyUserDefined _ -> LlvmAnonymous [LlvmI8, LlvmI64]
 
 sizeOfType :: LlvmType -> Int
 sizeOfType LlvmVoid = 0
@@ -68,20 +67,9 @@ sizeOfType (LlvmPointer _) = 8 -- todo: platform specific pointer size
 sizeOfType (LlvmArray n elemTy) = n * sizeOfType elemTy
 sizeOfType (LlvmAnonymous fields) = sum (map sizeOfType fields)
 sizeOfType (LlvmFn _ _) = 8 -- todo: platform specific pointer size
-sizeOfType (LlvmFunctionPtr _ _) = 8 -- function pointers are pointer-sized
-sizeOfType (LlvmNamedType _) = 8 -- todo: remove estimation
-sizeOfType LlvmVararg = 0
-sizeOfType LlvmSkolem = 0
+sizeOfType (LlvmNamedType _) = 8 -- Assume pointer size for named types
+sizeOfType e = error $ "sizeOfType: Unsupported LlvmType " ++ show e
 
+-- todo(urgent): proper implementation would use constructor metadata
 getConstructorTag :: String -> Int -> Int
-getConstructorTag "Some" _ = 0
-getConstructorTag "None" _ = 1
-getConstructorTag "Left" _ = 0
-getConstructorTag "Right" _ = 1
-getConstructorTag _ tag = tag
-
-constructorSignature :: String -> [Type] -> (Int, [LlvmType])
-constructorSignature ctorName fieldTypes =
-    let tag = getConstructorTag ctorName 0 -- todo: get actual tag from type system
-        fieldLlvmTypes = map convertType fieldTypes
-    in (tag, fieldLlvmTypes)
+getConstructorTag _name defaultTag = defaultTag

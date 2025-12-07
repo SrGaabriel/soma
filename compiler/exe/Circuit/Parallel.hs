@@ -40,6 +40,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Project.Name (Name (..), LocalId (..), LocalPrefix (..))
 import Typing.Types (Type (..))
 
 -- | Configuration for parallelization
@@ -100,16 +101,16 @@ parallelize config params term
 type ParM = State Int
 
 freshTaskName :: Name -> ParM Name
-freshTaskName base = do
+freshTaskName _base = do
     n <- get
     put (n + 1)
-    return $ "task_" ++ base ++ "_" ++ show n
+    return $ NLocal (LocalId LPTemp n)
 
 freshTempName :: String -> ParM Name
-freshTempName prefix = do
+freshTempName _prefix = do
     n <- get
     put (n + 1)
-    return $ prefix ++ "_" ++ show n
+    return $ NLocal (LocalId LPTemp n)
 
 -- | A reference to a variable, distinguishing dup projections
 data VarRef

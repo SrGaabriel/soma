@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 module Project.Check (
     CheckedModule (..),
     TypedBinding,
@@ -5,21 +6,23 @@ module Project.Check (
     checkModulesInOrder,
 ) where
 
+import Data.List (nub)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+
 import Inference.Assembler (MetalTypeEnv, inferModule)
 import Inference.Core (InstanceEnv, TypedBinding, TypedInstance)
 import Inference.Errors (InferenceError)
 import Inference.Resolver (runResolverWithEnv)
 import Metal.Gen.Metadata (extractConstructorMetadata)
-import Metal.Lower (LowerResult (..), lowerModule, runLower)
+import Metal.Lower (LowerResult (..), lowerModule, runLower, symbolToName)
 import Metal.Metadata (MetallicConstructorMetadata)
 import Project.Extracts (extractSymbolImports, resolveImport)
 import Project.Module (ModuleInfo (..), ModuleName)
+import Project.Name (Name)
 import Project.Symbols (Symbol (..))
 import Syntax.Tree (Expr)
 import Typing.Types (QualifiedType (..))
-import Data.List (nub)
 
 data CheckedModule = CheckedModule
     { checkedModuleName :: ModuleName
@@ -38,7 +41,7 @@ checkModule ::
     Map ModuleName CheckedModule ->
     Map String (Map Symbol QualifiedType) ->
     Map String InstanceEnv ->
-    Map String MetallicConstructorMetadata ->
+    Map Name MetallicConstructorMetadata ->
     ([InferenceError], CheckedModule)
 checkModule packageName modInfo checkedDeps externalDeps externalInstances externalConstructors =
     let modName = moduleName modInfo
@@ -57,11 +60,13 @@ checkModule packageName modInfo checkedDeps externalDeps externalInstances exter
             runResolverWithEnv packageName modName seedEnv seedInstances ast
 
         -- Extract constructor metadata for lowering (merge local and external)
-        localConstructorMeta = extractConstructorMetadata resolvedAst
-        constructorMeta = Map.union localConstructorMeta externalConstructors
+        -- Local constructors are extracted using the symbol environment for proper Name resolution
+        localConstructorMeta = extractConstructorMetadata fullEnv resolvedAst
+        -- Merge local and external constructors (both Name-keyed)
+        constructorMetaByName = Map.union localConstructorMeta externalConstructors
 
         -- Lower resolved AST to Metal IR
-        lowerResult = runLower constructorMeta (lowerModule resolvedAst)
+        lowerResult = runLower modName constructorMetaByName fullEnv (lowerModule resolvedAst)
 
         -- Build Metal type environment from Symbol-keyed environment
         metalTypeEnv = symbolEnvToMetalEnv fullEnv
@@ -87,11 +92,10 @@ checkModule packageName modInfo checkedDeps externalDeps externalInstances exter
                 }
     in (allErrors, checkedModule)
 
--- | Convert Symbol-keyed type environment to String-keyed Metal environment
 symbolEnvToMetalEnv :: Map Symbol QualifiedType -> MetalTypeEnv
 symbolEnvToMetalEnv symEnv =
     Map.fromList
-        [ (resolvedSymbolName sym, qty)
+        [ (symbolToName sym, qty)
         | (sym, qty) <- Map.toList symEnv
         ]
 
@@ -100,7 +104,7 @@ checkModulesInOrder ::
     Map ModuleName ModuleInfo ->
     Map String (Map Symbol QualifiedType) ->
     Map String InstanceEnv ->
-    Map String MetallicConstructorMetadata ->
+    Map Name MetallicConstructorMetadata ->
     String ->
     ([(ModuleName, [InferenceError])], Map ModuleName CheckedModule)
 checkModulesInOrder sorted graph externalDeps externalInstances externalConstructors packageName =

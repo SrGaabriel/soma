@@ -82,7 +82,7 @@ compileModuleForLSP modName filePath content ast compiledDeps externalDeps =
 
 toCheckedModule :: LspCompiledModule -> CheckedModule
 toCheckedModule cm =
-    let lowerResult = runLower Map.empty (lowerModule (lcmResolvedAst cm))
+    let lowerResult = runLower (lcmModuleName cm) Map.empty (lcmPublicSymbols cm) (lowerModule (lcmResolvedAst cm))
     in CheckedModule
         { checkedModuleName = lcmModuleName cm
         , checkedResolvedAst = lcmResolvedAst cm

@@ -46,6 +46,7 @@ import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Modules (LlvmFunction)
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getRegName, getValueType)
+import Project.Name (Name)
 import Typing.Types (Type)
 
 data IrGenEnv = IrGenEnv
@@ -54,7 +55,7 @@ data IrGenEnv = IrGenEnv
     , currentPackage :: String
     , moduleName :: String
     , opTypeEnv :: OperandTypeEnv
-    , dictMap :: Map.Map (String, Type) String
+    , dictMap :: Map.Map (Name, Type) String
     , isTailCall :: Bool
     -- ^ Whether current instruction is in tail call position
     , isGraphFunction :: Bool

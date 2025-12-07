@@ -34,10 +34,10 @@ import Circuit.Constants (parallelWorkThreshold)
 import Circuit.Escape (EscapeEnv, analyzeFunctionEscapes, canElideClone)
 import qualified Circuit.Ir as C
 import Control.Monad (forM, forM_, when)
-import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import Project.Name (mkProj0, mkProj1, nameToString, isErasureName, mkForkedTaskName)
 import Typing.Types (Type (..), byteType, isFunctionType, tupleType)
 
 {- | Environment for lowering, containing:
@@ -60,7 +60,7 @@ data LowerEnv = LowerEnv
 emptyLowerEnv :: LowerEnv
 emptyLowerEnv = LowerEnv Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty
 
--- | Look up an operand in the environment
+
 lookupOperand :: C.Name -> LowerEnv -> Maybe AOperand
 lookupOperand name = Map.lookup name . leOperands
 
@@ -148,7 +148,9 @@ lowerFunction cfun@C.CFunction{..} = do
     let escapeInfo = analyzeFunctionEscapes cfun
 
     -- Use typed parameters from the Circuit function
-    beginFunction cfName cfParams cfReturnType
+    let alloyName = cfName
+    let alloyParams = cfParams
+    beginFunction alloyName alloyParams cfReturnType
     entryBlock <- freshBlockName
     beginBlock entryBlock []
 
@@ -274,25 +276,26 @@ lowerTerm env term = case term of
     C.CDup name ty label val body -> do
         valOp <- lowerTerm env val
         -- Note: Alloc analysis stores kind under name.0/name.1, so look up projection
-        let valKind = getAllocKind (name ++ ".0") env
+        let proj0Name = mkProj0 name
+            proj1Name = mkProj1 name
+            valKind = getAllocKind proj0Name env
             canElide = canElideClone name (leEscapeInfo env)
-            isErasure = "era_" `isPrefixOf` name
         case valKind of
             StackOnly -> do
-                let env' = extendOperand (name ++ ".0") valOp $ extendOperand (name ++ ".1") valOp env
+                let env' = extendOperand proj0Name valOp $ extendOperand proj1Name valOp env
                 lowerTerm env' body
             MaybeHeap
-                | isErasure -> do
+                | isErasureName name -> do
                     emitEffect (EffDrop valOp)
                     lowerTerm env body
                 | canElide -> do
-                    let env' = extendOperand (name ++ ".0") valOp $ extendOperand (name ++ ".1") valOp env
+                    let env' = extendOperand proj0Name valOp $ extendOperand proj1Name valOp env
                     lowerTerm env' body
                 | isFunctionType ty -> do
                     let valName = case val of
                             C.CVar n _ -> Just n
-                            C.CDp0 n _ -> Just (n ++ ".0")
-                            C.CDp1 n _ -> Just (n ++ ".1")
+                            C.CDp0 n _ -> Just (mkProj0 n)
+                            C.CDp1 n _ -> Just (mkProj1 n)
                             _ -> Nothing
                         slotInfo = fromMaybe [] (valName >>= (`lookupClosureSlotTypes` env))
                         envSize = fromMaybe 0 (valName >>= (`lookupClosureEnvSize` env))
@@ -312,13 +315,13 @@ lowerTerm env term = case term of
                                 then OpParClosureProj1 (OpVar supHandle) envSize slotInfo workEstimate
                                 else OpDupClosureProj1 (OpVar supHandle) envSize slotInfo
                     let env' =
-                            markAsCloned (name ++ ".1")
-                                $ recordClosureSlotTypes (name ++ ".0") slotInfo
-                                $ recordClosureSlotTypes (name ++ ".1") slotInfo
-                                $ recordClosureEnvSize (name ++ ".0") envSize
-                                $ recordClosureEnvSize (name ++ ".1") envSize
-                                $ extendOperand (name ++ ".0") (OpVar proj0)
-                                $ extendOperand (name ++ ".1") (OpVar proj1) env
+                            markAsCloned proj1Name
+                                $ recordClosureSlotTypes proj0Name slotInfo
+                                $ recordClosureSlotTypes proj1Name slotInfo
+                                $ recordClosureEnvSize proj0Name envSize
+                                $ recordClosureEnvSize proj1Name envSize
+                                $ extendOperand proj0Name (OpVar proj0)
+                                $ extendOperand proj1Name (OpVar proj1) env
                     lowerTerm env' body
                 | otherwise -> do
                     -- Non-closure heap types: use generic DUP with parallel support
@@ -336,19 +339,21 @@ lowerTerm env term = case term of
                                 then OpParProj1 (OpVar supHandle) workEstimate
                                 else OpDupProj1 (OpVar supHandle)
                     let env' =
-                            extendOperand (name ++ ".0") (OpVar proj0)
-                                $ extendOperand (name ++ ".1") (OpVar proj1) env
+                            extendOperand proj0Name (OpVar proj0)
+                                $ extendOperand proj1Name (OpVar proj1) env
                     lowerTerm env' body
 
     -- Projections
     C.CDp0 name _ ->
-        case lookupOperand (name ++ ".0") env of
+        let proj0Name = mkProj0 name in
+        case lookupOperand proj0Name env of
             Just op -> pure op
-            Nothing -> error $ "Circuit.ToAlloy: unbound projection: " ++ name ++ ".0"
+            Nothing -> error $ "Circuit.ToAlloy: unbound projection: " ++ nameToString proj0Name
     C.CDp1 name _ ->
-        case lookupOperand (name ++ ".1") env of
+        let proj1Name = mkProj1 name in
+        case lookupOperand proj1Name env of
             Just op -> pure op
-            Nothing -> error $ "Circuit.ToAlloy: unbound projection: " ++ name ++ ".1"
+            Nothing -> error $ "Circuit.ToAlloy: unbound projection: " ++ nameToString proj1Name
     -- Tagged values (constructors)
     C.CTag tag fields resultTy -> do
         fieldOps <- mapM (lowerTerm env) fields
@@ -372,7 +377,7 @@ lowerTerm env term = case term of
             beginBlock blockName []
             fieldBindings <- forM (zip [0 ..] boundNamesWithTypes) $ \(idx, (boundName, fieldTy)) -> do
                 fieldName <- emitLetTmp fieldTy (OpProject scrutOp idx)
-                when ("era_" `isPrefixOf` boundName && getAllocKind "scrut" env == MaybeHeap)
+                when (isErasureName boundName)
                     $ emitEffect (EffDrop (OpVar fieldName))
                 pure (boundName, OpVar fieldName)
             let env' = foldr (uncurry extendOperand) env fieldBindings
@@ -445,13 +450,13 @@ lowerTerm env term = case term of
     -- e.g., ((computeLevel 5) 8) becomes (computeLevel, [5, 8])
     C.CFork taskName ty comp body -> do
         let (fun, args) = collectArgs comp
+            forkMarker = mkForkedTaskName taskName
         case fun of
             C.CRef fnName _ | not (null args) -> do
                 -- Direct function reference with arguments - can be forked
                 argOps <- mapM (lowerTerm env) args
                 taskHandle <- emitLetTmp ty (OpFork (OpVar fnName) argOps)
                 -- Store the task handle under a special name to mark it as a real fork
-                let forkMarker = "_forked_" ++ taskName
                 let env' =
                         extendOperand taskName (OpVar forkMarker)
                             $ extendOperand forkMarker (OpVar taskHandle) env
@@ -460,7 +465,6 @@ lowerTerm env term = case term of
                 -- Variable reference (could be local function) with arguments
                 argOps <- mapM (lowerTerm env) args
                 taskHandle <- emitLetTmp ty (OpFork (OpVar fnName) argOps)
-                let forkMarker = "_forked_" ++ taskName
                 let env' =
                         extendOperand taskName (OpVar forkMarker)
                             $ extendOperand forkMarker (OpVar taskHandle) env
@@ -478,7 +482,7 @@ lowerTerm env term = case term of
         case lookupOperand taskName env of
             Just taskOp -> do
                 -- Check if this is a real fork by looking for the marker
-                let forkMarker = "_forked_" ++ taskName
+                let forkMarker = mkForkedTaskName taskName
                 case lookupOperand forkMarker env of
                     Just taskHandleOp -> do
                         -- This came from OpFork - emit OpJoin to wait for the task
@@ -487,7 +491,7 @@ lowerTerm env term = case term of
                     Nothing -> do
                         -- Sequential fallback - the value is already computed
                         pure taskOp
-            Nothing -> error $ "CJoin: unknown task " ++ taskName
+            Nothing -> error $ "CJoin: unknown task " ++ nameToString taskName
   where
     countArityFromType :: Type -> Int
     countArityFromType (TArrow _ rest) = 1 + countArityFromType rest

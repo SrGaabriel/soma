@@ -29,7 +29,8 @@ import Inference.Naming (nameSkolemPrefix, nameTmpPrefix)
 import Inference.Substitution (Substitutable (apply))
 import Lexing.Position (Span (..))
 import Metal.Expr
-import Syntax.Patterns (Pattern (..))
+import Project.Name (Name (..), nameToString)
+import Syntax.Patterns (ResolvedPattern, Pattern (..))
 import qualified Syntax.Tree
 import Typing.Types (
     Constraint (..),
@@ -38,16 +39,19 @@ import Typing.Types (
     Rigidity (..),
     SkolemVar (..),
     TyConstructor (..),
+    TyPrimitive (..),
+    TyUnique (..),
     TyVar (..),
     Type (..),
     arrayType,
     boolType,
     cleanQualified,
     tupleType,
+    unitType,
  )
 import Utils.Lists (hardHead, hardTail)
 
-type MetalTypeEnv = Map.Map String QualifiedType
+type MetalTypeEnv = Map.Map Name QualifiedType
 
 newtype MetalGenM a = MetalGenM (StateT MetalGenState (ReaderT MetalTypeEnv (Writer [InferenceError])) a)
     deriving (Functor, Applicative, Monad, MonadState MetalGenState, MonadReader MetalTypeEnv, MonadWriter [InferenceError])
@@ -131,7 +135,7 @@ slotType (Known t) = t
 slotType (Hole tv) = TVar tv
 
 generateBindingConstraints ::
-    String ->
+    Name ->
     InferenceExpr ->
     [Type] ->
     Type ->
@@ -168,7 +172,7 @@ generateBindingConstraints _name body paramTypes returnType tyVars annConstraint
     pure (bodySlot, combinedConstraints)
 
 generateInstanceConstraints ::
-    String ->
+    Name ->
     InferenceExpr ->
     [Type] ->
     Type ->
@@ -217,7 +221,7 @@ generateConstraints expr = case expr of
 
                 pure (slot, typeConstraints [slotConstraint] <> classConstraints instClassConstraints)
             Nothing -> do
-                reportError (UnboundVariable (dummyExpr span') name)
+                reportError (UnboundVariable (dummyExpr span') (nameToString name))
                 pure (slot, emptyConstraints)
     MLit lit _ -> do
         let ty = literalType lit
@@ -371,7 +375,6 @@ generateConstraints expr = case expr of
     MTuple elements slot span' -> do
         if null elements
             then do
-                let unitType = TConstructor (TypeConstructor "Unit" KindStar)
                 let slotConstraint =
                         MetalTypeConstraint
                             { mtcSpan = span'
@@ -496,14 +499,14 @@ generateConstraints expr = case expr of
     MPanic _msg slot _span -> do
         pure (slot, emptyConstraints)
 
-generatePatternBindings :: Span -> [Pattern] -> [Type] -> MetalGenM MetalTypeEnv
+generatePatternBindings :: Span -> [ResolvedPattern] -> [Type] -> MetalGenM MetalTypeEnv
 generatePatternBindings span' patterns types = do
     when (length patterns /= length types) $ reportError (PatternArityMismatch (dummyExpr span') (length patterns) (length types))
 
     bindings <- zipWithM (generatePatternBinding span') patterns types
     pure $ Map.unions bindings
 
-generatePatternBinding :: Span -> Pattern -> Type -> MetalGenM MetalTypeEnv
+generatePatternBinding :: Span -> ResolvedPattern -> Type -> MetalGenM MetalTypeEnv
 generatePatternBinding _span (PVar name _) ty =
     pure $ Map.singleton name (cleanQualified ty)
 generatePatternBinding span' (PAs name inner _) ty = do
@@ -522,7 +525,7 @@ generatePatternBinding span' (PConstructor ctorName innerPatterns _) _ = do
             innerBindings <- zipWithM (generatePatternBinding span') innerPatterns argTypes
             pure $ Map.unions innerBindings
         Nothing -> do
-            reportError (UnknownTypeConstructor (dummyExpr span') ctorName)
+            reportError (UnknownTypeConstructor (dummyExpr span') (nameToString ctorName))
             pure Map.empty
 generatePatternBinding span' (PTuple innerPatterns _) ty = do
     let elemTypes = extractTupleTypes ty
@@ -538,13 +541,13 @@ generatePatternBinding _ PWildcard{} _ = pure Map.empty
 generatePatternBinding _ PLit{} _ = pure Map.empty
 
 extractTupleTypes :: Type -> [Type]
-extractTupleTypes (TApp (TApp (TConstructor (TypeConstructor "Tuple2" _)) t1) t2) = [t1, t2]
-extractTupleTypes (TApp (TApp (TApp (TConstructor (TypeConstructor "Tuple3" _)) t1) t2) t3) = [t1, t2, t3]
+extractTupleTypes (TApp (TApp (TConstructor (TypeConstructor (TyPrim (TPTuple 2)) _)) t1) t2) = [t1, t2]
+extractTupleTypes (TApp (TApp (TApp (TConstructor (TypeConstructor (TyPrim (TPTuple 3)) _)) t1) t2) t3) = [t1, t2, t3]
 extractTupleTypes (TApp t1 t2) = extractTupleTypes t1 ++ [t2]
 extractTupleTypes _ = []
 
 extractArrayElemType :: Type -> Type
-extractArrayElemType (TApp (TConstructor (TypeConstructor "Array" _)) elemType) = elemType
+extractArrayElemType (TApp (TConstructor (TypeConstructor (TyPrim TPArray) _)) elemType) = elemType
 extractArrayElemType _ = TVar (TypeVar "a" KindStar)
 
 splitFunctionType :: Int -> Type -> ([Type], Type)

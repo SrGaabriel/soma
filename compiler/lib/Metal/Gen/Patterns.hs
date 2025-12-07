@@ -12,26 +12,28 @@ module Metal.Gen.Patterns (
 import qualified Data.Set as Set
 import Metal.Lift (collectBinders)
 import Syntax.Patterns (
+    ParsedPattern,
+    ResolvedPattern,
     Pattern (..),
  )
 import Syntax.Tree (Expr (..))
 
-stripAs :: Pattern -> Pattern
+stripAs :: ResolvedPattern -> ResolvedPattern
 stripAs (PAs _ p _) = stripAs p
 stripAs p = p
 
-isDefaultPattern :: Pattern -> Bool
+isDefaultPattern :: ResolvedPattern -> Bool
 isDefaultPattern p = case stripAs p of
     PVar{} -> True
     PWildcard{} -> True
     _ -> False
 
-hasWildcardLike :: Pattern -> Bool
+hasWildcardLike :: ResolvedPattern -> Bool
 hasWildcardLike p = case stripAs p of
     PWildcard{} -> True
     _ -> False
 
-constructorArity :: Pattern -> Int
+constructorArity :: ResolvedPattern -> Int
 constructorArity p = case stripAs p of
     PLit _ _ -> 0
     PConstructor _ ps _ -> length ps
@@ -39,13 +41,13 @@ constructorArity p = case stripAs p of
     PArray ps _ -> length ps
     _ -> 0
 
-validateArity :: [[Pattern]] -> Bool
+validateArity :: [[ResolvedPattern]] -> Bool
 validateArity [] = True
 validateArity (r : rs) =
     let n = length r
     in all ((== n) . length) rs
 
-validateNoDuplicateBinders :: [[Pattern]] -> Bool
+validateNoDuplicateBinders :: [[ResolvedPattern]] -> Bool
 validateNoDuplicateBinders = all rowOk
   where
     rowOk ps =
@@ -53,10 +55,10 @@ validateNoDuplicateBinders = all rowOk
             s = Set.fromList vs
         in Set.size s == length vs
 
-extractArms :: [Expr] -> [([Pattern], Expr)]
+extractArms :: [Expr] -> [([ParsedPattern], Expr)]
 extractArms = map extractArm
   where
-    extractArm :: Expr -> ([Pattern], Expr)
+    extractArm :: Expr -> ([ParsedPattern], Expr)
     extractArm (ExprPatternMatchArm pats body _) = (pats, body)
     extractArm _ = error "Not a pattern match arm"
 

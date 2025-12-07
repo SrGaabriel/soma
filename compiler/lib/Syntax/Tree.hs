@@ -2,7 +2,7 @@ module Syntax.Tree (Expr (..), Attribute (..), exprChildren, exprSpan, modifySpa
 
 import Lexing.Position (Located (..), Span (..))
 import Project.Symbols (Symbol)
-import Syntax.Patterns (Pattern (..))
+import Syntax.Patterns (ParsedPattern, Pattern (..))
 import Typing.Types (Constraint, Kind, QualifiedType, TyVar, Type)
 
 data Attribute
@@ -28,7 +28,7 @@ data Expr
     | ExprPatternMatch Expr [Expr] Span
     | ExprDerivedPatternMatch [Expr]
     | ExprPatternMatchArm
-        { patternMatchArmPatterns :: [Pattern]
+        { patternMatchArmPatterns :: [ParsedPattern]
         , patternMatchArmBody :: Expr
         , patternMatchArmSpan :: Span
         }

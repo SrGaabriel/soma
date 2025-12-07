@@ -44,6 +44,7 @@ import Control.Monad.Reader
 import Control.Monad.State.Strict
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Project.Name (mkProj0, mkProj1)
 
 -- | Environment mapping variable names to their allocation kinds
 type AllocEnv = Map Name AllocKind
@@ -175,15 +176,17 @@ analyzeTerm' = \case
         let valKind = inferTermKind val
         -- Both projections (name.0 and name.1) have the same kind
         let projKind = valKind
+        let proj0 = mkProj0 name
+        let proj1 = mkProj1 name
         bodyBindings <-
             local
-                ( extendAlloc (name ++ ".0") projKind
-                    . extendAlloc (name ++ ".1") projKind
+                ( extendAlloc proj0 projKind
+                    . extendAlloc proj1 projKind
                 )
                 $ analyzeTerm' body
         pure
-            $ Map.insert (name ++ ".0") projKind
-            $ Map.insert (name ++ ".1") projKind
+            $ Map.insert proj0 projKind
+            $ Map.insert proj1 projKind
             $ Map.union valBindings bodyBindings
 
     -- Tagged value: analyze all fields

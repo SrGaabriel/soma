@@ -42,11 +42,12 @@ module Circuit.Escape (
 ) where
 
 import Circuit.Ir
-import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
+
+import Project.Name (Name (..), SyntheticId (..), SyntheticKind (..), Intrinsic (..), RuntimeFn (..), mkProj0, mkProj1)
 import Typing.Types (isFunctionType)
 
 -- | Escape classification for a binding
@@ -201,26 +202,26 @@ analyzeTermEscapes ctx term st = case term of
             st0 = if isClosure then markClosure name st else st
             -- Register the projections
             st1 =
-                registerProjection (name ++ ".0") name
-                    $ registerProjection (name ++ ".1") name st0
+                registerProjection (mkProj0 name) name
+                    $ registerProjection (mkProj1 name) name st0
             -- Analyze the value being duplicated
             st2 = analyzeTermEscapes CtxLocal val st1
             -- Analyze body to see how projections are used
             st3 = analyzeTermEscapes ctx body st2
             -- Determine escape status for the DUP based on projection usage
-            proj0Escape = Map.findWithDefault NoEscape (name ++ ".0") (asEscapes st3)
-            proj1Escape = Map.findWithDefault NoEscape (name ++ ".1") (asEscapes st3)
+            proj0Escape = Map.findWithDefault NoEscape (mkProj0 name) (asEscapes st3)
+            proj1Escape = Map.findWithDefault NoEscape (mkProj1 name) (asEscapes st3)
             dupEscape = mergeEscape proj0Escape proj1Escape
             st4 = updateEscape name dupEscape st3
         in
             st4
     -- Projections: mark usage based on context
     CDp0 name _ ->
-        let projName = name ++ ".0"
+        let projName = mkProj0 name
             kind = contextToEscape ctx
         in updateEscape projName kind st
     CDp1 name _ ->
-        let projName = name ++ ".1"
+        let projName = mkProj1 name
             kind = contextToEscape ctx
         in updateEscape projName kind st
     -- Erasure: nothing escapes
@@ -326,51 +327,30 @@ determineArgContext callee st = case callee of
 These functions don't store or return their arguments in ways that escape
 -}
 isKnownSafeFunction :: Name -> Bool
-isKnownSafeFunction name
-    -- Arithmetic and comparison intrinsics
-    | "llvm." `isPrefixOf` name = True
-    | "soma_" `isPrefixOf` name = isSafeSomaFunction name
-    -- Common pure functions that don't escape args
-    | name `elem` safePureFunctions = True
-    | otherwise = False
+isKnownSafeFunction (NIntrinsic intr) = case intr of
+    ILlvm _ -> True
+    IRuntime rt -> rt `elem` safeRuntimeFns
+    IPrimOp _ -> True
   where
-    -- Safe soma runtime functions (don't store closures)
-    isSafeSomaFunction n =
-        n
-            `elem` [ "soma_print_int"
-                   , "soma_print_str"
-                   , "soma_panic"
-                   , "soma_trace"
-                   ]
-    -- Known pure functions in the standard library
-    safePureFunctions =
-        [ "add"
-        , "sub"
-        , "mul"
-        , "div"
-        , "mod"
-        , "eq"
-        , "ne"
-        , "lt"
-        , "le"
-        , "gt"
-        , "ge"
-        , "and"
-        , "or"
-        , "not"
-        , "neg"
-        , "min"
-        , "max"
-        , "abs"
-        ]
+    safeRuntimeFns = [RtPrintInt, RtPrintStr, RtPanic, RtTrace]
+isKnownSafeFunction (NUser _) = False
+isKnownSafeFunction (NSynthetic _) = False
+isKnownSafeFunction (NLocal _) = False
+isKnownSafeFunction (NProjection _) = False
+isKnownSafeFunction (NDict _) = False
 
--- | Check if a call is a self-recursive call (to the current function)
 isSelfCall :: Name -> AnalysisState -> Bool
 isSelfCall name st = case asCurrentFunction st of
-    Just currentFn -> name == currentFn || (currentFn ++ "_lifted") `isPrefixOf` name
+    Just currentFn ->
+        name == currentFn ||
+        isLiftedFrom name currentFn
     Nothing -> False
 
--- | Check if a name is used in return position within a term
+isLiftedFrom :: Name -> Name -> Bool
+isLiftedFrom (NSynthetic synId) (NUser baseUnique) =
+    synKind synId == SKLiftedLambda && synBase synId == baseUnique
+isLiftedFrom _ _ = False
+
 nameUsedInReturnPosition :: Name -> CTerm -> Bool
 nameUsedInReturnPosition target = go
   where
@@ -380,8 +360,8 @@ nameUsedInReturnPosition target = go
     go (CLet _ _ _ body) = go body
     go (CSup{}) = False
     go (CDup _ _ _ _ body) = go body
-    go (CDp0 n _) = n ++ ".0" == target
-    go (CDp1 n _) = n ++ ".1" == target
+    go (CDp0 n _) = mkProj0 n == target
+    go (CDp1 n _) = mkProj1 n == target
     go CEra = False
     go (CErase _ body) = go body
     go (CRef n _) = n == target
@@ -419,6 +399,6 @@ use direct copying instead of SUP-based lazy cloning
 -}
 canElideClone :: Name -> EscapeEnv -> Bool
 canElideClone dupName env =
-    let proj0 = lookupEscape (dupName ++ ".0") env
-        proj1 = lookupEscape (dupName ++ ".1") env
+    let proj0 = lookupEscape (mkProj0 dupName) env
+        proj1 = lookupEscape (mkProj1 dupName) env
     in proj0 /= Escapes && proj1 /= Escapes

@@ -1,7 +1,7 @@
 module Main where
 
 import Build.Incremental (processExternalDependencies, processModulesIncremental)
-import Build.Metadata (serializableToConstructorMetadata)
+import Build.Metadata (serializableToConstructorMetadata, serializableToName)
 import Circuit.Linearize (linearizeModule)
 import Circuit.Lower (lowerModule)
 import Circuit.Simplify (simplifyModule)
@@ -11,6 +11,7 @@ import Control.Monad (unless, when)
 import qualified Data.ByteString as BS
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
+import qualified Data.Set as Set
 import qualified Data.Text.Encoding as TE
 import Format.Errors (CycleError (..), SomeError (..))
 import Format.Trees (prettyPrintAst, treeShow)
@@ -21,12 +22,13 @@ import Logging.Json (errorsToJsonOutput, failedJsonOutput, printJsonOutput)
 import Logging.Trees (prettyCircuit, prettyCircuitGraph)
 import Metal.Gen.Entry (TypedLowerResult (..), compileMetalModule)
 import Metal.Lift (liftLambdas)
-import Metal.Lower (LowerResult (..))
+import Metal.Lower (LowerResult (..), symbolToName)
 import Metal.MonadNormalize (normalizeModule)
 import Project.Check (CheckedModule (..), checkModule, checkModulesInOrder)
-import Project.Extracts (extractIntrinsicNames)
+
 import Project.Graph
 import Project.Module
+import Project.Symbols (resolvedSymbolKind, SymbolKind (..))
 import Project.Parsing
 import System.Directory (doesDirectoryExist, doesFileExist)
 import System.Exit (exitFailure, exitSuccess)
@@ -99,7 +101,7 @@ checkSingleFile opts path = do
             exitFailure
         Right mi -> do
             (externalDeps, externalInstances, externalConstructors, _) <- processExternalDependencies (checkDeps opts)
-            let metallicConstructors = Map.map serializableToConstructorMetadata externalConstructors
+            let metallicConstructors = Map.mapKeys serializableToName $ Map.map serializableToConstructorMetadata externalConstructors
             let graph = Map.singleton name mi
                 (errors, _) = checkModulesInOrder [name] graph externalDeps externalInstances metallicConstructors name
 
@@ -161,7 +163,7 @@ checkDirectory opts path = do
                     exitFailure
                 Right sorted -> do
                     (externalDeps, externalInstances, externalConstructors, _) <- processExternalDependencies (checkDeps opts)
-                    let metallicConstructors = Map.map serializableToConstructorMetadata externalConstructors
+                    let metallicConstructors = Map.mapKeys serializableToName $ Map.map serializableToConstructorMetadata externalConstructors
 
                     let (errors, _) = checkModulesInOrder sorted graph externalDeps externalInstances metallicConstructors name
 
@@ -273,10 +275,10 @@ circuit opts = do
         mapM_ (\e -> printError e (modulePath mi) (moduleContent mi) "INFERENCE") allErrors
         exitFailure
 
-    let resolvedAst = checkedResolvedAst checked
-        lowerResult = checkedLowerResult checked
+    let lowerResult = checkedLowerResult checked
         typedBindings = checkedTypedBindings checked
         typedInstances = checkedTypedInstances checked
+        newDefs = checkedPublicSymbols checked
 
     let typedLowerResult =
             TypedLowerResult
@@ -286,10 +288,12 @@ circuit opts = do
                 , tlrTypeClasses = lrTypeClasses lowerResult
                 }
 
+    let intrinsicSymbols = Map.keys $ Map.filterWithKey (\sym _ -> resolvedSymbolKind sym == IntrinsicBindingSymbol) newDefs
+        intrinsicNames = Set.fromList $ map symbolToName intrinsicSymbols
+
     -- Compile to Metal
     let metallic = compileMetalModule name typedLowerResult Map.empty
-        intrinsics = extractIntrinsicNames resolvedAst
-        metallicLifted = liftLambdas intrinsics metallic
+        metallicLifted = liftLambdas intrinsicNames metallic
         metallicNormalized = normalizeModule metallicLifted
 
     putStrLn "=== Metal HIR ==="

@@ -28,6 +28,7 @@ module Circuit.Simplify (
 import Circuit.Ir
 import qualified Data.Bits
 import Data.Monoid (Any (..))
+import Project.Name (mkProj0, mkProj1)
 import Typing.Types (Type)
 
 -- | Simplify a complete module
@@ -353,8 +354,8 @@ substitute target replacement = go
           where
             getReplacementName = case replacement of
                 CVar repName _ -> repName
-                CDp0 repName _ -> repName ++ ".0"
-                CDp1 repName _ -> repName ++ ".1"
+                CDp0 repName _ -> mkProj0 repName
+                CDp1 repName _ -> mkProj1 repName
                 _ -> target
         -- All other terms: just recurse into children
         _ -> mapChildren go term

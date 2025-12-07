@@ -6,17 +6,17 @@ module Llvm.Gen.Intrinsics (
 ) where
 
 import Alloy.Ir (AOperand (..))
-import Alloy.Naming (qualifyWithModule)
 import Control.Monad.Reader (asks)
 import Control.Monad.State (gets)
 import Control.Monad.Writer.Class (tell)
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), freshBlockName, freshNamedReg, saveToNamedReg, saveTmp)
+import Llvm.Gen.Core (IrGen, IrGenEnv (..), IrGenState (..), freshBlockName, freshNamedReg, saveTmp, saveToNamedReg)
 import Llvm.Gen.Externals (mallocDependency, printfDependency, putsDependency, strcpyDependency, strlenDependency, useDep)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getValueType, intLiteral, longLiteral)
+import Project.Name (nameToLLVM)
 
 isIntrinsic :: String -> Bool
 isIntrinsic "println" = True
@@ -67,17 +67,14 @@ compileMap ::
     IrGen LlvmValue
 compileMap [lambda, array] resultTy = do
     compiledArray <- compileOperand array
-    modName <- asks moduleName
-
     let (elemTy, fnRetType) = case resultTy of
             LlvmPointer (LlvmArray _ ty) -> (ty, ty) -- element type is result array element type
             _ -> (LlvmI32, LlvmI32) -- fallback
-    let lambdaName = case lambda of
-            OpVar name -> name
+    let qualifiedLambdaName = case lambda of
+            OpVar name -> nameToLLVM name
             _ -> error "map expects a function name as first argument"
 
     let fnType = LlvmFn fnRetType [elemTy]
-    let qualifiedLambdaName = qualifyWithModule modName lambdaName
     let compiledLambda = LlvmGlobal fnType qualifiedLambdaName
 
     -- todo: extract actual length from array metadata or type info
@@ -219,6 +216,6 @@ compileIntToString [numOp] _retTy = do
 
     tell [LlvmLabel doneLabel]
     finalPos <- saveTmp (LlvmPhi LlvmI64 [(currentPos, afterLoopLabel), (minusPos, addMinusLabel)]) LlvmI64
-    
+
     saveTmp (LlvmGetElementPtr LlvmI8 buffer [finalPos] False) (LlvmPointer LlvmI8)
 compileIntToString _ _ = error "int_to_string intrinsic expects exactly 1 argument"

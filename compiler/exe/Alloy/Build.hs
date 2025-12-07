@@ -18,12 +18,12 @@ module Alloy.Build (
 ) where
 
 import Alloy.Ir
-import Alloy.Naming (nameBlockPrefix, nameTmpPrefix)
 import Control.Monad (when)
 import Control.Monad.State.Strict
 import Data.Maybe (isNothing)
 import Metal.Metadata (FunctionAttributes, defaultFunctionAttributes)
 import qualified Metal.Metadata
+import Project.Name (LocalId (..), LocalPrefix (..), Name (..))
 import Typing.Types (Constraint, Type)
 
 data BuildState = BuildState
@@ -40,14 +40,14 @@ data FunBuild = FunBuild
     { fbName :: Name
     , fbParams :: [(Name, Type)]
     , fbReturnType :: Type
-    , fbEntry :: Maybe BlockName
+    , fbEntry :: Maybe Name
     , fbBlocks :: [ABlock]
     , fbConstraints :: [Constraint]
     , fbAttributes :: FunctionAttributes
     }
 
 data BlockBuild = BlockBuild
-    { bbName :: BlockName
+    { bbName :: Name
     , bbParams :: [(Name, Type)]
     , bbInstrs :: [AInstr]
     , bbTerminator :: Maybe ATerminator
@@ -131,7 +131,7 @@ endFunction = do
             , bsCurBlk = Nothing
             }
 
-beginBlock :: BlockName -> [(Name, Type)] -> AlloyBuilder ()
+beginBlock :: Name -> [(Name, Type)] -> AlloyBuilder ()
 beginBlock name params = do
     st@BuildState{..} <- get
     fb@FunBuild{..} <- requireOpenFunction "beginBlock"
@@ -202,13 +202,13 @@ freshName :: AlloyBuilder Name
 freshName = do
     st@BuildState{..} <- get
     put st{bsNextTmp = bsNextTmp + 1}
-    pure $ nameTmpPrefix ++ show bsNextTmp
+    pure $ NLocal (LocalId LPTemp bsNextTmp)
 
-freshBlockName :: AlloyBuilder BlockName
+freshBlockName :: AlloyBuilder Name
 freshBlockName = do
     st@BuildState{..} <- get
     put st{bsNextBlk = bsNextBlk + 1}
-    pure $ nameBlockPrefix ++ show bsNextBlk
+    pure $ NLocal (LocalId LPBlock bsNextBlk)
 
 requireOpenFunction :: String -> AlloyBuilder FunBuild
 requireOpenFunction context = do

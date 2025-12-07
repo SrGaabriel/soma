@@ -4,9 +4,8 @@ module Circuit.Decisions where
 
 import Data.List (groupBy, nub, partition, sortOn)
 import qualified Data.Map.Strict as Map
-import Metal.Gen.Patterns (extractArms)
-import Syntax.Patterns (Literal (..), Pattern (..))
-import qualified Syntax.Tree as AST (Expr (..))
+import Project.Name (Name)
+import Syntax.Patterns (Literal (..), ResolvedPattern, Pattern (..))
 
 type Action = Int
 
@@ -20,7 +19,7 @@ data Accessor
     deriving (Show, Eq, Ord)
 
 data MatrixRow = MatrixRow
-    { rowPatterns :: [Pattern]
+    { rowPatterns :: [ResolvedPattern]
     , rowAction :: Action
     }
     deriving (Show, Eq)
@@ -31,7 +30,7 @@ data PatternMatrix = PatternMatrix
     }
     deriving (Show, Eq)
 
-mkPatternMatrix :: [([Pattern], Action)] -> PatternMatrix
+mkPatternMatrix :: [([ResolvedPattern], Action)] -> PatternMatrix
 mkPatternMatrix [] = PatternMatrix{matrixRows = [], matrixVars = []}
 mkPatternMatrix clauses@((pats, _) : _) =
     let numArgs = length pats
@@ -54,7 +53,7 @@ data DecisionTree
 
 data Constructor
     = LitCtor Literal
-    | DataCtor String Int
+    | DataCtor Name Int
     | TupleCtor Int
     | ArrayCtor Int
     deriving (Show, Eq, Ord)
@@ -87,7 +86,7 @@ partitionRows col rows =
         groupedCtors = groupByConstructor col ctors
     in (groupedCtors, defaults)
 
-isDefaultPattern :: Pattern -> Bool
+isDefaultPattern :: ResolvedPattern -> Bool
 isDefaultPattern PVar{} = True
 isDefaultPattern PWildcard{} = True
 isDefaultPattern PAs{} = True
@@ -105,7 +104,7 @@ groupByConstructor col rows =
                 sorted
     in [(patternConstructor $ rowPatterns r !! col, g) | g@(r : _) <- grouped]
 
-patternConstructor :: Pattern -> Constructor
+patternConstructor :: ResolvedPattern -> Constructor
 patternConstructor (PLit lit _) = LitCtor lit
 patternConstructor (PConstructor name pats _) = DataCtor name (length pats)
 patternConstructor (PTuple pats _) = TupleCtor (length pats)
@@ -166,7 +165,7 @@ specializeRow col ctor row =
         allPats = take col pats ++ newPats ++ drop (col + 1) pats
     in MatrixRow allPats (rowAction row)
 
-extractSubPatterns :: Pattern -> [Pattern]
+extractSubPatterns :: ResolvedPattern -> [ResolvedPattern]
 extractSubPatterns (PConstructor _ pats _) = pats
 extractSubPatterns (PTuple pats _) = pats
 extractSubPatterns (PArray pats _) = pats
@@ -296,51 +295,9 @@ prettyDAG dag =
         ++ ")\n"
         ++ unlines [show nid ++ ": " ++ show node | (nid, node) <- Map.toList (dagNodes dag)]
 
-compilePatterns :: [([Pattern], Action)] -> DecisionTree
+compilePatterns :: [([ResolvedPattern], Action)] -> DecisionTree
 compilePatterns clauses = compile (mkPatternMatrix clauses)
 
-compilePatternsToDAG :: [([Pattern], Action)] -> DAG
+compilePatternsToDAG :: [([ResolvedPattern], Action)] -> DAG
 compilePatternsToDAG clauses =
     buildDAG $ compilePatterns clauses
-
-compileExprPatternMatch :: AST.Expr -> (DecisionTree, [AST.Expr])
-compileExprPatternMatch (AST.ExprPatternMatch _matchExpr arms _span) =
-    let armData = extractArms arms
-        bodies = map snd armData
-        patterns = map fst armData
-        indexedClauses = zip patterns [0 .. length patterns - 1]
-        tree = compilePatterns indexedClauses
-    in (tree, bodies)
-compileExprPatternMatch _ = error "Not a pattern match expression"
-
-compileExprDerivedPatternMatch :: AST.Expr -> (DecisionTree, [AST.Expr])
-compileExprDerivedPatternMatch (AST.ExprDerivedPatternMatch arms) =
-    let armData = extractArms arms
-        bodies = map snd armData
-        patterns = map fst armData
-        indexedClauses = zip patterns [0 .. length patterns - 1]
-        tree = compilePatterns indexedClauses
-    in (tree, bodies)
-compileExprDerivedPatternMatch _ = error "Not a derived pattern match expression"
-
-compileExprPatternMatchToDAG :: AST.Expr -> (DAG, [AST.Expr])
-compileExprPatternMatchToDAG expr =
-    let (tree, bodies) = compileExprPatternMatch expr
-    in (buildDAG tree, bodies)
-
-compileExprDerivedPatternMatchToDAG :: AST.Expr -> (DAG, [AST.Expr])
-compileExprDerivedPatternMatchToDAG expr =
-    let (tree, bodies) = compileExprDerivedPatternMatch expr
-    in (buildDAG tree, bodies)
-
-validatePatternMatchArity :: AST.Expr -> Bool
-validatePatternMatchArity expr =
-    let arms = case expr of
-            AST.ExprPatternMatch _ armExprs _ -> extractArms armExprs
-            AST.ExprDerivedPatternMatch armExprs -> extractArms armExprs
-            _ -> []
-    in case arms of
-        [] -> True
-        ((pats, _) : rest) ->
-            let expectedArity = length pats
-            in all (\(ps, _) -> length ps == expectedArity) rest

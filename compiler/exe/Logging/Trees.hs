@@ -15,6 +15,7 @@ import Metal.Expr
 import Metal.Function
 import Metal.Metadata (FunctionAttributes (..))
 import Metal.Module
+import Project.Name (nameToString)
 
 indent :: Int -> String -> String
 indent n s = replicate n ' ' ++ s
@@ -29,19 +30,19 @@ instance TreeShow MetallicLiteral where
 
 instance TreeShow TypedArm where
     treeShow (MCaseArm pats body) =
-        "(" ++ unwords (map treeShow pats) ++ ") => " ++ treeShow body
+        "(" ++ unwords (map show pats) ++ ") => " ++ treeShow body
 
 instance TreeShow TypedExpr where
-    treeShow (MVar n _ _) = n
+    treeShow (MVar n _ _) = nameToString n
     treeShow (MLit lit _) = treeShow lit
     treeShow (MCall f args _ _) =
         treeShow f ++ "(" ++ commaSep (map treeShow args) ++ ")"
     treeShow (MTypeApp e tys _ _) =
         treeShow e ++ "[" ++ commaSep (map treeShow tys) ++ "]"
     treeShow (MLet n v b _ _) =
-        "let " ++ n ++ " = " ++ treeShow v ++ " in " ++ treeShow b
+        "let " ++ nameToString n ++ " = " ++ treeShow v ++ " in " ++ treeShow b
     treeShow (MConstruct cname _ fields _ _) =
-        cname ++ " " ++ unwords (map treeShow fields)
+        nameToString cname ++ " " ++ unwords (map treeShow fields)
     treeShow (MArrayLit es _ _) =
         "[" ++ commaSep (map treeShow es) ++ "]"
     treeShow (MTuple es _ _) =
@@ -56,19 +57,19 @@ instance TreeShow TypedExpr where
     treeShow (MFieldAccess e ix _ _) =
         treeShow e ++ "." ++ show ix
     treeShow (MLambda params body _ _) =
-        "(\\" ++ commaSep (map fst params) ++ " -> " ++ treeShow body ++ ")"
+        "(\\" ++ commaSep (map (nameToString . fst) params) ++ " -> " ++ treeShow body ++ ")"
     treeShow (MIf cond ifBranch elseBranch _ _) =
         "if " ++ treeShow cond ++ " then " ++ treeShow ifBranch ++ " else " ++ treeShow elseBranch
     treeShow (MPanic msg _ _) = "panic " ++ show msg
     treeShow (MClosure liftedName captured _ _) =
-        "closure(" ++ liftedName ++ ", [" ++ commaSep (map fst captured) ++ "])"
+        "closure(" ++ nameToString liftedName ++ ", [" ++ commaSep (map (nameToString . fst) captured) ++ "])"
 
 instance TreeShow MetallicFunction where
     treeShow (MetallicFunction name params ret body _) =
         "def "
-            ++ name
+            ++ nameToString name
             ++ "("
-            ++ commaSep [n ++ ": " ++ treeShow t | (n, t) <- params]
+            ++ commaSep [nameToString n ++ ": " ++ treeShow t | (n, t) <- params]
             ++ ")"
             ++ " -> "
             ++ treeShow ret
@@ -77,13 +78,13 @@ instance TreeShow MetallicFunction where
 
 instance TreeShow MetallicTypeDef where
     treeShow (MAlgebraicType nm ctors) =
-        "data " ++ nm ++ " = " ++ intercalate " | " (map treeShow ctors)
+        "data " ++ nameToString nm ++ " = " ++ intercalate " | " (map treeShow ctors)
     treeShow (MRecordType nm fields) =
-        "record " ++ nm ++ " { " ++ commaSep [n ++ ": " ++ treeShow t | (n, t) <- fields] ++ " }"
+        "record " ++ nameToString nm ++ " { " ++ commaSep [nameToString n ++ ": " ++ treeShow t | (n, t) <- fields] ++ " }"
 
 instance TreeShow MetallicConstructor where
     treeShow (MetallicConstructor nm _ fields) =
-        nm ++ if null fields then "" else " " ++ unwords (map treeShow fields)
+        nameToString nm ++ if null fields then "" else " " ++ unwords (map treeShow fields)
 
 instance TreeShow MetallicInstance where
     treeShow (MetallicInstance cls ty methods) =
@@ -114,11 +115,11 @@ instance TreeShow AConst where
     treeShow CUnit = "()"
 
 instance TreeShow AOperand where
-    treeShow (OpVar n) = n
+    treeShow (OpVar n) = nameToString n
     treeShow (OpConst c) = treeShow c
 
 instance TreeShow ACallable where
-    treeShow (Direct n) = n
+    treeShow (Direct n) = nameToString n
     treeShow (Indirect op) = "*" ++ treeShow op
 
 instance TreeShow ABinOpKind where
@@ -147,8 +148,8 @@ instance TreeShow AOp where
     treeShow (OpIndex a ix) = treeShow a ++ "[" ++ treeShow ix ++ "]"
     treeShow (OpMakeArray xs) = "[" ++ commaSep (map treeShow xs) ++ "]"
     treeShow (OpMakeTuple xs) = "(" ++ commaSep (map treeShow xs) ++ ")"
-    treeShow (OpGetDict className ty) = "get_dict " ++ className ++ " for " ++ treeShow ty
-    treeShow (OpDictCall dict methodIdx method args) = "dict_call " ++ treeShow dict ++ "[" ++ show methodIdx ++ "]." ++ method ++ "(" ++ commaSep (map treeShow args) ++ ")"
+    treeShow (OpGetDict className ty) = "get_dict " ++ nameToString className ++ " for " ++ treeShow ty
+    treeShow (OpDictCall dict methodIdx method args) = "dict_call " ++ treeShow dict ++ "[" ++ show methodIdx ++ "]." ++ nameToString method ++ "(" ++ commaSep (map treeShow args) ++ ")"
     treeShow (OpDup label val) = "dup[" ++ show label ++ "] " ++ treeShow val
     treeShow (OpDupProj0 handle) = "proj0 " ++ treeShow handle
     treeShow (OpDupProj1 handle) = "proj1 " ++ treeShow handle
@@ -178,10 +179,10 @@ instance TreeShow AOp where
     treeShow (OpGraphMul l r) = "graph_mul " ++ treeShow l ++ " " ++ treeShow r
     treeShow (OpGraphDiv l r) = "graph_div " ++ treeShow l ++ " " ++ treeShow r
     treeShow (OpGraphMod l r) = "graph_mod " ++ treeShow l ++ " " ++ treeShow r
-    treeShow (OpGraphCall fnName args) = "graph_call fn=\"" ++ fnName ++ "\" args=[" ++ intercalate ", " (map treeShow args) ++ "]"
+    treeShow (OpGraphCall fnName args) = "graph_call fn=\"" ++ nameToString fnName ++ "\" args=[" ++ intercalate ", " (map treeShow args) ++ "]"
     treeShow (OpGraphReduce root) = "graph_reduce " ++ treeShow root
     treeShow (OpGraphExtractNum term) = "graph_extract_num " ++ treeShow term
-    treeShow (OpGraphRegisterFunc name arity impl) = "graph_register_func \"" ++ name ++ "\" arity=" ++ show arity ++ " impl=" ++ treeShow impl
+    treeShow (OpGraphRegisterFunc name arity impl) = "graph_register_func \"" ++ nameToString name ++ "\" arity=" ++ show arity ++ " impl=" ++ treeShow impl
     treeShow (OpGraphDup label val) = "graph_dup[" ++ show label ++ "] " ++ treeShow val
     treeShow (OpGraphDupGetProj0 dup) = "graph_dup_proj0 " ++ treeShow dup
     treeShow (OpGraphDupGetProj1 dup) = "graph_dup_proj1 " ++ treeShow dup
@@ -190,7 +191,7 @@ instance TreeShow AOp where
     treeShow (OpGraphCon fst' snd') = "graph_con " ++ treeShow fst' ++ " " ++ treeShow snd'
     treeShow (OpGraphConGet con idx) = "graph_con_get " ++ treeShow con ++ "[" ++ show idx ++ "]"
     treeShow (OpGraphLam param body) = "graph_lam " ++ treeShow param ++ " -> " ++ treeShow body
-    treeShow (OpGraphRef fnName idx arg) = "graph_ref[" ++ show idx ++ "] \"" ++ fnName ++ "\" " ++ treeShow arg
+    treeShow (OpGraphRef fnName idx arg) = "graph_ref[" ++ show idx ++ "] \"" ++ nameToString fnName ++ "\" " ++ treeShow arg
     treeShow (OpGraphApp fn arg) = "graph_app " ++ treeShow fn ++ " @ " ++ treeShow arg
     treeShow (OpGraphClosure funcIdx arity envVals) =
         "graph_closure[" ++ show funcIdx ++ ", arity=" ++ show arity ++ "](" ++ intercalate ", " (map treeShow envVals) ++ ")"
@@ -206,25 +207,25 @@ instance TreeShow AEffect where
     treeShow (EffClosureSetEnv closure idx val) = "closure_set_env " ++ treeShow closure ++ "[" ++ show idx ++ "] := " ++ treeShow val
     treeShow (EffGraphInit n) = "graph_init workers=" ++ show n
     treeShow EffGraphShutdown = "graph_shutdown"
-    treeShow (EffGraphRegisterFunc name arity impl) = "graph_register_func \"" ++ name ++ "\" arity=" ++ show arity ++ " impl=" ++ treeShow impl
+    treeShow (EffGraphRegisterFunc name arity impl) = "graph_register_func \"" ++ nameToString name ++ "\" arity=" ++ show arity ++ " impl=" ++ treeShow impl
 
 instance TreeShow AInstr where
-    treeShow (ILet n ty op) = n ++ " = " ++ treeShow op ++ " (" ++ treeShow ty ++ ")"
+    treeShow (ILet n ty op) = nameToString n ++ " = " ++ treeShow op ++ " (" ++ treeShow ty ++ ")"
     treeShow (IEffect eff) = treeShow eff
 
 instance TreeShow ATerminator where
     treeShow (ABr lbl args) =
-        "br " ++ lbl ++ argsS
+        "br " ++ nameToString lbl ++ argsS
       where
         argsS = if null args then "" else " (" ++ commaSep (map treeShow args) ++ ")"
     treeShow (ACondBr c t ta f fa) =
         "br_if "
             ++ treeShow c
             ++ " then "
-            ++ t
+            ++ nameToString t
             ++ withArgs ta
             ++ " else "
-            ++ f
+            ++ nameToString f
             ++ withArgs fa
       where
         withArgs xs = if null xs then "" else " (" ++ commaSep (map treeShow xs) ++ ")"
@@ -232,8 +233,8 @@ instance TreeShow ATerminator where
         "switch "
             ++ treeShow scr
             ++ " { "
-            ++ intercalate ", " [show i ++ " -> " ++ lbl | (i, lbl) <- cases]
-            ++ maybe "" (", default -> " ++) mdef
+            ++ intercalate ", " [show i ++ " -> " ++ nameToString lbl | (i, lbl) <- cases]
+            ++ maybe "" (", default -> " ++) (fmap nameToString mdef)
             ++ " }"
     treeShow (ARet Nothing) = "ret"
     treeShow (ARet (Just v)) = "ret " ++ treeShow v
@@ -241,7 +242,7 @@ instance TreeShow ATerminator where
 
 instance TreeShow ABlock where
     treeShow (ABlock nm params instrs term) =
-        nm
+        nameToString nm
             ++ paramsS
             ++ ":\n"
             ++ unlines (map (indent 2 . treeShow) instrs)
@@ -250,22 +251,22 @@ instance TreeShow ABlock where
         paramsS =
             if null params
                 then ""
-                else "(" ++ commaSep [n ++ ": " ++ treeShow t | (n, t) <- params] ++ ")"
+                else "(" ++ commaSep [nameToString n ++ ": " ++ treeShow t | (n, t) <- params] ++ ")"
 
 instance TreeShow AlloyFunction where
     treeShow (AlloyFunction nm params ret entry blks constraints attrs) =
         (if faInline attrs then "inline " else "")
             ++ "func "
-            ++ nm
+            ++ nameToString nm
             ++ "("
-            ++ commaSep [n ++ ": " ++ treeShow t | (n, t) <- params]
+            ++ commaSep [nameToString n ++ ": " ++ treeShow t | (n, t) <- params]
             ++ ")"
             ++ " -> "
             ++ treeShow ret
             ++ (if null constraints then "" else " where " ++ show constraints)
             ++ " {"
             ++ "\n  entry = "
-            ++ entry
+            ++ nameToString entry
             ++ "\n"
             ++ unlines (map (indent 2 . treeShow) blks)
             ++ "}"
@@ -300,17 +301,17 @@ prettyCircuit m =
 prettyTypeDef :: CTypeDef -> String
 prettyTypeDef td =
     "type "
-        ++ ctName td
+        ++ nameToString (ctName td)
         ++ " = "
         ++ intercalate " | " (map prettyCtor (ctConstructors td))
   where
-    prettyCtor c = ccName c ++ "/" ++ show (ccArity c) ++ "#" ++ show (ccTag c)
+    prettyCtor c = nameToString (ccName c) ++ "/" ++ show (ccArity c) ++ "#" ++ show (ccTag c)
 
 -- | Pretty print a function
 prettyFunction :: CFunction -> String
 prettyFunction f =
     unlines
-        [ "@" ++ cfName f ++ " " ++ unwords (map fst (cfParams f)) ++ " ="
+        [ "@" ++ nameToString (cfName f) ++ " " ++ unwords (map (nameToString . fst) (cfParams f)) ++ " ="
         , "  " ++ prettyTerm (cfBody f)
         ]
 
@@ -319,22 +320,22 @@ prettyTerm :: CTerm -> String
 prettyTerm = go 0
   where
     go :: Int -> CTerm -> String
-    go _ (CVar n _) = n
+    go _ (CVar n _) = nameToString n
     go d (CLam n _ body) =
-        "λ" ++ n ++ ". " ++ go d body
+        "λ" ++ nameToString n ++ ". " ++ go d body
     go d (CApp f x _) =
         "(" ++ go d f ++ " " ++ go d x ++ ")"
     go d (CLet n _ val body) =
-        "let " ++ n ++ " = " ++ go d val ++ " in " ++ go d body
+        "let " ++ nameToString n ++ " = " ++ go d val ++ " in " ++ go d body
     go d (CSup l a b _) =
         "&" ++ show l ++ "{" ++ go d a ++ ", " ++ go d b ++ "}"
     go d (CDup n _ l val body) =
-        "!" ++ n ++ " &" ++ show l ++ " = " ++ go d val ++ "; " ++ go d body
-    go _ (CDp0 n _) = n ++ "₀"
-    go _ (CDp1 n _) = n ++ "₁"
+        "!" ++ nameToString n ++ " &" ++ show l ++ " = " ++ go d val ++ "; " ++ go d body
+    go _ (CDp0 n _) = nameToString n ++ "₀"
+    go _ (CDp1 n _) = nameToString n ++ "₁"
     go _ CEra = "*"
     go d (CErase val body) = "erase " ++ go d val ++ "; " ++ go d body
-    go _ (CRef n _) = "@" ++ n
+    go _ (CRef n _) = "@" ++ nameToString n
     go _ (Circuit.Ir.CInt i) = show i
     go _ (Circuit.Ir.CBool True) = "true"
     go _ (Circuit.Ir.CBool False) = "false"
@@ -350,7 +351,7 @@ prettyTerm = go 0
             ++ " }"
       where
         prettyArm dd (tag, fieldsWithTypes, body) =
-            "<" ++ show tag ++ concatMap (\(n, _) -> ", " ++ n) fieldsWithTypes ++ "> -> " ++ go dd body
+            "<" ++ show tag ++ concatMap (\(n, _) -> ", " ++ nameToString n) fieldsWithTypes ++ "> -> " ++ go dd body
     go d (CBinOp op a b) =
         "((" ++ prettyBinOp op ++ " " ++ go d a ++ ") " ++ go d b ++ ")"
     go d (CCmpOp op a b) =
@@ -358,7 +359,7 @@ prettyTerm = go 0
     go d (CUnaryOp op a) =
         prettyUnaryOp op ++ go d a
     go _ (CClosure liftedName capturedVars _) =
-        "closure(" ++ liftedName ++ ", [" ++ intercalate ", " (map fst capturedVars) ++ "])"
+        "closure(" ++ nameToString liftedName ++ ", [" ++ intercalate ", " (map (nameToString . fst) capturedVars) ++ "])"
     go d (CClosureGetEnv closure idx _) =
         "closure_get_env(" ++ go d closure ++ ", " ++ show idx ++ ")"
     go d (CProject expr idx _) =
@@ -366,9 +367,9 @@ prettyTerm = go 0
     go _ (CPanic msg _) =
         "panic \"" ++ msg ++ "\""
     go d (CFork n _ comp body) =
-        "fork " ++ n ++ " = " ++ go d comp ++ " in " ++ go d body
+        "fork " ++ nameToString n ++ " = " ++ go d comp ++ " in " ++ go d body
     go _ (CJoin n _) =
-        "join " ++ n
+        "join " ++ nameToString n
 
 -- | Pretty print binary operators
 prettyBinOp :: BinOp -> String
@@ -414,7 +415,7 @@ prettyTermIndented = go
     go n (CLet name _ val body) =
         ind n
             ++ "let "
-            ++ name
+            ++ nameToString name
             ++ " =\n"
             ++ go (n + 1) val
             ++ "\n"
@@ -424,13 +425,13 @@ prettyTermIndented = go
     go n (CLam name _ body) =
         ind n
             ++ "λ"
-            ++ name
+            ++ nameToString name
             ++ ".\n"
             ++ go (n + 1) body
     go n (CDup name _ l val body) =
         ind n
             ++ "!"
-            ++ name
+            ++ nameToString name
             ++ " &"
             ++ show l
             ++ " =\n"
@@ -452,7 +453,7 @@ prettyTermIndented = go
         ind n
             ++ "<"
             ++ show tag
-            ++ concatMap (\(name, _) -> ", " ++ name) fieldsWithTypes
+            ++ concatMap (\(name, _) -> ", " ++ nameToString name) fieldsWithTypes
             ++ "> ->\n"
             ++ go (n + 1) body
             ++ "\n"
@@ -546,8 +547,8 @@ prettyCircuitGraph m =
 -- | Pretty print a function in graph format
 prettyFunctionGraph :: CFunction -> [String]
 prettyFunctionGraph f =
-    ["=== Function: " ++ cfName f ++ " ==="]
-        ++ ["Parameters: " ++ unwords (map fst (cfParams f))]
+    ["=== Function: " ++ nameToString (cfName f) ++ " ==="]
+        ++ ["Parameters: " ++ unwords (map (nameToString . fst) (cfParams f))]
         ++ [""]
         ++ prettyTermGraph (cfBody f)
 
@@ -677,26 +678,26 @@ prettyNode node =
 -- | Pretty print a node type
 prettyNodeType :: NodeType -> String
 prettyNodeType = \case
-    NLam n -> "LAM(" ++ n ++ ")"
+    NLam n -> "LAM(" ++ nameToString n ++ ")"
     NApp -> "APP"
     NDup l -> "DUP[" ++ show l ++ "]"
     NSup l -> "SUP[" ++ show l ++ "]"
     NEra -> "ERA"
     NErase -> "ERASE"
-    NVar n -> "VAR(" ++ n ++ ")"
-    NDp0 n -> "DP0(" ++ n ++ ")"
-    NDp1 n -> "DP1(" ++ n ++ ")"
-    NRef n -> "REF(@" ++ n ++ ")"
+    NVar n -> "VAR(" ++ nameToString n ++ ")"
+    NDp0 n -> "DP0(" ++ nameToString n ++ ")"
+    NDp1 n -> "DP1(" ++ nameToString n ++ ")"
+    NRef n -> "REF(@" ++ nameToString n ++ ")"
     NInt i -> "INT(" ++ show i ++ ")"
     NBool b -> "BOOL(" ++ show b ++ ")"
     NStr s -> "STR(" ++ show s ++ ")"
-    NLet n -> "LET(" ++ n ++ ")"
+    NLet n -> "LET(" ++ nameToString n ++ ")"
     NTag t -> "TAG[" ++ show t ++ "]"
     NCase n -> "CASE[" ++ show n ++ " arms]"
     NBinOp op -> "BINOP(" ++ prettyBinOp op ++ ")"
     NCmpOp op -> "CMPOP(" ++ prettyCmpOp op ++ ")"
     NUnaryOp op -> "UNOP(" ++ prettyUnaryOp op ++ ")"
-    NClosure liftedName captures -> "CLOSURE(" ++ liftedName ++ ", [" ++ intercalate ", " captures ++ "])"
+    NClosure liftedName captures -> "CLOSURE(" ++ nameToString liftedName ++ ", [" ++ intercalate ", " (map nameToString captures) ++ "])"
     NClosureGetEnv idx -> "CLOSURE_GET_ENV[" ++ show idx ++ "]"
     NProject idx -> "PROJECT[" ++ show idx ++ "]"
     NPanic msg -> "PANIC(\"" ++ msg ++ "\")"

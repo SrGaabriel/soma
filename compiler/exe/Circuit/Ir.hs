@@ -15,7 +15,39 @@ reduction through local graph rewriting. The key concepts are:
 The compilation pipeline is:
   Metal -> Circuit (non-affine) -> Linearize -> Circuit (affine) -> Alloy/Eval
 -}
-module Circuit.Ir where
+module Circuit.Ir (
+    Name,
+    Label,
+    CTerm (..),
+    BinOp (..),
+    CmpOp (..),
+    UnaryOp (..),
+    CFunction (..),
+    CFunctionMeta (..),
+    CTypeDef (..),
+    CConstructor (..),
+    CModule (..),
+    defaultFunctionMeta,
+    mkFunction,
+    emptyModule,
+    children,
+    mapChildren,
+    foldChildren,
+    mapChildrenM,
+    transformBottomUp,
+    transformTopDown,
+    universe,
+    getTermType,
+    countVarUses,
+    freeVars,
+    freeVarsWithTypes,
+    isLinear,
+    AllocKind (..),
+    classifyType,
+    classifyTypeWithEnv,
+    classifyTerm,
+    mergeAllocKind,
+) where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -23,16 +55,14 @@ import Data.Monoid (Sum (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import GHC.Generics (Generic)
-import Typing.Types (Kind (..), TyConstructor (..), Type (..))
+import Project.Name (Name (..))
+import Typing.Types (TyConstructor (..), TyUnique (..), TyPrimitive (..), Type (..), intType, boolType, strType, unitType)
 
 {- | A label distinguishes different superposition/duplication pairs.
 When a DUP with label L meets a SUP with label L, they annihilate.
 Different labels cause commutation (nested duplication).
 -}
 type Label = Int
-
--- | Variable names in the Circuit IR
-type Name = String
 
 {- | Circuit terms - the core expression language.
 
@@ -210,7 +240,7 @@ data CConstructor = CConstructor
 
 -- | A complete Circuit module
 data CModule = CModule
-    { cmName :: !Name
+    { cmName :: !String
     , cmFunctions :: ![CFunction]
     , cmTypes :: ![CTypeDef]
     , cmIsLinearized :: !Bool
@@ -240,7 +270,7 @@ mkFunction name params retTy body =
         }
 
 -- | Create an empty module
-emptyModule :: Name -> CModule
+emptyModule :: String -> CModule
 emptyModule name =
     CModule
         { cmName = name
@@ -429,18 +459,18 @@ getTermType = \case
     CErase _ body -> getTermType body
     CDp0 _ ty -> ty
     CDp1 _ ty -> ty
-    CEra -> TConstructor (TypeConstructor "Unit" KindStar)
+    CEra -> unitType
     CRef _ ty -> ty
-    CInt _ -> TConstructor (TypeConstructor "Int" KindStar)
-    CBool _ -> TConstructor (TypeConstructor "Bool" KindStar)
-    CStr _ -> TConstructor (TypeConstructor "Str" KindStar)
+    CInt _ -> intType
+    CBool _ -> boolType
+    CStr _ -> strType
     CTag _ _ ty -> ty
     CCase _ _ _ ty -> ty
-    CBinOp{} -> TConstructor (TypeConstructor "Int" KindStar)
-    CCmpOp{} -> TConstructor (TypeConstructor "Bool" KindStar)
+    CBinOp{} -> intType
+    CCmpOp{} -> boolType
     CUnaryOp op _ -> case op of
-        OpNot -> TConstructor (TypeConstructor "Bool" KindStar)
-        OpNeg -> TConstructor (TypeConstructor "Int" KindStar)
+        OpNot -> boolType
+        OpNeg -> intType
     CClosure _ _ ty -> ty
     CClosureGetEnv _ _ ty -> ty
     CProject _ _ ty -> ty
@@ -570,11 +600,9 @@ classifyType = classifyTypeWithEnv Map.empty
 classifyTypeWithEnv :: Map Name AllocKind -> Type -> AllocKind
 classifyTypeWithEnv env ty = case ty of
     -- Primitive types are always stack-allocated
-    TConstructor tc
-        | tcName tc `elem` ["Int", "Bool", "Byte", "Char", "Unit"] -> StackOnly
-        | otherwise ->
-            -- Check if we know about this type from the environment
-            Map.findWithDefault MaybeHeap (tcName tc) env
+    TConstructor tc -> case tcId tc of
+        TyPrim prim | prim `elem` [TPInt, TPBool, TPByte, TPUnit] -> StackOnly
+        _ -> MaybeHeap  -- User-defined types may be heap-allocated
     -- Function types are heap-allocated (closures)
     TArrow _ _ -> MaybeHeap
     -- Type variables are conservatively MaybeHeap (polymorphic)

@@ -15,7 +15,7 @@ import Lexing.Position (Located (..), Span (..))
 import Syntax.CST.GreenTree hiding (node, token)
 import Syntax.CST.RedTree hiding (tokens)
 import Syntax.CST.SyntaxKind
-import Syntax.Patterns (Literal (..), Pattern (..))
+import Syntax.Patterns (Literal (..), ParsedPattern, Pattern (..))
 import Syntax.Tree (ComposeStmt (..), Expr (..))
 import Typing.Types (Constraint (..), Kind (..), QualifiedType (..), TyConstructor (..), TyVar (..), Type (..), tupleType)
 
@@ -293,7 +293,7 @@ lowerType node = case ndKind (unGreenNode (snGreen node)) of
     SK_Node NK_TYPE_CONSTRUCTOR -> do
         tok <- firstToken node
         let name = T.unpack $ gtText (stGreen tok)
-        Just $ TConstructor (TypeConstructor name KindStar)
+        Just $ TUnresolved name
     SK_Node NK_TYPE_APP -> do
         let typeChildren = children node
         case typeChildren of
@@ -319,7 +319,7 @@ lowerType node = case ndKind (unGreenNode (snGreen node)) of
         case typeChildren of
             [elemType] -> do
                 elemTy <- lowerType elemType
-                Just $ TApp (TConstructor (TypeConstructor "[]" (KindArrow KindStar KindStar))) elemTy
+                Just $ TApp (TUnresolved "[]") elemTy
             _ -> Nothing
     SK_Node NK_TYPE_PARENS -> do
         inner <- firstChild node
@@ -459,7 +459,7 @@ lowerMatchArm node = do
 
     Just $ ExprPatternMatchArm patterns body (toSpan node)
 
-lowerPattern :: SyntaxNode -> Maybe Pattern
+lowerPattern :: SyntaxNode -> Maybe ParsedPattern
 lowerPattern node = case ndKind (unGreenNode (snGreen node)) of
     SK_Node NK_PATTERN_VAR -> do
         tok <- firstToken node

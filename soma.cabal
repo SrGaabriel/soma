@@ -43,8 +43,6 @@ library
     Metal.Module
     Metal.MonadNormalize
     Metal.MonadProfile
-    Metal.Naming
-    Metal.Unique
     Parsing.Ast
     Parsing.Atoms
     Parsing.Attributes
@@ -68,8 +66,10 @@ library
     Project.Extracts
     Project.Graph
     Project.Module
+    Project.Name
     Project.Parsing
     Project.Symbols
+    Project.Unique
     Syntax.CST.GreenTree
     Syntax.CST.Lower
     Syntax.CST.RedTree
@@ -125,9 +125,6 @@ executable somac
     Alloy.Build
     Alloy.CSE
     Alloy.Defunc
-    Alloy.DictUtils
-    Alloy.Dictionary
-    Alloy.DictionaryPass
     Alloy.ExpandIntrinsics
     Alloy.HoistAllocas
     Alloy.Inline
@@ -135,7 +132,6 @@ executable somac
     Alloy.Lower
     Alloy.MonadicInline
     Alloy.Monomorphize
-    Alloy.Naming
     Alloy.PromoteRefs
     Alloy.ReaderRewrite
     Alloy.Simplify
@@ -161,7 +157,6 @@ executable somac
     Llvm.Gen.Attributes
     Llvm.Gen.CRuntime
     Llvm.Gen.Core
-    Llvm.Gen.Dictionary
     Llvm.Gen.Entry
     Llvm.Gen.Externals
     Llvm.Gen.Function

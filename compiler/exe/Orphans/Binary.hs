@@ -5,7 +5,37 @@ module Orphans.Binary where
 import Alloy.Ir
 import Data.Binary (Binary)
 import Metal.Metadata (FunctionAttributes, MetallicTypeClassMetadata)
+import Project.Name (LocalId, LocalPrefix, Name, SyntheticId, SyntheticKind, Intrinsic, RuntimeFn, PrimOp, Projection, DictId, DictKind)
+import Project.Unique (Unique)
 import Typing.Types
+
+instance Binary Unique
+
+instance Binary LocalPrefix
+
+instance Binary LocalId
+
+instance Binary SyntheticKind
+
+instance Binary SyntheticId
+
+instance Binary RuntimeFn
+
+instance Binary PrimOp
+
+instance Binary Intrinsic
+
+instance Binary Projection
+
+instance Binary DictKind
+
+instance Binary DictId
+
+instance Binary Name
+
+instance Binary TyPrimitive
+
+instance Binary TyUnique
 
 instance Binary FlexInfo
 

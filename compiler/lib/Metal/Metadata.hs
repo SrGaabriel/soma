@@ -3,18 +3,19 @@
 module Metal.Metadata where
 
 import GHC.Generics (Generic)
+import Project.Name (Name)
 import Typing.Types (Constraint, QualifiedType, TyVar, Type)
 
 data MetallicConstructorMetadata = MetallicConstructorMetadata
-    { mcmTypeName :: String
+    { mcmTypeName :: Name
     , mcmTag :: Int
     , mcmFields :: [Type]
     }
     deriving (Show, Eq)
 
 data MetallicTypeClassMetadata = MetallicTypeClassMetadata
-    { mtcName :: String
-    , mtcMethods :: [(String, QualifiedType)]
+    { mtcName :: Name
+    , mtcMethods :: [(Name, QualifiedType)]
     }
     deriving (Generic, Show, Eq)
 
@@ -27,12 +28,13 @@ data FunctionAttributes = FunctionAttributes
     deriving (Generic, Show, Eq)
 
 defaultFunctionAttributes :: FunctionAttributes
-defaultFunctionAttributes = FunctionAttributes
-    { faInline = False
-    , faNoInline = False
-    , faDeprecated = Nothing
-    , faExtern = Nothing
-    }
+defaultFunctionAttributes =
+    FunctionAttributes
+        { faInline = False
+        , faNoInline = False
+        , faDeprecated = Nothing
+        , faExtern = Nothing
+        }
 
 data MetallicFunctionMetadata = MetallicFunctionMetadata
     { mfmTypeVars :: [TyVar]
@@ -44,13 +46,13 @@ data MetallicFunctionMetadata = MetallicFunctionMetadata
     deriving (Show, Eq)
 
 newtype ClosureFunctionInfo = ClosureFunctionInfo
-    { cfiCapturedVars :: [(String, Type)]
+    { cfiCapturedVars :: [(Name, Type)]
     }
     deriving (Show, Eq)
 
 data MetallicInstanceInfo = InstanceInfo
-    { iiClassName :: String
-    , iiInstanceType :: String
-    , iiMethodName :: String
+    { iiClassName :: Name
+    , iiInstanceType :: Name
+    , iiMethodName :: Name
     }
     deriving (Show, Eq)

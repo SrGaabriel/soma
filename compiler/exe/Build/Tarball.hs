@@ -10,7 +10,7 @@ module Build.Tarball (
 ) where
 
 import Alloy.Ir (AlloyModule (amName))
-import Build.Metadata (ProjectMetadata, SerializableConstructorMetadata, createProjectMetadata)
+import Build.Metadata (ProjectMetadata, SerializableConstructorMetadata, SerializableName, createProjectMetadata)
 import qualified Codec.Archive.Tar as Tar
 import qualified Codec.Archive.Tar.Entry as TarEntry
 import qualified Codec.Compression.GZip as GZip
@@ -59,7 +59,7 @@ createProjectTarball ::
     Map.Map Symbol QualifiedType ->
     [(QualifiedType, Bool)] ->
     Map.Map String [String] ->
-    Map.Map String SerializableConstructorMetadata ->
+    Map.Map SerializableName SerializableConstructorMetadata ->
     [(FilePath, BL.ByteString)] ->
     [(FilePath, BL.ByteString)] ->
     [AlloyModule] ->

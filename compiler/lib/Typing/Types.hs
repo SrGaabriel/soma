@@ -1,9 +1,68 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 
-module Typing.Types where
+module Typing.Types (
+    Kind (..),
 
+    TyVar (..),
+    SkolemVar (..),
+    Rigidity (..),
+    FlexInfo (..),
+
+    TyConstructor (..),
+    tyUniqueName,
+
+    TyUnique (..),
+    TyPrimitive (..),
+    primitiveName,
+    isPrimitive,
+    primitiveFromName,
+
+    Type (..),
+    Constraint (..),
+    QualifiedType (..),
+
+    intType,
+    strType,
+    boolType,
+    byteType,
+    closurePtrType,
+    unitType,
+    longType,
+    shortType,
+    floatType,
+    doubleType,
+
+    arrayType,
+    tupleType,
+    mkPrimTyCon,
+    mkUserTyCon,
+    mkConstraint,
+    constraintClassName,
+    constraintTypes,
+    constraintType,
+    cleanQualified,
+    cleanQualifiedCollectingTyvars,
+    assignConstraints,
+    sumQualifiedTypes,
+    substituteReturnType,
+    substituteReturnTypeQualified,
+    vectorize,
+    vectorizeAll,
+    vectorizeQualified,
+    vectorizeAllQualified,
+    extractTyVars,
+    isPolymorphic,
+    errType,
+    errQualifiedType,
+    getUnknownTypeConstructorName,
+    typesMatch,
+    isFunctionType,
+) where
+
+import Data.Hashable (Hashable (..))
 import GHC.Generics (Generic)
+import Project.Unique (Unique (..))
 
 data Kind
     = KindStar
@@ -17,10 +76,119 @@ data TyVar = TypeVar
     deriving (Generic, Show, Eq, Ord)
 
 data TyConstructor = TypeConstructor
-    { tcName :: String
+    { tcId :: !TyUnique
     , tcKind :: Kind
     }
     deriving (Generic, Show, Eq, Ord)
+
+tyUniqueName :: TyUnique -> String
+tyUniqueName (TyPrim p) = primitiveName p
+tyUniqueName (TyUserDefined u) = uniqueOriginal u
+
+data TyUnique
+    = TyPrim !TyPrimitive
+    | TyUserDefined !Unique
+    deriving (Show, Eq, Ord, Generic)
+
+instance Hashable TyUnique where
+    hashWithSalt salt (TyPrim p) = salt `hashWithSalt` (0 :: Int) `hashWithSalt` p
+    hashWithSalt salt (TyUserDefined u) = salt `hashWithSalt` (1 :: Int) `hashWithSalt` u
+
+data TyPrimitive
+    = TPInt
+    | TPLong
+    | TPShort
+    | TPByte
+    | TPFloat
+    | TPDouble
+    | TPBool
+    | TPString
+    | TPUnit
+    | TPArray
+    | TPTuple !Int
+    | TPClosurePtr
+    | TPPtr
+    | TPRef
+    | TPIO
+    deriving (Show, Eq, Ord, Generic)
+
+instance Hashable TyPrimitive where
+    hashWithSalt salt p = hashWithSalt salt (fromEnum p)
+
+instance Enum TyPrimitive where
+    fromEnum TPInt = 0
+    fromEnum TPLong = 1
+    fromEnum TPShort = 2
+    fromEnum TPByte = 3
+    fromEnum TPFloat = 4
+    fromEnum TPDouble = 5
+    fromEnum TPBool = 6
+    fromEnum TPString = 7
+    fromEnum TPUnit = 8
+    fromEnum TPArray = 9
+    fromEnum (TPTuple n) = 10 + n -- Tuples get 10+arity (todo: review)
+    fromEnum TPClosurePtr = 100
+    fromEnum TPPtr = 101
+    fromEnum TPRef = 102
+    fromEnum TPIO = 103
+
+    toEnum 0 = TPInt
+    toEnum 1 = TPLong
+    toEnum 2 = TPShort
+    toEnum 3 = TPByte
+    toEnum 4 = TPFloat
+    toEnum 5 = TPDouble
+    toEnum 6 = TPBool
+    toEnum 7 = TPString
+    toEnum 8 = TPUnit
+    toEnum 9 = TPArray
+    toEnum 100 = TPClosurePtr
+    toEnum 101 = TPPtr
+    toEnum 102 = TPRef
+    toEnum 103 = TPIO
+    toEnum n
+        | n >= 10 && n < 100 = TPTuple (n - 10)
+        | otherwise = error $ "Invalid TyPrimitive enum value: " ++ show n
+
+primitiveName :: TyPrimitive -> String
+primitiveName TPInt = "Int"
+primitiveName TPLong = "Long"
+primitiveName TPShort = "Short"
+primitiveName TPByte = "Byte"
+primitiveName TPFloat = "Float"
+primitiveName TPDouble = "Double"
+primitiveName TPBool = "Bool"
+primitiveName TPString = "String"
+primitiveName TPUnit = "Unit"
+primitiveName TPArray = "Array"
+primitiveName (TPTuple 0) = "Unit"
+primitiveName (TPTuple n) = "Tuple" ++ show n
+primitiveName TPClosurePtr = "ClosurePtr"
+primitiveName TPPtr = "Ptr"
+primitiveName TPRef = "Ref"
+primitiveName TPIO = "IO"
+
+isPrimitive :: TyUnique -> Bool
+isPrimitive (TyPrim _) = True
+isPrimitive (TyUserDefined _) = False
+
+primitiveFromName :: String -> Maybe TyPrimitive
+primitiveFromName "Int" = Just TPInt
+primitiveFromName "Long" = Just TPLong
+primitiveFromName "Short" = Just TPShort
+primitiveFromName "Byte" = Just TPByte
+primitiveFromName "Float" = Just TPFloat
+primitiveFromName "Double" = Just TPDouble
+primitiveFromName "Bool" = Just TPBool
+primitiveFromName "String" = Just TPString
+primitiveFromName "Unit" = Just TPUnit
+primitiveFromName "()" = Just TPUnit
+primitiveFromName "Array" = Just TPArray
+primitiveFromName "ClosurePtr" = Just TPClosurePtr
+primitiveFromName "Ptr" = Just TPPtr
+primitiveFromName "Ref" = Just TPRef
+primitiveFromName "IO" = Just TPIO
+primitiveFromName _ = Nothing
 
 data SkolemVar = SkolemVar
     { skId :: String
@@ -53,17 +221,17 @@ data Type
 
 newtype Constraint = Constraint Type deriving (Generic, Show, Eq, Ord)
 
-mkConstraint :: String -> [Type] -> Constraint
-mkConstraint className typs =
+mkConstraint :: TyUnique -> [Type] -> Constraint
+mkConstraint classId typs =
     let classKind = foldr (const $ KindArrow KindStar) KindStar typs
-        classCon = TConstructor (TypeConstructor className classKind)
+        classCon = TConstructor (TypeConstructor classId classKind)
         appliedType = foldl TApp classCon typs
     in Constraint appliedType
 
 constraintClassName :: Constraint -> String
 constraintClassName (Constraint typ) = getClassName typ
   where
-    getClassName (TConstructor tc) = tcName tc
+    getClassName (TConstructor tc) = tyUniqueName (tcId tc)
     getClassName (TApp t _) = getClassName t
     getClassName (TUnresolved name) = name
     getClassName _ = error "Invalid constraint type"
@@ -82,16 +250,26 @@ data QualifiedType = Forall [TyVar] [Constraint] Type
     deriving (Generic, Show, Eq, Ord)
 
 intType, strType, boolType, byteType, closurePtrType :: Type
-intType = TConstructor (TypeConstructor "Int" KindStar)
-strType = TConstructor (TypeConstructor "String" KindStar)
-boolType = TConstructor (TypeConstructor "Bool" KindStar)
-byteType = TConstructor (TypeConstructor "Byte" KindStar)
+intType = TConstructor (TypeConstructor (TyPrim TPInt) KindStar)
+strType = TConstructor (TypeConstructor (TyPrim TPString) KindStar)
+boolType = TConstructor (TypeConstructor (TyPrim TPBool) KindStar)
+byteType = TConstructor (TypeConstructor (TyPrim TPByte) KindStar)
+closurePtrType = TConstructor (TypeConstructor (TyPrim TPClosurePtr) KindStar)
 
-{- | Opaque pointer to a SomaClosure runtime structure
-Used for uniform closure calling convention where all lifted functions
-take closure_self as their first parameter
--}
-closurePtrType = TConstructor (TypeConstructor "ClosurePtr" KindStar)
+unitType :: Type
+unitType = TConstructor (TypeConstructor (TyPrim TPUnit) KindStar)
+
+longType :: Type
+longType = TConstructor (TypeConstructor (TyPrim TPLong) KindStar)
+
+shortType :: Type
+shortType = TConstructor (TypeConstructor (TyPrim TPShort) KindStar)
+
+floatType :: Type
+floatType = TConstructor (TypeConstructor (TyPrim TPFloat) KindStar)
+
+doubleType :: Type
+doubleType = TConstructor (TypeConstructor (TyPrim TPDouble) KindStar)
 
 cleanQualified :: Type -> QualifiedType
 cleanQualified = Forall [] []
@@ -102,11 +280,19 @@ cleanQualifiedCollectingTyvars t =
     in Forall tyVars [] t
 
 arrayType :: Type -> Type
-arrayType = TApp (TConstructor (TypeConstructor "Array" (KindArrow KindStar KindStar)))
+arrayType = TApp (TConstructor (TypeConstructor (TyPrim TPArray) (KindArrow KindStar KindStar)))
 
 tupleType :: [Type] -> Type
-tupleType [] = TConstructor (TypeConstructor "Unit" KindStar)
-tupleType types = foldr1 TApp (map (TApp (TConstructor (TypeConstructor "Tuple" KindStar))) types)
+tupleType [] = unitType
+tupleType types =
+    let n = length types
+    in foldr1 TApp (map (TApp (TConstructor (TypeConstructor (TyPrim (TPTuple n)) KindStar))) types)
+
+mkPrimTyCon :: TyPrimitive -> Kind -> TyConstructor
+mkPrimTyCon prim kind = TypeConstructor (TyPrim prim) kind
+
+mkUserTyCon :: Unique -> Kind -> TyConstructor
+mkUserTyCon u kind = TypeConstructor (TyUserDefined u) kind
 
 assignConstraints :: QualifiedType -> Type -> QualifiedType
 assignConstraints (Forall vars constraints _) =
@@ -185,7 +371,7 @@ errQualifiedType = Forall [] [] errType
 getUnknownTypeConstructorName :: QualifiedType -> Maybe String
 getUnknownTypeConstructorName (Forall _ _ t) = getConstructorName t
   where
-    getConstructorName (TConstructor tc) = Just $ tcName tc
+    getConstructorName (TConstructor tc) = Just $ tyUniqueName (tcId tc)
     getConstructorName (TUnresolved name) = Just name
     getConstructorName (TApp t' _) = getConstructorName t'
     getConstructorName _ = Nothing

@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
@@ -14,6 +15,7 @@ import Alloy.Build (
     emitLetTmp,
     endFunction,
     freshBlockName,
+    freshName,
     runAlloyBuilder,
     terminate,
  )
@@ -29,6 +31,7 @@ import Control.Applicative ((<|>))
 import Control.Monad (forM)
 import Control.Monad.State.Strict
 import qualified Data.Map.Strict as Map
+
 import Lexing.Position (dummySpan)
 import Metal.Expr (
     MCaseArm (..),
@@ -53,9 +56,12 @@ import Metal.MonadProfile (
     MonadProfiles,
     buildMonadProfiles,
  )
+import Project.Name (LocalId (..), LocalPrefix (..), Name (..), nameToString)
+import qualified Project.Name as PN
 import Syntax.Patterns (
     Literal (..),
     Pattern (..),
+    ResolvedPattern,
  )
 import Typing.Types (
     Type (..),
@@ -63,21 +69,22 @@ import Typing.Types (
     byteType,
     intType,
     strType,
+    unitType,
  )
 
 -- | Info about a closure binding
 data ClosureInfo = ClosureInfo
     { ciEnvSize :: !Int -- number of captured env values
-    , ciFuncName :: !String -- underlying lifted function name
+    , ciFuncName :: !PN.Name -- underlying lifted function name
     }
     deriving (Show, Eq)
 
 data LEnv = LEnv
-    { leVars :: Map.Map String AOperand
-    , leClosures :: Map.Map String ClosureInfo -- variable name -> closure info
-    , leClosureReturningFns :: Map.Map String ClosureReturnInfo -- function name -> closure return info
-    , leCtorTags :: Map.Map String Int
-    , leCtorFields :: Map.Map String [Type]
+    { leVars :: Map.Map PN.Name AOperand
+    , leClosures :: Map.Map PN.Name ClosureInfo -- variable name -> closure info
+    , leClosureReturningFns :: Map.Map PN.Name ClosureReturnInfo -- function name -> closure return info
+    , leCtorTags :: Map.Map PN.Name Int
+    , leCtorFields :: Map.Map PN.Name [Type]
     , leProfiles :: MonadProfiles
     }
 
@@ -96,12 +103,12 @@ lowerAlloyModule modName mm =
 -- | Info about what a function returns if it returns a closure
 data ClosureReturnInfo = ClosureReturnInfo
     { criEnvSize :: !Int -- env size of the returned closure
-    , criLiftedFn :: !String -- the lifted function the closure points to
+    , criLiftedFn :: !PN.Name -- the lifted function the closure points to
     }
     deriving (Show, Eq)
 
 -- | Build a map of function names to info about closures they return
-buildClosureReturningFnsMap :: [MetallicFunction] -> Map.Map String ClosureReturnInfo
+buildClosureReturningFnsMap :: [MetallicFunction] -> Map.Map PN.Name ClosureReturnInfo
 buildClosureReturningFnsMap fns =
     Map.fromList
         [ (mfName fn, info)
@@ -114,19 +121,19 @@ buildClosureReturningFnsMap fns =
         Just $ ClosureReturnInfo (length capturedVars) liftedName
     getClosureReturnInfo _ = Nothing
 
-lowerFunction :: Map.Map String Int -> Map.Map String [Type] -> MonadProfiles -> Map.Map String ClosureReturnInfo -> MetallicFunction -> AlloyBuilder ()
+lowerFunction :: Map.Map PN.Name Int -> Map.Map PN.Name [Type] -> MonadProfiles -> Map.Map PN.Name ClosureReturnInfo -> MetallicFunction -> AlloyBuilder ()
 lowerFunction ctorTags ctorFields profiles closureRetFns MetallicFunction{mfName, mfParams, mfReturnType, mfBody, mfMetadata} = do
     let constraints = mfmConstraints mfMetadata
     let attrs = mfmAttributes mfMetadata
     beginFunctionFull mfName mfParams mfReturnType constraints attrs
-    let entryName = "entry"
+    let entryName = NLocal (LocalId LPBlock 0)
     beginBlock entryName []
 
     -- For lifted lambdas with closure_self parameter, extract captured env vars
     envBindings <- case mfmClosureInfo mfMetadata of
         Just (ClosureFunctionInfo capturedVars) -> do
             -- closure_self is the first parameter
-            let closureSelfOp = OpVar "closure_self"
+            let closureSelfOp = OpVar (NLocal (LocalId LPParam 0))
             -- Extract each captured variable from the closure environment
             forM (zip [0 ..] capturedVars) $ \(idx, (varName, varTy)) -> do
                 extractedName <- emitLetTmp varTy (OpClosureGetEnv closureSelfOp idx)
@@ -202,8 +209,9 @@ lowerExpr (MClosure liftedName capturedVars ty _) = do
     countArityFromType _ = 0
 lowerExpr (MConstruct typeName tag fields ty _) = do
     ops <- mapM lowerExpr fields
-    tmp <- lift $ emitLetTmp ty (OpConstruct typeName tag ops)
+    tmp <- lift $ emitLetTmp ty (OpConstruct (nameToString typeName) tag ops)
     pure (OpVar tmp)
+-- todo: review how OpConstruct still uses String for type name (for LLVM codegen compatibility)
 lowerExpr (MCall callee args ty _) = do
     argOps <- mapM lowerExpr args
     env <- gets leVars
@@ -289,7 +297,7 @@ lowerExpr (MIf ifCond ifBlock elseBlock ty _) = do
     elseVal <- lowerExpr elseBlock
     lift $ terminate (ABr joinName [elseVal])
 
-    let resParam = "res"
+    resParam <- lift freshName
     lift $ beginBlock joinName [(resParam, ty)]
     pure (OpVar resParam)
 lowerExpr (MPanic msg _ty _) =
@@ -300,7 +308,7 @@ lowerLiteral (MInt i) = CInt i
 lowerLiteral (MBool b) = CBool b
 lowerLiteral (MString s) = CString s
 
-buildCtorFieldMap :: MetallicModule -> Map.Map String [Type]
+buildCtorFieldMap :: MetallicModule -> Map.Map PN.Name [Type]
 buildCtorFieldMap mm =
     Map.fromList
         [ (mcName c, mcFields c)
@@ -308,7 +316,7 @@ buildCtorFieldMap mm =
         , c <- ctors
         ]
 
-buildCtorTagMap :: MetallicModule -> Map.Map String Int
+buildCtorTagMap :: MetallicModule -> Map.Map PN.Name Int
 buildCtorTagMap mm =
     Map.fromList
         [ (mcName c, fromIntegral (mcTag c))
@@ -316,12 +324,12 @@ buildCtorTagMap mm =
         , c <- ctors
         ]
 
-getCtorTag :: String -> Lower Int
+getCtorTag :: PN.Name -> Lower Int
 getCtorTag ctor = do
     env <- get
     case Map.lookup ctor (leCtorTags env) of
         Just n -> pure n
-        Nothing -> failLower ("Unknown constructor tag for: " ++ ctor)
+        Nothing -> failLower ("Unknown constructor tag for: " ++ PN.nameToString ctor)
 
 lowerCase :: [AOperand] -> [TypedArm] -> Type -> Lower AOperand
 lowerCase scrOps arms resultTy = do
@@ -333,11 +341,11 @@ lowerCase scrOps arms resultTy = do
     lift $ terminate (ABr rootName [])
     lift $ beginBlock rootName []
     codegenDecisionTree scrOps arms tree joinName resultTy
-    let resParam = "res"
+    resParam <- lift freshName
     lift $ beginBlock joinName [(resParam, resultTy)]
     pure (OpVar resParam)
 
-codegenDecisionTree :: [AOperand] -> [TypedArm] -> DecisionTree -> BlockName -> Type -> Lower ()
+codegenDecisionTree :: [AOperand] -> [TypedArm] -> DecisionTree -> Name -> Type -> Lower ()
 codegenDecisionTree scrOps arms node joinName resultTy =
     case node of
         Fail -> lift $ terminate AUnreachable
@@ -357,7 +365,7 @@ lowerSwitch ::
     Accessor ->
     [(Constructor, DecisionTree)] ->
     Maybe DecisionTree ->
-    BlockName ->
+    Name ->
     Type ->
     Lower ()
 lowerSwitch scrOps arms accessor branches defCase joinName resultTy = do
@@ -481,7 +489,7 @@ evalAccessorWithType scrOps (ArrayElem acc i) (Just ty) = do
 evalAccessorWithType _ _ Nothing =
     failLower "Cannot project field without knowing its type"
 
-collectVarTypesFromBody :: TypedExpr -> Map.Map String Type
+collectVarTypesFromBody :: TypedExpr -> Map.Map PN.Name Type
 collectVarTypesFromBody = go Map.empty
   where
     go acc (MVar v ty _) = Map.insertWith (\_ old -> old) v ty acc
@@ -503,7 +511,7 @@ collectVarTypesFromBody = go Map.empty
     go acc (MClosure _ capturedVars _ _) =
         foldl (\a (n, ty) -> Map.insertWith (\_ old -> old) n ty a) acc capturedVars
 
-patternHasBinder :: Pattern -> Bool
+patternHasBinder :: ResolvedPattern -> Bool
 patternHasBinder (PVar{}) = True
 patternHasBinder (PAs _ p _) = patternHasBinder p
 patternHasBinder (PConstructor _ ps _) = any patternHasBinder ps
@@ -512,10 +520,10 @@ patternHasBinder (PArray ps _) = any patternHasBinder ps
 patternHasBinder _ = False
 
 bindPatterns ::
-    [Pattern] ->
+    [ResolvedPattern] ->
     [AOperand] ->
-    Map.Map String Type ->
-    Lower [(String, AOperand)]
+    Map.Map PN.Name Type ->
+    Lower [(PN.Name, AOperand)]
 bindPatterns [] [] _ = pure []
 bindPatterns (p : ps) (o : os) varTypes = do
     here <- bindOne p o varTypes
@@ -523,14 +531,15 @@ bindPatterns (p : ps) (o : os) varTypes = do
     pure (here ++ rest)
 bindPatterns _ _ _ = failLower "Arity mismatch in pattern binding"
 
-bindOne :: Pattern -> AOperand -> Map.Map String Type -> Lower [(String, AOperand)]
+bindOne :: ResolvedPattern -> AOperand -> Map.Map PN.Name Type -> Lower [(PN.Name, AOperand)]
 bindOne (PVar v _) op _ = pure [(v, op)]
 bindOne PWildcard{} _ _ = pure []
 bindOne (PLit{}) _ _ = pure []
 bindOne (PAs v p _) op vt = do
     more <- bindOne p op vt
     pure ((v, op) : more)
-bindOne (PConstructor ctorName sub _) op vt = bindPositional sub
+bindOne (PConstructor ctorName sub _) op vt = do
+    bindPositional sub
   where
     bindPositional [] = pure []
     bindPositional ps = do
@@ -549,8 +558,8 @@ bindOne (PConstructor ctorName sub _) op vt = bindPositional sub
                             Just fields ->
                                 case drop idx fields of
                                     (t : _) -> pure t
-                                    [] -> failLower ("Alloy.Lower: constructor " ++ ctorName ++ " has no field at index " ++ show idx)
-                            Nothing -> failLower ("Unable to infer field type for pattern binder for constructor " ++ ctorName)
+                                    [] -> failLower ("Alloy.Lower: constructor " ++ PN.nameToString ctorName ++ " has no field at index " ++ show idx)
+                            Nothing -> failLower ("Unable to infer field type for pattern binder for constructor " ++ PN.nameToString ctorName)
                 tmp <- lift $ emitLetTmp ty (OpProject op idx)
                 bindOne sp (OpVar tmp) vt
             else pure []
@@ -560,10 +569,17 @@ bindOne (PConstructor ctorName sub _) op vt = bindPositional sub
     collectVars (PTuple ps _) = concatMap collectVars ps
     collectVars (PArray ps _) = concatMap collectVars ps
     collectVars _ = []
-bindOne (PTuple sub s) op vt = bindOne (PConstructor "" sub s) op vt
+bindOne (PTuple sub s) op vt = do
+    forM (zip [0..] sub) $ \(idx, sp) -> do
+        if patternHasBinder sp
+            then do
+                tmp <- lift $ emitLetTmp unitType (OpProject op idx)  -- todo: proper type
+                bindOne sp (OpVar tmp) vt
+            else pure []
+    >>= pure . concat
 bindOne (PArray{}) _ _ = pure []
 
-withBinding :: String -> AOperand -> Lower a -> Lower a
+withBinding :: PN.Name -> AOperand -> Lower a -> Lower a
 withBinding name op action = do
     old <- get
     let newEnv = Map.insert name op (leVars old)
@@ -572,7 +588,7 @@ withBinding name op action = do
     modify (const old)
     pure res
 
-withClosureBinding :: String -> String -> Int -> AOperand -> Lower a -> Lower a
+withClosureBinding :: PN.Name -> PN.Name -> Int -> AOperand -> Lower a -> Lower a
 withClosureBinding name funcName envSize op action = do
     old <- get
     let newVars = Map.insert name op (leVars old)
@@ -582,7 +598,7 @@ withClosureBinding name funcName envSize op action = do
     modify (const old)
     pure res
 
-withBindings :: [(String, AOperand)] -> Lower a -> Lower a
+withBindings :: [(PN.Name, AOperand)] -> Lower a -> Lower a
 withBindings kvs action = do
     old <- get
     let newEnv = foldr (uncurry Map.insert) (leVars old) kvs

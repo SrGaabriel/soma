@@ -44,7 +44,8 @@ module Metal.Expr (
 ) where
 
 import Lexing.Position (Span)
-import Syntax.Patterns (Pattern)
+import Project.Name (Name)
+import Syntax.Patterns (ResolvedPattern)
 import Typing.Types (TyVar (..), Type (..), boolType, intType, strType)
 
 data Phase = Untyped | Inference | Typed
@@ -89,9 +90,9 @@ type family XLambda (p :: Phase) where
     XLambda Typed = Type
 
 type family XLambdaParams (p :: Phase) where
-    XLambdaParams Untyped = [String]
-    XLambdaParams Inference = [(String, TypeSlot)]
-    XLambdaParams Typed = [(String, Type)]
+    XLambdaParams Untyped = [Name]
+    XLambdaParams Inference = [(Name, TypeSlot)]
+    XLambdaParams Typed = [(Name, Type)]
 
 type family XClosure (p :: Phase) where
     XClosure Untyped = ()
@@ -99,9 +100,9 @@ type family XClosure (p :: Phase) where
     XClosure Typed = Type
 
 type family XClosureCaptures (p :: Phase) where
-    XClosureCaptures Untyped = [String]
-    XClosureCaptures Inference = [(String, TypeSlot)]
-    XClosureCaptures Typed = [(String, Type)]
+    XClosureCaptures Untyped = [Name]
+    XClosureCaptures Inference = [(Name, TypeSlot)]
+    XClosureCaptures Typed = [(Name, Type)]
 
 type family XConstruct (p :: Phase) where
     XConstruct Untyped = ()
@@ -139,14 +140,14 @@ type family XPanic (p :: Phase) where
     XPanic Typed = Type
 
 data MetallicExpr (p :: Phase)
-    = MVar String (XVar p) Span
+    = MVar Name (XVar p) Span
     | MLit MetallicLiteral Span
     | MCall (MetallicExpr p) [MetallicExpr p] (XCall p) Span
     | MTypeApp (MetallicExpr p) [Type] (XTypeApp p) Span
-    | MLet String (MetallicExpr p) (MetallicExpr p) (XLet p) Span
+    | MLet Name (MetallicExpr p) (MetallicExpr p) (XLet p) Span
     | MLambda (XLambdaParams p) (MetallicExpr p) (XLambda p) Span
-    | MClosure String (XClosureCaptures p) (XClosure p) Span
-    | MConstruct String Int [MetallicExpr p] (XConstruct p) Span
+    | MClosure Name (XClosureCaptures p) (XClosure p) Span
+    | MConstruct Name Int [MetallicExpr p] (XConstruct p) Span
     | MArrayLit [MetallicExpr p] (XArrayLit p) Span
     | MTuple [MetallicExpr p] (XTuple p) Span
     | MIf (MetallicExpr p) (MetallicExpr p) (MetallicExpr p) (XIf p) Span
@@ -193,7 +194,7 @@ deriving instance
     Eq (MetallicExpr p)
 
 data MCaseArm (p :: Phase) = MCaseArm
-    { mcaPatterns :: [Pattern]
+    { mcaPatterns :: [ResolvedPattern]
     , mcaBody :: MetallicExpr p
     }
 
@@ -208,7 +209,7 @@ data MetallicLiteral
     deriving (Show, Eq)
 
 data MetallicStatement
-    = MAssign String (MetallicExpr Typed)
+    = MAssign Name (MetallicExpr Typed)
     | MStore (MetallicExpr Typed) (MetallicExpr Typed)
 
 deriving instance Show MetallicStatement

@@ -6,9 +6,8 @@ module Llvm.Gen.Entry (
     runLlvmCodeGenAndTranscribe,
 ) where
 
-import Alloy.Ir (AlloyFunction (..), AlloyModule (AlloyModule, amDictionaries, amFunctions, amName))
-import Llvm.Gen.Core (IrGen, IrGenEnv (..), globalDefaultState, irDependencies, irFunctions, namedDefaultEnv, runIrGen)
-import Llvm.Gen.Dictionary (compileDictionaries)
+import Alloy.Ir (AlloyFunction (..), AlloyModule (AlloyModule, amFunctions, amName))
+import Llvm.Gen.Core (IrGen, globalDefaultState, irDependencies, irFunctions, namedDefaultEnv, runIrGen)
 import Llvm.Gen.Function (compileFunction)
 import Llvm.Ir (IR (toLlvm))
 import Llvm.Modules (LlvmModule (..))
@@ -23,24 +22,19 @@ compileLlvmModule AlloyModule{amFunctions} = do
     isConcreteFunction AlloyFunction{afConstraints = constraints} = null constraints
 
 runLlvmCodeGen :: AlloyModule -> LlvmModule
-runLlvmCodeGen alloyModule@AlloyModule{amName = name, amDictionaries = dicts, amFunctions = allFunctions} =
+runLlvmCodeGen alloyModule@AlloyModule{amName = name} =
     let
-        (_typeStructDecls, dictGlobals, dictLookupMap) = compileDictionaries name dicts allFunctions
-
-        env = (namedDefaultEnv name){dictMap = dictLookupMap}
+        env = namedDefaultEnv name
 
         ((_, _collectedStatements), finalStat) =
             runIrGen env globalDefaultState (compileLlvmModule alloyModule)
         fns = irFunctions finalStat
         deps = irDependencies finalStat
     in
-        LlvmModule name fns deps dictGlobals
+        LlvmModule name fns deps []
 
 runLlvmCodeGenAndTranscribe :: AlloyModule -> String
-runLlvmCodeGenAndTranscribe alloy@AlloyModule{amDictionaries = dicts, amFunctions = allFunctions} =
+runLlvmCodeGenAndTranscribe alloy =
     let moduleResult = runLlvmCodeGen alloy
         baseIR = toLlvm moduleResult
-
-        (typeStructDecls, _dictGlobals, _dictMap) = compileDictionaries (amName alloy) dicts allFunctions
-        structDeclarations = unlines typeStructDecls
-    in structDeclarations ++ "\n" ++ baseIR
+    in baseIR

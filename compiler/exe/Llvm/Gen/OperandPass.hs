@@ -6,12 +6,13 @@ import Alloy.Ir (
     ABlock (ABlock, abInstrs, abParams),
     AInstr (ILet),
     AlloyFunction (AlloyFunction, afBlocks, afParams),
+    Name,
  )
 import qualified Data.Map as Map
 import Llvm.Gen.TypeConversion (convertType)
 import Llvm.Types (LlvmType)
 
-type OperandTypeEnv = Map.Map String LlvmType
+type OperandTypeEnv = Map.Map Name LlvmType
 
 buildOperandTypeEnv :: AlloyFunction -> OperandTypeEnv
 buildOperandTypeEnv AlloyFunction{afParams, afBlocks} =

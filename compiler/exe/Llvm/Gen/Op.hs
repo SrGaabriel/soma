@@ -5,7 +5,6 @@ module Llvm.Gen.Op (
 ) where
 
 import Alloy.Ir
-import Alloy.Naming (makeDictStructTypeName, qualifyWithModule)
 import Control.Monad (foldM, foldM_, forM, forM_)
 import Control.Monad.Reader (asks)
 import Control.Monad.State (modify)
@@ -57,6 +56,7 @@ import Llvm.Modules (LlvmBlock (..), LlvmFunction (..))
 import Llvm.Types (LlvmFnAttr (..), LlvmType (..), deref)
 import qualified Llvm.Types as LT
 import Llvm.Values (LlvmValue (..), getValueType)
+import Project.Name (nameToLLVM, nameToString)
 import Utils.Lists (hardHead)
 
 -- ============================================================================
@@ -195,13 +195,12 @@ compileOp (OpProject agg ix) resultTy = do
             _ -> saveTmp (LlvmIdentityCast val) tgtTy
 compileOp (OpCall callable aArgs) opType = do
     case callable of
-        Direct fnName | isIntrinsic fnName -> do
-            compileIntrinsic fnName aArgs opType
+        Direct fnName | isIntrinsic (nameToString fnName) -> do
+            compileIntrinsic (nameToString fnName) aArgs opType
         _ -> do
-            modName <- asks moduleName
             args <- mapM compileOperand aArgs
             fn <- case callable of
-                Direct fnName -> pure $ LlvmGlobal opType ("\"" <> qualifyWithModule modName fnName <> "\"")
+                Direct fnName -> pure $ LlvmGlobal opType ("\"" <> nameToLLVM fnName <> "\"")
                 Indirect operand -> compileOperand operand
             isTail <- isTailCallContext
             if opType == LlvmVoid
@@ -320,12 +319,11 @@ compileOp (OpAllocHeap ty) resultTy = do
     saveTmp (LlvmAlloca llvmTy Nothing) resultTy
 compileOp (OpGetDict className ty) _resultTy = do
     dMap <- asks dictMap
-    modName <- asks moduleName
     case Map.lookup (className, ty) dMap of
         Just dictGlobalName -> do
-            let dictStructType = LT.LlvmNamed (makeDictStructTypeName modName className)
+            let dictStructType = LT.LlvmNamed (nameToLLVM className ++ "_dict")
             pure $ LlvmGlobal (LT.LlvmPointer dictStructType) dictGlobalName
-        Nothing -> error $ "Dictionary not found for class " ++ className ++ " and type " ++ show ty
+        Nothing -> error $ "Dictionary not found for class " ++ nameToString className ++ " and type " ++ show ty
 compileOp (OpDictCall dict methodIndex _methodName args) resultTy = do
     dictVal <- compileOperand dict
 
@@ -1034,7 +1032,6 @@ compileOp (OpGraphMod leftOp rightOp) _resultTy = do
 -- INET call: in graph mode, we need to reduce args and call the native function directly
 -- The function returns a Term (i64) that represents the graph result
 compileOp (OpGraphCall fnName argOps) _resultTy = do
-    modName <- asks moduleName
     llArgs <- mapM compileOperand argOps
     net <- getNet
     -- Reduce each graph argument to get native Int values
@@ -1044,8 +1041,7 @@ compileOp (OpGraphCall fnName argOps) _resultTy = do
         saveTmp (LlvmTrunc i64Val LlvmI32) LlvmI32
     -- Call the compiled function directly (it takes Int args and returns Term)
     -- Use qualified name to match the function's actual LLVM name
-    let qualifiedName = qualifyWithModule modName fnName
-        fnGlobal = LlvmGlobal LlvmI64 ("\"" ++ qualifiedName ++ "\"")
+    let fnGlobal = LlvmGlobal LlvmI64 ("\"" ++ nameToLLVM fnName ++ "\"")
     saveTmp (LlvmCall fnGlobal LlvmI64 reducedArgs) LlvmI64
 
 -- INET reduce: call inet_reduce(net, root) -> i64 result
@@ -1075,8 +1071,7 @@ compileOp (OpGraphExtractNum termOp) resultTy = do
 -- Note: This is only called from soma_main, so we use globals here
 compileOp (OpGraphRegisterFunc name arity implOp) _resultTy = do
     llImpl <- compileOperand implOp
-    -- Create string constant for function name
-    namePtr <- newStrTemplate name
+    namePtr <- newStrTemplate (nameToString name)
     net <- getNet
     registerFunc <- useDep cruntimeInetRegisterFunc
     let arityVal = LlvmLiteral LlvmI16 (show arity)

@@ -6,7 +6,6 @@ import Alloy.Ir (
     AConst (CBool, CInt, CString, CUnit),
     AOperand (..),
  )
-import Alloy.Naming (qualifyWithModule)
 import Control.Monad.Reader (asks)
 import Control.Monad.State (gets)
 import qualified Data.Map as Map
@@ -24,28 +23,29 @@ import Llvm.Values (
     boolLiteral,
     intLiteral,
  )
+import Project.Name (Name (..), nameToString, nameToLLVM)
 
 compileOperand :: AOperand -> IrGen LlvmValue
 compileOperand (OpVar name) = do
     tEnv <- asks opTypeEnv
     case Map.lookup name tEnv of
         Just opTy -> do
-            let reg = LlvmRegister opTy name
+            let reg = LlvmRegister opTy (nameToString name)
             applySubstitutions reg
         Nothing -> do
             st <- gets valueSubst
-            case Map.lookup name st of
+            case Map.lookup (nameToString name) st of
                 Just val -> pure val
                 Nothing ->
-                    let tag = getConstructorTag name (-1)
+                    let nameStr = nameToString name
+                        tag = getConstructorTag nameStr (-1)
                     in if tag /= -1
                         then
                             let structTy = LlvmAnonymous [LlvmI8, LlvmI64]
                                 valStr = "{ i8 " ++ show tag ++ ", i64 0 }"
                             in pure $ LlvmLiteral structTy valStr
                         else do
-                            modName <- asks moduleName
-                            let finalName = if name == "main" then name else qualifyWithModule modName name
+                            let finalName = if nameStr == "main" then "soma_main" else nameToLLVM name
                             let quotedName = "\"" ++ finalName ++ "\""
                             -- todo: have a proper type here
                             pure $ LlvmGlobal (LlvmPointer LlvmI8) quotedName

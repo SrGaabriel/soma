@@ -28,15 +28,15 @@ module Alloy.ReaderRewrite (
 ) where
 
 import Alloy.Ir
-import Alloy.Naming (nameEnvParam)
 import Alloy.Subst (Subst, substEffect, substOp, substTerminator)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Typing.Types (TyConstructor (..), Type (..))
+import qualified Project.Name as PN
+import Typing.Types (TyConstructor (..), Type (..), tyUniqueName)
 
 data ReaderConfig = ReaderConfig
     { readerTypeNames :: [String]
-    , readerAskNames :: [Name]
+    , readerAskPatterns :: [String]
     , envParamName :: Name
     }
     deriving (Show, Eq)
@@ -45,8 +45,8 @@ defaultReaderConfig :: ReaderConfig
 defaultReaderConfig =
     ReaderConfig
         { readerTypeNames = ["Reader"]
-        , readerAskNames = ["Reader.ask", "Reader$ask"]
-        , envParamName = nameEnvParam
+        , readerAskPatterns = ["Reader.ask", "Reader$ask"]
+        , envParamName = PN.NLocal (PN.LocalId PN.LPParam 0)  -- Use first param slot for env
         }
 
 readerRewriteModule :: AlloyModule -> AlloyModule
@@ -90,8 +90,8 @@ allSitesHaveEnv = all (\(_, _, _) -> True) -- by construction, list contains onl
 readerReturn :: ReaderConfig -> Type -> Maybe (Type, Type)
 readerReturn ReaderConfig{readerTypeNames} ty =
     case ty of
-        TApp (TApp (TConstructor (TypeConstructor nm _)) envTy) aTy
-            | nm `elem` readerTypeNames -> Just (envTy, aTy)
+        TApp (TApp (TConstructor (TypeConstructor tyId _)) envTy) aTy
+            | tyUniqueName tyId `elem` readerTypeNames -> Just (envTy, aTy)
         _ -> Nothing
 
 findCallsitesWithEnv ::
@@ -122,7 +122,7 @@ scanBlock cfg callee caller (cid0, acc0) ABlock{abInstrs} =
     let step (cid, acc, mEnv) instr =
             case instr of
                 ILet _ _ (OpCall (Direct ask) [arg])
-                    | ask `elem` readerAskNames cfg ->
+                    | PN.nameMatchesStdlib (readerAskPatterns cfg) ask ->
                         (cid, acc, Just arg)
                 ILet _ _ (OpCall (Direct target) _)
                     | target == callee ->
@@ -171,11 +171,11 @@ rewriteInstr ::
     ([AInstr], Subst) ->
     AInstr ->
     ([AInstr], Subst)
-rewriteInstr ReaderConfig{readerAskNames} envParamNm (acc, env) instr =
+rewriteInstr ReaderConfig{readerAskPatterns} envParamNm (acc, env) instr =
     case instr of
         -- Eliminate Reader.ask, substitute result with the new env parameter
         ILet n _ (OpCall (Direct ask) [_arg])
-            | ask `elem` readerAskNames ->
+            | PN.nameMatchesStdlib readerAskPatterns ask ->
                 let envOp = OpVar envParamNm
                 in (acc, Map.insert n envOp env)
         ILet n t op ->

@@ -26,7 +26,7 @@ data Uniqueness
 data LocalUniq = LocalUniq
     { luParams :: Map Name Uniqueness
     , luLocals :: Map Name Uniqueness
-    , luBlockParams :: Map BlockName (Map Name Uniqueness)
+    , luBlockParams :: Map Name (Map Name Uniqueness)
     }
     deriving (Eq, Show)
 
@@ -99,7 +99,7 @@ collectInBlock ABlock{abInstrs, abTerminator, abName} =
         usesT = collectInTerminator abName abTerminator
     in (allocsI, mergeUseMaps usesI usesT)
 
-collectInInstrs :: BlockName -> [AInstr] -> (Set.Set Name, Map Name [UseKind])
+collectInInstrs :: Name -> [AInstr] -> (Set.Set Name, Map Name [UseKind])
 collectInInstrs blk instrs =
     let folder (allocsAcc, usesAcc, idx) instr =
             case instr of
@@ -117,7 +117,7 @@ collectInInstrs blk instrs =
         (allocs, uses, _) = foldl' folder (Set.empty, Map.empty, 0 :: Int) instrs
     in (allocs, uses)
 
-collectInTerminator :: BlockName -> ATerminator -> Map Name [UseKind]
+collectInTerminator :: Name -> ATerminator -> Map Name [UseKind]
 collectInTerminator blk t =
     case t of
         ABr _ args ->
@@ -132,7 +132,7 @@ collectInTerminator blk t =
                 _ -> Map.empty
         AUnreachable -> Map.empty
 
-usesFromOp :: BlockName -> Int -> AOp -> Map Name [UseKind]
+usesFromOp :: Name -> Int -> AOp -> Map Name [UseKind]
 usesFromOp blk idx op =
     case op of
         OpBin _ a b ->
@@ -222,7 +222,7 @@ usesFromOp blk idx op =
                 <> mergeAll [singleUseIfVar a (UseCallArg blk idx (j + 1)) | (j, a) <- zip [0 ..] args]
         OpJoin handle -> singleUseIfVar handle (UseCallArg blk idx 0)
 
-usesFromEffect :: BlockName -> Int -> AEffect -> Map Name [UseKind]
+usesFromEffect :: Name -> Int -> AEffect -> Map Name [UseKind]
 usesFromEffect blk idx eff =
     case eff of
         EffStore p v ->
@@ -241,23 +241,23 @@ usesFromEffect blk idx eff =
         EffGraphRegisterFunc _ _ impl -> singleUseIfVar impl (UseCallArg blk idx 0)
 
 data UseKind
-    = UseCallArg BlockName Int Int
-    | UseCallIndirect BlockName Int
-    | UseReturn BlockName
-    | UseStoreVal BlockName Int
-    | UseAggValue BlockName Int
-    | UseStorePtr BlockName Int
-    | UseLoadPtr BlockName Int
-    | UseAggRead BlockName Int
-    | UseIndexBase BlockName Int
-    | UseIndexIdx BlockName Int
-    | UseBinArg BlockName Int
-    | UseUnaryArg BlockName Int
-    | UseCmpArg BlockName Int
-    | UseBrArg BlockName
-    | UseCond BlockName
-    | UseSwitchVal BlockName
-    | UseDrop BlockName Int
+    = UseCallArg Name Int Int
+    | UseCallIndirect Name Int
+    | UseReturn Name
+    | UseStoreVal Name Int
+    | UseAggValue Name Int
+    | UseStorePtr Name Int
+    | UseLoadPtr Name Int
+    | UseAggRead Name Int
+    | UseIndexBase Name Int
+    | UseIndexIdx Name Int
+    | UseBinArg Name Int
+    | UseUnaryArg Name Int
+    | UseCmpArg Name Int
+    | UseBrArg Name
+    | UseCond Name
+    | UseSwitchVal Name
+    | UseDrop Name Int
     deriving (Eq, Ord, Show)
 
 singleUseIfVar :: AOperand -> UseKind -> Map Name [UseKind]

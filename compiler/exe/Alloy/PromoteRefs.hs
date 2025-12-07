@@ -41,7 +41,7 @@ module Alloy.PromoteRefs (
 ) where
 
 import Alloy.Ir
-import Alloy.Naming (makeRefParamName)
+
 import Alloy.Subst
 import Alloy.Uniqueness (FunctionReport (..), LocalUniq (..), Uniqueness (..), analyzeFunction)
 import Data.List (findIndex, sort)
@@ -49,6 +49,8 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as Set
+import Project.Name (nameToString)
+import qualified Project.Name as PN
 import Typing.Types (Type (..))
 import Utils.Lists (hardHead)
 
@@ -77,7 +79,7 @@ promoteMany refs fn@AlloyFunction{afEntry, afBlocks} =
         promotedOrder = sort [(n, ety) | (n, _rty, ety) <- refs]
         promotedSet = Set.fromList (map fst promotedOrder)
 
-        needsMap :: Map Name (Set.Set BlockName)
+        needsMap :: Map Name (Set.Set Name)
         needsMap =
             Map.fromList
                 [ (r, Set.fromList [abName b | b <- afBlocks, abName b /= afEntry, loadBeforeStore r (abInstrs b)])
@@ -150,9 +152,9 @@ stepInstr promoted (acc, curr, subst) instr =
             in (IEffect eff' : acc, curr, subst)
 
 augmentTerm ::
-    BlockName ->
+    Name ->
     [(Name, Type)] ->
-    Map Name (Set.Set BlockName) ->
+    Map Name (Set.Set Name) ->
     Map Name AOperand ->
     ATerminator ->
     ATerminator
@@ -171,9 +173,9 @@ augmentTerm entry promoted needs curr term =
         ARet mv -> ARet mv
         AUnreachable -> AUnreachable
   where
-    packFor :: BlockName -> [AOperand]
+    packFor :: Name -> [AOperand]
     packFor succB =
-        [ fromMaybe (error ("PromoteRefs: missing current value for " ++ r)) v
+        [ fromMaybe (error ("PromoteRefs: missing current value for " ++ nameToString r)) v
         | (r, _) <- promoted
         , let needSet = Map.findWithDefault Set.empty r needs
         , Set.member succB needSet
@@ -324,17 +326,17 @@ dominatedOnAllEdges r AlloyFunction{afEntry, afBlocks} =
     let blocks = afBlocks
         succs = succMap blocks
 
-        hasStore :: Map BlockName Bool
+        hasStore :: Map Name Bool
         hasStore = Map.fromList [(abName b, blockHasStore r b) | b <- blocks]
 
-        initIn :: Map BlockName Bool
+        initIn :: Map Name Bool
         initIn =
             Map.fromList
                 [ (abName b, abName b /= afEntry)
                 | b <- blocks
                 ]
 
-        iterateFix :: Map BlockName Bool -> Map BlockName Bool
+        iterateFix :: Map Name Bool -> Map Name Bool
         iterateFix inMap =
             let outMap = Map.mapWithKey (\bn iv -> iv || Map.findWithDefault False bn hasStore) inMap
                 inMap' =
@@ -347,7 +349,7 @@ dominatedOnAllEdges r AlloyFunction{afEntry, afBlocks} =
                         (Map.toList succs)
             in inMap'
 
-        fix :: Int -> Map BlockName Bool -> Map BlockName Bool
+        fix :: Int -> Map Name Bool -> Map Name Bool
         fix 0 m = m
         fix k m =
             let m' = iterateFix m
@@ -366,7 +368,7 @@ blockHasStore r ABlock{abInstrs} =
     isStore (IEffect (EffStore (OpVar p) _)) | p == r = True
     isStore _ = False
 
-succMap :: [ABlock] -> Map BlockName [BlockName]
+succMap :: [ABlock] -> Map Name [Name]
 succMap blks =
     Map.fromList
         [ (abName b, succs (abTerminator b))
@@ -383,8 +385,8 @@ succMap blks =
             ARet _ -> []
             AUnreachable -> []
 
-paramName :: Name -> BlockName -> Name
-paramName = makeRefParamName
+paramName :: Name -> Name -> Name
+paramName refN blockN = PN.makeRefParam refN blockN
 
 trivialRefPeephole :: AlloyFunction -> AlloyFunction
 trivialRefPeephole fn@AlloyFunction{afParams, afBlocks} =

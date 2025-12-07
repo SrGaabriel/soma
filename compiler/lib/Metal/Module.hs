@@ -2,6 +2,7 @@ module Metal.Module where
 
 import Metal.Function
 import Metal.Metadata (MetallicTypeClassMetadata)
+import Project.Name (Name)
 import Typing.Types
 
 data MetallicModule = MetallicModule
@@ -16,17 +17,17 @@ data MetallicModule = MetallicModule
 
 data MetallicTypeDef
     = MAlgebraicType
-        { mtName :: String
+        { mtName :: Name
         , mtConstructors :: [MetallicConstructor]
         }
     | MRecordType
-        { mrName :: String
-        , mrFields :: [(String, Type)]
+        { mrName :: Name
+        , mrFields :: [(Name, Type)]
         }
     deriving (Show, Eq)
 
 data MetallicConstructor = MetallicConstructor
-    { mcName :: String
+    { mcName :: Name
     , mcTag :: Int
     , mcFields :: [Type]
     }

@@ -39,6 +39,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Project.Name (mkProj0, mkProj1, nameToString)
 import Typing.Types (Type (..))
 
 data ValidationError
@@ -139,7 +140,7 @@ validateModule CModule{..} = execWriter $ do
         ctx = emptyCtx{vcFunctions = allFuncs, vcLinear = cmIsLinearized}
 
     forM_ cmFunctions $ \func -> do
-        let funcCtx = withPath (cfName func) ctx
+        let funcCtx = withPath (nameToString $ cfName func) ctx
         validateFunctionM funcCtx func
 
 validateFunction :: Bool -> CFunction -> ValidationResult
@@ -147,7 +148,7 @@ validateFunction checkLinearInvariants func = execWriter $ do
     let ctx =
             emptyCtx
                 { vcLinear = checkLinearInvariants
-                , vcPath = cfName func
+                , vcPath = nameToString $ cfName func
                 }
     validateFunctionM ctx func
 
@@ -206,8 +207,8 @@ validateTermM ctx term = case term of
         let ctx' =
                 registerDup name label
                     $ extendScope name
-                    $ extendScope (name ++ ".0")
-                    $ extendScope (name ++ ".1") ctx
+                    $ extendScope (mkProj0 name)
+                    $ extendScope (mkProj1 name) ctx
 
         validateTermM ctx' body
 
@@ -221,17 +222,17 @@ validateTermM ctx term = case term of
                 $ UnusedVariable name (vcPath ctx ++ ": DUP neither projection used")
             when (uses0 > 1)
                 $ report
-                $ NonLinearUse (name ++ ".0") uses0 (vcPath ctx)
+                $ NonLinearUse (mkProj0 name) uses0 (vcPath ctx)
             when (uses1 > 1)
                 $ report
-                $ NonLinearUse (name ++ ".1") uses1 (vcPath ctx)
+                $ NonLinearUse (mkProj1 name) uses1 (vcPath ctx)
     CDp0 name _ -> do
-        let projName = name ++ ".0"
+        let projName = mkProj0 name
         unless (Set.member projName (vcScope ctx))
             $ report
             $ OrphanProjection projName (vcPath ctx ++ ": no matching DUP")
     CDp1 name _ -> do
-        let projName = name ++ ".1"
+        let projName = mkProj1 name
         unless (Set.member projName (vcScope ctx))
             $ report
             $ OrphanProjection projName (vcPath ctx ++ ": no matching DUP")
@@ -343,12 +344,12 @@ checkDupSupPairing = go Map.empty
         CDp0 name _ -> do
             case Map.lookup name labels of
                 Nothing ->
-                    report $ OrphanProjection (name ++ ".0") "projection without DUP"
+                    report $ OrphanProjection (mkProj0 name) "projection without DUP"
                 Just _ -> pure ()
         CDp1 name _ -> do
             case Map.lookup name labels of
                 Nothing ->
-                    report $ OrphanProjection (name ++ ".1") "projection without DUP"
+                    report $ OrphanProjection (mkProj1 name) "projection without DUP"
                 Just _ -> pure ()
         _ -> forM_ (children term) $ \child -> tell $ go labels child
 

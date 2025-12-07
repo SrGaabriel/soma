@@ -13,12 +13,14 @@ import Metal.Expr
 import Metal.Function
 import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (MetallicFunctionMetadata), defaultFunctionAttributes)
 import Metal.Module
-import Syntax.Patterns (Pattern (..))
+import Project.Name (Name (..), LocalId (..), LocalPrefix (..), nameToString)
+import Project.Unique (Unique (..))
+import Syntax.Patterns (ResolvedPattern, Pattern (..))
 import Typing.Types
 
 data ClosureInfo = ClosureInfo
-    { ciLiftedName :: String
-    , ciCapturedVars :: [(String, Type)]
+    { ciLiftedName :: Name
+    , ciCapturedVars :: [(Name, Type)]
     }
     deriving (Show, Eq)
 
@@ -27,12 +29,12 @@ type LiftM = State LiftState
 data LiftState = LiftState
     { lsNextLambdaId :: Int
     , lsLiftedFunctions :: [MetallicFunction]
-    , lsGlobalNames :: Set.Set String
-    , lsClosures :: Map.Map String ClosureInfo
+    , lsGlobalNames :: Set.Set Name
+    , lsClosures :: Map.Map Name ClosureInfo
     , lsModuleName :: String
     }
 
-emptyLiftState :: String -> Set.Set String -> LiftState
+emptyLiftState :: String -> Set.Set Name -> LiftState
 emptyLiftState modName globals =
     LiftState
         { lsNextLambdaId = 0
@@ -42,7 +44,7 @@ emptyLiftState modName globals =
         , lsModuleName = modName
         }
 
-liftLambdas :: Set.Set String -> MetallicModule -> MetallicModule
+liftLambdas :: Set.Set Name -> MetallicModule -> MetallicModule
 liftLambdas extraGlobals m@MetallicModule{mmName, mmFunctions, mmInstances} =
     let
         instanceMethodNames = [mfName mf | inst <- mmInstances, mf <- miMethods inst]
@@ -65,14 +67,14 @@ liftFunctionLambdas fn@MetallicFunction{mfParams, mfBody} = do
     body' <- liftExprLambdas paramNames Set.empty unwrappedBody
     pure fn{mfBody = body'}
 
-unwrapRedundantLambda :: [(String, Type)] -> TypedExpr -> TypedExpr
+unwrapRedundantLambda :: [(Name, Type)] -> TypedExpr -> TypedExpr
 unwrapRedundantLambda funcParams (MLambda lambdaParams innerBody _ _)
     | length funcParams == length lambdaParams =
         let substitution = Map.fromList $ zip (map fst lambdaParams) (map fst funcParams)
         in substituteVars substitution innerBody
 unwrapRedundantLambda _ body = body
 
-substituteVars :: Map.Map String String -> TypedExpr -> TypedExpr
+substituteVars :: Map.Map Name Name -> TypedExpr -> TypedExpr
 substituteVars subst expr = case expr of
     MVar name ty s ->
         case Map.lookup name subst of
@@ -116,7 +118,7 @@ substituteVars subst expr = case expr of
             subst'' = foldr Map.delete subst' boundNames
         in arm{mcaBody = substituteVars subst'' mcaBody}
 
-liftExprLambdas :: Set.Set String -> Set.Set String -> TypedExpr -> LiftM TypedExpr
+liftExprLambdas :: Set.Set Name -> Set.Set Name -> TypedExpr -> LiftM TypedExpr
 liftExprLambdas _ _ e@(MVar{}) = pure e
 liftExprLambdas _ _ e@(MLit _ _) = pure e
 liftExprLambdas available bound (MCall callee args ty s) = do
@@ -158,7 +160,7 @@ liftExprLambdas available bound (MCall callee args ty s) = do
                 originalParams = zip (map fst params) paramTypes
                 -- Uniform calling convention: closure_self is first param
                 -- Captured vars are extracted from closure_self by the lowering phase
-                liftedParams = ("closure_self", closurePtrType) : originalParams
+                liftedParams = (closureSelfName, closurePtrType) : originalParams
                 liftedFn =
                     MetallicFunction
                         { mfName = liftedName
@@ -209,7 +211,7 @@ liftExprLambdas available bound (MLet name val body ty s) = case val of
 
         let (paramTypes, retType) = splitFunctionType (length params) lambdaTy
             originalParams = zip (map fst params) paramTypes
-            liftedParams = ("closure_self", closurePtrType) : originalParams
+            liftedParams = (closureSelfName, closurePtrType) : originalParams
             liftedFn =
                 MetallicFunction
                     { mfName = liftedName
@@ -251,7 +253,7 @@ liftExprLambdas available bound (MLambda params body ty s) = do
 
     let (paramTypes, retType) = splitFunctionType (length params) ty
         originalParams = zip (map fst params) paramTypes
-        liftedParams = ("closure_self", closurePtrType) : originalParams
+        liftedParams = (closureSelfName, closurePtrType) : originalParams
         liftedFn =
             MetallicFunction
                 { mfName = liftedName
@@ -279,7 +281,7 @@ liftExprLambdas available bound (MCase scrutinees arms mdef ty s) =
         <*> pure ty
         <*> pure s
   where
-    liftArm :: Set.Set String -> Set.Set String -> TypedArm -> LiftM TypedArm
+    liftArm :: Set.Set Name -> Set.Set Name -> TypedArm -> LiftM TypedArm
     liftArm avail boundVars MCaseArm{mcaPatterns, mcaBody} =
         let binders = concatMap collectBinders mcaPatterns
             boundInArm = Set.union boundVars (Set.fromList binders)
@@ -304,19 +306,26 @@ freshLambdaId = do
     put st{lsNextLambdaId = i + 1}
     pure i
 
-freshLambdaName :: LiftM String
+freshLambdaName :: LiftM Name
 freshLambdaName = do
     st <- get
     lambdaId <- freshLambdaId
     let modName = lsModuleName st
-    pure $ modName ++ ".lambda$" ++ show lambdaId
+    let unique = Unique lambdaId modName ("lambda$" ++ show lambdaId)
+    pure $ NUser unique
 
-freshTmpName :: LiftM String
+freshTmpName :: LiftM Name
 freshTmpName = do
     st <- get
     lambdaId <- freshLambdaId
     let modName = lsModuleName st
-    pure $ modName ++ ".closure_tmp$" ++ show lambdaId
+    let unique = Unique lambdaId modName ("closure_tmp$" ++ show lambdaId)
+    pure $ NUser unique
+
+-- | Create a Name for closure_self parameter
+-- Uses index 0 since there's only ever one closure_self per lifted function
+closureSelfName :: Name
+closureSelfName = NLocal (LocalId LPClosureSelf 0)
 
 addLiftedFunction :: MetallicFunction -> LiftM ()
 addLiftedFunction fn = modify $ \st ->
@@ -325,7 +334,7 @@ addLiftedFunction fn = modify $ \st ->
         , lsGlobalNames = Set.insert (mfName fn) (lsGlobalNames st)
         }
 
-computeFreeVarsWithTypes :: TypedExpr -> Map.Map String Type
+computeFreeVarsWithTypes :: TypedExpr -> Map.Map Name Type
 computeFreeVarsWithTypes (MVar v t _) = Map.singleton v t
 computeFreeVarsWithTypes (MLit _ _) = Map.empty
 computeFreeVarsWithTypes (MCall callee args _ _) =
@@ -354,11 +363,11 @@ computeFreeVarsWithTypes (MPanic{}) = Map.empty
 computeFreeVarsWithTypes (MClosure _ capturedVars _ _) =
     Map.fromList capturedVars
 
-collectBinders :: Pattern -> [String]
-collectBinders (PVar v _) = [v]
+collectBinders :: ResolvedPattern -> [Name]
+collectBinders (PVar name _) = [name]
 collectBinders PWildcard{} = []
 collectBinders PLit{} = []
-collectBinders (PAs v p _) = v : collectBinders p
+collectBinders (PAs name p _) = name : collectBinders p
 collectBinders (PConstructor _ ps _) = concatMap collectBinders ps
 collectBinders (PTuple ps _) = concatMap collectBinders ps
 collectBinders (PArray ps _) = concatMap collectBinders ps

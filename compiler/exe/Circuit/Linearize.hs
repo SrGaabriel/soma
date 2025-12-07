@@ -31,6 +31,7 @@ import Control.Monad.State
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import Project.Name (Name (..), LocalId (..), LocalPrefix (..), mkProj0, mkProj1)
 import Typing.Types (Type)
 
 -- | State for linearization
@@ -64,10 +65,16 @@ freshLabel = do
 
 -- | Generate a fresh variable name
 freshName :: String -> LinearM Name
-freshName prefix = do
+freshName _prefix = do
     s <- get
     put s{lsNextName = lsNextName s + 1}
-    pure (prefix ++ "_" ++ show (lsNextName s))
+    pure $ NLocal (LocalId LPTemp (lsNextName s))
+
+freshErasureName :: LinearM Name
+freshErasureName = do
+    s <- get
+    put s{lsNextName = lsNextName s + 1}
+    pure $ NLocal (LocalId LPErasure (lsNextName s))
 
 -- | Look up a variable's type
 lookupType :: Name -> LinearM (Maybe Type)
@@ -208,9 +215,9 @@ linearizeFieldBindings fieldsWithTypes body = do
         let uses = countVarUses n accBody
         case uses of
             0 -> do
-                -- Unused field: rename to era_*
-                tmpName <- freshName "era"
-                pure ((tmpName, ty) : accFields, accBody)
+                -- Unused field: mark as erasure
+                erasureName <- freshErasureName
+                pure ((erasureName, ty) : accFields, accBody)
             1 ->
                 -- Single use: keep as is
                 pure ((n, ty) : accFields, accBody)
@@ -358,8 +365,8 @@ substituteAllOccurrences target substMap _ty term =
                     mRepl <- getNextReplacement
                     let newName = case mRepl of
                             Just (CVar repName _) -> repName
-                            Just (CDp0 repName _) -> repName ++ ".0"
-                            Just (CDp1 repName _) -> repName ++ ".1"
+                            Just (CDp0 repName _) -> mkProj0 repName
+                            Just (CDp1 repName _) -> mkProj1 repName
                             _ -> n
                     rest' <- goCaptured rest
                     pure $ (newName, ty') : rest'
@@ -457,8 +464,8 @@ substituteNth target n replacement _ty term =
                             put (-1)
                             let newName = case replacement of
                                     CVar repName _ -> repName
-                                    CDp0 repName _ -> repName ++ ".0"
-                                    CDp1 repName _ -> repName ++ ".1"
+                                    CDp0 repName _ -> mkProj0 repName
+                                    CDp1 repName _ -> mkProj1 repName
                                     _ -> n'
                             rest' <- goCaptured rest
                             pure $ (newName, t) : rest'
@@ -515,8 +522,8 @@ substituteVar target replacement _ty = go
           where
             getReplacementName = case replacement of
                 CVar repName _ -> repName
-                CDp0 repName _ -> repName ++ ".0"
-                CDp1 repName _ -> repName ++ ".1"
+                CDp0 repName _ -> mkProj0 repName
+                CDp1 repName _ -> mkProj1 repName
                 _ -> target -- fallback, keep original
                 -- All other terms: just recurse into children
         _ -> mapChildren go term

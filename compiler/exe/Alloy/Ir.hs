@@ -1,14 +1,14 @@
 {-# LANGUAGE DeriveGeneric #-}
 
-module Alloy.Ir where
+module Alloy.Ir (
+    module Alloy.Ir,
+    Name,
+) where
 
 import GHC.Generics (Generic)
 import Metal.Metadata (FunctionAttributes, MetallicTypeClassMetadata)
+import Project.Name (Name)
 import Typing.Types (Constraint, Type)
-
-type Name = String
-
-type BlockName = String
 
 type FieldIndex = Int
 
@@ -27,9 +27,9 @@ data AlloyModule = AlloyModule
     deriving (Generic, Show, Eq)
 
 data DictionaryDef = DictionaryDef
-    { ddClassName :: String
+    { ddClassName :: Name
     , ddForType :: Type
-    , ddMethods :: [(String, Name)]
+    , ddMethods :: [(Name, Name)]
     }
     deriving (Generic, Show, Eq)
 
@@ -37,7 +37,7 @@ data AlloyFunction = AlloyFunction
     { afName :: Name
     , afParams :: [(Name, Type)]
     , afReturnType :: Type
-    , afEntry :: BlockName
+    , afEntry :: Name
     , afBlocks :: [ABlock]
     , afConstraints :: [Constraint]
     , afAttributes :: FunctionAttributes
@@ -45,7 +45,7 @@ data AlloyFunction = AlloyFunction
     deriving (Generic, Show, Eq)
 
 data ABlock = ABlock
-    { abName :: BlockName
+    { abName :: Name
     , abParams :: [(Name, Type)]
     , abInstrs :: [AInstr]
     , abTerminator :: ATerminator
@@ -93,8 +93,8 @@ data AOp
     | OpIndex AOperand AOperand -- index into array/slice: base, idx
     | OpMakeArray [AOperand] -- array aggregate literal (element type dictated by ILet type)
     | OpMakeTuple [AOperand] -- tuple aggregate literal (shape dictated by ILet type)
-    | OpGetDict String Type -- get dictionary for typeclass + type
-    | OpDictCall AOperand Int String [AOperand] -- call method through dictionary: dict, method index, method name, args
+    | OpGetDict Name Type -- get dictionary for typeclass + type
+    | OpDictCall AOperand Int Name [AOperand] -- call method through dictionary: dict, method index, method name, args
     -- Lazy duplication operations (Interaction Net DUP/SUP)
     | OpDup !Int AOperand -- create lazy duplication node: label, value -> SUP handle
     | OpDupProj0 AOperand -- first projection from SUP handle (dp0)
@@ -198,7 +198,7 @@ data AOp
       The function index refers to a registered graph function.
       Returns node index (u32)
       -}
-      OpGraphCall !String [AOperand]
+      OpGraphCall !Name [AOperand]
     | {- | Reduce a graph to a value: root_idx
       Returns the final i64 value after reduction.
       Uses parallel reduction if workers > 1.
@@ -214,7 +214,7 @@ data AOp
     | {- | Register a function for graph reduction: name, arity, impl_ptr
       Returns function index (u16) for use in OpGraphCall.
       -}
-      OpGraphRegisterFunc !String !Int AOperand
+      OpGraphRegisterFunc !Name !Int AOperand
     | {- | Create a DUP node in the graph: label, target_idx
       For duplicating values in interaction nets.
       Returns the DUP term (u64). Use OpGraphDupGetProj0/1 to get projections.
@@ -253,7 +253,7 @@ data AOp
       Function reference that will be expanded lazily by the runtime.
       Returns Term (u64)
       -}
-      OpGraphRef !String !Int AOperand -- func_name, func_index, arg
+      OpGraphRef !Name !Int AOperand -- func_name, func_index, arg
     | {- | Create a closure in the graph: func_idx, arity, env_values
       Closures capture environment values and are applied incrementally.
       Returns Term (u64)
@@ -291,13 +291,13 @@ data AEffect
     -- Graph reduction effects
     | EffGraphInit !Int -- initialize graph runtime with N workers
     | EffGraphShutdown -- shutdown graph runtime
-    | EffGraphRegisterFunc !String !Int AOperand -- register function: name, arity, impl_ptr
+    | EffGraphRegisterFunc !Name !Int AOperand -- register function: name, arity, impl_ptr
     deriving (Generic, Show, Eq)
 
 data ATerminator
-    = ABr BlockName [AOperand] -- branch to block with arguments
-    | ACondBr AOperand BlockName [AOperand] BlockName [AOperand] -- conditional branch
-    | ASwitch AOperand [(Int, BlockName)] (Maybe BlockName) -- switch on an Int-like operand
+    = ABr Name [AOperand] -- branch to block with arguments
+    | ACondBr AOperand Name [AOperand] Name [AOperand] -- conditional branch
+    | ASwitch AOperand [(Int, Name)] (Maybe Name) -- switch on an Int-like operand
     | ARet (Maybe AOperand) -- return optional value (use unit type for void-like)
     | AUnreachable -- unreachable
     deriving (Generic, Show, Eq)

@@ -15,9 +15,11 @@ import Alloy.Ir (
     AUnaryOpKind (Neg, Not),
     AlloyFunction (AlloyFunction, afBlocks),
     AlloyModule (AlloyModule, amFunctions),
+    Name,
  )
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Project.Name (nameToString)
 
 expandIntrinsicsModule :: AlloyModule -> AlloyModule
 expandIntrinsicsModule m@AlloyModule{amFunctions} =
@@ -69,9 +71,9 @@ intrinsicTable =
         , ("not", UnaryOp Not)
         ]
 
-expandIntrinsicCall :: String -> [AOperand] -> Maybe AOp
+expandIntrinsicCall :: Name -> [AOperand] -> Maybe AOp
 expandIntrinsicCall callee args = do
-    spec <- Map.lookup callee intrinsicTable
+    spec <- Map.lookup (nameToString callee) intrinsicTable
     case (spec, args) of
         (BinOp op, [a, b]) -> Just $ OpBin op a b
         (CmpOp op, [a, b]) -> Just $ OpCmp op a b

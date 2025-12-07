@@ -45,7 +45,7 @@ cseFunctionWithUniqueSet uniqueRefs fn@AlloyFunction{afBlocks} =
         let blk' = cseBlock uniqueRefs blk
         in (blk' : acc, Map.empty)
 
-buildPredCount :: [ABlock] -> Map BlockName Int
+buildPredCount :: [ABlock] -> Map Name Int
 buildPredCount blks =
     let addPred m b = Map.insertWith (+) b 1 m
         succs t =

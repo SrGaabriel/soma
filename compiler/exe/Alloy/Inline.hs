@@ -39,20 +39,17 @@ import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Metal.Metadata (FunctionAttributes (..))
+import Project.Name (LocalId (..), LocalPrefix (..), Name (..))
 import Typing.Types (Type)
 
--- | Configuration for the inliner
+
 data InlineConfig = InlineConfig
     { icInlineFunctions :: !(Set Name)
-    -- ^ Functions explicitly marked for inlining (e.g., with `inline` modifier)
     , icMaxInlineSize :: !Int
-    -- ^ Maximum number of instructions for auto-inlining (0 = disabled)
     , icInlineClosures :: !Bool
-    -- ^ Whether to inline known closure calls
     }
     deriving (Show, Eq)
 
--- | Default configuration: only inline explicitly marked functions
 defaultInlineConfig :: InlineConfig
 defaultInlineConfig =
     InlineConfig
@@ -61,29 +58,19 @@ defaultInlineConfig =
         , icInlineClosures = True
         }
 
--- | Information about an inlinable function
 data InlinableFunc = InlinableFunc
     { ifParams :: ![(Name, Type)]
-    -- ^ Function parameters
     , ifReturnType :: !Type
-    -- ^ Return type
     , ifBody :: ![AInstr]
-    -- ^ Instructions (must be single-block for now)
     , ifReturnValue :: !(Maybe AOperand)
-    -- ^ The returned value (from ARet terminator)
     }
     deriving (Show, Eq)
 
--- | State for generating fresh names during inlining
 data InlineState = InlineState
     { isCounter :: !Int
-    -- ^ Counter for generating unique names
     , isFunctionMap :: !(Map Name InlinableFunc)
-    -- ^ Map of inlinable functions
     , isClosureTargets :: !(Map Name Name)
-    -- ^ Maps closure variables to their target functions
     , isFuncPtrs :: !(Map Name (Name, Name))
-    -- ^ Maps func ptr variables to their target functions
     }
     deriving (Show)
 
@@ -351,7 +338,7 @@ generateFreshNamesExcept counter names returnedVar resultName =
     let makeFreshName (name, i) =
             if Just name == returnedVar
                 then resultName
-                else name ++ "_inl" ++ show (counter + i)
+                else NLocal (LocalId LPTemp (counter + i))
         freshNames = [makeFreshName (name, i) | (name, i) <- zip names [0 ..]]
     in (freshNames, counter + length names)
 

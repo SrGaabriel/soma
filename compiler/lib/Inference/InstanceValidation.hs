@@ -6,7 +6,7 @@ import Inference.Errors (InferenceError (..))
 import Inference.Substitution (Substitutable (apply))
 import Lexing.Position (Located (..))
 import Syntax.Tree (Expr (..), exprChildren)
-import Typing.Types (Constraint (..), QualifiedType (..), TyConstructor (..), TyVar (..), Type (..), constraintType)
+import Typing.Types (Constraint (..), QualifiedType (..), TyConstructor (..), TyVar (..), Type (..), constraintType, tyUniqueName)
 
 validateInstances :: InstanceEnv -> Expr -> [InferenceError]
 validateInstances instEnv expr =
@@ -39,7 +39,7 @@ collectInstances (ExprRoot children) = concatMap collectInstances children
 collectInstances e = concatMap collectInstances (exprChildren e)
 
 getTypeClassName :: Type -> Maybe String
-getTypeClassName (TConstructor (TypeConstructor name _)) = Just name
+getTypeClassName (TConstructor (TypeConstructor tyId _)) = Just (tyUniqueName tyId)
 getTypeClassName (TApp f _) = getTypeClassName f
 getTypeClassName _ = Nothing
 

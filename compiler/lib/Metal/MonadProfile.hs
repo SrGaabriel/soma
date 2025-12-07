@@ -28,42 +28,43 @@ import Metal.Module (
     MetallicModule (..),
     MetallicTypeDef (..),
  )
+import Project.Name (Name)
 import Utils.Lists (hardHead)
 
 data MonadProfile
     = ProfileShortCircuit
-        { mpTypeName :: String
-        , mpSuccessCtor :: String
-        , mpFailCtor :: String
+        { mpTypeName :: Name
+        , mpSuccessCtor :: Name
+        , mpFailCtor :: Name
         }
     | ProfileStateLike
-        { mpTypeName :: String
+        { mpTypeName :: Name
         }
     | ProfileReaderLike
-        { mpTypeName :: String
+        { mpTypeName :: Name
         }
     | ProfileIOLike
-        { mpTypeName :: String
+        { mpTypeName :: Name
         }
     | ProfileListLike
-        { mpTypeName :: String
+        { mpTypeName :: Name
         , mpLazy :: Bool
         }
     deriving (Show, Eq)
 
 newtype MonadProfiles = MonadProfiles
-    { mpByTypeName :: Map String MonadProfile
+    { mpByTypeName :: Map Name MonadProfile
     }
     deriving (Show, Eq)
 
-lookupProfile :: MonadProfiles -> String -> Maybe MonadProfile
+lookupProfile :: MonadProfiles -> Name -> Maybe MonadProfile
 lookupProfile (MonadProfiles m) tn = Map.lookup tn m
 
 isShortCircuit :: MonadProfile -> Bool
 isShortCircuit ProfileShortCircuit{} = True
 isShortCircuit _ = False
 
-shortCircuitCtors :: MonadProfile -> Maybe (String, String)
+shortCircuitCtors :: MonadProfile -> Maybe (Name, Name)
 shortCircuitCtors ProfileShortCircuit{mpSuccessCtor, mpFailCtor} = Just (mpSuccessCtor, mpFailCtor)
 shortCircuitCtors _ = Nothing
 
@@ -72,7 +73,7 @@ buildMonadProfiles MetallicModule{mmTypes} =
     let pairs = concatMap inferFromType mmTypes
     in MonadProfiles (Map.fromList pairs)
 
-inferFromType :: MetallicTypeDef -> [(String, MonadProfile)]
+inferFromType :: MetallicTypeDef -> [(Name, MonadProfile)]
 inferFromType (MAlgebraicType{mtName, mtConstructors}) =
     case mtConstructors of
         [c0, c1] ->

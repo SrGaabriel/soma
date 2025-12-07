@@ -55,9 +55,9 @@ simplifyFunction fn0 =
             in f{afBlocks = bs'}
           where
             foldBlock ::
-                Map.Map BlockName [BlockName] ->
-                Map.Map BlockName (Map.Map Name Int) ->
-                Map.Map BlockName (Map.Map Name Int) ->
+                Map.Map Name [Name] ->
+                Map.Map Name (Map.Map Name Int) ->
+                Map.Map Name (Map.Map Name Int) ->
                 [ABlock] ->
                 ABlock ->
                 ABlock
@@ -84,7 +84,7 @@ simplifyFunction fn0 =
                             _ -> blk
                     _ -> blk
 
-            buildPreds :: [ABlock] -> Map.Map BlockName [BlockName]
+            buildPreds :: [ABlock] -> Map.Map Name [Name]
             buildPreds blks =
                 let pairs =
                         [ (s, abName b)
@@ -113,9 +113,9 @@ simplifyFunction fn0 =
             -- If tagVar is a block parameter, examine predecessor edges.
             -- If every predecessor supplies an argument whose tag is known and all tags are equal, return that tag.
             knownFromParams ::
-                Map.Map BlockName [BlockName] ->
-                Map.Map BlockName (Map.Map Name Int) ->
-                Map.Map BlockName (Map.Map Name Int) ->
+                Map.Map Name [Name] ->
+                Map.Map Name (Map.Map Name Int) ->
+                Map.Map Name (Map.Map Name Int) ->
                 [ABlock] ->
                 ABlock ->
                 Name ->
@@ -128,7 +128,7 @@ simplifyFunction fn0 =
                             tags = map (incomingTag idx) ps
                         in allEqualJust tags
               where
-                incomingTag :: Int -> BlockName -> Maybe Int
+                incomingTag :: Int -> Name -> Maybe Int
                 incomingTag idx predName =
                     case findBlock predName allBlocks of
                         Nothing -> Nothing
@@ -152,7 +152,7 @@ simplifyFunction fn0 =
                     Map.lookup (abName pblk) tagOfPer >>= \m -> Map.lookup v m
                 tagOfOperand _ _ = Nothing
 
-                findBlock :: BlockName -> [ABlock] -> Maybe ABlock
+                findBlock :: Name -> [ABlock] -> Maybe ABlock
                 findBlock nm blks =
                     case [b | b <- blks, abName b == nm] of
                         (b : _) -> Just b
@@ -214,7 +214,7 @@ simplifyFunction fn0 =
                     Nothing -> blk
             canonBlock blk = blk
 
-            unifyTarget :: [(Int, BlockName)] -> Maybe BlockName -> Maybe BlockName
+            unifyTarget :: [(Int, Name)] -> Maybe Name -> Maybe Name
             unifyTarget cases mdef =
                 case cases of
                     [] -> Nothing
@@ -432,13 +432,13 @@ fixpoint f x =
     let x' = f x
     in if x' == x then x else fixpoint f x'
 
-buildBlockMap :: [ABlock] -> Map.Map BlockName ABlock
+buildBlockMap :: [ABlock] -> Map.Map Name ABlock
 buildBlockMap = Map.fromList . map (\b -> (abName b, b))
 
-lookupBlock :: AlloyFunction -> BlockName -> Maybe ABlock
+lookupBlock :: AlloyFunction -> Name -> Maybe ABlock
 lookupBlock AlloyFunction{afBlocks} name = Map.lookup name (buildBlockMap afBlocks)
 
-successors :: ATerminator -> [BlockName]
+successors :: ATerminator -> [Name]
 successors (ABr b _) = [b]
 successors (ACondBr _ tb _ fb _) = [tb, fb]
 successors (ASwitch _ cases mdef) =
@@ -447,7 +447,7 @@ successors (ASwitch _ cases mdef) =
 successors (ARet _) = []
 successors AUnreachable = []
 
-reachableBlocks :: AlloyFunction -> Set.Set BlockName
+reachableBlocks :: AlloyFunction -> Set.Set Name
 reachableBlocks AlloyFunction{afEntry, afBlocks} =
     let m = buildBlockMap afBlocks
         go seen [] = seen
@@ -494,12 +494,12 @@ inlineJoinReturnBlocks fn =
     let joinBlocks = mapMaybe isJoinRet (afBlocks fn)
     in foldl' inlineOne fn joinBlocks
   where
-    isJoinRet :: ABlock -> Maybe (BlockName, Name)
+    isJoinRet :: ABlock -> Maybe (Name, Name)
     isJoinRet ABlock{abName, abParams = [(pName, _)], abInstrs = [], abTerminator = ARet (Just (OpVar v))}
         | pName == v = Just (abName, pName)
     isJoinRet _ = Nothing
 
-    inlineOne :: AlloyFunction -> (BlockName, Name) -> AlloyFunction
+    inlineOne :: AlloyFunction -> (Name, Name) -> AlloyFunction
     inlineOne fn' (jName, _pName) =
         let blocks' = map (rewritePred jName) (afBlocks fn')
 
@@ -509,7 +509,7 @@ inlineJoinReturnBlocks fn =
                     else filter ((/= jName) . abName) blocks'
         in fn'{afBlocks = blocks''}
 
-    rewritePred :: BlockName -> ABlock -> ABlock
+    rewritePred :: Name -> ABlock -> ABlock
     rewritePred jName blk@ABlock{abTerminator} =
         blk{abTerminator = rewriteTerm abTerminator}
       where
@@ -523,19 +523,19 @@ inlineForwardBlocks fn =
         fwdBlocks' = filter (\(bn, _, _, _) -> bn /= afEntry fn) fwdBlocks
     in foldl' inlineOne fn fwdBlocks'
   where
-    isForward :: ABlock -> Maybe (BlockName, [(Name, Type)], BlockName, [AOperand])
+    isForward :: ABlock -> Maybe (Name, [(Name, Type)], Name, [AOperand])
     isForward ABlock{abName, abParams, abInstrs = [], abTerminator = ABr tgt args} =
         Just (abName, abParams, tgt, args)
     isForward _ = Nothing
 
-    inlineOne :: AlloyFunction -> (BlockName, [(Name, Type)], BlockName, [AOperand]) -> AlloyFunction
+    inlineOne :: AlloyFunction -> (Name, [(Name, Type)], Name, [AOperand]) -> AlloyFunction
     inlineOne fn' (fName, params, tgtName, tgtArgs) =
         let paramNames = map fst params
             blocks' = map (rewritePred fName paramNames tgtName tgtArgs) (afBlocks fn')
             blocks'' = filter ((/= fName) . abName) blocks'
         in fn'{afBlocks = blocks''}
 
-    rewritePred :: BlockName -> [Name] -> BlockName -> [AOperand] -> ABlock -> ABlock
+    rewritePred :: Name -> [Name] -> Name -> [AOperand] -> ABlock -> ABlock
     rewritePred fName pNames tgtName tgtArgs blk@ABlock{abTerminator} =
         blk{abTerminator = rewriteTerm abTerminator}
       where
