@@ -89,15 +89,12 @@ unresolvedName name = do
     case mSymbol of
         Just symbol -> pure $ symbolToName symbol
         Nothing -> do
-            symEnv <- gets lsSymbolEnv
-            let availableNames = map resolvedSymbolName (Map.keys symEnv)
-            error
-                $ "unresolvedName: Unresolved variable not found in symbol environment: "
-                    ++ name
-                    ++ "\nAvailable symbols ("
-                    ++ show (length availableNames)
-                    ++ " total): "
-                    ++ show availableNames
+            -- Placeholder name for unresolved variables, the resolver already reported the error
+            n <- gets lsCounter
+            modName <- gets lsModuleName
+            modify $ \s -> s{lsCounter = n + 1}
+            let unique = Unique n modName ("$unresolved_" ++ name)
+            pure $ NUser unique
 
 collectLocalSymbols :: Expr -> Map.Map String Symbol
 collectLocalSymbols = go
