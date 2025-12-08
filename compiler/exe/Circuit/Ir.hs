@@ -2,6 +2,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
 
+{-@ LIQUID "--no-termination" @-}
+{-@ LIQUID "--no-totality" @-}
+
 {- | Circuit IR: An Interaction Net-based intermediate representation.
 
 This IR represents programs as interaction nets, enabling optimal
@@ -66,6 +69,15 @@ When a DUP with label L meets a SUP with label L, they annihilate.
 Different labels cause commutation (nested duplication).
 -}
 type Label = Int
+
+-- | Refined types for safety
+
+{-@ type Nat = {v:Int | v >= 0} @-}
+{-@ type Pos = {v:Int | v > 0} @-}
+{-@ type ValidTag = {v:Int | v >= -3} @-}
+-- -3 and -2 are special array pattern tags
+{-@ type ValidFieldIndex = Nat @-}
+{-@ type ValidLabel = Nat @-}
 
 {- | Circuit terms - the core expression language.
 

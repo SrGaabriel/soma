@@ -1,6 +1,10 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 
+{-@ LIQUID "--no-termination" @-}
+{-@ LIQUID "--no-totality" @-}
+{-@ LIQUID "--prune-unsorted" @-}
+
 module Typing.Types (
     Kind (..),
     TyVar (..),
@@ -155,13 +159,14 @@ data Type
 
 newtype Constraint = Constraint Type deriving (Generic, Show, Eq, Ord)
 
+{-@ ignore constraintClassName @-}
 constraintClassName :: Constraint -> String
 constraintClassName (Constraint typ) = getClassName typ
   where
     getClassName (TConstructor tc) = tyUniqueName (tcId tc)
     getClassName (TApp t _) = getClassName t
     getClassName (TUnresolved name) = name
-    getClassName _ = error "Invalid constraint type"
+    getClassName _ = error "Invalid constraint type"  -- TODO: This is a partial function that could crash
 
 constraintTypes :: Constraint -> [Type]
 constraintTypes (Constraint typ) = getTypes typ []

@@ -1,5 +1,8 @@
 {-# LANGUAGE DeriveGeneric #-}
 
+{-@ LIQUID "--no-termination" @-}
+{-@ LIQUID "--no-totality" @-}
+
 module Alloy.Ir (
     module Alloy.Ir,
     Name,
@@ -13,6 +16,17 @@ import Project.Unique (Unique)
 import Typing.Types (Constraint, Type)
 
 type FieldIndex = Int
+
+-- | Refined types for safety
+
+{-@ type Nat = {v:Int | v >= 0} @-}
+{-@ type Pos = {v:Int | v > 0} @-}
+{-@ type ValidFieldIndex = Nat @-}
+{-@ type ValidTag = Nat @-}
+{-@ type ValidSlotIndex = Nat @-}
+{-@ type ValidLabel = Nat @-}
+{-@ type ValidArity = Nat @-}
+{-@ type ValidEnvSize = Nat @-}
 
 {- | Information about closure environment slots for specialized duplication.
 Each entry is (slotIndex, isClosureTyped) where isClosureTyped indicates

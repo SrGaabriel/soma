@@ -1,6 +1,9 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
+{-@ LIQUID "--no-termination" @-}
+{-@ LIQUID "--no-totality" @-}
+
 module Project.Name (
     Name (..),
     SyntheticId (..),

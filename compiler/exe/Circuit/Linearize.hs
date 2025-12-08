@@ -1,6 +1,9 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
 
+{-@ LIQUID "--no-termination" @-}
+{-@ LIQUID "--no-totality" @-}
+
 {- | Linearization pass for Circuit IR.
 
 This pass transforms non-affine terms (where variables can be used
@@ -242,11 +245,13 @@ linearizeLet origName ty val uses body = do
 Returns the modified body where origName occurrences are replaced
 with the appropriate dup projections.
 -}
+
+{-@ linearizeBinding :: Name -> Type -> {uses:Nat | uses >= 0} -> CTerm -> LinearM CTerm @-}
 linearizeBinding :: Name -> Type -> Int -> CTerm -> LinearM CTerm
 linearizeBinding origName ty uses body =
     if uses <= 1
         then pure body
-        else buildDupChain origName ty uses body
+        else buildDupChain origName ty uses body -- uses > 1 here, satisfies buildDupChain precondition
 
 {- | Build a chain of DUP nodes for a variable used multiple times.
 
@@ -264,12 +269,17 @@ The algorithm:
 3. Apply all substitutions in a single traversal
 4. Wrap with the DUP chain from outside-in
 -}
+
+{-@ buildDupChain :: Name -> Type -> {uses:Int | uses > 1} -> CTerm -> LinearM CTerm @-}
 buildDupChain :: Name -> Type -> Int -> CTerm -> LinearM CTerm
 buildDupChain origName ty uses body = do
+    -- uses > 1 implies uses - 1 >= 1, so dupInfos will be non-empty
     dupInfos <- generateDupChainInfo (uses - 1)
     let substMap = buildSubstitutionMap ty dupInfos uses
     let body' = substituteAllOccurrences origName substMap ty body
     pure $ wrapWithDupChain origName ty dupInfos body'
+
+{-@ type NonEmptyDupInfos = {v:[DupInfo] | len v > 0} @-}
 
 data DupInfo = DupInfo
     { diName :: !Name
@@ -277,6 +287,7 @@ data DupInfo = DupInfo
     }
     deriving (Show)
 
+{-@ generateDupChainInfo :: n:Nat -> LinearM {v:[DupInfo] | len v = n} @-}
 generateDupChainInfo :: Int -> LinearM [DupInfo]
 generateDupChainInfo 0 = pure []
 generateDupChainInfo n = do
@@ -296,10 +307,14 @@ For n uses with DUPs [d0, d1, ..., d(n-2)]:
   - Occurrence n-2 -> CDp0 d(n-2) (last DUP's left projection)
   - Occurrence n-1 -> CDp1 d(n-2) (last DUP's right projection)
 -}
+
+{-@ buildSubstitutionMap :: Type -> NonEmptyDupInfos -> {uses:Int | uses > 1} -> Map Int CTerm @-}
 buildSubstitutionMap :: Type -> [DupInfo] -> Int -> Map Int CTerm
 buildSubstitutionMap ty dupInfos uses =
     Map.fromList $ zipWith makeSubst [0 ..] [0 .. uses - 1]
   where
+    -- SAFETY: dupInfos is non-empty (len dupInfos = uses - 1 >= 1 when uses > 1)
+    -- and occIdx < length dupInfos for all but the last occurrence
     makeSubst :: Int -> Int -> (Int, CTerm)
     makeSubst _ occIdx
         | occIdx < length dupInfos =
@@ -308,6 +323,7 @@ buildSubstitutionMap ty dupInfos uses =
             in (occIdx, CDp0 (diName dupInfo) ty)
         | otherwise =
             -- Last occurrence: use CDp1 of the last DUP
+            -- SAFETY: dupInfos is NonEmptyDupInfos, so `last` is safe
             let lastDup = last dupInfos
             in (occIdx, CDp1 (diName lastDup) ty)
 

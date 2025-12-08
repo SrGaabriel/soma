@@ -180,5 +180,7 @@ report.html
 CIRCUIT.md
 
 # Haoma
-
 .haoma
+
+# Liquid Haskell
+.liquid/
