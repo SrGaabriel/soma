@@ -10,7 +10,7 @@ import Alloy.Ir (
     ACallable (Direct),
     ACmpOp (CEq, CNe, CSge, CSgt, CSle, CSlt),
     AInstr (ILet),
-    AOp (OpBin, OpCall, OpCmp, OpUnary),
+    AOp (OpBin, OpCall, OpCmp, OpCons, OpUnary),
     AOperand,
     AUnaryOpKind (Neg, Not),
     AlloyFunction (AlloyFunction, afBlocks),
@@ -49,6 +49,7 @@ data IntrinsicSpec
     = BinOp ABinOpKind
     | CmpOp ACmpOp
     | UnaryOp AUnaryOpKind
+    | ConsOp
 
 intrinsicTable :: Map String IntrinsicSpec
 intrinsicTable =
@@ -69,6 +70,8 @@ intrinsicTable =
         , (">=", CmpOp CSge)
         , ("neg", UnaryOp Neg)
         , ("not", UnaryOp Not)
+        , (":", ConsOp)
+        , ("cons", ConsOp)
         ]
 
 expandIntrinsicCall :: Name -> [AOperand] -> Maybe AOp
@@ -78,4 +81,5 @@ expandIntrinsicCall callee args = do
         (BinOp op, [a, b]) -> Just $ OpBin op a b
         (CmpOp op, [a, b]) -> Just $ OpCmp op a b
         (UnaryOp op, [a]) -> Just $ OpUnary op a
+        (ConsOp, [elem, arr]) -> Just $ OpCons elem arr
         _ -> Nothing

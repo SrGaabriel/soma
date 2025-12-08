@@ -487,6 +487,14 @@ lowerPattern node = case ndKind (unGreenNode (snGreen node)) of
         let patternChildren = filter isPatternNode (children node)
         patterns <- mapM lowerPattern patternChildren
         Just $ PArray patterns (toSpan node)
+    SK_Node NK_PATTERN_CONS -> do
+        let patternChildren = filter isPatternNode (children node)
+        case patternChildren of
+            [headPat, tailPat] -> do
+                h <- lowerPattern headPat
+                t <- lowerPattern tailPat
+                Just $ PCons h t (toSpan node)
+            _ -> Nothing
     SK_Node NK_PATTERN_AS -> do
         nameTok <- firstToken node
         let name = T.unpack $ gtText (stGreen nameTok)
@@ -516,6 +524,7 @@ isPatternNode node = case ndKind (unGreenNode (snGreen node)) of
         , NK_PATTERN_AS
         , NK_PATTERN_TUPLE
         , NK_PATTERN_LIST
+        , NK_PATTERN_CONS
         ]
 
 lowerPatternLiteral :: SyntaxToken -> Maybe Literal

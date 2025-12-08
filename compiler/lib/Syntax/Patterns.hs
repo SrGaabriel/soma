@@ -40,6 +40,7 @@ data Pattern (p :: PatternPhase)
     | PTuple [Pattern p] Span
     | PArray [Pattern p] Span
     | PAs (PatternName p) (Pattern p) Span
+    | PCons (Pattern p) (Pattern p) Span
 
 -- | Type aliases for convenience
 type ParsedPattern = Pattern 'Parsed
@@ -69,3 +70,4 @@ patternSpan (PConstructor _ _ s) = s
 patternSpan (PTuple _ s) = s
 patternSpan (PArray _ s) = s
 patternSpan (PAs _ _ s) = s
+patternSpan (PCons _ _ s) = s

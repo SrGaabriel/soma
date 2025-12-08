@@ -254,6 +254,11 @@ typePattern ctorEnv resolve scrutTy pat = case pat of
         let elemType = extractArrayElemType scrutTy
             innerTyped = map (typePattern ctorEnv resolve elemType) innerPats
         in TPArray innerTyped scrutTy pSpan
+    PCons headPat tailPat pSpan ->
+        let elemType = extractArrayElemType scrutTy
+            headTyped = typePattern ctorEnv resolve elemType headPat
+            tailTyped = typePattern ctorEnv resolve scrutTy tailPat
+        in TPCons headTyped tailTyped scrutTy pSpan
 
 typeConstructorPatterns :: ConstructorEnv -> (Type -> Type) -> Type -> Name -> [ResolvedPattern] -> [TypedPattern]
 typeConstructorPatterns ctorEnv resolve scrutTy ctorName innerPats =

@@ -23,6 +23,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
+import Debug.Trace (trace)
 import Inference.Core (UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
 import Inference.Naming (nameSkolemPrefix, nameTmpPrefix)
@@ -38,6 +39,9 @@ import Typing.Types (
     QualifiedType (..),
     Rigidity (..),
     SkolemVar (..),
+    TyConstructor (..),
+    TyPrimitive (..),
+    TyUnique (..),
     TyVar (..),
     Type (..),
     arrayType,
@@ -437,8 +441,9 @@ generateConstraints expr = case expr of
         let scrutineeTypes = map slotType scrutineeSlots
 
         armResults <- forM arms $ \(MCaseArm patterns armBody) -> do
-            patternBindings <- generatePatternBindings span' patterns scrutineeTypes
-            local (Map.union patternBindings) $ generateConstraints armBody
+            (patternBindings, patternCs) <- generatePatternBindings span' patterns scrutineeTypes
+            (bodySlot, bodyCs) <- local (Map.union patternBindings) $ generateConstraints armBody
+            pure (bodySlot, patternCs <> bodyCs)
 
         let (armSlots, armCsList) = unzip armResults
 
@@ -499,19 +504,20 @@ generateConstraints expr = case expr of
     MPanic _msg slot _span -> do
         pure (slot, emptyConstraints)
 
-generatePatternBindings :: Span -> [ResolvedPattern] -> [Type] -> MetalGenM MetalTypeEnv
+generatePatternBindings :: Span -> [ResolvedPattern] -> [Type] -> MetalGenM (MetalTypeEnv, MetalConstraintSet)
 generatePatternBindings span' patterns types = do
     when (length patterns /= length types) $ reportError (PatternArityMismatch (dummyExpr span') (length patterns) (length types))
 
-    bindings <- zipWithM (generatePatternBinding span') patterns types
-    pure $ Map.unions bindings
+    results <- zipWithM (generatePatternBinding span') patterns types
+    let (bindings, constraints) = unzip results
+    pure (Map.unions bindings, mconcat constraints)
 
-generatePatternBinding :: Span -> ResolvedPattern -> Type -> MetalGenM MetalTypeEnv
+generatePatternBinding :: Span -> ResolvedPattern -> Type -> MetalGenM (MetalTypeEnv, MetalConstraintSet)
 generatePatternBinding _span (PVar name _) ty =
-    pure $ Map.singleton name (cleanQualified ty)
+    pure (Map.singleton name (cleanQualified ty), emptyConstraints)
 generatePatternBinding span' (PAs name inner _) ty = do
-    innerBindings <- generatePatternBinding span' inner ty
-    pure $ Map.insert name (cleanQualified ty) innerBindings
+    (innerBindings, innerCs) <- generatePatternBinding span' inner ty
+    pure (Map.insert name (cleanQualified ty) innerBindings, innerCs)
 generatePatternBinding span' (PConstructor ctorName innerPatterns _) _ = do
     env <- ask
     case Map.lookup ctorName env of
@@ -522,23 +528,67 @@ generatePatternBinding span' (PConstructor ctorName innerPatterns _) _ = do
 
             let (argTypes, _resultType) = splitFunctionType (length innerPatterns) instType
 
-            innerBindings <- zipWithM (generatePatternBinding span') innerPatterns argTypes
-            pure $ Map.unions innerBindings
+            results <- zipWithM (generatePatternBinding span') innerPatterns argTypes
+            let (bindings, constraints) = unzip results
+            pure (Map.unions bindings, mconcat constraints)
         Nothing -> do
             reportError (UnknownTypeConstructor (dummyExpr span') (nameToString ctorName))
-            pure Map.empty
+            pure (Map.empty, emptyConstraints)
 generatePatternBinding span' (PTuple innerPatterns _) ty = do
     let elemTypes = extractTupleTypes ty
     when (length innerPatterns /= length elemTypes) $ reportError (PatternArityMismatch (dummyExpr span') (length innerPatterns) (length elemTypes))
 
-    innerBindings <- zipWithM (generatePatternBinding span') innerPatterns elemTypes
-    pure $ Map.unions innerBindings
+    results <- zipWithM (generatePatternBinding span') innerPatterns elemTypes
+    let (bindings, constraints) = unzip results
+    pure (Map.unions bindings, mconcat constraints)
 generatePatternBinding span' (PArray innerPatterns _) ty = do
-    let elemType = extractArrayElemType ty
-    innerBindings <- mapM (\p -> generatePatternBinding span' p elemType) innerPatterns
-    pure $ Map.unions innerBindings
-generatePatternBinding _ PWildcard{} _ = pure Map.empty
-generatePatternBinding _ PLit{} _ = pure Map.empty
+    -- Handle the case where ty might be a type variable
+    (elemType, arrayConstraint) <- case ty of
+        TApp (TConstructor TypeConstructor{tcId = TyPrim Typing.Types.TPArray}) inner ->
+            pure (inner, emptyConstraints)
+        _ -> do
+            -- ty is a type variable or unknown, create a fresh element type
+            -- and emit a constraint that ty = [elemType]
+            freshElem <- freshTyVar KindStar
+            let arrayConstructor = TConstructor (TypeConstructor (TyPrim Typing.Types.TPArray) (KindArrow KindStar KindStar))
+            let freshArrayType = TApp arrayConstructor (TVar freshElem)
+            let constraint =
+                    typeConstraints
+                        [ MetalTypeConstraint
+                            { mtcSpan = span'
+                            , mtcExpected = freshArrayType
+                            , mtcActual = ty
+                            , mtcPurpose = UnifyPatternConstructor
+                            }
+                        ]
+            pure (TVar freshElem, constraint)
+    results <- mapM (\p -> generatePatternBinding span' p elemType) innerPatterns
+    let (bindings, constraints) = unzip results
+    pure (Map.unions bindings, arrayConstraint <> mconcat constraints)
+generatePatternBinding span' (PCons headPat tailPat _) ty = do
+    (elemType, arrayConstraint) <- case ty of
+        TApp (TConstructor TypeConstructor{tcId = TyPrim Typing.Types.TPArray}) inner ->
+            pure (inner, emptyConstraints)
+        _ -> do
+            -- ty is a type variable or unknown, create a fresh element type
+            freshElem <- freshTyVar KindStar
+            let arrayConstructor = TConstructor (TypeConstructor (TyPrim Typing.Types.TPArray) (KindArrow KindStar KindStar))
+            let freshArrayType = TApp arrayConstructor (TVar freshElem)
+            let constraint =
+                    typeConstraints
+                        [ MetalTypeConstraint
+                            { mtcSpan = span'
+                            , mtcExpected = freshArrayType
+                            , mtcActual = ty
+                            , mtcPurpose = UnifyPatternConstructor
+                            }
+                        ]
+            pure (TVar freshElem, constraint)
+    (headBindings, headCs) <- generatePatternBinding span' headPat elemType
+    (tailBindings, tailCs) <- generatePatternBinding span' tailPat ty
+    pure (Map.union headBindings tailBindings, arrayConstraint <> headCs <> tailCs)
+generatePatternBinding _ PWildcard{} _ = pure (Map.empty, emptyConstraints)
+generatePatternBinding _ PLit{} _ = pure (Map.empty, emptyConstraints)
 
 -- todo(magic-spans): remove workaround
 dummyExpr :: Span -> Syntax.Tree.Expr

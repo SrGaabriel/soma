@@ -56,6 +56,7 @@ data Constructor
     | DataCtor Name Int
     | TupleCtor Int
     | ArrayCtor Int
+    | ConsCtor
     deriving (Show, Eq, Ord)
 
 compile :: PatternMatrix -> DecisionTree
@@ -109,6 +110,7 @@ patternConstructor (PLit lit _) = LitCtor lit
 patternConstructor (PConstructor name pats _) = DataCtor name (length pats)
 patternConstructor (PTuple pats _) = TupleCtor (length pats)
 patternConstructor (PArray pats _) = ArrayCtor (length pats)
+patternConstructor (PCons _ _ _) = ConsCtor
 patternConstructor (PAs _ pat _) = patternConstructor pat
 patternConstructor _ = error "Not a constructor pattern"
 
@@ -149,6 +151,7 @@ constructorArity (LitCtor _) = 0
 constructorArity (DataCtor _ n) = n
 constructorArity (TupleCtor n) = n
 constructorArity (ArrayCtor n) = n
+constructorArity ConsCtor = 2
 
 specializeRow :: Int -> Constructor -> MatrixRow -> MatrixRow
 specializeRow col ctor row =
@@ -158,6 +161,7 @@ specializeRow col ctor row =
             PConstructor _ subPats _ -> subPats
             PTuple subPats _ -> subPats
             PArray subPats _ -> subPats
+            PCons h t _ -> [h, t]
             PLit{} -> []
             PAs _ p _ -> extractSubPatterns p
             PVar _ s -> replicate (constructorArity ctor) (PWildcard s)
@@ -169,6 +173,7 @@ extractSubPatterns :: ResolvedPattern -> [ResolvedPattern]
 extractSubPatterns (PConstructor _ pats _) = pats
 extractSubPatterns (PTuple pats _) = pats
 extractSubPatterns (PArray pats _) = pats
+extractSubPatterns (PCons h t _) = [h, t]
 extractSubPatterns PLit{} = []
 extractSubPatterns (PAs _ p _) = extractSubPatterns p
 extractSubPatterns PWildcard{} = []

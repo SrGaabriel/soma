@@ -8,6 +8,7 @@ module Llvm.Types (
     pattern LlvmStruct,
     pattern LlvmPtr,
     deref,
+    llvmTypeSize,
     LlvmFnAttr (..),
     LlvmMemoryEffect (..),
     fnAttrToLlvm,
@@ -70,6 +71,19 @@ instance IR LlvmType where
 deref :: LlvmType -> LlvmType
 deref (LlvmPointer t) = t
 deref u = error $ "Cannot dereference non-pointer type: " ++ show u
+
+llvmTypeSize :: LlvmType -> Int
+llvmTypeSize LlvmI1 = 1
+llvmTypeSize LlvmI8 = 1
+llvmTypeSize LlvmI16 = 2
+llvmTypeSize LlvmI32 = 4
+llvmTypeSize LlvmI64 = 8
+llvmTypeSize LlvmFloat = 4
+llvmTypeSize LlvmDouble = 8
+llvmTypeSize (LlvmPointer _) = 8 -- todo: platform dependent pointer sizes
+llvmTypeSize (LlvmArray n t) = n * llvmTypeSize t
+llvmTypeSize (LlvmAnonymous ts) = sum (map llvmTypeSize ts)
+llvmTypeSize _ = 8
 
 data LlvmFnAttr
     = FnAttrNoUnwind

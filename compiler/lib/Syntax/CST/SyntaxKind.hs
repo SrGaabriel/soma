@@ -67,6 +67,7 @@ data NodeKind
     | NK_PATTERN_AS
     | NK_PATTERN_TUPLE
     | NK_PATTERN_LIST
+    | NK_PATTERN_CONS
     | -- Types
       NK_TYPE
     | NK_TYPE_VAR

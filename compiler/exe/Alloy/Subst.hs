@@ -48,6 +48,8 @@ substOp env = \case
     OpCall callee args -> OpCall (substCallable env callee) (map sub args)
     OpConstruct tn tag fields -> OpConstruct tn tag (map sub fields)
     OpTagOf a -> OpTagOf (sub a)
+    OpArrayLength a -> OpArrayLength (sub a)
+    OpCons elem arr -> OpCons (sub elem) (sub arr)
     OpProject a i -> OpProject (sub a) i
     OpIndex a i -> OpIndex (sub a) (sub i)
     OpMakeArray xs -> OpMakeArray (map sub xs)
@@ -174,6 +176,8 @@ opVars = \case
     OpCall callee args -> callableVars callee ++ concatMap vars args
     OpConstruct _ _ fields -> concatMap vars fields
     OpTagOf a -> vars a
+    OpArrayLength a -> vars a
+    OpCons elem arr -> vars elem ++ vars arr
     OpProject a _ -> vars a
     OpIndex a i -> vars a ++ vars i
     OpMakeArray xs -> concatMap vars xs

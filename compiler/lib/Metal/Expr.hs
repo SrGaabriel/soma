@@ -58,6 +58,7 @@ data TypedPattern
     | TPTuple [TypedPattern] Type Span
     | TPArray [TypedPattern] Type Span
     | TPAs Name TypedPattern Type Span
+    | TPCons TypedPattern TypedPattern Type Span
     deriving (Show, Eq)
 
 typedPatternSpan :: TypedPattern -> Span
@@ -68,6 +69,7 @@ typedPatternSpan (TPConstructor _ _ _ s) = s
 typedPatternSpan (TPTuple _ _ s) = s
 typedPatternSpan (TPArray _ _ s) = s
 typedPatternSpan (TPAs _ _ _ s) = s
+typedPatternSpan (TPCons _ _ _ s) = s
 
 typedPatternType :: TypedPattern -> Type
 typedPatternType (TPVar _ t _) = t
@@ -77,6 +79,7 @@ typedPatternType (TPConstructor _ _ t _) = t
 typedPatternType (TPTuple _ t _) = t
 typedPatternType (TPArray _ t _) = t
 typedPatternType (TPAs _ _ t _) = t
+typedPatternType (TPCons _ _ t _) = t
 
 data Phase = Untyped | Inference | Typed
 

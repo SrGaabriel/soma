@@ -349,6 +349,13 @@ collectPatternMatchArmSymbols (ExprPatternMatchArm patterns _ _) = do
     collectPatternSymbol (PConstructor _ patterns' _) = do
         symbols <- mapM collectPatternSymbol patterns'
         pure $ Map.unions symbols
+    collectPatternSymbol (PCons headPat tailPat _) = do
+        headSymbols <- collectPatternSymbol headPat
+        tailSymbols <- collectPatternSymbol tailPat
+        pure $ Map.union headSymbols tailSymbols
+    collectPatternSymbol (PArray patterns' _) = do
+        symbols <- mapM collectPatternSymbol patterns'
+        pure $ Map.unions symbols
     collectPatternSymbol _ = pure Map.empty
 collectPatternMatchArmSymbols _ = pure Map.empty
 

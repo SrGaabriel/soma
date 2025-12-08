@@ -1,0 +1,144 @@
+use base/prim.{+, -, *}
+use base/core.{Option, Some, None}
+
+intrinsic def cons :: a -> [a] -> [a]
+
+intrinsic def {+} :: Int -> Int -> Int
+intrinsic def {-} :: Int -> Int -> Int
+intrinsic def {*} :: Int -> Int -> Int
+
+intrinsic def {==} :: a -> a -> Bool
+
+def head :: [a] -> Option a
+    | (x:_) => Some x
+    | [] => None
+
+def tail :: [a] -> Option [a]
+    | (_:xs) => Some xs
+    | [] => None
+
+def last :: [a] -> Option a
+    | [x] => Some x
+    | (_:xs) => last xs
+    | [] => None
+
+
+def null :: [a] -> Bool
+    | [] => true
+    | _ => false
+
+def length :: [a] -> Int
+    | [] => 0
+    | (_:xs) => 1 + length xs
+
+def singleton :: a -> [a]
+    | x => [x]
+
+def replicate :: Int -> a -> [a]
+    | n x =>
+        if n <= 0 then [] else cons x (replicate (n - 1) x)
+
+def map :: (a -> b) -> [a] -> [b]
+    | f (x:xs) => cons (f x) (map f xs)
+    | _ [] => []
+
+def reverse :: [a] -> [a]
+    | xs => reverseAcc xs []
+
+def reverseAcc :: [a] -> [a] -> [a]
+    | (x:xs) acc => reverseAcc xs (cons x acc)
+    | [] acc => acc
+
+def append :: [a] -> [a] -> [a]
+    | (x:xs) ys => cons x (append xs ys)
+    | [] ys => ys
+
+def concat :: [[a]] -> [a]
+    | (xs:xss) => append xs (concat xss)
+    | [] => []
+
+def concatMap :: (a -> [b]) -> [a] -> [b]
+    | f xs => concat (map f xs)
+
+def foldl :: (b -> a -> b) -> b -> [a] -> b
+    | f acc (x:xs) => foldl f (f acc x) xs
+    | _ acc [] => acc
+
+def foldr :: (a -> b -> b) -> b -> [a] -> b
+    | f acc (x:xs) => f x (foldr f acc xs)
+    | _ acc [] => acc
+
+def foldl1 :: (a -> a -> a) -> [a] -> Option a
+    | f (x:xs) => Some (foldl f x xs)
+    | _ [] => None
+
+def sum :: [Int] -> Int
+    | xs => foldl (\acc x -> acc + x) 0 xs
+
+def product :: [Int] -> Int
+    | xs => foldl (\acc x -> acc * x) 1 xs
+
+def and :: [Bool] -> Bool
+    | (x:xs) => if x then and xs else false
+    | [] => true
+
+def or :: [Bool] -> Bool
+    | (x:xs) => if x then true else or xs
+    | [] => false
+
+def any :: (a -> Bool) -> [a] -> Bool
+    | p (x:xs) => if p x then true else any p xs
+    | _ [] => false
+
+def all :: (a -> Bool) -> [a] -> Bool
+    | p (x:xs) => if p x then all p xs else false
+    | _ [] => true
+
+def take :: Int -> [a] -> [a]
+    | n (x:xs) => if n <= 0 then [] else cons x (take (n - 1) xs)
+    | _ [] => []
+
+def drop :: Int -> [a] -> [a]
+    | n (x:xs) => if n <= 0 then cons x xs else drop (n - 1) xs
+    | _ [] => []
+
+def takeWhile :: (a -> Bool) -> [a] -> [a]
+    | p (x:xs) => if p x then cons x (takeWhile p xs) else []
+    | _ [] => []
+
+def dropWhile :: (a -> Bool) -> [a] -> [a]
+    | p (x:xs) => if p x then dropWhile p xs else cons x xs
+    | _ [] => []
+
+def splitAt :: Int -> [a] -> ([a], [a])
+    | n xs => (take n xs, drop n xs)
+
+def elem :: a -> [a] -> Bool
+    | x (y:ys) => if x == y then true else elem x ys
+    | _ [] => false
+
+def filter :: (a -> Bool) -> [a] -> [a]
+    | p (x:xs) => if p x then cons x (filter p xs) else filter p xs
+    | _ [] => []
+
+def find :: (a -> Bool) -> [a] -> Option a
+    | p (x:xs) => if p x then Some x else find p xs
+    | _ [] => None
+
+def partition :: (a -> Bool) -> [a] -> ([a], [a])
+    | p (x:xs) =>
+        let (yes, no) = partition p xs in
+        if p x then (cons x yes, no) else (yes, cons x no)
+    | _ [] => ([], [])
+
+def nth :: Int -> [a] -> Option a
+    | n (x:xs) => if n == 0 then Some x else nth (n - 1) xs
+    | _ [] => None
+
+def zip :: [a] -> [b] -> [(a, b)]
+    | (x:xs) (y:ys) => cons (x, y) (zip xs ys)
+    | _ _ => []
+
+def zipWith :: (a -> b -> c) -> [a] -> [b] -> [c]
+    | f (x:xs) (y:ys) => cons (f x y) (zipWith f xs ys)
+    | _ _ _ => []

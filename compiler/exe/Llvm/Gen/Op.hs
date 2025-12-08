@@ -53,7 +53,7 @@ import Llvm.Gen.Templates (newStrTemplate)
 import Llvm.Gen.TypeConversion (convertTypeWithStructs)
 import Llvm.Instructions
 import Llvm.Modules (LlvmBlock (..), LlvmFunction (..))
-import Llvm.Types (LlvmFnAttr (..), LlvmType (..), deref)
+import Llvm.Types (LlvmFnAttr (..), LlvmType (..), deref, llvmTypeSize)
 import qualified Llvm.Types as LT
 import Llvm.Values (LlvmValue (..), getValueType)
 import Project.Name (nameToLLVM, nameToString)
@@ -185,6 +185,11 @@ compileOp (OpProject agg ix) resultTy = do
         LlvmI64 -> castPrimitive av aggTy resultTy
         LlvmI8 -> castPrimitive av aggTy resultTy
         LlvmI1 -> castPrimitive av aggTy resultTy
+        -- Array element access: pointer to element type (e.g., ptr to i32 for [Int])
+        -- Use GEP to get element at index ix, then load
+        LlvmPointer elemTy -> do
+            elemPtr <- saveTmp (LlvmGetElementPtr elemTy av [LlvmLiteral LlvmI64 (show ix)] True) (LlvmPointer elemTy)
+            saveTmp (LlvmLoadTyped elemTy elemPtr) resultTy
         _ ->
             saveTmp (LlvmExtractValue aggTy av ix) resultTy
   where
@@ -230,14 +235,23 @@ compileOp (OpConstruct _cName cTag cFields) resultTy = do
     fieldVals <- mapM compileOperand cFields
 
     -- Special case: Array literals use tag -2 and result in pointer types
+    -- Array layout: {i64 length, elemTy[]} - length at offset 0, elements start at offset 8
     case resultTy of
         LlvmPointer elemTy | cTag == -2 -> do
             let arraySize = length fieldVals
-            let arrayTy = LlvmArray arraySize elemTy
+            let elemSize = llvmTypeSize elemTy
+            -- Allocate: 8 bytes for length + (arraySize * elemSize) for elements
+            let totalSize = 8 + arraySize * elemSize
             mallocFn <- useDep mallocDependency
-            let allocSize = LlvmLiteral LlvmI64 (show (arraySize * 8)) -- 8 bytes per element
+            let allocSize = LlvmLiteral LlvmI64 (show totalSize)
             rawPtr <- saveTmp (LlvmCall mallocFn (LlvmPointer LlvmI8) [allocSize]) (LlvmPointer LlvmI8)
-            arrayPtr <- saveTmp (LlvmBitcast rawPtr (LlvmPointer arrayTy)) (LlvmPointer arrayTy)
+            -- Store length at offset 0
+            lengthPtr <- saveTmp (LlvmBitcast rawPtr (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+            tell [LlvmStore (LlvmLiteral LlvmI64 (show arraySize)) lengthPtr]
+            -- Get pointer to data area (offset 8 bytes = 1 i64)
+            dataPtr <- saveTmp (LlvmGetElementPtr LlvmI64 lengthPtr [LlvmLiteral LlvmI64 "1"] True) (LlvmPointer LlvmI64)
+            arrayPtr <- saveTmp (LlvmBitcast dataPtr (LlvmPointer elemTy)) (LlvmPointer elemTy)
+            -- Store elements
             forM_ (zip [0 ..] fieldVals) $ \(idx, val) -> do
                 let idxVal = LlvmLiteral LlvmI64 (show (idx :: Int))
                 elemPtr <- saveTmp (LlvmGetElementPtr elemTy arrayPtr [idxVal] True) (LlvmPointer elemTy)
@@ -311,17 +325,6 @@ compileOp (OpConstruct _cName cTag cFields) resultTy = do
         | valTy == LlvmI1 = saveTmp (LlvmZExt val LlvmI64) LlvmI64
         | LlvmPointer _ <- valTy = saveTmp (LlvmPtrToInt val LlvmI64) LlvmI64
         | otherwise = error $ "Unsupported type for payload conversion: " ++ show valTy
-
-    llvmTypeSize :: LlvmType -> Int
-    llvmTypeSize LlvmI1 = 1
-    llvmTypeSize LlvmI8 = 1
-    llvmTypeSize LlvmI16 = 2
-    llvmTypeSize LlvmI32 = 4
-    llvmTypeSize LlvmI64 = 8
-    llvmTypeSize LlvmFloat = 4
-    llvmTypeSize LlvmDouble = 8
-    llvmTypeSize (LlvmPointer _) = 8
-    llvmTypeSize _ = 8
 compileOp (OpTagOf agg) resultTy = do
     av <- compileOperand agg
     let aggTy = getValueType av
@@ -350,8 +353,72 @@ compileOp (OpTagOf agg) resultTy = do
             pure $ LlvmLiteral resultTy "0"
         LlvmPointer LlvmI8 ->
             pure $ LlvmLiteral resultTy "0"
+        -- Arrays don't have tags - this case shouldn't be reached for proper array pattern matching
+        -- (use OpArrayLength instead), but return -2 as fallback for compatibility
+        LlvmPointer _ ->
+            pure $ LlvmLiteral resultTy "-2"
         LlvmAnonymous _ -> saveTmp (LlvmExtractValue aggTy av 0) resultTy
         _ -> saveTmp (LlvmExtractValue aggTy av 0) resultTy
+compileOp (OpArrayLength agg) resultTy = do
+    av <- compileOperand agg
+    let aggTy = getValueType av
+    case aggTy of
+        -- Arrays have layout: {i64 length, elemTy[]} with length at offset -8 from data pointer
+        -- The array operand points to the data area, so we go back 8 bytes to get the length
+        LlvmPointer _elemTy -> do
+            asI64Ptr <- saveTmp (LlvmBitcast av (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+            lengthPtr <- saveTmp (LlvmGetElementPtr LlvmI64 asI64Ptr [LlvmLiteral LlvmI64 "-1"] True) (LlvmPointer LlvmI64)
+            lengthVal <- saveTmp (LlvmLoadTyped LlvmI64 lengthPtr) LlvmI64
+            if resultTy == LlvmI64
+                then pure lengthVal
+                else saveTmp (LlvmTrunc lengthVal resultTy) resultTy
+        _ -> error $ "OpArrayLength called on non-array type: " ++ show aggTy
+compileOp (OpCons elemOp arrOp) resultTy = do
+    elemVal <- compileOperand elemOp
+    arrVal <- compileOperand arrOp
+    let elemTy = getValueType elemVal
+
+    -- Get old array length
+    asI64Ptr <- saveTmp (LlvmBitcast arrVal (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+    oldLengthPtr <- saveTmp (LlvmGetElementPtr LlvmI64 asI64Ptr [LlvmLiteral LlvmI64 "-1"] True) (LlvmPointer LlvmI64)
+    oldLength <- saveTmp (LlvmLoadTyped LlvmI64 oldLengthPtr) LlvmI64
+
+    -- Calculate new length = old length + 1
+    newLength <- saveTmp (LlvmAdd LlvmI64 oldLength (LlvmLiteral LlvmI64 "1")) LlvmI64
+
+    -- Calculate allocation size: 8 bytes for length + (newLength * elemSize)
+    let elemSize = llvmTypeSize elemTy
+    bytesForElements <- saveTmp (LlvmMul LlvmI64 newLength (LlvmLiteral LlvmI64 (show elemSize))) LlvmI64
+    totalSize <- saveTmp (LlvmAdd LlvmI64 bytesForElements (LlvmLiteral LlvmI64 "8")) LlvmI64
+
+    -- Allocate new array
+    mallocFn <- useDep mallocDependency
+    rawPtr <- saveTmp (LlvmCall mallocFn (LlvmPointer LlvmI8) [totalSize]) (LlvmPointer LlvmI8)
+
+    -- Store new length at offset 0
+    newLengthPtr <- saveTmp (LlvmBitcast rawPtr (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+    tell [LlvmStore newLength newLengthPtr]
+
+    -- Get pointer to data area (offset 8 bytes = 1 i64)
+    dataPtr <- saveTmp (LlvmGetElementPtr LlvmI64 newLengthPtr [LlvmLiteral LlvmI64 "1"] True) (LlvmPointer LlvmI64)
+    newArrayPtr <- saveTmp (LlvmBitcast dataPtr (LlvmPointer elemTy)) (LlvmPointer elemTy)
+
+    -- Store new element at index 0
+    tell [LlvmStore elemVal newArrayPtr]
+
+    -- Copy old array elements to new array (starting at index 1)
+    -- Use memcpy: dest = newArrayPtr + 1, src = arrVal, size = oldLength * elemSize
+    destPtr <- saveTmp (LlvmGetElementPtr elemTy newArrayPtr [LlvmLiteral LlvmI64 "1"] True) (LlvmPointer elemTy)
+    destI8 <- saveTmp (LlvmBitcast destPtr (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    srcI8 <- saveTmp (LlvmBitcast arrVal (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    copySize <- saveTmp (LlvmMul LlvmI64 oldLength (LlvmLiteral LlvmI64 (show elemSize))) LlvmI64
+    memcpyFn <- useDep memcpyDependency
+    _ <- saveTmp (LlvmCall memcpyFn (LlvmPointer LlvmI8) [destI8, srcI8, copySize]) (LlvmPointer LlvmI8)
+
+    -- Return pointer to new array data
+    if resultTy == LlvmPointer elemTy
+        then pure newArrayPtr
+        else saveTmp (LlvmBitcast newArrayPtr resultTy) resultTy
 compileOp (OpMakeArray xs) _resultTy = do
     compiledXs <- mapM compileOperand xs
     let elemTy = if null compiledXs then LlvmI32 else getValueType (hardHead compiledXs)

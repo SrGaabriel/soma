@@ -45,8 +45,28 @@ parseSinglePattern parenthesizedConstructors = do
         TokenLeftParen -> do
             _ <- cstConsume TokenLeftParen
             parseSinglePattern True
-            _ <- cstConsume TokenRightParen
-            pure ()
+            nextTok <- cstPeek
+            case Lexer.tokenKind nextTok of
+                TokenColon -> withNode (SK_Node NK_PATTERN_CONS) $ do
+                    -- Cons pattern: (x:xs) or (x:y:zs)
+                    parseConsTail
+                    _ <- cstConsume TokenRightParen
+                    pure ()
+                _ -> do
+                    _ <- cstConsume TokenRightParen
+                    pure ()
+        TokenLeftBracket -> withNode (SK_Node NK_PATTERN_LIST) $ do
+            -- List literal pattern: [x, y, z] or []
+            _ <- cstConsume TokenLeftBracket
+            nextTok <- cstPeek
+            case Lexer.tokenKind nextTok of
+                TokenRightBracket -> do
+                    _ <- cstConsume TokenRightBracket
+                    pure ()
+                _ -> do
+                    parseCommaSeparatedPatterns
+                    _ <- cstConsume TokenRightBracket
+                    pure ()
         TokenUnderscore -> withNode (SK_Node NK_PATTERN_WILDCARD) $ do
             _ <- cstConsume TokenUnderscore
             pure ()
@@ -58,6 +78,31 @@ parseSinglePattern parenthesizedConstructors = do
             | not parenthesizedConstructors ->
                 MP.customFailure $ PatternNeedsParentheses tok (tokenValue tok)
         _ -> MP.customFailure $ InvalidPattern tok
+
+{- | Parse the tail of a cons pattern (after the first colon)
+This handles chained cons like x:y:zs
+-}
+parseConsTail :: CstParser ()
+parseConsTail = do
+    _ <- cstConsume TokenColon
+    parseSinglePattern True
+    nextTok <- cstPeek
+    case Lexer.tokenKind nextTok of
+        TokenColon -> withNode (SK_Node NK_PATTERN_CONS) parseConsTail
+        _ -> pure ()
+
+-- | Parse comma-separated patterns for list literals
+parseCommaSeparatedPatterns :: CstParser ()
+parseCommaSeparatedPatterns = do
+    parseSinglePattern True
+    _ <- MP.many $ do
+        tok <- cstPeek
+        case Lexer.tokenKind tok of
+            TokenComma -> do
+                _ <- cstConsume TokenComma
+                parseSinglePattern True
+            _ -> MP.empty
+    pure ()
 
 parsePipePatternArms :: CstParser ()
 parsePipePatternArms = parseLayout parsePipePatternArm

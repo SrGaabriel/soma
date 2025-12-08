@@ -113,6 +113,7 @@ instance TreeShow ParsedPattern where
     treeShow (PArray p _) = "Array (" ++ unwords (map treeShow p) ++ ")"
     treeShow PWildcard{} = "Wildcard"
     treeShow (PAs name p _) = "As (" ++ name ++ ": " ++ treeShow p ++ ")"
+    treeShow (PCons h t _) = "Cons (" ++ treeShow h ++ " : " ++ treeShow t ++ ")"
 
 instance (TreeShow a) => TreeShow (Map String a) where
     treeShow :: (TreeShow a) => Map String a -> String

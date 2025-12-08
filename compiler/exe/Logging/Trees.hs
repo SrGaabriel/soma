@@ -146,6 +146,8 @@ instance TreeShow AOp where
     treeShow (OpConstruct{acTypeName, acTag, acFields}) =
         "construct " ++ acTypeName ++ "#" ++ show acTag ++ "(" ++ commaSep (map treeShow acFields) ++ ")"
     treeShow (OpTagOf a) = "tag_of " ++ treeShow a
+    treeShow (OpArrayLength a) = "array_length " ++ treeShow a
+    treeShow (OpCons elem arr) = "cons " ++ treeShow elem ++ " " ++ treeShow arr
     treeShow (OpProject a ix) = treeShow a ++ "." ++ show ix
     treeShow (OpIndex a ix) = treeShow a ++ "[" ++ treeShow ix ++ "]"
     treeShow (OpMakeArray xs) = "[" ++ commaSep (map treeShow xs) ++ "]"

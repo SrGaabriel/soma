@@ -144,6 +144,10 @@ resolvePattern localSyms (PTuple pats span') = do
 resolvePattern localSyms (PArray pats span') = do
     resolvedPats <- mapM (resolvePattern localSyms) pats
     pure $ PArray resolvedPats span'
+resolvePattern localSyms (PCons headPat tailPat span') = do
+    resolvedHead <- resolvePattern localSyms headPat
+    resolvedTail <- resolvePattern localSyms tailPat
+    pure $ PCons resolvedHead resolvedTail span'
 resolvePattern localSyms (PAs name pat span') = do
     resolvedName <- lookupLocalSymbol localSyms name
     resolvedPat <- resolvePattern localSyms pat

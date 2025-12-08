@@ -39,7 +39,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Project.Name (isErasureName, mkForkedTaskName, mkProj0, mkProj1, nameToString)
-import Typing.Types (Type (..), byteType, countArityFromType, isFunctionType, tupleType)
+import Typing.Types (Kind (..), TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..), byteType, countArityFromType, intType, isFunctionType, tupleType)
 
 {- | Environment for lowering, containing:
   - Operand bindings (name -> Alloy operand)
@@ -381,32 +381,47 @@ lowerTerm env term = case term of
     -- Case expressions
     C.CCase scrut arms mdef resultTy -> do
         scrutOp <- lowerTerm env scrut
-        -- The tag extracted from an ADT is always a Byte
-        tagName <- emitLetTmp byteType (OpTagOf scrutOp)
         joinBlock <- freshBlockName
         resultName <- freshName
-        armBlocks <- forM arms $ \(tag, boundNamesWithTypes, body) ->
-            (tag,,boundNamesWithTypes,body) <$> freshBlockName
-        defBlockM <- forM mdef $ \defBody -> (,defBody) <$> freshBlockName
-        let switchArms = [(tag, blockName) | (tag, blockName, _, _) <- armBlocks]
-            defTarget = fmap fst defBlockM
-        terminate (ASwitch (OpVar tagName) switchArms defTarget)
-        forM_ armBlocks $ \(_, blockName, boundNamesWithTypes, body) -> do
-            beginBlock blockName []
-            fieldBindings <- forM (zip [0 ..] boundNamesWithTypes) $ \(idx, (boundName, fieldTy)) -> do
-                fieldName <- emitLetTmp fieldTy (OpProject scrutOp idx)
-                when (isErasureName boundName)
-                    $ emitEffect (EffDrop (OpVar fieldName))
-                pure (boundName, OpVar fieldName)
-            let env' = foldr (uncurry extendOperand) env fieldBindings
-            result <- lowerTerm env' body
-            terminate (ABr joinBlock [result])
-        forM_ defBlockM $ \(defBlock, defBody) -> do
-            beginBlock defBlock []
-            result <- lowerTerm env defBody
-            terminate (ABr joinBlock [result])
-        beginBlock joinBlock [(resultName, resultTy)]
-        pure (OpVar resultName)
+
+        -- Check if this is array pattern matching (tags -2 for array literals, -3 for cons)
+        let isArrayPatternMatching = all (\(tag, _, _) -> tag == -2 || tag == -3) arms
+
+        if isArrayPatternMatching && not (null arms)
+            then do
+                -- Array pattern matching: use length-based dispatch
+                -- Get the array length
+                lengthName <- emitLetTmp intType (OpArrayLength scrutOp)
+
+                -- Build conditional chain for array patterns
+                -- Cons patterns (-3) match when length >= 1
+                -- Array literal patterns (-2) with n fields match when length == n
+                lowerArrayPatternMatch env scrutOp (OpVar lengthName) arms mdef joinBlock resultName resultTy
+            else do
+                -- Regular ADT pattern matching: use tag-based dispatch
+                tagName <- emitLetTmp byteType (OpTagOf scrutOp)
+                armBlocks <- forM arms $ \(tag, boundNamesWithTypes, body) ->
+                    (tag,,boundNamesWithTypes,body) <$> freshBlockName
+                defBlockM <- forM mdef $ \defBody -> (,defBody) <$> freshBlockName
+                let switchArms = [(tag, blockName) | (tag, blockName, _, _) <- armBlocks]
+                    defTarget = fmap fst defBlockM
+                terminate (ASwitch (OpVar tagName) switchArms defTarget)
+                forM_ armBlocks $ \(_, blockName, boundNamesWithTypes, body) -> do
+                    beginBlock blockName []
+                    fieldBindings <- forM (zip [0 ..] boundNamesWithTypes) $ \(idx, (boundName, fieldTy)) -> do
+                        fieldName <- emitLetTmp fieldTy (OpProject scrutOp idx)
+                        when (isErasureName boundName)
+                            $ emitEffect (EffDrop (OpVar fieldName))
+                        pure (boundName, OpVar fieldName)
+                    let env' = foldr (uncurry extendOperand) env fieldBindings
+                    result <- lowerTerm env' body
+                    terminate (ABr joinBlock [result])
+                forM_ defBlockM $ \(defBlock, defBody) -> do
+                    beginBlock defBlock []
+                    result <- lowerTerm env defBody
+                    terminate (ABr joinBlock [result])
+                beginBlock joinBlock [(resultName, resultTy)]
+                pure (OpVar resultName)
 
     -- Operations
     C.CBinOp op a b -> do
@@ -510,3 +525,84 @@ lowerTerm env term = case term of
                         -- Sequential fallback - the value is already computed
                         pure taskOp
             Nothing -> error $ "CJoin: unknown task " ++ nameToString taskName
+
+lowerArrayPatternMatch ::
+    LowerEnv ->
+    AOperand ->
+    AOperand ->
+    [(Int, [(C.Name, Type)], C.CTerm)] ->
+    Maybe C.CTerm -> -- default
+    Name ->
+    Name ->
+    Type ->
+    AlloyBuilder AOperand
+lowerArrayPatternMatch env scrutOp lengthOp arms mdef joinBlock resultName resultTy = do
+    let sortedArms = sortArrayArms arms
+
+    go sortedArms
+  where
+    go [] = do
+        case mdef of
+            Just defBody -> do
+                result <- lowerTerm env defBody
+                terminate (ABr joinBlock [result])
+            Nothing -> do
+                terminate (ABr joinBlock [OpConst (CInt 0)])
+        beginBlock joinBlock [(resultName, resultTy)]
+        pure (OpVar resultName)
+    go ((tag, boundNamesWithTypes, body) : rest) = do
+        let expectedLen = getExpectedLength tag boundNamesWithTypes
+
+        thenBlock <- freshBlockName
+        elseBlock <- freshBlockName
+
+        if tag == -3
+            then do
+                let minLength = length boundNamesWithTypes - 1 -- -1 for tail binding
+                cmpResult <- emitLetTmp boolType (OpCmp CSge lengthOp (OpConst (CInt minLength)))
+                terminate (ACondBr (OpVar cmpResult) thenBlock [] elseBlock [])
+            else do
+                -- Array literal pattern: length == expectedLen
+                cmpResult <- emitLetTmp boolType (OpCmp CEq lengthOp (OpConst (CInt expectedLen)))
+                terminate (ACondBr (OpVar cmpResult) thenBlock [] elseBlock [])
+
+        -- Then block: matched, extract fields and evaluate body
+        beginBlock thenBlock []
+        fieldBindings <- forM (zip [0 ..] boundNamesWithTypes) $ \(idx, (boundName, fieldTy)) -> do
+            fieldName <- emitLetTmp fieldTy (OpProject scrutOp idx)
+            when (isErasureName boundName)
+                $ emitEffect (EffDrop (OpVar fieldName))
+            pure (boundName, OpVar fieldName)
+        let env' = foldr (uncurry extendOperand) env fieldBindings
+        result <- lowerTerm env' body
+        terminate (ABr joinBlock [result])
+
+        -- Else block: try next arm
+        beginBlock elseBlock []
+        go rest
+
+    getExpectedLength tag bindings
+        | tag == -3 = length bindings -- Cons: head + tail = 2 bindings, but matches length >= 1
+        | tag == -2 = length bindings -- Array literal: exact match
+        | otherwise = length bindings
+
+    -- Sort arms: cons patterns first (by descending depth), then array literals by descending length
+    -- For cons patterns, more bindings = deeper nesting = more specific, should come first
+    sortArrayArms armList =
+        let (consArms, arrayArms) = partition (\(t, _, _) -> t == -3) armList
+            sortedConsArms = sortBy (\(_, b1, _) (_, b2, _) -> compare (length b2) (length b1)) consArms
+            sortedArrayArms = sortBy (\(_, b1, _) (_, b2, _) -> compare (length b2) (length b1)) arrayArms
+        in sortedConsArms ++ sortedArrayArms
+
+    boolType = TConstructor (TypeConstructor (TyPrim TPBool) KindStar)
+
+    partition _ [] = ([], [])
+    partition p (x : xs)
+        | p x = let (yes, no) = partition p xs in (x : yes, no)
+        | otherwise = let (yes, no) = partition p xs in (yes, x : no)
+
+    sortBy _ [] = []
+    sortBy cmp (x : xs) =
+        sortBy cmp [y | y <- xs, cmp y x == LT]
+            ++ [x]
+            ++ sortBy cmp [y | y <- xs, cmp y x /= LT]

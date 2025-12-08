@@ -485,6 +485,18 @@ extractPatternInfo _scrutTy = \case
     TPArray pats _ty _ -> do
         fieldNamesAndTypes <- mapM extractTypedFieldNameAndType pats
         pure (-2, fieldNamesAndTypes) -- Arrays use tag -2
+    TPCons headPat tailPat _ty _ -> do
+        let flattenCons hp tp = case tp of
+                TPCons hp' tp' _ _ -> do
+                    h <- extractTypedFieldNameAndType hp
+                    rest <- flattenCons hp' tp'
+                    pure (h : rest)
+                _ -> do
+                    h <- extractTypedFieldNameAndType hp
+                    t <- extractTypedFieldNameAndType tp
+                    pure [h, t]
+        bindings <- flattenCons headPat tailPat
+        pure (-3, bindings)
     TPAs name _pat ty _ -> pure (0, [(name, ty)])
 
 {- | Extract a single field name and type from a typed pattern.
@@ -510,6 +522,9 @@ extractTypedFieldNameAndType = \case
         pure (tmp, ty)
     TPArray _ ty _ -> do
         tmp <- freshTmp "array"
+        pure (tmp, ty)
+    TPCons _ _ ty _ -> do
+        tmp <- freshTmp "cons"
         pure (tmp, ty)
     TPAs name _ ty _ -> pure (name, ty)
 

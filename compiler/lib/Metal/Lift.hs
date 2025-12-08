@@ -373,6 +373,7 @@ collectBinders (PAs name p _) = name : collectBinders p
 collectBinders (PConstructor _ ps _) = concatMap collectBinders ps
 collectBinders (PTuple ps _) = concatMap collectBinders ps
 collectBinders (PArray ps _) = concatMap collectBinders ps
+collectBinders (PCons h t _) = collectBinders h ++ collectBinders t
 
 collectBindersTyped :: TypedPattern -> [Name]
 collectBindersTyped (Metal.Expr.TPVar name _ _) = [name]
@@ -382,3 +383,4 @@ collectBindersTyped (Metal.Expr.TPAs name p _ _) = name : collectBindersTyped p
 collectBindersTyped (Metal.Expr.TPConstructor _ ps _ _) = concatMap collectBindersTyped ps
 collectBindersTyped (Metal.Expr.TPTuple ps _ _) = concatMap collectBindersTyped ps
 collectBindersTyped (Metal.Expr.TPArray ps _ _) = concatMap collectBindersTyped ps
+collectBindersTyped (Metal.Expr.TPCons h t _ _) = collectBindersTyped h ++ collectBindersTyped t

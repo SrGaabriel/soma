@@ -156,6 +156,9 @@ usesFromOp blk idx op =
         OpConstruct _ _ fields ->
             mergeAll [singleUseIfVar a (UseAggValue blk idx) | a <- fields]
         OpTagOf a -> singleUseIfVar a (UseAggRead blk idx)
+        OpArrayLength a -> singleUseIfVar a (UseAggRead blk idx)
+        OpCons elem arr ->
+            mergeAll [singleUseIfVar elem (UseAggValue blk idx), singleUseIfVar arr (UseAggRead blk idx)]
         OpProject a _ -> singleUseIfVar a (UseAggRead blk idx)
         OpIndex base ix ->
             mergeAll [singleUseIfVar base (UseIndexBase blk idx), singleUseIfVar ix (UseIndexIdx blk idx)]
