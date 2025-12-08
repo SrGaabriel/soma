@@ -2,7 +2,7 @@ module Parsing.DataTypes (parseDataType, parseDataTypeWithAttributes, parseStruc
 
 import Lexing.Lexer (Token (tokenKind, tokenValue), TokenKind (..), spanningTokens)
 import Lexing.Position (Located)
-import Parsing.Parser (Parser, consume, parseExhaustiveSequence, parseFluidSequence, parseLayout, tryPeekOrEOF)
+import Parsing.Parser (Parser, consume, parseFluidSequence, parseLayout, tryPeekOrEOF)
 import Parsing.Types (parseLocatedType, parseTyVar)
 import Syntax.Tree (Attribute, Expr (..))
 import qualified Text.Megaparsec as MP
@@ -20,10 +20,7 @@ parseDataTypeWithAttributes attrs = do
     let name = tokenValue nameTok
         spanning = spanningTokens dataTok nameTok
 
-    nextTok <- tryPeekOrEOF
-    constructors <- case tokenKind nextTok of
-        TokenEquals -> parseInlineConstructors
-        _ -> parseLayout parseDataTypeConstructor
+    constructors <- parseLayout parseDataTypeConstructor
 
     pure
         $ ExprDataTypeDef
@@ -33,23 +30,6 @@ parseDataTypeWithAttributes attrs = do
             , dataConstructors = constructors
             , dataAttributes = attrs
             , dataSpan = spanning
-            }
-
-parseInlineConstructors :: Parser [Expr]
-parseInlineConstructors = do
-    _ <- consume TokenEquals
-    parseExhaustiveSequence TokenPipe parseInlineConstructor
-
-parseInlineConstructor :: Parser Expr
-parseInlineConstructor = do
-    nameToken <- consume TokenUpperIdentifier
-    types <- parseInlineConstructorArgs
-    let fields = zipWith (\i t -> ("_" ++ show i, t)) [0 :: Int ..] types
-    pure
-        $ ExprDataConstructor
-            { structConstructorName = tokenValue nameToken
-            , structConstructorArgs = fields
-            , structConstructorSpan = spanningTokens nameToken nameToken
             }
 
 parseInlineConstructorArgs :: Parser [Located Type]

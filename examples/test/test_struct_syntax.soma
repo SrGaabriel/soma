@@ -7,7 +7,9 @@ data Tree a
         left :: a
         right :: a
 
-data Maybe a = Just a | Nothing
+data Maybe
+    | Just a
+    | Nothing
 
 data Dummy a
     | A String
