@@ -166,7 +166,7 @@ constraintClassName (Constraint typ) = getClassName typ
     getClassName (TConstructor tc) = tyUniqueName (tcId tc)
     getClassName (TApp t _) = getClassName t
     getClassName (TUnresolved name) = name
-    getClassName _ = error "Invalid constraint type"  -- TODO: This is a partial function that could crash
+    getClassName _ = error "Invalid constraint type" -- TODO: This is a partial function that could crash
 
 constraintTypes :: Constraint -> [Type]
 constraintTypes (Constraint typ) = getTypes typ []

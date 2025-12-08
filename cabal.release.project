@@ -6,7 +6,7 @@ packages:
 with-compiler: ghc-9.12.2
 
 package *
-  ghc-options: -O2 -split-sections -optl=-flto -optl=-O3 -fplugin=LiquidHaskell
+  ghc-options: -O2 -split-sections -optl=-flto -optl=-O3
   executable-stripping: True
 
 tests: True
