@@ -1,1 +1,6 @@
+use base/core.{<>}
+
 struct Path = Path String
+
+def {</>} :: Path -> Path -> Path
+    | (Path p1) (Path p2) => Path (p1 <> "/" <> p2)

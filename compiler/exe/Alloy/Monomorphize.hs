@@ -234,15 +234,17 @@ computeRewriteMap baseFnMap instCache fns =
   where
     processFn AlloyFunction{afName, afParams, afBlocks} =
         let baseEnv = Map.fromList [(n, t) | (n, t) <- afParams]
-            -- outer fold: accumulates (CallSiteId, Rewrites) across blocks
-            (_, rewrites) = foldl' (processBlock baseEnv) (0, []) afBlocks
+            -- outer fold: accumulates (CallSiteId, Rewrites, Env) across blocks
+            -- The env is threaded through so variables defined in earlier blocks are available when processing later blocks
+            (_, _, rewrites) = foldl' processBlock (baseEnv, 0, []) afBlocks
         in map (\(cid, target) -> ((afName, cid), target)) rewrites
 
-    processBlock baseEnv (startCid, startAcc) ABlock{abParams, abInstrs} =
+    processBlock (accEnv, startCid, startAcc) ABlock{abParams, abInstrs} =
         let
-            blockEnv = baseEnv `Map.union` Map.fromList [(n, t) | (n, t) <- abParams]
+            -- Start with accumulated env from previous blocks, plus this block's params
+            blockEnv = accEnv `Map.union` Map.fromList [(n, t) | (n, t) <- abParams]
 
-            -- we thread the environment strictly within the block, but pass Cid/Rewrites through
+            -- we thread the environment strictly within the block
             initialState = (blockEnv, startCid, startAcc)
 
             step (env, cid, acc) instr =
@@ -279,9 +281,9 @@ computeRewriteMap baseFnMap instCache fns =
                         in (nextEnv, nextCid, nextAcc)
                     IEffect _ -> (env, cid, acc)
 
-            (_, finalCid, finalAcc) = foldl' step initialState abInstrs
+            (finalEnv, finalCid, finalAcc) = foldl' step initialState abInstrs
         in
-            (finalCid, finalAcc)
+            (finalEnv, finalCid, finalAcc)
 
     isCallOp (OpCall _ _) = True
     isCallOp (OpDictCall{}) = True
