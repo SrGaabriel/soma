@@ -110,7 +110,7 @@ patternConstructor (PLit lit _) = LitCtor lit
 patternConstructor (PConstructor name pats _) = DataCtor name (length pats)
 patternConstructor (PTuple pats _) = TupleCtor (length pats)
 patternConstructor (PArray pats _) = ArrayCtor (length pats)
-patternConstructor (PCons {}) = ConsCtor
+patternConstructor (PCons{}) = ConsCtor
 patternConstructor (PAs _ pat _) = patternConstructor pat
 patternConstructor _ = error "Not a constructor pattern"
 

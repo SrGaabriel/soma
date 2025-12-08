@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
@@ -451,9 +450,9 @@ collectPatternSymbols = Map.unions . map collectPatternSymbol
 
 collectPatternSymbol :: ParsedPattern -> Map.Map String Symbol
 collectPatternSymbol pat = case pat of
-    PVar {} -> Map.empty -- PVar has String name, not Symbol - will be resolved later
+    PVar{} -> Map.empty -- PVar has String name, not Symbol - will be resolved later
     PWildcard _ -> Map.empty
-    PLit {} -> Map.empty
+    PLit{} -> Map.empty
     PConstructor _ pats _ -> collectPatternSymbols pats
     PTuple pats _ -> collectPatternSymbols pats
     PArray pats _ -> collectPatternSymbols pats
