@@ -97,9 +97,14 @@ data SerializableTyUnique
     | STyUserDefined SerializableUnique
     deriving (Show, Read, Eq, Ord, Generic)
 
+data SerializableKind
+    = SKindStar
+    | SKindArrow SerializableKind SerializableKind
+    deriving (Show, Read, Eq, Ord, Generic)
+
 data SerializableType
     = STyVar String
-    | STyCon SerializableTyUnique
+    | STyCon SerializableTyUnique SerializableKind
     | STyApp SerializableType SerializableType
     | STyArrow SerializableType SerializableType
     | STySkolem String Int
@@ -163,6 +168,11 @@ instance ToJSON SerializableTyUnique where
     toEncoding = genericToEncoding defaultOptions
 
 instance FromJSON SerializableTyUnique
+
+instance ToJSON SerializableKind where
+    toEncoding = genericToEncoding defaultOptions
+
+instance FromJSON SerializableKind
 
 instance ToJSON SerializableType where
     toEncoding = genericToEncoding defaultOptions
@@ -270,9 +280,17 @@ serializableToTyUnique (STyPrim name) = case primitiveFromName name of
     Nothing -> error $ "Unknown primitive type: " ++ name
 serializableToTyUnique (STyUserDefined su) = TyUserDefined (serializableToUnique su)
 
+kindToSerializable :: Kind -> SerializableKind
+kindToSerializable KindStar = SKindStar
+kindToSerializable (KindArrow k1 k2) = SKindArrow (kindToSerializable k1) (kindToSerializable k2)
+
+serializableToKind :: SerializableKind -> Kind
+serializableToKind SKindStar = KindStar
+serializableToKind (SKindArrow k1 k2) = KindArrow (serializableToKind k1) (serializableToKind k2)
+
 typeToSerializable :: Type -> SerializableType
 typeToSerializable (TVar (TypeVar name _)) = STyVar name
-typeToSerializable (TConstructor (TypeConstructor tyId _)) = STyCon (tyUniqueToSerializable tyId)
+typeToSerializable (TConstructor (TypeConstructor tyId kind)) = STyCon (tyUniqueToSerializable tyId) (kindToSerializable kind)
 typeToSerializable (TApp t1 t2) = STyApp (typeToSerializable t1) (typeToSerializable t2)
 typeToSerializable (TArrow t1 t2) = STyArrow (typeToSerializable t1) (typeToSerializable t2)
 typeToSerializable (TSkolem (SkolemVar _ _ uniq name _)) = STySkolem name uniq
@@ -280,7 +298,7 @@ typeToSerializable (TUnresolved name) = STyUnresolved name
 
 serializableToType :: SerializableType -> Type
 serializableToType (STyVar name) = TVar (TypeVar{tvId = name, tvKind = KindStar})
-serializableToType (STyCon stu) = TConstructor (TypeConstructor{tcId = serializableToTyUnique stu, tcKind = KindStar})
+serializableToType (STyCon stu sk) = TConstructor (TypeConstructor{tcId = serializableToTyUnique stu, tcKind = serializableToKind sk})
 serializableToType (STyApp t1 t2) = TApp (serializableToType t1) (serializableToType t2)
 serializableToType (STyArrow t1 t2) = TArrow (serializableToType t1) (serializableToType t2)
 serializableToType (STySkolem name uniq) = TSkolem (SkolemVar{skId = "", skKind = KindStar, skUnique = uniq, skName = name, skRigidity = Rigid})

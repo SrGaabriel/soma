@@ -186,10 +186,18 @@ compileOp (OpProject agg ix) resultTy = do
         LlvmI8 -> castPrimitive av aggTy resultTy
         LlvmI1 -> castPrimitive av aggTy resultTy
         -- Array element access: pointer to element type (e.g., ptr to i32 for [Int])
-        -- Use GEP to get element at index ix, then load
+        -- Two cases:
+        -- 1. resultTy is an element type: load element at index ix
+        -- 2. resultTy is a pointer type (array tail): compute pointer to rest of array
         LlvmPointer elemTy -> do
-            elemPtr <- saveTmp (LlvmGetElementPtr elemTy av [LlvmLiteral LlvmI64 (show ix)] True) (LlvmPointer elemTy)
-            saveTmp (LlvmLoadTyped elemTy elemPtr) resultTy
+            case resultTy of
+                LlvmPointer _ -> do
+                    -- Array tail access: return pointer to element at index ix (rest of array)
+                    saveTmp (LlvmGetElementPtr elemTy av [LlvmLiteral LlvmI64 (show ix)] True) resultTy
+                _ -> do
+                    -- Element access: load element at index ix
+                    elemPtr <- saveTmp (LlvmGetElementPtr elemTy av [LlvmLiteral LlvmI64 (show ix)] True) (LlvmPointer elemTy)
+                    saveTmp (LlvmLoadTyped elemTy elemPtr) resultTy
         _ ->
             saveTmp (LlvmExtractValue aggTy av ix) resultTy
   where
@@ -419,6 +427,39 @@ compileOp (OpCons elemOp arrOp) resultTy = do
     if resultTy == LlvmPointer elemTy
         then pure newArrayPtr
         else saveTmp (LlvmBitcast newArrayPtr resultTy) resultTy
+compileOp (OpArrayTail arrOp) resultTy = do
+    arrVal <- compileOperand arrOp
+    let elemTy = case resultTy of
+            LlvmPointer ty -> ty
+            _ -> error $ "OpArrayTail result must be pointer type, got: " ++ show resultTy
+
+    asI64Ptr <- saveTmp (LlvmBitcast arrVal (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+    oldLengthPtr <- saveTmp (LlvmGetElementPtr LlvmI64 asI64Ptr [LlvmLiteral LlvmI64 "-1"] True) (LlvmPointer LlvmI64)
+    oldLength <- saveTmp (LlvmLoadTyped LlvmI64 oldLengthPtr) LlvmI64
+
+    newLength <- saveTmp (LlvmSub LlvmI64 oldLength (LlvmLiteral LlvmI64 "1")) LlvmI64
+
+    let elemSize = llvmTypeSize elemTy
+    bytesForElements <- saveTmp (LlvmMul LlvmI64 newLength (LlvmLiteral LlvmI64 (show elemSize))) LlvmI64
+    totalSize <- saveTmp (LlvmAdd LlvmI64 bytesForElements (LlvmLiteral LlvmI64 "8")) LlvmI64
+
+    mallocFn <- useDep mallocDependency
+    rawPtr <- saveTmp (LlvmCall mallocFn (LlvmPointer LlvmI8) [totalSize]) (LlvmPointer LlvmI8)
+
+    newLengthPtr <- saveTmp (LlvmBitcast rawPtr (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+    tell [LlvmStore newLength newLengthPtr]
+
+    dataPtr <- saveTmp (LlvmGetElementPtr LlvmI64 newLengthPtr [LlvmLiteral LlvmI64 "1"] True) (LlvmPointer LlvmI64)
+    newArrayPtr <- saveTmp (LlvmBitcast dataPtr (LlvmPointer elemTy)) (LlvmPointer elemTy)
+
+    srcPtr <- saveTmp (LlvmGetElementPtr elemTy arrVal [LlvmLiteral LlvmI64 "1"] True) (LlvmPointer elemTy)
+    destI8 <- saveTmp (LlvmBitcast newArrayPtr (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    srcI8 <- saveTmp (LlvmBitcast srcPtr (LlvmPointer LlvmI8)) (LlvmPointer LlvmI8)
+    copySize <- saveTmp (LlvmMul LlvmI64 newLength (LlvmLiteral LlvmI64 (show elemSize))) LlvmI64
+    memcpyFn <- useDep memcpyDependency
+    _ <- saveTmp (LlvmCall memcpyFn (LlvmPointer LlvmI8) [destI8, srcI8, copySize]) (LlvmPointer LlvmI8)
+
+    pure newArrayPtr
 compileOp (OpMakeArray xs) _resultTy = do
     compiledXs <- mapM compileOperand xs
     let elemTy = if null compiledXs then LlvmI32 else getValueType (hardHead compiledXs)

@@ -109,6 +109,7 @@ data AOp
     | OpTagOf AOperand -- extract tag from ADT/enum aggregate
     | OpArrayLength AOperand -- extract length from array (for pattern matching)
     | OpCons AOperand AOperand -- prepend element to array: element, array -> new array
+    | OpArrayTail AOperand -- get tail of array (drop first element): array -> new array
     | OpProject AOperand FieldIndex -- project field by index (records/tuples/constructors)
     | OpIndex AOperand AOperand -- index into array/slice: base, idx
     | OpMakeArray [AOperand] -- array aggregate literal (element type dictated by ILet type)

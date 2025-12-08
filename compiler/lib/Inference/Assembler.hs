@@ -18,10 +18,10 @@ import Metal.Expr
 import Metal.Lower (LowerResult (..), untypedToInference)
 import Metal.Metadata (FunctionAttributes)
 import Metal.Module (MetallicConstructor (..), MetallicTypeDef (..))
-import Project.Name (Name (..), nameToString)
-import Syntax.Patterns (Literal (..), Pattern (..), ResolvedPattern)
+import Project.Name (Name (..))
+import Syntax.Patterns (Pattern (..), ResolvedPattern)
 import qualified Syntax.Tree
-import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..), extractArrayElemType, extractTupleTypes, extractTypeArgs, splitFunctionType)
+import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..), extractArrayElemType, extractTupleTypes, extractTypeArgs)
 
 type ConstructorEnv = Map.Map Name (Name, [Type])
 

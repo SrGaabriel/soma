@@ -8,6 +8,7 @@ intrinsic def {-} :: Int -> Int -> Int
 intrinsic def {*} :: Int -> Int -> Int
 
 intrinsic def {==} :: a -> a -> Bool
+intrinsic def {<=} :: Int -> Int -> Bool
 
 def head :: [a] -> Option a
     | (x:_) => Some x
@@ -42,12 +43,12 @@ def map :: (a -> b) -> [a] -> [b]
     | f (x:xs) => cons (f x) (map f xs)
     | _ [] => []
 
-def reverse :: [a] -> [a]
-    | xs => reverseAcc xs []
-
 def reverseAcc :: [a] -> [a] -> [a]
     | (x:xs) acc => reverseAcc xs (cons x acc)
     | [] acc => acc
+
+def reverse :: [a] -> [a]
+    | xs => reverseAcc xs []
 
 def append :: [a] -> [a] -> [a]
     | (x:xs) ys => cons x (append xs ys)

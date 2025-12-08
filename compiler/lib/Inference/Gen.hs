@@ -23,7 +23,6 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import qualified Data.Map as Map
-import Debug.Trace (trace)
 import Inference.Core (UnificationPurpose (..))
 import Inference.Errors (InferenceError (..))
 import Inference.Naming (nameSkolemPrefix, nameTmpPrefix)
@@ -47,7 +46,6 @@ import Typing.Types (
     arrayType,
     boolType,
     cleanQualified,
-    extractArrayElemType,
     extractTupleTypes,
     splitFunctionType,
     tupleType,

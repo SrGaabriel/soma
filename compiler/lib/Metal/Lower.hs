@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
@@ -437,11 +438,27 @@ lowerExpr expr = case expr of
 
 lowerArm :: Expr -> LowerM UntypedArm
 lowerArm (ExprPatternMatchArm pats body _) = do
-    let localSyms = collectLocalSymbols body
+    let patSyms = collectPatternSymbols pats
+        bodySyms = collectLocalSymbols body
+        localSyms = patSyms `Map.union` bodySyms
     resolvedPats <- mapM (resolvePattern localSyms) pats
     metalBody <- lowerExpr body
     pure $ MCaseArm resolvedPats metalBody
 lowerArm other = error $ "Invalid pattern match arm: " ++ show other
+
+collectPatternSymbols :: [ParsedPattern] -> Map.Map String Symbol
+collectPatternSymbols = Map.unions . map collectPatternSymbol
+
+collectPatternSymbol :: ParsedPattern -> Map.Map String Symbol
+collectPatternSymbol pat = case pat of
+    PVar {} -> Map.empty -- PVar has String name, not Symbol - will be resolved later
+    PWildcard _ -> Map.empty
+    PLit {} -> Map.empty
+    PConstructor _ pats _ -> collectPatternSymbols pats
+    PTuple pats _ -> collectPatternSymbols pats
+    PArray pats _ -> collectPatternSymbols pats
+    PCons h t _ -> collectPatternSymbol h `Map.union` collectPatternSymbol t
+    PAs _ pat' _ -> collectPatternSymbol pat'
 
 lowerApp :: Expr -> [Expr] -> LowerM UntypedExpr
 lowerApp base args = do

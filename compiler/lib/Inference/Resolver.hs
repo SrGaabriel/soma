@@ -114,7 +114,7 @@ collectGlobals (ExprRoot children) = do
     mapM_ collectGlobals children
 collectGlobals (ExprBindingDef{}) =
     pure ()
-collectGlobals (ExprIntrinsicDef{}) = do
+collectGlobals (ExprIntrinsicDef{}) =
     pure ()
 collectGlobals (ExprIntrinsicDataTypeDef name kind eSpan) = do
     tyUnique <- case primitiveFromName name of
@@ -226,9 +226,9 @@ resolveTReference expr@(ExprIntrinsicInstanceDef (Located typSpan constraintType
 resolveTReference (ExprBindingDef name (Located typSpan typ) body topLevel mods eSpan) = do
     let typeExpr = ExprNum "" typSpan -- Dummy expression with the type's span
     realTyp <- replaceAllUnresolvedQualified typeExpr typ
-    body' <- resolveTReference body
     when topLevel $ do
         addGlobalBinding name realTyp (BindingSymbol realTyp) eSpan
+    body' <- resolveTReference body
 
     pure $ ExprBindingDef name (Located typSpan realTyp) body' topLevel mods eSpan
 resolveTReference (ExprIntrinsicDef name (Located typSpan typ) eSpan) = do

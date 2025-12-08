@@ -124,7 +124,7 @@ parseLambdaBody = do
 
 operatorPrecedenceTable :: [[String]]
 operatorPrecedenceTable =
-    [ ["*", "/"]
+    [ ["*", "/", "%"]
     , ["+", "-"]
     , ["==", "!=", "<", ">", "<=", ">="]
     ]

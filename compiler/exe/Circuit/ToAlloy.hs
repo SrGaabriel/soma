@@ -39,7 +39,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Project.Name (isErasureName, mkForkedTaskName, mkProj0, mkProj1, nameToString)
-import Typing.Types (Kind (..), TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..), byteType, countArityFromType, intType, isFunctionType, tupleType)
+import Typing.Types (Kind (..), TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..), byteType, countArityFromType, intType, isArrayType, isFunctionType, tupleType)
 
 {- | Environment for lowering, containing:
   - Operand bindings (name -> Alloy operand)
@@ -341,6 +341,10 @@ lowerTerm env term = case term of
                                 $ extendOperand proj0Name (OpVar proj0)
                                 $ extendOperand proj1Name (OpVar proj1) env
                     lowerTerm env' body
+                | isArrayType ty -> do
+                    -- todo: when array mutation optimizations are added, this will need to generate proper cloning code (OpDupArray).
+                    let env' = extendOperand proj0Name valOp $ extendOperand proj1Name valOp env
+                    lowerTerm env' body
                 | otherwise -> do
                     -- Non-closure heap types: use generic DUP with parallel support
                     let workEstimate = 20 -- Base work for non-closure heap values
@@ -547,9 +551,42 @@ lowerArrayPatternMatch env scrutOp lengthOp arms mdef joinBlock resultName resul
                 result <- lowerTerm env defBody
                 terminate (ABr joinBlock [result])
             Nothing -> do
-                terminate (ABr joinBlock [OpConst (CInt 0)])
+                terminate AUnreachable
         beginBlock joinBlock [(resultName, resultTy)]
         pure (OpVar resultName)
+    go [(tag, boundNamesWithTypes, body)] = do
+        let expectedLen = getExpectedLength tag boundNamesWithTypes
+
+        thenBlock <- freshBlockName
+        elseBlock <- freshBlockName
+
+        if tag == -3
+            then do
+                let minLength = length boundNamesWithTypes - 1 -- -1 for tail binding
+                cmpResult <- emitLetTmp boolType (OpCmp CSge lengthOp (OpConst (CInt minLength)))
+                terminate (ACondBr (OpVar cmpResult) thenBlock [] elseBlock [])
+            else do
+                cmpResult <- emitLetTmp boolType (OpCmp CEq lengthOp (OpConst (CInt expectedLen)))
+                terminate (ACondBr (OpVar cmpResult) thenBlock [] elseBlock [])
+
+        beginBlock thenBlock []
+        fieldBindings <- forM (zip [0 ..] boundNamesWithTypes) $ \(idx, (boundName, fieldTy)) -> do
+            -- For cons patterns (tag -3), the last binding is the tail
+            -- Use OpArrayTail instead of OpProject for it
+            let isTailBinding = tag == -3 && idx == length boundNamesWithTypes - 1
+            fieldName <-
+                if isTailBinding
+                    then emitLetTmp fieldTy (OpArrayTail scrutOp)
+                    else emitLetTmp fieldTy (OpProject scrutOp idx)
+            when (isErasureName boundName)
+                $ emitEffect (EffDrop (OpVar fieldName))
+            pure (boundName, OpVar fieldName)
+        let env' = foldr (uncurry extendOperand) env fieldBindings
+        result <- lowerTerm env' body
+        terminate (ABr joinBlock [result])
+
+        beginBlock elseBlock []
+        go []
     go ((tag, boundNamesWithTypes, body) : rest) = do
         let expectedLen = getExpectedLength tag boundNamesWithTypes
 
@@ -569,7 +606,11 @@ lowerArrayPatternMatch env scrutOp lengthOp arms mdef joinBlock resultName resul
         -- Then block: matched, extract fields and evaluate body
         beginBlock thenBlock []
         fieldBindings <- forM (zip [0 ..] boundNamesWithTypes) $ \(idx, (boundName, fieldTy)) -> do
-            fieldName <- emitLetTmp fieldTy (OpProject scrutOp idx)
+            let isTailBinding = tag == -3 && idx == length boundNamesWithTypes - 1
+            fieldName <-
+                if isTailBinding
+                    then emitLetTmp fieldTy (OpArrayTail scrutOp)
+                    else emitLetTmp fieldTy (OpProject scrutOp idx)
             when (isErasureName boundName)
                 $ emitEffect (EffDrop (OpVar fieldName))
             pure (boundName, OpVar fieldName)

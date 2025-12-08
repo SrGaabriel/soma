@@ -160,6 +160,7 @@ analyzeOp op st = case op of
     OpTagOf _ -> st
     OpArrayLength _ -> st{asHasMemoryAccess = True}
     OpCons{} -> st{asHasMemoryAccess = True}
+    OpArrayTail{} -> st{asHasMemoryAccess = True}
     OpGetDict{} -> st
 
 analyzeEffect :: AEffect -> AnalysisState -> AnalysisState

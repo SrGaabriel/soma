@@ -49,7 +49,8 @@ substOp env = \case
     OpConstruct tn tag fields -> OpConstruct tn tag (map sub fields)
     OpTagOf a -> OpTagOf (sub a)
     OpArrayLength a -> OpArrayLength (sub a)
-    OpCons elem arr -> OpCons (sub elem) (sub arr)
+    OpCons element arr -> OpCons (sub element) (sub arr)
+    OpArrayTail a -> OpArrayTail (sub a)
     OpProject a i -> OpProject (sub a) i
     OpIndex a i -> OpIndex (sub a) (sub i)
     OpMakeArray xs -> OpMakeArray (map sub xs)
@@ -177,7 +178,8 @@ opVars = \case
     OpConstruct _ _ fields -> concatMap vars fields
     OpTagOf a -> vars a
     OpArrayLength a -> vars a
-    OpCons elem arr -> vars elem ++ vars arr
+    OpCons element arr -> vars element ++ vars arr
+    OpArrayTail a -> vars a
     OpProject a _ -> vars a
     OpIndex a i -> vars a ++ vars i
     OpMakeArray xs -> concatMap vars xs

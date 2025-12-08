@@ -340,15 +340,26 @@ lowerExpr = \case
                 if allCatchAll && not (null arms)
                     then do
                         -- All first patterns are catch-all (TPVar/TPWildcard), so we just bind the variable and continue with nested case!
-                        let firstArm = hardHead arms
-                            firstPat = hardHead (mcaPatterns firstArm)
-                        case firstPat of
-                            TPVar name _ _ -> do
-                                -- Bind the scrutinee to the variable name
-                                let nestedArms = [arm{mcaPatterns = drop 1 (mcaPatterns arm)} | arm <- arms]
+                        -- We use the first TPVar's name as the canonical binding name
+                        let firstVarName = findFirstVarName firstPatterns
+                        case firstVarName of
+                            Just canonicalName -> do
+                                let nestedArms =
+                                        [ let armPat = hardHead (mcaPatterns arm)
+                                              armBody = mcaBody arm
+                                              -- If this arm's first pattern is a TPVar with a different name,
+                                              -- substitute it in the body
+                                              newBody = case armPat of
+                                                TPVar patName _ _
+                                                    | patName /= canonicalName ->
+                                                        substituteInExpr patName canonicalName armBody
+                                                _ -> armBody
+                                          in arm{mcaPatterns = drop 1 (mcaPatterns arm), mcaBody = newBody}
+                                        | arm <- arms
+                                        ]
                                 nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy dummySpan)
-                                pure $ CLet name scrutTy scrut' nestedBody
-                            _ -> do
+                                pure $ CLet canonicalName scrutTy scrut' nestedBody
+                            Nothing -> do
                                 let nestedArms = [arm{mcaPatterns = drop 1 (mcaPatterns arm)} | arm <- arms]
                                 tmp <- freshTmp "wild"
                                 nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy dummySpan)
@@ -443,6 +454,49 @@ isCatchAllPattern TPVar{} = True
 isCatchAllPattern TPWildcard{} = True
 isCatchAllPattern TPAs{} = True
 isCatchAllPattern _ = False
+
+findFirstVarName :: [TypedPattern] -> Maybe Name
+findFirstVarName [] = Nothing
+findFirstVarName (TPVar name _ _ : _) = Just name
+findFirstVarName (TPAs name _ _ _ : _) = Just name
+findFirstVarName (_ : rest) = findFirstVarName rest
+
+substituteInExpr :: Name -> Name -> TypedExpr -> TypedExpr
+substituteInExpr oldName newName = go
+  where
+    go expr = case expr of
+        MVar name ty span'
+            | name == oldName -> MVar newName ty span'
+            | otherwise -> expr
+        MLit{} -> expr
+        MCall callee args ty span' ->
+            MCall (go callee) (map go args) ty span'
+        MTypeApp e tys ty span' ->
+            MTypeApp (go e) tys ty span'
+        MLet name val body ty span'
+            | name == oldName -> MLet name (go val) body ty span' -- shadowed
+            | otherwise -> MLet name (go val) (go body) ty span'
+        MLambda params body ty span' ->
+            if any (\(n, _) -> n == oldName) params
+                then expr -- shadowed by lambda param
+                else MLambda params (go body) ty span'
+        MClosure name captures ty span' ->
+            MClosure name (map (\(n, t) -> if n == oldName then (newName, t) else (n, t)) captures) ty span'
+        MConstruct name tag args ty span' ->
+            MConstruct name tag (map go args) ty span'
+        MArrayLit elems ty span' ->
+            MArrayLit (map go elems) ty span'
+        MTuple elems ty span' ->
+            MTuple (map go elems) ty span'
+        MIf cond thenE elseE ty span' ->
+            MIf (go cond) (go thenE) (go elseE) ty span'
+        MCase scruts arms mdef ty span' ->
+            MCase (map go scruts) (map goArm arms) (fmap go mdef) ty span'
+        MFieldAccess e idx ty span' ->
+            MFieldAccess (go e) idx ty span'
+        MPanic{} -> expr
+
+    goArm (MCaseArm pats body) = MCaseArm pats (go body)
 
 {- | Partition case arms into specific patterns and catch-all patterns.
 Specific patterns (literals, constructors) become switch arms.

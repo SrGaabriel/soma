@@ -232,14 +232,14 @@ computeRewriteMap ::
 computeRewriteMap baseFnMap instCache fns =
     Map.fromList $ concatMap processFn fns
   where
-    processFn AlloyFunction{afName, afParams, afBlocks} =
+    processFn AlloyFunction{afName = fnName', afParams, afBlocks} =
         let baseEnv = Map.fromList [(n, t) | (n, t) <- afParams]
             -- outer fold: accumulates (CallSiteId, Rewrites, Env) across blocks
             -- The env is threaded through so variables defined in earlier blocks are available when processing later blocks
-            (_, _, rewrites) = foldl' processBlock (baseEnv, 0, []) afBlocks
-        in map (\(cid, target) -> ((afName, cid), target)) rewrites
+            (_, _, rewrites) = foldl' (processBlock fnName') (baseEnv, 0, []) afBlocks
+        in map (\(cid, target) -> ((fnName', cid), target)) rewrites
 
-    processBlock (accEnv, startCid, startAcc) ABlock{abParams, abInstrs} =
+    processBlock fnName' (accEnv, startCid, startAcc) ABlock{abParams, abInstrs} =
         let
             -- Start with accumulated env from previous blocks, plus this block's params
             blockEnv = accEnv `Map.union` Map.fromList [(n, t) | (n, t) <- abParams]
@@ -256,9 +256,20 @@ computeRewriteMap baseFnMap instCache fns =
                                         Just specName -> (cid + 1, Just specName)
                                         Nothing -> (cid + 1, Nothing)
                                 Nothing ->
-                                    -- Check if trait method was resolved to instance method
+                                    -- Check if this is a recursive call from a monomorphized function to its base
+                                    -- or if trait method was resolved to instance method
                                     case op of
                                         OpCall (Direct calleeName) args
+                                            -- Check if caller is a monomorphized version of callee
+                                            -- Only apply this optimization if the callee is actually in the baseFnMap
+                                            -- For trait methods, we must use resolveTraitMethod to find the correct instance
+                                            | Just calleeBase <- nameBaseUnique calleeName
+                                            , Just callerBase <- nameBaseUnique fnName'
+                                            , calleeBase == callerBase
+                                            , fnName' /= calleeName
+                                            , Map.member calleeName baseFnMap ->
+                                                -- Recursive call from mono fn to base - rewrite to self
+                                                (cid + 1, Just fnName')
                                             | Map.notMember calleeName baseFnMap ->
                                                 case resolveTraitMethod baseFnMap env calleeName args of
                                                     Just resolved
@@ -291,16 +302,16 @@ computeRewriteMap baseFnMap instCache fns =
 
 applyRewrites :: RewriteMap -> Map InstKey Name -> Map Name AlloyFunction -> AlloyFunction -> AlloyFunction
 applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afParams = fnParams} =
-    fn{afBlocks = map rewriteBlock afBlocks}
+    let baseEnv = Map.fromList [(n, t) | (n, t) <- fnParams]
+        (rewrittenBlocks, _, _) = foldl' (rewriteBlock baseEnv) ([], 0, baseEnv) afBlocks
+    in fn{afBlocks = reverse rewrittenBlocks}
   where
-    baseEnv = Map.fromList [(n, t) | (n, t) <- fnParams]
+    rewriteBlock baseEnv (accBlocks, startCid, accEnv) blk@ABlock{abInstrs, abParams} =
+        let blockEnv = accEnv `Map.union` Map.fromList [(n, t) | (n, t) <- abParams]
+            (newInstrs, nextCid, nextEnv) = foldl' rewriteInstr ([], startCid, blockEnv) abInstrs
+        in (blk{abInstrs = reverse newInstrs} : accBlocks, nextCid, nextEnv)
 
-    rewriteBlock blk@ABlock{abInstrs, abParams} =
-        let blockEnv = baseEnv `Map.union` Map.fromList [(n, t) | (n, t) <- abParams]
-            (newInstrs, _, _) = foldl' (rewriteInstr blockEnv) ([], 0, blockEnv) abInstrs
-        in blk{abInstrs = reverse newInstrs}
-
-    rewriteInstr _env (acc, cid, currEnv) instr =
+    rewriteInstr (acc, cid, currEnv) instr =
         case instr of
             ILet name ty op ->
                 let (newOp, nextCid) = rewriteOp currEnv ty cid op
@@ -311,10 +322,13 @@ applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afPar
                 in (IEffect newEff : acc, cid, currEnv)
 
     rewriteOp _env ty cid op = case op of
-        OpCall (Direct _) args ->
+        OpCall (Direct calleeName) args ->
             case Map.lookup (afName, cid) rwMap of
                 Just newName -> (OpCall (Direct newName) args, cid + 1)
-                Nothing -> (op, cid + 1)
+                Nothing -> (OpCall (Direct calleeName) args, cid + 1)
+        OpCall (Indirect _) _ ->
+            -- Indirect calls also increment cid to stay in sync with computeRewriteMap
+            (op, cid + 1)
         OpDictCall _ _ _ args ->
             case Map.lookup (afName, cid) rwMap of
                 Just newName -> (OpCall (Direct newName) args, cid + 1)

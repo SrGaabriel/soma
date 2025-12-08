@@ -37,6 +37,7 @@ module Typing.Types (
     countArityFromType,
     extractTupleTypes,
     extractArrayElemType,
+    isArrayType,
     extractTypeArgs,
 ) where
 
@@ -251,6 +252,10 @@ extractTupleTypes _ = []
 extractArrayElemType :: Type -> Type
 extractArrayElemType (TApp (TConstructor (TypeConstructor (TyPrim TPArray) _)) elemTy) = elemTy
 extractArrayElemType ty = ty
+
+isArrayType :: Type -> Bool
+isArrayType (TApp (TConstructor (TypeConstructor (TyPrim TPArray) _)) _) = True
+isArrayType _ = False
 
 extractTypeArgs :: Type -> [Type]
 extractTypeArgs (TApp f arg) = extractTypeArgs f ++ [arg]

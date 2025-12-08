@@ -81,5 +81,5 @@ expandIntrinsicCall callee args = do
         (BinOp op, [a, b]) -> Just $ OpBin op a b
         (CmpOp op, [a, b]) -> Just $ OpCmp op a b
         (UnaryOp op, [a]) -> Just $ OpUnary op a
-        (ConsOp, [elem, arr]) -> Just $ OpCons elem arr
+        (ConsOp, [element, arr]) -> Just $ OpCons element arr
         _ -> Nothing

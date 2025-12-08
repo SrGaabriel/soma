@@ -521,19 +521,39 @@ inlineForwardBlocks fn =
     let fwdBlocks = mapMaybe isForward (afBlocks fn)
 
         fwdBlocks' = filter (\(bn, _, _, _) -> bn /= afEntry fn) fwdBlocks
-    in foldl' inlineOne fn fwdBlocks'
+
+        -- Check if there are any switches in the function
+        hasSwitch = any blockHasSwitch (afBlocks fn)
+        blockHasSwitch ABlock{abTerminator = ASwitch{}} = True
+        blockHasSwitch _ = False
+    in foldl' (inlineOne hasSwitch) fn fwdBlocks'
   where
     isForward :: ABlock -> Maybe (Name, [(Name, Type)], Name, [AOperand])
     isForward ABlock{abName, abParams, abInstrs = [], abTerminator = ABr tgt args} =
         Just (abName, abParams, tgt, args)
     isForward _ = Nothing
 
-    inlineOne :: AlloyFunction -> (Name, [(Name, Type)], Name, [AOperand]) -> AlloyFunction
-    inlineOne fn' (fName, params, tgtName, tgtArgs) =
+    inlineOne :: Bool -> AlloyFunction -> (Name, [(Name, Type)], Name, [AOperand]) -> AlloyFunction
+    inlineOne hasSwitch fn' (fName, params, tgtName, tgtArgs) =
         let paramNames = map fst params
+            -- If there are switches and the target has parameters (tgtArgs not empty),
+            -- we can't safely inline because switches can't pass arguments.
+            -- In this case, check if any switch actually references this block.
+            canRemoveBlock = not hasSwitch || null tgtArgs || not (anyBlockRefersViaSwitchTo fName (afBlocks fn'))
             blocks' = map (rewritePred fName paramNames tgtName tgtArgs) (afBlocks fn')
-            blocks'' = filter ((/= fName) . abName) blocks'
+            blocks'' =
+                if canRemoveBlock
+                    then filter ((/= fName) . abName) blocks'
+                    else blocks'
         in fn'{afBlocks = blocks''}
+
+    anyBlockRefersViaSwitchTo :: Name -> [ABlock] -> Bool
+    anyBlockRefersViaSwitchTo targetName = any (switchRefersTo targetName . abTerminator)
+
+    switchRefersTo :: Name -> ATerminator -> Bool
+    switchRefersTo targetName (ASwitch _ cases mdef) =
+        any ((== targetName) . snd) cases || mdef == Just targetName
+    switchRefersTo _ _ = False
 
     rewritePred :: Name -> [Name] -> Name -> [AOperand] -> ABlock -> ABlock
     rewritePred fName pNames tgtName tgtArgs blk@ABlock{abTerminator} =
@@ -560,4 +580,14 @@ inlineForwardBlocks fn =
                             in (tgtName, newArgs)
                         else (fb, fa)
             in ACondBr c tb' ta' fb' fa'
+        -- Handle ASwitch: rewrite case targets that point to the forward block
+        -- Note: switches don't pass arguments, so we can only inline forward blocks
+        -- when BOTH the forward block has no parameters AND the target block has no parameters
+        -- (i.e., tgtArgs is empty, meaning nothing needs to be passed to the target)
+        rewriteTerm (ASwitch op cases mdef)
+            | null pNames && null tgtArgs =
+                -- Both forward block and target have no parameters, safe to redirect
+                let cases' = map (\(tag, tgt) -> if tgt == fName then (tag, tgtName) else (tag, tgt)) cases
+                    mdef' = fmap (\tgt -> if tgt == fName then tgtName else tgt) mdef
+                in ASwitch op cases' mdef'
         rewriteTerm t = t
