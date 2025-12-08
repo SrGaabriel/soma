@@ -60,6 +60,15 @@ data Expr
         , dataAttributes :: [Located Attribute]
         , dataSpan :: Span
         }
+    | ExprStructDef
+        { structName :: String
+        , structGenerics :: [TyVar]
+        , structConstraints :: [Constraint]
+        , structConstructorName :: String
+        , structFields :: [(String, Located Type)]
+        , structAttributes :: [Located Attribute]
+        , structSpan :: Span
+        }
     | ExprIntrinsicDataTypeDef
         { intrinsicDataTypeName :: String
         , intrinsicDataTypeKind :: Kind
@@ -130,6 +139,7 @@ exprChildren (ExprDerivedPatternMatch arms) = arms
 exprChildren (ExprBindingDef _ _ body _ _ _) = [body]
 exprChildren (ExprIntrinsicDef{}) = []
 exprChildren (ExprDataTypeDef _ _ _ constructors _ _) = constructors
+exprChildren (ExprStructDef{}) = []
 exprChildren (ExprIntrinsicDataTypeDef{}) = []
 exprChildren (ExprTypeClassDef _ _ methods _) = methods
 exprChildren (ExprInstanceDef _ methods _) = methods
@@ -158,6 +168,7 @@ exprSpan (ExprLet _ _ _ s) = s
 exprSpan (ExprBindingDef _ _ _ _ _ s) = s
 exprSpan (ExprIntrinsicDef _ _ s) = s
 exprSpan (ExprDataTypeDef _ _ _ _ _ s) = s
+exprSpan (ExprStructDef _ _ _ _ _ _ s) = s
 exprSpan (ExprIntrinsicDataTypeDef _ _ s) = s
 exprSpan (ExprDataConstructor _ _ s) = s
 exprSpan (ExprTypeClassDef _ _ _ s) = s
@@ -197,6 +208,8 @@ modifySpan (ExprIntrinsicDef name typ _) newSpan =
     ExprIntrinsicDef name typ newSpan
 modifySpan (ExprDataTypeDef name generics constraints constructors attrs _) newSpan =
     ExprDataTypeDef name generics constraints constructors attrs newSpan
+modifySpan (ExprStructDef name generics constraints ctorName fields attrs _) newSpan =
+    ExprStructDef name generics constraints ctorName fields attrs newSpan
 modifySpan (ExprIntrinsicDataTypeDef name kind _) newSpan =
     ExprIntrinsicDataTypeDef name kind newSpan
 modifySpan (ExprDataConstructor name args _) newSpan =

@@ -10,6 +10,7 @@ import Control.Monad.Reader (MonadReader (local), ReaderT (runReaderT), asks)
 import Control.Monad.State (MonadState (get, put), State, gets, modify', runState)
 import Control.Monad.Writer (MonadWriter (tell), WriterT (runWriterT))
 import Data.Foldable (foldlM)
+import Data.List (partition)
 import qualified Data.Map as Map
 import Inference.Core (InstanceEnv, TypeEnv)
 import Inference.Errors (InferenceError (..))
@@ -66,6 +67,10 @@ freshUnique originalName = do
 mkSymbol :: String -> SymbolKind -> Span -> ResolverM Symbol
 mkSymbol name kind sySpan = do
     unique <- freshUnique name
+    mkSymbolWithUnique unique name kind sySpan
+
+mkSymbolWithUnique :: Unique -> String -> SymbolKind -> Span -> ResolverM Symbol
+mkSymbolWithUnique unique name kind sySpan = do
     moduleName <- gets currentModule
     packageName <- gets currentPackage
     return
@@ -81,9 +86,28 @@ mkSymbol name kind sySpan = do
 findSymbolByName :: String -> TypeEnv -> Maybe (Symbol, QualifiedType)
 findSymbolByName name env =
     let matches = [(sym, qual) | (sym, qual) <- Map.toList env, resolvedSymbolName sym == name]
-    in case matches of
+        (constructors, others) = partition (isConstructorSymbol . fst) matches
+    in case constructors ++ others of
         (sym, qual) : _ -> Just (sym, qual)
         [] -> Nothing
+  where
+    isConstructorSymbol sym = case resolvedSymbolKind sym of
+        DataConstructorSymbol _ -> True
+        _ -> False
+
+findTypeByName :: String -> TypeEnv -> Maybe (Symbol, QualifiedType)
+findTypeByName name env =
+    let matches = [(sym, qual) | (sym, qual) <- Map.toList env, resolvedSymbolName sym == name]
+        (types, others) = partition (isTypeSymbol . fst) matches
+    in case types ++ others of
+        (sym, qual) : _ -> Just (sym, qual)
+        [] -> Nothing
+  where
+    isTypeSymbol sym = case resolvedSymbolKind sym of
+        TypeSymbol -> True
+        TypeClassSymbol -> True
+        IntrinsicTypeSymbol -> True
+        _ -> False
 
 collectGlobals :: Expr -> ResolverM ()
 collectGlobals (ExprRoot children) = do
@@ -125,7 +149,29 @@ collectGlobals (ExprDataTypeDef name generics constraints constructors _attrs eS
                 curried = curryFunction fieldTypes structType
                 qualified = assignConstraints constrainedStructType curried
             addGlobalBinding cName qualified (DataConstructorSymbol parentName) eSpan'
-        recv -> error $ "Expected StructConstructorExpr in struct definition but got " ++ show recv
+        recv -> error $ "Expected ExprDataTypeDef in ADT definition but got " ++ show recv
+collectGlobals (ExprStructDef name generics constraints ctorName fields _attrs eSpan) = do
+    typeUnique <- freshUnique name
+    let tyUnique = TyUserDefined typeUnique
+
+    modify' $ \s -> s{typeUniques = Map.insert name tyUnique (typeUniques s)}
+
+    let kind = foldr (KindArrow . tvKind) KindStar generics
+    let baseConstructor = TConstructor $ TypeConstructor tyUnique kind
+
+    let structType =
+            if null generics
+                then baseConstructor
+                else foldl TApp baseConstructor (map TVar generics)
+
+    let constrainedStructType = Forall generics constraints baseConstructor
+    typeSymbol <- mkSymbolWithUnique typeUnique name TypeSymbol eSpan
+    addGlobalBindingWithSymbol typeSymbol constrainedStructType
+
+    let fieldTypes = map (lValue . snd) fields
+        curried = curryFunction fieldTypes structType
+        qualified = assignConstraints constrainedStructType curried
+    addGlobalBinding ctorName qualified (DataConstructorSymbol name) eSpan
 collectGlobals (ExprTypeClassDef className (Located _ ty@(Forall generics _ _)) _ eSpan) = do
     classUnique <- freshUnique className
     let tyUnique = TyUserDefined classUnique
@@ -153,6 +199,7 @@ resolveTReference (ExprRoot children) = do
 resolveTReference (ExprDataTypeDef name generics constraints constructors attrs s) = do
     constructors' <- mapM resolveTReference constructors
     pure $ ExprDataTypeDef name generics constraints constructors' attrs s
+resolveTReference expr@ExprStructDef{} = pure expr
 resolveTReference (ExprTypeClassDef name (Located tySpan ty) methods s) = do
     let typeExpr = ExprNum "" tySpan
     ty' <- replaceAllUnresolvedQualified typeExpr ty
@@ -324,11 +371,31 @@ analyzeTree root = do
 
 addGlobalBinding :: String -> QualifiedType -> SymbolKind -> Span -> ResolverM ()
 addGlobalBinding name ty kind sySpan = do
-    oldGlobals <- gets globalBindings
     symbol <- mkSymbol name kind sySpan
-    let globals' = Map.filterWithKey (\sym _ -> resolvedSymbolName sym /= name) oldGlobals
+    addGlobalBindingWithSymbol symbol ty
+
+addGlobalBindingWithSymbol :: Symbol -> QualifiedType -> ResolverM ()
+addGlobalBindingWithSymbol symbol ty = do
+    oldGlobals <- gets globalBindings
+    let name = resolvedSymbolName symbol
+        kind = resolvedSymbolKind symbol
+    -- Only remove existing symbols with the same name AND same kind category
+    -- This allows type symbols and constructor symbols with the same name to coexist
+    let globals' = Map.filterWithKey (\sym _ -> not (shouldReplace sym name kind)) oldGlobals
         newGlobals = Map.insert symbol ty globals'
     modify' $ \s -> s{globalBindings = newGlobals}
+  where
+    shouldReplace sym symName symKind =
+        resolvedSymbolName sym == symName && sameKindCategory (resolvedSymbolKind sym) symKind
+    sameKindCategory :: SymbolKind -> SymbolKind -> Bool
+    sameKindCategory TypeSymbol TypeSymbol = True
+    sameKindCategory TypeClassSymbol TypeClassSymbol = True
+    sameKindCategory IntrinsicTypeSymbol IntrinsicTypeSymbol = True
+    sameKindCategory (DataConstructorSymbol _) (DataConstructorSymbol _) = True
+    sameKindCategory (BindingSymbol _) (BindingSymbol _) = True
+    sameKindCategory IntrinsicBindingSymbol IntrinsicBindingSymbol = True
+    sameKindCategory PatternVariableSymbol PatternVariableSymbol = True
+    sameKindCategory _ _ = False
 
 addInstanceBindingFromType :: QualifiedType -> ResolverM ()
 addInstanceBindingFromType constraintType = do
@@ -404,7 +471,7 @@ replaceAllUnresolvedQualified expr (Forall vars constraints t) = do
                 pure (TConstructor tc, [])
             Nothing -> do
                 env <- getEnv
-                case findSymbolByName name env of
+                case findTypeByName name env of
                     Just (sym, qual@(Forall _ _ resolvedType)) -> do
                         case resolvedSymbolKind sym of
                             TypeSymbol ->

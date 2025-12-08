@@ -50,7 +50,7 @@ import Llvm.Gen.Externals (mallocDependency, memcpyDependency, useDep, useType)
 import Llvm.Gen.Intrinsics (compileIntrinsic, isIntrinsic)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.Templates (newStrTemplate)
-import Llvm.Gen.TypeConversion (convertType)
+import Llvm.Gen.TypeConversion (convertTypeWithStructs)
 import Llvm.Instructions
 import Llvm.Modules (LlvmBlock (..), LlvmFunction (..))
 import Llvm.Types (LlvmFnAttr (..), LlvmType (..), deref)
@@ -103,7 +103,8 @@ compileOp (OpLoad rOperand) resultTy = do
     operand <- compileOperand rOperand
     saveTmp (LlvmLoad operand) resultTy
 compileOp (OpAllocStack ty) resultTy = do
-    let llvmTy = convertType ty
+    structs <- asks structTypes
+    let llvmTy = convertTypeWithStructs structs ty
     saveTmp (LlvmAlloca llvmTy Nothing) resultTy
 compileOp (OpBin k a b) resultTy = do
     lhs <- compileOperand a
@@ -148,7 +149,7 @@ compileOp (OpProject agg ix) resultTy = do
     let aggTy = getValueType av
     case aggTy of
         LlvmAnonymous _ -> do
-            -- Extract the payload (always at index 1 in {i8, i64} struct)
+            -- ADT: Extract the payload (always at index 1 in {i8, i64} struct)
             payloadVal <- saveTmp (LlvmExtractValue aggTy av 1) LlvmI64
             if ix == 0
                 then
@@ -163,6 +164,20 @@ compileOp (OpProject agg ix) resultTy = do
                     -- Load the field value
                     fieldVal <- saveTmp (LlvmLoadTyped LlvmI64 fieldPtr) LlvmI64
                     bitcastFromPayload fieldVal resultTy
+        -- Named struct type: use typed GEP to access field directly
+        LlvmPointer (LlvmNamedType structName) -> do
+            let namedTy = LlvmNamedType structName
+                indices = [LlvmLiteral LlvmI32 "0", LlvmLiteral LlvmI32 (show ix)]
+            fieldPtr <- saveTmp (LlvmGetElementPtr namedTy av indices True) (LlvmPointer resultTy)
+            saveTmp (LlvmLoadTyped resultTy fieldPtr) resultTy
+        -- Legacy struct: pointer to array of i64 fields (no tag)
+        LlvmPointer LlvmI8 -> do
+            -- Struct is a pointer to fields stored as i64 array
+            -- GEP to the field at index ix and load
+            fieldsPtr <- saveTmp (LlvmBitcast av (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+            fieldPtr <- saveTmp (LlvmGetElementPtr LlvmI64 fieldsPtr [LlvmLiteral LlvmI64 (show ix)] True) (LlvmPointer LlvmI64)
+            fieldVal <- saveTmp (LlvmLoadTyped LlvmI64 fieldPtr) LlvmI64
+            bitcastFromPayload fieldVal resultTy
         -- For primitive types (i32, i64, etc.), the value itself is the "payload"
         -- This happens in pattern matching on Int literals where a variable binding
         -- needs to capture the scrutinee value
@@ -228,6 +243,40 @@ compileOp (OpConstruct _cName cTag cFields) resultTy = do
                 elemPtr <- saveTmp (LlvmGetElementPtr elemTy arrayPtr [idxVal] True) (LlvmPointer elemTy)
                 tell [LlvmStore val elemPtr]
             pure arrayPtr
+        -- Named struct type: allocate and store fields with proper types
+        LlvmPointer (LlvmNamedType structName) -> do
+            -- Look up field types from environment (O(1) lookup by name)
+            structInfoByName <- asks structTypeInfoByName
+            let fieldTypes = case Map.lookup structName structInfoByName of
+                    Just info -> stiFieldTypes info
+                    Nothing -> map getValueType fieldVals -- Fallback
+                    -- Calculate struct size (sum of field sizes, aligned)
+            let structSize = sum (map llvmTypeSize fieldTypes)
+            let allocSize = LlvmLiteral LlvmI64 (show structSize)
+            mallocFn <- useDep mallocDependency
+            rawPtr <- saveTmp (LlvmCall mallocFn (LlvmPointer LlvmI8) [allocSize]) (LlvmPointer LlvmI8)
+            let namedTy = LlvmNamedType structName
+            structPtr <- saveTmp (LlvmBitcast rawPtr (LlvmPointer namedTy)) (LlvmPointer namedTy)
+            -- Store each field using typed GEP
+            forM_ (zip3 [0 ..] fieldVals fieldTypes) $ \(idx, fieldVal, fieldTy) -> do
+                let indices = [LlvmLiteral LlvmI32 "0", LlvmLiteral LlvmI32 (show (idx :: Int))]
+                fieldPtr <- saveTmp (LlvmGetElementPtr namedTy structPtr indices True) (LlvmPointer fieldTy)
+                tell [LlvmStore fieldVal fieldPtr]
+            pure structPtr
+        -- Legacy struct: pointer to array of i64 fields (no tag)
+        LlvmPointer LlvmI8 -> do
+            let numFields = length fieldVals
+            let allocSize = LlvmLiteral LlvmI64 (show (numFields * 8)) -- 8 bytes per i64
+            mallocFn <- useDep mallocDependency
+            rawPtr <- saveTmp (LlvmCall mallocFn (LlvmPointer LlvmI8) [allocSize]) (LlvmPointer LlvmI8)
+            arrPtr <- saveTmp (LlvmBitcast rawPtr (LlvmPointer LlvmI64)) (LlvmPointer LlvmI64)
+            forM_ (zip [(0 :: Integer) ..] fieldVals) $ \(idx, fieldVal) -> do
+                let fieldTy = getValueType fieldVal
+                fieldAsI64 <- bitcastToPayload fieldVal fieldTy
+                fieldPtr <- saveTmp (LlvmGetElementPtr LlvmI64 arrPtr [LlvmLiteral LlvmI64 (show idx)] True) (LlvmPointer LlvmI64)
+                tell [LlvmStore fieldAsI64 fieldPtr]
+            -- Return the raw i8* pointer
+            pure rawPtr
         _ -> do
             let undefVal = LlvmUndef resultTy
             let tagLiteral = LlvmLiteral LlvmI8 (show cTag)
@@ -262,6 +311,17 @@ compileOp (OpConstruct _cName cTag cFields) resultTy = do
         | valTy == LlvmI1 = saveTmp (LlvmZExt val LlvmI64) LlvmI64
         | LlvmPointer _ <- valTy = saveTmp (LlvmPtrToInt val LlvmI64) LlvmI64
         | otherwise = error $ "Unsupported type for payload conversion: " ++ show valTy
+
+    llvmTypeSize :: LlvmType -> Int
+    llvmTypeSize LlvmI1 = 1
+    llvmTypeSize LlvmI8 = 1
+    llvmTypeSize LlvmI16 = 2
+    llvmTypeSize LlvmI32 = 4
+    llvmTypeSize LlvmI64 = 8
+    llvmTypeSize LlvmFloat = 4
+    llvmTypeSize LlvmDouble = 8
+    llvmTypeSize (LlvmPointer _) = 8
+    llvmTypeSize _ = 8
 compileOp (OpTagOf agg) resultTy = do
     av <- compileOperand agg
     let aggTy = getValueType av
@@ -286,6 +346,10 @@ compileOp (OpTagOf agg) resultTy = do
             if resultTy == LlvmI64
                 then saveTmp (LlvmIdentityCast av) resultTy
                 else saveTmp (LlvmTrunc av resultTy) resultTy
+        LlvmPointer (LlvmNamedType _) ->
+            pure $ LlvmLiteral resultTy "0"
+        LlvmPointer LlvmI8 ->
+            pure $ LlvmLiteral resultTy "0"
         LlvmAnonymous _ -> saveTmp (LlvmExtractValue aggTy av 0) resultTy
         _ -> saveTmp (LlvmExtractValue aggTy av 0) resultTy
 compileOp (OpMakeArray xs) _resultTy = do
@@ -315,7 +379,8 @@ compileOp (OpMakeTuple xs) resultTy = do
     insertElem tupleVal (idx, elemVal) = do
         saveTmp (LlvmInsertValue resultTy tupleVal elemVal idx) resultTy
 compileOp (OpAllocHeap ty) resultTy = do
-    let llvmTy = convertType ty
+    structs <- asks structTypes
+    let llvmTy = convertTypeWithStructs structs ty
     saveTmp (LlvmAlloca llvmTy Nothing) resultTy
 compileOp (OpGetDict className ty) _resultTy = do
     dMap <- asks dictMap

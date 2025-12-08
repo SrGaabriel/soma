@@ -1,0 +1,44 @@
+intrinsic def {+} :: Int -> Int -> Int
+
+data Tree a
+    | Leaf
+        value :: a
+    | Node
+        left :: a
+        right :: a
+
+data Maybe a = Just a | Nothing
+
+data Dummy a
+    | A String
+    | B
+        bValue :: a
+
+struct Point = Point
+    x :: Int
+    y :: Int
+
+struct Path = Path String
+
+def testTree :: Tree Int -> Int
+    | (Leaf val) => val
+    | (Node left right) => left + right
+
+def testMaybe :: Maybe String -> String
+    | (Just str) => str
+    | (Nothing) => "No value"
+
+def testDummy :: Dummy String -> String
+    | (A str) => str
+    | (B bVal) => bVal
+
+def testPoint :: Point -> Int
+    | (Point x y) => x + y
+
+def testPath :: Path -> String
+    | (Path p) => p
+
+def main :: Int =
+    let p = Point 10 20 in
+    let t = Leaf 5 in
+    testPoint p + testTree t

@@ -65,7 +65,7 @@ checkModule packageName modInfo checkedDeps externalDeps externalInstances exter
         constructorMetaByName = Map.union localConstructorMeta externalConstructors
 
         -- Lower resolved AST to Metal IR
-        lowerResult = runLower modName constructorMetaByName fullEnv (lowerModule resolvedAst)
+        lowerResult = runLower resolverUniqueCounter modName constructorMetaByName fullEnv (lowerModule resolvedAst)
 
         -- Build Metal type environment from Symbol-keyed environment
         metalTypeEnv = symbolEnvToMetalEnv fullEnv

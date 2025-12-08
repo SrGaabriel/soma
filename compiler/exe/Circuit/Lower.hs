@@ -1,5 +1,4 @@
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE TupleSections #-}
 
 {- HLINT ignore "Use newtype instead of data" -}
 
@@ -34,8 +33,8 @@ import Metal.Function
 import Metal.Metadata (ClosureFunctionInfo (..), MetallicFunctionMetadata (..), MetallicTypeClassMetadata (..))
 import Metal.Module
 import Project.Name (LocalId (..), LocalPrefix (..), Name (..), nameToString)
-import Syntax.Patterns (Literal (..), Pattern (..), ResolvedPattern)
-import Typing.Types (Kind (..), QualifiedType (..), TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..), boolType, closurePtrType, extractArrayElemType, extractTupleTypes, intType)
+import Syntax.Patterns (Literal (..))
+import Typing.Types (QualifiedType (..), Type (..), boolType, closurePtrType)
 import Utils.Lists (hardHead)
 
 -- | Environment for lowering
@@ -72,11 +71,16 @@ initLowerState = LowerState{lsNextTmp = 0}
 -- | Build environment from module
 buildEnv :: MetallicModule -> LowerEnv
 buildEnv m =
-    let ctors =
+    let adtCtors =
             [ (mcName c, (mcTag c, length (mcFields c), mcFields c))
             | MAlgebraicType _ cs <- mmTypes m
             , c <- cs
             ]
+        structCtors =
+            [ (ctorName, (0, length fields, fields))
+            | MStructType _ ctorName fields <- mmTypes m
+            ]
+        ctors = adtCtors ++ structCtors
     in LowerEnv
         { leConstructors = Map.fromList ctors
         , leTypeMap =
@@ -107,11 +111,19 @@ convertTypeDef (MAlgebraicType name cs) =
     CTypeDef
         { ctName = name
         , ctConstructors = map convertConstructor cs
+        , ctIsStruct = False
+        }
+convertTypeDef (MStructType name ctorName fields) =
+    CTypeDef
+        { ctName = name
+        , ctConstructors = [CConstructor ctorName 0 (length fields) fields]
+        , ctIsStruct = True
         }
 convertTypeDef (MRecordType name fields) =
     CTypeDef
         { ctName = name
-        , ctConstructors = [CConstructor name 0 (length fields)]
+        , ctConstructors = [CConstructor name 0 (length fields) (map snd fields)]
+        , ctIsStruct = False
         }
 
 convertConstructor :: MetallicConstructor -> CConstructor
@@ -120,6 +132,7 @@ convertConstructor mc =
         { ccName = mcName mc
         , ccTag = mcTag mc
         , ccArity = length (mcFields mc)
+        , ccFieldTypes = mcFields mc
         }
 
 -- | Lower a complete Metal module to Circuit
@@ -278,8 +291,8 @@ lowerExpr = \case
                         scrut' <- lowerExpr scrut
                         body' <- lowerExpr (mcaBody arm)
                         case mcaPatterns arm of
-                            [PVar name _] -> pure $ CLet name scrutTy scrut' body'
-                            [PWildcard _] -> do
+                            [TPVar name _ _] -> pure $ CLet name scrutTy scrut' body'
+                            [TPWildcard _ _] -> do
                                 -- Wildcard: evaluate scrutinee for effects, then body
                                 tmp <- freshTmp "wild"
                                 pure $ CLet tmp scrutTy scrut' body'
@@ -303,7 +316,7 @@ lowerExpr = \case
                                 -- For catch-all patterns, bind the variable to scrutinee
                                 body' <- lowerExpr (mcaBody firstCatchAll)
                                 case mcaPatterns firstCatchAll of
-                                    [PVar name _] -> pure $ Just $ CLet name scrutTy (CVar tmp scrutTy) body'
+                                    [TPVar name _ _] -> pure $ Just $ CLet name scrutTy (CVar tmp scrutTy) body'
                                     _ -> pure $ Just body'
                             (Nothing, []) -> pure Nothing
                         pure
@@ -326,17 +339,16 @@ lowerExpr = \case
 
                 if allCatchAll && not (null arms)
                     then do
-                        -- All first patterns are catch-all (PVar/PWildcard), so we Just bind the variable and continue with nested case!
+                        -- All first patterns are catch-all (TPVar/TPWildcard), so we just bind the variable and continue with nested case!
                         let firstArm = hardHead arms
                             firstPat = hardHead (mcaPatterns firstArm)
                         case firstPat of
-                            PVar name _ -> do
+                            TPVar name _ _ -> do
                                 -- Bind the scrutinee to the variable name
                                 let nestedArms = [arm{mcaPatterns = drop 1 (mcaPatterns arm)} | arm <- arms]
                                 nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy dummySpan)
                                 pure $ CLet name scrutTy scrut' nestedBody
                             _ -> do
-                                -- PWildcard or PAs: just continue without binding
                                 let nestedArms = [arm{mcaPatterns = drop 1 (mcaPatterns arm)} | arm <- arms]
                                 tmp <- freshTmp "wild"
                                 nestedBody <- lowerExpr (MCase restScrutinees nestedArms mdefault resultTy dummySpan)
@@ -415,26 +427,26 @@ lowerCaseArm scrutTy arm = do
             body <- lowerExpr (mcaBody arm)
             pure (0, [], body)
 
-{- | Check if a pattern list is trivial (just a single PVar or PWildcard)
+{- | Check if a pattern list is trivial (just a single TPVar or TPWildcard)
 Trivial patterns don't need case expressions - they're just variable bindings
 -}
-isTrivialPattern :: [ResolvedPattern] -> Bool
-isTrivialPattern [PVar _ _] = True
-isTrivialPattern [PWildcard _] = True
+isTrivialPattern :: [TypedPattern] -> Bool
+isTrivialPattern [TPVar{}] = True
+isTrivialPattern [TPWildcard{}] = True
 isTrivialPattern _ = False
 
 {- | Check if a pattern is a catch-all (variable or wildcard)
 These patterns match any value and should become the default case.
 -}
-isCatchAllPattern :: ResolvedPattern -> Bool
-isCatchAllPattern (PVar _ _) = True
-isCatchAllPattern (PWildcard _) = True
-isCatchAllPattern (PAs{}) = True
+isCatchAllPattern :: TypedPattern -> Bool
+isCatchAllPattern TPVar{} = True
+isCatchAllPattern TPWildcard{} = True
+isCatchAllPattern TPAs{} = True
 isCatchAllPattern _ = False
 
 {- | Partition case arms into specific patterns and catch-all patterns.
 Specific patterns (literals, constructors) become switch arms.
-Catch-all patterns (PVar, PWildcard) become the default case.
+Catch-all patterns (TPVar, TPWildcard) become the default case.
 -}
 partitionCaseArms :: [TypedArm] -> ([TypedArm], [TypedArm])
 partitionCaseArms = foldr partition ([], [])
@@ -444,78 +456,62 @@ partitionCaseArms = foldr partition ([], [])
             [pat] | isCatchAllPattern pat -> (specific, arm : catchAll)
             _ -> (arm : specific, catchAll)
 
-{- | Extract tag and field names with types from a pattern
-The scrutinee type is used to infer field types where possible
+{- | Extract tag and field names with types from a typed pattern.
+Since patterns are now typed, we can directly use the types from the pattern
+rather than trying to infer them from the scrutinee type.
 -}
-extractPatternInfo :: Type -> ResolvedPattern -> LowerM (Int, [(Name, Type)])
-extractPatternInfo scrutTy = \case
-    PConstructor name subPats _ -> do
+extractPatternInfo :: Type -> TypedPattern -> LowerM (Int, [(Name, Type)])
+extractPatternInfo _scrutTy = \case
+    TPConstructor name subPats _ty _ -> do
         env <- ask
         case Map.lookup name (leConstructors env) of
-            Just (tag, _, fieldTypes) -> do
-                -- Extract names and types from subpatterns, using actual field types
-                let typedSubPats = zip (fieldTypes ++ repeat scrutTy) subPats -- fallback to scrutTy if not enough types
-                fieldNamesAndTypes <- mapM (uncurry extractFieldNameAndType) typedSubPats
+            Just (tag, _, _) -> do
+                fieldNamesAndTypes <- mapM extractTypedFieldNameAndType subPats
                 pure (tag, fieldNamesAndTypes)
             Nothing ->
                 pure (0, [])
-    PVar name _ -> pure (0, [(name, scrutTy)])
-    PWildcard _ -> pure (0, [])
-    PLit lit _ -> case lit of
+    TPVar name ty _ -> pure (0, [(name, ty)])
+    TPWildcard ty _ -> do
+        tmp <- freshTmp "wild"
+        pure (0, [(tmp, ty)])
+    TPLit lit _ty _ -> case lit of
         LitInt i -> pure (i, [])
         LitBool True -> pure (1, [])
         LitBool False -> pure (0, [])
         LitString _ -> pure (0, [])
-    PTuple pats _ -> do
-        -- Extract element types from tuple type if possible
-        let elemTypes = extractTupleTypes scrutTy
-            typedPats = zip (elemTypes ++ repeat scrutTy) pats
-        fieldNamesAndTypes <- mapM (uncurry extractFieldNameAndType) typedPats
+    TPTuple pats _ty _ -> do
+        fieldNamesAndTypes <- mapM extractTypedFieldNameAndType pats
         pure (-1, fieldNamesAndTypes) -- Tuples use tag -1
-    PArray pats _ -> do
-        -- Extract element type from array type if possible
-        let elemType = extractArrayElemType scrutTy
-            typedPats = map (elemType,) pats
-        fieldNamesAndTypes <- mapM (uncurry extractFieldNameAndType) typedPats
+    TPArray pats _ty _ -> do
+        fieldNamesAndTypes <- mapM extractTypedFieldNameAndType pats
         pure (-2, fieldNamesAndTypes) -- Arrays use tag -2
-    PAs name _ _ -> pure (0, [(name, scrutTy)])
+    TPAs name _pat ty _ -> pure (0, [(name, ty)])
 
-{- | Extract a single field name and type from a pattern.
-For simple patterns (PVar, PWildcard), returns the binding name and field type.
-For nested patterns (PConstructor, PTuple), returns a temporary name - the
-caller is responsible for generating nested match code if needed.
-
-Note: Nested pattern matching is lowered to nested case expressions by the
-Metal -> Circuit lowering. This function only needs to handle the binding
-extraction for the immediate level.
+{- | Extract a single field name and type from a typed pattern.
+Since patterns are now typed, we get the type directly from the pattern.
 -}
-extractFieldNameAndType :: Type -> ResolvedPattern -> LowerM (Name, Type)
-extractFieldNameAndType fieldTy = \case
-    PVar name _ -> pure (name, fieldTy)
-    PWildcard _ -> do
+extractTypedFieldNameAndType :: TypedPattern -> LowerM (Name, Type)
+extractTypedFieldNameAndType = \case
+    TPVar name ty _ -> pure (name, ty)
+    TPWildcard ty _ -> do
         tmp <- freshTmp "wild"
-        pure (tmp, fieldTy)
-    PConstructor _name _ _ -> do
+        pure (tmp, ty)
+    TPConstructor _name _ ty _ -> do
         -- For nested constructor patterns, bind to a temporary.
         -- The nested match will be handled by a separate case expression
         -- in the pattern compilation (done at Metal level before lowering).
         tmp <- freshTmp "nested"
-        pure (tmp, fieldTy)
-    PLit lit _ -> do
-        -- Literal patterns: infer type from the literal
+        pure (tmp, ty)
+    TPLit _lit ty _ -> do
         tmp <- freshTmp "lit"
-        let litTy = case lit of
-                LitInt _ -> intType
-                LitBool _ -> boolType
-                LitString _ -> TConstructor (TypeConstructor (TyPrim TPString) KindStar)
-        pure (tmp, litTy)
-    PTuple _ _ -> do
+        pure (tmp, ty)
+    TPTuple _ ty _ -> do
         tmp <- freshTmp "tuple"
-        pure (tmp, fieldTy)
-    PArray _ _ -> do
+        pure (tmp, ty)
+    TPArray _ ty _ -> do
         tmp <- freshTmp "array"
-        pure (tmp, fieldTy)
-    PAs name _ _ -> pure (name, fieldTy)
+        pure (tmp, ty)
+    TPAs name _ ty _ -> pure (name, ty)
 
 -- | Lookup table for binary operators
 lookupBinOp :: String -> Maybe BinOp
@@ -561,13 +557,13 @@ Groups into:
   A -> [(A x, B y) -> e1, (A x, C z) -> e2]
   D -> [(D w, B y) -> e3]
 -}
-groupArmsByFirstPattern :: [TypedArm] -> [(ResolvedPattern, [TypedArm])]
+groupArmsByFirstPattern :: [TypedArm] -> [(TypedPattern, [TypedArm])]
 groupArmsByFirstPattern =
     -- Use a simple grouping: collect arms with equivalent first patterns
     -- Two patterns are equivalent if they have the same constructor/literal/variable form
     foldr insertArm []
   where
-    insertArm :: TypedArm -> [(ResolvedPattern, [TypedArm])] -> [(ResolvedPattern, [TypedArm])]
+    insertArm :: TypedArm -> [(TypedPattern, [TypedArm])] -> [(TypedPattern, [TypedArm])]
     insertArm arm [] = case mcaPatterns arm of
         (p : _) -> [(p, [arm])]
         [] -> []
@@ -580,19 +576,19 @@ groupArmsByFirstPattern =
                     (pat, armsInGroup) : insertArm arm rest
             [] -> (pat, armsInGroup) : rest
 
-{- | Check if two patterns are "equivalent" for grouping purposes.
+{- | Check if two typed patterns are "equivalent" for grouping purposes.
 Two patterns are equivalent if they match the same set of values at the top level.
 This means same constructor, same literal, or both are variables/wildcards.
 -}
-patternsEquivalent :: ResolvedPattern -> ResolvedPattern -> Bool
-patternsEquivalent (PConstructor n1 _ _) (PConstructor n2 _ _) = n1 == n2
-patternsEquivalent (PLit l1 _) (PLit l2 _) = l1 == l2
-patternsEquivalent (PTuple ps1 _) (PTuple ps2 _) = length ps1 == length ps2
-patternsEquivalent (PArray ps1 _) (PArray ps2 _) = length ps1 == length ps2
-patternsEquivalent (PVar _ _) (PVar _ _) = True
-patternsEquivalent (PWildcard _) (PWildcard _) = True
-patternsEquivalent (PVar _ _) (PWildcard _) = True
-patternsEquivalent (PWildcard _) (PVar _ _) = True
-patternsEquivalent (PAs _ p1 _) p2 = patternsEquivalent p1 p2
-patternsEquivalent p1 (PAs _ p2 _) = patternsEquivalent p1 p2
+patternsEquivalent :: TypedPattern -> TypedPattern -> Bool
+patternsEquivalent (TPConstructor n1 _ _ _) (TPConstructor n2 _ _ _) = n1 == n2
+patternsEquivalent (TPLit l1 _ _) (TPLit l2 _ _) = l1 == l2
+patternsEquivalent (TPTuple ps1 _ _) (TPTuple ps2 _ _) = length ps1 == length ps2
+patternsEquivalent (TPArray ps1 _ _) (TPArray ps2 _ _) = length ps1 == length ps2
+patternsEquivalent TPVar{} TPVar{} = True
+patternsEquivalent TPWildcard{} TPWildcard{} = True
+patternsEquivalent TPVar{} TPWildcard{} = True
+patternsEquivalent TPWildcard{} TPVar{} = True
+patternsEquivalent (TPAs _ p1 _ _) p2 = patternsEquivalent p1 p2
+patternsEquivalent p1 (TPAs _ p2 _ _) = patternsEquivalent p1 p2
 patternsEquivalent _ _ = False

@@ -10,6 +10,7 @@ module Metal.Lower (
     LowerM,
     LowerState (..),
     symbolToName,
+    untypedToInference,
 ) where
 
 import Control.Monad (zipWithM)
@@ -37,16 +38,10 @@ data LowerState = LowerState
 newtype LowerM a = LowerM (State LowerState a)
     deriving (Functor, Applicative, Monad, MonadState LowerState)
 
-runLower :: String -> Map.Map Name MetallicConstructorMetadata -> Map.Map Symbol QualifiedType -> LowerM a -> a
-runLower modName ctors symEnv (LowerM m) =
-    let state' = LowerState 0 ctors modName symEnv
+runLower :: Int -> String -> Map.Map Name MetallicConstructorMetadata -> Map.Map Symbol QualifiedType -> LowerM a -> a
+runLower initialCounter modName ctors symEnv (LowerM m) =
+    let state' = LowerState initialCounter ctors modName symEnv
     in evalState m state'
-
-freshHole :: Kind -> LowerM TypeSlot
-freshHole k = do
-    n <- gets lsCounter
-    modify $ \s -> s{lsCounter = n + 1}
-    pure $ Hole (TypeVar ("$h" ++ show n) k)
 
 lookupConstructor :: Name -> LowerM (Maybe MetallicConstructorMetadata)
 lookupConstructor name = gets (Map.lookup name . lsConstructors)
@@ -164,9 +159,9 @@ findConstructorByString str ctors =
     nameMatches _ _ = False
 
 data LowerResult = LowerResult
-    { lrBindings :: [(Name, InferenceExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)]
+    { lrBindings :: [(Name, UntypedExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)]
     , lrTypes :: [MetallicTypeDef]
-    , lrInstances :: [(QualifiedType, [(Name, InferenceExpr, [Type], Type)])]
+    , lrInstances :: [(QualifiedType, [(Name, UntypedExpr, [Type], Type)])]
     , lrTypeClasses :: [MetallicTypeClassMetadata]
     }
     deriving (Show)
@@ -190,14 +185,17 @@ lowerModule expr = do
     mainName <- freshLocalName "main"
     pure
         LowerResult
-            { lrBindings = [(mainName, body, [], slotToType (inferenceSlot body), [], [], defaultFunctionAttributes)]
+            { lrBindings = [(mainName, body, [], TUnresolved "infer", [], [], defaultFunctionAttributes)]
             , lrTypes = []
             , lrInstances = []
             , lrTypeClasses = []
             }
 
 lowerTypes :: [Expr] -> LowerM [MetallicTypeDef]
-lowerTypes exprs = mapM lowerType [e | e@ExprDataTypeDef{} <- exprs]
+lowerTypes exprs = do
+    dataTypes <- mapM lowerType [e | e@ExprDataTypeDef{} <- exprs]
+    structs <- mapM lowerStruct [e | e@ExprStructDef{} <- exprs]
+    pure $ dataTypes ++ structs
 
 lowerType :: Expr -> LowerM MetallicTypeDef
 lowerType (ExprDataTypeDef name _generics _constraints constructors _attrs _span) = do
@@ -220,6 +218,22 @@ lowerType (ExprDataTypeDef name _generics _constraints constructors _attrs _span
         pure $ MetallicConstructor ctorNameN tag fieldTypes
     lowerConstructor _ _ e = error $ "Expected data constructor, got: " ++ show e
 lowerType e = error $ "Expected data type definition, got: " ++ show e
+
+lowerStruct :: Expr -> LowerM MetallicTypeDef
+lowerStruct (ExprStructDef name _generics _constraints ctorName fields _attrs _span) = do
+    typeName <- do
+        mSymbol <- lookupSymbolByName name
+        case mSymbol of
+            Just symbol -> pure $ symbolToName symbol
+            Nothing -> freshLocalName name
+    ctorNameN <- do
+        mSymbol <- lookupConstructorSymbol ctorName name
+        case mSymbol of
+            Just symbol -> pure $ symbolToName symbol
+            Nothing -> freshLocalName ctorName
+    let fieldTypes = map (lValue . snd) fields
+    pure $ MStructType typeName ctorNameN fieldTypes
+lowerStruct e = error $ "Expected struct definition, got: " ++ show e
 
 lowerTypeClasses :: [Expr] -> LowerM [MetallicTypeClassMetadata]
 lowerTypeClasses exprs = mapM lowerTypeClass [e | e@ExprTypeClassDef{} <- exprs]
@@ -246,10 +260,10 @@ lowerTypeClass (ExprTypeClassDef className _ methods _) = do
     extractMethodBinding e = error $ "Expected type class binding, got: " ++ show e
 lowerTypeClass e = error $ "Expected type class definition, got: " ++ show e
 
-lowerBindings :: [Expr] -> LowerM [(Name, InferenceExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)]
+lowerBindings :: [Expr] -> LowerM [(Name, UntypedExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)]
 lowerBindings exprs = mapM lowerBinding [e | e@ExprBindingDef{} <- exprs]
 
-lowerBinding :: Expr -> LowerM (Name, InferenceExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)
+lowerBinding :: Expr -> LowerM (Name, UntypedExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)
 lowerBinding (ExprBindingDef name (Located _ (Forall typeVars constraints bindingType)) body _isTopLevel attrs _span) = do
     bindingName <- do
         mSymbol <- lookupSymbolByName name
@@ -269,15 +283,14 @@ attributesToFunctionAttrs = foldr apply defaultFunctionAttributes
     apply (AttrDeprecated msg) fa = fa{faDeprecated = msg}
     apply (AttrExtern n) fa = fa{faExtern = Just n}
 
-lowerBindingBody :: Type -> Expr -> LowerM ([Type], Type, InferenceExpr)
+lowerBindingBody :: Type -> Expr -> LowerM ([Type], Type, UntypedExpr)
 lowerBindingBody bindingType body = case body of
     ExprLambda paramNames innerBody span' -> do
         let localSyms = collectLocalSymbols innerBody
         let (paramTypes, returnType) = splitFunctionType (length paramNames) bindingType
         metalBody <- lowerExpr innerBody
         paramNamesN <- mapM (lookupLocalSymbol localSyms) paramNames
-        let typedParams = zip paramNamesN (map Known paramTypes)
-        pure (paramTypes, returnType, MLambda typedParams metalBody (Known bindingType) span')
+        pure (paramTypes, returnType, MLambda paramNamesN metalBody () span')
     ExprDerivedPatternMatch arms -> do
         let arity = patternMatchArity body
             (paramTypes, returnType) = splitFunctionType arity bindingType
@@ -286,23 +299,22 @@ lowerBindingBody bindingType body = case body of
                 (ExprPatternMatchArm _ _ s : _) -> s
                 _ -> dummySpan
         metalArms <- mapM lowerArm arms
-        let scrutinees = [MVar pn (Known pt) span' | (pn, pt) <- zip paramNames paramTypes]
-            typedParams = zip paramNames (map Known paramTypes)
-            caseExpr = MCase scrutinees metalArms Nothing (Known returnType) span'
-        pure (paramTypes, returnType, MLambda typedParams caseExpr (Known bindingType) span')
+        let scrutinees = [MVar pn () span' | pn <- paramNames]
+            caseExpr = MCase scrutinees metalArms Nothing () span'
+        pure (paramTypes, returnType, MLambda paramNames caseExpr () span')
     _ -> do
         metalBody <- lowerExpr body
         pure ([], bindingType, metalBody)
 
-lowerInstances :: [Expr] -> LowerM [(QualifiedType, [(Name, InferenceExpr, [Type], Type)])]
+lowerInstances :: [Expr] -> LowerM [(QualifiedType, [(Name, UntypedExpr, [Type], Type)])]
 lowerInstances exprs = mapM lowerInstance [e | e@ExprInstanceDef{} <- exprs]
 
-lowerInstance :: Expr -> LowerM (QualifiedType, [(Name, InferenceExpr, [Type], Type)])
+lowerInstance :: Expr -> LowerM (QualifiedType, [(Name, UntypedExpr, [Type], Type)])
 lowerInstance (ExprInstanceDef constraintType methods _) = do
     methodBindings <- mapM lowerInstanceMethod methods
     pure (constraintType, methodBindings)
   where
-    lowerInstanceMethod :: Expr -> LowerM (Name, InferenceExpr, [Type], Type)
+    lowerInstanceMethod :: Expr -> LowerM (Name, UntypedExpr, [Type], Type)
     lowerInstanceMethod (ExprBindingDef name (Located _ (Forall _ _ methodType)) body _ _ _) = do
         methodName <- do
             mSymbol <- lookupSymbolByName name
@@ -318,7 +330,7 @@ patternMatchArity :: Expr -> Int
 patternMatchArity (ExprDerivedPatternMatch (ExprPatternMatchArm pats _ _ : _)) = length pats
 patternMatchArity _ = 0
 
-lowerExpr :: Expr -> LowerM InferenceExpr
+lowerExpr :: Expr -> LowerM UntypedExpr
 lowerExpr expr = case expr of
     ExprNum n span' ->
         pure $ MLit (MInt (read n)) span'
@@ -327,122 +339,99 @@ lowerExpr expr = case expr of
     ExprBool b span' ->
         pure $ MLit (MBool b) span'
     ExprVar symbol span' -> do
-        hole <- freshHole KindStar
         let name = symbolToName symbol
         case resolvedSymbolKind symbol of
             DataConstructorSymbol _ -> do
                 mMeta <- lookupConstructor name
                 case mMeta of
                     Just meta ->
-                        pure $ MConstruct name (mcmTag meta) [] hole span'
+                        pure $ MConstruct name (mcmTag meta) [] () span'
                     Nothing ->
-                        pure $ MVar name hole span'
+                        pure $ MVar name () span'
             BindingSymbol _ ->
-                pure $ MCall (MVar name hole span') [] hole span'
+                pure $ MCall (MVar name () span') [] () span'
             _ ->
-                pure $ MVar name hole span'
+                pure $ MVar name () span'
     ExprUVar name span' -> do
-        hole <- freshHole KindStar
         varName <- unresolvedName name
-        pure $ MVar varName hole span'
+        pure $ MVar varName () span'
     ExprApp _ _ -> do
         let (base, args) = uncurryApp expr
         lowerApp base args
     ExprLambda params body span' -> do
         let localSyms = collectLocalSymbols body
-        paramHoles <- mapM (\_ -> freshHole KindStar) params
         paramNames <- mapM (lookupLocalSymbol localSyms) params
-        let typedParams = zip paramNames paramHoles
         metalBody <- lowerExpr body
-        hole <- freshHole KindStar
-        pure $ MLambda typedParams metalBody hole span'
+        pure $ MLambda paramNames metalBody () span'
     ExprLet{letName, letValue, letBody, letSpan} -> do
         -- Collect local symbols from the body to find the resolved let name
         let localSyms = collectLocalSymbols letBody
         metalValue <- lowerExpr letValue
         metalBody <- lowerExpr letBody
-        hole <- freshHole KindStar
         letNameN <- lookupLocalSymbol localSyms letName
-        pure $ MLet letNameN metalValue metalBody hole letSpan
+        pure $ MLet letNameN metalValue metalBody () letSpan
     ExprIf{ifCondition, ifBody, ifElseBody, ifSpan} -> do
         metalCond <- lowerExpr ifCondition
         metalThen <- lowerExpr ifBody
         metalElse <- lowerExpr ifElseBody
-        hole <- freshHole KindStar
-        pure $ MIf metalCond metalThen metalElse hole ifSpan
+        pure $ MIf metalCond metalThen metalElse () ifSpan
     ExprArray elements span' -> do
         metalElems <- mapM lowerExpr elements
-        hole <- freshHole KindStar
-        pure $ MArrayLit metalElems hole span'
+        pure $ MArrayLit metalElems () span'
     ExprTuple elements span' -> do
         metalElems <- mapM lowerExpr elements
-        hole <- freshHole KindStar
-        pure $ MTuple metalElems hole span'
+        pure $ MTuple metalElems () span'
     ExprPatternMatch scrutinee arms span' -> do
         metalScrutinee <- lowerExpr scrutinee
         metalArms <- mapM lowerArm arms
-        hole <- freshHole KindStar
-        pure $ MCase [metalScrutinee] metalArms Nothing hole span'
+        pure $ MCase [metalScrutinee] metalArms Nothing () span'
     ExprDerivedPatternMatch arms -> do
         metalArms <- mapM lowerArm arms
-        hole <- freshHole KindStar
         let span' = case arms of
                 (ExprPatternMatchArm _ _ s : _) -> s
                 _ -> dummySpan
-        pure $ MCase [] metalArms Nothing hole span'
+        pure $ MCase [] metalArms Nothing () span'
     ExprCompose stmts span' ->
         lowerCompose stmts span'
     ExprBindingDef{bindingBody} ->
         lowerExpr bindingBody
     ExprBlock exprs span' -> case exprs of
-        [] -> do
-            hole <- freshHole KindStar
-            pure $ MTuple [] hole span'
+        [] -> pure $ MTuple [] () span'
         [e] -> lowerExpr e
         _ -> lowerBlock exprs span'
     -- Top-level definitions produce unit tuples since they're handled at module level
-    ExprImport{} -> do
-        hole <- freshHole KindStar
-        pure $ MTuple [] hole dummySpan
-    ExprExport{} -> do
-        hole <- freshHole KindStar
-        pure $ MTuple [] hole dummySpan
+    ExprImport{} ->
+        pure $ MTuple [] () dummySpan
+    ExprExport{} ->
+        pure $ MTuple [] () dummySpan
     ExprRoot children -> do
         metalExprs <- mapM lowerExpr [b | b@ExprBindingDef{} <- children]
-        hole <- freshHole KindStar
         case metalExprs of
-            [] -> pure $ MTuple [] hole dummySpan
+            [] -> pure $ MTuple [] () dummySpan
             [e] -> pure e
-            _ -> pure $ MTuple [] hole dummySpan
-    ExprDataConstructor{} -> do
-        hole <- freshHole KindStar
-        pure $ MTuple [] hole dummySpan
-    ExprTypeClassBinding{} -> do
-        hole <- freshHole KindStar
-        pure $ MTuple [] hole dummySpan
-    ExprDataTypeDef{} -> do
-        hole <- freshHole KindStar
-        pure $ MTuple [] hole dummySpan
-    ExprTypeClassDef{} -> do
-        hole <- freshHole KindStar
-        pure $ MTuple [] hole dummySpan
-    ExprInstanceDef{} -> do
-        hole <- freshHole KindStar
-        pure $ MTuple [] hole dummySpan
-    ExprIntrinsicDef{} -> do
-        hole <- freshHole KindStar
-        pure $ MTuple [] hole dummySpan
-    ExprIntrinsicDataTypeDef{} -> do
-        hole <- freshHole KindStar
-        pure $ MTuple [] hole dummySpan
-    ExprIntrinsicInstanceDef{} -> do
-        hole <- freshHole KindStar
-        pure $ MTuple [] hole dummySpan
-    ExprPatternMatchArm{} -> do
-        hole <- freshHole KindStar
-        pure $ MTuple [] hole dummySpan
+            _ -> pure $ MTuple [] () dummySpan
+    ExprDataConstructor{} ->
+        pure $ MTuple [] () dummySpan
+    ExprTypeClassBinding{} ->
+        pure $ MTuple [] () dummySpan
+    ExprDataTypeDef{} ->
+        pure $ MTuple [] () dummySpan
+    ExprStructDef{} ->
+        pure $ MTuple [] () dummySpan
+    ExprTypeClassDef{} ->
+        pure $ MTuple [] () dummySpan
+    ExprInstanceDef{} ->
+        pure $ MTuple [] () dummySpan
+    ExprIntrinsicDef{} ->
+        pure $ MTuple [] () dummySpan
+    ExprIntrinsicDataTypeDef{} ->
+        pure $ MTuple [] () dummySpan
+    ExprIntrinsicInstanceDef{} ->
+        pure $ MTuple [] () dummySpan
+    ExprPatternMatchArm{} ->
+        pure $ MTuple [] () dummySpan
 
-lowerArm :: Expr -> LowerM InferenceArm
+lowerArm :: Expr -> LowerM UntypedArm
 lowerArm (ExprPatternMatchArm pats body _) = do
     let localSyms = collectLocalSymbols body
     resolvedPats <- mapM (resolvePattern localSyms) pats
@@ -450,7 +439,7 @@ lowerArm (ExprPatternMatchArm pats body _) = do
     pure $ MCaseArm resolvedPats metalBody
 lowerArm other = error $ "Invalid pattern match arm: " ++ show other
 
-lowerApp :: Expr -> [Expr] -> LowerM InferenceExpr
+lowerApp :: Expr -> [Expr] -> LowerM UntypedExpr
 lowerApp base args = do
     let span' = case (base, args) of
             (_, []) -> exprSpan base
@@ -460,7 +449,6 @@ lowerApp base args = do
                 in spanBetween s1 s2
 
     metalArgs <- mapM lowerExpr args
-    hole <- freshHole KindStar
 
     case base of
         ExprVar symbol _ -> do
@@ -470,21 +458,17 @@ lowerApp base args = do
                     mMeta <- lookupConstructor name
                     case mMeta of
                         Just meta ->
-                            pure $ MConstruct name (mcmTag meta) metalArgs hole span'
-                        Nothing -> do
-                            baseHole <- freshHole KindStar
-                            pure $ MCall (MVar name baseHole span') metalArgs hole span'
-                _ -> do
-                    baseHole <- freshHole KindStar
-                    pure $ MCall (MVar name baseHole span') metalArgs hole span'
+                            pure $ MConstruct name (mcmTag meta) metalArgs () span'
+                        Nothing ->
+                            pure $ MCall (MVar name () span') metalArgs () span'
+                _ ->
+                    pure $ MCall (MVar name () span') metalArgs () span'
         _ -> do
             metalBase <- lowerExpr base
-            pure $ MCall metalBase metalArgs hole span'
+            pure $ MCall metalBase metalArgs () span'
 
-lowerCompose :: [ComposeStmt] -> Span -> LowerM InferenceExpr
-lowerCompose [] span' = do
-    hole <- freshHole KindStar
-    pure $ MTuple [] hole span'
+lowerCompose :: [ComposeStmt] -> Span -> LowerM UntypedExpr
+lowerCompose [] span' = pure $ MTuple [] () span'
 lowerCompose [CSExpr e _] _ = lowerExpr e
 lowerCompose (stmt : rest) span' = case stmt of
     CSBind name action stmtSpan -> do
@@ -492,42 +476,104 @@ lowerCompose (stmt : rest) span' = case stmt of
         metalAction <- lowerExpr action
         restExpr <- lowerCompose rest span'
 
-        bindHole <- freshHole KindStar
-        lambdaParamHole <- freshHole KindStar
-        lambdaHole <- freshHole KindStar
-        resultHole <- freshHole KindStar
-
         nameN <- lookupLocalSymbol restSyms name
-        let lambda = MLambda [(nameN, lambdaParamHole)] restExpr lambdaHole stmtSpan
+        let lambda = MLambda [nameN] restExpr () stmtSpan
         bindVarName <- unresolvedName ">>="
-        let bindVar = MVar bindVarName bindHole stmtSpan
-        pure $ MCall bindVar [metalAction, lambda] resultHole span'
+        let bindVar = MVar bindVarName () stmtSpan
+        pure $ MCall bindVar [metalAction, lambda] () span'
     CSLet name value stmtSpan -> do
         let restSyms = collectComposeSymbols rest
         metalValue <- lowerExpr value
         restExpr <- lowerCompose rest span'
-        hole <- freshHole KindStar
         nameN <- lookupLocalSymbol restSyms name
-        pure $ MLet nameN metalValue restExpr hole stmtSpan
+        pure $ MLet nameN metalValue restExpr () stmtSpan
     CSExpr action stmtSpan -> do
         metalAction <- lowerExpr action
         restExpr <- lowerCompose rest span'
 
-        thenHole <- freshHole KindStar
-        resultHole <- freshHole KindStar
-
         thenVarName <- unresolvedName ">>"
-        let thenVar = MVar thenVarName thenHole stmtSpan
-        pure $ MCall thenVar [metalAction, restExpr] resultHole span'
+        let thenVar = MVar thenVarName () stmtSpan
+        pure $ MCall thenVar [metalAction, restExpr] () span'
 
-lowerBlock :: [Expr] -> Span -> LowerM InferenceExpr
-lowerBlock [] span' = do
-    hole <- freshHole KindStar
-    pure $ MTuple [] hole span'
+lowerBlock :: [Expr] -> Span -> LowerM UntypedExpr
+lowerBlock [] span' = pure $ MTuple [] () span'
 lowerBlock [e] _ = lowerExpr e
 lowerBlock (e : es) span' = do
     metalE <- lowerExpr e
     metalRest <- lowerBlock es span'
-    hole <- freshHole KindStar
     ignoreName <- freshLocalName "_"
-    pure $ MLet ignoreName metalE metalRest hole span'
+    pure $ MLet ignoreName metalE metalRest () span'
+
+untypedToInference :: Int -> UntypedExpr -> (InferenceExpr, Int)
+untypedToInference counter expr = runState (go expr) counter
+  where
+    freshHole :: State Int TypeSlot
+    freshHole = do
+        n <- get
+        put (n + 1)
+        pure $ Hole (TypeVar ("$h" ++ show n) KindStar)
+
+    go :: UntypedExpr -> State Int InferenceExpr
+    go (MVar name () span') = do
+        hole <- freshHole
+        pure $ MVar name hole span'
+    go (MLit lit span') = pure $ MLit lit span'
+    go (MCall callee args () span') = do
+        callee' <- go callee
+        args' <- mapM go args
+        hole <- freshHole
+        pure $ MCall callee' args' hole span'
+    go (MTypeApp e tys () span') = do
+        e' <- go e
+        hole <- freshHole
+        pure $ MTypeApp e' tys hole span'
+    go (MLet name val body () span') = do
+        val' <- go val
+        body' <- go body
+        hole <- freshHole
+        pure $ MLet name val' body' hole span'
+    go (MLambda params body () span') = do
+        paramHoles <- mapM (const freshHole) params
+        body' <- go body
+        hole <- freshHole
+        pure $ MLambda (zip params paramHoles) body' hole span'
+    go (MClosure name captures () span') = do
+        captureHoles <- mapM (const freshHole) captures
+        hole <- freshHole
+        pure $ MClosure name (zip captures captureHoles) hole span'
+    go (MConstruct name tag args () span') = do
+        args' <- mapM go args
+        hole <- freshHole
+        pure $ MConstruct name tag args' hole span'
+    go (MArrayLit elems () span') = do
+        elems' <- mapM go elems
+        hole <- freshHole
+        pure $ MArrayLit elems' hole span'
+    go (MTuple elems () span') = do
+        elems' <- mapM go elems
+        hole <- freshHole
+        pure $ MTuple elems' hole span'
+    go (MIf cond thenE elseE () span') = do
+        cond' <- go cond
+        thenE' <- go thenE
+        elseE' <- go elseE
+        hole <- freshHole
+        pure $ MIf cond' thenE' elseE' hole span'
+    go (MCase scruts arms mdef () span') = do
+        scruts' <- mapM go scruts
+        arms' <- mapM goArm arms
+        mdef' <- traverse go mdef
+        hole <- freshHole
+        pure $ MCase scruts' arms' mdef' hole span'
+    go (MFieldAccess e idx () span') = do
+        e' <- go e
+        hole <- freshHole
+        pure $ MFieldAccess e' idx hole span'
+    go (MPanic msg () span') = do
+        hole <- freshHole
+        pure $ MPanic msg hole span'
+
+    goArm :: UntypedArm -> State Int InferenceArm
+    goArm (MCaseArm pats body) = do
+        body' <- go body
+        pure $ MCaseArm pats body'

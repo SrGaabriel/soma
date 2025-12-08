@@ -11,6 +11,17 @@ data LlvmModule = LlvmModule
     , moduleFunctions :: [LlvmFunction]
     , moduleDependencies :: [LlvmDependency]
     , moduleGlobals :: [LlvmGlobal]
+    , moduleTypeDefs :: [LlvmTypeDef]
+    -- ^ Named struct type definitions (e.g., %Point = type { i32, i32 })
+    }
+    deriving (Show)
+
+-- | Named struct type definition
+data LlvmTypeDef = LlvmTypeDef
+    { typeDefName :: String
+    -- ^ The type name (without %)
+    , typeDefFields :: [LlvmType]
+    -- ^ The field types
     }
     deriving (Show)
 
@@ -39,12 +50,17 @@ data LlvmBlock = LlvmBlock
     deriving (Show)
 
 instance IR LlvmModule where
-    toLlvm (LlvmModule _ functions dependencies globals) =
+    toLlvm (LlvmModule _ functions dependencies globals typeDefs) =
         unlines (map toLlvm $ nub dependencies)
-            ++ "\n\n"
+            ++ "\n"
+            ++ (if null typeDefs then "" else unlines (map toLlvm typeDefs) ++ "\n")
             ++ unlines (map toLlvm globals)
             ++ "\n\n"
             ++ unlines (map toLlvm functions)
+
+instance IR LlvmTypeDef where
+    toLlvm (LlvmTypeDef name fields) =
+        "%" ++ name ++ " = type { " ++ intercalate ", " (map toLlvm fields) ++ " }"
 
 instance IR LlvmGlobal where
     toLlvm (LlvmGlobal name ty isConst initializer linkage) =

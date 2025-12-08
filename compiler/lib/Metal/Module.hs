@@ -20,6 +20,11 @@ data MetallicTypeDef
         { mtName :: Name
         , mtConstructors :: [MetallicConstructor]
         }
+    | MStructType
+        { msName :: Name
+        , msConstructorName :: Name
+        , msFields :: [Type]
+        }
     | MRecordType
         { mrName :: Name
         , mrFields :: [(Name, Type)]

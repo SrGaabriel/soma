@@ -4,6 +4,7 @@ module Llvm.Gen.Core (
     IrGen,
     IrGenEnv (..),
     IrGenState (..),
+    StructTypeInfo (..),
     globalDefaultState,
     namedDefaultEnv,
     runIrGen,
@@ -40,6 +41,7 @@ import Control.Monad.State (
  )
 import Control.Monad.Writer (MonadWriter (tell), WriterT (..))
 import qualified Data.Map as Map
+import Data.Set (Set)
 import Llvm.Dependencies (LlvmDependency)
 import Llvm.Gen.OperandPass (OperandTypeEnv)
 import Llvm.Instructions (LlvmInstruction (..), LlvmStatement (..))
@@ -47,7 +49,14 @@ import Llvm.Modules (LlvmFunction)
 import Llvm.Types (LlvmType (..))
 import Llvm.Values (LlvmValue (..), getRegName, getValueType)
 import Project.Name (Name)
+import Project.Unique (Unique)
 import Typing.Types (Type)
+
+data StructTypeInfo = StructTypeInfo
+    { stiLlvmName :: !String
+    , stiFieldTypes :: ![LlvmType]
+    }
+    deriving (Show)
 
 data IrGenEnv = IrGenEnv
     { currentFunction :: Maybe String
@@ -57,9 +66,10 @@ data IrGenEnv = IrGenEnv
     , opTypeEnv :: OperandTypeEnv
     , dictMap :: Map.Map (Name, Type) String
     , isTailCall :: Bool
-    -- ^ Whether current instruction is in tail call position
     , isGraphFunction :: Bool
-    -- ^ Whether we're inside a graph function that has (net, tm, arg) params
+    , structTypes :: Set Unique
+    , structTypeInfo :: Map.Map Unique StructTypeInfo
+    , structTypeInfoByName :: Map.Map String StructTypeInfo
     }
 
 data IrGenState = IrGenState
@@ -81,18 +91,24 @@ globalDefaultState =
         , valueSubst = Map.empty
         }
 
-namedDefaultEnv :: String -> IrGenEnv
-namedDefaultEnv name =
-    IrGenEnv
-        { currentFunction = Nothing
-        , currentBlock = Nothing
-        , currentPackage = name
-        , moduleName = name
-        , opTypeEnv = Map.empty
-        , dictMap = Map.empty
-        , isTailCall = False
-        , isGraphFunction = False
-        }
+namedDefaultEnv :: String -> Set Unique -> Map.Map Unique StructTypeInfo -> IrGenEnv
+namedDefaultEnv name structs structInfo =
+    let
+        structInfoByName = Map.fromList [(stiLlvmName info, info) | info <- Map.elems structInfo]
+    in
+        IrGenEnv
+            { currentFunction = Nothing
+            , currentBlock = Nothing
+            , currentPackage = name
+            , moduleName = name
+            , opTypeEnv = Map.empty
+            , dictMap = Map.empty
+            , isTailCall = False
+            , isGraphFunction = False
+            , structTypes = structs
+            , structTypeInfo = structInfo
+            , structTypeInfoByName = structInfoByName
+            }
 
 type IrGen a = ReaderT IrGenEnv (WriterT [LlvmStatement] (State IrGenState)) a
 

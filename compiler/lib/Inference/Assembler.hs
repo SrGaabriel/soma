@@ -15,11 +15,29 @@ import Inference.Solving (checkMetalConstraintEntailment, solveMetalTypeConstrai
 import Inference.Substitution (Subst, Substitutable (apply))
 import Lexing.Position (Span)
 import Metal.Expr
-import Metal.Lower (LowerResult (..))
+import Metal.Lower (LowerResult (..), untypedToInference)
 import Metal.Metadata (FunctionAttributes)
-import Project.Name (Name)
+import Metal.Module (MetallicConstructor (..), MetallicTypeDef (..))
+import Project.Name (Name (..), nameToString)
+import Syntax.Patterns (Literal (..), Pattern (..), ResolvedPattern)
 import qualified Syntax.Tree
-import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..))
+import Typing.Types (Constraint (..), QualifiedType (..), TyVar (..), Type (..), extractArrayElemType, extractTupleTypes, extractTypeArgs, splitFunctionType)
+
+type ConstructorEnv = Map.Map Name (Name, [Type])
+
+buildConstructorEnv :: [MetallicTypeDef] -> ConstructorEnv
+buildConstructorEnv = foldr addTypeDef Map.empty
+  where
+    addTypeDef :: MetallicTypeDef -> ConstructorEnv -> ConstructorEnv
+    addTypeDef (MAlgebraicType typeName ctors) env =
+        foldr (addCtor typeName) env ctors
+    addTypeDef (MStructType typeName ctorName fields) env =
+        Map.insert ctorName (typeName, fields) env
+    addTypeDef (MRecordType typeName fields) env =
+        Map.insert typeName (typeName, map snd fields) env
+
+    addCtor :: Name -> MetallicConstructor -> ConstructorEnv -> ConstructorEnv
+    addCtor typeName (MetallicConstructor ctorName _ fields) = Map.insert ctorName (typeName, fields)
 
 inferModule ::
     String ->
@@ -31,27 +49,60 @@ inferModule ::
 inferModule packageName moduleName typeEnv instanceEnv lowerResult = do
     let bindings = lrBindings lowerResult
     let instances = lrInstances lowerResult
+    let ctorEnv = buildConstructorEnv (lrTypes lowerResult)
+
+    let convertedBindings = convertBindings 0 bindings
+    let convertedInstances = convertInstances (length bindings * 100) instances
 
     let (bindingErrors, typedBindings) =
             unzip
-                [ inferBinding packageName moduleName typeEnv instanceEnv name body paramTypes retType tyVars constraints attrs
-                | (name, body, paramTypes, retType, tyVars, constraints, attrs) <- bindings
+                [ inferBinding packageName moduleName typeEnv instanceEnv ctorEnv name body paramTypes retType tyVars constraints attrs
+                | (name, body, paramTypes, retType, tyVars, constraints, attrs) <- convertedBindings
                 ]
 
     let (instanceErrors, typedInstances) =
             unzip
-                [ inferInstanceMethods packageName moduleName typeEnv instanceEnv constraintType methods
-                | (constraintType, methods) <- instances
+                [ inferInstanceMethods packageName moduleName typeEnv instanceEnv ctorEnv constraintType methods
+                | (constraintType, methods) <- convertedInstances
                 ]
 
     let allErrors = concat bindingErrors ++ concat instanceErrors
     (nub allErrors, typedBindings, typedInstances)
+  where
+    convertBindings ::
+        Int ->
+        [(Name, UntypedExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)] ->
+        [(Name, InferenceExpr, [Type], Type, [TyVar], [Constraint], FunctionAttributes)]
+    convertBindings _ [] = []
+    convertBindings counter ((name, body, paramTypes, retType, tyVars, constraints, attrs) : rest) =
+        let (inferBody, newCounter) = untypedToInference counter body
+        in (name, inferBody, paramTypes, retType, tyVars, constraints, attrs) : convertBindings newCounter rest
+
+    convertInstances ::
+        Int ->
+        [(QualifiedType, [(Name, UntypedExpr, [Type], Type)])] ->
+        [(QualifiedType, [(Name, InferenceExpr, [Type], Type)])]
+    convertInstances _ [] = []
+    convertInstances counter ((constraintType, methods) : rest) =
+        let (convertedMethods, newCounter) = convertMethods counter methods
+        in (constraintType, convertedMethods) : convertInstances newCounter rest
+
+    convertMethods ::
+        Int ->
+        [(Name, UntypedExpr, [Type], Type)] ->
+        ([(Name, InferenceExpr, [Type], Type)], Int)
+    convertMethods counter [] = ([], counter)
+    convertMethods counter ((name, body, paramTypes, retType) : rest) =
+        let (inferBody, newCounter) = untypedToInference counter body
+            (restConverted, finalCounter) = convertMethods newCounter rest
+        in ((name, inferBody, paramTypes, retType) : restConverted, finalCounter)
 
 inferBinding ::
     String ->
     String ->
     MetalTypeEnv ->
     InstanceEnv ->
+    ConstructorEnv ->
     Name ->
     InferenceExpr ->
     [Type] ->
@@ -60,7 +111,7 @@ inferBinding ::
     [Constraint] ->
     FunctionAttributes ->
     ([InferenceError], TypedBinding)
-inferBinding packageName moduleName typeEnv instanceEnv name body paramTypes retType tyVars constraints attrs =
+inferBinding packageName moduleName typeEnv instanceEnv ctorEnv name body paramTypes retType tyVars constraints attrs =
     let
         ((_, constraintSet), _genState, genErrors) =
             runMetalGenM packageName moduleName typeEnv
@@ -70,7 +121,7 @@ inferBinding packageName moduleName typeEnv instanceEnv name body paramTypes ret
     in
         case solveResult of
             Left solveErrors ->
-                let typedBody = applySubstitution Map.empty body
+                let typedBody = applySubstitution ctorEnv Map.empty body
                 in (genErrors ++ solveErrors, (name, typedBody, paramTypes, retType, tyVars, constraints, attrs))
             Right typeSubst ->
                 let classConstraints' = mcsClassConstraints constraintSet
@@ -78,10 +129,10 @@ inferBinding packageName moduleName typeEnv instanceEnv name body paramTypes ret
                     entailmentResult = checkMetalConstraintEntailment instanceEnv declaredConstraints' classConstraints' typeSubst
                 in case entailmentResult of
                     Left entailmentErrors ->
-                        let typedBody = applySubstitution typeSubst body
+                        let typedBody = applySubstitution ctorEnv typeSubst body
                         in (genErrors ++ entailmentErrors, (name, typedBody, paramTypes, retType, tyVars, constraints, attrs))
                     Right () ->
-                        let typedBody = applySubstitution typeSubst body
+                        let typedBody = applySubstitution ctorEnv typeSubst body
                             -- Apply substitution to param types and return type for consistency
                             typedParamTypes = map (apply typeSubst) paramTypes
                             typedRetType = apply typeSubst retType
@@ -93,12 +144,13 @@ inferInstanceMethods ::
     String ->
     MetalTypeEnv ->
     InstanceEnv ->
+    ConstructorEnv ->
     QualifiedType ->
     [(Name, InferenceExpr, [Type], Type)] ->
     ([InferenceError], TypedInstance)
-inferInstanceMethods packageName moduleName typeEnv instanceEnv constraintType methods =
+inferInstanceMethods packageName moduleName typeEnv instanceEnv ctorEnv constraintType methods =
     let results =
-            [ inferInstanceMethod packageName moduleName typeEnv instanceEnv name body paramTypes retType
+            [ inferInstanceMethod packageName moduleName typeEnv instanceEnv ctorEnv name body paramTypes retType
             | (name, body, paramTypes, retType) <- methods
             ]
         (errorLists, typedMethods) = unzip results
@@ -109,12 +161,13 @@ inferInstanceMethod ::
     String ->
     MetalTypeEnv ->
     InstanceEnv ->
+    ConstructorEnv ->
     Name ->
     InferenceExpr ->
     [Type] ->
     Type ->
     ([InferenceError], (Name, TypedExpr, [Type], Type))
-inferInstanceMethod packageName moduleName typeEnv instanceEnv name body paramTypes retType =
+inferInstanceMethod packageName moduleName typeEnv instanceEnv ctorEnv name body paramTypes retType =
     let
         ((_, constraintSet), _genState, genErrors) =
             runMetalGenM packageName moduleName typeEnv
@@ -124,29 +177,32 @@ inferInstanceMethod packageName moduleName typeEnv instanceEnv name body paramTy
     in
         case solveResult of
             Left solveErrors ->
-                let typedBody = applySubstitution Map.empty body
+                let typedBody = applySubstitution ctorEnv Map.empty body
                 in (genErrors ++ solveErrors, (name, typedBody, paramTypes, retType))
             Right typeSubst ->
                 let classConstraints' = mcsClassConstraints constraintSet
                     entailmentResult' = checkMetalConstraintEntailment instanceEnv [] classConstraints' typeSubst
                 in case entailmentResult' of
                     Left entailmentErrors ->
-                        let typedBody = applySubstitution typeSubst body
+                        let typedBody = applySubstitution ctorEnv typeSubst body
                         in (genErrors ++ entailmentErrors, (name, typedBody, paramTypes, retType))
                     Right () ->
-                        let typedBody = applySubstitution typeSubst body
+                        let typedBody = applySubstitution ctorEnv typeSubst body
                             typedParamTypes = map (apply typeSubst) paramTypes
                             typedRetType = apply typeSubst retType
                         in (genErrors, (name, typedBody, typedParamTypes, typedRetType))
 
-applySubstitution :: Subst -> InferenceExpr -> TypedExpr
-applySubstitution subst = go
+applySubstitution :: ConstructorEnv -> Subst -> InferenceExpr -> TypedExpr
+applySubstitution ctorEnv subst = go
   where
     resolveSlot :: TypeSlot -> Type
     resolveSlot (Known t) = apply subst t
     resolveSlot (Hole tv) = case Map.lookup tv subst of
         Just t -> apply subst t
         Nothing -> TVar tv
+
+    resolveType :: Type -> Type
+    resolveType = apply subst
 
     go :: InferenceExpr -> TypedExpr
     go (MVar name slot span') = MVar name (resolveSlot slot) span'
@@ -165,12 +221,65 @@ applySubstitution subst = go
     go (MTuple elems slot span') = MTuple (map go elems) (resolveSlot slot) span'
     go (MIf cond thenE elseE slot span') = MIf (go cond) (go thenE) (go elseE) (resolveSlot slot) span'
     go (MCase scruts arms mdef slot span') =
-        MCase (map go scruts) (map goArm arms) (fmap go mdef) (resolveSlot slot) span'
+        let typedScruts = map go scruts
+            scrutTypes = map getType typedScruts
+            typedArms = map (goArm scrutTypes) arms
+        in MCase typedScruts typedArms (fmap go mdef) (resolveSlot slot) span'
     go (MFieldAccess e idx slot span') = MFieldAccess (go e) idx (resolveSlot slot) span'
     go (MPanic msg slot span') = MPanic msg (resolveSlot slot) span'
 
-    goArm :: InferenceArm -> TypedArm
-    goArm (MCaseArm pats body) = MCaseArm pats (go body)
+    goArm :: [Type] -> InferenceArm -> TypedArm
+    goArm scrutTypes (MCaseArm pats body) =
+        let typedPats = zipWith (typePattern ctorEnv resolveType) scrutTypes pats
+        in MCaseArm typedPats (go body)
+
+typePattern :: ConstructorEnv -> (Type -> Type) -> Type -> ResolvedPattern -> TypedPattern
+typePattern ctorEnv resolve scrutTy pat = case pat of
+    PVar name pSpan ->
+        TPVar name scrutTy pSpan
+    PWildcard pSpan ->
+        TPWildcard scrutTy pSpan
+    PLit lit pSpan ->
+        TPLit lit scrutTy pSpan
+    PAs name inner pSpan ->
+        TPAs name (typePattern ctorEnv resolve scrutTy inner) scrutTy pSpan
+    PConstructor ctorName innerPats pSpan ->
+        let innerTyped = typeConstructorPatterns ctorEnv resolve scrutTy ctorName innerPats
+        in TPConstructor ctorName innerTyped scrutTy pSpan
+    PTuple innerPats pSpan ->
+        let elemTypes = extractTupleTypes scrutTy
+            innerTyped = zipWith (typePattern ctorEnv resolve) elemTypes innerPats
+        in TPTuple innerTyped scrutTy pSpan
+    PArray innerPats pSpan ->
+        let elemType = extractArrayElemType scrutTy
+            innerTyped = map (typePattern ctorEnv resolve elemType) innerPats
+        in TPArray innerTyped scrutTy pSpan
+
+typeConstructorPatterns :: ConstructorEnv -> (Type -> Type) -> Type -> Name -> [ResolvedPattern] -> [TypedPattern]
+typeConstructorPatterns ctorEnv resolve scrutTy ctorName innerPats =
+    case Map.lookup ctorName ctorEnv of
+        Just (_typeName, fieldTypes) ->
+            let typeArgs = extractTypeArgs scrutTy
+                instantiatedFieldTypes = map (instantiateFieldType resolve typeArgs) fieldTypes
+            in zipWith (typePattern ctorEnv resolve) instantiatedFieldTypes innerPats
+        Nothing ->
+            map (typePattern ctorEnv resolve (extractFieldTypeFallback scrutTy)) innerPats
+  where
+    instantiateFieldType :: (Type -> Type) -> [Type] -> Type -> Type
+    instantiateFieldType resolveT typeArgs fieldTy = case fieldTy of
+        TVar _ ->
+            case typeArgs of
+                (arg : _) -> resolveT arg
+                [] -> resolveT fieldTy
+        TApp f a ->
+            TApp (instantiateFieldType resolveT typeArgs f) (instantiateFieldType resolveT typeArgs a)
+        TArrow a b ->
+            TArrow (instantiateFieldType resolveT typeArgs a) (instantiateFieldType resolveT typeArgs b)
+        _ -> resolveT fieldTy
+
+    extractFieldTypeFallback :: Type -> Type
+    extractFieldTypeFallback (TApp _ arg) = resolve arg
+    extractFieldTypeFallback t = resolve t
 
 checkUnresolvedTypeVars :: TypedExpr -> [InferenceError]
 checkUnresolvedTypeVars expr = nub $ go expr

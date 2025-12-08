@@ -31,6 +31,7 @@ import Alloy.Ir
 import Alloy.Subst (Subst, substEffect, substOp, substTerminator)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import qualified Project.Name as PN
 import Typing.Types (TyConstructor (..), Type (..), tyUniqueName)
 
@@ -63,7 +64,7 @@ readerRewriteModuleWith cfg m@AlloyModule{amFunctions} =
 
 readerRewriteFunction :: ReaderConfig -> AlloyFunction -> AlloyFunction
 readerRewriteFunction cfg fn =
-    let afs = readerRewriteModuleWith cfg (AlloyModule "" [fn] [] [])
+    let afs = readerRewriteModuleWith cfg (AlloyModule "" [fn] [] [] Set.empty [])
     in case amFunctions afs of
         [f] -> f
         _ -> fn

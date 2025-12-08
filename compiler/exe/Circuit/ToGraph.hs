@@ -33,7 +33,7 @@ module Circuit.ToGraph (
 ) where
 
 import Alloy.Build
-import Circuit.Ir (collectArgs)
+import Circuit.Ir (collectArgs, extractStructTypes)
 import qualified Circuit.Ir as C
 import Control.Monad (foldM, forM, forM_)
 import Data.Map.Strict (Map)
@@ -136,8 +136,26 @@ lookupDupNode name = Map.lookup name . lgeDupNodes
 -- | Lower a Circuit module to an Alloy module using linearized graph reduction
 lowerCircuitToGraph :: C.CModule -> AlloyModule
 lowerCircuitToGraph cmod =
-    let (_, alloyMod) = runAlloyBuilder (C.cmName cmod) [] $ lowerToLGraphMain cmod
+    let structTypes = extractStructTypes (C.cmTypes cmod)
+        typeDefs = map convertTypeDef (C.cmTypes cmod)
+        (_, alloyMod) = runAlloyBuilder (C.cmName cmod) [] structTypes typeDefs $ lowerToLGraphMain cmod
     in alloyMod
+
+convertTypeDef :: C.CTypeDef -> AlloyTypeDef
+convertTypeDef td =
+    AlloyTypeDef
+        { atName = C.ctName td
+        , atConstructors = map convertConstructor (C.ctConstructors td)
+        , atIsStruct = C.ctIsStruct td
+        }
+
+convertConstructor :: C.CConstructor -> AlloyConstructor
+convertConstructor cc =
+    AlloyConstructor
+        { acCtorName = C.ccName cc
+        , acCtorTag = C.ccTag cc
+        , acCtorFieldTypes = C.ccFieldTypes cc
+        }
 
 -- | Generate the main entry point and all functions for linearized graph reduction
 lowerToLGraphMain :: C.CModule -> AlloyBuilder ()

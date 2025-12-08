@@ -22,7 +22,10 @@ Takes the symbol environment to look up proper Names for types
 -}
 extractConstructorMetadata :: SymbolEnv -> Expr -> Map Name MetallicConstructorMetadata
 extractConstructorMetadata symEnv (ExprRoot decls) =
-    Map.fromList $ concat [extractFromDataType dt | dt@(ExprDataTypeDef{}) <- decls]
+    Map.fromList
+        $ concat
+        $ [extractFromDataType dt | dt@(ExprDataTypeDef{}) <- decls]
+            ++ [extractFromStruct st | st@(ExprStructDef{}) <- decls]
   where
     extractFromDataType (ExprDataTypeDef{dataName, dataConstructors}) =
         let typeName = lookupTypeName dataName symEnv
@@ -38,6 +41,13 @@ extractConstructorMetadata symEnv (ExprRoot decls) =
            , let ctorName' = lookupConstructorName ctorName dataName symEnv
            ]
     extractFromDataType _ = []
+
+    extractFromStruct (ExprStructDef{structName, structConstructorName = ctorName, structFields}) =
+        let typeName = lookupTypeName structName symEnv
+            fieldTypes = map (lValue . snd) structFields
+            ctorName' = lookupConstructorName ctorName structName symEnv
+        in [(ctorName', MetallicConstructorMetadata typeName 0 fieldTypes)]
+    extractFromStruct _ = []
 extractConstructorMetadata _ _ = Map.empty
 
 lookupTypeName :: String -> SymbolEnv -> Name

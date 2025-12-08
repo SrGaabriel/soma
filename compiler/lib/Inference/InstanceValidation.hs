@@ -6,7 +6,7 @@ import Inference.Errors (InferenceError (..))
 import Inference.Substitution (Substitutable (apply))
 import Lexing.Position (Located (..))
 import Syntax.Tree (Expr (..), exprChildren)
-import Typing.Types (Constraint (..), QualifiedType (..), TyConstructor (..), TyVar (..), Type (..), constraintType, tyUniqueName)
+import Typing.Types (Constraint (..), QualifiedType (..), TyConstructor (..), TyVar (..), Type (..), constraintType, extractTypeArgs, tyUniqueName)
 
 validateInstances :: InstanceEnv -> Expr -> [InferenceError]
 validateInstances instEnv expr =
@@ -77,7 +77,3 @@ buildSubstitution tvs instanceType =
                 else Map.fromList [(tv, instanceType) | tv <- tvs]
         _ ->
             Map.fromList [(tv, instanceType) | tv <- tvs]
-  where
-    extractTypeArgs :: Type -> [Type]
-    extractTypeArgs (TApp f arg) = extractTypeArgs f ++ [arg]
-    extractTypeArgs _ = []

@@ -48,6 +48,7 @@ module Circuit.Ir (
     classifyTerm,
     mergeAllocKind,
     collectArgs,
+    extractStructTypes,
 ) where
 
 import Data.Map.Strict (Map)
@@ -57,6 +58,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import GHC.Generics (Generic)
 import Project.Name (Name (..))
+import Project.Unique (Unique)
 import Typing.Types (TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..), boolType, intType, strType, unitType)
 
 {- | A label distinguishes different superposition/duplication pairs.
@@ -224,10 +226,10 @@ data CFunctionMeta = CFunctionMeta
     }
     deriving (Show, Eq, Generic)
 
--- | A type definition (ADT) - for reference during lowering
 data CTypeDef = CTypeDef
     { ctName :: !Name
     , ctConstructors :: ![CConstructor]
+    , ctIsStruct :: !Bool
     }
     deriving (Show, Eq, Generic)
 
@@ -236,6 +238,7 @@ data CConstructor = CConstructor
     { ccName :: !Name
     , ccTag :: !Int
     , ccArity :: !Int -- Number of fields
+    , ccFieldTypes :: ![Type] -- Field types (for proper LLVM type generation)
     }
     deriving (Show, Eq, Generic)
 
@@ -680,3 +683,13 @@ collectArgs (CApp f x _) =
     let (fun, args) = collectArgs f
     in (fun, args ++ [x])
 collectArgs other = (other, [])
+
+extractStructTypes :: [CTypeDef] -> Set Unique
+extractStructTypes = Set.fromList . concatMap getStructUnique
+  where
+    getStructUnique :: CTypeDef -> [Unique]
+    getStructUnique td
+        | ctIsStruct td = case ctName td of
+            NUser u -> [u]
+            _ -> []
+        | otherwise = []

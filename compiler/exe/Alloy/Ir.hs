@@ -5,9 +5,11 @@ module Alloy.Ir (
     Name,
 ) where
 
+import Data.Set (Set)
 import GHC.Generics (Generic)
 import Metal.Metadata (FunctionAttributes, MetallicTypeClassMetadata)
 import Project.Name (Name)
+import Project.Unique (Unique)
 import Typing.Types (Constraint, Type)
 
 type FieldIndex = Int
@@ -23,6 +25,22 @@ data AlloyModule = AlloyModule
     , amFunctions :: [AlloyFunction]
     , amDictionaries :: [DictionaryDef]
     , amTypeClasses :: [MetallicTypeClassMetadata]
+    , amStructTypes :: Set Unique
+    , amTypeDefs :: [AlloyTypeDef]
+    }
+    deriving (Generic, Show, Eq)
+
+data AlloyTypeDef = AlloyTypeDef
+    { atName :: !Name
+    , atConstructors :: ![AlloyConstructor]
+    , atIsStruct :: !Bool
+    }
+    deriving (Generic, Show, Eq)
+
+data AlloyConstructor = AlloyConstructor
+    { acCtorName :: !Name
+    , acCtorTag :: !Int
+    , acCtorFieldTypes :: ![Type]
     }
     deriving (Generic, Show, Eq)
 

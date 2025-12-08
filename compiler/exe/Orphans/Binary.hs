@@ -61,6 +61,10 @@ instance Binary FunctionAttributes
 
 instance Binary AlloyModule
 
+instance Binary AlloyTypeDef
+
+instance Binary AlloyConstructor
+
 instance Binary DictionaryDef
 
 instance Binary AlloyFunction

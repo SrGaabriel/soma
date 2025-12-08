@@ -11,7 +11,7 @@ import Lexing.Lexer (Token (..), TokenKind (..))
 import Lexing.Position (Located)
 import Parsing.Attributes (parseAttributes)
 import Parsing.Bindings (parseBindingWithAttributes)
-import Parsing.DataTypes (parseDataTypeWithAttributes)
+import Parsing.DataTypes (parseDataTypeWithAttributes, parseStructWithAttributes)
 import Parsing.Errors (ParsingError (..))
 import Parsing.Imports (parseExport, parseImport)
 import Parsing.Intrinsics (parseIntrinsic)
@@ -127,6 +127,7 @@ someDeclarations = go []
         [ TokenDef
         , TokenAt
         , TokenData
+        , TokenStruct
         , TokenTrait
         , TokenInstance
         , TokenIntrinsic
@@ -147,6 +148,7 @@ parseDeclarationWithAttributes attrs = do
     case tokenKind token of
         TokenDef -> parseBindingWithAttributes True attrs
         TokenData -> parseDataTypeWithAttributes attrs
+        TokenStruct -> parseStructWithAttributes attrs
         TokenTrait -> parseTrait
         TokenInstance -> parseInstance
         TokenIntrinsic -> parseIntrinsic

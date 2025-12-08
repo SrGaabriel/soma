@@ -37,6 +37,7 @@ module Typing.Types (
     countArityFromType,
     extractTupleTypes,
     extractArrayElemType,
+    extractTypeArgs,
 ) where
 
 import GHC.Generics (Generic)
@@ -250,3 +251,7 @@ extractTupleTypes _ = []
 extractArrayElemType :: Type -> Type
 extractArrayElemType (TApp (TConstructor (TypeConstructor (TyPrim TPArray) _)) elemTy) = elemTy
 extractArrayElemType ty = ty
+
+extractTypeArgs :: Type -> [Type]
+extractTypeArgs (TApp f arg) = extractTypeArgs f ++ [arg]
+extractTypeArgs _ = []

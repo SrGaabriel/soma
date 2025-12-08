@@ -32,7 +32,7 @@ import Alloy.Build
 import Circuit.Alloc (AllocEnv, AllocKind (..), analyzeFunction, lookupAlloc)
 import Circuit.Constants (parallelWorkThreshold)
 import Circuit.Escape (EscapeEnv, analyzeFunctionEscapes, canElideClone)
-import Circuit.Ir (collectArgs)
+import Circuit.Ir (collectArgs, extractStructTypes)
 import qualified Circuit.Ir as C
 import Control.Monad (forM, forM_, when)
 import Data.Map.Strict (Map)
@@ -135,9 +135,27 @@ shouldUseParallel workEstimate = workEstimate >= parallelWorkThreshold
 -- | Lower a Circuit module to an Alloy module
 lowerCircuitToAlloy :: C.CModule -> AlloyModule
 lowerCircuitToAlloy cmod =
-    let (_, alloyMod) = runAlloyBuilder (C.cmName cmod) [] $ do
+    let structTypes = extractStructTypes (C.cmTypes cmod)
+        typeDefs = map convertTypeDef (C.cmTypes cmod)
+        (_, alloyMod) = runAlloyBuilder (C.cmName cmod) [] structTypes typeDefs $ do
             forM_ (C.cmFunctions cmod) lowerFunction
     in alloyMod
+
+convertTypeDef :: C.CTypeDef -> AlloyTypeDef
+convertTypeDef td =
+    AlloyTypeDef
+        { atName = C.ctName td
+        , atConstructors = map convertConstructor (C.ctConstructors td)
+        , atIsStruct = C.ctIsStruct td
+        }
+
+convertConstructor :: C.CConstructor -> AlloyConstructor
+convertConstructor cc =
+    AlloyConstructor
+        { acCtorName = C.ccName cc
+        , acCtorTag = C.ccTag cc
+        , acCtorFieldTypes = C.ccFieldTypes cc
+        }
 
 -- | Lower a Circuit function to Alloy
 lowerFunction :: C.CFunction -> AlloyBuilder ()

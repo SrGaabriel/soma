@@ -18,15 +18,16 @@ import Alloy.Ir (
     ),
  )
 import Control.Monad (forM)
-import Control.Monad.Reader (MonadReader (local))
+import Control.Monad.Reader (MonadReader (local), asks)
 import Control.Monad.State (modify)
 import Control.Monad.Writer (listen)
 import Data.Bifunctor (bimap)
+import qualified Data.Map.Strict as Map
 import Llvm.Gen.Attributes (FunctionAttrs (..), analyzeFunctionAttrs)
-import Llvm.Gen.Core (IrGen, IrGenEnv (opTypeEnv), IrGenState (irFunctions), setGraphFunctionContext, setTailCallContext)
+import Llvm.Gen.Core (IrGen, IrGenEnv (opTypeEnv, structTypeInfo, structTypes), IrGenState (irFunctions), StructTypeInfo (stiLlvmName), setGraphFunctionContext, setTailCallContext)
 import Llvm.Gen.Instr (compileInstr, compileTerminator)
 import Llvm.Gen.OperandPass (buildOperandTypeEnv)
-import Llvm.Gen.TypeConversion (convertType)
+import Llvm.Gen.TypeConversion (convertTypeWithStructInfo)
 import Llvm.Modules (
     LlvmBlock (..),
     LlvmFunction (
@@ -43,11 +44,15 @@ import Project.Name (Name (..), nameOriginal, nameToLLVM, nameToString)
 
 compileFunction :: AlloyFunction -> IrGen ()
 compileFunction aFn@AlloyFunction{afName, afParams, afBlocks, afReturnType} = do
+    structs <- asks structTypes
+    structInfo <- asks structTypeInfo
+    let structNames = Map.map stiLlvmName structInfo
+    let convertType = convertTypeWithStructInfo structs structNames
     let name =
             if nameOriginal afName == "main"
                 then "soma_main" -- Renamed so C runtime's main() can wrap it
                 else nameToLLVM afName
-    let opEnv = buildOperandTypeEnv aFn
+    let opEnv = buildOperandTypeEnv structs structNames aFn
     -- Detect if this is a graph function (has net, tm, arg params)
     let isGraphFn = case afParams of
             ((n1, _) : (n2, _) : _) | nameToString n1 == "net" && nameToString n2 == "tm" -> True

@@ -9,6 +9,9 @@ module Metal.Expr (
     Phase (..),
     MetallicExpr (..),
     MCaseArm (..),
+    TypedPattern (..),
+    typedPatternSpan,
+    typedPatternType,
     MetallicLiteral (..),
     MetallicStatement (..),
     TypeSlot (..),
@@ -29,6 +32,7 @@ module Metal.Expr (
     XCase,
     XFieldAccess,
     XPanic,
+    XCaseArmPatterns,
     UntypedExpr,
     TypedExpr,
     InferenceExpr,
@@ -43,8 +47,36 @@ module Metal.Expr (
 
 import Lexing.Position (Span)
 import Project.Name (Name)
-import Syntax.Patterns (ResolvedPattern)
+import Syntax.Patterns (Literal, ResolvedPattern)
 import Typing.Types (TyVar (..), Type (..), boolType, intType, strType)
+
+data TypedPattern
+    = TPVar Name Type Span
+    | TPWildcard Type Span
+    | TPLit Literal Type Span
+    | TPConstructor Name [TypedPattern] Type Span
+    | TPTuple [TypedPattern] Type Span
+    | TPArray [TypedPattern] Type Span
+    | TPAs Name TypedPattern Type Span
+    deriving (Show, Eq)
+
+typedPatternSpan :: TypedPattern -> Span
+typedPatternSpan (TPVar _ _ s) = s
+typedPatternSpan (TPWildcard _ s) = s
+typedPatternSpan (TPLit _ _ s) = s
+typedPatternSpan (TPConstructor _ _ _ s) = s
+typedPatternSpan (TPTuple _ _ s) = s
+typedPatternSpan (TPArray _ _ s) = s
+typedPatternSpan (TPAs _ _ _ s) = s
+
+typedPatternType :: TypedPattern -> Type
+typedPatternType (TPVar _ t _) = t
+typedPatternType (TPWildcard t _) = t
+typedPatternType (TPLit _ t _) = t
+typedPatternType (TPConstructor _ _ t _) = t
+typedPatternType (TPTuple _ t _) = t
+typedPatternType (TPArray _ t _) = t
+typedPatternType (TPAs _ _ t _) = t
 
 data Phase = Untyped | Inference | Typed
 
@@ -137,6 +169,11 @@ type family XPanic (p :: Phase) where
     XPanic Inference = TypeSlot
     XPanic Typed = Type
 
+type family XCaseArmPatterns (p :: Phase) where
+    XCaseArmPatterns Untyped = [ResolvedPattern]
+    XCaseArmPatterns Inference = [ResolvedPattern] -- Patterns typed during applySubstitution
+    XCaseArmPatterns Typed = [TypedPattern]
+
 data MetallicExpr (p :: Phase)
     = MVar Name (XVar p) Span
     | MLit MetallicLiteral Span
@@ -169,6 +206,7 @@ deriving instance
     , Show (XCase p)
     , Show (XFieldAccess p)
     , Show (XPanic p)
+    , Show (XCaseArmPatterns p)
     ) =>
     Show (MetallicExpr p)
 
@@ -188,17 +226,18 @@ deriving instance
     , Eq (XCase p)
     , Eq (XFieldAccess p)
     , Eq (XPanic p)
+    , Eq (XCaseArmPatterns p)
     ) =>
     Eq (MetallicExpr p)
 
 data MCaseArm (p :: Phase) = MCaseArm
-    { mcaPatterns :: [ResolvedPattern]
+    { mcaPatterns :: XCaseArmPatterns p
     , mcaBody :: MetallicExpr p
     }
 
-deriving instance (Show (MetallicExpr p)) => Show (MCaseArm p)
+deriving instance (Show (XCaseArmPatterns p), Show (MetallicExpr p)) => Show (MCaseArm p)
 
-deriving instance (Eq (MetallicExpr p)) => Eq (MCaseArm p)
+deriving instance (Eq (XCaseArmPatterns p), Eq (MetallicExpr p)) => Eq (MCaseArm p)
 
 data MetallicLiteral
     = MInt Int

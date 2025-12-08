@@ -21,9 +21,11 @@ import Alloy.Ir
 import Control.Monad (when)
 import Control.Monad.State.Strict
 import Data.Maybe (isNothing)
+import qualified Data.Set as Set
 import Metal.Metadata (FunctionAttributes, defaultFunctionAttributes)
 import qualified Metal.Metadata
 import Project.Name (LocalId (..), LocalPrefix (..), Name (..))
+import Project.Unique (Unique)
 import Typing.Types (Constraint, Type)
 
 data BuildState = BuildState
@@ -55,8 +57,8 @@ data BlockBuild = BlockBuild
 
 type AlloyBuilder = State BuildState
 
-runAlloyBuilder :: String -> [Metal.Metadata.MetallicTypeClassMetadata] -> AlloyBuilder a -> (a, AlloyModule)
-runAlloyBuilder modName typeClasses action =
+runAlloyBuilder :: String -> [Metal.Metadata.MetallicTypeClassMetadata] -> Set.Set Unique -> [AlloyTypeDef] -> AlloyBuilder a -> (a, AlloyModule)
+runAlloyBuilder modName typeClasses structTypes typeDefs action =
     let initState =
             BuildState
                 { bsModuleName = modName
@@ -74,6 +76,8 @@ runAlloyBuilder modName typeClasses action =
                 , amFunctions = bsFunctions st
                 , amDictionaries = bsDictionaries st
                 , amTypeClasses = typeClasses
+                , amStructTypes = structTypes
+                , amTypeDefs = typeDefs
                 }
     in (res, mdl)
 

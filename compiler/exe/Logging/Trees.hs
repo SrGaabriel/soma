@@ -79,6 +79,8 @@ instance TreeShow MetallicFunction where
 instance TreeShow MetallicTypeDef where
     treeShow (MAlgebraicType nm ctors) =
         "data " ++ nameToString nm ++ " = " ++ intercalate " | " (map treeShow ctors)
+    treeShow (MStructType nm ctorNm fields) =
+        "struct " ++ nameToString nm ++ " = " ++ nameToString ctorNm ++ " " ++ unwords (map treeShow fields)
     treeShow (MRecordType nm fields) =
         "record " ++ nameToString nm ++ " { " ++ commaSep [nameToString n ++ ": " ++ treeShow t | (n, t) <- fields] ++ " }"
 
@@ -272,7 +274,7 @@ instance TreeShow AlloyFunction where
             ++ "}"
 
 instance TreeShow AlloyModule where
-    treeShow (AlloyModule nm fns dicts tcs) =
+    treeShow (AlloyModule nm fns dicts tcs _structTypes _typeDefs) =
         "module "
             ++ nm
             ++ "\n"

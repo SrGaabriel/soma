@@ -3,6 +3,7 @@
 module Metal.Lift (
     liftLambdas,
     collectBinders,
+    collectBindersTyped,
 ) where
 
 import Control.Monad.State.Strict
@@ -114,7 +115,7 @@ substituteVars subst expr = case expr of
         in MClosure name capturedVars' ty s
   where
     substituteArm subst' arm@MCaseArm{mcaPatterns, mcaBody} =
-        let boundNames = concatMap collectBinders mcaPatterns
+        let boundNames = concatMap collectBindersTyped mcaPatterns
             subst'' = foldr Map.delete subst' boundNames
         in arm{mcaBody = substituteVars subst'' mcaBody}
 
@@ -283,7 +284,7 @@ liftExprLambdas available bound (MCase scrutinees arms mdef ty s) =
   where
     liftArm :: Set.Set Name -> Set.Set Name -> TypedArm -> LiftM TypedArm
     liftArm avail boundVars MCaseArm{mcaPatterns, mcaBody} =
-        let binders = concatMap collectBinders mcaPatterns
+        let binders = concatMap collectBindersTyped mcaPatterns
             boundInArm = Set.union boundVars (Set.fromList binders)
         in MCaseArm mcaPatterns <$> liftExprLambdas avail boundInArm mcaBody
 liftExprLambdas available bound (MIf ifCond ifBlock elseBlock ty s) =
@@ -352,7 +353,7 @@ computeFreeVarsWithTypes (MCase scrutinees arms mdef _ _) =
     let scrFree = Map.unions (map computeFreeVarsWithTypes scrutinees)
         armsFree =
             Map.unions
-                [ foldr Map.delete (computeFreeVarsWithTypes (mcaBody arm)) (concatMap collectBinders (mcaPatterns arm))
+                [ foldr Map.delete (computeFreeVarsWithTypes (mcaBody arm)) (concatMap collectBindersTyped (mcaPatterns arm))
                 | arm <- arms
                 ]
         defFree = maybe Map.empty computeFreeVarsWithTypes mdef
@@ -372,3 +373,12 @@ collectBinders (PAs name p _) = name : collectBinders p
 collectBinders (PConstructor _ ps _) = concatMap collectBinders ps
 collectBinders (PTuple ps _) = concatMap collectBinders ps
 collectBinders (PArray ps _) = concatMap collectBinders ps
+
+collectBindersTyped :: TypedPattern -> [Name]
+collectBindersTyped (Metal.Expr.TPVar name _ _) = [name]
+collectBindersTyped Metal.Expr.TPWildcard{} = []
+collectBindersTyped Metal.Expr.TPLit{} = []
+collectBindersTyped (Metal.Expr.TPAs name p _ _) = name : collectBindersTyped p
+collectBindersTyped (Metal.Expr.TPConstructor _ ps _ _) = concatMap collectBindersTyped ps
+collectBindersTyped (Metal.Expr.TPTuple ps _ _) = concatMap collectBindersTyped ps
+collectBindersTyped (Metal.Expr.TPArray ps _ _) = concatMap collectBindersTyped ps

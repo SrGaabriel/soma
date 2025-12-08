@@ -229,6 +229,8 @@ concatenateAlloyModules packageName modules =
         , amFunctions = concatMap amFunctions modules
         , amDictionaries = concatMap amDictionaries modules
         , amTypeClasses = concatMap amTypeClasses modules
+        , amStructTypes = mconcat (map amStructTypes modules)
+        , amTypeDefs = concatMap amTypeDefs modules
         }
 
 createFusedAst :: [(Expr, Map Symbol QualifiedType)] -> (Expr, Map Symbol QualifiedType)

@@ -4,7 +4,9 @@ module Llvm.Gen.Instr (
 ) where
 
 import Alloy.Ir
+import Control.Monad.Reader (asks)
 import Control.Monad.Writer.Class (MonadWriter (tell))
+import qualified Data.Map.Strict as Map
 import Llvm.Gen.CRuntime (
     cruntimeGInet,
     cruntimeInetFree,
@@ -13,12 +15,12 @@ import Llvm.Gen.CRuntime (
     cruntimeSomaClosureSetEnv,
     cruntimeSomaEraFree,
  )
-import Llvm.Gen.Core
+import Llvm.Gen.Core (IrGen, IrGenEnv (structTypeInfo, structTypes), StructTypeInfo (..), recordSubstitution, saveTmp)
 import Llvm.Gen.Externals (useDep)
 import Llvm.Gen.Op (compileOp)
 import Llvm.Gen.Operands (compileOperand)
 import Llvm.Gen.Templates (newStrTemplate)
-import Llvm.Gen.TypeConversion (convertType)
+import Llvm.Gen.TypeConversion (convertTypeWithStructInfo)
 import Llvm.Instructions
 import Llvm.Types (LlvmType (..), deref)
 import Llvm.Values (LlvmValue (..), getValueType)
@@ -26,7 +28,11 @@ import Project.Name (nameToLLVM, nameToString)
 
 compileInstr :: AInstr -> IrGen ()
 compileInstr (ILet letName letTy letOp) = do
-    let llTy = convertType letTy
+    structs <- asks structTypes
+    structInfo <- asks structTypeInfo
+    -- Build map from Unique to LLVM type name for named struct types
+    let structNameMap = Map.map stiLlvmName structInfo
+    let llTy = convertTypeWithStructInfo structs structNameMap letTy
     resultVal <- compileOp letOp llTy
     recordSubstitution (nameToString letName) resultVal
 compileInstr (IEffect (EffStore value addr)) = do
