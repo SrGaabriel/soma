@@ -96,6 +96,18 @@ jobs:
             - name: Build dependencies
               run: cabal build --only-dependencies all
 
+            - name: Install Z3
+              run: |
+                  if [ "$RUNNER_OS" == "Linux" ]; then
+                    sudo apt-get update
+                    sudo apt-get install -y z3
+                  elif [ "$RUNNER_OS" == "macOS" ]; then
+                    brew install z3
+                  elif [ "$RUNNER_OS" == "Windows" ]; then
+                    choco install z3
+                  fi
+              shell: bash
+
             - name: Build project
               run: cabal build --project-file=cabal.release.project all
 
