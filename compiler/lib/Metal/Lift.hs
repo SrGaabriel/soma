@@ -44,7 +44,6 @@ mkLiftState startCounter modName globals =
         , lsModuleName = modName
         }
 
-
 liftLambdas :: Int -> Set.Set Name -> MetallicModule -> MetallicModule
 liftLambdas startCounter extraGlobals m@MetallicModule{mmName, mmFunctions, mmInstances} =
     let

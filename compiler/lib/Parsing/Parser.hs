@@ -31,6 +31,7 @@ module Parsing.Parser (
     parseCommaSeparatedUntil,
     parseExhaustiveSequence,
     parseSequence,
+    parseBracedSequence,
     parseFluidSequence,
     parseInLayout,
     parseLayout,
@@ -267,6 +268,38 @@ parseSequence separator end itemParser = do
                     k | k == end -> empty
                     _ -> customFailure $ ExpectedDifferentToken separator nextTok
             pure (first : rest)
+
+skipLayoutTokens :: Parser ()
+skipLayoutTokens = void $ many $ satisfy $ \t ->
+    tokenKind t `elem` [TokenLayoutStart, TokenLayoutEnd, TokenLayoutSeparator]
+
+parseBracedSequence :: Parser a -> Parser [a]
+parseBracedSequence itemParser = do
+    skipLayoutTokens
+    inc <- tryPeekOrEOF
+    if tokenKind inc == TokenRightBraces
+        then pure []
+        else do
+            first <- itemParser
+            rest <- parseRest
+            pure (first : rest)
+  where
+    parseRest = do
+        skipLayoutTokens
+        nextTok <- tryPeekOrEOF
+        case tokenKind nextTok of
+            TokenComma -> do
+                _ <- consume TokenComma
+                skipLayoutTokens
+                nextTok' <- tryPeekOrEOF
+                if tokenKind nextTok' == TokenRightBraces
+                    then pure []
+                    else do
+                        item <- itemParser
+                        rest <- parseRest
+                        pure (item : rest)
+            TokenRightBraces -> pure []
+            _ -> customFailure $ ExpectedDifferentToken TokenComma nextTok
 
 parseFluidSequence :: TokenKind -> Parser a -> Parser [a]
 parseFluidSequence end itemParser = do

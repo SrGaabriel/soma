@@ -3,4 +3,35 @@ use base/core.{Option, Some, None, Either, Err, Ok, Display, display, Semigroup,
 use base/io.{IO}
 use stdlib/core.{println}
 
-export {+, -, *, /, %, Option, Some, None, Either, Err, Ok, Display, display, Semigroup, <>, Monoid, mempty, mconcat, Functor, fmap, Applicative, pure, <*>, *>, <*, Monad, >>=, >>, IO, println}
+export {
+    +,
+    -,
+    *,
+    /,
+    %,
+    Option,
+    Some,
+    None,
+    Either,
+    Err,
+    Ok,
+    Display,
+    display,
+    Semigroup,
+    <>,
+    Monoid,
+    mempty,
+    mconcat,
+    Functor,
+    fmap,
+    Applicative,
+    pure,
+    <*>,
+    *>,
+    <*,
+    Monad,
+    >>=,
+    >>,
+    IO,
+    println
+}

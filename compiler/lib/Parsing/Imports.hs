@@ -6,7 +6,7 @@ import Lexing.Lexer (Token (tokenValue), TokenKind (..), tokenSpan)
 import Lexing.Position (Span (..))
 import Parsing.Atoms (parseModuleName)
 import Parsing.Errors (ParsingError (UnexpectedToken))
-import Parsing.Parser (Parser, consume, consumeAnyOf, parseSequence)
+import Parsing.Parser (Parser, consume, consumeAnyOf, parseBracedSequence, parseSequence)
 import Syntax.Tree (Expr (..))
 import qualified Text.Megaparsec as MP
 
@@ -44,9 +44,7 @@ parseExport = do
     exportToken <- consume TokenExport
     _ <- consume TokenLeftBraces
     exports <-
-        parseSequence
-            TokenComma
-            TokenRightBraces
+        parseBracedSequence
             ( do
                 nameToken <-
                     consumeAnyOf
