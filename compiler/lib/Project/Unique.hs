@@ -27,7 +27,9 @@ data Unique = Unique
     deriving (Show, Generic)
 
 instance Eq Unique where
-    u1 == u2 = uniqueId u1 == uniqueId u2 && uniqueModule u1 == uniqueModule u2
+    u1 == u2 =
+        uniqueId u1 == uniqueId u2
+            && uniqueModule u1 == uniqueModule u2
 
 instance Ord Unique where
     compare u1 u2 =

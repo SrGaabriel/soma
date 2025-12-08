@@ -69,6 +69,8 @@ instance TreeShow Expr where
     treeShow (ExprLambda args _ _) = "Lambda (" ++ unwords args ++ "):"
     treeShow (ExprImport moduleName imports _) =
         "Import: " ++ moduleName ++ " (" ++ intercalate "," imports ++ ")"
+    treeShow (ExprExport exports _) =
+        "Export: (" ++ intercalate "," exports ++ ")"
     treeShow (ExprLet name _ _ _) = "Let (" ++ name ++ "):"
     treeShow (ExprPatternMatch{}) = "PatternMatch:"
     treeShow (ExprDerivedPatternMatch _) = "DerivedPatternMatch: "

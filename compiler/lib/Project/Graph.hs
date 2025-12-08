@@ -5,8 +5,8 @@ import Data.Either (partitionEithers)
 import Data.Graph (SCC (AcyclicSCC, CyclicSCC), stronglyConnComp)
 import qualified Data.Map as Map
 import Format.Errors (SomeError)
-import Project.Module (ModuleInfo (moduleAst), ModuleName, moduleName)
-import Project.Parsing (parseModule)
+import Project.Module (ModuleInfo (..), ModuleName)
+import Project.Parsing (injectPrelude, parseModule, preludeModuleName)
 import Syntax.Tree (Expr (..), exprChildren)
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath (dropExtension, takeExtension, (</>))
@@ -61,3 +61,13 @@ topoSortModules depGraph =
   where
     toEither (AcyclicSCC m) = Right m
     toEither (CyclicSCC ms) = Left ms
+
+{- | Inject prelude imports into all modules in the graph that should have it.
+A module gets the prelude injected if it's not the prelude itself.
+-}
+injectPreludeIntoGraph :: [String] -> ModuleGraph -> ModuleGraph
+injectPreludeIntoGraph preludeSymbols = Map.mapWithKey injectIfNeeded
+  where
+    injectIfNeeded modName modInfo
+        | modName == preludeModuleName = modInfo -- Don't inject into prelude itself
+        | otherwise = modInfo{moduleAst = injectPrelude preludeSymbols (moduleAst modInfo)}

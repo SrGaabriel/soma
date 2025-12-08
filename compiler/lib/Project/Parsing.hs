@@ -1,12 +1,14 @@
-module Project.Parsing where
+module Project.Parsing (parseModule, injectPrelude, preludeModuleName) where
 
 import qualified Data.ByteString as BS
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Format.Errors (SomeError (SomeError))
 import Lexing.Lexer (lexCode)
+import Lexing.Position (Span (..))
 import Parsing.Ast (parse)
 import Project.Module (ModuleInfo (..))
+import Syntax.Tree (Expr (..))
 
 parseModule :: String -> FilePath -> IO (Either [SomeError] ModuleInfo)
 parseModule modName path = do
@@ -27,3 +29,12 @@ parseModule modName path = do
             if null allErrors
                 then return $ Right $ ModuleInfo modName path contentStr tokens ast
                 else return $ Left allErrors
+
+preludeModuleName :: String
+preludeModuleName = "stdlib/prelude"
+
+injectPrelude :: [String] -> Expr -> Expr
+injectPrelude preludeSymbols (ExprRoot exprs) =
+    let preludeImport = ExprImport preludeModuleName preludeSymbols (Span 0 0)
+    in ExprRoot (preludeImport : exprs)
+injectPrelude _ expr = expr

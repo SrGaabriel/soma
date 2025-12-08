@@ -56,7 +56,7 @@ createProjectTarball ::
     String ->
     String ->
     [FilePath] ->
-    Map.Map Symbol QualifiedType ->
+    [(Symbol, QualifiedType)] ->
     [(QualifiedType, Bool)] ->
     Map.Map String [String] ->
     Map.Map SerializableName SerializableConstructorMetadata ->

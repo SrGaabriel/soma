@@ -22,14 +22,15 @@ import Syntax.Tree (Expr (..))
 import Typing.Types (QualifiedType)
 
 data LspCompiledModule = LspCompiledModule
-    { lcmModuleName :: String
-    , lcmFilePath :: FilePath
-    , lcmResolvedAst :: Expr
-    , lcmTypedBindings :: [TypedBinding]
-    , lcmTypedInstances :: [TypedInstance]
+    { lcmModuleName :: !String
+    , lcmFilePath :: !FilePath
+    , lcmResolvedAst :: !Expr
+    , lcmTypedBindings :: ![TypedBinding]
+    , lcmTypedInstances :: ![TypedInstance]
     , lcmPublicSymbols :: Map.Map Symbol QualifiedType
-    , lcmInstances :: InstanceEnv
-    , lcmSourceContent :: T.Text
+    , lcmInstances :: !InstanceEnv
+    , lcmSourceContent :: !T.Text
+    , lcmUniqueCounter :: !Int
     }
 
 data LspState = LspState
@@ -76,6 +77,7 @@ compileModuleForLSP modName filePath content ast compiledDeps externalDeps =
                 , lcmPublicSymbols = checkedPublicSymbols checked
                 , lcmInstances = checkedInstances checked
                 , lcmSourceContent = T.pack content
+                , lcmUniqueCounter = checkedUniqueCounter checked
                 }
     in
         (allErrors, compiledModule)
@@ -91,6 +93,7 @@ toCheckedModule cm =
         , checkedPublicSymbols = lcmPublicSymbols cm
         , checkedTypedInstances = lcmTypedInstances cm
         , checkedInstances = lcmInstances cm
+        , checkedUniqueCounter = lcmUniqueCounter cm
         }
 
 findModuleByName :: String -> Map.Map FilePath LspCompiledModule -> Maybe LspCompiledModule

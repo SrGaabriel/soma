@@ -1,0 +1,19 @@
+use base/core.{Functor, Applicative, Monad, >>=}
+
+intrinsic data IO :: * -> *
+intrinsic def pureIO :: a -> IO a
+
+instance Functor IO where
+    def fmap(f, ioA) :: (a -> b) -> IO a -> IO b =
+        ioA >>= (\x -> pureIO (f x))
+
+instance Applicative IO with (Functor IO) where
+    def pure :: a -> IO a = pureIO
+    def {<*>}(ioF, ioA) :: IO (a -> b) -> IO a -> IO b =
+        ioF >>= (\f -> ioA >>= (\a -> pureIO (f a)))
+    def {*>}(ioA, ioB) :: IO a -> IO b -> IO b =
+        ioA >>= (\a -> ioB)
+    def {<*}(ioA, ioB) :: IO a -> IO b -> IO a =
+        ioA >>= (\a -> ioB >>= (\b -> pureIO a))
+
+intrinsic instance Monad IO with (Applicative IO)

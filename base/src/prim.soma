@@ -1,0 +1,5 @@
+intrinsic def {+} :: Int -> Int -> Int
+intrinsic def {-} :: Int -> Int -> Int
+intrinsic def {*} :: Int -> Int -> Int
+intrinsic def {%} :: Int -> Int -> Int
+intrinsic def {/} :: Int -> Int -> Int

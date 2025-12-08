@@ -15,7 +15,7 @@ import Inference.Resolver (runResolverWithEnv)
 import Metal.Gen.Metadata (extractConstructorMetadata)
 import Metal.Lower (LowerResult (..), lowerModule, runLower, symbolToName)
 import Metal.Metadata (MetallicConstructorMetadata)
-import Project.Extracts (extractSymbolImports, resolveImport)
+import Project.Extracts (extractExportList, extractSymbolImports, filterSymbolsByNames, resolveImport)
 import Project.Module (ModuleInfo (..), ModuleName)
 import Project.Name (Name)
 import Project.Symbols (Symbol (..))
@@ -30,6 +30,7 @@ data CheckedModule = CheckedModule
     , checkedTypedInstances :: [TypedInstance]
     , checkedPublicSymbols :: Map Symbol QualifiedType
     , checkedInstances :: InstanceEnv
+    , checkedUniqueCounter :: Int
     }
     deriving (Show)
 
@@ -54,7 +55,7 @@ checkModule packageName modInfo checkedDeps externalDeps externalInstances exter
         seedInstances = Map.unions $ map snd importsResolved
 
         -- Run resolver to get resolved AST and type environment
-        (resolverErrors, (resolvedAst, fullEnv, instanceEnv)) =
+        (resolverErrors, (resolvedAst, fullEnv, instanceEnv, resolverUniqueCounter)) =
             runResolverWithEnv packageName modName seedEnv seedInstances ast
 
         -- Extract constructor metadata for lowering (merge local and external)
@@ -73,9 +74,12 @@ checkModule packageName modInfo checkedDeps externalDeps externalInstances exter
         (inferenceErrors, typedBindings, typedInstances) =
             inferModule packageName modName metalTypeEnv instanceEnv lowerResult
 
-        -- Extract new definitions (public symbols)
         newDefs = Map.difference fullEnv seedEnv
-
+        publicSymbols = case extractExportList ast of
+            Nothing -> newDefs
+            Just exportNames ->
+                let filtered = filterSymbolsByNames exportNames fullEnv
+                in Map.fromList [(sym{resolvedSymbolModule = modName}, ty) | (sym, ty) <- Map.toList filtered]
         allErrors = nub $ resolverErrors ++ inferenceErrors
 
         checkedModule =
@@ -85,8 +89,9 @@ checkModule packageName modInfo checkedDeps externalDeps externalInstances exter
                 , checkedLowerResult = lowerResult
                 , checkedTypedBindings = typedBindings
                 , checkedTypedInstances = typedInstances
-                , checkedPublicSymbols = newDefs
+                , checkedPublicSymbols = publicSymbols
                 , checkedInstances = instanceEnv
+                , checkedUniqueCounter = resolverUniqueCounter
                 }
     in (allErrors, checkedModule)
 

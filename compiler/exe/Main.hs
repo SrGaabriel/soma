@@ -278,6 +278,7 @@ circuit opts = do
         typedBindings = checkedTypedBindings checked
         typedInstances = checkedTypedInstances checked
         newDefs = checkedPublicSymbols checked
+        uniqueCounter = checkedUniqueCounter checked
 
     let typedLowerResult =
             TypedLowerResult
@@ -292,7 +293,7 @@ circuit opts = do
 
     -- Compile to Metal
     let metallic = compileMetalModule name typedLowerResult Map.empty
-        metallicLifted = liftLambdas intrinsicNames metallic
+        metallicLifted = liftLambdas uniqueCounter intrinsicNames metallic
         metallicNormalized = normalizeModule metallicLifted
 
     putStrLn "=== Metal HIR ==="

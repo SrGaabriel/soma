@@ -404,6 +404,9 @@ lowerExpr expr = case expr of
     ExprImport{} -> do
         hole <- freshHole KindStar
         pure $ MTuple [] hole dummySpan
+    ExprExport{} -> do
+        hole <- freshHole KindStar
+        pure $ MTuple [] hole dummySpan
     ExprRoot children -> do
         metalExprs <- mapM lowerExpr [b | b@ExprBindingDef{} <- children]
         hole <- freshHole KindStar

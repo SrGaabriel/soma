@@ -25,6 +25,7 @@ data Expr
     | ExprApp Expr Expr
     | ExprLambda [String] Expr Span
     | ExprImport String [String] Span
+    | ExprExport [String] Span
     | ExprPatternMatch Expr [Expr] Span
     | ExprDerivedPatternMatch [Expr]
     | ExprPatternMatchArm
@@ -117,6 +118,7 @@ exprChildren (ExprPatternMatch expr arms _) = expr : arms
 exprChildren (ExprPatternMatchArm _ body _) = [body]
 exprChildren (ExprDataConstructor{}) = []
 exprChildren (ExprImport{}) = []
+exprChildren (ExprExport{}) = []
 exprChildren (ExprNum _ _) = []
 exprChildren (ExprStr _ _) = []
 exprChildren (ExprUVar _ _) = []
@@ -166,6 +168,7 @@ exprSpan (ExprPatternMatchArm _ _ s) = s
 exprSpan (ExprInstanceDef _ _ s) = s
 exprSpan (ExprIntrinsicInstanceDef _ s) = s
 exprSpan (ExprImport _ _ s) = s
+exprSpan (ExprExport _ s) = s
 exprSpan (ExprCompose _ s) = s
 exprSpan (ExprIf _ _ _ s) = s
 
@@ -213,6 +216,8 @@ modifySpan (ExprIntrinsicInstanceDef constraintType _) newSpan =
     ExprIntrinsicInstanceDef constraintType newSpan
 modifySpan (ExprImport moduleName elements _) newSpan =
     ExprImport moduleName elements newSpan
+modifySpan (ExprExport elements _) newSpan =
+    ExprExport elements newSpan
 modifySpan (ExprCompose stmts _) newSpan =
     ExprCompose stmts newSpan
 modifySpan (ExprIf cond ifBlock elseBlock _) newSpan =

@@ -60,6 +60,7 @@ data TokenKind
     | TokenSlash
     | TokenCompose
     | TokenBind
+    | TokenExport
     | TokenIf
     | TokenThen
     | TokenElse
@@ -243,6 +244,7 @@ lexCode' text i stack =
                         "false" -> TokenFalse
                         "bind" -> TokenBind
                         "compose" -> TokenCompose
+                        "export" -> TokenExport
                         "if" -> TokenIf
                         "then" -> TokenThen
                         "else" -> TokenElse
@@ -355,6 +357,7 @@ referenceTokenKind TokenForall = "'∀'"
 referenceTokenKind TokenUnderscore = "an underscore"
 referenceTokenKind TokenBind = "'bind'"
 referenceTokenKind TokenCompose = "'compose'"
+referenceTokenKind TokenExport = "'export'"
 referenceTokenKind TokenLayoutStart = "layout start"
 referenceTokenKind TokenLayoutSeparator = "layout separator"
 referenceTokenKind TokenLayoutEnd = "layout end"

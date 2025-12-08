@@ -337,7 +337,7 @@ compileExternalModuleAst pkgName modName ast existingTypes existingInstances = d
         seedEnv = Map.unions $ map fst importsResolved
         seedInstances = Map.unions $ map snd importsResolved
 
-    let (resolverErrors, (_, fullEnv, instanceEnv)) =
+    let (resolverErrors, (_, fullEnv, instanceEnv, _)) =
             runResolverWithEnv pkgName modName seedEnv seedInstances ast
 
     if not (null resolverErrors)

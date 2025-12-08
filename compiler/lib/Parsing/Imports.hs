@@ -1,4 +1,4 @@
-module Parsing.Imports where
+module Parsing.Imports (parseImport, parseExport) where
 
 import Control.Monad (unless)
 import Data.List (intercalate)
@@ -38,3 +38,26 @@ parseImport = do
     let Span importStart _ = tokenSpan importToken
     let importEnd = importStart + length moduleNameSegments
     pure $ ExprImport moduleName imports (Span importStart importEnd)
+
+parseExport :: Parser Expr
+parseExport = do
+    exportToken <- consume TokenExport
+    _ <- consume TokenLeftBraces
+    exports <-
+        parseSequence
+            TokenComma
+            TokenRightBraces
+            ( do
+                nameToken <-
+                    consumeAnyOf
+                        [ TokenLowerIdentifier
+                        , TokenUpperIdentifier
+                        , TokenVarSymbol
+                        ]
+                pure $ tokenValue nameToken
+            )
+    closeBrace <- consume TokenRightBraces
+
+    let Span exportStart _ = tokenSpan exportToken
+    let Span _ exportEnd = tokenSpan closeBrace
+    pure $ ExprExport exports (Span exportStart exportEnd)

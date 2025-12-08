@@ -16,6 +16,16 @@ extractSymbolImports (ExprImport name elements _) =
     [(name, elements)]
 extractSymbolImports e = concatMap extractSymbolImports (exprChildren e)
 
+extractExportList :: Expr -> Maybe [String]
+extractExportList (ExprRoot cs) =
+    case concatMap extractExportList' cs of
+        [] -> Nothing
+        exports -> Just (concat exports)
+  where
+    extractExportList' (ExprExport names _) = [names]
+    extractExportList' _ = []
+extractExportList _ = Nothing
+
 extractIntrinsicNames :: Expr -> Set.Set String
 extractIntrinsicNames root =
     Set.fromList [intrinsicName e | e@ExprIntrinsicDef{} <- exprChildren root]

@@ -13,7 +13,7 @@ import Parsing.Attributes (parseAttributes)
 import Parsing.Bindings (parseBindingWithAttributes)
 import Parsing.DataTypes (parseDataTypeWithAttributes)
 import Parsing.Errors (ParsingError (..))
-import Parsing.Imports (parseImport)
+import Parsing.Imports (parseExport, parseImport)
 import Parsing.Intrinsics (parseIntrinsic)
 import Parsing.Parser (Parser, TokenStream (..), anySingle, consume, getErrors, initialErrorState, isEOF, peek, recordError, skipUntilSync, tryPeek)
 import Parsing.Traits (parseInstance, parseTrait)
@@ -131,6 +131,7 @@ someDeclarations = go []
         , TokenInstance
         , TokenIntrinsic
         , TokenImport
+        , TokenExport
         , TokenLayoutSeparator
         , TokenLayoutEnd
         ]
@@ -150,4 +151,5 @@ parseDeclarationWithAttributes attrs = do
         TokenInstance -> parseInstance
         TokenIntrinsic -> parseIntrinsic
         TokenImport -> parseImport
+        TokenExport -> parseExport
         _ -> MP.customFailure $ InvalidTokenForTopLevelDeclaration token

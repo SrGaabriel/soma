@@ -18,7 +18,7 @@ import Alloy.Monomorphize (monomorphizeModule)
 import Alloy.PromoteRefs (promoteRefsModule)
 import Alloy.ReaderRewrite (readerRewriteModule)
 import Alloy.Simplify (forwardClosureEnvValuesModule, simplifyModule)
-import Build.Metadata (SerializableConstructorMetadata, SerializableName, constructorMetadataToSerializable, nameToSerializable, projectMetadataConstructors, projectMetadataInstances, projectMetadataPublicSymbols, serializableToConstructorMetadata, serializableToName)
+import Build.Metadata (SerializableConstructorMetadata, SerializableName, constructorMetadataToSerializable, nameToSerializable, projectMetadataConstructors, projectMetadataInstances, projectMetadataPublicSymbolsList, serializableToConstructorMetadata, serializableToName)
 import Build.Tarball (TarballContents (TarballContents, tcAlloyModules, tcMetadata), createProjectTarball, defaultTarballOptions, extractProjectTarball, tarballExtension)
 import Circuit.Linearize (linearizeModule)
 import Circuit.Lower (lowerModule)
@@ -50,6 +50,7 @@ import Metal.MonadNormalize (normalizeModule)
 import Project.Check (CheckedModule (..), checkModule)
 import Project.Graph
 import Project.Module
+import Project.Parsing (preludeModuleName)
 import Project.Symbols (Symbol (..), SymbolKind (..))
 import Syntax.Tree (Expr (..))
 import System.Directory
@@ -93,6 +94,7 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
                         , checkedTypedInstances = []
                         , checkedPublicSymbols = cmPublicSymbols c
                         , checkedInstances = cmPublicInstances c
+                        , checkedUniqueCounter = 0 -- Not used for dependencies
                         }
                 )
                 compiledDeps
@@ -115,6 +117,7 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
         typedInstances = checkedTypedInstances checked
         newDefs = checkedPublicSymbols checked
         instanceEnv = checkedInstances checked
+        uniqueCounter = checkedUniqueCounter checked
 
     let typedLowerResult =
             TypedLowerResult
@@ -125,10 +128,12 @@ compileModuleSeparately packageName modInfo compiledDeps externalDeps externalIn
                 }
 
     let metallicExternalConstructors = Map.mapKeys serializableToName $ Map.map serializableToConstructorMetadata externalConstructors
-    let intrinsicSymbols = Map.keys $ Map.filterWithKey (\sym _ -> resolvedSymbolKind sym == IntrinsicBindingSymbol) newDefs
-        intrinsicNames = Set.fromList $ map symbolToName intrinsicSymbols
-    let metallic = compileMetalModule modName typedLowerResult metallicExternalConstructors
-        metallicLifted = liftLambdas intrinsicNames metallic
+        localIntrinsicSymbols = Map.keys $ Map.filterWithKey (\sym _ -> resolvedSymbolKind sym == IntrinsicBindingSymbol) newDefs
+        externalIntrinsicSymbols = concatMap (Map.keys . Map.filterWithKey (\sym _ -> resolvedSymbolKind sym == IntrinsicBindingSymbol)) (Map.elems externalDeps)
+        allIntrinsicSymbols = localIntrinsicSymbols ++ externalIntrinsicSymbols
+        intrinsicNames = Set.fromList $ map symbolToName allIntrinsicSymbols
+        metallic = compileMetalModule modName typedLowerResult metallicExternalConstructors
+        metallicLifted = liftLambdas uniqueCounter intrinsicNames metallic
         metallicNormalized = normalizeModule metallicLifted
 
     putStrLn $ "Metal (HIR) complete for " ++ modName
@@ -245,10 +250,18 @@ processModulesIncremental sorted graph compileOptions = do
     (externalDeps, externalInstances, externalConstructors, externalAlloyModules) <-
         processExternalDependencies (optionsDeps compileOptions)
 
+    let preludeSymbols = case Map.lookup preludeModuleName externalDeps of
+            Just syms -> map resolvedSymbolName (Map.keys syms)
+            Nothing -> []
+        graphWithPrelude =
+            if null preludeSymbols
+                then graph
+                else injectPreludeIntoGraph preludeSymbols graph
+
     compiledModules <-
         compileAllModulesInOrder
             sorted
-            graph
+            graphWithPrelude
             Map.empty
             externalDeps
             externalInstances
@@ -260,7 +273,7 @@ processModulesIncremental sorted graph compileOptions = do
     (alloyOpt, allCtorsForCodeGen) <- linkCompiledModules inputName compiledModules externalConstructors externalAlloyModules
 
     let llvmIr = runLlvmCodeGenAndTranscribe alloyOpt
-    generateOutputFile inputName llvmIr compileOptions compiledModules graph allCtorsForCodeGen
+    generateOutputFile inputName llvmIr compileOptions compiledModules graph allCtorsForCodeGen externalAlloyModules
 
     putStrLn "Build process completed."
 
@@ -309,8 +322,9 @@ generateOutputFile ::
     [CompiledModule] ->
     ModuleGraph ->
     Map SerializableName SerializableConstructorMetadata ->
+    [AlloyModule] ->
     IO ()
-generateOutputFile inputName llvmIr compileOptions compiledModules graph allConstructors = do
+generateOutputFile inputName llvmIr compileOptions compiledModules graph allConstructors externalAlloyModules = do
     let mOutputFile = optionsOutput compileOptions
         isLib = optionsLib compileOptions
         outputFile = fromMaybe inputName mOutputFile
@@ -342,7 +356,7 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                 let llFile = outputDir </> outputName <.> "ll"
                 writeFile llFile llvmIr
 
-                let publicSymbols = Map.unions [cmPublicSymbols cm | cm <- compiledModules]
+                let publicSymbolsList = concatMap (Map.toList . cmPublicSymbols) compiledModules
                     publicInstances = Map.unions [cmPublicInstances cm | cm <- compiledModules]
                     depGraph = buildDependencyGraph graph
                     sourceFiles = [modulePath info | info <- Map.elems graph]
@@ -357,7 +371,7 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                         (\(_ :: SomeException) -> return False)
 
                 objContent <- BL.readFile objFile
-                let alloyModulesToSave = map cmAlloyExpanded compiledModules
+                let alloyModulesToSave = map cmAlloyExpanded compiledModules ++ externalAlloyModules
 
                 createProjectTarball
                     outputFile
@@ -365,7 +379,7 @@ generateOutputFile inputName llvmIr compileOptions compiledModules graph allCons
                     inputName
                     "0.1.0"
                     sourceFiles
-                    publicSymbols
+                    publicSymbolsList
                     (Map.toList publicInstances)
                     depGraph
                     allConstructors
@@ -434,25 +448,25 @@ processExternalDependencies externals = do
                 case tarball of
                     Left err -> error $ "Failed to extract external dependency " ++ name ++ ": " ++ err
                     Right (TarballContents{tcMetadata, tcAlloyModules}) -> do
-                        let exports = projectMetadataPublicSymbols tcMetadata
+                        let exports = projectMetadataPublicSymbolsList tcMetadata
                         let instances = projectMetadataInstances tcMetadata
                         let constructors = projectMetadataConstructors tcMetadata
                         pure (name, exports, instances, constructors, tcAlloyModules)
             )
             externals
-    let allExports = Map.unions [exports | (_, exports, _, _, _) <- list]
+    let allExportsList = concatMap (\(_, exports, _, _, _) -> exports) list
         groupedByModule =
             Map.fromListWith
                 Map.union
                 [ (resolvedSymbolModule sym, Map.singleton sym ty)
-                | (sym, ty) <- Map.toList allExports
+                | (sym, ty) <- allExportsList
                 ]
     let instancesByModule =
             Map.fromListWith
                 Map.union
                 [ (modName, insts)
                 | (_, exports, insts, _, _) <- list
-                , let modNames = Set.toList $ Set.fromList [resolvedSymbolModule sym | sym <- Map.keys exports]
+                , let modNames = Set.toList $ Set.fromList [resolvedSymbolModule sym | (sym, _) <- exports]
                 , modName <- modNames
                 ]
     let constructors = Map.unions [ctors | (_, _, _, ctors, _) <- list]

@@ -34,22 +34,23 @@ data LiftState = LiftState
     , lsModuleName :: String
     }
 
-emptyLiftState :: String -> Set.Set Name -> LiftState
-emptyLiftState modName globals =
+mkLiftState :: Int -> String -> Set.Set Name -> LiftState
+mkLiftState startCounter modName globals =
     LiftState
-        { lsNextLambdaId = 0
+        { lsNextLambdaId = startCounter
         , lsLiftedFunctions = []
         , lsGlobalNames = globals
         , lsClosures = Map.empty
         , lsModuleName = modName
         }
 
-liftLambdas :: Set.Set Name -> MetallicModule -> MetallicModule
-liftLambdas extraGlobals m@MetallicModule{mmName, mmFunctions, mmInstances} =
+
+liftLambdas :: Int -> Set.Set Name -> MetallicModule -> MetallicModule
+liftLambdas startCounter extraGlobals m@MetallicModule{mmName, mmFunctions, mmInstances} =
     let
         instanceMethodNames = [mfName mf | inst <- mmInstances, mf <- miMethods inst]
         globalNames = Set.union extraGlobals (Set.fromList (map mfName mmFunctions ++ instanceMethodNames))
-        (fns', st1) = runState (mapM liftFunctionLambdas mmFunctions) (emptyLiftState mmName globalNames)
+        (fns', st1) = runState (mapM liftFunctionLambdas mmFunctions) (mkLiftState startCounter mmName globalNames)
         (instances', st2) = runState (mapM liftInstanceLambdas mmInstances) st1
         allFns = fns' ++ lsLiftedFunctions st2
     in

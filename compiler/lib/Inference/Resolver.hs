@@ -337,9 +337,11 @@ addInstanceBindingFromType constraintType = do
     put s{instanceBindings = Map.insert constraintType True instances}
 
 runResolver :: String -> String -> Expr -> ([InferenceError], (Expr, TypeEnv, InstanceEnv))
-runResolver packageName moduleName = runResolverWithEnv packageName moduleName Map.empty Map.empty
+runResolver packageName moduleName expr =
+    let (errors, (resolvedExpr, tyEnv, instEnv, _counter)) = runResolverWithEnv packageName moduleName Map.empty Map.empty expr
+    in (errors, (resolvedExpr, tyEnv, instEnv))
 
-runResolverWithEnv :: String -> String -> TypeEnv -> InstanceEnv -> Expr -> ([InferenceError], (Expr, TypeEnv, InstanceEnv))
+runResolverWithEnv :: String -> String -> TypeEnv -> InstanceEnv -> Expr -> ([InferenceError], (Expr, TypeEnv, InstanceEnv, Int))
 runResolverWithEnv packageName moduleName initialTyEnv initialInstEnv root = do
     let initialState =
             ResolverState
@@ -357,7 +359,7 @@ runResolverWithEnv packageName moduleName initialTyEnv initialInstEnv root = do
                 }
     let resolverM = runResolverM (analyzeTree root)
     let ((expr, errors), finalState) = runState (runWriterT (runReaderT resolverM initialEnv)) initialState
-    (errors, (expr, globalBindings finalState, instanceBindings finalState))
+    (errors, (expr, globalBindings finalState, instanceBindings finalState, uniqueCounter finalState))
 
 replaceAllUnresolvedQualified :: Expr -> QualifiedType -> ResolverM QualifiedType
 replaceAllUnresolvedQualified expr (Forall vars constraints t) = do

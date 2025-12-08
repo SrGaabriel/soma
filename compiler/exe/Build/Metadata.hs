@@ -360,10 +360,10 @@ createPublicSymbol sym ty =
         , psTypeSignature = qualTypeToSerializable ty
         }
 
-extractPublicSymbols :: Map.Map Symbol QualifiedType -> [PublicSymbol]
-extractPublicSymbols symMap =
+extractPublicSymbols :: [(Symbol, QualifiedType)] -> [PublicSymbol]
+extractPublicSymbols symList =
     [ createPublicSymbol sym ty
-    | (sym, ty) <- Map.toList symMap
+    | (sym, ty) <- symList
     , not (isLocalSymbol sym)
     ]
   where
@@ -374,7 +374,7 @@ createProjectMetadata ::
     String ->
     String ->
     [FilePath] ->
-    Map.Map Symbol QualifiedType ->
+    [(Symbol, QualifiedType)] ->
     [(QualifiedType, Bool)] ->
     Map.Map String [String] ->
     Map.Map SerializableName SerializableConstructorMetadata ->
@@ -396,13 +396,15 @@ createProjectMetadata modName version sourceFiles publicSyms publicInsts depGrap
         }
 
 projectMetadataPublicSymbols :: ProjectMetadata -> Map.Map Symbol QualifiedType
-projectMetadataPublicSymbols pm =
-    Map.fromList
-        [ ( serializableToSymbol (psSymbol ps)
-          , serializableToQualType (psTypeSignature ps)
-          )
-        | ps <- pmPublicSymbols pm
-        ]
+projectMetadataPublicSymbols pm = Map.fromList (projectMetadataPublicSymbolsList pm)
+
+projectMetadataPublicSymbolsList :: ProjectMetadata -> [(Symbol, QualifiedType)]
+projectMetadataPublicSymbolsList pm =
+    [ ( serializableToSymbol (psSymbol ps)
+      , serializableToQualType (psTypeSignature ps)
+      )
+    | ps <- pmPublicSymbols pm
+    ]
 
 projectMetadataConstructors :: ProjectMetadata -> Map.Map SerializableName SerializableConstructorMetadata
 projectMetadataConstructors = pmConstructorMetadata
