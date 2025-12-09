@@ -21,13 +21,25 @@ def parseAttribute : ParserM (Option SyntaxNode) := do
                   let span := Span.merge atTok.span rbracket.span
                   return some (mkNodeSpan .attribute #[mkToken atTok, mkToken lbracket, mkToken nameTok, mkToken rbracket] span)
               | none =>
-                  recordError "expected ']' after attribute"
+                  recordRichError "expected ']' after attribute"
+                    (← current).span
+                    (secondary := #[(lbracket.span, "'[' is here")])
+                    (notes := #["attribute syntax: @[name] or @[name arg1 arg2]"])
+                    (help := "add ']' to close the attribute")
                   return some (mkError atTok.span "unclosed attribute" #[mkToken atTok, mkToken lbracket, mkToken nameTok])
           | none =>
-              recordError "expected attribute name"
+              recordRichError "expected attribute name"
+                (← current).span
+                (secondary := #[(atTok.span, "'@' is here")])
+                (notes := #["attribute syntax: @[name]"])
+                (help := "provide an attribute name (identifier)")
               return some (mkError atTok.span "missing attribute name" #[mkToken atTok, mkToken lbracket])
       | none =>
-          recordError "expected '[' after '@'"
+          recordRichError "expected '[' after '@'"
+            (← current).span
+            (secondary := #[(atTok.span, "'@' is here")])
+            (notes := #["attribute syntax: @[attributeName]"])
+            (help := "add '[' after '@'")
           return some (mkError atTok.span "malformed attribute" #[mkToken atTok])
   | none => return none
 
@@ -56,7 +68,11 @@ partial def parseDefClause : ParserM (Option SyntaxNode) := do
         if tok.kind == .fatArrow || tok.kind == .equals then break
 
       if patterns.isEmpty then
-        recordError "expected pattern after '|'"
+        recordRichError "expected pattern after '|'"
+          (← current).span
+          (secondary := #[(pipeTok.span, "'|' is here")])
+          (notes := #["definition clause syntax: | pattern => body"])
+          (help := "provide a pattern")
         return some (mkError pipeTok.span "missing pattern" #[mkToken pipeTok])
 
       -- Expect => or =
@@ -74,11 +90,19 @@ partial def parseDefClause : ParserM (Option SyntaxNode) := do
             return some (mkNodeSpan .defClause (#[mkToken pipeTok] ++ patterns ++ #[mkToken arrowTok, body]) span)
         | none =>
             let _ ← tryLayoutEnd
-            recordError "expected expression after '=>'"
+            recordRichError "expected expression after '=>'"
+              (← current).span
+              (secondary := #[(arrowTok.span, "'=>' is here")])
+              (notes := #["definition clause syntax: | pattern => body"])
+              (help := "provide the clause body expression")
             let lastPat := patterns[patterns.size - 1]!
             return some (mkError (Span.merge pipeTok.span lastPat.span) "missing clause body" (#[mkToken pipeTok] ++ patterns))
       else
-        recordError "expected '=>' after patterns"
+        recordRichError "expected '=>' after patterns"
+          (← current).span
+          (secondary := #[(pipeTok.span, "'|' is here")])
+          (notes := #["definition clause syntax: | pattern => body"])
+          (help := "add '=>' after the pattern(s)")
         let lastPat := patterns[patterns.size - 1]!
         return some (mkError (Span.merge pipeTok.span lastPat.span) "missing '=>'" (#[mkToken pipeTok] ++ patterns))
 
@@ -99,13 +123,21 @@ partial def parseDefDecl (attrs : Array SyntaxNode) : ParserM (Option SyntaxNode
         match ← parseOperatorName with
         | some op => pure op
         | none =>
-            recordError "expected operator name"
+            recordRichError "expected operator name"
+              (← current).span
+              (secondary := #[(defTok.span, "'def' is here")])
+              (notes := #["operator definitions: def {+} ... or def {>>=} ..."])
+              (help := "provide an operator inside braces")
             pure (mkError defTok.span "missing name" #[mkToken defTok])
       else
         match ← parseIdent with
         | some nameTok => pure (mkNodeSpan .name #[mkToken nameTok] nameTok.span)
         | none =>
-            recordError "expected function name after 'def'"
+            recordRichError "expected function name after 'def'"
+              (← current).span
+              (secondary := #[(defTok.span, "'def' is here")])
+              (notes := #["function definition syntax: def name = body", "or operator definition: def {+} = body"])
+              (help := "provide a function name (identifier) or operator name {symbol}")
             pure (mkMissing .name (← currentLoc))
 
       -- Check for inline parameters: def foo(x: Int, y: String) -> RetType
@@ -124,13 +156,21 @@ partial def parseDefDecl (attrs : Array SyntaxNode) : ParserM (Option SyntaxNode
                         let span := Span.merge nameTok.span ty.span
                         paramNodes := paramNodes.push (mkNodeSpan .field #[mkToken nameTok, mkToken colonTok, ty] span)
                     | none =>
-                        recordError "expected type after ':'"
+                        recordRichError "expected type after ':'"
+                          (← current).span
+                          (secondary := #[(colonTok.span, "':' is here")])
+                          (notes := #["parameter type syntax: (x: Type)"])
+                          (help := "provide a type")
                         paramNodes := paramNodes.push (mkError nameTok.span "missing type" #[mkToken nameTok, mkToken colonTok])
                 | none =>
                     -- Parameter without type annotation
                     paramNodes := paramNodes.push (mkNodeSpan .patVar #[mkToken nameTok] nameTok.span)
             | none =>
-                recordError "expected parameter name"
+                recordRichError "expected parameter name"
+                  (← current).span
+                  (secondary := #[(lparen.span, "'(' is here")])
+                  (notes := #["function parameters: (x: Type) or (x: Type, y: OtherType)"])
+                  (help := "provide a parameter name (identifier)")
                 break
             if !(← check .comma) then break
             advance -- consume comma
@@ -155,7 +195,11 @@ partial def parseDefDecl (attrs : Array SyntaxNode) : ParserM (Option SyntaxNode
             let span := Span.merge arrowTok.span ty.span
             pure (some (mkNodeSpan .signature #[mkToken arrowTok, ty] span))
         | none =>
-            recordError "expected return type after '->'"
+            recordRichError "expected return type after '->'"
+              (← current).span
+              (secondary := #[(arrowTok.span, "'->' is here")])
+              (notes := #["return type syntax: def foo() -> ReturnType = ..."])
+              (help := "provide the return type")
             pure none
       else
         pure none
@@ -205,7 +249,11 @@ partial def parseDefDecl (attrs : Array SyntaxNode) : ParserM (Option SyntaxNode
         let _ ← tryLayoutEnd
 
         if clauses.isEmpty then
-          recordError "expected definition clauses"
+          recordRichError "expected definition clauses"
+            (← current).span
+            (secondary := #[(defTok.span, "'def' is here")])
+            (notes := #["pattern-based definitions use clauses: def name | pat => body | pat => body"])
+            (help := "provide at least one clause starting with '|'")
 
         let lastSpan := if clauses.isEmpty then nameNode.span else clauses[clauses.size - 1]!.span
         let span := Span.merge defTok.span lastSpan
@@ -224,7 +272,11 @@ partial def parseDefDecl (attrs : Array SyntaxNode) : ParserM (Option SyntaxNode
           let children := attrs ++ #[mkToken defTok, nameNode, signature.get!]
           return some (mkNodeSpan .declDef children span)
         else
-          recordError "expected '=', '|', or '::' after function name"
+          recordRichError "expected '=', '|', or '::' after function name"
+            (← current).span
+            (secondary := #[(nameNode.span, "function name is here")])
+            (notes := #["definition forms:", "  - type only: def name :: Type", "  - direct: def name = body", "  - clauses: def name | pattern => body"])
+            (help := "add '::' for type, '=' for body, or '|' for clauses")
           return some (mkError defTok.span "incomplete definition" (attrs ++ #[mkToken defTok, nameNode]))
 
   | none => return none
@@ -240,7 +292,11 @@ def parseConstructorField : ParserM (Option SyntaxNode) := do
               let span := Span.merge nameTok.span ty.span
               return some (mkNodeSpan .field #[mkToken nameTok, mkToken colonTok, ty] span)
           | none =>
-              recordError "expected type after '::'"
+              recordRichError "expected type after '::'"
+                (← current).span
+                (secondary := #[(colonTok.span, "'::' is here")])
+                (notes := #["field syntax: fieldName :: Type"])
+                (help := "provide a type for the field")
               return some (mkError nameTok.span "missing field type" #[mkToken nameTok, mkToken colonTok])
       | none =>
           -- Field without explicit name (positional)
@@ -267,7 +323,11 @@ def parseDataConstructor : ParserM (Option SyntaxNode) := do
           let span := Span.merge pipeTok.span lastSpan
           return some (mkNodeSpan .constructor (#[mkToken pipeTok, mkToken nameTok] ++ fields) span)
       | none =>
-          recordError "expected constructor name after '|'"
+          recordRichError "expected constructor name after '|'"
+            (← current).span
+            (secondary := #[(pipeTok.span, "'|' is here")])
+            (notes := #["data constructor syntax: | ConstructorName field1 :: Type1 field2 :: Type2"])
+            (help := "provide a constructor name (uppercase identifier)")
           return some (mkError pipeTok.span "missing constructor name" #[mkToken pipeTok])
   | none => return none
 
@@ -320,7 +380,11 @@ def parseDataDecl : ParserM (Option SyntaxNode) := do
             constructors
           return some (mkNodeSpan .declData children span)
       | none =>
-          recordError "expected type name after 'data'"
+          recordRichError "expected type name after 'data'"
+            (← current).span
+            (secondary := #[(dataTok.span, "'data' is here")])
+            (notes := #["data type syntax: data TypeName params | Constructor1 | Constructor2"])
+            (help := "provide a type name (uppercase identifier)")
           return some (mkError dataTok.span "missing type name" #[mkToken dataTok])
   | none => return none
 
@@ -366,13 +430,24 @@ def parseStructDecl : ParserM (Option SyntaxNode) := do
                     fields
                   return some (mkNodeSpan .declStruct children span)
               | none =>
-                  recordError "expected constructor name after '='"
+                  recordRichError "expected constructor name after '='"
+                    (← current).span
+                    (secondary := #[(eqTok.span, "'=' is here")])
+                    (notes := #["struct syntax: struct StructName = ConstructorName field1 :: Type1"])
+                    (help := "provide a constructor name (uppercase identifier)")
                   return some (mkError structTok.span "missing constructor" #[mkToken structTok, mkToken nameTok, mkToken eqTok])
           | none =>
-              recordError "expected '=' in struct declaration"
+              recordRichError "expected '=' in struct declaration"
+                (← current).span
+                (secondary := #[(structTok.span, "'struct' is here"), (nameTok.span, "type name is here")])
+                (notes := #["struct syntax: struct TypeName = ConstructorName field1 :: Type1"])
+                (help := "add '=' after the struct name")
               return some (mkError structTok.span "missing '='" #[mkToken structTok, mkToken nameTok])
       | none =>
-          recordError "expected struct name after 'struct'"
+          recordRichError "expected struct name after 'struct'"
+            (← current).span
+            (secondary := #[(structTok.span, "'struct' is here")])
+            (help := "provide a struct name (uppercase identifier)")
           return some (mkError structTok.span "missing struct name" #[mkToken structTok])
   | none => return none
 
@@ -396,7 +471,11 @@ def parseTraitMethod : ParserM (Option SyntaxNode) := do
           let span := Span.merge defTok.span sig.span
           return some (mkNodeSpan .traitMethod #[mkToken defTok, nameNode, sig] span)
       | none =>
-          recordError "expected '::' and type in trait method"
+          recordRichError "expected '::' and type in trait method"
+            (← current).span
+            (secondary := #[(defTok.span, "'def' is here"), (nameNode.span, "method name is here")])
+            (notes := #["trait methods must have type signatures: def methodName :: Type"])
+            (help := "add ':: Type' after the method name")
           return some (mkError defTok.span "missing method signature" #[mkToken defTok, nameNode])
   | none => return none
 
@@ -446,10 +525,17 @@ def parseTraitDecl : ParserM (Option SyntaxNode) := do
                 methods
               return some (mkNodeSpan .declTrait children span)
           | none =>
-              recordError "expected 'where' in trait declaration"
+              recordRichError "expected 'where' in trait declaration"
+                (← current).span
+                (secondary := #[(traitTok.span, "'trait' is here"), (nameTok.span, "trait name is here")])
+                (notes := #["trait syntax: trait TraitName params where", "  def method1 :: Type", "  def method2 :: Type"])
+                (help := "add 'where' after the trait name and parameters")
               return some (mkError traitTok.span "missing 'where'" #[mkToken traitTok, mkToken nameTok])
       | none =>
-          recordError "expected trait name after 'trait'"
+          recordRichError "expected trait name after 'trait'"
+            (← current).span
+            (secondary := #[(traitTok.span, "'trait' is here")])
+            (help := "provide a trait name (uppercase identifier)")
           return some (mkError traitTok.span "missing trait name" #[mkToken traitTok])
   | none => return none
 
@@ -498,7 +584,11 @@ def parseInstanceDecl : ParserM (Option SyntaxNode) := do
             methods
           return some (mkNodeSpan .declInstance children span)
       | none =>
-          recordError "expected trait application after 'instance'"
+          recordRichError "expected trait application after 'instance'"
+            (← current).span
+            (secondary := #[(instanceTok.span, "'instance' is here")])
+            (notes := #["instance syntax: instance TraitName Type where", "  def method = implementation"])
+            (help := "provide a trait and type, e.g., 'instance Show Int where'")
           return some (mkError instanceTok.span "missing trait" #[mkToken instanceTok])
   | none => return none
 

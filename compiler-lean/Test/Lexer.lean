@@ -1,9 +1,9 @@
 import Soma
 
-namespace Soma.Lexer.Tests
+namespace Test.Lexer
 
 open Soma.Syntax in
-def testLexer : IO Unit := do
+def run : IO Unit := do
   IO.println "=== Lexer Tests ==="
 
   -- Test 1: Simple identifier
@@ -72,4 +72,4 @@ def testLexer : IO Unit := do
 
   IO.println "=== Tests Complete ==="
 
-end Soma.Lexer.Tests
+end Test.Lexer

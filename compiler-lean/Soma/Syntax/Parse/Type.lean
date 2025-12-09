@@ -52,18 +52,24 @@ partial def parseParenType : ParserM (Option SyntaxNode) := do
           | .comma =>
               let mut elements := #[first]
               while (← check .comma) do
-                advance  -- consume comma
+                let commaTok ← consumeAny  -- consume comma
                 match ← parseType with
                 | some elem => elements := elements.push elem
                 | none =>
-                    recordError "expected type after ','"
+                    recordRichError "expected type after ','"
+                      (← current).span
+                      (secondary := #[(commaTok.span, "comma is here")])
+                      (help := "provide a type after the comma, e.g., '(Int, String, Bool)'")
                     break
               match ← tryConsume .rightParen with
               | some rparen =>
                   let span := Span.merge lparen.span rparen.span
                   return some (mkNodeSpan .typeTuple (#[mkToken lparen] ++ elements ++ #[mkToken rparen]) span)
               | none =>
-                  recordError "expected ')' after tuple type"
+                  recordRichError "expected ')' after tuple type"
+                    (← current).span
+                    (secondary := #[(lparen.span, "opening '(' is here")])
+                    (help := "add ')' to close the tuple type")
                   let span := Span.merge lparen.span (elements[elements.size - 1]!.span)
                   return some (mkError span "unclosed tuple type" (#[mkToken lparen] ++ elements))
 
@@ -74,11 +80,17 @@ partial def parseParenType : ParserM (Option SyntaxNode) := do
               return some (mkNodeSpan .typeParens #[mkToken lparen, first, mkToken rparen] span)
 
           | _ =>
-              recordError s!"expected ')' or ',' in type, found {tok.kind.describe}"
+              recordRichError s!"expected ')' or ',' in type, found {tok.kind.describe}"
+                tok.span
+                (secondary := #[(lparen.span, "parenthesized type starts here")])
+                (notes := #["tuple type syntax: (Type1, Type2, Type3)", "parenthesized type syntax: (Type)"])
+                (help := "add ')' to close, or add ',' if this is a tuple")
               return some (mkError lparen.span "malformed parenthesized type" #[mkToken lparen, first])
 
       | none =>
-          recordError "expected type after '('"
+          recordRichError "expected type after '('"
+            lparen.span
+            (help := "provide a type, or use '()' for unit type")
           return some (mkError lparen.span "empty type parentheses" #[mkToken lparen])
 
   | none => return none
@@ -94,7 +106,11 @@ partial def parseListType : ParserM (Option SyntaxNode) := do
               let span := Span.merge lbracket.span rbracket.span
               return some (mkNodeSpan .typeList #[mkToken lbracket, elemType, mkToken rbracket] span)
           | none =>
-              recordError "expected ']' after list type"
+              recordRichError "expected ']' after list type"
+                (← current).span
+                (secondary := #[(lbracket.span, "'[' is here")])
+                (notes := #["list type syntax: [ElementType]"])
+                (help := "add ']' to close the list type")
               return some (mkError (Span.merge lbracket.span elemType.span) "unclosed list type" #[mkToken lbracket, elemType])
       | none =>
           -- Empty brackets [] - could be list type with missing element
@@ -104,7 +120,10 @@ partial def parseListType : ParserM (Option SyntaxNode) := do
               let span := Span.merge lbracket.span rbracket.span
               return some (mkNodeSpan .typeList #[mkToken lbracket, mkToken rbracket] span)
           | none =>
-              recordError "expected type or ']' after '['"
+              recordRichError "expected type or ']' after '['"
+                (← current).span
+                (secondary := #[(lbracket.span, "'[' is here")])
+                (help := "provide a type for list elements, or use '[]' for empty list type")
               return some (mkError lbracket.span "incomplete list type" #[mkToken lbracket])
 
   | none => return none
@@ -122,7 +141,11 @@ partial def parseForallType : ParserM (Option SyntaxNode) := do
         | none => break
 
       if vars.isEmpty then
-        recordError "expected type variables after 'forall'"
+        recordRichError "expected type variables after 'forall'"
+          (← current).span
+          (secondary := #[(forallTok.span, "'forall' is here")])
+          (notes := #["forall syntax: forall a b. Type", "forall binds type variables"])
+          (help := "provide type variable names (lowercase identifiers)")
 
       -- Expect a dot (which is lexed as varSymbol ".")
       match ← tryConsumeDot with
@@ -134,10 +157,18 @@ partial def parseForallType : ParserM (Option SyntaxNode) := do
               let varList := mkNodeSpan .tyParamList vars (if vars.isEmpty then forallTok.span else Span.merge vars[0]!.span vars[vars.size-1]!.span)
               return some (mkNodeSpan .typeForall #[mkToken forallTok, varList, mkToken dotTok, body] span)
           | none =>
-              recordError "expected type after 'forall ... .'"
+              recordRichError "expected type after 'forall ... .'"
+                (← current).span
+                (secondary := #[(dotTok.span, "'.' is here")])
+                (notes := #["forall syntax: forall a b. Type", "the dot separates variables from the body type"])
+                (help := "provide the body type after the dot")
               return some (mkError forallTok.span "incomplete forall type" #[mkToken forallTok])
       | none =>
-          recordError "expected '.' after forall type variables"
+          recordRichError "expected '.' after forall type variables"
+            (← current).span
+            (secondary := #[(forallTok.span, "'forall' is here")])
+            (notes := #["forall syntax: forall a b. Type", "the dot separates variables from the body"])
+            (help := "add '.' after the type variables")
           -- Try to parse body anyway for error recovery
           match ← parseType with
           | some body =>
@@ -162,7 +193,11 @@ partial def parseForallSymbolType : ParserM (Option SyntaxNode) := do
         | none => break
 
       if vars.isEmpty then
-        recordError "expected type variables after '∀'"
+        recordRichError "expected type variables after '∀'"
+          (← current).span
+          (secondary := #[(forallTok.span, "'∀' is here")])
+          (notes := #["∀ (Unicode forall) syntax: ∀ a b. Type"])
+          (help := "provide type variable names")
 
       -- Expect a dot (which is lexed as varSymbol ".")
       match ← tryConsumeDot with
@@ -173,10 +208,16 @@ partial def parseForallSymbolType : ParserM (Option SyntaxNode) := do
               let varList := mkNodeSpan .tyParamList vars (if vars.isEmpty then forallTok.span else Span.merge vars[0]!.span vars[vars.size-1]!.span)
               return some (mkNodeSpan .typeForall #[mkToken forallTok, varList, mkToken dotTok, body] span)
           | none =>
-              recordError "expected type after '∀ ... .'"
+              recordRichError "expected type after '∀ ... .'"
+                (← current).span
+                (secondary := #[(dotTok.span, "'.' is here")])
+                (help := "provide the body type after the dot")
               return some (mkError forallTok.span "incomplete forall type" #[mkToken forallTok])
       | none =>
-          recordError "expected '.' after ∀ type variables"
+          recordRichError "expected '.' after ∀ type variables"
+            (← current).span
+            (secondary := #[(forallTok.span, "'∀' is here")])
+            (help := "add '.' after the type variables")
           match ← parseType with
           | some body =>
               let span := Span.merge forallTok.span body.span
@@ -244,7 +285,11 @@ partial def parseTypeArrow : ParserM (Option SyntaxNode) := do
             let span := Span.merge left.span right.span
             return some (mkNodeSpan .typeArrow #[left, mkToken arrowTok, right] span)
         | none =>
-            recordError "expected type after '->'"
+            recordRichError "expected type after '->'"
+              (← current).span
+              (secondary := #[(arrowTok.span, "'->' is here")])
+              (notes := #["function type syntax: InputType -> OutputType", "arrow associates right: a -> b -> c is a -> (b -> c)"])
+              (help := "provide the return type")
             return some (mkError (Span.merge left.span arrowTok.span) "incomplete arrow type" #[left, mkToken arrowTok])
       else
         return some left
@@ -281,7 +326,11 @@ partial def parseConstraints : ParserM (Option SyntaxNode) := do
         let span := Span.merge lparen.span rparen.span
         return some (mkNodeSpan .constraintList (#[mkToken lparen] ++ constraints ++ #[mkToken rparen]) span)
     | none =>
-        recordError "expected ')' after constraint list"
+        recordRichError "expected ')' after constraint list"
+          (← current).span
+          (secondary := #[(lparen.span, "'(' is here")])
+          (notes := #["constraint list syntax: (Show a, Eq a)"])
+          (help := "add ')' to close the constraint list")
         let lastSpan := if constraints.isEmpty then lparen.span else constraints[constraints.size-1]!.span
         return some (mkError (Span.merge lparen.span lastSpan) "unclosed constraint list" (#[mkToken lparen] ++ constraints))
   else
@@ -301,7 +350,11 @@ partial def parseType : ParserM (Option SyntaxNode) := do
             let span := Span.merge ty.span constraints.span
             return some (mkNodeSpan .typeConstrained #[ty, mkToken withTok, constraints] span)
         | none =>
-            recordError "expected constraints after 'with'"
+            recordRichError "expected constraints after 'with'"
+              (← current).span
+              (secondary := #[(withTok.span, "'with' is here")])
+              (notes := #["constrained type syntax: Type with Constraint", "constraints: (Show a, Eq a) or Show a"])
+              (help := "provide a constraint or constraint list")
             return some (mkError (Span.merge ty.span withTok.span) "missing constraints" #[ty, mkToken withTok])
       else
         return some ty
@@ -318,7 +371,11 @@ def parseTypeSignature : ParserM (Option SyntaxNode) := do
           let span := Span.merge colonTok.span ty.span
           return some (mkNodeSpan .signature #[mkToken colonTok, ty] span)
       | none =>
-          recordError "expected type after '::'"
+          recordRichError "expected type after '::'"
+            (← current).span
+            (secondary := #[(colonTok.span, "'::' is here")])
+            (notes := #["type signature syntax: name :: Type"])
+            (help := "provide a type")
           return some (mkError colonTok.span "missing type in signature" #[mkToken colonTok])
   | none => return none
 

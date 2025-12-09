@@ -108,10 +108,17 @@ partial def parseParenExpr : ParserM (Option SyntaxNode) := do
                   let span := Span.merge lparen.span rparen.span
                   return some (mkNodeSpan .exprSection #[mkToken lparen, mkToken opTok, arg, mkToken rparen] span)
               | none =>
-                  recordError "expected ')' after operator section"
+                  recordRichError "expected ')' after operator section"
+                    (← current).span
+                    (secondary := #[(lparen.span, "operator section starts here")])
+                    (notes := #["operator sections like (+) or (* 2) must be enclosed in parentheses"])
+                    (help := "add ')' to close the section")
                   return some (mkError (Span.merge lparen.span arg.span) "unclosed section" #[mkToken lparen, mkToken opTok, arg])
           | none =>
-              recordError "expected expression after operator in section"
+              recordRichError "expected expression after operator in section"
+                opTok.span
+                (notes := #["sections can be left-partial like (+ 1) or right-partial like (1 +)"])
+                (help := "provide an expression, e.g., '(+ 1)' or '(1 +)'")
               return some (mkError lparen.span "incomplete section" #[mkToken lparen, mkToken opTok])
 
       -- Parse first expression
@@ -123,11 +130,14 @@ partial def parseParenExpr : ParserM (Option SyntaxNode) := do
           | .comma =>
               let mut elements := #[first]
               while (← check .comma) do
-                advance  -- consume comma
+                let commaTok ← consumeAny  -- consume comma
                 match ← parseExpr with
                 | some elem => elements := elements.push elem
                 | none =>
-                    recordError "expected expression after ','"
+                    recordRichError "expected expression after ','"
+                      (← current).span
+                      (secondary := #[(commaTok.span, "comma is here")])
+                      (help := "provide an expression after the comma, e.g., '(1, 2, 3)'")
                     break
               match ← tryConsume .rightParen with
               | some rparen =>
@@ -150,8 +160,11 @@ partial def parseParenExpr : ParserM (Option SyntaxNode) := do
                 let span := Span.merge lparen.span rparen.span
                 return some (mkNodeSpan .exprSection #[mkToken lparen, first, mkToken opTok, mkToken rparen] span)
               else
-                -- todo: properly implement this
-                recordError "expected ')' after operator in section"
+                recordRichError "expected ')' after operator in section"
+                  (← current).span
+                  (secondary := #[(lparen.span, "opening '(' is here")])
+                  (notes := #["section syntax: (expr op) or (op expr) or (op)"])
+                  (help := "add ')' to complete the operator section")
                 return some (mkError lparen.span "malformed section" #[mkToken lparen, first, mkToken opTok])
 
           -- Parenthesized expression: (expr)
@@ -169,7 +182,10 @@ partial def parseParenExpr : ParserM (Option SyntaxNode) := do
               return some (mkError lparen.span "malformed parenthesized expression" #[mkToken lparen, first])
 
       | none =>
-          recordError "expected expression after '('"
+          recordRichError "expected expression after '('"
+            lparen.span
+            (notes := #["parentheses require an expression inside: (expr)"])
+            (help := "provide an expression, or use '()' for unit/empty tuple")
           return some (mkError lparen.span "empty parentheses" #[mkToken lparen])
 
   | none => return none
@@ -223,10 +239,16 @@ partial def parseLambda : ParserM (Option SyntaxNode) := do
                         let param := mkNodeSpan .paramList #[mkToken lparen, mkToken nameTok, mkToken colonTok, ty, mkToken rparen] span
                         params := params.push param
                     | none =>
-                        recordError "expected ')' after typed parameter"
+                        recordRichError "expected ')' after typed parameter"
+                          (← current).span
+                          (secondary := #[(lparen.span, "parameter starts here")])
+                          (help := "add ')' to close the parameter, e.g., '\\(x: Int) -> ...'")
                         params := params.push (mkError lparen.span "unclosed typed parameter" #[mkToken lparen, mkToken nameTok, mkToken colonTok, ty])
                 | none =>
-                    recordError "expected type after ':' in parameter"
+                    recordRichError "expected type after ':' in parameter"
+                      colonTok.span
+                      (secondary := #[(nameTok.span, "parameter name is here")])
+                      (help := "provide a type expression, e.g., '\\(x: Int) -> ...'")
                     params := params.push (mkError lparen.span "missing parameter type" #[mkToken lparen, mkToken nameTok, mkToken colonTok])
               else
                 -- Just a parenthesized identifier
@@ -235,10 +257,16 @@ partial def parseLambda : ParserM (Option SyntaxNode) := do
                     let span := Span.merge lparen.span rparen.span
                     params := params.push (mkNodeSpan .patVar #[mkToken lparen, mkToken nameTok, mkToken rparen] span)
                 | none =>
-                    recordError "expected ')' after parameter"
+                    recordRichError "expected ')' after parameter"
+                      (← current).span
+                      (secondary := #[(lparen.span, "opening '(' is here")])
+                      (help := "add ')' to close the parenthesized parameter")
                     params := params.push (mkError lparen.span "unclosed parameter" #[mkToken lparen, mkToken nameTok])
           | none =>
-              recordError "expected parameter name after '('"
+              recordRichError "expected parameter name after '('"
+                (← current).span
+                (secondary := #[(lparen.span, "'(' is here")])
+                (help := "provide a parameter name, e.g., '\\(x: Int) -> ...'")
               -- Skip to closing paren for recovery
               while !(← check .rightParen) && !(← atEnd) do
                 advance
@@ -261,10 +289,17 @@ partial def parseLambda : ParserM (Option SyntaxNode) := do
             let paramList := mkNodeSpan .paramList params (if params.isEmpty then lambdaTok.span else Span.merge params[0]!.span params[params.size-1]!.span)
             return some (mkNodeSpan .exprLambda #[mkToken lambdaTok, paramList, mkToken arrowTok, body] span)
         | none =>
-            recordError "expected expression after '->' in lambda"
+            recordRichError "expected expression after '->' in lambda"
+              arrowTok.span
+              (notes := #["lambda syntax: \\param1 param2 -> body", "the body must be an expression"])
+              (help := "provide the lambda body expression")
             return some (mkError lambdaTok.span "incomplete lambda" #[mkToken lambdaTok])
       else
-        recordError "expected '->' after lambda parameters"
+        recordRichError "expected '->' after lambda parameters"
+          (← current).span
+          (secondary := #[(lambdaTok.span, "lambda starts here")])
+          (notes := #["lambda syntax: \\x y -> expr or λx y -> expr"])
+          (help := "add '->' between parameters and body, e.g., '\\x -> x + 1'")
         -- Try to parse body anyway
         match ← parseExpr with
         | some body =>
@@ -305,7 +340,11 @@ partial def parseLetExpr : ParserM (Option SyntaxNode) := do
                             #[mkToken eqTok, value, mkToken inTok, body]
                           return some (mkNodeSpan .exprLet children span)
                       | none =>
-                          recordError "expected expression after 'in'"
+                          recordRichError "expected expression after 'in'"
+                            (← current).span
+                            (secondary := #[(inTok.span, "'in' is here")])
+                            (notes := #["let binding syntax: let x = value in body"])
+                            (help := "provide an expression as the body, e.g., 'let x = 1 in x + 1'")
                           return some (mkError letTok.span "incomplete let" #[mkToken letTok, mkToken nameTok, mkToken eqTok, value])
                   | none =>
                       -- 'in' might be implicit with layout
@@ -331,10 +370,17 @@ partial def parseLetExpr : ParserM (Option SyntaxNode) := do
                           (help := "add 'in <expr>' after the binding, e.g., 'let x = 1 in x + 1'")
                         return some (mkError letTok.span "missing 'in'" #[mkToken letTok, mkToken nameTok, mkToken eqTok, value])
               | none =>
-                  recordError "expected expression after '=' in let"
+                  recordRichError "expected expression after '=' in let"
+                    eqTok.span
+                    (secondary := #[(nameTok.span, "binding name is here")])
+                    (help := "provide the value expression, e.g., 'let x = 42 in ...'")
                   return some (mkError letTok.span "missing let value" #[mkToken letTok, mkToken nameTok, mkToken eqTok])
           | none =>
-              recordError "expected '=' after let binding name"
+              recordRichError "expected '=' after let binding name"
+                (← current).span
+                (secondary := #[(letTok.span, "'let' is here"), (nameTok.span, "binding name is here")])
+                (notes := #["let syntax: let name = expression in body"])
+                (help := "add '=' between the binding name and its value")
               return some (mkError letTok.span "missing '=' in let" #[mkToken letTok, mkToken nameTok])
       | none =>
           -- Could be a destructuring pattern
@@ -351,19 +397,35 @@ partial def parseLetExpr : ParserM (Option SyntaxNode) := do
                               let span := Span.merge letTok.span body.span
                               return some (mkNodeSpan .exprLet #[mkToken letTok, pat, mkToken eqTok, value, mkToken inTok, body] span)
                           | none =>
-                              recordError "expected expression after 'in'"
+                              recordRichError "expected expression after 'in'"
+                                (← current).span
+                                (secondary := #[(inTok.span, "'in' is here")])
+                                (help := "provide the body expression")
                               return some (mkError letTok.span "incomplete let" #[mkToken letTok, pat, mkToken eqTok, value])
                       | none =>
-                          recordError "expected 'in' after let binding"
+                          recordRichError "expected 'in' after let binding"
+                            (← current).span
+                            (secondary := #[(eqTok.span, "'=' is here")])
+                            (help := "add 'in <body_expr>' after the binding value")
                           return some (mkError letTok.span "missing 'in'" #[mkToken letTok, pat, mkToken eqTok, value])
                   | none =>
-                      recordError "expected expression after '='"
+                      recordRichError "expected expression after '='"
+                        (← current).span
+                        (secondary := #[(eqTok.span, "'=' is here")])
+                        (help := "provide an expression for the let binding value")
                       return some (mkError letTok.span "missing let value" #[mkToken letTok, pat, mkToken eqTok])
               | none =>
-                  recordError "expected '=' after pattern"
+                  recordRichError "expected '=' after pattern"
+                    (← current).span
+                    (secondary := #[(letTok.span, "'let' is here"), (pat.span, "pattern is here")])
+                    (help := "add '=' after the pattern")
                   return some (mkError letTok.span "missing '=' in let" #[mkToken letTok, pat])
           | none =>
-              recordError "expected binding name or pattern after 'let'"
+              recordRichError "expected binding name or pattern after 'let'"
+                (← current).span
+                (secondary := #[(letTok.span, "'let' is here")])
+                (notes := #["let requires a name or pattern", "examples: let x = ..., let (a, b) = ..., let Some x = ..."])
+                (help := "provide a binding name or pattern after 'let'")
               return some (mkError letTok.span "missing let binding" #[mkToken letTok])
 
   | none => return none
@@ -385,7 +447,10 @@ partial def parseIfExpr : ParserM (Option SyntaxNode) := do
                           let span := Span.merge ifTok.span elseBranch.span
                           return some (mkNodeSpan .exprIf #[mkToken ifTok, cond, mkToken thenTok, thenBranch, mkToken elseTok, elseBranch] span)
                       | none =>
-                          recordError "expected expression after 'else'"
+                          recordRichError "expected expression after 'else'"
+                            (← current).span
+                            (secondary := #[(elseTok.span, "'else' is here")])
+                            (help := "provide an expression for the else branch")
                           return some (mkError ifTok.span "missing else branch" #[mkToken ifTok, cond, mkToken thenTok, thenBranch, mkToken elseTok])
                   | none =>
                       let curTok ← current
@@ -396,13 +461,23 @@ partial def parseIfExpr : ParserM (Option SyntaxNode) := do
                         (help := "add 'else <expr>' after the 'then' branch")
                       return some (mkError ifTok.span "missing 'else'" #[mkToken ifTok, cond, mkToken thenTok, thenBranch])
               | none =>
-                  recordError "expected expression after 'then'"
+                  recordRichError "expected expression after 'then'"
+                    (← current).span
+                    (secondary := #[(thenTok.span, "'then' is here")])
+                    (help := "provide an expression for the then branch")
                   return some (mkError ifTok.span "missing then branch" #[mkToken ifTok, cond, mkToken thenTok])
           | none =>
-              recordError "expected 'then' after condition"
+              recordRichError "expected 'then' after condition"
+                (← current).span
+                (secondary := #[(ifTok.span, "'if' is here")])
+                (notes := #["if syntax: if condition then expr1 else expr2"])
+                (help := "add 'then' after the condition")
               return some (mkError ifTok.span "missing 'then'" #[mkToken ifTok, cond])
       | none =>
-          recordError "expected condition after 'if'"
+          recordRichError "expected condition after 'if'"
+            (← current).span
+            (secondary := #[(ifTok.span, "'if' is here")])
+            (help := "provide a boolean condition expression")
           return some (mkError ifTok.span "missing condition" #[mkToken ifTok])
 
   | none => return none
@@ -423,7 +498,11 @@ partial def parseMatchArm : ParserM (Option SyntaxNode) := do
           break
 
       if patterns.isEmpty then
-        recordError "expected pattern after '|'"
+        recordRichError "expected pattern after '|'"
+          (← current).span
+          (secondary := #[(pipeTok.span, "'|' is here")])
+          (notes := #["match arms start with '|' followed by one or more patterns"])
+          (help := "provide a pattern, e.g., '| Some x => ...', '| (a, b) => ...', '| _ => ...'")
         return some (mkError pipeTok.span "missing pattern" #[mkToken pipeTok])
 
       -- Optional guard: if expr
@@ -432,7 +511,11 @@ partial def parseMatchArm : ParserM (Option SyntaxNode) := do
         match ← parseExpr with
         | some guardExpr => pure (some (mkNodeSpan .matchGuard #[mkToken ifTok, guardExpr] (Span.merge ifTok.span guardExpr.span)))
         | none =>
-            recordError "expected expression after 'if' guard"
+            recordRichError "expected expression after 'if' guard"
+              (← current).span
+              (secondary := #[(ifTok.span, "'if' guard is here")])
+              (notes := #["match guard syntax: | pattern if condition => body"])
+              (help := "provide a boolean expression for the guard")
             pure none
       else
         pure none
@@ -454,11 +537,19 @@ partial def parseMatchArm : ParserM (Option SyntaxNode) := do
             return some (mkNodeSpan .matchArm children span)
         | none =>
             let _ ← tryLayoutEnd
-            recordError "expected expression after '=>'"
+            recordRichError "expected expression after '=>'"
+              (← current).span
+              (secondary := #[(arrowTok.span, "'=>' is here")])
+              (notes := #["match arm syntax: | pattern => body"])
+              (help := "provide an expression for the arm body")
             let lastPat := patterns[patterns.size - 1]!
             return some (mkError (Span.merge pipeTok.span lastPat.span) "missing arm body" (#[mkToken pipeTok] ++ patterns))
       else
-        recordError "expected '=>' after pattern"
+        recordRichError "expected '=>' after pattern"
+          (← current).span
+          (secondary := #[(pipeTok.span, "'|' is here")])
+          (notes := #["match arms use '=>' to separate patterns from bodies"])
+          (help := "add '=>' after the pattern(s)")
         let lastPat := patterns[patterns.size - 1]!
         return some (mkError (Span.merge pipeTok.span lastPat.span) "missing '=>'" (#[mkToken pipeTok] ++ patterns))
 
@@ -487,14 +578,22 @@ partial def parseCaseExpr : ParserM (Option SyntaxNode) := do
           let _ ← tryLayoutEnd
 
           if arms.isEmpty then
-            recordError "expected at least one match arm after 'case'"
+            recordRichError "expected at least one match arm after 'case'"
+              (← current).span
+              (secondary := #[(caseTok.span, "'case' is here")])
+              (notes := #["case expression syntax: case expr of | pat1 => body1 | pat2 => body2"])
+              (help := "provide at least one match arm starting with '|'")
 
           let lastSpan := if arms.isEmpty then scruts[scruts.size - 1]!.span else arms[arms.size - 1]!.span
           let span := Span.merge caseTok.span lastSpan
           return some (mkNodeSpan .exprCase (#[mkToken caseTok] ++ scruts ++ arms) span)
 
       | none =>
-          recordError "expected expression after 'case'"
+          recordRichError "expected expression after 'case'"
+            (← current).span
+            (secondary := #[(caseTok.span, "'case' is here")])
+            (notes := #["case syntax: case expr1, expr2 of | pattern => body"])
+            (help := "provide expressions to match on")
           return some (mkError caseTok.span "missing scrutinee" #[mkToken caseTok])
 
   | none => return none
@@ -531,7 +630,10 @@ partial def parseComposeExpr : ParserM (Option SyntaxNode) := do
       let _ ← tryLayoutEnd
 
       if stmts.isEmpty then
-        recordError "expected expression in compose block"
+        recordRichError "expected expression in compose block"
+          (← current).span
+          (secondary := #[(composeTok.span, "'compose' is here")])
+          (help := "provide at least one expression in the compose block")
         return some (mkError composeTok.span "empty compose" #[mkToken composeTok])
       else
         let lastSpan := stmts[stmts.size - 1]!.span
@@ -549,7 +651,10 @@ partial def parseBindExpr : ParserM (Option SyntaxNode) := do
       let _ ← tryLayoutEnd
 
       if stmts.isEmpty then
-        recordError "expected expression in bind block"
+        recordRichError "expected expression in bind block"
+          (← current).span
+          (secondary := #[(bindTok.span, "'bind' is here")])
+          (help := "provide at least one expression in the bind block")
         return some (mkError bindTok.span "empty bind" #[mkToken bindTok])
       else
         let lastSpan := stmts[stmts.size - 1]!.span
@@ -660,7 +765,11 @@ where
               let span := Span.merge result.span rightAtom.span
               result := mkNodeSpan .exprInfix #[result, mkToken opTok, rightAtom] span
       | none =>
-          recordError s!"expected expression after operator '{opTok.text}'"
+          recordRichError s!"expected expression after operator '{opTok.text}'"
+            (← current).span
+            (secondary := #[(opTok.span, "operator is here")])
+            (notes := #[s!"binary operator '{opTok.text}' requires expressions on both sides"])
+            (help := "provide a right-hand side expression")
           break
 
     return some result
@@ -683,7 +792,11 @@ partial def parseExpr : ParserM (Option SyntaxNode) := do
             let span := Span.merge expr.span ty.span
             return some (mkNodeSpan .exprTypeAnnot #[expr, mkToken colonTok, ty] span)
         | none =>
-            recordError "expected type after '::'"
+            recordRichError "expected type after '::'"
+              (← current).span
+              (secondary := #[(colonTok.span, "'::' is here")])
+              (notes := #["type annotation syntax: expr :: Type"])
+              (help := "provide a type expression")
             return some (mkError (Span.merge expr.span colonTok.span) "missing type annotation" #[expr, mkToken colonTok])
       else
         return some expr

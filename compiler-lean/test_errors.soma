@@ -1,0 +1,79 @@
+// Test file for enhanced error messages
+// Each section tests a different error case
+
+// 1. Unclosed operator section
+def test1 = (+ 1
+
+// 2. Expected expression after operator in section
+def test2 = (+
+
+// 3. Expected expression after comma in tuple
+def test3 = (1, 2,
+
+// 4. Unclosed parentheses
+def test4 = (1 + 2
+
+// 5. Expected expression after '('
+def test5 = (
+
+// 6. Expected ')' after typed parameter
+def test6 = \(x: Int -> x
+
+// 7. Expected type after ':' in parameter
+def test7 = \(x: -> x
+
+// 8. Expected '->' after lambda parameters
+def test8 = \x y x + y
+
+// 9. Expected expression after 'in'
+def test9 = let x = 1 in
+
+// 10. Expected '=' after let binding name
+def test10 = let x
+
+// 11. Expected 'then' after condition
+def test11 = if True False
+
+// 12. Missing 'else' branch
+def test12 = if True then 1
+
+// 13. Expected pattern after '|' in match
+def test13 = case x
+  |
+
+// 14. Expected '=>' after pattern
+def test14 = case x
+  | Some y
+
+// 15. Expected type after '->' in function type
+def test15 :: Int ->
+
+// 16. Expected ')' after tuple type
+def test16 :: (Int, String
+
+// 17. Expected '.' after forall type variables
+def test17 :: forall a b Int
+
+// 18. Expected ')' after cons pattern
+def test18 = case xs
+  | (x : ys -> x
+
+// 19. Expected ']' after list pattern
+def test19 = case xs
+  | [a, b, c -> a
+
+// 20. Expected ']' after attribute
+def test20 = @[inline 42
+
+// 21. Expected constructor name after '|' in data
+data Test21
+  |
+
+// 22. Expected '=' in struct declaration
+struct Test22 Test22Con
+
+// 23. Expected 'where' in trait declaration
+trait Test23 a
+
+// 24. Expected type after '::' in expression annotation
+def test24 = 42 ::

@@ -2,10 +2,12 @@ import Soma.Logging.Error
 import Soma.Syntax.Source
 import Soma.Syntax.Diagnostic
 
+namespace Test.Error
+
 open Soma.Syntax
 open Soma.Logging.Error
 
-def main : IO Unit := do
+def run : IO Unit := do
   -- Test 1: Two stacked labels at exact same span
   IO.eprintln "=== Test 1: Two stacked labels at same span ==="
   let source1 := "fn main() {\n    let x = 1\n}"
@@ -197,3 +199,5 @@ def main : IO Unit := do
     help := some "If this renders correctly, you've won"
   }
   IO.eprintln (renderDiagnostic diag8 sf8)
+
+end Test.Error

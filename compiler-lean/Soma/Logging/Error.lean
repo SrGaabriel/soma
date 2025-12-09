@@ -447,8 +447,11 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
 
         output := output.push s!" {emptyGutter gutterWidth}{row}"
 
-    let lineLabels := finalSingleLabels.filter (·.line == lineNum)
-    for sl in lineLabels do
+    let lineLabels := (finalSingleLabels.filter (·.line == lineNum)).toList.mergeSort (fun a b => a.startCol < b.startCol) |>.toArray
+
+    if lineLabels.size == 1 then
+      -- Single label: render with message inline (original behavior)
+      let sl := lineLabels[0]!
       let color := Color.labelColor sl.style
       let char := match sl.style with
         | .primary => Chars.underlineCaret
@@ -467,6 +470,88 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
       let underlineStr := String.mk (List.replicate underlineLen char)
       let msgPart := if sl.message.isEmpty then "" else " " ++ sl.message
       output := output.push s!" {emptyGutter gutterWidth}{labelMargin} {underlinePadding}{color}{underlineStr}{msgPart}{Color.reset}"
+
+    else if lineLabels.size > 1 then
+      -- Multiple labels on same line: render underlines first, then drop-down messages
+      -- First row: all underlines without messages
+      let mut underlineRow := ""
+      let mut underlineRowPos : Nat := 0
+
+      -- Add margin for active multi-line spans
+      for ms in activeSpans do
+        let targetCol := ms.visualCol - 1
+        if targetCol >= underlineRowPos then
+          let padding := String.mk (List.replicate (targetCol - underlineRowPos) ' ')
+          let c := getMostSevereColorAtCol activeSpans ms.visualCol
+          underlineRow := underlineRow ++ padding ++ c ++ Chars.pipe ++ Color.reset
+          underlineRowPos := targetCol + 1
+
+      -- Add space after gutter margin
+      underlineRow := underlineRow ++ " "
+      underlineRowPos := underlineRowPos + 1
+
+      -- Render all underlines
+      for sl in lineLabels do
+        let color := Color.labelColor sl.style
+        let char := match sl.style with
+          | .primary => Chars.underlineCaret
+          | .secondary => Chars.underlineTilde
+        let targetCol := sl.startCol
+        if targetCol > underlineRowPos then
+          let padding := String.mk (List.replicate (targetCol - underlineRowPos) ' ')
+          underlineRow := underlineRow ++ padding
+          underlineRowPos := targetCol
+        let underlineLen := if sl.endCol > sl.startCol then sl.endCol - sl.startCol else 1
+        let underlineStr := String.mk (List.replicate underlineLen char)
+        underlineRow := underlineRow ++ color ++ underlineStr ++ Color.reset
+        underlineRowPos := underlineRowPos + underlineLen
+
+      output := output.push s!" {emptyGutter gutterWidth}{underlineRow}"
+
+      -- Now render drop-down messages, from rightmost to leftmost (bottom to top visually)
+      let numLabels := lineLabels.size
+      for idx in List.range numLabels |>.reverse do
+        let currentLabel := lineLabels[idx]!
+        let color := Color.labelColor currentLabel.style
+
+        let mut row := ""
+        let mut rowPos : Nat := 0
+
+        -- Add margin for active multi-line spans
+        for ms in activeSpans do
+          let targetCol := ms.visualCol - 1
+          if targetCol >= rowPos then
+            let padding := String.mk (List.replicate (targetCol - rowPos) ' ')
+            let c := getMostSevereColorAtCol activeSpans ms.visualCol
+            row := row ++ padding ++ c ++ Chars.pipe ++ Color.reset
+            rowPos := targetCol + 1
+
+        -- Add space after gutter margin
+        row := row ++ " "
+        rowPos := rowPos + 1
+
+        -- Draw vertical pipes for labels to the left that still need messages below
+        for i in List.range idx do
+          let sl := lineLabels[i]!
+          let targetCol := sl.startCol
+          if targetCol > rowPos then
+            let padding := String.mk (List.replicate (targetCol - rowPos) ' ')
+            row := row ++ padding
+            rowPos := targetCol
+          let c := Color.labelColor sl.style
+          row := row ++ c ++ Chars.pipe ++ Color.reset
+          rowPos := rowPos + 1
+
+        -- Draw corner and message for current label
+        let cornerCol := currentLabel.startCol
+        if cornerCol > rowPos then
+          let padding := String.mk (List.replicate (cornerCol - rowPos) ' ')
+          row := row ++ padding
+          rowPos := cornerCol
+        let msgPart := if currentLabel.message.isEmpty then "" else " " ++ currentLabel.message
+        row := row ++ color ++ Chars.cornerBottomLeft ++ Chars.horizontal ++ msgPart ++ Color.reset
+
+        output := output.push s!" {emptyGutter gutterWidth}{row}"
 
   output := output.push s!" {emptyGutter gutterWidth}"
 

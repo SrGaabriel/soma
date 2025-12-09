@@ -14,6 +14,10 @@ name = "Soma"
 name = "somac"
 root = "Soma.Main"
 
+[[lean_lib]]
+name = "Test"
+globs = ["Test.**"]
+
 [[lean_exe]]
 name = "test"
-root = "test.Main"
+root = "Test.Main"
