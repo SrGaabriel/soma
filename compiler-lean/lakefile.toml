@@ -2,6 +2,10 @@ name = "soma"
 version = "0.1.0"
 defaultTargets = ["somac"]
 
+[[require]]
+scope = "leanprover"
+name = "Cli"
+
 [[lean_lib]]
 name = "Soma"
 roots = ["Soma"]
