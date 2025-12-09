@@ -93,6 +93,18 @@ jobs:
             - name: Configure project
               run: cabal configure --enable-tests --enable-benchmarks
 
+            - name: Install Z3
+              run: |
+                  if [ "$RUNNER_OS" == "Linux" ]; then
+                    sudo apt-get update
+                    sudo apt-get install -y z3
+                  elif [ "$RUNNER_OS" == "macOS" ]; then
+                    brew install z3
+                  elif [ "$RUNNER_OS" == "Windows" ]; then
+                    choco install z3
+                  fi
+              shell: bash
+
             - name: Build dependencies
               run: cabal build --only-dependencies all
 
