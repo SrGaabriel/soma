@@ -328,6 +328,99 @@ jobs:
                   path: haoma/artifacts/haoma-*
                   if-no-files-found: error
 
+    lean-build:
+        name: Build Lean (compiler-lean)
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                include:
+                    - os: ubuntu-latest
+                      target: x86_64-linux
+                    - os: macos-latest
+                      target: aarch64-darwin
+                    - os: macos-15-intel
+                      target: x86_64-darwin
+                    - os: windows-latest
+                      target: x86_64-windows
+            fail-fast: false
+
+        defaults:
+            run:
+                working-directory: compiler-lean
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Install elan
+              run: |
+                  curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+                  echo "$HOME/.elan/bin" >> $GITHUB_PATH
+              shell: bash
+
+            - name: Cache Lake packages
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.elan
+                      compiler-lean/.lake
+                      compiler-lean/lake-packages
+                  key: ${{ runner.os }}-lean-${{ hashFiles('compiler-lean/lean-toolchain', 'compiler-lean/lake-manifest.json', 'compiler-lean/lakefile.lean', 'compiler-lean/lakefile.toml') }}
+                  restore-keys: |
+                      ${{ runner.os }}-lean-
+
+            - name: Update Lake packages
+              working-directory: compiler-lean
+              run: lake update
+              shell: bash
+
+            - name: Build release
+              working-directory: compiler-lean
+              run: lake build --release
+              shell: bash
+              continue-on-error: true
+
+            - name: Run tests
+              working-directory: compiler-lean
+              run: lake test
+              shell: bash
+              continue-on-error: true
+
+            - name: Prepare artifacts (Unix)
+              if: runner.os != 'Windows'
+              working-directory: compiler-lean
+              run: |
+                  mkdir -p artifacts
+                  if [ -d ".lake/build/bin" ]; then
+                    for bin in .lake/build/bin/*; do
+                      if [ -f "$bin" ] && [ -x "$bin" ]; then
+                        name=$(basename "$bin")
+                        cp "$bin" "artifacts/${name}-${{ matrix.target }}"
+                        chmod +x "artifacts/${name}-${{ matrix.target }}"
+                      fi
+                    done
+                  fi
+              shell: bash
+
+            - name: Prepare artifacts (Windows)
+              if: runner.os == 'Windows'
+              working-directory: compiler-lean
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force -Path artifacts
+                  if (Test-Path ".lake/build/bin") {
+                    Get-ChildItem ".lake/build/bin/*.exe" | ForEach-Object {
+                      $name = $_.BaseName
+                      Copy-Item $_.FullName "artifacts/${name}-${{ matrix.target }}.exe"
+                    }
+                  }
+
+            - name: Upload artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: compiler-lean-${{ matrix.target }}
+                  path: compiler-lean/artifacts/*
+                  if-no-files-found: warn
+
     lint:
         name: Lint and Format Check
         runs-on: ubuntu-latest
@@ -366,9 +459,21 @@ jobs:
               run: cargo clippy --all-targets --all-features
               continue-on-error: true
 
+            - name: Install elan for Lean linting
+              run: |
+                  curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+                  echo "$HOME/.elan/bin" >> $GITHUB_PATH
+
+            - name: Check Lean build
+              working-directory: compiler-lean
+              run: |
+                  lake update
+                  lake build
+              continue-on-error: true
+
     check-all:
         name: All Checks Passed
-        needs: [haskell-build, rust-build, lint]
+        needs: [haskell-build, rust-build, lean-build, lint]
         runs-on: ubuntu-latest
         if: always()
 
@@ -381,6 +486,10 @@ jobs:
                   fi
                   if [ "${{ needs.rust-build.result }}" != "success" ]; then
                     echo "Rust build failed"
+                    exit 1
+                  fi
+                  if [ "${{ needs.lean-build.result }}" != "success" ]; then
+                    echo "Lean build failed"
                     exit 1
                   fi
                   if [ "${{ needs.lint.result }}" == "failure" ]; then
