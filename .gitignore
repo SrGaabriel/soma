@@ -177,10 +177,13 @@ $RECYCLE.BIN/
 
 zlang
 report.html
-CIRCUIT.md
+CRITICAL.md
 
 # Haoma
 .haoma
 
 # Liquid Haskell
 .liquid/
+
+# Lean
+**/.lake

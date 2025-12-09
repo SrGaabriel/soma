@@ -1,0 +1,17 @@
+name = "soma"
+version = "0.1.0"
+defaultTargets = ["somac"]
+
+[[lean_lib]]
+name = "Soma"
+roots = ["Soma"]
+
+[[lean_exe]]
+name = "somac"
+root = "exe.Main"
+
+[[lean_exe]]
+name = "soma-test"
+root = "test.Main"
+
+testDriver = "soma-test"
