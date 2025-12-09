@@ -1,8 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Unit.Inference.GenSpec (spec) where
 
-import qualified Data.Map as Map
 import Test.Hspec
 import Typing.Types
 
@@ -57,7 +57,7 @@ spec = describe "Inference.Gen" $ do
 
         it "creates pair type" $ do
             let pairTy = tupleType [intType, boolType]
-            pairTy `shouldSatisfy` \t -> case t of
+            pairTy `shouldSatisfy` \case
                 TApp _ _ -> True
                 _ -> False
 

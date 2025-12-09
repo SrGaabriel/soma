@@ -184,10 +184,7 @@ genWellScopedTerm scope n =
           , (1, genBinOp scope n)
           , (1, genCmpOp scope n)
           ]
-            ++ if Map.null scope
-                then []
-                else
-                    [(2, genVar scope)]
+            ++ ([(2, genVar scope) | not (Map.null scope)])
 
 genWellScopedLeaf :: Scope -> Gen CTerm
 genWellScopedLeaf scope
@@ -263,7 +260,7 @@ shrinkWellScoped term = case term of
     CBinOp _ a b -> [a, b]
     CCmpOp _ a b -> [a, b]
     CUnaryOp _ a -> [a]
-    CDup _ _ _ val body -> [val] ++ [body | isClosedTerm body]
+    CDup _ _ _ val body -> val : [body | isClosedTerm body]
     CErase val body -> [val, body]
     CTag _ fields _ -> fields
     CCase scrut _ _ _ -> [scrut]

@@ -41,6 +41,7 @@ import qualified Data.Map.Strict as Map
 import Project.Name (LocalId (..), LocalPrefix (..), Name (..), SyntheticId (..), SyntheticKind (..), mkProj0, mkProj1, nameOriginal)
 import qualified Project.Name as PN
 import Typing.Types (Kind (..), TyConstructor (..), TyPrimitive (..), TyUnique (..), Type (..), boolType, intType)
+import Utils.Lists (hardHead)
 
 isClosureSelf :: PN.Name -> Bool
 isClosureSelf (NLocal (LocalId LPClosureSelf _)) = True
@@ -214,7 +215,7 @@ lowerFunctionForLGraph funcIndexMap C.CFunction{..} = do
     env <-
         if isClosureFunc
             then do
-                let closureSelfName = fst (head cfParams)
+                let closureSelfName = fst (hardHead cfParams)
                 let baseEnv =
                         extendTermBinding closureSelfName graphArgName
                             $ emptyLGraphEnv{lgeFuncIndices = funcIndexMap}

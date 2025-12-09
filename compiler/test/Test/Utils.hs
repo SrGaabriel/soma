@@ -26,7 +26,7 @@ module Test.Utils (
 ) where
 
 import Control.Exception (bracket)
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import Data.List (isInfixOf)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -107,10 +107,10 @@ withTempSomaFile content action = bracket acquire release $ \(path, _) -> action
         pure (path, ())
     release (path, _) = do
         exists <- doesFileExist path
-        unless (not exists) $ removeFile path
+        when exists $ removeFile path
         let outPath = path ++ ".out"
         outExists <- doesFileExist outPath
-        unless (not outExists) $ removeFile outPath
+        when outExists $ removeFile outPath
 
 -- | Assert that output contains a specific error message
 shouldContainError :: Either String a -> String -> Expectation

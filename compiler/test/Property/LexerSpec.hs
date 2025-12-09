@@ -131,7 +131,7 @@ spec = describe "Lexer Properties" $ do
             $ forAll genKeyword
             $ \kw ->
                 let (tokens, _) = lexCode kw
-                in length tokens >= 1
+                in not (null tokens)
 
         it "produces tokens for valid operators"
             $ property
@@ -192,7 +192,7 @@ spec = describe "Lexer Properties" $ do
                 let input = ident <> " // this is a comment\n" <> ident
                     (tokens, _) = lexCode input
                     identTokens = filter (\t -> tokenKind t `elem` [TokenLowerIdentifier, TokenUpperIdentifier]) tokens
-                in length identTokens >= 1
+                in not (null identTokens)
 
         it "block comments are ignored"
             $ property
@@ -201,7 +201,7 @@ spec = describe "Lexer Properties" $ do
                 let input = ident <> " /* comment */ " <> ident
                     (tokens, _) = lexCode input
                     identTokens = filter (\t -> tokenKind t `elem` [TokenLowerIdentifier, TokenUpperIdentifier]) tokens
-                in length identTokens >= 1
+                in not (null identTokens)
 
     describe "whitespace properties" $ do
         it "whitespace is handled correctly"

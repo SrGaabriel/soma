@@ -177,7 +177,7 @@ spec = describe "Circuit.Linearize" $ do
                 let term = CLet name intType (CInt 1) (CInt 42)
                 let result = runLinearize term
                 -- The unused binding should be handled
-                result `shouldSatisfy` \_ -> True -- Just verify it doesn't crash
+                result `shouldSatisfy` const True -- Just verify it doesn't crash
         describe "nested bindings" $ do
             it "handles nested lambdas" $ do
                 let x = mkName "x" 0
@@ -275,13 +275,13 @@ spec = describe "Circuit.Linearize" $ do
             let x = mkName "x" 0
             let term = CCase (CVar x intType) [] Nothing intType
             let result = runLinearize term
-            result `shouldSatisfy` \_ -> True -- Should not crash
+            result `shouldSatisfy` const True -- Should not crash
         it "handles deeply nested terms" $ do
             let x = mkName "x" 0
-            let deepTerm = iterate (\t -> CLam (mkName "y" 0) intType t) (CVar x intType) !! 10
+            let deepTerm = iterate (CLam (mkName "y" 0) intType) (CVar x intType) !! 10
             let term = CLam x intType deepTerm
             let result = runLinearize term
-            result `shouldSatisfy` \_ -> True -- Should not crash
+            result `shouldSatisfy` const True -- Should not crash
         it "handles binary operations with same variable" $ do
             let x = mkName "x" 0
             let term = CLam x intType (CBinOp OpMul (CVar x intType) (CVar x intType))

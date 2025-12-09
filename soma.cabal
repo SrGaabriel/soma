@@ -13,8 +13,8 @@ common warnings
     -Wall
     -fprof-auto
     -rtsopts
---    -fplugin=LiquidHaskell
 
+--    -fplugin=LiquidHaskell
 library
   import: warnings
   exposed-modules:
@@ -102,40 +102,49 @@ test-suite soma-tests
   import: warnings
   type: exitcode-stdio-1.0
   main-is: Spec.hs
-  hs-source-dirs: compiler/test, compiler/exe
-  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  hs-source-dirs:
+    compiler/test
+    compiler/exe
+
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+
   build-depends:
+    QuickCheck >=2.14,
     base,
-    soma,
     containers,
-    text,
-    mtl,
-    filepath,
     directory,
-    process,
+    filepath,
     hspec >=2.11,
     hspec-discover >=2.11,
-    QuickCheck >=2.14,
+    mtl,
+    process,
+    soma,
+    text,
 
   other-modules:
+    Alloy.Build
+    Alloy.Ir
+    Alloy.Monomorphize
+    Circuit.Ir
+    Circuit.Linearize
+    Integration.E2ESpec
+    Integration.GoldenSpec
+    Property.LexerSpec
+    Property.LinearizationSpec
+    Property.ParserSpec
     Test.Generators
     Test.Utils
-    Unit.Lexing.LexerSpec
-    Unit.Parsing.ParserSpec
+    Unit.Alloy.MonomorphizeSpec
+    Unit.Circuit.LinearizeSpec
     Unit.Inference.GenSpec
     Unit.Inference.ResolverSpec
     Unit.Inference.SolvingSpec
-    Unit.Circuit.LinearizeSpec
-    Integration.GoldenSpec
-    Integration.E2ESpec
-    Property.LexerSpec
-    Property.ParserSpec
-    Property.LinearizationSpec
+    Unit.Lexing.LexerSpec
+    Unit.Parsing.ParserSpec
     Validation.CircuitSpec
-    Circuit.Ir
-    Circuit.Linearize
-    Alloy.Ir
-    Alloy.Build
 
   default-language: Haskell2010
 

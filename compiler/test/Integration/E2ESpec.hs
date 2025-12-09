@@ -299,7 +299,7 @@ spec = describe "End-to-End Tests" $ do
                 Left _ -> pure ()
                 Right _ -> expectationFailure "Should reject type mismatch in application"
 
-        it "rejects non-exhaustive patterns" $ pending
+        it "rejects non-exhaustive patterns" pending
     -- Pattern exhaustiveness checking may or may not be implemented
 
     describe "complex programs" $ do

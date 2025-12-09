@@ -198,5 +198,4 @@ withTempFile :: T.Text -> (FilePath -> IO a) -> IO a
 withTempFile content action = do
     let path = "/tmp/soma_test_" ++ show (abs $ T.length content `mod` 10000) ++ ".soma"
     TIO.writeFile path content
-    result <- action path
-    pure result
+    action path

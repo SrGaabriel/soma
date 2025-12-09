@@ -6,6 +6,7 @@ module Alloy.Monomorphize (
     monomorphizeFunction,
     InstKey (..),
     TySubst,
+    MonomorphizeError (..),
 ) where
 
 import Alloy.Ir (
@@ -21,8 +22,9 @@ import Alloy.Ir (
  )
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import qualified Data.Set as Set
+import Debug.Trace (trace)
 import Project.Name (Name, makeMonomorphized, nameBaseUnique, nameToString)
 import qualified Project.Name as PN
 import Project.Unique (Unique)
@@ -45,23 +47,34 @@ data InstKey = InstKey
     }
     deriving (Eq, Ord, Show)
 
-type CallSiteId = Int
+-- | Errors that can occur during monomorphization
+data MonomorphizeError
+    = -- | Function name, callee name, argument types
+      UnresolvedPolymorphicCall Name Name [Type]
+    | -- | Referenced function not found in base map
+      MissingBaseFunction Name
+    | -- | Function still has type variables after monomorphization
+      RemainingTypeVariables Name [Type]
+    deriving (Show, Eq)
 
-type RewriteMap = Map (Name, CallSiteId) Name
+-- | Warnings collected during monomorphization (logged but not fatal)
+data MonomorphizeWarning
+    = -- | Caller, callee - call could not be resolved
+      UnresolvedCallWarning Name Name
+    deriving (Show, Eq)
 
 monomorphizeModule :: AlloyModule -> AlloyModule
 monomorphizeModule m@AlloyModule{amName = moduleName, amFunctions = funcs} =
     let baseFnMap = toFnMap funcs
 
         -- Phase 1: Fixpoint Scan
-        (allFns, instCache) = monoFixpoint moduleName baseFnMap funcs Map.empty
-        dedupedFns = dedupByName allFns
+        (allFns, instCache, _warnings) = monoFixpointOptimized moduleName baseFnMap funcs Map.empty
 
         -- Phase 2: Rewrite
-        rwMap = computeRewriteMap baseFnMap instCache dedupedFns
+        rwMap = computeRewriteMap baseFnMap instCache allFns
 
         -- Apply rewrites
-        rewrittenFns = map (applyRewrites rwMap instCache baseFnMap) dedupedFns
+        rewrittenFns = map (applyRewrites rwMap instCache baseFnMap) allFns
 
         -- Phase 3: Cleanup
         specializedNames = Set.fromList (Map.elems instCache)
@@ -71,16 +84,38 @@ monomorphizeModule m@AlloyModule{amName = moduleName, amFunctions = funcs} =
                 || nameToString (afName fn) == "main"
                 || not (hasTypeVars fn)
 
-        finalFns = map eliminateAllTypeVars $ filter isKept rewrittenFns
-    in m{amFunctions = finalFns}
+        finalFns = filter isKept rewrittenFns
+        errors = validateNoTypeVars finalFns
+    in case errors of
+        [] -> m{amFunctions = finalFns}
+        _ ->
+            trace ("Monomorphization warnings: " ++ show errors)
+                $ m{amFunctions = finalFns}
+
+validateNoTypeVars :: [AlloyFunction] -> [MonomorphizeError]
+validateNoTypeVars = mapMaybe checkFn
+  where
+    checkFn fn
+        | hasTypeVars fn =
+            let polyTypes = collectTypeVars fn
+            in Just (RemainingTypeVariables (afName fn) polyTypes)
+        | otherwise = Nothing
+
+    collectTypeVars AlloyFunction{afParams, afReturnType} =
+        filter hasTypeVar (map snd afParams ++ [afReturnType])
+
+    hasTypeVar (TVar _) = True
+    hasTypeVar (TSkolem _) = True
+    hasTypeVar (TApp a b) = hasTypeVar a || hasTypeVar b
+    hasTypeVar (TArrow a b) = hasTypeVar a || hasTypeVar b
+    hasTypeVar _ = False
 
 monomorphizeFunction :: String -> Map Name AlloyFunction -> AlloyFunction -> (AlloyFunction, [AlloyFunction])
 monomorphizeFunction moduleName baseFnMap fn =
-    let (allFns, instCache) = monoFixpoint moduleName baseFnMap [fn] Map.empty
+    let (allFns, instCache, _warnings) = monoFixpointOptimized moduleName baseFnMap [fn] Map.empty
         rwMap = computeRewriteMap baseFnMap instCache allFns
         rewrittenAll = map (applyRewrites rwMap instCache baseFnMap) allFns
-        concreteAll = map eliminateAllTypeVars rewrittenAll
-    in case concreteAll of
+    in case rewrittenAll of
         [] -> (fn, [])
         (f : cs) -> (f, cs)
 
@@ -90,36 +125,38 @@ data CallResolution = CallResolution
     , crKey :: InstKey
     }
 
-resolveCallTarget :: Map Name AlloyFunction -> Map Name Type -> AOp -> Maybe CallResolution
+resolveCallTarget :: Map Name AlloyFunction -> Map Name Type -> AOp -> Either MonomorphizeWarning (Maybe CallResolution)
 resolveCallTarget baseFnMap env op =
     case op of
         OpCall (Direct calleeName) args -> resolveWithTraitLookup calleeName args
         OpDictCall _ _ methodName args -> resolveWithTraitLookup methodName args
-        _ -> Nothing
+        _ -> Right Nothing
   where
     resolveWithTraitLookup methodName args =
         -- First try to resolve as a trait method (instance method lookup)
         let resolvedName = resolveTraitMethod baseFnMap env methodName args
         in case resolvedName of
-            Just name -> resolveCommon name args
-            Nothing -> resolveCommon methodName args -- Fallback to original name
-    resolveCommon name args =
+            Just name -> resolveCommon name methodName args
+            Nothing -> resolveCommon methodName methodName args
+
+    resolveCommon name _originalName args =
         case Map.lookup name baseFnMap of
-            Nothing -> Nothing
+            Nothing -> Right Nothing
             Just calleeFn ->
                 case mapM (operandType baseFnMap env) args of
-                    Nothing -> Nothing
+                    Nothing -> Right Nothing
                     Just argTys ->
                         case matchCalleeParams (afParams calleeFn) argTys of
                             Just subst
                                 | not (Map.null subst) && allConcreteSubst subst ->
-                                    Just
-                                        CallResolution
-                                            { crTargetFn = calleeFn
-                                            , crSubst = subst
-                                            , crKey = InstKey (fnName calleeFn) (map (substType subst . snd) (afParams calleeFn))
-                                            }
-                            _ -> Nothing
+                                    Right
+                                        $ Just
+                                            CallResolution
+                                                { crTargetFn = calleeFn
+                                                , crSubst = subst
+                                                , crKey = InstKey (fnName calleeFn) (map (substType subst . snd) (afParams calleeFn))
+                                                }
+                            _ -> Right Nothing
 
 resolveTraitMethod :: Map Name AlloyFunction -> Map Name Type -> Name -> [AOperand] -> Maybe Name
 resolveTraitMethod baseFnMap env methodName args =
@@ -130,21 +167,25 @@ resolveTraitMethod baseFnMap env methodName args =
                 then Just methodName
                 else Nothing
         Just baseUnique ->
-            -- Try to find an instance method for the first argument's type
+            -- Try to find an instance method for the first data argument's type
             case mapM (operandType baseFnMap env) args of
                 Nothing -> Just methodName
                 Just argTys ->
-                    let firstNonFunctionType = case argTys of
-                            (TArrow _ _ : rest) -> listToMaybe rest
-                            (ty : _) -> Just ty
-                            [] -> Nothing
-                    in case firstNonFunctionType of
+                    -- Skip function-typed arguments (likely dictionary parameters)
+                    -- to find the actual instance type
+                    let firstDataType = findFirstDataType argTys
+                    in case firstDataType of
                         Nothing -> Just methodName
                         Just instanceType ->
                             -- Look for an instance method with this base and type
                             case findInstanceMethod baseUnique instanceType baseFnMap of
                                 Just instanceMethodName -> Just instanceMethodName
                                 Nothing -> Just methodName -- Fall back to base method
+
+findFirstDataType :: [Type] -> Maybe Type
+findFirstDataType [] = Nothing
+findFirstDataType (TArrow _ _ : rest) = findFirstDataType rest
+findFirstDataType (ty : _) = Just ty
 
 findInstanceMethod :: Unique -> Type -> Map Name AlloyFunction -> Maybe Name
 findInstanceMethod baseUnique instanceType fnMap =
@@ -166,47 +207,57 @@ typesMatch t1@TConstructor{} (TApp t2 _) = typesMatch t1 t2
 typesMatch (TApp t1a t1b) (TApp t2a t2b) = typesMatch t1a t2a && typesMatch t1b t2b
 typesMatch t1 t2 = t1 == t2
 
-monoFixpoint ::
+monoFixpointOptimized ::
     String ->
     Map Name AlloyFunction ->
     [AlloyFunction] ->
     Map InstKey Name ->
-    ([AlloyFunction], Map InstKey Name)
-monoFixpoint moduleName baseFnMap fns0 cache0 =
-    let reqs = scanForRequests baseFnMap fns0
-        newReqs = [(b, s, k) | (b, s, k) <- reqs, Map.notMember k cache0]
-
-        newClones =
-            [ let baseFn = fromMaybe (error $ "Missing base fn: " ++ nameToString b) (Map.lookup b baseFnMap)
-                  clone = specializeFunction moduleName baseFn s
-              in (k, fnName clone, clone)
-            | (b, s, k) <- newReqs
-            ]
-
-        cache1 = foldl' (\acc (k, nm, _) -> Map.insert k nm acc) cache0 newClones
-        fns1 = fns0 ++ [c | (_, _, c) <- newClones]
-    in if null newClones
-        then (fns0, cache0)
-        else monoFixpoint moduleName baseFnMap fns1 cache1
-
-scanForRequests :: Map Name AlloyFunction -> [AlloyFunction] -> [(Name, TySubst, InstKey)]
-scanForRequests baseFnMap = concatMap (scanCallsInFunction baseFnMap)
-
-scanCallsInFunction :: Map Name AlloyFunction -> AlloyFunction -> [(Name, TySubst, InstKey)]
-scanCallsInFunction baseFnMap AlloyFunction{afParams = fnParams, afBlocks} =
-    let baseEnv = Map.fromList [(n, t) | (n, t) <- fnParams]
-        (_, reqs) = foldl' scanBlock (baseEnv, []) afBlocks
-    in reqs
+    ([AlloyFunction], Map InstKey Name, [MonomorphizeWarning])
+monoFixpointOptimized moduleName baseFnMap initialFns cache0 =
+    go initialFns initialFns cache0 []
   where
-    scanBlock (env, reqs) ABlock{abParams, abInstrs} =
+    go allFns dirtyFns cache warnings
+        | null dirtyFns = (allFns, cache, warnings)
+        | otherwise =
+            let
+                (reqs, newWarnings) = scanForRequestsWithWarnings baseFnMap dirtyFns
+                newReqsRaw = [(b, s, k) | (b, s, k) <- reqs, Map.notMember k cache]
+                newReqs = Map.elems $ Map.fromList [(k, (b, s, k)) | (b, s, k) <- newReqsRaw]
+
+                newClones =
+                    [ let baseFn = fromMaybe (error $ "Missing base fn: " ++ nameToString b) (Map.lookup b baseFnMap)
+                          clone = specializeFunction moduleName baseFn s
+                      in (k, fnName clone, clone)
+                    | (b, s, k) <- newReqs
+                    ]
+
+                cache' = foldl' (\acc (k, nm, _) -> Map.insert k nm acc) cache newClones
+                newFns = [c | (_, _, c) <- newClones]
+                allFns' = allFns ++ newFns
+            in
+                go allFns' newFns cache' (warnings ++ newWarnings)
+
+scanForRequestsWithWarnings :: Map Name AlloyFunction -> [AlloyFunction] -> ([(Name, TySubst, InstKey)], [MonomorphizeWarning])
+scanForRequestsWithWarnings baseFnMap fns =
+    let results = map (scanCallsInFunctionWithWarnings baseFnMap) fns
+    in (concatMap fst results, concatMap snd results)
+
+scanCallsInFunctionWithWarnings :: Map Name AlloyFunction -> AlloyFunction -> ([(Name, TySubst, InstKey)], [MonomorphizeWarning])
+scanCallsInFunctionWithWarnings baseFnMap AlloyFunction{afParams = fnParams, afBlocks} =
+    let baseEnv = Map.fromList [(n, t) | (n, t) <- fnParams]
+        (_, reqs, warnings) = foldl' scanBlock (baseEnv, [], []) afBlocks
+    in (reqs, warnings)
+  where
+    scanBlock (env, reqs, warns) ABlock{abParams, abInstrs} =
         let env' = env `Map.union` Map.fromList [(n, t) | (n, t) <- abParams]
-            step (currEnv, currReqs) instr =
+            step (currEnv, currReqs, currWarns) instr =
                 case instr of
                     ILet name ty op ->
-                        let callReqs = case resolveCallTarget baseFnMap currEnv op of
-                                Just CallResolution{crTargetFn, crSubst, crKey} ->
-                                    (fnName crTargetFn, crSubst, crKey) : currReqs
-                                Nothing -> currReqs
+                        let (callReqs, newWarns) = case resolveCallTarget baseFnMap currEnv op of
+                                Right (Just CallResolution{crTargetFn, crSubst, crKey}) ->
+                                    ((fnName crTargetFn, crSubst, crKey) : currReqs, currWarns)
+                                Right Nothing -> (currReqs, currWarns)
+                                Left w -> (currReqs, w : currWarns)
                             -- Also check for closure allocations that reference polymorphic lambdas
                             closureReqs = case op of
                                 OpAllocClosure (OpVar lambdaName) _ _ ->
@@ -220,55 +271,43 @@ scanCallsInFunction baseFnMap AlloyFunction{afParams = fnParams, afBlocks} =
                                                 _ -> callReqs
                                         Nothing -> callReqs
                                 _ -> callReqs
-                        in (Map.insert name ty currEnv, closureReqs)
-                    IEffect _ -> (currEnv, currReqs)
-        in foldl' step (env', reqs) abInstrs
+                        in (Map.insert name ty currEnv, closureReqs, newWarns)
+                    IEffect _ -> (currEnv, currReqs, currWarns)
+        in foldl' step (env', reqs, warns) abInstrs
 
 computeRewriteMap ::
     Map Name AlloyFunction ->
     Map InstKey Name ->
     [AlloyFunction] ->
-    RewriteMap
+    Map (Name, Int) Name
 computeRewriteMap baseFnMap instCache fns =
     Map.fromList $ concatMap processFn fns
   where
     processFn AlloyFunction{afName = fnName', afParams, afBlocks} =
         let baseEnv = Map.fromList [(n, t) | (n, t) <- afParams]
-            -- outer fold: accumulates (CallSiteId, Rewrites, Env) across blocks
-            -- The env is threaded through so variables defined in earlier blocks are available when processing later blocks
             (_, _, rewrites) = foldl' (processBlock fnName') (baseEnv, 0, []) afBlocks
         in map (\(cid, target) -> ((fnName', cid), target)) rewrites
 
     processBlock fnName' (accEnv, startCid, startAcc) ABlock{abParams, abInstrs} =
-        let
-            -- Start with accumulated env from previous blocks, plus this block's params
-            blockEnv = accEnv `Map.union` Map.fromList [(n, t) | (n, t) <- abParams]
-
-            -- we thread the environment strictly within the block
+        let blockEnv = accEnv `Map.union` Map.fromList [(n, t) | (n, t) <- abParams]
             initialState = (blockEnv, startCid, startAcc)
 
             step (env, cid, acc) instr =
                 case instr of
                     ILet name ty op ->
                         let (nextCid, hit) = case resolveCallTarget baseFnMap env op of
-                                Just CallResolution{crKey} ->
+                                Right (Just CallResolution{crKey}) ->
                                     case Map.lookup crKey instCache of
                                         Just specName -> (cid + 1, Just specName)
                                         Nothing -> (cid + 1, Nothing)
-                                Nothing ->
-                                    -- Check if this is a recursive call from a monomorphized function to its base
-                                    -- or if trait method was resolved to instance method
+                                _ ->
                                     case op of
                                         OpCall (Direct calleeName) args
-                                            -- Check if caller is a monomorphized version of callee
-                                            -- Only apply this optimization if the callee is actually in the baseFnMap
-                                            -- For trait methods, we must use resolveTraitMethod to find the correct instance
                                             | Just calleeBase <- nameBaseUnique calleeName
                                             , Just callerBase <- nameBaseUnique fnName'
                                             , calleeBase == callerBase
                                             , fnName' /= calleeName
                                             , Map.member calleeName baseFnMap ->
-                                                -- Recursive call from mono fn to base - rewrite to self
                                                 (cid + 1, Just fnName')
                                             | Map.notMember calleeName baseFnMap ->
                                                 case resolveTraitMethod baseFnMap env calleeName args of
@@ -293,20 +332,19 @@ computeRewriteMap baseFnMap instCache fns =
                     IEffect _ -> (env, cid, acc)
 
             (finalEnv, finalCid, finalAcc) = foldl' step initialState abInstrs
-        in
-            (finalEnv, finalCid, finalAcc)
+        in (finalEnv, finalCid, finalAcc)
 
     isCallOp (OpCall _ _) = True
     isCallOp (OpDictCall{}) = True
     isCallOp _ = False
 
-applyRewrites :: RewriteMap -> Map InstKey Name -> Map Name AlloyFunction -> AlloyFunction -> AlloyFunction
+applyRewrites :: Map (Name, Int) Name -> Map InstKey Name -> Map Name AlloyFunction -> AlloyFunction -> AlloyFunction
 applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afParams = fnParams} =
     let baseEnv = Map.fromList [(n, t) | (n, t) <- fnParams]
         (rewrittenBlocks, _, _) = foldl' (rewriteBlock baseEnv) ([], 0, baseEnv) afBlocks
     in fn{afBlocks = reverse rewrittenBlocks}
   where
-    rewriteBlock baseEnv (accBlocks, startCid, accEnv) blk@ABlock{abInstrs, abParams} =
+    rewriteBlock _ (accBlocks, startCid, accEnv) blk@ABlock{abInstrs, abParams} =
         let blockEnv = accEnv `Map.union` Map.fromList [(n, t) | (n, t) <- abParams]
             (newInstrs, nextCid, nextEnv) = foldl' rewriteInstr ([], startCid, blockEnv) abInstrs
         in (blk{abInstrs = reverse newInstrs} : accBlocks, nextCid, nextEnv)
@@ -327,14 +365,12 @@ applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afPar
                 Just newName -> (OpCall (Direct newName) args, cid + 1)
                 Nothing -> (OpCall (Direct calleeName) args, cid + 1)
         OpCall (Indirect _) _ ->
-            -- Indirect calls also increment cid to stay in sync with computeRewriteMap
             (op, cid + 1)
         OpDictCall _ _ _ args ->
             case Map.lookup (afName, cid) rwMap of
                 Just newName -> (OpCall (Direct newName) args, cid + 1)
                 Nothing -> (op, cid + 1)
         OpAllocClosure (OpVar lambdaName) envSize envTy ->
-            -- Check if we need to rewrite the lambda name to a specialized version
             case Map.lookup lambdaName baseFnMap of
                 Just lambdaFn ->
                     case matchClosureType (afParams lambdaFn) ty of
@@ -361,19 +397,17 @@ applyRewrites rwMap instCache baseFnMap fn@AlloyFunction{afName, afBlocks, afPar
 
 specializeFunction :: String -> AlloyFunction -> TySubst -> AlloyFunction
 specializeFunction _moduleName fn subst =
-    let
-        specializedTypes = map (substType subst . snd) (afParams fn)
+    let specializedTypes = map (substType subst . snd) (afParams fn)
         newName = makeMonomorphized (afName fn) specializedTypes
         newParams = [(n, substType subst t) | (n, t) <- afParams fn]
         newRet = substType subst (afReturnType fn)
         newBlocks = map (substBlock subst) (afBlocks fn)
-    in
-        fn
-            { afName = newName
-            , afParams = newParams
-            , afReturnType = newRet
-            , afBlocks = newBlocks
-            }
+    in fn
+        { afName = newName
+        , afParams = newParams
+        , afReturnType = newRet
+        , afBlocks = newBlocks
+        }
 
 substBlock :: TySubst -> ABlock -> ABlock
 substBlock subst blk =
@@ -413,6 +447,7 @@ substType :: TySubst -> Type -> Type
 substType subst ty = case ty of
     TVar v -> fromMaybe ty (Map.lookup v subst)
     TSkolem s ->
+        -- Skolems are treated as unifiable type variables during monomorphization
         let match v = tvId v == skName s
             found = listToMaybe [t | (v, t) <- Map.toList subst, match v]
         in fromMaybe ty found
@@ -450,6 +485,7 @@ unifyTypes _ _ = Nothing
 unifyOne :: Type -> Type -> Maybe TySubst
 unifyOne (TVar v) concrete = Just (Map.singleton v concrete)
 unifyOne (TSkolem s) concrete =
+    -- Skolems unify like type variables during monomorphization
     let syntheticVar = TypeVar{tvId = skName s, tvKind = skKind s}
     in Just (Map.singleton syntheticVar concrete)
 unifyOne (TApp p1 p2) (TApp a1 a2) = do
@@ -465,12 +501,8 @@ unifyOne (TArrow p1 p2) (TArrow a1 a2) = do
     s2 <- unifyOne p2' a2'
     Just (Map.union s2 s1)
 unifyOne (TConstructor c1) (TConstructor c2)
-    -- compare by id only, ignore kinds (they may differ due to partial application)
     | tcId c1 == tcId c2 = Just Map.empty
 unifyOne _ _ = Nothing
-
-eliminateAllTypeVars :: AlloyFunction -> AlloyFunction
-eliminateAllTypeVars fn = fn
 
 hasTypeVars :: AlloyFunction -> Bool
 hasTypeVars AlloyFunction{afParams, afReturnType} =
@@ -509,6 +541,3 @@ fnName = afName
 
 toFnMap :: [AlloyFunction] -> Map Name AlloyFunction
 toFnMap = Map.fromList . map (\f -> (fnName f, f))
-
-dedupByName :: [AlloyFunction] -> [AlloyFunction]
-dedupByName fns = Map.elems (Map.fromList [(fnName f, f) | f <- fns])
