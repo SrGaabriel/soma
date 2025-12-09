@@ -120,6 +120,20 @@ def recordError (msg : String) : LexerM Unit := do
   let span := Span.point loc
   recordDiagnostic (Diagnostic.error msg span)
 
+/-- Record a rich error with secondary labels, notes, and help -/
+def recordRichError (msg : String) (span : Span)
+    (secondary : Array (Span × String) := #[])
+    (notes : Array String := #[])
+    (help : Option String := none) : LexerM Unit := do
+  let mut diag := Diagnostic.error msg span
+  for (s, m) in secondary do
+    diag := diag.withSecondary s m
+  for n in notes do
+    diag := diag.withNote n
+  if let some h := help then
+    diag := diag.withHelp h
+  recordDiagnostic diag
+
 /-- Check if at end -/
 def atEnd : LexerM Bool := do
   let s ← get
@@ -148,6 +162,11 @@ def advance : LexerM Unit :=
 def getOffset : LexerM Nat := do
   let s ← get
   return s.byteOffset
+
+/-- Get current source location -/
+def getLoc : LexerM SourceLoc := do
+  let s ← get
+  return s.currentLoc
 
 /-- Get text between offsets -/
 def getText (startOffset stopOffset : Nat) : LexerM String := do
@@ -247,6 +266,7 @@ def lexBacktickIdent : LexerM Token := do
 /-- Lex a regular string literal -/
 def lexStringLit : LexerM Token := do
   let start ← getOffset
+  let startLoc ← getLoc
   advance  -- skip opening "
   let contentStart ← getOffset
   while (← current) != '"' && (← current) != '\n' && (← current) != '\x00' do
@@ -257,12 +277,18 @@ def lexStringLit : LexerM Token := do
     let content ← getText contentStart contentEnd
     makeToken (.string content) start
   else
-    recordError "unterminated string literal"
+    let endLoc ← getLoc
+    let errorSpan := { start := endLoc, stop := endLoc : Span }
+    let openingSpan := { start := startLoc, stop := startLoc : Span }
+    recordRichError "unterminated string literal" errorSpan
+      (secondary := #[(openingSpan, "string starts here")])
+      (help := "add a closing '\"' to terminate the string")
     makeToken .error start
 
 /-- Lex a triple-quoted string literal -/
 def lexTripleString : LexerM Token := do
   let start ← getOffset
+  let startLoc ← getLoc
   skipN 3  -- skip opening """
   let contentStart ← getOffset
   -- Look for closing """
@@ -276,7 +302,12 @@ def lexTripleString : LexerM Token := do
     let content ← getText contentStart contentEnd
     makeToken (.string content) start
   else
-    recordError "unterminated triple-quoted string"
+    let endLoc ← getLoc
+    let errorSpan := { start := endLoc, stop := endLoc : Span }
+    let openingSpan := { start := startLoc, stop := startLoc : Span }
+    recordRichError "unterminated triple-quoted string" errorSpan
+      (secondary := #[(openingSpan, "string starts here")])
+      (help := "add closing '\"\"\"' to terminate the string")
     makeToken .error start
 
 /-- Lex an operator -/
@@ -292,13 +323,19 @@ def skipLineComment : LexerM Unit := do
 
 /-- Skip a block comment -/
 def skipBlockComment : LexerM Bool := do
+  let startLoc ← getLoc
   skipN 2  -- skip /*
   while !(← atEnd) do
     if (← current) == '*' && (← peekNext) == '/' then
       skipN 2
       return true
     advance
-  recordError "unterminated block comment"
+  let endLoc ← getLoc
+  let errorSpan := { start := endLoc, stop := endLoc : Span }
+  let openingSpan := { start := startLoc, stop := startLoc : Span }
+  recordRichError "unterminated block comment" errorSpan
+    (secondary := #[(openingSpan, "comment starts here")])
+    (help := "add closing '*/' to terminate the comment")
   return false
 
 /-! ## Main Tokenizer -/

@@ -190,6 +190,14 @@ def TokenKind.describe : TokenKind → String
 instance : ToString TokenKind where
   toString := TokenKind.describe
 
+/-- User-friendly description for error messages (avoids technical layout terms) -/
+def TokenKind.userFriendly : TokenKind → String
+  | .layoutStart => "start of indented block"
+  | .layoutSep => "end of line"
+  | .layoutEnd => "end of indented block"
+  | .eof => "end of file"
+  | other => other.describe
+
 /-- A token with its span and text -/
 structure Token where
   kind : TokenKind

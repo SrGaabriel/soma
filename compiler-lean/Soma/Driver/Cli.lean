@@ -1,6 +1,7 @@
 import Cli
 import Soma.Driver.Options
-import Soma.Syntax.Lexer
+import Soma.Syntax
+import Soma.Logging
 
 open Cli
 
@@ -57,9 +58,65 @@ def runLex (p : Parsed) : IO UInt32 := do
 /-- Handler for the `parse` command -/
 def runParse (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
-  IO.println s!"[parse] Parsing file: {input}"
-  IO.println "[parse] (not yet implemented)"
-  return 0
+  let showCst := p.hasFlag "cst"
+  let showAst := p.hasFlag "ast"
+
+  -- Read the file
+  let source ← IO.FS.readFile input
+
+  -- Create source file
+  let sourceFile := Syntax.SourceFile.create ⟨0⟩ input source
+
+  -- Lex it
+  let (tokens, lexDiags) := Syntax.lexCode sourceFile
+
+  -- Print lex diagnostics if any
+  if lexDiags.size > 0 then
+    Logging.Error.printDiagnostics lexDiags sourceFile
+
+  -- Parse it
+  let (cst, parseDiags) := Syntax.Parse.parseSourceFile.run' tokens sourceFile
+
+  -- Print parse diagnostics if any
+  if parseDiags.size > 0 then
+    Logging.Error.printDiagnostics parseDiags sourceFile
+
+  -- Show CST if requested
+  if showCst then
+    IO.println "=== Concrete Syntax Tree ==="
+    IO.println (cst.debugPrint)
+
+  -- Lower to AST
+  -- Extract module name from filename (without extension)
+  let fileName := input.splitOn "/" |>.getLast!
+  let moduleName := fileName.splitOn "." |>.head!
+                    |> fun s => if s.isEmpty then "Main" else s
+  let (astOpt, lowerDiags) := Syntax.lower cst moduleName
+
+  -- Print lowering diagnostics if any
+  if lowerDiags.size > 0 then
+    Logging.Error.printDiagnostics lowerDiags sourceFile
+
+  -- Collect all diagnostics
+  let allDiags := lexDiags ++ parseDiags ++ lowerDiags
+
+  -- Show AST if requested (or by default if no flags)
+  match astOpt with
+  | some ast =>
+      if showAst || (!showCst && !showAst) then
+        IO.println "=== Abstract Syntax Tree ==="
+        IO.println (Syntax.Pretty.ppModule ast)
+      if allDiags.isEmpty then
+        IO.println "\nParse successful!"
+  | none =>
+      IO.eprintln "Parse failed - could not produce AST"
+
+  -- Print summary if there were any diagnostics
+  if !allDiags.isEmpty then
+    IO.eprintln ""
+    IO.eprintln (Logging.Error.renderSummary allDiags)
+
+  return if allDiags.size > 0 then 1 else 0
 
 /-- Handler for the `check` command -/
 def runCheck (p : Parsed) : IO UInt32 := do
@@ -141,6 +198,10 @@ def lexCmd : Cmd := `[Cli|
 def parseCmd : Cmd := `[Cli|
   parse VIA runParse; ["0.1.0"]
   "Run the parser on a source file and print the AST."
+
+  FLAGS:
+    cst; "Show the Concrete Syntax Tree (before lowering)"
+    ast; "Show the Abstract Syntax Tree (after lowering)"
 
   ARGS:
     input : String; "Input source file (.soma)"

@@ -151,4 +151,10 @@ def Span.point (loc : SourceLoc) : Span :=
 def Span.getText (span : Span) (sf : SourceFile) : String :=
   (sf.slice span.start.byteOffset span.stop.byteOffset).toString
 
+/-- A dummy span for synthetic/generated nodes -/
+def Span.dummy : Span :=
+  { start := { file := ⟨0⟩, byteOffset := 0, line := 0, column := 0 }
+  , stop := { file := ⟨0⟩, byteOffset := 0, line := 0, column := 0 }
+  }
+
 end Soma.Syntax
