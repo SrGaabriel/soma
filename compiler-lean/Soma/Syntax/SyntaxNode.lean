@@ -1,12 +1,3 @@
-/-
-  Soma Compiler - Concrete Syntax Tree (CST) Node
-
-  This module defines the core CST node type. The CST is:
-  - **Infallible**: Parsing ALWAYS produces a tree, never fails
-  - **Lossless**: Preserves all source information (whitespace, comments, etc.)
-  - **Error-tolerant**: Syntax errors become nodes in the tree
--/
-
 import Soma.Syntax.Source
 import Soma.Syntax.Token
 import Soma.Syntax.SyntaxKind
@@ -189,19 +180,13 @@ partial def debugPrint (n : SyntaxNode) (indent : Nat := 0) : String :=
 
 end SyntaxNode
 
-/-! ## Smart Constructors -/
+/-- Create a node, computing span from children. Requires at least one child. -/
+def mkNode (kind : SyntaxKind) (children : Array SyntaxNode) (h : children.size > 0 := by decide) : SyntaxNode :=
+  let first := children[0]
+  let last := children[children.size - 1]
+  .node kind children (Span.merge first.span last.span)
 
-/-- Create a node, computing span from children -/
-def mkNode (kind : SyntaxKind) (children : Array SyntaxNode) : SyntaxNode :=
-  if h : children.size > 0 then
-    let first := children[0]
-    let last := children[children.size - 1]
-    .node kind children (Span.merge first.span last.span)
-  else
-    -- Empty node - use a dummy span
-    .node kind children Span.dummy
-
-/-- Create a node with explicit span -/
+/-- Create a node with explicit span (use when children may be empty or span differs from children) -/
 def mkNodeSpan (kind : SyntaxKind) (children : Array SyntaxNode) (span : Span) : SyntaxNode :=
   .node kind children span
 

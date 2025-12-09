@@ -10,10 +10,6 @@ structure Name where
   span : Span
   deriving Repr, BEq, Inhabited
 
-/-- Create a name with a dummy span (for generated code) -/
-def Name.synthetic (value : String) : Name :=
-  { value, span := Span.dummy }
-
 instance : ToString Name where
   toString n := n.value
 
@@ -254,9 +250,9 @@ end
 deriving instance Repr for MatchArm
 deriving instance Repr for Expr
 
--- Inhabited instances for array indexing
-instance : Inhabited Expr := ⟨.var ⟨"_", Span.dummy⟩⟩
-instance : Inhabited MatchArm := ⟨.mk #[] none (.var ⟨"_", Span.dummy⟩) Span.dummy⟩
+-- Inhabited instances for array indexing, should never be used in practice
+instance : Inhabited Expr := ⟨.var ⟨"_", Span.uninhabited⟩⟩
+instance : Inhabited MatchArm := ⟨.mk #[] none (.var ⟨"_", Span.uninhabited⟩) Span.uninhabited⟩
 
 namespace MatchArm
 
@@ -288,8 +284,6 @@ def span : Expr → Span
   | .bind _ s => s
 
 end Expr
-
-/-! ## Declarations -/
 
 /-- A data constructor: | ConName field1 :: T1 field2 :: T2 -/
 structure DataCon where
@@ -382,8 +376,6 @@ def name? : Decl → Option Name
 
 end Decl
 
-/-! ## Module -/
-
 /-- A complete module (source file) -/
 structure Module where
   /-- Module name (derived from file path) -/
@@ -393,8 +385,6 @@ structure Module where
   /-- Span covering the entire file -/
   span : Span
   deriving Repr
-
-/-! ## Pretty Printing -/
 
 namespace Pretty
 

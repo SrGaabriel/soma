@@ -538,38 +538,36 @@ def findNextToken (idx : Nat) (toks : Array Token) : Nat × Nat :=
   termination_by toks.size - i
   go idx
 
-/-- Close layout blocks until we reach or pass the target indentation -/
-def dedentTo (state : LayoutState) (targetCol : Nat) (loc : SourceLoc) : LayoutState × Bool :=
-  let rec go (st : LayoutState) (stack : List Nat) : LayoutState × Bool :=
-    match stack with
-    | [] => (st, false)
-    | [_] => ({ st with indentStack := stack }, st.currentIndent == targetCol)
-    | top :: rest =>
-      if top <= targetCol then
-        ({ st with indentStack := stack }, top == targetCol)
-      else
-        let newState := st.emit (st.syntheticToken .layoutEnd loc)
-        go { newState with indentStack := rest } rest
-  termination_by stack.length
-  go state state.indentStack
+def dedentTo (st : LayoutState) (targetCol : Nat) (loc : SourceLoc) : LayoutState × Bool :=
+  match hstack : st.indentStack with
+  | [] => (st, false)
+  | [_] => (st, st.currentIndent == targetCol)
+  | top :: tl =>
+    if top <= targetCol then
+      (st, top == targetCol)
+    else
+      have hLen : tl.length < st.indentStack.length := by simp only [hstack, List.length_cons]; omega
+      dedentTo { st.emit (st.syntheticToken .layoutEnd loc) with indentStack := tl } targetCol loc
+termination_by st.indentStack.length
 
-/-- Close all remaining layout blocks at end of file -/
-def closeAll (state : LayoutState) : LayoutState :=
-  let loc : SourceLoc := {
-    file := state.source.id
-    byteOffset := state.source.content.utf8ByteSize
-    line := state.source.lineStarts.size
-    column := 1
+def closeAll (st : LayoutState) (loc : SourceLoc) : LayoutState :=
+  match hstack : st.indentStack with
+  | [] => st
+  | [_] => st  -- Don't emit LayoutEnd for the base level
+  | _ :: tl =>
+    have hLen : tl.length < st.indentStack.length := by simp only [hstack, List.length_cons]; omega
+    closeAll { st.emit (st.syntheticToken .layoutEnd loc) with indentStack := tl } loc
+termination_by st.indentStack.length
+
+def LayoutState.eofLoc (st : LayoutState) : SourceLoc :=
+  { file := st.source.id
+  , byteOffset := st.source.content.utf8ByteSize
+  , line := st.source.lineStarts.size
+  , column := 1
   }
-  let rec go (st : LayoutState) (stack : List Nat) : LayoutState :=
-    match stack with
-    | [] => st
-    | [_] => st  -- Don't emit LayoutEnd for the base level
-    | _ :: rest =>
-      let newState := st.emit (st.syntheticToken .layoutEnd loc)
-      go { newState with indentStack := rest } rest
-  termination_by stack.length
-  go state state.indentStack
+
+def closeAllAtEof (state : LayoutState) : LayoutState :=
+  closeAll state state.eofLoc
 
 /--
 Process tokens applying layout rules. Extracted as top-level for theorem proving.
@@ -608,7 +606,7 @@ def processLayoutTokens (tokens : Array Token) (idx : Nat) (state : LayoutState)
       processLayoutTokens tokens (idx + 1) state
   else
     -- End of tokens: close all remaining layout blocks
-    closeAll state
+    closeAllAtEof state
 termination_by tokens.size - idx
 
 /--

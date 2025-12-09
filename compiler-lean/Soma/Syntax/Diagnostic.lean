@@ -48,9 +48,9 @@ structure Diagnostic where
   help : Option String        -- Suggested fix
   deriving Repr, Inhabited
 
-/-- Get the primary span (first label's span, or dummy if no labels) -/
-def Diagnostic.span (d : Diagnostic) : Span :=
-  if h : d.labels.size > 0 then d.labels[0].span else Span.dummy
+/-- Get the primary span (first label's span) -/
+def Diagnostic.span? (d : Diagnostic) : Option Span :=
+  if h : d.labels.size > 0 then some d.labels[0].span else none
 
 /-- Create a simple error diagnostic with a single primary label -/
 def Diagnostic.error (message : String) (span : Span) (label : String := "") : Diagnostic :=

@@ -151,8 +151,8 @@ def Span.point (loc : SourceLoc) : Span :=
 def Span.getText (span : Span) (sf : SourceFile) : String :=
   (sf.slice span.start.byteOffset span.stop.byteOffset).toString
 
-/-- A dummy span for synthetic/generated nodes -/
-def Span.dummy : Span :=
+/-- Uninhabited span, never use in real code -/
+def Span.uninhabited : Span :=
   { start := { file := ⟨0⟩, byteOffset := 0, line := 0, column := 0 }
   , stop := { file := ⟨0⟩, byteOffset := 0, line := 0, column := 0 }
   }
