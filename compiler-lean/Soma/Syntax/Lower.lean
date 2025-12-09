@@ -150,7 +150,7 @@ partial def lowerPattern (node : SyntaxNode) : LowerM Pattern := do
 
       | .name =>
           let text ← getTokenText (← firstChild node)
-          if text.length > 0 && (text.get ⟨0⟩).isUpper then
+          if text.length > 0 && (String.Pos.Raw.get text ⟨0⟩).isUpper then
             pure (.con ⟨text, span⟩ #[] span)
           else
             pure (.var ⟨text, span⟩)
