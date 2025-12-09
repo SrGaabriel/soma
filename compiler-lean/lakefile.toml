@@ -1,6 +1,7 @@
 name = "soma"
 version = "0.1.0"
 defaultTargets = ["somac"]
+testDriver = "test"
 
 [[require]]
 scope = "leanprover"
@@ -8,14 +9,11 @@ name = "Cli"
 
 [[lean_lib]]
 name = "Soma"
-roots = ["Soma"]
 
 [[lean_exe]]
 name = "somac"
-root = "exe.Main"
+root = "Soma.Main"
 
 [[lean_exe]]
-name = "soma-test"
+name = "test"
 root = "test.Main"
-
-testDriver = "soma-test"

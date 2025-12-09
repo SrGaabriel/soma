@@ -1,5 +1,6 @@
 import Cli
 import Soma.Driver.Options
+import Soma.Syntax.Lexer
 
 open Cli
 
@@ -33,9 +34,25 @@ def parseFormat (s : String) : Except String OutputFormat :=
 /-- Handler for the `lex` command -/
 def runLex (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
-  IO.println s!"[lex] Lexing file: {input}"
-  IO.println "[lex] (not yet implemented)"
-  return 0
+
+  -- Read the file
+  let source ← IO.FS.readFile input
+
+  -- Lex it
+  let (tokens, diags) := Syntax.lex source
+
+  -- Print diagnostics if any
+  if diags.size > 0 then
+    IO.eprintln s!"Found {diags.size} diagnostic(s):"
+    for diag in diags do
+      IO.eprintln s!"  {diag.severity}: {diag.message}"
+
+  -- Print tokens
+  IO.println s!"Lexed {tokens.size} tokens from {input}:"
+  for tok in tokens do
+    IO.println s!"  {tok.kind} at {tok.span.start.line}:{tok.span.start.column}"
+
+  return if diags.size > 0 then 1 else 0
 
 /-- Handler for the `parse` command -/
 def runParse (p : Parsed) : IO UInt32 := do
