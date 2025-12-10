@@ -371,8 +371,7 @@ def somaCmd : Cmd := `[Cli|
     buildCmd
 ]
 
-/-- Main entry point for the CLI -/
-def main (args : List String) : IO UInt32 :=
-  somaCmd.validate args
-
 end Soma.Driver
+
+def main (args : List String) : IO UInt32 :=
+  Soma.Driver.somaCmd.validate args

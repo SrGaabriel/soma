@@ -1,0 +1,7 @@
+name = "soma-workspace"
+version = "0.1.0"
+
+[[require]]
+scope = "."
+name = "somac"
+path = "./compiler-lean"

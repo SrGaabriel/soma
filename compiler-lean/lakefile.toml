@@ -9,14 +9,15 @@ name = "Cli"
 
 [[lean_lib]]
 name = "Soma"
+srcDir = "Lib"
 
 [[lean_exe]]
 name = "somac"
-root = "Soma.Main"
+root = "Somac"
+srcDir = "Exe"
 
 [[lean_lib]]
 name = "Test"
-globs = ["Test.**"]
 
 [[lean_exe]]
 name = "test"
