@@ -1,6 +1,6 @@
 <p style="text-align: center"><img src="docs/assets/icon.png" alt="Soma Logo" width="1024" height="1024"/></p>
 
-# 🚀 soma
+# ⚗️ soma
 
 Soma is a statically-typed, pure functional language with Hindley–Milner style type inference, explicit effect modeling, and eager evaluation semantics. It leverages Interaction Nets for optimal evaluation, enabling GC-free memory management with deterministic lifetimes and automatic parallelism.
 
@@ -8,7 +8,7 @@ Soma is a statically-typed, pure functional language with Hindley–Milner style
 
 ## ✨ Overview
 
-Soma is a statically-typed, pure functional programming language that combines high-level expressiveness with predictable performance characteristics. The language features Hindley–Milner type inference, eager evaluation semantics, and explicit effect modeling to enable aggressive compile.
+Combining high-level expressiveness with predictable performance characteristics, Soma features System F-ω typing, eager evaluation semantics, and explicit effect modeling to enable aggressive compile.
 
 Soma achieves optimal evaluation via Interaction Nets, in turn delivering GC-free memory management with deterministic lifetimes. The key is that the compiler statically analyzes variable usage patterns to infer linear types, automatically inserting duplication and erasure operations that correspond to precise allocation and deallocation points.
 
