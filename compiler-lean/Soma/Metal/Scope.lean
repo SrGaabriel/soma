@@ -18,6 +18,12 @@ namespace ScopedVar
 
 instance : ToString (ScopedVar s) := ⟨fun v => v.original⟩
 
+instance : BEq (ScopedVar s) where
+  beq v1 v2 := v1.binding == v2.binding
+
+instance : Hashable (ScopedVar s) where
+  hash v := hash v.binding
+
 /-- Weaken a scoped variable to a larger scope -/
 def weaken {s : Scope} (v : ScopedVar s) (b : BindingId) : ScopedVar (b :: s) :=
   { binding := v.binding
@@ -42,6 +48,17 @@ def here (b : BindingId) (orig : String) (s : Scope) : ScopedVar (b :: s) :=
   , proof := List.Mem.head _
   }
 
+/-- Get the display name for this variable -/
+def display (v : ScopedVar s) : String := v.original
+
+/-- Get the debug display with binding info -/
+def debugDisplay (v : ScopedVar s) : String :=
+  s!"{v.original}#{v.binding.id}"
+
+/-- Convert to a Name (for use in lowered code) -/
+def toName (v : ScopedVar s) : Name :=
+  .user { id := v.binding.id, module := v.binding.module, original := v.original }
+
 end ScopedVar
 
 /-- Environment mapping source names to scoped variables -/
@@ -57,11 +74,23 @@ def empty : ScopeEnv [] := ⟨[]⟩
 def lookup (env : ScopeEnv scope) (name : String) : Option (ScopedVar scope) :=
   env.bindings.find? (fun (n, _) => n == name) |>.map Prod.snd
 
+/-- Check if a name is in scope -/
+def contains (env : ScopeEnv scope) (name : String) : Bool :=
+  env.bindings.any (fun (n, _) => n == name)
+
+/-- Get all names in scope -/
+def names (env : ScopeEnv scope) : List String :=
+  env.bindings.map Prod.fst
+
 /-- Extend the environment with a new binding -/
 def extend (env : ScopeEnv scope) (b : BindingId) (name : String) : ScopeEnv (b :: scope) :=
   let weakened := env.bindings.map fun (n, v) => (n, v.weaken b)
   let newVar := ScopedVar.here b name scope
   ⟨(name, newVar) :: weakened⟩
+
+/-- Extend with a binding, using the binding's original name -/
+def extendWithBinding (env : ScopeEnv scope) (b : BindingId) : ScopeEnv (b :: scope) :=
+  env.extend b b.original
 
 /-- Extend with multiple bindings at once.
     The first binding in the list becomes the innermost (most recently bound).
@@ -81,6 +110,26 @@ def extendMany (env : ScopeEnv scope) (bindings : List (BindingId × String))
     -- So env'' has exactly the right type
     env''
 
+/-- Extend with multiple bindings, using their original names -/
+def extendManyWithBindings (env : ScopeEnv scope) (bindings : List BindingId)
+    : ScopeEnv (bindings ++ scope) :=
+  match bindings with
+  | [] => env
+  | b :: rest =>
+    let env' := env.extendManyWithBindings rest
+    env'.extendWithBinding b
+
 end ScopeEnv
+
+/-- The empty scope -/
+def Scope.empty : Scope := []
+
+/-- Check if a binding is in a scope (decidable) -/
+def Scope.contains (s : Scope) (b : BindingId) : Bool :=
+  s.any (· == b)
+
+/-- Get all binding IDs in a scope -/
+def Scope.ids (s : Scope) : List Nat :=
+  s.map (·.id)
 
 end Soma.Metal

@@ -10,16 +10,16 @@ open Soma.Syntax (Span TypeExpr)
     TODO: make user kinds not always * -/
 private def userTyOfKind (id : TypeId) : (k : Kind) → Ty k
   | .star => .con id
-  | _ => .var ⟨id.name, id.unique⟩  -- Fallback for non-star kinds
+  | k => .var ⟨id.name, id.unique, k⟩  -- Fallback for non-star kinds
 
 mutual
   /-- Resolve a type expression from Syntax to a MonoTy. TODO: Lower it even if it fails -/
   partial def resolveType (ty : TypeExpr) : LowerM (Option MonoTy) := do
     match ty with
     | .var name =>
-      -- Type variable - create a TyVarId
+      -- Type variable - create a TyVarId (default kind is .star)
       let id ← LowerM.freshUniqueId
-      let tyVarId : TyVarId := { name := name.value, id := id }
+      let tyVarId : TyVarId := { name := name.value, id := id, kind := .star }
       pure (some (.var tyVarId))
 
     | .con name =>
@@ -134,7 +134,7 @@ mutual
                   -- Create a user type fallback
                   let modName ← LowerM.getModuleName
                   let unique ← LowerM.freshUniqueId
-                  pure (some (.con ⟨modName, p.name, unique⟩))
+                  pure (some (.con ⟨modName, p.name, unique, .star⟩))
               | _ =>
                 LowerM.reportError (.kindMismatch "kind *" s!"kind {p.kind}" span)
                 pure none
@@ -169,18 +169,18 @@ mutual
               | none =>
                 let modName ← LowerM.getModuleName
                 let unique ← LowerM.freshUniqueId
-                pure (some ⟨.star, .con ⟨modName, p.name, unique⟩⟩)
+                pure (some ⟨.star, .con ⟨modName, p.name, unique, .star⟩⟩)
             | .arrow .star .star =>
               match HigherPrimitive.fromName? p.name with
               | some hp => pure (some ⟨.arrow .star .star, .higherPrim hp⟩)
               | none =>
                 let modName ← LowerM.getModuleName
                 let unique ← LowerM.freshUniqueId
-                pure (some ⟨.star, .con ⟨modName, p.name, unique⟩⟩)
+                pure (some ⟨.star, .con ⟨modName, p.name, unique, .star⟩⟩)
             | _ =>
               let modName ← LowerM.getModuleName
               let unique ← LowerM.freshUniqueId
-              pure (some ⟨.star, .con ⟨modName, p.name, unique⟩⟩)
+              pure (some ⟨.star, .con ⟨modName, p.name, unique, .star⟩⟩)
         | none =>
           LowerM.reportError (.unknownType name span)
           pure none

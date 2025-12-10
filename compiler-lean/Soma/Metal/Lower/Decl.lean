@@ -30,7 +30,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
       LowerM.reportError (.duplicateDefinition name.value name.span existingInfo.definedAt)
     | _ =>
       -- Register the function name (but don't resolve type yet)
-      let globalName ← LowerM.mkGlobalName name.value
+      let globalName ← LowerM.freshUserName name.value
       -- Store raw syntax - will be resolved during lowerFunction
       LowerM.registerGlobal name.value { name := globalName, typeSyntax := sig, definedAt := name.span }
 
@@ -38,55 +38,58 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     -- Register the type
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
-    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId }
+    let typeUnique : Unique := { id := uniqueId, module := modName, original := name.value }
+    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId, kind := Kind.nary params.size }
     let tyCon := TyCon.user typeId
-    let tyVarIds := params.map fun p => TyVarId.mk p.value 0
+    let tyVarIds := params.mapIdx fun idx p => TyVarId.mk p.value idx .star
     let kind := Kind.nary params.size
-    LowerM.registerType name.value { tyCon := tyCon, params := tyVarIds, kind := kind }
+    LowerM.registerType name.value { tyCon := tyCon, params := tyVarIds, kind := kind, unique := typeUnique }
 
     -- Register constructors
     let ctorList := enumWithIndex constructors.toList
     for (i, ctor) in ctorList do
-      let ctorName ← LowerM.mkCtorName name.value ctor.name.value i
+      let ctorName := LowerM.mkCtorName typeUnique ctor.name.value i
       -- Resolve field types (best effort - may fail if types not yet registered)
       let fields ← ctor.fields.mapM fun (_, tyExpr) => do
         let ty? ← resolveType tyExpr
         pure (ty?.getD Ty.unit)
       LowerM.registerConstructor ctor.name.value
-        { name := ctorName, parentType := name.value, tag := i, fields := fields }
+        { name := ctorName, parentType := name.value, parentUnique := typeUnique, tag := i, fields := fields }
 
   | .struct name params ctorName fields _span =>
     -- Register the type
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
-    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId }
+    let typeUnique : Unique := { id := uniqueId, module := modName, original := name.value }
+    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId, kind := Kind.nary params.size }
     let tyCon := TyCon.user typeId
-    let tyVarIds := params.map fun p => TyVarId.mk p.value 0
+    let tyVarIds := params.mapIdx fun idx p => TyVarId.mk p.value idx .star
     let kind := Kind.nary params.size
-    LowerM.registerType name.value { tyCon := tyCon, params := tyVarIds, kind := kind }
+    LowerM.registerType name.value { tyCon := tyCon, params := tyVarIds, kind := kind, unique := typeUnique }
 
     -- Register the constructor
-    let ctorMetalName ← LowerM.mkCtorName name.value ctorName.value 0
+    let ctorMetalName := LowerM.mkCtorName typeUnique ctorName.value 0
     let fieldTys ← fields.mapM fun field => do
       let ty? ← resolveType field.type_
       pure (ty?.getD Ty.unit)
     LowerM.registerConstructor ctorName.value
-      { name := ctorMetalName, parentType := name.value, tag := 0, fields := fieldTys }
+      { name := ctorMetalName, parentType := name.value, parentUnique := typeUnique, tag := 0, fields := fieldTys }
 
   | .trait name _params _constraints methods _span =>
     -- Register the type class
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
-    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId }
+    let typeUnique : Unique := { id := uniqueId, module := modName, original := name.value }
+    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId, kind := .star }
     let tyCon := TyCon.user typeId
-    let globalName ← LowerM.mkGlobalName name.value
+    let globalName ← LowerM.freshUserName name.value
 
     let methodSigs ← methods.mapM fun m => do
       let ty? ← resolveQualifiedType m.type_
       pure (m.name.value, ty?.getD (QualifiedType.mono Ty.unit))
 
     LowerM.registerTypeClass name.value
-      { name := globalName, tyCon := tyCon, methods := methodSigs }
+      { name := globalName, tyCon := tyCon, methods := methodSigs, unique := typeUnique }
 
   | .instance_ _traitName _args _constraints _methods _ =>
     -- Instances are handled in a separate pass
@@ -135,16 +138,16 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
 
       -- Get the function's registered name
       let globalInfo? ← LowerM.lookupVar LocalEnv.empty name.value
-      let globalName := match globalInfo? with
-        | some (.inr info) => info.name
-        | _ => Name.global "" name.value 0  -- Fallback
+      let globalName ← match globalInfo? with
+        | some (.inr info) => pure info.name
+        | _ => LowerM.freshUserName name.value  -- Fallback: create a fresh name
 
       -- Build params from clause patterns (just binding + name, no types yet)
       let params ← clause.patterns.mapM fun pat => do
-        let bindingId ← LowerM.freshBindingId
         let paramName := match pat with
           | .var n => n.value
           | _ => "_"
+        let bindingId ← LowerM.freshParamId paramName
         pure (bindingId, paramName)
 
       -- Build ParamList for the lambda body (we need it for scope calculation)
@@ -189,22 +192,24 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
 def lowerTypeDef (decl : Decl) : LowerM (Option UntypedTypeDef) := do
   match decl with
   | .data name _params constructors _ =>
-    let typeName := Name.global "" name.value 0
+    let typeUnique ← LowerM.freshUnique name.value
+    let typeName := Name.user typeUnique
     let typeVarNames := _params.map (·.value)
 
     -- Build untyped constructors (just names, tags, and field counts)
     -- Use enumWithIndex since we need indices
     let ctorList := enumWithIndex constructors.toList
     let ctors ← ctorList.toArray.mapM fun (i, ctor) => do
-      let ctorName := Name.ctor name.value ctor.name.value i
+      let ctorName := Name.ctor typeUnique ctor.name.value i
       pure { name := ctorName, tag := i, fieldCount := ctor.fields.size : UntypedConstructor }
 
     pure (some (.algebraic typeName typeVarNames ctors))
 
   | .struct name _params ctorName fields _ =>
-    let typeName := Name.global "" name.value 0
+    let typeUnique ← LowerM.freshUnique name.value
+    let typeName := Name.user typeUnique
     let typeVarNames := _params.map (·.value)
-    let ctorMetalName := Name.ctor name.value ctorName.value 0
+    let ctorMetalName := Name.ctor typeUnique ctorName.value 0
 
     pure (some (.struct typeName typeVarNames ctorMetalName fields.size))
 

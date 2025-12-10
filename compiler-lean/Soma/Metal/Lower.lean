@@ -35,6 +35,7 @@ def lowerWithEnv (syntaxModule : Syntax.Module) (initialEnv : GlobalEnv) : Lower
   let initialState : LowerState := {
     nextBindingId := 0
     nextUniqueId := 0
+    moduleName := syntaxModule.name
     errors := #[]
     globalEnv := initialEnv
   }

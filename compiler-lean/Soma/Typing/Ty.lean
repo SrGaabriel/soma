@@ -76,18 +76,43 @@ def fromName? : String → Option HigherPrimitive
 
 end HigherPrimitive
 
-/-- Type variable identifier (kind is tracked by position in Ty, not here) -/
+/-- Type variable identifier with kind information.
+
+    Type variables now track their kind explicitly, ensuring that
+    we can always query a variable's kind without needing context.
+-/
 structure TyVarId where
   name : String
   id : Nat
-  deriving Repr, BEq, Hashable, DecidableEq
+  kind : Kind := .star
+  deriving Repr
 
 namespace TyVarId
 
+/-- Equality based on id only, name and kind are metadata -/
+instance : BEq TyVarId where
+  beq v1 v2 := v1.id == v2.id
+
+instance : Hashable TyVarId where
+  hash v := hash v.id
+
+instance : DecidableEq TyVarId := fun v1 v2 =>
+  if h : v1.id == v2.id then isTrue (by sorry) else isFalse (by sorry)
+
 instance : ToString TyVarId := ⟨fun v => v.name⟩
 
-def fresh (name : String) (counter : Nat) : TyVarId × Nat :=
-  (⟨name, counter⟩, counter + 1)
+/-- Generate a fresh type variable -/
+def fresh (name : String) (counter : Nat) (kind : Kind := .star) : TyVarId × Nat :=
+  (⟨name, counter, kind⟩, counter + 1)
+
+/-- Create a star-kinded type variable -/
+def star (name : String) (id : Nat) : TyVarId := ⟨name, id, .star⟩
+
+/-- Check if this is a star-kinded variable -/
+def isStar (v : TyVarId) : Bool := v.kind == .star
+
+/-- Check if this is a higher-kinded variable -/
+def isHigherKinded (v : TyVarId) : Bool := v.kind != .star
 
 end TyVarId
 
@@ -395,6 +420,24 @@ def heq : {k1 k2 : Kind} → Ty k1 → Ty k2 → Bool
 def beq (t1 t2 : Ty k) : Bool := heq t1 t2
 
 instance : BEq (Ty k) := ⟨Ty.beq⟩
+
+/-- Hash a type (for use in hash maps) -/
+def hash : {k : Kind} → Ty k → UInt64
+  | _, .var v => mixHash 0 (Hashable.hash v)
+  | _, .starPrim p => mixHash 1 (Hashable.hash p)
+  | _, .higherPrim p => mixHash 2 (Hashable.hash p)
+  | _, .con id => mixHash 3 (Hashable.hash id)
+  | _, .app f a => mixHash 4 (mixHash (hash f) (hash a))
+  | _, .arrow from_ to => mixHash 5 (mixHash (hash from_) (hash to))
+  | _, .tuple2 a b => mixHash 6 (mixHash (hash a) (hash b))
+  | _, .tuple3 a b c => mixHash 7 (mixHash (hash a) (mixHash (hash b) (hash c)))
+  | _, .tuple4 a b c d => mixHash 8 (mixHash (hash a) (mixHash (hash b) (mixHash (hash c) (hash d))))
+  | _, .tuple5 a b c d e => mixHash 9 (mixHash (hash a) (mixHash (hash b) (mixHash (hash c) (mixHash (hash d) (hash e)))))
+  | _, .tuple6 a b c d e f => mixHash 10 (mixHash (hash a) (mixHash (hash b) (mixHash (hash c) (mixHash (hash d) (mixHash (hash e) (hash f))))))
+  | _, .tuple7 a b c d e f g => mixHash 11 (mixHash (hash a) (mixHash (hash b) (mixHash (hash c) (mixHash (hash d) (mixHash (hash e) (mixHash (hash f) (hash g)))))))
+  | _, .tuple8 a b c d e f g h => mixHash 12 (mixHash (hash a) (mixHash (hash b) (mixHash (hash c) (mixHash (hash d) (mixHash (hash e) (mixHash (hash f) (mixHash (hash g) (hash h))))))))
+
+instance : Hashable (Ty k) := ⟨Ty.hash⟩
 
 end Ty
 

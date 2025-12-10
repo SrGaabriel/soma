@@ -31,7 +31,7 @@ def lowerLiteral : Soma.Syntax.Literal → Metal.Literal
 partial def lowerPattern (pat : Soma.Syntax.Pattern) : LowerM (Pattern Unit) := do
   match pat with
   | .var name =>
-    let bindingId ← LowerM.freshBindingId
+    let bindingId ← LowerM.freshPatternVarId name.value
     pure (.var bindingId name.value () name.span)
 
   | .wildcard span =>
@@ -50,7 +50,8 @@ partial def lowerPattern (pat : Soma.Syntax.Pattern) : LowerM (Pattern Unit) := 
     | none =>
       LowerM.reportError (.unknownConstructor name.value span)
       -- Create a fake constructor pattern to preserve the arg bindings
-      let fakeName := Name.ctor "_unknown" name.value 0
+      let fakeUnique ← LowerM.freshUnique "_unknown"
+      let fakeName := Name.ctor fakeUnique name.value 0
       pure (.ctor fakeName args' () span)
 
   | .tuple elems span =>
@@ -187,7 +188,7 @@ mutual
 
     | .let_ name _ value body span =>
       let value' ← lowerExpr localEnv value
-      let bindingId ← LowerM.freshBindingId
+      let bindingId ← LowerM.freshPatternVarId name.value
       let localEnv' := localEnv.extend bindingId name.value
       let body' ← lowerExpr localEnv' body
       pure (.let_ bindingId name.value value' body' () span)
@@ -240,7 +241,7 @@ mutual
       (body : Soma.Syntax.Expr) (span : Span) : LowerM (Expr Unit scope) := do
     -- Generate binding IDs for all params
     let paramBindingPairs ← params.mapM fun (name, _) => do
-      let id ← LowerM.freshBindingId
+      let id ← LowerM.freshParamId name.value
       pure (id, name.value)
 
     -- Build the ParamList
