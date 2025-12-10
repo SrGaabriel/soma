@@ -338,8 +338,6 @@ jobs:
                       target: x86_64-linux
                     - os: macos-latest
                       target: aarch64-darwin
-                    - os: macos-15-intel
-                      target: x86_64-darwin
                     - os: windows-latest
                       target: x86_64-windows
             fail-fast: false
