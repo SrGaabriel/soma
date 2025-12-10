@@ -407,16 +407,29 @@ partial def lowerDataCon (node : SyntaxNode) : LowerM DataCon := do
       lowerError "expected constructor" node.span
       pure ⟨⟨"_Con", node.span⟩, #[], node.span⟩
 
-/-- Lower a struct field -/
-partial def lowerStructField (node : SyntaxNode) : LowerM StructField := do
+/-- Lower a named struct field (name :: Type) -/
+partial def lowerNamedStructField (node : SyntaxNode) : LowerM StructField := do
   let fKids := syntaxChildren node
-  if fKids.size >= 2 then
-    let fname ← getTokenText (← firstChild fKids[0]!)
-    let ftype ← lowerTypeExpr fKids[1]!
-    pure ⟨⟨fname, fKids[0]!.span⟩, ftype, node.span⟩
+  if fKids.size >= 1 then
+    -- First token child is the name
+    let nameTokens := node.children.filter fun c =>
+      match c with
+      | .token tok => tok.kind == .lowerIdent
+      | _ => false
+    let fname ← if nameTokens.isEmpty then pure none
+      else match nameTokens[0]! with
+        | .token tok => pure (some ⟨tok.text, tok.span⟩)
+        | _ => pure none
+    let ftype ← lowerTypeExpr fKids[0]!
+    pure ⟨fname, ftype, node.span⟩
   else
-    lowerError "struct field missing name or type" node.span
-    pure ⟨⟨"_", node.span⟩, .var ⟨"_", node.span⟩, node.span⟩
+    lowerError "struct field missing type" node.span
+    pure ⟨none, .var ⟨"_", node.span⟩, node.span⟩
+
+/-- Lower a positional struct field (just a type) -/
+partial def lowerPositionalStructField (node : SyntaxNode) : LowerM StructField := do
+  let ftype ← lowerTypeExpr node
+  pure ⟨none, ftype, node.span⟩
 
 
 /-- Lower a token to an expression -/
@@ -432,36 +445,57 @@ def lowerExprToken (tok : Token) : LowerM Expr := do
       lowerError s!"unexpected token in expression: {tok.kind}" tok.span
       pure (.var ⟨"_error", tok.span⟩)
 
-/-- Lower lambda parameters -/
+/-- Lower a single parameter node to (Name, Option TypeExpr) -/
+def lowerSingleParam (p : SyntaxNode) : LowerM (Name × Option TypeExpr) := do
+  match p.kind? with
+  | some .patVar =>
+      let name ← getTokenText (← firstChild p)
+      pure (⟨name, p.span⟩, none)
+  | some .field =>
+      -- Field like `x: Type` - extract name from first token
+      let tokenKids := p.children.filter fun c =>
+        match c with
+        | .token tok => tok.kind == .lowerIdent
+        | _ => false
+      if tokenKids.isEmpty then
+        pure (⟨"_", p.span⟩, none)
+      else
+        match tokenKids[0]! with
+        | .token tok =>
+            let typeNodes := syntaxChildren p
+            if typeNodes.size >= 1 then
+              let ty ← lowerTypeExpr typeNodes[0]!
+              pure (⟨tok.text, tok.span⟩, some ty)
+            else
+              pure (⟨tok.text, tok.span⟩, none)
+        | _ => pure (⟨"_", p.span⟩, none)
+  | _ =>
+      pure (⟨"_", p.span⟩, none)
+
+/-- Lower lambda parameters - handles both paramList containing multiple params, and individual patVar nodes -/
 def lowerLambdaParams (paramNodes : Array SyntaxNode) : LowerM (Array (Name × Option TypeExpr)) := do
-  paramNodes.mapM fun p => do
+  let mut result : Array (Name × Option TypeExpr) := #[]
+  for p in paramNodes do
     match p.kind? with
     | some .paramList =>
-        let fields := childrenOfKind p .field
+        -- A paramList can contain multiple patVar or field children
         let vars := childrenOfKind p .patVar
-        if !fields.isEmpty then
-          let f := fields[0]!
-          let fKids := syntaxChildren f
-          if fKids.size >= 2 then
-            let name ← getTokenText (← firstChild fKids[0]!)
-            let ty ← lowerTypeExpr fKids[1]!
-            pure (⟨name, fKids[0]!.span⟩, some ty)
-          else if fKids.size >= 1 then
-            let name ← getTokenText (← firstChild fKids[0]!)
-            pure (⟨name, fKids[0]!.span⟩, none)
-          else
-            pure (⟨"_", p.span⟩, none)
-        else if !vars.isEmpty then
-          let v := vars[0]!
-          let name ← getTokenText (← firstChild v)
-          pure (⟨name, v.span⟩, none)
-        else
-          pure (⟨"_", p.span⟩, none)
+        let fields := childrenOfKind p .field
+        for v in vars do
+          let param ← lowerSingleParam v
+          result := result.push param
+        for f in fields do
+          let param ← lowerSingleParam f
+          result := result.push param
     | some .patVar =>
-        let name ← getTokenText (← firstChild p)
-        pure (⟨name, p.span⟩, none)
+        let param ← lowerSingleParam p
+        result := result.push param
+    | some .field =>
+        let param ← lowerSingleParam p
+        result := result.push param
     | _ =>
-        pure (⟨"_", p.span⟩, none)
+        result := result.push (⟨"_", p.span⟩, none)
+  pure result
 
 /-! ## Expression Case Handlers (parameterized) -/
 
@@ -624,6 +658,58 @@ def lowerExprTypeAnnot (lowerE : SyntaxNode → LowerM Expr) (node : SyntaxNode)
     lowerError "type annotation incomplete" span
     pure (.var ⟨"_error", span⟩)
 
+/-- Lower a compose let statement (let x = expr without 'in').
+    Returns a let expression with a placeholder body that will be filled in by lowerExprCompose. -/
+def lowerComposeLetStmt (lowerE : SyntaxNode → LowerM Expr) (node : SyntaxNode) (span : Span) : LowerM Expr := do
+  -- composeLetStmt has children: [let token, name token/pattern, = token, value]
+  -- We need to look at all children including tokens
+  let allKids := node.children
+  let syntaxKids := syntaxChildren node
+
+  -- Find the name token (should be a lowerIdent token at index 1)
+  let nameTokens := allKids.filter fun c =>
+    match c with
+    | .token tok => tok.kind == .lowerIdent
+    | _ => false
+
+  -- The value is the last syntax child
+  if syntaxKids.isEmpty then
+    lowerError "compose let statement missing value" span
+    pure (.var ⟨"_error", span⟩)
+  else
+    let valueNode := syntaxKids[syntaxKids.size - 1]!
+    let value ← lowerE valueNode
+
+    if !nameTokens.isEmpty then
+      -- Simple name binding
+      match nameTokens[0]! with
+      | .token tok =>
+          pure (.let_ ⟨tok.text, tok.span⟩ none value (.var ⟨"_", span⟩) span)
+      | _ =>
+          lowerError "compose let missing binding name" span
+          pure (.var ⟨"_error", span⟩)
+    else
+      -- Could be a pattern - check if there's a pattern node in syntaxKids
+      -- Pattern would be at index 0 if present (value would be at index 1)
+      if syntaxKids.size >= 2 then
+        let patNode := syntaxKids[0]!
+        match patNode.kind? with
+        | some k =>
+            if k.isPattern then
+              let patText ← match patNode with
+                | .node .patVar _ _ => getTokenText (← firstChild patNode)
+                | _ => pure "_pat"
+              pure (.let_ ⟨patText, patNode.span⟩ none value (.var ⟨"_", span⟩) span)
+            else
+              lowerError s!"unexpected node in compose let: {k}" span
+              pure (.var ⟨"_error", span⟩)
+        | none =>
+            lowerError "compose let missing binding" span
+            pure (.var ⟨"_error", span⟩)
+      else
+        lowerError "compose let statement incomplete" span
+        pure (.var ⟨"_error", span⟩)
+
 def lowerExprCompose (lowerE : SyntaxNode → LowerM Expr) (node : SyntaxNode) (span : Span) : LowerM Expr := do
   let syntaxKids := syntaxChildren node
   if syntaxKids.isEmpty then
@@ -706,6 +792,7 @@ partial def lowerExpr (node : SyntaxNode) : LowerM Expr := do
       | .exprTypeAnnot => lowerExprTypeAnnot lowerExpr node span
       | .exprCompose => lowerExprCompose lowerExpr node span
       | .exprBind => lowerExprBind lowerExpr node span
+      | .composeLetStmt => lowerComposeLetStmt lowerExpr node span
       | .name =>
           let text ← getTokenText (← firstChild node)
           pure (.var ⟨text, span⟩)
@@ -799,6 +886,39 @@ partial def lowerDecl (node : SyntaxNode) : LowerM Decl := do
           let clauses ← clauseNodes.mapM lowerDefClause
 
           if clauses.isEmpty then
+            -- No explicit clauses - extract params and body from the definition itself
+            -- e.g., `def foo(x, y) = body` becomes a single clause with patterns [x, y]
+            let paramListNodes := childrenOfKind node .paramList
+            let paramPatterns ← if paramListNodes.isEmpty then pure #[]
+              else
+                -- Extract variable patterns from the parameter list
+                let plist := paramListNodes[0]!
+                let varNodes := childrenOfKind plist .patVar ++ childrenOfKind plist .field
+                varNodes.mapM fun v => do
+                  match v.kind? with
+                  | some .patVar =>
+                    -- Simple variable pattern like `x`
+                    let text ← getTokenText (← firstChild v)
+                    pure (Pattern.var ⟨text, v.span⟩)
+                  | some .field =>
+                    -- Field pattern like `x: Type` - the first token is the name
+                    let tokenKids := v.children.filter fun c =>
+                      match c with
+                      | .token tok => tok.kind == .lowerIdent
+                      | _ => false
+                    if tokenKids.isEmpty then
+                      lowerError "field missing name" v.span
+                      pure (Pattern.var ⟨"_error", v.span⟩)
+                    else
+                      match tokenKids[0]! with
+                      | .token tok => pure (Pattern.var ⟨tok.text, tok.span⟩)
+                      | _ =>
+                        lowerError "field missing name" v.span
+                        pure (Pattern.var ⟨"_error", v.span⟩)
+                  | _ =>
+                    lowerError "unexpected node in param list" v.span
+                    pure (Pattern.var ⟨"_error", v.span⟩)
+
             let bodyNodes := syntaxChildren node |>.filter fun c =>
               c.kind? != some .name && c.kind? != some .operatorName &&
               c.kind? != some .signature && c.kind? != some .attribute &&
@@ -807,7 +927,7 @@ partial def lowerDecl (node : SyntaxNode) : LowerM Decl := do
               pure (.def_ attrs name sig #[] span)
             else
               let body ← lowerExpr bodyNodes[0]!
-              let clause : DefClause := ⟨#[], none, body, body.span⟩
+              let clause : DefClause := ⟨paramPatterns, none, body, body.span⟩
               pure (.def_ attrs name sig #[clause] span)
           else
             pure (.def_ attrs name sig clauses span)
@@ -844,8 +964,8 @@ partial def lowerDecl (node : SyntaxNode) : LowerM Decl := do
           pure (.data name params cons span)
 
       | .declStruct =>
-          let syntaxKids := syntaxChildren node
-          let nameNodes := syntaxKids.filter fun c =>
+          -- Look at ALL children (including tokens) for struct and constructor names
+          let nameNodes := node.children.filter fun c =>
             match c with
             | .token tok => tok.kind == .upperIdent
             | _ => false
@@ -855,8 +975,17 @@ partial def lowerDecl (node : SyntaxNode) : LowerM Decl := do
           else
             let name ← getTokenText nameNodes[0]!
             let conName ← getTokenText nameNodes[1]!
-            let fieldNodes := childrenOfKind node .field
-            let fields ← fieldNodes.mapM lowerStructField
+            -- Collect named fields (.field nodes)
+            let namedFieldNodes := childrenOfKind node .field
+            let namedFields ← namedFieldNodes.mapM lowerNamedStructField
+            -- Collect positional fields (type nodes like .typeCon, .typeVar, .typeApp, etc.)
+            let typeKinds : Array SyntaxKind := #[.typeCon, .typeVar, .typeApp, .typeParens, .typeList, .typeForall, .typeTuple]
+            let positionalFieldNodes := syntaxChildren node |>.filter fun c =>
+              match c.kind? with
+              | some k => typeKinds.contains k
+              | none => false
+            let positionalFields ← positionalFieldNodes.mapM lowerPositionalStructField
+            let fields := namedFields ++ positionalFields
             pure (.struct ⟨name, nameNodes[0]!.span⟩ #[] ⟨conName, nameNodes[1]!.span⟩ fields span)
 
       | .declTrait =>

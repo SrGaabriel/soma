@@ -1,0 +1,4 @@
+instance Functor Maybe where
+    def fmap(f, m) :: Int -> Int = case m
+        | Nothing => Nothing
+        | Just x => Just (f x)

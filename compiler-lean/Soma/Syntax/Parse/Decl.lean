@@ -217,8 +217,12 @@ partial def parseDefDecl (attrs : Array SyntaxNode) : ParserM (Option SyntaxNode
       if (← check .equals) then
         -- Single body: def name = expr
         let eqTok ← consumeAny
+        -- Body may be on next line in a layout block
+        let hadLayoutStart ← tryLayoutStart
         match ← parseExpr with
         | some body =>
+            if hadLayoutStart then
+              let _ ← tryLayoutEnd
             let _ ← tryLayoutEnd
             let span := Span.merge defTok.span body.span
             let children := attrs ++ #[mkToken defTok, nameNode] ++
@@ -228,6 +232,8 @@ partial def parseDefDecl (attrs : Array SyntaxNode) : ParserM (Option SyntaxNode
               #[mkToken eqTok, body]
             return some (mkNodeSpan .declDef children span)
         | none =>
+            if hadLayoutStart then
+              let _ ← tryLayoutEnd
             let _ ← tryLayoutEnd
             let curTok ← current
             recordRichError "expected expression after '='"
@@ -359,6 +365,19 @@ def parseDataDecl : ParserM (Option SyntaxNode) := do
           else
             some (mkNodeSpan .tyParamList params (Span.merge params[0]!.span params[params.size-1]!.span))
 
+          -- Check for kind annotation: :: * -> *
+          let kindAnnot ← if (← check .doubleColon) then
+            let colonTok ← consumeAny
+            match ← parseKind with
+            | some kindTy =>
+                let span := Span.merge colonTok.span kindTy.span
+                pure (some (mkNodeSpan .signature #[mkToken colonTok, kindTy] span))
+            | none =>
+                recordError "expected kind after '::'"
+                pure none
+          else
+            pure none
+
           -- Parse constructors
           skipLayoutSep
           let _ ← tryLayoutStart
@@ -371,12 +390,17 @@ def parseDataDecl : ParserM (Option SyntaxNode) := do
           let _ ← tryLayoutEnd
 
           let lastSpan := if constructors.isEmpty then
-            (match paramList with | some p => p.span | none => nameTok.span)
+            match kindAnnot with
+            | some k => k.span
+            | none => match paramList with
+              | some p => p.span
+              | none => nameTok.span
           else
             constructors[constructors.size - 1]!.span
           let span := Span.merge dataTok.span lastSpan
           let children := #[mkToken dataTok, mkToken nameTok] ++
             (match paramList with | some p => #[p] | none => #[]) ++
+            (match kindAnnot with | some k => #[k] | none => #[]) ++
             constructors
           return some (mkNodeSpan .declData children span)
       | none =>
@@ -614,9 +638,14 @@ def parseImportPath : ParserM (Option SyntaxNode) := do
 def parseImportItems : ParserM (Option SyntaxNode) := do
   match ← tryConsume .leftBrace with
   | some lbrace =>
+      -- Skip any layout tokens after opening brace (items may be on next line)
+      let _ ← tryLayoutStart
+      skipLayoutSep
       let mut items : Array SyntaxNode := #[]
       if !(← check .rightBrace) then
         repeat do
+          -- Skip layout tokens between items
+          skipLayoutSep
           -- Items can be identifiers or operators
           if (← check .lowerIdent) || (← check .upperIdent) then
             let tok ← consumeAny
@@ -624,12 +653,21 @@ def parseImportItems : ParserM (Option SyntaxNode) := do
           else if (← check .varSymbol) then
             let tok ← consumeAny
             items := items.push (mkNodeSpan .operatorName #[mkToken tok] tok.span)
+          else if (← check .rightBrace) then
+            break  -- Allow trailing comma or empty items at end
           else
             recordError "expected import item"
             break
+          -- Skip layout after item
+          skipLayoutSep
           if !(← check .comma) then break
           advance -- consume comma
+          -- Skip layout after comma (next item may be on new line)
+          skipLayoutSep
 
+      -- Skip layout before closing brace
+      let _ ← tryLayoutEnd
+      skipLayoutSep
       match ← tryConsume .rightBrace with
       | some rbrace =>
           let span := Span.merge lbrace.span rbrace.span
@@ -699,8 +737,10 @@ partial def parseIntrinsicDecl (attrs : Array SyntaxNode) : ParserM (Option Synt
         parseDefDecl attrs
       else if (← check .kw_data) then
         parseDataDecl
+      else if (← check .kw_instance) then
+        parseInstanceDecl
       else
-        recordError "expected 'def' or 'data' after 'intrinsic'"
+        recordError "expected 'def', 'data', or 'instance' after 'intrinsic'"
         pure none
 
       match inner with

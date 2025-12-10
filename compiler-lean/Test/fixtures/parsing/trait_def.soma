@@ -1,0 +1,2 @@
+trait Functor f where
+    def fmap :: (a -> b) -> f a -> f b

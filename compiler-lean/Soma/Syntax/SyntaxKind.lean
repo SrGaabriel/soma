@@ -37,6 +37,7 @@ inductive SyntaxKind where
   | exprParens        -- Parenthesized
   | exprCompose       -- Compose block
   | exprBind          -- Bind block
+  | composeLetStmt    -- Let statement in compose block (no 'in')
   | exprSection       -- Operator section
   | exprTypeAnnot     -- Type annotation
   -- Patterns
@@ -120,6 +121,7 @@ def SyntaxKind.describe : SyntaxKind → String
   | .exprParens => "parenthesized expression"
   | .exprCompose => "compose block"
   | .exprBind => "bind block"
+  | .composeLetStmt => "compose let statement"
   | .exprSection => "operator section"
   | .exprTypeAnnot => "type annotation"
   | .patVar => "variable pattern"

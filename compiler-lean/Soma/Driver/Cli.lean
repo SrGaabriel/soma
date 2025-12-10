@@ -1,6 +1,7 @@
 import Cli
 import Soma.Driver.Options
 import Soma.Syntax
+import Soma.Metal
 import Soma.Logging
 
 open Cli
@@ -118,6 +119,84 @@ def runParse (p : Parsed) : IO UInt32 := do
 
   return if allDiags.size > 0 then 1 else 0
 
+/-- Handler for the `lower` command - Metal HIR lowering -/
+def runLower (p : Parsed) : IO UInt32 := do
+  let input := p.positionalArg! "input" |>.as! String
+
+  -- Read the file
+  let source ← IO.FS.readFile input
+
+  -- Create source file
+  let sourceFile := Syntax.SourceFile.create ⟨0⟩ input source
+
+  -- Lex
+  let (tokens, lexDiags) := Syntax.lexCode sourceFile
+  if lexDiags.size > 0 then
+    Logging.Error.printDiagnostics lexDiags sourceFile
+
+  -- Parse
+  let (cst, parseDiags) := Syntax.Parse.parseSourceFile.run' tokens sourceFile
+  if parseDiags.size > 0 then
+    Logging.Error.printDiagnostics parseDiags sourceFile
+
+  -- Lower CST to AST
+  let fileName := input.splitOn "/" |>.getLast!
+  let moduleName := fileName.splitOn "." |>.head!
+                    |> fun s => if s.isEmpty then "Main" else s
+  let (astOpt, astDiags) := Syntax.lower cst moduleName
+  if astDiags.size > 0 then
+    Logging.Error.printDiagnostics astDiags sourceFile
+
+  -- Check for errors so far
+  let frontendDiags := lexDiags ++ parseDiags ++ astDiags
+  if frontendDiags.hasErrors then
+    IO.eprintln "\nCannot proceed to Metal lowering due to errors."
+    IO.eprintln (Logging.Error.renderSummary frontendDiags)
+    return 1
+
+  match astOpt with
+  | none =>
+    IO.eprintln "Failed to produce AST"
+    return 1
+  | some ast =>
+    -- Lower AST to Metal IR
+    let result := Metal.Lower.lower ast
+
+    -- Convert and print Metal lowering errors
+    let metalDiags := Metal.Lower.LowerError.toDiagnostics result.errors
+    if metalDiags.size > 0 then
+      Logging.Error.printDiagnostics metalDiags sourceFile
+
+    -- Print summary
+    let allDiags := frontendDiags ++ metalDiags
+    if allDiags.hasErrors then
+      IO.eprintln ""
+      IO.eprintln (Logging.Error.renderSummary allDiags)
+      return 1
+
+    -- Success - print info about the lowered module
+    IO.println s!"=== Metal IR (Untyped) ==="
+    IO.println s!"Module: {result.module.name}"
+    IO.println s!"Functions: {result.module.functions.size}"
+    IO.println s!"Types: {result.module.types.size}"
+    IO.println s!"Type classes: {result.module.typeClasses.size}"
+
+    -- Print function names
+    if result.module.functions.size > 0 then
+      IO.println "\nFunctions:"
+      for fn in result.module.functions do
+        let sigInfo := if fn.hasSignature then " (has signature)" else ""
+        IO.println s!"  - {fn.name.display}{sigInfo}"
+
+    -- Print type names
+    if result.module.types.size > 0 then
+      IO.println "\nTypes:"
+      for ty in result.module.types do
+        IO.println s!"  - {ty.name.display}"
+
+    IO.println "\nMetal lowering successful!"
+    return 0
+
 /-- Handler for the `check` command -/
 def runCheck (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
@@ -207,6 +286,15 @@ def parseCmd : Cmd := `[Cli|
     input : String; "Input source file (.soma)"
 ]
 
+/-- The `lower` subcommand -/
+def lowerCmd : Cmd := `[Cli|
+  lower VIA runLower; ["0.1.0"]
+  "Lower a source file to Metal HIR (untyped intermediate representation)."
+
+  ARGS:
+    input : String; "Input source file (.soma)"
+]
+
 /-- The `check` subcommand -/
 def checkCmd : Cmd := `[Cli|
   check VIA runCheck; ["0.1.0"]
@@ -277,6 +365,7 @@ def somaCmd : Cmd := `[Cli|
   SUBCOMMANDS:
     lexCmd;
     parseCmd;
+    lowerCmd;
     checkCmd;
     circuitCmd;
     buildCmd

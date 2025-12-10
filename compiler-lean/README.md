@@ -18,3 +18,6 @@ This is a complete rewrite of the Soma compiler in Lean4, testing the waters by 
 
 5. **Improved maintainability**  
    Cleaner, more idiomatic code that replaces legacy hacks with proper implementations.
+  
+6. **Tests:**
+    Previous code didn't have a lot of tests because they were written retroactively. This rewrite includes tests from the beginning.

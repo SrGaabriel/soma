@@ -332,6 +332,8 @@ partial def parseLetExpr : ParserM (Option SyntaxNode) := do
                   -- Expect 'in'
                   match ← tryConsume .kw_in with
                   | some inTok =>
+                      -- Skip any layout tokens after 'in' (body may be on next line)
+                      skipLayoutSep
                       match ← parseExpr with
                       | some body =>
                           let span := Span.merge letTok.span body.span
@@ -392,6 +394,8 @@ partial def parseLetExpr : ParserM (Option SyntaxNode) := do
                   | some value =>
                       match ← tryConsume .kw_in with
                       | some inTok =>
+                          -- Skip any layout tokens after 'in' (body may be on next line)
+                          skipLayoutSep
                           match ← parseExpr with
                           | some body =>
                               let span := Span.merge letTok.span body.span
@@ -403,11 +407,23 @@ partial def parseLetExpr : ParserM (Option SyntaxNode) := do
                                 (help := "provide the body expression")
                               return some (mkError letTok.span "incomplete let" #[mkToken letTok, pat, mkToken eqTok, value])
                       | none =>
-                          recordRichError "expected 'in' after let binding"
-                            (← current).span
-                            (secondary := #[(eqTok.span, "'=' is here")])
-                            (help := "add 'in <body_expr>' after the binding value")
-                          return some (mkError letTok.span "missing 'in'" #[mkToken letTok, pat, mkToken eqTok, value])
+                          -- 'in' might be implicit with layout
+                          if (← check .layoutSep) || (← check .layoutEnd) then
+                            skipLayoutSep
+                            match ← parseExpr with
+                            | some body =>
+                                let span := Span.merge letTok.span body.span
+                                return some (mkNodeSpan .exprLet #[mkToken letTok, pat, mkToken eqTok, value, body] span)
+                            | none =>
+                                recordError "expected 'in' or expression after let binding"
+                                let span := Span.merge letTok.span value.span
+                                return some (mkNodeSpan .exprLet #[mkToken letTok, pat, mkToken eqTok, value] span)
+                          else
+                            recordRichError "expected 'in' after let binding"
+                              (← current).span
+                              (secondary := #[(eqTok.span, "'=' is here")])
+                              (help := "add 'in <body_expr>' after the binding value")
+                            return some (mkError letTok.span "missing 'in'" #[mkToken letTok, pat, mkToken eqTok, value])
                   | none =>
                       recordRichError "expected expression after '='"
                         (← current).span
@@ -598,6 +614,47 @@ partial def parseCaseExpr : ParserM (Option SyntaxNode) := do
 
   | none => return none
 
+/-- Parse a compose-style let statement (no 'in' required): let x = expr -/
+partial def parseComposeLetStmt : ParserM (Option SyntaxNode) := do
+  match ← tryConsume .kw_let with
+  | some letTok =>
+      -- Parse binding name or pattern
+      match ← parseLowerIdent with
+      | some nameTok =>
+          -- Expect =
+          match ← tryConsume .equals with
+          | some eqTok =>
+              match ← parseExpr with
+              | some value =>
+                  let span := Span.merge letTok.span value.span
+                  return some (mkNodeSpan .composeLetStmt #[mkToken letTok, mkToken nameTok, mkToken eqTok, value] span)
+              | none =>
+                  recordError "expected expression after '=' in let"
+                  return some (mkError letTok.span "missing let value" #[mkToken letTok, mkToken nameTok, mkToken eqTok])
+          | none =>
+              recordError "expected '=' after let binding name"
+              return some (mkError letTok.span "missing '=' in let" #[mkToken letTok, mkToken nameTok])
+      | none =>
+          -- Could be a destructuring pattern
+          match ← parsePattern with
+          | some pat =>
+              match ← tryConsume .equals with
+              | some eqTok =>
+                  match ← parseExpr with
+                  | some value =>
+                      let span := Span.merge letTok.span value.span
+                      return some (mkNodeSpan .composeLetStmt #[mkToken letTok, pat, mkToken eqTok, value] span)
+                  | none =>
+                      recordError "expected expression after '=' in let"
+                      return some (mkError letTok.span "missing let value" #[mkToken letTok, pat, mkToken eqTok])
+              | none =>
+                  recordError "expected '=' after let pattern"
+                  return some (mkError letTok.span "missing '=' in let" #[mkToken letTok, pat])
+          | none =>
+              recordError "expected binding name or pattern after 'let'"
+              return some (mkError letTok.span "missing let binding" #[mkToken letTok])
+  | none => return none
+
 /-- Parse a sequence of statements in a compose/bind block. -/
 partial def parseBlockStatements : ParserM (Array SyntaxNode) := do
   let mut stmts : Array SyntaxNode := #[]
@@ -606,10 +663,10 @@ partial def parseBlockStatements : ParserM (Array SyntaxNode) := do
     -- Check if we've reached the end of the block
     if (← check .layoutEnd) || (← check .eof) then
       break
-    -- Try to parse a let binding or expression
+    -- Try to parse a let statement (without 'in') or expression
     if (← check .kw_let) then
-      match ← parseLetExpr with
-      | some letExpr => stmts := stmts.push letExpr
+      match ← parseComposeLetStmt with
+      | some letStmt => stmts := stmts.push letStmt
       | none => break
     else
       match ← parseExpr with

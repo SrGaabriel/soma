@@ -1,0 +1,4 @@
+def factorial n =
+  case n
+    | 0 => 1
+    | _ => n * factorial (n - 1)

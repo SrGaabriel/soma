@@ -1,0 +1,4 @@
+def isZero(n: Int) =
+  case n
+    | 0 => True
+    | _ => False

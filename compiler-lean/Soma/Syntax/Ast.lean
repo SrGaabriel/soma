@@ -294,7 +294,7 @@ structure DataCon where
 
 /-- A struct field: name :: Type -/
 structure StructField where
-  name : Name
+  name : Option Name
   type_ : TypeExpr
   span : Span
   deriving Repr
@@ -556,7 +556,9 @@ partial def ppDecl : Decl → String
   | .struct name params con fields _ =>
       let paramsStr := if params.isEmpty then "" else s!" {ppNames params}"
       let fieldsStr := fields.toList.map (fun f =>
-        s!"{f.name.value} :: {ppTypeExpr f.type_}"
+        match f.name with
+        | some n => s!"{n.value} :: {ppTypeExpr f.type_}"
+        | none => ppTypeExpr f.type_
       ) |> String.intercalate ", "
       "struct " ++ name.value ++ paramsStr ++ " = " ++ con.value ++ " { " ++ fieldsStr ++ " }"
 

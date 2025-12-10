@@ -24,6 +24,12 @@ structure CheckOptions where
   format : OutputFormat := .json
   deriving Repr
 
+/-- Options for the `lower` command (Metal HIR lowering) -/
+structure LowerOptions where
+  input : String
+  showUntyped : Bool := false  -- Show untyped Metal IR
+  deriving Repr
+
 /-- Options for the `circuit` command -/
 structure CircuitOptions where
   input : String
@@ -53,6 +59,7 @@ inductive Command where
   | check : CheckOptions → Command
   | lex : String → Command
   | parse : String → Command
+  | lower : LowerOptions → Command
   | circuit : CircuitOptions → Command
   deriving Repr
 
@@ -62,6 +69,7 @@ def Command.inputFile : Command → String
   | .check opts => opts.input
   | .lex path => path
   | .parse path => path
+  | .lower opts => opts.input
   | .circuit opts => opts.input
 
 end Soma.Driver

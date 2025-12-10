@@ -386,4 +386,49 @@ def parseOptionalSignature : ParserM (Option SyntaxNode) := do
   else
     return none
 
+mutual
+
+/-- Parse a kind atom: * or (kind) -/
+partial def parseKindAtom : ParserM (Option SyntaxNode) := do
+  let tok ← current
+  -- Kind star: *
+  if tok.kind == .varSymbol && tok.text == "*" then
+    advance
+    return some (mkNodeSpan .typeCon #[mkToken tok] tok.span)
+  -- Parenthesized kind
+  if tok.kind == .leftParen then
+    let lparen ← consumeAny
+    match ← parseKind with
+    | some inner =>
+        match ← tryConsume .rightParen with
+        | some rparen =>
+            let span := Span.merge lparen.span rparen.span
+            return some (mkNodeSpan .typeParens #[mkToken lparen, inner, mkToken rparen] span)
+        | none =>
+            recordError "expected ')' after kind"
+            return some inner
+    | none =>
+        recordError "expected kind after '('"
+        return none
+  return none
+
+/-- Parse a kind: * -> * -> * -/
+partial def parseKind : ParserM (Option SyntaxNode) := do
+  match ← parseKindAtom with
+  | some left =>
+      if (← check .arrow) then
+        let arrowTok ← consumeAny
+        match ← parseKind with  -- Right-associative
+        | some right =>
+            let span := Span.merge left.span right.span
+            return some (mkNodeSpan .typeArrow #[left, mkToken arrowTok, right] span)
+        | none =>
+            recordError "expected kind after '->'"
+            return some left
+      else
+        return some left
+  | none => return none
+
+end
+
 end Soma.Syntax.Parse

@@ -1,0 +1,3 @@
+def splitList(xs: [x]) =
+  let (yes, no) = partition isEven xs in
+  (yes, no)
