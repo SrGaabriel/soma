@@ -31,7 +31,7 @@ def convertDiagnostics (diags : Soma.Syntax.Diagnostics) : Array Diagnostic :=
     , message := diag.message
     : Diagnostic }
 
-/-- Quick parse for immediate feedback (CST + symbols only, no type checking) -/
+/-- Quick parse for immediate feedback -/
 def quickParse (filePath : String) (content : String) : CompiledModule :=
   let moduleName := moduleNameFromPath filePath
   let fileId := fileIdFromPath filePath
@@ -55,7 +55,7 @@ def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentP
   let content := params.textDocument.text
   let filePath := uriToPath uri
 
-  -- Full analysis on open (user expects to see all errors)
+  -- Full analysis on open
   let mod := analyzeSource filePath content
 
   -- Update state
@@ -85,7 +85,7 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   let some snap ← ctx.getDocument uri | return
   let version := snap.version
 
-  -- Publish quick diagnostics (lex/parse errors only - fast feedback)
+  -- Publish quick diagnostics (todo: review this decision)
   let quickDiags := convertDiagnostics quickMod.diagnostics
   ctx.publishDiagnostics { uri, version := some version, diagnostics := quickDiags }
 

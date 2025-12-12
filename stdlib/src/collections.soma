@@ -23,7 +23,6 @@ def last :: [a] -> Option a
     | (_:xs) => last xs
     | [] => None
 
-
 def null :: [a] -> Bool
     | [] => true
     | _ => false
