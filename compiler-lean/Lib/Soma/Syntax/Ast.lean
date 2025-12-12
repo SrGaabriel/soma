@@ -390,7 +390,7 @@ namespace Pretty
 
 /-- Indent a string by n spaces -/
 def indent (n : Nat) (s : String) : String :=
-  let pre := String.mk (List.replicate n ' ')
+  let pre := String.ofList (List.replicate n ' ')
   s.splitOn "\n" |>.map (pre ++ ·) |> String.intercalate "\n"
 
 /-- Pretty print a Name -/

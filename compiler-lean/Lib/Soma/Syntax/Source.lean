@@ -64,8 +64,8 @@ def SourceFile.columnAt (sf : SourceFile) (byteOffset : Nat) : Nat :=
   byteOffset - lineStart + 1
 
 /-- Get a substring of the source content -/
-def SourceFile.slice (sf : SourceFile) (start stop : Nat) : Substring :=
-  sf.content.toSubstring.extract ⟨start⟩ ⟨stop⟩
+def SourceFile.slice (sf : SourceFile) (start stop : Nat) : String :=
+  String.Pos.Raw.extract sf.content ⟨start⟩ ⟨stop⟩
 
 /-- Get the line content at a given line number (1-indexed) -/
 def SourceFile.getLine (sf : SourceFile) (line : Nat) : String :=
@@ -77,8 +77,7 @@ def SourceFile.getLine (sf : SourceFile) (line : Nat) : String :=
       if h : line < sf.lineStarts.size then sf.lineStarts[line]
       else sf.content.utf8ByteSize
     -- Remove trailing newline if present
-    let slice := sf.content.toSubstring.extract ⟨start⟩ ⟨stop⟩
-    let str := slice.toString
+    let str := String.Pos.Raw.extract sf.content ⟨start⟩ ⟨stop⟩
     if str.endsWith "\n" then str.dropRight 1 else str
 
 /-- Rich source location with all information needed for diagnostics -/
@@ -149,7 +148,7 @@ def Span.point (loc : SourceLoc) : Span :=
 
 /-- Get the text content of a span from a source file -/
 def Span.getText (span : Span) (sf : SourceFile) : String :=
-  (sf.slice span.start.byteOffset span.stop.byteOffset).toString
+  sf.slice span.start.byteOffset span.stop.byteOffset
 
 /-- Uninhabited span, never use in real code -/
 def Span.uninhabited : Span :=

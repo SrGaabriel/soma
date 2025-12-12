@@ -96,9 +96,8 @@ def LexerState.spanFrom (s : LexerState) (startOffset : Nat) : Span :=
 
 /-- Get text between two offsets -/
 def LexerState.textBetween (s : LexerState) (startOffset stopOffset : Nat) : String :=
-  (s.source.slice startOffset stopOffset).toString
+  s.source.slice startOffset stopOffset
 
-/-! ## Lexer Monad -/
 
 /-- Lexer monad: state + error accumulation -/
 abbrev LexerM := StateT LexerState (StateT Diagnostics Id)

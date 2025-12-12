@@ -165,7 +165,7 @@ def nonTriviaChildren (n : SyntaxNode) : Array SyntaxNode :=
 
 /-- Pretty-print the tree structure (for debugging) -/
 partial def debugPrint (n : SyntaxNode) (indent : Nat := 0) : String :=
-  let pad := String.mk (List.replicate indent ' ')
+  let pad := String.ofList (List.replicate indent ' ')
   match n with
   | .node kind children span =>
       let header := s!"{pad}{kind} [{span.start.line}:{span.start.column}]\n"

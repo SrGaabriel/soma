@@ -5,3 +5,9 @@ version = "0.1.0"
 scope = "."
 name = "somac"
 path = "./compiler-lean"
+
+[[require]]
+scope = "."
+name = "souls"
+path = "./souls-lean"
+

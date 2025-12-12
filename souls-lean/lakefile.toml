@@ -1,0 +1,19 @@
+name = "souls"
+version = "0.1.0"
+defaultTargets = ["souls"]
+
+[[require]]
+name = "lapis"
+git = "https://github.com/SrGaabriel/lapis"
+rev = "main"
+
+[[require]]
+name = "soma"
+path = "../compiler-lean"
+
+[[lean_lib]]
+name = "Lsp"
+
+[[lean_exe]]
+name = "souls"
+root = "Lsp.Main"
