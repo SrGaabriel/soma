@@ -159,10 +159,19 @@ def checkSuperclasses (ctx : EntailmentContext) (c : Constraint)
 
   return instantiated
 
-/-- Full entailment check with superclass handling -/
+/-- Result of an entailment check -/
+inductive EntailmentCheckResult where
+  /-- Constraint is fully satisfied -/
+  | satisfied
+  /-- Constraint is deferred (has unresolved type variables, needs recheck later) -/
+  | deferred (constraint : Constraint)
+  /-- Constraint cannot be satisfied -/
+  | failed (error : InferError)
+
+/-- Full entailment check with superclass handling. -/
 def entails (instanceEnv : InstanceEnv) (declared : Array Constraint)
     (constraint : Constraint) (span : Span)
-    : Except InferError Bool := do
+    : EntailmentCheckResult :=
   let ctx : EntailmentContext := {
     instanceEnv
     declaredConstraints := declared
@@ -171,9 +180,9 @@ def entails (instanceEnv : InstanceEnv) (declared : Array Constraint)
   }
 
   match satisfyConstraint ctx constraint 0 with
-  | .satisfied _ _ => .ok true
-  | .deferred => .ok true -- Deferred constraints are assumed satisfiable
-  | .unsatisfied _ => .error (.noInstance constraint span)
+  | .satisfied _ _ => .satisfied
+  | .deferred => .deferred constraint
+  | .unsatisfied _ => .failed (.noInstance constraint span)
 
 /-- Check if all constraints in a qualified type can be satisfied -/
 def checkQualifiedType (instanceEnv : InstanceEnv) (qt : QualifiedType) (span : Span)

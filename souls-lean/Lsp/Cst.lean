@@ -83,8 +83,51 @@ def offsetAtSpanEnd (offset : Nat) (span : Span) : Bool :=
   offset == span.stop.byteOffset
 
 /--
+Binary search to find the child whose span contains the offset.
+Children are sorted by span (left-to-right from parsing).
+Returns the index of the child containing offset, or none if no child contains it.
+-/
+private def binarySearchChild (offset : Nat) (children : Array SyntaxNode) : Option Nat :=
+  if children.isEmpty then none
+  else
+    let rec go (lo hi : Nat) : Option Nat :=
+      if lo >= hi then none
+      else
+        let mid := (lo + hi) / 2
+        if h : mid < children.size then
+          let child := children[mid]
+          let span := child.span
+          if offset < span.start.byteOffset then
+            -- Offset is before this child, search left
+            go lo mid
+          else if offset > span.stop.byteOffset then
+            -- Offset is after this child, search right
+            go (mid + 1) hi
+          else if offset == span.stop.byteOffset then
+            -- At the end boundary - could be this child or the next
+            -- Prefer the next child if it starts exactly here
+            if h2 : mid + 1 < children.size then
+              let nextChild := children[mid + 1]
+              if nextChild.span.start.byteOffset == offset then
+                some (mid + 1)
+              else
+                some mid
+            else
+              some mid
+          else
+            -- Offset is strictly within this child's span
+            some mid
+        else
+          none
+    termination_by hi - lo
+    go 0 children.size
+
+/--
 Find the innermost node containing a byte offset.
 Returns the node and the path of ancestors from root.
+
+Uses binary search over children for O(log n) lookup at each level,
+matching rust-analyzer's performance characteristics.
 -/
 partial def findNodeAtOffset (offset : Nat) (node : SyntaxNode) (ancestors : Array SyntaxNode := #[])
     : Option (SyntaxNode × Array SyntaxNode) :=
@@ -92,12 +135,16 @@ partial def findNodeAtOffset (offset : Nat) (node : SyntaxNode) (ancestors : Arr
   if !offsetInSpan offset node.span && !offsetAtSpanEnd offset node.span then
     none
   else
-    -- Try to find a more specific child
+    -- Try to find a more specific child via binary search
     let newAncestors := ancestors.push node
-    let childResult := node.children.findSome? fun child =>
-      findNodeAtOffset offset child newAncestors
-    match childResult with
-    | some result => some result
+    match binarySearchChild offset node.children with
+    | some idx =>
+        if h : idx < node.children.size then
+          match findNodeAtOffset offset node.children[idx] newAncestors with
+          | some result => some result
+          | none => some (node, ancestors)
+        else
+          some (node, ancestors)
     | none => some (node, ancestors)
 
 /-- Derive syntax context from a node and its ancestors (helper) -/

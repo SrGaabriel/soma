@@ -148,6 +148,9 @@ partial def map (f : α → β) : Pattern α → Pattern β
   | .cons h t info s => .cons (map f h) (map f t) (f info) s
   | .as b orig inner info s => .as b orig (map f inner) (f info) s
 
+/-- Pattern.map preserves bindings (axiomatized due to partial functions) -/
+axiom map_bindings (f : α → β) (p : Pattern α) : (p.map f).bindings = p.bindings
+
 end Pattern
 
 end Soma.Metal

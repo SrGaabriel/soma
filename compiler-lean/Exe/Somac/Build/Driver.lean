@@ -3,6 +3,7 @@ import Somac.Build.Compiled
 import Soma.Project
 import Soma.Driver.Options
 import Soma.Logging
+import Soma.Unique
 
 namespace Somac.Build
 
@@ -10,7 +11,8 @@ open Soma
 open Soma.Project
 open Soma.Driver
 open Soma.Logging
-open Soma.Syntax (Diagnostic Span)
+open Soma.Syntax (Diagnostic Diagnostics Span)
+open Soma (UniqueSupply)
 
 /-- Result of a build operation -/
 structure BuildResult where
@@ -102,13 +104,20 @@ def buildSingleFile (opts : BuildOptions) : IO BuildResult := do
       | .ok deps =>
         let (extSymbols, extInstances, extConstructors) := processExternalDependencies deps
 
-        -- Compile
-        match ← compileModulesInOrder sortedNames graph extSymbols extInstances extConstructors name with
-        | .error e =>
-          IO.eprintln s!"Compilation failed: {e}"
-          pure (BuildResult.failed #[Diagnostic.error (toString e) Span.uninhabited])
+        -- Initialize UniqueSupply for this compilation unit
+        let supply := UniqueSupply.initial name
 
-        | .ok compiledModules =>
+        -- Compile
+        let (compileDiags, compiledModules, _) := compileModulesInOrder sortedNames graph extSymbols extInstances extConstructors name supply
+
+        if compileDiags.size > 0 then
+          Error.printDiagnostics compileDiags info.sourceFile
+
+
+        if Diagnostics.hasErrors compileDiags then
+          IO.eprintln (Error.renderSummary compileDiags)
+          pure (BuildResult.failed compileDiags)
+        else
           -- Link
           let (llvmIR, _allConstructors) ← linkModules name compiledModules extConstructors
 
@@ -168,13 +177,23 @@ def buildDirectory (opts : BuildOptions) : IO BuildResult := do
         let graph := if preludeSymbols.isEmpty then graph
                      else injectPreludeIntoGraph preludeSymbols graph
 
-        -- Compile all modules
-        match ← compileModulesInOrder sortedNames graph extSymbols extInstances extConstructors packageName with
-        | .error e =>
-          IO.eprintln s!"Compilation failed: {e}"
-          pure (BuildResult.failed #[Diagnostic.error (toString e) Span.uninhabited])
+        -- Initialize UniqueSupply for this compilation unit
+        let supply := UniqueSupply.initial packageName
 
-        | .ok compiledModules =>
+        -- Compile all modules
+        let (compileDiags, compiledModules, _) := compileModulesInOrder sortedNames graph extSymbols extInstances extConstructors packageName supply
+
+        for modName in sortedNames do
+          if let some info := graph.get? modName then
+            let modDiags := compileDiags.filter fun _ =>
+              true  -- TODO: filter by module
+            if modDiags.size > 0 then
+              Error.printDiagnostics modDiags info.sourceFile
+
+        if Diagnostics.hasErrors compileDiags then
+          IO.eprintln (Error.renderSummary compileDiags)
+          pure (BuildResult.failed compileDiags)
+        else
           -- Link
           let (llvmIR, _allConstructors) ← linkModules packageName compiledModules extConstructors
 

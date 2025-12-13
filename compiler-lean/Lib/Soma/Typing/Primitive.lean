@@ -19,6 +19,12 @@ inductive Primitive where
   | ptr
   | ref
   | io
+  | classEq
+  | classOrd
+  | classShow
+  | classNum
+  | classFunctor
+  | classMonad
   deriving Repr, BEq, Hashable, DecidableEq
 
 namespace Primitive
@@ -41,6 +47,12 @@ def name : Primitive → String
   | .ptr => "Ptr"
   | .ref => "Ref"
   | .io => "IO"
+  | .classEq => "Eq"
+  | .classOrd => "Ord"
+  | .classShow => "Show"
+  | .classNum => "Num"
+  | .classFunctor => "Functor"
+  | .classMonad => "Monad"
 
 instance : ToString Primitive := ⟨Primitive.name⟩
 
@@ -52,6 +64,8 @@ def kind : Primitive → Kind
   | .closurePtr | .ptr => .star
   | .array | .ref | .io => .arrow .star .star
   | .tuple n => Kind.nary n
+  | .classEq | .classOrd | .classShow | .classNum => .arrow .star .star
+  | .classFunctor | .classMonad => .arrow (.arrow .star .star) .star
 
 /-- Parse a primitive type from its name -/
 def fromName? : String → Option Primitive
@@ -69,6 +83,12 @@ def fromName? : String → Option Primitive
   | "Ptr" => some .ptr
   | "Ref" => some .ref
   | "IO" => some .io
+  | "Eq" => some .classEq
+  | "Ord" => some .classOrd
+  | "Show" => some .classShow
+  | "Num" => some .classNum
+  | "Functor" => some .classFunctor
+  | "Monad" => some .classMonad
   | s =>
     if s.startsWith "Tuple" then
       match s.drop 5 |>.toNat? with

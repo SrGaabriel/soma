@@ -6,11 +6,9 @@ namespace Soma.Metal.Lower
 open Soma.Typing
 open Soma.Syntax (Span TypeExpr)
 
-/-- Helper to create a Ty from a user TypeId at a given kind.
-    TODO: make user kinds not always * -/
-private def userTyOfKind (id : TypeId) : (k : Kind) → Ty k
-  | .star => .con id
-  | k => .var ⟨id.name, id.unique, k⟩  -- Fallback for non-star kinds
+/-- Create a Ty from a user TypeId at a given kind -/
+private def userTyOfKind (id : TypeId) (k : Kind) : Ty k :=
+  .userCon k id
 
 mutual
   /-- Resolve a type expression from Syntax to a MonoTy. TODO: Lower it even if it fails -/
@@ -60,7 +58,7 @@ mutual
       | none => pure none
 
     | .forall_ _ body _ =>
-      -- For now, just resolve the body (forall is handled at QualifiedType level)
+      -- Resolve the body (forall is handled at QualifiedType level)
       resolveType body
 
     | .constrained _ body _ =>
@@ -204,12 +202,65 @@ mutual
       pure none
 end
 
-/-- Resolve a QualifiedType from a Syntax TypeExpr -/
-def resolveQualifiedType (ty : TypeExpr) : LowerM (Option QualifiedType) := do
-  -- TODO: handle forall and constraints
-  let bodyTy? ← resolveType ty
-  match bodyTy? with
-  | some bodyTy => pure (some (QualifiedType.mono bodyTy))
+/-- Look up a type class by name, checking built-in classes first -/
+private def lookupTypeClass (name : String) : LowerM (Option TyCon) := do
+  match name with
+  | "Eq" => pure (some TypeClassName.eq)
+  | "Ord" => pure (some TypeClassName.ord)
+  | "Show" => pure (some TypeClassName.show_)
+  | "Num" => pure (some TypeClassName.num)
+  | "Functor" => pure (some TypeClassName.functor)
+  | "Monad" => pure (some TypeClassName.monad)
+  | _ =>
+    let env ← LowerM.getGlobalEnv
+    pure (env.lookupTypeClass name |>.map (·.tyCon))
+
+/-- Resolve a constraint from syntax -/
+private def resolveConstraint (className : Syntax.Name) (args : Array TypeExpr) : LowerM (Option Constraint) := do
+  let tycon? ← lookupTypeClass className.value
+  match tycon? with
   | none => pure none
+  | some tycon =>
+    let resolvedArgs ← args.mapM resolveType
+    if resolvedArgs.all Option.isSome then
+      pure (some { className := tycon, args := resolvedArgs.filterMap id })
+    else
+      pure none
+
+/-- Resolve a QualifiedType from a Syntax TypeExpr, handling forall and constraints -/
+def resolveQualifiedType (ty : TypeExpr) : LowerM (Option QualifiedType) := do
+  -- Collect type variables and constraints while unwrapping the type
+  let (vars, constraints, innerTy) ← collectQuantifiers ty #[] #[]
+  let bodyTy? ← resolveType innerTy
+  match bodyTy? with
+  | some bodyTy => pure (some { vars, constraints, body := bodyTy })
+  | none => pure none
+where
+  /-- Recursively collect forall-bound variables and constraints -/
+  collectQuantifiers (ty : TypeExpr) (accVars : Array TyVarId) (accConstrs : Array Constraint)
+      : LowerM (Array TyVarId × Array Constraint × TypeExpr) := do
+    match ty with
+    | .forall_ varNames body _ =>
+      -- Create TyVarIds for each bound variable
+      let mut newVars := accVars
+      for varName in varNames do
+        let id ← LowerM.freshUniqueId
+        let tyVarId : TyVarId := { name := varName.value, id := id, kind := .star }
+        newVars := newVars.push tyVarId
+      collectQuantifiers body newVars accConstrs
+    | .constrained syntaxConstrs body _ =>
+      -- Resolve each constraint
+      let mut newConstrs := accConstrs
+      for (className, args, _span) in syntaxConstrs do
+        let constr? ← resolveConstraint ⟨className.value, className.span⟩ args
+        match constr? with
+        | some c => newConstrs := newConstrs.push c
+        | none => pure ()  -- Skip unresolved constraints (error reported elsewhere)
+      collectQuantifiers body accVars newConstrs
+    | .parens inner _ =>
+      collectQuantifiers inner accVars accConstrs
+    | _ =>
+      -- Reached the body type
+      pure (accVars, accConstrs, ty)
 
 end Soma.Metal.Lower

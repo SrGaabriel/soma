@@ -131,8 +131,7 @@ def castExprScope (h : s1 = s2) (e : Expr α s1) : Expr α s2 := h ▸ e
 def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
   match decl with
   | .def_ attrs name sig clauses _span =>
-    -- For now, handle single-clause functions
-    -- Multi-clause functions (pattern matching on args) need desugaring
+    -- TODO: Multi-clause functions
     if h : clauses.size > 0 then
       let clause := clauses[0]
 
@@ -196,12 +195,13 @@ def lowerTypeDef (decl : Decl) : LowerM (Option UntypedTypeDef) := do
     let typeName := Name.user typeUnique
     let typeVarNames := _params.map (·.value)
 
-    -- Build untyped constructors (just names, tags, and field counts)
-    -- Use enumWithIndex since we need indices
+    -- Build untyped constructors with field type syntax preserved
     let ctorList := enumWithIndex constructors.toList
     let ctors ← ctorList.toArray.mapM fun (i, ctor) => do
       let ctorName := Name.ctor typeUnique ctor.name.value i
-      pure { name := ctorName, tag := i, fieldCount := ctor.fields.size : UntypedConstructor }
+      -- Extract TypeExpr from each field (ignoring optional field names)
+      let fieldTypes := ctor.fields.map (·.2)
+      pure { name := ctorName, tag := i, fieldTypeSyntax := fieldTypes : UntypedConstructor }
 
     pure (some (.algebraic typeName typeVarNames ctors))
 
@@ -210,9 +210,27 @@ def lowerTypeDef (decl : Decl) : LowerM (Option UntypedTypeDef) := do
     let typeName := Name.user typeUnique
     let typeVarNames := _params.map (·.value)
     let ctorMetalName := Name.ctor typeUnique ctorName.value 0
+    -- Extract TypeExpr from each field
+    let fieldTypes := fields.map (·.type_)
 
-    pure (some (.struct typeName typeVarNames ctorMetalName fields.size))
+    pure (some (.struct typeName typeVarNames ctorMetalName fieldTypes))
 
+  | _ => pure none
+
+/-- Lower an instance declaration to an UntypedInstance -/
+def lowerInstance (decl : Decl) : LowerM (Option UntypedInstance) := do
+  match decl with
+  | .instance_ traitName args constraints methods span =>
+    -- Lower each method as a function
+    let methodFunctions ← methods.filterMapM lowerFunction
+
+    pure (some {
+      className := traitName.value
+      typeArgsSyntax := args
+      constraintsSyntax := constraints
+      methods := methodFunctions
+      span := span
+    })
   | _ => pure none
 
 /-- Lower all declarations to an UntypedModule -/
@@ -226,8 +244,8 @@ def lowerModule (moduleName : String) (decls : Array Decl) : LowerM UntypedModul
   -- Third pass: lower type definitions
   let types ← decls.filterMapM lowerTypeDef
 
-  -- TODO: Lower instances
-  let instances : Array UntypedInstance := #[]
+  -- Fourth pass: lower instances
+  let instances ← decls.filterMapM lowerInstance
 
   pure {
     name := moduleName

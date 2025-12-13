@@ -149,11 +149,60 @@ structure SomeTy where
   kind : Kind
   ty : Ty kind
 
-/-- A substitution maps type variable IDs to monomorphic types -/
+/-- A substitution maps type variable IDs to monomorphic types (legacy) -/
 abbrev TySubst := Std.HashMap Nat MonoTy
 
+/-- A kind-polymorphic substitution maps type variable IDs to types of any kind -/
+abbrev KindSubst := Std.HashMap Nat SomeTy
+
+/-- Try to cast a SomeTy to a specific kind. Returns none if kinds don't match. -/
+def SomeTy.cast? (sty : SomeTy) (k : Kind) : Option (Ty k) :=
+  if h : sty.kind = k then some (h ▸ sty.ty) else none
+
 mutual
-  /-- Substitute in a monomorphic type -/
+  /-- Substitute in a monomorphic type using kind-polymorphic substitution -/
+  def Ty.substK (t : MonoTy) (σ : KindSubst) : MonoTy :=
+    match t with
+    | .var v =>
+      match σ.get? v.id with
+      | some sty =>
+        match sty.cast? .star with
+        | some ty => ty
+        | none => .var v -- Kind mismatch, keep variable
+      | none => .var v
+    | .starPrim p => .starPrim p
+    | .userCon _ id => .userCon .star id
+    | .app f a => .app (Ty.substFunK f σ) (Ty.substArgK a σ)
+    | .arrow from_ to => .arrow (Ty.substK from_ σ) (Ty.substK to σ)
+    | .tuple2 a b => .tuple2 (Ty.substK a σ) (Ty.substK b σ)
+    | .tuple3 a b c => .tuple3 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ)
+    | .tuple4 a b c d => .tuple4 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ) (Ty.substK d σ)
+    | .tuple5 a b c d e => .tuple5 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ) (Ty.substK d σ) (Ty.substK e σ)
+    | .tuple6 a b c d e f => .tuple6 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ) (Ty.substK d σ) (Ty.substK e σ) (Ty.substK f σ)
+    | .tuple7 a b c d e f g => .tuple7 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ) (Ty.substK d σ) (Ty.substK e σ) (Ty.substK f σ) (Ty.substK g σ)
+    | .tuple8 a b c d e f g h => .tuple8 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ) (Ty.substK d σ) (Ty.substK e σ) (Ty.substK f σ) (Ty.substK g σ) (Ty.substK h σ)
+
+  /-- Substitute in a function-kinded type using kind-polymorphic substitution -/
+  def Ty.substFunK : {k1 k2 : Kind} → Ty (.arrow k1 k2) → KindSubst → Ty (.arrow k1 k2)
+    | k1, k2, .var v, σ =>
+      match σ.get? v.id with
+      | some sty =>
+        match sty.cast? (.arrow k1 k2) with
+        | some ty => ty
+        | none => .var v -- Kind mismatch, keep variable
+      | none => .var v
+    | _, _, .higherPrim p, _ => .higherPrim p
+    | _, _, .userCon _ id, _ => .userCon _ id
+    | _, _, .app f a, σ => .app (Ty.substFunK f σ) (Ty.substArgK a σ)
+
+  /-- Substitute in a type of any kind using kind-polymorphic substitution -/
+  def Ty.substArgK : {k : Kind} → Ty k → KindSubst → Ty k
+    | .star, t, σ => Ty.substK t σ
+    | .arrow _ _, t, σ => Ty.substFunK t σ
+end
+
+mutual
+  /-- Substitute in a monomorphic type (legacy, monomorphic-only substitution) -/
   def Ty.subst (t : MonoTy) (σ : TySubst) : MonoTy :=
     match t with
     | .var v => σ.getD v.id (.var v)
@@ -173,10 +222,10 @@ mutual
   def Ty.substFun : {k1 k2 : Kind} → Ty (.arrow k1 k2) → TySubst → Ty (.arrow k1 k2)
     | _, _, .var v, _ => .var v  -- Variables of higher kind can't be substituted with MonoTy
     | _, _, .higherPrim p, _ => .higherPrim p
-    | _, _, .userCon _ id, _ => .userCon _ id  -- User types are not substituted
+    | _, _, .userCon _ id, _ => .userCon _ id
     | _, _, .app f a, σ => .app (Ty.substFun f σ) (Ty.substArg a σ)
 
-  /-- Substitute in a type of any kind -/
+  /-- Substitute in a type of any kind (legacy) -/
   def Ty.substArg : {k : Kind} → Ty k → TySubst → Ty k
     | .star, t, σ => Ty.subst t σ
     | .arrow _ _, t, σ => Ty.substFun t σ
@@ -381,6 +430,13 @@ def mkArrow (args : Array MonoTy) (ret : MonoTy) : MonoTy :=
 def returnType : MonoTy → MonoTy
   | .arrow _ rest => returnType rest
   | t => t
+
+/-- Extract return type from a function type by stripping exactly n arrows -/
+def stripArrows (ty : MonoTy) (n : Nat) : MonoTy :=
+  match n, ty with
+  | 0, _ => ty
+  | n+1, .arrow _ to => stripArrows to n
+  | _, _ => ty
 
 /-- Get all type variables in a type of any kind -/
 def freeVars : {k : Kind} → Ty k → Array TyVarId

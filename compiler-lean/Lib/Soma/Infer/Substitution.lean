@@ -17,11 +17,12 @@ namespace Soma.Infer
 open Std
 open Soma.Typing
 
-/-- A substitution maps type variable IDs to monomorphic types.
-    We use Nat (the variable ID) as the key for efficiency. -/
+/-- A substitution maps type variable IDs to types of any kind.
+    We use Nat (the variable ID) as the key for efficiency.
+    The stored SomeTy contains both the kind and the type. -/
 structure Subst where
-  /-- The underlying mapping from variable IDs to types -/
-  mapping : HashMap Nat MonoTy
+  /-- The underlying mapping from variable IDs to types (with their kinds) -/
+  mapping : HashMap Nat SomeTy
   deriving Inhabited
 
 namespace Subst
@@ -31,25 +32,45 @@ def empty : Subst := ⟨{}⟩
 
 instance : EmptyCollection Subst := ⟨empty⟩
 
-/-- Create a singleton substitution -/
+/-- Create a singleton substitution for a monomorphic type -/
 def singleton (varId : Nat) (ty : MonoTy) : Subst :=
-  ⟨({} : HashMap Nat MonoTy).insert varId ty⟩
+  ⟨({} : HashMap Nat SomeTy).insert varId ⟨.star, ty⟩⟩
 
-/-- Create a substitution from a type variable -/
+/-- Create a singleton substitution for a type of any kind -/
+def singletonAny (varId : Nat) (sty : SomeTy) : Subst :=
+  ⟨({} : HashMap Nat SomeTy).insert varId sty⟩
+
+/-- Create a substitution from a type variable (monomorphic) -/
 def fromVar (v : TyVarId) (ty : MonoTy) : Subst :=
   singleton v.id ty
 
-/-- Look up a type variable in the substitution -/
-def lookup (σ : Subst) (varId : Nat) : Option MonoTy :=
+/-- Create a substitution from a type variable of any kind -/
+def fromVarAny {k : Kind} (v : TyVarId) (ty : Ty k) : Subst :=
+  singletonAny v.id ⟨k, ty⟩
+
+/-- Look up a type variable in the substitution (returns SomeTy) -/
+def lookupAny (σ : Subst) (varId : Nat) : Option SomeTy :=
   σ.mapping.get? varId
+
+/-- Look up a type variable expecting a monomorphic type -/
+def lookup (σ : Subst) (varId : Nat) : Option MonoTy :=
+  match σ.mapping.get? varId with
+  | some ⟨.star, ty⟩ => some ty
+  | _ => none
 
 /-- Look up a type variable, returning the variable itself if not found -/
 def lookupOrVar (σ : Subst) (v : TyVarId) : MonoTy :=
-  σ.mapping.getD v.id (.var v)
+  match σ.mapping.get? v.id with
+  | some ⟨.star, ty⟩ => ty
+  | _ => .var v
 
-/-- Insert a mapping into the substitution -/
+/-- Insert a monomorphic type mapping into the substitution -/
 def insert (σ : Subst) (varId : Nat) (ty : MonoTy) : Subst :=
-  ⟨σ.mapping.insert varId ty⟩
+  ⟨σ.mapping.insert varId ⟨.star, ty⟩⟩
+
+/-- Insert a type of any kind into the substitution -/
+def insertAny (σ : Subst) (varId : Nat) (sty : SomeTy) : Subst :=
+  ⟨σ.mapping.insert varId sty⟩
 
 /-- Remove a variable from the substitution -/
 def remove (σ : Subst) (varId : Nat) : Subst :=
@@ -67,9 +88,16 @@ def size (σ : Subst) : Nat :=
 def domain (σ : Subst) : Array Nat :=
   σ.mapping.toArray.map (·.1)
 
-/-- Get all types in the range -/
-def range (σ : Subst) : Array MonoTy :=
+/-- Get all types in the range (as SomeTy) -/
+def rangeAny (σ : Subst) : Array SomeTy :=
   σ.mapping.toArray.map (·.2)
+
+/-- Get all monomorphic types in the range (filters out higher-kinded) -/
+def range (σ : Subst) : Array MonoTy :=
+  σ.mapping.toArray.filterMap fun (_, sty) =>
+    match sty.kind, sty.ty with
+    | .star, ty => some ty
+    | _, _ => none
 
 /-- Check if a variable is in the domain -/
 def contains (σ : Subst) (varId : Nat) : Bool :=
@@ -77,12 +105,12 @@ def contains (σ : Subst) (varId : Nat) : Bool :=
 
 /-- Apply a substitution to a monomorphic type -/
 def apply (σ : Subst) (ty : MonoTy) : MonoTy :=
-  if σ.isEmpty then ty else ty.subst σ.mapping
+  if σ.isEmpty then ty else ty.substK σ.mapping
 
 /-- Apply a substitution to a type of any kind (kind-preserving) -/
 def applyAny (σ : Subst) : {k : Kind} → Ty k → Ty k
   | .star, ty => σ.apply ty
-  | .arrow _ _, ty => ty.substFun σ.mapping
+  | .arrow _ _, ty => ty.substFunK σ.mapping
 
 /-- Apply a substitution to a SomeTy -/
 def applySome (σ : Subst) (sty : SomeTy) : SomeTy :=
@@ -98,8 +126,8 @@ def compose (σ1 σ2 : Subst) : Subst :=
   else if σ2.isEmpty then σ1
   else
     -- Apply σ1 to all types in σ2's range
-    let σ2Applied := σ2.mapping.fold (init := ({} : HashMap Nat MonoTy)) fun acc k v =>
-      acc.insert k (σ1.apply v)
+    let σ2Applied := σ2.mapping.fold (init := ({} : HashMap Nat SomeTy)) fun acc k v =>
+      acc.insert k (σ1.applySome v)
     -- Union: σ2Applied takes precedence, but we also need σ1's bindings
     -- for variables not in σ2's domain
     let result := σ1.mapping.fold (init := σ2Applied) fun acc k v =>
@@ -111,33 +139,36 @@ instance : Append Subst where
 
 /-- Get all free type variables in the range of the substitution -/
 def rangeVars (σ : Subst) : HashSet Nat :=
-  σ.mapping.fold (init := ({} : HashSet Nat)) fun acc _ ty =>
-    ty.freeVars.foldl (init := acc) fun acc v => acc.insert v.id
+  σ.mapping.fold (init := ({} : HashSet Nat)) fun acc _ sty =>
+    sty.ty.freeVars.foldl (init := acc) fun acc v => acc.insert v.id
 
 /-- Restrict a substitution to only certain variables -/
 def restrict (σ : Subst) (vars : HashSet Nat) : Subst :=
-  ⟨σ.mapping.fold (init := ({} : HashMap Nat MonoTy)) fun acc k v =>
+  ⟨σ.mapping.fold (init := ({} : HashMap Nat SomeTy)) fun acc k v =>
     if vars.contains k then acc.insert k v else acc⟩
 
 /-- Exclude certain variables from the substitution -/
 def exclude (σ : Subst) (vars : HashSet Nat) : Subst :=
-  ⟨σ.mapping.fold (init := ({} : HashMap Nat MonoTy)) fun acc k v =>
+  ⟨σ.mapping.fold (init := ({} : HashMap Nat SomeTy)) fun acc k v =>
     if vars.contains k then acc else acc.insert k v⟩
 
-/-- Create a substitution from parallel arrays of variables and types -/
+/-- Create a substitution from parallel arrays of variables and monomorphic types -/
 def fromArrays (vars : Array TyVarId) (types : Array MonoTy) : Subst :=
   if vars.size != types.size then empty
   else
     let pairs := vars.zip types
-    ⟨pairs.foldl (init := ({} : HashMap Nat MonoTy)) fun acc (v, t) => acc.insert v.id t⟩
+    ⟨pairs.foldl (init := ({} : HashMap Nat SomeTy)) fun acc (v, t) => acc.insert v.id ⟨.star, t⟩⟩
 
-/-- Convert to a list of pairs for debugging -/
+/-- Convert to a list of pairs for debugging (monomorphic types only) -/
 def toList (σ : Subst) : List (Nat × MonoTy) :=
-  σ.mapping.toList
+  σ.mapping.toList.filterMap fun (k, sty) =>
+    match sty.kind, sty.ty with
+    | .star, ty => some (k, ty)
+    | _, _ => none
 
 /-- Pretty print a substitution -/
 def toString (σ : Subst) : String :=
-  let pairs := σ.mapping.toArray.map fun (k, v) => s!"t{k} ↦ {v}"
+  let pairs := σ.mapping.toArray.map fun (k, sty) => s!"t{k} ↦ {sty.ty}"
   s!"[{", ".intercalate pairs.toList}]"
 
 instance : ToString Subst := ⟨Subst.toString⟩

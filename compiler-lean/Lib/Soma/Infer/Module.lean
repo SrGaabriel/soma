@@ -1,0 +1,552 @@
+/-
+  Module-Level Type Inference
+
+  This module provides functions for running type inference on entire modules,
+  bridging the gap between Metal lowering and the inference monad.
+
+  Key functions:
+  - `buildTypeEnvFromModule`: Build a TypeEnv from an UntypedModule and seed symbols
+  - `buildInstanceEnvFromModule`: Build an InstanceEnv from an UntypedModule
+  - `inferModule`: Run type inference on all functions in a module
+-/
+
+import Soma.Infer.Monad
+import Soma.Infer.Gen
+import Soma.Infer.Solver
+import Soma.Metal
+import Soma.Unique
+
+namespace Soma.Infer
+
+open Std
+open Soma.Typing
+open Soma.Metal (UntypedModule UntypedFunction UntypedTypeDef Module Function TypeDef
+                 Constructor UntypedConstructor Name BindingId Scope)
+open Soma.Syntax (TypeExpr)
+open Soma (UniqueSupply)
+
+/-- Resolve a TypeExpr to a MonoTy without using InferM (pure version).
+    Returns `none` if the type cannot be resolved (unknown type constructor).
+    Used for resolving field types in type definitions during environment building. -/
+partial def resolveTypeExprPure (ty : TypeExpr) (env : TypeEnv) : Option MonoTy :=
+  match ty with
+  | .var _name =>
+    -- Type variables cannot be resolved in a pure context because we don't have
+    -- access to a fresh variable counter. Return none and let the inference
+    -- phase handle type variable instantiation properly via InferM.
+    none
+
+  | .con name =>
+    match StarPrimitive.fromName? name.value with
+    | some prim => some (.starPrim prim)
+    | none =>
+      match env.lookupType name.value with
+      | some info => some (.con info.typeId)
+      | none => none
+
+  | .arrow from_ to _ =>
+    match resolveTypeExprPure from_ env, resolveTypeExprPure to env with
+    | some fromTy, some toTy => some (.arrow fromTy toTy)
+    | _, _ => none
+
+  | .tuple elements _ =>
+    let elemTys := elements.filterMap fun e => resolveTypeExprPure e env
+    if elemTys.size == elements.size then
+      Gen.mkTupleType elemTys
+    else
+      none
+
+  | .list elem _ =>
+    (resolveTypeExprPure elem env).map Ty.array
+
+  | .app fn arg _ =>
+    match resolveTypeExprPure arg env with
+    | none => none
+    | some argTy =>
+      match fn with
+      | .con name =>
+        match HigherPrimitive.fromName? name.value with
+        | some .array => some (Ty.array argTy)
+        | some .ref => some (Ty.ref argTy)
+        | some .io => some (Ty.io argTy)
+        | none =>
+          match env.lookupType name.value with
+          | some typeInfo =>
+            some (Gen.applyTypeArgs (Ty.userCon typeInfo.typeId.kind typeInfo.typeId) #[argTy])
+          | none => none
+      | .app _ _ _ =>
+        -- Nested application - collect all args
+        match collectTypeAppPure fn #[argTy] env with
+        | some (baseName, allArgs) =>
+          match HigherPrimitive.fromName? baseName with
+          | some .array => some (Ty.array (allArgs[0]?.getD argTy))
+          | some .ref => some (Ty.ref (allArgs[0]?.getD argTy))
+          | some .io => some (Ty.io (allArgs[0]?.getD argTy))
+          | none =>
+            match env.lookupType baseName with
+            | some typeInfo =>
+              some (Gen.applyTypeArgs (Ty.userCon typeInfo.typeId.kind typeInfo.typeId) allArgs)
+            | none => none
+        | none => none
+      | _ => none
+
+  | .forall_ _ body _ => resolveTypeExprPure body env
+  | .constrained _ body _ => resolveTypeExprPure body env
+  | .parens inner _ => resolveTypeExprPure inner env
+  | .kinded ty _ _ => resolveTypeExprPure ty env
+where
+  /-- Collect base type name and arguments from nested applications -/
+  collectTypeAppPure (ty : TypeExpr) (args : Array MonoTy) (env : TypeEnv) : Option (String × Array MonoTy) :=
+    match ty with
+    | .con name => some (name.value, args)
+    | .app fn arg _ =>
+      match resolveTypeExprPure arg env with
+      | some argTy => collectTypeAppPure fn (#[argTy] ++ args) env
+      | none => none
+    | .parens inner _ => collectTypeAppPure inner args env
+    | _ => none
+
+/-- Build a TypeEnv from an UntypedModule and external function signatures.
+
+    This populates the type environment with:
+    1. External functions from the seed environment
+    2. Type definitions from the module
+    3. Constructors from the module's type definitions
+
+    Takes a UniqueSupply to generate proper unique IDs for type definitions,
+    and returns the updated supply to ensure no ID collisions. -/
+def buildTypeEnvFromModule
+    (m : UntypedModule)
+    (externalFunctions : Array (String × FunctionInfo))
+    (supply : UniqueSupply)
+    : TypeEnv × UniqueSupply := Id.run do
+  -- Start with empty environment
+  let mut env := TypeEnv.empty
+  let mut sup := supply
+
+  -- Add external functions
+  for (name, info) in externalFunctions do
+    env := env.addFunction name info
+
+  -- Add type definitions from the module
+  for typeDef in m.types do
+    let typeName := typeDef.name.display
+    let typeVarCount := typeDef.typeVarCount
+
+    -- Create type parameters
+    let typeParams : Array TyVarId := Array.range typeVarCount |>.map fun i =>
+      ⟨s!"t{i}", i, .star⟩
+
+    -- Generate a proper unique ID for this type
+    let (typeUnique, sup') := sup.fresh typeName
+    sup := sup'
+
+    let typeId : TypeId := {
+      module := m.name
+      name := typeName
+      unique := typeUnique.id
+      kind := Kind.nary typeVarCount
+    }
+
+    let typeInfo : TypeInfo := {
+      typeId := typeId
+      params := typeParams
+      constructors := {}  -- Will be filled per-constructor below
+    }
+    env := env.addType typeName typeInfo
+
+    -- Add constructors with resolved field types
+    match typeDef with
+    | .algebraic name typeVarNames ctors =>
+      let typeParams' : Array TyVarId := typeVarNames.mapIdx fun i n =>
+        ⟨n, i, .star⟩
+
+      for ctor in ctors do
+        -- Resolve field types from syntax (falls back to empty for type variables)
+        let fieldTypes := ctor.fieldTypeSyntax.filterMap fun tyExpr =>
+          resolveTypeExprPure tyExpr env
+        let ctorInfo : ConstructorInfo := {
+          typeName := name.display
+          typeId := typeId
+          typeParams := typeParams'
+          fieldTypes := fieldTypes
+          tag := ctor.tag
+        }
+        env := env.addConstructor ctor.name.display ctorInfo
+
+    | .struct name typeVarNames ctorName fieldTypeSyntax =>
+      let typeParams' : Array TyVarId := typeVarNames.mapIdx fun i n =>
+        ⟨n, i, .star⟩
+
+      let fieldTypes := fieldTypeSyntax.filterMap fun tyExpr =>
+        resolveTypeExprPure tyExpr env
+      let ctorInfo : ConstructorInfo := {
+        typeName := name.display
+        typeId := typeId
+        typeParams := typeParams'
+        fieldTypes := fieldTypes
+        tag := 0
+      }
+      env := env.addConstructor ctorName.display ctorInfo
+
+    | .record name typeVarNames fieldNamesAndTypes =>
+      let typeParams' : Array TyVarId := typeVarNames.mapIdx fun i n =>
+        ⟨n, i, .star⟩
+
+      -- Record uses the type name as the constructor name
+      let fieldTypes := fieldNamesAndTypes.filterMap fun (_, tyExpr) =>
+        resolveTypeExprPure tyExpr env
+      let ctorInfo : ConstructorInfo := {
+        typeName := name.display
+        typeId := typeId
+        typeParams := typeParams'
+        fieldTypes := fieldTypes
+        tag := 0
+      }
+      env := env.addConstructor name.display ctorInfo
+
+  return (env, sup)
+
+/-- Look up a built-in class by name -/
+def lookupBuiltinClass (name : String) : Option TyCon :=
+  match name with
+  | "Eq" => some TypeClassName.eq
+  | "Ord" => some TypeClassName.ord
+  | "Show" => some TypeClassName.show_
+  | "Num" => some TypeClassName.num
+  | "Functor" => some TypeClassName.functor
+  | "Monad" => some TypeClassName.monad
+  | _ => none
+
+/-- Resolve a Syntax.Constraint to a Typing.Constraint.
+    Returns none if the class name or any type argument cannot be resolved. -/
+def resolveConstraintPure
+    (c : Syntax.Constraint)
+    (typeEnv : TypeEnv)
+    (instEnv : InstanceEnv)
+    : Option Typing.Constraint :=
+  -- Try to resolve the class name
+  let className := lookupBuiltinClass c.className.value
+    |>.orElse fun () =>
+      instEnv.classes.get? c.className.value |>.map (·.name)
+  match className with
+  | none => none
+  | some tycon =>
+    -- Resolve all type arguments
+    let resolvedArgs := c.args.filterMap fun tyExpr =>
+      resolveTypeExprPure tyExpr typeEnv
+    -- Only succeed if all args resolved
+    if resolvedArgs.size == c.args.size then
+      some { className := tycon, args := resolvedArgs }
+    else
+      none
+
+/-- Build an InstanceEnv from an UntypedModule, seed instances, and type environment.
+
+    This extracts instances from the module's UntypedInstance declarations
+    and adds them to the seed environment. Type arguments are resolved from
+    syntax using the provided TypeEnv.
+
+    For built-in classes (Eq, Ord, Show, Num, Functor, Monad), we use known TyCons.
+    For user-defined type classes, we look them up in the InstanceEnv.classes. -/
+def buildInstanceEnvFromModule
+    (m : UntypedModule)
+    (seed : InstanceEnv)
+    (typeEnv : TypeEnv)
+    : InstanceEnv := Id.run do
+  let mut env := seed
+
+  for inst in m.instances do
+    -- Resolve type arguments from syntax
+    let resolvedArgs := inst.typeArgsSyntax.filterMap fun tyExpr =>
+      resolveTypeExprPure tyExpr typeEnv
+
+    -- Try to resolve the class name to a TyCon
+    let className := lookupBuiltinClass inst.className
+      |>.orElse fun () =>
+        -- Look for user-defined type class
+        env.classes.get? inst.className |>.map (·.name)
+
+    match className with
+    | some tycon =>
+      -- Extract type variables from resolved args
+      let typeVars := resolvedArgs.foldl (init := #[]) fun acc ty =>
+        acc ++ ty.freeVarsUnique
+
+      -- Resolve constraints from syntax
+      let resolvedConstraints := inst.constraintsSyntax.filterMap fun c =>
+        resolveConstraintPure c typeEnv env
+
+      let instDecl : InstanceDecl := {
+        className := tycon
+        args := resolvedArgs
+        typeVars := typeVars
+        constraints := resolvedConstraints
+        id := env.nextId
+        span := inst.span
+      }
+      env := env.addInstance instDecl
+    | none =>
+      -- Unknown class - skip (will be caught as error during type checking)
+      pure ()
+
+  return env
+
+/-- Extract all captured variable types from a typed expression tree.
+    Traverses the expression and collects types from all closure nodes.
+    Returns a mapping from BindingId to MonoTy for all captured variables. -/
+partial def extractCaptureTypes {scope : Scope} (expr : Metal.TypedExpr scope) : HashMap BindingId MonoTy :=
+  go expr {}
+where
+  go {s : Scope} (e : Metal.TypedExpr s) (acc : HashMap BindingId MonoTy) : HashMap BindingId MonoTy :=
+    match e with
+    | .closure _liftedName captures _info _span =>
+      -- Extract types from this closure's capture list
+      captures.toList.foldl (fun m (v, ty) => m.insert v.binding ty) acc
+    | .var _ _ _ => acc
+    | .lit _ _ => acc
+    | .call fn args _ _ => goList args (go fn acc)
+    | .let_ _ _ value body _ _ => go body (go value acc)
+    | .lam _params body _ _ => go body acc
+    | .construct _ _ args _ _ => goList args acc
+    | .tuple elems _ _ => goList elems acc
+    | .array elems _ _ => goList elems acc
+    | .if_ cond then_ else_ _ _ => go else_ (go then_ (go cond acc))
+    | .case scrutinees arms _ _ => goArms arms (goList scrutinees acc)
+    | .fieldAccess e _ _ _ => go e acc
+    | .global _ _ _ => acc
+    | .panic _ _ _ => acc
+  goList {s : Scope} : Metal.ExprList MonoTy s → HashMap BindingId MonoTy → HashMap BindingId MonoTy
+    | .nil, acc => acc
+    | .cons e es, acc => goList es (go e acc)
+  goArms {s : Scope} : Metal.ArmList MonoTy s → HashMap BindingId MonoTy → HashMap BindingId MonoTy
+    | .nil, acc => acc
+    | .cons (.mk _pats body _span) as, acc => goArms as (go body acc)
+
+/-- Extract binding ID from a typed param triple -/
+def typedParamBindingId (p : BindingId × String × MonoTy) : BindingId := p.1
+
+/-- Axiom: when we build paramInfos from fn.params by adding types, the binding IDs are preserved.
+    This is true by construction in genFunctionBody. -/
+axiom inferFunction_scope_eq (fn : UntypedFunction) (paramInfos : Array (BindingId × String × MonoTy)) :
+    fn.params.toList.map Prod.fst = paramInfos.toList.map typedParamBindingId
+
+/-- Result of inferring a single function -/
+structure FunctionInferResult where
+  /-- The typed function (if successful) -/
+  function : Option Function
+  /-- Errors encountered -/
+  errors : Array InferError
+
+/-- Infer the type of a single untyped function.
+
+    This generates constraints from the function body, solves them,
+    and produces a typed function with inferred parameter and return types.
+
+    The key steps are:
+    1. Generate constraints - returns typed body with type variable annotations
+    2. Solve constraints - produces a substitution
+    3. Apply substitution via mapInfo - resolves all type variables to concrete types -/
+def inferFunction
+    (fn : UntypedFunction)
+    (ctx : InferContext)
+    : FunctionInferResult := Id.run do
+  -- Run inference in the monad
+  let (result, finalState) := InferM.run (m := do
+    -- Generate constraints and get typed body (with type variable annotations)
+    let (bodyTy, typedBody, paramInfos) ← genFunctionBody fn fn.body
+
+    -- Solve constraints
+    Solver.solve fn.body.span
+
+    -- Apply final substitution to get concrete types
+    let σ ← InferM.getSubst
+
+    -- Resolve all type variables in parameters
+    let finalParamInfos := paramInfos.map fun (b, n, ty) => (b, n, σ.apply ty)
+
+    -- Resolve return type
+    let finalReturnTy := σ.apply bodyTy
+
+    -- Apply substitution to the typed body to resolve all type annotations
+    let finalBody := typedBody.mapInfo σ.apply
+
+    -- Generalize the function type
+    let fnTy := finalParamInfos.foldr (init := finalReturnTy) fun (_, _, ty) acc =>
+      Ty.arrow ty acc
+
+    -- Get free type variables for generalization
+    let freeVars := fnTy.freeVarsUnique
+
+    -- Get remaining constraints
+    let graph ← InferM.getConstraints
+    let constraints := graph.classes.map (·.toConstraint)
+
+    -- Filter constraints to those relevant to the free variables
+    let relevantConstraints := constraints.filter fun c =>
+      c.args.any fun arg => arg.freeVars.any fun v =>
+        freeVars.any (·.id == v.id)
+
+    return (finalParamInfos, finalReturnTy, finalBody, freeVars, relevantConstraints)
+  ) ctx
+
+  let (paramInfos, returnTy, typedBody, typeVars, constraints) := result
+  let errors := finalState.errors
+
+  if errors.isEmpty then
+    -- The typed body is at scope fn.params.toList.map Prod.fst
+    -- Function.body expects scope paramInfos.toList.map typedParamBindingId
+    -- These are equal because paramInfos preserves binding IDs from fn.params
+    let castBody : Metal.TypedExpr (paramInfos.toList.map typedParamBindingId) :=
+      cast (congrArg Metal.TypedExpr (inferFunction_scope_eq fn paramInfos)) typedBody
+
+    -- Extract captured variable types from closure nodes in the typed body
+    let captureTypeMap := extractCaptureTypes typedBody
+
+    -- Build the typed function
+    let typedFunction : Function := {
+      name := fn.name
+      params := paramInfos
+      returnType := returnTy
+      body := castBody
+      typeVars := typeVars
+      constraints := constraints
+      closureInfo := fn.closureInfo.map fun ci =>
+        let capturedVars := ci.capturedVars.map fun (b, n) =>
+          -- Look up captured variable type from the extracted map
+          let ty := captureTypeMap.get? b |>.getD (.starPrim .unit)
+          (b, n, ty)
+        ({ capturedVars } : Metal.ClosureInfo)
+      attrs := fn.attrs
+    }
+    ⟨some typedFunction, #[]⟩
+  else
+    ⟨none, errors⟩
+
+/-- Result of inferring an entire module -/
+structure InferModuleResult where
+  /-- The typed module -/
+  module : Module
+  /-- All inference errors -/
+  errors : Array InferError
+
+/-- Run type inference on an entire module.
+
+    This processes all functions in the module, collecting errors
+    and producing typed versions where possible. -/
+def inferModule
+    (m : UntypedModule)
+    (ctx : InferContext)
+    : InferModuleResult := Id.run do
+  let mut typedFunctions : Array Function := #[]
+  let mut allErrors : Array InferError := #[]
+
+  -- First pass: add all function signatures to the environment
+  -- (for mutual recursion support)
+  let mut augmentedCtx := ctx
+  for fn in m.functions do
+    -- Create a placeholder polymorphic type for each function
+    -- This allows recursive and mutually recursive calls
+    let fnInfo : FunctionInfo := {
+      qualType := {
+        vars := #[]
+        constraints := #[]
+        body := .starPrim .unit  -- Placeholder, will be refined
+      }
+      metalName := fn.name
+    }
+    augmentedCtx := { augmentedCtx with
+      typeEnv := augmentedCtx.typeEnv.addFunction fn.name.display fnInfo
+    }
+
+  -- Second pass: infer each function
+  for fn in m.functions do
+    let fnCtx := { augmentedCtx with currentFunction := some fn.name.display }
+    let result := inferFunction fn fnCtx
+    allErrors := allErrors ++ result.errors
+    match result.function with
+    | some typedFn => typedFunctions := typedFunctions.push typedFn
+    | none => pure ()
+
+  -- Third pass: type-check instance methods
+  let mut typedInstances : Array Metal.Instance := #[]
+  for inst in m.instances do
+    -- Type-check each method in the instance
+    let mut typedMethods : Array Function := #[]
+    let mut instanceErrors : Array InferError := #[]
+
+    for method in inst.methods do
+      let methodCtx := { augmentedCtx with currentFunction := some method.name.display }
+      let result := inferFunction method methodCtx
+      instanceErrors := instanceErrors ++ result.errors
+      match result.function with
+      | some typedMethod => typedMethods := typedMethods.push typedMethod
+      | none => pure ()
+
+    allErrors := allErrors ++ instanceErrors
+
+    -- Only add the instance if all methods type-checked successfully
+    if typedMethods.size == inst.methods.size then
+      -- Resolve instance type from type arguments syntax
+      let instanceType := match inst.typeArgsSyntax[0]? with
+        | some tyExpr => resolveTypeExprPure tyExpr augmentedCtx.typeEnv |>.getD (.starPrim .unit)
+        | none => .starPrim .unit  -- Should not happen for valid instances
+      let typedInstance : Metal.Instance := {
+        className := inst.className
+        instanceType := instanceType
+        methods := typedMethods
+      }
+      typedInstances := typedInstances.push typedInstance
+
+  -- Convert untyped type definitions to typed ones
+  -- Field types are resolved from syntax using the type environment built earlier
+  let typedTypes := m.types.map fun td =>
+    match td with
+    | .algebraic name typeVarNames ctors =>
+      let typeVars : Array TyVarId := typeVarNames.mapIdx fun i n => ⟨n, i, .star⟩
+      let typedCtors := ctors.map fun c =>
+        -- Resolve field types from syntax
+        let fields := c.fieldTypeSyntax.filterMap fun tyExpr =>
+          resolveTypeExprPure tyExpr augmentedCtx.typeEnv
+        ({
+          name := c.name
+          tag := c.tag
+          fields := fields
+        } : Constructor)
+      TypeDef.algebraic name typeVars typedCtors
+    | .struct name typeVarNames ctorName fieldTypeSyntax =>
+      let typeVars : Array TyVarId := typeVarNames.mapIdx fun i n => ⟨n, i, .star⟩
+      let fields := fieldTypeSyntax.filterMap fun tyExpr =>
+        resolveTypeExprPure tyExpr augmentedCtx.typeEnv
+      TypeDef.struct name typeVars ctorName fields
+    | .record name typeVarNames fieldNamesAndTypes =>
+      let typeVars : Array TyVarId := typeVarNames.mapIdx fun i n => ⟨n, i, .star⟩
+      let fields := fieldNamesAndTypes.filterMap fun (n, tyExpr) =>
+        (resolveTypeExprPure tyExpr augmentedCtx.typeEnv).map (n, ·)
+      TypeDef.record name typeVars fields
+
+  let typedModule : Module := {
+    name := m.name
+    functions := typedFunctions
+    types := typedTypes
+    instances := typedInstances
+    typeClasses := m.typeClasses
+  }
+
+  { module := typedModule, errors := allErrors }
+
+/-- Extract public symbols (function signatures) from a typed module -/
+def extractPublicSymbols
+    (m : Module)
+    (seed : Array (String × FunctionInfo))
+    : Array (String × FunctionInfo) := Id.run do
+  let mut result := seed
+  for fn in m.functions do
+    let info : FunctionInfo := {
+      qualType := fn.qualifiedType
+      metalName := fn.name
+    }
+    result := result.push (fn.name.display, info)
+  return result
+
+end Soma.Infer

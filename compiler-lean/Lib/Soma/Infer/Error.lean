@@ -38,6 +38,8 @@ inductive UnifyPurpose where
   | tupleElement (index : Nat)
   /-- Unifying field access -/
   | fieldAccess (fieldName : String)
+  /-- Unifying with explicit type annotation -/
+  | typeAnnotation
   /-- General unification (fallback) -/
   | general
   deriving Repr, BEq, Inhabited
@@ -56,6 +58,7 @@ def describe : UnifyPurpose → String
   | .arrayElements => "in array literal elements"
   | .tupleElement idx => s!"in tuple element {idx + 1}"
   | .fieldAccess field => s!"in field access '.{field}'"
+  | .typeAnnotation => "in type annotation"
   | .general => ""
 
 end UnifyPurpose
@@ -112,6 +115,11 @@ inductive InferError where
       (typeName : String)
       (expected : Nat)
       (actual : Nat)
+      (span : Span)
+
+  /-- Tuple has too many elements -/
+  | tupleTooLarge
+      (size : Nat)
       (span : Span)
 
   /-- Wrong number of function arguments -/
@@ -182,6 +190,7 @@ def span : InferError → Span
   | .noInstance _ s => s
   | .ambiguousType _ s => s
   | .wrongTypeArity _ _ _ s => s
+  | .tupleTooLarge _ s => s
   | .wrongArgCount _ _ _ s => s
   | .notAFunction _ s => s
   | .patternTypeMismatch _ s => s
@@ -280,6 +289,15 @@ def toDiagnostic : InferError → Diagnostic
     , labels := #[Label.primary span s!"expected {expected} type {args}, found {actual}"]
     , notes := #[]
     , help := none
+    }
+
+  | .tupleTooLarge size span =>
+    { severity := .error
+    , code := some "E0108"
+    , message := s!"tuple has too many elements ({size})"
+    , labels := #[Label.primary span "maximum tuple size is 8"]
+    , notes := #[]
+    , help := some "consider using a struct or array instead"
     }
 
   | .wrongArgCount name expected actual span =>

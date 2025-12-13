@@ -31,6 +31,7 @@ import Soma.Infer.Entailment
 import Soma.Infer.Monad
 import Soma.Infer.Gen
 import Soma.Infer.Solver
+import Soma.Infer.Module
 
 namespace Soma.Infer
 

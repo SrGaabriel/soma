@@ -1,4 +1,5 @@
 import Soma.Metal.Function
+import Soma.Syntax.Ast
 
 namespace Soma.Metal
 
@@ -8,8 +9,7 @@ open Soma.Typing
 structure UntypedConstructor where
   name : Name
   tag : Nat
-  fieldCount : Nat
-  deriving BEq
+  fieldTypeSyntax : Array Syntax.TypeExpr
 
 /-- A data constructor (typed) -/
 structure Constructor where
@@ -21,8 +21,8 @@ structure Constructor where
 /-- An untyped type definition -/
 inductive UntypedTypeDef where
   | algebraic (name : Name) (typeVarNames : Array String) (ctors : Array UntypedConstructor)
-  | struct (name : Name) (typeVarNames : Array String) (ctorName : Name) (fieldCount : Nat)
-  | record (name : Name) (typeVarNames : Array String) (fieldNames : Array String)
+  | struct (name : Name) (typeVarNames : Array String) (ctorName : Name) (fieldTypeSyntax : Array Syntax.TypeExpr)
+  | record (name : Name) (typeVarNames : Array String) (fieldNamesAndTypes : Array (String × Syntax.TypeExpr))
 
 namespace UntypedTypeDef
 
@@ -69,7 +69,10 @@ end TypeDef
 /-- An untyped instance (before type checking) -/
 structure UntypedInstance where
   className : String
+  typeArgsSyntax : Array Syntax.TypeExpr
+  constraintsSyntax : Array Syntax.Constraint
   methods : Array UntypedFunction
+  span : Syntax.Span
 
 /-- A typed type class instance -/
 structure Instance where

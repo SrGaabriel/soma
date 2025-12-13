@@ -146,6 +146,101 @@ inductive Soma.Metal.CaptureList (α : Type) : Scope → Type where
 
 end
 
+-- Nonempty instances for partial function compilation
+instance : Nonempty (Soma.Metal.CaptureList α scope) := ⟨.nil⟩
+instance : Nonempty (Soma.Metal.ExprList α scope) := ⟨.nil⟩
+instance : Nonempty (Soma.Metal.ArmList α scope) := ⟨.nil⟩
+instance : Nonempty (Soma.Metal.ParamList α) := ⟨.nil⟩
+instance : Nonempty (Soma.Metal.PatternList α) := ⟨.nil⟩
+
+-- Use lit for Expr since it doesn't require α
+instance : Nonempty (Soma.Metal.Expr α scope) :=
+  ⟨.lit (Soma.Metal.Literal.int 0) Soma.Syntax.Span.uninhabited⟩
+
+instance : Nonempty (Soma.Metal.Arm α scope) :=
+  ⟨.mk .nil (.lit (Soma.Metal.Literal.int 0) Soma.Syntax.Span.uninhabited) Soma.Syntax.Span.uninhabited⟩
+
+/-! ## mapInfo: Transform annotation type across expressions -/
+
+/-- Map a function over the annotation type of a param list -/
+def Soma.Metal.ParamList.mapInfo (f : α → β) : Soma.Metal.ParamList α → Soma.Metal.ParamList β
+  | .nil => .nil
+  | .cons b n info rest => .cons b n (f info) (rest.mapInfo f)
+
+/-- ParamList.mapInfo preserves bindingIds -/
+theorem Soma.Metal.ParamList.mapInfo_bindingIds (f : α → β) (ps : Soma.Metal.ParamList α) :
+    (ps.mapInfo f).bindingIds = ps.bindingIds := by
+  induction ps with
+  | nil => rfl
+  | cons b n info rest ih => simp only [mapInfo, ParamList.bindingIds, ih]
+
+/-- Map a function over the annotation type of a pattern list -/
+def Soma.Metal.PatternList.mapInfo (f : α → β) : Soma.Metal.PatternList α → Soma.Metal.PatternList β
+  | .nil => .nil
+  | .cons p ps => .cons (p.map f) (ps.mapInfo f)
+
+/-- PatternList.mapInfo preserves bindingIds -/
+theorem Soma.Metal.PatternList.mapInfo_bindingIds (f : α → β) (ps : Soma.Metal.PatternList α) :
+    (ps.mapInfo f).bindingIds = ps.bindingIds := by
+  induction ps with
+  | nil => rfl
+  | cons p rest ih =>
+    simp only [mapInfo, PatternList.bindingIds]
+    rw [ih]
+    congr 1
+    have h := Soma.Metal.Pattern.map_bindings f p
+    exact congrArg Array.toList h
+
+mutual
+
+/-- Map a function over the annotation type of an expression -/
+partial def Soma.Metal.Expr.mapInfo (f : α → β) : Soma.Metal.Expr α scope → Soma.Metal.Expr β scope
+  | .var v info span => .var v (f info) span
+  | .lit lit span => .lit lit span
+  | .call fn args info span => .call (fn.mapInfo f) (args.mapInfo f) (f info) span
+  | .let_ b orig val body info span => .let_ b orig (val.mapInfo f) (body.mapInfo f) (f info) span
+  | .lam params body info span =>
+      let params' := params.mapInfo f
+      let body' := Soma.Metal.Expr.mapInfo f body
+      let h : params'.bindingIds ++ scope = params.bindingIds ++ scope := by
+        rw [Soma.Metal.ParamList.mapInfo_bindingIds]
+      .lam params' (h ▸ body') (f info) span
+  | .closure name caps info span => .closure name (caps.mapInfo f) (f info) span
+  | .construct name tag args info span => .construct name tag (args.mapInfo f) (f info) span
+  | .tuple elems info span => .tuple (elems.mapInfo f) (f info) span
+  | .array elems info span => .array (elems.mapInfo f) (f info) span
+  | .if_ c t e info span => .if_ (c.mapInfo f) (t.mapInfo f) (e.mapInfo f) (f info) span
+  | .case scruts arms info span => .case (scruts.mapInfo f) (arms.mapInfo f) (f info) span
+  | .fieldAccess e idx info span => .fieldAccess (e.mapInfo f) idx (f info) span
+  | .global name info span => .global name (f info) span
+  | .panic msg info span => .panic msg (f info) span
+
+/-- Map a function over the annotation type of an expression list -/
+partial def Soma.Metal.ExprList.mapInfo (f : α → β) : Soma.Metal.ExprList α scope → Soma.Metal.ExprList β scope
+  | .nil => .nil
+  | .cons e es => .cons (e.mapInfo f) (es.mapInfo f)
+
+/-- Map a function over the annotation type of a case arm -/
+partial def Soma.Metal.Arm.mapInfo (f : α → β) : Soma.Metal.Arm α scope → Soma.Metal.Arm β scope
+  | .mk pats body span =>
+      let pats' := pats.mapInfo f
+      let body' := Soma.Metal.Expr.mapInfo f body
+      let h : pats'.bindingIds ++ scope = pats.bindingIds ++ scope := by
+        rw [Soma.Metal.PatternList.mapInfo_bindingIds]
+      .mk pats' (h ▸ body') span
+
+/-- Map a function over the annotation type of an arm list -/
+partial def Soma.Metal.ArmList.mapInfo (f : α → β) : Soma.Metal.ArmList α scope → Soma.Metal.ArmList β scope
+  | .nil => .nil
+  | .cons a as => .cons (a.mapInfo f) (as.mapInfo f)
+
+/-- Map a function over the annotation type of a capture list -/
+partial def Soma.Metal.CaptureList.mapInfo (f : α → β) : Soma.Metal.CaptureList α scope → Soma.Metal.CaptureList β scope
+  | .nil => .nil
+  | .cons v info rest => .cons v (f info) (rest.mapInfo f)
+
+end
+
 namespace Soma.Metal
 
 /-! ## List utilities -/

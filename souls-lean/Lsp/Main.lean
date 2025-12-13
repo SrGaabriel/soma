@@ -31,24 +31,6 @@ def convertDiagnostics (diags : Soma.Syntax.Diagnostics) : Array Diagnostic :=
     , message := diag.message
     : Diagnostic }
 
-/-- Quick parse for immediate feedback -/
-def quickParse (filePath : String) (content : String) : CompiledModule :=
-  let moduleName := moduleNameFromPath filePath
-  let fileId := fileIdFromPath filePath
-  let sourceFile := Soma.Syntax.SourceFile.create fileId filePath content
-  let (tokens, lexDiags) := Soma.Syntax.lexCode sourceFile
-  let (cst, parseDiags) := Soma.Syntax.Parse.parseSourceFile.run' tokens sourceFile
-  let symbols := buildSymbolTable moduleName filePath cst
-  {
-    name := moduleName
-    filePath := filePath
-    sourceFile := sourceFile
-    cst := cst
-    ast := none  -- Skip AST for quick parse
-    symbols := symbols
-    diagnostics := lexDiags ++ parseDiags  -- Only lex/parse errors
-  }
-
 /-- Handle textDocument/didOpen -/
 def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentParams) : IO Unit := do
   let uri := params.textDocument.uri
@@ -76,18 +58,19 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   -- Get updated content from VFS
   let some content ← ctx.getDocumentContent uri | return
 
-  let quickMod := quickParse filePath content
+  -- Full analysis (debouncing is handled by the LSP framework)
+  let mod := analyzeSource filePath content
 
-  -- Update state immediately so hover/definition work
-  ctx.modifyUserState fun s => s.setModule filePath quickMod
+  -- Update state so hover/definition work
+  ctx.modifyUserState fun s => s.setModule filePath mod
 
   -- Get version for diagnostics
   let some snap ← ctx.getDocument uri | return
   let version := snap.version
 
-  -- Publish quick diagnostics (todo: review this decision)
-  let quickDiags := convertDiagnostics quickMod.diagnostics
-  ctx.publishDiagnostics { uri, version := some version, diagnostics := quickDiags }
+  -- Publish all diagnostics (lex, parse, Metal lower, type infer)
+  let lspDiags := convertDiagnostics mod.diagnostics
+  ctx.publishDiagnostics { uri, version := some version, diagnostics := lspDiags }
 
 /-- Handle textDocument/didClose -/
 def handleDidClose (ctx : RequestContext LspState) (params : DidCloseTextDocumentParams) : IO Unit := do

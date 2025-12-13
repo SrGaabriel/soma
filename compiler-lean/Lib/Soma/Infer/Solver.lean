@@ -194,8 +194,8 @@ end InferResult
 def inferExpr {scope : Scope} (expr : Metal.Expr Unit scope)
     (ctx : InferContext) : InferResult :=
   let m : InferM InferResult := do
-    -- Generate constraints
-    let ty ← Gen.genExpr expr
+    -- Generate constraints (now returns type and typed expression)
+    let (ty, _typedExpr) ← Gen.genExpr expr
 
     -- Solve constraints
     Solver.solve expr.span

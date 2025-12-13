@@ -9,7 +9,6 @@ open Test.Fixtures
 /-- Run a single lexer test from a fixture -/
 def runLexerTest (tc : TestCase) : IO TestResult := do
   let (tokens, diags) := lex tc.source
-  -- For now, just check that lexing produces no errors
   if diags.isEmpty then
     IO.println s!"  [PASS] {tc.name}: {tokens.size} tokens"
     return .passed

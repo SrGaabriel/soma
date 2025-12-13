@@ -1,4 +1,7 @@
 import Soma.Syntax
+import Soma.Metal
+import Soma.Infer
+import Soma.Infer.Module
 import Lsp.State
 import Lsp.Symbols
 import Lsp.Loc
@@ -6,6 +9,9 @@ import Lsp.Loc
 namespace Lsp
 
 open Soma.Syntax
+open Soma.Infer
+open Soma.Typing
+open Soma.Metal (UntypedModule)
 
 /-- Derive module name from file path -/
 def moduleNameFromPath (filePath : String) : String :=
@@ -20,7 +26,11 @@ def moduleNameFromPath (filePath : String) : String :=
 def fileIdFromPath (filePath : String) : FileId :=
   ⟨filePath.hash.toNat⟩
 
-/-- Analyze a source file and produce a CompiledModule -/
+
+
+/-- Analyze a source file and produce a CompiledModule.
+    Pipeline: Source → Lex → Parse → CST Lower → Metal Lower → Type Infer
+    All phases are infallible and collect errors. -/
 def analyzeSource (filePath : String) (content : String) : CompiledModule := Id.run do
   let moduleName := moduleNameFromPath filePath
   let fileId := fileIdFromPath filePath
@@ -28,27 +38,44 @@ def analyzeSource (filePath : String) (content : String) : CompiledModule := Id.
   -- Phase 1: Create source file with line information
   let sourceFile := SourceFile.create fileId filePath content
 
-  -- Phase 2: Lexing
+  -- Phase 2: Lexing (infallible)
   let (tokens, lexDiags) := lexCode sourceFile
 
   -- Phase 3: Parsing (infallible - always produces CST)
   let (cst, parseDiags) := Parse.parseSourceFile.run' tokens sourceFile
 
-  -- Phase 4: Build symbol table from CST
+  -- Phase 4: Build symbol table from CST (for LSP features)
   let symbols := buildSymbolTable moduleName filePath cst
 
-  -- Phase 5: Lower to AST (optional, may fail with errors)
-  let (astOpt, lowerDiags) := lower cst moduleName
+  -- Phase 5: Lower CST to AST (infallible, collects errors)
+  let (ast, astLowerDiags) := lower cst moduleName
+
+  -- Phase 6: Lower AST to Metal IR (infallible, collects errors)
+  let lowerResult := Soma.Metal.Lower.lower ast
+  let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics lowerResult.errors
+
+  -- Phase 7: Type inference on Metal module (infallible, collects errors)
+  let typeEnv := Soma.Infer.buildTypeEnvFromModule lowerResult.module #[]
+  let instanceEnv := Soma.Infer.buildInstanceEnvFromModule lowerResult.module InstanceEnv.empty
+  let inferCtx : InferContext := {
+    typeEnv := typeEnv
+    instanceEnv := instanceEnv
+    currentFunction := none
+  }
+  let inferResult := Soma.Infer.inferModule lowerResult.module inferCtx
+  let inferDiags := InferErrors.toDiagnostics inferResult.errors
+
+  let metalDiags := metalLowerDiags ++ inferDiags
 
   -- Combine all diagnostics
-  let allDiags := lexDiags ++ parseDiags ++ lowerDiags
+  let allDiags := lexDiags ++ parseDiags ++ astLowerDiags ++ metalDiags
 
   return {
     name := moduleName
     filePath := filePath
     sourceFile := sourceFile
     cst := cst
-    ast := astOpt
+    ast := some ast
     symbols := symbols
     diagnostics := allDiags
   }
@@ -60,19 +87,6 @@ def reanalyzeSource (filePath : String) (content : String) : CompiledModule :=
 /-- Check if content has changed significantly (for debouncing) -/
 def contentChanged (old new : String) : Bool :=
   old != new
-
-/-- Quick syntax check - just lex and parse, don't build full symbols -/
-def quickCheck (filePath : String) (content : String) : Diagnostics := Id.run do
-  let fileId := fileIdFromPath filePath
-  let sourceFile := SourceFile.create fileId filePath content
-  let (tokens, lexDiags) := lexCode sourceFile
-  let (cst, parseDiags) := Parse.parseSourceFile.run' tokens sourceFile
-
-  -- Collect CST errors too
-  let cstErrors := cst.collectErrors.map fun (span, msg) =>
-    Soma.Syntax.Diagnostic.error msg span
-
-  return lexDiags ++ parseDiags ++ cstErrors
 
 /-- Get all error diagnostics -/
 def getErrors (mod : CompiledModule) : Diagnostics :=

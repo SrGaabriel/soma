@@ -1,0 +1,2 @@
+// expect: success
+def x = 42

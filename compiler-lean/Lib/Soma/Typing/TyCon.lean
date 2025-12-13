@@ -142,4 +142,14 @@ def fromUnique (u : Unique) (kind : Kind := .star) : TyCon :=
 
 end TyCon
 
+-- Built-in type class names as TyCons
+namespace TypeClassName
+  def eq : TyCon := .prim .classEq
+  def ord : TyCon := .prim .classOrd
+  def show_ : TyCon := .prim .classShow
+  def num : TyCon := .prim .classNum
+  def functor : TyCon := .prim .classFunctor
+  def monad : TyCon := .prim .classMonad
+end TypeClassName
+
 end Soma.Typing

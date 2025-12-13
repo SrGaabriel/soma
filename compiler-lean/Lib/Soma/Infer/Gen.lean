@@ -10,6 +10,7 @@
   2. Span-based error reporting (constraints carry spans)
   3. Constraint graph structure for efficient lookup
   4. Proper handling of scope-indexed expressions
+  5. Single traversal builds typed expression (no separate assembly pass)
 -/
 
 import Soma.Infer.Monad
@@ -59,104 +60,206 @@ def freshVars (n : Nat) (prefix_ : String := "t") : InferM (Array MonoTy) := do
     result := result.push (← freshVar s!"{prefix_}{i}")
   return result
 
-/-- Generate VarInfo for a parameter list -/
-partial def genParamListImpl {α : Type} (params : ParamList α) : InferM (Array (String × VarInfo)) := do
-  let rec go (acc : Array (String × VarInfo)) : ParamList α → InferM (Array (String × VarInfo))
-    | .nil => return acc
-    | .cons binding name _info ps => do
-      let ty ← freshVar name
-      let info : VarInfo := { ty, bindingId := binding, name }
-      go (acc.push (name, info)) ps
-  go #[] params
-
 /-- Apply type arguments to a type constructor.
     Given a type of kind `k1 -> k2 -> ... -> *` and arguments,
-    applies them in sequence to produce a MonoTy.
-    If the kind doesn't match (not enough arrows), returns the type as-is
-    (which will cause a type error elsewhere). -/
+    applies them in sequence to produce a MonoTy. -/
 def applyTypeArgs (baseTy : Ty k) (args : Array MonoTy) : MonoTy :=
   go k baseTy args.toList
 where
   go : (k : Kind) → Ty k → List MonoTy → MonoTy
     | .star, ty, [] => ty
-    | .star, ty, _ => ty  -- Extra args ignored (shouldn't happen with well-formed input)
-    | .arrow _ _, _, [] =>
-      -- Not enough arguments - return a placeholder (shouldn't happen)
-      .starPrim .unit
-    | .arrow .star k2, ty, arg :: rest =>
-      go k2 (.app ty arg) rest
-    | .arrow (.arrow _ _) _, _, _ =>
-      -- Higher-kinded argument - not supported in this simple version
-      .starPrim .unit
+    | .star, ty, _ => ty
+    | .arrow _ _, _, [] => .starPrim .unit
+    | .arrow .star k2, ty, arg :: rest => go k2 (.app ty arg) rest
+    | .arrow (.arrow _ _) _, _, _ => .starPrim .unit
 
-/-! ### Mutually recursive constraint generation functions -/
+/-- Generate typed ParamList from untyped, returning bindings for scope preserving bindingIds -/
+def genParamListAux : ParamList Unit → InferM (Array (String × VarInfo) × ParamList MonoTy)
+  | .nil => return (#[], .nil)
+  | .cons binding name () ps => do
+    let ty ← freshVar name
+    let info : VarInfo := { ty, bindingId := binding, name }
+    let (restBindings, restParams) ← genParamListAux ps
+    return (#[(name, info)] ++ restBindings, .cons binding name ty restParams)
+
+/-- TODO: prove -/
+axiom genParamListAux_preserves_bindingIds (params : ParamList Unit) (bindings : Array (String × VarInfo)) (typedParams : ParamList MonoTy) :
+    typedParams.bindingIds = params.bindingIds
+
+/-- Generate typed PatternList from untyped -/
+partial def genPatternListAux (patterns : PatternList Unit) (scrutTys : Array MonoTy) (span : Span)
+    : InferM (Array (String × VarInfo) × PatternList MonoTy) := do
+  match patterns with
+  | .nil => return (#[], .nil)
+  | .cons pat rest => do
+    let scrutTy ← match scrutTys[0]? with
+      | some ty => pure ty
+      | none => freshVar "scrut"
+    let (bindings, typedPat) ← genPatternAux pat scrutTy span
+    let (restBindings, typedRest) ← genPatternListAux rest (scrutTys.extract 1 scrutTys.size) span
+    return (bindings ++ restBindings, .cons typedPat typedRest)
+where
+  /-- Generate typed pattern -/
+  genPatternAux (pat : Pattern Unit) (scrutTy : MonoTy) (span : Span)
+      : InferM (Array (String × VarInfo) × Pattern MonoTy) := do
+    match pat with
+    | .wildcard () patSpan =>
+      return (#[], .wildcard scrutTy patSpan)
+
+    | .var binding name () patSpan =>
+      let info : VarInfo := { ty := scrutTy, bindingId := binding, name }
+      return (#[(name, info)], .var binding name scrutTy patSpan)
+
+    | .lit lit patSpan =>
+      let litTy := genLiteral lit
+      addEqualityConstraint scrutTy litTy .patternMatch span patSpan
+      return (#[], .lit lit patSpan)
+
+    | .ctor ctorName pats () patSpan =>
+      let ctorNameStr := ctorName.display
+      match ← lookupConstructor ctorNameStr with
+      | some ctorInfo =>
+        let freshParams ← ctorInfo.typeParams.mapM fun v => do
+          let fresh ← freshVar v.name
+          return (v.id, fresh)
+        let σ := Subst.fromArrays ctorInfo.typeParams (freshParams.map (·.2))
+        let fieldTys := ctorInfo.fieldTypes.map (σ.apply ·)
+        let baseTy := Ty.userCon ctorInfo.typeId.kind ctorInfo.typeId
+        let expectedTy := applyTypeArgs baseTy (freshParams.map (·.2))
+        addEqualityConstraint scrutTy expectedTy .patternMatch span patSpan
+        let (bindings, typedPats) ← genPatternArrayAux pats fieldTys patSpan
+        return (bindings, .ctor ctorName typedPats expectedTy patSpan)
+      | none =>
+        reportError (.unknownConstructor ctorNameStr patSpan)
+        let (bindings, typedPats) ← genPatternArrayAux pats #[] patSpan
+        return (bindings, .ctor ctorName typedPats scrutTy patSpan)
+
+    | .tuple pats () patSpan =>
+      let n := pats.size
+      let elemTys ← freshVars n "tup"
+      match mkTupleType elemTys with
+      | some tupleTy =>
+        addEqualityConstraint scrutTy tupleTy .patternMatch span patSpan
+        let (bindings, typedPats) ← genPatternArrayAux pats elemTys patSpan
+        return (bindings, .tuple typedPats tupleTy patSpan)
+      | none =>
+        reportError (.cannotInfer s!"tuple pattern with {n} elements (max 8)" patSpan)
+        let (bindings, typedPats) ← genPatternArrayAux pats #[] patSpan
+        return (bindings, .tuple typedPats scrutTy patSpan)
+
+    | .array innerPats () patSpan =>
+      let elemTy ← freshVar "arrayElem"
+      let arrayTy := Ty.array elemTy
+      addEqualityConstraint scrutTy arrayTy .patternMatch span patSpan
+      let elemTys : Array MonoTy := (Array.range innerPats.size).map fun _ => elemTy
+      let (bindings, typedPats) ← genPatternArrayAux innerPats elemTys patSpan
+      return (bindings, .array typedPats arrayTy patSpan)
+
+    | .cons headPat tailPat () patSpan =>
+      let elemTy ← freshVar "consElem"
+      let arrayTy := Ty.array elemTy
+      addEqualityConstraint scrutTy arrayTy .patternMatch span patSpan
+      let (headBindings, typedHead) ← genPatternAux headPat elemTy patSpan
+      let (tailBindings, typedTail) ← genPatternAux tailPat arrayTy patSpan
+      return (headBindings ++ tailBindings, .cons typedHead typedTail arrayTy patSpan)
+
+    | .as binding name innerPat () patSpan =>
+      let info : VarInfo := { ty := scrutTy, bindingId := binding, name }
+      let (innerBindings, typedInner) ← genPatternAux innerPat scrutTy patSpan
+      return (#[(name, info)] ++ innerBindings, .as binding name typedInner scrutTy patSpan)
+
+  genPatternArrayAux (pats : Array (Pattern Unit)) (scrutTys : Array MonoTy) (span : Span)
+      : InferM (Array (String × VarInfo) × Array (Pattern MonoTy)) := do
+    let mut result := #[]
+    let mut typedPats := #[]
+    for i in [:pats.size] do
+      let pat := pats[i]!
+      let scrutTy ← match scrutTys[i]? with
+        | some ty => pure ty
+        | none => freshVar "scrut"
+      let (bindings, typedPat) ← genPatternAux pat scrutTy span
+      result := result ++ bindings
+      typedPats := typedPats.push typedPat
+    return (result, typedPats)
+
+/-- todo: prove -/
+axiom genPatternListAux_preserves_bindingIds (patterns : PatternList Unit) (scrutTys : Array MonoTy) (span : Span)
+    (bindings : Array (String × VarInfo)) (typedPatterns : PatternList MonoTy) :
+    typedPatterns.bindingIds = patterns.bindingIds
 
 mutual
 
-/-- Generate constraints for an expression list, returning types for each -/
+/-- Generate constraints for an expression list, returning types and typed list -/
 partial def genExprList {scope : Scope} (exprs : ExprList Unit scope)
-    : InferM (Array MonoTy) := do
+    : InferM (Array MonoTy × ExprList MonoTy scope) := do
   match exprs with
-  | .nil => return #[]
+  | .nil => return (#[], .nil)
   | .cons e es => do
-    let ty ← genExpr e
-    let rest ← genExprList es
-    return #[ty] ++ rest
+    let (ty, typedE) ← genExpr e
+    let (restTys, typedEs) ← genExprList es
+    return (#[ty] ++ restTys, .cons typedE typedEs)
 
-/-- Generate constraints for an expression, returning its type -/
-partial def genExpr {scope : Scope} (expr : Expr Unit scope) : InferM MonoTy := do
+/-- Generate constraints for an expression, returning its type and typed version -/
+partial def genExpr {scope : Scope} (expr : Expr Unit scope)
+    : InferM (MonoTy × Expr MonoTy scope) := do
   match expr with
-  | .var v _info span =>
-    -- Look up the variable in the type environment
+  | .var v () span =>
     let name := v.original
     match ← lookupLocal name with
-    | some info => return info.ty
+    | some info => return (info.ty, .var v info.ty span)
     | none =>
       reportError (.unknownVariable name span)
-      freshVar "err"
+      let errTy ← freshVar "err"
+      return (errTy, .var v errTy span)
 
-  | .lit lit _span =>
-    return genLiteral lit
+  | .lit lit span =>
+    let ty := genLiteral lit
+    return (ty, .lit lit span)
 
-  | .call fn args _info span => do
-    let fnTy ← genExpr fn
-    let argTys ← genExprList args
+  | .call fn args () span => do
+    let (fnTy, typedFn) ← genExpr fn
+    let (argTys, typedArgs) ← genExprList args
     let resultTy ← freshVar "result"
     let expectedFnTy := argTys.foldr (init := resultTy) fun argTy accTy =>
       Ty.arrow argTy accTy
-    let fnSpan := fn.span
-    addEqualityConstraint expectedFnTy fnTy .general fnSpan span
-    return resultTy
+    addEqualityConstraint expectedFnTy fnTy .general fn.span span
+    return (resultTy, .call typedFn typedArgs resultTy span)
 
-  | .let_ binding original value body _info _span => do
-    let valueTy ← genExpr value
-    let varInfo : VarInfo := {
-      ty := valueTy
-      bindingId := binding
-      name := original
-    }
-    withLocal original varInfo (genExpr body)
+  | .let_ binding original value body () span => do
+    let (valueTy, typedValue) ← genExpr value
+    let varInfo : VarInfo := { ty := valueTy, bindingId := binding, name := original }
+    let (bodyTy, typedBody) ← withLocal original varInfo (genExpr body)
+    return (bodyTy, .let_ binding original typedValue typedBody bodyTy span)
 
-  | .lam params body _info _span => do
-    let paramInfos ← genParamListImpl params
-    let bodyTy ← withLocals paramInfos (genExpr body)
-    let fnTy := paramInfos.foldr (init := bodyTy) fun (_, info) accTy =>
+  | .lam params body () span => do
+    let (paramBindings, typedParams) ← genParamListAux params
+    -- The body's scope is params.bindingIds ++ scope
+    -- So we can cast the body by theorem
+    let (bodyTy, typedBody) ← withLocals paramBindings (genExpr body)
+    let fnTy := paramBindings.foldr (init := bodyTy) fun (_, info) accTy =>
       Ty.arrow info.ty accTy
-    return fnTy
+    -- Cast body to use typedParams' scope (bindingIds are preserved by construction)
+    let h : typedParams.bindingIds ++ scope = params.bindingIds ++ scope := by
+      rw [genParamListAux_preserves_bindingIds params paramBindings typedParams]
+    let typedBody' : Expr MonoTy (typedParams.bindingIds ++ scope) := h ▸ typedBody
+    return (fnTy, .lam typedParams typedBody' fnTy span)
 
-  | .closure liftedName _captures _info span => do
+  | .closure liftedName captures () span => do
+    let (_, typedCaptures) ← genCaptureList captures
     match ← lookupFunction liftedName.display with
     | some fnInfo =>
       let (ty, constraints) ← instantiate fnInfo.qualType
       for c in constraints do
         addConstraint c span
-      return ty
+      return (ty, .closure liftedName typedCaptures ty span)
     | none =>
       reportError (.unknownVariable liftedName.display span)
-      freshVar "err"
+      let errTy ← freshVar "err"
+      return (errTy, .closure liftedName typedCaptures errTy span)
 
-  | .construct name _tag args _info span => do
+  | .construct name tag args () span => do
     let ctorName := name.display
+    let (argTys, typedArgs) ← genExprList args
     match ← lookupConstructor ctorName with
     | some ctorInfo =>
       let freshParams ← ctorInfo.typeParams.mapM fun v => do
@@ -164,7 +267,6 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope) : InferM MonoTy := 
         return (v.id, fresh)
       let σ := Subst.fromArrays ctorInfo.typeParams (freshParams.map (·.2))
       let expectedFieldTys := ctorInfo.fieldTypes.map (σ.apply ·)
-      let argTys ← genExprList args
       let argList := args.toList
       for i in [:argTys.size] do
         if h : i < expectedFieldTys.size then
@@ -174,21 +276,23 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope) : InferM MonoTy := 
           addEqualityConstraint expectedTy actualTy (.tupleElement i) span argSpan
       let baseTy := Ty.userCon ctorInfo.typeId.kind ctorInfo.typeId
       let resultTy := applyTypeArgs baseTy (freshParams.map (·.2))
-      return resultTy
+      return (resultTy, .construct name tag typedArgs resultTy span)
     | none =>
       reportError (.unknownConstructor ctorName span)
-      freshVar "err"
+      let errTy ← freshVar "err"
+      return (errTy, .construct name tag typedArgs errTy span)
 
-  | .tuple elements _info span => do
-    let elemTys ← genExprList elements
+  | .tuple elements () span => do
+    let (elemTys, typedElements) ← genExprList elements
     match mkTupleType elemTys with
-    | some ty => return ty
+    | some ty => return (ty, .tuple typedElements ty span)
     | none =>
       reportError (.cannotInfer s!"tuple with {elemTys.size} elements (max 8)" span)
-      freshVar "err"
+      let errTy ← freshVar "err"
+      return (errTy, .tuple typedElements errTy span)
 
-  | .array elements _info span => do
-    let elemTys ← genExprList elements
+  | .array elements () span => do
+    let (elemTys, typedElements) ← genExprList elements
     let elemTy ← if elemTys.isEmpty then
       freshVar "elem"
     else
@@ -199,172 +303,220 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope) : InferM MonoTy := 
         let tySpan := if i < elemList.length then elemList[i]!.span else span
         addEqualityConstraint first ty .arrayElements span tySpan
       pure first
-    return Ty.array elemTy
+    let arrayTy := Ty.array elemTy
+    return (arrayTy, .array typedElements arrayTy span)
 
-  | .if_ cond then_ else_ _info span => do
-    let condTy ← genExpr cond
+  | .if_ cond then_ else_ () span => do
+    let (condTy, typedCond) ← genExpr cond
     addEqualityConstraint Ty.bool condTy .ifCondition span cond.span
-    let thenTy ← genExpr then_
-    let elseTy ← genExpr else_
+    let (thenTy, typedThen) ← genExpr then_
+    let (elseTy, typedElse) ← genExpr else_
     addEqualityConstraint thenTy elseTy .ifBranches then_.span else_.span
-    return thenTy
+    return (thenTy, .if_ typedCond typedThen typedElse thenTy span)
 
-  | .case scrutinees arms _info span => do
-    let scrutTys ← genExprList scrutinees
+  | .case scrutinees arms () span => do
+    let (scrutTys, typedScrutinees) ← genExprList scrutinees
     let resultTy ← freshVar "case_result"
-    genArmList arms scrutTys resultTy span
-    return resultTy
+    let typedArms ← genArmList arms scrutTys resultTy span
+    return (resultTy, .case typedScrutinees typedArms resultTy span)
 
-  | .fieldAccess expr _index _info _span => do
-    let _ ← genExpr expr
+  | .fieldAccess expr index () span => do
+    let (_, typedExpr) ← genExpr expr
     let fieldTy ← freshVar "field"
-    return fieldTy
+    return (fieldTy, .fieldAccess typedExpr index fieldTy span)
 
-  | .global name _info span => do
+  | .global name () span => do
     match ← lookupFunction name.display with
     | some fnInfo =>
       let (ty, constraints) ← instantiate fnInfo.qualType
       for c in constraints do
         addConstraint c span
-      return ty
+      return (ty, .global name ty span)
     | none =>
       reportError (.unknownVariable name.display span)
-      freshVar "err"
+      let errTy ← freshVar "err"
+      return (errTy, .global name errTy span)
 
-  | .panic _message _info _span => do
-    freshVar "panic"
+  | .panic message () span => do
+    let ty ← freshVar "panic"
+    return (ty, .panic message ty span)
 
-/-- Generate constraints for an arm list -/
+/-- Generate constraints for a capture list -/
+partial def genCaptureList {scope : Scope} (captures : CaptureList Unit scope)
+    : InferM (Array MonoTy × CaptureList MonoTy scope) := do
+  match captures with
+  | .nil => return (#[], .nil)
+  | .cons v () rest => do
+    let name := v.original
+    let ty ← match ← lookupLocal name with
+      | some info => pure info.ty
+      | none => freshVar name
+    let (restTys, typedRest) ← genCaptureList rest
+    return (#[ty] ++ restTys, .cons v ty typedRest)
+
+/-- Generate constraints for an arm list, returning typed arms -/
 partial def genArmList {scope : Scope} (arms : ArmList Unit scope)
     (scrutTys : Array MonoTy) (resultTy : MonoTy) (caseSpan : Span)
-    : InferM Unit := do
+    : InferM (ArmList MonoTy scope) := do
   match arms with
-  | .nil => return ()
+  | .nil => return .nil
   | .cons arm rest => do
-    genArm arm scrutTys resultTy caseSpan
-    genArmList rest scrutTys resultTy caseSpan
+    let typedArm ← genArm arm scrutTys resultTy caseSpan
+    let typedRest ← genArmList rest scrutTys resultTy caseSpan
+    return .cons typedArm typedRest
 
-/-- Generate constraints for a single arm -/
+/-- Generate constraints for a single arm, returning typed arm -/
 partial def genArm {scope : Scope} (arm : Arm Unit scope)
     (scrutTys : Array MonoTy) (resultTy : MonoTy) (caseSpan : Span)
-    : InferM Unit := do
+    : InferM (Arm MonoTy scope) := do
   match arm with
   | .mk patterns body span =>
-    let patternBindings ← genPatternList patterns scrutTys caseSpan
-    let bodyTy ← withLocals patternBindings (genExpr body)
+    let (patternBindings, typedPatterns) ← genPatternListAux patterns scrutTys caseSpan
+    let (bodyTy, typedBody) ← withLocals patternBindings (genExpr body)
     addEqualityConstraint resultTy bodyTy .caseArms caseSpan span
-
-/-- Generate constraints and bindings from a pattern list -/
-partial def genPatternList {α : Type} (patterns : PatternList α)
-    (scrutTys : Array MonoTy) (span : Span)
-    : InferM (Array (String × VarInfo)) := do
-  match patterns with
-  | .nil => return #[]
-  | .cons pat rest => do
-    let scrutTy ← match scrutTys[0]? with
-      | some ty => pure ty
-      | none => freshVar "scrut"
-    let bindings ← genPattern pat scrutTy span
-    let restBindings ← genPatternList rest (scrutTys.extract 1 scrutTys.size) span
-    return bindings ++ restBindings
-
-/-- Generate constraints and bindings from a single pattern -/
-partial def genPattern {α : Type} (pat : Pattern α) (scrutTy : MonoTy) (span : Span)
-    : InferM (Array (String × VarInfo)) := do
-  match pat with
-  | .wildcard _ _ =>
-    return #[]
-
-  | .var binding name _ _patSpan =>
-    let info : VarInfo := { ty := scrutTy, bindingId := binding, name }
-    return #[(name, info)]
-
-  | .lit lit patSpan =>
-    let litTy := genLiteral lit
-    addEqualityConstraint scrutTy litTy .patternMatch span patSpan
-    return #[]
-
-  | .ctor ctorName pats _ patSpan =>
-    let ctorNameStr := ctorName.display
-    match ← lookupConstructor ctorNameStr with
-    | some ctorInfo =>
-      let freshParams ← ctorInfo.typeParams.mapM fun v => do
-        let fresh ← freshVar v.name
-        return (v.id, fresh)
-      let σ := Subst.fromArrays ctorInfo.typeParams (freshParams.map (·.2))
-      let fieldTys := ctorInfo.fieldTypes.map (σ.apply ·)
-      let baseTy := Ty.userCon ctorInfo.typeId.kind ctorInfo.typeId
-      let expectedTy := applyTypeArgs baseTy (freshParams.map (·.2))
-      addEqualityConstraint scrutTy expectedTy .patternMatch span patSpan
-      -- pats is Array (Pattern α), need to generate bindings for each
-      genPatternArray pats fieldTys patSpan
-    | none =>
-      reportError (.unknownConstructor ctorNameStr patSpan)
-      return #[]
-
-  | .tuple pats _ patSpan =>
-    let n := pats.size
-    -- Generate fresh type variables for each tuple element
-    let elemTys ← freshVars n "tup"
-    match mkTupleType elemTys with
-    | some tupleTy =>
-      addEqualityConstraint scrutTy tupleTy .patternMatch span patSpan
-      genPatternArray pats elemTys patSpan
-    | none =>
-      reportError (.cannotInfer s!"tuple pattern with {n} elements (max 8)" patSpan)
-      pure #[]
-
-  | .array _ _ _ | .cons _ _ _ _ | .as _ _ _ _ _ =>
-    -- Not yet implemented, but needed for exhaustiveness
-    reportError (.cannotInfer "array/cons/as pattern" span)
-    return #[]
-
-/-- Generate constraints and bindings from a pattern array -/
-partial def genPatternArray {α : Type} (pats : Array (Pattern α))
-    (scrutTys : Array MonoTy) (span : Span)
-    : InferM (Array (String × VarInfo)) := do
-  let mut result := #[]
-  for i in [:pats.size] do
-    let pat := pats[i]!
-    let scrutTy ← match scrutTys[i]? with
-      | some ty => pure ty
-      | none => freshVar "scrut"
-    let bindings ← genPattern pat scrutTy span
-    result := result ++ bindings
-  return result
+    let h : typedPatterns.bindingIds ++ scope = patterns.bindingIds ++ scope := by
+      rw [genPatternListAux_preserves_bindingIds patterns scrutTys caseSpan patternBindings typedPatterns]
+    let typedBody' : Expr MonoTy (typedPatterns.bindingIds ++ scope) := h ▸ typedBody
+    return .mk typedPatterns typedBody' span
 
 end
 
 end Gen
 
-/-- Generate constraints for a top-level function -/
-def genFunction (name : String) (params : Array (String × BindingId))
-    (bodyFn : {scope : Scope} → Expr Unit scope) (declaredType : Option QualifiedType)
-    (span : Span) : InferM MonoTy := do
+open Soma.Syntax (TypeExpr)
+
+/-- Resolve a TypeExpr (syntax) to a MonoTy during type inference -/
+partial def resolveTypeExpr (ty : TypeExpr) : InferM MonoTy := do
+  match ty with
+  | .var name =>
+    InferM.freshVar name.value
+
+  | .con name =>
+    match StarPrimitive.fromName? name.value with
+    | some prim => pure (.starPrim prim)
+    | none =>
+      match (← InferM.getTypeEnv).lookupType name.value with
+      | some info => pure (.con info.typeId)
+      | none =>
+        InferM.reportError (.unknownType name.value name.span)
+        InferM.freshVar name.value
+
+  | .arrow from_ to _ =>
+    let fromTy ← resolveTypeExpr from_
+    let toTy ← resolveTypeExpr to
+    pure (.arrow fromTy toTy)
+
+  | .tuple elements _ =>
+    let elemTys ← elements.mapM resolveTypeExpr
+    match Gen.mkTupleType elemTys with
+    | some ty => pure ty
+    | none =>
+      InferM.reportError (.tupleTooLarge elemTys.size ty.span)
+      InferM.freshVar "tuple"
+
+  | .list elem _ =>
+    let elemTy ← resolveTypeExpr elem
+    pure (Ty.array elemTy)
+
+  | .app fn arg span =>
+    -- First resolve the argument
+    let argTy ← resolveTypeExpr arg
+    -- Check if fn is a higher primitive or user-defined type
+    match fn with
+    | .con name =>
+      match HigherPrimitive.fromName? name.value with
+      | some .array => pure (Ty.array argTy)
+      | some .ref => pure (Ty.ref argTy)
+      | some .io => pure (Ty.io argTy)
+      | none =>
+        -- Look up user-defined parameterized type
+        match (← InferM.getTypeEnv).lookupType name.value with
+        | some typeInfo =>
+          -- Create the type constructor with its proper kind and apply the argument
+          let baseTy := Ty.userCon typeInfo.typeId.kind typeInfo.typeId
+          pure (Gen.applyTypeArgs baseTy #[argTy])
+        | none =>
+          InferM.reportError (.unknownType name.value name.span)
+          InferM.freshVar "app"
+    | .app _ _ _ =>
+      -- Nested application like `Map String Int` - recursively resolve the function part
+      -- This collects all arguments and applies them at once
+      let (baseName, allArgs) ← collectTypeApp fn #[argTy]
+      match baseName with
+      | some name =>
+        match HigherPrimitive.fromName? name with
+        | some .array => pure (Ty.array (allArgs[0]?.getD argTy))
+        | some .ref => pure (Ty.ref (allArgs[0]?.getD argTy))
+        | some .io => pure (Ty.io (allArgs[0]?.getD argTy))
+        | none =>
+          match (← InferM.getTypeEnv).lookupType name with
+          | some typeInfo =>
+            let baseTy := Ty.userCon typeInfo.typeId.kind typeInfo.typeId
+            pure (Gen.applyTypeArgs baseTy allArgs)
+          | none =>
+            InferM.reportError (.unknownType name span)
+            InferM.freshVar "app"
+      | none =>
+        InferM.reportError (.unknownType "invalid nested type application" span)
+        InferM.freshVar "app"
+    | _ =>
+      InferM.reportError (.unknownType "invalid type application" span)
+      InferM.freshVar "app"
+
+  | .forall_ _ body _ =>
+    -- Type variables are handled at generalization time, not during constraint generation
+    resolveTypeExpr body
+
+  | .constrained _ body _ =>
+    -- Constraints are collected separately during generalization
+    resolveTypeExpr body
+
+  | .parens inner _ =>
+    resolveTypeExpr inner
+
+  | .kinded ty _ _ =>
+    resolveTypeExpr ty
+where
+  span : Span := match ty with
+    | .app _ _ s | .arrow _ _ s | .tuple _ s | .list _ s
+    | .forall_ _ _ s | .constrained _ _ s | .parens _ s | .kinded _ _ s => s
+    | .var n | .con n => n.span
+
+  /-- Collect the base type name and all arguments from nested type applications  -/
+  collectTypeApp (ty : TypeExpr) (args : Array MonoTy) : InferM (Option String × Array MonoTy) := do
+    match ty with
+    | .con name => pure (some name.value, args)
+    | .app fn arg _ =>
+      let argTy ← resolveTypeExpr arg
+      collectTypeApp fn (#[argTy] ++ args)
+    | .parens inner _ => collectTypeApp inner args
+    | _ => pure (none, args)
+
+/-- Generate constraints for a top-level function, returning typed body -/
+def genFunctionBody {scope : Scope} (fn : UntypedFunction)
+    (body : Expr Unit scope)
+    : InferM (MonoTy × Expr MonoTy scope × Array (BindingId × String × MonoTy)) := do
   -- Generate fresh type variables for parameters
-  let paramInfos ← params.mapM fun (paramName, binding) => do
-    let ty ← freshVar paramName
-    let info : VarInfo := { ty, bindingId := binding, name := paramName }
-    return (paramName, info)
+  let mut paramInfos : Array (BindingId × String × MonoTy) := #[]
+  let mut localBindings : Array (String × VarInfo) := #[]
 
-  -- We need to provide a concrete scope for the body
-  -- For now, we use the empty scope (the body should be closed)
-  let body : Expr Unit Scope.empty := bodyFn
-  let bodyTy ← InferM.withLocals paramInfos (Gen.genExpr body)
+  for (binding, name) in fn.params do
+    let ty ← freshVar name
+    paramInfos := paramInfos.push (binding, name, ty)
+    localBindings := localBindings.push (name, { ty, bindingId := binding, name })
 
-  -- Build function type
-  let fnTy := paramInfos.foldr (init := bodyTy) fun (_, info) accTy =>
-    Ty.arrow info.ty accTy
+  -- Infer the body type with parameters in scope
+  let (bodyTy, typedBody) ← InferM.withLocals localBindings do
+    Gen.genExpr body
 
-  -- If there's a declared type, constrain to match
-  match declaredType with
-  | some qt =>
-    let (declTy, constraints) ← instantiate qt
-    for c in constraints do
-      addConstraint c span
-    addEqualityConstraint declTy fnTy (.functionBody name) span span
+  -- If there's a declared type annotation, add a constraint
+  match fn.declaredTypeSyntax with
+  | some declaredTy =>
+    let declaredMonoTy ← resolveTypeExpr declaredTy
+    let returnTy := declaredMonoTy.stripArrows fn.params.size
+    InferM.addEqualityConstraint bodyTy returnTy .typeAnnotation body.span declaredTy.span
   | none => pure ()
 
-  return fnTy
+  return (bodyTy, typedBody, paramInfos)
 
 end Soma.Infer

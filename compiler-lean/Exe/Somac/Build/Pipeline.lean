@@ -2,7 +2,9 @@ import Somac.Build.Compiled
 import Soma.Project
 import Soma.Syntax
 import Soma.Metal
+import Soma.Infer
 import Soma.Logging
+import Soma.Unique
 
 namespace Somac.Build
 
@@ -10,7 +12,9 @@ open Soma
 open Soma.Project
 open Soma.Syntax
 open Soma.Metal
+open Soma.Typing
 open Soma.Logging
+open Soma (UniqueSupply)
 
 /-- Result of parsing a single module -/
 abbrev ParseResult := Except (Array Diagnostic) ModuleInfo
@@ -57,18 +61,84 @@ def parseModules (modules : Array (String × System.FilePath)) : IO ((Array Diag
 
   pure (allDiags, graph)
 
+/-- Merge two instance environments -/
+def mergeInstanceEnvs (e1 e2 : Project.InstanceEnv) : Project.InstanceEnv :=
+  e2.fold (init := e1) fun acc className instances =>
+    match acc.get? className with
+    | none => acc.insert className instances
+    | some existing => acc.insert className (existing ++ instances)
+
+/-- Convert Project.InstanceEnv to Infer.InstanceEnv -/
+def projectToInferInstanceEnv (projEnv : Project.InstanceEnv) : Infer.InstanceEnv :=
+  projEnv.fold (init := Infer.InstanceEnv.empty) fun acc className instances =>
+    instances.foldl (fun env (typeArgs, sym) =>
+      -- Create a TyCon for the class from the symbol's unique
+      let classTyCon := TyCon.mkUser sym.module className sym.unique.id
+      let instDecl : Infer.InstanceDecl := {
+        className := classTyCon
+        args := typeArgs
+        typeVars := #[] -- extracted during inference
+        constraints := #[]  -- resolved during inference
+        id := env.nextId
+        span := sym.span
+      }
+      env.addInstance instDecl
+    ) acc
+
+/-- Convert SymbolEnv to array of function info for Infer.buildTypeEnvFromModule -/
+def symbolEnvToFunctionInfos (seed : SymbolEnv) : Array (String × Infer.FunctionInfo) :=
+  seed.fold (init := #[]) fun acc sym qt =>
+    let metalName : Metal.Name := .user { id := sym.unique.id, module := sym.unique.module, original := sym.name }
+    acc.push (sym.name, { qualType := qt, metalName := metalName })
+
+/-- Extract public symbols from a typed module -/
+def extractPublicSymbols (m : Metal.Module) (seed : SymbolEnv) : SymbolEnv :=
+  m.functions.foldl (init := seed) fun acc fn =>
+    -- Extract the unique from the function's Metal.Name
+    let unique := fn.name.baseUnique?.getD { id := 0, module := m.name, original := fn.name.display }
+    let sym : Symbol := {
+      unique := unique
+      name := fn.name.display
+      kind := .binding
+      module := m.name
+      package := "" -- todo
+      span := Span.uninhabited
+    }
+    acc.insert sym fn.qualifiedType
+
+/-- Extract public instances from a typed module -/
+def extractPublicInstances (m : Metal.Module) (seed : Project.InstanceEnv) (supply : UniqueSupply)
+    : Project.InstanceEnv × UniqueSupply := Id.run do
+  let mut acc := seed
+  let mut sup := supply
+  for inst in m.instances do
+    let instanceName := s!"{inst.className}${inst.instanceType}"
+    let (unique, sup') := sup.fresh instanceName
+    sup := sup'
+    let sym : Symbol := {
+      unique := unique
+      name := inst.className
+      kind := .instanceMethod inst.className inst.className
+      module := m.name
+      package := "" -- todo
+      span := Span.uninhabited
+    }
+    match acc.get? inst.className with
+    | none => acc := acc.insert inst.className #[(#[inst.instanceType], sym)]
+    | some existing => acc := acc.insert inst.className (existing.push (#[inst.instanceType], sym))
+  return (acc, sup)
+
 /-- Compile a single module with access to already-compiled dependencies -/
 def compileModule
     (_packageName : String)
     (info : ModuleInfo)
     (compiledDeps : Std.HashMap String CompiledModule)
     (externalDeps : Std.HashMap String SymbolEnv)
-    (externalInstances : Std.HashMap String InstanceEnv)
+    (externalInstances : Std.HashMap String Project.InstanceEnv)
     (_externalConstructors : Std.HashMap String Nat)
-    : IO (Except CompileError CompiledModule) := do
+    (supply : UniqueSupply)
+    : (Array Diagnostic) × CompiledModule × UniqueSupply :=
   let modName := info.name.toString
-
-  IO.println s!"Compiling module: {modName}"
 
   -- Collect seed environment from dependencies
   let seedEnv : SymbolEnv := compiledDeps.fold (init := {}) fun acc _ dep =>
@@ -77,53 +147,67 @@ def compileModule
   let seedEnv := externalDeps.fold (init := seedEnv) fun acc _ env =>
     acc.fold (init := env) fun e sym ty => e.insert sym ty
 
-  let seedInstances : InstanceEnv := compiledDeps.fold (init := {}) fun acc _ dep =>
+  let seedInstances : Project.InstanceEnv := compiledDeps.fold (init := {}) fun acc _ dep =>
     mergeInstanceEnvs acc dep.publicInstances
 
   let seedInstances := externalInstances.fold (init := seedInstances) fun acc _ env =>
     mergeInstanceEnvs acc env
 
-  -- TODO
+  let lowerResult := Metal.Lower.lower info.ast
 
-  let placeholderModule : CompiledModule := {
+  let metalDiags := Metal.Lower.LowerError.toDiagnostics lowerResult.errors
+
+  let externalFunctions := symbolEnvToFunctionInfos seedEnv
+  let (typeEnv, supply) := Infer.buildTypeEnvFromModule lowerResult.module externalFunctions supply
+  let inferInstanceEnv := Infer.buildInstanceEnvFromModule lowerResult.module (projectToInferInstanceEnv seedInstances) typeEnv
+
+  let inferCtx : Infer.InferContext := {
+    typeEnv := typeEnv
+    instanceEnv := inferInstanceEnv
+    currentFunction := none
+  }
+
+  let inferResult := Infer.inferModule lowerResult.module inferCtx
+
+  let inferDiags := Infer.InferErrors.toDiagnostics inferResult.errors
+
+  let allDiags := metalDiags ++ inferDiags
+
+  let publicSymbols := extractPublicSymbols inferResult.module seedEnv
+  let (publicInstances, supply) := extractPublicInstances inferResult.module seedInstances supply
+
+  let compiledModule : CompiledModule := {
     name := modName
-    metalNormalized := Metal.Module.empty modName
-    publicSymbols := seedEnv  -- TODO: Should be newly defined symbols
-    publicInstances := seedInstances  -- TODO: Should be newly defined instances
+    metalNormalized := inferResult.module
+    publicSymbols := publicSymbols
+    publicInstances := publicInstances
     resolvedAst := info.ast
   }
 
-  pure (.ok placeholderModule)
-where
-  mergeInstanceEnvs (e1 e2 : InstanceEnv) : InstanceEnv :=
-    e2.fold (init := e1) fun acc className instances =>
-      match acc.get? className with
-      | none => acc.insert className instances
-      | some existing => acc.insert className (existing ++ instances)
+  (allDiags, compiledModule, supply)
 
-/-- Compile all modules in topological order -/
+/-- Compile all modules in topological order.
+    Returns accumulated diagnostics and compiled modules.
+
+    Takes and returns UniqueSupply to ensure globally unique IDs across all modules. -/
 def compileModulesInOrder
     (sortedNames : Array String)
     (graph : ModuleGraph)
     (externalDeps : Std.HashMap String SymbolEnv)
-    (externalInstances : Std.HashMap String InstanceEnv)
+    (externalInstances : Std.HashMap String Project.InstanceEnv)
     (externalConstructors : Std.HashMap String Nat)
     (packageName : String)
-    : IO (Except CompileError (Array CompiledModule)) := do
-  let mut compiled : Std.HashMap String CompiledModule := {}
-  let mut results : Array CompiledModule := #[]
-
-  for modName in sortedNames do
-    match graph.get? modName with
-    | none => pure () -- Skip missing modules (shouldn't happen)
-    | some info =>
-      match ← compileModule packageName info compiled externalDeps externalInstances externalConstructors with
-      | .error e => return .error e
-      | .ok cm =>
-        compiled := compiled.insert modName cm
-        results := results.push cm
-
-  pure (.ok results)
+    (supply : UniqueSupply)
+    : (Array Diagnostic) × (Array CompiledModule) × UniqueSupply :=
+  let (allDiags, _, results, finalSupply) := sortedNames.foldl
+    (init := (#[], ({} : Std.HashMap String CompiledModule), #[], supply))
+    fun (diags, compiled, results, sup) modName =>
+      match graph.get? modName with
+      | none => (diags, compiled, results, sup) -- Skip missing modules
+      | some info =>
+        let (moduleDiags, cm, sup') := compileModule packageName info compiled externalDeps externalInstances externalConstructors sup
+        (diags ++ moduleDiags, compiled.insert modName cm, results.push cm, sup')
+  (allDiags, results, finalSupply)
 
 /-- Link compiled modules into a single optimized unit -/
 def linkModules
@@ -155,30 +239,15 @@ def linkModules
 /-- Load external dependencies from tarball files -/
 def loadExternalDependencies (deps : Array (String × System.FilePath))
     : IO (Except CompileError (Array ExternalDependency)) := do
-  let mut results : Array ExternalDependency := #[]
-
-  for (name, path) in deps do
-    -- Check if path exists
-    if !(← path.pathExists) then
-      return .error (.dependencyNotFound name path.toString)
-
-    IO.println s!"Loading external dependency: {name} from {path}"
-
-    -- TODO
-
-    results := results.push {
-      name := name
-      version := none
-      symbols := {}
-      instances := {}
-      constructors := {}
-    }
-
-  pure (.ok results)
+  if deps.isEmpty then
+    pure (.ok #[])
+  else
+    let (name, path) := deps[0]!
+    return .error (.dependencyNotFound name s!"external dependency loading not yet implemented (tried to load from {path})")
 
 /-- Process external dependencies into lookup tables -/
 def processExternalDependencies (deps : Array ExternalDependency)
-    : (Std.HashMap String SymbolEnv × Std.HashMap String InstanceEnv × Std.HashMap String Nat) :=
+    : (Std.HashMap String SymbolEnv × Std.HashMap String Project.InstanceEnv × Std.HashMap String Nat) :=
   deps.foldl (init := ({}, {}, {})) fun (symbols, instances, constructors) dep =>
     let symbols' := dep.symbols.fold (init := symbols) fun acc modName env =>
       acc.insert modName env

@@ -3,6 +3,7 @@ import Test.Lexer
 import Test.Parser
 import Test.Error
 import Test.Infer
+import Test.Checking
 
 /-- Main entry point for all tests -/
 def main : IO UInt32 := do
@@ -18,6 +19,9 @@ def main : IO UInt32 := do
 
   -- Run type inference tests
   Test.Infer.run
+
+  -- Run end-to-end checking tests
+  Test.Checking.run
 
   IO.println ""
   IO.println "All test suites completed."

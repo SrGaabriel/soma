@@ -25,26 +25,6 @@ structure InstanceDecl where
 
 namespace InstanceDecl
 
-/-- Create an instance from a QualifiedType representing the instance head -/
-def fromQualifiedType (className : TyCon) (qt : QualifiedType) (id : Nat) (span : Span)
-    : Option InstanceDecl :=
-  -- TODO: not assume the body directly represents the instance args
-  some {
-    className
-    args := #[qt.body] -- todo: review
-    typeVars := qt.vars
-    constraints := qt.constraints
-    id
-    span
-  }
-
-/-- Get the qualified type this instance provides -/
-def toQualifiedType (inst : InstanceDecl) : QualifiedType :=
-  { vars := inst.typeVars
-  , constraints := inst.constraints
-  , body := if h : inst.args.size > 0 then inst.args[0] else .starPrim .unit
-  }
-
 /-- Freshen the type variables in this instance with new IDs -/
 def freshen (inst : InstanceDecl) (startId : Nat) : InstanceDecl × Nat :=
   let numVars := inst.typeVars.size
@@ -185,14 +165,6 @@ instance : ToString InstanceEnv := ⟨InstanceEnv.toString⟩
 
 end InstanceEnv
 
-namespace TypeClassName
-  def eq : TyCon := TyCon.mkUser "" "Eq" 1
-  def ord : TyCon := TyCon.mkUser "" "Ord" 2
-  def show_ : TyCon := TyCon.mkUser "" "Show" 3
-  def num : TyCon := TyCon.mkUser "" "Num" 4
-  def functor : TyCon := TyCon.mkUser "" "Functor" 5 (.arrow .star .star)
-  def monad : TyCon := TyCon.mkUser "" "Monad" 6 (.arrow .star .star)
-end TypeClassName
 
 /-- Build a default instance environment with common instances -/
 def defaultInstanceEnv : InstanceEnv := Id.run do
