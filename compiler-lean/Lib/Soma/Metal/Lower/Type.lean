@@ -10,18 +10,7 @@ open Soma.Syntax (Span TypeExpr)
 private def userTyOfKind (id : TypeId) (k : Kind) : Ty k :=
   .userCon k id
 
-/-! ## Kind Inference
-
-Kind inference determines the kinds of type variables based on how they are used.
-For example, in `f a -> f b`, we infer that `f` has kind `* -> *` because it's
-applied to type arguments `a` and `b`.
-
-The algorithm:
-1. Traverse the type expression and count how many arguments each type variable is applied to
-2. The kind of a variable is `*` if it's never applied, `* -> *` if applied to 1 arg, etc.
--/
-
-/-- Count the maximum number of type arguments a variable is applied to -/
+/-! ## Kind Inference-/
 private partial def inferVarArity (ty : TypeExpr) : Std.HashMap String Nat :=
   go ty 0 {}
 where
