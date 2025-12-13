@@ -129,6 +129,14 @@ def run (m : UniqueM α) (moduleName : String) : α × UniqueSupply :=
 def run' (m : UniqueM α) (moduleName : String) : α :=
   (run m moduleName).1
 
+theorem fresh_ids_distinct (supply : UniqueSupply) (orig1 orig2 : String) :
+    let (u1, supply') := supply.fresh orig1
+    let (u2, _) := supply'.fresh orig2
+    u1.id ≠ u2.id := by
+  intro h
+  simp only at h
+  omega
+
 end UniqueM
 
 end Soma

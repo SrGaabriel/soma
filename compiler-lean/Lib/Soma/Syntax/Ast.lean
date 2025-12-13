@@ -102,6 +102,10 @@ inductive TypeExpr : Type where
 
 end
 
+-- Nonempty instances (needed for partial recursive functions)
+instance : Nonempty Pattern := ⟨.wildcard Span.uninhabited⟩
+instance : Nonempty TypeExpr := ⟨.var ⟨"_", Span.uninhabited⟩⟩
+
 -- Manually derive Repr for mutually recursive types
 mutual
 
@@ -168,6 +172,8 @@ structure Constraint where
   args : Array TypeExpr
   span : Span
   deriving Repr
+
+instance : Nonempty Constraint := ⟨⟨⟨"_", Span.uninhabited⟩, #[], Span.uninhabited⟩⟩
 
 namespace TypeExpr
 
@@ -350,6 +356,8 @@ inductive Decl where
   /-- Intrinsic declaration -/
   | intrinsic (inner : Decl) (span : Span)
   deriving Repr
+
+instance : Nonempty Decl := ⟨.export_ #[] Span.uninhabited⟩
 
 namespace Decl
 

@@ -93,7 +93,7 @@ def runParse (p : Parsed) : IO UInt32 := do
   let fileName := input.splitOn "/" |>.getLast!
   let moduleName := fileName.splitOn "." |>.head!
                     |> fun s => if s.isEmpty then "Main" else s
-  let (astOpt, lowerDiags) := Syntax.lower cst moduleName
+  let (ast, lowerDiags) := Syntax.lower cst moduleName
 
   -- Print lowering diagnostics if any
   if lowerDiags.size > 0 then
@@ -103,15 +103,12 @@ def runParse (p : Parsed) : IO UInt32 := do
   let allDiags := lexDiags ++ parseDiags ++ lowerDiags
 
   -- Show AST if requested (or by default if no flags)
-  match astOpt with
-  | some ast =>
-      if showAst || (!showCst && !showAst) then
-        IO.println "=== Abstract Syntax Tree ==="
-        IO.println (Syntax.Pretty.ppModule ast)
-      if allDiags.isEmpty then
-        IO.println "\nParse successful!"
-  | none =>
-      IO.eprintln "Parse failed - could not produce AST"
+  if showAst || (!showCst && !showAst) then
+    IO.println "=== Abstract Syntax Tree ==="
+    IO.println (Syntax.Pretty.ppModule ast)
+
+  if allDiags.isEmpty then
+    IO.println "\nParse successful!"
 
   -- Print summary if there were any diagnostics
   if !allDiags.isEmpty then
@@ -144,7 +141,7 @@ def runLower (p : Parsed) : IO UInt32 := do
   let fileName := input.splitOn "/" |>.getLast!
   let moduleName := fileName.splitOn "." |>.head!
                     |> fun s => if s.isEmpty then "Main" else s
-  let (astOpt, astDiags) := Syntax.lower cst moduleName
+  let (ast, astDiags) := Syntax.lower cst moduleName
   if astDiags.size > 0 then
     Logging.Error.printDiagnostics astDiags sourceFile
 
@@ -155,48 +152,43 @@ def runLower (p : Parsed) : IO UInt32 := do
     IO.eprintln (Logging.Error.renderSummary frontendDiags)
     return 1
 
-  match astOpt with
-  | none =>
-    IO.eprintln "Failed to produce AST"
+  -- Lower AST to Metal IR
+  let result := Metal.Lower.lower ast
+
+  -- Convert and print Metal lowering errors
+  let metalDiags := Metal.Lower.LowerError.toDiagnostics result.errors
+  if metalDiags.size > 0 then
+    Logging.Error.printDiagnostics metalDiags sourceFile
+
+  -- Print summary
+  let allDiags := frontendDiags ++ metalDiags
+  if allDiags.hasErrors then
+    IO.eprintln ""
+    IO.eprintln (Logging.Error.renderSummary allDiags)
     return 1
-  | some ast =>
-    -- Lower AST to Metal IR
-    let result := Metal.Lower.lower ast
 
-    -- Convert and print Metal lowering errors
-    let metalDiags := Metal.Lower.LowerError.toDiagnostics result.errors
-    if metalDiags.size > 0 then
-      Logging.Error.printDiagnostics metalDiags sourceFile
+  -- Success - print info about the lowered module
+  IO.println s!"=== Metal IR (Untyped) ==="
+  IO.println s!"Module: {result.module.name}"
+  IO.println s!"Functions: {result.module.functions.size}"
+  IO.println s!"Types: {result.module.types.size}"
+  IO.println s!"Type classes: {result.module.typeClasses.size}"
 
-    -- Print summary
-    let allDiags := frontendDiags ++ metalDiags
-    if allDiags.hasErrors then
-      IO.eprintln ""
-      IO.eprintln (Logging.Error.renderSummary allDiags)
-      return 1
+  -- Print function names
+  if result.module.functions.size > 0 then
+    IO.println "\nFunctions:"
+    for fn in result.module.functions do
+      let sigInfo := if fn.hasSignature then " (has signature)" else ""
+      IO.println s!"  - {fn.name.display}{sigInfo}"
 
-    -- Success - print info about the lowered module
-    IO.println s!"=== Metal IR (Untyped) ==="
-    IO.println s!"Module: {result.module.name}"
-    IO.println s!"Functions: {result.module.functions.size}"
-    IO.println s!"Types: {result.module.types.size}"
-    IO.println s!"Type classes: {result.module.typeClasses.size}"
+  -- Print type names
+  if result.module.types.size > 0 then
+    IO.println "\nTypes:"
+    for ty in result.module.types do
+      IO.println s!"  - {ty.name.display}"
 
-    -- Print function names
-    if result.module.functions.size > 0 then
-      IO.println "\nFunctions:"
-      for fn in result.module.functions do
-        let sigInfo := if fn.hasSignature then " (has signature)" else ""
-        IO.println s!"  - {fn.name.display}{sigInfo}"
-
-    -- Print type names
-    if result.module.types.size > 0 then
-      IO.println "\nTypes:"
-      for ty in result.module.types do
-        IO.println s!"  - {ty.name.display}"
-
-    IO.println "\nMetal lowering successful!"
-    return 0
+  IO.println "\nMetal lowering successful!"
+  return 0
 
 /-- Handler for the `check` command -/
 def runCheck (p : Parsed) : IO UInt32 := do

@@ -6,7 +6,7 @@ namespace Soma.Typing
 structure Constraint where
   className : TyCon
   args : Array MonoTy
-  deriving BEq
+  deriving BEq, Inhabited
 
 namespace Constraint
 

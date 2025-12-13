@@ -24,16 +24,14 @@ def runParserTest (tc : TestCase) (verbose : Bool := false) : IO TestResult := d
 
   -- Lower to AST
   let moduleName := tc.name.dropRight 5  -- Remove .soma extension
-  let (astOpt, lowerDiags) := lower cst moduleName
+  let (ast, lowerDiags) := lower cst moduleName
 
   let allDiags := parseDiags ++ lowerDiags
 
   if allDiags.isEmpty then
     IO.println s!"  [PASS] {tc.name}"
     if verbose then
-      match astOpt with
-      | some ast => IO.println s!"    AST: {repr ast.decls}"
-      | none => IO.println "    AST: (none)"
+      IO.println s!"    AST: {repr ast.decls}"
     return .passed
   else
     IO.println s!"  [FAIL] {tc.name}: {allDiags.size} errors"

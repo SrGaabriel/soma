@@ -127,7 +127,7 @@ inductive Ty : Kind → Type where
   | var (v : TyVarId) : Ty k
   | starPrim (p : StarPrimitive) : Ty .star
   | higherPrim (p : HigherPrimitive) : Ty (.arrow .star .star)
-  | con (id : TypeId) : Ty .star
+  | userCon (k : Kind) (id : TypeId) : Ty k
   | app : Ty (.arrow k1 k2) → Ty k1 → Ty k2
   | arrow : Ty .star → Ty .star → Ty .star
   | tuple2 : Ty .star → Ty .star → Ty .star
@@ -140,6 +140,9 @@ inductive Ty : Kind → Type where
 
 /-- Monomorphic types (kind *) are the most common -/
 abbrev MonoTy := Ty Kind.star
+
+/-- Default inhabited instance for MonoTy, uses unit type -/
+instance : Inhabited MonoTy := ⟨.starPrim .unit⟩
 
 /-- Existential wrapper for types of any kind -/
 structure SomeTy where
@@ -155,7 +158,7 @@ mutual
     match t with
     | .var v => σ.getD v.id (.var v)
     | .starPrim p => .starPrim p
-    | .con id => .con id
+    | .userCon _ id => .userCon .star id
     | .app f a => .app (Ty.substFun f σ) (Ty.substArg a σ)
     | .arrow from_ to => .arrow (Ty.subst from_ σ) (Ty.subst to σ)
     | .tuple2 a b => .tuple2 (Ty.subst a σ) (Ty.subst b σ)
@@ -170,6 +173,7 @@ mutual
   def Ty.substFun : {k1 k2 : Kind} → Ty (.arrow k1 k2) → TySubst → Ty (.arrow k1 k2)
     | _, _, .var v, _ => .var v  -- Variables of higher kind can't be substituted with MonoTy
     | _, _, .higherPrim p, _ => .higherPrim p
+    | _, _, .userCon _ id, _ => .userCon _ id  -- User types are not substituted
     | _, _, .app f a, σ => .app (Ty.substFun f σ) (Ty.substArg a σ)
 
   /-- Substitute in a type of any kind -/
@@ -185,7 +189,7 @@ def isAtom : {k : Kind} → Ty k → Bool
   | _, .var _ => true
   | _, .starPrim _ => true
   | _, .higherPrim _ => true
-  | _, .con _ => true
+  | _, .userCon _ _ => true
   | _, .app _ _ => false
   | _, .arrow _ _ => false
   | _, .tuple2 _ _ => true  -- tuples are in parens anyway
@@ -201,7 +205,7 @@ def toString : {k : Kind} → Ty k → String
   | _, .var v => v.name
   | _, .starPrim p => p.name
   | _, .higherPrim p => p.name
-  | _, .con id => id.name
+  | _, .userCon _ id => id.name
   | _, .app f a =>
     let as := if isAtom a then toString a else s!"({toString a})"
     s!"{toString f} {as}"
@@ -217,6 +221,9 @@ def toString : {k : Kind} → Ty k → String
   | _, .tuple8 a b c d e f g h => s!"({toString a}, {toString b}, {toString c}, {toString d}, {toString e}, {toString f}, {toString g}, {toString h})"
 
 instance : ToString (Ty k) := ⟨Ty.toString⟩
+
+/-- Convenience constructor for star-kinded user types. -/
+def con (id : TypeId) : MonoTy := .userCon .star id
 
 def int : MonoTy := .starPrim .int
 def long : MonoTy := .starPrim .long
@@ -380,7 +387,7 @@ def freeVars : {k : Kind} → Ty k → Array TyVarId
   | _, .var v => #[v]
   | _, .starPrim _ => #[]
   | _, .higherPrim _ => #[]
-  | _, .con _ => #[]
+  | _, .userCon _ _ => #[]
   | _, .app f a => freeVars f ++ freeVars a
   | _, .arrow from_ to => freeVars from_ ++ freeVars to
   | _, .tuple2 a b => freeVars a ++ freeVars b
@@ -409,7 +416,7 @@ def heq : {k1 k2 : Kind} → Ty k1 → Ty k2 → Bool
   | _, _, .var v1, .var v2 => v1 == v2
   | _, _, .starPrim p1, .starPrim p2 => p1 == p2
   | _, _, .higherPrim p1, .higherPrim p2 => p1 == p2
-  | _, _, .con id1, .con id2 => id1 == id2
+  | _, _, .userCon _ id1, .userCon _ id2 => id1 == id2
   | _, _, .app f1 a1, .app f2 a2 => heq f1 f2 && heq a1 a2
   | _, _, .arrow from1 to1, .arrow from2 to2 => heq from1 from2 && heq to1 to2
   | _, _, .tuple2 a1 b1, .tuple2 a2 b2 => heq a1 a2 && heq b1 b2
@@ -431,7 +438,7 @@ def hash : {k : Kind} → Ty k → UInt64
   | _, .var v => mixHash 0 (Hashable.hash v)
   | _, .starPrim p => mixHash 1 (Hashable.hash p)
   | _, .higherPrim p => mixHash 2 (Hashable.hash p)
-  | _, .con id => mixHash 3 (Hashable.hash id)
+  | _, .userCon _ id => mixHash 3 (Hashable.hash id)
   | _, .app f a => mixHash 4 (mixHash (hash f) (hash a))
   | _, .arrow from_ to => mixHash 5 (mixHash (hash from_) (hash to))
   | _, .tuple2 a b => mixHash 6 (mixHash (hash a) (hash b))

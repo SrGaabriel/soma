@@ -12,7 +12,7 @@ structure TypeId where
   name : String
   unique : Nat
   kind : Kind := .star
-  deriving Repr
+  deriving Repr, Inhabited
 
 namespace TypeId
 
@@ -59,7 +59,7 @@ inductive TyCon where
   | prim (p : Primitive)
   /-- A user-defined type -/
   | user (id : TypeId)
-  deriving Repr
+  deriving Repr, Inhabited
 
 namespace TyCon
 

@@ -2,6 +2,7 @@ import Test.Fixtures
 import Test.Lexer
 import Test.Parser
 import Test.Error
+import Test.Infer
 
 /-- Main entry point for all tests -/
 def main : IO UInt32 := do
@@ -14,6 +15,9 @@ def main : IO UInt32 := do
 
   -- Run parser tests
   Test.Parser.run
+
+  -- Run type inference tests
+  Test.Infer.run
 
   IO.println ""
   IO.println "All test suites completed."

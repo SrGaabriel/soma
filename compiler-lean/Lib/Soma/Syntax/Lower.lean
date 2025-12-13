@@ -10,14 +10,13 @@ namespace Soma.Syntax
 structure LowerState where
   diagnostics : Diagnostics := #[]
 
-/-- Lowering monad - can fail with a message, accumulates diagnostics -/
-abbrev LowerM := StateT LowerState (Except String)
+/-- Lowering monad - infallible, accumulates diagnostics -/
+abbrev LowerM := StateT LowerState Id
 
 /-- Run the lowering monad -/
-def LowerM.run' (m : LowerM α) : Except String α × Diagnostics :=
-  match m.run {} with
-  | .ok (result, state) => (.ok result, state.diagnostics)
-  | .error msg => (.error msg, #[])
+def LowerM.run' (m : LowerM α) : α × Diagnostics :=
+  let (result, state) := m.run {}
+  (result, state.diagnostics)
 
 /-- Record a diagnostic -/
 def recordDiag (d : Diagnostic) : LowerM Unit :=
@@ -27,21 +26,22 @@ def recordDiag (d : Diagnostic) : LowerM Unit :=
 def lowerError (msg : String) (span : Span) : LowerM Unit :=
   recordDiag (Diagnostic.error msg span)
 
-/-- Fail lowering with an error -/
-def lowerFail (msg : String) : LowerM α :=
-  throw msg
-
-/-- Get token text from a syntax node -/
-def getTokenText (node : SyntaxNode) : LowerM String :=
+/-- Get token text from a syntax node, returning "_error" on failure -/
+def getTokenText (node : SyntaxNode) : LowerM String := do
   match node.tokenText? with
   | some text => pure text
-  | none => lowerFail s!"expected token, got {repr node}"
+  | none =>
+      lowerError s!"expected token, got {repr node}" node.span
+      pure "_error"
 
-/-- Get the first child of a node -/
-def firstChild (node : SyntaxNode) : LowerM SyntaxNode :=
+/-- Get the first child of a node, creating an error node if missing -/
+def firstChild (node : SyntaxNode) : LowerM SyntaxNode := do
   match node.child? 0 with
   | some c => pure c
-  | none => lowerFail "expected at least one child"
+  | none =>
+      lowerError "expected at least one child" node.span
+      -- Return a placeholder error node
+      pure (.error node.span "missing child" #[])
 
 /-- Filter non-token children (actual syntax nodes) -/
 def syntaxChildren (node : SyntaxNode) : Array SyntaxNode :=
@@ -1145,12 +1145,10 @@ def lowerModule (node : SyntaxNode) (moduleName : String) : LowerM Module := do
 
 /--
 Lower a CST to an AST.
-Returns the AST (if successful) and all diagnostics.
+Always succeeds, returning an AST (possibly with error nodes) and diagnostics.
+This enables LSP features to work even with syntax errors.
 -/
-def lower (cst : SyntaxNode) (moduleName : String := "Main") : Option Module × Diagnostics :=
-  let (result, diagnostics) := (lowerModule cst moduleName).run'
-  match result with
-  | .ok mod => (some mod, diagnostics)
-  | .error _ => (none, diagnostics)
+def lower (cst : SyntaxNode) (moduleName : String := "Main") : Module × Diagnostics :=
+  (lowerModule cst moduleName).run'
 
 end Soma.Syntax

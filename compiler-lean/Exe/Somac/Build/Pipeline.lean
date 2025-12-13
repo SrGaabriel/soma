@@ -28,25 +28,22 @@ def parseModule (moduleName : String) (path : System.FilePath) : IO ParseResult 
 
   -- Lower to AST
   let baseName := moduleName.splitOn "/" |>.getLast!
-  let (astOpt, lowerDiags) := lower cst baseName
+  let (ast, lowerDiags) := lower cst baseName
 
   let allDiags := lexDiags ++ parseDiags ++ lowerDiags
 
-  match astOpt with
-  | none => pure (.error allDiags)
-  | some ast =>
-    if allDiags.hasErrors then
-      pure (.error allDiags)
-    else
-      let modName := ModuleName.fromString moduleName
-      pure (.ok {
-        name := modName
-        path := path
-        content := content
-        sourceFile := sourceFile
-        ast := ast
-        contentHash := some (hash content)
-      })
+  if allDiags.hasErrors then
+    pure (.error allDiags)
+  else
+    let modName := ModuleName.fromString moduleName
+    pure (.ok {
+      name := modName
+      path := path
+      content := content
+      sourceFile := sourceFile
+      ast := ast
+      contentHash := some (hash content)
+    })
 
 /-- Parse all modules in a list, collecting errors -/
 def parseModules (modules : Array (String × System.FilePath)) : IO ((Array Diagnostic) × ModuleGraph) := do

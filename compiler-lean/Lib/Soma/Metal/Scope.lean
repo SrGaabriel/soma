@@ -132,4 +132,8 @@ def Scope.contains (s : Scope) (b : BindingId) : Bool :=
 def Scope.ids (s : Scope) : List Nat :=
   s.map (·.id)
 
+theorem weaken_preserves_binding (v : ScopedVar s) (b : BindingId) :
+    (v.weaken b).binding = v.binding
+  := by trivial
+
 end Soma.Metal
