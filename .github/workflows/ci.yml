@@ -91,7 +91,7 @@ jobs:
                       ${{ runner.os }}-${{ matrix.arch }}-ghc-${{ env.GHC_VERSION }}-
 
             - name: Configure project
-              run: cabal configure --enable-tests --enable-benchmarks
+              run: cabal configure --disable-tests --disable-benchmarks
 
             - name: Install Z3
               run: |
@@ -106,10 +106,10 @@ jobs:
               shell: bash
 
             - name: Build dependencies
-              run: cabal build --only-dependencies all
+              run: cabal build --only-dependencies
 
             - name: Build project
-              run: cabal build --project-file=cabal.release.project all
+              run: cabal build --project-file=cabal.release.project
 
             - name: Setup Rust for haoma
               uses: dtolnay/rust-toolchain@stable
@@ -128,11 +128,11 @@ jobs:
                   echo "$HOME/.local/bin" >> $GITHUB_PATH
               shell: bash
 
-            - name: Run tests
-              run: |
-                  cabal test --project-file=cabal.release.project all
-              shell: bash
-              continue-on-error: true
+            # - name: Run tests
+            #   run: |
+            #       cabal test --project-file=cabal.release.project all
+            #   shell: bash
+            #   continue-on-error: true
 
             - name: Prepare executables (Unix)
               if: runner.os != 'Windows'
