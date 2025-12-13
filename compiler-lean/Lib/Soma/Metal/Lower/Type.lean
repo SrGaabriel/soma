@@ -10,7 +10,7 @@ open Soma.Syntax (Span TypeExpr)
 private def userTyOfKind (id : TypeId) (k : Kind) : Ty k :=
   .userCon k id
 
-/-! ## Kind Inference-/
+/-- Count the maximum number of type arguments a variable is applied to -/
 private partial def inferVarArity (ty : TypeExpr) : Std.HashMap String Nat :=
   go ty 0 {}
 where
@@ -256,8 +256,7 @@ mutual
       pure none
 end
 
-/-- Resolve a type expression from syntax to a MonoTy.
-    This is the main entry point that automatically infers kinds for type variables. -/
+/-- Resolve a type expression from syntax to a MonoTy -/
 def resolveType (ty : TypeExpr) : LowerM (Option MonoTy) := do
   let kindEnv := inferKinds ty
   resolveTypeWithKinds kindEnv ty
