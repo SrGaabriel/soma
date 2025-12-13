@@ -55,8 +55,9 @@ def analyzeSource (filePath : String) (content : String) : CompiledModule := Id.
   let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics lowerResult.errors
 
   -- Phase 7: Type inference on Metal module (infallible, collects errors)
-  let typeEnv := Soma.Infer.buildTypeEnvFromModule lowerResult.module #[]
-  let instanceEnv := Soma.Infer.buildInstanceEnvFromModule lowerResult.module InstanceEnv.empty
+  let supply := Soma.UniqueSupply.initial moduleName
+  let (typeEnv, _supply) := Soma.Infer.buildTypeEnvFromModule lowerResult.module #[] supply
+  let instanceEnv := Soma.Infer.buildInstanceEnvFromModule lowerResult.module InstanceEnv.empty typeEnv
   let inferCtx : InferContext := {
     typeEnv := typeEnv
     instanceEnv := instanceEnv

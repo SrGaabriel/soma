@@ -10,14 +10,73 @@ open Soma.Syntax (Span TypeExpr)
 private def userTyOfKind (id : TypeId) (k : Kind) : Ty k :=
   .userCon k id
 
-mutual
-  /-- Resolve a type expression from Syntax to a MonoTy. TODO: Lower it even if it fails -/
-  partial def resolveType (ty : TypeExpr) : LowerM (Option MonoTy) := do
+/-! ## Kind Inference
+
+Kind inference determines the kinds of type variables based on how they are used.
+For example, in `f a -> f b`, we infer that `f` has kind `* -> *` because it's
+applied to type arguments `a` and `b`.
+
+The algorithm:
+1. Traverse the type expression and count how many arguments each type variable is applied to
+2. The kind of a variable is `*` if it's never applied, `* -> *` if applied to 1 arg, etc.
+-/
+
+/-- Count the maximum number of type arguments a variable is applied to -/
+private partial def inferVarArity (ty : TypeExpr) : Std.HashMap String Nat :=
+  go ty 0 {}
+where
+  /-- Traverse type, tracking application depth for variables -/
+  go (ty : TypeExpr) (appDepth : Nat) (acc : Std.HashMap String Nat) : Std.HashMap String Nat :=
     match ty with
     | .var name =>
-      -- Type variable - create a TyVarId (default kind is .star)
+      -- Record this variable at current application depth
+      let current := acc.getD name.value 0
+      acc.insert name.value (max current appDepth)
+    | .con _ => acc
+    | .app fn arg _ =>
+      -- The function is being applied to one more argument
+      let acc' := go fn (appDepth + 1) acc
+      -- The argument is in a fresh context (depth 0)
+      go arg 0 acc'
+    | .arrow from_ to _ =>
+      let acc' := go from_ 0 acc
+      go to 0 acc'
+    | .tuple elems _ =>
+      elems.foldl (fun a e => go e 0 a) acc
+    | .list elem _ =>
+      go elem 0 acc
+    | .forall_ _ body _ =>
+      go body 0 acc
+    | .constrained _ body _ =>
+      go body 0 acc
+    | .parens inner _ =>
+      go inner appDepth acc
+    | .kinded inner _ _ =>
+      go inner appDepth acc
+
+/-- Build a Kind from an arity (number of type arguments) -/
+private def kindOfArity : Nat → Kind
+  | 0 => .star
+  | n + 1 => .arrow .star (kindOfArity n)
+
+/-- Environment mapping type variable names to their inferred kinds -/
+abbrev KindEnv := Std.HashMap String Kind
+
+/-- Infer kinds for all type variables in a type expression -/
+def inferKinds (ty : TypeExpr) : KindEnv :=
+  let arities := inferVarArity ty
+  arities.fold (init := {}) fun acc name arity =>
+    acc.insert name (kindOfArity arity)
+
+mutual
+  /-- Resolve a type expression from Syntax to a MonoTy using inferred kinds -/
+  partial def resolveTypeWithKinds (kindEnv : KindEnv) (ty : TypeExpr) : LowerM (Option MonoTy) := do
+    match ty with
+    | .var name =>
+      -- Type variable - look up inferred kind, default to star
+      let kind := kindEnv.getD name.value .star
       let id ← LowerM.freshUniqueId
-      let tyVarId : TyVarId := { name := name.value, id := id, kind := .star }
+      let tyVarId : TyVarId := { name := name.value, id := id, kind := kind }
       pure (some (.var tyVarId))
 
     | .con name =>
@@ -26,8 +85,8 @@ mutual
 
     | .app fn arg span =>
       -- Type application
-      let fnTy? ← resolveTypeAny fn
-      let argTy? ← resolveType arg
+      let fnTy? ← resolveTypeAnyWithKinds kindEnv fn
+      let argTy? ← resolveTypeWithKinds kindEnv arg
       match fnTy?, argTy? with
       | some fnTy, some argTy =>
         applyType fnTy argTy span
@@ -35,15 +94,15 @@ mutual
 
     | .arrow from_ to _ =>
       -- Function type
-      let fromTy? ← resolveType from_
-      let toTy? ← resolveType to
+      let fromTy? ← resolveTypeWithKinds kindEnv from_
+      let toTy? ← resolveTypeWithKinds kindEnv to
       match fromTy?, toTy? with
       | some fromTy, some toTy => pure (some (.arrow fromTy toTy))
       | _, _ => pure none
 
     | .tuple elements _ =>
       -- Tuple type
-      let elemTys ← elements.mapM resolveType
+      let elemTys ← elements.mapM (resolveTypeWithKinds kindEnv)
       if elemTys.all Option.isSome then
         let tys := elemTys.filterMap id
         pure (some (Ty.tuple tys))
@@ -52,35 +111,41 @@ mutual
 
     | .list elem _ =>
       -- List type (sugar for Array)
-      let elemTy? ← resolveType elem
+      let elemTy? ← resolveTypeWithKinds kindEnv elem
       match elemTy? with
       | some elemTy => pure (some (Ty.array elemTy))
       | none => pure none
 
     | .forall_ _ body _ =>
       -- Resolve the body (forall is handled at QualifiedType level)
-      resolveType body
+      resolveTypeWithKinds kindEnv body
 
     | .constrained _ body _ =>
       -- Constraints handled at QualifiedType level
-      resolveType body
+      resolveTypeWithKinds kindEnv body
 
     | .parens inner _ =>
-      resolveType inner
+      resolveTypeWithKinds kindEnv inner
 
     | .kinded ty _ _ =>
       -- Kind annotations - just resolve the type for now
-      resolveType ty
+      resolveTypeWithKinds kindEnv ty
 
-  /-- Resolve a type that might have non-star kind -/
-  private partial def resolveTypeAny (ty : TypeExpr) : LowerM (Option SomeTy) := do
+  /-- Resolve a type that might have non-star kind, using inferred kinds -/
+  private partial def resolveTypeAnyWithKinds (kindEnv : KindEnv) (ty : TypeExpr) : LowerM (Option SomeTy) := do
     match ty with
+    | .var name =>
+      -- Type variable in function position - look up its inferred kind
+      let kind := kindEnv.getD name.value .star
+      let id ← LowerM.freshUniqueId
+      let tyVarId : TyVarId := { name := name.value, id := id, kind := kind }
+      pure (some ⟨kind, .var tyVarId⟩)
     | .con name =>
       -- Type constructor - might have any kind
       resolveTypeConAny name.value name.span
     | .app fn arg span =>
-      let fnTy? ← resolveTypeAny fn
-      let argTy? ← resolveType arg
+      let fnTy? ← resolveTypeAnyWithKinds kindEnv fn
+      let argTy? ← resolveTypeWithKinds kindEnv arg
       match fnTy?, argTy? with
       | some ⟨.arrow k1 k2, fnTy⟩, some argTy =>
         -- We need to check that k1 = .star since argTy : MonoTy = Ty .star
@@ -96,7 +161,7 @@ mutual
       | _, _ => pure none
     | _ =>
       -- Other types are kind *
-      let ty? ← resolveType ty
+      let ty? ← resolveTypeWithKinds kindEnv ty
       match ty? with
       | some t => pure (some ⟨.star, t⟩)
       | none => pure none
@@ -201,6 +266,12 @@ mutual
       LowerM.reportError (.kindMismatch "arrow kind" s!"kind {k}" span)
       pure none
 end
+
+/-- Resolve a type expression from syntax to a MonoTy.
+    This is the main entry point that automatically infers kinds for type variables. -/
+def resolveType (ty : TypeExpr) : LowerM (Option MonoTy) := do
+  let kindEnv := inferKinds ty
+  resolveTypeWithKinds kindEnv ty
 
 /-- Look up a type class by name, checking built-in classes first -/
 private def lookupTypeClass (name : String) : LowerM (Option TyCon) := do

@@ -3,6 +3,7 @@ import Soma.Driver.Options
 import Soma.Syntax
 import Soma.Metal
 import Soma.Logging
+import Soma.Project
 import Somac.Build
 
 open Cli
@@ -88,7 +89,6 @@ def runParse (p : Parsed) : IO UInt32 := do
     IO.println "=== Concrete Syntax Tree ==="
     IO.println (cst.debugPrint)
 
-  -- Lower to AST
   -- Extract module name from filename (without extension)
   let fileName := input.splitOn "/" |>.getLast!
   let moduleName := fileName.splitOn "." |>.head!
@@ -190,6 +190,63 @@ def runLower (p : Parsed) : IO UInt32 := do
   IO.println "\nMetal lowering successful!"
   return 0
 
+/-- Parse dependency flags into array of (name, path) pairs -/
+def parseDeps (p : Parsed) : Array (String × String) :=
+  match p.flag? "dep" with
+  | none => #[]
+  | some flag =>
+    let depStrs := flag.as! (Array String)
+    depStrs.filterMap fun s =>
+      match parseDep s with
+      | .ok pair => some pair
+      | .error _ => none
+
+/-- Check a single .soma file -/
+def checkSingleFile (opts : CheckOptions) : IO (Array Syntax.Diagnostic × Option Syntax.SourceFile) := do
+  let path : System.FilePath := opts.input
+  let result ← Project.Check.checkFileSimple path.toString
+  return (result.diagnostics, some result.sourceFile)
+
+/-- Check a directory of .soma files -/
+def checkDirectory (opts : CheckOptions) : IO (Array Syntax.Diagnostic) := do
+  let rootDir : System.FilePath := opts.input
+  let packageName := opts.name.getD (rootDir.fileName.getD "app")
+
+  -- Find all modules
+  let modules ← Project.findModules packageName rootDir
+
+  -- Parse all modules
+  let (parseDiags, graph) ← Somac.Build.parseModules modules
+
+  if Syntax.Diagnostics.hasErrors parseDiags then
+    return parseDiags
+
+  let depGraph := Project.buildDependencyGraph graph
+
+  -- Check for cycles
+  match Project.topoSortModules depGraph with
+  | .cycles groups =>
+    let msg := s!"Cyclic imports detected: {groups.map (·.toList)}"
+    return #[Syntax.Diagnostic.error msg Syntax.Span.uninhabited]
+
+  | .sorted sortedNames =>
+    -- Load external dependencies
+    let externalDeps ← Somac.Build.loadExternalDependencies (opts.deps.map fun (n, p) => (n, ⟨p⟩))
+    match externalDeps with
+    | .error e =>
+      return #[Syntax.Diagnostic.error (toString e) Syntax.Span.uninhabited]
+
+    | .ok deps =>
+      let (extSymbols, extInstances, extConstructors) := Somac.Build.processExternalDependencies deps
+
+      -- Initialize UniqueSupply
+      let supply := Soma.UniqueSupply.initial packageName
+
+      -- Compile all modules (type check)
+      let (compileDiags, _, _) := Somac.Build.compileModulesInOrder sortedNames graph extSymbols extInstances extConstructors packageName supply
+
+      return compileDiags
+
 /-- Handler for the `check` command -/
 def runCheck (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
@@ -199,14 +256,40 @@ def runCheck (p : Parsed) : IO UInt32 := do
   let opts : CheckOptions := {
     input := input
     name := name
-    deps := #[]  -- TODO: parse deps
+    deps := parseDeps p
     format := if format == "human" then .human else .json
   }
 
-  IO.println s!"[check] Checking: {input}"
-  IO.println s!"[check] Options: {repr opts}"
-  IO.println "[check] (not yet implemented)"
-  return 0
+  let inputPath : System.FilePath := opts.input
+
+  let (diags, sourceFile) ← if ← inputPath.isDir then
+    let diags ← checkDirectory opts
+    pure (diags, none)
+  else if inputPath.extension == some "soma" then
+    checkSingleFile opts
+  else
+    let msg := s!"Input is neither a .soma file nor a directory: {opts.input}"
+    pure (#[Syntax.Diagnostic.error msg Syntax.Span.uninhabited], none)
+
+  -- Output diagnostics
+  match opts.format with
+  | .json =>
+    IO.println (Logging.Error.renderDiagnosticsJson diags)
+  | .human =>
+    match sourceFile with
+    | some sf => Logging.Error.printDiagnostics diags sf
+    | none =>
+      for d in diags do
+        let severity := toString d.severity
+        IO.eprintln s!"{severity}: {d.message}"
+
+    if !diags.isEmpty then
+      IO.eprintln ""
+      IO.eprintln (Logging.Error.renderSummary diags)
+    else
+      IO.println "No errors found."
+
+  return if Syntax.Diagnostics.hasErrors diags then 1 else 0
 
 /-- Handler for the `circuit` command -/
 def runCircuit (p : Parsed) : IO UInt32 := do
@@ -225,17 +308,6 @@ def runCircuit (p : Parsed) : IO UInt32 := do
   IO.println s!"[circuit] Options: {repr opts}"
   IO.println "[circuit] (not yet implemented)"
   return 0
-
-/-- Parse dependency flags into array of (name, path) pairs -/
-def parseDeps (p : Parsed) : Array (String × String) :=
-  match p.flag? "dep" with
-  | none => #[]
-  | some flag =>
-    let depStrs := flag.as! (Array String)
-    depStrs.filterMap fun s =>
-      match parseDep s with
-      | .ok pair => some pair
-      | .error _ => none
 
 /-- Handler for the `build` command -/
 def runBuild (p : Parsed) : IO UInt32 := do

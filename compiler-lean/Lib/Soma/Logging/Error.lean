@@ -590,4 +590,34 @@ def renderSummary (ds : Diagnostics) : String := Id.run do
   else
     String.intercalate ", " parts.toList ++ " emitted"
 
+/-- Escape a string for JSON output -/
+private def escapeJsonString (s : String) : String :=
+  s.foldl (fun acc c =>
+    match c with
+    | '"' => acc ++ "\\\""
+    | '\\' => acc ++ "\\\\"
+    | '\n' => acc ++ "\\n"
+    | '\r' => acc ++ "\\r"
+    | '\t' => acc ++ "\\t"
+    | c => acc.push c
+  ) ""
+
+/-- Render a single diagnostic as JSON object -/
+private def renderDiagnosticJson (d : Diagnostic) : String :=
+  let severity := match d.severity with
+    | .error => "error"
+    | .warning => "warning"
+    | .info => "info"
+    | .hint => "hint"
+  let span := d.labels[0]?.map (·.span) |>.getD Span.uninhabited
+  let msg := escapeJsonString d.message
+  "{\"severity\":\"" ++ severity ++ "\",\"message\":\"" ++ msg ++
+    "\",\"line\":" ++ toString span.start.line ++
+    ",\"column\":" ++ toString span.start.column ++ "}"
+
+/-- Render diagnostics as JSON array -/
+def renderDiagnosticsJson (diags : Diagnostics) : String :=
+  let items := diags.map renderDiagnosticJson
+  "[" ++ String.intercalate "," items.toList ++ "]"
+
 end Soma.Logging.Error

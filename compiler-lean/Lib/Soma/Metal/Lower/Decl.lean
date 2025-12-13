@@ -127,11 +127,35 @@ theorem bindingIds_append_nil (paramList : ParamList Unit) :
 /-- Cast expression to equivalent scope -/
 def castExprScope (h : s1 = s2) (e : Expr α s1) : Expr α s2 := h ▸ e
 
-/-- Lower a function definition to an UntypedFunction -/
+/-- Check if a pattern is a simple variable pattern -/
+private def isSimpleVarPattern : Syntax.Pattern → Bool
+  | .var _ => true
+  | .parens inner _ => isSimpleVarPattern inner
+  | .typed inner _ _ => isSimpleVarPattern inner
+  | _ => false
+
+/-- Check if all patterns in a clause are simple variable patterns -/
+private def allSimplePatterns (patterns : Array Syntax.Pattern) : Bool :=
+  patterns.all isSimpleVarPattern
+
+/-- Extract variable name from a simple pattern -/
+private def extractVarName : Syntax.Pattern → String
+  | .var n => n.value
+  | .parens inner _ => extractVarName inner
+  | .typed inner _ _ => extractVarName inner
+  | _ => "_"
+
+/-- Lower a function definition to an UntypedFunction.
+
+    For functions with complex patterns (e.g., `def head | (x:xs) => x`), we transform them
+    into functions with synthetic parameters and a case expression:
+    `def head = \_arg0 -> case _arg0 of (x:xs) => x`
+
+    This ensures pattern variables are properly bound via the existing case arm lowering.
+-/
 def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
   match decl with
-  | .def_ attrs name sig clauses _span =>
-    -- TODO: Multi-clause functions
+  | .def_ attrs name sig clauses span =>
     if h : clauses.size > 0 then
       let clause := clauses[0]
 
@@ -141,28 +165,6 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
         | some (.inr info) => pure info.name
         | _ => LowerM.freshUserName name.value  -- Fallback: create a fresh name
 
-      -- Build params from clause patterns (just binding + name, no types yet)
-      let params ← clause.patterns.mapM fun pat => do
-        let paramName := match pat with
-          | .var n => n.value
-          | _ => "_"
-        let bindingId ← LowerM.freshParamId paramName
-        pure (bindingId, paramName)
-
-      -- Build ParamList for the lambda body (we need it for scope calculation)
-      let paramList := buildParamList params.toList
-
-      -- Extend environment with params
-      let localEnv := extendEnvWithParams LocalEnv.empty paramList
-
-      -- Lower the body in the paramList scope
-      let bodyRaw ← lowerExpr localEnv clause.body
-      -- bodyRaw : Expr Unit (paramList.bindingIds ++ [])
-      -- We need: Expr Unit (params.toList.map Prod.fst)
-      -- Use the theorem to cast
-      let body : UntypedExpr (params.toList.map Prod.fst) :=
-        castExprScope (by rw [List.append_nil, buildParamList_bindingIds_eq]) bodyRaw
-
       -- Build function attributes
       let funcAttrs : FunctionAttrs := {
         inline := attrs.any fun a => a.name.value == "inline"
@@ -171,19 +173,111 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
         extern := none
       }
 
-      -- Store raw type syntax - resolution happens during type inference
+      -- Check if all patterns are simple variables
+      if allSimplePatterns clause.patterns then
+        -- Simple case: all patterns are variable patterns
+        -- Build params directly from patterns
+        let params ← clause.patterns.mapM fun pat => do
+          let paramName := extractVarName pat
+          let bindingId ← LowerM.freshParamId paramName
+          pure (bindingId, paramName)
+
+        -- Build ParamList for the lambda body
+        let paramList := buildParamList params.toList
+
+        -- Extend environment with params
+        let localEnv := extendEnvWithParams LocalEnv.empty paramList
+
+        -- Lower the body in the paramList scope
+        let bodyRaw ← lowerExpr localEnv clause.body
+        let body : UntypedExpr (params.toList.map Prod.fst) :=
+          castExprScope (by rw [List.append_nil, buildParamList_bindingIds_eq]) bodyRaw
+
+        pure (some {
+          name := globalName
+          params := params
+          body := body
+          declaredTypeSyntax := sig
+          closureInfo := none
+          attrs := funcAttrs
+        })
+      else
+        -- Complex case: patterns contain structured patterns (tuples, constructors, cons, etc.)
+        -- Strategy: Transform `def f | pat => body` into an equivalent syntax expression
+        -- `case (_arg0, ...) of | (pat, ...) => body` and lower that.
+        --
+        -- This reuses the existing case/arm lowering which properly handles pattern bindings.
+
+        let numParams := clause.patterns.size
+
+        -- Create synthetic parameters
+        let params ← (List.range numParams).toArray.mapM fun i => do
+          let bindingId ← LowerM.freshParamId s!"_arg{i}"
+          pure (bindingId, s!"_arg{i}")
+
+        -- Build ParamList and extend environment
+        let paramList := buildParamList params.toList
+        let localEnv := extendEnvWithParams LocalEnv.empty paramList
+
+        -- Build a syntax-level case expression and lower it
+        -- Scrutinees: references to the synthetic params (as syntax vars)
+        let scrutineeSyntax : Array Syntax.Expr := params.map fun (_, paramName) =>
+          Syntax.Expr.var ⟨paramName, span⟩
+
+        -- Arms: convert each DefClause to a MatchArm
+        let armsSyntax : Array Syntax.MatchArm := clauses.map fun c =>
+          Syntax.MatchArm.mk c.patterns c.guard c.body c.span
+
+        -- Create the case expression in syntax form
+        let caseSyntax := Syntax.Expr.case scrutineeSyntax armsSyntax span
+
+        -- Lower this case expression - it will properly handle pattern bindings
+        let bodyRaw ← lowerExpr localEnv caseSyntax
+
+        let body : UntypedExpr (params.toList.map Prod.fst) :=
+          castExprScope (by rw [List.append_nil, buildParamList_bindingIds_eq]) bodyRaw
+
+        pure (some {
+          name := globalName
+          params := params
+          body := body
+          declaredTypeSyntax := sig
+          closureInfo := none
+          attrs := funcAttrs
+        })
+    else
+      -- No clauses - empty function?
+      pure none
+
+  | .intrinsic inner _ =>
+    -- Handle intrinsic functions - they have signatures but implementation is external
+    match inner with
+    | .def_ attrs name sig _clauses span =>
+      let globalInfo? ← LowerM.lookupVar LocalEnv.empty name.value
+      let globalName ← match globalInfo? with
+        | some (.inr info) => pure info.name
+        | _ => LowerM.freshUserName name.value
+
+      -- Intrinsics have no real body - create a placeholder panic
+      -- The actual implementation comes from the runtime/LLVM intrinsics
+      let body : UntypedExpr [] := .panic s!"intrinsic:{name.value}" () span
+
+      let funcAttrs : FunctionAttrs := {
+        inline := attrs.any fun a => a.name.value == "inline"
+        noInline := attrs.any fun a => a.name.value == "noinline"
+        deprecated := none
+        extern := some name.value  -- Mark as extern with the intrinsic name
+      }
+
       pure (some {
         name := globalName
-        params := params
+        params := #[]
         body := body
         declaredTypeSyntax := sig
         closureInfo := none
         attrs := funcAttrs
       })
-
-    else
-      -- No clauses - empty function?
-      pure none
+    | _ => pure none
 
   | _ => pure none
 
