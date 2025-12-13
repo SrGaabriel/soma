@@ -98,14 +98,10 @@ def extendEnvWithParams {scope : Scope} (env : LocalEnv scope) (params : ParamLi
 
     This theorem states that extracting just the BindingIds from bindingsWithNames
     gives the same result as calling bindings directly.
-
-    TODO: implement this proof. It requires well-founded recursion proof over Pattern structure.
-    Both `bindings` and `bindingsWithNames` are marked `partial` due to nested array
-    traversals, making standard induction tactics unavailable.
 -/
 theorem pattern_bindingsWithNames_fst (pat : Pattern α) :
-    (pat.bindingsWithNames.toList.map Prod.fst) = pat.bindings.toList := by
-  sorry
+    (pat.bindingsWithNames.toList.map Prod.fst) = pat.bindings.toList :=
+  Pattern.bindingsWithNames_fst pat
 
 /-- Extend environment with a list of (BindingId, name) pairs -/
 def extendEnvWithBindingPairs {scope : Scope} (env : LocalEnv scope)

@@ -97,7 +97,12 @@ instance : Hashable TyVarId where
   hash v := hash v.id
 
 instance : DecidableEq TyVarId := fun v1 v2 =>
-  if h : v1.id == v2.id then isTrue (by sorry) else isFalse (by sorry)
+  match decEq v1.name v2.name, decEq v1.id v2.id, decEq v1.kind v2.kind with
+  | isTrue h1, isTrue h2, isTrue h3 =>
+    isTrue (by cases v1; cases v2; simp_all)
+  | isFalse h, _, _ => isFalse (by intro heq; cases heq; exact h rfl)
+  | _, isFalse h, _ => isFalse (by intro heq; cases heq; exact h rfl)
+  | _, _, isFalse h => isFalse (by intro heq; cases heq; exact h rfl)
 
 instance : ToString TyVarId := ⟨fun v => v.name⟩
 

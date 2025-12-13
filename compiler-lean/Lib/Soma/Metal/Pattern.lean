@@ -40,26 +40,93 @@ def span : Pattern α → Span
   | .as _ _ _ _ s => s
 
 /-- Get all binding IDs introduced by this pattern -/
-partial def bindings : Pattern α → Array BindingId
+def bindings : Pattern α → Array BindingId
   | .var b _ _ _ => #[b]
   | .wildcard _ _ => #[]
   | .lit _ _ => #[]
-  | .ctor _ args _ _ => args.foldl (fun acc p => acc ++ p.bindings) #[]
-  | .tuple elems _ _ => elems.foldl (fun acc p => acc ++ p.bindings) #[]
-  | .array elems _ _ => elems.foldl (fun acc p => acc ++ p.bindings) #[]
+  | .ctor _ args _ _ => args.attach.foldl (fun acc ⟨p, _⟩ => acc ++ p.bindings) #[]
+  | .tuple elems _ _ => elems.attach.foldl (fun acc ⟨p, _⟩ => acc ++ p.bindings) #[]
+  | .array elems _ _ => elems.attach.foldl (fun acc ⟨p, _⟩ => acc ++ p.bindings) #[]
   | .cons h t _ _ => h.bindings ++ t.bindings
   | .as b _ inner _ _ => #[b] ++ inner.bindings
 
 /-- Get bindings as (id, name) pairs -/
-partial def bindingsWithNames : Pattern α → Array (BindingId × String)
+def bindingsWithNames : Pattern α → Array (BindingId × String)
   | .var b orig _ _ => #[(b, orig)]
   | .wildcard _ _ => #[]
   | .lit _ _ => #[]
-  | .ctor _ args _ _ => args.foldl (fun acc p => acc ++ p.bindingsWithNames) #[]
-  | .tuple elems _ _ => elems.foldl (fun acc p => acc ++ p.bindingsWithNames) #[]
-  | .array elems _ _ => elems.foldl (fun acc p => acc ++ p.bindingsWithNames) #[]
+  | .ctor _ args _ _ => args.attach.foldl (fun acc ⟨p, _⟩ => acc ++ p.bindingsWithNames) #[]
+  | .tuple elems _ _ => elems.attach.foldl (fun acc ⟨p, _⟩ => acc ++ p.bindingsWithNames) #[]
+  | .array elems _ _ => elems.attach.foldl (fun acc ⟨p, _⟩ => acc ++ p.bindingsWithNames) #[]
   | .cons h t _ _ => h.bindingsWithNames ++ t.bindingsWithNames
   | .as b orig inner _ _ => #[(b, orig)] ++ inner.bindingsWithNames
+
+/-- General lemma: List.foldl over append preserves map relationship -/
+theorem list_foldl_append_map_fst {β γ δ : Type}
+    (f : β → Array (γ × δ)) (g : β → Array γ)
+    (hfg : ∀ x, (f x).toList.map Prod.fst = (g x).toList)
+    (xs : List β) (init1 : Array (γ × δ)) (init2 : Array γ)
+    (hinit : init1.toList.map Prod.fst = init2.toList) :
+    (xs.foldl (fun acc x => acc ++ f x) init1).toList.map Prod.fst =
+    (xs.foldl (fun acc x => acc ++ g x) init2).toList := by
+  induction xs generalizing init1 init2 with
+  | nil => exact hinit
+  | cons x xs ih =>
+    simp only [List.foldl_cons]
+    apply ih
+    simp only [Array.toList_append, List.map_append, hinit, hfg]
+
+/-- Specialized to Array.foldl -/
+theorem array_foldl_append_map_fst {β γ δ : Type}
+    (f : β → Array (γ × δ)) (g : β → Array γ)
+    (hfg : ∀ x, (f x).toList.map Prod.fst = (g x).toList)
+    (arr : Array β) (init1 : Array (γ × δ)) (init2 : Array γ)
+    (hinit : init1.toList.map Prod.fst = init2.toList) :
+    (arr.foldl (fun acc x => acc ++ f x) init1).toList.map Prod.fst =
+    (arr.foldl (fun acc x => acc ++ g x) init2).toList := by
+  have h := list_foldl_append_map_fst f g hfg arr.toList init1 init2 hinit
+  simp only [Array.foldl_toList] at h
+  exact h
+
+/-- Theorem: Pattern.bindingsWithNames.map fst = Pattern.bindings
+
+    This theorem states that extracting just the BindingIds from bindingsWithNames
+    gives the same result as calling bindings directly.
+-/
+theorem bindingsWithNames_fst (pat : Pattern α) :
+    (pat.bindingsWithNames.toList.map Prod.fst) = pat.bindings.toList := by
+  match pat with
+  | .var _ _ _ _ => simp [bindingsWithNames, bindings]
+  | .wildcard _ _ => simp [bindingsWithNames, bindings]
+  | .lit _ _ => simp [bindingsWithNames, bindings]
+  | .ctor _ args _ _ =>
+    simp only [bindingsWithNames, bindings]
+    exact array_foldl_append_map_fst
+      (fun ⟨p, _⟩ => p.bindingsWithNames)
+      (fun ⟨p, _⟩ => p.bindings)
+      (fun ⟨p, _⟩ => bindingsWithNames_fst p)
+      args.attach #[] #[] rfl
+  | .tuple elems _ _ =>
+    simp only [bindingsWithNames, bindings]
+    exact array_foldl_append_map_fst
+      (fun ⟨p, _⟩ => p.bindingsWithNames)
+      (fun ⟨p, _⟩ => p.bindings)
+      (fun ⟨p, _⟩ => bindingsWithNames_fst p)
+      elems.attach #[] #[] rfl
+  | .array elems _ _ =>
+    simp only [bindingsWithNames, bindings]
+    exact array_foldl_append_map_fst
+      (fun ⟨p, _⟩ => p.bindingsWithNames)
+      (fun ⟨p, _⟩ => p.bindings)
+      (fun ⟨p, _⟩ => bindingsWithNames_fst p)
+      elems.attach #[] #[] rfl
+  | .cons h t _ _ =>
+    simp only [bindingsWithNames, bindings, Array.toList_append, List.map_append]
+    rw [bindingsWithNames_fst h, bindingsWithNames_fst t]
+  | .as _ _ inner _ _ =>
+    simp only [bindingsWithNames, bindings, Array.toList_append, List.map_append]
+    simp only [List.map_cons, List.map_nil]
+    rw [bindingsWithNames_fst inner]
 
 /-- Extend a scope with the bindings from this pattern -/
 def extendScope (p : Pattern α) (s : Scope) : Scope :=

@@ -100,10 +100,13 @@ instance : Ord BindingId where
     | other => other
 
 instance : DecidableEq BindingId := fun b1 b2 =>
-  if h : b1.id == b2.id && b1.module == b2.module then
-    isTrue (by sorry)
-  else
-    isFalse (by sorry)
+  match decEq b1.id b2.id, decEq b1.module b2.module, decEq b1.original b2.original, decEq b1.kind b2.kind with
+  | isTrue h1, isTrue h2, isTrue h3, isTrue h4 =>
+    isTrue (by cases b1; cases b2; simp_all)
+  | isFalse h, _, _, _ => isFalse (by intro heq; cases heq; exact h rfl)
+  | _, isFalse h, _, _ => isFalse (by intro heq; cases heq; exact h rfl)
+  | _, _, isFalse h, _ => isFalse (by intro heq; cases heq; exact h rfl)
+  | _, _, _, isFalse h => isFalse (by intro heq; cases heq; exact h rfl)
 
 instance : Inhabited BindingId := ⟨{ id := 0, module := "", original := "_" }⟩
 

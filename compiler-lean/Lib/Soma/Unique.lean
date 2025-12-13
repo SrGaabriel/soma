@@ -43,12 +43,14 @@ instance : Ord Unique where
 instance : Hashable Unique where
   hash u := mixHash (hash u.id) (hash u.module)
 
-/-- DecidableEq based on our BEq -/
+/-- DecidableEq based on structural equality -/
 instance : DecidableEq Unique := fun u1 u2 =>
-  if u1.id == u2.id && u1.module == u2.module then
-    isTrue (by sorry) -- The proof would require proper eq definition
-  else
-    isFalse (by sorry)
+  match decEq u1.id u2.id, decEq u1.module u2.module, decEq u1.original u2.original with
+  | isTrue h1, isTrue h2, isTrue h3 =>
+    isTrue (by cases u1; cases u2; simp_all)
+  | isFalse h, _, _ => isFalse (by intro heq; cases heq; exact h rfl)
+  | _, isFalse h, _ => isFalse (by intro heq; cases heq; exact h rfl)
+  | _, _, isFalse h => isFalse (by intro heq; cases heq; exact h rfl)
 
 /-- Display name for error messages -/
 def display (u : Unique) : String := u.original

@@ -32,10 +32,13 @@ instance : Ord TypeId where
     | other => other
 
 instance : DecidableEq TypeId := fun t1 t2 =>
-  if h : t1.module == t2.module && t1.unique == t2.unique then
-    isTrue (by sorry)
-  else
-    isFalse (by sorry)
+  match decEq t1.module t2.module, decEq t1.name t2.name, decEq t1.unique t2.unique, decEq t1.kind t2.kind with
+  | isTrue h1, isTrue h2, isTrue h3, isTrue h4 =>
+    isTrue (by cases t1; cases t2; simp_all)
+  | isFalse h, _, _, _ => isFalse (by intro heq; cases heq; exact h rfl)
+  | _, isFalse h, _, _ => isFalse (by intro heq; cases heq; exact h rfl)
+  | _, _, isFalse h, _ => isFalse (by intro heq; cases heq; exact h rfl)
+  | _, _, _, isFalse h => isFalse (by intro heq; cases heq; exact h rfl)
 
 /-- Display the type name (qualified if module is non-empty) -/
 def toString (id : TypeId) : String :=
@@ -74,10 +77,15 @@ instance : Hashable TyCon where
 instance : DecidableEq TyCon := fun c1 c2 =>
   match c1, c2 with
   | .prim p1, .prim p2 =>
-    if h : p1 == p2 then isTrue (by sorry) else isFalse (by sorry)
+    match decEq p1 p2 with
+    | isTrue h => isTrue (by rw [h])
+    | isFalse h => isFalse (by intro heq; cases heq; exact h rfl)
   | .user id1, .user id2 =>
-    if h : id1 == id2 then isTrue (by sorry) else isFalse (by sorry)
-  | _, _ => isFalse (by sorry)
+    match decEq id1 id2 with
+    | isTrue h => isTrue (by rw [h])
+    | isFalse h => isFalse (by intro heq; cases heq; exact h rfl)
+  | .prim _, .user _ => isFalse (by intro h; cases h)
+  | .user _, .prim _ => isFalse (by intro h; cases h)
 
 /-- Get the name of a type constructor -/
 def name : TyCon → String
