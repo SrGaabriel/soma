@@ -11,6 +11,11 @@ name = "Cli"
 name = "Soma"
 srcDir = "Lib"
 
+[[lean_lib]]
+name = "Somac"
+srcDir = "Exe"
+globs = ["Somac.+"]
+
 [[lean_exe]]
 name = "somac"
 root = "Somac"

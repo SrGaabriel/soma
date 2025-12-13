@@ -3,6 +3,7 @@ import Soma.Driver.Options
 import Soma.Syntax
 import Soma.Metal
 import Soma.Logging
+import Somac.Build
 
 open Cli
 
@@ -233,6 +234,17 @@ def runCircuit (p : Parsed) : IO UInt32 := do
   IO.println "[circuit] (not yet implemented)"
   return 0
 
+/-- Parse dependency flags into array of (name, path) pairs -/
+def parseDeps (p : Parsed) : Array (String × String) :=
+  match p.flag? "dep" with
+  | none => #[]
+  | some flag =>
+    let depStrs := flag.as! (Array String)
+    depStrs.filterMap fun s =>
+      match parseDep s with
+      | .ok pair => some pair
+      | .error _ => none
+
 /-- Handler for the `build` command -/
 def runBuild (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
@@ -251,7 +263,7 @@ def runBuild (p : Parsed) : IO UInt32 := do
     output := output
     name := name
     lib := p.hasFlag "lib"
-    deps := #[]  -- TODO: parse deps
+    deps := parseDeps p
     skipCircuit := p.hasFlag "skip-circuit"
     mode := compMode
     optimizationLevel := optLevel
@@ -259,10 +271,15 @@ def runBuild (p : Parsed) : IO UInt32 := do
   }
 
   IO.println "Soma Compiler v0.1.0"
-  IO.println s!"[build] Compiling: {input}"
-  IO.println s!"[build] Options: {repr opts}"
-  IO.println "[build] (not yet implemented)"
-  return 0
+
+  let result ← Somac.Build.build opts
+
+  if result.success then
+    return 0
+  else
+    for diag in result.diagnostics do
+      IO.eprintln s!"{diag.severity}: {diag.message}"
+    return 1
 
 /-- The `lex` subcommand -/
 def lexCmd : Cmd := `[Cli|

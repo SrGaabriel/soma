@@ -77,7 +77,7 @@ end Chars
 
 def padNum (n : Nat) (width : Nat) : String :=
   let s := toString n
-  String.mk (List.replicate (width - s.length) ' ') ++ s
+  String.ofList (List.replicate (width - s.length) ' ') ++ s
 
 def lineNumWidth (maxLine : Nat) : Nat :=
   (toString maxLine).length
@@ -85,13 +85,13 @@ def lineNumWidth (maxLine : Nat) : Nat :=
 def gutter (lineNum : Option Nat) (width : Nat) : String :=
   match lineNum with
   | some n => Color.brightBlue ++ padNum n width ++ " " ++ Chars.pipe ++ Color.reset
-  | none => String.mk (List.replicate width ' ') ++ " " ++ Color.brightBlue ++ Chars.pipe ++ Color.reset
+  | none => String.ofList (List.replicate width ' ') ++ " " ++ Color.brightBlue ++ Chars.pipe ++ Color.reset
 
 def emptyGutter (width : Nat) : String :=
-  String.mk (List.replicate width ' ') ++ " " ++ Color.brightBlue ++ Chars.pipe ++ Color.reset
+  String.ofList (List.replicate width ' ') ++ " " ++ Color.brightBlue ++ Chars.pipe ++ Color.reset
 
 def skipGutter (width : Nat) : String :=
-  String.mk (List.replicate width ' ') ++ " " ++ Color.brightBlue ++ Chars.pipeDotted ++ Color.reset
+  String.ofList (List.replicate width ' ') ++ " " ++ Color.brightBlue ++ Chars.pipeDotted ++ Color.reset
 
 /-! ## Multi-line Span Tracking -/
 
@@ -285,7 +285,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
           for ms in activeSpans do
             let color := Color.labelColor ms.style
             let targetCol := ms.visualCol - 1
-            let padding := String.mk (List.replicate (targetCol - visualPos) ' ')
+            let padding := String.ofList (List.replicate (targetCol - visualPos) ' ')
             skipLine := skipLine ++ padding ++ color ++ Chars.pipeDotted ++ Color.reset
             visualPos := targetCol + 1
           output := output.push s!" {skipGutter gutterWidth}{skipLine}"
@@ -299,7 +299,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
       let targetCol := ms.visualCol - 1
       if targetCol >= visualPos then
         let color := getMostSevereColorAtCol activeSpans ms.visualCol
-        let padding := String.mk (List.replicate (targetCol - visualPos) ' ')
+        let padding := String.ofList (List.replicate (targetCol - visualPos) ' ')
         margin := margin ++ padding ++ color ++ Chars.pipe ++ Color.reset
         visualPos := targetCol + 1
 
@@ -320,16 +320,16 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
         for other in activeSpans do
           let targetCol := other.visualCol - 1
           if targetCol >= underlineVisualPos then
-            let padding := String.mk (List.replicate (targetCol - underlineVisualPos) ' ')
+            let padding := String.ofList (List.replicate (targetCol - underlineVisualPos) ' ')
             let c := getMostSevereColorAtCol activeSpans other.visualCol
             underlineMargin := underlineMargin ++ padding ++ c ++ Chars.pipe ++ Color.reset
             underlineVisualPos := targetCol + 1
         let toCornerLen := connCol - 1 - underlineVisualPos
-        let cornerPadding := String.mk (List.replicate (max toCornerLen 0) ' ')
+        let cornerPadding := String.ofList (List.replicate (max toCornerLen 0) ' ')
         let toStartLen := if startCol > connCol then startCol - connCol - 1 else 0
-        let toStartHoriz := String.mk (List.replicate toStartLen Chars.horizontalChar)
+        let toStartHoriz := String.ofList (List.replicate toStartLen Chars.horizontalChar)
         let underlineLen := content.length - max startCol connCol + 2
-        let underline := String.mk (List.replicate (max underlineLen 0) Chars.horizontalChar)
+        let underline := String.ofList (List.replicate (max underlineLen 0) Chars.horizontalChar)
         output := output.push s!" {emptyGutter gutterWidth}{underlineMargin}{cornerPadding}{color}{Chars.cornerTopLeft}{toStartHoriz}{underline}{Color.reset}"
 
     for ms in multiSpansWithCols do
@@ -343,14 +343,14 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
         for other in activeSpans do
           let targetCol := other.visualCol - 1
           if targetCol < ms.visualCol - 1 && targetCol >= rowPos then
-            let padding := String.mk (List.replicate (targetCol - rowPos) ' ')
+            let padding := String.ofList (List.replicate (targetCol - rowPos) ' ')
             let c := getMostSevereColorAtCol activeSpans other.visualCol
             row := row ++ padding ++ c ++ Chars.pipe ++ Color.reset
             rowPos := targetCol + 1
 
         let cornerCol := ms.visualCol - 1
         if cornerCol >= rowPos then
-          let padding := String.mk (List.replicate (cornerCol - rowPos) ' ')
+          let padding := String.ofList (List.replicate (cornerCol - rowPos) ' ')
           row := row ++ padding ++ color ++ Chars.cornerBottomLeft ++ Color.reset
           rowPos := cornerCol + 1
 
@@ -384,7 +384,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
         let targetCol := ms.visualCol - 1
         if targetCol >= firstRowPos then
           let color := getMostSevereColorAtCol activeSpans ms.visualCol
-          let padding := String.mk (List.replicate (targetCol - firstRowPos) ' ')
+          let padding := String.ofList (List.replicate (targetCol - firstRowPos) ' ')
           firstRow := firstRow ++ padding ++ color ++ Chars.pipe ++ Color.reset
           firstRowPos := targetCol + 1
 
@@ -394,7 +394,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
         let targetCol := vs.startCol - 1
         if targetCol >= firstRowPos then
           let color := getMostSevereColorAtColVirtual sortedVirtual vs.startCol
-          let padding := String.mk (List.replicate (targetCol - firstRowPos) ' ')
+          let padding := String.ofList (List.replicate (targetCol - firstRowPos) ' ')
           firstRow := firstRow ++ padding ++ color ++ Chars.teeRight ++ Color.reset
           firstRowPos := targetCol + 1
         lastCol := targetCol
@@ -416,7 +416,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
           let targetCol := ms.visualCol - 1
           if targetCol >= rowPos then
             let c := getMostSevereColorAtCol activeSpans ms.visualCol
-            let padding := String.mk (List.replicate (targetCol - rowPos) ' ')
+            let padding := String.ofList (List.replicate (targetCol - rowPos) ' ')
             row := row ++ padding ++ c ++ Chars.pipe ++ Color.reset
             rowPos := targetCol + 1
 
@@ -426,7 +426,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
           let vs := sortedVirtual[i]!
           let targetCol := vs.startCol - 1
           if targetCol >= rowPos then
-            let padding := String.mk (List.replicate (targetCol - rowPos) ' ')
+            let padding := String.ofList (List.replicate (targetCol - rowPos) ' ')
             if targetCol == cornerCol then
               let c := getMostSevereColorAtColVirtual sortedVirtual vs.startCol
               row := row ++ padding ++ c ++ Chars.teeRight ++ Color.reset
@@ -440,7 +440,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
         if drewCorner then
           row := row ++ color ++ Chars.horizontal ++ msgPart ++ Color.reset
         else if cornerCol >= rowPos then
-          let padding := String.mk (List.replicate (cornerCol - rowPos) ' ')
+          let padding := String.ofList (List.replicate (cornerCol - rowPos) ' ')
           row := row ++ padding ++ color ++ Chars.cornerBottomLeft ++ Chars.horizontal ++ msgPart ++ Color.reset
         else
           row := row ++ color ++ Chars.horizontal ++ msgPart ++ Color.reset
@@ -461,13 +461,13 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
       for ms in activeSpans do
         let targetCol := ms.visualCol - 1
         if targetCol >= labelVisualPos then
-          let padding := String.mk (List.replicate (targetCol - labelVisualPos) ' ')
+          let padding := String.ofList (List.replicate (targetCol - labelVisualPos) ' ')
           let c := getMostSevereColorAtCol activeSpans ms.visualCol
           labelMargin := labelMargin ++ padding ++ c ++ Chars.pipe ++ Color.reset
           labelVisualPos := targetCol + 1
-      let underlinePadding := String.mk (List.replicate (sl.startCol - 1) ' ')
+      let underlinePadding := String.ofList (List.replicate (sl.startCol - 1) ' ')
       let underlineLen := if sl.endCol > sl.startCol then sl.endCol - sl.startCol else 1
-      let underlineStr := String.mk (List.replicate underlineLen char)
+      let underlineStr := String.ofList (List.replicate underlineLen char)
       let msgPart := if sl.message.isEmpty then "" else " " ++ sl.message
       output := output.push s!" {emptyGutter gutterWidth}{labelMargin} {underlinePadding}{color}{underlineStr}{msgPart}{Color.reset}"
 
@@ -481,7 +481,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
       for ms in activeSpans do
         let targetCol := ms.visualCol - 1
         if targetCol >= underlineRowPos then
-          let padding := String.mk (List.replicate (targetCol - underlineRowPos) ' ')
+          let padding := String.ofList (List.replicate (targetCol - underlineRowPos) ' ')
           let c := getMostSevereColorAtCol activeSpans ms.visualCol
           underlineRow := underlineRow ++ padding ++ c ++ Chars.pipe ++ Color.reset
           underlineRowPos := targetCol + 1
@@ -498,11 +498,11 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
           | .secondary => Chars.underlineTilde
         let targetCol := sl.startCol
         if targetCol > underlineRowPos then
-          let padding := String.mk (List.replicate (targetCol - underlineRowPos) ' ')
+          let padding := String.ofList (List.replicate (targetCol - underlineRowPos) ' ')
           underlineRow := underlineRow ++ padding
           underlineRowPos := targetCol
         let underlineLen := if sl.endCol > sl.startCol then sl.endCol - sl.startCol else 1
-        let underlineStr := String.mk (List.replicate underlineLen char)
+        let underlineStr := String.ofList (List.replicate underlineLen char)
         underlineRow := underlineRow ++ color ++ underlineStr ++ Color.reset
         underlineRowPos := underlineRowPos + underlineLen
 
@@ -521,7 +521,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
         for ms in activeSpans do
           let targetCol := ms.visualCol - 1
           if targetCol >= rowPos then
-            let padding := String.mk (List.replicate (targetCol - rowPos) ' ')
+            let padding := String.ofList (List.replicate (targetCol - rowPos) ' ')
             let c := getMostSevereColorAtCol activeSpans ms.visualCol
             row := row ++ padding ++ c ++ Chars.pipe ++ Color.reset
             rowPos := targetCol + 1
@@ -535,7 +535,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
           let sl := lineLabels[i]!
           let targetCol := sl.startCol
           if targetCol > rowPos then
-            let padding := String.mk (List.replicate (targetCol - rowPos) ' ')
+            let padding := String.ofList (List.replicate (targetCol - rowPos) ' ')
             row := row ++ padding
             rowPos := targetCol
           let c := Color.labelColor sl.style
@@ -545,7 +545,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) : String := Id.run do
         -- Draw corner and message for current label
         let cornerCol := currentLabel.startCol
         if cornerCol > rowPos then
-          let padding := String.mk (List.replicate (cornerCol - rowPos) ' ')
+          let padding := String.ofList (List.replicate (cornerCol - rowPos) ' ')
           row := row ++ padding
           rowPos := cornerCol
         let msgPart := if currentLabel.message.isEmpty then "" else " " ++ currentLabel.message
