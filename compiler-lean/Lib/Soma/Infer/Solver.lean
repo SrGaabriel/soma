@@ -46,6 +46,8 @@ def solveEquality (c : EqualityConstraint) : InferM (Option Subst) := do
 
 /-- Solve all equality constraints iteratively -/
 partial def solveEqualities : InferM Unit := do
+  -- Track constraint IDs that have failed to avoid duplicate error reporting
+  let mut failedIds : Std.HashSet Nat := {}
   let mut changed := true
   while changed do
     changed := false
@@ -53,6 +55,8 @@ partial def solveEqualities : InferM Unit := do
     let sorted := graph.sortedEqualities
 
     for c in sorted do
+      -- Skip constraints that have already failed
+      if failedIds.contains c.id then continue
       if c.isTrivial then continue
 
       -- Apply current substitution to the constraint
@@ -67,7 +71,9 @@ partial def solveEqualities : InferM Unit := do
         if !σ'.isEmpty then
           extendSubst σ'
           changed := true
-      | none => pure ()
+      | none =>
+        -- Mark this constraint as failed so we don't report the error again
+        failedIds := failedIds.insert c.id
 
     -- Remove trivially satisfied constraints
     modify fun s => { s with constraints := s.constraints.removeTrivial }

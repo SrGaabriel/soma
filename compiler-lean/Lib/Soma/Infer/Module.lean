@@ -445,13 +445,16 @@ def inferModule
   -- (for mutual recursion support)
   let mut augmentedCtx := ctx
   for fn in m.functions do
-    -- Create a placeholder polymorphic type for each function
-    -- This allows recursive and mutually recursive calls
+    -- If the function has a declared type signature, resolve it
+    -- Otherwise use a placeholder (will be inferred in second pass)
+    let bodyTy : MonoTy := match fn.declaredTypeSyntax with
+      | some tyExpr => resolveTypeExprPure tyExpr ctx.typeEnv |>.getD (.starPrim .unit)
+      | none => .starPrim .unit  -- Placeholder for functions without signatures
     let fnInfo : FunctionInfo := {
       qualType := {
         vars := #[]
         constraints := #[]
-        body := .starPrim .unit  -- Placeholder, will be refined
+        body := bodyTy
       }
       metalName := fn.name
     }

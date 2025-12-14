@@ -1,0 +1,4 @@
+// expect: error mismatch
+intrinsic def {+} :: Int -> Int -> Int
+
+def a :: String = 5 + 10
