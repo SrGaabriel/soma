@@ -30,8 +30,8 @@ structure CheckResult where
   moduleName : String
   /-- Source file object for error rendering -/
   sourceFile : SourceFile
-  /-- The parsed CST -/
-  cst : SyntaxNode
+  /-- The parsed tree (green + red) -/
+  parsedTree : ParsedTree
   /-- The lowered AST (if frontend succeeded) -/
   ast : Option Syntax.Module
   /-- The Metal IR module (if lowering succeeded) -/
@@ -67,6 +67,14 @@ def metalSucceeded (r : CheckResult) : Bool :=
 def inferenceCompleted (r : CheckResult) : Bool :=
   r.typedModule.isSome
 
+/-- Get the green tree (immutable, position-independent) -/
+def greenTree (r : CheckResult) : GreenNode :=
+  r.parsedTree.green
+
+/-- Get the red tree (positioned, with stable NodeIds) -/
+def redTree (r : CheckResult) : RedTree :=
+  r.parsedTree.red
+
 end CheckResult
 
 /-- Configuration for the check pipeline -/
@@ -101,23 +109,20 @@ def checkSource (filePath : String) (content : String) (config : CheckConfig) : 
   -- Phase 1: Create source file with line information
   let sourceFile := SourceFile.create fileId filePath content
 
-  -- Phase 2: Lexing (infallible)
-  let (tokens, lexDiags) := lexCode sourceFile
-
-  -- Phase 3: Parsing (infallible - always produces CST)
-  let (cst, parseDiags) := Parse.parseSourceFile.run' tokens sourceFile
+  -- Phase 2+3: Lex and parse
+  let (parsedTree, frontendDiags) := parseToTree sourceFile
 
   -- Phase 4: Lower CST to AST (infallible, collects errors)
-  let (ast, astLowerDiags) := lower cst moduleName
+  let (ast, astLowerDiags) := lower parsedTree moduleName
 
-  let frontendDiags := lexDiags ++ parseDiags ++ astLowerDiags
+  let frontendDiags := frontendDiags ++ astLowerDiags
 
   -- If frontend has errors and config says to stop, return early
   if config.stopOnFrontendErrors && frontendDiags.hasErrors then
     return {
       moduleName := moduleName
       sourceFile := sourceFile
-      cst := cst
+      parsedTree := parsedTree
       ast := some ast
       metalModule := none
       typedModule := none
@@ -147,7 +152,7 @@ def checkSource (filePath : String) (content : String) (config : CheckConfig) : 
   return {
     moduleName := moduleName
     sourceFile := sourceFile
-    cst := cst
+    parsedTree := parsedTree
     ast := some ast
     metalModule := some lowerResult.module
     typedModule := some inferResult.module

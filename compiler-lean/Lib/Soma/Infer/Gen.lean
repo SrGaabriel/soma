@@ -208,9 +208,40 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope)
     match ← lookupLocal name with
     | some info => return (info.ty, .var v info.ty span)
     | none =>
-      reportError (.unknownVariable name span)
-      let errTy ← freshVar "err"
-      return (errTy, .var v errTy span)
+      -- Check if this might be a constructor
+      let isUppercase := name.get? ⟨0⟩ |>.map Char.isUpper |>.getD false
+      if isUppercase then
+        match ← lookupConstructor name with
+        | some ctorInfo =>
+          -- Instantiate with fresh type variables
+          let freshParams ← ctorInfo.typeParams.mapM fun tv => do
+            let fresh ← freshVar tv.name
+            return (tv.id, fresh)
+          let σ := Subst.fromArrays ctorInfo.typeParams (freshParams.map (·.2))
+          let expectedFieldTys := ctorInfo.fieldTypes.map (σ.apply ·)
+          -- Build the constructor name
+          let typeUnique : Unique := ⟨ctorInfo.typeId.unique, ctorInfo.typeId.module, ctorInfo.typeId.name⟩
+          let ctorName := Name.ctor typeUnique name ctorInfo.tag
+          -- For nullary constructors, just return the type
+          if expectedFieldTys.isEmpty then
+            let baseTy := Ty.userCon ctorInfo.typeId.kind ctorInfo.typeId
+            let resultTy := applyTypeArgs baseTy (freshParams.map (·.2))
+            return (resultTy, .construct ctorName ctorInfo.tag .nil resultTy span)
+          else
+            -- Constructor needs arguments - return as a function type
+            let baseTy := Ty.userCon ctorInfo.typeId.kind ctorInfo.typeId
+            let resultTy := applyTypeArgs baseTy (freshParams.map (·.2))
+            let ctorFnTy := expectedFieldTys.foldr (init := resultTy) fun argTy accTy =>
+              Ty.arrow argTy accTy
+            return (ctorFnTy, .construct ctorName ctorInfo.tag .nil ctorFnTy span)
+        | none =>
+          reportError (.unknownVariable name span)
+          let errTy ← freshVar "err"
+          return (errTy, .var v errTy span)
+      else
+        reportError (.unknownVariable name span)
+        let errTy ← freshVar "err"
+        return (errTy, .var v errTy span)
 
   | .lit lit span =>
     let ty := genLiteral lit
@@ -333,9 +364,39 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope)
         addConstraint c span
       return (ty, .global name ty span)
     | none =>
-      reportError (.unknownVariable name.display span)
-      let errTy ← freshVar "err"
-      return (errTy, .global name errTy span)
+      -- Check if this is a constructor reference (Name.ctor)
+      match name with
+      | .ctor _typeUnique _ctorName _tag =>
+        -- Use the full qualified name for lookup (e.g., "Maybe.Just")
+        match ← lookupConstructor name.display with
+        | some ctorInfo =>
+          -- Instantiate with fresh type variables
+          let freshParams ← ctorInfo.typeParams.mapM fun tv => do
+            let fresh ← freshVar tv.name
+            return (tv.id, fresh)
+          let σ := Subst.fromArrays ctorInfo.typeParams (freshParams.map (·.2))
+          let expectedFieldTys := ctorInfo.fieldTypes.map (σ.apply ·)
+          -- For nullary constructors, just return the constructed value
+          if expectedFieldTys.isEmpty then
+            let baseTy := Ty.userCon ctorInfo.typeId.kind ctorInfo.typeId
+            let resultTy := applyTypeArgs baseTy (freshParams.map (·.2))
+            return (resultTy, .construct name ctorInfo.tag .nil resultTy span)
+          else
+            -- Constructor needs arguments - treat it as a function (global reference)
+            -- It will be fully applied later via .call
+            let baseTy := Ty.userCon ctorInfo.typeId.kind ctorInfo.typeId
+            let resultTy := applyTypeArgs baseTy (freshParams.map (·.2))
+            let ctorFnTy := expectedFieldTys.foldr (init := resultTy) fun argTy accTy =>
+              Ty.arrow argTy accTy
+            return (ctorFnTy, .global name ctorFnTy span)
+        | none =>
+          reportError (.unknownVariable name.display span)
+          let errTy ← freshVar "err"
+          return (errTy, .global name errTy span)
+      | _ =>
+        reportError (.unknownVariable name.display span)
+        let errTy ← freshVar "err"
+        return (errTy, .global name errTy span)
 
   | .panic message () span => do
     let ty ← freshVar "panic"

@@ -1,0 +1,6 @@
+// expect: success
+data Maybe a
+    | Just a
+    | Nothing
+
+def test :: Maybe Int = Just 5

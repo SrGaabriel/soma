@@ -86,7 +86,9 @@ inductive SyntaxKind where
   | name              -- Simple name
   | qualifiedName     -- Qualified name
   | operatorName      -- Operator as name
-  deriving Repr, BEq, Inhabited
+  -- Token with leading trivia (for accurate span tracking)
+  | triviaToken       -- Wrapper: [trivia..., token]
+  deriving Repr, BEq, Hashable, Inhabited
 
 /-- Human-readable description of a syntax kind -/
 def SyntaxKind.describe : SyntaxKind → String
@@ -163,6 +165,7 @@ def SyntaxKind.describe : SyntaxKind → String
   | .name => "name"
   | .qualifiedName => "qualified name"
   | .operatorName => "operator name"
+  | .triviaToken => "token with trivia"
 
 instance : ToString SyntaxKind where
   toString := SyntaxKind.describe

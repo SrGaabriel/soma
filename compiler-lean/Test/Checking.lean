@@ -66,21 +66,46 @@ def isSuccess (r : CheckResult) : Bool :=
 def errorMessages (r : CheckResult) : Array String :=
   r.allErrors.map (·.message) ++ r.inferErrors.map (·.toDiagnostic.message)
 
+def detailedErrorMessages (r : CheckResult) : Array String :=
+  let diagMsgs := r.allErrors.map fun d =>
+    let labels := d.labels.map fun l => s!"  {l.message}"
+    s!"{d.message}\n{String.intercalate "\n" labels.toList}"
+  let inferMsgs := r.inferErrors.map fun e =>
+    let d := e.toDiagnostic
+    let labels := d.labels.map fun l => s!"  {l.message}"
+    s!"{d.message}\n{String.intercalate "\n" labels.toList}"
+  diagMsgs ++ inferMsgs
+
+def errorSpanInfo (r : CheckResult) : Array String :=
+  r.inferErrors.map fun e =>
+    let d := e.toDiagnostic
+    let labels := d.labels.map fun l =>
+      s!"    label: {l.span} (bytes {l.span.start.byteOffset}-{l.span.stop.byteOffset}) - {l.message}"
+    s!"{d.message} at primary span line {d.span?.map (·.start.line) |>.getD 0}\n{String.intercalate "\n" labels.toList}"
+
 end CheckResult
+
+/-- Debug: print expression spans recursively -/
+partial def debugExprSpan (e : Expr) (indent : String) : String :=
+  match e with
+  | .var name => s!"{indent}VAR {name.value} at {name.span} (bytes {name.span.start.byteOffset}-{name.span.stop.byteOffset})"
+  | .app fn arg span =>
+      let fnS := debugExprSpan fn (indent ++ "  ")
+      let argS := debugExprSpan arg (indent ++ "  ")
+      s!"{indent}APP at {span} (bytes {span.start.byteOffset}-{span.stop.byteOffset})\n{fnS}\n{argS}"
+  | .lit lit => s!"{indent}LIT at {lit.span}"
+  | _ => s!"{indent}OTHER at {e.span}"
 
 /-- Run the full pipeline on source code -/
 def runCheck (source : String) (moduleName : String := "Test") : CheckResult := Id.run do
   let fileId : FileId := ⟨0⟩
   let sourceFile := SourceFile.create fileId "test.soma" source
 
-  -- Phase 1: Lexing
-  let (tokens, lexDiags) := lexCode sourceFile
-
-  -- Phase 2: Parsing
-  let (cst, parseDiags) := Parse.parseSourceFile.run' tokens sourceFile
+  -- Phase 1+2: Parse to tree (includes lexing)
+  let (tree, parseDiags) := parseToTree sourceFile
 
   -- Phase 3: Lower CST to AST
-  let (ast, astLowerDiags) := lower cst moduleName
+  let (ast, astLowerDiags) := lower tree moduleName
 
   -- Phase 4: Lower AST to Metal IR
   let lowerResult := Soma.Metal.Lower.lower ast
@@ -99,7 +124,7 @@ def runCheck (source : String) (moduleName : String := "Test") : CheckResult := 
   let inferResult := Soma.Infer.inferModule lowerResult.module inferCtx
 
   return {
-    lexDiags := lexDiags
+    lexDiags := #[]
     parseDiags := parseDiags
     astLowerDiags := astLowerDiags
     metalLowerDiags := metalLowerDiags
@@ -111,13 +136,39 @@ def runCheckingTest (tc : TestCase) : IO TestResult := do
   let expectation := parseExpectation tc.source
   let result := runCheck tc.source
 
+  -- Debug: print span info for position_test
+  if tc.name == "position_test.soma" || tc.name == "position_test2.soma" || tc.name == "position_nocomment.soma" then
+    IO.println s!"  [DEBUG] position_test span info:"
+    for info in result.errorSpanInfo do
+      IO.println s!"    {info}"
+    -- Also print AST spans for the last def
+    let sf := SourceFile.create ⟨0⟩ "test.soma" tc.source
+    IO.println s!"  [DEBUG] Source length: {tc.source.utf8ByteSize} bytes"
+    IO.println s!"  [DEBUG] Source line starts: {sf.lineStarts.toList}"
+    let (tree, _) := parseToTree sf
+    IO.println s!"  [DEBUG] Green tree width: {tree.green.width} bytes"
+    let (ast, _) := lower tree "Test"
+    -- Print all decl spans
+    IO.println s!"  [DEBUG] AST declarations:"
+    for decl in ast.decls do
+      match decl with
+      | .def_ _ name _ clauses span =>
+          IO.println s!"    def {name.value} at {span} (bytes {span.start.byteOffset}-{span.stop.byteOffset})"
+          if name.value == "a" then
+            for clause in clauses do
+              IO.println s!"      body:"
+              IO.println s!"    {debugExprSpan clause.body "      "}"
+      | .data name _ _ span =>
+          IO.println s!"    data {name.value} at {span} (bytes {span.start.byteOffset}-{span.stop.byteOffset})"
+      | d => IO.println s!"    other decl at {d.span} (bytes {d.span.start.byteOffset}-{d.span.stop.byteOffset})"
+
   match expectation with
   | .success =>
     if result.isSuccess then
       return .passed
     else
-      let errors := result.errorMessages
-      return .failed s!"Expected success but got errors: {errors}"
+      let errors := result.detailedErrorMessages
+      return .failed s!"Expected success but got errors:\n{String.intercalate "\n" errors.toList}"
 
   | .error expectedSubstr =>
     if result.hasErrors then

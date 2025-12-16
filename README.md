@@ -1,5 +1,3 @@
-<p style="text-align: center"><img src="docs/assets/icon.png" alt="Soma Logo" width="1024" height="1024"/></p>
-
 # ⚗️ soma
 
 Soma is a statically-typed, pure functional language with Hindley–Milner style type inference, explicit effect modeling, and eager evaluation semantics. It leverages Interaction Nets for optimal evaluation, enabling GC-free memory management with deterministic lifetimes and automatic parallelism.

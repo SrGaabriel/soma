@@ -25,16 +25,15 @@ open Soma.Metal (UntypedModule UntypedFunction UntypedTypeDef Module Function Ty
 open Soma.Syntax (TypeExpr)
 open Soma (UniqueSupply)
 
-/-- Resolve a TypeExpr to a MonoTy without using InferM (pure version).
-    Returns `none` if the type cannot be resolved (unknown type constructor).
-    Used for resolving field types in type definitions during environment building. -/
-partial def resolveTypeExprPure (ty : TypeExpr) (env : TypeEnv) : Option MonoTy :=
+/-- Resolve a TypeExpr to a MonoTy with a mapping for type variables.
+    Returns `none` if the type cannot be resolved. -/
+partial def resolveTypeExprWithVars (ty : TypeExpr) (env : TypeEnv) (tyVars : Std.HashMap String TyVarId) : Option MonoTy :=
   match ty with
-  | .var _name =>
-    -- Type variables cannot be resolved in a pure context because we don't have
-    -- access to a fresh variable counter. Return none and let the inference
-    -- phase handle type variable instantiation properly via InferM.
-    none
+  | .var name =>
+    -- Look up type variable in the provided mapping
+    match tyVars.get? name.value with
+    | some tyVarId => some (.var tyVarId)
+    | none => none
 
   | .con name =>
     match StarPrimitive.fromName? name.value with
@@ -45,22 +44,22 @@ partial def resolveTypeExprPure (ty : TypeExpr) (env : TypeEnv) : Option MonoTy 
       | none => none
 
   | .arrow from_ to _ =>
-    match resolveTypeExprPure from_ env, resolveTypeExprPure to env with
+    match resolveTypeExprWithVars from_ env tyVars, resolveTypeExprWithVars to env tyVars with
     | some fromTy, some toTy => some (.arrow fromTy toTy)
     | _, _ => none
 
   | .tuple elements _ =>
-    let elemTys := elements.filterMap fun e => resolveTypeExprPure e env
+    let elemTys := elements.filterMap fun e => resolveTypeExprWithVars e env tyVars
     if elemTys.size == elements.size then
       Gen.mkTupleType elemTys
     else
       none
 
   | .list elem _ =>
-    (resolveTypeExprPure elem env).map Ty.array
+    (resolveTypeExprWithVars elem env tyVars).map Ty.array
 
   | .app fn arg _ =>
-    match resolveTypeExprPure arg env with
+    match resolveTypeExprWithVars arg env tyVars with
     | none => none
     | some argTy =>
       match fn with
@@ -76,7 +75,7 @@ partial def resolveTypeExprPure (ty : TypeExpr) (env : TypeEnv) : Option MonoTy 
           | none => none
       | .app _ _ _ =>
         -- Nested application - collect all args
-        match collectTypeAppPure fn #[argTy] env with
+        match collectTypeAppWithVars fn #[argTy] env tyVars with
         | some (baseName, allArgs) =>
           match HigherPrimitive.fromName? baseName with
           | some .array => some (Ty.array (allArgs[0]?.getD argTy))
@@ -90,21 +89,27 @@ partial def resolveTypeExprPure (ty : TypeExpr) (env : TypeEnv) : Option MonoTy 
         | none => none
       | _ => none
 
-  | .forall_ _ body _ => resolveTypeExprPure body env
-  | .constrained _ body _ => resolveTypeExprPure body env
-  | .parens inner _ => resolveTypeExprPure inner env
-  | .kinded ty _ _ => resolveTypeExprPure ty env
+  | .forall_ _ body _ => resolveTypeExprWithVars body env tyVars
+  | .constrained _ body _ => resolveTypeExprWithVars body env tyVars
+  | .parens inner _ => resolveTypeExprWithVars inner env tyVars
+  | .kinded ty _ _ => resolveTypeExprWithVars ty env tyVars
 where
   /-- Collect base type name and arguments from nested applications -/
-  collectTypeAppPure (ty : TypeExpr) (args : Array MonoTy) (env : TypeEnv) : Option (String × Array MonoTy) :=
+  collectTypeAppWithVars (ty : TypeExpr) (args : Array MonoTy) (env : TypeEnv) (tyVars : Std.HashMap String TyVarId) : Option (String × Array MonoTy) :=
     match ty with
     | .con name => some (name.value, args)
     | .app fn arg _ =>
-      match resolveTypeExprPure arg env with
-      | some argTy => collectTypeAppPure fn (#[argTy] ++ args) env
+      match resolveTypeExprWithVars arg env tyVars with
+      | some argTy => collectTypeAppWithVars fn (#[argTy] ++ args) env tyVars
       | none => none
-    | .parens inner _ => collectTypeAppPure inner args env
+    | .parens inner _ => collectTypeAppWithVars inner args env tyVars
     | _ => none
+
+/-- Resolve a TypeExpr to a MonoTy without using InferM (pure version).
+    Returns `none` if the type cannot be resolved (unknown type constructor).
+    Used for resolving field types in type definitions during environment building. -/
+def resolveTypeExprPure (ty : TypeExpr) (env : TypeEnv) : Option MonoTy :=
+  resolveTypeExprWithVars ty env {}
 
 /-- Build a TypeEnv from an UntypedModule and external function signatures.
 
@@ -160,11 +165,14 @@ def buildTypeEnvFromModule
     | .algebraic name typeVarNames ctors =>
       let typeParams' : Array TyVarId := typeVarNames.mapIdx fun i n =>
         ⟨n, i, .star⟩
+      -- Build type variable mapping for resolving field types
+      let tyVarMap : Std.HashMap String TyVarId := typeParams'.foldl (init := {}) fun m tv =>
+        m.insert tv.name tv
 
       for ctor in ctors do
-        -- Resolve field types from syntax (falls back to empty for type variables)
+        -- Resolve field types from syntax with type variable support
         let fieldTypes := ctor.fieldTypeSyntax.filterMap fun tyExpr =>
-          resolveTypeExprPure tyExpr env
+          resolveTypeExprWithVars tyExpr env tyVarMap
         let ctorInfo : ConstructorInfo := {
           typeName := name.display
           typeId := typeId
@@ -177,9 +185,11 @@ def buildTypeEnvFromModule
     | .struct name typeVarNames ctorName fieldTypeSyntax =>
       let typeParams' : Array TyVarId := typeVarNames.mapIdx fun i n =>
         ⟨n, i, .star⟩
+      let tyVarMap : Std.HashMap String TyVarId := typeParams'.foldl (init := {}) fun m tv =>
+        m.insert tv.name tv
 
       let fieldTypes := fieldTypeSyntax.filterMap fun tyExpr =>
-        resolveTypeExprPure tyExpr env
+        resolveTypeExprWithVars tyExpr env tyVarMap
       let ctorInfo : ConstructorInfo := {
         typeName := name.display
         typeId := typeId
@@ -192,10 +202,12 @@ def buildTypeEnvFromModule
     | .record name typeVarNames fieldNamesAndTypes =>
       let typeParams' : Array TyVarId := typeVarNames.mapIdx fun i n =>
         ⟨n, i, .star⟩
+      let tyVarMap : Std.HashMap String TyVarId := typeParams'.foldl (init := {}) fun m tv =>
+        m.insert tv.name tv
 
       -- Record uses the type name as the constructor name
       let fieldTypes := fieldNamesAndTypes.filterMap fun (_, tyExpr) =>
-        resolveTypeExprPure tyExpr env
+        resolveTypeExprWithVars tyExpr env tyVarMap
       let ctorInfo : ConstructorInfo := {
         typeName := name.display
         typeId := typeId

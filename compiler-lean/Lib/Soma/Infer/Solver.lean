@@ -35,8 +35,8 @@ namespace Solver
 def solveEquality (c : EqualityConstraint) : InferM (Option Subst) := do
   let ctx : UnifyContext := {
     purpose := c.purpose
-    expectedSpan := c.lhsSpan
-    actualSpan := c.rhsSpan
+    expectedSpan := c.rhsSpan
+    actualSpan := c.lhsSpan
   }
   match Unify.unifyMono c.lhs c.rhs ctx with
   | .ok σ => return some σ

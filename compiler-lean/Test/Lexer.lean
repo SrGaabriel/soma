@@ -28,6 +28,12 @@ def runFromFixtures : IO TestRunner := do
     runner := runner.record tc.name result
   return runner
 
+/-- Helper to display a token -/
+def showToken (tok : GreenNode) : String :=
+  match tok with
+  | .token kind text => s!"{kind} \"{text}\""
+  | _ => "<non-token>"
+
 /-- Run legacy inline tests (for comparison during migration) -/
 def runInlineTests : IO Unit := do
   IO.println "=== Lexer Tests (inline) ==="
@@ -36,19 +42,19 @@ def runInlineTests : IO Unit := do
   let (tokens, diags) := lex "hello"
   IO.println s!"Test 1 (identifier): {tokens.size} tokens, {diags.size} errors"
   for tok in tokens do
-    IO.println s!"  {tok.kind} \"{tok.text}\""
+    IO.println s!"  {showToken tok}"
 
   -- Test 2: Keywords
   let (tokens, diags) := lex "def let case if then else"
   IO.println s!"Test 2 (keywords): {tokens.size} tokens, {diags.size} errors"
   for tok in tokens do
-    IO.println s!"  {tok.kind} \"{tok.text}\""
+    IO.println s!"  {showToken tok}"
 
   -- Test 3: Numbers and operators
   let (tokens, diags) := lex "42 + 10 - 5"
   IO.println s!"Test 3 (numbers/ops): {tokens.size} tokens, {diags.size} errors"
   for tok in tokens do
-    IO.println s!"  {tok.kind} \"{tok.text}\""
+    IO.println s!"  {showToken tok}"
 
   IO.println "=== Inline Tests Complete ==="
 

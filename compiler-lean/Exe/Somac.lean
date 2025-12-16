@@ -42,8 +42,11 @@ def runLex (p : Parsed) : IO UInt32 := do
   -- Read the file
   let source ← IO.FS.readFile input
 
+  -- todo: remove workaround
+  let sourceFile := Syntax.SourceFile.create ⟨0⟩ input source
+
   -- Lex it
-  let (tokens, diags) := Syntax.lex source
+  let (tokens, diags) := Syntax.lexCode sourceFile
 
   -- Print diagnostics if any
   if diags.size > 0 then
@@ -54,7 +57,9 @@ def runLex (p : Parsed) : IO UInt32 := do
   -- Print tokens
   IO.println s!"Lexed {tokens.size} tokens from {input}:"
   for tok in tokens do
-    IO.println s!"  {tok.kind} at {tok.span.start.line}:{tok.span.start.column}"
+    match tok.tokenKind? with
+    | some kind => IO.println s!"  {kind}"
+    | none => IO.println s!"  (node)"
 
   return if diags.size > 0 then 1 else 0
 
@@ -70,37 +75,30 @@ def runParse (p : Parsed) : IO UInt32 := do
   -- Create source file
   let sourceFile := Syntax.SourceFile.create ⟨0⟩ input source
 
-  -- Lex it
-  let (tokens, lexDiags) := Syntax.lexCode sourceFile
+  -- Lex + Parse
+  let (parsedTree, frontendDiags) := Syntax.parseToTree sourceFile
 
-  -- Print lex diagnostics if any
-  if lexDiags.size > 0 then
-    Logging.Error.printDiagnostics lexDiags sourceFile
-
-  -- Parse it
-  let (cst, parseDiags) := Syntax.Parse.parseSourceFile.run' tokens sourceFile
-
-  -- Print parse diagnostics if any
-  if parseDiags.size > 0 then
-    Logging.Error.printDiagnostics parseDiags sourceFile
+  -- Print frontend diagnostics if any
+  if frontendDiags.size > 0 then
+    Logging.Error.printDiagnostics frontendDiags sourceFile
 
   -- Show CST if requested
   if showCst then
     IO.println "=== Concrete Syntax Tree ==="
-    IO.println (cst.debugPrint)
+    IO.println (parsedTree.green.debugPrint)
 
   -- Extract module name from filename (without extension)
   let fileName := input.splitOn "/" |>.getLast!
   let moduleName := fileName.splitOn "." |>.head!
                     |> fun s => if s.isEmpty then "Main" else s
-  let (ast, lowerDiags) := Syntax.lower cst moduleName
+  let (ast, lowerDiags) := Syntax.lower parsedTree moduleName
 
   -- Print lowering diagnostics if any
   if lowerDiags.size > 0 then
     Logging.Error.printDiagnostics lowerDiags sourceFile
 
   -- Collect all diagnostics
-  let allDiags := lexDiags ++ parseDiags ++ lowerDiags
+  let allDiags := frontendDiags ++ lowerDiags
 
   -- Show AST if requested (or by default if no flags)
   if showAst || (!showCst && !showAst) then
@@ -127,26 +125,21 @@ def runLower (p : Parsed) : IO UInt32 := do
   -- Create source file
   let sourceFile := Syntax.SourceFile.create ⟨0⟩ input source
 
-  -- Lex
-  let (tokens, lexDiags) := Syntax.lexCode sourceFile
-  if lexDiags.size > 0 then
-    Logging.Error.printDiagnostics lexDiags sourceFile
-
-  -- Parse
-  let (cst, parseDiags) := Syntax.Parse.parseSourceFile.run' tokens sourceFile
-  if parseDiags.size > 0 then
-    Logging.Error.printDiagnostics parseDiags sourceFile
+  -- Lex + Parse
+  let (parsedTree, frontendDiags) := Syntax.parseToTree sourceFile
+  if frontendDiags.size > 0 then
+    Logging.Error.printDiagnostics frontendDiags sourceFile
 
   -- Lower CST to AST
   let fileName := input.splitOn "/" |>.getLast!
   let moduleName := fileName.splitOn "." |>.head!
                     |> fun s => if s.isEmpty then "Main" else s
-  let (ast, astDiags) := Syntax.lower cst moduleName
+  let (ast, astDiags) := Syntax.lower parsedTree moduleName
   if astDiags.size > 0 then
     Logging.Error.printDiagnostics astDiags sourceFile
 
   -- Check for errors so far
-  let frontendDiags := lexDiags ++ parseDiags ++ astDiags
+  let frontendDiags := frontendDiags ++ astDiags
   if frontendDiags.hasErrors then
     IO.eprintln "\nCannot proceed to Metal lowering due to errors."
     IO.eprintln (Logging.Error.renderSummary frontendDiags)

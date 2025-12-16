@@ -4,14 +4,14 @@
 -- Foundation
 import Soma.Syntax.Source
 import Soma.Syntax.Diagnostic
-import Soma.Syntax.Token
+
+-- Green/Red Trees (rust-analyzer style CST)
+import Soma.Syntax.SyntaxKind
+import Soma.Syntax.GreenTree
+import Soma.Syntax.RedTree
 
 -- Lexer
 import Soma.Syntax.Lexer
-
--- CST (Concrete Syntax Tree)
-import Soma.Syntax.SyntaxKind
-import Soma.Syntax.SyntaxNode
 
 -- AST (Abstract Syntax Tree)
 import Soma.Syntax.Ast

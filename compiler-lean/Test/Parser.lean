@@ -11,20 +11,12 @@ def runParserTest (tc : TestCase) (verbose : Bool := false) : IO TestResult := d
   -- Create a source file for parsing
   let sf := SourceFile.create ⟨0⟩ tc.name tc.source
 
-  -- Lex first
-  let (tokens, lexDiags) := lex tc.source
-  if !lexDiags.isEmpty then
-    IO.println s!"  [FAIL] {tc.name}: lexer errors"
-    for d in lexDiags do
-      IO.println s!"    - {d.message}"
-    return .failed "lexer errors"
-
-  -- Parse
-  let (cst, parseDiags) := Parse.parseSourceFile.run' tokens sf
+  -- Parse to tree (includes lexing)
+  let (tree, parseDiags) := parseToTree sf
 
   -- Lower to AST
   let moduleName := tc.name.dropRight 5  -- Remove .soma extension
-  let (ast, lowerDiags) := lower cst moduleName
+  let (ast, lowerDiags) := lower tree moduleName
 
   let allDiags := parseDiags ++ lowerDiags
 

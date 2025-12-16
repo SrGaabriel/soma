@@ -24,17 +24,14 @@ def parseModule (moduleName : String) (path : System.FilePath) : IO ParseResult 
   let content ← IO.FS.readFile path
   let sourceFile := SourceFile.create ⟨0⟩ path.toString content
 
-  -- Lex
-  let (tokens, lexDiags) := lexCode sourceFile
-
-  -- Parse
-  let (cst, parseDiags) := Parse.parseSourceFile.run' tokens sourceFile
+  -- Lex + Parse (produces ParsedTree with green/red trees)
+  let (parsedTree, frontendDiags) := parseToTree sourceFile
 
   -- Lower to AST
   let baseName := moduleName.splitOn "/" |>.getLast!
-  let (ast, lowerDiags) := lower cst baseName
+  let (ast, lowerDiags) := lower parsedTree baseName
 
-  let allDiags := lexDiags ++ parseDiags ++ lowerDiags
+  let allDiags := frontendDiags ++ lowerDiags
 
   if allDiags.hasErrors then
     pure (.error allDiags)
