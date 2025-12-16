@@ -6,27 +6,16 @@ open Soma.Syntax
 
 /-- The syntactic context at a position, derived from CST structure -/
 inductive SyntaxContext where
-  /-- At module top level -/
   | topLevel
-  /-- Inside a declaration (def, data, etc.) -/
   | inDeclaration (kind : SyntaxKind)
-  /-- Inside a type signature (after ::) -/
   | inTypeSignature
-  /-- Inside a type expression -/
   | inTypeExpr
-  /-- Inside an expression -/
   | inExpression
-  /-- Inside a pattern -/
   | inPattern
-  /-- After a dot (field access context) -/
-  | afterDot (parentExpr : SyntaxNode)
-  /-- After colon (expecting type) -/
+  | afterDot (parentId : NodeId)
   | afterColon
-  /-- In an import path -/
   | inImport
-  /-- In an import item list -/
   | inImportItems
-  /-- Unknown/other context -/
   | unknown
   deriving Inhabited, Repr
 
@@ -47,329 +36,222 @@ instance : ToString SyntaxContext where
 /-- Result of finding a node at a position -/
 structure NodeAtPosition where
   /-- The innermost node at the position -/
-  node : SyntaxNode
-  /-- Ancestors from root to parent (not including node itself) -/
-  ancestors : Array SyntaxNode
+  node : RedNode
+  /-- The red tree (for parent lookups) -/
+  tree : RedTree
   /-- The derived syntax context -/
   context : SyntaxContext
   deriving Inhabited
 
 namespace NodeAtPosition
 
-/-- Get the parent node (immediate ancestor) -/
-def parent? (n : NodeAtPosition) : Option SyntaxNode :=
-  if n.ancestors.isEmpty then none
-  else some n.ancestors[n.ancestors.size - 1]!
+/-- Get the parent node - O(1) via parentIdx -/
+def parent? (n : NodeAtPosition) : Option RedNode :=
+  n.tree.parent? n.node
+
+/-- Get ancestors from node to root -/
+partial def ancestors (n : NodeAtPosition) : Array RedNode :=
+  go #[] (n.tree.parent? n.node)
+where
+  go (acc : Array RedNode) : Option RedNode → Array RedNode
+    | none => acc
+    | some node => go (acc.push node) (n.tree.parent? node)
 
 /-- Get the enclosing declaration -/
-def enclosingDecl? (n : NodeAtPosition) : Option SyntaxNode :=
-  n.ancestors.find? fun node =>
-    match node.kind? with
-    | some k => k.isDecl
-    | none => false
+partial def enclosingDecl? (n : NodeAtPosition) : Option RedNode :=
+  go (some n.node)
+where
+  go : Option RedNode → Option RedNode
+    | none => none
+    | some node =>
+        match node.syntaxKind? with
+        | some k => if k.isDecl then some node else go (n.tree.parent? node)
+        | none => go (n.tree.parent? node)
 
 /-- Check if we're inside an error node -/
-def hasError (n : NodeAtPosition) : Bool :=
-  n.node.isError || n.node.isMissing || n.ancestors.any (·.hasErrors)
+partial def hasError (n : NodeAtPosition) : Bool :=
+  go (some n.node)
+where
+  go : Option RedNode → Bool
+    | none => false
+    | some node => node.isError || go (n.tree.parent? node)
+
+/-- Get the span of the node -/
+def span (n : NodeAtPosition) : Span :=
+  n.tree.spanOf n.node
 
 end NodeAtPosition
 
-/-- Check if a byte offset is within a span -/
-def offsetInSpan (offset : Nat) (span : Span) : Bool :=
-  offset >= span.start.byteOffset && offset < span.stop.byteOffset
+/-- Derive syntax context by walking up from a node -/
+partial def deriveContext (tree : RedTree) (node : RedNode) : SyntaxContext :=
+  go (some node)
+where
+  go : Option RedNode → SyntaxContext
+    | none => .unknown
+    | some n =>
+        match n.syntaxKind? with
+        | some kind =>
+            match kind with
+            | .signature => .inTypeSignature
+            | .typeArrow | .typeApp | .typeCon | .typeVar
+            | .typeTuple | .typeList | .typeForall | .typeConstrained
+            | .typeParens | .typeKinded => .inTypeExpr
+            | .exprFieldAccess =>
+                -- Check if we're after the dot by comparing offsets
+                if node.offset > n.offset then .afterDot n.id
+                else .inExpression
+            | .declUse => .inImport
+            | .importItems => .inImportItems
+            | .sourceFile => .topLevel
+            | k =>
+                if k.isExpr then .inExpression
+                else if k.isPattern then .inPattern
+                else if k.isDecl then .inDeclaration k
+                else go (tree.parent? n)
+        | none => go (tree.parent? n)
 
-/-- Check if a byte offset is at the end of a span (for cursor after last char) -/
-def offsetAtSpanEnd (offset : Nat) (span : Span) : Bool :=
-  offset == span.stop.byteOffset
+/-- Find node at position with full context -/
+def findNodeAtPosition (offset : Nat) (tree : RedTree) : Option NodeAtPosition := do
+  let node ← tree.nodeAtOffset? offset
+  let context := deriveContext tree node
+  some { node, tree, context }
 
-/--
-Binary search to find the child whose span contains the offset.
-Children are sorted by span (left-to-right from parsing).
-Returns the index of the child containing offset, or none if no child contains it.
--/
-private def binarySearchChild (offset : Nat) (children : Array SyntaxNode) : Option Nat :=
-  if children.isEmpty then none
-  else
-    let rec go (lo hi : Nat) : Option Nat :=
-      if lo >= hi then none
-      else
-        let mid := (lo + hi) / 2
-        if h : mid < children.size then
-          let child := children[mid]
-          let span := child.span
-          if offset < span.start.byteOffset then
-            -- Offset is before this child, search left
-            go lo mid
-          else if offset > span.stop.byteOffset then
-            -- Offset is after this child, search right
-            go (mid + 1) hi
-          else if offset == span.stop.byteOffset then
-            -- At the end boundary - could be this child or the next
-            -- Prefer the next child if it starts exactly here
-            if h2 : mid + 1 < children.size then
-              let nextChild := children[mid + 1]
-              if nextChild.span.start.byteOffset == offset then
-                some (mid + 1)
-              else
-                some mid
-            else
-              some mid
-          else
-            -- Offset is strictly within this child's span
-            some mid
-        else
-          none
-    termination_by hi - lo
-    go 0 children.size
-
-/--
-Find the innermost node containing a byte offset.
-Returns the node and the path of ancestors from root.
-
-Uses binary search over children for O(log n) lookup at each level,
-matching rust-analyzer's performance characteristics.
--/
-partial def findNodeAtOffset (offset : Nat) (node : SyntaxNode) (ancestors : Array SyntaxNode := #[])
-    : Option (SyntaxNode × Array SyntaxNode) :=
-  -- Check if offset is in this node's span
-  if !offsetInSpan offset node.span && !offsetAtSpanEnd offset node.span then
-    none
-  else
-    -- Try to find a more specific child via binary search
-    let newAncestors := ancestors.push node
-    match binarySearchChild offset node.children with
-    | some idx =>
-        if h : idx < node.children.size then
-          match findNodeAtOffset offset node.children[idx] newAncestors with
-          | some result => some result
-          | none => some (node, ancestors)
-        else
-          some (node, ancestors)
-    | none => some (node, ancestors)
-
-/-- Derive syntax context from a node and its ancestors (helper) -/
-def deriveContextFromAncestor (ancestor : SyntaxNode) (node : SyntaxNode) : Option SyntaxContext :=
-  match ancestor.kind? with
-  | some .signature => some .inTypeSignature
-  | some .typeArrow | some .typeApp | some .typeCon | some .typeVar
-  | some .typeTuple | some .typeList | some .typeForall | some .typeConstrained
-  | some .typeParens | some .typeKinded =>
-      some .inTypeExpr
-  | some .exprFieldAccess =>
-      -- Check if we're after the dot
-      let dotChild := ancestor.children.find? (fun c =>
-          c.tokenKind? == some .varSymbol || c.tokenText? == some ".")
-      match dotChild with
-      | some dc =>
-          if node.span.start.byteOffset > dc.span.stop.byteOffset then
-            some (.afterDot ancestor)
-          else
-            some .inExpression
-      | none => some .inExpression
-  | some k =>
-      if k.isExpr then some .inExpression
-      else if k.isPattern then some .inPattern
-      else if k.isDecl then some (.inDeclaration k)
-      else none
-  | none => none
-
-/-- Derive syntax context from a node and its ancestors -/
-def deriveContext (node : SyntaxNode) (ancestors : Array SyntaxNode) : SyntaxContext :=
-  -- Check immediate context from ancestors (most recent first)
-  let rec checkAncestors (idx : Nat) : Option SyntaxContext :=
-    if idx >= ancestors.size then none
-    else
-      let ancestor := ancestors[ancestors.size - 1 - idx]!
-      match deriveContextFromAncestor ancestor node with
-      | some ctx => some ctx
-      | none => checkAncestors (idx + 1)
-
-  match checkAncestors 0 with
-  | some ctx => ctx
-  | none =>
-      -- Check the node itself
-      match node.kind? with
-      | some .sourceFile => .topLevel
-      | some k =>
-          if k.isType then .inTypeExpr
-          else if k.isExpr then .inExpression
-          else if k.isPattern then .inPattern
-          else if k.isDecl then .inDeclaration k
-          else .unknown
-      | none =>
-          -- Token - check ancestors for context
-          if ancestors.isEmpty then .topLevel else .unknown
-
-/-- Find node at position with full context information -/
-def findNodeAtPosition (offset : Nat) (cst : SyntaxNode) : Option NodeAtPosition := do
-  let (node, ancestors) ← findNodeAtOffset offset cst
-  let context := deriveContext node ancestors
-  some { node, ancestors, context }
-
-/-- Collect all identifier tokens from CST -/
-def collectIdentifiers (cst : SyntaxNode) : Array Token :=
-  let tokens := cst.tokens
-  tokens.filter fun tok =>
-    tok.kind == .lowerIdent || tok.kind == .upperIdent
-
-/-- Collect all tokens of a specific kind -/
-def collectTokensOfKind (cst : SyntaxNode) (kind : TokenKind) : Array Token :=
-  cst.tokens.filter (·.kind == kind)
-
-/-- Information about a definition site in the CST -/
+/-- Information about a definition site -/
 structure CstDefinition where
-  /-- The name token -/
-  nameToken : Token
+  /-- The name (text) -/
+  name : String
   /-- The kind of definition -/
   kind : SyntaxKind
-  /-- The full declaration node -/
-  declNode : SyntaxNode
-  /-- Type signature node (if present) -/
-  signatureNode : Option SyntaxNode
-  deriving Inhabited
+  /-- NodeId of the declaration (stable across reparses) -/
+  declId : NodeId
+  /-- NodeId of the name token -/
+  nameId : NodeId
+  /-- Span of the name -/
+  nameSpan : Span
+  /-- Span of the full declaration -/
+  declSpan : Span
+  /-- Type signature text (if present) -/
+  typeSignature : Option String
+  deriving Inhabited, Repr
 
-/-- Extract the name token from a declaration node -/
-def extractDeclName (node : SyntaxNode) : Option Token :=
-  -- Look for .name child first
-  match node.findChild? .name with
-  | some nameNode => nameNode.firstToken?
-  | none =>
-      -- Then try .operatorName
-      match node.findChild? .operatorName with
-      | some opNode =>
-          -- Operator name has structure: { op }
-          opNode.tokens.find? (·.kind == .varSymbol)
+/-- Get children of a RedNode as RedNodes (not GreenNodes) -/
+def getChildren (tree : RedTree) (node : RedNode) : Array RedNode := Id.run do
+  let mut children := #[]
+  let mut idx := node.selfIdx + 1
+  for child in node.green.children do
+    if h : idx < tree.nodes.size then
+      children := children.push tree.nodes[idx]
+      idx := idx + RedTree.countGreenNodes child
+  return children
+
+/-- Find a child with a specific SyntaxKind -/
+def findChild? (tree : RedTree) (node : RedNode) (kind : SyntaxKind) : Option RedNode :=
+  (getChildren tree node).find? fun c => c.syntaxKind? == some kind
+
+/-- Get all tokens under a node -/
+def getTokens (tree : RedTree) (node : RedNode) : Array RedNode :=
+  let startIdx := node.selfIdx
+  let endIdx := startIdx + RedTree.countGreenNodes node.green
+  tree.nodes[startIdx:endIdx].toArray.filter (·.isToken)
+
+/-- Find the first token of a specific kind under a node -/
+def findToken? (tree : RedTree) (node : RedNode) (kind : TokenKind) : Option RedNode :=
+  (getTokens tree node).find? fun t => t.tokenKind? == some kind
+
+/-- Get first token under a node -/
+def firstToken? (tree : RedTree) (node : RedNode) : Option RedNode :=
+  (getTokens tree node).toList.head?
+
+/-- Get text of all tokens under a node, joined -/
+def nodeText (tree : RedTree) (node : RedNode) : String :=
+  let tokens := getTokens tree node
+  String.join (tokens.toList.filterMap (·.text?))
+
+/-- Extract signature text from a signature node -/
+def extractSignatureText (tree : RedTree) (sigNode : RedNode) : String :=
+  let tokens := getTokens tree sigNode
+  let relevantTokens := tokens.filter fun t =>
+    t.tokenKind? != some .doubleColon && !t.green.isTrivia
+  String.intercalate " " (relevantTokens.toList.filterMap (·.text?))
+
+/-- Extract a definition from a declaration node -/
+def extractDefinition (tree : RedTree) (node : RedNode) : Option CstDefinition := do
+  let kind ← node.syntaxKind?
+  guard (kind.isDecl || kind == .constructor || kind == .field || kind == .traitMethod || kind == .patVar)
+
+  -- Find the name token
+  let nameToken ←
+    if kind == .constructor then
+      findToken? tree node .upperIdent
+    else if kind == .field || kind == .patVar then
+      findToken? tree node .lowerIdent
+    else
+      -- Look for .name child first, then .operatorName, then direct token
+      match findChild? tree node .name with
+      | some nameNode => firstToken? tree nameNode
       | none =>
-          -- For data/struct, look for upperIdent token directly
-          node.tokens.find? (·.kind == .upperIdent)
+          match findChild? tree node .operatorName with
+          | some opNode => findToken? tree opNode .varSymbol
+          | none => findToken? tree node .upperIdent <|> findToken? tree node .lowerIdent
 
-/-- Extract type signature node from a declaration -/
-def extractSignature (node : SyntaxNode) : Option SyntaxNode :=
-  node.findChild? .signature
+  let name ← nameToken.text?
+  let sigNode? := findChild? tree node .signature
+  let typeSignature := sigNode?.map (extractSignatureText tree ·)
 
-/-- Process a node for definition collection -/
-def processNodeForDef (node : SyntaxNode) : Option CstDefinition :=
-  match node.kind? with
-  | some kind =>
-      if kind.isDecl then
-        match extractDeclName node with
-        | some nameToken => some {
-            nameToken
-            kind
-            declNode := node
-            signatureNode := extractSignature node
-          }
-        | none => none
-      else if kind == .constructor then
-        -- Data constructors
-        match node.tokens.find? (·.kind == .upperIdent) with
-        | some tok => some {
-            nameToken := tok
-            kind := .constructor
-            declNode := node
-            signatureNode := none
-          }
-        | none => none
-      else if kind == .field then
-        -- Struct/constructor fields
-        match node.tokens.find? (·.kind == .lowerIdent) with
-        | some tok => some {
-            nameToken := tok
-            kind := .field
-            declNode := node
-            signatureNode := node.findChild? .typeVar
-          }
-        | none => none
-      else if kind == .traitMethod then
-        -- Trait method signatures
-        match extractDeclName node with
-        | some tok => some {
-            nameToken := tok
-            kind := .traitMethod
-            declNode := node
-            signatureNode := extractSignature node
-          }
-        | none => none
-      else if kind == .patVar then
-        -- Pattern variables
-        match node.firstToken? with
-        | some tok => some {
-            nameToken := tok
-            kind := .patVar
-            declNode := node
-            signatureNode := none
-          }
-        | none => none
-      else none
-  | none => none
+  some {
+    name
+    kind
+    declId := node.id
+    nameId := nameToken.id
+    nameSpan := tree.spanOf nameToken
+    declSpan := tree.spanOf node
+    typeSignature
+  }
 
-/-- Collect all definition sites from CST -/
-def collectDefinitions (cst : SyntaxNode) : Array CstDefinition :=
-  cst.fold #[] fun acc node =>
-    match processNodeForDef node with
-    | some def_ => acc.push def_
-    | none => acc
+/-- Collect all definitions from a RedTree -/
+def collectDefinitions (tree : RedTree) : Array CstDefinition :=
+  tree.nodes.filterMap (extractDefinition tree ·)
 
-/-- A reference to a name in the CST -/
+/-- A reference to a name -/
 structure CstReference where
-  /-- The token referencing the name -/
-  token : Token
+  /-- The referenced name -/
+  name : String
+  /-- NodeId of the reference token -/
+  tokenId : NodeId
+  /-- Span of the reference -/
+  span : Span
   /-- Context of the reference -/
   context : SyntaxContext
-  deriving Inhabited
+  deriving Inhabited, Repr
 
-/-- Helper to check if a node is a definition site -/
-def isDefSiteKind (kind : Option SyntaxKind) : Bool :=
-  match kind with
-  | some .name | some .patVar => true
-  | _ => false
+/-- Check if a node is a definition site (name node in a declaration) -/
+def isDefSite (tree : RedTree) (node : RedNode) : Bool :=
+  match tree.parent? node with
+  | some parent =>
+      match parent.syntaxKind? with
+      | some .name | some .patVar | some .operatorName => true
+      | _ => false
+  | none => false
 
-/-- Collect references from a node recursively -/
-partial def collectRefsFromNode (node : SyntaxNode) (ancestors : Array SyntaxNode)
-    (definedNames : Array String) : Array CstReference :=
-  match node with
-  | .token tok =>
-      if (tok.kind == .lowerIdent || tok.kind == .upperIdent) &&
-         definedNames.contains tok.text then
-        -- Check if this is a reference (not a definition site)
-        let parent := ancestors.back?
-        let isDefinition := parent.map (fun p => isDefSiteKind p.kind?) |>.getD false
-        if !isDefinition then
-          let ctx := deriveContext node ancestors
-          #[{ token := tok, context := ctx }]
-        else #[]
-      else #[]
-  | .node _ children _ =>
-      let newAncestors := ancestors.push node
-      children.foldl (fun acc child =>
-        acc ++ collectRefsFromNode child newAncestors definedNames) #[]
-  | .error _ _ skipped =>
-      let newAncestors := ancestors.push node
-      skipped.foldl (fun acc child =>
-        acc ++ collectRefsFromNode child newAncestors definedNames) #[]
-  | .missing _ _ => #[]
-
-/-- Collect all references to names (excluding definition sites) -/
-def collectReferences (cst : SyntaxNode) (definedNames : Array String) : Array CstReference :=
-  collectRefsFromNode cst #[] definedNames
-
-/-- Check if a position is in scope of a definition -/
-def isInScope (defNode : SyntaxNode) (useOffset : Nat) : Bool :=
-  -- todo: make this stronger
-  defNode.span.stop.byteOffset <= useOffset
+/-- Collect all references to known names -/
+def collectReferences (tree : RedTree) (definedNames : Array String) : Array CstReference :=
+  tree.nodes.filterMap fun node => do
+    -- Only identifier tokens (todo: review)
+    guard (node.tokenKind? == some .lowerIdent || node.tokenKind? == some .upperIdent)
+    let name ← node.text?
+    guard (definedNames.contains name)
+    guard (!isDefSite tree node)
+    let context := deriveContext tree node
+    some { name, tokenId := node.id, span := tree.spanOf node, context }
 
 /-- Find all names in scope at a position -/
-def namesInScopeAt (offset : Nat) (cst : SyntaxNode) : Array String :=
-  let defs := collectDefinitions cst
+def namesInScopeAt (offset : Nat) (tree : RedTree) : Array String :=
+  let defs := collectDefinitions tree
   defs.filterMap fun def_ =>
-    if isInScope def_.declNode offset then
-      some def_.nameToken.text
+    if def_.declSpan.stop.byteOffset <= offset then
+      some def_.name
     else
       none
-
-/-- Get the text at a node (joining all tokens) -/
-def nodeText (node : SyntaxNode) : String :=
-  node.text
 
 /-- Get a display string for a syntax kind -/
 def kindDisplayName : SyntaxKind → String
@@ -387,14 +269,14 @@ def kindDisplayName : SyntaxKind → String
   | k => k.describe
 
 /-- Check if a node represents an error -/
-def isErrorNode (node : SyntaxNode) : Bool :=
-  node.isError || node.isMissing
+def isErrorNode (node : RedNode) : Bool :=
+  node.isError
 
 /-- Get error message if node is an error -/
-def errorMessage? (node : SyntaxNode) : Option String :=
-  match node with
-  | .error _ msg _ => some msg
-  | .missing expected _ => some s!"expected {expected}"
+def errorMessage? (node : RedNode) : Option String :=
+  match node.green with
+  | .error msg _ _ => some msg
+  | .missing expected => some s!"expected {expected}"
   | _ => none
 
 end Lsp

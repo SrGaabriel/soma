@@ -36,6 +36,7 @@ def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentP
   let uri := params.textDocument.uri
   let content := params.textDocument.text
   let filePath := uriToPath uri
+  let version := params.textDocument.version
 
   -- Full analysis on open
   let mod := analyzeSource filePath content
@@ -45,8 +46,7 @@ def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentP
 
   -- Publish diagnostics immediately on open
   let lspDiags := convertDiagnostics mod.diagnostics
-  let some snap ← ctx.getDocument uri | return
-  ctx.publishDiagnostics { uri, version := some snap.version, diagnostics := lspDiags }
+  ctx.publishDiagnostics { uri, version := some version, diagnostics := lspDiags }
 
   ctx.logInfo s!"Opened: {uri} ({mod.symbols.allNames.size} symbols, {mod.diagnostics.size} diagnostics)"
 
@@ -58,8 +58,12 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   -- Get updated content from VFS
   let some content ← ctx.getDocumentContent uri | return
 
-  -- Full analysis (debouncing is handled by the LSP framework)
-  let mod := analyzeSource filePath content
+  -- Get old module for incremental analysis
+  let state ← ctx.getUserState
+  let oldModule? := state.getModule filePath
+
+  -- Incremental analysis (reuses NodeIds and symbols where possible)
+  let mod := analyzeSource filePath content oldModule?
 
   -- Update state so hover/definition work
   ctx.modifyUserState fun s => s.setModule filePath mod

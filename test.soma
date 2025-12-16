@@ -4,4 +4,4 @@ data Maybe a
     | Just a
     | Nothing
 
-def hello :: Maybe Int = 5
+def hello :: Maybe Int = Just 5

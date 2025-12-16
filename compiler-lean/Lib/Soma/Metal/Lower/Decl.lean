@@ -349,4 +349,166 @@ def lowerModule (moduleName : String) (decls : Array Decl) : LowerM UntypedModul
     typeClasses := #[]
   }
 
+/-- Get the name of a declaration (for tracking purposes) -/
+def getDeclName (decl : Decl) : Option String :=
+  match decl with
+  | .def_ _ name _ _ _ => some name.value
+  | .data name _ _ _ => some name.value
+  | .struct name _ _ _ _ => some name.value
+  | .trait name _ _ _ _ => some name.value
+  | .instance_ traitName args _ _ _ =>
+    let argStr := args.foldl (fun acc _ => acc ++ "_") ""
+    some s!"instance_{traitName.value}{argStr}"
+  | .intrinsic inner _ => getDeclName inner
+  | .use _ _ _ => none
+  | .export_ _ _ => none
+
+/-- Result of incremental lowering -/
+structure IncrementalLowerResult where
+  /-- The complete module -/
+  module : UntypedModule
+  /-- Lowering errors -/
+  errors : Array LowerError
+  /-- The final global environment -/
+  globalEnv : GlobalEnv
+  /-- Next binding ID counter -/
+  nextBindingId : Nat
+  /-- Next unique ID counter -/
+  nextUniqueId : Nat
+  /-- Cached functions by declaration name -/
+  functionsByName : Std.HashMap String UntypedFunction
+  /-- Cached type definitions by declaration name -/
+  typesByName : Std.HashMap String UntypedTypeDef
+  /-- Cached instances by declaration name -/
+  instancesByName : Std.HashMap String UntypedInstance
+
+/-- Lower a module from scratch and build the incremental cache -/
+def lowerModuleFresh (syntaxModule : Syntax.Module) : IncrementalLowerResult :=
+  let (metalModule, finalState) := LowerM.run (lowerModule syntaxModule.name syntaxModule.decls) syntaxModule.name
+
+  -- Build name-to-output mappings
+  let functionsByName := metalModule.functions.foldl (fun acc fn =>
+    match fn.name with
+    | .user u => acc.insert u.original fn
+    | _ => acc) {}
+
+  let typesByName := metalModule.types.foldl (fun acc td =>
+    match td.name with
+    | .user u => acc.insert u.original td
+    | _ => acc) {}
+
+  let instancesByName := metalModule.instances.foldl (fun acc inst =>
+    let instName := s!"instance_{inst.className}"
+    acc.insert instName inst) {}
+
+  { module := metalModule
+  , errors := finalState.errors
+  , globalEnv := finalState.globalEnv
+  , nextBindingId := finalState.nextBindingId
+  , nextUniqueId := finalState.nextUniqueId
+  , functionsByName := functionsByName
+  , typesByName := typesByName
+  , instancesByName := instancesByName
+  }
+
+/-- Remove entries for a declaration from GlobalEnv -/
+def removeFromGlobalEnv (env : GlobalEnv) (declName : String) : GlobalEnv :=
+  let globals := env.globals.erase declName
+  let types := env.types.erase declName
+  let constructors := env.constructors.fold (fun acc name info =>
+    if info.parentType == declName then acc
+    else acc.insert name info) {}
+  let typeClasses := env.typeClasses.erase declName
+  { env with globals, types, constructors, typeClasses }
+
+/-- Helper to lower only changed declarations -/
+def lowerChangedDecls (changedDecls : Array Decl)
+    : LowerM (Array UntypedFunction × Array UntypedTypeDef × Array UntypedInstance) := do
+  for decl in changedDecls do
+    collectGlobals decl
+
+  let newFunctions ← changedDecls.filterMapM lowerFunction
+  let newTypes ← changedDecls.filterMapM lowerTypeDef
+  let newInstances ← changedDecls.filterMapM lowerInstance
+
+  pure (newFunctions, newTypes, newInstances)
+
+/-- Lower a module incrementally, only re-processing changed declarations -/
+def lowerModuleIncremental
+    (syntaxModule : Syntax.Module)
+    (changedDeclNames : Array String)
+    (oldResult : IncrementalLowerResult)
+    : IncrementalLowerResult :=
+  if changedDeclNames.isEmpty then
+    -- Nothing changed, return old result
+    oldResult
+  else
+    let prunedEnv := changedDeclNames.foldl (fun acc name =>
+      removeFromGlobalEnv acc name) oldResult.globalEnv
+
+    let changedDecls := syntaxModule.decls.filter fun decl =>
+      match getDeclName decl with
+      | some name => changedDeclNames.contains name
+      | none => false
+
+    -- Initial state preserving counters but with pruned env
+    let initialState : LowerState := {
+      nextBindingId := oldResult.nextBindingId
+      nextUniqueId := oldResult.nextUniqueId
+      moduleName := syntaxModule.name
+      errors := #[]
+      globalEnv := prunedEnv
+    }
+
+    -- Re-collect globals for changed declarations and re-lower them
+    let (newOutputs, finalState) := StateT.run (lowerChangedDecls changedDecls) initialState
+
+    let (newFunctions, newTypes, newInstances) := newOutputs
+
+    -- Merge: start with old cached outputs, remove changed, add new
+    let prunedFunctions : Std.HashMap String UntypedFunction :=
+      changedDeclNames.foldl (fun acc name => acc.erase name) oldResult.functionsByName
+    let prunedTypes : Std.HashMap String UntypedTypeDef :=
+      changedDeclNames.foldl (fun acc name => acc.erase name) oldResult.typesByName
+    let prunedInstances : Std.HashMap String UntypedInstance :=
+      changedDeclNames.foldl (fun acc name => acc.erase s!"instance_{name}") oldResult.instancesByName
+
+    -- Add new entries
+    let functionsByName : Std.HashMap String UntypedFunction := newFunctions.foldl (fun acc fn =>
+      match fn.name with
+      | .user u => acc.insert u.original fn
+      | _ => acc) prunedFunctions
+
+    let typesByName : Std.HashMap String UntypedTypeDef := newTypes.foldl (fun acc td =>
+      match td.name with
+      | .user u => acc.insert u.original td
+      | _ => acc) prunedTypes
+
+    let instancesByName : Std.HashMap String UntypedInstance := newInstances.foldl (fun acc inst =>
+      let instName := s!"instance_{inst.className}"
+      acc.insert instName inst) prunedInstances
+
+    -- Build the complete module from all cached outputs
+    let allFunctions := functionsByName.fold (fun acc _ fn => acc.push fn) #[]
+    let allTypes := typesByName.fold (fun acc _ td => acc.push td) #[]
+    let allInstances := instancesByName.fold (fun acc _ inst => acc.push inst) #[]
+
+    let metalModule : UntypedModule := {
+      name := syntaxModule.name
+      functions := allFunctions
+      types := allTypes
+      instances := allInstances
+      typeClasses := #[]
+    }
+
+    { module := metalModule
+    , errors := oldResult.errors ++ finalState.errors
+    , globalEnv := finalState.globalEnv
+    , nextBindingId := finalState.nextBindingId
+    , nextUniqueId := finalState.nextUniqueId
+    , functionsByName := functionsByName
+    , typesByName := typesByName
+    , instancesByName := instancesByName
+    }
+
 end Soma.Metal.Lower

@@ -12,7 +12,7 @@
    "type": "git",
    "subDir": null,
    "scope": "",
-   "rev": "fc7e763fbb088ede30c8cfbcf51fa2860577a64d",
+   "rev": "1ce3d7ace96c316a9a55e59fc6199577ed986165",
    "name": "lapis",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",

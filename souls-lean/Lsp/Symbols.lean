@@ -1,78 +1,136 @@
+import Std.Data.HashSet
 import Lsp.State
 import Lsp.Cst
 
 namespace Lsp
 
-open Soma.Syntax
+open Std
 
-/-- Extract type signature text from a signature node -/
-def extractTypeSignatureText (sigNode : SyntaxNode) : String :=
-  -- Get all tokens after ::
-  let tokens := sigNode.tokens
-  let relevantTokens := tokens.filter fun t =>
-    t.kind != .doubleColon && !t.isLayout
-  String.intercalate " " (relevantTokens.toList.map (·.text))
+open Soma.Syntax
 
 /-- Build a DefinitionSite from a CstDefinition -/
 def cstDefToDefinitionSite (moduleName filePath : String) (def_ : CstDefinition) : DefinitionSite :=
-  let typeStr := def_.signatureNode.map extractTypeSignatureText
-  { name := def_.nameToken.text
+  { name := def_.name
   , kind := syntaxKindToSymbolKind def_.kind
-  , nameSpan := def_.nameToken.span
-  , declSpan := def_.declNode.span
-  , typeSignature := typeStr
+  , nameSpan := def_.nameSpan
+  , declSpan := def_.declSpan
+  , typeSignature := def_.typeSignature
   , moduleName := moduleName
   , filePath := filePath
   }
 
 /-- Extract import info from a use declaration node -/
-def extractImportInfo (node : SyntaxNode) : Option ImportInfo := do
-  guard (node.kind? == some .declUse)
+def extractImportInfo (tree : RedTree) (node : RedNode) : Option ImportInfo := do
+  guard (node.syntaxKind? == some .declUse)
 
-  let pathNode ← node.findChild? .importPath
-  let pathText := pathNode.tokens
-    |>.filter (·.kind != .slash)
+  let pathNode ← findChild? tree node .importPath
+  let pathTokens := getTokens tree pathNode
+  let pathText := pathTokens
+    |>.filter (·.tokenKind? != some .slash)
     |>.toList
-    |>.map (·.text)
+    |>.filterMap (·.text?)
     |> String.intercalate "/"
 
-  let items := match node.findChild? .importItems with
+  let items := match findChild? tree node .importItems with
     | some itemsNode =>
-        itemsNode.tokens
-          |>.filter (fun t => t.kind == .lowerIdent || t.kind == .upperIdent)
-          |>.map (·.text)
+        let tokens := getTokens tree itemsNode
+        tokens
+          |>.filter (fun t => t.tokenKind? == some .lowerIdent || t.tokenKind? == some .upperIdent)
+          |>.filterMap (·.text?)
     | none => #[]
 
-  some { modulePath := pathText, items, span := node.span }
+  some { modulePath := pathText, items, span := tree.spanOf node }
 
-/-- Build symbol table from CST -/
-def buildSymbolTable (moduleName filePath : String) (cst : SyntaxNode) : SymbolTable := Id.run do
+/-- Build symbol table from RedTree (full rebuild) -/
+def buildSymbolTable (moduleName filePath : String) (tree : RedTree) : SymbolTable := Id.run do
   let mut table := SymbolTable.empty
 
   -- Collect all definitions
-  let definitions := collectDefinitions cst
+  let definitions := collectDefinitions tree
   for def_ in definitions do
     let site := cstDefToDefinitionSite moduleName filePath def_
     table := table.addDefinition site
 
   -- Collect imports
-  let importNodes := cst.collect fun node =>
-    node.kind? == some .declUse
+  let importNodes := tree.nodes.filter fun node =>
+    node.syntaxKind? == some .declUse
   for impNode in importNodes do
-    if let some imp := extractImportInfo impNode then
+    if let some imp := extractImportInfo tree impNode then
       table := table.addImport imp
 
   -- Collect references
   let definedNames := table.allNames
-  let refs := collectReferences cst definedNames
+  let refs := collectReferences tree definedNames
   for ref in refs do
     table := table.addReference {
-      name := ref.token.text
-      span := ref.token.span
+      name := ref.name
+      span := ref.span
       context := ref.context
     }
 
   return table
+
+/-- Update symbol table incrementally for changed declarations -/
+def updateSymbolTableIncremental
+    (oldSymbols : SymbolTable)
+    (tree : RedTree)
+    (changedDeclIds : HashSet NodeId)
+    (moduleName filePath : String) : SymbolTable := Id.run do
+  -- Start with old symbols
+  let mut definitions := oldSymbols.definitions
+  let mut references := oldSymbols.references
+
+  -- Collect all new definitions
+  let allDefs := collectDefinitions tree
+
+  -- Find names of changed declarations (to remove old entries)
+  let changedNames : HashSet String := allDefs.foldl (fun acc def_ =>
+    if changedDeclIds.contains def_.declId then acc.insert def_.name
+    else acc) {}
+
+  -- Remove old definitions for changed declarations
+  for name in changedNames do
+    definitions := definitions.erase name
+    references := references.erase name
+
+  -- Add new definitions for changed declarations
+  for def_ in allDefs do
+    if changedDeclIds.contains def_.declId then
+      let site := cstDefToDefinitionSite moduleName filePath def_
+      definitions := definitions.insert def_.name site
+
+  -- Rebuild references for changed declarations
+  let definedNames := definitions.toArray.map (·.1)
+  let allRefs := collectReferences tree definedNames
+
+  -- Clear and rebuild references that involve changed names
+  for name in changedNames do
+    references := references.erase name
+
+  -- Add all references (simpler than trying to be incremental here)
+  let mut newRefs : Std.HashMap String (Array SymbolReference) := references
+  for ref in allRefs do
+    let existing := newRefs.getD ref.name #[]
+    -- Avoid duplicates by checking span
+    let isDuplicate := existing.any (·.span == ref.span)
+    if !isDuplicate then
+      newRefs := newRefs.insert ref.name (existing.push {
+        name := ref.name
+        span := ref.span
+        context := ref.context
+      })
+
+  -- Imports don't change incrementally (they're top-level)
+  let imports := tree.nodes.filterMap fun node =>
+    if node.syntaxKind? == some .declUse then
+      extractImportInfo tree node
+    else none
+
+  return {
+    definitions := definitions
+    references := newRefs
+    imports := imports
+  }
 
 /-- Format hover content for a definition -/
 def formatDefinitionHover (def_ : DefinitionSite) : String :=
@@ -84,8 +142,8 @@ def formatDefinitionHover (def_ : DefinitionSite) : String :=
       s!"**{def_.name}**\n\n*{kindStr}* from `{def_.moduleName}`"
 
 /-- Format hover for a keyword -/
-def formatKeywordHover (tok : Token) : String :=
-  let desc := match tok.kind with
+def formatKeywordHover (kind : TokenKind) (text : String) : String :=
+  let desc := match kind with
     | .kw_def => "Define a function or value"
     | .kw_let => "Local binding"
     | .kw_in => "Body of let expression"
@@ -104,46 +162,54 @@ def formatKeywordHover (tok : Token) : String :=
     | .kw_forall => "Universal quantification"
     | .kw_bind => "Monadic bind block"
     | .kw_compose => "Applicative compose block"
-    | _ => tok.kind.describe
-  s!"**{tok.text}** — {desc}"
+    | _ => kind.describe
+  s!"**{text}** — {desc}"
 
 /-- Format hover for a syntax construct -/
-def formatSyntaxHover (kind : SyntaxKind) (nodeText : String) : String :=
-  let preview := if nodeText.length > 50 then nodeText.take 50 ++ "..." else nodeText
+def formatSyntaxHover (kind : SyntaxKind) (text : String) : String :=
+  let preview := if text.length > 50 then text.take 50 ++ "..." else text
   s!"*{kind.describe}*\n```soma\n{preview}\n```"
 
 /-- Get hover information at a position -/
 def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array CompiledModule) : Option String := do
-  let nodeInfo ← findNodeAtPosition offset mod.cst
+  let nodeInfo ← findNodeAtPosition offset mod.tree
 
-  match nodeInfo.node with
-  | .token tok =>
-      -- Check if it's an identifier
-      if tok.kind == .lowerIdent || tok.kind == .upperIdent then
-        -- Try to find definition
-        if let some def_ := mod.symbols.lookupDefinition tok.text then
+  -- Check if it's a token
+  if nodeInfo.node.isToken then
+    let text ← nodeInfo.node.text?
+    let kind ← nodeInfo.node.tokenKind?
+
+    -- Check if it's an identifier
+    if kind == .lowerIdent || kind == .upperIdent then
+      -- Try to find definition
+      if let some def_ := mod.symbols.lookupDefinition text then
+        return formatDefinitionHover def_
+      -- Try other modules (for imported symbols)
+      for other in allModules do
+        if let some def_ := other.symbols.lookupDefinition text then
           return formatDefinitionHover def_
-        -- Try other modules (for imported symbols)
-        for other in allModules do
-          if let some def_ := other.symbols.lookupDefinition tok.text then
-            return formatDefinitionHover def_
-        -- Unknown identifier
-        return s!"**{tok.text}** — *unknown*"
-      else if tok.isKeyword then
-        return formatKeywordHover tok
-      else
-        -- Punctuation or operator
-        return s!"`{tok.text}` — {tok.kind.describe}"
-
-  | .node kind _ _ =>
-      let text := nodeText nodeInfo.node
-      return formatSyntaxHover kind text
-
-  | .error span msg _ =>
-      return s!"**Error** at {span.start.line}:{span.start.column}\n\n{msg}"
-
-  | .missing expected loc =>
-      return s!"**Missing** at {loc.line}:{loc.column}\n\nExpected: {expected.describe}"
+      -- Unknown identifier
+      return s!"**{text}** — *unknown*"
+    else if kind.isKeyword then
+      return formatKeywordHover kind text
+    else
+      -- Punctuation or operator
+      return s!"`{text}` — {kind.describe}"
+  else
+    -- Interior node
+    if let some kind := nodeInfo.node.syntaxKind? then
+      match nodeInfo.node.green with
+      | .error msg _ _ =>
+          let span := mod.tree.spanOf nodeInfo.node
+          return s!"**Error** at {span.start.line}:{span.start.column}\n\n{msg}"
+      | .missing expected =>
+          let span := mod.tree.spanOf nodeInfo.node
+          return s!"**Missing** at {span.start.line}:{span.start.column}\n\nExpected: {expected.describe}"
+      | _ =>
+          let text := nodeText mod.tree nodeInfo.node
+          return formatSyntaxHover kind text
+    else
+      none
 
 /-- Find definition location for a name -/
 def findDefinitionLocation (name : String) (mod : CompiledModule) (allModules : Array CompiledModule)
@@ -172,15 +238,17 @@ def findDefinitionLocation (name : String) (mod : CompiledModule) (allModules : 
 /-- Get definition at a position -/
 def getDefinitionAt (offset : Nat) (mod : CompiledModule) (allModules : Array CompiledModule)
     : Option (String × Span) := do
-  let nodeInfo ← findNodeAtPosition offset mod.cst
+  let nodeInfo ← findNodeAtPosition offset mod.tree
 
-  match nodeInfo.node with
-  | .token tok =>
-      if tok.kind == .lowerIdent || tok.kind == .upperIdent then
-        findDefinitionLocation tok.text mod allModules
-      else
-        none
-  | _ => none
+  if nodeInfo.node.isToken then
+    let kind ← nodeInfo.node.tokenKind?
+    if kind == .lowerIdent || kind == .upperIdent then
+      let text ← nodeInfo.node.text?
+      findDefinitionLocation text mod allModules
+    else
+      none
+  else
+    none
 
 /-- LSP completion item kind numbers -/
 def completionKindNumber : SymbolKind → Nat
@@ -215,7 +283,7 @@ def getCompletionsForContext (context : SyntaxContext) (mod : CompiledModule) (a
         acc ++ m.symbols.definitionsOfKind .constructor) #[]
       constructors ++ variables ++ importedCons
 
-  | .afterDot _parentExpr =>
+  | .afterDot _ =>
       -- TODO: Field completions based on parent type
       mod.symbols.definitionsOfKind .field
 
@@ -233,7 +301,7 @@ def getCompletionsForContext (context : SyntaxContext) (mod : CompiledModule) (a
 /-- Get all completions at a position -/
 def getCompletionsAt (offset : Nat) (mod : CompiledModule) (allModules : Array CompiledModule)
     : Array DefinitionSite :=
-  let context := match findNodeAtPosition offset mod.cst with
+  let context := match findNodeAtPosition offset mod.tree with
     | some nodeInfo => nodeInfo.context
     | none => .unknown
   getCompletionsForContext context mod allModules

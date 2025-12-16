@@ -1,10 +1,17 @@
 import Std.Data.HashMap
 import Soma.Syntax
+import Soma.Metal.Lower.Decl
+import Soma.Infer.Monad
+import Soma.Infer.Module
 import Lsp.Cst
 
 namespace Lsp
 
 open Soma.Syntax
+open Soma.Metal.Lower (IncrementalLowerResult)
+open Soma.Infer (TypeEnv InstanceEnv FunctionInfo)
+open Soma.Typing (QualifiedType)
+open Soma.Metal (Function)
 
 /-- Symbol kinds for LSP features -/
 inductive SymbolKind where
@@ -140,31 +147,49 @@ structure CompiledModule where
   name : String
   /-- File path -/
   filePath : String
-  /-- Source file (for position calculations) -/
-  sourceFile : SourceFile
-  /-- Concrete Syntax Tree (always present - parser is infallible) -/
-  cst : SyntaxNode
+  /-- The parsed tree (green + red with stable NodeIds) -/
+  parsedTree : ParsedTree
   /-- Abstract Syntax Tree (present if lowering succeeded) -/
   ast : Option Module := none
   /-- Symbol table built from CST -/
   symbols : SymbolTable := {}
   /-- All diagnostics from all phases -/
   diagnostics : Diagnostics := #[]
+  /-- Mapping from declaration NodeId to its name -/
+  declNodeIds : Std.HashMap NodeId String := {}
+  /-- Cached AST declarations by NodeId -/
+  declAsts : Std.HashMap NodeId Decl := {}
+  /-- Cached Metal lowering result  -/
+  metalResult : Option IncrementalLowerResult := none
+  /-- Cached type environment -/
+  typeEnv : Option TypeEnv := none
+  /-- Cached instance environment -/
+  instanceEnv : Option InstanceEnv := none
+  /-- Cached typed functions by name -/
+  typedFunctions : Std.HashMap String Function := {}
   deriving Inhabited
 
 namespace CompiledModule
 
+/-- Get the red tree (for compatibility) -/
+def tree (m : CompiledModule) : RedTree :=
+  m.parsedTree.red
+
+/-- Get source file -/
+def sourceFile (m : CompiledModule) : SourceFile :=
+  m.parsedTree.red.source
+
 /-- Get source content -/
 def sourceContent (m : CompiledModule) : String :=
-  m.sourceFile.content
+  m.parsedTree.red.source.content
 
 /-- Check if module has errors -/
 def hasErrors (m : CompiledModule) : Bool :=
-  m.diagnostics.hasErrors || m.cst.hasErrors
+  m.diagnostics.hasErrors || m.parsedTree.red.nodes.any (·.isError)
 
 /-- Get error count -/
 def errorCount (m : CompiledModule) : Nat :=
-  m.diagnostics.errorCount + m.cst.errorCount
+  m.diagnostics.errorCount + (m.parsedTree.red.nodes.filter (·.isError)).size
 
 /-- Look up a symbol by name -/
 def lookupSymbol (m : CompiledModule) (name : String) : Option DefinitionSite :=

@@ -1,5 +1,7 @@
+import Std.Data.HashSet
 import Soma.Syntax
 import Soma.Metal
+import Soma.Metal.Lower.Decl
 import Soma.Infer
 import Soma.Infer.Module
 import Lsp.State
@@ -8,86 +10,278 @@ import Lsp.Loc
 
 namespace Lsp
 
+open Std
+
 open Soma.Syntax
 open Soma.Infer
 open Soma.Typing
 open Soma.Metal (UntypedModule)
+open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleIncremental getDeclName)
 
 /-- Derive module name from file path -/
 def moduleNameFromPath (filePath : String) : String :=
-  -- Get filename without extension
   let parts := filePath.splitOn "/"
   let fileName := parts.getLast!
   let nameParts := fileName.splitOn "."
   if nameParts.isEmpty then fileName
   else nameParts.head!
 
-/-- Create a unique file ID (simple incrementing counter would be better, but use hash for now) -/
+/-- Create a unique file ID -/
 def fileIdFromPath (filePath : String) : FileId :=
   ⟨filePath.hash.toNat⟩
 
+/-- Build declNodeIds mapping from definitions -/
+def buildDeclNodeIds (defs : Array CstDefinition) : Std.HashMap NodeId String :=
+  defs.foldl (fun acc def_ => acc.insert def_.declId def_.name) {}
 
+/-- Walk up from a node to find its enclosing declaration -/
+partial def findEnclosingDecl (tree : RedTree) (node : RedNode) : Option NodeId :=
+  if let some kind := node.syntaxKind? then
+    if kind.isDecl then some node.id
+    else match tree.parent? node with
+      | some parent => findEnclosingDecl tree parent
+      | none => none
+  else match tree.parent? node with
+    | some parent => findEnclosingDecl tree parent
+    | none => none
 
-/-- Analyze a source file and produce a CompiledModule.
-    Pipeline: Source → Lex → Parse → CST Lower → Metal Lower → Type Infer
-    All phases are infallible and collect errors. -/
-def analyzeSource (filePath : String) (content : String) : CompiledModule := Id.run do
+/-- Find top-level declaration NodeIds that contain any changed node -/
+def findChangedDeclIds (tree : RedTree) (changedIds : HashSet NodeId) : HashSet NodeId :=
+  if changedIds.isEmpty then {}
+  else
+    tree.nodes.foldl (fun acc node =>
+      if changedIds.contains node.id then
+        match findEnclosingDecl tree node with
+        | some declId => acc.insert declId
+        | none => acc
+      else acc) {}
+
+/-- Analyze a source file from scratch (no prior state) -/
+def analyzeSourceFresh (filePath : String) (content : String) : CompiledModule := Id.run do
   let moduleName := moduleNameFromPath filePath
   let fileId := fileIdFromPath filePath
 
-  -- Phase 1: Create source file with line information
+  -- Phase 1: Create source file
   let sourceFile := SourceFile.create fileId filePath content
 
-  -- Phase 2: Lexing (infallible)
-  let (tokens, lexDiags) := lexCode sourceFile
+  -- Phase 2+3: Lex and parse (fresh parse)
+  let (parsedTree, frontendDiags) := parseToTree sourceFile
 
-  -- Phase 3: Parsing (infallible - always produces CST)
-  let (cst, parseDiags) := Parse.parseSourceFile.run' tokens sourceFile
+  -- Phase 4: Build symbol table
+  let symbols := buildSymbolTable moduleName filePath parsedTree.red
+  let cstDefs := collectDefinitions parsedTree.red
+  let declNodeIds := buildDeclNodeIds cstDefs
 
-  -- Phase 4: Build symbol table from CST (for LSP features)
-  let symbols := buildSymbolTable moduleName filePath cst
+  -- Phase 5: Lower CST to AST
+  let (ast, astLowerDiags) := lower parsedTree moduleName
 
-  -- Phase 5: Lower CST to AST (infallible, collects errors)
-  let (ast, astLowerDiags) := lower cst moduleName
+  -- Build declAsts cache for future incremental updates
+  let allDeclIds := collectDeclNodeIds parsedTree
+  let (declAsts, _) := lowerDeclarationsByIds parsedTree allDeclIds
 
-  -- Phase 6: Lower AST to Metal IR (infallible, collects errors)
-  let lowerResult := Soma.Metal.Lower.lower ast
-  let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics lowerResult.errors
+  -- Phase 6: Lower AST to Metal IR (using incremental infrastructure for caching)
+  let metalResult := lowerModuleFresh ast
+  let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
 
-  -- Phase 7: Type inference on Metal module (infallible, collects errors)
+  -- Phase 7: Type inference
   let supply := Soma.UniqueSupply.initial moduleName
-  let (typeEnv, _supply) := Soma.Infer.buildTypeEnvFromModule lowerResult.module #[] supply
-  let instanceEnv := Soma.Infer.buildInstanceEnvFromModule lowerResult.module InstanceEnv.empty typeEnv
+  let (typeEnv, _supply) := Soma.Infer.buildTypeEnvFromModule metalResult.module #[] supply
+  let instanceEnv := Soma.Infer.buildInstanceEnvFromModule metalResult.module InstanceEnv.empty typeEnv
   let inferCtx : InferContext := {
     typeEnv := typeEnv
     instanceEnv := instanceEnv
     currentFunction := none
   }
-  let inferResult := Soma.Infer.inferModule lowerResult.module inferCtx
+  let inferResult := Soma.Infer.inferModule metalResult.module inferCtx
   let inferDiags := InferErrors.toDiagnostics inferResult.errors
 
-  let metalDiags := metalLowerDiags ++ inferDiags
+  -- Build typed functions cache for incremental updates
+  let typedFunctions := inferResult.module.functions.foldl (fun acc fn =>
+    acc.insert fn.name.display fn) {}
 
-  -- Combine all diagnostics
-  let allDiags := lexDiags ++ parseDiags ++ astLowerDiags ++ metalDiags
+  let allDiags := frontendDiags ++ astLowerDiags ++ metalLowerDiags ++ inferDiags
 
   return {
     name := moduleName
     filePath := filePath
-    sourceFile := sourceFile
-    cst := cst
+    parsedTree := parsedTree
     ast := some ast
     symbols := symbols
     diagnostics := allDiags
+    declNodeIds := declNodeIds
+    declAsts := declAsts
+    metalResult := some metalResult
+    typeEnv := some typeEnv
+    instanceEnv := some instanceEnv
+    typedFunctions := typedFunctions
   }
 
-/-- Re-analyze a file (same as analyze, but clearer intent) -/
-def reanalyzeSource (filePath : String) (content : String) : CompiledModule :=
-  analyzeSource filePath content
+/-- Analyze a source file incrementally using prior state -/
+def analyzeSourceIncremental (filePath : String) (content : String)
+    (oldModule : CompiledModule) : CompiledModule := Id.run do
+  let moduleName := moduleNameFromPath filePath
+  let fileId := fileIdFromPath filePath
 
-/-- Check if content has changed significantly (for debouncing) -/
-def contentChanged (old new : String) : Bool :=
-  old != new
+  -- Phase 1: Create source file
+  let sourceFile := SourceFile.create fileId filePath content
+
+  -- Phase 2+3: Incremental reparse (preserves NodeIds for unchanged subtrees)
+  let (parsedTree, frontendDiags) := reparseToTree oldModule.parsedTree sourceFile
+
+  -- Phase 4: Find which NodeIds changed
+  let oldNodeIds := oldModule.parsedTree.red.idToIdx
+  let newNodeIds := parsedTree.red.idToIdx
+
+  -- NodeIds in new tree that weren't in old tree = changed/new nodes
+  let changedIds : HashSet NodeId :=
+    newNodeIds.fold (init := {}) fun acc nodeId _ =>
+      if oldNodeIds.contains nodeId then acc
+      else acc.insert nodeId
+
+  -- Find which top-level declarations were affected
+  let changedDeclIds := findChangedDeclIds parsedTree.red changedIds
+
+  -- Phase 5: Incremental symbol table update
+  let (symbols, cstDefs) :=
+    if changedDeclIds.isEmpty then
+      -- Nothing changed, reuse old symbols
+      (oldModule.symbols, collectDefinitions parsedTree.red)
+    else
+      -- Update only changed definitions
+      let newSymbols := updateSymbolTableIncremental
+        oldModule.symbols parsedTree.red changedDeclIds moduleName filePath
+      (newSymbols, collectDefinitions parsedTree.red)
+
+  let declNodeIds := buildDeclNodeIds cstDefs
+
+  -- Phase 6: Incremental AST lowering
+  let (declAsts, astLowerDiags) :=
+    if changedDeclIds.isEmpty then
+      -- Nothing changed, reuse all cached ASTs
+      (oldModule.declAsts, #[])
+    else
+      -- Lower only the changed declarations
+      let (freshAsts, diags) := lowerDeclarationsByIds parsedTree changedDeclIds.toArray
+      -- Start with old ASTs, remove changed ones, then merge fresh ones
+      let prunedAsts := changedDeclIds.fold (init := oldModule.declAsts) fun acc declId =>
+        acc.erase declId
+      -- Merge fresh ASTs into the pruned map
+      let mergedAsts := freshAsts.fold (init := prunedAsts) fun acc nodeId decl =>
+        acc.insert nodeId decl
+      (mergedAsts, diags)
+
+  -- Build the Module from the declaration map (in source order)
+  let ast := buildModuleFromDeclMap parsedTree declAsts moduleName
+
+  -- Phase 7: Incremental Metal lowering
+  let changedDeclNames := changedDeclIds.fold (init := #[]) fun acc nodeId =>
+    match oldModule.declNodeIds.get? nodeId with
+    | some name => acc.push name
+    | none =>
+      -- New declaration: find its name from the AST
+      match declAsts.get? nodeId with
+      | some decl =>
+        match getDeclName decl with
+        | some name => acc.push name
+        | none => acc
+      | none => acc
+
+  let metalResult := match oldModule.metalResult with
+    | some oldMetal =>
+      if changedDeclNames.isEmpty then oldMetal
+      else lowerModuleIncremental ast changedDeclNames oldMetal
+    | none => lowerModuleFresh ast
+
+  let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
+
+  -- Phase 8: Incremental type inference
+  let typeDefsChanged := changedDeclNames.any fun name =>
+    -- todo: maybe unique-based?
+    metalResult.typesByName.contains name
+
+  -- Build or reuse type environment
+  let supply := Soma.UniqueSupply.initial moduleName
+  let (typeEnv, instanceEnv, typedFunctions, inferDiags) :=
+    if typeDefsChanged then
+      -- Type definitions changed - must rebuild everything
+      let (typeEnv, _supply) := Soma.Infer.buildTypeEnvFromModule metalResult.module #[] supply
+      let instanceEnv := Soma.Infer.buildInstanceEnvFromModule metalResult.module InstanceEnv.empty typeEnv
+      let inferCtx : InferContext := {
+        typeEnv := typeEnv
+        instanceEnv := instanceEnv
+        currentFunction := none
+      }
+      let inferResult := Soma.Infer.inferModule metalResult.module inferCtx
+      let typedFns := inferResult.module.functions.foldl (fun acc fn =>
+        acc.insert fn.name.display fn) {}
+      (typeEnv, instanceEnv, typedFns, InferErrors.toDiagnostics inferResult.errors)
+    else
+      -- Only function bodies changed
+      match oldModule.typeEnv, oldModule.instanceEnv with
+      | some oldTypeEnv, some oldInstanceEnv =>
+        if changedDeclNames.isEmpty then
+          -- Nothing changed at all
+          (oldTypeEnv, oldInstanceEnv, oldModule.typedFunctions, #[])
+        else
+          -- Re-infer only changed functions, keep cached results for unchanged
+          let inferCtx : InferContext := {
+            typeEnv := oldTypeEnv
+            instanceEnv := oldInstanceEnv
+            currentFunction := none
+          }
+          -- Find untyped functions that need re-inference
+          let changedFunctions := metalResult.module.functions.filter fun fn =>
+            changedDeclNames.contains fn.name.display
+          -- Re-infer changed functions
+          let (newTypedFns, inferErrs) := changedFunctions.foldl (fun (acc, errs) fn =>
+            let fnCtx := { inferCtx with currentFunction := some fn.name.display }
+            let result := Soma.Infer.inferFunction fn fnCtx
+            match result.function with
+            | some typedFn => (acc.insert fn.name.display typedFn, errs ++ result.errors)
+            | none => (acc, errs ++ result.errors)
+          ) (oldModule.typedFunctions, #[])
+          -- Remove stale entries for changed functions that may have been deleted/renamed
+          let prunedFns := changedDeclNames.foldl (fun acc name =>
+            if metalResult.functionsByName.contains name then acc
+            else acc.erase name) newTypedFns
+          (oldTypeEnv, oldInstanceEnv, prunedFns, InferErrors.toDiagnostics inferErrs)
+      | _, _ =>
+        -- No cached env, do full inference
+        let (typeEnv, _supply) := Soma.Infer.buildTypeEnvFromModule metalResult.module #[] supply
+        let instanceEnv := Soma.Infer.buildInstanceEnvFromModule metalResult.module InstanceEnv.empty typeEnv
+        let inferCtx : InferContext := {
+          typeEnv := typeEnv
+          instanceEnv := instanceEnv
+          currentFunction := none
+        }
+        let inferResult := Soma.Infer.inferModule metalResult.module inferCtx
+        let typedFns := inferResult.module.functions.foldl (fun acc fn =>
+          acc.insert fn.name.display fn) {}
+        (typeEnv, instanceEnv, typedFns, InferErrors.toDiagnostics inferResult.errors)
+
+  let allDiags := frontendDiags ++ astLowerDiags ++ metalLowerDiags ++ inferDiags
+
+  return {
+    name := moduleName
+    filePath := filePath
+    parsedTree := parsedTree
+    ast := some ast
+    symbols := symbols
+    diagnostics := allDiags
+    declNodeIds := declNodeIds
+    declAsts := declAsts
+    metalResult := some metalResult
+    typeEnv := some typeEnv
+    instanceEnv := some instanceEnv
+    typedFunctions := typedFunctions
+  }
+
+/-- Analyze a source file, using incremental analysis if old module is available -/
+def analyzeSource (filePath : String) (content : String)
+    (oldModule? : Option CompiledModule := none) : CompiledModule :=
+  match oldModule? with
+  | none => analyzeSourceFresh filePath content
+  | some oldModule => analyzeSourceIncremental filePath content oldModule
 
 /-- Get all error diagnostics -/
 def getErrors (mod : CompiledModule) : Diagnostics :=
@@ -101,10 +295,13 @@ def getErrorCount (mod : CompiledModule) : Nat :=
 def hasAnyErrors (mod : CompiledModule) : Bool :=
   getErrorCount mod > 0
 
-/-- Create diagnostics from CST error nodes -/
-def cstErrorsToDiagnostics (cst : SyntaxNode) : Diagnostics :=
-  cst.collectErrors.map fun (span, msg) =>
-    Soma.Syntax.Diagnostic.error msg span
+/-- Create diagnostics from red tree error nodes -/
+def treeErrorsToDiagnostics (tree : RedTree) : Diagnostics :=
+  tree.nodes.filterMap fun node =>
+    match node.green with
+    | .error msg _ _ => some (Diagnostic.error msg (tree.spanOf node))
+    | .missing expected => some (Diagnostic.error s!"expected {expected.describe}" (tree.spanOf node))
+    | _ => none
 
 /-- Merge diagnostics from multiple sources -/
 def mergeDiagnostics (sources : Array Diagnostics) : Diagnostics :=
@@ -113,13 +310,10 @@ def mergeDiagnostics (sources : Array Diagnostics) : Diagnostics :=
 /-- Resolve a symbol name to its definition, checking imports -/
 def resolveSymbol (name : String) (currentMod : CompiledModule) (allModules : Array CompiledModule)
     : Option DefinitionSite :=
-  -- First check current module
   match currentMod.symbols.lookupDefinition name with
   | some def_ => some def_
   | none =>
-    -- Check imported modules
     let fromImports := currentMod.symbols.imports.findSome? fun imp =>
-      -- Empty items = import all, otherwise check if name is in list
       let shouldCheck := imp.items.isEmpty || imp.items.contains name
       if shouldCheck then
         allModules.findSome? fun mod =>
@@ -129,30 +323,23 @@ def resolveSymbol (name : String) (currentMod : CompiledModule) (allModules : Ar
       else none
     match fromImports with
     | some def_ => some def_
-    | none =>
-      -- Fallback: check all modules
-      allModules.findSome? fun mod => mod.symbols.lookupDefinition name
+    | none => allModules.findSome? fun mod => mod.symbols.lookupDefinition name
 
 /-- Get all visible symbols at a position (for completion) -/
 def visibleSymbols (currentMod : CompiledModule) (allModules : Array CompiledModule)
     : Array DefinitionSite :=
   let localDefs := currentMod.symbols.allDefinitions
-
-  -- Add symbols from imports
   let importedDefs := currentMod.symbols.imports.foldl (init := #[]) fun acc imp =>
     allModules.foldl (init := acc) fun acc2 mod =>
       if mod.name == imp.modulePath || mod.filePath.endsWith imp.modulePath then
         if imp.items.isEmpty then
-          -- Import all
           acc2 ++ mod.symbols.allDefinitions
         else
-          -- Import specific items
           imp.items.foldl (init := acc2) fun acc3 itemName =>
             match mod.symbols.lookupDefinition itemName with
             | some def_ => acc3.push def_
             | none => acc3
       else acc2
-
   localDefs ++ importedDefs
 
 /-- Check if a file is a Soma source file -/
