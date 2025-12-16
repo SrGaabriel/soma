@@ -5,3 +5,5 @@ data Maybe a
     | Nothing
 
 def hello :: Maybe Int = Just 5
+
+def test :: Maybe Int = Just (5 + 5)

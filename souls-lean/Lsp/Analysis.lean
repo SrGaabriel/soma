@@ -4,6 +4,7 @@ import Soma.Metal
 import Soma.Metal.Lower.Decl
 import Soma.Infer
 import Soma.Infer.Module
+import Soma.Project.Check
 import Lsp.State
 import Lsp.Symbols
 import Lsp.Loc
@@ -17,18 +18,7 @@ open Soma.Infer
 open Soma.Typing
 open Soma.Metal (UntypedModule)
 open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleIncremental getDeclName)
-
-/-- Derive module name from file path -/
-def moduleNameFromPath (filePath : String) : String :=
-  let parts := filePath.splitOn "/"
-  let fileName := parts.getLast!
-  let nameParts := fileName.splitOn "."
-  if nameParts.isEmpty then fileName
-  else nameParts.head!
-
-/-- Create a unique file ID -/
-def fileIdFromPath (filePath : String) : FileId :=
-  ⟨filePath.hash.toNat⟩
+open Soma.Check (moduleNameFromPath fileIdFromPath)
 
 /-- Build declNodeIds mapping from definitions -/
 def buildDeclNodeIds (defs : Array CstDefinition) : Std.HashMap NodeId String :=

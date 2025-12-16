@@ -152,7 +152,8 @@ def findChild? (tree : RedTree) (node : RedNode) (kind : SyntaxKind) : Option Re
 def getTokens (tree : RedTree) (node : RedNode) : Array RedNode :=
   let startIdx := node.selfIdx
   let endIdx := startIdx + RedTree.countGreenNodes node.green
-  tree.nodes[startIdx:endIdx].toArray.filter (·.isToken)
+  tree.nodes[startIdx:endIdx].toArray.filter fun n =>
+    n.isToken && !n.green.isTrivia
 
 /-- Find the first token of a specific kind under a node -/
 def findToken? (tree : RedTree) (node : RedNode) (kind : TokenKind) : Option RedNode :=

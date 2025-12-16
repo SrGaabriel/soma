@@ -5,6 +5,7 @@ import Soma.Metal
 import Soma.Infer
 import Soma.Logging
 import Soma.Unique
+import Soma.Project.Check
 
 namespace Somac.Build
 
@@ -15,6 +16,7 @@ open Soma.Metal
 open Soma.Typing
 open Soma.Logging
 open Soma (UniqueSupply)
+open Soma.Check (toAst metal infer buildTypeEnv buildInstanceEnv)
 
 /-- Result of parsing a single module -/
 abbrev ParseResult := Except (Array Diagnostic) ModuleInfo
@@ -22,16 +24,8 @@ abbrev ParseResult := Except (Array Diagnostic) ModuleInfo
 /-- Parse a single source file into a ModuleInfo -/
 def parseModule (moduleName : String) (path : System.FilePath) : IO ParseResult := do
   let content ← IO.FS.readFile path
-  let sourceFile := SourceFile.create ⟨0⟩ path.toString content
-
-  -- Lex + Parse (produces ParsedTree with green/red trees)
-  let (parsedTree, frontendDiags) := parseToTree sourceFile
-
-  -- Lower to AST
-  let baseName := moduleName.splitOn "/" |>.getLast!
-  let (ast, lowerDiags) := lower parsedTree baseName
-
-  let allDiags := frontendDiags ++ lowerDiags
+  let (parseRes, lowerRes) := toAst path.toString content
+  let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics
 
   if allDiags.hasErrors then
     pure (.error allDiags)
@@ -41,8 +35,8 @@ def parseModule (moduleName : String) (path : System.FilePath) : IO ParseResult 
       name := modName
       path := path
       content := content
-      sourceFile := sourceFile
-      ast := ast
+      sourceFile := parseRes.sourceFile
+      ast := lowerRes.ast
       contentHash := some (hash content)
     })
 
@@ -150,32 +144,25 @@ def compileModule
   let seedInstances := externalInstances.fold (init := seedInstances) fun acc _ env =>
     mergeInstanceEnvs acc env
 
-  let lowerResult := Metal.Lower.lower info.ast
+  -- Metal lowering
+  let metalRes := metal info.ast
 
-  let metalDiags := Metal.Lower.LowerError.toDiagnostics lowerResult.errors
-
+  -- Build environments with external dependencies
   let externalFunctions := symbolEnvToFunctionInfos seedEnv
-  let (typeEnv, supply) := Infer.buildTypeEnvFromModule lowerResult.module externalFunctions supply
-  let inferInstanceEnv := Infer.buildInstanceEnvFromModule lowerResult.module (projectToInferInstanceEnv seedInstances) typeEnv
+  let (typeEnv, supply) := buildTypeEnv metalRes.module externalFunctions supply
+  let inferInstanceEnv := buildInstanceEnv metalRes.module (projectToInferInstanceEnv seedInstances) typeEnv
 
-  let inferCtx : Infer.InferContext := {
-    typeEnv := typeEnv
-    instanceEnv := inferInstanceEnv
-    currentFunction := none
-  }
+  -- Type inference
+  let inferRes := infer metalRes.module typeEnv inferInstanceEnv
 
-  let inferResult := Infer.inferModule lowerResult.module inferCtx
+  let allDiags := metalRes.diagnostics ++ inferRes.diagnostics
 
-  let inferDiags := Infer.InferErrors.toDiagnostics inferResult.errors
-
-  let allDiags := metalDiags ++ inferDiags
-
-  let publicSymbols := extractPublicSymbols inferResult.module seedEnv
-  let (publicInstances, supply) := extractPublicInstances inferResult.module seedInstances supply
+  let publicSymbols := extractPublicSymbols inferRes.module seedEnv
+  let (publicInstances, supply) := extractPublicInstances inferRes.module seedInstances supply
 
   let compiledModule : CompiledModule := {
     name := modName
-    metalNormalized := inferResult.module
+    metalNormalized := inferRes.module
     publicSymbols := publicSymbols
     publicInstances := publicInstances
     resolvedAst := info.ast

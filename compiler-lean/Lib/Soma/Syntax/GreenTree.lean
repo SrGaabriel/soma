@@ -96,6 +96,11 @@ def isLayout : TokenKind → Bool
   | .layoutStart | .layoutSep | .layoutEnd | .whitespace | .comment => true
   | _ => false
 
+/-- Check if token is a name-like identifier (variable, type name, or operator) -/
+def isNameLike : TokenKind → Bool
+  | .lowerIdent | .upperIdent | .varSymbol => true
+  | _ => false
+
 end TokenKind
 
 /-- Keyword lookup table -/

@@ -179,8 +179,7 @@ def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array Compile
     let text ← nodeInfo.node.text?
     let kind ← nodeInfo.node.tokenKind?
 
-    -- Check if it's an identifier
-    if kind == .lowerIdent || kind == .upperIdent then
+    if kind.isNameLike then
       -- Try to find definition
       if let some def_ := mod.symbols.lookupDefinition text then
         return formatDefinitionHover def_
@@ -188,12 +187,12 @@ def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array Compile
       for other in allModules do
         if let some def_ := other.symbols.lookupDefinition text then
           return formatDefinitionHover def_
-      -- Unknown identifier
+      -- Unknown identifier/operator
       return s!"**{text}** — *unknown*"
     else if kind.isKeyword then
       return formatKeywordHover kind text
     else
-      -- Punctuation or operator
+      -- Punctuation
       return s!"`{text}` — {kind.describe}"
   else
     -- Interior node
@@ -242,7 +241,7 @@ def getDefinitionAt (offset : Nat) (mod : CompiledModule) (allModules : Array Co
 
   if nodeInfo.node.isToken then
     let kind ← nodeInfo.node.tokenKind?
-    if kind == .lowerIdent || kind == .upperIdent then
+    if kind.isNameLike then
       let text ← nodeInfo.node.text?
       findDefinitionLocation text mod allModules
     else
@@ -266,12 +265,13 @@ def completionKindNumber : SymbolKind → Nat
 /-- Get completions based on context -/
 def getCompletionsForContext (context : SyntaxContext) (mod : CompiledModule) (allModules : Array CompiledModule)
     : Array DefinitionSite :=
+  let otherModules := allModules.filter (·.filePath != mod.filePath)
   match context with
   | .inTypeExpr | .inTypeSignature | .afterColon =>
       -- Only type names and type variables
       let localTypes := mod.symbols.definitionsOfKind .type
       let localTyVars := mod.symbols.definitionsOfKind .typeVariable
-      let importedTypes := allModules.foldl (fun acc m =>
+      let importedTypes := otherModules.foldl (fun acc m =>
         acc ++ m.symbols.definitionsOfKind .type) #[]
       localTypes ++ localTyVars ++ importedTypes
 
@@ -279,7 +279,7 @@ def getCompletionsForContext (context : SyntaxContext) (mod : CompiledModule) (a
       -- Constructors and variables
       let constructors := mod.symbols.definitionsOfKind .constructor
       let variables := mod.symbols.definitionsOfKind .variable
-      let importedCons := allModules.foldl (fun acc m =>
+      let importedCons := otherModules.foldl (fun acc m =>
         acc ++ m.symbols.definitionsOfKind .constructor) #[]
       constructors ++ variables ++ importedCons
 
@@ -294,7 +294,7 @@ def getCompletionsForContext (context : SyntaxContext) (mod : CompiledModule) (a
   | _ =>
       -- All symbols
       let local_ := mod.symbols.allDefinitions
-      let imported := allModules.foldl (fun acc m =>
+      let imported := otherModules.foldl (fun acc m =>
         acc ++ m.symbols.allDefinitions) #[]
       local_ ++ imported
 

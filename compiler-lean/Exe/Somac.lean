@@ -4,9 +4,11 @@ import Soma.Syntax
 import Soma.Metal
 import Soma.Logging
 import Soma.Project
+import Soma.Project.Check
 import Somac.Build
 
 open Cli
+open Soma.Check (parseOnly toAst toMetal fullSimple)
 
 namespace Soma.Driver
 
@@ -69,115 +71,65 @@ def runParse (p : Parsed) : IO UInt32 := do
   let showCst := p.hasFlag "cst"
   let showAst := p.hasFlag "ast"
 
-  -- Read the file
-  let source ← IO.FS.readFile input
+  let content ← IO.FS.readFile input
+  let (parseRes, lowerRes) := toAst input content
+  let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics
 
-  -- Create source file
-  let sourceFile := Syntax.SourceFile.create ⟨0⟩ input source
-
-  -- Lex + Parse
-  let (parsedTree, frontendDiags) := Syntax.parseToTree sourceFile
-
-  -- Print frontend diagnostics if any
-  if frontendDiags.size > 0 then
-    Logging.Error.printDiagnostics frontendDiags sourceFile
+  if !allDiags.isEmpty then
+    Logging.Error.printDiagnostics allDiags parseRes.sourceFile
 
   -- Show CST if requested
   if showCst then
     IO.println "=== Concrete Syntax Tree ==="
-    IO.println (parsedTree.green.debugPrint)
-
-  -- Extract module name from filename (without extension)
-  let fileName := input.splitOn "/" |>.getLast!
-  let moduleName := fileName.splitOn "." |>.head!
-                    |> fun s => if s.isEmpty then "Main" else s
-  let (ast, lowerDiags) := Syntax.lower parsedTree moduleName
-
-  -- Print lowering diagnostics if any
-  if lowerDiags.size > 0 then
-    Logging.Error.printDiagnostics lowerDiags sourceFile
-
-  -- Collect all diagnostics
-  let allDiags := frontendDiags ++ lowerDiags
+    IO.println (parseRes.tree.green.debugPrint)
 
   -- Show AST if requested (or by default if no flags)
   if showAst || (!showCst && !showAst) then
     IO.println "=== Abstract Syntax Tree ==="
-    IO.println (Syntax.Pretty.ppModule ast)
+    IO.println (Syntax.Pretty.ppModule lowerRes.ast)
 
   if allDiags.isEmpty then
     IO.println "\nParse successful!"
-
-  -- Print summary if there were any diagnostics
-  if !allDiags.isEmpty then
+  else
     IO.eprintln ""
     IO.eprintln (Logging.Error.renderSummary allDiags)
 
-  return if allDiags.size > 0 then 1 else 0
+  return if allDiags.hasErrors then 1 else 0
 
 /-- Handler for the `lower` command - Metal HIR lowering -/
 def runLower (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
 
-  -- Read the file
-  let source ← IO.FS.readFile input
+  let content ← IO.FS.readFile input
+  let (parseRes, lowerRes, metalRes) := toMetal input content
+  let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics ++ metalRes.diagnostics
 
-  -- Create source file
-  let sourceFile := Syntax.SourceFile.create ⟨0⟩ input source
+  -- Print diagnostics
+  if !allDiags.isEmpty then
+    Logging.Error.printDiagnostics allDiags parseRes.sourceFile
 
-  -- Lex + Parse
-  let (parsedTree, frontendDiags) := Syntax.parseToTree sourceFile
-  if frontendDiags.size > 0 then
-    Logging.Error.printDiagnostics frontendDiags sourceFile
-
-  -- Lower CST to AST
-  let fileName := input.splitOn "/" |>.getLast!
-  let moduleName := fileName.splitOn "." |>.head!
-                    |> fun s => if s.isEmpty then "Main" else s
-  let (ast, astDiags) := Syntax.lower parsedTree moduleName
-  if astDiags.size > 0 then
-    Logging.Error.printDiagnostics astDiags sourceFile
-
-  -- Check for errors so far
-  let frontendDiags := frontendDiags ++ astDiags
-  if frontendDiags.hasErrors then
-    IO.eprintln "\nCannot proceed to Metal lowering due to errors."
-    IO.eprintln (Logging.Error.renderSummary frontendDiags)
-    return 1
-
-  -- Lower AST to Metal IR
-  let result := Metal.Lower.lower ast
-
-  -- Convert and print Metal lowering errors
-  let metalDiags := Metal.Lower.LowerError.toDiagnostics result.errors
-  if metalDiags.size > 0 then
-    Logging.Error.printDiagnostics metalDiags sourceFile
-
-  -- Print summary
-  let allDiags := frontendDiags ++ metalDiags
   if allDiags.hasErrors then
     IO.eprintln ""
     IO.eprintln (Logging.Error.renderSummary allDiags)
     return 1
 
   -- Success - print info about the lowered module
+  let module := metalRes.module
   IO.println s!"=== Metal IR (Untyped) ==="
-  IO.println s!"Module: {result.module.name}"
-  IO.println s!"Functions: {result.module.functions.size}"
-  IO.println s!"Types: {result.module.types.size}"
-  IO.println s!"Type classes: {result.module.typeClasses.size}"
+  IO.println s!"Module: {module.name}"
+  IO.println s!"Functions: {module.functions.size}"
+  IO.println s!"Types: {module.types.size}"
+  IO.println s!"Type classes: {module.typeClasses.size}"
 
-  -- Print function names
-  if result.module.functions.size > 0 then
+  if module.functions.size > 0 then
     IO.println "\nFunctions:"
-    for fn in result.module.functions do
+    for fn in module.functions do
       let sigInfo := if fn.hasSignature then " (has signature)" else ""
       IO.println s!"  - {fn.name.display}{sigInfo}"
 
-  -- Print type names
-  if result.module.types.size > 0 then
+  if module.types.size > 0 then
     IO.println "\nTypes:"
-    for ty in result.module.types do
+    for ty in module.types do
       IO.println s!"  - {ty.name.display}"
 
   IO.println "\nMetal lowering successful!"
@@ -197,7 +149,7 @@ def parseDeps (p : Parsed) : Array (String × String) :=
 /-- Check a single .soma file -/
 def checkSingleFile (opts : CheckOptions) : IO (Array Syntax.Diagnostic × Option Syntax.SourceFile) := do
   let path : System.FilePath := opts.input
-  let result ← Project.Check.checkFileSimple path.toString
+  let result ← Soma.Check.fullFromFileSimple path.toString
   return (result.diagnostics, some result.sourceFile)
 
 /-- Check a directory of .soma files -/
