@@ -34,7 +34,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
       -- Store raw syntax - will be resolved during lowerFunction
       LowerM.registerGlobal name.value { name := globalName, typeSyntax := sig, definedAt := name.span }
 
-  | .data name params constructors _span =>
+  | .data name params constructors _kind _span =>
     -- Register the type
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
@@ -91,8 +91,22 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     LowerM.registerTypeClass name.value
       { name := globalName, tyCon := tyCon, methods := methodSigs, unique := typeUnique }
 
-  | .instance_ _traitName _args _constraints _methods _ =>
-    -- Instances are handled in a separate pass
+    -- Register each trait method as a global so it can be looked up as a variable
+    for m in methods do
+      let methodGlobalName ← LowerM.freshUserName m.name.value
+      LowerM.registerGlobal m.name.value { name := methodGlobalName, typeSyntax := some m.type_, definedAt := m.name.span }
+
+  | .instance_ _traitName _args _constraints methods _ =>
+    -- Instance methods should NOT register as new globals - they implement existing trait methods
+    for methodDecl in methods do
+      match methodDecl with
+      | .def_ _attrs name sig _clauses _span =>
+        -- Only register if not already present (from the trait)
+        let existing? ← LowerM.lookupVar LocalEnv.empty name.value
+        if existing?.isNone then
+          let globalName ← LowerM.freshUserName name.value
+          LowerM.registerGlobal name.value { name := globalName, typeSyntax := sig, definedAt := name.span }
+      | _ => pure ()
     pure ()
 
   | .use _path _items _ =>
@@ -284,7 +298,7 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
 /-- Lower a type definition to an UntypedTypeDef -/
 def lowerTypeDef (decl : Decl) : LowerM (Option UntypedTypeDef) := do
   match decl with
-  | .data name _params constructors _ =>
+  | .data name _params constructors _kind _ =>
     let typeUnique ← LowerM.freshUnique name.value
     let typeName := Name.user typeUnique
     let typeVarNames := _params.map (·.value)
@@ -353,7 +367,7 @@ def lowerModule (moduleName : String) (decls : Array Decl) : LowerM UntypedModul
 def getDeclName (decl : Decl) : Option String :=
   match decl with
   | .def_ _ name _ _ _ => some name.value
-  | .data name _ _ _ => some name.value
+  | .data name _ _ _ _ => some name.value
   | .struct name _ _ _ _ => some name.value
   | .trait name _ _ _ _ => some name.value
   | .instance_ traitName args _ _ _ =>

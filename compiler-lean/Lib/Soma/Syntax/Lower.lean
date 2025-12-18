@@ -1113,7 +1113,21 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
           let conNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .constructor
           let cons ← conNodes.mapM fun (c, o) => lowerDataCon c o
 
-          pure (.data name params cons span)
+          -- Extract kind annotation if present (e.g., :: * -> *)
+          let sigNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .signature
+          let kindAnnot ← if sigNodes.isEmpty then pure none
+            else
+              let (sig, sigOffset) := sigNodes[0]!
+              let tyNodes := childrenWithOffsets sig sigOffset |>.filter fun (c, _) =>
+                match c.syntaxKind? with
+                | some sk => sk.isType
+                | none => false
+              if tyNodes.isEmpty then pure none
+              else
+                let kind ← lowerTypeExpr tyNodes[0]!.1 tyNodes[0]!.2
+                pure (some kind)
+
+          pure (.data name params cons kindAnnot span)
 
       | .declStruct =>
           let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent

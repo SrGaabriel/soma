@@ -158,7 +158,7 @@ def runCheckingTest (tc : TestCase) : IO TestResult := do
             for clause in clauses do
               IO.println s!"      body:"
               IO.println s!"    {debugExprSpan clause.body "      "}"
-      | .data name _ _ span =>
+      | .data name _ _ _ span =>
           IO.println s!"    data {name.value} at {span} (bytes {span.start.byteOffset}-{span.stop.byteOffset})"
       | d => IO.println s!"    other decl at {d.span} (bytes {d.span.start.byteOffset}-{d.span.stop.byteOffset})"
 

@@ -9,6 +9,7 @@
   - Notes and help suggestions
 -/
 
+import Lean.Data.Json
 import Soma.Syntax.Source
 import Soma.Syntax.Diagnostic
 
@@ -590,34 +591,49 @@ def renderSummary (ds : Diagnostics) : String := Id.run do
   else
     String.intercalate ", " parts.toList ++ " emitted"
 
-/-- Escape a string for JSON output -/
-private def escapeJsonString (s : String) : String :=
-  s.foldl (fun acc c =>
-    match c with
-    | '"' => acc ++ "\\\""
-    | '\\' => acc ++ "\\\\"
-    | '\n' => acc ++ "\\n"
-    | '\r' => acc ++ "\\r"
-    | '\t' => acc ++ "\\t"
-    | c => acc.push c
-  ) ""
+open Lean (Json ToJson)
 
-/-- Render a single diagnostic as JSON object -/
-private def renderDiagnosticJson (d : Diagnostic) : String :=
+/-- Convert a diagnostic to JSON -/
+private def diagnosticToJson (d : Diagnostic) (filePath : String := "") : Json :=
   let severity := match d.severity with
     | .error => "error"
     | .warning => "warning"
     | .info => "info"
     | .hint => "hint"
   let span := d.labels[0]?.map (·.span) |>.getD Span.uninhabited
-  let msg := escapeJsonString d.message
-  "{\"severity\":\"" ++ severity ++ "\",\"message\":\"" ++ msg ++
-    "\",\"line\":" ++ toString span.start.line ++
-    ",\"column\":" ++ toString span.start.column ++ "}"
+  Json.mkObj [
+    ("file", Json.str filePath),
+    ("range", Json.mkObj [
+      ("start", Json.mkObj [
+        ("line", Json.num span.start.line),
+        ("character", Json.num span.start.column)
+      ]),
+      ("end", Json.mkObj [
+        ("line", Json.num span.stop.line),
+        ("character", Json.num span.stop.column)
+      ])
+    ]),
+    ("severity", Json.num (match d.severity with | .error => 1 | .warning => 2 | .info => 3 | .hint => 4)),
+    ("message", Json.str d.message),
+    ("source", Json.str severity.toUpper),
+    ("code", Json.null)
+  ]
 
 /-- Render diagnostics as JSON array -/
-def renderDiagnosticsJson (diags : Diagnostics) : String :=
-  let items := diags.map renderDiagnosticJson
-  "[" ++ String.intercalate "," items.toList ++ "]"
+def renderDiagnosticsJson (diags : Diagnostics) (filePath : String := "") : String :=
+  let items := diags.map (diagnosticToJson · filePath)
+  (Json.arr items).compress
+
+/-- Render check output as JSON object matching haoma's expected format -/
+def renderCheckOutputJson (diags : Diagnostics) (moduleName : Option String := none) (filePath : String := "") : String :=
+  let success := !diags.hasErrors
+  let diagsArr := diags.map (diagnosticToJson · filePath)
+  let fields := [
+    ("success", Json.bool success),
+    ("diagnostics", Json.arr diagsArr)
+  ] ++ match moduleName with
+    | some name => [("module", Json.str name)]
+    | none => []
+  (Json.mkObj fields).compress
 
 end Soma.Logging.Error

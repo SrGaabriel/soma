@@ -181,7 +181,14 @@ def parseDataConstructor : ParserM (Option GreenNode) := do
   | some pipeTok =>
       match ← parseUpperIdent with
       | some nameTok =>
-          let fields ← many parseConstructorField
+          -- Check if fields are in a layout block (record-style with named fields)
+          -- or inline (positional style like `| Just a b`)
+          let fields ← if (← check .layoutStart) then
+            -- Record-style: fields separated by layoutSep
+            layoutSepBy parseConstructorField
+          else
+            -- Positional style: fields on same line
+            many parseConstructorField
           return some (GreenNode.mkNode .constructor (#[pipeTok, nameTok] ++ fields))
       | none =>
           recordError "expected constructor name after '|'"
@@ -324,6 +331,8 @@ def parseInstanceDecl : ParserM (Option GreenNode) := do
 
           let parseInstanceMethod : ParserM (Option GreenNode) := do
             let attrs ← parseAttributes
+            -- Skip layoutSep between attributes and def (when attribute is on separate line)
+            let _ ← tryLayoutSep
             parseDefDecl attrs
 
           let methods ← layoutSepBy parseInstanceMethod

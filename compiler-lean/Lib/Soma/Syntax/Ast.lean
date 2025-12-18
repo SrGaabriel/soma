@@ -334,7 +334,8 @@ inductive Decl where
          (clauses : Array DefClause) (span : Span)
 
   /-- Data type definition: data Option a | Some value :: a | None -/
-  | data (name : Name) (params : Array Name) (constructors : Array DataCon) (span : Span)
+  | data (name : Name) (params : Array Name) (constructors : Array DataCon)
+         (kind : Option TypeExpr) (span : Span)
 
   /-- Struct definition: struct Path = Path String -/
   | struct (name : Name) (params : Array Name) (con : Name) (fields : Array StructField) (span : Span)
@@ -363,7 +364,7 @@ namespace Decl
 
 def span : Decl → Span
   | .def_ _ _ _ _ s => s
-  | .data _ _ _ s => s
+  | .data _ _ _ _ s => s
   | .struct _ _ _ _ s => s
   | .trait _ _ _ _ s => s
   | .instance_ _ _ _ _ s => s
@@ -374,7 +375,7 @@ def span : Decl → Span
 /-- Get the name of a declaration (if it has one) -/
 def name? : Decl → Option Name
   | .def_ _ name _ _ _ => some name
-  | .data name _ _ _ => some name
+  | .data name _ _ _ _ => some name
   | .struct name _ _ _ _ => some name
   | .trait name _ _ _ _ => some name
   | .instance_ _ _ _ _ _ => none
@@ -556,10 +557,13 @@ partial def ppDecl : Decl → String
       else
         s!"{attrStr}def {name.value}{sigStr}\n{indent 2 clausesStr}"
 
-  | .data name params cons _ =>
+  | .data name params cons kind _ =>
       let paramsStr := if params.isEmpty then "" else s!" {ppNames params}"
+      let kindStr := match kind with
+        | some k => s!" :: {ppTypeExpr k}"
+        | none => ""
       let consStr := cons.toList.map ppDataCon |> String.intercalate "\n"
-      s!"data {name.value}{paramsStr}\n{indent 2 consStr}"
+      s!"data {name.value}{paramsStr}{kindStr}\n{indent 2 consStr}"
 
   | .struct name params con fields _ =>
       let paramsStr := if params.isEmpty then "" else s!" {ppNames params}"

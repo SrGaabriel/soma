@@ -403,7 +403,11 @@ def processLayoutTokens (tokens : Array RawToken) (idx : Nat) (state : LayoutSta
         else
           -- Dedent to the target column - layoutEnd(s) will be emitted
           -- Emit the newline as whitespace to preserve offset tracking
-          let (state, _) := dedentTo state nextCol tok.offset
+          let (state, atMatchingLevel) := dedentTo state nextCol tok.offset
+          -- If we landed at a matching indentation level, also emit a layoutSep
+          let state := if atMatchingLevel && state.indentStack.length > 1 then
+            state.emit (LayoutState.syntheticToken .layoutSep tok.offset)
+          else state
           let state := state.emit { tok with kind := .whitespace }
           processLayoutTokens tokens (idx + 1) state source
       else
