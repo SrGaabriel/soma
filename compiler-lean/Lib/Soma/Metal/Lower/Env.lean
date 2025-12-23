@@ -73,7 +73,7 @@ end ConstructorInfo
 structure TypeClassInfo where
   name : Name
   tyCon : TyCon
-  methods : Array (String × QualifiedType)
+  methods : Array (Name × QualifiedType)
   unique : Unique
 
 namespace TypeClassInfo
@@ -83,7 +83,7 @@ def methodCount (info : TypeClassInfo) : Nat := info.methods.size
 
 /-- Look up a method by name -/
 def lookupMethod (info : TypeClassInfo) (name : String) : Option QualifiedType :=
-  info.methods.find? (·.1 == name) |>.map (·.2)
+  info.methods.find? (·.1.display == name) |>.map (·.2)
 
 end TypeClassInfo
 

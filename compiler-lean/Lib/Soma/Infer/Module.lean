@@ -217,6 +217,15 @@ def buildTypeEnvFromModule
       }
       env := env.addConstructor name.display ctorInfo
 
+  -- Add trait methods from type classes
+  for typeClass in m.typeClasses do
+    for (methodName, qualType) in typeClass.methods do
+      let fnInfo : FunctionInfo := {
+        qualType := qualType
+        metalName := methodName
+      }
+      env := env.addFunction methodName.display fnInfo
+
   return (env, sup)
 
 /-- Look up a built-in class by name -/

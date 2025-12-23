@@ -85,16 +85,16 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     let globalName ← LowerM.freshUserName name.value
 
     let methodSigs ← methods.mapM fun m => do
+      let methodGlobalName ← LowerM.freshUserName m.name.value
       let ty? ← resolveQualifiedType m.type_
-      pure (m.name.value, ty?.getD (QualifiedType.mono Ty.unit))
+      pure (methodGlobalName, ty?.getD (QualifiedType.mono Ty.unit))
 
     LowerM.registerTypeClass name.value
       { name := globalName, tyCon := tyCon, methods := methodSigs, unique := typeUnique }
 
     -- Register each trait method as a global so it can be looked up as a variable
-    for m in methods do
-      let methodGlobalName ← LowerM.freshUserName m.name.value
-      LowerM.registerGlobal m.name.value { name := methodGlobalName, typeSyntax := some m.type_, definedAt := m.name.span }
+    for (methodName, _) in methodSigs do
+      LowerM.registerGlobal methodName.display { name := methodName, typeSyntax := none, definedAt := name.span }
 
   | .instance_ _traitName _args _constraints methods _ =>
     -- Instance methods should NOT register as new globals - they implement existing trait methods
@@ -355,12 +355,17 @@ def lowerModule (moduleName : String) (decls : Array Decl) : LowerM UntypedModul
   -- Fourth pass: lower instances
   let instances ← decls.filterMapM lowerInstance
 
+  -- Fifth pass: extract type class metadata from GlobalEnv
+  let genv ← LowerM.getGlobalEnv
+  let typeClasses := genv.typeClasses.fold (init := #[]) fun acc _ info =>
+    acc.push { name := info.name, methods := info.methods : TypeClassMeta }
+
   pure {
     name := moduleName
     functions := functions
     types := types
     instances := instances
-    typeClasses := #[]
+    typeClasses := typeClasses
   }
 
 /-- Get the name of a declaration (for tracking purposes) -/

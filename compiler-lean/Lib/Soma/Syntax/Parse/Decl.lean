@@ -265,6 +265,7 @@ def parseStructDecl : ParserM (Option GreenNode) := do
   | none => return none
 
 def parseTraitMethod : ParserM (Option GreenNode) := do
+  while (← check .layoutSep) do advance
   match ← tryConsume .kw_def with
   | some defTok =>
       let nameNode ← if (← check .leftBrace) then
