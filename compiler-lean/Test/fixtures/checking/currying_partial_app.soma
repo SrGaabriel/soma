@@ -1,0 +1,10 @@
+// expect: success
+intrinsic def {+} :: Int -> Int -> Int
+
+def add(x: Int, y: Int) -> Int = x + y
+
+def add3 :: Int -> Int = add 3
+
+def addBoth :: Int -> Int -> Int = add
+
+def apply(fn: Int -> Int -> Int) -> (Int -> Int) = fn 5

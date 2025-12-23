@@ -1020,15 +1020,42 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             lowerError "definition missing name" span
             pure ⟨"_error", span⟩
 
+          -- Extract the return type signature (e.g., `-> Int` gives us `Int`)
           let sigNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .signature
-          let sig ← if sigNodes.isEmpty then pure none
+          let returnTypeSig ← if sigNodes.isEmpty then pure none
             else some <$> lowerTypeExpr sigNodes[0]!.1 sigNodes[0]!.2
+
+          -- Extract parameter list to get parameter types for building full function signature
+          let paramListNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .paramList
+
+          -- Extract parameter types from .field nodes in paramList
+          let paramTypes ← if paramListNodes.isEmpty then pure #[]
+            else
+              let (plist, plistOffset) := paramListNodes[0]!
+              let fieldNodes := childrenWithOffsets plist plistOffset |>.filter fun (c, _) =>
+                c.syntaxKind? == some .field
+              fieldNodes.filterMapM fun (f, fo) => do
+                let typeNodes := childrenWithOffsets f fo |>.filter fun (c, _) => isSemanticNode c
+                if typeNodes.isEmpty then pure none
+                else some <$> lowerTypeExpr typeNodes[0]!.1 typeNodes[0]!.2
+
+          -- Build the full function signature: paramType1 -> paramType2 -> ... -> returnType
+          -- If we have both parameter types and a return type, construct the full arrow type
+          let sig ← match returnTypeSig with
+            | none => pure none
+            | some retTy =>
+              if paramTypes.isEmpty then
+                pure (some retTy)
+              else
+                -- Build: paramTypes[0] -> paramTypes[1] -> ... -> retTy
+                let fullSig := paramTypes.foldr (init := retTy) fun paramTy accTy =>
+                  TypeExpr.arrow paramTy accTy span
+                pure (some fullSig)
 
           let clauseNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .defClause
           let clauses ← clauseNodes.mapM fun (c, o) => lowerDefClause c o
 
           if clauses.isEmpty then
-            let paramListNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .paramList
             let paramPatterns ← if paramListNodes.isEmpty then pure #[]
               else
                 let (plist, plistOffset) := paramListNodes[0]!
