@@ -984,8 +984,6 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
           let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
           let attrs ← attrNodes.mapM fun (a, ao) => do
             let aspan ← spanFor a ao
-            -- Attribute children are [atTok, lbracket, nameTok, rbracket]
-            -- where nameTok is a .lowerIdent token
             let nameTokens := a.children.filter fun c => isTokenKind c .lowerIdent
             if nameTokens.isEmpty then
               pure ⟨⟨"unknown", aspan⟩, #[], aspan⟩

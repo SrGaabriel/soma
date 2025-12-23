@@ -206,7 +206,8 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope)
   | .var v () span =>
     let name := v.original
     match ← lookupLocal name with
-    | some info => return (info.ty, .var v info.ty span)
+    | some info =>
+      return (info.ty, .var v info.ty span)
     | none =>
       -- Check if this might be a constructor
       let isUppercase := name.get? ⟨0⟩ |>.map Char.isUpper |>.getD false
@@ -239,9 +240,20 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope)
           let errTy ← freshVar "err"
           return (errTy, .var v errTy span)
       else
-        reportError (.unknownVariable name span)
-        let errTy ← freshVar "err"
-        return (errTy, .var v errTy span)
+        -- Check for global function
+        match ← lookupFunction name with
+        | some fnInfo =>
+          -- Instantiate the qualified type with fresh type variables
+          let freshVars ← fnInfo.qualType.vars.mapM fun tv => do
+            let fresh ← freshVar tv.name
+            return (tv.id, fresh)
+          let σ := Subst.fromArrays fnInfo.qualType.vars (freshVars.map (·.2))
+          let instTy := σ.apply fnInfo.qualType.body
+          return (instTy, .var v instTy span)
+        | none =>
+          reportError (.unknownVariable name span)
+          let errTy ← freshVar "err"
+          return (errTy, .var v errTy span)
 
   | .lit lit span =>
     let ty := genLiteral lit
@@ -446,11 +458,17 @@ end Gen
 
 open Soma.Syntax (TypeExpr)
 
-/-- Resolve a TypeExpr (syntax) to a MonoTy during type inference -/
-partial def resolveTypeExpr (ty : TypeExpr) : InferM MonoTy := do
+/-- Environment mapping type variable names to their resolved MonoTy -/
+abbrev TyVarEnv := Std.HashMap String MonoTy
+
+/-- Resolve a TypeExpr (syntax) to a MonoTy during type inference, with bound type variables -/
+partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : InferM MonoTy := do
   match ty with
   | .var name =>
-    InferM.freshVar name.value
+    -- Check if type variable is already bound
+    match tyVarEnv.get? name.value with
+    | some boundTy => pure boundTy
+    | none => InferM.freshVar name.value
 
   | .con name =>
     match StarPrimitive.fromName? name.value with
@@ -463,12 +481,12 @@ partial def resolveTypeExpr (ty : TypeExpr) : InferM MonoTy := do
         InferM.freshVar name.value
 
   | .arrow from_ to _ =>
-    let fromTy ← resolveTypeExpr from_
-    let toTy ← resolveTypeExpr to
+    let fromTy ← resolveTypeExprWithEnv tyVarEnv from_
+    let toTy ← resolveTypeExprWithEnv tyVarEnv to
     pure (.arrow fromTy toTy)
 
   | .tuple elements _ =>
-    let elemTys ← elements.mapM resolveTypeExpr
+    let elemTys ← elements.mapM (resolveTypeExprWithEnv tyVarEnv)
     match Gen.mkTupleType elemTys with
     | some ty => pure ty
     | none =>
@@ -476,12 +494,12 @@ partial def resolveTypeExpr (ty : TypeExpr) : InferM MonoTy := do
       InferM.freshVar "tuple"
 
   | .list elem _ =>
-    let elemTy ← resolveTypeExpr elem
+    let elemTy ← resolveTypeExprWithEnv tyVarEnv elem
     pure (Ty.array elemTy)
 
   | .app fn arg span =>
     -- First resolve the argument
-    let argTy ← resolveTypeExpr arg
+    let argTy ← resolveTypeExprWithEnv tyVarEnv arg
     -- Check if fn is a higher primitive or user-defined type
     match fn with
     | .con name =>
@@ -502,7 +520,7 @@ partial def resolveTypeExpr (ty : TypeExpr) : InferM MonoTy := do
     | .app _ _ _ =>
       -- Nested application like `Map String Int` - recursively resolve the function part
       -- This collects all arguments and applies them at once
-      let (baseName, allArgs) ← collectTypeApp fn #[argTy]
+      let (baseName, allArgs) ← collectTypeApp tyVarEnv fn #[argTy]
       match baseName with
       | some name =>
         match HigherPrimitive.fromName? name with
@@ -524,19 +542,23 @@ partial def resolveTypeExpr (ty : TypeExpr) : InferM MonoTy := do
       InferM.reportError (.unknownType "invalid type application" span)
       InferM.freshVar "app"
 
-  | .forall_ _ body _ =>
-    -- Type variables are handled at generalization time, not during constraint generation
-    resolveTypeExpr body
+  | .forall_ varNames body _ =>
+    -- Extend tyVarEnv with fresh type variables for the bound names
+    let mut newEnv := tyVarEnv
+    for varName in varNames do
+      let freshTy ← InferM.freshVar varName.value
+      newEnv := newEnv.insert varName.value freshTy
+    resolveTypeExprWithEnv newEnv body
 
   | .constrained _ body _ =>
     -- Constraints are collected separately during generalization
-    resolveTypeExpr body
+    resolveTypeExprWithEnv tyVarEnv body
 
   | .parens inner _ =>
-    resolveTypeExpr inner
+    resolveTypeExprWithEnv tyVarEnv inner
 
   | .kinded ty _ _ =>
-    resolveTypeExpr ty
+    resolveTypeExprWithEnv tyVarEnv ty
 where
   span : Span := match ty with
     | .app _ _ s | .arrow _ _ s | .tuple _ s | .list _ s
@@ -544,14 +566,23 @@ where
     | .var n | .con n => n.span
 
   /-- Collect the base type name and all arguments from nested type applications  -/
-  collectTypeApp (ty : TypeExpr) (args : Array MonoTy) : InferM (Option String × Array MonoTy) := do
+  collectTypeApp (env : TyVarEnv) (ty : TypeExpr) (args : Array MonoTy) : InferM (Option String × Array MonoTy) := do
     match ty with
     | .con name => pure (some name.value, args)
     | .app fn arg _ =>
-      let argTy ← resolveTypeExpr arg
-      collectTypeApp fn (#[argTy] ++ args)
-    | .parens inner _ => collectTypeApp inner args
+      let argTy ← resolveTypeExprWithEnv env arg
+      collectTypeApp env fn (#[argTy] ++ args)
+    | .parens inner _ => collectTypeApp env inner args
     | _ => pure (none, args)
+
+/-- Resolve a TypeExpr (syntax) to a MonoTy during type inference -/
+def resolveTypeExpr (ty : TypeExpr) : InferM MonoTy := do
+  let varNames := ty.collectVarNames
+  let mut tyVarEnv : TyVarEnv := {}
+  for name in varNames do
+    let freshTy ← InferM.freshVar name
+    tyVarEnv := tyVarEnv.insert name freshTy
+  resolveTypeExprWithEnv tyVarEnv ty
 
 /-- Generate constraints for a top-level function, returning typed body -/
 def genFunctionBody {scope : Scope} (fn : UntypedFunction)

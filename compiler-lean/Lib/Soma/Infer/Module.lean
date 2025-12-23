@@ -111,6 +111,20 @@ where
 def resolveTypeExprPure (ty : TypeExpr) (env : TypeEnv) : Option MonoTy :=
   resolveTypeExprWithVars ty env {}
 
+/-- Resolve a TypeExpr to a QualifiedType, collecting free type variables -/
+def resolveTypeExprToQualified (ty : TypeExpr) (env : TypeEnv) : Option QualifiedType := do
+  let varNames := ty.collectVarNames
+  let mut tyVarMap : Std.HashMap String TyVarId := {}
+  let mut tyVarList : Array TyVarId := #[]
+  let mut nextId : Nat := 0
+  for name in varNames do
+    let tyVarId : TyVarId := ⟨name, nextId, .star⟩
+    tyVarMap := tyVarMap.insert name tyVarId
+    tyVarList := tyVarList.push tyVarId
+    nextId := nextId + 1
+  let body ← resolveTypeExprWithVars ty env tyVarMap
+  return { vars := tyVarList, constraints := #[], body := body }
+
 /-- Build a TypeEnv from an UntypedModule and external function signatures.
 
     This populates the type environment with:
@@ -466,17 +480,19 @@ def inferModule
   -- (for mutual recursion support)
   let mut augmentedCtx := ctx
   for fn in m.functions do
-    -- If the function has a declared type signature, resolve it
-    -- Otherwise use a placeholder (will be inferred in second pass)
-    let bodyTy : MonoTy := match fn.declaredTypeSyntax with
-      | some tyExpr => resolveTypeExprPure tyExpr ctx.typeEnv |>.getD (.starPrim .unit)
-      | none => .starPrim .unit  -- Placeholder for functions without signatures
+    -- If the function has a declared type signature, resolve it to a QualifiedType
+    let qualType : QualifiedType := match fn.declaredTypeSyntax with
+      | some tyExpr =>
+        match resolveTypeExprToQualified tyExpr ctx.typeEnv with
+        | some qt => qt
+        | none =>
+          -- todo: Report error here instead of silently using Unit
+          { vars := #[], constraints := #[], body := .starPrim .unit }
+      | none =>
+        -- No signature: use placeholder (will be inferred in second pass)
+        { vars := #[], constraints := #[], body := .starPrim .unit }
     let fnInfo : FunctionInfo := {
-      qualType := {
-        vars := #[]
-        constraints := #[]
-        body := bodyTy
-      }
+      qualType := qualType
       metalName := fn.name
     }
     augmentedCtx := { augmentedCtx with

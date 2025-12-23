@@ -81,8 +81,8 @@ instance Functor IO where
         ioA >>= (\x -> pureIO (f x))
 
 instance Applicative IO with (Functor IO) where
-    def pure :: a -> IO a =
-        pureIO
+    def pure(x) :: a -> IO a =
+        pureIO x
 
     def {<*>}(ioF, ioA) :: IO (a -> b) -> IO a -> IO b =
         ioF >>= (\f -> ioA >>= (\a -> pureIO (f a)))

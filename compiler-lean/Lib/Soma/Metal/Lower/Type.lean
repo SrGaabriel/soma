@@ -1,5 +1,6 @@
 import Soma.Metal.Lower.Monad
 import Soma.Syntax.Ast
+import Std.Data.HashSet
 
 namespace Soma.Metal.Lower
 
@@ -51,6 +52,9 @@ private def kindOfArity : Nat → Kind
 /-- Environment mapping type variable names to their inferred kinds -/
 abbrev KindEnv := Std.HashMap String Kind
 
+/-- Environment mapping type variable names to their resolved TyVarIds -/
+abbrev TyVarEnv := Std.HashMap String TyVarId
+
 /-- Infer kinds for all type variables in a type expression -/
 def inferKinds (ty : TypeExpr) : KindEnv :=
   let arities := inferVarArity ty
@@ -58,15 +62,19 @@ def inferKinds (ty : TypeExpr) : KindEnv :=
     acc.insert name (kindOfArity arity)
 
 mutual
-  /-- Resolve a type expression from Syntax to a MonoTy using inferred kinds -/
-  partial def resolveTypeWithKinds (kindEnv : KindEnv) (ty : TypeExpr) : LowerM (Option MonoTy) := do
+  /-- Resolve a type expression from Syntax to a MonoTy using inferred kinds and bound type variables -/
+  partial def resolveTypeWithEnv (kindEnv : KindEnv) (tyVarEnv : TyVarEnv) (ty : TypeExpr) : LowerM (Option MonoTy) := do
     match ty with
     | .var name =>
-      -- Type variable - look up inferred kind, default to star
-      let kind := kindEnv.getD name.value .star
-      let id ← LowerM.freshUniqueId
-      let tyVarId : TyVarId := { name := name.value, id := id, kind := kind }
-      pure (some (.var tyVarId))
+      -- Type variable - check if already bound, otherwise create fresh
+      match tyVarEnv.get? name.value with
+      | some tyVarId => pure (some (.var tyVarId))
+      | none =>
+        -- Unbound variable - create fresh (this shouldn't happen in well-formed types)
+        let kind := kindEnv.getD name.value .star
+        let id ← LowerM.freshUniqueId
+        let tyVarId : TyVarId := { name := name.value, id := id, kind := kind }
+        pure (some (.var tyVarId))
 
     | .con name =>
       -- Type constructor - look up in environment
@@ -74,8 +82,8 @@ mutual
 
     | .app fn arg span =>
       -- Type application
-      let fnTy? ← resolveTypeAnyWithKinds kindEnv fn
-      let argTy? ← resolveTypeWithKinds kindEnv arg
+      let fnTy? ← resolveTypeAnyWithEnv kindEnv tyVarEnv fn
+      let argTy? ← resolveTypeWithEnv kindEnv tyVarEnv arg
       match fnTy?, argTy? with
       | some fnTy, some argTy =>
         applyType fnTy argTy span
@@ -83,15 +91,15 @@ mutual
 
     | .arrow from_ to _ =>
       -- Function type
-      let fromTy? ← resolveTypeWithKinds kindEnv from_
-      let toTy? ← resolveTypeWithKinds kindEnv to
+      let fromTy? ← resolveTypeWithEnv kindEnv tyVarEnv from_
+      let toTy? ← resolveTypeWithEnv kindEnv tyVarEnv to
       match fromTy?, toTy? with
       | some fromTy, some toTy => pure (some (.arrow fromTy toTy))
       | _, _ => pure none
 
     | .tuple elements _ =>
       -- Tuple type
-      let elemTys ← elements.mapM (resolveTypeWithKinds kindEnv)
+      let elemTys ← elements.mapM (resolveTypeWithEnv kindEnv tyVarEnv)
       if elemTys.all Option.isSome then
         let tys := elemTys.filterMap id
         pure (some (Ty.tuple tys))
@@ -100,41 +108,50 @@ mutual
 
     | .list elem _ =>
       -- List type (sugar for Array)
-      let elemTy? ← resolveTypeWithKinds kindEnv elem
+      let elemTy? ← resolveTypeWithEnv kindEnv tyVarEnv elem
       match elemTy? with
       | some elemTy => pure (some (Ty.array elemTy))
       | none => pure none
 
-    | .forall_ _ body _ =>
-      -- Resolve the body (forall is handled at QualifiedType level)
-      resolveTypeWithKinds kindEnv body
+    | .forall_ varNames body _ =>
+      -- Extend tyVarEnv with the bound variables, then resolve body
+      let mut newEnv := tyVarEnv
+      for varName in varNames do
+        let kind := kindEnv.getD varName.value .star
+        let id ← LowerM.freshUniqueId
+        let tyVarId : TyVarId := { name := varName.value, id := id, kind := kind }
+        newEnv := newEnv.insert varName.value tyVarId
+      resolveTypeWithEnv kindEnv newEnv body
 
     | .constrained _ body _ =>
       -- Constraints handled at QualifiedType level
-      resolveTypeWithKinds kindEnv body
+      resolveTypeWithEnv kindEnv tyVarEnv body
 
     | .parens inner _ =>
-      resolveTypeWithKinds kindEnv inner
+      resolveTypeWithEnv kindEnv tyVarEnv inner
 
     | .kinded ty _ _ =>
       -- Kind annotations - just resolve the type for now
-      resolveTypeWithKinds kindEnv ty
+      resolveTypeWithEnv kindEnv tyVarEnv ty
 
-  /-- Resolve a type that might have non-star kind, using inferred kinds -/
-  private partial def resolveTypeAnyWithKinds (kindEnv : KindEnv) (ty : TypeExpr) : LowerM (Option SomeTy) := do
+  /-- Resolve a type that might have non-star kind, using inferred kinds and bound type variables -/
+  private partial def resolveTypeAnyWithEnv (kindEnv : KindEnv) (tyVarEnv : TyVarEnv) (ty : TypeExpr) : LowerM (Option SomeTy) := do
     match ty with
     | .var name =>
-      -- Type variable in function position - look up its inferred kind
-      let kind := kindEnv.getD name.value .star
-      let id ← LowerM.freshUniqueId
-      let tyVarId : TyVarId := { name := name.value, id := id, kind := kind }
-      pure (some ⟨kind, .var tyVarId⟩)
+      -- Type variable in function position - check if bound, otherwise create fresh
+      match tyVarEnv.get? name.value with
+      | some tyVarId => pure (some ⟨tyVarId.kind, .var tyVarId⟩)
+      | none =>
+        let kind := kindEnv.getD name.value .star
+        let id ← LowerM.freshUniqueId
+        let tyVarId : TyVarId := { name := name.value, id := id, kind := kind }
+        pure (some ⟨kind, .var tyVarId⟩)
     | .con name =>
       -- Type constructor - might have any kind
       resolveTypeConAny name.value name.span
     | .app fn arg span =>
-      let fnTy? ← resolveTypeAnyWithKinds kindEnv fn
-      let argTy? ← resolveTypeWithKinds kindEnv arg
+      let fnTy? ← resolveTypeAnyWithEnv kindEnv tyVarEnv fn
+      let argTy? ← resolveTypeWithEnv kindEnv tyVarEnv arg
       match fnTy?, argTy? with
       | some ⟨.arrow k1 k2, fnTy⟩, some argTy =>
         -- We need to check that k1 = .star since argTy : MonoTy = Ty .star
@@ -150,7 +167,7 @@ mutual
       | _, _ => pure none
     | _ =>
       -- Other types are kind *
-      let ty? ← resolveTypeWithKinds kindEnv ty
+      let ty? ← resolveTypeWithEnv kindEnv tyVarEnv ty
       match ty? with
       | some t => pure (some ⟨.star, t⟩)
       | none => pure none
@@ -259,7 +276,7 @@ end
 /-- Resolve a type expression from syntax to a MonoTy -/
 def resolveType (ty : TypeExpr) : LowerM (Option MonoTy) := do
   let kindEnv := inferKinds ty
-  resolveTypeWithKinds kindEnv ty
+  resolveTypeWithEnv kindEnv {} ty
 
 /-- Look up a type class by name, checking built-in classes first -/
 private def lookupTypeClass (name : String) : LowerM (Option TyCon) := do
@@ -274,13 +291,13 @@ private def lookupTypeClass (name : String) : LowerM (Option TyCon) := do
     let env ← LowerM.getGlobalEnv
     pure (env.lookupTypeClass name |>.map (·.tyCon))
 
-/-- Resolve a constraint from syntax -/
-private def resolveConstraint (className : Syntax.Name) (args : Array TypeExpr) : LowerM (Option Constraint) := do
+/-- Resolve a constraint from syntax with a given type variable environment -/
+private def resolveConstraintWithEnv (kindEnv : KindEnv) (tyVarEnv : TyVarEnv) (className : Syntax.Name) (args : Array TypeExpr) : LowerM (Option Constraint) := do
   let tycon? ← lookupTypeClass className.value
   match tycon? with
   | none => pure none
   | some tycon =>
-    let resolvedArgs ← args.mapM resolveType
+    let resolvedArgs ← args.mapM (resolveTypeWithEnv kindEnv tyVarEnv)
     if resolvedArgs.all Option.isSome then
       pure (some { className := tycon, args := resolvedArgs.filterMap id })
     else
@@ -288,38 +305,61 @@ private def resolveConstraint (className : Syntax.Name) (args : Array TypeExpr) 
 
 /-- Resolve a QualifiedType from a Syntax TypeExpr, handling forall and constraints -/
 def resolveQualifiedType (ty : TypeExpr) : LowerM (Option QualifiedType) := do
+  -- Infer kinds for the entire type expression first
+  let kindEnv := inferKinds ty
   -- Collect type variables and constraints while unwrapping the type
-  let (vars, constraints, innerTy) ← collectQuantifiers ty #[] #[]
-  let bodyTy? ← resolveType innerTy
+  -- Pass kindEnv and build tyVarEnv incrementally as we encounter foralls
+  let (explicitVars, constraints, innerTy, tyVarEnv) ← collectQuantifiers kindEnv ty #[] #[] {}
+
+  -- Collect all free type variable names from the inner type
+  let allVarNames := innerTy.collectVarNames
+  -- Find implicit type variables (those not already bound by explicit forall)
+  let explicitNames : Std.HashSet String := explicitVars.foldl (init := {}) fun acc v => acc.insert v.name
+
+  -- Create TyVarIds for implicit type variables and add to environment
+  let mut allVars := explicitVars
+  let mut finalEnv := tyVarEnv
+  for name in allVarNames do
+    if !explicitNames.contains name then
+      let kind := kindEnv.getD name .star
+      let id ← LowerM.freshUniqueId
+      let tyVarId : TyVarId := { name := name, id := id, kind := kind }
+      allVars := allVars.push tyVarId
+      finalEnv := finalEnv.insert name tyVarId
+
+  let bodyTy? ← resolveTypeWithEnv kindEnv finalEnv innerTy
   match bodyTy? with
-  | some bodyTy => pure (some { vars, constraints, body := bodyTy })
+  | some bodyTy => pure (some { vars := allVars, constraints, body := bodyTy })
   | none => pure none
 where
-  /-- Recursively collect forall-bound variables and constraints -/
-  collectQuantifiers (ty : TypeExpr) (accVars : Array TyVarId) (accConstrs : Array Constraint)
-      : LowerM (Array TyVarId × Array Constraint × TypeExpr) := do
+  /-- Recursively collect forall-bound variables and constraints, building TyVarEnv as we go -/
+  collectQuantifiers (kindEnv : KindEnv) (ty : TypeExpr) (accVars : Array TyVarId) (accConstrs : Array Constraint) (tyVarEnv : TyVarEnv)
+      : LowerM (Array TyVarId × Array Constraint × TypeExpr × TyVarEnv) := do
     match ty with
     | .forall_ varNames body _ =>
-      -- Create TyVarIds for each bound variable
+      -- Create TyVarIds for each bound variable and add to environment
       let mut newVars := accVars
+      let mut newEnv := tyVarEnv
       for varName in varNames do
+        let kind := kindEnv.getD varName.value .star
         let id ← LowerM.freshUniqueId
-        let tyVarId : TyVarId := { name := varName.value, id := id, kind := .star }
+        let tyVarId : TyVarId := { name := varName.value, id := id, kind := kind }
         newVars := newVars.push tyVarId
-      collectQuantifiers body newVars accConstrs
+        newEnv := newEnv.insert varName.value tyVarId
+      collectQuantifiers kindEnv body newVars accConstrs newEnv
     | .constrained syntaxConstrs body _ =>
-      -- Resolve each constraint
+      -- Resolve each constraint using current tyVarEnv
       let mut newConstrs := accConstrs
       for (className, args, _span) in syntaxConstrs do
-        let constr? ← resolveConstraint ⟨className.value, className.span⟩ args
+        let constr? ← resolveConstraintWithEnv kindEnv tyVarEnv ⟨className.value, className.span⟩ args
         match constr? with
         | some c => newConstrs := newConstrs.push c
         | none => pure ()  -- Skip unresolved constraints (error reported elsewhere)
-      collectQuantifiers body accVars newConstrs
+      collectQuantifiers kindEnv body accVars newConstrs tyVarEnv
     | .parens inner _ =>
-      collectQuantifiers inner accVars accConstrs
+      collectQuantifiers kindEnv inner accVars accConstrs tyVarEnv
     | _ =>
       -- Reached the body type
-      pure (accVars, accConstrs, ty)
+      pure (accVars, accConstrs, ty, tyVarEnv)
 
 end Soma.Metal.Lower

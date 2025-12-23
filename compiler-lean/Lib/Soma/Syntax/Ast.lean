@@ -1,4 +1,5 @@
 import Soma.Syntax.Source
+import Std.Data.HashSet
 
 namespace Soma.Syntax
 
@@ -101,6 +102,28 @@ inductive TypeExpr : Type where
   | kinded (ty : TypeExpr) (kind : TypeExpr) (span : Span)
 
 end
+
+namespace TypeExpr
+
+/-- Collect all type variable names from a TypeExpr.
+    Returns a HashSet of all variable names appearing in the type. -/
+partial def collectVarNames (ty : TypeExpr) : Std.HashSet String :=
+  go ty {}
+where
+  go (ty : TypeExpr) (acc : Std.HashSet String) : Std.HashSet String :=
+    match ty with
+    | .var name => acc.insert name.value
+    | .con _ => acc
+    | .arrow from_ to _ => go to (go from_ acc)
+    | .tuple elems _ => elems.foldl (fun a e => go e a) acc
+    | .list elem _ => go elem acc
+    | .app fn arg _ => go arg (go fn acc)
+    | .forall_ _ body _ => go body acc
+    | .constrained _ body _ => go body acc
+    | .parens inner _ => go inner acc
+    | .kinded inner _ _ => go inner acc
+
+end TypeExpr
 
 -- Nonempty instances (needed for partial recursive functions)
 instance : Nonempty Pattern := ⟨.wildcard Span.uninhabited⟩

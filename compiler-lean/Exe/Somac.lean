@@ -113,25 +113,10 @@ def runLower (p : Parsed) : IO UInt32 := do
     IO.eprintln (Logging.Error.renderSummary allDiags)
     return 1
 
-  -- Success - print info about the lowered module
+  -- Success
   let module := metalRes.module
-  IO.println s!"=== Metal IR (Untyped) ==="
-  IO.println s!"Module: {module.name}"
-  IO.println s!"Functions: {module.functions.size}"
-  IO.println s!"Types: {module.types.size}"
-  IO.println s!"Type classes: {module.typeClasses.size}"
-
-  if module.functions.size > 0 then
-    IO.println "\nFunctions:"
-    for fn in module.functions do
-      let sigInfo := if fn.hasSignature then " (has signature)" else ""
-      IO.println s!"  - {fn.name.display}{sigInfo}"
-
-  if module.types.size > 0 then
-    IO.println "\nTypes:"
-    for ty in module.types do
-      IO.println s!"  - {ty.name.display}"
-
+  let cfg : Metal.Pretty.Config := { showTypes := false, indent := 2 }
+  IO.println (Metal.Pretty.ppUntypedModule cfg module)
   IO.println "\nMetal lowering successful!"
   return 0
 

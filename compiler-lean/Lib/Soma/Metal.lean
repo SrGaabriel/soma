@@ -6,6 +6,7 @@ import Soma.Metal.Expr
 import Soma.Metal.Function
 import Soma.Metal.Module
 import Soma.Metal.Lower
+import Soma.Metal.Pretty
 
 namespace Soma.Metal
 
