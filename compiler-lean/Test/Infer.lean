@@ -1381,6 +1381,337 @@ def run : IO TestRunner := do
 
 end BuildInstanceEnvTests
 
+/-! ## QualifiedType and Type Variable Tests
+
+These tests verify the fixes for type variable resolution:
+1. QualifiedType.vars should properly store type variables
+2. Instantiation should replace type variables with fresh ones
+3. Implicit type variables (not in explicit forall) should be collected
+-/
+namespace QualifiedTypeTests
+
+/-- Test: Instantiation replaces type variables with fresh ones -/
+def testInstantiateReplacesTyVars : IO TestResult := do
+  -- Create a QualifiedType: forall a. a -> a
+  -- Use ID 100 to ensure it's different from fresh counter which starts at 0
+  let a := mkTyVar "a" 100
+  let qt : QualifiedType := {
+    vars := #[a]
+    constraints := #[]
+    body := .arrow (.var a) (.var a)
+  }
+
+  let ctx := InferContext.empty
+  let m : InferM (MonoTy × Array TyConstraint) := InferM.instantiate qt
+  let ((ty, _), state) := m.run ctx
+
+  -- Should have created a fresh type variable
+  if state.freshCounter != 1 then
+    return .failed s!"should create 1 fresh var, got {state.freshCounter}"
+
+  -- The instantiated type should NOT contain the original type variable (id 100)
+  match ty with
+  | .arrow from_ to =>
+    -- Both sides should be the same fresh variable
+    if from_ != to then
+      return .failed "instantiated a -> a should have same from/to"
+    -- The type should NOT be the original variable (id 100)
+    match from_ with
+    | .var v =>
+      if v.id == 100 then
+        return .failed "should have fresh variable (id != 100), not original"
+      return .passed
+    | _ => return .failed "should be a type variable"
+  | _ => return .failed "should be arrow type"
+
+/-- Test: Instantiation of polymorphic function type like `a -> Array a` -/
+def testInstantiatePolymorphicArray : IO TestResult := do
+  -- Create: forall a. a -> Array a
+  let a := mkTyVar "a" 0
+  let qt : QualifiedType := {
+    vars := #[a]
+    constraints := #[]
+    body := .arrow (.var a) (Ty.array (.var a))
+  }
+
+  let ctx := InferContext.empty
+  let m : InferM (MonoTy × Array TyConstraint) := InferM.instantiate qt
+  let ((ty, _), state) := m.run ctx
+
+  if state.freshCounter != 1 then
+    return .failed s!"should create 1 fresh var, got {state.freshCounter}"
+
+  -- Just verify it's an arrow type with Array result
+  match ty with
+  | .arrow _ (.app _ _) => return .passed
+  | _ => return .failed s!"expected a -> Array a shape, got {ty}"
+
+/-- Test: Multiple type variables are instantiated independently -/
+def testInstantiateMultipleVars : IO TestResult := do
+  -- Create: forall a b. a -> b -> a
+  let a := mkTyVar "a" 0
+  let b := mkTyVar "b" 1
+  let qt : QualifiedType := {
+    vars := #[a, b]
+    constraints := #[]
+    body := .arrow (.var a) (.arrow (.var b) (.var a))
+  }
+
+  let ctx := InferContext.empty
+  let m : InferM (MonoTy × Array TyConstraint) := InferM.instantiate qt
+  let ((ty, _), state) := m.run ctx
+
+  if state.freshCounter != 2 then
+    return .failed s!"should create 2 fresh vars, got {state.freshCounter}"
+
+  match ty with
+  | .arrow from1 (.arrow from2 result) =>
+    -- from1 and from2 should be different fresh variables
+    if from1 == from2 then
+      return .failed "a and b should be different fresh vars"
+    -- Result should be same as from1 (both are 'a')
+    if result != from1 then
+      return .failed "result should match first param (both are 'a')"
+    return .passed
+  | _ => return .failed "expected nested arrow type"
+
+/-- Test: Instantiation preserves structure with Array (for IO-like behavior) -/
+def testInstantiateArrayWrapped : IO TestResult := do
+  -- Create: forall a. Array a -> a (like head function)
+  let a := mkTyVar "a" 0
+  let qt : QualifiedType := {
+    vars := #[a]
+    constraints := #[]
+    body := .arrow (Ty.array (.var a)) (.var a)
+  }
+
+  let ctx := InferContext.empty
+  let run : InferM (MonoTy × Array TyConstraint) := InferM.instantiate qt
+  let ((ty, _), state) := run.run ctx
+
+  if state.freshCounter != 1 then
+    return .failed s!"should create 1 fresh var, got {state.freshCounter}"
+
+  -- Just verify it's an arrow from Array to something
+  match ty with
+  | .arrow (.app _ _) _ => return .passed
+  | _ => return .failed s!"expected Array a -> a shape, got {ty}"
+
+/-- Test: Empty vars means no instantiation needed -/
+def testInstantiateMonomorphic : IO TestResult := do
+  -- Create: Int -> String (no type variables)
+  let qt : QualifiedType := {
+    vars := #[]
+    constraints := #[]
+    body := .arrow Ty.int Ty.string
+  }
+
+  let ctx := InferContext.empty
+  let m : InferM (MonoTy × Array TyConstraint) := InferM.instantiate qt
+  let ((ty, _), state) := m.run ctx
+
+  -- No fresh variables should be created
+  if state.freshCounter != 0 then
+    return .failed s!"monomorphic type should create 0 fresh vars, got {state.freshCounter}"
+
+  -- Type should be unchanged
+  if ty != .arrow Ty.int Ty.string then
+    return .failed s!"type should be Int -> String, got {ty}"
+
+  return .passed
+
+/-- Test: Two instantiations of same QualifiedType get different fresh vars -/
+def testInstantiateTwiceGetsDifferentVars : IO TestResult := do
+  let a := mkTyVar "a" 0
+  let qt : QualifiedType := {
+    vars := #[a]
+    constraints := #[]
+    body := .var a
+  }
+
+  let ctx := InferContext.empty
+  let m : InferM (MonoTy × MonoTy) := do
+    let (ty1, _) ← InferM.instantiate qt
+    let (ty2, _) ← InferM.instantiate qt
+    return (ty1, ty2)
+  let ((ty1, ty2), state) := m.run ctx
+
+  -- Should have created 2 fresh variables (one per instantiation)
+  if state.freshCounter != 2 then
+    return .failed s!"should create 2 fresh vars, got {state.freshCounter}"
+
+  -- The two instantiations should produce different type variables
+  if ty1 == ty2 then
+    return .failed "two instantiations should produce different type vars"
+
+  return .passed
+
+def run : IO TestRunner := do
+  IO.println "  === QualifiedType Tests ==="
+  let mut runner := TestRunner.init
+
+  runner := runner.record "instantiate_replaces_tyvars" (← testInstantiateReplacesTyVars)
+  runner := runner.record "instantiate_polymorphic_array" (← testInstantiatePolymorphicArray)
+  runner := runner.record "instantiate_multiple_vars" (← testInstantiateMultipleVars)
+  runner := runner.record "instantiate_array_wrapped" (← testInstantiateArrayWrapped)
+  runner := runner.record "instantiate_monomorphic" (← testInstantiateMonomorphic)
+  runner := runner.record "instantiate_twice_different" (← testInstantiateTwiceGetsDifferentVars)
+
+  return runner
+
+end QualifiedTypeTests
+
+/-! ## TypeExpr.collectVarNames Tests
+
+Tests for the shared utility that collects type variable names from syntax.
+-/
+namespace TypeExprCollectVarNamesTests
+
+open Soma.Syntax
+
+/-- Helper to create a type variable expression -/
+def tyVarExpr (name : String) : TypeExpr :=
+  .var ⟨name, testSpan⟩
+
+/-- Helper to create a type constructor expression -/
+def tyConExpr (name : String) : TypeExpr :=
+  .con ⟨name, testSpan⟩
+
+/-- Test: Collect from simple variable -/
+def testCollectSimpleVar : IO TestResult := do
+  let ty := tyVarExpr "a"
+  let vars := ty.collectVarNames
+
+  if vars.size != 1 then
+    return .failed s!"should have 1 var, got {vars.size}"
+  if !vars.contains "a" then
+    return .failed "should contain 'a'"
+
+  return .passed
+
+/-- Test: Collect from type constructor (should be empty) -/
+def testCollectFromCon : IO TestResult := do
+  let ty := tyConExpr "Int"
+  let vars := ty.collectVarNames
+
+  if vars.size != 0 then
+    return .failed s!"constructor should have 0 vars, got {vars.size}"
+
+  return .passed
+
+/-- Test: Collect from arrow type -/
+def testCollectFromArrow : IO TestResult := do
+  let ty : TypeExpr := .arrow (tyVarExpr "a") (tyVarExpr "b") testSpan
+  let vars := ty.collectVarNames
+
+  if vars.size != 2 then
+    return .failed s!"should have 2 vars, got {vars.size}"
+  if !vars.contains "a" || !vars.contains "b" then
+    return .failed "should contain 'a' and 'b'"
+
+  return .passed
+
+/-- Test: Collect from type application -/
+def testCollectFromApp : IO TestResult := do
+  -- IO a
+  let ty : TypeExpr := .app (tyConExpr "IO") (tyVarExpr "a") testSpan
+  let vars := ty.collectVarNames
+
+  if vars.size != 1 then
+    return .failed s!"should have 1 var, got {vars.size}"
+  if !vars.contains "a" then
+    return .failed "should contain 'a'"
+
+  return .passed
+
+/-- Test: Collect from complex type like (m a) -> (a -> m b) -> m b -/
+def testCollectFromMonadBind : IO TestResult := do
+  -- m a -> (a -> m b) -> m b
+  let ma : TypeExpr := .app (tyVarExpr "m") (tyVarExpr "a") testSpan
+  let mb : TypeExpr := .app (tyVarExpr "m") (tyVarExpr "b") testSpan
+  let aToMb : TypeExpr := .arrow (tyVarExpr "a") mb testSpan
+  let ty : TypeExpr := .arrow ma (.arrow aToMb mb testSpan) testSpan
+
+  let vars := ty.collectVarNames
+
+  if vars.size != 3 then
+    return .failed s!"should have 3 vars (m, a, b), got {vars.size}"
+  if !vars.contains "m" then
+    return .failed "should contain 'm'"
+  if !vars.contains "a" then
+    return .failed "should contain 'a'"
+  if !vars.contains "b" then
+    return .failed "should contain 'b'"
+
+  return .passed
+
+/-- Test: Duplicates are not counted twice -/
+def testCollectDeduplicates : IO TestResult := do
+  -- a -> a -> a
+  let ty : TypeExpr := .arrow (tyVarExpr "a")
+                              (.arrow (tyVarExpr "a") (tyVarExpr "a") testSpan)
+                              testSpan
+  let vars := ty.collectVarNames
+
+  if vars.size != 1 then
+    return .failed s!"should deduplicate to 1 var, got {vars.size}"
+
+  return .passed
+
+/-- Test: Collect from tuple -/
+def testCollectFromTuple : IO TestResult := do
+  let ty : TypeExpr := .tuple #[tyVarExpr "a", tyVarExpr "b", tyVarExpr "c"] testSpan
+  let vars := ty.collectVarNames
+
+  if vars.size != 3 then
+    return .failed s!"should have 3 vars, got {vars.size}"
+
+  return .passed
+
+/-- Test: Collect from list type [a] -/
+def testCollectFromList : IO TestResult := do
+  let ty : TypeExpr := .list (tyVarExpr "a") testSpan
+  let vars := ty.collectVarNames
+
+  if vars.size != 1 then
+    return .failed s!"should have 1 var, got {vars.size}"
+  if !vars.contains "a" then
+    return .failed "should contain 'a'"
+
+  return .passed
+
+/-- Test: Collect from nested application like Map k v -/
+def testCollectFromNestedApp : IO TestResult := do
+  -- Map k v
+  let mapK : TypeExpr := .app (tyConExpr "Map") (tyVarExpr "k") testSpan
+  let ty : TypeExpr := .app mapK (tyVarExpr "v") testSpan
+  let vars := ty.collectVarNames
+
+  if vars.size != 2 then
+    return .failed s!"should have 2 vars (k, v), got {vars.size}"
+  if !vars.contains "k" || !vars.contains "v" then
+    return .failed "should contain 'k' and 'v'"
+
+  return .passed
+
+def run : IO TestRunner := do
+  IO.println "  === TypeExpr.collectVarNames Tests ==="
+  let mut runner := TestRunner.init
+
+  runner := runner.record "simple_var" (← testCollectSimpleVar)
+  runner := runner.record "from_con" (← testCollectFromCon)
+  runner := runner.record "from_arrow" (← testCollectFromArrow)
+  runner := runner.record "from_app" (← testCollectFromApp)
+  runner := runner.record "monad_bind" (← testCollectFromMonadBind)
+  runner := runner.record "deduplicates" (← testCollectDeduplicates)
+  runner := runner.record "from_tuple" (← testCollectFromTuple)
+  runner := runner.record "from_list" (← testCollectFromList)
+  runner := runner.record "nested_app" (← testCollectFromNestedApp)
+
+  return runner
+
+end TypeExprCollectVarNamesTests
+
 def run : IO Unit := do
   IO.println "=== Type Inference Tests ==="
   IO.println ""
@@ -1428,6 +1759,29 @@ def run : IO Unit := do
   totalPassed := totalPassed + buildInstanceEnvRunner.passed
   totalFailed := totalFailed + buildInstanceEnvRunner.failed
 
+  let qualifiedTypeRunner ← QualifiedTypeTests.run
+  totalPassed := totalPassed + qualifiedTypeRunner.passed
+  totalFailed := totalFailed + qualifiedTypeRunner.failed
+
+  let collectVarNamesRunner ← TypeExprCollectVarNamesTests.run
+  totalPassed := totalPassed + collectVarNamesRunner.passed
+  totalFailed := totalFailed + collectVarNamesRunner.failed
+
+  -- Collect all failures
+  let mut allFailures : Array String := #[]
+  allFailures := allFailures ++ substRunner.failures
+  allFailures := allFailures ++ unifyRunner.failures
+  allFailures := allFailures ++ hktRunner.failures
+  allFailures := allFailures ++ constraintRunner.failures
+  allFailures := allFailures ++ instanceRunner.failures
+  allFailures := allFailures ++ entailmentRunner.failures
+  allFailures := allFailures ++ genRunner.failures
+  allFailures := allFailures ++ monadRunner.failures
+  allFailures := allFailures ++ typedExprGenRunner.failures
+  allFailures := allFailures ++ buildInstanceEnvRunner.failures
+  allFailures := allFailures ++ qualifiedTypeRunner.failures
+  allFailures := allFailures ++ collectVarNamesRunner.failures
+
   IO.println ""
   IO.println "=== Inference Test Summary ==="
   IO.println s!"  Total Passed: {totalPassed}"
@@ -1435,6 +1789,9 @@ def run : IO Unit := do
 
   if totalFailed > 0 then
     IO.println "  SOME TESTS FAILED"
+    IO.println "  Failures:"
+    for f in allFailures do
+      IO.println s!"    - {f}"
   else
     IO.println "  ALL TESTS PASSED"
 
