@@ -1,20 +1,16 @@
 import Somac.Build.Pipeline
-import Somac.Build.Compiled
-import Somac.Build.Driver
 import Soma.Project
+import Soma.Project.Check
 import Soma.Driver.Options
-import Soma.Logging
-import Soma.Unique
 
 namespace Somac.Build.Metadata
 
 open Soma
 open Soma.Project
 open Soma.Driver
-open Soma.Logging
 open Soma.Syntax (Diagnostic Diagnostics Span)
 open Soma.Typing
-open Soma (UniqueSupply)
+open Soma.Check
 
 /-! # Metadata Generation
 
@@ -28,6 +24,8 @@ The metadata includes:
 - Type class instances
 - Constructor metadata (tags and field types)
 -/
+
+/-! ## JSON Serialization -/
 
 /-- Serialize a Kind to JSON -/
 def kindToJson : Kind → Lean.Json
@@ -130,8 +128,8 @@ def instanceEntryToJson (typeArgs : Array MonoTy) (sym : Symbol) : Lean.Json :=
     ("symbol", symbolToJson sym)
   ]
 
-/-- Serialize InstanceEnv to JSON -/
-def instanceEnvToJson (env : InstanceEnv) : Lean.Json :=
+/-- Serialize InstanceMetadata to JSON -/
+def instanceMetadataToJson (env : Project.InstanceMetadata) : Lean.Json :=
   let entries := env.fold (init := #[]) fun acc className instances =>
     let classInstances := instances.map fun (typeArgs, sym) => instanceEntryToJson typeArgs sym
     acc.push (.mkObj [("class", .str className), ("instances", .arr classInstances)])
@@ -143,12 +141,14 @@ def constructorMetadataToJson (ctors : Std.HashMap Metal.Name Nat) : Lean.Json :
     acc.push (.mkObj [("name", .str name.display), ("tag", .num tag)])
   .arr entries
 
+/-! ## Metadata Types -/
+
 /-- Project metadata structure for JSON output -/
 structure ProjectMetadata where
   version : String := "1"
   module : String
   symbols : SymbolEnv
-  instances : InstanceEnv
+  instances : Project.InstanceMetadata
   constructors : Std.HashMap Metal.Name Nat
 
 /-- Convert ProjectMetadata to JSON -/
@@ -157,7 +157,7 @@ def ProjectMetadata.toJson (pm : ProjectMetadata) : Lean.Json :=
     ("version", .str pm.version),
     ("module", .str pm.module),
     ("symbols", symbolEnvToJson pm.symbols),
-    ("instances", instanceEnvToJson pm.instances),
+    ("instances", instanceMetadataToJson pm.instances),
     ("constructors", constructorMetadataToJson pm.constructors)
   ]
 
@@ -177,125 +177,27 @@ def succeeded (pm : ProjectMetadata) : MetadataResult :=
 
 end MetadataResult
 
-/-- Generate metadata for a single .soma file -/
-def metadataSingleFile (opts : MetadataOptions) : IO MetadataResult := do
-  let path : System.FilePath := opts.input
-  let name := opts.name.getD (path.fileStem.getD "Main")
+/-! ## Main Entry Point -/
 
-  -- Parse the module
-  match ← parseModule name path with
-  | .error diags =>
-    pure (MetadataResult.failed diags)
-
-  | .ok info =>
-    let graph : ModuleGraph := ({} : ModuleGraph).insert name info
-    let depGraph := buildDependencyGraph graph
-
-    -- Check for cycles
-    match topoSortModules depGraph with
-    | .cycles groups =>
-      let msg := s!"Cyclic imports detected: {groups.map (·.toList)}"
-      pure (MetadataResult.failed #[Diagnostic.error msg Span.uninhabited])
-
-    | .sorted sortedNames =>
-      -- Load external dependencies
-      let externalDeps ← loadExternalDependencies (opts.deps.map fun (n, p) => (n, ⟨p⟩))
-      match externalDeps with
-      | .error e =>
-        pure (MetadataResult.failed #[Diagnostic.error (toString e) Span.uninhabited])
-
-      | .ok deps =>
-        let (extSymbols, extInstances, extConstructors) := processExternalDependencies deps
-
-        -- Initialize UniqueSupply
-        let supply := UniqueSupply.initial name
-
-        -- Compile (type check only)
-        let (compileDiags, compiledModules, _) := compileModulesInOrder sortedNames graph extSymbols extInstances extConstructors name supply
-
-        if Diagnostics.hasErrors compileDiags then
-          pure (MetadataResult.failed compileDiags)
-        else
-          -- Extract metadata from compiled modules
-          let pm : ProjectMetadata := {
-            module := name
-            symbols := compiledModules.foldl (init := {}) fun acc m =>
-              m.publicSymbols.fold (init := acc) fun env sym qt => env.insert sym qt
-            instances := compiledModules.foldl (init := {}) fun acc m =>
-              mergeInstanceEnvs acc m.publicInstances
-            constructors := compiledModules.foldl (init := {}) fun acc m =>
-              m.constructorMetadata.fold (init := acc) fun env name tag => env.insert name tag
-          }
-          pure (MetadataResult.succeeded pm)
-
-/-- Generate metadata for a project directory -/
-def metadataDirectory (opts : MetadataOptions) : IO MetadataResult := do
-  let rootDir : System.FilePath := opts.input
-  let packageName := opts.name.getD (rootDir.fileName.getD "app")
-
-  -- Find all modules
-  let modules ← findModules packageName rootDir
-
-  -- Parse all modules
-  match ← parseModules modules with
-  | (#[], graph) =>
-    let depGraph := buildDependencyGraph graph
-
-    -- Topological sort
-    match topoSortModules depGraph with
-    | .cycles groups =>
-      let msg := s!"Cyclic imports: {groups.map (·.toList)}"
-      pure (MetadataResult.failed #[Diagnostic.error msg Span.uninhabited])
-
-    | .sorted sortedNames =>
-      -- Load external dependencies
-      let externalDeps ← loadExternalDependencies (opts.deps.map fun (n, p) => (n, ⟨p⟩))
-      match externalDeps with
-      | .error e =>
-        pure (MetadataResult.failed #[Diagnostic.error (toString e) Span.uninhabited])
-
-      | .ok deps =>
-        let (extSymbols, extInstances, extConstructors) := processExternalDependencies deps
-
-        -- Optionally inject prelude
-        let preludeSymbols := extractPreludeSymbols extSymbols
-        let graph := if preludeSymbols.isEmpty then graph
-                     else injectPreludeIntoGraph preludeSymbols graph
-
-        -- Initialize UniqueSupply
-        let supply := UniqueSupply.initial packageName
-
-        -- Compile all modules (type check only)
-        let (compileDiags, compiledModules, _) := compileModulesInOrder sortedNames graph extSymbols extInstances extConstructors packageName supply
-
-        if Diagnostics.hasErrors compileDiags then
-          pure (MetadataResult.failed compileDiags)
-        else
-          -- Extract metadata
-          let pm : ProjectMetadata := {
-            module := packageName
-            symbols := compiledModules.foldl (init := {}) fun acc m =>
-              m.publicSymbols.fold (init := acc) fun env sym qt => env.insert sym qt
-            instances := compiledModules.foldl (init := {}) fun acc m =>
-              mergeInstanceEnvs acc m.publicInstances
-            constructors := compiledModules.foldl (init := {}) fun acc m =>
-              m.constructorMetadata.fold (init := acc) fun env name tag => env.insert name tag
-          }
-          pure (MetadataResult.succeeded pm)
-
-  | (diags, _) =>
-    pure (MetadataResult.failed diags)
-
-/-- Main metadata entry point -/
+/-- Generate metadata for a project (file or directory) -/
 def metadata (opts : MetadataOptions) : IO MetadataResult := do
-  let inputPath : System.FilePath := opts.input
+  let config : ProjectConfig := {
+    input := opts.input
+    name := opts.name
+    deps := opts.deps.map fun (n, p) => (n, ⟨p⟩)
+  }
 
-  if ← inputPath.isDir then
-    metadataDirectory opts
-  else if inputPath.extension == some "soma" then
-    metadataSingleFile opts
+  let result ← checkProject config Somac.Build.loadExternalDependencies
+
+  if result.success then
+    let pm : ProjectMetadata := {
+      module := result.packageName
+      symbols := result.symbols
+      instances := result.instances
+      constructors := result.constructors
+    }
+    pure (MetadataResult.succeeded pm)
   else
-    let msg := s!"Input is neither a .soma file nor a directory: {opts.input}"
-    pure (MetadataResult.failed #[Diagnostic.error msg Span.uninhabited])
+    pure (MetadataResult.failed result.diagnostics)
 
 end Somac.Build.Metadata

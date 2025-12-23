@@ -1,6 +1,6 @@
 import Lean.Data.Json
-import Somac.Build.Compiled
 import Soma.Project
+import Soma.Project.Check
 import Soma.Typing
 import Soma.Unique
 
@@ -10,6 +10,7 @@ open Soma
 open Soma.Project
 open Soma.Syntax (Span)
 open Soma.Typing
+open Soma.Check (ExternalDependency CheckError)
 
 /-! # Metadata JSON Loading
 
@@ -211,11 +212,11 @@ def instanceEntryFromJson (j : Lean.Json) : Except String (Array MonoTy × Symbo
   let sym ← symbolFromJson symJ
   pure (typeArgs.toArray, sym)
 
-/-- Parse InstanceEnv from JSON array -/
-def instanceEnvFromJson (j : Lean.Json) : Except String InstanceEnv := do
+/-- Parse InstanceMetadata from JSON array -/
+def instanceMetadataFromJson (j : Lean.Json) : Except String Project.InstanceMetadata := do
   match j with
   | .arr entries =>
-    let mut env : InstanceEnv := {}
+    let mut env : Project.InstanceMetadata := {}
     for entry in entries do
       let className ← entry.getObjValAs? String "class"
       let instancesJ ← entry.getObjValAs? (Array Lean.Json) "instances"
@@ -236,7 +237,6 @@ def constructorMetadataFromJson (j : Lean.Json) : Except String (Std.HashMap Str
     pure ctors
   | _ => .error "Expected array for constructors"
 
-open Somac.Build in
 /-- Load metadata from a JSON file -/
 def loadMetadataFromFile (path : System.FilePath) : IO (Except String ExternalDependency) := do
   let content ← IO.FS.readFile path
@@ -252,21 +252,20 @@ def loadMetadataFromFile (path : System.FilePath) : IO (Except String ExternalDe
         let symbolsJ ← json.getObjVal? "symbols"
         let symbols ← symbolEnvFromJson symbolsJ
         let instancesJ ← json.getObjVal? "instances"
-        let instances ← instanceEnvFromJson instancesJ
+        let instances ← instanceMetadataFromJson instancesJ
         let constructorsJ ← json.getObjVal? "constructors"
         let constructors ← constructorMetadataFromJson constructorsJ
         pure {
           name := moduleName
           version := some version
           symbols := ({} : Std.HashMap String SymbolEnv).insert moduleName symbols
-          instances := ({} : Std.HashMap String InstanceEnv).insert moduleName instances
+          instances := ({} : Std.HashMap String Project.InstanceMetadata).insert moduleName instances
           constructors := constructors
         }
     pure result
 
-open Somac.Build in
 /-- Load multiple metadata files as external dependencies -/
-def loadMetadataFiles (deps : Array (String × System.FilePath)) : IO (Except CompileError (Array ExternalDependency)) := do
+def loadMetadataFiles (deps : Array (String × System.FilePath)) : IO (Except CheckError (Array ExternalDependency)) := do
   let mut results : Array ExternalDependency := #[]
   for (name, path) in deps do
     match ← loadMetadataFromFile path with

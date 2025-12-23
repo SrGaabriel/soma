@@ -4,6 +4,9 @@ import Soma.Metal
 import Soma.Metal.Lower.Decl
 import Soma.Infer
 import Soma.Unique
+import Soma.Project.Module
+import Soma.Project.Graph
+import Soma.Project.Symbol
 
 namespace Soma.Check
 
@@ -12,6 +15,7 @@ open Soma.Syntax
 open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleWithExternals lowerModuleIncremental GlobalEnv)
 open Soma.Infer
 open Soma.Typing
+open Soma.Project
 open Soma (UniqueSupply)
 
 /-! ## Helper functions -/
@@ -232,5 +236,405 @@ def hasErrors (diags : Diagnostics) : Bool := diags.hasErrors
 /-- Combine diagnostics from multiple sources -/
 def combineDiags (sources : Array Diagnostics) : Diagnostics :=
   sources.foldl (· ++ ·) #[]
+
+/-- Errors that can occur during project checking -/
+inductive CheckError where
+  | parseError (module : String) (message : String)
+  | typeError (module : String) (errors : Array String)
+  | cyclicDependency (modules : Array String)
+  | dependencyNotFound (name : String) (path : String)
+  | dependencyLoadError (name : String) (message : String)
+  deriving Repr
+
+instance : ToString CheckError where
+  toString
+    | .parseError m msg => s!"Parse error in {m}: {msg}"
+    | .typeError m errs => s!"Type errors in {m}:\n" ++ String.intercalate "\n" errs.toList
+    | .cyclicDependency mods => s!"Cyclic dependency: {mods.toList}"
+    | .dependencyNotFound name path => s!"Dependency '{name}' not found at {path}"
+    | .dependencyLoadError name msg => s!"Failed to load dependency '{name}': {msg}"
+
+/-- A fully checked module with typed IR and public exports -/
+structure CheckedModule where
+  /-- Module name -/
+  name : String
+  /-- Resolved AST after parsing and lowering -/
+  resolvedAst : Syntax.Module
+  /-- Typed Metal IR -/
+  typedModule : Metal.Module
+  /-- Public symbols exported by this module -/
+  publicSymbols : SymbolEnv
+  /-- Public type class instances exported by this module -/
+  publicInstances : Project.InstanceMetadata
+
+namespace CheckedModule
+
+/-- Extract constructor metadata from this module -/
+def constructorMetadata (_m : CheckedModule) : Std.HashMap Metal.Name Nat :=
+  {}  -- TODO: Extract from typedModule.types when implemented
+
+end CheckedModule
+
+/-- External dependency loaded from metadata JSON -/
+structure ExternalDependency where
+  /-- Dependency name -/
+  name : String
+  /-- Metadata version -/
+  version : Option String := none
+  /-- Symbols by module name -/
+  symbols : Std.HashMap String SymbolEnv
+  /-- Instances by module name -/
+  instances : Std.HashMap String Project.InstanceMetadata
+  /-- Constructor tags by name -/
+  constructors : Std.HashMap String Nat
+
+/-- Configuration for project checking -/
+structure ProjectConfig where
+  /-- Root input path (file or directory) -/
+  input : System.FilePath
+  /-- Optional package/module name override -/
+  name : Option String := none
+  /-- External dependency paths: (name, path to .meta.json) -/
+  deps : Array (String × System.FilePath) := #[]
+
+/-- Result of project checking (type-checking phase) -/
+structure ProjectResult where
+  /-- Whether checking succeeded without errors -/
+  success : Bool
+  /-- All diagnostics (errors and warnings) -/
+  diagnostics : Diagnostics
+  /-- Name of the package/module -/
+  packageName : String
+  /-- Checked modules in dependency order -/
+  checkedModules : Array CheckedModule
+  /-- Aggregated public symbols from all modules -/
+  symbols : SymbolEnv
+  /-- Aggregated public instances from all modules -/
+  instances : Project.InstanceMetadata
+  /-- Constructor metadata (name → tag) -/
+  constructors : Std.HashMap Metal.Name Nat
+
+namespace ProjectResult
+
+def failed (name : String) (diags : Diagnostics) : ProjectResult :=
+  { success := false, diagnostics := diags, packageName := name,
+    checkedModules := #[], symbols := {}, instances := {}, constructors := {} }
+
+def succeeded (name : String) (diags : Diagnostics) (modules : Array CheckedModule)
+    (symbols : SymbolEnv) (instances : Project.InstanceMetadata)
+    (constructors : Std.HashMap Metal.Name Nat) : ProjectResult :=
+  { success := true, diagnostics := diags, packageName := name,
+    checkedModules := modules, symbols, instances, constructors }
+
+end ProjectResult
+
+/-- Merge two instance environments -/
+def mergeInstanceEnvs (e1 e2 : Project.InstanceMetadata) : Project.InstanceMetadata :=
+  e2.fold (init := e1) fun acc className instances =>
+    match acc.get? className with
+    | none => acc.insert className instances
+    | some existing => acc.insert className (existing ++ instances)
+
+/-- Convert Project.InstanceMetadata to Infer.InstanceEnv -/
+def projectToInferInstanceEnv (projEnv : InstanceMetadata) : Infer.InstanceEnv :=
+  projEnv.fold (init := InstanceEnv.empty) fun acc className instances =>
+    instances.foldl (fun env (typeArgs, sym) =>
+      let classTyCon := TyCon.mkUser sym.module className sym.unique.id
+      let instDecl : Infer.InstanceDecl := {
+        className := classTyCon
+        args := typeArgs
+        typeVars := #[]
+        constraints := #[]
+        id := env.nextId
+        span := sym.span
+      }
+      env.addInstance instDecl
+    ) acc
+
+/-- Convert SymbolEnv to array of function info for type environment building -/
+def symbolEnvToFunctionInfos (seed : SymbolEnv) : Array (String × Infer.FunctionInfo) :=
+  seed.fold (init := #[]) fun acc sym qt =>
+    let metalName : Metal.Name := .user { id := sym.unique.id, module := sym.unique.module, original := sym.name }
+    acc.push (sym.name, { qualType := qt, metalName := metalName })
+
+/-- Convert SymbolEnv to Metal.Lower.GlobalEnv for pre-populating external symbols -/
+def symbolEnvToGlobalEnv (moduleName : String) (seed : SymbolEnv) : Metal.Lower.GlobalEnv :=
+  seed.fold (init := Metal.Lower.GlobalEnv.empty moduleName) fun acc sym _qt =>
+    let metalName : Metal.Name := .user { id := sym.unique.id, module := sym.unique.module, original := sym.name }
+    let globalInfo : Metal.Lower.GlobalInfo := {
+      name := metalName
+      typeSyntax := none
+      definedAt := sym.span
+    }
+    acc.addGlobal sym.name globalInfo
+
+/-- Extract public symbols from a typed module -/
+def extractPublicSymbols (m : Metal.Module) (seed : SymbolEnv) : SymbolEnv :=
+  m.functions.foldl (init := seed) fun acc fn =>
+    let unique := fn.name.baseUnique?.getD { id := 0, module := m.name, original := fn.name.display }
+    let sym : Symbol := {
+      unique := unique
+      name := fn.name.display
+      kind := .binding
+      module := m.name
+      package := ""
+      span := Span.uninhabited
+    }
+    acc.insert sym fn.qualifiedType
+
+/-- Extract public instances from a typed module -/
+def extractPublicInstances (m : Metal.Module) (seed : Project.InstanceMetadata) (supply : UniqueSupply)
+    : Project.InstanceMetadata × UniqueSupply := Id.run do
+  let mut acc := seed
+  let mut sup := supply
+  for inst in m.instances do
+    let instanceName := s!"{inst.className}${inst.instanceType}"
+    let (unique, sup') := sup.fresh instanceName
+    sup := sup'
+    let sym : Symbol := {
+      unique := unique
+      name := inst.className
+      kind := .instanceMethod inst.className inst.className
+      module := m.name
+      package := ""
+      span := Span.uninhabited
+    }
+    match acc.get? inst.className with
+    | none => acc := acc.insert inst.className #[(#[inst.instanceType], sym)]
+    | some existing => acc := acc.insert inst.className (existing.push (#[inst.instanceType], sym))
+  pure (acc, sup)
+
+/-- Process external dependencies into lookup tables -/
+def processExternalDependencies (deps : Array ExternalDependency)
+    : Std.HashMap String SymbolEnv × Std.HashMap String Project.InstanceMetadata × Std.HashMap String Nat :=
+  deps.foldl (init := ({}, {}, {})) fun (symbols, instances, constructors) dep =>
+    let symbols' := dep.symbols.fold (init := symbols) fun acc modName env =>
+      acc.insert modName env
+    let instances' := dep.instances.fold (init := instances) fun acc modName env =>
+      acc.insert modName env
+    let constructors' := dep.constructors.fold (init := constructors) fun acc ctorName tag =>
+      acc.insert ctorName tag
+    (symbols', instances', constructors')
+
+/-- Extract prelude symbols from external dependencies -/
+def extractPreludeSymbols (extSymbols : Std.HashMap String SymbolEnv) : Array String :=
+  match extSymbols.get? preludeModuleName with
+  | none => #[]
+  | some env => env.toArray.map fun (sym, _) => sym.name
+
+/-- Check a single module with access to already-checked dependencies -/
+def checkModule
+    (info : ModuleInfo)
+    (checkedDeps : Std.HashMap String CheckedModule)
+    (externalSymbols : Std.HashMap String SymbolEnv)
+    (externalInstances : Std.HashMap String Project.InstanceMetadata)
+    (supply : UniqueSupply)
+    : Diagnostics × CheckedModule × UniqueSupply :=
+  let modName := info.name.toString
+
+  -- Collect seed environment from checked dependencies
+  let seedEnv : SymbolEnv := checkedDeps.fold (init := {}) fun acc _ dep =>
+    dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
+
+  let seedEnv := externalSymbols.fold (init := seedEnv) fun acc _ env =>
+    env.fold (init := acc) fun e sym ty => e.insert sym ty
+
+  let seedInstances : Project.InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
+    mergeInstanceEnvs acc dep.publicInstances
+
+  let seedInstances := externalInstances.fold (init := seedInstances) fun acc _ env =>
+    mergeInstanceEnvs acc env
+
+  -- Convert seed symbols to GlobalEnv for Metal lowering
+  let initialGlobalEnv := symbolEnvToGlobalEnv modName seedEnv
+
+  -- Metal lowering with external symbols pre-populated
+  let metalRes := metalWithExternals info.ast initialGlobalEnv
+
+  -- Build environments with external dependencies
+  let externalFunctions := symbolEnvToFunctionInfos seedEnv
+  let (typeEnv, supply) := buildTypeEnv metalRes.module externalFunctions supply
+  let inferInstanceEnv := buildInstanceEnv metalRes.module (projectToInferInstanceEnv seedInstances) typeEnv
+
+  -- Type inference
+  let inferRes := infer metalRes.module typeEnv inferInstanceEnv
+
+  let allDiags := metalRes.diagnostics ++ inferRes.diagnostics
+
+  let publicSymbols := extractPublicSymbols inferRes.module seedEnv
+  let (publicInstances, supply) := extractPublicInstances inferRes.module seedInstances supply
+
+  let checkedModule : CheckedModule := {
+    name := modName
+    resolvedAst := info.ast
+    typedModule := inferRes.module
+    publicSymbols := publicSymbols
+    publicInstances := publicInstances
+  }
+
+  (allDiags, checkedModule, supply)
+
+/-- Check all modules in topological order -/
+def checkModulesInOrder
+    (sortedNames : Array String)
+    (graph : ModuleGraph)
+    (externalSymbols : Std.HashMap String SymbolEnv)
+    (externalInstances : Std.HashMap String Project.InstanceMetadata)
+    (packageName : String)
+    (supply : UniqueSupply)
+    : Diagnostics × Array CheckedModule × UniqueSupply :=
+  let (allDiags, _, results, finalSupply) := sortedNames.foldl
+    (init := (#[], ({} : Std.HashMap String CheckedModule), #[], supply))
+    fun (diags, checked, results, sup) modName =>
+      match graph.get? modName with
+      | none => (diags, checked, results, sup)
+      | some info =>
+        let (moduleDiags, cm, sup') := checkModule info checked externalSymbols externalInstances sup
+        (diags ++ moduleDiags, checked.insert modName cm, results.push cm, sup')
+  (allDiags, results, finalSupply)
+
+/-- Parse a single source file into a ModuleInfo -/
+def parseModuleFile (moduleName : String) (path : System.FilePath) : IO (Except Diagnostics ModuleInfo) := do
+  let content ← IO.FS.readFile path
+  let (parseRes, lowerRes) := toAst path.toString content
+  let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics
+
+  if allDiags.hasErrors then
+    pure (.error allDiags)
+  else
+    let modName := ModuleName.fromString moduleName
+    pure (.ok {
+      name := modName
+      path := path
+      content := content
+      sourceFile := parseRes.sourceFile
+      ast := lowerRes.ast
+      contentHash := some (hash content)
+    })
+
+/-- Parse all modules in a list, collecting errors -/
+def parseModuleFiles (modules : Array (String × System.FilePath)) : IO (Diagnostics × ModuleGraph) := do
+  let mut graph : ModuleGraph := {}
+  let mut allDiags : Diagnostics := #[]
+
+  for (name, path) in modules do
+    match ← parseModuleFile name path with
+    | .ok info => graph := graph.insert name info
+    | .error diags => allDiags := allDiags ++ diags
+
+  pure (allDiags, graph)
+
+/-- Check a single .soma file -/
+def checkSingleFile
+    (config : ProjectConfig)
+    (loadDeps : Array (String × System.FilePath) → IO (Except CheckError (Array ExternalDependency)))
+    : IO ProjectResult := do
+  let path := config.input
+  let name := config.name.getD (path.fileStem.getD "Main")
+
+  match ← parseModuleFile name path with
+  | .error diags =>
+    pure (ProjectResult.failed name diags)
+
+  | .ok info =>
+    let graph : ModuleGraph := ({} : ModuleGraph).insert name info
+    let depGraph := buildDependencyGraph graph
+
+    match topoSortModules depGraph with
+    | .cycles groups =>
+      let msg := s!"Cyclic imports detected: {groups.map (·.toList)}"
+      pure (ProjectResult.failed name #[Diagnostic.error msg Span.uninhabited])
+
+    | .sorted sortedNames =>
+      match ← loadDeps config.deps with
+      | .error e =>
+        pure (ProjectResult.failed name #[Diagnostic.error (toString e) Span.uninhabited])
+
+      | .ok deps =>
+        let (extSymbols, extInstances, extConstructors) := processExternalDependencies deps
+        let supply := UniqueSupply.initial name
+
+        let (checkDiags, checkedModules, _) := checkModulesInOrder
+          sortedNames graph extSymbols extInstances name supply
+
+        let symbols := checkedModules.foldl (init := {}) fun acc m =>
+          m.publicSymbols.fold (init := acc) fun env sym qt => env.insert sym qt
+        let instances := checkedModules.foldl (init := {}) fun acc m =>
+          mergeInstanceEnvs acc m.publicInstances
+        let constructors := checkedModules.foldl (init := {}) fun acc m =>
+          m.constructorMetadata.fold (init := acc) fun env n tag => env.insert n tag
+
+        if checkDiags.hasErrors then
+          pure (ProjectResult.failed name checkDiags)
+        else
+          pure (ProjectResult.succeeded name checkDiags checkedModules symbols instances constructors)
+
+/-- Check a project directory -/
+def checkDirectory
+    (config : ProjectConfig)
+    (loadDeps : Array (String × System.FilePath) → IO (Except CheckError (Array ExternalDependency)))
+    : IO ProjectResult := do
+  let rootDir := config.input
+  let packageName := config.name.getD (rootDir.fileName.getD "app")
+
+  let modules ← findModules packageName rootDir
+
+  let (parseDiags, graph) ← parseModuleFiles modules
+
+  if parseDiags.hasErrors then
+    pure (ProjectResult.failed packageName parseDiags)
+  else
+    let depGraph := buildDependencyGraph graph
+
+    match topoSortModules depGraph with
+    | .cycles groups =>
+      let msg := s!"Cyclic imports: {groups.map (·.toList)}"
+      pure (ProjectResult.failed packageName #[Diagnostic.error msg Span.uninhabited])
+
+    | .sorted sortedNames =>
+      match ← loadDeps config.deps with
+      | .error e =>
+        pure (ProjectResult.failed packageName #[Diagnostic.error (toString e) Span.uninhabited])
+
+      | .ok deps =>
+        let (extSymbols, extInstances, extConstructors) := processExternalDependencies deps
+
+        -- Optionally inject prelude
+        let preludeSymbols := extractPreludeSymbols extSymbols
+        let graph := if preludeSymbols.isEmpty then graph
+                     else injectPreludeIntoGraph preludeSymbols graph
+
+        let supply := UniqueSupply.initial packageName
+
+        let (checkDiags, checkedModules, _) := checkModulesInOrder
+          sortedNames graph extSymbols extInstances packageName supply
+
+        let symbols := checkedModules.foldl (init := {}) fun acc m =>
+          m.publicSymbols.fold (init := acc) fun env sym qt => env.insert sym qt
+        let instances := checkedModules.foldl (init := {}) fun acc m =>
+          mergeInstanceEnvs acc m.publicInstances
+        let constructors := checkedModules.foldl (init := {}) fun acc m =>
+          m.constructorMetadata.fold (init := acc) fun env n tag => env.insert n tag
+
+        let allDiags := parseDiags ++ checkDiags
+
+        if allDiags.hasErrors then
+          pure (ProjectResult.failed packageName allDiags)
+        else
+          pure (ProjectResult.succeeded packageName allDiags checkedModules symbols instances constructors)
+
+/-- Check a project (file or directory) -/ 
+def checkProject
+    (config : ProjectConfig)
+    (loadDeps : Array (String × System.FilePath) → IO (Except CheckError (Array ExternalDependency)))
+    : IO ProjectResult := do
+  if ← config.input.isDir then
+    checkDirectory config loadDeps
+  else if config.input.extension == some "soma" then
+    checkSingleFile config loadDeps
+  else
+    let msg := s!"Input is neither a .soma file nor a directory: {config.input}"
+    let name := config.name.getD "unknown"
+    pure (ProjectResult.failed name #[Diagnostic.error msg Span.uninhabited])
 
 end Soma.Check

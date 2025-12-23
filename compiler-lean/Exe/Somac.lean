@@ -146,7 +146,7 @@ def checkDirectory (opts : CheckOptions) : IO (Array Syntax.Diagnostic) := do
   let modules ← Project.findModules packageName rootDir
 
   -- Parse all modules
-  let (parseDiags, graph) ← Somac.Build.parseModules modules
+  let (parseDiags, graph) ← Soma.Check.parseModuleFiles modules
 
   if Syntax.Diagnostics.hasErrors parseDiags then
     return parseDiags
@@ -167,13 +167,13 @@ def checkDirectory (opts : CheckOptions) : IO (Array Syntax.Diagnostic) := do
       return #[Syntax.Diagnostic.error (toString e) Syntax.Span.uninhabited]
 
     | .ok deps =>
-      let (extSymbols, extInstances, extConstructors) := Somac.Build.processExternalDependencies deps
+      let (extSymbols, extInstances, extConstructors) := Soma.Check.processExternalDependencies deps
 
       -- Initialize UniqueSupply
       let supply := Soma.UniqueSupply.initial packageName
 
       -- Compile all modules (type check)
-      let (compileDiags, _, _) := Somac.Build.compileModulesInOrder sortedNames graph extSymbols extInstances extConstructors packageName supply
+      let (compileDiags, _, _) := Soma.Check.checkModulesInOrder sortedNames graph extSymbols extInstances packageName supply
 
       return compileDiags
 

@@ -1,9 +1,8 @@
 import Somac.Build.Pipeline
-import Somac.Build.Compiled
 import Soma.Project
+import Soma.Project.Check
 import Soma.Driver.Options
 import Soma.Logging
-import Soma.Unique
 
 namespace Somac.Build
 
@@ -12,22 +11,20 @@ open Soma.Project
 open Soma.Driver
 open Soma.Logging
 open Soma.Syntax (Diagnostic Diagnostics Span)
-open Soma (UniqueSupply)
+open Soma.Check
 
 /-- Result of a build operation -/
 structure BuildResult where
   success : Bool
   diagnostics : Array Diagnostic
-  outputPath : Option System.FilePath
-  compiledModules : Array CompiledModule
 
 namespace BuildResult
 
 def failed (diags : Array Diagnostic) : BuildResult :=
-  { success := false, diagnostics := diags, outputPath := none, compiledModules := #[] }
+  { success := false, diagnostics := diags }
 
-def succeeded (path : System.FilePath) (modules : Array CompiledModule) : BuildResult :=
-  { success := true, diagnostics := #[], outputPath := some path, compiledModules := modules }
+def succeeded : BuildResult :=
+  { success := true, diagnostics := #[] }
 
 end BuildResult
 
@@ -68,159 +65,39 @@ def generateOutput (opts : BuildOptions) (outputPath : System.FilePath) (llvmIR 
       -- TODO
       sorry
 
-/-- Build a single .soma file -/
-def buildSingleFile (opts : BuildOptions) : IO BuildResult := do
-  let path : System.FilePath := opts.input
-  let name := opts.name.getD (path.fileStem.getD "Main")
-
-  IO.println s!"Compiling single file: {path}"
-
-  -- Parse the module
-  match ← parseModule name path with
-  | .error diags =>
-    for diag in diags do
-      IO.eprintln s!"  {diag.severity}: {diag.message}"
-    pure (BuildResult.failed diags)
-
-  | .ok info =>
-    let graph : ModuleGraph := ({} : ModuleGraph).insert name info
-    let depGraph := buildDependencyGraph graph
-
-    -- Check for cycles
-    match topoSortModules depGraph with
-    | .cycles groups =>
-      let msg := s!"Cyclic imports detected: {groups.map (·.toList)}"
-      IO.eprintln msg
-      pure (BuildResult.failed #[Diagnostic.error msg Span.uninhabited])
-
-    | .sorted sortedNames =>
-      -- Load external dependencies
-      let externalDeps ← loadExternalDependencies (opts.deps.map fun (n, p) => (n, ⟨p⟩))
-      match externalDeps with
-      | .error e =>
-        IO.eprintln s!"Failed to load dependencies: {e}"
-        pure (BuildResult.failed #[Diagnostic.error (toString e) Span.uninhabited])
-
-      | .ok deps =>
-        let (extSymbols, extInstances, extConstructors) := processExternalDependencies deps
-
-        -- Initialize UniqueSupply for this compilation unit
-        let supply := UniqueSupply.initial name
-
-        -- Compile
-        let (compileDiags, compiledModules, _) := compileModulesInOrder sortedNames graph extSymbols extInstances extConstructors name supply
-
-        if compileDiags.size > 0 then
-          Error.printDiagnostics compileDiags info.sourceFile
-
-
-        if Diagnostics.hasErrors compileDiags then
-          IO.eprintln (Error.renderSummary compileDiags)
-          pure (BuildResult.failed compileDiags)
-        else
-          -- Link
-          let (llvmIR, _allConstructors) ← linkModules name compiledModules extConstructors
-
-          -- Generate output
-          let outputPath := generateOutputPath opts name
-          generateOutput opts outputPath llvmIR
-
-          IO.println s!"Successfully compiled: {outputPath}"
-          pure (BuildResult.succeeded outputPath compiledModules)
-
-/-- Extract prelude symbols from external dependencies -/
-def extractPreludeSymbols (extSymbols : Std.HashMap String SymbolEnv) : Array String :=
-  match extSymbols.get? preludeModuleName with
-  | none => #[]
-  | some env => env.toArray.map fun (sym, _) => sym.name
-
-/-- Build a project directory -/
-def buildDirectory (opts : BuildOptions) : IO BuildResult := do
-  let rootDir : System.FilePath := opts.input
-  let packageName := opts.name.getD (rootDir.fileName.getD "app")
-
-  IO.println s!"Compiling project: {packageName} from {rootDir}"
-
-  -- Find all modules
-  let modules ← findModules packageName rootDir
-  IO.println s!"Discovered {modules.size} modules"
-
-  -- Parse all modules
-  match ← parseModules modules with
-  | (#[], graph) =>
-    let depGraph := buildDependencyGraph graph
-
-    -- Topological sort
-    match topoSortModules depGraph with
-    | .cycles groups =>
-      IO.eprintln "Error: Cyclic imports detected between modules:"
-      for group in groups do
-        IO.eprintln s!"  {group.toList}"
-      let msg := s!"Cyclic imports: {groups.map (·.toList)}"
-      pure (BuildResult.failed #[Diagnostic.error msg Span.uninhabited])
-
-    | .sorted sortedNames =>
-      IO.println s!"Compilation order: {sortedNames.toList}"
-
-      -- Load external dependencies
-      let externalDeps ← loadExternalDependencies (opts.deps.map fun (n, p) => (n, ⟨p⟩))
-      match externalDeps with
-      | .error e =>
-        IO.eprintln s!"Failed to load dependencies: {e}"
-        pure (BuildResult.failed #[Diagnostic.error (toString e) Span.uninhabited])
-
-      | .ok deps =>
-        let (extSymbols, extInstances, extConstructors) := processExternalDependencies deps
-
-        -- Optionally inject prelude
-        let preludeSymbols := extractPreludeSymbols extSymbols
-        let graph := if preludeSymbols.isEmpty then graph
-                     else injectPreludeIntoGraph preludeSymbols graph
-
-        -- Initialize UniqueSupply for this compilation unit
-        let supply := UniqueSupply.initial packageName
-
-        -- Compile all modules
-        let (compileDiags, compiledModules, _) := compileModulesInOrder sortedNames graph extSymbols extInstances extConstructors packageName supply
-
-        for modName in sortedNames do
-          if let some info := graph.get? modName then
-            let modDiags := compileDiags.filter fun _ =>
-              true  -- TODO: filter by module
-            if modDiags.size > 0 then
-              Error.printDiagnostics modDiags info.sourceFile
-
-        if Diagnostics.hasErrors compileDiags then
-          IO.eprintln (Error.renderSummary compileDiags)
-          pure (BuildResult.failed compileDiags)
-        else
-          -- Link
-          let (llvmIR, _allConstructors) ← linkModules packageName compiledModules extConstructors
-
-          -- Generate output
-          let outputPath := generateOutputPath opts packageName
-          generateOutput opts outputPath llvmIR
-
-          IO.println s!"Successfully compiled {compiledModules.size} modules"
-          IO.println s!"Output: {outputPath}"
-          pure (BuildResult.succeeded outputPath compiledModules)
-  | (diags, _graph) =>
-    IO.eprintln "Failed to parse one or more modules:"
-    for diag in diags do
-      IO.eprintln s!"  {diag.severity}: {diag.message}"
-    pure (BuildResult.failed diags)
-
-/-- Main build entry point - dispatches based on input type -/
+/-- Main build entry point -/
 def build (opts : BuildOptions) : IO BuildResult := do
   let inputPath : System.FilePath := opts.input
 
-  if ← inputPath.isDir then
-    buildDirectory opts
-  else if inputPath.extension == some "soma" then
-    buildSingleFile opts
+  IO.println s!"Building: {inputPath}"
+
+  let config : ProjectConfig := {
+    input := inputPath
+    name := opts.name
+    deps := opts.deps.map fun (n, p) => (n, ⟨p⟩)
+  }
+
+  let result ← checkProject config loadExternalDependencies
+
+  -- Print diagnostics
+  if result.diagnostics.size > 0 then
+    for diag in result.diagnostics do
+      IO.eprintln s!"  {diag.severity}: {diag.message}"
+
+  if !result.success then
+    IO.eprintln (Error.renderSummary result.diagnostics)
+    pure (BuildResult.failed result.diagnostics)
   else
-    let msg := s!"Input is neither a .soma file nor a directory: {opts.input}"
-    IO.eprintln msg
-    pure (BuildResult.failed #[Diagnostic.error msg Span.uninhabited])
+    -- Link
+    let extConstructors : Std.HashMap String Nat := {}  -- TODO: get from deps
+    let (llvmIR, _allConstructors) ← linkModules result.packageName result.checkedModules extConstructors
+
+    -- Generate output
+    let outputPath := generateOutputPath opts result.packageName
+    generateOutput opts outputPath llvmIR
+
+    IO.println s!"Successfully compiled {result.checkedModules.size} modules"
+    IO.println s!"Output: {outputPath}"
+    pure BuildResult.succeeded
 
 end Somac.Build

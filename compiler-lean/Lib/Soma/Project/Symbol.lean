@@ -125,7 +125,7 @@ end Symbol
 /-- A symbol environment maps symbols to their qualified types -/
 abbrev SymbolEnv := Std.HashMap Symbol QualifiedType
 
-/-- Instance environment for type class instances that maps class name to array of (instance types, implementing symbol) -/
-abbrev InstanceEnv := Std.HashMap String (Array (Array MonoTy × Symbol))
+/-- Instance metadata for type class instances - maps class name to array of (instance types, implementing symbol) -/
+abbrev InstanceMetadata := Std.HashMap String (Array (Array MonoTy × Symbol))
 
 end Soma.Project
