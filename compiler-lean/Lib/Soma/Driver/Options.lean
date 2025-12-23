@@ -24,6 +24,13 @@ structure CheckOptions where
   format : OutputFormat := .json
   deriving Repr
 
+/-- Options for the `metadata` command -/
+structure MetadataOptions where
+  input : String
+  name : Option String := none
+  deps : Array (String × String) := #[]
+  deriving Repr
+
 /-- Options for the `lower` command (Metal HIR lowering) -/
 structure LowerOptions where
   input : String
@@ -57,6 +64,7 @@ structure BuildOptions where
 inductive Command where
   | build : BuildOptions → Command
   | check : CheckOptions → Command
+  | metadata : MetadataOptions → Command
   | lex : String → Command
   | parse : String → Command
   | lower : LowerOptions → Command
@@ -67,6 +75,7 @@ inductive Command where
 def Command.inputFile : Command → String
   | .build opts => opts.input
   | .check opts => opts.input
+  | .metadata opts => opts.input
   | .lex path => path
   | .parse path => path
   | .lower opts => opts.input

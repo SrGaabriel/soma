@@ -4,7 +4,6 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use crate::build::build_project;
 use crate::build::consts::{BUILD_FOLDER_NAME, SRC_FOLDER_NAME};
 use crate::build::graph::BuildNode;
 use crate::build::resolve::DependencyResolver;
@@ -79,23 +78,23 @@ pub fn execute(path: &Path) {
 
     let mut all_outputs = Vec::new();
     let mut all_success = true;
-    let mut built_tarballs: HashMap<String, PathBuf> = HashMap::new();
+    let mut dep_metadata: HashMap<String, PathBuf> = HashMap::new();
 
     let root_module = layers.last().and_then(|l| l.last()).cloned();
 
     for layer in layers {
         for module_name in layer {
             if let Some(node) = graph.get_node(&module_name) {
-                let dep_tarballs: HashMap<String, PathBuf> = node
+                let dep_files: HashMap<String, PathBuf> = node
                     .dependencies
                     .iter()
-                    .filter_map(|dep| built_tarballs.get(dep).map(|p| (dep.clone(), p.clone())))
+                    .filter_map(|dep| dep_metadata.get(dep).map(|p| (dep.clone(), p.clone())))
                     .collect();
 
                 let is_root = root_module.as_ref() == Some(&module_name);
 
                 if is_root {
-                    match check_module(node, &dep_tarballs) {
+                    match check_module(node, &dep_files) {
                         Ok(output) => {
                             if !output.success {
                                 all_success = false;
@@ -132,21 +131,14 @@ pub fn execute(path: &Path) {
                         }
                     }
                 } else {
-                    match build_project(&node.path, &node.manifest) {
-                        Ok(_) => {
+                    match generate_metadata(node, &dep_files) {
+                        Ok(metadata_path) => {
                             all_outputs.push(CheckOutput {
                                 success: true,
                                 diagnostics: vec![],
                                 module_name: Some(module_name.clone()),
                             });
-
-                            let tarball_path = node
-                                .path
-                                .join(BUILD_FOLDER_NAME)
-                                .join(format!("{}.toria", node.manifest.name));
-                            if tarball_path.exists() {
-                                built_tarballs.insert(module_name.clone(), tarball_path);
-                            }
+                            dep_metadata.insert(module_name.clone(), metadata_path);
                         }
                         Err(e) => {
                             all_success = false;
@@ -169,7 +161,10 @@ pub fn execute(path: &Path) {
                                         },
                                     },
                                     severity: 1,
-                                    message: format!("Failed to build dependency module: {}", e),
+                                    message: format!(
+                                        "Failed to generate metadata for dependency: {}",
+                                        e
+                                    ),
                                     source: "haoma".to_string(),
                                     code: None,
                                 }],
@@ -194,9 +189,67 @@ pub fn execute(path: &Path) {
     }
 }
 
+fn generate_metadata(
+    node: &BuildNode,
+    dependency_metadata: &HashMap<String, PathBuf>,
+) -> Result<PathBuf, String> {
+    let src_path = node
+        .path
+        .join(SRC_FOLDER_NAME)
+        .canonicalize()
+        .map_err(|e| format!("Failed to canonicalize src path: {}", e))?;
+
+    let build_folder = node.path.join(BUILD_FOLDER_NAME);
+    std::fs::create_dir_all(&build_folder)
+        .map_err(|e| format!("Failed to create build folder: {}", e))?;
+
+    let metadata_path = build_folder.join(format!("{}.meta.json", node.manifest.name));
+
+    let mut command = Command::new("somac");
+    command
+        .arg("metadata")
+        .arg(&src_path)
+        .arg("--name")
+        .arg(&node.manifest.name)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    for (dep_name, dep_path) in dependency_metadata {
+        let meta_path = dep_path.canonicalize().unwrap_or_else(|_| dep_path.clone());
+        command
+            .arg("--dep")
+            .arg(format!("{}={}", dep_name, meta_path.display()));
+    }
+
+    let output = command
+        .output()
+        .map_err(|e| format!("Failed to run somac metadata: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "somac metadata failed: {}\n{}",
+            stderr.trim(),
+            stdout.trim()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json_line = stdout
+        .lines()
+        .find(|line| line.trim().starts_with('{'))
+        .ok_or_else(|| "No JSON output from somac metadata".to_string())?;
+
+    std::fs::write(&metadata_path, json_line)
+        .map_err(|e| format!("Failed to write metadata file: {}", e))?;
+
+    Ok(metadata_path)
+}
+
 fn check_module(
     node: &BuildNode,
-    dependency_tarballs: &HashMap<String, PathBuf>,
+    dependency_metadata: &HashMap<String, PathBuf>,
 ) -> Result<CheckOutput, String> {
     let src_path = node
         .path
@@ -214,13 +267,11 @@ fn check_module(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
-    for (dep_name, dep_tarball) in dependency_tarballs {
-        let tarball_path = dep_tarball
-            .canonicalize()
-            .unwrap_or_else(|_| dep_tarball.clone());
+    for (dep_name, dep_path) in dependency_metadata {
+        let meta_path = dep_path.canonicalize().unwrap_or_else(|_| dep_path.clone());
         command
             .arg("--dep")
-            .arg(format!("{}={}", dep_name, tarball_path.display()));
+            .arg(format!("{}={}", dep_name, meta_path.display()));
     }
 
     let output = command
@@ -229,12 +280,23 @@ fn check_module(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Parse JSON output from somac - find the first line that starts with '{'
+    // Parse JSON output from somac
     let json_line = stdout
         .lines()
-        .find(|line| line.trim().starts_with('{'))
+        .find(|line| line.trim().starts_with('[') || line.trim().starts_with('{'))
         .unwrap_or(&stdout);
 
+    // Try parsing as array of diagnostics first (somac check format)
+    if let Ok(diagnostics) = serde_json::from_str::<Vec<Diagnostic>>(json_line) {
+        let has_errors = diagnostics.iter().any(|d| d.severity == 1);
+        return Ok(CheckOutput {
+            success: !has_errors,
+            diagnostics,
+            module_name: Some(node.manifest.name.clone()),
+        });
+    }
+
+    // Fall back to parsing as CheckOutput directly
     serde_json::from_str(json_line).map_err(|e| {
         format!(
             "Failed to parse compiler output: {} (output was: {})",

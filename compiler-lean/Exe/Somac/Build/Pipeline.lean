@@ -1,4 +1,5 @@
 import Somac.Build.Compiled
+import Somac.Build.MetadataLoad
 import Soma.Project
 import Soma.Syntax
 import Soma.Metal
@@ -16,7 +17,7 @@ open Soma.Metal
 open Soma.Typing
 open Soma.Logging
 open Soma (UniqueSupply)
-open Soma.Check (toAst metal infer buildTypeEnv buildInstanceEnv)
+open Soma.Check (toAst metal metalWithExternals infer buildTypeEnv buildInstanceEnv)
 
 /-- Result of parsing a single module -/
 abbrev ParseResult := Except (Array Diagnostic) ModuleInfo
@@ -82,6 +83,18 @@ def symbolEnvToFunctionInfos (seed : SymbolEnv) : Array (String × Infer.Functio
     let metalName : Metal.Name := .user { id := sym.unique.id, module := sym.unique.module, original := sym.name }
     acc.push (sym.name, { qualType := qt, metalName := metalName })
 
+/-- Convert SymbolEnv to Metal.Lower.GlobalEnv for pre-populating external symbols.
+    This allows Metal lowering to resolve references to external symbols. -/
+def symbolEnvToGlobalEnv (moduleName : String) (seed : SymbolEnv) : Metal.Lower.GlobalEnv :=
+  seed.fold (init := Metal.Lower.GlobalEnv.empty moduleName) fun acc sym _qt =>
+    let metalName : Metal.Name := .user { id := sym.unique.id, module := sym.unique.module, original := sym.name }
+    let globalInfo : Metal.Lower.GlobalInfo := {
+      name := metalName
+      typeSyntax := none  -- Type will be resolved during inference
+      definedAt := sym.span
+    }
+    acc.addGlobal sym.name globalInfo
+
 /-- Extract public symbols from a typed module -/
 def extractPublicSymbols (m : Metal.Module) (seed : SymbolEnv) : SymbolEnv :=
   m.functions.foldl (init := seed) fun acc fn =>
@@ -133,10 +146,10 @@ def compileModule
 
   -- Collect seed environment from dependencies
   let seedEnv : SymbolEnv := compiledDeps.fold (init := {}) fun acc _ dep =>
-    acc.fold (init := dep.publicSymbols) fun env sym ty => env.insert sym ty
+    dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
   let seedEnv := externalDeps.fold (init := seedEnv) fun acc _ env =>
-    acc.fold (init := env) fun e sym ty => e.insert sym ty
+    env.fold (init := acc) fun e sym ty => e.insert sym ty
 
   let seedInstances : Project.InstanceEnv := compiledDeps.fold (init := {}) fun acc _ dep =>
     mergeInstanceEnvs acc dep.publicInstances
@@ -144,8 +157,11 @@ def compileModule
   let seedInstances := externalInstances.fold (init := seedInstances) fun acc _ env =>
     mergeInstanceEnvs acc env
 
-  -- Metal lowering
-  let metalRes := metal info.ast
+  -- Convert seed symbols to GlobalEnv for Metal lowering
+  let initialGlobalEnv := symbolEnvToGlobalEnv modName seedEnv
+
+  -- Metal lowering with external symbols pre-populated
+  let metalRes := metalWithExternals info.ast initialGlobalEnv
 
   -- Build environments with external dependencies
   let externalFunctions := symbolEnvToFunctionInfos seedEnv
@@ -220,14 +236,13 @@ def linkModules
 
   pure (placeholderLLVM, allConstructors)
 
-/-- Load external dependencies from tarball files -/
+/-- Load external dependencies from metadata JSON files -/
 def loadExternalDependencies (deps : Array (String × System.FilePath))
     : IO (Except CompileError (Array ExternalDependency)) := do
   if deps.isEmpty then
     pure (.ok #[])
   else
-    let (name, path) := deps[0]!
-    return .error (.dependencyNotFound name s!"external dependency loading not yet implemented (tried to load from {path})")
+    MetadataLoad.loadMetadataFiles deps
 
 /-- Process external dependencies into lookup tables -/
 def processExternalDependencies (deps : Array ExternalDependency)

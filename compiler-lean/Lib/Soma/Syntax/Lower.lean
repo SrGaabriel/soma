@@ -1259,10 +1259,16 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             pure ⟨#[], "_error", span⟩
           else
             let (pnode, _) := pathNodes[0]!
-            let segments := pnode.children.filterMap fun c =>
+            -- Extract all identifier tokens from the path, including nested nodes
+            -- Filter to only name-like tokens (lowerIdent, upperIdent, varSymbol)
+            let segments := pnode.children.foldl (init := #[]) fun acc c =>
               match c with
-              | .token k text => if k != .slash then some text else none
-              | _ => none
+              | .token k text => if k.isNameLike then acc.push text else acc
+              | .node _ children _ => children.foldl (fun a c2 =>
+                  match c2 with
+                  | .token k2 text2 => if k2.isNameLike then a.push text2 else a
+                  | _ => a) acc
+              | _ => acc
             if segments.isEmpty then
               pure ⟨#[], "_error", span⟩
             else

@@ -9,7 +9,7 @@ namespace Soma.Check
 
 open Std (HashSet)
 open Soma.Syntax
-open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleIncremental)
+open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleWithExternals lowerModuleIncremental GlobalEnv)
 open Soma.Infer
 open Soma.Typing
 open Soma (UniqueSupply)
@@ -82,6 +82,12 @@ def lower (tree : ParsedTree) (moduleName : String) : LowerResult :=
 /-- Phase 4: Lower AST to Metal IR -/
 def metal (ast : Syntax.Module) : MetalResult :=
   let result := lowerModuleFresh ast
+  let diags := Metal.Lower.LowerError.toDiagnostics result.errors
+  { module := result.module, result, diagnostics := diags }
+
+/-- Phase 4 with external symbols: Lower AST to Metal IR with pre-populated GlobalEnv -/
+def metalWithExternals (ast : Syntax.Module) (initialEnv : Metal.Lower.GlobalEnv) : MetalResult :=
+  let result := lowerModuleWithExternals ast initialEnv
   let diags := Metal.Lower.LowerError.toDiagnostics result.errors
   { module := result.module, result, diagnostics := diags }
 

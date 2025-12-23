@@ -27,6 +27,15 @@ def empty (moduleName : String) : LowerState :=
   , globalEnv := GlobalEnv.empty moduleName
   }
 
+/-- Create a LowerState with a pre-populated GlobalEnv for external symbols -/
+def withExternalSymbols (moduleName : String) (initialEnv : GlobalEnv) : LowerState :=
+  { nextBindingId := 0
+  , nextUniqueId := 0
+  , moduleName
+  , errors := #[]
+  , globalEnv := initialEnv
+  }
+
 end LowerState
 
 /-- The lowering monad -/
@@ -187,6 +196,10 @@ def registerTypeClass (name : String) (info : TypeClassInfo) : LowerM Unit := do
 /-- Run the lowering monad -/
 def run (m : LowerM α) (moduleName : String) : α × LowerState :=
   StateT.run m (LowerState.empty moduleName)
+
+/-- Run the lowering monad with an initial GlobalEnv for external symbols -/
+def runWithEnv (m : LowerM α) (moduleName : String) (initialEnv : GlobalEnv) : α × LowerState :=
+  StateT.run m (LowerState.withExternalSymbols moduleName initialEnv)
 
 /-- Run and extract just the result -/
 def run' (m : LowerM α) (moduleName : String) : α :=

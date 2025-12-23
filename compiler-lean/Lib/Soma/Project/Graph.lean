@@ -19,11 +19,16 @@ inductive TopoSortResult where
   | cycles (groups : Array (Array String))
   deriving Repr
 
+/-- Convert a QualName to a module path string using slashes (matching findModules format) -/
+def qualNameToModulePath (qn : QualName) : String :=
+  if qn.path.isEmpty then qn.name
+  else String.intercalate "/" qn.path.toList ++ "/" ++ qn.name
+
 /-- Extract the list of imported module names from a module's AST -/
 def extractImports (ast : Module) : Array String :=
   ast.decls.filterMap fun decl =>
     match decl with
-    | .use path _ _ => some (ToString.toString path)
+    | .use path _ _ => some (qualNameToModulePath path)
     | _ => none
 
 /-- Build a dependency graph from a module graph -/
@@ -114,8 +119,9 @@ def topoSortModules (graph : DependencyGraph) : TopoSortResult :=
   let sccs := tarjanSCC graph
   let cyclicSccs := sccs.filter (isCyclicSCC graph)
   if cyclicSccs.isEmpty then
-    -- Reverse to get correct order (dependencies first)
-    .sorted (sccs.reverse.map fun scc => scc[0]!)
+    -- Tarjan produces SCCs in reverse topological order of the condensation graph,
+    -- which means dependencies come first (leaves of the dependency graph are output first)
+    .sorted (sccs.map fun scc => scc[0]!)
   else
     .cycles cyclicSccs
 

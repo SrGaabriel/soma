@@ -430,6 +430,35 @@ def lowerModuleFresh (syntaxModule : Syntax.Module) : IncrementalLowerResult :=
   , instancesByName := instancesByName
   }
 
+/-- Lower a module with external symbols pre-populated in the GlobalEnv -/
+def lowerModuleWithExternals (syntaxModule : Syntax.Module) (initialEnv : GlobalEnv) : IncrementalLowerResult :=
+  let (metalModule, finalState) := LowerM.runWithEnv (lowerModule syntaxModule.name syntaxModule.decls) syntaxModule.name initialEnv
+
+  -- Build name-to-output mappings
+  let functionsByName := metalModule.functions.foldl (fun acc fn =>
+    match fn.name with
+    | .user u => acc.insert u.original fn
+    | _ => acc) {}
+
+  let typesByName := metalModule.types.foldl (fun acc td =>
+    match td.name with
+    | .user u => acc.insert u.original td
+    | _ => acc) {}
+
+  let instancesByName := metalModule.instances.foldl (fun acc inst =>
+    let instName := s!"instance_{inst.className}"
+    acc.insert instName inst) {}
+
+  { module := metalModule
+  , errors := finalState.errors
+  , globalEnv := finalState.globalEnv
+  , nextBindingId := finalState.nextBindingId
+  , nextUniqueId := finalState.nextUniqueId
+  , functionsByName := functionsByName
+  , typesByName := typesByName
+  , instancesByName := instancesByName
+  }
+
 /-- Remove entries for a declaration from GlobalEnv -/
 def removeFromGlobalEnv (env : GlobalEnv) (declName : String) : GlobalEnv :=
   let globals := env.globals.erase declName

@@ -221,6 +221,32 @@ def runCheck (p : Parsed) : IO UInt32 := do
 
   return if Syntax.Diagnostics.hasErrors diags then 1 else 0
 
+/-- Handler for the `metadata` command -/
+def runMetadata (p : Parsed) : IO UInt32 := do
+  let input := p.positionalArg! "input" |>.as! String
+  let name := p.flag? "name" |>.map (·.as! String)
+
+  let opts : MetadataOptions := {
+    input := input
+    name := name
+    deps := parseDeps p
+  }
+
+  let result ← Somac.Build.Metadata.metadata opts
+
+  if result.success then
+    match result.metadata with
+    | some pm =>
+      IO.println pm.toJson.compress
+      return 0
+    | none =>
+      IO.eprintln "Internal error: metadata generation succeeded but no metadata produced"
+      return 1
+  else
+    for diag in result.diagnostics do
+      IO.eprintln s!"{diag.severity}: {diag.message}"
+    return 1
+
 /-- Handler for the `circuit` command -/
 def runCircuit (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
@@ -264,7 +290,7 @@ def runBuild (p : Parsed) : IO UInt32 := do
     validate := p.hasFlag "validate"
   }
 
-  IO.println "Soma Compiler v0.1.0"
+  IO.println "Soma Compiler"
 
   let result ← Somac.Build.build opts
 
@@ -315,6 +341,19 @@ def checkCmd : Cmd := `[Cli|
     name : String; "Name of the module"
     d, dep : Array String; "External dependency (NAME=PATH)"
     format : String; "Output format: json (default) or human"
+
+  ARGS:
+    input : String; "Input source file or directory"
+]
+
+/-- The `metadata` subcommand -/
+def metadataCmd : Cmd := `[Cli|
+  metadata VIA runMetadata; ["0.1.0"]
+  "Generate type metadata JSON without codegen (for fast dependency checking)."
+
+  FLAGS:
+    name : String; "Name of the module"
+    d, dep : Array String; "External dependency (NAME=PATH)"
 
   ARGS:
     input : String; "Input source file or directory"
@@ -378,6 +417,7 @@ def somaCmd : Cmd := `[Cli|
     parseCmd;
     lowerCmd;
     checkCmd;
+    metadataCmd;
     circuitCmd;
     buildCmd
 ]

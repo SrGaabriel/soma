@@ -14,6 +14,8 @@ import Soma.Syntax
 import Soma.Metal
 import Soma.Infer
 import Soma.Infer.Module
+import Soma.Project
+import Somac.Build
 import Test.Fixtures
 
 namespace Test.Checking
@@ -22,6 +24,7 @@ open Soma.Syntax
 open Soma.Infer
 open Soma.Typing
 open Soma.Metal (UntypedModule)
+open Soma.Project
 open Test.Fixtures
 
 /-- Expectation parsed from fixture comment -/
@@ -198,9 +201,60 @@ def runFromFixtures : IO TestRunner := do
     runner := runner.record tc.name result
   return runner
 
+/-- Test multi-file package with internal dependencies -/
+def testMultiFilePackage : IO TestResult := do
+  -- Use the deplib fixture (multi-file package with internal dependencies)
+  let deplibPath : System.FilePath := "Test/fixtures/multifile/deplib"
+  let srcPath := deplibPath / "src"
+
+  -- Check if fixture exists
+  let dirExists ← srcPath.isDir
+  if !dirExists then
+    return .skipped "deplib fixture not found"
+
+  -- Find all modules
+  let modules ← Soma.Project.findModules "deplib" srcPath
+
+  -- Parse all modules
+  let (parseDiags, graph) ← Somac.Build.parseModules modules
+
+  if Diagnostics.hasErrors parseDiags then
+    let errors := parseDiags.filter (·.isError)
+    let msgs := errors.map (·.message)
+    return .failed s!"Parse errors: {msgs.toList}"
+
+  -- Build dependency graph and sort
+  let depGraph := Soma.Project.buildDependencyGraph graph
+  match Soma.Project.topoSortModules depGraph with
+  | .cycles groups =>
+    return .failed s!"Cyclic imports detected: {groups.map (·.toList)}"
+  | .sorted sortedNames =>
+    -- Compile all modules
+    let supply := Soma.UniqueSupply.initial "deplib"
+    let (compileDiags, _compiledModules, _) := Somac.Build.compileModulesInOrder
+      sortedNames graph {} {} {} "deplib" supply
+
+    if Diagnostics.hasErrors compileDiags then
+      let errors := compileDiags.filter (·.isError)
+      return .failed s!"Type check failed with {errors.size} error(s)"
+    else
+      return .passed
+
 /-- Main entry point for checking tests -/
 def run : IO Unit := do
-  let runner ← runFromFixtures
+  let mut runner ← runFromFixtures
+
+  -- Add multi-file package test
+  IO.println ""
+  IO.println "=== Multi-File Package Tests ==="
+  let multiResult ← testMultiFilePackage
+  match multiResult with
+  | .passed => IO.println s!"  [PASS] deplib (multi-file with internal deps)"
+  | .failed msg => IO.println s!"  [FAIL] deplib: {msg}"
+  | .skipped reason => IO.println s!"  [SKIP] deplib: {reason}"
+  runner := runner.record "deplib-multifile" multiResult
+
+  IO.println ""
   runner.printSummary "Checking Summary"
   IO.println ""
 
