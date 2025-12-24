@@ -38,26 +38,32 @@ def Label.primary (span : Span) (message : String) : Label :=
 def Label.secondary (span : Span) (message : String) : Label :=
   { span, message, style := .secondary }
 
-/-- A complete diagnostic message -/
+/-- A complete diagnostic message with guaranteed primary label -/
 structure Diagnostic where
   severity : Severity
   code : Option String        -- e.g., "E0308" for documentation lookup
   message : String            -- Main error message
-  labels : Array Label        -- Multiple labeled spans
+  primaryLabel : Label        -- Primary labeled span (guaranteed to exist)
+  secondaryLabels : Array Label  -- Additional labeled spans
   notes : Array String        -- Additional context
   help : Option String        -- Suggested fix
   deriving Repr, Inhabited
 
-/-- Get the primary span (first label's span) -/
-def Diagnostic.span? (d : Diagnostic) : Option Span :=
-  if h : d.labels.size > 0 then some d.labels[0].span else none
+/-- Get the primary span (always succeeds) -/
+def Diagnostic.span (d : Diagnostic) : Span :=
+  d.primaryLabel.span
+
+/-- Get all labels (primary + secondary) -/
+def Diagnostic.labels (d : Diagnostic) : Array Label :=
+  #[d.primaryLabel] ++ d.secondaryLabels
 
 /-- Create a simple error diagnostic with a single primary label -/
 def Diagnostic.error (message : String) (span : Span) (label : String := "") : Diagnostic :=
   { severity := .error
   , code := none
   , message
-  , labels := #[Label.primary span (if label.isEmpty then message else label)]
+  , primaryLabel := Label.primary span (if label.isEmpty then message else label)
+  , secondaryLabels := #[]
   , notes := #[]
   , help := none
   }
@@ -67,14 +73,15 @@ def Diagnostic.warning (message : String) (span : Span) (label : String := "") :
   { severity := .warning
   , code := none
   , message
-  , labels := #[Label.primary span (if label.isEmpty then message else label)]
+  , primaryLabel := Label.primary span (if label.isEmpty then message else label)
+  , secondaryLabels := #[]
   , notes := #[]
   , help := none
   }
 
 /-- Add a secondary label to a diagnostic -/
 def Diagnostic.withSecondary (d : Diagnostic) (span : Span) (message : String) : Diagnostic :=
-  { d with labels := d.labels.push (Label.secondary span message) }
+  { d with secondaryLabels := d.secondaryLabels.push (Label.secondary span message) }
 
 /-- Add a note to a diagnostic -/
 def Diagnostic.withNote (d : Diagnostic) (note : String) : Diagnostic :=

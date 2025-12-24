@@ -568,6 +568,13 @@ def renderDiagnostics (ds : Diagnostics) (sf : SourceFile) : String :=
   let rendered := ds.toList.map (renderDiagnostic · sf)
   String.intercalate "\n\n" rendered
 
+/-- Render diagnostics with a source file map (multi-file support) -/
+def renderDiagnosticsWithMap (ds : Diagnostics) (sourceMap : SourceFileMap) : String :=
+  let rendered := ds.toList.filterMap fun d =>
+    sourceMap.getForSpan? d.span |>.map fun sf =>
+      renderDiagnostic d sf
+  String.intercalate "\n\n" rendered
+
 def printDiagnostic (d : Diagnostic) (sf : SourceFile) : IO Unit :=
   IO.eprintln (renderDiagnostic d sf)
 
@@ -575,6 +582,18 @@ def printDiagnostics (ds : Diagnostics) (sf : SourceFile) : IO Unit :=
   for d in ds do
     printDiagnostic d sf
     IO.eprintln ""
+
+/-- Print diagnostics with a source file map (multi-file support) -/
+def printDiagnosticsWithMap (ds : Diagnostics) (sourceMap : SourceFileMap) : IO Unit :=
+  for d in ds do
+    match sourceMap.getForSpan? d.span with
+    | some sf =>
+      IO.eprintln (renderDiagnostic d sf)
+      IO.eprintln ""
+    | none =>
+      -- Fallback if source file not found (shouldn't happen)
+      IO.eprintln s!"{d.severity}: {d.message}"
+      IO.eprintln ""
 
 def renderSummary (ds : Diagnostics) : String := Id.run do
   let errors := ds.filter (·.severity == .error) |>.size
@@ -600,7 +619,7 @@ private def diagnosticToJson (d : Diagnostic) (filePath : String := "") : Json :
     | .warning => "warning"
     | .info => "info"
     | .hint => "hint"
-  let span := d.labels[0]?.map (·.span) |>.getD Span.uninhabited
+  let span := d.span
   Json.mkObj [
     ("file", Json.str filePath),
     ("range", Json.mkObj [
@@ -622,6 +641,13 @@ private def diagnosticToJson (d : Diagnostic) (filePath : String := "") : Json :
 /-- Render diagnostics as JSON array -/
 def renderDiagnosticsJson (diags : Diagnostics) (filePath : String := "") : String :=
   let items := diags.map (diagnosticToJson · filePath)
+  (Json.arr items).compress
+
+/-- Render diagnostics as JSON array with source file map (multi-file support) -/
+def renderDiagnosticsJsonWithMap (diags : Diagnostics) (sourceMap : SourceFileMap) : String :=
+  let items := diags.map fun d =>
+    let filePath := sourceMap.getForSpan? d.span |>.map (·.path) |>.getD ""
+    diagnosticToJson d filePath
   (Json.arr items).compress
 
 /-- Render check output as JSON object matching haoma's expected format -/

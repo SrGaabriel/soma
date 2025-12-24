@@ -79,6 +79,18 @@ def qualTypeToJson (qt : QualifiedType) : Lean.Json :=
     ("body", tyToJson qt.body)
   ]
 
+/-- Serialize a Span to JSON -/
+def spanToJson (s : Span) : Lean.Json :=
+  .mkObj [
+    ("fileId", .num s.start.file.id),
+    ("startOffset", .num s.start.byteOffset),
+    ("endOffset", .num s.stop.byteOffset),
+    ("startLine", .num s.start.line),
+    ("startColumn", .num s.start.column),
+    ("endLine", .num s.stop.line),
+    ("endColumn", .num s.stop.column)
+  ]
+
 /-- Serialize a SymbolKind to JSON -/
 def symbolKindToJson : SymbolKind → Lean.Json
   | .binding => .str "binding"
@@ -101,6 +113,8 @@ def symbolToJson (sym : Symbol) : Lean.Json :=
     ("name", .str sym.name),
     ("kind", symbolKindToJson sym.kind),
     ("module", .str sym.module),
+    ("package", .str sym.package),
+    ("span", spanToJson sym.span),
     ("unique", .mkObj [
       ("id", .num sym.unique.id),
       ("module", .str sym.unique.module),

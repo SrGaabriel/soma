@@ -1,3 +1,5 @@
+import Std.Data.HashMap
+
 namespace Soma.Syntax
 
 /-- Interned file identifier for efficient comparison -/
@@ -155,5 +157,54 @@ def Span.uninhabited : Span :=
   { start := { file := ⟨0⟩, byteOffset := 0, line := 0, column := 0 }
   , stop := { file := ⟨0⟩, byteOffset := 0, line := 0, column := 0 }
   }
+
+/-- Well-known FileId for built-in compiler constructs -/
+def FileId.builtin : FileId := ⟨1⟩
+
+/-- Create a synthetic source file for built-in compiler constructs -/
+def SourceFile.builtin : SourceFile :=
+  SourceFile.create FileId.builtin "<built-in>" ""
+
+/-- Create a span for built-in compiler constructs (type classes, instances, etc.) -/
+def Span.builtin : Span :=
+  { start := { file := FileId.builtin, byteOffset := 0, line := 1, column := 1 }
+  , stop := { file := FileId.builtin, byteOffset := 0, line := 1, column := 1 }
+  }
+
+/-- A mapping from FileId to SourceFile for multi-file compilation -/
+structure SourceFileMap where
+  files : Std.HashMap FileId SourceFile
+  deriving Inhabited
+
+namespace SourceFileMap
+
+/-- Create an empty source file map -/
+def empty : SourceFileMap := { files := {} }
+
+/-- Create a source file map from a single source file -/
+def fromSingle (sf : SourceFile) : SourceFileMap :=
+  { files := ({} : Std.HashMap FileId SourceFile).insert sf.id sf }
+
+/-- Add a source file to the map -/
+def insert (map : SourceFileMap) (sf : SourceFile) : SourceFileMap :=
+  { files := map.files.insert sf.id sf }
+
+/-- Look up a source file by FileId -/
+def get? (map : SourceFileMap) (id : FileId) : Option SourceFile :=
+  map.files.get? id
+
+/-- Get the source file for a span -/
+def getForSpan? (map : SourceFileMap) (span : Span) : Option SourceFile :=
+  map.get? span.start.file
+
+/-- Check if the map is empty -/
+def isEmpty (map : SourceFileMap) : Bool :=
+  map.files.isEmpty
+
+/-- Get the number of files in the map -/
+def size (map : SourceFileMap) : Nat :=
+  map.files.size
+
+end SourceFileMap
 
 end Soma.Syntax

@@ -79,6 +79,7 @@ structure Instance where
   className : String
   instanceType : MonoTy
   methods : Array Function
+  span : Syntax.Span
 
 /-- Metadata about a type class -/
 structure TypeClassMeta where

@@ -54,7 +54,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
         let ty? ← resolveType tyExpr
         pure (ty?.getD Ty.unit)
       LowerM.registerConstructor ctor.name.value
-        { name := ctorName, parentType := name.value, parentUnique := typeUnique, tag := i, fields := fields }
+        { name := ctorName, parentType := name.value, parentUnique := typeUnique, tag := i, fields := fields, span := ctor.span }
 
   | .struct name params ctorName fields _span =>
     -- Register the type
@@ -73,7 +73,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
       let ty? ← resolveType field.type_
       pure (ty?.getD Ty.unit)
     LowerM.registerConstructor ctorName.value
-      { name := ctorMetalName, parentType := name.value, parentUnique := typeUnique, tag := 0, fields := fieldTys }
+      { name := ctorMetalName, parentType := name.value, parentUnique := typeUnique, tag := 0, fields := fieldTys, span := ctorName.span }
 
   | .trait name _params _constraints methods _span =>
     -- Register the type class

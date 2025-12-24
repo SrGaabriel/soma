@@ -313,18 +313,20 @@ structure ProjectResult where
   instances : Project.InstanceMetadata
   /-- Constructor metadata (name → tag) -/
   constructors : Std.HashMap Metal.Name Nat
+  /-- Source file map for resolving diagnostic spans -/
+  sourceFiles : SourceFileMap
 
 namespace ProjectResult
 
-def failed (name : String) (diags : Diagnostics) : ProjectResult :=
+def failed (name : String) (diags : Diagnostics) (sourceFiles : SourceFileMap := SourceFileMap.empty) : ProjectResult :=
   { success := false, diagnostics := diags, packageName := name,
-    checkedModules := #[], symbols := {}, instances := {}, constructors := {} }
+    checkedModules := #[], symbols := {}, instances := {}, constructors := {}, sourceFiles }
 
 def succeeded (name : String) (diags : Diagnostics) (modules : Array CheckedModule)
     (symbols : SymbolEnv) (instances : Project.InstanceMetadata)
-    (constructors : Std.HashMap Metal.Name Nat) : ProjectResult :=
+    (constructors : Std.HashMap Metal.Name Nat) (sourceFiles : SourceFileMap) : ProjectResult :=
   { success := true, diagnostics := diags, packageName := name,
-    checkedModules := modules, symbols, instances, constructors }
+    checkedModules := modules, symbols, instances, constructors, sourceFiles }
 
 end ProjectResult
 
@@ -369,21 +371,42 @@ def symbolEnvToGlobalEnv (moduleName : String) (seed : SymbolEnv) : Metal.Lower.
     acc.addGlobal sym.name globalInfo
 
 /-- Extract public symbols from a typed module -/
-def extractPublicSymbols (m : Metal.Module) (seed : SymbolEnv) : SymbolEnv :=
-  m.functions.foldl (init := seed) fun acc fn =>
-    let unique := fn.name.baseUnique?.getD { id := 0, module := m.name, original := fn.name.display }
+def extractPublicSymbols
+    (m : Metal.Module)
+    (globalEnv : Metal.Lower.GlobalEnv)
+    (packageName : String)
+    (seed : SymbolEnv)
+    (supply : UniqueSupply)
+    : SymbolEnv × UniqueSupply := Id.run do
+  let mut acc := seed
+  let mut sup := supply
+  for fn in m.functions do
+    -- Get unique from function name, or generate fresh one
+    let (unique, sup') := match fn.name.baseUnique? with
+      | some u => (u, sup)
+      | none => sup.fresh fn.name.display
+    sup := sup'
+    -- Get span from globalEnv if available
+    let span := match globalEnv.lookupGlobal fn.name.display with
+      | some info => info.definedAt
+      | none => Span.uninhabited  -- Only for synthetic functions not in globalEnv
     let sym : Symbol := {
       unique := unique
       name := fn.name.display
       kind := .binding
       module := m.name
-      package := ""
-      span := Span.uninhabited
+      package := packageName
+      span := span
     }
-    acc.insert sym fn.qualifiedType
+    acc := acc.insert sym fn.qualifiedType
+  pure (acc, sup)
 
 /-- Extract public instances from a typed module -/
-def extractPublicInstances (m : Metal.Module) (seed : Project.InstanceMetadata) (supply : UniqueSupply)
+def extractPublicInstances
+    (m : Metal.Module)
+    (packageName : String)
+    (seed : Project.InstanceMetadata)
+    (supply : UniqueSupply)
     : Project.InstanceMetadata × UniqueSupply := Id.run do
   let mut acc := seed
   let mut sup := supply
@@ -396,8 +419,8 @@ def extractPublicInstances (m : Metal.Module) (seed : Project.InstanceMetadata) 
       name := inst.className
       kind := .instanceMethod inst.className inst.className
       module := m.name
-      package := ""
-      span := Span.uninhabited
+      package := packageName
+      span := inst.span
     }
     match acc.get? inst.className with
     | none => acc := acc.insert inst.className #[(#[inst.instanceType], sym)]
@@ -428,6 +451,7 @@ def checkModule
     (checkedDeps : Std.HashMap String CheckedModule)
     (externalSymbols : Std.HashMap String SymbolEnv)
     (externalInstances : Std.HashMap String Project.InstanceMetadata)
+    (packageName : String)
     (supply : UniqueSupply)
     : Diagnostics × CheckedModule × UniqueSupply :=
   let modName := info.name.toString
@@ -461,8 +485,8 @@ def checkModule
 
   let allDiags := metalRes.diagnostics ++ inferRes.diagnostics
 
-  let publicSymbols := extractPublicSymbols inferRes.module seedEnv
-  let (publicInstances, supply) := extractPublicInstances inferRes.module seedInstances supply
+  let (publicSymbols, supply) := extractPublicSymbols inferRes.module metalRes.result.globalEnv packageName seedEnv supply
+  let (publicInstances, supply) := extractPublicInstances inferRes.module packageName seedInstances supply
 
   let checkedModule : CheckedModule := {
     name := modName
@@ -489,7 +513,7 @@ def checkModulesInOrder
       match graph.get? modName with
       | none => (diags, checked, results, sup)
       | some info =>
-        let (moduleDiags, cm, sup') := checkModule info checked externalSymbols externalInstances sup
+        let (moduleDiags, cm, sup') := checkModule info checked externalSymbols externalInstances packageName sup
         (diags ++ moduleDiags, checked.insert modName cm, results.push cm, sup')
   (allDiags, results, finalSupply)
 
@@ -513,16 +537,19 @@ def parseModuleFile (moduleName : String) (path : System.FilePath) : IO (Except 
     })
 
 /-- Parse all modules in a list, collecting errors -/
-def parseModuleFiles (modules : Array (String × System.FilePath)) : IO (Diagnostics × ModuleGraph) := do
+def parseModuleFiles (modules : Array (String × System.FilePath)) : IO (Diagnostics × ModuleGraph × SourceFileMap) := do
   let mut graph : ModuleGraph := {}
+  let mut sourceMap : SourceFileMap := SourceFileMap.empty
   let mut allDiags : Diagnostics := #[]
 
   for (name, path) in modules do
     match ← parseModuleFile name path with
-    | .ok info => graph := graph.insert name info
+    | .ok info =>
+      graph := graph.insert name info
+      sourceMap := sourceMap.insert info.sourceFile
     | .error diags => allDiags := allDiags ++ diags
 
-  pure (allDiags, graph)
+  pure (allDiags, graph, sourceMap)
 
 /-- Check a single .soma file -/
 def checkSingleFile
@@ -537,18 +564,22 @@ def checkSingleFile
     pure (ProjectResult.failed name diags)
 
   | .ok info =>
+    let sourceMap := SourceFileMap.fromSingle info.sourceFile
     let graph : ModuleGraph := ({} : ModuleGraph).insert name info
     let depGraph := buildDependencyGraph graph
 
     match topoSortModules depGraph with
-    | .cycles groups =>
-      let msg := s!"Cyclic imports detected: {groups.map (·.toList)}"
-      pure (ProjectResult.failed name #[Diagnostic.error msg Span.uninhabited])
+    | .cycles cyclicDeps =>
+      let diags := cyclicDeps.filterMap fun cycle =>
+        cycle.imports[0]?.map fun edge =>
+          let msg := s!"Cyclic import detected: {cycle.modules.toList}"
+          Diagnostic.error msg edge.importSpan
+      pure (ProjectResult.failed name diags sourceMap)
 
     | .sorted sortedNames =>
       match ← loadDeps config.deps with
       | .error e =>
-        pure (ProjectResult.failed name #[Diagnostic.error (toString e) Span.uninhabited])
+        pure (ProjectResult.failed name #[Diagnostic.error (toString e) Span.uninhabited] sourceMap)
 
       | .ok deps =>
         let (extSymbols, extInstances, extConstructors) := processExternalDependencies deps
@@ -565,9 +596,9 @@ def checkSingleFile
           m.constructorMetadata.fold (init := acc) fun env n tag => env.insert n tag
 
         if checkDiags.hasErrors then
-          pure (ProjectResult.failed name checkDiags)
+          pure (ProjectResult.failed name checkDiags sourceMap)
         else
-          pure (ProjectResult.succeeded name checkDiags checkedModules symbols instances constructors)
+          pure (ProjectResult.succeeded name checkDiags checkedModules symbols instances constructors sourceMap)
 
 /-- Check a project directory -/
 def checkDirectory
@@ -579,22 +610,25 @@ def checkDirectory
 
   let modules ← findModules packageName rootDir
 
-  let (parseDiags, graph) ← parseModuleFiles modules
+  let (parseDiags, graph, sourceMap) ← parseModuleFiles modules
 
   if parseDiags.hasErrors then
-    pure (ProjectResult.failed packageName parseDiags)
+    pure (ProjectResult.failed packageName parseDiags sourceMap)
   else
     let depGraph := buildDependencyGraph graph
 
     match topoSortModules depGraph with
-    | .cycles groups =>
-      let msg := s!"Cyclic imports: {groups.map (·.toList)}"
-      pure (ProjectResult.failed packageName #[Diagnostic.error msg Span.uninhabited])
+    | .cycles cyclicDeps =>
+      let diags := cyclicDeps.filterMap fun cycle =>
+        cycle.imports[0]?.map fun edge =>
+          let msg := s!"Cyclic import detected: {cycle.modules.toList}"
+          Diagnostic.error msg edge.importSpan
+      pure (ProjectResult.failed packageName diags sourceMap)
 
     | .sorted sortedNames =>
       match ← loadDeps config.deps with
       | .error e =>
-        pure (ProjectResult.failed packageName #[Diagnostic.error (toString e) Span.uninhabited])
+        pure (ProjectResult.failed packageName #[Diagnostic.error (toString e) Span.uninhabited] sourceMap)
 
       | .ok deps =>
         let (extSymbols, extInstances, extConstructors) := processExternalDependencies deps
@@ -619,11 +653,11 @@ def checkDirectory
         let allDiags := parseDiags ++ checkDiags
 
         if allDiags.hasErrors then
-          pure (ProjectResult.failed packageName allDiags)
+          pure (ProjectResult.failed packageName allDiags sourceMap)
         else
-          pure (ProjectResult.succeeded packageName allDiags checkedModules symbols instances constructors)
+          pure (ProjectResult.succeeded packageName allDiags checkedModules symbols instances constructors sourceMap)
 
-/-- Check a project (file or directory) -/ 
+/-- Check a project (file or directory) -/
 def checkProject
     (config : ProjectConfig)
     (loadDeps : Array (String × System.FilePath) → IO (Except CheckError (Array ExternalDependency)))

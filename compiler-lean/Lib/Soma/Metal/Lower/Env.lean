@@ -52,6 +52,7 @@ structure ConstructorInfo where
   parentUnique : Unique
   tag : Nat
   fields : Array MonoTy
+  span : Span
 
 namespace ConstructorInfo
 

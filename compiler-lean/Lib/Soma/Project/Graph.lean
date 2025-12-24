@@ -1,5 +1,6 @@
 import Soma.Project.Module
 import Std.Data.HashMap
+import Std.Data.HashSet
 
 namespace Soma.Project
 
@@ -8,15 +9,29 @@ open Soma.Syntax
 /-- A graph of modules keyed by their qualified name -/
 abbrev ModuleGraph := Std.HashMap String ModuleInfo
 
-/-- A dependency graph: module name → list of modules it imports -/
-abbrev DependencyGraph := Std.HashMap String (Array String)
+/-- An edge in the dependency graph: target module and the import span that created it -/
+structure ImportEdge where
+  targetModule : String
+  importSpan : Span
+  deriving Repr, BEq
+
+/-- A dependency graph: module name → list of imports with spans -/
+abbrev DependencyGraph := Std.HashMap String (Array ImportEdge)
+
+/-- A cycle in the dependency graph with span information -/
+structure DependencyCycle where
+  /-- Modules involved in the cycle -/
+  modules : Array String
+  /-- Import edges forming the cycle (at least one per module in cycle) -/
+  imports : Array ImportEdge
+  deriving Repr
 
 /-- Result of topological sort -/
 inductive TopoSortResult where
   /-- Successfully sorted modules in dependency order -/
   | sorted (order : Array String)
-  /-- Found one or more cycles -/
-  | cycles (groups : Array (Array String))
+  /-- Found one or more cycles with import span information -/
+  | cycles (cycles : Array DependencyCycle)
   deriving Repr
 
 /-- Convert a QualName to a module path string using slashes (matching findModules format) -/
@@ -24,11 +39,11 @@ def qualNameToModulePath (qn : QualName) : String :=
   if qn.path.isEmpty then qn.name
   else String.intercalate "/" qn.path.toList ++ "/" ++ qn.name
 
-/-- Extract the list of imported module names from a module's AST -/
-def extractImports (ast : Module) : Array String :=
+/-- Extract the list of imports with their spans from a module's AST -/
+def extractImports (ast : Module) : Array ImportEdge :=
   ast.decls.filterMap fun decl =>
     match decl with
-    | .use path _ _ => some (qualNameToModulePath path)
+    | .use path _ span => some { targetModule := qualNameToModulePath path, importSpan := span }
     | _ => none
 
 /-- Build a dependency graph from a module graph -/
@@ -71,7 +86,8 @@ where
     }
 
     let successors := graph.get? v |>.getD #[]
-    let state := successors.foldl (init := state) fun state w =>
+    let state := successors.foldl (init := state) fun state edge =>
+      let w := edge.targetModule
       if !state.indices.contains w then
         let state := strongConnect graph w state
         let vLow := state.lowlinks.get? v |>.getD 0
@@ -112,7 +128,15 @@ private def isCyclicSCC (graph : DependencyGraph) (scc : Array String) : Bool :=
     | none => false
     | some node =>
       let deps := graph.get? node |>.getD #[]
-      deps.contains node
+      deps.any (·.targetModule == node)
+
+/-- Extract import edges that participate in a cycle -/
+private def extractCycleImports (graph : DependencyGraph) (scc : Array String) : Array ImportEdge :=
+  let sccSet : Std.HashSet String := scc.foldl (init := {}) (·.insert ·)
+  scc.foldl (init := #[]) fun acc moduleName =>
+    let imports := graph.get? moduleName |>.getD #[]
+    let cycleImports := imports.filter fun edge => sccSet.contains edge.targetModule
+    acc ++ cycleImports
 
 /-- Topologically sort modules, detecting cycles.-/
 def topoSortModules (graph : DependencyGraph) : TopoSortResult :=
@@ -123,7 +147,9 @@ def topoSortModules (graph : DependencyGraph) : TopoSortResult :=
     -- which means dependencies come first (leaves of the dependency graph are output first)
     .sorted (sccs.map fun scc => scc[0]!)
   else
-    .cycles cyclicSccs
+    let cycles := cyclicSccs.map fun scc =>
+      { modules := scc, imports := extractCycleImports graph scc : DependencyCycle }
+    .cycles cycles
 
 /-- Find all modules in a directory tree. -/
 partial def findModules (packageName : String) (rootDir : System.FilePath) : IO (Array (String × System.FilePath)) := do

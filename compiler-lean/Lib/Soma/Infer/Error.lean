@@ -210,10 +210,8 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0308"
     , message := msg
-    , labels := #[
-        Label.primary actualSpan s!"expected `{expected}`, found `{actual}`",
-        Label.secondary expectedSpan s!"expected due to this"
-      ]
+    , primaryLabel := Label.primary actualSpan s!"expected `{expected}`, found `{actual}`"
+    , secondaryLabels := #[Label.secondary expectedSpan s!"expected due to this"]
     , notes := #[]
     , help := none
     }
@@ -222,7 +220,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0309"
     , message := "kind mismatch"
-    , labels := #[Label.primary span s!"expected kind `{expected}`, found kind `{actual}`"]
+    , primaryLabel := Label.primary span s!"expected kind `{expected}`, found kind `{actual}`", secondaryLabels := #[]
     , notes := #[]
     , help := none
     }
@@ -231,7 +229,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0310"
     , message := "infinite type"
-    , labels := #[Label.primary span s!"type variable `{var.name}` occurs in `{ty}`"]
+    , primaryLabel := Label.primary span s!"type variable `{var.name}` occurs in `{ty}`", secondaryLabels := #[]
     , notes := #["this would create an infinite type like `a = List a`"]
     , help := some "consider using an explicit recursive type wrapper"
     }
@@ -240,7 +238,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0425"
     , message := s!"unknown variable `{name}`"
-    , labels := #[Label.primary span "not found in this scope"]
+    , primaryLabel := Label.primary span "not found in this scope", secondaryLabels := #[]
     , notes := #[]
     , help := none
     }
@@ -249,7 +247,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0412"
     , message := s!"unknown type `{name}`"
-    , labels := #[Label.primary span "not found"]
+    , primaryLabel := Label.primary span "not found", secondaryLabels := #[]
     , notes := #[]
     , help := none
     }
@@ -258,7 +256,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0405"
     , message := s!"unknown type class `{name}`"
-    , labels := #[Label.primary span "not found"]
+    , primaryLabel := Label.primary span "not found", secondaryLabels := #[]
     , notes := #[]
     , help := none
     }
@@ -267,7 +265,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0277"
     , message := s!"no instance for `{constraint}`"
-    , labels := #[Label.primary span "required by this"]
+    , primaryLabel := Label.primary span "required by this", secondaryLabels := #[]
     , notes := #[]
     , help := some s!"consider adding an instance declaration for `{constraint}`"
     }
@@ -276,7 +274,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0282"
     , message := s!"type variable `{var.name}` is ambiguous"
-    , labels := #[Label.primary span "cannot infer type"]
+    , primaryLabel := Label.primary span "cannot infer type", secondaryLabels := #[]
     , notes := #["the type of this expression could not be fully determined"]
     , help := some "consider adding a type annotation"
     }
@@ -286,7 +284,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0107"
     , message := s!"wrong number of type arguments for `{name}`"
-    , labels := #[Label.primary span s!"expected {expected} type {args}, found {actual}"]
+    , primaryLabel := Label.primary span s!"expected {expected} type {args}, found {actual}", secondaryLabels := #[]
     , notes := #[]
     , help := none
     }
@@ -295,7 +293,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0108"
     , message := s!"tuple has too many elements ({size})"
-    , labels := #[Label.primary span "maximum tuple size is 8"]
+    , primaryLabel := Label.primary span "maximum tuple size is 8", secondaryLabels := #[]
     , notes := #[]
     , help := some "consider using a struct or array instead"
     }
@@ -305,7 +303,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0061"
     , message := s!"wrong number of arguments for `{name}`"
-    , labels := #[Label.primary span s!"expected {expected} {args}, found {actual}"]
+    , primaryLabel := Label.primary span s!"expected {expected} {args}, found {actual}", secondaryLabels := #[]
     , notes := #[]
     , help := none
     }
@@ -314,7 +312,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0618"
     , message := "expected function"
-    , labels := #[Label.primary span s!"`{ty}` is not a function"]
+    , primaryLabel := Label.primary span s!"`{ty}` is not a function", secondaryLabels := #[]
     , notes := #[]
     , help := none
     }
@@ -323,7 +321,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0308"
     , message := "pattern type mismatch"
-    , labels := #[Label.primary span s!"expected pattern for type `{expected}`"]
+    , primaryLabel := Label.primary span s!"expected pattern for type `{expected}`", secondaryLabels := #[]
     , notes := #[]
     , help := none
     }
@@ -332,7 +330,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0531"
     , message := s!"unknown constructor `{name}`"
-    , labels := #[Label.primary span "not found"]
+    , primaryLabel := Label.primary span "not found", secondaryLabels := #[]
     , notes := #[]
     , help := none
     }
@@ -341,7 +339,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0609"
     , message := s!"type `{typeName}` has no field `{fieldName}`"
-    , labels := #[Label.primary span "unknown field"]
+    , primaryLabel := Label.primary span "unknown field", secondaryLabels := #[]
     , notes := #[]
     , help := none
     }
@@ -350,7 +348,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0282"
     , message := s!"cannot infer type {context}"
-    , labels := #[Label.primary span "type annotation needed"]
+    , primaryLabel := Label.primary span "type annotation needed", secondaryLabels := #[]
     , notes := #[]
     , help := some "add an explicit type annotation"
     }
@@ -359,10 +357,8 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0428"
     , message := s!"duplicate definition `{name}`"
-    , labels := #[
-        Label.primary secondSpan "redefined here",
-        Label.secondary firstSpan "first defined here"
-      ]
+    , primaryLabel := Label.primary secondSpan "redefined here"
+    , secondaryLabels := #[Label.secondary firstSpan "first defined here"]
     , notes := #[]
     , help := none
     }
@@ -371,7 +367,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0277"
     , message := s!"constraint `{constraint}` not satisfied"
-    , labels := #[Label.primary span reason]
+    , primaryLabel := Label.primary span reason, secondaryLabels := #[]
     , notes := #[]
     , help := none
     }
@@ -380,7 +376,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0072"
     , message := s!"recursive type `{name}` has infinite size"
-    , labels := #[Label.primary span "recursive without indirection"]
+    , primaryLabel := Label.primary span "recursive without indirection", secondaryLabels := #[]
     , notes := #[]
     , help := some "insert an indirection (e.g., Box, Ref) to break the cycle"
     }
@@ -389,7 +385,7 @@ def toDiagnostic : InferError → Diagnostic
     { severity := .error
     , code := some "E0521"
     , message := s!"type variable `{name}` escapes its scope"
-    , labels := #[Label.primary span "cannot escape"]
+    , primaryLabel := Label.primary span "cannot escape", secondaryLabels := #[]
     , notes := #["rigid type variables introduced by `forall` cannot escape their scope"]
     , help := none
     }

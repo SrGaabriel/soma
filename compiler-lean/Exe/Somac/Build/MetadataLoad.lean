@@ -178,15 +178,32 @@ def uniqueFromJson (j : Lean.Json) : Except String Unique := do
   let original ← j.getObjValAs? String "original"
   pure { id, module, original }
 
+/-- Parse a Span from JSON -/
+def spanFromJson (j : Lean.Json) : Except String Span := do
+  let fileId ← j.getObjValAs? Nat "fileId"
+  let startOffset ← j.getObjValAs? Nat "startOffset"
+  let endOffset ← j.getObjValAs? Nat "endOffset"
+  let startLine ← j.getObjValAs? Nat "startLine"
+  let startColumn ← j.getObjValAs? Nat "startColumn"
+  let endLine ← j.getObjValAs? Nat "endLine"
+  let endColumn ← j.getObjValAs? Nat "endColumn"
+  pure {
+    start := { file := ⟨fileId⟩, byteOffset := startOffset, line := startLine, column := startColumn }
+    stop := { file := ⟨fileId⟩, byteOffset := endOffset, line := endLine, column := endColumn }
+  }
+
 /-- Parse a Symbol from JSON -/
 def symbolFromJson (j : Lean.Json) : Except String Symbol := do
   let name ← j.getObjValAs? String "name"
   let kindJ ← j.getObjVal? "kind"
   let kind ← symbolKindFromJson kindJ
   let module ← j.getObjValAs? String "module"
+  let package ← j.getObjValAs? String "package"
+  let spanJ ← j.getObjVal? "span"
+  let span ← spanFromJson spanJ
   let uniqueJ ← j.getObjVal? "unique"
   let unique ← uniqueFromJson uniqueJ
-  pure { unique, name, kind, module, package := "", span := Span.uninhabited }
+  pure { unique, name, kind, module, package, span }
 
 /-- Parse a symbol entry (symbol + type) from JSON -/
 def symbolEntryFromJson (j : Lean.Json) : Except String (Symbol × QualifiedType) := do

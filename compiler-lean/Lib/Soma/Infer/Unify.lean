@@ -263,17 +263,21 @@ def unifyWith (expected actual : MonoTy) (purpose : UnifyPurpose)
 /-- Unify a list of types to a single type -/
 def unifyAll (types : Array MonoTy) (spans : Array Span) (purpose : UnifyPurpose)
     : Except InferError (MonoTy × Subst) := do
+  -- Assert that spans and types arrays have the same length
+  if types.size != spans.size then
+    panic! s!"unifyAll: types.size ({types.size}) != spans.size ({spans.size})"
+
   match types[0]? with
   | none => return (.starPrim .unit, Subst.empty)
   | some first =>
-    let firstSpan := spans[0]?.getD Span.uninhabited
+    let firstSpan := spans[0]!
     let mut result := first
     let mut σ := Subst.empty
     for i in [1:types.size] do
       match types[i]? with
       | none => pure ()
       | some ty =>
-        let tySpan := spans[i]?.getD Span.uninhabited
+        let tySpan := spans[i]!
         let ctx : UnifyContext := {
           purpose := purpose
           expectedSpan := firstSpan

@@ -1445,7 +1445,7 @@ def buildModuleFromDeclMap (tree : ParsedTree) (declAsts : Std.HashMap NodeId De
   let decls := declIds.filterMap fun nodeId => declAsts.get? nodeId
   let span := match tree.red.root with
     | some root => root.span tree.red.source
-    | none => Span.uninhabited
+    | none => panic! "buildModuleFromDeclMap: ParsedTree has no root"
   return { name := moduleName, decls := decls, span := span }
 
 end Soma.Syntax

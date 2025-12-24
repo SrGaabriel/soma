@@ -131,95 +131,33 @@ def parseDeps (p : Parsed) : Array (String × String) :=
       | .ok pair => some pair
       | .error _ => none
 
-/-- Check a single .soma file -/
-def checkSingleFile (opts : CheckOptions) : IO (Array Syntax.Diagnostic × Option Syntax.SourceFile) := do
-  let path : System.FilePath := opts.input
-  let result ← Soma.Check.fullFromFileSimple path.toString
-  return (result.diagnostics, some result.sourceFile)
-
-/-- Check a directory of .soma files -/
-def checkDirectory (opts : CheckOptions) : IO (Array Syntax.Diagnostic) := do
-  let rootDir : System.FilePath := opts.input
-  let packageName := opts.name.getD (rootDir.fileName.getD "app")
-
-  -- Find all modules
-  let modules ← Project.findModules packageName rootDir
-
-  -- Parse all modules
-  let (parseDiags, graph) ← Soma.Check.parseModuleFiles modules
-
-  if Syntax.Diagnostics.hasErrors parseDiags then
-    return parseDiags
-
-  let depGraph := Project.buildDependencyGraph graph
-
-  -- Check for cycles
-  match Project.topoSortModules depGraph with
-  | .cycles groups =>
-    let msg := s!"Cyclic imports detected: {groups.map (·.toList)}"
-    return #[Syntax.Diagnostic.error msg Syntax.Span.uninhabited]
-
-  | .sorted sortedNames =>
-    -- Load external dependencies
-    let externalDeps ← Somac.Build.loadExternalDependencies (opts.deps.map fun (n, p) => (n, ⟨p⟩))
-    match externalDeps with
-    | .error e =>
-      return #[Syntax.Diagnostic.error (toString e) Syntax.Span.uninhabited]
-
-    | .ok deps =>
-      let (extSymbols, extInstances, extConstructors) := Soma.Check.processExternalDependencies deps
-
-      -- Initialize UniqueSupply
-      let supply := Soma.UniqueSupply.initial packageName
-
-      -- Compile all modules (type check)
-      let (compileDiags, _, _) := Soma.Check.checkModulesInOrder sortedNames graph extSymbols extInstances packageName supply
-
-      return compileDiags
-
 /-- Handler for the `check` command -/
 def runCheck (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
   let name := p.flag? "name" |>.map (·.as! String)
   let format := p.flag? "format" |>.map (·.as! String) |>.getD "json"
 
-  let opts : CheckOptions := {
-    input := input
+  let config : Soma.Check.ProjectConfig := {
+    input := ⟨input⟩
     name := name
-    deps := parseDeps p
-    format := if format == "human" then .human else .json
+    deps := parseDeps p |>.map fun (n, p) => (n, ⟨p⟩)
   }
 
-  let inputPath : System.FilePath := opts.input
-
-  let (diags, sourceFile) ← if ← inputPath.isDir then
-    let diags ← checkDirectory opts
-    pure (diags, none)
-  else if inputPath.extension == some "soma" then
-    checkSingleFile opts
-  else
-    let msg := s!"Input is neither a .soma file nor a directory: {opts.input}"
-    pure (#[Syntax.Diagnostic.error msg Syntax.Span.uninhabited], none)
+  let result ← Soma.Check.checkProject config Somac.Build.loadExternalDependencies
 
   -- Output diagnostics
-  match opts.format with
-  | .json =>
-    IO.println (Logging.Error.renderDiagnosticsJson diags)
-  | .human =>
-    match sourceFile with
-    | some sf => Logging.Error.printDiagnostics diags sf
-    | none =>
-      for d in diags do
-        let severity := toString d.severity
-        IO.eprintln s!"{severity}: {d.message}"
-
-    if !diags.isEmpty then
+  match format with
+  | "json" =>
+    IO.println (Logging.Error.renderDiagnosticsJsonWithMap result.diagnostics result.sourceFiles)
+  | _ => -- "human"
+    Logging.Error.printDiagnosticsWithMap result.diagnostics result.sourceFiles
+    if !result.diagnostics.isEmpty then
       IO.eprintln ""
-      IO.eprintln (Logging.Error.renderSummary diags)
+      IO.eprintln (Logging.Error.renderSummary result.diagnostics)
     else
       IO.println "No errors found."
 
-  return if Syntax.Diagnostics.hasErrors diags then 1 else 0
+  return if Syntax.Diagnostics.hasErrors result.diagnostics then 1 else 0
 
 /-- Handler for the `metadata` command -/
 def runMetadata (p : Parsed) : IO UInt32 := do

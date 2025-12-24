@@ -535,6 +535,7 @@ def inferModule
         className := inst.className
         instanceType := instanceType
         methods := typedMethods
+        span := inst.span
       }
       typedInstances := typedInstances.push typedInstance
 

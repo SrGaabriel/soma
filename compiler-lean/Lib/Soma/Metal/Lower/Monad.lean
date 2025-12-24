@@ -157,8 +157,7 @@ def lookupVar (localEnv : LocalEnv scope) (name : String)
       -- Finally check constructors (they're also valid as expressions)
       match genv.lookupConstructor name with
       | some ctorInfo =>
-        -- Use uninhabited span for synthetic GlobalInfo from constructor lookup
-        let globalInfo : GlobalInfo := { name := ctorInfo.name, typeSyntax := none, definedAt := Span.uninhabited }
+        let globalInfo : GlobalInfo := { name := ctorInfo.name, typeSyntax := none, definedAt := ctorInfo.span }
         pure (some (.inr globalInfo))
       | none => pure none
 

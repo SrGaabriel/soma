@@ -118,8 +118,8 @@ where
       | some instArg, some constArg =>
         let ctx : UnifyContext := {
           purpose := .general
-          expectedSpan := Span.uninhabited
-          actualSpan := Span.uninhabited
+          expectedSpan := Span.builtin
+          actualSpan := Span.builtin
         }
         match Unify.unifyMono (σ.apply instArg) (σ.apply constArg) ctx with
         | .ok σ' => go (i + 1) (σ'.compose σ)
@@ -144,11 +144,20 @@ where
           { c with args := c.args.map (σ.apply ·) }
         some (freshInst, σ, subConstraints, nextId)
 
-/-- Check if a constraint is immediately satisfiable (no sub-constraints) -/
+/-- Check if a constraint is immediately satisfiable (no sub-constraints).
+    This is a fast check that doesn't require fresh ID generation - it only
+    checks whether a matching instance exists and has no constraints. -/
 def hasDirectInstance (env : InstanceEnv) (constraint : Constraint) : Bool :=
-  match env.findInstance constraint 1000000 with -- todo: review
-  | some (_, _, subConstraints, _) => subConstraints.isEmpty
-  | none => false
+  let instances := env.getInstances constraint.className
+  instances.any fun inst =>
+    inst.constraints.isEmpty && canMatch inst.args constraint.args
+where
+  /-- Check if instance args can potentially match constraint args.
+      An instance arg matches if it's a type variable (polymorphic) or equals the constraint arg. -/
+  canMatch (instArgs constArgs : Array MonoTy) : Bool :=
+    instArgs.size == constArgs.size &&
+    (instArgs.zip constArgs).all fun (instArg, constArg) =>
+      instArg.hasVars || instArg == constArg
 
 /-- Get all instances as a flat array -/
 def allInstances (env : InstanceEnv) : Array InstanceDecl :=
@@ -165,7 +174,6 @@ instance : ToString InstanceEnv := ⟨InstanceEnv.toString⟩
 
 end InstanceEnv
 
-
 /-- Build a default instance environment with common instances -/
 def defaultInstanceEnv : InstanceEnv := Id.run do
   let mut env := InstanceEnv.empty
@@ -175,28 +183,28 @@ def defaultInstanceEnv : InstanceEnv := Id.run do
     name := TypeClassName.eq
     params := #[⟨"a", 0, .star⟩]
     superclasses := #[]
-    span := Span.uninhabited
+    span := Span.builtin
   }
 
   env := env.addClass {
     name := TypeClassName.ord
     params := #[⟨"a", 0, .star⟩]
     superclasses := #[{ className := TypeClassName.eq, args := #[.var ⟨"a", 0, .star⟩] }]
-    span := Span.uninhabited
+    span := Span.builtin
   }
 
   env := env.addClass {
     name := TypeClassName.show_
     params := #[⟨"a", 0, .star⟩]
     superclasses := #[]
-    span := Span.uninhabited
+    span := Span.builtin
   }
 
   env := env.addClass {
     name := TypeClassName.num
     params := #[⟨"a", 0, .star⟩]
     superclasses := #[]
-    span := Span.uninhabited
+    span := Span.builtin
   }
 
   -- Add instances for primitives
@@ -208,7 +216,7 @@ def defaultInstanceEnv : InstanceEnv := Id.run do
       typeVars := #[]
       constraints := #[]
       id := 0
-      span := Span.uninhabited
+      span := Span.builtin
     }
     env := env.addInstance {
       className := TypeClassName.show_
@@ -216,7 +224,7 @@ def defaultInstanceEnv : InstanceEnv := Id.run do
       typeVars := #[]
       constraints := #[]
       id := 0
-      span := Span.uninhabited
+      span := Span.builtin
     }
 
   for prim in [StarPrimitive.int, .long, .short, .byte, .float, .double] do
@@ -227,7 +235,7 @@ def defaultInstanceEnv : InstanceEnv := Id.run do
       typeVars := #[]
       constraints := #[]
       id := 0
-      span := Span.uninhabited
+      span := Span.builtin
     }
     env := env.addInstance {
       className := TypeClassName.num
@@ -235,7 +243,7 @@ def defaultInstanceEnv : InstanceEnv := Id.run do
       typeVars := #[]
       constraints := #[]
       id := 0
-      span := Span.uninhabited
+      span := Span.builtin
     }
 
   return env
