@@ -22,6 +22,8 @@ def main : IO UInt32 := do
 
   -- Run end-to-end checking tests
   Test.Checking.run
+  
+  Test.Error.run
 
   IO.println ""
   IO.println "All test suites completed."

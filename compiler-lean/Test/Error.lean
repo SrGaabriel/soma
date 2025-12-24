@@ -21,10 +21,8 @@ def run : IO Unit := do
     severity := .error
     code := some "E0001"
     message := "two labels same span"
-    labels := #[
-      Label.primary span1 "first message",
-      Label.secondary span1 "second message"
-    ]
+    primaryLabel := Label.primary span1 "first message"
+    secondaryLabels := #[Label.secondary span1 "second message"]
     notes := #[]
     help := none
   }
@@ -37,8 +35,8 @@ def run : IO Unit := do
     severity := .warning
     code := some "W0002"
     message := "three labels same span"
-    labels := #[
-      Label.primary span1 "first",
+    primaryLabel := Label.primary span1 "first"
+    secondaryLabels := #[
       Label.secondary span1 "second",
       Label.secondary span1 "third"
     ]
@@ -62,10 +60,8 @@ def run : IO Unit := do
     severity := .error
     code := none
     message := "type mismatch"
-    labels := #[
-      Label.primary { start := fooStart, stop := fooEnd } "Int",
-      Label.secondary { start := barStart, stop := barEnd } "String"
-    ]
+    primaryLabel := Label.primary { start := fooStart, stop := fooEnd } "Int"
+    secondaryLabels := #[Label.secondary { start := barStart, stop := barEnd } "String"]
     notes := #[]
     help := none
   }
@@ -86,10 +82,8 @@ def run : IO Unit := do
     severity := .error
     code := none
     message := "overlapping spans"
-    labels := #[
-      Label.primary { start := overlapStart1, stop := overlapEnd1 } "starts here",
-      Label.secondary { start := overlapStart2, stop := overlapEnd2 } "extends further"
-    ]
+    primaryLabel := Label.primary { start := overlapStart1, stop := overlapEnd1 } "starts here"
+    secondaryLabels := #[Label.secondary { start := overlapStart2, stop := overlapEnd2 } "extends further"]
     notes := #[]
     help := none
   }
@@ -108,9 +102,8 @@ def run : IO Unit := do
     severity := .error
     code := some "E0425"
     message := "end column < start column"
-    labels := #[
-      Label.primary { start := mlStart, stop := mlEnd } "block spans here"
-    ]
+    primaryLabel := Label.primary { start := mlStart, stop := mlEnd } "block spans here"
+    secondaryLabels := #[]
     notes := #[]
     help := none
   }
@@ -129,9 +122,8 @@ def run : IO Unit := do
     severity := .error
     code := none
     message := "end column > start column"
-    labels := #[
-      Label.primary { start := ml2Start, stop := ml2End } "span goes right"
-    ]
+    primaryLabel := Label.primary { start := ml2Start, stop := ml2End } "span goes right"
+    secondaryLabels := #[]
     notes := #[]
     help := none
   }
@@ -152,10 +144,8 @@ def run : IO Unit := do
     severity := .error
     code := none
     message := "mixed span types"
-    labels := #[
-      Label.primary { start := bodyStart, stop := bodyEnd } "multi-line body",
-      Label.secondary { start := paramStart, stop := paramEnd } "parameter here"
-    ]
+    primaryLabel := Label.primary { start := bodyStart, stop := bodyEnd } "multi-line body"
+    secondaryLabels := #[Label.secondary { start := paramStart, stop := paramEnd } "parameter here"]
     notes := #["This combines both span types"]
     help := some "Consider refactoring"
   }
@@ -187,8 +177,8 @@ def run : IO Unit := do
     severity := .error
     code := some "E9999"
     message := "the final boss of diagnostics"
-    labels := #[
-      Label.primary { start := aStart, stop := aEnd } "param a",
+    primaryLabel := Label.primary { start := aStart, stop := aEnd } "param a"
+    secondaryLabels := #[
       Label.secondary { start := aStart, stop := aEnd } "also here",
       Label.secondary { start := aStart, stop := aEnd } "and here too",
       Label.primary { start := bodyStart, stop := bodyEnd } "function body spans here",

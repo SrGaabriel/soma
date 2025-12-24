@@ -15,7 +15,7 @@ import Soma.Metal
 import Soma.Infer
 import Soma.Infer.Module
 import Soma.Project
-import Somac.Build
+import Soma.Project.Check
 import Test.Fixtures
 
 namespace Test.Checking
@@ -25,6 +25,7 @@ open Soma.Infer
 open Soma.Typing
 open Soma.Metal (UntypedModule)
 open Soma.Project
+open Soma.Check
 open Test.Fixtures
 
 /-- Expectation parsed from fixture comment -/
@@ -84,7 +85,7 @@ def errorSpanInfo (r : CheckResult) : Array String :=
     let d := e.toDiagnostic
     let labels := d.labels.map fun l =>
       s!"    label: {l.span} (bytes {l.span.start.byteOffset}-{l.span.stop.byteOffset}) - {l.message}"
-    s!"{d.message} at primary span line {d.span?.map (·.start.line) |>.getD 0}\n{String.intercalate "\n" labels.toList}"
+    s!"{d.message} at primary span line {d.span.start.line}\n{String.intercalate "\n" labels.toList}"
 
 end CheckResult
 
@@ -108,7 +109,7 @@ def runCheck (source : String) (moduleName : String := "Test") : CheckResult := 
   let (tree, parseDiags) := parseToTree sourceFile
 
   -- Phase 3: Lower CST to AST
-  let (ast, astLowerDiags) := lower tree moduleName
+  let (ast, astLowerDiags) := Soma.Syntax.lower tree moduleName
 
   -- Phase 4: Lower AST to Metal IR
   let lowerResult := Soma.Metal.Lower.lower ast
@@ -150,7 +151,7 @@ def runCheckingTest (tc : TestCase) : IO TestResult := do
     IO.println s!"  [DEBUG] Source line starts: {sf.lineStarts.toList}"
     let (tree, _) := parseToTree sf
     IO.println s!"  [DEBUG] Green tree width: {tree.green.width} bytes"
-    let (ast, _) := lower tree "Test"
+    let (ast, _) := Soma.Syntax.lower tree "Test"
     -- Print all decl spans
     IO.println s!"  [DEBUG] AST declarations:"
     for decl in ast.decls do
@@ -216,7 +217,7 @@ def testMultiFilePackage : IO TestResult := do
   let modules ← Soma.Project.findModules "deplib" srcPath
 
   -- Parse all modules
-  let (parseDiags, graph) ← Somac.Build.parseModules modules
+  let (parseDiags, graph, _sourceMap) ← Soma.Check.parseModuleFiles modules
 
   if Diagnostics.hasErrors parseDiags then
     let errors := parseDiags.filter (·.isError)
@@ -227,12 +228,12 @@ def testMultiFilePackage : IO TestResult := do
   let depGraph := Soma.Project.buildDependencyGraph graph
   match Soma.Project.topoSortModules depGraph with
   | .cycles groups =>
-    return .failed s!"Cyclic imports detected: {groups.map (·.toList)}"
+    return .failed s!"Cyclic imports detected: {groups.map (·.modules.toList)}"
   | .sorted sortedNames =>
     -- Compile all modules
     let supply := Soma.UniqueSupply.initial "deplib"
-    let (compileDiags, _compiledModules, _) := Somac.Build.compileModulesInOrder
-      sortedNames graph {} {} {} "deplib" supply
+    let (compileDiags, _compiledModules, _) := Soma.Check.checkModulesInOrder
+      sortedNames graph {} {} "deplib" supply
 
     if Diagnostics.hasErrors compileDiags then
       let errors := compileDiags.filter (·.isError)

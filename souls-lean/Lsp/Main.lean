@@ -17,10 +17,7 @@ open Lapis.Server.Diagnostics
 /-- Convert Soma diagnostics to LSP format -/
 def convertDiagnostics (diags : Soma.Syntax.Diagnostics) : Array Diagnostic :=
   diags.map fun diag =>
-    let range := if h : 0 < diag.labels.size then
-        spanToRange diag.labels[0].span
-      else
-        { start := ⟨0, 0⟩, «end» := ⟨0, 0⟩ }
+    let range := spanToRange diag.span
     { range := range
     , severity := some (match diag.severity with
         | .error => .error
