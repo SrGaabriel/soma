@@ -163,7 +163,7 @@ def run : IO Unit := do
 
   -- Multi-line span from line 2 to line 5 (body of function)
   let bodyStart : SourceLoc := { file := ⟨0⟩, byteOffset := 45, line := 2, column := 5 }
-  let bodyEnd : SourceLoc := { file := ⟨0⟩, byteOffset := 150, line := 5, column := 24 }
+  let bodyEnd : SourceLoc := { file := ⟨0⟩, byteOffset := 150, line := 5, column := 28 }
 
   -- Another multi-line span that overlaps (match block lines 3-6)
   let matchStart : SourceLoc := { file := ⟨0⟩, byteOffset := 75, line := 3, column := 5 }
