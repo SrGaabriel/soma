@@ -130,13 +130,7 @@ inductive Ty : Kind → Type where
   | userCon (k : Kind) (id : TypeId) : Ty k
   | app : Ty (.arrow k1 k2) → Ty k1 → Ty k2
   | arrow : Ty .star → Ty .star → Ty .star
-  | tuple2 : Ty .star → Ty .star → Ty .star
-  | tuple3 : Ty .star → Ty .star → Ty .star → Ty .star
-  | tuple4 : Ty .star → Ty .star → Ty .star → Ty .star → Ty .star
-  | tuple5 : Ty .star → Ty .star → Ty .star → Ty .star → Ty .star → Ty .star
-  | tuple6 : Ty .star → Ty .star → Ty .star → Ty .star → Ty .star → Ty .star → Ty .star
-  | tuple7 : Ty .star → Ty .star → Ty .star → Ty .star → Ty .star → Ty .star → Ty .star → Ty .star
-  | tuple8 : Ty .star → Ty .star → Ty .star → Ty .star → Ty .star → Ty .star → Ty .star → Ty .star → Ty .star
+  | tuple (fst snd : Ty .star) (rest : List (Ty .star)) : Ty .star
 
 /-- Monomorphic types (kind *) are the most common -/
 abbrev MonoTy := Ty Kind.star
@@ -174,13 +168,14 @@ mutual
     | .userCon _ id => .userCon .star id
     | .app f a => .app (Ty.substFunK f σ) (Ty.substArgK a σ)
     | .arrow from_ to => .arrow (Ty.substK from_ σ) (Ty.substK to σ)
-    | .tuple2 a b => .tuple2 (Ty.substK a σ) (Ty.substK b σ)
-    | .tuple3 a b c => .tuple3 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ)
-    | .tuple4 a b c d => .tuple4 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ) (Ty.substK d σ)
-    | .tuple5 a b c d e => .tuple5 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ) (Ty.substK d σ) (Ty.substK e σ)
-    | .tuple6 a b c d e f => .tuple6 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ) (Ty.substK d σ) (Ty.substK e σ) (Ty.substK f σ)
-    | .tuple7 a b c d e f g => .tuple7 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ) (Ty.substK d σ) (Ty.substK e σ) (Ty.substK f σ) (Ty.substK g σ)
-    | .tuple8 a b c d e f g h => .tuple8 (Ty.substK a σ) (Ty.substK b σ) (Ty.substK c σ) (Ty.substK d σ) (Ty.substK e σ) (Ty.substK f σ) (Ty.substK g σ) (Ty.substK h σ)
+    | .tuple fst snd rest =>
+      .tuple (Ty.substK fst σ) (Ty.substK snd σ) (Ty.substListK rest σ)
+
+  /-- Substitute in a list of types -/
+  def Ty.substListK (ts : List MonoTy) (σ : KindSubst) : List MonoTy :=
+    match ts with
+    | [] => []
+    | t :: rest => Ty.substK t σ :: Ty.substListK rest σ
 
   /-- Substitute in a function-kinded type using kind-polymorphic substitution -/
   def Ty.substFunK : {k1 k2 : Kind} → Ty (.arrow k1 k2) → KindSubst → Ty (.arrow k1 k2)
@@ -210,13 +205,14 @@ mutual
     | .userCon _ id => .userCon .star id
     | .app f a => .app (Ty.substFun f σ) (Ty.substArg a σ)
     | .arrow from_ to => .arrow (Ty.subst from_ σ) (Ty.subst to σ)
-    | .tuple2 a b => .tuple2 (Ty.subst a σ) (Ty.subst b σ)
-    | .tuple3 a b c => .tuple3 (Ty.subst a σ) (Ty.subst b σ) (Ty.subst c σ)
-    | .tuple4 a b c d => .tuple4 (Ty.subst a σ) (Ty.subst b σ) (Ty.subst c σ) (Ty.subst d σ)
-    | .tuple5 a b c d e => .tuple5 (Ty.subst a σ) (Ty.subst b σ) (Ty.subst c σ) (Ty.subst d σ) (Ty.subst e σ)
-    | .tuple6 a b c d e f => .tuple6 (Ty.subst a σ) (Ty.subst b σ) (Ty.subst c σ) (Ty.subst d σ) (Ty.subst e σ) (Ty.subst f σ)
-    | .tuple7 a b c d e f g => .tuple7 (Ty.subst a σ) (Ty.subst b σ) (Ty.subst c σ) (Ty.subst d σ) (Ty.subst e σ) (Ty.subst f σ) (Ty.subst g σ)
-    | .tuple8 a b c d e f g h => .tuple8 (Ty.subst a σ) (Ty.subst b σ) (Ty.subst c σ) (Ty.subst d σ) (Ty.subst e σ) (Ty.subst f σ) (Ty.subst g σ) (Ty.subst h σ)
+    | .tuple fst snd rest =>
+      .tuple (Ty.subst fst σ) (Ty.subst snd σ) (Ty.substList rest σ)
+
+  /-- Substitute in a list of types (legacy) -/
+  def Ty.substList (ts : List MonoTy) (σ : TySubst) : List MonoTy :=
+    match ts with
+    | [] => []
+    | t :: rest => Ty.subst t σ :: Ty.substList rest σ
 
   /-- Substitute in a function-kinded type -/
   def Ty.substFun : {k1 k2 : Kind} → Ty (.arrow k1 k2) → TySubst → Ty (.arrow k1 k2)
@@ -241,13 +237,7 @@ def isAtom : {k : Kind} → Ty k → Bool
   | _, .userCon _ _ => true
   | _, .app _ _ => false
   | _, .arrow _ _ => false
-  | _, .tuple2 _ _ => true  -- tuples are in parens anyway
-  | _, .tuple3 _ _ _ => true
-  | _, .tuple4 _ _ _ _ => true
-  | _, .tuple5 _ _ _ _ _ => true
-  | _, .tuple6 _ _ _ _ _ _ => true
-  | _, .tuple7 _ _ _ _ _ _ _ => true
-  | _, .tuple8 _ _ _ _ _ _ _ _ => true
+  | _, .tuple _ _ _ => true  -- tuples are in parens anyway
 
 /-- Pretty print a type of any kind -/
 def toString : {k : Kind} → Ty k → String
@@ -261,13 +251,9 @@ def toString : {k : Kind} → Ty k → String
   | _, .arrow from_ to =>
     let fromStr := if isAtom from_ then toString from_ else s!"({toString from_})"
     s!"{fromStr} -> {toString to}"
-  | _, .tuple2 a b => s!"({toString a}, {toString b})"
-  | _, .tuple3 a b c => s!"({toString a}, {toString b}, {toString c})"
-  | _, .tuple4 a b c d => s!"({toString a}, {toString b}, {toString c}, {toString d})"
-  | _, .tuple5 a b c d e => s!"({toString a}, {toString b}, {toString c}, {toString d}, {toString e})"
-  | _, .tuple6 a b c d e f => s!"({toString a}, {toString b}, {toString c}, {toString d}, {toString e}, {toString f})"
-  | _, .tuple7 a b c d e f g => s!"({toString a}, {toString b}, {toString c}, {toString d}, {toString e}, {toString f}, {toString g})"
-  | _, .tuple8 a b c d e f g h => s!"({toString a}, {toString b}, {toString c}, {toString d}, {toString e}, {toString f}, {toString g}, {toString h})"
+  | _, .tuple fst snd rest =>
+    let elemStrs := [toString fst, toString snd] ++ rest.map toString
+    s!"({", ".intercalate elemStrs})"
 
 instance : ToString (Ty k) := ⟨Ty.toString⟩
 
@@ -305,28 +291,32 @@ def ioCon : Ty (.arrow .star .star) := .higherPrim .io
 def io (elem : MonoTy) : MonoTy := .app ioCon elem
 
 /-- Construct a tuple type from an array of element types -/
-def tuple (elements : Array MonoTy) : MonoTy :=
-  match h : elements.size with
-  | 0 => unit
-  | 1 => elements[0]'(by omega)
-  | 2 => .tuple2 (elements[0]'(by omega)) (elements[1]'(by omega))
-  | 3 => .tuple3 (elements[0]'(by omega)) (elements[1]'(by omega)) (elements[2]'(by omega))
-  | 4 => .tuple4 (elements[0]'(by omega)) (elements[1]'(by omega)) (elements[2]'(by omega)) (elements[3]'(by omega))
-  | 5 => .tuple5 (elements[0]'(by omega)) (elements[1]'(by omega)) (elements[2]'(by omega)) (elements[3]'(by omega)) (elements[4]'(by omega))
-  | 6 => .tuple6 (elements[0]'(by omega)) (elements[1]'(by omega)) (elements[2]'(by omega)) (elements[3]'(by omega)) (elements[4]'(by omega)) (elements[5]'(by omega))
-  | 7 => .tuple7 (elements[0]'(by omega)) (elements[1]'(by omega)) (elements[2]'(by omega)) (elements[3]'(by omega)) (elements[4]'(by omega)) (elements[5]'(by omega)) (elements[6]'(by omega))
-  | 8 => .tuple8 (elements[0]'(by omega)) (elements[1]'(by omega)) (elements[2]'(by omega)) (elements[3]'(by omega)) (elements[4]'(by omega)) (elements[5]'(by omega)) (elements[6]'(by omega)) (elements[7]'(by omega))
-  | _ + 9 =>
-    -- For tuples larger than 8, nest: (first8..., rest...)
-    let t8 := tuple8
-      (elements[0]'(by omega)) (elements[1]'(by omega)) (elements[2]'(by omega)) (elements[3]'(by omega))
-      (elements[4]'(by omega)) (elements[5]'(by omega)) (elements[6]'(by omega)) (elements[7]'(by omega))
-    let rest := elements.extract 8 elements.size
-    have : rest.size < elements.size := by
-      rw [Array.size_extract]
-      omega
-    .tuple2 t8 (tuple rest)
-termination_by elements.size
+def mkTuple (elements : Array MonoTy) : MonoTy :=
+  match elements.toList with
+  | [] => unit
+  | [x] => x
+  | fst :: snd :: rest => .tuple fst snd rest
+
+/-- Create a 2-tuple type -/
+def tuple2 (a b : MonoTy) : MonoTy := .tuple a b []
+
+/-- Create a 3-tuple type -/
+def tuple3 (a b c : MonoTy) : MonoTy := .tuple a b [c]
+
+/-- Create a 4-tuple type -/
+def tuple4 (a b c d : MonoTy) : MonoTy := .tuple a b [c, d]
+
+/-- Create a 5-tuple type -/
+def tuple5 (a b c d e : MonoTy) : MonoTy := .tuple a b [c, d, e]
+
+/-- Create a 6-tuple type -/
+def tuple6 (a b c d e f : MonoTy) : MonoTy := .tuple a b [c, d, e, f]
+
+/-- Create a 7-tuple type -/
+def tuple7 (a b c d e f g : MonoTy) : MonoTy := .tuple a b [c, d, e, f, g]
+
+/-- Create a 8-tuple type -/
+def tuple8 (a b c d e f g h : MonoTy) : MonoTy := .tuple a b [c, d, e, f, g, h]
 
 /-- Is this a function type? -/
 def isArrow : MonoTy → Bool
@@ -355,35 +345,17 @@ def isIO : MonoTy → Bool
 
 /-- Is this a tuple type? -/
 def isTuple : MonoTy → Bool
-  | .tuple2 _ _ => true
-  | .tuple3 _ _ _ => true
-  | .tuple4 _ _ _ _ => true
-  | .tuple5 _ _ _ _ _ => true
-  | .tuple6 _ _ _ _ _ _ => true
-  | .tuple7 _ _ _ _ _ _ _ => true
-  | .tuple8 _ _ _ _ _ _ _ _ => true
+  | .tuple _ _ _ => true
   | _ => false
 
 /-- Get tuple arity (0 if not a tuple) -/
 def tupleArity : MonoTy → Nat
-  | .tuple2 _ _ => 2
-  | .tuple3 _ _ _ => 3
-  | .tuple4 _ _ _ _ => 4
-  | .tuple5 _ _ _ _ _ => 5
-  | .tuple6 _ _ _ _ _ _ => 6
-  | .tuple7 _ _ _ _ _ _ _ => 7
-  | .tuple8 _ _ _ _ _ _ _ _ => 8
+  | .tuple _ _ rest => 2 + rest.length
   | _ => 0
 
 /-- Extract tuple elements (empty if not a tuple) -/
 def tupleElems : MonoTy → Array MonoTy
-  | .tuple2 a b => #[a, b]
-  | .tuple3 a b c => #[a, b, c]
-  | .tuple4 a b c d => #[a, b, c, d]
-  | .tuple5 a b c d e => #[a, b, c, d, e]
-  | .tuple6 a b c d e f => #[a, b, c, d, e, f]
-  | .tuple7 a b c d e f g => #[a, b, c, d, e, f, g]
-  | .tuple8 a b c d e f g h => #[a, b, c, d, e, f, g, h]
+  | .tuple fst snd rest => #[fst, snd] ++ rest.toArray
   | _ => #[]
 
 /-- Is this a numeric type? -/
@@ -446,13 +418,8 @@ def freeVars : {k : Kind} → Ty k → Array TyVarId
   | _, .userCon _ _ => #[]
   | _, .app f a => freeVars f ++ freeVars a
   | _, .arrow from_ to => freeVars from_ ++ freeVars to
-  | _, .tuple2 a b => freeVars a ++ freeVars b
-  | _, .tuple3 a b c => freeVars a ++ freeVars b ++ freeVars c
-  | _, .tuple4 a b c d => freeVars a ++ freeVars b ++ freeVars c ++ freeVars d
-  | _, .tuple5 a b c d e => freeVars a ++ freeVars b ++ freeVars c ++ freeVars d ++ freeVars e
-  | _, .tuple6 a b c d e f => freeVars a ++ freeVars b ++ freeVars c ++ freeVars d ++ freeVars e ++ freeVars f
-  | _, .tuple7 a b c d e f g => freeVars a ++ freeVars b ++ freeVars c ++ freeVars d ++ freeVars e ++ freeVars f ++ freeVars g
-  | _, .tuple8 a b c d e f g h => freeVars a ++ freeVars b ++ freeVars c ++ freeVars d ++ freeVars e ++ freeVars f ++ freeVars g ++ freeVars h
+  | _, .tuple fst snd rest =>
+    freeVars fst ++ freeVars snd ++ rest.foldl (init := #[]) fun acc t => acc ++ freeVars t
 
 /-- Check if a type has any type variables -/
 def hasVars (t : Ty k) : Bool := !t.freeVars.isEmpty
@@ -467,6 +434,13 @@ def freeVarsUnique (t : Ty k) : Array TyVarId :=
 def substSingle (t : MonoTy) (varId : Nat) (replacement : MonoTy) : MonoTy :=
   t.subst (({} : TySubst).insert varId replacement)
 
+mutual
+/-- Compare two lists of monomorphic types for equality -/
+def heqList : List MonoTy → List MonoTy → Bool
+  | [], [] => true
+  | t1 :: rest1, t2 :: rest2 => heq t1 t2 && heqList rest1 rest2
+  | _, _ => false
+
 /-- Heterogeneous equality for types (returns false if kinds differ) -/
 def heq : {k1 k2 : Kind} → Ty k1 → Ty k2 → Bool
   | _, _, .var v1, .var v2 => v1 == v2
@@ -475,14 +449,10 @@ def heq : {k1 k2 : Kind} → Ty k1 → Ty k2 → Bool
   | _, _, .userCon _ id1, .userCon _ id2 => id1 == id2
   | _, _, .app f1 a1, .app f2 a2 => heq f1 f2 && heq a1 a2
   | _, _, .arrow from1 to1, .arrow from2 to2 => heq from1 from2 && heq to1 to2
-  | _, _, .tuple2 a1 b1, .tuple2 a2 b2 => heq a1 a2 && heq b1 b2
-  | _, _, .tuple3 a1 b1 c1, .tuple3 a2 b2 c2 => heq a1 a2 && heq b1 b2 && heq c1 c2
-  | _, _, .tuple4 a1 b1 c1 d1, .tuple4 a2 b2 c2 d2 => heq a1 a2 && heq b1 b2 && heq c1 c2 && heq d1 d2
-  | _, _, .tuple5 a1 b1 c1 d1 e1, .tuple5 a2 b2 c2 d2 e2 => heq a1 a2 && heq b1 b2 && heq c1 c2 && heq d1 d2 && heq e1 e2
-  | _, _, .tuple6 a1 b1 c1 d1 e1 f1, .tuple6 a2 b2 c2 d2 e2 f2 => heq a1 a2 && heq b1 b2 && heq c1 c2 && heq d1 d2 && heq e1 e2 && heq f1 f2
-  | _, _, .tuple7 a1 b1 c1 d1 e1 f1 g1, .tuple7 a2 b2 c2 d2 e2 f2 g2 => heq a1 a2 && heq b1 b2 && heq c1 c2 && heq d1 d2 && heq e1 e2 && heq f1 f2 && heq g1 g2
-  | _, _, .tuple8 a1 b1 c1 d1 e1 f1 g1 h1, .tuple8 a2 b2 c2 d2 e2 f2 g2 h2 => heq a1 a2 && heq b1 b2 && heq c1 c2 && heq d1 d2 && heq e1 e2 && heq f1 f2 && heq g1 g2 && heq h1 h2
+  | _, _, .tuple fst1 snd1 rest1, .tuple fst2 snd2 rest2 =>
+    heq fst1 fst2 && heq snd1 snd2 && heqList rest1 rest2
   | _, _, _, _ => false
+end
 
 /-- Check equality of types at the same kind -/
 def beq (t1 t2 : Ty k) : Bool := heq t1 t2
@@ -497,13 +467,9 @@ def hash : {k : Kind} → Ty k → UInt64
   | _, .userCon _ id => mixHash 3 (Hashable.hash id)
   | _, .app f a => mixHash 4 (mixHash (hash f) (hash a))
   | _, .arrow from_ to => mixHash 5 (mixHash (hash from_) (hash to))
-  | _, .tuple2 a b => mixHash 6 (mixHash (hash a) (hash b))
-  | _, .tuple3 a b c => mixHash 7 (mixHash (hash a) (mixHash (hash b) (hash c)))
-  | _, .tuple4 a b c d => mixHash 8 (mixHash (hash a) (mixHash (hash b) (mixHash (hash c) (hash d))))
-  | _, .tuple5 a b c d e => mixHash 9 (mixHash (hash a) (mixHash (hash b) (mixHash (hash c) (mixHash (hash d) (hash e)))))
-  | _, .tuple6 a b c d e f => mixHash 10 (mixHash (hash a) (mixHash (hash b) (mixHash (hash c) (mixHash (hash d) (mixHash (hash e) (hash f))))))
-  | _, .tuple7 a b c d e f g => mixHash 11 (mixHash (hash a) (mixHash (hash b) (mixHash (hash c) (mixHash (hash d) (mixHash (hash e) (mixHash (hash f) (hash g)))))))
-  | _, .tuple8 a b c d e f g h => mixHash 12 (mixHash (hash a) (mixHash (hash b) (mixHash (hash c) (mixHash (hash d) (mixHash (hash e) (mixHash (hash f) (mixHash (hash g) (hash h))))))))
+  | _, .tuple fst snd rest =>
+    let base := mixHash 6 (mixHash (hash fst) (hash snd))
+    rest.foldl (init := base) fun acc t => mixHash acc (hash t)
 
 instance : Hashable (Ty k) := ⟨Ty.hash⟩
 

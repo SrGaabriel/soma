@@ -292,8 +292,8 @@ def toDiagnostic : InferError → Diagnostic
   | .tupleTooLarge size span =>
     { severity := .error
     , code := some "E0108"
-    , message := s!"tuple has too many elements ({size})"
-    , primaryLabel := Label.primary span "maximum tuple size is 8", secondaryLabels := #[]
+    , message := s!"invalid tuple size ({size})"
+    , primaryLabel := Label.primary span "tuples must have at least 2 elements", secondaryLabels := #[]
     , notes := #[]
     , help := some "consider using a struct or array instead"
     }

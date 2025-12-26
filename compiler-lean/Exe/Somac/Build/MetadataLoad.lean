@@ -107,7 +107,7 @@ partial def tyFromJson (j : Lean.Json) : Except String MonoTy := do
     -- Check for tuple
     else if let some (.arr elems) := obj.get? "tuple" then
       let elemTys ← elems.toList.mapM tyFromJson
-      pure (Ty.tuple elemTys.toArray)
+      pure (Ty.mkTuple elemTys.toArray)
     else
       .error s!"Unknown type JSON: {j}"
   | _ => .error s!"Invalid type JSON: {j}"

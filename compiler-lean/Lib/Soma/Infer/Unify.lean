@@ -20,6 +20,12 @@ structure UnifyContext where
 
 namespace Unify
 
+mutual
+/-- Check if a type variable occurs in a list of types -/
+def occursInList (varId : Nat) : List MonoTy → Bool
+  | [] => false
+  | t :: rest => occursK varId t || occursInList varId rest
+
 /-- Check if a type variable occurs in a type (kind-polymorphic occurs check) -/
 def occursK (varId : Nat) : {k : Kind} → Ty k → Bool
   | _, .var v => v.id == varId
@@ -28,13 +34,9 @@ def occursK (varId : Nat) : {k : Kind} → Ty k → Bool
   | _, .userCon _ _ => false
   | _, .app f a => occursK varId f || occursK varId a
   | _, .arrow from_ to => occursK varId from_ || occursK varId to
-  | _, .tuple2 a b => occursK varId a || occursK varId b
-  | _, .tuple3 a b c => occursK varId a || occursK varId b || occursK varId c
-  | _, .tuple4 a b c d => occursK varId a || occursK varId b || occursK varId c || occursK varId d
-  | _, .tuple5 a b c d e => occursK varId a || occursK varId b || occursK varId c || occursK varId d || occursK varId e
-  | _, .tuple6 a b c d e f => occursK varId a || occursK varId b || occursK varId c || occursK varId d || occursK varId e || occursK varId f
-  | _, .tuple7 a b c d e f g => occursK varId a || occursK varId b || occursK varId c || occursK varId d || occursK varId e || occursK varId f || occursK varId g
-  | _, .tuple8 a b c d e f g h => occursK varId a || occursK varId b || occursK varId c || occursK varId d || occursK varId e || occursK varId f || occursK varId g || occursK varId h
+  | _, .tuple fst snd rest =>
+    occursK varId fst || occursK varId snd || occursInList varId rest
+end
 
 /-- Monomorphic occurs check (for backwards compatibility) -/
 def occurs (varId : Nat) (ty : MonoTy) : Bool := occursK varId ty
@@ -110,81 +112,14 @@ mutual
       unifyAppSome ⟨_, f1⟩ ⟨_, a1⟩ ⟨_, f2⟩ ⟨_, a2⟩ ctx
 
     -- Tuple types
-    | .tuple2 a1 b1, .tuple2 a2 b2 => do
-      let σ1 ← unifyMono a1 a2 ctx
-      let σ2 ← unifyMono (σ1.apply b1) (σ1.apply b2) ctx
-      return σ2.compose σ1
-
-    | .tuple3 a1 b1 c1, .tuple3 a2 b2 c2 => do
-      let σ1 ← unifyMono a1 a2 ctx
-      let σ2 ← unifyMono (σ1.apply b1) (σ1.apply b2) ctx
-      let σ3 ← unifyMono (σ2.apply (σ1.apply c1)) (σ2.apply (σ1.apply c2)) ctx
-      return σ3.compose (σ2.compose σ1)
-
-    | .tuple4 a1 b1 c1 d1, .tuple4 a2 b2 c2 d2 => do
-      let σ1 ← unifyMono a1 a2 ctx
-      let σ2 ← unifyMono (σ1.apply b1) (σ1.apply b2) ctx
-      let σ12 := σ2.compose σ1
-      let σ3 ← unifyMono (σ12.apply c1) (σ12.apply c2) ctx
-      let σ123 := σ3.compose σ12
-      let σ4 ← unifyMono (σ123.apply d1) (σ123.apply d2) ctx
-      return σ4.compose σ123
-
-    | .tuple5 a1 b1 c1 d1 e1, .tuple5 a2 b2 c2 d2 e2 => do
-      let σ1 ← unifyMono a1 a2 ctx
-      let σ2 ← unifyMono (σ1.apply b1) (σ1.apply b2) ctx
-      let σ12 := σ2.compose σ1
-      let σ3 ← unifyMono (σ12.apply c1) (σ12.apply c2) ctx
-      let σ123 := σ3.compose σ12
-      let σ4 ← unifyMono (σ123.apply d1) (σ123.apply d2) ctx
-      let σ1234 := σ4.compose σ123
-      let σ5 ← unifyMono (σ1234.apply e1) (σ1234.apply e2) ctx
-      return σ5.compose σ1234
-
-    | .tuple6 a1 b1 c1 d1 e1 f1, .tuple6 a2 b2 c2 d2 e2 f2 => do
-      let σ1 ← unifyMono a1 a2 ctx
-      let σ2 ← unifyMono (σ1.apply b1) (σ1.apply b2) ctx
-      let σ12 := σ2.compose σ1
-      let σ3 ← unifyMono (σ12.apply c1) (σ12.apply c2) ctx
-      let σ123 := σ3.compose σ12
-      let σ4 ← unifyMono (σ123.apply d1) (σ123.apply d2) ctx
-      let σ1234 := σ4.compose σ123
-      let σ5 ← unifyMono (σ1234.apply e1) (σ1234.apply e2) ctx
-      let σ12345 := σ5.compose σ1234
-      let σ6 ← unifyMono (σ12345.apply f1) (σ12345.apply f2) ctx
-      return σ6.compose σ12345
-
-    | .tuple7 a1 b1 c1 d1 e1 f1 g1, .tuple7 a2 b2 c2 d2 e2 f2 g2 => do
-      let σ1 ← unifyMono a1 a2 ctx
-      let σ2 ← unifyMono (σ1.apply b1) (σ1.apply b2) ctx
-      let σ12 := σ2.compose σ1
-      let σ3 ← unifyMono (σ12.apply c1) (σ12.apply c2) ctx
-      let σ123 := σ3.compose σ12
-      let σ4 ← unifyMono (σ123.apply d1) (σ123.apply d2) ctx
-      let σ1234 := σ4.compose σ123
-      let σ5 ← unifyMono (σ1234.apply e1) (σ1234.apply e2) ctx
-      let σ12345 := σ5.compose σ1234
-      let σ6 ← unifyMono (σ12345.apply f1) (σ12345.apply f2) ctx
-      let σ123456 := σ6.compose σ12345
-      let σ7 ← unifyMono (σ123456.apply g1) (σ123456.apply g2) ctx
-      return σ7.compose σ123456
-
-    | .tuple8 a1 b1 c1 d1 e1 f1 g1 h1, .tuple8 a2 b2 c2 d2 e2 f2 g2 h2 => do
-      let σ1 ← unifyMono a1 a2 ctx
-      let σ2 ← unifyMono (σ1.apply b1) (σ1.apply b2) ctx
-      let σ12 := σ2.compose σ1
-      let σ3 ← unifyMono (σ12.apply c1) (σ12.apply c2) ctx
-      let σ123 := σ3.compose σ12
-      let σ4 ← unifyMono (σ123.apply d1) (σ123.apply d2) ctx
-      let σ1234 := σ4.compose σ123
-      let σ5 ← unifyMono (σ1234.apply e1) (σ1234.apply e2) ctx
-      let σ12345 := σ5.compose σ1234
-      let σ6 ← unifyMono (σ12345.apply f1) (σ12345.apply f2) ctx
-      let σ123456 := σ6.compose σ12345
-      let σ7 ← unifyMono (σ123456.apply g1) (σ123456.apply g2) ctx
-      let σ1234567 := σ7.compose σ123456
-      let σ8 ← unifyMono (σ1234567.apply h1) (σ1234567.apply h2) ctx
-      return σ8.compose σ1234567
+    | .tuple fst1 snd1 rest1, .tuple fst2 snd2 rest2 =>
+      if rest1.length != rest2.length then
+        .error (.typeMismatch t1 t2 ctx.purpose ctx.expectedSpan ctx.actualSpan)
+      else do
+        let σ1 ← unifyMono fst1 fst2 ctx
+        let σ2 ← unifyMono (σ1.apply snd1) (σ1.apply snd2) ctx
+        let σ12 := σ2.compose σ1
+        unifyLists (rest1.map σ12.apply) (rest2.map σ12.apply) σ12 ctx
 
     -- Mismatch cases
     | _, _ =>
@@ -249,6 +184,27 @@ mutual
     let a2' := σ1.applySome a2
     let σ2 ← unifySome a1' a2' ctx
     return σ2.compose σ1
+
+  /-- Unify two arrays of monomorphic types element-wise -/
+  partial def unifyArrays (arr1 arr2 : Array MonoTy) (ctx : UnifyContext) : UnifyResult := do
+    let mut σ := Subst.empty
+    for i in [:arr1.size] do
+      if h : i < arr1.size ∧ i < arr2.size then
+        let t1 := σ.apply arr1[i]
+        let t2 := σ.apply arr2[i]
+        let σ' ← unifyMono t1 t2 ctx
+        σ := σ'.compose σ
+    return σ
+
+  /-- Unify two lists of monomorphic types element-wise, accumulating substitution -/
+  partial def unifyLists (ts1 ts2 : List MonoTy) (acc : Subst) (ctx : UnifyContext) : UnifyResult := do
+    match ts1, ts2 with
+    | [], [] => return acc
+    | t1 :: rest1, t2 :: rest2 =>
+      let σ ← unifyMono t1 t2 ctx
+      let acc' := σ.compose acc
+      unifyLists (rest1.map acc'.apply) (rest2.map acc'.apply) acc' ctx
+    | _, _ => return acc  -- Shouldn't happen if lengths match
 end
 
 /-- Simple unification with minimal context (for internal use) -/

@@ -102,7 +102,7 @@ mutual
       let elemTys ← elements.mapM (resolveTypeWithEnv kindEnv tyVarEnv)
       if elemTys.all Option.isSome then
         let tys := elemTys.filterMap id
-        pure (some (Ty.tuple tys))
+        pure (some (Ty.mkTuple tys))
       else
         pure none
 

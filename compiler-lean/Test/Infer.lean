@@ -82,9 +82,9 @@ def testApplyTuple : IO TestResult := do
   let a := mkTyVar "a" 0
   let b := mkTyVar "b" 1
   let σ := (Subst.fromVar a Ty.int).insert b.id Ty.string
-  let ty : MonoTy := .tuple2 (.var a) (.var b)
+  let ty : MonoTy := Ty.tuple2 (.var a) (.var b)
   let result := σ.apply ty
-  let expected : MonoTy := .tuple2 Ty.int Ty.string
+  let expected : MonoTy := Ty.tuple2 Ty.int Ty.string
   if result != expected then
     return .failed s!"expected {expected}, got {result}"
   return .passed
@@ -202,8 +202,8 @@ def testUnifyArrow : IO TestResult := do
 
 def testUnifyTuple2 : IO TestResult := do
   let a := mkTyVar "a" 0
-  let ty1 : MonoTy := .tuple2 (.var a) Ty.int
-  let ty2 : MonoTy := .tuple2 Ty.string Ty.int
+  let ty1 : MonoTy := Ty.tuple2 (.var a) Ty.int
+  let ty2 : MonoTy := Ty.tuple2 Ty.string Ty.int
   match Unify.unifyMono ty1 ty2 unifyCtx with
   | .ok σ =>
     if σ.apply (.var a) != Ty.string then
@@ -947,10 +947,13 @@ def testMkTupleType8 : IO TestResult := do
   | none => return .failed "8-tuple should succeed"
 
 def testMkTupleType9 : IO TestResult := do
+  -- With the new unbounded tuple representation, 9-tuples are valid
   let tys := #[Ty.int, Ty.int, Ty.int, Ty.int, Ty.int, Ty.int, Ty.int, Ty.int, Ty.int]
   match Gen.mkTupleType tys with
-  | some _ => return .failed "9-tuple should fail"
-  | none => return .passed
+  | some ty =>
+    if ty.tupleArity == 9 then return .passed
+    else return .failed s!"9-tuple should have arity 9, got {ty.tupleArity}"
+  | none => return .failed "9-tuple should succeed"
 
 def testFreshVars : IO TestResult := do
   let ctx := InferContext.empty
@@ -977,7 +980,7 @@ def run : IO TestRunner := do
   runner := runner.record "mk_tuple_1" (← testMkTupleType1)
   runner := runner.record "mk_tuple_2" (← testMkTupleType2)
   runner := runner.record "mk_tuple_8" (← testMkTupleType8)
-  runner := runner.record "mk_tuple_9_fails" (← testMkTupleType9)
+  runner := runner.record "mk_tuple_9" (← testMkTupleType9)
   runner := runner.record "fresh_vars" (← testFreshVars)
 
   return runner

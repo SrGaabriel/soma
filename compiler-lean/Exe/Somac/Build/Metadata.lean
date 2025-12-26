@@ -44,13 +44,9 @@ partial def tyToJsonHK : {k : Kind} → Ty k → Lean.Json
   | k, .userCon _ id => .mkObj [("con", .mkObj [("name", .str id.name), ("module", .str id.module), ("unique", .num id.unique), ("kind", kindToJson k)])]
   | _, .app f a => .mkObj [("app", .arr #[tyToJsonHK f, tyToJsonHK a])]
   | _, .arrow from_ to => .mkObj [("arrow", .arr #[tyToJsonHK from_, tyToJsonHK to])]
-  | _, .tuple2 a b => .mkObj [("tuple", .arr #[tyToJsonHK a, tyToJsonHK b])]
-  | _, .tuple3 a b c => .mkObj [("tuple", .arr #[tyToJsonHK a, tyToJsonHK b, tyToJsonHK c])]
-  | _, .tuple4 a b c d => .mkObj [("tuple", .arr #[tyToJsonHK a, tyToJsonHK b, tyToJsonHK c, tyToJsonHK d])]
-  | _, .tuple5 a b c d e => .mkObj [("tuple", .arr #[tyToJsonHK a, tyToJsonHK b, tyToJsonHK c, tyToJsonHK d, tyToJsonHK e])]
-  | _, .tuple6 a b c d e f => .mkObj [("tuple", .arr #[tyToJsonHK a, tyToJsonHK b, tyToJsonHK c, tyToJsonHK d, tyToJsonHK e, tyToJsonHK f])]
-  | _, .tuple7 a b c d e f g => .mkObj [("tuple", .arr #[tyToJsonHK a, tyToJsonHK b, tyToJsonHK c, tyToJsonHK d, tyToJsonHK e, tyToJsonHK f, tyToJsonHK g])]
-  | _, .tuple8 a b c d e f g h => .mkObj [("tuple", .arr #[tyToJsonHK a, tyToJsonHK b, tyToJsonHK c, tyToJsonHK d, tyToJsonHK e, tyToJsonHK f, tyToJsonHK g, tyToJsonHK h])]
+  | _, .tuple fst snd rest =>
+    let elems := #[tyToJsonHK fst, tyToJsonHK snd] ++ (rest.map tyToJsonHK).toArray
+    .mkObj [("tuple", .arr elems)]
 
 /-- Serialize a MonoTy to JSON -/
 def tyToJson (t : MonoTy) : Lean.Json := tyToJsonHK t

@@ -39,19 +39,12 @@ def genLiteral (lit : Literal) : MonoTy :=
   lit.type
 
 /-- Construct a tuple type from an array of element types.
-    Handles 0-8 element tuples, returning an error type for larger tuples. -/
+    Returns Unit for empty, unwraps singletons, creates tuple for 2+ elements. -/
 def mkTupleType (elemTys : Array MonoTy) : Option MonoTy :=
-  match elemTys.size with
-  | 0 => some Ty.unit
-  | 1 => elemTys[0]?
-  | 2 => do pure (Ty.tuple2 (← elemTys[0]?) (← elemTys[1]?))
-  | 3 => do pure (Ty.tuple3 (← elemTys[0]?) (← elemTys[1]?) (← elemTys[2]?))
-  | 4 => do pure (Ty.tuple4 (← elemTys[0]?) (← elemTys[1]?) (← elemTys[2]?) (← elemTys[3]?))
-  | 5 => do pure (Ty.tuple5 (← elemTys[0]?) (← elemTys[1]?) (← elemTys[2]?) (← elemTys[3]?) (← elemTys[4]?))
-  | 6 => do pure (Ty.tuple6 (← elemTys[0]?) (← elemTys[1]?) (← elemTys[2]?) (← elemTys[3]?) (← elemTys[4]?) (← elemTys[5]?))
-  | 7 => do pure (Ty.tuple7 (← elemTys[0]?) (← elemTys[1]?) (← elemTys[2]?) (← elemTys[3]?) (← elemTys[4]?) (← elemTys[5]?) (← elemTys[6]?))
-  | 8 => do pure (Ty.tuple8 (← elemTys[0]?) (← elemTys[1]?) (← elemTys[2]?) (← elemTys[3]?) (← elemTys[4]?) (← elemTys[5]?) (← elemTys[6]?) (← elemTys[7]?))
-  | _ => none
+  match elemTys.toList with
+  | [] => some Ty.unit
+  | [x] => some x
+  | fst :: snd :: rest => some (.tuple fst snd rest)
 
 /-- Generate n fresh type variables with a given prefix -/
 def freshVars (n : Nat) (prefix_ : String := "t") : InferM (Array MonoTy) := do
@@ -143,7 +136,7 @@ where
         let (bindings, typedPats) ← genPatternArrayAux pats elemTys patSpan
         return (bindings, .tuple typedPats tupleTy patSpan)
       | none =>
-        reportError (.cannotInfer s!"tuple pattern with {n} elements (max 8)" patSpan)
+        reportError (.cannotInfer s!"tuple pattern with {n} elements" patSpan)
         let (bindings, typedPats) ← genPatternArrayAux pats #[] patSpan
         return (bindings, .tuple typedPats scrutTy patSpan)
 
@@ -330,7 +323,7 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope)
     match mkTupleType elemTys with
     | some ty => return (ty, .tuple typedElements ty span)
     | none =>
-      reportError (.cannotInfer s!"tuple with {elemTys.size} elements (max 8)" span)
+      reportError (.cannotInfer s!"tuple with {elemTys.size} elements" span)
       let errTy ← freshVar "err"
       return (errTy, .tuple typedElements errTy span)
 
