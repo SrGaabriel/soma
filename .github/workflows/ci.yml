@@ -373,7 +373,7 @@ jobs:
 
             - name: Build release
               working-directory: compiler-lean
-              run: lake build --release
+              run: lake build
               shell: bash
               continue-on-error: true
 
