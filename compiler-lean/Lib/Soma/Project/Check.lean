@@ -399,6 +399,26 @@ def extractPublicSymbols
       span := span
     }
     acc := acc.insert sym fn.qualifiedType
+  -- Also extract type class method signatures
+  for tc in m.typeClasses do
+    let className := tc.name.display
+    for (methodName, methodType) in tc.methods do
+      let (unique, sup') := match methodName.baseUnique? with
+        | some u => (u, sup)
+        | none => sup.fresh methodName.display
+      sup := sup'
+      let span := match globalEnv.lookupGlobal methodName.display with
+        | some info => info.definedAt
+        | none => Span.uninhabited
+      let sym : Symbol := {
+        unique := unique
+        name := methodName.display
+        kind := .typeClassMethod className
+        module := m.name
+        package := packageName
+        span := span
+      }
+      acc := acc.insert sym methodType
   pure (acc, sup)
 
 /-- Extract public instances from a typed module -/
