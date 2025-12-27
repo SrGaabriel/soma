@@ -73,6 +73,15 @@ inductive InferError where
       (expectedSpan : Span)
       (actualSpan : Span)
 
+  /-- Type constructor mismatch during unification (for higher-kinded types) -/
+  | typeConMismatch
+      (expected : String)
+      (actual : String)
+      (kind : Kind)
+      (purpose : UnifyPurpose)
+      (expectedSpan : Span)
+      (actualSpan : Span)
+
   /-- Kind mismatch during unification -/
   | kindMismatch
       (expected : Kind)
@@ -182,6 +191,7 @@ namespace InferError
 /-- Get the primary span of an error -/
 def span : InferError → Span
   | .typeMismatch _ _ _ _ s => s
+  | .typeConMismatch _ _ _ _ _ s => s
   | .kindMismatch _ _ s => s
   | .occursCheck _ _ s => s
   | .unknownVariable _ s => s
@@ -213,6 +223,18 @@ def toDiagnostic : InferError → Diagnostic
     , primaryLabel := Label.primary actualSpan s!"expected `{expected}`, found `{actual}`"
     , secondaryLabels := #[Label.secondary expectedSpan s!"expected due to this"]
     , notes := #[]
+    , help := none
+    }
+
+  | .typeConMismatch expected actual kind purpose expectedSpan actualSpan =>
+    let purposeStr := purpose.describe
+    let msg := if purposeStr.isEmpty then "type constructor mismatch" else s!"type constructor mismatch {purposeStr}"
+    { severity := .error
+    , code := some "E0308"
+    , message := msg
+    , primaryLabel := Label.primary actualSpan s!"expected `{expected}`, found `{actual}`"
+    , secondaryLabels := #[Label.secondary expectedSpan s!"expected due to this"]
+    , notes := #[s!"both type constructors have kind `{kind}`"]
     , help := none
     }
 

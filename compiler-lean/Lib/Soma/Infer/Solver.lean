@@ -134,26 +134,34 @@ def reportUnsolvedConstraints : InferM Unit := do
   for c in graph.classes do
     reportError (.noInstance c.toConstraint c.span)
 
-/-- Check for ambiguous type variables -/
-def checkAmbiguousTypes (_originalExprSpan : Span) : InferM Unit := do
+/-- Check for ambiguous type variables in unsolved class constraints.
+    A type variable is ambiguous if:
+    1. It appears in an unsolved class constraint
+    2. It does not appear in the final inferred type
+    This means the variable cannot be determined from the context. -/
+def checkAmbiguousTypes (exprSpan : Span) (inferredType : MonoTy) : InferM Unit := do
   let σ ← getSubst
+  let graph ← getConstraints
 
-  -- Find all type variables in the substitution that map to other variables
-  for (varId, ty) in σ.toList do
-    match ty with
-    | .var v =>
-      -- Check if this variable is used in any constraint
-      let graph ← getConstraints
-      let hasConstraint := graph.classes.any fun c =>
-        c.freeVars.contains varId || c.freeVars.contains v.id
-      if !hasConstraint then
-        -- Completely unconstrained variable - may be ambiguous
-        -- Only report if it appears in constraints but can't be resolved
-        pure ()
-    | _ => pure ()
+  -- Get all type variables in the final inferred type (after substitution)
+  let finalTy := σ.apply inferredType
+  let tyVars : Std.HashSet Nat := finalTy.freeVars.foldl (init := {}) fun acc v => acc.insert v.id
+
+  -- Check each unsolved class constraint for ambiguous variables
+  for c in graph.classes do
+    -- Get all type variables in this constraint
+    let constraintVars := c.freeVars
+    -- Find variables that are in the constraint but not in the type
+    for varId in constraintVars do
+      if !tyVars.contains varId then
+        let varInfo := c.args.findSome? fun arg =>
+          arg.freeVars.find? fun v => v.id == varId
+        match varInfo with
+        | some v => reportError (.ambiguousType v exprSpan)
+        | none => pure ()
 
 /-- Main solving entry point -/
-def solve (exprSpan : Span) : InferM Unit := do
+def solve (exprSpan : Span) (inferredType : MonoTy) : InferM Unit := do
   -- Phase 1: Solve equality constraints
   solveEqualities
 
@@ -164,7 +172,7 @@ def solve (exprSpan : Span) : InferM Unit := do
   reportUnsolvedConstraints
 
   -- Phase 4: Check for ambiguous types
-  checkAmbiguousTypes exprSpan
+  checkAmbiguousTypes exprSpan inferredType
 
 end Solver
 
@@ -203,8 +211,8 @@ def inferExpr {scope : Scope} (expr : Metal.Expr Unit scope)
     -- Generate constraints (now returns type and typed expression)
     let (ty, _typedExpr) ← Gen.genExpr expr
 
-    -- Solve constraints
-    Solver.solve expr.span
+    -- Solve constraints (pass inferred type for ambiguity checking)
+    Solver.solve expr.span ty
 
     -- Get final state
     let σ ← getSubst

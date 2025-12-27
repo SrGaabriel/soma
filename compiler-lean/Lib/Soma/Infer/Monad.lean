@@ -317,15 +317,21 @@ def instantiate (qt : QualifiedType) : InferM (MonoTy × Array Constraint) := do
 /-- Generalize a type by quantifying over free variables -/
 def generalize (ty : MonoTy) (constraints : Array Constraint) : InferM QualifiedType := do
   let σ ← getSubst
-  let ty := σ.apply ty
 
-  -- Get free variables in the type
+  -- Apply substitution to both the type and constraints
+  let ty := σ.apply ty
+  let constraints := constraints.map fun c =>
+    { c with args := c.args.map (σ.apply ·) }
+
+  -- Get free variables in the substituted type
   let tyVars := ty.freeVarsUnique
 
   -- Get free variables in the environment (these should NOT be quantified)
+  -- Also apply current substitution to environment types before extracting free vars
   let env ← getTypeEnv
   let envVars := env.locals.fold (init := ({} : Std.HashSet Nat)) fun acc _ info =>
-    info.ty.freeVars.foldl (init := acc) fun acc v => acc.insert v.id
+    let substTy := σ.apply info.ty
+    substTy.freeVars.foldl (init := acc) fun acc v => acc.insert v.id
 
   -- Quantify over variables that are free in ty but not in env
   let quantified := tyVars.filter fun v => !envVars.contains v.id

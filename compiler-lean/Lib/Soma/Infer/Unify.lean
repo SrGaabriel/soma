@@ -133,7 +133,8 @@ mutual
       let t2' : Ty s1.kind := h ▸ s2.ty
       unifyAtKind s1.kind s1.ty t2' ctx
     else
-      .error (.typeMismatch (.var ⟨s!"kind {s1.kind}", 0, .star⟩) (.var ⟨s!"kind {s2.kind}", 0, .star⟩) ctx.purpose ctx.expectedSpan ctx.actualSpan)
+      -- Kind mismatch - use the dedicated error variant
+      .error (.kindMismatch s1.kind s2.kind ctx.actualSpan)
 
   /-- Unify two types at a given kind -/
   partial def unifyAtKind (k : Kind) (t1 t2 : Ty k) (ctx : UnifyContext) : UnifyResult := do

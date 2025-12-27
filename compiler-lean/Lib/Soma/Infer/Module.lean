@@ -391,8 +391,12 @@ def inferFunction
     -- Generate constraints and get typed body (with type variable annotations)
     let (bodyTy, typedBody, paramInfos) ← genFunctionBody fn fn.body
 
-    -- Solve constraints
-    Solver.solve fn.body.span
+    -- Build the full function type for ambiguity checking
+    let paramTys := paramInfos.map fun (_, _, ty) => ty
+    let fnTyForCheck := paramTys.foldr (init := bodyTy) fun ty acc => Ty.arrow ty acc
+
+    -- Solve constraints (pass function type for ambiguity checking)
+    Solver.solve fn.body.span fnTyForCheck
 
     -- Apply final substitution to get concrete types
     let σ ← InferM.getSubst
