@@ -52,9 +52,7 @@ def tyVarIdFromJson (j : Lean.Json) : Except String TyVarId := do
     | .error _ => .star
   pure { name, id, kind }
 
-/-- Parse a type of a given kind from JSON.
-    This is the core parsing function that handles types of any kind,
-    using the expected kind to guide parsing of type applications. -/
+/-- Parse a type of a given kind from JSON -/
 partial def tyFromJsonWithKind (k : Kind) (j : Lean.Json) : Except String (Ty k) := do
   match j with
   | .obj obj =>
@@ -91,7 +89,6 @@ partial def tyFromJsonWithKind (k : Kind) (j : Lean.Json) : Except String (Ty k)
     else if let some conObj := obj.get? "con" then
       let typeId ← typeIdFromJson conObj
       -- The typeId includes the kind from JSON serialization
-      -- We trust it matches k (type system ensures this at serialization time)
       pure (.userCon k typeId)
 
     -- Arrow type (only valid for kind *)
@@ -109,7 +106,6 @@ partial def tyFromJsonWithKind (k : Kind) (j : Lean.Json) : Except String (Ty k)
     else if let some (.arr arr) := obj.get? "app" then
       if arr.size = 2 then
         -- If result kind is k, then f has kind (* -> k) and arg has kind *
-        -- We only support * as argument kinds (no higher-kinded arguments like Functor f)
         let fnKind : Kind := .arrow .star k
         let f' ← tyFromJsonWithKind fnKind arr[0]!
         let a' ← tyFromJsonWithKind .star arr[1]!

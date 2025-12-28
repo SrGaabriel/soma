@@ -38,11 +38,11 @@ def test11 = if True False
 def test12 = if True then 1
 
 // 13. Expected pattern after '|' in match
-def test13 = case x
+def test13 = match x
   |
 
 // 14. Expected '=>' after pattern
-def test14 = case x
+def test14 = match x
   | Some y
 
 // 15. Expected type after '->' in function type
@@ -55,11 +55,11 @@ def test16 :: (Int, String
 def test17 :: forall a b Int
 
 // 18. Expected ')' after cons pattern
-def test18 = case xs
+def test18 = match xs
   | (x : ys -> x
 
 // 19. Expected ']' after list pattern
-def test19 = case xs
+def test19 = match xs
   | [a, b, c -> a
 
 // 20. Expected ']' after attribute

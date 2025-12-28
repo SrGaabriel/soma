@@ -100,13 +100,13 @@ def firstGreenChild (green : GreenNode) : Option GreenNode :=
 
 /-- Check if a node is a "semantic" node that should be processed during lowering -/
 def isSemanticNode (green : GreenNode) : Bool :=
-  if green.isToken || green.isTrivia then false
-  else if green.syntaxKind? == some .triviaToken then
+  if green.isTrivia then false
+  else if green.isToken || green.syntaxKind? == some .triviaToken then
     -- Operators (.varSymbol) are NOT semantic since they are handled specially in exprInfix
     match getTokenKind green with
     | some .lowerIdent | some .upperIdent | some .number | some .true_ | some .false_ => true
     | some (.string _) => true
-    | _ => false  -- punctuation and operators wrapped in trivia are not semantic nodes
+    | _ => false  -- punctuation, keywords, and operators are not semantic nodes
   else true  -- regular syntax nodes are semantic
 
 /-- Filter children to get only semantic nodes (syntax nodes, not tokens/punctuation) -/
@@ -736,25 +736,36 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
               if h2 : bodyIdx < kidsWithOffsets.size then
                 let body ← lowerExpr kidsWithOffsets[bodyIdx].1 kidsWithOffsets[bodyIdx].2
                 -- Check if pattern is a simple name/variable or a complex pattern
-                match patNode.syntaxKind? with
-                | some .name | some .patVar =>
-                    let name ← match firstGreenChild patNode with
-                      | some child =>
-                          let text ← getGreenTokenText child patOffset
-                          let nspan ← spanFor patNode patOffset
-                          pure ⟨text, nspan⟩
-                      | none =>
-                          let nspan ← spanFor patNode patOffset
-                          pure ⟨"_", nspan⟩
-                    pure (.let_ name sig value body span)
-                | _ =>
-                    -- Complex pattern: desugar to case expression
-                    let pat ← lowerPattern patNode patOffset
-                    let typedPat := match sig with
-                      | some tyExpr => Pattern.typed pat tyExpr span
-                      | none => pat
-                    let arm := MatchArm.mk #[typedPat] none body span
-                    pure (.case #[value] #[arm] span)
+                -- Note: .triviaToken with lowerIdent is also a simple name (from parseLowerIdent)
+                let isSimpleName : Bool := match patNode.syntaxKind? with
+                  | some .name | some .patVar => true
+                  | some .triviaToken => getTokenKind patNode == some TokenKind.lowerIdent
+                  | _ => false
+                if isSimpleName then
+                  let name : Name ← match patNode.syntaxKind? with
+                    | some .triviaToken =>
+                        -- For triviaToken, extract the text directly
+                        let text := getTokenText patNode |>.getD "_"
+                        let nspan ← spanFor patNode patOffset
+                        pure { value := text, span := nspan }
+                    | _ =>
+                        match firstGreenChild patNode with
+                        | some child =>
+                            let text ← getGreenTokenText child patOffset
+                            let nspan ← spanFor patNode patOffset
+                            pure { value := text, span := nspan }
+                        | none =>
+                            let nspan ← spanFor patNode patOffset
+                            pure { value := "_", span := nspan }
+                  pure (.let_ name sig value body span)
+                else
+                  -- Complex pattern: desugar to case expression
+                  let pat ← lowerPattern patNode patOffset
+                  let typedPat := match sig with
+                    | some tyExpr => Pattern.typed pat tyExpr span
+                    | none => pat
+                  let arm := MatchArm.mk #[typedPat] none body span
+                  pure (.case #[value] #[arm] span)
               else
                 lowerError "let missing body" span
                 let nspan ← spanFor patNode patOffset
