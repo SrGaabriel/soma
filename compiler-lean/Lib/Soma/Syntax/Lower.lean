@@ -735,7 +735,7 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
               let bodyIdx := valueIdx + 1
               if h2 : bodyIdx < kidsWithOffsets.size then
                 let body ← lowerExpr kidsWithOffsets[bodyIdx].1 kidsWithOffsets[bodyIdx].2
-                -- Let bindings are desugared to case expressions (like Rust/Haskell)
+                -- Let bindings are desugared to case expressions
                 let pat ← lowerPattern patNode patOffset
                 let typedPat := match sig with
                   | some tyExpr => Pattern.typed pat tyExpr span
