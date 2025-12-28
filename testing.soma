@@ -1,6 +1,0 @@
-intrinsic def {+} :: Int -> Int -> Int
-
-def hello_world :: Int =
-    let x = 5 + 5 in
-    let (y,zero) = (x, 0) in
-    y

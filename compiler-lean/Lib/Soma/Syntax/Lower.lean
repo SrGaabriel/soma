@@ -735,37 +735,13 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
               let bodyIdx := valueIdx + 1
               if h2 : bodyIdx < kidsWithOffsets.size then
                 let body ← lowerExpr kidsWithOffsets[bodyIdx].1 kidsWithOffsets[bodyIdx].2
-                -- Check if pattern is a simple name/variable or a complex pattern
-                -- Note: .triviaToken with lowerIdent is also a simple name (from parseLowerIdent)
-                let isSimpleName : Bool := match patNode.syntaxKind? with
-                  | some .name | some .patVar => true
-                  | some .triviaToken => getTokenKind patNode == some TokenKind.lowerIdent
-                  | _ => false
-                if isSimpleName then
-                  let name : Name ← match patNode.syntaxKind? with
-                    | some .triviaToken =>
-                        -- For triviaToken, extract the text directly
-                        let text := getTokenText patNode |>.getD "_"
-                        let nspan ← spanFor patNode patOffset
-                        pure { value := text, span := nspan }
-                    | _ =>
-                        match firstGreenChild patNode with
-                        | some child =>
-                            let text ← getGreenTokenText child patOffset
-                            let nspan ← spanFor patNode patOffset
-                            pure { value := text, span := nspan }
-                        | none =>
-                            let nspan ← spanFor patNode patOffset
-                            pure { value := "_", span := nspan }
-                  pure (.let_ name sig value body span)
-                else
-                  -- Complex pattern: desugar to case expression
-                  let pat ← lowerPattern patNode patOffset
-                  let typedPat := match sig with
-                    | some tyExpr => Pattern.typed pat tyExpr span
-                    | none => pat
-                  let arm := MatchArm.mk #[typedPat] none body span
-                  pure (.case #[value] #[arm] span)
+                -- Let bindings are desugared to case expressions (like Rust/Haskell)
+                let pat ← lowerPattern patNode patOffset
+                let typedPat := match sig with
+                  | some tyExpr => Pattern.typed pat tyExpr span
+                  | none => pat
+                let arm := MatchArm.mk #[typedPat] none body span
+                pure (.case #[value] #[arm] span)
               else
                 lowerError "let missing body" span
                 let nspan ← spanFor patNode patOffset
