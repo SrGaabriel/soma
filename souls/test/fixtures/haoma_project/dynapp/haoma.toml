@@ -1,5 +1,0 @@
-name = "dynapp"
-version = "0.1.0"
-type = "binary"
-
-[dependencies]

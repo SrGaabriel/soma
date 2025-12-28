@@ -1,0 +1,7 @@
+name mmtop
+version "0.1.0"
+type binary
+
+dependencies {
+    aamid path="../aamid"
+}

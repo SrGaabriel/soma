@@ -81,8 +81,8 @@ pub fn execute(command: &Commands) {
 }
 
 pub fn parse_manifest(path: &Path) -> Manifest {
-    let manifest = path.join(MANIFEST_NAME);
-    if !manifest.exists() {
+    let manifest_path = path.join(MANIFEST_NAME);
+    if !manifest_path.exists() {
         output_err(&format!(
             "Manifest file '{}' not found in path '{}'",
             MANIFEST_NAME,
@@ -90,15 +90,25 @@ pub fn parse_manifest(path: &Path) -> Manifest {
         ));
         std::process::exit(1);
     }
-    output_debug(&format!("Found manifest file at '{}'", manifest.display()));
+    output_debug(&format!(
+        "Found manifest file at '{}'",
+        manifest_path.display()
+    ));
 
-    let parsing_result = std::fs::read_to_string(&manifest).and_then(|content| {
-        toml::from_str::<Manifest>(&content)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-    });
-    if let Err(e) = parsing_result {
-        output_err(&format!("Failed to parse manifest file: {}", e));
-        std::process::exit(1);
+    let content = match std::fs::read_to_string(&manifest_path) {
+        Ok(c) => c,
+        Err(e) => {
+            output_err(&format!("Failed to read manifest file: {}", e));
+            std::process::exit(1);
+        }
+    };
+
+    match Manifest::parse(&content, MANIFEST_NAME) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{:?}", miette::Report::new(e).with_source_code(content));
+            output_err("Failed to parse manifest file");
+            std::process::exit(1);
+        }
     }
-    parsing_result.unwrap()
 }

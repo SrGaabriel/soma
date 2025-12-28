@@ -40,8 +40,7 @@ pub fn execute(path: &Path) {
         authors: None,
         dependencies: ManifestDependencies::new(),
     };
-    let manifest_content =
-        toml::to_string(&manifest).expect("Failed to serialize manifest to TOML");
+    let manifest_content = manifest.to_kdl();
 
     let manifest_path = path.join(MANIFEST_NAME);
     if let Err(e) = std::fs::write(&manifest_path, manifest_content) {

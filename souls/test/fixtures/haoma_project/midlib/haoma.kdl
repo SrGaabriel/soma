@@ -1,0 +1,7 @@
+name midlib
+version "0.1.0"
+type library
+
+dependencies {
+    baselib path="../baselib"
+}
