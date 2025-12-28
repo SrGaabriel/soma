@@ -12,8 +12,8 @@ open Soma.Typing
 inductive SymbolKind where
   /-- Top-level function/value binding (type stored separately in SymbolEnv) -/
   | binding
-  /-- Data constructor with parent type name -/
-  | dataCon (parentType : String)
+  /-- Data constructor with parent type name and tag -/
+  | dataCon (parentType : String) (tag : Nat)
   /-- Type name (data, struct, type alias) -/
   | type
   /-- Type class name -/
@@ -42,7 +42,7 @@ namespace SymbolKind
 
 /-- Check if this is a value-level symbol (vs type-level) -/
 def isValue : SymbolKind → Bool
-  | .binding | .dataCon _ | .letBinding | .lambdaParam
+  | .binding | .dataCon _ _ | .letBinding | .lambdaParam
   | .patternVar | .patternAs | .composeBinding
   | .typeClassMethod _ | .instanceMethod _ _
   | .intrinsicBinding => true
@@ -111,7 +111,7 @@ def isIntrinsic (s : Symbol) : Bool := s.kind.isIntrinsic
 /-- Check if this is a data constructor -/
 def isDataCon (s : Symbol) : Bool :=
   match s.kind with
-  | .dataCon _ => true
+  | .dataCon _ _ => true
   | _ => false
 
 /-- Check if this is an instance method -/

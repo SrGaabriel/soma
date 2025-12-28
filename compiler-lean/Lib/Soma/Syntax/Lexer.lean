@@ -327,6 +327,7 @@ partial def tokenize : LexerM (Array RawToken) := do
 structure LayoutState where
   indentStack : List Nat := [1]  -- 1-based column (matches columnAt)
   output : Array RawToken := #[]
+  lastWasSep : Bool := false  -- Track if last emitted token was layoutSep (to avoid duplicates from blank lines)
   deriving Inhabited
 
 def LayoutState.currentIndent (s : LayoutState) : Nat := s.indentStack.head!
@@ -340,7 +341,10 @@ def LayoutState.popIndent (s : LayoutState) : LayoutState :=
   | _ :: rest => { s with indentStack := rest }
 
 def LayoutState.emit (s : LayoutState) (tok : RawToken) : LayoutState :=
-  { s with output := s.output.push tok }
+  { s with
+    output := s.output.push tok
+    -- Only update lastWasSep for non-trivia tokens (whitespace shouldn't reset the flag)
+    lastWasSep := if tok.kind == .whitespace then s.lastWasSep else tok.kind == .layoutSep }
 
 def LayoutState.syntheticToken (kind : TokenKind) (offset : Nat) (text : String := "") : RawToken :=
   { kind, text, offset }
@@ -391,13 +395,14 @@ def processLayoutTokens (tokens : Array RawToken) (idx : Nat) (state : LayoutSta
           processLayoutTokens tokens (idx + 1) state source
         else if nextCol == currentIndent then
           -- Only emit layoutSep if we're inside a layout block (more than base indent)
-          if state.indentStack.length > 1 then
+          -- and we haven't just emitted one (blank lines cause duplicate separators)
+          if state.indentStack.length > 1 && !state.lastWasSep then
             -- Emit zero-width layoutSep, then the newline as whitespace trivia
             let state := state.emit (LayoutState.syntheticToken .layoutSep tok.offset)
             let state := state.emit { tok with kind := .whitespace }
             processLayoutTokens tokens (idx + 1) state source
           else
-            -- At base level, emit as whitespace trivia (preserves offset tracking)
+            -- At base level or duplicate sep, emit as whitespace trivia (preserves offset tracking)
             let state := state.emit { tok with kind := .whitespace }
             processLayoutTokens tokens (idx + 1) state source
         else

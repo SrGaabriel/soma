@@ -723,20 +723,7 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
       | .exprLet =>
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
           if kidsWithOffsets.size >= 2 then
-            let (nameOrPat, nameOffset) := kidsWithOffsets[0]!
-            let name ← match nameOrPat.syntaxKind? with
-            | some .name | some .patVar =>
-                match firstGreenChild nameOrPat with
-                | some child =>
-                    let text ← getGreenTokenText child nameOffset
-                    let nspan ← spanFor nameOrPat nameOffset
-                    pure ⟨text, nspan⟩
-                | none =>
-                    let nspan ← spanFor nameOrPat nameOffset
-                    pure ⟨"_", nspan⟩
-            | _ =>
-                let nspan ← spanFor nameOrPat nameOffset
-                pure ⟨"_", nspan⟩
+            let (patNode, patOffset) := kidsWithOffsets[0]!
 
             let sigNodes := kidsWithOffsets.filter fun (c, _) => c.syntaxKind? == some .signature
             let sig ← if sigNodes.isEmpty then pure none
@@ -748,10 +735,30 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
               let bodyIdx := valueIdx + 1
               if h2 : bodyIdx < kidsWithOffsets.size then
                 let body ← lowerExpr kidsWithOffsets[bodyIdx].1 kidsWithOffsets[bodyIdx].2
-                pure (.let_ name sig value body span)
+                -- Check if pattern is a simple name/variable or a complex pattern
+                match patNode.syntaxKind? with
+                | some .name | some .patVar =>
+                    let name ← match firstGreenChild patNode with
+                      | some child =>
+                          let text ← getGreenTokenText child patOffset
+                          let nspan ← spanFor patNode patOffset
+                          pure ⟨text, nspan⟩
+                      | none =>
+                          let nspan ← spanFor patNode patOffset
+                          pure ⟨"_", nspan⟩
+                    pure (.let_ name sig value body span)
+                | _ =>
+                    -- Complex pattern: desugar to case expression
+                    let pat ← lowerPattern patNode patOffset
+                    let typedPat := match sig with
+                      | some tyExpr => Pattern.typed pat tyExpr span
+                      | none => pat
+                    let arm := MatchArm.mk #[typedPat] none body span
+                    pure (.case #[value] #[arm] span)
               else
                 lowerError "let missing body" span
-                pure (.let_ name sig value (.var ⟨"_error", span⟩) span)
+                let nspan ← spanFor patNode patOffset
+                pure (.let_ ⟨"_", nspan⟩ sig value (.var ⟨"_error", span⟩) span)
             else
               lowerError "let missing value" span
               pure (.var ⟨"_error", span⟩)

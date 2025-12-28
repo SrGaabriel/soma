@@ -138,6 +138,8 @@ def buildTypeEnvFromModule
     (m : UntypedModule)
     (externalFunctions : Array (String × FunctionInfo))
     (supply : UniqueSupply)
+    (externalTypes : Array (String × TypeInfo) := #[])
+    (externalConstructors : Array (String × ConstructorInfo) := #[])
     : TypeEnv × UniqueSupply := Id.run do
   -- Start with empty environment
   let mut env := TypeEnv.empty
@@ -146,6 +148,14 @@ def buildTypeEnvFromModule
   -- Add external functions
   for (name, info) in externalFunctions do
     env := env.addFunction name info
+
+  -- Add external types from dependencies
+  for (name, info) in externalTypes do
+    env := env.addType name info
+
+  -- Add external constructors from dependencies
+  for (name, info) in externalConstructors do
+    env := env.addConstructor name info
 
   -- Add type definitions from the module
   for typeDef in m.types do
@@ -549,10 +559,11 @@ def inferModule
     match td with
     | .algebraic name typeVarNames ctors =>
       let typeVars : Array TyVarId := typeVarNames.mapIdx fun i n => ⟨n, i, .star⟩
+      let tyVarMap : Std.HashMap String TyVarId := typeVars.foldl (init := {}) fun m tv => m.insert tv.name tv
       let typedCtors := ctors.map fun c =>
         -- Resolve field types from syntax
         let fields := c.fieldTypeSyntax.filterMap fun tyExpr =>
-          resolveTypeExprPure tyExpr augmentedCtx.typeEnv
+          resolveTypeExprWithVars tyExpr augmentedCtx.typeEnv tyVarMap
         ({
           name := c.name
           tag := c.tag
@@ -561,13 +572,15 @@ def inferModule
       TypeDef.algebraic name typeVars typedCtors
     | .struct name typeVarNames ctorName fieldTypeSyntax =>
       let typeVars : Array TyVarId := typeVarNames.mapIdx fun i n => ⟨n, i, .star⟩
+      let tyVarMap : Std.HashMap String TyVarId := typeVars.foldl (init := {}) fun m tv => m.insert tv.name tv
       let fields := fieldTypeSyntax.filterMap fun tyExpr =>
-        resolveTypeExprPure tyExpr augmentedCtx.typeEnv
+        resolveTypeExprWithVars tyExpr augmentedCtx.typeEnv tyVarMap
       TypeDef.struct name typeVars ctorName fields
     | .record name typeVarNames fieldNamesAndTypes =>
       let typeVars : Array TyVarId := typeVarNames.mapIdx fun i n => ⟨n, i, .star⟩
+      let tyVarMap : Std.HashMap String TyVarId := typeVars.foldl (init := {}) fun m tv => m.insert tv.name tv
       let fields := fieldNamesAndTypes.filterMap fun (n, tyExpr) =>
-        (resolveTypeExprPure tyExpr augmentedCtx.typeEnv).map (n, ·)
+        (resolveTypeExprWithVars tyExpr augmentedCtx.typeEnv tyVarMap).map (n, ·)
       TypeDef.record name typeVars fields
 
   let typedModule : Module := {
@@ -579,19 +592,5 @@ def inferModule
   }
 
   { module := typedModule, errors := allErrors }
-
-/-- Extract public symbols (function signatures) from a typed module -/
-def extractPublicSymbols
-    (m : Module)
-    (seed : Array (String × FunctionInfo))
-    : Array (String × FunctionInfo) := Id.run do
-  let mut result := seed
-  for fn in m.functions do
-    let info : FunctionInfo := {
-      qualType := fn.qualifiedType
-      metalName := fn.name
-    }
-    result := result.push (fn.name.display, info)
-  return result
 
 end Soma.Infer

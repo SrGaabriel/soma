@@ -17,6 +17,7 @@ open Soma.Infer
 open Soma.Typing
 open Soma.Project
 open Soma (UniqueSupply)
+open Soma.Infer.Gen (applyTypeArgs)
 
 /-! ## Helper functions -/
 
@@ -112,9 +113,12 @@ def infer (module : Metal.UntypedModule) (typeEnv : TypeEnv) (instanceEnv : Inst
 
 /-- Build type environment from a Metal module -/
 def buildTypeEnv (module : Metal.UntypedModule)
+    (supply : UniqueSupply)
     (externalFns : Array (String × FunctionInfo) := #[])
-    (supply : UniqueSupply) : TypeEnv × UniqueSupply :=
-  buildTypeEnvFromModule module externalFns supply
+    (externalTypes : Array (String × Infer.TypeInfo) := #[])
+    (externalConstructors : Array (String × Infer.ConstructorInfo) := #[])
+    : TypeEnv × UniqueSupply :=
+  buildTypeEnvFromModule module externalFns supply externalTypes externalConstructors
 
 /-- Build instance environment from a Metal module -/
 def buildInstanceEnv (module : Metal.UntypedModule)
@@ -169,7 +173,7 @@ def full (filePath : String) (content : String) (config : Config) : FullResult :
 
   -- Check for early exit on frontend errors
   if config.stopOnFrontendErrors && frontendDiags.hasErrors then
-    let (typeEnv, _) := buildTypeEnv metalRes.module config.externalFunctions config.supply
+    let (typeEnv, _) := buildTypeEnv metalRes.module config.supply config.externalFunctions
     let instanceEnv := buildInstanceEnv metalRes.module config.externalInstances typeEnv
     return {
       moduleName, sourceFile := parseRes.sourceFile, parsedTree := parseRes.tree
@@ -181,7 +185,7 @@ def full (filePath : String) (content : String) (config : Config) : FullResult :
     }
 
   -- Build environments
-  let (typeEnv, _) := buildTypeEnv metalRes.module config.externalFunctions config.supply
+  let (typeEnv, _) := buildTypeEnv metalRes.module config.supply config.externalFunctions
   let instanceEnv := buildInstanceEnv metalRes.module config.externalInstances typeEnv
 
   -- Type inference
@@ -218,10 +222,10 @@ def parseOnly (filePath : String) (content : String) : ParseResult :=
   parse filePath content
 
 /-- Parse + lower to AST -/
-def toAst (filePath : String) (content : String) : ParseResult × LowerResult :=
+def toAst (filePath : String) (content : String) (moduleName : Option String := none) : ParseResult × LowerResult :=
   let parseRes := parse filePath content
-  let moduleName := moduleNameFromPath filePath
-  let lowerRes := lower parseRes.tree moduleName
+  let modName := moduleName.getD (moduleNameFromPath filePath)
+  let lowerRes := lower parseRes.tree modName
   (parseRes, lowerRes)
 
 /-- Parse + lower to Metal IR -/
@@ -359,16 +363,100 @@ def symbolEnvToFunctionInfos (seed : SymbolEnv) : Array (String × Infer.Functio
     let metalName : Metal.Name := .user { id := sym.unique.id, module := sym.unique.module, original := sym.name }
     acc.push (sym.name, { qualType := qt, metalName := metalName })
 
+/-- Convert SymbolEnv to array of type info for type environment building -/
+def symbolEnvToTypeInfos (seed : SymbolEnv) : Array (String × Infer.TypeInfo) :=
+  seed.fold (init := #[]) fun acc sym qt =>
+    match sym.kind with
+    | .type =>
+      let unique : Unique := { id := sym.unique.id, module := sym.unique.module, original := sym.name }
+      -- Compute kind from number of type parameters
+      let kind := Kind.nary qt.vars.size
+      let typeId : TypeId := TypeId.fromUnique unique kind
+      let typeInfo : Infer.TypeInfo := {
+        typeId := typeId
+        params := qt.vars
+        constructors := {} -- Constructors are added separately
+      }
+      acc.push (sym.name, typeInfo)
+    | _ => acc
+
+/-- Extract field types from a constructor type -/
+private def extractFieldTypes (ty : MonoTy) : Array MonoTy :=
+  match ty with
+  | .arrow argTy resTy => #[argTy] ++ extractFieldTypes resTy
+  | _ => #[]
+
+/-- Convert SymbolEnv to array of constructor info for type environment building -/
+def symbolEnvToConstructorInfos (seed : SymbolEnv) : Array (String × Infer.ConstructorInfo) :=
+  -- First, build a map from type names to their TypeIds (with correct kinds)
+  let typeMap : Std.HashMap String TypeId := seed.fold (init := {}) fun acc sym qt =>
+    match sym.kind with
+    | .type =>
+      let unique : Unique := { id := sym.unique.id, module := sym.unique.module, original := sym.name }
+      -- Compute kind from number of type parameters
+      let kind := Kind.nary qt.vars.size
+      let typeId : TypeId := TypeId.fromUnique unique kind
+      acc.insert sym.name typeId
+    | _ => acc
+  -- Now extract constructors with correct parent TypeIds
+  seed.fold (init := #[]) fun acc sym qt =>
+    match sym.kind with
+    | .dataCon parentType tag =>
+      match typeMap.get? parentType with
+      | some parentTypeId =>
+        let fieldTypes := extractFieldTypes qt.body
+        let ctorInfo : Infer.ConstructorInfo := {
+          typeName := parentType
+          typeId := parentTypeId
+          typeParams := qt.vars
+          fieldTypes := fieldTypes
+          tag := tag
+        }
+        acc.push (sym.name, ctorInfo)
+      | none => acc 
+    | _ => acc
+
 /-- Convert SymbolEnv to Metal.Lower.GlobalEnv for pre-populating external symbols -/
 def symbolEnvToGlobalEnv (moduleName : String) (seed : SymbolEnv) : Metal.Lower.GlobalEnv :=
-  seed.fold (init := Metal.Lower.GlobalEnv.empty moduleName) fun acc sym _qt =>
-    let metalName : Metal.Name := .user { id := sym.unique.id, module := sym.unique.module, original := sym.name }
-    let globalInfo : Metal.Lower.GlobalInfo := {
-      name := metalName
-      typeSyntax := none
-      definedAt := sym.span
-    }
-    acc.addGlobal sym.name globalInfo
+  seed.fold (init := Metal.Lower.GlobalEnv.empty moduleName) fun acc sym qt =>
+    let unique : Unique := { id := sym.unique.id, module := sym.unique.module, original := sym.name }
+    let metalName : Metal.Name := .user unique
+    match sym.kind with
+    | .type =>
+      -- Register as a type
+      let typeId : TypeId := TypeId.fromUnique unique
+      let tyCon := TyCon.user typeId
+      let typeInfo : Metal.Lower.TypeInfo := {
+        tyCon := tyCon
+        params := qt.vars
+        kind := Kind.nary qt.vars.size
+        unique := unique
+      }
+      acc.addType sym.name typeInfo
+    | .dataCon parentType tag =>
+      -- Register as both a constructor and a global (for value-level usage)
+      let ctorInfo : Metal.Lower.ConstructorInfo := {
+        name := metalName
+        parentType := parentType
+        parentUnique := unique -- important: this is the ctor's unique, not parent's
+        tag := tag
+        fields := #[]  -- Field types aren't needed for name resolution
+        span := sym.span
+      }
+      let globalInfo : Metal.Lower.GlobalInfo := {
+        name := metalName
+        typeSyntax := none
+        definedAt := sym.span
+      }
+      acc.addConstructor sym.name ctorInfo |>.addGlobal sym.name globalInfo
+    | _ =>
+      -- Register as a global for value-level usage
+      let globalInfo : Metal.Lower.GlobalInfo := {
+        name := metalName
+        typeSyntax := none
+        definedAt := sym.span
+      }
+      acc.addGlobal sym.name globalInfo
 
 /-- Extract public symbols from a typed module -/
 def extractPublicSymbols
@@ -399,7 +487,7 @@ def extractPublicSymbols
       span := span
     }
     acc := acc.insert sym fn.qualifiedType
-  -- Also extract type class method signatures
+  -- Extract type class method signatures
   for tc in m.typeClasses do
     let className := tc.name.display
     for (methodName, methodType) in tc.methods do
@@ -419,6 +507,48 @@ def extractPublicSymbols
         span := span
       }
       acc := acc.insert sym methodType
+  -- Extract type definitions and their constructors
+  for td in m.types do
+    let typeName := td.name.display
+    let typeVars := td.typeVars
+    let (typeUnique, sup') := match td.name.baseUnique? with
+      | some u => (u, sup)
+      | none => sup.fresh typeName
+    sup := sup'
+    let typeSym : Symbol := {
+      unique := typeUnique
+      name := typeName
+      kind := .type
+      module := m.name
+      package := packageName
+      span := Span.uninhabited
+    }
+    let typeQualType : QualifiedType := { vars := typeVars, constraints := #[], body := Ty.unit }
+    acc := acc.insert typeSym typeQualType
+    -- Export data constructors
+    for ctor in td.constructors do
+      let (ctorName, ctorTag) := match ctor.name with
+        | .ctor _ c tag => (c, tag)
+        | n => (n.display, 0)
+      -- Each constructor needs its own unique (not the parent type's unique)
+      let (ctorUnique, sup') := sup.fresh ctorName
+      sup := sup'
+      let typeKind := Kind.nary typeVars.size
+      let typeId : TypeId := TypeId.fromUnique typeUnique typeKind
+      let baseTyCon : Ty typeKind := Ty.userCon typeKind typeId
+      let tyVarArgs : Array MonoTy := typeVars.map (fun v => Ty.var v)
+      let resultTy : MonoTy := applyTypeArgs baseTyCon tyVarArgs
+      let ctorTy := ctor.fields.foldr (fun fieldTy acc => Ty.arrow fieldTy acc) resultTy
+      let qualCtorTy : QualifiedType := { vars := typeVars, constraints := #[], body := ctorTy }
+      let ctorSym : Symbol := {
+        unique := ctorUnique
+        name := ctorName
+        kind := .dataCon typeName ctorTag
+        module := m.name
+        package := packageName
+        span := Span.uninhabited
+      }
+      acc := acc.insert ctorSym qualCtorTy
   pure (acc, sup)
 
 /-- Extract public instances from a typed module -/
@@ -497,7 +627,9 @@ def checkModule
 
   -- Build environments with external dependencies
   let externalFunctions := symbolEnvToFunctionInfos seedEnv
-  let (typeEnv, supply) := buildTypeEnv metalRes.module externalFunctions supply
+  let externalTypes := symbolEnvToTypeInfos seedEnv
+  let externalConstructors := symbolEnvToConstructorInfos seedEnv
+  let (typeEnv, supply) := buildTypeEnv metalRes.module supply externalFunctions externalTypes externalConstructors
   let inferInstanceEnv := buildInstanceEnv metalRes.module (projectToInferInstanceEnv seedInstances) typeEnv
 
   -- Type inference
@@ -540,7 +672,7 @@ def checkModulesInOrder
 /-- Parse a single source file into a ModuleInfo -/
 def parseModuleFile (moduleName : String) (path : System.FilePath) : IO (Except Diagnostics ModuleInfo) := do
   let content ← IO.FS.readFile path
-  let (parseRes, lowerRes) := toAst path.toString content
+  let (parseRes, lowerRes) := toAst path.toString content (some moduleName)
   let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics
 
   if allDiags.hasErrors then

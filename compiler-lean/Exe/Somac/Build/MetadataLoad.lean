@@ -52,65 +52,88 @@ def tyVarIdFromJson (j : Lean.Json) : Except String TyVarId := do
     | .error _ => .star
   pure { name, id, kind }
 
-/-- Parse a higher-kinded type from JSON -/
-partial def tyFromJsonHK (j : Lean.Json) : Except String (Ty (.arrow Kind.star Kind.star)) := do
+/-- Parse a type of a given kind from JSON.
+    This is the core parsing function that handles types of any kind,
+    using the expected kind to guide parsing of type applications. -/
+partial def tyFromJsonWithKind (k : Kind) (j : Lean.Json) : Except String (Ty k) := do
   match j with
   | .obj obj =>
-    if let some (.str hpName) := obj.get? "higherPrim" then
-      match HigherPrimitive.fromName? hpName with
-      | some p => pure (.higherPrim p)
-      | none => .error s!"Unknown higher primitive: {hpName}"
-    else if let some conObj := obj.get? "con" then
-      let typeId ← typeIdFromJson conObj
-      pure (.userCon (.arrow .star .star) typeId)
-    else
-      .error s!"Expected higher-kinded type: {j}"
-  | _ => .error s!"Invalid higher-kinded type JSON: {j}"
-
-/-- Parse a MonoTy from JSON -/
-partial def tyFromJson (j : Lean.Json) : Except String MonoTy := do
-  match j with
-  | .obj obj =>
-    -- Check for var
+    -- Variable case: create var with the expected kind
     if let some varObj := obj.get? "var" then
       let name ← varObj.getObjValAs? String "name"
       let id ← varObj.getObjValAs? Nat "id"
-      pure (.var { name, id, kind := .star })
-    -- Check for prim
+      pure (.var { name, id, kind := k })
+
+    -- Star primitive (only valid for kind *)
     else if let some (.str primName) := obj.get? "prim" then
-      match StarPrimitive.fromName? primName with
-      | some p => pure (.starPrim p)
-      | none => .error s!"Unknown primitive type: {primName}"
-    -- Check for higherPrim
+      match k with
+      | .star =>
+        match StarPrimitive.fromName? primName with
+        | some p => pure (.starPrim p)
+        | none => .error s!"Unknown primitive type: {primName}"
+      | _ => .error s!"Primitive {primName} has kind *, but expected kind {k}"
+
+    -- Higher primitive (only valid for kind * -> *)
     else if let some (.str hpName) := obj.get? "higherPrim" then
-      match HigherPrimitive.fromName? hpName with
-      | some p => pure (.app (.higherPrim p) (.starPrim .unit)) -- placeholder, will be in app
-      | none => .error s!"Unknown higher primitive: {hpName}"
-    -- Check for con (user type)
+      match k with
+      | .arrow .star .star =>
+        match HigherPrimitive.fromName? hpName with
+        | some p => pure (.higherPrim p)
+        | none => .error s!"Unknown higher primitive: {hpName}"
+      | .star =>
+        -- Standalone higherPrim at kind * is a placeholder (will be wrapped in app)
+        match HigherPrimitive.fromName? hpName with
+        | some p => pure (.app (.higherPrim p) (.starPrim .unit))
+        | none => .error s!"Unknown higher primitive: {hpName}"
+      | _ => .error s!"Higher primitive {hpName} has kind * -> *, but expected kind {k}"
+
+    -- User type constructor
     else if let some conObj := obj.get? "con" then
       let typeId ← typeIdFromJson conObj
-      pure (.userCon .star typeId)
-    -- Check for arrow
+      -- The typeId includes the kind from JSON serialization
+      -- We trust it matches k (type system ensures this at serialization time)
+      pure (.userCon k typeId)
+
+    -- Arrow type (only valid for kind *)
     else if let some (.arr arr) := obj.get? "arrow" then
-      if arr.size = 2 then
-        let from' ← tyFromJson arr[0]!
-        let to' ← tyFromJson arr[1]!
-        pure (.arrow from' to')
-      else .error "Invalid arrow type: expected 2 elements"
-    -- Check for app
+      match k with
+      | .star =>
+        if arr.size = 2 then
+          let from' ← tyFromJsonWithKind .star arr[0]!
+          let to' ← tyFromJsonWithKind .star arr[1]!
+          pure (.arrow from' to')
+        else .error "Invalid arrow type: expected 2 elements"
+      | _ => .error s!"Arrow types have kind *, but expected kind {k}"
+
+    -- Type application
     else if let some (.arr arr) := obj.get? "app" then
       if arr.size = 2 then
-        let f' ← tyFromJsonHK arr[0]!
-        let a' ← tyFromJson arr[1]!
+        -- If result kind is k, then f has kind (* -> k) and arg has kind *
+        -- We only support * as argument kinds (no higher-kinded arguments like Functor f)
+        let fnKind : Kind := .arrow .star k
+        let f' ← tyFromJsonWithKind fnKind arr[0]!
+        let a' ← tyFromJsonWithKind .star arr[1]!
         pure (.app f' a')
       else .error "Invalid app type: expected 2 elements"
-    -- Check for tuple
+
+    -- Tuple (only valid for kind *)
     else if let some (.arr elems) := obj.get? "tuple" then
-      let elemTys ← elems.toList.mapM tyFromJson
-      pure (Ty.mkTuple elemTys.toArray)
-    else
-      .error s!"Unknown type JSON: {j}"
+      match k with
+      | .star =>
+        let elemTys ← elems.toList.mapM (tyFromJsonWithKind .star)
+        pure (Ty.mkTuple elemTys.toArray)
+      | _ => .error s!"Tuple types have kind *, but expected kind {k}"
+
+    else .error s!"Unknown type JSON for kind {k}: {j}"
   | _ => .error s!"Invalid type JSON: {j}"
+
+/-- Parse a MonoTy (kind *) from JSON -/
+def tyFromJson (j : Lean.Json) : Except String MonoTy :=
+  tyFromJsonWithKind .star j
+
+/-- Parse a higher-kinded type (kind * -> *) from JSON -/
+def tyFromJsonHK (j : Lean.Json) : Except String (Ty (.arrow Kind.star Kind.star)) :=
+  tyFromJsonWithKind (.arrow .star .star) j
 
 /-- Parse a TyCon from JSON -/
 def tyConFromJson (j : Lean.Json) : Except String TyCon := do
@@ -159,8 +182,10 @@ def symbolKindFromJson (j : Lean.Json) : Except String SymbolKind := do
   | .str "intrinsicBinding" => pure .intrinsicBinding
   | .str "intrinsicType" => pure .intrinsicType
   | .obj obj =>
-    if let some (.str parent) := obj.get? "dataCon" then
-      pure (.dataCon parent)
+    if let some dataConObj := obj.get? "dataCon" then
+      let parent ← dataConObj.getObjValAs? String "parent"
+      let tag ← dataConObj.getObjValAs? Nat "tag"
+      pure (.dataCon parent tag)
     else if let some (.str cls) := obj.get? "typeClassMethod" then
       pure (.typeClassMethod cls)
     else if let some instObj := obj.get? "instanceMethod" then

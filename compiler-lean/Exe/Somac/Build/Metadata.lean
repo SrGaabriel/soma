@@ -90,7 +90,7 @@ def spanToJson (s : Span) : Lean.Json :=
 /-- Serialize a SymbolKind to JSON -/
 def symbolKindToJson : SymbolKind → Lean.Json
   | .binding => .str "binding"
-  | .dataCon parent => .mkObj [("dataCon", .str parent)]
+  | .dataCon parent tag => .mkObj [("dataCon", .mkObj [("parent", .str parent), ("tag", .num tag)])]
   | .type => .str "type"
   | .typeClass => .str "typeClass"
   | .typeClassMethod cls => .mkObj [("typeClassMethod", .str cls)]

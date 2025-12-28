@@ -3,10 +3,6 @@ use base/core.{Option, Some, None}
 
 intrinsic def cons :: a -> [a] -> [a]
 
-intrinsic def {+} :: Int -> Int -> Int
-intrinsic def {-} :: Int -> Int -> Int
-intrinsic def {*} :: Int -> Int -> Int
-
 intrinsic def {==} :: a -> a -> Bool
 intrinsic def {<=} :: Int -> Int -> Bool
 

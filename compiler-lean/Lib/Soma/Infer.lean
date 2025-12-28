@@ -35,15 +35,4 @@ import Soma.Infer.Module
 
 namespace Soma.Infer
 
-/-! ## Re-exports
-
-The key types and functions are re-exported here for convenient access:
-- `InferError`: Type inference error variants
-- `inferExpr`: Infer the type of an expression
-- `inferAndGeneralize`: Infer and generalize to a qualified type
-- `TypeEnv`: Type environment for local bindings
-- `InferContext`: Full inference context
-- `InferResult`: Result of type inference
--/
-
 end Soma.Infer
