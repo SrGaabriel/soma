@@ -5,7 +5,12 @@ import Std.Data.HashSet
 namespace Soma.Metal.Lower
 
 open Soma.Typing
-open Soma.Syntax (Span TypeExpr)
+open Soma.Syntax (Span TypeExpr KindExpr)
+
+/-- Convert a KindExpr (from syntax) to a Kind (for type system) -/
+private def kindFromExpr : KindExpr → Kind
+  | .atom name => Kind.fromString name.value
+  | .arrow from_ to _ => Kind.arrow (kindFromExpr from_) (kindFromExpr to)
 
 /-- Create a Ty from a user TypeId at a given kind -/
 private def userTyOfKind (id : TypeId) (k : Kind) : Ty k :=
@@ -130,7 +135,7 @@ mutual
         let varName := binder.name.value
         -- Use explicit kind annotation if provided, otherwise fall back to inferred kind
         let kind := match binder.kind with
-          | some kindName => Kind.fromString kindName.value
+          | some kindExpr => kindFromExpr kindExpr
           | none => kindEnv.getD varName .star
         let id ← LowerM.freshUniqueId
         let tyVarId : TyVarId := { name := varName, id := id, kind := kind }
@@ -410,7 +415,7 @@ where
         let varName := binder.name.value
         -- Use explicit kind annotation if provided, otherwise fall back to inferred kind
         let kind := match binder.kind with
-          | some kindName => Kind.fromString kindName.value
+          | some kindExpr => kindFromExpr kindExpr
           | none => kindEnv.getD varName .star
         let id ← LowerM.freshUniqueId
         let tyVarId : TyVarId := { name := varName, id := id, kind := kind }

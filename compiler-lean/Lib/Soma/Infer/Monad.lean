@@ -278,6 +278,11 @@ def freshVarOfKind (name : String) (kind : Kind) : InferM MonoTy := do
   let v ← freshTyVar name kind
   return .var v
 
+/-- Generate a fresh type variable of the given kind, returning it as a SomeTy -/
+def freshSomeVar (name : String) (kind : Kind) : InferM SomeTy := do
+  let v ← freshTyVar name kind
+  return ⟨kind, .var v⟩
+
 /-- Get the current substitution -/
 def getSubst : InferM Subst := do
   return (← get).subst

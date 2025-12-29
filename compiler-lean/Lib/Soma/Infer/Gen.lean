@@ -19,8 +19,13 @@ import Soma.Metal
 namespace Soma.Infer
 
 open Soma.Typing
-open Soma.Syntax (Span)
+open Soma.Syntax (Span KindExpr)
 open Soma.Metal
+
+/-- Convert a KindExpr (from syntax) to a Kind (for type system) -/
+private def kindFromExpr : KindExpr → Kind
+  | .atom name => Kind.fromString name.value
+  | .arrow from_ to _ => Kind.arrow (kindFromExpr from_) (kindFromExpr to)
 open InferM (freshVar freshRowVar freshLabelVar lookupLocal lookupFunction lookupConstructor lookupType
              addEqualityConstraint addConstraint reportError
              withLocal withLocals instantiate getFreshId)
@@ -580,8 +585,157 @@ end Gen
 
 open Soma.Syntax (TypeExpr)
 
-/-- Environment mapping type variable names to their resolved MonoTy -/
-abbrev TyVarEnv := Std.HashMap String MonoTy
+/-- Environment mapping type variable names to their resolved types -/
+abbrev TyVarEnv := Std.HashMap String SomeTy
+
+/-- Apply a type of arrow kind to an argument, returning the result as SomeTy -/
+def applyArrowType (fnTy : SomeTy) (argTy : SomeTy) (span : Span) : InferM SomeTy := do
+  match fnTy.kind with
+  | .arrow k1 k2 =>
+    if k1 == argTy.kind then
+      if hfn : fnTy.kind = Kind.arrow argTy.kind k2 then
+        let fn : Ty (Kind.arrow argTy.kind k2) := hfn ▸ fnTy.ty
+        if harg : argTy.kind = argTy.kind then
+          let arg : Ty argTy.kind := harg ▸ argTy.ty
+          pure ⟨k2, Ty.app fn arg⟩
+        else
+          InferM.reportError (.unknownType "internal error: kind mismatch" span)
+          pure ⟨.star, ← InferM.freshVar "app"⟩
+      else
+        InferM.reportError (.unknownType "internal error: kind mismatch" span)
+        pure ⟨.star, ← InferM.freshVar "app"⟩
+    else
+      InferM.reportError (.unknownType s!"type expects argument of kind {k1}, got {argTy.kind}" span)
+      pure ⟨.star, ← InferM.freshVar "app"⟩
+  | k =>
+    InferM.reportError (.unknownType s!"cannot apply type of kind {k} to argument" span)
+    pure ⟨.star, ← InferM.freshVar "app"⟩
+
+mutual
+
+/-- Resolve a TypeExpr to a SomeTy -/
+partial def resolveSomeTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : InferM SomeTy := do
+  match ty with
+  | .var name =>
+    match tyVarEnv.get? name.value with
+    | some sty => pure sty
+    | none =>
+      -- Unbound variable, create fresh star-kinded type variable
+      let freshTy ← InferM.freshVar name.value
+      pure ⟨.star, freshTy⟩
+
+  | .con name =>
+    match StarPrimitive.fromName? name.value with
+    | some prim => pure ⟨.star, .starPrim prim⟩
+    | none =>
+      match HigherPrimitive.fromName? name.value with
+      | some .array => pure ⟨.arrow .star .star, .higherPrim .array⟩
+      | some .ref => pure ⟨.arrow .star .star, .higherPrim .ref⟩
+      | some .io => pure ⟨.arrow .star .star, .higherPrim .io⟩
+      | none =>
+        match (← InferM.getTypeEnv).lookupType name.value with
+        | some info =>
+          pure ⟨info.typeId.kind, Ty.userCon info.typeId.kind info.typeId⟩
+        | none =>
+          InferM.reportError (.unknownType name.value name.span)
+          let freshTy ← InferM.freshVar name.value
+          pure ⟨.star, freshTy⟩
+
+  | .app fn arg span =>
+    resolveTypeAppWithEnv tyVarEnv fn arg span
+
+  | .arrow from_ to _ =>
+    let fromTy ← resolveTypeExprWithEnv tyVarEnv from_
+    let toTy ← resolveTypeExprWithEnv tyVarEnv to
+    pure ⟨.star, .arrow fromTy toTy⟩
+
+  | .tuple elements _ =>
+    let elemTys ← elements.mapM (resolveTypeExprWithEnv tyVarEnv)
+    match Gen.mkTupleType elemTys with
+    | some t => pure ⟨.star, t⟩
+    | none =>
+      let freshTy ← InferM.freshVar "tuple"
+      pure ⟨.star, freshTy⟩
+
+  | .list elem _ =>
+    let elemTy ← resolveTypeExprWithEnv tyVarEnv elem
+    pure ⟨.star, Ty.array elemTy⟩
+
+  | .forall_ binders body _ =>
+    let mut newEnv := tyVarEnv
+    for binder in binders do
+      let varName := binder.name.value
+      let kind := binder.kind.map kindFromExpr |>.getD .star
+      let freshTy ← InferM.freshSomeVar varName kind
+      newEnv := newEnv.insert varName freshTy
+    resolveSomeTypeExprWithEnv newEnv body
+
+  | .constrained _ body _ =>
+    resolveSomeTypeExprWithEnv tyVarEnv body
+
+  | .parens inner _ =>
+    resolveSomeTypeExprWithEnv tyVarEnv inner
+
+  | .kinded inner _ _ =>
+    resolveSomeTypeExprWithEnv tyVarEnv inner
+
+  | .record fields tail _ =>
+    let monoTy ← resolveRecordTypeWithEnv tyVarEnv fields tail
+    pure ⟨.star, monoTy⟩
+
+  | .variant cases tail _ =>
+    let monoTy ← resolveVariantTypeWithEnv tyVarEnv cases tail
+    pure ⟨.star, monoTy⟩
+
+/-- Resolve a type application, returning the result as SomeTy -/
+partial def resolveTypeAppWithEnv (tyVarEnv : TyVarEnv) (fn : TypeExpr) (arg : TypeExpr) (span : Span) : InferM SomeTy := do
+  let fnTy ← resolveSomeTypeExprWithEnv tyVarEnv fn
+  let argTy ← resolveSomeTypeExprWithEnv tyVarEnv arg
+  applyArrowType fnTy argTy span
+
+/-- Helper to resolve record type -/
+partial def resolveRecordTypeWithEnv (tyVarEnv : TyVarEnv) (fields : Array (Soma.Syntax.Name × TypeExpr)) (tail : Option Soma.Syntax.Name) : InferM MonoTy := do
+  let baseRow : RowTy ← match tail with
+    | some tailName =>
+      match tyVarEnv.get? tailName.value with
+      | some sty =>
+        match sty.cast? .row with
+        | some rowTy => pure rowTy
+        | none => InferM.freshRowVar tailName.value
+      | none => InferM.freshRowVar tailName.value
+    | none => pure .rowEmpty
+  let mut rowTy := baseRow
+  let tyVarIdMap : Std.HashMap String TyVarId := tyVarEnv.fold (init := {}) fun acc name sty =>
+    match sty.kind, sty.ty with
+    | .label, .var v => acc.insert name v
+    | _, _ => acc
+  for (fieldName, fieldTy) in fields.reverse do
+    let fieldMonoTy ← resolveTypeExprWithEnv tyVarEnv fieldTy
+    let labelTy := Ty.lookupOrLiteralLabel fieldName.value tyVarIdMap
+    rowTy := .rowExtend labelTy fieldMonoTy rowTy
+  pure (.record rowTy)
+
+/-- Helper to resolve variant type -/
+partial def resolveVariantTypeWithEnv (tyVarEnv : TyVarEnv) (cases : Array (Soma.Syntax.Name × TypeExpr)) (tail : Option Soma.Syntax.Name) : InferM MonoTy := do
+  let baseRow : RowTy ← match tail with
+    | some tailName =>
+      match tyVarEnv.get? tailName.value with
+      | some sty =>
+        match sty.cast? .row with
+        | some rowTy => pure rowTy
+        | none => InferM.freshRowVar tailName.value
+      | none => InferM.freshRowVar tailName.value
+    | none => pure .rowEmpty
+  let mut rowTy := baseRow
+  let tyVarIdMap : Std.HashMap String TyVarId := tyVarEnv.fold (init := {}) fun acc name sty =>
+    match sty.kind, sty.ty with
+    | .label, .var v => acc.insert name v
+    | _, _ => acc
+  for (caseName, caseTy) in cases.reverse do
+    let caseMonoTy ← resolveTypeExprWithEnv tyVarEnv caseTy
+    let labelTy := Ty.lookupOrLiteralLabel caseName.value tyVarIdMap
+    rowTy := .rowExtend labelTy caseMonoTy rowTy
+  pure (.variant rowTy)
 
 /-- Resolve a TypeExpr (syntax) to a MonoTy during type inference, with bound type variables -/
 partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : InferM MonoTy := do
@@ -589,7 +743,14 @@ partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : Infer
   | .var name =>
     -- Check if type variable is already bound
     match tyVarEnv.get? name.value with
-    | some boundTy => pure boundTy
+    | some sty =>
+      -- Type variable found, it should be of kind * for use as a MonoTy
+      match sty.cast? .star with
+      | some monoTy => pure monoTy
+      | none =>
+        -- Kind mismatch, the variable has a different kind
+        InferM.reportError (.unknownType s!"type variable '{name.value}' has kind {sty.kind}, expected *" name.span)
+        InferM.freshVar name.value
     | none => InferM.freshVar name.value
 
   | .con name =>
@@ -620,48 +781,12 @@ partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : Infer
     pure (Ty.array elemTy)
 
   | .app fn arg span =>
-    -- First resolve the argument
-    let argTy ← resolveTypeExprWithEnv tyVarEnv arg
-    -- Check if fn is a higher primitive or user-defined type
-    match fn with
-    | .con name =>
-      match HigherPrimitive.fromName? name.value with
-      | some .array => pure (Ty.array argTy)
-      | some .ref => pure (Ty.ref argTy)
-      | some .io => pure (Ty.io argTy)
-      | none =>
-        -- Look up user-defined parameterized type
-        match (← InferM.getTypeEnv).lookupType name.value with
-        | some typeInfo =>
-          -- Create the type constructor with its proper kind and apply the argument
-          let baseTy := Ty.userCon typeInfo.typeId.kind typeInfo.typeId
-          pure (Gen.applyTypeArgs baseTy #[argTy])
-        | none =>
-          InferM.reportError (.unknownType name.value name.span)
-          InferM.freshVar "app"
-    | .app _ _ _ =>
-      -- Nested application like `Map String Int` - recursively resolve the function part
-      -- This collects all arguments and applies them at once
-      let (baseName, allArgs) ← collectTypeApp tyVarEnv fn #[argTy]
-      match baseName with
-      | some name =>
-        match HigherPrimitive.fromName? name with
-        | some .array => pure (Ty.array (allArgs[0]?.getD argTy))
-        | some .ref => pure (Ty.ref (allArgs[0]?.getD argTy))
-        | some .io => pure (Ty.io (allArgs[0]?.getD argTy))
-        | none =>
-          match (← InferM.getTypeEnv).lookupType name with
-          | some typeInfo =>
-            let baseTy := Ty.userCon typeInfo.typeId.kind typeInfo.typeId
-            pure (Gen.applyTypeArgs baseTy allArgs)
-          | none =>
-            InferM.reportError (.unknownType name span)
-            InferM.freshVar "app"
-      | none =>
-        InferM.reportError (.unknownType "invalid nested type application" span)
-        InferM.freshVar "app"
-    | _ =>
-      InferM.reportError (.unknownType "invalid type application" span)
+    -- Resolve type application using kind-aware resolution
+    let result ← resolveTypeAppWithEnv tyVarEnv fn arg span
+    match result.cast? .star with
+    | some monoTy => pure monoTy
+    | none =>
+      InferM.reportError (.unknownType s!"type application has kind {result.kind}, expected *" span)
       InferM.freshVar "app"
 
   | .forall_ binders body _ =>
@@ -669,8 +794,8 @@ partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : Infer
     let mut newEnv := tyVarEnv
     for binder in binders do
       let varName := binder.name.value
-      let kind := binder.kind.map (Kind.fromString ·.value) |>.getD .star
-      let freshTy ← InferM.freshVarOfKind varName kind
+      let kind := binder.kind.map kindFromExpr |>.getD .star
+      let freshTy ← InferM.freshSomeVar varName kind
       newEnv := newEnv.insert varName freshTy
     resolveTypeExprWithEnv newEnv body
 
@@ -689,18 +814,13 @@ partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : Infer
     let baseRow : RowTy ← match tail with
       | some tailName =>
         match tyVarEnv.get? tailName.value with
-        | some (.var tyVarId) =>
-          -- Use the variable if it was bound with row kind
-          -- kind error but we create a fresh row variable to avoid crashes for now
-          if tyVarId.kind == .row then
-            pure (.var tyVarId)
-          else
-            -- Star-kinded variable used as row tail
-            -- could be an error, but we're lenient for now
+        | some sty =>
+          -- Check if this is a row-kinded type variable
+          match sty.cast? .row with
+          | some rowTy => pure rowTy
+          | none =>
+            -- Not a row type, create fresh row var
             InferM.freshRowVar tailName.value
-        | some _ =>
-          -- Bound to a non-variable type, create fresh row var
-          InferM.freshRowVar tailName.value
         | none =>
           -- Unbound variable - create fresh row variable
           InferM.freshRowVar tailName.value
@@ -709,10 +829,10 @@ partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : Infer
     -- Build the row type from fields
     let mut rowTy := baseRow
     -- Build a TyVarId map from tyVarEnv for lookupOrLiteralLabel
-    let tyVarIdMap : Std.HashMap String TyVarId := tyVarEnv.fold (init := {}) fun acc name ty =>
-      match ty with
-      | .var v => acc.insert name v
-      | _ => acc
+    let tyVarIdMap : Std.HashMap String TyVarId := tyVarEnv.fold (init := {}) fun acc name sty =>
+      match sty.kind, sty.ty with
+      | .label, .var v => acc.insert name v
+      | _, _ => acc
     for (fieldName, fieldTy) in fields.reverse do
       let fieldMonoTy ← resolveTypeExprWithEnv tyVarEnv fieldTy
       let labelTy := Ty.lookupOrLiteralLabel fieldName.value tyVarIdMap
@@ -724,63 +844,47 @@ partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : Infer
     let baseRow : RowTy ← match tail with
       | some tailName =>
         match tyVarEnv.get? tailName.value with
-        | some (.var tyVarId) =>
-          if tyVarId.kind == .row then
-            pure (.var tyVarId)
-          else
+        | some sty =>
+          -- Check if this is a row-kinded type variable
+          match sty.cast? .row with
+          | some rowTy => pure rowTy
+          | none =>
+            -- Not a row type, create fresh row var
             InferM.freshRowVar tailName.value
-        | some _ =>
-          InferM.freshRowVar tailName.value
         | none =>
           InferM.freshRowVar tailName.value
       | none =>
         pure .rowEmpty
     -- Build the row type from cases
     let mut rowTy := baseRow
-    let tyVarIdMap : Std.HashMap String TyVarId := tyVarEnv.fold (init := {}) fun acc name ty =>
-      match ty with
-      | .var v => acc.insert name v
-      | _ => acc
+    let tyVarIdMap : Std.HashMap String TyVarId := tyVarEnv.fold (init := {}) fun acc name sty =>
+      match sty.kind, sty.ty with
+      | .label, .var v => acc.insert name v
+      | _, _ => acc
     for (caseName, caseTy) in cases.reverse do
       let caseMonoTy ← resolveTypeExprWithEnv tyVarEnv caseTy
       let labelTy := Ty.lookupOrLiteralLabel caseName.value tyVarIdMap
       rowTy := .rowExtend labelTy caseMonoTy rowTy
     pure (.variant rowTy)
-where
-  span : Span := match ty with
-    | .app _ _ s | .arrow _ _ s | .tuple _ s | .list _ s
-    | .forall_ _ _ s | .constrained _ _ s | .parens _ s | .kinded _ _ s
-    | .record _ _ s | .variant _ _ s => s
-    | .var n | .con n => n.span
-
-  /-- Collect the base type name and all arguments from nested type applications  -/
-  collectTypeApp (env : TyVarEnv) (ty : TypeExpr) (args : Array MonoTy) : InferM (Option String × Array MonoTy) := do
-    match ty with
-    | .con name => pure (some name.value, args)
-    | .app fn arg _ =>
-      let argTy ← resolveTypeExprWithEnv env arg
-      collectTypeApp env fn (#[argTy] ++ args)
-    | .parens inner _ => collectTypeApp env inner args
-    | _ => pure (none, args)
 
 /-- Resolve a TypeExpr (syntax) to a MonoTy during type inference -/
-def resolveTypeExpr (ty : TypeExpr) : InferM MonoTy := do
+partial def resolveTypeExpr (ty : TypeExpr) : InferM MonoTy := do
   let varNames := ty.collectVarNames
   let mut tyVarEnv : TyVarEnv := {}
   for name in varNames do
-    let freshTy ← InferM.freshVar name
+    let freshTy ← InferM.freshSomeVar name .star
     tyVarEnv := tyVarEnv.insert name freshTy
   resolveTypeExprWithEnv tyVarEnv ty
 
 /-- Extract label type variable binders from a forall type expression -/
-def extractLabelBinders (ty : Soma.Syntax.TypeExpr) : InferM (Array (String × LabelTy)) := do
+partial def extractLabelBinders (ty : Soma.Syntax.TypeExpr) : InferM (Array (String × LabelTy)) := do
   match ty with
   | .forall_ vars body _ =>
     let mut labelBindings : Array (String × LabelTy) := #[]
     for binder in vars do
       match binder.kind with
-      | some kindName =>
-        let kind := Kind.fromString kindName.value
+      | some kindExpr =>
+        let kind := kindFromExpr kindExpr
         if kind == .label then
           let freshId ← InferM.getFreshId
           let tyVarId : TyVarId := ⟨binder.name.value, freshId, .label⟩
@@ -791,6 +895,8 @@ def extractLabelBinders (ty : Soma.Syntax.TypeExpr) : InferM (Array (String × L
   | .parens inner _ => extractLabelBinders inner
   | .constrained _ body _ => extractLabelBinders body
   | _ => return #[]
+
+end
 
 /-- Generate constraints for a top-level function, returning typed body -/
 def genFunctionBody {scope : Scope} (fn : UntypedFunction)

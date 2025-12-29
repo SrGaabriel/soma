@@ -25,6 +25,57 @@ def tryConsumeDot : ParserM (Option GreenNode) := do
 
 mutual
 
+/-- Parse an atomic kind: *, %, #, Row, Label, or parenthesized kind -/
+partial def parseKindAtom : ParserM (Option GreenNode) := do
+  let tok ← current
+  -- * (star kind)
+  if tok.kind == some .varSymbol && tok.text == "*" then
+    let g ← consumeAny
+    return some (GreenNode.mkNode .typeCon #[g])
+  -- % (row kind)
+  if tok.kind == some .varSymbol && tok.text == "%" then
+    let g ← consumeAny
+    return some (GreenNode.mkNode .typeCon #[g])
+  -- # (label kind)
+  if tok.kind == some .hash then
+    let g ← consumeAny
+    return some (GreenNode.mkNode .typeCon #[g])
+  -- Named kinds: Row, Label, or other identifiers
+  if tok.kind == some .upperIdent then
+    let g ← consumeAny
+    return some (GreenNode.mkNode .typeCon #[g])
+  -- Parenthesized kinds: (* -> *)
+  if tok.kind == some .leftParen then
+    let lparen ← consumeAny
+    match ← parseKind with
+    | some inner =>
+        match ← tryConsume .rightParen with
+        | some rparen =>
+            return some (GreenNode.mkNode .typeParens #[lparen, inner, rparen])
+        | none =>
+            recordError "expected ')' after kind"
+            return some inner
+    | none =>
+        recordError "expected kind after '('"
+        return none
+  return none
+
+/-- Parse a kind expression, including arrow kinds like * -> * -/
+partial def parseKind : ParserM (Option GreenNode) := do
+  match ← parseKindAtom with
+  | some left =>
+      if (← check .arrow) then
+        let arrowTok ← consumeAny
+        match ← parseKind with
+        | some right =>
+            return some (GreenNode.mkNode .typeArrow #[left, arrowTok, right])
+        | none =>
+            recordError "expected kind after '->'"
+            return some left
+      else
+        return some left
+  | none => return none
+
 partial def parseParenType : ParserM (Option GreenNode) := do
   match ← tryConsume .leftParen with
   | some lparen =>
@@ -233,32 +284,15 @@ partial def parseListType : ParserM (Option GreenNode) := do
 
 /-- Parse a single forall type variable binder -/
 partial def parseForallBinder : ParserM (Option GreenNode) := do
-  -- Try kinded binder: (name :: Kind)
+  -- Try kinded binder: (name :: Kind) where Kind can be *, %, #, * -> *, etc.
   if (← check .leftParen) then
     let lparen ← consumeAny
     match ← parseLowerIdent with
     | some varTok =>
         match ← tryConsume .doubleColon with
         | some colonTok =>
-            let kindNode ← do
-              let tok ← current
-              if tok.kind == some .varSymbol && tok.text == "*" then
-                let g ← consumeAny
-                pure (some (GreenNode.mkNode .typeCon #[g]))
-              else if tok.kind == some .varSymbol && tok.text == "%" then
-                let g ← consumeAny
-                pure (some (GreenNode.mkNode .typeCon #[g]))
-              else if tok.kind == some .hash then
-                let g ← consumeAny
-                pure (some (GreenNode.mkNode .typeCon #[g]))
-              else
-                match ← parseUpperIdent with
-                | some k => pure (some (GreenNode.mkNode .typeCon #[k]))
-                | none =>
-                    match ← parseLowerIdent with
-                    | some k => pure (some (GreenNode.mkNode .typeVar #[k]))
-                    | none => pure none
-            match kindNode with
+            -- Use parseKind to handle arrow kinds like * -> *
+            match ← parseKind with
             | some kind =>
                 match ← tryConsume .rightParen with
                 | some rparen =>
@@ -454,44 +488,5 @@ def parseTypeSignature : ParserM (Option GreenNode) := do
 def parseOptionalSignature : ParserM (Option GreenNode) := do
   if (← check .doubleColon) then parseTypeSignature
   else return none
-
-mutual
-
-partial def parseKindAtom : ParserM (Option GreenNode) := do
-  let tok ← current
-  if tok.kind == some .varSymbol && tok.text == "*" then
-    let g ← consumeAny
-    return some (GreenNode.mkNode .typeCon #[g])
-  if tok.kind == some .leftParen then
-    let lparen ← consumeAny
-    match ← parseKind with
-    | some inner =>
-        match ← tryConsume .rightParen with
-        | some rparen =>
-            return some (GreenNode.mkNode .typeParens #[lparen, inner, rparen])
-        | none =>
-            recordError "expected ')' after kind"
-            return some inner
-    | none =>
-        recordError "expected kind after '('"
-        return none
-  return none
-
-partial def parseKind : ParserM (Option GreenNode) := do
-  match ← parseKindAtom with
-  | some left =>
-      if (← check .arrow) then
-        let arrowTok ← consumeAny
-        match ← parseKind with
-        | some right =>
-            return some (GreenNode.mkNode .typeArrow #[left, arrowTok, right])
-        | none =>
-            recordError "expected kind after '->'"
-            return some left
-      else
-        return some left
-  | none => return none
-
-end
 
 end Soma.Syntax.Parse

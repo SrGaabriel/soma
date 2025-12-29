@@ -23,8 +23,13 @@ open Std
 open Soma.Typing
 open Soma.Metal (UntypedModule UntypedFunction UntypedTypeDef Module Function TypeDef
                  Constructor UntypedConstructor Name BindingId Scope)
-open Soma.Syntax (TypeExpr)
+open Soma.Syntax (TypeExpr KindExpr)
 open Soma (UniqueSupply)
+
+/-- Convert a KindExpr to a Kind -/
+def kindFromExpr : KindExpr → Kind
+  | .atom name => Kind.fromString name.value
+  | .arrow from_ to _ => Kind.arrow (kindFromExpr from_) (kindFromExpr to)
 
 /-- Resolve a TypeExpr to a MonoTy with a mapping for type variables.
     Returns `none` if the type cannot be resolved. -/
@@ -100,7 +105,7 @@ partial def resolveTypeExprWithVars (ty : TypeExpr) (env : TypeEnv) (tyVars : St
       | some _ => (acc, nextId)
       | none =>
         let kind : Kind := match binder.kind with
-          | some kindName => Kind.fromString kindName.value
+          | some kindExpr => kindFromExpr kindExpr
           | none => .star
         (acc.insert varName ⟨varName, nextId, kind⟩, nextId + 1)
     resolveTypeExprWithVars body env newTyVars
@@ -194,7 +199,7 @@ partial def collectForallBinders (ty : TypeExpr) : Array (String × Kind) :=
   | .forall_ binders body _ =>
     let binderVars := binders.map fun b =>
       let kind := match b.kind with
-        | some kindName => Kind.fromString kindName.value
+        | some kindExpr => kindFromExpr kindExpr
         | none => Kind.star
       (b.name.value, kind)
     binderVars ++ collectForallBinders body

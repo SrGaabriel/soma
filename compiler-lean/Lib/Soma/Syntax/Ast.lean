@@ -53,12 +53,28 @@ def span : Literal → Span
 
 end Literal
 
+/-- Kind expressions for annotating type variables -/
+inductive KindExpr where
+  /-- Atomic kind: *, %, #, Row, Label -/
+  | atom (name : Name)
+  /-- Arrow kind: * -> *, (* -> *) -> * -/
+  | arrow (from_ : KindExpr) (to : KindExpr) (span : Span)
+  deriving Repr, BEq, Inhabited
+
+namespace KindExpr
+
+def span : KindExpr → Span
+  | .atom name => name.span
+  | .arrow _ _ s => s
+
+end KindExpr
+
 /-- A type variable binder, optionally with a kind annotation -/
 structure TypeVarBinder where
   /-- The variable name -/
   name : Name
   /-- Optional kind annotation -/
-  kind : Option Name -- todo: make this TypeExpr for complex kinds
+  kind : Option KindExpr
   deriving Repr, BEq, Inhabited
 
 /-! ## Patterns and Type Expressions (mutually recursive) -/
@@ -544,6 +560,11 @@ partial def ppPattern : Pattern → String
       | some p => s!".{label.value} {ppPattern p}"
       | none => s!".{label.value}"
 
+/-- Pretty print a KindExpr -/
+partial def ppKindExpr : KindExpr → String
+  | .atom n => n.value
+  | .arrow from_ to _ => s!"({ppKindExpr from_} -> {ppKindExpr to})"
+
 /-- Pretty print a TypeExpr -/
 partial def ppTypeExpr : TypeExpr → String
   | .var n => n.value
@@ -555,7 +576,7 @@ partial def ppTypeExpr : TypeExpr → String
   | .list elem _ => s!"[{ppTypeExpr elem}]"
   | .forall_ vars body _ =>
       let ppVar (v : TypeVarBinder) := match v.kind with
-        | some k => s!"({v.name.value} :: {k.value})"
+        | some k => s!"({v.name.value} :: {ppKindExpr k})"
         | none => v.name.value
       s!"forall {vars.toList.map ppVar |> String.intercalate " "}. {ppTypeExpr body}"
   | .constrained cs body _ =>

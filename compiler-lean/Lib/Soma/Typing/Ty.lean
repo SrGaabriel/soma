@@ -153,6 +153,9 @@ structure SomeTy where
   kind : Kind
   ty : Ty kind
 
+instance : Inhabited SomeTy := ⟨⟨.star, .starPrim .unit⟩⟩
+instance : Nonempty SomeTy := ⟨default⟩
+
 /-- A substitution maps type variable IDs to monomorphic types (legacy) -/
 abbrev TySubst := Std.HashMap Nat MonoTy
 

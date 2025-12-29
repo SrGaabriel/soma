@@ -1,0 +1,12 @@
+// expect: success
+def identity :: forall (f :: * -> *) a. f a -> f a
+    | x => x
+
+def bimap :: forall (f :: * -> * -> *) a b c d. (a -> c) -> (b -> d) -> f a b -> f c d
+    | f g x => x
+ 
+def fix :: forall (f :: (* -> *) -> *) (g :: * -> *). f g -> f g
+    | x => x
+
+def mapRecord :: forall (f :: * -> *) (r :: %). { value :: f Int | r } -> { value :: f Int | r }
+    | rec => rec
