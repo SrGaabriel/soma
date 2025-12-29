@@ -1,17 +1,3 @@
-/-
-  Inference Monad
-
-  A monad that combines:
-  - State for fresh variable generation and current substitution
-  - Error accumulation for collecting multiple type errors
-  - Reader for the type environment and instance environment
-
-  Key improvements over the old Haskell design:
-  1. Cleaner separation of concerns (no entangled resolver logic)
-  2. Proper error accumulation without stopping on first error
-  3. Efficient fresh variable generation using Nat counter
--/
-
 import Std.Data.HashMap
 import Soma.Infer.Constraint
 import Soma.Infer.Instance
@@ -52,7 +38,31 @@ structure TypeInfo where
   params : Array TyVarId
   /-- Constructors (name → field types) -/
   constructors : HashMap String (Array MonoTy)
+  /-- Field names for records/structs -/
+  fieldsByName : HashMap String (Nat × MonoTy) := {}
   deriving Inhabited
+
+namespace TypeInfo
+
+/-- Look up a field by name, returns (index, type) if found -/
+def lookupField (info : TypeInfo) (fieldName : String) : Option (Nat × MonoTy) :=
+  info.fieldsByName.get? fieldName
+
+/-- Convert the type's fields to a closed row type -/
+def toRowTy (info : TypeInfo) : RowTy :=
+  -- Collect fields as (index, name, type) and sort by index
+  let fields := info.fieldsByName.fold (init := #[]) fun acc name (idx, ty) =>
+    acc.push (idx, name, ty)
+  let sortedFields := fields.qsort (fun a b => a.1 < b.1)
+  -- Build the row from the sorted fields (closed row ending in rowEmpty)
+  sortedFields.foldr (init := Ty.rowEmpty) fun (_, name, ty) acc =>
+    Ty.rowExtend (Ty.labelLit name) ty acc
+
+/-- Check if this type has fields (is a struct/record) -/
+def hasFields (info : TypeInfo) : Bool :=
+  !info.fieldsByName.isEmpty
+
+end TypeInfo
 
 /-- Information about a data constructor -/
 structure ConstructorInfo where
@@ -77,6 +87,8 @@ structure TypeEnv where
   types : HashMap String TypeInfo
   /-- Data constructors -/
   constructors : HashMap String ConstructorInfo
+  /-- Label type variables in scope (from forall binders with label kind) -/
+  labelVars : HashMap String LabelTy := {}
   deriving Inhabited
 
 namespace TypeEnv
@@ -86,6 +98,7 @@ def empty : TypeEnv :=
   , functions := {}
   , types := {}
   , constructors := {}
+  , labelVars := {}
   }
 
 /-- Add a local variable -/
@@ -104,9 +117,14 @@ def lookupLocal (env : TypeEnv) (name : String) : Option VarInfo :=
 def lookupFunction (env : TypeEnv) (name : String) : Option FunctionInfo :=
   env.functions.get? name
 
-/-- Look up a type -/
+/-- Look up a type by name -/
 def lookupType (env : TypeEnv) (name : String) : Option TypeInfo :=
   env.types.get? name
+
+/-- Look up a type by TypeId -/
+def lookupTypeById (env : TypeEnv) (typeId : TypeId) : Option TypeInfo :=
+  env.types.fold (init := none) fun acc _ info =>
+    if info.typeId == typeId then some info else acc
 
 /-- Look up a constructor -/
 def lookupConstructor (env : TypeEnv) (name : String) : Option ConstructorInfo :=
@@ -123,6 +141,14 @@ def addType (env : TypeEnv) (name : String) (info : TypeInfo) : TypeEnv :=
 /-- Add a constructor -/
 def addConstructor (env : TypeEnv) (name : String) (info : ConstructorInfo) : TypeEnv :=
   { env with constructors := env.constructors.insert name info }
+
+/-- Add a label type variable -/
+def addLabelVar (env : TypeEnv) (name : String) (labelTy : LabelTy) : TypeEnv :=
+  { env with labelVars := env.labelVars.insert name labelTy }
+
+/-- Look up a label type variable -/
+def lookupLabelVar (env : TypeEnv) (name : String) : Option LabelTy :=
+  env.labelVars.get? name
 
 end TypeEnv
 
@@ -210,6 +236,14 @@ def withLocal (name : String) (info : VarInfo) (m : InferM α) : InferM α :=
 def withLocals (bindings : Array (String × VarInfo)) (m : InferM α) : InferM α :=
   bindings.foldl (init := m) fun acc (name, info) => withLocal name info acc
 
+/-- Add a label type variable to scope for the duration of a computation -/
+def withLabelVar (name : String) (labelTy : LabelTy) (m : InferM α) : InferM α :=
+  withTypeEnv (·.addLabelVar name labelTy) m
+
+/-- Add multiple label type variables -/
+def withLabelVars (bindings : Array (String × LabelTy)) (m : InferM α) : InferM α :=
+  bindings.foldl (init := m) fun acc (name, ty) => withLabelVar name ty acc
+
 /-- Generate a fresh type variable -/
 def freshTyVar (name : String := "t") (kind : Kind := .star) : InferM TyVarId := do
   let s ← get
@@ -220,6 +254,28 @@ def freshTyVar (name : String := "t") (kind : Kind := .star) : InferM TyVarId :=
 /-- Generate a fresh monomorphic type variable -/
 def freshVar (name : String := "t") : InferM MonoTy := do
   let v ← freshTyVar name
+  return .var v
+
+/-- Get the current fresh counter value (for creating TyVarIds manually) -/
+def getFreshId : InferM Nat := do
+  let s ← get
+  let id := s.freshCounter
+  set { s with freshCounter := id + 1 }
+  return id
+
+/-- Generate a fresh row type variable -/
+def freshRowVar (name : String := "r") : InferM RowTy := do
+  let v ← freshTyVar name .row
+  return .var v
+
+/-- Generate a fresh label type variable -/
+def freshLabelVar (name : String := "l") : InferM LabelTy := do
+  let v ← freshTyVar name .label
+  return .var v
+
+/-- Generate a fresh type variable of the given kind, returning it as a MonoTy -/
+def freshVarOfKind (name : String) (kind : Kind) : InferM MonoTy := do
+  let v ← freshTyVar name kind
   return .var v
 
 /-- Get the current substitution -/
@@ -284,28 +340,35 @@ def lookupLocal (name : String) : InferM (Option VarInfo) := do
 def lookupFunction (name : String) : InferM (Option FunctionInfo) := do
   return (← getTypeEnv).lookupFunction name
 
-/-- Look up a type -/
+/-- Look up a type by name -/
 def lookupType (name : String) : InferM (Option TypeInfo) := do
   return (← getTypeEnv).lookupType name
+
+/-- Look up a type by TypeId -/
+def lookupTypeById (typeId : TypeId) : InferM (Option TypeInfo) := do
+  return (← getTypeEnv).lookupTypeById typeId
 
 /-- Look up a constructor -/
 def lookupConstructor (name : String) : InferM (Option ConstructorInfo) := do
   return (← getTypeEnv).lookupConstructor name
+
+/-- Look up a label type variable -/
+def lookupLabelVar (name : String) : InferM (Option LabelTy) := do
+  return (← getTypeEnv).lookupLabelVar name
 
 /-- Instantiate a qualified type with fresh type variables -/
 def instantiate (qt : QualifiedType) : InferM (MonoTy × Array Constraint) := do
   if qt.vars.isEmpty then
     return (qt.body, qt.constraints)
 
-  -- Generate fresh variables for each quantified variable
-  let freshVars ← qt.vars.mapM fun v => do
+  -- Generate fresh variables for each quantified variable, respecting kinds
+  -- Build substitution by composing individual kind-aware entries
+  let mut σ := Subst.empty
+  for v in qt.vars do
     let fresh ← freshTyVar v.name v.kind
-    return (v.id, Ty.var fresh)
-
-  -- Build substitution
-  let σ := Subst.fromArrays
-    (qt.vars)
-    (freshVars.map fun (_, ty) => ty)
+    -- Create a kind-aware substitution entry
+    let entry := Subst.singletonAny v.id ⟨v.kind, .var fresh⟩
+    σ := σ.compose entry
 
   -- Apply to body and constraints
   let body := σ.apply qt.body

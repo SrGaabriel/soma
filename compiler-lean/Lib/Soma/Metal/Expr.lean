@@ -8,6 +8,14 @@ open Soma.Typing
 open Soma.Metal
 open Soma.Syntax (Span)
 
+/-- Argument to an explicit type application in Metal IR -/
+inductive Soma.Metal.TypeArg where
+  /-- A type of any kind -/
+  | type (ty : SomeTy)
+  /-- A label literal for label polymorphism -/
+  | label (name : String)
+  deriving Inhabited
+
 /-- List of parameters (for lambda) - defined before Expr since it doesn't depend on it -/
 inductive Soma.Metal.ParamList (α : Type) : Type where
   | nil : Soma.Metal.ParamList α
@@ -96,6 +104,14 @@ inductive Soma.Metal.Expr (α : Type) : Scope → Type where
   | tuple (elements : Soma.Metal.ExprList α scope) (info : α) (span : Span)
       : Soma.Metal.Expr α scope
 
+  /-- Record literal { x = 1, y = 2 } -/
+  | record (fields : Soma.Metal.RecordFieldList α scope) (info : α) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Record update { base | x = 1, y = 2 } -/
+  | recordUpdate (base : Soma.Metal.Expr α scope) (updates : Soma.Metal.RecordFieldList α scope) (info : α) (span : Span)
+      : Soma.Metal.Expr α scope
+
   /-- Array literal -/
   | array (elements : Soma.Metal.ExprList α scope) (info : α) (span : Span)
       : Soma.Metal.Expr α scope
@@ -110,8 +126,8 @@ inductive Soma.Metal.Expr (α : Type) : Scope → Type where
          (info : α) (span : Span)
       : Soma.Metal.Expr α scope
 
-  /-- Field access (for structs/tuples) -/
-  | fieldAccess (expr : Soma.Metal.Expr α scope) (index : Nat) (info : α) (span : Span)
+  /-- Field access (for structs/records) -/
+  | fieldAccess (expr : Soma.Metal.Expr α scope) (fieldName : String) (fieldIndex : Nat) (info : α) (span : Span)
       : Soma.Metal.Expr α scope
 
   /-- Global reference (top-level function or value) -/
@@ -120,6 +136,14 @@ inductive Soma.Metal.Expr (α : Type) : Scope → Type where
 
   /-- Panic (abort with message) -/
   | panic (message : String) (info : α) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- First-class projection function for nominal record types -/
+  | proj (typeName : Name) (fieldName : String) (fieldIndex : Nat) (info : α) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Explicit type application: @Type or @label (todo: maybe merge) -/
+  | typeApp (arg : Soma.Metal.TypeArg) (info : α) (span : Span)
       : Soma.Metal.Expr α scope
 
 /-- List of expressions at the same scope -/
@@ -144,12 +168,18 @@ inductive Soma.Metal.CaptureList (α : Type) : Scope → Type where
   | nil : Soma.Metal.CaptureList α scope
   | cons : ScopedVar scope → α → Soma.Metal.CaptureList α scope → Soma.Metal.CaptureList α scope
 
+/-- List of record fields (name-value pairs) -/
+inductive Soma.Metal.RecordFieldList (α : Type) : Scope → Type where
+  | nil : Soma.Metal.RecordFieldList α scope
+  | cons : String → Soma.Metal.Expr α scope → Soma.Metal.RecordFieldList α scope → Soma.Metal.RecordFieldList α scope
+
 end
 
 -- Nonempty instances for partial function compilation
 instance : Nonempty (Soma.Metal.CaptureList α scope) := ⟨.nil⟩
 instance : Nonempty (Soma.Metal.ExprList α scope) := ⟨.nil⟩
 instance : Nonempty (Soma.Metal.ArmList α scope) := ⟨.nil⟩
+instance : Nonempty (Soma.Metal.RecordFieldList α scope) := ⟨.nil⟩
 instance : Nonempty (Soma.Metal.ParamList α) := ⟨.nil⟩
 instance : Nonempty (Soma.Metal.PatternList α) := ⟨.nil⟩
 
@@ -208,12 +238,16 @@ partial def Soma.Metal.Expr.mapInfo (f : α → β) : Soma.Metal.Expr α scope �
   | .closure name caps info span => .closure name (caps.mapInfo f) (f info) span
   | .construct name tag args info span => .construct name tag (args.mapInfo f) (f info) span
   | .tuple elems info span => .tuple (elems.mapInfo f) (f info) span
+  | .record fields info span => .record (fields.mapInfo f) (f info) span
+  | .recordUpdate base updates info span => .recordUpdate (base.mapInfo f) (updates.mapInfo f) (f info) span
   | .array elems info span => .array (elems.mapInfo f) (f info) span
   | .if_ c t e info span => .if_ (c.mapInfo f) (t.mapInfo f) (e.mapInfo f) (f info) span
   | .case scruts arms info span => .case (scruts.mapInfo f) (arms.mapInfo f) (f info) span
-  | .fieldAccess e idx info span => .fieldAccess (e.mapInfo f) idx (f info) span
+  | .fieldAccess e name idx info span => .fieldAccess (e.mapInfo f) name idx (f info) span
   | .global name info span => .global name (f info) span
   | .panic msg info span => .panic msg (f info) span
+  | .proj typeName fieldName idx info span => .proj typeName fieldName idx (f info) span
+  | .typeApp arg info span => .typeApp arg (f info) span
 
 /-- Map a function over the annotation type of an expression list -/
 partial def Soma.Metal.ExprList.mapInfo (f : α → β) : Soma.Metal.ExprList α scope → Soma.Metal.ExprList β scope
@@ -238,6 +272,11 @@ partial def Soma.Metal.ArmList.mapInfo (f : α → β) : Soma.Metal.ArmList α s
 partial def Soma.Metal.CaptureList.mapInfo (f : α → β) : Soma.Metal.CaptureList α scope → Soma.Metal.CaptureList β scope
   | .nil => .nil
   | .cons v info rest => .cons v (f info) (rest.mapInfo f)
+
+/-- Map a function over the annotation type of a record field list -/
+partial def Soma.Metal.RecordFieldList.mapInfo (f : α → β) : Soma.Metal.RecordFieldList α scope → Soma.Metal.RecordFieldList β scope
+  | .nil => .nil
+  | .cons name expr rest => .cons name (expr.mapInfo f) (rest.mapInfo f)
 
 end
 
@@ -297,6 +336,22 @@ def length : ArmList α scope → Nat
 
 end ArmList
 
+namespace RecordFieldList
+
+def toList : RecordFieldList α scope → List (String × Expr α scope)
+  | .nil => []
+  | .cons name expr rest => (name, expr) :: rest.toList
+
+def fromList : List (String × Expr α scope) → RecordFieldList α scope
+  | [] => .nil
+  | (name, expr) :: rest => .cons name expr (fromList rest)
+
+def length : RecordFieldList α scope → Nat
+  | .nil => 0
+  | .cons _ _ rest => 1 + rest.length
+
+end RecordFieldList
+
 /-! ## Type aliases -/
 
 /-- Untyped expressions (before type checking) -/
@@ -326,12 +381,16 @@ def span : Expr α scope → Span
   | .closure _ _ _ s => s
   | .construct _ _ _ _ s => s
   | .tuple _ _ s => s
+  | .record _ _ s => s
+  | .recordUpdate _ _ _ s => s
   | .array _ _ s => s
   | .if_ _ _ _ _ s => s
   | .case _ _ _ s => s
-  | .fieldAccess _ _ _ s => s
+  | .fieldAccess _ _ _ _ s => s
   | .global _ _ s => s
   | .panic _ _ s => s
+  | .proj _ _ _ _ s => s
+  | .typeApp _ _ s => s
 
 /-- Get the type info from an expression (if it carries one) -/
 def getInfo : Expr α scope → Option α
@@ -343,12 +402,16 @@ def getInfo : Expr α scope → Option α
   | .closure _ _ i _ => some i
   | .construct _ _ _ i _ => some i
   | .tuple _ i _ => some i
+  | .record _ i _ => some i
+  | .recordUpdate _ _ i _ => some i
   | .array _ i _ => some i
   | .if_ _ _ _ i _ => some i
   | .case _ _ i _ => some i
-  | .fieldAccess _ _ i _ => some i
+  | .fieldAccess _ _ _ i _ => some i
   | .global _ i _ => some i
   | .panic _ i _ => some i
+  | .proj _ _ _ i _ => some i
+  | .typeApp _ i _ => some i
 
 end Expr
 

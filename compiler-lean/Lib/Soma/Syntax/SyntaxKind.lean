@@ -32,14 +32,18 @@ inductive SyntaxKind where
   | exprMatch         -- Pattern match in def
   | exprTuple         -- Tuple
   | exprList          -- List literal
-  | exprRecord        -- Record
-  | exprFieldAccess   -- Field access
+  | exprRecord        -- Record literal { x = 1, y = 2 }
+  | exprRecordUpdate  -- Record update { r | x = 3 }
+  | recordField       -- Record field: name = expr
+  | exprFieldAccess   -- Field access (expr.field)
+  | exprProjection    -- Projection function (Type.field)
   | exprParens        -- Parenthesized
   | exprCompose       -- Compose block
   | exprBind          -- Bind block
   | composeLetStmt    -- Let statement in compose block (no 'in')
   | exprSection       -- Operator section
   | exprTypeAnnot     -- Type annotation
+  | exprTypeApp       -- Explicit type application (@Type or @label)
   -- Patterns
   | patVar            -- Variable pattern
   | patWildcard       -- Wildcard
@@ -62,6 +66,8 @@ inductive SyntaxKind where
   | typeConstrained   -- Constrained type
   | typeParens        -- Parenthesized type
   | typeKinded        -- Kind annotation
+  | typeRecord        -- Record type { x :: Int, y :: Bool }
+  | typeRecordField   -- Record type field: name :: Type
   -- Type Constraints
   | constraint        -- Single constraint
   | constraintList    -- Multiple constraints
@@ -69,6 +75,7 @@ inductive SyntaxKind where
   | paramList         -- Parameter list
   | argList           -- Argument list in application
   | tyParamList       -- Type parameter list
+  | tyParamKinded     -- Kinded type parameter: (r :: Row)
   | matchArm          -- Case arm
   | matchGuard        -- Guard in match
   | importPath        -- Import path
@@ -119,13 +126,17 @@ def SyntaxKind.describe : SyntaxKind → String
   | .exprTuple => "tuple"
   | .exprList => "list"
   | .exprRecord => "record"
+  | .exprRecordUpdate => "record update"
+  | .recordField => "record field"
   | .exprFieldAccess => "field access"
+  | .exprProjection => "projection"
   | .exprParens => "parenthesized expression"
   | .exprCompose => "compose block"
   | .exprBind => "bind block"
   | .composeLetStmt => "compose let statement"
   | .exprSection => "operator section"
   | .exprTypeAnnot => "type annotation"
+  | .exprTypeApp => "type application"
   | .patVar => "variable pattern"
   | .patWildcard => "wildcard pattern"
   | .patLit => "literal pattern"
@@ -146,11 +157,14 @@ def SyntaxKind.describe : SyntaxKind → String
   | .typeConstrained => "constrained type"
   | .typeParens => "parenthesized type"
   | .typeKinded => "kinded type"
+  | .typeRecord => "record type"
+  | .typeRecordField => "record type field"
   | .constraint => "constraint"
   | .constraintList => "constraint list"
   | .paramList => "parameter list"
   | .argList => "argument list"
   | .tyParamList => "type parameter list"
+  | .tyParamKinded => "kinded type parameter"
   | .matchArm => "match arm"
   | .matchGuard => "match guard"
   | .importPath => "import path"
@@ -180,8 +194,8 @@ def SyntaxKind.isDecl : SyntaxKind → Bool
 def SyntaxKind.isExpr : SyntaxKind → Bool
   | .exprVar | .exprLit | .exprApp | .exprInfix | .exprLambda
   | .exprLet | .exprIf | .exprCase | .exprMatch | .exprTuple
-  | .exprList | .exprRecord | .exprFieldAccess | .exprParens
-  | .exprCompose | .exprBind | .exprSection | .exprTypeAnnot => true
+  | .exprList | .exprRecord | .exprFieldAccess | .exprProjection | .exprParens
+  | .exprCompose | .exprBind | .exprSection | .exprTypeAnnot | .exprTypeApp => true
   | _ => false
 
 /-- Check if a syntax kind represents a pattern -/
@@ -193,7 +207,8 @@ def SyntaxKind.isPattern : SyntaxKind → Bool
 /-- Check if a syntax kind represents a type -/
 def SyntaxKind.isType : SyntaxKind → Bool
   | .typeVar | .typeCon | .typeApp | .typeArrow | .typeTuple
-  | .typeList | .typeForall | .typeConstrained | .typeParens | .typeKinded => true
+  | .typeList | .typeForall | .typeConstrained | .typeParens | .typeKinded
+  | .typeRecord | .typeRecordField => true
   | _ => false
 
 /-- Check if a syntax kind represents trivia -/

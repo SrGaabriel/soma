@@ -21,7 +21,7 @@ structure Constructor where
 /-- An untyped type definition -/
 inductive UntypedTypeDef where
   | algebraic (name : Name) (typeVarNames : Array String) (ctors : Array UntypedConstructor)
-  | struct (name : Name) (typeVarNames : Array String) (ctorName : Name) (fieldTypeSyntax : Array Syntax.TypeExpr)
+  | struct (name : Name) (typeVarNames : Array String) (ctorName : Name) (fields : Array (Option String × Syntax.TypeExpr))
   | record (name : Name) (typeVarNames : Array String) (fieldNamesAndTypes : Array (String × Syntax.TypeExpr))
 
 namespace UntypedTypeDef
@@ -41,7 +41,7 @@ end UntypedTypeDef
 /-- A typed type definition -/
 inductive TypeDef where
   | algebraic (name : Name) (typeVars : Array TyVarId) (ctors : Array Constructor)
-  | struct (name : Name) (typeVars : Array TyVarId) (ctorName : Name) (fields : Array MonoTy)
+  | struct (name : Name) (typeVars : Array TyVarId) (ctorName : Name) (fields : Array (Option String × MonoTy))
   | record (name : Name) (typeVars : Array TyVarId) (fields : Array (String × MonoTy))
 
 namespace TypeDef
@@ -61,8 +61,14 @@ def typeVars : TypeDef → Array TyVarId
 /-- Get all constructors (for algebraic types) -/
 def constructors : TypeDef → Array Constructor
   | .algebraic _ _ cs => cs
-  | .struct _ _ cn fields => #[{ name := cn, tag := 0, fields := fields }]
+  | .struct _ _ cn fields => #[{ name := cn, tag := 0, fields := fields.map (·.2) }]
   | .record n _ fields => #[{ name := n, tag := 0, fields := fields.map (·.2) }]
+
+/-- Get named fields only (for structs with field names) -/
+def namedFields : TypeDef → Array (String × MonoTy)
+  | .struct _ _ _ fields => fields.filterMap fun (name?, ty) => name?.map (·, ty)
+  | .record _ _ fields => fields
+  | .algebraic _ _ _ => #[]
 
 end TypeDef
 

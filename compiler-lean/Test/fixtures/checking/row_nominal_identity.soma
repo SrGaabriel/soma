@@ -1,0 +1,14 @@
+// expect: error type mismatch
+
+struct Point = Point
+    x :: Int
+    y :: Int
+
+struct Vec2 = Vec2
+    x :: Int
+    y :: Int
+
+def needsPoint :: Point -> Int
+    | p => p.x
+
+def test :: Int = needsPoint (Vec2 1 2)

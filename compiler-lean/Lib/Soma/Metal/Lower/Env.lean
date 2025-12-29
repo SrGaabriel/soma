@@ -31,17 +31,28 @@ structure TypeInfo where
   params : Array TyVarId
   kind : Kind
   unique : Unique
+  fieldNames : Array String := #[]
 
 namespace TypeInfo
 
-/-- Get the type name -/
-def name (info : TypeInfo) : String := info.tyCon.name
+/-- Get the Metal.Name for this type -/
+def name (info : TypeInfo) : Name := .user info.unique
+
+/-- Get the type name as a string -/
+def nameStr (info : TypeInfo) : String := info.tyCon.name
 
 /-- Check if this type is parameterized -/
 def isParametric (info : TypeInfo) : Bool := !info.params.isEmpty
 
 /-- Get the arity (number of type parameters) -/
 def arity (info : TypeInfo) : Nat := info.params.size
+
+/-- Check if this type has fields (is a struct/record) -/
+def hasFields (info : TypeInfo) : Bool := !info.fieldNames.isEmpty
+
+/-- Get the index of a field by name -/
+def fieldIndex (info : TypeInfo) (fieldName : String) : Option Nat :=
+  info.fieldNames.findIdx? (· == fieldName)
 
 end TypeInfo
 

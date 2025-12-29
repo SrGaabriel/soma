@@ -1,0 +1,6 @@
+// expect: error missing field
+
+def needsExact :: { x :: Int, y :: Int } -> Int
+    | r => r.x
+
+def test :: Int = needsExact { x = 1, y = 2, z = 3 }

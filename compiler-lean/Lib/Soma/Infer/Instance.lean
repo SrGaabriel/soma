@@ -106,13 +106,13 @@ def getSuperclasses (env : InstanceEnv) (className : TyCon) : Array Constraint :
   | none => #[]
 
 /-- Helper to unify instance args with constraint args -/
-private def tryUnifyArgs (instArgs constArgs : Array MonoTy) : Option Subst :=
+private def tryUnifyArgs (instArgs constArgs : Array MonoTy) (counter : Nat) : Option (Subst × Nat) :=
   if instArgs.size != constArgs.size then none
-  else go 0 Subst.empty
+  else go 0 Subst.empty counter
 where
-  go (i : Nat) (σ : Subst) : Option Subst :=
+  go (i : Nat) (σ : Subst) (cnt : Nat) : Option (Subst × Nat) :=
     if i >= instArgs.size then
-      some σ
+      some (σ, cnt)
     else
       match instArgs[i]?, constArgs[i]? with
       | some instArg, some constArg =>
@@ -121,8 +121,8 @@ where
           expectedSpan := Span.builtin
           actualSpan := Span.builtin
         }
-        match Unify.unifyMono (σ.apply instArg) (σ.apply constArg) ctx with
-        | .ok σ' => go (i + 1) (σ'.compose σ)
+        match Unify.unifyMono (σ.apply instArg) (σ.apply constArg) ctx cnt with
+        | .ok unifyState => go (i + 1) (unifyState.subst.compose σ) unifyState.freshCounter
         | .error _ => none
       | _, _ => none
   termination_by instArgs.size - i
@@ -137,12 +137,12 @@ where
     | [], _ => none
     | inst :: rest, freshId =>
       let (freshInst, nextId) := inst.freshen freshId
-      match tryUnifyArgs freshInst.args constraint.args with
+      match tryUnifyArgs freshInst.args constraint.args nextId with
       | none => go rest nextId
-      | some σ =>
+      | some (σ, finalCounter) =>
         let subConstraints := freshInst.constraints.map fun c =>
           { c with args := c.args.map (σ.apply ·) }
-        some (freshInst, σ, subConstraints, nextId)
+        some (freshInst, σ, subConstraints, finalCounter)
 
 /-- Check if a constraint is immediately satisfiable (no sub-constraints).
     This is a fast check that doesn't require fresh ID generation - it only

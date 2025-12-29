@@ -43,6 +43,11 @@ where
       go inner appDepth acc
     | .kinded inner _ _ =>
       go inner appDepth acc
+    | .record fields tail _ =>
+      let acc' := fields.foldl (fun a (_, t) => go t 0 a) acc
+      match tail with
+      | some tailName => acc'.insert tailName.value (max (acc'.getD tailName.value 0) 0)
+      | none => acc'
 
 /-- Build a Kind from an arity (number of type arguments) -/
 private def kindOfArity : Nat → Kind
@@ -113,14 +118,18 @@ mutual
       | some elemTy => pure (some (Ty.array elemTy))
       | none => pure none
 
-    | .forall_ varNames body _ =>
+    | .forall_ binders body _ =>
       -- Extend tyVarEnv with the bound variables, then resolve body
       let mut newEnv := tyVarEnv
-      for varName in varNames do
-        let kind := kindEnv.getD varName.value .star
+      for binder in binders do
+        let varName := binder.name.value
+        -- Use explicit kind annotation if provided, otherwise fall back to inferred kind
+        let kind := match binder.kind with
+          | some kindName => Kind.fromString kindName.value
+          | none => kindEnv.getD varName .star
         let id ← LowerM.freshUniqueId
-        let tyVarId : TyVarId := { name := varName.value, id := id, kind := kind }
-        newEnv := newEnv.insert varName.value tyVarId
+        let tyVarId : TyVarId := { name := varName, id := id, kind := kind }
+        newEnv := newEnv.insert varName tyVarId
       resolveTypeWithEnv kindEnv newEnv body
 
     | .constrained _ body _ =>
@@ -133,6 +142,32 @@ mutual
     | .kinded ty _ _ =>
       -- Kind annotations - just resolve the type for now
       resolveTypeWithEnv kindEnv tyVarEnv ty
+
+    | .record fields tail _ =>
+      -- First, determine the base row (either empty or a row variable for polymorphism)
+      let baseRow : Ty .row ← match tail with
+        | some tailName =>
+          -- Row polymorphic: { x :: Int | r }
+          match tyVarEnv.get? tailName.value with
+          | some tyVarId =>
+            -- Use the existing row variable
+            pure (.var { tyVarId with kind := .row })
+          | none =>
+            -- Create a fresh row variable
+            let id ← LowerM.freshUniqueId
+            let tyVarId : TyVarId := { name := tailName.value, id := id, kind := .row }
+            pure (.var tyVarId)
+        | none =>
+          pure .rowEmpty
+      -- Build the row type from fields, extending the base row
+      let mut rowTy := baseRow
+      for (fieldName, fieldTy) in fields.reverse do
+        let fieldMonoTy? ← resolveTypeWithEnv kindEnv tyVarEnv fieldTy
+        match fieldMonoTy? with
+        | some fieldMonoTy =>
+          rowTy := .rowExtend (.labelLit fieldName.value) fieldMonoTy rowTy
+        | none => return none
+      pure (some (.record rowTy))
 
   /-- Resolve a type that might have non-star kind, using inferred kinds and bound type variables -/
   private partial def resolveTypeAnyWithEnv (kindEnv : KindEnv) (tyVarEnv : TyVarEnv) (ty : TypeExpr) : LowerM (Option SomeTy) := do
@@ -336,16 +371,20 @@ where
   collectQuantifiers (kindEnv : KindEnv) (ty : TypeExpr) (accVars : Array TyVarId) (accConstrs : Array Constraint) (tyVarEnv : TyVarEnv)
       : LowerM (Array TyVarId × Array Constraint × TypeExpr × TyVarEnv) := do
     match ty with
-    | .forall_ varNames body _ =>
+    | .forall_ binders body _ =>
       -- Create TyVarIds for each bound variable and add to environment
       let mut newVars := accVars
       let mut newEnv := tyVarEnv
-      for varName in varNames do
-        let kind := kindEnv.getD varName.value .star
+      for binder in binders do
+        let varName := binder.name.value
+        -- Use explicit kind annotation if provided, otherwise fall back to inferred kind
+        let kind := match binder.kind with
+          | some kindName => Kind.fromString kindName.value
+          | none => kindEnv.getD varName .star
         let id ← LowerM.freshUniqueId
-        let tyVarId : TyVarId := { name := varName.value, id := id, kind := kind }
+        let tyVarId : TyVarId := { name := varName, id := id, kind := kind }
         newVars := newVars.push tyVarId
-        newEnv := newEnv.insert varName.value tyVarId
+        newEnv := newEnv.insert varName tyVarId
       collectQuantifiers kindEnv body newVars accConstrs newEnv
     | .constrained syntaxConstrs body _ =>
       -- Resolve each constraint using current tyVarEnv

@@ -21,16 +21,9 @@ namespace Soma.Infer
 open Soma.Typing
 open Soma.Syntax (Span)
 open Soma.Metal
-open InferM (freshVar lookupLocal lookupFunction lookupConstructor
+open InferM (freshVar freshRowVar freshLabelVar lookupLocal lookupFunction lookupConstructor lookupType
              addEqualityConstraint addConstraint reportError
-             withLocal withLocals instantiate)
-
-/-! ## Constraint Generation
-
-We traverse Metal expressions and generate constraints.
-Each expression is assigned a type (possibly a fresh variable),
-and we emit constraints relating types based on the expression structure.
--/
+             withLocal withLocals instantiate getFreshId)
 
 namespace Gen
 
@@ -65,6 +58,10 @@ where
     | .arrow _ _, _, [] => .starPrim .unit
     | .arrow .star k2, ty, arg :: rest => go k2 (.app ty arg) rest
     | .arrow (.arrow _ _) _, _, _ => .starPrim .unit
+    | .arrow .label _, _, _ => .starPrim .unit -- Labels don't take type args
+    | .arrow .row _, _, _ => .starPrim .unit -- Rows don't take type args
+    | .label, _, _ => .starPrim .unit -- Labels are not star-kinded
+    | .row, _, _ => .starPrim .unit -- Rows are not star-kinded
 
 /-- Generate typed ParamList from untyped, returning bindings for scope preserving bindingIds -/
 def genParamListAux : ParamList Unit → InferM (Array (String × VarInfo) × ParamList MonoTy)
@@ -192,6 +189,18 @@ partial def genExprList {scope : Scope} (exprs : ExprList Unit scope)
     let (restTys, typedEs) ← genExprList es
     return (#[ty] ++ restTys, .cons typedE typedEs)
 
+/-- Generate constraints for a normal function call -/
+partial def genFunctionCall {scope : Scope}
+    (fn : Expr Unit scope) (args : ExprList Unit scope) (span : Span)
+    : InferM (MonoTy × Expr MonoTy scope) := do
+  let (fnTy, typedFn) ← genExpr fn
+  let (argTys, typedArgs) ← genExprList args
+  let resultTy ← freshVar "result"
+  let expectedFnTy := argTys.foldr (init := resultTy) fun argTy accTy =>
+    Ty.arrow argTy accTy
+  addEqualityConstraint expectedFnTy fnTy .general fn.span span
+  return (resultTy, .call typedFn typedArgs resultTy span)
+
 /-- Generate constraints for an expression, returning its type and typed version -/
 partial def genExpr {scope : Scope} (expr : Expr Unit scope)
     : InferM (MonoTy × Expr MonoTy scope) := do
@@ -253,13 +262,34 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope)
     return (ty, .lit lit span)
 
   | .call fn args () span => do
-    let (fnTy, typedFn) ← genExpr fn
-    let (argTys, typedArgs) ← genExprList args
-    let resultTy ← freshVar "result"
-    let expectedFnTy := argTys.foldr (init := resultTy) fun argTy accTy =>
-      Ty.arrow argTy accTy
-    addEqualityConstraint expectedFnTy fnTy .general fn.span span
-    return (resultTy, .call typedFn typedArgs resultTy span)
+    -- Check for label-polymorphic field access pattern: rec @label
+    match args with
+    | .cons (.typeApp (.label labelName) () _labelSpan) .nil =>
+      -- First, check if fn is syntactically a record-like expression
+      let isLikelyRecord := match fn with
+        | .record .. | .recordUpdate .. => true
+        | .global .. => false  -- Global names are functions, not records
+        | .var .. => true  -- Local variables might be record parameters
+        | _ => true  -- Other expressions might be records
+      if isLikelyRecord then
+        -- This is `record @label` - treat as label-polymorphic field access
+        let (recTy, typedRec) ← genExpr fn
+        -- Generate fresh variables for field type and row tail
+        let fieldTy ← freshVar s!"field_{labelName}"
+        let rowTail ← InferM.freshRowVar s!"r_{labelName}"
+        -- Check if labelName refers to a label type variable in scope
+        let labelTy : LabelTy ← match ← InferM.lookupLabelVar labelName with
+          | some labelVar => pure labelVar  -- Use the label type variable
+          | none => pure (Ty.labelLit labelName)  -- Use concrete label literal
+        -- The record must have a field with this label
+        let expectedRecordTy := Ty.record (.rowExtend labelTy fieldTy rowTail)
+        addEqualityConstraint recTy expectedRecordTy (.fieldAccess labelName) fn.span span
+        -- Return as field access
+        return (fieldTy, .fieldAccess typedRec labelName 0 fieldTy span)
+      else
+        -- This is `function @label`, treat as type application (label instantiation) followed by normal function call semantics
+        genFunctionCall fn args span
+    | _ => genFunctionCall fn args span
 
   | .let_ binding original value body () span => do
     let (valueTy, typedValue) ← genExpr value
@@ -327,6 +357,35 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope)
       let errTy ← freshVar "err"
       return (errTy, .tuple typedElements errTy span)
 
+  | .record fields () span => do
+    -- Build a row type from the fields
+    let mut typedFieldsList : List (String × Expr MonoTy scope) := []
+    let mut rowTy : RowTy := .rowEmpty
+    -- Process fields in reverse to build row type correctly (first field at top)
+    for (fieldName, fieldExpr) in fields.toList.reverse do
+      let (fieldTy, typedFieldExpr) ← genExpr fieldExpr
+      typedFieldsList := (fieldName, typedFieldExpr) :: typedFieldsList
+      rowTy := .rowExtend (Ty.labelLit fieldName) fieldTy rowTy
+    let recordTy := Ty.record rowTy
+    return (recordTy, .record (RecordFieldList.fromList typedFieldsList) recordTy span)
+
+  | .recordUpdate base updates () span => do
+    -- Type the base expression
+    let (baseTy, typedBase) ← genExpr base
+    -- Type each update field
+    let mut typedUpdatesList : List (String × Expr MonoTy scope) := []
+    for (fieldName, fieldExpr) in updates.toList.reverse do
+      let (_, typedFieldExpr) ← genExpr fieldExpr
+      typedUpdatesList := (fieldName, typedFieldExpr) :: typedUpdatesList
+    -- The base must be a record containing at least the updated fields
+    -- Constraint: baseTy ~ { f1 :: T1, f2 :: T2, ... | rest } where T1, T2 are the types of the update expressions
+    let restRowVar ← freshRowVar "rest"
+    let expectedRowTy := typedUpdatesList.foldr (init := restRowVar) fun (fieldName, expr) acc =>
+      .rowExtend (Ty.labelLit fieldName) (expr.getInfo.getD (.starPrim .unit)) acc
+    addEqualityConstraint baseTy (Ty.record expectedRowTy) .recordUpdate base.span span
+    -- Result type is the same as base type
+    return (baseTy, .recordUpdate typedBase (RecordFieldList.fromList typedUpdatesList) baseTy span)
+
   | .array elements () span => do
     let (elemTys, typedElements) ← genExprList elements
     let elemTy ← if elemTys.isEmpty then
@@ -356,10 +415,17 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope)
     let typedArms ← genArmList arms scrutTys resultTy span
     return (resultTy, .case typedScrutinees typedArms resultTy span)
 
-  | .fieldAccess expr index () span => do
-    let (_, typedExpr) ← genExpr expr
-    let fieldTy ← freshVar "field"
-    return (fieldTy, .fieldAccess typedExpr index fieldTy span)
+  | .fieldAccess expr fieldName _index () span => do
+    let (exprTy, typedExpr) ← genExpr expr
+    -- Generate fresh variables for field type and row tail
+    let fieldTy ← freshVar s!"field_{fieldName}"
+    let rowTail ← InferM.freshRowVar s!"r_{fieldName}"
+    -- The expression must be a record with this field (using concrete label)
+    -- exprTy ~ { fieldName :: fieldTy | rowTail }
+    let expectedRecordTy := Ty.record (.rowExtend (Ty.labelLit fieldName) fieldTy rowTail)
+    addEqualityConstraint exprTy expectedRecordTy (.fieldAccess fieldName) expr.span span
+    -- Index is 0 for now but it will be resolved after monomorphization (todo: review)
+    return (fieldTy, .fieldAccess typedExpr fieldName 0 fieldTy span)
 
   | .global name () span => do
     match ← lookupFunction name.display with
@@ -406,6 +472,38 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope)
   | .panic message () span => do
     let ty ← freshVar "panic"
     return (ty, .panic message ty span)
+
+  | .proj typeName fieldName fieldIndex () span => do
+    match ← lookupType typeName.display with
+    | some typeInfo =>
+      match typeInfo.lookupField fieldName with
+      | some (_, fieldTy) =>
+        -- Instantiate type parameters with fresh variables
+        let freshParams ← typeInfo.params.mapM fun v => freshVar v.name
+        let σ := Subst.fromArrays typeInfo.params freshParams
+        let instFieldTy := σ.apply fieldTy
+        let baseTy := Ty.userCon typeInfo.typeId.kind typeInfo.typeId
+        let recordTy := applyTypeArgs baseTy freshParams
+        let projTy := Ty.arrow recordTy instFieldTy
+        return (projTy, .proj typeName fieldName fieldIndex projTy span)
+      | none =>
+        reportError (.unknownField typeName.display fieldName span)
+        let errTy ← freshVar "err"
+        return (errTy, .proj typeName fieldName fieldIndex errTy span)
+    | none =>
+      reportError (.unknownType typeName.display span)
+      let errTy ← freshVar "err"
+      return (errTy, .proj typeName fieldName fieldIndex errTy span)
+
+  | .typeApp arg () span => do
+    -- At this stage, we just give it a fresh type, the actual instantiation happens when the function call context resolves the type arguments.
+    let ty ← freshVar "typeApp"
+    let metalArg : Metal.TypeArg := match arg with
+      | .label name => .label name
+      | .type tyExpr =>
+        -- todo: use the type env
+        .type ⟨.star, .starPrim .unit⟩
+    return (ty, .typeApp metalArg ty span)
 
 /-- Generate constraints for a capture list -/
 partial def genCaptureList {scope : Scope} (captures : CaptureList Unit scope)
@@ -535,12 +633,14 @@ partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : Infer
       InferM.reportError (.unknownType "invalid type application" span)
       InferM.freshVar "app"
 
-  | .forall_ varNames body _ =>
+  | .forall_ binders body _ =>
     -- Extend tyVarEnv with fresh type variables for the bound names
     let mut newEnv := tyVarEnv
-    for varName in varNames do
-      let freshTy ← InferM.freshVar varName.value
-      newEnv := newEnv.insert varName.value freshTy
+    for binder in binders do
+      let varName := binder.name.value
+      let kind := binder.kind.map (Kind.fromString ·.value) |>.getD .star
+      let freshTy ← InferM.freshVarOfKind varName kind
+      newEnv := newEnv.insert varName freshTy
     resolveTypeExprWithEnv newEnv body
 
   | .constrained _ body _ =>
@@ -552,10 +652,46 @@ partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : Infer
 
   | .kinded ty _ _ =>
     resolveTypeExprWithEnv tyVarEnv ty
+
+  | .record fields tail _ =>
+    -- First, determine the base row (either empty or a row variable for polymorphism)
+    let baseRow : RowTy ← match tail with
+      | some tailName =>
+        match tyVarEnv.get? tailName.value with
+        | some (.var tyVarId) =>
+          -- Use the variable if it was bound with row kind
+          -- kind error but we create a fresh row variable to avoid crashes for now
+          if tyVarId.kind == .row then
+            pure (.var tyVarId)
+          else
+            -- Star-kinded variable used as row tail
+            -- could be an error, but we're lenient for now
+            InferM.freshRowVar tailName.value
+        | some _ =>
+          -- Bound to a non-variable type, create fresh row var
+          InferM.freshRowVar tailName.value
+        | none =>
+          -- Unbound variable - create fresh row variable
+          InferM.freshRowVar tailName.value
+      | none =>
+        pure .rowEmpty
+    -- Build the row type from fields
+    let mut rowTy := baseRow
+    -- Build a TyVarId map from tyVarEnv for lookupOrLiteralLabel
+    let tyVarIdMap : Std.HashMap String TyVarId := tyVarEnv.fold (init := {}) fun acc name ty =>
+      match ty with
+      | .var v => acc.insert name v
+      | _ => acc
+    for (fieldName, fieldTy) in fields.reverse do
+      let fieldMonoTy ← resolveTypeExprWithEnv tyVarEnv fieldTy
+      let labelTy := Ty.lookupOrLiteralLabel fieldName.value tyVarIdMap
+      rowTy := .rowExtend labelTy fieldMonoTy rowTy
+    pure (.record rowTy)
 where
   span : Span := match ty with
     | .app _ _ s | .arrow _ _ s | .tuple _ s | .list _ s
-    | .forall_ _ _ s | .constrained _ _ s | .parens _ s | .kinded _ _ s => s
+    | .forall_ _ _ s | .constrained _ _ s | .parens _ s | .kinded _ _ s
+    | .record _ _ s => s
     | .var n | .con n => n.span
 
   /-- Collect the base type name and all arguments from nested type applications  -/
@@ -577,6 +713,26 @@ def resolveTypeExpr (ty : TypeExpr) : InferM MonoTy := do
     tyVarEnv := tyVarEnv.insert name freshTy
   resolveTypeExprWithEnv tyVarEnv ty
 
+/-- Extract label type variable binders from a forall type expression -/
+def extractLabelBinders (ty : Soma.Syntax.TypeExpr) : InferM (Array (String × LabelTy)) := do
+  match ty with
+  | .forall_ vars body _ =>
+    let mut labelBindings : Array (String × LabelTy) := #[]
+    for binder in vars do
+      match binder.kind with
+      | some kindName =>
+        let kind := Kind.fromString kindName.value
+        if kind == .label then
+          let freshId ← InferM.getFreshId
+          let tyVarId : TyVarId := ⟨binder.name.value, freshId, .label⟩
+          labelBindings := labelBindings.push (binder.name.value, .var tyVarId)
+      | none => pure ()
+    let innerLabels ← extractLabelBinders body
+    return labelBindings ++ innerLabels
+  | .parens inner _ => extractLabelBinders inner
+  | .constrained _ body _ => extractLabelBinders body
+  | _ => return #[]
+
 /-- Generate constraints for a top-level function, returning typed body -/
 def genFunctionBody {scope : Scope} (fn : UntypedFunction)
     (body : Expr Unit scope)
@@ -590,14 +746,29 @@ def genFunctionBody {scope : Scope} (fn : UntypedFunction)
     paramInfos := paramInfos.push (binding, name, ty)
     localBindings := localBindings.push (name, { ty, bindingId := binding, name })
 
-  -- Infer the body type with parameters in scope
-  let (bodyTy, typedBody) ← InferM.withLocals localBindings do
-    Gen.genExpr body
+  -- Extract label binders from type annotation (if any) before inferring body
+  let labelBindings ← match fn.declaredTypeSyntax with
+    | some declaredTy => extractLabelBinders declaredTy
+    | none => pure #[]
 
-  -- If there's a declared type annotation, add a constraint
+  -- Infer the body type with parameters and label variables in scope
+  let (bodyTy, typedBody) ← InferM.withLabelVars labelBindings do
+    InferM.withLocals localBindings do
+      Gen.genExpr body
+
+  -- If there's a declared type annotation, add constraints for params and return type
   match fn.declaredTypeSyntax with
   | some declaredTy =>
     let declaredMonoTy ← resolveTypeExpr declaredTy
+    -- Extract parameter types from the declared type and constrain them
+    let mut currentTy := declaredMonoTy
+    for (_, _, paramTy) in paramInfos do
+      match currentTy with
+      | .arrow fromTy toTy =>
+        InferM.addEqualityConstraint paramTy fromTy .typeAnnotation body.span declaredTy.span
+        currentTy := toTy
+      | _ => break -- Not enough arrows in the type
+    -- Constrain return type
     let returnTy := declaredMonoTy.stripArrows fn.params.size
     InferM.addEqualityConstraint bodyTy returnTy .typeAnnotation body.span declaredTy.span
   | none => pure ()

@@ -1,0 +1,14 @@
+// expect: success
+struct Point = Point
+    x :: Int
+    y :: Int
+
+def origin :: Point = Point 0 0
+
+def getX :: Point -> Int
+    | p => p.x
+
+def getY :: Point -> Int
+    | p => p.y
+
+def test :: Int = origin.x

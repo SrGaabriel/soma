@@ -31,6 +31,8 @@ The metadata includes:
 def kindToJson : Kind → Lean.Json
   | .star => .str "*"
   | .arrow k1 k2 => .mkObj [("arrow", .arr #[kindToJson k1, kindToJson k2])]
+  | .label => .str "label"
+  | .row => .str "row"
 
 /-- Serialize a TypeId to JSON -/
 def typeIdToJson (id : TypeId) : Lean.Json :=
@@ -47,6 +49,11 @@ partial def tyToJsonHK : {k : Kind} → Ty k → Lean.Json
   | _, .tuple fst snd rest =>
     let elems := #[tyToJsonHK fst, tyToJsonHK snd] ++ (rest.map tyToJsonHK).toArray
     .mkObj [("tuple", .arr elems)]
+  | _, .labelLit name => .mkObj [("label", .str name)]
+  | _, .rowEmpty => .mkObj [("rowEmpty", .bool true)]
+  | _, .rowExtend label ty tail =>
+    .mkObj [("rowExtend", .mkObj [("label", tyToJsonHK label), ("type", tyToJsonHK ty), ("tail", tyToJsonHK tail)])]
+  | _, .record row => .mkObj [("record", tyToJsonHK row)]
 
 /-- Serialize a MonoTy to JSON -/
 def tyToJson (t : MonoTy) : Lean.Json := tyToJsonHK t

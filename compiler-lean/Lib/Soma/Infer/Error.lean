@@ -38,6 +38,8 @@ inductive UnifyPurpose where
   | tupleElement (index : Nat)
   /-- Unifying field access -/
   | fieldAccess (fieldName : String)
+  /-- Unifying record update base with expected fields -/
+  | recordUpdate
   /-- Unifying with explicit type annotation -/
   | typeAnnotation
   /-- General unification (fallback) -/
@@ -58,6 +60,7 @@ def describe : UnifyPurpose → String
   | .arrayElements => "in array literal elements"
   | .tupleElement idx => s!"in tuple element {idx + 1}"
   | .fieldAccess field => s!"in field access '.{field}'"
+  | .recordUpdate => "in record update"
   | .typeAnnotation => "in type annotation"
   | .general => ""
 
@@ -186,6 +189,39 @@ inductive InferError where
       (varName : String)
       (span : Span)
 
+  /-- Label mismatch in row unification -/
+  | labelMismatch
+      (expected : String)
+      (actual : String)
+      (span : Span)
+
+  /-- Row is missing a required field -/
+  | missingRowField
+      (fieldName : String)
+      (span : Span)
+
+  /-- Row has an unexpected extra field -/
+  | extraRowField
+      (fieldName : String)
+      (span : Span)
+
+  /-- Cannot find label in row during rewriting -/
+  | rowLabelMismatch
+      (label : String)
+      (row : RowTy)
+      (span : Span)
+
+  /-- General row type mismatch -/
+  | rowMismatch
+      (expected : RowTy)
+      (actual : RowTy)
+      (span : Span)
+
+  /-- Ambiguous label - multiple fields could match a label variable -/
+  | ambiguousLabel
+      (candidates : Array String)
+      (span : Span)
+
 namespace InferError
 
 /-- Get the primary span of an error -/
@@ -211,6 +247,12 @@ def span : InferError → Span
   | .constraintNotSatisfied _ _ s => s
   | .recursiveType _ s => s
   | .skolemEscape _ s => s
+  | .labelMismatch _ _ s => s
+  | .missingRowField _ s => s
+  | .extraRowField _ s => s
+  | .rowLabelMismatch _ _ s => s
+  | .rowMismatch _ _ s => s
+  | .ambiguousLabel _ s => s
 
 /-- Convert an InferError to a Diagnostic for rendering -/
 def toDiagnostic : InferError → Diagnostic
@@ -410,6 +452,63 @@ def toDiagnostic : InferError → Diagnostic
     , primaryLabel := Label.primary span "cannot escape", secondaryLabels := #[]
     , notes := #["rigid type variables introduced by `forall` cannot escape their scope"]
     , help := none
+    }
+
+  | .labelMismatch expected actual span =>
+    { severity := .error
+    , code := some "E0609"
+    , message := s!"label mismatch: expected `{expected}`, found `{actual}`"
+    , primaryLabel := Label.primary span s!"expected label `{expected}`", secondaryLabels := #[]
+    , notes := #[]
+    , help := none
+    }
+
+  | .missingRowField fieldName span =>
+    { severity := .error
+    , code := some "E0609"
+    , message := s!"record is missing field `{fieldName}`"
+    , primaryLabel := Label.primary span s!"missing field `{fieldName}`", secondaryLabels := #[]
+    , notes := #[]
+    , help := some s!"add the field `{fieldName}` to the record"
+    }
+
+  | .extraRowField fieldName span =>
+    { severity := .error
+    , code := some "E0609"
+    , message := s!"record has unexpected field `{fieldName}`"
+    , primaryLabel := Label.primary span s!"unexpected field `{fieldName}`", secondaryLabels := #[]
+    , notes := #[]
+    , help := none
+    }
+
+  | .rowLabelMismatch label row span =>
+    let knownLabels := row.rowLabels
+    let labelsStr := if knownLabels.isEmpty then "none" else ", ".intercalate knownLabels
+    { severity := .error
+    , code := some "E0609"
+    , message := s!"cannot find field `{label}` in record type"
+    , primaryLabel := Label.primary span s!"field `{label}` not found", secondaryLabels := #[]
+    , notes := #[s!"known fields: {labelsStr}"]
+    , help := none
+    }
+
+  | .rowMismatch expected actual span =>
+    { severity := .error
+    , code := some "E0308"
+    , message := "row type mismatch"
+    , primaryLabel := Label.primary span s!"expected `{expected}`, found `{actual}`", secondaryLabels := #[]
+    , notes := #[]
+    , help := none
+    }
+
+  | .ambiguousLabel candidates span =>
+    let candidatesStr := candidates.toList.map (s!"@{·}") |> ", ".intercalate
+    { severity := .error
+    , code := some "E0610"
+    , message := "ambiguous label: multiple fields could match"
+    , primaryLabel := Label.primary span "ambiguous label", secondaryLabels := #[]
+    , notes := #[s!"candidates: {candidatesStr}"]
+    , help := some s!"use explicit label application, e.g. {candidatesStr}"
     }
 
 end InferError

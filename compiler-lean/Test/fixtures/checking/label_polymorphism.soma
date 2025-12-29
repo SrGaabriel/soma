@@ -1,0 +1,24 @@
+// expect: success
+
+def getField :: forall (l :: #) (a :: *) (r :: %). { l :: a | r } -> a
+    | rec => rec @l
+
+def test1 :: Int = getField @x { x = 42, y = "hello" }
+
+def test2 :: String = getField @name { name = "alice", age = 30 }
+
+def test3 :: Bool = getField @active { id = 1, name = "test", active = true }
+
+def rename :: forall (l1 :: #) (l2 :: #) (a :: *) (r :: %). { l1 :: a | r } -> { l2 :: a | r }
+    | rec => { l2 = rec @l1 }
+
+def test4 = rename @x @y { x = 42, z = true }
+
+struct Point = Point
+    x :: Int
+    y :: Int
+
+def test5 :: Int = getField @x (Point 1 2)
+def test6 :: Int = getField @y (Point 3 4)
+
+def test7 :: Int = getField { x = 42 }

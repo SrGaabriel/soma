@@ -134,6 +134,131 @@ partial def parseListExpr : ParserM (Option GreenNode) := do
           return some (GreenNode.mkError "unclosed list" (#[lbracket] ++ elements))
   | none => return none
 
+/-- Parse a record field -/
+partial def parseRecordField : ParserM (Option GreenNode) := do
+  match ← parseLowerIdent with
+  | some nameTok =>
+      match ← tryConsume .equals with
+      | some eqTok =>
+          match ← parseExpr with
+          | some valExpr =>
+              return some (GreenNode.mkNode .recordField #[nameTok, eqTok, valExpr])
+          | none =>
+              recordError "expected expression after '=' in record field"
+              return some (GreenNode.mkError "missing field value" #[nameTok, eqTok])
+      | none =>
+          -- Punning: { x } means { x = x }
+          return some (GreenNode.mkNode .recordField #[nameTok])
+  | none => return none
+
+/-- Parse a record literal: { x = 1, y = 2 } or record update: { r | x = 3 } -/
+partial def parseRecordExpr : ParserM (Option GreenNode) := do
+  match ← tryConsume .leftBrace with
+  | some lbrace =>
+      -- Check for empty record
+      if (← check .rightBrace) then
+        let rbrace ← consumeAny
+        return some (GreenNode.mkNode .exprRecord #[lbrace, rbrace])
+
+      -- First, check if it's lowerIdent followed by = (field) or | (base for update)
+      let tok ← current
+      match tok.kind with
+      | some .lowerIdent =>
+          let nameTok ← consumeAny
+          let nextTok ← current
+          match nextTok.kind with
+          | some .equals =>
+              -- It's a field: name = expr
+              let eqTok ← consumeAny
+              match ← parseExpr with
+              | some valExpr =>
+                  let firstField := GreenNode.mkNode .recordField #[nameTok, eqTok, valExpr]
+                  -- Parse remaining fields
+                  let mut fields := #[firstField]
+                  while (← check .comma) do
+                    let _ ← consumeAny
+                    match ← parseRecordField with
+                    | some field => fields := fields.push field
+                    | none => recordError "expected field after ','"; break
+                  match ← tryConsume .rightBrace with
+                  | some rbrace =>
+                      return some (GreenNode.mkNode .exprRecord (#[lbrace] ++ fields ++ #[rbrace]))
+                  | none =>
+                      recordError "unclosed record"
+                      return some (GreenNode.mkError "unclosed record" (#[lbrace] ++ fields))
+              | none =>
+                  recordError "expected expression after '=' in record field"
+                  return some (GreenNode.mkError "missing field value" #[lbrace, nameTok, eqTok])
+          | some .pipe =>
+              -- It's a record update: { base | field = val }
+              let baseExpr := GreenNode.mkNode .exprVar #[nameTok]
+              let pipeTok ← consumeAny
+              let mut fields : Array GreenNode := #[]
+              match ← parseRecordField with
+              | some field => fields := fields.push field
+              | none => recordError "expected field after '|' in record update"
+              while (← check .comma) do
+                let _ ← consumeAny
+                match ← parseRecordField with
+                | some field => fields := fields.push field
+                | none => recordError "expected field after ','"; break
+              match ← tryConsume .rightBrace with
+              | some rbrace =>
+                  return some (GreenNode.mkNode .exprRecordUpdate (#[lbrace, baseExpr, pipeTok] ++ fields ++ #[rbrace]))
+              | none =>
+                  recordError "unclosed record update"
+                  return some (GreenNode.mkError "unclosed record update" (#[lbrace, baseExpr, pipeTok] ++ fields))
+          | some .comma =>
+              -- Punning: { x, y } means { x = x, y = y }
+              let firstField := GreenNode.mkNode .recordField #[nameTok]
+              let mut fields := #[firstField]
+              while (← check .comma) do
+                let _ ← consumeAny
+                match ← parseRecordField with
+                | some field => fields := fields.push field
+                | none => recordError "expected field after ','"; break
+              match ← tryConsume .rightBrace with
+              | some rbrace =>
+                  return some (GreenNode.mkNode .exprRecord (#[lbrace] ++ fields ++ #[rbrace]))
+              | none =>
+                  recordError "unclosed record"
+                  return some (GreenNode.mkError "unclosed record" (#[lbrace] ++ fields))
+          | some .rightBrace =>
+              -- Single punned field: { x }
+              let firstField := GreenNode.mkNode .recordField #[nameTok]
+              let rbrace ← consumeAny
+              return some (GreenNode.mkNode .exprRecord #[lbrace, firstField, rbrace])
+          | _ =>
+              recordError "expected '=', '|', ',' or '}' after field name in record"
+              return some (GreenNode.mkError "malformed record" #[lbrace, nameTok])
+      | _ =>
+          match ← parseExpr with
+          | some baseExpr =>
+              match ← tryConsume .pipe with
+              | some pipeTok =>
+                  let mut fields : Array GreenNode := #[]
+                  match ← parseRecordField with
+                  | some field => fields := fields.push field
+                  | none => recordError "expected field after '|' in record update"
+                  while (← check .comma) do
+                    let _ ← consumeAny
+                    match ← parseRecordField with
+                    | some field => fields := fields.push field
+                    | none => recordError "expected field after ','"; break
+                  match ← tryConsume .rightBrace with
+                  | some rbrace =>
+                      return some (GreenNode.mkNode .exprRecordUpdate (#[lbrace, baseExpr, pipeTok] ++ fields ++ #[rbrace]))
+                  | none =>
+                      recordError "unclosed record update"
+                      return some (GreenNode.mkError "unclosed record update" (#[lbrace, baseExpr, pipeTok] ++ fields))
+              | none =>
+                  recordError "expected '|' after base expression in record update"
+                  return some (GreenNode.mkError "malformed record update" #[lbrace, baseExpr])
+          | none =>
+              recordError "expected field or expression in record"
+              return some (GreenNode.mkError "empty record" #[lbrace])
+  | none => return none
+
 partial def parseLambda : ParserM (Option GreenNode) := do
   match ← tryConsume .lambda with
   | some lambdaTok =>
@@ -434,6 +559,50 @@ partial def parseBindExpr : ParserM (Option GreenNode) := do
         return some (GreenNode.mkNode .exprBind (#[bindTok] ++ stmts))
   | none => return none
 
+partial def parseProjection : ParserM (Option GreenNode) := do
+  -- Check for Type.field projection syntax
+  let tok ← current
+  if tok.kind != some .upperIdent then return none
+  let nextTok ← peekNext
+  if nextTok.kind != some .dot then return none
+  let fieldTok ← peekAhead 2
+  if fieldTok.kind != some .lowerIdent then return none
+  -- Parse Type.field as a projection
+  let typeTok ← consumeAny
+  let dotTok ← consumeAny
+  let fieldTok ← consumeAny
+  return some (GreenNode.mkNode .exprProjection #[typeTok, dotTok, fieldTok])
+
+partial def parseExprTypeApp : ParserM (Option GreenNode) := do
+  match ← tryConsume .at with
+  | some atTok =>
+    let tok ← current
+    match tok.kind with
+    | some .lowerIdent =>
+      -- @label - label application
+      let labelTok ← consumeAny
+      return some (GreenNode.mkNode .exprTypeApp #[atTok, labelTok])
+    | some .upperIdent =>
+      -- @Type - type constructor application
+      match ← parseTypeAtom with
+      | some typeTok =>
+        return some (GreenNode.mkNode .exprTypeApp #[atTok, typeTok])
+      | none =>
+        recordError "expected type after '@'"
+        return some (GreenNode.mkError "incomplete type application" #[atTok])
+    | some .leftParen =>
+      -- @(Type) - parenthesized type application
+      match ← parseTypeAtom with
+      | some typeTok =>
+        return some (GreenNode.mkNode .exprTypeApp #[atTok, typeTok])
+      | none =>
+        recordError "expected type after '@'"
+        return some (GreenNode.mkError "incomplete type application" #[atTok])
+    | _ =>
+      recordError "expected type or label after '@'"
+      return some (GreenNode.mkError "incomplete type application" #[atTok])
+  | none => return none
+
 partial def parseExprAtom : ParserM (Option GreenNode) := do
   if let some e ← parseLambda then return some e
   if let some e ← parseLetExpr then return some e
@@ -443,9 +612,12 @@ partial def parseExprAtom : ParserM (Option GreenNode) := do
   if let some e ← parseBindExpr then return some e
   if let some e ← parseParenExpr then return some e
   if let some e ← parseListExpr then return some e
+  if let some e ← parseRecordExpr then return some e
   if let some e ← parseExprNumber then return some e
   if let some e ← parseExprString then return some e
   if let some e ← parseExprBool then return some e
+  if let some e ← parseExprTypeApp then return some e
+  if let some e ← parseProjection then return some e
   if let some e ← parseExprVar then return some e
   if let some e ← parseExprCon then return some e
   return none
@@ -456,7 +628,17 @@ partial def parseExprApp : ParserM (Option GreenNode) := do
       let mut result := first
       while true do
         let tok ← current
-        if tok.kind == some .varSymbol || tok.kind == some .rightParen ||
+        -- Check for field access: expr.field
+        if tok.kind == some .dot then
+          let dotTok ← consumeAny
+          -- After dot, expect a lower-case identifier (field name)
+          match ← parseLowerIdent with
+          | some fieldTok =>
+              result := GreenNode.mkNode .exprFieldAccess #[result, dotTok, fieldTok]
+          | none =>
+              recordError "expected field name after '.'"
+              break
+        else if tok.kind == some .varSymbol || tok.kind == some .rightParen ||
            tok.kind == some .rightBracket || tok.kind == some .rightBrace ||
            tok.kind == some .comma || tok.kind == some .pipe ||
            tok.kind == some .fatArrow || tok.kind == some .equals ||
@@ -466,10 +648,11 @@ partial def parseExprApp : ParserM (Option GreenNode) := do
            tok.kind == some .layoutStart || tok.kind == some .layoutSep ||
            tok.kind == some .layoutEnd || tok.kind == some .eof then
           break
-        match ← parseExprAtom with
-        | some arg =>
-            result := GreenNode.mkNode .exprApp #[result, arg]
-        | none => break
+        else
+          match ← parseExprAtom with
+          | some arg =>
+              result := GreenNode.mkNode .exprApp #[result, arg]
+          | none => break
       return some result
   | none => return none
 

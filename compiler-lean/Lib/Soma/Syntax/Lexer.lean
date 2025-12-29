@@ -16,7 +16,7 @@ def isIdentStart (c : Char) : Bool := isLetter c || c == '_' || isEmoji c
 def isIdentContinue (c : Char) : Bool := isIdentStart c || isDigit c
 
 def isOperatorChar (c : Char) : Bool :=
-  c == '!' || c == '#' || c == '$' || c == '%' || c == '&' ||
+  c == '!' || c == '$' || c == '%' || c == '&' ||
   c == '*' || c == '+' || c == '.' || c == '-' || c == '/' ||
   c == '<' || c == '=' || c == '>' || c == '?' || c == '|'
 
@@ -303,10 +303,15 @@ partial def lexToken : LexerM (Option RawToken) := do
       if isSpace (← current) then advance
       return some (← makeToken .pipe start)
     else return some (← lexOperator)
+  | '.' =>
+    if isIdentStart (← peekNext) then
+      return some (← singleCharToken .dot)
+    else return some (← lexOperator)
   | '"' =>
     if (← peekNext) == '"' && (← peekAhead 2) == '"' then return some (← lexTripleString)
     else return some (← lexStringLit)
   | '`' => return some (← lexBacktickIdent)
+  | '#' => return some (← singleCharToken .hash)
   | '\n' => advance; return some (← makeToken .layoutSep start)
   | _ =>
     if isDigit c then return some (← lexNumber)

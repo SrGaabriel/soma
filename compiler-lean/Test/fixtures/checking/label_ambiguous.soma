@@ -1,0 +1,6 @@
+// expect: error
+
+def getField :: forall (l :: #) (a :: *) (r :: %). { l :: a | r } -> a
+    | rec => rec @l
+
+def bad :: Int = getField { x = 42, y = "hello" }

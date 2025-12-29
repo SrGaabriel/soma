@@ -121,8 +121,7 @@ def isHigherKinded (v : TyVarId) : Bool := v.kind != .star
 
 end TyVarId
 
-
-/-- Types indexed by their kind - ill-kinded types are unrepresentable -/
+/-- Types indexed by their kind -/
 inductive Ty : Kind → Type where
   | var (v : TyVarId) : Ty k
   | starPrim (p : StarPrimitive) : Ty .star
@@ -131,9 +130,19 @@ inductive Ty : Kind → Type where
   | app : Ty (.arrow k1 k2) → Ty k1 → Ty k2
   | arrow : Ty .star → Ty .star → Ty .star
   | tuple (fst snd : Ty .star) (rest : List (Ty .star)) : Ty .star
+  | labelLit (name : String) : Ty .label
+  | rowEmpty : Ty .row
+  | rowExtend (label : Ty .label) (fieldTy : Ty .star) (tail : Ty .row) : Ty .row
+  | record (row : Ty .row) : Ty .star
 
 /-- Monomorphic types (kind *) are the most common -/
 abbrev MonoTy := Ty Kind.star
+
+/-- Row-kinded types for record polymorphism -/
+abbrev RowTy := Ty Kind.row
+
+/-- Label-kinded types for field names -/
+abbrev LabelTy := Ty Kind.label
 
 /-- Default inhabited instance for MonoTy, uses unit type -/
 instance : Inhabited MonoTy := ⟨.starPrim .unit⟩
@@ -153,6 +162,20 @@ abbrev KindSubst := Std.HashMap Nat SomeTy
 def SomeTy.cast? (sty : SomeTy) (k : Kind) : Option (Ty k) :=
   if h : sty.kind = k then some (h ▸ sty.ty) else none
 
+/-- Substitute in a label type using kind-polymorphic substitution -/
+def Ty.substLabelK (t : LabelTy) (σ : KindSubst) : LabelTy :=
+  match t with
+  | .labelLit name => .labelLit name
+  | .var v =>
+    match σ.get? v.id with
+    | some sty =>
+      match sty.cast? .label with
+      | some ty => ty
+      | none => .var v -- Kind mismatch, keep variable
+    | none => .var v
+  | .app _ _ => t
+  | .userCon _ _ => t
+
 mutual
   /-- Substitute in a monomorphic type using kind-polymorphic substitution -/
   def Ty.substK (t : MonoTy) (σ : KindSubst) : MonoTy :=
@@ -170,6 +193,7 @@ mutual
     | .arrow from_ to => .arrow (Ty.substK from_ σ) (Ty.substK to σ)
     | .tuple fst snd rest =>
       .tuple (Ty.substK fst σ) (Ty.substK snd σ) (Ty.substListK rest σ)
+    | .record row => .record (Ty.substRowK row σ)
 
   /-- Substitute in a list of types -/
   def Ty.substListK (ts : List MonoTy) (σ : KindSubst) : List MonoTy :=
@@ -190,11 +214,37 @@ mutual
     | _, _, .userCon _ id, _ => .userCon _ id
     | _, _, .app f a, σ => .app (Ty.substFunK f σ) (Ty.substArgK a σ)
 
+  /-- Substitute in a row type using kind-polymorphic substitution -/
+  def Ty.substRowK (t : RowTy) (σ : KindSubst) : RowTy :=
+    match t with
+    | .rowEmpty => .rowEmpty
+    | .rowExtend label ty tail =>
+      .rowExtend (Ty.substLabelK label σ) (Ty.substK ty σ) (Ty.substRowK tail σ)
+    | .var v =>
+      match σ.get? v.id with
+      | some sty =>
+        match sty.cast? .row with
+        | some ty => ty
+        | none => .var v -- Kind mismatch, keep variable
+      | none => .var v
+    | .app _ _ => t
+    | .userCon _ _ => t
+
   /-- Substitute in a type of any kind using kind-polymorphic substitution -/
   def Ty.substArgK : {k : Kind} → Ty k → KindSubst → Ty k
     | .star, t, σ => Ty.substK t σ
     | .arrow _ _, t, σ => Ty.substFunK t σ
+    | .row, t, σ => Ty.substRowK t σ
+    | .label, t, σ => Ty.substLabelK t σ
 end
+
+/-- Substitute in a label type (todo: remove since labels don't contain star-kinded vars) -/
+def Ty.substLabel (t : LabelTy) (_σ : TySubst) : LabelTy :=
+  match t with
+  | .labelLit name => .labelLit name
+  | .var v => .var v -- Label variables can't be substituted with MonoTy
+  | .app _ _ => t
+  | .userCon _ _ => t
 
 mutual
   /-- Substitute in a monomorphic type (legacy, monomorphic-only substitution) -/
@@ -207,6 +257,7 @@ mutual
     | .arrow from_ to => .arrow (Ty.subst from_ σ) (Ty.subst to σ)
     | .tuple fst snd rest =>
       .tuple (Ty.subst fst σ) (Ty.subst snd σ) (Ty.substList rest σ)
+    | .record row => .record (Ty.substRow row σ)
 
   /-- Substitute in a list of types (legacy) -/
   def Ty.substList (ts : List MonoTy) (σ : TySubst) : List MonoTy :=
@@ -221,10 +272,22 @@ mutual
     | _, _, .userCon _ id, _ => .userCon _ id
     | _, _, .app f a, σ => .app (Ty.substFun f σ) (Ty.substArg a σ)
 
+  /-- Substitute in a row type (todo: remove legacy) -/
+  def Ty.substRow (t : RowTy) (σ : TySubst) : RowTy :=
+    match t with
+    | .rowEmpty => .rowEmpty
+    | .rowExtend label ty tail =>
+      .rowExtend (Ty.substLabel label σ) (Ty.subst ty σ) (Ty.substRow tail σ)
+    | .var v => .var v  -- Row variables can't be substituted with MonoTy
+    | .app _ _ => t
+    | .userCon _ _ => t
+
   /-- Substitute in a type of any kind (legacy) -/
   def Ty.substArg : {k : Kind} → Ty k → TySubst → Ty k
     | .star, t, σ => Ty.subst t σ
     | .arrow _ _, t, σ => Ty.substFun t σ
+    | .row, t, σ => Ty.substRow t σ
+    | .label, t, σ => Ty.substLabel t σ
 end
 
 namespace Ty
@@ -238,22 +301,63 @@ def isAtom : {k : Kind} → Ty k → Bool
   | _, .app _ _ => false
   | _, .arrow _ _ => false
   | _, .tuple _ _ _ => true  -- tuples are in parens anyway
+  | _, .labelLit _ => true
+  | _, .rowEmpty => true
+  | _, .rowExtend _ _ _ => false
+  | _, .record _ => true
+
+/-- Helper to get label string -/
+def labelToString (t : LabelTy) : String :=
+  match t with
+  | .labelLit name => name
+  | .var v => v.name
+  | .app _ _ => "<impossible>"
+  | .userCon _ _ => "<impossible>"
+
+mutual
+/-- Pretty print a row type as comma-separated fields -/
+partial def rowToStringAux (row : RowTy) : String :=
+  match row with
+  | .rowEmpty => ""
+  | .var v => "| " ++ v.name
+  | .rowExtend label ty tail =>
+    let labelStr := labelToString label
+    let fieldStr := labelStr ++ " :: " ++ toStringAux ty
+    match tail with
+    | .rowEmpty => fieldStr
+    | .var v => fieldStr ++ " | " ++ v.name
+    | .rowExtend _ _ _ => fieldStr ++ ", " ++ rowToStringAux tail
+    | .app _ _ => fieldStr
+    | .userCon _ _ => fieldStr
+  | .app _ _ => "<impossible>"
+  | .userCon _ _ => "<impossible>"
 
 /-- Pretty print a type of any kind -/
-def toString : {k : Kind} → Ty k → String
+partial def toStringAux : {k : Kind} → Ty k → String
   | _, .var v => v.name
   | _, .starPrim p => p.name
   | _, .higherPrim p => p.name
   | _, .userCon _ id => id.name
   | _, .app f a =>
-    let as := if isAtom a then toString a else s!"({toString a})"
-    s!"{toString f} {as}"
+    let as := if isAtom a then toStringAux a else "(" ++ toStringAux a ++ ")"
+    toStringAux f ++ " " ++ as
   | _, .arrow from_ to =>
-    let fromStr := if isAtom from_ then toString from_ else s!"({toString from_})"
-    s!"{fromStr} -> {toString to}"
+    let fromStr := if isAtom from_ then toStringAux from_ else "(" ++ toStringAux from_ ++ ")"
+    fromStr ++ " -> " ++ toStringAux to
   | _, .tuple fst snd rest =>
-    let elemStrs := [toString fst, toString snd] ++ rest.map toString
-    s!"({", ".intercalate elemStrs})"
+    let elemStrs := [toStringAux fst, toStringAux snd] ++ rest.map toStringAux
+    "(" ++ ", ".intercalate elemStrs ++ ")"
+  | _, .labelLit name => "'" ++ name
+  | _, .rowEmpty => "{}"
+  | _, .rowExtend (label : LabelTy) (ty : MonoTy) (tail : RowTy) =>
+    let rowStr := rowToStringAux (Ty.rowExtend label ty tail)
+    "{ " ++ rowStr ++ " }"
+  | _, .record (row : RowTy) =>
+    let rowStr := rowToStringAux row
+    "{ " ++ rowStr ++ " }"
+end
+
+def toString : {k : Kind} → Ty k → String := toStringAux
 
 instance : ToString (Ty k) := ⟨Ty.toString⟩
 
@@ -420,6 +524,10 @@ def freeVars : {k : Kind} → Ty k → Array TyVarId
   | _, .arrow from_ to => freeVars from_ ++ freeVars to
   | _, .tuple fst snd rest =>
     freeVars fst ++ freeVars snd ++ rest.foldl (init := #[]) fun acc t => acc ++ freeVars t
+  | _, .labelLit _ => #[]
+  | _, .rowEmpty => #[]
+  | _, .rowExtend label ty tail => freeVars label ++ freeVars ty ++ freeVars tail
+  | _, .record row => freeVars row
 
 /-- Check if a type has any type variables -/
 def hasVars (t : Ty k) : Bool := !t.freeVars.isEmpty
@@ -451,6 +559,11 @@ def heq : {k1 k2 : Kind} → Ty k1 → Ty k2 → Bool
   | _, _, .arrow from1 to1, .arrow from2 to2 => heq from1 from2 && heq to1 to2
   | _, _, .tuple fst1 snd1 rest1, .tuple fst2 snd2 rest2 =>
     heq fst1 fst2 && heq snd1 snd2 && heqList rest1 rest2
+  | _, _, .labelLit n1, .labelLit n2 => n1 == n2
+  | _, _, .rowEmpty, .rowEmpty => true
+  | _, _, .rowExtend l1 t1 r1, .rowExtend l2 t2 r2 =>
+    heq l1 l2 && heq t1 t2 && heq r1 r2
+  | _, _, .record r1, .record r2 => heq r1 r2
   | _, _, _, _ => false
 end
 
@@ -470,8 +583,100 @@ def hash : {k : Kind} → Ty k → UInt64
   | _, .tuple fst snd rest =>
     let base := mixHash 6 (mixHash (hash fst) (hash snd))
     rest.foldl (init := base) fun acc t => mixHash acc (hash t)
+  | _, .labelLit name => mixHash 7 (Hashable.hash name)
+  | _, .rowEmpty => 8
+  | _, .rowExtend label ty tail => mixHash 9 (mixHash (hash label) (mixHash (hash ty) (hash tail)))
+  | _, .record row => mixHash 10 (hash row)
 
 instance : Hashable (Ty k) := ⟨Ty.hash⟩
+
+/-- Create a label literal -/
+def label (name : String) : LabelTy := .labelLit name
+
+/-- Build a closed record type from field list -/
+def mkRecord (fields : List (String × MonoTy)) : MonoTy :=
+  let row := fields.foldr (init := Ty.rowEmpty) fun (name, ty) acc =>
+    Ty.rowExtend (Ty.labelLit name) ty acc
+  Ty.record row
+
+/-- Build an open record type (with row variable tail) -/
+def mkOpenRecord (fields : List (String × MonoTy)) (tail : RowTy) : MonoTy :=
+  let row := fields.foldr (init := tail) fun (name, ty) acc =>
+    Ty.rowExtend (Ty.labelLit name) ty acc
+  Ty.record row
+
+/-- Check if a type is a record type -/
+def isRecord : MonoTy → Bool
+  | .record _ => true
+  | _ => false
+
+/-- Extract row from record type -/
+def recordRow? : MonoTy → Option RowTy
+  | .record row => some row
+  | _ => none
+
+/-- Extract label name from a label type -/
+def labelName? (t : LabelTy) : Option String :=
+  match t with
+  | .labelLit name => some name
+  | .var _ => none
+  | .app _ _ => none
+  | .userCon _ _ => none
+
+/-- Collect all concrete labels from a row -/
+def rowLabels (row : RowTy) : List String :=
+  match row with
+  | .rowEmpty => []
+  | .rowExtend label _ tail =>
+    match labelName? label with
+    | some name => name :: rowLabels tail
+    | none => rowLabels tail  -- Skip label variables
+  | .var _ => [] -- Unknown tail
+  | .app _ _ => [] -- Impossible for RowTy
+  | .userCon _ _ => [] -- Impossible for RowTy
+
+/-- Look up a field by concrete label in a row, returns (fieldType, remainingRow) if found -/
+def rowLookup (name : String) (row : RowTy) : Option (MonoTy × RowTy) :=
+  match row with
+  | .rowEmpty => none
+  | .rowExtend label ty tail =>
+    match labelName? label with
+    | some n =>
+      if n == name then some (ty, tail)
+      else do
+        let (fieldTy, rest) ← rowLookup name tail
+        some (fieldTy, .rowExtend label ty rest)
+    | none => none
+  | .var _ => none
+  | .app _ _ => none
+  | .userCon _ _ => none
+
+/-- Look up a field name in a type variable environment and return the appropriate label -/
+def lookupOrLiteralLabel (fieldName : String) (tyVars : Std.HashMap String TyVarId) : LabelTy :=
+  match tyVars.get? fieldName with
+  | some tyVarId =>
+    if tyVarId.kind == Kind.label then
+      .var ⟨tyVarId.name, tyVarId.id, Kind.label⟩
+    else .labelLit fieldName
+  | none => .labelLit fieldName
+
+/-- Check if a row is closed (ends in rowEmpty, not a variable) -/
+def isClosedRow (row : RowTy) : Bool :=
+  match row with
+  | .rowEmpty => true
+  | .rowExtend _ _ tail => isClosedRow tail
+  | .var _ => false
+  | .app _ _ => false
+  | .userCon _ _ => false
+
+/-- Count the number of fields in a row (only counts concrete extensions) -/
+def rowFieldCount (row : RowTy) : Nat :=
+  match row with
+  | .rowEmpty => 0
+  | .rowExtend _ _ tail => 1 + rowFieldCount tail
+  | .var _ => 0
+  | .app _ _ => 0
+  | .userCon _ _ => 0
 
 end Ty
 

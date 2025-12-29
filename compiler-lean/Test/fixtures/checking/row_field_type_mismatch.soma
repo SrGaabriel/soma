@@ -1,0 +1,6 @@
+// expect: error type mismatch
+
+def getX :: { x :: Int } -> Int
+    | r => r.x
+
+def test = getX { x = "not an int" }

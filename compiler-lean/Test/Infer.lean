@@ -142,10 +142,13 @@ namespace UnifyTests
 def unifyCtx : UnifyContext :=
   { purpose := .general, expectedSpan := testSpan, actualSpan := testSpan }
 
+/-- Initial counter for tests -/
+def initCounter : Nat := 1000
+
 def testUnifyIdentical : IO TestResult := do
-  match Unify.unifyMono Ty.int Ty.int unifyCtx with
-  | .ok σ =>
-    if !σ.isEmpty then
+  match Unify.unifyMono Ty.int Ty.int unifyCtx initCounter with
+  | .ok state =>
+    if !state.subst.isEmpty then
       return .failed "unifying identical types should give empty subst"
     return .passed
   | .error e =>
@@ -153,9 +156,9 @@ def testUnifyIdentical : IO TestResult := do
 
 def testUnifyVarLeft : IO TestResult := do
   let v := mkTyVar "a" 0
-  match Unify.unifyMono (.var v) Ty.int unifyCtx with
-  | .ok σ =>
-    if σ.apply (.var v) != Ty.int then
+  match Unify.unifyMono (.var v) Ty.int unifyCtx initCounter with
+  | .ok state =>
+    if state.subst.apply (.var v) != Ty.int then
       return .failed "var should be bound to Int"
     return .passed
   | .error e =>
@@ -163,9 +166,9 @@ def testUnifyVarLeft : IO TestResult := do
 
 def testUnifyVarRight : IO TestResult := do
   let v := mkTyVar "a" 0
-  match Unify.unifyMono Ty.int (.var v) unifyCtx with
-  | .ok σ =>
-    if σ.apply (.var v) != Ty.int then
+  match Unify.unifyMono Ty.int (.var v) unifyCtx initCounter with
+  | .ok state =>
+    if state.subst.apply (.var v) != Ty.int then
       return .failed "var should be bound to Int"
     return .passed
   | .error e =>
@@ -174,11 +177,11 @@ def testUnifyVarRight : IO TestResult := do
 def testUnifyTwoVars : IO TestResult := do
   let a := mkTyVar "a" 0
   let b := mkTyVar "b" 1
-  match Unify.unifyMono (.var a) (.var b) unifyCtx with
-  | .ok σ =>
+  match Unify.unifyMono (.var a) (.var b) unifyCtx initCounter with
+  | .ok state =>
     -- One should be bound to the other
-    let resultA := σ.apply (.var a)
-    let resultB := σ.apply (.var b)
+    let resultA := state.subst.apply (.var a)
+    let resultB := state.subst.apply (.var b)
     if resultA != resultB then
       return .failed "both vars should unify to same type"
     return .passed
@@ -190,11 +193,11 @@ def testUnifyArrow : IO TestResult := do
   let b := mkTyVar "b" 1
   let ty1 : MonoTy := .arrow (.var a) Ty.int
   let ty2 : MonoTy := .arrow Ty.string (.var b)
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
-    if σ.apply (.var a) != Ty.string then
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
+    if state.subst.apply (.var a) != Ty.string then
       return .failed "a should be String"
-    if σ.apply (.var b) != Ty.int then
+    if state.subst.apply (.var b) != Ty.int then
       return .failed "b should be Int"
     return .passed
   | .error e =>
@@ -204,16 +207,16 @@ def testUnifyTuple2 : IO TestResult := do
   let a := mkTyVar "a" 0
   let ty1 : MonoTy := Ty.tuple2 (.var a) Ty.int
   let ty2 : MonoTy := Ty.tuple2 Ty.string Ty.int
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
-    if σ.apply (.var a) != Ty.string then
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
+    if state.subst.apply (.var a) != Ty.string then
       return .failed "a should be String"
     return .passed
   | .error e =>
     return .failed s!"should succeed: {e.toDiagnostic.message}"
 
 def testUnifyMismatch : IO TestResult := do
-  match Unify.unifyMono Ty.int Ty.string unifyCtx with
+  match Unify.unifyMono Ty.int Ty.string unifyCtx initCounter with
   | .ok _ =>
     return .failed "should fail: Int != String"
   | .error e =>
@@ -225,7 +228,7 @@ def testUnifyOccursCheck : IO TestResult := do
   let a := mkTyVar "a" 0
   -- Try to unify a with (a -> Int), which would create infinite type
   let ty : MonoTy := .arrow (.var a) Ty.int
-  match Unify.unifyMono (.var a) ty unifyCtx with
+  match Unify.unifyMono (.var a) ty unifyCtx initCounter with
   | .ok _ =>
     return .failed "should fail: occurs check"
   | .error e =>
@@ -236,7 +239,7 @@ def testUnifyOccursCheck : IO TestResult := do
 def testUnifyArrowMismatch : IO TestResult := do
   let ty1 : MonoTy := .arrow Ty.int Ty.int
   let ty2 : MonoTy := .arrow Ty.int Ty.string
-  match Unify.unifyMono ty1 ty2 unifyCtx with
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
   | .ok _ =>
     return .failed "should fail: return types differ"
   | .error _ =>
@@ -265,6 +268,8 @@ namespace HKTTests
 def unifyCtx : UnifyContext :=
   { purpose := .general, expectedSpan := testSpan, actualSpan := testSpan }
 
+def initCounter : Nat := 1000
+
 /-- Create a higher-kinded type variable (kind * -> *) -/
 def mkHKTVar (name : String) (id : Nat) : TyVarId :=
   ⟨name, id, .arrow .star .star⟩
@@ -277,9 +282,9 @@ def hktVar (name : String) (id : Nat) : Ty (.arrow Kind.star Kind.star) :=
 def testUnifyIdenticalApp : IO TestResult := do
   let ty1 := Ty.array Ty.int  -- Array Int
   let ty2 := Ty.array Ty.int  -- Array Int
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
-    if !σ.isEmpty then
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
+    if !state.subst.isEmpty then
       return .failed "unifying identical apps should give empty subst"
     return .passed
   | .error e =>
@@ -290,9 +295,9 @@ def testUnifyAppWithVar : IO TestResult := do
   let a := mkTyVar "a" 0
   let ty1 := Ty.array (.var a)  -- Array a
   let ty2 := Ty.array Ty.int   -- Array Int
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
-    let resolved := σ.apply (.var a)
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
+    let resolved := state.subst.apply (.var a)
     if resolved != Ty.int then
       return .failed s!"'a' should resolve to Int, got {resolved}"
     return .passed
@@ -305,10 +310,10 @@ def testUnifyAppTwoVars : IO TestResult := do
   let b := mkTyVar "b" 1
   let ty1 := Ty.array (.var a)  -- Array a
   let ty2 := Ty.array (.var b)  -- Array b
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
-    let resolvedA := σ.apply (.var a)
-    let resolvedB := σ.apply (.var b)
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
+    let resolvedA := state.subst.apply (.var a)
+    let resolvedB := state.subst.apply (.var b)
     if resolvedA != resolvedB then
       return .failed s!"both vars should unify to same type, got {resolvedA} and {resolvedB}"
     return .passed
@@ -322,10 +327,10 @@ def testUnifyHKTVarWithConcrete : IO TestResult := do
   let fTy : Ty (.arrow .star .star) := .var f
   let ty1 : MonoTy := .app fTy Ty.int
   let ty2 := Ty.array Ty.int  -- Array Int
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
     -- Check that f is bound to Array
-    match σ.lookupAny f.id with
+    match state.subst.lookupAny f.id with
     | some someTy =>
       match someTy.kind with
       | .arrow .star .star =>
@@ -346,17 +351,17 @@ def testUnifyHKTVarAndArgVar : IO TestResult := do
   let fTy : Ty (.arrow .star .star) := .var f
   let ty1 : MonoTy := .app fTy (.var a)  -- f a
   let ty2 := Ty.array Ty.int            -- Array Int
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
     -- Check f is bound to Array - use heterogeneous equality
-    match σ.lookupAny f.id with
+    match state.subst.lookupAny f.id with
     | some someTy =>
       if !Ty.heq someTy.ty Ty.arrayCon then
         return .failed "'f' should be Array"
     | none =>
       return .failed "'f' should be bound"
     -- Check a is bound to Int
-    let resolvedA := σ.apply (.var a)
+    let resolvedA := state.subst.apply (.var a)
     if resolvedA != Ty.int then
       return .failed s!"'a' should be Int, got {resolvedA}"
     return .passed
@@ -371,10 +376,10 @@ def testUnifyTwoHKTVars : IO TestResult := do
   let gTy : Ty (.arrow .star .star) := .var g
   let ty1 : MonoTy := .app fTy Ty.int  -- f Int
   let ty2 : MonoTy := .app gTy Ty.int  -- g Int
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
     -- f and g should unify to the same thing
-    match σ.lookupAny f.id, σ.lookupAny g.id with
+    match state.subst.lookupAny f.id, state.subst.lookupAny g.id with
     | some sf, some sg =>
       -- Use heterogeneous equality since kinds might differ
       if !Ty.heq sf.ty sg.ty then
@@ -401,11 +406,11 @@ def testUnifyFullyPolymorphicHKT : IO TestResult := do
   let gTy : Ty (.arrow .star .star) := .var g
   let ty1 : MonoTy := .app fTy (.var a)  -- f a
   let ty2 : MonoTy := .app gTy (.var b)  -- g b
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
     -- After unification, f a and g b should be equal under σ
-    let result1 := σ.apply ty1
-    let result2 := σ.apply ty2
+    let result1 := state.subst.apply ty1
+    let result2 := state.subst.apply ty2
     if result1 != result2 then
       return .failed s!"after unification, types should be equal: {result1} vs {result2}"
     return .passed
@@ -416,7 +421,7 @@ def testUnifyFullyPolymorphicHKT : IO TestResult := do
 def testUnifyDifferentConstructors : IO TestResult := do
   let ty1 := Ty.array Ty.int  -- Array Int
   let ty2 := Ty.ref Ty.int    -- Ref Int
-  match Unify.unifyMono ty1 ty2 unifyCtx with
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
   | .ok _ =>
     return .failed "should fail: Array != Ref"
   | .error _ =>
@@ -426,7 +431,7 @@ def testUnifyDifferentConstructors : IO TestResult := do
 def testUnifyDifferentElements : IO TestResult := do
   let ty1 := Ty.array Ty.int     -- Array Int
   let ty2 := Ty.array Ty.string  -- Array String
-  match Unify.unifyMono ty1 ty2 unifyCtx with
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
   | .ok _ =>
     return .failed "should fail: Int != String"
   | .error _ =>
@@ -444,7 +449,7 @@ def testHKTOccursCheck : IO TestResult := do
   -- This is tricky to set up directly, so let's test via element
   let ty1 : MonoTy := .app fTy Ty.int
   let ty2 := Ty.array (.app fTy Ty.int)  -- Array (f Int)
-  match Unify.unifyMono ty1 ty2 unifyCtx with
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
   | .ok _ =>
     -- This actually succeeds because f -> Array, then f Int -> Array Int
     -- which doesn't create a cycle. Let's try a real occurs check.
@@ -458,7 +463,7 @@ def testElementOccursCheck : IO TestResult := do
   -- Try to unify 'a' with 'Array a' - should fail occurs check
   let ty1 : MonoTy := .var a
   let ty2 := Ty.array (.var a)  -- Array a
-  match Unify.unifyMono ty1 ty2 unifyCtx with
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
   | .ok _ =>
     return .failed "should fail: occurs check for 'a' in 'Array a'"
   | .error e =>
@@ -471,9 +476,9 @@ def testNestedApp : IO TestResult := do
   let a := mkTyVar "a" 0
   let ty1 := Ty.array (Ty.array (.var a))  -- Array (Array a)
   let ty2 := Ty.array (Ty.array Ty.int)    -- Array (Array Int)
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
-    let resolved := σ.apply (.var a)
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
+    let resolved := state.subst.apply (.var a)
     if resolved != Ty.int then
       return .failed s!"'a' should be Int, got {resolved}"
     return .passed
@@ -487,12 +492,12 @@ def testHKTInArrow : IO TestResult := do
   let fTy : Ty (.arrow .star .star) := .var f
   let ty1 : MonoTy := .arrow (.var a) (.app fTy (.var a))  -- a -> f a
   let ty2 : MonoTy := .arrow Ty.int (Ty.array Ty.int)      -- Int -> Array Int
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
-    let resolvedA := σ.apply (.var a)
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
+    let resolvedA := state.subst.apply (.var a)
     if resolvedA != Ty.int then
       return .failed s!"'a' should be Int, got {resolvedA}"
-    match σ.lookupAny f.id with
+    match state.subst.lookupAny f.id with
     | some someTy =>
       if !Ty.heq someTy.ty Ty.arrayCon then
         return .failed "'f' should be Array"
@@ -553,9 +558,9 @@ def testIOTypeConstructor : IO TestResult := do
   let a := mkTyVar "a" 0
   let ty1 := Ty.io (.var a)   -- IO a
   let ty2 := Ty.io Ty.string  -- IO String
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
-    let resolved := σ.apply (.var a)
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
+    let resolved := state.subst.apply (.var a)
     if resolved != Ty.string then
       return .failed s!"'a' should be String, got {resolved}"
     return .passed
@@ -567,7 +572,7 @@ def testIOvsArray : IO TestResult := do
   let a := mkTyVar "a" 0
   let ty1 := Ty.io (.var a)     -- IO a
   let ty2 := Ty.array (.var a)  -- Array a
-  match Unify.unifyMono ty1 ty2 unifyCtx with
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
   | .ok _ =>
     return .failed "should fail: IO != Array"
   | .error _ =>
@@ -585,22 +590,22 @@ def testHKTChain : IO TestResult := do
   let ty1 : MonoTy := .app fTy inner
   -- Array (IO Int)
   let ty2 := Ty.array (Ty.io Ty.int)
-  match Unify.unifyMono ty1 ty2 unifyCtx with
-  | .ok σ =>
+  match Unify.unifyMono ty1 ty2 unifyCtx initCounter with
+  | .ok state =>
     -- f should be Array - use heterogeneous equality
-    match σ.lookupAny f.id with
+    match state.subst.lookupAny f.id with
     | some sf =>
       if !Ty.heq sf.ty Ty.arrayCon then
         return .failed "'f' should be Array"
     | none => return .failed "'f' should be bound"
     -- g should be IO - use heterogeneous equality
-    match σ.lookupAny g.id with
+    match state.subst.lookupAny g.id with
     | some sg =>
       if !Ty.heq sg.ty Ty.ioCon then
         return .failed "'g' should be IO"
     | none => return .failed "'g' should be bound"
     -- a should be Int
-    let resolvedA := σ.apply (.var a)
+    let resolvedA := state.subst.apply (.var a)
     if resolvedA != Ty.int then
       return .failed s!"'a' should be Int, got {resolvedA}"
     return .passed

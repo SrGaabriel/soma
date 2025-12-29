@@ -65,7 +65,8 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     let tyCon := TyCon.user typeId
     let tyVarIds := params.mapIdx fun idx p => TyVarId.mk p.value idx .star
     let kind := Kind.nary params.size
-    LowerM.registerType name.value { tyCon := tyCon, params := tyVarIds, kind := kind, unique := typeUnique }
+    let fieldNames := fields.filterMap fun field => field.name.map (·.value)
+    LowerM.registerType name.value { tyCon := tyCon, params := tyVarIds, kind := kind, unique := typeUnique, fieldNames := fieldNames }
 
     -- Register the constructor
     let ctorMetalName := LowerM.mkCtorName typeUnique ctorName.value 0
@@ -318,10 +319,11 @@ def lowerTypeDef (decl : Decl) : LowerM (Option UntypedTypeDef) := do
     let typeName := Name.user typeUnique
     let typeVarNames := _params.map (·.value)
     let ctorMetalName := Name.ctor typeUnique ctorName.value 0
-    -- Extract TypeExpr from each field
-    let fieldTypes := fields.map (·.type_)
+    -- Extract optional field names and types
+    let fieldsWithOptNames := fields.map fun field =>
+      (field.name.map (·.value), field.type_)
 
-    pure (some (.struct typeName typeVarNames ctorMetalName fieldTypes))
+    pure (some (.struct typeName typeVarNames ctorMetalName fieldsWithOptNames))
 
   | _ => pure none
 

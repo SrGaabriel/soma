@@ -212,18 +212,55 @@ mutual
       let elems' := ExprList.fromList elemList
       pure (.array elems' () span)
 
-    | .record _fields span =>
-      pure (.tuple .nil () span)
+    | .record fields span =>
+      -- Lower record literals, preserving field names
+      let fieldPairs ← fields.toList.mapM fun (name, valExpr) => do
+        let valExpr' ← lowerExpr localEnv valExpr
+        pure (name.value, valExpr')
+      pure (.record (RecordFieldList.fromList fieldPairs) () span)
 
-    | .fieldAccess expr _field span =>
+    | .recordUpdate base updates span =>
+      -- Lower record update expression
+      let base' ← lowerExpr localEnv base
+      let updatePairs ← updates.toList.mapM fun (name, valExpr) => do
+        let valExpr' ← lowerExpr localEnv valExpr
+        pure (name.value, valExpr')
+      pure (.recordUpdate base' (RecordFieldList.fromList updatePairs) () span)
+
+    | .fieldAccess expr field span =>
       let expr' ← lowerExpr localEnv expr
-      pure (.fieldAccess expr' 0 () span)
+      -- Store field name, index will be resolved during type inference
+      pure (.fieldAccess expr' field.value 0 () span)
+
+    | .projection typeName fieldName span =>
+      -- Look up the type to get its info
+      let typeInfo? ← LowerM.lookupType typeName.value
+      match typeInfo? with
+      | some typeInfo =>
+        -- Look up the field to get its index
+        match typeInfo.fieldIndex fieldName.value with
+        | some idx =>
+          pure (.proj typeInfo.name fieldName.value idx () span)
+        | none =>
+          LowerM.reportError (.unknownField typeName.value fieldName.value span)
+          pure (.panic s!"unknown field: {typeName.value}.{fieldName.value}" () span)
+      | none =>
+        LowerM.reportError (.unknownType typeName.value span)
+        pure (.panic s!"unknown type: {typeName.value}" () span)
 
     | .parens inner _ =>
       lowerExpr localEnv inner
 
     | .typeAnnot expr _ _ =>
       lowerExpr localEnv expr
+
+    | .typeApp arg span =>
+      let metalArg : Metal.TypeArg := match arg with
+        | .label name => .label name.value
+        | .type ty =>
+          -- proper resolution happens in type inference
+          .type ⟨.star, .starPrim .unit⟩
+      pure (.typeApp metalArg () span)
 
     | .compose body _ =>
       lowerExpr localEnv body

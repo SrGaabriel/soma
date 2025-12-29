@@ -107,10 +107,20 @@ def contains (σ : Subst) (varId : Nat) : Bool :=
 def apply (σ : Subst) (ty : MonoTy) : MonoTy :=
   if σ.isEmpty then ty else ty.substK σ.mapping
 
+/-- Apply a substitution to a row type -/
+def applyRow (σ : Subst) (row : RowTy) : RowTy :=
+  if σ.isEmpty then row else row.substRowK σ.mapping
+
+/-- Apply a substitution to a label type -/
+def applyLabel (σ : Subst) (label : LabelTy) : LabelTy :=
+  if σ.isEmpty then label else label.substLabelK σ.mapping
+
 /-- Apply a substitution to a type of any kind (kind-preserving) -/
 def applyAny (σ : Subst) : {k : Kind} → Ty k → Ty k
   | .star, ty => σ.apply ty
   | .arrow _ _, ty => ty.substFunK σ.mapping
+  | .row, ty => σ.applyRow ty
+  | .label, ty => σ.applyLabel ty
 
 /-- Apply a substitution to a SomeTy -/
 def applySome (σ : Subst) (sty : SomeTy) : SomeTy :=
@@ -185,6 +195,14 @@ namespace Substitutable
 instance : Substitutable MonoTy where
   apply := Subst.apply
   freeVars ty := ty.freeVars.foldl (init := ({} : HashSet Nat)) fun acc v => acc.insert v.id
+
+instance : Substitutable RowTy where
+  apply := Subst.applyRow
+  freeVars row := row.freeVars.foldl (init := ({} : HashSet Nat)) fun acc v => acc.insert v.id
+
+instance : Substitutable LabelTy where
+  apply := Subst.applyLabel
+  freeVars label := label.freeVars.foldl (init := ({} : HashSet Nat)) fun acc v => acc.insert v.id
 
 instance : Substitutable Constraint where
   apply σ c := { c with args := c.args.map (σ.apply ·) }

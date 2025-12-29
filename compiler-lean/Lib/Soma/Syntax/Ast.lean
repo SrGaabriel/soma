@@ -53,6 +53,14 @@ def span : Literal → Span
 
 end Literal
 
+/-- A type variable binder, optionally with a kind annotation -/
+structure TypeVarBinder where
+  /-- The variable name -/
+  name : Name
+  /-- Optional kind annotation -/
+  kind : Option Name -- todo: make this TypeExpr for complex kinds
+  deriving Repr, BEq, Inhabited
+
 /-! ## Patterns and Type Expressions (mutually recursive) -/
 
 mutual
@@ -92,14 +100,16 @@ inductive TypeExpr : Type where
   | tuple (elements : Array TypeExpr) (span : Span)
   /-- List type: [a] -/
   | list (elem : TypeExpr) (span : Span)
-  /-- Universal quantification: forall a b. Type -/
-  | forall_ (vars : Array Name) (body : TypeExpr) (span : Span)
+  /-- Universal quantification: forall a (r :: Row). Type -/
+  | forall_ (vars : Array TypeVarBinder) (body : TypeExpr) (span : Span)
   /-- Constrained type: Type with (Constraint1, Constraint2) -/
   | constrained (constraints : Array (Name × Array TypeExpr × Span)) (body : TypeExpr) (span : Span)
   /-- Parenthesized type -/
   | parens (inner : TypeExpr) (span : Span)
   /-- Kind annotation: Type :: * -> * -/
   | kinded (ty : TypeExpr) (kind : TypeExpr) (span : Span)
+  /-- Record type: { x :: Int, y :: Bool } or { x :: Int | r } -/
+  | record (fields : Array (Name × TypeExpr)) (tail : Option Name) (span : Span)
 
 end
 
@@ -122,6 +132,11 @@ where
     | .constrained _ body _ => go body acc
     | .parens inner _ => go inner acc
     | .kinded inner _ _ => go inner acc
+    | .record fields tail _ =>
+      let acc' := fields.foldl (fun a (_, t) => go t a) acc
+      match tail with
+      | some tailName => acc'.insert tailName.value
+      | none => acc'
 
 end TypeExpr
 
@@ -156,6 +171,7 @@ partial def TypeExpr.repr' (t : TypeExpr) (_ : Nat) : Std.Format :=
   | .constrained cs body span => f!"TypeExpr.constrained #[...{cs.size}] ({TypeExpr.repr' body 0}) {Repr.reprPrec span 0}"
   | .parens inner span => f!"TypeExpr.parens ({TypeExpr.repr' inner 0}) {Repr.reprPrec span 0}"
   | .kinded ty kind span => f!"TypeExpr.kinded ({TypeExpr.repr' ty 0}) ({TypeExpr.repr' kind 0}) {Repr.reprPrec span 0}"
+  | .record fields tail span => f!"TypeExpr.record #[...{fields.size}] {Repr.reprPrec tail 0} {Repr.reprPrec span 0}"
 
 end
 
@@ -211,6 +227,32 @@ def span : TypeExpr → Span
   | .constrained _ _ s => s
   | .parens _ s => s
   | .kinded _ _ s => s
+  | .record _ _ s => s
+
+end TypeExpr
+
+/-- Argument to an explicit type application -/
+inductive TypeAppArg : Type where
+  /-- A type expression: @Int -/
+  | type (ty : TypeExpr)
+  /-- A label literal: @fieldName -/
+  | label (name : Name)
+
+namespace TypeAppArg
+
+def span : TypeAppArg → Span
+  | .type ty => ty.span
+  | .label name => name.span
+
+def repr' : TypeAppArg → Nat → Std.Format
+  | .type ty, _ => f!"TypeAppArg.type ({TypeExpr.repr' ty 0})"
+  | .label name, _ => f!"TypeAppArg.label {Repr.reprPrec name 0}"
+
+end TypeAppArg
+
+instance : Repr TypeAppArg := ⟨TypeAppArg.repr'⟩
+
+namespace TypeExpr
 
 /-- Get all free type variables in this type -/
 partial def freeVars : TypeExpr → Array Name
@@ -221,11 +263,16 @@ partial def freeVars : TypeExpr → Array Name
   | .tuple elems _ => elems.foldl (fun acc t => acc ++ t.freeVars) #[]
   | .list elem _ => elem.freeVars
   | .forall_ vars body _ =>
-      let bound := vars.map (·.value)
+      let bound := vars.map (·.name.value)
       body.freeVars.filter fun v => !bound.contains v.value
   | .constrained _ body _ => body.freeVars
   | .parens inner _ => inner.freeVars
   | .kinded ty _ _ => ty.freeVars
+  | .record fields tail _ =>
+      let fieldVars := fields.foldl (fun acc (_, t) => acc ++ t.freeVars) #[]
+      match tail with
+      | some name => fieldVars ++ #[name]
+      | none => fieldVars
 
 end TypeExpr
 
@@ -262,12 +309,18 @@ inductive Expr where
   | list (elements : Array Expr) (span : Span)
   /-- Record literal: { field1 = val1, field2 = val2 } -/
   | record (fields : Array (Name × Expr)) (span : Span)
+  /-- Record update: { baseExpr | field1 = val1, field2 = val2 } -/
+  | recordUpdate (base : Expr) (updates : Array (Name × Expr)) (span : Span)
   /-- Field access: expr.field -/
   | fieldAccess (expr : Expr) (field : Name) (span : Span)
+  /-- Projection function: Type.field (first-class accessor) -/
+  | projection (typeName : Name) (fieldName : Name) (span : Span)
   /-- Parenthesized expression -/
   | parens (inner : Expr) (span : Span)
   /-- Type annotation: expr :: Type -/
   | typeAnnot (expr : Expr) (type_ : TypeExpr) (span : Span)
+  /-- Explicit type application: @Type or @label -/
+  | typeApp (typeArg : TypeAppArg) (span : Span)
   /-- Compose block: compose ... -/
   | compose (body : Expr) (span : Span)
   /-- Bind block: bind ... -/
@@ -306,9 +359,12 @@ def span : Expr → Span
   | .tuple _ s => s
   | .list _ s => s
   | .record _ s => s
+  | .recordUpdate _ _ s => s
   | .fieldAccess _ _ s => s
+  | .projection _ _ s => s
   | .parens _ s => s
   | .typeAnnot _ _ s => s
+  | .typeApp _ s => s
   | .compose _ s => s
   | .bind _ s => s
 
@@ -466,7 +522,10 @@ partial def ppTypeExpr : TypeExpr → String
       s!"({elems.toList.map ppTypeExpr |> String.intercalate ", "})"
   | .list elem _ => s!"[{ppTypeExpr elem}]"
   | .forall_ vars body _ =>
-      s!"forall {vars.toList.map (·.value) |> String.intercalate " "}. {ppTypeExpr body}"
+      let ppVar (v : TypeVarBinder) := match v.kind with
+        | some k => s!"({v.name.value} :: {k.value})"
+        | none => v.name.value
+      s!"forall {vars.toList.map ppVar |> String.intercalate " "}. {ppTypeExpr body}"
   | .constrained cs body _ =>
       let csStr := cs.toList.map (fun (n, args, _) =>
         if args.isEmpty then n.value
@@ -475,6 +534,11 @@ partial def ppTypeExpr : TypeExpr → String
       s!"{ppTypeExpr body} with ({csStr})"
   | .parens t _ => s!"({ppTypeExpr t})"
   | .kinded t k _ => s!"{ppTypeExpr t} :: {ppTypeExpr k}"
+  | .record fields tail _ =>
+      let fieldsStr := fields.toList.map (fun (n, t) => s!"{n.value} :: {ppTypeExpr t}") |> String.intercalate ", "
+      match tail with
+      | some name => "{ " ++ fieldsStr ++ " | " ++ name.value ++ " }"
+      | none => "{ " ++ fieldsStr ++ " }"
 where
   ppTypeAtom : TypeExpr → String
     | .var n => n.value
@@ -482,6 +546,11 @@ where
     | .tuple elems _ => s!"({elems.toList.map ppTypeExpr |> String.intercalate ", "})"
     | .list elem _ => s!"[{ppTypeExpr elem}]"
     | .parens t _ => s!"({ppTypeExpr t})"
+    | .record fields tail _ =>
+        let fieldsStr := fields.toList.map (fun (n, t) => s!"{n.value} :: {ppTypeExpr t}") |> String.intercalate ", "
+        match tail with
+        | some name => "{ " ++ fieldsStr ++ " | " ++ name.value ++ " }"
+        | none => "{ " ++ fieldsStr ++ " }"
     | t => s!"({ppTypeExpr t})"
 
 end
@@ -520,9 +589,16 @@ partial def ppExpr : Expr → String
   | .record fields _ =>
       let fs := fields.toList.map fun (n, e) => s!"{n.value} = {ppExpr e}"
       "{ " ++ (fs |> String.intercalate ", ") ++ " }"
+  | .recordUpdate base updates _ =>
+      let us := updates.toList.map fun (n, e) => s!"{n.value} = {ppExpr e}"
+      "{ " ++ ppExpr base ++ " | " ++ (us |> String.intercalate ", ") ++ " }"
   | .fieldAccess e f _ => s!"{ppExprAtom e}.{f.value}"
+  | .projection typeName fieldName _ => s!"{typeName.value}.{fieldName.value}"
   | .parens e _ => s!"({ppExpr e})"
   | .typeAnnot e t _ => s!"{ppExprAtom e} :: {ppTypeExpr t}"
+  | .typeApp arg _ => match arg with
+    | .type ty => s!"@{ppTypeExpr ty}"
+    | .label name => s!"@{name.value}"
   | .compose body _ => s!"compose {ppExpr body}"
   | .bind body _ => s!"bind {ppExpr body}"
 where

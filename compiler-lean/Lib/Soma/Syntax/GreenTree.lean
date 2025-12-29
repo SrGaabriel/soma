@@ -16,8 +16,8 @@ inductive TokenKind where
   | kw_data | kw_struct | kw_trait | kw_instance | kw_where | kw_with
   | kw_use | kw_export | kw_intrinsic | kw_forall | kw_bind | kw_compose
   | leftParen | rightParen | leftBrace | rightBrace | leftBracket | rightBracket
-  | leftAngle | rightAngle | comma | colon | doubleColon | equals | pipe
-  | at | underscore | lambda | forallSymbol | dollar | slash
+  | leftAngle | rightAngle | comma | colon | doubleColon | equals | pipe | dot
+  | at | underscore | lambda | forallSymbol | dollar | slash | hash
   | arrow | fatArrow | leftArrow
   | layoutStart | layoutSep | layoutEnd
   | whitespace | comment  -- Trivia tokens for accurate span tracking
@@ -66,12 +66,14 @@ def describe : TokenKind → String
   | .doubleColon => "'::'"
   | .equals => "'='"
   | .pipe => "'|'"
+  | .dot => "'.'"
   | .at => "'@'"
   | .underscore => "'_'"
   | .lambda => "'\\'"
   | .forallSymbol => "'∀'"
   | .dollar => "'$'"
   | .slash => "'/'"
+  | .hash => "'#'"
   | .arrow => "'->'"
   | .fatArrow => "'=>'"
   | .leftArrow => "'<-'"

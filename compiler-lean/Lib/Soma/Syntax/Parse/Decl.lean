@@ -241,14 +241,12 @@ def parseStructDecl : ParserM (Option GreenNode) := do
           | some eqTok =>
               match ← parseUpperIdent with
               | some conTok =>
-                  let mut fields : Array GreenNode := #[]
-                  while true do
-                    match ← parseConstructorField with
-                    | some field => fields := fields.push field
-                    | none =>
-                        match ← parseTypeAtom with
-                        | some ty => fields := fields.push ty
-                        | none => break
+                  -- Parse fields: either layout block (indented) or inline
+                  let fields ← if (← check .layoutStart) then
+                    layoutSepBy parseConstructorField
+                  else
+                    -- Positional style on same line
+                    many parseConstructorField
                   let paramList := if params.isEmpty then #[]
                     else #[GreenNode.mkNode .tyParamList params]
                   let children := #[structTok, nameTok] ++ paramList ++ #[eqTok, conTok] ++ fields

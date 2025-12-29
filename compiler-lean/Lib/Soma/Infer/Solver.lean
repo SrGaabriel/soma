@@ -24,22 +24,44 @@ namespace Soma.Infer
 open Soma.Typing
 open Soma.Syntax (Span)
 open Soma.Metal (Scope Expr Name)
-open InferM (reportError getConstraints getSubst extendSubst getInstanceEnv addConstraint getErrors)
+open InferM (reportError getConstraints getSubst extendSubst getInstanceEnv addConstraint getErrors getTypeEnv)
 open InstanceEnv (findInstance)
 
 /-! ## Constraint Solving -/
 
+/-- Extract the base TypeId from a type, handling nested applications -/
+def getBaseTypeIdFromApp : {k : Kind} → Ty k → Option TypeId
+  | _, .con id => some id
+  | _, .app f _ => getBaseTypeIdFromApp f
+  | _, _ => none
+
 namespace Solver
+
+/-- Create a type row lookup function from the type environment -/
+def mkTypeRowLookup (env : TypeEnv) : TypeRowLookup := fun typeId =>
+  match env.lookupTypeById typeId with
+  | some info =>
+    if info.hasFields then
+      some { row := info.toRowTy }
+    else
+      none
+  | none => none
 
 /-- Solve a single equality constraint, returning the resulting substitution -/
 def solveEquality (c : EqualityConstraint) : InferM (Option Subst) := do
+  let env ← getTypeEnv
+  let state ← get
   let ctx : UnifyContext := {
     purpose := c.purpose
     expectedSpan := c.rhsSpan
     actualSpan := c.lhsSpan
+    lookupTypeRow := mkTypeRowLookup env
   }
-  match Unify.unifyMono c.lhs c.rhs ctx with
-  | .ok σ => return some σ
+  match Unify.unifyMono c.lhs c.rhs ctx state.freshCounter with
+  | .ok unifyState =>
+    -- Update fresh counter from unification
+    modify fun s => { s with freshCounter := unifyState.freshCounter }
+    return some unifyState.subst
   | .error err =>
     reportError err
     return none

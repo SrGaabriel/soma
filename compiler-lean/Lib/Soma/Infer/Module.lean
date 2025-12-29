@@ -13,6 +13,7 @@
 import Soma.Infer.Monad
 import Soma.Infer.Gen
 import Soma.Infer.Solver
+import Soma.Infer.Resolve
 import Soma.Metal
 import Soma.Unique
 
@@ -89,10 +90,42 @@ partial def resolveTypeExprWithVars (ty : TypeExpr) (env : TypeEnv) (tyVars : St
         | none => none
       | _ => none
 
-  | .forall_ _ body _ => resolveTypeExprWithVars body env tyVars
+  | .forall_ binders body _ =>
+    -- If a binder is already in tyVars (from resolveTypeExprToQualified), use that ID
+    -- Otherwise, assign a fresh ID starting from the maximum existing ID + 1
+    let maxId := tyVars.fold (init := 0) fun acc _ v => max acc (v.id + 1)
+    let (newTyVars, _) := binders.foldl (init := (tyVars, maxId)) fun (acc, nextId) binder =>
+      let varName := binder.name.value
+      match acc.get? varName with
+      | some _ => (acc, nextId)
+      | none =>
+        let kind : Kind := match binder.kind with
+          | some kindName => Kind.fromString kindName.value
+          | none => .star
+        (acc.insert varName ⟨varName, nextId, kind⟩, nextId + 1)
+    resolveTypeExprWithVars body env newTyVars
   | .constrained _ body _ => resolveTypeExprWithVars body env tyVars
   | .parens inner _ => resolveTypeExprWithVars inner env tyVars
   | .kinded ty _ _ => resolveTypeExprWithVars ty env tyVars
+
+  | .record fields tail _ =>
+    -- Record type: { x :: Int, y :: Bool } or { x :: Int | r }
+    let baseRow : RowTy := match tail with
+      | some tailName =>
+        match tyVars.get? tailName.value with
+        | some tyVarId =>
+          -- Use the variable if it was bound with row kind
+          if tyVarId.kind == .row then .var tyVarId else .rowEmpty
+        | none => .rowEmpty -- Unknown tail variable, treat as closed
+      | none => .rowEmpty
+    -- Build the row type from fields
+    let rowTy? := fields.reverse.foldlM (init := baseRow) fun acc (fieldName, fieldTy) =>
+      match resolveTypeExprWithVars fieldTy env tyVars with
+      | some fieldMonoTy =>
+        let labelTy := Ty.lookupOrLiteralLabel fieldName.value tyVars
+        some (Ty.rowExtend labelTy fieldMonoTy acc)
+      | none => none
+    rowTy?.map Ty.record
 where
   /-- Collect base type name and arguments from nested applications -/
   collectTypeAppWithVars (ty : TypeExpr) (args : Array MonoTy) (env : TypeEnv) (tyVars : Std.HashMap String TyVarId) : Option (String × Array MonoTy) :=
@@ -111,17 +144,70 @@ where
 def resolveTypeExprPure (ty : TypeExpr) (env : TypeEnv) : Option MonoTy :=
   resolveTypeExprWithVars ty env {}
 
+/-- Result of building field types from syntax -/
+structure FieldBuildResult where
+  /-- Array of field types in order -/
+  fieldTypes : Array MonoTy
+  /-- Map from field name to (index, type) for named fields -/
+  fieldsByName : Std.HashMap String (Nat × MonoTy)
+
+/-- Build field types and fieldsByName map from an array of (optional name, type syntax) pairs -/
+def buildFieldTypes
+    (fields : Array (Option String × TypeExpr))
+    (env : TypeEnv)
+    (tyVarMap : Std.HashMap String TyVarId)
+    : FieldBuildResult := Id.run do
+  let mut fieldTypes : Array MonoTy := #[]
+  let mut fieldsByName : Std.HashMap String (Nat × MonoTy) := {}
+  let mut idx : Nat := 0
+  for (fieldName?, tyExpr) in fields do
+    match resolveTypeExprWithVars tyExpr env tyVarMap with
+    | some fieldTy =>
+      fieldTypes := fieldTypes.push fieldTy
+      if let some fieldName := fieldName? then
+        fieldsByName := fieldsByName.insert fieldName (idx, fieldTy)
+      idx := idx + 1
+    | none => pure ()
+  { fieldTypes, fieldsByName }
+
+/-- Collect type variable binders from forall expressions, respecting kind annotations -/
+partial def collectForallBinders (ty : TypeExpr) : Array (String × Kind) :=
+  match ty with
+  | .forall_ binders body _ =>
+    let binderVars := binders.map fun b =>
+      let kind := match b.kind with
+        | some kindName => Kind.fromString kindName.value
+        | none => Kind.star
+      (b.name.value, kind)
+    binderVars ++ collectForallBinders body
+  | .constrained _ body _ => collectForallBinders body
+  | .parens inner _ => collectForallBinders inner
+  | _ => #[]
+
 /-- Resolve a TypeExpr to a QualifiedType, collecting free type variables -/
 def resolveTypeExprToQualified (ty : TypeExpr) (env : TypeEnv) : Option QualifiedType := do
-  let varNames := ty.collectVarNames
+  -- First collect forall binders with their kinds
+  let forallBinders := collectForallBinders ty
+
+  -- Build the type variable map from forall binders
   let mut tyVarMap : Std.HashMap String TyVarId := {}
   let mut tyVarList : Array TyVarId := #[]
   let mut nextId : Nat := 0
-  for name in varNames do
-    let tyVarId : TyVarId := ⟨name, nextId, .star⟩
+  for (name, kind) in forallBinders do
+    let tyVarId : TyVarId := ⟨name, nextId, kind⟩
     tyVarMap := tyVarMap.insert name tyVarId
     tyVarList := tyVarList.push tyVarId
     nextId := nextId + 1
+
+  -- Also collect any remaining free variables (those not in forall binders)
+  let varNames := ty.collectVarNames
+  for name in varNames do
+    if !tyVarMap.contains name then
+      let tyVarId : TyVarId := ⟨name, nextId, .star⟩
+      tyVarMap := tyVarMap.insert name tyVarId
+      tyVarList := tyVarList.push tyVarId
+      nextId := nextId + 1
+
   let body ← resolveTypeExprWithVars ty env tyVarMap
   return { vars := tyVarList, constraints := #[], body := body }
 
@@ -206,22 +292,32 @@ def buildTypeEnvFromModule
         }
         env := env.addConstructor ctor.name.display ctorInfo
 
-    | .struct name typeVarNames ctorName fieldTypeSyntax =>
+    | .struct name typeVarNames ctorName fields =>
       let typeParams' : Array TyVarId := typeVarNames.mapIdx fun i n =>
         ⟨n, i, .star⟩
       let tyVarMap : Std.HashMap String TyVarId := typeParams'.foldl (init := {}) fun m tv =>
         m.insert tv.name tv
 
-      let fieldTypes := fieldTypeSyntax.filterMap fun tyExpr =>
-        resolveTypeExprWithVars tyExpr env tyVarMap
+      let fieldResult := buildFieldTypes fields env tyVarMap
+
       let ctorInfo : ConstructorInfo := {
         typeName := name.display
         typeId := typeId
         typeParams := typeParams'
-        fieldTypes := fieldTypes
+        fieldTypes := fieldResult.fieldTypes
         tag := 0
       }
       env := env.addConstructor ctorName.display ctorInfo
+
+      -- Update TypeInfo with fieldsByName
+      if !fieldResult.fieldsByName.isEmpty then
+        let updatedTypeInfo : TypeInfo := {
+          typeId := typeId
+          params := typeParams
+          constructors := {}
+          fieldsByName := fieldResult.fieldsByName
+        }
+        env := env.addType typeName updatedTypeInfo
 
     | .record name typeVarNames fieldNamesAndTypes =>
       let typeParams' : Array TyVarId := typeVarNames.mapIdx fun i n =>
@@ -229,17 +325,27 @@ def buildTypeEnvFromModule
       let tyVarMap : Std.HashMap String TyVarId := typeParams'.foldl (init := {}) fun m tv =>
         m.insert tv.name tv
 
-      -- Record uses the type name as the constructor name
-      let fieldTypes := fieldNamesAndTypes.filterMap fun (_, tyExpr) =>
-        resolveTypeExprWithVars tyExpr env tyVarMap
+      -- Convert (String × TypeExpr) to (Option String × TypeExpr) for buildFieldTypes
+      let fieldsWithNames := fieldNamesAndTypes.map fun (n, ty) => (some n, ty)
+      let fieldResult := buildFieldTypes fieldsWithNames env tyVarMap
+
       let ctorInfo : ConstructorInfo := {
         typeName := name.display
         typeId := typeId
         typeParams := typeParams'
-        fieldTypes := fieldTypes
+        fieldTypes := fieldResult.fieldTypes
         tag := 0
       }
       env := env.addConstructor name.display ctorInfo
+
+      -- Update TypeInfo with fieldsByName
+      let updatedTypeInfo : TypeInfo := {
+        typeId := typeId
+        params := typeParams
+        constructors := {}
+        fieldsByName := fieldResult.fieldsByName
+      }
+      env := env.addType typeName updatedTypeInfo
 
   -- Add trait methods from type classes
   for typeClass in m.typeClasses do
@@ -355,18 +461,25 @@ where
     | .lam _params body _ _ => go body acc
     | .construct _ _ args _ _ => goList args acc
     | .tuple elems _ _ => goList elems acc
+    | .record fields _ _ => goRecordFields fields acc
+    | .recordUpdate base updates _ _ => goRecordFields updates (go base acc)
     | .array elems _ _ => goList elems acc
     | .if_ cond then_ else_ _ _ => go else_ (go then_ (go cond acc))
     | .case scrutinees arms _ _ => goArms arms (goList scrutinees acc)
-    | .fieldAccess e _ _ _ => go e acc
+    | .fieldAccess e _ _ _ _ => go e acc
     | .global _ _ _ => acc
     | .panic _ _ _ => acc
+    | .proj _ _ _ _ _ => acc
+    | .typeApp _ _ _ => acc
   goList {s : Scope} : Metal.ExprList MonoTy s → HashMap BindingId MonoTy → HashMap BindingId MonoTy
     | .nil, acc => acc
     | .cons e es, acc => goList es (go e acc)
   goArms {s : Scope} : Metal.ArmList MonoTy s → HashMap BindingId MonoTy → HashMap BindingId MonoTy
     | .nil, acc => acc
     | .cons (.mk _pats body _span) as, acc => goArms as (go body acc)
+  goRecordFields {s : Scope} : Metal.RecordFieldList MonoTy s → HashMap BindingId MonoTy → HashMap BindingId MonoTy
+    | .nil, acc => acc
+    | .cons _name expr rest, acc => goRecordFields rest (go expr acc)
 
 /-- Extract binding ID from a typed param triple -/
 def typedParamBindingId (p : BindingId × String × MonoTy) : BindingId := p.1
@@ -449,6 +562,17 @@ def inferFunction
     let castBody : Metal.TypedExpr (paramInfos.toList.map typedParamBindingId) :=
       cast (congrArg Metal.TypedExpr (inferFunction_scope_eq fn paramInfos)) typedBody
 
+    -- Create nominal row lookup from type environment
+    let lookupNominalRow : Typing.TypeId → Option Typing.RowTy := fun typeId =>
+      match ctx.typeEnv.lookupTypeById typeId with
+      | some info =>
+        if info.hasFields then some info.toRowTy
+        else none
+      | none => none
+
+    -- Resolve field indices in the typed body
+    let resolvedBody := Resolve.resolveFieldIndices lookupNominalRow castBody
+
     -- Extract captured variable types from closure nodes in the typed body
     let captureTypeMap := extractCaptureTypes typedBody
 
@@ -457,7 +581,7 @@ def inferFunction
       name := fn.name
       params := paramInfos
       returnType := returnTy
-      body := castBody
+      body := resolvedBody
       typeVars := typeVars
       constraints := constraints
       closureInfo := fn.closureInfo.map fun ci =>
@@ -570,11 +694,11 @@ def inferModule
           fields := fields
         } : Constructor)
       TypeDef.algebraic name typeVars typedCtors
-    | .struct name typeVarNames ctorName fieldTypeSyntax =>
+    | .struct name typeVarNames ctorName fieldSyntax =>
       let typeVars : Array TyVarId := typeVarNames.mapIdx fun i n => ⟨n, i, .star⟩
       let tyVarMap : Std.HashMap String TyVarId := typeVars.foldl (init := {}) fun m tv => m.insert tv.name tv
-      let fields := fieldTypeSyntax.filterMap fun tyExpr =>
-        resolveTypeExprWithVars tyExpr augmentedCtx.typeEnv tyVarMap
+      let fields := fieldSyntax.filterMap fun (name?, tyExpr) =>
+        (resolveTypeExprWithVars tyExpr augmentedCtx.typeEnv tyVarMap).map (name?, ·)
       TypeDef.struct name typeVars ctorName fields
     | .record name typeVarNames fieldNamesAndTypes =>
       let typeVars : Array TyVarId := typeVarNames.mapIdx fun i n => ⟨n, i, .star⟩

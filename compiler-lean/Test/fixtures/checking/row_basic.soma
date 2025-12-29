@@ -1,0 +1,9 @@
+// expect: success
+
+def test1 :: Int = { x = 1, y = 2 }.x
+
+def test2 :: Int = { x = 42, y = true }.x
+
+def test3 :: String = { x = "hello", y = 1 }.x
+
+def test4 :: Bool = { x = 1, y = true }.y

@@ -346,18 +346,55 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
 
       | .typeForall =>
           let allKids := childrenWithOffsets green offset
-          let varNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .typeVar
-          let bodyNodes := allKids.filter fun (c, _) =>
-            c.syntaxKind? != some .typeVar && c.syntaxKind? != some .tyParamList && isSemanticNode c
-          let vars ← varNodes.mapM fun (v, o) => do
-            match firstGreenChild v with
-            | some child =>
-                let text ← getGreenTokenText child o
-                let vspan ← spanFor v o
-                pure ⟨text, vspan⟩
+          let tyParamListNode := allKids.find? fun (c, _) => c.syntaxKind? == some .tyParamList
+          let binderNodes : Array (GreenNode × Nat) := match tyParamListNode with
+            | some (paramList, paramOffset) =>
+                let paramKids := childrenWithOffsets paramList paramOffset
+                paramKids.filter fun (c, _) =>
+                  c.syntaxKind? == some .typeVar || c.syntaxKind? == some .tyParamKinded
             | none =>
-                let vspan ← spanFor v o
-                pure ⟨"_", vspan⟩
+                allKids.filter fun (c, _) =>
+                  c.syntaxKind? == some .typeVar || c.syntaxKind? == some .tyParamKinded
+          let bodyNodes := allKids.filter fun (c, _) =>
+            c.syntaxKind? != some .typeVar && c.syntaxKind? != some .tyParamKinded &&
+            c.syntaxKind? != some .tyParamList && isSemanticNode c
+          let vars ← binderNodes.mapM fun (v, o) => do
+            match v.syntaxKind? with
+            | some .tyParamKinded =>
+                let kids := childrenWithOffsets v o |>.filter (isSemanticNode ·.1)
+                let varChild := kids.find? fun (c, _) => c.syntaxKind? == some .typeVar
+                let kindChild := kids.find? fun (c, _) => c.syntaxKind? == some .typeCon
+                match varChild with
+                | some (varNode, varOff) =>
+                    match firstGreenChild varNode with
+                    | some child =>
+                        let text ← getGreenTokenText child varOff
+                        let vspan ← spanFor varNode varOff
+                        let kindName ← match kindChild with
+                          | some (kindNode, kindOff) =>
+                              match firstGreenChild kindNode with
+                              | some kc =>
+                                  let ktext ← getGreenTokenText kc kindOff
+                                  let kspan ← spanFor kindNode kindOff
+                                  pure (some ⟨ktext, kspan⟩)
+                              | none => pure none
+                          | none => pure none
+                        pure (TypeVarBinder.mk ⟨text, vspan⟩ kindName)
+                    | none =>
+                        let vspan ← spanFor varNode varOff
+                        pure (TypeVarBinder.mk ⟨"_", vspan⟩ none)
+                | none =>
+                    let vspan ← spanFor v o
+                    pure (TypeVarBinder.mk ⟨"_", vspan⟩ none)
+            | _ =>
+                match firstGreenChild v with
+                | some child =>
+                    let text ← getGreenTokenText child o
+                    let vspan ← spanFor v o
+                    pure (TypeVarBinder.mk ⟨text, vspan⟩ none)
+                | none =>
+                    let vspan ← spanFor v o
+                    pure (TypeVarBinder.mk ⟨"_", vspan⟩ none)
           if bodyNodes.isEmpty then
             lowerError "forall type requires body" span
             pure (.var ⟨"_error", span⟩)
@@ -396,6 +433,35 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
             pure (.var ⟨"_error", span⟩)
           else
             lowerTypeExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+
+      | .typeRecord =>
+          -- Parse record type
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          -- Separate field nodes from potential row tail variable
+          let fieldNodes := kidsWithOffsets.filter fun (c, _) => c.syntaxKind? == some .typeRecordField
+          let tailNodes := kidsWithOffsets.filter fun (c, _) => c.syntaxKind? == some .typeVar
+          -- Lower fields
+          let mut fields : Array (Name × TypeExpr) := #[]
+          for (fieldNode, fieldOffset) in fieldNodes do
+            let fieldKids := childrenWithOffsets fieldNode fieldOffset |>.filter fun (c, _) => isSemanticNode c
+            if fieldKids.size >= 2 then
+              let nameText ← getGreenTokenText fieldKids[0]!.1 fieldKids[0]!.2
+              let nameSpan ← spanFor fieldKids[0]!.1 fieldKids[0]!.2
+              let fieldTy ← lowerTypeExpr fieldKids[1]!.1 fieldKids[1]!.2
+              fields := fields.push (⟨nameText, nameSpan⟩, fieldTy)
+          -- Check for tail variable
+          let tail ← if tailNodes.isEmpty then pure none else do
+            let (tailNode, tailOffset) := tailNodes[0]!
+            let tailKids := childrenWithOffsets tailNode tailOffset |>.filter fun (c, _) => isSemanticNode c
+            if tailKids.isEmpty then
+              let tailText ← getGreenTokenText tailNode tailOffset
+              let tailSpan ← spanFor tailNode tailOffset
+              pure (some ⟨tailText, tailSpan⟩)
+            else
+              let tailText ← getGreenTokenText tailKids[0]!.1 tailKids[0]!.2
+              let tailSpan ← spanFor tailKids[0]!.1 tailKids[0]!.2
+              pure (some ⟨tailText, tailSpan⟩)
+          pure (.record fields tail span)
 
       | _ =>
           lowerError s!"unexpected type kind: {kind}" span
@@ -569,7 +635,7 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
 /-- Lower a struct field -/
 partial def lowerStructField (green : GreenNode) (offset : Nat) : LowerM StructField := do
   let span ← spanFor green offset
-  let fKids := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+  let allKids := childrenWithOffsets green offset
 
   -- Look for name token
   let nameTokens := green.children.filter fun c => isTokenKind c .lowerIdent
@@ -578,8 +644,10 @@ partial def lowerStructField (green : GreenNode) (offset : Nat) : LowerM StructF
     | some text => pure (some ⟨text, span⟩)
     | none => pure none
 
-  if fKids.size >= 1 then
-    let ftype ← lowerTypeExpr fKids[0]!.1 fKids[0]!.2
+  let syntaxKids := allKids.filter fun (c, _) => !c.isToken && isSemanticNode c
+
+  if syntaxKids.size >= 1 then
+    let ftype ← lowerTypeExpr syntaxKids[0]!.1 syntaxKids[0]!.2
     pure ⟨fname, ftype, span⟩
   else
     lowerError "struct field missing type" span
@@ -782,6 +850,76 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
           let elems ← kidsWithOffsets.mapM fun (c, o) => lowerExpr c o
           pure (.list elems span)
 
+      | .exprRecord =>
+          let allKids := childrenWithOffsets green offset
+          let fieldNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .recordField
+          let fields ← fieldNodes.mapM fun (fieldNode, fieldOffset) => do
+            let fieldSpan ← spanFor fieldNode fieldOffset
+            let fieldKids := childrenWithOffsets fieldNode fieldOffset
+            let nameTokens := fieldNode.children.filter fun c => isTokenKind c .lowerIdent
+            let fieldName ← if nameTokens.isEmpty then pure "_error"
+              else match getTokenText nameTokens[0]! with
+                | some text => pure text
+                | none => pure "_error"
+            let exprNodes := fieldKids.filter fun (c, _) => isSemanticNode c && !c.isToken
+            if exprNodes.isEmpty then
+              pure (⟨fieldName, fieldSpan⟩, Expr.var ⟨fieldName, fieldSpan⟩)
+            else
+              let valExpr ← lowerExpr exprNodes[0]!.1 exprNodes[0]!.2
+              pure (⟨fieldName, fieldSpan⟩, valExpr)
+          pure (.record fields span)
+
+      | .exprRecordUpdate =>
+          let allKids := childrenWithOffsets green offset
+          let exprNodes := allKids.filter fun (c, _) => isSemanticNode c && !c.isToken && c.syntaxKind? != some .recordField
+          let fieldNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .recordField
+          if exprNodes.isEmpty then
+            lowerError "record update missing base expression" span
+            pure (.var ⟨"_error", span⟩)
+          else
+            let baseExpr ← lowerExpr exprNodes[0]!.1 exprNodes[0]!.2
+            let updates ← fieldNodes.mapM fun (fieldNode, fieldOffset) => do
+              let fieldSpan ← spanFor fieldNode fieldOffset
+              let fieldKids := childrenWithOffsets fieldNode fieldOffset
+              let nameTokens := fieldNode.children.filter fun c => isTokenKind c .lowerIdent
+              let fieldName ← if nameTokens.isEmpty then pure "_error"
+                else match getTokenText nameTokens[0]! with
+                  | some text => pure text
+                  | none => pure "_error"
+              let valExprNodes := fieldKids.filter fun (c, _) => isSemanticNode c && !c.isToken
+              if valExprNodes.isEmpty then
+                pure (⟨fieldName, fieldSpan⟩, Expr.var ⟨fieldName, fieldSpan⟩)
+              else
+                let valExpr ← lowerExpr valExprNodes[0]!.1 valExprNodes[0]!.2
+                pure (⟨fieldName, fieldSpan⟩, valExpr)
+            pure (.recordUpdate baseExpr updates span)
+
+      | .exprFieldAccess =>
+          -- Structure: [expr, dot, fieldName]
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          if kidsWithOffsets.size >= 2 then
+            let expr ← lowerExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+            let fieldNode := kidsWithOffsets[1]!.1
+            let fieldText ← getGreenTokenText fieldNode kidsWithOffsets[1]!.2
+            let fieldSpan ← spanFor fieldNode kidsWithOffsets[1]!.2
+            pure (.fieldAccess expr ⟨fieldText, fieldSpan⟩ span)
+          else
+            lowerError "incomplete field access" span
+            pure (.var ⟨"_error", span⟩)
+
+      | .exprProjection =>
+          -- Structure: [TypeName, dot, fieldName] -> becomes Expr.projection
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          if kidsWithOffsets.size >= 2 then
+            let typeText ← getGreenTokenText kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+            let typeSpan ← spanFor kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+            let fieldText ← getGreenTokenText kidsWithOffsets[1]!.1 kidsWithOffsets[1]!.2
+            let fieldSpan ← spanFor kidsWithOffsets[1]!.1 kidsWithOffsets[1]!.2
+            pure (.projection ⟨typeText, typeSpan⟩ ⟨fieldText, fieldSpan⟩ span)
+          else
+            lowerError "incomplete projection" span
+            pure (.var ⟨"_error", span⟩)
+
       | .exprParens =>
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
           if kidsWithOffsets.isEmpty then
@@ -798,6 +936,27 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
             pure (.typeAnnot expr ty span)
           else
             lowerError "type annotation incomplete" span
+            pure (.var ⟨"_error", span⟩)
+
+      | .exprTypeApp =>
+          -- Structure: [@, type] or [@, label]
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          if kidsWithOffsets.size >= 1 then
+            let argNode := kidsWithOffsets[0]!.1
+            let argOffset := kidsWithOffsets[0]!.2
+            -- Check if it's a label (lowerIdent token) or a type
+            match argNode.tokenKind? with
+            | some .lowerIdent =>
+              -- It's a label: @fieldName
+              let labelText ← getGreenTokenText argNode argOffset
+              let labelSpan ← spanFor argNode argOffset
+              pure (.typeApp (.label ⟨labelText, labelSpan⟩) span)
+            | _ =>
+              -- It's a type: @Type or @(Type)
+              let ty ← lowerTypeExpr argNode argOffset
+              pure (.typeApp (.type ty) span)
+          else
+            lowerError "type application incomplete" span
             pure (.var ⟨"_error", span⟩)
 
       | .exprCompose =>

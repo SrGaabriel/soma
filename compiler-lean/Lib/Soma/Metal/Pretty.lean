@@ -104,6 +104,15 @@ partial def ppExpr [PpAnnotation α] (cfg : Config) (indent : Nat) : Expr α sco
   | .tuple elems info _ =>
     let elemsStr := ppExprList cfg indent elems
     s!"({", ".intercalate elemsStr}){PpAnnotation.ppAnnotation cfg info}"
+  | .record fields info _ =>
+    let fieldsStr := fields.toList.map (fun (name, expr) =>
+      s!"{name} = {ppExpr cfg indent expr}") |> ", ".intercalate
+    "{" ++ s!" {fieldsStr} " ++ "}" ++ PpAnnotation.ppAnnotation cfg info
+  | .recordUpdate base updates info _ =>
+    let baseStr := ppExpr cfg indent base
+    let updatesStr := updates.toList.map (fun (name, expr) =>
+      s!"{name} = {ppExpr cfg indent expr}") |> ", ".intercalate
+    "{" ++ s!" {baseStr} | {updatesStr} " ++ "}" ++ PpAnnotation.ppAnnotation cfg info
   | .array elems info _ =>
     let elemsStr := ppExprList cfg indent elems
     s!"[{", ".intercalate elemsStr}]{PpAnnotation.ppAnnotation cfg info}"
@@ -119,13 +128,20 @@ partial def ppExpr [PpAnnotation α] (cfg : Config) (indent : Nat) : Expr α sco
     let scrutsStr := ppExprList cfg indent scruts
     let armsStr := ppArmList cfg (indent + cfg.indent) arms
     s!"case {", ".intercalate scrutsStr} of{PpAnnotation.ppAnnotation cfg info}\n{armsStr}"
-  | .fieldAccess expr idx info _ =>
+  | .fieldAccess expr fieldName _idx info _ =>
     let exprStr := ppExpr cfg indent expr
-    s!"{exprStr}.{idx}{PpAnnotation.ppAnnotation cfg info}"
+    s!"{exprStr}.{fieldName}{PpAnnotation.ppAnnotation cfg info}"
   | .global name info _ =>
     name.display ++ PpAnnotation.ppAnnotation cfg info
   | .panic msg info _ =>
     s!"panic!(\"{msg}\"){PpAnnotation.ppAnnotation cfg info}"
+  | .proj typeName fieldName _idx info _ =>
+    s!"{typeName.display}.{fieldName}{PpAnnotation.ppAnnotation cfg info}"
+  | .typeApp arg info _ =>
+    let argStr := match arg with
+      | .type ty => s!"@{ty.ty}"
+      | .label name => s!"@{name}"
+    s!"{argStr}{PpAnnotation.ppAnnotation cfg info}"
 
 /-- Pretty print an expression list -/
 partial def ppExprList [PpAnnotation α] (cfg : Config) (indent : Nat) : ExprList α scope → List String

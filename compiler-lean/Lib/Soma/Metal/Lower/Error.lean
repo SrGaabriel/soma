@@ -11,6 +11,7 @@ inductive LowerError where
   | unknownType (name : String) (span : Span)
   | unknownTypeClass (name : String) (span : Span)
   | unknownConstructor (name : String) (span : Span)
+  | unknownField (typeName : String) (fieldName : String) (span : Span)
   | duplicateDefinition (name : String) (span : Span) (previousSpan : Span)
   | invalidPattern (message : String) (span : Span)
   | kindMismatch (expected : String) (got : String) (span : Span)
@@ -24,6 +25,7 @@ def span : LowerError → Span
   | .unknownType _ s => s
   | .unknownTypeClass _ s => s
   | .unknownConstructor _ s => s
+  | .unknownField _ _ s => s
   | .duplicateDefinition _ s _ => s
   | .invalidPattern _ s => s
   | .kindMismatch _ _ s => s
@@ -34,6 +36,7 @@ def message : LowerError → String
   | .unknownType name _ => s!"Unknown type: {name}"
   | .unknownTypeClass name _ => s!"Unknown type class: {name}"
   | .unknownConstructor name _ => s!"Unknown constructor: {name}"
+  | .unknownField typeName fieldName _ => s!"Unknown field: {typeName}.{fieldName}"
   | .duplicateDefinition name _ _ => s!"Duplicate definition: {name}"
   | .invalidPattern msg _ => s!"Invalid pattern: {msg}"
   | .kindMismatch expected got _ => s!"Kind mismatch: expected {expected}, got {got}"
@@ -55,6 +58,10 @@ def toDiagnostic : LowerError → Diagnostic
   | .unknownConstructor name span =>
     Diagnostic.error s!"Unknown constructor `{name}`" span "constructor not defined"
       |>.withHelp "Check that the data type is defined or imported"
+
+  | .unknownField typeName fieldName span =>
+    Diagnostic.error s!"Unknown field `{typeName}.{fieldName}`" span "field not defined"
+      |>.withHelp s!"Check that `{typeName}` has a field named `{fieldName}`"
 
   | .duplicateDefinition name span previousSpan =>
     Diagnostic.error s!"Duplicate definition of `{name}`" span "redefined here"
