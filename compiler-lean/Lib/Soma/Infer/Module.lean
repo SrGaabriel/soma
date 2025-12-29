@@ -93,6 +93,15 @@ partial def resolveTypeExprWithVars (ty : TypeExpr) (env : TypeEnv) (tyVars : St
               some (Gen.applyTypeArgs (Ty.userCon typeInfo.typeId.kind typeInfo.typeId) allArgs)
             | none => none
         | none => none
+      | .var name =>
+        -- Higher-kinded type variable application: f a where f :: * -> *
+        match tyVars.get? name.value with
+        | some tyVarId =>
+          match tyVarId.kind with
+          | .arrow .star k2 =>
+            some (.app (.var tyVarId) argTy)
+          | _ => none
+        | none => none
       | _ => none
 
   | .forall_ binders body _ =>

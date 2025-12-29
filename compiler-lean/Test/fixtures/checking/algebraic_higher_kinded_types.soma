@@ -1,0 +1,17 @@
+// expect: success 
+
+data Maybe a
+    | Nothing
+    | Just a
+
+def identity :: forall (f :: * -> *) a. f a -> f a
+    | x => x
+
+def identityMaybe :: Maybe Int -> Maybe Int
+    | x => identity x
+
+def mapRecord :: forall (f :: * -> *) (r :: %). { value :: f Int | r } -> { value :: f Int | r }
+    | rec => rec
+
+def mapMaybeRecord :: { value :: Maybe Int, name :: String } -> { value :: Maybe Int, name :: String }
+    | rec => mapRecord rec
