@@ -127,6 +127,90 @@ partial def parseRecordType : ParserM (Option GreenNode) := do
           return some (GreenNode.mkError "unclosed record type" (#[lbrace] ++ fields))
   | none => return none
 
+/-- Parse a variant type case: Name :: Type -/
+partial def parseVariantTypeCase : ParserM (Option GreenNode) := do
+  match ← parseUpperIdent with
+  | some nameTok =>
+      match ← tryConsume .doubleColon with
+      | some colonTok =>
+          match ← parseType with
+          | some ty =>
+              return some (GreenNode.mkNode .typeVariantCase #[nameTok, colonTok, ty])
+          | none =>
+              recordError "expected type after '::' in variant case"
+              return some (GreenNode.mkError "missing case type" #[nameTok, colonTok])
+      | none =>
+          recordError "expected '::' after case name in variant type"
+          return some (GreenNode.mkError "missing '::' in variant case" #[nameTok])
+  | none => return none
+
+/-- Parse a variant type: < Ok :: Int | Err :: String > or < Ok :: Int | r > -/
+partial def parseVariantType : ParserM (Option GreenNode) := do
+  match ← tryConsume .leftAngle with
+  | some langle =>
+      if (← check .rightAngle) then
+        let rangle ← consumeAny
+        return some (GreenNode.mkNode .typeVariant #[langle, rangle])
+
+      let mut cases : Array GreenNode := #[]
+      match ← parseVariantTypeCase with
+      | some case_ => cases := cases.push case_
+      | none =>
+          match ← parseLowerIdent with
+          | some tailVar =>
+              let tailNode := GreenNode.mkNode .typeVar #[tailVar]
+              match ← tryConsume .rightAngle with
+              | some rangle =>
+                  return some (GreenNode.mkNode .typeVariant #[langle, tailNode, rangle])
+              | none =>
+                  recordError "expected '>' after variant type variable"
+                  return some (GreenNode.mkError "unclosed variant type" #[langle, tailNode])
+          | none =>
+              recordError "expected case or type variable in variant type"
+              match ← tryConsume .rightAngle with
+              | some rangle => return some (GreenNode.mkNode .typeVariant #[langle, rangle])
+              | none => return some (GreenNode.mkError "malformed variant type" #[langle])
+
+      while (← check .pipe) do
+        let _ ← consumeAny
+        let tok ← current
+        if tok.kind == some .lowerIdent then
+          let tailVar ← consumeAny
+          let tailNode := GreenNode.mkNode .typeVar #[tailVar]
+          match ← tryConsume .rightAngle with
+          | some rangle =>
+              let children := #[langle] ++ cases ++ #[tailNode, rangle]
+              return some (GreenNode.mkNode .typeVariant children)
+          | none =>
+              recordError "expected '>' after variant type"
+              return some (GreenNode.mkError "unclosed variant type" (#[langle] ++ cases ++ #[tailNode]))
+        match ← parseVariantTypeCase with
+        | some case_ => cases := cases.push case_
+        | none =>
+            -- Try as row variable
+            match ← parseLowerIdent with
+            | some tailVar =>
+                let tailNode := GreenNode.mkNode .typeVar #[tailVar]
+                match ← tryConsume .rightAngle with
+                | some rangle =>
+                    let children := #[langle] ++ cases ++ #[tailNode, rangle]
+                    return some (GreenNode.mkNode .typeVariant children)
+                | none =>
+                    recordError "expected '>' after variant type"
+                    return some (GreenNode.mkError "unclosed variant type" (#[langle] ++ cases ++ #[tailNode]))
+            | none =>
+                recordError "expected case or row variable after '|' in variant type"
+                break
+
+      match ← tryConsume .rightAngle with
+      | some rangle =>
+          let children := #[langle] ++ cases ++ #[rangle]
+          return some (GreenNode.mkNode .typeVariant children)
+      | none =>
+          recordError "expected '>' after variant type"
+          return some (GreenNode.mkError "unclosed variant type" (#[langle] ++ cases))
+  | none => return none
+
 partial def parseListType : ParserM (Option GreenNode) := do
   match ← tryConsume .leftBracket with
   | some lbracket =>
@@ -267,6 +351,7 @@ partial def parseTypeAtom : ParserM (Option GreenNode) := do
   if let some ty ← parseParenType then return some ty
   if let some ty ← parseListType then return some ty
   if let some ty ← parseRecordType then return some ty
+  if let some ty ← parseVariantType then return some ty
   if let some ty ← parseTypeVar then return some ty
   if let some ty ← parseTypeCon then return some ty
   return none

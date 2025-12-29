@@ -573,6 +573,39 @@ partial def parseProjection : ParserM (Option GreenNode) := do
   let fieldTok ← consumeAny
   return some (GreenNode.mkNode .exprProjection #[typeTok, dotTok, fieldTok])
 
+/-- Parse a variant injection: .Label or .Label arg -/
+partial def parseVariantExpr : ParserM (Option GreenNode) := do
+  -- Check for .identifier pattern (variant injection)
+  let tok ← current
+  if tok.kind != some .dot then return none
+  let nextTok ← peekNext
+  -- Accept both upper and lower case identifiers for variant labels
+  if nextTok.kind != some .lowerIdent && nextTok.kind != some .upperIdent then return none
+  -- Parse .label
+  let dotTok ← consumeAny
+  let labelTok ← consumeAny
+  -- Optionally parse an argument (but don't consume operators, delimiters, etc.)
+  let argTok ← current
+  if argTok.kind == some .varSymbol || argTok.kind == some .rightParen ||
+     argTok.kind == some .rightBracket || argTok.kind == some .rightBrace ||
+     argTok.kind == some .comma || argTok.kind == some .pipe ||
+     argTok.kind == some .fatArrow || argTok.kind == some .equals ||
+     argTok.kind == some .kw_in || argTok.kind == some .kw_then ||
+     argTok.kind == some .kw_else || argTok.kind == some .kw_where ||
+     argTok.kind == some .kw_with || argTok.kind == some .doubleColon ||
+     argTok.kind == some .layoutStart || argTok.kind == some .layoutSep ||
+     argTok.kind == some .layoutEnd || argTok.kind == some .eof then
+    -- No argument, just .label
+    return some (GreenNode.mkNode .exprVariant #[dotTok, labelTok])
+  else
+    -- Try to parse an argument atom
+    match ← parseExprAtom with
+    | some arg =>
+        return some (GreenNode.mkNode .exprVariant #[dotTok, labelTok, arg])
+    | none =>
+        -- No argument parsed, just .label
+        return some (GreenNode.mkNode .exprVariant #[dotTok, labelTok])
+
 partial def parseExprTypeApp : ParserM (Option GreenNode) := do
   match ← tryConsume .at with
   | some atTok =>
@@ -617,6 +650,7 @@ partial def parseExprAtom : ParserM (Option GreenNode) := do
   if let some e ← parseExprString then return some e
   if let some e ← parseExprBool then return some e
   if let some e ← parseExprTypeApp then return some e
+  if let some e ← parseVariantExpr then return some e
   if let some e ← parseProjection then return some e
   if let some e ← parseExprVar then return some e
   if let some e ← parseExprCon then return some e

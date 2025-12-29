@@ -85,6 +85,8 @@ inductive Pattern : Type where
   | parens (inner : Pattern) (span : Span)
   /-- Typed pattern: (x :: Type) -/
   | typed (pat : Pattern) (ty : TypeExpr) (span : Span)
+  /-- Variant pattern: .Ok x -/
+  | variant (label : Name) (arg : Option Pattern) (span : Span)
 
 /-- Type expressions -/
 inductive TypeExpr : Type where
@@ -110,6 +112,8 @@ inductive TypeExpr : Type where
   | kinded (ty : TypeExpr) (kind : TypeExpr) (span : Span)
   /-- Record type: { x :: Int, y :: Bool } or { x :: Int | r } -/
   | record (fields : Array (Name × TypeExpr)) (tail : Option Name) (span : Span)
+  /-- Variant type: < Ok :: Int | Err :: String > or < Ok :: Int | r > -/
+  | variant (cases : Array (Name × TypeExpr)) (tail : Option Name) (span : Span)
 
 end
 
@@ -137,6 +141,11 @@ where
       match tail with
       | some tailName => acc'.insert tailName.value
       | none => acc'
+    | .variant cases tail _ =>
+      let acc' := cases.foldl (fun a (_, t) => go t a) acc
+      match tail with
+      | some tailName => acc'.insert tailName.value
+      | none => acc'
 
 end TypeExpr
 
@@ -158,6 +167,11 @@ partial def Pattern.repr' (p : Pattern) (_ : Nat) : Std.Format :=
   | .cons h t span => f!"Pattern.cons ({Pattern.repr' h 0}) ({Pattern.repr' t 0}) {Repr.reprPrec span 0}"
   | .parens inner span => f!"Pattern.parens ({Pattern.repr' inner 0}) {Repr.reprPrec span 0}"
   | .typed pat ty span => f!"Pattern.typed ({Pattern.repr' pat 0}) ({TypeExpr.repr' ty 0}) {Repr.reprPrec span 0}"
+  | .variant label arg span =>
+      let argRepr := match arg with
+        | some p => f!"some ({Pattern.repr' p 0})"
+        | none => f!"none"
+      f!"Pattern.variant {Repr.reprPrec label 0} {argRepr} {Repr.reprPrec span 0}"
 
 partial def TypeExpr.repr' (t : TypeExpr) (_ : Nat) : Std.Format :=
   match t with
@@ -172,6 +186,7 @@ partial def TypeExpr.repr' (t : TypeExpr) (_ : Nat) : Std.Format :=
   | .parens inner span => f!"TypeExpr.parens ({TypeExpr.repr' inner 0}) {Repr.reprPrec span 0}"
   | .kinded ty kind span => f!"TypeExpr.kinded ({TypeExpr.repr' ty 0}) ({TypeExpr.repr' kind 0}) {Repr.reprPrec span 0}"
   | .record fields tail span => f!"TypeExpr.record #[...{fields.size}] {Repr.reprPrec tail 0} {Repr.reprPrec span 0}"
+  | .variant cases tail span => f!"TypeExpr.variant #[...{cases.size}] {Repr.reprPrec tail 0} {Repr.reprPrec span 0}"
 
 end
 
@@ -190,6 +205,7 @@ def span : Pattern → Span
   | .cons _ _ s => s
   | .parens _ s => s
   | .typed _ _ s => s
+  | .variant _ _ s => s
 
 /-- Get all variable names bound by this pattern -/
 partial def boundVars : Pattern → Array Name
@@ -202,6 +218,9 @@ partial def boundVars : Pattern → Array Name
   | .cons h t _ => h.boundVars ++ t.boundVars
   | .parens inner _ => inner.boundVars
   | .typed pat _ _ => pat.boundVars
+  | .variant _ arg _ => match arg with
+    | some p => p.boundVars
+    | none => #[]
 
 end Pattern
 
@@ -228,6 +247,7 @@ def span : TypeExpr → Span
   | .parens _ s => s
   | .kinded _ _ s => s
   | .record _ _ s => s
+  | .variant _ _ s => s
 
 end TypeExpr
 
@@ -273,6 +293,11 @@ partial def freeVars : TypeExpr → Array Name
       match tail with
       | some name => fieldVars ++ #[name]
       | none => fieldVars
+  | .variant cases tail _ =>
+      let caseVars := cases.foldl (fun acc (_, t) => acc ++ t.freeVars) #[]
+      match tail with
+      | some name => caseVars ++ #[name]
+      | none => caseVars
 
 end TypeExpr
 
@@ -325,6 +350,8 @@ inductive Expr where
   | compose (body : Expr) (span : Span)
   /-- Bind block: bind ... -/
   | bind (body : Expr) (span : Span)
+  /-- Variant injection: .Ok value -/
+  | variant (label : Name) (arg : Option Expr) (span : Span)
 
 end
 
@@ -367,6 +394,7 @@ def span : Expr → Span
   | .typeApp _ s => s
   | .compose _ s => s
   | .bind _ s => s
+  | .variant _ _ s => s
 
 end Expr
 
@@ -511,6 +539,10 @@ partial def ppPattern : Pattern → String
   | .cons h t _ => s!"({ppPattern h}:{ppPattern t})"
   | .parens p _ => s!"({ppPattern p})"
   | .typed p ty _ => s!"({ppPattern p} :: {ppTypeExpr ty})"
+  | .variant label arg _ =>
+      match arg with
+      | some p => s!".{label.value} {ppPattern p}"
+      | none => s!".{label.value}"
 
 /-- Pretty print a TypeExpr -/
 partial def ppTypeExpr : TypeExpr → String
@@ -539,6 +571,11 @@ partial def ppTypeExpr : TypeExpr → String
       match tail with
       | some name => "{ " ++ fieldsStr ++ " | " ++ name.value ++ " }"
       | none => "{ " ++ fieldsStr ++ " }"
+  | .variant cases tail _ =>
+      let casesStr := cases.toList.map (fun (n, t) => s!"{n.value} :: {ppTypeExpr t}") |> String.intercalate " | "
+      match tail with
+      | some name => "< " ++ casesStr ++ " | " ++ name.value ++ " >"
+      | none => "< " ++ casesStr ++ " >"
 where
   ppTypeAtom : TypeExpr → String
     | .var n => n.value
@@ -551,6 +588,11 @@ where
         match tail with
         | some name => "{ " ++ fieldsStr ++ " | " ++ name.value ++ " }"
         | none => "{ " ++ fieldsStr ++ " }"
+    | .variant cases tail _ =>
+        let casesStr := cases.toList.map (fun (n, t) => s!"{n.value} :: {ppTypeExpr t}") |> String.intercalate " | "
+        match tail with
+        | some name => "< " ++ casesStr ++ " | " ++ name.value ++ " >"
+        | none => "< " ++ casesStr ++ " >"
     | t => s!"({ppTypeExpr t})"
 
 end
@@ -601,6 +643,10 @@ partial def ppExpr : Expr → String
     | .label name => s!"@{name.value}"
   | .compose body _ => s!"compose {ppExpr body}"
   | .bind body _ => s!"bind {ppExpr body}"
+  | .variant label arg _ =>
+      match arg with
+      | some e => s!".{label.value} {ppExprAtom e}"
+      | none => s!".{label.value}"
 where
   ppExprAtom : Expr → String
     | .var n => n.value

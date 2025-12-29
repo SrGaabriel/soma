@@ -77,6 +77,7 @@ def occursK (varId : Nat) : {k : Kind} → Ty k → Bool
   | _, .rowExtend label ty tail =>
     occursK varId label || occursK varId ty || occursK varId tail
   | _, .record row => occursK varId row
+  | _, .variant row => occursK varId row
 end
 
 /-- Check if a type variable occurs in a label type -/
@@ -326,6 +327,10 @@ mutual
 
     -- Record types (structural)
     | .record r1, .record r2 =>
+      unifyRow r1 r2 ctx counter
+
+    -- Variant types (structural) uses same row unification
+    | .variant r1, .variant r2 =>
       unifyRow r1 r2 ctx counter
 
     -- Nominal type vs structural record: expose nominal's row structure

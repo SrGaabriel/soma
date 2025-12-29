@@ -44,6 +44,7 @@ inductive SyntaxKind where
   | exprSection       -- Operator section
   | exprTypeAnnot     -- Type annotation
   | exprTypeApp       -- Explicit type application (@Type or @label)
+  | exprVariant       -- Variant injection (.Ok value)
   -- Patterns
   | patVar            -- Variable pattern
   | patWildcard       -- Wildcard
@@ -55,6 +56,7 @@ inductive SyntaxKind where
   | patAs             -- As pattern
   | patParens         -- Parenthesized
   | patTyped          -- Typed pattern
+  | patVariant        -- Variant pattern (.Ok x)
   -- Types
   | typeVar           -- Type variable
   | typeCon           -- Type constructor
@@ -68,6 +70,8 @@ inductive SyntaxKind where
   | typeKinded        -- Kind annotation
   | typeRecord        -- Record type { x :: Int, y :: Bool }
   | typeRecordField   -- Record type field: name :: Type
+  | typeVariant       -- Variant type < Ok :: Int | Err :: String >
+  | typeVariantCase   -- Variant type case: Name :: Type
   -- Type Constraints
   | constraint        -- Single constraint
   | constraintList    -- Multiple constraints
@@ -137,6 +141,7 @@ def SyntaxKind.describe : SyntaxKind → String
   | .exprSection => "operator section"
   | .exprTypeAnnot => "type annotation"
   | .exprTypeApp => "type application"
+  | .exprVariant => "variant injection"
   | .patVar => "variable pattern"
   | .patWildcard => "wildcard pattern"
   | .patLit => "literal pattern"
@@ -147,6 +152,7 @@ def SyntaxKind.describe : SyntaxKind → String
   | .patAs => "as pattern"
   | .patParens => "parenthesized pattern"
   | .patTyped => "typed pattern"
+  | .patVariant => "variant pattern"
   | .typeVar => "type variable"
   | .typeCon => "type constructor"
   | .typeApp => "type application"
@@ -159,6 +165,8 @@ def SyntaxKind.describe : SyntaxKind → String
   | .typeKinded => "kinded type"
   | .typeRecord => "record type"
   | .typeRecordField => "record type field"
+  | .typeVariant => "variant type"
+  | .typeVariantCase => "variant type case"
   | .constraint => "constraint"
   | .constraintList => "constraint list"
   | .paramList => "parameter list"
@@ -195,20 +203,22 @@ def SyntaxKind.isExpr : SyntaxKind → Bool
   | .exprVar | .exprLit | .exprApp | .exprInfix | .exprLambda
   | .exprLet | .exprIf | .exprCase | .exprMatch | .exprTuple
   | .exprList | .exprRecord | .exprFieldAccess | .exprProjection | .exprParens
-  | .exprCompose | .exprBind | .exprSection | .exprTypeAnnot | .exprTypeApp => true
+  | .exprCompose | .exprBind | .exprSection | .exprTypeAnnot | .exprTypeApp
+  | .exprVariant => true
   | _ => false
 
 /-- Check if a syntax kind represents a pattern -/
 def SyntaxKind.isPattern : SyntaxKind → Bool
   | .patVar | .patWildcard | .patLit | .patCon | .patTuple
-  | .patList | .patCons | .patAs | .patParens | .patTyped => true
+  | .patList | .patCons | .patAs | .patParens | .patTyped
+  | .patVariant => true
   | _ => false
 
 /-- Check if a syntax kind represents a type -/
 def SyntaxKind.isType : SyntaxKind → Bool
   | .typeVar | .typeCon | .typeApp | .typeArrow | .typeTuple
   | .typeList | .typeForall | .typeConstrained | .typeParens | .typeKinded
-  | .typeRecord | .typeRecordField => true
+  | .typeRecord | .typeRecordField | .typeVariant | .typeVariantCase => true
   | _ => false
 
 /-- Check if a syntax kind represents trivia -/

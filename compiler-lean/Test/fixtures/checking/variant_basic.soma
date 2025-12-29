@@ -1,0 +1,9 @@
+// expect: success
+
+def test1 :: < Ok :: Int > = .Ok 42
+
+def test2 :: < Name :: String > = .Name "hello"
+
+def test3 :: < Flag :: Bool > = .Flag true
+
+def test4 :: < None :: () > = .None

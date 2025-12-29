@@ -73,6 +73,10 @@ partial def lowerPattern (pat : Soma.Syntax.Pattern) : LowerM (Pattern Unit) := 
   | .typed pat _ _ =>
     lowerPattern pat
 
+  | .variant label arg span =>
+    let arg' ← arg.mapM lowerPattern
+    pure (.variant label.value arg' () span)
+
 /-- Build a ParamList from a list of (BindingId, name) pairs -/
 def buildParamList : List (BindingId × String) → ParamList Unit
   | [] => .nil
@@ -267,6 +271,14 @@ mutual
 
     | .bind body _ =>
       lowerExpr localEnv body
+
+    | .variant label arg span =>
+      let args ← match arg with
+        | some argExpr =>
+          let arg' ← lowerExpr localEnv argExpr
+          pure (.cons arg' .nil)
+        | none => pure .nil
+      pure (.inject label.value args () span)
 
   /-- Lower a lambda expression -/
   partial def lowerLambda (localEnv : LocalEnv scope)

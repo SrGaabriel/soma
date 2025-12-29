@@ -48,6 +48,11 @@ where
       match tail with
       | some tailName => acc'.insert tailName.value (max (acc'.getD tailName.value 0) 0)
       | none => acc'
+    | .variant cases tail _ =>
+      let acc' := cases.foldl (fun a (_, t) => go t 0 a) acc
+      match tail with
+      | some tailName => acc'.insert tailName.value (max (acc'.getD tailName.value 0) 0)
+      | none => acc'
 
 /-- Build a Kind from an arity (number of type arguments) -/
 private def kindOfArity : Nat → Kind
@@ -168,6 +173,32 @@ mutual
           rowTy := .rowExtend (.labelLit fieldName.value) fieldMonoTy rowTy
         | none => return none
       pure (some (.record rowTy))
+
+    | .variant cases tail _ =>
+      -- First, determine the base row (either empty or a row variable for polymorphism)
+      let baseRow : Ty .row ← match tail with
+        | some tailName =>
+          -- Row polymorphic: < Ok :: Int | r >
+          match tyVarEnv.get? tailName.value with
+          | some tyVarId =>
+            -- Use the existing row variable
+            pure (.var { tyVarId with kind := .row })
+          | none =>
+            -- Create a fresh row variable
+            let id ← LowerM.freshUniqueId
+            let tyVarId : TyVarId := { name := tailName.value, id := id, kind := .row }
+            pure (.var tyVarId)
+        | none =>
+          pure .rowEmpty
+      -- Build the row type from cases, extending the base row
+      let mut rowTy := baseRow
+      for (caseName, caseTy) in cases.reverse do
+        let caseMonoTy? ← resolveTypeWithEnv kindEnv tyVarEnv caseTy
+        match caseMonoTy? with
+        | some caseMonoTy =>
+          rowTy := .rowExtend (.labelLit caseName.value) caseMonoTy rowTy
+        | none => return none
+      pure (some (.variant rowTy))
 
   /-- Resolve a type that might have non-star kind, using inferred kinds and bound type variables -/
   private partial def resolveTypeAnyWithEnv (kindEnv : KindEnv) (tyVarEnv : TyVarEnv) (ty : TypeExpr) : LowerM (Option SomeTy) := do

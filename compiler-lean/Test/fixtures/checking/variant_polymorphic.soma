@@ -1,0 +1,7 @@
+// expect: success
+
+def test1 :: forall (r :: %). < Ok :: Int | r > = .Ok 42
+
+def test2 :: < Ok :: Int | Err :: String > = .Ok 100
+
+def test3 :: < Ok :: Int | Err :: String | Warning :: Bool > = .Ok 200

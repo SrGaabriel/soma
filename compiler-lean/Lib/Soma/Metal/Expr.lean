@@ -112,6 +112,10 @@ inductive Soma.Metal.Expr (α : Type) : Scope → Type where
   | recordUpdate (base : Soma.Metal.Expr α scope) (updates : Soma.Metal.RecordFieldList α scope) (info : α) (span : Span)
       : Soma.Metal.Expr α scope
 
+  /-- Variant injection .label args (empty for nullary, singleton for unary, extends to multi-field) -/
+  | inject (label : String) (args : Soma.Metal.ExprList α scope) (info : α) (span : Span)
+      : Soma.Metal.Expr α scope
+
   /-- Array literal -/
   | array (elements : Soma.Metal.ExprList α scope) (info : α) (span : Span)
       : Soma.Metal.Expr α scope
@@ -240,6 +244,7 @@ partial def Soma.Metal.Expr.mapInfo (f : α → β) : Soma.Metal.Expr α scope �
   | .tuple elems info span => .tuple (elems.mapInfo f) (f info) span
   | .record fields info span => .record (fields.mapInfo f) (f info) span
   | .recordUpdate base updates info span => .recordUpdate (base.mapInfo f) (updates.mapInfo f) (f info) span
+  | .inject label args info span => .inject label (args.mapInfo f) (f info) span
   | .array elems info span => .array (elems.mapInfo f) (f info) span
   | .if_ c t e info span => .if_ (c.mapInfo f) (t.mapInfo f) (e.mapInfo f) (f info) span
   | .case scruts arms info span => .case (scruts.mapInfo f) (arms.mapInfo f) (f info) span
@@ -383,6 +388,7 @@ def span : Expr α scope → Span
   | .tuple _ _ s => s
   | .record _ _ s => s
   | .recordUpdate _ _ _ s => s
+  | .inject _ _ _ s => s
   | .array _ _ s => s
   | .if_ _ _ _ _ s => s
   | .case _ _ _ s => s
@@ -404,6 +410,7 @@ def getInfo : Expr α scope → Option α
   | .tuple _ i _ => some i
   | .record _ i _ => some i
   | .recordUpdate _ _ i _ => some i
+  | .inject _ _ i _ => some i
   | .array _ i _ => some i
   | .if_ _ _ _ i _ => some i
   | .case _ _ i _ => some i

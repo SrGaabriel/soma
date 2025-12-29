@@ -18,6 +18,7 @@ inductive Pattern (α : Type) where
   | array (elements : Array (Pattern α)) (info : α) (span : Span)
   | cons (head : Pattern α) (tail : Pattern α) (info : α) (span : Span)
   | as (binding : BindingId) (original : String) (inner : Pattern α) (info : α) (span : Span)
+  | variant (label : String) (arg : Option (Pattern α)) (info : α) (span : Span)
   deriving Inhabited
 
 /-- Untyped patterns (before type checking) -/
@@ -38,6 +39,7 @@ def span : Pattern α → Span
   | .array _ _ s => s
   | .cons _ _ _ s => s
   | .as _ _ _ _ s => s
+  | .variant _ _ _ s => s
 
 /-- Get all binding IDs introduced by this pattern -/
 def bindings : Pattern α → Array BindingId
@@ -49,6 +51,8 @@ def bindings : Pattern α → Array BindingId
   | .array elems _ _ => elems.attach.foldl (fun acc ⟨p, _⟩ => acc ++ p.bindings) #[]
   | .cons h t _ _ => h.bindings ++ t.bindings
   | .as b _ inner _ _ => #[b] ++ inner.bindings
+  | .variant _ (some p) _ _ => p.bindings
+  | .variant _ none _ _ => #[]
 
 /-- Get bindings as (id, name) pairs -/
 def bindingsWithNames : Pattern α → Array (BindingId × String)
@@ -60,6 +64,8 @@ def bindingsWithNames : Pattern α → Array (BindingId × String)
   | .array elems _ _ => elems.attach.foldl (fun acc ⟨p, _⟩ => acc ++ p.bindingsWithNames) #[]
   | .cons h t _ _ => h.bindingsWithNames ++ t.bindingsWithNames
   | .as b orig inner _ _ => #[(b, orig)] ++ inner.bindingsWithNames
+  | .variant _ (some p) _ _ => p.bindingsWithNames
+  | .variant _ none _ _ => #[]
 
 /-- General lemma: List.foldl over append preserves map relationship -/
 theorem list_foldl_append_map_fst {β γ δ : Type}
@@ -127,6 +133,10 @@ theorem bindingsWithNames_fst (pat : Pattern α) :
     simp only [bindingsWithNames, bindings, Array.toList_append, List.map_append]
     simp only [List.map_cons, List.map_nil]
     rw [bindingsWithNames_fst inner]
+  | .variant _ (some p) _ _ =>
+    simp only [bindingsWithNames, bindings]
+    exact bindingsWithNames_fst p
+  | .variant _ none _ _ => simp [bindingsWithNames, bindings]
 
 /-- Extend a scope with the bindings from this pattern -/
 def extendScope (p : Pattern α) (s : Scope) : Scope :=
@@ -147,6 +157,7 @@ partial def map (f : α → β) : Pattern α → Pattern β
   | .array elems info s => .array (elems.map (map f)) (f info) s
   | .cons h t info s => .cons (map f h) (map f t) (f info) s
   | .as b orig inner info s => .as b orig (map f inner) (f info) s
+  | .variant label arg info s => .variant label (arg.map (map f)) (f info) s
 
 /-- Pattern.map preserves bindings (axiomatized due to partial functions) -/
 axiom map_bindings (f : α → β) (p : Pattern α) : (p.map f).bindings = p.bindings

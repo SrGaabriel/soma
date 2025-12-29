@@ -91,6 +91,9 @@ partial def resolveFieldIndices {scope : Scope}
   | .typeApp arg info span =>
     .typeApp arg info span
 
+  | .inject label args info span =>
+    .inject label (resolveExprList lookupNominalRow args) info span
+
 where
   resolveExprList {scope : Scope} (lookupNominalRow : TypeId → Option RowTy)
       (exprs : ExprList MonoTy scope) : ExprList MonoTy scope :=

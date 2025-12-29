@@ -54,6 +54,7 @@ partial def tyToJsonHK : {k : Kind} → Ty k → Lean.Json
   | _, .rowExtend label ty tail =>
     .mkObj [("rowExtend", .mkObj [("label", tyToJsonHK label), ("type", tyToJsonHK ty), ("tail", tyToJsonHK tail)])]
   | _, .record row => .mkObj [("record", tyToJsonHK row)]
+  | _, .variant row => .mkObj [("variant", tyToJsonHK row)]
 
 /-- Serialize a MonoTy to JSON -/
 def tyToJson (t : MonoTy) : Lean.Json := tyToJsonHK t

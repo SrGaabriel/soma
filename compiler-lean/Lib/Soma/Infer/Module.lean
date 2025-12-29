@@ -126,6 +126,24 @@ partial def resolveTypeExprWithVars (ty : TypeExpr) (env : TypeEnv) (tyVars : St
         some (Ty.rowExtend labelTy fieldMonoTy acc)
       | none => none
     rowTy?.map Ty.record
+
+  | .variant cases tail _ =>
+    -- Variant type: < Ok :: Int | Err :: String > or < Ok :: Int | r >
+    let baseRow : RowTy := match tail with
+      | some tailName =>
+        match tyVars.get? tailName.value with
+        | some tyVarId =>
+          if tyVarId.kind == .row then .var tyVarId else .rowEmpty
+        | none => .rowEmpty
+      | none => .rowEmpty
+    -- Build the row type from cases
+    let rowTy? := cases.reverse.foldlM (init := baseRow) fun acc (caseName, caseTy) =>
+      match resolveTypeExprWithVars caseTy env tyVars with
+      | some caseMonoTy =>
+        let labelTy := Ty.lookupOrLiteralLabel caseName.value tyVars
+        some (Ty.rowExtend labelTy caseMonoTy acc)
+      | none => none
+    rowTy?.map Ty.variant
 where
   /-- Collect base type name and arguments from nested applications -/
   collectTypeAppWithVars (ty : TypeExpr) (args : Array MonoTy) (env : TypeEnv) (tyVars : Std.HashMap String TyVarId) : Option (String × Array MonoTy) :=
@@ -471,6 +489,7 @@ where
     | .panic _ _ _ => acc
     | .proj _ _ _ _ _ => acc
     | .typeApp _ _ _ => acc
+    | .inject _ args _ _ => goList args acc
   goList {s : Scope} : Metal.ExprList MonoTy s → HashMap BindingId MonoTy → HashMap BindingId MonoTy
     | .nil, acc => acc
     | .cons e es, acc => goList es (go e acc)

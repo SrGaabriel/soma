@@ -1,0 +1,3 @@
+// expect: error type mismatch
+
+def bad :: < Ok :: Int > = .Ok "not an int"

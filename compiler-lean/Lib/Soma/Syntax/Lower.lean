@@ -243,6 +243,20 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
             lowerError "typed pattern missing pattern and type" span
             pure (.wildcard span)
 
+      | .patVariant =>
+          -- Structure: [dot, labelToken, optionalArgPattern]
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          if kidsWithOffsets.isEmpty then
+            lowerError "variant pattern missing label" span
+            pure (.wildcard span)
+          else
+            let labelText ← getGreenTokenText kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+            let labelSpan ← spanFor kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+            let arg ← if kidsWithOffsets.size >= 2 then
+              some <$> lowerPattern kidsWithOffsets[1]!.1 kidsWithOffsets[1]!.2
+            else pure none
+            pure (.variant ⟨labelText, labelSpan⟩ arg span)
+
       | .name =>
           match firstGreenChild green with
           | some child =>
@@ -462,6 +476,35 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
               let tailSpan ← spanFor tailKids[0]!.1 tailKids[0]!.2
               pure (some ⟨tailText, tailSpan⟩)
           pure (.record fields tail span)
+
+      | .typeVariant =>
+          -- Parse variant type: < Ok :: Int | Err :: String > or < Ok :: Int | r >
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          -- Separate case nodes from potential row tail variable
+          let caseNodes := kidsWithOffsets.filter fun (c, _) => c.syntaxKind? == some .typeVariantCase
+          let tailNodes := kidsWithOffsets.filter fun (c, _) => c.syntaxKind? == some .typeVar
+          -- Lower cases
+          let mut cases : Array (Name × TypeExpr) := #[]
+          for (caseNode, caseOffset) in caseNodes do
+            let caseKids := childrenWithOffsets caseNode caseOffset |>.filter fun (c, _) => isSemanticNode c
+            if caseKids.size >= 2 then
+              let nameText ← getGreenTokenText caseKids[0]!.1 caseKids[0]!.2
+              let nameSpan ← spanFor caseKids[0]!.1 caseKids[0]!.2
+              let caseTy ← lowerTypeExpr caseKids[1]!.1 caseKids[1]!.2
+              cases := cases.push (⟨nameText, nameSpan⟩, caseTy)
+          -- Check for tail variable
+          let tail ← if tailNodes.isEmpty then pure none else do
+            let (tailNode, tailOffset) := tailNodes[0]!
+            let tailKids := childrenWithOffsets tailNode tailOffset |>.filter fun (c, _) => isSemanticNode c
+            if tailKids.isEmpty then
+              let tailText ← getGreenTokenText tailNode tailOffset
+              let tailSpan ← spanFor tailNode tailOffset
+              pure (some ⟨tailText, tailSpan⟩)
+            else
+              let tailText ← getGreenTokenText tailKids[0]!.1 tailKids[0]!.2
+              let tailSpan ← spanFor tailKids[0]!.1 tailKids[0]!.2
+              pure (some ⟨tailText, tailSpan⟩)
+          pure (.variant cases tail span)
 
       | _ =>
           lowerError s!"unexpected type kind: {kind}" span
@@ -1000,6 +1043,20 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
               | other =>
                   result := Expr.let_ ⟨"_", other.span⟩ none other result other.span
             pure (.bind result span)
+
+      | .exprVariant =>
+          -- Structure: [dot, labelToken, optionalArgExpr]
+          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
+          if kidsWithOffsets.isEmpty then
+            lowerError "variant expression missing label" span
+            pure (.var ⟨"_error", span⟩)
+          else
+            let labelText ← getGreenTokenText kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+            let labelSpan ← spanFor kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
+            let arg ← if kidsWithOffsets.size >= 2 then
+              some <$> lowerExpr kidsWithOffsets[1]!.1 kidsWithOffsets[1]!.2
+            else pure none
+            pure (.variant ⟨labelText, labelSpan⟩ arg span)
 
       | .composeLetStmt =>
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c

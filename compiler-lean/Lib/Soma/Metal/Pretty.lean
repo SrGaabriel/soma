@@ -63,6 +63,10 @@ partial def ppPattern [PpAnnotation α] (cfg : Config) : Pattern α → String
     s!"{ppPattern cfg head} :: {ppPattern cfg tail}"
   | .as _ name inner _ _ =>
     s!"{name}@{ppPattern cfg inner}"
+  | .variant label (some arg) _ _ =>
+    s!".{label} {ppPattern cfg arg}"
+  | .variant label none _ _ =>
+    s!".{label}"
 
 /-- Pretty print a pattern list -/
 def ppPatternList [PpAnnotation α] (cfg : Config) : PatternList α → List String
@@ -142,6 +146,12 @@ partial def ppExpr [PpAnnotation α] (cfg : Config) (indent : Nat) : Expr α sco
       | .type ty => s!"@{ty.ty}"
       | .label name => s!"@{name}"
     s!"{argStr}{PpAnnotation.ppAnnotation cfg info}"
+  | .inject label args info _ =>
+    let argsStr := ppExprList cfg indent args
+    if argsStr.isEmpty then
+      s!".{label}{PpAnnotation.ppAnnotation cfg info}"
+    else
+      s!".{label} {" ".intercalate argsStr}{PpAnnotation.ppAnnotation cfg info}"
 
 /-- Pretty print an expression list -/
 partial def ppExprList [PpAnnotation α] (cfg : Config) (indent : Nat) : ExprList α scope → List String

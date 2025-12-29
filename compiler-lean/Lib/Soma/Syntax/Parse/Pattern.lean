@@ -93,7 +93,38 @@ partial def parseListPattern : ParserM (Option GreenNode) := do
           return some (GreenNode.mkError "unclosed list pattern" (#[lbracket] ++ elements))
   | none => return none
 
+/-- Parse a variant pattern: .label or .label pat -/
+partial def parseVariantPattern : ParserM (Option GreenNode) := do
+  -- Check for .identifier pattern (variant pattern)
+  let tok ← current
+  if tok.kind != some .dot then return none
+  let nextTok ← peekNext
+  -- Accept both upper and lower case identifiers for variant labels
+  if nextTok.kind != some .lowerIdent && nextTok.kind != some .upperIdent then return none
+  -- Parse .label
+  let dotTok ← consumeAny
+  let labelTok ← consumeAny
+  -- Optionally parse an argument pattern (but don't consume delimiters, etc.)
+  let argTok ← current
+  if argTok.kind == some .fatArrow || argTok.kind == some .equals ||
+     argTok.kind == some .pipe || argTok.kind == some .layoutStart ||
+     argTok.kind == some .layoutSep || argTok.kind == some .layoutEnd ||
+     argTok.kind == some .rightParen || argTok.kind == some .rightBracket ||
+     argTok.kind == some .comma || argTok.kind == some .colon ||
+     argTok.kind == some .kw_if || argTok.kind == some .eof then
+    -- No argument, just .label
+    return some (GreenNode.mkNode .patVariant #[dotTok, labelTok])
+  else
+    -- Try to parse an argument pattern atom
+    match ← parsePatternAtom with
+    | some arg =>
+        return some (GreenNode.mkNode .patVariant #[dotTok, labelTok, arg])
+    | none =>
+        -- No argument parsed, just .label
+        return some (GreenNode.mkNode .patVariant #[dotTok, labelTok])
+
 partial def parsePatternAtom : ParserM (Option GreenNode) := do
+  if let some pat ← parseVariantPattern then return some pat
   if let some pat ← parsePatternVar then return some pat
   if let some pat ← parsePatternWildcard then return some pat
   if let some pat ← parsePatternLit then return some pat

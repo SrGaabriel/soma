@@ -134,6 +134,7 @@ inductive Ty : Kind → Type where
   | rowEmpty : Ty .row
   | rowExtend (label : Ty .label) (fieldTy : Ty .star) (tail : Ty .row) : Ty .row
   | record (row : Ty .row) : Ty .star
+  | variant (row : Ty .row) : Ty .star
 
 /-- Monomorphic types (kind *) are the most common -/
 abbrev MonoTy := Ty Kind.star
@@ -194,6 +195,7 @@ mutual
     | .tuple fst snd rest =>
       .tuple (Ty.substK fst σ) (Ty.substK snd σ) (Ty.substListK rest σ)
     | .record row => .record (Ty.substRowK row σ)
+    | .variant row => .variant (Ty.substRowK row σ)
 
   /-- Substitute in a list of types -/
   def Ty.substListK (ts : List MonoTy) (σ : KindSubst) : List MonoTy :=
@@ -258,6 +260,7 @@ mutual
     | .tuple fst snd rest =>
       .tuple (Ty.subst fst σ) (Ty.subst snd σ) (Ty.substList rest σ)
     | .record row => .record (Ty.substRow row σ)
+    | .variant row => .variant (Ty.substRow row σ)
 
   /-- Substitute in a list of types (legacy) -/
   def Ty.substList (ts : List MonoTy) (σ : TySubst) : List MonoTy :=
@@ -305,6 +308,7 @@ def isAtom : {k : Kind} → Ty k → Bool
   | _, .rowEmpty => true
   | _, .rowExtend _ _ _ => false
   | _, .record _ => true
+  | _, .variant _ => true
 
 /-- Helper to get label string -/
 def labelToString (t : LabelTy) : String :=
@@ -315,7 +319,7 @@ def labelToString (t : LabelTy) : String :=
   | .userCon _ _ => "<impossible>"
 
 mutual
-/-- Pretty print a row type as comma-separated fields -/
+/-- Pretty print a row type as comma-separated fields (for records) -/
 partial def rowToStringAux (row : RowTy) : String :=
   match row with
   | .rowEmpty => ""
@@ -329,6 +333,23 @@ partial def rowToStringAux (row : RowTy) : String :=
     | .rowExtend _ _ _ => fieldStr ++ ", " ++ rowToStringAux tail
     | .app _ _ => fieldStr
     | .userCon _ _ => fieldStr
+  | .app _ _ => "<impossible>"
+  | .userCon _ _ => "<impossible>"
+
+/-- Pretty print a row type as pipe-separated cases (for variants) -/
+partial def variantRowToStringAux (row : RowTy) : String :=
+  match row with
+  | .rowEmpty => ""
+  | .var v => "| " ++ v.name
+  | .rowExtend label ty tail =>
+    let labelStr := labelToString label
+    let caseStr := labelStr ++ " :: " ++ toStringAux ty
+    match tail with
+    | .rowEmpty => caseStr
+    | .var v => caseStr ++ " | " ++ v.name
+    | .rowExtend _ _ _ => caseStr ++ " | " ++ variantRowToStringAux tail
+    | .app _ _ => caseStr
+    | .userCon _ _ => caseStr
   | .app _ _ => "<impossible>"
   | .userCon _ _ => "<impossible>"
 
@@ -355,6 +376,10 @@ partial def toStringAux : {k : Kind} → Ty k → String
   | _, .record (row : RowTy) =>
     let rowStr := rowToStringAux row
     "{ " ++ rowStr ++ " }"
+  | _, .variant (row : RowTy) =>
+    match row with
+    | .rowEmpty => "< >"
+    | _ => "< " ++ variantRowToStringAux row ++ " >"
 end
 
 def toString : {k : Kind} → Ty k → String := toStringAux
@@ -528,6 +553,7 @@ def freeVars : {k : Kind} → Ty k → Array TyVarId
   | _, .rowEmpty => #[]
   | _, .rowExtend label ty tail => freeVars label ++ freeVars ty ++ freeVars tail
   | _, .record row => freeVars row
+  | _, .variant row => freeVars row
 
 /-- Check if a type has any type variables -/
 def hasVars (t : Ty k) : Bool := !t.freeVars.isEmpty
@@ -564,6 +590,7 @@ def heq : {k1 k2 : Kind} → Ty k1 → Ty k2 → Bool
   | _, _, .rowExtend l1 t1 r1, .rowExtend l2 t2 r2 =>
     heq l1 l2 && heq t1 t2 && heq r1 r2
   | _, _, .record r1, .record r2 => heq r1 r2
+  | _, _, .variant r1, .variant r2 => heq r1 r2
   | _, _, _, _ => false
 end
 
@@ -587,6 +614,7 @@ def hash : {k : Kind} → Ty k → UInt64
   | _, .rowEmpty => 8
   | _, .rowExtend label ty tail => mixHash 9 (mixHash (hash label) (mixHash (hash ty) (hash tail)))
   | _, .record row => mixHash 10 (hash row)
+  | _, .variant row => mixHash 11 (hash row)
 
 instance : Hashable (Ty k) := ⟨Ty.hash⟩
 
@@ -613,6 +641,28 @@ def isRecord : MonoTy → Bool
 /-- Extract row from record type -/
 def recordRow? : MonoTy → Option RowTy
   | .record row => some row
+  | _ => none
+
+/-- Build a closed variant type from case list -/
+def mkVariant (cases : List (String × MonoTy)) : MonoTy :=
+  let row := cases.foldr (init := Ty.rowEmpty) fun (name, ty) acc =>
+    Ty.rowExtend (Ty.labelLit name) ty acc
+  Ty.variant row
+
+/-- Build an open variant type (with row variable tail) -/
+def mkOpenVariant (cases : List (String × MonoTy)) (tail : RowTy) : MonoTy :=
+  let row := cases.foldr (init := tail) fun (name, ty) acc =>
+    Ty.rowExtend (Ty.labelLit name) ty acc
+  Ty.variant row
+
+/-- Check if a type is a variant type -/
+def isVariant : MonoTy → Bool
+  | .variant _ => true
+  | _ => false
+
+/-- Extract row from variant type -/
+def variantRow? : MonoTy → Option RowTy
+  | .variant row => some row
   | _ => none
 
 /-- Extract label name from a label type -/

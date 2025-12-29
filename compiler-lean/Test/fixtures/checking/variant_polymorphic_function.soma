@@ -1,0 +1,15 @@
+// expect: success
+
+def isOk :: forall (r :: %). < Ok :: Int | r > -> Bool
+    | .Ok _ => true
+    | _ => false
+
+def test1 :: Bool = isOk (.Ok 42)
+def test2 :: Bool = isOk (.Err "fail")
+
+def getOk :: forall (r :: %). < Ok :: Int | r > -> Int
+    | .Ok n => n
+    | _ => 0
+
+def test3 :: Int = getOk (.Ok 100)
+def test4 :: Int = getOk (.Err "nope")

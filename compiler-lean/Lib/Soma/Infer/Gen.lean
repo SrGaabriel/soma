@@ -158,6 +158,23 @@ where
       let (innerBindings, typedInner) ← genPatternAux innerPat scrutTy patSpan
       return (#[(name, info)] ++ innerBindings, .as binding name typedInner scrutTy patSpan)
 
+    | .variant label arg () patSpan =>
+      -- Generate fresh type variable for the argument type (if present) and row tail
+      let argTy ← match arg with
+        | some _ => freshVar s!"variant_{label}"
+        | none => pure Ty.unit
+      let rowTail ← InferM.freshRowVar s!"r_{label}"
+      -- The scrutinee must be a variant containing this case
+      let expectedVariantTy := Ty.variant (.rowExtend (Ty.labelLit label) argTy rowTail)
+      addEqualityConstraint scrutTy expectedVariantTy .patternMatch span patSpan
+      -- Generate constraints for the argument pattern if present
+      match arg with
+      | some argPat =>
+        let (argBindings, typedArgPat) ← genPatternAux argPat argTy patSpan
+        return (argBindings, .variant label (some typedArgPat) scrutTy patSpan)
+      | none =>
+        return (#[], .variant label none scrutTy patSpan)
+
   genPatternArrayAux (pats : Array (Pattern Unit)) (scrutTys : Array MonoTy) (span : Span)
       : InferM (Array (String × VarInfo) × Array (Pattern MonoTy)) := do
     let mut result := #[]
@@ -505,6 +522,20 @@ partial def genExpr {scope : Scope} (expr : Expr Unit scope)
         .type ⟨.star, .starPrim .unit⟩
     return (ty, .typeApp metalArg ty span)
 
+  | .inject label args () span => do
+    let (argTys, typedArgs) ← genExprList args
+    let argTy ← match argTys.toList with
+      | [] => pure Ty.unit
+      | [ty] => pure ty
+      | tys =>
+        -- Multiple args: use tuple type
+        match tys with
+        | fst :: snd :: rest => pure (.tuple fst snd rest)
+        | _ => pure Ty.unit
+    let rowTail ← InferM.freshRowVar s!"r_{label}"
+    let variantTy := Ty.variant (.rowExtend (Ty.labelLit label) argTy rowTail)
+    return (variantTy, .inject label typedArgs variantTy span)
+
 /-- Generate constraints for a capture list -/
 partial def genCaptureList {scope : Scope} (captures : CaptureList Unit scope)
     : InferM (Array MonoTy × CaptureList MonoTy scope) := do
@@ -687,11 +718,39 @@ partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : Infer
       let labelTy := Ty.lookupOrLiteralLabel fieldName.value tyVarIdMap
       rowTy := .rowExtend labelTy fieldMonoTy rowTy
     pure (.record rowTy)
+
+  | .variant cases tail _ =>
+    -- First, determine the base row (either empty or a row variable for polymorphism)
+    let baseRow : RowTy ← match tail with
+      | some tailName =>
+        match tyVarEnv.get? tailName.value with
+        | some (.var tyVarId) =>
+          if tyVarId.kind == .row then
+            pure (.var tyVarId)
+          else
+            InferM.freshRowVar tailName.value
+        | some _ =>
+          InferM.freshRowVar tailName.value
+        | none =>
+          InferM.freshRowVar tailName.value
+      | none =>
+        pure .rowEmpty
+    -- Build the row type from cases
+    let mut rowTy := baseRow
+    let tyVarIdMap : Std.HashMap String TyVarId := tyVarEnv.fold (init := {}) fun acc name ty =>
+      match ty with
+      | .var v => acc.insert name v
+      | _ => acc
+    for (caseName, caseTy) in cases.reverse do
+      let caseMonoTy ← resolveTypeExprWithEnv tyVarEnv caseTy
+      let labelTy := Ty.lookupOrLiteralLabel caseName.value tyVarIdMap
+      rowTy := .rowExtend labelTy caseMonoTy rowTy
+    pure (.variant rowTy)
 where
   span : Span := match ty with
     | .app _ _ s | .arrow _ _ s | .tuple _ s | .list _ s
     | .forall_ _ _ s | .constrained _ _ s | .parens _ s | .kinded _ _ s
-    | .record _ _ s => s
+    | .record _ _ s | .variant _ _ s => s
     | .var n | .con n => n.span
 
   /-- Collect the base type name and all arguments from nested type applications  -/
