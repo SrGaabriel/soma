@@ -1,0 +1,20 @@
+// expect: success
+
+intrinsic def {+} :: Int -> Int -> Int
+
+data Maybe a
+    | Nothing
+    | Just a
+
+trait Functor (f :: * -> *) where
+    def fmap :: forall a b. (a -> b) -> f a -> f b
+
+ instance Functor Maybe where
+    def fmap :: (a -> b) -> Maybe a -> Maybe b
+        | f (Just value) => Just (f value)
+        | f (Nothing) => Nothing   
+
+def mapBoth :: forall (f :: * -> *) a b. (a -> b) -> f a -> f a -> (f b, f b) with (Functor f)
+    | fn x y => (fmap fn x, fmap fn y)
+
+def test :: (Maybe Int, Maybe Int) = mapBoth (\x => x + 1) (Just 1) (Just 2)        

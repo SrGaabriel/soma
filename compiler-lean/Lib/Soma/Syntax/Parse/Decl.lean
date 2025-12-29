@@ -287,7 +287,12 @@ def parseTraitDecl : ParserM (Option GreenNode) := do
   | some traitTok =>
       match ← parseUpperIdent with
       | some nameTok =>
-          let params ← parseTypeParams
+          -- Parse type parameters, supporting both simple vars and kinded vars like (f :: * -> *)
+          let mut params : Array GreenNode := #[]
+          while true do
+            match ← parseForallBinder with
+            | some binder => params := params.push binder
+            | none => break
 
           let constraints ← if (← check .kw_with) then do
             let withTok ← consumeAny
