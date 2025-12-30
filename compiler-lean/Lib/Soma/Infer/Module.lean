@@ -45,9 +45,18 @@ partial def resolveTypeExprWithVars (ty : TypeExpr) (env : TypeEnv) (tyVars : St
     match StarPrimitive.fromName? name.value with
     | some prim => some (.starPrim prim)
     | none =>
-      match env.lookupType name.value with
-      | some info => some (.con info.typeId)
-      | none => none
+      -- First check if this is a type abbreviation
+      match env.lookupAbbreviation name.value with
+      | some abbrevInfo =>
+        -- Expand the abbreviation (no arguments for bare type constructor)
+        if abbrevInfo.params.isEmpty then
+          resolveTypeExprWithVars abbrevInfo.expansion env tyVars
+        else
+          none 
+      | none =>
+        match env.lookupType name.value with
+        | some info => some (.con info.typeId)
+        | none => none
 
   | .arrow from_ to _ =>
     match resolveTypeExprWithVars from_ env tyVars, resolveTypeExprWithVars to env tyVars with
@@ -75,10 +84,16 @@ partial def resolveTypeExprWithVars (ty : TypeExpr) (env : TypeEnv) (tyVars : St
         | some .ref => some (Ty.ref argTy)
         | some .io => some (Ty.io argTy)
         | none =>
-          match env.lookupType name.value with
-          | some typeInfo =>
-            some (Gen.applyTypeArgs (Ty.userCon typeInfo.typeId.kind typeInfo.typeId) #[argTy])
-          | none => none
+          -- Check for type abbreviation first
+          match env.lookupAbbreviation name.value with
+          | some abbrevInfo =>
+            -- Expand the abbreviation with the provided argument
+            expandAbbrevWithArgs abbrevInfo #[argTy] env tyVars
+          | none =>
+            match env.lookupType name.value with
+            | some typeInfo =>
+              some (Gen.applyTypeArgs (Ty.userCon typeInfo.typeId.kind typeInfo.typeId) #[argTy])
+            | none => none
       | .app _ _ _ =>
         -- Nested application - collect all args
         match collectTypeAppWithVars fn #[argTy] env tyVars with
@@ -88,10 +103,15 @@ partial def resolveTypeExprWithVars (ty : TypeExpr) (env : TypeEnv) (tyVars : St
           | some .ref => some (Ty.ref (allArgs[0]?.getD argTy))
           | some .io => some (Ty.io (allArgs[0]?.getD argTy))
           | none =>
-            match env.lookupType baseName with
-            | some typeInfo =>
-              some (Gen.applyTypeArgs (Ty.userCon typeInfo.typeId.kind typeInfo.typeId) allArgs)
-            | none => none
+            -- Check for type abbreviation first
+            match env.lookupAbbreviation baseName with
+            | some abbrevInfo =>
+              expandAbbrevWithArgs abbrevInfo allArgs env tyVars
+            | none =>
+              match env.lookupType baseName with
+              | some typeInfo =>
+                some (Gen.applyTypeArgs (Ty.userCon typeInfo.typeId.kind typeInfo.typeId) allArgs)
+              | none => none
         | none => none
       | .var name =>
         -- Higher-kinded type variable application: f a where f :: * -> *
@@ -169,6 +189,27 @@ where
       | none => none
     | .parens inner _ => collectTypeAppWithVars inner args env tyVars
     | _ => none
+
+  /-- Expand a type abbreviation with the given type arguments -/
+  expandAbbrevWithArgs (abbrevInfo : AbbrevInfo) (args : Array MonoTy) (env : TypeEnv) (tyVars : Std.HashMap String TyVarId) : Option MonoTy :=
+    if args.size != abbrevInfo.params.size then
+      none
+    else
+      -- Build a substitution mapping abbreviation params to the provided args
+      let maxId := tyVars.fold (init := 0) fun acc _ v => max acc (v.id + 1)
+      let abbrevTyVars := abbrevInfo.params.mapIdx fun i paramName =>
+        (paramName, TyVarId.mk paramName (maxId + i) .star)
+      let abbrevTyVarMap := abbrevTyVars.foldl (init := tyVars) fun acc (name, tv) =>
+        acc.insert name tv
+
+      -- First resolve the expansion with the abbreviation's type variables
+      match resolveTypeExprWithVars abbrevInfo.expansion env abbrevTyVarMap with
+      | none => none
+      | some expandedTy =>
+        -- Now substitute the abbreviation's type variables with the actual arguments
+        let subst := abbrevTyVars.zip args |>.foldl (init := Subst.empty) fun acc ((_, tv), argTy) =>
+          acc.compose (Subst.singleton tv.id argTy)
+        some (subst.apply expandedTy)
 
 /-- Resolve a TypeExpr to a MonoTy without using InferM (pure version).
     Returns `none` if the type cannot be resolved (unknown type constructor).
@@ -387,6 +428,14 @@ def buildTypeEnvFromModule
         metalName := methodName
       }
       env := env.addFunction methodName.display fnInfo
+
+  -- Add type abbreviations
+  for typeAbbrev in m.abbreviations do
+    let abbrevInfo : AbbrevInfo := {
+      params := typeAbbrev.params
+      expansion := typeAbbrev.expansion
+    }
+    env := env.addAbbreviation typeAbbrev.name abbrevInfo
 
   return (env, sup)
 

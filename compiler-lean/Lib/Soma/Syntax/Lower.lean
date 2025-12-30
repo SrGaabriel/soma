@@ -1598,6 +1598,48 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             let inner ← lowerDecl allKids[0]!.1 allKids[0]!.2
             pure (.intrinsic inner span)
 
+      | .declAbbrev =>
+          -- Structure: [abbrevTok, nameTok, optional tyParamList, eqTok, type]
+          let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent
+          let name ← if nameNodes.isEmpty then
+            lowerError "abbreviation missing name" span
+            pure ⟨"_Error", span⟩
+          else
+            match getTokenText nameNodes[0]! with
+            | some text => pure ⟨text, span⟩
+            | none =>
+                lowerError "abbreviation missing name" span
+                pure ⟨"_Error", span⟩
+
+          let allKids := childrenWithOffsets green offset
+          let paramNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .tyParamList
+          let params ← if paramNodes.isEmpty then pure #[]
+            else
+              let (plist, plistOffset) := paramNodes[0]!
+              let varNodes := childrenWithOffsets plist plistOffset |>.filter fun (c, _) =>
+                c.syntaxKind? == some .typeVar
+              varNodes.mapM fun (v, vo) => do
+                match firstGreenChild v with
+                | some child =>
+                    let text ← getGreenTokenText child vo
+                    let vspan ← spanFor v vo
+                    pure ⟨text, vspan⟩
+                | none =>
+                    let vspan ← spanFor v vo
+                    pure ⟨"_", vspan⟩
+
+          -- Find the type (last semantic node that is a type)
+          let typeNodes := allKids.filter fun (c, _) =>
+            match c.syntaxKind? with
+            | some sk => sk.isType
+            | none => false
+          if typeNodes.isEmpty then
+            lowerError "abbreviation missing type" span
+            pure (.abbrev name params (.var ⟨"_error", span⟩) span)
+          else
+            let ty ← lowerTypeExpr typeNodes[0]!.1 typeNodes[0]!.2
+            pure (.abbrev name params ty span)
+
       | _ =>
           lowerError s!"unexpected declaration kind: {kind}" span
           pure (.export_ #[] span)

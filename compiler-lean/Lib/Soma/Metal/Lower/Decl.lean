@@ -122,6 +122,17 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     -- Intrinsics - collect the inner declaration
     collectGlobals inner
 
+  | .abbrev name params _type _span =>
+    -- Register the type abbreviation
+    let modName ← LowerM.getModuleName
+    let uniqueId ← LowerM.freshUniqueId
+    let typeUnique : Unique := { id := uniqueId, module := modName, original := name.value }
+    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId, kind := Kind.nary params.size }
+    let tyCon := TyCon.user typeId
+    let tyVarIds := params.mapIdx fun idx p => TyVarId.mk p.value idx .star
+    let kind := Kind.nary params.size
+    LowerM.registerType name.value { tyCon := tyCon, params := tyVarIds, kind := kind, unique := typeUnique }
+
 /-- Collect globals from all declarations -/
 def collectAllGlobals (decls : Array Decl) : LowerM Unit := do
   for decl in decls do
@@ -343,6 +354,17 @@ def lowerInstance (decl : Decl) : LowerM (Option UntypedInstance) := do
     })
   | _ => pure none
 
+/-- Lower a type abbreviation -/
+def lowerAbbrev (decl : Decl) : LowerM (Option TypeAbbrev) := do
+  match decl with
+  | .abbrev name params expansion _ =>
+    pure (some {
+      name := name.value
+      params := params.map (·.value)
+      expansion := expansion
+    })
+  | _ => pure none
+
 /-- Lower all declarations to an UntypedModule -/
 def lowerModule (moduleName : String) (decls : Array Decl) : LowerM UntypedModule := do
   -- First pass: collect all globals
@@ -357,7 +379,10 @@ def lowerModule (moduleName : String) (decls : Array Decl) : LowerM UntypedModul
   -- Fourth pass: lower instances
   let instances ← decls.filterMapM lowerInstance
 
-  -- Fifth pass: extract type class metadata from GlobalEnv
+  -- Fifth pass: lower abbreviations
+  let abbreviations ← decls.filterMapM lowerAbbrev
+
+  -- Sixth pass: extract type class metadata from GlobalEnv
   let genv ← LowerM.getGlobalEnv
   let typeClasses := genv.typeClasses.fold (init := #[]) fun acc _ info =>
     acc.push { name := info.name, methods := info.methods : TypeClassMeta }
@@ -368,6 +393,7 @@ def lowerModule (moduleName : String) (decls : Array Decl) : LowerM UntypedModul
     types := types
     instances := instances
     typeClasses := typeClasses
+    abbreviations := abbreviations
   }
 
 /-- Get the name of a declaration (for tracking purposes) -/
@@ -383,6 +409,7 @@ def getDeclName (decl : Decl) : Option String :=
   | .intrinsic inner _ => getDeclName inner
   | .use _ _ _ => none
   | .export_ _ _ => none
+  | .abbrev name _ _ _ => some name.value
 
 /-- Result of incremental lowering -/
 structure IncrementalLowerResult where

@@ -92,6 +92,12 @@ structure TypeClassMeta where
   name : Name
   methods : Array (Name × QualifiedType)
 
+/-- A type abbreviation -/
+structure TypeAbbrev where
+  name : String
+  params : Array String
+  expansion : Syntax.TypeExpr
+
 /-! ## Untyped Module (after lowering, before type inference) -/
 
 /-- An untyped Metal module - produced by lowering -/
@@ -101,12 +107,13 @@ structure UntypedModule where
   types : Array UntypedTypeDef
   instances : Array UntypedInstance
   typeClasses : Array TypeClassMeta
+  abbreviations : Array TypeAbbrev := #[]
 
 namespace UntypedModule
 
 /-- Create an empty untyped module -/
 def empty (name : String) : UntypedModule :=
-  { name, functions := #[], types := #[], instances := #[], typeClasses := #[] }
+  { name, functions := #[], types := #[], instances := #[], typeClasses := #[], abbreviations := #[] }
 
 /-- Look up a function by name -/
 def findFunction (m : UntypedModule) (name : Name) : Option UntypedFunction :=

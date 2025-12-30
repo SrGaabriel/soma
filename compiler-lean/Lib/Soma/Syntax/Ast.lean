@@ -479,6 +479,9 @@ inductive Decl where
 
   /-- Intrinsic declaration -/
   | intrinsic (inner : Decl) (span : Span)
+
+  /-- Type abbreviation: abbrev Name params = Type -/
+  | abbrev (name : Name) (params : Array Name) (type_ : TypeExpr) (span : Span)
   deriving Repr
 
 instance : Nonempty Decl := ⟨.export_ #[] Span.uninhabited⟩
@@ -494,6 +497,7 @@ def span : Decl → Span
   | .use _ _ s => s
   | .export_ _ s => s
   | .intrinsic _ s => s
+  | .abbrev _ _ _ s => s
 
 /-- Get the name of a declaration (if it has one) -/
 def name? : Decl → Option Name
@@ -505,6 +509,7 @@ def name? : Decl → Option Name
   | .use _ _ _ => none
   | .export_ _ _ => none
   | .intrinsic inner _ => inner.name?
+  | .abbrev name _ _ _ => some name
 
 end Decl
 
@@ -764,6 +769,10 @@ partial def ppDecl : Decl → String
 
   | .intrinsic inner _ =>
       s!"intrinsic {ppDecl inner}"
+
+  | .abbrev name params ty _ =>
+      let paramsStr := if params.isEmpty then "" else s!" {ppNames params}"
+      s!"abbrev {name.value}{paramsStr} = {ppTypeExpr ty}"
 
 /-- Pretty print a Module -/
 def ppModule (m : Module) : String :=

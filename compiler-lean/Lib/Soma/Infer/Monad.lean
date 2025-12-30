@@ -77,6 +77,13 @@ structure ConstructorInfo where
   /-- Constructor tag (for runtime) -/
   tag : Nat
 
+/-- Information about a type abbreviation -/
+structure AbbrevInfo where
+  /-- Type parameters -/
+  params : Array String
+  /-- The type expression to expand to -/
+  expansion : Syntax.TypeExpr
+
 /-- The type environment -/
 structure TypeEnv where
   /-- Local variables in scope (by name) -/
@@ -89,6 +96,8 @@ structure TypeEnv where
   constructors : HashMap String ConstructorInfo
   /-- Label type variables in scope (from forall binders with label kind) -/
   labelVars : HashMap String LabelTy := {}
+  /-- Type abbreviations -/
+  abbreviations : HashMap String AbbrevInfo := {}
   deriving Inhabited
 
 namespace TypeEnv
@@ -99,6 +108,7 @@ def empty : TypeEnv :=
   , types := {}
   , constructors := {}
   , labelVars := {}
+  , abbreviations := {}
   }
 
 /-- Add a local variable -/
@@ -149,6 +159,14 @@ def addLabelVar (env : TypeEnv) (name : String) (labelTy : LabelTy) : TypeEnv :=
 /-- Look up a label type variable -/
 def lookupLabelVar (env : TypeEnv) (name : String) : Option LabelTy :=
   env.labelVars.get? name
+
+/-- Add a type abbreviation -/
+def addAbbreviation (env : TypeEnv) (name : String) (info : AbbrevInfo) : TypeEnv :=
+  { env with abbreviations := env.abbreviations.insert name info }
+
+/-- Look up a type abbreviation -/
+def lookupAbbreviation (env : TypeEnv) (name : String) : Option AbbrevInfo :=
+  env.abbreviations.get? name
 
 end TypeEnv
 

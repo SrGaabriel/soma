@@ -611,7 +611,46 @@ def applyArrowType (fnTy : SomeTy) (argTy : SomeTy) (span : Span) : InferM SomeT
     InferM.reportError (.unknownType s!"cannot apply type of kind {k} to argument" span)
     pure ⟨.star, ← InferM.freshVar "app"⟩
 
+/-- Collect all type arguments from a nested type application chain -/
+def collectTypeAppArgs (ty : TypeExpr) (args : Array TypeExpr) : Option (String × Array TypeExpr) :=
+  match ty with
+  | .con name => some (name.value, args)
+  | .app fn arg _ => collectTypeAppArgs fn (#[arg] ++ args)
+  | .parens inner _ => collectTypeAppArgs inner args
+  | _ => none
+
 mutual
+
+/-- Try to resolve a type abbreviation with no arguments -/
+partial def tryResolveAbbrevCon (tyVarEnv : TyVarEnv) (name : Soma.Syntax.Name) : InferM (Option SomeTy) := do
+  let env ← InferM.getTypeEnv
+  match env.lookupAbbreviation name.value with
+  | some abbrevInfo =>
+    if abbrevInfo.params.isEmpty then
+      -- Expand the abbreviation (no arguments needed)
+      let expanded ← resolveSomeTypeExprWithEnv tyVarEnv abbrevInfo.expansion
+      pure (some expanded)
+    else
+      -- Abbreviation requires arguments but none provided
+      InferM.reportError (.unknownType s!"{name.value} requires {abbrevInfo.params.size} type argument(s)" name.span)
+      let freshTy ← InferM.freshVar name.value
+      pure (some ⟨.star, freshTy⟩)
+  | none => pure none
+
+/-- Try to resolve a type abbreviation application -/
+partial def tryResolveAbbrevApp (tyVarEnv : TyVarEnv) (baseName : String) (args : Array TypeExpr) (span : Span) : InferM (Option SomeTy) := do
+  let env ← InferM.getTypeEnv
+  match env.lookupAbbreviation baseName with
+  | some abbrevInfo =>
+    let argTys ← args.mapM (resolveSomeTypeExprWithEnv tyVarEnv)
+    if argTys.size != abbrevInfo.params.size then
+      InferM.reportError (.unknownType s!"{baseName} expects {abbrevInfo.params.size} type argument(s), got {argTys.size}" span)
+      let freshTy ← InferM.freshVar baseName
+      pure (some ⟨.star, freshTy⟩)
+    else
+      let expandedTy ← expandAbbrevWithArgsM tyVarEnv abbrevInfo argTys
+      pure (some expandedTy)
+  | none => pure none
 
 /-- Resolve a TypeExpr to a SomeTy -/
 partial def resolveSomeTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : InferM SomeTy := do
@@ -633,16 +672,28 @@ partial def resolveSomeTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : I
       | some .ref => pure ⟨.arrow .star .star, .higherPrim .ref⟩
       | some .io => pure ⟨.arrow .star .star, .higherPrim .io⟩
       | none =>
-        match (← InferM.getTypeEnv).lookupType name.value with
+        let env ← InferM.getTypeEnv
+        match env.lookupType name.value with
         | some info =>
           pure ⟨info.typeId.kind, Ty.userCon info.typeId.kind info.typeId⟩
         | none =>
-          InferM.reportError (.unknownType name.value name.span)
-          let freshTy ← InferM.freshVar name.value
-          pure ⟨.star, freshTy⟩
+          -- Check for type abbreviation
+          match ← tryResolveAbbrevCon tyVarEnv name with
+          | some sty => pure sty
+          | none =>
+            InferM.reportError (.unknownType name.value name.span)
+            let freshTy ← InferM.freshVar name.value
+            pure ⟨.star, freshTy⟩
 
   | .app fn arg span =>
-    resolveTypeAppWithEnv tyVarEnv fn arg span
+    match collectTypeAppArgs fn #[arg] with
+    | some (baseName, args) =>
+      match ← tryResolveAbbrevApp tyVarEnv baseName args span with
+      | some sty => pure sty
+      | none =>
+        resolveTypeAppWithEnv tyVarEnv fn arg span
+    | none =>
+      resolveTypeAppWithEnv tyVarEnv fn arg span
 
   | .arrow from_ to _ =>
     let fromTy ← resolveTypeExprWithEnv tyVarEnv from_
@@ -757,11 +808,21 @@ partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : Infer
     match StarPrimitive.fromName? name.value with
     | some prim => pure (.starPrim prim)
     | none =>
-      match (← InferM.getTypeEnv).lookupType name.value with
+      let env ← InferM.getTypeEnv
+      match env.lookupType name.value with
       | some info => pure (.con info.typeId)
       | none =>
-        InferM.reportError (.unknownType name.value name.span)
-        InferM.freshVar name.value
+        -- Check for type abbreviation
+        match ← tryResolveAbbrevCon tyVarEnv name with
+        | some sty =>
+          match sty.cast? .star with
+          | some monoTy => pure monoTy
+          | none =>
+            InferM.reportError (.unknownType s!"abbreviation '{name.value}' has kind {sty.kind}, expected *" name.span)
+            InferM.freshVar name.value
+        | none =>
+          InferM.reportError (.unknownType name.value name.span)
+          InferM.freshVar name.value
 
   | .arrow from_ to _ =>
     let fromTy ← resolveTypeExprWithEnv tyVarEnv from_
@@ -781,13 +842,32 @@ partial def resolveTypeExprWithEnv (tyVarEnv : TyVarEnv) (ty : TypeExpr) : Infer
     pure (Ty.array elemTy)
 
   | .app fn arg span =>
-    -- Resolve type application using kind-aware resolution
-    let result ← resolveTypeAppWithEnv tyVarEnv fn arg span
-    match result.cast? .star with
-    | some monoTy => pure monoTy
+    -- First check if this is an abbreviation application
+    match collectTypeAppArgs fn #[arg] with
+    | some (baseName, args) =>
+      match ← tryResolveAbbrevApp tyVarEnv baseName args span with
+      | some sty =>
+        match sty.cast? .star with
+        | some monoTy => pure monoTy
+        | none =>
+          InferM.reportError (.unknownType s!"abbreviation has kind {sty.kind}, expected *" span)
+          InferM.freshVar baseName
+      | none =>
+        -- Not an abbreviation, use standard resolution
+        let result ← resolveTypeAppWithEnv tyVarEnv fn arg span
+        match result.cast? .star with
+        | some monoTy => pure monoTy
+        | none =>
+          InferM.reportError (.unknownType s!"type application has kind {result.kind}, expected *" span)
+          InferM.freshVar "app"
     | none =>
-      InferM.reportError (.unknownType s!"type application has kind {result.kind}, expected *" span)
-      InferM.freshVar "app"
+      -- Couldn't collect args, use standard resolution
+      let result ← resolveTypeAppWithEnv tyVarEnv fn arg span
+      match result.cast? .star with
+      | some monoTy => pure monoTy
+      | none =>
+        InferM.reportError (.unknownType s!"type application has kind {result.kind}, expected *" span)
+        InferM.freshVar "app"
 
   | .forall_ binders body _ =>
     -- Extend tyVarEnv with fresh type variables for the bound names
@@ -895,6 +975,13 @@ partial def extractLabelBinders (ty : Soma.Syntax.TypeExpr) : InferM (Array (Str
   | .parens inner _ => extractLabelBinders inner
   | .constrained _ body _ => extractLabelBinders body
   | _ => return #[]
+
+/-- Expand a type abbreviation with the given type arguments (monadic version) -/
+partial def expandAbbrevWithArgsM (tyVarEnv : TyVarEnv) (abbrevInfo : AbbrevInfo) (args : Array SomeTy) : InferM SomeTy := do
+  let mut newEnv := tyVarEnv
+  for (paramName, argTy) in abbrevInfo.params.zip args do
+    newEnv := newEnv.insert paramName argTy
+  resolveSomeTypeExprWithEnv newEnv abbrevInfo.expansion
 
 end
 

@@ -411,6 +411,33 @@ def parseExportDecl : ParserM (Option GreenNode) := do
           return some (GreenNode.mkError "missing export items" #[exportTok])
   | none => return none
 
+def parseAbbrevDecl : ParserM (Option GreenNode) := do
+  match ← tryConsume .kw_abbrev with
+  | some abbrevTok =>
+      match ← parseUpperIdent with
+      | some nameTok =>
+          -- Parse optional type parameters
+          let params ← parseTypeParams
+
+          match ← tryConsume .equals with
+          | some eqTok =>
+              match ← parseType with
+              | some ty =>
+                  let paramList := if params.isEmpty then #[]
+                    else #[GreenNode.mkNode .tyParamList params]
+                  let children := #[abbrevTok, nameTok] ++ paramList ++ #[eqTok, ty]
+                  return some (GreenNode.mkNode .declAbbrev children)
+              | none =>
+                  recordError "expected type after '='"
+                  return some (GreenNode.mkError "missing type" #[abbrevTok, nameTok, eqTok])
+          | none =>
+              recordError "expected '=' in abbreviation declaration"
+              return some (GreenNode.mkError "missing '='" #[abbrevTok, nameTok])
+      | none =>
+          recordError "expected type name after 'abbrev'"
+          return some (GreenNode.mkError "missing type name" #[abbrevTok])
+  | none => return none
+
 partial def parseIntrinsicDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
   match ← tryConsume .kw_intrinsic with
   | some intrinsicTok =>
@@ -435,6 +462,7 @@ partial def parseDecl : ParserM (Option GreenNode) := do
   else if (← check .kw_instance) then parseInstanceDecl
   else if (← check .kw_use) then parseUseDecl
   else if (← check .kw_export) then parseExportDecl
+  else if (← check .kw_abbrev) then parseAbbrevDecl
   else return none
 
 def parseSourceFile : ParserM GreenNode := do

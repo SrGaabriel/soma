@@ -13,6 +13,7 @@ inductive SyntaxKind where
   | declUse           -- Import declaration
   | declExport        -- Export declaration
   | declIntrinsic     -- Intrinsic declaration
+  | declAbbrev        -- Type abbreviation
   -- Definition Components
   | signature         -- Type signature
   | defClause         -- Pattern matching clause
@@ -112,6 +113,7 @@ def SyntaxKind.describe : SyntaxKind → String
   | .declUse => "import"
   | .declExport => "export"
   | .declIntrinsic => "intrinsic"
+  | .declAbbrev => "abbreviation"
   | .signature => "type signature"
   | .defClause => "definition clause"
   | .constructor => "constructor"
@@ -195,7 +197,7 @@ instance : ToString SyntaxKind where
 /-- Check if a syntax kind represents a declaration -/
 def SyntaxKind.isDecl : SyntaxKind → Bool
   | .declDef | .declData | .declStruct | .declTrait
-  | .declInstance | .declUse | .declExport | .declIntrinsic => true
+  | .declInstance | .declUse | .declExport | .declIntrinsic | .declAbbrev => true
   | _ => false
 
 /-- Check if a syntax kind represents an expression -/
