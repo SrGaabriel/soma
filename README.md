@@ -1,18 +1,18 @@
 # ⚗️ soma
 
-Soma is a statically-typed, pure functional language with Hindley–Milner style type inference, explicit effect modeling, and eager evaluation semantics. It leverages Interaction Nets for optimal evaluation, enabling GC-free memory management with deterministic lifetimes and automatic parallelism.
+Soma is a statically-typed, pure functional language with the [Calculus of Quantitative Constructions (CQC)](docs/CQC.md) for optional dependent types, Hindley–Milner style type inference, explicit effect modeling, and eager evaluation semantics. It leverages Interaction Nets for optimal evaluation, enabling GC-free memory management with deterministic lifetimes, zero-cost proofs, and automatic parallelism.
 
 ---
 
 ## ✨ Overview
 
-Combining high-level expressiveness with predictable performance characteristics, Soma features System F-ω typing, eager evaluation semantics, and explicit effect modeling to enable aggressive compile.
+Combining high-level expressiveness with predictable performance characteristics, Soma features the [Calculus of Quantitative Constructions (CQC)](docs/CQC.md), a dependent type system with quantities that track variable usage (erased, linear, or unrestricted). The language supports eager evaluation semantics, explicit effect modeling, and System F-ω typing to enable aggressive optimization.
 
-Soma achieves optimal evaluation via Interaction Nets, in turn delivering GC-free memory management with deterministic lifetimes. The key is that the compiler statically analyzes variable usage patterns to infer linear types, automatically inserting duplication and erasure operations that correspond to precise allocation and deallocation points.
+Soma achieves optimal evaluation via Interaction Nets, in turn delivering GC-free memory management with deterministic lifetimes. The key is that the compiler statically analyzes variable usage patterns through quantities, automatically inserting duplication and erasure operations that correspond to precise allocation and deallocation points.
 
 The Interaction Net foundation also enables automatic parallelism, since independent subgraphs can reduce concurrently without synchronization overhead. The compiler offers three execution modes allowing developers to choose the appropriate performance-predictability tradeoff for their use case.
 
-In practice, this means developers write composable functional code while the compiler guarantees systems-level performance: deterministic memory reclamation, predictable execution timing, and no runtime garbage collection overhead.
+In practice, this means developers write composable functional code with optional dependent types for compile-time guarantees (vector lengths, protocol states, resource usage) while the compiler guarantees systems-level performance: deterministic memory reclamation, predictable execution timing, zero-cost proofs, and no runtime garbage collection overhead.
 
 ---
 
