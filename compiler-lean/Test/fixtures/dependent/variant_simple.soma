@@ -1,0 +1,5 @@
+// expect: success
+// Test: simple variant types
+
+def ok :: < Ok :: Int | Err :: String > = .Ok 42
+def err :: < Ok :: Int | Err :: String > = .Err "failed"

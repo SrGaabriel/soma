@@ -1,0 +1,12 @@
+// expect: success
+// Test: struct data type
+
+struct Point = Point
+    x :: Int
+    y :: Int
+
+def getX :: Point -> Int
+    | Point x _ => x
+
+def getY :: Point -> Int
+    | Point _ y => y

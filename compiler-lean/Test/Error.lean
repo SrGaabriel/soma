@@ -1,13 +1,15 @@
 import Soma.Logging.Error
 import Soma.Syntax.Source
 import Soma.Syntax.Diagnostic
+import Test.Fixtures
 
 namespace Test.Error
 
 open Soma.Syntax
 open Soma.Logging.Error
+open Test.Fixtures
 
-def run : IO Unit := do
+def run : IO TestRunner := do
   -- Test 1: Two stacked labels at exact same span
   IO.eprintln "=== Test 1: Two stacked labels at same span ==="
   let source1 := "fn main() {\n    let x = 1\n}"
@@ -189,5 +191,8 @@ def run : IO Unit := do
     help := some "If this renders correctly, you've won"
   }
   IO.eprintln (renderDiagnostic diag8 sf8)
+
+  -- Error tests are visual-only, no pass/fail tracking
+  return TestRunner.init
 
 end Test.Error

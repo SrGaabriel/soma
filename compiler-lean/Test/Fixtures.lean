@@ -103,6 +103,13 @@ def printSummary (r : TestRunner) (suiteName : String) : IO Unit := do
 
 def isSuccess (r : TestRunner) : Bool := r.failed == 0
 
+/-- Merge two test runners, combining their results -/
+def merge (r1 r2 : TestRunner) : TestRunner :=
+  { passed := r1.passed + r2.passed
+    failed := r1.failed + r2.failed
+    skipped := r1.skipped + r2.skipped
+    failures := r1.failures ++ r2.failures }
+
 end TestRunner
 
 end Test.Fixtures

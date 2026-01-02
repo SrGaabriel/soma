@@ -1,0 +1,6 @@
+// expect: success
+// Test: Type universe - Int lives in Type0
+
+def intIsType :: Type = Int
+def boolIsType :: Type = Bool
+def stringIsType :: Type = String

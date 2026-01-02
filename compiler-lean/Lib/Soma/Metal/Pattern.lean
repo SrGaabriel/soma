@@ -5,10 +5,9 @@ import Soma.Syntax.Source
 
 namespace Soma.Metal
 
-open Soma.Typing
 open Soma.Syntax (Span)
 
-/-- Patterns parameterized by type info (Unit for untyped, MonoTy for typed) -/
+/-- Patterns parameterized by type info -/
 inductive Pattern (α : Type) where
   | var (binding : BindingId) (original : String) (info : α) (span : Span)
   | wildcard (info : α) (span : Span)
@@ -21,11 +20,8 @@ inductive Pattern (α : Type) where
   | variant (label : String) (arg : Option (Pattern α)) (info : α) (span : Span)
   deriving Inhabited
 
-/-- Untyped patterns (before type checking) -/
+/-- Untyped patterns -/
 abbrev UntypedPattern := Pattern Unit
-
-/-- Typed patterns (after type checking) -/
-abbrev TypedPattern := Pattern MonoTy
 
 namespace Pattern
 

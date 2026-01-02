@@ -276,6 +276,8 @@ partial def lexToken : LexerM (Option RawToken) := do
   | 'λ' => return some (← singleCharToken .lambda)
   | '\\' => return some (← singleCharToken .lambda)
   | '∀' => return some (← singleCharToken .forallSymbol)
+  | '×' => return some (← singleCharToken .times)
+  | 'ω' => return some (← singleCharToken .omega)
   | '$' => return some (← singleCharToken .dollar)
   | ':' =>
     if (← peekNext) == ':' then skipN 2; return some (← makeToken .doubleColon start)

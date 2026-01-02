@@ -82,6 +82,9 @@ structure UniqueSupply where
 
 namespace UniqueSupply
 
+instance : Inhabited UniqueSupply where
+  default := { nextId := 0, module := "" }
+
 /-- Create a fresh supply for a module -/
 def initial (moduleName : String) : UniqueSupply :=
   { nextId := 0, module := moduleName }

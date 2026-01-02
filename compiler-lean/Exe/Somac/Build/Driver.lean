@@ -71,33 +71,34 @@ def build (opts : BuildOptions) : IO BuildResult := do
 
   IO.println s!"Building: {inputPath}"
 
-  let config : ProjectConfig := {
-    input := inputPath
-    name := opts.name
-    deps := opts.deps.map fun (n, p) => (n, ⟨p⟩)
-  }
+  -- let config : ProjectConfig := {
+  --   input := inputPath
+  --   name := opts.name
+  --   deps := opts.deps.map fun (n, p) => (n, ⟨p⟩)
+  -- }
 
-  let result ← checkProject config loadExternalDependencies
+  -- let result ← checkProject config loadExternalDependencies
 
-  -- Print diagnostics
-  if result.diagnostics.size > 0 then
-    for diag in result.diagnostics do
-      IO.eprintln s!"  {diag.severity}: {diag.message}"
+  -- -- Print diagnostics
+  -- if result.diagnostics.size > 0 then
+  --   for diag in result.diagnostics do
+  --     IO.eprintln s!"  {diag.severity}: {diag.message}"
 
-  if !result.success then
-    IO.eprintln (Error.renderSummary result.diagnostics)
-    pure (BuildResult.failed result.diagnostics)
-  else
-    -- Link
-    let extConstructors : Std.HashMap String Nat := {}  -- TODO: get from deps
-    let (llvmIR, _allConstructors) ← linkModules result.packageName result.checkedModules extConstructors
+  -- if !result.success then
+  --   IO.eprintln (Error.renderSummary result.diagnostics)
+  --   pure (BuildResult.failed result.diagnostics)
+  -- else
+  --   -- Link
+  --   let extConstructors : Std.HashMap String Nat := {}  -- TODO: get from deps
+  --   let (llvmIR, _allConstructors) ← linkModules result.packageName result.checkedModules extConstructors
 
-    -- Generate output
-    let outputPath := generateOutputPath opts result.packageName
-    generateOutput opts outputPath llvmIR
+  --   -- Generate output
+  --   let outputPath := generateOutputPath opts result.packageName
+  --   generateOutput opts outputPath llvmIR
 
-    IO.println s!"Successfully compiled {result.checkedModules.size} modules"
-    IO.println s!"Output: {outputPath}"
-    pure BuildResult.succeeded
+  --   IO.println s!"Successfully compiled {result.checkedModules.size} modules"
+  --   IO.println s!"Output: {outputPath}"
+  --   pure BuildResult.succeeded
+  sorry
 
 end Somac.Build

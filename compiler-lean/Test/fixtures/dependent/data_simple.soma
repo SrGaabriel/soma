@@ -1,0 +1,10 @@
+// expect: success
+// Test: simple algebraic data type
+
+data MyBool
+    | MyTrue
+    | MyFalse
+
+def not :: MyBool -> MyBool
+    | MyTrue => MyFalse
+    | MyFalse => MyTrue

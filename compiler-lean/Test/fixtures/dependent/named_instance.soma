@@ -1,0 +1,19 @@
+// expect: success
+// Test: named instance syntax
+// Instances can be given explicit names: `instance myName : Trait Type where ...`
+
+trait Showable a where
+    def render :: a -> String
+
+// Named instance - can be referenced by name later
+instance intShowable : Showable Int where
+    def render
+        | x => "int"
+
+// Unnamed instance (traditional syntax) also works
+instance Showable Bool where
+    def render
+        | b => "bool"
+
+def display :: forall a. {{Showable a}} -> a -> String
+    | x => render x

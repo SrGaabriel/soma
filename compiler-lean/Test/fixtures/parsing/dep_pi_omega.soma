@@ -1,0 +1,2 @@
+def useMany :: (ω a : Type) -> a -> a
+    | _ x => x

@@ -1,0 +1,2 @@
+def phantom :: (0 a : Type) -> Unit
+    | _ => ()

@@ -3,18 +3,57 @@ import Soma.Metal.Scope
 import Soma.Metal.Literal
 import Soma.Metal.Pattern
 import Soma.Syntax.Source
+import Soma.Syntax.Ast
+import Soma.Core.Quantity
+import Soma.Core.Level
+import Soma.Core.Primitive
+import Soma.Core.TypeId
 
-open Soma.Typing
 open Soma.Metal
 open Soma.Syntax (Span)
+open Soma.Core (Quantity Level LevelVarId StarPrimitive HigherPrimitive TypeId)
 
 /-- Argument to an explicit type application in Metal IR -/
 inductive Soma.Metal.TypeArg where
-  /-- A type of any kind -/
-  | type (ty : SomeTy)
+  /-- A type expression (to be elaborated during type checking) -/
+  | type (ty : Soma.Syntax.TypeExpr)
   /-- A label literal for label polymorphism -/
   | label (name : String)
   deriving Inhabited
+
+/-- Binder information: how a variable is bound -/
+inductive Soma.Metal.BinderInfo where
+  /-- Explicit argument: f x -/
+  | explicit
+  /-- Implicit argument: f {x} -/
+  | implicit
+  /-- Instance argument: f [x] or f {{x}} -/
+  | instance_
+  /-- Strict implicit: f ⦃x⦄ -/
+  | strictImplicit
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+
+namespace Soma.Metal.BinderInfo
+
+instance : ToString BinderInfo where
+  toString
+    | .explicit => "explicit"
+    | .implicit => "implicit"
+    | .instance_ => "instance"
+    | .strictImplicit => "strictImplicit"
+
+/-- Check if binder is implicit (any kind) -/
+def isImplicit : BinderInfo → Bool
+  | .explicit => false
+  | _ => true
+
+end Soma.Metal.BinderInfo
+
+/-- Hole identifier for user-written holes -/
+structure Soma.Metal.HoleId where
+  id : Nat
+  name : Option String := none
+  deriving Repr, BEq, Hashable, Inhabited
 
 /-- List of parameters (for lambda) - defined before Expr since it doesn't depend on it -/
 inductive Soma.Metal.ParamList (α : Type) : Type where
@@ -150,6 +189,125 @@ inductive Soma.Metal.Expr (α : Type) : Scope → Type where
   | typeApp (arg : Soma.Metal.TypeArg) (info : α) (span : Span)
       : Soma.Metal.Expr α scope
 
+  -- Dependent Type Constructors
+
+  /-- Universe type: Type_l -/
+  | type (level : Level) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Dependent function type (Π-type): (q x : A) -> B
+      - qty: quantity annotation (0 = erased, 1 = linear, ω = unrestricted)
+      - binder: how the argument is passed (explicit, implicit, instance)
+      - name: variable name (for pretty printing)
+      - domain: the type A
+      - codomain: the type B (may reference the bound variable)
+  -/
+  | pi (qty : Quantity) (binder : Soma.Metal.BinderInfo) (name : String)
+       (domain : Soma.Metal.Expr α scope)
+       (codomain : Soma.Metal.Expr α scope)
+       (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Dependent pair type (Σ-type): (x : A) × B -/
+  | sigma (qty : Quantity) (name : String)
+          (fst : Soma.Metal.Expr α scope)
+          (snd : Soma.Metal.Expr α scope)
+          (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Dependent pair value -/
+  | pair (fst : Soma.Metal.Expr α scope)
+         (snd : Soma.Metal.Expr α scope)
+         (info : α) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- First projection of a pair -/
+  | fst (e : Soma.Metal.Expr α scope) (info : α) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Second projection of a pair -/
+  | snd (e : Soma.Metal.Expr α scope) (info : α) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Primitive type as expression (Int, Bool, etc.) -/
+  | primTy (p : StarPrimitive) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Higher-kinded primitive as expression (Array, IO, Ref) -/
+  | higherPrimTy (p : HigherPrimitive) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Empty row type -/
+  | rowEmpty (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Row extension: { label : fieldTy | tail } -/
+  | rowExtend (label : Soma.Metal.Expr α scope)
+              (fieldTy : Soma.Metal.Expr α scope)
+              (tail : Soma.Metal.Expr α scope)
+              (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Record type from row -/
+  | recordTy (row : Soma.Metal.Expr α scope) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Variant type from row -/
+  | variantTy (row : Soma.Metal.Expr α scope) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Label literal for label polymorphism -/
+  | labelLit (name : String) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Data type applied to parameters (as a type expression) -/
+  | dataTy (id : TypeId) (params : Soma.Metal.ExprList α scope) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Type annotation: (e : A) -/
+  | ann (expr : Soma.Metal.Expr α scope)
+        (ty : Soma.Metal.Expr α scope)
+        (info : α) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- User-written hole: _ or ?name -/
+  | hole (id : Soma.Metal.HoleId) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Metavariable (created during elaboration) -/
+  | mvar (id : Nat) (info : α) (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Equality type: lhs = rhs : ty -/
+  | eq (tyLevel : Level) (ty : Soma.Metal.Expr α scope)
+       (lhs : Soma.Metal.Expr α scope)
+       (rhs : Soma.Metal.Expr α scope)
+       (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Reflexivity proof: refl : x = x -/
+  | refl (ty : Soma.Metal.Expr α scope)
+         (x : Soma.Metal.Expr α scope)
+         (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Transport along an equality proof: transport P eq px : P y
+      Given:
+      - P : A -> Type (the motive/predicate)
+      - eq : x = y (equality proof)
+      - px : P x (value at x)
+      Returns: P y (value transported to y)
+  -/
+  | transport (tyLevel : Level)
+              (ty : Soma.Metal.Expr α scope)
+              (motive : Soma.Metal.Expr α scope)
+              (lhs : Soma.Metal.Expr α scope)
+              (rhs : Soma.Metal.Expr α scope)
+              (eq : Soma.Metal.Expr α scope)
+              (body : Soma.Metal.Expr α scope)
+              (span : Span)
+      : Soma.Metal.Expr α scope
+
 /-- List of expressions at the same scope -/
 inductive Soma.Metal.ExprList (α : Type) : Scope → Type where
   | nil : Soma.Metal.ExprList α scope
@@ -253,6 +411,30 @@ partial def Soma.Metal.Expr.mapInfo (f : α → β) : Soma.Metal.Expr α scope �
   | .panic msg info span => .panic msg (f info) span
   | .proj typeName fieldName idx info span => .proj typeName fieldName idx (f info) span
   | .typeApp arg info span => .typeApp arg (f info) span
+  -- Dependent type constructors
+  | .type level span => .type level span
+  | .pi qty binder name dom cod span => .pi qty binder name (dom.mapInfo f) (cod.mapInfo f) span
+  | .sigma qty name fst snd span => .sigma qty name (fst.mapInfo f) (snd.mapInfo f) span
+  | .pair fst snd info span => .pair (fst.mapInfo f) (snd.mapInfo f) (f info) span
+  | .fst e info span => .fst (e.mapInfo f) (f info) span
+  | .snd e info span => .snd (e.mapInfo f) (f info) span
+  | .primTy p span => .primTy p span
+  | .higherPrimTy p span => .higherPrimTy p span
+  | .rowEmpty span => .rowEmpty span
+  | .rowExtend label fieldTy tail span =>
+      .rowExtend (label.mapInfo f) (fieldTy.mapInfo f) (tail.mapInfo f) span
+  | .recordTy row span => .recordTy (row.mapInfo f) span
+  | .variantTy row span => .variantTy (row.mapInfo f) span
+  | .labelLit name span => .labelLit name span
+  | .dataTy id params span => .dataTy id (params.mapInfo f) span
+  | .ann expr ty info span => .ann (expr.mapInfo f) (ty.mapInfo f) (f info) span
+  | .hole id span => .hole id span
+  | .mvar id info span => .mvar id (f info) span
+  | .eq tyLevel ty lhs rhs span => .eq tyLevel (ty.mapInfo f) (lhs.mapInfo f) (rhs.mapInfo f) span
+  | .refl ty x span => .refl (ty.mapInfo f) (x.mapInfo f) span
+  | .transport tyLevel ty motive lhs rhs eq body span =>
+      .transport tyLevel (ty.mapInfo f) (motive.mapInfo f) (lhs.mapInfo f)
+                 (rhs.mapInfo f) (eq.mapInfo f) (body.mapInfo f) span
 
 /-- Map a function over the annotation type of an expression list -/
 partial def Soma.Metal.ExprList.mapInfo (f : α → β) : Soma.Metal.ExprList α scope → Soma.Metal.ExprList β scope
@@ -362,17 +544,11 @@ end RecordFieldList
 /-- Untyped expressions (before type checking) -/
 abbrev UntypedExpr (scope : Scope) := Expr Unit scope
 
-/-- Typed expressions (after type checking) -/
-abbrev TypedExpr (scope : Scope) := Expr MonoTy scope
-
 /-- A closed expression has no free variables -/
 abbrev ClosedExpr α := Expr α []
 
 /-- Closed untyped expression -/
 abbrev ClosedUntypedExpr := ClosedExpr Unit
-
-/-- Closed typed expression -/
-abbrev ClosedTypedExpr := ClosedExpr MonoTy
 
 namespace Expr
 
@@ -397,6 +573,27 @@ def span : Expr α scope → Span
   | .panic _ _ s => s
   | .proj _ _ _ _ s => s
   | .typeApp _ _ s => s
+  -- Dependent type constructors
+  | .type _ s => s
+  | .pi _ _ _ _ _ s => s
+  | .sigma _ _ _ _ s => s
+  | .pair _ _ _ s => s
+  | .fst _ _ s => s
+  | .snd _ _ s => s
+  | .primTy _ s => s
+  | .higherPrimTy _ s => s
+  | .rowEmpty s => s
+  | .rowExtend _ _ _ s => s
+  | .recordTy _ s => s
+  | .variantTy _ s => s
+  | .labelLit _ s => s
+  | .dataTy _ _ s => s
+  | .ann _ _ _ s => s
+  | .hole _ s => s
+  | .mvar _ _ s => s
+  | .eq _ _ _ _ s => s
+  | .refl _ _ s => s
+  | .transport _ _ _ _ _ _ _ s => s
 
 /-- Get the type info from an expression (if it carries one) -/
 def getInfo : Expr α scope → Option α
@@ -419,10 +616,28 @@ def getInfo : Expr α scope → Option α
   | .panic _ i _ => some i
   | .proj _ _ _ i _ => some i
   | .typeApp _ i _ => some i
+  -- Dependent type constructors
+  | .type _ _ => none  -- Type literals don't carry runtime info
+  | .pi _ _ _ _ _ _ => none  -- Pi types are type-level
+  | .sigma _ _ _ _ _ => none  -- Sigma types are type-level
+  | .pair _ _ i _ => some i
+  | .fst _ i _ => some i
+  | .snd _ i _ => some i
+  | .primTy _ _ => none  -- Primitive types don't carry runtime info
+  | .higherPrimTy _ _ => none
+  | .rowEmpty _ => none
+  | .rowExtend _ _ _ _ => none
+  | .recordTy _ _ => none
+  | .variantTy _ _ => none
+  | .labelLit _ _ => none
+  | .dataTy _ _ _ => none
+  | .ann _ _ i _ => some i
+  | .hole _ _ => none
+  | .mvar _ i _ => some i
+  | .eq _ _ _ _ _ => none  -- Equality types are type-level
+  | .refl _ _ _ => none  -- Refl is a proof term
+  | .transport _ _ _ _ _ _ _ _ => none  -- Transport is a proof term
 
 end Expr
-
-/-- Get the type of a typed expression -/
-def TypedExpr.type (e : TypedExpr scope) : Option MonoTy := e.getInfo
 
 end Soma.Metal

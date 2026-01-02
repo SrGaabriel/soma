@@ -1,0 +1,10 @@
+// expect: success
+// Test: simple pair types
+
+def pair :: (Int, Int) = (1, 2)
+
+def fst :: (Int, Int) -> Int
+    | (x, _) => x
+
+def snd :: (Int, Int) -> Int
+    | (_, y) => y

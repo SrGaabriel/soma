@@ -1,0 +1,12 @@
+// expect: success
+// Test: forall polymorphism (implicit type arguments)
+
+def id :: forall a. a -> a
+    | x => x
+
+def const :: forall a b. a -> b -> a
+    | x _ => x
+
+def test1 :: Int = id 42
+def test2 :: String = id "hello"
+def test3 :: Int = const 1 "ignored"

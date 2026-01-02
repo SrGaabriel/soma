@@ -1,0 +1,11 @@
+// expect: success
+// Test: multiple trait constraints
+
+trait Eq a where
+    def eq :: a -> a -> Bool
+
+trait Ord a where
+    def compare :: a -> a -> Int
+
+def sortedEq :: forall a. a -> a -> Bool with (Eq a, Ord a)
+    | x y => eq x y

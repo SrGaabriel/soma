@@ -1,0 +1,6 @@
+// expect: success
+// Test: integer literal type inference
+
+def x :: Int = 42
+def y :: Int = 100
+def z :: Int = 0

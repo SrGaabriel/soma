@@ -1,0 +1,12 @@
+// expect: success
+// Test: combining row polymorphism and variant types
+
+def getX :: forall (r :: %). { x :: Int | r } -> Int
+    | rec => rec.x
+
+def handleResult :: < Ok :: Int | Err :: String > -> Int
+    | .Ok n => n
+    | .Err _ => 0
+
+def test1 :: Int = getX { x = 1, y = 2 }
+def test2 :: Int = handleResult (.Ok 42)

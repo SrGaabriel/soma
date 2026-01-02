@@ -1,0 +1,10 @@
+// expect: success
+// Test: recursive algebraic data type
+
+data List a
+    | Nil
+    | Cons a (List a)
+
+def head :: forall a. a -> List a -> a
+    | default Nil => default
+    | _ (Cons x _) => x

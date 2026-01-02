@@ -16,7 +16,8 @@ def loadExternalDependencies (deps : Array (String × System.FilePath))
   if deps.isEmpty then
     pure (.ok #[])
   else
-    MetadataLoad.loadMetadataFiles deps
+    -- MetadataLoad.loadMetadataFiles deps
+    sorry
 
 /-- Link checked modules into a single optimized unit -/
 def linkModules
@@ -28,17 +29,17 @@ def linkModules
   IO.println s!"  Linking {modules.size} modules into package '{packageName}'"
 
   -- Extract all constructor metadata
-  let mut allConstructors : Std.HashMap String Nat := {}
-  for m in modules do
-    let ctors := CheckedModule.constructorMetadata m
-    for (name, tag) in ctors.toArray do
-      allConstructors := allConstructors.insert name.display tag
+  -- let mut allConstructors : Std.HashMap String Nat := {}
+  -- for m in modules do
+  --   let ctors := CheckedModule.constructorMetadata m
+  --   for (name, tag) in ctors.toArray do
+  --     allConstructors := allConstructors.insert name.display tag
 
   -- TODO: Return actual Alloy module
   let placeholderLLVM := s!"; Placeholder LLVM IR for {packageName}\n"
 
   IO.println "Link-time optimization complete (placeholder)"
 
-  pure (placeholderLLVM, allConstructors)
+  pure (placeholderLLVM, sorry)
 
 end Somac.Build

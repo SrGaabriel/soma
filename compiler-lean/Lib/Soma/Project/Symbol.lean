@@ -1,12 +1,12 @@
 import Soma.Unique
 import Soma.Syntax.Source
-import Soma.Typing
+import Soma.Core.Value
 
 namespace Soma.Project
 
 open Soma
 open Soma.Syntax
-open Soma.Typing
+open Soma.Core
 
 /-- The kind of a symbol, determining its namespace and semantics -/
 inductive SymbolKind where
@@ -122,10 +122,10 @@ def isInstanceMethod (s : Symbol) : Bool :=
 
 end Symbol
 
-/-- A symbol environment maps symbols to their qualified types -/
-abbrev SymbolEnv := Std.HashMap Symbol QualifiedType
+/-- A symbol environment maps symbols to their types (as Core.Value) -/
+abbrev SymbolEnv := Std.HashMap Symbol Value
 
-/-- Instance metadata for type class instances - maps class name to array of (instance types, implementing symbol) -/
-abbrev InstanceMetadata := Std.HashMap String (Array (Array MonoTy × Symbol))
+/-- Instance metadata for type class instances - maps class name to array of (instance type args, implementing symbol) -/
+abbrev InstanceMetadata := Std.HashMap String (Array (Array Value × Symbol))
 
 end Soma.Project

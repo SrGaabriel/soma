@@ -1,6 +1,6 @@
 /-
   Soma.Metal.Pretty
-  Pretty printing for Metal IR (both typed and untyped).
+  Pretty printing for Metal IR.
 -/
 import Soma.Metal.Expr
 import Soma.Metal.Function
@@ -9,18 +9,12 @@ import Soma.Metal.Module
 namespace Soma.Metal.Pretty
 
 open Soma.Metal
-open Soma.Typing
 
 /-- Configuration for pretty printing -/
 structure Config where
-  showTypes : Bool := false
   indent : Nat := 2
 
-/-- Pretty print a type annotation if showTypes is enabled -/
-def ppTypeAnnotation (cfg : Config) (ty : MonoTy) : String :=
-  if cfg.showTypes then s!" : {ty}" else ""
-
-/-- Pretty print a Unit annotation (for untyped) -/
+/-- Pretty print a Unit annotation (always empty) -/
 def ppUnitAnnotation (_cfg : Config) (_u : Unit) : String := ""
 
 /-- Class for pretty printing annotations -/
@@ -29,9 +23,6 @@ class PpAnnotation (α : Type) where
 
 instance : PpAnnotation Unit where
   ppAnnotation := ppUnitAnnotation
-
-instance : PpAnnotation MonoTy where
-  ppAnnotation := ppTypeAnnotation
 
 /-- Create indentation string -/
 def mkIndent (n : Nat) : String :=
@@ -143,7 +134,7 @@ partial def ppExpr [PpAnnotation α] (cfg : Config) (indent : Nat) : Expr α sco
     s!"{typeName.display}.{fieldName}{PpAnnotation.ppAnnotation cfg info}"
   | .typeApp arg info _ =>
     let argStr := match arg with
-      | .type ty => s!"@{ty.ty}"
+      | .type ty => s!"@{Soma.Syntax.Pretty.ppTypeExpr ty}"
       | .label name => s!"@{name}"
     s!"{argStr}{PpAnnotation.ppAnnotation cfg info}"
   | .inject label args info _ =>
@@ -152,6 +143,76 @@ partial def ppExpr [PpAnnotation α] (cfg : Config) (indent : Nat) : Expr α sco
       s!".{label}{PpAnnotation.ppAnnotation cfg info}"
     else
       s!".{label} {" ".intercalate argsStr}{PpAnnotation.ppAnnotation cfg info}"
+
+  -- Dependent type constructors
+  | .type level _ =>
+    match level with
+    | .lit 0 => "Type"
+    | _ => s!"Type{level}"
+  | .pi qty binder name domain codomain _ =>
+    let qtyStr := match qty with
+      | .zero => "0 "
+      | .one => "1 "
+      | .omega => ""
+    let binderL := match binder with
+      | .explicit => "("
+      | .implicit => "{"
+      | .instance_ => "{{"
+      | .strictImplicit => "⦃"
+    let binderR := match binder with
+      | .explicit => ")"
+      | .implicit => "}"
+      | .instance_ => "}}"
+      | .strictImplicit => "⦄"
+    let domStr := ppExpr cfg indent domain
+    let codStr := ppExpr cfg indent codomain
+    s!"{binderL}{qtyStr}{name} : {domStr}{binderR} -> {codStr}"
+  | .sigma qty name fst snd _ =>
+    let qtyStr := match qty with
+      | .zero => "0 "
+      | .one => "1 "
+      | .omega => ""
+    let fstStr := ppExpr cfg indent fst
+    let sndStr := ppExpr cfg indent snd
+    s!"({qtyStr}{name} : {fstStr}) × {sndStr}"
+  | .pair fst snd info _ =>
+    let fstStr := ppExpr cfg indent fst
+    let sndStr := ppExpr cfg indent snd
+    s!"({fstStr}, {sndStr}){PpAnnotation.ppAnnotation cfg info}"
+  | .fst e info _ =>
+    s!"{ppExpr cfg indent e}.1{PpAnnotation.ppAnnotation cfg info}"
+  | .snd e info _ =>
+    s!"{ppExpr cfg indent e}.2{PpAnnotation.ppAnnotation cfg info}"
+  | .primTy p _ => p.name
+  | .higherPrimTy p _ => p.name
+  | .rowEmpty _ => "{}"
+  | .rowExtend label fieldTy tail _ =>
+    let labelStr := ppExpr cfg indent label
+    let tyStr := ppExpr cfg indent fieldTy
+    let tailStr := ppExpr cfg indent tail
+    "{ " ++ labelStr ++ " : " ++ tyStr ++ " | " ++ tailStr ++ " }"
+  | .recordTy row _ =>
+    "{ " ++ ppExpr cfg indent row ++ " }"
+  | .variantTy row _ =>
+    "< " ++ ppExpr cfg indent row ++ " >"
+  | .labelLit name _ => s!"'{name}"
+  | .dataTy id params _ =>
+    let paramsStr := ppExprList cfg indent params
+    if paramsStr.isEmpty then id.name
+    else s!"{id.name} {" ".intercalate paramsStr}"
+  | .ann expr ty info _ =>
+    s!"({ppExpr cfg indent expr} : {ppExpr cfg indent ty}){PpAnnotation.ppAnnotation cfg info}"
+  | .hole id _ =>
+    match id.name with
+    | some name => s!"?{name}"
+    | none => "_"
+  | .mvar id info _ =>
+    s!"?m{id}{PpAnnotation.ppAnnotation cfg info}"
+  | .eq _tyLevel ty lhs rhs _ =>
+    s!"{ppExpr cfg indent lhs} = {ppExpr cfg indent rhs}"
+  | .refl _ty _x _ => "refl"
+  | .transport _tyLevel _ty motive _lhs _rhs eq body _ =>
+    s!"transport {ppExpr cfg indent motive} {ppExpr cfg indent eq} {ppExpr cfg indent body}"
 
 /-- Pretty print an expression list -/
 partial def ppExprList [PpAnnotation α] (cfg : Config) (indent : Nat) : ExprList α scope → List String
@@ -184,8 +245,8 @@ partial def ppCaptureList [PpAnnotation α] (cfg : Config) (_indent : Nat) : Cap
 
 end
 
-/-- Pretty print an untyped function -/
-def ppUntypedFunction (cfg : Config) (fn : UntypedFunction) : String :=
+/-- Pretty print a function -/
+def ppFunction (cfg : Config) (fn : Function) : String :=
   let paramsStr := fn.params.toList.map (·.2) |> ", ".intercalate
   let sigStr := match fn.declaredTypeSyntax with
     | some _ => " (has signature)"
@@ -193,45 +254,18 @@ def ppUntypedFunction (cfg : Config) (fn : UntypedFunction) : String :=
   let bodyStr := ppExpr (α := Unit) cfg cfg.indent fn.body
   s!"def {fn.name.display}({paramsStr}){sigStr} =\n{mkIndent cfg.indent}{bodyStr}"
 
-/-- Pretty print a typed function -/
-def ppTypedFunction (cfg : Config) (fn : Function) : String :=
-  let paramsStr := fn.params.toList.map (fun (_, name, ty) =>
-    if cfg.showTypes then s!"{name} : {ty}" else name) |> ", ".intercalate
-  let retStr := if cfg.showTypes then s!" -> {fn.returnType}" else ""
-  let bodyStr := ppExpr (α := MonoTy) cfg cfg.indent fn.body
-  s!"def {fn.name.display}({paramsStr}){retStr} =\n{mkIndent cfg.indent}{bodyStr}"
-
-/-- Pretty print an untyped instance -/
-def ppUntypedInstance (cfg : Config) (inst : UntypedInstance) : String :=
+/-- Pretty print an instance -/
+def ppInstance (cfg : Config) (inst : InstanceDecl) : String :=
   let methodsStr := inst.methods.toList.map (fun m =>
     let ind := mkIndent cfg.indent
-    s!"{ind}{ppUntypedFunction { cfg with indent := cfg.indent * 2 } m}"
+    s!"{ind}{ppFunction { cfg with indent := cfg.indent * 2 } m}"
   ) |> "\n".intercalate
   s!"instance {inst.className} where\n{methodsStr}"
 
-/-- Pretty print a typed instance -/
-def ppTypedInstance (cfg : Config) (inst : Instance) : String :=
-  let methodsStr := inst.methods.toList.map (fun m =>
-    let ind := mkIndent cfg.indent
-    s!"{ind}{ppTypedFunction { cfg with indent := cfg.indent * 2 } m}"
-  ) |> "\n".intercalate
-  s!"instance {inst.className} for {inst.instanceType} where\n{methodsStr}"
-
-/-- Pretty print an untyped module -/
-def ppUntypedModule (cfg : Config) (m : UntypedModule) : String :=
-  let funcsStr := m.functions.toList.map (ppUntypedFunction cfg) |> "\n\n".intercalate
-  let instsStr := m.instances.toList.map (ppUntypedInstance cfg) |> "\n\n".intercalate
-  let sections := [
-    s!"-- Module: {m.name}",
-    if m.functions.isEmpty then "" else s!"-- Functions ({m.functions.size})\n\n{funcsStr}",
-    if m.instances.isEmpty then "" else s!"-- Instances ({m.instances.size})\n\n{instsStr}"
-  ].filter (· != "")
-  "\n".intercalate sections
-
-/-- Pretty print a typed module -/
-def ppTypedModule (cfg : Config) (m : Module) : String :=
-  let funcsStr := m.functions.toList.map (ppTypedFunction cfg) |> "\n\n".intercalate
-  let instsStr := m.instances.toList.map (ppTypedInstance cfg) |> "\n\n".intercalate
+/-- Pretty print a module -/
+def ppModule (cfg : Config) (m : Module) : String :=
+  let funcsStr := m.functions.toList.map (ppFunction cfg) |> "\n\n".intercalate
+  let instsStr := m.instances.toList.map (ppInstance cfg) |> "\n\n".intercalate
   let sections := [
     s!"-- Module: {m.name}",
     if m.functions.isEmpty then "" else s!"-- Functions ({m.functions.size})\n\n{funcsStr}",

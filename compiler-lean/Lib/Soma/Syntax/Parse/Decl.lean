@@ -181,15 +181,25 @@ def parseDataConstructor : ParserM (Option GreenNode) := do
   | some pipeTok =>
       match ← parseUpperIdent with
       | some nameTok =>
-          -- Check if fields are in a layout block (record-style with named fields)
-          -- or inline (positional style like `| Just a b`)
-          let fields ← if (← check .layoutStart) then
-            -- Record-style: fields separated by layoutSep
-            layoutSepBy parseConstructorField
+          -- Check for indexed constructor syntax: | Cons :: Type
+          if (← check .doubleColon) then
+            let colonTok ← consumeAny
+            match ← parseType with
+            | some ty =>
+                return some (GreenNode.mkNode .constructorSig #[pipeTok, nameTok, colonTok, ty])
+            | none =>
+                recordError "expected type after '::' in constructor"
+                return some (GreenNode.mkError "missing constructor type" #[pipeTok, nameTok, colonTok])
           else
-            -- Positional style: fields on same line
-            many parseConstructorField
-          return some (GreenNode.mkNode .constructor (#[pipeTok, nameTok] ++ fields))
+            -- Check if fields are in a layout block (record-style with named fields)
+            -- or inline (positional style like `| Just a b`)
+            let fields ← if (← check .layoutStart) then
+              -- Record-style: fields separated by layoutSep
+              layoutSepBy parseConstructorField
+            else
+              -- Positional style: fields on same line
+              many parseConstructorField
+            return some (GreenNode.mkNode .constructor (#[pipeTok, nameTok] ++ fields))
       | none =>
           recordError "expected constructor name after '|'"
           return some (GreenNode.mkError "missing constructor name" #[pipeTok])
@@ -198,9 +208,37 @@ def parseDataConstructor : ParserM (Option GreenNode) := do
 def parseTypeParams : ParserM (Array GreenNode) := do
   let mut params : Array GreenNode := #[]
   while true do
-    match ← parseLowerIdent with
-    | some tok => params := params.push (GreenNode.mkNode .typeVar #[tok])
-    | none => break
+    -- Try parenthesized annotated parameter: (a : Type)
+    if (← check .leftParen) then
+      let lparen ← consumeAny
+      match ← parseLowerIdent with
+      | some nameTok =>
+        if (← check .colon) then
+          let colonTok ← consumeAny
+          match ← parseType with
+          | some typeTy =>
+            match ← tryConsume .rightParen with
+            | some rparen =>
+              -- Build kinded type parameter: (a : Type)
+              let paramNode := GreenNode.mkNode .tyParamKinded #[lparen, nameTok, colonTok, typeTy, rparen]
+              params := params.push paramNode
+            | none =>
+              recordError "expected ')' after type annotation"
+              break
+          | none =>
+            recordError "expected type after ':'"
+            break
+        else
+          recordError "expected ':' after parameter name in annotation"
+          break
+      | none =>
+        recordError "expected parameter name after '('"
+        break
+    else
+      -- Try simple identifier parameter
+      match ← parseLowerIdent with
+      | some tok => params := params.push (GreenNode.mkNode .typeVar #[tok])
+      | none => break
   return params
 
 def parseDataDecl : ParserM (Option GreenNode) := do
@@ -219,11 +257,15 @@ def parseDataDecl : ParserM (Option GreenNode) := do
             | none => recordError "expected kind after '::'"; pure none
           else pure none
 
+          -- Check for 'where' keyword (indexed data types)
+          let whereTok ← tryConsume .kw_where
+
           let constructors ← layoutSepBy parseDataConstructor
 
           let children := #[dataTok, nameTok] ++
             (match paramList with | some p => #[p] | none => #[]) ++
             (match kindAnnot with | some k => #[k] | none => #[]) ++
+            (match whereTok with | some w => #[w] | none => #[]) ++
             constructors
           return some (GreenNode.mkNode .declData children)
       | none =>
@@ -322,33 +364,70 @@ def parseTraitDecl : ParserM (Option GreenNode) := do
 def parseInstanceDecl : ParserM (Option GreenNode) := do
   match ← tryConsume .kw_instance with
   | some instanceTok =>
-      match ← parseConstraint with
-      | some traitApp =>
-          let constraints ← if (← check .kw_with) then do
-            let withTok ← consumeAny
-            match ← parseConstraints with
-            | some cs => pure (some (GreenNode.mkNode .constraintList #[withTok, cs]))
-            | none => pure none
-          else pure none
+      -- Check for named instance: `instance myName : TraitName Type where ...`
+      -- vs unnamed instance: `instance TraitName Type where ...`
+      -- We look ahead to see if we have `lowerIdent :` pattern
+      let (instanceName, traitApp) ← do
+        -- Try to parse an identifier followed by colon (named instance)
+        match ← parseLowerIdent with
+        | some nameTok =>
+            match ← tryConsume .colon with
+            | some colonTok =>
+                -- Named instance: `instance myName : TraitName ...`
+                let nameNode := GreenNode.mkNode .name #[nameTok, colonTok]
+                match ← parseConstraint with
+                | some trait => pure (some nameNode, trait)
+                | none =>
+                    recordError "expected trait application after ':'"
+                    pure (some nameNode, GreenNode.mkError "missing trait" #[])
+            | none =>
+                -- No colon - this identifier is actually the start of the trait name
+                -- Need to build the constraint from this token + rest
+                let className := GreenNode.mkNode .typeCon #[nameTok]
+                let mut args := #[className]
+                while true do
+                  let tok ← current
+                  if tok.kind == some .comma || tok.kind == some .rightParen ||
+                     tok.kind == some .kw_where || tok.kind == some .kw_with ||
+                     tok.kind == some .layoutStart || tok.kind == some .layoutSep ||
+                     tok.kind == some .layoutEnd || tok.kind == some .eof then
+                    break
+                  match ← parseTypeAtom with
+                  | some arg => args := args.push arg
+                  | none => break
+                pure (none, GreenNode.mkNode .constraint args)
+        | none =>
+            -- Try upper ident for unnamed instance starting with UpperCase trait name
+            match ← parseConstraint with
+            | some trait => pure (none, trait)
+            | none =>
+                recordError "expected trait application after 'instance'"
+                pure (none, GreenNode.mkError "missing trait" #[])
 
-          let whereTok ← tryConsume .kw_where
+      let constraints ← if (← check .kw_with) then do
+        let withTok ← consumeAny
+        match ← parseConstraints with
+        | some cs => pure (some (GreenNode.mkNode .constraintList #[withTok, cs]))
+        | none => pure none
+      else pure none
 
-          let parseInstanceMethod : ParserM (Option GreenNode) := do
-            let attrs ← parseAttributes
-            -- Skip layoutSep between attributes and def (when attribute is on separate line)
-            let _ ← tryLayoutSep
-            parseDefDecl attrs
+      let whereTok ← tryConsume .kw_where
 
-          let methods ← layoutSepBy parseInstanceMethod
+      let parseInstanceMethod : ParserM (Option GreenNode) := do
+        let attrs ← parseAttributes
+        -- Skip layoutSep between attributes and def (when attribute is on separate line)
+        let _ ← tryLayoutSep
+        parseDefDecl attrs
 
-          let children := #[instanceTok, traitApp] ++
-            (match constraints with | some c => #[c] | none => #[]) ++
-            (match whereTok with | some w => #[w] | none => #[]) ++
-            methods
-          return some (GreenNode.mkNode .declInstance children)
-      | none =>
-          recordError "expected trait application after 'instance'"
-          return some (GreenNode.mkError "missing trait" #[instanceTok])
+      let methods ← layoutSepBy parseInstanceMethod
+
+      let children := #[instanceTok] ++
+        (match instanceName with | some n => #[n] | none => #[]) ++
+        #[traitApp] ++
+        (match constraints with | some c => #[c] | none => #[]) ++
+        (match whereTok with | some w => #[w] | none => #[]) ++
+        methods
+      return some (GreenNode.mkNode .declInstance children)
   | none => return none
 
 def parseImportPath : ParserM (Option GreenNode) := do

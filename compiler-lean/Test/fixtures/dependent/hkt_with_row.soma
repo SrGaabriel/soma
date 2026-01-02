@@ -1,0 +1,5 @@
+// expect: success
+// Test: higher-kinded types combined with row polymorphism
+
+def mapRecord :: forall (f :: * -> *) (r :: %). { value :: f Int | r } -> { value :: f Int | r }
+    | rec => rec

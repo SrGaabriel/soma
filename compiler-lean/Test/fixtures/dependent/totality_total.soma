@@ -1,0 +1,10 @@
+// expect: success
+// Test: total functions with termination checking via @[total] attribute
+
+@[total]
+def add :: Int -> Int -> Int
+    | x y => x
+
+@[total]
+def constZero :: Int -> Int
+    | _ => 0

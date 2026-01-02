@@ -15,6 +15,7 @@ inductive LowerError where
   | duplicateDefinition (name : String) (span : Span) (previousSpan : Span)
   | invalidPattern (message : String) (span : Span)
   | kindMismatch (expected : String) (got : String) (span : Span)
+  | unsupportedFeature (feature : String) (span : Span)
   | other (message : String) (span : Span)
   deriving Repr
 
@@ -29,6 +30,7 @@ def span : LowerError → Span
   | .duplicateDefinition _ s _ => s
   | .invalidPattern _ s => s
   | .kindMismatch _ _ s => s
+  | .unsupportedFeature _ s => s
   | .other _ s => s
 
 def message : LowerError → String
@@ -40,6 +42,7 @@ def message : LowerError → String
   | .duplicateDefinition name _ _ => s!"Duplicate definition: {name}"
   | .invalidPattern msg _ => s!"Invalid pattern: {msg}"
   | .kindMismatch expected got _ => s!"Kind mismatch: expected {expected}, got {got}"
+  | .unsupportedFeature feature _ => s!"Unsupported feature: {feature}"
   | .other msg _ => msg
 
 /-- Convert a LowerError to a rich Diagnostic -/
@@ -73,6 +76,10 @@ def toDiagnostic : LowerError → Diagnostic
   | .kindMismatch expected got span =>
     Diagnostic.error s!"Kind mismatch" span s!"expected {expected}, got {got}"
       |>.withNote s!"Types have kinds: * for value types, * -> * for type constructors like Array"
+
+  | .unsupportedFeature feature span =>
+    Diagnostic.error s!"Unsupported feature: {feature}" span "not available in simple type inference"
+      |>.withHelp "Use `somac check-dep` for dependent type checking"
 
   | .other msg span =>
     Diagnostic.error msg span

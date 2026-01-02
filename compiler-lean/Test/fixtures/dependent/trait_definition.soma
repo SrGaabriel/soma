@@ -1,0 +1,8 @@
+// expect: success
+// Test: trait (type class) definition
+
+trait Display a where
+    def display :: a -> String
+
+trait Eq a where
+    def eq :: a -> a -> Bool
