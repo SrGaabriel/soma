@@ -353,7 +353,8 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
       let ctorType ← TCM.withGlobals globals (elaborateCtorType structName typeVarNames fieldTypes)
       -- Get the simple constructor name
       let ctorSimpleName := ctorName.ctorSimpleName?.getD ctorName.display
-      let structCtorUnique ← TCM.freshUnique s!"{structName.display}.{ctorSimpleName}"
+      let ctorQualifiedName := s!"{structName.display}.{ctorSimpleName}"
+      let structCtorUnique ← TCM.freshUnique ctorQualifiedName
       let structCtorCoreName : Soma.Core.Name := .user structCtorUnique
       let info : GlobalInfo := {
         name := structCtorCoreName
@@ -362,6 +363,8 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
         isConstructor := true
         ctorTag := 0
       }
+      globals := globals.insert ctorQualifiedName info
+      -- Also register without the prefix for unqualified access
       globals := globals.insert ctorSimpleName info
       -- Register field accessors
       for (fieldNameOpt, _) in fields do
