@@ -1,6 +1,5 @@
 import Soma.Syntax
 import Soma.Metal
-import Soma.Metal.Lower.Decl
 import Soma.Dependent.Monad
 import Soma.Dependent.Infer
 import Soma.Dependent.Unify
@@ -19,84 +18,8 @@ namespace Soma.Dependent.Driver
 open Soma.Syntax
 open Soma.Metal
 open Soma.Core (exprToTerm Value Term Level)
-open Soma.Metal.Lower (lowerModuleFresh)
 open Soma (UniqueSupply)
 
-/-- Result of parsing phase -/
-structure ParseResult where
-  sourceFile : SourceFile
-  tree : ParsedTree
-  diagnostics : Diagnostics
-
-/-- Result of lowering to AST -/
-structure LowerResult where
-  ast : Syntax.Module
-  diagnostics : Diagnostics
-
-/-- Result of lowering to Metal IR -/
-structure MetalResult where
-  module : Metal.UntypedModule
-  diagnostics : Diagnostics
-
-/-- Inferred type information for a function -/
-structure FunctionTypeInfo where
-  /-- Function name -/
-  name : String
-  /-- Inferred or checked type -/
-  type : Soma.Core.Value
-  /-- Whether the type was from an explicit signature or inferred -/
-  fromSignature : Bool
-
-/-- Result of dependent type checking -/
-structure DepCheckResult where
-  /-- Whether type checking succeeded -/
-  success : Bool
-  /-- Diagnostics from all phases -/
-  diagnostics : Diagnostics
-  /-- Type checking errors (if any) -/
-  tcErrors : Array TCError
-  /-- The source file for error reporting -/
-  sourceFile : SourceFile
-  /-- Inferred types for each function (for verbose output) -/
-  functionTypes : Array FunctionTypeInfo := #[]
-
-namespace DepCheckResult
-
-def failed (sourceFile : SourceFile) (diags : Diagnostics) (tcErrors : Array TCError := #[]) : DepCheckResult :=
-  { success := false, diagnostics := diags, tcErrors := tcErrors, sourceFile := sourceFile }
-
-def succeeded (sourceFile : SourceFile) (diags : Diagnostics) : DepCheckResult :=
-  { success := true, diagnostics := diags, tcErrors := #[], sourceFile := sourceFile }
-
-end DepCheckResult
-
-/-- Derive module name from file path -/
-def moduleNameFromPath (filePath : String) : String :=
-  let parts := filePath.splitOn "/"
-  let fileName := parts.getLastD filePath -- Use full path as fallback if empty
-  let nameParts := fileName.splitOn "."
-  nameParts.headD fileName -- Use fileName as fallback if no extension
-
-/-- Create a file ID from path -/
-def fileIdFromPath (filePath : String) : FileId :=
-  ⟨filePath.hash.toNat⟩
-
-/-- Parse source code -/
-def parse (filePath : String) (content : String) : ParseResult :=
-  let sourceFile := SourceFile.create (fileIdFromPath filePath) filePath content
-  let (tree, diags) := parseToTree sourceFile
-  { sourceFile, tree, diagnostics := diags }
-
-/-- Lower CST to AST -/
-def lower (tree : ParsedTree) (moduleName : String) : LowerResult :=
-  let (ast, diags) := Syntax.lower tree moduleName
-  { ast, diagnostics := diags }
-
-/-- Lower AST to Metal IR -/
-def metal (ast : Syntax.Module) : MetalResult :=
-  let result := lowerModuleFresh ast
-  let diags := Metal.Lower.LowerError.toDiagnostics result.errors
-  { module := result.module, diagnostics := diags }
 
 /-- Convert TCError to Diagnostic -/
 def tcErrorToDiagnostic (e : TCError) : Diagnostic :=
@@ -287,7 +210,7 @@ def elaborateCtorType (typeName : Metal.Name) (typeVarNames : Array String)
     | none =>
       let u ← TCM.freshUnique typeName.display
       pure (Soma.Core.TypeId.fromUnique u)
-  
+
   -- Build the result type: DataType applied to type vars
   let resultType := Value.vDataType typeId typeVarVals.toList
 
@@ -409,7 +332,7 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
           | none =>
             -- Simple constructor: build type from fields
             TCM.withGlobals globals (elaborateCtorType typeName typeVarNames ctor.fieldTypeSyntax)
-        -- Get the simple constructor name 
+        -- Get the simple constructor name
         let ctorSimpleName := ctor.name.ctorSimpleName?.getD ctor.name.display
         let ctorQualifiedName := s!"{typeName.display}.{ctorSimpleName}"
         let ctorUnique ← TCM.freshUnique ctorQualifiedName
@@ -502,179 +425,5 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
 /-- Build the InstanceEnv from module type classes and instances -/
 def buildInstanceEnv (module : Metal.UntypedModule) (_moduleName : String) : TCM InstanceEnv := do
   TraitElaborate.buildInstanceEnvFromModule module
-
-/-- Type check all functions in a Metal module -/
-def checkModule (module : Metal.UntypedModule) : Except TCError (Array TCError) := do
-  -- Build the globals environment first (for forward references)
-  let ctx := TCContext.withDefaultInstances
-  let state := TCState.empty
-
-  -- Build globals and update context
-  let globalsResult := (buildGlobals module).run ctx state
-  match globalsResult with
-  | .error e => return #[e]
-  | .ok (globals, state') =>
-    let ctx' := { ctx with globals := globals }
-
-    -- Check each function, collecting errors
-    let mut errors : Array TCError := #[]
-
-    for fn in module.functions do
-      match (checkFunction fn).run ctx' state' with
-      | .ok _ => pure ()
-      | .error e => errors := errors.push e
-
-    return errors
-
-/-- Check a single file using the dependent type system -/
-def checkFile (filePath : String) (content : String) : DepCheckResult := Id.run do
-  let moduleName := moduleNameFromPath filePath
-
-  -- Phase 1: Parse
-  let parseRes := parse filePath content
-  if parseRes.diagnostics.hasErrors then
-    return DepCheckResult.failed parseRes.sourceFile parseRes.diagnostics
-
-  -- Phase 2: Lower CST → AST
-  let lowerRes := lower parseRes.tree moduleName
-  let frontendDiags := parseRes.diagnostics ++ lowerRes.diagnostics
-  if frontendDiags.hasErrors then
-    return DepCheckResult.failed parseRes.sourceFile frontendDiags
-
-  -- Phase 3: Lower AST → Metal IR
-  let metalRes := metal lowerRes.ast
-  let allDiags := frontendDiags ++ metalRes.diagnostics
-  if allDiags.hasErrors then
-    return DepCheckResult.failed parseRes.sourceFile allDiags
-
-  -- Phase 4: Dependent type checking
-  match checkModule metalRes.module with
-  | .ok tcErrors =>
-    if tcErrors.isEmpty then
-      DepCheckResult.succeeded parseRes.sourceFile allDiags
-    else
-      let tcDiags := tcErrorsToDiagnostics tcErrors
-      DepCheckResult.failed parseRes.sourceFile (allDiags ++ tcDiags) tcErrors
-  | .error e =>
-    let tcDiags := tcErrorsToDiagnostics #[e]
-    DepCheckResult.failed parseRes.sourceFile (allDiags ++ tcDiags) #[e]
-
-/-- Check a file from disk -/
-def checkFileFromDisk (filePath : String) : IO DepCheckResult := do
-  let content ← IO.FS.readFile filePath
-  pure (checkFile filePath content)
-
-/-- Run the complete dependent type checking pipeline on a single file -/
-def checkFileFull (filePath : String) (content : String) (debug : Bool := false) : DepCheckResult := Id.run do
-  let moduleName := moduleNameFromPath filePath
-
-  -- Phase 1: Parse
-  let parseRes := parse filePath content
-  if parseRes.diagnostics.hasErrors then
-    return DepCheckResult.failed parseRes.sourceFile parseRes.diagnostics
-
-  -- Phase 2: Lower CST to AST
-  let lowerRes := lower parseRes.tree moduleName
-  let frontendDiags := parseRes.diagnostics ++ lowerRes.diagnostics
-  if frontendDiags.hasErrors then
-    return DepCheckResult.failed parseRes.sourceFile frontendDiags
-
-  -- Phase 3: Lower AST to Metal IR
-  let metalRes := metal lowerRes.ast
-  let allDiags := frontendDiags ++ metalRes.diagnostics
-  if allDiags.hasErrors then
-    return DepCheckResult.failed parseRes.sourceFile allDiags
-
-  -- Phase 4: Full dependent type checking with all passes
-  let baseCtx := if debug then TCContext.withDefaultInstances.withDebug else TCContext.withDefaultInstances
-  let state := TCState.empty
-
-  -- Build globals environment first
-  let globalsResult := (buildGlobals metalRes.module).run baseCtx state
-  match globalsResult with
-  | .error e =>
-    return DepCheckResult.failed parseRes.sourceFile (allDiags ++ tcErrorsToDiagnostics #[e]) #[e]
-  | .ok (globals, state') =>
-    let ctxWithGlobals := { baseCtx with globals := globals }
-
-    -- Build instance environment from module's traits and instances
-    let instanceEnvResult := (buildInstanceEnv metalRes.module moduleName).run ctxWithGlobals state'
-    match instanceEnvResult with
-    | .error e =>
-      return DepCheckResult.failed parseRes.sourceFile (allDiags ++ tcErrorsToDiagnostics #[e]) #[e]
-    | .ok (instanceEnv, state'') =>
-    let ctx := { ctxWithGlobals with instanceEnv := instanceEnv }
-    let state' := state''
-
-    -- Track totality across all functions
-    let mut totalityRegistry := Totality.TotalityRegistry.empty
-
-    -- For each function, run the full pipeline
-    let mut allTcErrors : Array TCError := #[]
-
-    -- First, check positivity for all data types
-    for typeDef in metalRes.module.types do
-      let positivityErrors := checkDataTypePositivity typeDef ctx state'
-      allTcErrors := allTcErrors ++ positivityErrors
-
-    -- TODO: try to be infallible?
-    for fn in metalRes.module.functions do
-        -- Type check the function (elaborating signature if present)
-        let inferResult := (checkFunction fn).run ctx state'
-        match inferResult with
-        | .error e =>
-          allTcErrors := allTcErrors.push e
-        | .ok (_, state'') =>
-          -- Solve unification constraints
-          let solveResult := solveConstraints.run ctx state''
-          match solveResult with
-          | .error e =>
-            allTcErrors := allTcErrors.push e
-          | .ok (_, state''') =>
-            -- Solve level constraints
-            let levelResult := solveLevels.run ctx state'''
-            match levelResult with
-            | .error e =>
-              allTcErrors := allTcErrors.push e
-            | .ok (_, state'''') =>
-              -- Solve pending instances
-              let instanceResult := solvePendingInstancesOrFail.run ctx state''''
-              match instanceResult with
-              | .error e =>
-                allTcErrors := allTcErrors.push e
-              | .ok (_, state''''') =>
-                -- Phase 8: Zonking
-                let zonkResult := (do
-                  -- Check for unsolved metas in the function's declared type
-                  match fn.declaredTypeSyntax with
-                  | some typeSyntax =>
-                    -- Get the elaborated type and check for unsolved metas
-                    let declaredType ← Elaborate.elaborateType Elaborate.ElabEnv.empty typeSyntax
-                    let zonkedType ← zonkValue declaredType
-                    reportUnsolvedMetas zonkedType fn.body.span
-                  | none => pure ()
-                ).run ctx state'''''
-                match zonkResult with
-                | .error e =>
-                  allTcErrors := allTcErrors.push e
-                | .ok (_, state'''''') =>
-                  -- Collect any errors that were added during zonking
-                  allTcErrors := allTcErrors ++ state''''''.errors
-                  -- Phase 9: Check totality for @[total] functions
-                  let bodyTerm := exprToTerm fn.body
-                  let (registry', totalityErrors) := checkFunctionTotality fn bodyTerm totalityRegistry
-                  totalityRegistry := registry'
-                  allTcErrors := allTcErrors ++ totalityErrors
-
-    if allTcErrors.isEmpty then
-      DepCheckResult.succeeded parseRes.sourceFile allDiags
-    else
-      let tcDiags := tcErrorsToDiagnostics allTcErrors
-      DepCheckResult.failed parseRes.sourceFile (allDiags ++ tcDiags) allTcErrors
-
-/-- Check a file from disk with full pipeline -/
-def checkFileFullFromDisk (filePath : String) : IO DepCheckResult := do
-  let content ← IO.FS.readFile filePath
-  pure (checkFileFull filePath content)
 
 end Soma.Dependent.Driver

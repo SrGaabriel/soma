@@ -1,4 +1,5 @@
 import Std.Data.HashMap
+import Lean.Data.Json
 
 namespace Soma.Core
 
@@ -7,6 +8,15 @@ structure LevelVarId where
   id : Nat
   name : String := ""
   deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+
+instance : Lean.ToJson LevelVarId where
+  toJson v := .mkObj [("id", .num v.id), ("name", .str v.name)]
+
+instance : Lean.FromJson LevelVarId where
+  fromJson? j := do
+    let id ← j.getObjValAs? Nat "id"
+    let name ← j.getObjValAs? String "name"
+    pure ⟨id, name⟩
 
 namespace LevelVarId
 
@@ -26,6 +36,41 @@ inductive Level where
   /-- Successor level (l + 1) -/
   | succ (l : Level)
   deriving Repr, BEq, Hashable, Inhabited
+
+partial def Level.toJson : Level → Lean.Json
+  | .lit n => .mkObj [("lit", .num n)]
+  | .var v => .mkObj [("var", Lean.ToJson.toJson v)]
+  | .max l1 l2 => .mkObj [("max", .arr #[l1.toJson, l2.toJson])]
+  | .succ l => .mkObj [("succ", l.toJson)]
+
+instance : Lean.ToJson Level where
+  toJson := Level.toJson
+
+partial def Level.fromJson? (j : Lean.Json) : Except String Level := do
+  match j.getObjValAs? Nat "lit" with
+  | .ok n => pure (.lit n)
+  | .error _ =>
+    match j.getObjVal? "var" with
+    | .ok varJ =>
+      let v ← Lean.FromJson.fromJson? varJ
+      pure (.var v)
+    | .error _ =>
+      match j.getObjVal? "max" with
+      | .ok (.arr arr) =>
+        if arr.size = 2 then
+          let l1 ← Level.fromJson? arr[0]!
+          let l2 ← Level.fromJson? arr[1]!
+          pure (.max l1 l2)
+        else .error "Invalid max level: expected 2 elements"
+      | _ =>
+        match j.getObjVal? "succ" with
+        | .ok succJ =>
+          let l ← Level.fromJson? succJ
+          pure (.succ l)
+        | .error _ => .error s!"Unknown level JSON: {j}"
+
+instance : Lean.FromJson Level where
+  fromJson? := Level.fromJson?
 
 namespace Level
 

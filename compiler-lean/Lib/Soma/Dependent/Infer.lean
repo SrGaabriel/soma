@@ -638,7 +638,7 @@ where
       -- Build a proper nested Sigma type for tuples
       let tupleTy ← match tys with
         | [] => pure (Value.vPrimTy .unit)
-        | [t] => pure t 
+        | [t] => pure t
         | _ =>
           -- Build nested Sigma: (A, B, C) -> Σ(_ : A). Σ(_ : B). C
           tys.foldrM (init := Value.vPrimTy .unit) fun elemTy acc => do

@@ -7,6 +7,7 @@ import Soma.Project
 import Soma.Project.Check
 import Soma.Dependent
 import Somac.Build
+import Somac.Build.Metadata
 
 open Cli
 open Soma.Check (parseOnly toAst toMetal)
@@ -136,15 +137,18 @@ def parseDeps (p : Parsed) : Array (String × String) :=
 def runCheckDep (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
   let format := p.flag? "format" |>.map (·.as! String) |>.getD "human"
-  let full := p.hasFlag "full"
+  let name := p.flag? "name" |>.map (·.as! String)
+  let deps := parseDeps p
 
-  -- Read the file
-  let content ← IO.FS.readFile input
+  -- Build project config
+  let config : Soma.Check.ProjectConfig := {
+    input := ⟨input⟩
+    name := name
+    deps := deps.map fun (n, p) => (n, ⟨p⟩)
+  }
 
-  -- Run dependent type checking
-  let result := if full
-    then Soma.Dependent.Driver.checkFileFull input content
-    else Soma.Dependent.Driver.checkFile input content
+  -- Run dependent type checking via Check module
+  let result ← Soma.Check.checkProject config Somac.Build.loadExternalDependencies
 
   -- Output diagnostics
   match format with
@@ -152,20 +156,11 @@ def runCheckDep (p : Parsed) : IO UInt32 := do
     IO.println (Logging.Error.renderDiagnosticsJson result.diagnostics)
   | _ => -- "human"
     if !result.diagnostics.isEmpty then
-      Logging.Error.printDiagnostics result.diagnostics result.sourceFile
+      Logging.Error.printDiagnosticsWithMap result.diagnostics result.sourceFiles
       IO.eprintln ""
       IO.eprintln (Logging.Error.renderSummary result.diagnostics)
     else
       IO.println "Dependent type check passed."
-
-    -- Show TC-specific errors with more detail
-    if !result.tcErrors.isEmpty then
-      IO.eprintln ""
-      IO.eprintln "Type checking details:"
-      for e in result.tcErrors do
-        let diag := e.toDiagnostic
-        let code := diag.code.getD "E????"
-        IO.eprintln s!"  [{code}] {diag.message}"
 
   return if result.success then 0 else 1
 
@@ -180,21 +175,20 @@ def runMetadata (p : Parsed) : IO UInt32 := do
     deps := parseDeps p
   }
 
-  -- let result ← Somac.Build.Metadata.metadata opts
+  let result ← Somac.Build.Metadata.metadata opts Somac.Build.loadExternalDependencies
 
-  -- if result.success then
-  --   match result.metadata with
-  --   | some pm =>
-  --     IO.println pm.toJson.compress
-  --     return 0
-  --   | none =>
-  --     IO.eprintln "Internal error: metadata generation succeeded but no metadata produced"
-  --     return 1
-  -- else
-  --   for diag in result.diagnostics do
-  --     IO.eprintln s!"{diag.severity}: {diag.message}"
-  --   return 1
-  sorry
+  if result.success then
+    match result.metadata with
+    | some pm =>
+      IO.println pm.toJson.compress
+      return 0
+    | none =>
+      IO.eprintln "Internal error: metadata generation succeeded but no metadata produced"
+      return 1
+  else
+    for diag in result.diagnostics do
+      IO.eprintln s!"{diag.severity}: {diag.message}"
+    return 1
 
 /-- Handler for the `circuit` command -/
 def runCircuit (p : Parsed) : IO UInt32 := do

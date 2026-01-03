@@ -1,3 +1,5 @@
+import Lean.Data.Json
+
 namespace Soma.Core
 
 /-- Quantities for QTT: how many times a variable may be used -/
@@ -9,6 +11,19 @@ inductive Quantity where
   /-- Unrestricted: may be used any number of times -/
   | omega
   deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+
+instance : Lean.ToJson Quantity where
+  toJson
+    | .zero => .str "zero"
+    | .one => .str "one"
+    | .omega => .str "omega"
+
+instance : Lean.FromJson Quantity where
+  fromJson?
+    | .str "zero" => .ok .zero
+    | .str "one" => .ok .one
+    | .str "omega" => .ok .omega
+    | j => .error s!"Invalid Quantity JSON: {j}"
 
 namespace Quantity
 
