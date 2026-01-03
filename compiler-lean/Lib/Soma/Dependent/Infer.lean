@@ -325,6 +325,32 @@ partial def withAllParamBindings (params : Soma.Metal.ParamList Unit) (span : Sp
     TCM.withBinding name paramTy .omega .explicit span do
       withAllParamBindings rest span cont
 
+/-- Extend the typing context with bindings for parameters, extracting types from a nested Pi.
+    This peels off one Pi layer per parameter, using the domain type for each binding.
+    Returns the final codomain type (after all Pis are peeled) for checking the body. -/
+partial def withParamBindingsFromPi (params : List (Soma.Metal.BindingId × String × Unit))
+    (expectedTy : Value) (span : Span) (cont : Value → TCM α) : TCM α := do
+  match params with
+  | [] => cont expectedTy
+  | (_, paramName, ()) :: rest =>
+    let expectedTy' ← force expectedTy
+    match expectedTy' with
+    | .vPi qty binder _ dom cod =>
+      -- Get the codomain by applying closure to fresh variable at current level
+      let codTy ← do
+        let lvl ← TCM.currentLevel
+        let x := Value.vNeutral dom (.nVar ⟨paramName, lvl⟩)
+        applyClosure cod x
+      -- Extend context with this parameter and continue with remaining params
+      withCheckedBinding paramName dom qty binder span do
+        withParamBindingsFromPi rest codTy span cont
+    | _ =>
+      -- Expected type is not a Pi but we still have params - create metavariable
+      -- This handles cases where the expected type is a metavariable
+      let paramTy ← TCM.freshMetaVal (.vType .zero)
+      TCM.withBinding paramName paramTy .omega .explicit span do
+        withParamBindingsFromPi rest expectedTy' span cont
+
 /-- Infer the body of a lambda, extending the context with parameter bindings.
     We first extend the context for ALL params, then infer the body.
     This avoids scope type transformations since infer is polymorphic in scope. -/
@@ -697,11 +723,16 @@ where
       let variantTy := Value.vVariant row
       return (variantTy, .inject label argsExpr variantTy span)
 
-    -- Other constructs (pass through for now)
+    -- Array/List literals: infer as List type (not Array)
     | .array elems () span => do
-      let (_, elemsExpr) ← inferExprList elems
-      let arrTy := Value.vHigherPrim .array
-      return (arrTy, .array elemsExpr arrTy span)
+      -- Create a fresh metavariable for element type
+      let elemTy ← TCM.freshMetaVal (.vType .zero)
+      -- Check each element against the element type (this unifies element types)
+      let elemsChecked ← checkExprList elems.toList elemTy
+      -- Build List type with stable builtin TypeId
+      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let listTy := Value.vDataType listId [elemTy]
+      return (listTy, .array (Soma.Metal.ExprList.fromList elemsChecked) listTy span)
 
     | .recordUpdate base updates () span => do
       let (baseTy, baseExpr) ← infer base
@@ -725,6 +756,16 @@ where
       let resultTy ← TCM.freshMetaVal (.vType .zero)
       return (resultTy, .typeApp arg resultTy span)
 
+/-- Check a list of expressions against an expected element type -/
+partial def checkExprList {scope : Scope} (exprs : List (Expr Unit scope)) (elemTy : Value)
+    : TCM (List (Expr Value scope)) := do
+  match exprs with
+  | [] => return []
+  | e :: es =>
+    let e' ← check e elemTy
+    let es' ← checkExprList es elemTy
+    return e' :: es'
+
 /-- Check an expression against an expected type -/
 partial def check {scope : Scope} (e : Expr Unit scope) (expected : Value)
     : TCM (Expr Value scope) := do
@@ -743,8 +784,10 @@ where
 
     match e, expected' with
     -- Lambda against Pi type: check body under extended context
-    | .lam params body () span, .vPi qty binder name dom cod => do
-      match params.toList with
+    -- Handle multi-parameter lambdas by peeling off one Pi per parameter
+    | .lam params body () span, .vPi _ _ _ _ _ => do
+      let paramList := params.toList
+      match paramList with
       | [] =>
         -- No params, shouldn't happen but handle it by inferring body and wrapping
         let (_, bodyExpr) ← infer body
@@ -752,15 +795,10 @@ where
         let h : typedParams.bindingIds ++ scope = params.bindingIds ++ scope := by
           rw [Soma.Metal.ParamList.mapInfo_bindingIds]
         return .lam typedParams (h ▸ bodyExpr) expected' span
-      | (_, paramName, ()) :: _ =>
-        let codTy ← do
-          -- Get the codomain by applying closure to fresh variable
-          let lvl ← TCM.currentLevel
-          let x := Value.vNeutral dom (.nVar ⟨paramName, lvl⟩)
-          applyClosure cod x
-        -- Use withCheckedBinding for QTT enforcement
-        let bodyExpr ← withCheckedBinding paramName dom qty binder span do
-          check body codTy
+      | _ =>
+        -- Use withParamBindingsFromPi to peel off all Pi layers and extend context
+        let bodyExpr ← withParamBindingsFromPi paramList expected' span fun finalCodTy => do
+          check body finalCodTy
         let typedParams := params.mapInfo (fun () => expected')
         -- Use the theorem that mapInfo preserves bindingIds
         let h : typedParams.bindingIds ++ scope = params.bindingIds ++ scope := by
@@ -812,6 +850,23 @@ where
       -- Unify result with expected type (may solve more implicits)
       unify resultTy expected'
       return appExpr
+
+    -- Array literal against List type: treat [] as List, not Array
+    | .array elems () span, .vDataType typeId (elemTy :: _) => do
+      -- Check if the expected type is List (using stable builtin TypeId)
+      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      if typeId == listId then
+        -- Check each element against the expected element type
+        let elemsChecked ← checkExprList elems.toList elemTy
+        -- Return array with List type annotation
+        return .array (Soma.Metal.ExprList.fromList elemsChecked) expected' span
+      else
+        -- Not a List, fall through to default
+        let (inferred, expr) ← infer e
+        let (inferred', expr') ← insertImplicits inferred expr e.span
+        unify inferred' expected'
+        solveImplicitsGreedy
+        return expr'
 
     -- Default: infer and unify with expected type
     | _, _ => do
@@ -1203,8 +1258,20 @@ partial def extractPatternBindingTypes (pat : Soma.Metal.Pattern Unit) (scrutTy 
         result := result ++ bindings
       return result
   | .array elems () _ =>
-    -- Array elements all have the same type
+    -- Array/List elements all have the same type
     let elemTy ← TCM.freshMetaVal (.vType .zero)
+    -- Try to extract element type from scrutinee and unify
+    let scrutTy' ← force scrutTy
+    match scrutTy' with
+    | .vDataType _ (actualElemTy :: _) =>
+      -- Scrutinee is a data type with at least one param (List a or Array a)
+      unify elemTy actualElemTy
+    | _ =>
+      -- If scrutinee is a metavariable or other form, construct the expected
+      -- list type and unify with scrutinee using stable builtin TypeId
+      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let expectedListTy := Value.vDataType listId [elemTy]
+      unify scrutTy expectedListTy
     let mut result : List (Soma.Metal.BindingId × String × Value) := []
     for elem in elems do
       let bindings ← extractPatternBindingTypes elem elemTy
@@ -1212,8 +1279,23 @@ partial def extractPatternBindingTypes (pat : Soma.Metal.Pattern Unit) (scrutTy 
     return result
   | .cons head tail () _ =>
     -- List cons: head has element type, tail has list type
+    -- Create a fresh meta for element type and unify with scrutinee structure
     let elemTy ← TCM.freshMetaVal (.vType .zero)
+    -- Try to extract element type from scrutinee and unify
+    let scrutTy' ← force scrutTy
+    match scrutTy' with
+    | .vDataType _ (actualElemTy :: _) =>
+      -- Scrutinee is a data type with at least one param (List a)
+      -- Unify our fresh meta with the actual element type
+      unify elemTy actualElemTy
+    | _ =>
+      -- If scrutinee is a metavariable or other form, construct the expected
+      -- list type and unify with scrutinee using stable builtin TypeId
+      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let expectedListTy := Value.vDataType listId [elemTy]
+      unify scrutTy expectedListTy
     let headBindings ← extractPatternBindingTypes head elemTy
+    -- The tail has the same type as the scrutinee (List elemTy)
     let tailBindings ← extractPatternBindingTypes tail scrutTy
     return headBindings ++ tailBindings
   | .as binding orig inner () _ =>
@@ -1292,14 +1374,10 @@ partial def inferArmBodyWithBindings {extScope : Scope}
     : TCM (Expr Value extScope) := do
   match bindings with
   | [] =>
-    -- No bindings left, infer the body directly
-    let (bodyTy, typedBody) ← infer body
-    -- Insert implicit arguments if the inferred type has them
-    -- This handles cases like `Nothing` being used as a value in pattern match arms
-    let (bodyTy', typedBody') ← insertImplicits bodyTy typedBody span
-    -- Use unify instead of assertConvert to properly handle metavariables
-    unify bodyTy' expectedTy
-    return typedBody'
+    -- No bindings left, CHECK the body against expected type
+    -- This is important: check (not infer) so that [] can be treated as List
+    -- when the expected type is List, rather than being inferred as Array
+    check body expectedTy
   | (_, name, bindingTy) :: rest =>
     -- Use the type from pattern matching against scrutinee
     TCM.withBinding name bindingTy .omega .explicit span do

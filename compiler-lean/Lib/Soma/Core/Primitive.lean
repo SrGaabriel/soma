@@ -66,6 +66,7 @@ end StarPrimitive
 /-- Primitive type constructors that take one type argument -/
 inductive HigherPrimitive where
   | array
+  | list
   | ref
   | io
   deriving Repr, BEq, Hashable, DecidableEq
@@ -74,6 +75,7 @@ namespace HigherPrimitive
 
 def name : HigherPrimitive → String
   | .array => "Array"
+  | .list => "List"
   | .ref => "Ref"
   | .io => "IO"
 
@@ -81,6 +83,7 @@ instance : ToString HigherPrimitive := ⟨HigherPrimitive.name⟩
 
 def fromName? : String → Option HigherPrimitive
   | "Array" => some .array
+  | "List" => some .list
   | "Ref" => some .ref
   | "IO" => some .io
   | _ => none
@@ -88,8 +91,9 @@ def fromName? : String → Option HigherPrimitive
 /-- Deterministic unique ID for each higher primitive -/
 def uniqueId : HigherPrimitive → Nat
   | .array => 0
-  | .ref => 1
-  | .io => 2
+  | .list => 1
+  | .ref => 2
+  | .io => 3
 
 end HigherPrimitive
 

@@ -274,9 +274,43 @@ def elaborateIndexedCtorType (typeName : Metal.Name) (typeVarNames : Array Strin
 
   return ctorType
 
-/-- Build a Globals environment from all function definitions in a module -/
+/-- Elaborate a function type signature, properly handling free type variables.
+    Free type variables in the signature become implicit forall-bound parameters.
+    For example, `a -> [a] -> [a]` becomes `forall {a : Type}. a -> [a] -> [a]` -/
+def elaborateFunctionType (sigSyntax : Syntax.TypeExpr) : TCM Value := do
+  -- Find all free type variables in the function signature
+  let freeVarNames := sigSyntax.freeVars.map (·.value)
+  let freeVarNamesUnique := freeVarNames.toList.eraseDups
+
+  -- Create an elaboration environment with all free type variables bound
+  let mut elabEnv := Elaborate.ElabEnv.empty
+
+  -- Bind all free variables from the signature
+  for varName in freeVarNamesUnique do
+    elabEnv := elabEnv.extend varName (.vType .zero)
+
+  -- Elaborate the function type body
+  let fnBodyType ← Elaborate.elaborateType elabEnv sigSyntax
+
+  -- Wrap in implicit foralls for all free type variables
+  let mut fnType := fnBodyType
+  for varName in freeVarNamesUnique.reverse do
+    let outerEnv : Elaborate.ElabEnv := {
+      tyVars := elabEnv.tyVars.tail!
+      level := elabEnv.level - 1
+    }
+    let codClosure ← Elaborate.mkDependentClosure varName fnType outerEnv
+    fnType := Value.vPi .omega .implicit varName (.vType .zero) codClosure
+    elabEnv := outerEnv
+
+  return fnType
+
+/-- Build a Globals enviro      -- Check for builtin higher-kinded types (List, Array, IO, Ref)
+nment from all function definitions in a module -/
 def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
-  let mut globals := Globals.empty
+  -- Start with existing globals from context to preserve external typeIds
+  let ctx ← TCM.getCtx
+  let mut globals := ctx.globals
 
   -- First pass: Register all data types (so they can be referenced by functions and constructors)
   for typeDef in module.types do
@@ -345,8 +379,9 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
           ctorTag := ctor.tag
         }
         globals := globals.insert ctorQualifiedName info
-        -- Also register without the prefix for unqualified access
-        globals := globals.insert ctorSimpleName info
+        -- Also register without the prefix for unqualified access, but only if it doesn't conflict with an existing type
+        if !globals.defs.contains ctorSimpleName then
+          globals := globals.insert ctorSimpleName info
     | .struct structName typeVarNames ctorName fields =>
       -- Elaborate struct constructor type from field types
       let fieldTypes := fields.map (·.2)
@@ -364,8 +399,9 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
         ctorTag := 0
       }
       globals := globals.insert ctorQualifiedName info
-      -- Also register without the prefix for unqualified access
-      globals := globals.insert ctorSimpleName info
+      -- Also register without the prefix for unqualified access, but only if it doesn't conflict
+      if !globals.defs.contains ctorSimpleName then
+        globals := globals.insert ctorSimpleName info
       -- Register field accessors
       for (fieldNameOpt, _) in fields do
         if let some fieldName := fieldNameOpt then
@@ -416,8 +452,9 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
   -- Register all functions (after data types so function signatures can reference them)
   for fn in module.functions do
     -- Elaborate the type signature if present, otherwise create a placeholder
+    -- Use elaborateFunctionType to properly handle free type variables as implicit foralls
     let fnType ← match fn.declaredTypeSyntax with
-      | some typeSyntax => TCM.withGlobals globals (Elaborate.elaborateType Elaborate.ElabEnv.empty typeSyntax)
+      | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
       | none => TCM.freshMetaVal (.vType .zero)
     let fnUnique ← TCM.freshUnique fn.name.display
     let info : GlobalInfo := { name := .user fnUnique, type := fnType, value := none, isConstructor := false }

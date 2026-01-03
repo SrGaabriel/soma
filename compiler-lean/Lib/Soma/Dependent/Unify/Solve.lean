@@ -144,7 +144,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
       | _ => throwUnifyError v1' v2' "flex-rigid mismatch"
 
   -- Metavariable with spine on the right
-  | lhs, .vNeutral _ neu2 =>
+  | lhs, .vNeutral ty2 neu2 =>
     match getMetaWithSpine neu2 with
     | some (m, spine) => solveMeta m spine lhs
     | none =>

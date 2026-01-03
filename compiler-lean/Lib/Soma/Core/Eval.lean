@@ -283,7 +283,10 @@ partial def evalTerm (ctx : EvalCtx) (t : Term) : Value :=
   | .global name =>
     match ctx.globals.lookup name.display with
     | some v => v
-    | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
+    | none =>
+      match HigherPrimitive.fromName? name.display with
+      | some hp => .vDataType (TypeId.builtin hp.name hp.uniqueId) []
+      | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
 
   | .eq tyLevel ty lhs rhs =>
     .vEq tyLevel (evalTerm ctx ty) (evalTerm ctx lhs) (evalTerm ctx rhs)
@@ -394,7 +397,10 @@ partial def eval (ctx : EvalCtx) : {scope : Scope} → Expr Unit scope → Value
   | _, .global name _ _ =>
     match ctx.globals.lookup name.display with
     | some v => v
-    | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
+    | none =>
+      match HigherPrimitive.fromName? name.display with
+      | some hp => .vDataType (TypeId.builtin hp.name hp.uniqueId) []
+      | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
 
   -- Constructors
   | _, .construct name tag args _ _ =>

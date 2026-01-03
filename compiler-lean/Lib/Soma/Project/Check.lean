@@ -534,7 +534,7 @@ def checkModule
 
   -- Run dependent type checking
   let baseCtx := TCContext.withDefaultInstances
-  let state := TCState.empty
+  let state := TCState.forModule modName
 
   -- Build globals for this module, starting with seed globals
   let globalsResult := (Soma.Dependent.Driver.buildGlobals metalRes.module).run
@@ -560,13 +560,14 @@ def checkModule
       let fullInstanceEnv := mergeInstanceEnv seedInstanceEnv moduleInstanceEnv
       let ctx' := { ctx with instanceEnv := fullInstanceEnv }
 
-      -- Type check each function
+      -- Type check each function, threading state to preserve TypeId registrations
       let mut allErrors : Array Soma.Dependent.TCError := #[]
+      let mut currentState := state''
       for fn in metalRes.module.functions do
-        let checkResult := (Soma.Dependent.Driver.checkFunction fn).run ctx' state''
+        let checkResult := (Soma.Dependent.Driver.checkFunction fn).run ctx' currentState
         match checkResult with
         | .error e => allErrors := allErrors.push e
-        | .ok _ => pure ()
+        | .ok (_, newState) => currentState := newState
 
       if !allErrors.isEmpty then
         let diags := allErrors.map (·.toDiagnostic)

@@ -56,6 +56,7 @@ def resolveHigherPrimitive (name : String) : Option HigherPrimitive :=
   match name with
   | "IO" => some .io
   | "Array" => some .array
+  | "List" => some .list
   | "Ref" => some .ref
   | _ => none
 
@@ -308,7 +309,9 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
           | some id => pure id
           | none =>
             let u ← TCM.freshUnique name.value
-            pure (TypeId.fromUnique u)
+            let id := TypeId.fromUnique u
+            TCM.registerTypeId name.value id
+            pure id
         return Value.vDataType typeId []
     -- Otherwise, treat as a user-defined type (data type)
     else
@@ -317,7 +320,9 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
         | some id => pure id
         | none =>
           let u ← TCM.freshUnique name.value
-          pure (TypeId.fromUnique u)
+          let id := TypeId.fromUnique u
+          TCM.registerTypeId name.value id
+          pure id
       return Value.vDataType typeId []
 
   -- Type application: F A
@@ -335,12 +340,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       return Value.vConstructor name tag (args ++ [argVal])
     | .vHigherPrim hp =>
       -- Higher-kinded primitive applied to arg
-      -- For now, represent as a data type application
-      let typeId ← match ← TCM.lookupTypeId (toString hp) with
-        | some id => pure id
-        | none =>
-          let u ← TCM.freshUnique (toString hp)
-          pure (TypeId.fromUnique u)
+      let typeId := TypeId.builtin hp.name hp.uniqueId
       return Value.vDataType typeId [argVal]
     | .vPi _ _ _ _ cod =>
       -- Apply function type - evaluate the closure with TCM's applyClosure
@@ -390,11 +390,8 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
   -- List type: [A]
   | .list elem _ =>
     let elemVal ← elaborateType env elem
-    let listId ← match ← TCM.lookupTypeId "List" with
-      | some id => pure id
-      | none =>
-        let u ← TCM.freshUnique "List"
-        pure (TypeId.fromUnique u)
+    -- Use a stable builtin TypeId for List
+    let listId := TypeId.builtin "List" HigherPrimitive.list.uniqueId
     return Value.vDataType listId [elemVal]
 
   -- Universal quantification: forall a b. T

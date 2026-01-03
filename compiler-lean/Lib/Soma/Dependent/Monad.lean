@@ -304,6 +304,10 @@ namespace TCState
 
 def empty : TCState := {}
 
+/-- Create an initial state for a module -/
+def forModule (moduleName : String) : TCState :=
+  { uniqueSupply := Soma.UniqueSupply.initial moduleName }
+
 /-- Create a fresh metavariable -/
 def freshMeta (s : TCState) (ty : Value) (ctx : List CtxEntry) : MetaId × TCState :=
   let ctxList := ctx.map fun e => (e.name, e.type, e.qty)
