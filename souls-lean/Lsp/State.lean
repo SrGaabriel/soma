@@ -1,17 +1,14 @@
 import Std.Data.HashMap
 import Soma.Syntax
 import Soma.Metal.Lower.Decl
-import Soma.Infer.Monad
-import Soma.Infer.Module
+import Soma.Dependent.Monad
 import Lsp.Cst
 
 namespace Lsp
 
 open Soma.Syntax
 open Soma.Metal.Lower (IncrementalLowerResult)
-open Soma.Infer (TypeEnv InstanceEnv FunctionInfo)
-open Soma.Typing (QualifiedType)
-open Soma.Metal (Function)
+open Soma.Dependent (Globals InstanceEnv)
 
 /-- Symbol kinds for LSP features -/
 inductive SymbolKind where
@@ -161,12 +158,10 @@ structure CompiledModule where
   declAsts : Std.HashMap NodeId Decl := {}
   /-- Cached Metal lowering result  -/
   metalResult : Option IncrementalLowerResult := none
-  /-- Cached type environment -/
-  typeEnv : Option TypeEnv := none
+  /-- Cached globals environment -/
+  globals : Option Globals := none
   /-- Cached instance environment -/
   instanceEnv : Option InstanceEnv := none
-  /-- Cached typed functions by name -/
-  typedFunctions : Std.HashMap String Function := {}
   deriving Inhabited
 
 namespace CompiledModule

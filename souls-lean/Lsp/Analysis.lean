@@ -2,8 +2,7 @@ import Std.Data.HashSet
 import Soma.Syntax
 import Soma.Metal
 import Soma.Metal.Lower.Decl
-import Soma.Infer
-import Soma.Infer.Module
+import Soma.Dependent
 import Soma.Project.Check
 import Lsp.State
 import Lsp.Symbols
@@ -14,8 +13,8 @@ namespace Lsp
 open Std
 
 open Soma.Syntax
-open Soma.Infer
-open Soma.Typing
+open Soma.Dependent
+open Soma.Dependent.Driver
 open Soma.Metal (UntypedModule)
 open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleIncremental getDeclName)
 open Soma.Check (moduleNameFromPath fileIdFromPath)
@@ -73,21 +72,25 @@ def analyzeSourceFresh (filePath : String) (content : String) : CompiledModule :
   let metalResult := lowerModuleFresh ast
   let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
 
-  -- Phase 7: Type inference
-  let supply := Soma.UniqueSupply.initial moduleName
-  let (typeEnv, _supply) := Soma.Infer.buildTypeEnvFromModule metalResult.module #[] supply
-  let instanceEnv := Soma.Infer.buildInstanceEnvFromModule metalResult.module InstanceEnv.empty typeEnv
-  let inferCtx : InferContext := {
-    typeEnv := typeEnv
-    instanceEnv := instanceEnv
-    currentFunction := none
-  }
-  let inferResult := Soma.Infer.inferModule metalResult.module inferCtx
-  let inferDiags := InferErrors.toDiagnostics inferResult.errors
+  -- Phase 7: Dependent type checking
+  let tcState := TCState.forModule moduleName
+  let tcCtx := TCContext.empty
 
-  -- Build typed functions cache for incremental updates
-  let typedFunctions := inferResult.module.functions.foldl (fun acc fn =>
-    acc.insert fn.name.display fn) {}
+  -- Build globals and instance environment
+  let (globals, instanceEnv, inferDiags) := match (buildGlobals metalResult.module).run tcCtx tcState with
+    | .ok (globals, state1) =>
+      match (buildInstanceEnv metalResult.module moduleName).run { tcCtx with globals := globals } state1 with
+      | .ok (instanceEnv, state2) =>
+        -- Type check each function
+        let checkCtx : TCContext := { tcCtx with globals := globals, instanceEnv := instanceEnv }
+        let finalState := metalResult.module.functions.foldl (fun st fn =>
+          match (checkFunction fn).run checkCtx st with
+          | .ok (_, st') => st'
+          | .error e => st.addError e
+        ) state2
+        (globals, instanceEnv, tcErrorsToDiagnostics finalState.errors)
+      | .error e => (Globals.empty, InstanceEnv.empty, #[e.toDiagnostic])
+    | .error e => (Globals.empty, InstanceEnv.empty, #[e.toDiagnostic])
 
   let allDiags := frontendDiags ++ astLowerDiags ++ metalLowerDiags ++ inferDiags
 
@@ -101,9 +104,8 @@ def analyzeSourceFresh (filePath : String) (content : String) : CompiledModule :
     declNodeIds := declNodeIds
     declAsts := declAsts
     metalResult := some metalResult
-    typeEnv := some typeEnv
+    globals := some globals
     instanceEnv := some instanceEnv
-    typedFunctions := typedFunctions
   }
 
 /-- Analyze a source file incrementally using prior state -/
@@ -184,70 +186,24 @@ def analyzeSourceIncremental (filePath : String) (content : String)
 
   let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
 
-  -- Phase 8: Incremental type inference
-  let typeDefsChanged := changedDeclNames.any fun name =>
-    -- todo: maybe unique-based?
-    metalResult.typesByName.contains name
+  -- Phase 8: Dependent type checking (no caching for now, always rebuild)
+  let tcState := TCState.forModule moduleName
+  let tcCtx := TCContext.empty
 
-  -- Build or reuse type environment
-  let supply := Soma.UniqueSupply.initial moduleName
-  let (typeEnv, instanceEnv, typedFunctions, inferDiags) :=
-    if typeDefsChanged then
-      -- Type definitions changed - must rebuild everything
-      let (typeEnv, _supply) := Soma.Infer.buildTypeEnvFromModule metalResult.module #[] supply
-      let instanceEnv := Soma.Infer.buildInstanceEnvFromModule metalResult.module InstanceEnv.empty typeEnv
-      let inferCtx : InferContext := {
-        typeEnv := typeEnv
-        instanceEnv := instanceEnv
-        currentFunction := none
-      }
-      let inferResult := Soma.Infer.inferModule metalResult.module inferCtx
-      let typedFns := inferResult.module.functions.foldl (fun acc fn =>
-        acc.insert fn.name.display fn) {}
-      (typeEnv, instanceEnv, typedFns, InferErrors.toDiagnostics inferResult.errors)
-    else
-      -- Only function bodies changed
-      match oldModule.typeEnv, oldModule.instanceEnv with
-      | some oldTypeEnv, some oldInstanceEnv =>
-        if changedDeclNames.isEmpty then
-          -- Nothing changed at all
-          (oldTypeEnv, oldInstanceEnv, oldModule.typedFunctions, #[])
-        else
-          -- Re-infer only changed functions, keep cached results for unchanged
-          let inferCtx : InferContext := {
-            typeEnv := oldTypeEnv
-            instanceEnv := oldInstanceEnv
-            currentFunction := none
-          }
-          -- Find untyped functions that need re-inference
-          let changedFunctions := metalResult.module.functions.filter fun fn =>
-            changedDeclNames.contains fn.name.display
-          -- Re-infer changed functions
-          let (newTypedFns, inferErrs) := changedFunctions.foldl (fun (acc, errs) fn =>
-            let fnCtx := { inferCtx with currentFunction := some fn.name.display }
-            let result := Soma.Infer.inferFunction fn fnCtx
-            match result.function with
-            | some typedFn => (acc.insert fn.name.display typedFn, errs ++ result.errors)
-            | none => (acc, errs ++ result.errors)
-          ) (oldModule.typedFunctions, #[])
-          -- Remove stale entries for changed functions that may have been deleted/renamed
-          let prunedFns := changedDeclNames.foldl (fun acc name =>
-            if metalResult.functionsByName.contains name then acc
-            else acc.erase name) newTypedFns
-          (oldTypeEnv, oldInstanceEnv, prunedFns, InferErrors.toDiagnostics inferErrs)
-      | _, _ =>
-        -- No cached env, do full inference
-        let (typeEnv, _supply) := Soma.Infer.buildTypeEnvFromModule metalResult.module #[] supply
-        let instanceEnv := Soma.Infer.buildInstanceEnvFromModule metalResult.module InstanceEnv.empty typeEnv
-        let inferCtx : InferContext := {
-          typeEnv := typeEnv
-          instanceEnv := instanceEnv
-          currentFunction := none
-        }
-        let inferResult := Soma.Infer.inferModule metalResult.module inferCtx
-        let typedFns := inferResult.module.functions.foldl (fun acc fn =>
-          acc.insert fn.name.display fn) {}
-        (typeEnv, instanceEnv, typedFns, InferErrors.toDiagnostics inferResult.errors)
+  let (globals, instanceEnv, inferDiags) := match (buildGlobals metalResult.module).run tcCtx tcState with
+    | .ok (globals, state1) =>
+      match (buildInstanceEnv metalResult.module moduleName).run { tcCtx with globals := globals } state1 with
+      | .ok (instanceEnv, state2) =>
+        -- Type check each function
+        let checkCtx : TCContext := { tcCtx with globals := globals, instanceEnv := instanceEnv }
+        let finalState := metalResult.module.functions.foldl (fun st fn =>
+          match (checkFunction fn).run checkCtx st with
+          | .ok (_, st') => st'
+          | .error e => st.addError e
+        ) state2
+        (globals, instanceEnv, tcErrorsToDiagnostics finalState.errors)
+      | .error e => (Globals.empty, InstanceEnv.empty, #[e.toDiagnostic])
+    | .error e => (Globals.empty, InstanceEnv.empty, #[e.toDiagnostic])
 
   let allDiags := frontendDiags ++ astLowerDiags ++ metalLowerDiags ++ inferDiags
 
@@ -261,9 +217,8 @@ def analyzeSourceIncremental (filePath : String) (content : String)
     declNodeIds := declNodeIds
     declAsts := declAsts
     metalResult := some metalResult
-    typeEnv := some typeEnv
+    globals := some globals
     instanceEnv := some instanceEnv
-    typedFunctions := typedFunctions
   }
 
 /-- Analyze a source file, using incremental analysis if old module is available -/
