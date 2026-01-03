@@ -12,12 +12,12 @@
   Tests run with debug=true for detailed logging of the type inference process.
 -/
 
-import Soma.Dependent.Driver
+import Soma.Project.Check
 import Test.Fixtures
 
 namespace Test.Dependent.Integration
 
-open Soma.Dependent.Driver
+open Soma.Check
 open Test.Fixtures
 
 /-! ## Expectation Parsing -/
@@ -41,21 +41,29 @@ def parseExpectation (source : String) : Expectation :=
 
 /-! ## Test Running -/
 
+/-- A no-op dependency loader for single-file tests -/
+def noDepsLoader (_ : Array (String × System.FilePath)) : IO (Except CheckError (Array ExternalDependency)) :=
+  pure (.ok #[])
+
 /-- Run a single test from a fixture file -/
-def runDepCheckTest (tc : TestCase) (debug : Bool := true) : IO TestResult := do
+def runDepCheckTest (tc : TestCase) (_debug : Bool := true) : IO TestResult := do
   let expectation := parseExpectation tc.source
-  let result := checkFileFull s!"Test/fixtures/dependent/{tc.name}" tc.source debug
+  let filePath := s!"Test/fixtures/dependent/{tc.name}"
+  let config : ProjectConfig := {
+    input := filePath
+    name := some tc.name
+    deps := #[]
+  }
+  let result ← checkSingleFile config noDepsLoader
 
   match expectation with
   | .success =>
     if result.success then
       return .passed
     else
-      let errors := result.tcErrors.map (·.toDiagnostic.message) |>.toList
       let diagErrors := result.diagnostics.filter (·.severity == .error)
         |>.map (·.message) |>.toList
-      let allErrors := errors ++ diagErrors
-      return .failed s!"Expected success but got errors:\n  {String.intercalate "\n  " allErrors}"
+      return .failed s!"Expected success but got errors:\n  {String.intercalate "\n  " diagErrors}"
 
   | .error expectedSubstr =>
     if result.success then
@@ -63,14 +71,12 @@ def runDepCheckTest (tc : TestCase) (debug : Bool := true) : IO TestResult := do
     else
       match expectedSubstr with
       | some substr =>
-        let tcMsgs := result.tcErrors.map (·.toDiagnostic.message)
         let diagMsgs := result.diagnostics.filter (·.severity == .error) |>.map (·.message)
-        let allMsgs := tcMsgs ++ diagMsgs
         -- Check if any error message contains the expected substring
-        if allMsgs.any (fun msg => msg.toSlice.contains substr) then
+        if diagMsgs.any (fun msg => msg.toSlice.contains substr) then
           return .passed
         else
-          return .failed s!"Expected error containing '{substr}' but got: {allMsgs.toList}"
+          return .failed s!"Expected error containing '{substr}' but got: {diagMsgs.toList}"
       | none =>
         return .passed  -- Just expected some error, got one
 
