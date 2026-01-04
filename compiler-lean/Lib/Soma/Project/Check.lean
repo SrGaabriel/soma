@@ -543,69 +543,70 @@ def extractPublicSymbols
     (moduleName : String)
     (seed : SymbolEnv)
     (supply : UniqueSupply)
+    (explicitExports : Option (Array String) := none)
+    (seedSymbols : SymbolEnv := {})
     : SymbolEnv × UniqueSupply := Id.run do
   let mut acc := seed
   let mut sup := supply
 
+  -- Track which symbols we've already added (to avoid duplicates)
+  let mut addedNames : Std.HashSet String := {}
+
+  -- Helper to check if a name should be exported
+  let shouldExport (name : String) : Bool :=
+    match explicitExports with
+    | none => true -- No explicit exports means export everything defined
+    | some exports => exports.contains name
+
   -- Extract function symbols
   for fn in metalModule.functions do
     let fnName := fn.name.display
-    match globals.lookup fnName with
-    | some info =>
-      let (unique, sup') := match fn.name.baseUnique? with
-        | some u => (u, sup)
-        | none => sup.fresh fnName
-      sup := sup'
-      let sym : Symbol := {
-        unique := unique
-        name := fnName
-        kind := .binding
-        module := moduleName
-        package := packageName
-        span := fn.body.span
-      }
-      acc := acc.insert sym info.type
-    | none => pure ()
+    if shouldExport fnName then
+      match globals.lookup fnName with
+      | some info =>
+        let (unique, sup') := match fn.name.baseUnique? with
+          | some u => (u, sup)
+          | none => sup.fresh fnName
+        sup := sup'
+        let sym : Symbol := {
+          unique := unique
+          name := fnName
+          kind := .binding
+          module := moduleName
+          package := packageName
+          span := fn.body.span
+        }
+        acc := acc.insert sym info.type
+        addedNames := addedNames.insert fnName
+      | none => pure ()
 
   -- Extract type definitions and constructors
   for typeDef in metalModule.types do
     match typeDef with
     | .algebraic typeName _typeVars constructors =>
       let typeNameStr := typeName.display
-      -- Register type
-      let (typeUnique, sup') := sup.fresh typeNameStr
-      sup := sup'
-      let typeSym : Symbol := {
-        unique := typeUnique
-        name := typeNameStr
-        kind := .type
-        module := moduleName
-        package := packageName
-        span := Span.uninhabited
-      }
-      -- Type itself maps to Type₀
-      acc := acc.insert typeSym (Value.vType Level.zero)
+      if shouldExport typeNameStr then
+        -- Register type
+        let (typeUnique, sup') := sup.fresh typeNameStr
+        sup := sup'
+        let typeSym : Symbol := {
+          unique := typeUnique
+          name := typeNameStr
+          kind := .type
+          module := moduleName
+          package := packageName
+          span := Span.uninhabited
+        }
+        -- Type itself maps to Type₀
+        acc := acc.insert typeSym (Value.vType Level.zero)
+        addedNames := addedNames.insert typeNameStr
 
       -- Register constructors
       for ctor in constructors do
         let ctorSimpleName := ctor.name.ctorSimpleName?.getD ctor.name.display
-        let ctorQualified := s!"{typeNameStr}.{ctorSimpleName}"
-        match globals.lookup ctorQualified with
-        | some ctorInfo =>
-          let (ctorUnique, sup') := sup.fresh ctorSimpleName
-          sup := sup'
-          let ctorSym : Symbol := {
-            unique := ctorUnique
-            name := ctorSimpleName
-            kind := .dataCon typeNameStr ctor.tag
-            module := moduleName
-            package := packageName
-            span := Span.uninhabited
-          }
-          acc := acc.insert ctorSym ctorInfo.type
-        | none =>
-          -- Try unqualified name
-          match globals.lookup ctorSimpleName with
+        if shouldExport ctorSimpleName then
+          let ctorQualified := s!"{typeNameStr}.{ctorSimpleName}"
+          match globals.lookup ctorQualified with
           | some ctorInfo =>
             let (ctorUnique, sup') := sup.fresh ctorSimpleName
             sup := sup'
@@ -618,79 +619,126 @@ def extractPublicSymbols
               span := Span.uninhabited
             }
             acc := acc.insert ctorSym ctorInfo.type
-          | none => pure ()
+            addedNames := addedNames.insert ctorSimpleName
+          | none =>
+            -- Try unqualified name
+            match globals.lookup ctorSimpleName with
+            | some ctorInfo =>
+              let (ctorUnique, sup') := sup.fresh ctorSimpleName
+              sup := sup'
+              let ctorSym : Symbol := {
+                unique := ctorUnique
+                name := ctorSimpleName
+                kind := .dataCon typeNameStr ctor.tag
+                module := moduleName
+                package := packageName
+                span := Span.uninhabited
+              }
+              acc := acc.insert ctorSym ctorInfo.type
+              addedNames := addedNames.insert ctorSimpleName
+            | none => pure ()
 
     | .struct structName _typeVars ctorName fields =>
       let structNameStr := structName.display
-      let (structUnique, sup') := sup.fresh structNameStr
-      sup := sup'
-      let structSym : Symbol := {
-        unique := structUnique
-        name := structNameStr
-        kind := .type
-        module := moduleName
-        package := packageName
-        span := Span.uninhabited
-      }
-      acc := acc.insert structSym (Value.vType Level.zero)
-
-      -- Register struct constructor
-      let ctorSimpleName := ctorName.ctorSimpleName?.getD ctorName.display
-      match globals.lookup ctorSimpleName with
-      | some ctorInfo =>
-        let (ctorUnique, sup') := sup.fresh ctorSimpleName
+      if shouldExport structNameStr then
+        let (structUnique, sup') := sup.fresh structNameStr
         sup := sup'
-        let ctorSym : Symbol := {
-          unique := ctorUnique
-          name := ctorSimpleName
-          kind := .dataCon structNameStr 0
+        let structSym : Symbol := {
+          unique := structUnique
+          name := structNameStr
+          kind := .type
           module := moduleName
           package := packageName
           span := Span.uninhabited
         }
-        acc := acc.insert ctorSym ctorInfo.type
-      | none => pure ()
+        acc := acc.insert structSym (Value.vType Level.zero)
+        addedNames := addedNames.insert structNameStr
+
+      -- Register struct constructor
+      let ctorSimpleName := ctorName.ctorSimpleName?.getD ctorName.display
+      if shouldExport ctorSimpleName then
+        match globals.lookup ctorSimpleName with
+        | some ctorInfo =>
+          let (ctorUnique, sup') := sup.fresh ctorSimpleName
+          sup := sup'
+          let ctorSym : Symbol := {
+            unique := ctorUnique
+            name := ctorSimpleName
+            kind := .dataCon structNameStr 0
+            module := moduleName
+            package := packageName
+            span := Span.uninhabited
+          }
+          acc := acc.insert ctorSym ctorInfo.type
+          addedNames := addedNames.insert ctorSimpleName
+        | none => pure ()
 
       -- Register field accessors
       for (fieldNameOpt, _) in fields do
         if let some fieldName := fieldNameOpt then
           let accessorName := s!"{structNameStr}.{fieldName}"
-          match globals.lookup accessorName with
-          | some accessorInfo =>
-            let (accessorUnique, sup') := sup.fresh accessorName
-            sup := sup'
-            let accessorSym : Symbol := {
-              unique := accessorUnique
-              name := accessorName
-              kind := .binding
-              module := moduleName
-              package := packageName
-              span := Span.uninhabited
-            }
-            acc := acc.insert accessorSym accessorInfo.type
-          | none => pure ()
+          if shouldExport accessorName then
+            match globals.lookup accessorName with
+            | some accessorInfo =>
+              let (accessorUnique, sup') := sup.fresh accessorName
+              sup := sup'
+              let accessorSym : Symbol := {
+                unique := accessorUnique
+                name := accessorName
+                kind := .binding
+                module := moduleName
+                package := packageName
+                span := Span.uninhabited
+              }
+              acc := acc.insert accessorSym accessorInfo.type
+              addedNames := addedNames.insert accessorName
+            | none => pure ()
 
     | .record _ _ _ => pure ()
 
   -- Extract type class methods
   for typeClass in metalModule.typeClasses do
     let className := typeClass.name.display
+    if shouldExport className then
+      addedNames := addedNames.insert className
     for (methodName, _) in typeClass.methodSignatures do
       let methodNameStr := methodName.display
-      match globals.lookup methodNameStr with
-      | some methodInfo =>
-        let (methodUnique, sup') := sup.fresh methodNameStr
-        sup := sup'
-        let methodSym : Symbol := {
-          unique := methodUnique
-          name := methodNameStr
-          kind := .typeClassMethod className
-          module := moduleName
-          package := packageName
-          span := Span.uninhabited
-        }
-        acc := acc.insert methodSym methodInfo.type
-      | none => pure ()
+      if shouldExport methodNameStr then
+        match globals.lookup methodNameStr with
+        | some methodInfo =>
+          let (methodUnique, sup') := sup.fresh methodNameStr
+          sup := sup'
+          let methodSym : Symbol := {
+            unique := methodUnique
+            name := methodNameStr
+            kind := .typeClassMethod className
+            module := moduleName
+            package := packageName
+            span := Span.uninhabited
+          }
+          acc := acc.insert methodSym methodInfo.type
+          addedNames := addedNames.insert methodNameStr
+        | none => pure ()
+
+  if let some exports := explicitExports then
+    for exportName in exports do
+      if !addedNames.contains exportName then
+        -- This is a re-exported symbol from a dependency
+        for (sym, ty) in seedSymbols.toArray do
+          if sym.name == exportName then
+            -- Re-export with updated module attribution
+            let (newUnique, sup') := sup.fresh exportName
+            sup := sup'
+            let reexportSym : Symbol := {
+              unique := newUnique
+              name := sym.name
+              kind := sym.kind
+              module := moduleName
+              package := packageName
+              span := Span.uninhabited
+            }
+            acc := acc.insert reexportSym ty
+            break
 
   pure (acc, sup)
 
@@ -789,11 +837,17 @@ def checkModule
   let allDiags := tcErrors.map (·.toDiagnostic)
 
   -- Extract public symbols and instances (always do this, even with errors)
-  let depSymbols : SymbolEnv := checkedDeps.fold (init := {}) fun acc _ dep =>
+  let depSymbols : SymbolEnv := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
     dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
+  -- Check for explicit exports in the AST
+  let explicitExports : Option (Array String) := info.ast.decls.findSome? fun decl =>
+    match decl with
+    | .export_ items _ => some (items.map (·.value))
+    | _ => none
+
   let (publicSymbols, supply') := extractPublicSymbols
-    metalRes.module fullGlobals packageName modName depSymbols supply
+    metalRes.module fullGlobals packageName modName {} supply explicitExports depSymbols
 
   let depInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
     mergeInstanceEnvs acc dep.publicInstances
@@ -859,11 +913,17 @@ def checkModuleIncremental
   let allDiags := tcErrors.map (·.toDiagnostic)
 
   -- Extract public symbols and instances
-  let depSymbols : SymbolEnv := checkedDeps.fold (init := {}) fun acc _ dep =>
+  let depSymbols : SymbolEnv := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
     dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
+  -- Check for explicit exports in the AST
+  let explicitExports : Option (Array String) := info.ast.decls.findSome? fun decl =>
+    match decl with
+    | .export_ items _ => some (items.map (·.value))
+    | _ => none
+
   let (publicSymbols, supply') := extractPublicSymbols
-    metalRes.module fullGlobals packageName modName depSymbols supply
+    metalRes.module fullGlobals packageName modName {} supply explicitExports depSymbols
 
   let depInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
     mergeInstanceEnvs acc dep.publicInstances

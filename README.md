@@ -1,6 +1,6 @@
 # ⚗️ soma
 
-Soma is a statically-typed, pure functional language with the [Calculus of Quantitative Constructions (CQC)](docs/CQC.md) for optional dependent types, Hindley–Milner style type inference, explicit effect modeling, and eager evaluation semantics. It leverages Interaction Nets for optimal evaluation, enabling GC-free memory management with deterministic lifetimes, zero-cost proofs, and automatic parallelism.
+Soma is a statically-typed, pure functional language with the [Calculus of Quantitative Constructions (CQC)](docs/CQC.md) for dependent types, explicit effect modeling, and eager evaluation semantics. It leverages Interaction Nets for optimal evaluation, enabling GC-free memory management with deterministic lifetimes, zero-cost proofs, and automatic parallelism.
 
 ---
 
