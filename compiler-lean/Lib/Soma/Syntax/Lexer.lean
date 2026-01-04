@@ -422,7 +422,8 @@ def processLayoutTokens (tokens : Array RawToken) (idx : Nat) (state : LayoutSta
           let state := state.emit { tok with kind := .whitespace }
           processLayoutTokens tokens (idx + 1) state source
       else
-        -- At end of file, don't emit layoutSep, just continue, closeAll will handle the rest
+        -- At end of file, emit the newline as whitespace to preserve byte width
+        let state := state.emit { tok with kind := .whitespace }
         processLayoutTokens tokens (idx + 1) state source
     | _ =>
       let state := state.emit tok

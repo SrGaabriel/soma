@@ -55,7 +55,8 @@ partial def parseParenPattern : ParserM (Option GreenNode) := do
           else if (← check .comma) then
             let mut elements := #[first]
             while (← check .comma) do
-              let _ ← consumeAny
+              let comma ← consumeAny
+              elements := elements.push comma
               match ← parsePattern with
               | some elem => elements := elements.push elem
               | none => recordError "expected pattern after ','"; break

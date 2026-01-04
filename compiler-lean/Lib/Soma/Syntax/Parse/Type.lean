@@ -167,7 +167,8 @@ partial def parseParenType : ParserM (Option GreenNode) := do
               if (← check .comma) then
                 let mut elements := #[typeExpr]
                 while (← check .comma) do
-                  let _ ← consumeAny
+                  let comma ← consumeAny
+                  elements := elements.push comma
                   match ← parseType with
                   | some elem => elements := elements.push elem
                   | none => recordError "expected type after ','"; break
@@ -212,7 +213,8 @@ partial def parseParenType : ParserM (Option GreenNode) := do
             if (← check .comma) then
               let mut elements := #[first]
               while (← check .comma) do
-                let _ ← consumeAny
+                let comma ← consumeAny
+                elements := elements.push comma
                 match ← parseType with
                 | some elem => elements := elements.push elem
                 | none => recordError "expected type after ','"; break
@@ -411,7 +413,8 @@ partial def parseRecordType : ParserM (Option GreenNode) := do
 
       -- Parse remaining fields or row variable tail
       while (← check .comma) do
-        let _ ← consumeAny
+        let comma ← consumeAny
+        fields := fields.push comma
         match ← parseRecordTypeField with
         | some field => fields := fields.push field
         | none => recordError "expected field after ',' in record type"; break
@@ -486,7 +489,8 @@ partial def parseVariantType : ParserM (Option GreenNode) := do
               | none => return some (GreenNode.mkError "malformed variant type" #[langle])
 
       while (← check .pipe) do
-        let _ ← consumeAny
+        let pipeTok ← consumeAny
+        cases := cases.push pipeTok
         let tok ← current
         if tok.kind == some .lowerIdent then
           let tailVar ← consumeAny

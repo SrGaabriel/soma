@@ -88,7 +88,8 @@ partial def parseParenExpr : ParserM (Option GreenNode) := do
           if (← check .comma) then
             let mut elements := #[first]
             while (← check .comma) do
-              let _ ← consumeAny
+              let comma ← consumeAny
+              elements := elements.push comma
               match ← parseExpr with
               | some elem => elements := elements.push elem
               | none => recordError "expected expression after ','"; break
@@ -176,7 +177,8 @@ partial def parseRecordExpr : ParserM (Option GreenNode) := do
                   -- Parse remaining fields
                   let mut fields := #[firstField]
                   while (← check .comma) do
-                    let _ ← consumeAny
+                    let comma ← consumeAny
+                    fields := fields.push comma
                     match ← parseRecordField with
                     | some field => fields := fields.push field
                     | none => recordError "expected field after ','"; break
@@ -198,7 +200,8 @@ partial def parseRecordExpr : ParserM (Option GreenNode) := do
               | some field => fields := fields.push field
               | none => recordError "expected field after '|' in record update"
               while (← check .comma) do
-                let _ ← consumeAny
+                let comma ← consumeAny
+                fields := fields.push comma
                 match ← parseRecordField with
                 | some field => fields := fields.push field
                 | none => recordError "expected field after ','"; break
@@ -213,7 +216,8 @@ partial def parseRecordExpr : ParserM (Option GreenNode) := do
               let firstField := GreenNode.mkNode .recordField #[nameTok]
               let mut fields := #[firstField]
               while (← check .comma) do
-                let _ ← consumeAny
+                let comma ← consumeAny
+                fields := fields.push comma
                 match ← parseRecordField with
                 | some field => fields := fields.push field
                 | none => recordError "expected field after ','"; break
@@ -241,7 +245,8 @@ partial def parseRecordExpr : ParserM (Option GreenNode) := do
                   | some field => fields := fields.push field
                   | none => recordError "expected field after '|' in record update"
                   while (← check .comma) do
-                    let _ ← consumeAny
+                    let comma ← consumeAny
+                    fields := fields.push comma
                     match ← parseRecordField with
                     | some field => fields := fields.push field
                     | none => recordError "expected field after ','"; break

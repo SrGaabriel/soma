@@ -347,7 +347,8 @@ def sepBy (p : ParserM (Option GreenNode)) (sep : TokenKind) : ParserM (Array Gr
   | some first =>
       let mut results := #[first]
       while (← check sep) do
-        advance
+        let sepNode ← consumeAny
+        results := results.push sepNode
         match ← p with
         | some node => results := results.push node
         | none => break
@@ -359,7 +360,8 @@ def sepBy1 (p : ParserM (Option GreenNode)) (sep : TokenKind) : ParserM (Option 
   | some first =>
       let mut results := #[first]
       while (← check sep) do
-        advance
+        let sepNode ← consumeAny
+        results := results.push sepNode
         match ← p with
         | some node => results := results.push node
         | none => break
@@ -382,7 +384,8 @@ def delimitedSepBy (openTok closeTok : TokenKind) (sep : TokenKind)
       items := items.push first
       -- Parse remaining items, each preceded by separator (and optional layoutSep after)
       while (← check sep) do
-        advance  -- consume separator
+        let sepNode ← consumeAny -- consume separator
+        items := items.push sepNode
         let _ ← tryLayoutSep  -- consume layoutSep if present (for newline after comma)
         match ← p with
         | some item => items := items.push item

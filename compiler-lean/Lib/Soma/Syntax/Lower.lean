@@ -1878,6 +1878,14 @@ def lowerModule (green : GreenNode) (offset : Nat) (moduleName : String) : Lower
             let cspan ← spanFor c co
             lowerError s!"missing {expected}" cspan
             pure none
+        | .token .eof _ =>
+            -- Skip EOF token (it's only there to carry trailing trivia for width)
+            pure none
+        | .node .triviaToken _ _ =>
+            -- Skip triviaToken wrappers around EOF (trailing trivia)
+            let inner := unwrapTrivia c
+            if inner.tokenKind? == some .eof then pure none
+            else some <$> lowerDecl c co
         | _ =>
             some <$> lowerDecl c co
       pure ⟨moduleName, decls, span⟩

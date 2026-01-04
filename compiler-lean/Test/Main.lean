@@ -1,6 +1,7 @@
 import Test.Fixtures
 import Test.Lexer
 import Test.Parser
+import Test.GreenTree
 import Test.Error
 import Test.Dependent.Core
 import Test.Dependent.Infer
@@ -30,6 +31,10 @@ def main : IO UInt32 := do
   -- Run parser tests
   let parserRunner ← Test.Parser.run
   total := total.merge parserRunner
+
+  -- Run green tree size tests
+  let greenTreeRunner ← Test.GreenTree.run
+  total := total.merge greenTreeRunner
 
   -- Run error rendering tests (visual only)
   let errorRunner ← Test.Error.run

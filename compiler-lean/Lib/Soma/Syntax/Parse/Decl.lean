@@ -102,7 +102,8 @@ partial def parseDefDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) 
                 recordError "expected parameter name"
                 break
             if !(← check .comma) then break
-            advance
+            let comma ← consumeAny
+            paramNodes := paramNodes.push comma
         match ← tryConsume .rightParen with
         | some rparen =>
             pure (some (GreenNode.mkNode .paramList (#[lparen] ++ paramNodes ++ #[rparen])))
@@ -555,6 +556,9 @@ def parseSourceFile : ParserM GreenNode := do
     | none =>
         let tok ← current
         if tok.kind == some .eof then
+          -- Consume the EOF token to include its trailing trivia in the tree
+          let eofNode ← consumeAny
+          decls := decls.push eofNode
           break
         else if tok.kind == some .layoutEnd || tok.kind == some .layoutSep || tok.kind == some .layoutStart then advance
         else
