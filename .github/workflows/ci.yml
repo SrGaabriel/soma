@@ -165,7 +165,7 @@ jobs:
           if-no-files-found: error
 
   lean-build:
-    name: Build ${{ matrix.project }}
+    name: Build Lean (${{ matrix.project }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
