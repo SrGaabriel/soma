@@ -1,0 +1,8 @@
+// expect: success
+// Test: nested dependent function types
+
+def flipArgs :: (a : Type) -> (b : Type) -> (c : Type) -> (a -> b -> c) -> b -> a -> c
+    | _ _ _ f y x => f x y
+
+def composeF :: (a : Type) -> (b : Type) -> (c : Type) -> (b -> c) -> (a -> b) -> a -> c
+    | _ _ _ g f x => g (f x)

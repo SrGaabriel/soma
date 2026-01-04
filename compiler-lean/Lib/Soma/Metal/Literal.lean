@@ -2,11 +2,8 @@
   Soma.Metal.Literal
   Literal values in Metal IR.
 -/
-import Soma.Typing
 
 namespace Soma.Metal
-
-open Soma.Typing
 
 /-- Literal values -/
 inductive Literal where
@@ -16,12 +13,6 @@ inductive Literal where
   deriving Repr, BEq, Inhabited
 
 namespace Literal
-
-/-- Get the type of a literal -/
-def type : Literal → MonoTy
-  | .int _ => Ty.int
-  | .bool _ => Ty.bool
-  | .string _ => Ty.string
 
 /-- Pretty print a literal -/
 def toString : Literal → String

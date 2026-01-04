@@ -183,7 +183,6 @@ def lexBacktickIdent : LexerM RawToken := do
 
 def lexStringLit : LexerM RawToken := do
   let start ← getOffset
-  let startLoc ← getLoc
   advance  -- skip "
   let contentStart ← getOffset
   while (← current) != '"' && (← current) != '\n' && (← current) != '\x00' do
@@ -276,6 +275,8 @@ partial def lexToken : LexerM (Option RawToken) := do
   | 'λ' => return some (← singleCharToken .lambda)
   | '\\' => return some (← singleCharToken .lambda)
   | '∀' => return some (← singleCharToken .forallSymbol)
+  | '×' => return some (← singleCharToken .times)
+  | 'ω' => return some (← singleCharToken .omega)
   | '$' => return some (← singleCharToken .dollar)
   | ':' =>
     if (← peekNext) == ':' then skipN 2; return some (← makeToken .doubleColon start)

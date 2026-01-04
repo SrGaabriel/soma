@@ -20,6 +20,8 @@ inductive TokenKind where
   | leftAngle | rightAngle | comma | colon | doubleColon | equals | pipe | dot
   | at | underscore | lambda | forallSymbol | dollar | slash | hash
   | arrow | fatArrow | leftArrow
+  | times         -- '×' for dependent pair types
+  | omega         -- 'ω' for unrestricted quantity
   | layoutStart | layoutSep | layoutEnd
   | whitespace | comment  -- Trivia tokens for accurate span tracking
   | eof | error
@@ -79,6 +81,8 @@ def describe : TokenKind → String
   | .arrow => "'->'"
   | .fatArrow => "'=>'"
   | .leftArrow => "'<-'"
+  | .times => "'×'"
+  | .omega => "'ω'"
   | .layoutStart => "start of block"
   | .layoutSep => "newline"
   | .layoutEnd => "end of block"

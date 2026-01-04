@@ -1,0 +1,9 @@
+// expect: success
+// Test: indexed data type with natural numbers
+
+data Nat where
+  | Zero :: Nat
+  | Succ :: Nat -> Nat
+
+def one :: Nat = Succ Zero
+def two :: Nat = Succ (Succ Zero)

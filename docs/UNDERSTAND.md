@@ -265,7 +265,7 @@ Soma bridges the gap between the theoretical elegance of interaction nets and pr
 
 ## A Language You Can Actually Use
 
-Soma is a statically typed, pure functional programming language with Hindley-Milner type inference. If you've used Haskell, OCaml, or even TypeScript with strict settings, you'll feel at home. Even if you haven't, the learning curve is not very steep. You write normal functional code: pattern matching, higher-order functions, algebraic data types. and the compiler handles everything else.
+Soma is a dependently typed, pure functional programming language. If you've used Haskell, OCaml, or even TypeScript with strict settings, you'll feel at home. Even if you haven't, the learning curve is not very steep. You write normal functional code: pattern matching, higher-order functions, algebraic data types. and the compiler handles everything else.
 
 The key insight is that *you never see the interaction nets*. You don't write DUP nodes or think about superpositions. The compiler analyzes your code, infers where values need to be duplicated or erased, and generates the optimal interaction net representation automatically. It's the difference between writing assembly and writing Python. Except here, you get Python's expressiveness with assembly's performance.
 

@@ -1,7 +1,6 @@
 
 import Soma.Metal.Lower.Env
 import Soma.Metal.Lower.Monad
-import Soma.Metal.Lower.Type
 import Soma.Metal.Lower.Expr
 import Soma.Metal.Lower.Decl
 

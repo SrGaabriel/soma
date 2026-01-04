@@ -1,0 +1,10 @@
+// expect: success
+// Test: implicit instance arguments (type class style)
+// Traits are elaborated into ClassInfo with record types.
+// Instance arguments ({{Display a}}) are resolved via the InstanceEnv.
+
+trait Display a where
+    def display :: a -> String
+
+def show :: forall a. {{Display a}} -> a -> String
+    | x => display x

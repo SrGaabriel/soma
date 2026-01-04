@@ -23,6 +23,26 @@ def checkDot : ParserM Bool := do
 def tryConsumeDot : ParserM (Option GreenNode) := do
   if (← checkDot) then return some (← consumeAny) else return none
 
+/-- Check if current token is a quantity annotation (0, 1, or ω) -/
+def checkQuantity : ParserM Bool := do
+  let tok ← current
+  if tok.kind == some .omega then return true
+  if tok.kind == some .number then
+    return tok.text == "0" || tok.text == "1"
+  return false
+
+/-- Parse a quantity annotation: 0 (erased), 1 (linear), or ω (unrestricted) -/
+def parseQuantity : ParserM (Option GreenNode) := do
+  let tok ← current
+  if tok.kind == some .omega then
+    let g ← consumeAny
+    return some (GreenNode.mkNode .typeQuantity #[g])
+  if tok.kind == some .number then
+    if tok.text == "0" || tok.text == "1" then
+      let g ← consumeAny
+      return some (GreenNode.mkNode .typeQuantity #[g])
+  return none
+
 mutual
 
 /-- Parse an atomic kind: *, %, #, Row, Label, or parenthesized kind -/
@@ -83,32 +103,275 @@ partial def parseParenType : ParserM (Option GreenNode) := do
         let rparen ← consumeAny
         return some (GreenNode.mkNode .typeTuple #[lparen, rparen])
 
-      match ← parseType with
-      | some first =>
-          if (← check .comma) then
-            let mut elements := #[first]
-            while (← check .comma) do
-              let _ ← consumeAny
-              match ← parseType with
-              | some elem => elements := elements.push elem
-              | none => recordError "expected type after ','"; break
-            match ← tryConsume .rightParen with
-            | some rparen =>
-                return some (GreenNode.mkNode .typeTuple (#[lparen] ++ elements ++ #[rparen]))
-            | none =>
-                recordError "expected ')' after tuple type"
-                return some (GreenNode.mkError "unclosed tuple type" (#[lparen] ++ elements))
-          else
-            match ← tryConsume .rightParen with
-            | some rparen =>
-                return some (GreenNode.mkNode .typeParens #[lparen, first, rparen])
-            | none =>
-                recordError "expected ')' or ',' in type"
-                return some (GreenNode.mkError "malformed parenthesized type" #[lparen, first])
-      | none =>
-          recordError "expected type after '('"
-          return some (GreenNode.mkError "empty type parentheses" #[lparen])
+      -- Try to parse dependent type binder: (q? x : A) -> B or (q? x : A) × B
+      -- First check for optional quantity annotation
+      let quantityOpt ← parseQuantity
+
+      -- Check if this looks like a dependent binder: name : Type
+      let tok ← current
+      if tok.kind == some .lowerIdent then
+        let nameTok ← consumeAny
+        if (← check .colon) then
+          -- This is a dependent binder: (q? x : A) -> B or (x : A) × B
+          let colonTok ← consumeAny
+          match ← parseType with
+          | some domainTy =>
+              match ← tryConsume .rightParen with
+              | some rparen =>
+                  -- Check what follows: -> (Pi) or × (Sigma)
+                  if (← check .arrow) then
+                    let arrowTok ← consumeAny
+                    match ← parseType with  -- Use parseType to allow nested dependent types
+                    | some codomainTy =>
+                        -- Build Pi type node
+                        let binderChildren := match quantityOpt with
+                          | some qty => #[qty, GreenNode.mkNode .typeVar #[nameTok], colonTok, domainTy]
+                          | none => #[GreenNode.mkNode .typeVar #[nameTok], colonTok, domainTy]
+                        let binder := GreenNode.mkNode .typePiBinder binderChildren
+                        return some (GreenNode.mkNode .typePi #[lparen, binder, rparen, arrowTok, codomainTy])
+                    | none =>
+                        recordError "expected type after '->'"
+                        return some (GreenNode.mkError "incomplete Pi type" #[lparen, nameTok, colonTok, domainTy, rparen, arrowTok])
+                  else if (← check .times) then
+                    let timesTok ← consumeAny
+                    match ← parseType with
+                    | some sndTy =>
+                        -- Build Sigma type node
+                        let binderChildren := match quantityOpt with
+                          | some qty => #[qty, GreenNode.mkNode .typeVar #[nameTok], colonTok, domainTy]
+                          | none => #[GreenNode.mkNode .typeVar #[nameTok], colonTok, domainTy]
+                        let binder := GreenNode.mkNode .typePiBinder binderChildren
+                        return some (GreenNode.mkNode .typeSigma #[lparen, binder, rparen, timesTok, sndTy])
+                    | none =>
+                        recordError "expected type after '×'"
+                        return some (GreenNode.mkError "incomplete Sigma type" #[lparen, nameTok, colonTok, domainTy, rparen, timesTok])
+                  else
+                    -- Just a parenthesized annotated type, not dependent
+                    -- Reconstruct as regular parenthesized type
+                    let varNode := GreenNode.mkNode .typeVar #[nameTok]
+                    let annotTy := GreenNode.mkNode .typeKinded #[varNode, colonTok, domainTy]
+                    return some (GreenNode.mkNode .typeParens #[lparen, annotTy, rparen])
+              | none =>
+                  recordError "expected ')' after type in binder"
+                  return some (GreenNode.mkError "unclosed binder" #[lparen, nameTok, colonTok, domainTy])
+          | none =>
+              recordError "expected type after ':' in binder"
+              return some (GreenNode.mkError "missing type in binder" #[lparen, nameTok, colonTok])
+        else
+          -- Not a binder, just a parenthesized type starting with identifier
+          -- But we already consumed the identifier, so wrap it back
+          let varNode := GreenNode.mkNode .typeVar #[nameTok]
+          -- Check for type application or continue parsing
+          match ← parseTypeAppContinue varNode with
+          | some typeExpr =>
+              if (← check .comma) then
+                let mut elements := #[typeExpr]
+                while (← check .comma) do
+                  let _ ← consumeAny
+                  match ← parseType with
+                  | some elem => elements := elements.push elem
+                  | none => recordError "expected type after ','"; break
+                match ← tryConsume .rightParen with
+                | some rparen =>
+                    return some (GreenNode.mkNode .typeTuple (#[lparen] ++ elements ++ #[rparen]))
+                | none =>
+                    recordError "expected ')' after tuple type"
+                    return some (GreenNode.mkError "unclosed tuple type" (#[lparen] ++ elements))
+              else if (← check .arrow) then
+                let arrowTok ← consumeAny
+                match ← parseType with
+                | some rightTy =>
+                    let arrowTy := GreenNode.mkNode .typeArrow #[typeExpr, arrowTok, rightTy]
+                    match ← tryConsume .rightParen with
+                    | some rparen =>
+                        return some (GreenNode.mkNode .typeParens #[lparen, arrowTy, rparen])
+                    | none =>
+                        recordError "expected ')' after arrow type"
+                        return some (GreenNode.mkError "unclosed arrow type" #[lparen, arrowTy])
+                | none =>
+                    recordError "expected type after '->'"
+                    return some (GreenNode.mkError "incomplete arrow type" #[lparen, typeExpr, arrowTok])
+              else
+                match ← tryConsume .rightParen with
+                | some rparen =>
+                    return some (GreenNode.mkNode .typeParens #[lparen, typeExpr, rparen])
+                | none =>
+                    recordError "expected ')' or ',' in type"
+                    return some (GreenNode.mkError "malformed parenthesized type" #[lparen, typeExpr])
+          | none =>
+              match ← tryConsume .rightParen with
+              | some rparen =>
+                  return some (GreenNode.mkNode .typeParens #[lparen, varNode, rparen])
+              | none =>
+                  recordError "expected ')' after type variable"
+                  return some (GreenNode.mkError "unclosed parens" #[lparen, varNode])
+      else
+        -- Not starting with lowercase identifier, parse as regular type
+        match ← parseType with
+        | some first =>
+            if (← check .comma) then
+              let mut elements := #[first]
+              while (← check .comma) do
+                let _ ← consumeAny
+                match ← parseType with
+                | some elem => elements := elements.push elem
+                | none => recordError "expected type after ','"; break
+              match ← tryConsume .rightParen with
+              | some rparen =>
+                  return some (GreenNode.mkNode .typeTuple (#[lparen] ++ elements ++ #[rparen]))
+              | none =>
+                  recordError "expected ')' after tuple type"
+                  return some (GreenNode.mkError "unclosed tuple type" (#[lparen] ++ elements))
+            else
+              match ← tryConsume .rightParen with
+              | some rparen =>
+                  return some (GreenNode.mkNode .typeParens #[lparen, first, rparen])
+              | none =>
+                  recordError "expected ')' or ',' in type"
+                  return some (GreenNode.mkError "malformed parenthesized type" #[lparen, first])
+        | none =>
+            recordError "expected type after '('"
+            return some (GreenNode.mkError "empty type parentheses" #[lparen])
   | none => return none
+
+/-- Continue parsing type application after we have the first atom -/
+partial def parseTypeAppContinue (first : GreenNode) : ParserM (Option GreenNode) := do
+  let mut args := #[first]
+  while true do
+    let tok ← current
+    if tok.kind == some .arrow || tok.kind == some .fatArrow ||
+       tok.kind == some .rightParen || tok.kind == some .rightBracket ||
+       tok.kind == some .rightBrace || tok.kind == some .comma ||
+       tok.kind == some .kw_with || tok.kind == some .kw_where ||
+       tok.kind == some .pipe || tok.kind == some .equals ||
+       tok.kind == some .colon || tok.kind == some .times ||
+       tok.kind == some .layoutStart || tok.kind == some .layoutSep ||
+       tok.kind == some .layoutEnd || tok.kind == some .eof then
+      break
+    match ← parseTypeAtom with
+    | some arg => args := args.push arg
+    | none => break
+  if args.size == 1 then return some first
+  else return some (GreenNode.mkNode .typeApp args)
+
+/-- Check if we're looking at {{ (double brace for instance/implicit) -/
+partial def checkDoubleBrace : ParserM Bool := do
+  let tok ← current
+  if tok.kind == some .leftBrace then
+    let next ← peekNext
+    return next.kind == some .leftBrace
+  return false
+
+/-- Parse an implicit/instance type binder: {{x : A}} -> B or {{A}} -> B -/
+partial def parseImplicitType : ParserM (Option GreenNode) := do
+  -- Check for {{ (double brace)
+  if !(← checkDoubleBrace) then return none
+
+  let lbrace1 ← consumeAny  -- first {
+  let lbrace2 ← consumeAny  -- second {
+
+  -- Check for empty braces (error)
+  if (← check .rightBrace) then
+    recordError "empty implicit parameter"
+    let rbrace1 ← consumeAny
+    if (← check .rightBrace) then
+      let rbrace2 ← consumeAny
+      return some (GreenNode.mkError "empty implicit" #[lbrace1, lbrace2, rbrace1, rbrace2])
+    return some (GreenNode.mkError "empty implicit" #[lbrace1, lbrace2, rbrace1])
+
+  -- Check if this is a named implicit: {{x : A}} or unnamed: {{A}}
+  let tok ← current
+  if tok.kind == some .lowerIdent then
+    let nameTok ← consumeAny
+    if (← check .colon) then
+      -- Named implicit: {{x : A}} -> B
+      let colonTok ← consumeAny
+      match ← parseType with
+      | some domainTy =>
+          -- Expect }}
+          match ← tryConsume .rightBrace with
+          | some rbrace1 =>
+              match ← tryConsume .rightBrace with
+              | some rbrace2 =>
+                  if (← check .arrow) then
+                    let arrowTok ← consumeAny
+                    match ← parseType with
+                    | some codomainTy =>
+                        let binder := GreenNode.mkNode .typePiBinder #[GreenNode.mkNode .typeVar #[nameTok], colonTok, domainTy]
+                        return some (GreenNode.mkNode .typeImplicit #[lbrace1, lbrace2, binder, rbrace1, rbrace2, arrowTok, codomainTy])
+                    | none =>
+                        recordError "expected type after '->'"
+                        return some (GreenNode.mkError "incomplete implicit type" #[lbrace1, lbrace2, nameTok, colonTok, domainTy, rbrace1, rbrace2, arrowTok])
+                  else
+                    recordError "implicit parameter must be followed by '->'"
+                    let binder := GreenNode.mkNode .typePiBinder #[GreenNode.mkNode .typeVar #[nameTok], colonTok, domainTy]
+                    return some (GreenNode.mkNode .typeImplicit #[lbrace1, lbrace2, binder, rbrace1, rbrace2])
+              | none =>
+                  recordError "expected '}}' after implicit parameter"
+                  return some (GreenNode.mkError "unclosed implicit" #[lbrace1, lbrace2, nameTok, colonTok, domainTy, rbrace1])
+          | none =>
+              recordError "expected '}}' after implicit parameter"
+              return some (GreenNode.mkError "unclosed implicit" #[lbrace1, lbrace2, nameTok, colonTok, domainTy])
+      | none =>
+          recordError "expected type after ':' in implicit"
+          return some (GreenNode.mkError "missing type in implicit" #[lbrace1, lbrace2, nameTok, colonTok])
+    else
+      -- Not a colon after identifier - treat as unnamed implicit with type var
+      let varNode := GreenNode.mkNode .typeVar #[nameTok]
+      match ← parseTypeAppContinue varNode with
+      | some domainTy =>
+          match ← tryConsume .rightBrace with
+          | some rbrace1 =>
+              match ← tryConsume .rightBrace with
+              | some rbrace2 =>
+                  if (← check .arrow) then
+                    let arrowTok ← consumeAny
+                    match ← parseType with
+                    | some codomainTy =>
+                        return some (GreenNode.mkNode .typeImplicit #[lbrace1, lbrace2, domainTy, rbrace1, rbrace2, arrowTok, codomainTy])
+                    | none =>
+                        recordError "expected type after '->'"
+                        return some (GreenNode.mkError "incomplete implicit type" #[lbrace1, lbrace2, domainTy, rbrace1, rbrace2, arrowTok])
+                  else
+                    recordError "implicit parameter must be followed by '->'"
+                    return some (GreenNode.mkNode .typeImplicit #[lbrace1, lbrace2, domainTy, rbrace1, rbrace2])
+              | none =>
+                  recordError "expected '}}' after implicit parameter"
+                  return some (GreenNode.mkError "unclosed implicit" #[lbrace1, lbrace2, domainTy, rbrace1])
+          | none =>
+              recordError "expected '}}' after implicit parameter"
+              return some (GreenNode.mkError "unclosed implicit" #[lbrace1, lbrace2, domainTy])
+      | none =>
+          recordError "expected type in implicit parameter"
+          return some (GreenNode.mkError "incomplete implicit" #[lbrace1, lbrace2, nameTok])
+  else
+    -- Unnamed implicit starting with non-identifier: {{A}} -> B
+    match ← parseType with
+    | some domainTy =>
+        match ← tryConsume .rightBrace with
+        | some rbrace1 =>
+            match ← tryConsume .rightBrace with
+            | some rbrace2 =>
+                if (← check .arrow) then
+                  let arrowTok ← consumeAny
+                  match ← parseType with
+                  | some codomainTy =>
+                      return some (GreenNode.mkNode .typeImplicit #[lbrace1, lbrace2, domainTy, rbrace1, rbrace2, arrowTok, codomainTy])
+                  | none =>
+                      recordError "expected type after '->'"
+                      return some (GreenNode.mkError "incomplete implicit type" #[lbrace1, lbrace2, domainTy, rbrace1, rbrace2, arrowTok])
+                else
+                  recordError "implicit parameter must be followed by '->'"
+                  return some (GreenNode.mkNode .typeImplicit #[lbrace1, lbrace2, domainTy, rbrace1, rbrace2])
+            | none =>
+                recordError "expected '}}' after implicit parameter"
+                return some (GreenNode.mkError "unclosed implicit" #[lbrace1, lbrace2, domainTy, rbrace1])
+        | none =>
+            recordError "expected '}}' after implicit parameter"
+            return some (GreenNode.mkError "unclosed implicit" #[lbrace1, lbrace2, domainTy])
+    | none =>
+        recordError "expected type in implicit parameter"
+        return some (GreenNode.mkError "empty implicit" #[lbrace1, lbrace2])
 
 /-- Parse a record type field: name :: Type -/
 partial def parseRecordTypeField : ParserM (Option GreenNode) := do
@@ -382,6 +645,7 @@ partial def parseForallSymbolType : ParserM (Option GreenNode) := do
 partial def parseTypeAtom : ParserM (Option GreenNode) := do
   if let some ty ← parseForallType then return some ty
   if let some ty ← parseForallSymbolType then return some ty
+  if let some ty ← parseImplicitType then return some ty  -- Must come before parseRecordType
   if let some ty ← parseParenType then return some ty
   if let some ty ← parseListType then return some ty
   if let some ty ← parseRecordType then return some ty

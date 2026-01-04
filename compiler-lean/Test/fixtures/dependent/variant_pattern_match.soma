@@ -1,0 +1,9 @@
+// expect: success
+// Test: pattern matching on variants
+
+def handleResult :: < Ok :: Int | Err :: String > -> Int
+    | .Ok n => n
+    | .Err _ => 0
+
+def test1 :: Int = handleResult (.Ok 42)
+def test2 :: Int = handleResult (.Err "oops")

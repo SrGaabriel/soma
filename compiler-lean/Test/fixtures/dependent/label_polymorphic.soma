@@ -1,0 +1,9 @@
+// expect: success
+// Test: label polymorphism - accessing fields by polymorphic label
+
+def getField :: forall (l :: #) (a :: *) (r :: %). { l :: a | r } -> a
+    | rec => rec @l
+
+def test1 :: Int = getField @x { x = 42, y = "hello" }
+def test2 :: String = getField @name { name = "alice", age = 30 }
+def test3 :: Bool = getField @active { id = 1, name = "test", active = true }

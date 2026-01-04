@@ -1,0 +1,2 @@
+def useOnce :: (1 a : Type) -> a -> a
+    | _ x => x

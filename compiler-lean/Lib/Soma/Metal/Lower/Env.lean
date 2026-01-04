@@ -1,6 +1,6 @@
 import Soma.Metal.Name
 import Soma.Metal.Scope
-import Soma.Typing
+import Soma.Core.TypeId
 import Soma.Unique
 import Soma.Syntax.Ast
 import Soma.Syntax.Source
@@ -9,9 +9,9 @@ import Std.Data.HashMap
 namespace Soma.Metal.Lower
 
 open Soma
-open Soma.Typing
+open Soma.Core (TypeId)
 open Soma.Metal
-open Soma.Syntax (TypeExpr Span)
+open Soma.Syntax (TypeExpr Span Constraint)
 
 /-- Information about a global binding (collected during first pass) -/
 structure GlobalInfo where
@@ -27,9 +27,8 @@ end GlobalInfo
 
 /-- Information about a resolved type -/
 structure TypeInfo where
-  tyCon : TyCon
-  params : Array TyVarId
-  kind : Kind
+  typeId : TypeId
+  paramNames : Array String
   unique : Unique
   fieldNames : Array String := #[]
 
@@ -39,13 +38,13 @@ namespace TypeInfo
 def name (info : TypeInfo) : Name := .user info.unique
 
 /-- Get the type name as a string -/
-def nameStr (info : TypeInfo) : String := info.tyCon.name
+def nameStr (info : TypeInfo) : String := info.typeId.name
 
 /-- Check if this type is parameterized -/
-def isParametric (info : TypeInfo) : Bool := !info.params.isEmpty
+def isParametric (info : TypeInfo) : Bool := !info.paramNames.isEmpty
 
 /-- Get the arity (number of type parameters) -/
-def arity (info : TypeInfo) : Nat := info.params.size
+def arity (info : TypeInfo) : Nat := info.paramNames.size
 
 /-- Check if this type has fields (is a struct/record) -/
 def hasFields (info : TypeInfo) : Bool := !info.fieldNames.isEmpty
@@ -62,7 +61,11 @@ structure ConstructorInfo where
   parentType : String
   parentUnique : Unique
   tag : Nat
-  fields : Array MonoTy
+  /-- Field types as syntax (unresolved) - for simple constructors -/
+  fieldTypeSyntax : Array TypeExpr
+  /-- Full type signature for indexed data types (e.g., `a -> Vec n a -> Vec (n+1) a`).
+      When present, `fieldTypeSyntax` should be empty. -/
+  sigSyntax : Option TypeExpr := none
   span : Span
 
 namespace ConstructorInfo
@@ -74,18 +77,27 @@ def ctorName (info : ConstructorInfo) : String :=
   | _ => info.name.display
 
 /-- Check if this is a nullary constructor -/
-def isNullary (info : ConstructorInfo) : Bool := info.fields.isEmpty
+def isNullary (info : ConstructorInfo) : Bool :=
+  info.fieldTypeSyntax.isEmpty && info.sigSyntax.isNone
 
-/-- Get the arity (number of fields) -/
-def arity (info : ConstructorInfo) : Nat := info.fields.size
+/-- Get the arity (number of fields) - returns 0 for indexed constructors with signatures -/
+def arity (info : ConstructorInfo) : Nat := info.fieldTypeSyntax.size
+
+/-- Check if this is an indexed constructor (has full signature) -/
+def isIndexed (info : ConstructorInfo) : Bool := info.sigSyntax.isSome
 
 end ConstructorInfo
 
 /-- Information about a type class -/
 structure TypeClassInfo where
   name : Name
-  tyCon : TyCon
-  methods : Array (Name × QualifiedType)
+  typeId : TypeId
+  /-- Type parameter names (e.g., ["a"] for `trait Eq a`) -/
+  paramNames : Array String
+  /-- Superclass constraints as syntax -/
+  superclasses : Array Constraint
+  /-- Method signatures as syntax (name, type syntax) -/
+  methods : Array (Name × TypeExpr)
   unique : Unique
 
 namespace TypeClassInfo
@@ -94,7 +106,7 @@ namespace TypeClassInfo
 def methodCount (info : TypeClassInfo) : Nat := info.methods.size
 
 /-- Look up a method by name -/
-def lookupMethod (info : TypeClassInfo) (name : String) : Option QualifiedType :=
+def lookupMethod (info : TypeClassInfo) (name : String) : Option TypeExpr :=
   info.methods.find? (·.1.display == name) |>.map (·.2)
 
 end TypeClassInfo
@@ -106,7 +118,8 @@ structure GlobalEnv where
   types : Std.HashMap String TypeInfo
   constructors : Std.HashMap String ConstructorInfo
   typeClasses : Std.HashMap String TypeClassInfo
-  instances : Std.HashMap String (Array QualifiedType)
+  /-- Instance types stored as syntax (unresolved) -/
+  instances : Std.HashMap String (Array TypeExpr)
 
 namespace GlobalEnv
 
@@ -131,7 +144,7 @@ def addConstructor (env : GlobalEnv) (name : String) (info : ConstructorInfo) : 
 def addTypeClass (env : GlobalEnv) (name : String) (info : TypeClassInfo) : GlobalEnv :=
   { env with typeClasses := env.typeClasses.insert name info }
 
-def addInstance (env : GlobalEnv) (className : String) (instanceType : QualifiedType) : GlobalEnv :=
+def addInstance (env : GlobalEnv) (className : String) (instanceType : TypeExpr) : GlobalEnv :=
   let existing := env.instances.getD className #[]
   { env with instances := env.instances.insert className (existing.push instanceType) }
 
@@ -147,7 +160,7 @@ def lookupConstructor (env : GlobalEnv) (name : String) : Option ConstructorInfo
 def lookupTypeClass (env : GlobalEnv) (name : String) : Option TypeClassInfo :=
   env.typeClasses.get? name
 
-def lookupInstances (env : GlobalEnv) (className : String) : Array QualifiedType :=
+def lookupInstances (env : GlobalEnv) (className : String) : Array TypeExpr :=
   env.instances.getD className #[]
 
 def containsGlobal (env : GlobalEnv) (name : String) : Bool :=

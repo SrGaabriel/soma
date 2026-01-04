@@ -1,0 +1,11 @@
+// expect: success
+// Test: simple function type inference
+
+def identity :: Int -> Int
+    | x => x
+
+def const :: Int -> Int -> Int
+    | x _ => x
+
+def apply :: (Int -> Int) -> Int -> Int
+    | f x => f x

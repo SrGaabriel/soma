@@ -1,13 +1,12 @@
 import Soma.Metal.Lower.Monad
-import Soma.Metal.Lower.Type
 import Soma.Metal.Expr
 import Soma.Metal.Pattern
 import Soma.Syntax.Ast
 
 namespace Soma.Metal.Lower
 
-open Soma.Typing
 open Soma.Metal
+open Soma.Core (Name)
 open Soma.Syntax (Span Literal MatchArm)
 
 -- Inhabited instances needed for partial definitions
@@ -155,8 +154,21 @@ mutual
       | some (.inr globalInfo) =>
         pure (.global globalInfo.name () name.span)
       | none =>
-        LowerM.reportError (.unboundVariable name.value name.span)
-        pure (.panic s!"unresolved: {name.value}" () name.span)
+        -- Check if it's a primitive type name used as an expression
+        match name.value with
+        | "Int" => pure (.primTy .int name.span)
+        | "Long" => pure (.primTy .long name.span)
+        | "Short" => pure (.primTy .short name.span)
+        | "Byte" => pure (.primTy .byte name.span)
+        | "Bool" => pure (.primTy .bool name.span)
+        | "String" => pure (.primTy .string name.span)
+        | "Float" => pure (.primTy .float name.span)
+        | "Double" => pure (.primTy .double name.span)
+        | "Unit" => pure (.primTy .unit name.span)
+        | "Type" => pure (.type .zero name.span)
+        | _ =>
+          LowerM.reportError (.unboundVariable name.value name.span)
+          pure (.panic s!"unresolved: {name.value}" () name.span)
 
     | .lit lit =>
       pure (.lit (lowerLiteral lit) lit.span)
@@ -186,13 +198,6 @@ mutual
     | .lambda params body span =>
       lowerLambda localEnv params.toList body span
 
-    | .let_ name _ value body span =>
-      let value' ← lowerExpr localEnv value
-      let bindingId ← LowerM.freshPatternVarId name.value
-      let localEnv' := localEnv.extend bindingId name.value
-      let body' ← lowerExpr localEnv' body
-      pure (.let_ bindingId name.value value' body' () span)
-
     | .if_ cond then_ else_ span =>
       let cond' ← lowerExpr localEnv cond
       let then' ← lowerExpr localEnv then_
@@ -207,9 +212,26 @@ mutual
       pure (.case scrutinees' arms' () span)
 
     | .tuple elems span =>
+      -- Convert tuples to nested pairs (Agda-style)
+      -- (a, b, c) becomes (a, (b, c))
       let elemList ← elems.toList.mapM (lowerExpr localEnv)
-      let elems' := ExprList.fromList elemList
-      pure (.tuple elems' () span)
+      match elemList with
+      | [] =>
+        -- Empty tuple is unit - use the tuple representation with no elements
+        -- This will be inferred as Unit (vPrimTy .unit) by the type checker
+        pure (.tuple .nil () span)
+      | [e] => pure e  -- Single element, no wrapping
+      | _ =>
+        -- Build nested pairs right-to-left: (a, b, c) -> (a, (b, c))
+        let result := elemList.foldr (init := none) fun elem acc =>
+          match acc with
+          | none => some elem  -- Last element
+          | some rest => some (.pair elem rest () span)
+        match result with
+        | some e => pure e
+        | none =>
+          -- Shouldn't happen, but use empty tuple as fallback
+          pure (.tuple .nil () span)
 
     | .list elems span =>
       let elemList ← elems.toList.mapM (lowerExpr localEnv)
@@ -261,9 +283,7 @@ mutual
     | .typeApp arg span =>
       let metalArg : Metal.TypeArg := match arg with
         | .label name => .label name.value
-        | .type ty =>
-          -- proper resolution happens in type inference
-          .type ⟨.star, .starPrim .unit⟩
+        | .type ty => .type ty
       pure (.typeApp metalArg () span)
 
     | .compose body _ =>

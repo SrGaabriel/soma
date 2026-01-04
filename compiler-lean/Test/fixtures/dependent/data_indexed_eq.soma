@@ -1,0 +1,9 @@
+// expect: success
+// Test: propositional equality (Eq a b)
+
+data Eq a b where
+  | Refl :: Eq x x
+
+def intEqInt :: Eq Int Int = Refl
+
+def boolEqBool :: Eq Bool Bool = Refl

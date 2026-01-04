@@ -445,7 +445,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
           output := output.push s!"  DEBUG SPAN-START: connVisualCol={connVisualCol} startVisualCol={startVisualCol}"
           output := output.push s!"  DEBUG SPAN-START: corner at pos {connVisualCol}, horiz line from {startVisualCol} for {underlineLen} chars"
 
-    -- Render multi-line span end lines 
+    -- Render multi-line span end lines
     for ms in multiSpansWithCols do
       if ms.endLine == lineNum then
         let color := Color.labelColor ms.style
@@ -713,8 +713,6 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
           underlineParts := underlineParts.push color
           underlineParts := underlineParts.push (String.ofList [char])
           underlineParts := underlineParts.push Color.reset
-
-      underlineRowPos := maxCol
 
       output := output.push s!" {emptyGutter gutterWidth}{buildString underlineParts}"
 

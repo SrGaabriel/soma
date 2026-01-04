@@ -1,0 +1,10 @@
+// expect: success
+// Test: simple record types
+
+def point :: { x :: Int, y :: Int } = { x = 1, y = 2 }
+
+def getX :: { x :: Int, y :: Int } -> Int
+    | rec => rec.x
+
+def getY :: { x :: Int, y :: Int } -> Int
+    | rec => rec.y

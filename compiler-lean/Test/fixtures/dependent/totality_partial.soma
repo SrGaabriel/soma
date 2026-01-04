@@ -1,0 +1,9 @@
+// expect: success
+// Test: partial functions are allowed by default (no termination check)
+
+def loop :: Int -> Int
+    | x => loop x
+
+def collatz :: Int -> Int
+    | 1 => 1
+    | n => collatz n

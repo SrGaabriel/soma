@@ -5,10 +5,12 @@ import Soma.Metal
 import Soma.Logging
 import Soma.Project
 import Soma.Project.Check
+import Soma.Dependent
 import Somac.Build
+import Somac.Build.Metadata
 
 open Cli
-open Soma.Check (parseOnly toAst toMetal fullSimple)
+open Soma.Check (parseOnly toAst toMetal)
 
 namespace Soma.Driver
 
@@ -115,8 +117,8 @@ def runLower (p : Parsed) : IO UInt32 := do
 
   -- Success
   let module := metalRes.module
-  let cfg : Metal.Pretty.Config := { showTypes := false, indent := 2 }
-  IO.println (Metal.Pretty.ppUntypedModule cfg module)
+  let cfg : Metal.Pretty.Config := { indent := 2 }
+  IO.println (Metal.Pretty.ppModule cfg module)
   IO.println "\nMetal lowering successful!"
   return 0
 
@@ -131,33 +133,36 @@ def parseDeps (p : Parsed) : Array (String × String) :=
       | .ok pair => some pair
       | .error _ => none
 
-/-- Handler for the `check` command -/
-def runCheck (p : Parsed) : IO UInt32 := do
+/-- Handler for the `check-dep` command (dependent type checking) -/
+def runCheckDep (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
+  let format := p.flag? "format" |>.map (·.as! String) |>.getD "human"
   let name := p.flag? "name" |>.map (·.as! String)
-  let format := p.flag? "format" |>.map (·.as! String) |>.getD "json"
+  let deps := parseDeps p
 
+  -- Build project config
   let config : Soma.Check.ProjectConfig := {
     input := ⟨input⟩
     name := name
-    deps := parseDeps p |>.map fun (n, p) => (n, ⟨p⟩)
+    deps := deps.map fun (n, p) => (n, ⟨p⟩)
   }
 
+  -- Run dependent type checking via Check module
   let result ← Soma.Check.checkProject config Somac.Build.loadExternalDependencies
 
   -- Output diagnostics
   match format with
   | "json" =>
-    IO.println (Logging.Error.renderDiagnosticsJsonWithMap result.diagnostics result.sourceFiles)
+    IO.println (Logging.Error.renderDiagnosticsJson result.diagnostics)
   | _ => -- "human"
-    Logging.Error.printDiagnosticsWithMap result.diagnostics result.sourceFiles
     if !result.diagnostics.isEmpty then
+      Logging.Error.printDiagnosticsWithMap result.diagnostics result.sourceFiles
       IO.eprintln ""
       IO.eprintln (Logging.Error.renderSummary result.diagnostics)
     else
-      IO.println "No errors found."
+      IO.println "Dependent type check passed."
 
-  return if Syntax.Diagnostics.hasErrors result.diagnostics then 1 else 0
+  return if result.success then 0 else 1
 
 /-- Handler for the `metadata` command -/
 def runMetadata (p : Parsed) : IO UInt32 := do
@@ -170,7 +175,7 @@ def runMetadata (p : Parsed) : IO UInt32 := do
     deps := parseDeps p
   }
 
-  let result ← Somac.Build.Metadata.metadata opts
+  let result ← Somac.Build.Metadata.metadata opts Somac.Build.loadExternalDependencies
 
   if result.success then
     match result.metadata with
@@ -272,16 +277,18 @@ def lowerCmd : Cmd := `[Cli|
 
 /-- The `check` subcommand -/
 def checkCmd : Cmd := `[Cli|
-  check VIA runCheck; ["0.1.0"]
-  "Type-check a source file or directory without compiling."
+  check VIA runCheckDep; ["0.1.0"]
+  "Type-check a source file using the dependent type system (CQC)."
 
   FLAGS:
     name : String; "Name of the module"
     d, dep : Array String; "External dependency (NAME=PATH)"
-    format : String; "Output format: json (default) or human"
+    format : String; "Output format: json or human (default)"
+    legacy; "Use the legacy HM-based type inference instead of dependent types"
+    debug; "Print detailed type inference trace for debugging"
 
   ARGS:
-    input : String; "Input source file or directory"
+    input : String; "Input source file"
 ]
 
 /-- The `metadata` subcommand -/

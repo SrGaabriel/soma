@@ -1,7 +1,10 @@
 import Soma.Syntax.Source
+import Soma.Core.Quantity
 import Std.Data.HashSet
 
 namespace Soma.Syntax
+
+open Soma.Core (Quantity)
 
 /-! ## Names -/
 
@@ -130,6 +133,12 @@ inductive TypeExpr : Type where
   | record (fields : Array (Name × TypeExpr)) (tail : Option Name) (span : Span)
   /-- Variant type: < Ok :: Int | Err :: String > or < Ok :: Int | r > -/
   | variant (cases : Array (Name × TypeExpr)) (tail : Option Name) (span : Span)
+  /-- Dependent function type (Pi): (q x : A) -> B -/
+  | pi (qty : Quantity) (name : Name) (domain : TypeExpr) (codomain : TypeExpr) (span : Span)
+  /-- Dependent pair type (Sigma): (x : A) × B -/
+  | sigma (qty : Quantity) (name : Name) (fst : TypeExpr) (snd : TypeExpr) (span : Span)
+  /-- Implicit parameter type: {{x : A}} -> B -/
+  | implicit (name : Option Name) (domain : TypeExpr) (codomain : TypeExpr) (span : Span)
 
 end
 
@@ -162,6 +171,9 @@ where
       match tail with
       | some tailName => acc'.insert tailName.value
       | none => acc'
+    | .pi _ _ domain codomain _ => go codomain (go domain acc)
+    | .sigma _ _ fst snd _ => go snd (go fst acc)
+    | .implicit _ domain codomain _ => go codomain (go domain acc)
 
 end TypeExpr
 
@@ -203,6 +215,9 @@ partial def TypeExpr.repr' (t : TypeExpr) (_ : Nat) : Std.Format :=
   | .kinded ty kind span => f!"TypeExpr.kinded ({TypeExpr.repr' ty 0}) ({TypeExpr.repr' kind 0}) {Repr.reprPrec span 0}"
   | .record fields tail span => f!"TypeExpr.record #[...{fields.size}] {Repr.reprPrec tail 0} {Repr.reprPrec span 0}"
   | .variant cases tail span => f!"TypeExpr.variant #[...{cases.size}] {Repr.reprPrec tail 0} {Repr.reprPrec span 0}"
+  | .pi qty name domain codomain span => f!"TypeExpr.pi {Repr.reprPrec qty 0} {Repr.reprPrec name 0} ({TypeExpr.repr' domain 0}) ({TypeExpr.repr' codomain 0}) {Repr.reprPrec span 0}"
+  | .sigma qty name fst snd span => f!"TypeExpr.sigma {Repr.reprPrec qty 0} {Repr.reprPrec name 0} ({TypeExpr.repr' fst 0}) ({TypeExpr.repr' snd 0}) {Repr.reprPrec span 0}"
+  | .implicit name domain codomain span => f!"TypeExpr.implicit {Repr.reprPrec name 0} ({TypeExpr.repr' domain 0}) ({TypeExpr.repr' codomain 0}) {Repr.reprPrec span 0}"
 
 end
 
@@ -264,6 +279,9 @@ def span : TypeExpr → Span
   | .kinded _ _ s => s
   | .record _ _ s => s
   | .variant _ _ s => s
+  | .pi _ _ _ _ s => s
+  | .sigma _ _ _ _ s => s
+  | .implicit _ _ _ s => s
 
 end TypeExpr
 
@@ -314,6 +332,17 @@ partial def freeVars : TypeExpr → Array Name
       match tail with
       | some name => caseVars ++ #[name]
       | none => caseVars
+  | .pi _ name domain codomain _ =>
+      -- The bound variable is not free in the codomain
+      domain.freeVars ++ (codomain.freeVars.filter fun v => v.value != name.value)
+  | .sigma _ name fst snd _ =>
+      -- The bound variable is not free in the second component
+      fst.freeVars ++ (snd.freeVars.filter fun v => v.value != name.value)
+  | .implicit name domain codomain _ =>
+      let codomainVars := match name with
+        | some n => codomain.freeVars.filter fun v => v.value != n.value
+        | none => codomain.freeVars
+      domain.freeVars ++ codomainVars
 
 end TypeExpr
 
@@ -338,8 +367,6 @@ inductive Expr where
   | infix (op : OpName) (left : Expr) (right : Expr) (span : Span)
   /-- Lambda expression: \x y -> body -/
   | lambda (params : Array (Name × Option TypeExpr)) (body : Expr) (span : Span)
-  /-- Let binding: let x = e1 in e2 -/
-  | let_ (name : Name) (type_ : Option TypeExpr) (value : Expr) (body : Expr) (span : Span)
   /-- If expression: if cond then e1 else e2 -/
   | if_ (cond : Expr) (then_ : Expr) (else_ : Expr) (span : Span)
   /-- Case expression: case e of | pat => body ... -/
@@ -396,7 +423,6 @@ def span : Expr → Span
   | .app _ _ s => s
   | .infix _ _ _ s => s
   | .lambda _ _ s => s
-  | .let_ _ _ _ _ s => s
   | .if_ _ _ _ s => s
   | .case _ _ s => s
   | .tuple _ s => s
@@ -414,10 +440,15 @@ def span : Expr → Span
 
 end Expr
 
-/-- A data constructor: | ConName field1 :: T1 field2 :: T2 -/
+/-- A data constructor: | ConName field1 :: T1 field2 :: T2
+    For indexed types, includes a full type signature:
+    | Cons :: a -> Vec n a -> Vec (n + 1) a -/
 structure DataCon where
   name : Name
-  fields : Array (Option Name × TypeExpr)  -- Named or positional fields
+  fields : Array (Option Name × TypeExpr)  -- Named or positional fields (for simple constructors)
+  /-- Full constructor type signature (for indexed data types).
+      When present, `fields` should be empty and this contains the complete type. -/
+  sig : Option TypeExpr := none
   span : Span
   deriving Repr
 
@@ -468,8 +499,8 @@ inductive Decl where
           (methods : Array MethodSig) (span : Span)
 
   /-- Instance definition -/
-  | instance_ (traitName : Name) (args : Array TypeExpr) (constraints : Array Constraint)
-              (methods : Array Decl) (span : Span)
+  | instance_ (instanceName : Option Name) (traitName : Name) (args : Array TypeExpr)
+              (constraints : Array Constraint) (methods : Array Decl) (span : Span)
 
   /-- Import declaration: use base/core.{Option, Some, None} -/
   | use (path : QualName) (items : Array Name) (span : Span)
@@ -493,7 +524,7 @@ def span : Decl → Span
   | .data _ _ _ _ s => s
   | .struct _ _ _ _ s => s
   | .trait _ _ _ _ s => s
-  | .instance_ _ _ _ _ s => s
+  | .instance_ _ _ _ _ _ s => s
   | .use _ _ s => s
   | .export_ _ s => s
   | .intrinsic _ s => s
@@ -505,7 +536,7 @@ def name? : Decl → Option Name
   | .data name _ _ _ _ => some name
   | .struct name _ _ _ _ => some name
   | .trait name _ _ _ _ => some name
-  | .instance_ _ _ _ _ _ => none
+  | .instance_ instanceName _ _ _ _ _ => instanceName
   | .use _ _ _ => none
   | .export_ _ _ => none
   | .intrinsic inner _ => inner.name?
@@ -602,6 +633,23 @@ partial def ppTypeExpr : TypeExpr → String
       match tail with
       | some name => "< " ++ casesStr ++ " | " ++ name.value ++ " >"
       | none => "< " ++ casesStr ++ " >"
+  | .pi qty name domain codomain _ =>
+      let qtyStr := match qty with
+        | .zero => "0 "
+        | .one => "1 "
+        | .omega => ""
+      s!"({qtyStr}{name.value} : {ppTypeExpr domain}) -> {ppTypeExpr codomain}"
+  | .sigma qty name fst snd _ =>
+      let qtyStr := match qty with
+        | .zero => "0 "
+        | .one => "1 "
+        | .omega => ""
+      s!"({qtyStr}{name.value} : {ppTypeExpr fst}) × {ppTypeExpr snd}"
+  | .implicit name domain codomain _ =>
+      let nameStr := match name with
+        | some n => s!"{n.value} : "
+        | none => ""
+      "{{" ++ nameStr ++ ppTypeExpr domain ++ "}} -> " ++ ppTypeExpr codomain
 where
   ppTypeAtom : TypeExpr → String
     | .var n => n.value
@@ -642,9 +690,6 @@ partial def ppExpr : Expr → String
         | some t => s!"({n.value} :: {ppTypeExpr t})"
         | none => n.value
       s!"\\{ps |> String.intercalate " "} -> {ppExpr body}"
-  | .let_ n ty v b _ =>
-      let tyStr := match ty with | some t => s!" :: {ppTypeExpr t}" | none => ""
-      s!"let {n.value}{tyStr} = {ppExpr v} in {ppExpr b}"
   | .if_ c t e _ => s!"if {ppExpr c} then {ppExpr t} else {ppExpr e}"
   | .case scruts arms _ =>
       let scrutStr := scruts.toList.map ppExpr |> String.intercalate ", "
@@ -752,12 +797,15 @@ partial def ppDecl : Decl → String
       let methodsStr := methods.toList.map ppMethodSig |> String.intercalate "\n"
       s!"trait {name.value}{paramsStr}{consStr} where\n{indent 2 methodsStr}"
 
-  | .instance_ traitName args constraints methods _ =>
+  | .instance_ instanceName traitName args constraints methods _ =>
+      let nameStr := match instanceName with
+        | some n => s!"{n.value} : "
+        | none => ""
       let argsStr := args.toList.map ppTypeExpr |> String.intercalate " "
       let consStr := if constraints.isEmpty then ""
         else s!" with ({constraints.toList.map ppConstraint |> String.intercalate ", "})"
       let methodsStr := methods.toList.map ppDecl |> String.intercalate "\n\n"
-      s!"instance {traitName.value} {argsStr}{consStr} where\n{indent 2 methodsStr}"
+      s!"instance {nameStr}{traitName.value} {argsStr}{consStr} where\n{indent 2 methodsStr}"
 
   | .use path items _ =>
       let itemsStr := if items.isEmpty then ""

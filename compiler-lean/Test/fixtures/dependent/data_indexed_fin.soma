@@ -1,0 +1,16 @@
+// expect: success
+// Test: bounded natural numbers (Fin n)
+
+data Nat where
+  | Zero :: Nat
+  | Succ :: Nat -> Nat
+
+data Fin n where
+  | FZero :: Fin (Succ m)
+  | FSucc :: Fin m -> Fin (Succ m)
+
+def fin0of3 :: Fin (Succ (Succ (Succ Zero))) = FZero
+
+def fin1of3 :: Fin (Succ (Succ (Succ Zero))) = FSucc FZero
+
+def fin2of3 :: Fin (Succ (Succ (Succ Zero))) = FSucc (FSucc FZero)

@@ -1,0 +1,14 @@
+// expect: success
+// Test: basic trait instance
+
+data Maybe a
+    | Nothing
+    | Just a
+
+trait Functor (f :: * -> *) where
+    def fmap :: forall a b. (a -> b) -> f a -> f b
+
+instance Functor Maybe where
+    def fmap :: forall a b. (a -> b) -> Maybe a -> Maybe b
+        | f (Just value) => Just (f value)
+        | f Nothing => Nothing

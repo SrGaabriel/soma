@@ -3,94 +3,63 @@ import Soma.Syntax.Ast
 
 namespace Soma.Metal
 
-open Soma.Typing
-
-/-- A data constructor (untyped - fields not yet resolved) -/
-structure UntypedConstructor where
-  name : Name
-  tag : Nat
-  fieldTypeSyntax : Array Syntax.TypeExpr
-
-/-- A data constructor (typed) -/
+/-- A data constructor (fields stored as syntax for elaboration) -/
 structure Constructor where
   name : Name
   tag : Nat
-  fields : Array MonoTy
-  deriving BEq
+  fieldTypeSyntax : Array Syntax.TypeExpr
+  /-- Full type signature for indexed data types (e.g., `a -> Vec n a -> Vec (n+1) a`).
+      When present, `fieldTypeSyntax` should be empty. -/
+  sigSyntax : Option Syntax.TypeExpr := none
 
-/-- An untyped type definition -/
-inductive UntypedTypeDef where
-  | algebraic (name : Name) (typeVarNames : Array String) (ctors : Array UntypedConstructor)
+/-- A type definition -/
+inductive TypeDef where
+  | algebraic (name : Name) (typeVarNames : Array String) (ctors : Array Constructor)
   | struct (name : Name) (typeVarNames : Array String) (ctorName : Name) (fields : Array (Option String × Syntax.TypeExpr))
   | record (name : Name) (typeVarNames : Array String) (fieldNamesAndTypes : Array (String × Syntax.TypeExpr))
 
-namespace UntypedTypeDef
-
-def name : UntypedTypeDef → Name
-  | .algebraic n _ _ => n
-  | .struct n _ _ _ => n
-  | .record n _ _ => n
-
-def typeVarCount : UntypedTypeDef → Nat
-  | .algebraic _ vs _ => vs.size
-  | .struct _ vs _ _ => vs.size
-  | .record _ vs _ => vs.size
-
-end UntypedTypeDef
-
-/-- A typed type definition -/
-inductive TypeDef where
-  | algebraic (name : Name) (typeVars : Array TyVarId) (ctors : Array Constructor)
-  | struct (name : Name) (typeVars : Array TyVarId) (ctorName : Name) (fields : Array (Option String × MonoTy))
-  | record (name : Name) (typeVars : Array TyVarId) (fields : Array (String × MonoTy))
-
 namespace TypeDef
 
-/-- Get the name of a type definition -/
 def name : TypeDef → Name
   | .algebraic n _ _ => n
   | .struct n _ _ _ => n
   | .record n _ _ => n
 
-/-- Get the type variables of a type definition -/
-def typeVars : TypeDef → Array TyVarId
+def typeVarNames : TypeDef → Array String
   | .algebraic _ vs _ => vs
   | .struct _ vs _ _ => vs
   | .record _ vs _ => vs
 
-/-- Get all constructors (for algebraic types) -/
+def typeVarCount : TypeDef → Nat
+  | .algebraic _ vs _ => vs.size
+  | .struct _ vs _ _ => vs.size
+  | .record _ vs _ => vs.size
+
+/-- Get all constructors -/
 def constructors : TypeDef → Array Constructor
   | .algebraic _ _ cs => cs
-  | .struct _ _ cn fields => #[{ name := cn, tag := 0, fields := fields.map (·.2) }]
-  | .record n _ fields => #[{ name := n, tag := 0, fields := fields.map (·.2) }]
-
-/-- Get named fields only (for structs with field names) -/
-def namedFields : TypeDef → Array (String × MonoTy)
-  | .struct _ _ _ fields => fields.filterMap fun (name?, ty) => name?.map (·, ty)
-  | .record _ _ fields => fields
-  | .algebraic _ _ _ => #[]
+  | .struct _ _ cn fields => #[{ name := cn, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
+  | .record n _ fields => #[{ name := n, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
 
 end TypeDef
 
-/-- An untyped instance (before type checking) -/
-structure UntypedInstance where
+/-- An instance declaration (before type checking) -/
+structure InstanceDecl where
   className : String
   typeArgsSyntax : Array Syntax.TypeExpr
   constraintsSyntax : Array Syntax.Constraint
   methods : Array UntypedFunction
   span : Syntax.Span
 
-/-- A typed type class instance -/
-structure Instance where
-  className : String
-  instanceType : MonoTy
-  methods : Array Function
-  span : Syntax.Span
-
 /-- Metadata about a type class -/
 structure TypeClassMeta where
   name : Name
-  methods : Array (Name × QualifiedType)
+  /-- Type parameter names (e.g., ["a"] for `trait Eq a`) -/
+  paramNames : Array String
+  /-- Superclass constraints as syntax -/
+  superclasses : Array Syntax.Constraint
+  /-- Method names and their type signatures (as syntax) -/
+  methodSignatures : Array (Name × Syntax.TypeExpr)
 
 /-- A type abbreviation -/
 structure TypeAbbrev where
@@ -98,47 +67,25 @@ structure TypeAbbrev where
   params : Array String
   expansion : Syntax.TypeExpr
 
-/-! ## Untyped Module (after lowering, before type inference) -/
+/-! ## Module (after lowering, before type inference) -/
 
-/-- An untyped Metal module - produced by lowering -/
-structure UntypedModule where
-  name : String
-  functions : Array UntypedFunction
-  types : Array UntypedTypeDef
-  instances : Array UntypedInstance
-  typeClasses : Array TypeClassMeta
-  abbreviations : Array TypeAbbrev := #[]
-
-namespace UntypedModule
-
-/-- Create an empty untyped module -/
-def empty (name : String) : UntypedModule :=
-  { name, functions := #[], types := #[], instances := #[], typeClasses := #[], abbreviations := #[] }
-
-/-- Look up a function by name -/
-def findFunction (m : UntypedModule) (name : Name) : Option UntypedFunction :=
-  m.functions.find? (·.name == name)
-
-end UntypedModule
-
-/-! ## Typed Module (after type inference) -/
-
-/-- A typed Metal module -/
+/-- A Metal module - produced by lowering from syntax -/
 structure Module where
   name : String
-  functions : Array Function
+  functions : Array UntypedFunction
   types : Array TypeDef
-  instances : Array Instance
+  instances : Array InstanceDecl
   typeClasses : Array TypeClassMeta
+  abbreviations : Array TypeAbbrev := #[]
 
 namespace Module
 
 /-- Create an empty module -/
 def empty (name : String) : Module :=
-  { name, functions := #[], types := #[], instances := #[], typeClasses := #[] }
+  { name, functions := #[], types := #[], instances := #[], typeClasses := #[], abbreviations := #[] }
 
 /-- Look up a function by name -/
-def findFunction (m : Module) (name : Name) : Option Function :=
+def findFunction (m : Module) (name : Name) : Option UntypedFunction :=
   m.functions.find? (·.name == name)
 
 /-- Look up a type definition by name -/
@@ -156,5 +103,11 @@ def findConstructor (m : Module) (name : Name) : Option Constructor :=
   m.allConstructors.find? (·.1 == name) |>.map (·.2)
 
 end Module
+
+/-- Alias for backwards compatibility during migration -/
+abbrev UntypedModule := Module
+abbrev UntypedTypeDef := TypeDef
+abbrev UntypedConstructor := Constructor
+abbrev UntypedInstance := InstanceDecl
 
 end Soma.Metal

@@ -1,0 +1,16 @@
+// expect: success
+// Test: length-indexed vectors (Vec n a)
+
+data Nat where
+  | Zero :: Nat
+  | Succ :: Nat -> Nat
+
+data Vec n (a : Type) where
+  | Nil :: Vec Zero a
+  | Cons :: a -> Vec m a -> Vec (Succ m) a
+
+def emptyVec :: Vec Zero Int = Nil
+
+def oneElem :: Vec (Succ Zero) Int = Cons 42 Nil
+
+def twoElems :: Vec (Succ (Succ Zero)) Int = Cons 1 (Cons 2 Nil)

@@ -4,7 +4,7 @@ import Soma.Syntax.Ast
 
 namespace Soma.Metal.Lower
 
-open Soma.Typing
+open Soma.Core (TypeId Name)
 open Soma.Metal
 open Soma.Syntax (Decl DataCon StructField DefClause)
 
@@ -31,7 +31,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     | _ =>
       -- Register the function name (but don't resolve type yet)
       let globalName ← LowerM.freshUserName name.value
-      -- Store raw syntax - will be resolved during lowerFunction
+      -- Store raw syntax - will be resolved during dependent type checking
       LowerM.registerGlobal name.value { name := globalName, typeSyntax := sig, definedAt := name.span }
 
   | .data name params constructors _kind _span =>
@@ -39,65 +39,80 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
     let typeUnique : Unique := { id := uniqueId, module := modName, original := name.value }
-    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId, kind := Kind.nary params.size }
-    let tyCon := TyCon.user typeId
-    let tyVarIds := params.mapIdx fun idx p => TyVarId.mk p.value idx .star
-    let kind := Kind.nary params.size
-    LowerM.registerType name.value { tyCon := tyCon, params := tyVarIds, kind := kind, unique := typeUnique }
+    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId }
+    LowerM.registerType name.value {
+      typeId := typeId
+      paramNames := params.map (·.value)
+      unique := typeUnique
+    }
 
     -- Register constructors
     let ctorList := enumWithIndex constructors.toList
     for (i, ctor) in ctorList do
       let ctorName := LowerM.mkCtorName typeUnique ctor.name.value i
-      -- Resolve field types (best effort - may fail if types not yet registered)
-      let fields ← ctor.fields.mapM fun (_, tyExpr) => do
-        let ty? ← resolveType tyExpr
-        pure (ty?.getD Ty.unit)
-      LowerM.registerConstructor ctor.name.value
-        { name := ctorName, parentType := name.value, parentUnique := typeUnique, tag := i, fields := fields, span := ctor.span }
+      -- Check if this is an indexed constructor (has full signature) or simple (has fields)
+      match ctor.sig with
+      | some sig =>
+        -- Indexed constructor: store the full signature
+        LowerM.registerConstructor ctor.name.value
+          { name := ctorName, parentType := name.value, parentUnique := typeUnique, tag := i,
+            fieldTypeSyntax := #[], sigSyntax := some sig, span := ctor.span }
+      | none =>
+        -- Simple constructor: store field types
+        let fieldTypeSyntax := ctor.fields.map (·.2)
+        LowerM.registerConstructor ctor.name.value
+          { name := ctorName, parentType := name.value, parentUnique := typeUnique, tag := i,
+            fieldTypeSyntax := fieldTypeSyntax, sigSyntax := none, span := ctor.span }
 
   | .struct name params ctorName fields _span =>
     -- Register the type
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
     let typeUnique : Unique := { id := uniqueId, module := modName, original := name.value }
-    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId, kind := Kind.nary params.size }
-    let tyCon := TyCon.user typeId
-    let tyVarIds := params.mapIdx fun idx p => TyVarId.mk p.value idx .star
-    let kind := Kind.nary params.size
+    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId }
     let fieldNames := fields.filterMap fun field => field.name.map (·.value)
-    LowerM.registerType name.value { tyCon := tyCon, params := tyVarIds, kind := kind, unique := typeUnique, fieldNames := fieldNames }
+    LowerM.registerType name.value {
+      typeId := typeId
+      paramNames := params.map (·.value)
+      unique := typeUnique
+      fieldNames := fieldNames
+    }
 
     -- Register the constructor
     let ctorMetalName := LowerM.mkCtorName typeUnique ctorName.value 0
-    let fieldTys ← fields.mapM fun field => do
-      let ty? ← resolveType field.type_
-      pure (ty?.getD Ty.unit)
+    let fieldTypeSyntax := fields.map (·.type_)
     LowerM.registerConstructor ctorName.value
-      { name := ctorMetalName, parentType := name.value, parentUnique := typeUnique, tag := 0, fields := fieldTys, span := ctorName.span }
+      { name := ctorMetalName, parentType := name.value, parentUnique := typeUnique, tag := 0, fieldTypeSyntax := fieldTypeSyntax, span := ctorName.span }
 
-  | .trait name _params _constraints methods _span =>
+  | .trait name params constraints methods _span =>
     -- Register the type class
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
     let typeUnique : Unique := { id := uniqueId, module := modName, original := name.value }
-    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId, kind := .star }
-    let tyCon := TyCon.user typeId
+    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId }
     let globalName ← LowerM.freshUserName name.value
 
+    -- Store method signatures as syntax (unresolved)
     let methodSigs ← methods.mapM fun m => do
       let methodGlobalName ← LowerM.freshUserName m.name.value
-      let ty? ← resolveQualifiedType m.type_
-      pure (methodGlobalName, ty?.getD (QualifiedType.mono Ty.unit))
+      pure (methodGlobalName, m.type_)
+
+    -- Extract parameter names from the trait declaration
+    let paramNames := params.map (·.value)
 
     LowerM.registerTypeClass name.value
-      { name := globalName, tyCon := tyCon, methods := methodSigs, unique := typeUnique }
+      { name := globalName
+        typeId := typeId
+        paramNames := paramNames
+        superclasses := constraints
+        methods := methodSigs
+        unique := typeUnique }
 
     -- Register each trait method as a global so it can be looked up as a variable
     for (methodName, _) in methodSigs do
       LowerM.registerGlobal methodName.display { name := methodName, typeSyntax := none, definedAt := name.span }
 
-  | .instance_ _traitName _args _constraints methods _ =>
+  | .instance_ _instanceName _traitName _args _constraints methods _ =>
     -- Instance methods should NOT register as new globals - they implement existing trait methods
     for methodDecl in methods do
       match methodDecl with
@@ -127,11 +142,12 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
     let typeUnique : Unique := { id := uniqueId, module := modName, original := name.value }
-    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId, kind := Kind.nary params.size }
-    let tyCon := TyCon.user typeId
-    let tyVarIds := params.mapIdx fun idx p => TyVarId.mk p.value idx .star
-    let kind := Kind.nary params.size
-    LowerM.registerType name.value { tyCon := tyCon, params := tyVarIds, kind := kind, unique := typeUnique }
+    let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId }
+    LowerM.registerType name.value {
+      typeId := typeId
+      paramNames := params.map (·.value)
+      unique := typeUnique
+    }
 
 /-- Collect globals from all declarations -/
 def collectAllGlobals (decls : Array Decl) : LowerM Unit := do
@@ -153,9 +169,10 @@ theorem bindingIds_append_nil (paramList : ParamList Unit) :
 /-- Cast expression to equivalent scope -/
 def castExprScope (h : s1 = s2) (e : Expr α s1) : Expr α s2 := h ▸ e
 
-/-- Check if a pattern is a simple variable pattern -/
+/-- Check if a pattern is a simple variable or wildcard pattern -/
 private def isSimpleVarPattern : Syntax.Pattern → Bool
   | .var _ => true
+  | .wildcard _ => true
   | .parens inner _ => isSimpleVarPattern inner
   | .typed inner _ _ => isSimpleVarPattern inner
   | _ => false
@@ -195,6 +212,7 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
       let funcAttrs : FunctionAttrs := {
         inline := attrs.any fun a => a.name.value == "inline"
         noInline := attrs.any fun a => a.name.value == "noinline"
+        total := attrs.any fun a => a.name.value == "total"
         deprecated := none
         extern := none
       }
@@ -291,6 +309,7 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
       let funcAttrs : FunctionAttrs := {
         inline := attrs.any fun a => a.name.value == "inline"
         noInline := attrs.any fun a => a.name.value == "noinline"
+        total := attrs.any fun a => a.name.value == "total"
         deprecated := none
         extern := some name.value  -- Mark as extern with the intrinsic name
       }
@@ -319,9 +338,15 @@ def lowerTypeDef (decl : Decl) : LowerM (Option UntypedTypeDef) := do
     let ctorList := enumWithIndex constructors.toList
     let ctors ← ctorList.toArray.mapM fun (i, ctor) => do
       let ctorName := Name.ctor typeUnique ctor.name.value i
-      -- Extract TypeExpr from each field (ignoring optional field names)
-      let fieldTypes := ctor.fields.map (·.2)
-      pure { name := ctorName, tag := i, fieldTypeSyntax := fieldTypes : UntypedConstructor }
+      -- Check if this is an indexed constructor or simple constructor
+      match ctor.sig with
+      | some sig =>
+        -- Indexed constructor: store full signature
+        pure { name := ctorName, tag := i, fieldTypeSyntax := #[], sigSyntax := some sig : UntypedConstructor }
+      | none =>
+        -- Simple constructor: extract field types
+        let fieldTypes := ctor.fields.map (·.2)
+        pure { name := ctorName, tag := i, fieldTypeSyntax := fieldTypes, sigSyntax := none : UntypedConstructor }
 
     pure (some (.algebraic typeName typeVarNames ctors))
 
@@ -341,7 +366,7 @@ def lowerTypeDef (decl : Decl) : LowerM (Option UntypedTypeDef) := do
 /-- Lower an instance declaration to an UntypedInstance -/
 def lowerInstance (decl : Decl) : LowerM (Option UntypedInstance) := do
   match decl with
-  | .instance_ traitName args constraints methods span =>
+  | .instance_ _instanceName traitName args constraints methods span =>
     -- Lower each method as a function
     let methodFunctions ← methods.filterMapM lowerFunction
 
@@ -385,7 +410,10 @@ def lowerModule (moduleName : String) (decls : Array Decl) : LowerM UntypedModul
   -- Sixth pass: extract type class metadata from GlobalEnv
   let genv ← LowerM.getGlobalEnv
   let typeClasses := genv.typeClasses.fold (init := #[]) fun acc _ info =>
-    acc.push { name := info.name, methods := info.methods : TypeClassMeta }
+    acc.push { name := info.name
+               paramNames := info.paramNames
+               superclasses := info.superclasses
+               methodSignatures := info.methods : TypeClassMeta }
 
   pure {
     name := moduleName
@@ -403,9 +431,13 @@ def getDeclName (decl : Decl) : Option String :=
   | .data name _ _ _ _ => some name.value
   | .struct name _ _ _ _ => some name.value
   | .trait name _ _ _ _ => some name.value
-  | .instance_ traitName args _ _ _ =>
-    let argStr := args.foldl (fun acc _ => acc ++ "_") ""
-    some s!"instance_{traitName.value}{argStr}"
+  | .instance_ instanceName traitName args _ _ _ =>
+    -- Use the instance name if provided, otherwise generate from trait name
+    match instanceName with
+    | some name => some name.value
+    | none =>
+      let argStr := args.foldl (fun acc _ => acc ++ "_") ""
+      some s!"instance_{traitName.value}{argStr}"
   | .intrinsic inner _ => getDeclName inner
   | .use _ _ _ => none
   | .export_ _ _ => none

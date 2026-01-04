@@ -59,10 +59,11 @@ def runInlineTests : IO Unit := do
   IO.println "=== Inline Tests Complete ==="
 
 /-- Main entry point for lexer tests -/
-def run : IO Unit := do
+def run : IO TestRunner := do
   -- Run fixture-based tests
   let runner ← runFromFixtures
   runner.printSummary "Lexer Summary"
   IO.println ""
+  return runner
 
 end Test.Lexer

@@ -17,7 +17,8 @@ inductive SyntaxKind where
   -- Definition Components
   | signature         -- Type signature
   | defClause         -- Pattern matching clause
-  | constructor       -- Data constructor
+  | constructor       -- Data constructor (simple: | Cons a (List a))
+  | constructorSig    -- Data constructor with return type (indexed: | Cons :: a -> Vec n a -> Vec (n+1) a)
   | field             -- Struct/constructor field
   | traitMethod       -- Method in trait
   | instanceMethod    -- Method implementation in instance
@@ -73,6 +74,12 @@ inductive SyntaxKind where
   | typeRecordField   -- Record type field: name :: Type
   | typeVariant       -- Variant type < Ok :: Int | Err :: String >
   | typeVariantCase   -- Variant type case: Name :: Type
+  -- Dependent Types (Phase 7)
+  | typePi            -- Dependent function type: (x : A) -> B
+  | typeSigma         -- Dependent pair type: (x : A) × B
+  | typeImplicit      -- Implicit parameter type: {x : A} -> B
+  | typePiBinder      -- Binder in Pi type: (q x : A) or (x : A)
+  | typeQuantity      -- Quantity annotation: 0, 1, or ω
   -- Type Constraints
   | constraint        -- Single constraint
   | constraintList    -- Multiple constraints
@@ -117,6 +124,7 @@ def SyntaxKind.describe : SyntaxKind → String
   | .signature => "type signature"
   | .defClause => "definition clause"
   | .constructor => "constructor"
+  | .constructorSig => "constructor with signature"
   | .field => "field"
   | .traitMethod => "trait method"
   | .instanceMethod => "instance method"
@@ -169,6 +177,11 @@ def SyntaxKind.describe : SyntaxKind → String
   | .typeRecordField => "record type field"
   | .typeVariant => "variant type"
   | .typeVariantCase => "variant type case"
+  | .typePi => "dependent function type"
+  | .typeSigma => "dependent pair type"
+  | .typeImplicit => "implicit parameter type"
+  | .typePiBinder => "pi type binder"
+  | .typeQuantity => "quantity annotation"
   | .constraint => "constraint"
   | .constraintList => "constraint list"
   | .paramList => "parameter list"
@@ -220,7 +233,8 @@ def SyntaxKind.isPattern : SyntaxKind → Bool
 def SyntaxKind.isType : SyntaxKind → Bool
   | .typeVar | .typeCon | .typeApp | .typeArrow | .typeTuple
   | .typeList | .typeForall | .typeConstrained | .typeParens | .typeKinded
-  | .typeRecord | .typeRecordField | .typeVariant | .typeVariantCase => true
+  | .typeRecord | .typeRecordField | .typeVariant | .typeVariantCase
+  | .typePi | .typeSigma | .typeImplicit | .typePiBinder | .typeQuantity => true
   | _ => false
 
 /-- Check if a syntax kind represents trivia -/

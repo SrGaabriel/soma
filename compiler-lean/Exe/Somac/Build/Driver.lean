@@ -50,20 +50,24 @@ def generateOutput (opts : BuildOptions) (outputPath : System.FilePath) (llvmIR 
   | some "o" =>
     let llTemp := outputPath.withExtension "ll"
     IO.FS.writeFile llTemp llvmIR
-    -- TODO
-    sorry
+    IO.println s!"Generated LLVM IR: {llTemp}"
+    IO.println s!"Note: Object file generation not yet implemented"
+
   | some "toria" =>
-    -- TODO
-    sorry
+    -- For now, just write the LLVM IR as the library content
+    IO.FS.writeFile outputPath llvmIR
+    IO.println s!"Generated library archive: {outputPath}"
+
   | _ =>
     if opts.lib then
-      -- TODO
-      sorry
+      let libPath := outputPath.withExtension "toria"
+      IO.FS.writeFile libPath llvmIR
+      IO.println s!"Generated library archive: {libPath}"
     else
       let llTemp := outputPath.withExtension "ll"
       IO.FS.writeFile llTemp llvmIR
-      -- TODO
-      sorry
+      IO.println s!"Generated LLVM IR: {llTemp}"
+      IO.println s!"Note: Executable generation not yet implemented"
 
 /-- Main build entry point -/
 def build (opts : BuildOptions) : IO BuildResult := do
@@ -81,22 +85,23 @@ def build (opts : BuildOptions) : IO BuildResult := do
 
   -- Print diagnostics
   if result.diagnostics.size > 0 then
-    for diag in result.diagnostics do
-      IO.eprintln s!"  {diag.severity}: {diag.message}"
+    for (_, sourceFile) in result.sourceFiles.files do
+      Error.printDiagnostics result.diagnostics sourceFile
 
   if !result.success then
+    IO.eprintln ""
     IO.eprintln (Error.renderSummary result.diagnostics)
     pure (BuildResult.failed result.diagnostics)
   else
-    -- Link
-    let extConstructors : Std.HashMap String Nat := {}  -- TODO: get from deps
+    -- Link modules
+    let extConstructors : Std.HashMap String Nat := result.constructors
     let (llvmIR, _allConstructors) ← linkModules result.packageName result.checkedModules extConstructors
 
     -- Generate output
     let outputPath := generateOutputPath opts result.packageName
     generateOutput opts outputPath llvmIR
 
-    IO.println s!"Successfully compiled {result.checkedModules.size} modules"
+    IO.println s!"Successfully compiled {result.checkedModules.size} module(s)"
     IO.println s!"Output: {outputPath}"
     pure BuildResult.succeeded
 

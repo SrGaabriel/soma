@@ -1,17 +1,15 @@
 import Std.Data.HashMap
 import Soma.Syntax
 import Soma.Metal.Lower.Decl
-import Soma.Infer.Monad
-import Soma.Infer.Module
+import Soma.Dependent.Monad
+import Soma.Dependent.Incremental
 import Lsp.Cst
 
 namespace Lsp
 
 open Soma.Syntax
 open Soma.Metal.Lower (IncrementalLowerResult)
-open Soma.Infer (TypeEnv InstanceEnv FunctionInfo)
-open Soma.Typing (QualifiedType)
-open Soma.Metal (Function)
+open Soma.Dependent (Globals InstanceEnv)
 
 /-- Symbol kinds for LSP features -/
 inductive SymbolKind where
@@ -161,12 +159,12 @@ structure CompiledModule where
   declAsts : Std.HashMap NodeId Decl := {}
   /-- Cached Metal lowering result  -/
   metalResult : Option IncrementalLowerResult := none
-  /-- Cached type environment -/
-  typeEnv : Option TypeEnv := none
+  /-- Cached globals environment -/
+  globals : Option Globals := none
   /-- Cached instance environment -/
   instanceEnv : Option InstanceEnv := none
-  /-- Cached typed functions by name -/
-  typedFunctions : Std.HashMap String Function := {}
+  /-- Incremental type checking state (dependency tracking and caching) -/
+  incrementalState : Option Soma.Dependent.Incremental.IncrementalState := none
   deriving Inhabited
 
 namespace CompiledModule
@@ -215,6 +213,10 @@ structure LspState where
   modules : Std.HashMap String CompiledModule := {}
   /-- Workspace root path -/
   workspaceRoot : Option String := none
+  /-- Reverse dependency map: module name â†’ modules that import it -/
+  reverseDeps : Std.HashMap String (Std.HashSet String) := {}
+  /-- Module name to file path mapping -/
+  moduleNameToPath : Std.HashMap String String := {}
   deriving Inhabited
 
 namespace LspState
@@ -249,6 +251,65 @@ def lookupSymbolGlobal (s : LspState) (name : String) : Option (CompiledModule Ã
 /-- Get all symbols from all modules -/
 def allSymbols (s : LspState) : Array DefinitionSite :=
   s.allModules.foldl (fun acc m => acc ++ m.symbols.allDefinitions) #[]
+
+/-- Register module name to file path mapping -/
+def registerModulePath (s : LspState) (moduleName : String) (filePath : String) : LspState :=
+  { s with moduleNameToPath := s.moduleNameToPath.insert moduleName filePath }
+
+/-- Get file path for a module name -/
+def getModulePath (s : LspState) (moduleName : String) : Option String :=
+  s.moduleNameToPath.get? moduleName
+
+/-- Add a reverse dependency: depModule is imported by importerModule -/
+def addReverseDep (s : LspState) (depModule : String) (importerModule : String) : LspState :=
+  let existing := s.reverseDeps.getD depModule {}
+  { s with reverseDeps := s.reverseDeps.insert depModule (existing.insert importerModule) }
+
+/-- Remove all reverse dependencies where importerModule is the importer -/
+def clearReverseDepsFor (s : LspState) (importerModule : String) : LspState :=
+  let reverseDeps' := s.reverseDeps.fold (init := s.reverseDeps) fun acc depMod importers =>
+    acc.insert depMod (importers.erase importerModule)
+  { s with reverseDeps := reverseDeps' }
+
+/-- Update reverse dependencies for a module based on its imports -/
+def updateReverseDeps (s : LspState) (moduleName : String) (imports : Array String) : LspState :=
+  -- First clear old reverse deps for this module
+  let s' := s.clearReverseDepsFor moduleName
+  -- Then add new ones
+  imports.foldl (fun acc imp => acc.addReverseDep imp moduleName) s'
+
+/-- Get all modules that import a given module (direct dependents) -/
+def getDirectDependents (s : LspState) (moduleName : String) : Array String :=
+  match s.reverseDeps.get? moduleName with
+  | some deps => deps.toArray
+  | none => #[]
+
+/-- Get all modules that transitively depend on a given module -/
+def getTransitiveDependents (s : LspState) (moduleName : String) : Array String := Id.run do
+  let mut visited : Std.HashSet String := {}
+  let mut result : Array String := #[]
+  let mut worklist : Array String := #[moduleName]
+
+  while !worklist.isEmpty do
+    let current := worklist[0]!
+    worklist := worklist.extract 1 worklist.size
+
+    if visited.contains current then
+      continue
+
+    visited := visited.insert current
+
+    -- Don't include the original module in the result
+    if current != moduleName then
+      result := result.push current
+
+    -- Add direct dependents to worklist
+    let dependents := s.getDirectDependents current
+    for dep in dependents do
+      if !visited.contains dep then
+        worklist := worklist.push dep
+
+  return result
 
 end LspState
 

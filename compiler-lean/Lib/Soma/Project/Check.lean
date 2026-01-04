@@ -2,24 +2,27 @@ import Std.Data.HashSet
 import Soma.Syntax
 import Soma.Metal
 import Soma.Metal.Lower.Decl
-import Soma.Infer
 import Soma.Unique
 import Soma.Project.Module
 import Soma.Project.Graph
 import Soma.Project.Symbol
+import Soma.Dependent
+import Soma.Dependent.Driver
+import Soma.Dependent.Incremental
+import Soma.Core.Value
 
 namespace Soma.Check
 
 open Std (HashSet)
 open Soma.Syntax
 open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleWithExternals lowerModuleIncremental GlobalEnv)
-open Soma.Infer
-open Soma.Typing
+open Soma.Core
 open Soma.Project
 open Soma (UniqueSupply)
-open Soma.Infer.Gen (applyTypeArgs)
-
-/-! ## Helper functions -/
+open Soma.Dependent (Globals GlobalInfo TCContext TCState InstanceEnv InstanceInfo ClassInfo TCM)
+open Soma.Dependent.TraitElaborate (InstanceMap)
+open Soma.Dependent.Incremental (DefId DefCache DefKind DepGraph IncrementalState hashString
+  hashFunction hashModuleDefinitions)
 
 /-- Derive module name from file path -/
 def moduleNameFromPath (filePath : String) : String :=
@@ -31,12 +34,6 @@ def moduleNameFromPath (filePath : String) : String :=
 /-- Create a file ID from path -/
 def fileIdFromPath (filePath : String) : FileId :=
   ⟨filePath.hash.toNat⟩
-
-/-! ## Phase Results
-
-Each phase returns its output plus diagnostics. We use a simple pattern:
-the result is always produced (phases are infallible), diagnostics are collected.
--/
 
 /-- Result of parsing -/
 structure ParseResult where
@@ -53,13 +50,6 @@ structure LowerResult where
 structure MetalResult where
   module : Metal.UntypedModule
   result : IncrementalLowerResult  -- Contains caches for incremental updates
-  diagnostics : Diagnostics
-
-/-- Result of type inference -/
-structure InferResult where
-  module : Metal.Module
-  typeEnv : TypeEnv
-  instanceEnv : InstanceEnv
   diagnostics : Diagnostics
 
 /-- Phase 1+2: Parse source code (lex + parse combined) -/
@@ -96,150 +86,59 @@ def metalWithExternals (ast : Syntax.Module) (initialEnv : Metal.Lower.GlobalEnv
   let diags := Metal.Lower.LowerError.toDiagnostics result.errors
   { module := result.module, result, diagnostics := diags }
 
+/-- Convert SymbolEnv to Metal.Lower.GlobalEnv for pre-populating external symbols -/
+def symbolEnvToGlobalEnv (moduleName : String) (seed : SymbolEnv) : Metal.Lower.GlobalEnv :=
+  seed.fold (init := Metal.Lower.GlobalEnv.empty moduleName) fun acc sym _val =>
+    let unique : Unique := { id := sym.unique.id, module := sym.unique.module, original := sym.name }
+    let metalName : Metal.Name := .user unique
+    match sym.kind with
+    | .type =>
+      -- Register as a type
+      let typeId : Soma.Core.TypeId := Soma.Core.TypeId.fromUnique unique
+      let typeInfo : Metal.Lower.TypeInfo := {
+        typeId := typeId
+        paramNames := #[] -- We don't have param info in Symbol, but name resolution doesn't need it
+        unique := unique
+      }
+      acc.addType sym.name typeInfo
+    | .dataCon parentType tag =>
+      let ctorInfo : Metal.Lower.ConstructorInfo := {
+        name := metalName
+        parentType := parentType
+        parentUnique := unique
+        tag := tag
+        fieldTypeSyntax := #[] -- Field types aren't needed for name resolution
+        span := sym.span
+      }
+      let globalInfo : Metal.Lower.GlobalInfo := {
+        name := metalName
+        typeSyntax := none
+        definedAt := sym.span
+      }
+      acc.addConstructor sym.name ctorInfo |>.addGlobal sym.name globalInfo
+    | .typeClassMethod _className =>
+      -- Register type class methods as globals for value-level usage
+      let globalInfo : Metal.Lower.GlobalInfo := {
+        name := metalName
+        typeSyntax := none
+        definedAt := sym.span
+      }
+      acc.addGlobal sym.name globalInfo
+    | _ =>
+      -- Register as a global for value-level usage
+      let globalInfo : Metal.Lower.GlobalInfo := {
+        name := metalName
+        typeSyntax := none
+        definedAt := sym.span
+      }
+      acc.addGlobal sym.name globalInfo
+
 /-- Phase 4b: Incremental Metal lowering -/
 def metalIncremental (ast : Syntax.Module) (changedNames : Array String)
     (oldResult : IncrementalLowerResult) : MetalResult :=
   let result := lowerModuleIncremental ast changedNames oldResult
   let diags := Metal.Lower.LowerError.toDiagnostics result.errors
   { module := result.module, result, diagnostics := diags }
-
-/-- Phase 5: Type inference -/
-def infer (module : Metal.UntypedModule) (typeEnv : TypeEnv) (instanceEnv : InstanceEnv)
-    : InferResult :=
-  let ctx : InferContext := { typeEnv, instanceEnv, currentFunction := none }
-  let result := inferModule module ctx
-  let diags := InferErrors.toDiagnostics result.errors
-  { module := result.module, typeEnv, instanceEnv, diagnostics := diags }
-
-/-- Build type environment from a Metal module -/
-def buildTypeEnv (module : Metal.UntypedModule)
-    (supply : UniqueSupply)
-    (externalFns : Array (String × FunctionInfo) := #[])
-    (externalTypes : Array (String × Infer.TypeInfo) := #[])
-    (externalConstructors : Array (String × Infer.ConstructorInfo) := #[])
-    : TypeEnv × UniqueSupply :=
-  buildTypeEnvFromModule module externalFns supply externalTypes externalConstructors
-
-/-- Build instance environment from a Metal module -/
-def buildInstanceEnv (module : Metal.UntypedModule)
-    (externalInstances : InstanceEnv := InstanceEnv.empty)
-    (typeEnv : TypeEnv) : InstanceEnv :=
-  buildInstanceEnvFromModule module externalInstances typeEnv
-
-/-- Configuration for the full pipeline -/
-structure Config where
-  /-- External functions from dependencies -/
-  externalFunctions : Array (String × FunctionInfo) := #[]
-  /-- External instances from dependencies -/
-  externalInstances : InstanceEnv := InstanceEnv.empty
-  /-- Unique supply for fresh names -/
-  supply : UniqueSupply
-  /-- Whether to stop after frontend errors -/
-  stopOnFrontendErrors : Bool := false
-
-/-- Full pipeline result -/
-structure FullResult where
-  moduleName : String
-  sourceFile : SourceFile
-  parsedTree : ParsedTree
-  ast : Syntax.Module
-  metalModule : Metal.UntypedModule
-  metalResult : IncrementalLowerResult
-  typedModule : Metal.Module
-  typeEnv : TypeEnv
-  instanceEnv : InstanceEnv
-  diagnostics : Diagnostics
-
-namespace FullResult
-
-def hasErrors (r : FullResult) : Bool := r.diagnostics.hasErrors
-def errorCount (r : FullResult) : Nat := r.diagnostics.filter (·.severity == .error) |>.size
-
-end FullResult
-
-/-- Run the full pipeline: parse → lower → metal → infer -/
-def full (filePath : String) (content : String) (config : Config) : FullResult := Id.run do
-  let moduleName := moduleNameFromPath filePath
-
-  -- Parse
-  let parseRes := parse filePath content
-
-  -- Lower CST → AST
-  let lowerRes := lower parseRes.tree moduleName
-  let frontendDiags := parseRes.diagnostics ++ lowerRes.diagnostics
-
-  -- Metal lowering
-  let metalRes := metal lowerRes.ast
-
-  -- Check for early exit on frontend errors
-  if config.stopOnFrontendErrors && frontendDiags.hasErrors then
-    let (typeEnv, _) := buildTypeEnv metalRes.module config.supply config.externalFunctions
-    let instanceEnv := buildInstanceEnv metalRes.module config.externalInstances typeEnv
-    return {
-      moduleName, sourceFile := parseRes.sourceFile, parsedTree := parseRes.tree
-      ast := lowerRes.ast
-      metalModule := metalRes.module, metalResult := metalRes.result
-      typedModule := { name := moduleName, functions := #[], types := #[], typeClasses := #[], instances := #[] }
-      typeEnv, instanceEnv
-      diagnostics := frontendDiags ++ metalRes.diagnostics
-    }
-
-  -- Build environments
-  let (typeEnv, _) := buildTypeEnv metalRes.module config.supply config.externalFunctions
-  let instanceEnv := buildInstanceEnv metalRes.module config.externalInstances typeEnv
-
-  -- Type inference
-  let inferRes := infer metalRes.module typeEnv instanceEnv
-
-  let allDiags := frontendDiags ++ metalRes.diagnostics ++ inferRes.diagnostics
-
-  return {
-    moduleName, sourceFile := parseRes.sourceFile, parsedTree := parseRes.tree
-    ast := lowerRes.ast
-    metalModule := metalRes.module, metalResult := metalRes.result
-    typedModule := inferRes.module
-    typeEnv := inferRes.typeEnv, instanceEnv := inferRes.instanceEnv
-    diagnostics := allDiags
-  }
-
-/-- Simple full pipeline with default config -/
-def fullSimple (filePath : String) (content : String) : FullResult :=
-  let moduleName := moduleNameFromPath filePath
-  full filePath content { supply := UniqueSupply.initial moduleName }
-
-/-- Run full pipeline from file -/
-def fullFromFile (filePath : String) (config : Config) : IO FullResult := do
-  let content ← IO.FS.readFile filePath
-  pure (full filePath content config)
-
-/-- Simple full pipeline from file -/
-def fullFromFileSimple (filePath : String) : IO FullResult := do
-  let content ← IO.FS.readFile filePath
-  pure (fullSimple filePath content)
-
-/-- Parse only -/
-def parseOnly (filePath : String) (content : String) : ParseResult :=
-  parse filePath content
-
-/-- Parse + lower to AST -/
-def toAst (filePath : String) (content : String) (moduleName : Option String := none) : ParseResult × LowerResult :=
-  let parseRes := parse filePath content
-  let modName := moduleName.getD (moduleNameFromPath filePath)
-  let lowerRes := lower parseRes.tree modName
-  (parseRes, lowerRes)
-
-/-- Parse + lower to Metal IR -/
-def toMetal (filePath : String) (content : String) : ParseResult × LowerResult × MetalResult :=
-  let (parseRes, lowerRes) := toAst filePath content
-  let metalRes := metal lowerRes.ast
-  (parseRes, lowerRes, metalRes)
-
-/-- Check if diagnostics have errors -/
-def hasErrors (diags : Diagnostics) : Bool := diags.hasErrors
-
-/-- Combine diagnostics from multiple sources -/
-def combineDiags (sources : Array Diagnostics) : Diagnostics :=
-  sources.foldl (· ++ ·) #[]
 
 /-- Errors that can occur during project checking -/
 inductive CheckError where
@@ -264,18 +163,32 @@ structure CheckedModule where
   name : String
   /-- Resolved AST after parsing and lowering -/
   resolvedAst : Syntax.Module
-  /-- Typed Metal IR -/
-  typedModule : Metal.Module
-  /-- Public symbols exported by this module -/
+  /-- The Metal IR (untyped, but type-checked) -/
+  metalModule : Metal.UntypedModule
+  /-- Globals environment from type checking (contains all definitions with types) -/
+  globals : Globals
+  /-- Instance environment from type checking -/
+  instanceEnv : InstanceEnv
+  /-- Map from instance source spans to elaborated InstanceInfo -/
+  instanceMap : InstanceMap
+  /-- Public symbols exported by this module (symbol -> type as Value) -/
   publicSymbols : SymbolEnv
   /-- Public type class instances exported by this module -/
-  publicInstances : Project.InstanceMetadata
+  publicInstances : InstanceMetadata
+  /-- Source file for error reporting -/
+  sourceFile : SourceFile
+  /-- Incremental checking state (dependency tracking and caching) -/
+  incrementalState : IncrementalState := IncrementalState.empty
 
 namespace CheckedModule
 
 /-- Extract constructor metadata from this module -/
-def constructorMetadata (_m : CheckedModule) : Std.HashMap Metal.Name Nat :=
-  {}  -- TODO: Extract from typedModule.types when implemented
+def constructorMetadata (m : CheckedModule) : Std.HashMap String Nat :=
+  m.globals.defs.fold (init := {}) fun acc name info =>
+    if info.isConstructor then
+      acc.insert name info.ctorTag
+    else
+      acc
 
 end CheckedModule
 
@@ -285,12 +198,16 @@ structure ExternalDependency where
   name : String
   /-- Metadata version -/
   version : Option String := none
-  /-- Symbols by module name -/
+  /-- Symbols by module name (symbol -> type as Value) -/
   symbols : Std.HashMap String SymbolEnv
   /-- Instances by module name -/
-  instances : Std.HashMap String Project.InstanceMetadata
+  instances : Std.HashMap String InstanceMetadata
   /-- Constructor tags by name -/
   constructors : Std.HashMap String Nat
+  /-- Globals for type checking context -/
+  globals : Globals
+  /-- Instance environment -/
+  instanceEnv : InstanceEnv
 
 /-- Configuration for project checking -/
 structure ProjectConfig where
@@ -314,9 +231,13 @@ structure ProjectResult where
   /-- Aggregated public symbols from all modules -/
   symbols : SymbolEnv
   /-- Aggregated public instances from all modules -/
-  instances : Project.InstanceMetadata
+  instances : InstanceMetadata
   /-- Constructor metadata (name → tag) -/
-  constructors : Std.HashMap Metal.Name Nat
+  constructors : Std.HashMap String Nat
+  /-- Merged globals for the entire project -/
+  globals : Globals
+  /-- Merged instance environment -/
+  instanceEnv : InstanceEnv
   /-- Source file map for resolving diagnostic spans -/
   sourceFiles : SourceFileMap
 
@@ -324,270 +245,551 @@ namespace ProjectResult
 
 def failed (name : String) (diags : Diagnostics) (sourceFiles : SourceFileMap := SourceFileMap.empty) : ProjectResult :=
   { success := false, diagnostics := diags, packageName := name,
-    checkedModules := #[], symbols := {}, instances := {}, constructors := {}, sourceFiles }
+    checkedModules := #[], symbols := {}, instances := {}, constructors := {},
+    globals := Globals.empty, instanceEnv := InstanceEnv.empty, sourceFiles }
 
 def succeeded (name : String) (diags : Diagnostics) (modules : Array CheckedModule)
-    (symbols : SymbolEnv) (instances : Project.InstanceMetadata)
-    (constructors : Std.HashMap Metal.Name Nat) (sourceFiles : SourceFileMap) : ProjectResult :=
+    (symbols : SymbolEnv) (instances : InstanceMetadata)
+    (constructors : Std.HashMap String Nat)
+    (globals : Globals) (instanceEnv : InstanceEnv)
+    (sourceFiles : SourceFileMap) : ProjectResult :=
   { success := true, diagnostics := diags, packageName := name,
-    checkedModules := modules, symbols, instances, constructors, sourceFiles }
+    checkedModules := modules, symbols, instances, constructors, globals, instanceEnv, sourceFiles }
 
 end ProjectResult
 
 /-- Merge two instance environments -/
-def mergeInstanceEnvs (e1 e2 : Project.InstanceMetadata) : Project.InstanceMetadata :=
+def mergeInstanceEnvs (e1 e2 : InstanceMetadata) : InstanceMetadata :=
   e2.fold (init := e1) fun acc className instances =>
     match acc.get? className with
     | none => acc.insert className instances
     | some existing => acc.insert className (existing ++ instances)
 
-/-- Convert Project.InstanceMetadata to Infer.InstanceEnv -/
-def projectToInferInstanceEnv (projEnv : InstanceMetadata) : Infer.InstanceEnv :=
-  projEnv.fold (init := InstanceEnv.empty) fun acc className instances =>
-    instances.foldl (fun env (typeArgs, sym) =>
-      let classTyCon := TyCon.mkUser sym.module className sym.unique.id
-      let instDecl : Infer.InstanceDecl := {
-        className := classTyCon
-        args := typeArgs
-        typeVars := #[]
-        constraints := #[]
-        id := env.nextId
-        span := sym.span
-      }
-      env.addInstance instDecl
-    ) acc
+/-- Merge Globals environments -/
+def mergeGlobals (g1 g2 : Globals) : Globals :=
+  let defs := g2.defs.fold (init := g1.defs) fun acc name info =>
+    acc.insert name info
+  let typeIds := g2.typeIds.fold (init := g1.typeIds) fun acc name id =>
+    acc.insert name id
+  { defs := defs, typeIds := typeIds }
 
-/-- Convert SymbolEnv to array of function info for type environment building -/
-def symbolEnvToFunctionInfos (seed : SymbolEnv) : Array (String × Infer.FunctionInfo) :=
-  seed.fold (init := #[]) fun acc sym qt =>
-    let metalName : Metal.Name := .user { id := sym.unique.id, module := sym.unique.module, original := sym.name }
-    acc.push (sym.name, { qualType := qt, metalName := metalName })
+/-- Merge InstanceEnv (type class registry), deduplicating instances by instanceId -/
+def mergeInstanceEnv (e1 e2 : InstanceEnv) : InstanceEnv :=
+  -- Merge classes
+  let classes := e2.classes.fold (init := e1.classes) fun acc uid info =>
+    acc.insert uid info
+  -- Merge instances, deduplicating by instanceId
+  let instances := e2.instances.fold (init := e1.instances) fun acc uid insts =>
+    match e1.instances.get? uid with
+    | none => acc.insert uid insts
+    | some existing =>
+      -- Deduplicate: only add instances from insts that aren't already in existing
+      let existingIds : Std.HashSet (Nat × String) := existing.foldl (init := {}) fun s inst =>
+        s.insert (inst.instanceId.id, inst.instanceId.module)
+      let newInsts := insts.filter fun inst =>
+        !existingIds.contains (inst.instanceId.id, inst.instanceId.module)
+      acc.insert uid (existing ++ newInsts)
+  { classes := classes
+    instances := instances
+    nextInstanceId := max e1.nextInstanceId e2.nextInstanceId
+    moduleName := e1.moduleName }
 
-/-- Convert SymbolEnv to array of type info for type environment building -/
-def symbolEnvToTypeInfos (seed : SymbolEnv) : Array (String × Infer.TypeInfo) :=
-  seed.fold (init := #[]) fun acc sym qt =>
-    match sym.kind with
-    | .type =>
-      let unique : Unique := { id := sym.unique.id, module := sym.unique.module, original := sym.name }
-      -- Compute kind from number of type parameters
-      let kind := Kind.nary qt.vars.size
-      let typeId : TypeId := TypeId.fromUnique unique kind
-      let typeInfo : Infer.TypeInfo := {
-        typeId := typeId
-        params := qt.vars
-        constructors := {} -- Constructors are added separately
-      }
-      acc.push (sym.name, typeInfo)
-    | _ => acc
+/-! ## Shared Type Checking Core
 
-/-- Extract field types from a constructor type -/
-private def extractFieldTypes (ty : MonoTy) : Array MonoTy :=
-  match ty with
-  | .arrow argTy resTy => #[argTy] ++ extractFieldTypes resTy
-  | _ => #[]
+These functions provide the core type checking logic that can be shared between
+the CLI (Check.lean) and LSP (Analysis.lean). They handle building globals,
+instance environments, and checking functions with proper incremental state tracking.
+-/
 
-/-- Convert SymbolEnv to array of constructor info for type environment building -/
-def symbolEnvToConstructorInfos (seed : SymbolEnv) : Array (String × Infer.ConstructorInfo) :=
-  -- First, build a map from type names to their TypeIds (with correct kinds)
-  let typeMap : Std.HashMap String TypeId := seed.fold (init := {}) fun acc sym qt =>
-    match sym.kind with
-    | .type =>
-      let unique : Unique := { id := sym.unique.id, module := sym.unique.module, original := sym.name }
-      -- Compute kind from number of type parameters
-      let kind := Kind.nary qt.vars.size
-      let typeId : TypeId := TypeId.fromUnique unique kind
-      acc.insert sym.name typeId
-    | _ => acc
-  -- Now extract constructors with correct parent TypeIds
-  seed.fold (init := #[]) fun acc sym qt =>
-    match sym.kind with
-    | .dataCon parentType tag =>
-      match typeMap.get? parentType with
-      | some parentTypeId =>
-        let fieldTypes := extractFieldTypes qt.body
-        let ctorInfo : Infer.ConstructorInfo := {
-          typeName := parentType
-          typeId := parentTypeId
-          typeParams := qt.vars
-          fieldTypes := fieldTypes
-          tag := tag
-        }
-        acc.push (sym.name, ctorInfo)
-      | none => acc 
-    | _ => acc
+/-- Result of checking functions in a module -/
+structure FunctionCheckResult where
+  /-- Final TC state after checking all functions -/
+  finalState : TCState
+  /-- Updated incremental state with caches and dependencies -/
+  incrementalState : IncrementalState
+  /-- Errors encountered during checking -/
+  errors : Array Soma.Dependent.TCError
+  deriving Inhabited
 
-/-- Convert SymbolEnv to Metal.Lower.GlobalEnv for pre-populating external symbols -/
-def symbolEnvToGlobalEnv (moduleName : String) (seed : SymbolEnv) : Metal.Lower.GlobalEnv :=
-  seed.fold (init := Metal.Lower.GlobalEnv.empty moduleName) fun acc sym qt =>
-    let unique : Unique := { id := sym.unique.id, module := sym.unique.module, original := sym.name }
-    let metalName : Metal.Name := .user unique
-    match sym.kind with
-    | .type =>
-      -- Register as a type
-      let typeId : TypeId := TypeId.fromUnique unique
-      let tyCon := TyCon.user typeId
-      let typeInfo : Metal.Lower.TypeInfo := {
-        tyCon := tyCon
-        params := qt.vars
-        kind := Kind.nary qt.vars.size
-        unique := unique
-      }
-      acc.addType sym.name typeInfo
-    | .dataCon parentType tag =>
-      -- Register as both a constructor and a global (for value-level usage)
-      let ctorInfo : Metal.Lower.ConstructorInfo := {
-        name := metalName
-        parentType := parentType
-        parentUnique := unique -- important: this is the ctor's unique, not parent's
-        tag := tag
-        fields := #[]  -- Field types aren't needed for name resolution
-        span := sym.span
-      }
-      let globalInfo : Metal.Lower.GlobalInfo := {
-        name := metalName
-        typeSyntax := none
-        definedAt := sym.span
-      }
-      acc.addConstructor sym.name ctorInfo |>.addGlobal sym.name globalInfo
-    | _ =>
-      -- Register as a global for value-level usage
-      let globalInfo : Metal.Lower.GlobalInfo := {
-        name := metalName
-        typeSyntax := none
-        definedAt := sym.span
-      }
-      acc.addGlobal sym.name globalInfo
+/-- Check all functions in a Metal module, tracking dependencies and caching results.
+    This is the core function-checking loop shared by both CLI and LSP.
 
-/-- Extract public symbols from a typed module -/
+    Parameters:
+    - `metalModule`: The Metal IR module to check
+    - `moduleName`: Name of the module (for DefId construction)
+    - `ctx`: Type checking context with globals and instances
+    - `initialState`: Initial TC state
+    - `prevIncrState`: Previous incremental state (for caching)
+    - `dirtyNames`: If Some, only check functions in this set; if None, check all -/
+def checkFunctionsCore
+    (metalModule : Metal.UntypedModule)
+    (moduleName : String)
+    (ctx : TCContext)
+    (initialState : TCState)
+    (prevIncrState : IncrementalState)
+    (dirtyNames : Option (HashSet String))
+    : FunctionCheckResult := Id.run do
+  let mut errors : Array Soma.Dependent.TCError := #[]
+  let mut currentState := initialState
+  let mut incrState := prevIncrState
+
+  for fn in metalModule.functions do
+    let fnName := fn.name.display
+    let defId := DefId.mk moduleName fnName
+
+    -- Determine if we should check this function
+    let shouldCheck := match dirtyNames with
+      | none => true  -- Check all
+      | some dirty => dirty.contains fnName || !prevIncrState.isCached defId
+
+    if shouldCheck then
+      -- Clear dependency tracking before checking this function
+      let stateWithClearedDeps := { currentState with globalDeps := {} }
+
+      let checkResult := (Soma.Dependent.Driver.checkFunction fn).run ctx stateWithClearedDeps
+      match checkResult with
+      | .error e =>
+        -- Record error but continue with next function
+        errors := errors.push e
+        -- Cache the failure for incremental re-checking
+        let syntaxHash := hashFunction fn
+        let cache := DefCache.failure syntaxHash (Value.vType Level.zero) DefKind.function #[e]
+        incrState := incrState.updateCache defId cache
+      | .ok (fnType, newState) =>
+        -- Also collect any accumulated errors from error recovery
+        errors := errors ++ newState.errors
+
+        -- Clear old dependencies and record new ones
+        incrState := incrState.clearDeps defId
+        let deps := newState.globalDeps
+        for depName in deps do
+          -- Only track dependencies on definitions in globals
+          if ctx.globals.lookup depName |>.isSome then
+            let depId := DefId.mk moduleName depName
+            incrState := incrState.addDependency defId depId
+
+        -- Cache successful result
+        let syntaxHash := hashFunction fn
+        let isComplete := newState.errors.isEmpty
+        let cache := if isComplete then
+          -- Look up the GlobalInfo from the context (it should be registered already)
+          match ctx.globals.lookup fnName with
+          | some info => DefCache.success syntaxHash fnType DefKind.function info
+          | none =>
+            -- Fallback: create a basic GlobalInfo if not found (shouldn't happen)
+            let info : GlobalInfo := {
+              name := fn.name
+              type := fnType
+              value := none
+              isConstructor := false
+            }
+            DefCache.success syntaxHash fnType DefKind.function info
+        else
+          DefCache.failure syntaxHash fnType DefKind.function newState.errors
+        incrState := incrState.updateCache defId cache
+
+        currentState := newState
+    -- else: not dirty, keep cached result (already in incrState)
+
+  return { finalState := currentState, incrementalState := incrState, errors := errors }
+
+/-- Result of building globals and instance environment -/
+structure GlobalsAndInstancesResult where
+  /-- The built globals environment -/
+  globals : Globals
+  /-- The built instance environment -/
+  instanceEnv : InstanceEnv
+  /-- Map from instance source spans to elaborated InstanceInfo -/
+  instanceMap : InstanceMap
+  /-- Final TC state -/
+  finalState : TCState
+  /-- Errors encountered -/
+  errors : Array Soma.Dependent.TCError
+  deriving Inhabited
+
+/-- Build globals and instance environment for a module with error recovery.
+    Returns partial results even if some definitions fail.
+
+    Parameters:
+    - `metalModule`: The Metal IR module
+    - `moduleName`: Name of the module
+    - `seedGlobals`: Globals inherited from dependencies
+    - `seedInstanceEnv`: Instance env inherited from dependencies
+    - `prevGlobals`: Previous globals for incremental reuse (optional)
+    - `prevInstanceEnv`: Previous instance env for incremental reuse (optional)
+    - `prevInstanceMap`: Previous instance map for incremental reuse (optional)
+    - `dirtyNames`: If Some, only rebuild dirty definitions; if None, rebuild all -/
+def buildGlobalsAndInstances
+    (metalModule : Metal.UntypedModule)
+    (moduleName : String)
+    (seedGlobals : Globals)
+    (seedInstanceEnv : InstanceEnv)
+    (prevGlobals : Option Globals := none)
+    (prevInstanceEnv : Option InstanceEnv := none)
+    (prevInstanceMap : Option InstanceMap := none)
+    (dirtyNames : Option (HashSet String) := none)
+    : GlobalsAndInstancesResult := Id.run do
+  let baseCtx := TCContext.withDefaultInstances
+  let state := TCState.forModule moduleName
+  let mut allErrors : Array Soma.Dependent.TCError := #[]
+
+  -- Build globals
+  let globalsResult := match dirtyNames, prevGlobals with
+    | some dirty, some prev =>
+      (Soma.Dependent.Driver.buildGlobalsIncremental metalModule prev dirty).run
+        { baseCtx with globals := seedGlobals } state
+    | _, _ =>
+      (Soma.Dependent.Driver.buildGlobals metalModule).run
+        { baseCtx with globals := seedGlobals } state
+
+  let (moduleGlobals, state', globalsErrors) := match globalsResult with
+    | .error e => (Globals.empty, state, #[e])
+    | .ok (globals, st) => (globals, st, st.errors)
+
+  allErrors := allErrors ++ globalsErrors
+
+  -- Merge with seed globals
+  let fullGlobals := mergeGlobals seedGlobals moduleGlobals
+  let ctx := { baseCtx with globals := fullGlobals, instanceEnv := seedInstanceEnv }
+
+  -- Build instance environment
+  let instanceEnvResult := match dirtyNames, prevInstanceEnv, prevInstanceMap with
+    | some dirty, some prev, some prevMap =>
+      (Soma.Dependent.Driver.buildInstanceEnvIncremental metalModule moduleName prev prevMap dirty).run ctx state'
+    | _, _, _ =>
+      (Soma.Dependent.Driver.buildInstanceEnv metalModule moduleName).run ctx state'
+
+  let (moduleInstanceEnv, instanceMap, state'', instanceErrors) := match instanceEnvResult with
+    | .error e => (InstanceEnv.empty, {}, state', #[e])
+    | .ok ((instEnv, instMap), st) => (instEnv, instMap, st, st.errors)
+
+  allErrors := allErrors ++ instanceErrors
+
+  let fullInstanceEnv := mergeInstanceEnv seedInstanceEnv moduleInstanceEnv
+
+  return {
+    globals := fullGlobals
+    instanceEnv := fullInstanceEnv
+    instanceMap := instanceMap
+    finalState := state''
+    errors := allErrors
+  }
+
+/-- Full type checking pipeline for a Metal module.
+    Combines globals building, instance env building, and function checking.
+    Returns all results needed to construct a CheckedModule or CompiledModule.
+
+    Parameters:
+    - `metalModule`: The Metal IR module to check
+    - `moduleName`: Name of the module
+    - `seedGlobals`: Globals inherited from dependencies
+    - `seedInstanceEnv`: Instance env inherited from dependencies
+    - `prevIncrState`: Previous incremental state (optional, for incremental checking) -/
+def typeCheckModule
+    (metalModule : Metal.UntypedModule)
+    (moduleName : String)
+    (seedGlobals : Globals)
+    (seedInstanceEnv : InstanceEnv)
+    (prevIncrState : Option IncrementalState := none)
+    : Globals × InstanceEnv × InstanceMap × IncrementalState × Array Soma.Dependent.TCError := Id.run do
+  -- Determine dirty names if we have previous state
+  let (dirtyNames, baseIncrState) := match prevIncrState with
+    | some prev =>
+      let currentHashes := hashModuleDefinitions moduleName metalModule
+      let updated := prev.invalidateChanged currentHashes
+      let dirtyDefs := updated.getDirtyInOrder
+      let dirty : HashSet String := dirtyDefs.foldl (init := {}) fun (acc : HashSet String) (defId : DefId) =>
+        acc.insert defId.name
+      (some dirty, updated)
+    | none =>
+      (none, IncrementalState.forModule moduleName)
+
+  -- Get previous globals/instanceEnv/instanceMap for incremental building
+  let prevGlobals : Option Globals := prevIncrState.map (fun (s : IncrementalState) => s.cachedGlobals)
+  let prevInstanceEnv : Option InstanceEnv := prevIncrState.map (fun (s : IncrementalState) => s.cachedInstanceEnv)
+  let prevInstanceMap : Option InstanceMap := prevIncrState.map (fun (s : IncrementalState) => s.cachedInstanceMap)
+
+  -- Build globals and instance environment
+  let globalsResult := buildGlobalsAndInstances
+    metalModule moduleName seedGlobals seedInstanceEnv prevGlobals prevInstanceEnv prevInstanceMap dirtyNames
+
+  let mut allErrors := globalsResult.errors
+
+  -- Prepare context for function checking
+  let baseCtx := TCContext.withDefaultInstances
+  let ctx := { baseCtx with
+    globals := globalsResult.globals
+    instanceEnv := globalsResult.instanceEnv }
+
+  -- Check functions
+  let fnResult := checkFunctionsCore
+    metalModule moduleName ctx globalsResult.finalState baseIncrState dirtyNames
+
+  allErrors := allErrors ++ fnResult.errors
+
+  -- Update incremental state with final globals and instance map
+  let finalIncrState := { fnResult.incrementalState with
+    cachedGlobals := globalsResult.globals
+    cachedInstanceEnv := globalsResult.instanceEnv
+    cachedInstanceMap := globalsResult.instanceMap }
+
+  return (globalsResult.globals, globalsResult.instanceEnv, globalsResult.instanceMap, finalIncrState, allErrors)
+
+/-- Extract public symbols from a type-checked module -/
 def extractPublicSymbols
-    (m : Metal.Module)
-    (globalEnv : Metal.Lower.GlobalEnv)
+    (metalModule : Metal.UntypedModule)
+    (globals : Globals)
     (packageName : String)
+    (moduleName : String)
     (seed : SymbolEnv)
     (supply : UniqueSupply)
+    (explicitExports : Option (Array String) := none)
+    (seedSymbols : SymbolEnv := {})
     : SymbolEnv × UniqueSupply := Id.run do
   let mut acc := seed
   let mut sup := supply
-  for fn in m.functions do
-    -- Get unique from function name, or generate fresh one
-    let (unique, sup') := match fn.name.baseUnique? with
-      | some u => (u, sup)
-      | none => sup.fresh fn.name.display
-    sup := sup'
-    -- Get span from globalEnv if available
-    let span := match globalEnv.lookupGlobal fn.name.display with
-      | some info => info.definedAt
-      | none => Span.uninhabited  -- Only for synthetic functions not in globalEnv
-    let sym : Symbol := {
-      unique := unique
-      name := fn.name.display
-      kind := .binding
-      module := m.name
-      package := packageName
-      span := span
-    }
-    acc := acc.insert sym fn.qualifiedType
-  -- Extract type class method signatures
-  for tc in m.typeClasses do
-    let className := tc.name.display
-    for (methodName, methodType) in tc.methods do
-      let (unique, sup') := match methodName.baseUnique? with
-        | some u => (u, sup)
-        | none => sup.fresh methodName.display
-      sup := sup'
-      let span := match globalEnv.lookupGlobal methodName.display with
-        | some info => info.definedAt
-        | none => Span.uninhabited
-      let sym : Symbol := {
-        unique := unique
-        name := methodName.display
-        kind := .typeClassMethod className
-        module := m.name
-        package := packageName
-        span := span
-      }
-      acc := acc.insert sym methodType
-  -- Extract type definitions and their constructors
-  for td in m.types do
-    let typeName := td.name.display
-    let typeVars := td.typeVars
-    let (typeUnique, sup') := match td.name.baseUnique? with
-      | some u => (u, sup)
-      | none => sup.fresh typeName
-    sup := sup'
-    let typeSym : Symbol := {
-      unique := typeUnique
-      name := typeName
-      kind := .type
-      module := m.name
-      package := packageName
-      span := Span.uninhabited
-    }
-    let typeQualType : QualifiedType := { vars := typeVars, constraints := #[], body := Ty.unit }
-    acc := acc.insert typeSym typeQualType
-    -- Export data constructors
-    for ctor in td.constructors do
-      let (ctorName, ctorTag) := match ctor.name with
-        | .ctor _ c tag => (c, tag)
-        | n => (n.display, 0)
-      -- Each constructor needs its own unique (not the parent type's unique)
-      let (ctorUnique, sup') := sup.fresh ctorName
-      sup := sup'
-      let typeKind := Kind.nary typeVars.size
-      let typeId : TypeId := TypeId.fromUnique typeUnique typeKind
-      let baseTyCon : Ty typeKind := Ty.userCon typeKind typeId
-      let tyVarArgs : Array MonoTy := typeVars.map (fun v => Ty.var v)
-      let resultTy : MonoTy := applyTypeArgs baseTyCon tyVarArgs
-      let ctorTy := ctor.fields.foldr (fun fieldTy acc => Ty.arrow fieldTy acc) resultTy
-      let qualCtorTy : QualifiedType := { vars := typeVars, constraints := #[], body := ctorTy }
-      let ctorSym : Symbol := {
-        unique := ctorUnique
-        name := ctorName
-        kind := .dataCon typeName ctorTag
-        module := m.name
-        package := packageName
-        span := Span.uninhabited
-      }
-      acc := acc.insert ctorSym qualCtorTy
+
+  -- Track which symbols we've already added (to avoid duplicates)
+  let mut addedNames : Std.HashSet String := {}
+
+  -- Helper to check if a name should be exported
+  let shouldExport (name : String) : Bool :=
+    match explicitExports with
+    | none => true -- No explicit exports means export everything defined
+    | some exports => exports.contains name
+
+  -- Extract function symbols
+  for fn in metalModule.functions do
+    let fnName := fn.name.display
+    if shouldExport fnName then
+      match globals.lookup fnName with
+      | some info =>
+        let (unique, sup') := match fn.name.baseUnique? with
+          | some u => (u, sup)
+          | none => sup.fresh fnName
+        sup := sup'
+        let sym : Symbol := {
+          unique := unique
+          name := fnName
+          kind := .binding
+          module := moduleName
+          package := packageName
+          span := fn.body.span
+        }
+        acc := acc.insert sym info.type
+        addedNames := addedNames.insert fnName
+      | none => pure ()
+
+  -- Extract type definitions and constructors
+  for typeDef in metalModule.types do
+    match typeDef with
+    | .algebraic typeName _typeVars constructors =>
+      let typeNameStr := typeName.display
+      if shouldExport typeNameStr then
+        -- Register type
+        let (typeUnique, sup') := sup.fresh typeNameStr
+        sup := sup'
+        let typeSym : Symbol := {
+          unique := typeUnique
+          name := typeNameStr
+          kind := .type
+          module := moduleName
+          package := packageName
+          span := Span.uninhabited
+        }
+        -- Type itself maps to Type₀
+        acc := acc.insert typeSym (Value.vType Level.zero)
+        addedNames := addedNames.insert typeNameStr
+
+      -- Register constructors
+      for ctor in constructors do
+        let ctorSimpleName := ctor.name.ctorSimpleName?.getD ctor.name.display
+        if shouldExport ctorSimpleName then
+          let ctorQualified := s!"{typeNameStr}.{ctorSimpleName}"
+          match globals.lookup ctorQualified with
+          | some ctorInfo =>
+            let (ctorUnique, sup') := sup.fresh ctorSimpleName
+            sup := sup'
+            let ctorSym : Symbol := {
+              unique := ctorUnique
+              name := ctorSimpleName
+              kind := .dataCon typeNameStr ctor.tag
+              module := moduleName
+              package := packageName
+              span := Span.uninhabited
+            }
+            acc := acc.insert ctorSym ctorInfo.type
+            addedNames := addedNames.insert ctorSimpleName
+          | none =>
+            -- Try unqualified name
+            match globals.lookup ctorSimpleName with
+            | some ctorInfo =>
+              let (ctorUnique, sup') := sup.fresh ctorSimpleName
+              sup := sup'
+              let ctorSym : Symbol := {
+                unique := ctorUnique
+                name := ctorSimpleName
+                kind := .dataCon typeNameStr ctor.tag
+                module := moduleName
+                package := packageName
+                span := Span.uninhabited
+              }
+              acc := acc.insert ctorSym ctorInfo.type
+              addedNames := addedNames.insert ctorSimpleName
+            | none => pure ()
+
+    | .struct structName _typeVars ctorName fields =>
+      let structNameStr := structName.display
+      if shouldExport structNameStr then
+        let (structUnique, sup') := sup.fresh structNameStr
+        sup := sup'
+        let structSym : Symbol := {
+          unique := structUnique
+          name := structNameStr
+          kind := .type
+          module := moduleName
+          package := packageName
+          span := Span.uninhabited
+        }
+        acc := acc.insert structSym (Value.vType Level.zero)
+        addedNames := addedNames.insert structNameStr
+
+      -- Register struct constructor
+      let ctorSimpleName := ctorName.ctorSimpleName?.getD ctorName.display
+      if shouldExport ctorSimpleName then
+        match globals.lookup ctorSimpleName with
+        | some ctorInfo =>
+          let (ctorUnique, sup') := sup.fresh ctorSimpleName
+          sup := sup'
+          let ctorSym : Symbol := {
+            unique := ctorUnique
+            name := ctorSimpleName
+            kind := .dataCon structNameStr 0
+            module := moduleName
+            package := packageName
+            span := Span.uninhabited
+          }
+          acc := acc.insert ctorSym ctorInfo.type
+          addedNames := addedNames.insert ctorSimpleName
+        | none => pure ()
+
+      -- Register field accessors
+      for (fieldNameOpt, _) in fields do
+        if let some fieldName := fieldNameOpt then
+          let accessorName := s!"{structNameStr}.{fieldName}"
+          if shouldExport accessorName then
+            match globals.lookup accessorName with
+            | some accessorInfo =>
+              let (accessorUnique, sup') := sup.fresh accessorName
+              sup := sup'
+              let accessorSym : Symbol := {
+                unique := accessorUnique
+                name := accessorName
+                kind := .binding
+                module := moduleName
+                package := packageName
+                span := Span.uninhabited
+              }
+              acc := acc.insert accessorSym accessorInfo.type
+              addedNames := addedNames.insert accessorName
+            | none => pure ()
+
+    | .record _ _ _ => pure ()
+
+  -- Extract type class methods
+  for typeClass in metalModule.typeClasses do
+    let className := typeClass.name.display
+    if shouldExport className then
+      addedNames := addedNames.insert className
+    for (methodName, _) in typeClass.methodSignatures do
+      let methodNameStr := methodName.display
+      if shouldExport methodNameStr then
+        match globals.lookup methodNameStr with
+        | some methodInfo =>
+          let (methodUnique, sup') := sup.fresh methodNameStr
+          sup := sup'
+          let methodSym : Symbol := {
+            unique := methodUnique
+            name := methodNameStr
+            kind := .typeClassMethod className
+            module := moduleName
+            package := packageName
+            span := Span.uninhabited
+          }
+          acc := acc.insert methodSym methodInfo.type
+          addedNames := addedNames.insert methodNameStr
+        | none => pure ()
+
+  if let some exports := explicitExports then
+    for exportName in exports do
+      if !addedNames.contains exportName then
+        -- This is a re-exported symbol from a dependency
+        for (sym, ty) in seedSymbols.toArray do
+          if sym.name == exportName then
+            -- Re-export with updated module attribution
+            let (newUnique, sup') := sup.fresh exportName
+            sup := sup'
+            let reexportSym : Symbol := {
+              unique := newUnique
+              name := sym.name
+              kind := sym.kind
+              module := moduleName
+              package := packageName
+              span := Span.uninhabited
+            }
+            acc := acc.insert reexportSym ty
+            break
+
   pure (acc, sup)
 
-/-- Extract public instances from a typed module -/
+/-- Extract public instances from a type-checked module -/
 def extractPublicInstances
-    (m : Metal.Module)
+    (metalModule : Metal.UntypedModule)
+    (instanceMap : InstanceMap)
     (packageName : String)
-    (seed : Project.InstanceMetadata)
+    (moduleName : String)
+    (seed : InstanceMetadata)
     (supply : UniqueSupply)
-    : Project.InstanceMetadata × UniqueSupply := Id.run do
+    : InstanceMetadata × UniqueSupply := Id.run do
   let mut acc := seed
   let mut sup := supply
-  for inst in m.instances do
-    let instanceName := s!"{inst.className}${inst.instanceType}"
+
+  for inst in metalModule.instances do
+    let className := inst.className
+    let instanceName := s!"{inst.className}$inst{inst.typeArgsSyntax.size}"
     let (unique, sup') := sup.fresh instanceName
     sup := sup'
     let sym : Symbol := {
       unique := unique
-      name := inst.className
-      kind := .instanceMethod inst.className inst.className
-      module := m.name
+      name := className
+      kind := .instanceMethod instanceName className
+      module := moduleName
       package := packageName
       span := inst.span
     }
-    match acc.get? inst.className with
-    | none => acc := acc.insert inst.className #[(#[inst.instanceType], sym)]
-    | some existing => acc := acc.insert inst.className (existing.push (#[inst.instanceType], sym))
+    -- Look up the elaborated instance info directly by span
+    let typeArgs : Array Value := match instanceMap.get? inst.span with
+      | some instInfo => instInfo.args
+      | none => #[]
+    match acc.get? className with
+    | none => acc := acc.insert className #[(typeArgs, sym)]
+    | some existing => acc := acc.insert className (existing.push (typeArgs, sym))
+
   pure (acc, sup)
 
 /-- Process external dependencies into lookup tables -/
 def processExternalDependencies (deps : Array ExternalDependency)
-    : Std.HashMap String SymbolEnv × Std.HashMap String Project.InstanceMetadata × Std.HashMap String Nat :=
-  deps.foldl (init := ({}, {}, {})) fun (symbols, instances, constructors) dep =>
+    : Std.HashMap String SymbolEnv × Std.HashMap String InstanceMetadata × Std.HashMap String Nat × Globals × InstanceEnv :=
+  deps.foldl (init := ({}, {}, {}, Globals.empty, InstanceEnv.empty)) fun (symbols, instances, constructors, globals, instEnv) dep =>
     let symbols' := dep.symbols.fold (init := symbols) fun acc modName env =>
       acc.insert modName env
     let instances' := dep.instances.fold (init := instances) fun acc modName env =>
       acc.insert modName env
     let constructors' := dep.constructors.fold (init := constructors) fun acc ctorName tag =>
       acc.insert ctorName tag
-    (symbols', instances', constructors')
+    let globals' := mergeGlobals globals dep.globals
+    let instEnv' := mergeInstanceEnv instEnv dep.instanceEnv
+    (symbols', instances', constructors', globals', instEnv')
 
 /-- Extract prelude symbols from external dependencies -/
 def extractPreludeSymbols (extSymbols : Std.HashMap String SymbolEnv) : Array String :=
@@ -595,67 +797,162 @@ def extractPreludeSymbols (extSymbols : Std.HashMap String SymbolEnv) : Array St
   | none => #[]
   | some env => env.toArray.map fun (sym, _) => sym.name
 
-/-- Check a single module with access to already-checked dependencies -/
+/-- Check a single module with access to already-checked dependencies using dependent types.
+    Uses error recovery to continue checking and produce partial results even on errors. -/
 def checkModule
     (info : ModuleInfo)
     (checkedDeps : Std.HashMap String CheckedModule)
-    (externalSymbols : Std.HashMap String SymbolEnv)
-    (externalInstances : Std.HashMap String Project.InstanceMetadata)
+    (externalGlobals : Globals)
+    (externalInstanceEnv : InstanceEnv)
+    (externalSymbols : SymbolEnv)
     (packageName : String)
     (supply : UniqueSupply)
-    : Diagnostics × CheckedModule × UniqueSupply :=
+    : Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
   let modName := info.name.toString
 
-  -- Collect seed environment from checked dependencies
-  let seedEnv : SymbolEnv := checkedDeps.fold (init := {}) fun acc _ dep =>
+  -- Collect globals from checked dependencies
+  let seedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
+    mergeGlobals acc dep.globals
+
+  -- Collect instance env from checked dependencies
+  let seedInstanceEnv := checkedDeps.fold (init := externalInstanceEnv) fun acc _ dep =>
+    mergeInstanceEnv acc dep.instanceEnv
+
+  -- Collect symbol env from checked dependencies for Metal lowering
+  let seedSymbols := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
     dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
-  let seedEnv := externalSymbols.fold (init := seedEnv) fun acc _ env =>
-    env.fold (init := acc) fun e sym ty => e.insert sym ty
+  -- Convert seed symbols to GlobalEnv for Metal lowering
+  let initialGlobalEnv := symbolEnvToGlobalEnv modName seedSymbols
 
-  let seedInstances : Project.InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
+  -- Lower AST to Metal IR with external symbols pre-populated
+  let metalRes := metalWithExternals info.ast initialGlobalEnv
+  if metalRes.diagnostics.hasErrors then
+    return (metalRes.diagnostics, none, supply)
+
+  -- Use the shared type checking pipeline (fresh check, no previous state)
+  let (fullGlobals, fullInstanceEnv, instanceMap, incrState, tcErrors) :=
+    typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv none
+
+  let allDiags := tcErrors.map (·.toDiagnostic)
+
+  -- Extract public symbols and instances (always do this, even with errors)
+  let depSymbols : SymbolEnv := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
+    dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
+
+  -- Check for explicit exports in the AST
+  let explicitExports : Option (Array String) := info.ast.decls.findSome? fun decl =>
+    match decl with
+    | .export_ items _ => some (items.map (·.value))
+    | _ => none
+
+  let (publicSymbols, supply') := extractPublicSymbols
+    metalRes.module fullGlobals packageName modName {} supply explicitExports depSymbols
+
+  let depInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
     mergeInstanceEnvs acc dep.publicInstances
 
-  let seedInstances := externalInstances.fold (init := seedInstances) fun acc _ env =>
-    mergeInstanceEnvs acc env
+  let (publicInstances, supply'') := extractPublicInstances
+    metalRes.module instanceMap packageName modName depInstances supply'
 
-  -- Convert seed symbols to GlobalEnv for Metal lowering
-  let initialGlobalEnv := symbolEnvToGlobalEnv modName seedEnv
+  -- Always produce a CheckedModule, even with errors
+  -- This enables IDE features to work with partial information
+  let checkedModule : CheckedModule := {
+    name := modName
+    resolvedAst := info.ast
+    metalModule := metalRes.module
+    globals := fullGlobals
+    instanceEnv := fullInstanceEnv
+    instanceMap := instanceMap
+    publicSymbols := publicSymbols
+    publicInstances := publicInstances
+    sourceFile := info.sourceFile
+    incrementalState := incrState
+  }
 
-  -- Metal lowering with external symbols pre-populated
+  (metalRes.diagnostics ++ allDiags, some checkedModule, supply'')
+
+/-- Check a single module incrementally, reusing cached results for unchanged definitions.
+    This is the main entry point for incremental type checking in the LSP. -/
+def checkModuleIncremental
+    (info : ModuleInfo)
+    (prevModule : CheckedModule)
+    (checkedDeps : Std.HashMap String CheckedModule)
+    (externalGlobals : Globals)
+    (externalInstanceEnv : InstanceEnv)
+    (externalSymbols : SymbolEnv)
+    (packageName : String)
+    (supply : UniqueSupply)
+    : Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
+  let modName := info.name.toString
+
+  -- Collect globals from checked dependencies
+  let seedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
+    mergeGlobals acc dep.globals
+
+  let seedInstanceEnv := checkedDeps.fold (init := externalInstanceEnv) fun acc _ dep =>
+    mergeInstanceEnv acc dep.instanceEnv
+
+  let seedSymbols := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
+    dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
+
+  let initialGlobalEnv := symbolEnvToGlobalEnv modName seedSymbols
+
+  -- Lower AST to Metal IR
   let metalRes := metalWithExternals info.ast initialGlobalEnv
+  if metalRes.diagnostics.hasErrors then
+    return (metalRes.diagnostics, none, supply)
 
-  -- Build environments with external dependencies
-  let externalFunctions := symbolEnvToFunctionInfos seedEnv
-  let externalTypes := symbolEnvToTypeInfos seedEnv
-  let externalConstructors := symbolEnvToConstructorInfos seedEnv
-  let (typeEnv, supply) := buildTypeEnv metalRes.module supply externalFunctions externalTypes externalConstructors
-  let inferInstanceEnv := buildInstanceEnv metalRes.module (projectToInferInstanceEnv seedInstances) typeEnv
+  -- Use the shared type checking pipeline with previous state for incremental checking
+  let (fullGlobals, fullInstanceEnv, instanceMap, incrState, tcErrors) :=
+    typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv (some prevModule.incrementalState)
 
-  -- Type inference
-  let inferRes := infer metalRes.module typeEnv inferInstanceEnv
+  -- If nothing changed (empty errors and same state), we could reuse previous result
+  -- But for correctness, we rebuild anyway since Metal IR might have changed
 
-  let allDiags := metalRes.diagnostics ++ inferRes.diagnostics
+  let allDiags := tcErrors.map (·.toDiagnostic)
 
-  let (publicSymbols, supply) := extractPublicSymbols inferRes.module metalRes.result.globalEnv packageName seedEnv supply
-  let (publicInstances, supply) := extractPublicInstances inferRes.module packageName seedInstances supply
+  -- Extract public symbols and instances
+  let depSymbols : SymbolEnv := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
+    dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
+
+  -- Check for explicit exports in the AST
+  let explicitExports : Option (Array String) := info.ast.decls.findSome? fun decl =>
+    match decl with
+    | .export_ items _ => some (items.map (·.value))
+    | _ => none
+
+  let (publicSymbols, supply') := extractPublicSymbols
+    metalRes.module fullGlobals packageName modName {} supply explicitExports depSymbols
+
+  let depInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
+    mergeInstanceEnvs acc dep.publicInstances
+
+  let (publicInstances, supply'') := extractPublicInstances
+    metalRes.module instanceMap packageName modName depInstances supply'
 
   let checkedModule : CheckedModule := {
     name := modName
     resolvedAst := info.ast
-    typedModule := inferRes.module
+    metalModule := metalRes.module
+    globals := fullGlobals
+    instanceEnv := fullInstanceEnv
+    instanceMap := instanceMap
     publicSymbols := publicSymbols
     publicInstances := publicInstances
+    sourceFile := info.sourceFile
+    incrementalState := incrState
   }
 
-  (allDiags, checkedModule, supply)
+  (metalRes.diagnostics ++ allDiags, some checkedModule, supply'')
 
 /-- Check all modules in topological order -/
 def checkModulesInOrder
     (sortedNames : Array String)
     (graph : ModuleGraph)
-    (externalSymbols : Std.HashMap String SymbolEnv)
-    (externalInstances : Std.HashMap String Project.InstanceMetadata)
+    (externalGlobals : Globals)
+    (externalInstanceEnv : InstanceEnv)
+    (externalSymbols : SymbolEnv)
     (packageName : String)
     (supply : UniqueSupply)
     : Diagnostics × Array CheckedModule × UniqueSupply :=
@@ -665,28 +962,33 @@ def checkModulesInOrder
       match graph.get? modName with
       | none => (diags, checked, results, sup)
       | some info =>
-        let (moduleDiags, cm, sup') := checkModule info checked externalSymbols externalInstances packageName sup
-        (diags ++ moduleDiags, checked.insert modName cm, results.push cm, sup')
+        let (moduleDiags, cmOpt, sup') := checkModule info checked externalGlobals externalInstanceEnv externalSymbols packageName sup
+        match cmOpt with
+        | some cm => (diags ++ moduleDiags, checked.insert modName cm, results.push cm, sup')
+        | none => (diags ++ moduleDiags, checked, results, sup')
   (allDiags, results, finalSupply)
 
 /-- Parse a single source file into a ModuleInfo -/
 def parseModuleFile (moduleName : String) (path : System.FilePath) : IO (Except Diagnostics ModuleInfo) := do
   let content ← IO.FS.readFile path
-  let (parseRes, lowerRes) := toAst path.toString content (some moduleName)
-  let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics
-
-  if allDiags.hasErrors then
-    pure (.error allDiags)
+  let parseRes := parse path.toString content
+  if parseRes.diagnostics.hasErrors then
+    pure (.error parseRes.diagnostics)
   else
-    let modName := ModuleName.fromString moduleName
-    pure (.ok {
-      name := modName
-      path := path
-      content := content
-      sourceFile := parseRes.sourceFile
-      ast := lowerRes.ast
-      contentHash := some (hash content)
-    })
+    let lowerRes := lower parseRes.tree moduleName
+    let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics
+    if allDiags.hasErrors then
+      pure (.error allDiags)
+    else
+      let modName := ModuleName.fromString moduleName
+      pure (.ok {
+        name := modName
+        path := path
+        content := content
+        sourceFile := parseRes.sourceFile
+        ast := lowerRes.ast
+        contentHash := some (hash content)
+      })
 
 /-- Parse all modules in a list, collecting errors -/
 def parseModuleFiles (modules : Array (String × System.FilePath)) : IO (Diagnostics × ModuleGraph × SourceFileMap) := do
@@ -734,23 +1036,31 @@ def checkSingleFile
         pure (ProjectResult.failed name #[Diagnostic.error (toString e) Span.uninhabited] sourceMap)
 
       | .ok deps =>
-        let (extSymbols, extInstances, extConstructors) := processExternalDependencies deps
+        let (extSymbolsByModule, _, extConstructors, extGlobals, extInstanceEnv) := processExternalDependencies deps
+        -- Flatten external symbols into a single SymbolEnv
+        let extSymbols : SymbolEnv := extSymbolsByModule.fold (init := {}) fun acc _ env =>
+          env.fold (init := acc) fun e sym ty => e.insert sym ty
         let supply := UniqueSupply.initial name
 
         let (checkDiags, checkedModules, _) := checkModulesInOrder
-          sortedNames graph extSymbols extInstances name supply
+          sortedNames graph extGlobals extInstanceEnv extSymbols name supply
 
         let symbols := checkedModules.foldl (init := {}) fun acc m =>
-          m.publicSymbols.fold (init := acc) fun env sym qt => env.insert sym qt
+          m.publicSymbols.fold (init := acc) fun env sym val => env.insert sym val
         let instances := checkedModules.foldl (init := {}) fun acc m =>
           mergeInstanceEnvs acc m.publicInstances
-        let constructors := checkedModules.foldl (init := {}) fun acc m =>
-          m.constructorMetadata.fold (init := acc) fun env n tag => env.insert n tag
+        let constructors := checkedModules.foldl (init := extConstructors) fun acc m =>
+          let ctors := m.constructorMetadata
+          ctors.fold (init := acc) fun env n tag => env.insert n tag
+        let globals := checkedModules.foldl (init := extGlobals) fun acc m =>
+          mergeGlobals acc m.globals
+        let instanceEnv := checkedModules.foldl (init := extInstanceEnv) fun acc m =>
+          mergeInstanceEnv acc m.instanceEnv
 
         if checkDiags.hasErrors then
           pure (ProjectResult.failed name checkDiags sourceMap)
         else
-          pure (ProjectResult.succeeded name checkDiags checkedModules symbols instances constructors sourceMap)
+          pure (ProjectResult.succeeded name checkDiags checkedModules symbols instances constructors globals instanceEnv sourceMap)
 
 /-- Check a project directory -/
 def checkDirectory
@@ -783,31 +1093,40 @@ def checkDirectory
         pure (ProjectResult.failed packageName #[Diagnostic.error (toString e) Span.uninhabited] sourceMap)
 
       | .ok deps =>
-        let (extSymbols, extInstances, extConstructors) := processExternalDependencies deps
+        let (extSymbolsByModule, _, extConstructors, extGlobals, extInstanceEnv) := processExternalDependencies deps
 
         -- Optionally inject prelude
-        let preludeSymbols := extractPreludeSymbols extSymbols
+        let preludeSymbols := extractPreludeSymbols extSymbolsByModule
         let graph := if preludeSymbols.isEmpty then graph
                      else injectPreludeIntoGraph preludeSymbols graph
+
+        -- Flatten external symbols into a single SymbolEnv
+        let extSymbols : SymbolEnv := extSymbolsByModule.fold (init := {}) fun acc _ env =>
+          env.fold (init := acc) fun e sym ty => e.insert sym ty
 
         let supply := UniqueSupply.initial packageName
 
         let (checkDiags, checkedModules, _) := checkModulesInOrder
-          sortedNames graph extSymbols extInstances packageName supply
+          sortedNames graph extGlobals extInstanceEnv extSymbols packageName supply
 
         let symbols := checkedModules.foldl (init := {}) fun acc m =>
-          m.publicSymbols.fold (init := acc) fun env sym qt => env.insert sym qt
+          m.publicSymbols.fold (init := acc) fun env sym val => env.insert sym val
         let instances := checkedModules.foldl (init := {}) fun acc m =>
           mergeInstanceEnvs acc m.publicInstances
-        let constructors := checkedModules.foldl (init := {}) fun acc m =>
-          m.constructorMetadata.fold (init := acc) fun env n tag => env.insert n tag
+        let constructors := checkedModules.foldl (init := extConstructors) fun acc m =>
+          let ctors := m.constructorMetadata
+          ctors.fold (init := acc) fun env n tag => env.insert n tag
+        let globals := checkedModules.foldl (init := extGlobals) fun acc m =>
+          mergeGlobals acc m.globals
+        let instanceEnv := checkedModules.foldl (init := extInstanceEnv) fun acc m =>
+          mergeInstanceEnv acc m.instanceEnv
 
         let allDiags := parseDiags ++ checkDiags
 
         if allDiags.hasErrors then
           pure (ProjectResult.failed packageName allDiags sourceMap)
         else
-          pure (ProjectResult.succeeded packageName allDiags checkedModules symbols instances constructors sourceMap)
+          pure (ProjectResult.succeeded packageName allDiags checkedModules symbols instances constructors globals instanceEnv sourceMap)
 
 /-- Check a project (file or directory) -/
 def checkProject
@@ -822,5 +1141,22 @@ def checkProject
     let msg := s!"Input is neither a .soma file nor a directory: {config.input}"
     let name := config.name.getD "unknown"
     pure (ProjectResult.failed name #[Diagnostic.error msg Span.uninhabited])
+
+/-- Parse only -/
+def parseOnly (filePath : String) (content : String) : ParseResult :=
+  parse filePath content
+
+/-- Parse + lower to AST -/
+def toAst (filePath : String) (content : String) (moduleName : Option String := none) : ParseResult × LowerResult :=
+  let parseRes := parse filePath content
+  let modName := moduleName.getD (moduleNameFromPath filePath)
+  let lowerRes := lower parseRes.tree modName
+  (parseRes, lowerRes)
+
+/-- Parse + lower to Metal IR -/
+def toMetal (filePath : String) (content : String) : ParseResult × LowerResult × MetalResult :=
+  let (parseRes, lowerRes) := toAst filePath content
+  let metalRes := metal lowerRes.ast
+  (parseRes, lowerRes, metalRes)
 
 end Soma.Check

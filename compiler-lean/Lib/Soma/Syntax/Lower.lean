@@ -4,8 +4,11 @@ import Soma.Syntax.SyntaxKind
 import Soma.Syntax.GreenTree
 import Soma.Syntax.RedTree
 import Soma.Syntax.Ast
+import Soma.Core.Quantity
 
 namespace Soma.Syntax
+
+open Soma.Core (Quantity)
 
 /-- Context for lowering -/
 structure LowerContext where
@@ -164,7 +167,7 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
       -- Already handled above, but need this case for exhaustiveness
       pure (.wildcard span)
 
-  | .node kind children _ =>
+  | .node kind _ _ =>
       match kind with
       | .patVar =>
           match firstGreenChild green with
@@ -186,7 +189,6 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
               pure (.wildcard span)
 
       | .patCon =>
-          let syntaxKids := syntaxGreenChildren green
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
           if kidsWithOffsets.isEmpty then
             lowerError "constructor pattern missing name" span
@@ -292,7 +294,7 @@ partial def lowerKindExpr (green : GreenNode) (offset : Nat) : LowerM KindExpr :
   let span ← spanFor green offset
 
   match green with
-  | .token kind text =>
+  | .token _kind text =>
       -- Atomic kind token: *, %, #
       pure (.atom ⟨text, span⟩)
 
@@ -567,6 +569,139 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
               pure (some ⟨tailText, tailSpan⟩)
           pure (.variant cases tail span)
 
+      | .typePi =>
+          -- Dependent Pi type: (q? x : A) -> B
+          -- Structure: lparen, binder, rparen, arrow, codomain
+          let allKids := childrenWithOffsets green offset
+          let binderNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .typePiBinder
+          let codomainNodes := allKids.filter fun (c, _) =>
+            c.syntaxKind? != some .typePiBinder && isSemanticNode c
+          if binderNodes.isEmpty || codomainNodes.isEmpty then
+            lowerError "Pi type missing binder or codomain" span
+            pure (.var ⟨"_error", span⟩)
+          else
+            let (binderNode, binderOffset) := binderNodes[0]!
+            let binderKids := childrenWithOffsets binderNode binderOffset |>.filter fun (c, _) => isSemanticNode c
+            -- Parse binder: optional quantity, name, domain type
+            let (qty, nameIdx) ← if binderKids.size > 0 then
+              let firstKid := binderKids[0]!.1
+              if firstKid.syntaxKind? == some .typeQuantity then
+                let qtyText ← getGreenTokenText (firstGreenChild firstKid |>.getD firstKid) binderKids[0]!.2
+                let q := match qtyText with
+                  | "0" => Quantity.zero
+                  | "1" => Quantity.one
+                  | _ => Quantity.omega
+                pure (q, 1)
+              else
+                pure (Quantity.omega, 0)
+            else
+              pure (Quantity.omega, 0)
+            if h : nameIdx < binderKids.size then
+              let (nameNode, nameOffset) := binderKids[nameIdx]
+              let nameText ← match firstGreenChild nameNode with
+                | some child => getGreenTokenText child nameOffset
+                | none => getGreenTokenText nameNode nameOffset
+              let nameSpan ← spanFor nameNode nameOffset
+              let domainIdx := nameIdx + 1
+              if h2 : domainIdx < binderKids.size then
+                let domain ← lowerTypeExpr binderKids[domainIdx].1 binderKids[domainIdx].2
+                let codomain ← lowerTypeExpr codomainNodes[0]!.1 codomainNodes[0]!.2
+                pure (.pi qty ⟨nameText, nameSpan⟩ domain codomain span)
+              else
+                lowerError "Pi type binder missing domain type" span
+                pure (.var ⟨"_error", span⟩)
+            else
+              lowerError "Pi type binder missing name" span
+              pure (.var ⟨"_error", span⟩)
+
+      | .typeSigma =>
+          -- Dependent Sigma type: (q? x : A) × B
+          -- Structure: lparen, binder, rparen, times, snd
+          let allKids := childrenWithOffsets green offset
+          let binderNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .typePiBinder
+          let sndNodes := allKids.filter fun (c, _) =>
+            c.syntaxKind? != some .typePiBinder && isSemanticNode c
+          if binderNodes.isEmpty || sndNodes.isEmpty then
+            lowerError "Sigma type missing binder or second type" span
+            pure (.var ⟨"_error", span⟩)
+          else
+            let (binderNode, binderOffset) := binderNodes[0]!
+            let binderKids := childrenWithOffsets binderNode binderOffset |>.filter fun (c, _) => isSemanticNode c
+            -- Parse binder: optional quantity, name, fst type
+            let (qty, nameIdx) ← if binderKids.size > 0 then
+              let firstKid := binderKids[0]!.1
+              if firstKid.syntaxKind? == some .typeQuantity then
+                let qtyText ← getGreenTokenText (firstGreenChild firstKid |>.getD firstKid) binderKids[0]!.2
+                let q := match qtyText with
+                  | "0" => Quantity.zero
+                  | "1" => Quantity.one
+                  | _ => Quantity.omega
+                pure (q, 1)
+              else
+                pure (Quantity.omega, 0)
+            else
+              pure (Quantity.omega, 0)
+            if h : nameIdx < binderKids.size then
+              let (nameNode, nameOffset) := binderKids[nameIdx]
+              let nameText ← match firstGreenChild nameNode with
+                | some child => getGreenTokenText child nameOffset
+                | none => getGreenTokenText nameNode nameOffset
+              let nameSpan ← spanFor nameNode nameOffset
+              let fstIdx := nameIdx + 1
+              if h2 : fstIdx < binderKids.size then
+                let fst ← lowerTypeExpr binderKids[fstIdx].1 binderKids[fstIdx].2
+                let snd ← lowerTypeExpr sndNodes[0]!.1 sndNodes[0]!.2
+                pure (.sigma qty ⟨nameText, nameSpan⟩ fst snd span)
+              else
+                lowerError "Sigma type binder missing first type" span
+                pure (.var ⟨"_error", span⟩)
+            else
+              lowerError "Sigma type binder missing name" span
+              pure (.var ⟨"_error", span⟩)
+
+      | .typeImplicit =>
+          -- Implicit type: {{x : A}} -> B or {{A}} -> B
+          -- Structure: lbrace, lbrace, (binder | domain), rbrace, rbrace, arrow, codomain
+          let allKids := childrenWithOffsets green offset
+          let binderNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .typePiBinder
+          let semanticKids := allKids.filter fun (c, _) => isSemanticNode c
+          if semanticKids.size < 2 then
+            lowerError "Implicit type missing domain or codomain" span
+            pure (.var ⟨"_error", span⟩)
+          else if !binderNodes.isEmpty then
+            -- Named implicit: {{x : A}} -> B
+            let (binderNode, binderOffset) := binderNodes[0]!
+            let binderKids := childrenWithOffsets binderNode binderOffset |>.filter fun (c, _) => isSemanticNode c
+            if binderKids.size >= 2 then
+              let (nameNode, nameOffset) := binderKids[0]!
+              let nameText ← match firstGreenChild nameNode with
+                | some child => getGreenTokenText child nameOffset
+                | none => getGreenTokenText nameNode nameOffset
+              let nameSpan ← spanFor nameNode nameOffset
+              let domain ← lowerTypeExpr binderKids[1]!.1 binderKids[1]!.2
+              -- Find the codomain (last semantic kid that's not the binder)
+              let codomainKids := semanticKids.filter fun (c, _) => c.syntaxKind? != some .typePiBinder
+              if codomainKids.isEmpty then
+                lowerError "Implicit type missing codomain" span
+                pure (.var ⟨"_error", span⟩)
+              else
+                let codomain ← lowerTypeExpr codomainKids[codomainKids.size - 1]!.1 codomainKids[codomainKids.size - 1]!.2
+                pure (.implicit (some ⟨nameText, nameSpan⟩) domain codomain span)
+            else
+              lowerError "Implicit type binder incomplete" span
+              pure (.var ⟨"_error", span⟩)
+          else
+            -- Unnamed implicit: {{A}} -> B
+            -- First semantic child is domain, last is codomain
+            let domain ← lowerTypeExpr semanticKids[0]!.1 semanticKids[0]!.2
+            let codomain ← lowerTypeExpr semanticKids[semanticKids.size - 1]!.1 semanticKids[semanticKids.size - 1]!.2
+            pure (.implicit none domain codomain span)
+
+      | .typePiBinder | .typeQuantity =>
+          -- These are helper nodes, not standalone types
+          lowerError s!"unexpected standalone {kind}" span
+          pure (.var ⟨"_error", span⟩)
+
       | _ =>
           lowerError s!"unexpected type kind: {kind}" span
           pure (.var ⟨"_error", span⟩)
@@ -730,11 +865,29 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
           let fspan ← spanFor f fo
           pure (none, .var ⟨"_", fspan⟩)
 
-      pure ⟨name, fields, span⟩
+      pure ⟨name, fields, none, span⟩
+
+  | .node .constructorSig _ _ =>
+      -- Indexed constructor with signature: | Cons :: a -> Vec n a -> Vec (n+1) a
+      let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent
+      let name := if nameNodes.isEmpty then ⟨"_Con", span⟩
+        else match getTokenText nameNodes[0]! with
+        | some text => ⟨text, span⟩
+        | none => ⟨"_Con", span⟩
+
+      let allKids := childrenWithOffsets green offset
+      -- Find the type expression (after the :: token)
+      let typeNodes := allKids.filter fun (c, _) => isSemanticNode c && !c.isToken
+      if typeNodes.size >= 1 then
+        let sig ← lowerTypeExpr typeNodes[0]!.1 typeNodes[0]!.2
+        pure ⟨name, #[], some sig, span⟩
+      else
+        lowerError "expected type signature for indexed constructor" span
+        pure ⟨⟨"_Con", span⟩, #[], none, span⟩
 
   | _ =>
       lowerError "expected constructor" span
-      pure ⟨⟨"_Con", span⟩, #[], span⟩
+      pure ⟨⟨"_Con", span⟩, #[], none, span⟩
 
 /-- Lower a struct field -/
 partial def lowerStructField (green : GreenNode) (offset : Nat) : LowerM StructField := do
@@ -916,8 +1069,10 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
                 pure (.case #[value] #[arm] span)
               else
                 lowerError "let missing body" span
-                let nspan ← spanFor patNode patOffset
-                pure (.let_ ⟨"_", nspan⟩ sig value (.var ⟨"_error", span⟩) span)
+                let errorBody := Expr.var ⟨"_error", span⟩
+                let wildcardPat := Pattern.wildcard span
+                let arm := MatchArm.mk #[wildcardPat] none errorBody span
+                pure (.case #[value] #[arm] span)
             else
               lowerError "let missing value" span
               pure (.var ⟨"_error", span⟩)
@@ -1078,10 +1233,22 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
             let mut result : Expr := body
             for stmt in initStmts do
               match stmt with
-              | .let_ name ty val _ stmtSpan =>
-                  result := Expr.let_ name ty val result stmtSpan
+              -- Match on case with single arm and single var pattern (desugared let from composeLetStmt)
+              | .case #[val] #[arm] stmtSpan =>
+                  match arm.patterns[0]? with
+                  | some (Pattern.var name) =>
+                      -- Reconstruct as case with actual body
+                      let newArm := MatchArm.mk #[Pattern.var name] none result stmtSpan
+                      result := Expr.case #[val] #[newArm] stmtSpan
+                  | _ =>
+                      -- Non-var pattern or missing - treat as expression statement
+                      let wildcardPat := Pattern.wildcard stmt.span
+                      let newArm := MatchArm.mk #[wildcardPat] none result stmt.span
+                      result := Expr.case #[stmt] #[newArm] stmt.span
               | other =>
-                  result := Expr.let_ ⟨"_", other.span⟩ none other result other.span
+                  let wildcardPat := Pattern.wildcard other.span
+                  let newArm := MatchArm.mk #[wildcardPat] none result other.span
+                  result := Expr.case #[other] #[newArm] other.span
             pure (.compose result span)
 
       | .exprBind =>
@@ -1099,10 +1266,22 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
             let mut result : Expr := body
             for stmt in initStmts do
               match stmt with
-              | .let_ name ty val _ stmtSpan =>
-                  result := Expr.let_ name ty val result stmtSpan
+              -- Match on case with single arm and single var pattern (desugared let from composeLetStmt)
+              | .case #[val] #[arm] stmtSpan =>
+                  match arm.patterns[0]? with
+                  | some (Pattern.var name) =>
+                      -- Reconstruct as case with actual body
+                      let newArm := MatchArm.mk #[Pattern.var name] none result stmtSpan
+                      result := Expr.case #[val] #[newArm] stmtSpan
+                  | _ =>
+                      -- Non-var pattern or missing so we treat as expression statement
+                      let wildcardPat := Pattern.wildcard stmt.span
+                      let newArm := MatchArm.mk #[wildcardPat] none result stmt.span
+                      result := Expr.case #[stmt] #[newArm] stmt.span
               | other =>
-                  result := Expr.let_ ⟨"_", other.span⟩ none other result other.span
+                  let wildcardPat := Pattern.wildcard other.span
+                  let newArm := MatchArm.mk #[wildcardPat] none result other.span
+                  result := Expr.case #[other] #[newArm] other.span
             pure (.bind result span)
 
       | .exprVariant =>
@@ -1128,10 +1307,16 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
           else
             let (valueNode, valueOffset) := kidsWithOffsets[kidsWithOffsets.size - 1]!
             let value ← lowerExpr valueNode valueOffset
+            -- Helper to create a case expression with a variable pattern (desugared let)
+            let mkLetCase (name : String) : Expr :=
+              let pat := Pattern.var ⟨name, span⟩
+              let dummyBody := Expr.var ⟨"_", span⟩
+              let arm := MatchArm.mk #[pat] none dummyBody span
+              Expr.case #[value] #[arm] span
             if !nameTokens.isEmpty then
               match getTokenText nameTokens[0]! with
               | some text =>
-                  pure (.let_ ⟨text, span⟩ none value (.var ⟨"_", span⟩) span)
+                  pure (mkLetCase text)
               | none =>
                   lowerError "compose let missing binding name" span
                   pure (.var ⟨"_error", span⟩)
@@ -1143,9 +1328,9 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
                     match firstGreenChild patNode with
                     | some child =>
                         let patText ← getGreenTokenText child patOffset
-                        pure (.let_ ⟨patText, span⟩ none value (.var ⟨"_", span⟩) span)
+                        pure (mkLetCase patText)
                     | none =>
-                        pure (.let_ ⟨"_pat", span⟩ none value (.var ⟨"_", span⟩) span)
+                        pure (mkLetCase "_pat")
                   else
                     lowerError s!"unexpected node in compose let: {k}" span
                     pure (.var ⟨"_error", span⟩)
@@ -1405,7 +1590,8 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
                     let vspan ← spanFor v vo
                     pure ⟨"_", vspan⟩
 
-          let conNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .constructor
+          let conNodes := allKids.filter fun (c, _) =>
+            c.syntaxKind? == some .constructor || c.syntaxKind? == some .constructorSig
           let cons ← conNodes.mapM fun (c, o) => lowerDataCon c o
 
           -- Extract kind annotation if present (e.g., :: * -> *)
@@ -1506,6 +1692,25 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
 
       | .declInstance =>
           let allKids := childrenWithOffsets green offset
+
+          -- Check for optional instance name (a .name node before the constraint)
+          let nameNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .name
+          let instanceName ← if nameNodes.isEmpty then
+            pure none
+          else
+            let (nameNode, nameOffset) := nameNodes[0]!
+            -- The name node contains the identifier token (and possibly a colon)
+            let nameTokens := nameNode.children.filter fun c =>
+              isTokenKind c .lowerIdent || isTokenKind c .upperIdent
+            match nameTokens[0]? with
+            | some tok =>
+                match getTokenText tok with
+                | some text =>
+                    let nspan ← spanFor nameNode nameOffset
+                    pure (some ⟨text, nspan⟩)
+                | none => pure none
+            | none => pure none
+
           let constraintNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .constraint
           let (traitName, args) ← if constraintNodes.isEmpty then
             pure (⟨"_Error", span⟩, #[])
@@ -1519,7 +1724,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
           let methodNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .declDef
           let methods ← methodNodes.mapM fun (c, o) => lowerDecl c o
 
-          pure (.instance_ traitName args constraints methods span)
+          pure (.instance_ instanceName traitName args constraints methods span)
 
       | .declUse =>
           let allKids := childrenWithOffsets green offset
@@ -1661,7 +1866,7 @@ def lowerModule (green : GreenNode) (offset : Nat) (moduleName : String) : Lower
   let span ← spanFor green offset
 
   match green with
-  | .node .sourceFile children _ =>
+  | .node .sourceFile _ _ =>
       let childrenOff := childrenWithOffsets green offset
       let decls ← childrenOff.filterMapM fun (c, co) => do
         match c with

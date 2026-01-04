@@ -1,0 +1,8 @@
+// expect: success
+// Test: applying dependent functions
+
+def id :: (a : Type) -> a -> a
+    | _ x => x
+
+def applyTwice :: (a : Type) -> (a -> a) -> a -> a
+    | _ f x => f (f x)

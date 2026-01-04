@@ -42,9 +42,10 @@ def runFromFixtures (verbose : Bool := false) : IO TestRunner := do
   return runner
 
 /-- Main entry point for parser tests -/
-def run : IO Unit := do
+def run : IO TestRunner := do
   let runner ← runFromFixtures
   runner.printSummary "Parser Summary"
   IO.println ""
+  return runner
 
 end Test.Parser

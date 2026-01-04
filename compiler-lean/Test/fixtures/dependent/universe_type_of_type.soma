@@ -1,0 +1,4 @@
+// expect: success
+// Test: Type of Type (universe hierarchy)
+
+def typeIsType :: Type = Type

@@ -1,0 +1,5 @@
+// expect: error
+// Test: wrong number of arguments should be caught
+
+def f :: Int -> Int -> Int
+    | x => x

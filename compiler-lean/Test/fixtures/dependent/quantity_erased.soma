@@ -1,0 +1,8 @@
+// expect: success
+// Test: erased (0) quantity annotation - compile-time only types
+
+def phantom :: (0 a : Type) -> Unit
+    | _ => ()
+
+def typeWitness :: (0 a : Type) -> (0 b : Type) -> Unit
+    | _ _ => ()
