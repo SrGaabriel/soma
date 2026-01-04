@@ -487,9 +487,6 @@ private partial def collectCallsGo (caller : String) (targets : Array String)
     let acc' := collectCallsGo caller targets fn ctx acc
     collectCallsGoArgs caller targets args ctx acc'
   | .lam _ body => collectCallsGo caller targets body ctx acc
-  | .let_ _ value body =>
-    let acc' := collectCallsGo caller targets value ctx acc
-    collectCallsGo caller targets body ctx acc'
   | .if_ c th el =>
     let acc' := collectCallsGo caller targets c ctx acc
     let acc'' := collectCallsGo caller targets th ctx acc'

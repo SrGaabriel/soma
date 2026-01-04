@@ -1069,8 +1069,10 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
                 pure (.case #[value] #[arm] span)
               else
                 lowerError "let missing body" span
-                let nspan ← spanFor patNode patOffset
-                pure (.let_ ⟨"_", nspan⟩ sig value (.var ⟨"_error", span⟩) span)
+                let errorBody := Expr.var ⟨"_error", span⟩
+                let wildcardPat := Pattern.wildcard span
+                let arm := MatchArm.mk #[wildcardPat] none errorBody span
+                pure (.case #[value] #[arm] span)
             else
               lowerError "let missing value" span
               pure (.var ⟨"_error", span⟩)
@@ -1231,10 +1233,22 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
             let mut result : Expr := body
             for stmt in initStmts do
               match stmt with
-              | .let_ name ty val _ stmtSpan =>
-                  result := Expr.let_ name ty val result stmtSpan
+              -- Match on case with single arm and single var pattern (desugared let from composeLetStmt)
+              | .case #[val] #[arm] stmtSpan =>
+                  match arm.patterns[0]? with
+                  | some (Pattern.var name) =>
+                      -- Reconstruct as case with actual body
+                      let newArm := MatchArm.mk #[Pattern.var name] none result stmtSpan
+                      result := Expr.case #[val] #[newArm] stmtSpan
+                  | _ =>
+                      -- Non-var pattern or missing - treat as expression statement
+                      let wildcardPat := Pattern.wildcard stmt.span
+                      let newArm := MatchArm.mk #[wildcardPat] none result stmt.span
+                      result := Expr.case #[stmt] #[newArm] stmt.span
               | other =>
-                  result := Expr.let_ ⟨"_", other.span⟩ none other result other.span
+                  let wildcardPat := Pattern.wildcard other.span
+                  let newArm := MatchArm.mk #[wildcardPat] none result other.span
+                  result := Expr.case #[other] #[newArm] other.span
             pure (.compose result span)
 
       | .exprBind =>
@@ -1252,10 +1266,22 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
             let mut result : Expr := body
             for stmt in initStmts do
               match stmt with
-              | .let_ name ty val _ stmtSpan =>
-                  result := Expr.let_ name ty val result stmtSpan
+              -- Match on case with single arm and single var pattern (desugared let from composeLetStmt)
+              | .case #[val] #[arm] stmtSpan =>
+                  match arm.patterns[0]? with
+                  | some (Pattern.var name) =>
+                      -- Reconstruct as case with actual body
+                      let newArm := MatchArm.mk #[Pattern.var name] none result stmtSpan
+                      result := Expr.case #[val] #[newArm] stmtSpan
+                  | _ =>
+                      -- Non-var pattern or missing so we treat as expression statement
+                      let wildcardPat := Pattern.wildcard stmt.span
+                      let newArm := MatchArm.mk #[wildcardPat] none result stmt.span
+                      result := Expr.case #[stmt] #[newArm] stmt.span
               | other =>
-                  result := Expr.let_ ⟨"_", other.span⟩ none other result other.span
+                  let wildcardPat := Pattern.wildcard other.span
+                  let newArm := MatchArm.mk #[wildcardPat] none result other.span
+                  result := Expr.case #[other] #[newArm] other.span
             pure (.bind result span)
 
       | .exprVariant =>
@@ -1281,10 +1307,16 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
           else
             let (valueNode, valueOffset) := kidsWithOffsets[kidsWithOffsets.size - 1]!
             let value ← lowerExpr valueNode valueOffset
+            -- Helper to create a case expression with a variable pattern (desugared let)
+            let mkLetCase (name : String) : Expr :=
+              let pat := Pattern.var ⟨name, span⟩
+              let dummyBody := Expr.var ⟨"_", span⟩
+              let arm := MatchArm.mk #[pat] none dummyBody span
+              Expr.case #[value] #[arm] span
             if !nameTokens.isEmpty then
               match getTokenText nameTokens[0]! with
               | some text =>
-                  pure (.let_ ⟨text, span⟩ none value (.var ⟨"_", span⟩) span)
+                  pure (mkLetCase text)
               | none =>
                   lowerError "compose let missing binding name" span
                   pure (.var ⟨"_error", span⟩)
@@ -1296,9 +1328,9 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
                     match firstGreenChild patNode with
                     | some child =>
                         let patText ← getGreenTokenText child patOffset
-                        pure (.let_ ⟨patText, span⟩ none value (.var ⟨"_", span⟩) span)
+                        pure (mkLetCase patText)
                     | none =>
-                        pure (.let_ ⟨"_pat", span⟩ none value (.var ⟨"_", span⟩) span)
+                        pure (mkLetCase "_pat")
                   else
                     lowerError s!"unexpected node in compose let: {k}" span
                     pure (.var ⟨"_error", span⟩)

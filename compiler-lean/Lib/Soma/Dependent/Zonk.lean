@@ -281,12 +281,6 @@ partial def zonkExpr {scope : Scope} (e : Expr Value scope) : TCM (Expr Value sc
     let ty' ← zonkValue ty
     return .call fn' args' ty' span
 
-  | .let_ binding original value body ty span =>
-    let value' ← zonkExpr value
-    let body' ← zonkExpr body
-    let ty' ← zonkValue ty
-    return .let_ binding original value' body' ty' span
-
   | .lam params body ty span =>
     let ⟨params', hParams⟩ ← zonkParamListWithProof params
     let body' ← zonkExpr body

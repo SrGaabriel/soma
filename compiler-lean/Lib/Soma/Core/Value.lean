@@ -64,8 +64,6 @@ inductive Term where
   | app (fn : Term) (args : List Term)
   /-- Lambda abstraction -/
   | lam (names : List String) (body : Term)
-  /-- Let binding -/
-  | let_ (name : String) (value : Term) (body : Term)
   /-- If-then-else -/
   | if_ (cond : Term) (then_ : Term) (else_ : Term)
   /-- Pair construction -/

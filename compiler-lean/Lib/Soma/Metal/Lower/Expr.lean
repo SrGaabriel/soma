@@ -198,13 +198,6 @@ mutual
     | .lambda params body span =>
       lowerLambda localEnv params.toList body span
 
-    | .let_ name _ value body span =>
-      let value' ← lowerExpr localEnv value
-      let bindingId ← LowerM.freshPatternVarId name.value
-      let localEnv' := localEnv.extend bindingId name.value
-      let body' ← lowerExpr localEnv' body
-      pure (.let_ bindingId name.value value' body' () span)
-
     | .if_ cond then_ else_ span =>
       let cond' ← lowerExpr localEnv cond
       let then' ← lowerExpr localEnv then_

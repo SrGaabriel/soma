@@ -77,12 +77,6 @@ partial def ppExpr [PpAnnotation α] (cfg : Config) (indent : Nat) : Expr α sco
     let argsStr := ppExprList cfg indent args
     let callStr := if argsStr.isEmpty then fnStr else s!"{fnStr}({", ".intercalate argsStr})"
     callStr ++ PpAnnotation.ppAnnotation cfg info
-  | .let_ _ name value body info _ =>
-    let ind := mkIndent indent
-    let nextInd := indent + cfg.indent
-    let valueStr := ppExpr cfg nextInd value
-    let bodyStr := ppExpr cfg indent body
-    s!"let {name}{PpAnnotation.ppAnnotation cfg info} = {valueStr}\n{ind}{bodyStr}"
   | .lam params body info _ =>
     let paramsStr := ppParamList cfg params
     let bodyStr := ppExpr cfg (indent + cfg.indent) body

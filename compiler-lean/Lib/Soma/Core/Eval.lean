@@ -119,7 +119,6 @@ def exprToTerm {scope : Scope} (e : Expr α scope) : Term :=
     .var idx v.original
   | .lit l _ => .lit l
   | .call fn args _ _ => .app (exprToTerm fn) (exprListToTerms args)
-  | .let_ _ name value body _ _ => .let_ name (exprToTerm value) (exprToTerm body)
   | .lam params body _ _ => .lam (params.toList.map (·.2.1)) (exprToTerm body)
   | .if_ cond then_ else_ _ _ => .if_ (exprToTerm cond) (exprToTerm then_) (exprToTerm else_)
   | .pair fst snd _ _ => .pair (exprToTerm fst) (exprToTerm snd)
@@ -206,11 +205,6 @@ partial def evalTerm (ctx : EvalCtx) (t : Term) : Value :=
     | name :: rest =>
       let innerBody := if rest.isEmpty then body else .lam rest body
       .vLam .omega .explicit name .type0 (Closure.mkWithBody name ctx.env innerBody)
-
-  | .let_ name value body =>
-    let valV := evalTerm ctx value
-    let ctx' := ctx.extendEnv name valV
-    evalTerm ctx' body
 
   | .if_ cond then_ else_ =>
     match evalTerm ctx cond with
@@ -371,12 +365,6 @@ partial def eval (ctx : EvalCtx) : {scope : Scope} → Expr Unit scope → Value
   | _, .call fn args _ _ =>
     let fnVal := eval ctx fn
     evalArgs ctx args |>.foldl (fun acc arg => vApp acc arg ctx) fnVal
-
-  -- Let binding
-  | _, .let_ _ name value body _ _ =>
-    let valV := eval ctx value
-    let ctx' := ctx.extendEnv name valV
-    eval ctx' body
 
   -- Lambda
   | _, .lam params body _ _ =>

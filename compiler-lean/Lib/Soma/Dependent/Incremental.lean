@@ -394,42 +394,41 @@ private def exprTag : Nat → UInt64
   | 0 => 0x1000  -- var
   | 1 => 0x1001  -- lit
   | 2 => 0x1002  -- call
-  | 3 => 0x1003  -- let_
-  | 4 => 0x1004  -- lam
-  | 5 => 0x1005  -- closure
-  | 6 => 0x1006  -- construct
-  | 7 => 0x1007  -- tuple
-  | 8 => 0x1008  -- record
-  | 9 => 0x1009  -- recordUpdate
-  | 10 => 0x100A -- inject
-  | 11 => 0x100B -- array
-  | 12 => 0x100C -- if_
-  | 13 => 0x100D -- case
-  | 14 => 0x100E -- fieldAccess
-  | 15 => 0x100F -- global
-  | 16 => 0x1010 -- panic
-  | 17 => 0x1011 -- proj
-  | 18 => 0x1012 -- typeApp
-  | 19 => 0x1013 -- type
-  | 20 => 0x1014 -- pi
-  | 21 => 0x1015 -- sigma
-  | 22 => 0x1016 -- pair
-  | 23 => 0x1017 -- fst
-  | 24 => 0x1018 -- snd
-  | 25 => 0x1019 -- primTy
-  | 26 => 0x101A -- higherPrimTy
-  | 27 => 0x101B -- rowEmpty
-  | 28 => 0x101C -- rowExtend
-  | 29 => 0x101D -- recordTy
-  | 30 => 0x101E -- variantTy
-  | 31 => 0x101F -- labelLit
-  | 32 => 0x1020 -- dataTy
-  | 33 => 0x1021 -- ann
-  | 34 => 0x1022 -- hole
-  | 35 => 0x1023 -- mvar
-  | 36 => 0x1024 -- eq
-  | 37 => 0x1025 -- refl
-  | 38 => 0x1026 -- transport
+  | 3 => 0x1004  -- lam
+  | 4 => 0x1005  -- closure
+  | 5 => 0x1006  -- construct
+  | 6 => 0x1007  -- tuple
+  | 7 => 0x1008  -- record
+  | 8 => 0x1009  -- recordUpdate
+  | 9 => 0x100A  -- inject
+  | 10 => 0x100B -- array
+  | 11 => 0x100C -- if_
+  | 12 => 0x100D -- case
+  | 13 => 0x100E -- fieldAccess
+  | 14 => 0x100F -- global
+  | 15 => 0x1010 -- panic
+  | 16 => 0x1011 -- proj
+  | 17 => 0x1012 -- typeApp
+  | 18 => 0x1013 -- type
+  | 19 => 0x1014 -- pi
+  | 20 => 0x1015 -- sigma
+  | 21 => 0x1016 -- pair
+  | 22 => 0x1017 -- fst
+  | 23 => 0x1018 -- snd
+  | 24 => 0x1019 -- primTy
+  | 25 => 0x101A -- higherPrimTy
+  | 26 => 0x101B -- rowEmpty
+  | 27 => 0x101C -- rowExtend
+  | 28 => 0x101D -- recordTy
+  | 29 => 0x101E -- variantTy
+  | 30 => 0x101F -- labelLit
+  | 31 => 0x1020 -- dataTy
+  | 32 => 0x1021 -- ann
+  | 33 => 0x1022 -- hole
+  | 34 => 0x1023 -- mvar
+  | 35 => 0x1024 -- eq
+  | 36 => 0x1025 -- refl
+  | 37 => 0x1026 -- transport
   | _ => 0x1FFF
 
 /-- Hash a literal -/
@@ -541,57 +540,55 @@ partial def hashExpr (e : Expr α scope) : UInt64 :=
   | .var v _ _ => combineHash (exprTag 0) (hash v.binding)
   | .lit l _ => combineHash (exprTag 1) (hashLiteral l)
   | .call fn args _ _ => combineHashes #[exprTag 2, hashExpr fn, hashExprList args]
-  | .let_ _ name value body _ _ =>
-    combineHashes #[exprTag 3, hashString name, hashExpr value, hashExpr body]
   | .lam params body _ _ =>
-    combineHashes #[exprTag 4, hashParamList params, hashExpr body]
+    combineHashes #[exprTag 3, hashParamList params, hashExpr body]
   | .closure name captures _ _ =>
-    combineHashes #[exprTag 5, hashString name.display, hashCaptureList captures]
+    combineHashes #[exprTag 4, hashString name.display, hashCaptureList captures]
   | .construct name tag args _ _ =>
-    combineHashes #[exprTag 6, hashString name.display, hash tag, hashExprList args]
-  | .tuple elems _ _ => combineHash (exprTag 7) (hashExprList elems)
-  | .record fields _ _ => combineHash (exprTag 8) (hashRecordFieldList fields)
+    combineHashes #[exprTag 5, hashString name.display, hash tag, hashExprList args]
+  | .tuple elems _ _ => combineHash (exprTag 6) (hashExprList elems)
+  | .record fields _ _ => combineHash (exprTag 7) (hashRecordFieldList fields)
   | .recordUpdate base updates _ _ =>
-    combineHashes #[exprTag 9, hashExpr base, hashRecordFieldList updates]
+    combineHashes #[exprTag 8, hashExpr base, hashRecordFieldList updates]
   | .inject label args _ _ =>
-    combineHashes #[exprTag 10, hashString label, hashExprList args]
-  | .array elems _ _ => combineHash (exprTag 11) (hashExprList elems)
+    combineHashes #[exprTag 9, hashString label, hashExprList args]
+  | .array elems _ _ => combineHash (exprTag 10) (hashExprList elems)
   | .if_ cond then_ else_ _ _ =>
-    combineHashes #[exprTag 12, hashExpr cond, hashExpr then_, hashExpr else_]
+    combineHashes #[exprTag 11, hashExpr cond, hashExpr then_, hashExpr else_]
   | .case scrutinees arms _ _ =>
-    combineHashes #[exprTag 13, hashExprList scrutinees, hashArmList arms]
+    combineHashes #[exprTag 12, hashExprList scrutinees, hashArmList arms]
   | .fieldAccess expr fieldName fieldIndex _ _ =>
-    combineHashes #[exprTag 14, hashExpr expr, hashString fieldName, hash fieldIndex]
-  | .global name _ _ => combineHash (exprTag 15) (hashString name.display)
-  | .panic msg _ _ => combineHash (exprTag 16) (hashString msg)
+    combineHashes #[exprTag 13, hashExpr expr, hashString fieldName, hash fieldIndex]
+  | .global name _ _ => combineHash (exprTag 14) (hashString name.display)
+  | .panic msg _ _ => combineHash (exprTag 15) (hashString msg)
   | .proj typeName fieldName fieldIndex _ _ =>
-    combineHashes #[exprTag 17, hashString typeName.display, hashString fieldName, hash fieldIndex]
-  | .typeApp arg _ _ => combineHash (exprTag 18) (hashTypeArg arg)
-  | .type level _ => combineHash (exprTag 19) (hashLevel level)
+    combineHashes #[exprTag 16, hashString typeName.display, hashString fieldName, hash fieldIndex]
+  | .typeApp arg _ _ => combineHash (exprTag 17) (hashTypeArg arg)
+  | .type level _ => combineHash (exprTag 18) (hashLevel level)
   | .pi qty binder name domain codomain _ =>
-    combineHashes #[exprTag 20, hash qty, hash binder, hashString name, hashExpr domain, hashExpr codomain]
+    combineHashes #[exprTag 19, hash qty, hash binder, hashString name, hashExpr domain, hashExpr codomain]
   | .sigma qty name fstTy sndTy _ =>
-    combineHashes #[exprTag 21, hash qty, hashString name, hashExpr fstTy, hashExpr sndTy]
-  | .pair fst snd _ _ => combineHashes #[exprTag 22, hashExpr fst, hashExpr snd]
-  | .fst e _ _ => combineHash (exprTag 23) (hashExpr e)
-  | .snd e _ _ => combineHash (exprTag 24) (hashExpr e)
-  | .primTy p _ => combineHash (exprTag 25) (hash p)
-  | .higherPrimTy p _ => combineHash (exprTag 26) (hash p)
-  | .rowEmpty _ => exprTag 27
+    combineHashes #[exprTag 20, hash qty, hashString name, hashExpr fstTy, hashExpr sndTy]
+  | .pair fst snd _ _ => combineHashes #[exprTag 21, hashExpr fst, hashExpr snd]
+  | .fst e _ _ => combineHash (exprTag 22) (hashExpr e)
+  | .snd e _ _ => combineHash (exprTag 23) (hashExpr e)
+  | .primTy p _ => combineHash (exprTag 24) (hash p)
+  | .higherPrimTy p _ => combineHash (exprTag 25) (hash p)
+  | .rowEmpty _ => exprTag 26
   | .rowExtend label fieldTy tail _ =>
-    combineHashes #[exprTag 28, hashExpr label, hashExpr fieldTy, hashExpr tail]
-  | .recordTy row _ => combineHash (exprTag 29) (hashExpr row)
-  | .variantTy row _ => combineHash (exprTag 30) (hashExpr row)
-  | .labelLit name _ => combineHash (exprTag 31) (hashString name)
-  | .dataTy id params _ => combineHashes #[exprTag 32, hash id, hashExprList params]
-  | .ann expr ty _ _ => combineHashes #[exprTag 33, hashExpr expr, hashExpr ty]
-  | .hole id _ => combineHashes #[exprTag 34, hash id.id]
-  | .mvar id _ _ => combineHash (exprTag 35) (hash id)
+    combineHashes #[exprTag 27, hashExpr label, hashExpr fieldTy, hashExpr tail]
+  | .recordTy row _ => combineHash (exprTag 28) (hashExpr row)
+  | .variantTy row _ => combineHash (exprTag 29) (hashExpr row)
+  | .labelLit name _ => combineHash (exprTag 30) (hashString name)
+  | .dataTy id params _ => combineHashes #[exprTag 31, hash id, hashExprList params]
+  | .ann expr ty _ _ => combineHashes #[exprTag 32, hashExpr expr, hashExpr ty]
+  | .hole id _ => combineHashes #[exprTag 33, hash id.id]
+  | .mvar id _ _ => combineHash (exprTag 34) (hash id)
   | .eq tyLevel ty lhs rhs _ =>
-    combineHashes #[exprTag 36, hashLevel tyLevel, hashExpr ty, hashExpr lhs, hashExpr rhs]
-  | .refl ty x _ => combineHashes #[exprTag 37, hashExpr ty, hashExpr x]
+    combineHashes #[exprTag 35, hashLevel tyLevel, hashExpr ty, hashExpr lhs, hashExpr rhs]
+  | .refl ty x _ => combineHashes #[exprTag 36, hashExpr ty, hashExpr x]
   | .transport tyLevel ty motive lhs rhs eq body _ =>
-    combineHashes #[exprTag 38, hashLevel tyLevel, hashExpr ty, hashExpr motive,
+    combineHashes #[exprTag 37, hashLevel tyLevel, hashExpr ty, hashExpr motive,
                     hashExpr lhs, hashExpr rhs, hashExpr eq, hashExpr body]
 
 /-- Hash an expression list -/

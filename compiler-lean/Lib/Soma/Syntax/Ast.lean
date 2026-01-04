@@ -367,8 +367,6 @@ inductive Expr where
   | infix (op : OpName) (left : Expr) (right : Expr) (span : Span)
   /-- Lambda expression: \x y -> body -/
   | lambda (params : Array (Name × Option TypeExpr)) (body : Expr) (span : Span)
-  /-- Let binding: let x = e1 in e2 -/
-  | let_ (name : Name) (type_ : Option TypeExpr) (value : Expr) (body : Expr) (span : Span)
   /-- If expression: if cond then e1 else e2 -/
   | if_ (cond : Expr) (then_ : Expr) (else_ : Expr) (span : Span)
   /-- Case expression: case e of | pat => body ... -/
@@ -425,7 +423,6 @@ def span : Expr → Span
   | .app _ _ s => s
   | .infix _ _ _ s => s
   | .lambda _ _ s => s
-  | .let_ _ _ _ _ s => s
   | .if_ _ _ _ s => s
   | .case _ _ s => s
   | .tuple _ s => s
@@ -693,9 +690,6 @@ partial def ppExpr : Expr → String
         | some t => s!"({n.value} :: {ppTypeExpr t})"
         | none => n.value
       s!"\\{ps |> String.intercalate " "} -> {ppExpr body}"
-  | .let_ n ty v b _ =>
-      let tyStr := match ty with | some t => s!" :: {ppTypeExpr t}" | none => ""
-      s!"let {n.value}{tyStr} = {ppExpr v} in {ppExpr b}"
   | .if_ c t e _ => s!"if {ppExpr c} then {ppExpr t} else {ppExpr e}"
   | .case scruts arms _ =>
       let scrutStr := scruts.toList.map ppExpr |> String.intercalate ", "

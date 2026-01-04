@@ -44,7 +44,6 @@ partial def collectTermVars : Term → List String
   | .var _ name => [name]
   | .app fn args => collectTermVars fn ++ args.flatMap collectTermVars
   | .lam _ body => collectTermVars body
-  | .let_ _ value body => collectTermVars value ++ collectTermVars body
   | .if_ c t e => collectTermVars c ++ collectTermVars t ++ collectTermVars e
   | .pair a b => collectTermVars a ++ collectTermVars b
   | .fst e => collectTermVars e

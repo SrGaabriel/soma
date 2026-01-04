@@ -192,9 +192,6 @@ where
 
     | .lam _ body => go body guard
 
-    | .let_ _ value body =>
-      combineGuardedness (go value guard) (go body guard)
-
     | .case scrut arms =>
       let g := go scrut guard
       arms.foldl (fun g' (_, _, armBody) => combineGuardedness g' (go armBody guard)) g

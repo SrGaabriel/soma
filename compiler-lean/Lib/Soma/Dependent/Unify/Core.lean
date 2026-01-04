@@ -173,7 +173,6 @@ where
     | .mvar id => id == m.id
     | .app fn args => occursInTerm m fn || args.any (occursInTerm m)
     | .lam _ body => occursInTerm m body
-    | .let_ _ val body => occursInTerm m val || occursInTerm m body
     | .pi _ _ _ dom cod => occursInTerm m dom || occursInTerm m cod
     | .sigma _ _ fst snd => occursInTerm m fst || occursInTerm m snd
     | .pair a b => occursInTerm m a || occursInTerm m b
@@ -265,7 +264,6 @@ where
       idx < levels.length
     | .app fn args => inScopeTerm levels fn && args.all (inScopeTerm levels)
     | .lam _ body => inScopeTerm levels body  -- lam binds new vars
-    | .let_ _ val body => inScopeTerm levels val && inScopeTerm levels body
     | .pi _ _ _ dom cod => inScopeTerm levels dom && inScopeTerm levels cod
     | .sigma _ _ fst snd => inScopeTerm levels fst && inScopeTerm levels snd
     | .pair a b => inScopeTerm levels a && inScopeTerm levels b

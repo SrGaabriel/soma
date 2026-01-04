@@ -172,11 +172,6 @@ partial def termToJson : Term → Lean.Json
       ("names", .arr (names.toArray.map Lean.Json.str)),
       ("body", termToJson body)
     ])]
-  | .let_ name value body => .mkObj [("let", .mkObj [
-      ("name", .str name),
-      ("value", termToJson value),
-      ("body", termToJson body)
-    ])]
   | .if_ cond then_ else_ => .mkObj [("if", .mkObj [
       ("cond", termToJson cond),
       ("then", termToJson then_),

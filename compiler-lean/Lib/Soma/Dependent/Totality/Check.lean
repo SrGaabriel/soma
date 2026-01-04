@@ -110,9 +110,6 @@ where
         checkTerm arg
 
     | .lam _ body => checkTerm body
-    | .let_ _ value body =>
-      checkTerm value
-      checkTerm body
 
     | .if_ cond then_ else_ =>
       checkTerm cond

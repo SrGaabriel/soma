@@ -132,13 +132,6 @@ inductive Soma.Metal.Expr (α : Type) : Scope → Type where
   | call (fn : Soma.Metal.Expr α scope) (args : Soma.Metal.ExprList α scope) (info : α) (span : Span)
       : Soma.Metal.Expr α scope
 
-  /-- Let binding: let x = value in body -/
-  | let_ (binding : BindingId) (original : String)
-         (value : Soma.Metal.Expr α scope)
-         (body : Soma.Metal.Expr α (binding :: scope))
-         (info : α) (span : Span)
-      : Soma.Metal.Expr α scope
-
   /-- Lambda expression: \params -> body -/
   | lam (params : Soma.Metal.ParamList α)
         (body : Soma.Metal.Expr α (params.bindingIds ++ scope))
@@ -406,7 +399,6 @@ partial def Soma.Metal.Expr.mapInfo (f : α → β) : Soma.Metal.Expr α scope �
   | .var v info span => .var v (f info) span
   | .lit lit span => .lit lit span
   | .call fn args info span => .call (fn.mapInfo f) (args.mapInfo f) (f info) span
-  | .let_ b orig val body info span => .let_ b orig (val.mapInfo f) (body.mapInfo f) (f info) span
   | .lam params body info span =>
       let params' := params.mapInfo f
       let body' := Soma.Metal.Expr.mapInfo f body
@@ -573,7 +565,6 @@ def span : Expr α scope → Span
   | .var _ _ s => s
   | .lit _ s => s
   | .call _ _ _ s => s
-  | .let_ _ _ _ _ _ s => s
   | .lam _ _ _ s => s
   | .closure _ _ _ s => s
   | .construct _ _ _ _ s => s
@@ -616,7 +607,6 @@ def getInfo : Expr α scope → Option α
   | .var _ i _ => some i
   | .lit _ _ => none
   | .call _ _ i _ => some i
-  | .let_ _ _ _ _ i _ => some i
   | .lam _ _ i _ => some i
   | .closure _ _ i _ => some i
   | .construct _ _ _ i _ => some i

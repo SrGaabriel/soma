@@ -239,13 +239,6 @@ partial def termFromJson (j : Lean.Json) : Except String Term := do
       let bodyJ ← lamJ.getObjVal? "body"
       let body ← termFromJson bodyJ
       pure (.lam names body)
-    else if let some letJ := obj.get? "let" then
-      let name ← letJ.getObjValAs? String "name"
-      let valueJ ← letJ.getObjVal? "value"
-      let value ← termFromJson valueJ
-      let bodyJ ← letJ.getObjVal? "body"
-      let body ← termFromJson bodyJ
-      pure (.let_ name value body)
     else if let some ifJ := obj.get? "if" then
       let condJ ← ifJ.getObjVal? "cond"
       let cond ← termFromJson condJ

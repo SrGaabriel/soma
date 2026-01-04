@@ -278,7 +278,6 @@ def exprKind : Expr α scope → String
   | .sigma _ name _ _ _ => s!"Σ({name})"
   | .lam params _ _ _ => s!"λ({params.length} params)"
   | .call _ args _ _ => s!"call({args.length} args)"
-  | .let_ _ name _ _ _ _ => s!"let({name})"
   | .pair _ _ _ _ => "pair"
   | .fst _ _ _ => "fst"
   | .snd _ _ _ => "snd"
@@ -476,14 +475,6 @@ where
     | .call fn args () span => do
       let (fnTy, fnExpr) ← infer fn
       inferApp fnTy fnExpr args span
-
-    -- Let binding
-    | .let_ binding original value body () span => do
-      let (valTy, valExpr) ← infer value
-      -- We use the value's type for the binding, with unrestricted quantity
-      let (bodyTy, bodyExpr) ← TCM.withBinding original valTy .omega .explicit span do
-        infer body
-      return (bodyTy, .let_ binding original valExpr bodyExpr bodyTy span)
 
     -- Pairs: can sometimes infer, but usually need annotation
     | .pair fst snd () span => do
@@ -815,13 +806,6 @@ where
       let sndTy ← applyClosure sndClos fstTy'
       let sndExpr ← check snd sndTy
       return .pair fstExpr sndExpr expected' span
-
-    -- Let: infer value, check body
-    | .let_ binding original value body () span, _ => do
-      let (valTy, valExpr) ← infer value
-      let bodyExpr ← TCM.withBinding original valTy .omega .explicit span do
-        check body expected'
-      return .let_ binding original valExpr bodyExpr expected' span
 
     -- If-then-else: check both branches against expected
     | .if_ cond then_ else_ () span, _ => do
