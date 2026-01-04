@@ -357,7 +357,7 @@ def assertConvert (v1 v2 : Value) (purpose : CheckPurpose) : TCM Unit := do
   let eq ← convert v1 v2
   if !eq then
     let span ← TCM.getSpan
-    TCM.throw (.typeMismatch v2 v1 purpose span span)
+    TCM.throw (.typeMismatch v2 v1 purpose span span #[])
 
 /-- Check conversion and return the result as an Option -/
 def tryConvert (v1 v2 : Value) : TCM (Option Unit) := do

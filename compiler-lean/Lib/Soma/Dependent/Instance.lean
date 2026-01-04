@@ -385,11 +385,11 @@ def solvePendingInstancesOrFail : TCM Unit := do
   for failure in failures do
     match failure.reason with
     | "cycle in instance resolution" =>
-      TCM.addError (.instanceCycle failure.classId failure.span)
+      TCM.addError (.instanceCycle failure.classId failure.span #[])
     | "instance search depth exceeded" =>
-      TCM.addError (.instanceDepthExceeded failure.classId failure.span)
+      TCM.addError (.instanceDepthExceeded failure.classId failure.span #[])
     | _ =>
-      TCM.addError (.noInstance failure.classId failure.args failure.span)
+      TCM.addError (.noInstance failure.classId failure.args failure.span #[] #[])
 
 /-- Create an empty closure for non-dependent types -/
 private def mkSimpleClosure (name : String) : Closure :=

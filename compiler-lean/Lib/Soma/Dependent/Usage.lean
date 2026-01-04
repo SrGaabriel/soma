@@ -82,7 +82,7 @@ def checkNotErased (name : String) (useSpan : Span) : TCM Unit := do
   | some entry =>
     if entry.qty == .zero && !ctx.inErased then
       -- Using an erased variable in non-erased context
-      TCM.throw (.erasedUsedAtRuntime name useSpan)
+      TCM.throw (.erasedUsedAtRuntime name useSpan none)
   | none => pure ()
 
 /-- Record usage of a variable with proper erased context checking -/

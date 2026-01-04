@@ -72,7 +72,7 @@ def checkDataTypePositivity (typeDef : Metal.UntypedTypeDef) (ctx : TCContext) (
     match Totality.checkDataTypePositivity typeId ctorTypes Span.uninhabited with
     | .ok => #[]
     | .violated reason violationSpan =>
-      #[TCError.positivityViolation typeName reason violationSpan]
+      #[TCError.positivityViolation typeName reason violationSpan none]
 
   | .struct _ _ _ _ =>
     -- Structs are always positive (they're just records)

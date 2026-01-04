@@ -270,7 +270,7 @@ def solveLevels : TCM Unit := do
   | .error _ =>
     -- Create a unification failure for level mismatch
     let span ← TCM.getSpan
-    TCM.addError (.unificationFailed (.levelMismatch .zero .one) .general span)
+    TCM.addError (.unificationFailed (.levelMismatch .zero .one) .general span #[] #[])
 
 /-- Apply level solutions to a level -/
 def solveLevelVars (l : Level) : TCM Level := do
@@ -355,7 +355,7 @@ def assertType (v : Value) : TCM Level := do
   | .vNeutral (.vType l) _ => return l
   | _ =>
     let span ← TCM.getSpan
-    TCM.throw (.expectedType v' span)
+    TCM.throw (.expectedType v' span none)
 
 /-- Create the type of a Pi type given domain and codomain levels -/
 def piTypeLevel (domLevel codLevel : Level) : Level :=

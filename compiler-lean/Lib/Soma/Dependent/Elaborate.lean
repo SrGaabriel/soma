@@ -266,7 +266,7 @@ def elaborateKind (kind : KindExpr) : TCM Value := do
       -- Rows are type-level constructs
       return Value.vType Level.zero  -- Row : Type₀
     | other =>
-      TCM.throw (.cannotInfer s!"unknown kind '{other}'" name.span)
+      TCM.throw (.cannotInfer s!"unknown kind '{other}'" name.span none)
   | .arrow from_ to _ =>
     let fromVal ← elaborateKind from_
     let toVal ← elaborateKind to
@@ -349,7 +349,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- Stuck application
       return Value.vNeutral ty (Neutral.nApp neu argVal)
     | _ =>
-      TCM.throw (.cannotInfer s!"cannot apply non-function type" span)
+      TCM.throw (.cannotInfer s!"cannot apply non-function type" span none)
 
   -- Arrow type: A -> B (non-dependent function)
   | .arrow from_ to _ =>

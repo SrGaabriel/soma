@@ -201,7 +201,7 @@ def verifyRecursiveCalls (fnInfo : FunctionInfo) : TermM Bool := do
     | .lex _ => pure ()
     | .notFound reason =>
       allOk := false
-      TermM.addError (.terminationCheckFailed fnInfo.name reason call.callSpan)
+      TermM.addError (.terminationCheckFailed fnInfo.name reason call.callSpan #[] #[])
 
   return allOk
 
@@ -248,7 +248,7 @@ def checkMutualTermination (functions : Array FunctionInfo) (bodies : Array Term
       { callSpan := row.span, callee := dummyName, argNames := #[], decrease := .arg 0 reason }
     { status := .isTotal, errors := #[], recursiveCalls := calls }
   | none =>
-    let err := TCError.terminationCheckFailed dummyName "mutual recursion does not decrease" Span.uninhabited
+    let err := TCError.terminationCheckFailed dummyName "mutual recursion does not decrease" Span.uninhabited #[] #[]
     { status := .isPartial, errors := #[err], recursiveCalls := #[] }
 
 end Soma.Dependent.Totality

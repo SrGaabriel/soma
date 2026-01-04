@@ -191,7 +191,7 @@ partial def unifyNeutral (n1 n2 : Neutral) : TCM Unit := do
   | .nVar v1, .nVar v2 =>
     if v1.level != v2.level then
       let span ← TCM.getSpan
-      TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span)
+      TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span #[] #[])
 
   | .nMeta m1, .nMeta m2 =>
     if m1 != m2 then
@@ -219,12 +219,12 @@ partial def unifyNeutral (n1 n2 : Neutral) : TCM Unit := do
   | .nFieldAccess r1 f1, .nFieldAccess r2 f2 =>
     if f1 != f2 then
       let span ← TCM.getSpan
-      TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span)
+      TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span #[] #[])
     unifyNeutral r1 r2
 
   | _, _ =>
     let span ← TCM.getSpan
-    TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span)
+    TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span #[] #[])
 
 /-- Unify row types with rewriting -/
 partial def unifyRows (l1 : Value) (t1 : Value) (r1 : Value)
@@ -295,7 +295,7 @@ partial def unifyList (vs1 vs2 : List Value) : TCM Unit := do
   if vs1.length != vs2.length then
     let span ← TCM.getSpan
     TCM.throw (.unificationFailed
-      (.spineLengthMismatch vs1.length vs2.length) .general span)
+      (.spineLengthMismatch vs1.length vs2.length) .general span #[] #[])
   for (v1, v2) in vs1.zip vs2 do
     unify v1 v2
 
@@ -340,7 +340,7 @@ partial def applyToSpine (v : Value) (spine : List Value) : TCM Value := do
       applyToSpine applied rest
     | _ =>
       let span ← TCM.getSpan
-      TCM.throw (.expectedFunction v' span)
+      TCM.throw (.expectedFunction v' span none)
 
 /-- Pattern unification: solve ?m x₁...xₙ = rhs
     1. Standard Miller pattern unification
@@ -393,7 +393,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
         TCM.postpone (.unify (.vNeutral metaTy (.nMeta m)) rhs span)
       else
         let span ← TCM.getSpan
-        TCM.throw (.unificationFailed (.occursCheck m rhs) .general span)
+        TCM.throw (.unificationFailed (.occursCheck m rhs) .general span #[] #[m])
     else
       -- Scope check: ensure RHS only references variables in the spine
       if !inScope spineLevels rhs then

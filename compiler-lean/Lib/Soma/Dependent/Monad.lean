@@ -43,7 +43,25 @@ inductive Constraint where
   | levelLe (l1 l2 : Level)
   deriving Inhabited
 
-/-- A tracked constraint with its ID and the metas it references -/
+namespace Constraint
+
+/-- Get the span of a constraint -/
+def span : Constraint → Span
+  | .unify _ _ s => s
+  | .subtype _ _ s => s
+  | .levelEq _ _ => Span.uninhabited
+  | .levelLe _ _ => Span.uninhabited
+
+/-- Get a human-readable description of the constraint -/
+def describe : Constraint → String
+  | .unify v1 v2 _ => s!"unify `{v1}` with `{v2}`"
+  | .subtype v1 v2 _ => s!"`{v1}` <: `{v2}`"
+  | .levelEq l1 l2 => s!"level `{l1}` = `{l2}`"
+  | .levelLe l1 l2 => s!"level `{l1}` ≤ `{l2}`"
+
+end Constraint
+
+/-- A tracked constraint with its ID, metas, and provenance -/
 structure TrackedConstraint where
   /-- The underlying constraint -/
   constraint : Constraint
@@ -51,7 +69,21 @@ structure TrackedConstraint where
   constraintId : ConstraintId
   /-- Metas referenced by this constraint (cached for efficiency) -/
   metas : Array MetaId
+  /-- Where this constraint originated from -/
+  origin : ConstraintOrigin
+  /-- Parent constraints that led to this one (for error chain) -/
+  parentConstraints : Array ConstraintId
   deriving Inhabited
+
+namespace TrackedConstraint
+
+/-- Convert to ConstraintInfo for error reporting -/
+def toInfo (tc : TrackedConstraint) : ConstraintInfo :=
+  { origin := tc.origin
+  , description := tc.constraint.describe
+  , span := tc.constraint.span }
+
+end TrackedConstraint
 
 /-- Information about a global definition -/
 structure GlobalInfo where
@@ -336,11 +368,14 @@ def postpone (s : TCState) (c : Constraint) : TCState :=
     constraint := c
     constraintId := ⟨0⟩ -- will be assigned when properly tracked
     metas := #[]
+    origin := .unknown
+    parentConstraints := #[]
   }
   { s with postponed := s.postponed.push tc }
 
 /-- Add a postponed constraint with full dependency tracking -/
 def postponeTracked (s : TCState) (c : Constraint) (metas : Array MetaId)
+    (origin : ConstraintOrigin := .unknown) (parents : Array ConstraintId := #[])
     : ConstraintId × TCState :=
   -- Register the constraint in the dependency system
   let (cid, metas') := s.metas.registerConstraint metas
@@ -348,6 +383,8 @@ def postponeTracked (s : TCState) (c : Constraint) (metas : Array MetaId)
     constraint := c
     constraintId := cid
     metas := metas
+    origin := origin
+    parentConstraints := parents
   }
   (cid, { s with metas := metas', postponed := s.postponed.push tc })
 
@@ -695,11 +732,68 @@ def postpone (c : Constraint) : TCM Unit := do
   modifyState (·.postpone c)
 
 /-- Postpone a constraint with full dependency tracking -/
-def postponeTracked (c : Constraint) (metas : Array MetaId) : TCM ConstraintId := do
+def postponeTracked (c : Constraint) (metas : Array MetaId)
+    (origin : ConstraintOrigin := .unknown) (parents : Array ConstraintId := #[])
+    : TCM ConstraintId := do
   let state ← getState
-  let (cid, state') := state.postponeTracked c metas
+  let (cid, state') := state.postponeTracked c metas origin parents
   set state'
   return cid
+
+/-- Postpone a constraint with origin derived from current context -/
+def postponeWithOrigin (c : Constraint) (metas : Array MetaId)
+    (origin : ConstraintOrigin) : TCM ConstraintId := do
+  postponeTracked c metas origin #[]
+
+/-- Get the constraint chain leading to a constraint (for error reporting) -/
+def getConstraintChain (cid : ConstraintId) : TCM (Array ConstraintInfo) := do
+  let state ← getState
+  let mut chain : Array ConstraintInfo := #[]
+  let mut visited : Std.HashSet Nat := {}
+  let mut queue : Array ConstraintId := #[cid]
+
+  while h : queue.size > 0 do
+    let current := queue[0]'h
+    queue := queue.extract 1 queue.size
+
+    if visited.contains current.id then
+      continue
+    visited := visited.insert current.id
+
+    match state.getConstraint current with
+    | some tc =>
+      chain := chain.push tc.toInfo
+      for parent in tc.parentConstraints do
+        if !visited.contains parent.id then
+          queue := queue.push parent
+    | none => pure ()
+
+  return chain
+
+/-- Build constraint info for all constraints involving a metavariable -/
+def getMetaConstraintInfo (mid : MetaId) : TCM (Array MetaConstraintInfo) := do
+  let state ← getState
+  let mut infos : Array MetaConstraintInfo := #[]
+
+  for tc in state.postponed do
+    if tc.metas.contains mid then
+      -- Check if this constraint is blocked
+      let isBlocked ← do
+        let mut blocked := false
+        for m in tc.metas do
+          let solved ← isMetaSolved m
+          if !solved && m != mid then
+            blocked := true
+            break
+        pure blocked
+
+      infos := infos.push {
+        description := tc.constraint.describe
+        origin := tc.origin
+        isBlocked := isBlocked
+      }
+
+  return infos
 
 /-- Get all postponed constraints (returns TrackedConstraints) -/
 def getPostponedTracked : TCM (Array TrackedConstraint) := do

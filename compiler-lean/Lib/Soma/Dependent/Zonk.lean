@@ -648,9 +648,9 @@ partial def collectUnsolvedMetas (v : Value) (span : Span) : TCM Unit := do
     match ← TCM.lookupMeta m with
     | some info =>
       if info.solution.isNone then
-        TCM.addError (.unsolvedMeta m info.type span)
+        TCM.addError (.unsolvedMeta m info.type span #[] none)
     | none =>
-      TCM.addError (.unsolvedMeta m ty span)
+      TCM.addError (.unsolvedMeta m ty span #[] none)
   | .vPi _ _ _ dom _ => collectUnsolvedMetas dom span
   | .vLam _ _ _ dom _ => collectUnsolvedMetas dom span
   | .vSigma _ _ fst _ => collectUnsolvedMetas fst span
@@ -697,7 +697,7 @@ partial def collectUnsolvedMetasNeutral (n : Neutral) (span : Span) : TCM Unit :
     match ← TCM.lookupMeta m with
     | some info =>
       if info.solution.isNone then
-        TCM.addError (.unsolvedMeta m info.type span)
+        TCM.addError (.unsolvedMeta m info.type span #[] none)
     | none => pure ()
   | .nApp fn arg =>
     collectUnsolvedMetasNeutral fn span

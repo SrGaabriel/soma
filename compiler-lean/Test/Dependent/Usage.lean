@@ -261,7 +261,7 @@ def testErasedAtRuntime : IO TestResult := do
   | .ok _ => return .failed "Should have failed for erased var at runtime"
   | .error e =>
     match e with
-    | .erasedUsedAtRuntime name _ =>
+    | .erasedUsedAtRuntime name _ _ =>
       if name == "x" then return .passed
       else return .failed s!"Wrong variable: {name}"
     | _ => return .failed s!"Wrong error type: {e}"
@@ -383,7 +383,7 @@ def testUseVarCheckedErased : IO TestResult := do
     useVarChecked "x" testSpan
   match action.run ctx' with
   | .ok _ => return .failed "Should have failed"
-  | .error (.erasedUsedAtRuntime "x" _) => return .passed
+  | .error (.erasedUsedAtRuntime "x" _ _) => return .passed
   | .error e => return .failed s!"Wrong error: {e}"
 
 /-- Test: useVarChecked in erased context allows erased vars -/

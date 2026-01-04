@@ -9,6 +9,7 @@
   3. **Efficient data structures**: HashMap for O(1) constraint lookup, priority queue for scheduling
   4. **Bounded iteration**: Fuel-based limits to prevent infinite loops
   5. **Error recovery**: Collect errors but continue solving other constraints
+  6. **Constraint provenance**: Track origin and parent constraints for better error messages
 
   ## Architecture
 
@@ -17,6 +18,7 @@
   - Meta → constraint dependency mapping
   - Priority queue for scheduling (by complexity)
   - Blocked constraints waiting on specific metas
+  - Constraint provenance for error chain reconstruction
 
   ## Algorithm
 
@@ -26,7 +28,7 @@
      b. Try to solve it
      c. If solved: remove and wake dependents
      d. If blocked: move to blocked set
-     e. If failed: record error and remove
+     e. If failed: compute minimal unsatisfiable set, record error with chain, and remove
   3. Return remaining unsolved constraints
 -/
 
@@ -39,7 +41,7 @@ import Std.Data.HashSet
 
 namespace Soma.Dependent.Unify
 
-open Soma.Core (Value MetaId)
+open Soma.Core (Value MetaId ConstraintId)
 open Soma.Syntax (Span)
 open Std (HashMap HashSet)
 
@@ -212,6 +214,81 @@ def getConstraintsFor (g : ConstraintGraph) (mid : MetaId) : Array TrackedConstr
     | none => acc
     | some tc => acc.push tc
 
+/-- Get the constraint chain (ancestors) for a constraint.
+    Uses fuel to ensure termination. -/
+def getConstraintChain (g : ConstraintGraph) (tc : TrackedConstraint) : Array ConstraintInfo :=
+  -- Start with current constraint's info
+  let chain0 := #[tc.toInfo]
+  -- BFS through parent constraints with fuel = max constraints
+  let fuel := g.constraints.size + 1
+  go fuel chain0 {} tc.parentConstraints.toList
+where
+  go (fuel : Nat) (chain : Array ConstraintInfo) (visited : HashSet Nat)
+      (queue : List ConstraintId) : Array ConstraintInfo :=
+    match fuel with
+    | 0 => chain  -- Out of fuel, return what we have
+    | fuel' + 1 =>
+      match queue with
+      | [] => chain
+      | current :: rest =>
+        if visited.contains current.id then
+          go fuel' chain visited rest
+        else
+          let visited' := visited.insert current.id
+          match g.constraints.get? current.id with
+          | some parentTc =>
+            let chain' := chain.push parentTc.toInfo
+            let newParents := parentTc.parentConstraints.toList.filter
+              fun gp => !visited'.contains gp.id
+            go fuel' chain' visited' (rest ++ newParents)
+          | none =>
+            go fuel' chain visited' rest
+
+/-- Compute the minimal unsatisfiable constraint set for a failed constraint.
+    This walks the dependency graph to find which constraints contributed to the failure. -/
+def computeMinimalUnsatisfiableSet (g : ConstraintGraph) (failedTc : TrackedConstraint)
+    : TCM (Array ConstraintInfo × Array MetaId) := do
+  let mut relevantConstraints : Array ConstraintInfo := #[]
+  let mut relevantMetas : Array MetaId := #[]
+  let mut visited : HashSet Nat := {}
+
+  -- Start with the failed constraint
+  relevantConstraints := relevantConstraints.push failedTc.toInfo
+
+  -- Add all parent constraints
+  let mut queue := failedTc.parentConstraints
+  while h : queue.size > 0 do
+    let cid := queue[0]'h
+    queue := queue.extract 1 queue.size
+
+    if visited.contains cid.id then
+      continue
+    visited := visited.insert cid.id
+
+    match g.constraints.get? cid.id with
+    | some tc =>
+      relevantConstraints := relevantConstraints.push tc.toInfo
+      for parent in tc.parentConstraints do
+        if !visited.contains parent.id then
+          queue := queue.push parent
+    | none => pure ()
+
+  -- Collect all metas involved in the failed constraint and its ancestors
+  for mid in failedTc.metas do
+    if !relevantMetas.contains mid then
+      relevantMetas := relevantMetas.push mid
+
+  -- Also collect metas from related constraints (those sharing metas with the failed one)
+  for mid in failedTc.metas do
+    for relatedTc in g.getConstraintsFor mid do
+      if !visited.contains relatedTc.constraintId.id then
+        -- Only include if it's directly related (shares a meta)
+        for m in relatedTc.metas do
+          if failedTc.metas.contains m && !relevantMetas.contains m then
+            relevantMetas := relevantMetas.push m
+
+  return (relevantConstraints, relevantMetas)
+
 /-- Build a constraint graph from postponed constraints -/
 def fromPostponed : TCM ConstraintGraph := do
   let allConstraints ← TCM.getPostponedTracked
@@ -226,6 +303,16 @@ end ConstraintGraph
 
 /-- Default fuel for constraint solving -/
 def constraintSolverFuel : Nat := 10000
+
+/-- Enhance an error with constraint chain information -/
+def enhanceErrorWithChain (error : TCError) (chain : Array ConstraintInfo)
+    (metas : Array MetaId) : TCError :=
+  match error with
+  | .unificationFailed failure purpose span _ _ =>
+    .unificationFailed failure purpose span chain metas
+  | .typeMismatch expected actual purpose expectedSpan actualSpan _ =>
+    .typeMismatch expected actual purpose expectedSpan actualSpan chain
+  | other => other
 
 /-- Main unified constraint solver using the constraint graph -/
 def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
@@ -281,8 +368,10 @@ def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
         g := { g with queue := ConstraintGraph.bubbleUp (g.queue.push (complexity, tc.constraintId.id)) g.queue.size }
 
       | .failed error =>
-        -- Constraint failed - record error and remove
-        TCM.addError error
+        -- Constraint failed - compute minimal unsatisfiable set and record enhanced error
+        let (chain, metas) ← g.computeMinimalUnsatisfiableSet tc
+        let enhancedError := enhanceErrorWithChain error chain metas
+        TCM.addError enhancedError
         g := g.remove tc.constraintId.id
 
     -- Check for newly postponed constraints and add them

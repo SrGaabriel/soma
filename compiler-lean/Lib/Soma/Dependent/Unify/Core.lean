@@ -423,6 +423,13 @@ where
 def throwUnifyError (v1 v2 : Value) (_msg : String := "") : TCM Unit := do
   let span ← TCM.getSpan
   let failure := UnifyFailure.headMismatch v1 v2
-  TCM.throw (.unificationFailed failure .general span)
+  TCM.throw (.unificationFailed failure .general span #[] #[])
+
+/-- Throw a unification error with constraint chain context -/
+def throwUnifyErrorWithContext (v1 v2 : Value) (chain : Array ConstraintInfo)
+    (metas : Array MetaId) (purpose : CheckPurpose := .general) : TCM Unit := do
+  let span ← TCM.getSpan
+  let failure := UnifyFailure.headMismatch v1 v2
+  TCM.throw (.unificationFailed failure purpose span chain metas)
 
 end Soma.Dependent

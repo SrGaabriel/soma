@@ -43,27 +43,29 @@ def inferUniverse (ty : Value) : TCM Level := do
     TCM.freshLevel "u"
 
 /-- Ensure a value is a type (has type Type) -/
-def ensureType (v : Value) (span : Span) : TCM Level := do
+def ensureType (v : Value) (span : Span) (context : Option String := none) : TCM Level := do
   let v' ← force v
   match v' with
   | .vType l => return l
   | .vNeutral (.vType l) _ => return l
   | _ =>
-    TCM.throw (.expectedType v' span)
+    TCM.throw (.expectedType v' span context)
 
 /-- Ensure a value is a Pi type -/
-def ensurePi (v : Value) (span : Span) : TCM (Quantity × BinderInfo × String × Value × Closure) := do
+def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none)
+    : TCM (Quantity × BinderInfo × String × Value × Closure) := do
   let v' ← force v
   match v' with
   | .vPi qty binder name dom cod => return (qty, binder, name, dom, cod)
-  | _ => TCM.throw (.expectedFunction v' span)
+  | _ => TCM.throw (.expectedFunction v' span origin)
 
 /-- Ensure a value is a Sigma type -/
-def ensureSigma (v : Value) (span : Span) : TCM (Quantity × String × Value × Closure) := do
+def ensureSigma (v : Value) (span : Span) (origin : Option ConstraintOrigin := none)
+    : TCM (Quantity × String × Value × Closure) := do
   let v' ← force v
   match v' with
   | .vSigma qty name fst snd => return (qty, name, fst, snd)
-  | _ => TCM.throw (.expectedSigma v' span)
+  | _ => TCM.throw (.expectedSigma v' span origin)
 
 /-- Apply a motive value to an argument.
     Used for transport where we have P : A -> Type and want P x. -/
@@ -392,7 +394,7 @@ where
         | "Double" => return (.vType .zero, .primTy .double span)
         | "Unit" => return (.vType .zero, .primTy .unit span)
         | "Type" => return (.vType .one, .type .zero span)
-        | _ => TCM.throw (.unboundVariable v.original span)
+        | _ => TCM.throw (.unboundVariable v.original span #[])
 
     -- Literals
     | .lit (.int n) span =>
@@ -650,7 +652,7 @@ where
           -- For non-constructors, return the type directly
           -- Implicits will be inserted when used in application position
           return (info.type, .global name info.type span)
-      | none => TCM.throw (.unboundGlobal name.display span)
+      | none => TCM.throw (.unboundGlobal name.display span #[])
 
     -- Records
     | .record fields () span => do
@@ -1010,7 +1012,7 @@ partial def inferConstructorApp {scope : Scope}
 
     -- Not a Pi type but have more arguments: error
     | _, .cons _ _ =>
-      TCM.throw (.expectedFunction ty' span)
+      TCM.throw (.expectedFunction ty' span none)
 
   let (resultTy, reversedArgs) ← go ctorTy args .nil
   -- Reverse the accumulated args to get correct order
@@ -1147,7 +1149,7 @@ partial def inferCaptures {scope : Scope} (caps : Soma.Metal.CaptureList Unit sc
       let (restTys, restCaps) ← inferCaptures rest
       return (entry.type :: restTys, .cons v entry.type restCaps)
     | none =>
-      TCM.throw (.unboundVariable v.original Span.uninhabited)
+      TCM.throw (.unboundVariable v.original Span.uninhabited #[])
 
 /-- Infer arms of a case expression.
     For each arm, we:
@@ -1383,22 +1385,36 @@ partial def inferArmBodyWithBindings {extScope : Scope}
     TCM.withBinding name bindingTy .omega .explicit span do
       inferArmBodyWithBindings rest body expectedTy span
 
+/-- Collect available field names from a row -/
+partial def collectRowFields (row : Value) : TCM (Array String) := do
+  match row with
+  | .vRowEmpty => return #[]
+  | .vRowExtend (.vLabelLit name) _ tail =>
+    let tailFields ← collectRowFields tail
+    return #[name] ++ tailFields
+  | .vRowExtend _ _ tail => collectRowFields tail
+  | _ => return #[]
+
 /-- Look up field type in a record type -/
 partial def lookupFieldType (recTy : Value) (fieldName : String) (span : Span) : TCM Value := do
   let recTy' ← force recTy
   match recTy' with
-  | .vRecord row => findFieldInRow row fieldName span
+  | .vRecord row =>
+    findFieldInRow row fieldName span
   | .vRecordVal fields =>
     match fields.find? (·.1 == fieldName) with
     | some (_, ty) => return ty
-    | none => TCM.throw (.fieldNotFound fieldName recTy' span)
-  | _ => TCM.throw (.expectedRecord recTy' span)
+    | none =>
+      let available := fields.map (·.1) |>.toArray
+      TCM.throw (.fieldNotFound fieldName recTy' span available none)
+  | _ =>
+    TCM.throw (.expectedRecord recTy' span #[])
 
 /-- Find a field in a row type -/
 partial def findFieldInRow (row : Value) (fieldName : String) (span : Span) : TCM Value := do
   match row with
   | .vRowEmpty =>
-    TCM.throw (.fieldNotFound fieldName row span)
+    TCM.throw (.fieldNotFound fieldName row span #[] none)
   | .vRowExtend (.vLabelLit name) ty tail =>
     if name == fieldName then
       return ty
@@ -1406,9 +1422,10 @@ partial def findFieldInRow (row : Value) (fieldName : String) (span : Span) : TC
       findFieldInRow tail fieldName span
   | .vNeutral _ _ =>
     -- Can't search in neutral row
-    TCM.throw (.fieldNotFound fieldName row span)
+    let available ← collectRowFields row
+    TCM.throw (.fieldNotFound fieldName row span available none)
   | _ =>
-    TCM.throw (.fieldNotFound fieldName row span)
+    TCM.throw (.fieldNotFound fieldName row span #[] none)
 
 /-- Find a field in a row type by label value, supporting label polymorphism.
     This handles the case where both the row label and the lookup label can be
@@ -1422,7 +1439,7 @@ partial def findFieldInRowByLabelVal (row : Value) (lookupLabel : Value) (span :
       | .vLabelLit name => name
       | .vNeutral _ (.nVar v) => v.name
       | _ => "<label>"
-    TCM.throw (.fieldNotFound labelStr row' span)
+    TCM.throw (.fieldNotFound labelStr row' span #[] none)
   | .vRowExtend rowLabel ty tail =>
     -- Try to unify the row label with the lookup label
     -- If they unify, we found our field; otherwise, search the tail
@@ -1444,13 +1461,14 @@ partial def findFieldInRowByLabelVal (row : Value) (lookupLabel : Value) (span :
       | .vLabelLit name => name
       | .vNeutral _ (.nVar v) => v.name
       | _ => "<label>"
-    TCM.throw (.fieldNotFound labelStr row' span)
+    let available ← collectRowFields row'
+    TCM.throw (.fieldNotFound labelStr row' span available none)
   | _ =>
     let labelStr := match lookupLabel' with
       | .vLabelLit name => name
       | .vNeutral _ (.nVar v) => v.name
       | _ => "<label>"
-    TCM.throw (.fieldNotFound labelStr row' span)
+    TCM.throw (.fieldNotFound labelStr row' span #[] none)
 
 end
 

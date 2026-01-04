@@ -211,6 +211,6 @@ def checkAndReportPositivity (typeName : String) (typeId : TypeId)
   match checkDataTypePositivity typeId constructorTypes span with
   | .ok => pure ()
   | .violated reason violationSpan =>
-    TCM.throw (.positivityViolation typeName reason violationSpan)
+    TCM.throw (.positivityViolation typeName reason violationSpan none)
 
 end Soma.Dependent.Totality

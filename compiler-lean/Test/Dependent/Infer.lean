@@ -282,7 +282,7 @@ def testUnifyFailureMessage : IO TestResult := do
 
 /-- Test: TCError.toDiagnostic creates valid diagnostic -/
 def testErrorToDiagnostic : IO TestResult := do
-  let err := TCError.unboundVariable "x" testSpan
+  let err := TCError.unboundVariable "x" testSpan #[]
   let diag := err.toDiagnostic
   if diag.message.isEmpty then
     return .failed "diagnostic message should not be empty"

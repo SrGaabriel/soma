@@ -513,16 +513,22 @@ def testConstraintGraphPriority : Bool :=
       constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
       constraintId := ⟨0⟩
       metas := #[meta1]  -- 0 unsolved (meta1 is solved)
+      origin := .unknown
+      parentConstraints := #[]
     }
     let tc2 : TrackedConstraint := {
       constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
       constraintId := ⟨1⟩
       metas := #[meta2, meta3]  -- 2 unsolved
+      origin := .unknown
+      parentConstraints := #[]
     }
     let tc3 : TrackedConstraint := {
       constraint := .unify (.vPrimTy .int) (.vPrimTy .int) testSpan
       constraintId := ⟨2⟩
       metas := #[meta2]  -- 1 unsolved
+      origin := .unknown
+      parentConstraints := #[]
     }
 
     -- Insert into graph and extract in priority order
