@@ -1,3 +1,8 @@
+![GitHub branch status](https://img.shields.io/github/checks-status/SrGaabriel/soma/main?style=for-the-badge)
+![GitHub Repo stars](https://img.shields.io/github/stars/SrGaabriel/soma?style=for-the-badge)
+![GitHub License](https://img.shields.io/github/license/SrGaabriel/soma?style=for-the-badge)
+
+
 # ⚗️ soma
 
 Soma is a statically-typed, pure functional language with the [Calculus of Quantitative Constructions (CQC)](docs/CQC.md) for dependent types, explicit effect modeling, and eager evaluation semantics. It leverages Interaction Nets for optimal evaluation, enabling GC-free memory management with deterministic lifetimes, zero-cost proofs, and automatic parallelism.
