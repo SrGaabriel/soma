@@ -81,7 +81,7 @@ library
     Typing.Types
     Utils.Lists
 
-  hs-source-dirs: compiler/lib
+  hs-source-dirs: compiler-legacy/lib
   build-depends:
     async >=2.2.5,
     base >=4.19.2.0,
@@ -103,8 +103,8 @@ test-suite soma-tests
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   hs-source-dirs:
-    compiler/test
-    compiler/exe
+    compiler-legacy/test
+    compiler-legacy/exe
 
   ghc-options:
     -threaded
@@ -151,7 +151,7 @@ test-suite soma-tests
 executable somac
   import: warnings
   main-is: Main.hs
-  hs-source-dirs: compiler/exe
+  hs-source-dirs: compiler-legacy/exe
   build-depends:
     aeson >=2.2.3.0,
     ansi-terminal >=1.0,

@@ -1,6 +1,6 @@
 packages:
   .
-  souls
-  ide
+  souls-legacy
+  ide-legacy
 
 tests: True

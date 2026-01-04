@@ -4,10 +4,10 @@ version = "0.1.0"
 [[require]]
 scope = "."
 name = "somac"
-path = "./compiler-lean"
+path = "./compiler"
 
 [[require]]
 scope = "."
 name = "souls"
-path = "./souls-lean"
+path = "./souls"
 

@@ -9,7 +9,7 @@ rev = "main"
 
 [[require]]
 name = "soma"
-path = "../compiler-lean"
+path = "../compiler"
 
 [[lean_lib]]
 name = "Lsp"
