@@ -4,10 +4,11 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use crate::build::consts::{BUILD_FOLDER_NAME, SRC_FOLDER_NAME};
+use crate::build::consts::SRC_FOLDER_NAME;
 use crate::build::graph::BuildNode;
 use crate::build::resolve::DependencyResolver;
 use crate::cli::parse_manifest;
+use crate::cli::somac;
 use crate::logging::output_err;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,35 +104,11 @@ pub fn execute(path: &Path) {
                         }
                         Err(e) => {
                             all_success = false;
-                            all_outputs.push(CheckOutput {
-                                success: false,
-                                diagnostics: vec![Diagnostic {
-                                    file: node
-                                        .path
-                                        .join(SRC_FOLDER_NAME)
-                                        .to_string_lossy()
-                                        .to_string(),
-                                    range: Range {
-                                        start: Position {
-                                            line: 0,
-                                            character: 0,
-                                        },
-                                        end: Position {
-                                            line: 0,
-                                            character: 0,
-                                        },
-                                    },
-                                    severity: 1,
-                                    message: format!("Failed to check module: {}", e),
-                                    source: "haoma".to_string(),
-                                    code: None,
-                                }],
-                                module_name: Some(module_name.clone()),
-                            });
+                            all_outputs.push(make_error_output(node, &module_name, &e));
                         }
                     }
                 } else {
-                    match generate_metadata(node, &dep_files) {
+                    match somac::generate_metadata(node, &dep_files) {
                         Ok(metadata_path) => {
                             all_outputs.push(CheckOutput {
                                 success: true,
@@ -142,34 +119,11 @@ pub fn execute(path: &Path) {
                         }
                         Err(e) => {
                             all_success = false;
-                            all_outputs.push(CheckOutput {
-                                success: false,
-                                diagnostics: vec![Diagnostic {
-                                    file: node
-                                        .path
-                                        .join(SRC_FOLDER_NAME)
-                                        .to_string_lossy()
-                                        .to_string(),
-                                    range: Range {
-                                        start: Position {
-                                            line: 0,
-                                            character: 0,
-                                        },
-                                        end: Position {
-                                            line: 0,
-                                            character: 0,
-                                        },
-                                    },
-                                    severity: 1,
-                                    message: format!(
-                                        "Failed to generate metadata for dependency: {}",
-                                        e
-                                    ),
-                                    source: "haoma".to_string(),
-                                    code: None,
-                                }],
-                                module_name: Some(module_name.clone()),
-                            });
+                            all_outputs.push(make_error_output(
+                                node,
+                                &module_name,
+                                &format!("Failed to generate metadata for dependency: {}", e),
+                            ));
                         }
                     }
                 }
@@ -189,62 +143,32 @@ pub fn execute(path: &Path) {
     }
 }
 
-fn generate_metadata(
-    node: &BuildNode,
-    dependency_metadata: &HashMap<String, PathBuf>,
-) -> Result<PathBuf, String> {
-    let src_path = node
-        .path
-        .join(SRC_FOLDER_NAME)
-        .canonicalize()
-        .map_err(|e| format!("Failed to canonicalize src path: {}", e))?;
-
-    let build_folder = node.path.join(BUILD_FOLDER_NAME);
-    std::fs::create_dir_all(&build_folder)
-        .map_err(|e| format!("Failed to create build folder: {}", e))?;
-
-    let metadata_path = build_folder.join(format!("{}.meta.json", node.manifest.name));
-
-    let mut command = Command::new("somac");
-    command
-        .arg("metadata")
-        .arg(&src_path)
-        .arg("--name")
-        .arg(&node.manifest.name)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    for (dep_name, dep_path) in dependency_metadata {
-        let meta_path = dep_path.canonicalize().unwrap_or_else(|_| dep_path.clone());
-        command
-            .arg("--dep")
-            .arg(format!("{}={}", dep_name, meta_path.display()));
+fn make_error_output(node: &BuildNode, module_name: &str, message: &str) -> CheckOutput {
+    CheckOutput {
+        success: false,
+        diagnostics: vec![Diagnostic {
+            file: node
+                .path
+                .join(SRC_FOLDER_NAME)
+                .to_string_lossy()
+                .to_string(),
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
+            },
+            severity: 1,
+            message: message.to_string(),
+            source: "haoma".to_string(),
+            code: None,
+        }],
+        module_name: Some(module_name.to_string()),
     }
-
-    let output = command
-        .output()
-        .map_err(|e| format!("Failed to run somac metadata: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(format!(
-            "somac metadata failed: {}\n{}",
-            stderr.trim(),
-            stdout.trim()
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json_line = stdout
-        .lines()
-        .find(|line| line.trim().starts_with('{'))
-        .ok_or_else(|| "No JSON output from somac metadata".to_string())?;
-
-    std::fs::write(&metadata_path, json_line)
-        .map_err(|e| format!("Failed to write metadata file: {}", e))?;
-
-    Ok(metadata_path)
 }
 
 fn check_module(

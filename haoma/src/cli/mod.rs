@@ -4,6 +4,7 @@ mod clean;
 mod create;
 mod metadata;
 mod run;
+mod somac;
 
 use clap::Parser;
 use std::path::{Path, PathBuf};
@@ -50,6 +51,8 @@ pub enum Commands {
     Metadata {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        #[arg(short, long)]
+        full: bool,
     },
 }
 
@@ -74,8 +77,8 @@ pub fn execute(command: &Commands) {
         Commands::Clean { path } => {
             clean::execute(path);
         }
-        Commands::Metadata { path } => {
-            metadata::execute(path);
+        Commands::Metadata { path, full } => {
+            metadata::execute(path, *full);
         }
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Serialize;
@@ -5,6 +6,7 @@ use serde::Serialize;
 use crate::build::consts::SRC_FOLDER_NAME;
 use crate::build::resolve::DependencyResolver;
 use crate::cli::parse_manifest;
+use crate::cli::somac;
 use crate::logging::output_err;
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,9 +33,11 @@ pub struct ProjectMetadata {
     pub root_package: String,
     pub packages: Vec<PackageInfo>,
     pub modules: Vec<ModuleInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_metadata: Option<HashMap<String, String>>,
 }
 
-pub fn execute(path: &Path) {
+pub fn execute(path: &Path, full: bool) {
     let manifest = parse_manifest(path);
     let root_name = manifest.name.clone();
 
@@ -48,6 +52,7 @@ pub fn execute(path: &Path) {
                 root_package: root_name,
                 packages: vec![],
                 modules: vec![],
+                type_metadata: None,
             };
             println!("{}", serde_json::to_string(&output).unwrap());
             std::process::exit(1);
@@ -83,12 +88,38 @@ pub fn execute(path: &Path) {
     packages.sort_by(|a, b| a.name.cmp(&b.name));
     all_modules.sort_by(|a, b| a.name.cmp(&b.name));
 
+    let type_metadata = if full {
+        match somac::generate_all_metadata(&graph) {
+            Ok(metadata_paths) => Some(
+                metadata_paths
+                    .into_iter()
+                    .map(|(k, v)| (k, v.display().to_string()))
+                    .collect(),
+            ),
+            Err(e) => {
+                let output = ProjectMetadata {
+                    success: false,
+                    error: Some(format!("Failed to generate type metadata: {}", e)),
+                    root_package: root_name,
+                    packages,
+                    modules: all_modules,
+                    type_metadata: None,
+                };
+                println!("{}", serde_json::to_string(&output).unwrap());
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
     let output = ProjectMetadata {
         success: true,
         error: None,
         root_package: root_name,
         packages,
         modules: all_modules,
+        type_metadata,
     };
 
     println!("{}", serde_json::to_string(&output).unwrap());
