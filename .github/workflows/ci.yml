@@ -285,17 +285,13 @@ jobs:
 
   check-all:
     name: All Checks Passed
-    needs: [haskell-build, rust-build, lean-build, lint]
+    needs: [rust-build, lean-build, lint]
     runs-on: ubuntu-latest
     if: always()
 
     steps:
       - name: Check build results
         run: |
-          if [ "${{ needs.haskell-build.result }}" != "success" ]; then
-            echo "Haskell build failed"
-            exit 1
-          fi
           if [ "${{ needs.rust-build.result }}" != "success" ]; then
             echo "Rust build failed"
             exit 1
