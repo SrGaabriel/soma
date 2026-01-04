@@ -62,23 +62,19 @@ partial def valueToString (v : Value) : String :=
   | .vType level =>
     match level with
     | .lit 0 => "Type"
-    | .lit n => s!"Type{Level.toSubscript level}"
+    | .lit _ => s!"Type{Level.toSubscript level}"
     | _ => s!"Type{level}"
 
-  | .vPi qty binder name domain codomain =>
-    let qtyStr := match qty with
-      | .zero => "0 "
-      | .one => "1 "
-      | .omega => ""
+  | .vPi _qty binder name domain _codomain =>
     let binderStr := match binder with
       | .explicit => ""
       | .implicit => "implicit "
       | .instance_ => "instance "
       | .strictImplicit => "strict "
     let domStr := valueToString domain
-    s!"({binderStr}{qtyStr}{name} : {domStr}) -> ..."
+    s!"({binderStr}{name} : {domStr}) -> ..."
 
-  | .vLam qty binder name domain body =>
+  | .vLam _qty binder name domain _body =>
     let domStr := valueToString domain
     let binderStr := match binder with
       | .explicit => ""
@@ -90,7 +86,7 @@ partial def valueToString (v : Value) : String :=
     else
       s!"fun{binderStr}. ..."
 
-  | .vSigma qty name fst snd =>
+  | .vSigma _qty name fst _snd =>
     let fstStr := valueToString fst
     s!"({name} : {fstStr}) × ..."
 
@@ -140,7 +136,7 @@ partial def valueToString (v : Value) : String :=
       let argsStr := args.map valueToString
       s!"{name.display} {" ".intercalate argsStr}"
 
-  | .vEq _ ty lhs rhs =>
+  | .vEq _ _ty lhs rhs =>
     s!"{valueToString lhs} = {valueToString rhs}"
 
   | .vRefl _ _ => "refl"
@@ -227,15 +223,15 @@ partial def quoteClosed (v : Value) : Expr Unit [] :=
     .labelLit name quotedSpan
 
   -- For binder types, we quote the domain and create a placeholder for the body
-  | .vPi qty binder name domain _ =>
-    .pi qty binder name (quoteClosed domain) (.global (mkUserName "_") () quotedSpan) quotedSpan
+  | .vPi _qty _binder _name domain _ =>
+    .pi .omega .explicit "_" (quoteClosed domain) (.global (mkUserName "_") () quotedSpan) quotedSpan
 
-  | .vLam qty binder name domain _ =>
+  | .vLam _qty _binder name _domain _ =>
     -- Lambdas are quoted as global references since we can't easily quote the closure body
     .global (mkUserName s!"<lambda:{name}>") () quotedSpan
 
-  | .vSigma qty name fst _ =>
-    .sigma qty name (quoteClosed fst) (.global (mkUserName "_") () quotedSpan) quotedSpan
+  | .vSigma _qty name fst _ =>
+    .sigma .omega name (quoteClosed fst) (.global (mkUserName "_") () quotedSpan) quotedSpan
 
 /-- Quote a neutral term to a closed expression -/
 partial def quoteNeutralClosed (neu : Neutral) : Expr Unit [] :=

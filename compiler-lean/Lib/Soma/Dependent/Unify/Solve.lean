@@ -146,7 +146,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
       | _ => throwUnifyError v1' v2' "flex-rigid mismatch"
 
   -- Metavariable with spine on the right
-  | lhs, .vNeutral ty2 neu2 =>
+  | lhs, .vNeutral _ty2 neu2 =>
     match getMetaWithSpine neu2 with
     | some (m, spine) => solveMeta m spine lhs
     | none =>
@@ -334,7 +334,7 @@ partial def applyToSpine (v : Value) (spine : List Value) : TCM Value := do
     | .vLam _ _ _ _ body =>
       let result ← applyClosure body arg
       applyToSpine result rest
-    | .vNeutral ty neu =>
+    | .vNeutral _ty neu =>
       let resultTy ← TCM.freshMetaVal (.vType .zero)
       let applied := Value.vNeutral resultTy (.nApp neu arg)
       applyToSpine applied rest

@@ -169,8 +169,7 @@ partial def valueToTermWithDepth (v : Value) (depth : Nat) : TCM Term := do
       let term ← valueToTermWithDepth v depth
       return (n, term)
     return .record fieldTerms
-  | .vLam qty binder name dom body =>
-    let domTerm ← valueToTermWithDepth dom depth
+  | .vLam _qty _binder name dom body =>
     -- Apply the closure to get the body, then convert
     let dummyArg := Value.vNeutral dom (.nVar ⟨name, ⟨depth⟩⟩)
     let bodyVal ← Soma.Dependent.applyClosure body dummyArg

@@ -1,6 +1,7 @@
 import Soma.Core.Value
 import Soma.Dependent.Monad
 import Soma.Dependent.Error
+import Soma.Dependent.TraitElaborate
 import Soma.Metal.Module
 import Std.Data.HashMap
 import Std.Data.HashSet
@@ -8,6 +9,7 @@ import Std.Data.HashSet
 namespace Soma.Dependent.Incremental
 
 open Soma.Core (Value)
+open Soma.Dependent.TraitElaborate (InstanceMap)
 open Std (HashMap HashSet)
 
 /-- Uniquely identifies a definition within a project -/
@@ -150,6 +152,8 @@ structure IncrementalState where
   cachedGlobals : Globals := Globals.empty
   /-- Cached instance environment -/
   cachedInstanceEnv : InstanceEnv := InstanceEnv.empty
+  /-- Cached instance map (span -> instance info correlation) -/
+  cachedInstanceMap : InstanceMap := {}
   /-- External module dependencies: definition → set of (module name, symbol name) pairs -/
   externalDeps : HashMap DefId (HashSet (String × String)) := {}
   /-- Modules this module imports (for tracking what to invalidate) -/

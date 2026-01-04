@@ -80,7 +80,7 @@ def analyzeSourceFresh (filePath : String) (content : String) : CompiledModule :
 
   -- Phase 7: Dependent type checking using the shared pipeline
   -- For LSP single-file analysis, we have no dependencies (empty seed globals/instances)
-  let (globals, instanceEnv, incrState, tcErrors) :=
+  let (globals, instanceEnv, _instanceMap, incrState, tcErrors) :=
     typeCheckModule metalResult.module moduleName Globals.empty InstanceEnv.empty none
 
   -- Update incremental state with imported modules
@@ -189,7 +189,7 @@ def analyzeSourceIncremental (filePath : String) (content : String)
   let prevIncrState := oldModule.incrementalState
 
   -- Use the shared type checking pipeline with previous state for incremental checking
-  let (globals, instanceEnv, incrState, tcErrors) :=
+  let (globals, instanceEnv, _instanceMap, incrState, tcErrors) :=
     typeCheckModule metalResult.module moduleName Globals.empty InstanceEnv.empty prevIncrState
 
   -- Update incremental state with imported modules

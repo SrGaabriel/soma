@@ -119,7 +119,6 @@ partial def ppExpr [PpAnnotation α] (cfg : Config) (indent : Nat) : Expr α sco
     let elseStr := ppExpr cfg nextInd else_
     s!"if {condStr}{PpAnnotation.ppAnnotation cfg info}\n{ind}then {thenStr}\n{ind}else {elseStr}"
   | .case scruts arms info _ =>
-    let ind := mkIndent indent
     let scrutsStr := ppExprList cfg indent scruts
     let armsStr := ppArmList cfg (indent + cfg.indent) arms
     s!"case {", ".intercalate scrutsStr} of{PpAnnotation.ppAnnotation cfg info}\n{armsStr}"
@@ -208,7 +207,7 @@ partial def ppExpr [PpAnnotation α] (cfg : Config) (indent : Nat) : Expr α sco
     | none => "_"
   | .mvar id info _ =>
     s!"?m{id}{PpAnnotation.ppAnnotation cfg info}"
-  | .eq _tyLevel ty lhs rhs _ =>
+  | .eq _tyLevel _ty lhs rhs _ =>
     s!"{ppExpr cfg indent lhs} = {ppExpr cfg indent rhs}"
   | .refl _ty _x _ => "refl"
   | .transport _tyLevel _ty motive _lhs _rhs eq body _ =>

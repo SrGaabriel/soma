@@ -38,7 +38,7 @@ def typeVarCount : TypeDef → Nat
 /-- Get all constructors -/
 def constructors : TypeDef → Array Constructor
   | .algebraic _ _ cs => cs
-  | .struct n _ cn fields => #[{ name := cn, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
+  | .struct _ _ cn fields => #[{ name := cn, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
   | .record n _ fields => #[{ name := n, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
 
 end TypeDef

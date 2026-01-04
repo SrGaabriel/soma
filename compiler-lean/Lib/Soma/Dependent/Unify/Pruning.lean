@@ -490,7 +490,7 @@ def shouldDeferMeta (m : MetaId) : TCM Bool := do
     `?m spine x = body` instead, which might be a pattern. -/
 def tryEtaExpandLambda (rhs : Value) : Option (String × Value × Value) :=
   match rhs with
-  | .vLam _ _ name dom body =>
+  | .vLam _ _ name dom _body =>
     -- We can η-expand: instead of ?m = λx. body, solve ?m x = body
     -- where body is the closure applied to a fresh variable
     some (name, dom, .vNeutral dom (.nVar ⟨name, ⟨0⟩⟩))  -- Placeholder, actual application done in caller

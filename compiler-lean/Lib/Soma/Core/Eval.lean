@@ -149,11 +149,11 @@ def exprToTerm {scope : Scope} (e : Expr α scope) : Term :=
   | .panic msg _ _ => .panic msg
   | .ann e _ _ _ => exprToTerm e
   | .closure name _ _ _ => .global name
-  | .recordUpdate base updates _ _ => .panic "recordUpdate not supported in Term"
-  | .inject label args _ _ => .panic "inject not yet supported"
-  | .array elems _ _ => .panic "array not yet supported"
-  | .case scrutinees arms _ _ => .panic "case not yet converted"
-  | .tuple elems _ _ => .panic "tuple not yet converted"
+  | .recordUpdate _ _ _ _ => .panic "recordUpdate not supported in Term"
+  | .inject _ _ _ _ => .panic "inject not yet supported"
+  | .array _ _ _ => .panic "array not yet supported"
+  | .case _ _ _ _ => .panic "case not yet converted"
+  | .tuple _ _ _ => .panic "tuple not yet converted"
   | .proj _ field _ _ _ => .panic s!"proj {field}"
   | .typeApp _ _ _ => .panic "typeApp not supported"
   | .dataTy _ _ _ => .panic "dataTy not supported"
@@ -216,7 +216,7 @@ partial def evalTerm (ctx : EvalCtx) (t : Term) : Value :=
     match evalTerm ctx cond with
     | .vConstructor _ 0 _ => evalTerm ctx then_  -- True
     | .vConstructor _ 1 _ => evalTerm ctx else_  -- False
-    | condV => .vNeutral .type0 (.nVar ⟨"if", ctx.env.level⟩)  -- Stuck
+    | _ => .vNeutral .type0 (.nVar ⟨"if", ctx.env.level⟩)  -- Stuck
 
   | .pair fst snd =>
     .vPair (evalTerm ctx fst) (evalTerm ctx snd)
@@ -224,12 +224,12 @@ partial def evalTerm (ctx : EvalCtx) (t : Term) : Value :=
   | .fst e =>
     match evalTerm ctx e with
     | .vPair f _ => f
-    | v => .vNeutral .type0 (.nFst (.nVar ⟨"fst", ctx.env.level⟩))
+    | _ => .vNeutral .type0 (.nFst (.nVar ⟨"fst", ctx.env.level⟩))
 
   | .snd e =>
     match evalTerm ctx e with
     | .vPair _ s => s
-    | v => .vNeutral .type0 (.nSnd (.nVar ⟨"snd", ctx.env.level⟩))
+    | _ => .vNeutral .type0 (.nSnd (.nVar ⟨"snd", ctx.env.level⟩))
 
   | .pi qty binder name domain codomain =>
     let domVal := evalTerm ctx domain
@@ -262,21 +262,22 @@ partial def evalTerm (ctx : EvalCtx) (t : Term) : Value :=
       match fields.find? (·.1 == field) with
       | some (_, v) => v
       | none => .vNeutral .type0 (.nFieldAccess (.nVar ⟨"rec", ctx.env.level⟩) field)
-    | v => .vNeutral .type0 (.nFieldAccess (.nVar ⟨"rec", ctx.env.level⟩) field)
+    | _ => .vNeutral .type0 (.nFieldAccess (.nVar ⟨"rec", ctx.env.level⟩) field)
 
   | .construct name tag args =>
     .vConstructor name tag (args.map (evalTerm ctx))
 
   | .case scrutinee arms =>
-    -- Simplified case evaluation
     let scrut := evalTerm ctx scrutinee
     match scrut with
     | .vConstructor _ tag ctorArgs =>
       match arms.find? (fun (_, t, _) => t == tag) with
       | some (_, _, body) =>
         -- Extend environment with constructor arguments
-        -- For now, just evaluate the body
-        evalTerm ctx body
+        -- Args are bound in order: first arg gets lowest de Bruijn level,
+        -- so idx 0 in body refers to the last arg (most recently bound)
+        let ctx' := ctorArgs.foldl (fun c arg => c.extendEnv "_" arg) ctx
+        evalTerm ctx' body
       | none => .vNeutral .type0 (.nVar ⟨"case", ctx.env.level⟩)
     | _ => .vNeutral .type0 (.nVar ⟨"case", ctx.env.level⟩)
 

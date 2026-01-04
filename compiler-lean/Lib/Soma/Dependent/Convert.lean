@@ -53,12 +53,11 @@ def etaExpandLam (v : Value) (piTy : Value) : TCM Value := do
   | .vLam _ _ _ _ _ => return v  -- Already a lambda
   | _ =>
     match piTy with
-    | .vPi qty binder name domain codomain =>
+    | .vPi qty binder name domain _codomain =>
       -- η-expand: v becomes λx. v x
       -- We need to create a closure that, when applied to an argument,
       -- applies v to that argument.
       let env ← TCM.getEnv
-      let lvl ← TCM.currentLevel
       -- Create the body term: application of v to the bound variable
       -- The bound variable will be at De Bruijn index 0 in the closure body
       let bodyTerm := Term.app (Term.var 1 "_eta_fn") [Term.var 0 name]

@@ -183,7 +183,6 @@ def lexBacktickIdent : LexerM RawToken := do
 
 def lexStringLit : LexerM RawToken := do
   let start ← getOffset
-  let startLoc ← getLoc
   advance  -- skip "
   let contentStart ← getOffset
   while (← current) != '"' && (← current) != '\n' && (← current) != '\x00' do

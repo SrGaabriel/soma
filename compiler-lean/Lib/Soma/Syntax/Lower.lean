@@ -167,7 +167,7 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
       -- Already handled above, but need this case for exhaustiveness
       pure (.wildcard span)
 
-  | .node kind children _ =>
+  | .node kind _ _ =>
       match kind with
       | .patVar =>
           match firstGreenChild green with
@@ -189,7 +189,6 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
               pure (.wildcard span)
 
       | .patCon =>
-          let syntaxKids := syntaxGreenChildren green
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
           if kidsWithOffsets.isEmpty then
             lowerError "constructor pattern missing name" span
@@ -295,7 +294,7 @@ partial def lowerKindExpr (green : GreenNode) (offset : Nat) : LowerM KindExpr :
   let span ← spanFor green offset
 
   match green with
-  | .token kind text =>
+  | .token _kind text =>
       -- Atomic kind token: *, %, #
       pure (.atom ⟨text, span⟩)
 
@@ -1835,7 +1834,7 @@ def lowerModule (green : GreenNode) (offset : Nat) (moduleName : String) : Lower
   let span ← spanFor green offset
 
   match green with
-  | .node .sourceFile children _ =>
+  | .node .sourceFile _ _ =>
       let childrenOff := childrenWithOffsets green offset
       let decls ← childrenOff.filterMapM fun (c, co) => do
         match c with

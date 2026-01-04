@@ -41,7 +41,7 @@ partial def applySubst (r : Subst) (v : Value) : Option Term :=
     | none => none
   | .vLam _ _ name dom body =>
     match applySubst r dom with
-    | some domT =>
+    | some _domT =>
       match body.body with
       | some bodyT => some (.lam [name] bodyT)
       | none => some (.lam [name] (.var 0 name))

@@ -88,7 +88,7 @@ structure SourceLoc where
   byteOffset : Nat
   line : Nat      -- 1-indexed
   column : Nat    -- 1-indexed
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, Hashable
 
 instance : ToString SourceLoc where
   toString loc := s!"{loc.line}:{loc.column}"
@@ -115,7 +115,7 @@ instance : LE SourceLoc where
 structure Span where
   start : SourceLoc
   stop : SourceLoc
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, Hashable
 
 instance : ToString Span where
   toString span :=

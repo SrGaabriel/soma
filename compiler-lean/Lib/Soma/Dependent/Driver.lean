@@ -249,7 +249,7 @@ def elaborateCtorType (typeName : Metal.Name) (typeVarNames : Array String)
   return ctorType
 
 /-- Elaborate an indexed constructor type from a full signature -/
-def elaborateIndexedCtorType (typeName : Metal.Name) (typeVarNames : Array String)
+def elaborateIndexedCtorType (_typeName : Metal.Name) (_typeVarNames : Array String)
     (sigSyntax : Syntax.TypeExpr) : TCM Value := do
   -- Find ALL free type variables in the constructor signature
   -- This includes variables that may not be in the data type's parameter list
@@ -320,7 +320,7 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
   -- First pass: Register all data types (so they can be referenced by functions and constructors)
   for typeDef in module.types do
     match typeDef with
-    | .algebraic typeName typeVarNames _ =>
+    | .algebraic typeName _typeVarNames _ =>
       -- Generate a proper TypeId for this data type
       let typeUnique ← TCM.freshUnique typeName.display
       let typeId : Soma.Core.TypeId := Soma.Core.TypeId.fromUnique typeUnique
@@ -337,7 +337,7 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
         isConstructor := false
       }
       globals := globals.insert typeName.display dataTypeInfo
-    | .struct structName typeVarNames _ _ =>
+    | .struct structName _typeVarNames _ _ =>
       -- Generate a proper TypeId for this struct
       let typeUnique ← TCM.freshUnique structName.display
       let typeId : Soma.Core.TypeId := Soma.Core.TypeId.fromUnique typeUnique
@@ -479,7 +479,8 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
   return globals
 
 /-- Build the InstanceEnv from module type classes and instances -/
-def buildInstanceEnv (module : Metal.UntypedModule) (_moduleName : String) : TCM InstanceEnv := do
+def buildInstanceEnv (module : Metal.UntypedModule) (_moduleName : String)
+    : TCM (InstanceEnv × TraitElaborate.InstanceMap) := do
   TraitElaborate.buildInstanceEnvFromModule module
 
 /-- Build the InstanceEnv incrementally, reusing cached info for unchanged definitions -/
@@ -487,9 +488,10 @@ def buildInstanceEnvIncremental
     (module : Metal.UntypedModule)
     (_moduleName : String)
     (prevEnv : InstanceEnv)
+    (prevInstanceMap : TraitElaborate.InstanceMap)
     (dirtyNames : Std.HashSet String)
-    : TCM InstanceEnv := do
-  TraitElaborate.buildInstanceEnvFromModuleIncremental module prevEnv dirtyNames
+    : TCM (InstanceEnv × TraitElaborate.InstanceMap) := do
+  TraitElaborate.buildInstanceEnvFromModuleIncremental module prevEnv prevInstanceMap dirtyNames
 
 /-- Register or reuse a data type definition, returns updated globals -/
 private def registerDataType

@@ -20,6 +20,7 @@ open Soma.Core
 open Soma.Project
 open Soma (UniqueSupply)
 open Soma.Dependent (Globals GlobalInfo TCContext TCState InstanceEnv InstanceInfo ClassInfo TCM)
+open Soma.Dependent.TraitElaborate (InstanceMap)
 open Soma.Dependent.Incremental (DefId DefCache DefKind DepGraph IncrementalState hashString
   hashFunction hashModuleDefinitions)
 
@@ -168,6 +169,8 @@ structure CheckedModule where
   globals : Globals
   /-- Instance environment from type checking -/
   instanceEnv : InstanceEnv
+  /-- Map from instance source spans to elaborated InstanceInfo -/
+  instanceMap : InstanceMap
   /-- Public symbols exported by this module (symbol -> type as Value) -/
   publicSymbols : SymbolEnv
   /-- Public type class instances exported by this module -/
@@ -396,6 +399,8 @@ structure GlobalsAndInstancesResult where
   globals : Globals
   /-- The built instance environment -/
   instanceEnv : InstanceEnv
+  /-- Map from instance source spans to elaborated InstanceInfo -/
+  instanceMap : InstanceMap
   /-- Final TC state -/
   finalState : TCState
   /-- Errors encountered -/
@@ -412,6 +417,7 @@ structure GlobalsAndInstancesResult where
     - `seedInstanceEnv`: Instance env inherited from dependencies
     - `prevGlobals`: Previous globals for incremental reuse (optional)
     - `prevInstanceEnv`: Previous instance env for incremental reuse (optional)
+    - `prevInstanceMap`: Previous instance map for incremental reuse (optional)
     - `dirtyNames`: If Some, only rebuild dirty definitions; if None, rebuild all -/
 def buildGlobalsAndInstances
     (metalModule : Metal.UntypedModule)
@@ -420,6 +426,7 @@ def buildGlobalsAndInstances
     (seedInstanceEnv : InstanceEnv)
     (prevGlobals : Option Globals := none)
     (prevInstanceEnv : Option InstanceEnv := none)
+    (prevInstanceMap : Option InstanceMap := none)
     (dirtyNames : Option (HashSet String) := none)
     : GlobalsAndInstancesResult := Id.run do
   let baseCtx := TCContext.withDefaultInstances
@@ -446,15 +453,15 @@ def buildGlobalsAndInstances
   let ctx := { baseCtx with globals := fullGlobals, instanceEnv := seedInstanceEnv }
 
   -- Build instance environment
-  let instanceEnvResult := match dirtyNames, prevInstanceEnv with
-    | some dirty, some prev =>
-      (Soma.Dependent.Driver.buildInstanceEnvIncremental metalModule moduleName prev dirty).run ctx state'
-    | _, _ =>
+  let instanceEnvResult := match dirtyNames, prevInstanceEnv, prevInstanceMap with
+    | some dirty, some prev, some prevMap =>
+      (Soma.Dependent.Driver.buildInstanceEnvIncremental metalModule moduleName prev prevMap dirty).run ctx state'
+    | _, _, _ =>
       (Soma.Dependent.Driver.buildInstanceEnv metalModule moduleName).run ctx state'
 
-  let (moduleInstanceEnv, state'', instanceErrors) := match instanceEnvResult with
-    | .error e => (InstanceEnv.empty, state', #[e])
-    | .ok (instEnv, st) => (instEnv, st, st.errors)
+  let (moduleInstanceEnv, instanceMap, state'', instanceErrors) := match instanceEnvResult with
+    | .error e => (InstanceEnv.empty, {}, state', #[e])
+    | .ok ((instEnv, instMap), st) => (instEnv, instMap, st, st.errors)
 
   allErrors := allErrors ++ instanceErrors
 
@@ -463,6 +470,7 @@ def buildGlobalsAndInstances
   return {
     globals := fullGlobals
     instanceEnv := fullInstanceEnv
+    instanceMap := instanceMap
     finalState := state''
     errors := allErrors
   }
@@ -483,7 +491,7 @@ def typeCheckModule
     (seedGlobals : Globals)
     (seedInstanceEnv : InstanceEnv)
     (prevIncrState : Option IncrementalState := none)
-    : Globals × InstanceEnv × IncrementalState × Array Soma.Dependent.TCError := Id.run do
+    : Globals × InstanceEnv × InstanceMap × IncrementalState × Array Soma.Dependent.TCError := Id.run do
   -- Determine dirty names if we have previous state
   let (dirtyNames, baseIncrState) := match prevIncrState with
     | some prev =>
@@ -496,13 +504,14 @@ def typeCheckModule
     | none =>
       (none, IncrementalState.forModule moduleName)
 
-  -- Get previous globals/instanceEnv for incremental building
+  -- Get previous globals/instanceEnv/instanceMap for incremental building
   let prevGlobals : Option Globals := prevIncrState.map (fun (s : IncrementalState) => s.cachedGlobals)
   let prevInstanceEnv : Option InstanceEnv := prevIncrState.map (fun (s : IncrementalState) => s.cachedInstanceEnv)
+  let prevInstanceMap : Option InstanceMap := prevIncrState.map (fun (s : IncrementalState) => s.cachedInstanceMap)
 
   -- Build globals and instance environment
   let globalsResult := buildGlobalsAndInstances
-    metalModule moduleName seedGlobals seedInstanceEnv prevGlobals prevInstanceEnv dirtyNames
+    metalModule moduleName seedGlobals seedInstanceEnv prevGlobals prevInstanceEnv prevInstanceMap dirtyNames
 
   let mut allErrors := globalsResult.errors
 
@@ -518,12 +527,13 @@ def typeCheckModule
 
   allErrors := allErrors ++ fnResult.errors
 
-  -- Update incremental state with final globals
+  -- Update incremental state with final globals and instance map
   let finalIncrState := { fnResult.incrementalState with
     cachedGlobals := globalsResult.globals
-    cachedInstanceEnv := globalsResult.instanceEnv }
+    cachedInstanceEnv := globalsResult.instanceEnv
+    cachedInstanceMap := globalsResult.instanceMap }
 
-  return (globalsResult.globals, globalsResult.instanceEnv, finalIncrState, allErrors)
+  return (globalsResult.globals, globalsResult.instanceEnv, globalsResult.instanceMap, finalIncrState, allErrors)
 
 /-- Extract public symbols from a type-checked module -/
 def extractPublicSymbols
@@ -687,7 +697,7 @@ def extractPublicSymbols
 /-- Extract public instances from a type-checked module -/
 def extractPublicInstances
     (metalModule : Metal.UntypedModule)
-    (instanceEnv : InstanceEnv)
+    (instanceMap : InstanceMap)
     (packageName : String)
     (moduleName : String)
     (seed : InstanceMetadata)
@@ -698,8 +708,6 @@ def extractPublicInstances
 
   for inst in metalModule.instances do
     let className := inst.className
-    -- Look up instance info from the InstanceEnv
-    -- For now, create a placeholder symbol using the number of type args
     let instanceName := s!"{inst.className}$inst{inst.typeArgsSyntax.size}"
     let (unique, sup') := sup.fresh instanceName
     sup := sup'
@@ -711,8 +719,10 @@ def extractPublicInstances
       package := packageName
       span := inst.span
     }
-    -- Store the instance type args (for now just the main type)
-    let typeArgs : Array Value := #[]  -- TODO: extract from instanceEnv
+    -- Look up the elaborated instance info directly by span
+    let typeArgs : Array Value := match instanceMap.get? inst.span with
+      | some instInfo => instInfo.args
+      | none => #[]
     match acc.get? className with
     | none => acc := acc.insert className #[(typeArgs, sym)]
     | some existing => acc := acc.insert className (existing.push (typeArgs, sym))
@@ -773,7 +783,7 @@ def checkModule
     return (metalRes.diagnostics, none, supply)
 
   -- Use the shared type checking pipeline (fresh check, no previous state)
-  let (fullGlobals, fullInstanceEnv, incrState, tcErrors) :=
+  let (fullGlobals, fullInstanceEnv, instanceMap, incrState, tcErrors) :=
     typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv none
 
   let allDiags := tcErrors.map (·.toDiagnostic)
@@ -789,7 +799,7 @@ def checkModule
     mergeInstanceEnvs acc dep.publicInstances
 
   let (publicInstances, supply'') := extractPublicInstances
-    metalRes.module fullInstanceEnv packageName modName depInstances supply'
+    metalRes.module instanceMap packageName modName depInstances supply'
 
   -- Always produce a CheckedModule, even with errors
   -- This enables IDE features to work with partial information
@@ -799,6 +809,7 @@ def checkModule
     metalModule := metalRes.module
     globals := fullGlobals
     instanceEnv := fullInstanceEnv
+    instanceMap := instanceMap
     publicSymbols := publicSymbols
     publicInstances := publicInstances
     sourceFile := info.sourceFile
@@ -839,7 +850,7 @@ def checkModuleIncremental
     return (metalRes.diagnostics, none, supply)
 
   -- Use the shared type checking pipeline with previous state for incremental checking
-  let (fullGlobals, fullInstanceEnv, incrState, tcErrors) :=
+  let (fullGlobals, fullInstanceEnv, instanceMap, incrState, tcErrors) :=
     typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv (some prevModule.incrementalState)
 
   -- If nothing changed (empty errors and same state), we could reuse previous result
@@ -858,7 +869,7 @@ def checkModuleIncremental
     mergeInstanceEnvs acc dep.publicInstances
 
   let (publicInstances, supply'') := extractPublicInstances
-    metalRes.module fullInstanceEnv packageName modName depInstances supply'
+    metalRes.module instanceMap packageName modName depInstances supply'
 
   let checkedModule : CheckedModule := {
     name := modName
@@ -866,6 +877,7 @@ def checkModuleIncremental
     metalModule := metalRes.module
     globals := fullGlobals
     instanceEnv := fullInstanceEnv
+    instanceMap := instanceMap
     publicSymbols := publicSymbols
     publicInstances := publicInstances
     sourceFile := info.sourceFile

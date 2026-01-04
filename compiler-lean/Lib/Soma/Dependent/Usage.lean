@@ -144,7 +144,7 @@ def inErasedScope (action : TCM α) : TCM α :=
 /-- Record that pattern bindings are introduced (TODO: review) -/
 def introducePatternBindings (bindings : List (String × Quantity × Span)) : TCM Unit := do
   -- Pattern bindings start with zero usage
-  for (name, _, _) in bindings do
+  for (_, _, _) in bindings do
     -- Initialize usage to zero (already the default)
     pure ()
 

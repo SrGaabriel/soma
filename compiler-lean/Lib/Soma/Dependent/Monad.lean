@@ -1177,7 +1177,7 @@ def recoverWithM (action : TCM α) (mkDefault : TCM α) : TCM α := do
 
 /-- Create an error placeholder value (a neutral with an error meta).
     Used when type checking fails but we need to continue. -/
-def errorPlaceholder (ty : Value) (span : Span) : TCM Value := do
+def errorPlaceholder (ty : Value) (_span : Span) : TCM Value := do
   let metaId ← freshMeta ty
   return .vNeutral ty (.nMeta metaId)
 

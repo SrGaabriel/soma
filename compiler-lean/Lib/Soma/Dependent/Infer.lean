@@ -102,7 +102,7 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Expr Value scope) (span
     : TCM (Value × Expr Value scope × Array (MetaId × Value × String)) := do
   let fnTy' ← force fnTy
   match fnTy' with
-  | .vPi qty binder name dom cod =>
+  | .vPi _qty binder name dom cod =>
     if binder.isImplicit then
       -- Create metavariable for this implicit parameter
       let metaId ← TCM.freshMeta dom
@@ -989,7 +989,7 @@ partial def inferConstructorApp {scope : Scope}
       return (ty', checkedArgs)
 
     -- Pi type with implicit parameter: insert metavariable automatically
-    | .vPi _qty binder name dom cod, _ =>
+    | .vPi _qty binder _name dom cod, _ =>
       if binder.isImplicit then
         -- Create metavariable for implicit type/index parameter
         let metaVal ← TCM.freshMetaVal dom
@@ -1030,16 +1030,17 @@ partial def inferValueApp {scope : Scope}
     (fnExpr : Expr Value scope) (dom : Value) (cod : Closure)
     (arg : Expr Unit scope) (callSpan : Span)
     : TCM (Value × Expr Value scope) := do
-  -- First, infer the argument type to enable reverse propagation
-  -- Enhancement 3: We infer first to get the argument's type, then use it
-  -- to solve implicits that may appear in the domain type
-  let (argTy, argExprInferred) ← infer arg
+  -- First, infer the argument type to enable reverse propagation.
+  -- We infer to get the argument's type for constraint solving, then use it
+  -- to solve implicits that may appear in the domain type.
+  let (argTy, _) ← infer arg
 
   -- Reverse propagation: unify argument type with domain
   -- This can solve implicits in the domain that depend on the argument type
   propagateFromArgument argTy dom
 
-  -- Now check the argument against the (possibly refined) domain
+  -- Check the argument against the (possibly refined) domain.
+  -- This re-traverses the argument but enables bidirectional type propagation.
   let argExpr ← check arg dom
 
   -- For full dependent types, always evaluate the argument to a value.

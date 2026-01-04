@@ -20,6 +20,9 @@ open Soma.Metal (Name UntypedModule TypeClassMeta InstanceDecl UntypedFunction)
 open Soma.Syntax (TypeExpr Span)
 open Soma.Dependent.Elaborate (ElabEnv elaborateType mkConstClosure mkDependentClosure)
 
+/-- Maps source spans to their elaborated instance info -/
+abbrev InstanceMap := Std.HashMap Span InstanceInfo
+
 structure ClassRegistry where
   byName : Std.HashMap String Unique := {}
   deriving Inhabited
@@ -376,10 +379,11 @@ This is the main entry point for trait/instance elaboration.
 It processes all type classes first (to build the registry),
 then processes all instances using that registry.
 -/
-def buildInstanceEnvFromModule (module : UntypedModule) : TCM InstanceEnv := do
+def buildInstanceEnvFromModule (module : UntypedModule) : TCM (InstanceEnv × InstanceMap) := do
   -- Start with the default built-in instances (Eq Int, Num Int, etc.)
   let mut env := defaultInstanceEnv
   env := { env with moduleName := module.name }
+  let mut instanceMap : InstanceMap := {}
 
   -- First pass: elaborate all type classes and build the registry
   let mut registry := ClassRegistry.empty
@@ -399,21 +403,24 @@ def buildInstanceEnvFromModule (module : UntypedModule) : TCM InstanceEnv := do
       pure ()
     | some typeClass =>
       match ← elaborateInstance inst registry typeClass with
-      | some instInfo => env := env.addInstanceWithId instInfo
+      | some instInfo =>
+        env := env.addInstanceWithId instInfo
+        instanceMap := instanceMap.insert inst.span instInfo
       | none => pure ()
 
-  return env
+  return (env, instanceMap)
 
-/-- Build an InstanceEnv incrementally, reusing cached class/instance info for unchanged definitions.
-    Takes the previous InstanceEnv and a set of dirty definition names. -/
+/-- Build an InstanceEnv incrementally, reusing cached class/instance info for unchanged definitions -/
 def buildInstanceEnvFromModuleIncremental
     (module : UntypedModule)
     (prevEnv : InstanceEnv)
+    (prevInstanceMap : InstanceMap)
     (dirtyNames : Std.HashSet String)
-    : TCM InstanceEnv := do
+    : TCM (InstanceEnv × InstanceMap) := do
   -- Start with the default built-in instances
   let mut env := defaultInstanceEnv
   env := { env with moduleName := module.name }
+  let mut instanceMap : InstanceMap := {}
 
   -- First pass: elaborate type classes, reusing cached ones when possible
   let mut registry := ClassRegistry.empty
@@ -443,8 +450,6 @@ def buildInstanceEnvFromModuleIncremental
     let instClassName := inst.className
 
     -- Instance is dirty if its class is dirty or the instance itself changed
-    -- For simplicity, we consider an instance dirty if its class name is in dirtyNames
-    -- or if the instance's implementing type changed
     let isDirty := dirtyNames.contains instClassName
 
     if isDirty then
@@ -456,20 +461,19 @@ def buildInstanceEnvFromModuleIncremental
       | none => pure ()
       | some typeClass =>
         match ← elaborateInstance inst registry typeClass with
-        | some instInfo => env := env.addInstanceWithId instInfo
+        | some instInfo =>
+          env := env.addInstanceWithId instInfo
+          instanceMap := instanceMap.insert inst.span instInfo
         | none => pure ()
     else
-      -- Not dirty: try to reuse cached instances for this class
-      match registry.byName.get? instClassName with
-      | some classUnique =>
-        -- Find matching instance in previous env
-        let prevInstances := prevEnv.instances.getD classUnique #[]
-        -- For now, just re-add all previous instances for this class
-        -- A more precise approach would match by instance signature
-        for prevInst in prevInstances do
-          env := env.addInstanceWithId prevInst
+      -- Not dirty: look up the specific instance by span from previous map
+      match prevInstanceMap.get? inst.span with
+      | some prevInst =>
+        -- Reuse the exact cached instance
+        env := env.addInstanceWithId prevInst
+        instanceMap := instanceMap.insert inst.span prevInst
       | none =>
-        -- Class not in registry, need to elaborate
+        -- Not in cache (shouldn't happen if spans are stable), need to elaborate
         let typeClass? := module.typeClasses.find? fun tc =>
           tc.name.display == instClassName
 
@@ -477,9 +481,11 @@ def buildInstanceEnvFromModuleIncremental
         | none => pure ()
         | some typeClass =>
           match ← elaborateInstance inst registry typeClass with
-          | some instInfo => env := env.addInstanceWithId instInfo
+          | some instInfo =>
+            env := env.addInstanceWithId instInfo
+            instanceMap := instanceMap.insert inst.span instInfo
           | none => pure ()
 
-  return env
+  return (env, instanceMap)
 
 end Soma.Dependent.TraitElaborate
