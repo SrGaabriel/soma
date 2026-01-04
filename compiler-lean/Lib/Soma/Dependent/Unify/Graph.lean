@@ -45,6 +45,76 @@ open Soma.Core (Value MetaId ConstraintId)
 open Soma.Syntax (Span)
 open Std (HashMap HashSet)
 
+/-! ## Constraint Clustering
+
+Constraint clustering groups related constraints together so they can be solved
+more efficiently. Constraints are in the same cluster if they share metavariables.
+
+Benefits:
+1. Solving a constraint often helps solve related constraints
+2. We can batch process clusters, reducing overhead
+3. Clusters can be solved in parallel (future work)
+-/
+
+/-- A cluster of related constraints -/
+structure ConstraintCluster where
+  /-- Constraint IDs in this cluster -/
+  constraintIds : Array Nat
+  /-- All metas referenced by constraints in this cluster -/
+  metas : HashSet Nat
+  /-- Priority: lower is higher priority (based on min complexity in cluster) -/
+  priority : Nat
+  deriving Inhabited
+
+namespace ConstraintCluster
+
+/-- Merge two clusters -/
+def merge (c1 c2 : ConstraintCluster) : ConstraintCluster :=
+  { constraintIds := c1.constraintIds ++ c2.constraintIds
+  , metas := c2.metas.fold (init := c1.metas) fun acc mid => acc.insert mid
+  , priority := min c1.priority c2.priority }
+
+/-- Check if two clusters share any metas -/
+def overlaps (c1 c2 : ConstraintCluster) : Bool :=
+  c1.metas.fold (init := false) fun acc mid =>
+    acc || c2.metas.contains mid
+
+end ConstraintCluster
+
+/-! ## Speculative Solving
+
+Speculative solving tries multiple solution strategies and picks the best result.
+This is useful when there are multiple ways to solve a constraint and we want
+to find the one that makes the most progress.
+
+Strategies include:
+1. Solve in priority order (default)
+2. Solve by cluster (related constraints together)
+3. Solve smallest clusters first (more likely to succeed)
+-/
+
+/-- A solving strategy -/
+inductive SolveStrategy where
+  /-- Solve by priority (fewest unsolved metas first) -/
+  | priority
+  /-- Solve by cluster, smallest clusters first -/
+  | smallestClusterFirst
+  /-- Solve by cluster, largest clusters first (may make more progress) -/
+  | largestClusterFirst
+  deriving Inhabited, BEq
+
+/-- Result of speculative solving with a particular strategy -/
+structure SpeculativeResult where
+  /-- Number of constraints solved -/
+  solvedCount : Nat
+  /-- Number of constraints remaining -/
+  remainingCount : Nat
+  /-- Errors encountered -/
+  errorCount : Nat
+  /-- The strategy used -/
+  strategy : SolveStrategy
+  deriving Inhabited
+
 /-- Result of attempting to solve a constraint -/
 inductive SolveResult where
   /-- Constraint was solved successfully -/
@@ -69,6 +139,10 @@ structure ConstraintGraph where
   blocked : HashMap Nat (Array Nat) := {}
   /-- Next constraint ID for newly created constraints -/
   nextId : Nat := 0
+  /-- Constraint clusters (lazily computed) -/
+  clusters : Option (Array ConstraintCluster) := none
+  /-- Current solving strategy -/
+  strategy : SolveStrategy := .priority
   deriving Inhabited
 
 namespace ConstraintGraph
@@ -214,6 +288,193 @@ def getConstraintsFor (g : ConstraintGraph) (mid : MetaId) : Array TrackedConstr
     | none => acc
     | some tc => acc.push tc
 
+/-! ### Constraint Clustering -/
+
+/-- Build clusters of related constraints using union-find algorithm.
+    Returns an array of constraint clusters, where each cluster contains
+    constraints that share metavariables.
+
+    Algorithm:
+    1. Create a mapping from each meta to the constraints that use it
+    2. Build clusters by grouping constraints that share metas (transitive closure)
+    3. Return the resulting clusters sorted by priority -/
+def buildClusters (g : ConstraintGraph) : Array ConstraintCluster :=
+  -- Phase 1: Build meta -> constraints mapping
+  let emptyM2C : HashMap Nat (Array Nat) := {}
+  let metaToConstraints := g.constraints.fold (init := emptyM2C)
+    fun acc cid tc =>
+      tc.metas.foldl (init := acc) fun acc' mid =>
+        let existing := acc'.getD mid.id #[]
+        acc'.insert mid.id (existing.push cid)
+
+  -- Phase 2: Build clusters using BFS from each unvisited constraint
+  let emptyVisited : HashSet Nat := {}
+  let emptyResult : Array ConstraintCluster := #[]
+
+  let (result, _) := g.constraints.fold (init := (emptyResult, emptyVisited))
+    fun (clusters, visited) startCid _ =>
+      if visited.contains startCid then (clusters, visited)
+      else
+        -- BFS to find all connected constraints
+        let (clusterCids, clusterMetas, visited') :=
+          bfsCluster g metaToConstraints startCid visited
+        if clusterCids.isEmpty then (clusters, visited')
+        else
+          let cluster : ConstraintCluster := {
+            constraintIds := clusterCids
+            metas := clusterMetas
+            priority := clusterCids.size  -- Smaller clusters = higher priority
+          }
+          (clusters.push cluster, visited')
+
+  -- Sort by priority (smaller clusters first - they're often easier to solve)
+  result.qsort fun c1 c2 => c1.priority < c2.priority
+where
+  /-- BFS to find all constraints connected to startCid via shared metas.
+      Uses fuel to ensure termination. -/
+  bfsCluster (g : ConstraintGraph) (m2c : HashMap Nat (Array Nat))
+      (startCid : Nat) (visited : HashSet Nat)
+      : Array Nat × HashSet Nat × HashSet Nat :=
+    let emptyQueue : Array Nat := #[startCid]
+    let emptyMetas : HashSet Nat := {}
+    -- Use fuel = total constraints as upper bound on iterations
+    let fuel := g.constraints.size + 1
+    go fuel g m2c emptyQueue #[] emptyMetas visited
+  go (fuel : Nat) (g : ConstraintGraph) (m2c : HashMap Nat (Array Nat))
+      (queue : Array Nat) (result : Array Nat) (metas : HashSet Nat)
+      (visited : HashSet Nat) : Array Nat × HashSet Nat × HashSet Nat :=
+    match fuel with
+    | 0 => (result, metas, visited)  -- Out of fuel
+    | fuel' + 1 =>
+      if h : queue.size > 0 then
+        let cid := queue[0]'h
+        let queue' := queue.extract 1 queue.size
+        if visited.contains cid then
+          go fuel' g m2c queue' result metas visited
+        else
+          let visited' := visited.insert cid
+          match g.constraints.get? cid with
+          | none => go fuel' g m2c queue' result metas visited'
+          | some tc =>
+            let result' := result.push cid
+            -- Add all metas from this constraint
+            let metas' := tc.metas.foldl (init := metas) fun acc mid =>
+              acc.insert mid.id
+            -- Add all constraints that share these metas to the queue
+            let queue'' := tc.metas.foldl (init := queue') fun q mid =>
+              let related := m2c.getD mid.id #[]
+              related.foldl (init := q) fun q' rcid =>
+                if visited'.contains rcid then q' else q'.push rcid
+            go fuel' g m2c queue'' result' metas' visited'
+      else
+        (result, metas, visited)
+
+/-- Get or compute clusters -/
+def getClusters (g : ConstraintGraph) : ConstraintGraph × Array ConstraintCluster :=
+  match g.clusters with
+  | some clusters => (g, clusters)
+  | none =>
+    let clusters := g.buildClusters
+    ({ g with clusters := some clusters }, clusters)
+
+/-- Invalidate cached clusters (call when constraints change) -/
+def invalidateClusters (g : ConstraintGraph) : ConstraintGraph :=
+  { g with clusters := none }
+
+/-- Set the solving strategy -/
+def withStrategy (g : ConstraintGraph) (s : SolveStrategy) : ConstraintGraph :=
+  { g with strategy := s }
+
+/-! ### Smart Retrying -/
+
+/-- Get only the constraints related to a solved meta (for smart retrying).
+    This returns constraints that:
+    1. Directly reference the meta
+    2. Reference metas that depend on the solved meta
+    Instead of returning all constraints, we only return related ones. -/
+def getRelatedConstraints (g : ConstraintGraph) (mid : MetaId) : Array Nat :=
+  -- Get direct constraints
+  let directCids := g.metaToConstraints.getD mid.id {}
+
+  -- Also get constraints in the same cluster
+  match g.clusters with
+  | none =>
+    -- No clusters computed, just return direct constraints
+    directCids.fold (init := #[]) fun acc cid => acc.push cid
+  | some clusters =>
+    -- Find the cluster containing this meta and return all its constraints
+    let clusterResult := clusters.foldl (init := #[]) fun acc cluster =>
+      if acc.isEmpty && cluster.metas.contains mid.id then
+        cluster.constraintIds
+      else
+        acc
+    -- If not found in any cluster, fall back to direct constraints
+    if clusterResult.isEmpty then
+      directCids.fold (init := #[]) fun acc cid => acc.push cid
+    else
+      clusterResult
+
+/-- Smart wake: only re-queue constraints related to the solved meta -/
+def smartWakeBlocked (g : ConstraintGraph) (mid : MetaId) : TCM ConstraintGraph := do
+  let blockedCids := g.blocked.getD mid.id #[]
+  let relatedCids := g.getRelatedConstraints mid
+
+  -- Combine blocked and related constraints
+  let allCids := blockedCids ++ relatedCids
+
+  let mut g' := { g with blocked := g.blocked.erase mid.id }
+  let mut seen : HashSet Nat := {}
+
+  for cid in allCids do
+    if seen.contains cid then continue
+    seen := seen.insert cid
+
+    match g'.constraints.get? cid with
+    | none => pure ()
+    | some tc =>
+      -- Re-compute complexity and add back to queue
+      let complexity ← countUnsolvedMetas tc.metas
+      g' := { g' with queue := bubbleUp (g'.queue.push (complexity, cid)) g'.queue.size }
+
+  -- Invalidate clusters since solving may have changed relationships
+  return g'.invalidateClusters
+
+/-! ### Cluster-based Solving -/
+
+/-- Extract next constraint from a specific cluster -/
+def extractFromCluster (g : ConstraintGraph) (cluster : ConstraintCluster)
+    : Option (TrackedConstraint × ConstraintGraph) := Id.run do
+  -- Find the constraint with minimum complexity in this cluster
+  let mut minComplexity : Option (Nat × Nat) := none  -- (complexity, cid)
+
+  for cid in cluster.constraintIds do
+    match g.constraints.get? cid with
+    | none => continue
+    | some tc =>
+      let complexity := tc.metas.size
+      match minComplexity with
+      | none => minComplexity := some (complexity, cid)
+      | some (minC, _) =>
+        if complexity < minC then
+          minComplexity := some (complexity, cid)
+
+  match minComplexity with
+  | none => return none
+  | some (_, cid) =>
+    match g.constraints.get? cid with
+    | none => return none
+    | some tc => return some (tc, g)
+
+/-- Sort clusters by size for cluster-first strategies -/
+def sortClustersBySize (clusters : Array ConstraintCluster) (ascending : Bool)
+    : Array ConstraintCluster :=
+  let sorted := clusters.qsort fun c1 c2 =>
+    if ascending then
+      c1.constraintIds.size < c2.constraintIds.size
+    else
+      c1.constraintIds.size > c2.constraintIds.size
+  sorted
+
 /-- Get the constraint chain (ancestors) for a constraint.
     Uses fuel to ensure termination. -/
 def getConstraintChain (g : ConstraintGraph) (tc : TrackedConstraint) : Array ConstraintInfo :=
@@ -314,7 +575,7 @@ def enhanceErrorWithChain (error : TCError) (chain : Array ConstraintInfo)
     .typeMismatch expected actual purpose expectedSpan actualSpan chain
   | other => other
 
-/-- Main unified constraint solver using the constraint graph -/
+/-- Main unified constraint solver using the constraint graph with smart retrying -/
 def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
     (fuel : Nat := constraintSolverFuel) : TCM (Array Constraint) := do
   let mut g ← ConstraintGraph.fromPostponed
@@ -347,15 +608,12 @@ def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
         g := g.remove tc.constraintId.id
         solvedCount := solvedCount + 1
 
-        -- Wake up constraints that depend on metas we may have solved
+        -- Smart retrying: only wake up constraints related to solved metas
         for mid in tc.metas do
           let isSolved ← TCM.isMetaSolved mid
           if isSolved then
-            g ← g.wakeBlocked mid
-            -- Also re-queue any constraints from metaToConstraints
-            for depTc in g.getConstraintsFor mid do
-              let complexity ← ConstraintGraph.countUnsolvedMetas depTc.metas
-              g := { g with queue := ConstraintGraph.bubbleUp (g.queue.push (complexity, depTc.constraintId.id)) g.queue.size }
+            -- Use smart wake instead of waking all constraints
+            g ← g.smartWakeBlocked mid
 
       | .blocked metas =>
         -- Constraint is blocked, move to blocked set
@@ -381,6 +639,8 @@ def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
       for tc in newPostponed do
         let complexity ← ConstraintGraph.countUnsolvedMetas tc.metas
         g := g.insert tc complexity
+      -- Invalidate clusters when new constraints are added
+      g := g.invalidateClusters
 
   -- Collect remaining unsolved constraints
   let mut unsolved : Array Constraint := #[]
@@ -388,5 +648,170 @@ def solveConstraintGraph (tryConstraint : Constraint → TCM SolveResult)
     unsolved := unsolved.push tc.constraint
 
   return unsolved
+
+/-- Solve constraints using a cluster-based strategy.
+    This groups related constraints and solves them together. -/
+def solveConstraintGraphClustered (tryConstraint : Constraint → TCM SolveResult)
+    (strategy : SolveStrategy := .smallestClusterFirst)
+    (fuel : Nat := constraintSolverFuel) : TCM (Array Constraint) := do
+  let mut g ← ConstraintGraph.fromPostponed
+  g := g.withStrategy strategy
+
+  let mut remainingFuel := fuel
+  let mut solvedCount := 0
+
+  -- Build initial clusters
+  let (g', initialClusters) := g.getClusters
+  g := g'
+
+  -- Sort clusters based on strategy
+  let sortedClusters := match strategy with
+    | .priority => initialClusters  -- Use default priority order
+    | .smallestClusterFirst => ConstraintGraph.sortClustersBySize initialClusters true
+    | .largestClusterFirst => ConstraintGraph.sortClustersBySize initialClusters false
+
+  -- Process clusters in order
+  for cluster in sortedClusters do
+    -- Solve all constraints in this cluster
+    for cid in cluster.constraintIds do
+      if remainingFuel == 0 then break
+      remainingFuel := remainingFuel - 1
+
+      match g.constraints.get? cid with
+      | none => continue  -- Already solved/removed
+      | some tc =>
+        let result ← tryConstraint tc.constraint
+
+        match result with
+        | .solved =>
+          g := g.remove tc.constraintId.id
+          solvedCount := solvedCount + 1
+          -- Smart wake for related constraints
+          for mid in tc.metas do
+            let isSolved ← TCM.isMetaSolved mid
+            if isSolved then
+              g ← g.smartWakeBlocked mid
+
+        | .blocked metas =>
+          for mid in metas do
+            g := g.blockOn tc.constraintId.id mid
+
+        | .deferred =>
+          let complexity ← ConstraintGraph.countUnsolvedMetas tc.metas
+          g := { g with queue := ConstraintGraph.bubbleUp (g.queue.push (complexity, cid)) g.queue.size }
+
+        | .failed error =>
+          let (chain, metas) ← g.computeMinimalUnsatisfiableSet tc
+          let enhancedError := enhanceErrorWithChain error chain metas
+          TCM.addError enhancedError
+          g := g.remove tc.constraintId.id
+
+      -- Check for newly postponed constraints
+      let newPostponed ← TCM.getPostponedTracked
+      if !newPostponed.isEmpty then
+        TCM.clearPostponed
+        for ntc in newPostponed do
+          let complexity ← ConstraintGraph.countUnsolvedMetas ntc.metas
+          g := g.insert ntc complexity
+        g := g.invalidateClusters
+
+  -- Fall back to regular solving for any remaining constraints
+  if !g.isEmpty then
+    let remaining ← solveConstraintGraph tryConstraint remainingFuel
+    return remaining
+
+  -- Collect remaining unsolved constraints
+  let mut unsolved : Array Constraint := #[]
+  for (_, tc) in g.constraints do
+    unsolved := unsolved.push tc.constraint
+
+  return unsolved
+
+/-- Speculative solving: try multiple strategies and pick the best result.
+    This is useful when we're stuck and want to try different approaches. -/
+def solveConstraintGraphSpeculative (tryConstraint : Constraint → TCM SolveResult)
+    (fuel : Nat := constraintSolverFuel) : TCM (Array Constraint) := do
+  -- Save initial state
+  let initialState ← TCM.getState
+  let initialPostponed ← TCM.getPostponedTracked
+
+  -- Try strategy 1: Priority-based (default)
+  let result1 ← TCM.tryWithRollback do
+    TCM.clearPostponed
+    for tc in initialPostponed do
+      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.origin tc.parentConstraints
+    solveConstraintGraph tryConstraint fuel
+
+  -- Get state after first attempt
+  let state1 ← TCM.getState
+  let errors1 := state1.errors.size
+  let remaining1 := match result1 with
+    | some r => r.size
+    | none => initialPostponed.size
+
+  -- Reset state and try strategy 2: Smallest cluster first
+  set initialState
+  let result2 ← TCM.tryWithRollback do
+    TCM.clearPostponed
+    for tc in initialPostponed do
+      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.origin tc.parentConstraints
+    solveConstraintGraphClustered tryConstraint .smallestClusterFirst fuel
+
+  let state2 ← TCM.getState
+  let errors2 := state2.errors.size
+  let remaining2 := match result2 with
+    | some r => r.size
+    | none => initialPostponed.size
+
+  -- Reset state and try strategy 3: Largest cluster first
+  set initialState
+  let result3 ← TCM.tryWithRollback do
+    TCM.clearPostponed
+    for tc in initialPostponed do
+      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.origin tc.parentConstraints
+    solveConstraintGraphClustered tryConstraint .largestClusterFirst fuel
+
+  let state3 ← TCM.getState
+  let errors3 := state3.errors.size
+  let remaining3 := match result3 with
+    | some r => r.size
+    | none => initialPostponed.size
+
+  -- Pick the best result: fewer errors first, then fewer remaining constraints
+  let results := [
+    (remaining1, errors1, result1, state1),
+    (remaining2, errors2, result2, state2),
+    (remaining3, errors3, result3, state3)
+  ]
+
+  -- Find the best result
+  let mut bestRemaining := initialPostponed.size
+  let mut bestErrors := initialPostponed.size
+  let mut bestResult : Option (Array Constraint) := none
+  let mut bestState := initialState
+
+  for (rem, errs, res, st) in results do
+    -- Prefer fewer errors, then fewer remaining constraints
+    if errs < bestErrors || (errs == bestErrors && rem < bestRemaining) then
+      match res with
+      | some r =>
+        bestRemaining := rem
+        bestErrors := errs
+        bestResult := some r
+        bestState := st
+      | none => pure ()
+
+  -- Apply the best state
+  set bestState
+
+  match bestResult with
+  | some r => return r
+  | none =>
+    -- All strategies failed, fall back to default
+    set initialState
+    TCM.clearPostponed
+    for tc in initialPostponed do
+      let _ ← TCM.postponeTracked tc.constraint tc.metas tc.origin tc.parentConstraints
+    solveConstraintGraph tryConstraint fuel
 
 end Soma.Dependent.Unify

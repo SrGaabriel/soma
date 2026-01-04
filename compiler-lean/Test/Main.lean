@@ -5,6 +5,7 @@ import Test.Error
 import Test.Dependent.Core
 import Test.Dependent.Infer
 import Test.Dependent.Unify
+import Test.Dependent.Graph
 import Test.Dependent.Usage
 import Test.Dependent.Level
 import Test.Dependent.Instance
@@ -45,6 +46,10 @@ def main : IO UInt32 := do
   -- Run dependent types unify tests (Phase 3)
   let unifyRunner ← Test.Dependent.Unify.runAllTests
   total := total.merge unifyRunner
+
+  -- Run constraint graph tests (Phase 3b)
+  let graphRunner ← Test.Dependent.Graph.run
+  total := total.merge graphRunner
 
   -- Run dependent types usage tests (Phase 4)
   let usageRunner ← Test.Dependent.Usage.run
