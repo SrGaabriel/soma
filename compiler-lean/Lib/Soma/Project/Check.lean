@@ -369,7 +369,18 @@ def checkFunctionsCore
         let syntaxHash := hashFunction fn
         let isComplete := newState.errors.isEmpty
         let cache := if isComplete then
-          DefCache.success syntaxHash fnType DefKind.function
+          -- Look up the GlobalInfo from the context (it should be registered already)
+          match ctx.globals.lookup fnName with
+          | some info => DefCache.success syntaxHash fnType DefKind.function info
+          | none =>
+            -- Fallback: create a basic GlobalInfo if not found (shouldn't happen)
+            let info : GlobalInfo := {
+              name := fn.name
+              type := fnType
+              value := none
+              isConstructor := false
+            }
+            DefCache.success syntaxHash fnType DefKind.function info
         else
           DefCache.failure syntaxHash fnType DefKind.function newState.errors
         incrState := incrState.updateCache defId cache

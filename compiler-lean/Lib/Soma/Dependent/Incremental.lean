@@ -56,17 +56,19 @@ structure DefCache where
   isComplete : Bool
   /-- Errors encountered during checking (empty if isComplete) -/
   errors : Array TCError := #[]
+  /-- Cached GlobalInfo to avoid reconstruction (None if checking failed) -/
+  globalInfo : Option GlobalInfo := none
   deriving Inhabited
 
 namespace DefCache
 
 /-- Create a successful cache entry -/
-def success (hash : UInt64) (ty : Value) (kind : DefKind) : DefCache :=
-  { syntaxHash := hash, type := ty, kind := kind, isComplete := true }
+def success (hash : UInt64) (ty : Value) (kind : DefKind) (info : GlobalInfo) : DefCache :=
+  { syntaxHash := hash, type := ty, kind := kind, isComplete := true, globalInfo := some info }
 
 /-- Create a failed cache entry with errors -/
 def failure (hash : UInt64) (ty : Value) (kind : DefKind) (errs : Array TCError) : DefCache :=
-  { syntaxHash := hash, type := ty, kind := kind, isComplete := false, errors := errs }
+  { syntaxHash := hash, type := ty, kind := kind, isComplete := false, errors := errs, globalInfo := none }
 
 end DefCache
 
@@ -315,15 +317,20 @@ def rebuildGlobals (s : IncrementalState) : Globals := Id.run do
   let mut globals := Globals.empty
   for (def_, cache) in s.cache do
     if cache.isComplete then
-      -- todo: store GlobalInfo instead of reconstructing everytime
-      let info : GlobalInfo := {
-        name := .user { id := 0, module := def_.module, original := def_.name }
-        type := cache.type
-        isConstructor := match cache.kind with
-          | .constructor _ => true
-          | _ => false
-      }
-      globals := globals.insert def_.name info
+      -- Use cached GlobalInfo if available, otherwise reconstruct
+      match cache.globalInfo with
+      | some info =>
+        globals := globals.insert def_.name info
+      | none =>
+        -- Fallback reconstruction (shouldn't happen if cache.isComplete is true)
+        let info : GlobalInfo := {
+          name := .user { id := 0, module := def_.module, original := def_.name }
+          type := cache.type
+          isConstructor := match cache.kind with
+            | .constructor _ => true
+            | _ => false
+        }
+        globals := globals.insert def_.name info
   return globals
 
 end IncrementalState
@@ -428,10 +435,55 @@ def hashLiteral (l : Soma.Metal.Literal) : UInt64 :=
   | .bool b => combineHash 0x3001 (if b then 1 else 0)
   | .string s => combineHash 0x3002 (hashString s)
 
+/-- Hash a TypeExpr from the AST -/
+partial def hashTypeExpr (te : Soma.Syntax.TypeExpr) : UInt64 :=
+  match te with
+  | .var name => combineHash 0x6000 (hashString name.value)
+  | .con name => combineHash 0x6001 (hashString name.value)
+  | .app fn arg _ =>
+    combineHashes #[0x6002, hashTypeExpr fn, hashTypeExpr arg]
+  | .arrow from_ to _ =>
+    combineHashes #[0x6003, hashTypeExpr from_, hashTypeExpr to]
+  | .tuple elements _ =>
+    let elemsHash := elements.foldl (fun acc te => combineHash acc (hashTypeExpr te)) 0
+    combineHash 0x6004 elemsHash
+  | .list elem _ =>
+    combineHash 0x6005 (hashTypeExpr elem)
+  | .forall_ vars body _ =>
+    let varsHash := vars.foldl (fun acc v =>
+      combineHash acc (hashString v.name.value)) 0
+    combineHashes #[0x6006, varsHash, hashTypeExpr body]
+  | .constrained constraints body _ =>
+    let constrHash := constraints.foldl (fun acc (name, args, _) =>
+      let argsHash := args.foldl (fun h te => combineHash h (hashTypeExpr te)) 0
+      combineHashes #[acc, hashString name.value, argsHash]) 0
+    combineHashes #[0x6007, constrHash, hashTypeExpr body]
+  | .parens inner _ =>
+    combineHash 0x6008 (hashTypeExpr inner)
+  | .kinded ty kind _ =>
+    combineHashes #[0x6009, hashTypeExpr ty, hashTypeExpr kind]
+  | .record fields tail _ =>
+    let fieldsHash := fields.foldl (fun acc (name, te) =>
+      combineHashes #[acc, hashString name.value, hashTypeExpr te]) 0
+    let tailHash := match tail with | none => 0 | some n => hashString n.value
+    combineHashes #[0x600A, fieldsHash, tailHash]
+  | .variant cases tail _ =>
+    let casesHash := cases.foldl (fun acc (name, te) =>
+      combineHashes #[acc, hashString name.value, hashTypeExpr te]) 0
+    let tailHash := match tail with | none => 0 | some n => hashString n.value
+    combineHashes #[0x600B, casesHash, tailHash]
+  | .pi qty name domain codomain _ =>
+    combineHashes #[0x600C, hash qty, hashString name.value, hashTypeExpr domain, hashTypeExpr codomain]
+  | .sigma qty name fst snd _ =>
+    combineHashes #[0x600D, hash qty, hashString name.value, hashTypeExpr fst, hashTypeExpr snd]
+  | .implicit name domain codomain _ =>
+    let nameHash := match name with | none => 0 | some n => hashString n.value
+    combineHashes #[0x600E, nameHash, hashTypeExpr domain, hashTypeExpr codomain]
+
 /-- Hash a type argument -/
 def hashTypeArg (arg : Soma.Metal.TypeArg) : UInt64 :=
   match arg with
-  | .type _ => 0x4000 -- TypeExpr hashing would need more work
+  | .type tyExpr => combineHash 0x4000 (hashTypeExpr tyExpr)
   | .label name => combineHash 0x4001 (hashString name)
 
 /-- Hash a level -/
@@ -577,7 +629,7 @@ def hashFunction (fn : Soma.Metal.UntypedFunction) : UInt64 :=
   -- Also hash the declared type if present
   let typeHash := match fn.declaredTypeSyntax with
     | none => 0
-    | some _ => 1 -- TypeExpr hashing would need more work
+    | some tyExpr => hashTypeExpr tyExpr
   combineHashes #[nameHash, paramsHash, bodyHash, typeHash]
 
 /-- Hash a type definition for incremental checking -/
