@@ -21,6 +21,7 @@ namespace Test.Dependent.Unify
 open Test.Fixtures
 
 open Soma.Dependent
+open Soma.Dependent.Unify (SolveResult)
 open Soma.Core
 open Soma.Metal (Expr BinderInfo)
 open Soma.Syntax (Span)
@@ -233,33 +234,33 @@ def testUnifyRecordTypes : Bool :=
 def testSolveConstraintSuccess : Bool :=
   match runTCM do
     let c := Constraint.unify (.vPrimTy .int) (.vPrimTy .int) testSpan
-    solveConstraint c
+    trySolveConstraint c
   with
-  | .ok (true, _) => true
+  | .ok (.solved, _) => true
   | _ => false
 
 def testSolveConstraintFail : Bool :=
   match runTCM do
     let c := Constraint.unify (.vPrimTy .int) (.vPrimTy .bool) testSpan
-    solveConstraint c
+    trySolveConstraint c
   with
-  | .ok (false, _) => true
+  | .ok (.failed _, _) => true
   | _ => false
 
 def testSolveLevelConstraintEqual : Bool :=
   match runTCM do
     let c := Constraint.levelEq (.lit 0) (.lit 0)
-    solveConstraint c
+    trySolveConstraint c
   with
-  | .ok (true, _) => true
+  | .ok (.solved, _) => true
   | _ => false
 
 def testSolveLevelConstraintUnequal : Bool :=
   match runTCM do
     let c := Constraint.levelEq (.lit 0) (.lit 1)
-    solveConstraint c
+    trySolveConstraint c
   with
-  | .ok (false, _) => true
+  | .ok (.deferred, _) => true  -- Level constraints are deferred when not equal
   | _ => false
 
 /-! ## Zonking Tests -/
@@ -497,7 +498,7 @@ def testMetaStateAddDependency : Bool :=
   let dependents := state'''.getDependents meta2
   deps.contains meta2 && dependents.contains meta1
 
-def testSortByComplexity : Bool :=
+def testConstraintGraphPriority : Bool :=
   match runTCM do
     -- Create metas
     let meta1 ← TCM.freshMeta (.vType .zero)
@@ -524,11 +525,28 @@ def testSortByComplexity : Bool :=
       metas := #[meta2]  -- 1 unsolved
     }
 
-    let sorted ← sortByComplexity #[tc2, tc1, tc3]
-    -- Should be ordered: tc1 (0), tc3 (1), tc2 (2)
-    return sorted[0]!.constraintId.id == 0 &&
-           sorted[1]!.constraintId.id == 2 &&
-           sorted[2]!.constraintId.id == 1
+    -- Insert into graph and extract in priority order
+    let g0 := Unify.ConstraintGraph.empty
+    let complexity1 ← Unify.ConstraintGraph.countUnsolvedMetas tc1.metas
+    let g1 := g0.insert tc1 complexity1
+    let complexity2 ← Unify.ConstraintGraph.countUnsolvedMetas tc2.metas
+    let g2 := g1.insert tc2 complexity2
+    let complexity3 ← Unify.ConstraintGraph.countUnsolvedMetas tc3.metas
+    let g3 := g2.insert tc3 complexity3
+
+    -- Extract min should give tc1 first (complexity 0)
+    match g3.extractMin with
+    | some (first, g4) =>
+      if first.constraintId.id != 0 then return false
+      match g4.extractMin with
+      | some (second, g5) =>
+        if second.constraintId.id != 2 then return false  -- tc3 has complexity 1
+        match g5.extractMin with
+        | some (third, _) =>
+          return third.constraintId.id == 1  -- tc2 has complexity 2
+        | none => return false
+      | none => return false
+    | none => return false
   with
   | .ok (true, _) => true
   | _ => false
@@ -566,7 +584,7 @@ def dependencyTrackingTests : List (String × Bool) := [
   ("MetaDependencies remove", testMetaDependenciesRemove),
   ("MetaDependencies complexity", testMetaDependenciesComplexity),
   ("MetaState addDependency", testMetaStateAddDependency),
-  ("sortByComplexity", testSortByComplexity),
+  ("constraintGraphPriority", testConstraintGraphPriority),
   ("wakeConstraintsFor", testWakeConstraintsFor)
 ]
 

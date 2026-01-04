@@ -9,12 +9,14 @@ import Soma.Dependent.Unify.Core
 import Soma.Dependent.Unify.Pruning
 import Soma.Dependent.Unify.Row
 import Soma.Dependent.Unify.Pattern
+import Soma.Dependent.Unify.Graph
 
 open Soma.Syntax (Span)
 
 namespace Soma.Dependent
 
 open Soma.Core
+open Soma.Dependent.Unify (SolveResult ConstraintGraph)
 
 mutual
 
@@ -491,288 +493,101 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
 
 end
 
-/-- Try to solve a single postponed constraint -/
-def solveConstraint (c : Constraint) : TCM Bool := do
+/-- Try to solve a single postponed constraint, returning a detailed result -/
+def trySolveConstraint (c : Constraint) : TCM SolveResult := do
   match c with
   | .unify v1 v2 span =>
     TCM.withSpan span do
-      try
-        unify v1 v2
-        return true
-      catch _ =>
-        return false
+      -- Force values to see if they're blocked on metas
+      let v1' ← force v1
+      let v2' ← force v2
+
+      -- Check if either side is an unsolved meta - if so, we're blocked
+      let blockedMetas ← collectUnsolvedMetas v1' v2'
+      if !blockedMetas.isEmpty then
+        -- Check if we can make progress anyway
+        try
+          unify v1' v2'
+          return .solved
+        catch e =>
+          -- Check if this is a "stuck" error vs a real failure
+          if blockedMetas.size > 0 then
+            return .blocked blockedMetas
+          else
+            return .failed e
+      else
+        try
+          unify v1' v2'
+          return .solved
+        catch e =>
+          return .failed e
 
   | .subtype v1 v2 span =>
     TCM.withSpan span do
-      try
-        unify v1 v2 -- For now, subtyping is just equality
-        return true
-      catch _ =>
-        return false
+      let v1' ← force v1
+      let v2' ← force v2
+      let blockedMetas ← collectUnsolvedMetas v1' v2'
+      if !blockedMetas.isEmpty then
+        try
+          unify v1' v2'
+          return .solved
+        catch e =>
+          if blockedMetas.size > 0 then
+            return .blocked blockedMetas
+          else
+            return .failed e
+      else
+        try
+          unify v1' v2'
+          return .solved
+        catch e =>
+          return .failed e
 
   | .levelEq l1 l2 =>
-    -- Level constraints need a dedicated solver
-    -- For now, just check equality
-    if l1.simplify == l2.simplify then
-      return true
+    let l1' := l1.simplify
+    let l2' := l2.simplify
+    if l1' == l2' then
+      return .solved
     else
-      return false
+      -- Check for level variables
+      match l1', l2' with
+      | .var _, _ => return .deferred
+      | _, .var _ => return .deferred
+      | _, _ => return .deferred  -- Level solving is complex, defer for now
 
   | .levelLe l1 l2 =>
-    -- TODO: generate substitutions
     let l1' := l1.simplify
     let l2' := l2.simplify
     match l1', l2' with
-    | .lit n1, .lit n2 => return n1 ≤ n2
-    | _, _ => return false  -- Can't determine
-
-/-- A min-heap priority queue for constraints, keyed by complexity (unsolved meta count).
-    Uses a binary heap stored in an array for O(log n) insert and extractMin. -/
-structure ConstraintPQueue where
-  /-- Heap array: (priority, constraint) pairs, min-heap ordered by priority -/
-  heap : Array (Nat × TrackedConstraint) := #[]
-  deriving Inhabited
-
-namespace ConstraintPQueue
-
-/-- Create an empty priority queue -/
-def empty : ConstraintPQueue := ⟨#[]⟩
-
-/-- Check if queue is empty -/
-def isEmpty (pq : ConstraintPQueue) : Bool := pq.heap.isEmpty
-
-/-- Number of elements in queue -/
-def size (pq : ConstraintPQueue) : Nat := pq.heap.size
-
-/-- Swap elements at two indices -/
-private def swap (arr : Array (Nat × TrackedConstraint)) (i j : Nat) : Array (Nat × TrackedConstraint) :=
-  if i < arr.size && j < arr.size then
-    let vi := arr[i]!
-    let vj := arr[j]!
-    let arr' := arr.set! i vj
-    arr'.set! j vi
-  else arr
-
-/-- Bubble up element at index to maintain heap property -/
-private partial def bubbleUp (arr : Array (Nat × TrackedConstraint)) (idx : Nat) : Array (Nat × TrackedConstraint) :=
-  if idx == 0 then arr
-  else
-    let parentIdx := (idx - 1) / 2
-    if idx < arr.size && parentIdx < arr.size then
-      let (prio, _) := arr[idx]!
-      let (parentPrio, _) := arr[parentIdx]!
-      if prio < parentPrio then
-        bubbleUp (swap arr idx parentIdx) parentIdx
-      else arr
-    else arr
-
-/-- Bubble down element at index to maintain heap property -/
-private partial def bubbleDown (arr : Array (Nat × TrackedConstraint)) (idx : Nat) : Array (Nat × TrackedConstraint) :=
-  let leftIdx := 2 * idx + 1
-  let rightIdx := 2 * idx + 2
-  let sz := arr.size
-
-  if leftIdx >= sz then arr  -- No children
-  else
-    -- Find smallest child
-    let smallestIdx :=
-      if rightIdx < sz then
-        let (leftPrio, _) := arr[leftIdx]!
-        let (rightPrio, _) := arr[rightIdx]!
-        if leftPrio <= rightPrio then leftIdx else rightIdx
-      else leftIdx
-
-    if idx < sz && smallestIdx < sz then
-      let (prio, _) := arr[idx]!
-      let (smallestPrio, _) := arr[smallestIdx]!
-      if smallestPrio < prio then
-        bubbleDown (swap arr idx smallestIdx) smallestIdx
-      else arr
-    else arr
-
-/-- Insert a constraint with given priority -/
-def insert (pq : ConstraintPQueue) (priority : Nat) (tc : TrackedConstraint) : ConstraintPQueue :=
-  let newHeap := pq.heap.push (priority, tc)
-  ⟨bubbleUp newHeap (newHeap.size - 1)⟩
-
-/-- Extract minimum priority element, returns (element, new queue) or none if empty -/
-def extractMin (pq : ConstraintPQueue) : Option (TrackedConstraint × ConstraintPQueue) :=
-  if h : pq.heap.size > 0 then
-    let tc := (pq.heap[0]'h).2
-    if pq.heap.size == 1 then
-      some (tc, ⟨#[]⟩)
-    else
-      -- Move last element to root and bubble down
-      let lastElem := pq.heap.back!
-      let newHeap := (pq.heap.set! 0 lastElem).pop
-      some (tc, ⟨bubbleDown newHeap 0⟩)
-  else none
-
-/-- Build a priority queue from an array of (priority, constraint) pairs -/
-def fromArray (arr : Array (Nat × TrackedConstraint)) : ConstraintPQueue :=
-  arr.foldl (fun pq (prio, tc) => pq.insert prio tc) empty
-
-end ConstraintPQueue
-
-/-- Count how many unsolved metas are in a constraint -/
-def countUnsolvedMetas (metas : Array MetaId) : TCM Nat := do
-  let mut count := 0
-  for mid in metas do
-    let solved ← TCM.isMetaSolved mid
-    if !solved then
-      count := count + 1
-  return count
-
-/-- Build a priority queue from constraints, prioritized by complexity (fewer unsolved metas = higher priority) -/
-def buildConstraintQueue (constraints : Array TrackedConstraint) : TCM ConstraintPQueue := do
-  let mut pq := ConstraintPQueue.empty
-  for tc in constraints do
-    let complexity ← countUnsolvedMetas tc.metas
-    pq := pq.insert complexity tc
-  return pq
-
-/-- Sort constraints by complexity (fewer unsolved metas first) - kept for compatibility -/
-def sortByComplexity (constraints : Array TrackedConstraint) : TCM (Array TrackedConstraint) := do
-  -- Compute complexity for each constraint
-  let mut withComplexity : Array (TrackedConstraint × Nat) := #[]
-  for tc in constraints do
-    let complexity ← countUnsolvedMetas tc.metas
-    withComplexity := withComplexity.push (tc, complexity)
-  -- Sort by complexity (simpler first)
-  let sorted := withComplexity.qsort (fun (_, c1) (_, c2) => c1 < c2)
-  return sorted.map (·.1)
-
-/-- Run the constraint solver using priority queue for efficient ordering.
-    Returns the remaining unsolved constraints. -/
-def solveConstraints : TCM (Array Constraint) := do
-  let allConstraints ← TCM.getPostponedTracked
-  TCM.clearPostponed
-
-  -- Build initial priority queue
-  let mut pq ← buildConstraintQueue allConstraints
-  let mut unsolved : Array TrackedConstraint := #[]
-  let mut progress := true
-  let mut iterations := 0
-  let maxIterations := maxConstraintIterations
-
-  -- Keep trying while we make progress
-  while progress && iterations < maxIterations do
-    progress := false
-    iterations := iterations + 1
-
-    -- Process constraints from priority queue (lowest complexity first)
-    let mut nextRoundQueue := ConstraintPQueue.empty
-
-    while !pq.isEmpty do
-      match pq.extractMin with
-      | none => break
-      | some (tc, pq') =>
-        pq := pq'
-
-        -- Check if any metas in this constraint are now solved
-        let hasSolvedMeta ← tc.metas.anyM TCM.isMetaSolved
-
-        -- Try to solve if we have newly solved metas or on first iteration
-        let shouldTry := hasSolvedMeta || iterations == 1
-
-        if shouldTry then
-          if ← solveConstraint tc.constraint then
-            progress := true
-            -- When a constraint is solved, wake up constraints that depend on its metas
-            for mid in tc.metas do
-              let isSolved ← TCM.isMetaSolved mid
-              if isSolved then
-                TCM.wakeConstraintsFor mid
-          else
-            -- Constraint still unsolved, re-add with updated priority
-            let newPostponed ← TCM.getPostponedTracked
-            TCM.clearPostponed
-            for newTc in newPostponed do
-              let complexity ← countUnsolvedMetas newTc.metas
-              nextRoundQueue := nextRoundQueue.insert complexity newTc
-            -- Re-compute priority for unsolved constraint
-            let complexity ← countUnsolvedMetas tc.metas
-            unsolved := unsolved.push tc
-        else
-          -- Skip this constraint for now, preserve priority
-          let complexity ← countUnsolvedMetas tc.metas
-          nextRoundQueue := nextRoundQueue.insert complexity tc
-
-    -- Prepare for next iteration
-    if progress then
-      -- Re-add unsolved to queue with updated priorities
-      for tc in unsolved do
-        let complexity ← countUnsolvedMetas tc.metas
-        nextRoundQueue := nextRoundQueue.insert complexity tc
-      pq := nextRoundQueue
-      unsolved := #[]
-    else
-      pq := nextRoundQueue
-
-  -- Collect remaining unsolved from queue
-  while !pq.isEmpty do
-    match pq.extractMin with
-    | none => break
-    | some (tc, pq') =>
-      pq := pq'
-      unsolved := unsolved.push tc
-
-  return unsolved.map (·.constraint)
-
-/-- Solve constraints with worklist-driven approach (more efficient for large constraint sets) -/
-def solveConstraintsWorklist : TCM (Array Constraint) := do
-  -- Initialize: add all constraints to worklist
-  let allConstraints ← TCM.getPostponedTracked
-  TCM.clearPostponed
-
-  -- Track which constraints are still active
-  let mut activeConstraints : Std.HashMap Nat TrackedConstraint := {}
-  for tc in allConstraints do
-    activeConstraints := activeConstraints.insert tc.constraintId.id tc
-
-  -- Initialize worklist with all constraint IDs, sorted by complexity
-  let sorted ← sortByComplexity allConstraints
-  let mut worklist : Array ConstraintId := sorted.map (·.constraintId)
-
-  let mut iterations := 0
-  let maxIterations := maxConstraintIterations * 10  -- Higher limit for worklist approach
-
-  while !worklist.isEmpty && iterations < maxIterations do
-    iterations := iterations + 1
-
-    -- Pop from worklist
-    let cid := worklist[0]!
-    worklist := worklist.extract 1 worklist.size
-
-    -- Skip if already solved/removed
-    match activeConstraints.get? cid.id with
-    | none => continue
-    | some tc =>
-      if ← solveConstraint tc.constraint then
-        -- Solved! Remove from active set
-        activeConstraints := activeConstraints.erase cid.id
-
-        -- Wake up constraints that share metas with this one
-        for mid in tc.metas do
-          let isSolved ← TCM.isMetaSolved mid
-          if isSolved then
-            -- Find all constraints that reference this meta
-            let state ← TCM.getState
-            let affectedCids := state.metas.getAffectedConstraints mid
-            for affectedCid in affectedCids do
-              -- Only add if still active and not already in worklist
-              if activeConstraints.contains affectedCid.id then
-                if !worklist.contains affectedCid then
-                  worklist := worklist.push affectedCid
+    | .lit n1, .lit n2 =>
+      if n1 ≤ n2 then return .solved
       else
-        -- Still unsolved, might get new constraints
-        let newPostponed ← TCM.getPostponedTracked
-        TCM.clearPostponed
-        for newTc in newPostponed do
-          activeConstraints := activeConstraints.insert newTc.constraintId.id newTc
-          worklist := worklist.push newTc.constraintId
+        let span ← TCM.getSpan
+        return .failed (.internalError s!"level constraint failed: {l1'} ≤ {l2'}" span)
+    | .var _, _ => return .deferred
+    | _, .var _ => return .deferred
+    | _, _ => return .deferred
+where
+  /-- Collect unsolved metavariables from two values -/
+  collectUnsolvedMetas (v1 v2 : Value) : TCM (Array MetaId) := do
+    let mut metas : Array MetaId := #[]
+    -- Check v1 for unsolved metas at the head
+    match v1 with
+    | .vNeutral _ (.nMeta m) =>
+      let solved ← TCM.isMetaSolved m
+      if !solved then metas := metas.push m
+    | _ => pure ()
+    -- Check v2 for unsolved metas at the head
+    match v2 with
+    | .vNeutral _ (.nMeta m) =>
+      let solved ← TCM.isMetaSolved m
+      if !solved then metas := metas.push m
+    | _ => pure ()
+    return metas
 
-  -- Return remaining unsolved constraints
-  return activeConstraints.toList.map (·.2.constraint) |>.toArray
+/-- Run the unified constraint graph solver.
+    Returns the remaining unsolved constraints. -/
+def solveConstraints : TCM (Array Constraint) :=
+  Unify.solveConstraintGraph trySolveConstraint
 
 end Soma.Dependent

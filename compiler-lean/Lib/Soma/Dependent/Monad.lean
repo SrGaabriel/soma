@@ -298,6 +298,8 @@ structure TCState where
   uniqueSupply : Soma.UniqueSupply := Soma.UniqueSupply.initial ""
   /-- Registry mapping type names to their TypeIds -/
   typeIds : Std.HashMap String Soma.Core.TypeId := {}
+  /-- Dependencies on global definitions (for incremental checking) -/
+  globalDeps : Std.HashSet String := {}
   deriving Inhabited
 
 namespace TCState
@@ -558,10 +560,39 @@ def lookupLocal (name : String) : TCM (Option CtxEntry) := do
   let ctx ← getCtx
   return ctx.lookupLocal name
 
-/-- Look up a global -/
+/-- Record a dependency on a global definition (for incremental checking) -/
+def recordGlobalDep (name : String) : TCM Unit := do
+  modifyState fun s => { s with globalDeps := s.globalDeps.insert name }
+
+/-- Look up a global (and record dependency for incremental checking) -/
 def lookupGlobal (name : String) : TCM (Option GlobalInfo) := do
   let ctx ← getCtx
+  let result := ctx.lookupGlobal name
+  -- Record dependency if found
+  if result.isSome then
+    recordGlobalDep name
+  return result
+
+/-- Look up a global without recording a dependency -/
+def lookupGlobalNoDep (name : String) : TCM (Option GlobalInfo) := do
+  let ctx ← getCtx
   return ctx.lookupGlobal name
+
+/-- Get all recorded global dependencies -/
+def getGlobalDeps : TCM (Std.HashSet String) := do
+  let state ← getState
+  return state.globalDeps
+
+/-- Clear recorded global dependencies (call at start of checking a new definition) -/
+def clearGlobalDeps : TCM Unit := do
+  modifyState fun s => { s with globalDeps := {} }
+
+/-- Run an action and collect its global dependencies -/
+def withDependencyTracking (action : TCM α) : TCM (α × Std.HashSet String) := do
+  clearGlobalDeps
+  let result ← action
+  let deps ← getGlobalDeps
+  return (result, deps)
 
 /-- Run with updated globals -/
 def withGlobals (globals : Globals) (m : TCM α) : TCM α :=
@@ -986,6 +1017,183 @@ def tryAlternatives (actions : List (TCM α)) : TCM α := do
   match lastError with
   | some e => throw e
   | none => throw (.internalError "tryAlternatives: empty action list" Span.uninhabited)
+
+/-! ## Error Recovery Infrastructure
+
+These utilities support infallible type checking by:
+1. Collecting errors without stopping execution
+2. Providing placeholder values when errors occur
+3. Bounding recursion to prevent stack overflows
+4. Enabling partial results even when some definitions fail
+-/
+
+/-- Result of an action that may fail but should continue with a default -/
+inductive RecoverResult (α : Type) where
+  /-- Action succeeded with a value -/
+  | ok (value : α)
+  /-- Action failed, using default value -/
+  | recovered (value : α) (error : TCError)
+  deriving Inhabited
+
+namespace RecoverResult
+
+def value : RecoverResult α → α
+  | .ok v => v
+  | .recovered v _ => v
+
+def isOk : RecoverResult α → Bool
+  | .ok _ => true
+  | .recovered _ _ => false
+
+def error? : RecoverResult α → Option TCError
+  | .ok _ => none
+  | .recovered _ e => some e
+
+end RecoverResult
+
+/-- Run an action, recovering with a default value on failure.
+    The error is added to the error list but execution continues. -/
+def recover (action : TCM α) (default : α) : TCM (RecoverResult α) := do
+  let stateBefore ← getState
+  try
+    let result ← action
+    return .ok result
+  catch e =>
+    -- Restore state to before the failed action
+    set stateBefore
+    -- But record the error for later reporting
+    addError e
+    return .recovered default e
+
+/-- Run an action, recovering with a default value on failure.
+    Returns just the value (error is still recorded). -/
+def recoverWith (action : TCM α) (default : α) : TCM α := do
+  let result ← recover action default
+  return result.value
+
+/-- Run an action, recovering with a lazily-computed default on failure. -/
+def recoverWithM (action : TCM α) (mkDefault : TCM α) : TCM α := do
+  let stateBefore ← getState
+  try
+    action
+  catch e =>
+    set stateBefore
+    addError e
+    mkDefault
+
+/-- Create an error placeholder value (a neutral with an error meta).
+    Used when type checking fails but we need to continue. -/
+def errorPlaceholder (ty : Value) (span : Span) : TCM Value := do
+  let metaId ← freshMeta ty
+  return .vNeutral ty (.nMeta metaId)
+
+/-- Create a Type placeholder for when we can't infer a type -/
+def typePlaceholder (span : Span) : TCM Value := do
+  errorPlaceholder (.vType .zero) span
+
+/-- Run an action with bounded recursion depth.
+    Returns default if depth is exceeded. -/
+def withFuel [Inhabited α] (fuel : Nat) (action : Nat → TCM α) (span : Span) : TCM α := do
+  if fuel == 0 then
+    addError (.internalError "recursion limit exceeded" span)
+    return default
+  else
+    action (fuel - 1)
+
+/-- Default recursion fuel for deep operations -/
+def defaultFuel : Nat := 1000
+
+/-- Run a potentially deep recursive action with default fuel -/
+def bounded [Inhabited α] (action : Nat → TCM α) (span : Span) : TCM α :=
+  withFuel defaultFuel action span
+
+/-- Collect results from multiple actions, continuing even if some fail.
+    Returns all successful results and records all errors. -/
+def collectResults (actions : Array (TCM α)) (default : α) : TCM (Array α) := do
+  let mut results := #[]
+  for action in actions do
+    let result ← recover action default
+    results := results.push result.value
+  return results
+
+/-- Map over an array with error recovery for each element -/
+def mapRecover (arr : Array α) (f : α → TCM β) (default : β) : TCM (Array β) := do
+  let mut results := #[]
+  for x in arr do
+    let result ← recover (f x) default
+    results := results.push result.value
+  return results
+
+/-- Fold over an array with error recovery, continuing on failures -/
+def foldRecover (arr : Array α) (init : β) (f : β → α → TCM β) : TCM β := do
+  let mut acc := init
+  for x in arr do
+    match ← recover (f acc x) acc with
+    | .ok newAcc => acc := newAcc
+    | .recovered _ _ => pure ()  -- Keep old accumulator on failure
+  return acc
+
+/-- Check if we're in error recovery mode (have accumulated errors) -/
+def inRecoveryMode : TCM Bool := do
+  let state ← getState
+  return !state.errors.isEmpty
+
+/-- Get all accumulated errors so far -/
+def getAccumulatedErrors : TCM (Array TCError) := do
+  let state ← getState
+  return state.errors
+
+/-- Clear accumulated errors (use with caution, mainly for testing) -/
+def clearAccumulatedErrors : TCM Unit := do
+  modifyState fun s => { s with errors := #[] }
+
+/-- Run an action in a "sandbox" - errors are collected but not propagated to parent.
+    Returns (result, errors collected during action). -/
+def sandbox (action : TCM α) (default : α) : TCM (α × Array TCError) := do
+  let errorsBefore ← getAccumulatedErrors
+  clearAccumulatedErrors
+  let result ← recoverWith action default
+  let newErrors ← getAccumulatedErrors
+  modifyState fun s => { s with errors := errorsBefore }
+  return (result, newErrors)
+
+/-- Require that an action succeeds, but if it fails, add error and return default.
+    Unlike `recover`, this is for "soft" requirements that shouldn't stop checking. -/
+def softRequire (action : TCM α) (default : α) (errorMsg : String) (span : Span) : TCM α := do
+  match ← tryWithRollback action with
+  | some result => return result
+  | none =>
+    addError (.internalError errorMsg span)
+    return default
+
+/-- Assert a condition, adding an error if false but continuing execution -/
+def softAssert (cond : Bool) (errorMsg : String) (span : Span) : TCM Unit := do
+  if !cond then
+    addError (.internalError errorMsg span)
+
+/-- Run an action that might throw, converting throws to accumulated errors.
+    Always returns a value (the default on failure). This is the primary
+    mechanism for making type checking infallible. -/
+def infallible (action : TCM α) (default : α) : TCM α := do
+  recoverWith action default
+
+/-- Like infallible but for actions that produce elaborated expressions.
+    Creates a hole expression on failure. -/
+def infallibleExpr {scope : Metal.Scope} (action : TCM (Value × Metal.Expr Value scope))
+    (span : Span) : TCM (Value × Metal.Expr Value scope) := do
+  let stateBefore ← getState
+  try
+    action
+  catch e =>
+    set stateBefore
+    addError e
+    -- Create placeholder type and hole expression with fresh ID
+    let placeholderTy ← typePlaceholder span
+    let state ← getState
+    let holeId : Metal.HoleId := { id := state.freshCounter, name := some "_error" }
+    modifyState fun s => { s with freshCounter := s.freshCounter + 1 }
+    let holeExpr : Metal.Expr Value scope := .hole holeId span
+    return (placeholderTy, holeExpr)
 
 end TCM
 

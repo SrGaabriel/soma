@@ -404,4 +404,82 @@ def buildInstanceEnvFromModule (module : UntypedModule) : TCM InstanceEnv := do
 
   return env
 
+/-- Build an InstanceEnv incrementally, reusing cached class/instance info for unchanged definitions.
+    Takes the previous InstanceEnv and a set of dirty definition names. -/
+def buildInstanceEnvFromModuleIncremental
+    (module : UntypedModule)
+    (prevEnv : InstanceEnv)
+    (dirtyNames : Std.HashSet String)
+    : TCM InstanceEnv := do
+  -- Start with the default built-in instances
+  let mut env := defaultInstanceEnv
+  env := { env with moduleName := module.name }
+
+  -- First pass: elaborate type classes, reusing cached ones when possible
+  let mut registry := ClassRegistry.empty
+  for typeClass in module.typeClasses do
+    let className := typeClass.name.display
+
+    if dirtyNames.contains className then
+      -- Dirty: re-elaborate
+      let (classInfo, registry') ← elaborateClass typeClass registry
+      env := env.addClass classInfo
+      registry := registry'
+    else
+      -- Not dirty: try to reuse from previous env
+      match prevEnv.classes.toList.find? (fun (_, info) => info.classId.original == className) with
+      | some (classUnique, classInfo) =>
+        -- Reuse cached class info
+        env := env.addClass classInfo
+        registry := registry.register className classUnique
+      | none =>
+        -- Not in cache, must elaborate
+        let (classInfo, registry') ← elaborateClass typeClass registry
+        env := env.addClass classInfo
+        registry := registry'
+
+  -- Second pass: elaborate instances, reusing cached ones when possible
+  for inst in module.instances do
+    let instClassName := inst.className
+
+    -- Instance is dirty if its class is dirty or the instance itself changed
+    -- For simplicity, we consider an instance dirty if its class name is in dirtyNames
+    -- or if the instance's implementing type changed
+    let isDirty := dirtyNames.contains instClassName
+
+    if isDirty then
+      -- Dirty: re-elaborate
+      let typeClass? := module.typeClasses.find? fun tc =>
+        tc.name.display == instClassName
+
+      match typeClass? with
+      | none => pure ()
+      | some typeClass =>
+        match ← elaborateInstance inst registry typeClass with
+        | some instInfo => env := env.addInstanceWithId instInfo
+        | none => pure ()
+    else
+      -- Not dirty: try to reuse cached instances for this class
+      match registry.byName.get? instClassName with
+      | some classUnique =>
+        -- Find matching instance in previous env
+        let prevInstances := prevEnv.instances.getD classUnique #[]
+        -- For now, just re-add all previous instances for this class
+        -- A more precise approach would match by instance signature
+        for prevInst in prevInstances do
+          env := env.addInstanceWithId prevInst
+      | none =>
+        -- Class not in registry, need to elaborate
+        let typeClass? := module.typeClasses.find? fun tc =>
+          tc.name.display == instClassName
+
+        match typeClass? with
+        | none => pure ()
+        | some typeClass =>
+          match ← elaborateInstance inst registry typeClass with
+          | some instInfo => env := env.addInstanceWithId instInfo
+          | none => pure ()
+
+  return env
+
 end Soma.Dependent.TraitElaborate

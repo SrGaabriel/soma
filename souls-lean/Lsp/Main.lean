@@ -62,16 +62,46 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   -- Incremental analysis (reuses NodeIds and symbols where possible)
   let mod := analyzeSource filePath content oldModule?
 
-  -- Update state so hover/definition work
-  ctx.modifyUserState fun s => s.setModule filePath mod
+  -- Extract imported modules from the analyzed module
+  let importedModules := extractImportedModules mod.symbols
+
+  -- Update state: module, path mapping, and reverse dependencies
+  ctx.modifyUserState fun s =>
+    let s' := s.setModule filePath mod
+    let s'' := s'.registerModulePath mod.name filePath
+    s''.updateReverseDeps mod.name importedModules
 
   -- Get version for diagnostics
   let some snap ← ctx.getDocument uri | return
   let version := snap.version
 
-  -- Publish all diagnostics (lex, parse, Metal lower, type infer)
+  -- Publish diagnostics for the changed module
   let lspDiags := convertDiagnostics mod.diagnostics
   ctx.publishDiagnostics { uri, version := some version, diagnostics := lspDiags }
+
+  -- Find and re-analyze dependent modules
+  let state' ← ctx.getUserState
+  let dependentModuleNames := state'.getTransitiveDependents mod.name
+
+  for depModName in dependentModuleNames do
+    -- Get the file path for this dependent module
+    if let some depFilePath := state'.getModulePath depModName then
+      -- Get the content of the dependent file
+      let depUri := pathToUri depFilePath
+      if let some depContent ← ctx.getDocumentContent depUri then
+        -- Get old module for incremental analysis
+        let depOldModule? := state'.getModule depFilePath
+
+        -- Re-analyze with the dependent module marked as needing re-check
+        -- The incremental analysis will detect that imported modules changed
+        let depMod := analyzeSource depFilePath depContent depOldModule?
+
+        -- Update state
+        ctx.modifyUserState fun s => s.setModule depFilePath depMod
+
+        -- Publish diagnostics for the dependent module
+        let depLspDiags := convertDiagnostics depMod.diagnostics
+        ctx.publishDiagnostics { uri := depUri, diagnostics := depLspDiags }
 
 /-- Handle textDocument/didClose -/
 def handleDidClose (ctx : RequestContext LspState) (params : DidCloseTextDocumentParams) : IO Unit := do

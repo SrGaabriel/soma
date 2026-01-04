@@ -8,6 +8,7 @@ import Soma.Project.Graph
 import Soma.Project.Symbol
 import Soma.Dependent
 import Soma.Dependent.Driver
+import Soma.Dependent.Incremental
 import Soma.Core.Value
 
 namespace Soma.Check
@@ -18,7 +19,9 @@ open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleWithEx
 open Soma.Core
 open Soma.Project
 open Soma (UniqueSupply)
-open Soma.Dependent (Globals GlobalInfo TCContext TCState InstanceEnv InstanceInfo ClassInfo)
+open Soma.Dependent (Globals GlobalInfo TCContext TCState InstanceEnv InstanceInfo ClassInfo TCM)
+open Soma.Dependent.Incremental (DefId DefCache DefKind DepGraph IncrementalState hashString
+  hashFunction hashModuleDefinitions)
 
 /-- Derive module name from file path -/
 def moduleNameFromPath (filePath : String) : String :=
@@ -171,6 +174,8 @@ structure CheckedModule where
   publicInstances : InstanceMetadata
   /-- Source file for error reporting -/
   sourceFile : SourceFile
+  /-- Incremental checking state (dependency tracking and caching) -/
+  incrementalState : IncrementalState := IncrementalState.empty
 
 namespace CheckedModule
 
@@ -285,6 +290,229 @@ def mergeInstanceEnv (e1 e2 : InstanceEnv) : InstanceEnv :=
     instances := instances
     nextInstanceId := max e1.nextInstanceId e2.nextInstanceId
     moduleName := e1.moduleName }
+
+/-! ## Shared Type Checking Core
+
+These functions provide the core type checking logic that can be shared between
+the CLI (Check.lean) and LSP (Analysis.lean). They handle building globals,
+instance environments, and checking functions with proper incremental state tracking.
+-/
+
+/-- Result of checking functions in a module -/
+structure FunctionCheckResult where
+  /-- Final TC state after checking all functions -/
+  finalState : TCState
+  /-- Updated incremental state with caches and dependencies -/
+  incrementalState : IncrementalState
+  /-- Errors encountered during checking -/
+  errors : Array Soma.Dependent.TCError
+  deriving Inhabited
+
+/-- Check all functions in a Metal module, tracking dependencies and caching results.
+    This is the core function-checking loop shared by both CLI and LSP.
+
+    Parameters:
+    - `metalModule`: The Metal IR module to check
+    - `moduleName`: Name of the module (for DefId construction)
+    - `ctx`: Type checking context with globals and instances
+    - `initialState`: Initial TC state
+    - `prevIncrState`: Previous incremental state (for caching)
+    - `dirtyNames`: If Some, only check functions in this set; if None, check all -/
+def checkFunctionsCore
+    (metalModule : Metal.UntypedModule)
+    (moduleName : String)
+    (ctx : TCContext)
+    (initialState : TCState)
+    (prevIncrState : IncrementalState)
+    (dirtyNames : Option (HashSet String))
+    : FunctionCheckResult := Id.run do
+  let mut errors : Array Soma.Dependent.TCError := #[]
+  let mut currentState := initialState
+  let mut incrState := prevIncrState
+
+  for fn in metalModule.functions do
+    let fnName := fn.name.display
+    let defId := DefId.mk moduleName fnName
+
+    -- Determine if we should check this function
+    let shouldCheck := match dirtyNames with
+      | none => true  -- Check all
+      | some dirty => dirty.contains fnName || !prevIncrState.isCached defId
+
+    if shouldCheck then
+      -- Clear dependency tracking before checking this function
+      let stateWithClearedDeps := { currentState with globalDeps := {} }
+
+      let checkResult := (Soma.Dependent.Driver.checkFunction fn).run ctx stateWithClearedDeps
+      match checkResult with
+      | .error e =>
+        -- Record error but continue with next function
+        errors := errors.push e
+        -- Cache the failure for incremental re-checking
+        let syntaxHash := hashFunction fn
+        let cache := DefCache.failure syntaxHash (Value.vType Level.zero) DefKind.function #[e]
+        incrState := incrState.updateCache defId cache
+      | .ok (fnType, newState) =>
+        -- Also collect any accumulated errors from error recovery
+        errors := errors ++ newState.errors
+
+        -- Clear old dependencies and record new ones
+        incrState := incrState.clearDeps defId
+        let deps := newState.globalDeps
+        for depName in deps do
+          -- Only track dependencies on definitions in globals
+          if ctx.globals.lookup depName |>.isSome then
+            let depId := DefId.mk moduleName depName
+            incrState := incrState.addDependency defId depId
+
+        -- Cache successful result
+        let syntaxHash := hashFunction fn
+        let isComplete := newState.errors.isEmpty
+        let cache := if isComplete then
+          DefCache.success syntaxHash fnType DefKind.function
+        else
+          DefCache.failure syntaxHash fnType DefKind.function newState.errors
+        incrState := incrState.updateCache defId cache
+
+        currentState := newState
+    -- else: not dirty, keep cached result (already in incrState)
+
+  return { finalState := currentState, incrementalState := incrState, errors := errors }
+
+/-- Result of building globals and instance environment -/
+structure GlobalsAndInstancesResult where
+  /-- The built globals environment -/
+  globals : Globals
+  /-- The built instance environment -/
+  instanceEnv : InstanceEnv
+  /-- Final TC state -/
+  finalState : TCState
+  /-- Errors encountered -/
+  errors : Array Soma.Dependent.TCError
+  deriving Inhabited
+
+/-- Build globals and instance environment for a module with error recovery.
+    Returns partial results even if some definitions fail.
+
+    Parameters:
+    - `metalModule`: The Metal IR module
+    - `moduleName`: Name of the module
+    - `seedGlobals`: Globals inherited from dependencies
+    - `seedInstanceEnv`: Instance env inherited from dependencies
+    - `prevGlobals`: Previous globals for incremental reuse (optional)
+    - `prevInstanceEnv`: Previous instance env for incremental reuse (optional)
+    - `dirtyNames`: If Some, only rebuild dirty definitions; if None, rebuild all -/
+def buildGlobalsAndInstances
+    (metalModule : Metal.UntypedModule)
+    (moduleName : String)
+    (seedGlobals : Globals)
+    (seedInstanceEnv : InstanceEnv)
+    (prevGlobals : Option Globals := none)
+    (prevInstanceEnv : Option InstanceEnv := none)
+    (dirtyNames : Option (HashSet String) := none)
+    : GlobalsAndInstancesResult := Id.run do
+  let baseCtx := TCContext.withDefaultInstances
+  let state := TCState.forModule moduleName
+  let mut allErrors : Array Soma.Dependent.TCError := #[]
+
+  -- Build globals
+  let globalsResult := match dirtyNames, prevGlobals with
+    | some dirty, some prev =>
+      (Soma.Dependent.Driver.buildGlobalsIncremental metalModule prev dirty).run
+        { baseCtx with globals := seedGlobals } state
+    | _, _ =>
+      (Soma.Dependent.Driver.buildGlobals metalModule).run
+        { baseCtx with globals := seedGlobals } state
+
+  let (moduleGlobals, state', globalsErrors) := match globalsResult with
+    | .error e => (Globals.empty, state, #[e])
+    | .ok (globals, st) => (globals, st, st.errors)
+
+  allErrors := allErrors ++ globalsErrors
+
+  -- Merge with seed globals
+  let fullGlobals := mergeGlobals seedGlobals moduleGlobals
+  let ctx := { baseCtx with globals := fullGlobals, instanceEnv := seedInstanceEnv }
+
+  -- Build instance environment
+  let instanceEnvResult := match dirtyNames, prevInstanceEnv with
+    | some dirty, some prev =>
+      (Soma.Dependent.Driver.buildInstanceEnvIncremental metalModule moduleName prev dirty).run ctx state'
+    | _, _ =>
+      (Soma.Dependent.Driver.buildInstanceEnv metalModule moduleName).run ctx state'
+
+  let (moduleInstanceEnv, state'', instanceErrors) := match instanceEnvResult with
+    | .error e => (InstanceEnv.empty, state', #[e])
+    | .ok (instEnv, st) => (instEnv, st, st.errors)
+
+  allErrors := allErrors ++ instanceErrors
+
+  let fullInstanceEnv := mergeInstanceEnv seedInstanceEnv moduleInstanceEnv
+
+  return {
+    globals := fullGlobals
+    instanceEnv := fullInstanceEnv
+    finalState := state''
+    errors := allErrors
+  }
+
+/-- Full type checking pipeline for a Metal module.
+    Combines globals building, instance env building, and function checking.
+    Returns all results needed to construct a CheckedModule or CompiledModule.
+
+    Parameters:
+    - `metalModule`: The Metal IR module to check
+    - `moduleName`: Name of the module
+    - `seedGlobals`: Globals inherited from dependencies
+    - `seedInstanceEnv`: Instance env inherited from dependencies
+    - `prevIncrState`: Previous incremental state (optional, for incremental checking) -/
+def typeCheckModule
+    (metalModule : Metal.UntypedModule)
+    (moduleName : String)
+    (seedGlobals : Globals)
+    (seedInstanceEnv : InstanceEnv)
+    (prevIncrState : Option IncrementalState := none)
+    : Globals × InstanceEnv × IncrementalState × Array Soma.Dependent.TCError := Id.run do
+  -- Determine dirty names if we have previous state
+  let (dirtyNames, baseIncrState) := match prevIncrState with
+    | some prev =>
+      let currentHashes := hashModuleDefinitions moduleName metalModule
+      let updated := prev.invalidateChanged currentHashes
+      let dirtyDefs := updated.getDirtyInOrder
+      let dirty : HashSet String := dirtyDefs.foldl (init := {}) fun (acc : HashSet String) (defId : DefId) =>
+        acc.insert defId.name
+      (some dirty, updated)
+    | none =>
+      (none, IncrementalState.forModule moduleName)
+
+  -- Get previous globals/instanceEnv for incremental building
+  let prevGlobals : Option Globals := prevIncrState.map (fun (s : IncrementalState) => s.cachedGlobals)
+  let prevInstanceEnv : Option InstanceEnv := prevIncrState.map (fun (s : IncrementalState) => s.cachedInstanceEnv)
+
+  -- Build globals and instance environment
+  let globalsResult := buildGlobalsAndInstances
+    metalModule moduleName seedGlobals seedInstanceEnv prevGlobals prevInstanceEnv dirtyNames
+
+  let mut allErrors := globalsResult.errors
+
+  -- Prepare context for function checking
+  let baseCtx := TCContext.withDefaultInstances
+  let ctx := { baseCtx with
+    globals := globalsResult.globals
+    instanceEnv := globalsResult.instanceEnv }
+
+  -- Check functions
+  let fnResult := checkFunctionsCore
+    metalModule moduleName ctx globalsResult.finalState baseIncrState dirtyNames
+
+  allErrors := allErrors ++ fnResult.errors
+
+  -- Update incremental state with final globals
+  let finalIncrState := { fnResult.incrementalState with
+    cachedGlobals := globalsResult.globals
+    cachedInstanceEnv := globalsResult.instanceEnv }
+
+  return (globalsResult.globals, globalsResult.instanceEnv, finalIncrState, allErrors)
 
 /-- Extract public symbols from a type-checked module -/
 def extractPublicSymbols
@@ -500,7 +728,8 @@ def extractPreludeSymbols (extSymbols : Std.HashMap String SymbolEnv) : Array St
   | none => #[]
   | some env => env.toArray.map fun (sym, _) => sym.name
 
-/-- Check a single module with access to already-checked dependencies using dependent types -/
+/-- Check a single module with access to already-checked dependencies using dependent types.
+    Uses error recovery to continue checking and produce partial results even on errors. -/
 def checkModule
     (info : ModuleInfo)
     (checkedDeps : Std.HashMap String CheckedModule)
@@ -532,72 +761,107 @@ def checkModule
   if metalRes.diagnostics.hasErrors then
     return (metalRes.diagnostics, none, supply)
 
-  -- Run dependent type checking
-  let baseCtx := TCContext.withDefaultInstances
-  let state := TCState.forModule modName
+  -- Use the shared type checking pipeline (fresh check, no previous state)
+  let (fullGlobals, fullInstanceEnv, incrState, tcErrors) :=
+    typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv none
 
-  -- Build globals for this module, starting with seed globals
-  let globalsResult := (Soma.Dependent.Driver.buildGlobals metalRes.module).run
-    { baseCtx with globals := seedGlobals } state
+  let allDiags := tcErrors.map (·.toDiagnostic)
 
-  match globalsResult with
-  | .error e =>
-    let diag := e.toDiagnostic
-    return (#[diag], none, supply)
-  | .ok (moduleGlobals, state') =>
-    -- Merge with seed globals
-    let fullGlobals := mergeGlobals seedGlobals moduleGlobals
-    let ctx := { baseCtx with globals := fullGlobals, instanceEnv := seedInstanceEnv }
+  -- Extract public symbols and instances (always do this, even with errors)
+  let depSymbols : SymbolEnv := checkedDeps.fold (init := {}) fun acc _ dep =>
+    dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
-    -- Build instance environment for this module
-    let instanceEnvResult := (Soma.Dependent.Driver.buildInstanceEnv metalRes.module modName).run ctx state'
+  let (publicSymbols, supply') := extractPublicSymbols
+    metalRes.module fullGlobals packageName modName depSymbols supply
 
-    match instanceEnvResult with
-    | .error e =>
-      let diag := e.toDiagnostic
-      return (#[diag], none, supply)
-    | .ok (moduleInstanceEnv, state'') =>
-      let fullInstanceEnv := mergeInstanceEnv seedInstanceEnv moduleInstanceEnv
-      let ctx' := { ctx with instanceEnv := fullInstanceEnv }
+  let depInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
+    mergeInstanceEnvs acc dep.publicInstances
 
-      -- Type check each function, threading state to preserve TypeId registrations
-      let mut allErrors : Array Soma.Dependent.TCError := #[]
-      let mut currentState := state''
-      for fn in metalRes.module.functions do
-        let checkResult := (Soma.Dependent.Driver.checkFunction fn).run ctx' currentState
-        match checkResult with
-        | .error e => allErrors := allErrors.push e
-        | .ok (_, newState) => currentState := newState
+  let (publicInstances, supply'') := extractPublicInstances
+    metalRes.module fullInstanceEnv packageName modName depInstances supply'
 
-      if !allErrors.isEmpty then
-        let diags := allErrors.map (·.toDiagnostic)
-        return (diags, none, supply)
+  -- Always produce a CheckedModule, even with errors
+  -- This enables IDE features to work with partial information
+  let checkedModule : CheckedModule := {
+    name := modName
+    resolvedAst := info.ast
+    metalModule := metalRes.module
+    globals := fullGlobals
+    instanceEnv := fullInstanceEnv
+    publicSymbols := publicSymbols
+    publicInstances := publicInstances
+    sourceFile := info.sourceFile
+    incrementalState := incrState
+  }
 
-      -- Extract public symbols and instances
-      let seedSymbols : SymbolEnv := checkedDeps.fold (init := {}) fun acc _ dep =>
-        dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
+  (metalRes.diagnostics ++ allDiags, some checkedModule, supply'')
 
-      let (publicSymbols, supply') := extractPublicSymbols
-        metalRes.module fullGlobals packageName modName seedSymbols supply
+/-- Check a single module incrementally, reusing cached results for unchanged definitions.
+    This is the main entry point for incremental type checking in the LSP. -/
+def checkModuleIncremental
+    (info : ModuleInfo)
+    (prevModule : CheckedModule)
+    (checkedDeps : Std.HashMap String CheckedModule)
+    (externalGlobals : Globals)
+    (externalInstanceEnv : InstanceEnv)
+    (externalSymbols : SymbolEnv)
+    (packageName : String)
+    (supply : UniqueSupply)
+    : Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
+  let modName := info.name.toString
 
-      let seedInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
-        mergeInstanceEnvs acc dep.publicInstances
+  -- Collect globals from checked dependencies
+  let seedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
+    mergeGlobals acc dep.globals
 
-      let (publicInstances, supply'') := extractPublicInstances
-        metalRes.module fullInstanceEnv packageName modName seedInstances supply'
+  let seedInstanceEnv := checkedDeps.fold (init := externalInstanceEnv) fun acc _ dep =>
+    mergeInstanceEnv acc dep.instanceEnv
 
-      let checkedModule : CheckedModule := {
-        name := modName
-        resolvedAst := info.ast
-        metalModule := metalRes.module
-        globals := fullGlobals
-        instanceEnv := fullInstanceEnv
-        publicSymbols := publicSymbols
-        publicInstances := publicInstances
-        sourceFile := info.sourceFile
-      }
+  let seedSymbols := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
+    dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
-      (metalRes.diagnostics, some checkedModule, supply'')
+  let initialGlobalEnv := symbolEnvToGlobalEnv modName seedSymbols
+
+  -- Lower AST to Metal IR
+  let metalRes := metalWithExternals info.ast initialGlobalEnv
+  if metalRes.diagnostics.hasErrors then
+    return (metalRes.diagnostics, none, supply)
+
+  -- Use the shared type checking pipeline with previous state for incremental checking
+  let (fullGlobals, fullInstanceEnv, incrState, tcErrors) :=
+    typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv (some prevModule.incrementalState)
+
+  -- If nothing changed (empty errors and same state), we could reuse previous result
+  -- But for correctness, we rebuild anyway since Metal IR might have changed
+
+  let allDiags := tcErrors.map (·.toDiagnostic)
+
+  -- Extract public symbols and instances
+  let depSymbols : SymbolEnv := checkedDeps.fold (init := {}) fun acc _ dep =>
+    dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
+
+  let (publicSymbols, supply') := extractPublicSymbols
+    metalRes.module fullGlobals packageName modName depSymbols supply
+
+  let depInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
+    mergeInstanceEnvs acc dep.publicInstances
+
+  let (publicInstances, supply'') := extractPublicInstances
+    metalRes.module fullInstanceEnv packageName modName depInstances supply'
+
+  let checkedModule : CheckedModule := {
+    name := modName
+    resolvedAst := info.ast
+    metalModule := metalRes.module
+    globals := fullGlobals
+    instanceEnv := fullInstanceEnv
+    publicSymbols := publicSymbols
+    publicInstances := publicInstances
+    sourceFile := info.sourceFile
+    incrementalState := incrState
+  }
+
+  (metalRes.diagnostics ++ allDiags, some checkedModule, supply'')
 
 /-- Check all modules in topological order -/
 def checkModulesInOrder

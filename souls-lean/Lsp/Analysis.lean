@@ -3,6 +3,7 @@ import Soma.Syntax
 import Soma.Metal
 import Soma.Metal.Lower.Decl
 import Soma.Dependent
+import Soma.Dependent.Incremental
 import Soma.Project.Check
 import Lsp.State
 import Lsp.Symbols
@@ -15,9 +16,14 @@ open Std
 open Soma.Syntax
 open Soma.Dependent
 open Soma.Dependent.Driver
+open Soma.Dependent.Incremental (IncrementalState)
 open Soma.Metal (UntypedModule)
 open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleIncremental getDeclName)
-open Soma.Check (moduleNameFromPath fileIdFromPath)
+open Soma.Check (moduleNameFromPath fileIdFromPath typeCheckModule)
+
+/-- Extract imported module paths from a symbol table -/
+def extractImportedModules (symbols : SymbolTable) : Array String :=
+  symbols.imports.map (·.modulePath)
 
 /-- Build declNodeIds mapping from definitions -/
 def buildDeclNodeIds (defs : Array CstDefinition) : Std.HashMap NodeId String :=
@@ -72,25 +78,16 @@ def analyzeSourceFresh (filePath : String) (content : String) : CompiledModule :
   let metalResult := lowerModuleFresh ast
   let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
 
-  -- Phase 7: Dependent type checking
-  let tcState := TCState.forModule moduleName
-  let tcCtx := TCContext.empty
+  -- Phase 7: Dependent type checking using the shared pipeline
+  -- For LSP single-file analysis, we have no dependencies (empty seed globals/instances)
+  let (globals, instanceEnv, incrState, tcErrors) :=
+    typeCheckModule metalResult.module moduleName Globals.empty InstanceEnv.empty none
 
-  -- Build globals and instance environment
-  let (globals, instanceEnv, inferDiags) := match (buildGlobals metalResult.module).run tcCtx tcState with
-    | .ok (globals, state1) =>
-      match (buildInstanceEnv metalResult.module moduleName).run { tcCtx with globals := globals } state1 with
-      | .ok (instanceEnv, state2) =>
-        -- Type check each function
-        let checkCtx : TCContext := { tcCtx with globals := globals, instanceEnv := instanceEnv }
-        let finalState := metalResult.module.functions.foldl (fun st fn =>
-          match (checkFunction fn).run checkCtx st with
-          | .ok (_, st') => st'
-          | .error e => st.addError e
-        ) state2
-        (globals, instanceEnv, tcErrorsToDiagnostics finalState.errors)
-      | .error e => (Globals.empty, InstanceEnv.empty, #[e.toDiagnostic])
-    | .error e => (Globals.empty, InstanceEnv.empty, #[e.toDiagnostic])
+  -- Update incremental state with imported modules
+  let importedMods := extractImportedModules symbols
+  let finalIncrState := importedMods.foldl (fun acc mod => acc.addImportedModule mod) incrState
+
+  let inferDiags := tcErrorsToDiagnostics tcErrors
 
   let allDiags := frontendDiags ++ astLowerDiags ++ metalLowerDiags ++ inferDiags
 
@@ -106,6 +103,7 @@ def analyzeSourceFresh (filePath : String) (content : String) : CompiledModule :
     metalResult := some metalResult
     globals := some globals
     instanceEnv := some instanceEnv
+    incrementalState := some finalIncrState
   }
 
 /-- Analyze a source file incrementally using prior state -/
@@ -186,24 +184,19 @@ def analyzeSourceIncremental (filePath : String) (content : String)
 
   let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
 
-  -- Phase 8: Dependent type checking (no caching for now, always rebuild)
-  let tcState := TCState.forModule moduleName
-  let tcCtx := TCContext.empty
+  -- Phase 8: Incremental dependent type checking using the shared pipeline
+  -- Get or create previous incremental state
+  let prevIncrState := oldModule.incrementalState
 
-  let (globals, instanceEnv, inferDiags) := match (buildGlobals metalResult.module).run tcCtx tcState with
-    | .ok (globals, state1) =>
-      match (buildInstanceEnv metalResult.module moduleName).run { tcCtx with globals := globals } state1 with
-      | .ok (instanceEnv, state2) =>
-        -- Type check each function
-        let checkCtx : TCContext := { tcCtx with globals := globals, instanceEnv := instanceEnv }
-        let finalState := metalResult.module.functions.foldl (fun st fn =>
-          match (checkFunction fn).run checkCtx st with
-          | .ok (_, st') => st'
-          | .error e => st.addError e
-        ) state2
-        (globals, instanceEnv, tcErrorsToDiagnostics finalState.errors)
-      | .error e => (Globals.empty, InstanceEnv.empty, #[e.toDiagnostic])
-    | .error e => (Globals.empty, InstanceEnv.empty, #[e.toDiagnostic])
+  -- Use the shared type checking pipeline with previous state for incremental checking
+  let (globals, instanceEnv, incrState, tcErrors) :=
+    typeCheckModule metalResult.module moduleName Globals.empty InstanceEnv.empty prevIncrState
+
+  -- Update incremental state with imported modules
+  let importedMods := extractImportedModules symbols
+  let finalIncrState := importedMods.foldl (fun acc mod => acc.addImportedModule mod) incrState
+
+  let inferDiags := tcErrorsToDiagnostics tcErrors
 
   let allDiags := frontendDiags ++ astLowerDiags ++ metalLowerDiags ++ inferDiags
 
@@ -219,6 +212,7 @@ def analyzeSourceIncremental (filePath : String) (content : String)
     metalResult := some metalResult
     globals := some globals
     instanceEnv := some instanceEnv
+    incrementalState := some finalIncrState
   }
 
 /-- Analyze a source file, using incremental analysis if old module is available -/

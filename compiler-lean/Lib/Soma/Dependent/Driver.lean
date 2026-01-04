@@ -175,20 +175,25 @@ def checkFunction (fn : Metal.UntypedFunction) : TCM Value := do
   match fn.declaredTypeSyntax with
   | some typeSyntax =>
     -- Elaborate the declared type signature
-    let declaredType ← Elaborate.elaborateType Elaborate.ElabEnv.empty typeSyntax
+    let declaredType ← TCM.recoverWithM
+      (Elaborate.elaborateType Elaborate.ElabEnv.empty typeSyntax)
+      (TCM.typePlaceholder span)
     -- Extract ALL parameter types (both implicit forall binders and explicit params)
     -- This ensures type variables like label polymorphism variables are in scope
-    let (allParams, resultType) ← extractAllParamTypes declaredType fn.params.size
+    let (allParams, resultType) ← TCM.recoverWith
+      (extractAllParamTypes declaredType fn.params.size)
+      (#[], declaredType)
     -- Extend context with ALL bindings and check body against result type
+    -- Use infallible to continue even if body checking fails
     withAllTypeBindings allParams fn.params span do
-      let _ ← Soma.Dependent.check fn.body resultType
+      let _ ← TCM.infallible (Soma.Dependent.check fn.body resultType) default
     return declaredType
   | none =>
     -- No signature: create fresh metavariables for param types
     let paramTypes ← fn.params.mapM fun _ => TCM.freshMetaVal (.vType .zero)
     -- Extend context with parameters and infer body type
     withFunctionParams fn.params paramTypes span do
-      let (inferredType, _) ← Soma.Dependent.infer fn.body
+      let (inferredType, _) ← TCM.infallibleExpr (Soma.Dependent.infer fn.body) span
       return inferredType
 
 /-- Elaborate a constructor type: fields -> DataType params -/
@@ -359,13 +364,15 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
       for ctor in constructors do
         -- Elaborate the constructor type by checking wheter indexed (has signature) or simple (has fields)
         -- Use withGlobals so the TCM context sees the registered data types
-        let ctorType ← match ctor.sigSyntax with
-          | some sig =>
-            -- Indexed constructor: elaborate full signature
-            TCM.withGlobals globals (elaborateIndexedCtorType typeName typeVarNames sig)
-          | none =>
-            -- Simple constructor: build type from fields
-            TCM.withGlobals globals (elaborateCtorType typeName typeVarNames ctor.fieldTypeSyntax)
+        let ctorType ← TCM.recoverWithM
+          (match ctor.sigSyntax with
+            | some sig =>
+              -- Indexed constructor: elaborate full signature
+              TCM.withGlobals globals (elaborateIndexedCtorType typeName typeVarNames sig)
+            | none =>
+              -- Simple constructor: build type from fields
+              TCM.withGlobals globals (elaborateCtorType typeName typeVarNames ctor.fieldTypeSyntax))
+          (TCM.typePlaceholder Span.uninhabited)
         -- Get the simple constructor name
         let ctorSimpleName := ctor.name.ctorSimpleName?.getD ctor.name.display
         let ctorQualifiedName := s!"{typeName.display}.{ctorSimpleName}"
@@ -385,7 +392,9 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
     | .struct structName typeVarNames ctorName fields =>
       -- Elaborate struct constructor type from field types
       let fieldTypes := fields.map (·.2)
-      let ctorType ← TCM.withGlobals globals (elaborateCtorType structName typeVarNames fieldTypes)
+      let ctorType ← TCM.recoverWithM
+        (TCM.withGlobals globals (elaborateCtorType structName typeVarNames fieldTypes))
+        (TCM.typePlaceholder Span.uninhabited) -- todo: review if Span.uninhabited is appropriate here
       -- Get the simple constructor name
       let ctorSimpleName := ctorName.ctorSimpleName?.getD ctorName.display
       let ctorQualifiedName := s!"{structName.display}.{ctorSimpleName}"
@@ -418,27 +427,32 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
     | .record _ _ _ =>
       pure ()
 
-  -- Register type class methods as globals
+  -- Register type class methods as globals (with error recovery for each method)
   for typeClass in module.typeClasses do
     for (methodName, methodTypeSyntax) in typeClass.methodSignatures do
-      -- Build an elaboration environment with the trait's type parameters
-      let mut elabEnv := Elaborate.ElabEnv.empty
-      for paramName in typeClass.paramNames do
-        elabEnv := elabEnv.extend paramName (Value.vType Level.zero)
+      let methodType ← TCM.recoverWithM
+        (do
+          -- Build an elaboration environment with the trait's type parameters
+          let mut elabEnv := Elaborate.ElabEnv.empty
+          for paramName in typeClass.paramNames do
+            elabEnv := elabEnv.extend paramName (Value.vType Level.zero)
 
-      -- Elaborate the method type signature with type params in scope
-      let methodTypeBody ← TCM.withGlobals globals (Elaborate.elaborateType elabEnv methodTypeSyntax)
+          -- Elaborate the method type signature with type params in scope
+          let methodTypeBody ← TCM.withGlobals globals (Elaborate.elaborateType elabEnv methodTypeSyntax)
 
-      -- Wrap in implicit foralls for type parameters (right to left)
-      let mut methodType := methodTypeBody
-      let mut outerEnv := elabEnv
-      for paramName in typeClass.paramNames.reverse do
-        outerEnv := {
-          tyVars := outerEnv.tyVars.tail!
-          level := outerEnv.level - 1
-        }
-        let codClosure ← Elaborate.mkDependentClosure paramName methodType outerEnv
-        methodType := Value.vPi .omega .implicit paramName (Value.vType Level.zero) codClosure
+          -- Wrap in implicit foralls for type parameters (right to left)
+          let mut methodType := methodTypeBody
+          let mut outerEnv := elabEnv
+          for paramName in typeClass.paramNames.reverse do
+            outerEnv := {
+              tyVars := outerEnv.tyVars.tail!
+              level := outerEnv.level - 1
+            }
+            let codClosure ← Elaborate.mkDependentClosure paramName methodType outerEnv
+            methodType := Value.vPi .omega .implicit paramName (Value.vType Level.zero) codClosure
+
+          return methodType)
+        (TCM.typePlaceholder Span.uninhabited) -- todo: review if Span.uninhabited is appropriate here
 
       let methodUnique ← TCM.freshUnique methodName.display
       let methodInfo : GlobalInfo := {
@@ -453,9 +467,11 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
   for fn in module.functions do
     -- Elaborate the type signature if present, otherwise create a placeholder
     -- Use elaborateFunctionType to properly handle free type variables as implicit foralls
-    let fnType ← match fn.declaredTypeSyntax with
-      | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
-      | none => TCM.freshMetaVal (.vType .zero)
+    let fnType ← TCM.recoverWithM
+      (match fn.declaredTypeSyntax with
+        | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
+        | none => TCM.freshMetaVal (.vType .zero))
+      (TCM.typePlaceholder fn.body.span)
     let fnUnique ← TCM.freshUnique fn.name.display
     let info : GlobalInfo := { name := .user fnUnique, type := fnType, value := none, isConstructor := false }
     globals := globals.insert fn.name.display info
@@ -465,5 +481,268 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
 /-- Build the InstanceEnv from module type classes and instances -/
 def buildInstanceEnv (module : Metal.UntypedModule) (_moduleName : String) : TCM InstanceEnv := do
   TraitElaborate.buildInstanceEnvFromModule module
+
+/-- Build the InstanceEnv incrementally, reusing cached info for unchanged definitions -/
+def buildInstanceEnvIncremental
+    (module : Metal.UntypedModule)
+    (_moduleName : String)
+    (prevEnv : InstanceEnv)
+    (dirtyNames : Std.HashSet String)
+    : TCM InstanceEnv := do
+  TraitElaborate.buildInstanceEnvFromModuleIncremental module prevEnv dirtyNames
+
+/-- Register or reuse a data type definition, returns updated globals -/
+private def registerDataType
+    (globals : Globals)
+    (nameStr : String)
+    (prevGlobals : Option Globals)
+    (isDirty : Bool)
+    : TCM Globals := do
+  -- Check if we can reuse from previous globals
+  if !isDirty then
+    if let some prev := prevGlobals then
+      if let some info := prev.lookup nameStr then
+        let mut g := globals.insert nameStr info
+        if let some typeId := prev.lookupTypeId nameStr then
+          g := g.registerTypeId nameStr typeId
+          TCM.registerTypeId nameStr typeId
+        return g
+
+  -- Must elaborate fresh
+  let typeUnique ← TCM.freshUnique nameStr
+  let typeId : Soma.Core.TypeId := Soma.Core.TypeId.fromUnique typeUnique
+  let mut g := globals.registerTypeId nameStr typeId
+  TCM.registerTypeId nameStr typeId
+  let dataTypeVal := Value.vDataType typeId []
+  let dataTypeInfo : GlobalInfo := {
+    name := .user typeUnique
+    type := Value.vType .zero
+    value := some dataTypeVal
+    isConstructor := false
+  }
+  return g.insert nameStr dataTypeInfo
+
+/-- Register or reuse a constructor, returns updated globals -/
+private def registerConstructor
+    (globals : Globals)
+    (typeName : Metal.Name)
+    (typeVarNames : Array String)
+    (ctor : Metal.UntypedConstructor)
+    (prevGlobals : Option Globals)
+    (isDirty : Bool)
+    : TCM Globals := do
+  let ctorSimpleName := ctor.name.ctorSimpleName?.getD ctor.name.display
+  let ctorQualifiedName := s!"{typeName.display}.{ctorSimpleName}"
+
+  -- Check if we can reuse from previous globals
+  if !isDirty then
+    if let some prev := prevGlobals then
+      if let some info := prev.lookup ctorQualifiedName then
+        let mut g := globals.insert ctorQualifiedName info
+        if !g.defs.contains ctorSimpleName then
+          g := g.insert ctorSimpleName info
+        return g
+
+  -- Must elaborate fresh
+  let ctorType ← TCM.recoverWithM
+    (match ctor.sigSyntax with
+      | some sig => TCM.withGlobals globals (elaborateIndexedCtorType typeName typeVarNames sig)
+      | none => TCM.withGlobals globals (elaborateCtorType typeName typeVarNames ctor.fieldTypeSyntax))
+    (TCM.typePlaceholder Span.uninhabited)
+  let ctorUnique ← TCM.freshUnique ctorQualifiedName
+  let info : GlobalInfo := {
+    name := .user ctorUnique
+    type := ctorType
+    value := none
+    isConstructor := true
+    ctorTag := ctor.tag
+  }
+  let mut g := globals.insert ctorQualifiedName info
+  if !g.defs.contains ctorSimpleName then
+    g := g.insert ctorSimpleName info
+  return g
+
+/-- Register or reuse a struct constructor and its field accessors, returns updated globals -/
+private def registerStructConstructor
+    (globals : Globals)
+    (structName : Metal.Name)
+    (typeVarNames : Array String)
+    (ctorName : Metal.Name)
+    (fields : Array (Option String × Syntax.TypeExpr))
+    (prevGlobals : Option Globals)
+    (isDirty : Bool)
+    : TCM Globals := do
+  let structNameStr := structName.display
+  let ctorSimpleName := ctorName.ctorSimpleName?.getD ctorName.display
+  let ctorQualifiedName := s!"{structNameStr}.{ctorSimpleName}"
+
+  -- Check if we can reuse from previous globals
+  if !isDirty then
+    if let some prev := prevGlobals then
+      if let some info := prev.lookup ctorQualifiedName then
+        let mut g := globals.insert ctorQualifiedName info
+        if !g.defs.contains ctorSimpleName then
+          g := g.insert ctorSimpleName info
+        -- Also restore field accessors
+        for (fieldNameOpt, _) in fields do
+          if let some fieldName := fieldNameOpt then
+            let accessorNameStr := s!"{structNameStr}.{fieldName}"
+            if let some accessorInfo := prev.lookup accessorNameStr then
+              g := g.insert accessorNameStr accessorInfo
+        return g
+
+  -- Must elaborate fresh
+  let fieldTypes := fields.map (·.2)
+  let ctorType ← TCM.recoverWithM
+    (TCM.withGlobals globals (elaborateCtorType structName typeVarNames fieldTypes))
+    (TCM.typePlaceholder Span.uninhabited)
+  let structCtorUnique ← TCM.freshUnique ctorQualifiedName
+  let info : GlobalInfo := {
+    name := .user structCtorUnique
+    type := ctorType
+    value := none
+    isConstructor := true
+    ctorTag := 0
+  }
+  let mut g := globals.insert ctorQualifiedName info
+  if !g.defs.contains ctorSimpleName then
+    g := g.insert ctorSimpleName info
+
+  -- Register field accessors
+  for (fieldNameOpt, _) in fields do
+    if let some fieldName := fieldNameOpt then
+      let accessorNameStr := s!"{structNameStr}.{fieldName}"
+      let accessorUnique ← TCM.freshUnique accessorNameStr
+      let accessorType ← TCM.freshMetaVal (.vType .zero)
+      let accessorInfo : GlobalInfo := {
+        name := .user accessorUnique
+        type := accessorType
+        value := none
+        isConstructor := false
+      }
+      g := g.insert accessorNameStr accessorInfo
+  return g
+
+/-- Elaborate a type class method type -/
+private def elaborateMethodType
+    (globals : Globals)
+    (typeClass : Metal.TypeClassMeta)
+    (methodTypeSyntax : Syntax.TypeExpr)
+    : TCM Value := do
+  let mut elabEnv := Elaborate.ElabEnv.empty
+  for paramName in typeClass.paramNames do
+    elabEnv := elabEnv.extend paramName (Value.vType Level.zero)
+  let methodTypeBody ← TCM.withGlobals globals (Elaborate.elaborateType elabEnv methodTypeSyntax)
+  let mut methodType := methodTypeBody
+  let mut outerEnv := elabEnv
+  for paramName in typeClass.paramNames.reverse do
+    outerEnv := { tyVars := outerEnv.tyVars.tail!, level := outerEnv.level - 1 }
+    let codClosure ← Elaborate.mkDependentClosure paramName methodType outerEnv
+    methodType := Value.vPi .omega .implicit paramName (Value.vType Level.zero) codClosure
+  return methodType
+
+/-- Register or reuse a type class method, returns updated globals -/
+private def registerMethod
+    (globals : Globals)
+    (typeClass : Metal.TypeClassMeta)
+    (methodName : Metal.Name)
+    (methodTypeSyntax : Syntax.TypeExpr)
+    (prevGlobals : Option Globals)
+    (isDirty : Bool)
+    : TCM Globals := do
+  let methodNameStr := methodName.display
+
+  -- Check if we can reuse from previous globals
+  if !isDirty then
+    if let some prev := prevGlobals then
+      if let some info := prev.lookup methodNameStr then
+        return globals.insert methodNameStr info
+
+  -- Must elaborate fresh
+  let methodType ← TCM.recoverWithM
+    (elaborateMethodType globals typeClass methodTypeSyntax)
+    (TCM.typePlaceholder Span.uninhabited)
+  let methodUnique ← TCM.freshUnique methodNameStr
+  let methodInfo : GlobalInfo := {
+    name := .user methodUnique
+    type := methodType
+    value := none
+    isConstructor := false
+  }
+  return globals.insert methodNameStr methodInfo
+
+/-- Register or reuse a function, returns updated globals -/
+private def registerFunction
+    (globals : Globals)
+    (fn : Metal.UntypedFunction)
+    (prevGlobals : Option Globals)
+    (isDirty : Bool)
+    : TCM Globals := do
+  let fnNameStr := fn.name.display
+
+  -- Check if we can reuse from previous globals
+  if !isDirty then
+    if let some prev := prevGlobals then
+      if let some info := prev.lookup fnNameStr then
+        return globals.insert fnNameStr info
+
+  -- Must elaborate fresh
+  let fnType ← TCM.recoverWithM
+    (match fn.declaredTypeSyntax with
+      | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
+      | none => TCM.freshMetaVal (.vType .zero))
+    (TCM.typePlaceholder fn.body.span)
+  let fnUnique ← TCM.freshUnique fnNameStr
+  let info : GlobalInfo := { name := .user fnUnique, type := fnType, value := none, isConstructor := false }
+  return globals.insert fnNameStr info
+
+/-- Build a Globals environment incrementally, reusing cached types for unchanged definitions -/
+def buildGlobalsIncremental
+    (module : Metal.UntypedModule)
+    (prevGlobals : Globals)
+    (dirtyNames : Std.HashSet String)
+    : TCM Globals := do
+  let ctx ← TCM.getCtx
+  let mut globals := ctx.globals
+
+  -- First pass: Register all data types
+  for typeDef in module.types do
+    match typeDef with
+    | .algebraic typeName _ _ =>
+      let nameStr := typeName.display
+      let isDirty := dirtyNames.contains nameStr
+      globals ← registerDataType globals nameStr (some prevGlobals) isDirty
+    | .struct structName _ _ _ =>
+      let nameStr := structName.display
+      let isDirty := dirtyNames.contains nameStr
+      globals ← registerDataType globals nameStr (some prevGlobals) isDirty
+    | .record _ _ _ =>
+      pure ()
+
+  -- Second pass: Register constructors
+  for typeDef in module.types do
+    match typeDef with
+    | .algebraic typeName typeVarNames constructors =>
+      let isDirty := dirtyNames.contains typeName.display
+      for ctor in constructors do
+        globals ← registerConstructor globals typeName typeVarNames ctor (some prevGlobals) isDirty
+    | .struct structName typeVarNames ctorName fields =>
+      let isDirty := dirtyNames.contains structName.display
+      globals ← registerStructConstructor globals structName typeVarNames ctorName fields (some prevGlobals) isDirty
+    | .record _ _ _ =>
+      pure ()
+
+  -- Register type class methods
+  for typeClass in module.typeClasses do
+    let isDirty := dirtyNames.contains typeClass.name.display
+    for (methodName, methodTypeSyntax) in typeClass.methodSignatures do
+      globals ← registerMethod globals typeClass methodName methodTypeSyntax (some prevGlobals) isDirty
+
+  -- Register all functions
+  for fn in module.functions do
+    let isDirty := dirtyNames.contains fn.name.display
+    globals ← registerFunction globals fn (some prevGlobals) isDirty
+
+  return globals
 
 end Soma.Dependent.Driver
