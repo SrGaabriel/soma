@@ -4,6 +4,7 @@ import Lsp.Analysis
 import Lsp.Symbols
 import Lsp.Loc
 import Lsp.Haoma
+import Lsp.SemanticTokens
 import Soma.Project.MetadataLoad
 
 namespace Lsp
@@ -16,6 +17,8 @@ open Lapis.Concurrent.Dispatcher
 open Lapis.Concurrent.VfsActor
 open Lapis.Server.Diagnostics
 open Lapis.Server.Progress
+open Lapis.Server.SemanticTokens
+open Lapis.Protocol.Generated (SemanticTokensParams)
 open Soma.Project.MetadataLoad (loadMetadataFromFile)
 
 /-- Convert Soma diagnostics to LSP format -/
@@ -358,6 +361,17 @@ def handleReferences (ctx : RequestContext LspState) (params : ReferenceParams) 
     range := spanToRange span
   }
 
+/-- Handle textDocument/semanticTokens/full -/
+def handleSemanticTokensFull (ctx : RequestContext LspState) (params : SemanticTokensParams)
+    : IO Lapis.Protocol.Generated.SemanticTokens := do
+  let uri := params.textDocument.uri
+  let filePath := uriToPath uri
+
+  let state ← ctx.getUserState
+  let some mod := state.getModule filePath | return emptyTokens
+
+  return buildSemanticTokens mod
+
 /-- Build server capabilities -/
 def serverCapabilities : ServerCapabilities :=
   { textDocumentSync := some {
@@ -373,6 +387,7 @@ def serverCapabilities : ServerCapabilities :=
   , definitionProvider := some true
   , referencesProvider := some true
   , documentSymbolProvider := some true
+  , semanticTokensProvider := some defaultOptions
   }
 
 /-- Handle LSP initialization -/
@@ -427,6 +442,7 @@ def main : IO Unit := do
     |>.onRequest "textDocument/completion" handleCompletion
     |>.onRequest "textDocument/documentSymbol" handleDocumentSymbol
     |>.onRequest "textDocument/references" handleReferences
+    |>.onRequest "textDocument/semanticTokens/full" handleSemanticTokensFull
 
   runStdio config ({} : LspState)
 
