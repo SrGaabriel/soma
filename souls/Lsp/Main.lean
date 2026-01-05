@@ -3,6 +3,8 @@ import Lsp.State
 import Lsp.Analysis
 import Lsp.Symbols
 import Lsp.Loc
+import Lsp.Haoma
+import Soma.Project.MetadataLoad
 
 namespace Lsp
 
@@ -13,6 +15,8 @@ open Lapis.Concurrent.LspActor
 open Lapis.Concurrent.Dispatcher
 open Lapis.Concurrent.VfsActor
 open Lapis.Server.Diagnostics
+open Lapis.Server.Progress
+open Soma.Project.MetadataLoad (loadMetadataFromFile)
 
 /-- Convert Soma diagnostics to LSP format -/
 def convertDiagnostics (diags : Soma.Syntax.Diagnostics) : Array Diagnostic :=
@@ -28,6 +32,62 @@ def convertDiagnostics (diags : Soma.Syntax.Diagnostics) : Array Diagnostic :=
     , message := diag.message
     : Diagnostic }
 
+/-- Load a single haoma project with logging, including dependency metadata -/
+def loadHaomaProject (ctx : RequestContext LspState) (projectRoot : System.FilePath) : IO Bool := do
+  -- Use --full to generate type metadata for dependencies
+  match ← Haoma.loadMetadataFull projectRoot with
+  | .ok metadata =>
+    -- Load external dependency metadata from the type_metadata paths
+    let mut deps : Array Soma.Check.ExternalDependency := #[]
+    for (depName, metaPath) in metadata.typeMetadata.toArray do
+      -- Skip root package metadata
+      if depName == metadata.rootPackage then
+        continue
+      -- Resolve relative paths against project root
+      let path := if metaPath.startsWith "/" then
+        System.FilePath.mk metaPath
+      else
+        projectRoot / metaPath
+      match ← loadMetadataFromFile path with
+      | .ok dep =>
+        deps := deps.push dep
+      | .error e =>
+        ctx.logError s!"Failed to load dependency {depName} from {path}: {e}"
+
+    ctx.modifyUserState fun s =>
+      let s' := s.addHaomaProject metadata
+      let s'' := s'.addExternalDeps deps
+      s''
+    return true
+  | .notHaomaProject =>
+    return false
+  | .error msg =>
+    ctx.logInfo s!"Failed to load haoma metadata for {projectRoot}: {msg}"
+    return false
+
+/-- Try to discover and load haoma project for a file (lazy discovery) -/
+def tryDiscoverProjectForFile (ctx : RequestContext LspState) (filePath : String) : IO Unit := do
+  let state ← ctx.getUserState
+
+  -- Skip if file is already in a known project
+  if state.isFileInKnownProject filePath then
+    return
+
+  -- Try to find a haoma project root for this file
+  let filePathObj := System.FilePath.mk filePath
+  match ← Haoma.findProjectRoot filePathObj with
+  | none => return -- Not in a haoma project
+  | some projectRoot =>
+    -- Check if we already know this project
+    if state.hasProjectRoot projectRoot.toString then
+      return
+
+    -- Discover new project with progress
+    ctx.withProgress "Loading haoma project" (cancellable := false) fun progress => do
+      progress.report (message := some s!"Loading {projectRoot.fileName.getD "project"}...")
+      let _ ← loadHaomaProject ctx projectRoot
+      progress.report (message := some "Done") (percentage := some 100)
+
 /-- Handle textDocument/didOpen -/
 def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentParams) : IO Unit := do
   let uri := params.textDocument.uri
@@ -35,8 +95,11 @@ def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentP
   let filePath := uriToPath uri
   let version := params.textDocument.version
 
-  -- Full analysis on open
-  let mod := analyzeSource filePath content
+  -- Lazy discovery: try to load haoma project if file is not in a known project
+  tryDiscoverProjectForFile ctx filePath
+
+  let state ← ctx.getUserState
+  let mod := analyzeSource filePath content none state.seedGlobals state.seedInstanceEnv state.seedSymbols
 
   -- Update state
   ctx.modifyUserState fun s => s.setModule filePath mod
@@ -60,7 +123,8 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   let oldModule? := state.getModule filePath
 
   -- Incremental analysis (reuses NodeIds and symbols where possible)
-  let mod := analyzeSource filePath content oldModule?
+  -- Incremental analysis (reuses NodeIds and symbols where possible)
+  let mod := analyzeSource filePath content oldModule? state.seedGlobals state.seedInstanceEnv state.seedSymbols
 
   -- Extract imported modules from the analyzed module
   let importedModules := extractImportedModules mod.symbols
@@ -94,7 +158,7 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
 
         -- Re-analyze with the dependent module marked as needing re-check
         -- The incremental analysis will detect that imported modules changed
-        let depMod := analyzeSource depFilePath depContent depOldModule?
+        let depMod := analyzeSource depFilePath depContent depOldModule? state'.seedGlobals state'.seedInstanceEnv state'.seedSymbols
 
         -- Update state
         ctx.modifyUserState fun s => s.setModule depFilePath depMod
@@ -123,7 +187,8 @@ def handleDidSave (ctx : RequestContext LspState) (params : DidSaveTextDocumentP
 
   -- On save, do full analysis and publish all diagnostics
   let some content ← ctx.getDocumentContent uri | return
-  let mod := analyzeSource filePath content
+  let state ← ctx.getUserState
+  let mod := analyzeSource filePath content none state.seedGlobals state.seedInstanceEnv state.seedSymbols
 
   ctx.modifyUserState fun s => s.setModule filePath mod
 
@@ -310,10 +375,49 @@ def serverCapabilities : ServerCapabilities :=
   , documentSymbolProvider := some true
   }
 
+/-- Handle LSP initialization -/
+def handleInitialize (ctx : RequestContext LspState) (params : InitializeParams) : IO Unit := do
+  let workspaceRoot := params.rootUri.map uriToPath
+  match workspaceRoot with
+  | none => return
+  | some root =>
+    ctx.modifyUserState fun s => { s with workspaceRoot := some root }
+
+/-- Handle initialized notification -/
+def handleInitialized (ctx : RequestContext LspState) (_params : Lean.Json) : IO Unit := do
+  ctx.showInfo "SouLS server initialized"
+
+  let state ← ctx.getUserState
+  let some root := state.workspaceRoot | return
+
+  -- Discover all haoma projects in workspace
+  ctx.withProgress "Discovering haoma projects" (cancellable := false) fun progress => do
+    let workspacePath := System.FilePath.mk root
+
+    progress.report (message := some "Scanning for haoma.kdl files...")
+    let projectRoots ← Haoma.discoverProjects workspacePath
+
+    if projectRoots.isEmpty then
+      ctx.logInfo "No haoma projects found in workspace"
+      return
+
+    ctx.logInfo s!"Found {projectRoots.size} haoma project(s)"
+
+    -- Load metadata for each project
+    for h : i in [:projectRoots.size] do
+      let projectRoot := projectRoots[i]
+      let percentage := (i * 100) / projectRoots.size
+      progress.report (message := some s!"Loading {projectRoot.fileName.getD "project"}...") (percentage := some percentage)
+      let _ ← loadHaomaProject ctx projectRoot
+
+    progress.report (message := some "Done") (percentage := some 100)
+
 def main : IO Unit := do
   let config : LspConfig LspState := LspConfig.new "souls"
     |>.withVersion "0.1.0"
     |>.withCapabilities serverCapabilities
+    |>.onInitialize handleInitialize
+    |>.onNotification "initialized" handleInitialized
     |>.onNotification "textDocument/didOpen" handleDidOpen
     |>.onNotification "textDocument/didChange" handleDidChange
     |>.onNotification "textDocument/didClose" handleDidClose

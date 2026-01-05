@@ -1,4 +1,4 @@
-import Somac.Build.MetadataLoad
+import Soma.Project.MetadataLoad
 import Soma.Project
 import Soma.Project.Check
 

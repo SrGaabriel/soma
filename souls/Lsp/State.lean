@@ -3,13 +3,18 @@ import Soma.Syntax
 import Soma.Metal.Lower.Decl
 import Soma.Dependent.Monad
 import Soma.Dependent.Incremental
+import Soma.Project.Check
+import Soma.Project.MetadataLoad
 import Lsp.Cst
+import Lsp.Haoma
 
 namespace Lsp
 
 open Soma.Syntax
-open Soma.Metal.Lower (IncrementalLowerResult)
+open Soma.Metal.Lower (IncrementalLowerResult GlobalEnv)
 open Soma.Dependent (Globals InstanceEnv)
+open Soma.Project (SymbolEnv)
+open Soma.Check (ExternalDependency symbolEnvToGlobalEnv)
 
 /-- Symbol kinds for LSP features -/
 inductive SymbolKind where
@@ -217,6 +222,18 @@ structure LspState where
   reverseDeps : Std.HashMap String (Std.HashSet String) := {}
   /-- Module name to file path mapping -/
   moduleNameToPath : Std.HashMap String String := {}
+  /-- Known haoma project roots (to avoid re-discovery) -/
+  knownProjectRoots : Std.HashSet String := {}
+  /-- All loaded haoma project metadata -/
+  haomaProjects : Array Haoma.ProjectMetadata := #[]
+  /-- Loaded external dependencies (for type checking with dependency info) -/
+  externalDeps : Array ExternalDependency := #[]
+  /-- Merged globals from all external dependencies -/
+  seedGlobals : Globals := Globals.empty
+  /-- Merged instance environment from all external dependencies -/
+  seedInstanceEnv : InstanceEnv := InstanceEnv.empty
+  /-- Merged symbols from all external dependencies (for Metal lowering) -/
+  seedSymbols : SymbolEnv := {}
   deriving Inhabited
 
 namespace LspState
@@ -310,6 +327,45 @@ def getTransitiveDependents (s : LspState) (moduleName : String) : Array String 
         worklist := worklist.push dep
 
   return result
+
+/-- Add a haoma project and register its modules -/
+def addHaomaProject (s : LspState) (metadata : Haoma.ProjectMetadata) : LspState :=
+  -- Find the root package to get its path
+  let rootPkg := metadata.packages.find? (·.isRoot)
+  let s' := match rootPkg with
+    | some pkg => { s with knownProjectRoots := s.knownProjectRoots.insert pkg.root }
+    | none => s
+  -- Add to projects list
+  let s'' := { s' with haomaProjects := s'.haomaProjects.push metadata }
+  -- Register all module paths from haoma metadata
+  metadata.modules.foldl (fun acc mod =>
+    acc.registerModulePath mod.name mod.path
+  ) s''
+
+/-- Check if a project root is already known -/
+def hasProjectRoot (s : LspState) (root : String) : Bool :=
+  s.knownProjectRoots.contains root
+
+/-- Check if a file path belongs to a known project -/
+def isFileInKnownProject (s : LspState) (filePath : String) : Bool :=
+  s.knownProjectRoots.any (filePath.startsWith ·)
+
+/-- Add an external dependency and merge its globals/instanceEnv/symbols -/
+def addExternalDep (s : LspState) (dep : ExternalDependency) : LspState :=
+  let newGlobals := Soma.Check.mergeGlobals s.seedGlobals dep.globals
+  let newInstanceEnv := Soma.Check.mergeInstanceEnv s.seedInstanceEnv dep.instanceEnv
+  -- Merge symbols from all modules in this dependency
+  let newSymbols := dep.symbols.fold (init := s.seedSymbols) fun acc _modName modSymbols =>
+    modSymbols.fold (init := acc) fun acc2 sym val => acc2.insert sym val
+  { s with
+    externalDeps := s.externalDeps.push dep
+    seedGlobals := newGlobals
+    seedInstanceEnv := newInstanceEnv
+    seedSymbols := newSymbols }
+
+/-- Add multiple external dependencies -/
+def addExternalDeps (s : LspState) (deps : Array ExternalDependency) : LspState :=
+  deps.foldl addExternalDep s
 
 end LspState
 

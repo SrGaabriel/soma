@@ -18,7 +18,9 @@ open Soma.Dependent
 open Soma.Dependent.Driver
 open Soma.Dependent.Incremental (IncrementalState)
 open Soma.Metal (UntypedModule)
-open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleIncremental getDeclName)
+open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleWithExternals lowerModuleIncremental getDeclName GlobalEnv)
+open Soma.Project (SymbolEnv)
+open Soma.Check (symbolEnvToGlobalEnv)
 open Soma.Check (moduleNameFromPath fileIdFromPath typeCheckModule)
 
 /-- Extract imported module paths from a symbol table -/
@@ -52,7 +54,10 @@ def findChangedDeclIds (tree : RedTree) (changedIds : HashSet NodeId) : HashSet 
       else acc) {}
 
 /-- Analyze a source file from scratch (no prior state) -/
-def analyzeSourceFresh (filePath : String) (content : String) : CompiledModule := Id.run do
+def analyzeSourceFresh (filePath : String) (content : String)
+    (seedGlobals : Globals := Globals.empty)
+    (seedInstanceEnv : InstanceEnv := InstanceEnv.empty)
+    (seedSymbols : SymbolEnv := {}) : CompiledModule := Id.run do
   let moduleName := moduleNameFromPath filePath
   let fileId := fileIdFromPath filePath
 
@@ -74,14 +79,15 @@ def analyzeSourceFresh (filePath : String) (content : String) : CompiledModule :
   let allDeclIds := collectDeclNodeIds parsedTree
   let (declAsts, _) := lowerDeclarationsByIds parsedTree allDeclIds
 
-  -- Phase 6: Lower AST to Metal IR (using incremental infrastructure for caching)
-  let metalResult := lowerModuleFresh ast
+  -- Phase 6: Lower AST to Metal IR with external symbols pre-populated
+  let initialEnv := symbolEnvToGlobalEnv moduleName seedSymbols
+  let metalResult := lowerModuleWithExternals ast initialEnv
   let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
 
   -- Phase 7: Dependent type checking using the shared pipeline
-  -- For LSP single-file analysis, we have no dependencies (empty seed globals/instances)
+  -- Use seed globals/instanceEnv from dependencies
   let (globals, instanceEnv, _instanceMap, incrState, tcErrors) :=
-    typeCheckModule metalResult.module moduleName Globals.empty InstanceEnv.empty none
+    typeCheckModule metalResult.module moduleName seedGlobals seedInstanceEnv none
 
   -- Update incremental state with imported modules
   let importedMods := extractImportedModules symbols
@@ -108,7 +114,10 @@ def analyzeSourceFresh (filePath : String) (content : String) : CompiledModule :
 
 /-- Analyze a source file incrementally using prior state -/
 def analyzeSourceIncremental (filePath : String) (content : String)
-    (oldModule : CompiledModule) : CompiledModule := Id.run do
+    (oldModule : CompiledModule)
+    (seedGlobals : Globals := Globals.empty)
+    (seedInstanceEnv : InstanceEnv := InstanceEnv.empty)
+    (seedSymbols : SymbolEnv := {}) : CompiledModule := Id.run do
   let moduleName := moduleNameFromPath filePath
   let fileId := fileIdFromPath filePath
 
@@ -176,11 +185,13 @@ def analyzeSourceIncremental (filePath : String) (content : String)
         | none => acc
       | none => acc
 
+  -- Phase 7: Incremental Metal lowering with external symbols
+  let initialEnv := symbolEnvToGlobalEnv moduleName seedSymbols
   let metalResult := match oldModule.metalResult with
     | some oldMetal =>
       if changedDeclNames.isEmpty then oldMetal
       else lowerModuleIncremental ast changedDeclNames oldMetal
-    | none => lowerModuleFresh ast
+    | none => lowerModuleWithExternals ast initialEnv
 
   let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
 
@@ -189,8 +200,9 @@ def analyzeSourceIncremental (filePath : String) (content : String)
   let prevIncrState := oldModule.incrementalState
 
   -- Use the shared type checking pipeline with previous state for incremental checking
+  -- Use seed globals/instanceEnv from dependencies
   let (globals, instanceEnv, _instanceMap, incrState, tcErrors) :=
-    typeCheckModule metalResult.module moduleName Globals.empty InstanceEnv.empty prevIncrState
+    typeCheckModule metalResult.module moduleName seedGlobals seedInstanceEnv prevIncrState
 
   -- Update incremental state with imported modules
   let importedMods := extractImportedModules symbols
@@ -217,10 +229,13 @@ def analyzeSourceIncremental (filePath : String) (content : String)
 
 /-- Analyze a source file, using incremental analysis if old module is available -/
 def analyzeSource (filePath : String) (content : String)
-    (oldModule? : Option CompiledModule := none) : CompiledModule :=
+    (oldModule? : Option CompiledModule := none)
+    (seedGlobals : Globals := Globals.empty)
+    (seedInstanceEnv : InstanceEnv := InstanceEnv.empty)
+    (seedSymbols : SymbolEnv := {}) : CompiledModule :=
   match oldModule? with
-  | none => analyzeSourceFresh filePath content
-  | some oldModule => analyzeSourceIncremental filePath content oldModule
+  | none => analyzeSourceFresh filePath content seedGlobals seedInstanceEnv seedSymbols
+  | some oldModule => analyzeSourceIncremental filePath content oldModule seedGlobals seedInstanceEnv seedSymbols
 
 /-- Get all error diagnostics -/
 def getErrors (mod : CompiledModule) : Diagnostics :=

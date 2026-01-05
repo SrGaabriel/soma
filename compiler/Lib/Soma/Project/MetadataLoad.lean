@@ -9,7 +9,7 @@ import Soma.Core.Primitive
 import Soma.Core.TypeId
 import Soma.Dependent.Monad
 
-namespace Somac.Build.MetadataLoad
+namespace Soma.Project.MetadataLoad
 
 open Soma
 open Soma.Project
@@ -842,4 +842,4 @@ def loadMetadataFiles (deps : Array (String × System.FilePath)) : IO (Except Ch
     | .error e => return .error (.dependencyLoadError name e)
   pure (.ok results)
 
-end Somac.Build.MetadataLoad
+end Soma.Project.MetadataLoad

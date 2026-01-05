@@ -6,7 +6,7 @@ cp -f ./compiler/.lake/build/bin/somac ~/.sup/bin/somac
 
 # Install haoma
 echo "Installing haoma..."
-cargo install --path haoma
+cargo build --manifest-path ./haoma/Cargo.toml --release 
 
 cp -f ./haoma/target/release/haoma ~/.sup/bin/haoma
 
