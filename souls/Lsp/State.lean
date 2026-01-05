@@ -53,6 +53,7 @@ def syntaxKindToSymbolKind : SyntaxKind → SymbolKind
   | .field => .field
   | .traitMethod => .method
   | .patVar => .variable
+  | .composeLetStmt => .variable
   | .typeVar => .typeVariable
   | _ => .variable
 

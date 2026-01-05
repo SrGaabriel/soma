@@ -178,7 +178,7 @@ def extractSignatureText (tree : RedTree) (sigNode : RedNode) : String :=
 /-- Extract a definition from a declaration node -/
 def extractDefinition (tree : RedTree) (node : RedNode) : Option CstDefinition := do
   let kind ← node.syntaxKind?
-  guard (kind.isDecl || kind == .constructor || kind == .field || kind == .traitMethod || kind == .patVar)
+  guard (kind.isDecl || kind == .constructor || kind == .field || kind == .traitMethod || kind == .patVar || kind == .composeLetStmt)
 
   -- Find the name token
   let nameToken ←
@@ -186,6 +186,20 @@ def extractDefinition (tree : RedTree) (node : RedNode) : Option CstDefinition :
       findToken? tree node .upperIdent
     else if kind == .field || kind == .patVar then
       findToken? tree node .lowerIdent
+    else if kind == .composeLetStmt then
+      -- composeLetStmt structure: [letTok, nameTok/pattern, eqTok, value]
+      -- The name is the first lowerIdent token (if it's a simple binding)
+      let children := getChildren tree node
+      -- Skip the 'let' keyword, look for lowerIdent in second child
+      if h : 1 < children.size then
+        let second := children[1]
+        if second.tokenKind? == some .lowerIdent then
+          some second
+        else
+          -- It's a pattern, try to find a patVar inside
+          findToken? tree second .lowerIdent
+      else
+        none
     else
       -- Look for .name child first, then .operatorName, then direct token
       match findChild? tree node .name with
@@ -265,6 +279,7 @@ def kindDisplayName : SyntaxKind → String
   | .field => "field"
   | .traitMethod => "method"
   | .patVar => "variable"
+  | .composeLetStmt => "local binding"
   | .typeVar => "type variable"
   | .typeCon => "type"
   | k => k.describe

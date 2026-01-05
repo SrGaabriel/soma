@@ -216,8 +216,8 @@ def handleHover (ctx : RequestContext LspState) (params : HoverParams) : IO (Opt
   -- Get all modules for cross-reference lookup
   let allMods := state.allModules
 
-  -- Get hover content (uses cached symbol table)
-  let some hoverText := getHoverAt offset mod allMods | return none
+  -- Get hover content (uses cached symbol table and external deps)
+  let some hoverText := getHoverAt offset mod allMods state.seedSymbols | return none
 
   return some {
     contents := { kind := .markdown, value := hoverText }
@@ -246,8 +246,8 @@ def handleDefinition (ctx : RequestContext LspState) (params : TextDocumentPosit
   let allMods := state.allModules
   ctx.logInfo s!"definition: allMods.size={allMods.size}"
 
-  -- Find definition (uses cached symbol table)
-  let some (defPath, defSpan) := getDefinitionAt offset mod allMods | do
+  -- Find definition (uses cached symbol table and external deps)
+  let some (defPath, defSpan) := getDefinitionAt offset mod allMods state.seedSymbols | do
     ctx.logInfo "definition: no definition found"
     return none
 

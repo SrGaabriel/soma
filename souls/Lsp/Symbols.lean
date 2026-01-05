@@ -1,12 +1,17 @@
 import Std.Data.HashSet
 import Lsp.State
 import Lsp.Cst
+import Soma.Core.Quote
+import Soma.Dependent.Monad
 
 namespace Lsp
 
 open Std
 
 open Soma.Syntax
+open Soma.Project (Symbol SymbolEnv SymbolKind)
+open Soma.Core (Value valueToString)
+open Soma.Dependent (Globals GlobalInfo)
 
 /-- Build a DefinitionSite from a CstDefinition -/
 def cstDefToDefinitionSite (moduleName filePath : String) (def_ : CstDefinition) : DefinitionSite :=
@@ -133,13 +138,46 @@ def updateSymbolTableIncremental
   }
 
 /-- Format hover content for a definition -/
-def formatDefinitionHover (def_ : DefinitionSite) : String :=
+def formatDefinitionHover (def_ : DefinitionSite) (globals : Option Globals := none) : String :=
   let kindStr := toString def_.kind
-  match def_.typeSignature with
+  -- First try CST signature, then fall back to inferred type from globals
+  let typeStr : Option String :=
+    match def_.typeSignature with
+    | some sig => some sig
+    | none =>
+        -- Try to get inferred type from globals
+        globals.bind fun g => g.lookup def_.name |>.map fun info => valueToString info.type
+  match typeStr with
   | some sig =>
       s!"```soma\n{def_.name} :: {sig}\n```\n\n*{kindStr}* from `{def_.moduleName}`"
   | none =>
       s!"**{def_.name}**\n\n*{kindStr}* from `{def_.moduleName}`"
+
+/-- Convert compiler SymbolKind to LSP SymbolKind for display -/
+def compilerSymbolKindToString : Soma.Project.SymbolKind → String
+  | .binding => "function"
+  | .dataCon _ _ => "constructor"
+  | .type => "type"
+  | .typeClass => "trait"
+  | .typeClassMethod _ => "method"
+  | .instanceMethod _ _ => "instance method"
+  | .letBinding => "local binding"
+  | .lambdaParam => "parameter"
+  | .patternVar => "variable"
+  | .patternAs => "variable"
+  | .composeBinding => "local binding"
+  | .intrinsicBinding => "intrinsic"
+  | .intrinsicType => "intrinsic type"
+
+/-- Format hover content for an external symbol (from seedSymbols) -/
+def formatExternalSymbolHover (sym : Symbol) (ty : Value) : String :=
+  let kindStr := compilerSymbolKindToString sym.kind
+  let typeStr := valueToString ty
+  s!"```soma\n{sym.name} :: {typeStr}\n```\n\n*{kindStr}* from `{sym.module}`"
+
+/-- Look up a name in seedSymbols -/
+def lookupInSeedSymbols (name : String) (seedSymbols : SymbolEnv) : Option (Symbol × Value) :=
+  seedSymbols.toArray.find? fun (sym, _) => sym.name == name
 
 /-- Format hover for a keyword -/
 def formatKeywordHover (kind : TokenKind) (text : String) : String :=
@@ -171,7 +209,8 @@ def formatSyntaxHover (kind : SyntaxKind) (text : String) : String :=
   s!"*{kind.describe}*\n```soma\n{preview}\n```"
 
 /-- Get hover information at a position -/
-def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array CompiledModule) : Option String := do
+def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array CompiledModule)
+    (seedSymbols : SymbolEnv := {}) : Option String := do
   let nodeInfo ← findNodeAtPosition offset mod.tree
 
   -- Check if it's a token
@@ -180,13 +219,16 @@ def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array Compile
     let kind ← nodeInfo.node.tokenKind?
 
     if kind.isNameLike then
-      -- Try to find definition
+      -- Try to find definition in current module
       if let some def_ := mod.symbols.lookupDefinition text then
-        return formatDefinitionHover def_
-      -- Try other modules (for imported symbols)
+        return formatDefinitionHover def_ mod.globals
+      -- Try other open modules (for imported symbols)
       for other in allModules do
         if let some def_ := other.symbols.lookupDefinition text then
-          return formatDefinitionHover def_
+          return formatDefinitionHover def_ other.globals
+      -- Try external dependencies (seedSymbols)
+      if let some (sym, ty) := lookupInSeedSymbols text seedSymbols then
+        return formatExternalSymbolHover sym ty
       -- Unknown identifier/operator
       return s!"**{text}** — *unknown*"
     else if kind.isKeyword then
@@ -212,7 +254,7 @@ def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array Compile
 
 /-- Find definition location for a name -/
 def findDefinitionLocation (name : String) (mod : CompiledModule) (allModules : Array CompiledModule)
-    : Option (String × Span) := do
+    (seedSymbols : SymbolEnv := {}) : Option (String × Span) := do
   -- Try current module first
   if let some def_ := mod.symbols.lookupDefinition name then
     return (def_.filePath, def_.nameSpan)
@@ -232,18 +274,28 @@ def findDefinitionLocation (name : String) (mod : CompiledModule) (allModules : 
     if let some def_ := other.symbols.lookupDefinition name then
       return (def_.filePath, def_.nameSpan)
 
+  -- Try external dependencies (seedSymbols)
+  -- Note: External symbols have source spans but we need to find the file path
+  -- The Symbol.module field contains the module name, we need to map it to a file
+  if let some (sym, _) := lookupInSeedSymbols name seedSymbols then
+    -- For external deps, we construct the path from package/module info
+    -- The span already contains location info from the metadata
+    -- We need to find the actual source file - for now use module as path hint
+    -- TODO: Improve this by storing file paths in external dependency metadata
+    return (sym.module ++ ".soma", sym.span)
+
   none
 
 /-- Get definition at a position -/
 def getDefinitionAt (offset : Nat) (mod : CompiledModule) (allModules : Array CompiledModule)
-    : Option (String × Span) := do
+    (seedSymbols : SymbolEnv := {}) : Option (String × Span) := do
   let nodeInfo ← findNodeAtPosition offset mod.tree
 
   if nodeInfo.node.isToken then
     let kind ← nodeInfo.node.tokenKind?
     if kind.isNameLike then
       let text ← nodeInfo.node.text?
-      findDefinitionLocation text mod allModules
+      findDefinitionLocation text mod allModules seedSymbols
     else
       none
   else
