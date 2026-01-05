@@ -195,10 +195,10 @@ impl CommandRunner {
             .parse()
             .map_err(|e| SvmError::InvalidConfig(format!("Invalid version: {}", e)))?;
 
-        if let Some(current) = self.dirs.current_version(&self.target)? {
-            if current == version {
-                return Err(SvmError::CannotUninstallActive(version.to_string()));
-            }
+        if let Some(current) = self.dirs.current_version(&self.target)?
+            && current == version
+        {
+            return Err(SvmError::CannotUninstallActive(version.to_string()));
         }
 
         self.dirs.remove_version(&version)?;
@@ -427,13 +427,12 @@ impl CommandRunner {
         };
 
         for candidate in &candidates {
-            if candidate.exists() {
-                if let Ok(content) = fs::read_to_string(candidate) {
-                    if content.contains(".svm/current") {
-                        println!("Shell already configured in {}", candidate.display());
-                        return Ok(());
-                    }
-                }
+            if candidate.exists()
+                && let Ok(content) = fs::read_to_string(candidate)
+                && content.contains(".svm/current")
+            {
+                println!("Shell already configured in {}", candidate.display());
+                return Ok(());
             }
         }
 
@@ -563,23 +562,23 @@ pub fn self_uninstall(yes: bool) -> Result<()> {
     ];
 
     for file in &shell_files {
-        if file.exists() && !file.is_symlink() {
-            if let Ok(content) = fs::read_to_string(file) {
-                if content.contains(".svm/current") || content.contains("Soma Version Manager") {
-                    let new_content: String = content
-                        .lines()
-                        .filter(|line| {
-                            !line.contains(".svm/current") && !line.contains("Soma Version Manager")
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
+        if file.exists()
+            && !file.is_symlink()
+            && let Ok(content) = fs::read_to_string(file)
+            && (content.contains(".svm/current") || content.contains("Soma Version Manager"))
+        {
+            let new_content: String = content
+                .lines()
+                .filter(|line| {
+                    !line.contains(".svm/current") && !line.contains("Soma Version Manager")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
 
-                    if new_content.len() < content.len() {
-                        if fs::write(file, new_content.trim_start_matches('\n')).is_ok() {
-                            println!("Cleaned {}", file.display());
-                        }
-                    }
-                }
+            if new_content.len() < content.len()
+                && fs::write(file, new_content.trim_start_matches('\n')).is_ok()
+            {
+                println!("Cleaned {}", file.display());
             }
         }
     }

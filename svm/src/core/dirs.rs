@@ -87,10 +87,10 @@ impl SvmDirs {
         for entry in entries {
             let entry = entry.map_err(|e| SvmError::io(&versions_dir, e))?;
             let name = entry.file_name();
-            if let Some(name_str) = name.to_str() {
-                if let Ok(version) = name_str.parse() {
-                    versions.push(version);
-                }
+            if let Some(name_str) = name.to_str()
+                && let Ok(version) = name_str.parse()
+            {
+                versions.push(version);
             }
         }
 
@@ -107,16 +107,13 @@ impl SvmDirs {
 
         let components: Vec<_> = target_path.components().collect();
         for (i, comp) in components.iter().enumerate() {
-            if let std::path::Component::Normal(s) = comp {
-                if s.to_str() == Some("versions") {
-                    if let Some(std::path::Component::Normal(version_str)) = components.get(i + 1) {
-                        if let Some(v) = version_str.to_str() {
-                            if let Ok(version) = v.parse() {
-                                return Ok(Some(version));
-                            }
-                        }
-                    }
-                }
+            if let std::path::Component::Normal(s) = comp
+                && s.to_str() == Some("versions")
+                && let Some(std::path::Component::Normal(version_str)) = components.get(i + 1)
+                && let Some(v) = version_str.to_str()
+                && let Ok(version) = v.parse()
+            {
+                return Ok(Some(version));
             }
         }
 

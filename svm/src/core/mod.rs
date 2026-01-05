@@ -9,5 +9,4 @@ pub use config::*;
 pub use dirs::*;
 pub use error::*;
 pub use target::*;
-pub use toolchain::*;
 pub use version::*;

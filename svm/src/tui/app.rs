@@ -152,10 +152,10 @@ impl App {
             while let Ok(msg) = state.receiver.try_recv() {
                 match msg {
                     BuildMessage::Output(line) => {
-                        if line.starts_with("[Building ") {
-                            if let Some(end) = line.find(']') {
-                                state.component = line[10..end].to_string();
-                            }
+                        if line.starts_with("[Building ")
+                            && let Some(end) = line.find(']')
+                        {
+                            state.component = line[10..end].to_string();
                         }
                         state.output_lines.push(line);
                         if state.output_lines.len() > 100 {
@@ -239,21 +239,20 @@ impl App {
                 _ => {}
             },
             AppMode::Building => {
-                if key == KeyCode::Esc || key == KeyCode::Char('q') {
-                    if let Some(ref state) = self.build_state {
-                        if state.is_complete {
-                            if state.success {
-                                self.message = Some("Build completed successfully".to_string());
-                                self.refresh()?;
-                            } else {
-                                self.message = Some("Build failed".to_string());
-                            }
-                            self.build_state = None;
-                            self.mode = AppMode::Normal;
-                        }
-                        // if not complete, ignore esc (can't cancel mid-build)
+                if (key == KeyCode::Esc || key == KeyCode::Char('q'))
+                    && let Some(ref state) = self.build_state
+                    && state.is_complete
+                {
+                    if state.success {
+                        self.message = Some("Build completed successfully".to_string());
+                        self.refresh()?;
+                    } else {
+                        self.message = Some("Build failed".to_string());
                     }
+                    self.build_state = None;
+                    self.mode = AppMode::Normal;
                 }
+                // if not complete, ignore esc (can't cancel mid-build)
             }
         }
         Ok(())
@@ -436,15 +435,12 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         if event::poll(Duration::from_millis(50)).map_err(|e| SvmError::Io {
             path: std::path::PathBuf::from("terminal"),
             source: e,
-        })? {
-            if let Event::Key(key) = event::read().map_err(|e| SvmError::Io {
-                path: std::path::PathBuf::from("terminal"),
-                source: e,
-            })? {
-                if key.kind == KeyEventKind::Press {
-                    app.handle_key(key.code)?;
-                }
-            }
+        })? && let Event::Key(key) = event::read().map_err(|e| SvmError::Io {
+            path: std::path::PathBuf::from("terminal"),
+            source: e,
+        })? && key.kind == KeyEventKind::Press
+        {
+            app.handle_key(key.code)?;
         }
 
         if app.should_quit {
