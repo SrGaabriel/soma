@@ -41,8 +41,8 @@ inductive SyntaxKind where
   | exprProjection    -- Projection function (Type.field)
   | exprParens        -- Parenthesized
   | exprCompose       -- Compose block
-  | exprBind          -- Bind block
-  | composeLetStmt    -- Let statement in compose block (no 'in')
+  | composeLetStmt    -- Let statement in compose block: let x = expr
+  | composeBindStmt   -- Bind statement in compose block: bind x <- expr
   | exprSection       -- Operator section
   | exprTypeAnnot     -- Type annotation
   | exprTypeApp       -- Explicit type application (@Type or @label)
@@ -146,8 +146,8 @@ def SyntaxKind.describe : SyntaxKind → String
   | .exprProjection => "projection"
   | .exprParens => "parenthesized expression"
   | .exprCompose => "compose block"
-  | .exprBind => "bind block"
   | .composeLetStmt => "compose let statement"
+  | .composeBindStmt => "compose bind statement"
   | .exprSection => "operator section"
   | .exprTypeAnnot => "type annotation"
   | .exprTypeApp => "type application"
@@ -218,7 +218,7 @@ def SyntaxKind.isExpr : SyntaxKind → Bool
   | .exprVar | .exprLit | .exprApp | .exprInfix | .exprLambda
   | .exprLet | .exprIf | .exprCase | .exprMatch | .exprTuple
   | .exprList | .exprRecord | .exprFieldAccess | .exprProjection | .exprParens
-  | .exprCompose | .exprBind | .exprSection | .exprTypeAnnot | .exprTypeApp
+  | .exprCompose | .exprSection | .exprTypeAnnot | .exprTypeApp
   | .exprVariant => true
   | _ => false
 

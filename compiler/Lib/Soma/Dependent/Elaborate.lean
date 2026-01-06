@@ -409,8 +409,9 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     let bodyVal ← elaborateType env' body
 
     -- Convert the body Value to a Term
-    -- The depth is the number of forall variables (env'.level - env.level)
-    let bodyTerm ← valueToTermWithDepth bodyVal vars.size
+    -- The depth must be the FULL environment level (env'.level), not just vars.size,
+    -- because the body may reference outer type variables (like `f` in a trait method).
+    let bodyTerm ← valueToTermWithDepth bodyVal env'.level
 
     -- Build nested Pi types from right to left using Term representation
     -- For `forall a b. T`, we build: Π{a:*}. Π{b:*}. T[indices adjusted]

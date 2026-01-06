@@ -531,9 +531,32 @@ partial def parseComposeLetStmt : ParserM (Option GreenNode) := do
               return some (GreenNode.mkError "missing let binding" #[letTok])
   | none => return none
 
+partial def parseComposeBindStmt : ParserM (Option GreenNode) := do
+  match ← tryConsume .kw_bind with
+  | some bindTok =>
+      match ← parseLowerIdent with
+      | some nameTok =>
+          match ← tryConsume .leftArrow with
+          | some arrowTok =>
+              match ← parseExpr with
+              | some value =>
+                  return some (GreenNode.mkNode .composeBindStmt #[bindTok, nameTok, arrowTok, value])
+              | none =>
+                  recordError "expected expression after '<-' in bind"
+                  return some (GreenNode.mkError "missing bind value" #[bindTok, nameTok, arrowTok])
+          | none =>
+              recordError "expected '<-' after bind variable name"
+              return some (GreenNode.mkError "missing '<-' in bind" #[bindTok, nameTok])
+      | none =>
+          recordError "expected variable name after 'bind'"
+          return some (GreenNode.mkError "missing bind variable" #[bindTok])
+  | none => return none
+
 partial def parseBlockStatement : ParserM (Option GreenNode) := do
   if (← check .kw_let) then
     parseComposeLetStmt
+  else if (← check .kw_bind) then
+    parseComposeBindStmt
   else
     parseExpr
 
@@ -550,18 +573,6 @@ partial def parseComposeExpr : ParserM (Option GreenNode) := do
         return some (GreenNode.mkError "empty compose" #[composeTok])
       else
         return some (GreenNode.mkNode .exprCompose (#[composeTok] ++ stmts))
-  | none => return none
-
-partial def parseBindExpr : ParserM (Option GreenNode) := do
-  match ← tryConsume .kw_bind with
-  | some bindTok =>
-      let stmts ← parseBlockStatements
-
-      if stmts.isEmpty then
-        recordError "expected expression in bind block"
-        return some (GreenNode.mkError "empty bind" #[bindTok])
-      else
-        return some (GreenNode.mkNode .exprBind (#[bindTok] ++ stmts))
   | none => return none
 
 partial def parseProjection : ParserM (Option GreenNode) := do
@@ -647,7 +658,6 @@ partial def parseExprAtom : ParserM (Option GreenNode) := do
   if let some e ← parseIfExpr then return some e
   if let some e ← parseCaseExpr then return some e
   if let some e ← parseComposeExpr then return some e
-  if let some e ← parseBindExpr then return some e
   if let some e ← parseParenExpr then return some e
   if let some e ← parseListExpr then return some e
   if let some e ← parseRecordExpr then return some e

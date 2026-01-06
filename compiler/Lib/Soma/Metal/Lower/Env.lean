@@ -11,7 +11,7 @@ namespace Soma.Metal.Lower
 open Soma
 open Soma.Core (TypeId)
 open Soma.Metal
-open Soma.Syntax (TypeExpr Span Constraint)
+open Soma.Syntax (TypeExpr Span Constraint TypeVarBinder)
 
 /-- Information about a global binding (collected during first pass) -/
 structure GlobalInfo where
@@ -92,8 +92,8 @@ end ConstructorInfo
 structure TypeClassInfo where
   name : Name
   typeId : TypeId
-  /-- Type parameter names (e.g., ["a"] for `trait Eq a`) -/
-  paramNames : Array String
+  /-- Type parameters with optional kind annotations -/
+  params : Array TypeVarBinder
   /-- Superclass constraints as syntax -/
   superclasses : Array Constraint
   /-- Method signatures as syntax (name, type syntax) -/

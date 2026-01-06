@@ -432,24 +432,57 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
     for (methodName, methodTypeSyntax) in typeClass.methodSignatures do
       let methodType ← TCM.recoverWithM
         (do
-          -- Build an elaboration environment with the trait's type parameters
-          let mut elabEnv := Elaborate.ElabEnv.empty
-          for paramName in typeClass.paramNames do
-            elabEnv := elabEnv.extend paramName (Value.vType Level.zero)
+          -- Elaborate kinds for each parameter
+          let mut paramKinds : Array (String × Value) := #[]
+          for param in typeClass.params do
+            let kind ← match param.kind with
+              | some k => Elaborate.elaborateKind k
+              | none => pure (Value.vType Level.zero)
+            paramKinds := paramKinds.push (param.name.value, kind)
 
-          -- Elaborate the method type signature with type params in scope
+          -- Collect free type variables from the method signature that are not trait params
+          let traitParamNames := paramKinds.map (·.1)
+          let methodFreeVars := methodTypeSyntax.freeVars.map (·.value)
+          let methodOwnVars := methodFreeVars.filter (fun v => !traitParamNames.contains v)
+          let methodOwnVarsUnique := methodOwnVars.toList.eraseDups
+
+          -- Build an elaboration environment with:
+          -- 1. Method's own free type variables (innermost, bound first)
+          -- 2. Trait's type parameters (outermost)
+          let mut elabEnv := Elaborate.ElabEnv.empty
+
+          -- First, add method's own type variables
+          for varName in methodOwnVarsUnique do
+            elabEnv := elabEnv.extend varName (.vType .zero)
+
+          -- Then, add trait's type parameters
+          for (paramName, kind) in paramKinds do
+            elabEnv := elabEnv.extend paramName kind
+
+          -- Elaborate the method type signature with all type params in scope
           let methodTypeBody ← TCM.withGlobals globals (Elaborate.elaborateType elabEnv methodTypeSyntax)
 
-          -- Wrap in implicit foralls for type parameters (right to left)
+          -- Wrap in implicit foralls for method's own type variables (right to left)
           let mut methodType := methodTypeBody
           let mut outerEnv := elabEnv
-          for paramName in typeClass.paramNames.reverse do
+
+          -- First wrap trait parameters (outermost foralls)
+          for (paramName, paramKind) in paramKinds.reverse do
             outerEnv := {
               tyVars := outerEnv.tyVars.tail!
               level := outerEnv.level - 1
             }
             let codClosure ← Elaborate.mkDependentClosure paramName methodType outerEnv
-            methodType := Value.vPi .omega .implicit paramName (Value.vType Level.zero) codClosure
+            methodType := Value.vPi .omega .implicit paramName paramKind codClosure
+
+          -- Then wrap method's own type variables (innermost foralls, but still implicit)
+          for varName in methodOwnVarsUnique.reverse do
+            outerEnv := {
+              tyVars := outerEnv.tyVars.tail!
+              level := outerEnv.level - 1
+            }
+            let codClosure ← Elaborate.mkDependentClosure varName methodType outerEnv
+            methodType := Value.vPi .omega .implicit varName (.vType .zero) codClosure
 
           return methodType)
         (TCM.typePlaceholder Span.uninhabited) -- todo: review if Span.uninhabited is appropriate here
@@ -631,16 +664,24 @@ private def elaborateMethodType
     (typeClass : Metal.TypeClassMeta)
     (methodTypeSyntax : Syntax.TypeExpr)
     : TCM Value := do
+  -- Elaborate kinds for each parameter
+  let mut paramKinds : Array (String × Value) := #[]
+  for param in typeClass.params do
+    let kind ← match param.kind with
+      | some k => Elaborate.elaborateKind k
+      | none => pure (Value.vType Level.zero)
+    paramKinds := paramKinds.push (param.name.value, kind)
+
   let mut elabEnv := Elaborate.ElabEnv.empty
-  for paramName in typeClass.paramNames do
-    elabEnv := elabEnv.extend paramName (Value.vType Level.zero)
+  for (paramName, kind) in paramKinds do
+    elabEnv := elabEnv.extend paramName kind
   let methodTypeBody ← TCM.withGlobals globals (Elaborate.elaborateType elabEnv methodTypeSyntax)
   let mut methodType := methodTypeBody
   let mut outerEnv := elabEnv
-  for paramName in typeClass.paramNames.reverse do
+  for (paramName, paramKind) in paramKinds.reverse do
     outerEnv := { tyVars := outerEnv.tyVars.tail!, level := outerEnv.level - 1 }
     let codClosure ← Elaborate.mkDependentClosure paramName methodType outerEnv
-    methodType := Value.vPi .omega .implicit paramName (Value.vType Level.zero) codClosure
+    methodType := Value.vPi .omega .implicit paramName paramKind codClosure
   return methodType
 
 /-- Register or reuse a type class method, returns updated globals -/

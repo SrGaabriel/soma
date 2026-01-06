@@ -17,7 +17,7 @@ namespace Soma.Dependent.TraitElaborate
 open Soma (Unique)
 open Soma.Core
 open Soma.Metal (Name UntypedModule TypeClassMeta InstanceDecl UntypedFunction)
-open Soma.Syntax (TypeExpr Span)
+open Soma.Syntax (TypeExpr Span TypeVarBinder)
 open Soma.Dependent.Elaborate (ElabEnv elaborateType mkConstClosure mkDependentClosure)
 
 /-- Maps source spans to their elaborated instance info -/
@@ -130,12 +130,20 @@ We build this by:
 3. Building a record row from the method types
 4. Wrapping in implicit foralls for type parameters
 -/
-def elaborateClassRecordType (paramNames : Array String)
+def elaborateClassRecordType (params : Array TypeVarBinder)
     (methods : Array (Name × TypeExpr)) : TCM Value := do
-  -- Build elaboration environment with type parameters
+  -- Elaborate kinds for each parameter
+  let mut paramKinds : Array (String × Value) := #[]
+  for param in params do
+    let kind ← match param.kind with
+      | some k => Elaborate.elaborateKind k
+      | none => pure (Value.vType Level.zero)  -- default to Type
+    paramKinds := paramKinds.push (param.name.value, kind)
+
+  -- Build elaboration environment with type parameters and their kinds
   let mut elabEnv := ElabEnv.empty
-  for paramName in paramNames do
-    elabEnv := elabEnv.extend paramName (Value.vType Level.zero)
+  for (paramName, kind) in paramKinds do
+    elabEnv := elabEnv.extend paramName kind
 
   -- Elaborate each method signature
   let mut fields : List (String × Value) := []
@@ -154,7 +162,7 @@ def elaborateClassRecordType (paramNames : Array String)
   -- Wrap in implicit foralls for each type parameter (right to left)
   let mut result := recordTy
   let mut outerEnv := elabEnv
-  for paramName in paramNames.reverse do
+  for (paramName, paramKind) in paramKinds.reverse do
     -- Pop the current variable from the environment
     outerEnv := {
       tyVars := outerEnv.tyVars.tail!
@@ -162,7 +170,7 @@ def elaborateClassRecordType (paramNames : Array String)
     }
     -- Create dependent closure for the codomain
     let codClosure ← mkDependentClosure paramName result outerEnv
-    result := Value.vPi .omega .implicit paramName (Value.vType Level.zero) codClosure
+    result := Value.vPi .omega .implicit paramName paramKind codClosure
 
   return result
 
@@ -176,9 +184,10 @@ The superclass constraint (Eq a) means:
 
 Returns an array of (superclass Unique, parameter index mapping).
 -/
-def elaborateSuperclasses (paramNames : Array String)
+def elaborateSuperclasses (params : Array TypeVarBinder)
     (constraints : Array Syntax.Constraint)
     (registry : ClassRegistry) : TCM (Array (Unique × Array Nat)) := do
+  let paramNames := params.map (·.name.value)
   let mut result : Array (Unique × Array Nat) := #[]
 
   for constraint in constraints do
@@ -207,15 +216,15 @@ def elaborateClass (typeClass : TypeClassMeta) (registry : ClassRegistry)
   let classUnique ← TCM.freshUnique typeClass.name.display
 
   -- Elaborate the record type from method signatures
-  let recordType ← elaborateClassRecordType typeClass.paramNames typeClass.methodSignatures
+  let recordType ← elaborateClassRecordType typeClass.params typeClass.methodSignatures
 
   -- Elaborate superclass constraints
-  let superclasses ← elaborateSuperclasses typeClass.paramNames typeClass.superclasses registry
+  let superclasses ← elaborateSuperclasses typeClass.params typeClass.superclasses registry
 
   let classInfo : ClassInfo := {
     classId := classUnique
-    numParams := typeClass.paramNames.size
-    paramQuantities := typeClass.paramNames.map (fun _ => Quantity.omega)
+    numParams := typeClass.params.size
+    paramQuantities := typeClass.params.map (fun _ => Quantity.omega)
     recordType := recordType
     superclasses := superclasses
     span := Span.uninhabited
@@ -307,7 +316,8 @@ We build:
 def elaborateInstanceValue (typeArgs : Array Value)
     (methods : Array UntypedFunction)
     (methodSignatures : Array (Name × TypeExpr))
-    (paramNames : Array String) : TCM Value := do
+    (params : Array TypeVarBinder) : TCM Value := do
+  let paramNames := params.map (·.name.value)
   let mut fields : List (String × Value) := []
 
   for method in methods do
@@ -353,7 +363,7 @@ def elaborateInstance (inst : InstanceDecl) (registry : ClassRegistry)
       typeArgs
       inst.methods
       typeClass.methodSignatures
-      typeClass.paramNames
+      typeClass.params
 
     -- Generate instance ID
     let instName := s!"$inst_{inst.className}_{typeArgs.size}"

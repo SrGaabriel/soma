@@ -54,8 +54,8 @@ structure InstanceDecl where
 /-- Metadata about a type class -/
 structure TypeClassMeta where
   name : Name
-  /-- Type parameter names (e.g., ["a"] for `trait Eq a`) -/
-  paramNames : Array String
+  /-- Type parameters with optional kind annotations -/
+  params : Array Syntax.TypeVarBinder
   /-- Superclass constraints as syntax -/
   superclasses : Array Syntax.Constraint
   /-- Method names and their type signatures (as syntax) -/

@@ -345,6 +345,48 @@ partial def lowerKindExpr (green : GreenNode) (offset : Nat) : LowerM KindExpr :
       lowerError s!"missing {expected}" span
       pure (.atom ⟨"*", span⟩)
 
+/-- Lower a type parameter node (.typeVar or .tyParamKinded) to TypeVarBinder -/
+partial def lowerTypeVarBinder (v : GreenNode) (o : Nat) : LowerM TypeVarBinder := do
+  match v.syntaxKind? with
+  | some .tyParamKinded =>
+      let kids := childrenWithOffsets v o |>.filter (isSemanticNode ·.1)
+      let varChild := kids.find? fun (c, _) => c.syntaxKind? == some .typeVar
+      let kindChild := kids.find? fun (c, _) =>
+        c.syntaxKind? == some .typeCon ||
+        c.syntaxKind? == some .typeArrow ||
+        c.syntaxKind? == some .typeParens
+      match varChild with
+      | some (varNode, varOff) =>
+          match firstGreenChild varNode with
+          | some child =>
+              let text ← getGreenTokenText child varOff
+              let vspan ← spanFor varNode varOff
+              let kindExpr ← match kindChild with
+                | some (kindNode, kindOff) => some <$> lowerKindExpr kindNode kindOff
+                | none => pure none
+              pure (TypeVarBinder.mk ⟨text, vspan⟩ kindExpr)
+          | none =>
+              let vspan ← spanFor varNode varOff
+              pure (TypeVarBinder.mk ⟨"_", vspan⟩ none)
+      | none =>
+          let vspan ← spanFor v o
+          pure (TypeVarBinder.mk ⟨"_", vspan⟩ none)
+  | _ =>
+      match firstGreenChild v with
+      | some child =>
+          let text ← getGreenTokenText child o
+          let vspan ← spanFor v o
+          pure (TypeVarBinder.mk ⟨text, vspan⟩ none)
+      | none =>
+          let vspan ← spanFor v o
+          pure (TypeVarBinder.mk ⟨"_", vspan⟩ none)
+
+/-- Lower type parameters from a tyParamList node -/
+partial def lowerTypeParams (plist : GreenNode) (plistOffset : Nat) : LowerM (Array TypeVarBinder) := do
+  let varNodes := childrenWithOffsets plist plistOffset |>.filter fun (c, _) =>
+    c.syntaxKind? == some .typeVar || c.syntaxKind? == some .tyParamKinded
+  varNodes.mapM fun (v, vo) => lowerTypeVarBinder v vo
+
 /-- Lower a CST type to AST TypeExpr -/
 partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr := do
   -- For triviaToken, recurse immediately with adjusted offset (don't compute span yet)
@@ -436,42 +478,7 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
           let bodyNodes := allKids.filter fun (c, _) =>
             c.syntaxKind? != some .typeVar && c.syntaxKind? != some .tyParamKinded &&
             c.syntaxKind? != some .tyParamList && isSemanticNode c
-          let vars ← binderNodes.mapM fun (v, o) => do
-            match v.syntaxKind? with
-            | some .tyParamKinded =>
-                let kids := childrenWithOffsets v o |>.filter (isSemanticNode ·.1)
-                let varChild := kids.find? fun (c, _) => c.syntaxKind? == some .typeVar
-                -- Kind can be .typeCon (atomic), .typeArrow (arrow), or .typeParens (parenthesized)
-                let kindChild := kids.find? fun (c, _) =>
-                  c.syntaxKind? == some .typeCon ||
-                  c.syntaxKind? == some .typeArrow ||
-                  c.syntaxKind? == some .typeParens
-                match varChild with
-                | some (varNode, varOff) =>
-                    match firstGreenChild varNode with
-                    | some child =>
-                        let text ← getGreenTokenText child varOff
-                        let vspan ← spanFor varNode varOff
-                        let kindExpr ← match kindChild with
-                          | some (kindNode, kindOff) =>
-                              some <$> lowerKindExpr kindNode kindOff
-                          | none => pure none
-                        pure (TypeVarBinder.mk ⟨text, vspan⟩ kindExpr)
-                    | none =>
-                        let vspan ← spanFor varNode varOff
-                        pure (TypeVarBinder.mk ⟨"_", vspan⟩ none)
-                | none =>
-                    let vspan ← spanFor v o
-                    pure (TypeVarBinder.mk ⟨"_", vspan⟩ none)
-            | _ =>
-                match firstGreenChild v with
-                | some child =>
-                    let text ← getGreenTokenText child o
-                    let vspan ← spanFor v o
-                    pure (TypeVarBinder.mk ⟨text, vspan⟩ none)
-                | none =>
-                    let vspan ← spanFor v o
-                    pure (TypeVarBinder.mk ⟨"_", vspan⟩ none)
+          let vars ← binderNodes.mapM fun (v, o) => lowerTypeVarBinder v o
           if bodyNodes.isEmpty then
             lowerError "forall type requires body" span
             pure (.var ⟨"_error", span⟩)
@@ -1224,65 +1231,69 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
             lowerError "compose block empty" span
             pure (.var ⟨"_error", span⟩)
           else if kidsWithOffsets.size == 1 then
-            let body ← lowerExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
-            pure (.compose body span)
+            -- Single expression, no desugaring needed
+            lowerExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
           else
-            let stmts ← kidsWithOffsets.mapM fun (c, o) => lowerExpr c o
-            let body := stmts[stmts.size - 1]!
-            let initStmts := stmts[:stmts.size - 1].toArray.reverse
-            let mut result : Expr := body
-            for stmt in initStmts do
-              match stmt with
-              -- Match on case with single arm and single var pattern (desugared let from composeLetStmt)
-              | .case #[val] #[arm] stmtSpan =>
-                  match arm.patterns[0]? with
-                  | some (Pattern.var name) =>
-                      -- Reconstruct as case with actual body
-                      let newArm := MatchArm.mk #[Pattern.var name] none result stmtSpan
-                      result := Expr.case #[val] #[newArm] stmtSpan
-                  | _ =>
-                      -- Non-var pattern or missing - treat as expression statement
-                      let wildcardPat := Pattern.wildcard stmt.span
-                      let newArm := MatchArm.mk #[wildcardPat] none result stmt.span
-                      result := Expr.case #[stmt] #[newArm] stmt.span
-              | other =>
-                  let wildcardPat := Pattern.wildcard other.span
-                  let newArm := MatchArm.mk #[wildcardPat] none result other.span
-                  result := Expr.case #[other] #[newArm] other.span
-            pure (.compose result span)
+            -- Desugar compose block:
+            -- - `let x = expr` (pure binding) becomes `case expr of x -> rest`
+            -- - `bind x <- action` (monadic bind) becomes `action >>= (\x -> rest)`
+            -- - `expr` (expression statement) becomes `expr >> rest`
+            --
+            -- Process statements from last to first, building up the result
+            let lastIdx := kidsWithOffsets.size - 1
+            let (lastNode, lastOffset) := kidsWithOffsets[lastIdx]!
+            let mut result ← lowerExpr lastNode lastOffset
 
-      | .exprBind =>
-          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
-          if kidsWithOffsets.isEmpty then
-            lowerError "bind block empty" span
-            pure (.var ⟨"_error", span⟩)
-          else if kidsWithOffsets.size == 1 then
-            let body ← lowerExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
-            pure (.bind body span)
-          else
-            let stmts ← kidsWithOffsets.mapM fun (c, o) => lowerExpr c o
-            let body := stmts[stmts.size - 1]!
-            let initStmts := stmts[:stmts.size - 1].toArray.reverse
-            let mut result : Expr := body
-            for stmt in initStmts do
-              match stmt with
-              -- Match on case with single arm and single var pattern (desugared let from composeLetStmt)
-              | .case #[val] #[arm] stmtSpan =>
-                  match arm.patterns[0]? with
-                  | some (Pattern.var name) =>
-                      -- Reconstruct as case with actual body
-                      let newArm := MatchArm.mk #[Pattern.var name] none result stmtSpan
-                      result := Expr.case #[val] #[newArm] stmtSpan
-                  | _ =>
-                      -- Non-var pattern or missing so we treat as expression statement
-                      let wildcardPat := Pattern.wildcard stmt.span
-                      let newArm := MatchArm.mk #[wildcardPat] none result stmt.span
-                      result := Expr.case #[stmt] #[newArm] stmt.span
-              | other =>
-                  let wildcardPat := Pattern.wildcard other.span
-                  let newArm := MatchArm.mk #[wildcardPat] none result other.span
-                  result := Expr.case #[other] #[newArm] other.span
-            pure (.bind result span)
+            for i in List.reverse (List.range lastIdx) do
+              let (stmtNode, stmtOffset) := kidsWithOffsets[i]!
+              let stmtSpan ← spanFor stmtNode stmtOffset
+
+              match stmtNode.syntaxKind? with
+              | some .composeLetStmt =>
+                  -- Pure let binding: let x = expr
+                  -- Desugar to: case expr of | x -> result (same as regular let expressions)
+                  let nameTokens := stmtNode.children.filter fun c => isTokenKind c .lowerIdent
+                  let valueNodes := childrenWithOffsets stmtNode stmtOffset |>.filter fun (c, _) => isSemanticNode c
+                  if valueNodes.isEmpty then
+                    lowerError "compose let missing value" stmtSpan
+                  else
+                    let (valueNode, valueOffset) := valueNodes[valueNodes.size - 1]!
+                    let value ← lowerExpr valueNode valueOffset
+                    let varName := match nameTokens[0]? with
+                      | some tok => match getTokenText tok with
+                        | some text => text
+                        | none => "_"
+                      | none => "_"
+                    let pat := Pattern.var ⟨varName, stmtSpan⟩
+                    let arm := MatchArm.mk #[pat] none result stmtSpan
+                    result := Expr.case #[value] #[arm] stmtSpan
+
+              | some .composeBindStmt =>
+                  -- Monadic bind: bind x <- action
+                  -- Desugar to: action >>= (\x -> result)
+                  let nameTokens := stmtNode.children.filter fun c => isTokenKind c .lowerIdent
+                  let valueNodes := childrenWithOffsets stmtNode stmtOffset |>.filter fun (c, _) => isSemanticNode c
+                  if valueNodes.isEmpty then
+                    lowerError "compose bind missing value" stmtSpan
+                  else
+                    let (valueNode, valueOffset) := valueNodes[valueNodes.size - 1]!
+                    let value ← lowerExpr valueNode valueOffset
+                    let varName := match nameTokens[0]? with
+                      | some tok => match getTokenText tok with
+                        | some text => text
+                        | none => "_"
+                      | none => "_"
+                    let bindOp : OpName := ⟨">>=", stmtSpan⟩
+                    let lambda := Expr.lambda #[(⟨varName, stmtSpan⟩, none)] result stmtSpan
+                    result := Expr.infix bindOp value lambda stmtSpan
+
+              | _ =>
+                  -- Expression statement: expr >> result
+                  let expr ← lowerExpr stmtNode stmtOffset
+                  let seqOp : OpName := ⟨">>", stmtSpan⟩
+                  result := Expr.infix seqOp expr result stmtSpan
+
+            pure result
 
       | .exprVariant =>
           -- Structure: [dot, labelToken, optionalArgExpr]
@@ -1298,48 +1309,11 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
             else pure none
             pure (.variant ⟨labelText, labelSpan⟩ arg span)
 
-      | .composeLetStmt =>
-          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
-          let nameTokens := green.children.filter fun c => isTokenKind c .lowerIdent
-          if kidsWithOffsets.isEmpty then
-            lowerError "compose let statement missing value" span
-            pure (.var ⟨"_error", span⟩)
-          else
-            let (valueNode, valueOffset) := kidsWithOffsets[kidsWithOffsets.size - 1]!
-            let value ← lowerExpr valueNode valueOffset
-            -- Helper to create a case expression with a variable pattern (desugared let)
-            let mkLetCase (name : String) : Expr :=
-              let pat := Pattern.var ⟨name, span⟩
-              let dummyBody := Expr.var ⟨"_", span⟩
-              let arm := MatchArm.mk #[pat] none dummyBody span
-              Expr.case #[value] #[arm] span
-            if !nameTokens.isEmpty then
-              match getTokenText nameTokens[0]! with
-              | some text =>
-                  pure (mkLetCase text)
-              | none =>
-                  lowerError "compose let missing binding name" span
-                  pure (.var ⟨"_error", span⟩)
-            else if kidsWithOffsets.size >= 2 then
-              let (patNode, patOffset) := kidsWithOffsets[0]!
-              match patNode.syntaxKind? with
-              | some k =>
-                  if k.isPattern then
-                    match firstGreenChild patNode with
-                    | some child =>
-                        let patText ← getGreenTokenText child patOffset
-                        pure (mkLetCase patText)
-                    | none =>
-                        pure (mkLetCase "_pat")
-                  else
-                    lowerError s!"unexpected node in compose let: {k}" span
-                    pure (.var ⟨"_error", span⟩)
-              | none =>
-                  lowerError "compose let missing binding" span
-                  pure (.var ⟨"_error", span⟩)
-            else
-              lowerError "compose let statement incomplete" span
-              pure (.var ⟨"_error", span⟩)
+      | .composeLetStmt | .composeBindStmt =>
+          -- These are handled directly in .exprCompose
+          -- If we reach here, it means they appeared outside a compose block
+          lowerError "let/bind statement outside compose block" span
+          pure (.var ⟨"_error", span⟩)
 
       | .name =>
           match firstGreenChild green with
@@ -1578,17 +1552,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
           let params ← if paramNodes.isEmpty then pure #[]
             else
               let (plist, plistOffset) := paramNodes[0]!
-              let varNodes := childrenWithOffsets plist plistOffset |>.filter fun (c, _) =>
-                c.syntaxKind? == some .typeVar
-              varNodes.mapM fun (v, vo) => do
-                match firstGreenChild v with
-                | some child =>
-                    let text ← getGreenTokenText child vo
-                    let vspan ← spanFor v vo
-                    pure ⟨text, vspan⟩
-                | none =>
-                    let vspan ← spanFor v vo
-                    pure ⟨"_", vspan⟩
+              lowerTypeParams plist plistOffset
 
           let conNodes := allKids.filter fun (c, _) =>
             c.syntaxKind? == some .constructor || c.syntaxKind? == some .constructorSig
@@ -1624,10 +1588,15 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             | none => pure "_Con"
 
             let allKids := childrenWithOffsets green offset
+            let paramNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .tyParamList
+            let params ← if paramNodes.isEmpty then pure #[]
+              else
+                let (plist, plistOffset) := paramNodes[0]!
+                lowerTypeParams plist plistOffset
             let fieldNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .field
             let fields ← fieldNodes.mapM fun (c, o) => lowerStructField c o
 
-            pure (.struct ⟨name, span⟩ #[] ⟨conName, span⟩ fields span)
+            pure (.struct ⟨name, span⟩ params ⟨conName, span⟩ fields span)
 
       | .declTrait =>
           let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent
@@ -1643,17 +1612,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
           let params ← if paramNodes.isEmpty then pure #[]
             else
               let (plist, plistOffset) := paramNodes[0]!
-              let varNodes := childrenWithOffsets plist plistOffset |>.filter fun (c, _) =>
-                c.syntaxKind? == some .typeVar
-              varNodes.mapM fun (v, vo) => do
-                match firstGreenChild v with
-                | some child =>
-                    let text ← getGreenTokenText child vo
-                    let vspan ← spanFor v vo
-                    pure ⟨text, vspan⟩
-                | none =>
-                    let vspan ← spanFor v vo
-                    pure ⟨"_", vspan⟩
+              lowerTypeParams plist plistOffset
 
           let constraintNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .constraintList
           let constraints ← constraintNodes.mapM fun (c, o) => lowerConstraint c o

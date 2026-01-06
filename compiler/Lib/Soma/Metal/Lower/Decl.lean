@@ -42,7 +42,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     let typeId : TypeId := { module := modName, name := name.value, unique := uniqueId }
     LowerM.registerType name.value {
       typeId := typeId
-      paramNames := params.map (·.value)
+      paramNames := params.map (·.name.value)
       unique := typeUnique
     }
 
@@ -73,7 +73,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     let fieldNames := fields.filterMap fun field => field.name.map (·.value)
     LowerM.registerType name.value {
       typeId := typeId
-      paramNames := params.map (·.value)
+      paramNames := params.map (·.name.value)
       unique := typeUnique
       fieldNames := fieldNames
     }
@@ -97,13 +97,10 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
       let methodGlobalName ← LowerM.freshUserName m.name.value
       pure (methodGlobalName, m.type_)
 
-    -- Extract parameter names from the trait declaration
-    let paramNames := params.map (·.value)
-
     LowerM.registerTypeClass name.value
       { name := globalName
         typeId := typeId
-        paramNames := paramNames
+        params := params
         superclasses := constraints
         methods := methodSigs
         unique := typeUnique }
@@ -332,7 +329,7 @@ def lowerTypeDef (decl : Decl) : LowerM (Option UntypedTypeDef) := do
   | .data name _params constructors _kind _ =>
     let typeUnique ← LowerM.freshUnique name.value
     let typeName := Name.user typeUnique
-    let typeVarNames := _params.map (·.value)
+    let typeVarNames := _params.map (·.name.value)
 
     -- Build untyped constructors with field type syntax preserved
     let ctorList := enumWithIndex constructors.toList
@@ -353,7 +350,7 @@ def lowerTypeDef (decl : Decl) : LowerM (Option UntypedTypeDef) := do
   | .struct name _params ctorName fields _ =>
     let typeUnique ← LowerM.freshUnique name.value
     let typeName := Name.user typeUnique
-    let typeVarNames := _params.map (·.value)
+    let typeVarNames := _params.map (·.name.value)
     let ctorMetalName := Name.ctor typeUnique ctorName.value 0
     -- Extract optional field names and types
     let fieldsWithOptNames := fields.map fun field =>
@@ -411,7 +408,7 @@ def lowerModule (moduleName : String) (decls : Array Decl) : LowerM UntypedModul
   let genv ← LowerM.getGlobalEnv
   let typeClasses := genv.typeClasses.fold (init := #[]) fun acc _ info =>
     acc.push { name := info.name
-               paramNames := info.paramNames
+               params := info.params
                superclasses := info.superclasses
                methodSignatures := info.methods : TypeClassMeta }
 

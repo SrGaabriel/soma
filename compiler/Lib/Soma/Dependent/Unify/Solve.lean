@@ -338,6 +338,10 @@ partial def applyToSpine (v : Value) (spine : List Value) : TCM Value := do
       let resultTy ← TCM.freshMetaVal (.vType .zero)
       let applied := Value.vNeutral resultTy (.nApp neu arg)
       applyToSpine applied rest
+    | .vDataType id params =>
+      -- Apply type constructor to argument
+      let applied := Value.vDataType id (params ++ [arg])
+      applyToSpine applied rest
     | _ =>
       let span ← TCM.getSpan
       TCM.throw (.expectedFunction v' span none)
@@ -378,6 +382,27 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
         if allEqual then
           return
     | none => pure ()
+  | _ => pure ()
+
+  -- Higher-kinded decomposition: ?m x₁...xₙ = T y₁...yₙ where T is a type constructor
+  -- Solve ?m = T (unapplied) and unify xᵢ = yᵢ
+  match rhs' with
+  | .vDataType id params =>
+    if spine.length == params.length && spine.length > 0 then
+      -- Check if all spine args are unsolved metas
+      let allUnsolvedMetas ← spine.allM fun arg => do
+        let arg' ← force arg
+        match arg' with
+        | .vNeutral _ (.nMeta _) => pure true
+        | _ => pure false
+      if allUnsolvedMetas then
+        -- Decompose: solve ?m = T (with no params) and unify spine with params
+        let unappliedTyCon := Value.vDataType id []
+        TCM.solveMeta m unappliedTyCon
+        -- Unify each spine element with corresponding param
+        for (spineArg, param) in spine.zip params do
+          unify spineArg param
+        return
   | _ => pure ()
 
   -- Check if spine is a pattern (distinct bound variables)

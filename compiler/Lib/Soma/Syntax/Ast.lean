@@ -488,14 +488,14 @@ inductive Decl where
          (clauses : Array DefClause) (span : Span)
 
   /-- Data type definition: data Option a | Some value :: a | None -/
-  | data (name : Name) (params : Array Name) (constructors : Array DataCon)
+  | data (name : Name) (params : Array TypeVarBinder) (constructors : Array DataCon)
          (kind : Option TypeExpr) (span : Span)
 
   /-- Struct definition: struct Path = Path String -/
-  | struct (name : Name) (params : Array Name) (con : Name) (fields : Array StructField) (span : Span)
+  | struct (name : Name) (params : Array TypeVarBinder) (con : Name) (fields : Array StructField) (span : Span)
 
   /-- Trait definition -/
-  | trait (name : Name) (params : Array Name) (constraints : Array Constraint)
+  | trait (name : Name) (params : Array TypeVarBinder) (constraints : Array Constraint)
           (methods : Array MethodSig) (span : Span)
 
   /-- Instance definition -/
@@ -600,6 +600,15 @@ partial def ppPattern : Pattern → String
 partial def ppKindExpr : KindExpr → String
   | .atom n => n.value
   | .arrow from_ to _ => s!"({ppKindExpr from_} -> {ppKindExpr to})"
+
+/-- Pretty print a TypeVarBinder -/
+partial def ppTypeVarBinder (v : TypeVarBinder) : String := match v.kind with
+  | some k => s!"({v.name.value} :: {ppKindExpr k})"
+  | none => v.name.value
+
+/-- Pretty print an array of TypeVarBinders -/
+partial def ppTypeVarBinders (vs : Array TypeVarBinder) : String :=
+  vs.toList.map ppTypeVarBinder |> String.intercalate " "
 
 /-- Pretty print a TypeExpr -/
 partial def ppTypeExpr : TypeExpr → String
@@ -774,7 +783,7 @@ partial def ppDecl : Decl → String
         s!"{attrStr}def {name.value}{sigStr}\n{indent 2 clausesStr}"
 
   | .data name params cons kind _ =>
-      let paramsStr := if params.isEmpty then "" else s!" {ppNames params}"
+      let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
       let kindStr := match kind with
         | some k => s!" :: {ppTypeExpr k}"
         | none => ""
@@ -782,7 +791,7 @@ partial def ppDecl : Decl → String
       s!"data {name.value}{paramsStr}{kindStr}\n{indent 2 consStr}"
 
   | .struct name params con fields _ =>
-      let paramsStr := if params.isEmpty then "" else s!" {ppNames params}"
+      let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
       let fieldsStr := fields.toList.map (fun f =>
         match f.name with
         | some n => s!"{n.value} :: {ppTypeExpr f.type_}"
@@ -791,7 +800,7 @@ partial def ppDecl : Decl → String
       "struct " ++ name.value ++ paramsStr ++ " = " ++ con.value ++ " { " ++ fieldsStr ++ " }"
 
   | .trait name params constraints methods _ =>
-      let paramsStr := if params.isEmpty then "" else s!" {ppNames params}"
+      let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
       let consStr := if constraints.isEmpty then ""
         else s!" with ({constraints.toList.map ppConstraint |> String.intercalate ", "})"
       let methodsStr := methods.toList.map ppMethodSig |> String.intercalate "\n"
