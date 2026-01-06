@@ -38,12 +38,12 @@ def map :: (a -> b) -> [a] -> [b]
     | f (x:xs) => cons (f x) (map f xs)
     | _ [] => []
 
-def reverseAcc :: [a] -> [a] -> [a]
-    | (x:xs) acc => reverseAcc xs (cons x acc)
+def reverse_acc :: [a] -> [a] -> [a]
+    | (x:xs) acc => reverse_acc xs (cons x acc)
     | [] acc => acc
 
 def reverse :: [a] -> [a]
-    | xs => reverseAcc xs []
+    | xs => reverse_acc xs []
 
 def append :: [a] -> [a] -> [a]
     | (x:xs) ys => cons x (append xs ys)
@@ -53,7 +53,7 @@ def concat :: [[a]] -> [a]
     | (xs:xss) => append xs (concat xss)
     | [] => []
 
-def concatMap :: (a -> [b]) -> [a] -> [b]
+def concat_map :: (a -> [b]) -> [a] -> [b]
     | f xs => concat (map f xs)
 
 def foldl :: (b -> a -> b) -> b -> [a] -> b
@@ -98,15 +98,15 @@ def drop :: Int -> [a] -> [a]
     | n (x:xs) => if n <= 0 then cons x xs else drop (n - 1) xs
     | _ [] => []
 
-def takeWhile :: (a -> Bool) -> [a] -> [a]
-    | p (x:xs) => if p x then cons x (takeWhile p xs) else []
+def take_while :: (a -> Bool) -> [a] -> [a]
+    | p (x:xs) => if p x then cons x (take_while p xs) else []
     | _ [] => []
 
-def dropWhile :: (a -> Bool) -> [a] -> [a]
-    | p (x:xs) => if p x then dropWhile p xs else cons x xs
+def drop_while :: (a -> Bool) -> [a] -> [a]
+    | p (x:xs) => if p x then drop_while p xs else cons x xs
     | _ [] => []
 
-def splitAt :: Int -> [a] -> ([a], [a])
+def split_at :: Int -> [a] -> ([a], [a])
     | n xs => (take n xs, drop n xs)
 
 def elem :: a -> [a] -> Bool
@@ -135,6 +135,6 @@ def zip :: [a] -> [b] -> [(a, b)]
     | (x:xs) (y:ys) => cons (x, y) (zip xs ys)
     | _ _ => []
 
-def zipWith :: (a -> b -> c) -> [a] -> [b] -> [c]
-    | f (x:xs) (y:ys) => cons (f x y) (zipWith f xs ys)
+def zip_with :: (a -> b -> c) -> [a] -> [b] -> [c]
+    | f (x:xs) (y:ys) => cons (f x y) (zip_with f xs ys)
     | _ _ _ => []

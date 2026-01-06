@@ -82,7 +82,9 @@ def analyzeSourceFresh (filePath : String) (content : String)
   -- Phase 6: Lower AST to Metal IR with external symbols pre-populated
   let initialEnv := symbolEnvToGlobalEnv moduleName seedSymbols
   let metalResult := lowerModuleWithExternals ast initialEnv
-  let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
+  let metalLowerErrors := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
+  let metalLowerWarnings := Soma.Metal.Lower.LowerWarning.toDiagnostics metalResult.warnings
+  let metalLowerDiags := metalLowerErrors ++ metalLowerWarnings
 
   -- Phase 7: Dependent type checking using the shared pipeline
   -- Use seed globals/instanceEnv from dependencies
@@ -193,7 +195,9 @@ def analyzeSourceIncremental (filePath : String) (content : String)
       else lowerModuleIncremental ast changedDeclNames oldMetal
     | none => lowerModuleWithExternals ast initialEnv
 
-  let metalLowerDiags := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
+  let metalLowerErrors := Soma.Metal.Lower.LowerError.toDiagnostics metalResult.errors
+  let metalLowerWarnings := Soma.Metal.Lower.LowerWarning.toDiagnostics metalResult.warnings
+  let metalLowerDiags := metalLowerErrors ++ metalLowerWarnings
 
   -- Phase 8: Incremental dependent type checking using the shared pipeline
   -- Get or create previous incremental state

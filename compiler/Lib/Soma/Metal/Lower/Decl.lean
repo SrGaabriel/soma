@@ -8,6 +8,60 @@ open Soma.Core (TypeId Name)
 open Soma.Metal
 open Soma.Syntax (Decl DataCon StructField DefClause)
 
+/-- Check if a character is uppercase ASCII letter -/
+private def isUpperAscii (c : Char) : Bool :=
+  c.toNat >= 65 && c.toNat <= 90  -- 'A' to 'Z'
+
+/-- Check if a character is lowercase ASCII letter -/
+private def isLowerAscii (c : Char) : Bool :=
+  c.toNat >= 97 && c.toNat <= 122  -- 'a' to 'z'
+
+/-- Check if a character is a digit -/
+private def isDigit (c : Char) : Bool :=
+  c.toNat >= 48 && c.toNat <= 57  -- '0' to '9'
+
+/-- Check if a name follows snake_case conventions -/
+private def isSnakeCase (name : String) : Bool :=
+  if name.isEmpty then true
+  else
+    let chars := name.toList
+    match chars with
+    | [] => true
+    | c :: rest =>
+      (isLowerAscii c || c == '_') &&
+      rest.all fun c => isLowerAscii c || isDigit c || c == '_'
+
+/-- Check if a name follows PascalCase convention -/
+private def isPascalCase (name : String) : Bool :=
+  if name.isEmpty then true
+  else
+    let chars := name.toList
+    match chars with
+    | [] => true
+    | c :: rest =>
+      isUpperAscii c &&
+      rest.all fun c => isUpperAscii c || isLowerAscii c || isDigit c
+
+/-- Check if a character is an identifier character (letter, digit, or underscore) -/
+private def isIdentChar (c : Char) : Bool :=
+  isUpperAscii c || isLowerAscii c || isDigit c || c == '_'
+
+/-- Check if a name is an operator (contains non-identifier characters). -/
+private def isOperatorName (name : String) : Bool :=
+  if name.isEmpty then false
+  else name.toList.any fun c => !isIdentChar c
+
+/-- Check naming convention for a declaration and report warning if violated -/
+private def checkNamingConvention (name : Syntax.Name) (declKind : String) (expected : NamingConvention) : LowerM Unit := do
+  let nameStr := name.value
+  if nameStr.startsWith "_" then return
+  if isOperatorName nameStr then return
+  let valid := match expected with
+    | .snakeCase => isSnakeCase nameStr
+    | .pascalCase => isPascalCase nameStr
+  if !valid then
+    LowerM.reportWarning (.namingConvention declKind nameStr name.span expected)
+
 /-- Helper to enumerate a list with indices -/
 def enumWithIndex (xs : List α) : List (Nat × α) :=
   go 0 xs
@@ -22,6 +76,7 @@ where
 partial def collectGlobals (decl : Decl) : LowerM Unit := do
   match decl with
   | .def_ _attrs name sig _clauses _span =>
+    checkNamingConvention name "function" .snakeCase
     -- Check for duplicate definition
     let existing? ← LowerM.lookupVar LocalEnv.empty name.value
     match existing? with
@@ -35,6 +90,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
       LowerM.registerGlobal name.value { name := globalName, typeSyntax := sig, definedAt := name.span }
 
   | .data name params constructors _kind _span =>
+    checkNamingConvention name "type" .pascalCase
     -- Register the type
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
@@ -49,6 +105,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     -- Register constructors
     let ctorList := enumWithIndex constructors.toList
     for (i, ctor) in ctorList do
+      checkNamingConvention ctor.name "constructor" .pascalCase
       let ctorName := LowerM.mkCtorName typeUnique ctor.name.value i
       -- Check if this is an indexed constructor (has full signature) or simple (has fields)
       match ctor.sig with
@@ -65,6 +122,8 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
             fieldTypeSyntax := fieldTypeSyntax, sigSyntax := none, span := ctor.span }
 
   | .struct name params ctorName fields _span =>
+    checkNamingConvention name "struct" .pascalCase
+    checkNamingConvention ctorName "constructor" .pascalCase
     -- Register the type
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
@@ -85,6 +144,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
       { name := ctorMetalName, parentType := name.value, parentUnique := typeUnique, tag := 0, fieldTypeSyntax := fieldTypeSyntax, span := ctorName.span }
 
   | .trait name params constraints methods _span =>
+    checkNamingConvention name "trait" .pascalCase
     -- Register the type class
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
@@ -94,6 +154,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
 
     -- Store method signatures as syntax (unresolved)
     let methodSigs ← methods.mapM fun m => do
+      checkNamingConvention m.name "function" .snakeCase
       let methodGlobalName ← LowerM.freshUserName m.name.value
       pure (methodGlobalName, m.type_)
 
@@ -135,6 +196,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     collectGlobals inner
 
   | .abbrev name params _type _span =>
+    checkNamingConvention name "type" .pascalCase
     -- Register the type abbreviation
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId
@@ -446,6 +508,8 @@ structure IncrementalLowerResult where
   module : UntypedModule
   /-- Lowering errors -/
   errors : Array LowerError
+  /-- Lowering warnings -/
+  warnings : Array LowerWarning
   /-- The final global environment -/
   globalEnv : GlobalEnv
   /-- Next binding ID counter -/
@@ -480,6 +544,7 @@ def lowerModuleFresh (syntaxModule : Syntax.Module) : IncrementalLowerResult :=
 
   { module := metalModule
   , errors := finalState.errors
+  , warnings := finalState.warnings
   , globalEnv := finalState.globalEnv
   , nextBindingId := finalState.nextBindingId
   , nextUniqueId := finalState.nextUniqueId
@@ -509,6 +574,7 @@ def lowerModuleWithExternals (syntaxModule : Syntax.Module) (initialEnv : Global
 
   { module := metalModule
   , errors := finalState.errors
+  , warnings := finalState.warnings
   , globalEnv := finalState.globalEnv
   , nextBindingId := finalState.nextBindingId
   , nextUniqueId := finalState.nextUniqueId
@@ -563,6 +629,7 @@ def lowerModuleIncremental
       nextUniqueId := oldResult.nextUniqueId
       moduleName := syntaxModule.name
       errors := #[]
+      warnings := #[]
       globalEnv := prunedEnv
     }
 
@@ -609,6 +676,7 @@ def lowerModuleIncremental
 
     { module := metalModule
     , errors := oldResult.errors ++ finalState.errors
+    , warnings := oldResult.warnings ++ finalState.warnings
     , globalEnv := finalState.globalEnv
     , nextBindingId := finalState.nextBindingId
     , nextUniqueId := finalState.nextUniqueId

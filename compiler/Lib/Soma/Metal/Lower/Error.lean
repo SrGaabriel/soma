@@ -5,6 +5,43 @@ namespace Soma.Metal.Lower
 
 open Soma.Syntax (Span Diagnostic Label)
 
+/-- Naming convention expected for a declaration kind -/
+inductive NamingConvention where
+  | snakeCase
+  | pascalCase
+  deriving Repr, BEq
+
+instance : ToString NamingConvention where
+  toString
+    | .snakeCase => "snake_case"
+    | .pascalCase => "PascalCase"
+
+/-- Warnings that can occur during lowering -/
+inductive LowerWarning where
+  | namingConvention (declKind : String) (name : String) (span : Span) (expected : NamingConvention)
+  deriving Repr
+
+namespace LowerWarning
+
+def span : LowerWarning → Span
+  | .namingConvention _ _ s _ => s
+
+def message : LowerWarning → String
+  | .namingConvention kind name _ expected =>
+    s!"{kind} `{name}` should use {expected} naming convention"
+
+/-- Convert a LowerWarning to a Diagnostic -/
+def toDiagnostic : LowerWarning → Diagnostic
+  | .namingConvention kind name span expected =>
+    Diagnostic.warning s!"{kind} `{name}` should use {expected}" span "non-conventional name"
+      |>.withHelp s!"{kind} names should use {expected} (e.g., {exampleFor expected})"
+where
+  exampleFor : NamingConvention → String
+    | .snakeCase => "foo_bar, my_function"
+    | .pascalCase => "FooBar, MyType"
+
+end LowerWarning
+
 /-- Errors that can occur during lowering -/
 inductive LowerError where
   | unboundVariable (name : String) (span : Span)
@@ -91,5 +128,9 @@ end LowerError
 /-- Convert an array of LowerErrors to Diagnostics -/
 def LowerError.toDiagnostics (errors : Array LowerError) : Array Diagnostic :=
   errors.map LowerError.toDiagnostic
+
+/-- Convert an array of LowerWarnings to Diagnostics -/
+def LowerWarning.toDiagnostics (warnings : Array LowerWarning) : Array Diagnostic :=
+  warnings.map LowerWarning.toDiagnostic
 
 end Soma.Metal.Lower

@@ -1869,10 +1869,10 @@ def lowerGreen (green : GreenNode) (source : SourceFile) (moduleName : String :=
   (lowerModule green 0 moduleName).run' ctx
 
 /- todo: implement -/
-theorem lower_trivia_invariant (green : GreenNode) (source : SourceFile) (moduleName : String) :
-    (lowerGreen (green.stripTrivia) source moduleName).1 =
-    (lowerGreen green source moduleName).1 := by
-  sorry
+-- theorem lower_trivia_invariant (green : GreenNode) (source : SourceFile) (moduleName : String) :
+--     (lowerGreen (green.stripTrivia) source moduleName).1 =
+--     (lowerGreen green source moduleName).1 := by
+--   sorry
 
 /-- Lower a single declaration from a RedNode -/
 def lowerDeclFromRedNode (tree : ParsedTree) (node : RedNode) : Option (Decl × Diagnostics) :=

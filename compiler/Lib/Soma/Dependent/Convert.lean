@@ -30,7 +30,7 @@ mutual
 /-- Force a value: if it's a solved metavariable, return the solution -/
 partial def force (v : Value) : TCM Value := do
   match v with
-  | .vNeutral ty (.nMeta id) =>
+  | .vNeutral _ty (.nMeta id) =>
     let info? ← TCM.lookupMeta id
     match info? with
     | some info =>
@@ -57,7 +57,7 @@ partial def force (v : Value) : TCM Value := do
           return finalVal
       | none => return v
     | none => return v
-  | .vNeutral ty neu =>
+  | .vNeutral _ty neu =>
     -- Handle meta applications: ?m arg1 arg2 ... where ?m might be solved
     match getMetaFromNeutral neu with
     | some (metaId, args) =>

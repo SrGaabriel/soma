@@ -4,3 +4,10 @@ struct Path = Path String
 
 def {</>} :: Path -> Path -> Path
     | (Path p1) (Path p2) => Path (p1 <> "/" <> p2)
+
+def to_string :: Path -> String
+    | (Path p) => p
+
+def from_string :: String -> Path
+    | p => Path p
+

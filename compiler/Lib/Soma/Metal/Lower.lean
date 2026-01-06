@@ -13,6 +13,7 @@ open Soma.Metal (UntypedModule)
 structure LowerResult where
   module : UntypedModule
   errors : Array LowerError
+  warnings : Array LowerWarning
   globalEnv : GlobalEnv
 
 /-- Lower a Syntax module to an UntypedModule.
@@ -26,6 +27,7 @@ def lower (syntaxModule : Syntax.Module) : LowerResult :=
   let (metalModule, finalState) := LowerM.run (lowerModule syntaxModule.name syntaxModule.decls) syntaxModule.name
   { module := metalModule
   , errors := finalState.errors
+  , warnings := finalState.warnings
   , globalEnv := finalState.globalEnv
   }
 
@@ -36,11 +38,13 @@ def lowerWithEnv (syntaxModule : Syntax.Module) (initialEnv : GlobalEnv) : Lower
     nextUniqueId := 0
     moduleName := syntaxModule.name
     errors := #[]
+    warnings := #[]
     globalEnv := initialEnv
   }
   let (metalModule, finalState) := StateT.run (lowerModule syntaxModule.name syntaxModule.decls) initialState
   { module := metalModule
   , errors := finalState.errors
+  , warnings := finalState.warnings
   , globalEnv := finalState.globalEnv
   }
 
@@ -50,5 +54,9 @@ def LowerResult.success (r : LowerResult) : Bool := r.errors.isEmpty
 /-- Get error messages -/
 def LowerResult.errorMessages (r : LowerResult) : Array String :=
   r.errors.map LowerError.message
+
+/-- Get warning messages -/
+def LowerResult.warningMessages (r : LowerResult) : Array String :=
+  r.warnings.map LowerWarning.message
 
 end Soma.Metal.Lower

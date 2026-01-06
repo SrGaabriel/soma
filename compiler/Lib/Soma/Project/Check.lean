@@ -77,14 +77,16 @@ def lower (tree : ParsedTree) (moduleName : String) : LowerResult :=
 /-- Phase 4: Lower AST to Metal IR -/
 def metal (ast : Syntax.Module) : MetalResult :=
   let result := lowerModuleFresh ast
-  let diags := Metal.Lower.LowerError.toDiagnostics result.errors
-  { module := result.module, result, diagnostics := diags }
+  let errorDiags := Metal.Lower.LowerError.toDiagnostics result.errors
+  let warningDiags := Metal.Lower.LowerWarning.toDiagnostics result.warnings
+  { module := result.module, result, diagnostics := errorDiags ++ warningDiags }
 
 /-- Phase 4 with external symbols: Lower AST to Metal IR with pre-populated GlobalEnv -/
 def metalWithExternals (ast : Syntax.Module) (initialEnv : Metal.Lower.GlobalEnv) : MetalResult :=
   let result := lowerModuleWithExternals ast initialEnv
-  let diags := Metal.Lower.LowerError.toDiagnostics result.errors
-  { module := result.module, result, diagnostics := diags }
+  let errorDiags := Metal.Lower.LowerError.toDiagnostics result.errors
+  let warningDiags := Metal.Lower.LowerWarning.toDiagnostics result.warnings
+  { module := result.module, result, diagnostics := errorDiags ++ warningDiags }
 
 /-- Convert SymbolEnv to Metal.Lower.GlobalEnv for pre-populating external symbols -/
 def symbolEnvToGlobalEnv (moduleName : String) (seed : SymbolEnv) : Metal.Lower.GlobalEnv :=
@@ -137,8 +139,9 @@ def symbolEnvToGlobalEnv (moduleName : String) (seed : SymbolEnv) : Metal.Lower.
 def metalIncremental (ast : Syntax.Module) (changedNames : Array String)
     (oldResult : IncrementalLowerResult) : MetalResult :=
   let result := lowerModuleIncremental ast changedNames oldResult
-  let diags := Metal.Lower.LowerError.toDiagnostics result.errors
-  { module := result.module, result, diagnostics := diags }
+  let errorDiags := Metal.Lower.LowerError.toDiagnostics result.errors
+  let warningDiags := Metal.Lower.LowerWarning.toDiagnostics result.warnings
+  { module := result.module, result, diagnostics := errorDiags ++ warningDiags }
 
 /-- Errors that can occur during project checking -/
 inductive CheckError where

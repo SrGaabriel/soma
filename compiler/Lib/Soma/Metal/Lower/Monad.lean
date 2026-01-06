@@ -15,6 +15,7 @@ structure LowerState where
   nextUniqueId : Nat
   moduleName : String
   errors : Array LowerError
+  warnings : Array LowerWarning
   globalEnv : GlobalEnv
 
 namespace LowerState
@@ -24,6 +25,7 @@ def empty (moduleName : String) : LowerState :=
   , nextUniqueId := 0
   , moduleName
   , errors := #[]
+  , warnings := #[]
   , globalEnv := GlobalEnv.empty moduleName
   }
 
@@ -33,6 +35,7 @@ def withExternalSymbols (moduleName : String) (initialEnv : GlobalEnv) : LowerSt
   , nextUniqueId := 0
   , moduleName
   , errors := #[]
+  , warnings := #[]
   , globalEnv := initialEnv
   }
 
@@ -86,10 +89,20 @@ def reportError (err : LowerError) : LowerM Unit := do
   let st ← get
   set { st with errors := st.errors.push err }
 
+/-- Report a warning -/
+def reportWarning (warn : LowerWarning) : LowerM Unit := do
+  let st ← get
+  set { st with warnings := st.warnings.push warn }
+
 /-- Get all errors -/
 def getErrors : LowerM (Array LowerError) := do
   let st ← get
   pure st.errors
+
+/-- Get all warnings -/
+def getWarnings : LowerM (Array LowerWarning) := do
+  let st ← get
+  pure st.warnings
 
 /-- Check if there are any errors -/
 def hasErrors : LowerM Bool := do
