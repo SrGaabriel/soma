@@ -45,12 +45,6 @@ haoma run -m <mode>
 
 ---
 
-## 💡 Examples
-
-You can find some examples in the `examples/` directory. They are not comprehensive, but should give you a taste of the language and its syntax.
-
----
-
 ## 🛠️ Compiler backend breakdown
 
 The compiler provides three compilation modes, each optimized for different use cases:
@@ -134,4 +128,4 @@ First and foremost, I would like to thank Jesus Christ for His guidance and bles
 
 Special thanks to **HigherOrderCo** (HOC) and **Victor Taelin** for their groundbreaking research and development in Interaction Nets and Interaction Calculus. Their work on optimal evaluation, the HVM runtime, and the theoretical foundations of interaction-based computation has been instrumental in developing Soma's Circuit IR and runtime system.
 
-Lastly, thanks to the open-soruce community and researchers whose contributions made this project possible.
+Lastly, thanks to the open-source community and researchers whose contributions made this project possible.

@@ -36,6 +36,21 @@ def parseAttributes : ParserM (Array GreenNode) := do
     | none => break
   return attrs
 
+/-- Check if attributes contain @[intrinsic] or @[extern] which allow bodiless declarations -/
+def hasBodyProvidingAttr (attrs : Array GreenNode) : Bool :=
+  attrs.any fun attr =>
+    -- Attribute structure: @[name] -> children are [@, [, name, ]]
+    -- The name token is at index 2
+    if attr.syntaxKind? == some .attribute then
+      let children := attr.children
+      if h : 2 < children.size then
+        match children[2].text? with
+        | some "intrinsic" => true
+        | some "extern" => true
+        | _ => false
+      else false
+    else false
+
 partial def parseDefClause : ParserM (Option GreenNode) := do
   match ← tryConsume .pipe with
   | some pipeTok =>
@@ -149,9 +164,13 @@ partial def parseDefDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) 
         return some (GreenNode.mkNode .declDef children)
 
       else
-        if signature.isSome then
+        -- Bodiless declaration: only allowed with @[intrinsic] or @[extern]
+        if signature.isSome && hasBodyProvidingAttr attrs then
           let children := attrs ++ #[defTok, nameNode, signature.get!]
           return some (GreenNode.mkNode .declDef children)
+        else if signature.isSome then
+          recordError "bodiless def requires @[intrinsic] or @[extern] attribute"
+          return some (GreenNode.mkError "missing body" (attrs ++ #[defTok, nameNode, signature.get!]))
         else
           recordError "expected '=', '|', or '::' after function name"
           return some (GreenNode.mkError "incomplete definition" (attrs ++ #[defTok, nameNode]))
@@ -242,7 +261,7 @@ def parseTypeParams : ParserM (Array GreenNode) := do
       | none => break
   return params
 
-def parseDataDecl : ParserM (Option GreenNode) := do
+def parseDataDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
   match ← tryConsume .kw_data with
   | some dataTok =>
       match ← parseUpperIdent with
@@ -263,7 +282,15 @@ def parseDataDecl : ParserM (Option GreenNode) := do
 
           let constructors ← layoutSepBy parseDataConstructor
 
-          let children := #[dataTok, nameTok] ++
+          -- Bodiless data: only allowed with @[intrinsic]
+          if constructors.isEmpty && !hasBodyProvidingAttr attrs then
+            recordError "bodiless data requires @[intrinsic] attribute"
+            let children := attrs ++ #[dataTok, nameTok] ++
+              (match paramList with | some p => #[p] | none => #[]) ++
+              (match kindAnnot with | some k => #[k] | none => #[])
+            return some (GreenNode.mkError "missing constructors" children)
+
+          let children := attrs ++ #[dataTok, nameTok] ++
             (match paramList with | some p => #[p] | none => #[]) ++
             (match kindAnnot with | some k => #[k] | none => #[]) ++
             (match whereTok with | some w => #[w] | none => #[]) ++
@@ -362,7 +389,7 @@ def parseTraitDecl : ParserM (Option GreenNode) := do
           return some (GreenNode.mkError "missing trait name" #[traitTok])
   | none => return none
 
-def parseInstanceDecl : ParserM (Option GreenNode) := do
+def parseInstanceDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
   match ← tryConsume .kw_instance with
   | some instanceTok =>
       -- Check for named instance: `instance myName : TraitName Type where ...`
@@ -422,7 +449,16 @@ def parseInstanceDecl : ParserM (Option GreenNode) := do
 
       let methods ← layoutSepBy parseInstanceMethod
 
-      let children := #[instanceTok] ++
+      -- Bodiless instance: only allowed with @[intrinsic]
+      if methods.isEmpty && whereTok.isNone && !hasBodyProvidingAttr attrs then
+        recordError "bodiless instance requires @[intrinsic] attribute"
+        let children := attrs ++ #[instanceTok] ++
+          (match instanceName with | some n => #[n] | none => #[]) ++
+          #[traitApp] ++
+          (match constraints with | some c => #[c] | none => #[])
+        return some (GreenNode.mkError "missing methods" children)
+
+      let children := attrs ++ #[instanceTok] ++
         (match instanceName with | some n => #[n] | none => #[]) ++
         #[traitApp] ++
         (match constraints with | some c => #[c] | none => #[]) ++
@@ -518,28 +554,14 @@ def parseAbbrevDecl : ParserM (Option GreenNode) := do
           return some (GreenNode.mkError "missing type name" #[abbrevTok])
   | none => return none
 
-partial def parseIntrinsicDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
-  match ← tryConsume .kw_intrinsic with
-  | some intrinsicTok =>
-      let inner ← if (← check .kw_def) then parseDefDecl attrs
-        else if (← check .kw_data) then parseDataDecl
-        else if (← check .kw_instance) then parseInstanceDecl
-        else recordError "expected 'def', 'data', or 'instance' after 'intrinsic'"; pure none
-
-      match inner with
-      | some decl => return some (GreenNode.mkNode .declIntrinsic #[intrinsicTok, decl])
-      | none => return some (GreenNode.mkError "missing intrinsic body" #[intrinsicTok])
-  | none => return none
-
 partial def parseDecl : ParserM (Option GreenNode) := do
   let attrs ← parseAttributes
 
-  if (← check .kw_intrinsic) then parseIntrinsicDecl attrs
-  else if (← check .kw_def) then parseDefDecl attrs
-  else if (← check .kw_data) then parseDataDecl
+  if (← check .kw_def) then parseDefDecl attrs
+  else if (← check .kw_data) then parseDataDecl attrs
   else if (← check .kw_struct) then parseStructDecl
   else if (← check .kw_trait) then parseTraitDecl
-  else if (← check .kw_instance) then parseInstanceDecl
+  else if (← check .kw_instance) then parseInstanceDecl attrs
   else if (← check .kw_use) then parseUseDecl
   else if (← check .kw_export) then parseExportDecl
   else if (← check .kw_abbrev) then parseAbbrevDecl

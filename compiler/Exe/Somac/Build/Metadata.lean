@@ -17,7 +17,7 @@ open Soma.Driver
 open Soma.Syntax (Diagnostic Diagnostics Span)
 open Soma.Core
 open Soma.Check
-open Soma.Dependent (Globals GlobalInfo InstanceEnv InstanceInfo ClassInfo)
+open Soma.Dependent (Globals GlobalInfo InstanceEnv InstanceInfo ClassInfo AbbrevEnv AbbrevInfo)
 
 /-! # Metadata Generation
 
@@ -521,17 +521,37 @@ def instanceEnvToJson (env : InstanceEnv) : Lean.Json :=
     ("moduleName", .str env.moduleName)
   ]
 
+/-- Serialize an AbbrevInfo to JSON -/
+def abbrevInfoToJson (info : AbbrevInfo) : Lean.Json :=
+  .mkObj [
+    ("abbrevId", .mkObj [
+      ("id", .num info.abbrevId.id),
+      ("module", .str info.abbrevId.module),
+      ("original", .str info.abbrevId.original)
+    ]),
+    ("arity", .num info.arity),
+    ("expansion", valueToJson info.expansion),
+    ("span", spanToJson info.span)
+  ]
+
+/-- Serialize AbbrevEnv to JSON -/
+def abbrevEnvToJson (env : AbbrevEnv) : Lean.Json :=
+  let entries := env.fold (init := #[]) fun acc info =>
+    acc.push (abbrevInfoToJson info)
+  .arr entries
+
 /-! ## Metadata Types -/
 
 /-- Project metadata structure for JSON output -/
 structure ProjectMetadata where
-  version : String := "2"  -- Version 2 for dependent types
+  version : String := "3" -- Version 3 adds abbreviation environment
   module : String
   symbols : SymbolEnv
   instances : InstanceMetadata
   constructors : Std.HashMap String Nat
   globals : Globals
   instanceEnv : InstanceEnv
+  abbrevEnv : AbbrevEnv
 
 /-- Convert ProjectMetadata to JSON -/
 def ProjectMetadata.toJson (pm : ProjectMetadata) : Lean.Json :=
@@ -542,7 +562,8 @@ def ProjectMetadata.toJson (pm : ProjectMetadata) : Lean.Json :=
     ("instances", instanceMetadataToJson pm.instances),
     ("constructors", constructorMetadataToJson pm.constructors),
     ("globals", globalsToJson pm.globals),
-    ("instanceEnv", instanceEnvToJson pm.instanceEnv)
+    ("instanceEnv", instanceEnvToJson pm.instanceEnv),
+    ("abbrevEnv", abbrevEnvToJson pm.abbrevEnv)
   ]
 
 /-- Result of metadata generation -/
@@ -581,6 +602,7 @@ def metadata (opts : MetadataOptions) (loadDeps : Array (String × System.FilePa
       constructors := result.constructors
       globals := result.globals
       instanceEnv := result.instanceEnv
+      abbrevEnv := result.abbrevEnv
     }
     pure (MetadataResult.succeeded pm)
   else

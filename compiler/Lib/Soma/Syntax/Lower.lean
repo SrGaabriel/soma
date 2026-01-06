@@ -1753,15 +1753,6 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
 
           pure (.export_ items span)
 
-      | .declIntrinsic =>
-          let allKids := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
-          if allKids.isEmpty then
-            lowerError "intrinsic missing declaration" span
-            pure (.intrinsic (.export_ #[] span) span)
-          else
-            let inner ← lowerDecl allKids[0]!.1 allKids[0]!.2
-            pure (.intrinsic inner span)
-
       | .declAbbrev =>
           -- Structure: [abbrevTok, nameTok, optional tyParamList, eqTok, type]
           let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent

@@ -1,6 +1,7 @@
-
-intrinsic def strcat :: String -> String -> String
-intrinsic def int_to_string :: Int -> String
+@[intrinsic]
+def strcat :: String -> String -> String
+@[intrinsic]
+def int_to_string :: Int -> String
 
 data Option a
     | Some

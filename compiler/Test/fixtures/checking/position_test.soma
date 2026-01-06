@@ -1,5 +1,6 @@
 // expect: error mismatch
-intrinsic def {+} :: Int -> Int -> Int
+@[intrinsic]
+def {+} :: Int -> Int -> Int
 
 data Maybe a
     | Just a 

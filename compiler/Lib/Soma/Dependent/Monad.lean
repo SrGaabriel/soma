@@ -4,6 +4,7 @@ import Soma.Core.Level
 import Soma.Core.Eval
 import Soma.Dependent.Error
 import Soma.Metal.Expr
+import Soma.Metal.Module
 import Soma.Syntax.Source
 import Soma.Unique
 import Std.Data.HashMap
@@ -12,7 +13,7 @@ namespace Soma.Dependent
 
 open Soma (Unique)
 open Soma.Core
-open Soma.Metal (Name Expr BinderInfo)
+open Soma.Metal (Name Expr BinderInfo TypeAbbrev)
 open Soma.Syntax (Span)
 
 /-- An entry in the typing context -/
@@ -285,6 +286,74 @@ def instanceCount (env : InstanceEnv) : Nat :=
 
 end InstanceEnv
 
+/-- Elaborated type abbreviation -/
+structure AbbrevInfo where
+  /-- Unique identifier for this abbreviation -/
+  abbrevId : Unique
+  /-- Number of type parameters -/
+  arity : Nat
+  /-- The elaborated expansion, pi-wrapped if parametized -/
+  expansion : Value
+  /-- Source span for error reporting -/
+  span : Span
+
+instance : Inhabited AbbrevInfo where
+  default := {
+    abbrevId := { id := 0, module := "", original := "" }
+    arity := 0
+    expansion := Value.vType Level.zero
+    span := Span.uninhabited
+  }
+
+namespace AbbrevInfo
+
+/-- Display name for error messages -/
+def displayName (a : AbbrevInfo) : String := a.abbrevId.original
+
+/-- Is this a parameterized abbreviation? -/
+def isParameterized (a : AbbrevInfo) : Bool := a.arity > 0
+
+end AbbrevInfo
+
+/-- Environment mapping abbreviation names to their elaborated info -/
+structure AbbrevEnv where
+  /-- Map from name to info -/
+  byName : Std.HashMap String AbbrevInfo := {}
+  /-- Map from unique to info -/
+  byUnique : Std.HashMap Unique AbbrevInfo := {}
+  deriving Inhabited
+
+namespace AbbrevEnv
+
+def empty : AbbrevEnv := {}
+
+def insert (env : AbbrevEnv) (info : AbbrevInfo) : AbbrevEnv :=
+  { byName := env.byName.insert info.abbrevId.original info
+    byUnique := env.byUnique.insert info.abbrevId info }
+
+def get? (env : AbbrevEnv) (name : String) : Option AbbrevInfo :=
+  env.byName.get? name
+
+def getByUnique? (env : AbbrevEnv) (u : Unique) : Option AbbrevInfo :=
+  env.byUnique.get? u
+
+def contains (env : AbbrevEnv) (name : String) : Bool :=
+  env.byName.contains name
+
+/-- Merge two abbreviation environments, deduplicating by Unique -/
+def merge (e1 e2 : AbbrevEnv) : AbbrevEnv :=
+  e2.byUnique.fold (init := e1) fun acc unique info =>
+    if acc.byUnique.contains unique then acc
+    else acc.insert info
+
+def fold (env : AbbrevEnv) (init : α) (f : α → AbbrevInfo → α) : α :=
+  env.byName.fold (fun acc _ info => f acc info) init
+
+def size (env : AbbrevEnv) : Nat :=
+  env.byName.size
+
+end AbbrevEnv
+
 /-- A pending instance constraint to be resolved -/
 structure PendingInstance where
   /-- The metavariable that needs an instance -/
@@ -476,6 +545,8 @@ structure TCContext where
   globals : Globals := Globals.empty
   /-- Instance environment (type classes and instances) -/
   instanceEnv : InstanceEnv := InstanceEnv.empty
+  /-- Type abbreviations (elaborated, merged from dependencies) -/
+  abbrevEnv : AbbrevEnv := AbbrevEnv.empty
   /-- Current span (for error reporting) -/
   currentSpan : Span := Span.uninhabited
   /-- Are we in erased context? (under a 0-quantity binder) -/
@@ -522,6 +593,10 @@ def lookupLevel (ctx : TCContext) (lvl : DeBruijnLvl) : Option CtxEntry :=
 /-- Look up a global -/
 def lookupGlobal (ctx : TCContext) (name : String) : Option GlobalInfo :=
   ctx.globals.lookup name
+
+/-- Look up a type abbreviation by name -/
+def lookupAbbrev (ctx : TCContext) (name : String) : Option AbbrevInfo :=
+  ctx.abbrevEnv.get? name
 
 /-- Extend context with a new binding -/
 def extend (ctx : TCContext) (name : String) (ty : Value) (qty : Quantity)
@@ -615,6 +690,11 @@ def lookupGlobalNoDep (name : String) : TCM (Option GlobalInfo) := do
   let ctx ← getCtx
   return ctx.lookupGlobal name
 
+/-- Look up a type abbreviation by name -/
+def lookupAbbrev (name : String) : TCM (Option AbbrevInfo) := do
+  let ctx ← getCtx
+  return ctx.lookupAbbrev name
+
 /-- Get all recorded global dependencies -/
 def getGlobalDeps : TCM (Std.HashSet String) := do
   let state ← getState
@@ -634,6 +714,15 @@ def withDependencyTracking (action : TCM α) : TCM (α × Std.HashSet String) :=
 /-- Run with updated globals -/
 def withGlobals (globals : Globals) (m : TCM α) : TCM α :=
   withReader (fun ctx => { ctx with globals := globals }) m
+
+/-- Run with updated abbreviations -/
+def withAbbrevEnv (abbrevEnv : AbbrevEnv) (m : TCM α) : TCM α :=
+  withReader (fun ctx => { ctx with abbrevEnv := abbrevEnv }) m
+
+/-- Run with both globals and abbreviations -/
+def withGlobalsAndAbbrevs (globals : Globals) (abbrevEnv : AbbrevEnv)
+    (m : TCM α) : TCM α :=
+  withReader (fun ctx => { ctx with globals := globals, abbrevEnv := abbrevEnv }) m
 
 /-- Look up a TypeId by name (checks both state and global context) -/
 def lookupTypeId (name : String) : TCM (Option Soma.Core.TypeId) := do

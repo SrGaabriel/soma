@@ -1,1 +1,2 @@
-intrinsic data IO :: * -> *
+@[intrinsic]
+data IO :: * -> *

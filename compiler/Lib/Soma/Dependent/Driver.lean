@@ -526,6 +526,48 @@ def buildInstanceEnvIncremental
     : TCM (InstanceEnv × TraitElaborate.InstanceMap) := do
   TraitElaborate.buildInstanceEnvFromModuleIncremental module prevEnv prevInstanceMap dirtyNames
 
+/-- Elaborate a single type abbreviation into an AbbrevInfo.
+
+    For non-parameterized abbreviations like `abbrev CInt = Int32`:
+      - Directly elaborates the expansion to a Value
+
+    For parameterized abbreviations like `abbrev MyList a = List a`:
+      - Creates an elaboration environment with the type parameters
+      - Elaborates the expansion in that environment
+      - Wraps the result in Pi types (right to left) -/
+def elaborateAbbrev (typeAbbrev : Metal.TypeAbbrev) : TCM AbbrevInfo := do
+  let abbrevUnique ← TCM.freshUnique typeAbbrev.name
+  let arity := typeAbbrev.params.size
+
+  if typeAbbrev.params.isEmpty then
+    -- Non-parameterized: elaborate expansion directly
+    let expansion ← Elaborate.elaborateType Elaborate.ElabEnv.empty typeAbbrev.expansion
+    return { abbrevId := abbrevUnique, arity := 0, expansion, span := typeAbbrev.span }
+  else
+    -- Parameterized: build environment with type parameters
+    let mut elabEnv := Elaborate.ElabEnv.empty
+    for paramName in typeAbbrev.params do
+      elabEnv := elabEnv.extend paramName (Value.vType Level.zero)
+
+    -- Elaborate the expansion body in the parameter context
+    let bodyVal ← Elaborate.elaborateType elabEnv typeAbbrev.expansion
+
+    -- Wrap in Pi types (right to left) to create: forall p1 p2 ... pn. body
+    let mut expansion := bodyVal
+    for paramName in typeAbbrev.params.reverse do
+      let closure ← TCM.mkConstClosure paramName expansion
+      expansion := Value.vPi .omega .explicit paramName (Value.vType Level.zero) closure
+
+    return { abbrevId := abbrevUnique, arity, expansion, span := typeAbbrev.span }
+
+/-- Build the AbbrevEnv from module type abbreviations -/
+def buildAbbrevEnv (module : Metal.UntypedModule) : TCM AbbrevEnv := do
+  let mut env := AbbrevEnv.empty
+  for typeAbbrev in module.abbreviations do
+    let info ← elaborateAbbrev typeAbbrev
+    env := env.insert info
+  return env
+
 /-- Register or reuse a data type definition, returns updated globals -/
 private def registerDataType
     (globals : Globals)

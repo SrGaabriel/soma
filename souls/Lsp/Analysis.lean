@@ -14,7 +14,7 @@ namespace Lsp
 open Std
 
 open Soma.Syntax
-open Soma.Dependent
+open Soma.Dependent (Globals InstanceEnv AbbrevEnv)
 open Soma.Dependent.Driver
 open Soma.Dependent.Incremental (IncrementalState)
 open Soma.Metal (UntypedModule)
@@ -57,6 +57,7 @@ def findChangedDeclIds (tree : RedTree) (changedIds : HashSet NodeId) : HashSet 
 def analyzeSourceFresh (filePath : String) (content : String)
     (seedGlobals : Globals := Globals.empty)
     (seedInstanceEnv : InstanceEnv := InstanceEnv.empty)
+    (seedAbbrevEnv : AbbrevEnv := AbbrevEnv.empty)
     (seedSymbols : SymbolEnv := {}) : CompiledModule := Id.run do
   let moduleName := moduleNameFromPath filePath
   let fileId := fileIdFromPath filePath
@@ -87,9 +88,9 @@ def analyzeSourceFresh (filePath : String) (content : String)
   let metalLowerDiags := metalLowerErrors ++ metalLowerWarnings
 
   -- Phase 7: Dependent type checking using the shared pipeline
-  -- Use seed globals/instanceEnv from dependencies
-  let (globals, instanceEnv, _instanceMap, incrState, tcErrors) :=
-    typeCheckModule metalResult.module moduleName seedGlobals seedInstanceEnv none
+  -- Use seed from dependencies
+  let (globals, instanceEnv, _abbrevEnv, _instanceMap, incrState, tcErrors) :=
+    typeCheckModule metalResult.module moduleName seedGlobals seedInstanceEnv seedAbbrevEnv none
 
   -- Update incremental state with imported modules
   let importedMods := extractImportedModules symbols
@@ -119,6 +120,7 @@ def analyzeSourceIncremental (filePath : String) (content : String)
     (oldModule : CompiledModule)
     (seedGlobals : Globals := Globals.empty)
     (seedInstanceEnv : InstanceEnv := InstanceEnv.empty)
+    (seedAbbrevEnv : AbbrevEnv := AbbrevEnv.empty)
     (seedSymbols : SymbolEnv := {}) : CompiledModule := Id.run do
   let moduleName := moduleNameFromPath filePath
   let fileId := fileIdFromPath filePath
@@ -204,9 +206,9 @@ def analyzeSourceIncremental (filePath : String) (content : String)
   let prevIncrState := oldModule.incrementalState
 
   -- Use the shared type checking pipeline with previous state for incremental checking
-  -- Use seed globals/instanceEnv from dependencies
-  let (globals, instanceEnv, _instanceMap, incrState, tcErrors) :=
-    typeCheckModule metalResult.module moduleName seedGlobals seedInstanceEnv prevIncrState
+  -- Use seed from dependencies
+  let (globals, instanceEnv, _abbrevEnv, _instanceMap, incrState, tcErrors) :=
+    typeCheckModule metalResult.module moduleName seedGlobals seedInstanceEnv seedAbbrevEnv prevIncrState
 
   -- Update incremental state with imported modules
   let importedMods := extractImportedModules symbols
@@ -236,10 +238,11 @@ def analyzeSource (filePath : String) (content : String)
     (oldModule? : Option CompiledModule := none)
     (seedGlobals : Globals := Globals.empty)
     (seedInstanceEnv : InstanceEnv := InstanceEnv.empty)
+    (seedAbbrevEnv : AbbrevEnv := AbbrevEnv.empty)
     (seedSymbols : SymbolEnv := {}) : CompiledModule :=
   match oldModule? with
-  | none => analyzeSourceFresh filePath content seedGlobals seedInstanceEnv seedSymbols
-  | some oldModule => analyzeSourceIncremental filePath content oldModule seedGlobals seedInstanceEnv seedSymbols
+  | none => analyzeSourceFresh filePath content seedGlobals seedInstanceEnv seedAbbrevEnv seedSymbols
+  | some oldModule => analyzeSourceIncremental filePath content oldModule seedGlobals seedInstanceEnv seedAbbrevEnv seedSymbols
 
 /-- Get all error diagnostics -/
 def getErrors (mod : CompiledModule) : Diagnostics :=

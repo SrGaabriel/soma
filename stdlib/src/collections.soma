@@ -1,10 +1,13 @@
 use base/prim.{+, -, *}
 use base/core.{Option, Some, None}
 
-intrinsic def cons :: a -> [a] -> [a]
+@[intrinsic]
+def cons :: a -> [a] -> [a]
 
-intrinsic def {==} :: a -> a -> Bool
-intrinsic def {<=} :: Int -> Int -> Bool
+@[intrinsic]
+def {==} :: a -> a -> Bool
+@[intrinsic]
+def {<=} :: Int -> Int -> Bool
 
 def head :: [a] -> Option a
     | (x:_) => Some x
@@ -18,10 +21,6 @@ def last :: [a] -> Option a
     | [x] => Some x
     | (_:xs) => last xs
     | [] => None
-
-def null :: [a] -> Bool
-    | [] => true
-    | _ => false
 
 def length :: [a] -> Int
     | [] => 0

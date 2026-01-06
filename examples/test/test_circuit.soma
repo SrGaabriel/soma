@@ -1,9 +1,0 @@
-// Test for Circuit IR with multiple variable uses
-
-intrinsic def {+} :: Int -> Int -> Int
-
-def triple :: Int -> Int
-    | x => x + x + x
-
-def identity :: Int -> Int
-    | x => x

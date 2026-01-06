@@ -307,7 +307,7 @@ def parseOperatorName : ParserM (Option GreenNode) := do
 
 def syncTokens : Array TokenKind :=
   #[.kw_def, .kw_data, .kw_struct, .kw_trait, .kw_instance, .kw_use, .kw_export,
-    .kw_intrinsic, .layoutEnd, .eof]
+    .layoutEnd, .eof]
 
 def atSyncPoint : ParserM Bool := do
   let k := (← current).kind

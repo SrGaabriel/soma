@@ -1,7 +1,0 @@
-intrinsic def {+} :: Int -> Int -> Int
-
-def testSimple(x: Int) -> Int =
-    let addOne = (\z -> z + 1) in
-    addOne x
-
-def main :: Int = testSimple 10

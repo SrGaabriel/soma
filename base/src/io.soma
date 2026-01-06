@@ -1,7 +1,9 @@
 use base/core.{Functor, Applicative, Monad, >>=}
 
-intrinsic data IO :: * -> *
-intrinsic def pure_io :: a -> IO a
+@[intrinsic]
+data IO :: * -> *
+@[intrinsic]
+def pure_io :: a -> IO a
 
 instance Functor IO where
     def fmap(f, ioA) :: (a -> b) -> IO a -> IO b =
@@ -16,4 +18,5 @@ instance Applicative IO with (Functor IO) where
     def {<*}(ioA, ioB) :: IO a -> IO b -> IO a =
         ioA >>= (\a -> ioB >>= (\b -> pure_io a))
 
-intrinsic instance Monad IO with (Applicative IO)
+@[intrinsic]
+instance Monad IO with (Applicative IO)

@@ -5,14 +5,13 @@ inductive SyntaxKind where
   -- Source File
   | sourceFile        -- Root node containing all declarations
   -- Declarations
-  | declDef           -- Function/value definition
-  | declData          -- Data type definition
+  | declDef           -- Function/value definition (may have no body if @[intrinsic] or @[extern])
+  | declData          -- Data type definition (may have no constructors if @[intrinsic])
   | declStruct        -- Struct definition
   | declTrait         -- Trait definition
-  | declInstance      -- Instance definition
+  | declInstance      -- Instance definition (may have no methods if @[intrinsic])
   | declUse           -- Import declaration
   | declExport        -- Export declaration
-  | declIntrinsic     -- Intrinsic declaration
   | declAbbrev        -- Type abbreviation
   -- Definition Components
   | signature         -- Type signature
@@ -119,7 +118,6 @@ def SyntaxKind.describe : SyntaxKind → String
   | .declInstance => "instance"
   | .declUse => "import"
   | .declExport => "export"
-  | .declIntrinsic => "intrinsic"
   | .declAbbrev => "abbreviation"
   | .signature => "type signature"
   | .defClause => "definition clause"
@@ -210,7 +208,7 @@ instance : ToString SyntaxKind where
 /-- Check if a syntax kind represents a declaration -/
 def SyntaxKind.isDecl : SyntaxKind → Bool
   | .declDef | .declData | .declStruct | .declTrait
-  | .declInstance | .declUse | .declExport | .declIntrinsic | .declAbbrev => true
+  | .declInstance | .declUse | .declExport | .declAbbrev => true
   | _ => false
 
 /-- Check if a syntax kind represents an expression -/

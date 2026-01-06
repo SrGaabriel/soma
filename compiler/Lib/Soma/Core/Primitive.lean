@@ -12,7 +12,16 @@ inductive StarPrimitive where
   | string
   | unit
   | closurePtr
-  | ptr
+  -- Fixed-width signed integers
+  | int8
+  | int16
+  | int32
+  | int64
+  -- Fixed-width unsigned integers
+  | word8
+  | word16
+  | word32
+  | word64
   deriving Repr, BEq, Hashable, DecidableEq
 
 namespace StarPrimitive
@@ -28,7 +37,14 @@ def name : StarPrimitive → String
   | .string => "String"
   | .unit => "Unit"
   | .closurePtr => "ClosurePtr"
-  | .ptr => "Ptr"
+  | .int8 => "Int8"
+  | .int16 => "Int16"
+  | .int32 => "Int32"
+  | .int64 => "Int64"
+  | .word8 => "Word8"
+  | .word16 => "Word16"
+  | .word32 => "Word32"
+  | .word64 => "Word64"
 
 instance : ToString StarPrimitive := ⟨StarPrimitive.name⟩
 
@@ -43,23 +59,53 @@ def fromName? : String → Option StarPrimitive
   | "String" => some .string
   | "Unit" | "()" => some .unit
   | "ClosurePtr" => some .closurePtr
-  | "Ptr" => some .ptr
+  | "Int8" => some .int8
+  | "Int16" => some .int16
+  | "Int32" => some .int32
+  | "Int64" => some .int64
+  | "Word8" => some .word8
+  | "Word16" => some .word16
+  | "Word32" => some .word32
+  | "Word64" => some .word64
   | _ => none
 
 /-- Check if this is a numeric type -/
 def isNumeric : StarPrimitive → Bool
   | .int | .long | .short | .byte | .float | .double => true
+  | .int8 | .int16 | .int32 | .int64 => true
+  | .word8 | .word16 | .word32 | .word64 => true
   | _ => false
 
 /-- Check if this is an integral type -/
 def isIntegral : StarPrimitive → Bool
   | .int | .long | .short | .byte => true
+  | .int8 | .int16 | .int32 | .int64 => true
+  | .word8 | .word16 | .word32 | .word64 => true
+  | _ => false
+
+/-- Check if this is a signed integral type -/
+def isSigned : StarPrimitive → Bool
+  | .int | .long | .short | .byte => true
+  | .int8 | .int16 | .int32 | .int64 => true
+  | _ => false
+
+/-- Check if this is an unsigned integral type -/
+def isUnsigned : StarPrimitive → Bool
+  | .word8 | .word16 | .word32 | .word64 => true
   | _ => false
 
 /-- Check if this is a floating-point type -/
 def isFloating : StarPrimitive → Bool
   | .float | .double => true
   | _ => false
+
+/-- Get the bit width of an integral type -/
+def bitWidth : StarPrimitive → Option Nat
+  | .byte | .int8 | .word8 => some 8
+  | .short | .int16 | .word16 => some 16
+  | .int | .int32 | .word32 => some 32
+  | .long | .int64 | .word64 => some 64
+  | _ => none
 
 end StarPrimitive
 
@@ -69,6 +115,7 @@ inductive HigherPrimitive where
   | list
   | ref
   | io
+  | ptr
   deriving Repr, BEq, Hashable, DecidableEq
 
 namespace HigherPrimitive
@@ -78,6 +125,7 @@ def name : HigherPrimitive → String
   | .list => "List"
   | .ref => "Ref"
   | .io => "IO"
+  | .ptr => "Ptr"
 
 instance : ToString HigherPrimitive := ⟨HigherPrimitive.name⟩
 
@@ -86,6 +134,7 @@ def fromName? : String → Option HigherPrimitive
   | "List" => some .list
   | "Ref" => some .ref
   | "IO" => some .io
+  | "Ptr" => some .ptr
   | _ => none
 
 /-- Deterministic unique ID for each higher primitive -/
@@ -94,6 +143,7 @@ def uniqueId : HigherPrimitive → Nat
   | .list => 1
   | .ref => 2
   | .io => 3
+  | .ptr => 4
 
 end HigherPrimitive
 

@@ -1,8 +1,0 @@
-intrinsic def {+} :: Int -> Int -> Int
-intrinsic def pureIO :: a -> IO a
-
-def head :: [Int] -> Int
-    | (x:_) => x
-    | [] => 0
-
-def main :: IO Int = pureIO (head [1, 2, 3])

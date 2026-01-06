@@ -1,4 +1,6 @@
 use base/core.{<>}
+use base/ffi.{Ptr, CString, CInt, to_cstring, free}
+use base/io.{IO}
 
 struct Path = Path String
 
@@ -11,3 +13,32 @@ def to_string :: Path -> String
 def from_string :: String -> Path
     | p => Path p
 
+data FileHandle
+    | FileHandle (Ptr Unit)
+
+@[extern]
+def c_fopen :: CString -> CString -> Ptr Unit
+
+@[extern]
+def c_fclose :: Ptr Unit -> CInt
+
+@[extern]
+def c_fflush :: Ptr Unit -> CInt
+
+def open :: Path -> String -> IO FileHandle
+    | (Path path) mode => compose
+        let cpath = to_cstring path
+        let cmode = to_cstring mode
+        let handle = c_fopen cpath cmode
+        free cpath
+        free cmode
+        pure (FileHandle handle)
+
+def close :: FileHandle -> IO CInt
+    | (FileHandle ptr) => pure (c_fclose ptr)
+
+def create :: Path -> IO FileHandle
+    | path => open path "w"
+
+def flush :: FileHandle -> IO CInt
+    | (FileHandle ptr) => pure (c_fflush ptr)

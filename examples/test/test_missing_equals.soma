@@ -1,9 +1,0 @@
-// Test missing equals error
-
-intrinsic def {+} :: Int -> Int -> Int
-
-// Missing = before compose
-def example1 :: Int
-    compose
-        let x = 5
-        x + x

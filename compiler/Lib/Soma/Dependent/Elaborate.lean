@@ -49,6 +49,14 @@ def resolvePrimitive (name : String) : Option StarPrimitive :=
   | "Float" => some .float
   | "Double" => some .double
   | "Unit" => some .unit
+  | "Int8" => some .int8
+  | "Int16" => some .int16
+  | "Int32" => some .int32
+  | "Int64" => some .int64
+  | "Word8" => some .word8
+  | "Word16" => some .word16
+  | "Word32" => some .word32
+  | "Word64" => some .word64
   | _ => none
 
 /-- Resolve a higher-kinded primitive type -/
@@ -58,6 +66,7 @@ def resolveHigherPrimitive (name : String) : Option HigherPrimitive :=
   | "Array" => some .array
   | "List" => some .list
   | "Ref" => some .ref
+  | "Ptr" => some .ptr
   | _ => none
 
 /-- Resolve "Type" to a universe -/
@@ -288,8 +297,14 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
 
   -- Type constructor
   | .con name =>
-    -- First try primitive types
-    if let some prim := resolvePrimitive name.value then
+    -- First check if this is a type abbreviation (e.g., CInt = Int32)
+    if let some abbrevInfo ← TCM.lookupAbbrev name.value then
+      -- Return the elaborated expansion directly.
+      -- For non-parameterized: this is the final type (e.g., vPrimTy Int32)
+      -- For parameterized: this is a Pi type that will be applied via .app
+      return abbrevInfo.expansion
+    -- Then try primitive types
+    else if let some prim := resolvePrimitive name.value then
       return Value.vPrimTy prim
     -- Then try higher-kinded primitives
     else if let some hprim := resolveHigherPrimitive name.value then

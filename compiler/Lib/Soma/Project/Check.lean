@@ -13,13 +13,14 @@ import Soma.Core.Value
 
 namespace Soma.Check
 
-open Std (HashSet)
+open Std (HashSet HashMap)
 open Soma.Syntax
 open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleWithExternals lowerModuleIncremental GlobalEnv)
+open Soma.Metal (TypeAbbrev)
 open Soma.Core
 open Soma.Project
 open Soma (UniqueSupply)
-open Soma.Dependent (Globals GlobalInfo TCContext TCState InstanceEnv InstanceInfo ClassInfo TCM)
+open Soma.Dependent (Globals GlobalInfo TCContext TCState InstanceEnv InstanceInfo ClassInfo AbbrevEnv AbbrevInfo TCM)
 open Soma.Dependent.TraitElaborate (InstanceMap)
 open Soma.Dependent.Incremental (DefId DefCache DefKind DepGraph IncrementalState hashString
   hashFunction hashModuleDefinitions)
@@ -172,6 +173,8 @@ structure CheckedModule where
   globals : Globals
   /-- Instance environment from type checking -/
   instanceEnv : InstanceEnv
+  /-- Abbreviation environment from type checking -/
+  abbrevEnv : AbbrevEnv
   /-- Map from instance source spans to elaborated InstanceInfo -/
   instanceMap : InstanceMap
   /-- Public symbols exported by this module (symbol -> type as Value) -/
@@ -211,6 +214,8 @@ structure ExternalDependency where
   globals : Globals
   /-- Instance environment -/
   instanceEnv : InstanceEnv
+  /-- Abbreviation environment -/
+  abbrevEnv : AbbrevEnv
 
 /-- Configuration for project checking -/
 structure ProjectConfig where
@@ -241,6 +246,8 @@ structure ProjectResult where
   globals : Globals
   /-- Merged instance environment -/
   instanceEnv : InstanceEnv
+  /-- Merged abbreviation environment -/
+  abbrevEnv : AbbrevEnv
   /-- Source file map for resolving diagnostic spans -/
   sourceFiles : SourceFileMap
 
@@ -249,15 +256,15 @@ namespace ProjectResult
 def failed (name : String) (diags : Diagnostics) (sourceFiles : SourceFileMap := SourceFileMap.empty) : ProjectResult :=
   { success := false, diagnostics := diags, packageName := name,
     checkedModules := #[], symbols := {}, instances := {}, constructors := {},
-    globals := Globals.empty, instanceEnv := InstanceEnv.empty, sourceFiles }
+    globals := Globals.empty, instanceEnv := InstanceEnv.empty, abbrevEnv := AbbrevEnv.empty, sourceFiles }
 
 def succeeded (name : String) (diags : Diagnostics) (modules : Array CheckedModule)
     (symbols : SymbolEnv) (instances : InstanceMetadata)
     (constructors : Std.HashMap String Nat)
-    (globals : Globals) (instanceEnv : InstanceEnv)
+    (globals : Globals) (instanceEnv : InstanceEnv) (abbrevEnv : AbbrevEnv)
     (sourceFiles : SourceFileMap) : ProjectResult :=
   { success := true, diagnostics := diags, packageName := name,
-    checkedModules := modules, symbols, instances, constructors, globals, instanceEnv, sourceFiles }
+    checkedModules := modules, symbols, instances, constructors, globals, instanceEnv, abbrevEnv, sourceFiles }
 
 end ProjectResult
 
@@ -402,6 +409,8 @@ structure GlobalsAndInstancesResult where
   globals : Globals
   /-- The built instance environment -/
   instanceEnv : InstanceEnv
+  /-- The built abbreviation environment -/
+  abbrevEnv : AbbrevEnv
   /-- Map from instance source spans to elaborated InstanceInfo -/
   instanceMap : InstanceMap
   /-- Final TC state -/
@@ -418,6 +427,7 @@ structure GlobalsAndInstancesResult where
     - `moduleName`: Name of the module
     - `seedGlobals`: Globals inherited from dependencies
     - `seedInstanceEnv`: Instance env inherited from dependencies
+    - `seedAbbrevEnv`: Abbreviation env inherited from dependencies
     - `prevGlobals`: Previous globals for incremental reuse (optional)
     - `prevInstanceEnv`: Previous instance env for incremental reuse (optional)
     - `prevInstanceMap`: Previous instance map for incremental reuse (optional)
@@ -427,6 +437,7 @@ def buildGlobalsAndInstances
     (moduleName : String)
     (seedGlobals : Globals)
     (seedInstanceEnv : InstanceEnv)
+    (seedAbbrevEnv : AbbrevEnv)
     (prevGlobals : Option Globals := none)
     (prevInstanceEnv : Option InstanceEnv := none)
     (prevInstanceMap : Option InstanceMap := none)
@@ -436,24 +447,37 @@ def buildGlobalsAndInstances
   let state := TCState.forModule moduleName
   let mut allErrors : Array Soma.Dependent.TCError := #[]
 
-  -- Build globals
+  -- Build abbreviation environment for this module
+  let abbrevResult := (Soma.Dependent.Driver.buildAbbrevEnv metalModule).run
+    { baseCtx with globals := seedGlobals, abbrevEnv := seedAbbrevEnv } state
+
+  let (moduleAbbrevEnv, state0, abbrevErrors) := match abbrevResult with
+    | .error e => (AbbrevEnv.empty, state, #[e])
+    | .ok (abbrevEnv, st) => (abbrevEnv, st, st.errors)
+
+  allErrors := allErrors ++ abbrevErrors
+
+  -- Merge with seed abbreviations
+  let fullAbbrevEnv := AbbrevEnv.merge seedAbbrevEnv moduleAbbrevEnv
+
+  -- Build globals with the full abbreviation environment
   let globalsResult := match dirtyNames, prevGlobals with
     | some dirty, some prev =>
       (Soma.Dependent.Driver.buildGlobalsIncremental metalModule prev dirty).run
-        { baseCtx with globals := seedGlobals } state
+        { baseCtx with globals := seedGlobals, abbrevEnv := fullAbbrevEnv } state0
     | _, _ =>
       (Soma.Dependent.Driver.buildGlobals metalModule).run
-        { baseCtx with globals := seedGlobals } state
+        { baseCtx with globals := seedGlobals, abbrevEnv := fullAbbrevEnv } state0
 
   let (moduleGlobals, state', globalsErrors) := match globalsResult with
-    | .error e => (Globals.empty, state, #[e])
+    | .error e => (Globals.empty, state0, #[e])
     | .ok (globals, st) => (globals, st, st.errors)
 
   allErrors := allErrors ++ globalsErrors
 
   -- Merge with seed globals
   let fullGlobals := mergeGlobals seedGlobals moduleGlobals
-  let ctx := { baseCtx with globals := fullGlobals, instanceEnv := seedInstanceEnv }
+  let ctx := { baseCtx with globals := fullGlobals, instanceEnv := seedInstanceEnv, abbrevEnv := fullAbbrevEnv }
 
   -- Build instance environment
   let instanceEnvResult := match dirtyNames, prevInstanceEnv, prevInstanceMap with
@@ -473,6 +497,7 @@ def buildGlobalsAndInstances
   return {
     globals := fullGlobals
     instanceEnv := fullInstanceEnv
+    abbrevEnv := fullAbbrevEnv
     instanceMap := instanceMap
     finalState := state''
     errors := allErrors
@@ -487,14 +512,16 @@ def buildGlobalsAndInstances
     - `moduleName`: Name of the module
     - `seedGlobals`: Globals inherited from dependencies
     - `seedInstanceEnv`: Instance env inherited from dependencies
+    - `seedAbbrevEnv`: Abbreviation env inherited from dependencies
     - `prevIncrState`: Previous incremental state (optional, for incremental checking) -/
 def typeCheckModule
     (metalModule : Metal.UntypedModule)
     (moduleName : String)
     (seedGlobals : Globals)
     (seedInstanceEnv : InstanceEnv)
+    (seedAbbrevEnv : AbbrevEnv)
     (prevIncrState : Option IncrementalState := none)
-    : Globals × InstanceEnv × InstanceMap × IncrementalState × Array Soma.Dependent.TCError := Id.run do
+    : Globals × InstanceEnv × AbbrevEnv × InstanceMap × IncrementalState × Array Soma.Dependent.TCError := Id.run do
   -- Determine dirty names if we have previous state
   let (dirtyNames, baseIncrState) := match prevIncrState with
     | some prev =>
@@ -512,9 +539,9 @@ def typeCheckModule
   let prevInstanceEnv : Option InstanceEnv := prevIncrState.map (fun (s : IncrementalState) => s.cachedInstanceEnv)
   let prevInstanceMap : Option InstanceMap := prevIncrState.map (fun (s : IncrementalState) => s.cachedInstanceMap)
 
-  -- Build globals and instance environment
+  -- Build globals, instance environment, and abbreviation environment
   let globalsResult := buildGlobalsAndInstances
-    metalModule moduleName seedGlobals seedInstanceEnv prevGlobals prevInstanceEnv prevInstanceMap dirtyNames
+    metalModule moduleName seedGlobals seedInstanceEnv seedAbbrevEnv prevGlobals prevInstanceEnv prevInstanceMap dirtyNames
 
   let mut allErrors := globalsResult.errors
 
@@ -522,7 +549,8 @@ def typeCheckModule
   let baseCtx := TCContext.withDefaultInstances
   let ctx := { baseCtx with
     globals := globalsResult.globals
-    instanceEnv := globalsResult.instanceEnv }
+    instanceEnv := globalsResult.instanceEnv
+    abbrevEnv := globalsResult.abbrevEnv }
 
   -- Check functions
   let fnResult := checkFunctionsCore
@@ -536,7 +564,7 @@ def typeCheckModule
     cachedInstanceEnv := globalsResult.instanceEnv
     cachedInstanceMap := globalsResult.instanceMap }
 
-  return (globalsResult.globals, globalsResult.instanceEnv, globalsResult.instanceMap, finalIncrState, allErrors)
+  return (globalsResult.globals, globalsResult.instanceEnv, globalsResult.abbrevEnv, globalsResult.instanceMap, finalIncrState, allErrors)
 
 /-- Extract public symbols from a type-checked module -/
 def extractPublicSymbols
@@ -782,8 +810,8 @@ def extractPublicInstances
 
 /-- Process external dependencies into lookup tables -/
 def processExternalDependencies (deps : Array ExternalDependency)
-    : Std.HashMap String SymbolEnv × Std.HashMap String InstanceMetadata × Std.HashMap String Nat × Globals × InstanceEnv :=
-  deps.foldl (init := ({}, {}, {}, Globals.empty, InstanceEnv.empty)) fun (symbols, instances, constructors, globals, instEnv) dep =>
+    : Std.HashMap String SymbolEnv × Std.HashMap String InstanceMetadata × Std.HashMap String Nat × Globals × InstanceEnv × AbbrevEnv :=
+  deps.foldl (init := ({}, {}, {}, Globals.empty, InstanceEnv.empty, AbbrevEnv.empty)) fun (symbols, instances, constructors, globals, instEnv, abbrevEnv) dep =>
     let symbols' := dep.symbols.fold (init := symbols) fun acc modName env =>
       acc.insert modName env
     let instances' := dep.instances.fold (init := instances) fun acc modName env =>
@@ -792,7 +820,8 @@ def processExternalDependencies (deps : Array ExternalDependency)
       acc.insert ctorName tag
     let globals' := mergeGlobals globals dep.globals
     let instEnv' := mergeInstanceEnv instEnv dep.instanceEnv
-    (symbols', instances', constructors', globals', instEnv')
+    let abbrevEnv' := AbbrevEnv.merge abbrevEnv dep.abbrevEnv
+    (symbols', instances', constructors', globals', instEnv', abbrevEnv')
 
 /-- Extract prelude symbols from external dependencies -/
 def extractPreludeSymbols (extSymbols : Std.HashMap String SymbolEnv) : Array String :=
@@ -807,6 +836,7 @@ def checkModule
     (checkedDeps : Std.HashMap String CheckedModule)
     (externalGlobals : Globals)
     (externalInstanceEnv : InstanceEnv)
+    (externalAbbrevEnv : AbbrevEnv)
     (externalSymbols : SymbolEnv)
     (packageName : String)
     (supply : UniqueSupply)
@@ -821,6 +851,10 @@ def checkModule
   let seedInstanceEnv := checkedDeps.fold (init := externalInstanceEnv) fun acc _ dep =>
     mergeInstanceEnv acc dep.instanceEnv
 
+  -- Collect abbrev env from checked dependencies
+  let seedAbbrevEnv := checkedDeps.fold (init := externalAbbrevEnv) fun acc _ dep =>
+    AbbrevEnv.merge acc dep.abbrevEnv
+
   -- Collect symbol env from checked dependencies for Metal lowering
   let seedSymbols := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
     dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
@@ -834,8 +868,8 @@ def checkModule
     return (metalRes.diagnostics, none, supply)
 
   -- Use the shared type checking pipeline (fresh check, no previous state)
-  let (fullGlobals, fullInstanceEnv, instanceMap, incrState, tcErrors) :=
-    typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv none
+  let (fullGlobals, fullInstanceEnv, fullAbbrevEnv, instanceMap, incrState, tcErrors) :=
+    typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv none
 
   let allDiags := tcErrors.map (·.toDiagnostic)
 
@@ -866,6 +900,7 @@ def checkModule
     metalModule := metalRes.module
     globals := fullGlobals
     instanceEnv := fullInstanceEnv
+    abbrevEnv := fullAbbrevEnv
     instanceMap := instanceMap
     publicSymbols := publicSymbols
     publicInstances := publicInstances
@@ -883,6 +918,7 @@ def checkModuleIncremental
     (checkedDeps : Std.HashMap String CheckedModule)
     (externalGlobals : Globals)
     (externalInstanceEnv : InstanceEnv)
+    (externalAbbrevEnv : AbbrevEnv)
     (externalSymbols : SymbolEnv)
     (packageName : String)
     (supply : UniqueSupply)
@@ -896,6 +932,9 @@ def checkModuleIncremental
   let seedInstanceEnv := checkedDeps.fold (init := externalInstanceEnv) fun acc _ dep =>
     mergeInstanceEnv acc dep.instanceEnv
 
+  let seedAbbrevEnv := checkedDeps.fold (init := externalAbbrevEnv) fun acc _ dep =>
+    AbbrevEnv.merge acc dep.abbrevEnv
+
   let seedSymbols := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
     dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
@@ -907,8 +946,8 @@ def checkModuleIncremental
     return (metalRes.diagnostics, none, supply)
 
   -- Use the shared type checking pipeline with previous state for incremental checking
-  let (fullGlobals, fullInstanceEnv, instanceMap, incrState, tcErrors) :=
-    typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv (some prevModule.incrementalState)
+  let (fullGlobals, fullInstanceEnv, fullAbbrevEnv, instanceMap, incrState, tcErrors) :=
+    typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv (some prevModule.incrementalState)
 
   -- If nothing changed (empty errors and same state), we could reuse previous result
   -- But for correctness, we rebuild anyway since Metal IR might have changed
@@ -940,6 +979,7 @@ def checkModuleIncremental
     metalModule := metalRes.module
     globals := fullGlobals
     instanceEnv := fullInstanceEnv
+    abbrevEnv := fullAbbrevEnv
     instanceMap := instanceMap
     publicSymbols := publicSymbols
     publicInstances := publicInstances
@@ -955,6 +995,7 @@ def checkModulesInOrder
     (graph : ModuleGraph)
     (externalGlobals : Globals)
     (externalInstanceEnv : InstanceEnv)
+    (externalAbbrevEnv : AbbrevEnv)
     (externalSymbols : SymbolEnv)
     (packageName : String)
     (supply : UniqueSupply)
@@ -965,7 +1006,7 @@ def checkModulesInOrder
       match graph.get? modName with
       | none => (diags, checked, results, sup)
       | some info =>
-        let (moduleDiags, cmOpt, sup') := checkModule info checked externalGlobals externalInstanceEnv externalSymbols packageName sup
+        let (moduleDiags, cmOpt, sup') := checkModule info checked externalGlobals externalInstanceEnv externalAbbrevEnv externalSymbols packageName sup
         match cmOpt with
         | some cm => (diags ++ moduleDiags, checked.insert modName cm, results.push cm, sup')
         | none => (diags ++ moduleDiags, checked, results, sup')
@@ -1039,14 +1080,14 @@ def checkSingleFile
         pure (ProjectResult.failed name #[Diagnostic.error (toString e) Span.uninhabited] sourceMap)
 
       | .ok deps =>
-        let (extSymbolsByModule, _, extConstructors, extGlobals, extInstanceEnv) := processExternalDependencies deps
+        let (extSymbolsByModule, _, extConstructors, extGlobals, extInstanceEnv, extAbbrevEnv) := processExternalDependencies deps
         -- Flatten external symbols into a single SymbolEnv
         let extSymbols : SymbolEnv := extSymbolsByModule.fold (init := {}) fun acc _ env =>
           env.fold (init := acc) fun e sym ty => e.insert sym ty
         let supply := UniqueSupply.initial name
 
         let (checkDiags, checkedModules, _) := checkModulesInOrder
-          sortedNames graph extGlobals extInstanceEnv extSymbols name supply
+          sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols name supply
 
         let symbols := checkedModules.foldl (init := {}) fun acc m =>
           m.publicSymbols.fold (init := acc) fun env sym val => env.insert sym val
@@ -1059,11 +1100,13 @@ def checkSingleFile
           mergeGlobals acc m.globals
         let instanceEnv := checkedModules.foldl (init := extInstanceEnv) fun acc m =>
           mergeInstanceEnv acc m.instanceEnv
+        let abbrevEnv := checkedModules.foldl (init := extAbbrevEnv) fun acc m =>
+          AbbrevEnv.merge acc m.abbrevEnv
 
         if checkDiags.hasErrors then
           pure (ProjectResult.failed name checkDiags sourceMap)
         else
-          pure (ProjectResult.succeeded name checkDiags checkedModules symbols instances constructors globals instanceEnv sourceMap)
+          pure (ProjectResult.succeeded name checkDiags checkedModules symbols instances constructors globals instanceEnv abbrevEnv sourceMap)
 
 /-- Check a project directory -/
 def checkDirectory
@@ -1096,7 +1139,7 @@ def checkDirectory
         pure (ProjectResult.failed packageName #[Diagnostic.error (toString e) Span.uninhabited] sourceMap)
 
       | .ok deps =>
-        let (extSymbolsByModule, _, extConstructors, extGlobals, extInstanceEnv) := processExternalDependencies deps
+        let (extSymbolsByModule, _, extConstructors, extGlobals, extInstanceEnv, extAbbrevEnv) := processExternalDependencies deps
 
         -- Optionally inject prelude
         let preludeSymbols := extractPreludeSymbols extSymbolsByModule
@@ -1110,7 +1153,7 @@ def checkDirectory
         let supply := UniqueSupply.initial packageName
 
         let (checkDiags, checkedModules, _) := checkModulesInOrder
-          sortedNames graph extGlobals extInstanceEnv extSymbols packageName supply
+          sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols packageName supply
 
         let symbols := checkedModules.foldl (init := {}) fun acc m =>
           m.publicSymbols.fold (init := acc) fun env sym val => env.insert sym val
@@ -1123,13 +1166,15 @@ def checkDirectory
           mergeGlobals acc m.globals
         let instanceEnv := checkedModules.foldl (init := extInstanceEnv) fun acc m =>
           mergeInstanceEnv acc m.instanceEnv
+        let abbrevEnv := checkedModules.foldl (init := extAbbrevEnv) fun acc m =>
+          AbbrevEnv.merge acc m.abbrevEnv
 
         let allDiags := parseDiags ++ checkDiags
 
         if allDiags.hasErrors then
           pure (ProjectResult.failed packageName allDiags sourceMap)
         else
-          pure (ProjectResult.succeeded packageName allDiags checkedModules symbols instances constructors globals instanceEnv sourceMap)
+          pure (ProjectResult.succeeded packageName allDiags checkedModules symbols instances constructors globals instanceEnv abbrevEnv sourceMap)
 
 /-- Check a project (file or directory) -/
 def checkProject

@@ -1,7 +1,8 @@
 // expect: success
 // Test: currying and partial application
 
-intrinsic def {+} :: Int -> Int -> Int
+@[intrinsic]
+def {+} :: Int -> Int -> Int
 
 def add :: Int -> Int -> Int
     | x y => x + y

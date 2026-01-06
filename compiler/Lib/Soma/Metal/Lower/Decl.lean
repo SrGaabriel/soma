@@ -191,10 +191,6 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
     -- Exports are handled by the driver
     pure ()
 
-  | .intrinsic inner _ =>
-    -- Intrinsics - collect the inner declaration
-    collectGlobals inner
-
   | .abbrev name params _type _span =>
     checkNamingConvention name "type" .pascalCase
     -- Register the type abbreviation
@@ -349,39 +345,39 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
           attrs := funcAttrs
         })
     else
-      -- No clauses - empty function?
-      pure none
+      -- No clauses - check for @[intrinsic] or @[extern] attributes
+      let isIntrinsic := attrs.any fun a => a.name.value == "intrinsic"
+      let isExtern := attrs.any fun a => a.name.value == "extern"
 
-  | .intrinsic inner _ =>
-    -- Handle intrinsic functions - they have signatures but implementation is external
-    match inner with
-    | .def_ attrs name sig _clauses span =>
-      let globalInfo? ← LowerM.lookupVar LocalEnv.empty name.value
-      let globalName ← match globalInfo? with
-        | some (.inr info) => pure info.name
-        | _ => LowerM.freshUserName name.value
+      if isIntrinsic || isExtern then
+        let globalInfo? ← LowerM.lookupVar LocalEnv.empty name.value
+        let globalName ← match globalInfo? with
+          | some (.inr info) => pure info.name
+          | _ => LowerM.freshUserName name.value
 
-      -- Intrinsics have no real body - create a placeholder panic
-      -- The actual implementation comes from the runtime/LLVM intrinsics
-      let body : UntypedExpr [] := .panic s!"intrinsic:{name.value}" () span
+        -- Intrinsics/externs have no real body - create a placeholder panic
+        -- The actual implementation comes from the runtime/LLVM intrinsics or external linkage
+        let body : UntypedExpr [] := .panic s!"{if isIntrinsic then "intrinsic" else "extern"}:{name.value}" () span
 
-      let funcAttrs : FunctionAttrs := {
-        inline := attrs.any fun a => a.name.value == "inline"
-        noInline := attrs.any fun a => a.name.value == "noinline"
-        total := attrs.any fun a => a.name.value == "total"
-        deprecated := none
-        extern := some name.value  -- Mark as extern with the intrinsic name
-      }
+        let funcAttrs : FunctionAttrs := {
+          inline := attrs.any fun a => a.name.value == "inline"
+          noInline := attrs.any fun a => a.name.value == "noinline"
+          total := attrs.any fun a => a.name.value == "total"
+          deprecated := none
+          extern := some name.value  -- Mark as extern with the function name
+        }
 
-      pure (some {
-        name := globalName
-        params := #[]
-        body := body
-        declaredTypeSyntax := sig
-        closureInfo := none
-        attrs := funcAttrs
-      })
-    | _ => pure none
+        pure (some {
+          name := globalName
+          params := #[]
+          body := body
+          declaredTypeSyntax := sig
+          closureInfo := none
+          attrs := funcAttrs
+        })
+      else
+        -- No clauses and no intrinsic/extern attribute - invalid
+        pure none
 
   | _ => pure none
 
@@ -441,11 +437,12 @@ def lowerInstance (decl : Decl) : LowerM (Option UntypedInstance) := do
 /-- Lower a type abbreviation -/
 def lowerAbbrev (decl : Decl) : LowerM (Option TypeAbbrev) := do
   match decl with
-  | .abbrev name params expansion _ =>
+  | .abbrev name params expansion span =>
     pure (some {
       name := name.value
       params := params.map (·.value)
       expansion := expansion
+      span := span
     })
   | _ => pure none
 
@@ -497,7 +494,6 @@ def getDeclName (decl : Decl) : Option String :=
     | none =>
       let argStr := args.foldl (fun acc _ => acc ++ "_") ""
       some s!"instance_{traitName.value}{argStr}"
-  | .intrinsic inner _ => getDeclName inner
   | .use _ _ _ => none
   | .export_ _ _ => none
   | .abbrev name _ _ _ => some name.value

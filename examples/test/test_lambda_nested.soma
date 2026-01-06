@@ -1,7 +1,0 @@
-intrinsic def {+} :: Int -> Int -> Int
-
-def testNested(x: Int, y: Int) -> Int =
-    let outer = (\a -> (\b -> x + a + b) y) in
-    outer 100
-
-def main :: Int = testNested 1000 1

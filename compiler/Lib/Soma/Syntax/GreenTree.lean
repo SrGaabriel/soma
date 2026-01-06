@@ -14,7 +14,7 @@ inductive TokenKind where
   | varSymbol
   | kw_def | kw_let | kw_in | kw_case | kw_if | kw_then | kw_else
   | kw_data | kw_struct | kw_trait | kw_instance | kw_where | kw_with
-  | kw_use | kw_export | kw_intrinsic | kw_forall | kw_bind | kw_compose
+  | kw_use | kw_export | kw_forall | kw_bind | kw_compose
   | kw_abbrev
   | leftParen | rightParen | leftBrace | rightBrace | leftBracket | rightBracket
   | leftAngle | rightAngle | comma | colon | doubleColon | equals | pipe | dot
@@ -52,7 +52,6 @@ def describe : TokenKind → String
   | .kw_with => "'with'"
   | .kw_use => "'use'"
   | .kw_export => "'export'"
-  | .kw_intrinsic => "'intrinsic'"
   | .kw_forall => "'forall'"
   | .kw_bind => "'bind'"
   | .kw_compose => "'compose'"
@@ -96,7 +95,7 @@ instance : ToString TokenKind := ⟨describe⟩
 def isKeyword : TokenKind → Bool
   | .kw_def | .kw_let | .kw_in | .kw_case | .kw_if | .kw_then | .kw_else
   | .kw_data | .kw_struct | .kw_trait | .kw_instance | .kw_where | .kw_with
-  | .kw_use | .kw_export | .kw_intrinsic | .kw_forall | .kw_bind | .kw_compose
+  | .kw_use | .kw_export | .kw_forall | .kw_bind | .kw_compose
   | .kw_abbrev | .true_ | .false_ => true
   | _ => false
 
@@ -117,7 +116,7 @@ def keywordMap : List (String × TokenKind) :=
   , ("if", .kw_if), ("then", .kw_then), ("else", .kw_else)
   , ("data", .kw_data), ("struct", .kw_struct), ("trait", .kw_trait)
   , ("instance", .kw_instance), ("where", .kw_where), ("with", .kw_with)
-  , ("use", .kw_use), ("export", .kw_export), ("intrinsic", .kw_intrinsic)
+  , ("use", .kw_use), ("export", .kw_export)
   , ("forall", .kw_forall), ("bind", .kw_bind), ("compose", .kw_compose)
   , ("abbrev", .kw_abbrev)
   , ("true", .true_), ("false", .false_)

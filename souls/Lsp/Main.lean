@@ -102,7 +102,7 @@ def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentP
   tryDiscoverProjectForFile ctx filePath
 
   let state ← ctx.getUserState
-  let mod := analyzeSource filePath content none state.seedGlobals state.seedInstanceEnv state.seedSymbols
+  let mod := analyzeSource filePath content none state.seedGlobals state.seedInstanceEnv state.seedAbbrevEnv state.seedSymbols
 
   -- Update state
   ctx.modifyUserState fun s => s.setModule filePath mod
@@ -126,8 +126,7 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   let oldModule? := state.getModule filePath
 
   -- Incremental analysis (reuses NodeIds and symbols where possible)
-  -- Incremental analysis (reuses NodeIds and symbols where possible)
-  let mod := analyzeSource filePath content oldModule? state.seedGlobals state.seedInstanceEnv state.seedSymbols
+  let mod := analyzeSource filePath content oldModule? state.seedGlobals state.seedInstanceEnv state.seedAbbrevEnv state.seedSymbols
 
   -- Extract imported modules from the analyzed module
   let importedModules := extractImportedModules mod.symbols
@@ -161,7 +160,7 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
 
         -- Re-analyze with the dependent module marked as needing re-check
         -- The incremental analysis will detect that imported modules changed
-        let depMod := analyzeSource depFilePath depContent depOldModule? state'.seedGlobals state'.seedInstanceEnv state'.seedSymbols
+        let depMod := analyzeSource depFilePath depContent depOldModule? state'.seedGlobals state'.seedInstanceEnv state'.seedAbbrevEnv state'.seedSymbols
 
         -- Update state
         ctx.modifyUserState fun s => s.setModule depFilePath depMod
@@ -191,7 +190,7 @@ def handleDidSave (ctx : RequestContext LspState) (params : DidSaveTextDocumentP
   -- On save, do full analysis and publish all diagnostics
   let some content ← ctx.getDocumentContent uri | return
   let state ← ctx.getUserState
-  let mod := analyzeSource filePath content none state.seedGlobals state.seedInstanceEnv state.seedSymbols
+  let mod := analyzeSource filePath content none state.seedGlobals state.seedInstanceEnv state.seedAbbrevEnv state.seedSymbols
 
   ctx.modifyUserState fun s => s.setModule filePath mod
 

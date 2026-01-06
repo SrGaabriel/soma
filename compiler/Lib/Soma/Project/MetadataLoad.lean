@@ -16,7 +16,7 @@ open Soma.Project
 open Soma.Syntax (Span)
 open Soma.Core
 open Soma.Check (ExternalDependency CheckError)
-open Soma.Dependent (Globals GlobalInfo InstanceEnv InstanceInfo ClassInfo)
+open Soma.Dependent (Globals GlobalInfo InstanceEnv InstanceInfo ClassInfo AbbrevEnv AbbrevInfo)
 
 /-! # Metadata JSON Loading
 
@@ -800,6 +800,28 @@ def instanceEnvFromJson (j : Lean.Json) : Except String InstanceEnv := do
     instances := instances.insert classId insts.toArray
   pure { classes, instances, nextInstanceId, moduleName }
 
+/-- Parse an AbbrevInfo from JSON -/
+def abbrevInfoFromJson (j : Lean.Json) : Except String AbbrevInfo := do
+  let abbrevIdJ ← j.getObjVal? "abbrevId"
+  let abbrevId ← uniqueFromJson abbrevIdJ
+  let arity ← j.getObjValAs? Nat "arity"
+  let expansionJ ← j.getObjVal? "expansion"
+  let expansion ← valueFromJson expansionJ
+  let spanJ ← j.getObjVal? "span"
+  let span ← spanFromJson spanJ
+  pure { abbrevId, arity, expansion, span }
+
+/-- Parse AbbrevEnv from JSON array -/
+def abbrevEnvFromJson (j : Lean.Json) : Except String AbbrevEnv := do
+  match j with
+  | .arr entries =>
+    let mut env := AbbrevEnv.empty
+    for entry in entries do
+      let info ← abbrevInfoFromJson entry
+      env := env.insert info
+    pure env
+  | _ => .error "Expected array for abbrevEnv"
+
 /-- Load metadata from a JSON file -/
 def loadMetadataFromFile (path : System.FilePath) : IO (Except String ExternalDependency) := do
   let content ← IO.FS.readFile path
@@ -808,8 +830,9 @@ def loadMetadataFromFile (path : System.FilePath) : IO (Except String ExternalDe
   | .ok json => do
     let result := do
       let version ← json.getObjValAs? String "version"
-      if version != "2" then
-        .error s!"Unsupported metadata version: {version}. Expected version 2 for dependent types."
+      -- Accept version 2 (without abbrevEnv) and version 3 (with abbrevEnv)
+      if version != "2" && version != "3" then
+        .error s!"Unsupported metadata version: {version}. Expected version 2 or 3."
       else
         let moduleName ← json.getObjValAs? String "module"
         let symbolsJ ← json.getObjVal? "symbols"
@@ -822,6 +845,10 @@ def loadMetadataFromFile (path : System.FilePath) : IO (Except String ExternalDe
         let globals ← globalsFromJson globalsJ
         let instanceEnvJ ← json.getObjVal? "instanceEnv"
         let instanceEnv ← instanceEnvFromJson instanceEnvJ
+        -- Parse abbrevEnv if present (version 3), otherwise use empty
+        let abbrevEnv ← match json.getObjVal? "abbrevEnv" with
+          | .ok abbrevEnvJ => abbrevEnvFromJson abbrevEnvJ
+          | .error _ => pure AbbrevEnv.empty
         pure {
           name := moduleName
           version := some version
@@ -830,6 +857,7 @@ def loadMetadataFromFile (path : System.FilePath) : IO (Except String ExternalDe
           constructors := constructors
           globals := globals
           instanceEnv := instanceEnv
+          abbrevEnv := abbrevEnv
         }
     pure result
 

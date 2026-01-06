@@ -61,11 +61,12 @@ structure TypeClassMeta where
   /-- Method names and their type signatures (as syntax) -/
   methodSignatures : Array (Name × Syntax.TypeExpr)
 
-/-- A type abbreviation -/
+/-- A type abbreviation (before type checking) -/
 structure TypeAbbrev where
   name : String
   params : Array String
   expansion : Syntax.TypeExpr
+  span : Syntax.Span
 
 /-! ## Module (after lowering, before type inference) -/
 

@@ -1,0 +1,92 @@
+@[intrinsic]
+def null :: Ptr a
+
+@[intrinsic]
+def ptr_add :: Ptr a -> Int64 -> Ptr a
+
+@[intrinsic]
+def ptr_diff :: Ptr a -> Ptr a -> Int64
+
+@[intrinsic]
+def ptr_read :: Ptr a -> a
+
+@[intrinsic]
+def ptr_write :: Ptr a -> a -> Unit
+
+@[intrinsic]
+def ptr_cast :: Ptr a -> Ptr b
+
+abbrev CChar = Int8
+abbrev CShort = Int16
+abbrev CInt = Int32
+abbrev CLong = Int64
+abbrev CLLong = Int64
+
+abbrev CUChar = Word8
+abbrev CUShort = Word16
+abbrev CUInt = Word32
+abbrev CULong = Word64
+abbrev CULLong = Word64
+
+abbrev CSize = Word64
+abbrev CSsize = Int64
+abbrev CPtrdiff = Int64
+
+abbrev CIntPtr = Int64
+abbrev CUIntPtr = Word64
+
+abbrev CString = Ptr Word8
+
+@[intrinsic]
+def to_cstring :: String -> CString
+
+@[intrinsic]
+def from_cstring :: CString -> String
+
+@[intrinsic]
+def cstring_len :: CString -> CSize
+
+@[extern]
+def malloc :: CSize -> Ptr a
+
+@[extern]
+def free :: Ptr a -> Unit
+
+@[extern]
+def realloc :: Ptr a -> CSize -> Ptr a
+
+@[extern]
+def calloc :: CSize -> CSize -> Ptr a
+
+export {
+    Ptr,
+    null,
+    ptr_add,
+    ptr_diff,
+    ptr_read,
+    ptr_write,
+    ptr_cast,
+    CChar,
+    CShort,
+    CInt,
+    CLong,
+    CLLong,
+    CUChar,
+    CUShort,
+    CUInt,
+    CULong,
+    CULLong,
+    CSize,
+    CSsize,
+    CPtrdiff,
+    CIntPtr,
+    CUIntPtr,
+    CString,
+    to_cstring,
+    from_cstring,
+    cstring_len,
+    malloc,
+    free,
+    realloc,
+    calloc
+}

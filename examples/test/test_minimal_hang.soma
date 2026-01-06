@@ -1,7 +1,0 @@
-// Absolute minimal case
-
-data A
-    | A
-
-data B
-    | B

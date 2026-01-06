@@ -12,7 +12,7 @@ namespace Lsp
 
 open Soma.Syntax
 open Soma.Metal.Lower (IncrementalLowerResult GlobalEnv)
-open Soma.Dependent (Globals InstanceEnv)
+open Soma.Dependent (Globals InstanceEnv AbbrevEnv)
 open Soma.Project (SymbolEnv)
 open Soma.Check (ExternalDependency symbolEnvToGlobalEnv)
 
@@ -233,6 +233,8 @@ structure LspState where
   seedGlobals : Globals := Globals.empty
   /-- Merged instance environment from all external dependencies -/
   seedInstanceEnv : InstanceEnv := InstanceEnv.empty
+  /-- Merged abbreviation environment from all external dependencies -/
+  seedAbbrevEnv : AbbrevEnv := AbbrevEnv.empty
   /-- Merged symbols from all external dependencies (for Metal lowering) -/
   seedSymbols : SymbolEnv := {}
   deriving Inhabited
@@ -351,10 +353,11 @@ def hasProjectRoot (s : LspState) (root : String) : Bool :=
 def isFileInKnownProject (s : LspState) (filePath : String) : Bool :=
   s.knownProjectRoots.any (filePath.startsWith ·)
 
-/-- Add an external dependency and merge its globals/instanceEnv/symbols -/
+/-- Add an external dependency and merge its globals/instanceEnv/abbrevEnv/symbols -/
 def addExternalDep (s : LspState) (dep : ExternalDependency) : LspState :=
   let newGlobals := Soma.Check.mergeGlobals s.seedGlobals dep.globals
   let newInstanceEnv := Soma.Check.mergeInstanceEnv s.seedInstanceEnv dep.instanceEnv
+  let newAbbrevEnv := s.seedAbbrevEnv.merge dep.abbrevEnv
   -- Merge symbols from all modules in this dependency
   let newSymbols := dep.symbols.fold (init := s.seedSymbols) fun acc _modName modSymbols =>
     modSymbols.fold (init := acc) fun acc2 sym val => acc2.insert sym val
@@ -362,6 +365,7 @@ def addExternalDep (s : LspState) (dep : ExternalDependency) : LspState :=
     externalDeps := s.externalDeps.push dep
     seedGlobals := newGlobals
     seedInstanceEnv := newInstanceEnv
+    seedAbbrevEnv := newAbbrevEnv
     seedSymbols := newSymbols }
 
 /-- Add multiple external dependencies -/
