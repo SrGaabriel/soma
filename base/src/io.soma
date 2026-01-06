@@ -1,8 +1,6 @@
 use base/core.{Functor, Applicative, Monad, >>=}
 
 @[intrinsic]
-data IO :: * -> *
-@[intrinsic]
 def pure_io :: a -> IO a
 
 instance Functor IO where
