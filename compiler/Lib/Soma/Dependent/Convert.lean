@@ -15,18 +15,81 @@ def convertLevel (l1 l2 : Level) : TCM Bool := do
   let l2' := l2.simplify
   return l1' == l2'
 
+/-- Extract meta id and collected arguments from a neutral application spine -/
+private def getMetaFromNeutral (neu : Neutral) : Option (MetaId × List Value) :=
+  go neu []
+where
+  go (neu : Neutral) (args : List Value) : Option (MetaId × List Value) :=
+    match neu with
+    | .nMeta id => some (id, args)
+    | .nApp fn arg => go fn (arg :: args)
+    | _ => none
+
+mutual
+
 /-- Force a value: if it's a solved metavariable, return the solution -/
 partial def force (v : Value) : TCM Value := do
   match v with
-  | .vNeutral _ (.nMeta id) =>
+  | .vNeutral ty (.nMeta id) =>
     let info? ← TCM.lookupMeta id
     match info? with
     | some info =>
       match info.solution with
-      | some sol => force sol
+      | some sol =>
+        -- Recursively force the solution
+        let finalVal ← force sol
+        -- Path compression: if the final value is different from the immediate solution,
+        -- update this meta to point directly to the final value
+        match finalVal with
+        | .vNeutral _ (.nMeta finalId) =>
+          -- Final value is still a meta (unsolved or same) - don't compress
+          if finalId != id then
+            return finalVal
+          else
+            return v
+        | _ =>
+          -- Final value is not a meta, compress the path
+          match sol with
+          | .vNeutral _ (.nMeta _) =>
+            -- sol was a meta, so we followed a chain and can compress
+            TCM.updateMetaSolution id finalVal
+          | _ => pure ()
+          return finalVal
+      | none => return v
+    | none => return v
+  | .vNeutral ty neu =>
+    -- Handle meta applications: ?m arg1 arg2 ... where ?m might be solved
+    match getMetaFromNeutral neu with
+    | some (metaId, args) =>
+      let info? ← TCM.lookupMeta metaId
+      match info? with
+      | some info =>
+        match info.solution with
+        | some sol =>
+          -- Meta is solved, apply solution to arguments
+          forceApplyToArgs sol args
+        | none => return v
       | none => return v
     | none => return v
   | _ => return v
+
+/-- Apply a value to a list of arguments, forcing as we go -/
+partial def forceApplyToArgs (v : Value) (args : List Value) : TCM Value := do
+  match args with
+  | [] => force v
+  | arg :: rest =>
+    let v' ← force v
+    let arg' ← force arg
+    match v' with
+    | .vLam _ _ _ _ body =>
+      let result ← applyClosure body arg'
+      forceApplyToArgs result rest
+    | .vDataType id params =>
+      let applied := Value.vDataType id (params ++ [arg'])
+      forceApplyToArgs applied rest
+    | _ =>
+      -- Can't apply further, return as-is
+      return v
 
 /-- Apply a closure to an argument -/
 partial def applyClosure (clos : Closure) (arg : Value) : TCM Value := do
@@ -45,6 +108,8 @@ partial def applyClosure (clos : Closure) (arg : Value) : TCM Value := do
     }
     let result := Soma.Core.evalTerm evalCtx body
     return result
+
+end
 
 /-- Eta-expand a value to a lambda if checking against a Pi type
     For a value v and Pi type (x : A) -> B, we create λx. v x -/

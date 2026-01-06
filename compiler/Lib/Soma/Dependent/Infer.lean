@@ -1014,17 +1014,9 @@ partial def inferValueApp {scope : Scope}
     (fnExpr : Expr Value scope) (dom : Value) (cod : Closure)
     (arg : Expr Unit scope) (callSpan : Span)
     : TCM (Value × Expr Value scope) := do
-  -- First, infer the argument type to enable reverse propagation.
-  -- We infer to get the argument's type for constraint solving, then use it
-  -- to solve implicits that may appear in the domain type.
-  let (argTy, _) ← infer arg
+  -- Single-pass bidirectional elaboration: check the argument against the expected domain.
 
-  -- Reverse propagation: unify argument type with domain
-  -- This can solve implicits in the domain that depend on the argument type
-  propagateFromArgument argTy dom
-
-  -- Check the argument against the (possibly refined) domain.
-  -- This re-traverses the argument but enables bidirectional type propagation.
+  -- For non-lambda expressions, check falls through to infer + unify.
   let argExpr ← check arg dom
 
   -- For full dependent types, always evaluate the argument to a value.

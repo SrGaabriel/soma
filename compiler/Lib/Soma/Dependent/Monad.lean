@@ -696,6 +696,10 @@ def freshMeta (ty : Value) : TCM MetaId := do
   set state'
   return id
 
+def getMetaCount : TCM Nat := do
+  let state ← getState
+  return state.metas.nextId
+
 /-- Create a fresh metavariable and return it as a Value -/
 def freshMetaVal (ty : Value) : TCM Value := do
   let id ← freshMeta ty
@@ -703,6 +707,13 @@ def freshMetaVal (ty : Value) : TCM Value := do
 
 /-- Solve a metavariable -/
 def solveMeta (id : MetaId) (v : Value) : TCM Unit := do
+  modifyState (·.solveMeta id v)
+
+/-- Update metavariable solution for path compression.
+    This is a lightweight version of solveMeta that just updates the solution
+    without any side effects. Used by `force` to implement union-find style
+    path compression. -/
+def updateMetaSolution (id : MetaId) (v : Value) : TCM Unit := do
   modifyState (·.solveMeta id v)
 
 /-- Look up metavariable info -/

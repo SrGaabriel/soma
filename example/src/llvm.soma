@@ -12,6 +12,9 @@ def main :: IO () =
 
         let total = sum xs
         println ("Sum: " <> display total)
+        println ("Hello, World!")
+
+        bind x <- println "5"
 
         let doubled = map (\x -> x * 2) xs
         let doubledSum = sum doubled

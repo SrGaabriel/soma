@@ -26,6 +26,10 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
   let v1' ← force v1
   let v2' ← force v2
 
+  -- Early exit: if values are syntactically equal, no work needed
+  if valueEq v1' v2' then
+    return
+
   match v1', v2' with
   -- Same constructor: unify recursively
   | .vType l1, .vType l2 =>
@@ -316,7 +320,11 @@ partial def solveMeta (m : MetaId) (spine : List Value) (rhs : Value) : TCM Unit
     | some sol =>
       -- Already solved: apply to spine and unify with rhs
       let applied ← applyToSpine sol spine
-      unify applied rhs
+      -- Early exit: if applied is syntactically equal to rhs, we're done
+      let rhs' ← force rhs
+      if valueEq applied rhs' then
+        return
+      unify applied rhs'
     | none =>
       -- Not yet solved: try pattern unification
       solvePattern m spine rhs info.type
@@ -330,17 +338,19 @@ partial def applyToSpine (v : Value) (spine : List Value) : TCM Value := do
   | [] => return v
   | arg :: rest =>
     let v' ← force v
+    -- Force the argument too, so we work with resolved values
+    let arg' ← force arg
     match v' with
     | .vLam _ _ _ _ body =>
-      let result ← applyClosure body arg
+      let result ← applyClosure body arg'
       applyToSpine result rest
     | .vNeutral _ty neu =>
       let resultTy ← TCM.freshMetaVal (.vType .zero)
-      let applied := Value.vNeutral resultTy (.nApp neu arg)
+      let applied := Value.vNeutral resultTy (.nApp neu arg')
       applyToSpine applied rest
     | .vDataType id params =>
       -- Apply type constructor to argument
-      let applied := Value.vDataType id (params ++ [arg])
+      let applied := Value.vDataType id (params ++ [arg'])
       applyToSpine applied rest
     | _ =>
       let span ← TCM.getSpan
