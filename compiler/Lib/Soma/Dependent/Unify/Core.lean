@@ -354,6 +354,10 @@ def getMetaWithSpine (neu : Neutral) : Option (MetaId × List Value) :=
     | none => none
   | _ => none
 
+/-- Build a neutral from a metavariable and a spine (inverse of getMetaWithSpine) -/
+def buildMetaSpine (m : MetaId) (spine : List Value) : Neutral :=
+  spine.foldl (fun neu arg => .nApp neu arg) (.nMeta m)
+
 /-- Convert a Value to a Neutral (for eta expansion) -/
 def valueToNeutral (v : Value) : Neutral :=
   match v with

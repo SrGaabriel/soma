@@ -8,6 +8,7 @@ def main :: IO () =
 
         let len = length xs
         println ("Length: " <> display len)
+        println ("Buggy")
 
         let total = sum xs
         println ("Sum: " <> display total)

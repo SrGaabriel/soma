@@ -361,7 +361,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
   if shouldDefer then
     -- Defer: the meta's type needs to be solved first
     let span ← TCM.getSpan
-    TCM.postpone (.unify (.vNeutral metaTy (.nMeta m)) rhs span)
+    TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
     return
 
   -- Check for reflexivity: ?m spine = ?m spine should always succeed
@@ -415,7 +415,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
       if pruned then
         -- Pruning was attempted, retry unification
         let span ← TCM.getSpan
-        TCM.postpone (.unify (.vNeutral metaTy (.nMeta m)) rhs span)
+        TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
       else
         let span ← TCM.getSpan
         TCM.throw (.unificationFailed (.occursCheck m rhs) .general span #[] #[m])
@@ -428,7 +428,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
         -- RHS contains variables not in scope - postpone rather than fail
         -- (it might become solvable after more unification)
         let span ← TCM.getSpan
-        TCM.postpone (.unify (.vNeutral metaTy (.nMeta m)) rhs span)
+        TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
       else
         -- Check for twin variables (dependent pattern matching)
         let twins := detectTwinVars spine rhs
@@ -443,7 +443,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
             TCM.solveMeta m solutionVal
           | none =>
             let span ← TCM.getSpan
-            TCM.postpone (.unify (.vNeutral metaTy (.nMeta m)) rhs span)
+            TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
         else
           -- Build substitution from spine levels
           let subst := mkSubst spineLevels
@@ -460,7 +460,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
           | none =>
             -- RHS contains variables not in the spine - postpone
             let span ← TCM.getSpan
-            TCM.postpone (.unify (.vNeutral metaTy (.nMeta m)) rhs span)
+            TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
 
   | none =>
     -- Not a pattern - try η-expansion to make it one
@@ -482,7 +482,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
           -- Different metas: try pruning both or postpone
           let _ ← tryPrune m spine rhs
           let span ← TCM.getSpan
-          TCM.postpone (.unify (.vNeutral metaTy (.nMeta m)) rhs span)
+          TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
       | .vNeutral _ neu2 =>
         match getMetaWithSpine neu2 with
         | some (m2, spine2) =>
@@ -496,7 +496,7 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
             else
               -- Different length spines - postpone
               let span ← TCM.getSpan
-              TCM.postpone (.unify (.vNeutral metaTy (.nMeta m)) rhs span)
+              TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
           else
             -- NEW: Different metas with spines - try spine intersection
             let intersected ← tryFlexFlexIntersection m spine m2 spine2
@@ -506,15 +506,15 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
             else
               -- Intersection failed, postpone
               let span ← TCM.getSpan
-              TCM.postpone (.unify (.vNeutral metaTy (.nMeta m)) rhs span)
+              TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
         | none =>
           -- Not a meta application - postpone
           let span ← TCM.getSpan
-          TCM.postpone (.unify (.vNeutral metaTy (.nMeta m)) rhs span)
+          TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
       | _ =>
         -- Not a pattern and not flex-flex - postpone
         let span ← TCM.getSpan
-        TCM.postpone (.unify (.vNeutral metaTy (.nMeta m)) rhs span)
+        TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
 
 end
 
