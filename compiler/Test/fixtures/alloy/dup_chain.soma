@@ -1,0 +1,14 @@
+// expect: success
+// Test: variable used multiple times - DUP chain lowering
+
+@[intrinsic]
+def {+} :: Int -> Int -> Int
+
+def useThrice :: Int -> Int
+    | x => x + x + x
+
+def useTwice :: Int -> (Int, Int)
+    | x => (x, x)
+
+def test1 :: Int = useThrice 10
+def test2 :: (Int, Int) = useTwice 42

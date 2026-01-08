@@ -1,0 +1,18 @@
+// expect: success
+// Test: recursive function - self REF lowering
+
+data Nat
+    | Zero
+    | Succ (Nat)
+
+def is_zero :: Nat -> Int
+    | Zero => 1
+    | (Succ _) => 0
+
+def pred :: Nat -> Nat
+    | Zero => Zero
+    | (Succ n) => n
+
+def one :: Nat = Succ Zero
+def two :: Nat = Succ (Succ Zero)
+def test :: Int = is_zero one

@@ -224,6 +224,15 @@ def tagType : Ty := .prim .u32
 /-- Type for closure (fn ptr + env ptr) -/
 def closureType : Ty := .struct #[("fn", .rawPtr), ("env", .rawPtr)]
 
+/-- Reserved tag for closure CTORs in Circuit IR -/
+def closureTag : Nat := 0xFFFFFE
+
+/-- Reserved tag for panic CTORs in Circuit IR -/
+def panicTag : Nat := 0xFFFFFF
+
+/-- Reserved tag for array backing CTORs in Circuit IR -/
+def arrayBackingTag : Nat := 0xFFFFFD
+
 /-- Lower a numeric literal -/
 def lowerNum (primTy : PrimType) (val : UInt32) : LowerM LocalId := do
   let ty := Ty.prim (convertPrimType primTy)
@@ -423,6 +432,13 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
   if let some result := ns.results.get? nodeId.id then
     return result
 
+  -- Check if currently being processed (cycle detection)
+  if ns.visited.contains nodeId.id then
+    -- Cycle detected - return undefined to break recursion
+    -- This can happen with self-referential structures
+    let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+    return undef
+
   -- Mark as being processed
   set { ns with visited := ns.visited.insert nodeId.id }
 
@@ -447,15 +463,21 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     StateT.lift (LowerM.emitInst (.copy (.const .unit)) Ty.unit)
 
   | .lam erased => do
-    -- Lambda creates a closure
-    -- aux0 = var port, aux1 = body port
+    -- LAM nodes in Circuit IR represent function parameters.
+    -- After lambda lifting, nested lambdas become .closure expressions
+    -- which lower to CTOR nodes with closureTag.
+    --
+    -- When we encounter a LAM during traversal, it's part of the
+    -- parameter binding chain. We lower the body and return it.
+    -- The variable binding is already handled by function parameters.
     if erased then
+      -- Erased lambda: just return unit
       StateT.lift (LowerM.emitInst (.copy (.const .unit)) Ty.unit)
     else
-      -- For now, lambdas are lowered separately as functions
-      -- This node represents a reference to the closure
-      -- We need the lifted function ID and captured values
-      StateT.lift (LowerM.emitInst (.copy (.const (.undef closureType))) closureType)
+      -- Lower the body (aux1 port)
+      match entry.getPort ⟨2⟩ with
+      | some bodyPort => lowerNode graph bodyPort.node
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
 
   | .app => do
     -- Application: call closure with argument
@@ -471,14 +493,44 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     StateT.lift (lowerApp fnVal argVal)
 
   | .ctor tag arity => do
-    -- Constructor: build tagged struct
-    let mut fieldVals : Array LocalId := #[]
-    for i in [:arity] do
-      let fieldVal ← match entry.getPort ⟨i + 1⟩ with
-        | some fieldPort => lowerNode graph fieldPort.node
-        | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
-      fieldVals := fieldVals.push fieldVal
-    StateT.lift (lowerCtor tag arity fieldVals)
+    -- Check for special closure CTOR (tag 0xFFFFFE, arity 2)
+    if tag == closureTag && arity == 2 then
+      -- Closure: field 0 = REF (function), field 1 = env CTOR
+      -- Get the function reference - we need to find the REF node's refId
+      let fnRefNodeId ← match entry.getPort ⟨1⟩ with
+        | some fnPort => pure fnPort.node
+        | none => do
+          -- No function reference - emit error closure
+          let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef closureType))) closureType)
+          return undef
+
+      -- Look up the REF node to get the function ID
+      let funcId ← match graph.getNode fnRefNodeId with
+        | some fnEntry =>
+          match fnEntry.node with
+          | .ref refId => pure (FuncId.mk refId)
+          | .alo refId => pure (FuncId.mk refId)  -- ALO also references a function
+          | _ =>
+            -- Not a REF/ALO node - treat as indirect call, use placeholder
+            pure (FuncId.mk 0)
+        | none => pure (FuncId.mk 0)
+
+      -- Lower the environment (field 1)
+      let envVal ← match entry.getPort ⟨2⟩ with
+        | some envPort => lowerNode graph envPort.node
+        | none => StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+
+      -- Emit makeClosure instruction
+      StateT.lift (LowerM.emitInst (.makeClosure funcId (.local envVal)) closureType)
+    else
+      -- Regular constructor: build tagged struct
+      let mut fieldVals : Array LocalId := #[]
+      for i in [:arity] do
+        let fieldVal ← match entry.getPort ⟨i + 1⟩ with
+          | some fieldPort => lowerNode graph fieldPort.node
+          | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+        fieldVals := fieldVals.push fieldVal
+      StateT.lift (lowerCtor tag arity fieldVals)
 
   | .proj fieldIdx => do
     -- Projection: extract field from struct
@@ -638,6 +690,28 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
 
 /-! ## Function Lowering -/
 
+/-- Traverse LAM chain to find body and collect var ports.
+    Returns (body node, array of var port node IDs) -/
+def traverseLamChain (graph : CGraph) (root : CNodeId) (arity : Nat) : CNodeId × Array CNodeId := Id.run do
+  let mut current := root
+  let mut varNodes : Array CNodeId := #[]
+
+  for _ in [:arity] do
+    if let some entry := graph.getNode current then
+      match entry.node with
+      | .lam _ =>
+        -- Collect the var port's connected node (port 1)
+        if let some varPort := entry.getPort ⟨1⟩ then
+          varNodes := varNodes.push varPort.node
+        -- Move to body (port 2)
+        if let some bodyPort := entry.getPort ⟨2⟩ then
+          current := bodyPort.node
+      | _ => break
+    else
+      break
+
+  (current, varNodes)
+
 /-- Lower a Circuit definition to an Alloy function -/
 def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId) : Func :=
   let sig : Signature := {
@@ -648,9 +722,34 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId) : Fu
   }
 
   let (_, func) := LowerM.run' funcId sig do
-    -- Lower from root node
-    let (result, _) ← StateT.run (lowerNode graph def_.root) {}
-    LowerM.terminate (.ret (.local result))
+    if def_.arity == 0 then
+      -- No parameters: just lower the root directly
+      let (result, _) ← StateT.run (lowerNode graph def_.root) {}
+      LowerM.terminate (.ret (.local result))
+    else
+      -- Has parameters: traverse LAM chain and bind params to var ports
+      let (bodyNode, varNodes) := traverseLamChain graph def_.root def_.arity
+
+      -- Build initial NodeState with var ports mapped to function parameters
+      let mut initState : NodeState := {}
+      for i in [:varNodes.size] do
+        if h : i < varNodes.size then
+          -- Map the var port node to the corresponding function parameter
+          let varNodeId := varNodes[i]
+          let paramId : LocalId := ⟨i⟩
+          initState := { initState with results := initState.results.insert varNodeId.id paramId }
+
+      -- Also mark LAM nodes as visited so we don't re-traverse them
+      let mut current := def_.root
+      for _ in [:def_.arity] do
+        initState := { initState with visited := initState.visited.insert current.id }
+        if let some entry := graph.getNode current then
+          if let some bodyPort := entry.getPort ⟨2⟩ then
+            current := bodyPort.node
+
+      -- Lower the body with var ports pre-bound
+      let (result, _) ← StateT.run (lowerNode graph bodyNode) initState
+      LowerM.terminate (.ret (.local result))
 
   func
 

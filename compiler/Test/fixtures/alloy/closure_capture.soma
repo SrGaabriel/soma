@@ -1,0 +1,10 @@
+// expect: success
+// Test: closure with captured variable - environment lowering
+
+@[intrinsic]
+def {+} :: Int -> Int -> Int
+
+def makeAdder :: Int -> Int -> Int
+    | n => \x -> x + n
+
+def test :: Int = (makeAdder 10) 5

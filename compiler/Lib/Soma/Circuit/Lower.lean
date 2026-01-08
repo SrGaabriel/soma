@@ -362,8 +362,8 @@ partial def lowerExpr (e : Expr Value scope) : LowerM PortId := do
   | .ann expr _ty _info _span =>
     lowerExpr expr
 
-  | .closure _name captures _info _span =>
-    lowerClosure captures
+  | .closure name captures _info _span =>
+    lowerClosure name captures
 
   | .array elems _info _span =>
     lowerArray elems
@@ -407,29 +407,39 @@ partial def lowerCaptureList (caps : Soma.Metal.CaptureList Value scope)
     let restPorts ← lowerCaptureList rest
     pure (#[port] ++ restPorts)
 
-/-- Lower a closure to a CTOR node.
+/-- Lower a closure to a pair of (function_ref, environment).
 
-    Closures are represented as constructors where:
-    - Tag 0 is used for all closure environments (distinguishes from user data types)
-    - Each captured variable becomes a field of the constructor
-    - The closure's lifted function is referenced separately when applied
+    Closures are represented as a 2-field CTOR where:
+    - Field 0: REF node pointing to the lifted function
+    - Field 1: CTOR containing captured values (or nullary CTOR if no captures)
 
-    This encoding allows closures to participate in interaction net reduction
-    naturally - when a closure is applied, the environment CTOR interacts
-    with the function body to provide the captured values. -/
-partial def lowerClosure (captures : Soma.Metal.CaptureList Value scope)
+    This encoding allows closures to be first-class values that carry both
+    the function pointer and their captured environment. When a closure is
+    applied, the caller extracts the function ref and environment, then
+    calls the function with the environment as an implicit first argument. -/
+partial def lowerClosure (fnName : Name) (captures : Soma.Metal.CaptureList Value scope)
     : LowerM PortId := do
+  -- Get REF to the lifted function
+  let fnPort ← lowerGlobal fnName
+
+  -- Build environment CTOR from captures
   let capturePorts ← lowerCaptureList captures
-  if capturePorts.isEmpty then
-    -- No captures: return unit (empty tuple / nullary CTOR)
+  let envPort ← if capturePorts.isEmpty then do
+    -- No captures: empty environment (nullary CTOR)
     let ctor ← LowerM.addNode (.ctor 0 0)
     pure (PortId.principal ctor)
-  else
+  else do
     -- Build CTOR with captured values as fields
     let ctor ← LowerM.addNode (.ctor 0 capturePorts.size)
     for i in [:capturePorts.size] do
       LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ capturePorts[i]!
     pure (PortId.principal ctor)
+
+  -- Build closure pair: (fn_ref, env)
+  let closureCtor ← LowerM.addNode (.ctor 0xFFFFFE 2)
+  LowerM.connect ⟨closureCtor, ⟨1⟩⟩ fnPort
+  LowerM.connect ⟨closureCtor, ⟨2⟩⟩ envPort
+  pure (PortId.principal closureCtor)
 
 /-- Lower a function application.
 
@@ -957,7 +967,7 @@ partial def lowerGlobal (name : Name) : LowerM PortId := do
           let ctor ← LowerM.addNode (.ctor tag 0)
           pure (PortId.principal ctor)
         else
-          -- Partial app, should've already been desugared (todo: consider panicking here) 
+          -- Partial app, should've already been desugared (todo: consider panicking here)
           let era ← LowerM.addNode .era
           pure (PortId.principal era)
       | none =>
@@ -1149,8 +1159,8 @@ partial def lowerArray (elems : ExprList Value scope) : LowerM PortId := do
   let lenNode ← LowerM.addNode (.num .u64 len.toUInt32)
 
   -- Create data node: for now, store elements in a CTOR
-  -- Tag 0xFFFFFE is reserved for array backing storage
-  let dataNode ← LowerM.addNode (.ctor 0xFFFFFE len)
+  -- Tag 0xFFFFFD is reserved for array backing storage
+  let dataNode ← LowerM.addNode (.ctor 0xFFFFFD len)
   for i in [:len] do
     LowerM.connect ⟨dataNode, ⟨i + 1⟩⟩ elemPorts[i]!
 

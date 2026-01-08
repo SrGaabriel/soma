@@ -1,0 +1,13 @@
+// expect: success
+// Test: record creation and field access - struct lowering
+
+def point :: { x :: Int, y :: Int } = { x = 10, y = 20 }
+
+def getX :: { x :: Int, y :: Int } -> Int
+    | p => p.x
+
+def getY :: { x :: Int, y :: Int } -> Int
+    | p => p.y
+
+def test1 :: Int = getX point
+def test2 :: Int = getY point

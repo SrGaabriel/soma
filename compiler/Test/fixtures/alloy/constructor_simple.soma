@@ -1,0 +1,12 @@
+// expect: success
+// Test: simple constructors - CTOR node lowering
+
+data MyBool
+    | MyTrue
+    | MyFalse
+
+def not :: MyBool -> MyBool
+    | MyTrue => MyFalse
+    | MyFalse => MyTrue
+
+def test :: MyBool = not MyTrue

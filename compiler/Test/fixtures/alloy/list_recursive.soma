@@ -1,0 +1,16 @@
+// expect: success
+// Test: recursive data type - REF/ALO node lowering
+
+data List a
+    | Nil
+    | Cons a (List a)
+
+def head :: forall a. a -> List a -> a
+    | default Nil => default
+    | _ (Cons x _) => x
+
+def tail :: forall a. List a -> List a
+    | Nil => Nil
+    | (Cons _ xs) => xs
+
+def test :: Int = head 0 Nil

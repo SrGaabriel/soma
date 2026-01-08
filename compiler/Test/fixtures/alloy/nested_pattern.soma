@@ -1,0 +1,20 @@
+// expect: success
+// Test: nested pattern matching - compound MAT lowering
+
+@[intrinsic]
+def {+} :: Int -> Int -> Int
+
+data Maybe a
+    | Nothing
+    | Just a
+
+def from_maybe :: forall a. a -> Maybe a -> a
+    | default Nothing => default
+    | _ (Just x) => x
+
+def map_maybe :: forall a b. (a -> b) -> Maybe a -> Maybe b
+    | _ Nothing => Nothing
+    | f (Just x) => Just (f x)
+
+def test1 :: Int = from_maybe 0 (Just 42)
+def test2 :: Int = from_maybe 0 Nothing

@@ -1,0 +1,7 @@
+// expect: success
+// Test: simple identity function - basic function lowering
+
+def id :: Int -> Int
+    | x => x
+
+def test :: Int = id 42

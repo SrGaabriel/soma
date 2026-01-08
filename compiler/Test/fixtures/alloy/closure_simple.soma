@@ -1,0 +1,13 @@
+// expect: success
+// Test: simple closure - lambda lifting and closure lowering
+
+@[intrinsic]
+def {+} :: Int -> Int -> Int
+
+def apply :: (Int -> Int) -> Int -> Int
+    | f x => f x
+
+def add_one :: Int -> Int
+    | x => x + 1
+
+def test :: Int = apply add_one 41

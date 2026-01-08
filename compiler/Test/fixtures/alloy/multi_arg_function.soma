@@ -1,0 +1,10 @@
+// expect: success
+// Test: multi-argument function - LAM chain lowering
+
+@[intrinsic]
+def {+} :: Int -> Int -> Int
+
+def add3 :: Int -> Int -> Int -> Int
+    | a b c => a + b + c
+
+def test :: Int = add3 1 2 3

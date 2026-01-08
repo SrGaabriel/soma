@@ -1,0 +1,16 @@
+// expect: success
+// Test: mutually recursive functions - cross REF lowering
+
+data Nat
+    | Zero
+    | Succ Nat
+
+def isEven :: Nat -> Int
+    | Zero => 1
+    | (Succ n) => isOdd n
+
+def isOdd :: Nat -> Int
+    | Zero => 0
+    | (Succ n) => isEven n
+
+def test :: Int = isEven (Succ (Succ Zero))

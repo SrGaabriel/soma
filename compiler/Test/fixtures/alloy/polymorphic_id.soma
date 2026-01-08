@@ -1,0 +1,8 @@
+// expect: success
+// Test: polymorphic identity - forall lowering
+
+def id :: forall a. a -> a
+    | x => x
+
+def test_int :: Int = id 42
+def test_string :: String = id "hello"
