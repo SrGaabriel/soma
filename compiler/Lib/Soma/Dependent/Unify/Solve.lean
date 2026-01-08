@@ -46,7 +46,8 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
     let cod1 ← applyClosure c1 x
     let cod2 ← applyClosure c2 x
-    TCM.withBinding n1 d1 q1 b1 defaultSpan do
+    let bindingId ← TCM.freshBindingId n1
+    TCM.withBinding n1 bindingId d1 q1 b1 defaultSpan do
       unify cod1 cod2
 
   | .vLam q1 b1 n1 d1 body1, .vLam q2 b2 _ d2 body2 =>
@@ -59,7 +60,8 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
     let b1Val ← applyClosure body1 x
     let b2Val ← applyClosure body2 x
-    TCM.withBinding n1 d1 q1 b1 defaultSpan do
+    let bindingId ← TCM.freshBindingId n1
+    TCM.withBinding n1 bindingId d1 q1 b1 defaultSpan do
       unify b1Val b2Val
 
   | .vSigma q1 n1 f1 s1, .vSigma q2 _ f2 s2 =>
@@ -70,7 +72,8 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let x := Value.vNeutral f1 (.nVar ⟨n1, lvl⟩)
     let snd1 ← applyClosure s1 x
     let snd2 ← applyClosure s2 x
-    TCM.withBinding n1 f1 q1 .explicit defaultSpan do
+    let bindingId ← TCM.freshBindingId n1
+    TCM.withBinding n1 bindingId f1 q1 .explicit defaultSpan do
       unify snd1 snd2
 
   | .vPair a1 b1, .vPair a2 b2 =>
@@ -164,7 +167,8 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let x := Value.vNeutral d (.nVar ⟨n, lvl⟩)
     let bodyVal ← applyClosure body x
     let otherApp := Value.vNeutral d (.nApp (valueToNeutral other) x)
-    TCM.withBinding n d .omega .explicit defaultSpan do
+    let bindingId ← TCM.freshBindingId n
+    TCM.withBinding n bindingId d .omega .explicit defaultSpan do
       unify bodyVal otherApp
 
   | other, .vLam _ _ n d body =>
@@ -172,7 +176,8 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let x := Value.vNeutral d (.nVar ⟨n, lvl⟩)
     let bodyVal ← applyClosure body x
     let otherApp := Value.vNeutral d (.nApp (valueToNeutral other) x)
-    TCM.withBinding n d .omega .explicit defaultSpan do
+    let bindingId ← TCM.freshBindingId n
+    TCM.withBinding n bindingId d .omega .explicit defaultSpan do
       unify otherApp bodyVal
 
   -- Eta for pairs: v1 = v2 if (v1.1, v1.2) = (v2.1, v2.2)

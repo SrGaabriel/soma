@@ -20,6 +20,8 @@ open Soma.Syntax (Span)
 structure CtxEntry where
   /-- Variable name -/
   name : String
+  /-- Unique binding identifier for usage tracking -/
+  bindingId : Soma.Metal.BindingId
   /-- Variable's type (as a Value) -/
   type : Value
   /-- Quantity annotation -/
@@ -391,8 +393,8 @@ structure TCState where
   warnings : Array TCWarning := #[]
   /-- Fresh name counter -/
   freshCounter : Nat := 0
-  /-- Variable usage counts for QTT tracking (name -> accumulated quantity) -/
-  usages : Std.HashMap String Quantity := {}
+  /-- Variable usage counts for QTT tracking (BindingId -> exact count) -/
+  usages : Std.HashMap Soma.Metal.BindingId Nat := {}
   /-- Pending instance constraints to be resolved -/
   pendingInstances : Array PendingInstance := #[]
   /-- Unique supply for generating compiler-internal names -/
@@ -497,26 +499,25 @@ def freshUnique (s : TCState) (original : String) : Unique × TCState :=
   let (u, supply') := s.uniqueSupply.fresh original
   (u, { s with uniqueSupply := supply' })
 
-/-- Record usage of a variable with a given quantity -/
-def useVar (s : TCState) (name : String) (qty : Quantity) : TCState :=
-  let current := s.usages.getD name .zero
-  let newQty := current.add qty
-  { s with usages := s.usages.insert name newQty }
+/-- Record usage of a variable (increments count by given amount, default 1) -/
+def useVar (s : TCState) (bindingId : Soma.Metal.BindingId) (count : Nat := 1) : TCState :=
+  let current := s.usages.getD bindingId 0
+  { s with usages := s.usages.insert bindingId (current + count) }
 
-/-- Get the usage of a variable -/
-def getUsage (s : TCState) (name : String) : Quantity :=
-  s.usages.getD name .zero
+/-- Get the usage count of a variable -/
+def getUsage (s : TCState) (bindingId : Soma.Metal.BindingId) : Nat :=
+  s.usages.getD bindingId 0
 
 /-- Clear usages (for starting a new scope) -/
 def clearUsages (s : TCState) : TCState :=
   { s with usages := {} }
 
 /-- Save current usages -/
-def saveUsages (s : TCState) : Std.HashMap String Quantity :=
+def saveUsages (s : TCState) : Std.HashMap Soma.Metal.BindingId Nat :=
   s.usages
 
 /-- Restore usages -/
-def restoreUsages (s : TCState) (usages : Std.HashMap String Quantity) : TCState :=
+def restoreUsages (s : TCState) (usages : Std.HashMap Soma.Metal.BindingId Nat) : TCState :=
   { s with usages := usages }
 
 /-- Add a pending instance constraint -/
@@ -599,11 +600,12 @@ def lookupAbbrev (ctx : TCContext) (name : String) : Option AbbrevInfo :=
   ctx.abbrevEnv.get? name
 
 /-- Extend context with a new binding -/
-def extend (ctx : TCContext) (name : String) (ty : Value) (qty : Quantity)
-    (binder : BinderInfo) (span : Span) : TCContext :=
+def extend (ctx : TCContext) (name : String) (bindingId : Soma.Metal.BindingId)
+    (ty : Value) (qty : Quantity) (binder : BinderInfo) (span : Span) : TCContext :=
   let lvl := ctx.level
   let entry : CtxEntry := {
     name := name
+    bindingId := bindingId
     type := ty
     qty := qty
     level := lvl
@@ -663,9 +665,9 @@ def withSpan (span : Span) (m : TCM α) : TCM α :=
   withReader (·.withSpan span) m
 
 /-- Run with an extended context -/
-def withBinding (name : String) (ty : Value) (qty : Quantity)
-    (binder : BinderInfo) (span : Span) (m : TCM α) : TCM α :=
-  withReader (·.extend name ty qty binder span) m
+def withBinding (name : String) (bindingId : Soma.Metal.BindingId) (ty : Value)
+    (qty : Quantity) (binder : BinderInfo) (span : Span) (m : TCM α) : TCM α :=
+  withReader (·.extend name bindingId ty qty binder span) m
 
 /-- Look up a local variable -/
 def lookupLocal (name : String) : TCM (Option CtxEntry) := do
@@ -950,36 +952,50 @@ def freshUnique (original : String) : TCM Unique := do
   set state'
   return u
 
-/-- Record usage of a variable. The quantity is multiplied by the current context multiplier. -/
-def useVar (name : String) (qty : Quantity := .omega) : TCM Unit := do
-  let ctx ← getCtx
-  -- Multiply by context multiplier
-  let effectiveQty := ctx.qtyMultiplier.mul qty
-  modifyState (·.useVar name effectiveQty)
+/-- Generate a fresh BindingId for a local binding -/
+def freshBindingId (name : String) : TCM Soma.Metal.BindingId := do
+  let u ← freshUnique name
+  return { id := u.id, module := u.module, original := name }
 
-/-- Get the recorded usage of a variable -/
-def getUsage (name : String) : TCM Quantity := do
+/-- Record usage of a variable. In erased context, usages don't count (compile-time only). -/
+def useVar (bindingId : Soma.Metal.BindingId) (count : Nat := 1) : TCM Unit := do
+  let ctx ← getCtx
+  -- In erased context, usages don't count towards runtime
+  if ctx.qtyMultiplier != .zero then
+    modifyState (·.useVar bindingId count)
+
+/-- Get the recorded usage count of a variable -/
+def getUsage (bindingId : Soma.Metal.BindingId) : TCM Nat := do
   let state ← getState
-  return state.getUsage name
+  return state.getUsage bindingId
+
+/-- Convert usage count to Quantity for compatibility checks -/
+def countToQuantity (n : Nat) : Quantity :=
+  match n with
+  | 0 => .zero
+  | 1 => .one
+  | _ => .omega
 
 /-- Check that a variable's usage is compatible with its declared quantity -/
-def checkUsage (name : String) (declared : Quantity) (span : Span) : TCM Unit := do
-  let actual ← getUsage name
+def checkUsage (bindingId : Soma.Metal.BindingId) (declared : Quantity) (span : Span) : TCM Unit := do
+  let count ← getUsage bindingId
+  let actual := countToQuantity count
   -- Check: actual ≤ declared (in the quantity semiring ordering)
   if !actual.le declared then
-    throw (.quantityMismatch declared actual name span)
+    throw (.quantityMismatch declared actual bindingId.original span)
 
 /-- Check all linear variables in scope are used exactly once -/
 def checkLinearVarsUsed : TCM Unit := do
   let ctx ← getCtx
   for entry in ctx.locals do
     if entry.qty == .one then
-      let usage ← getUsage entry.name
-      if usage == .zero then
+      let count ← getUsage entry.bindingId
+      if count == 0 then
         throw (.linearNotUsed entry.name entry.span)
-      else if usage != .one then
+      else if count != 1 then
         -- Used more than once
-        addError (.quantityMismatch .one usage entry.name entry.span)
+        let actual := countToQuantity count
+        addError (.quantityMismatch .one actual entry.name entry.span)
 
 /-- Run an action with quantity multiplier set (for checking under binders) -/
 def withQtyMultiplier (qty : Quantity) (m : TCM α) : TCM α :=
@@ -989,8 +1005,8 @@ def withQtyMultiplier (qty : Quantity) (m : TCM α) : TCM α :=
 def inErasedContext (m : TCM α) : TCM α :=
   withReader (fun ctx => { ctx with inErased := true, qtyMultiplier := .zero }) m
 
-/-- Run an action with fresh usage tracking, returning the usages -/
-def withFreshUsages (m : TCM α) : TCM (α × Std.HashMap String Quantity) := do
+/-- Run an action with fresh usage tracking, returning the usage counts -/
+def withFreshUsages (m : TCM α) : TCM (α × Std.HashMap Soma.Metal.BindingId Nat) := do
   let state ← getState
   let savedUsages := state.saveUsages
   modifyState (·.clearUsages)

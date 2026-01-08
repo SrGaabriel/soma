@@ -319,11 +319,11 @@ partial def withAllParamBindings (params : Soma.Metal.ParamList Unit) (span : Sp
     (cont : TCM α) : TCM α := do
   match params with
   | .nil => cont
-  | .cons _binding name () rest =>
+  | .cons bindingId name () rest =>
     -- Create metavariable for this parameter's type
     let paramTy ← TCM.freshMetaVal (.vType .zero)
     -- Extend context with this binding, then process remaining params
-    TCM.withBinding name paramTy .omega .explicit span do
+    TCM.withBinding name bindingId paramTy .omega .explicit span do
       withAllParamBindings rest span cont
 
 /-- Extend the typing context with bindings for parameters, extracting types from a nested Pi.
@@ -333,7 +333,7 @@ partial def withParamBindingsFromPi (params : List (Soma.Metal.BindingId × Stri
     (expectedTy : Value) (span : Span) (cont : Value → TCM α) : TCM α := do
   match params with
   | [] => cont expectedTy
-  | (_, paramName, ()) :: rest =>
+  | (bindingId, paramName, ()) :: rest =>
     let expectedTy' ← force expectedTy
     match expectedTy' with
     | .vPi qty binder _ dom cod =>
@@ -343,13 +343,13 @@ partial def withParamBindingsFromPi (params : List (Soma.Metal.BindingId × Stri
         let x := Value.vNeutral dom (.nVar ⟨paramName, lvl⟩)
         applyClosure cod x
       -- Extend context with this parameter and continue with remaining params
-      withCheckedBinding paramName dom qty binder span do
+      withCheckedBinding paramName bindingId dom qty binder span do
         withParamBindingsFromPi rest codTy span cont
     | _ =>
       -- Expected type is not a Pi but we still have params - create metavariable
       -- This handles cases where the expected type is a metavariable
       let paramTy ← TCM.freshMetaVal (.vType .zero)
-      TCM.withBinding paramName paramTy .omega .explicit span do
+      TCM.withBinding paramName bindingId paramTy .omega .explicit span do
         withParamBindingsFromPi rest expectedTy' span cont
 
 /-- Infer the body of a lambda, extending the context with parameter bindings.
@@ -378,7 +378,7 @@ where
       match ← TCM.lookupLocal v.original with
       | some entry =>
         -- Record variable usage with QTT checking
-        useVarChecked v.original span
+        useVarChecked v.binding span
         return (entry.type, .var v entry.type span)
       | none =>
         -- Check if it's a primitive type name used as a value (todo: review)
@@ -428,8 +428,9 @@ where
       let domVal ← TCM.evalTyped domExpr
 
       -- Check codomain is a type, under extended context (also in erased context)
+      let bindingId ← TCM.freshBindingId name
       let (codTy, codExpr) ← TCM.inErasedContext do
-        TCM.withBinding name domVal qty binder span do
+        TCM.withBinding name bindingId domVal qty binder span do
           infer codomain
       let codLevel ← ensureType codTy codomain.span
 
@@ -446,8 +447,9 @@ where
       let fstVal ← TCM.evalTyped fstExpr
 
       -- Check second component is a type (in erased context)
+      let bindingId ← TCM.freshBindingId name
       let (sndTy, sndExpr) ← TCM.inErasedContext do
-        TCM.withBinding name fstVal qty .explicit span do
+        TCM.withBinding name bindingId fstVal qty .explicit span do
           infer snd
       let sndLevel ← ensureType sndTy snd.span
 
@@ -1365,9 +1367,9 @@ partial def inferArmBodyWithBindings {extScope : Scope}
     -- This is important: check (not infer) so that [] can be treated as List
     -- when the expected type is List, rather than being inferred as Array
     check body expectedTy
-  | (_, name, bindingTy) :: rest =>
+  | (bindingId, name, bindingTy) :: rest =>
     -- Use the type from pattern matching against scrutinee
-    TCM.withBinding name bindingTy .omega .explicit span do
+    TCM.withBinding name bindingId bindingTy .omega .explicit span do
       inferArmBodyWithBindings rest body expectedTy span
 
 /-- Collect available field names from a row -/

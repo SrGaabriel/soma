@@ -4,7 +4,7 @@ import Soma.Syntax.Ast
 
 namespace Soma.Metal.Lower
 
-open Soma.Core (TypeId Name)
+open Soma.Core (TypeId Name PrimOp Intrinsic)
 open Soma.Metal
 open Soma.Syntax (Decl DataCon StructField DefClause)
 
@@ -75,7 +75,7 @@ where
 -/
 partial def collectGlobals (decl : Decl) : LowerM Unit := do
   match decl with
-  | .def_ _attrs name sig _clauses _span =>
+  | .def_ attrs name sig _clauses _span =>
     checkNamingConvention name "function" .snakeCase
     -- Check for duplicate definition
     let existing? ← LowerM.lookupVar LocalEnv.empty name.value
@@ -85,7 +85,15 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
       LowerM.reportError (.duplicateDefinition name.value name.span existingInfo.definedAt)
     | _ =>
       -- Register the function name (but don't resolve type yet)
-      let globalName ← LowerM.freshUserName name.value
+      -- For intrinsics, check if the name matches a known primitive operation
+      let isIntrinsic := attrs.any fun a => a.name.value == "intrinsic"
+      let globalName ←
+        if isIntrinsic then
+          match PrimOp.fromString? name.value with
+          | some op => pure (Name.intrinsic (Intrinsic.primOp op))
+          | none => LowerM.freshUserName name.value
+        else
+          LowerM.freshUserName name.value
       -- Store raw syntax - will be resolved during dependent type checking
       LowerM.registerGlobal name.value { name := globalName, typeSyntax := sig, definedAt := name.span }
 
@@ -353,7 +361,14 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
         let globalInfo? ← LowerM.lookupVar LocalEnv.empty name.value
         let globalName ← match globalInfo? with
           | some (.inr info) => pure info.name
-          | _ => LowerM.freshUserName name.value
+          | _ =>
+            -- For intrinsics, check if the name matches a known primitive operation
+            if isIntrinsic then
+              match PrimOp.fromString? name.value with
+              | some op => pure (Name.intrinsic (Intrinsic.primOp op))
+              | none => LowerM.freshUserName name.value
+            else
+              LowerM.freshUserName name.value
 
         -- Intrinsics/externs have no real body - create a placeholder panic
         -- The actual implementation comes from the runtime/LLVM intrinsics or external linkage

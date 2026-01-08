@@ -503,17 +503,17 @@ def buildGlobalsAndInstances
     errors := allErrors
   }
 
-/-- Full type checking pipeline for a Metal module.
-    Combines globals building, instance env building, and function checking.
-    Returns all results needed to construct a CheckedModule or CompiledModule.
+/-- Result of type checking a module -/
+structure TypeCheckResult where
+  globals : Globals
+  instanceEnv : InstanceEnv
+  abbrevEnv : AbbrevEnv
+  instanceMap : InstanceMap
+  incrementalState : IncrementalState
+  usages : Std.HashMap Soma.Metal.BindingId Nat
+  errors : Array Soma.Dependent.TCError
+  deriving Inhabited
 
-    Parameters:
-    - `metalModule`: The Metal IR module to check
-    - `moduleName`: Name of the module
-    - `seedGlobals`: Globals inherited from dependencies
-    - `seedInstanceEnv`: Instance env inherited from dependencies
-    - `seedAbbrevEnv`: Abbreviation env inherited from dependencies
-    - `prevIncrState`: Previous incremental state (optional, for incremental checking) -/
 def typeCheckModule
     (metalModule : Metal.UntypedModule)
     (moduleName : String)
@@ -521,7 +521,7 @@ def typeCheckModule
     (seedInstanceEnv : InstanceEnv)
     (seedAbbrevEnv : AbbrevEnv)
     (prevIncrState : Option IncrementalState := none)
-    : Globals × InstanceEnv × AbbrevEnv × InstanceMap × IncrementalState × Array Soma.Dependent.TCError := Id.run do
+    : TypeCheckResult := Id.run do
   -- Determine dirty names if we have previous state
   let (dirtyNames, baseIncrState) := match prevIncrState with
     | some prev =>
@@ -564,7 +564,15 @@ def typeCheckModule
     cachedInstanceEnv := globalsResult.instanceEnv
     cachedInstanceMap := globalsResult.instanceMap }
 
-  return (globalsResult.globals, globalsResult.instanceEnv, globalsResult.abbrevEnv, globalsResult.instanceMap, finalIncrState, allErrors)
+  return {
+    globals := globalsResult.globals
+    instanceEnv := globalsResult.instanceEnv
+    abbrevEnv := globalsResult.abbrevEnv
+    instanceMap := globalsResult.instanceMap
+    incrementalState := finalIncrState
+    usages := fnResult.finalState.usages
+    errors := allErrors
+  }
 
 /-- Extract public symbols from a type-checked module -/
 def extractPublicSymbols
@@ -868,10 +876,9 @@ def checkModule
     return (metalRes.diagnostics, none, supply)
 
   -- Use the shared type checking pipeline (fresh check, no previous state)
-  let (fullGlobals, fullInstanceEnv, fullAbbrevEnv, instanceMap, incrState, tcErrors) :=
-    typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv none
+  let tcResult := typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv none
 
-  let allDiags := tcErrors.map (·.toDiagnostic)
+  let allDiags := tcResult.errors.map (·.toDiagnostic)
 
   -- Extract public symbols and instances (always do this, even with errors)
   let depSymbols : SymbolEnv := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
@@ -884,13 +891,13 @@ def checkModule
     | _ => none
 
   let (publicSymbols, supply') := extractPublicSymbols
-    metalRes.module fullGlobals packageName modName {} supply explicitExports depSymbols
+    metalRes.module tcResult.globals packageName modName {} supply explicitExports depSymbols
 
   let depInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
     mergeInstanceEnvs acc dep.publicInstances
 
   let (publicInstances, supply'') := extractPublicInstances
-    metalRes.module instanceMap packageName modName depInstances supply'
+    metalRes.module tcResult.instanceMap packageName modName depInstances supply'
 
   -- Always produce a CheckedModule, even with errors
   -- This enables IDE features to work with partial information
@@ -898,14 +905,14 @@ def checkModule
     name := modName
     resolvedAst := info.ast
     metalModule := metalRes.module
-    globals := fullGlobals
-    instanceEnv := fullInstanceEnv
-    abbrevEnv := fullAbbrevEnv
-    instanceMap := instanceMap
+    globals := tcResult.globals
+    instanceEnv := tcResult.instanceEnv
+    abbrevEnv := tcResult.abbrevEnv
+    instanceMap := tcResult.instanceMap
     publicSymbols := publicSymbols
     publicInstances := publicInstances
     sourceFile := info.sourceFile
-    incrementalState := incrState
+    incrementalState := tcResult.incrementalState
   }
 
   (metalRes.diagnostics ++ allDiags, some checkedModule, supply'')
@@ -946,13 +953,12 @@ def checkModuleIncremental
     return (metalRes.diagnostics, none, supply)
 
   -- Use the shared type checking pipeline with previous state for incremental checking
-  let (fullGlobals, fullInstanceEnv, fullAbbrevEnv, instanceMap, incrState, tcErrors) :=
-    typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv (some prevModule.incrementalState)
+  let tcResult := typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv (some prevModule.incrementalState)
 
   -- If nothing changed (empty errors and same state), we could reuse previous result
   -- But for correctness, we rebuild anyway since Metal IR might have changed
 
-  let allDiags := tcErrors.map (·.toDiagnostic)
+  let allDiags := tcResult.errors.map (·.toDiagnostic)
 
   -- Extract public symbols and instances
   let depSymbols : SymbolEnv := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
@@ -965,26 +971,26 @@ def checkModuleIncremental
     | _ => none
 
   let (publicSymbols, supply') := extractPublicSymbols
-    metalRes.module fullGlobals packageName modName {} supply explicitExports depSymbols
+    metalRes.module tcResult.globals packageName modName {} supply explicitExports depSymbols
 
   let depInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
     mergeInstanceEnvs acc dep.publicInstances
 
   let (publicInstances, supply'') := extractPublicInstances
-    metalRes.module instanceMap packageName modName depInstances supply'
+    metalRes.module tcResult.instanceMap packageName modName depInstances supply'
 
   let checkedModule : CheckedModule := {
     name := modName
     resolvedAst := info.ast
     metalModule := metalRes.module
-    globals := fullGlobals
-    instanceEnv := fullInstanceEnv
-    abbrevEnv := fullAbbrevEnv
-    instanceMap := instanceMap
+    globals := tcResult.globals
+    instanceEnv := tcResult.instanceEnv
+    abbrevEnv := tcResult.abbrevEnv
+    instanceMap := tcResult.instanceMap
     publicSymbols := publicSymbols
     publicInstances := publicInstances
     sourceFile := info.sourceFile
-    incrementalState := incrState
+    incrementalState := tcResult.incrementalState
   }
 
   (metalRes.diagnostics ++ allDiags, some checkedModule, supply'')

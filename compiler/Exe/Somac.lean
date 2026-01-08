@@ -6,6 +6,7 @@ import Soma.Logging
 import Soma.Project
 import Soma.Project.Check
 import Soma.Dependent
+import Soma.Circuit
 import Somac.Build
 import Somac.Build.Metadata
 
@@ -193,19 +194,63 @@ def runMetadata (p : Parsed) : IO UInt32 := do
 /-- Handler for the `circuit` command -/
 def runCircuit (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
+  let graphFormat := p.hasFlag "graph"
 
-  let opts : CircuitOptions := {
-    input := input
-    linearize := p.hasFlag "linearize"
-    graphFormat := p.hasFlag "graph"
-    eval := p.hasFlag "eval"
-    toAlloy := p.hasFlag "alloy"
-    toLlvm := p.hasFlag "llvm"
-  }
+  -- Read source file
+  let content ← IO.FS.readFile input
 
-  IO.println s!"[circuit] Processing: {input}"
-  IO.println s!"[circuit] Options: {repr opts}"
-  IO.println "[circuit] (not yet implemented)"
+  -- Phase 1-3: Parse and lower to AST
+  let moduleName := Soma.Check.moduleNameFromPath input
+  let (parseRes, lowerRes) := toAst input content (some moduleName)
+  let parseDiags := parseRes.diagnostics ++ lowerRes.diagnostics
+
+  if parseDiags.hasErrors then
+    Soma.Logging.Error.printDiagnostics parseDiags parseRes.sourceFile
+    IO.eprintln ""
+    IO.eprintln (Soma.Logging.Error.renderSummary parseDiags)
+    return 1
+
+  -- Phase 4: Lower to Metal IR
+  let metalRes := Soma.Check.metal lowerRes.ast
+  let metalDiags := parseDiags ++ metalRes.diagnostics
+
+  if metalRes.diagnostics.hasErrors then
+    Soma.Logging.Error.printDiagnostics metalDiags parseRes.sourceFile
+    IO.eprintln ""
+    IO.eprintln (Soma.Logging.Error.renderSummary metalDiags)
+    return 1
+
+  -- Phase 5: Type check with dependent types (this gives us usage counts)
+  let tcResult := Soma.Check.typeCheckModule
+    metalRes.module moduleName
+    Soma.Dependent.Globals.empty
+    Soma.Dependent.InstanceEnv.empty
+    Soma.Dependent.AbbrevEnv.empty
+    none
+
+  let tcDiags := tcResult.errors.map (·.toDiagnostic)
+  let allDiags := metalDiags ++ tcDiags
+
+  if allDiags.hasErrors then
+    Soma.Logging.Error.printDiagnostics allDiags parseRes.sourceFile
+    IO.eprintln ""
+    IO.eprintln (Soma.Logging.Error.renderSummary allDiags)
+    return 1
+
+  -- Phase 6: Lower to Circuit IR with usage data from type checking
+  let graph := Soma.Circuit.Lower.lower metalRes.module tcResult.usages
+
+  -- Pretty print the Circuit IR graph
+  if graphFormat then
+    -- Full graph format with node IDs and connections
+    let cfg : Soma.Circuit.Pretty.Config := { showIds := true, showConnections := true, showLabels := true }
+    IO.println (Soma.Circuit.Pretty.ppFull cfg graph)
+  else
+    -- Default: just the graph summary
+    IO.println (Soma.Circuit.Pretty.ppGraph .default graph)
+
+  IO.println ""
+  IO.println s!"Circuit IR lowering successful ({graph.nodeCount} nodes)"
   return 0
 
 /-- Handler for the `build` command -/

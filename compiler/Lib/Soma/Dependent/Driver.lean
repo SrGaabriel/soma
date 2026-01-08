@@ -140,9 +140,9 @@ def withFunctionParams (params : Array (Metal.BindingId × String)) (paramTypes 
     if idx >= params.size then
       action
     else
-      let (_, name) := params[idx]!
+      let (bindingId, name) := params[idx]!
       let paramTy := if h : idx < paramTypes.size then paramTypes[idx] else Value.vType .zero
-      TCM.withBinding name paramTy .omega .explicit span do
+      TCM.withBinding name bindingId paramTy .omega .explicit span do
         go (idx + 1)
   go 0
 
@@ -158,15 +158,19 @@ def withAllTypeBindings (allParams : Array (String × Value × Bool))
       let (name, ty, isImplicit) := allParams[idx]!
       if isImplicit then
         -- Implicit type parameter (from forall)
-        TCM.withBinding name ty .omega .implicit span do
+        let bindingId ← TCM.freshBindingId name
+        TCM.withBinding name bindingId ty .omega .implicit span do
           bindImplicits (idx + 1) explicitIdx
       else
-        -- Explicit parameter, use the name from explicitParams if available
-        let paramName := if h : explicitIdx < explicitParams.size
-                         then explicitParams[explicitIdx].2
-                         else name
-        TCM.withBinding paramName ty .omega .explicit span do
-          bindImplicits (idx + 1) (explicitIdx + 1)
+        -- Explicit parameter
+        if h : explicitIdx < explicitParams.size then
+          let (bindingId, paramName) := explicitParams[explicitIdx]
+          TCM.withBinding paramName bindingId ty .omega .explicit span do
+            bindImplicits (idx + 1) (explicitIdx + 1)
+        else
+          let bindingId ← TCM.freshBindingId name
+          TCM.withBinding name bindingId ty .omega .explicit span do
+            bindImplicits (idx + 1) (explicitIdx + 1)
   bindImplicits 0 0
 
 /-- Type check a single Metal function using dependent types -/

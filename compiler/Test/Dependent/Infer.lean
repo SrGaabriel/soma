@@ -201,7 +201,8 @@ def testContextExtend : IO TestResult := do
     if lookup1.isSome then
       TCM.throw (.internalError "x should not be in empty context" testSpan)
     -- Extend and lookup
-    TCM.withBinding "x" (.vPrimTy .int) .omega .explicit testSpan do
+    let xId := mkBindingId 0 "x"
+    TCM.withBinding "x" xId (.vPrimTy .int) .omega .explicit testSpan do
       let lookup2 ← TCM.lookupLocal "x"
       match lookup2 with
       | some entry =>
@@ -564,36 +565,39 @@ namespace UsageTests
 
 /-- Test: Variable usage is recorded -/
 def testUsageRecorded : IO TestResult := do
-  let action : TCM Quantity := do
-    TCM.useVar "x"
-    TCM.getUsage "x"
+  let xId := mkBindingId 0 "x"
+  let action : TCM Nat := do
+    TCM.useVar xId
+    TCM.getUsage xId
   match action.run' with
-  | .ok qty =>
-    if qty == .omega then return .passed
-    else return .failed s!"Expected omega, got {qty}"
+  | .ok count =>
+    if count == 1 then return .passed
+    else return .failed s!"Expected 1, got {count}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
 /-- Test: Multiple usages accumulate -/
 def testUsageAccumulates : IO TestResult := do
-  let action : TCM Quantity := do
-    TCM.useVar "x" .one
-    TCM.useVar "x" .one
-    TCM.getUsage "x"
+  let xId := mkBindingId 0 "x"
+  let action : TCM Nat := do
+    TCM.useVar xId 1
+    TCM.useVar xId 1
+    TCM.getUsage xId
   match action.run' with
-  | .ok qty =>
-    if qty == .omega then return .passed  -- 1 + 1 = ω
-    else return .failed s!"Expected omega (1+1), got {qty}"
+  | .ok count =>
+    if count == 2 then return .passed  -- 1 + 1 = 2
+    else return .failed s!"Expected 2, got {count}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
 /-- Test: Zero usage doesn't change -/
 def testZeroUsage : IO TestResult := do
-  let action : TCM Quantity := do
-    TCM.useVar "x" .zero
-    TCM.getUsage "x"
+  let xId := mkBindingId 0 "x"
+  let action : TCM Nat := do
+    TCM.useVar xId 0
+    TCM.getUsage xId
   match action.run' with
-  | .ok qty =>
-    if qty == .zero then return .passed
-    else return .failed s!"Expected zero, got {qty}"
+  | .ok count =>
+    if count == 0 then return .passed
+    else return .failed s!"Expected 0, got {count}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
 def run : IO TestRunner := do

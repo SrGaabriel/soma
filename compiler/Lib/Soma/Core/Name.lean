@@ -169,6 +169,25 @@ instance : ToString PrimOp := ⟨PrimOp.symbol⟩
 
 def llvmName (op : PrimOp) : String := s!"primop_{op.name}"
 
+/-- Parse a string (symbol or name) into a PrimOp -/
+def fromString? : String → Option PrimOp
+  | "+" | "add" => some .add
+  | "-" | "sub" => some .sub
+  | "*" | "mul" => some .mul
+  | "/" | "div" => some .div
+  | "%" | "mod" => some .mod
+  | "==" | "eq" => some .eq
+  | "!=" | "ne" => some .ne
+  | "<" | "lt" => some .lt
+  | "<=" | "le" => some .le
+  | ">" | "gt" => some .gt
+  | ">=" | "ge" => some .ge
+  | "&&" | "and" => some .and
+  | "||" | "or" => some .or
+  | "!" | "not" => some .not
+  | "neg" => some .neg
+  | _ => none
+
 end PrimOp
 
 /-- Compiler intrinsics (LLVM, runtime, or primitive ops) -/

@@ -26,6 +26,10 @@ open Test.Fixtures
 /-- Helper to create a dummy span -/
 def testSpan : Span := Span.uninhabited
 
+/-- Helper to create a test BindingId from a name -/
+def testBindingId (name : String) (id : Nat := 0) : BindingId :=
+  { id := id, module := "test", original := name }
+
 /-! ## Quantity Compatibility Tests
 
     usageCompatible(declared, actual) checks: actual ≤ declared
@@ -111,40 +115,45 @@ namespace SnapshotTests
 /-- Test: Empty snapshot has zero for all variables -/
 def testEmptySnapshot : IO TestResult := do
   let snap := UsageSnapshot.empty
-  if snap.get "x" == .zero then return .passed
+  let xId := testBindingId "x"
+  if snap.get xId == .zero then return .passed
   else return .failed "Empty snapshot should return zero"
 
 /-- Test: Setting and getting usage -/
 def testSetGet : IO TestResult := do
-  let snap := UsageSnapshot.empty.set "x" .one
-  if snap.get "x" == .one then return .passed
+  let xId := testBindingId "x"
+  let snap := UsageSnapshot.empty.set xId 1
+  if snap.get xId == 1 then return .passed
   else return .failed "Should get the set value"
 
-/-- Test: Merge adds quantities -/
+/-- Test: Merge adds counts -/
 def testMerge : IO TestResult := do
-  let s1 := UsageSnapshot.empty.set "x" .one
-  let s2 := UsageSnapshot.empty.set "x" .one
+  let xId := testBindingId "x"
+  let s1 := UsageSnapshot.empty.set xId 1
+  let s2 := UsageSnapshot.empty.set xId 1
   let merged := s1.merge s2
-  -- 1 + 1 = ω
-  if merged.get "x" == .omega then return .passed
-  else return .failed s!"Expected omega, got {merged.get "x"}"
+  -- 1 + 1 = 2
+  if merged.get xId == 2 then return .passed
+  else return .failed s!"Expected 2, got {merged.get xId}"
 
 /-- Test: Join takes maximum -/
 def testJoin : IO TestResult := do
-  let s1 := UsageSnapshot.empty.set "x" .one
-  let s2 := UsageSnapshot.empty.set "x" .omega
+  let xId := testBindingId "x"
+  let s1 := UsageSnapshot.empty.set xId 1
+  let s2 := UsageSnapshot.empty.set xId 3
   let joined := s1.join s2
-  -- max(1, ω) = ω
-  if joined.get "x" == .omega then return .passed
-  else return .failed s!"Expected omega, got {joined.get "x"}"
+  -- max(1, 3) = 3
+  if joined.get xId == 3 then return .passed
+  else return .failed s!"Expected 3, got {joined.get xId}"
 
 /-- Test: Join with zero and one gives one -/
 def testJoinZeroOne : IO TestResult := do
-  let s1 := UsageSnapshot.empty.set "x" .zero
-  let s2 := UsageSnapshot.empty.set "x" .one
+  let xId := testBindingId "x"
+  let s1 := UsageSnapshot.empty.set xId 0
+  let s2 := UsageSnapshot.empty.set xId 1
   let joined := s1.join s2
-  if joined.get "x" == .one then return .passed
-  else return .failed s!"Expected one, got {joined.get "x"}"
+  if joined.get xId == 1 then return .passed
+  else return .failed s!"Expected 1, got {joined.get xId}"
 
 def run : IO TestRunner := do
   IO.println "  === Usage Snapshot Tests ==="
@@ -166,23 +175,25 @@ namespace LinearTests
 
 /-- Test: Linear variable used exactly once is OK -/
 def testLinearUsedOnce : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Unit := do
     -- Add a linear binding
-    TCM.withBinding "x" (.vPrimTy .int) .one .explicit testSpan do
-      -- Use it once (use low-level API to record exact quantity)
-      TCM.modifyState (·.useVar "x" .one)
+    TCM.withBinding "x" xId (.vPrimTy .int) .one .explicit testSpan do
+      -- Use it once (use low-level API to record exact count)
+      TCM.modifyState (·.useVar xId 1)
       -- Check should pass
-      checkLinearBinding "x" testSpan
+      checkLinearBinding xId testSpan
   match action.run' with
   | .ok () => return .passed
   | .error e => return .failed s!"Should succeed: {e}"
 
 /-- Test: Linear variable not used is an error -/
 def testLinearNotUsed : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Unit := do
-    TCM.withBinding "x" (.vPrimTy .int) .one .explicit testSpan do
+    TCM.withBinding "x" xId (.vPrimTy .int) .one .explicit testSpan do
       -- Don't use it
-      checkLinearBinding "x" testSpan
+      checkLinearBinding xId testSpan
   match action.run with
   | .ok ((), state) =>
     -- Check for accumulated error
@@ -198,12 +209,13 @@ def testLinearNotUsed : IO TestResult := do
 
 /-- Test: Linear variable used multiple times is an error -/
 def testLinearUsedMultiple : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Unit := do
-    TCM.withBinding "x" (.vPrimTy .int) .one .explicit testSpan do
-      -- Use twice (1 + 1 = ω in QTT)
-      TCM.modifyState (·.useVar "x" .one)
-      TCM.modifyState (·.useVar "x" .one)
-      checkLinearBinding "x" testSpan
+    TCM.withBinding "x" xId (.vPrimTy .int) .one .explicit testSpan do
+      -- Use twice (1 + 1 = 2, which is > 1)
+      TCM.modifyState (·.useVar xId 1)
+      TCM.modifyState (·.useVar xId 1)
+      checkLinearBinding xId testSpan
   match action.run with
   | .ok ((), state) =>
     -- Check for accumulated error
@@ -235,11 +247,12 @@ namespace ErasedTests
 
 /-- Test: Erased variable used in erased context is OK -/
 def testErasedInErasedContext : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Unit := do
-    TCM.withBinding "x" (.vPrimTy .int) .zero .explicit testSpan do
+    TCM.withBinding "x" xId (.vPrimTy .int) .zero .explicit testSpan do
       -- When we bind with qty=0, we automatically enter erased context
       -- So this should succeed
-      checkNotErased "x" testSpan
+      checkNotErased xId testSpan
   match action.run' with
   | .ok () => return .passed
   | .error e => return .failed s!"Should succeed in erased context: {e}"
@@ -247,16 +260,17 @@ def testErasedInErasedContext : IO TestResult := do
 /-- Test: Erased variable from outer scope used at runtime is an error
     Note: We need to bind an erased var but NOT be inside it to test runtime usage -/
 def testErasedAtRuntime : IO TestResult := do
+  let xId := testBindingId "x"
   -- Create context with erased binding but not in erased mode
   let ctx := TCContext.empty
   let entry : CtxEntry := {
-    name := "x", type := .vPrimTy .int, qty := .zero,
+    name := "x", bindingId := xId, type := .vPrimTy .int, qty := .zero,
     level := ⟨0⟩, binder := .explicit, span := testSpan
   }
   -- Must populate both locals list AND localsByName HashMap for lookupLocal to work
   let ctx' := { ctx with locals := [entry], localsByName := ({} : Std.HashMap String CtxEntry).insert "x" entry }
   let action : TCM Unit := do
-    checkNotErased "x" testSpan
+    checkNotErased xId testSpan
   match action.run ctx' with
   | .ok _ => return .failed "Should have failed for erased var at runtime"
   | .error e =>
@@ -268,17 +282,19 @@ def testErasedAtRuntime : IO TestResult := do
 
 /-- Test: Non-erased variable at runtime is OK -/
 def testNonErasedAtRuntime : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Unit := do
-    TCM.withBinding "x" (.vPrimTy .int) .omega .explicit testSpan do
-      checkNotErased "x" testSpan
+    TCM.withBinding "x" xId (.vPrimTy .int) .omega .explicit testSpan do
+      checkNotErased xId testSpan
   match action.run' with
   | .ok () => return .passed
   | .error e => return .failed s!"Should succeed for non-erased var: {e}"
 
 /-- Test: Binding with qty=0 automatically enters erased context -/
 def testZeroBindingEntersErased : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Bool := do
-    TCM.withBinding "x" (.vPrimTy .int) .zero .explicit testSpan do
+    TCM.withBinding "x" xId (.vPrimTy .int) .zero .explicit testSpan do
       TCM.isInErasedContext
   match action.run' with
   | .ok true => return .passed
@@ -304,11 +320,12 @@ namespace CheckedBindingTests
 
 /-- Test: withCheckedBinding for omega quantity (unrestricted) -/
 def testOmegaBinding : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Int := do
-    withCheckedBinding "x" (.vPrimTy .int) .omega .explicit testSpan do
+    withCheckedBinding "x" xId (.vPrimTy .int) .omega .explicit testSpan do
       -- Can use many times
-      TCM.useVar "x" .omega
-      TCM.useVar "x" .omega
+      TCM.useVar xId 1
+      TCM.useVar xId 1
       return 42
   match action.run' with
   | .ok 42 => return .passed
@@ -317,10 +334,11 @@ def testOmegaBinding : IO TestResult := do
 
 /-- Test: withCheckedBinding for linear quantity (must use exactly once) -/
 def testLinearBinding : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Int := do
-    withCheckedBinding "x" (.vPrimTy .int) .one .explicit testSpan do
-      -- Use low-level API to record exact quantity
-      TCM.modifyState (·.useVar "x" .one)
+    withCheckedBinding "x" xId (.vPrimTy .int) .one .explicit testSpan do
+      -- Use low-level API to record exact count
+      TCM.modifyState (·.useVar xId 1)
       return 42
   match action.run' with
   | .ok 42 => return .passed
@@ -329,8 +347,9 @@ def testLinearBinding : IO TestResult := do
 
 /-- Test: withCheckedBinding fails if linear not used -/
 def testLinearBindingNotUsed : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Int := do
-    withCheckedBinding "x" (.vPrimTy .int) .one .explicit testSpan do
+    withCheckedBinding "x" xId (.vPrimTy .int) .one .explicit testSpan do
       return 42
   match action.run with
   | .ok (_, state) =>
@@ -359,28 +378,30 @@ namespace UseVarCheckedTests
 
 /-- Test: useVarChecked records usage for non-erased var -/
 def testUseVarCheckedRecords : IO TestResult := do
-  let action : TCM Quantity := do
-    TCM.withBinding "x" (.vPrimTy .int) .omega .explicit testSpan do
-      useVarChecked "x" testSpan
-      TCM.getUsage "x"
+  let xId := testBindingId "x"
+  let action : TCM Nat := do
+    TCM.withBinding "x" xId (.vPrimTy .int) .omega .explicit testSpan do
+      useVarChecked xId testSpan
+      TCM.getUsage xId
   match action.run' with
-  | .ok qty =>
-    if qty == .omega then return .passed
-    else return .failed s!"Expected omega, got {qty}"
+  | .ok count =>
+    if count == 1 then return .passed
+    else return .failed s!"Expected 1, got {count}"
   | .error e => return .failed s!"Should succeed: {e}"
 
 /-- Test: useVarChecked fails for erased var at runtime -/
 def testUseVarCheckedErased : IO TestResult := do
+  let xId := testBindingId "x"
   -- Create context with erased binding but not in erased mode
   let ctx := TCContext.empty
   let entry : CtxEntry := {
-    name := "x", type := .vPrimTy .int, qty := .zero,
+    name := "x", bindingId := xId, type := .vPrimTy .int, qty := .zero,
     level := ⟨0⟩, binder := .explicit, span := testSpan
   }
   -- Must populate both locals list AND localsByName HashMap for lookupLocal to work
   let ctx' := { ctx with locals := [entry], localsByName := ({} : Std.HashMap String CtxEntry).insert "x" entry }
   let action : TCM Unit := do
-    useVarChecked "x" testSpan
+    useVarChecked xId testSpan
   match action.run ctx' with
   | .ok _ => return .failed "Should have failed"
   | .error (.erasedUsedAtRuntime "x" _ _) => return .passed
@@ -388,10 +409,11 @@ def testUseVarCheckedErased : IO TestResult := do
 
 /-- Test: useVarChecked in erased context allows erased vars -/
 def testUseVarCheckedErasedContext : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Unit := do
-    TCM.withBinding "x" (.vPrimTy .int) .zero .explicit testSpan do
+    TCM.withBinding "x" xId (.vPrimTy .int) .zero .explicit testSpan do
       inErasedScope do
-        useVarChecked "x" testSpan
+        useVarChecked xId testSpan
   match action.run' with
   | .ok () => return .passed
   | .error e => return .failed s!"Should succeed in erased context: {e}"
@@ -414,20 +436,22 @@ namespace FunctionUsageTests
 
 /-- Test: checkFunctionUsage with correctly used linear param -/
 def testFunctionUsageLinearOK : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Unit := do
-    TCM.withBinding "x" (.vPrimTy .int) .one .explicit testSpan do
-      -- Use low-level API to record exact quantity
-      TCM.modifyState (·.useVar "x" .one)
-      checkFunctionUsage [("x", .one, testSpan)]
+    TCM.withBinding "x" xId (.vPrimTy .int) .one .explicit testSpan do
+      -- Use low-level API to record exact count
+      TCM.modifyState (·.useVar xId 1)
+      checkFunctionUsage [(xId, .one, testSpan)]
   match action.run' with
   | .ok () => return .passed
   | .error e => return .failed s!"Should succeed: {e}"
 
 /-- Test: checkFunctionUsage with unused linear param fails -/
 def testFunctionUsageLinearUnused : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Unit := do
-    TCM.withBinding "x" (.vPrimTy .int) .one .explicit testSpan do
-      checkFunctionUsage [("x", .one, testSpan)]
+    TCM.withBinding "x" xId (.vPrimTy .int) .one .explicit testSpan do
+      checkFunctionUsage [(xId, .one, testSpan)]
   match action.run with
   | .ok ((), state) =>
     -- Check for accumulated error
@@ -439,20 +463,22 @@ def testFunctionUsageLinearUnused : IO TestResult := do
 
 /-- Test: checkFunctionUsage with omega param allows any usage -/
 def testFunctionUsageOmegaOK : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Unit := do
-    TCM.withBinding "x" (.vPrimTy .int) .omega .explicit testSpan do
-      TCM.useVar "x" .omega
-      TCM.useVar "x" .omega
-      checkFunctionUsage [("x", .omega, testSpan)]
+    TCM.withBinding "x" xId (.vPrimTy .int) .omega .explicit testSpan do
+      TCM.useVar xId 1
+      TCM.useVar xId 1
+      checkFunctionUsage [(xId, .omega, testSpan)]
   match action.run' with
   | .ok () => return .passed
   | .error e => return .failed s!"Should succeed: {e}"
 
 /-- Test: checkFunctionUsage with zero param allows no usage -/
 def testFunctionUsageZeroOK : IO TestResult := do
+  let xId := testBindingId "x"
   let action : TCM Unit := do
-    TCM.withBinding "x" (.vPrimTy .int) .zero .explicit testSpan do
-      checkFunctionUsage [("x", .zero, testSpan)]
+    TCM.withBinding "x" xId (.vPrimTy .int) .zero .explicit testSpan do
+      checkFunctionUsage [(xId, .zero, testSpan)]
   match action.run' with
   | .ok () => return .passed
   | .error e => return .failed s!"Should succeed: {e}"

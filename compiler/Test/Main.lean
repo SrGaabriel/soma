@@ -13,6 +13,8 @@ import Test.Dependent.Instance
 import Test.Dependent.Equality
 import Test.Dependent.Totality
 import Test.Dependent.Integration
+import Test.Circuit
+import Test.PatternMatch
 
 open Test.Fixtures
 
@@ -79,6 +81,14 @@ def main : IO UInt32 := do
   -- Run dependent types integration tests (Phase 10)
   let integrationRunner ← Test.Dependent.Integration.run
   total := total.merge integrationRunner
+
+  -- Run Circuit IR tests
+  let circuitRunner ← Test.Circuit.run
+  total := total.merge circuitRunner
+
+  -- Run Pattern Match Compilation tests
+  let patternMatchRunner ← Test.PatternMatch.run
+  total := total.merge patternMatchRunner
 
   IO.println ""
   IO.println "════════════════════════════════════════════════════════════════"
