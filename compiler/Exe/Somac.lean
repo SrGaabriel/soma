@@ -7,6 +7,7 @@ import Soma.Project
 import Soma.Project.Check
 import Soma.Dependent
 import Soma.Circuit
+import Soma.Alloy
 import Somac.Build
 import Somac.Build.Metadata
 
@@ -195,6 +196,7 @@ def runMetadata (p : Parsed) : IO UInt32 := do
 def runCircuit (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
   let graphFormat := p.hasFlag "graph"
+  let alloyFormat := p.hasFlag "alloy"
 
   -- Read source file
   let content ← IO.FS.readFile input
@@ -237,8 +239,19 @@ def runCircuit (p : Parsed) : IO UInt32 := do
     IO.eprintln (Soma.Logging.Error.renderSummary allDiags)
     return 1
 
+  -- Phase 5.5: Lambda lifting (after typechecking, before Circuit IR)
+  let liftedModule := Soma.Metal.LambdaLift.liftModule metalRes.module
+
   -- Phase 6: Lower to Circuit IR with usage data from type checking
-  let graph := Soma.Circuit.Lower.lower metalRes.module tcResult.usages
+  let graph := Soma.Circuit.Lower.lower liftedModule tcResult.usages
+
+  -- Phase 7: If --alloy flag, lower to Alloy MIR
+  if alloyFormat then
+    let alloyModule := Soma.Alloy.Lower.lower graph moduleName
+    IO.println (Soma.Alloy.Pretty.pp alloyModule)
+    IO.println ""
+    IO.println s!"Alloy IR lowering successful ({alloyModule.funcs.size} functions)"
+    return 0
 
   -- Pretty print the Circuit IR graph
   if graphFormat then

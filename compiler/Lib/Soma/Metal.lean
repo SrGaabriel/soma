@@ -7,6 +7,7 @@ import Soma.Metal.Function
 import Soma.Metal.Module
 import Soma.Metal.Lower
 import Soma.Metal.Pretty
+import Soma.Metal.LambdaLift
 
 namespace Soma.Metal
 
