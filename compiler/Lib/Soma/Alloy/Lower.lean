@@ -17,6 +17,8 @@
 import Soma.Alloy.Func
 import Soma.Circuit.Graph
 import Soma.Circuit.Node
+import Soma.Core.Value
+import Soma.Core.Primitive
 import Std.Data.HashMap
 import Std.Data.HashSet
 
@@ -212,6 +214,119 @@ def convertBinOp : Op2Code → BinOp
 def convertUnOp : Op1Code → UnOp
   | .not => .not
   | .neg => .neg
+
+open Soma.Core (Value StarPrimitive HigherPrimitive)
+
+/-- Convert a StarPrimitive to Alloy PrimTy -/
+def convertStarPrimitive : StarPrimitive → PrimTy
+  | .int => .i32
+  | .long => .i64
+  | .short => .i16
+  | .byte => .i8
+  | .float => .f32
+  | .double => .f64
+  | .bool => .bool
+  | .string => .i64 -- String is a pointer
+  | .unit => .unit
+  | .closurePtr => .i64 -- Closure pointer
+  | .int8 => .i8
+  | .int16 => .i16
+  | .int32 => .i32
+  | .int64 => .i64
+  | .word8 => .u8
+  | .word16 => .u16
+  | .word32 => .u32
+  | .word64 => .u64
+
+/-- Convert a HigherPrimitive to Alloy Ty -/
+def convertHigherPrimitive : HigherPrimitive → Ty
+  | .array => .rawPtr
+  | .list => .rawPtr
+  | .ref => .rawPtr
+  | .io => .prim .i64
+  | .ptr => .rawPtr
+
+/-- Convert a Soma Value type to an Alloy Ty -/
+partial def convertValueType : Value → Ty
+  -- Primitive types
+  | Value.vPrimTy prim => .prim (convertStarPrimitive prim)
+
+  -- Higher-kinded primitives
+  | Value.vHigherPrim prim => convertHigherPrimitive prim
+
+  -- Function types (Pi) become closures
+  | Value.vPi _qty _binder _name dom _cod =>
+    -- todo: make closure representation fancier
+    -- The domain and codomain inform monomorphization later
+    let domTy := convertValueType dom
+    -- Codomain is a closure, we can't easily evaluate it without an argument
+    -- todo: dont use i64
+    .closure #[domTy] (.prim .i64)
+
+  -- Lambda (shouldn't appear as a type, but handle gracefully)
+  | Value.vLam _ _ _ _ _ => .closure #[] (.prim .i64)
+
+  -- Sigma types (dependent pairs) become structs
+  | Value.vSigma _qty _name fst _snd =>
+    let fstTy := convertValueType fst
+    -- Second component is dependent, use i64 as default
+    .struct #[("fst", fstTy), ("snd", .prim .i64)]
+
+  -- Pair value
+  | Value.vPair fst snd =>
+    let fstTy := convertValueType fst
+    let sndTy := convertValueType snd
+    .struct #[("fst", fstTy), ("snd", sndTy)]
+
+  -- Data types become tagged unions
+  | Value.vDataType _id _params =>
+    -- todo
+    .tagged (.prim .u32) #[]
+
+  -- Constructor applied to args, same as data type
+  | Value.vConstructor _name _tag _args =>
+    .rawPtr -- Constructors are heap-allocated
+
+  -- Record types
+  | Value.vRecord _row =>
+    -- Records are structs, but we need row info to determine fields
+    .rawPtr
+
+  -- Record value
+  | Value.vRecordVal _fields =>
+    .rawPtr
+
+  -- Variant types
+  | Value.vVariant _row =>
+    .tagged (.prim .u32) #[]
+
+  -- Type universe - erased at runtime
+  | Value.vType _ => .prim .unit
+
+  -- Neutral terms (variables, applications) are boxed
+  | Value.vNeutral _ _ => .prim .i64
+
+  -- Labels (for row types) are erased
+  | Value.vLabelLit _ => .prim .unit
+
+  -- Row types are erased
+  | Value.vRowEmpty => .prim .unit
+  | Value.vRowExtend _ _ _ => .prim .unit
+
+  -- Equality types are erased (proofs have no runtime content)
+  | Value.vEq _ _ _ _ => .prim .unit
+  | Value.vRefl _ _ => .prim .unit
+  | Value.vTransport _ _ _ _ _ _ _ => .prim .i64 -- Transport carries the value
+
+  -- Literals
+  | Value.vIntLit _ => .prim .i64
+  | Value.vStringLit _ => .rawPtr
+
+/-- Get the Alloy type for a Circuit node entry, using the type annotation if available -/
+def getNodeType (entry : CNodeEntry) : Ty :=
+  match entry.ty with
+  | some val => convertValueType val
+  | none => .prim .i64 -- Fallback to boxed representation
 
 /-! ## Node Lowering -/
 
@@ -434,7 +549,7 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
 
   -- Check if currently being processed (cycle detection)
   if ns.visited.contains nodeId.id then
-    -- Cycle detected - return undefined to break recursion
+    -- Cycle detected, return undefined to break recursion
     -- This can happen with self-referential structures
     let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
     return undef
@@ -449,6 +564,9 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
       let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
       return undef
 
+  -- Get the type for this node from the type annotation
+  let nodeTy := getNodeType entry
+
   -- Process based on node type
   let result ← match entry.node with
   | .num primTy val => do
@@ -460,7 +578,7 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     if let some inputPort := entry.getPort ⟨0⟩ then  -- Principal port
       let inputVal ← lowerNode graph inputPort.node
       StateT.lift (lowerErase inputVal)
-    StateT.lift (LowerM.emitInst (.copy (.const .unit)) Ty.unit)
+    StateT.lift (LowerM.emitInst (.copy (.const .unit)) nodeTy)
 
   | .lam erased => do
     -- LAM nodes in Circuit IR represent function parameters.
@@ -472,12 +590,12 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     -- The variable binding is already handled by function parameters.
     if erased then
       -- Erased lambda: just return unit
-      StateT.lift (LowerM.emitInst (.copy (.const .unit)) Ty.unit)
+      StateT.lift (LowerM.emitInst (.copy (.const .unit)) nodeTy)
     else
       -- Lower the body (aux1 port)
       match entry.getPort ⟨2⟩ with
       | some bodyPort => lowerNode graph bodyPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
   | .app => do
     -- Application: call closure with argument
@@ -490,7 +608,8 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
       | some argPort => lowerNode graph argPort.node
       | none => StateT.lift (LowerM.emitInst (.copy (.const .unit)) Ty.unit)
 
-    StateT.lift (lowerApp fnVal argVal)
+    -- Use the node's type annotation for the result type
+    StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
 
   | .ctor tag arity => do
     -- Check for special closure CTOR (tag 0xFFFFFE, arity 2)
@@ -501,7 +620,7 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
         | some fnPort => pure fnPort.node
         | none => do
           -- No function reference - emit error closure
-          let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef closureType))) closureType)
+          let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
           return undef
 
       -- Look up the REF node to get the function ID
@@ -521,23 +640,29 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
         | none => StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
 
       -- Emit makeClosure instruction
-      StateT.lift (LowerM.emitInst (.makeClosure funcId (.local envVal)) closureType)
+      StateT.lift (LowerM.emitInst (.makeClosure funcId (.local envVal)) nodeTy)
     else
       -- Regular constructor: build tagged struct
       let mut fieldVals : Array LocalId := #[]
       for i in [:arity] do
         let fieldVal ← match entry.getPort ⟨i + 1⟩ with
           | some fieldPort => lowerNode graph fieldPort.node
-          | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+          | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
         fieldVals := fieldVals.push fieldVal
       StateT.lift (lowerCtor tag arity fieldVals)
 
   | .proj fieldIdx => do
-    -- Projection: extract field from struct
+    -- Projection: extract field from struct, result type comes from node annotation
     let recordVal ← match entry.getPort ⟨1⟩ with
       | some recordPort => lowerNode graph recordPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
-    StateT.lift (lowerProj fieldIdx recordVal)
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
+    -- Use nodeTy for the projected field type
+    let offset := 4 + fieldIdx * 8
+    let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.bitcast (.prim .i64)) (.local recordVal)) (.prim .i64))
+    let offsetVal ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat offset) .i64))) (.prim .i64))
+    let fieldAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offsetVal) (.prim .i64)) (.prim .i64))
+    let fieldPtr ← StateT.lift (LowerM.emitInst (.unOp (.bitcast .rawPtr) (.local fieldAddr)) .rawPtr)
+    StateT.lift (LowerM.emitInst (.load (.local fieldPtr) nodeTy) nodeTy)
 
   | .record numFields => do
     -- Record: same as ctor with tag 0
@@ -545,22 +670,22 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     for i in [:numFields] do
       let fieldVal ← match entry.getPort ⟨i + 1⟩ with
         | some fieldPort => lowerNode graph fieldPort.node
-        | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+        | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
       fieldVals := fieldVals.push fieldVal
     StateT.lift (lowerCtor 0 numFields fieldVals)
 
   | .mat expectedTag => do
-    -- Pattern match: test tag and branch
+    -- Pattern match: test tag and branch, result type from node annotation
     let scrutineeVal ← match entry.getPort ⟨1⟩ with
       | some scrutPort => lowerNode graph scrutPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
     let (_cond, thenBlock, elseBlock) ← StateT.lift (lowerMat expectedTag scrutineeVal)
 
     -- Lower hit branch
     let hitVal ← match entry.getPort ⟨2⟩ with
       | some hitPort => lowerNode graph hitPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
     -- Need a join block for phi
     let joinBlock ← StateT.lift LowerM.freshBlockId
@@ -569,40 +694,43 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     -- Lower miss branch
     let missVal ← match entry.getPort ⟨3⟩ with
       | some missPort => lowerNode graph missPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
     StateT.lift (LowerM.finishBlock (.jump joinBlock) joinBlock)
 
-    -- Phi to merge results
+    -- Phi to merge results, use node's type annotation
     StateT.lift (LowerM.emitInst
-      (.phi #[(Operand.local hitVal, thenBlock), (Operand.local missVal, elseBlock)] valueType)
-      valueType)
+      (.phi #[(Operand.local hitVal, thenBlock), (Operand.local missVal, elseBlock)] nodeTy)
+      nodeTy)
 
   | .op1 op => do
     let operandVal ← match entry.getPort ⟨1⟩ with
       | some opPort => lowerNode graph opPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
-    StateT.lift (lowerUnOp op operandVal)
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
+    -- Use node's type annotation for result
+    StateT.lift (LowerM.emitInst (.unOp (convertUnOp op) (.local operandVal)) nodeTy)
 
   | .op2 op => do
     let lhsVal ← match entry.getPort ⟨1⟩ with
       | some lhsPort => lowerNode graph lhsPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
     let rhsVal ← match entry.getPort ⟨2⟩ with
       | some rhsPort => lowerNode graph rhsPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
-    StateT.lift (lowerBinOp op lhsVal rhsVal)
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
+    -- Use node's type annotation for result
+    let binOp := convertBinOp op
+    StateT.lift (LowerM.emitInst (.binOp binOp (.local lhsVal) (.local rhsVal) nodeTy) nodeTy)
 
   | .dup _label => do
     -- DUP: clone the input value
-    let inputVal ← match entry.getPort ⟨0⟩ with  -- Principal port
+    let inputVal ← match entry.getPort ⟨0⟩ with -- Principal port
       | some inputPort => lowerNode graph inputPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
-    -- Clone for aux0
-    let copy0 ← StateT.lift (lowerClone inputVal)
+    -- Clone for aux0 using node's type
+    let copy0 ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) nodeTy) nodeTy)
     -- Clone for aux1
-    let copy1 ← StateT.lift (lowerClone inputVal)
+    let copy1 ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) nodeTy) nodeTy)
 
     -- Bind copies to output ports
     let port0 : CPortId := ⟨nodeId, ⟨1⟩⟩
@@ -615,28 +743,28 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
   | .sup _label => do
     -- SUP: select between alternatives (should be resolved at compile time)
     -- For residual SUPs, emit runtime selection
-    StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+    StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
   | .ref refId => do
-    -- Global reference: get function from book
+    -- Global reference: get function from book, type comes from annotation
     let funcId := FuncId.mk refId
-    StateT.lift (LowerM.emitInst (.copy (.func funcId)) (.ptr valueType))
+    StateT.lift (LowerM.emitInst (.copy (.func funcId)) nodeTy)
 
   | .alo refId => do
     -- Allocation/instantiation: call the referenced function
     let funcId := FuncId.mk refId
-    StateT.lift (LowerM.emitInst (.call funcId #[] valueType) valueType)
+    StateT.lift (LowerM.emitInst (.call funcId #[] nodeTy) nodeTy)
 
   | .use => do
     -- Strict evaluation: force the term, then continue
     let termVal ← match entry.getPort ⟨1⟩ with
       | some termPort => lowerNode graph termPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
     -- In compiled code, terms are already evaluated (CBV), so this is identity
     pure termVal
 
   | .array _elemTy => do
-    -- Array node: lower length and data
+    -- Array node: lower length and data, type from annotation
     let _lenVal ← match entry.getPort ⟨1⟩ with
       | some lenPort => lowerNode graph lenPort.node
       | none => StateT.lift (LowerM.emitInst (.copy (.const (.int 0 .u64))) (.prim .u64))
@@ -655,10 +783,10 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     StateT.lift (lowerString 0 0)
 
   | .index => do
-    -- Array indexing: load element at runtime index
+    -- Array indexing: load element at runtime index, result type from annotation
     let arrayVal ← match entry.getPort ⟨1⟩ with
       | some arrayPort => lowerNode graph arrayPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
     let indexVal ← match entry.getPort ⟨2⟩ with
       | some indexPort => lowerNode graph indexPort.node
@@ -671,18 +799,19 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     let dataPtrSlot ← StateT.lift (LowerM.emitInst (.unOp (.bitcast .rawPtr) (.local dataPtrAddr)) .rawPtr)
     let dataPtr ← StateT.lift (LowerM.emitInst (.load (.local dataPtrSlot) .rawPtr) .rawPtr)
 
-    -- Calculate element address
-    let elemSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64))
+    -- Calculate element address (use node type's size for element)
+    let elemSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat nodeTy.sizeBytes) .i64))) (.prim .i64))
     let offset ← StateT.lift (LowerM.emitInst (.binOp .mul (.local indexVal) (.local elemSize) (.prim .i64)) (.prim .i64))
     let dataAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.bitcast (.prim .i64)) (.local dataPtr)) (.prim .i64))
     let elemAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local dataAsI64) (.local offset) (.prim .i64)) (.prim .i64))
     let elemPtr ← StateT.lift (LowerM.emitInst (.unOp (.bitcast .rawPtr) (.local elemAddr)) .rawPtr)
 
-    StateT.lift (LowerM.emitInst (.load (.local elemPtr) valueType) valueType)
+    -- Load with the node's actual type
+    StateT.lift (LowerM.emitInst (.load (.local elemPtr) nodeTy) nodeTy)
 
   | .slice => do
     -- Slice: create view without copying
-    StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
+    StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
   -- Cache result
   modify fun ns => { ns with results := ns.results.insert nodeId.id result }
@@ -714,11 +843,16 @@ def traverseLamChain (graph : CGraph) (root : CNodeId) (arity : Nat) : CNodeId �
 
 /-- Lower a Circuit definition to an Alloy function -/
 def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId) : Func :=
+  -- Get return type from definition's type annotation
+  let retTy := match def_.ty with
+    | some val => convertValueType val
+    | none => valueType
   let sig : Signature := {
     name := def_.name
+    -- For now, use valueType for params until we have full type info on params
     params := (List.range def_.arity).toArray.map fun i =>
       { id := ⟨i⟩, name := s!"arg{i}", ty := valueType }
-    retTy := valueType
+    retTy := retTy
   }
 
   let (_, func) := LowerM.run' funcId sig do

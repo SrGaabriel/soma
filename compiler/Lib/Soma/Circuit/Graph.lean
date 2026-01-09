@@ -1,11 +1,13 @@
 import Soma.Circuit.Node
 import Soma.Circuit.Term
+import Soma.Core.Value
 import Std.Data.HashMap
 
 namespace Soma.Circuit.Graph
 
 open Soma.Circuit.Node (Node NodeId PortId PortIdx Wire ActivePair Label)
 open Soma.Circuit.Term (Term Tag Loc)
+open Soma.Core (Value)
 
 /-- Enumerate a list with indices -/
 def enumList (xs : List α) : List (Nat × α) :=
@@ -14,19 +16,24 @@ def enumList (xs : List α) : List (Nat × α) :=
     | x :: xs => (i, x) :: go (i + 1) xs
   go 0 xs
 
-/-- An entry in the graph: a node with its connectivity -/
+/-- An entry in the graph: a node with its connectivity and type -/
 structure NodeEntry where
   /-- The node itself -/
   node : Node
   /-- Connections for each port (indexed by PortIdx) -/
   ports : Array (Option PortId)
-  deriving Repr, Inhabited
+  /-- Type of the value at the principal port (from elaboration) -/
+  ty : Option Value := none
+  deriving Inhabited
 
 namespace NodeEntry
 
 /-- Create an entry for a node with unconnected ports -/
-def create (n : Node) : NodeEntry :=
-  ⟨n, Array.mk (List.replicate n.numPorts none)⟩
+def create (n : Node) (ty : Option Value := none) : NodeEntry :=
+  { node := n
+  , ports := Array.mk (List.replicate n.numPorts none)
+  , ty := ty
+  }
 
 /-- Get the connection at a port index -/
 def getPort (e : NodeEntry) (p : PortIdx) : Option PortId :=
@@ -35,7 +42,7 @@ def getPort (e : NodeEntry) (p : PortIdx) : Option PortId :=
 /-- Set the connection at a port index -/
 def setPort (e : NodeEntry) (p : PortIdx) (target : PortId) : NodeEntry :=
   if p.idx < e.ports.size
-  then ⟨e.node, e.ports.set! p.idx (some target)⟩
+  then { e with ports := e.ports.set! p.idx (some target) }
   else e
 
 /-- Get the principal port connection -/
@@ -61,7 +68,9 @@ structure Definition where
   root : NodeId
   /-- Parameter count (for lazy instantiation) -/
   arity : Nat
-  deriving Repr, Inhabited
+  /-- Full type of this definition (possibly polymorphic) -/
+  ty : Option Value := none
+  deriving Inhabited
 
 /-- The interaction net graph -/
 structure Graph where
@@ -102,9 +111,9 @@ def freshLabels (g : Graph) (n : Nat) : Array Label × Graph :=
   (labels, { g with nextLabel := g.nextLabel + n.toUInt32 })
 
 /-- Add a node to the graph -/
-def addNode (g : Graph) (n : Node) : NodeId × Graph :=
+def addNode (g : Graph) (n : Node) (ty : Option Value := none) : NodeId × Graph :=
   let (nid, g') := g.freshNodeId
-  let entry := NodeEntry.create n
+  let entry := NodeEntry.create n ty
   (nid, { g' with nodes := g'.nodes.insert nid.id entry })
 
 /-- Add a node and immediately set its root as the graph root -/
@@ -144,11 +153,11 @@ def disconnect (g : Graph) (p : PortId) : Graph :=
   -- First, disconnect the other end
   let g' := match g.getConnection p with
     | some other => g.updateNode other.node fun e =>
-        ⟨e.node, e.ports.modify other.port.idx (fun _ => none)⟩
+        { e with ports := e.ports.modify other.port.idx (fun _ => none) }
     | none => g
   -- Then disconnect this end
   g'.updateNode p.node fun e =>
-    ⟨e.node, e.ports.modify p.port.idx (fun _ => none)⟩
+    { e with ports := e.ports.modify p.port.idx (fun _ => none) }
 
 /-- Disconnect p1 from its current target and connect it to p2's target -/
 def rewire (g : Graph) (p1 p2 : PortId) : Graph :=
@@ -198,9 +207,9 @@ def isFullyConnected (g : Graph) : Bool :=
   g.nodes.toList.all fun (_, entry) => entry.isFullyConnected
 
 /-- Add a definition to the book -/
-def addDefinition (g : Graph) (name : String) (root : NodeId) (arity : Nat) : Nat × Graph :=
+def addDefinition (g : Graph) (name : String) (root : NodeId) (arity : Nat) (ty : Option Value := none) : Nat × Graph :=
   let idx := g.book.size
-  let def_ : Definition := ⟨name, root, arity⟩
+  let def_ : Definition := { name, root, arity, ty }
   (idx, { g with book := g.book.push def_ })
 
 /-- Look up a definition by index -/
@@ -293,9 +302,9 @@ def freshLabels (n : Nat) : GraphM (Array Label) := do
   return labels
 
 /-- Add a node to the graph -/
-def addNode (n : Node) : GraphM NodeId := do
+def addNode (n : Node) (ty : Option Value := none) : GraphM NodeId := do
   let g ← get
-  let (nid, g') := g.addNode n
+  let (nid, g') := g.addNode n ty
   set g'
   return nid
 
@@ -308,8 +317,8 @@ def connect (p1 p2 : PortId) : GraphM Unit := do
   modify fun g => g.connect p1 p2
 
 /-- Add a node and connect its principal port to a target -/
-def addConnected (n : Node) (target : PortId) : GraphM NodeId := do
-  let nid ← addNode n
+def addConnected (n : Node) (target : PortId) (ty : Option Value := none) : GraphM NodeId := do
+  let nid ← addNode n ty
   connect (PortId.principal nid) target
   return nid
 
@@ -326,9 +335,9 @@ def wireToAux (n1 : NodeId) (p1 : PortIdx) (n2 : NodeId) (auxIdx : Nat) : GraphM
   wire n1 p1 n2 ⟨auxIdx + 1⟩
 
 /-- Add a definition to the book -/
-def addDefinition (name : String) (root : NodeId) (arity : Nat) : GraphM Nat := do
+def addDefinition (name : String) (root : NodeId) (arity : Nat) (ty : Option Value := none) : GraphM Nat := do
   let g ← get
-  let (idx, g') := g.addDefinition name root arity
+  let (idx, g') := g.addDefinition name root arity ty
   set g'
   return idx
 
