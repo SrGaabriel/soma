@@ -21,13 +21,15 @@ import Soma.Alloy.Block
 import Soma.Alloy.Func
 import Soma.Alloy.Lower
 import Soma.Alloy.Pretty
+import Soma.Alloy.Monomorphize
 
 namespace Soma.Alloy
 
 -- All types are already exported by their respective modules in Soma.Alloy namespace
--- Re-export lowering and pretty printing functions
+-- Re-export lowering, pretty printing, and monomorphization functions
 
 export Lower (lower lowerGraph)
 export Pretty (pp ppColored ppFn ppBb ppModule)
+export Monomorphize (monomorphize isFullyMonomorphic reportPolymorphism)
 
 end Soma.Alloy
