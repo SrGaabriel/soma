@@ -81,12 +81,18 @@ inductive Inst where
   /-- Direct function call: result = func(args...) -/
   | call (func : FuncId) (args : Array Operand) (retTy : Ty)
 
+  /-- Call a polymorphic function with type arguments: result = func<T1, T2, ...>(args...) -/
+  | callPoly (func : FuncId) (typeArgs : Array Ty) (args : Array Operand) (retTy : Ty)
+
   /-- Indirect call through function pointer: result = ptr(args...) -/
   | callIndirect (ptr : Operand) (args : Array Operand) (retTy : Ty)
 
   /-- Closure call: result = closure(args...)
       Unpacks closure into (fn, env), calls fn(env, args...) -/
   | callClosure (closure : Operand) (args : Array Operand) (retTy : Ty)
+
+  /-- Create closure from polymorphic function: result = { fn<T1, T2, ...>, env } -/
+  | makeClosurePoly (func : FuncId) (typeArgs : Array Ty) (env : Operand)
 
   /-- Create closure: result = { fn, env }
       Captures environment pointer with function pointer -/
@@ -167,8 +173,10 @@ def resultTy : Inst → Option Ty
   | .getPayload _ _ _ => none  -- Depends on variant
   | .taggedLit _ _ ty => some ty
   | .call _ _ retTy => some retTy
+  | .callPoly _ _ _ retTy => some retTy
   | .callIndirect _ _ retTy => some retTy
   | .callClosure _ _ retTy => some retTy
+  | .makeClosurePoly _ _ _ => none -- Closure type depends on function
   | .makeClosure _ _ => none  -- Closure type depends on function
   | .closureFunc _ => none  -- Function pointer type
   | .closureEnv _ => some .rawPtr
@@ -212,12 +220,19 @@ instance : ToString Inst where
     | .call func args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call {func}({as})"
+    | .callPoly func typeArgs args _ =>
+      let ts := String.intercalate ", " (typeArgs.toList.map ToString.toString)
+      let as := String.intercalate ", " (args.toList.map ToString.toString)
+      s!"call.poly {func}<{ts}>({as})"
     | .callIndirect ptr args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call.indirect {ptr}({as})"
     | .callClosure closure args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call.closure {closure}({as})"
+    | .makeClosurePoly func typeArgs env =>
+      let ts := String.intercalate ", " (typeArgs.toList.map ToString.toString)
+      s!"makeclosure.poly {func}<{ts}>, {env}"
     | .makeClosure func env => s!"makeclosure {func}, {env}"
     | .closureFunc closure => s!"closure.func {closure}"
     | .closureEnv closure => s!"closure.env {closure}"

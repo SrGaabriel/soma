@@ -11,9 +11,6 @@
   3. Explicit memory: Allocations, loads, stores
   4. Explicit closures: Environment capture and function pointers
   5. No interaction net concepts: DUP/SUP lowered to explicit copies/allocations
-
-  The name "Alloy" reflects its role as a refined, hardened form of the higher-level
-  Circuit IR - just as an alloy is a refined mixture of metals.
 -/
 
 import Std.Data.HashMap
@@ -74,6 +71,21 @@ instance : ToString GlobalId where
 
 end GlobalId
 
+/-- A type variable identifier (de Bruijn index for quantified types) -/
+structure TyVarId where
+  idx : Nat
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+
+namespace TyVarId
+
+instance : ToString TyVarId where
+  toString v := s!"α{v.idx}"
+
+def zero : TyVarId := ⟨0⟩
+def succ (v : TyVarId) : TyVarId := ⟨v.idx + 1⟩
+
+end TyVarId
+
 /-! ## Types -/
 
 /-- Primitive types at the Alloy level -/
@@ -131,6 +143,12 @@ inductive Ty where
   | tagged (tag : Ty) (variants : Array (Nat × Array Ty))
   /-- Closure type: function pointer + environment pointer -/
   | closure (args : Array Ty) (ret : Ty)
+  /-- Type variable (de Bruijn index into enclosing foralls) -/
+  | tyVar (id : TyVarId)
+  /-- Universal quantification: ∀α. body -/
+  | forall_ (name : String) (body : Ty)
+  /-- Type application: F[T] -/
+  | tyApp (func : Ty) (arg : Ty)
   deriving Repr, BEq, Inhabited
 
 namespace Ty
@@ -143,7 +161,70 @@ def u32 : Ty := .prim .u32
 def bool : Ty := .prim .bool
 def unit : Ty := .prim .unit
 
-/-- Size in bytes (for allocation) -/
+/-- Check if a type is monomorphic -/
+partial def isMonomorphic : Ty → Bool
+  | .prim _ => true
+  | .ptr t => t.isMonomorphic
+  | .rawPtr => true
+  | .funcPtr args ret => args.all isMonomorphic && ret.isMonomorphic
+  | .struct fields => fields.all fun (_, t) => t.isMonomorphic
+  | .array elem _ => elem.isMonomorphic
+  | .tagged tag variants =>
+    tag.isMonomorphic && variants.all fun (_, fields) => fields.all isMonomorphic
+  | .closure args ret => args.all isMonomorphic && ret.isMonomorphic
+  | .tyVar _ => false
+  | .forall_ _ _ => false
+  | .tyApp func arg => func.isMonomorphic && arg.isMonomorphic
+
+/-- Substitute a type for a type variable at a given de Bruijn index -/
+partial def substTyVar (ty : Ty) (idx : Nat) (replacement : Ty) : Ty :=
+  match ty with
+  | .prim p => .prim p
+  | .ptr t => .ptr (t.substTyVar idx replacement)
+  | .rawPtr => .rawPtr
+  | .funcPtr args ret =>
+    .funcPtr (args.map (·.substTyVar idx replacement)) (ret.substTyVar idx replacement)
+  | .struct fields =>
+    .struct (fields.map fun (n, t) => (n, t.substTyVar idx replacement))
+  | .array elem size => .array (elem.substTyVar idx replacement) size
+  | .tagged tag variants =>
+    .tagged (tag.substTyVar idx replacement)
+      (variants.map fun (i, fields) => (i, fields.map (·.substTyVar idx replacement)))
+  | .closure args ret =>
+    .closure (args.map (·.substTyVar idx replacement)) (ret.substTyVar idx replacement)
+  | .tyVar id =>
+    if id.idx == idx then replacement else .tyVar id
+  | .forall_ name body =>
+    -- Shift the index since we're going under a binder
+    .forall_ name (body.substTyVar (idx + 1) replacement)
+  | .tyApp func arg =>
+    .tyApp (func.substTyVar idx replacement) (arg.substTyVar idx replacement)
+
+/-- Apply a type argument to a forall type, performing substitution -/
+def applyTyArg (ty : Ty) (arg : Ty) : Ty :=
+  match ty with
+  | .forall_ _ body => body.substTyVar 0 arg
+  | _ => .tyApp ty arg -- If not a forall, create an application node
+
+/-- Collect all free type variables in a type -/
+partial def freeTyVars (ty : Ty) (bound : Nat := 0) : List TyVarId :=
+  match ty with
+  | .prim _ | .rawPtr => []
+  | .ptr t => t.freeTyVars bound
+  | .funcPtr args ret =>
+    args.toList.flatMap (·.freeTyVars bound) ++ ret.freeTyVars bound
+  | .struct fields => fields.toList.flatMap fun (_, t) => t.freeTyVars bound
+  | .array elem _ => elem.freeTyVars bound
+  | .tagged tag variants =>
+    tag.freeTyVars bound ++ variants.toList.flatMap fun (_, fields) =>
+      fields.toList.flatMap (·.freeTyVars bound)
+  | .closure args ret =>
+    args.toList.flatMap (·.freeTyVars bound) ++ ret.freeTyVars bound
+  | .tyVar id => if id.idx >= bound then [id] else []
+  | .forall_ _ body => body.freeTyVars (bound + 1)
+  | .tyApp func arg => func.freeTyVars bound ++ arg.freeTyVars bound
+
+/-- Size in bytes -/
 partial def sizeBytes : Ty → Nat
   | .prim p => (p.bitWidth + 7) / 8
   | .ptr _ | .rawPtr => 8
@@ -155,6 +236,9 @@ partial def sizeBytes : Ty → Nat
       max acc (fields.foldl (fun a t => a + t.sizeBytes) 0)) 0
     tag.sizeBytes + maxPayload
   | .closure _ _ => 16  -- fn ptr + env ptr
+  | .tyVar _ => 8 -- use pointer size as default
+  | .forall_ _ body => body.sizeBytes
+  | .tyApp _ _ => 8 -- use pointer size as default
 
 /-- Alignment in bytes -/
 partial def alignment : Ty → Nat
@@ -167,6 +251,9 @@ partial def alignment : Ty → Nat
       max acc (fields.foldl (fun a t => max a t.alignment) 1)) 1
     max tag.alignment maxAlign
   | .closure _ _ => 8
+  | .tyVar _ => 8
+  | .forall_ _ body => body.alignment
+  | .tyApp _ _ => 8
 
 partial def toStringAux : Ty → String
   | .prim p => ToString.toString p
@@ -186,6 +273,9 @@ partial def toStringAux : Ty → String
   | .closure args ret =>
     let argsStr := String.intercalate ", " (args.toList.map toStringAux)
     s!"closure({argsStr}) -> {toStringAux ret}"
+  | .tyVar id => ToString.toString id
+  | .forall_ name body => s!"∀{name}. {toStringAux body}"
+  | .tyApp func arg => s!"{toStringAux func}[{toStringAux arg}]"
 
 instance : ToString Ty where
   toString := toStringAux

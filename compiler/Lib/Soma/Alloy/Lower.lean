@@ -303,8 +303,12 @@ partial def convertValueType : Value → Ty
   -- Type universe - erased at runtime
   | Value.vType _ => .prim .unit
 
-  -- Neutral terms (variables, applications) are boxed
-  | Value.vNeutral _ _ => .prim .i64
+  -- Neutral terms (variables, applications)
+  | Value.vNeutral _ty neu =>
+    match neu with
+    | .nVar v => .tyVar ⟨v.level.lvl⟩ -- Use de Bruijn level as type var index
+    | .nMeta m => .tyVar ⟨m.id⟩ -- Metavariables also become type vars
+    | _ => .prim .i64 -- Other neutrals (applications) are boxed
 
   -- Labels (for row types) are erased
   | Value.vLabelLit _ => .prim .unit
@@ -322,11 +326,55 @@ partial def convertValueType : Value → Ty
   | Value.vIntLit _ => .prim .i64
   | Value.vStringLit _ => .rawPtr
 
-/-- Get the Alloy type for a Circuit node entry, using the type annotation if available -/
+/-- Extract type parameters and value parameters from a function type (Pi chain) -/
+partial def extractParams (ty : Value)
+    (typeAcc : Array String := #[])
+    (valAcc : Array (String × Ty) := #[])
+    : Array String × Array (String × Ty) :=
+  match ty with
+  | Value.vPi _qty binder name dom cod =>
+    -- Check if this is a type parameter (implicit binder with Type domain)
+    let isTypeParam := binder.isImplicit && dom.isType
+    match cod with
+    | .const _ nextTy =>
+      if isTypeParam then
+        extractParams nextTy (typeAcc.push name) valAcc
+      else
+        let domTy := convertValueType dom
+        extractParams nextTy typeAcc (valAcc.push (name, domTy))
+    | .term _ _ _ =>
+      -- Dependent type - we can't extract further without evaluation
+      if isTypeParam then
+        (typeAcc.push name, valAcc)
+      else
+        let domTy := convertValueType dom
+        (typeAcc, valAcc.push (name, domTy))
+  | _ => (typeAcc, valAcc)
+
+/-- Extract the return type from a function type (Pi chain) and convert to Alloy Ty -/
+def extractReturnType (ty : Value) : Ty :=
+  match ty.returnType? with
+  | some retVal => convertValueType retVal
+  | none => .prim .i64  -- Dependent return type - fall back to i64
+
+/-- Build function signature from a Value type. -/
+def buildSignatureFromType (name : String) (ty : Value) (arity : Nat) : Signature :=
+  let (typeParams, paramInfos) := extractParams ty
+  -- Default type for parameters we can't extract (boxed i64)
+  let defaultTy : Ty := .prim .i64
+  -- If we got fewer params than arity (due to dependent types), pad with defaultTy
+  let params := (List.range arity).toArray.map fun i =>
+    if h : i < paramInfos.size then
+      let (pname, pty) := paramInfos[i]
+      { id := ⟨i⟩, name := pname, ty := pty : Param }
+    else
+      { id := ⟨i⟩, name := s!"arg{i}", ty := defaultTy : Param }
+  let retTy := extractReturnType ty
+  { name := name, typeParams := typeParams, params := params, retTy := retTy }
+
+/-- Get the Alloy type for a Circuit node entry from its type annotation -/
 def getNodeType (entry : CNodeEntry) : Ty :=
-  match entry.ty with
-  | some val => convertValueType val
-  | none => .prim .i64 -- Fallback to boxed representation
+  convertValueType entry.ty
 
 /-! ## Node Lowering -/
 
@@ -360,16 +408,6 @@ def lowerNum (primTy : PrimType) (val : UInt32) : LowerM LocalId := do
       Int.ofNat val.toNat
   LowerM.emitInst (.copy (.const (.int intVal (convertPrimType primTy)))) ty
 
-/-- Lower a binary operation -/
-def lowerBinOp (op : Op2Code) (lhs rhs : LocalId) : LowerM LocalId := do
-  let binOp := convertBinOp op
-  let resTy := if binOp.isComparison then Ty.bool else valueType
-  LowerM.emitInst (.binOp binOp (.local lhs) (.local rhs) valueType) resTy
-
-/-- Lower a unary operation -/
-def lowerUnOp (op : Op1Code) (operand : LocalId) : LowerM LocalId := do
-  LowerM.emitInst (.unOp (convertUnOp op) (.local operand)) valueType
-
 /-- Lower a constructor (creates a tagged struct on the heap) -/
 def lowerCtor (tag : Nat) (arity : Nat) (fieldVals : Array LocalId) : LowerM LocalId := do
   if arity == 0 then
@@ -398,49 +436,12 @@ def lowerCtor (tag : Nat) (arity : Nat) (fieldVals : Array LocalId) : LowerM Loc
 
     pure ptr
 
-/-- Lower a projection (field access) -/
-def lowerProj (fieldIdx : Nat) (record : LocalId) : LowerM LocalId := do
-  let offset := 4 + fieldIdx * 8  -- Skip tag, then index into fields
-  let baseAsI64 ← LowerM.emitInst (.unOp (.bitcast (.prim .i64)) (.local record)) (.prim .i64)
-  let offsetVal ← LowerM.emitInst (.copy (.const (.int (Int.ofNat offset) .i64))) (.prim .i64)
-  let fieldAddr ← LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offsetVal) (.prim .i64)) (.prim .i64)
-  let fieldPtr ← LowerM.emitInst (.unOp (.bitcast .rawPtr) (.local fieldAddr)) .rawPtr
-  LowerM.emitInst (.load (.local fieldPtr) valueType) valueType
-
 /-- Lower tag extraction for pattern matching -/
 def lowerGetTag (scrutinee : LocalId) : LowerM LocalId := do
   -- Check if it's a pointer (heap-allocated) or immediate (nullary ctor)
   -- For now, assume heap-allocated and load tag from address
   let tagPtr ← LowerM.emitInst (.unOp (.bitcast (.ptr tagType)) (.local scrutinee)) (.ptr tagType)
   LowerM.emitInst (.load (.local tagPtr) tagType) tagType
-
-/-- Lower a lambda/closure creation -/
-def lowerLam (funcId : FuncId) (envVals : Array LocalId) (_erased : Bool) : LowerM LocalId := do
-  if envVals.isEmpty then
-    -- No captures: just return function pointer as closure with null env
-    let nullEnv ← LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr
-    LowerM.emitInst (.makeClosure funcId (.local nullEnv)) closureType
-  else
-    -- Allocate environment struct
-    let envSize := envVals.size * 8
-    let env ← LowerM.emitInst (.malloc (.const (.int (Int.ofNat envSize) .u64))) .rawPtr
-
-    -- Store captured values
-    for i in [:envVals.size] do
-      if h : i < envVals.size then
-        let capVal := envVals[i]
-        let offset := i * 8
-        let baseAsI64 ← LowerM.emitInst (.unOp (.bitcast (.prim .i64)) (.local env)) (.prim .i64)
-        let offsetVal ← LowerM.emitInst (.copy (.const (.int (Int.ofNat offset) .i64))) (.prim .i64)
-        let capAddr ← LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offsetVal) (.prim .i64)) (.prim .i64)
-        let capPtr ← LowerM.emitInst (.unOp (.bitcast .rawPtr) (.local capAddr)) .rawPtr
-        LowerM.emitVoid (.store (.local capPtr) (.local capVal))
-
-    LowerM.emitInst (.makeClosure funcId (.local env)) closureType
-
-/-- Lower function application -/
-def lowerApp (closure : LocalId) (arg : LocalId) : LowerM LocalId := do
-  LowerM.emitInst (.callClosure (.local closure) #[.local arg] valueType) valueType
 
 /-- Lower a pattern match (MAT node) -/
 def lowerMat (expectedTag : Nat) (scrutinee : LocalId) : LowerM (LocalId × BlockId × BlockId) := do
@@ -454,43 +455,6 @@ def lowerMat (expectedTag : Nat) (scrutinee : LocalId) : LowerM (LocalId × Bloc
   LowerM.finishBlock (.branch (.local cond) thenBlock elseBlock) thenBlock
 
   pure (cond, thenBlock, elseBlock)
-
-/-- Lower an array literal -/
-def lowerArray (elemTy : PrimType) (elems : Array LocalId) : LowerM LocalId := do
-  let len := elems.size
-  let elemSize := (convertPrimType elemTy).bitWidth / 8
-  let dataSize := len * elemSize
-
-  -- Allocate array struct: { length: u64, data: ptr }
-  let arraySize := 8 + 8  -- length + data pointer
-  let arrayPtr ← LowerM.emitInst (.malloc (.const (.int (Int.ofNat arraySize) .u64))) .rawPtr
-
-  -- Store length
-  let lenVal ← LowerM.emitInst (.copy (.const (.int (Int.ofNat len) .u64))) (.prim .u64)
-  LowerM.emitVoid (.store (.local arrayPtr) (.local lenVal))
-
-  -- Allocate data
-  let dataPtr ← LowerM.emitInst (.malloc (.const (.int (Int.ofNat dataSize) .u64))) .rawPtr
-
-  -- Store data pointer at offset 8
-  let baseAsI64 ← LowerM.emitInst (.unOp (.bitcast (.prim .i64)) (.local arrayPtr)) (.prim .i64)
-  let offset8 ← LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64)
-  let dataPtrAddr ← LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset8) (.prim .i64)) (.prim .i64)
-  let dataPtrSlot ← LowerM.emitInst (.unOp (.bitcast .rawPtr) (.local dataPtrAddr)) .rawPtr
-  LowerM.emitVoid (.store (.local dataPtrSlot) (.local dataPtr))
-
-  -- Store elements
-  for i in [:len] do
-    if h : i < elems.size then
-      let elem := elems[i]
-      let offset := i * elemSize
-      let dataAsI64 ← LowerM.emitInst (.unOp (.bitcast (.prim .i64)) (.local dataPtr)) (.prim .i64)
-      let offsetVal ← LowerM.emitInst (.copy (.const (.int (Int.ofNat offset) .i64))) (.prim .i64)
-      let elemAddr ← LowerM.emitInst (.binOp .add (.local dataAsI64) (.local offsetVal) (.prim .i64)) (.prim .i64)
-      let elemPtr ← LowerM.emitInst (.unOp (.bitcast .rawPtr) (.local elemAddr)) .rawPtr
-      LowerM.emitVoid (.store (.local elemPtr) (.local elem))
-
-  pure arrayPtr
 
 /-- Lower a string literal -/
 def lowerString (len : UInt32) (dataHash : UInt32) : LowerM LocalId := do
@@ -515,15 +479,6 @@ def lowerString (len : UInt32) (dataHash : UInt32) : LowerM LocalId := do
   LowerM.emitVoid (.store (.local dataPtrSlot) (.local dataPtr))
 
   pure stringPtr
-
-/-- Lower a panic -/
-def lowerPanic (msgIdx : Nat) (line : Nat) : LowerM Unit := do
-  LowerM.emitVoid (.panic msgIdx line)
-  LowerM.terminate .unreachable
-
-/-- Lower a clone operation (for DUP) -/
-def lowerClone (src : LocalId) : LowerM LocalId := do
-  LowerM.emitInst (.clone (.local src) valueType) valueType
 
 /-- Lower an erase operation (for ERA) -/
 def lowerErase (val : LocalId) : LowerM Unit := do
@@ -843,17 +798,8 @@ def traverseLamChain (graph : CGraph) (root : CNodeId) (arity : Nat) : CNodeId �
 
 /-- Lower a Circuit definition to an Alloy function -/
 def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId) : Func :=
-  -- Get return type from definition's type annotation
-  let retTy := match def_.ty with
-    | some val => convertValueType val
-    | none => valueType
-  let sig : Signature := {
-    name := def_.name
-    -- For now, use valueType for params until we have full type info on params
-    params := (List.range def_.arity).toArray.map fun i =>
-      { id := ⟨i⟩, name := s!"arg{i}", ty := valueType }
-    retTy := retTy
-  }
+  -- Build signature from the definition's type annotation
+  let sig := buildSignatureFromType def_.name def_.ty def_.arity
 
   let (_, func) := LowerM.run' funcId sig do
     if def_.arity == 0 then

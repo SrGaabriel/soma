@@ -349,6 +349,93 @@ def Value.isSigma (v : Value) : Bool :=
   | Value.vSigma _ _ _ _ => true
   | _ => false
 
+/-- Extract the domain from a Pi type -/
+def Value.piDomain? (v : Value) : Option Value :=
+  match v with
+  | Value.vPi _ _ _ domain _ => some domain
+  | _ => none
+
+/-- Extract the codomain from a Pi type (for non-dependent functions) -/
+def Value.piCodomain? (v : Value) : Option Value :=
+  match v with
+  | Value.vPi _ _ _ _ (Closure.const _ result) => some result
+  | _ => none
+
+/-- Extract the first component type from a Sigma type -/
+def Value.sigmaFst? (v : Value) : Option Value :=
+  match v with
+  | Value.vSigma _ _ fst _ => some fst
+  | _ => none
+
+/-- Extract the second component type from a Sigma type (for non-dependent) -/
+def Value.sigmaSnd? (v : Value) : Option Value :=
+  match v with
+  | Value.vSigma _ _ _ (Closure.const _ snd) => some snd
+  | _ => none
+
+/-- Create a non-dependent Sigma (product) -/
+def Value.prod (a b : Value) : Value :=
+  Value.vSigma Quantity.omega "_" a (Closure.const "_" b)
+
+/-- Build a tuple/product type from an array of types -/
+def Value.tuple (types : Array Value) : Value :=
+  if types.isEmpty then Value.vPrimTy .unit
+  else if h : types.size = 1 then types[0]
+  else
+    -- Build right-nested sigma
+    let rec go (i : Nat) : Value :=
+      if i + 1 >= types.size then
+        types[types.size - 1]!
+      else
+        Value.prod types[i]! (go (i + 1))
+    go 0
+
+/-- Extract field type from a record row type at a given index -/
+partial def Value.rowFieldType (row : Value) (idx : Nat) : Option Value :=
+  match row, idx with
+  | .vRowExtend _ fieldTy _, 0 => some fieldTy
+  | .vRowExtend _ _ tail, n + 1 => Value.rowFieldType tail n
+  | _, _ => none
+
+/-- Extract field type from a record type at a given index -/
+def Value.recordFieldType (v : Value) (idx : Nat) : Option Value :=
+  match v with
+  | .vRecord row => Value.rowFieldType row idx
+  | _ => none
+
+/-- Extract the first type parameter from a data type -/
+def Value.dataTypeFirstParam? (v : Value) : Option Value :=
+  match v with
+  | .vDataType _ (first :: _) => some first
+  | _ => none
+
+/-- Extract the return type from a function type (Pi chain) -/
+partial def Value.returnType? (v : Value) : Option Value :=
+  match v with
+  | .vPi _ _ _ _ cod =>
+    match cod with
+    | .const _ nextTy => Value.returnType? nextTy
+    | .term _ _ _ => none -- Dependent return type
+  | other => some other
+
+/-- Extract parameter types from a function type (Pi chain) -/
+partial def Value.paramTypes (v : Value) (acc : Array (String × Value) := #[]) : Array (String × Value) :=
+  match v with
+  | .vPi _ _ name dom cod =>
+    match cod with
+    | .const _ nextTy => Value.paramTypes nextTy (acc.push (name, dom))
+    | .term _ _ _ => acc.push (name, dom) -- Stop at dependent type
+  | _ => acc
+
+/-- Get the arity of a function type (number of Pi binders) -/
+partial def Value.arity (v : Value) : Nat :=
+  match v with
+  | .vPi _ _ _ _ cod =>
+    match cod with
+    | .const _ nextTy => 1 + Value.arity nextTy
+    | .term _ _ _ => 1
+  | _ => 0
+
 /-! ## Neutral Operations -/
 
 /-- Create a variable neutral -/

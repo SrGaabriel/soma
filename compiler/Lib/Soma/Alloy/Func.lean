@@ -36,6 +36,8 @@ end Param
 structure Signature where
   /-- Function name -/
   name : String
+  /-- Type parameters -/
+  typeParams : Array String := #[]
   /-- Parameters -/
   params : Array Param
   /-- Return type -/
@@ -49,18 +51,42 @@ namespace Signature
 /-- Arity (number of parameters) -/
 def arity (sig : Signature) : Nat := sig.params.size
 
+/-- Number of type parameters -/
+def numTypeParams (sig : Signature) : Nat := sig.typeParams.size
+
+/-- Check if the function is polymorphic -/
+def isPolymorphic (sig : Signature) : Bool := !sig.typeParams.isEmpty
+
 /-- Get parameter types -/
 def paramTypes (sig : Signature) : Array Ty := sig.params.map (·.ty)
 
 /-- Convert to function type -/
 def toFuncTy (sig : Signature) : Ty :=
-  .funcPtr sig.paramTypes sig.retTy
+  let baseTy := Ty.funcPtr sig.paramTypes sig.retTy
+  -- Wrap in foralls for each type parameter (in reverse order for de Bruijn)
+  sig.typeParams.foldr (init := baseTy) fun name acc => .forall_ name acc
+
+/-- Instantiate type parameters with concrete types -/
+def instantiate (sig : Signature) (typeArgs : Array Ty) : Signature :=
+  if typeArgs.size != sig.typeParams.size then sig
+  else
+    -- Substitute type arguments into params and return type
+    let substTy := fun ty =>
+      typeArgs.foldl (init := (ty, 0)) (fun (t, idx) arg =>
+        (t.substTyVar idx arg, idx + 1)) |>.1
+    { sig with
+      typeParams := #[]
+      params := sig.params.map fun p => { p with ty := substTy p.ty }
+      retTy := substTy sig.retTy
+    }
 
 instance : ToString Signature where
   toString sig :=
     let closureStr := if sig.isClosure then " [closure]" else ""
+    let typeParamsStr := if sig.typeParams.isEmpty then ""
+      else s!"<{String.intercalate ", " sig.typeParams.toList}>"
     let paramsStr := String.intercalate ", " (sig.params.toList.map ToString.toString)
-    s!"fn {sig.name}({paramsStr}) -> {sig.retTy}{closureStr}"
+    s!"fn {sig.name}{typeParamsStr}({paramsStr}) -> {sig.retTy}{closureStr}"
 
 end Signature
 
@@ -112,6 +138,10 @@ structure Func where
   nextLocalId : Nat := 0
   /-- Local variable types (for SSA verification) -/
   localTypes : Std.HashMap Nat Ty := {}
+  /-- The original polymorphic function ID -/
+  specializedFrom : Option FuncId := none
+  /-- The type arguments used -/
+  typeArgs : Array Ty := #[]
   deriving Inhabited
 
 namespace Func
@@ -136,6 +166,15 @@ def withBody (id : FuncId) (sig : Signature) (cfg : CFG) : Func :=
 
 /-- Check if function is external -/
 def isExtern (f : Func) : Bool := f.attrs.extern.isSome
+
+/-- Check if function is polymorphic -/
+def isPolymorphic (f : Func) : Bool := f.sig.isPolymorphic
+
+/-- Check if function is a specialization of another -/
+def isSpecialization (f : Func) : Bool := f.specializedFrom.isSome
+
+/-- Get the number of type parameters -/
+def numTypeParams (f : Func) : Nat := f.sig.numTypeParams
 
 /-- Allocate a fresh local ID -/
 def freshLocal (f : Func) : LocalId × Func :=

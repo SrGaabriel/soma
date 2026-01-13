@@ -5,6 +5,7 @@ import Soma.Circuit.PatternMatch.Compile
 import Soma.Circuit.Graph
 import Soma.Circuit.Node
 import Soma.Metal.Expr
+import Soma.Core.Value
 import Std.Data.HashMap
 
 namespace Soma.Circuit.PatternMatch
@@ -12,248 +13,260 @@ namespace Soma.Circuit.PatternMatch
 open Soma.Circuit.Graph (Graph GraphM)
 open Soma.Circuit.Node (Node NodeId PortId PortIdx Label)
 open Soma.Metal (BindingId Literal)
+open Soma.Core (Value)
+
+/-- The unit type -/
+def unitTy : Value := Value.vPrimTy .unit
+
+/-- Type class for monads that can perform graph operations -/
+class MonadGraph (M : Type → Type) where
+  /-- Add a node to the graph with its type -/
+  addNode : Node → Value → M NodeId
+  /-- Connect two ports -/
+  connect : PortId → PortId → M Unit
+  /-- Get a fresh DUP label -/
+  freshLabel : M Label
+  /-- Get n fresh labels -/
+  freshLabels : Nat → M (Array Label)
+
+/-- GraphM instance for MonadGraph -/
+instance : MonadGraph GraphM where
+  addNode := GraphM.addNode
+  connect := GraphM.connect
+  freshLabel := GraphM.freshLabel
+  freshLabels := GraphM.freshLabels
 
 /-- State for lowering -/
 structure LowerState where
-  /-- Maps occurrences to their corresponding ports -/
-  occurrenceCache : Std.HashMap Occurrence PortId := {}
+  /-- Maps occurrences to their corresponding (port, type) pairs -/
+  occurrenceCache : Std.HashMap Occurrence (PortId × Value) := {}
   /-- The original scrutinee ports (one per column) -/
   scrutinees : Array PortId := #[]
+  /-- The types of the original scrutinees (one per column) -/
+  scrutineeTypes : Array Value := #[]
+  /-- The result type of the match expression -/
+  resultType : Value := unitTy
   deriving Inhabited
 
-/-! ## Lowering Monad
+/-- Pattern match lowering monad, parameterized over the base monad -/
+abbrev LowerT (M : Type → Type) := StateT LowerState M
 
-    We use the same monad structure as Circuit.Lower for compatibility.
--/
+namespace LowerT
 
-/-- Lowering monad - wraps GraphM with context -/
-abbrev LowerM := StateT LowerState GraphM
-
-namespace LowerM
+variable {M : Type → Type} [Monad M] [MonadGraph M]
 
 /-- Run the lowering monad -/
-def run (m : LowerM α) (scrutinees : Array PortId) : GraphM (α × LowerState) :=
-  StateT.run m { scrutinees := scrutinees }
+def run (m : LowerT M α) (scrutinees : Array PortId) (scrutineeTypes : Array Value) (resultType : Value)
+    : M (α × LowerState) :=
+  StateT.run m { scrutinees := scrutinees, scrutineeTypes := scrutineeTypes, resultType := resultType }
 
-/-- Lift a GraphM action -/
-def liftGraph (m : GraphM α) : LowerM α :=
-  StateT.lift m
+/-- Add a node to the graph with its type -/
+def addNode (n : Node) (ty : Value) : LowerT M NodeId :=
+  StateT.lift (MonadGraph.addNode n ty)
 
-/-- Add a node to the graph -/
-def addNode (n : Node) : LowerM NodeId :=
-  liftGraph (GraphM.addNode n)
+/-- Add an ERA node (eraser) -/
+def addEra : LowerT M NodeId :=
+  addNode .era unitTy
+
+/-- Add a DUP node with a label and type -/
+def addDup (label : Label) (ty : Value) : LowerT M NodeId :=
+  addNode (.dup label) ty
+
+/-- Add a PROJ node with the projected field's type -/
+def addProj (fieldIdx : Nat) (ty : Value) : LowerT M NodeId :=
+  addNode (.proj fieldIdx) ty
+
+/-- Add a MAT node with the result type -/
+def addMat (tag : Nat) (ty : Value) : LowerT M NodeId :=
+  addNode (.mat tag) ty
 
 /-- Connect two ports -/
-def connect (p1 p2 : PortId) : LowerM Unit :=
-  liftGraph (GraphM.connect p1 p2)
+def connect (p1 p2 : PortId) : LowerT M Unit :=
+  StateT.lift (MonadGraph.connect p1 p2)
 
 /-- Get a fresh DUP label -/
-def freshLabel : LowerM Label :=
-  liftGraph GraphM.freshLabel
+def freshLabel : LowerT M Label :=
+  StateT.lift MonadGraph.freshLabel
 
 /-- Get n fresh labels -/
-def freshLabels (n : Nat) : LowerM (Array Label) :=
-  liftGraph (GraphM.freshLabels n)
+def freshLabels (n : Nat) : LowerT M (Array Label) :=
+  StateT.lift (MonadGraph.freshLabels n)
 
 /-- Get the state -/
-def getState : LowerM LowerState := get
+def getState : LowerT M LowerState := get
 
 /-- Modify the state -/
-def modifyState (f : LowerState → LowerState) : LowerM Unit := modify f
+def modifyState (f : LowerState → LowerState) : LowerT M Unit := modify f
 
-/-- Cache an occurrence → port mapping -/
-def cacheOccurrence (occ : Occurrence) (port : PortId) : LowerM Unit :=
-  modifyState fun s => { s with occurrenceCache := s.occurrenceCache.insert occ port }
+/-- Get the result type -/
+def getResultType : LowerT M Value := do
+  let s ← getState
+  pure s.resultType
+
+/-- Cache an occurrence → (port, type) mapping -/
+def cacheOccurrence (occ : Occurrence) (port : PortId) (ty : Value) : LowerT M Unit :=
+  modifyState fun s => { s with occurrenceCache := s.occurrenceCache.insert occ (port, ty) }
 
 /-- Look up a cached occurrence -/
-def lookupOccurrence (occ : Occurrence) : LowerM (Option PortId) := do
+def lookupOccurrence (occ : Occurrence) : LowerT M (Option (PortId × Value)) := do
   let s ← getState
   pure (s.occurrenceCache.get? occ)
 
-end LowerM
+/-- Get scrutinee type for a column -/
+def getScrutineeType (column : Nat) : LowerT M Value := do
+  let s ← getState
+  pure (s.scrutineeTypes[column]?.getD unitTy)
 
-/-! ## Occurrence Resolution
+end LowerT
 
-    Convert an Occurrence (path to a sub-value) into a Circuit port.
-    This involves generating PROJ nodes for field access.
--/
 
-/-- Resolve an occurrence to a port, generating PROJ nodes as needed.
+/-- Get the type of a constructor field.
+    For data types, we need to look up the constructor's field types.
+    This is a simplified version - in practice, you'd look up the constructor info. -/
+def getConstructorFieldType (dataType : Value) (fieldIdx : Nat) : Value :=
+  match dataType with
+  | .vSigma _ _ fst (Soma.Core.Closure.const _ snd) =>
+    if fieldIdx == 0 then fst else snd
+  | .vDataType _ params =>
+    params.head?.getD unitTy
+  | _ => unitTy
 
-    For a path like column=0, path=[1, 2], we:
-    1. Start with scrutinee 0
-    2. Generate PROJ 1 to get field 1
-    3. Generate PROJ 2 to get field 2 of that
--/
-partial def resolveOccurrence (occ : Occurrence) : LowerM PortId := do
-  -- Check cache first
-  match ← LowerM.lookupOccurrence occ with
-  | some port => pure port
+/-- Resolve an occurrence to a (port, type) pair, generating PROJ nodes as needed. -/
+partial def resolveOccurrence {M : Type → Type} [Monad M] [MonadGraph M]
+    (occ : Occurrence) : LowerT M (PortId × Value) := do
+  match ← LowerT.lookupOccurrence occ with
+  | some result => pure result
   | none =>
-    let state ← LowerM.getState
-    -- Get the root scrutinee
+    let state ← LowerT.getState
     let rootPort := state.scrutinees[occ.column]!
-    -- Follow the path, generating PROJs
-    let resultPort ← occ.path.foldlM (init := rootPort) fun currentPort fieldIdx => do
-      let proj ← LowerM.addNode (.proj fieldIdx)
-      LowerM.connect ⟨proj, ⟨1⟩⟩ currentPort  -- PROJ.aux0 = input
-      pure (PortId.principal proj)
-    -- Cache the result
-    LowerM.cacheOccurrence occ resultPort
-    pure resultPort
+    let rootType ← LowerT.getScrutineeType occ.column
 
-/-! ## DUP Chain Building
+    let (resultPort, resultType) ← occ.path.foldlM (init := (rootPort, rootType))
+      fun (currentPort, currentType) fieldIdx => do
+        let fieldType := getConstructorFieldType currentType fieldIdx
+        let proj ← LowerT.addProj fieldIdx fieldType
+        LowerT.connect ⟨proj, ⟨1⟩⟩ currentPort
+        pure (PortId.principal proj, fieldType)
 
-    Build a chain of DUP nodes for multi-use variables.
--/
+    LowerT.cacheOccurrence occ resultPort resultType
+    pure (resultPort, resultType)
 
-/-- Build a DUP chain for n uses of a value.
-
-    Returns an array of n ports, one for each use.
-    If n=0, connects an ERA and returns empty.
-    If n=1, returns the source port directly.
--/
-def buildDupChain (sourcePort : PortId) (n : Nat) : LowerM (Array PortId) := do
+/-- Build a DUP chain for n uses of a value with its type. -/
+def buildDupChain {M : Type → Type} [Monad M] [MonadGraph M]
+    (sourcePort : PortId) (n : Nat) (ty : Value) : LowerT M (Array PortId) := do
   if n == 0 then
-    let era ← LowerM.addNode .era
-    LowerM.connect (PortId.principal era) sourcePort
+    let era ← LowerT.addEra
+    LowerT.connect (PortId.principal era) sourcePort
     pure #[]
   else if n == 1 then
     pure #[sourcePort]
   else
-    let labels ← LowerM.freshLabels (n - 1)
+    let labels ← LowerT.freshLabels (n - 1)
     let mut usePorts : Array PortId := #[]
     let mut chainPort := sourcePort
 
     for i in [:n - 1] do
-      let dup ← LowerM.addNode (.dup labels[i]!)
-      LowerM.connect (PortId.principal dup) chainPort
-      usePorts := usePorts.push ⟨dup, ⟨1⟩⟩  -- aux0 = first copy
-      chainPort := ⟨dup, ⟨2⟩⟩               -- aux1 = chain continues
+      let dup ← LowerT.addDup labels[i]! ty
+      LowerT.connect (PortId.principal dup) chainPort
+      usePorts := usePorts.push ⟨dup, ⟨1⟩⟩
+      chainPort := ⟨dup, ⟨2⟩⟩
 
-    usePorts := usePorts.push chainPort  -- last use from final aux1
+    usePorts := usePorts.push chainPort
     pure usePorts
 
 /-! ## Decision Tree Lowering -/
 
-/-- Context passed to arm body lowering.
-    Each binding maps to an array of ports - one port per use of the variable.
-    For single-use variables, the array has one element.
-    For multi-use variables, the array contains ports from a DUP chain. -/
+/-- Context passed to arm body lowering. -/
 structure ArmContext where
-  /-- Variable bindings: (id, name, ports).
-      The ports array has one port per use of the variable. -/
-  bindings : Array (BindingId × String × Array PortId)
+  /-- Variable bindings: (id, name, ports, type). -/
+  bindings : Array (BindingId × String × Array PortId × Value)
 
 /-- Type of callback for lowering arm bodies -/
-abbrev ArmCallback := Nat → ArmContext → GraphM PortId
+abbrev ArmCallback (M : Type → Type) := Nat → ArmContext → M PortId
 
 /-! ## Mutually Recursive Lowering Functions -/
 
 mutual
 
-/-- Lower a decision tree to Circuit IR.
-
-    Parameters:
-    - tree: The decision tree to lower
-    - lowerArm: Callback to lower an arm body given its index and bindings
-    - usageCounts: Maps BindingId to usage count (for DUP chains)
-
-    Returns the port carrying the match result.
--/
-partial def lowerTree
+/-- Lower a decision tree to Circuit IR. -/
+partial def lowerTree {M : Type → Type} [Monad M] [MonadGraph M]
     (tree : DecisionTree)
-    (lowerArm : ArmCallback)
+    (lowerArm : ArmCallback M)
     (usageCounts : Std.HashMap Nat Nat)
-    : LowerM PortId := do
+    : LowerT M PortId := do
   match tree with
   | .fail =>
-    -- Match failure - should be unreachable in exhaustive matches
-    let era ← LowerM.addNode .era
+    let era ← LowerT.addEra
     pure (PortId.principal era)
 
   | .leaf bindings armIndex =>
-    -- Resolve all bindings to ports
     let resolvedBindings ← bindings.mapM fun binding => do
-      let port ← resolveOccurrence binding.occurrence
-      pure (binding.id, binding.name, port)
+      let (port, ty) ← resolveOccurrence binding.occurrence
+      pure (binding.id, binding.name, port, ty)
 
-    -- Build DUP chains for multi-use bindings
-    let finalBindings ← resolvedBindings.foldlM (init := #[]) fun acc (id, name, port) =>
+    let finalBindings ← resolvedBindings.foldlM (init := #[]) fun acc (id, name, port, ty) =>
       let count := usageCounts.getD id.id 1
       if count == 0 then do
-        -- Erased binding: connect to ERA
-        let era ← LowerM.addNode .era
-        LowerM.connect (PortId.principal era) port
+        let era ← LowerT.addEra
+        LowerT.connect (PortId.principal era) port
         pure acc
       else do
-        -- Build DUP chain with exactly `count` ports
-        let dupPorts ← buildDupChain port count
-        pure (acc.push (id, name, dupPorts))
+        let dupPorts ← buildDupChain port count ty
+        pure (acc.push (id, name, dupPorts, ty))
 
-    -- Call the arm body lowering callback
-    LowerM.liftGraph (lowerArm armIndex ⟨finalBindings⟩)
+    -- Call the arm body lowering callback (lifted to LowerT)
+    StateT.lift (lowerArm armIndex ⟨finalBindings⟩)
 
   | .switch occurrence kind cases default =>
-    -- Resolve the scrutinee occurrence
-    let scrutPort ← resolveOccurrence occurrence
+    let (scrutPort, _scrutTy) ← resolveOccurrence occurrence
 
     match kind with
     | .constructor =>
-      -- Build a chain of MAT nodes for constructor matching
       lowerConstructorSwitch scrutPort cases default lowerArm usageCounts
-
     | .literal lits =>
-      -- Literal matching: use literal values directly as discriminants
-      -- Circuit IR MAT nodes work on numeric tags, so we convert literals to their values
       lowerLiteralSwitch scrutPort lits cases default lowerArm usageCounts
 
 /-- Lower a constructor switch (chain of MAT nodes) -/
-partial def lowerConstructorSwitch
+partial def lowerConstructorSwitch {M : Type → Type} [Monad M] [MonadGraph M]
     (scrutPort : PortId)
     (cases : Array (Nat × DecisionTree))
     (default : Option DecisionTree)
-    (lowerArm : ArmCallback)
+    (lowerArm : ArmCallback M)
     (usageCounts : Std.HashMap Nat Nat)
-    : LowerM PortId := do
+    : LowerT M PortId := do
   if cases.isEmpty then
-    -- No cases - just use default or fail
     match default with
     | some d => lowerTree d lowerArm usageCounts
     | none =>
-      let era ← LowerM.addNode .era
-      LowerM.connect (PortId.principal era) scrutPort
+      let era ← LowerT.addEra
+      LowerT.connect (PortId.principal era) scrutPort
       pure (PortId.principal era)
   else
-    -- Build chain: MAT for first case, miss goes to rest
     lowerMATChain scrutPort cases.toList default lowerArm usageCounts
 
-/-- Lower a literal switch using MAT nodes.
-    Literals are converted to their numeric representation for matching. -/
-partial def lowerLiteralSwitch
+/-- Lower a literal switch using MAT nodes -/
+partial def lowerLiteralSwitch {M : Type → Type} [Monad M] [MonadGraph M]
     (scrutPort : PortId)
     (lits : Array Literal)
     (cases : Array (Nat × DecisionTree))
     (default : Option DecisionTree)
-    (lowerArm : ArmCallback)
+    (lowerArm : ArmCallback M)
     (usageCounts : Std.HashMap Nat Nat)
-    : LowerM PortId := do
+    : LowerT M PortId := do
   if cases.isEmpty then
     match default with
     | some d => lowerTree d lowerArm usageCounts
     | none =>
-      let era ← LowerM.addNode .era
-      LowerM.connect (PortId.principal era) scrutPort
+      let era ← LowerT.addEra
+      LowerT.connect (PortId.principal era) scrutPort
       pure (PortId.principal era)
   else
-    -- Convert case indices to literal values for MAT matching
     let litCases := cases.filterMap fun (idx, tree) =>
       match lits[idx]? with
       | some lit => some (literalToTag lit, tree)
       | none => none
     lowerMATChain scrutPort litCases.toList default lowerArm usageCounts
 where
-  /-- Convert a literal to a numeric tag for MAT node matching -/
   literalToTag : Literal → Nat
     | .bool true => 1
     | .bool false => 0
@@ -261,94 +274,75 @@ where
     | .string s => s.hash.toNat
 
 /-- Build a chain of MAT nodes -/
-partial def lowerMATChain
+partial def lowerMATChain {M : Type → Type} [Monad M] [MonadGraph M]
     (scrutPort : PortId)
     (cases : List (Nat × DecisionTree))
     (default : Option DecisionTree)
-    (lowerArm : ArmCallback)
+    (lowerArm : ArmCallback M)
     (usageCounts : Std.HashMap Nat Nat)
-    : LowerM PortId := do
+    : LowerT M PortId := do
+  let resultTy ← LowerT.getResultType
   match cases with
   | [] =>
-    -- No more cases - use default or fail
     match default with
     | some d => lowerTree d lowerArm usageCounts
     | none =>
-      let era ← LowerM.addNode .era
-      LowerM.connect (PortId.principal era) scrutPort
+      let era ← LowerT.addEra
+      LowerT.connect (PortId.principal era) scrutPort
       pure (PortId.principal era)
 
   | [(tag, subtree)] =>
-    -- Last case
-    let mat ← LowerM.addNode (.mat tag)
-    LowerM.connect ⟨mat, ⟨1⟩⟩ scrutPort  -- aux0 = scrutinee
-
-    -- Hit: lower the subtree
     let hitPort ← lowerTree subtree lowerArm usageCounts
-    LowerM.connect ⟨mat, ⟨2⟩⟩ hitPort    -- aux1 = hit continuation
-
-    -- Miss: default or fail
     let missPort ← match default with
       | some d => lowerTree d lowerArm usageCounts
       | none =>
-        let era ← LowerM.addNode .era
+        let era ← LowerT.addEra
         pure (PortId.principal era)
-    LowerM.connect ⟨mat, ⟨3⟩⟩ missPort   -- aux2 = miss continuation
 
+    let mat ← LowerT.addMat tag resultTy
+    LowerT.connect ⟨mat, ⟨1⟩⟩ scrutPort
+    LowerT.connect ⟨mat, ⟨2⟩⟩ hitPort
+    LowerT.connect ⟨mat, ⟨3⟩⟩ missPort
     pure (PortId.principal mat)
 
   | (tag, subtree) :: rest =>
-    -- More cases follow
-    let mat ← LowerM.addNode (.mat tag)
-    LowerM.connect ⟨mat, ⟨1⟩⟩ scrutPort
-
-    -- Hit: lower this subtree
     let hitPort ← lowerTree subtree lowerArm usageCounts
-    LowerM.connect ⟨mat, ⟨2⟩⟩ hitPort
+    let missPort ← lowerMATChain scrutPort rest default lowerArm usageCounts
 
-    -- Miss: continue to next MAT in chain
-    -- The miss port becomes the scrutinee for the next MAT
-    let missPort ← lowerMATChain ⟨mat, ⟨3⟩⟩ rest default lowerArm usageCounts
-    LowerM.connect ⟨mat, ⟨3⟩⟩ missPort
-
+    let mat ← LowerT.addMat tag resultTy
+    LowerT.connect ⟨mat, ⟨1⟩⟩ scrutPort
+    LowerT.connect ⟨mat, ⟨2⟩⟩ hitPort
+    LowerT.connect ⟨mat, ⟨3⟩⟩ missPort
     pure (PortId.principal mat)
 
 end
 
 /-! ## Public API -/
 
-/-- Lower a compiled decision tree to Circuit IR.
-
-    Parameters:
-    - tree: The compiled decision tree
-    - scrutinees: Ports for the original scrutinee expressions
-    - lowerArm: Callback to lower arm bodies
-    - usageCounts: Variable usage counts for DUP chain construction
-
-    Returns the port carrying the match result.
--/
-def lower
+/-- Lower a compiled decision tree to Circuit IR -/
+def lowerIn {M : Type → Type} [Monad M] [MonadGraph M]
     (tree : DecisionTree)
     (scrutinees : Array PortId)
-    (lowerArm : ArmCallback)
+    (scrutineeTypes : Array Value)
+    (resultType : Value)
+    (lowerArm : ArmCallback M)
     (usageCounts : Std.HashMap Nat Nat := {})
-    : GraphM PortId := do
-  let (result, _) ← LowerM.run (lowerTree tree lowerArm usageCounts) scrutinees
+    : M PortId := do
+  let (result, _) ← LowerT.run (lowerTree tree lowerArm usageCounts) scrutinees scrutineeTypes resultType
   pure result
 
-/-- Full compilation and lowering from Metal arms.
-
-    This is the main entry point for pattern matching compilation.
--/
-def compileAndLower
+/-- Full compilation and lowering from Metal arms (generic version) -/
+def compileAndLowerIn {M : Type → Type} [Monad M] [MonadGraph M]
     (ctx : SimplifyCtx)
     (arms : Soma.Metal.ArmList α scope)
     (scrutinees : Array PortId)
-    (lowerArm : ArmCallback)
+    (scrutineeTypes : Array Value)
+    (resultType : Value)
+    (lowerArm : ArmCallback M)
     (usageCounts : Std.HashMap Nat Nat := {})
-    : GraphM PortId := do
+    : M PortId := do
   let matrix := buildMatrixFromArmList ctx arms
   let tree := compileMatrix matrix
-  lower tree scrutinees lowerArm usageCounts
+  lowerIn tree scrutinees scrutineeTypes resultType lowerArm usageCounts
 
 end Soma.Circuit.PatternMatch

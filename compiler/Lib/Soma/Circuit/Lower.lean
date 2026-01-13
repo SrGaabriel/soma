@@ -31,10 +31,21 @@ structure VarAlloc where
   ports : Array PortId
   /-- Original variable name (for debugging) -/
   name : String
-  deriving Repr, Inhabited
+  /-- Type of the bound variable -/
+  ty : Value
+  deriving Inhabited
 
-/-- Default maximum recursion depth for pattern matching -/
-def defaultMaxPatternDepth : Nat := 100
+/-- The unit type used for erased/void values -/
+def unitTy : Value := Value.vPrimTy .unit
+
+/-- The integer type -/
+def intTy : Value := Value.vPrimTy .int64
+
+/-- The boolean type -/
+def boolTy : Value := Value.vPrimTy .bool
+
+/-- The string type -/
+def stringTy : Value := Value.vPrimTy .string
 
 /-- Lowering context tracks variable bindings -/
 structure LowerCtx where
@@ -48,8 +59,6 @@ structure LowerCtx where
   currentFn : Option Name := none
   /-- Usage counts from type checking (BindingId → exact count) -/
   usageMap : UsageMap := {}
-  /-- Maximum recursion depth for pattern matching -/
-  maxPatternDepth : Nat := defaultMaxPatternDepth
   deriving Inhabited
 
 namespace LowerCtx
@@ -57,11 +66,11 @@ namespace LowerCtx
 def empty : LowerCtx := {}
 
 /-- Register a variable binding with pre-allocated ports -/
-def bindVar (ctx : LowerCtx) (id : BindingId) (name : String) (ports : Array PortId) : LowerCtx :=
-  { ctx with bindings := ctx.bindings.insert id.id ⟨ports, name⟩ }
+def bindVar (ctx : LowerCtx) (id : BindingId) (name : String) (ports : Array PortId) (ty : Value) : LowerCtx :=
+  { ctx with bindings := ctx.bindings.insert id.id ⟨ports, name, ty⟩ }
 
-/-- Consume one use of a variable, returning the port for that use -/
-def useVar (ctx : LowerCtx) (id : BindingId) : Option (PortId × LowerCtx) :=
+/-- Consume one use of a variable, returning the port and type for that use -/
+def useVar (ctx : LowerCtx) (id : BindingId) : Option (PortId × Value × LowerCtx) :=
   match ctx.bindings.get? id.id with
   | none => none
   | some alloc =>
@@ -69,8 +78,12 @@ def useVar (ctx : LowerCtx) (id : BindingId) : Option (PortId × LowerCtx) :=
     else
       let port := alloc.ports[0]!
       let remaining := alloc.ports.extract 1 alloc.ports.size
-      let ctx' := { ctx with bindings := ctx.bindings.insert id.id ⟨remaining, alloc.name⟩ }
-      some (port, ctx')
+      let ctx' := { ctx with bindings := ctx.bindings.insert id.id ⟨remaining, alloc.name, alloc.ty⟩ }
+      some (port, alloc.ty, ctx')
+
+/-- Look up type for a binding -/
+def getVarType (ctx : LowerCtx) (id : BindingId) : Option Value :=
+  ctx.bindings.get? id.id |>.map (·.ty)
 
 /-- Register a global function -/
 def registerGlobal (ctx : LowerCtx) (name : Name) (idx : Nat) : LowerCtx :=
@@ -134,7 +147,7 @@ def withCtx (f : LowerCtx → LowerCtx) (m : LowerM α) : LowerM α := do
   pure result
 
 /-- Add a node to the graph -/
-def addNode (n : Node) (ty : Option Value := none) : LowerM NodeId :=
+def addNode (n : Node) (ty : Value) : LowerM NodeId :=
   liftGraph (GraphM.addNode n ty)
 
 /-- Connect two ports -/
@@ -154,18 +167,25 @@ def setRoot (p : PortId) : LowerM Unit :=
   liftGraph (GraphM.setRoot p)
 
 /-- Add a definition to the book -/
-def addDefinition (name : String) (root : NodeId) (arity : Nat) (ty : Option Value := none) : LowerM Nat :=
+def addDefinition (name : String) (root : NodeId) (arity : Nat) (ty : Value) : LowerM Nat :=
   liftGraph (GraphM.addDefinition name root arity ty)
 
 end LowerM
 
+/-- MonadGraph instance for LowerM -/
+instance : PatternMatch.MonadGraph LowerM where
+  addNode := LowerM.addNode
+  connect := LowerM.connect
+  freshLabel := LowerM.freshLabel
+  freshLabels := LowerM.freshLabels
+
 /-- Build a DUP chain for n uses, returning an array of n ports (one per use)
     If n=0, connects an ERA to consume the value.
     If n=1, returns the source port directly (no DUP needed) -/
-def buildDupChain (sourcePort : PortId) (n : Nat) : LowerM (Array PortId) := do
+def buildDupChain (sourcePort : PortId) (n : Nat) (ty : Value) : LowerM (Array PortId) := do
   if n == 0 then
     -- Erased: connect to ERA
-    let era ← LowerM.addNode .era
+    let era ← LowerM.addNode .era unitTy
     LowerM.connect (PortId.principal era) sourcePort
     pure #[]
   else if n == 1 then
@@ -178,7 +198,7 @@ def buildDupChain (sourcePort : PortId) (n : Nat) : LowerM (Array PortId) := do
     let mut chainPort := sourcePort
 
     for i in [:n - 1] do
-      let dup ← LowerM.addNode (.dup labels[i]!)
+      let dup ← LowerM.addNode (.dup labels[i]!) ty
       -- Connect value to DUP's principal port
       LowerM.connect (PortId.principal dup) chainPort
       -- aux0 goes to a use
@@ -212,27 +232,25 @@ def lowerLiteral (lit : Literal) : LowerM PortId := do
     -- Use two's complement for proper signed integer representation
     let encoded := encodeSignedInt n
     let node := Node.num .i64 encoded
-    let ty := Value.vPrimTy .int
-    let nid ← LowerM.addNode node (some ty)
+    let nid ← LowerM.addNode node intTy
     pure (PortId.principal nid)
   | .bool b =>
     let node := Node.num .bool (if b then 1 else 0)
-    let ty := Value.vPrimTy .bool
-    let nid ← LowerM.addNode node (some ty)
+    let nid ← LowerM.addNode node boolTy
     pure (PortId.principal nid)
   | .string s =>
     -- String literals: use STRING node
     -- Length is the byte length of the UTF-8 encoded string
     let len := s.utf8ByteSize.toUInt32
-    let lenNode ← LowerM.addNode (.num .u64 len) (some (Value.vPrimTy .word64))
+    let word64Ty := Value.vPrimTy .word64
+    let lenNode ← LowerM.addNode (.num .u64 len) word64Ty
 
     -- The codegen will intern strings and replace with actual pointers
     let hash := s.hash.toUInt32
-    let dataNode ← LowerM.addNode (.num .u64 hash) (some (Value.vPrimTy .word64))
+    let dataNode ← LowerM.addNode (.num .u64 hash) word64Ty
 
     -- Create STRING node
-    let ty := Value.vPrimTy .string
-    let stringNode ← LowerM.addNode .string (some ty)
+    let stringNode ← LowerM.addNode .string stringTy
     LowerM.connect ⟨stringNode, ⟨1⟩⟩ (PortId.principal lenNode) -- aux0 = length
     LowerM.connect ⟨stringNode, ⟨2⟩⟩ (PortId.principal dataNode) -- aux1 = data
 
@@ -242,13 +260,13 @@ def lowerLiteral (lit : Literal) : LowerM PortId := do
 def lowerVar (bindingId : BindingId) : LowerM PortId := do
   let ctx ← LowerM.getCtx
   match ctx.useVar bindingId with
-  | some (port, ctx') =>
+  | some (port, _ty, ctx') =>
     LowerM.setCtx ctx'
     pure port
   | none =>
     -- todo: consider panicking here instead
     -- Return an ERA as error placeholder
-    let era ← LowerM.addNode .era
+    let era ← LowerM.addNode .era unitTy
     pure (PortId.principal era)
 
 /-- Convert a PrimOp to an Op1Code for unary operations -/
@@ -296,12 +314,21 @@ def extractRecordFieldNames : Value → Array String
   | .vRecord row => extractRowFieldNames row
   | _ => #[]
 
+/-- Get the type of an expression, falling back to unit for erased/untyped expressions -/
+def exprType (e : Expr Value scope) : Value :=
+  e.getInfo.getD unitTy
+
+/-- Convert UsageMap (keyed by BindingId) to Std.HashMap Nat Nat (keyed by raw id) -/
+def usageMapToNatMap (usageMap : UsageMap) : Std.HashMap Nat Nat :=
+  usageMap.fold (init := {}) fun acc bindingId count =>
+    acc.insert bindingId.id count
+
 mutual
 
 /-- Lower an expression to a Circuit IR subgraph -/
 partial def lowerExpr (e : Expr Value scope) : LowerM PortId := do
   -- Extract the type info from the Metal expression
-  let ty := e.getInfo
+  let ty := exprType e
   match e with
   | .var v _info _span =>
     lowerVar v.binding
@@ -347,14 +374,16 @@ partial def lowerExpr (e : Expr Value scope) : LowerM PortId := do
 
   | .panic msg _info span =>
     -- Panic: emit a call to the runtime panic function (soma_panic)
-    let msgNode ← LowerM.addNode (Node.num .u64 msg.hash.toUInt32)
+    let word64Ty := Value.vPrimTy .word64
+    let word32Ty := Value.vPrimTy .word32
+    let msgNode ← LowerM.addNode (Node.num .u64 msg.hash.toUInt32) word64Ty
     let msgPort := PortId.principal msgNode
 
     -- Create a marker node that indicates panic with source location info
     -- We use a CTOR with a special tag (maxNat) to mark it as panic
     -- The arity is 2: (message_hash, line_number)
     let lineNum := span.start.line.toUInt32
-    let lineNode ← LowerM.addNode (Node.num .u32 lineNum)
+    let lineNode ← LowerM.addNode (Node.num .u32 lineNum) word32Ty
 
     -- Build panic info as a 2-field constructor with reserved tag
     let panicTag := 0xFFFFFF -- Reserved tag for panic
@@ -389,7 +418,7 @@ partial def lowerExpr (e : Expr Value scope) : LowerM PortId := do
   | .labelLit _ _ | .dataTy _ _ _ | .eq _ _ _ _ _
   | .refl _ _ _ | .transport _ _ _ _ _ _ _ _
   | .hole _ _ | .mvar _ _ _ | .typeApp _ _ _ =>
-    let era ← LowerM.addNode .era
+    let era ← LowerM.addNode .era unitTy
     pure (PortId.principal era)
 
 /-- Lower an expression list -/
@@ -401,16 +430,16 @@ partial def lowerExprList (es : ExprList Value scope) : LowerM (Array PortId) :=
     let restPorts ← lowerExprList rest
     pure (#[port] ++ restPorts)
 
-/-- Lower a capture list to an array of ports -/
+/-- Lower a capture list to an array of (port, type) pairs -/
 partial def lowerCaptureList (caps : Soma.Metal.CaptureList Value scope)
-    : LowerM (Array PortId) := do
+    : LowerM (Array (PortId × Value)) := do
   match caps with
   | .nil => pure #[]
-  | .cons scopedVar _info rest =>
+  | .cons scopedVar captureType rest =>
     -- Look up the captured variable in current bindings
     let port ← lowerVar scopedVar.binding
-    let restPorts ← lowerCaptureList rest
-    pure (#[port] ++ restPorts)
+    let restPairs ← lowerCaptureList rest
+    pure (#[(port, captureType)] ++ restPairs)
 
 /-- Lower a closure to a pair of (function_ref, environment).
 
@@ -423,21 +452,24 @@ partial def lowerCaptureList (caps : Soma.Metal.CaptureList Value scope)
     applied, the caller extracts the function ref and environment, then
     calls the function with the environment as an implicit first argument. -/
 partial def lowerClosure (fnName : Name) (captures : Soma.Metal.CaptureList Value scope)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   -- Get REF to the lifted function
-  let fnPort ← lowerGlobal fnName none
+  let fnPort ← lowerGlobal fnName ty
 
   -- Build environment CTOR from captures
-  let capturePorts ← lowerCaptureList captures
-  let envPort ← if capturePorts.isEmpty then do
+  let capturePairs ← lowerCaptureList captures
+  let envPort ← if capturePairs.isEmpty then do
     -- No captures: empty environment (nullary CTOR)
-    let ctor ← LowerM.addNode (.ctor 0 0)
+    let ctor ← LowerM.addNode (.ctor 0 0) unitTy
     pure (PortId.principal ctor)
   else do
     -- Build CTOR with captured values as fields
-    let ctor ← LowerM.addNode (.ctor 0 capturePorts.size)
-    for i in [:capturePorts.size] do
-      LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ capturePorts[i]!
+    -- Environment type is a tuple of capture types
+    let captureTypes := capturePairs.map (·.2)
+    let envTy := Value.tuple captureTypes
+    let ctor ← LowerM.addNode (.ctor 0 capturePairs.size) envTy
+    for i in [:capturePairs.size] do
+      LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ capturePairs[i]!.1
     pure (PortId.principal ctor)
 
   -- Build closure pair: (fn_ref, env)
@@ -455,7 +487,7 @@ partial def lowerClosure (fnName : Name) (captures : Soma.Metal.CaptureList Valu
 
     For other function calls, we build a chain of APP nodes. -/
 partial def lowerApp (fn : Expr Value scope) (args : ExprList Value scope)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   let argPorts ← lowerExprList args
 
   -- Check for primitive operation optimization
@@ -489,16 +521,17 @@ partial def lowerApp (fn : Expr Value scope) (args : ExprList Value scope)
 where
   /-- Generic APP chain lowering for non-primitive function calls -/
   lowerAppGeneric (fn : Expr Value scope) (argPorts : Array PortId)
-      (ty : Option Value) : LowerM PortId := do
+      (ty : Value) : LowerM PortId := do
     let fnPort ← lowerExpr fn
 
     -- Build a chain of APP nodes: ((fn arg₀) arg₁) ...
-    -- Only the final APP gets the result type
+    -- Each intermediate APP has an intermediate type, final APP has result type
     let mut resultPort := fnPort
     for i in [:argPorts.size] do
       let argPort := argPorts[i]!
       let isLast := i == argPorts.size - 1
-      let appTy := if isLast then ty else none
+      -- todo: track partial application types
+      let appTy := if isLast then ty else unitTy
       let app ← LowerM.addNode .app appTy
       -- aux0 = function, aux1 = argument, principal = result
       LowerM.connect ⟨app, ⟨1⟩⟩ resultPort -- function
@@ -510,7 +543,7 @@ where
 /-- Lower a lambda expression -/
 partial def lowerLam (params : Soma.Metal.ParamList Value)
     (body : Expr Value (params.bindingIds ++ scope))
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   let paramList := params.toList
 
   if paramList.isEmpty then
@@ -518,25 +551,29 @@ partial def lowerLam (params : Soma.Metal.ParamList Value)
     lowerExpr body
   else
     -- Create LAM nodes (we'll wire them after lowering body)
-    -- Only the outermost LAM gets the full function type
+    -- Each LAM gets the appropriate partial function type
     let mut lamNodes : Array NodeId := #[]
     let ctx ← LowerM.getCtx
-    let mut i := 0
-    for (bindingId, name, _info) in paramList do
+    let mut currentTy := ty -- Track the remaining function type
+    for (bindingId, name, info) in paramList do
       -- This determines both erasure and DUP chain construction
       let usageCount := ctx.getUsageCount bindingId
       let erased := usageCount == 0
-      -- Only first LAM gets the type annotation
-      let lamTy := if i == 0 then ty else none
-      let lam ← LowerM.addNode (.lam erased) lamTy
+      -- Each LAM gets its partial function type
+      let lam ← LowerM.addNode (.lam erased) currentTy
       lamNodes := lamNodes.push lam
+
+      -- Peel the function type for the next LAM
+      currentTy := currentTy.piCodomain?.getD unitTy
+
+      -- The parameter type comes from the param info
+      let paramTy := info
 
       if usageCount > 0 then
         -- Build DUP chain from the LAM's var port
         let varPort : PortId := ⟨lam, ⟨1⟩⟩ -- aux0 = var
-        let usePorts ← buildDupChain varPort usageCount
-        LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name usePorts
-      i := i + 1
+        let usePorts ← buildDupChain varPort usageCount paramTy
+        LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name usePorts paramTy
 
     -- Wire LAMs together: outer.body → inner.principal
     for j in [:lamNodes.size - 1] do
@@ -556,7 +593,7 @@ partial def lowerLam (params : Soma.Metal.ParamList Value)
 
 /-- Lower a constructor application -/
 partial def lowerConstruct (_name : Name) (tag : Nat) (args : ExprList Value scope)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   let argPorts ← lowerExprList args
   let ctor ← LowerM.addNode (.ctor tag argPorts.size) ty
 
@@ -568,7 +605,7 @@ partial def lowerConstruct (_name : Name) (tag : Nat) (args : ExprList Value sco
 
 /-- Lower an if-then-else (as a MAT on boolean) -/
 partial def lowerIf (cond then_ else_ : Expr Value scope)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   let condPort ← lowerExpr cond
   let thenPort ← lowerExpr then_
   let elsePort ← lowerExpr else_
@@ -581,366 +618,66 @@ partial def lowerIf (cond then_ else_ : Expr Value scope)
 
   pure (PortId.principal mat)
 
-/-- Lower pattern matching to a chain of MAT nodes.
-
-    Each arm is tested in order using MAT nodes. When a pattern matches,
-    pattern variables are bound to projections from the scrutinee before
-    evaluating the arm body.
-
-    Architecture:
-    - For multi-scrutinee matching, we identify which scrutinee has a constructor pattern
-    - That scrutinee is used for MAT; others are just for variable binding
-    - The MAT's hit/miss ports receive the arm body RESULTS, not the scrutinee
--/
+/-- Lower a case expression using decision tree compilation -/
 partial def lowerCase (scrutinees : ExprList Value scope)
     (arms : Soma.Metal.ArmList Value scope)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
+  -- Lower scrutinees and collect their types
   let scrutPorts ← lowerExprList scrutinees
+  let scrutTypes ← getExprListTypes scrutinees
 
   if scrutPorts.isEmpty then
-    let era ← LowerM.addNode .era
+    let era ← LowerM.addNode .era unitTy
     pure (PortId.principal era)
   else
-    lowerArmsChainMulti scrutPorts arms ty
-where
-  /-- Check if arm list is empty -/
-  isArmListEmpty : Soma.Metal.ArmList Value scope → Bool
-    | .nil => true
-    | .cons _ _ => false
-
-  /-- Check if a pattern needs its scrutinee for bindings -/
-  patternNeedsScrutinee : Soma.Metal.Pattern Value → Bool
-    | .var _ _ _ _ => true
-    | .wildcard _ _ => false
-    | .lit _ _ => false
-    | .ctor _ args _ _ => args.any patternNeedsScrutinee
-    | .tuple elems _ _ => elems.any patternNeedsScrutinee
-    | .array elems _ _ => elems.any patternNeedsScrutinee
-    | .cons h t _ _ => patternNeedsScrutinee h || patternNeedsScrutinee t
-    | .as _ _ _ _ _ => true
-    | .variant _ arg _ _ => arg.map patternNeedsScrutinee |>.getD false
-
-  /-- Check if a pattern is a constructor/literal that needs MAT -/
-  patternNeedsMatch : Soma.Metal.Pattern Value → Bool
-    | .ctor _ _ _ _ => true
-    | .lit _ _ => true
-    | .variant _ _ _ _ => true
-    | .as _ _ inner _ _ => patternNeedsMatch inner
-    | _ => false
-
-  /-- Convert PatternList to Array -/
-  patternListToArray : Soma.Metal.PatternList Value → Array (Soma.Metal.Pattern Value)
-    | .nil => #[]
-    | .cons p rest => #[p] ++ patternListToArray rest
-
-  /-- Find which scrutinee index has a constructor pattern (for MAT) -/
-  findMatchIndex (patterns : Array (Soma.Metal.Pattern Value)) : Option Nat :=
-    patterns.findIdx? patternNeedsMatch
-
-  /-- Get tag from a pattern -/
-  getTagFromPattern (pat : Soma.Metal.Pattern Value) : Nat :=
-    match pat with
-    | .ctor name _ _ _ => name.ctorTag?.getD 0
-    | .lit (.bool true) _ => 1
-    | .lit (.bool false) _ => 0
-    | .lit (.int n) _ => n.toNat
-    | .as _ _ inner _ _ => getTagFromPattern inner
-    | .tuple _ _ _ => 0
-    | .variant label _ _ _ => label.hash.toNat
-    | _ => 0
-
-  /-- Count arms -/
-  countArms : Soma.Metal.ArmList Value scope → Nat
-    | .nil => 0
-    | .cons _ rest => 1 + countArms rest
-
-  /-- Lower arms with multiple scrutinees -/
-  lowerArmsChainMulti (scrutPorts : Array PortId)
-      (arms : Soma.Metal.ArmList Value scope) (ty : Option Value) : LowerM PortId :=
-    match arms with
-    | .nil => do
-      -- No arms so erase all scrutinees
-      for port in scrutPorts do
-        let era ← LowerM.addNode .era
-        LowerM.connect (PortId.principal era) port
-      let era ← LowerM.addNode .era
-      pure (PortId.principal era)
-    | .cons arm rest => do
-      match arm with
-      | .mk patterns body _span =>
-        let patsArray := patternListToArray patterns
-
-        if isArmListEmpty rest then
-          -- Last arm: bind all patterns and evaluate body
-          bindAllPatterns patsArray scrutPorts
-          lowerExpr body
-        else
-          -- Find which pattern needs MAT
-          match findMatchIndex patsArray with
-          | none =>
-            -- No constructor patterns, just bind and evaluate
-            bindAllPatterns patsArray scrutPorts
-            lowerExpr body
-          | some matchIdx =>
-            -- We need to MAT on scrutPorts[matchIdx]
-            let matchPat := patsArray[matchIdx]!
-            let tag := getTagFromPattern matchPat
-
-            -- Count how many copies we need of the match scrutinee
-            let numRemaining := countArms rest
-            let matchPort := scrutPorts[matchIdx]!
-
-            -- DUP the match scrutinee: one for MAT, one for bindings, plus copies for remaining arms
-            let totalCopies := 2 + numRemaining
-            let dupPorts ← buildDupChain matchPort totalCopies
-            let matPort := dupPorts[0]!
-            let bindPort := dupPorts[1]!
-            let remainingMatchPorts := dupPorts.extract 2 dupPorts.size
-
-            -- DUP all scrutinees: one for binding, rest for remaining arms
-            let mut bindPorts := #[]
-            let mut missPortsPerScrut : Array (Array PortId) := #[]
-
-            for i in [:scrutPorts.size] do
-              let port := scrutPorts[i]!
-              if i == matchIdx then
-                -- Already DUP'd above
-                bindPorts := bindPorts.push bindPort
-                missPortsPerScrut := missPortsPerScrut.push remainingMatchPorts
-              else
-                if numRemaining > 0 then
-                  let totalNeeded := 1 + numRemaining
-                  let dups ← buildDupChain port totalNeeded
-                  bindPorts := bindPorts.push dups[0]!
-                  missPortsPerScrut := missPortsPerScrut.push (dups.extract 1 dups.size)
-                else
-                  bindPorts := bindPorts.push port
-                  missPortsPerScrut := missPortsPerScrut.push #[]
-
-            -- Create MAT node with result type
-            let mat ← LowerM.addNode (.mat tag) ty
-            LowerM.connect ⟨mat, ⟨1⟩⟩ matPort
-
-            -- Bind all patterns using bindPorts
-            bindAllPatterns patsArray bindPorts
-
-            -- Lower body for hit case
-            let hitBodyPort ← lowerExpr body
-            LowerM.connect ⟨mat, ⟨2⟩⟩ hitBodyPort
-
-            -- Build remaining scrutPorts for miss case (transpose missPortsPerScrut)
-            let missScrutPortsList := transposePortArrays missPortsPerScrut numRemaining
-
-            -- Lower remaining arms for miss case
-            let missPort ← lowerArmsChainMultiWithPorts missScrutPortsList rest ty
-            LowerM.connect ⟨mat, ⟨3⟩⟩ missPort
-
-            pure (PortId.principal mat)
-
-  /-- Transpose array of port arrays: [[a1,a2], [b1,b2]] -> [[a1,b1], [a2,b2]] -/
-  transposePortArrays (arrays : Array (Array PortId)) (numArms : Nat) : Array (Array PortId) :=
-    Array.mk <| (List.range numArms).map fun armIdx =>
-      Array.mk <| arrays.toList.filterMap fun arr => arr[armIdx]?
-
-  /-- Lower arms with pre-transposed port arrays per arm -/
-  lowerArmsChainMultiWithPorts (scrutPortsPerArm : Array (Array PortId))
-      (arms : Soma.Metal.ArmList Value scope) (ty : Option Value) : LowerM PortId :=
-    match arms with
-    | .nil => do
-      -- Erase any remaining ports
-      for ports in scrutPortsPerArm do
-        for port in ports do
-          let era ← LowerM.addNode .era
-          LowerM.connect (PortId.principal era) port
-      let era ← LowerM.addNode .era
-      pure (PortId.principal era)
-    | .cons arm rest => do
-      match arm with
-      | .mk patterns body _span =>
-        let patsArray := patternListToArray patterns
-        let scrutPorts := scrutPortsPerArm[0]?.getD #[]
-        let remainingPortsPerArm := scrutPortsPerArm.extract 1 scrutPortsPerArm.size
-
-        if isArmListEmpty rest then
-          -- Last arm
-          bindAllPatterns patsArray scrutPorts
-          -- Erase unused remaining ports
-          for ports in remainingPortsPerArm do
-            for port in ports do
-              let era ← LowerM.addNode .era
-              LowerM.connect (PortId.principal era) port
-          lowerExpr body
-        else
-          match findMatchIndex patsArray with
-          | none =>
-            bindAllPatterns patsArray scrutPorts
-            lowerExpr body
-          | some matchIdx =>
-            let matchPat := patsArray[matchIdx]!
-            let tag := getTagFromPattern matchPat
-            let numRemaining := countArms rest
-
-            -- DUP scrutinees for this arm's binding vs remaining arms
-            let mut bindPorts := #[]
-            let mut nextRemainingPorts : Array (Array PortId) := #[]
-
-            for i in [:scrutPorts.size] do
-              let port := scrutPorts[i]!
-              if numRemaining > 0 then
-                let dups ← buildDupChain port 2
-                bindPorts := bindPorts.push dups[0]!
-                -- Collect remaining ports for next arms
-                if i == matchIdx then
-                  nextRemainingPorts := nextRemainingPorts.push #[dups[1]!]
-                else
-                  nextRemainingPorts := nextRemainingPorts.push #[dups[1]!]
-              else
-                bindPorts := bindPorts.push port
-                nextRemainingPorts := nextRemainingPorts.push #[]
-
-            let matchPort := bindPorts[matchIdx]!
-            -- Need another DUP for MAT vs binding
-            let matDups ← buildDupChain matchPort 2
-            let matPort := matDups[0]!
-            let bindMatchPort := matDups[1]!
-            let finalBindPorts := bindPorts.set! matchIdx bindMatchPort
-
-            let mat ← LowerM.addNode (.mat tag) ty
-            LowerM.connect ⟨mat, ⟨1⟩⟩ matPort
-
-            bindAllPatterns patsArray finalBindPorts
-            let hitBodyPort ← lowerExpr body
-            LowerM.connect ⟨mat, ⟨2⟩⟩ hitBodyPort
-
-            -- Combine with remaining ports from previous arms
-            let combinedRemaining := combineRemainingPorts remainingPortsPerArm nextRemainingPorts
-            let missPort ← lowerArmsChainMultiWithPorts combinedRemaining rest ty
-            LowerM.connect ⟨mat, ⟨3⟩⟩ missPort
-
-            pure (PortId.principal mat)
-
-  /-- Combine remaining port arrays -/
-  combineRemainingPorts (prev : Array (Array PortId)) (next : Array (Array PortId))
-      : Array (Array PortId) :=
-    next ++ prev
-
-  /-- Bind all patterns to corresponding scrutinee ports -/
-  bindAllPatterns (patterns : Array (Soma.Metal.Pattern Value))
-      (scrutPorts : Array PortId) : LowerM Unit := do
-    for i in [:patterns.size.min scrutPorts.size] do
-      bindPatternRecursive patterns[i]! scrutPorts[i]! 0
-
-  /-- Recursively bind variables in a pattern.
-
-      This function uses the usage map from type checking to build appropriate
-      DUP chains for pattern-bound variables. Each variable binding looks up
-      its actual usage count and creates a DUP chain accordingly.
-
-      For compound patterns (ctor, tuple, etc.), we DUP the scrutinee once
-      per field to enable projection. The per-variable usage is then handled
-      when recursing into each sub-pattern.
-
-      The depth limit is configurable via LowerCtx.maxPatternDepth to prevent
-      stack overflow on deeply nested patterns. -/
-  bindPatternRecursive (pat : Soma.Metal.Pattern Value) (port : PortId) (depth : Nat)
-      : LowerM Unit := do
+    -- Build constructor table from current context
     let ctx ← LowerM.getCtx
-    if depth > ctx.maxPatternDepth then pure ()
-    else
-      match pat with
-      | .var binding name _info _span =>
-        -- Look up actual usage count from type checking
-        let ctx ← LowerM.getCtx
-        let usageCount := ctx.getUsageCount binding
-        if usageCount == 0 then
-          -- Variable is unused (erased) - connect to ERA
-          let era ← LowerM.addNode .era
-          LowerM.connect (PortId.principal era) port
-        else
-          -- Build DUP chain based on actual usage
-          let usePorts ← buildDupChain port usageCount
-          LowerM.modifyCtx fun ctx => ctx.bindVar binding name usePorts
+    let ctorTable := buildCtorTable ctx.constructors
+    let simplifyCtx : PatternMatch.SimplifyCtx := { ctorTable := ctorTable }
 
-      | .wildcard _info _span =>
-        let era ← LowerM.addNode .era
-        LowerM.connect (PortId.principal era) port
+    -- Compile pattern matrix to decision tree
+    let matrix := PatternMatch.buildMatrixFromArmList simplifyCtx arms
+    let tree := PatternMatch.compileMatrix matrix
 
-      | .ctor _name args _info _span =>
-        if args.isEmpty then
-          -- Nullary constructor - just erase the value
-          let era ← LowerM.addNode .era
-          LowerM.connect (PortId.principal era) port
-        else
-          -- DUP the scrutinee once per field for projection
-          -- Per-variable usage is handled in the recursive calls
-          let dupPorts ← buildDupChain port args.size
-          for i in [:args.size] do
-            let proj ← LowerM.addNode (.proj i)
-            LowerM.connect ⟨proj, ⟨1⟩⟩ dupPorts[i]!
-            bindPatternRecursive args[i]! (PortId.principal proj) (depth + 1)
+    -- Convert usage map to the format expected by PatternMatch.lowerIn
+    let usageCounts := usageMapToNatMap ctx.usageMap
 
-      | .tuple elements _info _span =>
-        if elements.isEmpty then
-          let era ← LowerM.addNode .era
-          LowerM.connect (PortId.principal era) port
-        else
-          -- DUP the scrutinee once per element for projection
-          let dupPorts ← buildDupChain port elements.size
-          for i in [:elements.size] do
-            let proj ← LowerM.addNode (.proj i)
-            LowerM.connect ⟨proj, ⟨1⟩⟩ dupPorts[i]!
-            bindPatternRecursive elements[i]! (PortId.principal proj) (depth + 1)
+    -- Lower the decision tree using lowerIn with LowerM
+    PatternMatch.lowerIn tree scrutPorts scrutTypes ty
+      (fun armIndex armCtx => lowerArmBodyByIndex arms armIndex armCtx)
+      usageCounts
+where
+  /-- Get types of an expression list -/
+  getExprListTypes : ExprList Value scope → LowerM (Array Value)
+    | .nil => pure #[]
+    | .cons e rest => do
+      let ty := exprType e
+      let restTys ← getExprListTypes rest
+      pure (#[ty] ++ restTys)
 
-      | .as binding name inner _info _span =>
-        -- As-pattern: the binding gets its own usage, plus we need one copy for inner
-        let ctx ← LowerM.getCtx
-        let bindingUsage := ctx.getUsageCount binding
-        -- Total copies needed: bindingUsage + 1 (for inner pattern)
-        let totalNeeded := bindingUsage + 1
-        let dupPorts ← buildDupChain port totalNeeded
-        -- First `bindingUsage` ports go to the binding
-        let bindingPorts := dupPorts.extract 0 bindingUsage
-        if bindingUsage > 0 then
-          LowerM.modifyCtx fun ctx => ctx.bindVar binding name bindingPorts
-        -- Last port goes to inner pattern
-        bindPatternRecursive inner dupPorts[bindingUsage]! (depth + 1)
+  /-- Build a constructor table from the LowerCtx format -/
+  buildCtorTable (ctors : Std.HashMap Name (Name × Nat × Nat))
+      : PatternMatch.ConstructorTable :=
+    ctors.fold (init := {}) fun acc name (typeName, tag, arity) =>
+      acc.insert name.display ⟨typeName.display, tag, arity⟩
 
-      | .lit _lit _span =>
-        let era ← LowerM.addNode .era
-        LowerM.connect (PortId.principal era) port
+  /-- Get arm body by index and lower it directly -/
+  lowerArmBodyByIndex (arms : Soma.Metal.ArmList Value scope) (idx : Nat)
+      (armCtx : PatternMatch.ArmContext) : LowerM PortId := do
+    match arms, idx with
+    | .nil, _ =>
+      -- Should not happen with well-formed patterns
+      let era ← LowerM.addNode .era unitTy
+      pure (PortId.principal era)
+    | .cons (.mk _pats body _span) _, 0 =>
+      -- Install bindings from armCtx into the context
+      for (bindingId, name, ports, varTy) in armCtx.bindings do
+        LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name ports varTy
+      -- Lower the arm body directly here where we have access to its true scope
+      lowerExpr body
+    | .cons _ rest, n + 1 => lowerArmBodyByIndex rest n armCtx
 
-      | .array elements _info _span =>
-        if elements.isEmpty then
-          let era ← LowerM.addNode .era
-          LowerM.connect (PortId.principal era) port
-        else
-          -- DUP the scrutinee once per element for projection
-          let dupPorts ← buildDupChain port elements.size
-          for i in [:elements.size] do
-            let proj ← LowerM.addNode (.proj i)
-            LowerM.connect ⟨proj, ⟨1⟩⟩ dupPorts[i]!
-            bindPatternRecursive elements[i]! (PortId.principal proj) (depth + 1)
 
-      | .cons head tail _info _span =>
-        -- Cons pattern: need to project head and tail
-        let dupPorts ← buildDupChain port 2
-        let projHead ← LowerM.addNode (.proj 0)
-        LowerM.connect ⟨projHead, ⟨1⟩⟩ dupPorts[0]!
-        bindPatternRecursive head (PortId.principal projHead) (depth + 1)
-
-        let projTail ← LowerM.addNode (.proj 1)
-        LowerM.connect ⟨projTail, ⟨1⟩⟩ dupPorts[1]!
-        bindPatternRecursive tail (PortId.principal projTail) (depth + 1)
-
-      | .variant _label arg _info _span =>
-        match arg with
-        | none =>
-          let era ← LowerM.addNode .era
-          LowerM.connect (PortId.principal era) port
-        | some innerPat =>
-          let proj ← LowerM.addNode (.proj 0)
-          LowerM.connect ⟨proj, ⟨1⟩⟩ port
-          bindPatternRecursive innerPat (PortId.principal proj) (depth + 1)
 
 /-- Lower a global reference.
 
@@ -958,7 +695,7 @@ where
     - ALO is the dynamic "instantiation" that expands lazily
     - For self-recursion, we know at compile time that instantiation is needed
 -/
-partial def lowerGlobal (name : Name) (ty : Option Value) : LowerM PortId := do
+partial def lowerGlobal (name : Name) (ty : Value) : LowerM PortId := do
   let ctx ← LowerM.getCtx
   -- First check if it's a known function
   match ctx.lookupGlobal name with
@@ -990,16 +727,16 @@ partial def lowerGlobal (name : Name) (ty : Option Value) : LowerM PortId := do
           pure (PortId.principal ctor)
         else
           -- Partial app, should've already been desugared (todo: consider panicking here)
-          let era ← LowerM.addNode .era
+          let era ← LowerM.addNode .era unitTy
           pure (PortId.principal era)
       | none =>
         -- Unknown global: ERA placeholder
-        let era ← LowerM.addNode .era
+        let era ← LowerM.addNode .era unitTy
         pure (PortId.principal era)
 
 /-- Lower field access (projection) -/
 partial def lowerFieldAccess (expr : Expr Value scope) (fieldIdx : Nat)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   let exprPort ← lowerExpr expr
   let proj ← LowerM.addNode (.proj fieldIdx) ty
   LowerM.connect ⟨proj, ⟨1⟩⟩ exprPort
@@ -1007,7 +744,7 @@ partial def lowerFieldAccess (expr : Expr Value scope) (fieldIdx : Nat)
 
 /-- Lower a record literal -/
 partial def lowerRecord (fields : Soma.Metal.RecordFieldList Value scope)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   let fieldPorts ← lowerRecordFields fields
   let rec_ ← LowerM.addNode (.record fieldPorts.size) ty
 
@@ -1035,11 +772,10 @@ partial def lowerRecordFields (fields : Soma.Metal.RecordFieldList Value scope) 
     The type info contains the record type, from which we extract field names -/
 partial def lowerRecordUpdate (base : Expr Value scope)
     (updates : Soma.Metal.RecordFieldList Value scope)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   -- Get the record type from base's type annotation
-  let fieldNames := match base.getInfo with
-    | some ty => extractRecordFieldNames ty
-    | none => #[]
+  let baseTy := exprType base
+  let fieldNames := extractRecordFieldNames baseTy
 
   let numFields := fieldNames.size
 
@@ -1061,7 +797,7 @@ partial def lowerRecordUpdate (base : Expr Value scope)
     let numNonUpdated := numFields - updateList.length
     let numCopies := if numNonUpdated > 0 then numNonUpdated else 1
 
-    let basePorts ← buildDupChain basePort numCopies
+    let basePorts ← buildDupChain basePort numCopies baseTy
     let mut basePortIdx := 0
 
     -- For each field, either project from base or use the update value
@@ -1076,14 +812,15 @@ partial def lowerRecordUpdate (base : Expr Value scope)
         fieldPorts := fieldPorts.push updatePort
       | none =>
         -- Project from base
+        let fieldTy := baseTy.recordFieldType i |>.getD unitTy
         if basePortIdx < basePorts.size then
-          let proj ← LowerM.addNode (.proj i)
+          let proj ← LowerM.addNode (.proj i) fieldTy
           LowerM.connect ⟨proj, ⟨1⟩⟩ basePorts[basePortIdx]!
           fieldPorts := fieldPorts.push (PortId.principal proj)
           basePortIdx := basePortIdx + 1
         else
           -- Fallback: should not happen with correct typing
-          let era ← LowerM.addNode .era
+          let era ← LowerM.addNode .era unitTy
           fieldPorts := fieldPorts.push (PortId.principal era)
 
     -- Construct the new record
@@ -1103,7 +840,7 @@ partial def lowerRecordUpdate (base : Expr Value scope)
     For unary variants (.Label(val)), we emit a 1-arity CTOR.
     For multi-field variants, args are packed into fields. -/
 partial def lowerInject (label : String) (args : ExprList Value scope)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   let argPorts ← lowerExprList args
 
   -- Use label hash as the constructor tag
@@ -1130,7 +867,7 @@ partial def lowerInject (label : String) (args : ExprList Value scope)
 
     We lower this to: LAM → PROJ → (wire body to LAM)
     The LAM's variable receives the record, PROJ extracts the field. -/
-partial def lowerFirstClassProj (fieldIdx : Nat) (ty : Option Value) : LowerM PortId := do
+partial def lowerFirstClassProj (fieldIdx : Nat) (ty : Value) : LowerM PortId := do
   -- Create LAM node (not erased - the parameter is used)
   let lam ← LowerM.addNode (.lam false) ty
 
@@ -1138,7 +875,8 @@ partial def lowerFirstClassProj (fieldIdx : Nat) (ty : Option Value) : LowerM Po
   let varPort : PortId := ⟨lam, ⟨1⟩⟩
 
   -- Create PROJ node to extract the field
-  let proj ← LowerM.addNode (.proj fieldIdx)
+  -- The projected field type is the return type of the projection function
+  let proj ← LowerM.addNode (.proj fieldIdx) ty
 
   -- Connect: LAM.var → PROJ.input
   LowerM.connect ⟨proj, ⟨1⟩⟩ varPort
@@ -1151,7 +889,7 @@ partial def lowerFirstClassProj (fieldIdx : Nat) (ty : Option Value) : LowerM Po
 
 /-- Lower a tuple -/
 partial def lowerTuple (elems : ExprList Value scope)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   let elemPorts ← lowerExprList elems
   -- Tuple as a 0-tagged constructor
   let ctor ← LowerM.addNode (.ctor 0 elemPorts.size) ty
@@ -1174,21 +912,24 @@ partial def lowerTuple (elems : ExprList Value scope)
     - ERA-ARRAY frees the backing memory
 
     For small arrays, we inline the elements into a CTOR node as the data.
-    The runtime can optimize large arrays to use heap-allocated contiguous memory.
-
-    Element type is inferred as i64 by default (polymorphic arrays would need
-    type information from the elaborator). -/
+    The runtime can optimize large arrays to use heap-allocated contiguous memory. -/
 partial def lowerArray (elems : ExprList Value scope)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   let elemPorts ← lowerExprList elems
   let len := elemPorts.size
 
+  -- Extract element type from the array type (Array T -> T)
+  let elemTy := ty.dataTypeFirstParam?.getD intTy
+
   -- Create length node
-  let lenNode ← LowerM.addNode (.num .u64 len.toUInt32)
+  let word64Ty := Value.vPrimTy .word64
+  let lenNode ← LowerM.addNode (.num .u64 len.toUInt32) word64Ty
 
   -- Create data node: for now, store elements in a CTOR
   -- Tag 0xFFFFFD is reserved for array backing storage
-  let dataNode ← LowerM.addNode (.ctor 0xFFFFFD len)
+  -- The backing storage type is a tuple of element types
+  let backingTy := Value.tuple (List.replicate len elemTy).toArray
+  let dataNode ← LowerM.addNode (.ctor 0xFFFFFD len) backingTy
   for i in [:len] do
     LowerM.connect ⟨dataNode, ⟨i + 1⟩⟩ elemPorts[i]!
 
@@ -1201,7 +942,7 @@ partial def lowerArray (elems : ExprList Value scope)
 
 /-- Lower a pair -/
 partial def lowerPair (fst snd : Expr Value scope)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   let fstPort ← lowerExpr fst
   let sndPort ← lowerExpr snd
 
@@ -1213,7 +954,7 @@ partial def lowerPair (fst snd : Expr Value scope)
 
 /-- Lower a projection -/
 partial def lowerProj (expr : Expr Value scope) (idx : Nat)
-    (ty : Option Value) : LowerM PortId := do
+    (ty : Value) : LowerM PortId := do
   let exprPort ← lowerExpr expr
   let proj ← LowerM.addNode (.proj idx) ty
   LowerM.connect ⟨proj, ⟨1⟩⟩ exprPort
@@ -1239,19 +980,19 @@ def lowerFunction (fn : Soma.Metal.UntypedFunction) : LowerM NodeId := do
     -- Look up actual usage count from type checking
     let usageCount := ctx.getUsageCount bindingId
     let erased := usageCount == 0
-    let lam ← LowerM.addNode (.lam erased)
+    let lam ← LowerM.addNode (.lam erased) unitTy
     lamNodes := lamNodes.push lam
 
     -- Build DUP chain based on actual usage
     let varPort : PortId := ⟨lam, ⟨1⟩⟩
     if usageCount == 0 then
       -- Erased parameter so we connect to ERA
-      let era ← LowerM.addNode .era
+      let era ← LowerM.addNode .era unitTy
       LowerM.connect (PortId.principal era) varPort
     else
       -- Build DUP chain for actual usage count
-      let usePorts ← buildDupChain varPort usageCount
-      LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name usePorts
+      let usePorts ← buildDupChain varPort usageCount unitTy
+      LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name usePorts unitTy
 
   -- Wire LAMs together
   for i in [:lamNodes.size - 1] do
@@ -1303,18 +1044,17 @@ def lowerModule (module : Soma.Metal.Module) : LowerM Unit := do
   for fn in functions do
     let root ← lowerFunction fn
     let arity := fn.params.size
-    let _ ← LowerM.addDefinition fn.name.display root arity
+    let _ ← LowerM.addDefinition fn.name.display root arity unitTy
 
   -- Set root to main function if it exists
   let ctx ← LowerM.getCtx
   let mainEntry := ctx.globals.toList.find? fun (name, _) => name.original == "main"
   match mainEntry with
   | some (_, idx) =>
-    let ref ← LowerM.addNode (.ref idx)
+    let ref ← LowerM.addNode (.ref idx) unitTy
     LowerM.setRoot (PortId.principal ref)
   | none =>
-    -- todo: create a special node for this maybe?
-    let era ← LowerM.addNode .era
+    let era ← LowerM.addNode .era unitTy
     LowerM.setRoot (PortId.principal era)
 
 /-- Lower a Metal module to Circuit IR -/

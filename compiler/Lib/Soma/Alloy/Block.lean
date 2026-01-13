@@ -128,8 +128,10 @@ where
     | .getPayload val _ _ => #[val].filterMap extractOperandLocal
     | .taggedLit _ payload _ => payload.filterMap extractOperandLocal
     | .call _ args _ => args.filterMap extractOperandLocal
+    | .callPoly _ _ args _ => args.filterMap extractOperandLocal
     | .callIndirect ptr args _ => (#[ptr] ++ args).filterMap extractOperandLocal
     | .callClosure closure args _ => (#[closure] ++ args).filterMap extractOperandLocal
+    | .makeClosurePoly _ _ env => #[env].filterMap extractOperandLocal
     | .makeClosure _ env => #[env].filterMap extractOperandLocal
     | .closureFunc closure => #[closure].filterMap extractOperandLocal
     | .closureEnv closure => #[closure].filterMap extractOperandLocal

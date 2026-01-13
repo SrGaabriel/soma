@@ -1,10 +1,3 @@
-/-
-  Alloy IR Pretty Printer
-
-  Formats Alloy IR in a human-readable textual form similar to LLVM IR.
-  Useful for debugging, testing, and understanding the lowered code.
--/
-
 import Soma.Alloy.Func
 
 namespace Soma.Alloy.Pretty
@@ -69,6 +62,11 @@ partial def ppTy (cfg : Config) : Ty → String
   | .closure args ret =>
     let argsStr := String.intercalate ", " (args.toList.map (ppTy cfg))
     s!"{colorKeyword cfg "closure"}({argsStr}) -> {ppTy cfg ret}"
+  | .tyVar id => colorType cfg s!"α{id.idx}"
+  | .forall_ name body =>
+    s!"{colorKeyword cfg "∀"}{name}. {ppTy cfg body}"
+  | .tyApp func arg =>
+    s!"{ppTy cfg func}[{ppTy cfg arg}]"
 
 /-! ## Value Formatting -/
 
@@ -182,6 +180,13 @@ def ppInst (cfg : Config) : Inst → String
     s!"{colorKeyword cfg "call.closure"} {ppTy cfg retTy} {ppOperand cfg closure}({as})"
   | .makeClosure func env =>
     s!"{colorKeyword cfg "makeclosure"} {ppFuncId cfg func}, {ppOperand cfg env}"
+  | .makeClosurePoly func typeArgs env =>
+    let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
+    s!"{colorKeyword cfg "makeclosure.poly"} {ppFuncId cfg func}<{tyArgsStr}>, {ppOperand cfg env}"
+  | .callPoly func typeArgs args retTy =>
+    let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
+    let argsStr := String.intercalate ", " (args.toList.map (ppOperand cfg))
+    s!"{colorKeyword cfg "call.poly"} {ppTy cfg retTy} {ppFuncId cfg func}<{tyArgsStr}>({argsStr})"
   | .closureFunc closure =>
     s!"{colorKeyword cfg "closure.func"} {ppOperand cfg closure}"
   | .closureEnv closure =>

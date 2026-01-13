@@ -23,13 +23,13 @@ structure NodeEntry where
   /-- Connections for each port (indexed by PortIdx) -/
   ports : Array (Option PortId)
   /-- Type of the value at the principal port (from elaboration) -/
-  ty : Option Value := none
+  ty : Value
   deriving Inhabited
 
 namespace NodeEntry
 
 /-- Create an entry for a node with unconnected ports -/
-def create (n : Node) (ty : Option Value := none) : NodeEntry :=
+def create (n : Node) (ty : Value) : NodeEntry :=
   { node := n
   , ports := Array.mk (List.replicate n.numPorts none)
   , ty := ty
@@ -69,7 +69,7 @@ structure Definition where
   /-- Parameter count (for lazy instantiation) -/
   arity : Nat
   /-- Full type of this definition (possibly polymorphic) -/
-  ty : Option Value := none
+  ty : Value
   deriving Inhabited
 
 /-- The interaction net graph -/
@@ -111,14 +111,14 @@ def freshLabels (g : Graph) (n : Nat) : Array Label × Graph :=
   (labels, { g with nextLabel := g.nextLabel + n.toUInt32 })
 
 /-- Add a node to the graph -/
-def addNode (g : Graph) (n : Node) (ty : Option Value := none) : NodeId × Graph :=
+def addNode (g : Graph) (n : Node) (ty : Value) : NodeId × Graph :=
   let (nid, g') := g.freshNodeId
   let entry := NodeEntry.create n ty
   (nid, { g' with nodes := g'.nodes.insert nid.id entry })
 
 /-- Add a node and immediately set its root as the graph root -/
-def addRootNode (g : Graph) (n : Node) : NodeId × Graph :=
-  let (nid, g') := g.addNode n
+def addRootNode (g : Graph) (n : Node) (ty : Value) : NodeId × Graph :=
+  let (nid, g') := g.addNode n ty
   (nid, { g' with root := PortId.principal nid })
 
 /-- Look up a node by ID -/
@@ -207,7 +207,7 @@ def isFullyConnected (g : Graph) : Bool :=
   g.nodes.toList.all fun (_, entry) => entry.isFullyConnected
 
 /-- Add a definition to the book -/
-def addDefinition (g : Graph) (name : String) (root : NodeId) (arity : Nat) (ty : Option Value := none) : Nat × Graph :=
+def addDefinition (g : Graph) (name : String) (root : NodeId) (arity : Nat) (ty : Value) : Nat × Graph :=
   let idx := g.book.size
   let def_ : Definition := { name, root, arity, ty }
   (idx, { g with book := g.book.push def_ })
@@ -302,7 +302,7 @@ def freshLabels (n : Nat) : GraphM (Array Label) := do
   return labels
 
 /-- Add a node to the graph -/
-def addNode (n : Node) (ty : Option Value := none) : GraphM NodeId := do
+def addNode (n : Node) (ty : Value) : GraphM NodeId := do
   let g ← get
   let (nid, g') := g.addNode n ty
   set g'
@@ -317,7 +317,7 @@ def connect (p1 p2 : PortId) : GraphM Unit := do
   modify fun g => g.connect p1 p2
 
 /-- Add a node and connect its principal port to a target -/
-def addConnected (n : Node) (target : PortId) (ty : Option Value := none) : GraphM NodeId := do
+def addConnected (n : Node) (target : PortId) (ty : Value) : GraphM NodeId := do
   let nid ← addNode n ty
   connect (PortId.principal nid) target
   return nid
@@ -335,7 +335,7 @@ def wireToAux (n1 : NodeId) (p1 : PortIdx) (n2 : NodeId) (auxIdx : Nat) : GraphM
   wire n1 p1 n2 ⟨auxIdx + 1⟩
 
 /-- Add a definition to the book -/
-def addDefinition (name : String) (root : NodeId) (arity : Nat) (ty : Option Value := none) : GraphM Nat := do
+def addDefinition (name : String) (root : NodeId) (arity : Nat) (ty : Value) : GraphM Nat := do
   let g ← get
   let (idx, g') := g.addDefinition name root arity ty
   set g'
