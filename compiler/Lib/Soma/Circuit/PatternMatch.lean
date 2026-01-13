@@ -1,3 +1,4 @@
+import Soma.Circuit.PatternMatch.Types
 import Soma.Circuit.PatternMatch.Pattern
 import Soma.Circuit.PatternMatch.Matrix
 import Soma.Circuit.PatternMatch.Decision

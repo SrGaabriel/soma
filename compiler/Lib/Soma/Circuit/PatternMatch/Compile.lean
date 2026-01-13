@@ -1,8 +1,12 @@
 import Soma.Circuit.PatternMatch.Pattern
 import Soma.Circuit.PatternMatch.Matrix
 import Soma.Circuit.PatternMatch.Decision
+import Soma.Circuit.PatternMatch.Types
+import Soma.Core.Value
 
 namespace Soma.Circuit.PatternMatch
+
+open Soma.Core (Value)
 
 /-- Heuristic scores for column selection (higher = better) -/
 structure ColumnScore where
@@ -71,28 +75,28 @@ def selectColumn (m : PatternMatrix) : Nat :=
 /-- Convert a row's bindings to decision tree bindings.
     This includes both accumulated bindings from specialization
     and bindings from variable patterns still in the row. -/
-def resolveBindings (row : Row) (occMap : OccurrenceMap) : Array Binding :=
+def resolveBindings (row : Row) (toccMap : TypedOccurrenceMap) : Array Binding :=
   -- First, collect accumulated bindings from specialization
   let accumulated := row.bindings.filterMap fun (id, name, col) =>
-    occMap.get col |>.map fun occ => ⟨id, name, occ⟩
+    toccMap.get col |>.map fun tocc => ⟨id, name, tocc.occurrence, tocc.ty⟩
 
   -- Then collect bindings from remaining variable patterns
-  let fromPatterns := collectPatternBindings row.patterns occMap 0 #[]
+  let fromPatterns := collectPatternBindings row.patterns toccMap 0 #[]
 
   accumulated ++ fromPatterns
 where
-  collectPatternBindings (patterns : Array SimplePattern) (occMap : OccurrenceMap)
+  collectPatternBindings (patterns : Array SimplePattern) (toccMap : TypedOccurrenceMap)
       (col : Nat) (acc : Array Binding) : Array Binding :=
     if col >= patterns.size then acc
     else
       let pat := patterns[col]!
-      let acc' := match occMap.get col with
+      let acc' := match toccMap.get col with
         | none => acc
-        | some occ =>
+        | some tocc =>
           let patBindings := pat.collectBindings
           patBindings.foldl (init := acc) fun a (id, name) =>
-            a.push ⟨id, name, occ⟩
-      collectPatternBindings patterns occMap (col + 1) acc'
+            a.push ⟨id, name, tocc.occurrence, tocc.ty⟩
+      collectPatternBindings patterns toccMap (col + 1) acc'
 
 /-! ## Core Compilation Algorithm -/
 
@@ -102,15 +106,15 @@ structure CompileState where
   fuel : Nat
   deriving Inhabited
 
-/-- Compile a pattern matrix to a decision tree.
+/-- Compile a pattern matrix to a decision tree with type tracking.
 
     This is the main entry point for the Maranget algorithm.
 -/
-partial def compile (matrix : PatternMatrix) (occMap : OccurrenceMap)
+partial def compileTyped (matrix : PatternMatrix) (toccMap : TypedOccurrenceMap)
     : DecisionTree :=
-  compileAux matrix occMap { fuel := 10000 }
+  compileAux matrix toccMap { fuel := 10000 }
 where
-  compileAux (m : PatternMatrix) (occMap : OccurrenceMap) (state : CompileState)
+  compileAux (m : PatternMatrix) (toccMap : TypedOccurrenceMap) (state : CompileState)
       : DecisionTree :=
     -- Defensive fuel check
     if state.fuel == 0 then
@@ -126,7 +130,7 @@ where
       else if m.firstRowAllWildcards then
         match m.firstRow with
         | some row =>
-          let bindings := resolveBindings row occMap
+          let bindings := resolveBindings row toccMap
           .leaf bindings row.armIndex
         | none => .fail
 
@@ -134,13 +138,13 @@ where
       -- This means all patterns matched; take first row
       else if m.numColumns == 0 then
         match m.firstRow with
-        | some row => .leaf (resolveBindings row occMap) row.armIndex
+        | some row => .leaf (resolveBindings row toccMap) row.armIndex
         | none => .fail
 
       -- Recursive case: split on best column
       else
         let col := selectColumn m
-        let occ := occMap.get! col
+        let occ := toccMap.getOccurrence! col
 
         -- Check what kind of patterns are in this column
         let ctorTags := m.getConstructorTags col
@@ -150,16 +154,16 @@ where
           -- Constructor patterns: build switch on constructor tag
           let cases := ctorTags.map fun (tag, arity) =>
             let specialized := m.specialize col tag arity
-            let newOccMap := occMap.specialize col arity
-            let subtree := compileAux specialized newOccMap state'
+            let newToccMap := toccMap.specialize col tag arity
+            let subtree := compileAux specialized newToccMap state'
             (tag, subtree)
 
           -- Default case: rows with wildcards at this column
           let defaultMatrix := m.default col
           let default := if defaultMatrix.isEmpty then none
             else
-              let newOccMap := occMap.removeColumn col
-              some (compileAux defaultMatrix newOccMap state')
+              let newToccMap := toccMap.removeColumn col
+              some (compileAux defaultMatrix newToccMap state')
 
           .switch occ .constructor cases default
 
@@ -167,44 +171,36 @@ where
           -- Literal patterns: build switch on literal value
           let cases := litValues.mapIdx fun idx lit =>
             let specialized := m.specializeLit col lit
-            let newOccMap := occMap.removeColumn col
-            let subtree := compileAux specialized newOccMap state'
+            let newToccMap := toccMap.removeColumn col
+            let subtree := compileAux specialized newToccMap state'
             (idx, subtree)
 
           -- Default for non-matched literals
           let defaultMatrix := m.default col
           let default := if defaultMatrix.isEmpty then none
             else
-              let newOccMap := occMap.removeColumn col
-              some (compileAux defaultMatrix newOccMap state')
+              let newToccMap := toccMap.removeColumn col
+              some (compileAux defaultMatrix newToccMap state')
 
           .switch occ (.literal litValues) cases default
 
         else
           -- All wildcards in this column - just remove it and continue
-          -- This happens when we selected a column that only has wildcards
-          -- (shouldn't happen with good heuristics, but handle it)
           let defaultMatrix := m.default col
-          let newOccMap := occMap.removeColumn col
-          compileAux defaultMatrix newOccMap state'
+          let newToccMap := toccMap.removeColumn col
+          compileAux defaultMatrix newToccMap state'
 
-/-! ## Public API -/
+/-- Compile a pattern matrix to a decision tree with type tracking -/
+def compileMatrix (matrix : PatternMatrix) (registry : ConstructorTypeRegistry)
+    (scrutineeTypes : Array Value) : DecisionTree :=
+  let toccMap := TypedOccurrenceMap.initial registry scrutineeTypes
+  compileTyped matrix toccMap
 
-/-- Compile a pattern matrix to a decision tree.
-
-    Entry point that sets up the initial occurrence map.
--/
-def compileMatrix (matrix : PatternMatrix) : DecisionTree :=
-  let occMap := OccurrenceMap.initial matrix.numColumns
-  compile matrix occMap
-
-/-- Compile match arms directly to a decision tree.
-
-    Convenience function that builds the matrix first.
--/
-def compileArms (ctx : SimplifyCtx) (arms : Soma.Metal.ArmList α scope)
+/-- Compile match arms to a decision tree with type tracking -/
+def compileArms (ctx : SimplifyCtx) (registry : ConstructorTypeRegistry)
+    (scrutineeTypes : Array Value) (arms : Soma.Metal.ArmList α scope)
     : DecisionTree :=
   let matrix := buildMatrixFromArmList ctx arms
-  compileMatrix matrix
+  compileMatrix matrix registry scrutineeTypes
 
 end Soma.Circuit.PatternMatch

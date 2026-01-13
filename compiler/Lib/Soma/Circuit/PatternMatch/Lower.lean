@@ -2,6 +2,7 @@ import Soma.Circuit.PatternMatch.Pattern
 import Soma.Circuit.PatternMatch.Matrix
 import Soma.Circuit.PatternMatch.Decision
 import Soma.Circuit.PatternMatch.Compile
+import Soma.Circuit.PatternMatch.Types
 import Soma.Circuit.Graph
 import Soma.Circuit.Node
 import Soma.Metal.Expr
@@ -38,11 +39,15 @@ instance : MonadGraph GraphM where
 
 /-- State for lowering -/
 structure LowerState where
-  /-- Maps occurrences to their corresponding (port, type) pairs -/
+  /-- Cache mapping occurrences to their (port, type) pairs -/
   occurrenceCache : Std.HashMap Occurrence (PortId × Value) := {}
+  /-- Cache mapping occurrences to their known types (from bindings) -/
+  typeCache : Std.HashMap Occurrence Value := {}
   /-- The original scrutinee ports (one per column) -/
   scrutinees : Array PortId := #[]
-  /-- The types of the original scrutinees (one per column) -/
+  /-- Constructor type registry for field type lookup -/
+  registry : ConstructorTypeRegistry := {}
+  /-- The types of the original scrutinees -/
   scrutineeTypes : Array Value := #[]
   /-- The result type of the match expression -/
   resultType : Value := unitTy
@@ -56,9 +61,15 @@ namespace LowerT
 variable {M : Type → Type} [Monad M] [MonadGraph M]
 
 /-- Run the lowering monad -/
-def run (m : LowerT M α) (scrutinees : Array PortId) (scrutineeTypes : Array Value) (resultType : Value)
+def run (m : LowerT M α) (scrutinees : Array PortId) (scrutineeTypes : Array Value)
+    (registry : ConstructorTypeRegistry) (resultType : Value)
     : M (α × LowerState) :=
-  StateT.run m { scrutinees := scrutinees, scrutineeTypes := scrutineeTypes, resultType := resultType }
+  StateT.run m {
+    scrutinees := scrutinees,
+    scrutineeTypes := scrutineeTypes,
+    registry := registry,
+    resultType := resultType
+  }
 
 /-- Add a node to the graph with its type -/
 def addNode (n : Node) (ty : Value) : LowerT M NodeId :=
@@ -103,14 +114,31 @@ def getResultType : LowerT M Value := do
   let s ← getState
   pure s.resultType
 
+/-- Get the constructor type registry -/
+def getRegistry : LowerT M ConstructorTypeRegistry := do
+  let s ← getState
+  pure s.registry
+
 /-- Cache an occurrence → (port, type) mapping -/
 def cacheOccurrence (occ : Occurrence) (port : PortId) (ty : Value) : LowerT M Unit :=
   modifyState fun s => { s with occurrenceCache := s.occurrenceCache.insert occ (port, ty) }
+
+/-- Cache just the type for an occurrence (used for pre-populating from bindings) -/
+def cacheOccurrenceType (occ : Occurrence) (ty : Value) : LowerT M Unit :=
+  modifyState fun s => { s with typeCache := s.typeCache.insert occ ty }
 
 /-- Look up a cached occurrence -/
 def lookupOccurrence (occ : Occurrence) : LowerT M (Option (PortId × Value)) := do
   let s ← getState
   pure (s.occurrenceCache.get? occ)
+
+/-- Look up just the type for an occurrence -/
+def lookupOccurrenceType (occ : Occurrence) : LowerT M (Option Value) := do
+  let s ← getState
+  -- First check the full cache, then the type-only cache
+  match s.occurrenceCache.get? occ with
+  | some (_, ty) => pure (some ty)
+  | none => pure (s.typeCache.get? occ)
 
 /-- Get scrutinee type for a column -/
 def getScrutineeType (column : Nat) : LowerT M Value := do
@@ -119,21 +147,47 @@ def getScrutineeType (column : Nat) : LowerT M Value := do
 
 end LowerT
 
+/-- Get the type of a field at a given index from a parent type -/
+def getFieldType (registry : ConstructorTypeRegistry) (parentType : Value)
+    (fieldIdx : Nat) : Value :=
+  match parentType with
+  | .vSigma _qty _name fst snd =>
+    -- Sigma types: field 0 is fst, field 1 is snd
+    if fieldIdx == 0 then fst
+    else match snd with
+      | .const _ v => v
+      | .term _ _ _ => unitTy -- Can't evaluate dependent closure without argument
 
-/-- Get the type of a constructor field.
-    For data types, we need to look up the constructor's field types.
-    This is a simplified version - in practice, you'd look up the constructor info. -/
-def getConstructorFieldType (dataType : Value) (fieldIdx : Nat) : Value :=
-  match dataType with
-  | .vSigma _ _ fst (Soma.Core.Closure.const _ snd) =>
-    if fieldIdx == 0 then fst else snd
-  | .vDataType _ params =>
-    params.head?.getD unitTy
+  | .vDataType _typeId _params =>
+    -- todo: look up field types from registry (requires tag, which we don't have here)
+    let fieldTypes := fallbackFieldTypes parentType (fieldIdx + 1)
+    fieldTypes[fieldIdx]?.getD unitTy
+
+  | .vRecord row =>
+    -- Record types: extract from row
+    extractRowFieldType row fieldIdx
+
+  | .vPi _qty _binder _name dom _cod =>
+    -- Pi types: field 0 is domain (for dependent tuple-like usage)
+    if fieldIdx == 0 then dom else unitTy
+
+  | .vRowExtend _ fieldTy tail =>
+    -- Row types: navigate to the right field
+    if fieldIdx == 0 then fieldTy
+    else getFieldType registry tail (fieldIdx - 1)
+
   | _ => unitTy
+where
+  extractRowFieldType (row : Value) (idx : Nat) : Value :=
+    match row, idx with
+    | .vRowExtend _ fieldTy _, 0 => fieldTy
+    | .vRowExtend _ _ tail, n + 1 => extractRowFieldType tail n
+    | _, _ => unitTy
 
-/-- Resolve an occurrence to a (port, type) pair, generating PROJ nodes as needed. -/
+/-- Resolve an occurrence to a (port, type) pair, generating PROJ nodes as needed -/
 partial def resolveOccurrence {M : Type → Type} [Monad M] [MonadGraph M]
     (occ : Occurrence) : LowerT M (PortId × Value) := do
+  -- Check full cache first
   match ← LowerT.lookupOccurrence occ with
   | some result => pure result
   | none =>
@@ -141,14 +195,33 @@ partial def resolveOccurrence {M : Type → Type} [Monad M] [MonadGraph M]
     let rootPort := state.scrutinees[occ.column]!
     let rootType ← LowerT.getScrutineeType occ.column
 
-    let (resultPort, resultType) ← occ.path.foldlM (init := (rootPort, rootType))
-      fun (currentPort, currentType) fieldIdx => do
-        let fieldType := getConstructorFieldType currentType fieldIdx
-        let proj ← LowerT.addProj fieldIdx fieldType
-        LowerT.connect ⟨proj, ⟨1⟩⟩ currentPort
-        pure (PortId.principal proj, fieldType)
+    -- Cache the root occurrence
+    let rootOcc : Occurrence := ⟨occ.column, #[]⟩
+    LowerT.cacheOccurrence rootOcc rootPort rootType
 
-    LowerT.cacheOccurrence occ resultPort resultType
+    -- Walk down the path, projecting at each step and caching intermediates
+    let (resultPort, resultType, _) ← occ.path.foldlM
+      (init := (rootPort, rootType, #[]))
+      fun (currentPort, currentType, pathSoFar) fieldIdx => do
+        let newPath := pathSoFar.push fieldIdx
+        let intermediateOcc : Occurrence := ⟨occ.column, newPath⟩
+
+        -- Check if this intermediate occurrence is already fully cached
+        match ← LowerT.lookupOccurrence intermediateOcc with
+        | some (cachedPort, cachedType) =>
+          pure (cachedPort, cachedType, newPath)
+        | none =>
+          -- Determine field type: prefer pre-cached type, fall back to computation
+          let fieldType ← match ← LowerT.lookupOccurrenceType intermediateOcc with
+            | some ty => pure ty
+            | none => pure (getFieldType state.registry currentType fieldIdx)
+          let proj ← LowerT.addProj fieldIdx fieldType
+          LowerT.connect ⟨proj, ⟨1⟩⟩ currentPort
+          let projPort := PortId.principal proj
+          -- Cache this intermediate for reuse
+          LowerT.cacheOccurrence intermediateOcc projPort fieldType
+          pure (projPort, fieldType, newPath)
+
     pure (resultPort, resultType)
 
 /-- Build a DUP chain for n uses of a value with its type. -/
@@ -200,10 +273,21 @@ partial def lowerTree {M : Type → Type} [Monad M] [MonadGraph M]
     pure (PortId.principal era)
 
   | .leaf bindings armIndex =>
+    -- Pre-cache all binding occurrence types before resolution.
+    -- This ensures that when we walk occurrence paths, we have accurate
+    -- type information from compilation (which knew the constructor tags).
+    for binding in bindings do
+      match binding.ty with
+      | .vPrimTy .unit => pure ()  -- No type info, skip
+      | ty => LowerT.cacheOccurrenceType binding.occurrence ty
+
+    -- Resolve all bindings to (port, type) pairs
     let resolvedBindings ← bindings.mapM fun binding => do
       let (port, ty) ← resolveOccurrence binding.occurrence
+      -- The resolved type should now be accurate thanks to pre-caching
       pure (binding.id, binding.name, port, ty)
 
+    -- Build DUP chains based on usage counts
     let finalBindings ← resolvedBindings.foldlM (init := #[]) fun acc (id, name, port, ty) =>
       let count := usageCounts.getD id.id 1
       if count == 0 then do
@@ -319,21 +403,25 @@ end
 
 /-! ## Public API -/
 
-/-- Lower a compiled decision tree to Circuit IR -/
-def lowerIn {M : Type → Type} [Monad M] [MonadGraph M]
+/-- Lower a compiled decision tree to Circuit IR with type tracking. -/
+def lower {M : Type → Type} [Monad M] [MonadGraph M]
     (tree : DecisionTree)
     (scrutinees : Array PortId)
     (scrutineeTypes : Array Value)
+    (registry : ConstructorTypeRegistry)
     (resultType : Value)
     (lowerArm : ArmCallback M)
     (usageCounts : Std.HashMap Nat Nat := {})
     : M PortId := do
-  let (result, _) ← LowerT.run (lowerTree tree lowerArm usageCounts) scrutinees scrutineeTypes resultType
+  let (result, _) ← LowerT.run
+    (lowerTree tree lowerArm usageCounts)
+    scrutinees scrutineeTypes registry resultType
   pure result
 
-/-- Full compilation and lowering from Metal arms (generic version) -/
-def compileAndLowerIn {M : Type → Type} [Monad M] [MonadGraph M]
+/-- Full compilation and lowering from Metal arms. -/
+def compileAndLower {M : Type → Type} [Monad M] [MonadGraph M]
     (ctx : SimplifyCtx)
+    (registry : ConstructorTypeRegistry)
     (arms : Soma.Metal.ArmList α scope)
     (scrutinees : Array PortId)
     (scrutineeTypes : Array Value)
@@ -342,7 +430,7 @@ def compileAndLowerIn {M : Type → Type} [Monad M] [MonadGraph M]
     (usageCounts : Std.HashMap Nat Nat := {})
     : M PortId := do
   let matrix := buildMatrixFromArmList ctx arms
-  let tree := compileMatrix matrix
-  lowerIn tree scrutinees scrutineeTypes resultType lowerArm usageCounts
+  let tree := compileMatrix matrix registry scrutineeTypes
+  lower tree scrutinees scrutineeTypes registry resultType lowerArm usageCounts
 
 end Soma.Circuit.PatternMatch

@@ -55,6 +55,8 @@ structure LowerCtx where
   globals : Std.HashMap Name Nat := {}
   /-- Constructor Name → (type Name, tag, arity) -/
   constructors : Std.HashMap Name (Name × Nat × Nat) := {}
+  /-- Constructor type registry for field type lookup during pattern matching -/
+  ctorTypeRegistry : PatternMatch.ConstructorTypeRegistry := {}
   /-- Current function Name (for recursion detection) -/
   currentFn : Option Name := none
   /-- Usage counts from type checking (BindingId → exact count) -/
@@ -96,6 +98,12 @@ def lookupGlobal (ctx : LowerCtx) (name : Name) : Option Nat :=
 /-- Register a constructor -/
 def registerCtor (ctx : LowerCtx) (name : Name) (typeName : Name) (tag arity : Nat) : LowerCtx :=
   { ctx with constructors := ctx.constructors.insert name (typeName, tag, arity) }
+
+/-- Register a constructor with its elaborated type (for pattern matching field type lookup) -/
+def registerCtorType (ctx : LowerCtx) (typeId : Soma.Core.TypeId) (tag : Nat)
+    (ctorType : Value) : LowerCtx :=
+  let info := PatternMatch.ConstructorTypeRegistry.fromElaboratedType ctorType
+  { ctx with ctorTypeRegistry := ctx.ctorTypeRegistry.register typeId tag info }
 
 /-- Look up constructor info -/
 def lookupCtor (ctx : LowerCtx) (name : Name) : Option (Name × Nat × Nat) :=
@@ -637,13 +645,13 @@ partial def lowerCase (scrutinees : ExprList Value scope)
 
     -- Compile pattern matrix to decision tree
     let matrix := PatternMatch.buildMatrixFromArmList simplifyCtx arms
-    let tree := PatternMatch.compileMatrix matrix
+    let tree := PatternMatch.compileMatrix matrix ctx.ctorTypeRegistry scrutTypes
 
-    -- Convert usage map to the format expected by PatternMatch.lowerIn
+    -- Convert usage map to the format expected by PatternMatch
     let usageCounts := usageMapToNatMap ctx.usageMap
 
-    -- Lower the decision tree using lowerIn with LowerM
-    PatternMatch.lowerIn tree scrutPorts scrutTypes ty
+    -- Lower the decision tree
+    PatternMatch.lower tree scrutPorts scrutTypes ctx.ctorTypeRegistry ty
       (fun armIndex armCtx => lowerArmBodyByIndex arms armIndex armCtx)
       usageCounts
 where
@@ -1012,28 +1020,54 @@ def lowerFunction (fn : Soma.Metal.UntypedFunction) : LowerM NodeId := do
     LowerM.connect ⟨innermost, ⟨2⟩⟩ bodyPort
     pure lamNodes[0]!
 
-/-- Register type definitions (constructors) -/
-def registerTypes (types : Array Soma.Metal.TypeDef) : LowerM Unit := do
+/-- Register type definitions and builds the constructor type registry from type checker globals if provided -/
+def registerTypes (types : Array Soma.Metal.TypeDef)
+    (globals : Option Soma.Dependent.Globals := none) : LowerM Unit := do
   for typeDef in types do
     match typeDef with
-    | .algebraic name _tvars ctors =>
+    | .algebraic typeName _tvars ctors =>
+      -- Look up the TypeId for this type
+      let typeIdOpt := globals.bind fun g => g.lookupTypeId typeName.display
       for ctor in ctors do
         let arity := ctor.fieldTypeSyntax.size
         LowerM.modifyCtx fun ctx =>
-          ctx.registerCtor ctor.name name ctor.tag arity
-    | .struct name _tvars ctorName fields =>
+          ctx.registerCtor ctor.name typeName ctor.tag arity
+
+        -- If we have globals, register the constructor type for field type lookup
+        if let (some g, some typeId) := (globals, typeIdOpt) then
+          let ctorSimpleName := ctor.name.ctorSimpleName?.getD ctor.name.display
+          let ctorQualifiedName := s!"{typeName.display}.{ctorSimpleName}"
+          if let some ctorInfo := g.lookup ctorQualifiedName then
+            LowerM.modifyCtx fun ctx =>
+              ctx.registerCtorType typeId ctor.tag ctorInfo.type
+          else if let some ctorInfo := g.lookup ctorSimpleName then
+            LowerM.modifyCtx fun ctx =>
+              ctx.registerCtorType typeId ctor.tag ctorInfo.type
+
+    | .struct structName _tvars ctorName fields =>
       let arity := fields.size
       LowerM.modifyCtx fun ctx =>
-        ctx.registerCtor ctorName name 0 arity
+        ctx.registerCtor ctorName structName 0 arity
+
+      -- Register struct constructor type if available
+      if let some g := globals then
+        if let some typeId := g.lookupTypeId structName.display then
+          let ctorSimpleName := ctorName.ctorSimpleName?.getD ctorName.display
+          let ctorQualifiedName := s!"{structName.display}.{ctorSimpleName}"
+          if let some ctorInfo := g.lookup ctorQualifiedName then
+            LowerM.modifyCtx fun ctx =>
+              ctx.registerCtorType typeId 0 ctorInfo.type
+
     | .record name _tvars fields =>
       let arity := fields.size
       LowerM.modifyCtx fun ctx =>
         ctx.registerCtor name name 0 arity
 
 /-- Lower an entire module -/
-def lowerModule (module : Soma.Metal.Module) : LowerM Unit := do
+def lowerModule (module : Soma.Metal.Module)
+    (globals : Option Soma.Dependent.Globals := none) : LowerM Unit := do
   -- Register type constructors
-  registerTypes module.types
+  registerTypes module.types globals
 
   -- First pass: register all functions as globals
   let functions := module.functions.toList
@@ -1058,7 +1092,8 @@ def lowerModule (module : Soma.Metal.Module) : LowerM Unit := do
     LowerM.setRoot (PortId.principal era)
 
 /-- Lower a Metal module to Circuit IR -/
-def lower (module : Soma.Metal.Module) (usageMap : UsageMap) : Graph :=
-  LowerM.build (lowerModule module) usageMap
+def lower (module : Soma.Metal.Module) (usageMap : UsageMap)
+    (globals : Option Soma.Dependent.Globals := none) : Graph :=
+  LowerM.build (lowerModule module globals) usageMap
 
 end Soma.Circuit.Lower

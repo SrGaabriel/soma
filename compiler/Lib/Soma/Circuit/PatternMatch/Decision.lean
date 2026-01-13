@@ -1,10 +1,12 @@
 import Soma.Circuit.PatternMatch.Pattern
+import Soma.Circuit.PatternMatch.Types
 import Soma.Metal.Literal
+import Soma.Core.Value
 
 namespace Soma.Circuit.PatternMatch
 
 open Soma.Metal (BindingId Literal)
-
+open Soma.Core (Value)
 
 /-- Path to a sub-value within a scrutinee.
 
@@ -45,11 +47,23 @@ instance : ToString Occurrence := ⟨format⟩
 
 end Occurrence
 
-/-! ## Binding Information
+/-- An occurrence with its associated type -/
+structure TypedOccurrence where
+  /-- Where the value comes from -/
+  occurrence : Occurrence
+  /-- The type of the value at this occurrence -/
+  ty : Value
+  deriving Inhabited
 
-    When we reach a leaf of the decision tree, we need to know which
-    variables to bind to which occurrences.
--/
+namespace TypedOccurrence
+
+def root (col : Nat) (ty : Value) : TypedOccurrence :=
+  ⟨Occurrence.root col, ty⟩
+
+def field (tocc : TypedOccurrence) (idx : Nat) (fieldTy : Value) : TypedOccurrence :=
+  ⟨tocc.occurrence.field idx, fieldTy⟩
+
+end TypedOccurrence
 
 /-- A variable binding at a decision tree leaf -/
 structure Binding where
@@ -59,7 +73,9 @@ structure Binding where
   name : String
   /-- Where to get the value from -/
   occurrence : Occurrence
-  deriving Repr, Inhabited, BEq
+  /-- The type of the bound variable -/
+  ty : Value
+  deriving Inhabited
 
 namespace Binding
 
@@ -96,7 +112,7 @@ inductive DecisionTree where
       (kind : TestKind)
       (cases : Array (Nat × DecisionTree))  -- tag/lit-index → subtree
       (default : Option DecisionTree)       -- fallback for unmatched
-  deriving Repr, Inhabited
+  deriving Inhabited
 
 namespace DecisionTree
 
@@ -173,56 +189,78 @@ instance : ToString DecisionTree := ⟨fun t => format t 0⟩
 
 end DecisionTree
 
-/-! ## Occurrence Mapping
-
-    During compilation, we need to track how columns in the matrix
-    correspond to occurrences in the original scrutinees.
--/
-
 /-- Maps matrix column indices to occurrences.
 
-    As the matrix is specialized, columns are added/removed.
-    This map tracks where each column's value comes from.
+    This map tracks both where each column's value comes from AND its type.
 -/
-structure OccurrenceMap where
-  /-- Occurrence for each current column -/
-  columns : Array Occurrence
-  deriving Repr, Inhabited
+structure TypedOccurrenceMap where
+  /-- Typed occurrence for each current column -/
+  columns : Array TypedOccurrence
+  /-- Constructor type registry for field type lookup -/
+  registry : ConstructorTypeRegistry
+  deriving Inhabited
 
-namespace OccurrenceMap
+namespace TypedOccurrenceMap
 
-/-- Create initial map for n scrutinees (each is a root occurrence) -/
-def initial (n : Nat) : OccurrenceMap :=
-  ⟨Array.range n |>.map Occurrence.root⟩
+/-- Create initial map for n scrutinees with their types -/
+def initial (registry : ConstructorTypeRegistry) (scrutineeTypes : Array Value)
+    : TypedOccurrenceMap :=
+  let columns := scrutineeTypes.mapIdx fun i ty =>
+    TypedOccurrence.root i ty
+  ⟨columns, registry⟩
 
-/-- Get the occurrence for a column -/
-def get (m : OccurrenceMap) (col : Nat) : Option Occurrence :=
+/-- Get the typed occurrence for a column -/
+def get (m : TypedOccurrenceMap) (col : Nat) : Option TypedOccurrence :=
   m.columns[col]?
 
-/-- Get occurrence, panicking if out of bounds -/
-def get! (m : OccurrenceMap) (col : Nat) : Occurrence :=
+/-- Get typed occurrence, panicking if out of bounds -/
+def get! (m : TypedOccurrenceMap) (col : Nat) : TypedOccurrence :=
   m.columns[col]!
+
+/-- Get just the occurrence (without type) for a column -/
+def getOccurrence (m : TypedOccurrenceMap) (col : Nat) : Option Occurrence :=
+  m.columns[col]?.map (·.occurrence)
+
+/-- Get occurrence, panicking if out of bounds -/
+def getOccurrence! (m : TypedOccurrenceMap) (col : Nat) : Occurrence :=
+  m.columns[col]!.occurrence
+
+/-- Get the type at a column -/
+def getType (m : TypedOccurrenceMap) (col : Nat) : Value :=
+  m.columns[col]?.map (·.ty) |>.getD (.vPrimTy .unit)
 
 /-- Specialize the map for constructor match at `col` with `arity` fields.
 
     The column at `col` is replaced by `arity` new columns for the
-    constructor's fields.
+    constructor's fields with types computed from the constructor info.
 -/
-def specialize (m : OccurrenceMap) (col : Nat) (arity : Nat) : OccurrenceMap :=
+def specialize (m : TypedOccurrenceMap) (col : Nat) (tag : Nat) (arity : Nat)
+    : TypedOccurrenceMap :=
   match m.columns[col]? with
   | none => m
-  | some occ =>
+  | some tocc =>
     let before := m.columns.extract 0 col
     let after := m.columns.extract (col + 1) m.columns.size
-    let fieldOccs := Array.range arity |>.map (occ.field ·)
-    ⟨before ++ fieldOccs ++ after⟩
+
+    -- Compute field types using the registry and scrutinee type
+    let fieldTypes := computeFieldTypes m.registry tocc.ty tag arity
+
+    -- Create typed occurrences for each field
+    let fieldToccs := Array.range arity |>.map fun i =>
+      let fieldTy := fieldTypes[i]?.getD (.vPrimTy .unit)
+      TypedOccurrence.field tocc i fieldTy
+
+    ⟨before ++ fieldToccs ++ after, m.registry⟩
 
 /-- Remove a column (for literal specialization where no sub-patterns exist) -/
-def removeColumn (m : OccurrenceMap) (col : Nat) : OccurrenceMap :=
+def removeColumn (m : TypedOccurrenceMap) (col : Nat) : TypedOccurrenceMap :=
   let before := m.columns.extract 0 col
   let after := m.columns.extract (col + 1) m.columns.size
-  ⟨before ++ after⟩
+  ⟨before ++ after, m.registry⟩
 
-end OccurrenceMap
+/-- Get the number of columns -/
+def size (m : TypedOccurrenceMap) : Nat := m.columns.size
+
+end TypedOccurrenceMap
 
 end Soma.Circuit.PatternMatch
