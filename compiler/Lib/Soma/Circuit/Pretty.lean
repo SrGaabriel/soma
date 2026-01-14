@@ -1,6 +1,7 @@
 import Soma.Circuit.Graph
 import Soma.Circuit.Node
 import Soma.Circuit.Term
+import Soma.Core.Quote
 
 namespace Soma.Circuit.Pretty
 
@@ -20,6 +21,8 @@ structure Config where
   showConnections : Bool := true
   /-- Show labels on DUP/SUP -/
   showLabels : Bool := true
+  /-- Show type annotations on nodes -/
+  showTypes : Bool := false
   /-- Maximum line width before wrapping -/
   maxWidth : Nat := 80
   deriving Repr, Inhabited
@@ -73,6 +76,7 @@ def ppActivePair (ap : ActivePair) : String :=
 def ppNodeEntry (cfg : Config) (nid : NodeId) (entry : NodeEntry) : String :=
   let nodeStr := ppNode cfg entry.node
   let idStr := if cfg.showIds then s!"n{nid.id}: " else ""
+  let typeStr := if cfg.showTypes then s!" : {entry.ty}" else ""
   let connStr := if cfg.showConnections then
     let conns := entry.connections.map fun (pIdx, target) =>
       let pName := match entry.node.portRole pIdx with
@@ -81,7 +85,7 @@ def ppNodeEntry (cfg : Config) (nid : NodeId) (entry : NodeEntry) : String :=
       s!"{pName}→{ppPortId target}"
     if conns.isEmpty then "" else s!" [{String.intercalate ", " conns}]"
   else ""
-  s!"{idStr}{nodeStr}{connStr}"
+  s!"{idStr}{nodeStr}{typeStr}{connStr}"
 
 /-- Pretty print an entire graph -/
 def ppGraph (cfg : Config := .default) (g : Graph) : String :=
@@ -104,16 +108,17 @@ def ppGraph (cfg : Config := .default) (g : Graph) : String :=
   s!"{header}\n{rootStr}\n\n{nodesStr}\n\n{activeStr}"
 
 /-- Pretty print book definitions -/
-def ppBook (g : Graph) : String :=
+def ppBook (cfg : Config := .default) (g : Graph) : String :=
   if g.book.isEmpty then "Book: (empty)"
   else
     let defs := (enumList g.book.toList).map fun (idx, def_) =>
-      s!"  [{idx}] {def_.name} (arity {def_.arity}, root n{def_.root.id})"
+      let typeStr := if cfg.showTypes then s!" : {def_.ty}" else ""
+      s!"  [{idx}] {def_.name} (arity {def_.arity}, root n{def_.root.id}){typeStr}"
     s!"Book:\n{String.intercalate "\n" defs}"
 
 /-- Full graph dump including book -/
 def ppFull (cfg : Config := .default) (g : Graph) : String :=
-  s!"{ppGraph cfg g}\n\n{ppBook g}"
+  s!"{ppGraph cfg g}\n\n{ppBook cfg g}"
 
 /-! ## Term-level Pretty Printing -/
 

@@ -971,7 +971,7 @@ partial def lowerProj (expr : Expr Value scope) (idx : Nat)
 end
 
 /-- Lower a function definition -/
-def lowerFunction (fn : Soma.Metal.UntypedFunction) : LowerM NodeId := do
+def lowerFunction (fn : Soma.Metal.UntypedFunction) (fnType : Value) : LowerM NodeId := do
   -- Set current function for recursion detection
   LowerM.modifyCtx fun ctx => { ctx with currentFn := some fn.name }
 
@@ -982,14 +982,18 @@ def lowerFunction (fn : Soma.Metal.UntypedFunction) : LowerM NodeId := do
   let paramList := fn.params.toList
   let mut lamNodes : Array NodeId := #[]
   let ctx ← LowerM.getCtx
+  let mut currentTy := fnType
 
   for param in paramList do
     let (bindingId, name) := param
     -- Look up actual usage count from type checking
     let usageCount := ctx.getUsageCount bindingId
     let erased := usageCount == 0
-    let lam ← LowerM.addNode (.lam erased) unitTy
+    let lam ← LowerM.addNode (.lam erased) currentTy
     lamNodes := lamNodes.push lam
+
+    let paramTy := currentTy.piDomain?.getD unitTy
+    currentTy := currentTy.piCodomain?.getD unitTy
 
     -- Build DUP chain based on actual usage
     let varPort : PortId := ⟨lam, ⟨1⟩⟩
@@ -999,8 +1003,8 @@ def lowerFunction (fn : Soma.Metal.UntypedFunction) : LowerM NodeId := do
       LowerM.connect (PortId.principal era) varPort
     else
       -- Build DUP chain for actual usage count
-      let usePorts ← buildDupChain varPort usageCount unitTy
-      LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name usePorts unitTy
+      let usePorts ← buildDupChain varPort usageCount paramTy
+      LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name usePorts paramTy
 
   -- Wire LAMs together
   for i in [:lamNodes.size - 1] do
@@ -1076,16 +1080,30 @@ def lowerModule (module : Soma.Metal.Module)
 
   -- Second pass: lower each function
   for fn in functions do
-    let root ← lowerFunction fn
+    -- Look up the function's type from globals
+    let fnType := match globals with
+      | some g =>
+        match g.lookup fn.name.display with
+        | some info => info.type
+        | none => unitTy
+      | none => unitTy
+    let root ← lowerFunction fn fnType
     let arity := fn.params.size
-    let _ ← LowerM.addDefinition fn.name.display root arity unitTy
+    let _ ← LowerM.addDefinition fn.name.display root arity fnType
 
   -- Set root to main function if it exists
   let ctx ← LowerM.getCtx
   let mainEntry := ctx.globals.toList.find? fun (name, _) => name.original == "main"
   match mainEntry with
   | some (_, idx) =>
-    let ref ← LowerM.addNode (.ref idx) unitTy
+    -- Look up main's type
+    let mainTy := match globals with
+      | some g =>
+        match g.lookup "main" with
+        | some info => info.type
+        | none => unitTy
+      | none => unitTy
+    let ref ← LowerM.addNode (.ref idx) mainTy
     LowerM.setRoot (PortId.principal ref)
   | none =>
     let era ← LowerM.addNode .era unitTy

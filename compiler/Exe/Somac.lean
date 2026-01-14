@@ -192,11 +192,9 @@ def runMetadata (p : Parsed) : IO UInt32 := do
       IO.eprintln s!"{diag.severity}: {diag.message}"
     return 1
 
-/-- Handler for the `circuit` command -/
-def runCircuit (p : Parsed) : IO UInt32 := do
+/-- Handler for the `llvm` command -/
+def runLLVM (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
-  let graphFormat := p.hasFlag "graph"
-  let alloyFormat := p.hasFlag "alloy"
 
   -- Read source file
   let content ← IO.FS.readFile input
@@ -242,25 +240,141 @@ def runCircuit (p : Parsed) : IO UInt32 := do
   -- Phase 5.5: Lambda lifting (after typechecking, before Circuit IR)
   let liftedModule := Soma.Metal.LambdaLift.liftModule metalRes.module
 
-  -- Phase 6: Lower to Circuit IR with usage data from type checking
-  let graph := Soma.Circuit.Lower.lower liftedModule tcResult.usages
+  -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
+  let graph := Soma.Circuit.Lower.lower liftedModule tcResult.usages (some tcResult.globals)
 
-  -- Phase 7: If --alloy flag, lower to Alloy MIR
-  if alloyFormat then
-    let alloyModule := Soma.Alloy.Lower.lower graph moduleName
-    IO.println (Soma.Alloy.Pretty.pp alloyModule)
-    IO.println ""
-    IO.println s!"Alloy IR lowering successful ({alloyModule.funcs.size} functions)"
-    return 0
+  -- Phase 7: Lower to Alloy MIR
+  let alloyModule := Soma.Alloy.Lower.lower graph moduleName
+
+  -- Phase 8: Monomorphize the Alloy module
+  let monoModule := Soma.Alloy.Monomorphize.monomorphize alloyModule
+
+  -- Phase 9: Generate LLVM IR
+  let llvmIR := Soma.Alloy.codegenToString monoModule
+
+  IO.println llvmIR
+  return 0
+
+/-- Handler for the `alloy` command -/
+def runAlloy (p : Parsed) : IO UInt32 := do
+  let input := p.positionalArg! "input" |>.as! String
+
+  -- Read source file
+  let content ← IO.FS.readFile input
+
+  -- Phase 1-3: Parse and lower to AST
+  let moduleName := Soma.Check.moduleNameFromPath input
+  let (parseRes, lowerRes) := toAst input content (some moduleName)
+  let parseDiags := parseRes.diagnostics ++ lowerRes.diagnostics
+
+  if parseDiags.hasErrors then
+    Soma.Logging.Error.printDiagnostics parseDiags parseRes.sourceFile
+    IO.eprintln ""
+    IO.eprintln (Soma.Logging.Error.renderSummary parseDiags)
+    return 1
+
+  -- Phase 4: Lower to Metal IR
+  let metalRes := Soma.Check.metal lowerRes.ast
+  let metalDiags := parseDiags ++ metalRes.diagnostics
+
+  if metalRes.diagnostics.hasErrors then
+    Soma.Logging.Error.printDiagnostics metalDiags parseRes.sourceFile
+    IO.eprintln ""
+    IO.eprintln (Soma.Logging.Error.renderSummary metalDiags)
+    return 1
+
+  -- Phase 5: Type check with dependent types (this gives us usage counts)
+  let tcResult := Soma.Check.typeCheckModule
+    metalRes.module moduleName
+    Soma.Dependent.Globals.empty
+    Soma.Dependent.InstanceEnv.empty
+    Soma.Dependent.AbbrevEnv.empty
+    none
+
+  let tcDiags := tcResult.errors.map (·.toDiagnostic)
+  let allDiags := metalDiags ++ tcDiags
+
+  if allDiags.hasErrors then
+    Soma.Logging.Error.printDiagnostics allDiags parseRes.sourceFile
+    IO.eprintln ""
+    IO.eprintln (Soma.Logging.Error.renderSummary allDiags)
+    return 1
+
+  -- Phase 5.5: Lambda lifting (after typechecking, before Circuit IR)
+  let liftedModule := Soma.Metal.LambdaLift.liftModule metalRes.module
+
+  -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
+  let graph := Soma.Circuit.Lower.lower liftedModule tcResult.usages (some tcResult.globals)
+
+  -- Phase 7: Lower to Alloy MIR
+  let alloyModule := Soma.Alloy.Lower.lower graph moduleName
+
+  IO.println (Soma.Alloy.Pretty.pp alloyModule)
+  IO.println ""
+  IO.println s!"Alloy IR lowering successful ({alloyModule.funcs.size} functions)"
+  return 0
+
+/-- Handler for the `circuit` command -/
+def runCircuit (p : Parsed) : IO UInt32 := do
+  let input := p.positionalArg! "input" |>.as! String
+  let graphFormat := p.hasFlag "graph"
+  let showTypes := p.hasFlag "types"
+
+  -- Read source file
+  let content ← IO.FS.readFile input
+
+  -- Phase 1-3: Parse and lower to AST
+  let moduleName := Soma.Check.moduleNameFromPath input
+  let (parseRes, lowerRes) := toAst input content (some moduleName)
+  let parseDiags := parseRes.diagnostics ++ lowerRes.diagnostics
+
+  if parseDiags.hasErrors then
+    Soma.Logging.Error.printDiagnostics parseDiags parseRes.sourceFile
+    IO.eprintln ""
+    IO.eprintln (Soma.Logging.Error.renderSummary parseDiags)
+    return 1
+
+  -- Phase 4: Lower to Metal IR
+  let metalRes := Soma.Check.metal lowerRes.ast
+  let metalDiags := parseDiags ++ metalRes.diagnostics
+
+  if metalRes.diagnostics.hasErrors then
+    Soma.Logging.Error.printDiagnostics metalDiags parseRes.sourceFile
+    IO.eprintln ""
+    IO.eprintln (Soma.Logging.Error.renderSummary metalDiags)
+    return 1
+
+  -- Phase 5: Type check with dependent types (this gives us usage counts)
+  let tcResult := Soma.Check.typeCheckModule
+    metalRes.module moduleName
+    Soma.Dependent.Globals.empty
+    Soma.Dependent.InstanceEnv.empty
+    Soma.Dependent.AbbrevEnv.empty
+    none
+
+  let tcDiags := tcResult.errors.map (·.toDiagnostic)
+  let allDiags := metalDiags ++ tcDiags
+
+  if allDiags.hasErrors then
+    Soma.Logging.Error.printDiagnostics allDiags parseRes.sourceFile
+    IO.eprintln ""
+    IO.eprintln (Soma.Logging.Error.renderSummary allDiags)
+    return 1
+
+  -- Phase 5.5: Lambda lifting (after typechecking, before Circuit IR)
+  let liftedModule := Soma.Metal.LambdaLift.liftModule metalRes.module
+
+  -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
+  let graph := Soma.Circuit.Lower.lower liftedModule tcResult.usages (some tcResult.globals)
 
   -- Pretty print the Circuit IR graph
+  let cfg : Soma.Circuit.Pretty.Config := { showIds := true, showConnections := true, showLabels := true, showTypes := showTypes }
   if graphFormat then
     -- Full graph format with node IDs and connections
-    let cfg : Soma.Circuit.Pretty.Config := { showIds := true, showConnections := true, showLabels := true }
     IO.println (Soma.Circuit.Pretty.ppFull cfg graph)
   else
     -- Default: just the graph summary
-    IO.println (Soma.Circuit.Pretty.ppGraph .default graph)
+    IO.println (Soma.Circuit.Pretty.ppGraph cfg graph)
 
   IO.println ""
   IO.println s!"Circuit IR lowering successful ({graph.nodeCount} nodes)"
@@ -371,8 +485,25 @@ def circuitCmd : Cmd := `[Cli|
     l, linearize; "Apply linearization pass (insert DUP/ERA nodes)"
     g, graph; "Output in graph format instead of term format"
     e, eval; "Evaluate using interaction net reduction"
-    a, alloy; "Lower Circuit IR to Alloy MIR"
-    llvm; "Lower to LLVM IR (implies -l -a)"
+    t, types; "Show type annotations on nodes"
+
+  ARGS:
+    input : String; "Input source file (.soma)"
+]
+
+/-- The `alloy` subcommand -/
+def alloyCmd : Cmd := `[Cli|
+  alloy VIA runAlloy; ["0.1.0"]
+  "Lower to Alloy MIR (SSA-based mid-level IR)."
+
+  ARGS:
+    input : String; "Input source file (.soma)"
+]
+
+/-- The `llvm` subcommand -/
+def llvmCmd : Cmd := `[Cli|
+  llvm VIA runLLVM; ["0.1.0"]
+  "Compile to LLVM IR (full pipeline: parse → typecheck → Circuit → Alloy → monomorphize → LLVM)."
 
   ARGS:
     input : String; "Input source file (.soma)"
@@ -422,6 +553,8 @@ def somaCmd : Cmd := `[Cli|
     checkCmd;
     metadataCmd;
     circuitCmd;
+    alloyCmd;
+    llvmCmd;
     buildCmd
 ]
 
