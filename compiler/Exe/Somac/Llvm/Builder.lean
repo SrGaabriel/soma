@@ -1,9 +1,9 @@
-import Soma.Alloy.LLVM.Types
+import Somac.Llvm.Types
 import Std.Data.HashMap
 
-namespace Soma.Alloy.LLVM.Builder
+namespace Somac.Llvm.Builder
 
-open Soma.Alloy.LLVM
+open Somac.Llvm
 
 /-- State for building an LLVM function -/
 structure FuncBuilderState where
@@ -490,4 +490,4 @@ def buildFuncWithEntry (name : String) (retTy : LLVMType) (params : Array LLVMPa
   let ((), state) := Id.run (StateT.run builder initState)
   { name, retTy, params, attrs, blocks := state.blocks, isDeclaration := false }
 
-end Soma.Alloy.LLVM.Builder
+end Somac.Llvm.Builder

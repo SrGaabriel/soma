@@ -1,9 +1,9 @@
-import Soma.Circuit.Term
+import Somac.Circuit.Term
 import Soma.Core.Quantity
 
-namespace Soma.Circuit.Node
+namespace Somac.Circuit.Node
 
-open Soma.Circuit.Term (Term Tag Loc Ext Op1Code Op2Code PrimType)
+open Somac.Circuit.Term (Term Tag Loc Ext Op1Code Op2Code PrimType)
 open Soma.Core (Quantity)
 
 /-- Unique identifier for a node in the graph -/
@@ -543,4 +543,4 @@ instance : ToString ActivePair where
 
 end ActivePair
 
-end Soma.Circuit.Node
+end Somac.Circuit.Node

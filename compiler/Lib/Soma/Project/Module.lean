@@ -4,8 +4,7 @@ namespace Soma.Project
 
 open Soma.Syntax
 
-/-- A qualified module name with package and path components.
--/
+/-- A qualified module name with package and path components -/
 structure ModuleName where
   /-- The package this module belongs to -/
   package : String

@@ -1,4 +1,4 @@
-namespace Soma.Alloy.LLVM
+namespace Somac.Llvm
 
 /-- LLVM calling conventions -/
 inductive CallConv where
@@ -701,4 +701,4 @@ instance : ToString LLVMModule where
 
 end LLVMModule
 
-end Soma.Alloy.LLVM
+end Somac.Llvm

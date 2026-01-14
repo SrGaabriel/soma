@@ -1,7 +1,7 @@
-import Soma.Circuit.Graph
-import Soma.Circuit.Node
-import Soma.Circuit.Term
-import Soma.Circuit.PatternMatch
+import Somac.Circuit.Graph
+import Somac.Circuit.Node
+import Somac.Circuit.Term
+import Somac.Circuit.PatternMatch
 import Soma.Metal.Expr
 import Soma.Metal.Module
 import Soma.Metal.Function
@@ -10,12 +10,12 @@ import Soma.Core.Quantity
 import Soma.Dependent.Monad
 import Std.Data.HashMap
 
-namespace Soma.Circuit.Lower
+namespace Somac.Circuit.Lower
 
-open Soma.Circuit.Graph (Graph GraphM enumList)
-open Soma.Circuit.Node (Node NodeId PortId PortIdx Label)
-open Soma.Circuit.Term (Op1Code Op2Code PrimType)
-open Soma.Circuit.Term (PrimType)
+open Somac.Circuit.Graph (Graph GraphM enumList)
+open Somac.Circuit.Node (Node NodeId PortId PortIdx Label)
+open Somac.Circuit.Term (Op1Code Op2Code PrimType)
+open Somac.Circuit.Term (PrimType)
 open Soma.Metal (Expr ExprList Literal Name BindingId)
 open Soma.Core (Value Quantity PrimOp Intrinsic)
 
@@ -1109,4 +1109,4 @@ def lower (types : Array Soma.Metal.TypeDef)
     (globals : Option Soma.Dependent.Globals := none) : Graph :=
   LowerM.build (lowerModule types typedFunctions globals) usageMap
 
-end Soma.Circuit.Lower
+end Somac.Circuit.Lower

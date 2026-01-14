@@ -1,4 +1,4 @@
-namespace Soma.Circuit.Term
+namespace Somac.Circuit.Term
 
 /-- Number of bits for the substitution flag -/
 def subBits : Nat := 1
@@ -603,4 +603,4 @@ def isImmediate (t : Term) : Bool :=
 
 end Term
 
-end Soma.Circuit.Term
+end Somac.Circuit.Term

@@ -1,13 +1,13 @@
-import Soma.Circuit.Graph
-import Soma.Circuit.Node
-import Soma.Circuit.Term
+import Somac.Circuit.Graph
+import Somac.Circuit.Node
+import Somac.Circuit.Term
 import Soma.Core.Quote
 
-namespace Soma.Circuit.Pretty
+namespace Somac.Circuit.Pretty
 
-open Soma.Circuit.Graph (Graph GraphM NodeEntry Definition enumList)
-open Soma.Circuit.Node (Node NodeId PortId PortIdx Wire ActivePair Label PortRole)
-open Soma.Circuit.Term (Term Tag Loc Op2Code PrimType)
+open Somac.Circuit.Graph (Graph GraphM NodeEntry Definition enumList)
+open Somac.Circuit.Node (Node NodeId PortId PortIdx Wire ActivePair Label PortRole)
+open Somac.Circuit.Term (Term Tag Loc Op2Code PrimType)
 
 /-! ## Configuration -/
 
@@ -130,4 +130,4 @@ def ppTerm (t : Term) : String :=
   let subStr := if t.isSubstituted then "!" else ""
   s!"{subStr}{tagStr}{extStr}{valStr}"
 
-end Soma.Circuit.Pretty
+end Somac.Circuit.Pretty

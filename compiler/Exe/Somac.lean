@@ -6,8 +6,9 @@ import Soma.Logging
 import Soma.Project
 import Soma.Project.Check
 import Soma.Dependent
-import Soma.Circuit
-import Soma.Alloy
+import Somac.Circuit
+import Somac.Alloy
+import Somac.Llvm
 import Somac.Build
 import Somac.Build.Metadata
 
@@ -241,16 +242,16 @@ def runLLVM (p : Parsed) : IO UInt32 := do
   let liftedTypedFunctions := Soma.Metal.LambdaLift.liftAll tcResult.typedFunctions moduleName
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Soma.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
+  let graph := Somac.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
 
   -- Phase 7: Lower to Alloy MIR
-  let alloyModule := Soma.Alloy.Lower.lower graph moduleName
+  let alloyModule := Somac.Alloy.Lower.lower graph moduleName
 
   -- Phase 8: Monomorphize the Alloy module
-  let monoModule := Soma.Alloy.Monomorphize.monomorphize alloyModule
+  let monoModule := Somac.Alloy.Monomorphize.monomorphize alloyModule
 
   -- Phase 9: Generate LLVM IR
-  let llvmIR := Soma.Alloy.codegenToString monoModule
+  let llvmIR := Somac.Llvm.codegenToString monoModule
 
   IO.println llvmIR
   return 0
@@ -304,12 +305,12 @@ def runAlloy (p : Parsed) : IO UInt32 := do
   let liftedTypedFunctions := Soma.Metal.LambdaLift.liftAll tcResult.typedFunctions moduleName
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Soma.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
+  let graph := Somac.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
 
   -- Phase 7: Lower to Alloy MIR
-  let alloyModule := Soma.Alloy.Lower.lower graph moduleName
+  let alloyModule := Somac.Alloy.Lower.lower graph moduleName
 
-  IO.println (Soma.Alloy.Pretty.pp alloyModule)
+  IO.println (Somac.Alloy.Pretty.pp alloyModule)
   IO.println ""
   IO.println s!"Alloy IR lowering successful ({alloyModule.funcs.size} functions)"
   return 0
@@ -365,16 +366,16 @@ def runCircuit (p : Parsed) : IO UInt32 := do
   let liftedTypedFunctions := Soma.Metal.LambdaLift.liftAll tcResult.typedFunctions moduleName
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Soma.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
+  let graph := Somac.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
 
   -- Pretty print the Circuit IR graph
-  let cfg : Soma.Circuit.Pretty.Config := { showIds := true, showConnections := true, showLabels := true, showTypes := showTypes }
+  let cfg : Somac.Circuit.Pretty.Config := { showIds := true, showConnections := true, showLabels := true, showTypes := showTypes }
   if graphFormat then
     -- Full graph format with node IDs and connections
-    IO.println (Soma.Circuit.Pretty.ppFull cfg graph)
+    IO.println (Somac.Circuit.Pretty.ppFull cfg graph)
   else
     -- Default: just the graph summary
-    IO.println (Soma.Circuit.Pretty.ppGraph cfg graph)
+    IO.println (Somac.Circuit.Pretty.ppGraph cfg graph)
 
   IO.println ""
   IO.println s!"Circuit IR lowering successful ({graph.nodeCount} nodes)"

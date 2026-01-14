@@ -15,9 +15,7 @@
 
 import Std.Data.HashMap
 
-namespace Soma.Alloy
-
-/-! ## Value Identifiers -/
+namespace Somac.Alloy
 
 /-- A local value in SSA form (assigned exactly once) -/
 structure LocalId where
@@ -85,8 +83,6 @@ def zero : TyVarId := ⟨0⟩
 def succ (v : TyVarId) : TyVarId := ⟨v.idx + 1⟩
 
 end TyVarId
-
-/-! ## Types -/
 
 /-- Primitive types at the Alloy level -/
 inductive PrimTy where
@@ -399,4 +395,4 @@ instance : ToString UnOp where
 
 end UnOp
 
-end Soma.Alloy
+end Somac.Alloy

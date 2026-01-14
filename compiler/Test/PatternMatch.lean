@@ -1,6 +1,6 @@
-import Soma.Circuit.PatternMatch
-import Soma.Circuit.Graph
-import Soma.Circuit.Node
+import Somac.Circuit.PatternMatch
+import Somac.Circuit.Graph
+import Somac.Circuit.Node
 import Soma.Metal.Pattern
 import Soma.Metal.Expr
 import Soma.Core.Name
@@ -8,9 +8,9 @@ import Test.Fixtures
 
 namespace Test.PatternMatch
 
-open Soma.Circuit.PatternMatch
-open Soma.Circuit.Graph (Graph GraphM)
-open Soma.Circuit.Node (Node NodeId PortId)
+open Somac.Circuit.PatternMatch
+open Somac.Circuit.Graph (Graph GraphM)
+open Somac.Circuit.Node (Node NodeId PortId)
 open Soma.Metal (BindingId Literal Pattern PatternList)
 open Soma.Core (Name)
 open Test.Fixtures

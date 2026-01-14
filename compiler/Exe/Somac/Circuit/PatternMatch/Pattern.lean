@@ -3,7 +3,7 @@ import Soma.Metal.Literal
 import Soma.Metal.Scope
 import Std.Data.HashMap
 
-namespace Soma.Circuit.PatternMatch
+namespace Somac.Circuit.PatternMatch
 
 open Soma.Metal (Pattern Literal BindingId Name)
 
@@ -209,4 +209,4 @@ def simplifyPatterns (ctx : SimplifyCtx) (pats : Array (Pattern α))
     : Array SimplePattern :=
   pats.map (simplifyPattern ctx)
 
-end Soma.Circuit.PatternMatch
+end Somac.Circuit.PatternMatch

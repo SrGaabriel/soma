@@ -22,13 +22,13 @@
   type variables, forall types, or polymorphic call instructions.
 -/
 
-import Soma.Alloy.Func
+import Somac.Alloy.Func
 import Std.Data.HashMap
 import Std.Data.HashSet
 
-namespace Soma.Alloy.Monomorphize
+namespace Somac.Alloy.Monomorphize
 
-open Soma.Alloy
+open Somac.Alloy
 
 /-! ## Type Hashing
 
@@ -605,4 +605,4 @@ def reportPolymorphism (m : Module) : Array String :=
 
     acc ++ funcIssues
 
-end Soma.Alloy.Monomorphize
+end Somac.Alloy.Monomorphize

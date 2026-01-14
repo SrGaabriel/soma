@@ -1,8 +1,8 @@
-import Soma.Alloy.Func
+import Somac.Alloy.Func
 
-namespace Soma.Alloy.Pretty
+namespace Somac.Alloy.Pretty
 
-open Soma.Alloy
+open Somac.Alloy
 
 /-! ## Configuration -/
 
@@ -341,4 +341,4 @@ def ppFn (f : Func) : String := ppFunc .default f
 /-- Pretty print a block -/
 def ppBb (b : Block) : String := ppBlock .default b
 
-end Soma.Alloy.Pretty
+end Somac.Alloy.Pretty

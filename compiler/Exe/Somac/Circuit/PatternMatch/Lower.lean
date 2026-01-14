@@ -1,18 +1,18 @@
-import Soma.Circuit.PatternMatch.Pattern
-import Soma.Circuit.PatternMatch.Matrix
-import Soma.Circuit.PatternMatch.Decision
-import Soma.Circuit.PatternMatch.Compile
-import Soma.Circuit.PatternMatch.Types
-import Soma.Circuit.Graph
-import Soma.Circuit.Node
+import Somac.Circuit.PatternMatch.Pattern
+import Somac.Circuit.PatternMatch.Matrix
+import Somac.Circuit.PatternMatch.Decision
+import Somac.Circuit.PatternMatch.Compile
+import Somac.Circuit.PatternMatch.Types
+import Somac.Circuit.Graph
+import Somac.Circuit.Node
 import Soma.Metal.Expr
 import Soma.Core.Value
 import Std.Data.HashMap
 
-namespace Soma.Circuit.PatternMatch
+namespace Somac.Circuit.PatternMatch
 
-open Soma.Circuit.Graph (Graph GraphM)
-open Soma.Circuit.Node (Node NodeId PortId PortIdx Label)
+open Somac.Circuit.Graph (Graph GraphM)
+open Somac.Circuit.Node (Node NodeId PortId PortIdx Label)
 open Soma.Metal (BindingId Literal)
 open Soma.Core (Value)
 
@@ -433,4 +433,4 @@ def compileAndLower {M : Type → Type} [Monad M] [MonadGraph M]
   let tree := compileMatrix matrix registry scrutineeTypes
   lower tree scrutinees scrutineeTypes registry resultType lowerArm usageCounts
 
-end Soma.Circuit.PatternMatch
+end Somac.Circuit.PatternMatch

@@ -1,16 +1,16 @@
-import Soma.Circuit
-import Soma.Circuit.Term
-import Soma.Circuit.Node
-import Soma.Circuit.Graph
-import Soma.Circuit.Pretty
+import Somac.Circuit
+import Somac.Circuit.Term
+import Somac.Circuit.Node
+import Somac.Circuit.Graph
+import Somac.Circuit.Pretty
 import Test.Fixtures
 
 namespace Test.Circuit
 
-open Soma.Circuit.Term (Term Tag Loc Ext Op2Code PrimType)
-open Soma.Circuit.Node (Node NodeId PortId PortIdx Wire ActivePair Label)
-open Soma.Circuit.Graph (Graph GraphM)
-open Soma.Circuit.Pretty (ppGraph ppNode ppTerm)
+open Somac.Circuit.Term (Term Tag Loc Ext Op2Code PrimType)
+open Somac.Circuit.Node (Node NodeId PortId PortIdx Wire ActivePair Label)
+open Somac.Circuit.Graph (Graph GraphM)
+open Somac.Circuit.Pretty (ppGraph ppNode ppTerm)
 open Test.Fixtures
 
 namespace TermTests
@@ -602,7 +602,7 @@ namespace PrettyTests
 
 /-- Test: ppNode produces non-empty output -/
 def testPpNode : IO TestResult := do
-  let cfg := Soma.Circuit.Pretty.Config.default
+  let cfg := Somac.Circuit.Pretty.Config.default
   let nodes := [Node.lam false, Node.lam true, Node.app, Node.era,
                 Node.dup ⟨5⟩, Node.sup ⟨3⟩, Node.ctor 2 3,
                 Node.mat 1, Node.record 2, Node.proj 0,
@@ -616,7 +616,7 @@ def testPpNode : IO TestResult := do
 
 /-- Test: ppNode shows labels for DUP/SUP -/
 def testPpNodeLabels : IO TestResult := do
-  let cfg := { Soma.Circuit.Pretty.Config.default with showLabels := true }
+  let cfg := { Somac.Circuit.Pretty.Config.default with showLabels := true }
   let dup := ppNode cfg (Node.dup ⟨7⟩)
   let sup := ppNode cfg (Node.sup ⟨3⟩)
 
@@ -649,7 +649,7 @@ def testPpGraph : IO TestResult := do
     GraphM.setRoot (PortId.principal n2)
 
   let (_, graph) := GraphM.run' buildGraph
-  let output := ppGraph Soma.Circuit.Pretty.Config.default graph
+  let output := ppGraph Somac.Circuit.Pretty.Config.default graph
 
   if !output.toSlice.contains "Circuit Graph" then
     return .failed "ppGraph should contain header"

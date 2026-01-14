@@ -1,12 +1,12 @@
-import Soma.Circuit.Node
-import Soma.Circuit.Term
+import Somac.Circuit.Node
+import Somac.Circuit.Term
 import Soma.Core.Value
 import Std.Data.HashMap
 
-namespace Soma.Circuit.Graph
+namespace Somac.Circuit.Graph
 
-open Soma.Circuit.Node (Node NodeId PortId PortIdx Wire ActivePair Label)
-open Soma.Circuit.Term (Term Tag Loc)
+open Somac.Circuit.Node (Node NodeId PortId PortIdx Wire ActivePair Label)
+open Somac.Circuit.Term (Term Tag Loc)
 open Soma.Core (Value)
 
 /-- Enumerate a list with indices -/
@@ -349,4 +349,4 @@ def modifyGraph (f : Graph → Graph) : GraphM Unit := modify f
 
 end GraphM
 
-end Soma.Circuit.Graph
+end Somac.Circuit.Graph

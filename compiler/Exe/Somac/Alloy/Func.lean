@@ -9,11 +9,9 @@
   A module is a collection of functions, globals, and type definitions.
 -/
 
-import Soma.Alloy.Block
+import Somac.Alloy.Block
 
-namespace Soma.Alloy
-
-/-! ## Function Signatures -/
+namespace Somac.Alloy
 
 /-- Function parameter -/
 structure Param where
@@ -391,4 +389,4 @@ instance : ToString Module where
 
 end Module
 
-end Soma.Alloy
+end Somac.Alloy

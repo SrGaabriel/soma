@@ -1,12 +1,12 @@
-import Soma.Alloy.Func
-import Soma.Alloy.LLVM.Builder
+import Somac.Alloy.Func
+import Somac.Llvm.Builder
 import Std.Data.HashMap
 
-namespace Soma.Alloy.LLVM.Codegen
+namespace Somac.Llvm.Codegen
 
-open Soma.Alloy
-open Soma.Alloy.LLVM
-open Soma.Alloy.LLVM.Builder
+open Somac.Alloy
+open Somac.Llvm
+open Somac.Llvm.Builder
 
 /-- Convert Alloy primitive type to LLVM type -/
 def convertPrimTy : PrimTy → LLVMType
@@ -990,4 +990,4 @@ def codegenToString (alloyModule : Module) (targetTriple : Option String := none
   let llvmModule := codegen alloyModule targetTriple
   llvmModule.toLLVM
 
-end Soma.Alloy.LLVM.Codegen
+end Somac.Llvm.Codegen

@@ -1,7 +1,7 @@
-import Soma.Circuit.PatternMatch.Pattern
+import Somac.Circuit.PatternMatch.Pattern
 import Soma.Metal.Expr
 
-namespace Soma.Circuit.PatternMatch
+namespace Somac.Circuit.PatternMatch
 
 open Soma.Metal (BindingId Pattern PatternList Arm ArmList)
 
@@ -387,4 +387,4 @@ where
     | .nil => []
     | .cons a as => a :: armListToList as
 
-end Soma.Circuit.PatternMatch
+end Somac.Circuit.PatternMatch

@@ -11,11 +11,9 @@
   5. Function operations: call, closure creation
 -/
 
-import Soma.Alloy.Types
+import Somac.Alloy.Types
 
-namespace Soma.Alloy
-
-/-! ## Instructions -/
+namespace Somac.Alloy
 
 /-- An instruction that produces a value -/
 inductive Inst where
@@ -297,4 +295,4 @@ instance : ToString Terminator where
 
 end Terminator
 
-end Soma.Alloy
+end Somac.Alloy

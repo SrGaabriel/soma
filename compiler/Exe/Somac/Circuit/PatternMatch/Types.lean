@@ -2,7 +2,7 @@ import Soma.Core.Value
 import Soma.Core.TypeId
 import Std.Data.HashMap
 
-namespace Soma.Circuit.PatternMatch
+namespace Somac.Circuit.PatternMatch
 
 open Soma.Core (Value Closure TypeId)
 
@@ -240,4 +240,4 @@ def removeColumn (ctx : TypeContext) (col : Nat) : TypeContext :=
 
 end TypeContext
 
-end Soma.Circuit.PatternMatch
+end Somac.Circuit.PatternMatch

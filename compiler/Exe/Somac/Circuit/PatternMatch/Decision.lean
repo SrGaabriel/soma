@@ -1,9 +1,9 @@
-import Soma.Circuit.PatternMatch.Pattern
-import Soma.Circuit.PatternMatch.Types
+import Somac.Circuit.PatternMatch.Pattern
+import Somac.Circuit.PatternMatch.Types
 import Soma.Metal.Literal
 import Soma.Core.Value
 
-namespace Soma.Circuit.PatternMatch
+namespace Somac.Circuit.PatternMatch
 
 open Soma.Metal (BindingId Literal)
 open Soma.Core (Value)
@@ -263,4 +263,4 @@ def size (m : TypedOccurrenceMap) : Nat := m.columns.size
 
 end TypedOccurrenceMap
 
-end Soma.Circuit.PatternMatch
+end Somac.Circuit.PatternMatch

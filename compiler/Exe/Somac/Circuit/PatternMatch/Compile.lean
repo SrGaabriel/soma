@@ -1,10 +1,10 @@
-import Soma.Circuit.PatternMatch.Pattern
-import Soma.Circuit.PatternMatch.Matrix
-import Soma.Circuit.PatternMatch.Decision
-import Soma.Circuit.PatternMatch.Types
+import Somac.Circuit.PatternMatch.Pattern
+import Somac.Circuit.PatternMatch.Matrix
+import Somac.Circuit.PatternMatch.Decision
+import Somac.Circuit.PatternMatch.Types
 import Soma.Core.Value
 
-namespace Soma.Circuit.PatternMatch
+namespace Somac.Circuit.PatternMatch
 
 open Soma.Core (Value)
 
@@ -203,4 +203,4 @@ def compileArms (ctx : SimplifyCtx) (registry : ConstructorTypeRegistry)
   let matrix := buildMatrixFromArmList ctx arms
   compileMatrix matrix registry scrutineeTypes
 
-end Soma.Circuit.PatternMatch
+end Somac.Circuit.PatternMatch

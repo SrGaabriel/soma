@@ -14,31 +14,28 @@
   Alloy instructions in evaluation order.
 -/
 
-import Soma.Alloy.Func
-import Soma.Circuit.Graph
-import Soma.Circuit.Node
+import Somac.Alloy.Func
+import Somac.Circuit.Graph
+import Somac.Circuit.Node
 import Soma.Core.Value
 import Soma.Core.Primitive
 import Std.Data.HashMap
 import Std.Data.HashSet
 
-namespace Soma.Alloy.Lower
+namespace Somac.Alloy.Lower
 
-open Soma.Alloy
+open Somac.Alloy
 
--- Use qualified names for Circuit types to avoid conflicts
-abbrev CGraph := Soma.Circuit.Graph.Graph
-abbrev CDefinition := Soma.Circuit.Graph.Definition
-abbrev CNode := Soma.Circuit.Node.Node
-abbrev CNodeId := Soma.Circuit.Node.NodeId
-abbrev CPortId := Soma.Circuit.Node.PortId
-abbrev CPortIdx := Soma.Circuit.Node.PortIdx
-abbrev CLabel := Soma.Circuit.Node.Label
-abbrev CNodeEntry := Soma.Circuit.Graph.NodeEntry
+abbrev CGraph := Somac.Circuit.Graph.Graph
+abbrev CDefinition := Somac.Circuit.Graph.Definition
+abbrev CNode := Somac.Circuit.Node.Node
+abbrev CNodeId := Somac.Circuit.Node.NodeId
+abbrev CPortId := Somac.Circuit.Node.PortId
+abbrev CPortIdx := Somac.Circuit.Node.PortIdx
+abbrev CLabel := Somac.Circuit.Node.Label
+abbrev CNodeEntry := Somac.Circuit.Graph.NodeEntry
 
-open Soma.Circuit.Term (Op1Code Op2Code PrimType Tag)
-
-/-! ## Lowering Context -/
+open Somac.Circuit.Term (Op1Code Op2Code PrimType Tag)
 
 /-- Mapping from Circuit node ports to Alloy local values -/
 abbrev PortMap := Std.HashMap (Nat × Nat) LocalId
@@ -193,8 +190,6 @@ def getPortOrFresh (port : CPortId) (ty : Ty) : LowerM LocalId := do
     pure id
 
 end LowerM
-
-/-! ## Type Conversion -/
 
 /-- Convert Circuit PrimType to Alloy PrimTy -/
 def convertPrimType : PrimType → PrimTy
@@ -856,4 +851,4 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") : Module := Id.r
 def lower (graph : CGraph) (moduleName : String := "main") : Module :=
   lowerGraph graph moduleName
 
-end Soma.Alloy.Lower
+end Somac.Alloy.Lower

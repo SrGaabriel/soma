@@ -10,13 +10,11 @@
   between blocks is explicit via terminators.
 -/
 
-import Soma.Alloy.Inst
+import Somac.Alloy.Inst
 import Std.Data.HashMap
 import Std.Data.HashSet
 
-namespace Soma.Alloy
-
-/-! ## Statements -/
+namespace Somac.Alloy
 
 /-- A statement binds an instruction result to a local -/
 structure Stmt where
@@ -169,8 +167,6 @@ instance : ToString Block where
 
 end Block
 
-/-! ## Control Flow Graph -/
-
 /-- A control flow graph is a collection of basic blocks -/
 structure CFG where
   /-- All blocks, indexed by BlockId -/
@@ -263,4 +259,4 @@ instance : ToString CFG where
 
 end CFG
 
-end Soma.Alloy
+end Somac.Alloy
