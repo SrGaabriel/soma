@@ -317,6 +317,8 @@ structure FunctionCheckResult where
   finalState : TCState
   /-- Updated incremental state with caches and dependencies -/
   incrementalState : IncrementalState
+  /-- Typed function bodies (function name -> typed fn) -/
+  typedFunctions : Std.HashMap String Metal.TypedFunction
   /-- Errors encountered during checking -/
   errors : Array Soma.Dependent.TCError
   deriving Inhabited
@@ -342,6 +344,7 @@ def checkFunctionsCore
   let mut errors : Array Soma.Dependent.TCError := #[]
   let mut currentState := initialState
   let mut incrState := prevIncrState
+  let mut typedFns : Std.HashMap String Metal.TypedFunction := {}
 
   for fn in metalModule.functions do
     let fnName := fn.name.display
@@ -365,9 +368,20 @@ def checkFunctionsCore
         let syntaxHash := hashFunction fn
         let cache := DefCache.failure syntaxHash (Value.vType Level.zero) DefKind.function #[e]
         incrState := incrState.updateCache defId cache
-      | .ok (fnType, newState) =>
+      | .ok ((fnType, typedBody), newState) =>
         -- Also collect any accumulated errors from error recovery
         errors := errors ++ newState.errors
+
+        -- Store the typed function for downstream passes
+        let typedFn : Metal.TypedFunction := {
+          name := fn.name
+          params := fn.params
+          body := typedBody
+          fnType := fnType
+          closureInfo := fn.closureInfo
+          attrs := fn.attrs
+        }
+        typedFns := typedFns.insert fnName typedFn
 
         -- Clear old dependencies and record new ones
         incrState := incrState.clearDeps defId
@@ -401,7 +415,7 @@ def checkFunctionsCore
         currentState := newState
     -- else: not dirty, keep cached result (already in incrState)
 
-  return { finalState := currentState, incrementalState := incrState, errors := errors }
+  return { finalState := currentState, incrementalState := incrState, typedFunctions := typedFns, errors := errors }
 
 /-- Result of building globals and instance environment -/
 structure GlobalsAndInstancesResult where
@@ -511,6 +525,8 @@ structure TypeCheckResult where
   instanceMap : InstanceMap
   incrementalState : IncrementalState
   usages : Std.HashMap Soma.Metal.BindingId Nat
+  /-- Typed function bodies (function name -> typed fn) -/
+  typedFunctions : Std.HashMap String Metal.TypedFunction
   errors : Array Soma.Dependent.TCError
   deriving Inhabited
 
@@ -571,6 +587,7 @@ def typeCheckModule
     instanceMap := globalsResult.instanceMap
     incrementalState := finalIncrState
     usages := fnResult.finalState.usages
+    typedFunctions := fnResult.typedFunctions
     errors := allErrors
   }
 

@@ -971,18 +971,17 @@ partial def lowerProj (expr : Expr Value scope) (idx : Nat)
 end
 
 /-- Lower a function definition -/
-def lowerFunction (fn : Soma.Metal.UntypedFunction) (fnType : Value) : LowerM NodeId := do
+def lowerFunction (fn : Soma.Metal.TypedFunction) : LowerM NodeId := do
   -- Set current function for recursion detection
   LowerM.modifyCtx fun ctx => { ctx with currentFn := some fn.name }
 
-  -- Convert untyped body to Value-annotated (using placeholder)
-  let typedBody := fn.body.mapInfo (fun () => Value.vType Soma.Core.Level.zero)
+  let typedBody := fn.body
 
   -- Create LAM nodes for parameters
   let paramList := fn.params.toList
   let mut lamNodes : Array NodeId := #[]
   let ctx ← LowerM.getCtx
-  let mut currentTy := fnType
+  let mut currentTy := fn.fnType
 
   for param in paramList do
     let (bindingId, name) := param
@@ -1067,41 +1066,35 @@ def registerTypes (types : Array Soma.Metal.TypeDef)
       LowerM.modifyCtx fun ctx =>
         ctx.registerCtor name name 0 arity
 
-/-- Lower an entire module -/
-def lowerModule (module : Soma.Metal.Module)
+/-- Map from function name to typed function -/
+abbrev TypedFunctionMap := Std.HashMap String Soma.Metal.TypedFunction
+
+/-- Lower an entire module using typed functions from type checking -/
+def lowerModule (types : Array Soma.Metal.TypeDef)
+    (typedFunctions : TypedFunctionMap)
     (globals : Option Soma.Dependent.Globals := none) : LowerM Unit := do
   -- Register type constructors
-  registerTypes module.types globals
+  registerTypes types globals
 
   -- First pass: register all functions as globals
-  let functions := module.functions.toList
-  for (i, fn) in enumList functions do
+  let functions := typedFunctions.toList
+  for (i, (_, fn)) in enumList functions do
     LowerM.modifyCtx fun ctx => ctx.registerGlobal fn.name i
 
   -- Second pass: lower each function
-  for fn in functions do
-    -- Look up the function's type from globals
-    let fnType := match globals with
-      | some g =>
-        match g.lookup fn.name.display with
-        | some info => info.type
-        | none => unitTy
-      | none => unitTy
-    let root ← lowerFunction fn fnType
+  for (_, fn) in functions do
+    let fnName := fn.name.display
+    let root ← lowerFunction fn
     let arity := fn.params.size
-    let _ ← LowerM.addDefinition fn.name.display root arity fnType
+    let _ ← LowerM.addDefinition fnName root arity fn.fnType
 
   -- Set root to main function if it exists
   let ctx ← LowerM.getCtx
   let mainEntry := ctx.globals.toList.find? fun (name, _) => name.original == "main"
   match mainEntry with
   | some (_, idx) =>
-    -- Look up main's type
-    let mainTy := match globals with
-      | some g =>
-        match g.lookup "main" with
-        | some info => info.type
-        | none => unitTy
+    let mainTy := match typedFunctions.get? "main" with
+      | some typedFn => typedFn.fnType
       | none => unitTy
     let ref ← LowerM.addNode (.ref idx) mainTy
     LowerM.setRoot (PortId.principal ref)
@@ -1109,9 +1102,11 @@ def lowerModule (module : Soma.Metal.Module)
     let era ← LowerM.addNode .era unitTy
     LowerM.setRoot (PortId.principal era)
 
-/-- Lower a Metal module to Circuit IR -/
-def lower (module : Soma.Metal.Module) (usageMap : UsageMap)
+/-- Lower typed functions to Circuit IR -/
+def lower (types : Array Soma.Metal.TypeDef)
+    (typedFunctions : TypedFunctionMap)
+    (usageMap : UsageMap)
     (globals : Option Soma.Dependent.Globals := none) : Graph :=
-  LowerM.build (lowerModule module globals) usageMap
+  LowerM.build (lowerModule types typedFunctions globals) usageMap
 
 end Soma.Circuit.Lower

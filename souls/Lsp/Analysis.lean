@@ -89,14 +89,13 @@ def analyzeSourceFresh (filePath : String) (content : String)
 
   -- Phase 7: Dependent type checking using the shared pipeline
   -- Use seed from dependencies
-  let (globals, instanceEnv, _abbrevEnv, _instanceMap, incrState, tcErrors) :=
-    typeCheckModule metalResult.module moduleName seedGlobals seedInstanceEnv seedAbbrevEnv none
+  let tcResult := typeCheckModule metalResult.module moduleName seedGlobals seedInstanceEnv seedAbbrevEnv none
 
   -- Update incremental state with imported modules
   let importedMods := extractImportedModules symbols
-  let finalIncrState := importedMods.foldl (fun acc mod => acc.addImportedModule mod) incrState
+  let finalIncrState := importedMods.foldl (fun acc mod => acc.addImportedModule mod) tcResult.incrementalState
 
-  let inferDiags := tcErrorsToDiagnostics tcErrors
+  let inferDiags := tcErrorsToDiagnostics tcResult.errors
 
   let allDiags := frontendDiags ++ astLowerDiags ++ metalLowerDiags ++ inferDiags
 
@@ -110,8 +109,8 @@ def analyzeSourceFresh (filePath : String) (content : String)
     declNodeIds := declNodeIds
     declAsts := declAsts
     metalResult := some metalResult
-    globals := some globals
-    instanceEnv := some instanceEnv
+    globals := some tcResult.globals
+    instanceEnv := some tcResult.instanceEnv
     incrementalState := some finalIncrState
   }
 
@@ -207,14 +206,13 @@ def analyzeSourceIncremental (filePath : String) (content : String)
 
   -- Use the shared type checking pipeline with previous state for incremental checking
   -- Use seed from dependencies
-  let (globals, instanceEnv, _abbrevEnv, _instanceMap, incrState, tcErrors) :=
-    typeCheckModule metalResult.module moduleName seedGlobals seedInstanceEnv seedAbbrevEnv prevIncrState
+  let tcResult := typeCheckModule metalResult.module moduleName seedGlobals seedInstanceEnv seedAbbrevEnv prevIncrState
 
   -- Update incremental state with imported modules
   let importedMods := extractImportedModules symbols
-  let finalIncrState := importedMods.foldl (fun acc mod => acc.addImportedModule mod) incrState
+  let finalIncrState := importedMods.foldl (fun acc mod => acc.addImportedModule mod) tcResult.incrementalState
 
-  let inferDiags := tcErrorsToDiagnostics tcErrors
+  let inferDiags := tcErrorsToDiagnostics tcResult.errors
 
   let allDiags := frontendDiags ++ astLowerDiags ++ metalLowerDiags ++ inferDiags
 
@@ -228,8 +226,8 @@ def analyzeSourceIncremental (filePath : String) (content : String)
     declNodeIds := declNodeIds
     declAsts := declAsts
     metalResult := some metalResult
-    globals := some globals
-    instanceEnv := some instanceEnv
+    globals := some tcResult.globals
+    instanceEnv := some tcResult.instanceEnv
     incrementalState := some finalIncrState
   }
 

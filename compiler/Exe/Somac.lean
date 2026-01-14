@@ -237,11 +237,11 @@ def runLLVM (p : Parsed) : IO UInt32 := do
     IO.eprintln (Soma.Logging.Error.renderSummary allDiags)
     return 1
 
-  -- Phase 5.5: Lambda lifting (after typechecking, before Circuit IR)
-  let liftedModule := Soma.Metal.LambdaLift.liftModule metalRes.module
+  -- Phase 5.5: Lambda lifting
+  let liftedTypedFunctions := Soma.Metal.LambdaLift.liftAll tcResult.typedFunctions moduleName
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Soma.Circuit.Lower.lower liftedModule tcResult.usages (some tcResult.globals)
+  let graph := Soma.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
 
   -- Phase 7: Lower to Alloy MIR
   let alloyModule := Soma.Alloy.Lower.lower graph moduleName
@@ -300,11 +300,11 @@ def runAlloy (p : Parsed) : IO UInt32 := do
     IO.eprintln (Soma.Logging.Error.renderSummary allDiags)
     return 1
 
-  -- Phase 5.5: Lambda lifting (after typechecking, before Circuit IR)
-  let liftedModule := Soma.Metal.LambdaLift.liftModule metalRes.module
+  -- Phase 5.5: Lambda lifting
+  let liftedTypedFunctions := Soma.Metal.LambdaLift.liftAll tcResult.typedFunctions moduleName
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Soma.Circuit.Lower.lower liftedModule tcResult.usages (some tcResult.globals)
+  let graph := Soma.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
 
   -- Phase 7: Lower to Alloy MIR
   let alloyModule := Soma.Alloy.Lower.lower graph moduleName
@@ -361,11 +361,11 @@ def runCircuit (p : Parsed) : IO UInt32 := do
     IO.eprintln (Soma.Logging.Error.renderSummary allDiags)
     return 1
 
-  -- Phase 5.5: Lambda lifting (after typechecking, before Circuit IR)
-  let liftedModule := Soma.Metal.LambdaLift.liftModule metalRes.module
+  -- Phase 5.5: Lambda lifting
+  let liftedTypedFunctions := Soma.Metal.LambdaLift.liftAll tcResult.typedFunctions moduleName
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Soma.Circuit.Lower.lower liftedModule tcResult.usages (some tcResult.globals)
+  let graph := Soma.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
 
   -- Pretty print the Circuit IR graph
   let cfg : Soma.Circuit.Pretty.Config := { showIds := true, showConnections := true, showLabels := true, showTypes := showTypes }

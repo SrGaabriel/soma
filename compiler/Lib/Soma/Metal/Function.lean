@@ -1,5 +1,6 @@
 import Soma.Metal.Expr
 import Soma.Syntax.Ast
+import Soma.Core.Value
 
 namespace Soma.Metal
 
@@ -51,5 +52,24 @@ end Function
 /-- Alias for backwards compatibility during migration -/
 abbrev UntypedFunction := Function
 abbrev UntypedClosureInfo := ClosureInfo
+
+/-- A typed Metal function - produced by type checking -/
+structure TypedFunction where
+  name : Name
+  params : Array (BindingId × String)
+  body : Expr Soma.Core.Value (params.toList.map (·.1))
+  fnType : Soma.Core.Value
+  closureInfo : Option ClosureInfo
+  attrs : FunctionAttrs
+
+namespace TypedFunction
+
+/-- Get the function's arity -/
+def arity (f : TypedFunction) : Nat := f.params.size
+
+/-- Check if this is a closure (lifted lambda) -/
+def isClosure (f : TypedFunction) : Bool := f.closureInfo.isSome
+
+end TypedFunction
 
 end Soma.Metal

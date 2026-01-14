@@ -174,7 +174,8 @@ def withAllTypeBindings (allParams : Array (String × Value × Bool))
   bindImplicits 0 0
 
 /-- Type check a single Metal function using dependent types -/
-def checkFunction (fn : Metal.UntypedFunction) : TCM Value := do
+def checkFunction (fn : Metal.UntypedFunction)
+    : TCM (Value × Metal.Expr Value (fn.params.toList.map (·.1))) := do
   let span := fn.body.span
   match fn.declaredTypeSyntax with
   | some typeSyntax =>
@@ -189,16 +190,18 @@ def checkFunction (fn : Metal.UntypedFunction) : TCM Value := do
       (#[], declaredType)
     -- Extend context with ALL bindings and check body against result type
     -- Use infallible to continue even if body checking fails
-    withAllTypeBindings allParams fn.params span do
-      let _ ← TCM.infallible (Soma.Dependent.check fn.body resultType) default
-    return declaredType
+    -- Now we capture the typed expression instead of discarding it
+    let typedBody ← withAllTypeBindings allParams fn.params span do
+      TCM.infallible (Soma.Dependent.check fn.body resultType) default
+    return (declaredType, typedBody)
   | none =>
     -- No signature: create fresh metavariables for param types
     let paramTypes ← fn.params.mapM fun _ => TCM.freshMetaVal (.vType .zero)
     -- Extend context with parameters and infer body type
+    -- Now we capture the typed expression instead of discarding it
     withFunctionParams fn.params paramTypes span do
-      let (inferredType, _) ← TCM.infallibleExpr (Soma.Dependent.infer fn.body) span
-      return inferredType
+      let (inferredType, typedBody) ← TCM.infallibleExpr (Soma.Dependent.infer fn.body) span
+      return (inferredType, typedBody)
 
 /-- Elaborate a constructor type: fields -> DataType params -/
 def elaborateCtorType (typeName : Metal.Name) (typeVarNames : Array String)
