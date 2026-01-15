@@ -2,15 +2,18 @@
   Soma.Metal.Literal
   Literal values in Metal IR.
 -/
+import Kenosis
 
 namespace Soma.Metal
+
+open Kenosis
 
 /-- Literal values -/
 inductive Literal where
   | int (value : Int)
   | bool (value : Bool)
   | string (value : String)
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, Serialize, Deserialize
 
 namespace Literal
 

@@ -5,9 +5,11 @@
   the Haskell compiler's design. Uniques are globally unique within a module
   and carry enough context for debugging and cross-module disambiguation.
 -/
-import Lean.Data.Json
+import Kenosis
 
 namespace Soma
+
+open Kenosis
 
 /-- A unique identifier within the compiler.
 
@@ -26,21 +28,7 @@ structure Unique where
   module : String
   /-- Original source name (for debugging/error messages) -/
   original : String
-  deriving Repr
-
-instance : Lean.ToJson Unique where
-  toJson u := .mkObj [
-    ("id", .num u.id),
-    ("module", .str u.module),
-    ("original", .str u.original)
-  ]
-
-instance : Lean.FromJson Unique where
-  fromJson? j := do
-    let id ← j.getObjValAs? Nat "id"
-    let module ← j.getObjValAs? String "module"
-    let original ← j.getObjValAs? String "original"
-    pure ⟨id, module, original⟩
+  deriving Repr, Inhabited, Serialize, Deserialize
 
 namespace Unique
 

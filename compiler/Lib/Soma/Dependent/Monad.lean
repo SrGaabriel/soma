@@ -8,6 +8,7 @@ import Soma.Metal.Module
 import Soma.Syntax.Source
 import Soma.Unique
 import Std.Data.HashMap
+import Kenosis
 
 namespace Soma.Dependent
 
@@ -15,6 +16,7 @@ open Soma (Unique)
 open Soma.Core
 open Soma.Metal (Name Expr BinderInfo TypeAbbrev)
 open Soma.Syntax (Span)
+open Kenosis
 
 /-- An entry in the typing context -/
 structure CtxEntry where
@@ -100,6 +102,7 @@ structure GlobalInfo where
   isConstructor : Bool := false
   /-- Constructor tag (if isConstructor) -/
   ctorTag : Nat := 0
+  deriving Serialize, Deserialize
 
 instance : Inhabited GlobalInfo where
   default := {
@@ -157,6 +160,7 @@ structure ClassInfo where
   superclasses : Array (Unique × Array Nat)
   /-- Source span for error reporting -/
   span : Span
+  deriving Serialize, Deserialize
 
 instance : Inhabited ClassInfo where
   default := {
@@ -191,6 +195,7 @@ structure InstanceInfo where
   value : Value
   /-- Source span for error reporting -/
   span : Span
+  deriving Serialize, Deserialize
 
 instance : Inhabited InstanceInfo where
   default := {
@@ -298,6 +303,7 @@ structure AbbrevInfo where
   expansion : Value
   /-- Source span for error reporting -/
   span : Span
+  deriving Serialize, Deserialize
 
 instance : Inhabited AbbrevInfo where
   default := {

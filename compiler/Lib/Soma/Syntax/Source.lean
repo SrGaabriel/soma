@@ -1,11 +1,14 @@
 import Std.Data.HashMap
+import Kenosis
 
 namespace Soma.Syntax
+
+open Kenosis
 
 /-- Interned file identifier for efficient comparison -/
 structure FileId where
   id : Nat
-  deriving BEq, Hashable, Repr, Inhabited
+  deriving BEq, Hashable, Repr, Inhabited, Serialize, Deserialize
 
 instance : ToString FileId where
   toString fid := s!"FileId({fid.id})"
@@ -88,7 +91,7 @@ structure SourceLoc where
   byteOffset : Nat
   line : Nat      -- 1-indexed
   column : Nat    -- 1-indexed
-  deriving Repr, BEq, Inhabited, Hashable
+  deriving Repr, BEq, Inhabited, Hashable, Serialize, Deserialize
 
 instance : ToString SourceLoc where
   toString loc := s!"{loc.line}:{loc.column}"
@@ -115,7 +118,7 @@ instance : LE SourceLoc where
 structure Span where
   start : SourceLoc
   stop : SourceLoc
-  deriving Repr, BEq, Inhabited, Hashable
+  deriving Repr, BEq, Inhabited, Hashable, Serialize, Deserialize
 
 instance : ToString Span where
   toString span :=

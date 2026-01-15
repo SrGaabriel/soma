@@ -183,7 +183,7 @@ def runMetadata (p : Parsed) : IO UInt32 := do
   if result.success then
     match result.metadata with
     | some pm =>
-      IO.println pm.toJson.compress
+      IO.println (Kenosis.Json.encode pm)
       return 0
     | none =>
       IO.eprintln "Internal error: metadata generation succeeded but no metadata produced"

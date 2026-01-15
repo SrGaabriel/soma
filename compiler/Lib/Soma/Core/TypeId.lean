@@ -1,9 +1,10 @@
 import Soma.Unique
-import Lean.Data.Json
+import Kenosis
 
 namespace Soma.Core
 
 open Soma
+open Kenosis
 
 /-- Unique identifier for a user-defined type -/
 structure TypeId where
@@ -13,21 +14,7 @@ structure TypeId where
   name : String
   /-- Unique numeric identifier within the module -/
   unique : Nat
-  deriving Repr, Inhabited
-
-instance : Lean.ToJson TypeId where
-  toJson id := .mkObj [
-    ("module", .str id.module),
-    ("name", .str id.name),
-    ("unique", .num id.unique)
-  ]
-
-instance : Lean.FromJson TypeId where
-  fromJson? j := do
-    let module ← j.getObjValAs? String "module"
-    let name ← j.getObjValAs? String "name"
-    let unique ← j.getObjValAs? Nat "unique"
-    pure ⟨module, name, unique⟩
+  deriving Repr, Inhabited, Serialize, Deserialize
 
 namespace TypeId
 

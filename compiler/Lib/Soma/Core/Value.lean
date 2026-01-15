@@ -4,15 +4,17 @@ import Soma.Core.Primitive
 import Soma.Core.TypeId
 import Soma.Core.Name
 import Soma.Metal.Expr
+import Kenosis
 
 namespace Soma.Core
 
 open Soma.Metal (BinderInfo)
+open Kenosis
 
 /-- De Bruijn level (counts from bottom of context, unlike indices which count from top) -/
 structure DeBruijnLvl where
   lvl : Nat
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace DeBruijnLvl
 
@@ -30,7 +32,7 @@ end DeBruijnLvl
 /-- Metavariable identifier -/
 structure MetaId where
   id : Nat
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace MetaId
 
@@ -43,7 +45,7 @@ end MetaId
 structure BoundVar where
   name : String
   level : DeBruijnLvl
-  deriving Repr, BEq, Hashable, Inhabited
+  deriving Repr, BEq, Hashable, Inhabited, Serialize, Deserialize
 
 namespace BoundVar
 
@@ -116,7 +118,7 @@ inductive Term where
   | mvar (id : Nat)
   /-- Panic/error -/
   | panic (msg : String)
-  deriving Inhabited
+  deriving Inhabited, Serialize, Deserialize
 
 mutual
 
@@ -185,6 +187,7 @@ inductive Value where
   /-- Transport along equality: transporting a value from P x to P y via equality proof x = y -/
   | vTransport (tyLevel : Level) (ty : Value) (motive : Value) (lhs rhs : Value)
                (eq : Value) (body : Value)
+  deriving Serialize, Deserialize
 
 /-- Closure: represents a function waiting for an argument.
     We support two representations:
@@ -197,10 +200,12 @@ inductive Closure where
   | term (name : String) (env : Env) (body : Term) : Closure
   /-- Constant closure: always returns the same value (for non-dependent types) -/
   | const (name : String) (value : Value) : Closure
+  deriving Serialize, Deserialize
 
 /-- Environment: mapping from De Bruijn levels to values -/
 inductive Env where
   | mk (values : List (String × Value)) (size : Nat) : Env
+  deriving Serialize, Deserialize
 
 /-- Neutral terms: terms that are stuck on a variable or metavariable -/
 inductive Neutral where
@@ -218,10 +223,12 @@ inductive Neutral where
   | nFieldAccess (record : Neutral) (field : String)
   /-- Case analysis on a neutral scrutinee -/
   | nCase (scrutinee : Neutral) (arms : List ArmClosure)
+  deriving Serialize, Deserialize
 
 /-- Case arm closure -/
 inductive ArmClosure where
   | mk (pattern : String) (closure : Closure) : ArmClosure
+  deriving Serialize, Deserialize
 
 end
 

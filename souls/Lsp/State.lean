@@ -4,7 +4,7 @@ import Soma.Metal.Lower.Decl
 import Soma.Dependent.Monad
 import Soma.Dependent.Incremental
 import Soma.Project.Check
-import Soma.Project.MetadataLoad
+import Soma.Project.Metadata
 import Lsp.Cst
 import Lsp.Haoma
 
@@ -334,7 +334,7 @@ def getTransitiveDependents (s : LspState) (moduleName : String) : Array String 
 /-- Add a haoma project and register its modules -/
 def addHaomaProject (s : LspState) (metadata : Haoma.ProjectMetadata) : LspState :=
   -- Find the root package to get its path
-  let rootPkg := metadata.packages.find? (·.isRoot)
+  let rootPkg := metadata.packages.find? (·.is_root)
   let s' := match rootPkg with
     | some pkg => { s with knownProjectRoots := s.knownProjectRoots.insert pkg.root }
     | none => s

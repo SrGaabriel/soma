@@ -1,8 +1,10 @@
 import Soma.Unique
+import Kenosis
 
 namespace Soma.Core
 
 open Soma
+open Kenosis
 
 /-- Prefix for local identifiers, distinguishing different kinds of locals -/
 inductive LocalPrefix where
@@ -16,7 +18,7 @@ inductive LocalPrefix where
   | refParam
   | erasure
   | forkedTask
-  deriving Repr, BEq, Hashable, DecidableEq
+  deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
 namespace LocalPrefix
 
@@ -40,7 +42,7 @@ end LocalPrefix
 structure LocalId where
   kind : LocalPrefix
   index : Nat
-  deriving Repr, BEq, Hashable, DecidableEq
+  deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
 namespace LocalId
 
@@ -130,7 +132,7 @@ inductive RuntimeFn where
   | trace
   | alloc
   | free
-  deriving Repr, BEq, Hashable, DecidableEq
+  deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
 namespace RuntimeFn
 
@@ -151,7 +153,7 @@ inductive PrimOp where
   | add | sub | mul | div | mod
   | eq | ne | lt | le | gt | ge
   | and | or | not | neg
-  deriving Repr, BEq, Hashable, DecidableEq
+  deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
 namespace PrimOp
 
@@ -195,7 +197,7 @@ inductive Intrinsic where
   | llvm (name : String)
   | runtime (fn : RuntimeFn)
   | primOp (op : PrimOp)
-  deriving Repr, BEq, Hashable, DecidableEq
+  deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
 namespace Intrinsic
 
@@ -219,7 +221,7 @@ inductive DictKind where
   | global
   /-- Dictionary struct type -/
   | struct
-  deriving Repr, BEq, Hashable, DecidableEq
+  deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
 /-- A type class dictionary identifier.
     Uses a string representation of the instance type for naming purposes. -/
@@ -232,7 +234,7 @@ structure DictId where
   instanceTypeStr : String
   /-- Kind of dictionary -/
   kind : DictKind
-  deriving Repr, BEq, Hashable, DecidableEq
+  deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
 namespace DictId
 
@@ -262,7 +264,7 @@ inductive SyntheticKind where
   | refParam (blockName : String)
   | erasure
   | temp
-  deriving Repr, BEq, Hashable, DecidableEq
+  deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
 namespace SyntheticKind
 
@@ -291,6 +293,7 @@ inductive Name where
   | projection (base : Name) (index : Nat)
   | dict (id : DictId)
   | ctor (typeUnique : Unique) (ctorName : String) (tag : Nat)
+  deriving Serialize, Deserialize
 
 namespace Name
 

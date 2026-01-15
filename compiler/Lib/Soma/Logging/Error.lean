@@ -9,7 +9,7 @@
   - Notes and help suggestions
 -/
 
-import Lean.Data.Json
+import Kenosis
 import Soma.Syntax.Source
 import Soma.Syntax.Diagnostic
 
@@ -836,51 +836,54 @@ def severityToLspCode : Severity → Nat
   | .info => 3
   | .hint => 4
 
-open Lean (Json ToJson)
+open Kenosis (Encoder)
+open Kenosis.Json (JsonWriter)
 
-/-- Convert a diagnostic to JSON -/
-private def diagnosticToJson (d : Diagnostic) (filePath : String := "") : Json :=
+/-- Write a diagnostic to JSON -/
+private def writeDiagnostic (d : Diagnostic) (filePath : String := "") : JsonWriter Unit := do
   let span := d.span
-  Json.mkObj [
-    ("file", Json.str filePath),
-    ("range", Json.mkObj [
-      ("start", Json.mkObj [
-        ("line", Json.num span.start.line),
-        ("character", Json.num span.start.column)
+  Encoder.putObject [
+    ("file", Encoder.putString filePath),
+    ("range", Encoder.putObject [
+      ("start", Encoder.putObject [
+        ("line", Encoder.putNat span.start.line),
+        ("character", Encoder.putNat span.start.column)
       ]),
-      ("end", Json.mkObj [
-        ("line", Json.num span.stop.line),
-        ("character", Json.num span.stop.column)
+      ("end", Encoder.putObject [
+        ("line", Encoder.putNat span.stop.line),
+        ("character", Encoder.putNat span.stop.column)
       ])
     ]),
-    ("severity", Json.num (severityToLspCode d.severity)),
-    ("message", Json.str d.message),
-    ("source", Json.str (toString d.severity).toUpper),
-    ("code", Json.null)
+    ("severity", Encoder.putNat (severityToLspCode d.severity)),
+    ("message", Encoder.putString d.message),
+    ("source", Encoder.putString (toString d.severity).toUpper),
+    ("code", Encoder.putNull)
   ]
 
 /-- Render diagnostics as JSON array -/
 def renderDiagnosticsJson (diags : Diagnostics) (filePath : String := "") : String :=
-  let items := diags.map (diagnosticToJson · filePath)
-  (Json.arr items).compress
+  JsonWriter.run do
+    Encoder.putList (diags.toList.map (writeDiagnostic · filePath))
 
 /-- Render diagnostics as JSON array with source file map (multi-file support) -/
 def renderDiagnosticsJsonWithMap (diags : Diagnostics) (sourceMap : SourceFileMap) : String :=
-  let items := diags.map fun d =>
-    let filePath := sourceMap.getForSpan? d.span |>.map (·.path) |>.getD ""
-    diagnosticToJson d filePath
-  (Json.arr items).compress
+  JsonWriter.run do
+    let items := diags.toList.map fun d =>
+      let filePath := sourceMap.getForSpan? d.span |>.map (·.path) |>.getD ""
+      writeDiagnostic d filePath
+    Encoder.putList items
 
 /-- Render check output as JSON object matching haoma's expected format -/
 def renderCheckOutputJson (diags : Diagnostics) (moduleName : Option String := none) (filePath : String := "") : String :=
-  let success := !diags.hasErrors
-  let diagsArr := diags.map (diagnosticToJson · filePath)
-  let fields := [
-    ("success", Json.bool success),
-    ("diagnostics", Json.arr diagsArr)
-  ] ++ match moduleName with
-    | some name => [("module", Json.str name)]
-    | none => []
-  (Json.mkObj fields).compress
+  JsonWriter.run do
+    let success := !diags.hasErrors
+    let baseFields : List (String × JsonWriter Unit) := [
+      ("success", Encoder.putBool success),
+      ("diagnostics", Encoder.putList (diags.toList.map (writeDiagnostic · filePath)))
+    ]
+    let fields := match moduleName with
+      | some name => baseFields ++ [("module", Encoder.putString name)]
+      | none => baseFields
+    Encoder.putObject fields
 
 end Soma.Logging.Error

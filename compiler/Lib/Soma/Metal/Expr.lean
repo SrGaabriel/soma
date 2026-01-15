@@ -8,7 +8,7 @@ import Soma.Core.Quantity
 import Soma.Core.Level
 import Soma.Core.Primitive
 import Soma.Core.TypeId
-import Lean.Data.Json
+import Kenosis
 
 open Soma.Metal
 open Soma.Syntax (Span)
@@ -32,7 +32,7 @@ inductive Soma.Metal.BinderInfo where
   | instance_
   /-- Strict implicit: f ⦃x⦄ -/
   | strictImplicit
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Kenosis.Serialize, Kenosis.Deserialize
 
 namespace Soma.Metal.BinderInfo
 
@@ -47,21 +47,6 @@ instance : ToString BinderInfo where
 def isImplicit : BinderInfo → Bool
   | .explicit => false
   | _ => true
-
-instance : Lean.ToJson BinderInfo where
-  toJson
-    | .explicit => .str "explicit"
-    | .implicit => .str "implicit"
-    | .instance_ => .str "instance"
-    | .strictImplicit => .str "strictImplicit"
-
-instance : Lean.FromJson BinderInfo where
-  fromJson?
-    | .str "explicit" => .ok .explicit
-    | .str "implicit" => .ok .implicit
-    | .str "instance" => .ok .instance_
-    | .str "strictImplicit" => .ok .strictImplicit
-    | j => .error s!"Invalid BinderInfo JSON: {j}"
 
 end Soma.Metal.BinderInfo
 

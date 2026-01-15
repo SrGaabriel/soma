@@ -1,12 +1,14 @@
 import Soma.Unique
 import Soma.Syntax.Source
 import Soma.Core.Value
+import Kenosis
 
 namespace Soma.Project
 
 open Soma
 open Soma.Syntax
 open Soma.Core
+open Kenosis
 
 /-- The kind of a symbol, determining its namespace and semantics -/
 inductive SymbolKind where
@@ -36,7 +38,7 @@ inductive SymbolKind where
   | intrinsicBinding
   /-- Compiler intrinsic type -/
   | intrinsicType
-  deriving Repr, BEq
+  deriving Repr, BEq, Serialize, Deserialize
 
 namespace SymbolKind
 
@@ -74,7 +76,7 @@ structure Symbol where
   package : String
   /-- Source location where defined -/
   span : Span
-  deriving Repr
+  deriving Repr, Serialize, Deserialize
 
 namespace Symbol
 

@@ -9,7 +9,7 @@ namespace Soma.Core
 
 open Soma.Metal (Expr ExprList Scope BindingId Name BinderInfo HoleId)
 open Soma.Syntax (Span)
-open Soma (Unique)
+open _root_.Soma (Unique)
 
 /-- Quotation context: tracks the current De Bruijn level -/
 structure QuoteCtx where

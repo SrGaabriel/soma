@@ -1,4 +1,4 @@
-import Soma.Project.MetadataLoad
+import Soma.Project.Metadata
 import Soma.Project
 import Soma.Project.Check
 
@@ -15,7 +15,7 @@ def loadExternalDependencies (deps : Array (String × System.FilePath))
   if deps.isEmpty then
     pure (.ok #[])
   else
-    MetadataLoad.loadMetadataFiles deps
+    Metadata.loadMetadataFiles deps
 
 /-- Link checked modules into a single optimized unit -/
 def linkModules

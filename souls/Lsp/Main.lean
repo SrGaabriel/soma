@@ -5,7 +5,7 @@ import Lsp.Symbols
 import Lsp.Loc
 import Lsp.Haoma
 import Lsp.SemanticTokens
-import Soma.Project.MetadataLoad
+import Soma.Project.Metadata
 
 namespace Lsp
 
@@ -19,7 +19,7 @@ open Lapis.Server.Diagnostics
 open Lapis.Server.Progress
 open Lapis.Server.SemanticTokens
 open Lapis.Protocol.Generated (SemanticTokensParams)
-open Soma.Project.MetadataLoad (loadMetadataFromFile)
+open Soma.Project.Metadata (loadMetadataFromFile)
 
 /-- Convert Soma diagnostics to LSP format -/
 def convertDiagnostics (diags : Soma.Syntax.Diagnostics) : Array Diagnostic :=
@@ -42,9 +42,9 @@ def loadHaomaProject (ctx : RequestContext LspState) (projectRoot : System.FileP
   | .ok metadata =>
     -- Load external dependency metadata from the type_metadata paths
     let mut deps : Array Soma.Check.ExternalDependency := #[]
-    for (depName, metaPath) in metadata.typeMetadata.toArray do
+    for (depName, metaPath) in metadata.type_metadata.toArray do
       -- Skip root package metadata
-      if depName == metadata.rootPackage then
+      if depName == metadata.root_package then
         continue
       -- Resolve relative paths against project root
       let path := if metaPath.startsWith "/" then

@@ -1,4 +1,8 @@
+import Kenosis
+
 namespace Soma.Core
+
+open Kenosis
 
 /-- Primitive types with no type parameters (base types) -/
 inductive StarPrimitive where
@@ -22,7 +26,7 @@ inductive StarPrimitive where
   | word16
   | word32
   | word64
-  deriving Repr, BEq, Hashable, DecidableEq
+  deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
 namespace StarPrimitive
 
@@ -116,7 +120,7 @@ inductive HigherPrimitive where
   | ref
   | io
   | ptr
-  deriving Repr, BEq, Hashable, DecidableEq
+  deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
 namespace HigherPrimitive
 

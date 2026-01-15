@@ -4,12 +4,12 @@
   This module provides integration with haoma by calling `haoma metadata`
   to discover project structure and dependencies.
 -/
-import Lean.Data.Json
+import Kenosis
 import Std.Data.HashMap
 
 namespace Lsp.Haoma
 
-open Lean (Json FromJson ToJson)
+open Kenosis
 
 /-- Information about a single module in the project -/
 structure ModuleInfo where
@@ -19,14 +19,7 @@ structure ModuleInfo where
   path : String
   /-- Package this module belongs to -/
   package : String
-  deriving Repr, Inhabited
-
-instance : FromJson ModuleInfo where
-  fromJson? json := do
-    let name ← json.getObjValAs? String "name"
-    let path ← json.getObjValAs? String "path"
-    let package ← json.getObjValAs? String "package"
-    return { name, path, package }
+  deriving Repr, Inhabited, Deserialize
 
 /-- Information about a package in the project -/
 structure PackageInfo where
@@ -37,19 +30,10 @@ structure PackageInfo where
   /-- Package version -/
   version : String
   /-- Whether this is the root package -/
-  isRoot : Bool
+  is_root : Bool
   /-- Names of direct dependencies -/
   dependencies : Array String
-  deriving Repr, Inhabited
-
-instance : FromJson PackageInfo where
-  fromJson? json := do
-    let name ← json.getObjValAs? String "name"
-    let root ← json.getObjValAs? String "root"
-    let version ← json.getObjValAs? String "version"
-    let isRoot ← json.getObjValAs? Bool "is_root"
-    let dependencies ← json.getObjValAs? (Array String) "dependencies"
-    return { name, root, version, isRoot, dependencies }
+  deriving Repr, Inhabited, Deserialize
 
 /-- Complete project metadata from haoma -/
 structure ProjectMetadata where
@@ -58,31 +42,67 @@ structure ProjectMetadata where
   /-- Error message if extraction failed -/
   error : Option String
   /-- Name of the root package -/
-  rootPackage : String
+  root_package : String
   /-- All packages (root + dependencies) -/
   packages : Array PackageInfo
   /-- All modules across all packages -/
   modules : Array ModuleInfo
   /-- Paths to type metadata files (package name → .meta.json path), only with --full -/
-  typeMetadata : Std.HashMap String String := {}
+  type_metadata : Std.HashMap String String := {}
   deriving Repr, Inhabited
 
-instance : FromJson ProjectMetadata where
-  fromJson? json := do
-    let success ← json.getObjValAs? Bool "success"
-    let error := json.getObjValAs? String "error" |>.toOption
-    let rootPackage ← json.getObjValAs? String "root_package"
-    let packages ← json.getObjValAs? (Array PackageInfo) "packages"
-    let modules ← json.getObjValAs? (Array ModuleInfo) "modules"
-    -- type_metadata is optional (only present with --full)
-    let typeMetadata : Std.HashMap String String := match json.getObjVal? "type_metadata" with
-      | .ok (.obj obj) =>
-        obj.foldl (init := {}) fun acc k v =>
-          match v.getStr? with
-          | .ok path => acc.insert k path
-          | .error _ => acc
-      | _ => {}
-    return { success, error, rootPackage, packages, modules, typeMetadata }
+/-- Deserialize ProjectMetadata from JSON, handling optional type_metadata field -/
+def deserializeProjectMetadata (input : String) : Except Json.JsonError ProjectMetadata := do
+  let value ← Json.JsonReader.run input Json.parseValue
+  let success ← getFieldValue value "success" getBoolValue
+  let error ← getOptFieldValue value "error" getStrValue
+  let root_package ← getFieldValue value "root_package" getStrValue
+  let packages ← getFieldValue value "packages" (getArrayValue deserializePackageInfo)
+  let modules ← getFieldValue value "modules" (getArrayValue deserializeModuleInfo)
+  -- type_metadata is optional (only present with --full)
+  let type_metadata : Std.HashMap String String := match getFieldRaw value "type_metadata" with
+    | some (.obj metaFields) =>
+      metaFields.foldl (init := {}) fun acc (k, v) =>
+        match v with
+        | .str path => acc.insert k path
+        | _ => acc
+    | _ => {}
+  return { success, error, root_package, packages, modules, type_metadata }
+where
+  getFieldRaw (v : Json.JsonValue) (name : String) : Option Json.JsonValue :=
+    match v with
+    | .obj fields => fields.find? (fun (k, _) => k == name) |>.map (·.2)
+    | _ => none
+  getFieldValue {α : Type} (v : Json.JsonValue) (name : String) (decode : Json.JsonValue → Except Json.JsonError α) : Except Json.JsonError α := do
+    match getFieldRaw v name with
+    | some fieldVal => decode fieldVal
+    | none => .error (.custom s!"missing field '{name}'" 0)
+  getOptFieldValue {α : Type} (v : Json.JsonValue) (name : String) (decode : Json.JsonValue → Except Json.JsonError α) : Except Json.JsonError (Option α) := do
+    match getFieldRaw v name with
+    | some .null => return none
+    | some fieldVal => return some (← decode fieldVal)
+    | none => return none
+  getBoolValue : Json.JsonValue → Except Json.JsonError Bool
+    | .bool b => return b
+    | _ => .error (.custom "expected boolean" 0)
+  getStrValue : Json.JsonValue → Except Json.JsonError String
+    | .str s => return s
+    | _ => .error (.custom "expected string" 0)
+  getArrayValue {α : Type} (decodeElem : Json.JsonValue → Except Json.JsonError α) : Json.JsonValue → Except Json.JsonError (Array α)
+    | .arr xs => xs.toArray.mapM decodeElem
+    | _ => .error (.custom "expected array" 0)
+  deserializeModuleInfo (v : Json.JsonValue) : Except Json.JsonError ModuleInfo := do
+    let name ← getFieldValue v "name" getStrValue
+    let path ← getFieldValue v "path" getStrValue
+    let package ← getFieldValue v "package" getStrValue
+    return { name, path, package }
+  deserializePackageInfo (v : Json.JsonValue) : Except Json.JsonError PackageInfo := do
+    let name ← getFieldValue v "name" getStrValue
+    let root ← getFieldValue v "root" getStrValue
+    let version ← getFieldValue v "version" getStrValue
+    let is_root ← getFieldValue v "is_root" getBoolValue
+    let dependencies ← getFieldValue v "dependencies" (getArrayValue getStrValue)
+    return { name, root, version, is_root, dependencies }
 
 /-- Result of loading haoma metadata -/
 inductive LoadResult
@@ -144,16 +164,13 @@ def loadMetadata (projectRoot : System.FilePath) (full : Bool := false) : IO Loa
     return .error s!"haoma metadata failed (exit code {output.exitCode}): {output.stderr}"
 
   -- Parse JSON output
-  match Json.parse output.stdout with
+  match deserializeProjectMetadata output.stdout with
   | .error e => return .error s!"Failed to parse haoma output: {e}"
-  | .ok json =>
-    match FromJson.fromJson? json with
-    | .error e => return .error s!"Failed to decode metadata: {e}"
-    | .ok (metadata : ProjectMetadata) =>
-      if metadata.success then
-        return .ok metadata
-      else
-        return .error (metadata.error.getD "Unknown error")
+  | .ok metadata =>
+    if metadata.success then
+      return .ok metadata
+    else
+      return .error (metadata.error.getD "Unknown error")
 
 /-- Run haoma metadata --full to get type metadata paths -/
 def loadMetadataFull (projectRoot : System.FilePath) : IO LoadResult :=
