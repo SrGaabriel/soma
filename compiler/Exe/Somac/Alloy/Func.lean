@@ -10,6 +10,7 @@
 -/
 
 import Somac.Alloy.Block
+import Kenosis
 
 namespace Somac.Alloy
 
@@ -21,7 +22,7 @@ structure Param where
   name : String
   /-- Parameter type -/
   ty : Ty
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, Serialize, Deserialize
 
 namespace Param
 
@@ -42,7 +43,7 @@ structure Signature where
   retTy : Ty
   /-- Is this a closure body (first param is env)? -/
   isClosure : Bool := false
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, Serialize, Deserialize
 
 namespace Signature
 
@@ -102,7 +103,7 @@ structure FuncAttrs where
   pure : Bool := false
   /-- Always tail-call optimize -/
   tailCall : Bool := false
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, Serialize, Deserialize
 
 namespace FuncAttrs
 
@@ -233,7 +234,7 @@ structure Global where
   init : Option Const := none
   /-- Is this mutable? -/
   mutable : Bool := false
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, Serialize, Deserialize
 
 namespace Global
 
@@ -255,7 +256,7 @@ structure TypeDef where
   name : String
   /-- The type -/
   ty : Ty
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, Serialize, Deserialize
 
 namespace TypeDef
 

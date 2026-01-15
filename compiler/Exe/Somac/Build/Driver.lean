@@ -1,4 +1,6 @@
 import Somac.Build.Pipeline
+import Somac.Build.External
+import Somac.Build.Package
 import Soma.Project
 import Soma.Project.Check
 import Soma.Driver.Options
@@ -17,14 +19,15 @@ open Soma.Check
 structure BuildResult where
   success : Bool
   diagnostics : Array Diagnostic
+  outputPath : Option System.FilePath := none
 
 namespace BuildResult
 
 def failed (diags : Array Diagnostic) : BuildResult :=
   { success := false, diagnostics := diags }
 
-def succeeded : BuildResult :=
-  { success := true, diagnostics := #[] }
+def succeeded (output : System.FilePath) : BuildResult :=
+  { success := true, diagnostics := #[], outputPath := some output }
 
 end BuildResult
 
@@ -39,35 +42,71 @@ def generateOutputPath (opts : BuildOptions) (defaultName : String) : System.Fil
       ⟨defaultName⟩ -- Executable (no extension)
 
 /-- Generate the final output file -/
-def generateOutput (opts : BuildOptions) (outputPath : System.FilePath) (llvmIR : String) : IO Unit := do
+def generateOutput
+    (opts : BuildOptions)
+    (outputPath : System.FilePath)
+    (llvmIR : String)
+    : IO (Except String Unit) := do
   let ext := outputPath.extension
+  let tools := External.defaultTools
+  let optLevel := opts.optimizationLevel.getD 2
 
   match ext with
   | some "ll" =>
     IO.FS.writeFile outputPath llvmIR
     IO.println s!"Generated LLVM IR: {outputPath}"
+    pure (.ok ())
 
   | some "o" =>
     let llTemp := outputPath.withExtension "ll"
     IO.FS.writeFile llTemp llvmIR
-    IO.println s!"Generated LLVM IR: {llTemp}"
-    IO.println s!"Note: Object file generation not yet implemented"
-
-  | some "toria" =>
-    -- For now, just write the LLVM IR as the library content
-    IO.FS.writeFile outputPath llvmIR
-    IO.println s!"Generated library archive: {outputPath}"
+    let result ← External.compileToObject tools llTemp outputPath optLevel
+    IO.FS.removeFile llTemp |>.catchExceptions fun _ => pure ()
+    match result with
+    | .ok () =>
+      IO.println s!"Generated object file: {outputPath}"
+      pure (.ok ())
+    | .error e =>
+      pure (.error e)
 
   | _ =>
-    if opts.lib then
-      let libPath := outputPath.withExtension "toria"
-      IO.FS.writeFile libPath llvmIR
-      IO.println s!"Generated library archive: {libPath}"
-    else
       let llTemp := outputPath.withExtension "ll"
       IO.FS.writeFile llTemp llvmIR
-      IO.println s!"Generated LLVM IR: {llTemp}"
-      IO.println s!"Note: Executable generation not yet implemented"
+
+      IO.println s!"Compiling to executable..."
+      let result ← External.compileAndLink tools llTemp outputPath none optLevel false
+
+      match result with
+      | .ok () =>
+        IO.FS.removeFile llTemp |>.catchExceptions fun _ => pure ()
+        IO.println s!"Generated executable: {outputPath}"
+        pure (.ok ())
+      | .error e =>
+        IO.println s!"LLVM IR saved to: {llTemp}"
+        pure (.error e)
+
+/-- Generate a .toria library package -/
+def generateLibrary
+    (result : ProjectResult)
+    (compileResult : CompileResult)
+    (outputPath : System.FilePath)
+    : IO (Except String Unit) := do
+  IO.println "  Creating library package..."
+
+  -- Build metadata for dependent packages
+  let metadata := buildProjectMetadata result
+
+  -- Collect exported symbols (all public symbols)
+  let exports := result.symbols.fold (init := #[]) fun acc sym _ =>
+    acc.push sym.name
+
+  -- Create .toria package
+  Package.createPackage
+    result.packageName
+    compileResult.alloyModules
+    metadata
+    exports
+    outputPath
 
 /-- Main build entry point -/
 def build (opts : BuildOptions) : IO BuildResult := do
@@ -93,16 +132,33 @@ def build (opts : BuildOptions) : IO BuildResult := do
     IO.eprintln (Error.renderSummary result.diagnostics)
     pure (BuildResult.failed result.diagnostics)
   else
-    -- Link modules
+    -- Compile modules
     let extConstructors : Std.HashMap String Nat := result.constructors
-    let (llvmIR, _allConstructors) ← linkModules result.packageName result.checkedModules extConstructors
+    let compileResult ← compileModules
+      result.packageName
+      result.checkedModules
+      extConstructors
+      result.globals
 
     -- Generate output
     let outputPath := generateOutputPath opts result.packageName
-    generateOutput opts outputPath llvmIR
 
-    IO.println s!"Successfully compiled {result.checkedModules.size} module(s)"
-    IO.println s!"Output: {outputPath}"
-    pure BuildResult.succeeded
+    if opts.lib then
+      let libPath := outputPath.withExtension "toria"
+      match ← generateLibrary result compileResult libPath with
+      | .ok () =>
+        IO.println s!"Successfully built library with {result.checkedModules.size} module(s)"
+        pure (BuildResult.succeeded libPath)
+      | .error e =>
+        IO.eprintln s!"Library packaging failed: {e}"
+        pure (BuildResult.failed #[])
+    else
+      match ← generateOutput opts outputPath compileResult.llvmIR with
+      | .ok () =>
+        IO.println s!"Successfully compiled {result.checkedModules.size} module(s)"
+        pure (BuildResult.succeeded outputPath)
+      | .error e =>
+        IO.eprintln s!"Compilation failed: {e}"
+        pure (BuildResult.failed #[])
 
 end Somac.Build

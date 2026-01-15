@@ -102,8 +102,8 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst) : Inst :=
   | .intrinsic name args retTy => .intrinsic name (remapOps args) retTy
   | .malloc size => .malloc (remapOp size)
   | .free ptr => .free (remapOp ptr)
-  | .alloca ty => inst
-  | .panic msgIdx line => inst
+  | .alloca _ => inst
+  | .panic _ _ => inst
 
 /-- Rewrite FuncId references in a terminator -/
 def remapTerminator (remap : IdRemap) (moduleName : String) (term : Terminator) : Terminator :=

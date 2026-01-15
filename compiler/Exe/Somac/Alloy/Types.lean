@@ -14,13 +14,16 @@
 -/
 
 import Std.Data.HashMap
+import Kenosis
+
+open Kenosis
 
 namespace Somac.Alloy
 
 /-- A local value in SSA form (assigned exactly once) -/
 structure LocalId where
   id : Nat
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace LocalId
 
@@ -34,7 +37,7 @@ end LocalId
 /-- A basic block identifier -/
 structure BlockId where
   id : Nat
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace BlockId
 
@@ -48,7 +51,7 @@ end BlockId
 /-- A function identifier (index into the module's function table) -/
 structure FuncId where
   id : Nat
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace FuncId
 
@@ -60,7 +63,7 @@ end FuncId
 /-- A global constant identifier -/
 structure GlobalId where
   id : Nat
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace GlobalId
 
@@ -72,7 +75,7 @@ end GlobalId
 /-- A type variable identifier (de Bruijn index for quantified types) -/
 structure TyVarId where
   idx : Nat
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace TyVarId
 
@@ -91,7 +94,7 @@ inductive PrimTy where
   | f32 | f64
   | bool
   | unit
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace PrimTy
 
@@ -145,7 +148,7 @@ inductive Ty where
   | forall_ (name : String) (body : Ty)
   /-- Type application: F[T] -/
   | tyApp (func : Ty) (arg : Ty)
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, Serialize, Deserialize
 
 namespace Ty
 
@@ -296,7 +299,7 @@ inductive Const where
   | string (idx : Nat) (len : Nat)
   /-- Undefined value (for uninitialized memory) -/
   | undef (ty : Ty)
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, Serialize, Deserialize
 
 namespace Const
 
@@ -329,7 +332,7 @@ inductive Operand where
   | const (c : Const)
   | global (id : GlobalId)
   | func (id : FuncId)
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, Serialize, Deserialize
 
 namespace Operand
 
@@ -352,7 +355,7 @@ inductive BinOp where
   | and | or | xor | shl | shr
   -- Comparison (returns bool)
   | eq | ne | lt | le | gt | ge
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace BinOp
 
@@ -378,7 +381,7 @@ inductive UnOp where
   | itof (to : PrimTy)    -- Int to float
   | ftoi (to : PrimTy)    -- Float to int
   | bitcast (to : Ty)     -- Reinterpret bits
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, Serialize, Deserialize
 
 namespace UnOp
 

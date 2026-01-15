@@ -185,6 +185,10 @@ structure CheckedModule where
   sourceFile : SourceFile
   /-- Incremental checking state (dependency tracking and caching) -/
   incrementalState : IncrementalState := IncrementalState.empty
+  /-- Typed function bodies from type checking -/
+  typedFunctions : Std.HashMap String Metal.TypedFunction := {}
+  /-- Usage counts from type checking -/
+  usages : Std.HashMap Metal.BindingId Nat := {}
 
 namespace CheckedModule
 
@@ -930,6 +934,8 @@ def checkModule
     publicInstances := publicInstances
     sourceFile := info.sourceFile
     incrementalState := tcResult.incrementalState
+    typedFunctions := tcResult.typedFunctions
+    usages := tcResult.usages
   }
 
   (metalRes.diagnostics ++ allDiags, some checkedModule, supply'')
@@ -1008,6 +1014,8 @@ def checkModuleIncremental
     publicInstances := publicInstances
     sourceFile := info.sourceFile
     incrementalState := tcResult.incrementalState
+    typedFunctions := tcResult.typedFunctions
+    usages := tcResult.usages
   }
 
   (metalRes.diagnostics ++ allDiags, some checkedModule, supply'')

@@ -13,6 +13,7 @@
 import Somac.Alloy.Inst
 import Std.Data.HashMap
 import Std.Data.HashSet
+import Kenosis
 
 namespace Somac.Alloy
 
@@ -22,7 +23,7 @@ structure Stmt where
   result : Option LocalId
   /-- The instruction -/
   inst : Inst
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, Serialize, Deserialize
 
 namespace Stmt
 
@@ -56,7 +57,7 @@ structure Block where
   stmts : Array Stmt := #[]
   /-- Block terminator -/
   terminator : Terminator
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, Serialize, Deserialize
 
 namespace Block
 

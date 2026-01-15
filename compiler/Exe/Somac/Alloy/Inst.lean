@@ -12,6 +12,7 @@
 -/
 
 import Somac.Alloy.Types
+import Kenosis
 
 namespace Somac.Alloy
 
@@ -127,7 +128,7 @@ inductive Inst where
   /-- Runtime intrinsic call -/
   | intrinsic (name : String) (args : Array Operand) (retTy : Ty)
 
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, Serialize, Deserialize
 
 namespace Inst
 
@@ -271,7 +272,7 @@ inductive Terminator where
   /-- Unreachable (undefined behavior if reached) -/
   | unreachable
 
-  deriving Repr, Inhabited
+  deriving Repr, Inhabited, Serialize, Deserialize
 
 namespace Terminator
 
