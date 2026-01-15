@@ -11,7 +11,7 @@ rev = "v4.26.0"
 
 [[require]]
 name = "kenosis"
-path = "../../kenosis"
+git = "https://github.com/SrGaabriel/soma"
 rev = "main"
 
 [[lean_lib]]
