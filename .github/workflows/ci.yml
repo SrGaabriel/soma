@@ -298,18 +298,6 @@ jobs:
                   echo "$HOME/.elan/bin" >> $GITHUB_PATH
               shell: bash
 
-            - name: Cache Lake packages
-              uses: actions/cache@v4
-              with:
-                  path: |
-                      ~/.elan
-                      ${{ matrix.project }}/.lake
-                      ${{ matrix.project }}/lake-packages
-                  key: ${{ runner.os }}-${{ matrix.project }}-${{ hashFiles(format('{0}/lean-toolchain', matrix.project), format('{0}/lake-manifest.json', matrix.project), format('{0}/lakefile.lean', matrix.project), format('{0}/lakefile.toml', matrix.project)) }}
-                  restore-keys: |
-                      ${{ runner.os }}-${{ matrix.project }}-
-                      ${{ runner.os }}-
-
             - name: Update Lake packages
               run: lake update
               shell: bash
