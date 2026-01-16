@@ -14,9 +14,19 @@ def parseAttribute : ParserM (Option GreenNode) := do
       | some lbracket =>
           match ← parseLowerIdent with
           | some nameTok =>
+              let argNode ← do
+                let tok ← current
+                match tok.kind with
+                | some (.string _) =>
+                    let strTok ← consumeAny
+                    pure (some strTok)
+                | _ => pure none
               match ← tryConsume .rightBracket with
               | some rbracket =>
-                  return some (GreenNode.mkNode .attribute #[atTok, lbracket, nameTok, rbracket])
+                  let children := match argNode with
+                    | some arg => #[atTok, lbracket, nameTok, arg, rbracket]
+                    | none => #[atTok, lbracket, nameTok, rbracket]
+                  return some (GreenNode.mkNode .attribute children)
               | none =>
                   recordError "expected ']' after attribute"
                   return some (GreenNode.mkError "unclosed attribute" #[atTok, lbracket, nameTok])
@@ -39,7 +49,7 @@ def parseAttributes : ParserM (Array GreenNode) := do
 /-- Check if attributes contain @[intrinsic] or @[extern] which allow bodiless declarations -/
 def hasBodyProvidingAttr (attrs : Array GreenNode) : Bool :=
   attrs.any fun attr =>
-    -- Attribute structure: @[name] -> children are [@, [, name, ]]
+    -- Attribute structure: @[name] or @[name "arg"] -> children are [@, [, name, ]] or [@, [, name, arg, ]]
     -- The name token is at index 2
     if attr.syntaxKind? == some .attribute then
       let children := attr.children

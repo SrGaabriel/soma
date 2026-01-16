@@ -1,6 +1,6 @@
-@[intrinsic]
+@[extern "soma_strcat"]
 def strcat :: String -> String -> String
-@[intrinsic]
+@[extern "soma_int_to_string"]
 def int_to_string :: Int -> String
 
 def test :: Int = 5

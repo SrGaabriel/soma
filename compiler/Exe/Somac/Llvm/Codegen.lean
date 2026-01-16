@@ -764,16 +764,6 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
       FuncBuilder.callNamedVoid "soma_panic" #[(.i32, i32Val msgIdx), (.i32, i32Val line)]
     pure none
 
-  | .intrinsic name args retTy =>
-    let llvmRetTy := convertTy retTy
-    let llvmArgs ← args.mapM fun arg => convertOperandWithTy arg
-    if isVoidTy retTy then
-      CodegenM.withFuncBuilder do
-        FuncBuilder.callNamedVoid name llvmArgs
-      pure none
-    else
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
-      pure (some (ref, retTy))
 
   | .callIntrinsic op args retTy =>
     -- FFI intrinsic operations compile to inline LLVM instructions
@@ -1052,7 +1042,6 @@ def addRuntimeDeclarations : CodegenM Unit := do
 /-- Lower an Alloy module to LLVM -/
 def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
   -- Register all functions first (names and signatures)
-  -- Use "soma_main" as the name for the main function so the linker can find it
   for func in alloyModule.funcs do
     let isMain := alloyModule.mainFunc == some func.id
     let name := if isMain then "soma_main" else func.sig.name
@@ -1088,7 +1077,6 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
     CodegenM.withModuleBuilder (ModuleBuilder.addGlobal llvmGlobal)
 
   -- Lower all functions
-  -- Use "soma_main" as the name for the main function so the linker can find it
   for func in alloyModule.funcs do
     let isMain := alloyModule.mainFunc == some func.id
     let funcName := if isMain then "soma_main" else func.sig.name

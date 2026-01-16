@@ -192,7 +192,6 @@ def resultTy : Inst → Option Ty
   | .clone _ ty => some ty
   | .erase _ _ => none
   | .panic _ _ => none
-  | .intrinsic _ _ retTy => some retTy
   | .callIntrinsic op _ retTy => if op.hasResult then some retTy else none
   | .callExtern _ _ retTy => some retTy
 
@@ -252,9 +251,6 @@ instance : ToString Inst where
     | .clone src ty => s!"clone {src} : {ty}"
     | .erase val ty => s!"erase {val} : {ty}"
     | .panic msgIdx line => s!"panic #{msgIdx} @ line {line}"
-    | .intrinsic name args _ =>
-      let as := String.intercalate ", " (args.toList.map ToString.toString)
-      s!"intrinsic {name}({as})"
     | .callIntrinsic op args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call.intrinsic {op}({as})"

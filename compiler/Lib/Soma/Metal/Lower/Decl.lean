@@ -87,7 +87,14 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
       -- Register the function name (but don't resolve type yet)
       -- For intrinsics/externs, create appropriate Name.intrinsic
       let isIntrinsic := attrs.any fun a => a.name.value == "intrinsic"
-      let isExtern := attrs.any fun a => a.name.value == "extern"
+      let externAttr := attrs.find? fun a => a.name.value == "extern"
+      let isExtern := externAttr.isSome
+      let externName := match externAttr with
+        | some attr =>
+          match attr.args[0]? with
+          | some (Syntax.Expr.lit (Syntax.Literal.string s _)) => s
+          | _ => name.value
+        | none => name.value
       let globalName ←
         if isExtern then
           -- External C function
@@ -363,14 +370,21 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
     else
       -- No clauses - check for @[intrinsic] or @[extern] attributes
       let isIntrinsic := attrs.any fun a => a.name.value == "intrinsic"
-      let isExtern := attrs.any fun a => a.name.value == "extern"
+      let externAttr := attrs.find? fun a => a.name.value == "extern"
+      let isExtern := externAttr.isSome
+      let externName := match externAttr with
+        | some attr =>
+          match attr.args[0]? with
+          | some (Syntax.Expr.lit (Syntax.Literal.string s _)) => s
+          | _ => name.value
+        | none => name.value
 
       if isIntrinsic || isExtern then
         let globalInfo? ← LowerM.lookupVar LocalEnv.empty name.value
         let globalName ← match globalInfo? with
           | some (.inr info) => pure info.name
           | _ =>
-            -- For intrinsics, check if the name matches a known primitive or FFI operation
+            -- For intrinsics, check if the name matches a known primitive operation
             if isIntrinsic then
               match PrimOp.fromString? name.value with
               | some op => pure (Name.intrinsic (Intrinsic.primOp op))
@@ -379,8 +393,8 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
                 | some op => pure (Name.intrinsic (Intrinsic.ffiOp op))
                 | none => LowerM.freshUserName name.value
             else
-              -- Extern function: use Name.intrinsic (Intrinsic.extern name)
-              pure (Name.intrinsic (Intrinsic.extern name.value))
+              -- Extern function: use Name.intrinsic (Intrinsic.extern externName)
+              pure (Name.intrinsic (Intrinsic.extern externName))
 
         -- Intrinsics/externs have no real body - create a placeholder panic
         -- The actual implementation comes from the runtime/LLVM intrinsics or external linkage
@@ -391,7 +405,7 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
           noInline := attrs.any fun a => a.name.value == "noinline"
           total := attrs.any fun a => a.name.value == "total"
           deprecated := none
-          extern := if isExtern then some name.value else none
+          extern := if isExtern then some externName else none
           intrinsic := isIntrinsic
         }
 

@@ -99,7 +99,6 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst) : Inst :=
   | .memset dst val size => .memset (remapOp dst) (remapOp val) (remapOp size)
   | .clone src ty => .clone (remapOp src) ty
   | .erase val ty => .erase (remapOp val) ty
-  | .intrinsic name args retTy => .intrinsic name (remapOps args) retTy
   | .malloc size => .malloc (remapOp size)
   | .free ptr => .free (remapOp ptr)
   | .alloca _ => inst

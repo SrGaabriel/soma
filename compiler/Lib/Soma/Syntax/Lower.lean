@@ -83,6 +83,12 @@ def getTokenKind (green : GreenNode) : Option TokenKind :=
 def isTokenKind (green : GreenNode) (kind : TokenKind) : Bool :=
   getTokenKind green == some kind
 
+/-- Check if a node is a string token -/
+def isStringToken (green : GreenNode) : Bool :=
+  match getTokenKind green with
+  | some (.string _) => true
+  | _ => false
+
 /-- Get the token text, unwrapping triviaToken if necessary -/
 def getTokenText (green : GreenNode) : Option String :=
   (unwrapTrivia green).text?
@@ -1415,12 +1421,22 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
           let attrs ← attrNodes.mapM fun (a, ao) => do
             let aspan ← spanFor a ao
             let nameTokens := a.children.filter fun c => isTokenKind c .lowerIdent
+            let stringTokens := a.children.filter isStringToken
+            let args ← if stringTokens.isEmpty then
+              pure #[]
+            else
+              let strTok := stringTokens[0]!
+              match getTokenText strTok with
+              | some text =>
+                let unquoted := if text.length >= 2 then text.extract ⟨1⟩ ⟨text.length - 1⟩ else text
+                pure #[Expr.lit (.string unquoted aspan)]
+              | none => pure #[]
             if nameTokens.isEmpty then
-              pure ⟨⟨"unknown", aspan⟩, #[], aspan⟩
+              pure ⟨⟨"unknown", aspan⟩, args, aspan⟩
             else
               match getTokenText nameTokens[0]! with
-              | some text => pure ⟨⟨text, aspan⟩, #[], aspan⟩
-              | none => pure ⟨⟨"unknown", aspan⟩, #[], aspan⟩
+              | some text => pure ⟨⟨text, aspan⟩, args, aspan⟩
+              | none => pure ⟨⟨"unknown", aspan⟩, args, aspan⟩
 
           let nameNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .name
           let opNameNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .operatorName

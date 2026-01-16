@@ -207,9 +207,6 @@ def ppInst (cfg : Config) : Inst → String
     s!"{colorKeyword cfg "erase"} {ppTy cfg ty} {ppOperand cfg val}"
   | .panic msgIdx line =>
     s!"{colorKeyword cfg "panic"} #{msgIdx} @ line {line}"
-  | .intrinsic name args retTy =>
-    let as := String.intercalate ", " (args.toList.map (ppOperand cfg))
-    s!"{colorKeyword cfg "intrinsic"} {ppTy cfg retTy} \"{name}\"({as})"
   | .callIntrinsic op args retTy =>
     let as := String.intercalate ", " (args.toList.map (ppOperand cfg))
     s!"{colorKeyword cfg "call.intrinsic"} {ppTy cfg retTy} {op}({as})"

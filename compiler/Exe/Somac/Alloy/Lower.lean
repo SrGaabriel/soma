@@ -486,7 +486,7 @@ def lowerString (len : UInt32) (dataHash : UInt32) : LowerM LocalId := do
 
   -- Use intrinsic to get string data from table
   let dataPtr ← LowerM.emitInst
-    (.intrinsic "soma_string_lookup" #[.const (.int (Int.ofNat dataHash.toNat) .u32)] .rawPtr)
+    (.callExtern "soma_string_lookup" #[.const (.int (Int.ofNat dataHash.toNat) .u32)] .rawPtr)
     .rawPtr
   LowerM.emitVoid (.store (.local dataPtrSlot) (.local dataPtr))
 

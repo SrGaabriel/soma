@@ -160,7 +160,6 @@ def substInstTypes (inst : Inst) (args : Array Ty) : Inst :=
   | .clone src ty => .clone src (subst ty)
   | .erase val ty => .erase val (subst ty)
   | .panic msgIdx line => .panic msgIdx line
-  | .intrinsic name intrArgs retTy => .intrinsic name intrArgs (subst retTy)
   | .callIntrinsic op intrArgs retTy => .callIntrinsic op intrArgs (subst retTy)
   | .callExtern name extArgs retTy => .callExtern name extArgs (subst retTy)
 
