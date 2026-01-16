@@ -21,7 +21,7 @@ def convertPrimTy : PrimTy → LLVMType
   | .f32 => .float
   | .f64 => .double
   | .bool => .i1
-  | .unit => .void
+  | .unit => .i8 -- here unit is i8 so it can be used as a value but wherever it's important it's void
 
 /-- Check if a primitive type is a floating point type -/
 def primTyIsFloat : PrimTy → Bool
@@ -47,10 +47,15 @@ partial def convertTy : Ty → LLVMType
   | .forall_ _ body => convertTy body
   | .tyApp func _ => convertTy func
 
-/-- Check if an Alloy type converts to void -/
-def isVoidTy : Ty → Bool
+/-- Check if an Alloy type is unit -/
+def isUnitTy : Ty → Bool
   | .prim .unit => true
   | _ => false
+
+/-- Convert Alloy type to LLVM type for function return types -/
+partial def convertRetTy : Ty → LLVMType
+  | .prim .unit => .void
+  | other => convertTy other
 
 /-- The closure struct type -/
 def closureTy : LLVMType := .struct false #[.ptr, .ptr]
@@ -245,7 +250,7 @@ def convertOperand (op : Operand) : CodegenM LLVMValue := do
       | .f32 => pure (.const (.float32 val))
       | _ => pure (.const (.float64 val))
     | .bool b => pure (.const (.bool b))
-    | .unit => pure (.const (.int 0 1))
+    | .unit => pure (.const (.int 0 8))
     | .null _ => pure (.const .null)
     | .string idx _ => pure (.global ⟨s!".str.{idx}"⟩)
     | .undef t => pure (.const (.undef (convertTy t)))
@@ -356,6 +361,11 @@ def convertUnOp (op : UnOp) (srcTy : Ty) (operand : LLVMValue) : CodegenM LocalR
     | .bitcast t =>
       let toTy := convertTy t
       FuncBuilder.bitcast llvmSrcTy toTy operand
+    | .ptrtoint t =>
+      let toTy := convertPrimTy t
+      FuncBuilder.ptrtoint toTy operand
+    | .inttoptr =>
+      FuncBuilder.inttoptr llvmSrcTy operand
 
 /-- Lower an Alloy instruction to LLVM, returning result ref and result type -/
 def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
@@ -372,8 +382,9 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     let opVal ← convertOperand operand
     let ref ← convertUnOp op srcTy opVal
     let resultTy := match op with
-      | .trunc t | .zext t | .sext t | .itof t | .ftoi t => .prim t
+      | .trunc t | .zext t | .sext t | .itof t | .ftoi t | .ptrtoint t => .prim t
       | .bitcast t => t
+      | .inttoptr => .rawPtr
       | .neg | .not => srcTy
     pure (some (ref, resultTy))
 
@@ -587,7 +598,7 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
           else operandTy arg
         | none => operandTy arg
       pure (convertTy argTy, argVal)
-    if isVoidTy retTy then
+    if isUnitTy retTy then
       CodegenM.withFuncBuilder do
         FuncBuilder.callNamedVoid funcName llvmArgs
       pure none
@@ -609,7 +620,7 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
           else operandTy arg
         | none => operandTy arg
       pure (convertTy argTy, argVal)
-    if isVoidTy retTy then
+    if isUnitTy retTy then
       CodegenM.withFuncBuilder do
         FuncBuilder.callNamedVoid funcName llvmArgs
       pure none
@@ -622,7 +633,7 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     let ptrVal ← convertOperand ptr
     let llvmRetTy := convertTy retTy
     let llvmArgs ← args.mapM fun arg => convertOperandWithTy arg
-    if isVoidTy retTy then
+    if isUnitTy retTy then
       CodegenM.withFuncBuilder do
         FuncBuilder.callVoid ptrVal llvmArgs
       pure none
@@ -632,26 +643,44 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
       pure (some (ref, retTy))
 
   | .callClosure closure args retTy =>
-    let closureVal ← convertOperand closure
-    let llvmRetTy := convertTy retTy
-    -- Extract function pointer (field 0) and environment (field 1)
-    let fnPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.extractvalue closureTy closureVal #[0]
-    let envPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.extractvalue closureTy closureVal #[1]
-    -- Build args: env first, then regular args
-    let mut llvmArgs : Array (LLVMType × LLVMValue) := #[(.ptr, .local envPtr)]
-    for arg in args do
-      let argWithTy ← convertOperandWithTy arg
-      llvmArgs := llvmArgs.push argWithTy
-    if isVoidTy retTy then
-      CodegenM.withFuncBuilder do
-        FuncBuilder.callVoid (.local fnPtr) llvmArgs
-      pure none
+    let closureTyAlloy ← operandTy closure
+    let closureLLVMTy := convertTy closureTyAlloy
+    -- Check if closure operand is actually a closure type (not unit from ERA)
+    if closureLLVMTy != closureTy then
+      -- Not a real closure, return unit (dead code path)
+      if isUnitTy retTy then
+        pure none
+      else
+        -- Return undef for non-unit return types (dead code, but must be well-typed)
+        let llvmRetTy := convertTy retTy
+        -- Use add 0 for integers, null for pointers to produce a valid value
+        let ref ← CodegenM.withFuncBuilder do
+          if llvmRetTy.isInt then
+            FuncBuilder.add llvmRetTy (intVal 0 (llvmRetTy.intBits.getD 64)) (intVal 0 (llvmRetTy.intBits.getD 64))
+          else
+            FuncBuilder.bitcast .ptr llvmRetTy nullVal
+        pure (some (ref, retTy))
     else
-      let ref ← CodegenM.withFuncBuilder do
-        FuncBuilder.call llvmRetTy (.local fnPtr) llvmArgs
-      pure (some (ref, retTy))
+      let closureVal ← convertOperand closure
+      let llvmRetTy := convertTy retTy
+      -- Extract function pointer (field 0) and environment (field 1)
+      let fnPtr ← CodegenM.withFuncBuilder do
+        FuncBuilder.extractvalue closureTy closureVal #[0]
+      let envPtr ← CodegenM.withFuncBuilder do
+        FuncBuilder.extractvalue closureTy closureVal #[1]
+      -- Build args: env first, then regular args
+      let mut llvmArgs : Array (LLVMType × LLVMValue) := #[(.ptr, .local envPtr)]
+      for arg in args do
+        let argWithTy ← convertOperandWithTy arg
+        llvmArgs := llvmArgs.push argWithTy
+      if isUnitTy retTy then
+        CodegenM.withFuncBuilder do
+          FuncBuilder.callVoid (.local fnPtr) llvmArgs
+        pure none
+      else
+        let ref ← CodegenM.withFuncBuilder do
+          FuncBuilder.call llvmRetTy (.local fnPtr) llvmArgs
+        pure (some (ref, retTy))
 
   | .makeClosure func env =>
     let funcName ← CodegenM.getFuncName func.id
@@ -665,9 +694,13 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     -- Store environment pointer
     let envPtrSlot ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 closureTy (.local closurePtr) #[0, 1]
-    -- If env is not already a pointer, we need to handle it
-    let envPtrVal := if envLLVMTy == .ptr then envVal
-                     else envVal -- Assume already converted to ptr
+    -- If env is not already a pointer, convert it
+    let envPtrVal ← if envLLVMTy == .ptr then pure envVal
+                    else do
+                      -- Convert non-pointer to pointer (typically int 0 -> null ptr)
+                      let converted ← CodegenM.withFuncBuilder do
+                        FuncBuilder.inttoptr envLLVMTy envVal
+                      pure (.local converted)
     CodegenM.withFuncBuilder do
       FuncBuilder.store .ptr envPtrVal (.local envPtrSlot)
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.load closureTy (.local closurePtr))
@@ -689,7 +722,12 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
       FuncBuilder.store .ptr (globalVal funcName) (.local fnPtrSlot)
     let envPtrSlot ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 closureTy (.local closurePtr) #[0, 1]
-    let envPtrVal := if envLLVMTy == .ptr then envVal else envVal
+    -- If env is not already a pointer, convert it
+    let envPtrVal ← if envLLVMTy == .ptr then pure envVal
+                    else do
+                      let converted ← CodegenM.withFuncBuilder do
+                        FuncBuilder.inttoptr envLLVMTy envVal
+                      pure (.local converted)
     CodegenM.withFuncBuilder do
       FuncBuilder.store .ptr envPtrVal (.local envPtrSlot)
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.load closureTy (.local closurePtr))
@@ -753,11 +791,21 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
       FuncBuilder.memcpy (.local newPtr) srcVal (i64Val size)
     pure (some (newPtr, ty))
 
-  | .erase val _ =>
-    let valRef ← convertOperand val
-    CodegenM.withFuncBuilder do
-      FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, valRef)]
-    pure none
+  | .erase val ty =>
+    -- Skip erase for unit types (nothing to free)
+    if isUnitTy ty then
+      pure none
+    else
+      let valRef ← convertOperand val
+      let llvmTy := convertTy ty
+      -- Only call erase for pointer types (heap-allocated values)
+      if llvmTy == .ptr then
+        CodegenM.withFuncBuilder do
+          FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, valRef)]
+      else
+        -- Non-pointer types don't need heap deallocation, skip
+        pure ()
+      pure none
 
   | .panic msgIdx line =>
     CodegenM.withFuncBuilder do
@@ -865,7 +913,7 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     -- External function call: emit regular LLVM call to @name
     let llvmRetTy := convertTy retTy
     let llvmArgs ← args.mapM fun arg => convertOperandWithTy arg
-    if isVoidTy retTy then
+    if isUnitTy retTy then
       CodegenM.withFuncBuilder do
         FuncBuilder.callNamedVoid name llvmArgs
       pure none
@@ -874,7 +922,7 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
       pure (some (ref, retTy))
 
 /-- Lower an Alloy terminator to LLVM -/
-def lowerTerminator (term : Terminator) (_retTy : Ty) : CodegenM Unit := do
+def lowerTerminator (term : Terminator) (retTy : Ty) : CodegenM Unit := do
   match term with
   | .jump target =>
     let label ← CodegenM.getOrCreateBlock target.id
@@ -897,9 +945,24 @@ def lowerTerminator (term : Terminator) (_retTy : Ty) : CodegenM Unit := do
 
   | .ret val =>
     let valTy ← operandTy val
-    let valRef ← convertOperand val
-    let llvmTy := convertTy valTy
-    CodegenM.withFuncBuilder (FuncBuilder.ret llvmTy valRef)
+    -- Use function's declared return type, not the value's type
+    if isUnitTy retTy then
+      -- Function returns unit (void in LLVM)
+      CodegenM.withFuncBuilder FuncBuilder.retVoid
+    else if isUnitTy valTy then
+      -- todo: improve this and maybe just remove the functions altogether
+      -- This can happen when closure calls are erased but the function signature expects a result
+      let llvmRetTy := convertTy retTy
+      let defaultVal ← CodegenM.withFuncBuilder do
+        if llvmRetTy.isInt then
+          FuncBuilder.add llvmRetTy (intVal 0 (llvmRetTy.intBits.getD 64)) (intVal 0 (llvmRetTy.intBits.getD 64))
+        else
+          FuncBuilder.bitcast .ptr llvmRetTy nullVal
+      CodegenM.withFuncBuilder (FuncBuilder.ret llvmRetTy (.local defaultVal))
+    else
+      let llvmTy := convertTy valTy
+      let valRef ← convertOperand val
+      CodegenM.withFuncBuilder (FuncBuilder.ret llvmTy valRef)
 
   | .retUnit =>
     CodegenM.withFuncBuilder FuncBuilder.retVoid
@@ -926,17 +989,19 @@ def lowerFuncWithName (func : Func) (name : String) : CodegenM LLVMFunc := do
   CodegenM.clearFuncState
   CodegenM.setCurrentFunc func
 
-  -- Convert parameters and map them
-  let llvmParams : Array LLVMParam := func.sig.params.map fun p =>
-    { name := p.name, ty := convertTy p.ty }
-
-  -- Map parameter locals to their types
+  -- Map parameter locals to their types first (to get consistent numbering)
   for param in func.sig.params do
     let localRef ← CodegenM.withFuncBuilder FuncBuilder.freshLocal
     CodegenM.mapLocal param.id.id localRef param.ty
 
+  -- Convert parameters using numeric names matching the LocalRef IDs
+  let llvmParams : Array LLVMParam ← func.sig.params.mapM fun p => do
+    match ← CodegenM.getLocal p.id.id with
+    | some ref => pure { name := s!"{ref.id}", ty := convertTy p.ty }
+    | none => pure { name := p.name, ty := convertTy p.ty }
+
   -- Convert return type
-  let llvmRetTy := convertTy func.sig.retTy
+  let llvmRetTy := convertRetTy func.sig.retTy
 
   -- Convert attributes
   let llvmAttrs : LLVMFuncAttrs := {
@@ -1036,6 +1101,14 @@ def addRuntimeDeclarations : CodegenM Unit := do
         { name := "len", ty := .i64 },
         { name := "isvolatile", ty := .i1 }
       ]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_string_lookup"
+      retTy := .ptr
+      params := #[{ name := "idx", ty := .i32 }]
       isDeclaration := true
     }
 

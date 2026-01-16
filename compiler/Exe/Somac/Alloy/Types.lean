@@ -381,6 +381,8 @@ inductive UnOp where
   | itof (to : PrimTy)    -- Int to float
   | ftoi (to : PrimTy)    -- Float to int
   | bitcast (to : Ty)     -- Reinterpret bits
+  | ptrtoint (to : PrimTy) -- Pointer to integer
+  | inttoptr -- Integer to pointer
   deriving Repr, BEq, Inhabited, Serialize, Deserialize
 
 namespace UnOp
@@ -395,6 +397,8 @@ instance : ToString UnOp where
     | .itof t => s!"itof.{t}"
     | .ftoi t => s!"ftoi.{t}"
     | .bitcast t => s!"bitcast.{t}"
+    | .ptrtoint t => s!"ptrtoint.{t}"
+    | .inttoptr => "inttoptr"
 
 end UnOp
 

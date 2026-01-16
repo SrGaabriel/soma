@@ -126,6 +126,8 @@ def ppUnOp (cfg : Config) : UnOp → String
   | .itof t => s!"{colorKeyword cfg "itof"}.{t}"
   | .ftoi t => s!"{colorKeyword cfg "ftoi"}.{t}"
   | .bitcast t => s!"{colorKeyword cfg "bitcast"}.{ppTy cfg t}"
+  | .ptrtoint t => s!"{colorKeyword cfg "ptrtoint"}.{t}"
+  | .inttoptr => colorKeyword cfg "inttoptr"
 
 def ppInst (cfg : Config) : Inst → String
   | .binOp op lhs rhs ty =>

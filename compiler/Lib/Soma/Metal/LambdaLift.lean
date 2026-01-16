@@ -264,6 +264,50 @@ inductive UExpr where
 /-- Default type for expressions without type info -/
 def defaultTy : Value := Value.vType Soma.Core.Level.zero
 
+/-- Get the type of a UExpr -/
+def UExpr.getType : UExpr → Value
+  | .var v _ => v.ty
+  | .lit l _ => match l with
+    | .int _ => Value.vPrimTy .int
+    | .bool _ => Value.vPrimTy .bool
+    | .string _ => Value.vPrimTy .string
+  | .call _ _ ty _ => ty
+  | .lam _ _ ty _ => ty
+  | .closure _ _ ty _ => ty
+  | .construct _ _ _ ty _ => ty
+  | .tuple _ ty _ => ty
+  | .record _ ty _ => ty
+  | .recordUpdate _ _ ty _ => ty
+  | .inject _ _ ty _ => ty
+  | .array _ ty _ => ty
+  | .if_ _ _ _ ty _ => ty
+  | .case _ _ ty _ => ty
+  | .fieldAccess _ _ _ ty _ => ty
+  | .global _ ty _ => ty
+  | .panic _ ty _ => ty
+  | .proj _ _ _ ty _ => ty
+  | .typeApp _ ty _ => ty
+  | .type l _ => Value.vType l
+  | .pi _ _ _ _ _ _ => defaultTy
+  | .sigma _ _ _ _ _ => defaultTy
+  | .pair _ _ ty _ => ty
+  | .fst _ ty _ => ty
+  | .snd _ ty _ => ty
+  | .primTy p _ => Value.vPrimTy p
+  | .higherPrimTy p _ => Value.vHigherPrim p
+  | .rowEmpty _ => defaultTy
+  | .rowExtend _ _ _ _ => defaultTy
+  | .recordTy _ _ => defaultTy
+  | .variantTy _ _ => defaultTy
+  | .labelLit _ _ => defaultTy
+  | .dataTy _ _ _ => defaultTy
+  | .ann _ _ ty _ => ty
+  | .hole _ _ => defaultTy
+  | .mvar _ ty _ => ty
+  | .eq _ _ _ _ _ => defaultTy
+  | .refl _ _ _ => defaultTy
+  | .transport _ _ _ _ _ _ _ _ => defaultTy
+
 mutual
 
 partial def patternToU : Pattern Value → UPattern
@@ -652,7 +696,7 @@ partial def liftUExpr (e : UExpr) : LiftM UExpr := do
 
       -- Build the function type for the lifted function
       let allParamTypes := allParams.map (·.ty)
-      let resultType := ty.piCodomain?.getD defaultTy
+      let resultType := body''.getType
       let liftedFnType := buildFnType allParamTypes resultType
 
       let liftedFn : TypedFunction := {

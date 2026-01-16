@@ -155,8 +155,9 @@ def resultTy : Inst → Option Ty
   | .unOp op _ =>
     match op with
     | .neg | .not => none  -- Same as input type
-    | .trunc t | .zext t | .sext t | .itof t | .ftoi t => some (.prim t)
+    | .trunc t | .zext t | .sext t | .itof t | .ftoi t | .ptrtoint t => some (.prim t)
     | .bitcast t => some t
+    | .inttoptr => some .rawPtr
   | .copy _ => none  -- Same as input
   | .alloca ty => some (.ptr ty)
   | .malloc _ => some .rawPtr
