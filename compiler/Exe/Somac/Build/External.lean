@@ -6,6 +6,8 @@ structure ToolPaths where
   llc : String := "llc"
   /-- Path to clang (C/C++ compiler and linker) -/
   clang : String := "clang"
+  /-- Path to cc (system C compiler for linking, typically gcc) -/
+  cc : String := "cc"
   /-- Path to ar (archive tool) -/
   ar : String := "ar"
   /-- Path to tar (tape archive) -/
@@ -81,7 +83,8 @@ def linkExecutable
   -- Add standard libraries (math library often needed)
   args := args.push "-lm"
 
-  let result ← runCommand tools.clang args
+  -- Use system cc (typically gcc) for linking - it knows where system libraries are
+  let result ← runCommand tools.cc args
 
   if result.exitCode == 0 then
     pure (.ok ())

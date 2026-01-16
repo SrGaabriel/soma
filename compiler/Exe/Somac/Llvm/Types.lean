@@ -136,14 +136,36 @@ instance : ToString NamedRef where
 
 end NamedRef
 
-/-- A global reference (function or global variable) -/
+/-- Check if an LLVM identifier character is valid (doesn't need quoting).
+    Valid characters are: letters, digits, underscore, dot, and dollar sign -/
+def isValidLLVMIdentChar (c : Char) : Bool :=
+  c.isAlpha || c.isDigit || c == '_' || c == '.' || c == '$' || c == '-'
+
+/-- Check if a name needs quoting for LLVM IR.
+    Names containing invalid characters (like `/`) must be quoted. -/
+def needsQuoting (name : String) : Bool :=
+  name.isEmpty || name.any fun c => !isValidLLVMIdentChar c
+
+/-- Quote an LLVM name if it contains invalid characters.
+    Invalid chars in quoted names are escaped. -/
+def quoteIfNeeded (name : String) : String :=
+  if needsQuoting name then
+    -- Quote the name and escape special characters
+    let escaped := name.foldl (fun acc c =>
+      if c == '"' then acc ++ "\\\""
+      else if c == '\\' then acc ++ "\\\\"
+      else acc.push c) ""
+    s!"\"{escaped}\""
+  else
+    name
+
 structure GlobalRef where
   name : String
   deriving Repr, BEq, Hashable, Inhabited
 
 namespace GlobalRef
 
-def toLLVM (r : GlobalRef) : String := s!"@{r.name}"
+def toLLVM (r : GlobalRef) : String := s!"@{quoteIfNeeded r.name}"
 
 instance : ToString GlobalRef where
   toString := toLLVM
@@ -602,12 +624,13 @@ def toLLVM (f : LLVMFunc) : String :=
     | l => s!"{l} "
   let defOrDecl := if f.isDeclaration then "declare" else "define"
   let paramsStr := String.intercalate ", " (f.params.toList.map LLVMParam.toLLVM)
+  let quotedName := quoteIfNeeded f.name
 
   if f.isDeclaration then
-    s!"{defOrDecl} {linkageStr}{f.retTy} @{f.name}({paramsStr}){f.attrs}"
+    s!"{defOrDecl} {linkageStr}{f.retTy} @{quotedName}({paramsStr}){f.attrs}"
   else
     let blocksStr := String.intercalate "\n" (f.blocks.toList.map LLVMBlock.toLLVM)
-    s!"{defOrDecl} {linkageStr}{f.retTy} @{f.name}({paramsStr}){f.attrs} \{\n{blocksStr}\n}"
+    s!"{defOrDecl} {linkageStr}{f.retTy} @{quotedName}({paramsStr}){f.attrs} \{\n{blocksStr}\n}"
 
 instance : ToString LLVMFunc where
   toString := toLLVM
@@ -637,7 +660,8 @@ def toLLVM (g : LLVMGlobal) : String :=
   let alignStr := match g.align with
     | some a => s!", align {a}"
     | none => ""
-  s!"@{g.name} = {linkageStr}{constStr} {g.ty}{initStr}{alignStr}"
+  let quotedName := quoteIfNeeded g.name
+  s!"@{quotedName} = {linkageStr}{constStr} {g.ty}{initStr}{alignStr}"
 
 instance : ToString LLVMGlobal where
   toString := toLLVM

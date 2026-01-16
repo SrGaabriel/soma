@@ -125,8 +125,13 @@ inductive Inst where
   /-- Panic with message (aborts execution) -/
   | panic (msgIdx : Nat) (line : Nat)
 
-  /-- Runtime intrinsic call -/
-  | intrinsic (name : String) (args : Array Operand) (retTy : Ty)
+  /-- FFI intrinsic operation (compiles to inline LLVM instructions)
+      These are @[intrinsic] functions like ptr_read, ptr_write, etc. -/
+  | callIntrinsic (op : IntrinsicOp) (args : Array Operand) (retTy : Ty)
+
+  /-- External function call (compiles to LLVM external linkage call)
+      These are @[extern] functions like malloc, free, etc. -/
+  | callExtern (name : String) (args : Array Operand) (retTy : Ty)
 
   deriving Repr, Inhabited, Serialize, Deserialize
 
@@ -140,6 +145,7 @@ def hasResult : Inst → Bool
   | .memset _ _ _ => false
   | .erase _ _ => false
   | .panic _ _ => false
+  | .callIntrinsic op _ _ => op.hasResult
   | _ => true
 
 /-- Get the result type of an instruction (if it has one) -/
@@ -187,6 +193,8 @@ def resultTy : Inst → Option Ty
   | .erase _ _ => none
   | .panic _ _ => none
   | .intrinsic _ _ retTy => some retTy
+  | .callIntrinsic op _ retTy => if op.hasResult then some retTy else none
+  | .callExtern _ _ retTy => some retTy
 
 instance : ToString Inst where
   toString inst :=
@@ -247,6 +255,12 @@ instance : ToString Inst where
     | .intrinsic name args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"intrinsic {name}({as})"
+    | .callIntrinsic op args _ =>
+      let as := String.intercalate ", " (args.toList.map ToString.toString)
+      s!"call.intrinsic {op}({as})"
+    | .callExtern name args _ =>
+      let as := String.intercalate ", " (args.toList.map ToString.toString)
+      s!"call.extern {name}({as})"
 
 end Inst
 

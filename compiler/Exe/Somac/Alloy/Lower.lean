@@ -18,6 +18,7 @@ import Somac.Alloy.Func
 import Somac.Circuit.Graph
 import Somac.Circuit.Node
 import Soma.Core.Value
+import Soma.Core.Name
 import Soma.Core.Primitive
 import Std.Data.HashMap
 import Std.Data.HashSet
@@ -36,6 +37,7 @@ abbrev CLabel := Somac.Circuit.Node.Label
 abbrev CNodeEntry := Somac.Circuit.Graph.NodeEntry
 
 open Somac.Circuit.Term (Op1Code Op2Code PrimType Tag)
+open Soma.Core (Name FFIOp Intrinsic)
 
 /-- Mapping from Circuit node ports to Alloy local values -/
 abbrev PortMap := Std.HashMap (Nat × Nat) LocalId
@@ -210,6 +212,21 @@ def convertUnOp : Op1Code → UnOp
   | .not => .not
   | .neg => .neg
 
+/-- Convert Core FFIOp to Alloy IntrinsicOp -/
+def convertFFIOp : FFIOp → IntrinsicOp
+  | .null => .ptrNull
+  | .ptrAdd => .ptrAdd
+  | .ptrDiff => .ptrDiff
+  | .ptrRead => .ptrRead
+  | .ptrWrite => .ptrWrite
+  | .ptrCast => .ptrCast
+  | .toCString => .toCString
+  | .fromCString => .fromCString
+  | .cstringLen => .cstringLen
+  | .strcat => .strcat
+  | .intToString => .intToString
+  | .pureIO => .pureIO
+
 open Soma.Core (Value StarPrimitive HigherPrimitive)
 
 /-- Convert a StarPrimitive to Alloy PrimTy -/
@@ -318,7 +335,7 @@ partial def convertValueType : Value → Ty
   | Value.vTransport _ _ _ _ _ _ _ => .prim .i64 -- Transport carries the value
 
   -- Literals
-  | Value.vIntLit _ => .prim .i64
+  | Value.vIntLit _ => .prim .i32
   | Value.vStringLit _ => .rawPtr
 
 /-- Extract type parameters and value parameters from a function type (Pi chain) -/
@@ -353,7 +370,7 @@ def extractReturnType (ty : Value) : Ty :=
   | none => .prim .i64  -- Dependent return type - fall back to i64
 
 /-- Build function signature from a Value type. -/
-def buildSignatureFromType (name : String) (ty : Value) (arity : Nat) : Signature :=
+def buildSignatureFromType (name : Name) (ty : Value) (arity : Nat) : Signature :=
   let (typeParams, paramInfos) := extractParams ty
   -- Default type for parameters we can't extract (boxed i64)
   let defaultTy : Ty := .prim .i64
@@ -365,7 +382,7 @@ def buildSignatureFromType (name : String) (ty : Value) (arity : Nat) : Signatur
     else
       { id := ⟨i⟩, name := s!"arg{i}", ty := defaultTy : Param }
   let retTy := extractReturnType ty
-  { name := name, typeParams := typeParams, params := params, retTy := retTy }
+  { name := name.display, typeParams := typeParams, params := params, retTy := retTy }
 
 /-- Get the Alloy type for a Circuit node entry from its type annotation -/
 def getNodeType (entry : CNodeEntry) : Ty :=
@@ -550,16 +567,44 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
   | .app => do
     -- Application: call closure with argument
     -- aux0 = function, aux1 = argument
-    let fnVal ← match entry.getPort ⟨1⟩ with
-      | some fnPort => lowerNode graph fnPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef closureType))) closureType)
+    let fnPort := entry.getPort ⟨1⟩
+    let maybeIntrinsicCall ← match fnPort with
+      | some fp =>
+        match graph.getNode fp.node with
+        | some fnEntry =>
+          match fnEntry.node with
+          | .ref refId | .alo refId =>
+            match graph.getDefinition refId with
+            | some def_ =>
+              match def_.name.intrinsic? with
+              | some (Intrinsic.ffiOp op) => pure (some (Sum.inl op : Sum FFIOp String))
+              | some (Intrinsic.extern name) => pure (some (Sum.inr name : Sum FFIOp String))
+              | _ => pure none
+            | none => pure none
+          | _ => pure none
+        | none => pure none
+      | none => pure none
 
+    -- Lower the argument(s)
     let argVal ← match entry.getPort ⟨2⟩ with
       | some argPort => lowerNode graph argPort.node
       | none => StateT.lift (LowerM.emitInst (.copy (.const .unit)) Ty.unit)
 
-    -- Use the node's type annotation for the result type
-    StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
+    match maybeIntrinsicCall with
+    | some (Sum.inl ffiOp) =>
+      -- FFI intrinsic: emit callIntrinsic
+      let intrinsicOp := convertFFIOp ffiOp
+      StateT.lift (LowerM.emitInst (.callIntrinsic intrinsicOp #[.local argVal] nodeTy) nodeTy)
+    | some (Sum.inr externName) =>
+      -- Extern function: emit callExtern
+      StateT.lift (LowerM.emitInst (.callExtern externName #[.local argVal] nodeTy) nodeTy)
+    | none =>
+      -- Regular function call: lower the function and call as closure
+      let fnVal ← match fnPort with
+        | some fp => lowerNode graph fp.node
+        | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef closureType))) closureType)
+      -- Use the node's type annotation for the result type
+      StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
 
   | .ctor tag arity => do
     -- Check for special closure CTOR (tag 0xFFFFFE, arity 2)
@@ -697,13 +742,33 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
 
   | .ref refId => do
     -- Global reference: get function from book, type comes from annotation
-    let funcId := FuncId.mk refId
-    StateT.lift (LowerM.emitInst (.copy (.func funcId)) nodeTy)
+    -- Check if this is an intrinsic/extern
+    match graph.getDefinition refId with
+    | some def_ =>
+      match def_.name.intrinsic? with
+      | some _ =>
+        StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
+      | none =>
+        let funcId := FuncId.mk refId
+        StateT.lift (LowerM.emitInst (.copy (.func funcId)) nodeTy)
+    | none =>
+      let funcId := FuncId.mk refId
+      StateT.lift (LowerM.emitInst (.copy (.func funcId)) nodeTy)
 
   | .alo refId => do
     -- Allocation/instantiation: call the referenced function
-    let funcId := FuncId.mk refId
-    StateT.lift (LowerM.emitInst (.call funcId #[] nodeTy) nodeTy)
+    -- Check if this is an intrinsic/extern
+    match graph.getDefinition refId with
+    | some def_ =>
+      match def_.name.intrinsic? with
+      | some _ =>
+        StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
+      | none =>
+        let funcId := FuncId.mk refId
+        StateT.lift (LowerM.emitInst (.call funcId #[] nodeTy) nodeTy)
+    | none =>
+      let funcId := FuncId.mk refId
+      StateT.lift (LowerM.emitInst (.call funcId #[] nodeTy) nodeTy)
 
   | .use => do
     -- Strict evaluation: force the term, then continue
@@ -837,12 +902,14 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") : Module := Id.r
   -- Lower each definition in the book
   for i in [:graph.book.size] do
     if let some def_ := graph.book[i]? then
-      let funcId := FuncId.mk i
-      let func := lowerDefinition graph def_ funcId
-      module := module.addFunc func
+      -- Skip intrinsic/extern functions
+      if not def_.name.isIntrinsic then
+        let funcId := FuncId.mk i
+        let func := lowerDefinition graph def_ funcId
+        module := module.addFunc func
 
   -- Set main function if present
-  if let some (idx, _) := graph.findDefinition "main" then
+  if let some (idx, _) := graph.findDefinitionByDisplay "main" then
     module := module.withMain (FuncId.mk idx)
 
   module

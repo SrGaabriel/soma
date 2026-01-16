@@ -321,13 +321,11 @@ namespace Module
 /-- Create an empty module -/
 def empty (name : String) : Module := { name }
 
-/-- Add a function -/
+/-- Add a function, preserving its existing ID -/
 def addFunc (m : Module) (f : Func) : Module :=
-  let id := FuncId.mk m.funcs.size
-  let f' := { f with id }
   { m with
-    funcs := m.funcs.push f'
-    funcIndex := m.funcIndex.insert f.sig.name id
+    funcs := m.funcs.push f
+    funcIndex := m.funcIndex.insert f.sig.name f.id
   }
 
 /-- Add a global -/

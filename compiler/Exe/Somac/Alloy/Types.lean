@@ -398,4 +398,58 @@ instance : ToString UnOp where
 
 end UnOp
 
+/-- FFI/intrinsic operations that compile to inline LLVM instructions -/
+inductive IntrinsicOp where
+  /-- Null pointer constant: null :: Ptr a -/
+  | ptrNull
+  /-- Pointer arithmetic: ptr_add :: Ptr a -> Int64 -> Ptr a -/
+  | ptrAdd
+  /-- Pointer difference: ptr_diff :: Ptr a -> Ptr a -> Int64 -/
+  | ptrDiff
+  /-- Memory load: ptr_read :: Ptr a -> a -/
+  | ptrRead
+  /-- Memory store: ptr_write :: Ptr a -> a -> Unit -/
+  | ptrWrite
+  /-- Pointer cast: ptr_cast :: Ptr a -> Ptr b -/
+  | ptrCast
+  /-- Convert String to C string: to_cstring :: String -> CString -/
+  | toCString
+  /-- Convert C string to String: from_cstring :: CString -> String -/
+  | fromCString
+  /-- Get C string length: cstring_len :: CString -> CSize -/
+  | cstringLen
+  /-- String concatenation: strcat :: String -> String -> String -/
+  | strcat
+  /-- Integer to string conversion: int_to_string :: Int -> String -/
+  | intToString
+  /-- Lift pure value into IO: pure_io :: a -> IO a -/
+  | pureIO
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
+
+namespace IntrinsicOp
+
+def name : IntrinsicOp → String
+  | .ptrNull => "ptr_null"
+  | .ptrAdd => "ptr_add"
+  | .ptrDiff => "ptr_diff"
+  | .ptrRead => "ptr_read"
+  | .ptrWrite => "ptr_write"
+  | .ptrCast => "ptr_cast"
+  | .toCString => "to_cstring"
+  | .fromCString => "from_cstring"
+  | .cstringLen => "cstring_len"
+  | .strcat => "strcat"
+  | .intToString => "int_to_string"
+  | .pureIO => "pure_io"
+
+instance : ToString IntrinsicOp where
+  toString := IntrinsicOp.name
+
+/-- Does this intrinsic return a value? -/
+def hasResult : IntrinsicOp → Bool
+  | .ptrWrite => false
+  | _ => true
+
+end IntrinsicOp
+
 end Somac.Alloy

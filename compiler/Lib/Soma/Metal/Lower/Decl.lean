@@ -4,7 +4,7 @@ import Soma.Syntax.Ast
 
 namespace Soma.Metal.Lower
 
-open Soma.Core (TypeId Name PrimOp Intrinsic)
+open Soma.Core (TypeId Name PrimOp FFIOp Intrinsic)
 open Soma.Metal
 open Soma.Syntax (Decl DataCon StructField DefClause)
 
@@ -85,13 +85,21 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
       LowerM.reportError (.duplicateDefinition name.value name.span existingInfo.definedAt)
     | _ =>
       -- Register the function name (but don't resolve type yet)
-      -- For intrinsics, check if the name matches a known primitive operation
+      -- For intrinsics/externs, create appropriate Name.intrinsic
       let isIntrinsic := attrs.any fun a => a.name.value == "intrinsic"
+      let isExtern := attrs.any fun a => a.name.value == "extern"
       let globalName ←
-        if isIntrinsic then
+        if isExtern then
+          -- External C function
+          pure (Name.intrinsic (Intrinsic.extern name.value))
+        else if isIntrinsic then
+          -- First try primitive ops, then FFI ops
           match PrimOp.fromString? name.value with
           | some op => pure (Name.intrinsic (Intrinsic.primOp op))
-          | none => LowerM.freshUserName name.value
+          | none =>
+            match FFIOp.fromString? name.value with
+            | some op => pure (Name.intrinsic (Intrinsic.ffiOp op))
+            | none => LowerM.freshUserName name.value
         else
           LowerM.freshUserName name.value
       -- Store raw syntax - will be resolved during dependent type checking
@@ -362,13 +370,17 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
         let globalName ← match globalInfo? with
           | some (.inr info) => pure info.name
           | _ =>
-            -- For intrinsics, check if the name matches a known primitive operation
+            -- For intrinsics, check if the name matches a known primitive or FFI operation
             if isIntrinsic then
               match PrimOp.fromString? name.value with
               | some op => pure (Name.intrinsic (Intrinsic.primOp op))
-              | none => LowerM.freshUserName name.value
+              | none =>
+                match FFIOp.fromString? name.value with
+                | some op => pure (Name.intrinsic (Intrinsic.ffiOp op))
+                | none => LowerM.freshUserName name.value
             else
-              LowerM.freshUserName name.value
+              -- Extern function: use Name.intrinsic (Intrinsic.extern name)
+              pure (Name.intrinsic (Intrinsic.extern name.value))
 
         -- Intrinsics/externs have no real body - create a placeholder panic
         -- The actual implementation comes from the runtime/LLVM intrinsics or external linkage
@@ -379,7 +391,8 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
           noInline := attrs.any fun a => a.name.value == "noinline"
           total := attrs.any fun a => a.name.value == "total"
           deprecated := none
-          extern := some name.value  -- Mark as extern with the function name
+          extern := if isExtern then some name.value else none
+          intrinsic := isIntrinsic
         }
 
         pure (some {

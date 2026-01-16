@@ -142,6 +142,8 @@ where
     | .erase val _ => #[val].filterMap extractOperandLocal
     | .panic _ _ => #[]
     | .intrinsic _ args _ => args.filterMap extractOperandLocal
+    | .callIntrinsic _ args _ => args.filterMap extractOperandLocal
+    | .callExtern _ args _ => args.filterMap extractOperandLocal
 
   extractTermLocals : Terminator → Array LocalId
     | .jump _ => #[]

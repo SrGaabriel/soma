@@ -17,7 +17,7 @@ open Somac.Circuit.Node (Node NodeId PortId PortIdx Label)
 open Somac.Circuit.Term (Op1Code Op2Code PrimType)
 open Somac.Circuit.Term (PrimType)
 open Soma.Metal (Expr ExprList Literal Name BindingId)
-open Soma.Core (Value Quantity PrimOp Intrinsic)
+open Soma.Core (Value Quantity PrimOp FFIOp Intrinsic)
 
 /-- Usage map: maps BindingId to exact usage count from type checkings -/
 abbrev UsageMap := Std.HashMap BindingId Nat
@@ -39,7 +39,7 @@ structure VarAlloc where
 def unitTy : Value := Value.vPrimTy .unit
 
 /-- The integer type -/
-def intTy : Value := Value.vPrimTy .int64
+def intTy : Value := Value.vPrimTy .int
 
 /-- The boolean type -/
 def boolTy : Value := Value.vPrimTy .bool
@@ -175,7 +175,7 @@ def setRoot (p : PortId) : LowerM Unit :=
   liftGraph (GraphM.setRoot p)
 
 /-- Add a definition to the book -/
-def addDefinition (name : String) (root : NodeId) (arity : Nat) (ty : Value) : LowerM Nat :=
+def addDefinition (name : Name) (root : NodeId) (arity : Nat) (ty : Value) : LowerM Nat :=
   liftGraph (GraphM.addDefinition name root arity ty)
 
 end LowerM
@@ -239,7 +239,7 @@ def lowerLiteral (lit : Literal) : LowerM PortId := do
   | .int n =>
     -- Use two's complement for proper signed integer representation
     let encoded := encodeSignedInt n
-    let node := Node.num .i64 encoded
+    let node := Node.num .i32 encoded
     let nid ← LowerM.addNode node intTy
     pure (PortId.principal nid)
   | .bool b =>
@@ -694,7 +694,11 @@ where
        Emit an ALO (allocation) node for lazy instantiation.
        This enables infinite unfolding without building infinite graphs.
 
-    2. **Other function references** (calling a different function):
+    2. **Nullary function calls** (referencing a 0-arity function as a value):
+       Emit an ALO node to call the function and get its result.
+       Example: `def main = test` where `test :: Int` - we need to call test.
+
+    3. **Other function references** (calling a different function):
        Emit a REF node pointing to the book entry.
        During reduction, when APP-REF interacts, an ALO is created.
 
@@ -710,8 +714,10 @@ partial def lowerGlobal (name : Name) (ty : Value) : LowerM PortId := do
   | some idx =>
     -- Check if this is a self-recursive call
     let isSelfRecursive := ctx.currentFn == some name
-    if isSelfRecursive then
-      -- Self-recursive call: emit ALO for lazy instantiation
+    -- Check if the result type is a non-function type
+    let isNullaryCall := !ty.isPi
+    if isSelfRecursive || isNullaryCall then
+      -- Self-recursive call or nullary function: emit ALO for instantiation
       let alo ← LowerM.addNode (.alo idx) ty
       pure (PortId.principal alo)
     else
@@ -1069,6 +1075,10 @@ def registerTypes (types : Array Soma.Metal.TypeDef)
 /-- Map from function name to typed function -/
 abbrev TypedFunctionMap := Std.HashMap String Soma.Metal.TypedFunction
 
+/-- Check if a function should be lowered to actual code -/
+def shouldLowerBody (fn : Soma.Metal.TypedFunction) : Bool :=
+  not fn.attrs.intrinsic && fn.attrs.extern.isNone
+
 /-- Lower an entire module using typed functions from type checking -/
 def lowerModule (types : Array Soma.Metal.TypeDef)
     (typedFunctions : TypedFunctionMap)
@@ -1076,19 +1086,25 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
   -- Register type constructors
   registerTypes types globals
 
-  -- First pass: register all functions as globals
+  -- We register ALL functions including intrinsics/externs
   let functions := typedFunctions.toList
+
+  -- First pass: register all functions as globals
   for (i, (_, fn)) in enumList functions do
     LowerM.modifyCtx fun ctx => ctx.registerGlobal fn.name i
 
   -- Second pass: lower each function
   for (_, fn) in functions do
-    let fnName := fn.name.display
-    let root ← lowerFunction fn
-    let arity := fn.params.size
-    let _ ← LowerM.addDefinition fnName root arity fn.fnType
+    if shouldLowerBody fn then
+      let root ← lowerFunction fn
+      let arity := fn.params.size
+      let _ ← LowerM.addDefinition fn.name root arity fn.fnType
+    else
+      let era ← LowerM.addNode .era unitTy
+      let _ ← LowerM.addDefinition fn.name era 0 fn.fnType
 
   -- Set root to main function if it exists
+  -- Use ALO (allocation/instantiation) instead of REF because we want to actually exec
   let ctx ← LowerM.getCtx
   let mainEntry := ctx.globals.toList.find? fun (name, _) => name.original == "main"
   match mainEntry with
@@ -1096,8 +1112,8 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
     let mainTy := match typedFunctions.get? "main" with
       | some typedFn => typedFn.fnType
       | none => unitTy
-    let ref ← LowerM.addNode (.ref idx) mainTy
-    LowerM.setRoot (PortId.principal ref)
+    let alo ← LowerM.addNode (.alo idx) mainTy
+    LowerM.setRoot (PortId.principal alo)
   | none =>
     let era ← LowerM.addNode .era unitTy
     LowerM.setRoot (PortId.principal era)

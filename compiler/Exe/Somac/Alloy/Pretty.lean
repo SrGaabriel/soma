@@ -210,6 +210,12 @@ def ppInst (cfg : Config) : Inst → String
   | .intrinsic name args retTy =>
     let as := String.intercalate ", " (args.toList.map (ppOperand cfg))
     s!"{colorKeyword cfg "intrinsic"} {ppTy cfg retTy} \"{name}\"({as})"
+  | .callIntrinsic op args retTy =>
+    let as := String.intercalate ", " (args.toList.map (ppOperand cfg))
+    s!"{colorKeyword cfg "call.intrinsic"} {ppTy cfg retTy} {op}({as})"
+  | .callExtern name args retTy =>
+    let as := String.intercalate ", " (args.toList.map (ppOperand cfg))
+    s!"{colorKeyword cfg "call.extern"} {ppTy cfg retTy} \"{name}\"({as})"
 
 /-! ## Terminator Formatting -/
 

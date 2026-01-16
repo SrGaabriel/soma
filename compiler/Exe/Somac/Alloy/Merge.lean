@@ -104,6 +104,8 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst) : Inst :=
   | .free ptr => .free (remapOp ptr)
   | .alloca _ => inst
   | .panic _ _ => inst
+  | .callIntrinsic op args retTy => .callIntrinsic op (remapOps args) retTy
+  | .callExtern name args retTy => .callExtern name (remapOps args) retTy
 
 /-- Rewrite FuncId references in a terminator -/
 def remapTerminator (remap : IdRemap) (moduleName : String) (term : Terminator) : Terminator :=
@@ -247,6 +249,7 @@ def registerModule (moduleName : String) (module : Module) (state : MergeState) 
 def remapModule (moduleName : String) (state : MergeState) : MergeState := Id.run do
   let mut result := state.result
 
+  -- qualifiedName in addFunc is s!"${moduleName}$${func.sig.name}"
   let modulePrefix := s!"${moduleName}$$"
 
   -- Rewrite all functions that belong to this module

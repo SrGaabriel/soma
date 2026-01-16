@@ -11,7 +11,10 @@ structure FunctionAttrs where
   inline : Bool := false
   noInline : Bool := false
   deprecated : Option String := none
+  /-- External function name (for @[extern] functions) -/
   extern : Option String := none
+  /-- Whether this function is an @[intrinsic] (compiler-handled operation) -/
+  intrinsic : Bool := false
   /-- Whether this function is marked as total (must terminate) -/
   total : Bool := false
   deriving BEq, Inhabited

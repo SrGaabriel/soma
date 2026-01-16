@@ -775,6 +775,114 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
       let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
       pure (some (ref, retTy))
 
+  | .callIntrinsic op args retTy =>
+    -- FFI intrinsic operations compile to inline LLVM instructions
+    let llvmArgs ← args.mapM fun arg => convertOperandWithTy arg
+    let llvmRetTy := convertTy retTy
+    match op with
+    | .ptrNull =>
+      -- Null pointer constant
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.bitcast .ptr .ptr nullVal)
+      pure (some (ref, retTy))
+
+    | .ptrRead =>
+      -- Load from pointer: ptr_read ptr -> value
+      if llvmArgs.size > 0 then
+        let (_, ptrVal) := llvmArgs[0]!
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.load llvmRetTy ptrVal)
+        pure (some (ref, retTy))
+      else
+        pure none
+
+    | .ptrWrite =>
+      -- Store to pointer: ptr_write ptr val -> Unit
+      if llvmArgs.size >= 2 then
+        let (_, ptrVal) := llvmArgs[0]!
+        let (valTy, valVal) := llvmArgs[1]!
+        CodegenM.withFuncBuilder (FuncBuilder.store valTy valVal ptrVal)
+      pure none
+
+    | .ptrAdd =>
+      -- Pointer arithmetic: ptr_add ptr offset -> ptr
+      if llvmArgs.size >= 2 then
+        let (_, ptrVal) := llvmArgs[0]!
+        let (offsetTy, offsetVal) := llvmArgs[1]!
+        -- GEP with byte offset (treat as i8*)
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.gep .i8 ptrVal #[(offsetTy, offsetVal)])
+        pure (some (ref, retTy))
+      else
+        pure none
+
+    | .ptrDiff =>
+      -- Pointer difference: ptr_diff ptr1 ptr2 -> i64
+      if llvmArgs.size >= 2 then
+        let (_, ptr1Val) := llvmArgs[0]!
+        let (_, ptr2Val) := llvmArgs[1]!
+        -- Convert pointers to i64 and subtract
+        let i1 ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 ptr1Val)
+        let i2 ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 ptr2Val)
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.sub .i64 (.local i1) (.local i2))
+        pure (some (ref, .prim .i64))
+      else
+        pure none
+
+    | .ptrCast =>
+      -- Pointer cast: just return the pointer (LLVM opaque pointers)
+      if llvmArgs.size > 0 then
+        let (_, ptrVal) := llvmArgs[0]!
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.bitcast .ptr .ptr ptrVal)
+        pure (some (ref, retTy))
+      else
+        pure none
+
+    | .toCString =>
+      -- Convert String to C string: call runtime function
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_to_cstring" llvmArgs)
+      pure (some (ref, retTy))
+
+    | .fromCString =>
+      -- Convert C string to String: call runtime function
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy "soma_from_cstring" llvmArgs)
+      pure (some (ref, retTy))
+
+    | .cstringLen =>
+      -- Get C string length: call runtime function
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .i64 "soma_cstring_len" llvmArgs)
+      pure (some (ref, .prim .u64))
+
+    | .strcat =>
+      -- String concatenation: call runtime function
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy "soma_strcat" llvmArgs)
+      pure (some (ref, retTy))
+
+    | .intToString =>
+      -- Integer to string: call runtime function
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy "soma_int_to_string" llvmArgs)
+      pure (some (ref, retTy))
+
+    | .pureIO =>
+      -- pure_io is identity at runtime (IO is just a newtype wrapper)
+      -- Just return the argument as-is
+      if llvmArgs.size > 0 then
+        let (_, argVal) := llvmArgs[0]!
+        -- Use a no-op bitcast to same type as identity operation
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.bitcast llvmRetTy llvmRetTy argVal)
+        pure (some (ref, retTy))
+      else
+        pure none
+
+  | .callExtern name args retTy =>
+    -- External function call: emit regular LLVM call to @name
+    let llvmRetTy := convertTy retTy
+    let llvmArgs ← args.mapM fun arg => convertOperandWithTy arg
+    if isVoidTy retTy then
+      CodegenM.withFuncBuilder do
+        FuncBuilder.callNamedVoid name llvmArgs
+      pure none
+    else
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
+      pure (some (ref, retTy))
+
 /-- Lower an Alloy terminator to LLVM -/
 def lowerTerminator (term : Terminator) (_retTy : Ty) : CodegenM Unit := do
   match term with
@@ -823,8 +931,8 @@ def lowerBlock (block : Block) (retTy : Ty) : CodegenM Unit := do
 
   lowerTerminator block.terminator retTy
 
-/-- Lower an Alloy function to LLVM -/
-def lowerFunc (func : Func) : CodegenM LLVMFunc := do
+/-- Lower an Alloy function to LLVM with explicit name -/
+def lowerFuncWithName (func : Func) (name : String) : CodegenM LLVMFunc := do
   CodegenM.clearFuncState
   CodegenM.setCurrentFunc func
 
@@ -850,7 +958,7 @@ def lowerFunc (func : Func) : CodegenM LLVMFunc := do
   match func.body with
   | none =>
     pure {
-      name := func.sig.name
+      name := name
       retTy := llvmRetTy
       params := llvmParams
       attrs := llvmAttrs
@@ -868,13 +976,17 @@ def lowerFunc (func : Func) : CodegenM LLVMFunc := do
     let blocks ← CodegenM.withFuncBuilder FuncBuilder.getBlocks
 
     pure {
-      name := func.sig.name
+      name := name
       retTy := llvmRetTy
       params := llvmParams
       attrs := llvmAttrs
       blocks := blocks
       isDeclaration := false
     }
+
+/-- Lower an Alloy function to LLVM -/
+def lowerFunc (func : Func) : CodegenM LLVMFunc := do
+  lowerFuncWithName func func.sig.name
 
 /-- Add runtime function declarations -/
 def addRuntimeDeclarations : CodegenM Unit := do
@@ -940,8 +1052,11 @@ def addRuntimeDeclarations : CodegenM Unit := do
 /-- Lower an Alloy module to LLVM -/
 def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
   -- Register all functions first (names and signatures)
+  -- Use "soma_main" as the name for the main function so the linker can find it
   for func in alloyModule.funcs do
-    CodegenM.registerFunc func.id.id func.sig.name func.sig
+    let isMain := alloyModule.mainFunc == some func.id
+    let name := if isMain then "soma_main" else func.sig.name
+    CodegenM.registerFunc func.id.id name func.sig
 
   addRuntimeDeclarations
 
@@ -973,8 +1088,11 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
     CodegenM.withModuleBuilder (ModuleBuilder.addGlobal llvmGlobal)
 
   -- Lower all functions
+  -- Use "soma_main" as the name for the main function so the linker can find it
   for func in alloyModule.funcs do
-    let llvmFunc ← lowerFunc func
+    let isMain := alloyModule.mainFunc == some func.id
+    let funcName := if isMain then "soma_main" else func.sig.name
+    let llvmFunc ← lowerFuncWithName func funcName
     CodegenM.withModuleBuilder (ModuleBuilder.addFunc llvmFunc)
 
   CodegenM.withModuleBuilder ModuleBuilder.getModule
