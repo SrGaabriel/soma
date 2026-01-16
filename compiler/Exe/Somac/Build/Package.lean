@@ -70,6 +70,8 @@ def createPackage
   IO.FS.createDirAll alloyDir
   for (modName, alloyMod) in modules do
     let binPath := alloyDir / (modName ++ ".alloybin")
+    if let some parent := binPath.parent then
+      IO.FS.createDirAll parent
     Alloy.Serialize.writeAlloyBin binPath alloyMod
 
   -- Create tarball

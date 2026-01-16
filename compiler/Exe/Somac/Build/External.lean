@@ -83,7 +83,7 @@ def linkExecutable
   -- Add standard libraries (math library often needed)
   args := args.push "-lm"
 
-  -- Use system cc (typically gcc) for linking - it knows where system libraries are
+  -- Use system cc for linking (todo: reconsider)
   let result ← runCommand tools.cc args
 
   if result.exitCode == 0 then

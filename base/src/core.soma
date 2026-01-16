@@ -3,10 +3,6 @@ def strcat :: String -> String -> String
 @[extern "soma_int_to_string"]
 def int_to_string :: Int -> String
 
-def test :: Int = 5
-
-def main :: Int = test
-
 data Option a
     | Some
         value :: a
