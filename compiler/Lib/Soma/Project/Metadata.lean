@@ -170,8 +170,28 @@ def instanceEnvFromSerializable (sie : SerializableInstanceEnv) : InstanceEnv :=
 def abbrevEnvFromSerializable (sae : SerializableAbbrevEnv) : AbbrevEnv :=
   sae.abbrevs.foldl (fun env info => env.insert info) AbbrevEnv.empty
 
+/-- Convert ProjectMetadata to ExternalDependency -/
+def metadataToExternalDependency (pm : ProjectMetadata) : ExternalDependency :=
+  let moduleName := pm.module
+  let symbols := symbolsFromSerializable pm.symbols
+  let instances := instanceMetadataFromSerializable pm.instances
+  let constructors := constructorsFromSerializable pm.constructors
+  let globals := globalsFromSerializable pm.globals
+  let instanceEnv := instanceEnvFromSerializable pm.instanceEnv
+  let abbrevEnv := abbrevEnvFromSerializable pm.abbrevEnv
+  {
+    name := moduleName
+    version := some pm.version
+    symbols := ({} : Std.HashMap String SymbolEnv).insert moduleName symbols
+    instances := ({} : Std.HashMap String InstanceMetadata).insert moduleName instances
+    constructors := constructors
+    globals := globals
+    instanceEnv := instanceEnv
+    abbrevEnv := abbrevEnv
+  }
+
 /-- Load metadata from a JSON file -/
-def loadMetadataFromFile (path : System.FilePath) : IO (Except String ExternalDependency) := do
+def loadMetadataFromJsonFile (path : System.FilePath) : IO (Except String ExternalDependency) := do
   let content ← IO.FS.readFile path
   match Json.decode (α := ProjectMetadata) content with
   | .error e => pure (.error s!"Failed to parse JSON: {e}")
@@ -180,23 +200,46 @@ def loadMetadataFromFile (path : System.FilePath) : IO (Except String ExternalDe
     if pm.version != "3" && pm.version != "4" then
       pure (.error s!"Unsupported metadata version: {pm.version}. Expected version 3 or 4.")
     else
-      let moduleName := pm.module
-      let symbols := symbolsFromSerializable pm.symbols
-      let instances := instanceMetadataFromSerializable pm.instances
-      let constructors := constructorsFromSerializable pm.constructors
-      let globals := globalsFromSerializable pm.globals
-      let instanceEnv := instanceEnvFromSerializable pm.instanceEnv
-      let abbrevEnv := abbrevEnvFromSerializable pm.abbrevEnv
-      pure (.ok {
-        name := moduleName
-        version := some pm.version
-        symbols := ({} : Std.HashMap String SymbolEnv).insert moduleName symbols
-        instances := ({} : Std.HashMap String InstanceMetadata).insert moduleName instances
-        constructors := constructors
-        globals := globals
-        instanceEnv := instanceEnv
-        abbrevEnv := abbrevEnv
-      })
+      pure (.ok (metadataToExternalDependency pm))
+
+/-- Load metadata from a file -/
+def loadMetadataFromFile (path : System.FilePath) : IO (Except String ExternalDependency) := do
+  match path.extension with
+  | some "toria" => loadMetadataFromToria path
+  | _ => loadMetadataFromJsonFile path
+
+where
+  loadMetadataFromToria (path : System.FilePath) : IO (Except String ExternalDependency) := do
+    let tmpDir := path.withExtension "extract.tmp"
+    IO.FS.createDirAll tmpDir
+
+    let result ← IO.Process.output {
+      cmd := "tar"
+      args := #["-xzf", path.toString, "-C", tmpDir.toString]
+    }
+
+    if result.exitCode != 0 then
+      IO.FS.removeDirAll tmpDir |>.catchExceptions fun _ => pure ()
+      return .error s!"Failed to extract tarball: {result.stderr}"
+
+    let entries ← tmpDir.readDir
+    let extractedDir := match entries.toList.head? with
+      | some entry => tmpDir / entry.fileName
+      | none => tmpDir
+
+    let metadataPath := extractedDir / "metadata.bin"
+    let metadataBytes ← IO.FS.readBinFile metadataPath
+
+    IO.FS.removeDirAll tmpDir |>.catchExceptions fun _ => pure ()
+
+    match Binary.decode metadataBytes with
+    | .ok (pm : ProjectMetadata) =>
+      if pm.version != "3" && pm.version != "4" then
+        pure (.error s!"Unsupported metadata version: {pm.version}. Expected version 3 or 4.")
+      else
+        pure (.ok (metadataToExternalDependency pm))
+    | .error e =>
+      pure (.error s!"Failed to decode metadata: {e}")
 
 /-- Load multiple metadata files as external dependencies -/
 def loadMetadataFiles (deps : Array (String × System.FilePath)) : IO (Except CheckError (Array ExternalDependency)) := do
