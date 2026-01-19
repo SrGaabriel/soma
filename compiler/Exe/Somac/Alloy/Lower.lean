@@ -633,15 +633,8 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
       let fnVal ← match fnPort with
         | some fp => lowerNode graph fp.node
         | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef closureType))) closureType)
-      -- Check if the function operand is actually a closure (not unit from ERA)
-      let fnTy ← StateT.lift (LowerM.getLocalType fnVal)
-      match fnTy with
-      | some (.prim .unit) =>
-        -- Function was erased (ERA) so this is dead code, just produce unit
-        StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
-      | _ =>
-        -- Use the node's type annotation for the result type
-        StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
+      -- Use the node's type annotation for the result type
+      StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
 
   | .ctor tag arity => do
     -- Check for special closure CTOR (tag 0xFFFFFE, arity 2)

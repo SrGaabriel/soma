@@ -4,6 +4,7 @@ import Somac.Circuit.Node
 import Soma.Metal.Pattern
 import Soma.Metal.Expr
 import Soma.Core.Name
+import Soma.Core.Value
 import Test.Fixtures
 
 namespace Test.PatternMatch
@@ -12,8 +13,14 @@ open Somac.Circuit.PatternMatch
 open Somac.Circuit.Graph (Graph GraphM)
 open Somac.Circuit.Node (Node NodeId PortId)
 open Soma.Metal (BindingId Literal Pattern PatternList)
-open Soma.Core (Name)
+open Soma.Core (Name Value)
 open Test.Fixtures
+
+/-- Unit type used for tests where we don't care about the type annotation -/
+private def testTy : Value := Value.vPrimTy .unit
+
+/-- Empty constructor type registry for tests -/
+private def emptyRegistry : ConstructorTypeRegistry := {}
 
 /-! ## SimplePattern Tests -/
 
@@ -284,7 +291,7 @@ def testOccurrence : IO TestResult := do
 def testBinding : IO TestResult := do
   let bid : BindingId := { id := 5, module := "test", original := "foo" }
   let occ := Occurrence.root 0
-  let binding : Binding := ⟨bid, "foo", occ⟩
+  let binding : Binding := ⟨bid, "foo", occ, testTy⟩
 
   if binding.id.id != 5 then
     return .failed "Binding id should be 5"
@@ -295,7 +302,7 @@ def testBinding : IO TestResult := do
 /-- Test: Decision tree leaf -/
 def testLeaf : IO TestResult := do
   let bid : BindingId := { id := 1, module := "test", original := "x" }
-  let binding : Binding := ⟨bid, "x", Occurrence.root 0⟩
+  let binding : Binding := ⟨bid, "x", Occurrence.root 0, testTy⟩
   let tree := DecisionTree.leaf #[binding] 3
 
   match tree with
@@ -336,20 +343,20 @@ def testSwitch : IO TestResult := do
   | _ => return .failed "Expected switch node"
   return .passed
 
-/-- Test: OccurrenceMap operations -/
+/-- Test: TypedOccurrenceMap operations -/
 def testOccurrenceMap : IO TestResult := do
-  let occMap := OccurrenceMap.initial 3
+  let occMap := TypedOccurrenceMap.initial emptyRegistry #[testTy, testTy, testTy]
   if occMap.columns.size != 3 then
     return .failed s!"Initial map should have 3 entries, got {occMap.columns.size}"
 
   match occMap.get 0 with
-  | some occ =>
-    if occ.column != 0 then
+  | some tocc =>
+    if tocc.occurrence.column != 0 then
       return .failed "Column 0 occurrence should have column 0"
   | none => return .failed "Should find occurrence for column 0"
 
-  -- Test specialize
-  let specialized := occMap.specialize 1 2  -- Remove col 1, add 2 new columns
+  -- Test specialize (takes col, tag, arity)
+  let specialized := occMap.specialize 1 0 2  -- Remove col 1, add 2 new columns
   if specialized.columns.size != 4 then  -- 3 - 1 + 2 = 4
     return .failed s!"Specialized map should have 4 entries, got {specialized.columns.size}"
 
@@ -381,7 +388,7 @@ namespace CompileTests
 /-- Test: Compile empty matrix gives fail -/
 def testCompileEmpty : IO TestResult := do
   let matrix := PatternMatrix.empty 1
-  let tree := compileMatrix matrix
+  let tree := compileMatrix matrix emptyRegistry #[testTy]
 
   match tree with
   | .fail => return .passed
@@ -391,7 +398,7 @@ def testCompileEmpty : IO TestResult := do
 def testCompileAllWildcard : IO TestResult := do
   let matrix := PatternMatrix.empty 2
   let matrix := matrix.addRow (Row.ofPatterns #[.wildcard, .wildcard] 7)
-  let tree := compileMatrix matrix
+  let tree := compileMatrix matrix emptyRegistry #[testTy, testTy]
 
   match tree with
   | .leaf _ armIndex =>
@@ -405,7 +412,7 @@ def testCompileSingleCtor : IO TestResult := do
   let matrix := PatternMatrix.empty 1
   let matrix := matrix.addRow (Row.ofPatterns #[.ctor 0 0 #[]] 0)
   let matrix := matrix.addRow (Row.ofPatterns #[.ctor 1 0 #[]] 1)
-  let tree := compileMatrix matrix
+  let tree := compileMatrix matrix emptyRegistry #[testTy]
 
   match tree with
   | .switch _ kind cases _ =>
@@ -422,7 +429,7 @@ def testCompileWithDefault : IO TestResult := do
   let matrix := PatternMatrix.empty 1
   let matrix := matrix.addRow (Row.ofPatterns #[.ctor 0 0 #[]] 0)
   let matrix := matrix.addRow (Row.ofPatterns #[.wildcard] 1)
-  let tree := compileMatrix matrix
+  let tree := compileMatrix matrix emptyRegistry #[testTy]
 
   match tree with
   | .switch _ _ _ default =>
@@ -457,7 +464,7 @@ def testCompileNested : IO TestResult := do
   let pat3 := SimplePattern.ctor 0 0 #[]
   let matrix := matrix.addRow (Row.ofPatterns #[pat3] 2)
 
-  let tree := compileMatrix matrix
+  let tree := compileMatrix matrix emptyRegistry #[testTy]
 
   -- Should produce a nested switch structure
   match tree with
@@ -472,7 +479,7 @@ def testCompileWithBindings : IO TestResult := do
   let b1 : BindingId := { id := 1, module := "test", original := "x" }
   let matrix := PatternMatrix.empty 1
   let matrix := matrix.addRow (Row.ofPatterns #[.var b1 "x"] 0)
-  let tree := compileMatrix matrix
+  let tree := compileMatrix matrix emptyRegistry #[testTy]
 
   match tree with
   | .leaf bindings _ =>
@@ -505,13 +512,13 @@ namespace LowerTests
 /-- Test: Lower fail tree -/
 def testLowerFail : IO TestResult := do
   let tree := DecisionTree.fail
-  let lowerArm : ArmCallback := fun _ _ => do
-    let era ← GraphM.addNode .era
+  let lowerArm : ArmCallback GraphM := fun _ _ => do
+    let era ← GraphM.addNode .era testTy
     pure (PortId.principal era)
 
-  let (result, graph) := GraphM.run' do
-    let scrut ← GraphM.addNode (.num .i64 0)
-    lower tree #[PortId.principal scrut] lowerArm
+  let (_, graph) := GraphM.run' do
+    let scrut ← GraphM.addNode (.num .i64 0) testTy
+    lower tree #[PortId.principal scrut] #[testTy] emptyRegistry testTy lowerArm
 
   -- Should create an ERA node for failure
   if graph.nodeCount < 1 then
@@ -521,16 +528,15 @@ def testLowerFail : IO TestResult := do
 /-- Test: Lower leaf tree -/
 def testLowerLeaf : IO TestResult := do
   let tree := DecisionTree.leaf #[] 0
-  let mut armCalled := false
-  let lowerArm : ArmCallback := fun armIdx ctx => do
+  let lowerArm : ArmCallback GraphM := fun armIdx _ => do
     if armIdx != 0 then
       panic! "Wrong arm index"
-    let num ← GraphM.addNode (.num .i64 42)
+    let num ← GraphM.addNode (.num .i64 42) testTy
     pure (PortId.principal num)
 
-  let (result, graph) := GraphM.run' do
-    let scrut ← GraphM.addNode (.num .i64 0)
-    lower tree #[PortId.principal scrut] lowerArm
+  let (_, graph) := GraphM.run' do
+    let scrut ← GraphM.addNode (.num .i64 0) testTy
+    lower tree #[PortId.principal scrut] #[testTy] emptyRegistry testTy lowerArm
 
   -- Should call arm callback and create its node
   if graph.nodeCount < 2 then  -- scrutinee + arm result
@@ -545,13 +551,13 @@ def testLowerSwitch : IO TestResult := do
   let cases := #[(0, leaf0), (1, leaf1)]
   let tree := DecisionTree.switch occ .constructor cases none
 
-  let lowerArm : ArmCallback := fun armIdx _ => do
-    let num ← GraphM.addNode (.num .i64 armIdx.toUInt32)
+  let lowerArm : ArmCallback GraphM := fun armIdx _ => do
+    let num ← GraphM.addNode (.num .i64 armIdx.toUInt32) testTy
     pure (PortId.principal num)
 
-  let (result, graph) := GraphM.run' do
-    let scrut ← GraphM.addNode (.ctor 0 0)
-    lower tree #[PortId.principal scrut] lowerArm
+  let (_, graph) := GraphM.run' do
+    let scrut ← GraphM.addNode (.ctor 0 0) testTy
+    lower tree #[PortId.principal scrut] #[testTy] emptyRegistry testTy lowerArm
 
   -- Should create MAT nodes for the switch
   -- At least: scrutinee + 2 arm results + MAT nodes
@@ -562,14 +568,14 @@ def testLowerSwitch : IO TestResult := do
 /-- Test: Lower with bindings -/
 def testLowerWithBindings : IO TestResult := do
   let bid : BindingId := { id := 1, module := "test", original := "x" }
-  let binding : Binding := ⟨bid, "x", Occurrence.root 0⟩
+  let binding : Binding := ⟨bid, "x", Occurrence.root 0, testTy⟩
   let tree := DecisionTree.leaf #[binding] 0
 
-  let lowerArm : ArmCallback := fun _ ctx => do
+  let lowerArm : ArmCallback GraphM := fun _ ctx => do
     -- Check that we received the binding
     if ctx.bindings.size != 1 then
       panic! s!"Expected 1 binding, got {ctx.bindings.size}"
-    let (id, name, ports) := ctx.bindings[0]!
+    let (_, name, ports, _) := ctx.bindings[0]!
     if name != "x" then
       panic! "Binding name should be 'x'"
     if ports.size != 1 then
@@ -579,8 +585,8 @@ def testLowerWithBindings : IO TestResult := do
 
   let usageCounts : Std.HashMap Nat Nat := ({} : Std.HashMap Nat Nat).insert 1 1
   let (_, graph) := GraphM.run' do
-    let scrut ← GraphM.addNode (.num .i64 99)
-    lower tree #[PortId.principal scrut] lowerArm usageCounts
+    let scrut ← GraphM.addNode (.num .i64 99) testTy
+    lower tree #[PortId.principal scrut] #[testTy] emptyRegistry testTy lowerArm usageCounts
 
   -- The result should reference the scrutinee through the binding
   if graph.nodeCount < 1 then
@@ -590,23 +596,23 @@ def testLowerWithBindings : IO TestResult := do
 /-- Test: Lower with multi-use bindings -/
 def testLowerMultiUse : IO TestResult := do
   let bid : BindingId := { id := 1, module := "test", original := "x" }
-  let binding : Binding := ⟨bid, "x", Occurrence.root 0⟩
+  let binding : Binding := ⟨bid, "x", Occurrence.root 0, testTy⟩
   let tree := DecisionTree.leaf #[binding] 0
 
-  let lowerArm : ArmCallback := fun _ ctx => do
+  let lowerArm : ArmCallback GraphM := fun _ ctx => do
     if ctx.bindings.size != 1 then
       panic! s!"Expected 1 binding, got {ctx.bindings.size}"
-    let (_, _, ports) := ctx.bindings[0]!
+    let (_, _, ports, _) := ctx.bindings[0]!
     -- For multi-use, should have 3 ports
     if ports.size != 3 then
       panic! s!"Should have 3 ports for binding used 3 times, got {ports.size}"
-    let num ← GraphM.addNode (.num .i64 0)
+    let num ← GraphM.addNode (.num .i64 0) testTy
     pure (PortId.principal num)
 
   let usageCounts : Std.HashMap Nat Nat := ({} : Std.HashMap Nat Nat).insert 1 3  -- x is used 3 times
   let (_, graph) := GraphM.run' do
-    let scrut ← GraphM.addNode (.num .i64 99)
-    lower tree #[PortId.principal scrut] lowerArm usageCounts
+    let scrut ← GraphM.addNode (.num .i64 99) testTy
+    lower tree #[PortId.principal scrut] #[testTy] emptyRegistry testTy lowerArm usageCounts
 
   -- Should create DUP nodes for the multi-use binding
   -- 3 uses requires 2 DUP nodes
@@ -619,24 +625,24 @@ def testLowerNestedOccurrence : IO TestResult := do
   -- Binding at path [1] (second field of scrutinee)
   let bid : BindingId := { id := 1, module := "test", original := "y" }
   let occ := (Occurrence.root 0).field 1
-  let binding : Binding := ⟨bid, "y", occ⟩
+  let binding : Binding := ⟨bid, "y", occ, testTy⟩
   let tree := DecisionTree.leaf #[binding] 0
 
-  let lowerArm : ArmCallback := fun _ ctx => do
+  let lowerArm : ArmCallback GraphM := fun _ ctx => do
     if ctx.bindings.size != 1 then
       panic! "Expected 1 binding"
-    let (_, _, ports) := ctx.bindings[0]!
+    let (_, _, ports, _) := ctx.bindings[0]!
     -- Port should be from a PROJ node
     pure ports[0]!
 
-  let (result, graph) := GraphM.run' do
+  let (_, graph) := GraphM.run' do
     -- Create a 2-field constructor as scrutinee
-    let field0 ← GraphM.addNode (.num .i64 1)
-    let field1 ← GraphM.addNode (.num .i64 2)
-    let ctor ← GraphM.addNode (.ctor 0 2)
+    let field0 ← GraphM.addNode (.num .i64 1) testTy
+    let field1 ← GraphM.addNode (.num .i64 2) testTy
+    let ctor ← GraphM.addNode (.ctor 0 2) testTy
     GraphM.connect ⟨ctor, ⟨1⟩⟩ (PortId.principal field0)
     GraphM.connect ⟨ctor, ⟨2⟩⟩ (PortId.principal field1)
-    lower tree #[PortId.principal ctor] lowerArm
+    lower tree #[PortId.principal ctor] #[testTy] emptyRegistry testTy lowerArm
 
   -- Should create a PROJ node to access field 1
   if graph.nodeCount < 4 then  -- 2 fields + ctor + proj
@@ -671,16 +677,16 @@ def testSimpleMatch : IO TestResult := do
   let matrix := matrix.addRow (Row.ofPatterns #[.lit (.bool true)] 0)
   let matrix := matrix.addRow (Row.ofPatterns #[.lit (.bool false)] 1)
 
-  let tree := compileMatrix matrix
+  let tree := compileMatrix matrix emptyRegistry #[testTy]
 
-  let lowerArm : ArmCallback := fun armIdx _ => do
+  let lowerArm : ArmCallback GraphM := fun armIdx _ => do
     let value := if armIdx == 0 then 1 else 0
-    let num ← GraphM.addNode (.num .i64 value.toUInt32)
+    let num ← GraphM.addNode (.num .i64 value.toUInt32) testTy
     pure (PortId.principal num)
 
-  let (result, graph) := GraphM.run' do
-    let scrut ← GraphM.addNode (.num .bool 1)  -- True
-    lower tree #[PortId.principal scrut] lowerArm
+  let (_, graph) := GraphM.run' do
+    let scrut ← GraphM.addNode (.num .bool 1) testTy  -- True
+    lower tree #[PortId.principal scrut] #[testTy] emptyRegistry testTy lowerArm
 
   if graph.nodeCount < 3 then
     return .failed s!"Simple match should create at least 3 nodes, got {graph.nodeCount}"
@@ -697,27 +703,27 @@ def testCtorMatchWithBindings : IO TestResult := do
   let matrix := matrix.addRow (Row.ofPatterns #[.ctor 1 1 #[.var b1 "y"]] 0)  -- Some(y)
   let matrix := matrix.addRow (Row.ofPatterns #[.ctor 0 0 #[]] 1)  -- None
 
-  let tree := compileMatrix matrix
+  let tree := compileMatrix matrix emptyRegistry #[testTy]
 
-  let lowerArm : ArmCallback := fun armIdx ctx => do
+  let lowerArm : ArmCallback GraphM := fun armIdx ctx => do
     if armIdx == 0 then
       -- Some case: return y
       if ctx.bindings.size != 1 then
         panic! "Should have binding for y"
-      let (_, _, ports) := ctx.bindings[0]!
+      let (_, _, ports, _) := ctx.bindings[0]!
       pure ports[0]!
     else
       -- None case: return 0
-      let num ← GraphM.addNode (.num .i64 0)
+      let num ← GraphM.addNode (.num .i64 0) testTy
       pure (PortId.principal num)
 
   let usageCounts : Std.HashMap Nat Nat := ({} : Std.HashMap Nat Nat).insert 1 1
   let (_, graph) := GraphM.run' do
     -- Create Some(42)
-    let inner ← GraphM.addNode (.num .i64 42)
-    let some ← GraphM.addNode (.ctor 1 1)
+    let inner ← GraphM.addNode (.num .i64 42) testTy
+    let some ← GraphM.addNode (.ctor 1 1) testTy
     GraphM.connect ⟨some, ⟨1⟩⟩ (PortId.principal inner)
-    lower tree #[PortId.principal some] lowerArm usageCounts
+    lower tree #[PortId.principal some] #[testTy] emptyRegistry testTy lowerArm usageCounts
 
   if graph.nodeCount < 3 then
     return .failed s!"Ctor match should create at least 3 nodes, got {graph.nodeCount}"
@@ -748,16 +754,16 @@ def testNestedMatch : IO TestResult := do
   let pat3 := SimplePattern.ctor 0 0 #[]
   let matrix := matrix.addRow (Row.ofPatterns #[pat3] 2)
 
-  let tree := compileMatrix matrix
+  let tree := compileMatrix matrix emptyRegistry #[testTy]
 
-  let lowerArm : ArmCallback := fun armIdx _ => do
-    let num ← GraphM.addNode (.num .i64 armIdx.toUInt32)
+  let lowerArm : ArmCallback GraphM := fun armIdx _ => do
+    let num ← GraphM.addNode (.num .i64 armIdx.toUInt32) testTy
     pure (PortId.principal num)
 
-  let (result, graph) := GraphM.run' do
+  let (_, graph) := GraphM.run' do
     -- Create Nil
-    let nil ← GraphM.addNode (.ctor 0 0)
-    lower tree #[PortId.principal nil] lowerArm
+    let nil ← GraphM.addNode (.ctor 0 0) testTy
+    lower tree #[PortId.principal nil] #[testTy] emptyRegistry testTy lowerArm
 
   -- Nested match should create a good number of nodes
   if graph.nodeCount < 2 then
@@ -773,7 +779,7 @@ def testExhaustive : IO TestResult := do
   let matrix := matrix.addRow (Row.ofPatterns #[.ctor 1 0 #[]] 1)
   let matrix := matrix.addRow (Row.ofPatterns #[.wildcard] 2)  -- Catch-all
 
-  let tree := compileMatrix matrix
+  let tree := compileMatrix matrix emptyRegistry #[testTy]
 
   -- The tree should never reach .fail because we have a catch-all
   -- Check that all reachable arms are valid (not fail nodes at top level)

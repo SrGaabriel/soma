@@ -3,6 +3,7 @@ import Somac.Circuit.Term
 import Somac.Circuit.Node
 import Somac.Circuit.Graph
 import Somac.Circuit.Pretty
+import Soma.Core.Value
 import Test.Fixtures
 
 namespace Test.Circuit
@@ -11,7 +12,11 @@ open Somac.Circuit.Term (Term Tag Loc Ext Op2Code PrimType)
 open Somac.Circuit.Node (Node NodeId PortId PortIdx Wire ActivePair Label)
 open Somac.Circuit.Graph (Graph GraphM)
 open Somac.Circuit.Pretty (ppGraph ppNode ppTerm)
+open Soma.Core (Value)
 open Test.Fixtures
+
+/-- Unit type used for tests where we don't care about the type annotation -/
+private def testTy : Value := Value.vPrimTy .unit
 
 namespace TermTests
 
@@ -423,9 +428,9 @@ def testEmptyGraph : IO TestResult := do
 /-- Test: Adding nodes -/
 def testAddNode : IO TestResult := do
   let g := Graph.empty
-  let (n1, g) := g.addNode (.lam false)
-  let (n2, g) := g.addNode .app
-  let (n3, g) := g.addNode .era
+  let (n1, g) := g.addNode (.lam false) testTy
+  let (n2, g) := g.addNode .app testTy
+  let (n3, g) := g.addNode .era testTy
 
   if n1.id != 0 then
     return .failed "First node should have id 0"
@@ -440,8 +445,8 @@ def testAddNode : IO TestResult := do
 /-- Test: Node lookup -/
 def testNodeLookup : IO TestResult := do
   let g := Graph.empty
-  let (n1, g) := g.addNode (.lam false)
-  let (n2, g) := g.addNode .app
+  let (n1, g) := g.addNode (.lam false) testTy
+  let (n2, g) := g.addNode .app testTy
 
   match g.getNodeType n1 with
   | some (.lam false) => pure ()
@@ -459,8 +464,8 @@ def testNodeLookup : IO TestResult := do
 /-- Test: Connecting ports -/
 def testConnect : IO TestResult := do
   let g := Graph.empty
-  let (n1, g) := g.addNode (.lam false)
-  let (n2, g) := g.addNode .app
+  let (n1, g) := g.addNode (.lam false) testTy
+  let (n2, g) := g.addNode .app testTy
 
   -- Connect LAM's principal to APP's fun port
   let p1 := PortId.principal n1
@@ -503,8 +508,8 @@ def testFreshLabels : IO TestResult := do
 /-- Test: Active pairs detection -/
 def testActivePairs : IO TestResult := do
   let g := Graph.empty
-  let (n1, g) := g.addNode (.lam false)
-  let (n2, g) := g.addNode .app
+  let (n1, g) := g.addNode (.lam false) testTy
+  let (n2, g) := g.addNode .app testTy
 
   -- Before connecting principals: no active pairs
   let pairs1 := g.activePairs
@@ -525,8 +530,8 @@ def testIsNormalForm : IO TestResult := do
   if !g.isNormalForm then
     return .failed "Empty graph should be in normal form"
 
-  let (n1, g) := g.addNode (.lam false)
-  let (n2, g) := g.addNode .app
+  let (n1, g) := g.addNode (.lam false) testTy
+  let (n2, g) := g.addNode .app testTy
   let g := g.connect (PortId.principal n1) (PortId.principal n2)
 
   if g.isNormalForm then
@@ -536,15 +541,16 @@ def testIsNormalForm : IO TestResult := do
 /-- Test: Book (definitions) -/
 def testBook : IO TestResult := do
   let g := Graph.empty
-  let (root, g) := g.addNode (.lam false)
-  let (idx, g) := g.addDefinition "myFunc" root 2
+  let (root, g) := g.addNode (.lam false) testTy
+  let funcName : Soma.Core.Name := .user { id := 0, module := "test", original := "myFunc" }
+  let (idx, g) := g.addDefinition funcName root 2 testTy
 
   if idx != 0 then
     return .failed "First definition should have index 0"
 
   match g.getDefinition 0 with
   | some def_ =>
-    if def_.name != "myFunc" then
+    if def_.name != funcName then
       return .failed "Definition name should be 'myFunc'"
     if def_.arity != 2 then
       return .failed "Definition arity should be 2"
@@ -552,7 +558,7 @@ def testBook : IO TestResult := do
       return .failed "Definition root should match"
   | none => return .failed "Should find definition at index 0"
 
-  match g.findDefinition "myFunc" with
+  match g.findDefinition funcName with
   | some (foundIdx, _) =>
     if foundIdx != 0 then
       return .failed "findDefinition should return index 0"
@@ -562,8 +568,8 @@ def testBook : IO TestResult := do
 /-- Test: GraphM monad -/
 def testGraphM : IO TestResult := do
   let buildGraph : GraphM NodeId := do
-    let n1 ← GraphM.addNode (.lam false)
-    let n2 ← GraphM.addNode .app
+    let n1 ← GraphM.addNode (.lam false) testTy
+    let n2 ← GraphM.addNode .app testTy
     GraphM.connect (PortId.principal n1) ⟨n2, ⟨1⟩⟩
     GraphM.setRoot (PortId.principal n2)
     pure n1
@@ -643,8 +649,8 @@ def testPpTerm : IO TestResult := do
 /-- Test: ppGraph produces structured output -/
 def testPpGraph : IO TestResult := do
   let buildGraph : GraphM Unit := do
-    let n1 ← GraphM.addNode (.lam false)
-    let n2 ← GraphM.addNode .app
+    let n1 ← GraphM.addNode (.lam false) testTy
+    let n2 ← GraphM.addNode .app testTy
     GraphM.connect (PortId.principal n1) ⟨n2, ⟨1⟩⟩
     GraphM.setRoot (PortId.principal n2)
 
@@ -691,11 +697,11 @@ def testLambdaAppGraph : IO TestResult := do
   -- Active pair: APP.principal <-> LAM.principal
   let buildGraph : GraphM Unit := do
     -- Create identity lambda
-    let lam ← GraphM.addNode (.lam false)
+    let lam ← GraphM.addNode (.lam false) testTy
     -- Create application
-    let app ← GraphM.addNode .app
+    let app ← GraphM.addNode .app testTy
     -- Create numeric argument
-    let num ← GraphM.addNode (.num PrimType.i64 42)
+    let num ← GraphM.addNode (.num PrimType.i64 42) testTy
 
     -- Wire: APP.principal <-> LAM.principal (THIS creates the active pair)
     GraphM.connect (PortId.principal app) (PortId.principal lam)
@@ -723,13 +729,13 @@ def testDupChainGraph : IO TestResult := do
   -- Build a chain for duplicating a value 3 times
   let buildGraph : GraphM (Array PortId) := do
     -- Source value (a number)
-    let num ← GraphM.addNode (.num PrimType.i64 100)
+    let num ← GraphM.addNode (.num PrimType.i64 100) testTy
     let sourcePort := PortId.principal num
 
     -- Build DUP chain: need 2 DUPs for 3 uses
     let labels ← GraphM.freshLabels 2
-    let dup0 ← GraphM.addNode (.dup labels[0]!)
-    let dup1 ← GraphM.addNode (.dup labels[1]!)
+    let dup0 ← GraphM.addNode (.dup labels[0]!) testTy
+    let dup1 ← GraphM.addNode (.dup labels[1]!) testTy
 
     -- Wire source to first DUP
     GraphM.connect (PortId.principal dup0) sourcePort
@@ -763,18 +769,18 @@ def testCtorMatchGraph : IO TestResult := do
   -- Active pair: MAT.principal <-> CTOR.principal
   let buildGraph : GraphM Unit := do
     -- Create Nil constructor (tag 0, arity 0)
-    let nil ← GraphM.addNode (.ctor 0 0)
+    let nil ← GraphM.addNode (.ctor 0 0) testTy
     -- Create Cons constructor (tag 1, arity 2)
-    let cons ← GraphM.addNode (.ctor 1 2)
+    let cons ← GraphM.addNode (.ctor 1 2) testTy
     -- Create the element "1"
-    let elem ← GraphM.addNode (.num PrimType.i64 1)
+    let elem ← GraphM.addNode (.num PrimType.i64 1) testTy
 
     -- Wire Cons fields
     GraphM.connect ⟨cons, ⟨1⟩⟩ (PortId.principal elem)
     GraphM.connect ⟨cons, ⟨2⟩⟩ (PortId.principal nil)
 
     -- Create MAT node for Cons (tag 1)
-    let mat ← GraphM.addNode (.mat 1)
+    let mat ← GraphM.addNode (.mat 1) testTy
     -- Wire: MAT.principal <-> CTOR.principal (THIS creates the active pair)
     GraphM.connect (PortId.principal mat) (PortId.principal cons)
 
