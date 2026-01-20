@@ -529,6 +529,8 @@ structure NodeState where
   visited : Std.HashSet Nat := {}
   /-- Node results (principal port values) -/
   results : Std.HashMap Nat LocalId := {}
+  /-- LAM node ID → parameter index -/
+  lamParams : Std.HashMap Nat Nat := {}
   deriving Inhabited
 
 /-- Lower a single node, returning the value at its principal port -/
@@ -565,34 +567,17 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     StateT.lift (lowerNum primTy val)
 
   | .era => do
-    -- ERA consumes its input and produces nothing
-    -- Find what's connected to the principal port and erase it
-    if let some inputPort := entry.getPort ⟨0⟩ then  -- Principal port
-      let inputVal ← lowerNode graph inputPort.node
-      -- Get the type of the input node for proper erase handling
-      let inputTy := match graph.getNode inputPort.node with
-        | some inputEntry => getNodeType inputEntry
-        | none => valueType
-      StateT.lift (lowerErase inputVal inputTy)
-    -- ERA always produces unit, regardless of type annotation
     StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
 
-  | .lam erased => do
+  | .lam _erased => do
     -- LAM nodes in Circuit IR represent function parameters.
     -- After lambda lifting, nested lambdas become .closure expressions
     -- which lower to CTOR nodes with closureTag.
     --
-    -- When we encounter a LAM during traversal, it's part of the
-    -- parameter binding chain. We lower the body and return it.
-    -- The variable binding is already handled by function parameters.
-    if erased then
-      -- Erased lambda: always produces unit
-      StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
-    else
-      -- Lower the body (aux1 port)
-      match entry.getPort ⟨2⟩ with
-      | some bodyPort => lowerNode graph bodyPort.node
-      | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
+    -- The `erased` flag indicates whether the parameter is unused (todo: review this decision)
+    match entry.getPort ⟨2⟩ with
+    | some bodyPort => lowerNode graph bodyPort.node
+    | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
   | .app => do
     -- Application: call closure with argument
@@ -616,8 +601,23 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
       | none => pure none
 
     -- Lower the argument(s)
+    -- Linear variable use. Return the parameter directly.
     let argVal ← match entry.getPort ⟨2⟩ with
-      | some argPort => lowerNode graph argPort.node
+      | some argPort =>
+        -- Check if this connects to a LAM's var port (linear variable)
+        let ns ← get
+        -- Get info about what we're connecting to
+        if argPort.port.idx == 1 then
+          -- Check if the connected node is a LAM in our param chain
+          match ns.lamParams.get? argPort.node.id with
+          | some paramIdx =>
+            -- This is a linear variable use so we return the parameter directly
+            pure ⟨paramIdx⟩
+          | none =>
+            -- Not one of our LAMs, lower normally
+            lowerNode graph argPort.node
+        else
+          lowerNode graph argPort.node
       | none => StateT.lift (LowerM.emitInst (.copy (.const .unit)) Ty.unit)
 
     match maybeIntrinsicCall with
@@ -629,12 +629,32 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
       -- Extern function: emit callExtern
       StateT.lift (LowerM.emitInst (.callExtern externName #[.local argVal] nodeTy) nodeTy)
     | none =>
-      -- Regular function call: lower the function and call as closure
-      let fnVal ← match fnPort with
-        | some fp => lowerNode graph fp.node
-        | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef closureType))) closureType)
-      -- Use the node's type annotation for the result type
-      StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
+      -- Regular function call: check what the function node is
+      match fnPort with
+      | none =>
+        -- No function port → erased, return unit
+        StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
+      | some fp =>
+        match graph.getNode fp.node with
+        | none =>
+          -- Missing node → treat as erased
+          StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
+        | some fnEntry =>
+          match fnEntry.node with
+          | .era =>
+            -- Function is ERA → erased, return unit
+            StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
+          | .lam _ =>
+            -- Inline beta reduction
+            lowerNode graph fp.node
+          | _ =>
+            -- Regular closure call: lower the function and use callClosure
+            let fnNodeTy := getNodeType fnEntry
+            if fnNodeTy == .prim .unit then
+              StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
+            else
+              let fnVal ← lowerNode graph fp.node
+              StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
 
   | .ctor tag arity => do
     -- Check for special closure CTOR (tag 0xFFFFFE, arity 2)
@@ -771,7 +791,7 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
   | .ref refId => do
-    -- Global reference: get function from book, type comes from annotation
+    -- Global reference: create a closure (function pointer + null env)
     -- Check if this is an intrinsic/extern
     match graph.getDefinition refId with
     | some def_ =>
@@ -779,14 +799,18 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
       | some _ =>
         StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
       | none =>
+        -- Wrap function in closure with null environment
         let funcId := FuncId.mk refId
-        StateT.lift (LowerM.emitInst (.copy (.func funcId)) nodeTy)
+        let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+        StateT.lift (LowerM.emitInst (.makeClosure funcId (.local nullEnv)) nodeTy)
     | none =>
+      -- External function reference: wrap in closure with null environment
       let funcId := FuncId.mk refId
-      StateT.lift (LowerM.emitInst (.copy (.func funcId)) nodeTy)
+      let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+      StateT.lift (LowerM.emitInst (.makeClosure funcId (.local nullEnv)) nodeTy)
 
   | .alo refId => do
-    -- Allocation/instantiation: call the referenced function
+    -- Allocation/instantiation: create a closure (function pointer + null env)
     -- Check if this is an intrinsic/extern
     match graph.getDefinition refId with
     | some def_ =>
@@ -794,11 +818,15 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
       | some _ =>
         StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
       | none =>
+        -- Wrap function in closure with null environment
         let funcId := FuncId.mk refId
-        StateT.lift (LowerM.emitInst (.call funcId #[] nodeTy) nodeTy)
+        let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+        StateT.lift (LowerM.emitInst (.makeClosure funcId (.local nullEnv)) nodeTy)
     | none =>
+      -- External function reference: wrap in closure with null environment
       let funcId := FuncId.mk refId
-      StateT.lift (LowerM.emitInst (.call funcId #[] nodeTy) nodeTy)
+      let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+      StateT.lift (LowerM.emitInst (.makeClosure funcId (.local nullEnv)) nodeTy)
 
   | .use => do
     -- Strict evaluation: force the term, then continue
@@ -866,17 +894,24 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
 
 /-- Traverse LAM chain to find body and collect var ports.
     Returns (body node, array of var port node IDs) -/
-def traverseLamChain (graph : CGraph) (root : CNodeId) (arity : Nat) : CNodeId × Array CNodeId := Id.run do
+def traverseLamChain (graph : CGraph) (root : CNodeId) (arity : Nat) : CNodeId × Array (Option CNodeId) := Id.run do
   let mut current := root
-  let mut varNodes : Array CNodeId := #[]
+  let mut varNodes : Array (Option CNodeId) := #[]
 
   for _ in [:arity] do
     if let some entry := graph.getNode current then
       match entry.node with
       | .lam _ =>
-        -- Collect the var port's connected node (port 1)
+        -- Collect the var port's connected node (port 1) ONLY if it's a DUP or ERA
         if let some varPort := entry.getPort ⟨1⟩ then
-          varNodes := varNodes.push varPort.node
+          match graph.getNode varPort.node with
+          | some varEntry =>
+            match varEntry.node with
+            | .dup _ | .era => varNodes := varNodes.push (some varPort.node)
+            | _ => varNodes := varNodes.push none -- Linear use, no dedicated var node
+          | none => varNodes := varNodes.push none
+        else
+          varNodes := varNodes.push none
         -- Move to body (port 2)
         if let some bodyPort := entry.getPort ⟨2⟩ then
           current := bodyPort.node
@@ -908,15 +943,20 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId) : Fu
       let mut initState : NodeState := {}
       for i in [:varNodes.size] do
         if h : i < varNodes.size then
-          -- Map the var port node to the corresponding function parameter
-          let varNodeId := varNodes[i]
-          let paramId : LocalId := ⟨i⟩
-          initState := { initState with results := initState.results.insert varNodeId.id paramId }
+          match varNodes[i] with
+          | some varNodeId =>
+            -- Map the var port node to the corresponding function parameter
+            let paramId : LocalId := ⟨i⟩
+            initState := { initState with results := initState.results.insert varNodeId.id paramId }
+          | none => pure ()
 
-      -- Also mark LAM nodes as visited so we don't re-traverse them
+      -- Also mark LAM nodes as visited and record their param indices
       let mut current := def_.root
-      for _ in [:def_.arity] do
-        initState := { initState with visited := initState.visited.insert current.id }
+      for i in [:def_.arity] do
+        initState := { initState with
+          visited := initState.visited.insert current.id
+          lamParams := initState.lamParams.insert current.id i
+        }
         if let some entry := graph.getNode current then
           if let some bodyPort := entry.getPort ⟨2⟩ then
             current := bodyPort.node

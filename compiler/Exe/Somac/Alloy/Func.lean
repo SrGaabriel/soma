@@ -157,10 +157,13 @@ def extern (id : FuncId) (name : String) (params : Array Param) (retTy : Ty)
 
 /-- Create a function with a body -/
 def withBody (id : FuncId) (sig : Signature) (cfg : CFG) : Func :=
+  let paramTypes := sig.params.foldl (init := ({} : Std.HashMap Nat Ty)) fun acc p =>
+    acc.insert p.id.id p.ty
   { id
   , sig
   , body := some cfg
   , nextLocalId := sig.params.size
+  , localTypes := paramTypes
   }
 
 /-- Check if function is external -/

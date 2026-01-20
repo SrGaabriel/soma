@@ -343,6 +343,19 @@ def usageMapToNatMap (usageMap : UsageMap) : Std.HashMap Nat Nat :=
   usageMap.fold (init := {}) fun acc bindingId count =>
     acc.insert bindingId.id count
 
+/-- Check if an expression is a type-level argument (erased at runtime) -/
+def isTypeLevelArg (e : Expr Value scope) : Bool :=
+  match e with
+  | .typeApp _ _ _ => true
+  | .mvar _ _ _ => true
+  | _ => false
+
+/-- Check if all arguments in a list are type-level (erased at runtime) -/
+def allTypeLevelArgs (args : ExprList Value scope) : Bool :=
+  match args with
+  | .nil => true
+  | .cons e rest => isTypeLevelArg e && allTypeLevelArgs rest
+
 mutual
 
 /-- Lower an expression to a Circuit IR subgraph -/
@@ -440,6 +453,24 @@ partial def lowerExpr (e : Expr Value scope) : LowerM (Option PortId) := do
   | .hole _ _ | .mvar _ _ _ | .typeApp _ _ _ =>
     pure none
 
+/-- Lower an expression with an explicit type override -/
+partial def lowerExprWithType (e : Expr Value scope) (overrideTy : Value) : LowerM (Option PortId) := do
+  match e with
+  | .global name _ _ =>
+    -- Global reference: use the override type instead of the declared type
+    some <$> lowerGlobal name overrideTy
+  | .call fn args _ _ =>
+    -- Nested call: if all args are type-level, continue passing override through
+    if allTypeLevelArgs args then
+      lowerExprWithType fn overrideTy
+    else
+      -- The override type is for the outermost type application, not intermediate calls.
+      let callTy := exprType e
+      lowerApp fn args callTy
+  | _ =>
+    -- Other expressions: fall back to normal lowering
+    lowerExpr e
+
 /-- Lower an expression list -/
 partial def lowerExprList (es : ExprList Value scope) : LowerM (Array PortId) := do
   match es with
@@ -504,61 +535,70 @@ partial def lowerClosure (fnName : Name) (captures : Soma.Metal.CaptureList Valu
 /-- Lower a function application -/
 partial def lowerApp (fn : Expr Value scope) (args : ExprList Value scope)
     (ty : Value) : LowerM (Option PortId) := do
-  -- First, check if the function is erased
-  let fnPort? ← lowerExpr fn
-  match fnPort? with
-  | none =>
-    pure none
-  | some fnPort =>
-    let argPorts ← lowerExprList args
+  -- Check if all arguments are type-level (erased at runtime)
+  if allTypeLevelArgs args then
+    -- Pure type app, pass result ty through
+    lowerExprWithType fn ty
+  else
+    -- Has value arguments: proceed with normal lowering
+    let fnPort? ← lowerExpr fn
+    match fnPort? with
+    | none => pure none
+    | some fnPort =>
+      let argPorts ← lowerExprList args
+      match fn, argPorts.toList with
+      | .call innerFn innerArgs _ _, [argPort] =>
+        match getPrimOp innerFn with
+        | some primOp =>
+          -- This ais a binary operation
+          match primOpToOp2Code primOp with
+          | some op2 =>
+            let innerArgPorts ← lowerExprList innerArgs
+            if h : innerArgPorts.size = 1 then
+              let op2Node ← LowerM.addNode (.op2 op2) ty
+              LowerM.connect ⟨op2Node, ⟨1⟩⟩ innerArgPorts[0]
+              LowerM.connect ⟨op2Node, ⟨2⟩⟩ argPort
+              pure (some (PortId.principal op2Node))
+            else
+              lowerSingleApp fnPort argPort ty
+          | none =>
+            lowerSingleApp fnPort argPort ty
+        | none =>
+          lowerSingleApp fnPort argPort ty
 
-    -- Check for primitive operation optimization
-    match getPrimOp fn, argPorts.size with
-    | some primOp, 1 =>
-      -- Unary primitive operation: emit OP1 directly
-      match primOpToOp1Code primOp with
-      | some op1 =>
-        let op1Node ← LowerM.addNode (.op1 op1) ty
-        -- aux0 = operand
-        LowerM.connect ⟨op1Node, ⟨1⟩⟩ argPorts[0]!
-        pure (some (PortId.principal op1Node))
-      | none =>
-        -- Binary op with 1 arg: partial application, fall through to APP
-        some <$> lowerAppGeneric fnPort argPorts ty
-    | some primOp, 2 =>
-      -- Binary primitive operation: emit OP2 directly
-      match primOpToOp2Code primOp with
-      | some op2 =>
-        let op2Node ← LowerM.addNode (.op2 op2) ty
-        -- aux0 = left operand, aux1 = right operand
-        LowerM.connect ⟨op2Node, ⟨1⟩⟩ argPorts[0]!
-        LowerM.connect ⟨op2Node, ⟨2⟩⟩ argPorts[1]!
-        pure (some (PortId.principal op2Node))
-      | none =>
-        -- Unary op with 2 args: shouldn't happen, fall through to APP
-        some <$> lowerAppGeneric fnPort argPorts ty
-    | _, _ =>
-      -- General case: build APP chain
-      some <$> lowerAppGeneric fnPort argPorts ty
+      | _, [argPort] =>
+        -- Single argument call (the normal case after elaboration)
+        match getPrimOp fn with
+        | some primOp =>
+          match primOpToOp1Code primOp with
+          | some op1 =>
+            let op1Node ← LowerM.addNode (.op1 op1) ty
+            LowerM.connect ⟨op1Node, ⟨1⟩⟩ argPort
+            pure (some (PortId.principal op1Node))
+          | none =>
+            lowerSingleApp fnPort argPort ty
+        | none =>
+          lowerSingleApp fnPort argPort ty
+
+      | _, [] =>
+        pure (some fnPort)
+
+      | _, argPortList =>
+        -- todo: consider panicking
+        let mut resultPort := fnPort
+        for argPort in argPortList do
+          let app ← LowerM.addNode .app ty
+          LowerM.connect ⟨app, ⟨1⟩⟩ resultPort
+          LowerM.connect ⟨app, ⟨2⟩⟩ argPort
+          resultPort := PortId.principal app
+        pure (some resultPort)
 where
-  /-- Generic APP chain lowering for non-primitive function calls -/
-  lowerAppGeneric (fnPort : PortId) (argPorts : Array PortId)
-      (ty : Value) : LowerM PortId := do
-    -- Build a chain of APP nodes: ((fn arg₀) arg₁) ...
-    -- Each intermediate APP has an intermediate type, final APP has result type
-    let mut resultPort := fnPort
-    for i in [:argPorts.size] do
-      let argPort := argPorts[i]!
-      let isLast := i == argPorts.size - 1
-      -- todo: track partial application types
-      let appTy := if isLast then ty else unitTy
-      let app ← LowerM.addNode .app appTy
-      -- aux0 = function, aux1 = argument, principal = result
-      LowerM.connect ⟨app, ⟨1⟩⟩ resultPort -- function
-      LowerM.connect ⟨app, ⟨2⟩⟩ argPort -- argument
-      resultPort := PortId.principal app
-
-    pure resultPort
+  /-- Lower a single-argument application using the type annotation from elaboration -/
+  lowerSingleApp (fnPort : PortId) (argPort : PortId) (resultTy : Value) : LowerM (Option PortId) := do
+    let app ← LowerM.addNode .app resultTy
+    LowerM.connect ⟨app, ⟨1⟩⟩ fnPort
+    LowerM.connect ⟨app, ⟨2⟩⟩ argPort
+    pure (some (PortId.principal app))
 
 /-- Lower a lambda expression -/
 partial def lowerLam (params : Soma.Metal.ParamList Value)
@@ -566,57 +606,69 @@ partial def lowerLam (params : Soma.Metal.ParamList Value)
     (ty : Value) : LowerM PortId := do
   let paramList := params.toList
 
-  if paramList.isEmpty then
+  match paramList with
+  | [] =>
     -- No parameters: just lower the body
-    -- If body is erased, we still need to return something for the lambda
     match ← lowerExpr body with
     | some bodyPort => pure bodyPort
     | none =>
-      -- Body is erased so we create a unit placeholder
       let era ← LowerM.addNode .era unitTy
       pure (PortId.principal era)
-  else
-    -- Create LAM nodes (we'll wire them after lowering body)
-    -- Each LAM gets the appropriate partial function type
+
+  | [(bindingId, name, _info)] =>
+    -- Single parameter lambda (the normal case after elaboration)
+    let ctx ← LowerM.getCtx
+    let usageCount := ctx.getUsageCount bindingId
+    let erased := usageCount == 0
+
+    -- The LAM node gets the full function type from the expression annotation
+    let lam ← LowerM.addNode (.lam erased) ty
+
+    -- Extract parameter type from the Pi type's domain
+    let paramTy := ty.piDomain?.getD unitTy
+
+    -- Build DUP chain and bind the parameter
+    let varPort : PortId := ⟨lam, ⟨1⟩⟩
+    let (usePorts, isErased) ← buildDupChain varPort usageCount paramTy
+    LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name usePorts paramTy isErased
+
+    -- Lower the body and wire to LAM
+    let bodyPort? ← lowerExpr body
+    let bodyPort := bodyPort?.getD ⟨lam, ⟨1⟩⟩
+    LowerM.connect ⟨lam, ⟨2⟩⟩ bodyPort
+
+    pure (PortId.principal lam)
+
+  | _ =>
+    -- todo: consider panicking
     let mut lamNodes : Array NodeId := #[]
     let ctx ← LowerM.getCtx
-    let mut currentTy := ty -- Track the remaining function type
-    for (bindingId, name, info) in paramList do
-      -- This determines both erasure and DUP chain construction
+    let mut currentTy := ty
+
+    for (bindingId, name, _info) in paramList do
       let usageCount := ctx.getUsageCount bindingId
       let erased := usageCount == 0
-      -- Each LAM gets its partial function type
+
       let lam ← LowerM.addNode (.lam erased) currentTy
       lamNodes := lamNodes.push lam
 
-      -- Peel the function type for the next LAM
+      let paramTy := currentTy.piDomain?.getD unitTy
       currentTy := currentTy.piCodomain?.getD unitTy
 
-      -- The parameter type comes from the param info
-      let paramTy := info
-
-      -- Build DUP chain from the LAM's var port
-      let varPort : PortId := ⟨lam, ⟨1⟩⟩ -- aux0 = var
+      let varPort : PortId := ⟨lam, ⟨1⟩⟩
       let (usePorts, isErased) ← buildDupChain varPort usageCount paramTy
       LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name usePorts paramTy isErased
 
-    -- Wire LAMs together: outer.body → inner.principal
     for j in [:lamNodes.size - 1] do
       let outer := lamNodes[j]!
       let inner := lamNodes[j + 1]!
-      LowerM.connect ⟨outer, ⟨2⟩⟩ (PortId.principal inner) -- outer.body → inner
+      LowerM.connect ⟨outer, ⟨2⟩⟩ (PortId.principal inner)
 
-    -- Lower the body
     let bodyPort? ← lowerExpr body
-    let bodyPort := match bodyPort? with
-      | some port => port
-      | none => ⟨lamNodes[lamNodes.size - 1]!, ⟨1⟩⟩
-
-    -- Wire body to innermost LAM's body port
+    let bodyPort := bodyPort?.getD ⟨lamNodes[lamNodes.size - 1]!, ⟨1⟩⟩
     let innermost := lamNodes[lamNodes.size - 1]!
     LowerM.connect ⟨innermost, ⟨2⟩⟩ bodyPort
 
-    -- Return outermost LAM's principal port
     pure (PortId.principal lamNodes[0]!)
 
 /-- Lower a constructor application -/
@@ -1153,12 +1205,19 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
 
   -- We register ALL functions including intrinsics/externs
   let functions := typedFunctions.toList
+  let localCount := functions.length
 
-  -- First pass: register all functions as globals
+  -- First pass: register all local functions as globals
   for (i, (_, fn)) in enumList functions do
     LowerM.modifyCtx fun ctx => ctx.registerGlobal fn.name i
 
-  -- Second pass: lower each function
+  -- Second pass: register external functions from dependencies
+  if let some g := globals then
+    let externals := g.defs.toList.filter fun (name, _) => !typedFunctions.contains name
+    for (i, (_, info)) in enumList externals do
+      LowerM.modifyCtx fun ctx => ctx.registerGlobal info.name (localCount + i)
+
+  -- Third pass: lower each function body
   for (_, fn) in functions do
     if shouldLowerBody fn then
       let root ← lowerFunction fn
@@ -1167,6 +1226,13 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
     else
       let era ← LowerM.addNode .era unitTy
       let _ ← LowerM.addDefinition fn.name era 0 fn.fnType
+
+  -- Fourth pass: add placeholder definitions for external functions (will be resolved at merge-time)
+  if let some g := globals then
+    let externals := g.defs.toList.filter fun (name, _) => !typedFunctions.contains name
+    for (_, info) in externals do
+      let era ← LowerM.addNode .era unitTy
+      let _ ← LowerM.addDefinition info.name era 0 info.type
 
   -- Set root to main function if it exists
   -- Use ALO (allocation/instantiation) instead of REF because we want to actually exec

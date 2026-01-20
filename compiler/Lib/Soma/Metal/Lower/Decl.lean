@@ -397,7 +397,7 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
               pure (Name.intrinsic (Intrinsic.extern externName))
 
         -- Intrinsics/externs have no real body - create a placeholder panic
-        -- The actual implementation comes from the runtime/LLVM intrinsics or external linkage
+        -- The actual implementation comes from the runtime/LLVM intrnsics or external linkage
         let body : UntypedExpr [] := .panic s!"{if isIntrinsic then "intrinsic" else "extern"}:{name.value}" () span
 
         let funcAttrs : FunctionAttrs := {

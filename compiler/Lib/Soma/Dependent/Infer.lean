@@ -648,11 +648,11 @@ where
           -- This is needed because constructors like `Nil : forall {n} {a}. Vec Zero a`
           -- need their implicits filled in even when used standalone (not in application)
           let instantiatedTy ← instantiateImplicits info.type span
-          return (instantiatedTy, .global name instantiatedTy span)
+          return (instantiatedTy, .global info.name instantiatedTy span)
         else
           -- For non-constructors, return the type directly
           -- Implicits will be inserted when used in application position
-          return (info.type, .global name info.type span)
+          return (info.type, .global info.name info.type span)
       | none => TCM.throw (.unboundGlobal name.display span #[])
 
     -- Records
