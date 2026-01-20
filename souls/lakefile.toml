@@ -11,6 +11,11 @@ rev = "main"
 name = "soma"
 path = "../compiler"
 
+[[require]]
+name = "kenosis"
+git = "https://github.com/SrGaabriel/kenosis"
+rev = "main"
+
 [[lean_lib]]
 name = "Lsp"
 

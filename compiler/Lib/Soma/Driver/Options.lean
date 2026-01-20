@@ -58,6 +58,7 @@ structure BuildOptions where
   mode : CompilationMode := .standard
   optimizationLevel : Option Nat := none
   validate : Bool := false
+  sysroot : Option String := none  -- Path to sysroot (contains lib/ with runtime)
   deriving Repr
 
 /-- All commands supported by the compiler -/

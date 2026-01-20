@@ -17,6 +17,52 @@ structure ToolPaths where
 /-- Default tool paths -/
 def defaultTools : ToolPaths := {}
 
+/-- Runtime file names -/
+def runtimeSourceFile : String := "soma_runtime.c"
+def runtimeHeaderFile : String := "soma_runtime.h"
+
+/-- Find the sysroot directory using the standard discovery order -/
+def findSysroot (explicit : Option String) : IO (Option System.FilePath) := do
+  -- 1. Explicit sysroot
+  if let some s := explicit then
+    let path : System.FilePath := ⟨s⟩
+    if ← path.pathExists then
+      return some path
+
+  -- 2. Environment variable
+  if let some s ← IO.getEnv "SOMA_SYSROOT" then
+    let path : System.FilePath := ⟨s⟩
+    if ← path.pathExists then
+      return some path
+
+  -- 3. Relative to executable
+  let exe ← IO.appPath
+  if let some binDir := exe.parent then
+    if let some sysroot := binDir.parent then
+      let libPath := sysroot / "lib"
+      if ← libPath.pathExists then
+        return some sysroot
+
+  -- 4. Well-known svm location
+  if let some home ← IO.getEnv "HOME" then
+    -- Detect target triple (todo: properly implement this shit)
+    let target := if System.Platform.isWindows then "x86_64-windows"
+                  else if System.Platform.isOSX then "aarch64-macos"
+                  else "x86_64-linux"
+    let svmPath : System.FilePath := ⟨home⟩ / ".svm" / "current" / target
+    if ← svmPath.pathExists then
+      return some svmPath
+
+  return none
+
+/-- Find the runtime source file -/
+def findRuntime (sysroot : Option String) : IO (Option System.FilePath) := do
+  if let some sysrootPath ← findSysroot sysroot then
+    let runtimePath := sysrootPath / "lib" / runtimeSourceFile
+    if ← runtimePath.pathExists then
+      return some runtimePath
+  return none
+
 /-- Result of running an external command -/
 structure CommandResult where
   exitCode : UInt32
@@ -154,6 +200,7 @@ def compileAndLink
     (runtime : Option System.FilePath := none)
     (optLevel : Nat := 2)
     (keepIntermediates : Bool := false)
+    (sysroot : Option String := none)
     : IO (Except String Unit) := do
   -- Compile to object
   let oPath := output.withExtension "o"
@@ -161,8 +208,13 @@ def compileAndLink
   match ← compileToObject tools llPath oPath optLevel with
   | .error e => pure (.error e)
   | .ok () =>
+    -- Find runtime if not explicitly provided
+    let runtimePath ← match runtime with
+      | some r => pure (some r)
+      | none => findRuntime sysroot
+
     -- Link to executable
-    match ← linkExecutable tools #[oPath] output runtime optLevel with
+    match ← linkExecutable tools #[oPath] output runtimePath optLevel with
     | .error e => pure (.error e)
     | .ok () =>
       unless keepIntermediates do

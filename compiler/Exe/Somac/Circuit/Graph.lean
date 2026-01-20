@@ -85,6 +85,10 @@ structure Graph where
   nextLabel : UInt32
   /-- Global definitions book (for REF nodes) -/
   book : Array Definition
+  /-- String table: maps hash → (index, string content) -/
+  strings : Std.HashMap UInt64 (Nat × String) := {}
+  /-- Next string index -/
+  nextStringIdx : Nat := 0
   deriving Inhabited
 
 namespace Graph
@@ -105,6 +109,31 @@ def freshNodeId (g : Graph) : NodeId × Graph :=
 /-- Allocate a fresh duplication label -/
 def freshLabel (g : Graph) : Label × Graph :=
   (⟨g.nextLabel⟩, { g with nextLabel := g.nextLabel + 1 })
+
+/-- Intern a string, returning its index. If already interned, returns existing index -/
+def internString (g : Graph) (s : String) : Nat × Graph :=
+  let hash := s.hash
+  match g.strings.get? hash with
+  | some (idx, _) => (idx, g)
+  | none =>
+    let idx := g.nextStringIdx
+    (idx, { g with
+      strings := g.strings.insert hash (idx, s)
+      nextStringIdx := idx + 1
+    })
+
+/-- Look up a string by its hash -/
+def lookupStringByHash (g : Graph) (hash : UInt64) : Option (Nat × String) :=
+  g.strings.get? hash
+
+/-- Get all strings as an array ordered by index -/
+def getStringTable (g : Graph) : Array String := Id.run do
+  let mut arr : Array String := .mkEmpty g.nextStringIdx
+  for _ in [:g.nextStringIdx] do
+    arr := arr.push ""
+  for (_, (idx, s)) in g.strings.toList do
+    arr := arr.set! idx s
+  arr
 
 /-- Allocate N consecutive labels (for DUP chains) -/
 def freshLabels (g : Graph) (n : Nat) : Array Label × Graph :=
@@ -305,6 +334,13 @@ def freshLabels (n : Nat) : GraphM (Array Label) := do
   let (labels, g') := g.freshLabels n
   set g'
   return labels
+
+/-- Intern a string, returning its index -/
+def internString (s : String) : GraphM Nat := do
+  let g ← get
+  let (idx, g') := g.internString s
+  set g'
+  return idx
 
 /-- Add a node to the graph -/
 def addNode (n : Node) (ty : Value) : GraphM NodeId := do

@@ -265,14 +265,14 @@ def lowerLiteral (lit : Literal) : LowerM PortId := do
     let word64Ty := Value.vPrimTy .word64
     let lenNode ← LowerM.addNode (.num .u64 len) word64Ty
 
-    -- The codegen will intern strings and replace with actual pointers
-    let hash := s.hash.toUInt32
-    let dataNode ← LowerM.addNode (.num .u64 hash) word64Ty
+    -- Intern the string and store its index (not hash) so Alloy can reference it
+    let stringIdx ← LowerM.liftGraph (GraphM.internString s)
+    let dataNode ← LowerM.addNode (.num .u64 stringIdx.toUInt32) word64Ty
 
     -- Create STRING node
     let stringNode ← LowerM.addNode .string stringTy
     LowerM.connect ⟨stringNode, ⟨1⟩⟩ (PortId.principal lenNode) -- aux0 = length
-    LowerM.connect ⟨stringNode, ⟨2⟩⟩ (PortId.principal dataNode) -- aux1 = data
+    LowerM.connect ⟨stringNode, ⟨2⟩⟩ (PortId.principal dataNode) -- aux1 = string table index
 
     pure (PortId.principal stringNode)
 

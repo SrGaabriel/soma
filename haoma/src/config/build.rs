@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::build::consts::COMPILER_NAME;
@@ -17,6 +18,8 @@ pub struct SomacBuildConfig {
     pub command: Option<String>,
     #[serde(default)]
     pub debug: Option<bool>,
+    #[serde(default)]
+    pub sysroot: Option<String>,
 }
 
 impl SomacBuildConfig {
@@ -41,6 +44,7 @@ impl Default for SomacBuildConfig {
             binary: compiler_name(),
             debug: None,
             command: None,
+            sysroot: None,
         }
     }
 }
@@ -48,4 +52,51 @@ impl Default for SomacBuildConfig {
 #[inline]
 pub fn compiler_name() -> String {
     String::from(COMPILER_NAME)
+}
+
+pub fn find_sysroot(config_sysroot: Option<&str>) -> Option<PathBuf> {
+    if let Some(s) = config_sysroot {
+        let path = PathBuf::from(s);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    if let Ok(s) = std::env::var("SOMA_SYSROOT") {
+        let path = PathBuf::from(s);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    if let Ok(somac_path) = which::which("somac") {
+        if let Some(bin_dir) = somac_path.parent() {
+            if let Some(sysroot) = bin_dir.parent() {
+                let lib_path = sysroot.join("lib");
+                if lib_path.exists() {
+                    return Some(sysroot.to_path_buf());
+                }
+            }
+        }
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        let target = if cfg!(target_os = "windows") {
+            "x86_64-windows"
+        } else if cfg!(target_os = "macos") {
+            if cfg!(target_arch = "aarch64") {
+                "aarch64-macos"
+            } else {
+                "x86_64-macos"
+            }
+        } else {
+            "x86_64-linux"
+        };
+        let svm_path = home.join(".svm").join("current").join(target);
+        if svm_path.exists() {
+            return Some(svm_path);
+        }
+    }
+
+    None
 }

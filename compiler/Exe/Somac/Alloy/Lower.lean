@@ -478,25 +478,23 @@ def lowerMat (expectedTag : Nat) (scrutinee : LocalId) : LowerM (LocalId × Bloc
   pure (cond, thenBlock, elseBlock)
 
 /-- Lower a string literal -/
-def lowerString (len : UInt32) (dataHash : UInt32) : LowerM LocalId := do
+def lowerString (stringIdx : Nat) (len : Nat) : LowerM LocalId := do
   -- String struct: { length: u64, data: ptr }
   let stringSize := 8 + 8
   let stringPtr ← LowerM.emitInst (.malloc (.const (.int (Int.ofNat stringSize) .u64))) .rawPtr
 
   -- Store length
-  let lenVal ← LowerM.emitInst (.copy (.const (.int (Int.ofNat len.toNat) .u64))) (.prim .u64)
+  let lenVal ← LowerM.emitInst (.copy (.const (.int (Int.ofNat len) .u64))) (.prim .u64)
   LowerM.emitVoid (.store (.local stringPtr) (.local lenVal))
 
-  -- Store data pointer (using hash as string table index for now)
+  -- Store data pointer
   let baseAsI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local stringPtr)) (.prim .i64)
   let offset8 ← LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64)
   let dataPtrAddr ← LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset8) (.prim .i64)) (.prim .i64)
   let dataPtrSlot ← LowerM.emitInst (.unOp .inttoptr (.local dataPtrAddr)) .rawPtr
 
-  -- Use intrinsic to get string data from table
-  let dataPtr ← LowerM.emitInst
-    (.callExtern "soma_string_lookup" #[.const (.int (Int.ofNat dataHash.toNat) .u32)] .rawPtr)
-    .rawPtr
+  -- Reference the string data directly from the global string table
+  let dataPtr ← LowerM.emitInst (.copy (.const (.string stringIdx len))) .rawPtr
   LowerM.emitVoid (.store (.local dataPtrSlot) (.local dataPtr))
 
   pure stringPtr
@@ -851,9 +849,25 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     pure dataVal
 
   | .string => do
-    -- String node: extract length and data hash from connected nodes
-    -- This is simplified - real implementation needs more context
-    StateT.lift (lowerString 0 0)
+    -- String node: extract length and string index from connected NUM nodes
+    -- aux0 = length (NUM node), aux1 = string table index (NUM node)
+    let len : Nat ← match entry.getPort ⟨1⟩ with
+      | some lenPort =>
+        if let some lenEntry := graph.getNode lenPort.node then
+          if let .num _ val := lenEntry.node then pure val.toNat
+          else pure 0
+        else pure 0
+      | none => pure 0
+
+    let stringIdx : Nat ← match entry.getPort ⟨2⟩ with
+      | some idxPort =>
+        if let some idxEntry := graph.getNode idxPort.node then
+          if let .num _ val := idxEntry.node then pure val.toNat
+          else pure 0
+        else pure 0
+      | none => pure 0
+
+    StateT.lift (lowerString stringIdx len)
 
   | .index => do
     -- Array indexing: load element at runtime index, result type from annotation
@@ -975,6 +989,14 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId) : Fu
 /-- Lower an entire Circuit graph to an Alloy module -/
 def lowerGraph (graph : CGraph) (moduleName : String := "main") : Module := Id.run do
   let mut module := Module.empty moduleName
+
+  -- Copy string table from Circuit graph to Alloy module
+  let circuitStrings := graph.getStringTable
+  let mut stringTable := StringTable.empty
+  for s in circuitStrings do
+    let (_, st') := stringTable.intern s
+    stringTable := st'
+  module := { module with strings := stringTable }
 
   -- Lower each definition in the book
   for i in [:graph.book.size] do

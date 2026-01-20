@@ -388,6 +388,7 @@ def runBuild (p : Parsed) : IO UInt32 := do
   let name := p.flag? "name" |>.map (·.as! String)
   let mode := p.flag? "mode" |>.map (·.as! String) |>.getD "standard"
   let optLevel := p.flag? "opt-level" |>.map (·.as! Nat)
+  let sysroot := p.flag? "sysroot" |>.map (·.as! String)
 
   let compMode := match mode with
     | "graph" => CompilationMode.graph
@@ -404,6 +405,7 @@ def runBuild (p : Parsed) : IO UInt32 := do
     mode := compMode
     optimizationLevel := optLevel
     validate := p.hasFlag "validate"
+    sysroot := sysroot
   }
 
   IO.println "Soma Compiler"
@@ -524,6 +526,7 @@ def buildCmd : Cmd := `[Cli|
     m, mode : String; "Compilation mode: standard (default), graph, or hybrid"
     O, "opt-level" : Nat; "Optimization level (0-3)"
     validate; "Validate the Circuit IR for correctness"
+    sysroot : String; "Path to sysroot (contains lib/ with runtime)"
 
   ARGS:
     input : String; "Input source file or directory"
@@ -543,6 +546,7 @@ def somaCmd : Cmd := `[Cli|
     m, mode : String; "Compilation mode: standard (default), graph, or hybrid"
     O, "opt-level" : Nat; "Optimization level (0-3)"
     validate; "Validate the Circuit IR for correctness"
+    sysroot : String; "Path to sysroot (contains lib/ with runtime)"
 
   ARGS:
     input : String; "Input source file or directory"

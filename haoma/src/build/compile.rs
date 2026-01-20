@@ -4,7 +4,7 @@ use crate::build::consts::{
 };
 use crate::build::errors::{BuildError, InternalBuildError};
 use crate::build::graph::BuildNode;
-use crate::config::build::BuildConfig;
+use crate::config::build::{BuildConfig, find_sysroot};
 use crate::config::manifest::ManifestModuleType;
 use std::collections::HashMap;
 use std::fs;
@@ -69,9 +69,12 @@ fn compile_module(
     if manifest.module_type == ManifestModuleType::Library {
         command.arg("--lib");
     };
-    command
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
+
+    if let Some(sysroot) = find_sysroot(build_config.somac.sysroot.as_deref()) {
+        command.arg("--sysroot").arg(sysroot);
+    }
+
+    command.stdout(Stdio::null()).stderr(Stdio::inherit());
     if let Some(debug_flag) = build_config.somac.debug
         && debug_flag
     {

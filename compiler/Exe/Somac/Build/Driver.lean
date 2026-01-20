@@ -74,7 +74,7 @@ def generateOutput
       IO.FS.writeFile llTemp llvmIR
 
       IO.println s!"Compiling to executable..."
-      let result ← External.compileAndLink tools llTemp outputPath none optLevel false
+      let result ← External.compileAndLink tools llTemp outputPath none optLevel false opts.sysroot
 
       match result with
       | .ok () =>

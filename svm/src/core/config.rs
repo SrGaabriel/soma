@@ -12,9 +12,18 @@ pub struct ComponentConfig {
     pub binary_path: PathBuf,
 }
 
+/// Configuration for library/runtime files
+#[derive(Debug, Clone)]
+pub struct LibraryConfig {
+    pub name: String,
+    pub path: PathBuf,
+    pub files: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone)]
 pub struct BuildConfig {
     pub components: HashMap<String, ComponentConfig>,
+    pub libraries: HashMap<String, LibraryConfig>,
 }
 
 impl BuildConfig {
@@ -35,6 +44,7 @@ impl BuildConfig {
             .map_err(|e| SvmError::InvalidConfig(format!("{}", e)))?;
 
         let mut components = HashMap::new();
+        let mut libraries = HashMap::new();
 
         for node in doc.nodes() {
             let name = node.name().value().to_string();
@@ -49,30 +59,64 @@ impl BuildConfig {
                     .map(|s| s.to_string())
             };
 
-            let path_str = get_string("path")
-                .ok_or_else(|| SvmError::InvalidConfig(format!("Missing 'path' for {}", name)))?;
-            let build_command = get_string("build")
-                .ok_or_else(|| SvmError::InvalidConfig(format!("Missing 'build' for {}", name)))?;
-            let binary_str = get_string("binary")
-                .ok_or_else(|| SvmError::InvalidConfig(format!("Missing 'binary' for {}", name)))?;
+            let get_string_array = |key: &str| -> Option<Vec<String>> {
+                let children = node.children()?;
+                let child = children.get(key)?;
+                Some(
+                    child
+                        .entries()
+                        .iter()
+                        .filter_map(|e| e.value().as_string().map(|s| s.to_string()))
+                        .collect(),
+                )
+            };
 
-            components.insert(
-                name.clone(),
-                ComponentConfig {
-                    name,
-                    path: PathBuf::from(path_str),
-                    build_command,
-                    binary_path: PathBuf::from(binary_str),
-                },
-            );
+            // Check if this is a library config
+            if let Some(files) = get_string_array("files") {
+                let path_str = get_string("path").ok_or_else(|| {
+                    SvmError::InvalidConfig(format!("Missing 'path' for {}", name))
+                })?;
+                libraries.insert(
+                    name.clone(),
+                    LibraryConfig {
+                        name,
+                        path: PathBuf::from(path_str),
+                        files: files.into_iter().map(PathBuf::from).collect(),
+                    },
+                );
+            } else {
+                let path_str = get_string("path").ok_or_else(|| {
+                    SvmError::InvalidConfig(format!("Missing 'path' for {}", name))
+                })?;
+                let build_command = get_string("build").ok_or_else(|| {
+                    SvmError::InvalidConfig(format!("Missing 'build' for {}", name))
+                })?;
+                let binary_str = get_string("binary").ok_or_else(|| {
+                    SvmError::InvalidConfig(format!("Missing 'binary' for {}", name))
+                })?;
+
+                components.insert(
+                    name.clone(),
+                    ComponentConfig {
+                        name,
+                        path: PathBuf::from(path_str),
+                        build_command,
+                        binary_path: PathBuf::from(binary_str),
+                    },
+                );
+            }
         }
 
-        Ok(Self { components })
+        Ok(Self {
+            components,
+            libraries,
+        })
     }
 
     /// Auto-detect standard Soma project structure
     fn auto_detect(project_root: &Path) -> Result<Self> {
         let mut components = HashMap::new();
+        let mut libraries = HashMap::new();
 
         // somac - Lean4 compiler
         let compiler_dir = project_root.join("compiler");
@@ -116,19 +160,46 @@ impl BuildConfig {
             );
         }
 
+        // runtime - C runtime library
+        let runtime_dir = project_root.join("runtime");
+        if runtime_dir.exists() {
+            libraries.insert(
+                "runtime".to_string(),
+                LibraryConfig {
+                    name: "runtime".to_string(),
+                    path: runtime_dir,
+                    files: vec![
+                        PathBuf::from("soma_runtime.c"),
+                        PathBuf::from("soma_runtime.h"),
+                    ],
+                },
+            );
+        }
+
         if components.is_empty() {
             return Err(SvmError::ProjectNotFound);
         }
 
-        Ok(Self { components })
+        Ok(Self {
+            components,
+            libraries,
+        })
     }
 
     pub fn get(&self, name: &str) -> Option<&ComponentConfig> {
         self.components.get(name)
     }
 
+    pub fn get_library(&self, name: &str) -> Option<&LibraryConfig> {
+        self.libraries.get(name)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &ComponentConfig> {
         self.components.values()
+    }
+
+    pub fn iter_libraries(&self) -> impl Iterator<Item = &LibraryConfig> {
+        self.libraries.values()
     }
 }
 

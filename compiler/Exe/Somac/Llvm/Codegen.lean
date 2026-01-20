@@ -1164,13 +1164,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
       isDeclaration := true
     }
 
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_string_lookup"
-      retTy := .ptr
-      params := #[{ name := "idx", ty := .i32 }]
-      isDeclaration := true
-    }
+
 
 /-- Lower an Alloy module to LLVM -/
 def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
@@ -1181,6 +1175,20 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
     CodegenM.registerFunc func.id.id name func.sig
 
   addRuntimeDeclarations
+
+  -- Emit string table as LLVM global constants
+  for (s, idx) in alloyModule.strings.strings.zipIdx do
+    let strBytes := s.utf8ByteSize + 1
+    let global : LLVMGlobal := {
+      name := s!".str.{idx}"
+      ty := .array strBytes .i8
+      init := some (.string s)
+      linkage := .private_
+      isConstant := true
+      align := some 1
+    }
+    CodegenM.withModuleBuilder do
+      modify fun st => { st with module := { st.module with globals := st.module.globals.push global } }
 
   -- Add type definitions
   for typedef in alloyModule.types do

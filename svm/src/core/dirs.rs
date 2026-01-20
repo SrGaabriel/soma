@@ -52,7 +52,15 @@ impl SvmDirs {
     }
 
     pub fn bin_dir(&self, version: &Version, target: &Target) -> PathBuf {
-        self.version_dir(version).join(target.to_string())
+        self.version_dir(version)
+            .join(target.to_string())
+            .join("bin")
+    }
+
+    pub fn lib_dir(&self, version: &Version, target: &Target) -> PathBuf {
+        self.version_dir(version)
+            .join(target.to_string())
+            .join("lib")
     }
 
     pub fn current_dir(&self) -> PathBuf {
@@ -60,7 +68,11 @@ impl SvmDirs {
     }
 
     pub fn current_bin_dir(&self, target: &Target) -> PathBuf {
-        self.current_dir().join(target.to_string())
+        self.current_dir().join(target.to_string()).join("bin")
+    }
+
+    pub fn current_lib_dir(&self, target: &Target) -> PathBuf {
+        self.current_dir().join(target.to_string()).join("lib")
     }
 
     pub fn cache_dir(&self) -> PathBuf {
@@ -121,27 +133,58 @@ impl SvmDirs {
     }
 
     pub fn set_current(&self, version: &Version, target: &Target) -> Result<()> {
-        let link = self.current_bin_dir(target);
-        let target_dir = self.bin_dir(version, target);
+        let bin_link = self.current_bin_dir(target);
+        let bin_target = self.bin_dir(version, target);
 
-        if !target_dir.exists() {
+        if !bin_target.exists() {
             return Err(SvmError::VersionNotInstalled(version.to_string()));
         }
 
-        if link.exists() || link.is_symlink() {
-            fs::remove_file(&link).map_err(|e| SvmError::io(&link, e))?;
+        if bin_link.is_symlink() {
+            fs::remove_file(&bin_link).map_err(|e| SvmError::io(&bin_link, e))?;
+        } else if bin_link.is_dir() {
+            fs::remove_dir_all(&bin_link).map_err(|e| SvmError::io(&bin_link, e))?;
+        } else if bin_link.exists() {
+            fs::remove_file(&bin_link).map_err(|e| SvmError::io(&bin_link, e))?;
         }
 
-        if let Some(parent) = link.parent() {
+        if let Some(parent) = bin_link.parent() {
             fs::create_dir_all(parent).map_err(|e| SvmError::io(parent, e))?;
         }
 
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&target_dir, &link).map_err(|e| SvmError::io(&link, e))?;
+        std::os::unix::fs::symlink(&bin_target, &bin_link)
+            .map_err(|e| SvmError::io(&bin_link, e))?;
 
         #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(&target_dir, &link)
-            .map_err(|e| SvmError::io(&link, e))?;
+        std::os::windows::fs::symlink_dir(&bin_target, &bin_link)
+            .map_err(|e| SvmError::io(&bin_link, e))?;
+
+        // Symlink lib directory
+        let lib_link = self.current_lib_dir(target);
+        let lib_target = self.lib_dir(version, target);
+
+        if lib_target.exists() {
+            if lib_link.is_symlink() {
+                fs::remove_file(&lib_link).map_err(|e| SvmError::io(&lib_link, e))?;
+            } else if lib_link.is_dir() {
+                fs::remove_dir_all(&lib_link).map_err(|e| SvmError::io(&lib_link, e))?;
+            } else if lib_link.exists() {
+                fs::remove_file(&lib_link).map_err(|e| SvmError::io(&lib_link, e))?;
+            }
+
+            if let Some(parent) = lib_link.parent() {
+                fs::create_dir_all(parent).map_err(|e| SvmError::io(parent, e))?;
+            }
+
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&lib_target, &lib_link)
+                .map_err(|e| SvmError::io(&lib_link, e))?;
+
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_dir(&lib_target, &lib_link)
+                .map_err(|e| SvmError::io(&lib_link, e))?;
+        }
 
         Ok(())
     }

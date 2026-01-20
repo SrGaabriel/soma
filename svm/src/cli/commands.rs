@@ -5,7 +5,8 @@ use std::process::Command;
 use directories::BaseDirs;
 
 use crate::core::{
-    BuildConfig, ComponentConfig, Result, SvmDirs, SvmError, Target, Version, find_project_root,
+    BuildConfig, ComponentConfig, LibraryConfig, Result, SvmDirs, SvmError, Target, Version,
+    find_project_root,
 };
 
 pub struct CommandRunner {
@@ -40,8 +41,10 @@ impl CommandRunner {
         let config = BuildConfig::load(&project_root)?;
         let version = Version::Dev;
         let bin_dir = self.dirs.bin_dir(&version, &self.target);
+        let lib_dir = self.dirs.lib_dir(&version, &self.target);
 
         fs::create_dir_all(&bin_dir).map_err(|e| SvmError::io(&bin_dir, e))?;
+        fs::create_dir_all(&lib_dir).map_err(|e| SvmError::io(&lib_dir, e))?;
 
         let components: Vec<&ComponentConfig> = config
             .iter()
@@ -52,7 +55,16 @@ impl CommandRunner {
             })
             .collect();
 
-        if components.is_empty() {
+        let libraries: Vec<&LibraryConfig> = config
+            .iter_libraries()
+            .filter(|l| {
+                only.as_ref()
+                    .map(|names| names.iter().any(|n| n == &l.name))
+                    .unwrap_or(true)
+            })
+            .collect();
+
+        if components.is_empty() && libraries.is_empty() {
             return Err(SvmError::InvalidConfig(
                 "No matching components found".to_string(),
             ));
@@ -95,6 +107,43 @@ impl CommandRunner {
                     .map_err(|e| SvmError::io(&dest, e))?;
 
                 println!("  {} -> {} (linked)", component.name, src.display());
+            }
+        }
+
+        // Handle library files
+        for library in libraries {
+            let lib_src_dir = project_root.join(&library.path);
+
+            for file in &library.files {
+                let src = lib_src_dir.join(file);
+                let dest = lib_dir.join(file);
+
+                if !src.exists() {
+                    println!(
+                        "  Warning: {} not found at {}",
+                        file.display(),
+                        src.display()
+                    );
+                    continue;
+                }
+
+                if dest.exists() || dest.is_symlink() {
+                    fs::remove_file(&dest).map_err(|e| SvmError::io(&dest, e))?;
+                }
+
+                if copy {
+                    fs::copy(&src, &dest).map_err(|e| SvmError::io(&dest, e))?;
+                    println!("  {} -> {} (copied)", file.display(), dest.display());
+                } else {
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&src, &dest).map_err(|e| SvmError::io(&dest, e))?;
+
+                    #[cfg(windows)]
+                    std::os::windows::fs::symlink_file(&src, &dest)
+                        .map_err(|e| SvmError::io(&dest, e))?;
+
+                    println!("  {} -> {} (linked)", file.display(), src.display());
+                }
             }
         }
 
