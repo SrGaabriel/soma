@@ -287,6 +287,37 @@ def convertOperandWithTy (op : Operand) : CodegenM (LLVMType × LLVMValue) := do
   let val ← convertOperand op
   pure (convertTy ty, val)
 
+/-- Ensure a value is a pointer, converting if necessary -/
+def ensurePtr (ty : LLVMType) (val : LLVMValue) : CodegenM LLVMValue := do
+  if ty == .ptr then
+    pure val
+  else if ty.isInt then
+    let ref ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr ty val)
+    pure (.local ref)
+  else
+    -- Dead code
+    let ref ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 (intVal 0 64))
+    pure (.local ref)
+
+/-- Convert a value to i64, handling both pointers and other integer types -/
+def toI64 (ty : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
+  CodegenM.withFuncBuilder do
+    if ty == .ptr then
+      FuncBuilder.ptrtoint .i64 val
+    else if ty == .i64 then
+      -- Already i64, just need to produce an SSA value
+      FuncBuilder.add .i64 val (intVal 0 64)
+    else if ty.isInt then
+      -- Other integer type, extend or truncate to i64
+      let bits := ty.intBits.getD 64
+      if bits < 64 then
+        FuncBuilder.zext ty .i64 val
+      else
+        FuncBuilder.trunc ty .i64 val
+    else
+      -- Dead code
+      FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
+
 /-- Convert Alloy binary operation to LLVM -/
 def convertBinOp (op : BinOp) (ty : Ty) (lhs rhs : LLVMValue) : CodegenM LocalRef := do
   let llvmTy := convertTy ty
@@ -382,12 +413,64 @@ def convertUnOp (op : UnOp) (srcTy : Ty) (operand : LLVMValue) : CodegenM LocalR
       else FuncBuilder.fptoui llvmSrcTy toTy operand
     | .bitcast t =>
       let toTy := convertTy t
-      FuncBuilder.bitcast llvmSrcTy toTy operand
+      if llvmSrcTy == toTy then
+        -- Same type, no-op (just produce SSA value)
+        if toTy.isInt then
+          FuncBuilder.add toTy operand (intVal 0 (toTy.intBits.getD 64))
+        else if toTy == .ptr then
+          FuncBuilder.bitcast .ptr .ptr operand
+        else
+          -- For structs/other types, use select to produce new SSA value
+          FuncBuilder.select toTy (boolVal true) operand operand
+      else if llvmSrcTy.isInt && toTy == .ptr then
+        FuncBuilder.inttoptr llvmSrcTy operand
+      else if llvmSrcTy == .ptr && toTy.isInt then
+        FuncBuilder.ptrtoint toTy operand
+      else if llvmSrcTy == .ptr && toTy == .ptr then
+        FuncBuilder.bitcast .ptr .ptr operand
+      else if llvmSrcTy.isInt && toTy.isInt then
+        let srcBits := llvmSrcTy.intBits.getD 64
+        let dstBits := toTy.intBits.getD 64
+        if srcBits < dstBits then FuncBuilder.zext llvmSrcTy toTy operand
+        else if srcBits > dstBits then FuncBuilder.trunc llvmSrcTy toTy operand
+        else FuncBuilder.bitcast llvmSrcTy toTy operand
+      else
+        -- Incompatible (prob dead code), return placeholder
+        if toTy == .ptr then
+          FuncBuilder.inttoptr .i64 (intVal 0 64)
+        else if toTy.isInt then
+          let bits := toTy.intBits.getD 64
+          FuncBuilder.add toTy (intVal 0 bits) (intVal 0 bits)
+        else
+          -- For other types, use select with undef
+          let undefVal := LLVMValue.const (.undef toTy)
+          FuncBuilder.select toTy (boolVal true) undefVal undefVal
     | .ptrtoint t =>
       let toTy := convertPrimTy t
-      FuncBuilder.ptrtoint toTy operand
+      -- Handle the case where source might already be an integer (from dead code)
+      if llvmSrcTy == .ptr then
+        FuncBuilder.ptrtoint toTy operand
+      else if llvmSrcTy.isInt then
+        -- Already an integer, just convert to target size
+        let srcBits := llvmSrcTy.intBits.getD 64
+        let dstBits := toTy.intBits.getD 64
+        if srcBits == dstBits then
+          FuncBuilder.add llvmSrcTy operand (intVal 0 srcBits)
+        else if srcBits < dstBits then
+          FuncBuilder.zext llvmSrcTy toTy operand
+        else
+          FuncBuilder.trunc llvmSrcTy toTy operand
+      else
+        -- Other types (floats, structs) - can't meaningfully convert
+        -- This is dead code, return placeholder of target type
+        let dstBits := toTy.intBits.getD 64
+        FuncBuilder.add toTy (intVal 0 dstBits) (intVal 0 dstBits)
     | .inttoptr =>
-      FuncBuilder.inttoptr llvmSrcTy operand
+      -- Handle the case where source might already be a pointer (shouldn't happen but be safe)
+      if llvmSrcTy == .ptr then
+        FuncBuilder.bitcast .ptr .ptr operand
+      else
+        FuncBuilder.inttoptr llvmSrcTy operand
 
 /-- Lower an Alloy instruction to LLVM, returning result ref and result type -/
 def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
@@ -789,9 +872,45 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
   | .phi incoming ty =>
     let llvmTy := convertTy ty
     let llvmIncoming ← incoming.mapM fun (val, blockId) => do
+      let valTy ← operandTy val
+      let valLlvmTy := convertTy valTy
       let valRef ← convertOperand val
       let label ← CodegenM.getOrCreateBlock blockId.id
-      pure (valRef, label)
+      -- Ensure incoming value matches the phi type (handle dead code type mismatches)
+      let coercedVal ← if valLlvmTy == llvmTy then
+        pure valRef
+      else if llvmTy == .ptr then
+        -- Need pointer but have something else
+        let ptrVal ← ensurePtr valLlvmTy valRef
+        pure ptrVal
+      else if llvmTy.isInt && valLlvmTy == .ptr then
+        -- Need int but have pointer
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint llvmTy valRef)
+        pure (.local ref)
+      else if llvmTy.isInt && valLlvmTy.isInt then
+        -- Both ints but different sizes
+        let srcBits := valLlvmTy.intBits.getD 64
+        let dstBits := llvmTy.intBits.getD 64
+        if srcBits < dstBits then
+          let ref ← CodegenM.withFuncBuilder (FuncBuilder.zext valLlvmTy llvmTy valRef)
+          pure (.local ref)
+        else
+          let ref ← CodegenM.withFuncBuilder (FuncBuilder.trunc valLlvmTy llvmTy valRef)
+          pure (.local ref)
+      else
+        -- Incompatible types, prob dead code, use appropriate placeholder
+        let ref ← CodegenM.withFuncBuilder do
+          if llvmTy == .ptr then
+            FuncBuilder.inttoptr .i64 (intVal 0 64)
+          else if llvmTy.isInt then
+            let bits := llvmTy.intBits.getD 64
+            FuncBuilder.add llvmTy (intVal 0 bits) (intVal 0 bits)
+          else
+            -- For other types use select with undef
+            let undefVal := LLVMValue.const (.undef llvmTy)
+            FuncBuilder.select llvmTy (boolVal true) undefVal undefVal
+        pure (.local ref)
+      pure (coercedVal, label)
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.phi llvmTy llvmIncoming)
     pure (some (ref, ty))
 
@@ -819,13 +938,23 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     pure none
 
   | .clone src ty =>
+    let srcTy ← operandTy src
+    let srcLlvmTy := convertTy srcTy
     let srcVal ← convertOperand src
     let llvmTy := convertTy ty
     let size := ty.sizeBytes
     let newPtr ← CodegenM.withFuncBuilder do
       FuncBuilder.callNamed .ptr "malloc" #[(.i64, i64Val size)]
+    -- Ensure source is a pointer for memcpy (handle dead code type mismatches)
+    let srcPtr ← if srcLlvmTy == .ptr then
+      pure srcVal
+    else
+      -- Dead code, alloca the value and use that as source
+      let tmpPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca srcLlvmTy)
+      CodegenM.withFuncBuilder (FuncBuilder.store srcLlvmTy srcVal (.local tmpPtr))
+      pure (.local tmpPtr)
     CodegenM.withFuncBuilder do
-      FuncBuilder.memcpy (.local newPtr) srcVal (i64Val size)
+      FuncBuilder.memcpy (.local newPtr) srcPtr (i64Val size)
     pure (some (newPtr, ty))
 
   | .erase val ty =>
@@ -863,8 +992,10 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     | .ptrRead =>
       -- Load from pointer: ptr_read ptr -> value
       if llvmArgs.size > 0 then
-        let (_, ptrVal) := llvmArgs[0]!
-        let ref ← CodegenM.withFuncBuilder (FuncBuilder.load llvmRetTy ptrVal)
+        let (ptrTy, ptrVal) := llvmArgs[0]!
+        -- Ensure the argument is actually a pointer (handle i64 undefs from dead code)
+        let ptrVal' ← ensurePtr ptrTy ptrVal
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.load llvmRetTy ptrVal')
         pure (some (ref, retTy))
       else
         pure none
@@ -872,18 +1003,22 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     | .ptrWrite =>
       -- Store to pointer: ptr_write ptr val -> Unit
       if llvmArgs.size >= 2 then
-        let (_, ptrVal) := llvmArgs[0]!
+        let (ptrTy, ptrVal) := llvmArgs[0]!
         let (valTy, valVal) := llvmArgs[1]!
-        CodegenM.withFuncBuilder (FuncBuilder.store valTy valVal ptrVal)
+        -- Ensure the argument is actually a pointer (handle i64 undefs from dead code)
+        let ptrVal' ← ensurePtr ptrTy ptrVal
+        CodegenM.withFuncBuilder (FuncBuilder.store valTy valVal ptrVal')
       pure none
 
     | .ptrAdd =>
       -- Pointer arithmetic: ptr_add ptr offset -> ptr
       if llvmArgs.size >= 2 then
-        let (_, ptrVal) := llvmArgs[0]!
+        let (ptrTy, ptrVal) := llvmArgs[0]!
         let (offsetTy, offsetVal) := llvmArgs[1]!
+        -- Ensure the argument is actually a pointer (handle i64 undefs from dead code)
+        let ptrVal' ← ensurePtr ptrTy ptrVal
         -- GEP with byte offset (treat as i8*)
-        let ref ← CodegenM.withFuncBuilder (FuncBuilder.gep .i8 ptrVal #[(offsetTy, offsetVal)])
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.gep .i8 ptrVal' #[(offsetTy, offsetVal)])
         pure (some (ref, retTy))
       else
         pure none
@@ -891,11 +1026,11 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     | .ptrDiff =>
       -- Pointer difference: ptr_diff ptr1 ptr2 -> i64
       if llvmArgs.size >= 2 then
-        let (_, ptr1Val) := llvmArgs[0]!
-        let (_, ptr2Val) := llvmArgs[1]!
-        -- Convert pointers to i64 and subtract
-        let i1 ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 ptr1Val)
-        let i2 ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 ptr2Val)
+        let (ty1, val1) := llvmArgs[0]!
+        let (ty2, val2) := llvmArgs[1]!
+        -- Convert both values to i64
+        let i1 ← toI64 ty1 val1
+        let i2 ← toI64 ty2 val2
         let ref ← CodegenM.withFuncBuilder (FuncBuilder.sub .i64 (.local i1) (.local i2))
         pure (some (ref, .prim .i64))
       else
@@ -904,8 +1039,10 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     | .ptrCast =>
       -- Pointer cast: just return the pointer (LLVM opaque pointers)
       if llvmArgs.size > 0 then
-        let (_, ptrVal) := llvmArgs[0]!
-        let ref ← CodegenM.withFuncBuilder (FuncBuilder.bitcast .ptr .ptr ptrVal)
+        let (ptrTy, ptrVal) := llvmArgs[0]!
+        -- Ensure the argument is actually a pointer (handle i64 undefs from dead code)
+        let ptrVal' ← ensurePtr ptrTy ptrVal
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.bitcast .ptr .ptr ptrVal')
         pure (some (ref, retTy))
       else
         pure none

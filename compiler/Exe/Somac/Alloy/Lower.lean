@@ -1001,22 +1001,11 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") : Module := Id.r
   -- Lower each definition in the book
   for i in [:graph.book.size] do
     if let some def_ := graph.book[i]? then
-      -- Skip intrinsic functions (FFI ops handled inline)
-      if not def_.name.isIntrinsic then
+      -- Skip intrinsic functions (FFI ops handled inline) and externals (handled at linking-time)
+      if not def_.name.isIntrinsic && not def_.isExternal then
         let funcId := FuncId.mk i
-        if def_.isExternal then
-          -- External functions: create declaration with no body
-          let sig := buildSignatureFromType def_.name def_.ty def_.arity
-          let func : Func := {
-            id := funcId
-            sig := sig
-            body := none
-            attrs := { extern := some sig.name }
-          }
-          module := module.addFunc func
-        else
-          let func := lowerDefinition graph def_ funcId
-          module := module.addFunc func
+        let func := lowerDefinition graph def_ funcId
+        module := module.addFunc func
 
   -- Set main function if present
   if let some (idx, _) := graph.findDefinitionByDisplay "main" then

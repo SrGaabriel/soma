@@ -88,10 +88,14 @@ fn compile_module(
         command.arg("--emit-llvm");
     }
 
-    for (dep_name, dep_tarball) in dependency_tarballs {
-        command
-            .arg("--dep")
-            .arg(format!("{}={}", dep_name, dep_tarball.display()));
+    // Pass all dependencies as a single comma-separated --dep argument
+    // The somac CLI expects: --dep "name1=path1,name2=path2"
+    if !dependency_tarballs.is_empty() {
+        let deps_str: Vec<String> = dependency_tarballs
+            .iter()
+            .map(|(name, path)| format!("{}={}", name, path.display()))
+            .collect();
+        command.arg("--dep").arg(deps_str.join(","));
     }
 
     let output = command.output().map_err(BuildError::FailedToCallCompiler)?;

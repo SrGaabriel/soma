@@ -1224,14 +1224,13 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
       let root ← lowerFunction fn
       let arity := fn.params.size
       let _ ← LowerM.addDefinition fn.name root arity fn.fnType
-    else
-      -- Intrinsic/extern functions: mark as external (no body to lower)
-      let era ← LowerM.addNode .era unitTy
-      let _ ← LowerM.addDefinition fn.name era 0 fn.fnType (isExternal := true)
 
   -- Fourth pass: add placeholder definitions for external functions (will be resolved at merge-time)
   if let some g := globals then
-    let externals := g.defs.toList.filter fun (name, _) => !typedFunctions.contains name
+    let externals := g.defs.toList.filter fun (name, info) =>
+      !typedFunctions.contains name && -- Not in current module
+      !info.isConstructor && -- Not a type constructor
+      !info.name.isIntrinsic -- Not an intrinsic
     for (_, info) in externals do
       -- External dependency functions: mark as external (no body to lower)
       let era ← LowerM.addNode .era unitTy

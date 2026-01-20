@@ -247,9 +247,26 @@ impl LayeredBuilder {
                     .clone();
 
                 let mut dependency_tarballs = HashMap::new();
-                for dep_name in &node.dependencies {
-                    if let Some(dep_tarball) = tarball_paths.get(dep_name) {
+                let mut to_visit: Vec<String> = node.dependencies.clone();
+                let mut visited: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+
+                while let Some(dep_name) = to_visit.pop() {
+                    if visited.contains(&dep_name) {
+                        continue;
+                    }
+                    visited.insert(dep_name.clone());
+
+                    if let Some(dep_tarball) = tarball_paths.get(&dep_name) {
                         dependency_tarballs.insert(dep_name.clone(), dep_tarball.clone());
+                    }
+
+                    if let Some(dep_node) = nodes.get(&dep_name) {
+                        for transitive_dep in &dep_node.dependencies {
+                            if !visited.contains(transitive_dep) {
+                                to_visit.push(transitive_dep.clone());
+                            }
+                        }
                     }
                 }
 

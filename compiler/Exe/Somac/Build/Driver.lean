@@ -145,6 +145,19 @@ def build (opts : BuildOptions) : IO BuildResult := do
     IO.eprintln (Error.renderSummary result.diagnostics)
     pure (BuildResult.failed result.diagnostics)
   else
+    let dependencyAlloyModules ← if opts.lib then
+      pure #[]
+    else if opts.deps.isEmpty then
+      pure #[]
+    else do
+      IO.println "  Loading dependency Alloy IR..."
+      let depsWithPaths := opts.deps.map fun (n, p) => (n, (⟨p⟩ : System.FilePath))
+      match ← loadDependencyAlloyModules depsWithPaths with
+      | .ok modules => pure modules
+      | .error e =>
+        IO.eprintln s!"Failed to load dependency Alloy IR: {e}"
+        pure #[]
+
     -- Compile modules
     let extConstructors : Std.HashMap String Nat := result.constructors
     let compileResult ← compileModules
@@ -152,6 +165,7 @@ def build (opts : BuildOptions) : IO BuildResult := do
       result.checkedModules
       extConstructors
       result.globals
+      dependencyAlloyModules
 
     -- Generate output
     let outputPath := generateOutputPath opts result.packageName
