@@ -252,13 +252,11 @@ def convertOperand (op : Operand) : CodegenM LLVMValue := do
       let ty ← operandTy op
       let llvmTy := convertTy ty
       let ref ← CodegenM.withFuncBuilder do
-        -- Emit a no-op instruction that produces an undef value
-        if llvmTy.isInt then
-          FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
-        else if llvmTy == .ptr then
-          FuncBuilder.bitcast .ptr .ptr (.const .null)
+        if llvmTy == .ptr then
+          -- For pointers, null is a clean undef-like value (todo: llvm will (hopefully?) optimize but we should consider optimizing)
+          FuncBuilder.inttoptr .i64 (intVal 0 64)
         else
-          -- For other types use select with undef
+          -- For other types use select with undef (todo: llvm will (hopefully?) optimize but we should consider optimizing)
           let undefVal := LLVMValue.const (.undef llvmTy)
           FuncBuilder.select llvmTy (boolVal true) undefVal undefVal
       CodegenM.mapLocal id.id ref ty
@@ -416,13 +414,28 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     let srcTy ← operandTy src
     let srcVal ← convertOperand src
     let llvmTy := convertTy srcTy
-    -- Use add 0 for integers, or bitcast for pointers/aggregates
-    let ref ← CodegenM.withFuncBuilder do
-      if llvmTy.isInt then
-        FuncBuilder.add llvmTy srcVal (intVal 0 (llvmTy.intBits.getD 64))
-      else
-        FuncBuilder.bitcast llvmTy llvmTy srcVal
-    pure (some (ref, srcTy))
+    -- For copies, we need to produce an SSA value. Check if source is already a local.
+    match srcVal with
+    | .local ref =>
+      pure (some (ref, srcTy))
+    | _ =>
+      let ref ← CodegenM.withFuncBuilder do
+        match srcVal with
+        | .const .null =>
+          -- todo: consider optimizing
+          FuncBuilder.inttoptr .i64 (intVal 0 64)
+        | .const (.int v bits) =>
+          -- todo: consider optimizing
+          FuncBuilder.add llvmTy srcVal (intVal 0 bits)
+        | _ =>
+          -- For other values, bitcast to same type (LLVM will eliminate)
+          if llvmTy == .ptr then
+            FuncBuilder.bitcast .ptr .ptr srcVal
+          else if llvmTy.isInt then
+            FuncBuilder.add llvmTy srcVal (intVal 0 (llvmTy.intBits.getD 64))
+          else
+            FuncBuilder.bitcast llvmTy llvmTy srcVal
+      pure (some (ref, srcTy))
 
   | .alloca ty =>
     let llvmTy := convertTy ty
@@ -677,10 +690,9 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
       else
         -- Return undef for non-unit return types (dead code, but must be well-typed)
         let llvmRetTy := convertTy retTy
-        -- Use add 0 for integers, select-based undef for all other types
         let ref ← CodegenM.withFuncBuilder do
-          if llvmRetTy.isInt then
-            FuncBuilder.add llvmRetTy (intVal 0 (llvmRetTy.intBits.getD 64)) (intVal 0 (llvmRetTy.intBits.getD 64))
+          if llvmRetTy == .ptr then
+            FuncBuilder.inttoptr .i64 (intVal 0 64)
           else
             let undefVal := LLVMValue.const (.undef llvmRetTy)
             FuncBuilder.select llvmRetTy (boolVal true) undefVal undefVal
@@ -976,10 +988,8 @@ def lowerTerminator (term : Terminator) (retTy : Ty) : CodegenM Unit := do
       CodegenM.withFuncBuilder FuncBuilder.retVoid
     else if isUnitTy valTy then
       let defaultVal ← CodegenM.withFuncBuilder do
-        if llvmRetTy.isInt then
-          FuncBuilder.add llvmRetTy (intVal 0 (llvmRetTy.intBits.getD 64)) (intVal 0 (llvmRetTy.intBits.getD 64))
-        else if llvmRetTy == .ptr then
-          FuncBuilder.bitcast .ptr .ptr (.const .null)
+        if llvmRetTy == .ptr then
+          FuncBuilder.inttoptr .i64 (intVal 0 64)
         else
           let undefVal := LLVMValue.const (.undef llvmRetTy)
           FuncBuilder.select llvmRetTy (boolVal true) undefVal undefVal
@@ -988,7 +998,7 @@ def lowerTerminator (term : Terminator) (retTy : Ty) : CodegenM Unit := do
       -- Normal case: convert the value and use the function's declared return type
       let valRef ← convertOperand val
       let llvmValTy := convertTy valTy
-      -- If types mismatch, we need to bitcast
+      -- If types mismatch, we need to convert
       if llvmValTy != llvmRetTy then
         let converted ← CodegenM.withFuncBuilder do
           if llvmRetTy == .ptr && llvmValTy.isInt then
@@ -996,13 +1006,12 @@ def lowerTerminator (term : Terminator) (retTy : Ty) : CodegenM Unit := do
           else if llvmRetTy.isInt && llvmValTy == .ptr then
             FuncBuilder.ptrtoint llvmRetTy valRef
           else if llvmRetTy == .ptr && llvmValTy == .ptr then
-            FuncBuilder.bitcast .ptr .ptr valRef
+            -- ptr to ptr is identity, no instruction needed
+            pure (match valRef with | .local r => r | _ => ⟨0⟩)
           else
             -- Fallback: return undef of correct type
-            if llvmRetTy.isInt then
-              FuncBuilder.add llvmRetTy (intVal 0 (llvmRetTy.intBits.getD 64)) (intVal 0 (llvmRetTy.intBits.getD 64))
-            else if llvmRetTy == .ptr then
-              FuncBuilder.bitcast .ptr .ptr (.const .null)
+            if llvmRetTy == .ptr then
+              FuncBuilder.inttoptr .i64 (intVal 0 64)
             else
               let undefVal := LLVMValue.const (.undef llvmRetTy)
               FuncBuilder.select llvmRetTy (boolVal true) undefVal undefVal
