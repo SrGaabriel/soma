@@ -61,7 +61,10 @@ def generateOutput
     let llTemp := outputPath.withExtension "ll"
     IO.FS.writeFile llTemp llvmIR
     let result ← External.compileToObject tools llTemp outputPath optLevel
-    IO.FS.removeFile llTemp |>.catchExceptions fun _ => pure ()
+    if !opts.emitLlvm then
+      IO.FS.removeFile llTemp |>.catchExceptions fun _ => pure ()
+    else
+      IO.println s!"LLVM IR saved to: {llTemp}"
     match result with
     | .ok () =>
       IO.println s!"Generated object file: {outputPath}"
@@ -78,7 +81,10 @@ def generateOutput
 
       match result with
       | .ok () =>
-        IO.FS.removeFile llTemp |>.catchExceptions fun _ => pure ()
+        if !opts.emitLlvm then
+          IO.FS.removeFile llTemp |>.catchExceptions fun _ => pure ()
+        else
+          IO.println s!"LLVM IR saved to: {llTemp}"
         IO.println s!"Generated executable: {outputPath}"
         pure (.ok ())
       | .error e =>
@@ -87,6 +93,7 @@ def generateOutput
 
 /-- Generate a .toria library package -/
 def generateLibrary
+    (opts : BuildOptions)
     (result : ProjectResult)
     (compileResult : CompileResult)
     (outputPath : System.FilePath)
@@ -99,6 +106,12 @@ def generateLibrary
   -- Collect exported symbols (all public symbols)
   let exports := result.symbols.fold (init := #[]) fun acc sym _ =>
     acc.push sym.name
+
+  -- Optionally emit LLVM IR
+  if opts.emitLlvm then
+    let llPath := outputPath.withExtension "ll"
+    IO.FS.writeFile llPath compileResult.llvmIR
+    IO.println s!"LLVM IR saved to: {llPath}"
 
   -- Create .toria package
   Package.createPackage
@@ -145,7 +158,7 @@ def build (opts : BuildOptions) : IO BuildResult := do
 
     if opts.lib then
       let libPath := outputPath.withExtension "toria"
-      match ← generateLibrary result compileResult libPath with
+      match ← generateLibrary opts result compileResult libPath with
       | .ok () =>
         IO.println s!"Successfully built library with {result.checkedModules.size} module(s)"
         pure (BuildResult.succeeded libPath)

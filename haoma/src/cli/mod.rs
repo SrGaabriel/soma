@@ -29,6 +29,9 @@ pub enum Commands {
     Build {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        /// Keep the generated LLVM IR file (.ll) after compilation
+        #[arg(long)]
+        emit_llvm: bool,
     },
     Check {
         #[arg(short, long, default_value = ".")]
@@ -45,6 +48,8 @@ pub enum Commands {
     Run {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        #[arg(long)]
+        emit_llvm: bool,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -62,7 +67,12 @@ pub fn parse() -> Cli {
 
 pub fn execute(command: &Commands) {
     match &command {
-        Commands::Build { path } => {
+        Commands::Build { path, emit_llvm } => {
+            if *emit_llvm {
+                unsafe {
+                    std::env::set_var("SOMA_EMIT_LLVM", "1");
+                }
+            }
             build::execute(path);
         }
         Commands::Check { path } => {
@@ -71,7 +81,16 @@ pub fn execute(command: &Commands) {
         Commands::Create { path } => {
             create::execute(path);
         }
-        Commands::Run { path, args } => {
+        Commands::Run {
+            path,
+            emit_llvm,
+            args,
+        } => {
+            if *emit_llvm {
+                unsafe {
+                    std::env::set_var("SOMA_EMIT_LLVM", "1");
+                }
+            }
             run::execute(path, args);
         }
         Commands::Clean { path } => {

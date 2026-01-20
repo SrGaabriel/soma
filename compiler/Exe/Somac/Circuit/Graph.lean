@@ -71,6 +71,8 @@ structure Definition where
   arity : Nat
   /-- Full type of this definition (possibly polymorphic) -/
   ty : Value
+  /-- Whether this is an external/intrinsic function -/
+  isExternal : Bool := false
   deriving Inhabited
 
 /-- The interaction net graph -/
@@ -237,9 +239,10 @@ def isFullyConnected (g : Graph) : Bool :=
   g.nodes.toList.all fun (_, entry) => entry.isFullyConnected
 
 /-- Add a definition to the book -/
-def addDefinition (g : Graph) (name : Name) (root : NodeId) (arity : Nat) (ty : Value) : Nat × Graph :=
+def addDefinition (g : Graph) (name : Name) (root : NodeId) (arity : Nat) (ty : Value)
+    (isExternal : Bool := false) : Nat × Graph :=
   let idx := g.book.size
-  let def_ : Definition := { name, root, arity, ty }
+  let def_ : Definition := { name, root, arity, ty, isExternal }
   (idx, { g with book := g.book.push def_ })
 
 /-- Look up a definition by index -/
@@ -376,9 +379,10 @@ def wireToAux (n1 : NodeId) (p1 : PortIdx) (n2 : NodeId) (auxIdx : Nat) : GraphM
   wire n1 p1 n2 ⟨auxIdx + 1⟩
 
 /-- Add a definition to the book -/
-def addDefinition (name : Name) (root : NodeId) (arity : Nat) (ty : Value) : GraphM Nat := do
+def addDefinition (name : Name) (root : NodeId) (arity : Nat) (ty : Value)
+    (isExternal : Bool := false) : GraphM Nat := do
   let g ← get
-  let (idx, g') := g.addDefinition name root arity ty
+  let (idx, g') := g.addDefinition name root arity ty isExternal
   set g'
   return idx
 

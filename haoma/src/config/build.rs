@@ -20,6 +20,8 @@ pub struct SomacBuildConfig {
     pub debug: Option<bool>,
     #[serde(default)]
     pub sysroot: Option<String>,
+    #[serde(default)]
+    pub emit_llvm: Option<bool>,
 }
 
 impl SomacBuildConfig {
@@ -45,6 +47,7 @@ impl Default for SomacBuildConfig {
             debug: None,
             command: None,
             sysroot: None,
+            emit_llvm: None,
         }
     }
 }

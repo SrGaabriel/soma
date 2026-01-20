@@ -186,8 +186,9 @@ def setRoot (p : PortId) : LowerM Unit :=
   liftGraph (GraphM.setRoot p)
 
 /-- Add a definition to the book -/
-def addDefinition (name : Name) (root : NodeId) (arity : Nat) (ty : Value) : LowerM Nat :=
-  liftGraph (GraphM.addDefinition name root arity ty)
+def addDefinition (name : Name) (root : NodeId) (arity : Nat) (ty : Value)
+    (isExternal : Bool := false) : LowerM Nat :=
+  liftGraph (GraphM.addDefinition name root arity ty isExternal)
 
 end LowerM
 
@@ -1224,15 +1225,17 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
       let arity := fn.params.size
       let _ ← LowerM.addDefinition fn.name root arity fn.fnType
     else
+      -- Intrinsic/extern functions: mark as external (no body to lower)
       let era ← LowerM.addNode .era unitTy
-      let _ ← LowerM.addDefinition fn.name era 0 fn.fnType
+      let _ ← LowerM.addDefinition fn.name era 0 fn.fnType (isExternal := true)
 
   -- Fourth pass: add placeholder definitions for external functions (will be resolved at merge-time)
   if let some g := globals then
     let externals := g.defs.toList.filter fun (name, _) => !typedFunctions.contains name
     for (_, info) in externals do
+      -- External dependency functions: mark as external (no body to lower)
       let era ← LowerM.addNode .era unitTy
-      let _ ← LowerM.addDefinition info.name era 0 info.type
+      let _ ← LowerM.addDefinition info.name era 0 info.type (isExternal := true)
 
   -- Set root to main function if it exists
   -- Use ALO (allocation/instantiation) instead of REF because we want to actually exec

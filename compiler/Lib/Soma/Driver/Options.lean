@@ -59,6 +59,7 @@ structure BuildOptions where
   optimizationLevel : Option Nat := none
   validate : Bool := false
   sysroot : Option String := none  -- Path to sysroot (contains lib/ with runtime)
+  emitLlvm : Bool := false  -- Keep the LLVM IR file after compilation
   deriving Repr
 
 /-- All commands supported by the compiler -/

@@ -389,6 +389,7 @@ def runBuild (p : Parsed) : IO UInt32 := do
   let mode := p.flag? "mode" |>.map (·.as! String) |>.getD "standard"
   let optLevel := p.flag? "opt-level" |>.map (·.as! Nat)
   let sysroot := p.flag? "sysroot" |>.map (·.as! String)
+  let emitLlvm := p.hasFlag "emit-llvm"
 
   let compMode := match mode with
     | "graph" => CompilationMode.graph
@@ -406,6 +407,7 @@ def runBuild (p : Parsed) : IO UInt32 := do
     optimizationLevel := optLevel
     validate := p.hasFlag "validate"
     sysroot := sysroot
+    emitLlvm := emitLlvm
   }
 
   IO.println "Soma Compiler"
@@ -527,6 +529,7 @@ def buildCmd : Cmd := `[Cli|
     O, "opt-level" : Nat; "Optimization level (0-3)"
     validate; "Validate the Circuit IR for correctness"
     sysroot : String; "Path to sysroot (contains lib/ with runtime)"
+    "emit-llvm"; "Keep the generated LLVM IR file (.ll) after compilation"
 
   ARGS:
     input : String; "Input source file or directory"
@@ -547,6 +550,7 @@ def somaCmd : Cmd := `[Cli|
     O, "opt-level" : Nat; "Optimization level (0-3)"
     validate; "Validate the Circuit IR for correctness"
     sysroot : String; "Path to sysroot (contains lib/ with runtime)"
+    "emit-llvm"; "Keep the generated LLVM IR file (.ll) after compilation"
 
   ARGS:
     input : String; "Input source file or directory"
