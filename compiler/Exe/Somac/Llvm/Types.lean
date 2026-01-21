@@ -536,6 +536,12 @@ def toLLVM (s : LLVMStmt) : String :=
   | some r => s!"{r} = {s.inst}"
   | none => s!"{s.inst}"
 
+/-- Check if this statement is a phi instruction -/
+def isPhi (s : LLVMStmt) : Bool :=
+  match s.inst with
+  | .phi _ _ => true
+  | _ => false
+
 instance : ToString LLVMStmt where
   toString := toLLVM
 
@@ -551,8 +557,11 @@ structure LLVMBlock where
 namespace LLVMBlock
 
 def toLLVM (b : LLVMBlock) : String :=
-  let stmtsStr := if b.stmts.isEmpty then ""
-    else "\n  " ++ String.intercalate "\n  " (b.stmts.toList.map LLVMStmt.toLLVM)
+  -- LLVM requires phi nodes to be at the beginning of a basic block
+  let (phis, nonPhis) := b.stmts.partition LLVMStmt.isPhi
+  let sortedStmts := phis ++ nonPhis
+  let stmtsStr := if sortedStmts.isEmpty then ""
+    else "\n  " ++ String.intercalate "\n  " (sortedStmts.toList.map LLVMStmt.toLLVM)
   s!"{b.label.name}:{stmtsStr}\n  {b.terminator}"
 
 instance : ToString LLVMBlock where
