@@ -244,21 +244,16 @@ def convertHigherPrimitive : HigherPrimitive → Ty
   | .io => .prim .unit | .ptr => .rawPtr
 
 mutual
-/-- Extract variant information from a row type.
-    Returns an array of (variantIdx, fieldTypes) pairs.
-    Row types look like: vRowExtend label fieldTy (vRowExtend ... vRowEmpty) -/
+
+/-- Extract variant information from a row type -/
 partial def extractRowVariants (row : Value) (idx : Nat := 0) (acc : Array (Nat × Array Ty) := #[])
     : Array (Nat × Array Ty) :=
   match row with
   | Value.vRowEmpty => acc
   | Value.vRowExtend _label fieldTy tail =>
-    -- For a variant, fieldTy represents the payload type
-    -- If it's a tuple/product, we need to extract individual fields
-    -- For simplicity, we treat non-unit types as a single field
     let fields := match fieldTy with
-      | Value.vPrimTy (.unit) => #[]  -- Nullary constructor
+      | Value.vPrimTy (.unit) => #[]
       | Value.vSigma _ _ fst sndClos =>
-        -- Product type - extract fields
         let fstTy := convertValueType fst
         let sndTy := match sndClos with
           | .const _ v => convertValueType v
@@ -268,7 +263,7 @@ partial def extractRowVariants (row : Value) (idx : Nat := 0) (acc : Array (Nat 
         #[convertValueType fst, convertValueType snd]
       | other => #[convertValueType other]
     extractRowVariants tail (idx + 1) (acc.push (idx, fields))
-  | _ => acc  -- Malformed row, return what we have
+  | _ => acc -- Malformed
 
 /-- Convert a Soma Value type to an Alloy Ty -/
 partial def convertValueType : Value → Ty
@@ -289,7 +284,7 @@ partial def convertValueType : Value → Ty
   | Value.vSigma _ _ fst sndClos =>
     let sndTy := match sndClos with
       | .const _ v => convertValueType v
-      | _ => .prim .i64  -- Dependent type, fall back to boxed
+      | _ => .prim .i64 -- Dependent type, fall back to boxed
     .struct #[("fst", convertValueType fst), ("snd", sndTy)]
   | Value.vPair fst snd =>
     .struct #[("fst", convertValueType fst), ("snd", convertValueType snd)]
@@ -403,15 +398,50 @@ def lowerNum (primTy : PrimType) (val : UInt32) : LowerM LocalId := do
 
 /-- Lower a constructor (creates a tagged struct on the heap) -/
 def lowerCtor (tag : Nat) (arity : Nat) (fieldVals : Array LocalId) (ty : Ty) : LowerM LocalId := do
-  -- Use taggedLit instruction which creates by-value { i32, ptr } structs
   -- The LLVM codegen handles heap allocation of the payload
   let payload := fieldVals.map fun id => Operand.local id
-  -- Ensure the result type is always a tagged union type, not the semantic type
-  -- This is important because taggedLit always produces { i32, ptr } in LLVM
   let taggedTy := match ty with
-    | .tagged _ _ => ty  -- Already a tagged type, keep it
-    | _ => .tagged (.prim .u32) #[]  -- Convert to tagged union type
+    | .tagged _ _ => ty -- Already a tagged type, keep it
+    | _ => .tagged (.prim .u32) #[] -- Convert to tagged union type
   LowerM.emitInst (.taggedLit tag payload taggedTy) taggedTy
+
+/-- Build a nested struct literal for nested pair types.
+    For a type like `{ fst: A, snd: { fst: B, snd: C } }` with flat fields `[a, b, c]`,
+    this recursively builds `{ a, { b, c } }`. -/
+partial def lowerNestedStructLit (fieldVals : Array LocalId) (ty : Ty) : LowerM LocalId := do
+  match ty with
+  | .struct fields =>
+    if fields.size == 2 then
+      -- Check if second field is also a struct (nested pair)
+      let sndTy := fields[1]?.map (·.snd)
+      match sndTy with
+      | some (Ty.struct innerFields) =>
+        if innerFields.size >= 2 && fieldVals.size > 2 then
+          -- Nested struct: recursively build the inner struct
+          let innerTy := Ty.struct innerFields
+          let innerVals := fieldVals.extract 1 fieldVals.size
+          let innerVal ← lowerNestedStructLit innerVals innerTy
+          -- Build outer struct with first field and nested inner
+          let outerFields := #[Operand.local fieldVals[0]!, Operand.local innerVal]
+          LowerM.emitInst (.structLit outerFields ty) ty
+        else
+          -- Not enough fields for nesting, use flat
+          let ops := fieldVals.map fun id => Operand.local id
+          LowerM.emitInst (.structLit ops ty) ty
+      | _ =>
+        -- Second field is not a struct, use flat
+        let ops := fieldVals.map fun id => Operand.local id
+        LowerM.emitInst (.structLit ops ty) ty
+    else
+      -- Not a 2-field struct, use flat
+      let ops := fieldVals.map fun id => Operand.local id
+      LowerM.emitInst (.structLit ops ty) ty
+  | _ =>
+    -- Not a struct type, emit single value
+    if h : fieldVals.size > 0 then
+      pure fieldVals[0]
+    else
+      LowerM.emitInst (.copy (.const (.undef ty))) ty
 
 /-- Lower tag extraction for pattern matching -/
 def lowerGetTag (scrutinee : LocalId) : LowerM LocalId := do
@@ -501,7 +531,6 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
 
   let nodeTy := getNodeType entry
 
-  -- Helper to get the type of a port's source node
   let getPortType (portIdx : Nat) (defaultTy : Ty := nodeTy) : Ty :=
     match entry.getPort ⟨portIdx⟩ with
     | some targetPort =>
@@ -611,7 +640,7 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
       -- Emit makeClosure instruction
       StateT.lift (LowerM.emitInst (.makeClosure funcId (.local envVal)) nodeTy)
     else
-      -- Regular constructor: build tagged struct or struct literal
+      -- Regular constructor: build tagged struct
       let mut fieldVals : Array LocalId := #[]
       for i in [:arity] do
         let fieldVal ← lowerPort (i + 1)
@@ -619,9 +648,8 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
       -- Check if target type is struct (for tuples/pairs) or tagged union (for ADTs)
       match nodeTy with
       | .struct _ =>
-        -- Create struct literal directly (for tuples)
-        let fields := fieldVals.map fun id => Operand.local id
-        StateT.lift (LowerM.emitInst (.structLit fields nodeTy) nodeTy)
+        -- Create struct literal, handling nested pair types
+        StateT.lift (lowerNestedStructLit fieldVals nodeTy)
       | _ =>
         -- Create tagged union (for ADTs)
         StateT.lift (lowerCtor tag arity fieldVals nodeTy)
@@ -631,9 +659,11 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     let recordTy := getPortType 1
     -- Check if record is struct or tagged union
     match recordTy with
-    | .struct _ =>
+    | .struct fields =>
       -- Use extractField for struct types
-      StateT.lift (LowerM.emitInst (.extractField (.local recordVal) fieldIdx) nodeTy)
+      -- Compute the correct field type from the struct definition
+      let fieldTy := if h : fieldIdx < fields.size then fields[fieldIdx].snd else nodeTy
+      StateT.lift (LowerM.emitInst (.extractField (.local recordVal) fieldIdx) fieldTy)
     | _ =>
       -- Use getPayload for tagged unions
       StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 fieldIdx nodeTy) nodeTy)
@@ -646,9 +676,8 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
       fieldVals := fieldVals.push fieldVal
     match nodeTy with
     | .struct _ =>
-      -- Create struct literal directly
-      let fields := fieldVals.map fun id => Operand.local id
-      StateT.lift (LowerM.emitInst (.structLit fields nodeTy) nodeTy)
+      -- Create struct literal, handling nested pair types
+      StateT.lift (lowerNestedStructLit fieldVals nodeTy)
     | _ =>
       -- Create tagged union with tag 0
       StateT.lift (lowerCtor 0 numFields fieldVals nodeTy)
@@ -861,7 +890,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
   let nodeTy := getNodeType entry
 
-  -- Helper to get the type of a port's source node
+  -- todo: remove boilerplate
   let getPortType (portIdx : Nat) (defaultTy : Ty := nodeTy) : Ty :=
     match entry.getPort ⟨portIdx⟩ with
     | some targetPort =>
@@ -965,9 +994,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       -- Check if target type is struct (for tuples/pairs) or tagged union (for ADTs)
       match nodeTy with
       | .struct _ =>
-        -- Create struct literal directly (for tuples)
-        let fields := fieldVals.map fun id => Operand.local id
-        StateT.lift (LowerM.emitInst (.structLit fields nodeTy) nodeTy)
+        -- Create struct literal, handling nested pair types
+        StateT.lift (lowerNestedStructLit fieldVals nodeTy)
       | _ =>
         -- Create tagged union (for ADTs)
         StateT.lift (lowerCtor tag arity fieldVals nodeTy)
@@ -977,9 +1005,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     let recordTy := getPortType 1
     -- Check if record is struct or tagged union
     match recordTy with
-    | .struct _ =>
+    | .struct fields =>
       -- Use extractField for struct types
-      StateT.lift (LowerM.emitInst (.extractField (.local recordVal) fieldIdx) nodeTy)
+      -- Compute the correct field type from the struct definition
+      let fieldTy := if h : fieldIdx < fields.size then fields[fieldIdx].snd else nodeTy
+      StateT.lift (LowerM.emitInst (.extractField (.local recordVal) fieldIdx) fieldTy)
     | _ =>
       -- Use getPayload for tagged unions
       StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 fieldIdx nodeTy) nodeTy)
@@ -992,9 +1022,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       fieldVals := fieldVals.push fieldVal
     match nodeTy with
     | .struct _ =>
-      -- Create struct literal directly
-      let fields := fieldVals.map fun id => Operand.local id
-      StateT.lift (LowerM.emitInst (.structLit fields nodeTy) nodeTy)
+      -- Create struct literal, handling nested pair types
+      StateT.lift (lowerNestedStructLit fieldVals nodeTy)
     | _ =>
       -- Create tagged union with tag 0
       StateT.lift (lowerCtor 0 numFields fieldVals nodeTy)

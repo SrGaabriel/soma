@@ -674,18 +674,54 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     let valTy ← operandTy val
     let valRef ← convertOperand val
     let llvmValTy := convertTy valTy
-    -- Check if this is actually a tagged union (struct type) or a primitive
-    match llvmValTy with
-    | .struct _ _ =>
-      -- Tagged unions are by-value { i32, ptr } structs
+    -- Handle based on Alloy type to determine the proper extraction strategy
+    match valTy with
+    | .tagged _ _ =>
+      -- Tagged union: extract the tag (field 0) directly
       let ref ← CodegenM.withFuncBuilder do
         FuncBuilder.extractvalue llvmValTy valRef #[0]
       pure (some (ref, .prim .u32))
-    | _ =>
-      -- Primitive type
+    | .struct fields =>
+      -- Struct: check if first field is a tagged union
+      match fields[0]? with
+      | some (_, Ty.tagged _ _) =>
+        let innerRef ← CodegenM.withFuncBuilder do
+          FuncBuilder.extractvalue llvmValTy valRef #[0]
+        let ref ← CodegenM.withFuncBuilder do
+          FuncBuilder.extractvalue taggedTy (.local innerRef) #[0]
+        pure (some (ref, .prim .u32))
+      | _ =>
+        -- First field is not a tagged union, extract it as the tag
+        let ref ← CodegenM.withFuncBuilder do
+          FuncBuilder.extractvalue llvmValTy valRef #[0]
+        pure (some (ref, .prim .u32))
+    | .prim .bool =>
+      -- Bool: zext i1 to i32
       let ref ← CodegenM.withFuncBuilder do
-        FuncBuilder.zext llvmValTy .i32 valRef
+        FuncBuilder.zext .i1 .i32 valRef
       pure (some (ref, .prim .u32))
+    | _ =>
+      match llvmValTy with
+      | .i32 =>
+        -- Already i32, just copy it (for simple enums)
+        let ref ← CodegenM.withFuncBuilder do
+          FuncBuilder.add .i32 valRef (intVal 0 32)
+        pure (some (ref, .prim .u32))
+      | .i1 | .i8 | .i16 =>
+        -- Small integer type, zext to i32
+        let ref ← CodegenM.withFuncBuilder do
+          FuncBuilder.zext llvmValTy .i32 valRef
+        pure (some (ref, .prim .u32))
+      | .struct _ _ =>
+        -- Struct type, extract first field as tag
+        let ref ← CodegenM.withFuncBuilder do
+          FuncBuilder.extractvalue llvmValTy valRef #[0]
+        pure (some (ref, .prim .u32))
+      | _ =>
+        -- Unknown type, assume tagged union and extract tag
+        let ref ← CodegenM.withFuncBuilder do
+          FuncBuilder.extractvalue taggedTy valRef #[0]
+        pure (some (ref, .prim .u32))
 
   | .getPayload val variantIdx fieldIdx resultTy =>
     let valTy ← operandTy val
