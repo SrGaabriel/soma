@@ -671,29 +671,36 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     pure (some (arrayPtr, resultTy))
 
   | .getTag val =>
-    let valRef ← convertOperand val
-    let tagPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi32 taggedTy valRef #[0, 0]
-    let ref ← CodegenM.withFuncBuilder do
-      FuncBuilder.load .i32 (.local tagPtr)
-    pure (some (ref, .prim .u32))
-
-  | .getPayload val variantIdx fieldIdx =>
     let valTy ← operandTy val
     let valRef ← convertOperand val
-    let fieldTy := getTaggedPayloadTy valTy variantIdx fieldIdx
-    let llvmFieldTy := convertTy fieldTy
-    -- Get payload pointer (offset 1 in tagged struct)
-    let payloadPtrPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi32 taggedTy valRef #[0, 1]
+    let llvmValTy := convertTy valTy
+    -- Check if this is actually a tagged union (struct type) or a primitive
+    match llvmValTy with
+    | .struct _ _ =>
+      -- Tagged unions are by-value { i32, ptr } structs
+      let ref ← CodegenM.withFuncBuilder do
+        FuncBuilder.extractvalue llvmValTy valRef #[0]
+      pure (some (ref, .prim .u32))
+    | _ =>
+      -- Primitive type
+      let ref ← CodegenM.withFuncBuilder do
+        FuncBuilder.zext llvmValTy .i32 valRef
+      pure (some (ref, .prim .u32))
+
+  | .getPayload val variantIdx fieldIdx resultTy =>
+    let valTy ← operandTy val
+    let valRef ← convertOperand val
+    let llvmValTy := convertTy valTy
+    let llvmResultTy := convertTy resultTy
+    -- Tagged unions are by-value { i32, ptr } structs
     let payloadPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.load .ptr (.local payloadPtrPtr)
-    -- Get field from payload struct
+      FuncBuilder.extractvalue llvmValTy valRef #[1]
+    -- Payload is a pointer to heap-allocated fields, each field is 8 bytes (todo: consider target triple)
     let fieldPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi64 (.struct false #[]) (.local payloadPtr) #[fieldIdx]
+      FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fieldIdx]
     let ref ← CodegenM.withFuncBuilder do
-      FuncBuilder.load llvmFieldTy (.local fieldPtr)
-    pure (some (ref, fieldTy))
+      FuncBuilder.load llvmResultTy (.local fieldPtr)
+    pure (some (ref, resultTy))
 
   | .taggedLit tag payload ty =>
     let taggedPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca taggedTy)
@@ -815,13 +822,18 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     -- Store environment pointer
     let envPtrSlot ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 closureTy (.local closurePtr) #[0, 1]
-    -- If env is not already a pointer, convert it
+    -- Convert env to pointer based on its type
     let envPtrVal ← if envLLVMTy == .ptr then pure envVal
-                    else do
-                      -- Convert non-pointer to pointer (typically int 0 -> null ptr)
+                    else if envLLVMTy.isInt then do
                       let converted ← CodegenM.withFuncBuilder do
                         FuncBuilder.inttoptr envLLVMTy envVal
                       pure (.local converted)
+                    else do
+                      -- Struct/aggregate type: box it by allocating and storing
+                      let boxPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca envLLVMTy)
+                      CodegenM.withFuncBuilder do
+                        FuncBuilder.store envLLVMTy envVal (.local boxPtr)
+                      pure (.local boxPtr)
     CodegenM.withFuncBuilder do
       FuncBuilder.store .ptr envPtrVal (.local envPtrSlot)
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.load closureTy (.local closurePtr))
@@ -843,12 +855,18 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
       FuncBuilder.store .ptr (globalVal funcName) (.local fnPtrSlot)
     let envPtrSlot ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 closureTy (.local closurePtr) #[0, 1]
-    -- If env is not already a pointer, convert it
+    -- Convert env to pointer based on its type
     let envPtrVal ← if envLLVMTy == .ptr then pure envVal
-                    else do
+                    else if envLLVMTy.isInt then do
                       let converted ← CodegenM.withFuncBuilder do
                         FuncBuilder.inttoptr envLLVMTy envVal
                       pure (.local converted)
+                    else do
+                      -- Struct/aggregate type: box it by allocating and storing
+                      let boxPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca envLLVMTy)
+                      CodegenM.withFuncBuilder do
+                        FuncBuilder.store envLLVMTy envVal (.local boxPtr)
+                      pure (.local boxPtr)
     CodegenM.withFuncBuilder do
       FuncBuilder.store .ptr envPtrVal (.local envPtrSlot)
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.load closureTy (.local closurePtr))

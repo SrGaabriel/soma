@@ -124,7 +124,7 @@ where
     | .structLit fields _ => fields.filterMap extractOperandLocal
     | .arrayLit elems _ => elems.filterMap extractOperandLocal
     | .getTag val => #[val].filterMap extractOperandLocal
-    | .getPayload val _ _ => #[val].filterMap extractOperandLocal
+    | .getPayload val _ _ _ => #[val].filterMap extractOperandLocal
     | .taggedLit _ payload _ => payload.filterMap extractOperandLocal
     | .call _ args _ => args.filterMap extractOperandLocal
     | .callPoly _ _ args _ => args.filterMap extractOperandLocal

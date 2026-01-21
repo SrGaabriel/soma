@@ -72,7 +72,7 @@ inductive Inst where
   | getTag (val : Operand)
 
   /-- Get payload from tagged union (unsafe, must check tag first) -/
-  | getPayload (val : Operand) (variantIdx : Nat) (fieldIdx : Nat)
+  | getPayload (val : Operand) (variantIdx : Nat) (fieldIdx : Nat) (resultTy : Ty)
 
   /-- Construct tagged union: result = Tag(payload...) -/
   | taggedLit (tag : Nat) (payload : Array Operand) (ty : Ty)
@@ -176,7 +176,7 @@ def resultTy : Inst → Option Ty
   | .structLit _ ty => some ty
   | .arrayLit elems elemTy => some (.array elemTy elems.size)
   | .getTag _ => some (.prim .u32)
-  | .getPayload _ _ _ => none  -- Depends on variant
+  | .getPayload _ _ _ resultTy => some resultTy
   | .taggedLit _ _ ty => some ty
   | .call _ _ retTy => some retTy
   | .callPoly _ _ _ retTy => some retTy
@@ -220,7 +220,7 @@ instance : ToString Inst where
       let es := String.intercalate ", " (elems.toList.map ToString.toString)
       s!"array [{es}]"
     | .getTag val => s!"gettag {val}"
-    | .getPayload val variant field => s!"getpayload {val}, {variant}, {field}"
+    | .getPayload val variant field ty => s!"getpayload {val}, {variant}, {field} : {ty}"
     | .taggedLit tag payload _ =>
       let ps := String.intercalate ", " (payload.toList.map ToString.toString)
       s!"tagged {tag}({ps})"

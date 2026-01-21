@@ -166,8 +166,8 @@ def ppInst (cfg : Config) : Inst → String
     s!"{colorKeyword cfg "array"} [{ppTy cfg elemTy}] [{es}]"
   | .getTag val =>
     s!"{colorKeyword cfg "gettag"} {ppOperand cfg val}"
-  | .getPayload val variant field =>
-    s!"{colorKeyword cfg "getpayload"} {ppOperand cfg val}, {variant}, {field}"
+  | .getPayload val variant field ty =>
+    s!"{colorKeyword cfg "getpayload"} {ppOperand cfg val}, {variant}, {field} : {ppTy cfg ty}"
   | .taggedLit tag payload ty =>
     let ps := String.intercalate ", " (payload.toList.map (ppOperand cfg))
     s!"{colorKeyword cfg "tagged"} {ppTy cfg ty} {tag}({ps})"

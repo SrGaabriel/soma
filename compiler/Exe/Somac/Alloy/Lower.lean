@@ -243,6 +243,33 @@ def convertHigherPrimitive : HigherPrimitive → Ty
   | .array => .rawPtr | .list => .rawPtr | .ref => .rawPtr
   | .io => .prim .unit | .ptr => .rawPtr
 
+mutual
+/-- Extract variant information from a row type.
+    Returns an array of (variantIdx, fieldTypes) pairs.
+    Row types look like: vRowExtend label fieldTy (vRowExtend ... vRowEmpty) -/
+partial def extractRowVariants (row : Value) (idx : Nat := 0) (acc : Array (Nat × Array Ty) := #[])
+    : Array (Nat × Array Ty) :=
+  match row with
+  | Value.vRowEmpty => acc
+  | Value.vRowExtend _label fieldTy tail =>
+    -- For a variant, fieldTy represents the payload type
+    -- If it's a tuple/product, we need to extract individual fields
+    -- For simplicity, we treat non-unit types as a single field
+    let fields := match fieldTy with
+      | Value.vPrimTy (.unit) => #[]  -- Nullary constructor
+      | Value.vSigma _ _ fst sndClos =>
+        -- Product type - extract fields
+        let fstTy := convertValueType fst
+        let sndTy := match sndClos with
+          | .const _ v => convertValueType v
+          | _ => .prim .i64
+        #[fstTy, sndTy]
+      | Value.vPair fst snd =>
+        #[convertValueType fst, convertValueType snd]
+      | other => #[convertValueType other]
+    extractRowVariants tail (idx + 1) (acc.push (idx, fields))
+  | _ => acc  -- Malformed row, return what we have
+
 /-- Convert a Soma Value type to an Alloy Ty -/
 partial def convertValueType : Value → Ty
   -- Primitive types
@@ -259,8 +286,11 @@ partial def convertValueType : Value → Ty
 
   -- Lambda (shouldn't appear as a type, but handle gracefully)
   | Value.vLam _ _ _ _ _ => .closure #[] (.prim .i64)
-  | Value.vSigma _ _ fst _ =>
-    .struct #[("fst", convertValueType fst), ("snd", .prim .i64)]
+  | Value.vSigma _ _ fst sndClos =>
+    let sndTy := match sndClos with
+      | .const _ v => convertValueType v
+      | _ => .prim .i64  -- Dependent type, fall back to boxed
+    .struct #[("fst", convertValueType fst), ("snd", sndTy)]
   | Value.vPair fst snd =>
     .struct #[("fst", convertValueType fst), ("snd", convertValueType snd)]
   | Value.vDataType id params =>
@@ -272,7 +302,7 @@ partial def convertValueType : Value → Ty
   | Value.vConstructor _ _ _ => .rawPtr
   | Value.vRecord _ => .rawPtr
   | Value.vRecordVal _ => .rawPtr
-  | Value.vVariant _ => .tagged (.prim .u32) #[]
+  | Value.vVariant row => .tagged (.prim .u32) (extractRowVariants row)
   | Value.vType _ => .prim .unit
   | Value.vNeutral _ neu =>
     match neu with
@@ -287,6 +317,7 @@ partial def convertValueType : Value → Ty
   | Value.vTransport _ _ _ _ _ _ _ => .prim .i64
   | Value.vIntLit _ => .prim .i32
   | Value.vStringLit _ => .rawPtr
+end
 
 partial def extractParams (ty : Value)
     (typeAcc : Array String := #[]) (valAcc : Array (String × Ty) := #[])
@@ -371,34 +402,21 @@ def lowerNum (primTy : PrimType) (val : UInt32) : LowerM LocalId := do
   LowerM.emitInst (.copy (.const (.int intVal (convertPrimType primTy)))) ty
 
 /-- Lower a constructor (creates a tagged struct on the heap) -/
-def lowerCtor (tag : Nat) (arity : Nat) (fieldVals : Array LocalId) : LowerM LocalId := do
-  if arity == 0 then
-    -- Nullary constructor: just the tag as an immediate
-    LowerM.emitInst (.copy (.const (.int (Int.ofNat tag) .u32))) tagType
-  else
-    let structSize := 4 + arity * 8
-    let ptr ← LowerM.emitInst (.malloc (.const (.int (Int.ofNat structSize) .u64))) .rawPtr
-
-    -- Store tag
-    let tagPtr ← LowerM.emitInst (.copy (.local ptr)) (.ptr tagType)
-    LowerM.emitVoid (.store (.local tagPtr) (.const (.int (Int.ofNat tag) .u32)))
-
-    -- Store fields
-    for i in [:arity] do
-      if h : i < fieldVals.size then
-        let offset := 4 + i * 8
-        -- Get pointer to field
-        let baseAsI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local ptr)) (.prim .i64)
-        let offsetVal ← LowerM.emitInst (.copy (.const (.int (Int.ofNat offset) .i64))) (.prim .i64)
-        let fieldAddr ← LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offsetVal) (.prim .i64)) (.prim .i64)
-        let fieldPtr ← LowerM.emitInst (.unOp .inttoptr (.local fieldAddr)) .rawPtr
-        LowerM.emitVoid (.store (.local fieldPtr) (.local fieldVals[i]))
-    pure ptr
+def lowerCtor (tag : Nat) (arity : Nat) (fieldVals : Array LocalId) (ty : Ty) : LowerM LocalId := do
+  -- Use taggedLit instruction which creates by-value { i32, ptr } structs
+  -- The LLVM codegen handles heap allocation of the payload
+  let payload := fieldVals.map fun id => Operand.local id
+  -- Ensure the result type is always a tagged union type, not the semantic type
+  -- This is important because taggedLit always produces { i32, ptr } in LLVM
+  let taggedTy := match ty with
+    | .tagged _ _ => ty  -- Already a tagged type, keep it
+    | _ => .tagged (.prim .u32) #[]  -- Convert to tagged union type
+  LowerM.emitInst (.taggedLit tag payload taggedTy) taggedTy
 
 /-- Lower tag extraction for pattern matching -/
 def lowerGetTag (scrutinee : LocalId) : LowerM LocalId := do
-  let tagPtr ← LowerM.emitInst (.unOp (.bitcast (.ptr tagType)) (.local scrutinee)) (.ptr tagType)
-  LowerM.emitInst (.load (.local tagPtr) tagType) tagType
+  -- Use .getTag instruction which handles both by-value and pointer-based tagged unions
+  LowerM.emitInst (.getTag (.local scrutinee)) tagType
 
 /-- Lower a pattern match (MAT node) -/
 def lowerMat (expectedTag : Nat) (scrutinee : LocalId) : LowerM (LocalId × BlockId × BlockId) := do
@@ -482,6 +500,15 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     return undef
 
   let nodeTy := getNodeType entry
+
+  -- Helper to get the type of a port's source node
+  let getPortType (portIdx : Nat) (defaultTy : Ty := nodeTy) : Ty :=
+    match entry.getPort ⟨portIdx⟩ with
+    | some targetPort =>
+      match graph.getNode targetPort.node with
+      | some targetEntry => getNodeType targetEntry
+      | none => defaultTy
+    | none => defaultTy
 
   -- Helper to lower an operand from a port connection
   let lowerPort (portIdx : Nat) (defaultTy : Ty := nodeTy) : StateT NodeState LowerM LocalId := do
@@ -584,29 +611,47 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
       -- Emit makeClosure instruction
       StateT.lift (LowerM.emitInst (.makeClosure funcId (.local envVal)) nodeTy)
     else
-      -- Regular constructor: build tagged struct
+      -- Regular constructor: build tagged struct or struct literal
       let mut fieldVals : Array LocalId := #[]
       for i in [:arity] do
         let fieldVal ← lowerPort (i + 1)
         fieldVals := fieldVals.push fieldVal
-      StateT.lift (lowerCtor tag arity fieldVals)
+      -- Check if target type is struct (for tuples/pairs) or tagged union (for ADTs)
+      match nodeTy with
+      | .struct _ =>
+        -- Create struct literal directly (for tuples)
+        let fields := fieldVals.map fun id => Operand.local id
+        StateT.lift (LowerM.emitInst (.structLit fields nodeTy) nodeTy)
+      | _ =>
+        -- Create tagged union (for ADTs)
+        StateT.lift (lowerCtor tag arity fieldVals nodeTy)
 
   | .proj fieldIdx => do
     let recordVal ← lowerPort 1
-    let offset := 4 + fieldIdx * 8
-    let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local recordVal)) (.prim .i64))
-    let offsetVal ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat offset) .i64))) (.prim .i64))
-    let fieldAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offsetVal) (.prim .i64)) (.prim .i64))
-    let fieldPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local fieldAddr)) .rawPtr)
-    StateT.lift (LowerM.emitInst (.load (.local fieldPtr) nodeTy) nodeTy)
+    let recordTy := getPortType 1
+    -- Check if record is struct or tagged union
+    match recordTy with
+    | .struct _ =>
+      -- Use extractField for struct types
+      StateT.lift (LowerM.emitInst (.extractField (.local recordVal) fieldIdx) nodeTy)
+    | _ =>
+      -- Use getPayload for tagged unions
+      StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 fieldIdx nodeTy) nodeTy)
 
   | .record numFields => do
-    -- Record: same as ctor with tag 0
+    -- Record: check if target type is struct or tagged union
     let mut fieldVals : Array LocalId := #[]
     for i in [:numFields] do
       let fieldVal ← lowerPort (i + 1)
       fieldVals := fieldVals.push fieldVal
-    StateT.lift (lowerCtor 0 numFields fieldVals)
+    match nodeTy with
+    | .struct _ =>
+      -- Create struct literal directly
+      let fields := fieldVals.map fun id => Operand.local id
+      StateT.lift (LowerM.emitInst (.structLit fields nodeTy) nodeTy)
+    | _ =>
+      -- Create tagged union with tag 0
+      StateT.lift (lowerCtor 0 numFields fieldVals nodeTy)
 
   | .mat expectedTag => do
     let scrutineeVal ← lowerPort 1
@@ -816,6 +861,15 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
   let nodeTy := getNodeType entry
 
+  -- Helper to get the type of a port's source node
+  let getPortType (portIdx : Nat) (defaultTy : Ty := nodeTy) : Ty :=
+    match entry.getPort ⟨portIdx⟩ with
+    | some targetPort =>
+      match graph.getNode targetPort.node with
+      | some targetEntry => getNodeType targetEntry
+      | none => defaultTy
+    | none => defaultTy
+
   let lowerPort (portIdx : Nat) (defaultTy : Ty := nodeTy) : StateT NodeState LowerM LocalId := do
     match entry.getPort ⟨portIdx⟩ with
     | some targetPort => lowerOperandWithMap graph targetPort funcIdMap
@@ -903,27 +957,47 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
       StateT.lift (LowerM.emitInst (.makeClosure funcId (.local envVal)) nodeTy)
     else
+      -- Regular constructor: build tagged struct or struct literal
       let mut fieldVals : Array LocalId := #[]
       for i in [:arity] do
         let fieldVal ← lowerPort (i + 1)
         fieldVals := fieldVals.push fieldVal
-      StateT.lift (lowerCtor tag arity fieldVals)
+      -- Check if target type is struct (for tuples/pairs) or tagged union (for ADTs)
+      match nodeTy with
+      | .struct _ =>
+        -- Create struct literal directly (for tuples)
+        let fields := fieldVals.map fun id => Operand.local id
+        StateT.lift (LowerM.emitInst (.structLit fields nodeTy) nodeTy)
+      | _ =>
+        -- Create tagged union (for ADTs)
+        StateT.lift (lowerCtor tag arity fieldVals nodeTy)
 
   | .proj fieldIdx => do
     let recordVal ← lowerPort 1
-    let offset := 4 + fieldIdx * 8
-    let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local recordVal)) (.prim .i64))
-    let offsetVal ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat offset) .i64))) (.prim .i64))
-    let fieldAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offsetVal) (.prim .i64)) (.prim .i64))
-    let fieldPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local fieldAddr)) .rawPtr)
-    StateT.lift (LowerM.emitInst (.load (.local fieldPtr) nodeTy) nodeTy)
+    let recordTy := getPortType 1
+    -- Check if record is struct or tagged union
+    match recordTy with
+    | .struct _ =>
+      -- Use extractField for struct types
+      StateT.lift (LowerM.emitInst (.extractField (.local recordVal) fieldIdx) nodeTy)
+    | _ =>
+      -- Use getPayload for tagged unions
+      StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 fieldIdx nodeTy) nodeTy)
 
   | .record numFields => do
+    -- Record: check if target type is struct or tagged union
     let mut fieldVals : Array LocalId := #[]
     for i in [:numFields] do
       let fieldVal ← lowerPort (i + 1)
       fieldVals := fieldVals.push fieldVal
-    StateT.lift (lowerCtor 0 numFields fieldVals)
+    match nodeTy with
+    | .struct _ =>
+      -- Create struct literal directly
+      let fields := fieldVals.map fun id => Operand.local id
+      StateT.lift (LowerM.emitInst (.structLit fields nodeTy) nodeTy)
+    | _ =>
+      -- Create tagged union with tag 0
+      StateT.lift (lowerCtor 0 numFields fieldVals nodeTy)
 
   | .mat expectedTag => do
     let scrutineeVal ← lowerPort 1
