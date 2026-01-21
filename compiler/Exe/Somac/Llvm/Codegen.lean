@@ -54,7 +54,7 @@ def isUnitTy : Ty → Bool
 
 /-- Convert Alloy type to LLVM type for function return types -/
 partial def convertRetTy : Ty → LLVMType
-  | .prim .unit => .void
+  | .prim .unit => .i8
   | other => convertTy other
 
 /-- The closure struct type -/
@@ -742,14 +742,9 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
           else operandTy arg
         | none => operandTy arg
       pure (convertTy argTy, argVal)
-    if isUnitTy retTy then
-      CodegenM.withFuncBuilder do
-        FuncBuilder.callNamedVoid funcName llvmArgs
-      pure none
-    else
-      let ref ← CodegenM.withFuncBuilder do
-        FuncBuilder.callNamed llvmRetTy funcName llvmArgs
-      pure (some (ref, retTy))
+    let ref ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed llvmRetTy funcName llvmArgs
+    pure (some (ref, retTy))
 
   | .callPoly func _typeArgs args retTy =>
     -- this should've been monomorphized, but anyway we handle it the exact same as normal call
@@ -764,49 +759,36 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
           else operandTy arg
         | none => operandTy arg
       pure (convertTy argTy, argVal)
-    if isUnitTy retTy then
-      CodegenM.withFuncBuilder do
-        FuncBuilder.callNamedVoid funcName llvmArgs
-      pure none
-    else
-      let ref ← CodegenM.withFuncBuilder do
-        FuncBuilder.callNamed llvmRetTy funcName llvmArgs
-      pure (some (ref, retTy))
+    let ref ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed llvmRetTy funcName llvmArgs
+    pure (some (ref, retTy))
 
   | .callIndirect ptr args retTy =>
     let ptrVal ← convertOperand ptr
     let llvmRetTy := convertTy retTy
     let llvmArgs ← args.mapM fun arg => convertOperandWithTy arg
-    if isUnitTy retTy then
-      CodegenM.withFuncBuilder do
-        FuncBuilder.callVoid ptrVal llvmArgs
-      pure none
-    else
-      let ref ← CodegenM.withFuncBuilder do
-        FuncBuilder.call llvmRetTy ptrVal llvmArgs
-      pure (some (ref, retTy))
+    let ref ← CodegenM.withFuncBuilder do
+      FuncBuilder.call llvmRetTy ptrVal llvmArgs
+    pure (some (ref, retTy))
 
   | .callClosure closure args retTy =>
     let closureTyAlloy ← operandTy closure
     let closureLLVMTy := convertTy closureTyAlloy
+    let llvmRetTy := convertTy retTy
     -- Check if closure operand is actually a closure type (not unit from ERA)
     if closureLLVMTy != closureTy then
-      -- Not a real closure, return unit (dead code path)
-      if isUnitTy retTy then
-        pure none
-      else
-        -- Return undef for non-unit return types (dead code, but must be well-typed)
-        let llvmRetTy := convertTy retTy
-        let ref ← CodegenM.withFuncBuilder do
-          if llvmRetTy == .ptr then
-            FuncBuilder.inttoptr .i64 (intVal 0 64)
-          else
-            let undefVal := LLVMValue.const (.undef llvmRetTy)
-            FuncBuilder.select llvmRetTy (boolVal true) undefVal undefVal
-        pure (some (ref, retTy))
+      -- Not a real closure, return a default value (dead code path)
+      let ref ← CodegenM.withFuncBuilder do
+        if llvmRetTy == .ptr then
+          FuncBuilder.inttoptr .i64 (intVal 0 64)
+        else if llvmRetTy.isInt then
+          FuncBuilder.add llvmRetTy (intVal 0 (llvmRetTy.intBits.getD 64)) (intVal 0 (llvmRetTy.intBits.getD 64))
+        else
+          let undefVal := LLVMValue.const (.undef llvmRetTy)
+          FuncBuilder.select llvmRetTy (boolVal true) undefVal undefVal
+      pure (some (ref, retTy))
     else
       let closureVal ← convertOperand closure
-      let llvmRetTy := convertTy retTy
       -- Extract function pointer (field 0) and environment (field 1)
       let fnPtr ← CodegenM.withFuncBuilder do
         FuncBuilder.extractvalue closureTy closureVal #[0]
@@ -817,14 +799,9 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
       for arg in args do
         let argWithTy ← convertOperandWithTy arg
         llvmArgs := llvmArgs.push argWithTy
-      if isUnitTy retTy then
-        CodegenM.withFuncBuilder do
-          FuncBuilder.callVoid (.local fnPtr) llvmArgs
-        pure none
-      else
-        let ref ← CodegenM.withFuncBuilder do
-          FuncBuilder.call llvmRetTy (.local fnPtr) llvmArgs
-        pure (some (ref, retTy))
+      let ref ← CodegenM.withFuncBuilder do
+        FuncBuilder.call llvmRetTy (.local fnPtr) llvmArgs
+      pure (some (ref, retTy))
 
   | .makeClosure func env =>
     let funcName ← CodegenM.getFuncName func.id
@@ -1098,13 +1075,8 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     -- External function call: emit regular LLVM call to @name
     let llvmRetTy := convertTy retTy
     let llvmArgs ← args.mapM fun arg => convertOperandWithTy arg
-    if isUnitTy retTy then
-      CodegenM.withFuncBuilder do
-        FuncBuilder.callNamedVoid name llvmArgs
-      pure none
-    else
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
-      pure (some (ref, retTy))
+    let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
+    pure (some (ref, retTy))
 
 /-- Lower an Alloy terminator to LLVM -/
 def lowerTerminator (term : Terminator) (retTy : Ty) : CodegenM Unit := do
@@ -1132,12 +1104,13 @@ def lowerTerminator (term : Terminator) (retTy : Ty) : CodegenM Unit := do
     let valTy ← operandTy val
     let llvmRetTy := convertTy retTy
     if isUnitTy retTy then
-      -- Function returns unit (void in LLVM)
-      CodegenM.withFuncBuilder FuncBuilder.retVoid
+      CodegenM.withFuncBuilder (FuncBuilder.ret .i8 (intVal 0 8))
     else if isUnitTy valTy then
       let defaultVal ← CodegenM.withFuncBuilder do
         if llvmRetTy == .ptr then
           FuncBuilder.inttoptr .i64 (intVal 0 64)
+        else if llvmRetTy.isInt then
+          FuncBuilder.add llvmRetTy (intVal 0 (llvmRetTy.intBits.getD 64)) (intVal 0 (llvmRetTy.intBits.getD 64))
         else
           let undefVal := LLVMValue.const (.undef llvmRetTy)
           FuncBuilder.select llvmRetTy (boolVal true) undefVal undefVal
@@ -1168,10 +1141,38 @@ def lowerTerminator (term : Terminator) (retTy : Ty) : CodegenM Unit := do
         CodegenM.withFuncBuilder (FuncBuilder.ret llvmRetTy valRef)
 
   | .retUnit =>
-    CodegenM.withFuncBuilder FuncBuilder.retVoid
+    CodegenM.withFuncBuilder (FuncBuilder.ret .i8 (intVal 0 8))
 
   | .unreachable =>
     CodegenM.withFuncBuilder FuncBuilder.unreachable
+
+/-- Collect LocalIds referenced in an instruction -/
+def instReferencedLocals (inst : Inst) : Array Nat :=
+  let collectOp : Operand → Array Nat := fun op =>
+    match op with
+    | .local id => #[id.id]
+    | _ => #[]
+  let collectOps := fun ops => ops.foldl (fun acc op => acc ++ collectOp op) #[]
+  match inst with
+  | .binOp _ l r _ => collectOp l ++ collectOp r
+  | .unOp _ op => collectOp op
+  | .copy op => collectOp op
+  | .load ptr _ => collectOp ptr
+  | .store ptr val => collectOp ptr ++ collectOp val
+  | .call _ args _ => collectOps args
+  | .callIndirect ptr args _ => collectOp ptr ++ collectOps args
+  | .callClosure cls args _ => collectOp cls ++ collectOps args
+  | .phi incoming _ => incoming.foldl (fun acc (op, _) => acc ++ collectOp op) #[]
+  | .select c t e => collectOp c ++ collectOp t ++ collectOp e
+  | .structLit fields _ => collectOps fields
+  | .extractField v _ => collectOp v
+  | .getFieldPtr v _ _ => collectOp v
+  | .makeClosure _ env => collectOp env
+  | .malloc sz => collectOp sz
+  | .free ptr => collectOp ptr
+  | .callIntrinsic _ args _ => collectOps args
+  | .callExtern _ args _ => collectOps args
+  | _ => #[]
 
 /-- Lower an Alloy basic block to LLVM -/
 def lowerBlock (block : Block) (retTy : Ty) : CodegenM Unit := do
@@ -1188,7 +1189,19 @@ def lowerBlock (block : Block) (retTy : Ty) : CodegenM Unit := do
       let tyFromAlloy := func?.bind (·.getLocalType alloyLocal)
       let ty := tyFromAlloy.getD _tyFromLowerInst
       CodegenM.mapLocal alloyLocal.id llvmRef ty
-    | _, _ => pure ()
+    | some alloyLocal, none =>
+      -- Statement has a result LocalId but lowerInst returned none
+      let tyFromAlloy := func?.bind (·.getLocalType alloyLocal) |>.getD (.prim .unit)
+      let llvmTy := convertTy tyFromAlloy
+      let dummyRef ← CodegenM.withFuncBuilder do
+        if llvmTy == .ptr then
+          FuncBuilder.inttoptr .i64 (intVal 0 64)
+        else if llvmTy.isInt then
+          FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
+        else
+          FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
+      CodegenM.mapLocal alloyLocal.id dummyRef tyFromAlloy
+    | none, _ => pure ()
 
   lowerTerminator block.terminator retTy
 
@@ -1233,8 +1246,10 @@ def lowerFuncWithName (func : Func) (name : String) : CodegenM LLVMFunc := do
       let _ ← CodegenM.getOrCreateBlock block.id.id
 
     -- Lower all blocks
-    for block in cfg.allBlocks do
-      lowerBlock block func.sig.retTy
+    let blockOrder := cfg.reversePostorder
+    for blockId in blockOrder do
+      if let some block := cfg.getBlock blockId then
+        lowerBlock block func.sig.retTy
 
     let blocks ← CodegenM.withFuncBuilder FuncBuilder.getBlocks
 
