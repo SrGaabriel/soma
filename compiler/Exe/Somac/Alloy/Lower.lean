@@ -175,6 +175,10 @@ def lookupPort (port : CPortId) : LowerM (Option LocalId) := do
   let s ← get
   pure (s.lookupPort port)
 
+def getCurrentBlockId : LowerM BlockId := do
+  let s ← get
+  pure s.currentBlock.id
+
 end LowerM
 
 /-- Convert Circuit PrimType to Alloy PrimTy -/
@@ -344,6 +348,17 @@ structure NodeState where
   /-- LAM node ID → parameter index mapping -/
   lamParams : Std.HashMap Nat Nat := {}
   deriving Inhabited
+
+namespace NodeState
+
+/-- Snapshot the results cache (for branch isolation) -/
+def snapshotResults (s : NodeState) : Std.HashMap Nat LocalId := s.results
+
+/-- Restore results cache from a snapshot -/
+def restoreResults (s : NodeState) (snapshot : Std.HashMap Nat LocalId) : NodeState :=
+  { s with results := snapshot }
+
+end NodeState
 
 /-- Lower a numeric literal -/
 def lowerNum (primTy : PrimType) (val : UInt32) : LowerM LocalId := do
@@ -595,18 +610,28 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
 
   | .mat expectedTag => do
     let scrutineeVal ← lowerPort 1
-    let (_, thenBlock, elseBlock) ← StateT.lift (lowerMat expectedTag scrutineeVal)
+    let (_, _thenBlock, elseBlock) ← StateT.lift (lowerMat expectedTag scrutineeVal)
+    let cacheSnapshot ← do let ns ← get; pure ns.snapshotResults
 
+    -- Lower hit value
     let hitVal ← lowerPort 2
+    -- Record the actual block we're in after lowering the hit branch
+    let hitBlock ← StateT.lift LowerM.getCurrentBlockId
     let joinBlock ← StateT.lift LowerM.freshBlockId
     StateT.lift (LowerM.finishBlock (.jump joinBlock) elseBlock)
 
+    -- Restore cache
+    modify fun ns => ns.restoreResults cacheSnapshot
+
+    -- Lower miss value
     let missVal ← lowerPort 3
+    -- Record the actual block we're in after lowering the miss branch
+    let missBlock ← StateT.lift LowerM.getCurrentBlockId
     StateT.lift (LowerM.finishBlock (.jump joinBlock) joinBlock)
 
-    -- Phi to merge results, use node's type annotation
+    -- Phi to merge results
     StateT.lift (LowerM.emitInst
-      (.phi #[(Operand.local hitVal, thenBlock), (Operand.local missVal, elseBlock)] nodeTy)
+      (.phi #[(Operand.local hitVal, hitBlock), (Operand.local missVal, missBlock)] nodeTy)
       nodeTy)
 
   | .op1 op => do
@@ -902,17 +927,28 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
   | .mat expectedTag => do
     let scrutineeVal ← lowerPort 1
-    let (_, thenBlock, elseBlock) ← StateT.lift (lowerMat expectedTag scrutineeVal)
+    let (_, _thenBlock, elseBlock) ← StateT.lift (lowerMat expectedTag scrutineeVal)
+    let cacheSnapshot ← do let ns ← get; pure ns.snapshotResults
 
+    -- Lower hit value
     let hitVal ← lowerPort 2
+    -- Record the actual block we're in after lowering the hit branch
+    let hitBlock ← StateT.lift LowerM.getCurrentBlockId
     let joinBlock ← StateT.lift LowerM.freshBlockId
     StateT.lift (LowerM.finishBlock (.jump joinBlock) elseBlock)
 
+    -- Restore cache
+    modify fun ns => ns.restoreResults cacheSnapshot
+
+    -- Lower miss value
     let missVal ← lowerPort 3
+    -- Record the actual block we're in after lowering the miss branch
+    let missBlock ← StateT.lift LowerM.getCurrentBlockId
     StateT.lift (LowerM.finishBlock (.jump joinBlock) joinBlock)
 
+    -- Phi to merge results
     StateT.lift (LowerM.emitInst
-      (.phi #[(Operand.local hitVal, thenBlock), (Operand.local missVal, elseBlock)] nodeTy)
+      (.phi #[(Operand.local hitVal, hitBlock), (Operand.local missVal, missBlock)] nodeTy)
       nodeTy)
 
   | .op1 op => do

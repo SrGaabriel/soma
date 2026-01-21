@@ -896,14 +896,30 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
   | .phi incoming ty =>
     let llvmTy := convertTy ty
     let llvmIncoming ← incoming.mapM fun (val, blockId) => do
-      let valTy ← operandTy val
-      let valLlvmTy := convertTy valTy
-      let valRef ← convertOperand val
       let label ← CodegenM.getOrCreateBlock blockId.id
-      -- For phi nodes, we cannot emit coercion instructions in the destination block
-      let finalVal := if valLlvmTy == llvmTy then valRef
-                      else LLVMValue.const (.undef llvmTy)
-      pure (finalVal, label)
+      -- We can only use values that were already defined in the predecessor blocks
+      match val with
+      | .local id =>
+        match ← CodegenM.getLocal id.id with
+        | some ref =>
+          let valTy ← CodegenM.getLocalTy id.id
+          let valLlvmTy := convertTy valTy
+          if valLlvmTy == llvmTy then
+            pure (LLVMValue.local ref, label)
+          else
+            -- Unfortunately can't coerce in phi context
+            pure (LLVMValue.const (.undef llvmTy), label)
+        | none =>
+          -- Local not found, use undef
+          pure (LLVMValue.const (.undef llvmTy), label)
+      | .const c =>
+        -- Constants are fine, convert them directly
+        let constVal ← convertOperand val
+        pure (constVal, label)
+      | _ =>
+        -- Convert
+        let opVal ← convertOperand val
+        pure (opVal, label)
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.phi llvmTy llvmIncoming)
     pure (some (ref, ty))
 
