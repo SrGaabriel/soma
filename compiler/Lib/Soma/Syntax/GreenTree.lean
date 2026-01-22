@@ -114,7 +114,7 @@ end TokenKind
 def keywordMap : List (String × TokenKind) :=
   [ ("def", .kw_def), ("let", .kw_let), ("in", .kw_in), ("match", .kw_case)
   , ("if", .kw_if), ("then", .kw_then), ("else", .kw_else)
-  , ("data", .kw_data), ("struct", .kw_struct), ("trait", .kw_trait)
+  , ("data", .kw_data), ("struct", .kw_struct), ("class", .kw_trait)
   , ("instance", .kw_instance), ("where", .kw_where), ("with", .kw_with)
   , ("use", .kw_use), ("export", .kw_export)
   , ("forall", .kw_forall), ("bind", .kw_bind), ("compose", .kw_compose)

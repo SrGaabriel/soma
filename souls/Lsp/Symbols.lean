@@ -158,7 +158,7 @@ def compilerSymbolKindToString : Soma.Project.SymbolKind → String
   | .binding => "function"
   | .dataCon _ _ => "constructor"
   | .type => "type"
-  | .typeClass => "trait"
+  | .typeClass => "class"
   | .typeClassMethod _ => "method"
   | .instanceMethod _ _ => "instance method"
   | .letBinding => "local binding"

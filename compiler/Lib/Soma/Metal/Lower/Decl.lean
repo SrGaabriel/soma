@@ -89,12 +89,6 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
       let isIntrinsic := attrs.any fun a => a.name.value == "intrinsic"
       let externAttr := attrs.find? fun a => a.name.value == "extern"
       let isExtern := externAttr.isSome
-      let externName := match externAttr with
-        | some attr =>
-          match attr.args[0]? with
-          | some (Syntax.Expr.lit (Syntax.Literal.string s _)) => s
-          | _ => name.value
-        | none => name.value
       let globalName ←
         if isExtern then
           -- External C function
@@ -167,7 +161,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
       { name := ctorMetalName, parentType := name.value, parentUnique := typeUnique, tag := 0, fieldTypeSyntax := fieldTypeSyntax, span := ctorName.span }
 
   | .trait name params constraints methods _span =>
-    checkNamingConvention name "trait" .pascalCase
+    checkNamingConvention name "type class" .pascalCase
     -- Register the type class
     let modName ← LowerM.getModuleName
     let uniqueId ← LowerM.freshUniqueId

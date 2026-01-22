@@ -114,7 +114,7 @@ def SyntaxKind.describe : SyntaxKind → String
   | .declDef => "definition"
   | .declData => "data type"
   | .declStruct => "struct"
-  | .declTrait => "trait"
+  | .declTrait => "class"
   | .declInstance => "instance"
   | .declUse => "import"
   | .declExport => "export"

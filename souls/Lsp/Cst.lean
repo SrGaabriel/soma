@@ -273,7 +273,7 @@ def kindDisplayName : SyntaxKind → String
   | .declDef => "function"
   | .declData => "data type"
   | .declStruct => "struct"
-  | .declTrait => "trait"
+  | .declTrait => "class"
   | .declInstance => "instance"
   | .constructor => "constructor"
   | .field => "field"

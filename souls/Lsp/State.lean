@@ -36,7 +36,7 @@ instance : ToString SymbolKind where
     | .type => "type"
     | .constructor => "constructor"
     | .field => "field"
-    | .trait => "trait"
+    | .trait => "class"
     | .method => "method"
     | .variable => "variable"
     | .typeVariable => "type variable"
