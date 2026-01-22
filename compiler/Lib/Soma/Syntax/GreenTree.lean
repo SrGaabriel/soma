@@ -118,7 +118,7 @@ def keywordMap : List (String × TokenKind) :=
   , ("instance", .kw_instance), ("where", .kw_where), ("with", .kw_with)
   , ("use", .kw_use), ("export", .kw_export)
   , ("forall", .kw_forall), ("bind", .kw_bind), ("compose", .kw_compose)
-  , ("abbrev", .kw_abbrev)
+  , ("alias", .kw_abbrev)
   , ("true", .true_), ("false", .false_)
   ]
 

@@ -1,8 +1,8 @@
 // expect: success
 
-abbrev MyInt = Int
+alias MyInt = Int
 
-abbrev Pair a b = (a, b)
+alias Pair a b = (a, b)
 
 def x :: MyInt = 42
 
