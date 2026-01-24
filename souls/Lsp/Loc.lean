@@ -66,7 +66,7 @@ def pathToUri (path : String) : String :=
 
 /-- Convert a file URI to a path -/
 def uriToPath (uri : String) : String :=
-  if uri.startsWith "file://" then uri.drop 7
+  if uri.startsWith "file://" then uri.drop 7 |>.copy
   else uri
 
 end Lsp

@@ -205,7 +205,7 @@ def formatKeywordHover (kind : TokenKind) (text : String) : String :=
 
 /-- Format hover for a syntax construct -/
 def formatSyntaxHover (kind : SyntaxKind) (text : String) : String :=
-  let preview := if text.length > 50 then text.take 50 ++ "..." else text
+  let preview := if text.length > 50 then (text.take 50 |>.copy) ++ "..." else text
   s!"*{kind.describe}*\n```soma\n{preview}\n```"
 
 /-- Get hover information at a position -/
