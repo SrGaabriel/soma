@@ -83,7 +83,7 @@ def SourceFile.getLine (sf : SourceFile) (line : Nat) : String :=
       else sf.content.utf8ByteSize
     -- Remove trailing newline if present
     let str := String.Pos.Raw.extract sf.content ⟨start⟩ ⟨stop⟩
-    if str.endsWith "\n" then str.dropRight 1 else str
+    if str.endsWith "\n" then (str.dropEnd 1).copy else str
 
 /-- Rich source location with all information needed for diagnostics -/
 structure SourceLoc where

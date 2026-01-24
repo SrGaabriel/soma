@@ -389,7 +389,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
     let margin := buildString marginParts
 
     -- Render line content with tab expansion
-    let displayContent := if content.trim.isEmpty then
+    let displayContent := if content.trimAscii.isEmpty then
       s!"{Color.dim}<empty line>{Color.reset}"
     else
       content

@@ -397,7 +397,7 @@ def lowerNum (primTy : PrimType) (val : UInt32) : LowerM LocalId := do
   LowerM.emitInst (.copy (.const (.int intVal (convertPrimType primTy)))) ty
 
 /-- Lower a constructor (creates a tagged struct on the heap) -/
-def lowerCtor (tag : Nat) (arity : Nat) (fieldVals : Array LocalId) (ty : Ty) : LowerM LocalId := do
+def lowerCtor (tag : Nat) (_arity : Nat) (fieldVals : Array LocalId) (ty : Ty) : LowerM LocalId := do
   -- The LLVM codegen handles heap allocation of the payload
   let payload := fieldVals.map fun id => Operand.local id
   let taggedTy := match ty with

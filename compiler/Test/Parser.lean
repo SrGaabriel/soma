@@ -15,7 +15,7 @@ def runParserTest (tc : TestCase) (verbose : Bool := false) : IO TestResult := d
   let (tree, parseDiags) := parseToTree sf
 
   -- Lower to AST
-  let moduleName := tc.name.dropRight 5  -- Remove .soma extension
+  let moduleName := tc.name.dropEnd 5 |>.copy
   let (ast, lowerDiags) := lower tree moduleName
 
   let allDiags := parseDiags ++ lowerDiags

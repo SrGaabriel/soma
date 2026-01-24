@@ -6,8 +6,6 @@ testDriver = "test"
 [[require]]
 scope = "leanprover"
 name = "Cli"
-git = "https://github.com/leanprover/lean4-cli"
-rev = "v4.26.0"
 
 [[require]]
 name = "kenosis"

@@ -34,7 +34,7 @@ def parseExpectation (source : String) : Expectation :=
   if firstLine.startsWith "// expect: success" then
     .success
   else if firstLine.startsWith "// expect: error" then
-    let rest := firstLine.drop "// expect: error".length |>.trim
+    let rest := firstLine.drop "// expect: error".length |>.trimAscii |>.copy
     if rest.isEmpty then .error none else .error (some rest)
   else
     .success  -- Default to success if no expectation comment

@@ -68,7 +68,7 @@ def loadAlloyModulesFromToria (path : System.FilePath) : IO (Except String (Arra
         let moduleEntries ← packageDir.readDir
         for entry in moduleEntries do
           if entry.fileName.endsWith ".alloybin" then
-            let modName := s!"{packageEntry.fileName}/{entry.fileName.dropRight 9}" -- "package/module"
+            let modName := s!"{packageEntry.fileName}/{entry.fileName.dropEnd 9}" -- "package/module"
             let binPath := packageDir / entry.fileName
             match ← Alloy.Serialize.readAlloyBin binPath with
             | .ok alloyMod => alloyModules := alloyModules.push (modName, alloyMod)

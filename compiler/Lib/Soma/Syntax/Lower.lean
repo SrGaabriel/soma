@@ -1428,7 +1428,15 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
               let strTok := stringTokens[0]!
               match getTokenText strTok with
               | some text =>
-                let unquoted := if text.length >= 2 then text.extract ⟨1⟩ ⟨text.length - 1⟩ else text
+                let unquoted := if text.utf8ByteSize >= 2 then
+                  let pos1 : String.Pos.Raw := ⟨1⟩
+                  let posEnd : String.Pos.Raw := ⟨text.utf8ByteSize - 1⟩
+                  if hv1 : String.Pos.Raw.IsValid text pos1 then
+                    if hv2 : String.Pos.Raw.IsValid text posEnd then
+                      text.extract ⟨pos1, hv1⟩ ⟨posEnd, hv2⟩
+                    else text
+                  else text
+                else text
                 pure #[Expr.lit (.string unquoted aspan)]
               | none => pure #[]
             if nameTokens.isEmpty then

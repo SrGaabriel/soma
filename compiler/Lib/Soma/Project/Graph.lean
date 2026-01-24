@@ -168,7 +168,7 @@ where
         let subResults ← go (extendPath pfx name) fullPath
         pure (acc ++ subResults)
       else if name.endsWith ".soma" then
-        let baseName := name.dropRight 5  -- Remove ".soma"
+        let baseName := name.dropEnd 5 |>.copy
         let moduleName := packageName ++ "/" ++ extendPath pfx baseName
         pure (acc.push (moduleName, fullPath))
       else
