@@ -1030,7 +1030,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           return undef
 
       -- Resolve the function reference by following USE/DUP chains
-      let funcRef ← match resolveCanonicalRef graph fnPort.node with
+      let canonRef := resolveCanonicalRef graph fnPort.node
+      let funcRef ← match canonRef with
         | .bookRef refId =>
           pure (buildFuncRefFromBookRef graph refId (some funcIdMap))
         | .dynamicValue dynNodeId =>

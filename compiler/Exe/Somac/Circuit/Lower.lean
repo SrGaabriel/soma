@@ -1204,15 +1204,17 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
   -- Register type constructors
   registerTypes types globals
 
-  -- We register ALL functions including intrinsics/externs
-  let functions := typedFunctions.toList
-  let localCount := functions.length
+  -- Get list of functions to lower (only those that should be lowered)
+  let functions := typedFunctions.toList.filter fun (_, fn) => shouldLowerBody fn
 
-  -- First pass: register all local functions as globals
+  -- First pass: register all local functions that will be lowered as globals
+  -- Use the index in the filtered list (which matches the book index)
   for (i, (_, fn)) in enumList functions do
     LowerM.modifyCtx fun ctx => ctx.registerGlobal fn.name i
 
   -- Second pass: register external functions from dependencies
+  -- Their book indices start after all local functions
+  let localCount := functions.length
   if let some g := globals then
     let externals := g.defs.toList.filter fun (name, info) =>
       !typedFunctions.contains name &&
@@ -1220,12 +1222,11 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
     for (i, (_, info)) in enumList externals do
       LowerM.modifyCtx fun ctx => ctx.registerGlobal info.name (localCount + i)
 
-  -- Third pass: lower each function body
+  -- Third pass: lower each function body and add to book
   for (_, fn) in functions do
-    if shouldLowerBody fn then
-      let root ← lowerFunction fn
-      let arity := fn.params.size
-      let _ ← LowerM.addDefinition fn.name root arity fn.fnType
+    let root ← lowerFunction fn
+    let arity := fn.params.size
+    let _ ← LowerM.addDefinition fn.name root arity fn.fnType
 
   -- Fourth pass: add placeholder definitions for external functions (will be resolved at merge-time)
   if let some g := globals then
