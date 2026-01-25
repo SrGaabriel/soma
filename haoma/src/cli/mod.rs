@@ -68,7 +68,11 @@ pub fn parse() -> Cli {
 
 pub fn execute(command: &Commands) {
     match &command {
-        Commands::Build { path, verbose, emit_llvm } => {
+        Commands::Build {
+            path,
+            verbose,
+            emit_llvm,
+        } => {
             unsafe {
                 if *emit_llvm {
                     std::env::set_var("SOMA_EMIT_LLVM", "1");

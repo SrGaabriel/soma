@@ -89,11 +89,11 @@ impl Manifest {
         lines.push(format!("version {:?}", self.version));
         lines.push(format!("type {:?}", self.module_type.as_str()));
 
-        if let Some(authors) = &self.authors {
-            if !authors.is_empty() {
-                let author_args: Vec<String> = authors.iter().map(|a| format!("{:?}", a)).collect();
-                lines.push(format!("authors {}", author_args.join(" ")));
-            }
+        if let Some(authors) = &self.authors
+            && !authors.is_empty()
+        {
+            let author_args: Vec<String> = authors.iter().map(|a| format!("{:?}", a)).collect();
+            lines.push(format!("authors {}", author_args.join(" ")));
         }
 
         if !self.dependencies.dependencies.is_empty() {
@@ -292,10 +292,10 @@ fn parse_dependency(
         return Ok((name, ManifestDependencyValue::Custom { path, version }));
     }
 
-    if let Some(entry) = node.entries().first() {
-        if let Some(version) = entry.value().as_string() {
-            return Ok((name, ManifestDependencyValue::Version(version.to_string())));
-        }
+    if let Some(entry) = node.entries().first()
+        && let Some(version) = entry.value().as_string()
+    {
+        return Ok((name, ManifestDependencyValue::Version(version.to_string())));
     }
 
     Err(ManifestError::InvalidDependency {

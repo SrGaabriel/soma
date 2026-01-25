@@ -72,14 +72,13 @@ pub fn find_sysroot(config_sysroot: Option<&str>) -> Option<PathBuf> {
         }
     }
 
-    if let Ok(somac_path) = which::which("somac") {
-        if let Some(bin_dir) = somac_path.parent() {
-            if let Some(sysroot) = bin_dir.parent() {
-                let lib_path = sysroot.join("lib");
-                if lib_path.exists() {
-                    return Some(sysroot.to_path_buf());
-                }
-            }
+    if let Ok(somac_path) = which::which("somac")
+        && let Some(bin_dir) = somac_path.parent()
+        && let Some(sysroot) = bin_dir.parent()
+    {
+        let lib_path = sysroot.join("lib");
+        if lib_path.exists() {
+            return Some(sysroot.to_path_buf());
         }
     }
 
