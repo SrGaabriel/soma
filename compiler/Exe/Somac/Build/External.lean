@@ -96,7 +96,11 @@ def compileToObject
     : IO (Except String Unit) := do
   -- Use clang to compile LLVM IR directly to object
   let optFlag := s!"-O{min optLevel 3}"
-  let args := #["-c", optFlag, "-o", oPath.toString, llPath.toString]
+  let mut args := #["-c", optFlag, "-o", oPath.toString, llPath.toString]
+
+  -- On Windows, target MinGW to match the linker (gcc uses ___chkstk, MSVC uses __chkstk)
+  if System.Platform.isWindows then
+    args := #["-target", "x86_64-w64-mingw32"] ++ args
 
   let result ← runCommand tools.clang args
 
@@ -128,6 +132,10 @@ def linkExecutable
 
   -- Add standard libraries (math library often needed)
   args := args.push "-lm"
+
+  -- On Windows, link against libgcc for __chkstk (stack probing for large stack frames)
+  if System.Platform.isWindows then
+    args := args.push "-lgcc"
 
   -- Use system cc for linking (todo: reconsider)
   let result ← runCommand tools.cc args

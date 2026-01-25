@@ -41,7 +41,13 @@ pub fn compile_binary(
     node: &BuildNode,
     dependency_tarballs: &HashMap<String, PathBuf>,
 ) -> BuildResult<PathBuf> {
-    compile_module(node, dependency_tarballs, node.name.clone())
+    let platform_suffix = if cfg!(target_os = "windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    let output_filename = format!("{}{}", node.manifest.name, platform_suffix);
+    compile_module(node, dependency_tarballs, output_filename)
 }
 
 fn compile_module(

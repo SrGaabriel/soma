@@ -14,6 +14,12 @@
 #include <stdatomic.h>
 #include <stdio.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 /* Global label counter (atomic for future parallel support) */
 _Atomic uint32_t soma_label_counter = 0;
 
@@ -921,10 +927,21 @@ static void* worker_main(void* arg) {
  * Runtime Lifecycle
  */
 
+/* Get number of available CPU cores (platform-specific) */
+static int get_num_cpus(void) {
+#ifdef _WIN32
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    return (int)sysinfo.dwNumberOfProcessors;
+#else
+    return (int)sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+}
+
 void soma_par_init(int num_workers) {
     if (num_workers <= 0) {
         /* Auto-detect: use number of online CPUs - 1 (main thread counts) */
-        num_workers = (int)sysconf(_SC_NPROCESSORS_ONLN) - 1;
+        num_workers = get_num_cpus() - 1;
         if (num_workers < 1) num_workers = 1;
     }
     if (num_workers > SOMA_MAX_WORKERS) {
