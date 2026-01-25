@@ -212,8 +212,8 @@ def generatePrimOpWrapper (op : PrimOp) (funcId : FuncId) : Func :=
     if op.isBinary then
       match primOpToBinOp op with
       | some binOp =>
-        let resultTy := sig.retTy
-        #[Stmt.withResult ⟨3⟩ (.binOp binOp (.local ⟨1⟩) (.local ⟨2⟩) resultTy)]
+        let opTy := if op.isComparison then sig.params[1]!.ty else sig.retTy
+        #[Stmt.withResult ⟨3⟩ (.binOp binOp (.local ⟨1⟩) (.local ⟨2⟩) opTy)]
       | none => #[]
     else
       match op with

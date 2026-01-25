@@ -454,6 +454,21 @@ def hasResult : IntrinsicOp → Bool
   | .ptrWrite => false
   | _ => true
 
+/-- Get the return type for an intrinsic operation if predictable -/
+def fixedRetTy : IntrinsicOp → Option Ty
+  | .ptrNull => some .rawPtr
+  | .ptrAdd => some .rawPtr
+  | .ptrDiff => some (.prim .i64)
+  | .ptrRead => none
+  | .ptrWrite => some (.prim .unit)
+  | .ptrCast => some .rawPtr
+  | .toCString => some .rawPtr
+  | .fromCString => some .rawPtr
+  | .cstringLen => some (.prim .u64)
+  | .strcat => some .rawPtr
+  | .intToString => some .rawPtr
+  | .pureIO => none
+
 end IntrinsicOp
 
 /-- Primitive operations (for FuncRef.primOp) -/

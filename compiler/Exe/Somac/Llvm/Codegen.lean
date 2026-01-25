@@ -1035,7 +1035,7 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     | .ptrNull =>
       -- Null pointer constant
       let ref ← CodegenM.withFuncBuilder (FuncBuilder.bitcast .ptr .ptr nullVal)
-      pure (some (ref, retTy))
+      pure (some (ref, .rawPtr))
 
     | .ptrRead =>
       -- Load from pointer: ptr_read ptr -> value
@@ -1067,7 +1067,7 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
         let ptrVal' ← ensurePtr ptrTy ptrVal
         -- GEP with byte offset (treat as i8*)
         let ref ← CodegenM.withFuncBuilder (FuncBuilder.gep .i8 ptrVal' #[(offsetTy, offsetVal)])
-        pure (some (ref, retTy))
+        pure (some (ref, .rawPtr))
       else
         pure none
 
@@ -1091,19 +1091,19 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
         -- Ensure the argument is actually a pointer (handle i64 undefs from dead code)
         let ptrVal' ← ensurePtr ptrTy ptrVal
         let ref ← CodegenM.withFuncBuilder (FuncBuilder.bitcast .ptr .ptr ptrVal')
-        pure (some (ref, retTy))
+        pure (some (ref, .rawPtr))
       else
         pure none
 
     | .toCString =>
       -- Convert String to C string: call runtime function
       let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_to_cstring" llvmArgs)
-      pure (some (ref, retTy))
+      pure (some (ref, .rawPtr))
 
     | .fromCString =>
       -- Convert C string to String: call runtime function
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy "soma_from_cstring" llvmArgs)
-      pure (some (ref, retTy))
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_from_cstring" llvmArgs)
+      pure (some (ref, .rawPtr))
 
     | .cstringLen =>
       -- Get C string length: call runtime function
@@ -1112,13 +1112,13 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
 
     | .strcat =>
       -- String concatenation: call runtime function
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy "soma_strcat" llvmArgs)
-      pure (some (ref, retTy))
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_strcat" llvmArgs)
+      pure (some (ref, .rawPtr))
 
     | .intToString =>
       -- Integer to string: call runtime function
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy "soma_int_to_string" llvmArgs)
-      pure (some (ref, retTy))
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_int_to_string" llvmArgs)
+      pure (some (ref, .rawPtr))
 
     | .pureIO =>
       -- pure_io is identity at runtime (IO is just a newtype wrapper)
@@ -1387,6 +1387,45 @@ def addRuntimeDeclarations : CodegenM Unit := do
       isDeclaration := true
     }
 
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_to_cstring"
+      retTy := .ptr
+      params := #[{ name := "str", ty := .i64 }]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_from_cstring"
+      retTy := .ptr
+      params := #[{ name := "cstr", ty := .ptr }]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_cstring_len"
+      retTy := .i64
+      params := #[{ name := "cstr", ty := .ptr }]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_strcat"
+      retTy := .ptr
+      params := #[{ name := "a", ty := .ptr }, { name := "b", ty := .ptr }]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_int_to_string"
+      retTy := .ptr
+      params := #[{ name := "val", ty := .i32 }]
+      isDeclaration := true
+    }
 
 
 /-- Lower an Alloy module to LLVM -/

@@ -649,7 +649,9 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
 
     match maybeIntrinsic with
     | some (Sum.inl ffiOp) =>
-      StateT.lift (LowerM.emitInst (.callIntrinsic (convertFFIOp ffiOp) #[.local argVal] nodeTy) nodeTy)
+      let intrinsicOp := convertFFIOp ffiOp
+      let retTy := intrinsicOp.fixedRetTy.getD nodeTy
+      StateT.lift (LowerM.emitInst (.callIntrinsic intrinsicOp #[.local argVal] retTy) retTy)
     | some (Sum.inr externName) =>
       -- Extern function: emit callExtern
       StateT.lift (LowerM.emitInst (.callExtern externName #[.local argVal] nodeTy) nodeTy)
@@ -782,7 +784,9 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
   | .op2 op => do
     let lhsVal ← lowerPort 1
     let rhsVal ← lowerPort 2
-    StateT.lift (LowerM.emitInst (.binOp (convertBinOp op) (.local lhsVal) (.local rhsVal) nodeTy) nodeTy)
+    let binOp := convertBinOp op
+    let opTy := if binOp.isComparison then getPortType 1 else nodeTy
+    StateT.lift (LowerM.emitInst (.binOp binOp (.local lhsVal) (.local rhsVal) opTy) nodeTy)
 
   | .dup _ => do
     let inputVal ← lowerPort 0
@@ -995,7 +999,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
     match maybeIntrinsic with
     | some (Sum.inl ffiOp) =>
-      StateT.lift (LowerM.emitInst (.callIntrinsic (convertFFIOp ffiOp) #[.local argVal] nodeTy) nodeTy)
+      let intrinsicOp := convertFFIOp ffiOp
+      let retTy := intrinsicOp.fixedRetTy.getD nodeTy
+      StateT.lift (LowerM.emitInst (.callIntrinsic intrinsicOp #[.local argVal] retTy) retTy)
     | some (Sum.inr externName) =>
       StateT.lift (LowerM.emitInst (.callExtern externName #[.local argVal] nodeTy) nodeTy)
     | none =>
@@ -1119,7 +1125,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   | .op2 op => do
     let lhsVal ← lowerPort 1
     let rhsVal ← lowerPort 2
-    StateT.lift (LowerM.emitInst (.binOp (convertBinOp op) (.local lhsVal) (.local rhsVal) nodeTy) nodeTy)
+    let binOp := convertBinOp op
+    let opTy := if binOp.isComparison then getPortType 1 else nodeTy
+    StateT.lift (LowerM.emitInst (.binOp binOp (.local lhsVal) (.local rhsVal) opTy) nodeTy)
 
   | .dup _ => do
     let inputVal ← lowerPort 0
