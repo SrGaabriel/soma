@@ -29,7 +29,8 @@ pub enum Commands {
     Build {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
-        /// Keep the generated LLVM IR file (.ll) after compilation
+        #[arg(short, long)]
+        verbose: bool,
         #[arg(long)]
         emit_llvm: bool,
     },
@@ -67,10 +68,13 @@ pub fn parse() -> Cli {
 
 pub fn execute(command: &Commands) {
     match &command {
-        Commands::Build { path, emit_llvm } => {
-            if *emit_llvm {
-                unsafe {
+        Commands::Build { path, verbose, emit_llvm } => {
+            unsafe {
+                if *emit_llvm {
                     std::env::set_var("SOMA_EMIT_LLVM", "1");
+                }
+                if *verbose {
+                    std::env::set_var("SOMA_VERBOSE_LOGGING", "1");
                 }
             }
             build::execute(path);

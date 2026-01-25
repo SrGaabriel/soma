@@ -8,8 +8,23 @@ use crate::config::build::{BuildConfig, find_sysroot};
 use crate::config::manifest::ManifestModuleType;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+
+#[cfg(windows)]
+fn strip_unc_prefix(path: &Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+#[cfg(not(windows))]
+fn strip_unc_prefix(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
 
 pub fn compile_lib(
     node: &BuildNode,
@@ -36,11 +51,11 @@ fn compile_module(
 ) -> BuildResult<PathBuf> {
     let module_path = &node.path;
     let manifest = &node.manifest;
-    let src_path = module_path.join(SRC_FOLDER_NAME);
+    let src_path = strip_unc_prefix(&module_path.join(SRC_FOLDER_NAME));
     let build_path = module_path.join(BUILD_FOLDER_NAME);
 
     fs::create_dir_all(&build_path).map_err(BuildError::FailedToCreateBuildDirectory)?;
-    let output_file = build_path.join(output_filename);
+    let output_file = strip_unc_prefix(&build_path.join(output_filename));
 
     let build_config_path = module_path
         .join(CONFIG_FOLDER_NAME)
@@ -52,10 +67,6 @@ fn compile_module(
         )
         .map_err(|_| BuildError::FailedToParseBuildConfigFile(build_config_path))?
     } else {
-        println!(
-            "No build config found at: {}, using defaults",
-            build_config_path.display()
-        );
         BuildConfig::default()
     };
 
@@ -73,15 +84,14 @@ fn compile_module(
     if let Some(sysroot) = find_sysroot(build_config.somac.sysroot.as_deref()) {
         command.arg("--sysroot").arg(sysroot);
     }
+    let verbose =
+        std::env::var("SOMA_VERBOSE_LOGGING").is_ok() || build_config.somac.debug.unwrap_or(false);
 
     command.stdout(Stdio::null()).stderr(Stdio::inherit());
-    if let Some(debug_flag) = build_config.somac.debug
-        && debug_flag
-    {
+    if verbose {
         command.stdout(Stdio::inherit());
     }
 
-    // Check both config file and environment variable for emit_llvm
     let emit_llvm_from_config = build_config.somac.emit_llvm.unwrap_or(false);
     let emit_llvm_from_env = std::env::var("SOMA_EMIT_LLVM").is_ok();
     if emit_llvm_from_config || emit_llvm_from_env {
@@ -93,7 +103,7 @@ fn compile_module(
     if !dependency_tarballs.is_empty() {
         let deps_str: Vec<String> = dependency_tarballs
             .iter()
-            .map(|(name, path)| format!("{}={}", name, path.display()))
+            .map(|(name, path)| format!("{}={}", name, strip_unc_prefix(path).display()))
             .collect();
         command.arg("--dep").arg(deps_str.join(","));
     }
