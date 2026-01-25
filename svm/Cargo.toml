@@ -15,3 +15,6 @@ thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 which = "8"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

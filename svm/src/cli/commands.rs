@@ -72,8 +72,17 @@ impl CommandRunner {
 
         for component in components {
             let work_dir = project_root.join(&component.path);
-            let src = work_dir.join(&component.binary_path);
-            let dest = bin_dir.join(&component.name);
+            let src = if cfg!(windows) {
+                work_dir.join(component.binary_path.with_extension("exe"))
+            } else {
+                work_dir.join(&component.binary_path)
+            };
+            let dest_name = if cfg!(windows) {
+                format!("{}.exe", component.name)
+            } else {
+                component.name.clone()
+            };
+            let dest = bin_dir.join(&dest_name);
 
             if !src.exists() {
                 println!("Building {}...", component.name);
@@ -277,10 +286,77 @@ impl CommandRunner {
             self.setup_macos_env(bin_path)?;
         }
 
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(windows)]
         {
-            self.setup_profile_fallback(bin_path)?;
+            self.setup_windows_env(bin_path)?;
         }
+
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn setup_windows_env(&self, bin_path: &std::path::Path) -> Result<()> {
+        use std::ptr;
+        use winreg::RegKey;
+        use winreg::enums::*;
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let env = hkcu
+            .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
+            .map_err(|e| SvmError::ShellSetupFailed(format!("Failed to open registry: {}", e)))?;
+
+        let current_path: String = env.get_value("Path").unwrap_or_default();
+        let bin_path_str = bin_path.to_string_lossy();
+
+        if current_path
+            .split(';')
+            .any(|p| p.eq_ignore_ascii_case(&bin_path_str))
+        {
+            println!("PATH already contains {}", bin_path_str);
+            return Ok(());
+        }
+
+        let new_path = if current_path.is_empty() {
+            bin_path_str.to_string()
+        } else {
+            format!("{};{}", bin_path_str, current_path)
+        };
+
+        env.set_value("Path", &new_path)
+            .map_err(|e| SvmError::ShellSetupFailed(format!("Failed to update PATH: {}", e)))?;
+
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn SendMessageTimeoutW(
+                hwnd: *mut std::ffi::c_void,
+                msg: u32,
+                wparam: usize,
+                lparam: *const u16,
+                flags: u32,
+                timeout: u32,
+                result: *mut usize,
+            ) -> isize;
+        }
+
+        const HWND_BROADCAST: *mut std::ffi::c_void = 0xffff as *mut std::ffi::c_void;
+        const WM_SETTINGCHANGE: u32 = 0x001A;
+        const SMTO_ABORTIFHUNG: u32 = 0x0002;
+
+        let environment: Vec<u16> = "Environment\0".encode_utf16().collect();
+        unsafe {
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                environment.as_ptr(),
+                SMTO_ABORTIFHUNG,
+                5000,
+                ptr::null_mut(),
+            );
+        }
+
+        println!("Added {} to user PATH", bin_path_str);
+        println!("Restart your terminal for changes to take effect.");
 
         Ok(())
     }
@@ -467,11 +543,37 @@ impl CommandRunner {
                     bin_path.display()
                 ),
             ),
+            "powershell" | "pwsh" => {
+                let docs = base_dirs
+                    .home_dir()
+                    .join("Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1");
+                let docs_legacy = base_dirs
+                    .home_dir()
+                    .join("Documents\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1");
+                (
+                    vec![docs, docs_legacy],
+                    format!(
+                        "\n# Soma Version Manager\n$env:Path = \"{};$env:Path\"\n",
+                        bin_path.display()
+                    ),
+                )
+            }
             _ => {
-                return Err(SvmError::ShellSetupFailed(format!(
-                    "Unsupported shell: {}",
-                    shell
-                )));
+                #[cfg(windows)]
+                {
+                    println!(
+                        "Shell '{}' not supported, but PATH was added via Windows Registry.",
+                        shell
+                    );
+                    return Ok(());
+                }
+                #[cfg(not(windows))]
+                {
+                    return Err(SvmError::ShellSetupFailed(format!(
+                        "Unsupported shell: {}",
+                        shell
+                    )));
+                }
             }
         };
 
@@ -540,10 +642,20 @@ fn dirs_path() -> PathBuf {
 }
 
 fn detect_shell() -> String {
-    std::env::var("SHELL")
-        .ok()
-        .and_then(|s| s.rsplit('/').next().map(|s| s.to_string()))
-        .unwrap_or_else(|| "bash".to_string())
+    #[cfg(windows)]
+    {
+        if std::env::var("PSModulePath").is_ok() {
+            return "powershell".to_string();
+        }
+        "powershell".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var("SHELL")
+            .ok()
+            .and_then(|s| s.rsplit('/').next().map(|s| s.to_string()))
+            .unwrap_or_else(|| "bash".to_string())
+    }
 }
 
 pub fn self_uninstall(yes: bool) -> Result<()> {
