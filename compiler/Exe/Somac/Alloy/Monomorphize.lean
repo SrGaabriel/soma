@@ -237,8 +237,11 @@ def collectInstRequests (inst : Inst) : Array SpecKey :=
   match inst with
   | .callPoly funcId typeArgs _ _ =>
     if typeArgs.all Ty.isMonomorphic then #[⟨funcId, typeArgs⟩] else #[]
-  | .makeClosurePoly funcId typeArgs _ =>
-    if typeArgs.all Ty.isMonomorphic then #[⟨funcId, typeArgs⟩] else #[]
+  | .makeClosurePoly funcRef typeArgs _ =>
+    match funcRef with
+    | .local funcId =>
+      if typeArgs.all Ty.isMonomorphic then #[⟨funcId, typeArgs⟩] else #[]
+    | _ => #[]
   | _ => #[]
 
 /-- Extract specialization requests from a block -/
@@ -307,11 +310,15 @@ def rewriteInst (inst : Inst) (specMap : Std.HashMap SpecKey FuncId) : Inst :=
     match specMap.get? key with
     | some newFuncId => .call newFuncId args retTy
     | none => inst  -- Keep as-is if not found (shouldn't happen for valid programs)
-  | .makeClosurePoly funcId typeArgs env =>
-    let key : SpecKey := ⟨funcId, typeArgs⟩
-    match specMap.get? key with
-    | some newFuncId => .makeClosure newFuncId env
-    | none => inst
+  | .makeClosurePoly funcRef typeArgs env =>
+    -- Extract FuncId from FuncRef
+    match funcRef with
+    | .local funcId =>
+      let key : SpecKey := ⟨funcId, typeArgs⟩
+      match specMap.get? key with
+      | some newFuncId => .makeClosure (.local newFuncId) env
+      | none => inst
+    | _ => inst
   | _ => inst
 
 /-- Rewrite a statement -/
@@ -456,22 +463,28 @@ def isUsed (m : Module) (funcId : FuncId) : Bool :=
           block.stmts.any fun stmt =>
             match stmt.inst with
             | .call fid _ _ => fid == funcId
-            | .makeClosure fid _ => fid == funcId
+            | .makeClosure (.local fid) _ => fid == funcId
             | _ => false
 
 /-- Remap function reference -/
-def remapFuncRef (fid : FuncId) (idMap : Std.HashMap Nat Nat) : FuncId :=
+def remapFuncId (fid : FuncId) (idMap : Std.HashMap Nat Nat) : FuncId :=
   match idMap.get? fid.id with
   | some newId => ⟨newId⟩
   | none => fid
 
+/-- Remap FuncRef -/
+def remapFuncRefId (ref : FuncRef) (idMap : Std.HashMap Nat Nat) : FuncRef :=
+  match ref with
+  | .local fid => .local (remapFuncId fid idMap)
+  | _ => ref
+
 /-- Remap function references in an instruction -/
 def remapInstRefs (inst : Inst) (idMap : Std.HashMap Nat Nat) : Inst :=
   match inst with
-  | .call fid args retTy => .call (remapFuncRef fid idMap) args retTy
-  | .callPoly fid tyArgs args retTy => .callPoly (remapFuncRef fid idMap) tyArgs args retTy
-  | .makeClosure fid env => .makeClosure (remapFuncRef fid idMap) env
-  | .makeClosurePoly fid tyArgs env => .makeClosurePoly (remapFuncRef fid idMap) tyArgs env
+  | .call fid args retTy => .call (remapFuncId fid idMap) args retTy
+  | .callPoly fid tyArgs args retTy => .callPoly (remapFuncId fid idMap) tyArgs args retTy
+  | .makeClosure ref env => .makeClosure (remapFuncRefId ref idMap) env
+  | .makeClosurePoly ref tyArgs env => .makeClosurePoly (remapFuncRefId ref idMap) tyArgs env
   | _ => inst
 
 /-- Remap function references in a function -/
@@ -598,8 +611,8 @@ def reportPolymorphism (m : Module) : Array String :=
             match stmt.inst with
             | .callPoly funcId typeArgs _ _ =>
               issues := issues.push s!"Function {f.sig.name} has callPoly to {funcId} with {typeArgs}"
-            | .makeClosurePoly funcId typeArgs _ =>
-              issues := issues.push s!"Function {f.sig.name} has makeClosurePoly to {funcId} with {typeArgs}"
+            | .makeClosurePoly funcRef typeArgs _ =>
+              issues := issues.push s!"Function {f.sig.name} has makeClosurePoly to {funcRef} with {typeArgs}"
             | _ => pure ()
 
       pure issues

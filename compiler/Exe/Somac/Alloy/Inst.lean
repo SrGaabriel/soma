@@ -91,11 +91,11 @@ inductive Inst where
   | callClosure (closure : Operand) (args : Array Operand) (retTy : Ty)
 
   /-- Create closure from polymorphic function: result = { fn<T1, T2, ...>, env } -/
-  | makeClosurePoly (func : FuncId) (typeArgs : Array Ty) (env : Operand)
+  | makeClosurePoly (func : FuncRef) (typeArgs : Array Ty) (env : Operand)
 
   /-- Create closure: result = { fn, env }
       Captures environment pointer with function pointer -/
-  | makeClosure (func : FuncId) (env : Operand)
+  | makeClosure (func : FuncRef) (env : Operand)
 
   /-- Get function pointer from closure -/
   | closureFunc (closure : Operand)
@@ -237,10 +237,10 @@ instance : ToString Inst where
     | .callClosure closure args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call.closure {closure}({as})"
-    | .makeClosurePoly func typeArgs env =>
+    | .makeClosurePoly funcRef typeArgs env =>
       let ts := String.intercalate ", " (typeArgs.toList.map ToString.toString)
-      s!"makeclosure.poly {func}<{ts}>, {env}"
-    | .makeClosure func env => s!"makeclosure {func}, {env}"
+      s!"makeclosure.poly {funcRef}<{ts}>, {env}"
+    | .makeClosure funcRef env => s!"makeclosure {funcRef}, {env}"
     | .closureFunc closure => s!"closure.func {closure}"
     | .closureEnv closure => s!"closure.env {closure}"
     | .phi incoming _ =>

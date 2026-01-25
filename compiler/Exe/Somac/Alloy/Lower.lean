@@ -215,6 +215,73 @@ def convertFFIOp : FFIOp → IntrinsicOp
   | .intToString => .intToString
   | .pureIO => .pureIO
 
+/-- Convert Core.PrimOp to Alloy.PrimOp -/
+def convertCorePrimOp : Soma.Core.PrimOp → PrimOp
+  | .add => .add | .sub => .sub | .mul => .mul | .div => .div | .mod => .mod
+  | .eq => .eq | .ne => .ne | .lt => .lt | .le => .le | .gt => .gt | .ge => .ge
+  | .and => .and | .or => .or | .not => .not | .neg => .neg
+
+/-- Result of resolving a function reference through the IR graph -/
+inductive CanonicalRef where
+  /-- Direct reference to a book definition by index -/
+  | bookRef (idx : Nat)
+  /-- Runtime-computed value -/
+  | dynamicValue (nodeId : CNodeId)
+  deriving Repr, Inhabited
+
+/-- Follow USE/DUP chains to find the canonical source of a value -/
+partial def resolveCanonicalRef (graph : CGraph) (nodeId : CNodeId)
+    (fuel : Nat := 1000) : CanonicalRef :=
+  if fuel == 0 then
+    .dynamicValue nodeId
+  else
+    match graph.getNode nodeId with
+    | some entry =>
+      match entry.node with
+      | .ref idx => .bookRef idx
+      | .alo idx => .bookRef idx
+      | .use =>
+        -- USE reads its value from port 1, follow through
+        match entry.getPort ⟨1⟩ with
+        | some port => resolveCanonicalRef graph port.node (fuel - 1)
+        | none => .dynamicValue nodeId
+      | .dup _ =>
+        -- DUP duplicates its input from port 0, follow through
+        match entry.getPort ⟨0⟩ with
+        | some port => resolveCanonicalRef graph port.node (fuel - 1)
+        | none => .dynamicValue nodeId
+      | _ =>
+        .dynamicValue nodeId
+    | none => .dynamicValue nodeId
+
+/-- Build a FuncRef from a book index, handling intrinsics and externals -/
+def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
+    (funcIdMap : Option (Std.HashMap Nat FuncId) := none) : FuncRef :=
+  match graph.getDefinition refId with
+  | some def_ =>
+    -- Check if the definition's Name carries intrinsic information
+    match def_.name.intrinsic? with
+    | some (Intrinsic.ffiOp op) => .intrinsic (convertFFIOp op)
+    | some (Intrinsic.extern name) => .externC name
+    | some (Intrinsic.primOp op) => .primOp (convertCorePrimOp op)
+    | some (Intrinsic.llvm name) => .externC name
+    | some (Intrinsic.runtime fn) => .externC fn.name
+    | none =>
+      if def_.isExternal then
+        .external def_.name.display
+      else
+        -- Local function
+        match funcIdMap with
+        | some map =>
+          match map.get? refId with
+          | some funcId => .local funcId
+          | none => .external def_.name.display
+        | none =>
+          .local (FuncId.mk refId)
+  | none =>
+    -- todo: consider panicking
+    .external s!"unresolved_ref_{refId}"
+
 open Soma.Core (Value StarPrimitive HigherPrimitive TypeId)
 
 /-- Convert a StarPrimitive to Alloy PrimTy -/
@@ -618,27 +685,27 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     -- Check for special closure CTOR (tag 0xFFFFFE, arity 2)
     if tag == closureTag && arity == 2 then
       -- Closure CTOR
-      let fnRefNodeId ← match entry.getPort ⟨1⟩ with
-        | some fnPort => pure fnPort.node
+      let fnPort ← match entry.getPort ⟨1⟩ with
+        | some p => pure p
         | none =>
           let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
           return undef
 
-      -- Look up the REF node to get the function ID
-      let funcId ← match graph.getNode fnRefNodeId with
-        | some fnEntry =>
-          match fnEntry.node with
-          | .ref refId | .alo refId => pure (FuncId.mk refId)
-          | _ => pure (FuncId.mk 0)
-        | none => pure (FuncId.mk 0)
+      -- Resolve the function reference by following USE/DUP chains
+      let funcRef ← match resolveCanonicalRef graph fnPort.node with
+        | .bookRef refId =>
+          pure (buildFuncRefFromBookRef graph refId none)
+        | .dynamicValue dynNodeId =>
+          -- todo: extract the function pointer at runtime.
+          pure (FuncRef.external s!"$dynamic_closure_{dynNodeId.id}")
 
-      -- Lower the environment (field 1)
+      -- Lower the environment (port 2)
       let envVal ← match entry.getPort ⟨2⟩ with
         | some envPort => lowerOperand graph envPort
         | none => StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
 
       -- Emit makeClosure instruction
-      StateT.lift (LowerM.emitInst (.makeClosure funcId (.local envVal)) nodeTy)
+      StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local envVal)) nodeTy)
     else
       -- Regular constructor: build tagged struct
       let mut fieldVals : Array LocalId := #[]
@@ -733,20 +800,10 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
   | .ref refId | .alo refId => do
-    match graph.getDefinition refId with
-    | some def_ =>
-      match def_.name.intrinsic? with
-      | some _ => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
-      | none =>
-        -- Wrap function in closure with null environment
-        let funcId := FuncId.mk refId
-        let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
-        StateT.lift (LowerM.emitInst (.makeClosure funcId (.local nullEnv)) nodeTy)
-    | none =>
-      -- External function reference: wrap in closure with null environment
-      let funcId := FuncId.mk refId
-      let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
-      StateT.lift (LowerM.emitInst (.makeClosure funcId (.local nullEnv)) nodeTy)
+    -- Function reference used as a value
+    let funcRef := buildFuncRefFromBookRef graph refId none
+    let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+    StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local nullEnv)) nodeTy)
 
   | .use => lowerPort 1
 
@@ -965,26 +1022,26 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
   | .ctor tag arity => do
     if tag == closureTag && arity == 2 then
-      let fnRefNodeId ← match entry.getPort ⟨1⟩ with
-        | some fnPort => pure fnPort.node
+      -- Closure CTOR: function reference at port 1, environment at port 2
+      let fnPort ← match entry.getPort ⟨1⟩ with
+        | some p => pure p
         | none =>
           let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
           return undef
 
-      let funcId ← match graph.getNode fnRefNodeId with
-        | some fnEntry =>
-          match fnEntry.node with
-          | .ref refId | .alo refId =>
-            -- Use the mapping to get the correct Alloy FuncId
-            pure (funcIdMap.get? refId |>.getD (FuncId.mk 0))
-          | _ => pure (FuncId.mk 0)
-        | none => pure (FuncId.mk 0)
+      -- Resolve the function reference by following USE/DUP chains
+      let funcRef ← match resolveCanonicalRef graph fnPort.node with
+        | .bookRef refId =>
+          pure (buildFuncRefFromBookRef graph refId (some funcIdMap))
+        | .dynamicValue dynNodeId =>
+          -- todo: consider panicking
+          pure (FuncRef.external s!"$dynamic_closure_{dynNodeId.id}")
 
       let envVal ← match entry.getPort ⟨2⟩ with
         | some envPort => lowerOperandWithMap graph envPort funcIdMap
         | none => StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
 
-      StateT.lift (LowerM.emitInst (.makeClosure funcId (.local envVal)) nodeTy)
+      StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local envVal)) nodeTy)
     else
       -- Regular constructor: build tagged struct or struct literal
       let mut fieldVals : Array LocalId := #[]
@@ -1078,19 +1135,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
 
   | .ref refId | .alo refId => do
-    match graph.getDefinition refId with
-    | some def_ =>
-      match def_.name.intrinsic? with
-      | some _ => StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy))) nodeTy)
-      | none =>
-        -- Use the mapping to get the correct Alloy FuncId
-        let funcId := funcIdMap.get? refId |>.getD (FuncId.mk 0)
-        let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
-        StateT.lift (LowerM.emitInst (.makeClosure funcId (.local nullEnv)) nodeTy)
-    | none =>
-      let funcId := funcIdMap.get? refId |>.getD (FuncId.mk 0)
-      let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
-      StateT.lift (LowerM.emitInst (.makeClosure funcId (.local nullEnv)) nodeTy)
+    -- Use centralized helper for consistent FuncRef resolution
+    let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
+    let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+    StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local nullEnv)) nodeTy)
 
   | .use => lowerPort 1
 

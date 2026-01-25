@@ -1,9 +1,11 @@
 import Somac.Alloy.Func
+import Somac.Alloy.Intrinsic
 import Std.Data.HashMap
 
 namespace Somac.Alloy.Merge
 
 open Somac.Alloy
+open Somac.Alloy.Intrinsic
 
 /-- Mapping from old IDs to new IDs during merge -/
 structure IdRemap where
@@ -33,6 +35,39 @@ def lookupGlobal (r : IdRemap) (moduleName : String) (oldId : Nat) : Option Nat 
 
 end IdRemap
 
+/-- Resolution context for FuncRef resolution -/
+structure FuncRefResolver where
+  /-- Function name → FuncId mapping for external resolution -/
+  nameToFuncId : Std.HashMap String FuncId := {}
+  /-- IntrinsicOp → FuncId of generated wrapper -/
+  intrinsicWrappers : Std.HashMap IntrinsicOp FuncId := {}
+  /-- PrimOp → FuncId of generated wrapper -/
+  primOpWrappers : Std.HashMap PrimOp FuncId := {}
+  /-- ExternC name → FuncId of generated wrapper -/
+  externCWrappers : Std.HashMap String FuncId := {}
+  deriving Inhabited
+
+namespace FuncRefResolver
+
+def empty : FuncRefResolver := {}
+
+/-- Resolve a FuncRef to a FuncId -/
+def resolve (r : FuncRefResolver) (ref : FuncRef) : Option FuncId :=
+  match ref with
+  | .local id => some id
+  | .external name => r.nameToFuncId.get? name
+  | .intrinsic op => r.intrinsicWrappers.get? op
+  | .primOp op => r.primOpWrappers.get? op
+  | .externC name => r.externCWrappers.get? name
+
+/-- Resolve a FuncRef, returning local with the resolved ID or the original ref -/
+def resolveToLocal (r : FuncRefResolver) (ref : FuncRef) : FuncRef :=
+  match r.resolve ref with
+  | some id => .local id
+  | none => ref
+
+end FuncRefResolver
+
 /-- Rewrite FuncId references in an operand -/
 def remapOperand (remap : IdRemap) (moduleName : String) (op : Operand) : Operand :=
   match op with
@@ -46,10 +81,20 @@ def remapOperand (remap : IdRemap) (moduleName : String) (op : Operand) : Operan
     | none => op
   | _ => op
 
+/-- Remap a FuncRef: update local refs with new IDs -/
+def remapFuncRef (remap : IdRemap) (moduleName : String) (ref : FuncRef) : FuncRef :=
+  match ref with
+  | .local id =>
+    match remap.lookupFunc moduleName id.id with
+    | some newId => .local ⟨newId⟩
+    | none => ref
+  | _ => ref
+
 /-- Rewrite FuncId references in an instruction -/
 def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst) : Inst :=
   let remapOp := remapOperand remap moduleName
   let remapOps := fun ops => ops.map remapOp
+  let remapRef := remapFuncRef remap moduleName
   match inst with
   | .binOp op lhs rhs ty => .binOp op (remapOp lhs) (remapOp rhs) ty
   | .unOp op operand => .unOp op (remapOp operand)
@@ -79,16 +124,8 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst) : Inst :=
     .callPoly newFuncId typeArgs (remapOps args) retTy
   | .callIndirect ptr args retTy => .callIndirect (remapOp ptr) (remapOps args) retTy
   | .callClosure closure args retTy => .callClosure (remapOp closure) (remapOps args) retTy
-  | .makeClosure funcId env =>
-    let newFuncId := match remap.lookupFunc moduleName funcId.id with
-      | some newId => ⟨newId⟩
-      | none => funcId
-    .makeClosure newFuncId (remapOp env)
-  | .makeClosurePoly funcId typeArgs env =>
-    let newFuncId := match remap.lookupFunc moduleName funcId.id with
-      | some newId => ⟨newId⟩
-      | none => funcId
-    .makeClosurePoly newFuncId typeArgs (remapOp env)
+  | .makeClosure funcRef env => .makeClosure (remapRef funcRef) (remapOp env)
+  | .makeClosurePoly funcRef typeArgs env => .makeClosurePoly (remapRef funcRef) typeArgs (remapOp env)
   | .closureFunc closure => .closureFunc (remapOp closure)
   | .closureEnv closure => .closureEnv (remapOp closure)
   | .phi incoming ty =>
@@ -260,15 +297,111 @@ def remapModule (moduleName : String) (state : MergeState) : MergeState := Id.ru
 
   { state with result := { result with funcs := funcs } }
 
+/-- Collect all unresolved FuncRefs from a module -/
+def collectUnresolvedRefs (mod : Module) : Std.HashSet WrapperNeeded := Id.run do
+  let mut result : Std.HashSet WrapperNeeded := {}
+  for func in mod.funcs do
+    if let some cfg := func.body then
+      for block in cfg.allBlocks do
+        for stmt in block.stmts do
+          match stmt.inst with
+          | .makeClosure ref _ | .makeClosurePoly ref _ _ =>
+            match ref with
+            | .primOp op => result := result.insert (.primOp op)
+            | .intrinsic op => result := result.insert (.intrinsicOp op)
+            | .externC name => result := result.insert (.externC name)
+            | _ => pure ()
+          | _ => pure ()
+  result
+
+/-- Build the name→FuncId mapping from all functions in the module -/
+def buildNameTable (mod : Module) : Std.HashMap String FuncId := Id.run do
+  let mut table : Std.HashMap String FuncId := {}
+  for func in mod.funcs do
+    -- Add mapping for the full qualified name
+    table := table.insert func.sig.name func.id
+    let parts := func.sig.name.splitOn "$$"
+    if parts.length >= 2 then
+      -- todo: dont use this bullshit
+      let simpleName := String.intercalate "$$" (parts.drop 1)
+      if not (table.contains simpleName) then
+        table := table.insert simpleName func.id
+  table
+
+/-- Resolve FuncRef in an instruction using the resolver -/
+def resolveInstFuncRefs (resolver : FuncRefResolver) (inst : Inst) : Inst :=
+  match inst with
+  | .makeClosure ref env => .makeClosure (resolver.resolveToLocal ref) env
+  | .makeClosurePoly ref typeArgs env => .makeClosurePoly (resolver.resolveToLocal ref) typeArgs env
+  | _ => inst
+
+/-- Resolve FuncRefs in a statement -/
+def resolveStmtFuncRefs (resolver : FuncRefResolver) (stmt : Stmt) : Stmt :=
+  { stmt with inst := resolveInstFuncRefs resolver stmt.inst }
+
+/-- Resolve FuncRefs in a block -/
+def resolveBlockFuncRefs (resolver : FuncRefResolver) (block : Block) : Block :=
+  { block with stmts := block.stmts.map (resolveStmtFuncRefs resolver) }
+
+/-- Resolve FuncRefs in a CFG -/
+def resolveCFGFuncRefs (resolver : FuncRefResolver) (cfg : CFG) : CFG :=
+  { cfg with
+    blocks := cfg.blocks.fold (init := {}) fun acc id block =>
+      acc.insert id (resolveBlockFuncRefs resolver block)
+  }
+
+/-- Resolve FuncRefs in a function -/
+def resolveFuncFuncRefs (resolver : FuncRefResolver) (func : Func) : Func :=
+  { func with body := func.body.map (resolveCFGFuncRefs resolver) }
+
+/-- Generate wrappers and resolve all FuncRefs in the module -/
+def resolveFuncRefs (mod : Module) : Module := Id.run do
+  -- Collect all unresolved refs
+  let needed := collectUnresolvedRefs mod
+
+  -- Build name table for external resolution
+  let nameTable := buildNameTable mod
+
+  -- Generate wrappers and build resolver
+  let mut nextFuncId := mod.funcs.size
+  let mut wrapperFuncs : Array Func := #[]
+  let mut resolver : FuncRefResolver := { nameToFuncId := nameTable }
+
+  for wrapper in needed do
+    let funcId := FuncId.mk nextFuncId
+    let wrapperFunc := generateWrapper wrapper funcId
+    wrapperFuncs := wrapperFuncs.push wrapperFunc
+
+    -- Register in resolver
+    match wrapper with
+    | .primOp op => resolver := { resolver with primOpWrappers := resolver.primOpWrappers.insert op funcId }
+    | .intrinsicOp op => resolver := { resolver with intrinsicWrappers := resolver.intrinsicWrappers.insert op funcId }
+    | .externC name => resolver := { resolver with externCWrappers := resolver.externCWrappers.insert name funcId }
+
+    nextFuncId := nextFuncId + 1
+
+  -- Resolve all FuncRefs in existing functions
+  let resolvedFuncs := mod.funcs.map (resolveFuncFuncRefs resolver)
+
+  -- Add wrapper functions and update funcIndex
+  let mut funcIndex := mod.funcIndex
+  for wrapper in wrapperFuncs do
+    funcIndex := funcIndex.insert wrapper.sig.name wrapper.id
+
+  { mod with
+    funcs := resolvedFuncs ++ wrapperFuncs
+    funcIndex := funcIndex
+  }
+
 /-- Merge multiple Alloy modules into one -/
 def merge (modules : Array (String × Module)) (outputName : String := "merged") : Module := Id.run do
   if modules.isEmpty then
     return Module.empty outputName
 
   if modules.size == 1 then
-    -- Single module: just rename it
+    -- Single module: resolve FuncRefs and rename
     let (_, m) := modules[0]!
-    return { m with name := outputName }
+    return resolveFuncRefs { m with name := outputName }
 
   -- First pass: register everything
   let mut state := MergeState.init outputName
@@ -287,7 +420,8 @@ def merge (modules : Array (String × Module)) (outputName : String := "merged")
         result := { result with mainFunc := some ⟨newId⟩ }
         break
 
-  result
+  -- Third pass: resolve all FuncRefs (generate wrappers, resolve external names)
+  resolveFuncRefs result
 
 /-- Merge modules from a list -/
 def mergeModules (modules : Array Module) (outputName : String := "merged") : Module :=

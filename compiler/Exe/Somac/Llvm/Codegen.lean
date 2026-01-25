@@ -846,8 +846,11 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
         FuncBuilder.call llvmRetTy (.local fnPtr) llvmArgs
       pure (some (ref, retTy))
 
-  | .makeClosure func env =>
-    let funcName ← CodegenM.getFuncName func.id
+  | .makeClosure funcRef env =>
+    let funcId := match funcRef with
+      | .local id => id
+      | _ => FuncId.mk 0 -- todo: consider panicking
+    let funcName ← CodegenM.getFuncName funcId.id
     let (envLLVMTy, envVal) ← convertOperandWithTy env
     let closurePtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca closureTy)
     -- Store function pointer
@@ -875,14 +878,17 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.load closureTy (.local closurePtr))
     -- Get closure type from function signature if available
     let closureTyAlloy ← do
-      match ← CodegenM.getFuncSig func.id with
+      match ← CodegenM.getFuncSig funcId.id with
       | some sig => pure (.closure (sig.params.map (·.ty)) sig.retTy)
       | none => pure (.closure #[] (.prim .i64))
     pure (some (ref, closureTyAlloy))
 
-  | .makeClosurePoly func _typeArgs env =>
+  | .makeClosurePoly funcRef _typeArgs env =>
     -- Same as makeClosure
-    let funcName ← CodegenM.getFuncName func.id
+    let funcId := match funcRef with
+      | .local id => id
+      | _ => FuncId.mk 0 -- todo: consider panicking
+    let funcName ← CodegenM.getFuncName funcId.id
     let (envLLVMTy, envVal) ← convertOperandWithTy env
     let closurePtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca closureTy)
     let fnPtrSlot ← CodegenM.withFuncBuilder do
@@ -907,7 +913,7 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
       FuncBuilder.store .ptr envPtrVal (.local envPtrSlot)
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.load closureTy (.local closurePtr))
     let closureTyAlloy ← do
-      match ← CodegenM.getFuncSig func.id with
+      match ← CodegenM.getFuncSig funcId.id with
       | some sig => pure (.closure (sig.params.map (·.ty)) sig.retTy)
       | none => pure (.closure #[] (.prim .i64))
     pure (some (ref, closureTyAlloy))

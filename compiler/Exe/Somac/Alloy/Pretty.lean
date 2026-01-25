@@ -79,6 +79,14 @@ def ppBlockId (cfg : Config) (id : BlockId) : String :=
 def ppFuncId (cfg : Config) (id : FuncId) : String :=
   colorLabel cfg s!"@fn{id.id}"
 
+def ppFuncRef (cfg : Config) (ref : FuncRef) : String :=
+  match ref with
+  | .local id => ppFuncId cfg id
+  | .external name => colorLabel cfg s!"@extern\"{name}\""
+  | .intrinsic op => colorLabel cfg s!"@intrinsic.{op}"
+  | .primOp op => colorLabel cfg s!"@primop.{op}"
+  | .externC name => colorLabel cfg s!"@externc\"{name}\""
+
 def ppGlobalId (cfg : Config) (id : GlobalId) : String :=
   colorLabel cfg s!"@g{id.id}"
 
@@ -181,10 +189,10 @@ def ppInst (cfg : Config) : Inst → String
     let as := String.intercalate ", " (args.toList.map (ppOperand cfg))
     s!"{colorKeyword cfg "call.closure"} {ppTy cfg retTy} {ppOperand cfg closure}({as})"
   | .makeClosure func env =>
-    s!"{colorKeyword cfg "makeclosure"} {ppFuncId cfg func}, {ppOperand cfg env}"
+    s!"{colorKeyword cfg "makeclosure"} {ppFuncRef cfg func}, {ppOperand cfg env}"
   | .makeClosurePoly func typeArgs env =>
     let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
-    s!"{colorKeyword cfg "makeclosure.poly"} {ppFuncId cfg func}<{tyArgsStr}>, {ppOperand cfg env}"
+    s!"{colorKeyword cfg "makeclosure.poly"} {ppFuncRef cfg func}<{tyArgsStr}>, {ppOperand cfg env}"
   | .callPoly func typeArgs args retTy =>
     let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
     let argsStr := String.intercalate ", " (args.toList.map (ppOperand cfg))

@@ -12,12 +12,13 @@ import Soma.Dependent.Elaborate
 import Soma.Dependent.TraitElaborate
 import Soma.Unique
 import Soma.Core.Eval
+import Soma.Core.Name
 
 namespace Soma.Dependent.Driver
 
 open Soma.Syntax
 open Soma.Metal
-open Soma.Core (exprToTerm Value Term Level)
+open Soma.Core (exprToTerm Value Term Level PrimOp FFIOp Intrinsic Name)
 open Soma (UniqueSupply)
 
 
@@ -512,8 +513,22 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
         | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
         | none => TCM.freshMetaVal (.vType .zero))
       (TCM.typePlaceholder fn.body.span)
-    let fnUnique ← TCM.freshUnique fn.name.display
-    let info : GlobalInfo := { name := .user fnUnique, type := fnType, value := none, isConstructor := false }
+    let fnName ← if fn.attrs.extern.isSome then
+        let externName := fn.attrs.extern.getD fn.name.display
+        pure (Name.intrinsic (Intrinsic.extern externName))
+      else if fn.attrs.intrinsic then
+        match PrimOp.fromString? fn.name.display with
+        | some op => pure (Name.intrinsic (Intrinsic.primOp op))
+        | none =>
+          match FFIOp.fromString? fn.name.display with
+          | some op => pure (Name.intrinsic (Intrinsic.ffiOp op))
+          | none =>
+            let fnUnique ← TCM.freshUnique fn.name.display
+            pure (Name.user fnUnique)
+      else
+        let fnUnique ← TCM.freshUnique fn.name.display
+        pure (Name.user fnUnique)
+    let info : GlobalInfo := { name := fnName, type := fnType, value := none, isConstructor := false }
     globals := globals.insert fn.name.display info
 
   return globals
@@ -784,8 +799,22 @@ private def registerFunction
       | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
       | none => TCM.freshMetaVal (.vType .zero))
     (TCM.typePlaceholder fn.body.span)
-  let fnUnique ← TCM.freshUnique fnNameStr
-  let info : GlobalInfo := { name := .user fnUnique, type := fnType, value := none, isConstructor := false }
+  let fnName ← if fn.attrs.extern.isSome then
+      let externName := fn.attrs.extern.getD fnNameStr
+      pure (Name.intrinsic (Intrinsic.extern externName))
+    else if fn.attrs.intrinsic then
+      match PrimOp.fromString? fnNameStr with
+      | some op => pure (Name.intrinsic (Intrinsic.primOp op))
+      | none =>
+        match FFIOp.fromString? fnNameStr with
+        | some op => pure (Name.intrinsic (Intrinsic.ffiOp op))
+        | none =>
+          let fnUnique ← TCM.freshUnique fnNameStr
+          pure (Name.user fnUnique)
+    else
+      let fnUnique ← TCM.freshUnique fnNameStr
+      pure (Name.user fnUnique)
+  let info : GlobalInfo := { name := fnName, type := fnType, value := none, isConstructor := false }
   return globals.insert fnNameStr info
 
 /-- Build a Globals environment incrementally, reusing cached types for unchanged definitions -/

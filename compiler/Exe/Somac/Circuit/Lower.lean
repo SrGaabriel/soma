@@ -1214,7 +1214,9 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
 
   -- Second pass: register external functions from dependencies
   if let some g := globals then
-    let externals := g.defs.toList.filter fun (name, _) => !typedFunctions.contains name
+    let externals := g.defs.toList.filter fun (name, info) =>
+      !typedFunctions.contains name &&
+      !info.isConstructor
     for (i, (_, info)) in enumList externals do
       LowerM.modifyCtx fun ctx => ctx.registerGlobal info.name (localCount + i)
 
@@ -1229,10 +1231,8 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
   if let some g := globals then
     let externals := g.defs.toList.filter fun (name, info) =>
       !typedFunctions.contains name && -- Not in current module
-      !info.isConstructor && -- Not a type constructor
-      !info.name.isIntrinsic -- Not an intrinsic
+      !info.isConstructor
     for (_, info) in externals do
-      -- External dependency functions: mark as external (no body to lower)
       let era ← LowerM.addNode .era unitTy
       let _ ← LowerM.addDefinition info.name era 0 info.type (isExternal := true)
 

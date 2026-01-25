@@ -456,4 +456,70 @@ def hasResult : IntrinsicOp → Bool
 
 end IntrinsicOp
 
+/-- Primitive operations (for FuncRef.primOp) -/
+inductive PrimOp where
+  | add | sub | mul | div | mod
+  | eq | ne | lt | le | gt | ge
+  | and | or | not | neg
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
+
+namespace PrimOp
+
+def name : PrimOp → String
+  | .add => "add" | .sub => "sub" | .mul => "mul" | .div => "div" | .mod => "mod"
+  | .eq => "eq" | .ne => "ne" | .lt => "lt" | .le => "le" | .gt => "gt" | .ge => "ge"
+  | .and => "and" | .or => "or" | .not => "not" | .neg => "neg"
+
+def isBinary : PrimOp → Bool
+  | .not | .neg => false
+  | _ => true
+
+def isComparison : PrimOp → Bool
+  | .eq | .ne | .lt | .le | .gt | .ge => true
+  | _ => false
+
+instance : ToString PrimOp where
+  toString := PrimOp.name
+
+end PrimOp
+
+/-- A function reference that may be resolved later -/
+inductive FuncRef where
+  /-- A resolved local function with known FuncId -/
+  | local (id : FuncId)
+  /-- Cross-module function reference -/
+  | external (qualifiedName : String)
+  /-- Intrinsic -/
+  | intrinsic (op : IntrinsicOp)
+  /-- PrimOp intrinsic -/
+  | primOp (op : PrimOp)
+  /-- External C function used as a value -/
+  | externC (name : String)
+  deriving Repr, BEq, Hashable, Inhabited, Serialize, Deserialize
+
+namespace FuncRef
+
+/-- Check if this reference is fully resolved -/
+def isResolved : FuncRef → Bool
+  | .local _ => true
+  | _ => false
+
+/-- Get the FuncId if this is a resolved local reference -/
+def toFuncId? : FuncRef → Option FuncId
+  | .local id => some id
+  | _ => none
+
+/-- Create a local reference -/
+def mk (id : FuncId) : FuncRef := .local id
+
+instance : ToString FuncRef where
+  toString
+    | .local id => ToString.toString id
+    | .external name => s!"@extern\"{name}\""
+    | .intrinsic op => s!"@intrinsic.{op}"
+    | .primOp op => s!"@primop.{op}"
+    | .externC name => s!"@externc\"{name}\""
+
+end FuncRef
+
 end Somac.Alloy
