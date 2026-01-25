@@ -1,7 +1,7 @@
 // expect: success
-// Test: trait with higher-kinded type parameter
+// Test: class with higher-kinded type parameter
 
-trait Functor (f :: * -> *) where
+class Functor (f :: * -> *) where
     def fmap :: forall a b. (a -> b) -> f a -> f b
 
 def mapBoth :: forall (f :: * -> *) a b. (a -> b) -> f a -> f a -> (f b, f b) with (Functor f)

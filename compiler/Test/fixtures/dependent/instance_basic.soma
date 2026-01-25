@@ -1,11 +1,11 @@
 // expect: success
-// Test: basic trait instance
+// Test: basic class instance
 
 data Maybe a
     | Nothing
     | Just a
 
-trait Functor (f :: * -> *) where
+class Functor (f :: * -> *) where
     def fmap :: forall a b. (a -> b) -> f a -> f b
 
 instance Functor Maybe where

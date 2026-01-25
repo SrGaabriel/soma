@@ -1,8 +1,8 @@
 // expect: success
 // Test: named instance syntax
-// Instances can be given explicit names: `instance myName : Trait Type where ...`
+// Instances can be given explicit names: `instance myName : class Type where ...`
 
-trait Showable a where
+class Showable a where
     def render :: a -> String
 
 // Named instance - can be referenced by name later

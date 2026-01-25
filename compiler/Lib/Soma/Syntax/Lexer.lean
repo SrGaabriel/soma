@@ -4,7 +4,7 @@ import Soma.Syntax.Diagnostic
 
 namespace Soma.Syntax
 
-def isSpace (c : Char) : Bool := c == ' ' || c == '\t'
+def isSpace (c : Char) : Bool := c == ' ' || c == '\t' || c == '\r'
 def isDigit (c : Char) : Bool := '0' ≤ c && c ≤ '9'
 def isLetter (c : Char) : Bool := ('a' ≤ c && c ≤ 'z') || ('A' ≤ c && c ≤ 'Z')
 

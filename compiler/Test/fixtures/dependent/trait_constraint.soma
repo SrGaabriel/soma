@@ -1,7 +1,7 @@
 // expect: success
-// Test: trait constraints with 'with' syntax
+// Test: class constraints with 'with' syntax
 
-trait Eq a where
+class Eq a where
     def eq :: a -> a -> Bool
 
 def equal :: forall a. a -> a -> Bool with (Eq a)
