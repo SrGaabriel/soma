@@ -78,6 +78,12 @@ def isPtr : LLVMType → Bool
   | .ptr => true
   | _ => false
 
+/-- Check if this is a struct type -/
+def isStruct : LLVMType → Bool
+  | .struct _ _ => true
+  | .namedStruct _ => true
+  | _ => false
+
 /-- Convert to LLVM IR syntax -/
 partial def toLLVM : LLVMType → String
   | .void => "void"

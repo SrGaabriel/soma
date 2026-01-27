@@ -43,8 +43,10 @@ partial def convertTy : Ty → LLVMType
     .struct false #[.i32, .ptr]
   | .closure _ _ =>
     .struct false #[.ptr, .ptr]
-  | .tyVar _ => .ptr
-  | .forall_ _ body => convertTy body
+  | .tyVar id =>
+    panic! s!"CODEGEN BUG: tyVar α{id.idx} reached codegen without substitution, monomorphization incomplete"
+  | .forall_ name _body =>
+    panic! s!"CODEGEN BUG: forall type '{name}' reached codegen but it should have been eliminated"
   | .tyApp func _ => convertTy func
 
 /-- Check if an Alloy type is unit -/
@@ -245,7 +247,7 @@ def coerceValue (srcTy dstTy : LLVMType) (val : LLVMValue) : CodegenM LLVMValue 
   if srcTy == dstTy then pure val
   else
     let ref ← CodegenM.withFuncBuilder do
-      -- Integer ptr conversions
+      -- Integer ↔ ptr conversions
       if dstTy == .ptr && srcTy.isInt then
         FuncBuilder.inttoptr srcTy val
       else if dstTy.isInt && srcTy == .ptr then
@@ -260,15 +262,8 @@ def coerceValue (srcTy dstTy : LLVMType) (val : LLVMValue) : CodegenM LLVMValue 
         if srcBits < dstBits then FuncBuilder.zext srcTy dstTy val
         else if srcBits > dstBits then FuncBuilder.trunc srcTy dstTy val
         else FuncBuilder.add dstTy val (intVal 0 dstBits)
-      -- Fallback: produce zero/null/undef of target type
-      else if dstTy == .ptr then
-        FuncBuilder.inttoptr .i64 (intVal 0 64)
-      else if dstTy.isInt then
-        FuncBuilder.add dstTy (intVal 0 (dstTy.intBits.getD 64)) (intVal 0 (dstTy.intBits.getD 64))
       else
-        -- Also can't convert so undef it is
-        let undefVal := LLVMValue.const (.undef dstTy)
-        FuncBuilder.select dstTy (boolVal true) undefVal undefVal
+        panic! s!"CODEGEN BUG: coerceValue cannot convert {srcTy.toLLVM} to {dstTy.toLLVM}"
     pure (.local ref)
 
 /-- Convert Alloy operand to LLVM value -/
@@ -278,21 +273,7 @@ def convertOperand (op : Operand) : CodegenM LLVMValue := do
     match ← CodegenM.getLocal id.id with
     | some ref => pure (.local ref)
     | none =>
-      -- Local not found
-      let ty ← operandTy op
-      let llvmTy := convertTy ty
-      let ref ← CodegenM.withFuncBuilder do
-        if llvmTy == .ptr then
-          -- For pointers, null is a clean undef-like value (todo: llvm will (hopefully?) optimize but we should consider optimizing)
-          FuncBuilder.inttoptr .i64 (intVal 0 64)
-        else if llvmTy.isInt then
-          FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
-        else
-          -- For other types use select with undef (todo: llvm will (hopefully?) optimize but we should consider optimizing)
-          let undefVal := LLVMValue.const (.undef llvmTy)
-          FuncBuilder.select llvmTy (boolVal true) undefVal undefVal
-      CodegenM.mapLocal id.id ref ty
-      pure (.local ref)
+      panic! s!"CODEGEN BUG: local %{id.id} not found"
   | .const c =>
     match c with
     | .int val t =>
@@ -339,8 +320,7 @@ def toI64 (ty : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
       else
         FuncBuilder.trunc ty .i64 val
     else
-      -- Dead code
-      FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
+      panic! s!"CODEGEN BUG: toI64 cannot convert {ty.toLLVM} to i64"
 
 /-- Convert Alloy binary operation to LLVM -/
 def convertBinOp (op : BinOp) (ty : Ty) (lhs rhs : LLVMValue) : CodegenM LocalRef := do
@@ -459,16 +439,7 @@ def convertUnOp (op : UnOp) (srcTy : Ty) (operand : LLVMValue) : CodegenM LocalR
         else if srcBits > dstBits then FuncBuilder.trunc llvmSrcTy toTy operand
         else FuncBuilder.bitcast llvmSrcTy toTy operand
       else
-        -- Incompatible (prob dead code), return placeholder
-        if toTy == .ptr then
-          FuncBuilder.inttoptr .i64 (intVal 0 64)
-        else if toTy.isInt then
-          let bits := toTy.intBits.getD 64
-          FuncBuilder.add toTy (intVal 0 bits) (intVal 0 bits)
-        else
-          -- For other types, use select with undef
-          let undefVal := LLVMValue.const (.undef toTy)
-          FuncBuilder.select toTy (boolVal true) undefVal undefVal
+        panic! s!"CODEGEN BUG: bitcast cannot convert {llvmSrcTy.toLLVM} to {toTy.toLLVM}"
     | .ptrtoint t =>
       let toTy := convertPrimTy t
       -- Handle the case where source might already be an integer (from dead code)
@@ -485,10 +456,7 @@ def convertUnOp (op : UnOp) (srcTy : Ty) (operand : LLVMValue) : CodegenM LocalR
         else
           FuncBuilder.trunc llvmSrcTy toTy operand
       else
-        -- Other types (floats, structs) - can't meaningfully convert
-        -- This is dead code, return placeholder of target type
-        let dstBits := toTy.intBits.getD 64
-        FuncBuilder.add toTy (intVal 0 dstBits) (intVal 0 dstBits)
+        panic! s!"CODEGEN BUG: ptrtoint cannot convert {llvmSrcTy.toLLVM} to {toTy.toLLVM}"
     | .inttoptr =>
       -- Handle the case where source might already be a pointer (shouldn't happen but be safe)
       if llvmSrcTy == .ptr then
@@ -934,7 +902,6 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     let llvmTy := convertTy ty
     let llvmIncoming ← incoming.mapM fun (val, blockId) => do
       let label ← CodegenM.getOrCreateBlock blockId.id
-      -- We can only use values that were already defined in the predecessor blocks
       match val with
       | .local id =>
         match ← CodegenM.getLocal id.id with
@@ -944,17 +911,13 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
           if valLlvmTy == llvmTy then
             pure (LLVMValue.local ref, label)
           else
-            -- Unfortunately can't coerce in phi context
-            pure (LLVMValue.const (.undef llvmTy), label)
+            panic! s!"CODEGEN BUG: phi node type mismatch - expected {llvmTy.toLLVM} but got {valLlvmTy.toLLVM} for local %{id.id}"
         | none =>
-          -- Local not found, use undef
-          pure (LLVMValue.const (.undef llvmTy), label)
+          panic! s!"CODEGEN BUG: phi node references undefined local %{id.id}"
       | .const c =>
-        -- Constants are fine, convert them directly
         let constVal ← convertOperand val
         pure (constVal, label)
       | _ =>
-        -- Convert
         let opVal ← convertOperand val
         pure (opVal, label)
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.phi llvmTy llvmIncoming)
@@ -1165,40 +1128,28 @@ def lowerTerminator (term : Terminator) (retTy : Ty) : CodegenM Unit := do
     let llvmRetTy := convertTy retTy
     if isUnitTy retTy then
       CodegenM.withFuncBuilder (FuncBuilder.ret .i8 (intVal 0 8))
-    else if isUnitTy valTy then
-      let defaultVal ← CodegenM.withFuncBuilder do
-        if llvmRetTy == .ptr then
-          FuncBuilder.inttoptr .i64 (intVal 0 64)
-        else if llvmRetTy.isInt then
-          FuncBuilder.add llvmRetTy (intVal 0 (llvmRetTy.intBits.getD 64)) (intVal 0 (llvmRetTy.intBits.getD 64))
-        else
-          let undefVal := LLVMValue.const (.undef llvmRetTy)
-          FuncBuilder.select llvmRetTy (boolVal true) undefVal undefVal
-      CodegenM.withFuncBuilder (FuncBuilder.ret llvmRetTy (.local defaultVal))
     else
-      -- Normal case: convert the value and use the function's declared return type
       let valRef ← convertOperand val
       let llvmValTy := convertTy valTy
-      -- If types mismatch, we need to convert
-      if llvmValTy != llvmRetTy then
+      if llvmValTy == llvmRetTy then
+        CodegenM.withFuncBuilder (FuncBuilder.ret llvmRetTy valRef)
+      else
         let converted ← CodegenM.withFuncBuilder do
           if llvmRetTy == .ptr && llvmValTy.isInt then
             FuncBuilder.inttoptr llvmValTy valRef
           else if llvmRetTy.isInt && llvmValTy == .ptr then
             FuncBuilder.ptrtoint llvmRetTy valRef
           else if llvmRetTy == .ptr && llvmValTy == .ptr then
-            -- ptr to ptr is identity, no instruction needed
             pure (match valRef with | .local r => r | _ => ⟨0⟩)
+          else if llvmRetTy.isInt && llvmValTy.isInt then
+            let srcBits := llvmValTy.intBits.getD 64
+            let dstBits := llvmRetTy.intBits.getD 64
+            if srcBits < dstBits then FuncBuilder.zext llvmValTy llvmRetTy valRef
+            else if srcBits > dstBits then FuncBuilder.trunc llvmValTy llvmRetTy valRef
+            else pure (match valRef with | .local r => r | _ => ⟨0⟩)
           else
-            -- Fallback: return undef of correct type
-            if llvmRetTy == .ptr then
-              FuncBuilder.inttoptr .i64 (intVal 0 64)
-            else
-              let undefVal := LLVMValue.const (.undef llvmRetTy)
-              FuncBuilder.select llvmRetTy (boolVal true) undefVal undefVal
+            panic! s!"CODEGEN BUG: return type mismatch - expected {llvmRetTy.toLLVM} but got {llvmValTy.toLLVM}"
         CodegenM.withFuncBuilder (FuncBuilder.ret llvmRetTy (.local converted))
-      else
-        CodegenM.withFuncBuilder (FuncBuilder.ret llvmRetTy valRef)
 
   | .retUnit =>
     CodegenM.withFuncBuilder (FuncBuilder.ret .i8 (intVal 0 8))

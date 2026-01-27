@@ -310,39 +310,43 @@ def convertHigherPrimitive : HigherPrimitive → Ty
   | .array => .rawPtr | .list => .rawPtr | .ref => .rawPtr
   | .io => .prim .unit | .ptr => .rawPtr
 
+/-- Mapping from de Bruijn level to normalized type parameter index -/
+abbrev TyVarMapping := Std.HashMap Nat Nat
+
 mutual
 
 /-- Extract variant information from a row type -/
-partial def extractRowVariants (row : Value) (idx : Nat := 0) (acc : Array (Nat × Array Ty) := #[])
-    : Array (Nat × Array Ty) :=
+partial def extractRowVariantsWithMapping (row : Value) (mapping : TyVarMapping)
+    (idx : Nat := 0) (acc : Array (Nat × Array Ty) := #[]) : Array (Nat × Array Ty) :=
   match row with
   | Value.vRowEmpty => acc
   | Value.vRowExtend _label fieldTy tail =>
     let fields := match fieldTy with
       | Value.vPrimTy (.unit) => #[]
       | Value.vSigma _ _ fst sndClos =>
-        let fstTy := convertValueType fst
+        let fstTy := convertValueTypeWithMapping fst mapping
         let sndTy := match sndClos with
-          | .const _ v => convertValueType v
+          | .const _ v => convertValueTypeWithMapping v mapping
           | _ => .prim .i64
         #[fstTy, sndTy]
       | Value.vPair fst snd =>
-        #[convertValueType fst, convertValueType snd]
-      | other => #[convertValueType other]
-    extractRowVariants tail (idx + 1) (acc.push (idx, fields))
+        #[convertValueTypeWithMapping fst mapping, convertValueTypeWithMapping snd mapping]
+      | other => #[convertValueTypeWithMapping other mapping]
+    extractRowVariantsWithMapping tail mapping (idx + 1) (acc.push (idx, fields))
   | _ => acc -- Malformed
 
 /-- Convert a Soma Value type to an Alloy Ty -/
-partial def convertValueType : Value → Ty
+partial def convertValueTypeWithMapping (val : Value) (mapping : TyVarMapping) : Ty :=
+  match val with
   -- Primitive types
   | Value.vPrimTy prim => .prim (convertStarPrimitive prim)
 
   -- Higher-kinded primitives
   | Value.vHigherPrim prim => convertHigherPrimitive prim
   | Value.vPi _ _ _ dom cod =>
-    let domTy := convertValueType dom
+    let domTy := convertValueTypeWithMapping dom mapping
     let codTy := match cod with
-      | .const _ result => convertValueType result
+      | .const _ result => convertValueTypeWithMapping result mapping
       | .term _ _ _ => .prim .i64
     .closure #[domTy] codTy
 
@@ -350,26 +354,34 @@ partial def convertValueType : Value → Ty
   | Value.vLam _ _ _ _ _ => .closure #[] (.prim .i64)
   | Value.vSigma _ _ fst sndClos =>
     let sndTy := match sndClos with
-      | .const _ v => convertValueType v
+      | .const _ v => convertValueTypeWithMapping v mapping
       | _ => .prim .i64 -- Dependent type, fall back to boxed
-    .struct #[("fst", convertValueType fst), ("snd", sndTy)]
+    .struct #[("fst", convertValueTypeWithMapping fst mapping), ("snd", sndTy)]
   | Value.vPair fst snd =>
-    .struct #[("fst", convertValueType fst), ("snd", convertValueType snd)]
+    .struct #[("fst", convertValueTypeWithMapping fst mapping),
+              ("snd", convertValueTypeWithMapping snd mapping)]
   | Value.vDataType id params =>
     if id.module == TypeId.builtinModule && id.unique == HigherPrimitive.io.uniqueId then
       match params with
-      | [innerTy] => convertValueType innerTy
+      | [innerTy] => convertValueTypeWithMapping innerTy mapping
       | _ => .prim .unit
     else .tagged (.prim .u32) #[]
   | Value.vConstructor _ _ _ => .rawPtr
   | Value.vRecord _ => .rawPtr
   | Value.vRecordVal _ => .rawPtr
-  | Value.vVariant row => .tagged (.prim .u32) (extractRowVariants row)
+  | Value.vVariant row => .tagged (.prim .u32) (extractRowVariantsWithMapping row mapping)
   | Value.vType _ => .prim .unit
   | Value.vNeutral _ neu =>
     match neu with
-    | .nVar v => .tyVar ⟨v.level.lvl⟩
-    | .nMeta m => .tyVar ⟨m.id⟩
+    | .nVar v =>
+      -- Look up the de Bruijn level in our mapping to get the normalized index
+      match mapping.get? v.level.lvl with
+      | some normalizedIdx => .tyVar ⟨normalizedIdx⟩
+      | none => .tyVar ⟨v.level.lvl⟩
+    | .nMeta m =>
+      match mapping.get? m.id with
+      | some normalizedIdx => .tyVar ⟨normalizedIdx⟩
+      | none => .tyVar ⟨m.id⟩
     | _ => .prim .i64
   | Value.vLabelLit _ => .prim .unit
   | Value.vRowEmpty => .prim .unit
@@ -379,9 +391,108 @@ partial def convertValueType : Value → Ty
   | Value.vTransport _ _ _ _ _ _ _ => .prim .i64
   | Value.vIntLit _ => .prim .i32
   | Value.vStringLit _ => .rawPtr
+
 end
 
-partial def extractParams (ty : Value)
+/-- Extract variant information from a row type -/
+partial def extractRowVariants (row : Value) (idx : Nat := 0) (acc : Array (Nat × Array Ty) := #[])
+    : Array (Nat × Array Ty) :=
+  extractRowVariantsWithMapping row {} idx acc
+
+/-- Convert a Soma Value type to an Alloy type -/
+def convertValueType (val : Value) : Ty :=
+  convertValueTypeWithMapping val {}
+
+mutual
+
+/-- Collect all de Bruijn levels from a Neutral term -/
+partial def collectTyVarLevelsNeutral (neu : Soma.Core.Neutral) (acc : Std.HashSet Nat) : Std.HashSet Nat :=
+  match neu with
+  | .nVar v => acc.insert v.level.lvl
+  | .nMeta m => acc.insert m.id
+  | .nApp fn arg => collectTyVarLevels arg (collectTyVarLevelsNeutral fn acc)
+  | .nFst pair => collectTyVarLevelsNeutral pair acc
+  | .nSnd pair => collectTyVarLevelsNeutral pair acc
+  | .nFieldAccess record _ => collectTyVarLevelsNeutral record acc
+  | .nCase scrutinee _ => collectTyVarLevelsNeutral scrutinee acc
+
+/-- Collect all de Bruijn levels of type variables appearing in a Value -/
+partial def collectTyVarLevels (val : Value) (acc : Std.HashSet Nat := {}) : Std.HashSet Nat :=
+  match val with
+  | Value.vNeutral _ neu => collectTyVarLevelsNeutral neu acc
+  | Value.vPi _ _ _ dom cod =>
+    let acc' := collectTyVarLevels dom acc
+    match cod with
+    | .const _ body => collectTyVarLevels body acc'
+    | _ => acc'
+  | Value.vSigma _ _ fst sndClos =>
+    let acc' := collectTyVarLevels fst acc
+    match sndClos with
+    | .const _ body => collectTyVarLevels body acc'
+    | _ => acc'
+  | Value.vPair fst snd =>
+    collectTyVarLevels snd (collectTyVarLevels fst acc)
+  | Value.vDataType _ params =>
+    params.foldl (fun a p => collectTyVarLevels p a) acc
+  | Value.vVariant row => collectTyVarLevels row acc
+  | Value.vRowExtend _ fieldTy tail =>
+    collectTyVarLevels tail (collectTyVarLevels fieldTy acc)
+  | Value.vEq _ ty lhs rhs =>
+    collectTyVarLevels rhs (collectTyVarLevels lhs (collectTyVarLevels ty acc))
+  | Value.vTransport _ ty motive lhs rhs eq body =>
+    let acc' := collectTyVarLevels ty acc
+    let acc' := collectTyVarLevels motive acc'
+    let acc' := collectTyVarLevels lhs acc'
+    let acc' := collectTyVarLevels rhs acc'
+    let acc' := collectTyVarLevels eq acc'
+    collectTyVarLevels body acc'
+  | _ => acc
+end
+
+/-- Build a mapping from de Bruijn levels to normalized indices -/
+def buildTyVarMappingFromLevels (levels : Std.HashSet Nat) : TyVarMapping :=
+  let sortedLevels := levels.toArray.qsort (· < ·)
+  sortedLevels.foldl (init := ({} : TyVarMapping)) fun map lvl =>
+    map.insert lvl map.size
+
+/-- Build a mapping from a single Value's type variables -/
+def buildTyVarMappingFromValue (val : Value) : TyVarMapping :=
+  buildTyVarMappingFromLevels (collectTyVarLevels val)
+
+/-- Collect all tyVar levels from all reachable nodes in a definition's graph -/
+def collectAllTyVarLevels (graph : CGraph) (def_ : CDefinition) : Std.HashSet Nat := Id.run do
+  let mut levels := collectTyVarLevels def_.ty
+
+  let mut visited : Std.HashSet Nat := {}
+  let mut queue : Array CNodeId := #[def_.root]
+
+  while !queue.isEmpty do
+    let nodeId := queue.back!
+    queue := queue.pop
+
+    if visited.contains nodeId.id then
+      continue
+    visited := visited.insert nodeId.id
+
+    match graph.getNode nodeId with
+    | some entry =>
+      levels := collectTyVarLevels entry.ty levels
+
+      for conn in entry.connections do
+        let (_, targetPort) := conn
+        if !visited.contains targetPort.node.id then
+          queue := queue.push targetPort.node
+    | none => pure ()
+
+  levels
+
+/-- Build tyVar mapping from an entire definition -/
+def buildTyVarMappingFromDefinition (graph : CGraph) (def_ : CDefinition) : TyVarMapping :=
+  let allLevels := collectAllTyVarLevels graph def_
+  buildTyVarMappingFromLevels allLevels
+
+/-- Extract type parameter names and value parameters using a pre-built mapping -/
+partial def extractParamsUsingMapping (ty : Value) (levelMap : TyVarMapping)
     (typeAcc : Array String := #[]) (valAcc : Array (String × Ty) := #[])
     : Array String × Array (String × Ty) :=
   match ty with
@@ -389,22 +500,41 @@ partial def extractParams (ty : Value)
     let isTypeParam := binder.isImplicit && dom.isType
     match cod with
     | .const _ nextTy =>
-      if isTypeParam then extractParams nextTy (typeAcc.push name) valAcc
-      else extractParams nextTy typeAcc (valAcc.push (name, convertValueType dom))
+      if isTypeParam then
+        extractParamsUsingMapping nextTy levelMap (typeAcc.push name) valAcc
+      else
+        let paramTy := convertValueTypeWithMapping dom levelMap
+        extractParamsUsingMapping nextTy levelMap typeAcc (valAcc.push (name, paramTy))
     | .term _ _ _ =>
-      if isTypeParam then (typeAcc.push name, valAcc)
-      else (typeAcc, valAcc.push (name, convertValueType dom))
+      if isTypeParam then
+        (typeAcc.push name, valAcc)
+      else
+        let paramTy := convertValueTypeWithMapping dom levelMap
+        (typeAcc, valAcc.push (name, paramTy))
   | _ => (typeAcc, valAcc)
 
-/-- Extract the return type from a function type (Pi chain) and convert to Alloy Ty -/
-def extractReturnType (ty : Value) : Ty :=
-  match ty.returnType? with
-  | some retVal => convertValueType retVal
-  | none => .prim .i64
+/-- Extract type parameter info: names, the de Bruijn level → index mapping, and value parameters -/
+partial def extractParamsWithMapping (ty : Value)
+    (typeAcc : Array String := #[]) (valAcc : Array (String × Ty) := #[])
+    : Array String × TyVarMapping × Array (String × Ty) :=
+  -- First, collect all type variable levels from the entire type
+  let levelMap := buildTyVarMappingFromValue ty
+  -- Then extract parameter info using this mapping
+  let (typeParams, paramInfos) := extractParamsUsingMapping ty levelMap typeAcc valAcc
+  (typeParams, levelMap, paramInfos)
+
+/-- Extract the return type from a function type (Pi chain) with type variable mapping -/
+partial def extractReturnTypeWithMapping (ty : Value) (mapping : TyVarMapping) : Ty :=
+  match ty with
+  | Value.vPi _ _ _ _ cod =>
+    match cod with
+    | .const _ nextTy => extractReturnTypeWithMapping nextTy mapping
+    | .term _ _ _ => .prim .i64
+  | other => convertValueTypeWithMapping other mapping
 
 /-- Build function signature from a Value type. -/
 def buildSignatureFromType (name : Name) (ty : Value) (arity : Nat) : Signature :=
-  let (typeParams, paramInfos) := extractParams ty
+  let (typeParams, levelMap, paramInfos) := extractParamsWithMapping ty
   -- Default type for parameters we can't extract (boxed i64)
   let defaultTy : Ty := .prim .i64
   -- If we got fewer params than arity (due to dependent types), pad with defaultTy
@@ -413,9 +543,15 @@ def buildSignatureFromType (name : Name) (ty : Value) (arity : Nat) : Signature 
       let (pname, pty) := paramInfos[i]
       { id := ⟨i⟩, name := pname, ty := pty : Param }
     else { id := ⟨i⟩, name := s!"arg{i}", ty := defaultTy : Param }
-  { name := name.display, typeParams, params, retTy := extractReturnType ty }
+  let retTy := extractReturnTypeWithMapping ty levelMap
+  { name := name.display, typeParams, params, retTy }
 
+/-- Get node type without mapping -/
 def getNodeType (entry : CNodeEntry) : Ty := convertValueType entry.ty
+
+/-- Get node type with type variable mapping -/
+def getNodeTypeWithMapping (entry : CNodeEntry) (mapping : TyVarMapping) : Ty :=
+  convertValueTypeWithMapping entry.ty mapping
 
 /-- The generic value type used at runtime (tagged pointer or immediate) -/
 def valueType : Ty := .prim .i64
@@ -440,6 +576,8 @@ structure NodeState where
   results : Std.HashMap Nat LocalId := {}
   /-- LAM node ID → parameter index mapping -/
   lamParams : Std.HashMap Nat Nat := {}
+  /-- Type variable level → index mapping -/
+  tyVarMapping : TyVarMapping := {}
   deriving Inhabited
 
 namespace NodeState
@@ -596,13 +734,14 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
     let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
     return undef
 
-  let nodeTy := getNodeType entry
+  let tyMapping := ns.tyVarMapping
+  let nodeTy := getNodeTypeWithMapping entry tyMapping
 
   let getPortType (portIdx : Nat) (defaultTy : Ty := nodeTy) : Ty :=
     match entry.getPort ⟨portIdx⟩ with
     | some targetPort =>
       match graph.getNode targetPort.node with
-      | some targetEntry => getNodeType targetEntry
+      | some targetEntry => getNodeTypeWithMapping targetEntry tyMapping
       | none => defaultTy
     | none => defaultTy
 
@@ -676,7 +815,7 @@ partial def lowerNode (graph : CGraph) (nodeId : CNodeId) : StateT NodeState Low
             lowerNode graph fp.node
           | _ =>
             -- Regular closure call: lower the function and use callClosure
-            let fnNodeTy := getNodeType fnEntry
+            let fnNodeTy := getNodeTypeWithMapping fnEntry tyMapping
             if fnNodeTy == .prim .unit then
               StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
             else
@@ -893,19 +1032,38 @@ def collectLamChain (graph : CGraph) (root : CNodeId) (arity : Nat)
 
 /-- Lower a Circuit definition to an Alloy function -/
 def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId) : Func :=
-  -- Build signature from the definition's type annotation
-  let sig := buildSignatureFromType def_.name def_.ty def_.arity
+  -- Build type variable mapping from WHOLE definition (function type + all node types)
+  let tyVarMapping := buildTyVarMappingFromDefinition graph def_
+  let (explicitTypeParams, paramInfos) := extractParamsUsingMapping def_.ty tyVarMapping
+  -- The mapping size tells us how many unique type variables exist
+  let numTyVars := tyVarMapping.size
+  let typeParams := if explicitTypeParams.size >= numTyVars then
+      explicitTypeParams
+    else
+      -- Generate synthetic names for extra type variables
+      let extra := (List.range (numTyVars - explicitTypeParams.size)).toArray.map fun i =>
+        s!"T{explicitTypeParams.size + i}"
+      explicitTypeParams ++ extra
+  let defaultTy : Ty := .prim .i64
+  let params := (List.range def_.arity).toArray.map fun i =>
+    if h : i < paramInfos.size then
+      let (pname, pty) := paramInfos[i]
+      { id := ⟨i⟩, name := pname, ty := pty : Param }
+    else { id := ⟨i⟩, name := s!"arg{i}", ty := defaultTy : Param }
+  let retTy := extractReturnTypeWithMapping def_.ty tyVarMapping
+  let sig : Signature := { name := def_.name.display, typeParams, params, retTy }
   let returnsUnit := sig.retTy == .prim .unit
 
   let (_, func) := LowerM.run' funcId sig do
     if def_.arity == 0 then
       -- No parameters: just lower the root directly
-      let (result, _) ← StateT.run (lowerNode graph def_.root) {}
+      let initState : NodeState := { tyVarMapping }
+      let (result, _) ← StateT.run (lowerNode graph def_.root) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
     else
       let (bodyNode, lamParams) := collectLamChain graph def_.root def_.arity
-      let initState : NodeState := { lamParams }
+      let initState : NodeState := { lamParams, tyVarMapping }
       let (result, _) ← StateT.run (lowerNode graph bodyNode) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
@@ -949,14 +1107,15 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef valueType))) valueType)
     return undef
 
-  let nodeTy := getNodeType entry
+  -- Use type variable mapping from state for polymorphic type normalization
+  let tyMapping := ns.tyVarMapping
+  let nodeTy := getNodeTypeWithMapping entry tyMapping
 
-  -- todo: remove boilerplate
   let getPortType (portIdx : Nat) (defaultTy : Ty := nodeTy) : Ty :=
     match entry.getPort ⟨portIdx⟩ with
     | some targetPort =>
       match graph.getNode targetPort.node with
-      | some targetEntry => getNodeType targetEntry
+      | some targetEntry => getNodeTypeWithMapping targetEntry tyMapping
       | none => defaultTy
     | none => defaultTy
 
@@ -1019,7 +1178,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           | .lam _ =>
             lowerNodeWithMap graph fp.node funcIdMap
           | _ =>
-            let fnNodeTy := getNodeType fnEntry
+            let fnNodeTy := getNodeTypeWithMapping fnEntry tyMapping
             if fnNodeTy == .prim .unit then
               StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
             else
@@ -1207,17 +1366,37 @@ end
 /-- Lower a definition with a FuncId map for resolving references -/
 def lowerDefinitionWithMap (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (funcIdMap : FuncIdMap) : Func :=
-  let sig := buildSignatureFromType def_.name def_.ty def_.arity
+  -- Build type variable mapping from ENTIRE definition (function type + all node types)
+  let tyVarMapping := buildTyVarMappingFromDefinition graph def_
+  -- Extract type parameter names and value params using the complete mapping
+  let (explicitTypeParams, paramInfos) := extractParamsUsingMapping def_.ty tyVarMapping
+  let numTyVars := tyVarMapping.size
+  let typeParams := if explicitTypeParams.size >= numTyVars then
+      explicitTypeParams
+    else
+      -- Generate synthetic names for extra type variables
+      let extra := (List.range (numTyVars - explicitTypeParams.size)).toArray.map fun i =>
+        s!"T{explicitTypeParams.size + i}"
+      explicitTypeParams ++ extra
+  let defaultTy : Ty := .prim .i64
+  let params := (List.range def_.arity).toArray.map fun i =>
+    if h : i < paramInfos.size then
+      let (pname, pty) := paramInfos[i]
+      { id := ⟨i⟩, name := pname, ty := pty : Param }
+    else { id := ⟨i⟩, name := s!"arg{i}", ty := defaultTy : Param }
+  let retTy := extractReturnTypeWithMapping def_.ty tyVarMapping
+  let sig : Signature := { name := def_.name.display, typeParams, params, retTy }
   let returnsUnit := sig.retTy == .prim .unit
 
   let (_, func) := LowerM.run' funcId sig do
     if def_.arity == 0 then
-      let (result, _) ← StateT.run (lowerNodeWithMap graph def_.root funcIdMap) {}
+      let initState : NodeState := { tyVarMapping }
+      let (result, _) ← StateT.run (lowerNodeWithMap graph def_.root funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
     else
       let (bodyNode, lamParams) := collectLamChain graph def_.root def_.arity
-      let initState : NodeState := { lamParams }
+      let initState : NodeState := { lamParams, tyVarMapping }
       let (result, _) ← StateT.run (lowerNodeWithMap graph bodyNode funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))

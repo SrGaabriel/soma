@@ -104,12 +104,89 @@ Apply a list of type arguments to substitute all type variables in types,
 instructions, and functions.
 -/
 
-/-- Apply multiple type arguments to a type (for all forall-bound variables) -/
+/-- Collect all type variable indices appearing in a type -/
+partial def collectTyVarIndices (ty : Ty) (acc : Std.HashSet Nat := {}) : Std.HashSet Nat :=
+  match ty with
+  | .prim _ | .rawPtr => acc
+  | .ptr t => collectTyVarIndices t acc
+  | .funcPtr args ret =>
+    let acc' := args.foldl (fun a t => collectTyVarIndices t a) acc
+    collectTyVarIndices ret acc'
+  | .struct fields =>
+    fields.foldl (fun a (_, t) => collectTyVarIndices t a) acc
+  | .array elem _ => collectTyVarIndices elem acc
+  | .tagged tag variants =>
+    let acc' := collectTyVarIndices tag acc
+    variants.foldl (fun a (_, fields) => fields.foldl (fun a' t => collectTyVarIndices t a') a) acc'
+  | .closure args ret =>
+    let acc' := args.foldl (fun a t => collectTyVarIndices t a) acc
+    collectTyVarIndices ret acc'
+  | .tyVar id => acc.insert id.idx
+  | .forall_ _ body => collectTyVarIndices body acc
+  | .tyApp func arg => collectTyVarIndices arg (collectTyVarIndices func acc)
+
+/-- Substitute a type variable by direct index -/
+partial def substTyVarDirect (ty : Ty) (idx : Nat) (replacement : Ty) : Ty :=
+  match ty with
+  | .prim p => .prim p
+  | .ptr t => .ptr (substTyVarDirect t idx replacement)
+  | .rawPtr => .rawPtr
+  | .funcPtr args ret =>
+    .funcPtr (args.map (substTyVarDirect · idx replacement)) (substTyVarDirect ret idx replacement)
+  | .struct fields =>
+    .struct (fields.map fun (n, t) => (n, substTyVarDirect t idx replacement))
+  | .array elem size => .array (substTyVarDirect elem idx replacement) size
+  | .tagged tag variants =>
+    .tagged (substTyVarDirect tag idx replacement)
+      (variants.map fun (i, fields) => (i, fields.map (substTyVarDirect · idx replacement)))
+  | .closure args ret =>
+    .closure (args.map (substTyVarDirect · idx replacement)) (substTyVarDirect ret idx replacement)
+  | .tyVar id =>
+    if id.idx == idx then replacement else .tyVar id
+  | .forall_ name body =>
+    .forall_ name (substTyVarDirect body idx replacement)
+  | .tyApp func arg =>
+    .tyApp (substTyVarDirect func idx replacement) (substTyVarDirect arg idx replacement)
+
+/-- Build mapping from sorted type variable indices to type arguments -/
+def buildTyVarSubstMap (ty : Ty) (args : Array Ty) : Std.HashMap Nat Ty :=
+  let indices := collectTyVarIndices ty
+  let sortedIndices := indices.toArray.qsort (· < ·)
+  sortedIndices.foldl (init := ({} : Std.HashMap Nat Ty)) fun map idx =>
+    let argIdx := map.size
+    if h : argIdx < args.size then
+      map.insert idx args[argIdx]
+    else map
+
+/-- Apply type arguments using direct substitution with a mapping -/
+partial def applyTypeArgsWithMap (ty : Ty) (substMap : Std.HashMap Nat Ty) : Ty :=
+  match ty with
+  | .prim p => .prim p
+  | .ptr t => .ptr (applyTypeArgsWithMap t substMap)
+  | .rawPtr => .rawPtr
+  | .funcPtr args ret =>
+    .funcPtr (args.map (applyTypeArgsWithMap · substMap)) (applyTypeArgsWithMap ret substMap)
+  | .struct fields =>
+    .struct (fields.map fun (n, t) => (n, applyTypeArgsWithMap t substMap))
+  | .array elem size => .array (applyTypeArgsWithMap elem substMap) size
+  | .tagged tag variants =>
+    .tagged (applyTypeArgsWithMap tag substMap)
+      (variants.map fun (i, fields) => (i, fields.map (applyTypeArgsWithMap · substMap)))
+  | .closure args ret =>
+    .closure (args.map (applyTypeArgsWithMap · substMap)) (applyTypeArgsWithMap ret substMap)
+  | .tyVar id =>
+    match substMap.get? id.idx with
+    | some replacement => replacement
+    | none => .tyVar id
+  | .forall_ name body =>
+    .forall_ name (applyTypeArgsWithMap body substMap)
+  | .tyApp func arg =>
+    .tyApp (applyTypeArgsWithMap func substMap) (applyTypeArgsWithMap arg substMap)
+
+/-- Apply multiple type arguments to a type -/
 def applyTypeArgs (ty : Ty) (args : Array Ty) : Ty :=
-  -- Type args are applied in order: first arg replaces tyVar 0, etc.
-  -- But after each substitution, indices shift down.
-  -- So we substitute from the innermost outward (reverse order).
-  args.foldr (init := ty) fun arg acc => acc.substTyVar 0 arg
+  let substMap := buildTyVarSubstMap ty args
+  applyTypeArgsWithMap ty substMap
 
 /-- Substitute type arguments into all types within an instruction -/
 def substInstTypes (inst : Inst) (args : Array Ty) : Inst :=
@@ -267,9 +344,64 @@ def collectModuleRequests (m : Module) : Array SpecKey :=
 Clone and specialize polymorphic functions.
 -/
 
-/-- Specialize a function signature -/
-def specializeSignature (sig : Signature) (typeArgs : Array Ty) : Signature :=
-  let subst := fun ty => applyTypeArgs ty typeArgs
+/-- Collect all type variable indices from a function -/
+def collectFuncTyVarIndices (func : Func) : Std.HashSet Nat := Id.run do
+  let mut acc : Std.HashSet Nat := {}
+  for p in func.sig.params do
+    acc := collectTyVarIndices p.ty acc
+  acc := collectTyVarIndices func.sig.retTy acc
+  for (_, ty) in func.localTypes.toArray do
+    acc := collectTyVarIndices ty acc
+  if let some cfg := func.body then
+    for block in cfg.allBlocks do
+      for (_, ty) in block.params do
+        acc := collectTyVarIndices ty acc
+      for stmt in block.stmts do
+        acc := collectInstTyVarIndices stmt.inst acc
+  pure acc
+where
+  collectInstTyVarIndices (inst : Inst) (acc : Std.HashSet Nat) : Std.HashSet Nat :=
+    match inst with
+    | .binOp _ _ _ ty => collectTyVarIndices ty acc
+    | .alloca ty => collectTyVarIndices ty acc
+    | .load _ ty => collectTyVarIndices ty acc
+    | .getFieldPtr _ _ ty => collectTyVarIndices ty acc
+    | .getElemPtr _ _ ty => collectTyVarIndices ty acc
+    | .structLit _ ty => collectTyVarIndices ty acc
+    | .arrayLit _ ty => collectTyVarIndices ty acc
+    | .getPayload _ _ _ ty => collectTyVarIndices ty acc
+    | .taggedLit _ _ ty => collectTyVarIndices ty acc
+    | .call _ _ ty => collectTyVarIndices ty acc
+    | .callPoly _ tyArgs _ ty =>
+      let acc' := tyArgs.foldl (fun a t => collectTyVarIndices t a) acc
+      collectTyVarIndices ty acc'
+    | .callIndirect _ _ ty => collectTyVarIndices ty acc
+    | .callClosure _ _ ty => collectTyVarIndices ty acc
+    | .makeClosurePoly _ tyArgs _ => tyArgs.foldl (fun a t => collectTyVarIndices t a) acc
+    | .phi _ ty => collectTyVarIndices ty acc
+    | .clone _ ty => collectTyVarIndices ty acc
+    | .erase _ ty => collectTyVarIndices ty acc
+    | .callIntrinsic _ _ ty => collectTyVarIndices ty acc
+    | .callExtern _ _ ty => collectTyVarIndices ty acc
+    | .unOp op _ =>
+      match op with
+      | .bitcast t => collectTyVarIndices t acc
+      | _ => acc
+    | _ => acc
+
+/-- Build a substitution map for a function using all its type variables -/
+def buildFuncSubstMap (func : Func) (typeArgs : Array Ty) : Std.HashMap Nat Ty :=
+  let indices := collectFuncTyVarIndices func
+  let sortedIndices := indices.toArray.qsort (· < ·)
+  sortedIndices.foldl (init := ({} : Std.HashMap Nat Ty)) fun map idx =>
+    let argIdx := map.size
+    if h : argIdx < typeArgs.size then
+      map.insert idx typeArgs[argIdx]
+    else map
+
+/-- Specialize a function signature using a pre-built substitution map -/
+def specializeSignatureWithMap (sig : Signature) (typeArgs : Array Ty) (substMap : Std.HashMap Nat Ty) : Signature :=
+  let subst := fun ty => applyTypeArgsWithMap ty substMap
   { sig with
     name := mangleSpecName sig.name typeArgs
     typeParams := #[]  -- No longer polymorphic
@@ -277,17 +409,83 @@ def specializeSignature (sig : Signature) (typeArgs : Array Ty) : Signature :=
     retTy := subst sig.retTy
   }
 
-/-- Specialize a function body -/
-def specializeBody (cfg : CFG) (typeArgs : Array Ty) : CFG :=
-  substCFGTypes cfg typeArgs
+/-- Substitute type arguments into all types within an instruction using a map -/
+def substInstTypesWithMap (inst : Inst) (substMap : Std.HashMap Nat Ty) : Inst :=
+  let subst := fun ty => applyTypeArgsWithMap ty substMap
+  match inst with
+  | .binOp op lhs rhs ty => .binOp op lhs rhs (subst ty)
+  | .unOp op operand =>
+    match op with
+    | .bitcast t => .unOp (.bitcast (subst t)) operand
+    | _ => inst
+  | .copy src => .copy src
+  | .alloca ty => .alloca (subst ty)
+  | .malloc size => .malloc size
+  | .free ptr => .free ptr
+  | .load ptr ty => .load ptr (subst ty)
+  | .store ptr val => .store ptr val
+  | .getFieldPtr base idx structTy => .getFieldPtr base idx (subst structTy)
+  | .getElemPtr base idx elemTy => .getElemPtr base idx (subst elemTy)
+  | .extractField val idx => .extractField val idx
+  | .insertField val idx newVal => .insertField val idx newVal
+  | .extractElem val idx => .extractElem val idx
+  | .insertElem val idx newVal => .insertElem val idx newVal
+  | .structLit fields ty => .structLit fields (subst ty)
+  | .arrayLit elems elemTy => .arrayLit elems (subst elemTy)
+  | .getTag val => .getTag val
+  | .getPayload val variant field ty => .getPayload val variant field (subst ty)
+  | .taggedLit tag payload ty => .taggedLit tag payload (subst ty)
+  | .call func callArgs retTy => .call func callArgs (subst retTy)
+  | .callPoly func tyArgs callArgs retTy =>
+    .callPoly func (tyArgs.map subst) callArgs (subst retTy)
+  | .callIndirect ptr callArgs retTy => .callIndirect ptr callArgs (subst retTy)
+  | .callClosure closure callArgs retTy => .callClosure closure callArgs (subst retTy)
+  | .makeClosurePoly func tyArgs env =>
+    .makeClosurePoly func (tyArgs.map subst) env
+  | .makeClosure func env => .makeClosure func env
+  | .closureFunc closure => .closureFunc closure
+  | .closureEnv closure => .closureEnv closure
+  | .phi incoming ty => .phi incoming (subst ty)
+  | .select cond thenVal elseVal => .select cond thenVal elseVal
+  | .memcpy dst src size => .memcpy dst src size
+  | .memset dst val size => .memset dst val size
+  | .clone src ty => .clone src (subst ty)
+  | .erase val ty => .erase val (subst ty)
+  | .panic msgIdx line => .panic msgIdx line
+  | .callIntrinsic op intrArgs retTy => .callIntrinsic op intrArgs (subst retTy)
+  | .callExtern name extArgs retTy => .callExtern name extArgs (subst retTy)
+
+/-- Substitute type arguments into a statement using a map -/
+def substStmtTypesWithMap (stmt : Stmt) (substMap : Std.HashMap Nat Ty) : Stmt :=
+  { stmt with inst := substInstTypesWithMap stmt.inst substMap }
+
+/-- Substitute type arguments into a block using a map -/
+def substBlockTypesWithMap (block : Block) (substMap : Std.HashMap Nat Ty) : Block :=
+  let subst := fun ty => applyTypeArgsWithMap ty substMap
+  { block with
+    params := block.params.map fun (id, ty) => (id, subst ty)
+    stmts := block.stmts.map fun s => substStmtTypesWithMap s substMap
+  }
+
+/-- Substitute type arguments into a CFG using a map -/
+def substCFGTypesWithMap (cfg : CFG) (substMap : Std.HashMap Nat Ty) : CFG :=
+  let blocks' := cfg.blocks.fold (init := ({} : Std.HashMap Nat Block)) fun acc id block =>
+    acc.insert id (substBlockTypesWithMap block substMap)
+  { cfg with blocks := blocks' }
+
+/-- Specialize a function body using a pre-built substitution map -/
+def specializeBodyWithMap (cfg : CFG) (substMap : Std.HashMap Nat Ty) : CFG :=
+  substCFGTypesWithMap cfg substMap
 
 /-- Create a specialized version of a function -/
 def specializeFunc (func : Func) (typeArgs : Array Ty) (newId : FuncId) : Func :=
-  let newSig := specializeSignature func.sig typeArgs
-  let newBody := func.body.map fun cfg => specializeBody cfg typeArgs
+  -- Build a single consistent substitution map for the entire function
+  let substMap := buildFuncSubstMap func typeArgs
+  let newSig := specializeSignatureWithMap func.sig typeArgs substMap
+  let newBody := func.body.map fun cfg => specializeBodyWithMap cfg substMap
   let newLocalTypes := func.localTypes.fold
     (init := ({} : Std.HashMap Nat Ty)) fun acc id ty =>
-      acc.insert id (applyTypeArgs ty typeArgs)
+      acc.insert id (applyTypeArgsWithMap ty substMap)
   { func with
     id := newId
     sig := newSig
