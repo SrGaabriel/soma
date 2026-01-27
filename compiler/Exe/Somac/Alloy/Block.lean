@@ -1,15 +1,3 @@
-/-
-  Alloy IR Basic Blocks
-
-  A basic block is a sequence of instructions with:
-  - A single entry point (the block label)
-  - A single exit point (the terminator)
-  - No internal control flow
-
-  Instructions within a block execute sequentially. Control flow
-  between blocks is explicit via terminators.
--/
-
 import Somac.Alloy.Inst
 import Std.Data.HashMap
 import Std.Data.HashSet
@@ -18,141 +6,85 @@ import Kenosis
 namespace Somac.Alloy
 
 /-- A statement binds an instruction result to a local -/
-structure Stmt where
-  /-- The local receiving the result (none for void instructions) -/
+structure Stmt (n : Nat) where
   result : Option LocalId
-  /-- The instruction -/
-  inst : Inst
-  deriving Repr, Inhabited, Serialize, Deserialize
+  inst : Inst n
+
+instance : Inhabited (Stmt n) where
+  default := ⟨none, .copy (.const .unit)⟩
 
 namespace Stmt
 
-/-- Create a statement with a result -/
-def withResult (result : LocalId) (inst : Inst) : Stmt :=
+def withResult (result : LocalId) (inst : Inst n) : Stmt n :=
   ⟨some result, inst⟩
 
-/-- Create a void statement (no result) -/
-def void (inst : Inst) : Stmt :=
+def void (inst : Inst n) : Stmt n :=
   ⟨none, inst⟩
 
-instance : ToString Stmt where
-  toString s :=
-    match s.result with
-    | some r => s!"{r} = {s.inst}"
-    | none => ToString.toString s.inst
+/-- Instantiate all types in a statement -/
+def instantiate (s : Stmt n) (env : TyEnv n) : Stmt 0 :=
+  ⟨s.result, s.inst.instantiate env⟩
+
+private def toStringAux : Stmt n → String
+  | ⟨some r, inst⟩ => s!"{r} = {inst}"
+  | ⟨none, inst⟩ => ToString.toString inst
+
+instance : ToString (Stmt n) where
+  toString := toStringAux
 
 end Stmt
 
-/-! ## Basic Blocks -/
+/-- Monomorphic statement -/
+abbrev ClosedStmt := Stmt 0
 
-/-- A basic block: a sequence of statements ending with a terminator -/
-structure Block where
-  /-- Block identifier -/
+/-- A basic block indexed by type variable count -/
+structure Block (n : Nat) where
   id : BlockId
-  /-- Optional label for debugging -/
   label : Option String := none
-  /-- Block parameters (for phi-like semantics) -/
-  params : Array (LocalId × Ty) := #[]
-  /-- Statements in execution order -/
-  stmts : Array Stmt := #[]
-  /-- Block terminator -/
+  params : Array (LocalId × Ty n) := #[]
+  stmts : Array (Stmt n) := #[]
   terminator : Terminator
-  deriving Repr, Inhabited, Serialize, Deserialize
+  deriving Inhabited
 
 namespace Block
 
-/-- Create an entry block -/
-def entry (terminator : Terminator) : Block :=
+def entry (terminator : Terminator) : Block n :=
   { id := .entry, terminator }
 
-/-- Create a block with a label -/
-def labeled (id : BlockId) (label : String) (terminator : Terminator) : Block :=
+def labeled (id : BlockId) (label : String) (terminator : Terminator) : Block n :=
   { id, label := some label, terminator }
 
-/-- Add a statement to a block -/
-def addStmt (b : Block) (s : Stmt) : Block :=
+def addStmt (b : Block n) (s : Stmt n) : Block n :=
   { b with stmts := b.stmts.push s }
 
-/-- Add multiple statements -/
-def addStmts (b : Block) (ss : Array Stmt) : Block :=
+def addStmts (b : Block n) (ss : Array (Stmt n)) : Block n :=
   { b with stmts := b.stmts ++ ss }
 
-/-- Set the terminator -/
-def withTerminator (b : Block) (t : Terminator) : Block :=
+def withTerminator (b : Block n) (t : Terminator) : Block n :=
   { b with terminator := t }
 
-/-- Add a parameter -/
-def addParam (b : Block) (p : LocalId) (ty : Ty) : Block :=
+def addParam (b : Block n) (p : LocalId) (ty : Ty n) : Block n :=
   { b with params := b.params.push (p, ty) }
 
-/-- Get all successor block IDs -/
-def successors (b : Block) : Array BlockId :=
+def successors (b : Block n) : Array BlockId :=
   b.terminator.successors
 
-/-- Get all locals defined in this block -/
-def definedLocals (b : Block) : Array LocalId :=
+def definedLocals (b : Block n) : Array LocalId :=
   let paramLocals := b.params.map (·.1)
   let stmtLocals := b.stmts.filterMap (·.result)
   paramLocals ++ stmtLocals
 
-/-- Get all locals used in this block -/
-def usedLocals (b : Block) : Array LocalId :=
-  let fromStmts := b.stmts.foldl (fun acc s => acc ++ extractLocals s.inst) #[]
-  let fromTerm := extractTermLocals b.terminator
-  fromStmts ++ fromTerm
-where
-  extractOperandLocal : Operand → Option LocalId
-    | .local id => some id
-    | _ => none
+/-- Instantiate all types in a block -/
+def instantiate (b : Block n) (env : TyEnv n) : Block 0 :=
+  { id := b.id
+  , label := b.label
+  , params := b.params.map fun (id, ty) => (id, Somac.Alloy.instantiate ty env)
+  , stmts := b.stmts.map (·.instantiate env)
+  , terminator := b.terminator
+  }
 
-  extractLocals (inst : Inst) : Array LocalId :=
-    match inst with
-    | .binOp _ lhs rhs _ => #[lhs, rhs].filterMap extractOperandLocal
-    | .unOp _ op => #[op].filterMap extractOperandLocal
-    | .copy src => #[src].filterMap extractOperandLocal
-    | .alloca _ => #[]
-    | .malloc size => #[size].filterMap extractOperandLocal
-    | .free ptr => #[ptr].filterMap extractOperandLocal
-    | .load ptr _ => #[ptr].filterMap extractOperandLocal
-    | .store ptr val => #[ptr, val].filterMap extractOperandLocal
-    | .getFieldPtr base _ _ => #[base].filterMap extractOperandLocal
-    | .getElemPtr base idx _ => #[base, idx].filterMap extractOperandLocal
-    | .extractField val _ => #[val].filterMap extractOperandLocal
-    | .insertField val _ newVal => #[val, newVal].filterMap extractOperandLocal
-    | .extractElem val idx => #[val, idx].filterMap extractOperandLocal
-    | .insertElem val idx newVal => #[val, idx, newVal].filterMap extractOperandLocal
-    | .structLit fields _ => fields.filterMap extractOperandLocal
-    | .arrayLit elems _ => elems.filterMap extractOperandLocal
-    | .getTag val => #[val].filterMap extractOperandLocal
-    | .getPayload val _ _ _ => #[val].filterMap extractOperandLocal
-    | .taggedLit _ payload _ => payload.filterMap extractOperandLocal
-    | .call _ args _ => args.filterMap extractOperandLocal
-    | .callPoly _ _ args _ => args.filterMap extractOperandLocal
-    | .callIndirect ptr args _ => (#[ptr] ++ args).filterMap extractOperandLocal
-    | .callClosure closure args _ => (#[closure] ++ args).filterMap extractOperandLocal
-    | .makeClosurePoly _ _ env => #[env].filterMap extractOperandLocal
-    | .makeClosure _ env => #[env].filterMap extractOperandLocal
-    | .closureFunc closure => #[closure].filterMap extractOperandLocal
-    | .closureEnv closure => #[closure].filterMap extractOperandLocal
-    | .phi incoming _ => incoming.map (·.1) |>.filterMap extractOperandLocal
-    | .select cond t e => #[cond, t, e].filterMap extractOperandLocal
-    | .memcpy dst src size => #[dst, src, size].filterMap extractOperandLocal
-    | .memset dst val size => #[dst, val, size].filterMap extractOperandLocal
-    | .clone src _ => #[src].filterMap extractOperandLocal
-    | .erase val _ => #[val].filterMap extractOperandLocal
-    | .panic _ _ => #[]
-    | .callIntrinsic _ args _ => args.filterMap extractOperandLocal
-    | .callExtern _ args _ => args.filterMap extractOperandLocal
-
-  extractTermLocals : Terminator → Array LocalId
-    | .jump _ => #[]
-    | .branch cond _ _ => #[cond].filterMap extractOperandLocal
-    | .switch val _ _ => #[val].filterMap extractOperandLocal
-    | .ret val => #[val].filterMap extractOperandLocal
-    | .retUnit | .unreachable => #[]
-
-instance : ToString Block where
-  toString b :=
+private def toStringAux : Block n → String
+  | b =>
     let labelStr := match b.label with
       | some l => s!" ; {l}"
       | none => ""
@@ -167,79 +99,80 @@ instance : ToString Block where
     else
       s!"{header}\n  {stmtsStr}\n  {b.terminator}"
 
+instance : ToString (Block n) where
+  toString := toStringAux
+
 end Block
 
-/-- A control flow graph is a collection of basic blocks -/
-structure CFG where
-  /-- All blocks, indexed by BlockId -/
-  blocks : Std.HashMap Nat Block := {}
-  /-- Entry block ID -/
+/-- Monomorphic block -/
+abbrev ClosedBlock := Block 0
+
+/-- A control flow graph indexed by type variable count -/
+structure CFG (n : Nat) where
+  blocks : Std.HashMap Nat (Block n) := {}
   entry : BlockId := .entry
-  /-- Next available block ID -/
   nextBlockId : Nat := 1
   deriving Inhabited
 
 namespace CFG
 
-/-- Create an empty CFG -/
-def empty : CFG := {}
+def empty : CFG n := {}
 
-/-- Create a CFG with just an entry block -/
-def withEntry (entryBlock : Block) : CFG :=
-  { blocks := ({} : Std.HashMap Nat Block).insert 0 entryBlock
+def withEntry (entryBlock : Block n) : CFG n :=
+  { blocks := ({} : Std.HashMap Nat (Block n)).insert 0 entryBlock
   , entry := .entry
   , nextBlockId := 1
   }
 
-/-- Allocate a fresh block ID -/
-def freshBlockId (cfg : CFG) : BlockId × CFG :=
+def freshBlockId (cfg : CFG n) : BlockId × CFG n :=
   (⟨cfg.nextBlockId⟩, { cfg with nextBlockId := cfg.nextBlockId + 1 })
 
-/-- Add a block to the CFG -/
-def addBlock (cfg : CFG) (b : Block) : CFG :=
+def addBlock (cfg : CFG n) (b : Block n) : CFG n :=
   let nextId := max cfg.nextBlockId (b.id.id + 1)
   { cfg with
     blocks := cfg.blocks.insert b.id.id b
     nextBlockId := nextId
   }
 
-/-- Get a block by ID -/
-def getBlock (cfg : CFG) (id : BlockId) : Option Block :=
+def getBlock (cfg : CFG n) (id : BlockId) : Option (Block n) :=
   cfg.blocks.get? id.id
 
-/-- Update a block -/
-def updateBlock (cfg : CFG) (id : BlockId) (f : Block → Block) : CFG :=
+def updateBlock (cfg : CFG n) (id : BlockId) (f : Block n → Block n) : CFG n :=
   match cfg.blocks.get? id.id with
   | some b => { cfg with blocks := cfg.blocks.insert id.id (f b) }
   | none => cfg
 
-/-- Get all blocks in order -/
-def allBlocks (cfg : CFG) : Array Block :=
+def allBlocks (cfg : CFG n) : Array (Block n) :=
   cfg.blocks.toArray
     |>.qsort (fun a b => a.1 < b.1)
     |>.map (·.2)
 
-/-- Get the entry block -/
-def entryBlock (cfg : CFG) : Option Block :=
+def entryBlock (cfg : CFG n) : Option (Block n) :=
   cfg.getBlock cfg.entry
 
-/-- Count blocks -/
-def blockCount (cfg : CFG) : Nat :=
+def blockCount (cfg : CFG n) : Nat :=
   cfg.blocks.size
 
-/-- Get predecessors of a block -/
-def predecessors (cfg : CFG) (id : BlockId) : Array BlockId :=
+def predecessors (cfg : CFG n) (id : BlockId) : Array BlockId :=
   cfg.allBlocks.foldl (fun acc b =>
     if b.successors.contains id then acc.push b.id else acc
   ) #[]
 
-/-- Check if CFG is well-formed (all successors exist) -/
-def isWellFormed (cfg : CFG) : Bool :=
+def isWellFormed (cfg : CFG n) : Bool :=
   cfg.allBlocks.all fun b =>
     b.successors.all fun succ => cfg.blocks.contains succ.id
 
-/-- Compute reverse postorder (for dataflow analysis) -/
-partial def reversePostorder (cfg : CFG) : Array BlockId :=
+/-- Instantiate all types in a CFG -/
+def instantiate (cfg : CFG n) (env : TyEnv n) : CFG 0 :=
+  let blocks' := cfg.blocks.fold
+    (init := ({} : Std.HashMap Nat (Block 0))) fun acc id block =>
+      acc.insert id (block.instantiate env)
+  { blocks := blocks'
+  , entry := cfg.entry
+  , nextBlockId := cfg.nextBlockId
+  }
+
+partial def reversePostorder (cfg : CFG n) : Array BlockId :=
   let rec dfs (visited : Std.HashSet Nat) (order : Array BlockId) (id : BlockId)
       : Std.HashSet Nat × Array BlockId :=
     if visited.contains id.id then (visited, order)
@@ -254,11 +187,17 @@ partial def reversePostorder (cfg : CFG) : Array BlockId :=
   let (_, order) := dfs {} #[] cfg.entry
   order.reverse
 
-instance : ToString CFG where
-  toString cfg :=
+private def toStringAux : CFG n → String
+  | cfg =>
     let blocksStr := String.intercalate "\n\n" (cfg.allBlocks.toList.map ToString.toString)
     s!"CFG (entry: {cfg.entry}, {cfg.blockCount} blocks):\n{blocksStr}"
 
+instance : ToString (CFG n) where
+  toString := toStringAux
+
 end CFG
+
+/-- Monomorphic CFG -/
+abbrev ClosedCFG := CFG 0
 
 end Somac.Alloy

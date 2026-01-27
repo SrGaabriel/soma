@@ -1,95 +1,72 @@
-/-
-  Alloy IR Functions and Module
-
-  A function contains:
-  - A signature (parameters and return type)
-  - A control flow graph (basic blocks)
-  - Local variable type information
-
-  A module is a collection of functions, globals, and type definitions.
--/
-
 import Somac.Alloy.Block
 import Kenosis
 
 namespace Somac.Alloy
 
 /-- Function parameter -/
-structure Param where
-  /-- Local ID for parameter (starts at %0, %1, ...) -/
+structure Param (n : Nat) where
   id : LocalId
-  /-- Parameter name (for debugging) -/
   name : String
-  /-- Parameter type -/
-  ty : Ty
-  deriving Repr, Inhabited, Serialize, Deserialize
+  ty : Ty n
+  deriving Inhabited
 
 namespace Param
 
-instance : ToString Param where
-  toString p := s!"{p.id}: {p.ty}"
+def instantiate (p : Param n) (env : TyEnv n) : Param 0 :=
+  { id := p.id, name := p.name, ty := Somac.Alloy.instantiate p.ty env }
+
+private def toStringAux : Param n → String
+  | p => s!"{p.id}: {p.ty}"
+
+instance : ToString (Param n) where
+  toString := toStringAux
 
 end Param
 
-/-- Function signature -/
-structure Signature where
-  /-- Function name -/
+/-- Monomorphic parameter -/
+abbrev ClosedParam := Param 0
+
+/-- Function signature indexed by type variable count -/
+structure Signature (n : Nat) where
   name : String
-  /-- Type parameters -/
-  typeParams : Array String := #[]
-  /-- Parameters -/
-  params : Array Param
-  /-- Return type -/
-  retTy : Ty
-  /-- Is this a closure body (first param is env)? -/
+  typeParamNames : Array String := #[]
+  params : Array (Param n)
+  retTy : Ty n
   isClosure : Bool := false
-  deriving Repr, Inhabited, Serialize, Deserialize
+  deriving Inhabited
 
 namespace Signature
 
-/-- Arity (number of parameters) -/
-def arity (sig : Signature) : Nat := sig.params.size
+def arity (sig : Signature n) : Nat := sig.params.size
 
-/-- Number of type parameters -/
-def numTypeParams (sig : Signature) : Nat := sig.typeParams.size
+def isPolymorphic (_ : Signature n) : Bool := n > 0
 
-/-- Check if the function is polymorphic -/
-def isPolymorphic (sig : Signature) : Bool := !sig.typeParams.isEmpty
+def paramTypes (sig : Signature n) : Array (Ty n) := sig.params.map (·.ty)
 
-/-- Get parameter types -/
-def paramTypes (sig : Signature) : Array Ty := sig.params.map (·.ty)
+/-- Instantiate all types in a signature -/
+def instantiate (sig : Signature n) (env : TyEnv n) (newName : String) : Signature 0 :=
+  { name := newName
+  , typeParamNames := #[]
+  , params := sig.params.map (·.instantiate env)
+  , retTy := Somac.Alloy.instantiate sig.retTy env
+  , isClosure := sig.isClosure
+  }
 
-/-- Convert to function type -/
-def toFuncTy (sig : Signature) : Ty :=
-  let baseTy := Ty.funcPtr sig.paramTypes sig.retTy
-  -- Wrap in foralls for each type parameter (in reverse order for de Bruijn)
-  sig.typeParams.foldr (init := baseTy) fun name acc => .forall_ name acc
-
-/-- Instantiate type parameters with concrete types -/
-def instantiate (sig : Signature) (typeArgs : Array Ty) : Signature :=
-  if typeArgs.size != sig.typeParams.size then sig
-  else
-    -- Substitute type arguments into params and return type
-    let substTy := fun ty =>
-      typeArgs.foldl (init := (ty, 0)) (fun (t, idx) arg =>
-        (t.substTyVar idx arg, idx + 1)) |>.1
-    { sig with
-      typeParams := #[]
-      params := sig.params.map fun p => { p with ty := substTy p.ty }
-      retTy := substTy sig.retTy
-    }
-
-instance : ToString Signature where
-  toString sig :=
+private def toStringAux : Signature n → String
+  | sig =>
     let closureStr := if sig.isClosure then " [closure]" else ""
-    let typeParamsStr := if sig.typeParams.isEmpty then ""
-      else s!"<{String.intercalate ", " sig.typeParams.toList}>"
+    let typeParamsStr := if sig.typeParamNames.isEmpty then ""
+      else s!"<{String.intercalate ", " sig.typeParamNames.toList}>"
     let paramsStr := String.intercalate ", " (sig.params.toList.map ToString.toString)
     s!"fn {sig.name}{typeParamsStr}({paramsStr}) -> {sig.retTy}{closureStr}"
 
+instance : ToString (Signature n) where
+  toString := toStringAux
+
 end Signature
 
-/-! ## Functions -/
+/-- Monomorphic signature -/
+abbrev ClosedSignature := Signature 0
 
 /-- Function attributes -/
 structure FuncAttrs where
@@ -123,31 +100,22 @@ instance : ToString FuncAttrs where
 
 end FuncAttrs
 
+
 /-- A complete function -/
-structure Func where
-  /-- Function ID (index in module) -/
+structure Func (n : Nat) where
   id : FuncId
-  /-- Function signature -/
-  sig : Signature
-  /-- Control flow graph (none for extern functions) -/
-  body : Option CFG := none
-  /-- Attributes -/
+  sig : Signature n
+  body : Option (CFG n) := none
   attrs : FuncAttrs := {}
   /-- Next available local ID -/
   nextLocalId : Nat := 0
-  /-- Local variable types (for SSA verification) -/
-  localTypes : Std.HashMap Nat Ty := {}
-  /-- The original polymorphic function ID -/
-  specializedFrom : Option FuncId := none
-  /-- The type arguments used -/
-  typeArgs : Array Ty := #[]
+  localTypes : Std.HashMap Nat (Ty n) := {}
   deriving Inhabited
 
 namespace Func
 
-/-- Create an external function declaration -/
-def extern (id : FuncId) (name : String) (params : Array Param) (retTy : Ty)
-    (externName : String) : Func :=
+def extern (id : FuncId) (name : String) (params : Array (Param 0)) (retTy : ClosedTy)
+    (externName : String) : Func 0 :=
   { id
   , sig := { name, params, retTy }
   , body := none
@@ -155,9 +123,8 @@ def extern (id : FuncId) (name : String) (params : Array Param) (retTy : Ty)
   , nextLocalId := params.size
   }
 
-/-- Create a function with a body -/
-def withBody (id : FuncId) (sig : Signature) (cfg : CFG) : Func :=
-  let paramTypes := sig.params.foldl (init := ({} : Std.HashMap Nat Ty)) fun acc p =>
+def withBody (id : FuncId) (sig : Signature n) (cfg : CFG n) : Func n :=
+  let paramTypes := sig.params.foldl (init := ({} : Std.HashMap Nat (Ty n))) fun acc p =>
     acc.insert p.id.id p.ty
   { id
   , sig
@@ -166,52 +133,55 @@ def withBody (id : FuncId) (sig : Signature) (cfg : CFG) : Func :=
   , localTypes := paramTypes
   }
 
-/-- Check if function is external -/
-def isExtern (f : Func) : Bool := f.attrs.extern.isSome
+def isExtern (f : Func n) : Bool := f.attrs.extern.isSome
 
-/-- Check if function is polymorphic -/
-def isPolymorphic (f : Func) : Bool := f.sig.isPolymorphic
+def isPolymorphic (_ : Func n) : Bool := n > 0
 
-/-- Check if function is a specialization of another -/
-def isSpecialization (f : Func) : Bool := f.specializedFrom.isSome
+def numTypeParams (_ : Func n) : Nat := n
 
-/-- Get the number of type parameters -/
-def numTypeParams (f : Func) : Nat := f.sig.numTypeParams
-
-/-- Allocate a fresh local ID -/
-def freshLocal (f : Func) : LocalId × Func :=
+def freshLocal (f : Func n) : LocalId × Func n :=
   (⟨f.nextLocalId⟩, { f with nextLocalId := f.nextLocalId + 1 })
 
-/-- Allocate a fresh local with a known type -/
-def freshLocalTyped (f : Func) (ty : Ty) : LocalId × Func :=
+def freshLocalTyped (f : Func n) (ty : Ty n) : LocalId × Func n :=
   let id := ⟨f.nextLocalId⟩
   (id, { f with
     nextLocalId := f.nextLocalId + 1
     localTypes := f.localTypes.insert id.id ty
   })
 
-/-- Get the type of a local -/
-def getLocalType (f : Func) (id : LocalId) : Option Ty :=
+def getLocalType (f : Func n) (id : LocalId) : Option (Ty n) :=
   f.localTypes.get? id.id
 
-/-- Set the type of a local -/
-def setLocalType (f : Func) (id : LocalId) (ty : Ty) : Func :=
+def setLocalType (f : Func n) (id : LocalId) (ty : Ty n) : Func n :=
   { f with localTypes := f.localTypes.insert id.id ty }
 
-/-- Update the CFG -/
-def updateBody (f : Func) (update : CFG → CFG) : Func :=
+def updateBody (f : Func n) (update : CFG n → CFG n) : Func n :=
   match f.body with
   | some cfg => { f with body := some (update cfg) }
   | none => f
 
-/-- Get all blocks -/
-def blocks (f : Func) : Array Block :=
+def blocks (f : Func n) : Array (Block n) :=
   match f.body with
   | some cfg => cfg.allBlocks
   | none => #[]
 
-instance : ToString Func where
-  toString f :=
+/-- Instantiate a polymorphic function to produce a monomorphic one -/
+def instantiate (f : Func n) (env : TyEnv n) (newId : FuncId) (newName : String) : Func 0 :=
+  let newSig := f.sig.instantiate env newName
+  let newBody := f.body.map (·.instantiate env)
+  let newLocalTypes := f.localTypes.fold
+    (init := ({} : Std.HashMap Nat ClosedTy)) fun acc id ty =>
+      acc.insert id (Somac.Alloy.instantiate ty env)
+  { id := newId
+  , sig := newSig
+  , body := newBody
+  , attrs := f.attrs
+  , nextLocalId := f.nextLocalId
+  , localTypes := newLocalTypes
+  }
+
+private def toStringAux : Func n → String
+  | f =>
     let attrsStr := if f.attrs == FuncAttrs.default then ""
       else s!"{f.attrs} "
     let header := s!"{attrsStr}{f.sig}"
@@ -221,7 +191,38 @@ instance : ToString Func where
       let bodyStr := String.intercalate "\n\n" (cfg.allBlocks.toList.map ToString.toString)
       s!"{header} \{\n{bodyStr}\n}"
 
+instance : ToString (Func n) where
+  toString := toStringAux
+
 end Func
+
+/-- Monomorphic function -/
+abbrev ClosedFunc := Func 0
+
+/-- A function with existentially quantified arity -/
+abbrev SomeFunc := Σ n, Func n
+
+namespace SomeFunc
+
+def id (f : SomeFunc) : FuncId := f.2.id
+def name (f : SomeFunc) : String := f.2.sig.name
+def arity (f : SomeFunc) : Nat := f.1
+def isPolymorphic (f : SomeFunc) : Bool := f.1 > 0
+def isMono (f : SomeFunc) : Bool := f.1 == 0
+
+/-- Get as monomorphic if arity is 0 -/
+def asMono? (f : SomeFunc) : Option ClosedFunc :=
+  match f with
+  | ⟨0, func⟩ => some func
+  | _ => none
+
+/-- Wrap a monomorphic function -/
+def ofMono (f : ClosedFunc) : SomeFunc := ⟨0, f⟩
+
+instance : ToString SomeFunc where
+  toString f := ToString.toString f.2
+
+end SomeFunc
 
 /-! ## Globals -/
 
@@ -231,13 +232,11 @@ structure Global where
   id : GlobalId
   /-- Name -/
   name : String
-  /-- Type -/
-  ty : Ty
-  /-- Initial value (none for uninitialized) -/
+  ty : ClosedTy
   init : Option Const := none
-  /-- Is this mutable? -/
+  /-- Whether this is mutable -/
   mutable : Bool := false
-  deriving Repr, Inhabited, Serialize, Deserialize
+  deriving Inhabited
 
 namespace Global
 
@@ -257,9 +256,8 @@ end Global
 structure TypeDef where
   /-- Type name -/
   name : String
-  /-- The type -/
-  ty : Ty
-  deriving Repr, Inhabited, Serialize, Deserialize
+  ty : ClosedTy
+  deriving Inhabited
 
 namespace TypeDef
 
@@ -299,15 +297,11 @@ def get (st : StringTable) (idx : Nat) : Option String :=
 
 end StringTable
 
-/-! ## Module -/
-
 /-- An Alloy module -/
 structure Module where
   /-- Module name -/
   name : String
-  /-- Functions -/
-  funcs : Array Func := #[]
-  /-- Global variables and constants -/
+  funcs : Array SomeFunc := #[]
   globals : Array Global := #[]
   /-- Named type definitions -/
   types : Array TypeDef := #[]
@@ -324,14 +318,17 @@ namespace Module
 /-- Create an empty module -/
 def empty (name : String) : Module := { name }
 
-/-- Add a function, preserving its existing ID -/
-def addFunc (m : Module) (f : Func) : Module :=
+/-- Add a function-/
+def addFunc (m : Module) (f : SomeFunc) : Module :=
   { m with
     funcs := m.funcs.push f
-    funcIndex := m.funcIndex.insert f.sig.name f.id
+    funcIndex := m.funcIndex.insert f.name f.id
   }
 
-/-- Add a global -/
+/-- Add a monomorphic function -/
+def addMonoFunc (m : Module) (f : ClosedFunc) : Module :=
+  m.addFunc (SomeFunc.ofMono f)
+
 def addGlobal (m : Module) (g : Global) : Module :=
   let id := GlobalId.mk m.globals.size
   { m with globals := m.globals.push { g with id } }
@@ -346,14 +343,17 @@ def internString (m : Module) (s : String) : Nat × Module :=
   (idx, { m with strings := strings' })
 
 /-- Get function by ID -/
-def getFunc (m : Module) (id : FuncId) : Option Func :=
+def getFunc (m : Module) (id : FuncId) : Option SomeFunc :=
   m.funcs[id.id]?
 
 /-- Get function by name -/
-def getFuncByName (m : Module) (name : String) : Option Func :=
+def getFuncByName (m : Module) (name : String) : Option SomeFunc :=
   m.funcIndex.get? name |>.bind m.getFunc
 
-/-- Get global by ID -/
+/-- Get monomorphic function by ID -/
+def getMonoFunc (m : Module) (id : FuncId) : Option ClosedFunc :=
+  m.getFunc id |>.bind SomeFunc.asMono?
+
 def getGlobal (m : Module) (id : GlobalId) : Option Global :=
   m.globals[id.id]?
 
@@ -366,6 +366,14 @@ def withMainByName (m : Module) (name : String) : Module :=
   match m.funcIndex.get? name with
   | some id => { m with mainFunc := some id }
   | none => m
+
+/-- Get all monomorphic functions -/
+def monoFuncs (m : Module) : Array ClosedFunc :=
+  m.funcs.filterMap SomeFunc.asMono?
+
+/-- Check if module is fully monomorphic -/
+def isFullyMonomorphic (m : Module) : Bool :=
+  m.funcs.all (·.isMono)
 
 instance : ToString Module where
   toString m :=
@@ -390,5 +398,24 @@ instance : ToString Module where
     s!"{header}{typesStr}{globalsStr}; Functions\n{funcsStr}{mainStr}"
 
 end Module
+
+/-- A type-safe specialization request for a function of arity n -/
+structure SpecRequest (n : Nat) where
+  func : Func n
+  typeArgs : Fin n → ClosedTy
+
+namespace SpecRequest
+
+/-- Build a type environment from the request -/
+def toEnv (req : SpecRequest n) : TyEnv n := req.typeArgs
+
+/-- Specialize the function -/
+def specialize (req : SpecRequest n) (newId : FuncId) (newName : String) : ClosedFunc :=
+  req.func.instantiate req.toEnv newId newName
+
+end SpecRequest
+
+/-- Existentially quantified specialization request -/
+abbrev SomeSpecRequest := Σ n, SpecRequest n
 
 end Somac.Alloy

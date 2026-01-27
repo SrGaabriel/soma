@@ -91,7 +91,7 @@ def remapFuncRef (remap : IdRemap) (moduleName : String) (ref : FuncRef) : FuncR
   | _ => ref
 
 /-- Rewrite FuncId references in an instruction -/
-def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst) : Inst :=
+def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst n) : Inst n :=
   let remapOp := remapOperand remap moduleName
   let remapOps := fun ops => ops.map remapOp
   let remapRef := remapFuncRef remap moduleName
@@ -154,35 +154,37 @@ def remapTerminator (remap : IdRemap) (moduleName : String) (term : Terminator) 
   | _ => term
 
 /-- Rewrite FuncId references in a statement -/
-def remapStmt (remap : IdRemap) (moduleName : String) (stmt : Stmt) : Stmt :=
+def remapStmt (remap : IdRemap) (moduleName : String) (stmt : Stmt n) : Stmt n :=
   { stmt with inst := remapInst remap moduleName stmt.inst }
 
 /-- Rewrite FuncId references in a block -/
-def remapBlock (remap : IdRemap) (moduleName : String) (block : Block) : Block :=
+def remapBlock (remap : IdRemap) (moduleName : String) (block : Block n) : Block n :=
   { block with
     stmts := block.stmts.map (remapStmt remap moduleName)
     terminator := remapTerminator remap moduleName block.terminator
   }
 
 /-- Rewrite FuncId references in a CFG -/
-def remapCFG (remap : IdRemap) (moduleName : String) (cfg : CFG) : CFG :=
+def remapCFG (remap : IdRemap) (moduleName : String) (cfg : CFG n) : CFG n :=
   { cfg with
     blocks := cfg.blocks.fold (init := {}) fun acc id block =>
       acc.insert id (remapBlock remap moduleName block)
   }
 
 /-- Rewrite FuncId references in a function -/
-def remapFunc (remap : IdRemap) (moduleName : String) (func : Func) (newId : FuncId) (newName : String) : Func :=
+def remapFunc (remap : IdRemap) (moduleName : String) (func : Func n) (newId : FuncId) (newName : String) : Func n :=
   let newSig := { func.sig with name := newName }
   let newBody := func.body.map (remapCFG remap moduleName)
-  let newSpecializedFrom := func.specializedFrom.bind fun oldId =>
-    remap.lookupFunc moduleName oldId.id |>.map FuncId.mk
   { func with
     id := newId
     sig := newSig
     body := newBody
-    specializedFrom := newSpecializedFrom
   }
+
+/-- Rewrite FuncId references in a SomeFunc -/
+def remapSomeFunc (remap : IdRemap) (moduleName : String) (sf : SomeFunc) (newId : FuncId) (newName : String) : SomeFunc :=
+  let ⟨n, func⟩ := sf
+  ⟨n, remapFunc remap moduleName func newId newName⟩
 
 /-- State for merging modules -/
 structure MergeState where
@@ -206,7 +208,8 @@ def init (name : String) : MergeState :=
   { result := Module.empty name, remap := IdRemap.empty }
 
 /-- Add a function to the merged module -/
-def addFunc (s : MergeState) (moduleName : String) (func : Func) : MergeState :=
+def addFunc (s : MergeState) (moduleName : String) (sf : SomeFunc) : MergeState :=
+  let ⟨n, func⟩ := sf
   let oldId := func.id.id
   let newId := s.nextFuncId
   let qualifiedName := s!"${moduleName}$${func.sig.name}"
@@ -215,11 +218,11 @@ def addFunc (s : MergeState) (moduleName : String) (func : Func) : MergeState :=
   let remap' := s.remap.addFuncMapping moduleName oldId newId
 
   -- Will remap references after all functions are registered
-  let newFunc : Func := { func with id := ⟨newId⟩, sig := { func.sig with name := qualifiedName } }
+  let newFunc : Func n := { func with id := ⟨newId⟩, sig := { func.sig with name := qualifiedName } }
 
   { s with
     result := { s.result with
-      funcs := s.result.funcs.push newFunc
+      funcs := s.result.funcs.push ⟨n, newFunc⟩
       funcIndex := s.result.funcIndex.insert qualifiedName ⟨newId⟩
     }
     remap := remap'
@@ -263,8 +266,8 @@ def registerModule (moduleName : String) (module : Module) (state : MergeState) 
   let mut s := state
 
   -- Register all functions
-  for func in module.funcs do
-    s := s.addFunc moduleName func
+  for sf in module.funcs do
+    s := s.addFunc moduleName sf
 
   -- Register all globals
   for global in module.globals do
@@ -289,18 +292,19 @@ def remapModule (moduleName : String) (state : MergeState) : MergeState := Id.ru
   let modulePrefix := s!"${moduleName}$$"
 
   -- Rewrite all functions that belong to this module
-  let funcs := result.funcs.map fun func =>
+  let funcs := result.funcs.map fun sf =>
+    let ⟨n, func⟩ := sf
     if func.sig.name.startsWith modulePrefix then
-      remapFunc state.remap moduleName func func.id func.sig.name
+      ⟨n, remapFunc state.remap moduleName func func.id func.sig.name⟩
     else
-      func
+      sf
 
   { state with result := { result with funcs := funcs } }
 
 /-- Collect all unresolved FuncRefs from a module -/
 def collectUnresolvedRefs (mod : Module) : Std.HashSet WrapperNeeded := Id.run do
   let mut result : Std.HashSet WrapperNeeded := {}
-  for func in mod.funcs do
+  for ⟨_, func⟩ in mod.funcs do
     if let some cfg := func.body then
       for block in cfg.allBlocks do
         for stmt in block.stmts do
@@ -317,7 +321,7 @@ def collectUnresolvedRefs (mod : Module) : Std.HashSet WrapperNeeded := Id.run d
 /-- Build the name→FuncId mapping from all functions in the module -/
 def buildNameTable (mod : Module) : Std.HashMap String FuncId := Id.run do
   let mut table : Std.HashMap String FuncId := {}
-  for func in mod.funcs do
+  for ⟨_, func⟩ in mod.funcs do
     -- Add mapping for the full qualified name
     table := table.insert func.sig.name func.id
     let parts := func.sig.name.splitOn "$$"
@@ -329,30 +333,35 @@ def buildNameTable (mod : Module) : Std.HashMap String FuncId := Id.run do
   table
 
 /-- Resolve FuncRef in an instruction using the resolver -/
-def resolveInstFuncRefs (resolver : FuncRefResolver) (inst : Inst) : Inst :=
+def resolveInstFuncRefs (resolver : FuncRefResolver) (inst : Inst n) : Inst n :=
   match inst with
   | .makeClosure ref env => .makeClosure (resolver.resolveToLocal ref) env
   | .makeClosurePoly ref typeArgs env => .makeClosurePoly (resolver.resolveToLocal ref) typeArgs env
   | _ => inst
 
 /-- Resolve FuncRefs in a statement -/
-def resolveStmtFuncRefs (resolver : FuncRefResolver) (stmt : Stmt) : Stmt :=
+def resolveStmtFuncRefs (resolver : FuncRefResolver) (stmt : Stmt n) : Stmt n :=
   { stmt with inst := resolveInstFuncRefs resolver stmt.inst }
 
 /-- Resolve FuncRefs in a block -/
-def resolveBlockFuncRefs (resolver : FuncRefResolver) (block : Block) : Block :=
+def resolveBlockFuncRefs (resolver : FuncRefResolver) (block : Block n) : Block n :=
   { block with stmts := block.stmts.map (resolveStmtFuncRefs resolver) }
 
 /-- Resolve FuncRefs in a CFG -/
-def resolveCFGFuncRefs (resolver : FuncRefResolver) (cfg : CFG) : CFG :=
+def resolveCFGFuncRefs (resolver : FuncRefResolver) (cfg : CFG n) : CFG n :=
   { cfg with
     blocks := cfg.blocks.fold (init := {}) fun acc id block =>
       acc.insert id (resolveBlockFuncRefs resolver block)
   }
 
 /-- Resolve FuncRefs in a function -/
-def resolveFuncFuncRefs (resolver : FuncRefResolver) (func : Func) : Func :=
+def resolveFuncFuncRefs (resolver : FuncRefResolver) (func : Func n) : Func n :=
   { func with body := func.body.map (resolveCFGFuncRefs resolver) }
+
+/-- Resolve FuncRefs in a SomeFunc -/
+def resolveSomeFuncFuncRefs (resolver : FuncRefResolver) (sf : SomeFunc) : SomeFunc :=
+  let ⟨n, func⟩ := sf
+  ⟨n, resolveFuncFuncRefs resolver func⟩
 
 /-- Generate wrappers and resolve all FuncRefs in the module -/
 def resolveFuncRefs (mod : Module) : Module := Id.run do
@@ -364,13 +373,13 @@ def resolveFuncRefs (mod : Module) : Module := Id.run do
 
   -- Generate wrappers and build resolver
   let mut nextFuncId := mod.funcs.size
-  let mut wrapperFuncs : Array Func := #[]
+  let mut wrapperFuncs : Array SomeFunc := #[]
   let mut resolver : FuncRefResolver := { nameToFuncId := nameTable }
 
   for wrapper in needed do
     let funcId := FuncId.mk nextFuncId
-    let wrapperFunc := generateWrapper wrapper funcId
-    wrapperFuncs := wrapperFuncs.push wrapperFunc
+    let wrapperFunc : ClosedFunc := generateWrapper wrapper funcId
+    wrapperFuncs := wrapperFuncs.push ⟨0, wrapperFunc⟩
 
     -- Register in resolver
     match wrapper with
@@ -381,11 +390,11 @@ def resolveFuncRefs (mod : Module) : Module := Id.run do
     nextFuncId := nextFuncId + 1
 
   -- Resolve all FuncRefs in existing functions
-  let resolvedFuncs := mod.funcs.map (resolveFuncFuncRefs resolver)
+  let resolvedFuncs := mod.funcs.map (resolveSomeFuncFuncRefs resolver)
 
   -- Add wrapper functions and update funcIndex
   let mut funcIndex := mod.funcIndex
-  for wrapper in wrapperFuncs do
+  for ⟨_, wrapper⟩ in wrapperFuncs do
     funcIndex := funcIndex.insert wrapper.sig.name wrapper.id
 
   { mod with

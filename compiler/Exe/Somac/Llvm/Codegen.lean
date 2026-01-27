@@ -28,8 +28,8 @@ def primTyIsFloat : PrimTy → Bool
   | .f32 | .f64 => true
   | _ => false
 
-/-- Convert Alloy type to LLVM type -/
-partial def convertTy : Ty → LLVMType
+/-- Convert Alloy closed type to LLVM type -/
+partial def convertTy : ClosedTy → LLVMType
   | .prim p => convertPrimTy p
   | .ptr _ => .ptr
   | .rawPtr => .ptr
@@ -43,19 +43,15 @@ partial def convertTy : Ty → LLVMType
     .struct false #[.i32, .ptr]
   | .closure _ _ =>
     .struct false #[.ptr, .ptr]
-  | .tyVar id =>
-    panic! s!"CODEGEN BUG: tyVar α{id.idx} reached codegen without substitution, monomorphization incomplete"
-  | .forall_ name _body =>
-    panic! s!"CODEGEN BUG: forall type '{name}' reached codegen but it should have been eliminated"
-  | .tyApp func _ => convertTy func
+  | .var i => nomatch i -- impossible
 
 /-- Check if an Alloy type is unit -/
-def isUnitTy : Ty → Bool
+def isUnitTy : ClosedTy → Bool
   | .prim .unit => true
   | _ => false
 
 /-- Convert Alloy type to LLVM type for function return types -/
-partial def convertRetTy : Ty → LLVMType
+partial def convertRetTy : ClosedTy → LLVMType
   | .prim .unit => .i8
   | other => convertTy other
 
@@ -66,7 +62,7 @@ def closureTy : LLVMType := .struct false #[.ptr, .ptr]
 def taggedTy : LLVMType := .struct false #[.i32, .ptr]
 
 /-- Get the type of an Alloy operand -/
-def getOperandTy (op : Operand) (localTypes : Std.HashMap Nat Ty) : Ty :=
+def getOperandTy (op : Operand) (localTypes : Std.HashMap Nat ClosedTy) : ClosedTy :=
   match op with
   | .local id => localTypes.get? id.id |>.getD (.prim .i64)
   | .const c => c.ty
@@ -74,7 +70,7 @@ def getOperandTy (op : Operand) (localTypes : Std.HashMap Nat Ty) : Ty :=
   | .func _ => .rawPtr
 
 /-- Get field type from a struct type -/
-def getStructFieldTy (structTy : Ty) (fieldIdx : Nat) : Ty :=
+def getStructFieldTy (structTy : ClosedTy) (fieldIdx : Nat) : ClosedTy :=
   match structTy with
   | .struct fields =>
     if h : fieldIdx < fields.size then fields[fieldIdx].2
@@ -82,12 +78,12 @@ def getStructFieldTy (structTy : Ty) (fieldIdx : Nat) : Ty :=
   | _ => .prim .i64
 
 /-- Get element type from an array type -/
-def getArrayElemTy : Ty → Ty
+def getArrayElemTy : ClosedTy → ClosedTy
   | .array elem _ => elem
   | _ => .prim .i64
 
 /-- Get payload field types from a tagged union -/
-def getTaggedPayloadTy (taggedTy : Ty) (variantIdx : Nat) (fieldIdx : Nat) : Ty :=
+def getTaggedPayloadTy (taggedTy : ClosedTy) (variantIdx : Nat) (fieldIdx : Nat) : ClosedTy :=
   match taggedTy with
   | .tagged _ variants =>
     if h : variantIdx < variants.size then
@@ -104,17 +100,17 @@ structure CodegenState where
   /-- Alloy FuncId to LLVM function name mapping -/
   funcNames : Std.HashMap Nat String := {}
   /-- Alloy FuncId to function signature mapping -/
-  funcSigs : Std.HashMap Nat Signature := {}
+  funcSigs : Std.HashMap Nat ClosedSignature := {}
   /-- Alloy LocalId to LLVM LocalRef mapping (per function) -/
   localMap : Std.HashMap Nat LocalRef := {}
   /-- Alloy LocalId to Alloy Type mapping (per function) -/
-  localTypes : Std.HashMap Nat Ty := {}
+  localTypes : Std.HashMap Nat ClosedTy := {}
   /-- Alloy BlockId to LLVM Label mapping (per function) -/
   blockMap : Std.HashMap Nat Label := {}
   /-- Function builder state -/
   funcState : FuncBuilderState := {}
   /-- Current function being lowered -/
-  currentFunc : Option Func := none
+  currentFunc : Option ClosedFunc := none
   deriving Inhabited
 
 /-- Codegen monad -/
@@ -141,7 +137,7 @@ def withModuleBuilder (m : ModuleBuilder α) : CodegenM α := do
   pure result
 
 /-- Map an Alloy local to LLVM local with its type -/
-def mapLocal (alloyId : Nat) (llvmRef : LocalRef) (ty : Ty) : CodegenM Unit := do
+def mapLocal (alloyId : Nat) (llvmRef : LocalRef) (ty : ClosedTy) : CodegenM Unit := do
   modify fun s => { s with
     localMap := s.localMap.insert alloyId llvmRef
     localTypes := s.localTypes.insert alloyId ty
@@ -153,12 +149,12 @@ def getLocal (alloyId : Nat) : CodegenM (Option LocalRef) := do
   pure (s.localMap.get? alloyId)
 
 /-- Get type of an Alloy local -/
-def getLocalTy (alloyId : Nat) : CodegenM Ty := do
+def getLocalTy (alloyId : Nat) : CodegenM ClosedTy := do
   let s ← get
   pure (s.localTypes.get? alloyId |>.getD (.prim .i64))
 
 /-- Get LLVM local, creating if needed (with default type) -/
-def getOrCreateLocal (alloyId : Nat) (defaultTy : Ty := .prim .i64) : CodegenM LocalRef := do
+def getOrCreateLocal (alloyId : Nat) (defaultTy : ClosedTy := .prim .i64) : CodegenM LocalRef := do
   match ← getLocal alloyId with
   | some ref => pure ref
   | none =>
@@ -185,7 +181,7 @@ def getOrCreateBlock (alloyId : Nat) : CodegenM Label := do
     pure label
 
 /-- Register a function -/
-def registerFunc (alloyId : Nat) (name : String) (sig : Signature) : CodegenM Unit := do
+def registerFunc (alloyId : Nat) (name : String) (sig : ClosedSignature) : CodegenM Unit := do
   modify fun s => { s with
     funcNames := s.funcNames.insert alloyId name
     funcSigs := s.funcSigs.insert alloyId sig
@@ -197,7 +193,7 @@ def getFuncName (alloyId : Nat) : CodegenM String := do
   pure (s.funcNames.get? alloyId |>.getD s!"fn{alloyId}")
 
 /-- Get function signature -/
-def getFuncSig (alloyId : Nat) : CodegenM (Option Signature) := do
+def getFuncSig (alloyId : Nat) : CodegenM (Option ClosedSignature) := do
   let s ← get
   pure (s.funcSigs.get? alloyId)
 
@@ -212,23 +208,23 @@ def clearFuncState : CodegenM Unit := do
   }
 
 /-- Set current function -/
-def setCurrentFunc (func : Func) : CodegenM Unit := do
+def setCurrentFunc (func : ClosedFunc) : CodegenM Unit := do
   modify fun s => { s with currentFunc := some func }
 
 /-- Get current function -/
-def getCurrentFunc : CodegenM (Option Func) := do
+def getCurrentFunc : CodegenM (Option ClosedFunc) := do
   let s ← get
   pure s.currentFunc
 
 /-- Get local types map -/
-def getLocalTypes : CodegenM (Std.HashMap Nat Ty) := do
+def getLocalTypes : CodegenM (Std.HashMap Nat ClosedTy) := do
   let s ← get
   pure s.localTypes
 
 end CodegenM
 
 /-- Get the Alloy type of an operand -/
-def operandTy (op : Operand) : CodegenM Ty := do
+def operandTy (op : Operand) : CodegenM ClosedTy := do
   match op with
   | .local id =>
     -- First try the Alloy Func's localTypes (authoritative source)
@@ -323,7 +319,7 @@ def toI64 (ty : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
       panic! s!"CODEGEN BUG: toI64 cannot convert {ty.toLLVM} to i64"
 
 /-- Convert Alloy binary operation to LLVM -/
-def convertBinOp (op : BinOp) (ty : Ty) (lhs rhs : LLVMValue) : CodegenM LocalRef := do
+def convertBinOp (op : BinOp) (ty : ClosedTy) (lhs rhs : LLVMValue) : CodegenM LocalRef := do
   let llvmTy := convertTy ty
   let isFloat := match ty with
     | .prim p => primTyIsFloat p
@@ -378,7 +374,7 @@ def convertBinOp (op : BinOp) (ty : Ty) (lhs rhs : LLVMValue) : CodegenM LocalRe
       else FuncBuilder.icmp .uge llvmTy lhs rhs
 
 /-- Convert Alloy unary operation to LLVM with proper source type -/
-def convertUnOp (op : UnOp) (srcTy : Ty) (operand : LLVMValue) : CodegenM LocalRef := do
+def convertUnOp (op : UnOp 0) (srcTy : ClosedTy) (operand : LLVMValue) : CodegenM LocalRef := do
   let llvmSrcTy := convertTy srcTy
   let isFloat := match srcTy with
     | .prim p => primTyIsFloat p
@@ -465,7 +461,7 @@ def convertUnOp (op : UnOp) (srcTy : Ty) (operand : LLVMValue) : CodegenM LocalR
         FuncBuilder.inttoptr llvmSrcTy operand
 
 /-- Lower an Alloy instruction to LLVM, returning result ref and result type -/
-def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
+def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := do
   match inst with
   | .binOp op lhs rhs ty =>
     let lhsVal ← convertOperand lhs
@@ -1102,7 +1098,7 @@ def lowerInst (inst : Inst) : CodegenM (Option (LocalRef × Ty)) := do
     pure (some (ref, retTy))
 
 /-- Lower an Alloy terminator to LLVM -/
-def lowerTerminator (term : Terminator) (retTy : Ty) : CodegenM Unit := do
+def lowerTerminator (term : Terminator) (retTy : ClosedTy) : CodegenM Unit := do
   match term with
   | .jump target =>
     let label ← CodegenM.getOrCreateBlock target.id
@@ -1158,7 +1154,7 @@ def lowerTerminator (term : Terminator) (retTy : Ty) : CodegenM Unit := do
     CodegenM.withFuncBuilder FuncBuilder.unreachable
 
 /-- Collect LocalIds referenced in an instruction -/
-def instReferencedLocals (inst : Inst) : Array Nat :=
+def instReferencedLocals (inst : ClosedInst) : Array Nat :=
   let collectOp : Operand → Array Nat := fun op =>
     match op with
     | .local id => #[id.id]
@@ -1186,7 +1182,7 @@ def instReferencedLocals (inst : Inst) : Array Nat :=
   | _ => #[]
 
 /-- Lower an Alloy basic block to LLVM -/
-def lowerBlock (block : Block) (retTy : Ty) : CodegenM Unit := do
+def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) : CodegenM Unit := do
   let label ← CodegenM.getOrCreateBlock block.id.id
   CodegenM.withFuncBuilder (FuncBuilder.startBlock label)
 
@@ -1217,7 +1213,7 @@ def lowerBlock (block : Block) (retTy : Ty) : CodegenM Unit := do
   lowerTerminator block.terminator retTy
 
 /-- Lower an Alloy function to LLVM with explicit name -/
-def lowerFuncWithName (func : Func) (name : String) : CodegenM LLVMFunc := do
+def lowerFuncWithName (func : ClosedFunc) (name : String) : CodegenM LLVMFunc := do
   CodegenM.clearFuncState
   CodegenM.setCurrentFunc func
 
@@ -1274,7 +1270,7 @@ def lowerFuncWithName (func : Func) (name : String) : CodegenM LLVMFunc := do
     }
 
 /-- Lower an Alloy function to LLVM -/
-def lowerFunc (func : Func) : CodegenM LLVMFunc := do
+def lowerFunc (func : ClosedFunc) : CodegenM LLVMFunc := do
   lowerFuncWithName func func.sig.name
 
 /-- Add runtime function declarations -/
@@ -1381,8 +1377,10 @@ def addRuntimeDeclarations : CodegenM Unit := do
 
 /-- Lower an Alloy module to LLVM -/
 def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
+  let monoFuncs := alloyModule.monoFuncs
+
   -- Register all functions first (names and signatures)
-  for func in alloyModule.funcs do
+  for func in monoFuncs do
     let isMain := alloyModule.mainFunc == some func.id
     let name := if isMain then "soma_main" else func.sig.name
     CodegenM.registerFunc func.id.id name func.sig
@@ -1430,8 +1428,8 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
     }
     CodegenM.withModuleBuilder (ModuleBuilder.addGlobal llvmGlobal)
 
-  -- Lower all functions
-  for func in alloyModule.funcs do
+  -- Lower all monomorphic functions
+  for func in monoFuncs do
     let isMain := alloyModule.mainFunc == some func.id
     let funcName := if isMain then "soma_main" else func.sig.name
     let llvmFunc ← lowerFuncWithName func funcName

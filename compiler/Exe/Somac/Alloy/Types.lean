@@ -1,24 +1,11 @@
-/-
-  Alloy IR: Mid-level Intermediate Representation for Soma
-
-  Alloy is an imperative, SSA-based IR positioned between Circuit IR (interaction nets)
-  and LLVM IR. It serves as the target for Circuit IR lowering and the source for
-  native code generation.
-
-  Key design principles:
-  1. SSA form: Every value is defined exactly once
-  2. Explicit control flow: Basic blocks with terminators
-  3. Explicit memory: Allocations, loads, stores
-  4. Explicit closures: Environment capture and function pointers
-  5. No interaction net concepts: DUP/SUP lowered to explicit copies/allocations
--/
-
 import Std.Data.HashMap
 import Kenosis
 
 open Kenosis
 
 namespace Somac.Alloy
+
+/-! ## Identifiers -/
 
 /-- A local value in SSA form (assigned exactly once) -/
 structure LocalId where
@@ -72,20 +59,6 @@ instance : ToString GlobalId where
 
 end GlobalId
 
-/-- A type variable identifier (de Bruijn index for quantified types) -/
-structure TyVarId where
-  idx : Nat
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
-
-namespace TyVarId
-
-instance : ToString TyVarId where
-  toString v := s!"α{v.idx}"
-
-def zero : TyVarId := ⟨0⟩
-def succ (v : TyVarId) : TyVarId := ⟨v.idx + 1⟩
-
-end TyVarId
 
 /-- Primitive types at the Alloy level -/
 inductive PrimTy where
@@ -125,159 +98,177 @@ instance : ToString PrimTy where
 end PrimTy
 
 /-- Alloy types -/
-inductive Ty where
+inductive Ty : Nat → Type where
   /-- Primitive types -/
-  | prim (p : PrimTy)
+  | prim : PrimTy → Ty n
   /-- Pointer to a value of type t -/
-  | ptr (t : Ty)
+  | ptr : Ty n → Ty n
   /-- Raw pointer (void*) -/
-  | rawPtr
+  | rawPtr : Ty n
   /-- Function pointer: (args) -> ret -/
-  | funcPtr (args : Array Ty) (ret : Ty)
+  | funcPtr : Array (Ty n) → Ty n → Ty n
   /-- Struct type (product) with named fields -/
-  | struct (fields : Array (String × Ty))
+  | struct : Array (String × Ty n) → Ty n
   /-- Array type with static size -/
-  | array (elem : Ty) (size : Nat)
-  /-- Tagged union (for ADTs) -/
-  | tagged (tag : Ty) (variants : Array (Nat × Array Ty))
+  | array : Ty n → Nat → Ty n
+  /-- Tagged union (for ADTs): tag type + variant payloads -/
+  | tagged : Ty n → Array (Nat × Array (Ty n)) → Ty n
   /-- Closure type: function pointer + environment pointer -/
-  | closure (args : Array Ty) (ret : Ty)
-  /-- Type variable (de Bruijn index into enclosing foralls) -/
-  | tyVar (id : TyVarId)
-  /-- Universal quantification: ∀α. body -/
-  | forall_ (name : String) (body : Ty)
-  /-- Type application: F[T] -/
-  | tyApp (func : Ty) (arg : Ty)
-  deriving Repr, BEq, Inhabited, Serialize, Deserialize
+  | closure : Array (Ty n) → Ty n → Ty n
+  /-- Type variable (de Bruijn index into enclosing quantifiers) -/
+  | var : Fin n → Ty n
+
+/-- Ty is always inhabited (by rawPtr) -/
+instance : Inhabited (Ty n) where
+  default := .rawPtr
+
+/-- A closed (monomorphic) type has no free type variables -/
+abbrev ClosedTy := Ty 0
+
+/-- Type environment: maps each of n type variables to a closed type -/
+abbrev TyEnv (n : Nat) := Fin n → ClosedTy
+
+/-- Instantiate a type by substituting all type variables -/
+partial def instantiate (ty : Ty n) (env : TyEnv n) : ClosedTy :=
+  match ty with
+  | .prim p => .prim p
+  | .ptr t => .ptr (instantiate t env)
+  | .rawPtr => .rawPtr
+  | .funcPtr args ret =>
+      .funcPtr (args.map (instantiate · env)) (instantiate ret env)
+  | .struct fields =>
+      .struct (fields.map fun (name, t) => (name, instantiate t env))
+  | .array elem sz => .array (instantiate elem env) sz
+  | .tagged tag variants =>
+      .tagged (instantiate tag env)
+              (variants.map fun (idx, fields) => (idx, fields.map (instantiate · env)))
+  | .closure args ret =>
+      .closure (args.map (instantiate · env)) (instantiate ret env)
+  | .var i => env i
+
+/-- Weaken a type by allowing more type variables (shift all indices) -/
+partial def Ty.weaken (ty : Ty n) (extra : Nat) : Ty (n + extra) :=
+  match ty with
+  | .prim p => .prim p
+  | .ptr t => .ptr (t.weaken extra)
+  | .rawPtr => .rawPtr
+  | .funcPtr args ret => .funcPtr (args.map (·.weaken extra)) (ret.weaken extra)
+  | .struct fields => .struct (fields.map fun (name, t) => (name, t.weaken extra))
+  | .array elem sz => .array (elem.weaken extra) sz
+  | .tagged tag variants =>
+      .tagged (tag.weaken extra)
+              (variants.map fun (idx, fields) => (idx, fields.map (·.weaken extra)))
+  | .closure args ret => .closure (args.map (·.weaken extra)) (ret.weaken extra)
+  | .var i => .var ⟨i.val, Nat.lt_add_right extra i.isLt⟩
+
+/-- Embed a closed type into any context (trivially safe) -/
+partial def ClosedTy.embed (ty : ClosedTy) : Ty n :=
+  match ty with
+  | .prim p => .prim p
+  | .ptr t => .ptr (embed t)
+  | .rawPtr => .rawPtr
+  | .funcPtr args ret => .funcPtr (args.map embed) (embed ret)
+  | .struct fields => .struct (fields.map fun (name, t) => (name, embed t))
+  | .array elem sz => .array (embed elem) sz
+  | .tagged tag variants =>
+      .tagged (embed tag) (variants.map fun (idx, fields) => (idx, fields.map embed))
+  | .closure args ret => .closure (args.map embed) (embed ret)
+  | .var i => nomatch i -- impossible
+
+instance : Coe ClosedTy (Ty n) := ⟨ClosedTy.embed⟩
 
 namespace Ty
 
-/-- Common type aliases -/
-def i64 : Ty := .prim .i64
-def i32 : Ty := .prim .i32
-def u64 : Ty := .prim .u64
-def u32 : Ty := .prim .u32
-def bool : Ty := .prim .bool
-def unit : Ty := .prim .unit
-
-/-- Check if a type is monomorphic -/
-partial def isMonomorphic : Ty → Bool
-  | .prim _ => true
-  | .ptr t => t.isMonomorphic
-  | .rawPtr => true
-  | .funcPtr args ret => args.all isMonomorphic && ret.isMonomorphic
-  | .struct fields => fields.all fun (_, t) => t.isMonomorphic
-  | .array elem _ => elem.isMonomorphic
-  | .tagged tag variants =>
-    tag.isMonomorphic && variants.all fun (_, fields) => fields.all isMonomorphic
-  | .closure args ret => args.all isMonomorphic && ret.isMonomorphic
-  | .tyVar _ => false
-  | .forall_ _ _ => false
-  | .tyApp func arg => func.isMonomorphic && arg.isMonomorphic
-
-/-- Substitute a type for a type variable at a given de Bruijn index -/
-partial def substTyVar (ty : Ty) (idx : Nat) (replacement : Ty) : Ty :=
-  match ty with
-  | .prim p => .prim p
-  | .ptr t => .ptr (t.substTyVar idx replacement)
-  | .rawPtr => .rawPtr
-  | .funcPtr args ret =>
-    .funcPtr (args.map (·.substTyVar idx replacement)) (ret.substTyVar idx replacement)
-  | .struct fields =>
-    .struct (fields.map fun (n, t) => (n, t.substTyVar idx replacement))
-  | .array elem size => .array (elem.substTyVar idx replacement) size
-  | .tagged tag variants =>
-    .tagged (tag.substTyVar idx replacement)
-      (variants.map fun (i, fields) => (i, fields.map (·.substTyVar idx replacement)))
-  | .closure args ret =>
-    .closure (args.map (·.substTyVar idx replacement)) (ret.substTyVar idx replacement)
-  | .tyVar id =>
-    if id.idx == idx then replacement else .tyVar id
-  | .forall_ name body =>
-    -- Shift the index since we're going under a binder
-    .forall_ name (body.substTyVar (idx + 1) replacement)
-  | .tyApp func arg =>
-    .tyApp (func.substTyVar idx replacement) (arg.substTyVar idx replacement)
-
-/-- Apply a type argument to a forall type, performing substitution -/
-def applyTyArg (ty : Ty) (arg : Ty) : Ty :=
-  match ty with
-  | .forall_ _ body => body.substTyVar 0 arg
-  | _ => .tyApp ty arg -- If not a forall, create an application node
-
-/-- Collect all free type variables in a type -/
-partial def freeTyVars (ty : Ty) (bound : Nat := 0) : List TyVarId :=
-  match ty with
-  | .prim _ | .rawPtr => []
-  | .ptr t => t.freeTyVars bound
-  | .funcPtr args ret =>
-    args.toList.flatMap (·.freeTyVars bound) ++ ret.freeTyVars bound
-  | .struct fields => fields.toList.flatMap fun (_, t) => t.freeTyVars bound
-  | .array elem _ => elem.freeTyVars bound
-  | .tagged tag variants =>
-    tag.freeTyVars bound ++ variants.toList.flatMap fun (_, fields) =>
-      fields.toList.flatMap (·.freeTyVars bound)
-  | .closure args ret =>
-    args.toList.flatMap (·.freeTyVars bound) ++ ret.freeTyVars bound
-  | .tyVar id => if id.idx >= bound then [id] else []
-  | .forall_ _ body => body.freeTyVars (bound + 1)
-  | .tyApp func arg => func.freeTyVars bound ++ arg.freeTyVars bound
+def i64 : Ty n := .prim .i64
+def i32 : Ty n := .prim .i32
+def u64 : Ty n := .prim .u64
+def u32 : Ty n := .prim .u32
+def bool : Ty n := .prim .bool
+def unit : Ty n := .prim .unit
 
 /-- Size in bytes -/
-partial def sizeBytes : Ty → Nat
+partial def sizeBytes (ty : Ty n) : Nat :=
+  match ty with
   | .prim p => (p.bitWidth + 7) / 8
   | .ptr _ | .rawPtr => 8
   | .funcPtr _ _ => 8
   | .struct fields => fields.foldl (fun acc (_, t) => acc + t.sizeBytes) 0
   | .array elem size => elem.sizeBytes * size
   | .tagged tag variants =>
-    let maxPayload := variants.foldl (fun acc (_, fields) =>
-      max acc (fields.foldl (fun a t => a + t.sizeBytes) 0)) 0
-    tag.sizeBytes + maxPayload
-  | .closure _ _ => 16  -- fn ptr + env ptr
-  | .tyVar _ => 8 -- use pointer size as default
-  | .forall_ _ body => body.sizeBytes
-  | .tyApp _ _ => 8 -- use pointer size as default
+      let maxPayload := variants.foldl (fun acc (_, fields) =>
+        max acc (fields.foldl (fun a t => a + t.sizeBytes) 0)) 0
+      tag.sizeBytes + maxPayload
+  | .closure _ _ => 16
+  | .var _ => 8
 
 /-- Alignment in bytes -/
-partial def alignment : Ty → Nat
+partial def alignment (ty : Ty n) : Nat :=
+  match ty with
   | .prim p => min 8 ((p.bitWidth + 7) / 8)
   | .ptr _ | .rawPtr | .funcPtr _ _ => 8
   | .struct fields => fields.foldl (fun acc (_, t) => max acc t.alignment) 1
   | .array elem _ => elem.alignment
   | .tagged tag variants =>
-    let maxAlign := variants.foldl (fun acc (_, fields) =>
-      max acc (fields.foldl (fun a t => max a t.alignment) 1)) 1
-    max tag.alignment maxAlign
+      let maxAlign := variants.foldl (fun acc (_, fields) =>
+        max acc (fields.foldl (fun a t => max a t.alignment) 1)) 1
+      max tag.alignment maxAlign
   | .closure _ _ => 8
-  | .tyVar _ => 8
-  | .forall_ _ body => body.alignment
-  | .tyApp _ _ => 8
+  | .var _ => 8
 
-partial def toStringAux : Ty → String
+/-- Pretty-print a type -/
+partial def toString (ty : Ty n) : String :=
+  match ty with
   | .prim p => ToString.toString p
-  | .ptr t => s!"*{toStringAux t}"
+  | .ptr t => s!"*{toString t}"
   | .rawPtr => "rawptr"
   | .funcPtr args ret =>
-    let argsStr := String.intercalate ", " (args.toList.map toStringAux)
-    s!"fn({argsStr}) -> {toStringAux ret}"
+      let argsStr := String.intercalate ", " (args.toList.map toString)
+      s!"fn({argsStr}) -> {toString ret}"
   | .struct fields =>
-    let fieldsStr := String.intercalate ", " (fields.toList.map fun (n, t) => s!"{n}: {toStringAux t}")
-    s!"\{{fieldsStr}}"
-  | .array elem size => s!"[{toStringAux elem}; {size}]"
+      let fieldsStr := String.intercalate ", " (fields.toList.map fun (name, t) => s!"{name}: {toString t}")
+      s!"\{{fieldsStr}}"
+  | .array elem size => s!"[{toString elem}; {size}]"
   | .tagged tag variants =>
-    let varStr := String.intercalate " | " (variants.toList.map fun (i, ts) =>
-      s!"{i}({String.intercalate ", " (ts.toList.map toStringAux)})")
-    s!"tagged<{toStringAux tag}>[{varStr}]"
+      let varStr := String.intercalate " | " (variants.toList.map fun (i, ts) =>
+        s!"{i}({String.intercalate ", " (ts.toList.map toString)})")
+      s!"tagged<{toString tag}>[{varStr}]"
   | .closure args ret =>
-    let argsStr := String.intercalate ", " (args.toList.map toStringAux)
-    s!"closure({argsStr}) -> {toStringAux ret}"
-  | .tyVar id => ToString.toString id
-  | .forall_ name body => s!"∀{name}. {toStringAux body}"
-  | .tyApp func arg => s!"{toStringAux func}[{toStringAux arg}]"
+      let argsStr := String.intercalate ", " (args.toList.map toString)
+      s!"closure({argsStr}) -> {toString ret}"
+  | .var i => s!"α{i.val}"
 
-instance : ToString Ty where
-  toString := toStringAux
+instance : ToString (Ty n) where
+  toString := Ty.toString
+
+/-- Check structural equality -/
+partial def beq (a : Ty n) (b : Ty m) : Bool :=
+  match a, b with
+  | .prim p₁, .prim p₂ => p₁ == p₂
+  | .ptr t₁, .ptr t₂ => beq t₁ t₂
+  | .rawPtr, .rawPtr => true
+  | .funcPtr args₁ ret₁, .funcPtr args₂ ret₂ =>
+      args₁.size == args₂.size &&
+      (List.zip args₁.toList args₂.toList).all fun (x, y) => beq x y &&
+      beq ret₁ ret₂
+  | .struct fields₁, .struct fields₂ =>
+      fields₁.size == fields₂.size &&
+      (List.zip fields₁.toList fields₂.toList).all fun ((n₁, t₁), (n₂, t₂)) =>
+        n₁ == n₂ && beq t₁ t₂
+  | .array elem₁ sz₁, .array elem₂ sz₂ => sz₁ == sz₂ && beq elem₁ elem₂
+  | .tagged tag₁ vs₁, .tagged tag₂ vs₂ =>
+      beq tag₁ tag₂ && vs₁.size == vs₂.size &&
+      (List.zip vs₁.toList vs₂.toList).all fun ((i₁, fs₁), (i₂, fs₂)) =>
+        i₁ == i₂ && fs₁.size == fs₂.size &&
+        (List.zip fs₁.toList fs₂.toList).all fun (x, y) => beq x y
+  | .closure args₁ ret₁, .closure args₂ ret₂ =>
+      args₁.size == args₂.size &&
+      (List.zip args₁.toList args₂.toList).all fun (x, y) => beq x y &&
+      beq ret₁ ret₂
+  | .var i₁, .var i₂ => i₁.val == i₂.val
+  | _, _ => false
+
+instance : BEq (Ty n) where
+  beq a b := Ty.beq a b
 
 end Ty
 
@@ -294,16 +285,26 @@ inductive Const where
   /-- Unit value -/
   | unit
   /-- Null pointer -/
-  | null (ty : Ty)
+  | null (ty : ClosedTy)
   /-- String literal (index into string table) -/
   | string (idx : Nat) (len : Nat)
-  /-- Undefined value (for uninitialized memory) -/
-  | undef (ty : Ty)
-  deriving Repr, BEq, Inhabited, Serialize, Deserialize
+  /-- Undefined value (for unitialized memory) -/
+  | undef (ty : ClosedTy)
+  deriving BEq, Inhabited
+
+instance : Repr Const where
+  reprPrec c _ := match c with
+    | .int v t => s!"Const.int {repr v} {repr t}"
+    | .float v t => s!"Const.float {repr v} {repr t}"
+    | .bool b => s!"Const.bool {repr b}"
+    | .unit => "Const.unit"
+    | .null _ => "Const.null _"
+    | .string idx len => s!"Const.string {idx} {len}"
+    | .undef _ => "Const.undef _"
 
 namespace Const
 
-def ty : Const → Ty
+def ty : Const → ClosedTy
   | .int _ t => .prim t
   | .float _ t => .prim t
   | .bool _ => .prim .bool
@@ -332,7 +333,7 @@ inductive Operand where
   | const (c : Const)
   | global (id : GlobalId)
   | func (id : FuncId)
-  deriving Repr, BEq, Inhabited, Serialize, Deserialize
+  deriving Repr, BEq, Inhabited
 
 namespace Operand
 
@@ -344,8 +345,6 @@ instance : ToString Operand where
     | .func id => ToString.toString id
 
 end Operand
-
-/-! ## Binary and Unary Operations -/
 
 /-- Binary operations -/
 inductive BinOp where
@@ -372,22 +371,48 @@ instance : ToString BinOp where
 end BinOp
 
 /-- Unary operations -/
-inductive UnOp where
-  | neg   -- Arithmetic negation
-  | not   -- Bitwise/logical not
-  | trunc (to : PrimTy)   -- Truncate to smaller type
-  | zext (to : PrimTy)    -- Zero-extend to larger type
-  | sext (to : PrimTy)    -- Sign-extend to larger type
-  | itof (to : PrimTy)    -- Int to float
-  | ftoi (to : PrimTy)    -- Float to int
-  | bitcast (to : Ty)     -- Reinterpret bits
-  | ptrtoint (to : PrimTy) -- Pointer to integer
-  | inttoptr -- Integer to pointer
-  deriving Repr, BEq, Inhabited, Serialize, Deserialize
+inductive UnOp (n : Nat) where
+  | neg
+  | not
+  | trunc (to : PrimTy)
+  | zext (to : PrimTy)
+  | sext (to : PrimTy)
+  | itof (to : PrimTy)
+  | ftoi (to : PrimTy)
+  | bitcast (to : Ty n)
+  | ptrtoint (to : PrimTy)
+  | inttoptr
+  deriving BEq, Inhabited
+
+instance : Repr (UnOp n) where
+  reprPrec op _ := match op with
+    | .neg => "UnOp.neg"
+    | .not => "UnOp.not"
+    | .trunc t => s!"UnOp.trunc {repr t}"
+    | .zext t => s!"UnOp.zext {repr t}"
+    | .sext t => s!"UnOp.sext {repr t}"
+    | .itof t => s!"UnOp.itof {repr t}"
+    | .ftoi t => s!"UnOp.ftoi {repr t}"
+    | .bitcast t => s!"UnOp.bitcast {t}"
+    | .ptrtoint t => s!"UnOp.ptrtoint {repr t}"
+    | .inttoptr => "UnOp.inttoptr"
 
 namespace UnOp
 
-instance : ToString UnOp where
+def instantiate (op : UnOp n) (env : TyEnv n) : UnOp 0 :=
+  match op with
+  | .neg => .neg
+  | .not => .not
+  | .trunc t => .trunc t
+  | .zext t => .zext t
+  | .sext t => .sext t
+  | .itof t => .itof t
+  | .ftoi t => .ftoi t
+  | .bitcast t => .bitcast (Somac.Alloy.instantiate t env)
+  | .ptrtoint t => .ptrtoint t
+  | .inttoptr => .inttoptr
+
+instance : ToString (UnOp n) where
   toString
     | .neg => "neg"
     | .not => "not"
@@ -402,60 +427,29 @@ instance : ToString UnOp where
 
 end UnOp
 
-/-- FFI/intrinsic operations that compile to inline LLVM instructions -/
+/-- FFI/intrinsic operations -/
 inductive IntrinsicOp where
-  /-- Null pointer constant: null :: Ptr a -/
-  | ptrNull
-  /-- Pointer arithmetic: ptr_add :: Ptr a -> Int64 -> Ptr a -/
-  | ptrAdd
-  /-- Pointer difference: ptr_diff :: Ptr a -> Ptr a -> Int64 -/
-  | ptrDiff
-  /-- Memory load: ptr_read :: Ptr a -> a -/
-  | ptrRead
-  /-- Memory store: ptr_write :: Ptr a -> a -> Unit -/
-  | ptrWrite
-  /-- Pointer cast: ptr_cast :: Ptr a -> Ptr b -/
-  | ptrCast
-  /-- Convert String to C string: to_cstring :: String -> CString -/
-  | toCString
-  /-- Convert C string to String: from_cstring :: CString -> String -/
-  | fromCString
-  /-- Get C string length: cstring_len :: CString -> CSize -/
-  | cstringLen
-  /-- String concatenation: strcat :: String -> String -> String -/
-  | strcat
-  /-- Integer to string conversion: int_to_string :: Int -> String -/
-  | intToString
-  /-- Lift pure value into IO: pure_io :: a -> IO a -/
-  | pureIO
+  | ptrNull | ptrAdd | ptrDiff | ptrRead | ptrWrite | ptrCast
+  | toCString | fromCString | cstringLen
+  | strcat | intToString | pureIO
   deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace IntrinsicOp
 
 def name : IntrinsicOp → String
-  | .ptrNull => "ptr_null"
-  | .ptrAdd => "ptr_add"
-  | .ptrDiff => "ptr_diff"
-  | .ptrRead => "ptr_read"
-  | .ptrWrite => "ptr_write"
-  | .ptrCast => "ptr_cast"
-  | .toCString => "to_cstring"
-  | .fromCString => "from_cstring"
-  | .cstringLen => "cstring_len"
-  | .strcat => "strcat"
-  | .intToString => "int_to_string"
-  | .pureIO => "pure_io"
+  | .ptrNull => "ptr_null" | .ptrAdd => "ptr_add" | .ptrDiff => "ptr_diff"
+  | .ptrRead => "ptr_read" | .ptrWrite => "ptr_write" | .ptrCast => "ptr_cast"
+  | .toCString => "to_cstring" | .fromCString => "from_cstring" | .cstringLen => "cstring_len"
+  | .strcat => "strcat" | .intToString => "int_to_string" | .pureIO => "pure_io"
 
 instance : ToString IntrinsicOp where
   toString := IntrinsicOp.name
 
-/-- Does this intrinsic return a value? -/
 def hasResult : IntrinsicOp → Bool
   | .ptrWrite => false
   | _ => true
 
-/-- Get the return type for an intrinsic operation if predictable -/
-def fixedRetTy : IntrinsicOp → Option Ty
+def fixedRetTy : IntrinsicOp → Option ClosedTy
   | .ptrNull => some .rawPtr
   | .ptrAdd => some .rawPtr
   | .ptrDiff => some (.prim .i64)
@@ -471,7 +465,7 @@ def fixedRetTy : IntrinsicOp → Option Ty
 
 end IntrinsicOp
 
-/-- Primitive operations (for FuncRef.primOp) -/
+/-- Primitive operations -/
 inductive PrimOp where
   | add | sub | mul | div | mod
   | eq | ne | lt | le | gt | ge
@@ -536,5 +530,40 @@ instance : ToString FuncRef where
     | .externC name => s!"@externc\"{name}\""
 
 end FuncRef
+
+/-- Mix two hash values -/
+def mixHash (a b : UInt64) : UInt64 :=
+  a ^^^ (b * 0x9e3779b97f4a7c15 + (a <<< (6 : UInt64)) + (a >>> (2 : UInt64)))
+
+/-- Hash a closed type -/
+partial def hashClosedTy (ty : ClosedTy) : UInt64 :=
+  match ty with
+  | .prim p => mixHash 1 (hash p)
+  | .ptr t => mixHash 2 (hashClosedTy t)
+  | .rawPtr => 3
+  | .funcPtr args ret =>
+      let argsHash := args.foldl (init := (0 : UInt64)) fun acc t => mixHash acc (hashClosedTy t)
+      mixHash 4 (mixHash argsHash (hashClosedTy ret))
+  | .struct fields =>
+      let fieldsHash := fields.foldl (init := (0 : UInt64)) fun acc (n, t) =>
+        mixHash acc (mixHash (hash n) (hashClosedTy t))
+      mixHash 5 fieldsHash
+  | .array elem size => mixHash 6 (mixHash (hashClosedTy elem) (hash size))
+  | .tagged tag variants =>
+      let variantsHash := variants.foldl (init := (0 : UInt64)) fun acc (i, fields) =>
+        let fieldsH := fields.foldl (init := hash i) fun a t => mixHash a (hashClosedTy t)
+        mixHash acc fieldsH
+      mixHash 7 (mixHash (hashClosedTy tag) variantsHash)
+  | .closure args ret =>
+      let argsHash := args.foldl (init := (0 : UInt64)) fun acc t => mixHash acc (hashClosedTy t)
+      mixHash 8 (mixHash argsHash (hashClosedTy ret))
+  | .var i => nomatch i
+
+instance : Hashable ClosedTy where
+  hash := hashClosedTy
+
+/-- Hash an array of closed types -/
+def hashClosedTyArray (tys : Array ClosedTy) : UInt64 :=
+  tys.foldl (init := (0 : UInt64)) fun acc ty => mixHash acc (hashClosedTy ty)
 
 end Somac.Alloy

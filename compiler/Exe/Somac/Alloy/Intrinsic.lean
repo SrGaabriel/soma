@@ -6,7 +6,7 @@ namespace Somac.Alloy.Intrinsic
 open Somac.Alloy
 
 /-- Get the closure-compatible signature for a primOp wrapper -/
-def primOpSignature (op : PrimOp) : Signature :=
+def primOpSignature (op : PrimOp) : ClosedSignature :=
   let name := s!"$intrinsic$$primop_{op.name}"
   match op with
   | .add | .sub | .mul | .div | .mod =>
@@ -59,7 +59,7 @@ def primOpSignature (op : PrimOp) : Signature :=
     }
 
 /-- Get the closure-compatible signature for an intrinsicOp wrapper -/
-def intrinsicOpSignature (op : IntrinsicOp) : Signature :=
+def intrinsicOpSignature (op : IntrinsicOp) : ClosedSignature :=
   let name := s!"$intrinsic$${op.name}"
   match op with
   | .ptrNull =>
@@ -173,10 +173,10 @@ def intrinsicOpSignature (op : IntrinsicOp) : Signature :=
     }
 
 /-- Get signature for an externC wrapper -/
-def externCSignature (name : String) (params : Array Ty) (retTy : Ty) : Signature :=
+def externCSignature (name : String) (params : Array ClosedTy) (retTy : ClosedTy) : ClosedSignature :=
   let wrapperName := s!"$intrinsic$$extern_{name}"
   -- Add env pointer as first param
-  let wrapperParams := #[{ id := ⟨0⟩, name := "env", ty := .rawPtr : Param }] ++
+  let wrapperParams := #[{ id := ⟨0⟩, name := "env", ty := .rawPtr : ClosedParam }] ++
     params.mapIdx fun i ty => { id := ⟨i + 1⟩, name := s!"arg{i}", ty }
   { name := wrapperName
   , params := wrapperParams
@@ -202,13 +202,13 @@ def primOpToBinOp : PrimOp → Option BinOp
   | _ => none
 
 /-- Generate wrapper function for a primOp -/
-def generatePrimOpWrapper (op : PrimOp) (funcId : FuncId) : Func :=
+def generatePrimOpWrapper (op : PrimOp) (funcId : FuncId) : ClosedFunc :=
   let sig := primOpSignature op
-  let paramTypes := sig.params.foldl (init := ({} : Std.HashMap Nat Ty)) fun acc p =>
+  let paramTypes := sig.params.foldl (init := ({} : Std.HashMap Nat ClosedTy)) fun acc p =>
     acc.insert p.id.id p.ty
 
   -- Build the body based on whether it's binary or unary
-  let stmts : Array Stmt :=
+  let stmts : Array ClosedStmt :=
     if op.isBinary then
       match primOpToBinOp op with
       | some binOp =>
@@ -224,7 +224,7 @@ def generatePrimOpWrapper (op : PrimOp) (funcId : FuncId) : Func :=
   let resultLocal := if op.isBinary then ⟨3⟩ else ⟨2⟩
   let terminator := Terminator.ret (.local resultLocal)
 
-  let entryBlock : Block :=
+  let entryBlock : ClosedBlock :=
     { id := .entry
     , stmts := stmts
     , terminator := terminator
@@ -240,15 +240,15 @@ def generatePrimOpWrapper (op : PrimOp) (funcId : FuncId) : Func :=
   }
 
 /-- Generate wrapper function for an intrinsicOp -/
-def generateIntrinsicOpWrapper (op : IntrinsicOp) (funcId : FuncId) : Func :=
+def generateIntrinsicOpWrapper (op : IntrinsicOp) (funcId : FuncId) : ClosedFunc :=
   let sig := intrinsicOpSignature op
-  let paramTypes := sig.params.foldl (init := ({} : Std.HashMap Nat Ty)) fun acc p =>
+  let paramTypes := sig.params.foldl (init := ({} : Std.HashMap Nat ClosedTy)) fun acc p =>
     acc.insert p.id.id p.ty
 
   -- Build args array (skip env at position 0)
   let args : Array Operand := sig.params.toList.drop 1 |>.toArray.map fun p => .local p.id
 
-  let (stmts, resultLocal, nextLocal) : Array Stmt × LocalId × Nat :=
+  let (stmts, resultLocal, nextLocal) : Array ClosedStmt × LocalId × Nat :=
     if op.hasResult then
       let resultId : LocalId := ⟨sig.params.size⟩
       (#[Stmt.withResult resultId (.callIntrinsic op args sig.retTy)], resultId, sig.params.size + 1)
@@ -259,7 +259,7 @@ def generateIntrinsicOpWrapper (op : IntrinsicOp) (funcId : FuncId) : Func :=
     if op.hasResult then Terminator.ret (.local resultLocal)
     else Terminator.retUnit
 
-  let entryBlock : Block :=
+  let entryBlock : ClosedBlock :=
     { id := .entry
     , stmts := stmts
     , terminator := terminator
@@ -275,20 +275,20 @@ def generateIntrinsicOpWrapper (op : IntrinsicOp) (funcId : FuncId) : Func :=
   }
 
 /-- Generate wrapper function for an externC function -/
-def generateExternCWrapper (name : String) (paramTys : Array Ty) (retTy : Ty) (funcId : FuncId) : Func :=
+def generateExternCWrapper (name : String) (paramTys : Array ClosedTy) (retTy : ClosedTy) (funcId : FuncId) : ClosedFunc :=
   let sig := externCSignature name paramTys retTy
-  let paramTypes := sig.params.foldl (init := ({} : Std.HashMap Nat Ty)) fun acc p =>
+  let paramTypes := sig.params.foldl (init := ({} : Std.HashMap Nat ClosedTy)) fun acc p =>
     acc.insert p.id.id p.ty
 
   -- Build args array (skip env at position 0)
   let args : Array Operand := sig.params.toList.drop 1 |>.toArray.map fun p => .local p.id
 
   let resultId : LocalId := ⟨sig.params.size⟩
-  let stmts := #[Stmt.withResult resultId (.callExtern name args retTy)]
+  let stmts : Array ClosedStmt := #[Stmt.withResult resultId (.callExtern name args retTy)]
 
   let terminator := Terminator.ret (.local resultId)
 
-  let entryBlock : Block :=
+  let entryBlock : ClosedBlock :=
     { id := .entry
     , stmts := stmts
     , terminator := terminator
@@ -314,7 +314,7 @@ inductive WrapperNeeded where
 def collectWrappersNeeded (mod : Module) : Std.HashSet WrapperNeeded := Id.run do
   let mut result : Std.HashSet WrapperNeeded := {}
 
-  for func in mod.funcs do
+  for ⟨_, func⟩ in mod.funcs do
     if let some cfg := func.body then
       for block in cfg.allBlocks do
         for stmt in block.stmts do
@@ -330,7 +330,7 @@ def collectWrappersNeeded (mod : Module) : Std.HashSet WrapperNeeded := Id.run d
   result
 
 /-- Generate a wrapper function for a WrapperNeeded -/
-def generateWrapper (needed : WrapperNeeded) (funcId : FuncId) : Func :=
+def generateWrapper (needed : WrapperNeeded) (funcId : FuncId) : ClosedFunc :=
   match needed with
   | .primOp op => generatePrimOpWrapper op funcId
   | .intrinsicOp op => generateIntrinsicOpWrapper op funcId

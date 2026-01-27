@@ -42,7 +42,7 @@ def colorComment (cfg : Config) (s : String) : String :=
 
 /-! ## Type Formatting -/
 
-partial def ppTy (cfg : Config) : Ty → String
+partial def ppTy (cfg : Config) : Ty n → String
   | .prim p => colorType cfg (ToString.toString p)
   | .ptr t => s!"*{ppTy cfg t}"
   | .rawPtr => colorType cfg "ptr"
@@ -62,11 +62,7 @@ partial def ppTy (cfg : Config) : Ty → String
   | .closure args ret =>
     let argsStr := String.intercalate ", " (args.toList.map (ppTy cfg))
     s!"{colorKeyword cfg "closure"}({argsStr}) -> {ppTy cfg ret}"
-  | .tyVar id => colorType cfg s!"α{id.idx}"
-  | .forall_ name body =>
-    s!"{colorKeyword cfg "∀"}{name}. {ppTy cfg body}"
-  | .tyApp func arg =>
-    s!"{ppTy cfg func}[{ppTy cfg arg}]"
+  | .var i => colorType cfg s!"α{i.val}"
 
 /-! ## Value Formatting -/
 
@@ -125,7 +121,7 @@ def ppBinOp (cfg : Config) : BinOp → String
   | .gt => colorKeyword cfg "gt"
   | .ge => colorKeyword cfg "ge"
 
-def ppUnOp (cfg : Config) : UnOp → String
+def ppUnOp (cfg : Config) : UnOp n → String
   | .neg => colorKeyword cfg "neg"
   | .not => colorKeyword cfg "not"
   | .trunc t => s!"{colorKeyword cfg "trunc"}.{t}"
@@ -137,7 +133,7 @@ def ppUnOp (cfg : Config) : UnOp → String
   | .ptrtoint t => s!"{colorKeyword cfg "ptrtoint"}.{t}"
   | .inttoptr => colorKeyword cfg "inttoptr"
 
-def ppInst (cfg : Config) : Inst → String
+def ppInst (cfg : Config) : Inst n → String
   | .binOp op lhs rhs ty =>
     s!"{ppBinOp cfg op} {ppTy cfg ty} {ppOperand cfg lhs}, {ppOperand cfg rhs}"
   | .unOp op operand =>
@@ -244,13 +240,13 @@ def ppTerminator (cfg : Config) : Terminator → String
 
 /-! ## Statement Formatting -/
 
-def ppStmt (cfg : Config) : Stmt → String
+def ppStmt (cfg : Config) : Stmt n → String
   | ⟨some result, inst⟩ => s!"{ppLocalId cfg result} = {ppInst cfg inst}"
   | ⟨none, inst⟩ => ppInst cfg inst
 
 /-! ## Block Formatting -/
 
-def ppBlock (cfg : Config) (b : Block) : String :=
+def ppBlock (cfg : Config) (b : Block n) : String :=
   let labelStr := match b.label with
     | some l => colorComment cfg s!" ; {l}"
     | none => ""
@@ -276,7 +272,7 @@ def ppBlock (cfg : Config) (b : Block) : String :=
 
 /-! ## Function Formatting -/
 
-def ppSignature (cfg : Config) (sig : Signature) : String :=
+def ppSignature (cfg : Config) (sig : Signature n) : String :=
   let paramsStr := String.intercalate ", " (sig.params.toList.map fun p =>
     s!"{ppLocalId cfg p.id}: {ppTy cfg p.ty}")
   let closureStr := if sig.isClosure then s!" {colorComment cfg "[closure]"}" else ""
@@ -293,7 +289,7 @@ def ppFuncAttrs (cfg : Config) (attrs : FuncAttrs) : String :=
   let attrList := if attrs.tailCall then attrList ++ [colorKeyword cfg "tailcall"] else attrList
   if attrList.isEmpty then "" else s!"[{String.intercalate ", " attrList}] "
 
-def ppFunc (cfg : Config) (f : Func) : String :=
+def ppFunc (cfg : Config) (f : Func n) : String :=
   let attrsStr := ppFuncAttrs cfg f.attrs
   let sigStr := ppSignature cfg f.sig
   match f.body with
@@ -318,6 +314,10 @@ def ppTypeDef (cfg : Config) (td : TypeDef) : String :=
 
 /-! ## Module Formatting -/
 
+def ppSomeFunc (cfg : Config) (sf : SomeFunc) : String :=
+  let ⟨_, f⟩ := sf
+  ppFunc cfg f
+
 def ppModule (cfg : Config := .default) (m : Module) : String :=
   let header := colorComment cfg s!"; Alloy IR Module: {m.name}\n"
 
@@ -331,7 +331,7 @@ def ppModule (cfg : Config := .default) (m : Module) : String :=
       let gs := String.intercalate "\n" (m.globals.toList.map (ppGlobal cfg))
       s!"\n{colorComment cfg "; Globals"}\n{gs}\n"
 
-  let funcsStr := String.intercalate "\n\n" (m.funcs.toList.map (ppFunc cfg))
+  let funcsStr := String.intercalate "\n\n" (m.funcs.toList.map (ppSomeFunc cfg))
   let funcsSection := s!"\n{colorComment cfg "; Functions"}\n{funcsStr}"
 
   let mainStr := match m.mainFunc with
@@ -349,9 +349,9 @@ def pp (m : Module) : String := ppModule .default m
 def ppColored (m : Module) : String := ppModule { useColors := true } m
 
 /-- Pretty print a function -/
-def ppFn (f : Func) : String := ppFunc .default f
+def ppFn (f : Func n) : String := ppFunc .default f
 
 /-- Pretty print a block -/
-def ppBb (b : Block) : String := ppBlock .default b
+def ppBb (b : Block n) : String := ppBlock .default b
 
 end Somac.Alloy.Pretty

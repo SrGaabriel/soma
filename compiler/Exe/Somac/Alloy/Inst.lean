@@ -1,144 +1,125 @@
-/-
-  Alloy IR Instructions
-
-  Instructions are the atomic operations in Alloy. Each instruction produces
-  at most one value (SSA form). Instructions are organized into categories:
-
-  1. Value operations: arithmetic, logic, conversions
-  2. Memory operations: alloc, load, store, memcpy
-  3. Aggregate operations: struct/array construction and access
-  4. Control flow: handled by terminators (separate type)
-  5. Function operations: call, closure creation
--/
-
 import Somac.Alloy.Types
 import Kenosis
 
 namespace Somac.Alloy
 
 /-- An instruction that produces a value -/
-inductive Inst where
+inductive Inst : Nat → Type where
   /-- Binary operation: result = op lhs rhs -/
-  | binOp (op : BinOp) (lhs : Operand) (rhs : Operand) (ty : Ty)
+  | binOp : BinOp → Operand → Operand → Ty n → Inst n
 
   /-- Unary operation: result = op operand -/
-  | unOp (op : UnOp) (operand : Operand)
+  | unOp : UnOp n → Operand → Inst n
 
-  /-- Copy an operand (identity, useful for phi nodes and moves) -/
-  | copy (src : Operand)
+  /-- Copy an operand -/
+  | copy : Operand → Inst n
 
-  /-- Stack allocation: result = alloca ty
-      Allocates sizeof(ty) bytes on the stack, returns pointer -/
-  | alloca (ty : Ty)
+  /-- Stack allocation: result = alloca ty -/
+  | alloca : Ty n → Inst n
 
-  /-- Heap allocation: result = malloc size
-      Allocates size bytes on the heap, returns raw pointer -/
-  | malloc (size : Operand)
+  /-- Heap allocation: result = malloc size -/
+  | malloc : Operand → Inst n
 
-  /-- Free heap memory: free ptr -/
-  | free (ptr : Operand)
+  /-- Free heap memory -/
+  | free : Operand → Inst n
 
   /-- Load from pointer: result = *ptr -/
-  | load (ptr : Operand) (ty : Ty)
+  | load : Operand → Ty n → Inst n
 
-  /-- Store to pointer: *ptr = val (no result) -/
-  | store (ptr : Operand) (val : Operand)
+  /-- Store to pointer: *ptr = val -/
+  | store : Operand → Operand → Inst n
 
   /-- Get pointer to struct field: result = &base->field -/
-  | getFieldPtr (base : Operand) (fieldIdx : Nat) (structTy : Ty)
+  | getFieldPtr : Operand → Nat → Ty n → Inst n
 
   /-- Get pointer to array element: result = &base[idx] -/
-  | getElemPtr (base : Operand) (idx : Operand) (elemTy : Ty)
+  | getElemPtr : Operand → Operand → Ty n → Inst n
 
-  /-- Extract value from struct: result = val.field -/
-  | extractField (val : Operand) (fieldIdx : Nat)
+  /-- Extract value from struct -/
+  | extractField : Operand → Nat → Inst n
 
-  /-- Insert value into struct: result = { val | field = newVal } -/
-  | insertField (val : Operand) (fieldIdx : Nat) (newVal : Operand)
+  /-- Insert value into struct -/
+  | insertField : Operand → Nat → Operand → Inst n
 
-  /-- Extract element from array: result = val[idx] -/
-  | extractElem (val : Operand) (idx : Operand)
+  /-- Extract element from array -/
+  | extractElem : Operand → Operand → Inst n
 
-  /-- Insert element into array: result = val[idx := newVal] -/
-  | insertElem (val : Operand) (idx : Operand) (newVal : Operand)
+  /-- Insert element into array -/
+  | insertElem : Operand → Operand → Operand → Inst n
 
-  /-- Construct a struct from fields: result = { f0, f1, ... } -/
-  | structLit (fields : Array Operand) (ty : Ty)
+  /-- Construct a struct from fields -/
+  | structLit : Array Operand → Ty n → Inst n
 
-  /-- Construct an array from elements: result = [e0, e1, ...] -/
-  | arrayLit (elems : Array Operand) (elemTy : Ty)
+  /-- Construct an array from elements -/
+  | arrayLit : Array Operand → Ty n → Inst n
 
-  /-- Get tag from tagged union: result = val.tag -/
-  | getTag (val : Operand)
+  /-- Get tag from tagged union -/
+  | getTag : Operand → Inst n
 
-  /-- Get payload from tagged union (unsafe, must check tag first) -/
-  | getPayload (val : Operand) (variantIdx : Nat) (fieldIdx : Nat) (resultTy : Ty)
+  /-- Get payload from tagged union -/
+  | getPayload : Operand → Nat → Nat → Ty n → Inst n
 
-  /-- Construct tagged union: result = Tag(payload...) -/
-  | taggedLit (tag : Nat) (payload : Array Operand) (ty : Ty)
+  /-- Construct tagged union -/
+  | taggedLit : Nat → Array Operand → Ty n → Inst n
 
-  /-- Direct function call: result = func(args...) -/
-  | call (func : FuncId) (args : Array Operand) (retTy : Ty)
+  /-- Direct function call (monomorphic) -/
+  | call : FuncId → Array Operand → Ty n → Inst n
 
-  /-- Call a polymorphic function with type arguments: result = func<T1, T2, ...>(args...) -/
-  | callPoly (func : FuncId) (typeArgs : Array Ty) (args : Array Operand) (retTy : Ty)
+  /-- Polymorphic function call with type arguments -/
+  | callPoly : FuncId → Array (Ty n) → Array Operand → Ty n → Inst n
 
-  /-- Indirect call through function pointer: result = ptr(args...) -/
-  | callIndirect (ptr : Operand) (args : Array Operand) (retTy : Ty)
+  /-- Indirect call through function pointer -/
+  | callIndirect : Operand → Array Operand → Ty n → Inst n
 
-  /-- Closure call: result = closure(args...)
-      Unpacks closure into (fn, env), calls fn(env, args...) -/
-  | callClosure (closure : Operand) (args : Array Operand) (retTy : Ty)
+  /-- Closure call -/
+  | callClosure : Operand → Array Operand → Ty n → Inst n
 
-  /-- Create closure from polymorphic function: result = { fn<T1, T2, ...>, env } -/
-  | makeClosurePoly (func : FuncRef) (typeArgs : Array Ty) (env : Operand)
+  /-- Create closure from polymorphic function -/
+  | makeClosurePoly : FuncRef → Array (Ty n) → Operand → Inst n
 
-  /-- Create closure: result = { fn, env }
-      Captures environment pointer with function pointer -/
-  | makeClosure (func : FuncRef) (env : Operand)
+  /-- Create closure (monomorphic) -/
+  | makeClosure : FuncRef → Operand → Inst n
 
   /-- Get function pointer from closure -/
-  | closureFunc (closure : Operand)
+  | closureFunc : Operand → Inst n
 
   /-- Get environment pointer from closure -/
-  | closureEnv (closure : Operand)
+  | closureEnv : Operand → Inst n
 
-  /-- Phi node: result = phi [val1, block1], [val2, block2], ...
-      Value depends on which predecessor block we came from -/
-  | phi (incoming : Array (Operand × BlockId)) (ty : Ty)
+  /-- Phi node -/
+  | phi : Array (Operand × BlockId) → Ty n → Inst n
 
-  /-- Select: result = cond ? thenVal : elseVal -/
-  | select (cond : Operand) (thenVal : Operand) (elseVal : Operand)
+  /-- Select: cond ? thenVal : elseVal -/
+  | select : Operand → Operand → Operand → Inst n
 
-  /-- Memory copy: memcpy dst src size -/
-  | memcpy (dst : Operand) (src : Operand) (size : Operand)
+  /-- Memory copy -/
+  | memcpy : Operand → Operand → Operand → Inst n
 
-  /-- Memory set: memset dst val size -/
-  | memset (dst : Operand) (val : Operand) (size : Operand)
+  /-- Memory set -/
+  | memset : Operand → Operand → Operand → Inst n
 
-  /-- Clone a value (deep copy for runtime) -/
-  | clone (src : Operand) (ty : Ty)
+  /-- Clone a value -/
+  | clone : Operand → Ty n → Inst n
 
-  /-- Erase/free a value (recursive deallocation) -/
-  | erase (val : Operand) (ty : Ty)
+  /-- Erase a value -/
+  | erase : Operand → Ty n → Inst n
 
-  /-- Panic with message (aborts execution) -/
-  | panic (msgIdx : Nat) (line : Nat)
+  /-- Panic with message -/
+  | panic : Nat → Nat → Inst n
 
-  /-- FFI intrinsic operation (compiles to inline LLVM instructions)
-      These are @[intrinsic] functions like ptr_read, ptr_write, etc. -/
-  | callIntrinsic (op : IntrinsicOp) (args : Array Operand) (retTy : Ty)
+  /-- FFI intrinsic operation -/
+  | callIntrinsic : IntrinsicOp → Array Operand → Ty n → Inst n
 
-  /-- External function call (compiles to LLVM external linkage call)
-      These are @[extern] functions like malloc, free, etc. -/
-  | callExtern (name : String) (args : Array Operand) (retTy : Ty)
+  /-- External function call -/
+  | callExtern : String → Array Operand → Ty n → Inst n
 
-  deriving Repr, Inhabited, Serialize, Deserialize
+/-- Monomorphic instruction -/
+abbrev ClosedInst := Inst 0
 
 namespace Inst
 
 /-- Does this instruction have a result value? -/
-def hasResult : Inst → Bool
+def hasResult : Inst n → Bool
   | .store _ _ => false
   | .free _ => false
   | .memcpy _ _ _ => false
@@ -148,46 +129,86 @@ def hasResult : Inst → Bool
   | .callIntrinsic op _ _ => op.hasResult
   | _ => true
 
-/-- Get the result type of an instruction (if it has one) -/
-def resultTy : Inst → Option Ty
-  | .binOp op _ _ ty =>
-    if op.isComparison then some Ty.bool else some ty
+/-- Instantiate all types in an instruction -/
+def instantiate : Inst n → TyEnv n → ClosedInst
+  | .binOp op lhs rhs ty, env => .binOp op lhs rhs (Somac.Alloy.instantiate ty env)
+  | .unOp op operand, env => .unOp (op.instantiate env) operand
+  | .copy src, _ => .copy src
+  | .alloca ty, env => .alloca (Somac.Alloy.instantiate ty env)
+  | .malloc size, _ => .malloc size
+  | .free ptr, _ => .free ptr
+  | .load ptr ty, env => .load ptr (Somac.Alloy.instantiate ty env)
+  | .store ptr val, _ => .store ptr val
+  | .getFieldPtr base idx structTy, env => .getFieldPtr base idx (Somac.Alloy.instantiate structTy env)
+  | .getElemPtr base idx elemTy, env => .getElemPtr base idx (Somac.Alloy.instantiate elemTy env)
+  | .extractField val idx, _ => .extractField val idx
+  | .insertField val idx newVal, _ => .insertField val idx newVal
+  | .extractElem val idx, _ => .extractElem val idx
+  | .insertElem val idx newVal, _ => .insertElem val idx newVal
+  | .structLit fields ty, env => .structLit fields (Somac.Alloy.instantiate ty env)
+  | .arrayLit elems ty, env => .arrayLit elems (Somac.Alloy.instantiate ty env)
+  | .getTag val, _ => .getTag val
+  | .getPayload val variant field ty, env => .getPayload val variant field (Somac.Alloy.instantiate ty env)
+  | .taggedLit tag payload ty, env => .taggedLit tag payload (Somac.Alloy.instantiate ty env)
+  | .call func args retTy, env => .call func args (Somac.Alloy.instantiate retTy env)
+  | .callPoly func tyArgs args retTy, env =>
+      .callPoly func (tyArgs.map (Somac.Alloy.instantiate · env)) args (Somac.Alloy.instantiate retTy env)
+  | .callIndirect ptr args retTy, env => .callIndirect ptr args (Somac.Alloy.instantiate retTy env)
+  | .callClosure closure args retTy, env => .callClosure closure args (Somac.Alloy.instantiate retTy env)
+  | .makeClosurePoly func tyArgs envOp, env =>
+      .makeClosurePoly func (tyArgs.map (Somac.Alloy.instantiate · env)) envOp
+  | .makeClosure func envOp, _ => .makeClosure func envOp
+  | .closureFunc closure, _ => .closureFunc closure
+  | .closureEnv closure, _ => .closureEnv closure
+  | .phi incoming ty, env => .phi incoming (Somac.Alloy.instantiate ty env)
+  | .select cond t e, _ => .select cond t e
+  | .memcpy dst src size, _ => .memcpy dst src size
+  | .memset dst val size, _ => .memset dst val size
+  | .clone src ty, env => .clone src (Somac.Alloy.instantiate ty env)
+  | .erase val ty, env => .erase val (Somac.Alloy.instantiate ty env)
+  | .panic msgIdx line, _ => .panic msgIdx line
+  | .callIntrinsic op args retTy, env => .callIntrinsic op args (Somac.Alloy.instantiate retTy env)
+  | .callExtern name args retTy, env => .callExtern name args (Somac.Alloy.instantiate retTy env)
+
+/-- Get the result type of a closed instruction -/
+def resultTy : ClosedInst → Option ClosedTy
+  | .binOp op _ _ ty => if op.isComparison then some Ty.bool else some ty
   | .unOp op _ =>
-    match op with
-    | .neg | .not => none  -- Same as input type
-    | .trunc t | .zext t | .sext t | .itof t | .ftoi t | .ptrtoint t => some (.prim t)
-    | .bitcast t => some t
-    | .inttoptr => some .rawPtr
-  | .copy _ => none  -- Same as input
+      match op with
+      | .neg | .not => none
+      | .trunc t | .zext t | .sext t | .itof t | .ftoi t | .ptrtoint t => some (.prim t)
+      | .bitcast t => some t
+      | .inttoptr => some .rawPtr
+  | .copy _ => none
   | .alloca ty => some (.ptr ty)
   | .malloc _ => some .rawPtr
   | .free _ => none
   | .load _ ty => some ty
   | .store _ _ => none
   | .getFieldPtr _ fieldIdx structTy =>
-    match structTy with
-    | .struct fields => fields[fieldIdx]?.map (fun (_, t) => .ptr t)
-    | _ => none
+      match structTy with
+      | .struct fields => fields[fieldIdx]?.map (fun (_, t) => .ptr t)
+      | _ => none
   | .getElemPtr _ _ elemTy => some (.ptr elemTy)
-  | .extractField _ _ => none  -- Depends on struct type
-  | .insertField _ _ _ => none  -- Same as input struct
-  | .extractElem _ _ => none  -- Depends on array type
-  | .insertElem _ _ _ => none  -- Same as input array
+  | .extractField _ _ => none
+  | .insertField _ _ _ => none
+  | .extractElem _ _ => none
+  | .insertElem _ _ _ => none
   | .structLit _ ty => some ty
   | .arrayLit elems elemTy => some (.array elemTy elems.size)
   | .getTag _ => some (.prim .u32)
-  | .getPayload _ _ _ resultTy => some resultTy
+  | .getPayload _ _ _ ty => some ty
   | .taggedLit _ _ ty => some ty
   | .call _ _ retTy => some retTy
   | .callPoly _ _ _ retTy => some retTy
   | .callIndirect _ _ retTy => some retTy
   | .callClosure _ _ retTy => some retTy
-  | .makeClosurePoly _ _ _ => none -- Closure type depends on function
-  | .makeClosure _ _ => none  -- Closure type depends on function
-  | .closureFunc _ => none  -- Function pointer type
+  | .makeClosurePoly _ _ _ => none
+  | .makeClosure _ _ => none
+  | .closureFunc _ => none
   | .closureEnv _ => some .rawPtr
   | .phi _ ty => some ty
-  | .select _ _ _ => none  -- Same as branch types
+  | .select _ _ _ => none
   | .memcpy _ _ _ => none
   | .memset _ _ _ => none
   | .clone _ ty => some ty
@@ -196,68 +217,69 @@ def resultTy : Inst → Option Ty
   | .callIntrinsic op _ retTy => if op.hasResult then some retTy else none
   | .callExtern _ _ retTy => some retTy
 
-instance : ToString Inst where
-  toString inst :=
-    match inst with
-    | .binOp op lhs rhs _ => s!"{op} {lhs}, {rhs}"
-    | .unOp op operand => s!"{op} {operand}"
-    | .copy src => s!"copy {src}"
-    | .alloca ty => s!"alloca {ty}"
-    | .malloc size => s!"malloc {size}"
-    | .free ptr => s!"free {ptr}"
-    | .load ptr ty => s!"load {ty} {ptr}"
-    | .store ptr val => s!"store {ptr}, {val}"
-    | .getFieldPtr base idx _ => s!"getfieldptr {base}, {idx}"
-    | .getElemPtr base idx _ => s!"getelemptr {base}, {idx}"
-    | .extractField val idx => s!"extractfield {val}, {idx}"
-    | .insertField val idx newVal => s!"insertfield {val}, {idx}, {newVal}"
-    | .extractElem val idx => s!"extractelem {val}, {idx}"
-    | .insertElem val idx newVal => s!"insertelem {val}, {idx}, {newVal}"
-    | .structLit fields _ =>
+private def toStringAux : Inst n → String
+  | .binOp op lhs rhs _ => s!"{op} {lhs}, {rhs}"
+  | .unOp op operand => s!"{op} {operand}"
+  | .copy src => s!"copy {src}"
+  | .alloca ty => s!"alloca {ty}"
+  | .malloc size => s!"malloc {size}"
+  | .free ptr => s!"free {ptr}"
+  | .load ptr ty => s!"load {ty} {ptr}"
+  | .store ptr val => s!"store {ptr}, {val}"
+  | .getFieldPtr base idx _ => s!"getfieldptr {base}, {idx}"
+  | .getElemPtr base idx _ => s!"getelemptr {base}, {idx}"
+  | .extractField val idx => s!"extractfield {val}, {idx}"
+  | .insertField val idx newVal => s!"insertfield {val}, {idx}, {newVal}"
+  | .extractElem val idx => s!"extractelem {val}, {idx}"
+  | .insertElem val idx newVal => s!"insertelem {val}, {idx}, {newVal}"
+  | .structLit fields _ =>
       let fs := String.intercalate ", " (fields.toList.map ToString.toString)
       s!"struct \{{fs}}"
-    | .arrayLit elems _ =>
+  | .arrayLit elems _ =>
       let es := String.intercalate ", " (elems.toList.map ToString.toString)
       s!"array [{es}]"
-    | .getTag val => s!"gettag {val}"
-    | .getPayload val variant field ty => s!"getpayload {val}, {variant}, {field} : {ty}"
-    | .taggedLit tag payload _ =>
+  | .getTag val => s!"gettag {val}"
+  | .getPayload val variant field ty => s!"getpayload {val}, {variant}, {field} : {ty}"
+  | .taggedLit tag payload _ =>
       let ps := String.intercalate ", " (payload.toList.map ToString.toString)
       s!"tagged {tag}({ps})"
-    | .call func args _ =>
+  | .call func args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call {func}({as})"
-    | .callPoly func typeArgs args _ =>
-      let ts := String.intercalate ", " (typeArgs.toList.map ToString.toString)
+  | .callPoly func typeArgs args _ =>
+      let ts := String.intercalate ", " (typeArgs.toList.map Ty.toString)
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call.poly {func}<{ts}>({as})"
-    | .callIndirect ptr args _ =>
+  | .callIndirect ptr args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call.indirect {ptr}({as})"
-    | .callClosure closure args _ =>
+  | .callClosure closure args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call.closure {closure}({as})"
-    | .makeClosurePoly funcRef typeArgs env =>
-      let ts := String.intercalate ", " (typeArgs.toList.map ToString.toString)
+  | .makeClosurePoly funcRef typeArgs env =>
+      let ts := String.intercalate ", " (typeArgs.toList.map Ty.toString)
       s!"makeclosure.poly {funcRef}<{ts}>, {env}"
-    | .makeClosure funcRef env => s!"makeclosure {funcRef}, {env}"
-    | .closureFunc closure => s!"closure.func {closure}"
-    | .closureEnv closure => s!"closure.env {closure}"
-    | .phi incoming _ =>
+  | .makeClosure funcRef env => s!"makeclosure {funcRef}, {env}"
+  | .closureFunc closure => s!"closure.func {closure}"
+  | .closureEnv closure => s!"closure.env {closure}"
+  | .phi incoming _ =>
       let is := String.intercalate ", " (incoming.toList.map fun (v, b) => s!"[{v}, {b}]")
       s!"phi {is}"
-    | .select cond t e => s!"select {cond}, {t}, {e}"
-    | .memcpy dst src size => s!"memcpy {dst}, {src}, {size}"
-    | .memset dst val size => s!"memset {dst}, {val}, {size}"
-    | .clone src ty => s!"clone {src} : {ty}"
-    | .erase val ty => s!"erase {val} : {ty}"
-    | .panic msgIdx line => s!"panic #{msgIdx} @ line {line}"
-    | .callIntrinsic op args _ =>
+  | .select cond t e => s!"select {cond}, {t}, {e}"
+  | .memcpy dst src size => s!"memcpy {dst}, {src}, {size}"
+  | .memset dst val size => s!"memset {dst}, {val}, {size}"
+  | .clone src ty => s!"clone {src} : {ty}"
+  | .erase val ty => s!"erase {val} : {ty}"
+  | .panic msgIdx line => s!"panic #{msgIdx} @ line {line}"
+  | .callIntrinsic op args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call.intrinsic {op}({as})"
-    | .callExtern name args _ =>
+  | .callExtern name args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call.extern {name}({as})"
+
+instance : ToString (Inst n) where
+  toString := toStringAux
 
 end Inst
 
@@ -287,7 +309,6 @@ inductive Terminator where
 
 namespace Terminator
 
-/-- Get all successor blocks -/
 def successors : Terminator → Array BlockId
   | .jump target => #[target]
   | .branch _ thenB elseB => #[thenB, elseB]
@@ -299,8 +320,8 @@ instance : ToString Terminator where
     | .jump target => s!"jump {target}"
     | .branch cond thenB elseB => s!"br {cond}, {thenB}, {elseB}"
     | .switch val cases default =>
-      let cs := String.intercalate ", " (cases.toList.map fun (v, b) => s!"{v} => {b}")
-      s!"switch {val} [{cs}] default {default}"
+        let cs := String.intercalate ", " (cases.toList.map fun (v, b) => s!"{v} => {b}")
+        s!"switch {val} [{cs}] default {default}"
     | .ret val => s!"ret {val}"
     | .retUnit => "ret"
     | .unreachable => "unreachable"

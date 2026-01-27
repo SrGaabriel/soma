@@ -1,27 +1,3 @@
-/-
-  Alloy IR Monomorphization Pass
-
-  This pass transforms a polymorphic Alloy IR module into a fully monomorphic one
-  by specializing all polymorphic functions for their concrete type arguments.
-
-  The algorithm works in three phases:
-
-  1. **Discovery**: Traverse all call sites to find `callPoly` and `makeClosurePoly`
-     instructions, collecting the required (FuncId, TypeArgs) specialization pairs.
-
-  2. **Specialization**: For each unique specialization request:
-     - Clone the polymorphic function
-     - Substitute concrete types for type variables throughout
-     - Generate a mangled name for the specialized version
-     - Add to the module
-
-  3. **Rewriting**: Replace all polymorphic calls with direct calls to the
-     specialized versions, then remove unused polymorphic functions.
-
-  After this pass, the module contains only monomorphic functions with no
-  type variables, forall types, or polymorphic call instructions.
--/
-
 import Somac.Alloy.Func
 import Std.Data.HashMap
 import Std.Data.HashSet
@@ -30,268 +6,59 @@ namespace Somac.Alloy.Monomorphize
 
 open Somac.Alloy
 
-/-! ## Type Hashing
-
-We need to hash types for the specialization cache. Since `Ty` doesn't derive
-`Hashable`, we implement a custom hash function.
--/
-
-/-- Mix two hash values using a variant of the FNV technique -/
-def mixHash (a b : UInt64) : UInt64 :=
-  a ^^^ (b * 0x9e3779b97f4a7c15 + (a <<< (6 : UInt64)) + (a >>> (2 : UInt64)))
-
-/-- Compute a hash for an Alloy type -/
-partial def hashTy (ty : Ty) : UInt64 :=
-  match ty with
-  | .prim p => mixHash 1 (hash p)
-  | .ptr t => mixHash 2 (hashTy t)
-  | .rawPtr => 3
-  | .funcPtr args ret =>
-    let argsHash := args.foldl (init := (0 : UInt64)) fun acc t => mixHash acc (hashTy t)
-    mixHash 4 (mixHash argsHash (hashTy ret))
-  | .struct fields =>
-    let fieldsHash := fields.foldl (init := (0 : UInt64)) fun acc (n, t) =>
-      mixHash acc (mixHash (hash n) (hashTy t))
-    mixHash 5 fieldsHash
-  | .array elem size => mixHash 6 (mixHash (hashTy elem) (hash size))
-  | .tagged tag variants =>
-    let variantsHash := variants.foldl (init := (0 : UInt64)) fun acc (i, fields) =>
-      let fieldsH := fields.foldl (init := hash i) fun a t => mixHash a (hashTy t)
-      mixHash acc fieldsH
-    mixHash 7 (mixHash (hashTy tag) variantsHash)
-  | .closure args ret =>
-    let argsHash := args.foldl (init := (0 : UInt64)) fun acc t => mixHash acc (hashTy t)
-    mixHash 8 (mixHash argsHash (hashTy ret))
-  | .tyVar id => mixHash 9 (hash id.idx)
-  | .forall_ name body => mixHash 10 (mixHash (hash name) (hashTy body))
-  | .tyApp func arg => mixHash 11 (mixHash (hashTy func) (hashTy arg))
-
-/-- Compute a hash for an array of types -/
-def hashTyArray (tys : Array Ty) : UInt64 :=
-  tys.foldl (init := (0 : UInt64)) fun acc ty =>
-    mixHash acc (hashTy ty)
-
-/-- Key for the specialization cache: (original function ID, type arguments) -/
+/-- Key for the specialization cache -/
 structure SpecKey where
   funcId : FuncId
-  typeArgs : Array Ty
+  typeArgs : Array ClosedTy
   deriving Inhabited
 
 namespace SpecKey
 
 def hash (k : SpecKey) : UInt64 :=
   let funcHash := Hashable.hash k.funcId.id
-  let tyHash := hashTyArray k.typeArgs
+  let tyHash := hashClosedTyArray k.typeArgs
   mixHash funcHash tyHash
 
 def beq (a b : SpecKey) : Bool :=
-  a.funcId == b.funcId && a.typeArgs == b.typeArgs
+  a.funcId == b.funcId && a.typeArgs.size == b.typeArgs.size &&
+  (List.zip a.typeArgs.toList b.typeArgs.toList).all fun (x, y) => Ty.beq x y
 
 instance : BEq SpecKey := ⟨beq⟩
 instance : Hashable SpecKey := ⟨hash⟩
 
 def toString (k : SpecKey) : String :=
-  let tyArgsStr := String.intercalate ", " (k.typeArgs.toList.map Ty.toStringAux)
+  let tyArgsStr := String.intercalate ", " (k.typeArgs.toList.map Ty.toString)
   s!"{k.funcId}<{tyArgsStr}>"
 
 instance : ToString SpecKey := ⟨toString⟩
 
 end SpecKey
 
-/-! ## Type Substitution
-
-Apply a list of type arguments to substitute all type variables in types,
-instructions, and functions.
--/
-
-/-- Collect all type variable indices appearing in a type -/
-partial def collectTyVarIndices (ty : Ty) (acc : Std.HashSet Nat := {}) : Std.HashSet Nat :=
-  match ty with
-  | .prim _ | .rawPtr => acc
-  | .ptr t => collectTyVarIndices t acc
-  | .funcPtr args ret =>
-    let acc' := args.foldl (fun a t => collectTyVarIndices t a) acc
-    collectTyVarIndices ret acc'
-  | .struct fields =>
-    fields.foldl (fun a (_, t) => collectTyVarIndices t a) acc
-  | .array elem _ => collectTyVarIndices elem acc
-  | .tagged tag variants =>
-    let acc' := collectTyVarIndices tag acc
-    variants.foldl (fun a (_, fields) => fields.foldl (fun a' t => collectTyVarIndices t a') a) acc'
-  | .closure args ret =>
-    let acc' := args.foldl (fun a t => collectTyVarIndices t a) acc
-    collectTyVarIndices ret acc'
-  | .tyVar id => acc.insert id.idx
-  | .forall_ _ body => collectTyVarIndices body acc
-  | .tyApp func arg => collectTyVarIndices arg (collectTyVarIndices func acc)
-
-/-- Substitute a type variable by direct index -/
-partial def substTyVarDirect (ty : Ty) (idx : Nat) (replacement : Ty) : Ty :=
-  match ty with
-  | .prim p => .prim p
-  | .ptr t => .ptr (substTyVarDirect t idx replacement)
-  | .rawPtr => .rawPtr
-  | .funcPtr args ret =>
-    .funcPtr (args.map (substTyVarDirect · idx replacement)) (substTyVarDirect ret idx replacement)
-  | .struct fields =>
-    .struct (fields.map fun (n, t) => (n, substTyVarDirect t idx replacement))
-  | .array elem size => .array (substTyVarDirect elem idx replacement) size
-  | .tagged tag variants =>
-    .tagged (substTyVarDirect tag idx replacement)
-      (variants.map fun (i, fields) => (i, fields.map (substTyVarDirect · idx replacement)))
-  | .closure args ret =>
-    .closure (args.map (substTyVarDirect · idx replacement)) (substTyVarDirect ret idx replacement)
-  | .tyVar id =>
-    if id.idx == idx then replacement else .tyVar id
-  | .forall_ name body =>
-    .forall_ name (substTyVarDirect body idx replacement)
-  | .tyApp func arg =>
-    .tyApp (substTyVarDirect func idx replacement) (substTyVarDirect arg idx replacement)
-
-/-- Build mapping from sorted type variable indices to type arguments -/
-def buildTyVarSubstMap (ty : Ty) (args : Array Ty) : Std.HashMap Nat Ty :=
-  let indices := collectTyVarIndices ty
-  let sortedIndices := indices.toArray.qsort (· < ·)
-  sortedIndices.foldl (init := ({} : Std.HashMap Nat Ty)) fun map idx =>
-    let argIdx := map.size
-    if h : argIdx < args.size then
-      map.insert idx args[argIdx]
-    else map
-
-/-- Apply type arguments using direct substitution with a mapping -/
-partial def applyTypeArgsWithMap (ty : Ty) (substMap : Std.HashMap Nat Ty) : Ty :=
-  match ty with
-  | .prim p => .prim p
-  | .ptr t => .ptr (applyTypeArgsWithMap t substMap)
-  | .rawPtr => .rawPtr
-  | .funcPtr args ret =>
-    .funcPtr (args.map (applyTypeArgsWithMap · substMap)) (applyTypeArgsWithMap ret substMap)
-  | .struct fields =>
-    .struct (fields.map fun (n, t) => (n, applyTypeArgsWithMap t substMap))
-  | .array elem size => .array (applyTypeArgsWithMap elem substMap) size
-  | .tagged tag variants =>
-    .tagged (applyTypeArgsWithMap tag substMap)
-      (variants.map fun (i, fields) => (i, fields.map (applyTypeArgsWithMap · substMap)))
-  | .closure args ret =>
-    .closure (args.map (applyTypeArgsWithMap · substMap)) (applyTypeArgsWithMap ret substMap)
-  | .tyVar id =>
-    match substMap.get? id.idx with
-    | some replacement => replacement
-    | none => .tyVar id
-  | .forall_ name body =>
-    .forall_ name (applyTypeArgsWithMap body substMap)
-  | .tyApp func arg =>
-    .tyApp (applyTypeArgsWithMap func substMap) (applyTypeArgsWithMap arg substMap)
-
-/-- Apply multiple type arguments to a type -/
-def applyTypeArgs (ty : Ty) (args : Array Ty) : Ty :=
-  let substMap := buildTyVarSubstMap ty args
-  applyTypeArgsWithMap ty substMap
-
-/-- Substitute type arguments into all types within an instruction -/
-def substInstTypes (inst : Inst) (args : Array Ty) : Inst :=
-  let subst := fun ty => applyTypeArgs ty args
-  match inst with
-  | .binOp op lhs rhs ty => .binOp op lhs rhs (subst ty)
-  | .unOp op operand =>
-    match op with
-    | .trunc t => .unOp (.trunc t) operand
-    | .zext t => .unOp (.zext t) operand
-    | .sext t => .unOp (.sext t) operand
-    | .itof t => .unOp (.itof t) operand
-    | .ftoi t => .unOp (.ftoi t) operand
-    | .bitcast t => .unOp (.bitcast (subst t)) operand
-    | _ => inst
-  | .copy src => .copy src
-  | .alloca ty => .alloca (subst ty)
-  | .malloc size => .malloc size
-  | .free ptr => .free ptr
-  | .load ptr ty => .load ptr (subst ty)
-  | .store ptr val => .store ptr val
-  | .getFieldPtr base idx structTy => .getFieldPtr base idx (subst structTy)
-  | .getElemPtr base idx elemTy => .getElemPtr base idx (subst elemTy)
-  | .extractField val idx => .extractField val idx
-  | .insertField val idx newVal => .insertField val idx newVal
-  | .extractElem val idx => .extractElem val idx
-  | .insertElem val idx newVal => .insertElem val idx newVal
-  | .structLit fields ty => .structLit fields (subst ty)
-  | .arrayLit elems elemTy => .arrayLit elems (subst elemTy)
-  | .getTag val => .getTag val
-  | .getPayload val variant field ty => .getPayload val variant field (subst ty)
-  | .taggedLit tag payload ty => .taggedLit tag payload (subst ty)
-  | .call func callArgs retTy => .call func callArgs (subst retTy)
-  | .callPoly func tyArgs callArgs retTy =>
-    -- Substitute into the type args themselves, and into the return type
-    .callPoly func (tyArgs.map subst) callArgs (subst retTy)
-  | .callIndirect ptr callArgs retTy => .callIndirect ptr callArgs (subst retTy)
-  | .callClosure closure callArgs retTy => .callClosure closure callArgs (subst retTy)
-  | .makeClosurePoly func tyArgs env =>
-    .makeClosurePoly func (tyArgs.map subst) env
-  | .makeClosure func env => .makeClosure func env
-  | .closureFunc closure => .closureFunc closure
-  | .closureEnv closure => .closureEnv closure
-  | .phi incoming ty => .phi incoming (subst ty)
-  | .select cond thenVal elseVal => .select cond thenVal elseVal
-  | .memcpy dst src size => .memcpy dst src size
-  | .memset dst val size => .memset dst val size
-  | .clone src ty => .clone src (subst ty)
-  | .erase val ty => .erase val (subst ty)
-  | .panic msgIdx line => .panic msgIdx line
-  | .callIntrinsic op intrArgs retTy => .callIntrinsic op intrArgs (subst retTy)
-  | .callExtern name extArgs retTy => .callExtern name extArgs (subst retTy)
-
-/-- Substitute type arguments into a statement -/
-def substStmtTypes (stmt : Stmt) (args : Array Ty) : Stmt :=
-  { stmt with inst := substInstTypes stmt.inst args }
-
-/-- Substitute type arguments into a block -/
-def substBlockTypes (block : Block) (args : Array Ty) : Block :=
-  let subst := fun ty => applyTypeArgs ty args
-  { block with
-    params := block.params.map fun (id, ty) => (id, subst ty)
-    stmts := block.stmts.map fun s => substStmtTypes s args
-  }
-
-/-- Substitute type arguments into a CFG -/
-def substCFGTypes (cfg : CFG) (args : Array Ty) : CFG :=
-  let blocks' := cfg.blocks.fold (init := ({} : Std.HashMap Nat Block)) fun acc id block =>
-    acc.insert id (substBlockTypes block args)
-  { cfg with blocks := blocks' }
-
-/-! ## Name Mangling
-
-Generate unique names for specialized functions.
--/
-
-/-- Mangle a type into a string suitable for function names -/
-partial def mangleTy (ty : Ty) : String :=
+/-- Mangle a closed type into a string suitable for function names -/
+partial def mangleTy (ty : ClosedTy) : String :=
   match ty with
   | .prim p =>
-    match p with
-    | .i8 => "i8" | .i16 => "i16" | .i32 => "i32" | .i64 => "i64"
-    | .u8 => "u8" | .u16 => "u16" | .u32 => "u32" | .u64 => "u64"
-    | .f32 => "f32" | .f64 => "f64" | .bool => "b" | .unit => "u"
+      match p with
+      | .i8 => "i8" | .i16 => "i16" | .i32 => "i32" | .i64 => "i64"
+      | .u8 => "u8" | .u16 => "u16" | .u32 => "u32" | .u64 => "u64"
+      | .f32 => "f32" | .f64 => "f64" | .bool => "b" | .unit => "u"
   | .ptr t => s!"P{mangleTy t}"
   | .rawPtr => "Pv"
   | .funcPtr args ret =>
-    let argsM := String.intercalate "" (args.toList.map mangleTy)
-    s!"F{args.size}{argsM}{mangleTy ret}"
+      let argsM := String.intercalate "" (args.toList.map mangleTy)
+      s!"F{args.size}{argsM}{mangleTy ret}"
   | .struct fields =>
-    let fieldsM := String.intercalate "" (fields.toList.map fun (_, t) => mangleTy t)
-    s!"S{fields.size}{fieldsM}"
+      let fieldsM := String.intercalate "" (fields.toList.map fun (_, t) => mangleTy t)
+      s!"S{fields.size}{fieldsM}"
   | .array elem size => s!"A{size}{mangleTy elem}"
-  | .tagged _ variants =>
-    let count := variants.size
-    s!"T{count}"
+  | .tagged _ variants => s!"T{variants.size}"
   | .closure args ret =>
-    let argsM := String.intercalate "" (args.toList.map mangleTy)
-    s!"C{args.size}{argsM}{mangleTy ret}"
-  | .tyVar id => s!"V{id.idx}"
-  | .forall_ _ body => s!"Q{mangleTy body}"
-  | .tyApp func arg => s!"A{mangleTy func}{mangleTy arg}"
+      let argsM := String.intercalate "" (args.toList.map mangleTy)
+      s!"C{args.size}{argsM}{mangleTy ret}"
+  | .var i => nomatch i -- impossible
 
 /-- Generate a mangled name for a specialized function -/
-def mangleSpecName (baseName : String) (typeArgs : Array Ty) : String :=
+def mangleSpecName (baseName : String) (typeArgs : Array ClosedTy) : String :=
   if typeArgs.isEmpty then baseName
   else
     let suffix := String.intercalate "_" (typeArgs.toList.map mangleTy)
@@ -302,239 +69,70 @@ def mangleSpecName (baseName : String) (typeArgs : Array Ty) : String :=
 Find all polymorphic call sites and collect specialization requests.
 -/
 
-/-- A request to specialize a function with specific type arguments -/
-structure SpecRequest where
-  key : SpecKey
-  /-- Source location for error reporting -/
-  callSites : Array (FuncId × BlockId × Nat)  -- (function, block, stmt index)
-  deriving Inhabited
-
-/-- Extract specialization requests from an instruction -/
-def collectInstRequests (inst : Inst) : Array SpecKey :=
-  match inst with
-  | .callPoly funcId typeArgs _ _ =>
-    if typeArgs.all Ty.isMonomorphic then #[⟨funcId, typeArgs⟩] else #[]
+/-- Extract specialization keys from a closed instruction -/
+def collectInstRequests : ClosedInst → Array SpecKey
+  | .callPoly funcId typeArgs _ _ => #[⟨funcId, typeArgs⟩]
   | .makeClosurePoly funcRef typeArgs _ =>
-    match funcRef with
-    | .local funcId =>
-      if typeArgs.all Ty.isMonomorphic then #[⟨funcId, typeArgs⟩] else #[]
-    | _ => #[]
+      match funcRef with
+      | .local funcId => #[⟨funcId, typeArgs⟩]
+      | _ => #[]
   | _ => #[]
 
-/-- Extract specialization requests from a block -/
-def collectBlockRequests (block : Block) : Array SpecKey :=
+/-- Extract specialization keys from a closed block -/
+def collectBlockRequests (block : ClosedBlock) : Array SpecKey :=
   block.stmts.foldl (init := #[]) fun acc stmt =>
     acc ++ collectInstRequests stmt.inst
 
-/-- Extract specialization requests from a function -/
-def collectFuncRequests (func : Func) : Array SpecKey :=
+/-- Extract specialization keys from a closed function -/
+def collectFuncRequests (func : ClosedFunc) : Array SpecKey :=
   match func.body with
   | none => #[]
   | some cfg =>
     cfg.allBlocks.foldl (init := #[]) fun acc block =>
       acc ++ collectBlockRequests block
 
-/-- Extract all specialization requests from a module -/
+/-- Extract all specialization keys from a module -/
 def collectModuleRequests (m : Module) : Array SpecKey :=
-  m.funcs.foldl (init := #[]) fun acc func =>
-    acc ++ collectFuncRequests func
+  m.funcs.foldl (init := #[]) fun acc sf =>
+    match sf.asMono? with
+    | some f => acc ++ collectFuncRequests f
+    | none => acc
 
-/-! ## Specialization Phase
-
-Clone and specialize polymorphic functions.
--/
-
-/-- Collect all type variable indices from a function -/
-def collectFuncTyVarIndices (func : Func) : Std.HashSet Nat := Id.run do
-  let mut acc : Std.HashSet Nat := {}
-  for p in func.sig.params do
-    acc := collectTyVarIndices p.ty acc
-  acc := collectTyVarIndices func.sig.retTy acc
-  for (_, ty) in func.localTypes.toArray do
-    acc := collectTyVarIndices ty acc
-  if let some cfg := func.body then
-    for block in cfg.allBlocks do
-      for (_, ty) in block.params do
-        acc := collectTyVarIndices ty acc
-      for stmt in block.stmts do
-        acc := collectInstTyVarIndices stmt.inst acc
-  pure acc
-where
-  collectInstTyVarIndices (inst : Inst) (acc : Std.HashSet Nat) : Std.HashSet Nat :=
-    match inst with
-    | .binOp _ _ _ ty => collectTyVarIndices ty acc
-    | .alloca ty => collectTyVarIndices ty acc
-    | .load _ ty => collectTyVarIndices ty acc
-    | .getFieldPtr _ _ ty => collectTyVarIndices ty acc
-    | .getElemPtr _ _ ty => collectTyVarIndices ty acc
-    | .structLit _ ty => collectTyVarIndices ty acc
-    | .arrayLit _ ty => collectTyVarIndices ty acc
-    | .getPayload _ _ _ ty => collectTyVarIndices ty acc
-    | .taggedLit _ _ ty => collectTyVarIndices ty acc
-    | .call _ _ ty => collectTyVarIndices ty acc
-    | .callPoly _ tyArgs _ ty =>
-      let acc' := tyArgs.foldl (fun a t => collectTyVarIndices t a) acc
-      collectTyVarIndices ty acc'
-    | .callIndirect _ _ ty => collectTyVarIndices ty acc
-    | .callClosure _ _ ty => collectTyVarIndices ty acc
-    | .makeClosurePoly _ tyArgs _ => tyArgs.foldl (fun a t => collectTyVarIndices t a) acc
-    | .phi _ ty => collectTyVarIndices ty acc
-    | .clone _ ty => collectTyVarIndices ty acc
-    | .erase _ ty => collectTyVarIndices ty acc
-    | .callIntrinsic _ _ ty => collectTyVarIndices ty acc
-    | .callExtern _ _ ty => collectTyVarIndices ty acc
-    | .unOp op _ =>
-      match op with
-      | .bitcast t => collectTyVarIndices t acc
-      | _ => acc
-    | _ => acc
-
-/-- Build a substitution map for a function using all its type variables -/
-def buildFuncSubstMap (func : Func) (typeArgs : Array Ty) : Std.HashMap Nat Ty :=
-  let indices := collectFuncTyVarIndices func
-  let sortedIndices := indices.toArray.qsort (· < ·)
-  sortedIndices.foldl (init := ({} : Std.HashMap Nat Ty)) fun map idx =>
-    let argIdx := map.size
-    if h : argIdx < typeArgs.size then
-      map.insert idx typeArgs[argIdx]
-    else map
-
-/-- Specialize a function signature using a pre-built substitution map -/
-def specializeSignatureWithMap (sig : Signature) (typeArgs : Array Ty) (substMap : Std.HashMap Nat Ty) : Signature :=
-  let subst := fun ty => applyTypeArgsWithMap ty substMap
-  { sig with
-    name := mangleSpecName sig.name typeArgs
-    typeParams := #[]  -- No longer polymorphic
-    params := sig.params.map fun p => { p with ty := subst p.ty }
-    retTy := subst sig.retTy
-  }
-
-/-- Substitute type arguments into all types within an instruction using a map -/
-def substInstTypesWithMap (inst : Inst) (substMap : Std.HashMap Nat Ty) : Inst :=
-  let subst := fun ty => applyTypeArgsWithMap ty substMap
-  match inst with
-  | .binOp op lhs rhs ty => .binOp op lhs rhs (subst ty)
-  | .unOp op operand =>
-    match op with
-    | .bitcast t => .unOp (.bitcast (subst t)) operand
-    | _ => inst
-  | .copy src => .copy src
-  | .alloca ty => .alloca (subst ty)
-  | .malloc size => .malloc size
-  | .free ptr => .free ptr
-  | .load ptr ty => .load ptr (subst ty)
-  | .store ptr val => .store ptr val
-  | .getFieldPtr base idx structTy => .getFieldPtr base idx (subst structTy)
-  | .getElemPtr base idx elemTy => .getElemPtr base idx (subst elemTy)
-  | .extractField val idx => .extractField val idx
-  | .insertField val idx newVal => .insertField val idx newVal
-  | .extractElem val idx => .extractElem val idx
-  | .insertElem val idx newVal => .insertElem val idx newVal
-  | .structLit fields ty => .structLit fields (subst ty)
-  | .arrayLit elems elemTy => .arrayLit elems (subst elemTy)
-  | .getTag val => .getTag val
-  | .getPayload val variant field ty => .getPayload val variant field (subst ty)
-  | .taggedLit tag payload ty => .taggedLit tag payload (subst ty)
-  | .call func callArgs retTy => .call func callArgs (subst retTy)
-  | .callPoly func tyArgs callArgs retTy =>
-    .callPoly func (tyArgs.map subst) callArgs (subst retTy)
-  | .callIndirect ptr callArgs retTy => .callIndirect ptr callArgs (subst retTy)
-  | .callClosure closure callArgs retTy => .callClosure closure callArgs (subst retTy)
-  | .makeClosurePoly func tyArgs env =>
-    .makeClosurePoly func (tyArgs.map subst) env
-  | .makeClosure func env => .makeClosure func env
-  | .closureFunc closure => .closureFunc closure
-  | .closureEnv closure => .closureEnv closure
-  | .phi incoming ty => .phi incoming (subst ty)
-  | .select cond thenVal elseVal => .select cond thenVal elseVal
-  | .memcpy dst src size => .memcpy dst src size
-  | .memset dst val size => .memset dst val size
-  | .clone src ty => .clone src (subst ty)
-  | .erase val ty => .erase val (subst ty)
-  | .panic msgIdx line => .panic msgIdx line
-  | .callIntrinsic op intrArgs retTy => .callIntrinsic op intrArgs (subst retTy)
-  | .callExtern name extArgs retTy => .callExtern name extArgs (subst retTy)
-
-/-- Substitute type arguments into a statement using a map -/
-def substStmtTypesWithMap (stmt : Stmt) (substMap : Std.HashMap Nat Ty) : Stmt :=
-  { stmt with inst := substInstTypesWithMap stmt.inst substMap }
-
-/-- Substitute type arguments into a block using a map -/
-def substBlockTypesWithMap (block : Block) (substMap : Std.HashMap Nat Ty) : Block :=
-  let subst := fun ty => applyTypeArgsWithMap ty substMap
-  { block with
-    params := block.params.map fun (id, ty) => (id, subst ty)
-    stmts := block.stmts.map fun s => substStmtTypesWithMap s substMap
-  }
-
-/-- Substitute type arguments into a CFG using a map -/
-def substCFGTypesWithMap (cfg : CFG) (substMap : Std.HashMap Nat Ty) : CFG :=
-  let blocks' := cfg.blocks.fold (init := ({} : Std.HashMap Nat Block)) fun acc id block =>
-    acc.insert id (substBlockTypesWithMap block substMap)
-  { cfg with blocks := blocks' }
-
-/-- Specialize a function body using a pre-built substitution map -/
-def specializeBodyWithMap (cfg : CFG) (substMap : Std.HashMap Nat Ty) : CFG :=
-  substCFGTypesWithMap cfg substMap
-
-/-- Create a specialized version of a function -/
-def specializeFunc (func : Func) (typeArgs : Array Ty) (newId : FuncId) : Func :=
-  -- Build a single consistent substitution map for the entire function
-  let substMap := buildFuncSubstMap func typeArgs
-  let newSig := specializeSignatureWithMap func.sig typeArgs substMap
-  let newBody := func.body.map fun cfg => specializeBodyWithMap cfg substMap
-  let newLocalTypes := func.localTypes.fold
-    (init := ({} : Std.HashMap Nat Ty)) fun acc id ty =>
-      acc.insert id (applyTypeArgsWithMap ty substMap)
-  { func with
-    id := newId
-    sig := newSig
-    body := newBody
-    specializedFrom := some func.id
-    typeArgs := typeArgs
-    localTypes := newLocalTypes
-  }
-
-/-! ## Rewriting Phase
-
-Replace polymorphic calls with monomorphic ones.
--/
-
-/-- Rewrite an instruction, replacing polymorphic calls with specialized versions -/
-def rewriteInst (inst : Inst) (specMap : Std.HashMap SpecKey FuncId) : Inst :=
+/-- Rewrite a closed instruction, replacing polymorphic calls -/
+def rewriteInst (inst : ClosedInst) (specMap : Std.HashMap SpecKey FuncId) : ClosedInst :=
   match inst with
   | .callPoly funcId typeArgs args retTy =>
-    let key : SpecKey := ⟨funcId, typeArgs⟩
-    match specMap.get? key with
-    | some newFuncId => .call newFuncId args retTy
-    | none => inst  -- Keep as-is if not found (shouldn't happen for valid programs)
-  | .makeClosurePoly funcRef typeArgs env =>
-    -- Extract FuncId from FuncRef
-    match funcRef with
-    | .local funcId =>
       let key : SpecKey := ⟨funcId, typeArgs⟩
       match specMap.get? key with
-      | some newFuncId => .makeClosure (.local newFuncId) env
+      | some newFuncId => .call newFuncId args retTy
       | none => inst
-    | _ => inst
+  | .makeClosurePoly funcRef typeArgs env =>
+      match funcRef with
+      | .local funcId =>
+        let key : SpecKey := ⟨funcId, typeArgs⟩
+        match specMap.get? key with
+        | some newFuncId => .makeClosure (.local newFuncId) env
+        | none => inst
+      | _ => inst
   | _ => inst
 
 /-- Rewrite a statement -/
-def rewriteStmt (stmt : Stmt) (specMap : Std.HashMap SpecKey FuncId) : Stmt :=
+def rewriteStmt (stmt : ClosedStmt) (specMap : Std.HashMap SpecKey FuncId) : ClosedStmt :=
   { stmt with inst := rewriteInst stmt.inst specMap }
 
 /-- Rewrite a block -/
-def rewriteBlock (block : Block) (specMap : Std.HashMap SpecKey FuncId) : Block :=
+def rewriteBlock (block : ClosedBlock) (specMap : Std.HashMap SpecKey FuncId) : ClosedBlock :=
   { block with stmts := block.stmts.map fun s => rewriteStmt s specMap }
 
 /-- Rewrite a CFG -/
-def rewriteCFG (cfg : CFG) (specMap : Std.HashMap SpecKey FuncId) : CFG :=
-  let blocks' := cfg.blocks.fold (init := ({} : Std.HashMap Nat Block)) fun acc id block =>
-    acc.insert id (rewriteBlock block specMap)
+def rewriteCFG (cfg : ClosedCFG) (specMap : Std.HashMap SpecKey FuncId) : ClosedCFG :=
+  let blocks' := cfg.blocks.fold
+    (init := ({} : Std.HashMap Nat ClosedBlock)) fun acc id block =>
+      acc.insert id (rewriteBlock block specMap)
   { cfg with blocks := blocks' }
 
 /-- Rewrite a function -/
-def rewriteFunc (func : Func) (specMap : Std.HashMap SpecKey FuncId) : Func :=
+def rewriteFunc (func : ClosedFunc) (specMap : Std.HashMap SpecKey FuncId) : ClosedFunc :=
   match func.body with
   | none => func
   | some cfg => { func with body := some (rewriteCFG cfg specMap) }
@@ -590,13 +188,22 @@ def popPending (s : MonoState) : Option (SpecKey × MonoState) :=
     let key := s.pending.back!
     some (key, { s with pending := s.pending.pop })
 
-/-- Add a specialized function to the module -/
-def addFunc (s : MonoState) (func : Func) : MonoState :=
-  { s with module := s.module.addFunc func }
+def addFunc (s : MonoState) (func : ClosedFunc) : MonoState :=
+  { s with module := s.module.addMonoFunc func }
 
 end MonoState
 
-/-! ## Main Algorithm -/
+/-- Try to build a SpecRequest for a function with the given type arguments -/
+def mkSpecRequest? (sf : SomeFunc) (typeArgs : Array ClosedTy) : Option SomeSpecRequest :=
+  -- Check arity matches
+  if h : sf.1 = typeArgs.size then
+    let func : Func sf.1 := sf.2
+    -- Build the type environment
+    let env : Fin sf.1 → ClosedTy := fun i =>
+      typeArgs[i.val]'(h ▸ i.isLt)
+    some ⟨sf.1, { func := func, typeArgs := env }⟩
+  else
+    none
 
 /-- Process one specialization request -/
 def processRequest (key : SpecKey) : StateM MonoState Unit := do
@@ -604,20 +211,24 @@ def processRequest (key : SpecKey) : StateM MonoState Unit := do
 
   -- Look up the original function
   let some origFunc := s.module.getFunc key.funcId
-    | return ()  -- Function not found, skip
+    | return ()
 
   -- Only specialize if it's actually polymorphic
   if !origFunc.isPolymorphic then return ()
 
-  -- Verify type args match the function's type parameters
-  if key.typeArgs.size != origFunc.numTypeParams then return ()
+  -- Try to create a type-safe specialization request
+  let some ⟨_, req⟩ := mkSpecRequest? origFunc key.typeArgs
+    | return ()
 
   -- Allocate a new function ID
   let (newFuncId, s') := s.freshFuncId
   set s'
 
-  -- Create the specialized function
-  let specializedFunc := specializeFunc origFunc key.typeArgs newFuncId
+  -- Generate the mangled name
+  let newName := mangleSpecName origFunc.name key.typeArgs
+
+  -- TOTAL SPECIALIZATION: req.specialize cannot fail
+  let specializedFunc := req.specialize newFuncId newName
 
   -- Record the specialization
   modify fun s => s.recordSpecialization key newFuncId
@@ -625,8 +236,7 @@ def processRequest (key : SpecKey) : StateM MonoState Unit := do
   -- Add the specialized function to the module
   modify fun s => s.addFunc specializedFunc
 
-  -- The specialized function may itself contain polymorphic calls
-  -- We need to collect and add those to the work list
+  -- The specialized function may contain more polymorphic calls
   let newRequests := collectFuncRequests specializedFunc
   modify fun s => s.addRequests newRequests
 
@@ -644,25 +254,12 @@ partial def processAllRequests : StateM MonoState Unit := do
 def rewriteAllFuncs : StateM MonoState Unit := do
   let s ← get
   let specMap := s.specMap
-  let newFuncs := s.module.funcs.map fun f => rewriteFunc f specMap
+  let newFuncs := s.module.funcs.map fun sf =>
+    match sf.asMono? with
+    | some f => SomeFunc.ofMono (rewriteFunc f specMap)
+    | none => sf -- keep polymorphic (will be removed)
   set { s with module := { s.module with funcs := newFuncs } }
 
-/-- Check if a function is used (has any callers or is main) -/
-def isUsed (m : Module) (funcId : FuncId) : Bool :=
-  -- Main function is always used
-  if m.mainFunc == some funcId then true
-  else
-    -- Check if any function calls this one
-    m.funcs.any fun f =>
-      match f.body with
-      | none => false
-      | some cfg =>
-        cfg.allBlocks.any fun block =>
-          block.stmts.any fun stmt =>
-            match stmt.inst with
-            | .call fid _ _ => fid == funcId
-            | .makeClosure (.local fid) _ => fid == funcId
-            | _ => false
 
 /-- Remap function reference -/
 def remapFuncId (fid : FuncId) (idMap : Std.HashMap Nat Nat) : FuncId :=
@@ -676,8 +273,7 @@ def remapFuncRefId (ref : FuncRef) (idMap : Std.HashMap Nat Nat) : FuncRef :=
   | .local fid => .local (remapFuncId fid idMap)
   | _ => ref
 
-/-- Remap function references in an instruction -/
-def remapInstRefs (inst : Inst) (idMap : Std.HashMap Nat Nat) : Inst :=
+def remapInstRefs (inst : ClosedInst) (idMap : Std.HashMap Nat Nat) : ClosedInst :=
   match inst with
   | .call fid args retTy => .call (remapFuncId fid idMap) args retTy
   | .callPoly fid tyArgs args retTy => .callPoly (remapFuncId fid idMap) tyArgs args retTy
@@ -685,59 +281,71 @@ def remapInstRefs (inst : Inst) (idMap : Std.HashMap Nat Nat) : Inst :=
   | .makeClosurePoly ref tyArgs env => .makeClosurePoly (remapFuncRefId ref idMap) tyArgs env
   | _ => inst
 
-/-- Remap function references in a function -/
-def remapFuncRefs (f : Func) (idMap : Std.HashMap Nat Nat) : Func :=
+def remapFuncRefs (f : ClosedFunc) (idMap : Std.HashMap Nat Nat) : ClosedFunc :=
   match f.body with
   | none => f
   | some cfg =>
     let newBlocks := cfg.blocks.fold
-      (init := ({} : Std.HashMap Nat Block)) fun acc id block =>
+      (init := ({} : Std.HashMap Nat ClosedBlock)) fun acc id block =>
         let newStmts := block.stmts.map fun s =>
           { s with inst := remapInstRefs s.inst idMap }
         acc.insert id { block with stmts := newStmts }
-    { f with
-      body := some { cfg with blocks := newBlocks }
-      specializedFrom := f.specializedFrom.bind fun fid =>
-        idMap.get? fid.id |>.map FuncId.mk
-    }
+    { f with body := some { cfg with blocks := newBlocks } }
 
 /-- Renumber functions and return the mapping -/
-def renumberFuncs (funcs : Array Func) : Array Func × Std.HashMap Nat Nat :=
-  let (arr, mapPair) := funcs.foldl (init := (#[], ({} : Std.HashMap Nat Nat), 0))
+def renumberFuncs (funcs : Array ClosedFunc) : Array ClosedFunc × Std.HashMap Nat Nat :=
+  let (arr, mapResult, _) := funcs.foldl (init := (#[], ({} : Std.HashMap Nat Nat), 0))
     fun (arr, map, idx) f =>
       let newF := { f with id := ⟨idx⟩ }
       (arr.push newF, map.insert f.id.id idx, idx + 1)
-  (arr, mapPair.1)
+  (arr, mapResult)
 
-/-- Remove polymorphic functions that have been fully specialized -/
-def removeUnusedPolymorphic : StateM MonoState Unit := do
+/-- Check if a function is used -/
+def isUsed (m : Module) (funcId : FuncId) : Bool :=
+  if m.mainFunc == some funcId then true
+  else
+    m.funcs.any fun sf =>
+      match sf.asMono? with
+      | none => false
+      | some f =>
+        match f.body with
+        | none => false
+        | some cfg =>
+          cfg.allBlocks.any fun block =>
+            block.stmts.any fun stmt =>
+              match stmt.inst with
+              | .call fid _ _ => fid == funcId
+              | .makeClosure (.local fid) _ => fid == funcId
+              | _ => false
+
+/-- Remove polymorphic functions and compact IDs -/
+def removePolymorphicAndCompact : StateM MonoState Unit := do
   let s ← get
-  -- Keep functions that are:
-  -- 1. Not polymorphic, OR
-  -- 2. Still have polymorphic call sites (callPoly), OR
-  -- 3. Are used (called directly or are main)
-  let keepFunc := fun (f : Func) =>
-    !f.isPolymorphic || isUsed s.module f.id
 
-  let keptFuncs := s.module.funcs.filter keepFunc
+  -- Keep only monomorphic functions that are used
+  let monoFuncs := s.module.funcs.filterMap fun sf =>
+    match sf.asMono? with
+    | some f => if isUsed s.module f.id then some f else none
+    | none => none
 
-  -- Renumber function IDs to be contiguous
-  let (newFuncs, idMap) := renumberFuncs keptFuncs
+  -- Renumber
+  let (newFuncs, idMap) := renumberFuncs monoFuncs
 
-  -- Update function index
+  -- Update index
   let newFuncIndex := newFuncs.foldl
     (init := ({} : Std.HashMap String FuncId)) fun acc f =>
       acc.insert f.sig.name f.id
 
-  -- Update references in the kept functions
+  -- Remap references
   let finalFuncs := newFuncs.map fun f => remapFuncRefs f idMap
 
-  -- Update main function reference
-  let newMain := s.module.mainFunc.bind fun oldId => idMap.get? oldId.id |>.map FuncId.mk
+  -- Update main
+  let newMain := s.module.mainFunc.bind fun oldId =>
+    idMap.get? oldId.id |>.map FuncId.mk
 
   set { s with module := {
     s.module with
-    funcs := finalFuncs
+    funcs := finalFuncs.map SomeFunc.ofMono
     funcIndex := newFuncIndex
     mainFunc := newMain
   }}
@@ -761,60 +369,49 @@ def monomorphize (m : Module) : Module :=
   -- Rewrite all functions to use specialized versions
   let ((), stateAfterRewrite) := Id.run (StateT.run rewriteAllFuncs stateAfterSpec)
 
-  -- Remove unused polymorphic functions
-  let ((), finalState) := Id.run (StateT.run removeUnusedPolymorphic stateAfterRewrite)
-
+  let ((), finalState) := Id.run (StateT.run removePolymorphicAndCompact stateAfterRewrite)
   finalState.module
 
 /-! ## Verification -/
 
 /-- Check if a module is fully monomorphic -/
 def isFullyMonomorphic (m : Module) : Bool :=
-  m.funcs.all fun f =>
-    -- No type parameters
-    f.sig.typeParams.isEmpty &&
-    -- All types in signature are monomorphic
-    f.sig.params.all (·.ty.isMonomorphic) &&
-    f.sig.retTy.isMonomorphic &&
-    -- No polymorphic calls in body
-    match f.body with
-    | none => true
-    | some cfg =>
-      cfg.allBlocks.all fun block =>
-        block.stmts.all fun stmt =>
-          match stmt.inst with
-          | .callPoly _ _ _ _ => false
-          | .makeClosurePoly _ _ _ => false
-          | _ => true
-
-/-- Report any remaining polymorphism (for debugging) -/
-def reportPolymorphism (m : Module) : Array String :=
-  m.funcs.foldl (init := #[]) fun acc f =>
-    let funcIssues := Id.run do
-      let mut issues : Array String := #[]
-
-      if !f.sig.typeParams.isEmpty then
-        issues := issues.push s!"Function {f.sig.name} has type parameters: {f.sig.typeParams}"
-
-      for p in f.sig.params do
-        if !p.ty.isMonomorphic then
-          issues := issues.push s!"Function {f.sig.name} param {p.name} has polymorphic type: {p.ty}"
-
-      if !f.sig.retTy.isMonomorphic then
-        issues := issues.push s!"Function {f.sig.name} has polymorphic return type: {f.sig.retTy}"
-
-      if let some cfg := f.body then
-        for block in cfg.allBlocks do
-          for stmt in block.stmts do
+  m.funcs.all fun sf =>
+    sf.isMono &&
+    match sf.asMono? with
+    | none => false
+    | some f =>
+      match f.body with
+      | none => true
+      | some cfg =>
+        cfg.allBlocks.all fun block =>
+          block.stmts.all fun stmt =>
             match stmt.inst with
-            | .callPoly funcId typeArgs _ _ =>
-              issues := issues.push s!"Function {f.sig.name} has callPoly to {funcId} with {typeArgs}"
-            | .makeClosurePoly funcRef typeArgs _ =>
-              issues := issues.push s!"Function {f.sig.name} has makeClosurePoly to {funcRef} with {typeArgs}"
-            | _ => pure ()
+            | .callPoly _ _ _ _ => false
+            | .makeClosurePoly _ _ _ => false
+            | _ => true
 
-      pure issues
-
-    acc ++ funcIssues
+/-- Report remaining polymorphism -/
+def reportPolymorphism (m : Module) : Array String :=
+  m.funcs.foldl (init := #[]) fun acc sf =>
+    if sf.isPolymorphic then
+      acc.push s!"Function {sf.name} is polymorphic (arity {sf.arity})"
+    else
+      match sf.asMono? with
+      | none => acc
+      | some f =>
+        let funcIssues := Id.run do
+          let mut issues : Array String := #[]
+          if let some cfg := f.body then
+            for block in cfg.allBlocks do
+              for stmt in block.stmts do
+                match stmt.inst with
+                | .callPoly funcId typeArgs _ _ =>
+                    issues := issues.push s!"Function {f.sig.name} has callPoly to {funcId} with {typeArgs.size} type args"
+                | .makeClosurePoly funcRef typeArgs _ =>
+                    issues := issues.push s!"Function {f.sig.name} has makeClosurePoly to {funcRef} with {typeArgs.size} type args"
+                | _ => pure ()
+          pure issues
+        acc ++ funcIssues
 
 end Somac.Alloy.Monomorphize
