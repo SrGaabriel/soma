@@ -117,6 +117,7 @@ inductive Ty : Nat → Type where
   | closure : Array (Ty n) → Ty n → Ty n
   /-- Type variable (de Bruijn index into enclosing quantifiers) -/
   | var : Fin n → Ty n
+  deriving Repr, Serialize, Deserialize
 
 /-- Ty is always inhabited (by rawPtr) -/
 instance : Inhabited (Ty n) where
@@ -290,7 +291,7 @@ inductive Const where
   | string (idx : Nat) (len : Nat)
   /-- Undefined value (for unitialized memory) -/
   | undef (ty : ClosedTy)
-  deriving BEq, Inhabited
+  deriving BEq, Inhabited, Serialize, Deserialize
 
 instance : Repr Const where
   reprPrec c _ := match c with
@@ -333,7 +334,7 @@ inductive Operand where
   | const (c : Const)
   | global (id : GlobalId)
   | func (id : FuncId)
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, Serialize, Deserialize
 
 namespace Operand
 
@@ -382,7 +383,7 @@ inductive UnOp (n : Nat) where
   | bitcast (to : Ty n)
   | ptrtoint (to : PrimTy)
   | inttoptr
-  deriving BEq, Inhabited
+  deriving BEq, Inhabited, Serialize, Deserialize
 
 instance : Repr (UnOp n) where
   reprPrec op _ := match op with
