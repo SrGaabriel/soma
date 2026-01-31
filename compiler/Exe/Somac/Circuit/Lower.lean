@@ -829,13 +829,9 @@ partial def lowerGlobal (name : Name) (ty : Value) : LowerM PortId := do
           let ctor ← LowerM.addNode (.ctor tag 0) ty
           pure (PortId.principal ctor)
         else
-          -- Partial app, should've already been desugared (todo: consider panicking here)
-          let era ← LowerM.addNode .era unitTy
-          pure (PortId.principal era)
+          panic! s!"lowerGlobal: partial constructor application should have been desugared: {name.display}"
       | none =>
-        -- Unknown global: ERA placeholder
-        let era ← LowerM.addNode .era unitTy
-        pure (PortId.principal era)
+        panic! s!"lowerGlobal: unknown global '{name.display}' (not in globals, not a constructor)"
 
 /-- Lower field access (projection) -/
 partial def lowerFieldAccess (expr : Expr Value scope) (fieldIdx : Nat)
@@ -1207,28 +1203,41 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
   -- Get list of functions to lower (only those that should be lowered)
   let functions := typedFunctions.toList.filter fun (_, fn) => shouldLowerBody fn
 
+  let intrinsics := typedFunctions.toList.filter fun (_, fn) => not (shouldLowerBody fn)
+
   -- First pass: register all local functions that will be lowered as globals
   -- Use the index in the filtered list (which matches the book index)
   for (i, (_, fn)) in enumList functions do
     LowerM.modifyCtx fun ctx => ctx.registerGlobal fn.name i
 
-  -- Second pass: register external functions from dependencies
-  -- Their book indices start after all local functions
+  -- Second pass: register intrinsic/extern functions from the current module
+  -- Their book indices start after local functions
   let localCount := functions.length
+  for (i, (_, fn)) in enumList intrinsics do
+    LowerM.modifyCtx fun ctx => ctx.registerGlobal fn.name (localCount + i)
+
+  -- Third pass: register external functions from dependencies
+  -- Their book indices start after all local functions
+  let intrinsicCount := intrinsics.length
   if let some g := globals then
     let externals := g.defs.toList.filter fun (name, info) =>
       !typedFunctions.contains name &&
       !info.isConstructor
     for (i, (_, info)) in enumList externals do
-      LowerM.modifyCtx fun ctx => ctx.registerGlobal info.name (localCount + i)
+      LowerM.modifyCtx fun ctx => ctx.registerGlobal info.name (localCount + intrinsicCount + i)
 
-  -- Third pass: lower each function body and add to book
+  -- Fourth pass: lower each function body and add to book
   for (_, fn) in functions do
     let root ← lowerFunction fn
     let arity := fn.params.size
     let _ ← LowerM.addDefinition fn.name root arity fn.fnType
 
-  -- Fourth pass: add placeholder definitions for external functions (will be resolved at merge-time)
+  -- Fifth pass: add placeholder definitions for intrinsic/extern functions from current module
+  for (_, fn) in intrinsics do
+    let era ← LowerM.addNode .era unitTy
+    let _ ← LowerM.addDefinition fn.name era 0 fn.fnType (isExternal := true)
+
+  -- Sixth pass: add placeholder definitions for external functions from dependencies
   if let some g := globals then
     let externals := g.defs.toList.filter fun (name, info) =>
       !typedFunctions.contains name && -- Not in current module

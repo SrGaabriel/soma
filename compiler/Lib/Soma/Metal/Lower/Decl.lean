@@ -100,7 +100,7 @@ partial def collectGlobals (decl : Decl) : LowerM Unit := do
           | none =>
             match FFIOp.fromString? name.value with
             | some op => pure (Name.intrinsic (Intrinsic.ffiOp op))
-            | none => LowerM.freshUserName name.value
+            | none => pure (Name.intrinsic (Intrinsic.extern name.value))
         else
           LowerM.freshUserName name.value
       -- Store raw syntax - will be resolved during dependent type checking
@@ -385,7 +385,7 @@ def lowerFunction (decl : Decl) : LowerM (Option UntypedFunction) := do
               | none =>
                 match FFIOp.fromString? name.value with
                 | some op => pure (Name.intrinsic (Intrinsic.ffiOp op))
-                | none => LowerM.freshUserName name.value
+                | none => pure (Name.intrinsic (Intrinsic.extern name.value))
             else
               -- Extern function: use Name.intrinsic (Intrinsic.extern externName)
               pure (Name.intrinsic (Intrinsic.extern externName))
