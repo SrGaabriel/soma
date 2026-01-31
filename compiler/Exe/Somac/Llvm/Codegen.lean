@@ -111,6 +111,8 @@ structure CodegenState where
   funcState : FuncBuilderState := {}
   /-- Current function being lowered -/
   currentFunc : Option ClosedFunc := none
+  /-- Set of extern function names that have been declared -/
+  declaredExterns : Std.HashSet String := {}
   deriving Inhabited
 
 /-- Codegen monad -/
@@ -220,6 +222,15 @@ def getCurrentFunc : CodegenM (Option ClosedFunc) := do
 def getLocalTypes : CodegenM (Std.HashMap Nat ClosedTy) := do
   let s ← get
   pure s.localTypes
+
+/-- Check if an extern function has been declared -/
+def isExternDeclared (name : String) : CodegenM Bool := do
+  let s ← get
+  pure (s.declaredExterns.contains name)
+
+/-- Mark an extern function as declared -/
+def markExternDeclared (name : String) : CodegenM Unit := do
+  modify fun s => { s with declaredExterns := s.declaredExterns.insert name }
 
 end CodegenM
 
@@ -1094,6 +1105,20 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     -- External function call: emit regular LLVM call to @name
     let llvmRetTy := convertTy retTy
     let llvmArgs ← args.mapM fun arg => convertOperandWithTy arg
+
+    -- Declare the extern function if not already declared
+    unless (← CodegenM.isExternDeclared name) do
+      let llvmParams := llvmArgs.mapIdx fun i (ty, _) =>
+        { name := s!"arg{i}", ty := ty : LLVMParam }
+      CodegenM.withModuleBuilder do
+        ModuleBuilder.addFunc {
+          name := name
+          retTy := llvmRetTy
+          params := llvmParams
+          isDeclaration := true
+        }
+      CodegenM.markExternDeclared name
+
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
     pure (some (ref, retTy))
 

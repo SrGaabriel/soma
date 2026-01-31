@@ -1443,6 +1443,177 @@ void soma_par_print_stats(void) {
 }
 
 /*
+ * ============================================================================
+ * String Operations
+ * ============================================================================
+ *
+ * Soma String representation (16 bytes, heap-allocated):
+ *   [0]  int64_t length   (string length in bytes, not including null terminator)
+ *   [8]  char*   data     (pointer to null-terminated UTF-8 data)
+ *
+ * The data pointer may point to:
+ *   - A global string constant (.str.0, .str.1, etc.) for string literals
+ *   - A heap-allocated buffer for dynamically created strings
+ *
+ * SomaString struct is defined in soma_runtime.h
+ */
+
+/*
+ * soma_to_cstring - Convert Soma String to C string
+ *
+ * Extracts the data pointer from a Soma String structure.
+ * The returned pointer is valid as long as the String is alive.
+ *
+ * LLVM signature: ptr @soma_to_cstring(i64 %str)
+ * The i64 is a tagged pointer (SomaValue) to a SomaString.
+ */
+char* soma_to_cstring(SomaValue str) {
+    if (!SOMA_IS_PTR(str) || str == 0) {
+        return NULL;
+    }
+    SomaString* s = (SomaString*)SOMA_TO_PTR(str);
+    return s->data;
+}
+
+/*
+ * soma_from_cstring - Convert C string to Soma String
+ *
+ * Allocates a new Soma String structure and copies the C string data.
+ * The caller takes ownership of the returned String.
+ *
+ * LLVM signature: ptr @soma_from_cstring(ptr %cstr)
+ * Returns a pointer to a newly allocated SomaString.
+ */
+SomaString* soma_from_cstring(const char* cstr) {
+    if (cstr == NULL) {
+        return NULL;
+    }
+
+    size_t len = strlen(cstr);
+
+    /* Allocate String structure */
+    SomaString* s = (SomaString*)malloc(sizeof(SomaString));
+    if (s == NULL) {
+        soma_panic("soma_from_cstring: out of memory");
+        return NULL;
+    }
+
+    /* Allocate and copy string data (include null terminator) */
+    char* data = (char*)malloc(len + 1);
+    if (data == NULL) {
+        free(s);
+        soma_panic("soma_from_cstring: out of memory");
+        return NULL;
+    }
+    memcpy(data, cstr, len + 1);
+
+    s->length = (int64_t)len;
+    s->data = data;
+
+    return s;
+}
+
+/*
+ * soma_cstring_len - Get C string length
+ *
+ * Returns the length of a null-terminated C string (not a Soma String).
+ *
+ * LLVM signature: i64 @soma_cstring_len(ptr %cstr)
+ */
+uint64_t soma_cstring_len(const char* cstr) {
+    if (cstr == NULL) {
+        return 0;
+    }
+    return (uint64_t)strlen(cstr);
+}
+
+/*
+ * soma_strcat - Concatenate two Soma Strings
+ *
+ * Allocates a new Soma String containing the concatenation of a and b.
+ * The caller takes ownership of the returned String.
+ *
+ * LLVM signature: ptr @soma_strcat(ptr %a, ptr %b)
+ * Both arguments are pointers to SomaString structures.
+ */
+SomaString* soma_strcat(SomaString* a, SomaString* b) {
+    /* Handle NULL cases */
+    if (a == NULL) {
+        if (b == NULL) {
+            return soma_from_cstring("");
+        }
+        /* Return a copy of b */
+        return soma_from_cstring(b->data);
+    }
+    if (b == NULL) {
+        /* Return a copy of a */
+        return soma_from_cstring(a->data);
+    }
+
+    size_t len_a = (size_t)a->length;
+    size_t len_b = (size_t)b->length;
+    size_t total_len = len_a + len_b;
+
+    /* Allocate String structure */
+    SomaString* result = (SomaString*)malloc(sizeof(SomaString));
+    if (result == NULL) {
+        soma_panic("soma_strcat: out of memory");
+        return NULL;
+    }
+
+    /* Allocate concatenated data */
+    char* data = (char*)malloc(total_len + 1);
+    if (data == NULL) {
+        free(result);
+        soma_panic("soma_strcat: out of memory");
+        return NULL;
+    }
+
+    memcpy(data, a->data, len_a);
+    memcpy(data + len_a, b->data, len_b);
+    data[total_len] = '\0';
+
+    result->length = (int64_t)total_len;
+    result->data = data;
+
+    return result;
+}
+
+/*
+ * soma_int_to_string - Convert int32 to Soma String
+ *
+ * Allocates a new Soma String containing the decimal representation of val.
+ *
+ * LLVM signature: ptr @soma_int_to_string(i32 %val)
+ */
+SomaString* soma_int_to_string(int32_t val) {
+    /* Buffer large enough for any 32-bit integer including sign and null */
+    char buf[12];
+    int len = snprintf(buf, sizeof(buf), "%d", val);
+
+    /* Allocate String structure */
+    SomaString* s = (SomaString*)malloc(sizeof(SomaString));
+    if (s == NULL) {
+        soma_panic("soma_int_to_string: out of memory");
+        return NULL;
+    }
+
+    /* Allocate and copy string data */
+    char* data = (char*)malloc(len + 1);
+    if (data == NULL) {
+        free(s);
+        soma_panic("soma_int_to_string: out of memory");
+        return NULL;
+    }
+    memcpy(data, buf, len + 1);
+
+    s->length = (int64_t)len;
+    s->data = data;
+
+    return s;
+}
+
+/*
  * Panic function - prints error message and aborts
  */
 void soma_panic(const char* msg) {

@@ -498,9 +498,9 @@ def buildTyVarMapping (levels : Std.HashSet Nat) : Σ n, TyVarMapping n :=
   ⟨n, ⟨map.1⟩⟩
 
 /-- Build tyVar mapping from an entire definition -/
-def buildTyVarMappingFromDefinition (graph : CGraph) (def_ : CDefinition) : Σ n, TyVarMapping n :=
-  let allLevels := collectAllTyVarLevels graph def_
-  buildTyVarMapping allLevels
+def buildTyVarMappingFromDefinition (_graph : CGraph) (def_ : CDefinition) : Σ n, TyVarMapping n :=
+  let defLevels := collectTyVarLevels def_.ty
+  buildTyVarMapping defLevels
 
 /-- Extract type parameter names and value parameters using a mapping -/
 partial def extractParamsUsingMapping (ty : Value) (mapping : TyVarMapping n)
@@ -682,7 +682,7 @@ def lowerString (stringIdx : Nat) (len : Nat) : LowerM n LocalId := do
   -- Reference the string data directly from the global string table
   let dataPtr ← LowerM.emitInst (.copy (.const (.string stringIdx len))) .rawPtr
   LowerM.emitVoid (.store (.local dataPtrSlot) (.local dataPtr))
-  pure stringPtr
+  LowerM.emitInst (.unOp (.ptrtoint .i64) (.local stringPtr)) (.prim .i64)
 
 /-- Check if a type needs heap deallocation when erased -/
 def needsErase : Ty n → Bool
@@ -814,6 +814,20 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
           | .lam _ =>
             lowerNodeWithMap graph fp.node funcIdMap
+          | .ref refId | .alo refId =>
+            -- Direct function reference: emit direct call instead of closure call
+            let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
+            match funcRef with
+            | .local funcId =>
+              StateT.lift (LowerM.emitInst (.call funcId #[.local argVal] nodeTy) nodeTy)
+            | .external name =>
+              StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] nodeTy) nodeTy)
+            | .intrinsic op =>
+              panic! "Unexpected intrinsic in direct function call"
+            | .primOp _op =>
+              panic! "Unexpected primOp in direct function call"
+            | .externC name =>
+              StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] nodeTy) nodeTy)
           | _ =>
             -- Regular closure call: lower the function and use callClosure
             let fnNodeTy := getNodeTypeWithMapping fnEntry tyMapping

@@ -161,6 +161,34 @@ uint32_t soma_fresh_label(void);
 void soma_panic(const char* msg);
 
 /*
+ * String operations
+ *
+ * Soma String representation (16 bytes, heap-allocated):
+ *   [0]  int64_t length   (string length in bytes)
+ *   [8]  char*   data     (pointer to null-terminated UTF-8 data)
+ */
+
+typedef struct SomaString {
+    int64_t length;
+    char*   data;
+} SomaString;
+
+/* Convert Soma String to C string (returns data pointer) */
+char* soma_to_cstring(SomaValue str);
+
+/* Convert C string to Soma String (allocates new String) */
+SomaString* soma_from_cstring(const char* cstr);
+
+/* Get C string length */
+uint64_t soma_cstring_len(const char* cstr);
+
+/* Concatenate two Soma Strings (allocates new String) */
+SomaString* soma_strcat(SomaString* a, SomaString* b);
+
+/* Convert int32 to Soma String (allocates new String) */
+SomaString* soma_int_to_string(int32_t val);
+
+/*
  * Closure operations
  */
 
