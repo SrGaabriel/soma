@@ -337,6 +337,11 @@ def resolveInstFuncRefs (resolver : FuncRefResolver) (inst : Inst n) : Inst n :=
   match inst with
   | .makeClosure ref env => .makeClosure (resolver.resolveToLocal ref) env
   | .makeClosurePoly ref typeArgs env => .makeClosurePoly (resolver.resolveToLocal ref) typeArgs env
+  | .callExtern name args retTy =>
+    -- Check if the extern function is now available as a local function in the merged module
+    match resolver.nameToFuncId.get? name with
+    | some funcId => .call funcId args retTy
+    | none => inst
   | _ => inst
 
 /-- Resolve FuncRefs in a statement -/
