@@ -19,7 +19,7 @@ structure Config where
   showIds : Bool := true
   /-- Show port connections -/
   showConnections : Bool := true
-  /-- Show labels on DUP/SUP -/
+  /-- Show labels on DUP nodes -/
   showLabels : Bool := true
   /-- Show type annotations on nodes -/
   showTypes : Bool := false
@@ -42,7 +42,6 @@ def ppNode (cfg : Config) (n : Node) : String :=
   | .lam false   => "λ"
   | .app         => "@"
   | .dup label   => if cfg.showLabels then s!"dup{ppLabel label}" else "dup"
-  | .sup label   => if cfg.showLabels then s!"sup{ppLabel label}" else "sup"
   | .era         => "era"
   | .ctor tag ar => s!"C{tag}[{ar}]"
   | .mat exp     => s!"mat({exp})"

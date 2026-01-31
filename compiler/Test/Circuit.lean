@@ -22,7 +22,7 @@ namespace TermTests
 
 /-- Test: Tag encoding/decoding roundtrips -/
 def testTagRoundtrip : IO TestResult := do
-  let tags := [Tag.var, Tag.lam, Tag.app, Tag.dup, Tag.sup, Tag.era,
+  let tags := [Tag.var, Tag.lam, Tag.app, Tag.dup, Tag.era,
                Tag.ctor, Tag.mat, Tag.record, Tag.proj, Tag.num,
                Tag.op2, Tag.ref, Tag.use]
   for tag in tags do
@@ -84,19 +84,14 @@ def testMkLam : IO TestResult := do
     return .failed "Erased LAM should be erased"
   return .passed
 
-/-- Test: mkDup and mkSup with labels -/
-def testDupSupLabels : IO TestResult := do
+/-- Test: mkDup with labels -/
+def testDupLabels : IO TestResult := do
   let dup := Term.mkDup 7 (Loc.ofNat 100)
-  let sup := Term.mkSup 7 (Loc.ofNat 200)
 
   if dup.tag != Tag.dup then
     return .failed "DUP should have DUP tag"
-  if sup.tag != Tag.sup then
-    return .failed "SUP should have SUP tag"
   if dup.getLabel != 7 then
     return .failed s!"DUP label should be 7, got {dup.getLabel}"
-  if sup.getLabel != 7 then
-    return .failed s!"SUP label should be 7, got {sup.getLabel}"
   return .passed
 
 /-- Test: mkCtor encodes tag and arity -/
@@ -204,7 +199,7 @@ def run : IO TestRunner := do
   runner := runner.record "substitution_bit" (← testSubstitutionBit)
   runner := runner.record "mkVar" (← testMkVar)
   runner := runner.record "mkLam" (← testMkLam)
-  runner := runner.record "dup_sup_labels" (← testDupSupLabels)
+  runner := runner.record "dup_labels" (← testDupLabels)
   runner := runner.record "mkCtor" (← testMkCtor)
   runner := runner.record "mkNum" (← testMkNum)
   runner := runner.record "mkOp2" (← testMkOp2)
@@ -229,7 +224,6 @@ def testPortCounts : IO TestResult := do
     (.lam false, 2),   -- var, body
     (.app, 2),         -- fun, arg
     (.dup ⟨0⟩, 2),     -- copy0, copy1
-    (.sup ⟨0⟩, 2),     -- alt0, alt1
     (.era, 0),         -- no aux ports
     (.ctor 0 3, 3),    -- 3 fields
     (.mat 0, 3),       -- scrutinee, hit, miss
@@ -264,7 +258,7 @@ def testToTag : IO TestResult := do
 
 /-- Test: Node isCombinator predicate -/
 def testIsCombinator : IO TestResult := do
-  let combinators := [Node.lam false, Node.app, Node.dup ⟨0⟩, Node.sup ⟨0⟩, Node.era]
+  let combinators := [Node.lam false, Node.app, Node.dup ⟨0⟩, Node.era]
   let nonCombinators := [Node.ctor 0 1, Node.mat 0, Node.num PrimType.i64 0]
 
   for node in combinators do
@@ -610,7 +604,7 @@ namespace PrettyTests
 def testPpNode : IO TestResult := do
   let cfg := Somac.Circuit.Pretty.Config.default
   let nodes := [Node.lam false, Node.lam true, Node.app, Node.era,
-                Node.dup ⟨5⟩, Node.sup ⟨3⟩, Node.ctor 2 3,
+                Node.dup ⟨5⟩, Node.ctor 2 3,
                 Node.mat 1, Node.record 2, Node.proj 0,
                 Node.num PrimType.i64 42, Node.ref 0, Node.use]
 
@@ -620,16 +614,13 @@ def testPpNode : IO TestResult := do
       return .failed s!"ppNode should produce non-empty output for {repr node}"
   return .passed
 
-/-- Test: ppNode shows labels for DUP/SUP -/
+/-- Test: ppNode shows labels for DUP -/
 def testPpNodeLabels : IO TestResult := do
   let cfg := { Somac.Circuit.Pretty.Config.default with showLabels := true }
   let dup := ppNode cfg (Node.dup ⟨7⟩)
-  let sup := ppNode cfg (Node.sup ⟨3⟩)
 
   if !dup.toSlice.contains "7" then
     return .failed s!"DUP output should contain label 7: got '{dup}'"
-  if !sup.toSlice.contains "3" then
-    return .failed s!"SUP output should contain label 3: got '{sup}'"
   return .passed
 
 /-- Test: ppTerm produces output -/

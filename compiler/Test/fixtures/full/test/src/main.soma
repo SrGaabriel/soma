@@ -1,0 +1,4 @@
+@[intrinsic]
+def println :: a -> IO () with (Display a)
+
+def main :: IO () = println "Hello, World!"

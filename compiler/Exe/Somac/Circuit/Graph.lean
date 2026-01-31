@@ -277,7 +277,7 @@ def findNodesByTag (g : Graph) (tag : Tag) : List NodeId :=
 def usedLabels (g : Graph) : List Label :=
   g.nodes.toList.filterMap fun (_, entry) =>
     match entry.node with
-    | .dup label | .sup label => some label
+    | .dup label => some label
     | _ => none
 
 /-- Extract a subgraph reachable from a port (BFS) -/

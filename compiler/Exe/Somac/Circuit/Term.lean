@@ -46,8 +46,6 @@ inductive Tag where
   | app
   /-- Duplicator node (for cloning values) -/
   | dup
-  /-- Superposition node (lazy duplication wrapper) -/
-  | sup
   /-- Eraser node (for discarding values) -/
   | era
   /-- Constructor application -/
@@ -88,7 +86,6 @@ def toUInt8 : Tag → UInt8
   | .lam    => 1
   | .app    => 2
   | .dup    => 3
-  | .sup    => 4
   | .era    => 5
   | .ctor   => 6
   | .mat    => 7
@@ -111,7 +108,6 @@ def fromUInt8 : UInt8 → Option Tag
   | 1  => some .lam
   | 2  => some .app
   | 3  => some .dup
-  | 4  => some .sup
   | 5  => some .era
   | 6  => some .ctor
   | 7  => some .mat
@@ -135,7 +131,6 @@ instance : ToString Tag where
     | .lam    => "LAM"
     | .app    => "APP"
     | .dup    => "DUP"
-    | .sup    => "SUP"
     | .era    => "ERA"
     | .ctor   => "CTOR"
     | .mat    => "MAT"
@@ -455,10 +450,6 @@ def mkApp (loc : Loc) : Term :=
 def mkDup (label : UInt32) (loc : Loc) : Term :=
   create Tag.dup (Ext.fromLabel label) loc.val
 
-/-- Create a superposition term with label -/
-def mkSup (label : UInt32) (loc : Loc) : Term :=
-  create Tag.sup (Ext.fromLabel label) loc.val
-
 /-- Create an eraser term -/
 def mkEra : Term :=
   create Tag.era Ext.zero 0
@@ -591,7 +582,7 @@ def getSubstitution (t : Term) : Option Loc :=
 /-- Check if this is a compound node (has children in heap) -/
 def isCompound (t : Term) : Bool :=
   match t.tag with
-  | .lam | .app | .dup | .sup | .ctor | .mat | .record | .proj | .op1 | .op2 | .use | .alo => true
+  | .lam | .app | .dup | .ctor | .mat | .record | .proj | .op1 | .op2 | .use | .alo => true
   | .array | .index | .string | .slice => true
   | .var | .era | .num | .ref => false
 

@@ -940,9 +940,6 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     }
     pure inputVal
 
-  | .sup _ =>
-    StateT.lift (LowerM.emitInst (.copy (.const (.undef (.prim .i64)))) nodeTy)
-
   | .ref refId | .alo refId => do
     let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
     let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
