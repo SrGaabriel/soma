@@ -11,7 +11,7 @@ Soma is a statically-typed, pure functional language with dependent types, expli
 
 ## ✨ Overview
 
-Combining high-level expressiveness with predictable performance characteristics, Soma features the [Calculus of Quantitative Constructions (CQC)](docs/CQC.md), a dependent type system with quantities that track variable usage (erased, linear, or unrestricted).
+Combining high-level expressiveness with predictable performance characteristics, Soma features a dependent type system with quantities that track variable usage (erased, linear, or unrestricted).
 
 Soma achieves optimal evaluation via Interaction Nets, in turn delivering GC-free memory management with deterministic lifetimes. The key is that the compiler statically analyzes variable usage patterns through quantities, automatically inserting duplication and erasure operations that correspond to precise allocation and deallocation points.
 
