@@ -3,12 +3,18 @@ namespace Test.E2E
 /-- Base directory for E2E fixtures -/
 def fixturesDir : System.FilePath := "Test/fixtures/e2e"
 
-/-- An E2E test case loaded from a fixture directory -/
+/-- Source type for a test case -/
+inductive TestSource where
+  | directory (path : System.FilePath)
+  | singleFile (path : System.FilePath)
+  deriving Repr
+
+/-- An E2E test case loaded from a fixture directory or single file -/
 structure TestCase where
-  /-- Name of the test (directory name) -/
+  /-- Name of the test -/
   name : String
-  /-- Path to the fixture directory -/
-  fixtureDir : System.FilePath
+  /-- Source location -/
+  source : TestSource
   /-- Expected stdout content -/
   expectedStdout : Option String
   /-- Expected exit code -/
@@ -17,8 +23,29 @@ structure TestCase where
 
 namespace TestCase
 
+/-- Parse inline expected values from file comments -/
+def parseInlineExpected (content : String) : Option String × UInt32 := Id.run do
+  let lines := content.splitOn "\n"
+  let mut stdout : Option String := none
+  let mut exitCode : UInt32 := 0
+
+  for line in lines do
+    let trimmed := line.trimAscii.toString
+    if !trimmed.startsWith "//" && !trimmed.isEmpty then
+      break
+
+    if trimmed.startsWith "// expected stdout:" then
+      let value := (trimmed.drop 18).trimAscii.toString
+      stdout := some value
+    else if trimmed.startsWith "// expected exit:" then
+      let value := (trimmed.drop 17).trimAscii.toString
+      if let some n := value.toNat? then
+        exitCode := n.toUInt32
+
+  (stdout, exitCode)
+
 /-- Load a test case from a fixture directory -/
-def load (dir : System.FilePath) : IO TestCase := do
+def loadFromDir (dir : System.FilePath) : IO TestCase := do
   let name := dir.fileName.getD "unknown"
 
   -- Read expected stdout
@@ -40,7 +67,20 @@ def load (dir : System.FilePath) : IO TestCase := do
 
   return {
     name
-    fixtureDir := dir
+    source := .directory dir
+    expectedStdout
+    expectedExitCode
+  }
+
+/-- Load a test case from a single .soma file -/
+def loadFromFile (file : System.FilePath) : IO TestCase := do
+  let name := file.fileStem.getD "unknown"
+  let content ← IO.FS.readFile file
+  let (expectedStdout, expectedExitCode) := parseInlineExpected content
+
+  return {
+    name
+    source := .singleFile file
     expectedStdout
     expectedExitCode
   }
@@ -57,7 +97,12 @@ def discoverTestCases : IO (Array TestCase) := do
       if ← entry.path.isDir then
         let srcDir := entry.path / "src"
         if ← srcDir.pathExists then
-          let tc ← TestCase.load entry.path
+          let tc ← TestCase.loadFromDir entry.path
+          cases := cases.push tc
+      else
+        let ext := entry.path.extension.getD ""
+        if ext == "soma" then
+          let tc ← TestCase.loadFromFile entry.path
           cases := cases.push tc
 
   return cases.qsort (·.name < ·.name)
@@ -96,8 +141,15 @@ def createTempDir (testName : String) : IO System.FilePath := do
 
 /-- Set up a test case in a temporary directory -/
 def setupTestDir (tc : TestCase) (tempDir : System.FilePath) : IO Unit := do
-  let srcDir := tc.fixtureDir / "src"
-  let dstDir := tempDir / "src"
-  copyDirRecursive srcDir dstDir
+  match tc.source with
+  | .directory dir =>
+    let srcDir := dir / "src"
+    let dstDir := tempDir / "src"
+    copyDirRecursive srcDir dstDir
+  | .singleFile file =>
+    let dstDir := tempDir / "src"
+    IO.FS.createDirAll dstDir
+    let content ← IO.FS.readBinFile file
+    IO.FS.writeBinFile (dstDir / file.fileName.getD "main.soma") content
 
 end Test.E2E
