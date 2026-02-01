@@ -15,6 +15,7 @@ import Test.Dependent.Totality
 import Test.Dependent.Integration
 import Test.Circuit
 import Test.PatternMatch
+import Test.E2E
 
 open Test.Fixtures
 
@@ -89,6 +90,10 @@ def main : IO UInt32 := do
   -- Run Pattern Match Compilation tests
   let patternMatchRunner ← Test.PatternMatch.run
   total := total.merge patternMatchRunner
+
+  -- Run E2E tests (requires somac binary and runtime)
+  let e2eRunner ← Test.E2E.run
+  total := total.merge e2eRunner
 
   IO.println ""
   IO.println "════════════════════════════════════════════════════════════════"
