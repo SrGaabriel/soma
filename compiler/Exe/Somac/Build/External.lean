@@ -57,10 +57,23 @@ def findSysroot (explicit : Option String) : IO (Option System.FilePath) := do
 
 /-- Find the runtime source file -/
 def findRuntime (sysroot : Option String) : IO (Option System.FilePath) := do
+  -- 1. Check sysroot/lib/
   if let some sysrootPath ← findSysroot sysroot then
     let runtimePath := sysrootPath / "lib" / runtimeSourceFile
     if ← runtimePath.pathExists then
       return some runtimePath
+
+  -- 2. Check relative to cwd (todo: remove this on prod)
+  let cwd ← IO.currentDir
+  -- Check ../runtime/ (when running from compiler/)
+  let devPath := cwd / ".." / "runtime" / runtimeSourceFile
+  if ← devPath.pathExists then
+    return some devPath
+  -- Check runtime/ (when running from project root)
+  let rootPath := cwd / "runtime" / runtimeSourceFile
+  if ← rootPath.pathExists then
+    return some rootPath
+
   return none
 
 /-- Result of running an external command -/

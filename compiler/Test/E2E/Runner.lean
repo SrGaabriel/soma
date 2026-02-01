@@ -58,7 +58,6 @@ def runTestCase (config : Config) (tc : TestCase) : IO (String × TestResult) :=
     let buildOpts : BuildOptions := {
       input := srcDir.toString
       output := some outputPath.toString
-      sysroot := some config.sysroot.toString
     }
 
     let buildResult ← build buildOpts
