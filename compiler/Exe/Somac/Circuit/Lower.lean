@@ -1197,8 +1197,18 @@ def shouldLowerBody (fn : Soma.Metal.TypedFunction) : Bool :=
 def lowerModule (types : Array Soma.Metal.TypeDef)
     (typedFunctions : TypedFunctionMap)
     (globals : Option Soma.Dependent.Globals := none) : LowerM Unit := do
-  -- Register type constructors
+  -- Register type constructors from current module
   registerTypes types globals
+
+  -- Register constructors from external dependencies
+  if let some g := globals then
+    for (_, info) in g.defs.toList do
+      if info.isConstructor then
+        let ctx ← LowerM.getCtx
+        if ctx.lookupCtor info.name |>.isNone then
+          let arity := info.type.explicitArity
+          LowerM.modifyCtx fun ctx =>
+            ctx.registerCtor info.name info.name info.ctorTag arity
 
   -- Get list of functions to lower (only those that should be lowered)
   let functions := typedFunctions.toList.filter fun (_, fn) => shouldLowerBody fn

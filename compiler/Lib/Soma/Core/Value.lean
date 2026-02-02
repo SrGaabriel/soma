@@ -443,6 +443,16 @@ partial def Value.arity (v : Value) : Nat :=
     | .term _ _ _ => 1
   | _ => 0
 
+/-- Get the number of explicit Pi binders -/
+partial def Value.explicitArity (v : Value) : Nat :=
+  match v with
+  | .vPi _ binder _ _ cod =>
+    let rest := match cod with
+      | .const _ nextTy => Value.explicitArity nextTy
+      | .term _ _ _ => 0
+    if binder.isImplicit then rest else 1 + rest
+  | _ => 0
+
 /-! ## Neutral Operations -/
 
 /-- Create a variable neutral -/
