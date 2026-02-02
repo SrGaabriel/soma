@@ -314,12 +314,27 @@ def primOpToOp2Code : PrimOp → Option Op2Code
   | .not => none  -- Unary operation
   | .neg => none  -- Unary operation
 
+/-- Check if an expression is a type-level argument (erased at runtime) -/
+def isTypeLevelArg (e : Expr Value scope) : Bool :=
+  match e with
+  | .typeApp _ _ _ => true
+  | .mvar _ _ _ => true
+  | _ => false
+
+/-- Check if all arguments in a list are type-level (erased at runtime) -/
+def allTypeLevelArgs (args : ExprList Value scope) : Bool :=
+  match args with
+  | .nil => true
+  | .cons e rest => isTypeLevelArg e && allTypeLevelArgs rest
+
 /-- Check if an expression is a primitive operation global reference -/
-def getPrimOp : Expr Value scope → Option PrimOp
+partial def getPrimOp : Expr Value scope → Option PrimOp
   | .global name _ _ =>
     match name with
     | .intrinsic (.primOp op) => some op
     | _ => none
+  | .call fn args _ _ =>
+    if allTypeLevelArgs args then getPrimOp fn else none
   | _ => none
 
 /-- Extract field names from a record row type
@@ -343,19 +358,6 @@ def exprType (e : Expr Value scope) : Value :=
 def usageMapToNatMap (usageMap : UsageMap) : Std.HashMap Nat Nat :=
   usageMap.fold (init := {}) fun acc bindingId count =>
     acc.insert bindingId.id count
-
-/-- Check if an expression is a type-level argument (erased at runtime) -/
-def isTypeLevelArg (e : Expr Value scope) : Bool :=
-  match e with
-  | .typeApp _ _ _ => true
-  | .mvar _ _ _ => true
-  | _ => false
-
-/-- Check if all arguments in a list are type-level (erased at runtime) -/
-def allTypeLevelArgs (args : ExprList Value scope) : Bool :=
-  match args with
-  | .nil => true
-  | .cons e rest => isTypeLevelArg e && allTypeLevelArgs rest
 
 mutual
 
@@ -541,32 +543,42 @@ partial def lowerApp (fn : Expr Value scope) (args : ExprList Value scope)
     -- Pure type app, pass result ty through
     lowerExprWithType fn ty
   else
-    -- Has value arguments: proceed with normal lowering
+    match fn with
+    | .call innerFn innerArgs _ _ =>
+      match getPrimOp innerFn with
+      | some primOp =>
+        match primOpToOp2Code primOp with
+        | some op2 =>
+          -- Lower operands directly without creating intermediate APP nodes
+          let innerArgPorts ← lowerExprList innerArgs
+          let outerArgPorts ← lowerExprList args
+          match innerArgPorts.toList, outerArgPorts.toList with
+          | [arg1Port], [arg2Port] =>
+            -- Both operands available: create Op2 node
+            let op2Node ← LowerM.addNode (.op2 op2) ty
+            LowerM.connect ⟨op2Node, ⟨1⟩⟩ arg1Port
+            LowerM.connect ⟨op2Node, ⟨2⟩⟩ arg2Port
+            pure (some (PortId.principal op2Node))
+          | _, _ =>
+            -- Operands erased or wrong arity: fall through to normal lowering
+            lowerAppGeneric fn args ty
+        | none =>
+          lowerAppGeneric fn args ty
+      | none =>
+        lowerAppGeneric fn args ty
+    | _ =>
+      -- fn is not a .call: fall through
+      lowerAppGeneric fn args ty
+where
+  /-- Generic application lowering -/
+  lowerAppGeneric (fn : Expr Value scope) (args : ExprList Value scope)
+      (ty : Value) : LowerM (Option PortId) := do
     let fnPort? ← lowerExpr fn
     match fnPort? with
     | none => pure none
     | some fnPort =>
       let argPorts ← lowerExprList args
       match fn, argPorts.toList with
-      | .call innerFn innerArgs _ _, [argPort] =>
-        match getPrimOp innerFn with
-        | some primOp =>
-          -- This ais a binary operation
-          match primOpToOp2Code primOp with
-          | some op2 =>
-            let innerArgPorts ← lowerExprList innerArgs
-            if h : innerArgPorts.size = 1 then
-              let op2Node ← LowerM.addNode (.op2 op2) ty
-              LowerM.connect ⟨op2Node, ⟨1⟩⟩ innerArgPorts[0]
-              LowerM.connect ⟨op2Node, ⟨2⟩⟩ argPort
-              pure (some (PortId.principal op2Node))
-            else
-              lowerSingleApp fnPort argPort ty
-          | none =>
-            lowerSingleApp fnPort argPort ty
-        | none =>
-          lowerSingleApp fnPort argPort ty
-
       | _, [argPort] =>
         -- Single argument call (the normal case after elaboration)
         match getPrimOp fn with
@@ -585,7 +597,6 @@ partial def lowerApp (fn : Expr Value scope) (args : ExprList Value scope)
         pure (some fnPort)
 
       | _, argPortList =>
-        -- todo: consider panicking
         let mut resultPort := fnPort
         for argPort in argPortList do
           let app ← LowerM.addNode .app ty
@@ -593,7 +604,6 @@ partial def lowerApp (fn : Expr Value scope) (args : ExprList Value scope)
           LowerM.connect ⟨app, ⟨2⟩⟩ argPort
           resultPort := PortId.principal app
         pure (some resultPort)
-where
   /-- Lower a single-argument application using the type annotation from elaboration -/
   lowerSingleApp (fnPort : PortId) (argPort : PortId) (resultTy : Value) : LowerM (Option PortId) := do
     let app ← LowerM.addNode .app resultTy
