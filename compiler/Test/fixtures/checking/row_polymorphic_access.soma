@@ -1,9 +1,9 @@
 // expect: success
 
-def getX :: forall (r :: %). { x :: Int | r } -> Int
+def getX :: forall (r :: Row). { x :: Int | r } -> Int
     | rec => rec.x
 
-def getName :: forall (r :: %). { name :: String | r } -> String
+def getName :: forall (r :: Row). { name :: String | r } -> String
     | rec => rec.name
 
 def test1 :: Int = getX { x = 42 }
@@ -13,7 +13,7 @@ def test3 :: Int = getX { x = 100, y = "hello", z = true }
 def test4 :: String = getName { name = "alice" }
 def test5 :: String = getName { name = "bob", age = 30 }
 
-def getBoth :: forall (r :: %). { x :: Int, name :: String | r } -> (Int, String)
+def getBoth :: forall (r :: Row). { x :: Int, name :: String | r } -> (Int, String)
     | rec => (rec.x, rec.name)
 
 def test6 :: (Int, String) = getBoth { x = 42, name = "test" }

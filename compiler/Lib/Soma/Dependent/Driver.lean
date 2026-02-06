@@ -444,7 +444,7 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
           let mut paramKinds : Array (String × Value) := #[]
           for param in typeClass.params do
             let kind ← match param.kind with
-              | some k => Elaborate.elaborateKind k
+              | some k => Elaborate.elaborateType Elaborate.ElabEnv.empty k
               | none => pure (Value.vType Level.zero)
             paramKinds := paramKinds.push (param.name.value, kind)
 
@@ -717,7 +717,7 @@ private def elaborateMethodType
   let mut paramKinds : Array (String × Value) := #[]
   for param in typeClass.params do
     let kind ← match param.kind with
-      | some k => Elaborate.elaborateKind k
+      | some k => Elaborate.elaborateType Elaborate.ElabEnv.empty k
       | none => pure (Value.vType Level.zero)
     paramKinds := paramKinds.push (param.name.value, kind)
 

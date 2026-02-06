@@ -1,5 +1,5 @@
 // expect: success
 // Test: higher-kinded type - identity for type constructors
 
-def identity :: forall (f :: * -> *) a. f a -> f a
+def identity :: forall (f :: Type -> Type) a. f a -> f a
     | x => x

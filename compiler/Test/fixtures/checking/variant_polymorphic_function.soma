@@ -1,13 +1,13 @@
 // expect: success
 
-def isOk :: forall (r :: %). < Ok :: Int | r > -> Bool
+def isOk :: forall (r :: Row). < Ok :: Int | r > -> Bool
     | .Ok _ => true
     | _ => false
 
 def test1 :: Bool = isOk (.Ok 42)
 def test2 :: Bool = isOk (.Err "fail")
 
-def getOk :: forall (r :: %). < Ok :: Int | r > -> Int
+def getOk :: forall (r :: Row). < Ok :: Int | r > -> Int
     | .Ok n => n
     | _ => 0
 

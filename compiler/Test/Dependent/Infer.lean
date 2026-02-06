@@ -368,8 +368,8 @@ def testInferRowEmpty : IO TestResult := do
   match typeInfer expr with
   | .ok (ty, _, _) =>
     match ty with
-    | .vType _ => return .passed
-    | _ => return .failed s!"Expected Type, got {ty}"
+    | .vRowSort => return .passed
+    | _ => return .failed s!"Expected Row, got {ty}"
   | .error e => return .failed s!"Inference failed: {e}"
 
 /-- Test: Infer label literal -/
@@ -378,8 +378,8 @@ def testInferLabelLit : IO TestResult := do
   match typeInfer expr with
   | .ok (ty, _, _) =>
     match ty with
-    | .vType _ => return .passed
-    | _ => return .failed s!"Expected Type (label kind), got {ty}"
+    | .vLabelSort => return .passed
+    | _ => return .failed s!"Expected Label, got {ty}"
   | .error e => return .failed s!"Inference failed: {e}"
 
 /-- Test: Infer Pi type formation -/

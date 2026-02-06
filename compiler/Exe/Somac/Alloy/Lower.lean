@@ -359,8 +359,6 @@ partial def convertValueTypeWithMapping (val : Value) (mapping : TyVarMapping n)
   -- Primitive types
   | Value.vPrimTy prim => .prim (convertStarPrimitive prim)
 
-  -- Higher-kinded primitives
-  | Value.vHigherPrim prim => convertHigherPrimitive prim
   | Value.vPi _ _ _ dom cod =>
     let domTy := convertValueTypeWithMapping dom mapping
     let codTy := match cod with
@@ -368,7 +366,7 @@ partial def convertValueTypeWithMapping (val : Value) (mapping : TyVarMapping n)
       | .term _ _ _ => .prim .i64
     .closure #[domTy] codTy
   -- todo: panic
-  | Value.vLam _ _ _ _ _ => .closure #[] (.prim .i64)
+  | Value.vLam _ _ => .closure #[] (.prim .i64)
   | Value.vSigma _ _ fst sndClos =>
     let sndTy := match sndClos with
       | .const _ v => convertValueTypeWithMapping v mapping
@@ -378,10 +376,14 @@ partial def convertValueTypeWithMapping (val : Value) (mapping : TyVarMapping n)
     .struct #[("fst", convertValueTypeWithMapping fst mapping),
               ("snd", convertValueTypeWithMapping snd mapping)]
   | Value.vDataType id params =>
-    if id.module == TypeId.builtinModule && id.unique == HigherPrimitive.io.uniqueId then
-      match params with
-      | [innerTy] => convertValueTypeWithMapping innerTy mapping
-      | _ => .prim .unit
+    if id.module == TypeId.builtinModule then
+      match HigherPrimitive.fromName? id.name with
+      | some .io =>
+        match params with
+        | [innerTy] => convertValueTypeWithMapping innerTy mapping
+        | _ => .prim .unit
+      | some prim => convertHigherPrimitive prim
+      | none => .tagged (.prim .u32) #[]
     else .tagged (.prim .u32) #[]
   | Value.vConstructor _ _ _ => .rawPtr
   | Value.vRecord _ => .rawPtr
@@ -401,6 +403,8 @@ partial def convertValueTypeWithMapping (val : Value) (mapping : TyVarMapping n)
       | none => .prim .i64
     | _ => .prim .i64
   | Value.vLabelLit _ => .prim .unit
+  | Value.vRowSort => .prim .unit
+  | Value.vLabelSort => .prim .unit
   | Value.vRowEmpty => .prim .unit
   | Value.vRowExtend _ _ _ => .prim .unit
   | Value.vEq _ _ _ _ => .prim .unit

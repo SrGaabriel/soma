@@ -11,7 +11,7 @@ import Soma.Syntax.Ast
 namespace Soma.Dependent.Elaborate
 
 open Soma.Core
-open Soma.Syntax (TypeExpr KindExpr Span)
+open Soma.Syntax (TypeExpr Span)
 
 /-- Environment for tracking type variables during elaboration -/
 structure ElabEnv where
@@ -74,6 +74,8 @@ def resolveType (name : String) : Option Value :=
   if name == "Type" then some (Value.vType Level.zero)
   else if name == "Type0" then some (Value.vType Level.zero)
   else if name == "Type1" then some (Value.vType Level.one)
+  else if name == "Row" then some Value.vRowSort
+  else if name == "Label" then some Value.vLabelSort
   else none
 
 /-- Create an empty closure from the current environment -/
@@ -89,8 +91,9 @@ def mkElabClosure (name : String) : TCM Closure := do
 partial def valueToTermWithDepth (v : Value) (depth : Nat) : TCM Term := do
   match v with
   | .vType level => return .type level
+  | .vRowSort => return .rowSort
+  | .vLabelSort => return .labelSort
   | .vPrimTy p => return .primTy p
-  | .vHigherPrim p => return .higherPrimTy p
   | .vIntLit n => return .intLit n
   | .vStringLit s => return .stringLit s
   | .vRowEmpty => return .rowEmpty
@@ -178,9 +181,9 @@ partial def valueToTermWithDepth (v : Value) (depth : Nat) : TCM Term := do
       let term ← valueToTermWithDepth v depth
       return (n, term)
     return .record fieldTerms
-  | .vLam _qty _binder name dom body =>
+  | .vLam name body =>
     -- Apply the closure to get the body, then convert
-    let dummyArg := Value.vNeutral dom (.nVar ⟨name, ⟨depth⟩⟩)
+    let dummyArg := Value.vNeutral .type0 (.nVar ⟨name, ⟨depth⟩⟩)
     let bodyVal ← Soma.Dependent.applyClosure body dummyArg
     let bodyTerm ← valueToTermWithDepth bodyVal (depth + 1)
     return .lam [name] bodyTerm
@@ -255,33 +258,6 @@ partial def rebuildRowWithTail (row : Value) (newTail : Value) : Value :=
     .vRowExtend label ty (rebuildRowWithTail tail newTail)
   | other => other -- If it's already a variable/meta, just return it
 
-/-- Elaborate a kind expression to a Value.
-    Kinds become types in CQC:
-    - * (star) becomes Type₀
-    - # (label) becomes Label (represented as a type)
-    - % (row) becomes Row (represented as a type)
-    - k1 -> k2 becomes a Pi type -/
-def elaborateKind (kind : KindExpr) : TCM Value := do
-  match kind with
-  | .atom name =>
-    match name.value with
-    | "*" => return Value.vType Level.zero
-    | "Type" => return Value.vType Level.zero
-    | "#" | "Label" =>
-      -- Labels are type-level strings, we represent them as a special type
-      return Value.vType Level.zero  -- Label : Type₀
-    | "%" | "Row" =>
-      -- Rows are type-level constructs
-      return Value.vType Level.zero  -- Row : Type₀
-    | other =>
-      TCM.throw (.cannotInfer s!"unknown kind '{other}'" name.span none)
-  | .arrow from_ to _ =>
-    let fromVal ← elaborateKind from_
-    let toVal ← elaborateKind to
-    -- Kind arrow becomes a non-dependent Pi type
-    let cod ← mkConstClosure "_" toVal
-    return Value.vPi .omega .explicit "_" fromVal cod
-
 /-- Elaborate a type expression to a Value -/
 partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
   match ty with
@@ -308,7 +284,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       return Value.vPrimTy prim
     -- Then try higher-kinded primitives
     else if let some hprim := resolveHigherPrimitive name.value then
-      return Value.vHigherPrim hprim
+      return Value.vDataType (TypeId.builtin hprim.name hprim.uniqueId) []
     -- Then try Type
     else if let some tyVal := resolveType name.value then
       return tyVal
@@ -352,10 +328,6 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- Constructor application in type position
       -- Accumulate arguments to the constructor
       return Value.vConstructor name tag (args ++ [argVal])
-    | .vHigherPrim hp =>
-      -- Higher-kinded primitive applied to arg
-      let typeId := TypeId.builtin hp.name hp.uniqueId
-      return Value.vDataType typeId [argVal]
     | .vPi _ _ _ _ cod =>
       -- Apply function type - evaluate the closure with TCM's applyClosure
       Soma.Dependent.applyClosure cod argVal
@@ -414,12 +386,11 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     -- the body references the bound type variables.
 
     -- First, elaborate the body in an extended environment with all type vars
-    let env' := vars.foldl (fun acc v =>
-      let kind := match v.kind with
-        | some _ => Value.vType Level.zero  -- TODO: elaborate kind properly
-        | none => Value.vType Level.zero
-      acc.extend v.name.value kind
-    ) env
+    let env' ← vars.foldlM (init := env) fun acc v => do
+      let kind ← match v.kind with
+        | some k => elaborateType acc k
+        | none => pure (Value.vType Level.zero)
+      return acc.extend v.name.value kind
 
     let bodyVal ← elaborateType env' body
 
@@ -433,7 +404,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     let mut accTerm := bodyTerm
     for v in vars.toList.reverse do
       let kind ← match v.kind with
-        | some k => elaborateKind k
+        | some k => elaborateType ElabEnv.empty k
         | none => pure (Value.vType Level.zero)
       let kindTerm ← valueToTermWithDepth kind 0
       accTerm := Term.pi .omega .implicit v.name.value kindTerm accTerm
@@ -483,7 +454,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       let labelVal := match env.lookup name.value with
         | some (lvl, _) =>
           -- Field name is a bound variable - use as label variable
-          Value.vNeutral (Value.vType Level.zero) (Neutral.nVar ⟨name.value, lvl⟩)
+          Value.vNeutral Value.vLabelSort (Neutral.nVar ⟨name.value, lvl⟩)
         | none =>
           -- Field name is a literal label
           Value.vLabelLit name.value
@@ -496,13 +467,13 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       | some (lvl, _) =>
         -- The tail is a known row variable - use it directly as the row tail
         -- (not as a labeled field, but as the actual tail of the row)
-        let tailVar := Value.vNeutral (Value.vType Level.zero) (Neutral.nVar ⟨tailName.value, lvl⟩)
+        let tailVar := Value.vNeutral Value.vRowSort (Neutral.nVar ⟨tailName.value, lvl⟩)
         -- Properly concatenate: prepend our fields to the tail row
         -- We need to rebuild the row with the tail as the base
         row := rebuildRowWithTail row tailVar
       | none =>
         -- Unknown tail variable - create metavariable for the tail
-        let tailMeta ← TCM.freshMetaVal (Value.vType Level.zero)
+        let tailMeta ← TCM.freshMetaVal Value.vRowSort
         row := rebuildRowWithTail row tailMeta
     | none => pure ()
     return Value.vRecord row
@@ -516,7 +487,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- Check if the case name is a bound label variable (for label polymorphism)
       let labelVal := match env.lookup name.value with
         | some (lvl, _) =>
-          Value.vNeutral (Value.vType Level.zero) (Neutral.nVar ⟨name.value, lvl⟩)
+          Value.vNeutral Value.vLabelSort (Neutral.nVar ⟨name.value, lvl⟩)
         | none =>
           Value.vLabelLit name.value
       row := Value.vRowExtend labelVal tyVal row
@@ -525,10 +496,10 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     | some tailName =>
       match env.lookup tailName.value with
       | some (lvl, _) =>
-        let tailVar := Value.vNeutral (Value.vType Level.zero) (Neutral.nVar ⟨tailName.value, lvl⟩)
+        let tailVar := Value.vNeutral Value.vRowSort (Neutral.nVar ⟨tailName.value, lvl⟩)
         row := rebuildRowWithTail row tailVar
       | none =>
-        let tailMeta ← TCM.freshMetaVal (Value.vType Level.zero)
+        let tailMeta ← TCM.freshMetaVal Value.vRowSort
         row := rebuildRowWithTail row tailMeta
     | none => pure ()
     return Value.vVariant row

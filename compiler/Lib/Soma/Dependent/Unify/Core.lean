@@ -51,14 +51,13 @@ partial def collectMetas (v : Value) : Array MetaId :=
   | .vType _ => #[]
   | .vPi _ _ _ dom cod =>
     collectMetas dom ++ collectMetasClosure cod
-  | .vLam _ _ _ dom body =>
-    collectMetas dom ++ collectMetasClosure body
+  | .vLam _ body =>
+    collectMetasClosure body
   | .vSigma _ _ fst snd =>
     collectMetas fst ++ collectMetasClosure snd
   | .vPair a b => collectMetas a ++ collectMetas b
   | .vNeutral ty neu => collectMetas ty ++ collectMetasNeutral neu
   | .vPrimTy _ => #[]
-  | .vHigherPrim _ => #[]
   | .vIntLit _ => #[]
   | .vStringLit _ => #[]
   | .vRowEmpty => #[]
@@ -67,6 +66,7 @@ partial def collectMetas (v : Value) : Array MetaId :=
   | .vRecord row => collectMetas row
   | .vVariant row => collectMetas row
   | .vLabelLit _ => #[]
+  | .vRowSort | .vLabelSort => #[]
   | .vRecordVal fields =>
     fields.foldl (fun acc (_, v) => acc ++ collectMetas v) #[]
   | .vDataType _ params =>
@@ -117,14 +117,13 @@ partial def occursIn (m : MetaId) (v : Value) : Bool :=
   | .vType _ => false
   | .vPi _ _ _ dom cod =>
     occursIn m dom || occursInClosure m cod
-  | .vLam _ _ _ dom body =>
-    occursIn m dom || occursInClosure m body
+  | .vLam _ body =>
+    occursInClosure m body
   | .vSigma _ _ fst snd =>
     occursIn m fst || occursInClosure m snd
   | .vPair a b => occursIn m a || occursIn m b
   | .vNeutral _ neu => occursInNeutral m neu
   | .vPrimTy _ => false
-  | .vHigherPrim _ => false
   | .vIntLit _ => false
   | .vStringLit _ => false
   | .vRowEmpty => false
@@ -133,6 +132,7 @@ partial def occursIn (m : MetaId) (v : Value) : Bool :=
   | .vRecord row => occursIn m row
   | .vVariant row => occursIn m row
   | .vLabelLit _ => false
+  | .vRowSort | .vLabelSort => false
   | .vRecordVal fields =>
     fields.any (fun (_, v) => occursIn m v)
   | .vDataType _ params =>
@@ -203,14 +203,13 @@ partial def inScope (allowedLevels : List DeBruijnLvl) (v : Value) : Bool :=
   | .vType _ => true
   | .vPi _ _ _ dom cod =>
     inScope allowedLevels dom && inScopeClosure allowedLevels cod
-  | .vLam _ _ _ dom body =>
-    inScope allowedLevels dom && inScopeClosure allowedLevels body
+  | .vLam _ body =>
+    inScopeClosure allowedLevels body
   | .vSigma _ _ fst snd =>
     inScope allowedLevels fst && inScopeClosure allowedLevels snd
   | .vPair a b => inScope allowedLevels a && inScope allowedLevels b
   | .vNeutral _ neu => inScopeNeutral allowedLevels neu
   | .vPrimTy _ => true
-  | .vHigherPrim _ => true
   | .vIntLit _ => true
   | .vStringLit _ => true
   | .vRowEmpty => true
@@ -219,6 +218,7 @@ partial def inScope (allowedLevels : List DeBruijnLvl) (v : Value) : Bool :=
   | .vRecord row => inScope allowedLevels row
   | .vVariant row => inScope allowedLevels row
   | .vLabelLit _ => true
+  | .vRowSort | .vLabelSort => true
   | .vRecordVal fields =>
     fields.all (fun (_, v) => inScope allowedLevels v)
   | .vDataType _ params =>
@@ -294,14 +294,13 @@ partial def collectFreeVars (v : Value) : Array DeBruijnLvl :=
   | .vType _ => #[]
   | .vPi _ _ _ dom cod =>
     collectFreeVars dom ++ collectFreeVarsClosure cod
-  | .vLam _ _ _ dom body =>
-    collectFreeVars dom ++ collectFreeVarsClosure body
+  | .vLam _ body =>
+    collectFreeVarsClosure body
   | .vSigma _ _ fst snd =>
     collectFreeVars fst ++ collectFreeVarsClosure snd
   | .vPair a b => collectFreeVars a ++ collectFreeVars b
   | .vNeutral _ neu => collectFreeVarsNeutral neu
   | .vPrimTy _ => #[]
-  | .vHigherPrim _ => #[]
   | .vIntLit _ => #[]
   | .vStringLit _ => #[]
   | .vRowEmpty => #[]
@@ -310,6 +309,7 @@ partial def collectFreeVars (v : Value) : Array DeBruijnLvl :=
   | .vRecord row => collectFreeVars row
   | .vVariant row => collectFreeVars row
   | .vLabelLit _ => #[]
+  | .vRowSort | .vLabelSort => #[]
   | .vRecordVal fields =>
     fields.foldl (fun acc (_, v) => acc ++ collectFreeVars v) #[]
   | .vDataType _ params =>
@@ -393,12 +393,11 @@ def defaultSpan : Span := Span.uninhabited
 def getValueKind : Value → String
   | .vType _ => "vType"
   | .vPi _ _ _ _ _ => "vPi"
-  | .vLam _ _ _ _ _ => "vLam"
+  | .vLam _ _ => "vLam"
   | .vSigma _ _ _ _ => "vSigma"
   | .vPair _ _ => "vPair"
   | .vNeutral _ n => s!"vNeutral({getNeutralKind n})"
   | .vPrimTy p => s!"vPrimTy({p})"
-  | .vHigherPrim p => s!"vHigherPrim({p})"
   | .vIntLit _ => "vIntLit"
   | .vStringLit _ => "vStringLit"
   | .vRowEmpty => "vRowEmpty"
@@ -407,6 +406,8 @@ def getValueKind : Value → String
   | .vVariant _ => "vVariant"
   | .vRecordVal _ => "vRecordVal"
   | .vLabelLit _ => "vLabelLit"
+  | .vRowSort => "vRowSort"
+  | .vLabelSort => "vLabelSort"
   | .vDataType id _ => s!"vDataType({id.name})"
   | .vConstructor n _ _ => s!"vConstructor({n})"
   | .vEq _ _ _ _ => "vEq"

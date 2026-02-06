@@ -82,8 +82,11 @@ inductive Term where
   | type (level : Level)
   /-- Primitive type -/
   | primTy (p : StarPrimitive)
-  /-- Higher-kinded primitive -/
-  | higherPrimTy (p : HigherPrimitive)
+  /-- Row sort -/
+  | rowSort
+  /-- Label sort -/
+  | labelSort
+
   /-- Integer literal -/
   | intLit (n : Int)
   /-- String literal -/
@@ -131,7 +134,7 @@ inductive Value where
   | vPi (qty : Quantity) (binder : BinderInfo) (name : String) (domain : Value) (codomain : Closure)
 
   /-- Lambda abstraction -/
-  | vLam (qty : Quantity) (binder : BinderInfo) (name : String) (domain : Value) (body : Closure)
+  | vLam (name : String) (body : Closure)
 
   /-- Dependent pair type: (x : A) * B -/
   | vSigma (qty : Quantity) (name : String) (fst : Value) (snd : Closure)
@@ -145,8 +148,10 @@ inductive Value where
   /-- Primitive type (Int, Bool, etc.) -/
   | vPrimTy (p : StarPrimitive)
 
-  /-- Higher-kinded primitive (Array, IO, Ref) -/
-  | vHigherPrim (p : HigherPrimitive)
+  /-- Row sorts -/
+  | vRowSort
+  /-- Label sort -/
+  | vLabelSort
 
   /-- Integer literal -/
   | vIntLit (n : Int)

@@ -1,7 +1,7 @@
 // expect: success
 
-class Functor (f :: * -> *) where
+class Functor (f :: Type -> Type) where
     def fmap :: forall a b. (a -> b) -> f a -> f b
 
-def mapBoth :: forall (f :: * -> *) a b. (a -> b) -> f a -> f a -> (f b, f b) with (Functor f)
+def mapBoth :: forall (f :: Type -> Type) a b. (a -> b) -> f a -> f a -> (f b, f b) with (Functor f)
     | fn x y => (fmap fn x, fmap fn y)

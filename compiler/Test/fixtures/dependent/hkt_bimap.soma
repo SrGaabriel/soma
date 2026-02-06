@@ -1,5 +1,5 @@
 // expect: success
 // Test: higher-kinded type with two type parameters
 
-def bimap :: forall (f :: * -> * -> *) a b c d. (a -> c) -> (b -> d) -> f a b -> f c d
+def bimap :: forall (f :: Type -> Type -> Type) a b c d. (a -> c) -> (b -> d) -> f a b -> f c d
     | f g x => x

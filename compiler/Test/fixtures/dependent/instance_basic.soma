@@ -5,7 +5,7 @@ data Maybe a
     | Nothing
     | Just a
 
-class Functor (f :: * -> *) where
+class Functor (f :: Type -> Type) where
     def fmap :: forall a b. (a -> b) -> f a -> f b
 
 instance Functor Maybe where

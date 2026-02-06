@@ -136,7 +136,7 @@ def elaborateClassRecordType (params : Array TypeVarBinder)
   let mut paramKinds : Array (String × Value) := #[]
   for param in params do
     let kind ← match param.kind with
-      | some k => Elaborate.elaborateKind k
+      | some k => Elaborate.elaborateType Elaborate.ElabEnv.empty k
       | none => pure (Value.vType Level.zero)  -- default to Type
     paramKinds := paramKinds.push (param.name.value, kind)
 
@@ -281,7 +281,7 @@ partial def buildLambdaValue (paramNames : Array String) (paramTypes : Array Val
       let name := paramNames[idx]
       let paramTy := if h₂ : idx < paramTypes.size then paramTypes[idx] else Value.vType .zero
       let bodyClosure ← mkConstClosure name result
-      result := Value.vLam .omega .explicit name paramTy bodyClosure
+      result := Value.vLam name bodyClosure
 
   return result
 

@@ -128,7 +128,8 @@ def exprToTerm {scope : Scope} (e : Expr α scope) : Term :=
   | .sigma qty name fst snd _ => .sigma qty name (exprToTerm fst) (exprToTerm snd)
   | .type level _ => .type level
   | .primTy p _ => .primTy p
-  | .higherPrimTy p _ => .higherPrimTy p
+  | .rowSort _ => .rowSort
+  | .labelSort _ => .labelSort
   | .rowEmpty _ => .rowEmpty
   | .rowExtend label fieldTy tail _ => .rowExtend (exprToTerm label) (exprToTerm fieldTy) (exprToTerm tail)
   | .recordTy row _ => .recordTy (exprToTerm row)
@@ -204,7 +205,7 @@ partial def evalTerm (ctx : EvalCtx) (t : Term) : Value :=
     | [] => evalTerm ctx body
     | name :: rest =>
       let innerBody := if rest.isEmpty then body else .lam rest body
-      .vLam .omega .explicit name .type0 (Closure.mkWithBody name ctx.env innerBody)
+      .vLam name (Closure.mkWithBody name ctx.env innerBody)
 
   | .if_ cond then_ else_ =>
     match evalTerm ctx cond with
@@ -235,7 +236,8 @@ partial def evalTerm (ctx : EvalCtx) (t : Term) : Value :=
 
   | .type level => .vType level
   | .primTy p => .vPrimTy p
-  | .higherPrimTy p => .vHigherPrim p
+  | .rowSort => .vRowSort
+  | .labelSort => .vLabelSort
   | .intLit n => .vIntLit n
   | .stringLit s => .vStringLit s
   | .rowEmpty => .vRowEmpty
@@ -327,7 +329,7 @@ partial def applyClosure (clos : Closure) (arg : Value) (ctx : EvalCtx) : Value 
 /-- Apply a value to an argument -/
 partial def vApp (fn : Value) (arg : Value) (ctx : EvalCtx) : Value :=
   match fn with
-  | .vLam _ _ _ _ body =>
+  | .vLam _ body =>
     applyClosure body arg ctx
   | .vNeutral ty neu =>
     -- Application is stuck, create neutral application
@@ -336,11 +338,6 @@ partial def vApp (fn : Value) (arg : Value) (ctx : EvalCtx) : Value :=
   | .vDataType id params =>
     -- Type application: accumulate type parameters
     .vDataType id (params ++ [arg])
-  | .vHigherPrim hp =>
-    -- Higher-kinded primitive applied to type argument
-    -- Use a proper builtin TypeId with deterministic unique to avoid collisions
-    let typeId := TypeId.builtin hp.name hp.uniqueId
-    .vDataType typeId [arg]
   | _ =>
     -- Type error: applying non-function
     fn
@@ -376,11 +373,11 @@ partial def eval (ctx : EvalCtx) : {scope : Scope} → Expr Unit scope → Value
       let termBody := exprToTerm body
       if rest.isEmpty then
         -- Single parameter lambda
-        .vLam .omega .explicit name .type0 (Closure.mkWithBody name ctx.env termBody)
+        .vLam name (Closure.mkWithBody name ctx.env termBody)
       else
         -- Multi-param: the body includes all parameters, so we store it once
         -- When applied, we'll extend the environment with each argument
-        .vLam .omega .explicit name .type0 (Closure.mkWithBody name ctx.env termBody)
+        .vLam name (Closure.mkWithBody name ctx.env termBody)
 
   -- Global reference
   | _, .global name _ _ =>
@@ -441,8 +438,6 @@ partial def eval (ctx : EvalCtx) : {scope : Scope} → Expr Unit scope → Value
   | _, .snd e _ _ => vSnd (eval ctx e)
 
   | _, .primTy p _ => .vPrimTy p
-
-  | _, .higherPrimTy p _ => .vHigherPrim p
 
   | _, .rowEmpty _ => .vRowEmpty
 

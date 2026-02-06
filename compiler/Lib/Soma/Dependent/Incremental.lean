@@ -416,7 +416,6 @@ private def exprTag : Nat → UInt64
   | 22 => 0x1017 -- fst
   | 23 => 0x1018 -- snd
   | 24 => 0x1019 -- primTy
-  | 25 => 0x101A -- higherPrimTy
   | 26 => 0x101B -- rowEmpty
   | 27 => 0x101C -- rowExtend
   | 28 => 0x101D -- recordTy
@@ -429,6 +428,8 @@ private def exprTag : Nat → UInt64
   | 35 => 0x1024 -- eq
   | 36 => 0x1025 -- refl
   | 37 => 0x1026 -- transport
+  | 38 => 0x1027 -- rowSort
+  | 39 => 0x1028 -- labelSort
   | _ => 0x1FFF
 
 /-- Hash a literal -/
@@ -573,7 +574,8 @@ partial def hashExpr (e : Expr α scope) : UInt64 :=
   | .fst e _ _ => combineHash (exprTag 22) (hashExpr e)
   | .snd e _ _ => combineHash (exprTag 23) (hashExpr e)
   | .primTy p _ => combineHash (exprTag 24) (hash p)
-  | .higherPrimTy p _ => combineHash (exprTag 25) (hash p)
+  | .rowSort _ => exprTag 38
+  | .labelSort _ => exprTag 39
   | .rowEmpty _ => exprTag 26
   | .rowExtend label fieldTy tail _ =>
     combineHashes #[exprTag 27, hashExpr label, hashExpr fieldTy, hashExpr tail]

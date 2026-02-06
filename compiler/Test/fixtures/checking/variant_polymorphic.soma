@@ -1,6 +1,6 @@
 // expect: success
 
-def test1 :: forall (r :: %). < Ok :: Int | r > = .Ok 42
+def test1 :: forall (r :: Row). < Ok :: Int | r > = .Ok 42
 
 def test2 :: < Ok :: Int | Err :: String > = .Ok 100
 

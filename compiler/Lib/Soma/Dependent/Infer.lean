@@ -71,7 +71,7 @@ def ensureSigma (v : Value) (span : Span) (origin : Option ConstraintOrigin := n
     Used for transport where we have P : A -> Type and want P x. -/
 def vAppMotive (motive : Value) (arg : Value) : TCM Value := do
   match motive with
-  | .vLam _ _ _ _ body =>
+  | .vLam _ body =>
     applyClosure body arg
   | .vPi _ _ _ _ cod =>
     -- If motive is a Pi type, apply the codomain closure
@@ -282,7 +282,8 @@ def exprKind : Expr α scope → String
   | .fst _ _ _ => "fst"
   | .snd _ _ _ => "snd"
   | .primTy p _ => s!"primTy({p.name})"
-  | .higherPrimTy p _ => s!"higherPrimTy({p.name})"
+  | .rowSort _ => "Row"
+  | .labelSort _ => "Label"
   | .dataTy id _ _ => s!"dataTy({id.name})"
   | .ann _ _ _ _ => "ann"
   | .hole _ _ => "hole"
@@ -401,6 +402,8 @@ where
         | "Word32" => return (.vType .zero, .primTy .word32 span)
         | "Word64" => return (.vType .zero, .primTy .word64 span)
         | "Type" => return (.vType .one, .type .zero span)
+        | "Row" => return (.vType .zero, .rowSort span)
+        | "Label" => return (.vType .zero, .labelSort span)
         | _ => TCM.throw (.unboundVariable v.original span #[])
 
     -- Literals
@@ -417,6 +420,10 @@ where
     | .type level span =>
       let resultLevel := Level.mkSucc level
       return (.vType resultLevel, .type level span)
+
+    -- Sorts: Row : Type 0, Label : Type 0
+    | .rowSort span => return (.vType .zero, .rowSort span)
+    | .labelSort span => return (.vType .zero, .labelSort span)
 
     -- Pi types: check domain and codomain are types
     | .pi qty binder name domain codomain span => do
@@ -515,23 +522,16 @@ where
     | .primTy p span =>
       return (.vType .zero, .primTy p span)
 
-    | .higherPrimTy p span =>
-      -- Higher-kinded primitives have kind * -> *
-      -- The codomain is constant (Type), so use empty closure
-      let clos ← TCM.mkEmptyClosure "_"
-      let kindTy := Value.vPi .omega .explicit "_" (.vType .zero) clos
-      return (kindTy, .higherPrimTy p span)
-
     -- Row types
     | .rowEmpty span =>
-      -- Empty row has type Row (which is Type for now)
-      return (.vType .zero, .rowEmpty span)
+      -- Empty row has type Row
+      return (.vRowSort, .rowEmpty span)
 
     | .rowExtend label fieldTy tail span => do
       let (_, labelExpr) ← infer label
       let (_, fieldTyExpr) ← infer fieldTy
       let (_, tailExpr) ← infer tail
-      return (.vType .zero, .rowExtend labelExpr fieldTyExpr tailExpr span)
+      return (.vRowSort, .rowExtend labelExpr fieldTyExpr tailExpr span)
 
     | .recordTy row span => do
       let (_, rowExpr) ← infer row
@@ -542,8 +542,8 @@ where
       return (.vType .zero, .variantTy rowExpr span)
 
     | .labelLit name span =>
-      -- Label literals have type Label (which is Type for now)
-      return (.vType .zero, .labelLit name span)
+      -- Label literals have type Label
+      return (.vLabelSort, .labelLit name span)
 
     -- Data types
     | .dataTy id params span => do
@@ -721,7 +721,7 @@ where
       let argTy := match argTys with
         | [t] => t
         | _ => Value.vRecordVal [] -- Unit for nullary
-      let rowTail ← TCM.freshMetaVal (.vType .zero)
+      let rowTail ← TCM.freshMetaVal .vRowSort
       let row := Value.vRowExtend (.vLabelLit label) argTy rowTail
       let variantTy := Value.vVariant row
       return (variantTy, .inject label argsExpr variantTy span)
@@ -1438,7 +1438,7 @@ partial def findFieldInRowByLabelVal (row : Value) (lookupLabel : Value) (span :
   | .vNeutral _ (.nMeta _) =>
     -- Row ends in a metavariable - we can extend it with the field we need
     let fieldTy ← TCM.freshMetaVal (.vType .zero)
-    let tailMeta ← TCM.freshMetaVal (.vType .zero)
+    let tailMeta ← TCM.freshMetaVal .vRowSort
     let newRow := Value.vRowExtend lookupLabel' fieldTy tailMeta
     unify row' newRow
     return fieldTy

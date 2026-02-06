@@ -25,10 +25,9 @@ partial def zonkValue (v : Value) : TCM Value := do
     let codomain' ← zonkClosure codomain
     return .vPi qty binder name domain' codomain'
 
-  | .vLam qty binder name domain body =>
-    let domain' ← zonkValue domain
+  | .vLam name body =>
     let body' ← zonkClosure body
-    return .vLam qty binder name domain' body'
+    return .vLam name body'
 
   | .vSigma qty name fst snd =>
     let fst' ← zonkValue fst
@@ -56,7 +55,6 @@ partial def zonkValue (v : Value) : TCM Value := do
       return .vNeutral ty' neu'
 
   | .vPrimTy p => return .vPrimTy p
-  | .vHigherPrim p => return .vHigherPrim p
   | .vIntLit n => return .vIntLit n
   | .vStringLit s => return .vStringLit s
 
@@ -77,6 +75,9 @@ partial def zonkValue (v : Value) : TCM Value := do
     return .vVariant row'
 
   | .vLabelLit name => return .vLabelLit name
+
+  | .vRowSort => return .vRowSort
+  | .vLabelSort => return .vLabelSort
 
   | .vRecordVal fields =>
     let fields' ← fields.mapM fun (name, val) => do
@@ -386,7 +387,8 @@ partial def zonkExpr {scope : Scope} (e : Expr Value scope) : TCM (Expr Value sc
     return .snd e' ty' span
 
   | .primTy p span => return .primTy p span
-  | .higherPrimTy p span => return .higherPrimTy p span
+  | .rowSort span => return .rowSort span
+  | .labelSort span => return .labelSort span
   | .rowEmpty span => return .rowEmpty span
 
   | .rowExtend label fieldTy tail span =>
@@ -575,7 +577,7 @@ partial def hasUnsolvedMetas (v : Value) : TCM Bool := do
     | some info => return info.solution.isNone
     | none => return true
   | .vPi _ _ _ dom _ => hasUnsolvedMetas dom
-  | .vLam _ _ _ dom _ => hasUnsolvedMetas dom
+  | .vLam _ _ => return false
   | .vSigma _ _ fst _ => hasUnsolvedMetas fst
   | .vPair a b =>
     if ← hasUnsolvedMetas a then return true
@@ -646,7 +648,7 @@ partial def collectUnsolvedMetas (v : Value) (span : Span) : TCM Unit := do
     | none =>
       TCM.addError (.unsolvedMeta m ty span #[] none)
   | .vPi _ _ _ dom _ => collectUnsolvedMetas dom span
-  | .vLam _ _ _ dom _ => collectUnsolvedMetas dom span
+  | .vLam _ _ => pure ()
   | .vSigma _ _ fst _ => collectUnsolvedMetas fst span
   | .vPair a b =>
     collectUnsolvedMetas a span

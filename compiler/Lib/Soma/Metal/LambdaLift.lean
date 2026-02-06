@@ -138,7 +138,8 @@ partial def collectFreeVars : Expr Value scope → FreeVars
   | .fst e _ _ => collectFreeVars e
   | .snd e _ _ => collectFreeVars e
   | .primTy _ _ => FreeVars.empty
-  | .higherPrimTy _ _ => FreeVars.empty
+  | .rowSort _ => FreeVars.empty
+  | .labelSort _ => FreeVars.empty
   | .rowEmpty _ => FreeVars.empty
   | .rowExtend label fieldTy tail _ =>
       FreeVars.unions [collectFreeVars label, collectFreeVars fieldTy, collectFreeVars tail]
@@ -243,7 +244,8 @@ inductive UExpr where
   | fst (e : UExpr) (ty : Value) (span : Span)
   | snd (e : UExpr) (ty : Value) (span : Span)
   | primTy (p : Soma.Core.StarPrimitive) (span : Span)
-  | higherPrimTy (p : Soma.Core.HigherPrimitive) (span : Span)
+  | rowSort (span : Span)
+  | labelSort (span : Span)
   | rowEmpty (span : Span)
   | rowExtend (label : UExpr) (fieldTy : UExpr) (tail : UExpr) (span : Span)
   | recordTy (row : UExpr) (span : Span)
@@ -294,7 +296,8 @@ def UExpr.getType : UExpr → Value
   | .fst _ ty _ => ty
   | .snd _ ty _ => ty
   | .primTy p _ => Value.vPrimTy p
-  | .higherPrimTy p _ => Value.vHigherPrim p
+  | .rowSort _ => defaultTy
+  | .labelSort _ => defaultTy
   | .rowEmpty _ => defaultTy
   | .rowExtend _ _ _ _ => defaultTy
   | .recordTy _ _ => defaultTy
@@ -355,7 +358,8 @@ partial def exprToU : Expr Value scope → UExpr
   | .fst e ty span => .fst (exprToU e) ty span
   | .snd e ty span => .snd (exprToU e) ty span
   | .primTy p span => .primTy p span
-  | .higherPrimTy p span => .higherPrimTy p span
+  | .rowSort span => .rowSort span
+  | .labelSort span => .labelSort span
   | .rowEmpty span => .rowEmpty span
   | .rowExtend l f t span => .rowExtend (exprToU l) (exprToU f) (exprToU t) span
   | .recordTy r span => .recordTy (exprToU r) span
@@ -403,7 +407,7 @@ partial def uToPattern (p : UPattern) : Pattern Value :=
   | .cons h t => .cons (uToPattern h) (uToPattern t) defaultTy Span.uninhabited
   | .as b n inner => .as b n (uToPattern inner) defaultTy Span.uninhabited
   | .variant label arg => .variant label (arg.map uToPattern) defaultTy Span.uninhabited
- 
+
 axiom trustedInScope (b : BindingId) (scope : Scope) : b ∈ scope
 
 /-- Get bindings from a UPattern -/
@@ -483,7 +487,8 @@ partial def uToExpr (e : UExpr) (scope : Scope) : Expr Value scope :=
   | .fst e ty span => .fst (uToExpr e scope) ty span
   | .snd e ty span => .snd (uToExpr e scope) ty span
   | .primTy p span => .primTy p span
-  | .higherPrimTy p span => .higherPrimTy p span
+  | .rowSort span => .rowSort span
+  | .labelSort span => .labelSort span
   | .rowEmpty span => .rowEmpty span
   | .rowExtend l f t span =>
       .rowExtend (uToExpr l scope) (uToExpr f scope) (uToExpr t scope) span
@@ -575,7 +580,8 @@ partial def substUExpr (subst : Subst) : UExpr → UExpr
   | .fst e ty span => .fst (substUExpr subst e) ty span
   | .snd e ty span => .snd (substUExpr subst e) ty span
   | .primTy p span => .primTy p span
-  | .higherPrimTy p span => .higherPrimTy p span
+  | .rowSort span => .rowSort span
+  | .labelSort span => .labelSort span
   | .rowEmpty span => .rowEmpty span
   | .rowExtend l f t span =>
       .rowExtend (substUExpr subst l) (substUExpr subst f) (substUExpr subst t) span
@@ -633,7 +639,8 @@ partial def collectFreeVarsU : UExpr → FreeVars
   | .fst e _ _ => collectFreeVarsU e
   | .snd e _ _ => collectFreeVarsU e
   | .primTy _ _ => FreeVars.empty
-  | .higherPrimTy _ _ => FreeVars.empty
+  | .rowSort _ => FreeVars.empty
+  | .labelSort _ => FreeVars.empty
   | .rowEmpty _ => FreeVars.empty
   | .rowExtend l f t _ =>
       FreeVars.unions [collectFreeVarsU l, collectFreeVarsU f, collectFreeVarsU t]
@@ -785,7 +792,8 @@ partial def liftUExpr (e : UExpr) : LiftM UExpr := do
       let e' ← liftUExpr e
       pure (.snd e' ty span)
   | .primTy p span => pure (.primTy p span)
-  | .higherPrimTy p span => pure (.higherPrimTy p span)
+  | .rowSort span => pure (.rowSort span)
+  | .labelSort span => pure (.labelSort span)
   | .rowEmpty span => pure (.rowEmpty span)
   | .rowExtend l f t span => do
       let l' ← liftUExpr l

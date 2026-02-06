@@ -288,9 +288,8 @@ partial def zonkValueLevels (v : Value) : TCM Value := do
     let dom' ← zonkValueLevels dom
     -- Closures contain terms, not values with levels, so skip
     return .vPi qty binder name dom' cod
-  | .vLam qty binder name dom body =>
-    let dom' ← zonkValueLevels dom
-    return .vLam qty binder name dom' body
+  | .vLam name body =>
+    return .vLam name body
   | .vSigma qty name fst snd =>
     let fst' ← zonkValueLevels fst
     return .vSigma qty name fst' snd
@@ -338,8 +337,9 @@ partial def zonkValueLevels (v : Value) : TCM Value := do
     let body' ← zonkValueLevels body
     return .vTransport tyLevel' ty' motive' lhs' rhs' eq' body'
   -- Values without levels
-  | .vPrimTy _ | .vHigherPrim _ | .vIntLit _ | .vStringLit _
-  | .vRowEmpty | .vLabelLit _ | .vRecordVal _ =>
+  | .vPrimTy _ | .vIntLit _ | .vStringLit _
+  | .vRowEmpty | .vLabelLit _ | .vRecordVal _
+  | .vRowSort | .vLabelSort =>
     return v
 
 /-- Create a fresh Type with a fresh level variable -/

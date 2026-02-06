@@ -81,7 +81,7 @@ partial def forceApplyToArgs (v : Value) (args : List Value) : TCM Value := do
     let v' ← force v
     let arg' ← force arg
     match v' with
-    | .vLam _ _ _ _ body =>
+    | .vLam _ body =>
       let result ← applyClosure body arg'
       forceApplyToArgs result rest
     | .vDataType id params =>
@@ -115,10 +115,10 @@ end
     For a value v and Pi type (x : A) -> B, we create λx. v x -/
 def etaExpandLam (v : Value) (piTy : Value) : TCM Value := do
   match v with
-  | .vLam _ _ _ _ _ => return v  -- Already a lambda
+  | .vLam _ _ => return v
   | _ =>
     match piTy with
-    | .vPi qty binder name domain _codomain =>
+    | .vPi _qty _binder name _domain _codomain =>
       -- η-expand: v becomes λx. v x
       -- We need to create a closure that, when applied to an argument,
       -- applies v to that argument.
@@ -129,7 +129,7 @@ def etaExpandLam (v : Value) (piTy : Value) : TCM Value := do
       -- Extend environment with v so it's available in the closure
       let env' := env.extend "_eta_fn" v
       let closure := Closure.term name env' bodyTerm
-      return .vLam qty binder name domain closure
+      return .vLam name closure
     | _ => return v
 
 /-- Eta-expand a value to a pair if checking against a Sigma type -/
@@ -190,14 +190,10 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
     let cod2 ← applyClosure c2 x
     convert cod1 cod2
 
-  -- Lambdas: compare binders, domains, and bodies under a fresh variable
-  | .vLam q1 b1 n1 d1 body1, .vLam q2 b2 _ d2 body2 =>
-    if q1 != q2 then return false
-    if b1 != b2 then return false -- Binder info must match
-    let domEq ← convert d1 d2
-    if !domEq then return false
+  -- Lambdas: compare bodies under a fresh variable
+  | .vLam n1 body1, .vLam _ body2 =>
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
+    let x := Value.vNeutral .type0 (.nVar ⟨n1, lvl⟩)
     let b1Val ← applyClosure body1 x
     let b2Val ← applyClosure body2 x
     convert b1Val b2Val
@@ -221,12 +217,15 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
 
   -- Primitives
   | .vPrimTy p1, .vPrimTy p2 => return p1 == p2
-  | .vHigherPrim p1, .vHigherPrim p2 => return p1 == p2
 
   -- Literals
   | .vIntLit n1, .vIntLit n2 => return n1 == n2
   | .vStringLit s1, .vStringLit s2 => return s1 == s2
   | .vLabelLit l1, .vLabelLit l2 => return l1 == l2
+
+  -- Row/label sorts
+  | .vRowSort, .vRowSort => return true
+  | .vLabelSort, .vLabelSort => return true
 
   -- Rows
   | .vRowEmpty, .vRowEmpty => return true
@@ -301,16 +300,16 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
     convertNeutral n1 n2
 
   -- Eta rules for functions: v1 = λx. v2 x  iff  v1 x = v2 x for fresh x
-  | .vLam _ _ n1 d1 b1, .vNeutral ty neu =>
+  | .vLam n1 b1, .vNeutral ty neu =>
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
+    let x := Value.vNeutral .type0 (.nVar ⟨n1, lvl⟩)
     let body1 ← applyClosure b1 x
     let body2 := Value.vNeutral ty (.nApp neu x)
     convert body1 body2
 
-  | .vNeutral ty neu, .vLam _ _ n2 d2 b2 =>
+  | .vNeutral ty neu, .vLam n2 b2 =>
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral d2 (.nVar ⟨n2, lvl⟩)
+    let x := Value.vNeutral .type0 (.nVar ⟨n2, lvl⟩)
     let body1 := Value.vNeutral ty (.nApp neu x)
     let body2 ← applyClosure b2 x
     convert body1 body2

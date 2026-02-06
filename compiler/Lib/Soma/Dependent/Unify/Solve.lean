@@ -50,18 +50,13 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     TCM.withBinding n1 bindingId d1 q1 b1 defaultSpan do
       unify cod1 cod2
 
-  | .vLam q1 b1 n1 d1 body1, .vLam q2 b2 _ d2 body2 =>
-    if q1 != q2 then
-      throwUnifyError v1' v2' "quantity mismatch"
-    if b1 != b2 then
-      throwUnifyError v1' v2' "binder mismatch"
-    unify d1 d2
+  | .vLam n1 body1, .vLam _ body2 =>
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
+    let x := Value.vNeutral .type0 (.nVar ⟨n1, lvl⟩)
     let b1Val ← applyClosure body1 x
     let b2Val ← applyClosure body2 x
     let bindingId ← TCM.freshBindingId n1
-    TCM.withBinding n1 bindingId d1 q1 b1 defaultSpan do
+    TCM.withBinding n1 bindingId .type0 .omega .explicit defaultSpan do
       unify b1Val b2Val
 
   | .vSigma q1 n1 f1 s1, .vSigma q2 _ f2 s2 =>
@@ -83,9 +78,6 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
   | .vPrimTy p1, .vPrimTy p2 =>
     if p1 != p2 then throwUnifyError v1' v2' "primitive type mismatch"
 
-  | .vHigherPrim p1, .vHigherPrim p2 =>
-    if p1 != p2 then throwUnifyError v1' v2' "higher primitive mismatch"
-
   | .vIntLit n1, .vIntLit n2 =>
     if n1 != n2 then throwUnifyError v1' v2' "integer mismatch"
 
@@ -94,6 +86,9 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
 
   | .vLabelLit l1, .vLabelLit l2 =>
     if l1 != l2 then throwUnifyError v1' v2' "label mismatch"
+
+  | .vRowSort, .vRowSort => pure ()
+  | .vLabelSort, .vLabelSort => pure ()
 
   | .vRowEmpty, .vRowEmpty => pure ()
 
@@ -162,22 +157,22 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
       | _ => throwUnifyError v1' v2' "rigid-flex mismatch"
 
   -- Eta for functions: v1 = v2 if λx. v1 x = λx. v2 x
-  | .vLam _ _ n d body, other =>
+  | .vLam n body, other =>
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral d (.nVar ⟨n, lvl⟩)
+    let x := Value.vNeutral .type0 (.nVar ⟨n, lvl⟩)
     let bodyVal ← applyClosure body x
-    let otherApp := Value.vNeutral d (.nApp (valueToNeutral other) x)
+    let otherApp := Value.vNeutral .type0 (.nApp (valueToNeutral other) x)
     let bindingId ← TCM.freshBindingId n
-    TCM.withBinding n bindingId d .omega .explicit defaultSpan do
+    TCM.withBinding n bindingId .type0 .omega .explicit defaultSpan do
       unify bodyVal otherApp
 
-  | other, .vLam _ _ n d body =>
+  | other, .vLam n body =>
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral d (.nVar ⟨n, lvl⟩)
+    let x := Value.vNeutral .type0 (.nVar ⟨n, lvl⟩)
     let bodyVal ← applyClosure body x
-    let otherApp := Value.vNeutral d (.nApp (valueToNeutral other) x)
+    let otherApp := Value.vNeutral .type0 (.nApp (valueToNeutral other) x)
     let bindingId ← TCM.freshBindingId n
-    TCM.withBinding n bindingId d .omega .explicit defaultSpan do
+    TCM.withBinding n bindingId .type0 .omega .explicit defaultSpan do
       unify otherApp bodyVal
 
   -- Eta for pairs: v1 = v2 if (v1.1, v1.2) = (v2.1, v2.2)
@@ -346,7 +341,7 @@ partial def applyToSpine (v : Value) (spine : List Value) : TCM Value := do
     -- Force the argument too, so we work with resolved values
     let arg' ← force arg
     match v' with
-    | .vLam _ _ _ _ body =>
+    | .vLam _ body =>
       let result ← applyClosure body arg'
       applyToSpine result rest
     | .vNeutral _ty neu =>

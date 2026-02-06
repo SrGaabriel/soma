@@ -1,7 +1,7 @@
 // expect: success
 // Test: row polymorphism - accessing fields in extensible records
 
-def getX :: forall (r :: %). { x :: Int | r } -> Int
+def getX :: forall (r :: Row). { x :: Int | r } -> Int
     | rec => rec.x
 
 def test1 :: Int = getX { x = 1, y = 2 }

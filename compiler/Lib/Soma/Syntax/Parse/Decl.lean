@@ -282,9 +282,9 @@ def parseDataDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
 
           let kindAnnot ← if (← check .doubleColon) then do
             let colonTok ← consumeAny
-            match ← parseKind with
+            match ← parseType with
             | some kindTy => pure (some (GreenNode.mkNode .signature #[colonTok, kindTy]))
-            | none => recordError "expected kind after '::'"; pure none
+            | none => recordError "expected type after '::'"; pure none
           else pure none
 
           -- Check for 'where' keyword (indexed data types)

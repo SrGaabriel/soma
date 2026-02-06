@@ -39,13 +39,10 @@ partial def applySubst (r : Subst) (v : Value) : Option Term :=
       | some body => some (.pi qty binder name domT body)
       | none => some (.pi qty binder name domT (.var 0 "_"))
     | none => none
-  | .vLam _ _ name dom body =>
-    match applySubst r dom with
-    | some _domT =>
-      match body.body with
-      | some bodyT => some (.lam [name] bodyT)
-      | none => some (.lam [name] (.var 0 name))
-    | none => none
+  | .vLam name body =>
+    match body.body with
+    | some bodyT => some (.lam [name] bodyT)
+    | none => some (.lam [name] (.var 0 name))
   | .vSigma qty name fst snd =>
     match applySubst r fst with
     | some fstT =>
@@ -59,7 +56,6 @@ partial def applySubst (r : Subst) (v : Value) : Option Term :=
     | _, _ => none
   | .vNeutral _ neu => applySubstNeutral r neu
   | .vPrimTy p => some (.primTy p)
-  | .vHigherPrim p => some (.higherPrimTy p)
   | .vIntLit n => some (.intLit n)
   | .vStringLit s => some (.stringLit s)
   | .vRowEmpty => some .rowEmpty
@@ -76,6 +72,8 @@ partial def applySubst (r : Subst) (v : Value) : Option Term :=
     | some rowT => some (.variantTy rowT)
     | none => none
   | .vLabelLit name => some (.labelLit name)
+  | .vRowSort => some .rowSort
+  | .vLabelSort => some .labelSort
   | .vRecordVal fields =>
     let fieldTerms := fields.filterMap (fun (name, v) =>
       match applySubst r v with

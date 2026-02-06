@@ -739,9 +739,8 @@ def testRecordMetaDependency : Bool :=
 /-! ### η-expansion Tests -/
 
 def testTryEtaExpandLambdaYes : Bool :=
-  let dom := Value.vPrimTy .int
   let clos := Closure.const "x" (.vPrimTy .bool)
-  let lam := Value.vLam .omega .explicit "x" dom clos
+  let lam := Value.vLam "x" clos
   match tryEtaExpandLambda lam with
   | some (name, _, _) => name == "x"
   | none => false
@@ -770,9 +769,8 @@ def testTryEtaExpandPairNo : Bool :=
 def testTryMakePatternViaEtaLambda : Bool :=
   match runTCM do
     let meta1 ← TCM.freshMeta (.vType .zero)
-    let dom := Value.vPrimTy .int
     let clos := Closure.const "x" (.vPrimTy .bool)
-    let lam := Value.vLam .omega .explicit "x" dom clos
+    let lam := Value.vLam "x" clos
     -- Try to make ?m = λx. body into a pattern
     let result ← tryMakePatternViaEta meta1 [] lam
     return result.isSome
@@ -796,9 +794,8 @@ def testUnifyMetaWithLambdaViaEta : Bool :=
   -- Test: ?m = λx. Int should solve via η-expansion
   match runTCM do
     let metaVal ← TCM.freshMetaVal (.vType .zero)
-    let dom := Value.vPrimTy .int
     let clos := Closure.const "x" (.vPrimTy .bool)
-    let lam := Value.vLam .omega .explicit "x" dom clos
+    let lam := Value.vLam "x" clos
     unify metaVal lam
     -- After unification, the meta should be solved or constraint postponed
     return true

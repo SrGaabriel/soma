@@ -177,7 +177,8 @@ partial def ppExpr [PpAnnotation α] (cfg : Config) (indent : Nat) : Expr α sco
   | .snd e info _ =>
     s!"{ppExpr cfg indent e}.2{PpAnnotation.ppAnnotation cfg info}"
   | .primTy p _ => p.name
-  | .higherPrimTy p _ => p.name
+  | .rowSort _ => "Row"
+  | .labelSort _ => "Label"
   | .rowEmpty _ => "{}"
   | .rowExtend label fieldTy tail _ =>
     let labelStr := ppExpr cfg indent label

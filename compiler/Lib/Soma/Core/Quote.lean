@@ -74,17 +74,8 @@ partial def valueToString (v : Value) : String :=
     let domStr := valueToString domain
     s!"({binderStr}{name} : {domStr}) -> ..."
 
-  | .vLam _qty binder name domain _body =>
-    let domStr := valueToString domain
-    let binderStr := match binder with
-      | .explicit => ""
-      | .implicit => "{" ++ name ++ "}"
-      | .instance_ => "[" ++ name ++ "]"
-      | .strictImplicit => "⦃" ++ name ++ "⦄"
-    if binder == .explicit then
-      s!"fun({name} : {domStr}). ..."
-    else
-      s!"fun{binderStr}. ..."
+  | .vLam name _body =>
+    s!"fun({name}). ..."
 
   | .vSigma _qty name fst _snd =>
     let fstStr := valueToString fst
@@ -98,7 +89,8 @@ partial def valueToString (v : Value) : String :=
 
   | .vPrimTy p => p.name
 
-  | .vHigherPrim p => p.name
+  | .vRowSort => "Row"
+  | .vLabelSort => "Label"
 
   | .vIntLit n => toString n
 
@@ -175,8 +167,8 @@ partial def quoteClosed (v : Value) : Expr Unit [] :=
   | .vPrimTy p =>
     .primTy p quotedSpan
 
-  | .vHigherPrim p =>
-    .higherPrimTy p quotedSpan
+  | .vRowSort => .rowSort quotedSpan
+  | .vLabelSort => .labelSort quotedSpan
 
   | .vNeutral _ neu =>
     quoteNeutralClosed neu
@@ -226,7 +218,7 @@ partial def quoteClosed (v : Value) : Expr Unit [] :=
   | .vPi _qty _binder _name domain _ =>
     .pi .omega .explicit "_" (quoteClosed domain) (.global (mkUserName "_") () quotedSpan) quotedSpan
 
-  | .vLam _qty _binder name _domain _ =>
+  | .vLam name _ =>
     -- Lambdas are quoted as global references since we can't easily quote the closure body
     .global (mkUserName s!"<lambda:{name}>") () quotedSpan
 
@@ -273,7 +265,8 @@ partial def valueEq (v1 v2 : Value) : Bool :=
   match v1, v2 with
   | .vType l1, .vType l2 => l1 == l2
   | .vPrimTy p1, .vPrimTy p2 => p1 == p2
-  | .vHigherPrim p1, .vHigherPrim p2 => p1 == p2
+  | .vRowSort, .vRowSort => true
+  | .vLabelSort, .vLabelSort => true
   | .vIntLit n1, .vIntLit n2 => n1 == n2
   | .vStringLit s1, .vStringLit s2 => s1 == s2
   | .vLabelLit n1, .vLabelLit n2 => n1 == n2

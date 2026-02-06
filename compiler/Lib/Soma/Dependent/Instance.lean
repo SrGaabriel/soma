@@ -98,9 +98,10 @@ where
   valueHeadsMatch (v1 v2 : Value) : Bool :=
     match v1, v2 with
     | .vPrimTy p1, .vPrimTy p2 => p1 == p2
-    | .vHigherPrim p1, .vHigherPrim p2 => p1 == p2
     | .vType l1, .vType l2 => l1 == l2
     | .vLabelLit s1, .vLabelLit s2 => s1 == s2
+    | .vRowSort, .vRowSort => true
+    | .vLabelSort, .vLabelSort => true
     | .vDataType id1 _, .vDataType id2 _ => id1 == id2
     | .vNeutral _ (.nMeta m1), .vNeutral _ (.nMeta m2) => m1 == m2
     | .vNeutral _ (.nVar v1), .vNeutral _ (.nVar v2) => v1.level == v2.level
@@ -396,10 +397,10 @@ private def mkSimpleClosure (name : String) : Closure :=
   Closure.mkEmpty name Env.empty
 
 /-- Create a placeholder function value for instance methods -/
-private def mkMethodPlaceholder (name : String) (retTy : Value) : Value :=
+private def mkMethodPlaceholder (name : String) : Value :=
   -- Create a lambda that returns a placeholder
   -- todo: use the actual method implementation
-  Value.vLam .omega .explicit name retTy (mkSimpleClosure name)
+  Value.vLam name (mkSimpleClosure name)
 
 /-- Build the default instance environment with common classes -/
 def defaultInstanceEnv : InstanceEnv := Id.run do
@@ -479,30 +480,30 @@ def defaultInstanceEnv : InstanceEnv := Id.run do
   for prim in [StarPrimitive.int, .long, .short, .byte, .float, .double, .bool, .string] do
     let primTy := Value.vPrimTy prim
     -- Create an instance value that's a record with the eq method
-    let eqMethod := mkMethodPlaceholder "eq" (.vPrimTy .bool)
+    let eqMethod := mkMethodPlaceholder "eq"
     let instValue := Value.vRecordVal [("eq", eqMethod)]
     env := env.addInstance BuiltinClass.eq #[primTy] #[.omega] #[] instValue
 
   for prim in [StarPrimitive.int, .long, .short, .byte, .float, .double] do
     let primTy := Value.vPrimTy prim
-    let compareMethod := mkMethodPlaceholder "compare" (.vPrimTy .int)
+    let compareMethod := mkMethodPlaceholder "compare"
     let instValue := Value.vRecordVal [("compare", compareMethod)]
     env := env.addInstance BuiltinClass.ord #[primTy] #[.omega]
       #[(BuiltinClass.eq, #[primTy])] instValue
 
   for prim in [StarPrimitive.int, .long, .short, .byte, .float, .double, .bool, .string] do
     let primTy := Value.vPrimTy prim
-    let showMethod := mkMethodPlaceholder "show" (.vPrimTy .string)
+    let showMethod := mkMethodPlaceholder "show"
     let instValue := Value.vRecordVal [("show", showMethod)]
     env := env.addInstance BuiltinClass.show_ #[primTy] #[.omega] #[] instValue
 
   for prim in [StarPrimitive.int, .long, .short, .byte, .float, .double] do
     let primTy := Value.vPrimTy prim
-    let addMethod := mkMethodPlaceholder "add" primTy
-    let subMethod := mkMethodPlaceholder "sub" primTy
-    let mulMethod := mkMethodPlaceholder "mul" primTy
-    let negMethod := mkMethodPlaceholder "neg" primTy
-    let fromIntMethod := mkMethodPlaceholder "fromInt" primTy
+    let addMethod := mkMethodPlaceholder "add"
+    let subMethod := mkMethodPlaceholder "sub"
+    let mulMethod := mkMethodPlaceholder "mul"
+    let negMethod := mkMethodPlaceholder "neg"
+    let fromIntMethod := mkMethodPlaceholder "fromInt"
     let instValue := Value.vRecordVal [
       ("add", addMethod),
       ("sub", subMethod),

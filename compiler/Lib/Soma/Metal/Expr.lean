@@ -12,7 +12,7 @@ import Kenosis
 
 open Soma.Metal
 open Soma.Syntax (Span)
-open Soma.Core (Quantity Level LevelVarId StarPrimitive HigherPrimitive TypeId)
+open Soma.Core (Quantity Level LevelVarId StarPrimitive TypeId)
 
 /-- Argument to an explicit type application in Metal IR -/
 inductive Soma.Metal.TypeArg where
@@ -227,8 +227,12 @@ inductive Soma.Metal.Expr (α : Type) : Scope → Type where
   | primTy (p : StarPrimitive) (span : Span)
       : Soma.Metal.Expr α scope
 
-  /-- Higher-kinded primitive as expression (Array, IO, Ref) -/
-  | higherPrimTy (p : HigherPrimitive) (span : Span)
+  /-- Sort of row expressions -/
+  | rowSort (span : Span)
+      : Soma.Metal.Expr α scope
+
+  /-- Sort of label expressions -/
+  | labelSort (span : Span)
       : Soma.Metal.Expr α scope
 
   /-- Empty row type -/
@@ -412,7 +416,8 @@ partial def Soma.Metal.Expr.mapInfo (f : α → β) : Soma.Metal.Expr α scope �
   | .fst e info span => .fst (e.mapInfo f) (f info) span
   | .snd e info span => .snd (e.mapInfo f) (f info) span
   | .primTy p span => .primTy p span
-  | .higherPrimTy p span => .higherPrimTy p span
+  | .rowSort span => .rowSort span
+  | .labelSort span => .labelSort span
   | .rowEmpty span => .rowEmpty span
   | .rowExtend label fieldTy tail span =>
       .rowExtend (label.mapInfo f) (fieldTy.mapInfo f) (tail.mapInfo f) span
@@ -573,7 +578,8 @@ def span : Expr α scope → Span
   | .fst _ _ s => s
   | .snd _ _ s => s
   | .primTy _ s => s
-  | .higherPrimTy _ s => s
+  | .rowSort s => s
+  | .labelSort s => s
   | .rowEmpty s => s
   | .rowExtend _ _ _ s => s
   | .recordTy _ s => s
@@ -615,7 +621,8 @@ def getInfo : Expr α scope → Option α
   | .fst _ i _ => some i
   | .snd _ i _ => some i
   | .primTy _ _ => none  -- Primitive types don't carry runtime info
-  | .higherPrimTy _ _ => none
+  | .rowSort _ => none
+  | .labelSort _ => none
   | .rowEmpty _ => none
   | .rowExtend _ _ _ _ => none
   | .recordTy _ _ => none

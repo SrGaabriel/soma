@@ -350,8 +350,7 @@ partial def collectMetaOccurrences (m : MetaId) (v : Value) (depth : Nat)
   | .vPi _ _ _ dom cod =>
     collectMetaOccurrences m dom depth scope ++
     collectMetaOccurrencesClosure m cod (depth + 1) scope
-  | .vLam _ _ _ dom body =>
-    collectMetaOccurrences m dom depth scope ++
+  | .vLam _ body =>
     collectMetaOccurrencesClosure m body (depth + 1) scope
   | .vSigma _ _ fst snd =>
     collectMetaOccurrences m fst depth scope ++
@@ -490,10 +489,10 @@ def shouldDeferMeta (m : MetaId) : TCM Bool := do
     `?m spine x = body` instead, which might be a pattern. -/
 def tryEtaExpandLambda (rhs : Value) : Option (String × Value × Value) :=
   match rhs with
-  | .vLam _ _ name dom _body =>
+  | .vLam name _body =>
     -- We can η-expand: instead of ?m = λx. body, solve ?m x = body
     -- where body is the closure applied to a fresh variable
-    some (name, dom, .vNeutral dom (.nVar ⟨name, ⟨0⟩⟩))  -- Placeholder, actual application done in caller
+    some (name, .type0, .vNeutral .type0 (.nVar ⟨name, ⟨0⟩⟩))  -- Placeholder, actual application done in caller
   | _ => none
 
 /-- Try η-expansion on a pair -/
@@ -511,10 +510,10 @@ def tryMakePatternViaEta (m : MetaId) (spine : List Value) (rhs : Value)
     : TCM (Option (List Value × Value)) := do
   -- First check: is the RHS a lambda?
   match rhs with
-  | .vLam _ _ name dom body =>
+  | .vLam name body =>
     -- Create a fresh variable to extend the spine
     let lvl ← TCM.currentLevel
-    let x := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
+    let x := Value.vNeutral .type0 (.nVar ⟨name, lvl⟩)
     -- Apply the closure to get the body
     let bodyVal ← applyClosure body x
     -- Check if adding x to spine makes it a pattern

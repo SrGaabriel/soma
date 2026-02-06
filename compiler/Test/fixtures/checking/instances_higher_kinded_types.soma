@@ -7,15 +7,15 @@ data Maybe a
     | Nothing
     | Just a
 
-class Functor (f :: * -> *) where
+class Functor (f :: Type -> Type) where
     def fmap :: forall a b. (a -> b) -> f a -> f b
 
  instance Functor Maybe where
     def fmap :: (a -> b) -> Maybe a -> Maybe b
         | f (Just value) => Just (f value)
-        | f (Nothing) => Nothing   
+        | f (Nothing) => Nothing
 
-def mapBoth :: forall (f :: * -> *) a b. (a -> b) -> f a -> f a -> (f b, f b) with (Functor f)
+def mapBoth :: forall (f :: Type -> Type) a b. (a -> b) -> f a -> f a -> (f b, f b) with (Functor f)
     | fn x y => (fmap fn x, fmap fn y)
 
-def test :: (Maybe Int, Maybe Int) = mapBoth (\x => x + 1) (Just 1) (Just 2)        
+def test :: (Maybe Int, Maybe Int) = mapBoth (\x => x + 1) (Just 1) (Just 2)

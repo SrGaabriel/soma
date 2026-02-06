@@ -56,31 +56,7 @@ def span : Literal → Span
 
 end Literal
 
-/-- Kind expressions for annotating type variables -/
-inductive KindExpr where
-  /-- Atomic kind: *, %, #, Row, Label -/
-  | atom (name : Name)
-  /-- Arrow kind: * -> *, (* -> *) -> * -/
-  | arrow (from_ : KindExpr) (to : KindExpr) (span : Span)
-  deriving Repr, BEq, Inhabited
-
-namespace KindExpr
-
-def span : KindExpr → Span
-  | .atom name => name.span
-  | .arrow _ _ s => s
-
-end KindExpr
-
-/-- A type variable binder, optionally with a kind annotation -/
-structure TypeVarBinder where
-  /-- The variable name -/
-  name : Name
-  /-- Optional kind annotation -/
-  kind : Option KindExpr
-  deriving Repr, BEq, Inhabited
-
-/-! ## Patterns and Type Expressions (mutually recursive) -/
+/-! ## Patterns, Type Expressions, and Type Variable Binders (mutually recursive) -/
 
 mutual
 
@@ -106,6 +82,10 @@ inductive Pattern : Type where
   | typed (pat : Pattern) (ty : TypeExpr) (span : Span)
   /-- Variant pattern: .Ok x -/
   | variant (label : Name) (arg : Option Pattern) (span : Span)
+
+/-- A type variable binder, optionally with a type/kind annotation -/
+inductive TypeVarBinder : Type where
+  | mk (name : Name) (kind : Option TypeExpr) : TypeVarBinder
 
 /-- Type expressions -/
 inductive TypeExpr : Type where
@@ -141,6 +121,18 @@ inductive TypeExpr : Type where
   | implicit (name : Option Name) (domain : TypeExpr) (codomain : TypeExpr) (span : Span)
 
 end
+
+namespace TypeVarBinder
+
+def name : TypeVarBinder → Name
+  | .mk n _ => n
+
+def kind : TypeVarBinder → Option TypeExpr
+  | .mk _ k => k
+
+end TypeVarBinder
+
+instance : Inhabited TypeVarBinder := ⟨.mk ⟨"_", Span.uninhabited⟩ none⟩
 
 namespace TypeExpr
 
@@ -180,6 +172,7 @@ end TypeExpr
 -- Nonempty instances (needed for partial recursive functions)
 instance : Nonempty Pattern := ⟨.wildcard Span.uninhabited⟩
 instance : Nonempty TypeExpr := ⟨.var ⟨"_", Span.uninhabited⟩⟩
+instance : Nonempty TypeVarBinder := ⟨.mk ⟨"_", Span.uninhabited⟩ none⟩
 
 -- Manually derive Repr for mutually recursive types
 mutual
@@ -223,6 +216,12 @@ end
 
 instance : Repr Pattern := ⟨Pattern.repr'⟩
 instance : Repr TypeExpr := ⟨TypeExpr.repr'⟩
+
+instance : Repr TypeVarBinder where
+  reprPrec v _ := f!"TypeVarBinder.mk {Repr.reprPrec v.name 0} {Repr.reprPrec v.kind 0}"
+
+instance : BEq TypeVarBinder where
+  beq a b := a.name == b.name
 
 namespace Pattern
 
@@ -591,14 +590,9 @@ partial def ppPattern : Pattern → String
       | some p => s!".{label.value} {ppPattern p}"
       | none => s!".{label.value}"
 
-/-- Pretty print a KindExpr -/
-partial def ppKindExpr : KindExpr → String
-  | .atom n => n.value
-  | .arrow from_ to _ => s!"({ppKindExpr from_} -> {ppKindExpr to})"
-
 /-- Pretty print a TypeVarBinder -/
 partial def ppTypeVarBinder (v : TypeVarBinder) : String := match v.kind with
-  | some k => s!"({v.name.value} :: {ppKindExpr k})"
+  | some k => s!"({v.name.value} :: {ppTypeExpr k})"
   | none => v.name.value
 
 /-- Pretty print an array of TypeVarBinders -/
@@ -615,10 +609,7 @@ partial def ppTypeExpr : TypeExpr → String
       s!"({elems.toList.map ppTypeExpr |> String.intercalate ", "})"
   | .list elem _ => s!"[{ppTypeExpr elem}]"
   | .forall_ vars body _ =>
-      let ppVar (v : TypeVarBinder) := match v.kind with
-        | some k => s!"({v.name.value} :: {ppKindExpr k})"
-        | none => v.name.value
-      s!"forall {vars.toList.map ppVar |> String.intercalate " "}. {ppTypeExpr body}"
+      s!"forall {vars.toList.map ppTypeVarBinder |> String.intercalate " "}. {ppTypeExpr body}"
   | .constrained cs body _ =>
       let csStr := cs.toList.map (fun (n, args, _) =>
         if args.isEmpty then n.value

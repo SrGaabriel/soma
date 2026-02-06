@@ -174,6 +174,8 @@ mutual
         | "Word32" => pure (.primTy .word32 name.span)
         | "Word64" => pure (.primTy .word64 name.span)
         | "Type" => pure (.type .zero name.span)
+        | "Row" => pure (.rowSort name.span)
+        | "Label" => pure (.labelSort name.span)
         | _ =>
           LowerM.reportError (.unboundVariable name.value name.span)
           pure (.panic s!"unresolved: {name.value}" () name.span)

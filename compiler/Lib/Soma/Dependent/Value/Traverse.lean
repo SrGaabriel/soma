@@ -81,8 +81,8 @@ partial def traverseValue (action : TraversalAction α) (v : Value) : α :=
     | .vPi _ _ _ dom cod =>
       inst.combine (traverseValue action dom) (traverseClosure action cod)
 
-    | .vLam _ _ _ dom body =>
-      inst.combine (traverseValue action dom) (traverseClosure action body)
+    | .vLam _ body =>
+      traverseClosure action body
 
     | .vSigma _ _ fst snd =>
       inst.combine (traverseValue action fst) (traverseClosure action snd)
@@ -94,11 +94,11 @@ partial def traverseValue (action : TraversalAction α) (v : Value) : α :=
       inst.combine (traverseValue action ty) (traverseNeutral action neu)
 
     | .vPrimTy _ => inst.empty
-    | .vHigherPrim _ => inst.empty
     | .vIntLit _ => inst.empty
     | .vStringLit _ => inst.empty
     | .vRowEmpty => inst.empty
     | .vLabelLit _ => inst.empty
+    | .vRowSort | .vLabelSort => inst.empty
 
     | .vRowExtend label ty tail =>
       inst.combine
@@ -242,10 +242,8 @@ partial def traverseValueM
       let r2 ← traverseClosureM action cod
       return inst.combine r1 r2
 
-    | .vLam _ _ _ dom body =>
-      let r1 ← traverseValueM action dom
-      let r2 ← traverseClosureM action body
-      return inst.combine r1 r2
+    | .vLam _ body =>
+      traverseClosureM action body
 
     | .vSigma _ _ fst snd =>
       let r1 ← traverseValueM action fst
@@ -263,11 +261,11 @@ partial def traverseValueM
       return inst.combine r1 r2
 
     | .vPrimTy _ => return inst.empty
-    | .vHigherPrim _ => return inst.empty
     | .vIntLit _ => return inst.empty
     | .vStringLit _ => return inst.empty
     | .vRowEmpty => return inst.empty
     | .vLabelLit _ => return inst.empty
+    | .vRowSort | .vLabelSort => return inst.empty
 
     | .vRowExtend label ty tail =>
       let r1 ← traverseValueM action label
@@ -389,10 +387,9 @@ partial def transformValueM (t : ValueTransformer M) (v : Value) : M Value := do
       let cod' ← transformClosureM t cod
       return .vPi qty binder name dom' cod'
 
-    | .vLam qty binder name dom body =>
-      let dom' ← transformValueM t dom
+    | .vLam name body =>
       let body' ← transformClosureM t body
-      return .vLam qty binder name dom' body'
+      return .vLam name body'
 
     | .vSigma qty name fst snd =>
       let fst' ← transformValueM t fst
@@ -410,11 +407,12 @@ partial def transformValueM (t : ValueTransformer M) (v : Value) : M Value := do
       return .vNeutral ty' neu'
 
     | .vPrimTy p => return .vPrimTy p
-    | .vHigherPrim p => return .vHigherPrim p
     | .vIntLit n => return .vIntLit n
     | .vStringLit s => return .vStringLit s
     | .vRowEmpty => return .vRowEmpty
     | .vLabelLit name => return .vLabelLit name
+    | .vRowSort => return .vRowSort
+    | .vLabelSort => return .vLabelSort
 
     | .vRowExtend label ty tail =>
       let label' ← transformValueM t label

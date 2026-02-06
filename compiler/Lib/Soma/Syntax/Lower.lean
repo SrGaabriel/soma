@@ -289,87 +289,22 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
       lowerError s!"missing {expected}" span
       pure (.wildcard span)
 
-/-- Lower a CST kind to AST KindExpr -/
-partial def lowerKindExpr (green : GreenNode) (offset : Nat) : LowerM KindExpr := do
-  -- For triviaToken, recurse immediately with adjusted offset
-  if green.syntaxKind? == some .triviaToken then
-    let unwrapped := unwrapTrivia green
-    let adjustedOffset := offset + triviaOffset green
-    return ← lowerKindExpr unwrapped adjustedOffset
-
-  let span ← spanFor green offset
-
-  match green with
-  | .token _kind text =>
-      -- Atomic kind token: *, %, #
-      pure (.atom ⟨text, span⟩)
-
-  | .node .triviaToken _ _ =>
-      pure (.atom ⟨"*", span⟩)
-
-  | .node nodeKind _ _ =>
-      match nodeKind with
-      | .typeCon =>
-          -- Atomic kind: *, %, #, Row, Label
-          match firstGreenChild green with
-          | some child =>
-              let text ← getGreenTokenText child offset
-              pure (.atom ⟨text, span⟩)
-          | none =>
-              lowerError "kind missing name" span
-              pure (.atom ⟨"*", span⟩)
-
-      | .typeArrow =>
-          -- Arrow kind: K1 -> K2
-          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
-          if kidsWithOffsets.size >= 2 then
-            let from_ ← lowerKindExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
-            let to ← lowerKindExpr kidsWithOffsets[1]!.1 kidsWithOffsets[1]!.2
-            pure (.arrow from_ to span)
-          else
-            lowerError "arrow kind requires two arguments" span
-            pure (.atom ⟨"*", span⟩)
-
-      | .typeParens =>
-          -- Parenthesized kind: (K)
-          let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
-          if kidsWithOffsets.isEmpty then
-            lowerError "empty parenthesized kind" span
-            pure (.atom ⟨"*", span⟩)
-          else
-            lowerKindExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
-
-      | _ =>
-          lowerError s!"unexpected kind node: {nodeKind}" span
-          pure (.atom ⟨"*", span⟩)
-
-  | .error message _ _ =>
-      lowerError message span
-      pure (.atom ⟨"*", span⟩)
-
-  | .missing expected =>
-      lowerError s!"missing {expected}" span
-      pure (.atom ⟨"*", span⟩)
-
 /-- Lower a type parameter node (.typeVar or .tyParamKinded) to TypeVarBinder -/
 partial def lowerTypeVarBinder (v : GreenNode) (o : Nat) : LowerM TypeVarBinder := do
   match v.syntaxKind? with
   | some .tyParamKinded =>
       let kids := childrenWithOffsets v o |>.filter (isSemanticNode ·.1)
       let varChild := kids.find? fun (c, _) => c.syntaxKind? == some .typeVar
-      let kindChild := kids.find? fun (c, _) =>
-        c.syntaxKind? == some .typeCon ||
-        c.syntaxKind? == some .typeArrow ||
-        c.syntaxKind? == some .typeParens
+      let kindChildren := kids.filter fun (c, _) =>
+        c.syntaxKind? != some .typeVar
       match varChild with
       | some (varNode, varOff) =>
           match firstGreenChild varNode with
           | some child =>
               let text ← getGreenTokenText child varOff
               let vspan ← spanFor varNode varOff
-              let kindExpr ← match kindChild with
-                | some (kindNode, kindOff) => some <$> lowerKindExpr kindNode kindOff
-                | none => pure none
+              let kindExpr ← if kindChildren.isEmpty then pure none
+                else some <$> lowerTypeExpr kindChildren[0]!.1 kindChildren[0]!.2
               pure (TypeVarBinder.mk ⟨text, vspan⟩ kindExpr)
           | none =>
               let vspan ← spanFor varNode varOff

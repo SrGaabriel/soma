@@ -1,2 +1,2 @@
 @[intrinsic]
-data IO :: * -> *
+data IO :: Type -> Type

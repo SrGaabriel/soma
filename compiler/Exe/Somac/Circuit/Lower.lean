@@ -449,7 +449,7 @@ partial def lowerExpr (e : Expr Value scope) : LowerM (Option PortId) := do
 
   -- Type-level constructs (erased at runtime)
   | .type _ _ | .pi _ _ _ _ _ _ | .sigma _ _ _ _ _
-  | .primTy _ _ | .higherPrimTy _ _ | .rowEmpty _
+  | .primTy _ _ | .rowSort _ | .labelSort _ | .rowEmpty _
   | .rowExtend _ _ _ _ | .recordTy _ _ | .variantTy _ _
   | .labelLit _ _ | .dataTy _ _ _ | .eq _ _ _ _ _
   | .refl _ _ _ | .transport _ _ _ _ _ _ _ _

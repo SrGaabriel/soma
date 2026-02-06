@@ -65,10 +65,10 @@ partial def checkPositivityValue (typeId : TypeId) (pol : Polarity) (ty : Value)
   match ty with
   | .vType _ => .ok
   | .vPrimTy _ => .ok
-  | .vHigherPrim _ => .ok
   | .vIntLit _ => .ok
   | .vStringLit _ => .ok
   | .vLabelLit _ => .ok
+  | .vRowSort | .vLabelSort => .ok
 
   | .vDataType id params =>
     if id == typeId then
@@ -89,10 +89,8 @@ partial def checkPositivityValue (typeId : TypeId) (pol : Polarity) (ty : Value)
     | .violated reason span => .violated reason span
     | .ok => checkPositivityClosure typeId pol snd fst
 
-  | .vLam _ _ _ dom body =>
-    match checkPositivityValue typeId pol.flip dom with
-    | .violated reason span => .violated reason span
-    | .ok => checkPositivityClosure typeId pol body dom
+  | .vLam _ body =>
+    checkPositivityClosure typeId pol body (.vType .zero)
 
   | .vPair a b =>
     match checkPositivityValue typeId pol a with
