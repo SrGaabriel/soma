@@ -1,2 +1,0 @@
-def brokenFunc( -> Int
-| x => x + 1

@@ -1,3 +1,0 @@
-use deplib/zfinal.{triple_increment}
-
-def quad_increment(x: Int) -> Int = triple_increment (triple_increment x)

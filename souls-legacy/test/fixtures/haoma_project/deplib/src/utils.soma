@@ -1,3 +1,0 @@
-use deplib/base.{increment}
-
-def double_increment(x: Int) -> Int = increment (increment x)

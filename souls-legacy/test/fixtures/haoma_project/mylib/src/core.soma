@@ -1,8 +1,0 @@
-@[intrinsic]
-def {+} :: Int -> Int -> Int
-@[intrinsic]
-def {*} :: Int -> Int -> Int
-
-def add(x: Int, y: Int) -> Int = x + y
-
-def multiply(x: Int, y: Int) -> Int = x * y

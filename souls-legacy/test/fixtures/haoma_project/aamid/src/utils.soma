@@ -1,3 +1,0 @@
-use zzbase/core.{zz_add}
-
-def aa_double(x: Int) -> Int = zz_add x x

@@ -1,3 +1,0 @@
-use deplib/aaa.{quad_increment}
-
-def main :: Int = quad_increment 5

@@ -1,7 +1,0 @@
-name aamid
-version "0.1.0"
-type library
-
-dependencies {
-    zzbase path="../zzbase"
-}

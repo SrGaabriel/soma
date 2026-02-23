@@ -1,3 +1,0 @@
-use baselib/core.{base_add}
-
-def mid_double(x: Int) -> Int = base_add x x
