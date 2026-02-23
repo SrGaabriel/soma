@@ -1,16 +1,16 @@
 // expect: success
 // Test: recursive data type - REF/ALO node lowering
 
-data List a
+inductive List {a : Type} where
     | Nil
-    | Cons a (List a)
+    | Cons (head : a) (tail : List a)
 
-def head :: forall a. a -> List a -> a
-    | default Nil => default
-    | _ (Cons x _) => x
+def head :  a. a -> List a -> a
+    | default, Nil  => default
+    | _ (Cons x, _)  => x
 
-def tail :: forall a. List a -> List a
+def tail :  a. List a -> List a
     | Nil => Nil
     | (Cons _ xs) => xs
 
-def test :: Int = head 0 Nil
+def test : Int = head 0 Nil

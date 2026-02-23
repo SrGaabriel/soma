@@ -1,12 +1,12 @@
 // expect: success
 // Test: variant injection and matching - tagged union lowering
 
-def handleResult :: < Ok :: Int | Err :: Int > -> Int
+def handle_result : < Ok::Int | Err :: Int > -> Int
     | .Ok n => n
     | .Err e => e
 
-def success :: < Ok :: Int | Err :: Int > = .Ok 42
-def failure :: < Ok :: Int | Err :: Int > = .Err 1
+def success : < Ok::Int | Err :: Int > = .Ok 42
+def failure : < Ok::Int | Err :: Int > = .Err 1
 
-def test1 :: Int = handleResult success
-def test2 :: Int = handleResult failure
+def test1 : Int = handle_result success
+def test2 : Int = handle_result failure

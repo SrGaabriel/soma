@@ -2,9 +2,9 @@
 // Test: closure with captured variable - environment lowering
 
 @[intrinsic]
-def {+} :: Int -> Int -> Int
+def {+} : Int -> Int -> Int
 
-def makeAdder :: Int -> Int -> Int
+def make_adder : Int -> Int -> Int
     | n => \x -> x + n
 
-def test :: Int = (makeAdder 10) 5
+def test : Int = (make_adder 10) 5

@@ -2,7 +2,7 @@ use stdlib/collections.{cons, head, length, map, foldl, filter, sum, reverse, ap
 use stdlib/core.{println}
 use base/core.{display}
 
-def main :: IO () =
+def main : IO () =
     compose
         let xs = [1, 2, 3, 4, 5]
 

@@ -822,22 +822,29 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
       let fieldNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .field
       let fields ← fieldNodes.mapM fun (f, fo) => do
         let fKids := childrenWithOffsets f fo |>.filter fun (c, _) => isSemanticNode c
-        if fKids.size >= 2 then
-          match firstGreenChild fKids[0]!.1 with
-          | some nameChild =>
-              let fname ← getGreenTokenText nameChild fKids[0]!.2
-              let fnameSpan ← spanFor fKids[0]!.1 fKids[0]!.2
-              let ftype ← lowerTypeExpr fKids[1]!.1 fKids[1]!.2
-              pure (some ⟨fname, fnameSpan⟩, ftype)
-          | none =>
-              let ftype ← lowerTypeExpr fKids[1]!.1 fKids[1]!.2
-              pure (none, ftype)
-        else if fKids.size == 1 then
-          let ftype ← lowerTypeExpr fKids[0]!.1 fKids[0]!.2
-          pure (none, ftype)
-        else
-          let fspan ← spanFor f fo
-          pure (none, .var ⟨"_", fspan⟩)
+        let nameNode? := fKids.find? fun (c, _) => isTokenKind c .lowerIdent
+        let typeNode? := fKids.find? fun (c, _) =>
+          match c.syntaxKind? with
+          | some sk => sk.isType
+          | none => false
+
+        match typeNode? with
+        | some (tyNode, tyOff) =>
+            let ftype ← lowerTypeExpr tyNode tyOff
+            match nameNode? with
+            | some (nNode, nOff) =>
+                match firstGreenChild nNode with
+                | some nameChild =>
+                    let fname ← getGreenTokenText nameChild nOff
+                    let fnameSpan ← spanFor nNode nOff
+                    pure (some ⟨fname, fnameSpan⟩, ftype)
+                | none =>
+                    pure (none, ftype)
+            | none =>
+                pure (none, ftype)
+        | none =>
+            let fspan ← spanFor f fo
+            pure (none, .var ⟨"_", fspan⟩)
 
       pure { attrs, name, fields, span }
 
@@ -1430,19 +1437,21 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
                         pure { name := ⟨"_error", vspan⟩, type? := none, span := vspan }
                 | some .field =>
                     let kids := childrenWithOffsets v vo |>.filter fun (c, _) => isSemanticNode c
-                    if kids.isEmpty then
-                      lowerError "field missing name" vspan
-                      pure { name := ⟨"_error", vspan⟩, type? := none, span := vspan }
-                    else
-                      let nameNode := kids[0]!.1
-                      let nameOffset := kids[0]!.2
-                      let nameText ← getGreenTokenText nameNode nameOffset
-                      let tyOpt ← if h : kids.size > 1 then
-                        let tyNode := kids[1]!.1
-                        let tyOffset := kids[1]!.2
-                        some <$> lowerTypeExpr tyNode tyOffset
-                      else pure none
-                      pure { name := ⟨nameText, vspan⟩, type? := tyOpt, span := vspan }
+                    let nameNode? := kids.find? fun (c, _) => isTokenKind c .lowerIdent
+                    let typeNode? := kids.find? fun (c, _) =>
+                      match c.syntaxKind? with
+                      | some sk => sk.isType
+                      | none => false
+                    match nameNode? with
+                    | some (nameNode, nameOffset) =>
+                        let nameText ← getGreenTokenText nameNode nameOffset
+                        let tyOpt ← match typeNode? with
+                          | some (tyNode, tyOffset) => some <$> lowerTypeExpr tyNode tyOffset
+                          | none => pure none
+                        pure { name := ⟨nameText, vspan⟩, type? := tyOpt, span := vspan }
+                    | none =>
+                        lowerError "field missing name" vspan
+                        pure { name := ⟨"_error", vspan⟩, type? := none, span := vspan }
                 | _ =>
                     lowerError "unexpected node in param list" vspan
                     pure { name := ⟨"_error", vspan⟩, type? := none, span := vspan }
@@ -1482,35 +1491,6 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
           let clauses ← clauseNodes.mapM fun (c, o) => lowerDefClause c o
 
           if clauses.isEmpty then
-            let paramPatterns ← if paramListNodes.isEmpty then pure #[]
-              else
-                let (plist, plistOffset) := paramListNodes[0]!
-                let varNodes := childrenWithOffsets plist plistOffset |>.filter fun (c, _) =>
-                  c.syntaxKind? == some .patVar || c.syntaxKind? == some .field
-                varNodes.mapM fun (v, vo) => do
-                  let vspan ← spanFor v vo
-                  match v.syntaxKind? with
-                  | some .patVar =>
-                      match firstGreenChild v with
-                      | some child =>
-                          let text ← getGreenTokenText child vo
-                          pure (Pattern.var ⟨text, vspan⟩)
-                      | none =>
-                          lowerError "patVar missing name" vspan
-                          pure (Pattern.var ⟨"_error", vspan⟩)
-                  | some .field =>
-                      let tokenKids := v.children.filter fun c => isTokenKind c .lowerIdent
-                      if tokenKids.isEmpty then
-                        lowerError "field missing name" vspan
-                        pure (Pattern.var ⟨"_error", vspan⟩)
-                      else
-                        match getTokenText tokenKids[0]! with
-                        | some text => pure (Pattern.var ⟨text, vspan⟩)
-                        | none => pure (Pattern.var ⟨"_error", vspan⟩)
-                  | _ =>
-                      lowerError "unexpected node in param list" vspan
-                      pure (Pattern.var ⟨"_error", vspan⟩)
-
             let bodyNodes := allKids.filter fun (c, _) =>
               c.syntaxKind? != some .name && c.syntaxKind? != some .operatorName &&
               c.syntaxKind? != some .signature && c.syntaxKind? != some .attribute &&
@@ -1519,16 +1499,16 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
               pure (.def_ attrs name headerParams sig #[] span)
             else
               let body ← lowerExpr bodyNodes[0]!.1 bodyNodes[0]!.2
-              let clause : DefClause := ⟨paramPatterns, none, body, body.span⟩
+              let clause : DefClause := ⟨#[], none, body, body.span⟩
               pure (.def_ attrs name headerParams sig #[clause] span)
           else
             pure (.def_ attrs name headerParams sig clauses span)
 
-      | .declData =>
+      | .declInductive =>
           let nameNodes := green.children.filter fun c =>
             isTokenKind c .upperIdent || c.syntaxKind? == some .typeCon
           let name ← if nameNodes.isEmpty then
-            lowerError "data type missing name" span
+            lowerError "inductive type missing name" span
             pure ⟨"_Error", span⟩
           else
             -- Use getTokenText to handle both raw tokens and triviaToken wrappers
@@ -1540,7 +1520,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
                     let text ← getGreenTokenText child offset
                     pure ⟨text, span⟩
                 | none =>
-                    lowerError "data type missing name" span
+                    lowerError "inductive type missing name" span
                     pure ⟨"_Error", span⟩
 
           let allKids := childrenWithOffsets green offset
@@ -1571,20 +1551,23 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
           -- Extract attributes
           let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
           let attrs ← lowerAttributes attrNodes
-          pure (.data attrs name params cons kindAnnot span)
+          pure (.inductive attrs name params cons kindAnnot span)
 
       | .declStruct =>
           let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent
-          if nameNodes.size < 2 then
-            lowerError "struct missing name or constructor" span
-            pure (.struct #[] ⟨"_Error", span⟩ #[] ⟨"_Con", span⟩ #[] span)
+          if nameNodes.isEmpty then
+            lowerError "record missing name" span
+            pure (.struct #[] ⟨"_Error", span⟩ #[] ⟨"_Error", span⟩ #[] span)
           else
             let name ← match getTokenText nameNodes[0]! with
             | some text => pure text
             | none => pure "_Error"
-            let conName ← match getTokenText nameNodes[1]! with
-            | some text => pure text
-            | none => pure "_Con"
+            let conName ← if h : nameNodes.size > 1 then
+              match getTokenText nameNodes[1]! with
+              | some text => pure text
+              | none => pure name
+            else
+              pure name
 
             let allKids := childrenWithOffsets green offset
             let paramNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .tyParamList

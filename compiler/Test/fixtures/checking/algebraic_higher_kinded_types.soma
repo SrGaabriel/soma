@@ -1,17 +1,17 @@
 // expect: success
 
-data Maybe a
+inductive Maybe {a : Type} where
     | Nothing
-    | Just a
+    | Just (value : a)
 
-def identity :: forall (f :: Type -> Type) a. f a -> f a
+def identity :  (f : Type -> Type) a. f a -> f a
     | x => x
 
-def identityMaybe :: Maybe Int -> Maybe Int
+def identity_maybe : Maybe Int -> Maybe Int
     | x => identity x
 
-def mapRecord :: forall (f :: Type -> Type) (r :: Row). { value :: f Int | r } -> { value :: f Int | r }
+def map_record :  (f : Type -> Type) (r : Row). { value : f Int | r } -> { value : f Int | r }
     | rec => rec
 
-def mapMaybeRecord :: { value :: Maybe Int, name :: String } -> { value :: Maybe Int, name :: String }
-    | rec => mapRecord rec
+def map_maybe_record : { value : Maybe Int, name : String } -> { value : Maybe Int, name : String }
+    | rec => map_record rec

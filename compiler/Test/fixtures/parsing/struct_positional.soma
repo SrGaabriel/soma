@@ -1,1 +1,2 @@
-struct Path = Path String
+record Path where
+	value : String

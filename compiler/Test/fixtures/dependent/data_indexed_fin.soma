@@ -1,16 +1,16 @@
 // expect: success
 // Test: bounded natural numbers (Fin n)
 
-data Nat where
-  | Zero :: Nat
-  | Succ :: Nat -> Nat
+inductive Nat where
+  | Zero : Nat
+  | Succ : Nat -> Nat
 
-data Fin n where
-  | FZero :: Fin (Nat::Succ m)
-  | FSucc :: Fin m -> Fin (Nat::Succ m)
+inductive Fin (n : Nat) where
+  | FZero : ∀ (m : Nat). Fin (Nat::Succ m)
+  | FSucc : ∀ (m : Nat). Fin m -> Fin (Nat::Succ m)
 
-def fin0of3 :: Fin (Nat::Succ (Nat::Succ (Nat::Succ Nat::Zero))) = Fin::FZero
+def fin0of3 : Fin (Nat::Succ (Nat::Succ (Nat::Succ Nat::Zero))) = Fin::FZero
 
-def fin1of3 :: Fin (Nat::Succ (Nat::Succ (Nat::Succ Nat::Zero))) = Fin::FSucc Fin::FZero
+def fin1of3 : Fin (Nat::Succ (Nat::Succ (Nat::Succ Nat::Zero))) = Fin::FSucc Fin::FZero
 
-def fin2of3 :: Fin (Nat::Succ (Nat::Succ (Nat::Succ Nat::Zero))) = Fin::FSucc (Fin::FSucc Fin::FZero)
+def fin2of3 : Fin (Nat::Succ (Nat::Succ (Nat::Succ Nat::Zero))) = Fin::FSucc (Fin::FSucc Fin::FZero)

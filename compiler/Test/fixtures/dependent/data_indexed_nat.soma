@@ -1,9 +1,9 @@
 // expect: success
 // Test: indexed data type with natural numbers
 
-data Nat where
-  | Zero :: Nat
-  | Succ :: Nat -> Nat
+inductive Nat where
+  | Zero : Nat
+  | Succ : Nat -> Nat
 
-def one :: Nat = Nat::Succ Nat::Zero
-def two :: Nat = Nat::Succ (Nat::Succ Nat::Zero)
+def one : Nat = Nat::Succ Nat::Zero
+def two : Nat = Nat::Succ (Nat::Succ Nat::Zero)

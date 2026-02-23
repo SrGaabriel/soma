@@ -1,16 +1,16 @@
 // expect: success
 // Test: tuple creation and projection - pair lowering
 
-def pair :: (Int, Int) = (42, 17)
+def pair : (Int, Int) = (42, 17)
 
-def fst :: (Int, Int) -> Int
+def fst : (Int, Int) -> Int
     | (x, _) => x
 
-def snd :: (Int, Int) -> Int
+def snd : (Int, Int) -> Int
     | (_, y) => y
 
-def swap :: (Int, Int) -> (Int, Int)
+def swap : (Int, Int) -> (Int, Int)
     | (a, b) => (b, a)
 
-def test1 :: Int = fst pair
-def test2 :: Int = snd (swap pair)
+def test1 : Int = fst pair
+def test2 : Int = snd (swap pair)

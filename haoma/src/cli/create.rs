@@ -67,7 +67,7 @@ pub fn execute(path: &Path) {
         ));
         std::process::exit(1);
     }
-    if let Err(e) = std::fs::write(&main, "def main :: IO ()\n    println \"Hello, World!\"\n") {
+    if let Err(e) = std::fs::write(&main, "def main : IO () = println \"Hello, World!\"\n") {
         output_err(&format!(
             "Failed to write main source file at '{}': {}",
             main.display(),

@@ -1,2 +1,2 @@
 // expect: success
-def add(x: Int, y: Int) -> Int = x
+def add (x : Int) (y : Int) : Int = x

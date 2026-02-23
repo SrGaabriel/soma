@@ -1,14 +1,14 @@
 // expect: error type mismatch
 
-struct Point = Point
-    x :: Int
-    y :: Int
+record Point where
+    x : Int
+    y : Int
 
-struct Vec2 = Vec2
-    x :: Int
-    y :: Int
+record Vec2 where
+    x : Int
+    y : Int
 
-def needsPoint :: Point -> Int
+def needs_point : Point -> Int
     | p => p.x
 
-def test :: Int = needsPoint (Vec2 1 2)
+def test : Int = needs_point (Vec2 1 2)

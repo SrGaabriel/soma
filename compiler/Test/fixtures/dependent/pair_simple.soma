@@ -1,13 +1,13 @@
 // expect: success
 // Test: simple pair types with @[wired_in] attributes
 
-data Pair a b
-    | MkPair a b
+inductive Pair {a : Type} {b : Type} where
+    | MkPair (fst : a) (snd : b)
 
-def pair :: (Int, Int) = (1, 2)
+def pair : Pair Int Int = Pair::MkPair 1 2
 
-def fst :: (Int, Int) -> Int
-    | (x, _) => x
+def fst : Pair Int Int -> Int
+    | Pair::MkPair x _ => x
 
-def snd :: (Int, Int) -> Int
-    | (_, y) => y
+def snd : Pair Int Int -> Int
+    | Pair::MkPair _ y => y

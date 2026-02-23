@@ -1,12 +1,12 @@
 // expect: success
 // Test: constructors with fields - CTOR with arity > 0
 
-data Maybe a
+inductive Maybe {a : Type} where
     | Nothing
-    | Just a
+    | Just (value : a)
 
-def fromMaybe :: forall a. a -> Maybe a -> a
-    | default Nothing => default
-    | _ (Just x) => x
+def from_maybe :  a. a -> Maybe a -> a
+    | default, Nothing  => default
+    | _ (Just, x)  => x
 
-def test :: Int = fromMaybe 0 (Just 42)
+def test : Int = from_maybe 0 (Just 42)

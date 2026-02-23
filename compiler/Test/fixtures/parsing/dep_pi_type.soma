@@ -1,2 +1,2 @@
-def identity :: (a : Type) -> a -> a
-    | _ x => x
+def identity : (a : Type) -> a -> a
+    | _, x  => x

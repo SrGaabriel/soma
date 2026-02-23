@@ -1,9 +1,9 @@
 // expect: success
 
-def test1 :: String = { x = "hello", y = 42 }.x
+def test1 : String = { x = "hello", y = 42 }.x
 
-def test2 :: Int = { x = "hello", y = 42 }.y
+def test2 : Int = { x = "hello", y = 42 }.y
 
-def test3 :: Int = { x = { a = 1, b = 2 }.b, y = { a = 1, b = 2 }.a }.x
+def test3 : Int = { x = { a = 1, b = 2 }.b, y = { a = 1, b = 2 }.a }.x
 
-def test4 :: Int = { x = { a = 1, b = 2 }.b, y = { a = 1, b = 2 }.a }.y
+def test4 : Int = { x = { a = 1, b = 2 }.b, y = { a = 1, b = 2 }.a }.y

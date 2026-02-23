@@ -494,8 +494,8 @@ inductive Decl where
   | def_ (attrs : Array Attribute) (name : Name) (params : Array DefParam) (sig : Option TypeExpr)
          (clauses : Array DefClause) (span : Span)
 
-  /-- Data type definition: data Option a | Some value :: a | None -/
-  | data (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
+  /-- Inductive type definition: inductive Option {a : Type} where ... -/
+  | inductive (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
          (constructors : Array DataCon) (kind : Option TypeExpr) (span : Span)
 
   /-- Struct definition: struct Path = Path String -/
@@ -526,7 +526,7 @@ namespace Decl
 
 def span : Decl → Span
   | .def_ _ _ _ _ _ s => s
-  | .data _ _ _ _ _ s => s
+  | .inductive _ _ _ _ _ s => s
   | .struct _ _ _ _ _ s => s
   | .trait _ _ _ _ _ s => s
   | .instance_ _ _ _ _ _ s => s
@@ -537,7 +537,7 @@ def span : Decl → Span
 /-- Get the name of a declaration (if it has one) -/
 def name? : Decl → Option Name
   | .def_ _ name _ _ _ _ => some name
-  | .data _ name _ _ _ _ => some name
+  | .inductive _ name _ _ _ _ => some name
   | .struct _ name _ _ _ _ => some name
   | .trait _ name _ _ _ _ => some name
   | .instance_ instanceName _ _ _ _ _ => instanceName
@@ -782,7 +782,7 @@ partial def ppDecl : Decl → String
       else
         s!"{attrStr}def {name.value}{paramsStr}{sigStr}\n{indent 2 clausesStr}"
 
-  | .data attrs name params cons kind _ =>
+  | .inductive attrs name params cons kind _ =>
       let attrStr := if attrs.isEmpty then ""
         else s!"@[{attrs.toList.map (·.name.value) |> String.intercalate ", "}]\n"
       let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
@@ -790,7 +790,7 @@ partial def ppDecl : Decl → String
         | some k => s!" :: {ppTypeExpr k}"
         | none => ""
       let consStr := cons.toList.map ppDataCon |> String.intercalate "\n"
-      s!"{attrStr}data {name.value}{paramsStr}{kindStr}\n{indent 2 consStr}"
+      s!"{attrStr}inductive {name.value}{paramsStr}{kindStr} where\n{indent 2 consStr}"
 
   | .struct attrs name params con fields _ =>
       let attrStr := if attrs.isEmpty then ""

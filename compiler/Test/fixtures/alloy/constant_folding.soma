@@ -2,13 +2,13 @@
 // Test: constant expressions - NUM node lowering
 
 @[intrinsic]
-def {+} :: Int -> Int -> Int
+def {+} : Int -> Int -> Int
 
 @[intrinsic]
-def {*} :: Int -> Int -> Int
+def {*} : Int -> Int -> Int
 
-def fortyTwo :: Int = 42
-def sum :: Int = 1 + 2 + 3 + 4 + 5
-def product :: Int = 2 * 3 * 4
+def forty_two : Int = 42
+def sum : Int = 1 + 2 + 3 + 4 + 5
+def product : Int = 2 * 3 * 4
 
-def test :: Int = fortyTwo + sum + product
+def test : Int = forty_two + sum + product

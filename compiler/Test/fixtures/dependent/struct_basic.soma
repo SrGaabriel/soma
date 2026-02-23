@@ -1,12 +1,12 @@
 // expect: success
-// Test: struct data type
+// Test: record data type
 
-struct Point = Point
-    x :: Int
-    y :: Int
+record Point where
+    x : Int
+    y : Int
 
-def getX :: Point -> Int
+def get_x : Point -> Int
     | Point x _ => x
 
-def getY :: Point -> Int
+def get_y : Point -> Int
     | Point _ y => y

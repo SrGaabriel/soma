@@ -1,7 +1,7 @@
 // expect: success
 
-def test1 :: Int = let x = 10 in { x }.x
+def test1 : Int = let x = 10 in { x }.x
 
-def test2 :: Int = let x = 10 in let y = 20 in { x, y }.y
+def test2 : Int = let x = 10 in let y = 20 in { x, y }.y
 
-def test3 :: String = let x = 10 in let z = "hello" in { x, y = 100, z }.z
+def test3 : String = let x = 10 in let z = "hello" in { x, y = 100, z }.z

@@ -1,16 +1,16 @@
 // expect: success
 // Test: mutually recursive functions - cross REF lowering
 
-data Nat
+inductive Nat where
     | Zero
-    | Succ Nat
+    | Succ (pred : Nat)
 
-def isEven :: Nat -> Int
+def is_even : Nat -> Int
     | Zero => 1
-    | (Succ n) => isOdd n
+    | (Succ n) => is_odd n
 
-def isOdd :: Nat -> Int
+def is_odd : Nat -> Int
     | Zero => 0
-    | (Succ n) => isEven n
+    | (Succ n) => is_even n
 
-def test :: Int = isEven (Succ (Succ Zero))
+def test : Int = is_even (Succ (Succ Zero))

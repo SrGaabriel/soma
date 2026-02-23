@@ -1,11 +1,11 @@
 // expect: success
 // Test: implicit argument syntax
 
-def id :: forall a. a -> a
+def id : ∀ a. a -> a
     | x => x
 
-def apply :: forall a b. (a -> b) -> a -> b
-    | f x => f x
+def apply : ∀ a b. (a -> b) -> a -> b
+    | f, x => f x
 
-def testId :: Int = id 42
-def testApply :: Int = apply id 100
+def test_id : Int = id 42
+def test_apply : Int = apply id 100

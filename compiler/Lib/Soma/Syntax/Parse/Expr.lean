@@ -455,16 +455,36 @@ partial def parseIfExpr : ParserM (Option GreenNode) := do
 partial def parseMatchArm : ParserM (Option GreenNode) := do
   match ← tryConsume .pipe with
   | some pipeTok =>
-      let mut patterns : Array GreenNode := #[]
+      let mut patternsWithDelims : Array GreenNode := #[]
+      let mut patternCount := 0
+
+      match ← parsePattern with
+      | some pat =>
+          patternsWithDelims := patternsWithDelims.push pat
+          patternCount := patternCount + 1
+      | none =>
+          recordError "expected pattern after '|'"
+          return some (GreenNode.mkError "missing pattern" #[pipeTok])
+
       while true do
-        match ← parsePattern with
-        | some pat => patterns := patterns.push pat
-        | none => break
         let tok ← current
         if tok.kind == some .fatArrow || tok.kind == some .equals || tok.kind == some .kw_if then
           break
+        if tok.kind == some .comma then
+          let commaTok ← consumeAny
+          patternsWithDelims := patternsWithDelims.push commaTok
+          match ← parsePattern with
+          | some pat =>
+              patternsWithDelims := patternsWithDelims.push pat
+              patternCount := patternCount + 1
+          | none =>
+              recordError "expected pattern after ','"
+              return some (GreenNode.mkError "missing pattern after ','" (#[pipeTok] ++ patternsWithDelims))
+        else
+          recordError "expected ',' between multiple patterns"
+          return some (GreenNode.mkError "missing ',' between patterns" (#[pipeTok] ++ patternsWithDelims))
 
-      if patterns.isEmpty then
+      if patternCount == 0 then
         recordError "expected pattern after '|'"
         return some (GreenNode.mkError "missing pattern" #[pipeTok])
 
@@ -480,16 +500,16 @@ partial def parseMatchArm : ParserM (Option GreenNode) := do
         let arrowTok ← consumeAny
         match ← inLayout parseExpr with
         | some body =>
-            let children := #[pipeTok] ++ patterns ++
+            let children := #[pipeTok] ++ patternsWithDelims ++
               (match guard with | some g => #[g] | none => #[]) ++
               #[arrowTok, body]
             return some (GreenNode.mkNode .matchArm children)
         | none =>
             recordError "expected expression after '=>'"
-            return some (GreenNode.mkError "missing arm body" (#[pipeTok] ++ patterns))
+            return some (GreenNode.mkError "missing arm body" (#[pipeTok] ++ patternsWithDelims))
       else
         recordError "expected '=>' after pattern"
-        return some (GreenNode.mkError "missing '=>'" (#[pipeTok] ++ patterns))
+        return some (GreenNode.mkError "missing '=>'" (#[pipeTok] ++ patternsWithDelims))
   | none => return none
 
 partial def parseCaseExpr : ParserM (Option GreenNode) := do

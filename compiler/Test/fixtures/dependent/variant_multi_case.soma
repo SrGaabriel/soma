@@ -1,7 +1,7 @@
 // expect: success
 // Test: variants with multiple cases
 
-def handleColor :: < Red :: Unit | Green :: Unit | Blue :: Unit > -> Int
+def handle_color : < Red::Unit | Green :: Unit | Blue :: Unit > -> Int
     | .Red _ => 1
     | .Green _ => 2
     | .Blue _ => 3

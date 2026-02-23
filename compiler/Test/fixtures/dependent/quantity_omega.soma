@@ -1,8 +1,8 @@
 // expect: success
 // Test: unrestricted (omega) quantity annotation - use any number of times
 
-def useMany :: (ω a : Type) -> a -> a
-    | _ x => x
+def use_many : (ω a : Type) -> a -> a
+    | _, x  => x
 
-def duplicate :: (ω x : Int) -> (Int, Int)
+def duplicate : (ω x : Int) -> (Int, Int)
     | x => (x, x)

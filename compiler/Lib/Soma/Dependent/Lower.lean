@@ -114,7 +114,8 @@ private def lowerFunctionDecl
         let hasPatternClauses := clauses.any (fun c => c.patterns.size > 0)
         if hasPatternClauses then
           if let some sigTy := sig then
-            let expectedArity := explicitArityOfType sigTy
+            let totalArity := explicitArityOfType sigTy
+            let expectedArity := totalArity - headerParams.size
             if let some badClause := clauses.find? (fun c => c.patterns.size != expectedArity) then
               let d := Diagnostic.error
                 (s!"definition '{name.value}' expects {expectedArity} pattern(s) from its signature, but got {badClause.patterns.size}")
@@ -176,7 +177,7 @@ private def lowerTypeDecl
     (supply : UniqueSupply)
   : Option Soma.Core.UntypedTypeDef × UniqueSupply :=
   match decl with
-  | .data _ name params constructors _ _ =>
+  | .inductive _ name params constructors _ _ =>
     let (typeUnique, supply') := supply.fresh name.value
     let typeName : Soma.Core.QualifiedName := ⟨typeUnique⟩
     let typeVarNames := params.map (·.name.value)

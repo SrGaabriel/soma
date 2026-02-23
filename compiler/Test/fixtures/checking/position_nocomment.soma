@@ -1,9 +1,9 @@
 // expect: error mismatch
 @[intrinsic]
-def {+} :: Int -> Int -> Int
+def {+} : Int -> Int -> Int
 
-data Maybe a
-    | Just a
+inductive Maybe {a : Type} where
+    | Just (value : a)
     | Nothing
 
-def a :: Maybe Int = Just "hello"
+def a : Maybe Int = Just "hello"

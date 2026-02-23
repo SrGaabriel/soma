@@ -1,49 +1,46 @@
 @[extern "soma_strcat"]
-def strcat :: String -> String -> String
+def strcat : String -> String -> String
 @[extern "soma_int_to_string"]
-def int_to_string :: Int -> String
+def int_to_string : Int -> String
 
-data Option a
-    | Some
-        value :: a
+inductive Option {a : Type} where
+    | Some (value : a)
     | None
 
-data Either err ok
-    | Err
-        error :: err
-    | Ok
-        value :: ok
+inductive Either {err : Type} {ok : Type} where
+    | Err (error : err)
+    | Ok (value : ok)
 
 class Display a where
-    def display :: a -> String
+    def display : a -> String
 
 class Semigroup a where
-    def {<>} :: a -> a -> a
+    def {<>} : a -> a -> a
 
 class Monoid a with (Semigroup a) where
-    def mempty :: a
-    def mconcat :: [a] -> a
+    def mempty : a
+    def mconcat : [a] -> a
 
 class Functor f where
-    def fmap :: (a -> b) -> f a -> f b
+    def fmap : (a -> b) -> f a -> f b
 
 class Applicative f with (Functor f) where
-    def pure :: a -> f a
-    def {<*>} :: f (a -> b) -> f a -> f b
-    def {*>} :: f a -> f b -> f b
-    def {<*} :: f a -> f b -> f a
+    def pure : a -> f a
+    def {<*>} : f (a -> b) -> f a -> f b
+    def {*>} : f a -> f b -> f b
+    def {<*} : f a -> f b -> f a
 
 class Monad m with (Applicative m) where
-    def {>>=} :: m a -> (a -> m b) -> m b
-    def {>>} :: m a -> m b -> m b
+    def {>>=} : m a -> (a -> m b) -> m b
+    def {>>} : m a -> m b -> m b
 
 instance Functor Option where
-    def fmap :: (a -> b) -> Option a -> Option b
+    def fmap : (a -> b) -> Option a -> Option b
         | f (Some value) => Some (f value)
         | f (None) => None
 
 instance Display (Option a) with (Display a) where
-    def display :: Option a -> String
+    def display : Option a -> String
         | (Some value) => "Some(" <> display value <> ")"
         | (None) => "None"
 

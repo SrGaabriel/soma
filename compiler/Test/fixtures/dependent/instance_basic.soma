@@ -1,14 +1,14 @@
 // expect: success
 // Test: basic class instance
 
-data Maybe a
+inductive Maybe {a : Type} where
     | Nothing
-    | Just a
+    | Just (value : a)
 
-class Functor (f :: Type -> Type) where
-    def fmap :: forall a b. (a -> b) -> f a -> f b
+class Functor (f : Type -> Type) where
+    fmap : {a : Type} -> {b : Type} -> (a -> b) -> f a -> f b
 
 instance Functor Maybe where
-    def fmap :: forall a b. (a -> b) -> Maybe a -> Maybe b
-        | g (Maybe::Just value) => Maybe::Just (g value)
-        | g Maybe::Nothing => Maybe::Nothing
+    def fmap {a : Type} {b : Type} : (a -> b) -> Maybe a -> Maybe b
+        | g, (Maybe::Just value) => Maybe::Just (g value)
+        | g, Maybe::Nothing => Maybe::Nothing

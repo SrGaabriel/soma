@@ -1,20 +1,20 @@
 @[intrinsic]
-def null :: Ptr a
+def null : Ptr a
 
 @[intrinsic]
-def ptr_add :: Ptr a -> Int64 -> Ptr a
+def ptr_add : Ptr a -> Int64 -> Ptr a
 
 @[intrinsic]
-def ptr_diff :: Ptr a -> Ptr a -> Int64
+def ptr_diff : Ptr a -> Ptr a -> Int64
 
 @[intrinsic]
-def ptr_read :: Ptr a -> a
+def ptr_read : Ptr a -> a
 
 @[intrinsic]
-def ptr_write :: Ptr a -> a -> Unit
+def ptr_write : Ptr a -> a -> Unit
 
 @[intrinsic]
-def ptr_cast :: Ptr a -> Ptr b
+def ptr_cast : Ptr a -> Ptr b
 
 alias CChar = Int8
 alias CShort = Int16
@@ -38,25 +38,25 @@ alias CUIntPtr = Word64
 alias CString = Ptr Word8
 
 @[intrinsic]
-def to_cstring :: String -> CString
+def to_cstring : String -> CString
 
 @[intrinsic]
-def from_cstring :: CString -> String
+def from_cstring : CString -> String
 
 @[intrinsic]
-def cstring_len :: CString -> CSize
+def cstring_len : CString -> CSize
 
 @[extern]
-def malloc :: CSize -> Ptr a
+def malloc : CSize -> Ptr a
 
 @[extern]
-def free :: Ptr a -> Unit
+def free : Ptr a -> Unit
 
 @[extern]
-def realloc :: Ptr a -> CSize -> Ptr a
+def realloc : Ptr a -> CSize -> Ptr a
 
 @[extern]
-def calloc :: CSize -> CSize -> Ptr a
+def calloc : CSize -> CSize -> Ptr a
 
 export {
     Ptr,

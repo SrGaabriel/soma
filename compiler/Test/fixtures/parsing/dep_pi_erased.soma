@@ -1,2 +1,2 @@
-def phantom :: (0 a : Type) -> Unit
+def phantom : (0 a : Type) -> Unit
     | _ => ()

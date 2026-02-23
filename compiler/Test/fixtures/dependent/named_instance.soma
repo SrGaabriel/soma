@@ -3,7 +3,7 @@
 // Instances can be given explicit names: `instance myName : class Type where ...`
 
 class Showable a where
-    def render :: a -> String
+    render : a -> String
 
 // Named instance - can be referenced by name later
 instance intShowable : Showable Int where
@@ -15,5 +15,5 @@ instance Showable Bool where
     def render
         | b => "bool"
 
-def display :: forall a. {{Showable a}} -> a -> String
+def display (a : Type) : {{Showable a}} -> a -> String
     | x => render x

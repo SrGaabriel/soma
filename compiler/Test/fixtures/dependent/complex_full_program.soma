@@ -2,19 +2,19 @@
 // Test: a complete program with multiple features
 
 @[intrinsic]
-def {+} :: Int -> Int -> Int
+def {+} : Int -> Int -> Int
 
-data Maybe a
+inductive Maybe {a : Type} where
     | Nothing
-    | Just a
+    | Just (value : a)
 
-def id :: forall a. a -> a
+def id : ∀ a. a -> a
     | x => x
 
-def map :: forall a b. (a -> b) -> Maybe a -> Maybe b
-    | f Maybe::Nothing => Maybe::Nothing
-    | f (Maybe::Just x) => Maybe::Just (f x)
+def map : ∀ a b. (a -> b) -> Maybe a -> Maybe b
+    | f, Maybe::Nothing => Maybe::Nothing
+    | f, (Maybe::Just x) => Maybe::Just (f x)
 
-def test1 :: Int = id 42
-def test2 :: Maybe Int = Maybe::Just 100
-def test3 :: Maybe Int = map id (Maybe::Just 42)
+def test1 : Int = id 42
+def test2 : Maybe Int = Maybe::Just 100
+def test3 : Maybe Int = map id (Maybe::Just 42)

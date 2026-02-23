@@ -2,7 +2,7 @@
 // Test: class (type class) definition
 
 class Display a where
-    def display :: a -> String
+    display : a -> String
 
 class Eq a where
-    def eq :: a -> a -> Bool
+    eq : a -> a -> Bool

@@ -1,4 +1,4 @@
 // expect: error unknown variable
 // Test: unbound variable should be caught
 
-def x :: Int = undefined_variable
+def x : Int = undefined_variable

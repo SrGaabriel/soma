@@ -2,18 +2,18 @@
 // Test: higher-order functions - callClosure lowering
 
 @[intrinsic]
-def {+} :: Int -> Int -> Int
+def {+} : Int -> Int -> Int
 
 @[intrinsic]
-def {*} :: Int -> Int -> Int
+def {*} : Int -> Int -> Int
 
-def comp :: (Int -> Int) -> (Int -> Int) -> Int -> Int
-    | f g x => f (g x)
+def comp : (Int -> Int) -> (Int -> Int) -> Int -> Int
+    | f g, x  => f (g x)
 
-def double :: Int -> Int
+def double : Int -> Int
     | x => x + x
 
-def square :: Int -> Int
+def square : Int -> Int
     | x => x * x
 
-def test :: Int = comp double square 3
+def test : Int = comp double square 3

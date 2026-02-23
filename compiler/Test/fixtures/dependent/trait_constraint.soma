@@ -2,7 +2,7 @@
 // Test: class constraints with 'with' syntax
 
 class Eq a where
-    def eq :: a -> a -> Bool
+    eq : a -> a -> Bool
 
-def equal :: forall a. a -> a -> Bool with (Eq a)
-    | x y => eq x y
+def equal (a : Type) : {{Eq a}} -> a -> a -> Bool
+    | x, y => eq x y

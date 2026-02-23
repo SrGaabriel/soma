@@ -1,2 +1,2 @@
 @[intrinsic]
-data IO :: Type -> Type
+inductive IO : Type -> Type where

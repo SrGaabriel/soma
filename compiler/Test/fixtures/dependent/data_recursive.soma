@@ -1,10 +1,10 @@
 // expect: success
 // Test: recursive algebraic data type
 
-data List a
+inductive List {a : Type} where
     | Nil
-    | Cons a (List a)
+    | Cons (head : a) (tail : List a)
 
-def head :: forall a. a -> List a -> a
-    | default List::Nil => default
-    | _ (List::Cons x _) => x
+def head (a : Type) : a -> List a -> a
+    | default, List::Nil => default
+    | _, (List::Cons x _) => x

@@ -1,15 +1,15 @@
 // expect: success
 // Test: if-then-else - branch terminator lowering
 
-data MyBool
+inductive MyBool where
     | MyTrue
     | MyFalse
 
-def choose :: MyBool -> Int -> Int -> Int
-    | MyTrue x _ => x
-    | MyFalse _ y => y
+def choose : MyBool -> Int -> Int -> Int
+    | MyTrue x, _  => x
+    | MyFalse _, y  => y
 
-def max :: Int -> Int -> Int
-    | x y => choose MyTrue x y
+def max : Int -> Int -> Int
+    | x, y  => choose MyTrue x y
 
-def test :: Int = max 10 20
+def test : Int = max 10 20

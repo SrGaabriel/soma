@@ -1,8 +1,8 @@
 // expect: success
 // Test: nested explicit Pi binders on the right of `::` are scrutinees
 
-def idInt :: Int -> Int
+def id_int : Int -> Int
   | x => x
 
-def tailFn :: Int -> (y : Int) -> Int
-  | _ y => idInt y
+def tail_fn : Int -> (y : Int) -> Int
+  | _, y  => id_int y

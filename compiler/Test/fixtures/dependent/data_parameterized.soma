@@ -1,10 +1,10 @@
 // expect: success
 // Test: parameterized algebraic data type
 
-data Maybe a
+inductive Maybe {a : Type} where
     | Nothing
-    | Just a
+    | Just (value : a)
 
-def fromMaybe :: forall a. a -> Maybe a -> a
-    | default Maybe::Nothing => default
-    | _ (Maybe::Just x) => x
+def from_maybe (a : Type) : a -> Maybe a -> a
+    | default, Maybe::Nothing => default
+    | _, (Maybe::Just x) => x

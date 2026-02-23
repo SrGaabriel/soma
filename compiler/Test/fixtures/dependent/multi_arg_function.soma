@@ -1,8 +1,8 @@
 // expect: success
 // Test: multi-argument function types
 
-def add3 :: Int -> Int -> Int -> Int
-    | x y z => x
+def add3 : Int -> Int -> Int -> Int
+    | x, y, z => x
 
-def nested :: (Int -> Int -> Int) -> Int -> Int
-    | f x => f x x
+def nested : (Int -> Int -> Int) -> Int -> Int
+    | f, x => f x x

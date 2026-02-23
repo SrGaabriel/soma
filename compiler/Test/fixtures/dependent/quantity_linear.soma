@@ -1,8 +1,8 @@
 // expect: success
 // Test: linear (1) quantity annotation - use exactly once
 
-def useOnce :: (1 a : Type) -> a -> a
-    | _ x => x
+def use_once : (1 a : Type) -> a -> a
+    | _, x  => x
 
-def linearId :: (1 x : Int) -> Int
+def linear_id : (1 x : Int) -> Int
     | x => x

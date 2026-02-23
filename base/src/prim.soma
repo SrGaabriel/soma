@@ -1,10 +1,10 @@
 @[intrinsic]
-def {+} :: Int -> Int -> Int
+def {+} : Int -> Int -> Int
 @[intrinsic]
-def {-} :: Int -> Int -> Int
+def {-} : Int -> Int -> Int
 @[intrinsic]
-def {*} :: Int -> Int -> Int
+def {*} : Int -> Int -> Int
 @[intrinsic]
-def {%} :: Int -> Int -> Int
+def {%} : Int -> Int -> Int
 @[intrinsic]
-def {/} :: Int -> Int -> Int
+def {/} : Int -> Int -> Int

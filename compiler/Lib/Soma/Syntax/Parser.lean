@@ -306,7 +306,7 @@ def parseOperatorName : ParserM (Option GreenNode) := do
       return some (GreenNode.mkError "expected operator" #[lbrace])
 
 def syncTokens : Array TokenKind :=
-  #[.kw_def, .kw_data, .kw_struct, .kw_trait, .kw_instance, .kw_use, .kw_export,
+  #[.kw_def, .kw_inductive, .kw_struct, .kw_trait, .kw_instance, .kw_use, .kw_export,
     .layoutEnd, .eof]
 
 def atSyncPoint : ParserM Bool := do

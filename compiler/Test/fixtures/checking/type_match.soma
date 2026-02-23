@@ -1,2 +1,2 @@
 // expect: success
-def a :: Int = 5
+def a : Int = 5

@@ -1,6 +1,6 @@
 // expect: success
 // Test: string literal type inference
 
-def s :: String = "hello world"
-def empty :: String = ""
-def multiword :: String = "multiple words here"
+def s : String = "hello world"
+def empty : String = ""
+def multiword : String = "multiple words here"

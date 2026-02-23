@@ -1,9 +1,9 @@
 // expect: success
 // Test: row polymorphism - accessing fields in extensible records
 
-def getX :: forall (r :: Row). { x :: Int | r } -> Int
+def get_x : ∀ (r : Row). { x : Int | r } -> Int
     | rec => rec.x
 
-def test1 :: Int = getX { x = 1, y = 2 }
-def test2 :: Int = getX { x = 42, z = true, w = "hello" }
-def test3 :: Int = getX { x = 100 }
+def test1 : Int = get_x { x = 1, y = 2 }
+def test2 : Int = get_x { x = 42, z = true, w = "hello" }
+def test3 : Int = get_x { x = 100 }

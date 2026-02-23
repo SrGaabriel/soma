@@ -1,9 +1,9 @@
 // expect: success
 // Test: propositional equality (Eq a b)
 
-data Eq a b where
-  | Refl :: Eq x x
+inductive Eq (a : Type) (b : Type) where
+  | Refl : Eq a a
 
-def intEqInt :: Eq Int Int = Eq::Refl
+def int_eq_int : Eq Int Int = Eq::Refl
 
-def boolEqBool :: Eq Bool Bool = Eq::Refl
+def bool_eq_bool : Eq Bool Bool = Eq::Refl

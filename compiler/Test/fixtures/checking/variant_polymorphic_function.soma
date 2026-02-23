@@ -1,15 +1,15 @@
 // expect: success
 
-def isOk :: forall (r :: Row). < Ok :: Int | r > -> Bool
+def is_ok :  (r : Row). < Ok : Int | r > -> Bool
     | .Ok _ => true
     | _ => false
 
-def test1 :: Bool = isOk (.Ok 42)
-def test2 :: Bool = isOk (.Err "fail")
+def test1 : Bool = is_ok (.Ok 42)
+def test2 : Bool = is_ok (.Err "fail")
 
-def getOk :: forall (r :: Row). < Ok :: Int | r > -> Int
+def get_ok :  (r : Row). < Ok : Int | r > -> Int
     | .Ok n => n
     | _ => 0
 
-def test3 :: Int = getOk (.Ok 100)
-def test4 :: Int = getOk (.Err "nope")
+def test3 : Int = get_ok (.Ok 100)
+def test4 : Int = get_ok (.Err "nope")

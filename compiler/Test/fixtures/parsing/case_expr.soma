@@ -1,4 +1,4 @@
-def isZero(n: Int) =
+def is_zero(n: Int) =
   match n
     | 0 => True
     | _ => False

@@ -2,9 +2,9 @@
 // Test: unary operations - OP1 node lowering
 
 @[intrinsic]
-def {-} :: Int -> Int -> Int
+def {-} : Int -> Int -> Int
 
-def negate :: Int -> Int
+def negate : Int -> Int
     | x => 0 - x
 
-def test :: Int = negate 42
+def test : Int = negate 42

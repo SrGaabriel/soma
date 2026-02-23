@@ -1,4 +1,4 @@
 @[intrinsic]
-def {+} :: Int -> Int -> Int
+def {+} : Int -> Int -> Int
 
 def increment(x: Int) -> Int = x + 1

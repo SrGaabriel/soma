@@ -1,14 +1,14 @@
 // expect: success
 
-def handleResult :: < Ok :: Int | Err :: String > -> Int
+def handle_result : < Ok::Int | Err :: String > -> Int
     | .Ok n => n
     | .Err _ => 0
 
-def test1 :: Int = handleResult (.Ok 42)
-def test2 :: Int = handleResult (.Err "oops")
+def test1 : Int = handle_result (.Ok 42)
+def test2 : Int = handle_result (.Err "oops")
 
-def unwrapOk :: < Ok :: Int | Err :: String > -> Int
+def unwrap_ok : < Ok::Int | Err :: String > -> Int
     | .Ok n => n
     | .Err msg => 0
 
-def test3 :: Int = unwrapOk (.Ok 100)
+def test3 : Int = unwrap_ok (.Ok 100)

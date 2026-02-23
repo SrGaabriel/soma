@@ -1,2 +1,2 @@
 class Functor f where
-    def fmap :: (a -> b) -> f a -> f b
+    fmap : (a -> b) -> f a -> f b

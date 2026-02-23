@@ -1,2 +1,2 @@
-def useMany :: (ω a : Type) -> a -> a
-    | _ x => x
+def use_many : (ω a : Type) -> a -> a
+    | _, x  => x

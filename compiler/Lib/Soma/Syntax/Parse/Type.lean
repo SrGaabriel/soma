@@ -342,24 +342,28 @@ partial def parseImplicitType : ParserM (Option GreenNode) := do
         recordError "expected type in implicit parameter"
         return some (GreenNode.mkError "empty implicit" #[lbrace1, lbrace2])
 
-/-- Parse a record type field: name :: Type -/
+/-- Parse a record type field: name : Type -/
 partial def parseRecordTypeField : ParserM (Option GreenNode) := do
   match ← parseLowerIdent with
   | some nameTok =>
-      match ← tryConsume .doubleColon with
+      let colonTok? ← do
+        match ← tryConsume .colon with
+        | some tok => pure (some tok)
+        | none => tryConsume .doubleColon
+      match colonTok? with
       | some colonTok =>
           match ← parseType with
           | some ty =>
               return some (GreenNode.mkNode .typeRecordField #[nameTok, colonTok, ty])
           | none =>
-              recordError "expected type after '::' in record field"
+            recordError "expected type after ':' in record field"
               return some (GreenNode.mkError "missing field type" #[nameTok, colonTok])
       | none =>
-          recordError "expected '::' after field name in record type"
-          return some (GreenNode.mkError "missing '::' in record field" #[nameTok])
+          recordError "expected ':' after field name in record type"
+          return some (GreenNode.mkError "missing ':' in record field" #[nameTok])
   | none => return none
 
-/-- Parse a record type: { x :: Int, y :: Bool } or { x :: Int | r } -/
+/-- Parse a record type: { x : Int, y : Bool } or { x : Int | r } -/
 partial def parseRecordType : ParserM (Option GreenNode) := do
   match ← tryConsume .leftBrace with
   | some lbrace =>
@@ -411,24 +415,28 @@ partial def parseRecordType : ParserM (Option GreenNode) := do
           return some (GreenNode.mkError "unclosed record type" (#[lbrace] ++ fields))
   | none => return none
 
-/-- Parse a variant type case: Name :: Type -/
+/-- Parse a variant type case: Name : Type -/
 partial def parseVariantTypeCase : ParserM (Option GreenNode) := do
   match ← parseUpperIdent with
   | some nameTok =>
-      match ← tryConsume .doubleColon with
+      let colonTok? ← do
+        match ← tryConsume .colon with
+        | some tok => pure (some tok)
+        | none => tryConsume .doubleColon
+      match colonTok? with
       | some colonTok =>
           match ← parseType with
           | some ty =>
               return some (GreenNode.mkNode .typeVariantCase #[nameTok, colonTok, ty])
           | none =>
-              recordError "expected type after '::' in variant case"
+            recordError "expected type after ':' in variant case"
               return some (GreenNode.mkError "missing case type" #[nameTok, colonTok])
       | none =>
-          recordError "expected '::' after case name in variant type"
-          return some (GreenNode.mkError "missing '::' in variant case" #[nameTok])
+          recordError "expected ':' after case name in variant type"
+          return some (GreenNode.mkError "missing ':' in variant case" #[nameTok])
   | none => return none
 
-/-- Parse a variant type: < Ok :: Int | Err :: String > or < Ok :: Int | r > -/
+/-- Parse a variant type: < Ok : Int | Err : String > or < Ok : Int | r > -/
 partial def parseVariantType : ParserM (Option GreenNode) := do
   match ← tryConsume .leftAngle with
   | some langle =>
@@ -518,12 +526,16 @@ partial def parseListType : ParserM (Option GreenNode) := do
 
 /-- Parse a single forall type variable binder -/
 partial def parseForallBinder : ParserM (Option GreenNode) := do
-  -- Try kinded binder: (name :: Kind) where Kind can be *, %, #, * -> *, etc.
+  -- Try kinded binder: (name : Kind) where Kind can be *, %, #, * -> *, etc.
   if (← check .leftParen) then
     let lparen ← consumeAny
     match ← parseLowerIdent with
     | some varTok =>
-        match ← tryConsume .doubleColon with
+        let colonTok? ← do
+          match ← tryConsume .colon with
+          | some tok => pure (some tok)
+          | none => tryConsume .doubleColon
+        match colonTok? with
         | some colonTok =>
             match ← parseType with
             | some kind =>
@@ -536,12 +548,12 @@ partial def parseForallBinder : ParserM (Option GreenNode) := do
                     let varNode := GreenNode.mkNode .typeVar #[varTok]
                     return some (GreenNode.mkNode .tyParamKinded #[lparen, varNode, colonTok, kind])
             | none =>
-                recordError "expected type after '::' in type parameter"
+                recordError "expected type after ':' in type parameter"
                 let varNode := GreenNode.mkNode .typeVar #[varTok]
                 return some (GreenNode.mkError "missing type" #[lparen, varNode, colonTok])
         | none =>
-            recordError "expected '::' in kinded type parameter"
-            return some (GreenNode.mkError "missing '::'" #[lparen, varTok])
+            recordError "expected ':' in kinded type parameter"
+            return some (GreenNode.mkError "missing ':'" #[lparen, varTok])
     | none =>
         recordError "expected type variable name after '(' in forall"
         return some (GreenNode.mkError "missing var name" #[lparen])
@@ -613,7 +625,6 @@ partial def parseForallSymbolType : ParserM (Option GreenNode) := do
   | none => return none
 
 partial def parseTypeAtom : ParserM (Option GreenNode) := do
-  if let some ty ← parseForallType then return some ty
   if let some ty ← parseForallSymbolType then return some ty
   if let some ty ← parseImplicitType then return some ty  -- Must come before parseRecordType
   if let some ty ← parseParenType then return some ty
@@ -692,17 +703,7 @@ partial def parseConstraints : ParserM (Option GreenNode) := do
 
 partial def parseType : ParserM (Option GreenNode) := do
   match ← parseTypeArrow with
-  | some ty =>
-      if (← check .kw_with) then
-        let withTok ← consumeAny
-        match ← parseConstraints with
-        | some constraints =>
-            return some (GreenNode.mkNode .typeConstrained #[ty, withTok, constraints])
-        | none =>
-            recordError "expected constraints after 'with'"
-            return some (GreenNode.mkError "missing constraints" #[ty, withTok])
-      else
-        return some ty
+  | some ty => return some ty
   | none => return none
 
 end

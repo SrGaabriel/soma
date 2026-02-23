@@ -4,28 +4,28 @@ use base/io.{IO}
 
 struct Path = Path String
 
-def {</>} :: Path -> Path -> Path
+def {</>} : Path -> Path -> Path
     | (Path p1) (Path p2) => Path (p1 <> "/" <> p2)
 
-def to_string :: Path -> String
+def to_string : Path -> String
     | (Path p) => p
 
-def from_string :: String -> Path
+def from_string : String -> Path
     | p => Path p
 
-data FileHandle
-    | FileHandle (Ptr Unit)
+inductive FileHandle where
+    | FileHandle (ptr : Ptr Unit)
 
 @[extern]
-def c_fopen :: CString -> CString -> Ptr Unit
+def c_fopen : CString -> CString -> Ptr Unit
 
 @[extern]
-def c_fclose :: Ptr Unit -> CInt
+def c_fclose : Ptr Unit -> CInt
 
 @[extern]
-def c_fflush :: Ptr Unit -> CInt
+def c_fflush : Ptr Unit -> CInt
 
-def open :: Path -> String -> IO FileHandle
+def open : Path -> String -> IO FileHandle
     | (Path path) mode => compose
         let cpath = to_cstring path
         let cmode = to_cstring mode
@@ -34,11 +34,11 @@ def open :: Path -> String -> IO FileHandle
         free cmode
         pure (FileHandle handle)
 
-def close :: FileHandle -> IO CInt
+def close : FileHandle -> IO CInt
     | (FileHandle ptr) => pure (c_fclose ptr)
 
-def create :: Path -> IO FileHandle
+def create : Path -> IO FileHandle
     | path => open path "w"
 
-def flush :: FileHandle -> IO CInt
+def flush : FileHandle -> IO CInt
     | (FileHandle ptr) => pure (c_fflush ptr)

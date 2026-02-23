@@ -1,5 +1,5 @@
 // expect: success
 // Test: mixed quantity annotations
 
-def mixedQuantities :: (0 a : Type) -> (1 b : Type) -> (ω c : Type) -> Unit
-    | _ _ _ => ()
+def mixed_quantities : (0 a : Type) -> (1 b : Type) -> (ω c : Type) -> Unit
+    | _, _, _ => ()

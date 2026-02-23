@@ -1,14 +1,14 @@
 // expect: success
-struct Point = Point
-    x :: Int
-    y :: Int
+record Point where
+    x : Int
+    y : Int
 
-def origin :: Point = Point 0 0
+def origin : Point = Point 0 0
 
-def getX :: Point -> Int
+def get_x : Point -> Int
     | p => p.x
 
-def getY :: Point -> Int
+def get_y : Point -> Int
     | p => p.y
 
-def test :: Int = origin.x
+def test : Int = origin.x

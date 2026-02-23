@@ -1,11 +1,9 @@
 // expect: success
 // Test: combining dependent type features
 
-def id :: (a : Type) -> a -> a
-    | _ x => x
+def id (a : Type) (x : a) : a = x
 
-def const :: (a : Type) -> (b : Type) -> a -> b -> a
-    | _ _ x _ => x
+def const (a : Type) (b : Type) (x : a) (ignored : b) : a = x
 
-def test1 :: Int = id Int 42
-def test2 :: Int = const Int String 1 "hello"
+def test1 : Int = id Int 42
+def test2 : Int = const Int String 1 "hello"

@@ -1,6 +1,6 @@
 // expect: error
 
-def getField :: forall (l :: Label) (a :: Type) (r :: Row). { l :: a | r } -> a
+def get_field :  (l : Label) (a : Type) (r : Row). { l : a | r } -> a
     | rec => rec @l
 
-def bad :: Int = getField { x = 42, y = "hello" }
+def bad : Int = get_field { x = 42, y = "hello" }
