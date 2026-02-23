@@ -36,13 +36,16 @@ private partial def explicitArityOfType : Syntax.TypeExpr → Nat
   | .kinded ty _ _ => explicitArityOfType ty
   | _ => 0
 
-private def functionAttrsFromSyntax (attrs : Array Syntax.Attribute) : FunctionAttrs :=
+private def functionAttrsFromSyntax
+    (attrs : Array Syntax.Attribute)
+    (defaultExternName : Option String := none)
+  : FunctionAttrs :=
   let externAttr := attrs.find? fun a => a.name.value == "extern"
   let externName := match externAttr with
     | some attr =>
       match attr.args[0]? with
       | some (Syntax.Expr.lit (Syntax.Literal.string s _)) => some s
-      | _ => none
+      | _ => defaultExternName
     | none => none
   {
     inline := attrs.any fun a => a.name.value == "inline"
@@ -73,7 +76,7 @@ private def registerGlobalNames
       match decl with
       | .def_ attrs name _ _ _ _ =>
         if names.get? name.value |>.isNone then
-          let fnAttrs := functionAttrsFromSyntax attrs
+          let fnAttrs := functionAttrsFromSyntax attrs (some name.value)
           let (n, s') := mkGlobalName name.value fnAttrs supply
           supply := s'
           names := names.insert name.value n
@@ -88,7 +91,7 @@ private def registerGlobalNames
           match methodDecl with
           | .def_ attrs methodName _ _ _ _ =>
             if names.get? methodName.value |>.isNone then
-              let fnAttrs := functionAttrsFromSyntax attrs
+              let fnAttrs := functionAttrsFromSyntax attrs (some methodName.value)
               let (n, s') := mkGlobalName methodName.value fnAttrs supply
               supply := s'
               names := names.insert methodName.value n
@@ -107,7 +110,7 @@ private def lowerFunctionDecl
   Id.run do
     match decl with
     | .def_ attrs name headerParams sig clauses span =>
-      let fnAttrs := functionAttrsFromSyntax attrs
+      let fnAttrs := functionAttrsFromSyntax attrs (some name.value)
       let globalName := globalNames.getD name.value ⟨{ id := 0, module := "", original := name.value }⟩
       match clauses[0]? with
       | some clause =>

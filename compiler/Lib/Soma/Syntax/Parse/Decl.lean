@@ -48,18 +48,21 @@ def parseAttributes : ParserM (Array GreenNode) := do
 
 /-- Check if attributes contain @[intrinsic] or @[extern] which allow bodiless declarations -/
 def hasBodyProvidingAttr (attrs : Array GreenNode) : Bool :=
-  attrs.any fun attr =>
-    -- Attribute structure: @[name] or @[name "arg"] -> children are [@, [, name, ]] or [@, [, name, arg, ]]
-    -- The name token is at index 2
-    if attr.syntaxKind? == some .attribute then
-      let children := attr.children
-      if h : 2 < children.size then
-        match children[2].text? with
-        | some "intrinsic" => true
-        | some "extern" => true
+  let isBodyName (txt : String) : Bool := txt == "intrinsic" || txt == "extern"
+  let hasBodyNameInChild (n : GreenNode) : Bool :=
+    match n with
+    | .token _ txt => isBodyName txt
+    | .node _ children _ => children.any fun gc =>
+        match gc with
+        | .token _ txt => isBodyName txt
         | _ => false
-      else false
-    else false
+    | .error _ children _ => children.any fun gc =>
+        match gc with
+        | .token _ txt => isBodyName txt
+        | _ => false
+    | .missing _ => false
+  attrs.any fun attr =>
+    attr.syntaxKind? == some .attribute && attr.children.any hasBodyNameInChild
 
 partial def parseDefClause : ParserM (Option GreenNode) := do
   match ← tryConsume .pipe with

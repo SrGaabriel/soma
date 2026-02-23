@@ -3,7 +3,7 @@ alias CString = Ptr Word8
 @[intrinsic]
 def to_cstring : String -> CString
 
-@[intrinsic]
+@[extern]
 def puts : CString -> IO ()
 
 def println (s : String) : IO () =
