@@ -9,4 +9,3 @@ import Soma.Core.LambdaLift
 import Soma.Core.Value
 import Soma.Core.Eval
 import Soma.Core.Quote
-import Soma.Core.CQuote

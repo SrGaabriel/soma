@@ -3,7 +3,7 @@ import Soma.Core.Quantity
 import Soma.Core.Level
 import Soma.Core.Primitive
 import Soma.Core.TypeId
-import Soma.Core.CQuote
+import Soma.Core.Quote
 import Soma.Dependent.Monad
 import Soma.Dependent.Convert
 import Soma.Dependent.Error

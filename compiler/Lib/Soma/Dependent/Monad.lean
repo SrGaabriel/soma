@@ -9,6 +9,7 @@ import Soma.Core.Module
 import Soma.Syntax.Source
 import Soma.Unique
 import Std.Data.HashMap
+import Std.Data.HashMap.Raw
 import Kenosis
 
 namespace Soma.Dependent
@@ -218,19 +219,92 @@ def nil  (w : WiredIn) : Option GlobalInfo := w.get? "nil"
 
 end WiredIn
 
-/-- Global environment mapping names to their info -/
+/-- Recursive namespace tree -/
+structure Namespace where
+  /-- Declarations directly in this namespace -/
+  decls : Std.HashMap.Raw String GlobalInfo := {}
+  /-- Child namespaces -/
+  children : Std.HashMap.Raw String Namespace := {}
+
+instance : Inhabited Namespace where
+  default := {}
+
+namespace Namespace
+
+def empty : Namespace := {}
+
+/-- Look up a declaration by simple (unqualified) name -/
+def getDecl? (ns : Namespace) (name : String) : Option GlobalInfo :=
+  ns.decls.get? name
+
+/-- Look up a child namespace -/
+def getChild? (ns : Namespace) (name : String) : Option Namespace :=
+  ns.children.get? name
+
+/-- Insert a declaration into this namespace -/
+def insertDecl (ns : Namespace) (name : String) (info : GlobalInfo) : Namespace :=
+  { ns with decls := ns.decls.insert name info }
+
+/-- Check if a declaration exists by simple name -/
+def containsDecl (ns : Namespace) (name : String) : Bool :=
+  ns.decls.contains name
+
+/-- Resolve a qualified path -/
+partial def resolve (ns : Namespace) (parts : List String) : Option GlobalInfo :=
+  match parts with
+  | [] => none
+  | [name] => ns.getDecl? name
+  | seg :: rest =>
+    match ns.getChild? seg with
+    | some child => child.resolve rest
+    | none => none
+
+/-- Insert at a qualified path, creating intermediate namespaces as needed -/
+partial def insertAt (ns : Namespace) (parts : List String) (info : GlobalInfo) : Namespace :=
+  match parts with
+  | [] => ns
+  | [name] => ns.insertDecl name info
+  | seg :: rest =>
+    let child := (ns.children.get? seg).getD .empty
+    let child' := child.insertAt rest info
+    { ns with children := ns.children.insert seg child' }
+
+/-- Fold over all declarations in the tree, passing the qualified name prefix -/
+partial def foldDecls (f : β → String → GlobalInfo → β) (init : β)
+    (ns : Namespace) (prefix_ : String := "") : β :=
+  let acc := Std.HashMap.Raw.fold (fun acc name info =>
+    let qualified := if prefix_.isEmpty then name else s!"{prefix_}::{name}"
+    f acc qualified info) init ns.decls
+  Std.HashMap.Raw.fold (fun acc childName child =>
+    let childPrefix := if prefix_.isEmpty then childName else s!"{prefix_}::{childName}"
+    child.foldDecls f acc childPrefix) acc ns.children
+
+/-- Recursively merge another namespace into this one -/
+partial def merge (ns1 ns2 : Namespace) : Namespace :=
+  let mergedDecls := Std.HashMap.Raw.fold (fun acc name info =>
+    acc.insert name info) ns1.decls ns2.decls
+  let mergedChildren := Std.HashMap.Raw.fold (fun acc childName child2 =>
+    match acc.get? childName with
+    | some child1 => acc.insert childName (Namespace.merge child1 child2)
+    | none => acc.insert childName child2) ns1.children ns2.children
+  { decls := mergedDecls, children := mergedChildren }
+
+/-- List constructor declarations in this namespace -/
+def constructorDecls (ns : Namespace) : List (String × GlobalInfo) :=
+  Std.HashMap.Raw.fold (fun acc name info =>
+    if info.isConstructor then (name, info) :: acc else acc) [] ns.decls
+
+end Namespace
+
 structure Globals where
-  defs : Std.HashMap String GlobalInfo := {}
+  /-- Hierarchical namespace tree -/
+  root : Namespace := .empty
+  /-- Open namespaces for unqualified lookup fallback -/
+  openNamespaces : Array String := #[]
   /-- Intrinsic dispatch table keyed by qualified global name -/
   intrinsics : Std.HashMap Soma.Core.QualifiedName Soma.Core.Intrinsic := {}
   /-- Registry mapping type names to their TypeIds -/
   typeIds : Std.HashMap String Soma.Core.TypeId := {}
-  /-- Child namespace declarations: childDecls["Point"]["new"] = constructor info. -/
-  childDecls : Std.HashMap String (Std.HashMap String GlobalInfo) := {}
-  /-- Hierarchical namespace declarations keyed by full path -/
-  namespaceDecls : Std.HashMap String GlobalInfo := {}
-  /-- Open namespaces used for unqualified lookup fallback -/
-  openNamespaces : Array String := #[]
   /-- Ordered field names for struct types -/
   structFields : Std.HashMap String (Array String) := {}
   /-- First-class inductive metadata keyed by canonical type name -/
@@ -253,35 +327,30 @@ def splitQualified (name : String) : List String :=
 def normalizeQualified (name : String) : String :=
   String.intercalate "::" (splitQualified name)
 
-private def lookupNormalized (g : Globals) (name : String) : Option GlobalInfo :=
-  g.namespaceDecls.get? (normalizeQualified name)
-
 def insert (g : Globals) (name : String) (info : GlobalInfo) : Globals :=
-  let normalized := normalizeQualified name
-  let g' := {
-    g with
-    defs := g.defs.insert name info
-    namespaceDecls := g.namespaceDecls.insert normalized info
-  }
+  let parts := splitQualified name
+  let g' := { g with root := g.root.insertAt parts info }
   match info.intrinsic with
   | some i =>
     { g' with intrinsics := g'.intrinsics.insert info.name i }
   | none => g'
 
 def lookup (g : Globals) (name : String) : Option GlobalInfo :=
-  match g.defs.get? name with
+  let parts := splitQualified name
+  match g.root.resolve parts with
   | some info => some info
   | none =>
-    match g.lookupNormalized name with
-    | some info => some info
-    | none =>
-      if name.contains "::" then
-        none
-      else
-        g.openNamespaces.foldl (init := none) fun acc ns =>
-          match acc with
-          | some _ => acc
-          | none => g.lookupNormalized s!"{ns}::{name}"
+    if name.contains "::" then
+      none
+    else
+      g.openNamespaces.foldl (init := none) fun acc ns =>
+        match acc with
+        | some _ => acc
+        | none => g.root.resolve (splitQualified s!"{ns}::{name}")
+
+/-- Check if a name is defined -/
+def contains (g : Globals) (name : String) : Bool :=
+  (g.lookup name).isSome
 
 /-- Mark a namespace as opened for unqualified lookup fallback -/
 def openNamespace (g : Globals) (ns : String) : Globals :=
@@ -367,20 +436,16 @@ def lookupTypeId (g : Globals) (name : String) : Option Soma.Core.TypeId :=
 
 /-- Insert a declaration into a child namespace -/
 def insertInChild (g : Globals) (parentName : String) (childName : String) (info : GlobalInfo) : Globals :=
-  let normalizedParent := normalizeQualified parentName
-  let existing := g.childDecls.getD normalizedParent {}
-  let qualified := normalizeQualified s!"{normalizedParent}::{childName}"
-  let g' := {
-    g with
-    childDecls := g.childDecls.insert normalizedParent (existing.insert childName info)
-    namespaceDecls := g.namespaceDecls.insert qualified info
-  }
-  -- Keep flat defs insertion too for direct references
-  g'.insert qualified info
+  let parentParts := splitQualified parentName
+  let qualified := parentParts ++ [childName]
+  let g' := { g with root := g.root.insertAt qualified info }
+  -- Also insert as a flat qualified name for direct references
+  g'.insert (normalizeQualified s!"{normalizeQualified parentName}::{childName}") info
 
 /-- Look up a declaration in a child namespace -/
 def lookupInChild (g : Globals) (parentName : String) (childName : String) : Option GlobalInfo :=
   let normalizedParent := normalizeQualified parentName
+  -- Priority 1: inductive metadata constructors
   match g.lookupInductive normalizedParent with
   | some indInfo =>
     match indInfo.ctors.find? (fun c => c.simpleName == childName) with
@@ -392,13 +457,13 @@ def lookupInChild (g : Globals) (parentName : String) (childName : String) : Opt
         ctorTag := ctor.tag
       }
     | none =>
-      match g.childDecls.get? normalizedParent with
-      | some children => children.get? childName
-      | none => g.lookupNormalized s!"{normalizedParent}::{childName}"
+      -- Priority 2: namespace tree
+      let parts := splitQualified normalizedParent ++ [childName]
+      g.root.resolve parts
   | none =>
-  match g.childDecls.get? normalizedParent with
-  | some children => children.get? childName
-  | none => g.lookupNormalized s!"{normalizedParent}::{childName}"
+    -- No inductive: go straight to namespace tree
+    let parts := splitQualified normalizedParent ++ [childName]
+    g.root.resolve parts
 
 /-- Look up a constructor by name, with namespace-aware resolution -/
 def resolveConstructor (g : Globals) (name : String) : Option GlobalInfo :=
@@ -432,9 +497,19 @@ def resolveConstructor (g : Globals) (name : String) : Option GlobalInfo :=
           }
         | _ => none
       | none =>
-        match g.childDecls.get? parent with
-          | some children =>
-            let ctors := children.toList.filter (·.2.isConstructor)
+        -- Check child namespace for a single constructor
+        let parentParts := splitQualified parent
+        match g.root.resolve (parentParts.dropLast) with
+        | some _ => none  -- parent exists but is a decl, not a namespace
+        | none =>
+          -- Walk down to the child namespace and check its decls
+          let childNs := parentParts.foldl (init := some g.root) fun acc seg =>
+            match acc with
+            | some ns => ns.getChild? seg
+            | none => none
+          match childNs with
+          | some ns =>
+            let ctors := ns.constructorDecls
             match ctors with
             | [(_, ctorInfo)] => some ctorInfo
             | _ => none
@@ -483,14 +558,20 @@ def lookupFieldIndex (g : Globals) (typeName : String) (fieldName : String) : Op
   | some fields => fields.toList.findIdx? (· == fieldName)
   | none => none
 
+/-- Fold over all declarations across the entire namespace tree -/
+def foldDecls (f : β → String → GlobalInfo → β) (init : β) (g : Globals) : β :=
+  g.root.foldDecls f init
+
+/-- Collect all declarations as a list of (qualifiedName, info) pairs -/
+def allDecls (g : Globals) : List (String × GlobalInfo) :=
+  g.foldDecls (fun acc name info => (name, info) :: acc) []
+
 /-- Convert Globals to GlobalEnv (for evaluation context) -/
 def toGlobalEnv (g : Globals) : GlobalEnv :=
-  let entries := g.defs.toList
-  entries.foldl (fun acc (_, info) =>
+  g.foldDecls (init := GlobalEnv.empty) fun acc _ info =>
     match info.value with
     | some v => acc.insert info.name v
     | none => acc
-  ) GlobalEnv.empty
 
 end Globals
 
@@ -1387,12 +1468,10 @@ def withFreshUsages (m : TCM α) : TCM (α × Std.HashMap Unique Nat) := do
 
 /-- Convert TCM globals to EvalCtx globals -/
 private def globalsToEvalGlobals (g : Globals) : GlobalEnv :=
-  let entries := g.defs.toList
-  entries.foldl (fun acc (_, info) =>
+  g.foldDecls (init := GlobalEnv.empty) fun acc _ info =>
     match info.value with
     | some v => acc.insert info.name v
     | none => acc
-  ) GlobalEnv.empty
 
 /-- Evaluate a Core.Expr to a Value using the current environment. -/
 def evalExpr (e : Soma.Core.Expr) : TCM Value := do

@@ -699,7 +699,7 @@ private def registerConstructor
           type := info.type
         }
         g := g.registerConstructorMeta typeName.display ctorMeta
-        if !g.defs.contains ctorSimpleName then
+        if !g.contains ctorSimpleName then
           g := g.insert ctorSimpleName info
         return g
 

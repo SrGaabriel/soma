@@ -130,7 +130,7 @@ def constructorsToSerializable (ctors : Std.HashMap String Nat) : Array Construc
 
 /-- Convert Globals to serializable form -/
 def globalsToSerializable (g : Globals) : SerializableGlobals :=
-  let defs := g.defs.fold (init := #[]) fun acc name info =>
+  let defs := g.foldDecls (init := #[]) fun acc name info =>
     acc.push { name, info }
   let typeIds := g.typeIds.fold (init := #[]) fun acc name id =>
     acc.push { name, id }

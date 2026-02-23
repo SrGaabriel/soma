@@ -939,7 +939,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
 
   -- Register constructors from external dependencies
   if let some g := globals then
-    for (_, info) in g.defs.toList do
+    for (_, info) in g.allDecls do
       if info.isConstructor then
         let ctx ← LowerM.getCtx
         let ctorQN := info.name
@@ -968,7 +968,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
   -- Their book indices start after all local functions
   let intrinsicCount := intrinsics.length
   if let some g := globals then
-    let externals := g.defs.toList.filter fun (name, info) =>
+    let externals := g.allDecls.filter fun (name, info) =>
       !typedFunctions.contains name &&
       !info.isConstructor
     for (i, (_, info)) in enumList externals do
@@ -988,7 +988,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
 
   -- Sixth pass: add placeholder definitions for external functions from dependencies
   if let some g := globals then
-    let externals := g.defs.toList.filter fun (name, info) =>
+    let externals := g.allDecls.filter fun (name, info) =>
       !typedFunctions.contains name && -- Not in current module
       !info.isConstructor
     for (_, info) in externals do

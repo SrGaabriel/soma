@@ -145,8 +145,7 @@ def constructorMetadata (m : CheckedModule) : Std.HashMap String Nat :=
   let fromInductives := m.globals.inductives.fold (init := {}) fun acc _ indInfo =>
     indInfo.ctors.foldl (init := acc) fun acc2 ctor =>
       acc2.insert ctor.name.display ctor.tag
-  -- todo: remove?
-  m.globals.defs.fold (init := fromInductives) fun acc name info =>
+  m.globals.foldDecls (init := fromInductives) fun acc name info =>
     if info.isConstructor && !acc.contains name then
       acc.insert name info.ctorTag
     else acc
@@ -232,32 +231,26 @@ def mergeInstanceEnvs (e1 e2 : InstanceMetadata) : InstanceMetadata :=
 
 /-- Merge Globals environments -/
 def mergeGlobals (g1 g2 : Globals) : Globals :=
-  -- Start from g1 and insert g2 defs through `Globals.insert` so namespaceTree stays consistent
-  let mergedDefs := g2.defs.fold (init := g1) fun acc name info =>
-    acc.insert name info
-  let intrinsics := g2.intrinsics.fold (init := mergedDefs.intrinsics) fun acc qn info =>
+  -- Merge namespace trees recursively
+  let mergedRoot := Soma.Dependent.Namespace.merge g1.root g2.root
+  let intrinsics := g2.intrinsics.fold (init := g1.intrinsics) fun acc qn info =>
     acc.insert qn info
-  let typeIds := g2.typeIds.fold (init := mergedDefs.typeIds) fun acc name id =>
+  let typeIds := g2.typeIds.fold (init := g1.typeIds) fun acc name id =>
     acc.insert name id
-  let childDecls := g2.childDecls.fold (init := mergedDefs.childDecls) fun acc parent children =>
-    let mergedChildren := match acc.get? parent with
-      | some existing =>
-        children.fold (init := existing) fun childAcc childName info =>
-          childAcc.insert childName info
-      | none => children
-    acc.insert parent mergedChildren
-  let structFields := g2.structFields.fold (init := mergedDefs.structFields) fun acc typeName fields =>
+  let structFields := g2.structFields.fold (init := g1.structFields) fun acc typeName fields =>
     acc.insert typeName fields
-  let inductives := g2.inductives.fold (init := mergedDefs.inductives) fun acc typeName metaInfo =>
+  let inductives := g2.inductives.fold (init := g1.inductives) fun acc typeName metaInfo =>
     acc.insert typeName metaInfo
-  let ctorToInductive := g2.ctorToInductive.fold (init := mergedDefs.ctorToInductive) fun acc ctorName typeName =>
+  let ctorToInductive := g2.ctorToInductive.fold (init := g1.ctorToInductive) fun acc ctorName typeName =>
     acc.insert ctorName typeName
-  let wiredRoles := g2.wiredIn.roles.fold (init := mergedDefs.wiredIn.roles) fun acc role info =>
+  let openNs := g2.openNamespaces.foldl (init := g1.openNamespaces) fun acc ns =>
+    if acc.contains ns then acc else acc.push ns
+  let wiredRoles := g2.wiredIn.roles.fold (init := g1.wiredIn.roles) fun acc role info =>
     if acc.contains role then acc else acc.insert role info
-  { mergedDefs with
+  { root := mergedRoot
+    openNamespaces := openNs
     intrinsics := intrinsics
     typeIds := typeIds
-    childDecls := childDecls
     structFields := structFields
     inductives := inductives
     ctorToInductive := ctorToInductive
