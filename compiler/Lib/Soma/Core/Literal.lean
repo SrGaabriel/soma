@@ -1,10 +1,6 @@
-/-
-  Soma.Metal.Literal
-  Literal values in Metal IR.
--/
 import Kenosis
 
-namespace Soma.Metal
+namespace Soma.Core
 
 open Kenosis
 
@@ -27,4 +23,4 @@ instance : ToString Literal := ⟨Literal.toString⟩
 
 end Literal
 
-end Soma.Metal
+end Soma.Core

@@ -2,13 +2,11 @@ import Soma.Core.Value
 import Soma.Core.Level
 import Soma.Core.Eval
 import Soma.Core.Quantity
-import Soma.Metal.Expr
 import Soma.Syntax.Source
 
 namespace Soma.Dependent
 
 open Soma.Core
-open Soma.Metal (Expr ExprList Name BinderInfo Pattern)
 open Soma.Syntax (Span)
 
 /-- Maximum recursion depth for type checking operations -/

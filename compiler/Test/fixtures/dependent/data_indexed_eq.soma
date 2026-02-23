@@ -4,6 +4,6 @@
 data Eq a b where
   | Refl :: Eq x x
 
-def intEqInt :: Eq Int Int = Refl
+def intEqInt :: Eq Int Int = Eq::Refl
 
-def boolEqBool :: Eq Bool Bool = Refl
+def boolEqBool :: Eq Bool Bool = Eq::Refl

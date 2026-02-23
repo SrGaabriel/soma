@@ -15,7 +15,7 @@ import Somac.Alloy.Func
 import Somac.Circuit.Graph
 import Somac.Circuit.Node
 import Soma.Core.Value
-import Soma.Core.Name
+import Soma.Core.Intrinsic
 import Soma.Core.Primitive
 import Std.Data.HashMap
 import Std.Data.HashSet
@@ -34,7 +34,23 @@ abbrev CLabel := Somac.Circuit.Node.Label
 abbrev CNodeEntry := Somac.Circuit.Graph.NodeEntry
 
 open Somac.Circuit.Term (Op1Code Op2Code PrimType Tag)
-open Soma.Core (Name FFIOp Intrinsic)
+open Soma.Core (QualifiedName PrimOp FFIOp Intrinsic)
+
+private def intrinsicOfQName? (qn : QualifiedName) : Option Intrinsic :=
+  let n := qn.id.original
+  match PrimOp.fromString? n with
+  | some op => some (.primOp op)
+  | none =>
+    match FFIOp.fromString? n with
+    | some op => some (.ffiOp op)
+    | none =>
+      if qn.id.module == "$intrinsic" then
+        some (.extern n)
+      else
+        none
+
+private def isIntrinsicQName (qn : QualifiedName) : Bool :=
+  (intrinsicOfQName? qn).isSome
 
 /-- Mapping from de Bruijn level to bounded type variable index -/
 structure TyVarMapping (n : Nat) where
@@ -281,8 +297,7 @@ def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
     (funcIdMap : Option (Std.HashMap Nat FuncId) := none) : FuncRef :=
   match graph.getDefinition refId with
   | some def_ =>
-    -- Check if the definition's Name carries intrinsic information
-    match def_.name.intrinsic? with
+    match intrinsicOfQName? def_.name with
     | some (Intrinsic.ffiOp op) => .intrinsic (convertFFIOp op)
     | some (Intrinsic.extern name) => .externC name
     | some (Intrinsic.primOp op) => .primOp (convertCorePrimOp op)
@@ -538,7 +553,7 @@ partial def extractReturnTypeWithMapping (ty : Value) (mapping : TyVarMapping n)
   | other => convertValueTypeWithMapping other mapping
 
 /-- Build function signature from a Value type with known type parameter count -/
-def buildSignatureFromType (name : Name) (ty : Value) (arity : Nat)
+def buildSignatureFromType (name : QualifiedName) (ty : Value) (arity : Nat)
     (mapping : TyVarMapping n) (numTypeParams : Nat) : Signature n :=
   let (explicitTypeParams, paramInfos) := extractParamsUsingMapping ty mapping
   -- Ensure we have names for all n type parameters
@@ -778,7 +793,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           | .ref refId | .alo refId =>
             match graph.getDefinition refId with
             | some def_ =>
-              match def_.name.intrinsic? with
+              match intrinsicOfQName? def_.name with
               | some (Intrinsic.ffiOp op) => pure (some (Sum.inl op : Sum FFIOp String))
               | some (Intrinsic.extern name) => pure (some (Sum.inr name : Sum FFIOp String))
               | _ => pure none
@@ -1107,14 +1122,14 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") : Module := Id.r
   let mut nextFuncId : Nat := 0
   for i in [:graph.book.size] do
     if let some def_ := graph.book[i]? then
-      if not def_.name.isIntrinsic && not def_.isExternal then
+      if not (isIntrinsicQName def_.name) && not def_.isExternal then
         funcIdMap := funcIdMap.insert i (FuncId.mk nextFuncId)
         nextFuncId := nextFuncId + 1
 
   -- Second pass: lower definitions using the mapping
   for i in [:graph.book.size] do
     if let some def_ := graph.book[i]? then
-      if not def_.name.isIntrinsic && not def_.isExternal then
+      if not (isIntrinsicQName def_.name) && not def_.isExternal then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
         let func := lowerDefinition graph def_ funcId funcIdMap
         module := module.addFunc func

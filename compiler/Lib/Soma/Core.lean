@@ -1,8 +1,12 @@
 import Soma.Core.Primitive
 import Soma.Core.TypeId
-import Soma.Core.Name
+import Soma.Core.Intrinsic
+import Soma.Core.Literal
 import Soma.Core.Quantity
 import Soma.Core.Level
+import Soma.Core.Expr
+import Soma.Core.LambdaLift
 import Soma.Core.Value
 import Soma.Core.Eval
 import Soma.Core.Quote
+import Soma.Core.CQuote

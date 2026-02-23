@@ -1,0 +1,12 @@
+// expect: error
+// Test: all explicit binders on the right of `::` are scrutinees for clause matching
+
+data Nat where
+  | Zero :: Nat
+  | Succ :: Nat -> Nat
+
+def id_nat :: Nat -> Nat
+  | x => x
+
+def classify :: (n : Nat) -> (m : Nat) -> Nat
+  | _ => id_nat

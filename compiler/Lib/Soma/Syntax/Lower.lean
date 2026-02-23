@@ -144,6 +144,20 @@ def childrenWithOffsets (green : GreenNode) (baseOffset : Nat) : Array (GreenNod
 def tokensOfKind (green : GreenNode) (kind : TokenKind) : Array GreenNode :=
   green.children.filter fun c => isTokenKind c kind
 
+/-- Extract a qualified identifier from a node by joining identifier segments with `::` -/
+def lowerQualifiedNameText (green : GreenNode) (offset : Nat) : LowerM String := do
+  if green.isToken then
+    return ← getGreenTokenText green offset
+  let kidsWithOffsets := childrenWithOffsets green offset
+  let mut parts : Array String := #[]
+  for (c, o) in kidsWithOffsets do
+    if isTokenKind c .lowerIdent || isTokenKind c .upperIdent then
+      parts := parts.push (← getGreenTokenText c o)
+  if parts.isEmpty then
+    return ← getGreenTokenText green offset
+  else
+    return String.intercalate "::" parts.toList
+
 mutual
 
 /-- Lower a CST pattern to AST Pattern -/
@@ -201,15 +215,10 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
             pure (.wildcard span)
           else
             let (nameNode, nameOffset) := kidsWithOffsets[0]!
-            match firstGreenChild nameNode with
-            | some nameChild =>
-                let name ← getGreenTokenText nameChild nameOffset
-                let nameSpan ← spanFor nameNode nameOffset
-                let args ← kidsWithOffsets[1:].toArray.mapM fun (c, o) => lowerPattern c o
-                pure (.con ⟨name, nameSpan⟩ args span)
-            | none =>
-                lowerError "constructor pattern missing name" span
-                pure (.wildcard span)
+            let name ← lowerQualifiedNameText nameNode nameOffset
+            let nameSpan ← spanFor nameNode nameOffset
+            let args ← kidsWithOffsets[1:].toArray.mapM fun (c, o) => lowerPattern c o
+            pure (.con ⟨name, nameSpan⟩ args span)
 
       | .patTuple =>
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
@@ -266,16 +275,11 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
             pure (.variant ⟨labelText, labelSpan⟩ arg span)
 
       | .name =>
-          match firstGreenChild green with
-          | some child =>
-              let text ← getGreenTokenText child offset
-              if text.length > 0 && (String.Pos.Raw.get text ⟨0⟩).isUpper then
-                pure (.con ⟨text, span⟩ #[] span)
-              else
-                pure (.var ⟨text, span⟩)
-          | none =>
-              lowerError "name missing text" span
-              pure (.wildcard span)
+          let text ← lowerQualifiedNameText green offset
+          if text.length > 0 && (String.Pos.Raw.get text ⟨0⟩).isUpper then
+            pure (.con ⟨text, span⟩ #[] span)
+          else
+            pure (.var ⟨text, span⟩)
 
       | _ =>
           lowerError s!"unexpected pattern kind: {kind}" span
@@ -361,13 +365,8 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
               pure (.var ⟨"_error", span⟩)
 
       | .typeCon =>
-          match firstGreenChild green with
-          | some child =>
-              let text ← getGreenTokenText child offset
-              pure (.con ⟨text, span⟩)
-          | none =>
-              lowerError "type constructor missing name" span
-              pure (.var ⟨"_error", span⟩)
+          let text ← lowerQualifiedNameText green offset
+          pure (.con ⟨text, span⟩)
 
       | .typeApp =>
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
@@ -729,13 +728,8 @@ partial def lowerConstraint (green : GreenNode) (offset : Nat) : LowerM Constrai
         if kidsWithOffsets.isEmpty then
           match kind with
           | .typeCon =>
-              match firstGreenChild green with
-              | some child =>
-                  let text ← getGreenTokenText child offset
-                  pure ⟨⟨text, span⟩, #[], span⟩
-              | none =>
-                  lowerError "expected constraint" span
-                  pure ⟨⟨"_error", span⟩, #[], span⟩
+              let text ← lowerQualifiedNameText green offset
+              pure ⟨⟨text, span⟩, #[], span⟩
           | _ =>
               lowerError "expected constraint" span
               pure ⟨⟨"_error", span⟩, #[], span⟩
@@ -743,12 +737,9 @@ partial def lowerConstraint (green : GreenNode) (offset : Nat) : LowerM Constrai
           let (classNode, classOffset) := kidsWithOffsets[0]!
           let className ← match classNode.syntaxKind? with
           | some .typeCon =>
-              match firstGreenChild classNode with
-              | some child =>
-                  let text ← getGreenTokenText child classOffset
-                  let cspan ← spanFor classNode classOffset
-                  pure ⟨text, cspan⟩
-              | none => pure ⟨"_error", span⟩
+              let text ← lowerQualifiedNameText classNode classOffset
+              let cspan ← spanFor classNode classOffset
+              pure ⟨text, cspan⟩
           | _ =>
               match getTokenText classNode with
               | some text =>
@@ -780,19 +771,54 @@ partial def lowerConstraint (green : GreenNode) (offset : Nat) : LowerM Constrai
 
 end
 
+/-- Lower attribute nodes to Syntax.Attribute values -/
+partial def lowerAttributes (attrNodes : Array (GreenNode × Nat)) : LowerM (Array Attribute) :=
+  attrNodes.mapM fun (a, ao) => do
+    let aspan ← spanFor a ao
+    let nameTokens := a.children.filter fun c => isTokenKind c .lowerIdent
+    let stringTokens := a.children.filter isStringToken
+    let args ← if stringTokens.isEmpty then
+      pure #[]
+    else
+      let strTok := stringTokens[0]!
+      match getTokenText strTok with
+      | some text =>
+        let unquoted := if text.utf8ByteSize >= 2 then
+          let pos1 : String.Pos.Raw := ⟨1⟩
+          let posEnd : String.Pos.Raw := ⟨text.utf8ByteSize - 1⟩
+          if hv1 : String.Pos.Raw.IsValid text pos1 then
+            if hv2 : String.Pos.Raw.IsValid text posEnd then
+              text.extract ⟨pos1, hv1⟩ ⟨posEnd, hv2⟩
+            else text
+          else text
+        else text
+        pure #[Expr.lit (.string unquoted aspan)]
+      | none => pure #[]
+    if nameTokens.isEmpty then
+      pure ⟨⟨"unknown", aspan⟩, args, aspan⟩
+    else
+      match getTokenText nameTokens[0]! with
+      | some text => pure ⟨⟨text, aspan⟩, args, aspan⟩
+      | none => pure ⟨⟨"unknown", aspan⟩, args, aspan⟩
+
 /-- Lower a data constructor -/
 partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := do
   let span ← spanFor green offset
 
   match green with
   | .node .constructor _ _ =>
+      let allKids := childrenWithOffsets green offset
+
+      -- Extract constructor-level attributes
+      let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
+      let attrs ← lowerAttributes attrNodes
+
       let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent
       let name := if nameNodes.isEmpty then ⟨"_Con", span⟩
         else match getTokenText nameNodes[0]! with
         | some text => ⟨text, span⟩
         | none => ⟨"_Con", span⟩
 
-      let allKids := childrenWithOffsets green offset
       let fieldNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .field
       let fields ← fieldNodes.mapM fun (f, fo) => do
         let fKids := childrenWithOffsets f fo |>.filter fun (c, _) => isSemanticNode c
@@ -813,9 +839,15 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
           let fspan ← spanFor f fo
           pure (none, .var ⟨"_", fspan⟩)
 
-      pure ⟨name, fields, none, span⟩
+      pure { attrs, name, fields, span }
 
   | .node .constructorSig _ _ =>
+      let allKids := childrenWithOffsets green offset
+
+      -- Extract constructor-level attributes
+      let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
+      let attrs ← lowerAttributes attrNodes
+
       -- Indexed constructor with signature: | Cons :: a -> Vec n a -> Vec (n+1) a
       let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent
       let name := if nameNodes.isEmpty then ⟨"_Con", span⟩
@@ -823,19 +855,18 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
         | some text => ⟨text, span⟩
         | none => ⟨"_Con", span⟩
 
-      let allKids := childrenWithOffsets green offset
       -- Find the type expression (after the :: token)
       let typeNodes := allKids.filter fun (c, _) => isSemanticNode c && !c.isToken
       if typeNodes.size >= 1 then
         let sig ← lowerTypeExpr typeNodes[0]!.1 typeNodes[0]!.2
-        pure ⟨name, #[], some sig, span⟩
+        pure { attrs, name, fields := #[], sig := some sig, span }
       else
         lowerError "expected type signature for indexed constructor" span
-        pure ⟨⟨"_Con", span⟩, #[], none, span⟩
+        pure { name := ⟨"_Con", span⟩, fields := #[], span }
 
   | _ =>
       lowerError "expected constructor" span
-      pure ⟨⟨"_Con", span⟩, #[], none, span⟩
+      pure { name := ⟨"_Con", span⟩, fields := #[], span }
 
 /-- Lower a struct field -/
 partial def lowerStructField (green : GreenNode) (offset : Nat) : LowerM StructField := do
@@ -938,13 +969,8 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
   | .node kind children _ =>
       match kind with
       | .exprVar =>
-          match firstGreenChild green with
-          | some child =>
-              let text ← getGreenTokenText child offset
-              pure (.var ⟨text, span⟩)
-          | none =>
-              lowerError "variable missing name" span
-              pure (.var ⟨"_error", span⟩)
+          let text ← lowerQualifiedNameText green offset
+          pure (.var ⟨text, span⟩)
 
       | .exprLit =>
           match firstGreenChild green with
@@ -1353,33 +1379,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
       | .declDef =>
           let allKids := childrenWithOffsets green offset
           let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
-          let attrs ← attrNodes.mapM fun (a, ao) => do
-            let aspan ← spanFor a ao
-            let nameTokens := a.children.filter fun c => isTokenKind c .lowerIdent
-            let stringTokens := a.children.filter isStringToken
-            let args ← if stringTokens.isEmpty then
-              pure #[]
-            else
-              let strTok := stringTokens[0]!
-              match getTokenText strTok with
-              | some text =>
-                let unquoted := if text.utf8ByteSize >= 2 then
-                  let pos1 : String.Pos.Raw := ⟨1⟩
-                  let posEnd : String.Pos.Raw := ⟨text.utf8ByteSize - 1⟩
-                  if hv1 : String.Pos.Raw.IsValid text pos1 then
-                    if hv2 : String.Pos.Raw.IsValid text posEnd then
-                      text.extract ⟨pos1, hv1⟩ ⟨posEnd, hv2⟩
-                    else text
-                  else text
-                else text
-                pure #[Expr.lit (.string unquoted aspan)]
-              | none => pure #[]
-            if nameTokens.isEmpty then
-              pure ⟨⟨"unknown", aspan⟩, args, aspan⟩
-            else
-              match getTokenText nameTokens[0]! with
-              | some text => pure ⟨⟨text, aspan⟩, args, aspan⟩
-              | none => pure ⟨⟨"unknown", aspan⟩, args, aspan⟩
+          let attrs ← lowerAttributes attrNodes
 
           let nameNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .name
           let opNameNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .operatorName
@@ -1409,28 +1409,65 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             lowerError "definition missing name" span
             pure ⟨"_error", span⟩
 
-          -- Extract the return type signature (e.g., `-> Int` gives us `Int`)
-          let sigNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .signature
-          let returnTypeSig ← if sigNodes.isEmpty then pure none
-            else some <$> lowerTypeExpr sigNodes[0]!.1 sigNodes[0]!.2
-
-          -- Extract parameter list to get parameter types for building full function signature
+          -- Extract parameter list and preserve header parameters
           let paramListNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .paramList
 
-          -- Extract parameter types from .field nodes in paramList
-          let paramTypes ← if paramListNodes.isEmpty then pure #[]
+          let headerParams ← if paramListNodes.isEmpty then pure #[]
             else
               let (plist, plistOffset) := paramListNodes[0]!
-              let fieldNodes := childrenWithOffsets plist plistOffset |>.filter fun (c, _) =>
-                c.syntaxKind? == some .field
-              fieldNodes.filterMapM fun (f, fo) => do
-                let typeNodes := childrenWithOffsets f fo |>.filter fun (c, _) => isSemanticNode c
-                if typeNodes.isEmpty then pure none
-                else some <$> lowerTypeExpr typeNodes[0]!.1 typeNodes[0]!.2
+              let varNodes := childrenWithOffsets plist plistOffset |>.filter fun (c, _) =>
+                c.syntaxKind? == some .patVar || c.syntaxKind? == some .field
+              varNodes.mapM fun (v, vo) => do
+                let vspan ← spanFor v vo
+                match v.syntaxKind? with
+                | some .patVar =>
+                    match firstGreenChild v with
+                    | some child =>
+                        let text ← getGreenTokenText child vo
+                        pure { name := ⟨text, vspan⟩, type? := none, span := vspan }
+                    | none =>
+                        lowerError "patVar missing name" vspan
+                        pure { name := ⟨"_error", vspan⟩, type? := none, span := vspan }
+                | some .field =>
+                    let kids := childrenWithOffsets v vo |>.filter fun (c, _) => isSemanticNode c
+                    if kids.isEmpty then
+                      lowerError "field missing name" vspan
+                      pure { name := ⟨"_error", vspan⟩, type? := none, span := vspan }
+                    else
+                      let nameNode := kids[0]!.1
+                      let nameOffset := kids[0]!.2
+                      let nameText ← getGreenTokenText nameNode nameOffset
+                      let tyOpt ← if h : kids.size > 1 then
+                        let tyNode := kids[1]!.1
+                        let tyOffset := kids[1]!.2
+                        some <$> lowerTypeExpr tyNode tyOffset
+                      else pure none
+                      pure { name := ⟨nameText, vspan⟩, type? := tyOpt, span := vspan }
+                | _ =>
+                    lowerError "unexpected node in param list" vspan
+                    pure { name := ⟨"_error", vspan⟩, type? := none, span := vspan }
+
+          -- Extract signature base from either `::` or `->` notation
+          let sigNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .signature
+          let mut returnTypeSig : Option TypeExpr := none
+          let mut explicitSig : Option TypeExpr := none
+          for (sigNode, sigOffset) in sigNodes do
+            let sigTy ← lowerTypeExpr sigNode sigOffset
+            let sigKind := match sigNode.children[0]? with
+              | some (.token k _) => some k
+              | _ => none
+            match sigKind with
+            | some .arrow => if returnTypeSig.isNone then returnTypeSig := some sigTy
+            | some .doubleColon => if explicitSig.isNone then explicitSig := some sigTy
+            | _ => if explicitSig.isNone then explicitSig := some sigTy
+
+          -- Extract parameter types from .field nodes in paramList
+          let paramTypes := headerParams.filterMap (·.type?)
 
           -- Build the full function signature: paramType1 -> paramType2 -> ... -> returnType
-          -- If we have both parameter types and a return type, construct the full arrow type
-          let sig ← match returnTypeSig with
+          -- Header parameters become leading binders; tail comes from explicit `::` or `->` return.
+          let sigBase := explicitSig.orElse (fun _ => returnTypeSig)
+          let sig ← match sigBase with
             | none => pure none
             | some retTy =>
               if paramTypes.isEmpty then
@@ -1479,13 +1516,13 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
               c.syntaxKind? != some .signature && c.syntaxKind? != some .attribute &&
               c.syntaxKind? != some .paramList && isSemanticNode c
             if bodyNodes.isEmpty then
-              pure (.def_ attrs name sig #[] span)
+              pure (.def_ attrs name headerParams sig #[] span)
             else
               let body ← lowerExpr bodyNodes[0]!.1 bodyNodes[0]!.2
               let clause : DefClause := ⟨paramPatterns, none, body, body.span⟩
-              pure (.def_ attrs name sig #[clause] span)
+              pure (.def_ attrs name headerParams sig #[clause] span)
           else
-            pure (.def_ attrs name sig clauses span)
+            pure (.def_ attrs name headerParams sig clauses span)
 
       | .declData =>
           let nameNodes := green.children.filter fun c =>
@@ -1531,13 +1568,16 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
                 let kind ← lowerTypeExpr tyNodes[0]!.1 tyNodes[0]!.2
                 pure (some kind)
 
-          pure (.data name params cons kindAnnot span)
+          -- Extract attributes
+          let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
+          let attrs ← lowerAttributes attrNodes
+          pure (.data attrs name params cons kindAnnot span)
 
       | .declStruct =>
           let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent
           if nameNodes.size < 2 then
             lowerError "struct missing name or constructor" span
-            pure (.struct ⟨"_Error", span⟩ #[] ⟨"_Con", span⟩ #[] span)
+            pure (.struct #[] ⟨"_Error", span⟩ #[] ⟨"_Con", span⟩ #[] span)
           else
             let name ← match getTokenText nameNodes[0]! with
             | some text => pure text
@@ -1555,7 +1595,10 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             let fieldNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .field
             let fields ← fieldNodes.mapM fun (c, o) => lowerStructField c o
 
-            pure (.struct ⟨name, span⟩ params ⟨conName, span⟩ fields span)
+            -- Extract attributes
+            let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
+            let attrs ← lowerAttributes attrNodes
+            pure (.struct attrs ⟨name, span⟩ params ⟨conName, span⟩ fields span)
 
       | .declTrait =>
           let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent
@@ -1606,7 +1649,10 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
               else lowerTypeExpr sigN[0]!.1 sigN[0]!.2
             pure ⟨mname, mtype, mspan⟩
 
-          pure (.trait name params constraints methods span)
+          -- Extract attributes
+          let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
+          let attrs ← lowerAttributes attrNodes
+          pure (.trait attrs name params constraints methods span)
 
       | .declInstance =>
           let allKids := childrenWithOffsets green offset

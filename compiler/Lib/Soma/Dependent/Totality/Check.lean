@@ -2,18 +2,48 @@ import Soma.Dependent.Totality.Core
 import Soma.Dependent.Totality.TermShape
 import Soma.Dependent.Totality.CallMatrix
 import Soma.Dependent.Totality.Positivity
+import Soma.Core.Expr
 
 namespace Soma.Dependent.Totality
 
 open Soma.Core
-open Soma.Metal (Name)
 open Soma.Syntax (Span)
+
+/-- Collect the application spine from nested binary apps -/
+private partial def collectAppSpine' (e : Soma.Core.Expr) : Soma.Core.Expr × List Soma.Core.Expr :=
+  match e with
+  | .app fn arg =>
+    let (head, args) := collectAppSpine' fn
+    (head, args ++ [arg])
+  | _ => (e, [])
+
+/-- Get a variable name from an Expr for scrutinee parameter matching -/
+private def exprVarName? : Soma.Core.Expr → Option String
+  | .fvar id => some id.original
+  | .const name => some name.display
+  | _ => none
+
+/-- Analyze a case arm and extract all bindings introduced by the pattern (Expr version). -/
+private def analyzePatternFromArmExpr (patternName : String) (scrutineeParam : Option (Nat × String))
+    (armBody : Soma.Core.Expr) (existingParams : Array String) : Array BindingInfo :=
+  match scrutineeParam with
+  | none => #[]
+  | some (paramIdx, paramName) =>
+    let usedVars := collectExprVars armBody
+    let newVars := usedVars.filter fun v => !existingParams.contains v
+    newVars.toArray.map fun name => {
+      name := name
+      paramIdx := paramIdx
+      paramName := paramName
+      path := .ctorArg .root patternName 0
+      depth := 1
+    }
 
 /-- Check if a recursive call terminates using SupGen-style structural comparison
     Returns a decrease witness if termination can be proven. -/
-def checkRecursiveCallStructural (args : List Term) (ctx : TerminationContext)
+def checkRecursiveCallStructural (args : List Soma.Core.Expr) (ctx : TerminationContext)
     : DecreaseWitness :=
-  let argShapes := args.map analyzeTermShape
+  let argShapes := args.map analyzeExprShape
 
   -- Try lexicographic comparison across arguments
   let rec go (shapes : List TermShape) (idx : Nat) : DecreaseWitness :=
@@ -65,51 +95,66 @@ where
     | none => .notFound s!"no decreasing argument found (failed at position {failedIdx})"
 
 /-- Find which parameter a scrutinee corresponds to -/
-private def findScrutineeParam (scrutinee : Term) (params : Array String) : Option (Nat × String) :=
-  match scrutinee with
-  | .var _ name =>
+private def findScrutineeParam (scrutinee : Soma.Core.Expr) (params : Array String) : Option (Nat × String) :=
+  match exprVarName? scrutinee with
+  | some name =>
     match params.findIdx? (· == name) with
     | some idx => some (idx, name)
     | none => none
-  | _ => none
+  | none => none
 
 /-- Check termination for a function body -/
-partial def checkTermination (fnInfo : FunctionInfo) (body : Term) : TermM Unit := do
+partial def checkTermination (fnInfo : FunctionInfo) (body : Soma.Core.Expr) : TermM Unit := do
   TermM.setCurrentFn fnInfo
   checkTerm body
 where
   /-- Check a term for termination -/
-  checkTerm (t : Term) : TermM Unit := do
+  checkTerm (t : Soma.Core.Expr) : TermM Unit := do
     match t with
-    | .var _ _ => pure ()
+    | .bvar _ => pure ()
+    | .fvar _ => pure ()
+    | .mvar _ => pure ()
+    | .const _ => pure ()
     | .lit _ => pure ()
+    | .sort _ => pure ()
+    | .primTy _ => pure ()
+    | .rowSort => pure ()
+    | .labelSort => pure ()
+    | .rowEmpty => pure ()
+    | .labelLit _ => pure ()
+    | .panic _ => pure ()
+    | .proj _ _ _ => pure ()
 
-    | .app fn args =>
-      match fn with
-      | .global name =>
+    | .app _ _ =>
+      let (head, args) := collectAppSpine' t
+      match head with
+      | .const name =>
         let fnInfo? ← TermM.getCurrentFn
         match fnInfo? with
         | some fnInfo =>
-          if name == fnInfo.name then
+          if name.display == fnInfo.name.display then
             let ctx ← TermM.getContext
             let witness := checkRecursiveCallStructural args ctx
-            let argNames := args.filterMap (fun t =>
-              match t with
-              | .var _ n => some n
-              | _ => none) |>.toArray
+            let argNames := args.filterMap (fun e =>
+              exprVarName? e) |>.toArray
             TermM.recordRecursiveCall {
               callSpan := Span.uninhabited
-              callee := name
+              callee := fnInfo.name
               argNames := argNames
               decrease := witness
             }
         | none => pure ()
       | _ => pure ()
-      checkTerm fn
+      checkTerm head
       for arg in args do
         checkTerm arg
 
-    | .lam _ body => checkTerm body
+    | .lam _ _ _ body => checkTerm body
+
+    | .let_ _ ty val body =>
+      checkTerm ty
+      checkTerm val
+      checkTerm body
 
     | .if_ cond then_ else_ =>
       checkTerm cond
@@ -120,14 +165,14 @@ where
       checkTerm fst
       checkTerm snd
 
-    | .fst e => checkTerm e
-    | .snd e => checkTerm e
+    | .projFst e => checkTerm e
+    | .projSnd e => checkTerm e
 
     | .pi _ _ _ dom cod =>
       checkTerm dom
       checkTerm cod
 
-    | .sigma _ _ fst snd =>
+    | .sigma _ _ _ fst snd =>
       checkTerm fst
       checkTerm snd
 
@@ -143,32 +188,48 @@ where
       for (_, t) in fields do
         checkTerm t
 
-    | .fieldAccess e _ => checkTerm e
+    | .recordUpdate base updates =>
+      checkTerm base
+      for (_, t) in updates do
+        checkTerm t
+
+    | .fieldAccess e _ _ => checkTerm e
+
+    | .inject _ args =>
+      for arg in args do
+        checkTerm arg
 
     | .construct _ _ args =>
       for arg in args do
         checkTerm arg
 
-    | .case scrutinee arms =>
-      checkTerm scrutinee
+    | .«case» scruts arms =>
+      for scrut in scruts do
+        checkTerm scrut
 
+      -- Use the first scrutinee for parameter matching
+      let scrutinee := scruts[0]?
       let fnInfo? ← TermM.getCurrentFn
-      let paramInfo := match fnInfo? with
-        | some fnInfo => findScrutineeParam scrutinee fnInfo.params
-        | none => none
+      let paramInfo := match fnInfo?, scrutinee with
+        | some fnInfo, some s => findScrutineeParam s fnInfo.params
+        | _, _ => none
 
-      for (patName, _tag, armBody) in arms do
+      for arm in arms do
+        let patName := match arm.patterns[0]? with
+          | some (.ctor name _ _) => name.display
+          | _ => "_"
+        let armBody := arm.body
         match paramInfo with
         | some (paramIdx, paramName) =>
           let ctx ← TermM.getContext
-          let bindings := analyzePatternFromArm patName (some (paramIdx, paramName))
+          let bindings := analyzePatternFromArmExpr patName (some (paramIdx, paramName))
                            armBody ctx.params
           TermM.withBindings bindings do
             checkTerm armBody
         | none =>
           checkTerm armBody
 
-    | .eq _ ty lhs rhs =>
+    | .eqTy _ ty lhs rhs =>
       checkTerm ty
       checkTerm lhs
       checkTerm rhs
@@ -185,7 +246,25 @@ where
       checkTerm eq
       checkTerm body
 
-    | _ => pure ()
+    | .closure _ caps =>
+      for cap in caps do
+        checkTerm cap
+
+    | .array elements =>
+      for e in elements do
+        checkTerm e
+
+    | .tuple elements =>
+      for e in elements do
+        checkTerm e
+
+    | .dataTy _ params =>
+      for p in params do
+        checkTerm p
+
+    | .ann expr ty =>
+      checkTerm expr
+      checkTerm ty
 
 /-- Verify all recursive calls are well-founded -/
 def verifyRecursiveCalls (fnInfo : FunctionInfo) : TermM Bool := do
@@ -203,7 +282,7 @@ def verifyRecursiveCalls (fnInfo : FunctionInfo) : TermM Bool := do
   return allOk
 
 /-- Check totality for a function marked @[total] -/
-def checkFunctionTotality (fnInfo : FunctionInfo) (body : Term) : TotalityCheckResult :=
+def checkFunctionTotality (fnInfo : FunctionInfo) (body : Soma.Core.Expr) : TotalityCheckResult :=
   match (do
     checkTermination fnInfo body
     let ok ← verifyRecursiveCalls fnInfo
@@ -218,14 +297,14 @@ def checkFunctionTotality (fnInfo : FunctionInfo) (body : Term) : TotalityCheckR
     { status := .isPartial, errors := #[e], recursiveCalls := #[] }
 
 /-- Check if a function is total (for use in type indices) -/
-def assertFunctionTotal (name : Name) (status : TotalityStatus) (span : Span) : TCM Unit := do
+def assertFunctionTotal (name : QualifiedName) (status : TotalityStatus) (span : Span) : TCM Unit := do
   match status with
   | .isTotal => pure ()
   | .isPartial => TCM.throw (.partialInTypeIndex name span)
   | .isUnknown => TCM.addWarning (.totalityUnknown name span)
 
 /-- Check and register a function's totality -/
-def checkAndRegisterTotality (fnInfo : FunctionInfo) (body : Term)
+def checkAndRegisterTotality (fnInfo : FunctionInfo) (body : Soma.Core.Expr)
     (registry : TotalityRegistry) : TotalityRegistry × TotalityCheckResult :=
   if fnInfo.markedTotal then
     let result := checkFunctionTotality fnInfo body
@@ -236,7 +315,7 @@ def checkAndRegisterTotality (fnInfo : FunctionInfo) (body : Term)
     (registry', { status := .isPartial, errors := #[], recursiveCalls := #[] })
 
 /-- Check mutual recursion termination using call matrix -/
-def checkMutualTermination (functions : Array FunctionInfo) (bodies : Array Term)
+def checkMutualTermination (functions : Array FunctionInfo) (bodies : Array Soma.Core.Expr)
     : TotalityCheckResult :=
   let matrix := buildCallMatrix functions bodies
   match matrix.verifyTermination with

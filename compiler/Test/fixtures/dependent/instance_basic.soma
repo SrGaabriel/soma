@@ -10,5 +10,5 @@ class Functor (f :: Type -> Type) where
 
 instance Functor Maybe where
     def fmap :: forall a b. (a -> b) -> Maybe a -> Maybe b
-        | f (Just value) => Just (f value)
-        | f Nothing => Nothing
+        | g (Maybe::Just value) => Maybe::Just (g value)
+        | g Maybe::Nothing => Maybe::Nothing

@@ -5,16 +5,18 @@ import Somac.Circuit.PatternMatch.Compile
 import Somac.Circuit.PatternMatch.Types
 import Somac.Circuit.Graph
 import Somac.Circuit.Node
-import Soma.Metal.Expr
+import Soma.Core.Literal
 import Soma.Core.Value
+import Soma.Core.Expr
 import Std.Data.HashMap
 
 namespace Somac.Circuit.PatternMatch
 
 open Somac.Circuit.Graph (Graph GraphM)
 open Somac.Circuit.Node (Node NodeId PortId PortIdx Label)
-open Soma.Metal (BindingId Literal)
 open Soma.Core (Value)
+open Soma (Unique)
+open Soma.Core (Literal)
 
 /-- The unit type -/
 def unitTy : Value := Value.vPrimTy .unit
@@ -252,7 +254,7 @@ def buildDupChain {M : Type → Type} [Monad M] [MonadGraph M]
 /-- Context passed to arm body lowering. -/
 structure ArmContext where
   /-- Variable bindings: (id, name, ports, type). -/
-  bindings : Array (BindingId × String × Array PortId × Value)
+  bindings : Array (Unique × String × Array PortId × Value)
 
 /-- Type of callback for lowering arm bodies -/
 abbrev ArmCallback (M : Type → Type) := Nat → ArmContext → M PortId
@@ -418,18 +420,18 @@ def lower {M : Type → Type} [Monad M] [MonadGraph M]
     scrutinees scrutineeTypes registry resultType
   pure result
 
-/-- Full compilation and lowering from Metal arms. -/
+/-- Full compilation and lowering from case arms. -/
 def compileAndLower {M : Type → Type} [Monad M] [MonadGraph M]
     (ctx : SimplifyCtx)
     (registry : ConstructorTypeRegistry)
-    (arms : Soma.Metal.ArmList α scope)
+  (arms : Array Soma.Core.Arm)
     (scrutinees : Array PortId)
     (scrutineeTypes : Array Value)
     (resultType : Value)
     (lowerArm : ArmCallback M)
     (usageCounts : Std.HashMap Nat Nat := {})
     : M PortId := do
-  let matrix := buildMatrixFromArmList ctx arms
+  let matrix := buildMatrixFromArms ctx arms
   let tree := compileMatrix matrix registry scrutineeTypes
   lower tree scrutinees scrutineeTypes registry resultType lowerArm usageCounts
 

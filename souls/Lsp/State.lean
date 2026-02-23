@@ -1,6 +1,6 @@
 import Std.Data.HashMap
 import Soma.Syntax
-import Soma.Metal.Lower.Decl
+import Soma.Dependent.Lower
 import Soma.Dependent.Monad
 import Soma.Dependent.Incremental
 import Soma.Project.Check
@@ -11,10 +11,10 @@ import Lsp.Haoma
 namespace Lsp
 
 open Soma.Syntax
-open Soma.Metal.Lower (IncrementalLowerResult GlobalEnv)
 open Soma.Dependent (Globals InstanceEnv AbbrevEnv)
+open Soma.Dependent.Lower (Result)
 open Soma.Project (SymbolEnv)
-open Soma.Check (ExternalDependency symbolEnvToGlobalEnv)
+open Soma.Project.Check (ExternalDependency)
 
 /-- Symbol kinds for LSP features -/
 inductive SymbolKind where
@@ -163,8 +163,8 @@ structure CompiledModule where
   declNodeIds : Std.HashMap NodeId String := {}
   /-- Cached AST declarations by NodeId -/
   declAsts : Std.HashMap NodeId Decl := {}
-  /-- Cached Metal lowering result  -/
-  metalResult : Option IncrementalLowerResult := none
+  /-- Cached declaration lowering result  -/
+  elabResult : Option Result := none
   /-- Cached globals environment -/
   globals : Option Globals := none
   /-- Cached instance environment -/
@@ -235,7 +235,7 @@ structure LspState where
   seedInstanceEnv : InstanceEnv := InstanceEnv.empty
   /-- Merged abbreviation environment from all external dependencies -/
   seedAbbrevEnv : AbbrevEnv := AbbrevEnv.empty
-  /-- Merged symbols from all external dependencies (for Metal lowering) -/
+  /-- Merged symbols from all external dependencies (for declaration lowering) -/
   seedSymbols : SymbolEnv := {}
   deriving Inhabited
 
@@ -355,8 +355,8 @@ def isFileInKnownProject (s : LspState) (filePath : String) : Bool :=
 
 /-- Add an external dependency and merge its globals/instanceEnv/abbrevEnv/symbols -/
 def addExternalDep (s : LspState) (dep : ExternalDependency) : LspState :=
-  let newGlobals := Soma.Check.mergeGlobals s.seedGlobals dep.globals
-  let newInstanceEnv := Soma.Check.mergeInstanceEnv s.seedInstanceEnv dep.instanceEnv
+  let newGlobals := Soma.Project.Check.mergeGlobals s.seedGlobals dep.globals
+  let newInstanceEnv := Soma.Project.Check.mergeInstanceEnv s.seedInstanceEnv dep.instanceEnv
   let newAbbrevEnv := s.seedAbbrevEnv.merge dep.abbrevEnv
   -- Merge symbols from all modules in this dependency
   let newSymbols := dep.symbols.fold (init := s.seedSymbols) fun acc _modName modSymbols =>

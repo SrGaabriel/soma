@@ -1,22 +1,21 @@
 import Std.Data.HashSet
 import Soma.Syntax
-import Soma.Metal
-import Soma.Metal.Lower.Decl
+import Soma.Core.Module
+import Soma.Core.Function
 import Soma.Unique
 import Soma.Project.Module
 import Soma.Project.Graph
 import Soma.Project.Symbol
 import Soma.Dependent
+import Soma.Dependent.Lower
 import Soma.Dependent.Driver
 import Soma.Dependent.Incremental
 import Soma.Core.Value
 
-namespace Soma.Check
+namespace Soma.Project.Check
 
 open Std (HashSet HashMap)
 open Soma.Syntax
-open Soma.Metal.Lower (IncrementalLowerResult lowerModuleFresh lowerModuleWithExternals lowerModuleIncremental GlobalEnv)
-open Soma.Metal (TypeAbbrev)
 open Soma.Core
 open Soma.Project
 open Soma (UniqueSupply)
@@ -47,11 +46,14 @@ structure LowerResult where
   ast : Syntax.Module
   diagnostics : Diagnostics
 
-/-- Result of AST → Metal IR lowering -/
-structure MetalResult where
-  module : Metal.UntypedModule
-  result : IncrementalLowerResult  -- Contains caches for incremental updates
+/-- Result of AST → Core untyped-module lowering -/
+structure ElaborationResult where
+  module : Soma.Core.UntypedModule
   diagnostics : Diagnostics
+
+private def lowerModuleFromSyntax (ast : Syntax.Module) : ElaborationResult :=
+  let lowered := Soma.Dependent.Lower.lowerModule ast
+  { module := lowered.module, diagnostics := lowered.diagnostics }
 
 /-- Phase 1+2: Parse source code (lex + parse combined) -/
 def parse (filePath : String) (content : String) : ParseResult :=
@@ -75,74 +77,20 @@ def lower (tree : ParsedTree) (moduleName : String) : LowerResult :=
   let (ast, diags) := Syntax.lower tree moduleName
   { ast, diagnostics := diags }
 
-/-- Phase 4: Lower AST to Metal IR -/
-def metal (ast : Syntax.Module) : MetalResult :=
-  let result := lowerModuleFresh ast
-  let errorDiags := Metal.Lower.LowerError.toDiagnostics result.errors
-  let warningDiags := Metal.Lower.LowerWarning.toDiagnostics result.warnings
-  { module := result.module, result, diagnostics := errorDiags ++ warningDiags }
+/-- Phase 4: Lower AST to Core untyped module -/
+def elaborate (ast : Syntax.Module) : ElaborationResult :=
+  lowerModuleFromSyntax ast
 
-/-- Phase 4 with external symbols: Lower AST to Metal IR with pre-populated GlobalEnv -/
-def metalWithExternals (ast : Syntax.Module) (initialEnv : Metal.Lower.GlobalEnv) : MetalResult :=
-  let result := lowerModuleWithExternals ast initialEnv
-  let errorDiags := Metal.Lower.LowerError.toDiagnostics result.errors
-  let warningDiags := Metal.Lower.LowerWarning.toDiagnostics result.warnings
-  { module := result.module, result, diagnostics := errorDiags ++ warningDiags }
+/-- Phase 4 with external symbols: Lower AST to Core untyped module with pre-populated GlobalEnv -/
+def elaborateWithExternals (ast : Syntax.Module) : ElaborationResult :=
+  lowerModuleFromSyntax ast
 
-/-- Convert SymbolEnv to Metal.Lower.GlobalEnv for pre-populating external symbols -/
-def symbolEnvToGlobalEnv (moduleName : String) (seed : SymbolEnv) : Metal.Lower.GlobalEnv :=
-  seed.fold (init := Metal.Lower.GlobalEnv.empty moduleName) fun acc sym _val =>
-    let unique : Unique := { id := sym.unique.id, module := sym.unique.module, original := sym.name }
-    let metalName : Metal.Name := .user unique
-    match sym.kind with
-    | .type =>
-      -- Register as a type
-      let typeId : Soma.Core.TypeId := Soma.Core.TypeId.fromUnique unique
-      let typeInfo : Metal.Lower.TypeInfo := {
-        typeId := typeId
-        paramNames := #[] -- We don't have param info in Symbol, but name resolution doesn't need it
-        unique := unique
-      }
-      acc.addType sym.name typeInfo
-    | .dataCon parentType tag =>
-      let ctorInfo : Metal.Lower.ConstructorInfo := {
-        name := metalName
-        parentType := parentType
-        parentUnique := unique
-        tag := tag
-        fieldTypeSyntax := #[] -- Field types aren't needed for name resolution
-        span := sym.span
-      }
-      let globalInfo : Metal.Lower.GlobalInfo := {
-        name := metalName
-        typeSyntax := none
-        definedAt := sym.span
-      }
-      acc.addConstructor sym.name ctorInfo |>.addGlobal sym.name globalInfo
-    | .typeClassMethod _className =>
-      -- Register type class methods as globals for value-level usage
-      let globalInfo : Metal.Lower.GlobalInfo := {
-        name := metalName
-        typeSyntax := none
-        definedAt := sym.span
-      }
-      acc.addGlobal sym.name globalInfo
-    | _ =>
-      -- Register as a global for value-level usage
-      let globalInfo : Metal.Lower.GlobalInfo := {
-        name := metalName
-        typeSyntax := none
-        definedAt := sym.span
-      }
-      acc.addGlobal sym.name globalInfo
-
-/-- Phase 4b: Incremental Metal lowering -/
-def metalIncremental (ast : Syntax.Module) (changedNames : Array String)
-    (oldResult : IncrementalLowerResult) : MetalResult :=
-  let result := lowerModuleIncremental ast changedNames oldResult
-  let errorDiags := Metal.Lower.LowerError.toDiagnostics result.errors
-  let warningDiags := Metal.Lower.LowerWarning.toDiagnostics result.warnings
-  { module := result.module, result, diagnostics := errorDiags ++ warningDiags }
+/-- Phase 4b: Incremental elaboration -/
+def elaborateIncremental (ast : Syntax.Module) (changedNames : Array String)
+    (_oldResult : ElaborationResult) : ElaborationResult :=
+  -- We lower directly from Syntax in one pass.
+  let _ := changedNames
+  elaborate ast
 
 /-- Errors that can occur during project checking -/
 inductive CheckError where
@@ -167,8 +115,8 @@ structure CheckedModule where
   name : String
   /-- Resolved AST after parsing and lowering -/
   resolvedAst : Syntax.Module
-  /-- The Metal IR (untyped, but type-checked) -/
-  metalModule : Metal.UntypedModule
+  /-- The untyped Core module (declarations lowered from syntax) -/
+  untypedModule : Soma.Core.UntypedModule
   /-- Globals environment from type checking (contains all definitions with types) -/
   globals : Globals
   /-- Instance environment from type checking -/
@@ -186,19 +134,22 @@ structure CheckedModule where
   /-- Incremental checking state (dependency tracking and caching) -/
   incrementalState : IncrementalState := IncrementalState.empty
   /-- Typed function bodies from type checking -/
-  typedFunctions : Std.HashMap String Metal.TypedFunction := {}
+  typedFunctions : Std.HashMap String Soma.Core.TypedFunction := {}
   /-- Usage counts from type checking -/
-  usages : Std.HashMap Metal.BindingId Nat := {}
+  usages : Std.HashMap Soma.Unique Nat := {}
 
 namespace CheckedModule
 
 /-- Extract constructor metadata from this module -/
 def constructorMetadata (m : CheckedModule) : Std.HashMap String Nat :=
-  m.globals.defs.fold (init := {}) fun acc name info =>
-    if info.isConstructor then
+  let fromInductives := m.globals.inductives.fold (init := {}) fun acc _ indInfo =>
+    indInfo.ctors.foldl (init := acc) fun acc2 ctor =>
+      acc2.insert ctor.name.display ctor.tag
+  -- todo: remove?
+  m.globals.defs.fold (init := fromInductives) fun acc name info =>
+    if info.isConstructor && !acc.contains name then
       acc.insert name info.ctorTag
-    else
-      acc
+    else acc
 
 end CheckedModule
 
@@ -281,11 +232,37 @@ def mergeInstanceEnvs (e1 e2 : InstanceMetadata) : InstanceMetadata :=
 
 /-- Merge Globals environments -/
 def mergeGlobals (g1 g2 : Globals) : Globals :=
-  let defs := g2.defs.fold (init := g1.defs) fun acc name info =>
+  -- Start from g1 and insert g2 defs through `Globals.insert` so namespaceTree stays consistent
+  let mergedDefs := g2.defs.fold (init := g1) fun acc name info =>
     acc.insert name info
-  let typeIds := g2.typeIds.fold (init := g1.typeIds) fun acc name id =>
+  let intrinsics := g2.intrinsics.fold (init := mergedDefs.intrinsics) fun acc qn info =>
+    acc.insert qn info
+  let typeIds := g2.typeIds.fold (init := mergedDefs.typeIds) fun acc name id =>
     acc.insert name id
-  { defs := defs, typeIds := typeIds }
+  let childDecls := g2.childDecls.fold (init := mergedDefs.childDecls) fun acc parent children =>
+    let mergedChildren := match acc.get? parent with
+      | some existing =>
+        children.fold (init := existing) fun childAcc childName info =>
+          childAcc.insert childName info
+      | none => children
+    acc.insert parent mergedChildren
+  let structFields := g2.structFields.fold (init := mergedDefs.structFields) fun acc typeName fields =>
+    acc.insert typeName fields
+  let inductives := g2.inductives.fold (init := mergedDefs.inductives) fun acc typeName metaInfo =>
+    acc.insert typeName metaInfo
+  let ctorToInductive := g2.ctorToInductive.fold (init := mergedDefs.ctorToInductive) fun acc ctorName typeName =>
+    acc.insert ctorName typeName
+  let wiredRoles := g2.wiredIn.roles.fold (init := mergedDefs.wiredIn.roles) fun acc role info =>
+    if acc.contains role then acc else acc.insert role info
+  { mergedDefs with
+    intrinsics := intrinsics
+    typeIds := typeIds
+    childDecls := childDecls
+    structFields := structFields
+    inductives := inductives
+    ctorToInductive := ctorToInductive
+    wiredIn := { roles := wiredRoles }
+  }
 
 /-- Merge InstanceEnv (type class registry), deduplicating instances by instanceId -/
 def mergeInstanceEnv (e1 e2 : InstanceEnv) : InstanceEnv :=
@@ -322,23 +299,23 @@ structure FunctionCheckResult where
   /-- Updated incremental state with caches and dependencies -/
   incrementalState : IncrementalState
   /-- Typed function bodies (function name -> typed fn) -/
-  typedFunctions : Std.HashMap String Metal.TypedFunction
+  typedFunctions : Std.HashMap String Soma.Core.TypedFunction
   /-- Errors encountered during checking -/
   errors : Array Soma.Dependent.TCError
   deriving Inhabited
 
-/-- Check all functions in a Metal module, tracking dependencies and caching results.
+/-- Check all functions in a module, tracking dependencies and caching results.
     This is the core function-checking loop shared by both CLI and LSP.
 
     Parameters:
-    - `metalModule`: The Metal IR module to check
+    - `untypedModule`: The untyped Core module to check
     - `moduleName`: Name of the module (for DefId construction)
     - `ctx`: Type checking context with globals and instances
     - `initialState`: Initial TC state
     - `prevIncrState`: Previous incremental state (for caching)
     - `dirtyNames`: If Some, only check functions in this set; if None, check all -/
 def checkFunctionsCore
-    (metalModule : Metal.UntypedModule)
+  (untypedModule : Soma.Core.UntypedModule)
     (moduleName : String)
     (ctx : TCContext)
     (initialState : TCState)
@@ -348,9 +325,9 @@ def checkFunctionsCore
   let mut errors : Array Soma.Dependent.TCError := #[]
   let mut currentState := initialState
   let mut incrState := prevIncrState
-  let mut typedFns : Std.HashMap String Metal.TypedFunction := {}
+  let mut typedFns : Std.HashMap String Soma.Core.TypedFunction := {}
 
-  for fn in metalModule.functions do
+  for fn in untypedModule.functions do
     let fnName := fn.name.display
     let defId := DefId.mk moduleName fnName
 
@@ -372,14 +349,14 @@ def checkFunctionsCore
         let syntaxHash := hashFunction fn
         let cache := DefCache.failure syntaxHash (Value.vType Level.zero) DefKind.function #[e]
         incrState := incrState.updateCache defId cache
-      | .ok ((fnType, typedBody), newState) =>
+      | .ok ((fnType, typedBody, generatedParams), newState) =>
         -- Also collect any accumulated errors from error recovery
         errors := errors ++ newState.errors
 
         -- Store the typed function for downstream passes
-        let typedFn : Metal.TypedFunction := {
+        let typedFn : Soma.Core.TypedFunction := {
           name := fn.name
-          params := fn.params
+          params := generatedParams
           body := typedBody
           fnType := fnType
           closureInfo := fn.closureInfo
@@ -410,6 +387,7 @@ def checkFunctionsCore
               type := fnType
               value := none
               isConstructor := false
+              origin := .function
             }
             DefCache.success syntaxHash fnType DefKind.function info
         else
@@ -441,7 +419,7 @@ structure GlobalsAndInstancesResult where
     Returns partial results even if some definitions fail.
 
     Parameters:
-    - `metalModule`: The Metal IR module
+    - `untypedModule`: The untyped Core module
     - `moduleName`: Name of the module
     - `seedGlobals`: Globals inherited from dependencies
     - `seedInstanceEnv`: Instance env inherited from dependencies
@@ -451,7 +429,7 @@ structure GlobalsAndInstancesResult where
     - `prevInstanceMap`: Previous instance map for incremental reuse (optional)
     - `dirtyNames`: If Some, only rebuild dirty definitions; if None, rebuild all -/
 def buildGlobalsAndInstances
-    (metalModule : Metal.UntypedModule)
+  (untypedModule : Soma.Core.UntypedModule)
     (moduleName : String)
     (seedGlobals : Globals)
     (seedInstanceEnv : InstanceEnv)
@@ -466,7 +444,7 @@ def buildGlobalsAndInstances
   let mut allErrors : Array Soma.Dependent.TCError := #[]
 
   -- Build abbreviation environment for this module
-  let abbrevResult := (Soma.Dependent.Driver.buildAbbrevEnv metalModule).run
+  let abbrevResult := (Soma.Dependent.Driver.buildAbbrevEnv untypedModule).run
     { baseCtx with globals := seedGlobals, abbrevEnv := seedAbbrevEnv } state
 
   let (moduleAbbrevEnv, state0, abbrevErrors) := match abbrevResult with
@@ -481,10 +459,10 @@ def buildGlobalsAndInstances
   -- Build globals with the full abbreviation environment
   let globalsResult := match dirtyNames, prevGlobals with
     | some dirty, some prev =>
-      (Soma.Dependent.Driver.buildGlobalsIncremental metalModule prev dirty).run
+      (Soma.Dependent.Driver.buildGlobalsIncremental untypedModule prev dirty).run
         { baseCtx with globals := seedGlobals, abbrevEnv := fullAbbrevEnv } state0
     | _, _ =>
-      (Soma.Dependent.Driver.buildGlobals metalModule).run
+      (Soma.Dependent.Driver.buildGlobals untypedModule).run
         { baseCtx with globals := seedGlobals, abbrevEnv := fullAbbrevEnv } state0
 
   let (moduleGlobals, state', globalsErrors) := match globalsResult with
@@ -500,9 +478,9 @@ def buildGlobalsAndInstances
   -- Build instance environment
   let instanceEnvResult := match dirtyNames, prevInstanceEnv, prevInstanceMap with
     | some dirty, some prev, some prevMap =>
-      (Soma.Dependent.Driver.buildInstanceEnvIncremental metalModule moduleName prev prevMap dirty).run ctx state'
+      (Soma.Dependent.Driver.buildInstanceEnvIncremental untypedModule moduleName prev prevMap dirty).run ctx state'
     | _, _, _ =>
-      (Soma.Dependent.Driver.buildInstanceEnv metalModule moduleName).run ctx state'
+      (Soma.Dependent.Driver.buildInstanceEnv untypedModule moduleName).run ctx state'
 
   let (moduleInstanceEnv, instanceMap, state'', instanceErrors) := match instanceEnvResult with
     | .error e => (InstanceEnv.empty, {}, state', #[e])
@@ -528,14 +506,14 @@ structure TypeCheckResult where
   abbrevEnv : AbbrevEnv
   instanceMap : InstanceMap
   incrementalState : IncrementalState
-  usages : Std.HashMap Soma.Metal.BindingId Nat
+  usages : Std.HashMap Soma.Unique Nat
   /-- Typed function bodies (function name -> typed fn) -/
-  typedFunctions : Std.HashMap String Metal.TypedFunction
+  typedFunctions : Std.HashMap String Soma.Core.TypedFunction
   errors : Array Soma.Dependent.TCError
   deriving Inhabited
 
 def typeCheckModule
-    (metalModule : Metal.UntypedModule)
+  (untypedModule : Soma.Core.UntypedModule)
     (moduleName : String)
     (seedGlobals : Globals)
     (seedInstanceEnv : InstanceEnv)
@@ -545,7 +523,7 @@ def typeCheckModule
   -- Determine dirty names if we have previous state
   let (dirtyNames, baseIncrState) := match prevIncrState with
     | some prev =>
-      let currentHashes := hashModuleDefinitions moduleName metalModule
+      let currentHashes := hashModuleDefinitions moduleName untypedModule
       let updated := prev.invalidateChanged currentHashes
       let dirtyDefs := updated.getDirtyInOrder
       let dirty : HashSet String := dirtyDefs.foldl (init := {}) fun (acc : HashSet String) (defId : DefId) =>
@@ -561,7 +539,7 @@ def typeCheckModule
 
   -- Build globals, instance environment, and abbreviation environment
   let globalsResult := buildGlobalsAndInstances
-    metalModule moduleName seedGlobals seedInstanceEnv seedAbbrevEnv prevGlobals prevInstanceEnv prevInstanceMap dirtyNames
+    untypedModule moduleName seedGlobals seedInstanceEnv seedAbbrevEnv prevGlobals prevInstanceEnv prevInstanceMap dirtyNames
 
   let mut allErrors := globalsResult.errors
 
@@ -574,9 +552,15 @@ def typeCheckModule
 
   -- Check functions
   let fnResult := checkFunctionsCore
-    metalModule moduleName ctx globalsResult.finalState baseIncrState dirtyNames
+    untypedModule moduleName ctx globalsResult.finalState baseIncrState dirtyNames
 
   allErrors := allErrors ++ fnResult.errors
+
+  let usages : Std.HashMap Soma.Unique Nat :=
+    fnResult.finalState.usages.fold (init := {}) fun acc bindingId count =>
+      acc.insert
+        { id := bindingId.id, module := bindingId.module, original := bindingId.original }
+        count
 
   -- Update incremental state with final globals and instance map
   let finalIncrState := { fnResult.incrementalState with
@@ -590,14 +574,14 @@ def typeCheckModule
     abbrevEnv := globalsResult.abbrevEnv
     instanceMap := globalsResult.instanceMap
     incrementalState := finalIncrState
-    usages := fnResult.finalState.usages
+    usages := usages
     typedFunctions := fnResult.typedFunctions
     errors := allErrors
   }
 
 /-- Extract public symbols from a type-checked module -/
 def extractPublicSymbols
-    (metalModule : Metal.UntypedModule)
+  (untypedModule : Soma.Core.UntypedModule)
     (globals : Globals)
     (packageName : String)
     (moduleName : String)
@@ -619,14 +603,13 @@ def extractPublicSymbols
     | some exports => exports.contains name
 
   -- Extract function symbols
-  for fn in metalModule.functions do
+  for fn in untypedModule.functions do
     let fnName := fn.name.display
     if shouldExport fnName then
       match globals.lookup fnName with
       | some info =>
-        let (unique, sup') := match fn.name.baseUnique? with
-          | some u => (u, sup)
-          | none => sup.fresh fnName
+        let unique := fn.name.id
+        let sup' := sup
         sup := sup'
         let sym : Symbol := {
           unique := unique
@@ -634,14 +617,14 @@ def extractPublicSymbols
           kind := .binding
           module := moduleName
           package := packageName
-          span := fn.body.span
+          span := fn.span
         }
         acc := acc.insert sym info.type
         addedNames := addedNames.insert fnName
       | none => pure ()
 
   -- Extract type definitions and constructors
-  for typeDef in metalModule.types do
+  for typeDef in untypedModule.types do
     match typeDef with
     | .algebraic typeName _typeVars constructors =>
       let typeNameStr := typeName.display
@@ -663,9 +646,9 @@ def extractPublicSymbols
 
       -- Register constructors
       for ctor in constructors do
-        let ctorSimpleName := ctor.name.ctorSimpleName?.getD ctor.name.display
+        let ctorSimpleName := ctor.name.id.original
         if shouldExport ctorSimpleName then
-          let ctorQualified := s!"{typeNameStr}.{ctorSimpleName}"
+          let ctorQualified := s!"{typeNameStr}::{ctorSimpleName}"
           match globals.lookup ctorQualified with
           | some ctorInfo =>
             let (ctorUnique, sup') := sup.fresh ctorSimpleName
@@ -680,25 +663,9 @@ def extractPublicSymbols
             }
             acc := acc.insert ctorSym ctorInfo.type
             addedNames := addedNames.insert ctorSimpleName
-          | none =>
-            -- Try unqualified name
-            match globals.lookup ctorSimpleName with
-            | some ctorInfo =>
-              let (ctorUnique, sup') := sup.fresh ctorSimpleName
-              sup := sup'
-              let ctorSym : Symbol := {
-                unique := ctorUnique
-                name := ctorSimpleName
-                kind := .dataCon typeNameStr ctor.tag
-                module := moduleName
-                package := packageName
-                span := Span.uninhabited
-              }
-              acc := acc.insert ctorSym ctorInfo.type
-              addedNames := addedNames.insert ctorSimpleName
-            | none => pure ()
+          | none => pure ()
 
-    | .struct structName _typeVars ctorName fields =>
+    | .struct structName _typeVars _ctorName fields =>
       let structNameStr := structName.display
       if shouldExport structNameStr then
         let (structUnique, sup') := sup.fresh structNameStr
@@ -714,29 +681,29 @@ def extractPublicSymbols
         acc := acc.insert structSym (Value.vType Level.zero)
         addedNames := addedNames.insert structNameStr
 
-      -- Register struct constructor
-      let ctorSimpleName := ctorName.ctorSimpleName?.getD ctorName.display
-      if shouldExport ctorSimpleName then
-        match globals.lookup ctorSimpleName with
+      -- Register struct constructor (named "new" in namespace)
+      let ctorQualified := s!"{structNameStr}::new"
+      if shouldExport structNameStr then
+        match globals.lookup ctorQualified with
         | some ctorInfo =>
-          let (ctorUnique, sup') := sup.fresh ctorSimpleName
+          let (ctorUnique, sup') := sup.fresh ctorQualified
           sup := sup'
           let ctorSym : Symbol := {
             unique := ctorUnique
-            name := ctorSimpleName
+            name := ctorQualified
             kind := .dataCon structNameStr 0
             module := moduleName
             package := packageName
             span := Span.uninhabited
           }
           acc := acc.insert ctorSym ctorInfo.type
-          addedNames := addedNames.insert ctorSimpleName
+          addedNames := addedNames.insert ctorQualified
         | none => pure ()
 
       -- Register field accessors
       for (fieldNameOpt, _) in fields do
         if let some fieldName := fieldNameOpt then
-          let accessorName := s!"{structNameStr}.{fieldName}"
+          let accessorName := s!"{structNameStr}::{fieldName}"
           if shouldExport accessorName then
             match globals.lookup accessorName with
             | some accessorInfo =>
@@ -757,7 +724,7 @@ def extractPublicSymbols
     | .record _ _ _ => pure ()
 
   -- Extract type class methods
-  for typeClass in metalModule.typeClasses do
+  for typeClass in untypedModule.typeClasses do
     let className := typeClass.name.display
     if shouldExport className then
       addedNames := addedNames.insert className
@@ -804,7 +771,7 @@ def extractPublicSymbols
 
 /-- Extract public instances from a type-checked module -/
 def extractPublicInstances
-    (metalModule : Metal.UntypedModule)
+  (untypedModule : Soma.Core.UntypedModule)
     (instanceMap : InstanceMap)
     (packageName : String)
     (moduleName : String)
@@ -814,7 +781,7 @@ def extractPublicInstances
   let mut acc := seed
   let mut sup := supply
 
-  for inst in metalModule.instances do
+  for inst in untypedModule.instances do
     let className := inst.className
     let instanceName := s!"{inst.className}$inst{inst.typeArgsSyntax.size}"
     let (unique, sup') := sup.fresh instanceName
@@ -884,20 +851,17 @@ def checkModule
   let seedAbbrevEnv := checkedDeps.fold (init := externalAbbrevEnv) fun acc _ dep =>
     AbbrevEnv.merge acc dep.abbrevEnv
 
-  -- Collect symbol env from checked dependencies for Metal lowering
-  let seedSymbols := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
+  -- Collect symbol env from checked dependencies
+  let _seedSymbols := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
     dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
-  -- Convert seed symbols to GlobalEnv for Metal lowering
-  let initialGlobalEnv := symbolEnvToGlobalEnv modName seedSymbols
-
-  -- Lower AST to Metal IR with external symbols pre-populated
-  let metalRes := metalWithExternals info.ast initialGlobalEnv
-  if metalRes.diagnostics.hasErrors then
-    return (metalRes.diagnostics, none, supply)
+  -- Lower AST to Core untyped module
+  let elabRes := elaborateWithExternals info.ast
+  if elabRes.diagnostics.hasErrors then
+    return (elabRes.diagnostics, none, supply)
 
   -- Use the shared type checking pipeline (fresh check, no previous state)
-  let tcResult := typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv none
+  let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv none
 
   let allDiags := tcResult.errors.map (·.toDiagnostic)
 
@@ -912,20 +876,20 @@ def checkModule
     | _ => none
 
   let (publicSymbols, supply') := extractPublicSymbols
-    metalRes.module tcResult.globals packageName modName {} supply explicitExports depSymbols
+    elabRes.module tcResult.globals packageName modName {} supply explicitExports depSymbols
 
   let depInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
     mergeInstanceEnvs acc dep.publicInstances
 
   let (publicInstances, supply'') := extractPublicInstances
-    metalRes.module tcResult.instanceMap packageName modName depInstances supply'
+    elabRes.module tcResult.instanceMap packageName modName depInstances supply'
 
   -- Always produce a CheckedModule, even with errors
   -- This enables IDE features to work with partial information
   let checkedModule : CheckedModule := {
     name := modName
     resolvedAst := info.ast
-    metalModule := metalRes.module
+    untypedModule := elabRes.module
     globals := tcResult.globals
     instanceEnv := tcResult.instanceEnv
     abbrevEnv := tcResult.abbrevEnv
@@ -938,7 +902,7 @@ def checkModule
     usages := tcResult.usages
   }
 
-  (metalRes.diagnostics ++ allDiags, some checkedModule, supply'')
+  (elabRes.diagnostics ++ allDiags, some checkedModule, supply'')
 
 /-- Check a single module incrementally, reusing cached results for unchanged definitions.
     This is the main entry point for incremental type checking in the LSP. -/
@@ -965,21 +929,19 @@ def checkModuleIncremental
   let seedAbbrevEnv := checkedDeps.fold (init := externalAbbrevEnv) fun acc _ dep =>
     AbbrevEnv.merge acc dep.abbrevEnv
 
-  let seedSymbols := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
+  let _seedSymbols := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
     dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
-  let initialGlobalEnv := symbolEnvToGlobalEnv modName seedSymbols
-
-  -- Lower AST to Metal IR
-  let metalRes := metalWithExternals info.ast initialGlobalEnv
-  if metalRes.diagnostics.hasErrors then
-    return (metalRes.diagnostics, none, supply)
+  -- Lower AST to Core untyped module
+  let elabRes := elaborateWithExternals info.ast
+  if elabRes.diagnostics.hasErrors then
+    return (elabRes.diagnostics, none, supply)
 
   -- Use the shared type checking pipeline with previous state for incremental checking
-  let tcResult := typeCheckModule metalRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv (some prevModule.incrementalState)
+  let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv (some prevModule.incrementalState)
 
   -- If nothing changed (empty errors and same state), we could reuse previous result
-  -- But for correctness, we rebuild anyway since Metal IR might have changed
+  -- But for correctness, we rebuild anyway since the lowered module might have changed
 
   let allDiags := tcResult.errors.map (·.toDiagnostic)
 
@@ -994,18 +956,18 @@ def checkModuleIncremental
     | _ => none
 
   let (publicSymbols, supply') := extractPublicSymbols
-    metalRes.module tcResult.globals packageName modName {} supply explicitExports depSymbols
+    elabRes.module tcResult.globals packageName modName {} supply explicitExports depSymbols
 
   let depInstances : InstanceMetadata := checkedDeps.fold (init := {}) fun acc _ dep =>
     mergeInstanceEnvs acc dep.publicInstances
 
   let (publicInstances, supply'') := extractPublicInstances
-    metalRes.module tcResult.instanceMap packageName modName depInstances supply'
+    elabRes.module tcResult.instanceMap packageName modName depInstances supply'
 
   let checkedModule : CheckedModule := {
     name := modName
     resolvedAst := info.ast
-    metalModule := metalRes.module
+    untypedModule := elabRes.module
     globals := tcResult.globals
     instanceEnv := tcResult.instanceEnv
     abbrevEnv := tcResult.abbrevEnv
@@ -1018,7 +980,7 @@ def checkModuleIncremental
     usages := tcResult.usages
   }
 
-  (metalRes.diagnostics ++ allDiags, some checkedModule, supply'')
+  (elabRes.diagnostics ++ allDiags, some checkedModule, supply'')
 
 /-- Check all modules in topological order -/
 def checkModulesInOrder
@@ -1232,10 +1194,10 @@ def toAst (filePath : String) (content : String) (moduleName : Option String := 
   let lowerRes := lower parseRes.tree modName
   (parseRes, lowerRes)
 
-/-- Parse + lower to Metal IR -/
-def toMetal (filePath : String) (content : String) : ParseResult × LowerResult × MetalResult :=
+/-- Parse + lower to Core untyped module -/
+def toElaborated (filePath : String) (content : String) : ParseResult × LowerResult × ElaborationResult :=
   let (parseRes, lowerRes) := toAst filePath content
-  let metalRes := metal lowerRes.ast
-  (parseRes, lowerRes, metalRes)
+  let elabRes := elaborate lowerRes.ast
+  (parseRes, lowerRes, elabRes)
 
-end Soma.Check
+end Soma.Project.Check

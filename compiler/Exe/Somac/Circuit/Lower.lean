@@ -2,12 +2,15 @@ import Somac.Circuit.Graph
 import Somac.Circuit.Node
 import Somac.Circuit.Term
 import Somac.Circuit.PatternMatch
-import Soma.Metal.Expr
-import Soma.Metal.Module
-import Soma.Metal.Function
+import Soma.Core.Module
+import Soma.Core.Function
 import Soma.Core.Value
 import Soma.Core.Quantity
+import Soma.Core.Expr
+import Soma.Core.Intrinsic
+import Soma.Core.Literal
 import Soma.Dependent.Monad
+import Soma.Unique
 import Std.Data.HashMap
 
 namespace Somac.Circuit.Lower
@@ -16,14 +19,14 @@ open Somac.Circuit.Graph (Graph GraphM enumList)
 open Somac.Circuit.Node (Node NodeId PortId PortIdx Label)
 open Somac.Circuit.Term (Op1Code Op2Code PrimType)
 open Somac.Circuit.Term (PrimType)
-open Soma.Metal (Expr ExprList Literal Name BindingId)
-open Soma.Core (Value Quantity PrimOp FFIOp Intrinsic)
+open Soma.Core (Literal Value Quantity PrimOp FFIOp Intrinsic QualifiedName)
+open Soma (Unique)
 
-/-- Usage map: maps BindingId to exact usage count from type checkings -/
-abbrev UsageMap := Std.HashMap BindingId Nat
+/-- Usage map: maps local unique id to exact usage count from type checking -/
+abbrev UsageMap := Std.HashMap Unique Nat
 
 /-- Convert TCState.usages to UsageMap for clear boundaries -/
-def UsageMap.fromTCUsages (usages : Std.HashMap BindingId Nat) : UsageMap := usages
+def UsageMap.fromTCUsages (usages : Std.HashMap Unique Nat) : UsageMap := usages
 
 /-- A port allocation for a variable binding -/
 structure VarAlloc where
@@ -51,18 +54,20 @@ def stringTy : Value := Value.vPrimTy .string
 
 /-- Lowering context tracks variable bindings -/
 structure LowerCtx where
-  /-- Variable allocations by BindingId -/
+  /-- Variable allocations by local unique id -/
   bindings : Std.HashMap Nat VarAlloc := {}
-  /-- Global function Name → book index -/
-  globals : Std.HashMap Name Nat := {}
-  /-- Constructor Name → (type Name, tag, arity) -/
-  constructors : Std.HashMap Name (Name × Nat × Nat) := {}
+  /-- Global function QualifiedName → book index -/
+  globals : Std.HashMap QualifiedName Nat := {}
+  /-- Constructor QualifiedName → (type QualifiedName, tag, arity) -/
+  constructors : Std.HashMap QualifiedName (QualifiedName × Nat × Nat) := {}
   /-- Constructor type registry for field type lookup during pattern matching -/
   ctorTypeRegistry : PatternMatch.ConstructorTypeRegistry := {}
-  /-- Current function Name (for recursion detection) -/
-  currentFn : Option Name := none
-  /-- Usage counts from type checking (BindingId → exact count) -/
+  /-- Current function QualifiedName (for recursion detection) -/
+  currentFn : Option QualifiedName := none
+  /-- Usage counts from type checking (Unique → exact count) -/
   usageMap : UsageMap := {}
+  /-- Intrinsic dispatch table from elaboration/type-checking -/
+  intrinsics : Std.HashMap QualifiedName Intrinsic := {}
   deriving Inhabited
 
 namespace LowerCtx
@@ -70,18 +75,18 @@ namespace LowerCtx
 def empty : LowerCtx := {}
 
 /-- Register a variable binding with pre-allocated ports -/
-def bindVar (ctx : LowerCtx) (id : BindingId) (name : String) (ports : Array PortId) (ty : Value)
+def bindVar (ctx : LowerCtx) (id : Unique) (name : String) (ports : Array PortId) (ty : Value)
     (erased : Bool := false) : LowerCtx :=
   { ctx with bindings := ctx.bindings.insert id.id ⟨ports, name, ty, erased⟩ }
 
 /-- Check if a binding is erased -/
-def isBindingErased (ctx : LowerCtx) (id : BindingId) : Bool :=
+def isBindingErased (ctx : LowerCtx) (id : Unique) : Bool :=
   match ctx.bindings.get? id.id with
   | some alloc => alloc.erased
   | none => false
 
 /-- Consume one use of a variable, returning the port and type for that use -/
-def useVar (ctx : LowerCtx) (id : BindingId) : Option (PortId × Value × LowerCtx) :=
+def useVar (ctx : LowerCtx) (id : Unique) : Option (PortId × Value × LowerCtx) :=
   match ctx.bindings.get? id.id with
   | none => none
   | some alloc =>
@@ -95,19 +100,19 @@ def useVar (ctx : LowerCtx) (id : BindingId) : Option (PortId × Value × LowerC
       some (port, alloc.ty, ctx')
 
 /-- Look up type for a binding -/
-def getVarType (ctx : LowerCtx) (id : BindingId) : Option Value :=
+def getVarType (ctx : LowerCtx) (id : Unique) : Option Value :=
   ctx.bindings.get? id.id |>.map (·.ty)
 
 /-- Register a global function -/
-def registerGlobal (ctx : LowerCtx) (name : Name) (idx : Nat) : LowerCtx :=
+def registerGlobal (ctx : LowerCtx) (name : QualifiedName) (idx : Nat) : LowerCtx :=
   { ctx with globals := ctx.globals.insert name idx }
 
 /-- Look up a global function's book index -/
-def lookupGlobal (ctx : LowerCtx) (name : Name) : Option Nat :=
+def lookupGlobal (ctx : LowerCtx) (name : QualifiedName) : Option Nat :=
   ctx.globals.get? name
 
 /-- Register a constructor -/
-def registerCtor (ctx : LowerCtx) (name : Name) (typeName : Name) (tag arity : Nat) : LowerCtx :=
+def registerCtor (ctx : LowerCtx) (name : QualifiedName) (typeName : QualifiedName) (tag arity : Nat) : LowerCtx :=
   { ctx with constructors := ctx.constructors.insert name (typeName, tag, arity) }
 
 /-- Register a constructor with its elaborated type (for pattern matching field type lookup) -/
@@ -117,11 +122,11 @@ def registerCtorType (ctx : LowerCtx) (typeId : Soma.Core.TypeId) (tag : Nat)
   { ctx with ctorTypeRegistry := ctx.ctorTypeRegistry.register typeId tag info }
 
 /-- Look up constructor info -/
-def lookupCtor (ctx : LowerCtx) (name : Name) : Option (Name × Nat × Nat) :=
+def lookupCtor (ctx : LowerCtx) (name : QualifiedName) : Option (QualifiedName × Nat × Nat) :=
   ctx.constructors.get? name
 
 /-- Look up usage count for a binding. Returns 1 if not found (safe default) -/
-def getUsageCount (ctx : LowerCtx) (id : BindingId) : Nat :=
+def getUsageCount (ctx : LowerCtx) (id : Unique) : Nat :=
   ctx.usageMap.getD id 1
 
 /-- Create context with a usage map -/
@@ -186,7 +191,7 @@ def setRoot (p : PortId) : LowerM Unit :=
   liftGraph (GraphM.setRoot p)
 
 /-- Add a definition to the book -/
-def addDefinition (name : Name) (root : NodeId) (arity : Nat) (ty : Value)
+def addDefinition (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
     (isExternal : Bool := false) : LowerM Nat :=
   liftGraph (GraphM.addDefinition name root arity ty isExternal)
 
@@ -278,7 +283,7 @@ def lowerLiteral (lit : Literal) : LowerM PortId := do
     pure (PortId.principal stringNode)
 
 /-- Lower a variable reference -/
-def lowerVar (bindingId : BindingId) : LowerM (Option PortId) := do
+def lowerVar (bindingId : Unique) : LowerM (Option PortId) := do
   let ctx ← LowerM.getCtx
   if ctx.isBindingErased bindingId then
     pure none
@@ -314,499 +319,13 @@ def primOpToOp2Code : PrimOp → Option Op2Code
   | .not => none  -- Unary operation
   | .neg => none  -- Unary operation
 
-/-- Check if an expression is a type-level argument (erased at runtime) -/
-def isTypeLevelArg (e : Expr Value scope) : Bool :=
-  match e with
-  | .typeApp _ _ _ => true
-  | .mvar _ _ _ => true
-  | _ => false
-
-/-- Check if all arguments in a list are type-level (erased at runtime) -/
-def allTypeLevelArgs (args : ExprList Value scope) : Bool :=
-  match args with
-  | .nil => true
-  | .cons e rest => isTypeLevelArg e && allTypeLevelArgs rest
-
-/-- Check if an expression is a primitive operation global reference -/
-partial def getPrimOp : Expr Value scope → Option PrimOp
-  | .global name _ _ =>
-    match name with
-    | .intrinsic (.primOp op) => some op
-    | _ => none
-  | .call fn args _ _ =>
-    if allTypeLevelArgs args then getPrimOp fn else none
-  | _ => none
-
-/-- Extract field names from a record row type
-    Returns field names in order (outermost extension first) -/
-def extractRowFieldNames : Value → Array String
-  | .vRowExtend (.vLabelLit name) _ tail => #[name] ++ extractRowFieldNames tail
-  | .vRowExtend _ _ tail => extractRowFieldNames tail -- Non-label (shouldn't happen)
-  | .vRowEmpty => #[]
-  | _ => #[] -- Not a row type
-
-/-- Extract field names from a record type (vRecord row) -/
-def extractRecordFieldNames : Value → Array String
-  | .vRecord row => extractRowFieldNames row
-  | _ => #[]
-
-/-- Get the type of an expression, falling back to unit for erased/untyped expressions -/
-def exprType (e : Expr Value scope) : Value :=
-  e.getInfo.getD unitTy
-
-/-- Convert UsageMap (keyed by BindingId) to Std.HashMap Nat Nat (keyed by raw id) -/
+/-- Convert UsageMap (keyed by Unique) to Std.HashMap Nat Nat (keyed by raw id) -/
 def usageMapToNatMap (usageMap : UsageMap) : Std.HashMap Nat Nat :=
   usageMap.fold (init := {}) fun acc bindingId count =>
     acc.insert bindingId.id count
 
-mutual
-
-/-- Lower an expression to a Circuit IR subgraph -/
-partial def lowerExpr (e : Expr Value scope) : LowerM (Option PortId) := do
-  -- Extract the type info from the Metal expression
-  let ty := exprType e
-  match e with
-  | .var v _info _span =>
-    lowerVar v.binding
-
-  | .lit lit _span =>
-    some <$> lowerLiteral lit
-
-  | .call fn args _info _span =>
-    lowerApp fn args ty
-
-  | .lam params body _info _span =>
-    some <$> lowerLam params body ty
-
-  | .construct name tag args _info _span =>
-    lowerConstruct name tag args ty
-
-  | .if_ cond then_ else_ _info _span =>
-    lowerIf cond then_ else_ ty
-
-  | .case scrutinees arms _info _span =>
-    lowerCase scrutinees arms ty
-
-  | .global name _info _span =>
-    some <$> lowerGlobal name ty
-
-  | .fieldAccess expr _fieldName fieldIdx _info _span =>
-    lowerFieldAccess expr fieldIdx ty
-
-  | .record fields _info _span =>
-    lowerRecord fields ty
-
-  | .tuple elems _info _span =>
-    lowerTuple elems ty
-
-  | .pair fst snd _info _span =>
-    lowerPair fst snd ty
-
-  | .fst e _info _span =>
-    lowerProj e 0 ty
-
-  | .snd e _info _span =>
-    lowerProj e 1 ty
-
-  | .panic msg _info span =>
-    -- Panic: emit a call to the runtime panic function (soma_panic)
-    let word64Ty := Value.vPrimTy .word64
-    let word32Ty := Value.vPrimTy .word32
-    let msgNode ← LowerM.addNode (Node.num .u64 msg.hash.toUInt32) word64Ty
-    let msgPort := PortId.principal msgNode
-
-    -- Create a marker node that indicates panic with source location info
-    -- We use a CTOR with a special tag (maxNat) to mark it as panic
-    -- The arity is 2: (message_hash, line_number)
-    let lineNum := span.start.line.toUInt32
-    let lineNode ← LowerM.addNode (Node.num .u32 lineNum) word32Ty
-
-    -- Build panic info as a 2-field constructor with reserved tag
-    let panicTag := 0xFFFFFF -- Reserved tag for panic
-    let panicCtor ← LowerM.addNode (.ctor panicTag 2) ty
-    LowerM.connect ⟨panicCtor, ⟨1⟩⟩ msgPort
-    LowerM.connect ⟨panicCtor, ⟨2⟩⟩ (PortId.principal lineNode)
-
-    pure (some (PortId.principal panicCtor))
-
-  | .ann expr _ty _info _span =>
-    lowerExpr expr
-
-  | .closure name captures _info _span =>
-    lowerClosure name captures ty
-
-  | .array elems _info _span =>
-    lowerArray elems ty
-
-  | .proj _typeName _fieldName fieldIdx _info _span =>
-    some <$> lowerFirstClassProj fieldIdx ty
-
-  | .inject label args _info _span =>
-    lowerInject label args ty
-
-  | .recordUpdate base updates _info _span =>
-    lowerRecordUpdate base updates ty
-
-  -- Type-level constructs (erased at runtime)
-  | .type _ _ | .pi _ _ _ _ _ _ | .sigma _ _ _ _ _
-  | .primTy _ _ | .rowSort _ | .labelSort _ | .rowEmpty _
-  | .rowExtend _ _ _ _ | .recordTy _ _ | .variantTy _ _
-  | .labelLit _ _ | .dataTy _ _ _ | .eq _ _ _ _ _
-  | .refl _ _ _ | .transport _ _ _ _ _ _ _ _
-  | .hole _ _ | .mvar _ _ _ | .typeApp _ _ _ =>
-    pure none
-
-/-- Lower an expression with an explicit type override -/
-partial def lowerExprWithType (e : Expr Value scope) (overrideTy : Value) : LowerM (Option PortId) := do
-  match e with
-  | .global name _ _ =>
-    -- Global reference: use the override type instead of the declared type
-    some <$> lowerGlobal name overrideTy
-  | .call fn args _ _ =>
-    -- Nested call: if all args are type-level, continue passing override through
-    if allTypeLevelArgs args then
-      lowerExprWithType fn overrideTy
-    else
-      -- The override type is for the outermost type application, not intermediate calls.
-      let callTy := exprType e
-      lowerApp fn args callTy
-  | _ =>
-    -- Other expressions: fall back to normal lowering
-    lowerExpr e
-
-/-- Lower an expression list -/
-partial def lowerExprList (es : ExprList Value scope) : LowerM (Array PortId) := do
-  match es with
-  | .nil => pure #[]
-  | .cons e rest =>
-    let port? ← lowerExpr e
-    let restPorts ← lowerExprList rest
-    match port? with
-    | some port => pure (#[port] ++ restPorts)
-    | none => pure restPorts
-
-/-- Lower a capture list to an array of (port, type) pairs -/
-partial def lowerCaptureList (caps : Soma.Metal.CaptureList Value scope)
-    : LowerM (Array (PortId × Value)) := do
-  match caps with
-  | .nil => pure #[]
-  | .cons scopedVar captureType rest =>
-    -- Look up the captured variable in current bindings
-    let port? ← lowerVar scopedVar.binding
-    let restPairs ← lowerCaptureList rest
-    match port? with
-    | some port => pure (#[(port, captureType)] ++ restPairs)
-    | none => pure restPairs
-
-/-- Lower a closure to a pair of (function_ref, environment).
-
-    Closures are represented as a 2-field CTOR where:
-    - Field 0: REF node pointing to the lifted function
-    - Field 1: CTOR containing captured values (or nullary CTOR if no captures)
-
-    This encoding allows closures to be first-class values that carry both
-    the function pointer and their captured environment. When a closure is
-    applied, the caller extracts the function ref and environment, then
-    calls the function with the environment as an implicit first argument. -/
-partial def lowerClosure (fnName : Name) (captures : Soma.Metal.CaptureList Value scope)
-    (ty : Value) : LowerM (Option PortId) := do
-  -- Get REF to the lifted function
-  let fnPort ← lowerGlobal fnName ty
-
-  -- Build environment CTOR from captures
-  let capturePairs ← lowerCaptureList captures
-  let envPort ← if capturePairs.isEmpty then do
-    -- No captures: empty environment (nullary CTOR)
-    let ctor ← LowerM.addNode (.ctor 0 0) unitTy
-    pure (PortId.principal ctor)
-  else do
-    -- Build CTOR with captured values as fields
-    -- Environment type is a tuple of capture types
-    let captureTypes := capturePairs.map (·.2)
-    let envTy := Value.tuple captureTypes
-    let ctor ← LowerM.addNode (.ctor 0 capturePairs.size) envTy
-    for i in [:capturePairs.size] do
-      LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ capturePairs[i]!.1
-    pure (PortId.principal ctor)
-
-  -- Build closure pair: (fn_ref, env)
-  let closureCtor ← LowerM.addNode (.ctor 0xFFFFFE 2) ty
-  LowerM.connect ⟨closureCtor, ⟨1⟩⟩ fnPort
-  LowerM.connect ⟨closureCtor, ⟨2⟩⟩ envPort
-  pure (some (PortId.principal closureCtor))
-
-/-- Lower a function application -/
-partial def lowerApp (fn : Expr Value scope) (args : ExprList Value scope)
-    (ty : Value) : LowerM (Option PortId) := do
-  -- Check if all arguments are type-level (erased at runtime)
-  if allTypeLevelArgs args then
-    -- Pure type app, pass result ty through
-    lowerExprWithType fn ty
-  else
-    match fn with
-    | .call innerFn innerArgs _ _ =>
-      match getPrimOp innerFn with
-      | some primOp =>
-        match primOpToOp2Code primOp with
-        | some op2 =>
-          -- Lower operands directly without creating intermediate APP nodes
-          let innerArgPorts ← lowerExprList innerArgs
-          let outerArgPorts ← lowerExprList args
-          match innerArgPorts.toList, outerArgPorts.toList with
-          | [arg1Port], [arg2Port] =>
-            -- Both operands available: create Op2 node
-            let op2Node ← LowerM.addNode (.op2 op2) ty
-            LowerM.connect ⟨op2Node, ⟨1⟩⟩ arg1Port
-            LowerM.connect ⟨op2Node, ⟨2⟩⟩ arg2Port
-            pure (some (PortId.principal op2Node))
-          | _, _ =>
-            -- Operands erased or wrong arity: fall through to normal lowering
-            lowerAppGeneric fn args ty
-        | none =>
-          lowerAppGeneric fn args ty
-      | none =>
-        lowerAppGeneric fn args ty
-    | _ =>
-      -- fn is not a .call: fall through
-      lowerAppGeneric fn args ty
-where
-  /-- Generic application lowering -/
-  lowerAppGeneric (fn : Expr Value scope) (args : ExprList Value scope)
-      (ty : Value) : LowerM (Option PortId) := do
-    let fnPort? ← lowerExpr fn
-    match fnPort? with
-    | none => pure none
-    | some fnPort =>
-      let argPorts ← lowerExprList args
-      match fn, argPorts.toList with
-      | _, [argPort] =>
-        -- Single argument call (the normal case after elaboration)
-        match getPrimOp fn with
-        | some primOp =>
-          match primOpToOp1Code primOp with
-          | some op1 =>
-            let op1Node ← LowerM.addNode (.op1 op1) ty
-            LowerM.connect ⟨op1Node, ⟨1⟩⟩ argPort
-            pure (some (PortId.principal op1Node))
-          | none =>
-            lowerSingleApp fnPort argPort ty
-        | none =>
-          lowerSingleApp fnPort argPort ty
-
-      | _, [] =>
-        pure (some fnPort)
-
-      | _, argPortList =>
-        let mut resultPort := fnPort
-        for argPort in argPortList do
-          let app ← LowerM.addNode .app ty
-          LowerM.connect ⟨app, ⟨1⟩⟩ resultPort
-          LowerM.connect ⟨app, ⟨2⟩⟩ argPort
-          resultPort := PortId.principal app
-        pure (some resultPort)
-  /-- Lower a single-argument application using the type annotation from elaboration -/
-  lowerSingleApp (fnPort : PortId) (argPort : PortId) (resultTy : Value) : LowerM (Option PortId) := do
-    let app ← LowerM.addNode .app resultTy
-    LowerM.connect ⟨app, ⟨1⟩⟩ fnPort
-    LowerM.connect ⟨app, ⟨2⟩⟩ argPort
-    pure (some (PortId.principal app))
-
-/-- Lower a lambda expression -/
-partial def lowerLam (params : Soma.Metal.ParamList Value)
-    (body : Expr Value (params.bindingIds ++ scope))
-    (ty : Value) : LowerM PortId := do
-  let paramList := params.toList
-
-  match paramList with
-  | [] =>
-    -- No parameters: just lower the body
-    match ← lowerExpr body with
-    | some bodyPort => pure bodyPort
-    | none =>
-      let era ← LowerM.addNode .era unitTy
-      pure (PortId.principal era)
-
-  | [(bindingId, name, _info)] =>
-    -- Single parameter lambda (the normal case after elaboration)
-    let ctx ← LowerM.getCtx
-    let usageCount := ctx.getUsageCount bindingId
-    let erased := usageCount == 0
-
-    -- The LAM node gets the full function type from the expression annotation
-    let lam ← LowerM.addNode (.lam erased) ty
-
-    -- Extract parameter type from the Pi type's domain
-    let paramTy := ty.piDomain?.getD unitTy
-
-    -- Build DUP chain and bind the parameter
-    let varPort : PortId := ⟨lam, ⟨1⟩⟩
-    let (usePorts, isErased) ← buildDupChain varPort usageCount paramTy
-    LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name usePorts paramTy isErased
-
-    -- Lower the body and wire to LAM
-    let bodyPort? ← lowerExpr body
-    let bodyPort := bodyPort?.getD ⟨lam, ⟨1⟩⟩
-    LowerM.connect ⟨lam, ⟨2⟩⟩ bodyPort
-
-    pure (PortId.principal lam)
-
-  | _ =>
-    -- todo: consider panicking
-    let mut lamNodes : Array NodeId := #[]
-    let ctx ← LowerM.getCtx
-    let mut currentTy := ty
-
-    for (bindingId, name, _info) in paramList do
-      let usageCount := ctx.getUsageCount bindingId
-      let erased := usageCount == 0
-
-      let lam ← LowerM.addNode (.lam erased) currentTy
-      lamNodes := lamNodes.push lam
-
-      let paramTy := currentTy.piDomain?.getD unitTy
-      currentTy := currentTy.piCodomain?.getD unitTy
-
-      let varPort : PortId := ⟨lam, ⟨1⟩⟩
-      let (usePorts, isErased) ← buildDupChain varPort usageCount paramTy
-      LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name usePorts paramTy isErased
-
-    for j in [:lamNodes.size - 1] do
-      let outer := lamNodes[j]!
-      let inner := lamNodes[j + 1]!
-      LowerM.connect ⟨outer, ⟨2⟩⟩ (PortId.principal inner)
-
-    let bodyPort? ← lowerExpr body
-    let bodyPort := bodyPort?.getD ⟨lamNodes[lamNodes.size - 1]!, ⟨1⟩⟩
-    let innermost := lamNodes[lamNodes.size - 1]!
-    LowerM.connect ⟨innermost, ⟨2⟩⟩ bodyPort
-
-    pure (PortId.principal lamNodes[0]!)
-
-/-- Lower a constructor application -/
-partial def lowerConstruct (_name : Name) (tag : Nat) (args : ExprList Value scope)
-    (ty : Value) : LowerM (Option PortId) := do
-  let argPorts ← lowerExprList args
-  let ctor ← LowerM.addNode (.ctor tag argPorts.size) ty
-
-  -- Connect each field to the CTOR's aux ports
-  for i in [:argPorts.size] do
-    LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ argPorts[i]!
-
-  pure (some (PortId.principal ctor))
-
-/-- Lower an if-then-else (as a MAT on boolean) -/
-partial def lowerIf (cond then_ else_ : Expr Value scope)
-    (ty : Value) : LowerM (Option PortId) := do
-  let condPort? ← lowerExpr cond
-  match condPort? with
-  | none =>
-    -- Condition is erased, entire if is erased
-    pure none
-  | some condPort =>
-    let thenPort? ← lowerExpr then_
-    let elsePort? ← lowerExpr else_
-    -- For branches, if they're erased we still need something to connect
-    let thenPort := match thenPort? with
-      | some p => p
-      | none => condPort -- placeholder
-    let elsePort := match elsePort? with
-      | some p => p
-      | none => condPort -- placeholder
-
-    -- MAT on bool: tag 1 = true
-    let mat ← LowerM.addNode (.mat 1) ty
-    LowerM.connect ⟨mat, ⟨1⟩⟩ condPort -- scrutinee
-    LowerM.connect ⟨mat, ⟨2⟩⟩ thenPort -- hit (true)
-    LowerM.connect ⟨mat, ⟨3⟩⟩ elsePort -- miss (false)
-
-    pure (some (PortId.principal mat))
-
-/-- Lower a case expression using decision tree compilation -/
-partial def lowerCase (scrutinees : ExprList Value scope)
-    (arms : Soma.Metal.ArmList Value scope)
-    (ty : Value) : LowerM (Option PortId) := do
-  -- Lower scrutinees and collect their types
-  let scrutPorts ← lowerExprList scrutinees
-  let scrutTypes ← getExprListTypes scrutinees
-
-  if scrutPorts.isEmpty then
-    pure none
-  else
-    -- Build constructor table from current context
-    let ctx ← LowerM.getCtx
-    let ctorTable := buildCtorTable ctx.constructors
-    let simplifyCtx : PatternMatch.SimplifyCtx := { ctorTable := ctorTable }
-
-    -- Compile pattern matrix to decision tree
-    let matrix := PatternMatch.buildMatrixFromArmList simplifyCtx arms
-    let tree := PatternMatch.compileMatrix matrix ctx.ctorTypeRegistry scrutTypes
-
-    -- Convert usage map to the format expected by PatternMatch
-    let usageCounts := usageMapToNatMap ctx.usageMap
-
-    -- Lower the decision tree
-    let result ← PatternMatch.lower tree scrutPorts scrutTypes ctx.ctorTypeRegistry ty
-      (fun armIndex armCtx => lowerArmBodyByIndex arms armIndex armCtx)
-      usageCounts
-    pure (some result)
-where
-  /-- Get types of an expression list -/
-  getExprListTypes : ExprList Value scope → LowerM (Array Value)
-    | .nil => pure #[]
-    | .cons e rest => do
-      let ty := exprType e
-      let restTys ← getExprListTypes rest
-      pure (#[ty] ++ restTys)
-
-  /-- Build a constructor table from the LowerCtx format -/
-  buildCtorTable (ctors : Std.HashMap Name (Name × Nat × Nat))
-      : PatternMatch.ConstructorTable :=
-    ctors.fold (init := {}) fun acc name (typeName, tag, arity) =>
-      acc.insert name.display ⟨typeName.display, tag, arity⟩
-
-  /-- Get arm body by index and lower it directly -/
-  lowerArmBodyByIndex (arms : Soma.Metal.ArmList Value scope) (idx : Nat)
-      (armCtx : PatternMatch.ArmContext) : LowerM PortId := do
-    match arms, idx with
-    | .nil, _ =>
-      -- Should not happen with well-formed patterns
-      let era ← LowerM.addNode .era unitTy
-      pure (PortId.principal era)
-    | .cons (.mk _pats body _span) _, 0 =>
-      -- Install bindings from armCtx into the context
-      for (bindingId, name, ports, varTy) in armCtx.bindings do
-        LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name ports varTy
-      -- Lower the arm body directly here where we have access to its true scope
-      match ← lowerExpr body with
-      | some port => pure port
-      | none =>
-        let era ← LowerM.addNode .era unitTy
-        pure (PortId.principal era)
-    | .cons _ rest, n + 1 => lowerArmBodyByIndex rest n armCtx
-
-
-
-/-- Lower a global reference.
-
-    For function references, we distinguish between:
-    1. **Self-recursive calls** (calling the currently-compiling function):
-       Emit an ALO (allocation) node for lazy instantiation.
-       This enables infinite unfolding without building infinite graphs.
-
-    2. **Nullary function calls** (referencing a 0-arity function as a value):
-       Emit an ALO node to call the function and get its result.
-       Example: `def main = test` where `test :: Int` - we need to call test.
-
-    3. **Other function references** (calling a different function):
-       Emit a REF node pointing to the book entry.
-       During reduction, when APP-REF interacts, an ALO is created.
-
-    The key insight from the spec (Section 6.5):
-    - REF is a static "address" of a definition in the book
-    - ALO is the dynamic "instantiation" that expands lazily
-    - For self-recursion, we know at compile time that instantiation is needed
--/
-partial def lowerGlobal (name : Name) (ty : Value) : LowerM PortId := do
+/-- Lower a global function or constructor reference to a circuit node -/
+def lowerGlobal (name : QualifiedName) (ty : Value) : LowerM PortId := do
   let ctx ← LowerM.getCtx
   -- First check if it's a known function
   match ctx.lookupGlobal name with
@@ -820,175 +339,27 @@ partial def lowerGlobal (name : Name) (ty : Value) : LowerM PortId := do
       let alo ← LowerM.addNode (.alo idx) ty
       pure (PortId.principal alo)
     else
-      -- Reference to another function: emit REF
-      -- The reducer will create ALO when this REF interacts with APP
       let ref ← LowerM.addNode (.ref idx) ty
       pure (PortId.principal ref)
   | none =>
-    -- Check if it's a constructor (nullary constructors show up as globals)
-    match name.ctorTag? with
-    | some tag =>
-      -- It's a constructor with no arguments
-      let ctor ← LowerM.addNode (.ctor tag 0) ty
-      pure (PortId.principal ctor)
+    match ctx.lookupCtor name with
+    | some (_, tag, arity) =>
+      if arity == 0 then
+        let ctor ← LowerM.addNode (.ctor tag 0) ty
+        pure (PortId.principal ctor)
+      else
+        panic! s!"lowerGlobal: partial constructor application should have been desugared: {name.display}"
     | none =>
-      -- Also check by looking up in the constructor registry (using Name)
-      match ctx.lookupCtor name with
-      | some (_, tag, arity) =>
-        if arity == 0 then
-          let ctor ← LowerM.addNode (.ctor tag 0) ty
-          pure (PortId.principal ctor)
-        else
-          panic! s!"lowerGlobal: partial constructor application should have been desugared: {name.display}"
-      | none =>
-        panic! s!"lowerGlobal: unknown global '{name.display}' (not in globals, not a constructor)"
+      panic! s!"lowerGlobal: unknown global '{name.display}' (not in globals, not a constructor)"
 
-/-- Lower field access (projection) -/
-partial def lowerFieldAccess (expr : Expr Value scope) (fieldIdx : Nat)
-    (ty : Value) : LowerM (Option PortId) := do
-  let exprPort? ← lowerExpr expr
-  match exprPort? with
-  | none => pure none -- Record is erased, projection is erased
-  | some exprPort =>
-    let proj ← LowerM.addNode (.proj fieldIdx) ty
-    LowerM.connect ⟨proj, ⟨1⟩⟩ exprPort
-    pure (some (PortId.principal proj))
-
-/-- Lower a record literal -/
-partial def lowerRecord (fields : Soma.Metal.RecordFieldList Value scope)
-    (ty : Value) : LowerM (Option PortId) := do
-  let fieldPorts ← lowerRecordFields fields
-  let rec_ ← LowerM.addNode (.record fieldPorts.size) ty
-
-  for i in [:fieldPorts.size] do
-    LowerM.connect ⟨rec_, ⟨i + 1⟩⟩ fieldPorts[i]!
-
-  pure (some (PortId.principal rec_))
-
-/-- Lower record fields -/
-partial def lowerRecordFields (fields : Soma.Metal.RecordFieldList Value scope) : LowerM (Array PortId) := do
-  match fields with
-  | .nil => pure #[]
-  | .cons _name expr rest =>
-    let port? ← lowerExpr expr
-    let restPorts ← lowerRecordFields rest
-    match port? with
-    | some port => pure (#[port] ++ restPorts)
-    | none => pure restPorts
-
-/-- Lower a record update expression.
-
-    Record update `{ base | field1 = val1, field2 = val2 }` is lowered as:
-    1. Project all fields from the base record
-    2. For each field in updates, use the new value instead
-    3. Construct a new record with the combined fields
-
-    The type info contains the record type, from which we extract field names -/
-partial def lowerRecordUpdate (base : Expr Value scope)
-    (updates : Soma.Metal.RecordFieldList Value scope)
-    (ty : Value) : LowerM (Option PortId) := do
-  -- Get the record type from base's type annotation
-  let baseTy := exprType base
-  let fieldNames := extractRecordFieldNames baseTy
-
-  let numFields := fieldNames.size
-
-  if numFields == 0 then
-    -- Can't determine record structure, just lower base
-    lowerExpr base
-
-  else
-    -- Build a map from field name to update expression
-    let updateList := updates.toList
-    let updateMap : Std.HashMap String (Expr Value scope) :=
-      updateList.foldl (init := {}) fun m (name, expr) => m.insert name expr
-
-    -- Lower the base expression
-    let basePort? ← lowerExpr base
-    match basePort? with
-    | none => pure none
-    | some basePort =>
-      -- DUP the base for each field we need to project
-      -- We need one copy per non-updated field
-      let numNonUpdated := numFields - updateList.length
-      let numCopies := if numNonUpdated > 0 then numNonUpdated else 1
-
-      let (basePorts, _) ← buildDupChain basePort numCopies baseTy
-      let mut basePortIdx := 0
-
-      -- For each field, either project from base or use the update value
-      let mut fieldPorts : Array PortId := #[]
-
-      for i in [:numFields] do
-        let fieldName := fieldNames[i]!
-        match updateMap.get? fieldName with
-        | some updateExpr =>
-          -- Use the update value
-          let updatePort? ← lowerExpr updateExpr
-          match updatePort? with
-          | some updatePort => fieldPorts := fieldPorts.push updatePort
-          | none => pure ()
-        | none =>
-          -- Project from base
-          let fieldTy := baseTy.recordFieldType i |>.getD unitTy
-          if basePortIdx < basePorts.size then
-            let proj ← LowerM.addNode (.proj i) fieldTy
-            LowerM.connect ⟨proj, ⟨1⟩⟩ basePorts[basePortIdx]!
-            fieldPorts := fieldPorts.push (PortId.principal proj)
-            basePortIdx := basePortIdx + 1
-
-      -- Construct the new record
-      let rec_ ← LowerM.addNode (.record fieldPorts.size) ty
-      for i in [:fieldPorts.size] do
-        LowerM.connect ⟨rec_, ⟨i + 1⟩⟩ fieldPorts[i]!
-
-      pure (some (PortId.principal rec_))
-
-/-- Lower a variant injection expression.
-
-    Variant injection `.Label(args)` is lowered as a CTOR node where:
-    - The tag is derived from hashing the label name
-    - The args become the constructor fields
-
-    For nullary variants (.Label), we emit a 0-arity CTOR.
-    For unary variants (.Label(val)), we emit a 1-arity CTOR.
-    For multi-field variants, args are packed into fields. -/
-partial def lowerInject (label : String) (args : ExprList Value scope)
-    (ty : Value) : LowerM (Option PortId) := do
-  let argPorts ← lowerExprList args
-
-  -- Use label hash as the constructor tag
-  -- This ensures consistent tags across compilation units
-  let tag := label.hash.toNat % 0xFFFFFF  -- Keep within 24-bit range
-
-  let ctor ← LowerM.addNode (.ctor tag argPorts.size) ty
-  for i in [:argPorts.size] do
-    LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ argPorts[i]!
-
-  pure (some (PortId.principal ctor))
-
-/-- Lower a first-class projection function.
-
-    `.proj TypeName fieldName fieldIndex` is a first-class function that
-    projects the given field from a record. It's equivalent to:
-
-        λr. r.fieldIndex
-
-    This is used for:
-    - Σ-type projections (.1, .2)
-    - Named record field accessors (Record.field)
-    - Partial application of field access
-
-    We lower this to: LAM → PROJ → (wire body to LAM)
-    The LAM's variable receives the record, PROJ extracts the field. -/
-partial def lowerFirstClassProj (fieldIdx : Nat) (ty : Value) : LowerM PortId := do
+/-- Lower a first-class projection function -/
+def lowerFirstClassProj (fieldIdx : Nat) (ty : Value) : LowerM PortId := do
   -- Create LAM node (not erased - the parameter is used)
   let lam ← LowerM.addNode (.lam false) ty
 
   -- The LAM's aux0 (var port) will receive the record argument
   let varPort : PortId := ⟨lam, ⟨1⟩⟩
 
-  -- Create PROJ node to extract the field
   -- The projected field type is the return type of the projection function
   let proj ← LowerM.addNode (.proj fieldIdx) ty
 
@@ -1001,94 +372,283 @@ partial def lowerFirstClassProj (fieldIdx : Nat) (ty : Value) : LowerM PortId :=
   -- Return the LAM's principal port (the function value)
   pure (PortId.principal lam)
 
-/-- Lower a tuple -/
-partial def lowerTuple (elems : ExprList Value scope)
-    (ty : Value) : LowerM (Option PortId) := do
-  let elemPorts ← lowerExprList elems
-  -- Tuple as a 0-tagged constructor
-  let ctor ← LowerM.addNode (.ctor 0 elemPorts.size) ty
+/-- Check if a Core.Expr is a primitive operation global reference -/
+private partial def getCoreExprPrimOp (e : Soma.Core.Expr) : LowerM (Option PrimOp) := do
+  match e with
+  | .const qn =>
+    let ctx ← LowerM.getCtx
+    match ctx.intrinsics.get? qn with
+    | some (.primOp op) => pure (some op)
+    | _ => pure none
+  | .app fn _ =>
+    -- If fn is a primop applied to type-level args, propagate
+    getCoreExprPrimOp fn
+  | _ => pure none
 
-  for i in [:elemPorts.size] do
-    LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ elemPorts[i]!
+/-- Check if a Core.Expr is type-level (erased at runtime) -/
+private def isCoreTypeLevelExpr : Soma.Core.Expr → Bool
+  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
+  | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
+  | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
+  | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
+  | .mvar _ | .bvar _ => true
+  | _ => false
+
+/-- Lower a Core.Expr variable (fvar) by looking up its Unique.id in the bindings map -/
+private def lowerCoreVar (u : Unique) : LowerM (Option PortId) := do
+  lowerVar u
+
+mutual
+
+/-- Lower a Core.Expr to a Circuit IR subgraph. -/
+partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option PortId) := do
+  match e with
+  | .fvar u => lowerCoreVar u
+
+  | .lit lit => some <$> lowerLiteral lit
+
+  | .app fn arg => lowerCoreApp fn arg ty
+
+  | .lam info name _domain body => some <$> lowerCoreLam info name body ty
+
+  | .construct _qn tag args => lowerCoreConstruct tag args ty
+
+  | .if_ cond then_ else_ => lowerCoreIf cond then_ else_ ty
+
+  | .«case» scruts arms => lowerCoreCase scruts arms ty
+
+  | .const qn => some <$> lowerGlobal qn ty
+
+  | .fieldAccess expr _field idx => lowerCoreFieldAccess expr idx ty
+
+  | .record fields => lowerCoreRecord fields ty
+
+  | .tuple elems => lowerCoreTuple elems ty
+
+  | .pair fst snd => lowerCorePair fst snd ty
+
+  | .projFst e => lowerCoreProj e 0 ty
+
+  | .projSnd e => lowerCoreProj e 1 ty
+
+  | .panic msg =>
+    let word64Ty := Value.vPrimTy .word64
+    let word32Ty := Value.vPrimTy .word32
+    let msgNode ← LowerM.addNode (Node.num .u64 msg.hash.toUInt32) word64Ty
+    let msgPort := PortId.principal msgNode
+    let lineNode ← LowerM.addNode (Node.num .u32 0) word32Ty
+    let panicTag := 0xFFFFFF
+    let panicCtor ← LowerM.addNode (.ctor panicTag 2) ty
+    LowerM.connect ⟨panicCtor, ⟨1⟩⟩ msgPort
+    LowerM.connect ⟨panicCtor, ⟨2⟩⟩ (PortId.principal lineNode)
+    pure (some (PortId.principal panicCtor))
+
+  | .ann expr _ty => lowerCoreExpr expr ty
+
+  | .closure qn captures => lowerCoreClosure qn captures ty
+
+  | .array elems => lowerCoreArray elems ty
+
+  | .proj _typeName _field idx => some <$> lowerFirstClassProj idx ty
+
+  | .inject label args => lowerCoreInject label args ty
+
+  | .recordUpdate base updates => lowerCoreRecordUpdate base updates ty
+
+  | .let_ _name _ty val body => do
+    -- Lower let as immediate application: (λx. body) val
+    -- Bind val, then lower body
+    lowerCoreExpr (.app (.lam .explicit _name _ty body) val) ty
+
+  -- Type-level constructs (erased at runtime)
+  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _
+  | .primTy _ | .rowSort | .labelSort | .rowEmpty
+  | .rowExtend _ _ _ | .recordTy _ | .variantTy _
+  | .labelLit _ | .dataTy _ _ | .eqTy _ _ _ _
+  | .refl _ _ | .transport _ _ _ _ _ _ _
+  | .mvar _ | .bvar _ =>
+    pure none
+
+/-- Lower a Core.Expr function application -/
+partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
+    : LowerM (Option PortId) := do
+  -- Check for binary primop: f x y where f is a primop
+  match fn with
+  | .app innerFn innerArg =>
+    match ← getCoreExprPrimOp innerFn with
+    | some primOp =>
+      match primOpToOp2Code primOp with
+      | some op2 =>
+        let arg1Port? ← lowerCoreExpr innerArg unitTy
+        let arg2Port? ← lowerCoreExpr arg unitTy
+        match arg1Port?, arg2Port? with
+        | some arg1Port, some arg2Port =>
+          let op2Node ← LowerM.addNode (.op2 op2) ty
+          LowerM.connect ⟨op2Node, ⟨1⟩⟩ arg1Port
+          LowerM.connect ⟨op2Node, ⟨2⟩⟩ arg2Port
+          pure (some (PortId.principal op2Node))
+        | _, _ => lowerCoreAppGeneric fn arg ty
+      | none => lowerCoreAppGeneric fn arg ty
+    | none => lowerCoreAppGeneric fn arg ty
+  | _ =>
+    -- Check for unary primop
+    match ← getCoreExprPrimOp fn with
+    | some primOp =>
+      match primOpToOp1Code primOp with
+      | some op1 =>
+        let argPort? ← lowerCoreExpr arg unitTy
+        match argPort? with
+        | some argPort =>
+          let op1Node ← LowerM.addNode (.op1 op1) ty
+          LowerM.connect ⟨op1Node, ⟨1⟩⟩ argPort
+          pure (some (PortId.principal op1Node))
+        | none => lowerCoreAppGeneric fn arg ty
+      | none => lowerCoreAppGeneric fn arg ty
+    | none =>
+      -- Check if arg is type-level (erased)
+      if isCoreTypeLevelExpr arg then
+        lowerCoreExpr fn ty
+      else
+        lowerCoreAppGeneric fn arg ty
+
+/-- Generic application lowering for Core.Expr -/
+partial def lowerCoreAppGeneric (fn arg : Soma.Core.Expr) (ty : Value)
+    : LowerM (Option PortId) := do
+  let fnPort? ← lowerCoreExpr fn unitTy
+  match fnPort? with
+  | none => pure none
+  | some fnPort =>
+    let argPort? ← lowerCoreExpr arg unitTy
+    match argPort? with
+    | some argPort =>
+      let app ← LowerM.addNode .app ty
+      LowerM.connect ⟨app, ⟨1⟩⟩ fnPort
+      LowerM.connect ⟨app, ⟨2⟩⟩ argPort
+      pure (some (PortId.principal app))
+    | none =>
+      -- Arg is erased, just return fn
+      pure (some fnPort)
+
+/-- Lower a Core.Expr lambda -/
+partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
+    (body : Soma.Core.Expr) (ty : Value) : LowerM PortId := do
+  -- The body uses bvar(0) for the lambda parameter (locally nameless).
+  -- Instantiate bvar(0) with fvar(u) so it can be looked up during lowering.
+  let paramUnique : Unique := { id := name.hash.toNat, module := "$lam", original := name }
+  let openBody := Soma.Core.Expr.instantiate body (.fvar paramUnique)
+
+  -- Count how many times the param is actually used in the opened body
+  let usageCount := if openBody.hasFVar paramUnique then
+    -- Conservative: count occurrences. hasFVar just tells us it's used at all.
+    1
+  else
+    0
+  let erased := usageCount == 0
+
+  let lam ← LowerM.addNode (.lam erased) ty
+  let paramTy := ty.piDomain?.getD unitTy
+
+  let paramBinding : Unique := { id := paramUnique.id, module := paramUnique.module, original := name }
+  let varPort : PortId := ⟨lam, ⟨1⟩⟩
+  let (usePorts, isErased) ← buildDupChain varPort usageCount paramTy
+  LowerM.modifyCtx fun ctx => ctx.bindVar paramBinding name usePorts paramTy isErased
+
+  -- Lower the opened body
+  let bodyPort? ← lowerCoreExpr openBody (ty.piCodomain?.getD unitTy)
+  let bodyPort := bodyPort?.getD ⟨lam, ⟨1⟩⟩
+  LowerM.connect ⟨lam, ⟨2⟩⟩ bodyPort
+
+  pure (PortId.principal lam)
+
+/-- Lower a Core.Expr constructor application -/
+partial def lowerCoreConstruct (tag : Nat) (args : Array Soma.Core.Expr)
+    (ty : Value) : LowerM (Option PortId) := do
+  let mut argPorts : Array PortId := #[]
+  for arg in args do
+    let port? ← lowerCoreExpr arg unitTy
+    match port? with
+    | some port => argPorts := argPorts.push port
+    | none => pure ()
+
+  let ctor ← LowerM.addNode (.ctor tag argPorts.size) ty
+  for i in [:argPorts.size] do
+    LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ argPorts[i]!
 
   pure (some (PortId.principal ctor))
 
-/-- Lower an array literal.
+/-- Lower a Core.Expr if-then-else -/
+partial def lowerCoreIf (cond then_ else_ : Soma.Core.Expr) (ty : Value)
+    : LowerM (Option PortId) := do
+  let condPort? ← lowerCoreExpr cond unitTy
+  match condPort? with
+  | none => pure none
+  | some condPort =>
+    let thenPort? ← lowerCoreExpr then_ ty
+    let elsePort? ← lowerCoreExpr else_ ty
 
-    Arrays are represented as ARRAY nodes with:
-    - Aux 0: length (NUM node with the element count)
-    - Aux 1: data pointer (for now, a CTOR containing the elements)
+    let thenPort := match thenPort? with
+      | some p => p
+      | none => condPort -- Fallback
+    let elsePort := match elsePort? with
+      | some p => p
+      | none => condPort -- Fallback
 
-    The ARRAY node supports:
-    - O(1) length access (just read aux0)
-    - O(1) random access via INDEX node
-    - DUP-ARRAY creates a shallow copy (shares backing data)
-    - ERA-ARRAY frees the backing memory
+    let mat ← LowerM.addNode (.mat 2) ty
+    LowerM.connect (PortId.principal mat) condPort
+    LowerM.connect ⟨mat, ⟨1⟩⟩ elsePort -- Branch 0 (false)
+    LowerM.connect ⟨mat, ⟨2⟩⟩ thenPort -- Branch 1 (true)
+    pure (some (PortId.principal mat))
 
-    For small arrays, we inline the elements into a CTOR node as the data.
-    The runtime can optimize large arrays to use heap-allocated contiguous memory. -/
-partial def lowerArray (elems : ExprList Value scope)
+/-- Lower a Core.Expr case expression using existing PatternMatch infrastructure -/
+partial def lowerCoreCase (scruts : Array Soma.Core.Expr) (arms : Array Soma.Core.Arm)
     (ty : Value) : LowerM (Option PortId) := do
-  let elemPorts ← lowerExprList elems
-  let len := elemPorts.size
+  -- Lower scrutinees
+  let mut scrutPorts : Array PortId := #[]
+  let mut scrutTypes : Array Value := #[]
+  for scrut in scruts do
+    let port? ← lowerCoreExpr scrut unitTy
+    match port? with
+    | some port =>
+      scrutPorts := scrutPorts.push port
+      scrutTypes := scrutTypes.push unitTy
+    | none => pure ()
 
-  -- Extract element type from the array type (Array T -> T)
-  let elemTy := ty.dataTypeFirstParam?.getD intTy
-
-  -- Create length node
-  let word64Ty := Value.vPrimTy .word64
-  let lenNode ← LowerM.addNode (.num .u64 len.toUInt32) word64Ty
-
-  -- Create data node: for now, store elements in a CTOR
-  -- Tag 0xFFFFFD is reserved for array backing storage
-  -- The backing storage type is a tuple of element types
-  let backingTy := Value.tuple (List.replicate len elemTy).toArray
-  let dataNode ← LowerM.addNode (.ctor 0xFFFFFD len) backingTy
-  for i in [:len] do
-    LowerM.connect ⟨dataNode, ⟨i + 1⟩⟩ elemPorts[i]!
-
-  -- Create ARRAY node with element type from ty if available
-  let arrayNode ← LowerM.addNode (.array .i64) ty
-  LowerM.connect ⟨arrayNode, ⟨1⟩⟩ (PortId.principal lenNode)   -- aux0 = length
-  LowerM.connect ⟨arrayNode, ⟨2⟩⟩ (PortId.principal dataNode)  -- aux1 = data
-
-  pure (some (PortId.principal arrayNode))
-
-/-- Lower a pair -/
-partial def lowerPair (fst snd : Expr Value scope)
-    (ty : Value) : LowerM (Option PortId) := do
-  let fstPort? ← lowerExpr fst
-  let sndPort? ← lowerExpr snd
-
-  match fstPort?, sndPort? with
-  | none, none =>
-    -- Both components erased, entire pair is erased
+  if scrutPorts.isEmpty then
     pure none
-  | some fstPort, some sndPort =>
-    -- Both present, build normal pair
-    let ctor ← LowerM.addNode (.ctor 0 2) ty
-    LowerM.connect ⟨ctor, ⟨1⟩⟩ fstPort
-    LowerM.connect ⟨ctor, ⟨2⟩⟩ sndPort
-    pure (some (PortId.principal ctor))
-  | some fstPort, none =>
-    -- Only first component present, build pair with ERA for second
-    let era ← LowerM.addNode .era unitTy
-    let ctor ← LowerM.addNode (.ctor 0 2) ty
-    LowerM.connect ⟨ctor, ⟨1⟩⟩ fstPort
-    LowerM.connect ⟨ctor, ⟨2⟩⟩ (PortId.principal era)
-    pure (some (PortId.principal ctor))
-  | none, some sndPort =>
-    -- Only second component present, build pair with ERA for first
-    let era ← LowerM.addNode .era unitTy
-    let ctor ← LowerM.addNode (.ctor 0 2) ty
-    LowerM.connect ⟨ctor, ⟨1⟩⟩ (PortId.principal era)
-    LowerM.connect ⟨ctor, ⟨2⟩⟩ sndPort
-    pure (some (PortId.principal ctor))
+  else
+    let ctx ← LowerM.getCtx
+    let simplifyCtx : PatternMatch.SimplifyCtx := {}
+    let matrix := PatternMatch.buildMatrixFromArms simplifyCtx arms
+    let tree := PatternMatch.compileMatrix matrix ctx.ctorTypeRegistry scrutTypes
+    let usageCounts := usageMapToNatMap ctx.usageMap
 
-/-- Lower a projection -/
-partial def lowerProj (expr : Expr Value scope) (idx : Nat)
+    let result ← PatternMatch.lower tree scrutPorts scrutTypes ctx.ctorTypeRegistry ty
+      (fun armIndex armCtx => lowerCoreArmBodyByIndex arms armIndex armCtx)
+      usageCounts
+    pure (some result)
+where
+  /-- Lower the body of a case arm by index -/
+  lowerCoreArmBodyByIndex (arms : Array Soma.Core.Arm) (idx : Nat)
+      (armCtx : PatternMatch.ArmContext) : LowerM PortId := do
+    if h : idx < arms.size then
+      let arm := arms[idx]
+      -- Install bindings from armCtx into the context
+      for (bindingId, name, ports, varTy) in armCtx.bindings do
+        LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name ports varTy
+      -- Lower the arm body
+      match ← lowerCoreExpr arm.body unitTy with
+      | some port => pure port
+      | none =>
+        let era ← LowerM.addNode .era unitTy
+        pure (PortId.principal era)
+    else
+      let era ← LowerM.addNode .era unitTy
+      pure (PortId.principal era)
+
+/-- Lower a Core.Expr field access -/
+partial def lowerCoreFieldAccess (expr : Soma.Core.Expr) (idx : Nat)
     (ty : Value) : LowerM (Option PortId) := do
-  let exprPort? ← lowerExpr expr
+  let exprPort? ← lowerCoreExpr expr unitTy
   match exprPort? with
   | none => pure none
   | some exprPort =>
@@ -1096,14 +656,154 @@ partial def lowerProj (expr : Expr Value scope) (idx : Nat)
     LowerM.connect ⟨proj, ⟨1⟩⟩ exprPort
     pure (some (PortId.principal proj))
 
+/-- Lower a Core.Expr record literal -/
+partial def lowerCoreRecord (fields : Array (String × Soma.Core.Expr))
+    (ty : Value) : LowerM (Option PortId) := do
+  let mut fieldPorts : Array PortId := #[]
+  for (_, e) in fields do
+    let port? ← lowerCoreExpr e unitTy
+    match port? with
+    | some port => fieldPorts := fieldPorts.push port
+    | none => pure ()
+
+  let rec_ ← LowerM.addNode (.record fieldPorts.size) ty
+  for i in [:fieldPorts.size] do
+    LowerM.connect ⟨rec_, ⟨i + 1⟩⟩ fieldPorts[i]!
+  pure (some (PortId.principal rec_))
+
+/-- Lower a Core.Expr record update -/
+partial def lowerCoreRecordUpdate (base : Soma.Core.Expr)
+    (_updates : Array (String × Soma.Core.Expr)) (ty : Value)
+    : LowerM (Option PortId) := do
+  -- Record update requires knowing field names from the record type
+  lowerCoreExpr base ty
+
+/-- Lower a Core.Expr tuple -/
+partial def lowerCoreTuple (elems : Array Soma.Core.Expr)
+    (ty : Value) : LowerM (Option PortId) := do
+  let mut elemPorts : Array PortId := #[]
+  for e in elems do
+    let port? ← lowerCoreExpr e unitTy
+    match port? with
+    | some port => elemPorts := elemPorts.push port
+    | none => pure ()
+
+  let ctor ← LowerM.addNode (.ctor 0 elemPorts.size) ty
+  for i in [:elemPorts.size] do
+    LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ elemPorts[i]!
+  pure (some (PortId.principal ctor))
+
+/-- Lower a Core.Expr pair -/
+partial def lowerCorePair (fst snd : Soma.Core.Expr)
+    (ty : Value) : LowerM (Option PortId) := do
+  let fstPort? ← lowerCoreExpr fst unitTy
+  let sndPort? ← lowerCoreExpr snd unitTy
+  match fstPort?, sndPort? with
+  | none, none => pure none
+  | some fstPort, some sndPort =>
+    let ctor ← LowerM.addNode (.ctor 0 2) ty
+    LowerM.connect ⟨ctor, ⟨1⟩⟩ fstPort
+    LowerM.connect ⟨ctor, ⟨2⟩⟩ sndPort
+    pure (some (PortId.principal ctor))
+  | some fstPort, none =>
+    let era ← LowerM.addNode .era unitTy
+    let ctor ← LowerM.addNode (.ctor 0 2) ty
+    LowerM.connect ⟨ctor, ⟨1⟩⟩ fstPort
+    LowerM.connect ⟨ctor, ⟨2⟩⟩ (PortId.principal era)
+    pure (some (PortId.principal ctor))
+  | none, some sndPort =>
+    let era ← LowerM.addNode .era unitTy
+    let ctor ← LowerM.addNode (.ctor 0 2) ty
+    LowerM.connect ⟨ctor, ⟨1⟩⟩ (PortId.principal era)
+    LowerM.connect ⟨ctor, ⟨2⟩⟩ sndPort
+    pure (some (PortId.principal ctor))
+
+/-- Lower a Core.Expr projection -/
+partial def lowerCoreProj (expr : Soma.Core.Expr) (idx : Nat)
+    (ty : Value) : LowerM (Option PortId) := do
+  let exprPort? ← lowerCoreExpr expr unitTy
+  match exprPort? with
+  | none => pure none
+  | some exprPort =>
+    let proj ← LowerM.addNode (.proj idx) ty
+    LowerM.connect ⟨proj, ⟨1⟩⟩ exprPort
+    pure (some (PortId.principal proj))
+
+/-- Lower a Core.Expr closure -/
+partial def lowerCoreClosure (fnName : Soma.Core.QualifiedName)
+    (captures : Array Soma.Core.Expr) (ty : Value) : LowerM (Option PortId) := do
+  let fnPort ← lowerGlobal fnName ty
+
+  -- Lower captures
+  let mut capturePairs : Array (PortId × Value) := #[]
+  for cap in captures do
+    let port? ← lowerCoreExpr cap unitTy
+    match port? with
+    | some port => capturePairs := capturePairs.push (port, unitTy)
+    | none => pure ()
+
+  let envPort ← if capturePairs.isEmpty then do
+    let ctor ← LowerM.addNode (.ctor 0 0) unitTy
+    pure (PortId.principal ctor)
+  else do
+    let captureTypes := capturePairs.map (·.2)
+    let envTy := Value.tuple captureTypes
+    let ctor ← LowerM.addNode (.ctor 0 capturePairs.size) envTy
+    for i in [:capturePairs.size] do
+      LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ capturePairs[i]!.1
+    pure (PortId.principal ctor)
+
+  let closureCtor ← LowerM.addNode (.ctor 0xFFFFFE 2) ty
+  LowerM.connect ⟨closureCtor, ⟨1⟩⟩ fnPort
+  LowerM.connect ⟨closureCtor, ⟨2⟩⟩ envPort
+  pure (some (PortId.principal closureCtor))
+
+/-- Lower a Core.Expr array literal -/
+partial def lowerCoreArray (elems : Array Soma.Core.Expr)
+    (ty : Value) : LowerM (Option PortId) := do
+  let mut elemPorts : Array PortId := #[]
+  for e in elems do
+    let port? ← lowerCoreExpr e unitTy
+    match port? with
+    | some port => elemPorts := elemPorts.push port
+    | none => pure ()
+
+  let len := elemPorts.size
+  let elemTy := ty.dataTypeFirstParam?.getD intTy
+  let word64Ty := Value.vPrimTy .word64
+  let lenNode ← LowerM.addNode (.num .u64 len.toUInt32) word64Ty
+  let backingTy := Value.tuple (List.replicate len elemTy).toArray
+  let dataNode ← LowerM.addNode (.ctor 0xFFFFFD len) backingTy
+  for i in [:len] do
+    LowerM.connect ⟨dataNode, ⟨i + 1⟩⟩ elemPorts[i]!
+
+  let arrayNode ← LowerM.addNode (.array .i64) ty
+  LowerM.connect ⟨arrayNode, ⟨1⟩⟩ (PortId.principal lenNode)
+  LowerM.connect ⟨arrayNode, ⟨2⟩⟩ (PortId.principal dataNode)
+  pure (some (PortId.principal arrayNode))
+
+/-- Lower a Core.Expr variant injection -/
+partial def lowerCoreInject (label : String) (args : Array Soma.Core.Expr)
+    (ty : Value) : LowerM (Option PortId) := do
+  let mut argPorts : Array PortId := #[]
+  for arg in args do
+    let port? ← lowerCoreExpr arg unitTy
+    match port? with
+    | some port => argPorts := argPorts.push port
+    | none => pure ()
+
+  let tag := label.hash.toNat % 0xFFFFFF
+  let ctor ← LowerM.addNode (.ctor tag argPorts.size) ty
+  for i in [:argPorts.size] do
+    LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ argPorts[i]!
+  pure (some (PortId.principal ctor))
+
 end
 
 /-- Lower a function definition -/
-def lowerFunction (fn : Soma.Metal.TypedFunction) : LowerM NodeId := do
+def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
   -- Set current function for recursion detection
   LowerM.modifyCtx fun ctx => { ctx with currentFn := some fn.name }
-
-  let typedBody := fn.body
 
   -- Create LAM nodes for parameters
   let paramList := fn.params.toList
@@ -1134,8 +834,9 @@ def lowerFunction (fn : Soma.Metal.TypedFunction) : LowerM NodeId := do
     let inner := lamNodes[i + 1]!
     LowerM.connect ⟨outer, ⟨2⟩⟩ (PortId.principal inner)
 
-  -- Lower the body
-  let bodyPort? ← lowerExpr typedBody
+  -- Lower the body (now Core.Expr)
+  let resultTy := currentTy  -- type remaining after peeling all param Pis
+  let bodyPort? ← lowerCoreExpr fn.body resultTy
 
   if lamNodes.isEmpty then
     -- No parameters: body is the root
@@ -1154,59 +855,85 @@ def lowerFunction (fn : Soma.Metal.TypedFunction) : LowerM NodeId := do
     pure lamNodes[0]!
 
 /-- Register type definitions and builds the constructor type registry from type checker globals if provided -/
-def registerTypes (types : Array Soma.Metal.TypeDef)
+def registerTypes (types : Array Soma.Core.TypeDef)
     (globals : Option Soma.Dependent.Globals := none) : LowerM Unit := do
   for typeDef in types do
     match typeDef with
     | .algebraic typeName _tvars ctors =>
-      -- Look up the TypeId for this type
-      let typeIdOpt := globals.bind fun g => g.lookupTypeId typeName.display
-      for ctor in ctors do
-        let arity := ctor.fieldTypeSyntax.size
-        LowerM.modifyCtx fun ctx =>
-          ctx.registerCtor ctor.name typeName ctor.tag arity
+      let mut usedMetadata := false
+      if let some g := globals then
+        if let some indInfo := g.lookupInductive typeName.display then
+          usedMetadata := true
+          for ctor in indInfo.ctors do
+            LowerM.modifyCtx fun ctx =>
+              ctx.registerCtor ctor.name typeName ctor.tag ctor.arity
+            LowerM.modifyCtx fun ctx =>
+              ctx.registerCtorType indInfo.typeId ctor.tag ctor.type
+      if !usedMetadata then
+        -- Legacy fallback path
+        let typeIdOpt := globals.bind fun g => g.lookupTypeId typeName.display
+        for ctor in ctors do
+          let arity := ctor.fieldTypeSyntax.size
+          LowerM.modifyCtx fun ctx =>
+            ctx.registerCtor ctor.name typeName ctor.tag arity
 
-        -- If we have globals, register the constructor type for field type lookup
-        if let (some g, some typeId) := (globals, typeIdOpt) then
-          let ctorSimpleName := ctor.name.ctorSimpleName?.getD ctor.name.display
-          let ctorQualifiedName := s!"{typeName.display}.{ctorSimpleName}"
-          if let some ctorInfo := g.lookup ctorQualifiedName then
-            LowerM.modifyCtx fun ctx =>
-              ctx.registerCtorType typeId ctor.tag ctorInfo.type
-          else if let some ctorInfo := g.lookup ctorSimpleName then
-            LowerM.modifyCtx fun ctx =>
-              ctx.registerCtorType typeId ctor.tag ctorInfo.type
+          if let (some g, some typeId) := (globals, typeIdOpt) then
+            let ctorSimpleName := ctor.name.id.original
+            if let some ctorInfo := g.lookupInChild typeName.display ctorSimpleName then
+              LowerM.modifyCtx fun ctx =>
+                ctx.registerCtorType typeId ctor.tag ctorInfo.type
 
     | .struct structName _tvars ctorName fields =>
-      let arity := fields.size
-      LowerM.modifyCtx fun ctx =>
-        ctx.registerCtor ctorName structName 0 arity
-
-      -- Register struct constructor type if available
+      let mut usedMetadata := false
       if let some g := globals then
-        if let some typeId := g.lookupTypeId structName.display then
-          let ctorSimpleName := ctorName.ctorSimpleName?.getD ctorName.display
-          let ctorQualifiedName := s!"{structName.display}.{ctorSimpleName}"
-          if let some ctorInfo := g.lookup ctorQualifiedName then
+        if let some indInfo := g.lookupInductive structName.display then
+          usedMetadata := true
+          for ctor in indInfo.ctors do
             LowerM.modifyCtx fun ctx =>
-              ctx.registerCtorType typeId 0 ctorInfo.type
+              ctx.registerCtor ctor.name structName ctor.tag ctor.arity
+            LowerM.modifyCtx fun ctx =>
+              ctx.registerCtorType indInfo.typeId ctor.tag ctor.type
+      if !usedMetadata then
+        let arity := fields.size
+        LowerM.modifyCtx fun ctx =>
+          ctx.registerCtor ctorName structName 0 arity
+
+        if let some g := globals then
+          if let some typeId := g.lookupTypeId structName.display then
+            if let some ctorInfo := g.lookupInChild structName.display "new" then
+              LowerM.modifyCtx fun ctx =>
+                ctx.registerCtorType typeId 0 ctorInfo.type
 
     | .record name _tvars fields =>
-      let arity := fields.size
-      LowerM.modifyCtx fun ctx =>
-        ctx.registerCtor name name 0 arity
+      let mut usedMetadata := false
+      if let some g := globals then
+        if let some indInfo := g.lookupInductive name.display then
+          usedMetadata := true
+          for ctor in indInfo.ctors do
+            LowerM.modifyCtx fun ctx =>
+              ctx.registerCtor ctor.name name ctor.tag ctor.arity
+            LowerM.modifyCtx fun ctx =>
+              ctx.registerCtorType indInfo.typeId ctor.tag ctor.type
+      if !usedMetadata then
+        let arity := fields.size
+        LowerM.modifyCtx fun ctx =>
+          ctx.registerCtor name name 0 arity
 
 /-- Map from function name to typed function -/
-abbrev TypedFunctionMap := Std.HashMap String Soma.Metal.TypedFunction
+abbrev TypedFunctionMap := Std.HashMap String Soma.Core.TypedFunction
 
 /-- Check if a function should be lowered to actual code -/
-def shouldLowerBody (fn : Soma.Metal.TypedFunction) : Bool :=
+def shouldLowerBody (fn : Soma.Core.TypedFunction) : Bool :=
   not fn.attrs.intrinsic && fn.attrs.extern.isNone
 
 /-- Lower an entire module using typed functions from type checking -/
-def lowerModule (types : Array Soma.Metal.TypeDef)
+def lowerModule (types : Array Soma.Core.TypeDef)
     (typedFunctions : TypedFunctionMap)
     (globals : Option Soma.Dependent.Globals := none) : LowerM Unit := do
+  -- Load intrinsic dispatch metadata from elaboration/type checking.
+  if let some g := globals then
+    LowerM.modifyCtx fun ctx => { ctx with intrinsics := g.intrinsics }
+
   -- Register type constructors from current module
   registerTypes types globals
 
@@ -1215,10 +942,11 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
     for (_, info) in g.defs.toList do
       if info.isConstructor then
         let ctx ← LowerM.getCtx
-        if ctx.lookupCtor info.name |>.isNone then
+        let ctorQN := info.name
+        if ctx.lookupCtor ctorQN |>.isNone then
           let arity := info.type.explicitArity
           LowerM.modifyCtx fun ctx =>
-            ctx.registerCtor info.name info.name info.ctorTag arity
+            ctx.registerCtor ctorQN ctorQN info.ctorTag arity
 
   -- Get list of functions to lower (only those that should be lowered)
   let functions := typedFunctions.toList.filter fun (_, fn) => shouldLowerBody fn
@@ -1244,7 +972,8 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
       !typedFunctions.contains name &&
       !info.isConstructor
     for (i, (_, info)) in enumList externals do
-      LowerM.modifyCtx fun ctx => ctx.registerGlobal info.name (localCount + intrinsicCount + i)
+      LowerM.modifyCtx fun ctx =>
+        ctx.registerGlobal info.name (localCount + intrinsicCount + i)
 
   -- Fourth pass: lower each function body and add to book
   for (_, fn) in functions do
@@ -1264,12 +993,13 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
       !info.isConstructor
     for (_, info) in externals do
       let era ← LowerM.addNode .era unitTy
-      let _ ← LowerM.addDefinition info.name era 0 info.type (isExternal := true)
+      let _ ← LowerM.addDefinition info.name era 0 info.type
+        (isExternal := true)
 
   -- Set root to main function if it exists
   -- Use ALO (allocation/instantiation) instead of REF because we want to actually exec
   let ctx ← LowerM.getCtx
-  let mainEntry := ctx.globals.toList.find? fun (name, _) => name.original == "main"
+  let mainEntry := ctx.globals.toList.find? fun (name, _) => name.id.original == "main"
   match mainEntry with
   | some (_, idx) =>
     let mainTy := match typedFunctions.get? "main" with
@@ -1282,7 +1012,7 @@ def lowerModule (types : Array Soma.Metal.TypeDef)
     LowerM.setRoot (PortId.principal era)
 
 /-- Lower typed functions to Circuit IR -/
-def lower (types : Array Soma.Metal.TypeDef)
+def lower (types : Array Soma.Core.TypeDef)
     (typedFunctions : TypedFunctionMap)
     (usageMap : UsageMap)
     (globals : Option Soma.Dependent.Globals := none) : Graph :=

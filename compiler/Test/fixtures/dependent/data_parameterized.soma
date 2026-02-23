@@ -6,5 +6,5 @@ data Maybe a
     | Just a
 
 def fromMaybe :: forall a. a -> Maybe a -> a
-    | default Nothing => default
-    | _ (Just x) => x
+    | default Maybe::Nothing => default
+    | _ (Maybe::Just x) => x

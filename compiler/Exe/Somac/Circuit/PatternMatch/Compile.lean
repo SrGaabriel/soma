@@ -198,9 +198,9 @@ def compileMatrix (matrix : PatternMatrix) (registry : ConstructorTypeRegistry)
 
 /-- Compile match arms to a decision tree with type tracking -/
 def compileArms (ctx : SimplifyCtx) (registry : ConstructorTypeRegistry)
-    (scrutineeTypes : Array Value) (arms : Soma.Metal.ArmList α scope)
+    (scrutineeTypes : Array Value) (arms : Array Soma.Core.Arm)
     : DecisionTree :=
-  let matrix := buildMatrixFromArmList ctx arms
+  let matrix := buildMatrixFromArms ctx arms
   compileMatrix matrix registry scrutineeTypes
 
 end Somac.Circuit.PatternMatch

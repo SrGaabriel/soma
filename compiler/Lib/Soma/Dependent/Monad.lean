@@ -2,9 +2,10 @@ import Soma.Core.Value
 import Soma.Core.Quantity
 import Soma.Core.Level
 import Soma.Core.Eval
+import Soma.Core.Expr
+import Soma.Core.Intrinsic
 import Soma.Dependent.Error
-import Soma.Metal.Expr
-import Soma.Metal.Module
+import Soma.Core.Module
 import Soma.Syntax.Source
 import Soma.Unique
 import Std.Data.HashMap
@@ -14,7 +15,6 @@ namespace Soma.Dependent
 
 open Soma (Unique)
 open Soma.Core
-open Soma.Metal (Name Expr BinderInfo TypeAbbrev)
 open Soma.Syntax (Span)
 open Kenosis
 
@@ -22,8 +22,10 @@ open Kenosis
 structure CtxEntry where
   /-- Variable name -/
   name : String
-  /-- Unique binding identifier for usage tracking -/
-  bindingId : Soma.Metal.BindingId
+  /-- Unique local identifier for usage tracking -/
+  bindingId : Unique
+  /-- Free variable id for Core.Expr output -/
+  fvarId : Soma.Unique
   /-- Variable's type (as a Value) -/
   type : Value
   /-- Quantity annotation -/
@@ -90,57 +92,403 @@ def toInfo (tc : TrackedConstraint) : ConstraintInfo :=
 
 end TrackedConstraint
 
+/-- Origin metadata for global declarations -/
+inductive DeclarationOrigin where
+  | user
+  | function
+  | typeDecl
+  | constructor
+  | projection
+  | traitMethod
+  | intrinsic
+  | extern
+  | generated
+  deriving Inhabited, BEq, Serialize, Deserialize
+
 /-- Information about a global definition -/
 structure GlobalInfo where
   /-- The canonical Name for this definition -/
-  name : Soma.Core.Name
+  name : Soma.Core.QualifiedName
   /-- The type of the definition -/
   type : Value
   /-- The value (for unfolding), if available -/
   value : Option Value := none
+  /-- Intrinsic metadata for codegen dispatch (when this global is intrinsic/extern) -/
+  intrinsic : Option Soma.Core.Intrinsic := none
   /-- Whether this is a constructor -/
   isConstructor : Bool := false
   /-- Constructor tag (if isConstructor) -/
   ctorTag : Nat := 0
+  /-- Declaration classification metadata. -/
+  origin : DeclarationOrigin := .user
   deriving Serialize, Deserialize
 
 instance : Inhabited GlobalInfo where
   default := {
-    name := .user { id := 0, module := "", original := "" }
+    name := ⟨{ id := 0, module := "", original := "" }⟩
     type := .vType .zero
   }
+
+namespace GlobalInfo
+
+def qualifiedName (info : GlobalInfo) : Soma.Core.QualifiedName :=
+  info.name
+
+end GlobalInfo
+
+/-- Kind of inductive-like type declaration tracked in metadata. -/
+inductive InductiveKind where
+  | algebraic
+  | struct
+  | record
+  deriving Inhabited, BEq, Serialize, Deserialize
+
+/-- Metadata for a single constructor belonging to an inductive type -/
+structure ConstructorMeta where
+  /-- Fully qualified constructor name -/
+  name : Soma.Core.QualifiedName
+  /-- Unqualified constructor/member name in its parent namespace -/
+  simpleName : String
+  /-- Constructor tag used by pattern matching/codegen -/
+  tag : Nat
+  /-- Runtime arity (explicit fields) -/
+  arity : Nat
+  /-- Elaborated constructor type -/
+  type : Value
+  deriving Inhabited, Serialize, Deserialize
+
+/-- Metadata for an inductive-like declaration and its constructors. -/
+structure InductiveMeta where
+  /-- Canonical type name (`A::B::T`) -/
+  name : String
+  /-- Stable TypeId used in elaboration/evaluation/lowering -/
+  typeId : Soma.Core.TypeId
+  /-- Source declaration kind -/
+  kind : InductiveKind
+  /-- Declared type parameter names, in order -/
+  typeVarNames : Array String := #[]
+  /-- Constructor metadata in declaration order -/
+  ctors : Array ConstructorMeta := #[]
+  /-- Ordered field names for struct/record declarations -/
+  fieldNames : Array String := #[]
+  deriving Inhabited, Serialize, Deserialize
+
+namespace InductiveMeta
+
+/-- Add or replace constructor metadata by simple name, preserving order where possible -/
+def upsertCtor (m : InductiveMeta) (ctor : ConstructorMeta) : InductiveMeta :=
+  let idx? := m.ctors.findIdx? (fun c => c.simpleName == ctor.simpleName)
+  match idx? with
+  | some idx => { m with ctors := m.ctors.set! idx ctor }
+  | none => { m with ctors := m.ctors.push ctor }
+
+end InductiveMeta
+
+/-- Well-known constructors resolved during global registration via @[wired_in "role"] attributes -/
+structure WiredIn where
+  /-- Role → constructor info mapping -/
+  roles : Std.HashMap String GlobalInfo := {}
+  deriving Inhabited
+
+namespace WiredIn
+
+/-- Look up a wired-in constructor by role name -/
+def get? (w : WiredIn) (role : String) : Option GlobalInfo :=
+  w.roles.get? role
+
+/-- Register a constructor under a role -/
+def register (w : WiredIn) (role : String) (info : GlobalInfo) : WiredIn :=
+  if w.roles.contains role then w
+  else { w with roles := w.roles.insert role info }
+
+/-- Scan attributes for @[wired_in "role"] and register if found (todo: register lazily) -/
+def tryRegisterFromAttrs (w : WiredIn) (attrs : Array Soma.Syntax.Attribute) (info : GlobalInfo) : WiredIn :=
+  attrs.foldl (init := w) fun acc attr =>
+    if attr.name.value == "wired_in" then
+      if h : 0 < attr.args.size then
+        match attr.args[0] with
+        | .lit (.string role _) => acc.register role info
+        | _ => acc
+      else acc
+    else acc
+
+def pair (w : WiredIn) : Option GlobalInfo := w.get? "pair"
+def cons (w : WiredIn) : Option GlobalInfo := w.get? "cons"
+def nil  (w : WiredIn) : Option GlobalInfo := w.get? "nil"
+
+end WiredIn
 
 /-- Global environment mapping names to their info -/
 structure Globals where
   defs : Std.HashMap String GlobalInfo := {}
+  /-- Intrinsic dispatch table keyed by qualified global name -/
+  intrinsics : Std.HashMap Soma.Core.QualifiedName Soma.Core.Intrinsic := {}
   /-- Registry mapping type names to their TypeIds -/
   typeIds : Std.HashMap String Soma.Core.TypeId := {}
+  /-- Child namespace declarations: childDecls["Point"]["new"] = constructor info. -/
+  childDecls : Std.HashMap String (Std.HashMap String GlobalInfo) := {}
+  /-- Hierarchical namespace declarations keyed by full path -/
+  namespaceDecls : Std.HashMap String GlobalInfo := {}
+  /-- Open namespaces used for unqualified lookup fallback -/
+  openNamespaces : Array String := #[]
+  /-- Ordered field names for struct types -/
+  structFields : Std.HashMap String (Array String) := {}
+  /-- First-class inductive metadata keyed by canonical type name -/
+  inductives : Std.HashMap String InductiveMeta := {}
+  /-- Reverse index: constructor qualified name -> canonical inductive name -/
+  ctorToInductive : Std.HashMap Soma.Core.QualifiedName String := {}
+  /-- Well-known constructors for pattern desugaring -/
+  wiredIn : WiredIn := {}
   deriving Inhabited
 
 namespace Globals
 
-def empty : Globals := ⟨{}, {}⟩
+def empty : Globals := {}
+
+/-- Split a qualified name by `::`, dropping empty segments. -/
+def splitQualified (name : String) : List String :=
+  (name.splitOn "::").filter (fun s => !s.isEmpty)
+
+/-- Normalize a potentially-qualified name to canonical `A::B::x` form. -/
+def normalizeQualified (name : String) : String :=
+  String.intercalate "::" (splitQualified name)
+
+private def lookupNormalized (g : Globals) (name : String) : Option GlobalInfo :=
+  g.namespaceDecls.get? (normalizeQualified name)
 
 def insert (g : Globals) (name : String) (info : GlobalInfo) : Globals :=
-  { g with defs := g.defs.insert name info }
+  let normalized := normalizeQualified name
+  let g' := {
+    g with
+    defs := g.defs.insert name info
+    namespaceDecls := g.namespaceDecls.insert normalized info
+  }
+  match info.intrinsic with
+  | some i =>
+    { g' with intrinsics := g'.intrinsics.insert info.name i }
+  | none => g'
 
 def lookup (g : Globals) (name : String) : Option GlobalInfo :=
-  g.defs.get? name
+  match g.defs.get? name with
+  | some info => some info
+  | none =>
+    match g.lookupNormalized name with
+    | some info => some info
+    | none =>
+      if name.contains "::" then
+        none
+      else
+        g.openNamespaces.foldl (init := none) fun acc ns =>
+          match acc with
+          | some _ => acc
+          | none => g.lookupNormalized s!"{ns}::{name}"
+
+/-- Mark a namespace as opened for unqualified lookup fallback -/
+def openNamespace (g : Globals) (ns : String) : Globals :=
+  let normalized := normalizeQualified ns
+  if g.openNamespaces.contains normalized then g
+  else { g with openNamespaces := g.openNamespaces.push normalized }
+
+/-- Remove an opened namespace. -/
+def closeNamespace (g : Globals) (ns : String) : Globals :=
+  let normalized := normalizeQualified ns
+  { g with openNamespaces := g.openNamespaces.filter (· != normalized) }
+
+/-- Replace all opened namespaces -/
+def setOpenNamespaces (g : Globals) (namespaces : Array String) : Globals :=
+  { g with openNamespaces := namespaces.map normalizeQualified }
+
+/-- Register intrinsic metadata for a qualified name -/
+def registerIntrinsic (g : Globals) (name : Soma.Core.QualifiedName)
+    (intrinsic : Soma.Core.Intrinsic) : Globals :=
+  { g with intrinsics := g.intrinsics.insert name intrinsic }
+
+/-- Look up intrinsic metadata by qualified name -/
+def lookupIntrinsic (g : Globals) (name : Soma.Core.QualifiedName)
+    : Option Soma.Core.Intrinsic :=
+  g.intrinsics.get? name
 
 /-- Register a TypeId for a type name -/
 def registerTypeId (g : Globals) (name : String) (id : Soma.Core.TypeId) : Globals :=
   { g with typeIds := g.typeIds.insert name id }
 
+/-- Register or refresh top-level inductive metadata for a type name -/
+def registerInductive (g : Globals) (name : String) (typeId : Soma.Core.TypeId)
+    (kind : InductiveKind) (typeVarNames : Array String := #[])
+    (fieldNames : Array String := #[]) : Globals :=
+  let normalized := normalizeQualified name
+  let metaInfo : InductiveMeta := match g.inductives.get? normalized with
+    | some existing =>
+      { existing with
+        typeId := typeId
+        kind := kind
+        typeVarNames := typeVarNames
+        fieldNames := fieldNames }
+    | none =>
+      { name := normalized
+        typeId := typeId
+        kind := kind
+        typeVarNames := typeVarNames
+        fieldNames := fieldNames }
+  { g with
+    typeIds := g.typeIds.insert normalized typeId
+    structFields := if fieldNames.isEmpty then g.structFields else g.structFields.insert normalized fieldNames
+    inductives := g.inductives.insert normalized metaInfo }
+
+/-- Register constructor metadata under an inductive type -/
+def registerConstructorMeta (g : Globals) (typeName : String) (ctor : ConstructorMeta) : Globals :=
+  let normalized := normalizeQualified typeName
+  let g := match g.inductives.get? normalized with
+    | some metaInfo =>
+      let updated := metaInfo.upsertCtor ctor
+      { g with inductives := g.inductives.insert normalized updated }
+    | none => g
+  { g with ctorToInductive := g.ctorToInductive.insert ctor.name normalized }
+
+/-- Look up inductive metadata by type name -/
+def lookupInductive (g : Globals) (name : String) : Option InductiveMeta :=
+  g.inductives.get? (normalizeQualified name)
+
+/-- Look up inductive metadata owning a constructor -/
+def lookupInductiveByCtor (g : Globals) (ctorName : Soma.Core.QualifiedName)
+    : Option InductiveMeta :=
+  match g.ctorToInductive.get? ctorName with
+  | some typeName => g.inductives.get? typeName
+  | none =>
+    g.inductives.toList.findSome? fun (_, info) =>
+      if info.ctors.any (·.name == ctorName) then some info else none
+
 /-- Look up a TypeId by name -/
 def lookupTypeId (g : Globals) (name : String) : Option Soma.Core.TypeId :=
-  g.typeIds.get? name
+  let normalized := normalizeQualified name
+  match g.typeIds.get? normalized with
+  | some id => some id
+  | none => (g.lookupInductive normalized).map (·.typeId)
+
+/-- Insert a declaration into a child namespace -/
+def insertInChild (g : Globals) (parentName : String) (childName : String) (info : GlobalInfo) : Globals :=
+  let normalizedParent := normalizeQualified parentName
+  let existing := g.childDecls.getD normalizedParent {}
+  let qualified := normalizeQualified s!"{normalizedParent}::{childName}"
+  let g' := {
+    g with
+    childDecls := g.childDecls.insert normalizedParent (existing.insert childName info)
+    namespaceDecls := g.namespaceDecls.insert qualified info
+  }
+  -- Keep flat defs insertion too for direct references
+  g'.insert qualified info
+
+/-- Look up a declaration in a child namespace -/
+def lookupInChild (g : Globals) (parentName : String) (childName : String) : Option GlobalInfo :=
+  let normalizedParent := normalizeQualified parentName
+  match g.lookupInductive normalizedParent with
+  | some indInfo =>
+    match indInfo.ctors.find? (fun c => c.simpleName == childName) with
+    | some ctor =>
+      some {
+        name := ctor.name
+        type := ctor.type
+        isConstructor := true
+        ctorTag := ctor.tag
+      }
+    | none =>
+      match g.childDecls.get? normalizedParent with
+      | some children => children.get? childName
+      | none => g.lookupNormalized s!"{normalizedParent}::{childName}"
+  | none =>
+  match g.childDecls.get? normalizedParent with
+  | some children => children.get? childName
+  | none => g.lookupNormalized s!"{normalizedParent}::{childName}"
+
+/-- Look up a constructor by name, with namespace-aware resolution -/
+def resolveConstructor (g : Globals) (name : String) : Option GlobalInfo :=
+  let resolveFromType (typeName : String) (ctorName : String) : Option GlobalInfo :=
+    match g.lookupInductive typeName with
+    | some indInfo =>
+      indInfo.ctors.findSome? fun ctor =>
+        if ctor.simpleName == ctorName then
+          some {
+            name := ctor.name
+            type := ctor.type
+            isConstructor := true
+            ctorTag := ctor.tag
+          }
+        else none
+    | none => g.lookupInChild typeName ctorName
+  match g.lookup name with
+  | some info =>
+    if info.isConstructor then some info
+    else
+      let parent := normalizeQualified name
+      match g.lookupInductive parent with
+      | some indInfo =>
+        match indInfo.ctors.toList with
+        | [ctor] =>
+          some {
+            name := ctor.name
+            type := ctor.type
+            isConstructor := true
+            ctorTag := ctor.tag
+          }
+        | _ => none
+      | none =>
+        match g.childDecls.get? parent with
+          | some children =>
+            let ctors := children.toList.filter (·.2.isConstructor)
+            match ctors with
+            | [(_, ctorInfo)] => some ctorInfo
+            | _ => none
+          | none => none
+  | none =>
+    match splitQualified name |>.reverse with
+    | [] => none
+    | suffix :: revPrefix =>
+      let prefixParts := revPrefix.reverse
+      if prefixParts.isEmpty then
+        -- Unqualified constructor: try open namespaces against inductive metadata first
+        let fromOpens := g.openNamespaces.findSome? fun ns => resolveFromType ns suffix
+        match fromOpens with
+        | some info => some info
+        | none =>
+          -- As a last resort, accept a unique global constructor simple name
+          let candidates := g.inductives.toList.foldl (init := #[]) fun acc (_, indInfo) =>
+            indInfo.ctors.foldl (init := acc) fun acc2 ctor =>
+              if ctor.simpleName == suffix then
+                acc2.push {
+                  name := ctor.name
+                  type := ctor.type
+                  isConstructor := true
+                  ctorTag := ctor.tag
+                }
+              else acc2
+          match candidates.toList with
+          | [only] => some only
+          | _ => none
+      else
+        resolveFromType (String.intercalate "::" prefixParts) suffix
+
+/-- Look up a struct field's positional index by type name and field name -/
+def lookupFieldIndex (g : Globals) (typeName : String) (fieldName : String) : Option Nat :=
+  let normalized := normalizeQualified typeName
+  match g.lookupInductive normalized with
+  | some indInfo =>
+    match indInfo.fieldNames.toList.findIdx? (· == fieldName) with
+    | some idx => some idx
+    | none =>
+      match g.structFields.get? normalized with
+      | some fields => fields.toList.findIdx? (· == fieldName)
+      | none => none
+  | none =>
+  match g.structFields.get? normalized with
+  | some fields => fields.toList.findIdx? (· == fieldName)
+  | none => none
 
 /-- Convert Globals to GlobalEnv (for evaluation context) -/
 def toGlobalEnv (g : Globals) : GlobalEnv :=
   let entries := g.defs.toList
-  entries.foldl (fun acc (name, info) =>
+  entries.foldl (fun acc (_, info) =>
     match info.value with
-    | some v => acc.insert name v
+    | some v => acc.insert info.name v
     | none => acc
   ) GlobalEnv.empty
 
@@ -399,8 +747,8 @@ structure TCState where
   warnings : Array TCWarning := #[]
   /-- Fresh name counter -/
   freshCounter : Nat := 0
-  /-- Variable usage counts for QTT tracking (BindingId -> exact count) -/
-  usages : Std.HashMap Soma.Metal.BindingId Nat := {}
+  /-- Variable usage counts for QTT tracking (Unique -> exact count) -/
+  usages : Std.HashMap Unique Nat := {}
   /-- Pending instance constraints to be resolved -/
   pendingInstances : Array PendingInstance := #[]
   /-- Unique supply for generating compiler-internal names -/
@@ -506,12 +854,12 @@ def freshUnique (s : TCState) (original : String) : Unique × TCState :=
   (u, { s with uniqueSupply := supply' })
 
 /-- Record usage of a variable (increments count by given amount, default 1) -/
-def useVar (s : TCState) (bindingId : Soma.Metal.BindingId) (count : Nat := 1) : TCState :=
+def useVar (s : TCState) (bindingId : Unique) (count : Nat := 1) : TCState :=
   let current := s.usages.getD bindingId 0
   { s with usages := s.usages.insert bindingId (current + count) }
 
 /-- Get the usage count of a variable -/
-def getUsage (s : TCState) (bindingId : Soma.Metal.BindingId) : Nat :=
+def getUsage (s : TCState) (bindingId : Unique) : Nat :=
   s.usages.getD bindingId 0
 
 /-- Clear usages (for starting a new scope) -/
@@ -519,11 +867,11 @@ def clearUsages (s : TCState) : TCState :=
   { s with usages := {} }
 
 /-- Save current usages -/
-def saveUsages (s : TCState) : Std.HashMap Soma.Metal.BindingId Nat :=
+def saveUsages (s : TCState) : Std.HashMap Unique Nat :=
   s.usages
 
 /-- Restore usages -/
-def restoreUsages (s : TCState) (usages : Std.HashMap Soma.Metal.BindingId Nat) : TCState :=
+def restoreUsages (s : TCState) (usages : Std.HashMap Unique Nat) : TCState :=
   { s with usages := usages }
 
 /-- Add a pending instance constraint -/
@@ -606,12 +954,13 @@ def lookupAbbrev (ctx : TCContext) (name : String) : Option AbbrevInfo :=
   ctx.abbrevEnv.get? name
 
 /-- Extend context with a new binding -/
-def extend (ctx : TCContext) (name : String) (bindingId : Soma.Metal.BindingId)
+def extend (ctx : TCContext) (name : String) (bindingId : Unique)
     (ty : Value) (qty : Quantity) (binder : BinderInfo) (span : Span) : TCContext :=
   let lvl := ctx.level
   let entry : CtxEntry := {
     name := name
     bindingId := bindingId
+    fvarId := { id := bindingId.id, module := bindingId.module, original := name }
     type := ty
     qty := qty
     level := lvl
@@ -671,7 +1020,7 @@ def withSpan (span : Span) (m : TCM α) : TCM α :=
   withReader (·.withSpan span) m
 
 /-- Run with an extended context -/
-def withBinding (name : String) (bindingId : Soma.Metal.BindingId) (ty : Value)
+def withBinding (name : String) (bindingId : Unique) (ty : Value)
     (qty : Quantity) (binder : BinderInfo) (span : Span) (m : TCM α) : TCM α :=
   withReader (·.extend name bindingId ty qty binder span) m
 
@@ -697,6 +1046,19 @@ def lookupGlobal (name : String) : TCM (Option GlobalInfo) := do
 def lookupGlobalNoDep (name : String) : TCM (Option GlobalInfo) := do
   let ctx ← getCtx
   return ctx.lookupGlobal name
+
+/-- Resolve a constructor name using namespace-aware lookup -/
+def resolveConstructor (name : String) : TCM (Option GlobalInfo) := do
+  let ctx ← getCtx
+  let result := ctx.globals.resolveConstructor name
+  if result.isSome then
+    recordGlobalDep name
+  return result
+
+/-- Look up a wired-in constructor by role name -/
+def lookupWiredIn (role : String) : TCM (Option GlobalInfo) := do
+  let ctx ← getCtx
+  return ctx.globals.wiredIn.get? role
 
 /-- Look up a type abbreviation by name -/
 def lookupAbbrev (name : String) : TCM (Option AbbrevInfo) := do
@@ -958,20 +1320,19 @@ def freshUnique (original : String) : TCM Unique := do
   set state'
   return u
 
-/-- Generate a fresh BindingId for a local binding -/
-def freshBindingId (name : String) : TCM Soma.Metal.BindingId := do
-  let u ← freshUnique name
-  return { id := u.id, module := u.module, original := name }
+/-- Generate a fresh local Unique for a binding site -/
+def freshLocalId (name : String) : TCM Unique :=
+  freshUnique name
 
 /-- Record usage of a variable. In erased context, usages don't count (compile-time only). -/
-def useVar (bindingId : Soma.Metal.BindingId) (count : Nat := 1) : TCM Unit := do
+def useVar (bindingId : Unique) (count : Nat := 1) : TCM Unit := do
   let ctx ← getCtx
   -- In erased context, usages don't count towards runtime
   if ctx.qtyMultiplier != .zero then
     modifyState (·.useVar bindingId count)
 
 /-- Get the recorded usage count of a variable -/
-def getUsage (bindingId : Soma.Metal.BindingId) : TCM Nat := do
+def getUsage (bindingId : Unique) : TCM Nat := do
   let state ← getState
   return state.getUsage bindingId
 
@@ -983,7 +1344,7 @@ def countToQuantity (n : Nat) : Quantity :=
   | _ => .omega
 
 /-- Check that a variable's usage is compatible with its declared quantity -/
-def checkUsage (bindingId : Soma.Metal.BindingId) (declared : Quantity) (span : Span) : TCM Unit := do
+def checkUsage (bindingId : Unique) (declared : Quantity) (span : Span) : TCM Unit := do
   let count ← getUsage bindingId
   let actual := countToQuantity count
   -- Check: actual ≤ declared (in the quantity semiring ordering)
@@ -1012,7 +1373,7 @@ def inErasedContext (m : TCM α) : TCM α :=
   withReader (fun ctx => { ctx with inErased := true, qtyMultiplier := .zero }) m
 
 /-- Run an action with fresh usage tracking, returning the usage counts -/
-def withFreshUsages (m : TCM α) : TCM (α × Std.HashMap Soma.Metal.BindingId Nat) := do
+def withFreshUsages (m : TCM α) : TCM (α × Std.HashMap Unique Nat) := do
   let state ← getState
   let savedUsages := state.saveUsages
   modifyState (·.clearUsages)
@@ -1027,14 +1388,14 @@ def withFreshUsages (m : TCM α) : TCM (α × Std.HashMap Soma.Metal.BindingId N
 /-- Convert TCM globals to EvalCtx globals -/
 private def globalsToEvalGlobals (g : Globals) : GlobalEnv :=
   let entries := g.defs.toList
-  entries.foldl (fun acc (name, info) =>
+  entries.foldl (fun acc (_, info) =>
     match info.value with
-    | some v => acc.insert name v
+    | some v => acc.insert info.name v
     | none => acc
   ) GlobalEnv.empty
 
-/-- Evaluate an untyped expression to a Value using the current environment -/
-def eval (e : Expr Unit scope) : TCM Value := do
+/-- Evaluate a Core.Expr to a Value using the current environment. -/
+def evalExpr (e : Soma.Core.Expr) : TCM Value := do
   let ctx ← getCtx
   let state ← getState
   let evalCtx : EvalCtx := {
@@ -1042,32 +1403,7 @@ def eval (e : Expr Unit scope) : TCM Value := do
     globals := globalsToEvalGlobals ctx.globals
     metas := state.metas
   }
-  return Soma.Core.eval evalCtx e
-
-/-- Evaluate a typed expression by first stripping type annotations -/
-def evalTyped (e : Expr Value scope) : TCM Value := do
-  let ctx ← getCtx
-  let state ← getState
-  let evalCtx : EvalCtx := {
-    env := ctx.env
-    globals := globalsToEvalGlobals ctx.globals
-    metas := state.metas
-  }
-  -- Strip type annotations and evaluate
-  let untyped := e.mapInfo (fun _ => ())
-  return Soma.Core.eval evalCtx untyped
-
-/-- Evaluate a Term to a Value using the current environment.
-    This is useful when working with closures or pattern solutions that use Terms. -/
-def evalTerm (t : Term) : TCM Value := do
-  let ctx ← getCtx
-  let state ← getState
-  let evalCtx : EvalCtx := {
-    env := ctx.env
-    globals := globalsToEvalGlobals ctx.globals
-    metas := state.metas
-  }
-  return Soma.Core.evalTerm evalCtx t
+  return Soma.Core.evalCoreExpr evalCtx e
 
 /-- Create a Pi type value -/
 def mkPi (qty : Quantity) (binder : BinderInfo) (name : String) (domain : Value)
@@ -1185,8 +1521,8 @@ def mkEmptyClosure (name : String) : TCM Closure := do
   let ctx ← getCtx
   return Closure.mkEmpty name ctx.env
 
-/-- Create a closure with a specific term body -/
-def mkClosureWithTerm (name : String) (body : Term) : TCM Closure := do
+/-- Create a closure with a specific Expr body -/
+def mkClosureWithExpr (name : String) (body : Soma.Core.Expr) : TCM Closure := do
   let ctx ← getCtx
   return Closure.mkWithBody name ctx.env body
 
@@ -1394,22 +1730,17 @@ def infallible (action : TCM α) (default : α) : TCM α := do
   recoverWith action default
 
 /-- Like infallible but for actions that produce elaborated expressions.
-    Creates a hole expression on failure. -/
-def infallibleExpr {scope : Metal.Scope} (action : TCM (Value × Metal.Expr Value scope))
-    (span : Span) : TCM (Value × Metal.Expr Value scope) := do
+    Creates a panic expression on failure. -/
+def infallibleExpr (action : TCM (Value × Soma.Core.Expr))
+    (span : Span) : TCM (Value × Soma.Core.Expr) := do
   let stateBefore ← getState
   try
     action
   catch e =>
     set stateBefore
     addError e
-    -- Create placeholder type and hole expression with fresh ID
     let placeholderTy ← typePlaceholder span
-    let state ← getState
-    let holeId : Metal.HoleId := { id := state.freshCounter, name := some "_error" }
-    modifyState fun s => { s with freshCounter := s.freshCounter + 1 }
-    let holeExpr : Metal.Expr Value scope := .hole holeId span
-    return (placeholderTy, holeExpr)
+    return (placeholderTy, .panic "_error")
 
 end TCM
 

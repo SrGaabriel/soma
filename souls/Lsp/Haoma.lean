@@ -102,7 +102,7 @@ where
     let version ← getFieldValue v "version" getStrValue
     let is_root ← getFieldValue v "is_root" getBoolValue
     let dependencies ← getFieldValue v "dependencies" (getArrayValue getStrValue)
-    return { name, root, version, is_root, dependencies }data -/
+    return { name, root, version, is_root, dependencies }
 inductive LoadResult
   /-- Successfully loaded project metadata -/
   | ok (metadata : ProjectMetadata)

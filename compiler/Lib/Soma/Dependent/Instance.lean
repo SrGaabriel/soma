@@ -5,7 +5,6 @@ import Soma.Core.Primitive
 import Soma.Dependent.Monad
 import Soma.Dependent.Convert
 import Soma.Dependent.Unify
-import Soma.Metal.Expr
 import Soma.Syntax.Source
 import Soma.Unique
 
@@ -13,7 +12,6 @@ namespace Soma.Dependent
 
 open Soma (Unique)
 open Soma.Core
-open Soma.Metal (Name Expr BinderInfo)
 open Soma.Syntax (Span)
 
 /-- Module name for built-in classes -/

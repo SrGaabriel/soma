@@ -1,5 +1,8 @@
 // expect: success
-// Test: simple pair types
+// Test: simple pair types with @[wired_in] attributes
+
+data Pair a b
+    | MkPair a b
 
 def pair :: (Int, Int) = (1, 2)
 

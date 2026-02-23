@@ -1,9 +1,9 @@
 import Soma.Syntax
-import Soma.Metal
+import Soma.Core.Module
+import Soma.Core.Function
 import Soma.Dependent.Monad
 import Soma.Dependent.Infer
 import Soma.Dependent.Unify
-import Soma.Dependent.Zonk
 import Soma.Dependent.Level
 import Soma.Dependent.Instance
 import Soma.Dependent.Error
@@ -12,15 +12,12 @@ import Soma.Dependent.Elaborate
 import Soma.Dependent.TraitElaborate
 import Soma.Unique
 import Soma.Core.Eval
-import Soma.Core.Name
 
 namespace Soma.Dependent.Driver
 
 open Soma.Syntax
-open Soma.Metal
-open Soma.Core (exprToTerm Value Term Level PrimOp FFIOp Intrinsic Name)
+open Soma.Core (Value Level PrimOp FFIOp Intrinsic)
 open Soma (UniqueSupply)
-
 
 /-- Convert TCError to Diagnostic -/
 def tcErrorToDiagnostic (e : TCError) : Diagnostic :=
@@ -37,22 +34,33 @@ structure CheckState where
   /-- Accumulated errors -/
   errors : Array TCError := #[]
 
+private def inferIntrinsicInfo (fn : Soma.Core.UntypedFunction) : Option Intrinsic :=
+  if fn.attrs.intrinsic then
+    match PrimOp.fromString? fn.name.display with
+    | some op => some (.primOp op)
+    | none =>
+      match FFIOp.fromString? fn.name.display with
+      | some op => some (.ffiOp op)
+      | none => some (.extern (fn.attrs.extern.getD fn.name.display))
+  else
+    fn.attrs.extern.map Intrinsic.extern
+
 /-- Check totality for a function if it's marked @[total] -/
-def checkFunctionTotality (fn : Metal.UntypedFunction) (body : Term)
+def checkFunctionTotality (fn : Soma.Core.UntypedFunction) (body : Soma.Core.Expr)
     (registry : Totality.TotalityRegistry) : Totality.TotalityRegistry × Array TCError :=
   let fnInfo : Totality.FunctionInfo := {
     name := fn.name
     markedTotal := fn.attrs.total
     status := .isUnknown
-    params := fn.params.map (·.2)
+    params := fn.params
     fnType := Value.vType .zero
-    span := fn.body.span
+    span := fn.span
   }
   let (registry', result) := Totality.checkAndRegisterTotality fnInfo body registry
   (registry', result.errors)
 
 /-- Check positivity for a data type definition -/
-def checkDataTypePositivity (typeDef : Metal.UntypedTypeDef) (ctx : TCContext) (state : TCState)
+def checkDataTypePositivity (typeDef : Soma.Core.UntypedTypeDef) (ctx : TCContext) (state : TCState)
     : Array TCError :=
   match typeDef with
   | .algebraic name _params constructors =>
@@ -106,106 +114,120 @@ partial def extractParamTypes (ty : Value) (numParams : Nat) : TCM (Array Value 
       -- Not a Pi type, return remaining as result
       return (#[], ty')
 
-/-- Extract ALL parameter types from a Pi type (both implicit and explicit) -/
-partial def extractAllParamTypes (ty : Value) (numExplicit : Nat)
-    : TCM (Array (String × Value × Bool) × Value) := do
+/-- Extract a binder telescope prefix from a Pi type -/
+partial def extractSignaturePrefix (ty : Value) (numExplicit : Nat)
+    : TCM (Array (String × Value × Soma.Core.BinderInfo) × Value) := do
   let ty' ← force ty
   match ty' with
   | .vPi _qty binder name dom cod =>
-    let isImplicit := binder.isImplicit
-    -- If we've consumed all explicit params and this is an explicit param, stop here
-    -- and return the whole remaining type as the result
-    if numExplicit == 0 && !isImplicit then
+    -- Once we consumed all explicit term parameters, stop before the next explicit binder
+    if numExplicit == 0 && !binder.isImplicit then
       return (#[], ty')
-    -- Get the codomain by applying the closure to a dummy value
     let lvl ← TCM.currentLevel
     let dummyArg := Value.vNeutral dom (.nVar ⟨name, lvl⟩)
     let codTy ← applyClosure cod dummyArg
-    let remainingExplicit := if isImplicit then numExplicit else numExplicit - 1
-    if remainingExplicit == 0 && !isImplicit then
-      -- Last explicit parameter, stop here
-      return (#[(name, dom, isImplicit)], codTy)
-    else
-      -- Continue extracting (either implicit param, or more explicit params to go)
-      let (restParams, resultTy) ← extractAllParamTypes codTy remainingExplicit
-      return (#[(name, dom, isImplicit)] ++ restParams, resultTy)
+    let remainingExplicit := if binder.isImplicit then numExplicit else numExplicit - 1
+    let (restParams, resultTy) ← extractSignaturePrefix codTy remainingExplicit
+    return (#[(name, dom, binder)] ++ restParams, resultTy)
   | _ =>
-    -- Not a Pi type, return remaining as result
     return (#[], ty')
 
-/-- Extend the context with function parameters and run an actions -/
-def withFunctionParams (params : Array (Metal.BindingId × String)) (paramTypes : Array Value)
-    (span : Span) (action : TCM α) : TCM α := do
-  -- Extend context with each parameter
+/-- Extend the context with function parameters and run an action -/
+def withFunctionParams (params : Array String) (paramTypes : Array Value)
+    (span : Span) (action : TCM α) : TCM (Array (Soma.Unique × String) × α) := do
+  -- First generate all local ids
+  let mut bindings : Array (Soma.Unique × String) := #[]
+  for name in params do
+    let bindingId ← TCM.freshLocalId name
+    bindings := bindings.push (bindingId, name)
+  -- Then extend context with each
   let rec go (idx : Nat) : TCM α := do
-    if idx >= params.size then
+    if idx >= bindings.size then
       action
     else
-      let (bindingId, name) := params[idx]!
+      let (bindingId, name) := bindings[idx]!
       let paramTy := if h : idx < paramTypes.size then paramTypes[idx] else Value.vType .zero
       TCM.withBinding name bindingId paramTy .omega .explicit span do
         go (idx + 1)
-  go 0
+  let result ← go 0
+  return (bindings, result)
 
-/-- Extend the context with ALL type-level bindings (both implicit forall binders and explicit parameters), then run an action -/
-def withAllTypeBindings (allParams : Array (String × Value × Bool))
-    (explicitParams : Array (Metal.BindingId × String))
-    (span : Span) (action : TCM α) : TCM α := do
-  -- First, bind all the implicit type parameters (forall binders)
-  let rec bindImplicits (idx : Nat) (explicitIdx : Nat) : TCM α := do
-    if idx >= allParams.size then
+/-- Extend the context with a signature telescope prefix, then run an action.
+  Explicit binders in the prefix are renamed to the concrete function parameter names.
+  Returns generated Unique×String pairs for those explicit term parameters. -/
+def withSignaturePrefixBindings (allParams : Array (String × Value × Soma.Core.BinderInfo))
+    (explicitParams : Array String)
+    (span : Span) (action : TCM α) : TCM (Array (Soma.Unique × String) × α) := do
+  -- Pre-generate all local ids to collect them
+  let mut explicitBindings : Array (Soma.Unique × String) := #[]
+  let mut allBindings : Array (Soma.Unique × String × Soma.Core.BinderInfo) := #[]
+  let mut eIdx : Nat := 0
+  for (name, _, binder) in allParams do
+    if binder.isImplicit then
+      let bindingId ← TCM.freshLocalId name
+      allBindings := allBindings.push (bindingId, name, binder)
+    else
+      let paramName := if h : eIdx < explicitParams.size then explicitParams[eIdx] else name
+      let bindingId ← TCM.freshLocalId paramName
+      allBindings := allBindings.push (bindingId, paramName, .explicit)
+      explicitBindings := explicitBindings.push (bindingId, paramName)
+      eIdx := eIdx + 1
+  -- Now bind them all
+  let rec go (idx : Nat) : TCM α := do
+    if idx >= allBindings.size then
       action
     else
-      let (name, ty, isImplicit) := allParams[idx]!
-      if isImplicit then
-        -- Implicit type parameter (from forall)
-        let bindingId ← TCM.freshBindingId name
-        TCM.withBinding name bindingId ty .omega .implicit span do
-          bindImplicits (idx + 1) explicitIdx
-      else
-        -- Explicit parameter
-        if h : explicitIdx < explicitParams.size then
-          let (bindingId, paramName) := explicitParams[explicitIdx]
-          TCM.withBinding paramName bindingId ty .omega .explicit span do
-            bindImplicits (idx + 1) (explicitIdx + 1)
-        else
-          let bindingId ← TCM.freshBindingId name
-          TCM.withBinding name bindingId ty .omega .explicit span do
-            bindImplicits (idx + 1) (explicitIdx + 1)
-  bindImplicits 0 0
+      let (bindingId, paramName, binder) := allBindings[idx]!
+      let (_, ty, _) := allParams[idx]!
+      TCM.withBinding paramName bindingId ty .omega binder span do
+        go (idx + 1)
+  let result ← go 0
+  return (explicitBindings, result)
 
-/-- Type check a single Metal function using dependent types -/
-def checkFunction (fn : Metal.UntypedFunction)
-    : TCM (Value × Metal.Expr Value (fn.params.toList.map (·.1))) := do
-  let span := fn.body.span
+/-- Type check a single function using dependent types.
+    Returns (fnType, typedBody, generatedParams) where generatedParams contains local ids. -/
+def checkFunction (fn : Soma.Core.UntypedFunction)
+  : TCM (Value × Soma.Core.Expr × Array (Soma.Unique × String)) := do
+  let span := fn.span
+  -- Intrinsic/extern functions have no real body — just elaborate the type
+  if fn.attrs.intrinsic || fn.attrs.extern.isSome then
+    match fn.declaredTypeSyntax with
+    | some typeSyntax =>
+      let declaredType ← TCM.recoverWithM
+        (Elaborate.elaborateType Elaborate.ElabEnv.empty typeSyntax)
+        (TCM.typePlaceholder span)
+      let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
+      return (declaredType, placeholderBody, #[])
+    | none =>
+      let ty ← TCM.freshMetaVal (.vType .zero)
+      let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
+      return (ty, placeholderBody, #[])
   match fn.declaredTypeSyntax with
   | some typeSyntax =>
     -- Elaborate the declared type signature
     let declaredType ← TCM.recoverWithM
       (Elaborate.elaborateType Elaborate.ElabEnv.empty typeSyntax)
       (TCM.typePlaceholder span)
-    -- Extract ALL parameter types (both implicit forall binders and explicit params)
-    -- This ensures type variables like label polymorphism variables are in scope
+    -- Split declared signature into:
+    --   1) telescope prefix needed to check this function's term parameters
+    --   2) remaining result type outside that prefix
     let (allParams, resultType) ← TCM.recoverWith
-      (extractAllParamTypes declaredType fn.params.size)
+      (extractSignaturePrefix declaredType fn.params.size)
       (#[], declaredType)
-    -- Extend context with ALL bindings and check body against result type
-    -- Use infallible to continue even if body checking fails
-    -- Now we capture the typed expression instead of discarding it
-    let typedBody ← withAllTypeBindings allParams fn.params span do
-      TCM.infallible (Soma.Dependent.check fn.body resultType) default
-    return (declaredType, typedBody)
+    -- Extend context with prefix binders and check body against the exact remaining result type
+    let (generatedParams, typedBody) ← withSignaturePrefixBindings allParams fn.params span do
+      TCM.infallible (Soma.Dependent.checkSyntax fn.body resultType) default
+    return (declaredType, typedBody, generatedParams)
   | none =>
     -- No signature: create fresh metavariables for param types
     let paramTypes ← fn.params.mapM fun _ => TCM.freshMetaVal (.vType .zero)
     -- Extend context with parameters and infer body type
-    -- Now we capture the typed expression instead of discarding it
-    withFunctionParams fn.params paramTypes span do
-      let (inferredType, typedBody) ← TCM.infallibleExpr (Soma.Dependent.infer fn.body) span
-      return (inferredType, typedBody)
+    let (generatedParams, (inferredType, typedBody)) ← withFunctionParams fn.params paramTypes span do
+      TCM.infallibleExpr (Soma.Dependent.inferSyntax fn.body) span
+    return (inferredType, typedBody, generatedParams)
 
 /-- Elaborate a constructor type: fields -> DataType params -/
-def elaborateCtorType (typeName : Metal.Name) (typeVarNames : Array String)
+def elaborateCtorType (typeName : Soma.Core.QualifiedName) (typeVarNames : Array String)
     (fieldTypeSyntax : Array Syntax.TypeExpr) : TCM Value := do
   -- Create an elaboration environment with type variables
   let mut elabEnv := Elaborate.ElabEnv.empty
@@ -257,7 +279,7 @@ def elaborateCtorType (typeName : Metal.Name) (typeVarNames : Array String)
   return ctorType
 
 /-- Elaborate an indexed constructor type from a full signature -/
-def elaborateIndexedCtorType (_typeName : Metal.Name) (_typeVarNames : Array String)
+def elaborateIndexedCtorType (_typeName : Soma.Core.QualifiedName) (_typeVarNames : Array String)
     (sigSyntax : Syntax.TypeExpr) : TCM Value := do
   -- Find ALL free type variables in the constructor signature
   -- This includes variables that may not be in the data type's parameter list
@@ -320,7 +342,7 @@ def elaborateFunctionType (sigSyntax : Syntax.TypeExpr) : TCM Value := do
 
 /-- Build a Globals enviro      -- Check for builtin higher-kinded types (List, Array, IO, Ref)
 nment from all function definitions in a module -/
-def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
+def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
   -- Start with existing globals from context to preserve external typeIds
   let ctx ← TCM.getCtx
   let mut globals := ctx.globals
@@ -328,38 +350,43 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
   -- First pass: Register all data types (so they can be referenced by functions and constructors)
   for typeDef in module.types do
     match typeDef with
-    | .algebraic typeName _typeVarNames _ =>
+    | .algebraic typeName typeVarNames _ =>
       -- Generate a proper TypeId for this data type
       let typeUnique ← TCM.freshUnique typeName.display
       let typeId : Soma.Core.TypeId := Soma.Core.TypeId.fromUnique typeUnique
       -- Register the TypeId in both local globals and TCM context
       globals := globals.registerTypeId typeName.display typeId
+      globals := globals.registerInductive typeName.display typeId .algebraic typeVarNames
       TCM.registerTypeId typeName.display typeId
 
-      -- Register the data type name itself (for evaluation of Term.global)
+      -- Register the data type name itself (for evaluation of Expr.const)
       let dataTypeVal := Value.vDataType typeId []
       let dataTypeInfo : GlobalInfo := {
-        name := .user typeUnique
+        name := ⟨typeUnique⟩
         type := Value.vType .zero  -- The type of the data type is Type
         value := some dataTypeVal
         isConstructor := false
+        origin := .typeDecl
       }
       globals := globals.insert typeName.display dataTypeInfo
-    | .struct structName _typeVarNames _ _ =>
+    | .struct structName typeVarNames _ fields =>
       -- Generate a proper TypeId for this struct
       let typeUnique ← TCM.freshUnique structName.display
       let typeId : Soma.Core.TypeId := Soma.Core.TypeId.fromUnique typeUnique
       -- Register the TypeId in both local globals and TCM context
       globals := globals.registerTypeId structName.display typeId
+      globals := globals.registerInductive structName.display typeId .struct typeVarNames
+        (fields.filterMap (·.1))
       TCM.registerTypeId structName.display typeId
 
       -- Register the struct type name itself
       let dataTypeVal := Value.vDataType typeId []
       let dataTypeInfo : GlobalInfo := {
-        name := .user typeUnique
+        name := ⟨typeUnique⟩
         type := Value.vType .zero
         value := some dataTypeVal
         isConstructor := false
+        origin := .typeDecl
       }
       globals := globals.insert structName.display dataTypeInfo
     | .record _ _ _ =>
@@ -382,56 +409,77 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
               TCM.withGlobals globals (elaborateCtorType typeName typeVarNames ctor.fieldTypeSyntax))
           (TCM.typePlaceholder Span.uninhabited)
         -- Get the simple constructor name
-        let ctorSimpleName := ctor.name.ctorSimpleName?.getD ctor.name.display
-        let ctorQualifiedName := s!"{typeName.display}.{ctorSimpleName}"
+        let ctorSimpleName := ctor.name.id.original
+        let ctorQualifiedName := s!"{typeName.display}::{ctorSimpleName}"
         let ctorUnique ← TCM.freshUnique ctorQualifiedName
-        let ctorCoreName : Soma.Core.Name := .user ctorUnique
+        let ctorCoreName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
         let info : GlobalInfo := {
           name := ctorCoreName
           type := ctorType
           value := none
           isConstructor := true
           ctorTag := ctor.tag
+          origin := .constructor
         }
         globals := globals.insert ctorQualifiedName info
-        -- Also register without the prefix for unqualified access, but only if it doesn't conflict with an existing type
-        if !globals.defs.contains ctorSimpleName then
-          globals := globals.insert ctorSimpleName info
-    | .struct structName typeVarNames ctorName fields =>
+        -- Register in child namespace: TypeName → CtorSimpleName
+        globals := globals.insertInChild typeName.display ctorSimpleName info
+        let ctorMeta : ConstructorMeta := {
+          name := ctorCoreName
+          simpleName := ctorSimpleName
+          tag := ctor.tag
+          arity := ctor.fieldTypeSyntax.size
+          type := ctorType
+        }
+        globals := globals.registerConstructorMeta typeName.display ctorMeta
+        -- Register wired-in role if @[wired_in "role"] attribute present
+        globals := { globals with wiredIn := globals.wiredIn.tryRegisterFromAttrs ctor.attrs info }
+    | .struct structName typeVarNames _ctorName fields =>
       -- Elaborate struct constructor type from field types
       let fieldTypes := fields.map (·.2)
       let ctorType ← TCM.recoverWithM
         (TCM.withGlobals globals (elaborateCtorType structName typeVarNames fieldTypes))
-        (TCM.typePlaceholder Span.uninhabited) -- todo: review if Span.uninhabited is appropriate here
-      -- Get the simple constructor name
-      let ctorSimpleName := ctorName.ctorSimpleName?.getD ctorName.display
-      let ctorQualifiedName := s!"{structName.display}.{ctorSimpleName}"
-      let structCtorUnique ← TCM.freshUnique ctorQualifiedName
-      let structCtorCoreName : Soma.Core.Name := .user structCtorUnique
+        (TCM.typePlaceholder Span.uninhabited)
+      -- Struct constructors are named "new" in the namespace, accessed as StructName::new
+      let structCtorUnique ← TCM.freshUnique s!"{structName.display}::new"
+      let structCtorCoreName : Soma.Core.QualifiedName := ⟨structCtorUnique⟩
       let info : GlobalInfo := {
         name := structCtorCoreName
         type := ctorType
         value := none
         isConstructor := true
         ctorTag := 0
+        origin := .constructor
       }
-      globals := globals.insert ctorQualifiedName info
-      -- Also register without the prefix for unqualified access, but only if it doesn't conflict
-      if !globals.defs.contains ctorSimpleName then
-        globals := globals.insert ctorSimpleName info
+      globals := globals.insertInChild structName.display "new" info
+      let ctorMeta : ConstructorMeta := {
+        name := structCtorCoreName
+        simpleName := "new"
+        tag := 0
+        arity := fields.size
+        type := ctorType
+      }
+      globals := globals.registerConstructorMeta structName.display ctorMeta
       -- Register field accessors
       for (fieldNameOpt, _) in fields do
         if let some fieldName := fieldNameOpt then
-          let accessorNameStr := s!"{structName.display}.{fieldName}"
+          let accessorNameStr := s!"{structName.display}::{fieldName}"
           let accessorUnique ← TCM.freshUnique accessorNameStr
           let accessorType ← TCM.freshMetaVal (.vType .zero)
           let accessorInfo : GlobalInfo := {
-            name := .user accessorUnique
+            name := ⟨accessorUnique⟩
             type := accessorType
             value := none
             isConstructor := false
+            origin := .projection
           }
           globals := globals.insert accessorNameStr accessorInfo
+          -- Also register accessor in child namespace
+          globals := globals.insertInChild structName.display fieldName accessorInfo
+      -- Register ordered field names for index lookup
+      let fieldNames := fields.filterMap (·.1)
+      globals := { globals with
+        structFields := globals.structFields.insert structName.display fieldNames }
     | .record _ _ _ =>
       pure ()
 
@@ -493,14 +541,15 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
             methodType := Value.vPi .omega .implicit varName (.vType .zero) codClosure
 
           return methodType)
-        (TCM.typePlaceholder Span.uninhabited) -- todo: review if Span.uninhabited is appropriate here
+        (TCM.typePlaceholder typeClass.span)
 
       let methodUnique ← TCM.freshUnique methodName.display
       let methodInfo : GlobalInfo := {
-        name := .user methodUnique
+        name := ⟨methodUnique⟩
         type := methodType
         value := none
         isConstructor := false
+        origin := .traitMethod
       }
       globals := globals.insert methodName.display methodInfo
 
@@ -512,20 +561,30 @@ def buildGlobals (module : Metal.UntypedModule) : TCM Globals := do
       (match fn.declaredTypeSyntax with
         | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
         | none => TCM.freshMetaVal (.vType .zero))
-      (TCM.typePlaceholder fn.body.span)
-    let info : GlobalInfo := { name := fn.name, type := fnType, value := none, isConstructor := false }
+      (TCM.typePlaceholder fn.span)
+    let info : GlobalInfo := {
+      name := fn.name
+      type := fnType
+      value := none
+      intrinsic := inferIntrinsicInfo fn
+      isConstructor := false
+      origin := match inferIntrinsicInfo fn with
+        | some (.extern _) => if fn.attrs.intrinsic then .intrinsic else .extern
+        | some _ => .intrinsic
+        | none => .function
+    }
     globals := globals.insert fn.name.display info
 
   return globals
 
 /-- Build the InstanceEnv from module type classes and instances -/
-def buildInstanceEnv (module : Metal.UntypedModule) (_moduleName : String)
+def buildInstanceEnv (module : Soma.Core.UntypedModule) (_moduleName : String)
     : TCM (InstanceEnv × TraitElaborate.InstanceMap) := do
   TraitElaborate.buildInstanceEnvFromModule module
 
 /-- Build the InstanceEnv incrementally, reusing cached info for unchanged definitions -/
 def buildInstanceEnvIncremental
-    (module : Metal.UntypedModule)
+  (module : Soma.Core.UntypedModule)
     (_moduleName : String)
     (prevEnv : InstanceEnv)
     (prevInstanceMap : TraitElaborate.InstanceMap)
@@ -542,7 +601,7 @@ def buildInstanceEnvIncremental
       - Creates an elaboration environment with the type parameters
       - Elaborates the expansion in that environment
       - Wraps the result in Pi types (right to left) -/
-def elaborateAbbrev (typeAbbrev : Metal.TypeAbbrev) : TCM AbbrevInfo := do
+def elaborateAbbrev (typeAbbrev : Soma.Core.TypeAbbrev) : TCM AbbrevInfo := do
   let abbrevUnique ← TCM.freshUnique typeAbbrev.name
   let arity := typeAbbrev.params.size
 
@@ -568,7 +627,7 @@ def elaborateAbbrev (typeAbbrev : Metal.TypeAbbrev) : TCM AbbrevInfo := do
     return { abbrevId := abbrevUnique, arity, expansion, span := typeAbbrev.span }
 
 /-- Build the AbbrevEnv from module type abbreviations -/
-def buildAbbrevEnv (module : Metal.UntypedModule) : TCM AbbrevEnv := do
+def buildAbbrevEnv (module : Soma.Core.UntypedModule) : TCM AbbrevEnv := do
   let mut env := AbbrevEnv.empty
   for typeAbbrev in module.abbreviations do
     let info ← elaborateAbbrev typeAbbrev
@@ -579,6 +638,9 @@ def buildAbbrevEnv (module : Metal.UntypedModule) : TCM AbbrevEnv := do
 private def registerDataType
     (globals : Globals)
     (nameStr : String)
+  (kind : InductiveKind)
+  (typeVarNames : Array String := #[])
+  (fieldNames : Array String := #[])
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
@@ -589,40 +651,54 @@ private def registerDataType
         let mut g := globals.insert nameStr info
         if let some typeId := prev.lookupTypeId nameStr then
           g := g.registerTypeId nameStr typeId
+          g := g.registerInductive nameStr typeId kind typeVarNames fieldNames
           TCM.registerTypeId nameStr typeId
+        else if let some metaInfo := prev.lookupInductive nameStr then
+          g := { g with inductives := g.inductives.insert metaInfo.name metaInfo }
         return g
 
   -- Must elaborate fresh
   let typeUnique ← TCM.freshUnique nameStr
   let typeId : Soma.Core.TypeId := Soma.Core.TypeId.fromUnique typeUnique
   let mut g := globals.registerTypeId nameStr typeId
+  g := g.registerInductive nameStr typeId kind typeVarNames fieldNames
   TCM.registerTypeId nameStr typeId
   let dataTypeVal := Value.vDataType typeId []
   let dataTypeInfo : GlobalInfo := {
-    name := .user typeUnique
+    name := ⟨typeUnique⟩
     type := Value.vType .zero
     value := some dataTypeVal
     isConstructor := false
+    origin := .typeDecl
   }
   return g.insert nameStr dataTypeInfo
 
 /-- Register or reuse a constructor, returns updated globals -/
 private def registerConstructor
     (globals : Globals)
-    (typeName : Metal.Name)
+  (typeName : Soma.Core.QualifiedName)
     (typeVarNames : Array String)
-    (ctor : Metal.UntypedConstructor)
+  (ctor : Soma.Core.UntypedConstructor)
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
-  let ctorSimpleName := ctor.name.ctorSimpleName?.getD ctor.name.display
-  let ctorQualifiedName := s!"{typeName.display}.{ctorSimpleName}"
+  let ctorSimpleName := ctor.name.id.original
+  let ctorQualifiedName := s!"{typeName.display}::{ctorSimpleName}"
 
   -- Check if we can reuse from previous globals
   if !isDirty then
     if let some prev := prevGlobals then
       if let some info := prev.lookup ctorQualifiedName then
         let mut g := globals.insert ctorQualifiedName info
+        g := g.insertInChild typeName.display ctorSimpleName info
+        let ctorMeta : ConstructorMeta := {
+          name := info.name
+          simpleName := ctorSimpleName
+          tag := info.ctorTag
+          arity := info.type.explicitArity
+          type := info.type
+        }
+        g := g.registerConstructorMeta typeName.display ctorMeta
         if !g.defs.contains ctorSimpleName then
           g := g.insert ctorSimpleName info
         return g
@@ -635,44 +711,59 @@ private def registerConstructor
     (TCM.typePlaceholder Span.uninhabited)
   let ctorUnique ← TCM.freshUnique ctorQualifiedName
   let info : GlobalInfo := {
-    name := .user ctorUnique
+    name := ⟨ctorUnique⟩
     type := ctorType
     value := none
     isConstructor := true
     ctorTag := ctor.tag
+    origin := .constructor
   }
   let mut g := globals.insert ctorQualifiedName info
-  if !g.defs.contains ctorSimpleName then
-    g := g.insert ctorSimpleName info
+  g := g.insertInChild typeName.display ctorSimpleName info
+  let ctorMeta : ConstructorMeta := {
+    name := info.name
+    simpleName := ctorSimpleName
+    tag := ctor.tag
+    arity := ctor.fieldTypeSyntax.size
+    type := ctorType
+  }
+  g := g.registerConstructorMeta typeName.display ctorMeta
   return g
 
 /-- Register or reuse a struct constructor and its field accessors, returns updated globals -/
 private def registerStructConstructor
     (globals : Globals)
-    (structName : Metal.Name)
+  (structName : Soma.Core.QualifiedName)
     (typeVarNames : Array String)
-    (ctorName : Metal.Name)
+  (_ctorName : Soma.Core.QualifiedName)
     (fields : Array (Option String × Syntax.TypeExpr))
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
   let structNameStr := structName.display
-  let ctorSimpleName := ctorName.ctorSimpleName?.getD ctorName.display
-  let ctorQualifiedName := s!"{structNameStr}.{ctorSimpleName}"
+  let ctorQualifiedName := s!"{structNameStr}::new"
 
   -- Check if we can reuse from previous globals
   if !isDirty then
     if let some prev := prevGlobals then
       if let some info := prev.lookup ctorQualifiedName then
         let mut g := globals.insert ctorQualifiedName info
-        if !g.defs.contains ctorSimpleName then
-          g := g.insert ctorSimpleName info
+        g := g.insertInChild structNameStr "new" info
+        let ctorMeta : ConstructorMeta := {
+          name := info.name
+          simpleName := "new"
+          tag := info.ctorTag
+          arity := fields.size
+          type := info.type
+        }
+        g := g.registerConstructorMeta structNameStr ctorMeta
         -- Also restore field accessors
         for (fieldNameOpt, _) in fields do
           if let some fieldName := fieldNameOpt then
-            let accessorNameStr := s!"{structNameStr}.{fieldName}"
+            let accessorNameStr := s!"{structNameStr}::{fieldName}"
             if let some accessorInfo := prev.lookup accessorNameStr then
               g := g.insert accessorNameStr accessorInfo
+              g := g.insertInChild structNameStr fieldName accessorInfo
         return g
 
   -- Must elaborate fresh
@@ -682,35 +773,45 @@ private def registerStructConstructor
     (TCM.typePlaceholder Span.uninhabited)
   let structCtorUnique ← TCM.freshUnique ctorQualifiedName
   let info : GlobalInfo := {
-    name := .user structCtorUnique
+    name := ⟨structCtorUnique⟩
     type := ctorType
     value := none
     isConstructor := true
     ctorTag := 0
+    origin := .constructor
   }
   let mut g := globals.insert ctorQualifiedName info
-  if !g.defs.contains ctorSimpleName then
-    g := g.insert ctorSimpleName info
+  g := g.insertInChild structNameStr "new" info
+  let ctorMeta : ConstructorMeta := {
+    name := info.name
+    simpleName := "new"
+    tag := 0
+    arity := fields.size
+    type := ctorType
+  }
+  g := g.registerConstructorMeta structNameStr ctorMeta
 
   -- Register field accessors
   for (fieldNameOpt, _) in fields do
     if let some fieldName := fieldNameOpt then
-      let accessorNameStr := s!"{structNameStr}.{fieldName}"
+      let accessorNameStr := s!"{structNameStr}::{fieldName}"
       let accessorUnique ← TCM.freshUnique accessorNameStr
       let accessorType ← TCM.freshMetaVal (.vType .zero)
       let accessorInfo : GlobalInfo := {
-        name := .user accessorUnique
+        name := ⟨accessorUnique⟩
         type := accessorType
         value := none
         isConstructor := false
+        origin := .projection
       }
       g := g.insert accessorNameStr accessorInfo
+      g := g.insertInChild structNameStr fieldName accessorInfo
   return g
 
 /-- Elaborate a type class method type -/
 private def elaborateMethodType
     (globals : Globals)
-    (typeClass : Metal.TypeClassMeta)
+  (typeClass : Soma.Core.TypeClassMeta)
     (methodTypeSyntax : Syntax.TypeExpr)
     : TCM Value := do
   -- Elaborate kinds for each parameter
@@ -736,8 +837,8 @@ private def elaborateMethodType
 /-- Register or reuse a type class method, returns updated globals -/
 private def registerMethod
     (globals : Globals)
-    (typeClass : Metal.TypeClassMeta)
-    (methodName : Metal.Name)
+  (typeClass : Soma.Core.TypeClassMeta)
+  (methodName : Soma.Core.QualifiedName)
     (methodTypeSyntax : Syntax.TypeExpr)
     (prevGlobals : Option Globals)
     (isDirty : Bool)
@@ -756,17 +857,18 @@ private def registerMethod
     (TCM.typePlaceholder Span.uninhabited)
   let methodUnique ← TCM.freshUnique methodNameStr
   let methodInfo : GlobalInfo := {
-    name := .user methodUnique
+    name := ⟨methodUnique⟩
     type := methodType
     value := none
     isConstructor := false
+    origin := .traitMethod
   }
   return globals.insert methodNameStr methodInfo
 
 /-- Register or reuse a function, returns updated globals -/
 private def registerFunction
     (globals : Globals)
-    (fn : Metal.UntypedFunction)
+  (fn : Soma.Core.UntypedFunction)
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
@@ -783,13 +885,23 @@ private def registerFunction
     (match fn.declaredTypeSyntax with
       | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
       | none => TCM.freshMetaVal (.vType .zero))
-    (TCM.typePlaceholder fn.body.span)
-  let info : GlobalInfo := { name := fn.name, type := fnType, value := none, isConstructor := false }
+    (TCM.typePlaceholder fn.span)
+  let info : GlobalInfo := {
+    name := fn.name
+    type := fnType
+    value := none
+    intrinsic := inferIntrinsicInfo fn
+    isConstructor := false
+    origin := match inferIntrinsicInfo fn with
+      | some (.extern _) => if fn.attrs.intrinsic then .intrinsic else .extern
+      | some _ => .intrinsic
+      | none => .function
+  }
   return globals.insert fnNameStr info
 
 /-- Build a Globals environment incrementally, reusing cached types for unchanged definitions -/
 def buildGlobalsIncremental
-    (module : Metal.UntypedModule)
+  (module : Soma.Core.UntypedModule)
     (prevGlobals : Globals)
     (dirtyNames : Std.HashSet String)
     : TCM Globals := do
@@ -799,14 +911,14 @@ def buildGlobalsIncremental
   -- First pass: Register all data types
   for typeDef in module.types do
     match typeDef with
-    | .algebraic typeName _ _ =>
+    | .algebraic typeName typeVarNames _ =>
       let nameStr := typeName.display
       let isDirty := dirtyNames.contains nameStr
-      globals ← registerDataType globals nameStr (some prevGlobals) isDirty
-    | .struct structName _ _ _ =>
+      globals ← registerDataType globals nameStr .algebraic typeVarNames #[] (some prevGlobals) isDirty
+    | .struct structName typeVarNames _ fields =>
       let nameStr := structName.display
       let isDirty := dirtyNames.contains nameStr
-      globals ← registerDataType globals nameStr (some prevGlobals) isDirty
+      globals ← registerDataType globals nameStr .struct typeVarNames (fields.filterMap (·.1)) (some prevGlobals) isDirty
     | .record _ _ _ =>
       pure ()
 

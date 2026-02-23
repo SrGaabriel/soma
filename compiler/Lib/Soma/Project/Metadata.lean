@@ -15,7 +15,7 @@ open Soma
 open Soma.Project
 open Soma.Syntax (Span)
 open Soma.Core
-open Soma.Check (ExternalDependency CheckError)
+open Soma.Project.Check (ExternalDependency CheckError)
 open Soma.Dependent (Globals GlobalInfo InstanceEnv InstanceInfo ClassInfo AbbrevEnv AbbrevInfo)
 open Kenosis
 
@@ -55,10 +55,24 @@ structure TypeIdEntry where
   id : TypeId
   deriving Serialize, Deserialize
 
+/-- Serializable inductive metadata entry -/
+structure InductiveEntry where
+  name : String
+  info : Soma.Dependent.InductiveMeta
+  deriving Serialize, Deserialize
+
+/-- Serializable constructor-to-inductive reverse index entry -/
+structure CtorOwnerEntry where
+  ctorName : Soma.Core.QualifiedName
+  inductiveName : String
+  deriving Serialize, Deserialize
+
 /-- Serializable globals -/
 structure SerializableGlobals where
-  defs : Array GlobalDefEntry
-  typeIds : Array TypeIdEntry
+  defs : Array GlobalDefEntry := #[]
+  typeIds : Array TypeIdEntry := #[]
+  inductives : Array InductiveEntry := #[]
+  ctorOwners : Array CtorOwnerEntry := #[]
   deriving Serialize, Deserialize
 
 /-- Serializable class entry -/
@@ -120,7 +134,11 @@ def globalsToSerializable (g : Globals) : SerializableGlobals :=
     acc.push { name, info }
   let typeIds := g.typeIds.fold (init := #[]) fun acc name id =>
     acc.push { name, id }
-  { defs, typeIds }
+  let inductives := g.inductives.fold (init := #[]) fun acc name info =>
+    acc.push { name, info }
+  let ctorOwners := g.ctorToInductive.fold (init := #[]) fun acc ctorName inductiveName =>
+    acc.push { ctorName, inductiveName }
+  { defs, typeIds, inductives, ctorOwners }
 
 /-- Convert InstanceEnv to serializable form -/
 def instanceEnvToSerializable (env : InstanceEnv) : SerializableInstanceEnv :=
@@ -156,9 +174,18 @@ def constructorsFromSerializable (entries : Array ConstructorEntry) : Std.HashMa
 
 /-- Convert serializable globals to Globals -/
 def globalsFromSerializable (sg : SerializableGlobals) : Globals :=
-  let defs := sg.defs.foldl (fun acc entry => acc.insert entry.name entry.info) {}
+  let defs := sg.defs.foldl (fun acc entry => acc.insert entry.name entry.info) Globals.empty
   let typeIds := sg.typeIds.foldl (fun acc entry => acc.insert entry.name entry.id) {}
-  { defs, typeIds }
+  let inductives := sg.inductives.foldl (fun acc entry => acc.insert entry.name entry.info) {}
+  let ctorToInductive := sg.ctorOwners.foldl (fun acc entry => acc.insert entry.ctorName entry.inductiveName) {}
+  let structFields := sg.inductives.foldl (fun acc entry =>
+    if entry.info.fieldNames.isEmpty then acc else acc.insert entry.name entry.info.fieldNames
+  ) {}
+  { defs with
+    typeIds := typeIds
+    structFields := structFields
+    inductives := inductives
+    ctorToInductive := ctorToInductive }
 
 /-- Convert serializable instance env to InstanceEnv -/
 def instanceEnvFromSerializable (sie : SerializableInstanceEnv) : InstanceEnv :=

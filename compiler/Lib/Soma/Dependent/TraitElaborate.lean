@@ -7,8 +7,7 @@ import Soma.Dependent.Monad
 import Soma.Dependent.Elaborate
 import Soma.Dependent.Infer
 import Soma.Dependent.Instance
-import Soma.Metal.Module
-import Soma.Metal.Expr
+import Soma.Core.Module
 import Soma.Syntax.Ast
 import Soma.Unique
 
@@ -16,7 +15,6 @@ namespace Soma.Dependent.TraitElaborate
 
 open Soma (Unique)
 open Soma.Core
-open Soma.Metal (Name UntypedModule TypeClassMeta InstanceDecl UntypedFunction)
 open Soma.Syntax (TypeExpr Span TypeVarBinder)
 open Soma.Dependent.Elaborate (ElabEnv elaborateType mkConstClosure mkDependentClosure)
 
@@ -44,6 +42,27 @@ end ClassRegistry
 When we see a neutral variable that matches a type parameter name,
 we replace it with the corresponding type argument.
 -/
+private partial def applyTypeValue (fnVal argVal : Value) : TCM Value := do
+  match fnVal with
+  | .vDataType id params =>
+    return .vDataType id (params ++ [argVal])
+  | .vPi _ _ _ _ cod =>
+    applyClosure cod argVal
+  | .vNeutral ty neu =>
+    let resultTy ← match ty with
+      | .vPi _ _ _ _ cod => applyClosure cod argVal
+      | _ => pure ty
+    return .vNeutral resultTy (.nApp neu argVal)
+  | _ =>
+    return fnVal
+
+private partial def neutralHeadAndArgs (neu : Neutral) : Neutral × List Value :=
+  match neu with
+  | .nApp fn arg =>
+    let (head, args) := neutralHeadAndArgs fn
+    (head, args ++ [arg])
+  | _ => (neu, [])
+
 partial def substituteTypeArgsInValue (v : Value) (paramNames : Array String)
     (typeArgs : Array Value) (depth : Nat) : TCM Value := do
   let v' ← force v
@@ -57,6 +76,27 @@ partial def substituteTypeArgsInValue (v : Value) (paramNames : Array String)
       else
         return v'
     | none => return v'
+
+  | .vNeutral ty neu =>
+    let ty' ← substituteTypeArgsInValue ty paramNames typeArgs depth
+    let (head, args) := neutralHeadAndArgs neu
+    let args' ← args.mapM (fun a => substituteTypeArgsInValue a paramNames typeArgs depth)
+    match head with
+    | .nVar var =>
+      match paramNames.findIdx? (· == var.name) with
+      | some idx =>
+        if h : idx < typeArgs.size then
+          let base := typeArgs[idx]
+          args'.foldlM (init := base) (fun acc arg => applyTypeValue acc arg)
+        else
+          let rebuilt := args'.foldl (fun acc arg => .nApp acc arg) head
+          return .vNeutral ty' rebuilt
+      | none =>
+        let rebuilt := args'.foldl (fun acc arg => .nApp acc arg) head
+        return .vNeutral ty' rebuilt
+    | _ =>
+      let rebuilt := args'.foldl (fun acc arg => .nApp acc arg) head
+      return .vNeutral ty' rebuilt
 
   | .vPi qty binder name dom cod =>
     let dom' ← substituteTypeArgsInValue dom paramNames typeArgs depth
@@ -101,11 +141,14 @@ partial def extractParamTypes (ty : Value) (count : Nat) : TCM (Array Value × V
   else
     let ty' ← force ty
     match ty' with
-    | .vPi _ _ _ dom cod =>
+    | .vPi _ binder _ dom cod =>
       let dummyArg ← TCM.freshMetaVal dom
       let codTy ← applyClosure cod dummyArg
-      let (restParams, resultTy) ← extractParamTypes codTy (count - 1)
-      return (#[dom] ++ restParams, resultTy)
+      if binder.isImplicit then
+        extractParamTypes codTy count
+      else
+        let (restParams, resultTy) ← extractParamTypes codTy (count - 1)
+        return (#[dom] ++ restParams, resultTy)
     | _ =>
       return (#[], ty')
 
@@ -131,7 +174,7 @@ We build this by:
 4. Wrapping in implicit foralls for type parameters
 -/
 def elaborateClassRecordType (params : Array TypeVarBinder)
-    (methods : Array (Name × TypeExpr)) : TCM Value := do
+  (methods : Array (QualifiedName × TypeExpr)) : TCM Value := do
   -- Elaborate kinds for each parameter
   let mut paramKinds : Array (String × Value) := #[]
   for param in params do
@@ -210,7 +253,7 @@ def elaborateSuperclasses (params : Array TypeVarBinder)
   return result
 
 /-- Elaborate a single type class into a ClassInfo. -/
-def elaborateClass (typeClass : TypeClassMeta) (registry : ClassRegistry)
+def elaborateClass (typeClass : Soma.Core.TypeClassMeta) (registry : ClassRegistry)
     : TCM (ClassInfo × ClassRegistry) := do
   -- Generate a unique ID for this class
   let classUnique ← TCM.freshUnique typeClass.name.display
@@ -256,12 +299,17 @@ For `instance Display Int where def display | x => ...`:
 - The class method signature is `a -> String`
 - We substitute `a := Int` to get `Int -> String`
 -/
-def substituteMethodType (methodTypeSyntax : TypeExpr) (paramNames : Array String)
+def substituteMethodType (methodTypeSyntax : TypeExpr) (params : Array TypeVarBinder)
     (typeArgs : Array Value) : TCM Value := do
   -- Build an environment with type parameters
   let mut elabEnv := ElabEnv.empty
-  for paramName in paramNames do
-    elabEnv := elabEnv.extend paramName (Value.vType Level.zero)
+  for param in params do
+    let kind ← match param.kind with
+      | some k => elaborateType elabEnv k
+      | none => pure (Value.vType Level.zero)
+    elabEnv := elabEnv.extend param.name.value kind
+
+  let paramNames := params.map (·.name.value)
 
   -- Elaborate the method type in this environment
   let methodType ← elaborateType elabEnv methodTypeSyntax
@@ -290,14 +338,27 @@ partial def buildLambdaValue (paramNames : Array String) (paramTypes : Array Val
 Type-checks the method body against the expected (substituted) signature
 and returns the elaborated value.
 -/
-def elaborateMethodImpl (methodFn : UntypedFunction) (expectedType : Value) : TCM Value := do
-  let paramNames := methodFn.params.map (·.2)
+def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : Value) : TCM Value := do
+  let paramNames := methodFn.params
 
   -- Decompose the expected type to get parameter types
   let (paramTypes, _resultType) ← extractParamTypes expectedType paramNames.size
 
-  -- Evaluate the method body to get a value
-  let bodyVal ← TCM.eval methodFn.body
+  -- Extend context with params, then elaborate the method body
+  let rec bindParams (idx : Nat) : TCM Value := do
+    if idx >= paramNames.size then
+      let (_, coreBody) ← Soma.Dependent.inferSyntax methodFn.body
+      let bodyVal ← TCM.evalExpr coreBody
+      return bodyVal
+    else
+      let name := paramNames[idx]!
+      let paramTy := if h : idx < paramTypes.size then paramTypes[idx] else Value.vType .zero
+      let bindingId ← TCM.freshLocalId name
+      TCM.withBinding name bindingId paramTy .omega
+        (Soma.Core.BinderInfo.explicit) methodFn.span do
+        bindParams (idx + 1)
+
+  let bodyVal ← bindParams 0
 
   -- Build the method value as a lambda
   let methodVal ← buildLambdaValue paramNames paramTypes bodyVal
@@ -314,10 +375,9 @@ We build:
   { display = \x => intToString x }
 -/
 def elaborateInstanceValue (typeArgs : Array Value)
-    (methods : Array UntypedFunction)
-    (methodSignatures : Array (Name × TypeExpr))
+  (methods : Array Soma.Core.UntypedFunction)
+    (methodSignatures : Array (QualifiedName × TypeExpr))
     (params : Array TypeVarBinder) : TCM Value := do
-  let paramNames := params.map (·.name.value)
   let mut fields : List (String × Value) := []
 
   for method in methods do
@@ -331,7 +391,7 @@ def elaborateInstanceValue (typeArgs : Array Value)
       pure ()
     | some (_, sigSyntax) =>
       -- Substitute type arguments into the method signature
-      let expectedType ← substituteMethodType sigSyntax paramNames typeArgs
+      let expectedType ← substituteMethodType sigSyntax params typeArgs
 
       -- Elaborate the method implementation
       let methodVal ← elaborateMethodImpl method expectedType
@@ -340,8 +400,8 @@ def elaborateInstanceValue (typeArgs : Array Value)
   return Value.vRecordVal fields.reverse
 
 /-- Elaborate a single instance declaration into an InstanceInfo. -/
-def elaborateInstance (inst : InstanceDecl) (registry : ClassRegistry)
-    (typeClass : TypeClassMeta) : TCM (Option InstanceInfo) := do
+def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
+  (typeClass : Soma.Core.TypeClassMeta) : TCM (Option InstanceInfo) := do
   -- Look up the class this is an instance of
   match registry.lookup inst.className with
   | none =>
@@ -389,7 +449,7 @@ This is the main entry point for trait/instance elaboration.
 It processes all type classes first (to build the registry),
 then processes all instances using that registry.
 -/
-def buildInstanceEnvFromModule (module : UntypedModule) : TCM (InstanceEnv × InstanceMap) := do
+def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule) : TCM (InstanceEnv × InstanceMap) := do
   -- Start with the default built-in instances (Eq Int, Num Int, etc.)
   let mut env := defaultInstanceEnv
   env := { env with moduleName := module.name }
@@ -422,7 +482,7 @@ def buildInstanceEnvFromModule (module : UntypedModule) : TCM (InstanceEnv × In
 
 /-- Build an InstanceEnv incrementally, reusing cached class/instance info for unchanged definitions -/
 def buildInstanceEnvFromModuleIncremental
-    (module : UntypedModule)
+  (module : Soma.Core.UntypedModule)
     (prevEnv : InstanceEnv)
     (prevInstanceMap : InstanceMap)
     (dirtyNames : Std.HashSet String)

@@ -13,7 +13,7 @@ open Soma.Project
 open Soma.Driver
 open Soma.Logging
 open Soma.Syntax (Diagnostic Diagnostics Span)
-open Soma.Check
+open Soma.Project.Check
 
 /-- Result of a build operation -/
 structure BuildResult where

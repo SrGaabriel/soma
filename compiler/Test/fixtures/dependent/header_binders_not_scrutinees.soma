@@ -1,0 +1,10 @@
+// expect: error
+// Test: explicit binders to the right of :: are clause scrutinees
+
+data Nat where
+  | Zero :: Nat
+  | Succ :: Nat -> Nat
+
+def choose_with_ctx(n: Nat, m: Nat) :: Nat -> Nat
+  | Nat::Zero => n
+  | Nat::Succ _ => m

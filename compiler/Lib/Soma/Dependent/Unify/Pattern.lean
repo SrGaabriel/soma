@@ -27,135 +27,140 @@ def Subst.lookup (r : Subst) (lvl : DeBruijnLvl) : Option Nat :=
 
 mutual
 
-/-- Apply a renaming to a value, producing a Term that uses de Bruijn indices relative to the lambda we're building -/
-partial def applySubst (r : Subst) (v : Value) : Option Term :=
+/-- Apply a renaming to a value, producing an Expr that uses de Bruijn indices relative to the lambda we're building -/
+partial def applySubst (r : Subst) (v : Value) : Option Soma.Core.Expr :=
   match v with
-  | .vType level => some (.type level)
+  | .vType level => some (.sort level)
   | .vPi qty binder name dom cod =>
     match applySubst r dom with
-    | some domT =>
-      -- For the codomain, we'd need to handle the extended scope
+    | some domE =>
       match cod.body with
-      | some body => some (.pi qty binder name domT body)
-      | none => some (.pi qty binder name domT (.var 0 "_"))
+      | some body => some (.pi qty binder name domE body)
+      | none => some (.pi qty binder name domE (.bvar 0))
     | none => none
   | .vLam name body =>
     match body.body with
-    | some bodyT => some (.lam [name] bodyT)
-    | none => some (.lam [name] (.var 0 name))
+    | some bodyE => some (.lam .explicit name (.sort Level.zero) bodyE)
+    | none => some (.lam .explicit name (.sort Level.zero) (.bvar 0))
   | .vSigma qty name fst snd =>
     match applySubst r fst with
-    | some fstT =>
+    | some fstE =>
       match snd.body with
-      | some sndBody => some (.sigma qty name fstT sndBody)
-      | none => some (.sigma qty name fstT (.var 0 "_"))
+      | some sndBody => some (.sigma qty .explicit name fstE sndBody)
+      | none => some (.sigma qty .explicit name fstE (.bvar 0))
     | none => none
   | .vPair a b =>
     match applySubst r a, applySubst r b with
-    | some aT, some bT => some (.pair aT bT)
+    | some aE, some bE => some (.pair aE bE)
     | _, _ => none
   | .vNeutral _ neu => applySubstNeutral r neu
   | .vPrimTy p => some (.primTy p)
-  | .vIntLit n => some (.intLit n)
-  | .vStringLit s => some (.stringLit s)
+  | .vIntLit n => some (.lit (.int n))
+  | .vStringLit s => some (.lit (.string s))
   | .vRowEmpty => some .rowEmpty
   | .vRowExtend label ty tail =>
     match applySubst r label, applySubst r ty, applySubst r tail with
-    | some labelT, some tyT, some tailT => some (.rowExtend labelT tyT tailT)
+    | some labelE, some tyE, some tailE => some (.rowExtend labelE tyE tailE)
     | _, _, _ => none
   | .vRecord row =>
     match applySubst r row with
-    | some rowT => some (.recordTy rowT)
+    | some rowE => some (.recordTy rowE)
     | none => none
   | .vVariant row =>
     match applySubst r row with
-    | some rowT => some (.variantTy rowT)
+    | some rowE => some (.variantTy rowE)
     | none => none
   | .vLabelLit name => some (.labelLit name)
   | .vRowSort => some .rowSort
   | .vLabelSort => some .labelSort
   | .vRecordVal fields =>
-    let fieldTerms := fields.filterMap (fun (name, v) =>
+    let fieldExprs := fields.filterMap (fun (name, v) =>
       match applySubst r v with
-      | some t => some (name, t)
+      | some e => some (name, e)
       | none => none)
-    if fieldTerms.length == fields.length then
-      some (.record fieldTerms)
+    if fieldExprs.length == fields.length then
+      some (.record fieldExprs.toArray)
     else
       none
   | .vDataType id params =>
-    -- Convert data type with its parameters
-    let paramTerms := params.filterMap (applySubst r)
-    if paramTerms.length != params.length then none
+    let paramExprs := params.filterMap (applySubst r)
+    if paramExprs.length != params.length then none
     else
-      let baseTerm := Term.global (Name.user ⟨id.unique, id.module, id.name⟩)
-      some (paramTerms.foldl (fun acc p => .app acc [p]) baseTerm)
+      let baseExpr := Soma.Core.Expr.const ⟨⟨id.unique, id.module, id.name⟩⟩
+      some (paramExprs.foldl (fun acc p => .app acc p) baseExpr)
   | .vConstructor name tag args =>
-    let argTerms := args.filterMap (applySubst r)
-    if argTerms.length == args.length then
-      some (.construct name tag argTerms)
+    let argExprs := args.filterMap (applySubst r)
+    if argExprs.length == args.length then
+      some (.construct name tag argExprs.toArray)
     else
       none
   | .vEq tyLevel ty lhs rhs =>
     match applySubst r ty, applySubst r lhs, applySubst r rhs with
-    | some tyT, some lhsT, some rhsT => some (.eq tyLevel tyT lhsT rhsT)
+    | some tyE, some lhsE, some rhsE => some (.eqTy tyLevel tyE lhsE rhsE)
     | _, _, _ => none
   | .vRefl ty x =>
     match applySubst r ty, applySubst r x with
-    | some tyT, some xT => some (.refl tyT xT)
+    | some tyE, some xE => some (.refl tyE xE)
     | _, _ => none
   | .vTransport tyLevel ty motive lhs rhs eq body =>
     match applySubst r ty, applySubst r motive, applySubst r lhs,
           applySubst r rhs, applySubst r eq, applySubst r body with
-    | some tyT, some motiveT, some lhsT, some rhsT, some eqT, some bodyT =>
-      some (.transport tyLevel tyT motiveT lhsT rhsT eqT bodyT)
+    | some tyE, some motiveE, some lhsE, some rhsE, some eqE, some bodyE =>
+      some (.transport tyLevel tyE motiveE lhsE rhsE eqE bodyE)
     | _, _, _, _, _, _ => none
 
-partial def applySubstNeutral (r : Subst) (n : Neutral) : Option Term :=
+partial def applySubstNeutral (r : Subst) (n : Neutral) : Option Soma.Core.Expr :=
   match n with
   | .nVar v =>
     match r.lookup v.level with
-    | some idx => some (.var idx v.name)
+    | some idx => some (.bvar idx)
     | none => none  -- Variable not in scope
-  | .nMeta id => some (.mvar id.id)
+  | .nMeta id => some (.mvar id)
   | .nApp fn arg =>
     match applySubstNeutral r fn, applySubst r arg with
-    | some fnT, some argT => some (.app fnT [argT])
+    | some fnE, some argE => some (.app fnE argE)
     | _, _ => none
   | .nFst pair =>
     match applySubstNeutral r pair with
-    | some pairT => some (.fst pairT)
+    | some pairE => some (.projFst pairE)
     | none => none
   | .nSnd pair =>
     match applySubstNeutral r pair with
-    | some pairT => some (.snd pairT)
+    | some pairE => some (.projSnd pairE)
     | none => none
   | .nFieldAccess rec field =>
     match applySubstNeutral r rec with
-    | some recT => some (.fieldAccess recT field)
+    | some recE => some (.fieldAccess recE field 0)
     | none => none
   | .nCase scrut arms =>
     match applySubstNeutral r scrut with
-    | some scrutT =>
-      -- Convert each arm: apply the closure to get the body, then convert
-      let armTerms := arms.filterMap fun arm =>
+    | some scrutE =>
+      let armExprs := arms.filterMap fun arm =>
         match arm.closure.body with
-        | some bodyTerm => some (arm.pattern, 0, bodyTerm)
+        | some bodyExpr => some (Soma.Core.Arm.mk #[Soma.Core.Pattern.wildcard] bodyExpr)
         | none => none
-      if armTerms.length == arms.length then
-        some (.case scrutT armTerms)
+      if armExprs.length == arms.length then
+        some (.«case» #[scrutE] armExprs.toArray)
       else
-        none  -- Can't convert all arms
+        none
     | none => none
 
 end
 
 /-- Build nested lambdas from the spine -/
-def buildLambdaSolution (spineLevels : List DeBruijnLvl) (body : Term) : Term :=
-  let names := spineLevels.map (fun lvl => s!"x{lvl.lvl}")
-  if names.isEmpty then body else .lam names body
+def buildLambdaSolution (spineLevels : List DeBruijnLvl) (body : Soma.Core.Expr) : Soma.Core.Expr :=
+  spineLevels.foldr (fun lvl acc =>
+    Soma.Core.Expr.lam .explicit s!"x{lvl.lvl}" (.sort Level.zero) acc) body
 
-/-- Evaluate a Term to a Value (simplified) -/
-def evalSolutionTerm (t : Term) : TCM Value := TCM.evalTerm t
+/-- Evaluate a solution Expr to a Value -/
+def evalSolutionTerm (t : Soma.Core.Expr) : TCM Value := do
+  let ctx ← TCM.getCtx
+  let state ← TCM.getState
+  let evalCtx : EvalCtx := {
+    env := ctx.env
+    globals := ctx.globals.toGlobalEnv
+    metas := state.metas
+  }
+  return evalCoreExpr evalCtx t
 
 end Soma.Dependent

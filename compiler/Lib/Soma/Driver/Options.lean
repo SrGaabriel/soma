@@ -31,10 +31,10 @@ structure MetadataOptions where
   deps : Array (String × String) := #[]
   deriving Repr
 
-/-- Options for the `lower` command (Metal HIR lowering) -/
+/-- Options for the `lower` command (declaration lowering) -/
 structure LowerOptions where
   input : String
-  showUntyped : Bool := false  -- Show untyped Metal IR
+  showUntyped : Bool := false  -- Show untyped Core module
   deriving Repr
 
 /-- Options for the `circuit` command -/

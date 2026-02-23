@@ -1,6 +1,7 @@
 import Soma.Core.Value
 import Soma.Core.Level
 import Soma.Core.Eval
+import Soma.Core.Expr
 import Soma.Dependent.Monad
 import Soma.Dependent.Error
 
@@ -106,7 +107,7 @@ partial def applyClosure (clos : Closure) (arg : Value) : TCM Value := do
       globals := ctx.globals.toGlobalEnv
       metas := state.metas
     }
-    let result := Soma.Core.evalTerm evalCtx body
+    let result := Soma.Core.evalCoreExpr evalCtx body
     return result
 
 end
@@ -123,12 +124,13 @@ def etaExpandLam (v : Value) (piTy : Value) : TCM Value := do
       -- We need to create a closure that, when applied to an argument,
       -- applies v to that argument.
       let env ← TCM.getEnv
-      -- Create the body term: application of v to the bound variable
-      -- The bound variable will be at De Bruijn index 0 in the closure body
-      let bodyTerm := Term.app (Term.var 1 "_eta_fn") [Term.var 0 name]
+      -- Create the body Expr: application of v to the bound variable
+      -- After closure application, env has _eta_fn(lvl=env.size) and param(lvl=env.size+1)
+      -- bvar 0 = param (the closure arg), bvar 1 = _eta_fn (= v)
+      let bodyExpr := Soma.Core.Expr.app (.bvar 1) (.bvar 0)
       -- Extend environment with v so it's available in the closure
       let env' := env.extend "_eta_fn" v
-      let closure := Closure.term name env' bodyTerm
+      let closure := Closure.term name env' bodyExpr
       return .vLam name closure
     | _ => return v
 

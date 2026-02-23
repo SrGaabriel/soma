@@ -311,7 +311,7 @@ def parseDataDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
           return some (GreenNode.mkError "missing type name" #[dataTok])
   | none => return none
 
-def parseStructDecl : ParserM (Option GreenNode) := do
+def parseStructDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
   match ← tryConsume .kw_struct with
   | some structTok =>
       match ← parseUpperIdent with
@@ -329,7 +329,7 @@ def parseStructDecl : ParserM (Option GreenNode) := do
                     many parseConstructorField
                   let paramList := if params.isEmpty then #[]
                     else #[GreenNode.mkNode .tyParamList params]
-                  let children := #[structTok, nameTok] ++ paramList ++ #[eqTok, conTok] ++ fields
+                  let children := attrs ++ #[structTok, nameTok] ++ paramList ++ #[eqTok, conTok] ++ fields
                   return some (GreenNode.mkNode .declStruct children)
               | none =>
                   recordError "expected constructor name after '='"
@@ -362,7 +362,7 @@ def parseTraitMethod : ParserM (Option GreenNode) := do
           return some (GreenNode.mkError "missing method signature" #[defTok, nameNode])
   | none => return none
 
-def parseTraitDecl : ParserM (Option GreenNode) := do
+def parseTraitDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
   match ← tryConsume .kw_trait with
   | some traitTok =>
       match ← parseUpperIdent with
@@ -387,7 +387,7 @@ def parseTraitDecl : ParserM (Option GreenNode) := do
 
               let paramList := if params.isEmpty then #[]
                 else #[GreenNode.mkNode .tyParamList params]
-              let children := #[traitTok, nameTok] ++ paramList ++
+              let children := attrs ++ #[traitTok, nameTok] ++ paramList ++
                 (match constraints with | some c => #[c] | none => #[]) ++
                 #[whereTok] ++ methods
               return some (GreenNode.mkNode .declTrait children)
@@ -569,8 +569,8 @@ partial def parseDecl : ParserM (Option GreenNode) := do
 
   if (← check .kw_def) then parseDefDecl attrs
   else if (← check .kw_data) then parseDataDecl attrs
-  else if (← check .kw_struct) then parseStructDecl
-  else if (← check .kw_trait) then parseTraitDecl
+  else if (← check .kw_struct) then parseStructDecl attrs
+  else if (← check .kw_trait) then parseTraitDecl attrs
   else if (← check .kw_instance) then parseInstanceDecl attrs
   else if (← check .kw_use) then parseUseDecl
   else if (← check .kw_export) then parseExportDecl

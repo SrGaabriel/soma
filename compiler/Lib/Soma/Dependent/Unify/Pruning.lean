@@ -55,8 +55,8 @@ partial def getMetaResultType (ty : Value) : TCM Value := do
     | _ => return ty'
   go maxPiParams ty
 
-/-- Evaluate a pruning solution Term to a Value -/
-def evalPruneSolution (t : Term) : TCM Value := TCM.evalTerm t
+/-- Evaluate a pruning solution Expr to a Value -/
+def evalPruneSolution (e : Soma.Core.Expr) : TCM Value := TCM.evalExpr e
 
 /-- Build a Pi type from a list of domain types, with a given codomain.
     buildPiType [A, B, C] D = A -> B -> C -> D -/
@@ -68,23 +68,21 @@ def buildPiType (doms : List Value) (cod : Value) : TCM Value := do
     let codClos := Closure.const "_" restTy
     return Value.vPi .omega .explicit "_" dom codClos
 
-/-- Build nested lambdas from parameter names and a body term.
+/-- Build nested lambdas from parameter names and a body expression.
     buildLambdas ["x", "y"] body = λx. λy. body -/
-def buildLambdasFromNames (names : List String) (body : Term) : Term :=
-  match names with
-  | [] => body
-  | _ => Term.lam names body
+def buildLambdasFromNames (names : List String) (body : Soma.Core.Expr) : Soma.Core.Expr :=
+  names.foldr (fun name acc => .lam .explicit name (.sort Level.zero) acc) body
 
-/-- Build a Term that applies a meta to selected arguments.
+/-- Build an Expr that applies a meta to selected arguments.
     Given neededIndices = [0, 2] and paramCount = 3, builds:
-    ?m' (var 2) (var 0)  -- using de Bruijn indices -/
-def buildFilteredApplication (newMetaId : MetaId) (neededIndices : List Nat) (paramCount : Nat) : Term :=
+    ?m' (bvar 2) (bvar 0)  -- using de Bruijn indices -/
+def buildFilteredApplication (newMetaId : MetaId) (neededIndices : List Nat) (paramCount : Nat) : Soma.Core.Expr :=
   let args := neededIndices.map fun idx =>
     -- Convert spine position to de Bruijn index
     -- If we have params x0, x1, x2 (bound left to right), then:
     -- x0 has index paramCount-1, x1 has index paramCount-2, etc.
-    Term.var (paramCount - idx - 1) s!"x{idx}"
-  Term.app (Term.mvar newMetaId.id) args
+    Soma.Core.Expr.bvar (paramCount - idx - 1)
+  args.foldl (fun acc arg => .app acc arg) (.mvar ⟨newMetaId.id⟩)
 
 /-- Try to prune a metavariable: restrict its domain by eliminating
     variables that cannot appear in its solution.

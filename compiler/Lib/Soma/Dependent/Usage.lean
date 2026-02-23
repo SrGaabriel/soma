@@ -6,23 +6,23 @@ import Soma.Syntax.Source
 
 namespace Soma.Dependent
 
+open Soma (Unique)
 open Soma.Core
-open Soma.Metal (BinderInfo BindingId)
 open Soma.Syntax (Span)
 
 /-- A snapshot of variable usage counts at a point in the program -/
 structure UsageSnapshot where
-  usages : Std.HashMap BindingId Nat
+  usages : Std.HashMap Unique Nat
   deriving Inhabited
 
 namespace UsageSnapshot
 
 def empty : UsageSnapshot := ⟨{}⟩
 
-def get (snap : UsageSnapshot) (bindingId : BindingId) : Nat :=
+def get (snap : UsageSnapshot) (bindingId : Unique) : Nat :=
   snap.usages.getD bindingId 0
 
-def set (snap : UsageSnapshot) (bindingId : BindingId) (count : Nat) : UsageSnapshot :=
+def set (snap : UsageSnapshot) (bindingId : Unique) (count : Nat) : UsageSnapshot :=
   ⟨snap.usages.insert bindingId count⟩
 
 /-- Merge two usage snapshots by adding counts -/
@@ -66,7 +66,7 @@ def checkAllUsages : TCM Unit := do
 
 /-- Check that a linear variable is used exactly once.
     This is a stricter check than checkAllUsages for linear bindings. -/
-def checkLinearBinding (bindingId : BindingId) (declSpan : Span) : TCM Unit := do
+def checkLinearBinding (bindingId : Unique) (declSpan : Span) : TCM Unit := do
   let count ← TCM.getUsage bindingId
   if count == 0 then
     TCM.addError (.linearNotUsed bindingId.original declSpan)
@@ -76,7 +76,7 @@ def checkLinearBinding (bindingId : BindingId) (declSpan : Span) : TCM Unit := d
 
 /-- Check that an erased variable is not used at runtime.
     This should be called when we detect a use of a variable. -/
-def checkNotErased (bindingId : BindingId) (useSpan : Span) : TCM Unit := do
+def checkNotErased (bindingId : Unique) (useSpan : Span) : TCM Unit := do
   let ctx ← TCM.getCtx
   match ctx.lookupLocal bindingId.original with
   | some entry =>
@@ -86,7 +86,7 @@ def checkNotErased (bindingId : BindingId) (useSpan : Span) : TCM Unit := do
   | none => pure ()
 
 /-- Record usage of a variable with proper erased context checking -/
-def useVarChecked (bindingId : BindingId) (span : Span) (count : Nat := 1) : TCM Unit := do
+def useVarChecked (bindingId : Unique) (span : Span) (count : Nat := 1) : TCM Unit := do
   -- First check if we're trying to use an erased variable
   checkNotErased bindingId span
   -- Then record the usage
@@ -128,7 +128,7 @@ def checkBranchUsages (branch1 branch2 : UsageSnapshot) (span : Span) : TCM Usag
 
 /-- Run an action with usage checking for a binder.
     After the action, checks that the bound variable was used correctly. -/
-def withCheckedBinding (name : String) (bindingId : BindingId) (ty : Value)
+def withCheckedBinding (name : String) (bindingId : Unique) (ty : Value)
     (qty : Quantity) (binder : BinderInfo) (span : Span) (action : TCM α) : TCM α := do
   -- Run the action under the binding
   let result ← TCM.withBinding name bindingId ty qty binder span action
@@ -143,20 +143,20 @@ def inErasedScope (action : TCM α) : TCM α :=
   TCM.inErasedContext action
 
 /-- Record that pattern bindings are introduced (TODO: review) -/
-def introducePatternBindings (bindings : List (BindingId × Quantity × Span)) : TCM Unit := do
+def introducePatternBindings (bindings : List (Unique × Quantity × Span)) : TCM Unit := do
   -- Pattern bindings start with zero usage
   for (_, _, _) in bindings do
     -- Initialize usage to zero (already the default)
     pure ()
 
 /-- Check pattern bindings were used correctly after checking a body -/
-def checkPatternBindings (bindings : List (BindingId × Quantity × Span)) : TCM Unit := do
+def checkPatternBindings (bindings : List (Unique × Quantity × Span)) : TCM Unit := do
   for (bindingId, qty, span) in bindings do
     if qty == .one then
       checkLinearBinding bindingId span
 
 /-- Check a complete function body for correct usage -/
-def checkFunctionUsage (params : List (BindingId × Quantity × Span)) : TCM Unit := do
+def checkFunctionUsage (params : List (Unique × Quantity × Span)) : TCM Unit := do
   for (bindingId, qty, span) in params do
     let count ← TCM.getUsage bindingId
     if qty == .one then
@@ -172,7 +172,7 @@ def checkFunctionUsage (params : List (BindingId × Quantity × Span)) : TCM Uni
     -- For omega, any usage is fine
 
 /-- Wrapper that runs an action and then checks function usage -/
-def withFunctionUsageCheck (params : List (BindingId × Quantity × Span))
+def withFunctionUsageCheck (params : List (Unique × Quantity × Span))
     (action : TCM α) : TCM α := do
   let result ← action
   checkFunctionUsage params

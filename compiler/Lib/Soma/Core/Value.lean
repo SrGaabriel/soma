@@ -2,126 +2,13 @@ import Soma.Core.Quantity
 import Soma.Core.Level
 import Soma.Core.Primitive
 import Soma.Core.TypeId
-import Soma.Core.Name
-import Soma.Metal.Expr
+import Soma.Core.MetaId
+import Soma.Core.Expr
 import Kenosis
 
 namespace Soma.Core
 
-open Soma.Metal (BinderInfo)
 open Kenosis
-
-/-- De Bruijn level (counts from bottom of context, unlike indices which count from top) -/
-structure DeBruijnLvl where
-  lvl : Nat
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
-
-namespace DeBruijnLvl
-
-def zero : DeBruijnLvl := ⟨0⟩
-
-def succ (l : DeBruijnLvl) : DeBruijnLvl := ⟨l.lvl + 1⟩
-
-def toNat (l : DeBruijnLvl) : Nat := l.lvl
-
-instance : ToString DeBruijnLvl where
-  toString l := s!"@{l.lvl}"
-
-end DeBruijnLvl
-
-/-- Metavariable identifier -/
-structure MetaId where
-  id : Nat
-  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
-
-namespace MetaId
-
-instance : ToString MetaId where
-  toString m := s!"?{m.id}"
-
-end MetaId
-
-/-- A bound variable in a value -/
-structure BoundVar where
-  name : String
-  level : DeBruijnLvl
-  deriving Repr, BEq, Hashable, Inhabited, Serialize, Deserialize
-
-namespace BoundVar
-
-instance : ToString BoundVar where
-  toString v := s!"{v.name}@{v.level.lvl}"
-
-end BoundVar
-
-/-- Raw term for closure bodies without annotations. Uses De Bruijn indices.
-    This is a simplified representation that can be stored in Closures
-    without creating a circular dependency with Value. -/
-inductive Term where
-  /-- Variable by De Bruijn index (0 = most recently bound) -/
-  | var (idx : Nat) (name : String)
-  /-- Literal value -/
-  | lit (l : Soma.Metal.Literal)
-  /-- Function application -/
-  | app (fn : Term) (args : List Term)
-  /-- Lambda abstraction -/
-  | lam (names : List String) (body : Term)
-  /-- If-then-else -/
-  | if_ (cond : Term) (then_ : Term) (else_ : Term)
-  /-- Pair construction -/
-  | pair (fst : Term) (snd : Term)
-  /-- First projection -/
-  | fst (e : Term)
-  /-- Second projection -/
-  | snd (e : Term)
-  /-- Pi type -/
-  | pi (qty : Quantity) (binder : BinderInfo) (name : String) (domain : Term) (codomain : Term)
-  /-- Sigma type -/
-  | sigma (qty : Quantity) (name : String) (fst : Term) (snd : Term)
-  /-- Type universe -/
-  | type (level : Level)
-  /-- Primitive type -/
-  | primTy (p : StarPrimitive)
-  /-- Row sort -/
-  | rowSort
-  /-- Label sort -/
-  | labelSort
-
-  /-- Integer literal -/
-  | intLit (n : Int)
-  /-- String literal -/
-  | stringLit (s : String)
-  /-- Record type -/
-  | recordTy (row : Term)
-  /-- Variant type -/
-  | variantTy (row : Term)
-  /-- Empty row -/
-  | rowEmpty
-  /-- Row extension -/
-  | rowExtend (label : Term) (fieldTy : Term) (tail : Term)
-  /-- Label literal -/
-  | labelLit (name : String)
-  /-- Record value -/
-  | record (fields : List (String × Term))
-  /-- Field access -/
-  | fieldAccess (e : Term) (field : String)
-  /-- Constructor application -/
-  | construct (name : Name) (tag : Nat) (args : List Term)
-  /-- Case expression -/
-  | case (scrutinee : Term) (arms : List (String × Nat × Term))
-  /-- Global reference -/
-  | global (name : Name)
-  /-- Equality type -/
-  | eq (tyLevel : Level) (ty : Term) (lhs : Term) (rhs : Term)
-  /-- Reflexivity proof -/
-  | refl (ty : Term) (x : Term)
-  /-- Transport along equality proof -/
-  | transport (tyLevel : Level) (ty : Term) (motive : Term) (lhs : Term) (rhs : Term) (eq : Term) (body : Term)
-  /-- Metavariable reference (for unification) -/
-  | mvar (id : Nat)
-  /-- Panic/error -/
-  | panic (msg : String)
-  deriving Inhabited, Serialize, Deserialize
 
 mutual
 
@@ -181,7 +68,7 @@ inductive Value where
   | vDataType (id : TypeId) (params : List Value)
 
   /-- Constructor application -/
-  | vConstructor (name : Name) (tag : Nat) (args : List Value)
+  | vConstructor (name : QualifiedName) (tag : Nat) (args : List Value)
 
   /-- Equality type: a = b -/
   | vEq (tyLevel : Level) (ty : Value) (lhs rhs : Value)
@@ -192,25 +79,23 @@ inductive Value where
   /-- Transport along equality: transporting a value from P x to P y via equality proof x = y -/
   | vTransport (tyLevel : Level) (ty : Value) (motive : Value) (lhs rhs : Value)
                (eq : Value) (body : Value)
-  deriving Serialize, Deserialize
+
 
 /-- Closure: represents a function waiting for an argument.
     We support two representations:
-    1. term: A Term with its environment, for closures created during evaluation
+    1. term: An Expr with its environment, for closures created during evaluation
     2. const: A constant Value, for non-dependent closures (like arrow type codomains)
 
     The const variant is for non-dependent types where the result doesn't depend on the argument. -/
 inductive Closure where
-  /-- Term-based closure: evaluates body under extended environment -/
-  | term (name : String) (env : Env) (body : Term) : Closure
+  /-- Expr-based closure: evaluates body under extended environment -/
+  | term (name : String) (env : Env) (body : Soma.Core.Expr) : Closure
   /-- Constant closure: always returns the same value (for non-dependent types) -/
   | const (name : String) (value : Value) : Closure
-  deriving Serialize, Deserialize
 
 /-- Environment: mapping from De Bruijn levels to values -/
 inductive Env where
   | mk (values : List (String × Value)) (size : Nat) : Env
-  deriving Serialize, Deserialize
 
 /-- Neutral terms: terms that are stuck on a variable or metavariable -/
 inductive Neutral where
@@ -228,14 +113,18 @@ inductive Neutral where
   | nFieldAccess (record : Neutral) (field : String)
   /-- Case analysis on a neutral scrutinee -/
   | nCase (scrutinee : Neutral) (arms : List ArmClosure)
-  deriving Serialize, Deserialize
 
 /-- Case arm closure -/
 inductive ArmClosure where
   | mk (pattern : String) (closure : Closure) : ArmClosure
-  deriving Serialize, Deserialize
 
 end
+
+deriving instance Serialize, Deserialize for Value
+deriving instance Serialize, Deserialize for Closure
+deriving instance Serialize, Deserialize for Env
+deriving instance Serialize, Deserialize for Neutral
+deriving instance Serialize, Deserialize for ArmClosure
 
 namespace Closure
 
@@ -247,7 +136,7 @@ def env : Closure → Env
   | .term _ e _ => e
   | .const _ _ => .mk [] 0
 
-def body : Closure → Option Term
+def body : Closure → Option Soma.Core.Expr
   | .term _ _ b => some b
   | .const _ _ => none
 
@@ -319,11 +208,11 @@ def Env.level (env : Env) : DeBruijnLvl := ⟨env.size⟩
 
 /-- Create a closure with no body (placeholder) -/
 def Closure.mkEmpty (name : String) (env : Env) : Closure :=
-  let clos : Closure := .term name env (Term.var 0 name)
+  let clos : Closure := .term name env (.bvar 0)
   clos
 
-/-- Create a closure with a Term body -/
-def Closure.mkWithBody (name : String) (env : Env) (body : Term) : Closure :=
+/-- Create a closure with an Expr body -/
+def Closure.mkWithBody (name : String) (env : Env) (body : Soma.Core.Expr) : Closure :=
   let clos : Closure := .term name env body
   clos
 

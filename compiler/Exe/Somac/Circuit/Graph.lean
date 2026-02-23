@@ -1,14 +1,14 @@
 import Somac.Circuit.Node
 import Somac.Circuit.Term
 import Soma.Core.Value
-import Soma.Core.Name
+import Soma.Core.Expr
 import Std.Data.HashMap
 
 namespace Somac.Circuit.Graph
 
 open Somac.Circuit.Node (Node NodeId PortId PortIdx Wire ActivePair Label)
 open Somac.Circuit.Term (Term Tag Loc)
-open Soma.Core (Value Name)
+open Soma.Core (Value QualifiedName)
 
 /-- Enumerate a list with indices -/
 def enumList (xs : List α) : List (Nat × α) :=
@@ -64,7 +64,7 @@ end NodeEntry
 /-- A global definition in the "book" (for recursion via REF nodes) -/
 structure Definition where
   /-- Unique name for this definition -/
-  name : Name
+  name : QualifiedName
   /-- The root node of the definition's graph -/
   root : NodeId
   /-- Parameter count (for lazy instantiation) -/
@@ -239,7 +239,7 @@ def isFullyConnected (g : Graph) : Bool :=
   g.nodes.toList.all fun (_, entry) => entry.isFullyConnected
 
 /-- Add a definition to the book -/
-def addDefinition (g : Graph) (name : Name) (root : NodeId) (arity : Nat) (ty : Value)
+def addDefinition (g : Graph) (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
     (isExternal : Bool := false) : Nat × Graph :=
   let idx := g.book.size
   let def_ : Definition := { name, root, arity, ty, isExternal }
@@ -250,7 +250,7 @@ def getDefinition (g : Graph) (idx : Nat) : Option Definition :=
   g.book[idx]?
 
 /-- Look up a definition by name -/
-def findDefinition (g : Graph) (name : Name) : Option (Nat × Definition) :=
+def findDefinition (g : Graph) (name : QualifiedName) : Option (Nat × Definition) :=
   (enumList g.book.toList).find? fun (_, d) => d.name == name
 
 /-- Look up a definition by display name (for backwards compatibility) -/
@@ -379,7 +379,7 @@ def wireToAux (n1 : NodeId) (p1 : PortIdx) (n2 : NodeId) (auxIdx : Nat) : GraphM
   wire n1 p1 n2 ⟨auxIdx + 1⟩
 
 /-- Add a definition to the book -/
-def addDefinition (name : Name) (root : NodeId) (arity : Nat) (ty : Value)
+def addDefinition (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
     (isExternal : Bool := false) : GraphM Nat := do
   let g ← get
   let (idx, g') := g.addDefinition name root arity ty isExternal

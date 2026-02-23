@@ -1,8 +1,8 @@
-import Soma.Metal.Expr
 import Soma.Syntax.Ast
 import Soma.Core.Value
+import Soma.Core.Expr
 
-namespace Soma.Metal
+namespace Soma.Core
 
 open Soma.Syntax (TypeExpr)
 
@@ -27,52 +27,53 @@ end FunctionAttrs
 
 /-- Information about a closure (lifted lambda) -/
 structure ClosureInfo where
-  capturedVars : Array (BindingId × String)
+  capturedVars : Array (Soma.Unique × String)
   deriving BEq
 
-/-- A Metal function produced by lowering -/
+/-- A function produced by lowering (body is raw syntax, elaborated by type checker) -/
 structure Function where
-  name : Name
-  params : Array (BindingId × String)
-  body : UntypedExpr (params.toList.map (·.1))
+  name : QualifiedName
+  params : Array String
+  body : Soma.Syntax.Expr
+  span : Soma.Syntax.Span
   declaredTypeSyntax : Option TypeExpr
   closureInfo : Option ClosureInfo
   attrs : FunctionAttrs
 
 namespace Function
 
-/-- Get the function's arity -/
+def qualifiedName (f : Function) : QualifiedName :=
+  f.name
+
 def arity (f : Function) : Nat := f.params.size
 
-/-- Check if this is a closure (lifted lambda) -/
 def isClosure (f : Function) : Bool := f.closureInfo.isSome
 
-/-- Check if this function has a declared type signature -/
 def hasSignature (f : Function) : Bool := f.declaredTypeSyntax.isSome
 
 end Function
 
-/-- Alias for backwards compatibility during migration -/
 abbrev UntypedFunction := Function
 abbrev UntypedClosureInfo := ClosureInfo
 
-/-- A typed Metal function - produced by type checking -/
+/-- A typed function produced by type checking -/
 structure TypedFunction where
-  name : Name
-  params : Array (BindingId × String)
-  body : Expr Soma.Core.Value (params.toList.map (·.1))
-  fnType : Soma.Core.Value
+  name : QualifiedName
+  params : Array (Soma.Unique × String)
+  body : Expr
+  fnType : Value
   closureInfo : Option ClosureInfo
   attrs : FunctionAttrs
 
 namespace TypedFunction
 
-/-- Get the function's arity -/
+def qualifiedName (f : TypedFunction) : QualifiedName :=
+  f.name
+
 def arity (f : TypedFunction) : Nat := f.params.size
 
-/-- Check if this is a closure (lifted lambda) -/
 def isClosure (f : TypedFunction) : Bool := f.closureInfo.isSome
 
 end TypedFunction
 
-end Soma.Metal
+end Soma.Core

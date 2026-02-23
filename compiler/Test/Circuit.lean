@@ -536,7 +536,7 @@ def testIsNormalForm : IO TestResult := do
 def testBook : IO TestResult := do
   let g := Graph.empty
   let (root, g) := g.addNode (.lam false) testTy
-  let funcName : Soma.Core.Name := .user { id := 0, module := "test", original := "myFunc" }
+  let funcName : Soma.Core.QualifiedName := ⟨{ id := 0, module := "test", original := "myFunc" }⟩
   let (idx, g) := g.addDefinition funcName root 2 testTy
 
   if idx != 0 then

@@ -1,8 +1,9 @@
-import Soma.Core.Value
+-- import Soma.Core.Value
 import Soma.Core.Quantity
 import Soma.Core.Level
 import Soma.Core.Primitive
 import Soma.Core.TypeId
+import Soma.Core.CQuote
 import Soma.Dependent.Monad
 import Soma.Dependent.Convert
 import Soma.Dependent.Error
@@ -37,7 +38,7 @@ def lookup (env : ElabEnv) (name : String) : Option (DeBruijnLvl × Value) :=
 
 end ElabEnv
 
-/-- Resolve a type constructor name to a primitive type (todo: find where the fuck was the original bc i swear this was already done) -/
+/-- Resolve a type constructor name to a primitive type (todo: remove) -/
 def resolvePrimitive (name : String) : Option StarPrimitive :=
   match name with
   | "Int" => some .int
@@ -83,126 +84,13 @@ def mkElabClosure (name : String) : TCM Closure := do
   let env ← TCM.getEnv
   return Closure.mkEmpty name env
 
-/-- Convert a Value to a Term (for use in closures).
-    This handles the common cases needed for type elaboration.
-    Uses TCM to generate proper unique identifiers when needed.
-    The depth parameter represents the number of binders we're inside relative
-    to the closure body we're building. -/
-partial def valueToTermWithDepth (v : Value) (depth : Nat) : TCM Term := do
-  match v with
-  | .vType level => return .type level
-  | .vRowSort => return .rowSort
-  | .vLabelSort => return .labelSort
-  | .vPrimTy p => return .primTy p
-  | .vIntLit n => return .intLit n
-  | .vStringLit s => return .stringLit s
-  | .vRowEmpty => return .rowEmpty
-  | .vRowExtend label fieldTy tail =>
-    let labelTerm ← valueToTermWithDepth label depth
-    let fieldTyTerm ← valueToTermWithDepth fieldTy depth
-    let tailTerm ← valueToTermWithDepth tail depth
-    return .rowExtend labelTerm fieldTyTerm tailTerm
-  | .vRecord row =>
-    let rowTerm ← valueToTermWithDepth row depth
-    return .recordTy rowTerm
-  | .vVariant row =>
-    let rowTerm ← valueToTermWithDepth row depth
-    return .variantTy rowTerm
-  | .vLabelLit name => return .labelLit name
-  | .vPi qty binder name dom cod =>
-    let domTerm ← valueToTermWithDepth dom depth
-    -- For the codomain, we need to apply the closure to get a value, then convert
-    -- Use a fresh variable at the current depth level
-    let dummyArg := Value.vNeutral dom (.nVar ⟨name, ⟨depth⟩⟩)
-    let codVal ← Soma.Dependent.applyClosure cod dummyArg
-    -- Increment depth since we're going under a binder
-    let codTerm ← valueToTermWithDepth codVal (depth + 1)
-    return .pi qty binder name domTerm codTerm
-  | .vSigma qty name fst snd =>
-    let fstTerm ← valueToTermWithDepth fst depth
-    let dummyArg := Value.vNeutral fst (.nVar ⟨name, ⟨depth⟩⟩)
-    let sndVal ← Soma.Dependent.applyClosure snd dummyArg
-    let sndTerm ← valueToTermWithDepth sndVal (depth + 1)
-    return .sigma qty name fstTerm sndTerm
-  | .vDataType id params =>
-    -- Use the existing TypeId's unique - don't generate a new one!
-    -- Reconstruct the Unique from TypeId fields
-    let unique : Unique := { id := id.unique, module := id.module, original := id.name }
-    let baseTerm := Term.global (Name.user unique)
-    let paramTerms ← params.mapM (valueToTermWithDepth · depth)
-    return paramTerms.foldl (fun acc p => .app acc [p]) baseTerm
-  | .vNeutral _ (.nVar v) =>
-    -- Convert De Bruijn level to De Bruijn index
-    -- index = depth - varLevel - 1
-    -- depth is like the "current level" within the Term we're building
-    let idx := depth - v.level.lvl - 1
-    return .var idx v.name
-  | .vNeutral _ (.nMeta m) => return .mvar m.id
-  | .vNeutral ty (.nApp fn arg) =>
-    -- Handle neutral application
-    let fnTerm ← valueToTermWithDepth (.vNeutral ty fn) depth
-    let argTerm ← valueToTermWithDepth arg depth
-    return .app fnTerm [argTerm]
-  | .vNeutral ty (.nFst inner) =>
-    let innerTerm ← valueToTermWithDepth (.vNeutral ty inner) depth
-    return .fst innerTerm
-  | .vNeutral ty (.nSnd inner) =>
-    let innerTerm ← valueToTermWithDepth (.vNeutral ty inner) depth
-    return .snd innerTerm
-  | .vNeutral ty (.nFieldAccess inner field) =>
-    let innerTerm ← valueToTermWithDepth (.vNeutral ty inner) depth
-    return .fieldAccess innerTerm field
-  | .vEq tyLevel ty lhs rhs =>
-    let tyTerm ← valueToTermWithDepth ty depth
-    let lhsTerm ← valueToTermWithDepth lhs depth
-    let rhsTerm ← valueToTermWithDepth rhs depth
-    return .eq tyLevel tyTerm lhsTerm rhsTerm
-  | .vRefl ty x =>
-    let tyTerm ← valueToTermWithDepth ty depth
-    let xTerm ← valueToTermWithDepth x depth
-    return .refl tyTerm xTerm
-  | .vTransport tyLevel ty motive lhs rhs eq body =>
-    let tyTerm ← valueToTermWithDepth ty depth
-    let motiveTerm ← valueToTermWithDepth motive depth
-    let lhsTerm ← valueToTermWithDepth lhs depth
-    let rhsTerm ← valueToTermWithDepth rhs depth
-    let eqTerm ← valueToTermWithDepth eq depth
-    let bodyTerm ← valueToTermWithDepth body depth
-    return .transport tyLevel tyTerm motiveTerm lhsTerm rhsTerm eqTerm bodyTerm
-  | .vConstructor name tag args =>
-    let argTerms ← args.mapM (valueToTermWithDepth · depth)
-    return .construct name tag argTerms
-  | .vPair fst snd =>
-    let fstTerm ← valueToTermWithDepth fst depth
-    let sndTerm ← valueToTermWithDepth snd depth
-    return .pair fstTerm sndTerm
-  | .vRecordVal fields =>
-    let fieldTerms ← fields.mapM fun (n, v) => do
-      let term ← valueToTermWithDepth v depth
-      return (n, term)
-    return .record fieldTerms
-  | .vLam name body =>
-    -- Apply the closure to get the body, then convert
-    let dummyArg := Value.vNeutral .type0 (.nVar ⟨name, ⟨depth⟩⟩)
-    let bodyVal ← Soma.Dependent.applyClosure body dummyArg
-    let bodyTerm ← valueToTermWithDepth bodyVal (depth + 1)
-    return .lam [name] bodyTerm
-  | .vNeutral _ (.nCase scrut arms) =>
-    -- Handle neutral case expressions
-    let scrutTerm ← valueToTermWithDepth (.vNeutral .type0 scrut) depth
-    let armTerms ← arms.mapM fun arm => do
-      let dummyArg := Value.vNeutral .type0 (.nVar ⟨"_", ⟨depth⟩⟩)
-      let bodyVal ← Soma.Dependent.applyClosure arm.closure dummyArg
-      let bodyTerm ← valueToTermWithDepth bodyVal (depth + 1)
-      return (arm.pattern, 0, bodyTerm)
-    return .case scrutTerm armTerms
-
-/-- Convert a Value to a Term (for use in closures). Uses depth 0 as default. -/
-def valueToTerm (v : Value) : TCM Term := valueToTermWithDepth v 0
+/-- Quote a value to an Expr at a given depth (pure, no TCM needed) -/
+def quoteValue (v : Value) (depth : Nat) : Soma.Core.Expr :=
+  quoteExpr ⟨depth⟩ v
 
 /-- Create a closure that returns a constant value (for non-dependent types).
     Uses HOAS-style representation: stores the result Value directly instead of
-    converting to a Term. This eliminates De Bruijn index bugs for non-dependent types.
+    converting to an Expr. This eliminates De Bruijn index bugs for non-dependent types.
     The depth parameter is kept for API compatibility but is ignored. -/
 def mkConstClosureWithDepth (name : String) (result : Value) (_depth : Nat) : TCM Closure := do
   return Closure.const name result
@@ -227,11 +115,11 @@ def elabEnvToEnv (elabEnv : ElabEnv) : Env :=
   Env.mk bindings elabEnv.level
 
 /-- Create a term-based closure for dependent types.
-    Converts the result Value back to a Term and creates a closure that will
+    Quotes the result Value to an Expr and creates a closure that will
     evaluate it with the argument bound.
 
     The key insight from defunctionalized NbE: we must capture the current
-    environment so that outer variable bindings are preserved. The Term uses
+    environment so that outer variable bindings are preserved. The Expr uses
     De Bruijn indices relative to this captured environment.
 
     The `elabEnv` is the current elaboration environment with outer bindings.
@@ -240,15 +128,15 @@ def mkDependentClosure (name : String) (result : Value) (elabEnv : ElabEnv) : TC
   let depth := elabEnv.level
   -- Convert ElabEnv to evaluation Env
   let env := elabEnvToEnv elabEnv
-  -- Convert the result Value to a Term.
+  -- Quote the result Value to an Expr.
   -- IMPORTANT: Use depth + 1 because when the closure is applied, the environment
   -- will be extended with one more binding (the closure's parameter).
   -- De Bruijn index = (depth + 1) - varLevel - 1 = depth - varLevel
   -- This ensures indices point to the correct bindings after extension.
-  let bodyTerm ← valueToTermWithDepth result (depth + 1)
-  -- Create a term closure capturing the environment
+  let bodyExpr := quoteValue result (depth + 1)
+  -- Create a closure capturing the environment
   -- When applied, the argument will be added to this environment
-  return Closure.term name env bodyTerm
+  return Closure.term name env bodyExpr
 
 /-- Rebuild a row with a new tail -/
 partial def rebuildRowWithTail (row : Value) (newTail : Value) : Value :=
@@ -264,9 +152,9 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
   -- Type variable
   | .var name =>
     match env.lookup name.value with
-    | some (lvl, _kind) =>
+    | some (lvl, kind) =>
       -- Return a neutral variable
-      return Value.vNeutral (Value.vType Level.zero) (Neutral.nVar ⟨name.value, lvl⟩)
+      return Value.vNeutral kind (Neutral.nVar ⟨name.value, lvl⟩)
     | none =>
       -- Unknown type variable - create a metavariable
       TCM.freshMetaVal (Value.vType Level.zero)
@@ -282,9 +170,6 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     -- Then try primitive types
     else if let some prim := resolvePrimitive name.value then
       return Value.vPrimTy prim
-    -- Then try higher-kinded primitives
-    else if let some hprim := resolveHigherPrimitive name.value then
-      return Value.vDataType (TypeId.builtin hprim.name hprim.uniqueId) []
     -- Then try Type
     else if let some tyVal := resolveType name.value then
       return tyVal
@@ -305,15 +190,19 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
         return Value.vDataType typeId []
     -- Otherwise, treat as a user-defined type (data type)
     else
-      -- Look up the registered TypeId, or create a fresh one if not found
-      let typeId ← match ← TCM.lookupTypeId name.value with
-        | some id => pure id
-        | none =>
-          let u ← TCM.freshUnique name.value
-          let id := TypeId.fromUnique u
-          TCM.registerTypeId name.value id
-          pure id
-      return Value.vDataType typeId []
+      -- Try higher-kinded primitives as a fallback only when no user/global type exists
+      if let some hprim := resolveHigherPrimitive name.value then
+        return Value.vDataType (TypeId.builtin hprim.name hprim.uniqueId) []
+      else
+        -- Look up the registered TypeId, or create a fresh one if not found
+        let typeId ← match ← TCM.lookupTypeId name.value with
+          | some id => pure id
+          | none =>
+            let u ← TCM.freshUnique name.value
+            let id := TypeId.fromUnique u
+            TCM.registerTypeId name.value id
+            pure id
+        return Value.vDataType typeId []
 
   -- Type application: F A
   | .app fn arg span =>
@@ -332,8 +221,11 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- Apply function type - evaluate the closure with TCM's applyClosure
       Soma.Dependent.applyClosure cod argVal
     | .vNeutral ty neu =>
-      -- Stuck application
-      return Value.vNeutral ty (Neutral.nApp neu argVal)
+      -- Stuck application; if the function kind is Pi, compute codomain kind.
+      let resultTy ← match ty with
+        | .vPi _ _ _ _ cod => Soma.Dependent.applyClosure cod argVal
+        | _ => pure ty
+      return Value.vNeutral resultTy (Neutral.nApp neu argVal)
     | _ =>
       TCM.throw (.cannotInfer s!"cannot apply non-function type" span none)
 
@@ -341,17 +233,8 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
   | .arrow from_ to _ =>
     let fromVal ← elaborateType env from_
     let toVal ← elaborateType env to
-    -- For arrow types, the codomain doesn't depend on the arrow's own parameter.
-    -- However, if we're inside a dependent Pi (env.level > 0), the codomain might
-    -- reference outer bound variables. In that case, we need a term-based closure
-    -- so that outer variable substitutions propagate correctly.
-    if env.level > 0 then
-      -- Inside dependent context: create term-based closure to allow substitution
-      let codClosure ← mkDependentClosure "_" toVal env
-      return Value.vPi .omega .explicit "_" fromVal codClosure
-    else
-      -- At top level: no outer variables to substitute
-      return Value.vPi .omega .explicit "_" fromVal (Closure.const "_" toVal)
+    -- Arrow codomains are non-dependent on the arrow binder itself.
+    return Value.vPi .omega .explicit "_" fromVal (Closure.const "_" toVal)
 
   -- Tuple type: (A, B, C) -> nested Sigma types
   | .tuple elements _ =>
@@ -382,7 +265,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
 
   -- Universal quantification: forall a b. T
   | .forall_ vars body _ =>
-    -- For forall quantifiers, we need proper term-based closures because
+    -- For forall quantifiers, we need proper closures because
     -- the body references the bound type variables.
 
     -- First, elaborate the body in an extended environment with all type vars
@@ -394,23 +277,23 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
 
     let bodyVal ← elaborateType env' body
 
-    -- Convert the body Value to a Term
+    -- Quote the body Value to an Expr
     -- The depth must be the FULL environment level (env'.level), not just vars.size,
     -- because the body may reference outer type variables (like `f` in a trait method).
-    let bodyTerm ← valueToTermWithDepth bodyVal env'.level
+    let bodyExpr := quoteValue bodyVal env'.level
 
-    -- Build nested Pi types from right to left using Term representation
+    -- Build nested Pi types from right to left using Expr representation
     -- For `forall a b. T`, we build: Π{a:*}. Π{b:*}. T[indices adjusted]
-    let mut accTerm := bodyTerm
+    let mut accExpr := bodyExpr
     for v in vars.toList.reverse do
       let kind ← match v.kind with
         | some k => elaborateType ElabEnv.empty k
         | none => pure (Value.vType Level.zero)
-      let kindTerm ← valueToTermWithDepth kind 0
-      accTerm := Term.pi .omega .implicit v.name.value kindTerm accTerm
+      let kindExpr := quoteValue kind 0
+      accExpr := Soma.Core.Expr.pi .omega .implicit v.name.value kindExpr accExpr
 
-    -- Evaluate the final term to get a Value
-    TCM.evalTerm accTerm
+    -- Evaluate the final Expr to get a Value
+    TCM.evalExpr accExpr
 
   -- Constrained type: T with (C1, C2)
   | .constrained constraints body _ =>

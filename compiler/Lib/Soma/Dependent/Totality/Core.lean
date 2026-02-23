@@ -5,18 +5,16 @@ import Soma.Core.TypeId
 import Soma.Dependent.Monad
 import Soma.Dependent.Error
 import Soma.Dependent.Prelude
-import Soma.Metal.Expr
 import Soma.Unique
 
 namespace Soma.Dependent.Totality
 
 open Soma.Core
-open Soma.Metal (Expr ExprList Name BinderInfo Scope LocalId LocalPrefix Literal)
 open Soma.Syntax (Span)
 open Soma (Unique)
 
-/-- A placeholder Name for use in Inhabited instances -/
-def dummyName : Name := .local_ (LocalId.temp 0)
+/-- A placeholder QualifiedName for use in Inhabited instances -/
+def dummyName : QualifiedName := ⟨{ id := 0, module := "$totality", original := "$dummy" }⟩
 
 /-- The totality status of a definition -/
 inductive TotalityStatus where
@@ -27,7 +25,7 @@ inductive TotalityStatus where
 
 /-- Information about a function for totality checking -/
 structure FunctionInfo where
-  name : Name
+  name : QualifiedName
   markedTotal : Bool
   status : TotalityStatus
   params : Array String
@@ -171,7 +169,7 @@ end TerminationContext
 /-- Information about a recursive call -/
 structure RecursiveCallInfo where
   callSpan : Span
-  callee : Name
+  callee : QualifiedName
   argNames : Array String
   decrease : DecreaseWitness
 

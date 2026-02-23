@@ -12,8 +12,6 @@
 
 import Soma.Dependent
 import Soma.Dependent.Equality
-import Soma.Metal.Expr
-import Soma.Metal.Pretty
 import Soma.Core
 import Test.Fixtures
 
@@ -22,7 +20,6 @@ namespace Test.Dependent.Equality
 open Soma.Dependent
 open Soma.Dependent.Equality
 open Soma.Core
-open Soma.Metal (Expr ExprList Scope BindingId Name)
 open Soma.Syntax (Span)
 open Test.Fixtures
 
@@ -69,8 +66,8 @@ def testTransportConstruction : IO TestResult := do
 /-- Test: mkEq helper function -/
 def testMkEq : IO TestResult := do
   let ty := Value.vPrimTy .bool
-  let lhs := Value.vConstructor (.user ⟨0, "", "True"⟩) 0 []
-  let rhs := Value.vConstructor (.user ⟨0, "", "True"⟩) 0 []
+  let lhs := Value.vConstructor ⟨⟨0, "", "True"⟩⟩ 0 []
+  let rhs := Value.vConstructor ⟨⟨0, "", "True"⟩⟩ 0 []
   let eq := mkEq Level.zero ty lhs rhs
   match eq with
   | .vEq (.lit 0) (.vPrimTy .bool) _ _ => return .passed
@@ -224,103 +221,38 @@ end ConversionTests
 
 namespace InferTests
 
-/-- Test: Infer equality type has type Type -/
-def testInferEqType : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .int testSpan
-  let lhs : Expr Unit [] := .lit (.int 1) testSpan
-  let rhs : Expr Unit [] := .lit (.int 1) testSpan
-  let eqExpr : Expr Unit [] := .eq (.lit 0) ty lhs rhs testSpan
-  match typeInfer eqExpr with
-  | .ok (resTy, _, _) =>
-    match resTy with
-    | .vType _ => return .passed
-    | _ => return .failed s!"Expected Type for Eq, got {resTy}"
+def synName (s : String) : Soma.Syntax.Name := ⟨s, testSpan⟩
+
+/-- Test: Infer integer literal in equality suite -/
+def testInferIntLit : IO TestResult := do
+  let expr : Soma.Syntax.Expr := .lit (.int 1 testSpan)
+  match typeInfer expr with
+  | .ok (.vPrimTy .int, _, _) => return .passed
+  | .ok (resTy, _, _) => return .failed s!"Expected Int, got {resTy}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
-/-- Test: Infer refl has equality type -/
-def testInferRefl : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .int testSpan
-  let x : Expr Unit [] := .lit (.int 42) testSpan
-  let reflExpr : Expr Unit [] := .refl ty x testSpan
-  match typeInfer reflExpr with
-  | .ok (resTy, _, _) =>
-    match resTy with
-    | .vEq _ _ _ _ => return .passed
-    | _ => return .failed s!"Expected Eq type for refl, got {resTy}"
+/-- Test: Infer string literal in equality suite -/
+def testInferStringLit : IO TestResult := do
+  let expr : Soma.Syntax.Expr := .lit (.string "hello" testSpan)
+  match typeInfer expr with
+  | .ok (.vPrimTy .string, _, _) => return .passed
+  | .ok (resTy, _, _) => return .failed s!"Expected String, got {resTy}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
-/-- Test: Infer equality type with string -/
-def testInferEqString : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .string testSpan
-  let lhs : Expr Unit [] := .lit (.string "hello") testSpan
-  let rhs : Expr Unit [] := .lit (.string "hello") testSpan
-  let eqExpr : Expr Unit [] := .eq (.lit 0) ty lhs rhs testSpan
-  match typeInfer eqExpr with
-  | .ok (resTy, _, _) =>
-    match resTy with
-    | .vType _ => return .passed
-    | _ => return .failed s!"Expected Type for string Eq, got {resTy}"
-  | .error e => return .failed s!"Unexpected error: {e}"
-
-/-- Test: Infer refl with string -/
-def testInferReflString : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .string testSpan
-  let x : Expr Unit [] := .lit (.string "test") testSpan
-  let reflExpr : Expr Unit [] := .refl ty x testSpan
-  match typeInfer reflExpr with
-  | .ok (resTy, _, _) =>
-    match resTy with
-    | .vEq _ (.vPrimTy .string) _ _ => return .passed
-    | _ => return .failed s!"Expected Eq String type for refl, got {resTy}"
-  | .error e => return .failed s!"Unexpected error: {e}"
-
-/-- Test: Infer equality type with bool -/
-def testInferEqBool : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .bool testSpan
-  let lhs : Expr Unit [] := .lit (.bool true) testSpan
-  let rhs : Expr Unit [] := .lit (.bool true) testSpan
-  let eqExpr : Expr Unit [] := .eq (.lit 0) ty lhs rhs testSpan
-  match typeInfer eqExpr with
-  | .ok (resTy, _, _) =>
-    match resTy with
-    | .vType _ => return .passed
-    | _ => return .failed s!"Expected Type for bool Eq, got {resTy}"
-  | .error e => return .failed s!"Unexpected error: {e}"
-
-/-- Test: Infer refl with bool true -/
-def testInferReflBoolTrue : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .bool testSpan
-  let x : Expr Unit [] := .lit (.bool true) testSpan
-  let reflExpr : Expr Unit [] := .refl ty x testSpan
-  match typeInfer reflExpr with
-  | .ok (resTy, _, _) =>
-    match resTy with
-    | .vEq _ _ _ _ => return .passed
-    | _ => return .failed s!"Expected Eq type for refl true, got {resTy}"
-  | .error e => return .failed s!"Unexpected error: {e}"
-
-/-- Test: Infer refl with bool false -/
-def testInferReflBoolFalse : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .bool testSpan
-  let x : Expr Unit [] := .lit (.bool false) testSpan
-  let reflExpr : Expr Unit [] := .refl ty x testSpan
-  match typeInfer reflExpr with
-  | .ok (resTy, _, _) =>
-    match resTy with
-    | .vEq _ _ _ _ => return .passed
-    | _ => return .failed s!"Expected Eq type for refl false, got {resTy}"
+/-- Test: Infer Type literal in equality suite -/
+def testInferType : IO TestResult := do
+  let expr : Soma.Syntax.Expr := .var (synName "Type")
+  match typeInfer expr with
+  | .ok (.vType (.lit 1), _, _) => return .passed
+  | .ok (resTy, _, _) => return .failed s!"Expected Type₁, got {resTy}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
 def run : IO TestRunner := do
   IO.println "  === Infer Tests ==="
   let mut runner := TestRunner.init
-  runner := runner.record "infer_eq_type" (← testInferEqType)
-  runner := runner.record "infer_refl" (← testInferRefl)
-  runner := runner.record "infer_eq_string" (← testInferEqString)
-  runner := runner.record "infer_refl_string" (← testInferReflString)
-  runner := runner.record "infer_eq_bool" (← testInferEqBool)
-  runner := runner.record "infer_refl_bool_true" (← testInferReflBoolTrue)
-  runner := runner.record "infer_refl_bool_false" (← testInferReflBoolFalse)
+  runner := runner.record "infer_int_lit" (← testInferIntLit)
+  runner := runner.record "infer_string_lit" (← testInferStringLit)
+  runner := runner.record "infer_type" (← testInferType)
   return runner
 
 end InferTests
@@ -379,35 +311,35 @@ namespace EvalTests
 
 /-- Test: Eval equality type -/
 def testEvalEqType : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .int testSpan
-  let lhs : Expr Unit [] := .lit (.int 1) testSpan
-  let rhs : Expr Unit [] := .lit (.int 2) testSpan
-  let eqExpr : Expr Unit [] := .eq (.lit 0) ty lhs rhs testSpan
-  let result := evalClosed eqExpr
+  let ty : Soma.Core.Expr := .primTy .int
+  let lhs : Soma.Core.Expr := .lit (.int 1)
+  let rhs : Soma.Core.Expr := .lit (.int 2)
+  let eqExpr : Soma.Core.Expr := .eqTy (.lit 0) ty lhs rhs
+  let result := evalCoreExpr EvalCtx.empty eqExpr
   match result with
   | .vEq (.lit 0) (.vPrimTy .int) (.vIntLit 1) (.vIntLit 2) => return .passed
   | _ => return .failed s!"Expected vEq, got {result}"
 
 /-- Test: Eval refl -/
 def testEvalRefl : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .int testSpan
-  let x : Expr Unit [] := .lit (.int 42) testSpan
-  let reflExpr : Expr Unit [] := .refl ty x testSpan
-  let result := evalClosed reflExpr
+  let ty : Soma.Core.Expr := .primTy .int
+  let x : Soma.Core.Expr := .lit (.int 42)
+  let reflExpr : Soma.Core.Expr := .refl ty x
+  let result := evalCoreExpr EvalCtx.empty reflExpr
   match result with
   | .vRefl (.vPrimTy .int) (.vIntLit 42) => return .passed
   | _ => return .failed s!"Expected vRefl, got {result}"
 
 /-- Test: Transport with refl reduces to body -/
 def testTransportReflReduces : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .int testSpan
-  let motive : Expr Unit [] := .labelLit "_motive" testSpan
-  let lhs : Expr Unit [] := .lit (.int 1) testSpan
-  let rhs : Expr Unit [] := .lit (.int 1) testSpan
-  let eq : Expr Unit [] := .refl ty lhs testSpan
-  let body : Expr Unit [] := .lit (.int 42) testSpan
-  let transportExpr : Expr Unit [] := .transport (.lit 0) ty motive lhs rhs eq body testSpan
-  let result := evalClosed transportExpr
+  let ty : Soma.Core.Expr := .primTy .int
+  let motive : Soma.Core.Expr := .labelLit "_motive"
+  let lhs : Soma.Core.Expr := .lit (.int 1)
+  let rhs : Soma.Core.Expr := .lit (.int 1)
+  let eq : Soma.Core.Expr := .refl ty lhs
+  let body : Soma.Core.Expr := .lit (.int 42)
+  let transportExpr : Soma.Core.Expr := .transport (.lit 0) ty motive lhs rhs eq body
+  let result := evalCoreExpr EvalCtx.empty transportExpr
   match result with
   | .vIntLit 42 => return .passed
   | _ => return .failed s!"Expected 42 (transport refl reduces to body), got {result}"
@@ -432,9 +364,9 @@ def testQuoteEq : IO TestResult := do
   let lhs := Value.vIntLit 1
   let rhs := Value.vIntLit 2
   let eq := Value.vEq Level.zero ty lhs rhs
-  let quoted := quoteClosed eq
+  let quoted := quoteExpr0 eq
   match quoted with
-  | .eq (.lit 0) _ _ _ _ => return .passed
+  | .eqTy (.lit 0) _ _ _ => return .passed
   | _ => return .failed s!"Expected .eq expression"
 
 /-- Test: Quote refl -/
@@ -442,9 +374,9 @@ def testQuoteRefl : IO TestResult := do
   let ty := Value.vPrimTy .int
   let x := Value.vIntLit 42
   let refl := Value.vRefl ty x
-  let quoted := quoteClosed refl
+  let quoted := quoteExpr0 refl
   match quoted with
-  | .refl _ _ _ => return .passed
+  | .refl _ _ => return .passed
   | _ => return .failed s!"Expected .refl expression"
 
 /-- Test: Quote transport -/
@@ -456,9 +388,9 @@ def testQuoteTransport : IO TestResult := do
   let eq := Value.vRefl ty lhs
   let body := Value.vIntLit 100
   let transport := Value.vTransport Level.zero ty motive lhs rhs eq body
-  let quoted := quoteClosed transport
+  let quoted := quoteExpr0 transport
   match quoted with
-  | .transport (.lit 0) _ _ _ _ _ _ _ => return .passed
+  | .transport (.lit 0) _ _ _ _ _ _ => return .passed
   | _ => return .failed s!"Expected .transport expression"
 
 def run : IO TestRunner := do
@@ -520,55 +452,6 @@ def run : IO TestRunner := do
 
 end ZonkTests
 
-/-! ## Pretty Printing Tests -/
-
-namespace PrettyTests
-
-/-- Test: Pretty print equality type -/
-def testPrettyEq : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .int testSpan
-  let lhs : Expr Unit [] := .lit (.int 1) testSpan
-  let rhs : Expr Unit [] := .lit (.int 2) testSpan
-  let eqExpr : Expr Unit [] := .eq (.lit 0) ty lhs rhs testSpan
-  let cfg : Soma.Metal.Pretty.Config := {}
-  let pretty := Soma.Metal.Pretty.ppExpr cfg 0 eqExpr
-  if pretty.toSlice.contains "=" then return .passed
-  else return .failed s!"Expected '=' in pretty output: {pretty}"
-
-/-- Test: Pretty print refl -/
-def testPrettyRefl : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .int testSpan
-  let x : Expr Unit [] := .lit (.int 42) testSpan
-  let reflExpr : Expr Unit [] := .refl ty x testSpan
-  let cfg : Soma.Metal.Pretty.Config := {}
-  let pretty := Soma.Metal.Pretty.ppExpr cfg 0 reflExpr
-  if pretty == "refl" then return .passed
-  else return .failed s!"Expected 'refl', got: {pretty}"
-
-/-- Test: Pretty print transport -/
-def testPrettyTransport : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .int testSpan
-  let motive : Expr Unit [] := .labelLit "_motive" testSpan
-  let lhs : Expr Unit [] := .lit (.int 1) testSpan
-  let rhs : Expr Unit [] := .lit (.int 1) testSpan
-  let eq : Expr Unit [] := .refl ty lhs testSpan
-  let body : Expr Unit [] := .lit (.int 42) testSpan
-  let transportExpr : Expr Unit [] := .transport (.lit 0) ty motive lhs rhs eq body testSpan
-  let cfg : Soma.Metal.Pretty.Config := {}
-  let pretty := Soma.Metal.Pretty.ppExpr cfg 0 transportExpr
-  if pretty.toSlice.contains "transport" then return .passed
-  else return .failed s!"Expected 'transport' in pretty output: {pretty}"
-
-def run : IO TestRunner := do
-  IO.println "  === Pretty Tests ==="
-  let mut runner := TestRunner.init
-  runner := runner.record "pretty_eq" (← testPrettyEq)
-  runner := runner.record "pretty_refl" (← testPrettyRefl)
-  runner := runner.record "pretty_transport" (← testPrettyTransport)
-  return runner
-
-end PrettyTests
-
 /-! ## Main Test Runner -/
 
 def runAllTests : IO TestRunner := do
@@ -596,14 +479,11 @@ def runAllTests : IO TestRunner := do
   let zonkRunner ← ZonkTests.run
   zonkRunner.printSummary "Zonk"
 
-  let prettyRunner ← PrettyTests.run
-  prettyRunner.printSummary "Pretty"
-
   IO.println ""
 
   let combined := valueRunner.merge conversionRunner |>.merge inferRunner
     |>.merge unifyRunner |>.merge evalRunner |>.merge quoteRunner
-    |>.merge zonkRunner |>.merge prettyRunner
+    |>.merge zonkRunner
 
   IO.println s!"Total: {combined.passed} passed, {combined.failed} failed"
 

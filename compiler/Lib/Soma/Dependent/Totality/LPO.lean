@@ -1,11 +1,11 @@
 import Soma.Dependent.Totality.Core
 import Soma.Dependent.Totality.TermShape
 import Soma.Dependent.Totality.CallMatrix
+import Soma.Core.Expr
 
 namespace Soma.Dependent.Totality
 
 open Soma.Core
-open Soma.Metal (Literal)
 
 /-- Ordering result for LPO comparison -/
 inductive LPOResult where
@@ -99,8 +99,8 @@ where
     | _, _ => .incomparable
 
 /-- Check termination using LPO for a recursive call -/
-def checkLPOTermination (args : List Term) (ctx : TerminationContext) : Option String :=
-  let argShapes := args.map analyzeTermShape
+def checkLPOTermination (args : List Soma.Core.Expr) (ctx : TerminationContext) : Option String :=
+  let argShapes := args.map analyzeExprShape
   let paramShapes := ctx.params.toList.map fun p => TermShape.var p
 
   let results := argShapes.zip paramShapes |>.map fun (arg, param) =>
@@ -159,12 +159,20 @@ def isConstructor (r : CodataRegistry) (ctorName : String) : Bool :=
 
 end CodataRegistry
 
+/-- Collect the head and spine of nested applications -/
+private partial def collectAppSpine (e : Soma.Core.Expr) : Soma.Core.Expr × List Soma.Core.Expr :=
+  match e with
+  | .app fn arg =>
+    let (head, args) := collectAppSpine fn
+    (head, args ++ [arg])
+  | _ => (e, [])
+
 /-- Check if a term is productive (all corecursive calls are guarded) -/
-partial def checkProductivity (fnName : String) (body : Term) (codata : CodataRegistry)
+partial def checkProductivity (fnName : String) (body : Soma.Core.Expr) (codata : CodataRegistry)
     : Guardedness :=
   go body .unguarded
 where
-  go (t : Term) (guard : Guardedness) : Guardedness :=
+  go (t : Soma.Core.Expr) (guard : Guardedness) : Guardedness :=
     match t with
     | .construct name _ args =>
       if codata.isConstructor name.display then
@@ -176,25 +184,27 @@ where
       else
         args.foldl (fun g arg => combineGuardedness g (go arg guard)) guard
 
-    | .app (.global name) args =>
-      if name.display == fnName then
-        match guard with
-        | .guarded _ => args.foldl (fun g arg => combineGuardedness g (go arg guard)) guard
-        | .unguarded => .unguarded
-        | .mixed => .mixed
-      else
-        let g := go (.global name) guard
+    | .app _ _ =>
+      let (head, args) := collectAppSpine t
+      match head with
+      | .const name =>
+        if name.display == fnName then
+          match guard with
+          | .guarded _ => args.foldl (fun g arg => combineGuardedness g (go arg guard)) guard
+          | .unguarded => .unguarded
+          | .mixed => .mixed
+        else
+          let g := go head guard
+          args.foldl (fun g' arg => combineGuardedness g' (go arg guard)) g
+      | _ =>
+        let g := go head guard
         args.foldl (fun g' arg => combineGuardedness g' (go arg guard)) g
 
-    | .app fn args =>
-      let g := go fn guard
-      args.foldl (fun g' arg => combineGuardedness g' (go arg guard)) g
+    | .lam _ _ _ body => go body guard
 
-    | .lam _ body => go body guard
-
-    | .case scrut arms =>
-      let g := go scrut guard
-      arms.foldl (fun g' (_, _, armBody) => combineGuardedness g' (go armBody guard)) g
+    | .«case» scruts arms =>
+      let g := scruts.foldl (fun g' s => combineGuardedness g' (go s guard)) guard
+      arms.toList.foldl (fun g' arm => combineGuardedness g' (go arm.body guard)) g
 
     | .if_ c th el =>
       let g1 := go c guard
@@ -204,8 +214,8 @@ where
 
     | .pair a b => combineGuardedness (go a guard) (go b guard)
 
-    | .fst e => go e guard
-    | .snd e => go e guard
+    | .projFst e => go e guard
+    | .projSnd e => go e guard
 
     | .record fields =>
       fields.foldl (fun g (_, v) => combineGuardedness g (go v guard)) guard
@@ -222,7 +232,7 @@ where
     | _, .mixed => .mixed
 
 /-- Check productivity for a function -/
-def checkCodataProductivity (fnName : String) (body : Term) (codata : CodataRegistry)
+def checkCodataProductivity (fnName : String) (body : Soma.Core.Expr) (codata : CodataRegistry)
     : Bool × String :=
   match checkProductivity fnName body codata with
   | .guarded depth => (true, s!"productive: guarded at depth {depth}")

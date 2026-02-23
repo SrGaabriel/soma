@@ -1,10 +1,10 @@
 import Soma.Dependent.Totality.Core
 import Soma.Dependent.Totality.TermShape
+import Soma.Core.Expr
 
 namespace Soma.Dependent.Totality
 
 open Soma.Core
-open Soma.Metal (Name)
 open Soma.Syntax (Span)
 
 /-- How an argument changes in a call -/
@@ -456,14 +456,22 @@ partial def compareTermToParam (shape : TermShape) (paramIdx : Nat) (paramName :
   | .app _ _ => .unknown
   | .unknown => .unknown
 
+/-- Collect the spine of an application into (head, args) form -/
+private partial def collectAppSpine (e : Soma.Core.Expr) : Soma.Core.Expr × List Soma.Core.Expr :=
+  match e with
+  | .app fn arg =>
+    let (head, args) := collectAppSpine fn
+    (head, args ++ [arg])
+  | _ => (e, [])
+
 /-- Build a call matrix row from a recursive call -/
-def buildRow (caller callee : String) (args : List Term) (ctx : TerminationContext)
+def buildRow (caller callee : String) (args : List Soma.Core.Expr) (ctx : TerminationContext)
     (span : Span) : CallMatrixRow :=
   let (changes, _) := args.foldl (init := (#[], 0)) fun (acc, idx) arg =>
     let change :=
       if h : idx < ctx.params.size then
         let paramName := ctx.params[idx]
-        let shape := analyzeTermShape arg
+        let shape := analyzeExprShape arg
         let cmp := compareTermToParam shape idx paramName ctx
         CallMatrix.toArgChange cmp
       else
@@ -473,20 +481,22 @@ def buildRow (caller callee : String) (args : List Term) (ctx : TerminationConte
 
 /-- Collect all recursive/mutual calls in a term -/
 private partial def collectCallsGo (caller : String) (targets : Array String)
-    (t : Term) (ctx : TerminationContext) (acc : Array CallMatrixRow)
+    (t : Soma.Core.Expr) (ctx : TerminationContext) (acc : Array CallMatrixRow)
     : Array CallMatrixRow :=
   match t with
-  | .app (.global name) args =>
-    let callee := name.display
-    if targets.contains callee then
-      let row := buildRow caller callee args ctx Span.uninhabited
-      collectCallsGoArgs caller targets args ctx (acc.push row)
-    else
-      collectCallsGoArgs caller targets args ctx acc
-  | .app fn args =>
-    let acc' := collectCallsGo caller targets fn ctx acc
-    collectCallsGoArgs caller targets args ctx acc'
-  | .lam _ body => collectCallsGo caller targets body ctx acc
+  | e@(.app _ _) =>
+    let (head, args) := collectAppSpine e
+    match head with
+    | .const name =>
+      let callee := name.display
+      if targets.contains callee then
+        let row := buildRow caller callee args ctx Span.uninhabited
+        collectCallsGoArgs caller targets args ctx (acc.push row)
+      else
+        collectCallsGoArgs caller targets args ctx acc
+    | _ =>
+      collectCallsGoArgs caller targets (head :: args) ctx acc
+  | .lam _ _ _ body => collectCallsGo caller targets body ctx acc
   | .if_ c th el =>
     let acc' := collectCallsGo caller targets c ctx acc
     let acc'' := collectCallsGo caller targets th ctx acc'
@@ -494,22 +504,24 @@ private partial def collectCallsGo (caller : String) (targets : Array String)
   | .pair a b =>
     let acc' := collectCallsGo caller targets a ctx acc
     collectCallsGo caller targets b ctx acc'
-  | .fst e => collectCallsGo caller targets e ctx acc
-  | .snd e => collectCallsGo caller targets e ctx acc
-  | .construct _ _ args => collectCallsGoArgs caller targets args ctx acc
-  | .case scrut arms =>
-    let acc' := collectCallsGo caller targets scrut ctx acc
-    arms.foldl (fun a (_, _, body) => collectCallsGo caller targets body ctx a) acc'
+  | .projFst e => collectCallsGo caller targets e ctx acc
+  | .projSnd e => collectCallsGo caller targets e ctx acc
+  | .construct _ _ args => collectCallsGoArgs caller targets args.toList ctx acc
+  | .«case» scruts arms =>
+    let acc' := match scruts[0]? with
+      | some s => collectCallsGo caller targets s ctx acc
+      | none => acc
+    arms.toList.foldl (fun a arm => collectCallsGo caller targets arm.body ctx a) acc'
   | .record fields =>
-    fields.foldl (fun a (_, v) => collectCallsGo caller targets v ctx a) acc
-  | .fieldAccess e _ => collectCallsGo caller targets e ctx acc
+    fields.toList.foldl (fun a (_, v) => collectCallsGo caller targets v ctx a) acc
+  | .fieldAccess e _ _ => collectCallsGo caller targets e ctx acc
   | .pi _ _ _ d c =>
     let acc' := collectCallsGo caller targets d ctx acc
     collectCallsGo caller targets c ctx acc'
-  | .sigma _ _ f s =>
+  | .sigma _ _ _ f s =>
     let acc' := collectCallsGo caller targets f ctx acc
     collectCallsGo caller targets s ctx acc'
-  | .eq _ ty l r =>
+  | .eqTy _ ty l r =>
     let acc' := collectCallsGo caller targets ty ctx acc
     let acc'' := collectCallsGo caller targets l ctx acc'
     collectCallsGo caller targets r ctx acc''
@@ -532,17 +544,17 @@ private partial def collectCallsGo (caller : String) (targets : Array String)
   | _ => acc
 where
   collectCallsGoArgs (caller : String) (targets : Array String)
-      (args : List Term) (ctx : TerminationContext) (acc : Array CallMatrixRow)
+      (args : List Soma.Core.Expr) (ctx : TerminationContext) (acc : Array CallMatrixRow)
       : Array CallMatrixRow :=
     args.foldl (fun a arg => collectCallsGo caller targets arg ctx a) acc
 
 /-- Collect all recursive/mutual calls in a term -/
-def collectCalls (caller : String) (targets : Array String) (t : Term)
+def collectCalls (caller : String) (targets : Array String) (t : Soma.Core.Expr)
     (ctx : TerminationContext) : Array CallMatrixRow :=
   collectCallsGo caller targets t ctx #[]
 
 /-- Build a call matrix for mutual recursion -/
-def buildCallMatrix (functions : Array FunctionInfo) (bodies : Array Term)
+def buildCallMatrix (functions : Array FunctionInfo) (bodies : Array Soma.Core.Expr)
     : CallMatrix :=
   let names := functions.map (·.name.display)
   let arity := if functions.isEmpty then 0
@@ -561,7 +573,7 @@ def buildCallMatrix (functions : Array FunctionInfo) (bodies : Array Term)
   result
 
 /-- Build a call graph from function info and bodies -/
-def buildCallGraph (functions : Array FunctionInfo) (bodies : Array Term) : CallGraph :=
+def buildCallGraph (functions : Array FunctionInfo) (bodies : Array Soma.Core.Expr) : CallGraph :=
   let names := functions.map (·.name.display)
   let g := names.foldl (fun acc name => acc.addNode name) CallGraph.empty
   let (g', _) := functions.foldl (init := (g, 0)) fun (graph, i) fnInfo =>
@@ -576,7 +588,7 @@ def buildCallGraph (functions : Array FunctionInfo) (bodies : Array Term) : Call
   g'
 
 /-- Check termination using matrix analysis -/
-def checkMatrixTermination (functions : Array FunctionInfo) (bodies : Array Term)
+def checkMatrixTermination (functions : Array FunctionInfo) (bodies : Array Soma.Core.Expr)
     : Bool × String :=
   let graph := buildCallGraph functions bodies
   let matrix := buildTermMatrix graph

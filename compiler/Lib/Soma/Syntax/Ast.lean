@@ -439,10 +439,18 @@ def span : Expr → Span
 
 end Expr
 
+/-- Attributes on declarations: @[inline], @[specialize], @[wired_in "role"] -/
+structure Attribute where
+  name : Name
+  args : Array Expr
+  span : Span
+  deriving Repr
+
 /-- A data constructor: | ConName field1 :: T1 field2 :: T2
     For indexed types, includes a full type signature:
     | Cons :: a -> Vec n a -> Vec (n + 1) a -/
 structure DataCon where
+  attrs : Array Attribute := #[]
   name : Name
   fields : Array (Option Name × TypeExpr)  -- Named or positional fields (for simple constructors)
   /-- Full constructor type signature (for indexed data types).
@@ -473,29 +481,30 @@ structure DefClause where
   span : Span
   deriving Repr
 
-/-- Attributes on declarations: @[inline], @[specialize] -/
-structure Attribute where
+/-- A named definition parameter from the declaration header -/
+structure DefParam where
   name : Name
-  args : Array Expr  -- Optional arguments
+  type? : Option TypeExpr
   span : Span
   deriving Repr
 
 /-- Top-level declarations -/
 inductive Decl where
   /-- Function/value definition -/
-  | def_ (attrs : Array Attribute) (name : Name) (sig : Option TypeExpr)
+  | def_ (attrs : Array Attribute) (name : Name) (params : Array DefParam) (sig : Option TypeExpr)
          (clauses : Array DefClause) (span : Span)
 
   /-- Data type definition: data Option a | Some value :: a | None -/
-  | data (name : Name) (params : Array TypeVarBinder) (constructors : Array DataCon)
-         (kind : Option TypeExpr) (span : Span)
+  | data (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
+         (constructors : Array DataCon) (kind : Option TypeExpr) (span : Span)
 
   /-- Struct definition: struct Path = Path String -/
-  | struct (name : Name) (params : Array TypeVarBinder) (con : Name) (fields : Array StructField) (span : Span)
+  | struct (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
+           (con : Name) (fields : Array StructField) (span : Span)
 
   /-- Trait definition -/
-  | trait (name : Name) (params : Array TypeVarBinder) (constraints : Array Constraint)
-          (methods : Array MethodSig) (span : Span)
+  | trait (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
+          (constraints : Array Constraint) (methods : Array MethodSig) (span : Span)
 
   /-- Instance definition -/
   | instance_ (instanceName : Option Name) (traitName : Name) (args : Array TypeExpr)
@@ -516,10 +525,10 @@ instance : Nonempty Decl := ⟨.export_ #[] Span.uninhabited⟩
 namespace Decl
 
 def span : Decl → Span
-  | .def_ _ _ _ _ s => s
-  | .data _ _ _ _ s => s
-  | .struct _ _ _ _ s => s
-  | .trait _ _ _ _ s => s
+  | .def_ _ _ _ _ _ s => s
+  | .data _ _ _ _ _ s => s
+  | .struct _ _ _ _ _ s => s
+  | .trait _ _ _ _ _ s => s
   | .instance_ _ _ _ _ _ s => s
   | .use _ _ s => s
   | .export_ _ s => s
@@ -527,10 +536,10 @@ def span : Decl → Span
 
 /-- Get the name of a declaration (if it has one) -/
 def name? : Decl → Option Name
-  | .def_ _ name _ _ _ => some name
-  | .data name _ _ _ _ => some name
-  | .struct name _ _ _ _ => some name
-  | .trait name _ _ _ _ => some name
+  | .def_ _ name _ _ _ _ => some name
+  | .data _ name _ _ _ _ => some name
+  | .struct _ name _ _ _ _ => some name
+  | .trait _ name _ _ _ _ => some name
   | .instance_ instanceName _ _ _ _ _ => instanceName
   | .use _ _ _ => none
   | .export_ _ _ => none
@@ -756,41 +765,52 @@ def ppMethodSig (m : MethodSig) : String :=
 
 /-- Pretty print a Decl -/
 partial def ppDecl : Decl → String
-  | .def_ attrs name sig clauses _ =>
+  | .def_ attrs name params sig clauses _ =>
       let attrStr := if attrs.isEmpty then ""
         else s!"@[{attrs.toList.map (·.name.value) |> String.intercalate ", "}]\n"
+      let paramsStr := if params.isEmpty then "" else
+        let ppParam (p : DefParam) := match p.type? with
+          | some ty => s!"({p.name.value} : {ppTypeExpr ty})"
+          | none => p.name.value
+        " " ++ (params.toList.map ppParam |> String.intercalate " ")
       let sigStr := match sig with
         | some t => s!" :: {ppTypeExpr t}"
         | none => ""
       let clausesStr := clauses.toList.map ppDefClause |> String.intercalate "\n"
       if clauses.isEmpty then
-        s!"{attrStr}def {name.value}{sigStr}"
+        s!"{attrStr}def {name.value}{paramsStr}{sigStr}"
       else
-        s!"{attrStr}def {name.value}{sigStr}\n{indent 2 clausesStr}"
+        s!"{attrStr}def {name.value}{paramsStr}{sigStr}\n{indent 2 clausesStr}"
 
-  | .data name params cons kind _ =>
+  | .data attrs name params cons kind _ =>
+      let attrStr := if attrs.isEmpty then ""
+        else s!"@[{attrs.toList.map (·.name.value) |> String.intercalate ", "}]\n"
       let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
       let kindStr := match kind with
         | some k => s!" :: {ppTypeExpr k}"
         | none => ""
       let consStr := cons.toList.map ppDataCon |> String.intercalate "\n"
-      s!"data {name.value}{paramsStr}{kindStr}\n{indent 2 consStr}"
+      s!"{attrStr}data {name.value}{paramsStr}{kindStr}\n{indent 2 consStr}"
 
-  | .struct name params con fields _ =>
+  | .struct attrs name params con fields _ =>
+      let attrStr := if attrs.isEmpty then ""
+        else s!"@[{attrs.toList.map (·.name.value) |> String.intercalate ", "}]\n"
       let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
       let fieldsStr := fields.toList.map (fun f =>
         match f.name with
         | some n => s!"{n.value} :: {ppTypeExpr f.type_}"
         | none => ppTypeExpr f.type_
       ) |> String.intercalate ", "
-      "struct " ++ name.value ++ paramsStr ++ " = " ++ con.value ++ " { " ++ fieldsStr ++ " }"
+      s!"{attrStr}struct " ++ name.value ++ paramsStr ++ " = " ++ con.value ++ " { " ++ fieldsStr ++ " }"
 
-  | .trait name params constraints methods _ =>
+  | .trait attrs name params constraints methods _ =>
+      let attrStr := if attrs.isEmpty then ""
+        else s!"@[{attrs.toList.map (·.name.value) |> String.intercalate ", "}]\n"
       let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
       let consStr := if constraints.isEmpty then ""
         else s!" with ({constraints.toList.map ppConstraint |> String.intercalate ", "})"
       let methodsStr := methods.toList.map ppMethodSig |> String.intercalate "\n"
-      s!"trait {name.value}{paramsStr}{consStr} where\n{indent 2 methodsStr}"
+      s!"{attrStr}trait {name.value}{paramsStr}{consStr} where\n{indent 2 methodsStr}"
 
   | .instance_ instanceName traitName args constraints methods _ =>
       let nameStr := match instanceName with

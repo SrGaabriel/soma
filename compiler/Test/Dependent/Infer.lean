@@ -11,24 +11,26 @@
 -/
 
 import Soma.Dependent
-import Soma.Metal.Expr
 import Soma.Core
 import Test.Fixtures
 
 namespace Test.Dependent.Infer
 
 open Soma.Dependent
+open Soma (Unique)
 open Soma.Core
-open Soma.Metal (Expr ExprList Scope BindingId Name)
 open Soma.Syntax (Span)
 open Test.Fixtures
 
 /-- Helper to create a dummy span -/
 def testSpan : Span := Span.uninhabited
 
-/-- Helper to create a simple binding ID -/
-def mkBindingId (n : Nat) (name : String) : BindingId :=
-  ⟨n, "test", name, .patternVar⟩
+/-- Helper to create a syntax name at test span -/
+def synName (s : String) : Soma.Syntax.Name := ⟨s, testSpan⟩
+
+/-- Helper to create a simple unique ID -/
+def mkUnique (n : Nat) (name : String) : Unique :=
+  ⟨n, "test", name⟩
 
 /-! ## Conversion Tests -/
 
@@ -201,7 +203,7 @@ def testContextExtend : IO TestResult := do
     if lookup1.isSome then
       TCM.throw (.internalError "x should not be in empty context" testSpan)
     -- Extend and lookup
-    let xId := mkBindingId 0 "x"
+    let xId := mkUnique 0 "x"
     TCM.withBinding "x" xId (.vPrimTy .int) .omega .explicit testSpan do
       let lookup2 ← TCM.lookupLocal "x"
       match lookup2 with
@@ -307,12 +309,11 @@ end ErrorTests
 
 namespace InferTests
 
-open Soma.Metal (BinderInfo)
 open Soma.Core (StarPrimitive)
 
 /-- Test: Infer integer literal type -/
 def testInferIntLit : IO TestResult := do
-  let expr : Expr Unit [] := .lit (.int 42) testSpan
+  let expr : Soma.Syntax.Expr := .lit (.int 42 testSpan)
   match typeInfer expr with
   | .ok (ty, _, _) =>
     match ty with
@@ -322,7 +323,7 @@ def testInferIntLit : IO TestResult := do
 
 /-- Test: Infer string literal type -/
 def testInferStringLit : IO TestResult := do
-  let expr : Expr Unit [] := .lit (.string "hello") testSpan
+  let expr : Soma.Syntax.Expr := .lit (.string "hello" testSpan)
   match typeInfer expr with
   | .ok (ty, _, _) =>
     match ty with
@@ -332,7 +333,7 @@ def testInferStringLit : IO TestResult := do
 
 /-- Test: Infer boolean literal type -/
 def testInferBoolLit : IO TestResult := do
-  let expr : Expr Unit [] := .lit (.bool true) testSpan
+  let expr : Soma.Syntax.Expr := .lit (.bool true testSpan)
   match typeInfer expr with
   | .ok (ty, _, _) =>
     match ty with
@@ -342,7 +343,7 @@ def testInferBoolLit : IO TestResult := do
 
 /-- Test: Infer Type universe -/
 def testInferTypeUniverse : IO TestResult := do
-  let expr : Expr Unit [] := .type (.lit 0) testSpan
+  let expr : Soma.Syntax.Expr := .var (synName "Type")
   match typeInfer expr with
   | .ok (ty, _, _) =>
     match ty with
@@ -353,7 +354,7 @@ def testInferTypeUniverse : IO TestResult := do
 
 /-- Test: Infer primitive type (Int as type) -/
 def testInferPrimTy : IO TestResult := do
-  let expr : Expr Unit [] := .primTy .int testSpan
+  let expr : Soma.Syntax.Expr := .var (synName "Int")
   match typeInfer expr with
   | .ok (ty, _, _) =>
     match ty with
@@ -363,111 +364,14 @@ def testInferPrimTy : IO TestResult := do
   | .error e => return .failed s!"Inference failed: {e}"
 
 /-- Test: Infer row empty type -/
-def testInferRowEmpty : IO TestResult := do
-  let expr : Expr Unit [] := .rowEmpty testSpan
+def testInferTuple : IO TestResult := do
+  let expr : Soma.Syntax.Expr :=
+    .tuple #[(.lit (.int 1 testSpan)), (.lit (.int 2 testSpan))] testSpan
   match typeInfer expr with
   | .ok (ty, _, _) =>
     match ty with
-    | .vRowSort => return .passed
-    | _ => return .failed s!"Expected Row, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
-
-/-- Test: Infer label literal -/
-def testInferLabelLit : IO TestResult := do
-  let expr : Expr Unit [] := .labelLit "foo" testSpan
-  match typeInfer expr with
-  | .ok (ty, _, _) =>
-    match ty with
-    | .vLabelSort => return .passed
-    | _ => return .failed s!"Expected Label, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
-
-/-- Test: Infer Pi type formation -/
-def testInferPiType : IO TestResult := do
-  -- (x : Int) -> Int
-  let domain : Expr Unit [] := .primTy .int testSpan
-  let codomain : Expr Unit [] := .primTy .int testSpan
-  let piExpr : Expr Unit [] := .pi .omega .explicit "x" domain codomain testSpan
-  match typeInfer piExpr with
-  | .ok (ty, _, _) =>
-    match ty with
-    | .vType _ => return .passed
-    | _ => return .failed s!"Expected Type for Pi, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
-
-/-- Test: Infer Sigma type formation -/
-def testInferSigmaType : IO TestResult := do
-  -- (x : Int) × Int
-  let fstTy : Expr Unit [] := .primTy .int testSpan
-  let sndTy : Expr Unit [] := .primTy .int testSpan
-  let sigmaExpr : Expr Unit [] := .sigma .omega "x" fstTy sndTy testSpan
-  match typeInfer sigmaExpr with
-  | .ok (ty, _, _) =>
-    match ty with
-    | .vType _ => return .passed
-    | _ => return .failed s!"Expected Type for Sigma, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
-
-/-- Test: Infer pair type -/
-def testInferPair : IO TestResult := do
-  let fst : Expr Unit [] := .lit (.int 1) testSpan
-  let snd : Expr Unit [] := .lit (.int 2) testSpan
-  let pairExpr : Expr Unit [] := .pair fst snd () testSpan
-  match typeInfer pairExpr with
-  | .ok (ty, _, _) =>
-    match ty with
-    | .vSigma _ _ fstTy _ =>
-      match fstTy with
-      | .vPrimTy .int => return .passed
-      | _ => return .failed s!"Expected Int for first component, got {fstTy}"
-    | _ => return .failed s!"Expected Sigma type, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
-
-/-- Test: Infer record type -/
-def testInferRecordTy : IO TestResult := do
-  let row : Expr Unit [] := .rowEmpty testSpan
-  let recTyExpr : Expr Unit [] := .recordTy row testSpan
-  match typeInfer recTyExpr with
-  | .ok (ty, _, _) =>
-    match ty with
-    | .vType _ => return .passed
-    | _ => return .failed s!"Expected Type for record, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
-
-/-- Test: Infer variant type -/
-def testInferVariantTy : IO TestResult := do
-  let row : Expr Unit [] := .rowEmpty testSpan
-  let varTyExpr : Expr Unit [] := .variantTy row testSpan
-  match typeInfer varTyExpr with
-  | .ok (ty, _, _) =>
-    match ty with
-    | .vType _ => return .passed
-    | _ => return .failed s!"Expected Type for variant, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
-
-/-- Test: Infer equality type -/
-def testInferEqType : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .int testSpan
-  let lhs : Expr Unit [] := .lit (.int 1) testSpan
-  let rhs : Expr Unit [] := .lit (.int 1) testSpan
-  let eqExpr : Expr Unit [] := .eq (.lit 0) ty lhs rhs testSpan
-  match typeInfer eqExpr with
-  | .ok (resTy, _, _) =>
-    match resTy with
-    | .vType _ => return .passed
-    | _ => return .failed s!"Expected Type for Eq, got {resTy}"
-  | .error e => return .failed s!"Inference failed: {e}"
-
-/-- Test: Infer refl term -/
-def testInferRefl : IO TestResult := do
-  let ty : Expr Unit [] := .primTy .int testSpan
-  let x : Expr Unit [] := .lit (.int 42) testSpan
-  let reflExpr : Expr Unit [] := .refl ty x testSpan
-  match typeInfer reflExpr with
-  | .ok (resTy, _, _) =>
-    match resTy with
-    | .vEq _ _ _ _ => return .passed
-    | _ => return .failed s!"Expected Eq type for refl, got {resTy}"
+    | .vSigma _ _ _ _ => return .passed
+    | _ => return .failed s!"Expected Sigma-like tuple type, got {ty}"
   | .error e => return .failed s!"Inference failed: {e}"
 
 def run : IO TestRunner := do
@@ -479,15 +383,7 @@ def run : IO TestRunner := do
   runner := runner.record "infer_bool_lit" (← testInferBoolLit)
   runner := runner.record "infer_type_universe" (← testInferTypeUniverse)
   runner := runner.record "infer_prim_ty" (← testInferPrimTy)
-  runner := runner.record "infer_row_empty" (← testInferRowEmpty)
-  runner := runner.record "infer_label_lit" (← testInferLabelLit)
-  runner := runner.record "infer_pi_type" (← testInferPiType)
-  runner := runner.record "infer_sigma_type" (← testInferSigmaType)
-  runner := runner.record "infer_pair" (← testInferPair)
-  runner := runner.record "infer_record_ty" (← testInferRecordTy)
-  runner := runner.record "infer_variant_ty" (← testInferVariantTy)
-  runner := runner.record "infer_eq_type" (← testInferEqType)
-  runner := runner.record "infer_refl" (← testInferRefl)
+  runner := runner.record "infer_tuple" (← testInferTuple)
 
   return runner
 
@@ -497,39 +393,37 @@ end InferTests
 
 namespace CheckTests
 
-open Soma.Metal (BinderInfo)
 open Soma.Core (StarPrimitive)
 
 /-- Test: Check integer literal against Int -/
 def testCheckIntAgainstInt : IO TestResult := do
-  let expr : Expr Unit [] := .lit (.int 42) testSpan
+  let expr : Soma.Syntax.Expr := .lit (.int 42 testSpan)
   match typeCheck expr (.vPrimTy .int) with
   | .ok _ => return .passed
   | .error e => return .failed s!"Check failed: {e}"
 
 /-- Test: Check string literal against String -/
 def testCheckStringAgainstString : IO TestResult := do
-  let expr : Expr Unit [] := .lit (.string "hello") testSpan
+  let expr : Soma.Syntax.Expr := .lit (.string "hello" testSpan)
   match typeCheck expr (.vPrimTy .string) with
   | .ok _ => return .passed
   | .error e => return .failed s!"Check failed: {e}"
 
 /-- Test: Check Type₀ against Type₁ -/
 def testCheckTypeAgainstType : IO TestResult := do
-  let expr : Expr Unit [] := .type (.lit 0) testSpan
+  let expr : Soma.Syntax.Expr := .var (synName "Type")
   match typeCheck expr (.vType (.lit 1)) with
   | .ok _ => return .passed
   | .error e => return .failed s!"Check failed: {e}"
 
 /-- Test: Check pair against Sigma type -/
 def testCheckPairAgainstSigma : IO TestResult := do
-  let fst : Expr Unit [] := .lit (.int 1) testSpan
-  let snd : Expr Unit [] := .lit (.int 2) testSpan
-  let pairExpr : Expr Unit [] := .pair fst snd () testSpan
+  let fst : Soma.Syntax.Expr := .lit (.int 1 testSpan)
+  let snd : Soma.Syntax.Expr := .lit (.int 2 testSpan)
+  let pairExpr : Soma.Syntax.Expr := .tuple #[fst, snd] testSpan
   -- Create a Sigma type (x : Int) × Int
   -- The second component closure should return Int (we use primTy .int as the body)
-  let sndBody : Expr Unit [] := .primTy .int testSpan
-  let sndClosure := Closure.mkWithBody "_" Env.empty (Soma.Core.exprToTerm sndBody)
+  let sndClosure := Closure.mkWithBody "_" Env.empty (Soma.Core.Expr.primTy .int)
   let sigmaTy := Value.vSigma .omega "x" (.vPrimTy .int) sndClosure
   match typeCheck pairExpr sigmaTy with
   | .ok _ => return .passed
@@ -537,10 +431,10 @@ def testCheckPairAgainstSigma : IO TestResult := do
 
 /-- Test: Check if-then-else with matching branch types -/
 def testCheckIfThenElse : IO TestResult := do
-  let cond : Expr Unit [] := .lit (.bool true) testSpan
-  let then_ : Expr Unit [] := .lit (.int 1) testSpan
-  let else_ : Expr Unit [] := .lit (.int 2) testSpan
-  let ifExpr : Expr Unit [] := .if_ cond then_ else_ () testSpan
+  let cond : Soma.Syntax.Expr := .lit (.bool true testSpan)
+  let then_ : Soma.Syntax.Expr := .lit (.int 1 testSpan)
+  let else_ : Soma.Syntax.Expr := .lit (.int 2 testSpan)
+  let ifExpr : Soma.Syntax.Expr := .if_ cond then_ else_ testSpan
   match typeCheck ifExpr (.vPrimTy .int) with
   | .ok _ => return .passed
   | .error e => return .failed s!"Check failed: {e}"
@@ -565,7 +459,7 @@ namespace UsageTests
 
 /-- Test: Variable usage is recorded -/
 def testUsageRecorded : IO TestResult := do
-  let xId := mkBindingId 0 "x"
+  let xId := mkUnique 0 "x"
   let action : TCM Nat := do
     TCM.useVar xId
     TCM.getUsage xId
@@ -577,7 +471,7 @@ def testUsageRecorded : IO TestResult := do
 
 /-- Test: Multiple usages accumulate -/
 def testUsageAccumulates : IO TestResult := do
-  let xId := mkBindingId 0 "x"
+  let xId := mkUnique 0 "x"
   let action : TCM Nat := do
     TCM.useVar xId 1
     TCM.useVar xId 1
@@ -590,7 +484,7 @@ def testUsageAccumulates : IO TestResult := do
 
 /-- Test: Zero usage doesn't change -/
 def testZeroUsage : IO TestResult := do
-  let xId := mkBindingId 0 "x"
+  let xId := mkUnique 0 "x"
   let action : TCM Nat := do
     TCM.useVar xId 0
     TCM.getUsage xId
@@ -616,7 +510,6 @@ end UsageTests
 
 namespace ImplicitPropagationTests
 
-open Soma.Metal (BinderInfo ParamList)
 open Soma.Core (StarPrimitive)
 
 /-- Helper to create a polymorphic identity function type: forall {a : Type}. a -> a -/

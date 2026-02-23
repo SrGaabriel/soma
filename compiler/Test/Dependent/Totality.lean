@@ -16,8 +16,8 @@
 
 import Soma.Dependent
 import Soma.Dependent.Totality
-import Soma.Metal.Expr
 import Soma.Core
+import Soma.Core.Expr
 import Test.Fixtures
 
 namespace Test.Dependent.Totality
@@ -25,14 +25,20 @@ namespace Test.Dependent.Totality
 open Soma.Dependent
 open Soma.Dependent.Totality
 open Soma.Core
-open Soma.Metal (Name Literal)
 open Soma.Syntax (Span)
-open Soma.Core (TypeId)
+open Soma.Core (TypeId QualifiedName)
 open Test.Fixtures
 
 def testSpan : Span := Span.uninhabited
-def testFnName (s : String) : Name := .user ⟨0, "", s⟩
+def testFnName (s : String) : QualifiedName := ⟨⟨0, "", s⟩⟩
 def testTypeId (name : String) : TypeId := ⟨"", name, 0⟩
+
+/-- Create a free variable Expr for tests (using fvar with the given name) -/
+def testVar (name : String) : Soma.Core.Expr := .fvar ⟨0, "", name⟩
+
+/-- Create a constructor Expr for tests -/
+def testConstruct (name : String) (tag : Nat) (args : List Soma.Core.Expr) : Soma.Core.Expr :=
+  .construct (QualifiedName.ofUnique ⟨0, "", name⟩) tag args.toArray
 
 /-! ═══════════════════════════════════════════════════════════════════════════
     SECTION 1: StructurePath Tests
@@ -186,36 +192,36 @@ end TerminationContextTests
 namespace TermShapeTests
 
 def testVarShape : IO TestResult := do
-  let term := Term.var 0 "x"
-  let shape := analyzeTermShape term
+  let term := testVar "x"
+  let shape := analyzeExprShape term
   match shape with
   | .var "x" => return .passed
   | _ => return .failed s!"expected var shape, got {repr shape}"
 
 def testCtorShape : IO TestResult := do
-  let term := Term.construct (testFnName "Pair") 0 [Term.var 0 "a", Term.var 0 "b"]
-  let shape := analyzeTermShape term
+  let term := testConstruct "Pair" 0 [testVar "a", testVar "b"]
+  let shape := analyzeExprShape term
   match shape with
   | .ctor "Pair" args => if args.size == 2 then return .passed else return .failed "wrong arity"
   | _ => return .failed s!"expected ctor shape, got {repr shape}"
 
 def testPairShape : IO TestResult := do
-  let term := Term.pair (Term.var 0 "a") (Term.var 0 "b")
-  let shape := analyzeTermShape term
+  let term := Soma.Core.Expr.pair (testVar "a") (testVar "b")
+  let shape := analyzeExprShape term
   match shape with
   | .pair (.var "a") (.var "b") => return .passed
   | _ => return .failed s!"expected pair shape, got {repr shape}"
 
 def testFstProjShape : IO TestResult := do
-  let term := Term.fst (Term.var 0 "p")
-  let shape := analyzeTermShape term
+  let term := Soma.Core.Expr.projFst (testVar "p")
+  let shape := analyzeExprShape term
   match shape with
   | .fstProj (.var "p") => return .passed
   | _ => return .failed s!"expected fstProj shape, got {repr shape}"
 
 def testCollectVars : IO TestResult := do
-  let term := Term.construct (testFnName "Node") 0 [Term.var 0 "a", Term.var 0 "b"]
-  let shape := analyzeTermShape term
+  let term := testConstruct "Node" 0 [testVar "a", testVar "b"]
+  let shape := analyzeExprShape term
   let vars := shape.collectVars
   if vars.length == 2 && vars.contains "a" && vars.contains "b" then return .passed
   else return .failed s!"expected [a, b], got {vars}"
@@ -322,7 +328,7 @@ def testPairExampleSimple : IO TestResult := do
 
   -- The recursive call argument is just 'a' (simplified test)
   -- In a full test, we'd check Pair a (S (S b))
-  let args := [Term.var 0 "a"]
+  let args := [testVar "a"]
   let witness := checkRecursiveCallStructural args ctx''
 
   match witness with
@@ -353,9 +359,9 @@ def testPairExampleFull : IO TestResult := do
 
   -- Recursive call: foo (Pair a (S (S b)))
   -- Represented as: Pair [a, S [S [b]]]
-  let innerS := Term.construct (testFnName "S") 0 [Term.var 0 "b"]
-  let outerS := Term.construct (testFnName "S") 0 [innerS]
-  let pairArg := Term.construct (testFnName "Pair") 0 [Term.var 0 "a", outerS]
+  let innerS := testConstruct "S" 0 [testVar "b"]
+  let outerS := testConstruct "S" 0 [innerS]
+  let pairArg := testConstruct "Pair" 0 [testVar "a", outerS]
   let args := [pairArg]
 
   let witness := checkRecursiveCallStructural args ctx''
@@ -371,7 +377,7 @@ def testPairExampleFull : IO TestResult := do
 /-- Test that passing the parameter unchanged gives 'equal' not 'smaller' -/
 def testPairNoDecrease : IO TestResult := do
   let ctx := TerminationContext.fromParams #["p"]
-  let args := [Term.var 0 "p"]  -- Just pass p unchanged
+  let args := [testVar "p"]  -- Just pass p unchanged
 
   let witness := checkRecursiveCallStructural args ctx
 
@@ -404,7 +410,7 @@ def testFirstArgSmaller : IO TestResult := do
     name := "a", paramIdx := 0, paramName := "x",
     path := .ctorArg .root "S" 0, depth := 1
   }
-  let args := [Term.var 0 "a", Term.var 0 "larger"]
+  let args := [testVar "a", testVar "larger"]
 
   let witness := checkRecursiveCallStructural args ctx'
 
@@ -420,7 +426,7 @@ def testSecondArgSmaller : IO TestResult := do
     name := "b", paramIdx := 1, paramName := "y",
     path := .ctorArg .root "S" 0, depth := 1
   }
-  let args := [Term.var 0 "x", Term.var 0 "b"]
+  let args := [testVar "x", testVar "b"]
 
   let witness := checkRecursiveCallStructural args ctx'
 
@@ -432,7 +438,7 @@ def testSecondArgSmaller : IO TestResult := do
 def testNoDecrease : IO TestResult := do
   -- foo x y = foo x y (no decrease)
   let ctx := TerminationContext.fromParams #["x", "y"]
-  let args := [Term.var 0 "x", Term.var 0 "y"]
+  let args := [testVar "x", testVar "y"]
 
   let witness := checkRecursiveCallStructural args ctx
 
@@ -463,7 +469,7 @@ def testListLength : IO TestResult := do
     name := "xs", paramIdx := 0, paramName := "list",
     path := .ctorArg .root "Cons" 1, depth := 1
   }
-  let args := [Term.var 0 "xs"]
+  let args := [testVar "xs"]
 
   let witness := checkRecursiveCallStructural args ctx'
 
@@ -484,9 +490,9 @@ def testTreeRecursion : IO TestResult := do
   }
 
   -- First recursive call on 'l'
-  let witness1 := checkRecursiveCallStructural [Term.var 0 "l"] ctx''
+  let witness1 := checkRecursiveCallStructural [testVar "l"] ctx''
   -- Second recursive call on 'r'
-  let witness2 := checkRecursiveCallStructural [Term.var 0 "r"] ctx''
+  let witness2 := checkRecursiveCallStructural [testVar "r"] ctx''
 
   match witness1, witness2 with
   | .arg 0 _, .arg 0 _ => return .passed
@@ -645,7 +651,7 @@ def testNonRecursive : IO TestResult := do
     fnType := Value.vType .zero
     span := testSpan
   }
-  let body := Term.var 0 "x"
+  let body := testVar "x"
   let result := checkFunctionTotality fnInfo body
   if result.status == .isTotal then return .passed
   else return .failed "non-recursive should be total"
@@ -659,7 +665,7 @@ def testCheckAndRegister : IO TestResult := do
     fnType := Value.vType .zero
     span := testSpan
   }
-  let body := Term.var 1 "x"
+  let body := testVar "x"
   let (registry, result) := checkAndRegisterTotality fnInfo body TotalityRegistry.empty
   if result.status == .isTotal && registry.isTotal "const" then return .passed
   else return .failed "should register as total"

@@ -6,5 +6,5 @@ data List a
     | Cons a (List a)
 
 def head :: forall a. a -> List a -> a
-    | default Nil => default
-    | _ (Cons x _) => x
+    | default List::Nil => default
+    | _ (List::Cons x _) => x

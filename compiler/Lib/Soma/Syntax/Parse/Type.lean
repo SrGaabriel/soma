@@ -6,6 +6,12 @@ open ParserM
 
 /-! ## Type Atoms -/
 
+private def parseIdentAny : ParserM (Option GreenNode) := do
+  let tok ← current
+  match tok.kind with
+  | some .lowerIdent | some .upperIdent => some <$> consumeAny
+  | _ => return none
+
 def parseTypeVar : ParserM (Option GreenNode) := do
   match ← parseLowerIdent with
   | some tok => return some (GreenNode.mkNode .typeVar #[tok])
@@ -13,8 +19,20 @@ def parseTypeVar : ParserM (Option GreenNode) := do
 
 def parseTypeCon : ParserM (Option GreenNode) := do
   match ← parseUpperIdent with
-  | some tok => return some (GreenNode.mkNode .typeCon #[tok])
   | none => return none
+  | some first =>
+      let mut parts : Array GreenNode := #[first]
+      while (← check .doubleColon) do
+        let sep ← consumeAny
+        match ← parseIdentAny with
+        | some next =>
+            parts := parts.push sep
+            parts := parts.push next
+        | none =>
+            recordError "expected identifier after '::' in type name"
+            return some (GreenNode.mkError "incomplete qualified type name" (parts.push sep))
+
+      return some (GreenNode.mkNode .typeCon parts)
 
 def checkDot : ParserM Bool := do
   let tok ← current
@@ -643,9 +661,8 @@ partial def parseTypeArrow : ParserM (Option GreenNode) := do
   | none => return none
 
 partial def parseConstraint : ParserM (Option GreenNode) := do
-  match ← parseUpperIdent with
-  | some classTok =>
-      let className := GreenNode.mkNode .typeCon #[classTok]
+  match ← parseTypeCon with
+  | some className =>
       let mut args := #[className]
       while true do
         let tok ← current

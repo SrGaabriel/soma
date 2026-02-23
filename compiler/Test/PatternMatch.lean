@@ -1,9 +1,7 @@
 import Somac.Circuit.PatternMatch
 import Somac.Circuit.Graph
 import Somac.Circuit.Node
-import Soma.Metal.Pattern
-import Soma.Metal.Expr
-import Soma.Core.Name
+import Soma.Core.Expr
 import Soma.Core.Value
 import Test.Fixtures
 
@@ -12,8 +10,9 @@ namespace Test.PatternMatch
 open Somac.Circuit.PatternMatch
 open Somac.Circuit.Graph (Graph GraphM)
 open Somac.Circuit.Node (Node NodeId PortId)
-open Soma.Metal (BindingId Literal Pattern PatternList)
-open Soma.Core (Name Value)
+open Soma (Unique)
+open Soma.Core (Literal Pattern)
+open Soma.Core (Value)
 open Test.Fixtures
 
 /-- Unit type used for tests where we don't care about the type annotation -/
@@ -39,7 +38,7 @@ def testWildcard : IO TestResult := do
 
 /-- Test: Variable pattern properties -/
 def testVar : IO TestResult := do
-  let binding : BindingId := { id := 42, module := "test", original := "x" }
+  let binding : Unique := { id := 42, module := "test", original := "x" }
   let pat := SimplePattern.var binding "x"
   if !pat.isWildcardOrVar then
     return .failed "Var should be isWildcardOrVar"
@@ -87,7 +86,7 @@ def testLit : IO TestResult := do
 
 /-- Test: As-pattern properties -/
 def testAs : IO TestResult := do
-  let binding : BindingId := { id := 1, module := "test", original := "y" }
+  let binding : Unique := { id := 1, module := "test", original := "y" }
   let inner := SimplePattern.ctor 0 2 #[.wildcard, .wildcard]
   let pat := SimplePattern.as binding "y" inner
 
@@ -105,9 +104,9 @@ def testAs : IO TestResult := do
 
 /-- Test: Nested pattern binding collection -/
 def testNestedBindings : IO TestResult := do
-  let b1 : BindingId := { id := 1, module := "test", original := "x" }
-  let b2 : BindingId := { id := 2, module := "test", original := "y" }
-  let b3 : BindingId := { id := 3, module := "test", original := "z" }
+  let b1 : Unique := { id := 1, module := "test", original := "x" }
+  let b2 : Unique := { id := 2, module := "test", original := "y" }
+  let b3 : Unique := { id := 3, module := "test", original := "z" }
 
   -- Cons(x, Cons(y, z))
   let innerCons := SimplePattern.ctor 1 2 #[.var b2 "y", .var b3 "z"]
@@ -212,8 +211,8 @@ def testSpecialize : IO TestResult := do
   -- Matrix with patterns matching on a 2-arity constructor
   let matrix := PatternMatrix.empty 1
   -- Row 0: Cons(x, xs) - matches tag 1
-  let b1 : BindingId := { id := 1, module := "test", original := "x" }
-  let b2 : BindingId := { id := 2, module := "test", original := "xs" }
+  let b1 : Unique := { id := 1, module := "test", original := "x" }
+  let b2 : Unique := { id := 2, module := "test", original := "xs" }
   let row0 := Row.ofPatterns #[.ctor 1 2 #[.var b1 "x", .var b2 "xs"]] 0
   -- Row 1: Nil - matches tag 0
   let row1 := Row.ofPatterns #[.ctor 0 0 #[]] 1
@@ -289,7 +288,7 @@ def testOccurrence : IO TestResult := do
 
 /-- Test: Binding creation -/
 def testBinding : IO TestResult := do
-  let bid : BindingId := { id := 5, module := "test", original := "foo" }
+  let bid : Unique := { id := 5, module := "test", original := "foo" }
   let occ := Occurrence.root 0
   let binding : Binding := ⟨bid, "foo", occ, testTy⟩
 
@@ -301,7 +300,7 @@ def testBinding : IO TestResult := do
 
 /-- Test: Decision tree leaf -/
 def testLeaf : IO TestResult := do
-  let bid : BindingId := { id := 1, module := "test", original := "x" }
+  let bid : Unique := { id := 1, module := "test", original := "x" }
   let binding : Binding := ⟨bid, "x", Occurrence.root 0, testTy⟩
   let tree := DecisionTree.leaf #[binding] 3
 
@@ -444,9 +443,9 @@ def testCompileWithDefault : IO TestResult := do
 /-- Test: Compile nested patterns -/
 def testCompileNested : IO TestResult := do
   -- Match on Cons(x, Cons(y, z)) vs Cons(x, Nil) vs Nil
-  let b1 : BindingId := { id := 1, module := "test", original := "x" }
-  let b2 : BindingId := { id := 2, module := "test", original := "y" }
-  let b3 : BindingId := { id := 3, module := "test", original := "z" }
+  let b1 : Unique := { id := 1, module := "test", original := "x" }
+  let b2 : Unique := { id := 2, module := "test", original := "y" }
+  let b3 : Unique := { id := 3, module := "test", original := "z" }
 
   let matrix := PatternMatrix.empty 1
 
@@ -476,7 +475,7 @@ def testCompileNested : IO TestResult := do
 
 /-- Test: Compile with variable bindings -/
 def testCompileWithBindings : IO TestResult := do
-  let b1 : BindingId := { id := 1, module := "test", original := "x" }
+  let b1 : Unique := { id := 1, module := "test", original := "x" }
   let matrix := PatternMatrix.empty 1
   let matrix := matrix.addRow (Row.ofPatterns #[.var b1 "x"] 0)
   let tree := compileMatrix matrix emptyRegistry #[testTy]
@@ -567,7 +566,7 @@ def testLowerSwitch : IO TestResult := do
 
 /-- Test: Lower with bindings -/
 def testLowerWithBindings : IO TestResult := do
-  let bid : BindingId := { id := 1, module := "test", original := "x" }
+  let bid : Unique := { id := 1, module := "test", original := "x" }
   let binding : Binding := ⟨bid, "x", Occurrence.root 0, testTy⟩
   let tree := DecisionTree.leaf #[binding] 0
 
@@ -595,7 +594,7 @@ def testLowerWithBindings : IO TestResult := do
 
 /-- Test: Lower with multi-use bindings -/
 def testLowerMultiUse : IO TestResult := do
-  let bid : BindingId := { id := 1, module := "test", original := "x" }
+  let bid : Unique := { id := 1, module := "test", original := "x" }
   let binding : Binding := ⟨bid, "x", Occurrence.root 0, testTy⟩
   let tree := DecisionTree.leaf #[binding] 0
 
@@ -623,7 +622,7 @@ def testLowerMultiUse : IO TestResult := do
 /-- Test: Lower nested occurrence -/
 def testLowerNestedOccurrence : IO TestResult := do
   -- Binding at path [1] (second field of scrutinee)
-  let bid : BindingId := { id := 1, module := "test", original := "y" }
+  let bid : Unique := { id := 1, module := "test", original := "y" }
   let occ := (Occurrence.root 0).field 1
   let binding : Binding := ⟨bid, "y", occ, testTy⟩
   let tree := DecisionTree.leaf #[binding] 0
@@ -697,7 +696,7 @@ def testCtorMatchWithBindings : IO TestResult := do
   -- match x with
   -- | Some(y) -> y
   -- | None -> 0
-  let b1 : BindingId := { id := 1, module := "test", original := "y" }
+  let b1 : Unique := { id := 1, module := "test", original := "y" }
 
   let matrix := PatternMatrix.empty 1
   let matrix := matrix.addRow (Row.ofPatterns #[.ctor 1 1 #[.var b1 "y"]] 0)  -- Some(y)
@@ -735,8 +734,8 @@ def testNestedMatch : IO TestResult := do
   -- | Cons(a, Cons(b, _)) -> a + b
   -- | Cons(a, Nil) -> a
   -- | Nil -> 0
-  let ba : BindingId := { id := 1, module := "test", original := "a" }
-  let bb : BindingId := { id := 2, module := "test", original := "b" }
+  let ba : Unique := { id := 1, module := "test", original := "a" }
+  let bb : Unique := { id := 2, module := "test", original := "b" }
 
   let matrix := PatternMatrix.empty 1
 

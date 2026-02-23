@@ -1,0 +1,8 @@
+// expect: success
+// Test: forall binders are context; all explicit signature binders are scrutinees
+
+def constPoly :: forall a. a -> (b : Type) -> b -> a
+  | x _ _ => x
+
+def retConst :: forall a. a -> (b : Type) -> b -> a
+  | x _ _ => x

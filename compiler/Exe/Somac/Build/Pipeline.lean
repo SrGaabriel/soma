@@ -1,7 +1,7 @@
 import Soma.Project.Metadata
 import Soma.Project
 import Soma.Project.Check
-import Soma.Metal.LambdaLift
+import Soma.Core.LambdaLift
 import Somac.Circuit
 import Somac.Alloy
 import Somac.Alloy.Merge
@@ -13,7 +13,7 @@ namespace Somac.Build
 open Soma
 open Soma.Project
 open Soma.Syntax
-open Soma.Check
+open Soma.Project.Check
 
 /-- Load external dependencies from metadata JSON files -/
 def loadExternalDependencies (deps : Array (String × System.FilePath))
@@ -101,10 +101,10 @@ def loadDependencyAlloyModules (deps : Array (String × System.FilePath))
 /-- Lower a single checked module to Alloy IR -/
 def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : Alloy.Module :=
   -- Lambda lifting
-  let liftedTypedFunctions := Soma.Metal.LambdaLift.liftAll cm.typedFunctions cm.name
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name
 
   -- Lower to Circuit IR
-  let graph := Circuit.Lower.lower cm.metalModule.types liftedTypedFunctions cm.usages (some globals)
+  let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals)
 
   -- Lower to Alloy MIR
   Alloy.Lower.lower graph cm.name

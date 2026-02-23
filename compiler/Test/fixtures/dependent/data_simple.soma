@@ -6,5 +6,5 @@ data MyBool
     | MyFalse
 
 def not :: MyBool -> MyBool
-    | MyTrue => MyFalse
-    | MyFalse => MyTrue
+    | MyBool::MyTrue => MyBool::MyFalse
+    | MyBool::MyFalse => MyBool::MyTrue

@@ -6,8 +6,12 @@ namespace Soma.Syntax.Parse
 open ParserM
 
 def parsePatternVar : ParserM (Option GreenNode) := do
+  let tok ← current
+  if tok.kind != some .lowerIdent then return none
+  let nextTok ← peekNext
+  if nextTok.kind == some .doubleColon then return none
   match ← parseLowerIdent with
-  | some tok => return some (GreenNode.mkNode .patVar #[tok])
+  | some nameTok => return some (GreenNode.mkNode .patVar #[nameTok])
   | none => return none
 
 def parsePatternWildcard : ParserM (Option GreenNode) := do
@@ -23,10 +27,36 @@ def parsePatternLit : ParserM (Option GreenNode) := do
       return some (GreenNode.mkNode .patLit #[g])
   | _ => return none
 
+private def parseIdentAny : ParserM (Option GreenNode) := do
+  let tok ← current
+  match tok.kind with
+  | some .lowerIdent | some .upperIdent => some <$> consumeAny
+  | _ => return none
+
 def parseConstructorName : ParserM (Option GreenNode) := do
-  match ← parseUpperIdent with
-  | some tok => return some (GreenNode.mkNode .name #[tok])
+  match ← parseIdentAny with
   | none => return none
+  | some first =>
+      let mut parts : Array GreenNode := #[first]
+      let mut sawQualified := false
+      while (← check .doubleColon) do
+        sawQualified := true
+        let sep ← consumeAny
+        match ← parseIdentAny with
+        | some next =>
+            parts := parts.push sep
+            parts := parts.push next
+        | none =>
+            recordError "expected identifier after '::' in constructor name"
+            return some (GreenNode.mkError "incomplete qualified constructor" (parts.push sep))
+
+      -- Keep old behavior for single-segment names: only UpperIdent is a constructor.
+      if !sawQualified then
+        let headTok := first
+        if headTok.tokenKind? != some .upperIdent then
+          return none
+
+      return some (GreenNode.mkNode .name parts)
 
 mutual
 

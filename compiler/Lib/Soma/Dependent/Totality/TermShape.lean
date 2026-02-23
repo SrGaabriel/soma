@@ -1,9 +1,25 @@
 import Soma.Dependent.Totality.Core
+import Soma.Core.Expr
 
 namespace Soma.Dependent.Totality
 
 open Soma.Core
-open Soma.Metal (Literal Name)
+open Soma (Unique)
+
+/-- Collect the application spine: (app (app f a1) a2) -> (f, [a1, a2]) -/
+private partial def collectAppSpine (e : Expr) : Expr × List Expr :=
+  match e with
+  | .app fn arg =>
+    let (head, args) := collectAppSpine fn
+    (head, args ++ [arg])
+  | _ => (e, [])
+
+/-- Get a display name from an Expr (for variable tracking) -/
+private def exprName? : Expr → Option String
+  | .fvar id => some id.original
+  | .const name => some name.display
+  | .bvar idx => some s!"_bvar{idx}"
+  | _ => none
 
 /-- The structural shape of a term (for comparison purposes) -/
 inductive TermShape where
@@ -39,45 +55,70 @@ def asVar? : TermShape → Option String
 
 end TermShape
 
-/-- Collect all variable names used in a term (standalone function for termination) -/
-partial def collectTermVars : Term → List String
-  | .var _ name => [name]
-  | .app fn args => collectTermVars fn ++ args.flatMap collectTermVars
-  | .lam _ body => collectTermVars body
-  | .if_ c t e => collectTermVars c ++ collectTermVars t ++ collectTermVars e
-  | .pair a b => collectTermVars a ++ collectTermVars b
-  | .fst e => collectTermVars e
-  | .snd e => collectTermVars e
-  | .construct _ _ args => args.flatMap collectTermVars
-  | .case s arms => collectTermVars s ++ arms.flatMap fun (_, _, b) => collectTermVars b
-  | .record fields => fields.flatMap fun (_, t) => collectTermVars t
-  | .fieldAccess e _ => collectTermVars e
-  | .pi _ _ _ d c => collectTermVars d ++ collectTermVars c
-  | .sigma _ _ f s => collectTermVars f ++ collectTermVars s
-  | .eq _ ty l r => collectTermVars ty ++ collectTermVars l ++ collectTermVars r
-  | .refl ty x => collectTermVars ty ++ collectTermVars x
+/-- Collect all variable names used in an Expr (standalone function for termination) -/
+partial def collectExprVars : Expr → List String
+  | .fvar id => [id.original]
+  | .const name => [name.display]
+  | .bvar idx => [s!"_bvar{idx}"]
+  | .app fn arg => collectExprVars fn ++ collectExprVars arg
+  | .lam _ _ dom body => collectExprVars dom ++ collectExprVars body
+  | .let_ _ ty val body => collectExprVars ty ++ collectExprVars val ++ collectExprVars body
+  | .if_ c t e => collectExprVars c ++ collectExprVars t ++ collectExprVars e
+  | .pair a b => collectExprVars a ++ collectExprVars b
+  | .projFst e => collectExprVars e
+  | .projSnd e => collectExprVars e
+  | .construct _ _ args => args.toList.flatMap collectExprVars
+  | .«case» scruts arms =>
+    scruts.toList.flatMap collectExprVars ++
+      arms.toList.flatMap fun arm => collectExprVars arm.body
+  | .record fields => fields.toList.flatMap fun (_, t) => collectExprVars t
+  | .recordUpdate base updates =>
+    collectExprVars base ++ updates.toList.flatMap fun (_, t) => collectExprVars t
+  | .fieldAccess e _ _ => collectExprVars e
+  | .inject _ args => args.toList.flatMap collectExprVars
+  | .pi _ _ _ d c => collectExprVars d ++ collectExprVars c
+  | .sigma _ _ _ f s => collectExprVars f ++ collectExprVars s
+  | .eqTy _ ty l r => collectExprVars ty ++ collectExprVars l ++ collectExprVars r
+  | .refl ty x => collectExprVars ty ++ collectExprVars x
   | .transport _ ty m l r eq b =>
-      collectTermVars ty ++ collectTermVars m ++ collectTermVars l ++
-      collectTermVars r ++ collectTermVars eq ++ collectTermVars b
-  | .rowExtend l t tail => collectTermVars l ++ collectTermVars t ++ collectTermVars tail
-  | .recordTy r => collectTermVars r
-  | .variantTy r => collectTermVars r
+      collectExprVars ty ++ collectExprVars m ++ collectExprVars l ++
+      collectExprVars r ++ collectExprVars eq ++ collectExprVars b
+  | .rowExtend l t tail => collectExprVars l ++ collectExprVars t ++ collectExprVars tail
+  | .recordTy r => collectExprVars r
+  | .variantTy r => collectExprVars r
+  | .dataTy _ ps => ps.toList.flatMap collectExprVars
+  | .closure _ caps => caps.toList.flatMap collectExprVars
+  | .array es => es.toList.flatMap collectExprVars
+  | .tuple es => es.toList.flatMap collectExprVars
+  | .ann e _ => collectExprVars e
   | _ => []
 
-/-- Convert a Term to its structural shape for analysis -/
-partial def analyzeTermShape : Term → TermShape
-  | .var _ name => .var name
+-- Backwards-compatible alias
+abbrev collectTermVars := collectExprVars
+
+/-- Convert an Expr to its structural shape for analysis -/
+partial def analyzeExprShape : Expr → TermShape
+  | .fvar id => .var id.original
+  | .const name => .var name.display
+  | .bvar idx => .var s!"_bvar{idx}"
   | .lit l => .lit l
   | .construct name _ args =>
-    .ctor name.display (args.map analyzeTermShape |>.toArray)
-  | .pair fst snd => .pair (analyzeTermShape fst) (analyzeTermShape snd)
-  | .fst e => .fstProj (analyzeTermShape e)
-  | .snd e => .sndProj (analyzeTermShape e)
-  | .fieldAccess e field => .fieldProj (analyzeTermShape e) field
-  | .app fn args =>
-    .app (analyzeTermShape fn) (args.map analyzeTermShape |>.toArray)
-  | .global name => .var name.display  -- Treat globals as variables for shape analysis
-  | _ => .unknown
+    .ctor name.display (args.map analyzeExprShape)
+  | .pair fst snd => .pair (analyzeExprShape fst) (analyzeExprShape snd)
+  | .projFst e => .fstProj (analyzeExprShape e)
+  | .projSnd e => .sndProj (analyzeExprShape e)
+  | .fieldAccess e field _ => .fieldProj (analyzeExprShape e) field
+  | e =>
+    let (head, args) := collectAppSpine e
+    if args.isEmpty then
+      match exprName? e with
+      | some name => .var name
+      | none => .unknown
+    else
+      .app (analyzeExprShape head) (args.map analyzeExprShape |>.toArray)
+
+-- Backwards-compatible alias
+abbrev analyzeTermShape := analyzeExprShape
 
 /-- The structural shape of a pattern -/
 inductive PatternShape where
@@ -98,26 +139,39 @@ inductive Pattern where
   | record (fields : Array (String × Pattern))
   deriving Repr, Inhabited
 
-/-- Extract a Pattern from a Term (when the Term represents a pattern) -/
-partial def termToPattern : Term → Pattern
-  | .var _ name => .var name
+/-- Extract a Pattern from an Expr -/
+partial def exprToPattern : Expr → Pattern
+  | .fvar id => .var id.original
+  | .const name => .var name.display
+  | .bvar idx => .var s!"_bvar{idx}"
   | .lit l => .lit l
   | .construct name _ args =>
-    .ctor name.display (args.toArray.map termToPattern)
-  | .pair a b => .pair (termToPattern a) (termToPattern b)
+    .ctor name.display (args.map exprToPattern)
+  | .pair a b => .pair (exprToPattern a) (exprToPattern b)
   | .record fields =>
-    .record (fields.toArray.map fun (n, t) => (n, termToPattern t))
+    .record (fields.map fun (n, t) => (n, exprToPattern t))
   | _ => .wildcard
 
-/-- Analyze a Term that represents a pattern and extract bindings.
-    This is used when we have patterns represented as Terms (from case arms). -/
-partial def extractPatternBindings (t : Term) (paramIdx : Nat) (paramName : String)
+abbrev termToPattern := exprToPattern
+
+/-- Analyze an Expr that represents a pattern and extract bindings. -/
+partial def extractPatternBindings (t : Expr) (paramIdx : Nat) (paramName : String)
     (path : StructurePath := .root) : Array BindingInfo :=
   match t with
-  | .var _ name =>
-    -- A variable in a pattern = a binding
+  | .fvar id =>
+    -- A free variable in a pattern = a binding
     #[{
-      name := name
+      name := id.original
+      paramIdx := paramIdx
+      paramName := paramName
+      path := path
+      depth := path.depth
+    }]
+
+  | .bvar idx =>
+    -- A bound variable in a pattern = a binding (use index-based name)
+    #[{
+      name := s!"_bvar{idx}"
       paramIdx := paramIdx
       paramName := paramName
       path := path
@@ -126,7 +180,7 @@ partial def extractPatternBindings (t : Term) (paramIdx : Nat) (paramName : Stri
 
   | .construct ctorName _ args =>
     -- Constructor pattern: each argument is deeper
-    args.toArray.foldl (init := (#[], 0)) (fun (acc, idx) arg =>
+    args.foldl (init := (#[], 0)) (fun (acc, idx) arg =>
       let argPath := .ctorArg path ctorName.display idx
       let bindings := extractPatternBindings arg paramIdx paramName argPath
       (acc ++ bindings, idx + 1)
@@ -148,12 +202,12 @@ partial def extractPatternBindings (t : Term) (paramIdx : Nat) (paramName : Stri
 
 /-- Analyze a case arm and extract all bindings introduced by the pattern. -/
 def analyzePatternFromArm (patternName : String) (scrutineeParam : Option (Nat × String))
-    (armBody : Term) (existingParams : Array String) : Array BindingInfo :=
+    (armBody : Expr) (existingParams : Array String) : Array BindingInfo :=
   match scrutineeParam with
   | none => #[]  -- Scrutinee isn't a parameter, can't track size
   | some (paramIdx, paramName) =>
     -- Collect variables used in the arm body that aren't existing parameters
-    let usedVars := collectTermVars armBody
+    let usedVars := collectExprVars armBody
     let newVars := usedVars.filter fun v => !existingParams.contains v
     -- Each new variable is a pattern binding, mark as smaller
     newVars.toArray.map fun name => {
@@ -198,29 +252,29 @@ partial def extractPatternBindingsAccurate (pat : Pattern) (paramIdx : Nat) (par
       let fieldPath := StructurePath.field path fieldName
       acc ++ extractPatternBindingsAccurate fieldPat paramIdx paramName fieldPath
 
-/-- Analyze a case arm pattern (as a Term) and extract bindings with accurate depths -/
-def analyzePatternFromArmAccurate (patternTerm : Term) (scrutineeParam : Option (Nat × String))
+/-- Analyze a case arm pattern (as an Expr) and extract bindings with accurate depths -/
+def analyzePatternFromArmAccurate (patternExpr : Expr) (scrutineeParam : Option (Nat × String))
     : Array BindingInfo :=
   match scrutineeParam with
   | none => #[]
   | some (paramIdx, paramName) =>
-    let pattern := termToPattern patternTerm
+    let pattern := exprToPattern patternExpr
     extractPatternBindingsAccurate pattern paramIdx paramName
 
 /-- Enhanced pattern analysis that handles nested constructors properly. -/
-def analyzeNestedPattern (scrutinee : Term) (patternCtor : String)
-    (patternArgs : List Term) (params : Array String) : Array BindingInfo :=
-  match scrutinee with
-  | .var _ name =>
+def analyzeNestedPattern (scrutinee : Expr) (patternCtor : String)
+    (patternArgs : List Expr) (params : Array String) : Array BindingInfo :=
+  match exprName? scrutinee with
+  | some name =>
     match params.findIdx? (· == name) with
     | some paramIdx =>
       let (bindings, _) := patternArgs.foldl (init := (#[], 0)) fun (acc, idx) arg =>
         let argPath := StructurePath.ctorArg .root patternCtor idx
-        let pat := termToPattern arg
+        let pat := exprToPattern arg
         let argBindings := extractPatternBindingsAccurate pat paramIdx name argPath
         (acc ++ argBindings, idx + 1)
       bindings
     | none => #[]
-  | _ => #[]
+  | none => #[]
 
 end Soma.Dependent.Totality

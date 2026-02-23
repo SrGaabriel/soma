@@ -4,7 +4,6 @@ import Soma.Core.Quantity
 import Soma.Core.Quote
 import Soma.Syntax.Diagnostic
 import Soma.Unique
-import Soma.Metal.Name
 
 namespace Soma.Dependent
 
@@ -370,7 +369,7 @@ inductive TCError where
 
   /-- Termination check failed for @[total] function -/
   | terminationCheckFailed
-      (fnName : Soma.Metal.Name)
+      (fnName : Soma.Core.QualifiedName)
       (reason : String)
       (span : Span)
       (failingCalls : Array Span)
@@ -378,7 +377,7 @@ inductive TCError where
 
   /-- Partial function used in type index -/
   | partialInTypeIndex
-      (fnName : Soma.Metal.Name)
+      (fnName : Soma.Core.QualifiedName)
       (span : Span)
 
   /-- Positivity check failed for data type -/
@@ -390,7 +389,7 @@ inductive TCError where
 
   /-- Recursive call not structurally decreasing -/
   | nonStructuralRecursion
-      (fnName : Soma.Metal.Name)
+      (fnName : Soma.Core.QualifiedName)
       (callSpan : Span)
       (expectedArg : Option (Nat × String))
       (actualArg : Option String)
@@ -779,7 +778,7 @@ inductive TCWarning where
   /-- Unreachable code -/
   | unreachableCode (span : Span)
   /-- Totality status unknown for function -/
-  | totalityUnknown (fnName : Soma.Metal.Name) (span : Span)
+  | totalityUnknown (fnName : Soma.Core.QualifiedName) (span : Span)
   deriving Inhabited
 
 namespace TCWarning

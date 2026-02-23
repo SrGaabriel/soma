@@ -5,6 +5,7 @@ import Soma.Core.Quote
 import Soma.Core.Eval
 import Soma.Core.Primitive
 import Soma.Core.TypeId
+import Soma.Core.Expr
 import Soma.Dependent.Prelude
 import Soma.Dependent.Monad
 import Soma.Dependent.Convert
@@ -12,14 +13,13 @@ import Soma.Dependent.Unify
 import Soma.Dependent.Error
 import Soma.Dependent.Usage
 import Soma.Dependent.Elaborate
-import Soma.Metal.Expr
+import Soma.Syntax.Ast
 import Soma.Unique
 
 namespace Soma.Dependent
 
 open Soma (Unique)
 open Soma.Core
-open Soma.Metal (Expr ExprList Name BinderInfo HoleId Scope ScopedVar)
 open Soma.Syntax (Span)
 
 /-- Try to unify two values, returning true if successful, false if unification fails -/
@@ -97,9 +97,10 @@ def extractClassInfo (ty : Value) : Option (Unique × Array Value) := do
     return (classId, args.toArray)
   | _ => none
 
-/-- Insert implicit arguments for a function type, tracking created metavariables -/
-partial def insertImplicitsCore (fnTy : Value) (fnExpr : Expr Value scope) (span : Span)
-    : TCM (Value × Expr Value scope × Array (MetaId × Value × String)) := do
+/-- Insert implicit arguments for a function type, tracking created metavariables.
+    Returns (resultType, wrappedCoreExpr, createdMetas). -/
+partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span : Span)
+    : TCM (Value × Soma.Core.Expr × Array (MetaId × Value × String)) := do
   let fnTy' ← force fnTy
   match fnTy' with
   | .vPi _qty binder name dom cod =>
@@ -117,8 +118,8 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Expr Value scope) (span
 
       -- Apply the function to the metavariable
       let resultTy ← applyClosure cod argMeta
-      let argExpr : Expr Value scope := .mvar metaId.id argMeta span
-      let appExpr := Expr.call fnExpr (.cons argExpr .nil) resultTy span
+      let argExpr := Soma.Core.Expr.mvar metaId
+      let appExpr := Soma.Core.Expr.app fnExpr argExpr
 
       -- Recursively insert more implicits, accumulating metas
       let (finalTy, finalExpr, restMetas) ← insertImplicitsCore resultTy appExpr span
@@ -128,9 +129,9 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Expr Value scope) (span
       return (fnTy', fnExpr, #[])
   | _ => return (fnTy', fnExpr, #[])
 
-/-- Naive insert implicit arguments (TODO: remove legacy) -/
-partial def insertImplicits (fnTy : Value) (fnExpr : Expr Value scope) (span : Span)
-    : TCM (Value × Expr Value scope) := do
+/-- Insert implicit arguments, discarding created meta tracking info -/
+partial def insertImplicits (fnTy : Value) (fnExpr : Soma.Core.Expr) (span : Span)
+    : TCM (Value × Soma.Core.Expr) := do
   let (ty, expr, _) ← insertImplicitsCore fnTy fnExpr span
   return (ty, expr)
 
@@ -220,9 +221,9 @@ def propagateFromArgument (argTy : Value) (expectedDom : Value) : TCM Unit := do
   solveImplicitsGreedy
 
 /-- Insert implicit arguments with expected type guidance and full bidirectional propagation -/
-partial def insertImplicitsWithExpected (fnTy : Value) (fnExpr : Expr Value scope)
+partial def insertImplicitsWithExpected (fnTy : Value) (fnExpr : Soma.Core.Expr)
     (expected : Option Value) (numExplicitArgs : Nat) (span : Span)
-    : TCM (Value × Expr Value scope) := do
+    : TCM (Value × Soma.Core.Expr) := do
   -- Insert implicits and track the metas created
   let (fnTy', fnExpr', implicitMetas) ← insertImplicitsCore fnTy fnExpr span
 
@@ -264,907 +265,60 @@ def propagateTypeInfo (inferredTy : Value) (targetTy : Value) : TCM Unit := do
   unify inferredTy targetTy
   solveImplicitsGreedy
 
-/-- Extract bindings with names from a pattern list -/
-def patternListBindingsWithNames : Soma.Metal.PatternList α → List (Soma.Metal.BindingId × String)
-  | .nil => []
-  | .cons p ps => p.bindingsWithNames.toList ++ patternListBindingsWithNames ps
 
-/-- Get a short description of an expression for debug output -/
-def exprKind : Expr α scope → String
-  | .var v _ _ => s!"var({v.original})"
-  | .lit l _ => s!"lit({l})"
-  | .type _ _ => "Type"
-  | .pi _ _ name _ _ _ => s!"Π({name})"
-  | .sigma _ name _ _ _ => s!"Σ({name})"
-  | .lam params _ _ _ => s!"λ({params.length} params)"
-  | .call _ args _ _ => s!"call({args.length} args)"
-  | .pair _ _ _ _ => "pair"
-  | .fst _ _ _ => "fst"
-  | .snd _ _ _ => "snd"
-  | .primTy p _ => s!"primTy({p.name})"
-  | .rowSort _ => "Row"
-  | .labelSort _ => "Label"
-  | .dataTy id _ _ => s!"dataTy({id.name})"
-  | .ann _ _ _ _ => "ann"
-  | .hole _ _ => "hole"
-  | .mvar id _ _ => s!"mvar({id})"
-  | .eq _ _ _ _ _ => "eq"
-  | .refl _ _ _ => "refl"
-  | .transport _ _ _ _ _ _ _ _ => "transport"
-  | .global name _ _ => s!"global({name.display})"
-  | .record _ _ _ => "record"
-  | .tuple _ _ _ => "tuple"
-  | .construct name _ _ _ _ => s!"construct({name.display})"
-  | .fieldAccess _ name _ _ _ => s!"fieldAccess({name})"
-  | .if_ _ _ _ _ _ => "if"
-  | .case _ _ _ _ => "case"
-  | .inject label _ _ _ => s!"inject({label})"
-  | .array _ _ _ => "array"
-  | .recordUpdate _ _ _ _ => "recordUpdate"
-  | .closure name _ _ _ => s!"closure({name})"
-  | .panic _ _ _ => "panic"
-  | .proj _ name _ _ _ => s!"proj({name})"
-  | .typeApp _ _ _ => "typeApp"
-  | .rowEmpty _ => "rowEmpty"
-  | .rowExtend _ _ _ _ => "rowExtend"
-  | .recordTy _ _ => "recordTy"
-  | .variantTy _ _ => "variantTy"
-  | .labelLit name _ => s!"label({name})"
-
-mutual
-
-/-- Extend the typing context with bindings for all parameters in a ParamList.
-    This processes params left-to-right, creating fresh metavariables for each param's type
-    and extending the context. The continuation is run under the fully extended context. -/
-partial def withAllParamBindings (params : Soma.Metal.ParamList Unit) (span : Span)
-    (cont : TCM α) : TCM α := do
-  match params with
-  | .nil => cont
-  | .cons bindingId name () rest =>
-    -- Create metavariable for this parameter's type
-    let paramTy ← TCM.freshMetaVal (.vType .zero)
-    -- Extend context with this binding, then process remaining params
-    TCM.withBinding name bindingId paramTy .omega .explicit span do
-      withAllParamBindings rest span cont
-
-/-- Extend the typing context with bindings for parameters, extracting types from a nested Pi.
-    This peels off one Pi layer per parameter, using the domain type for each binding.
-    Returns the final codomain type (after all Pis are peeled) for checking the body. -/
-partial def withParamBindingsFromPi (params : List (Soma.Metal.BindingId × String × Unit))
-    (expectedTy : Value) (span : Span) (cont : Value → TCM α) : TCM α := do
-  match params with
-  | [] => cont expectedTy
-  | (bindingId, paramName, ()) :: rest =>
-    let expectedTy' ← force expectedTy
-    match expectedTy' with
-    | .vPi qty binder _ dom cod =>
-      -- Get the codomain by applying closure to fresh variable at current level
-      let codTy ← do
-        let lvl ← TCM.currentLevel
-        let x := Value.vNeutral dom (.nVar ⟨paramName, lvl⟩)
-        applyClosure cod x
-      -- Extend context with this parameter and continue with remaining params
-      withCheckedBinding paramName bindingId dom qty binder span do
-        withParamBindingsFromPi rest codTy span cont
-    | _ =>
-      -- Expected type is not a Pi but we still have params - create metavariable
-      -- This handles cases where the expected type is a metavariable
-      let paramTy ← TCM.freshMetaVal (.vType .zero)
-      TCM.withBinding paramName bindingId paramTy .omega .explicit span do
-        withParamBindingsFromPi rest expectedTy' span cont
-
-/-- Infer the body of a lambda, extending the context with parameter bindings.
-    We first extend the context for ALL params, then infer the body.
-    This avoids scope type transformations since infer is polymorphic in scope. -/
-partial def inferLamBody {scope : Scope} (params : Soma.Metal.ParamList Unit)
-    (body : Expr Unit (params.bindingIds ++ scope)) (span : Span)
-    : TCM (Value × Expr Value (params.bindingIds ++ scope)) := do
-  -- Extend context for all params, then infer body under that context
-  withAllParamBindings params span (infer body)
-
-/-- Infer the type of an expression and return it + elaborated -/
-partial def infer {scope : Scope} (e : Expr Unit scope) : TCM (Value × Expr Value scope) := do
-  let kind := exprKind e
-  TCM.debugEnter "infer" kind
-  let result ← TCM.withDebugIndent do
-    TCM.withSpan e.span do
-      inferCore e
-  TCM.debugLeave "infer" (toString result.1)
-  return result
-where
-  inferCore {scope : Scope} (e : Expr Unit scope) : TCM (Value × Expr Value scope) := do
-    match e with
-    -- Variables: look up in context and record usage
-    | .var v () span =>
-      match ← TCM.lookupLocal v.original with
-      | some entry =>
-        -- Record variable usage with QTT checking
-        useVarChecked v.binding span
-        return (entry.type, .var v entry.type span)
-      | none =>
-        -- Check if it's a primitive type name used as a value (todo: review)
-        match v.original with
-        | "Int" => return (.vType .zero, .primTy .int span)
-        | "Long" => return (.vType .zero, .primTy .long span)
-        | "Short" => return (.vType .zero, .primTy .short span)
-        | "Byte" => return (.vType .zero, .primTy .byte span)
-        | "Bool" => return (.vType .zero, .primTy .bool span)
-        | "String" => return (.vType .zero, .primTy .string span)
-        | "Float" => return (.vType .zero, .primTy .float span)
-        | "Double" => return (.vType .zero, .primTy .double span)
-        | "Unit" => return (.vType .zero, .primTy .unit span)
-        | "Int8" => return (.vType .zero, .primTy .int8 span)
-        | "Int16" => return (.vType .zero, .primTy .int16 span)
-        | "Int32" => return (.vType .zero, .primTy .int32 span)
-        | "Int64" => return (.vType .zero, .primTy .int64 span)
-        | "Word8" => return (.vType .zero, .primTy .word8 span)
-        | "Word16" => return (.vType .zero, .primTy .word16 span)
-        | "Word32" => return (.vType .zero, .primTy .word32 span)
-        | "Word64" => return (.vType .zero, .primTy .word64 span)
-        | "Type" => return (.vType .one, .type .zero span)
-        | "Row" => return (.vType .zero, .rowSort span)
-        | "Label" => return (.vType .zero, .labelSort span)
-        | _ => TCM.throw (.unboundVariable v.original span #[])
-
-    -- Literals
-    | .lit (.int n) span =>
-      return (.vPrimTy .int, .lit (.int n) span)
-
-    | .lit (.string s) span =>
-      return (.vPrimTy .string, .lit (.string s) span)
-
-    | .lit (.bool b) span =>
-      return (.vPrimTy .bool, .lit (.bool b) span)
-
-    -- Type universes: Type_i : Type_(i+1)
-    | .type level span =>
-      let resultLevel := Level.mkSucc level
-      return (.vType resultLevel, .type level span)
-
-    -- Sorts: Row : Type 0, Label : Type 0
-    | .rowSort span => return (.vType .zero, .rowSort span)
-    | .labelSort span => return (.vType .zero, .labelSort span)
-
-    -- Pi types: check domain and codomain are types
-    | .pi qty binder name domain codomain span => do
-      -- Check domain is a type (in erased context since types are erased)
-      let (domTy, domExpr) ← TCM.inErasedContext do
-        infer domain
-      let domLevel ← ensureType domTy domain.span
-      -- Evaluate domain for the context
-      let domVal ← TCM.evalTyped domExpr
-
-      -- Check codomain is a type, under extended context (also in erased context)
-      let bindingId ← TCM.freshBindingId name
-      let (codTy, codExpr) ← TCM.inErasedContext do
-        TCM.withBinding name bindingId domVal qty binder span do
-          infer codomain
-      let codLevel ← ensureType codTy codomain.span
-
-      -- Pi type has type Type (max i j)
-      let resultLevel := Level.mkMax domLevel codLevel
-      return (.vType resultLevel, .pi qty binder name domExpr codExpr span)
-
-    -- Sigma types
-    | .sigma qty name fst snd span => do
-      -- Check first component is a type (in erased context)
-      let (fstTy, fstExpr) ← TCM.inErasedContext do
-        infer fst
-      let fstLevel ← ensureType fstTy fst.span
-      let fstVal ← TCM.evalTyped fstExpr
-
-      -- Check second component is a type (in erased context)
-      let bindingId ← TCM.freshBindingId name
-      let (sndTy, sndExpr) ← TCM.inErasedContext do
-        TCM.withBinding name bindingId fstVal qty .explicit span do
-          infer snd
-      let sndLevel ← ensureType sndTy snd.span
-
-      let resultLevel := Level.mkMax fstLevel sndLevel
-      return (.vType resultLevel, .sigma qty name fstExpr sndExpr span)
-
-    -- Lambda: cannot infer without annotation, create metavariables
-    | .lam params body () span => do
-      -- Lambda inference: create metavariables for parameter types and infer body
-      -- The body has type Expr Unit (params.bindingIds ++ scope)
-      -- We need to infer its type under the extended scope
-      let (bodyTy, bodyExpr) ← inferLamBody params body span
-      -- Create the pi type from the result
-      match params with
-      | .nil =>
-        -- No parameters - body type is the result type
-        -- params.bindingIds = [] so [] ++ scope = scope definitionally
-        return (bodyTy, .lam (.nil) bodyExpr bodyTy span)
-      | .cons binding paramName () rest =>
-        -- Create a closure for the codomain
-        let domMeta ← TCM.freshMetaVal (.vType .zero)
-        -- Convert the body expression to a Term for storage in the closure
-        let bodyTerm := exprToTerm bodyExpr
-        let codClosure ← TCM.mkClosureWithTerm paramName bodyTerm
-        let piTy := Value.vPi .omega .explicit paramName domMeta codClosure
-        let typedParams : Soma.Metal.ParamList Value := .cons binding paramName piTy (rest.mapInfo (fun () => piTy))
-        let h : typedParams.bindingIds ++ scope = (Soma.Metal.ParamList.cons binding paramName () rest).bindingIds ++ scope := by
-          unfold typedParams
-          simp only [Soma.Metal.ParamList.bindingIds, Soma.Metal.ParamList.mapInfo_bindingIds]
-        return (piTy, .lam typedParams (h ▸ bodyExpr) piTy span)
-
-    -- Application
-    | .call fn args () span => do
-      let (fnTy, fnExpr) ← infer fn
-      inferApp fnTy fnExpr args span
-
-    -- Pairs: can sometimes infer, but usually need annotation
-    | .pair fst snd () span => do
-      let (fstTy, fstExpr) ← infer fst
-      let (sndTy, sndExpr) ← infer snd
-      -- For inference, create a non-dependent sigma (constant second component)
-      let clos ← TCM.mkEmptyClosure "_"
-      let sigmaTy := Value.vSigma .omega "_" fstTy clos
-      return (sigmaTy, .pair fstExpr sndExpr sigmaTy span)
-
-    -- First projection
-    | .fst e () span => do
-      let (eTy, eExpr) ← infer e
-      let (_, _, fstTy, _) ← ensureSigma eTy e.span
-      return (fstTy, .fst eExpr fstTy span)
-
-    -- Second projection
-    | .snd e () span => do
-      let (eTy, eExpr) ← infer e
-      let (_, _, fstTy, sndClos) ← ensureSigma eTy e.span
-      -- Apply closure to first projection to get second type
-      let eVal ← TCM.evalTyped eExpr
-      let fstVal := Value.vNeutral fstTy (.nFst (.nVar ⟨"_", ⟨0⟩⟩))
-      let sndTy ← applyClosure sndClos fstVal
-      return (sndTy, .snd eExpr sndTy span)
-
-    -- Primitive types
-    | .primTy p span =>
-      return (.vType .zero, .primTy p span)
-
-    -- Row types
-    | .rowEmpty span =>
-      -- Empty row has type Row
-      return (.vRowSort, .rowEmpty span)
-
-    | .rowExtend label fieldTy tail span => do
-      let (_, labelExpr) ← infer label
-      let (_, fieldTyExpr) ← infer fieldTy
-      let (_, tailExpr) ← infer tail
-      return (.vRowSort, .rowExtend labelExpr fieldTyExpr tailExpr span)
-
-    | .recordTy row span => do
-      let (_, rowExpr) ← infer row
-      return (.vType .zero, .recordTy rowExpr span)
-
-    | .variantTy row span => do
-      let (_, rowExpr) ← infer row
-      return (.vType .zero, .variantTy rowExpr span)
-
-    | .labelLit name span =>
-      -- Label literals have type Label
-      return (.vLabelSort, .labelLit name span)
-
-    -- Data types
-    | .dataTy id params span => do
-      let (_, paramsExpr) ← inferExprList params
-      return (.vType .zero, .dataTy id paramsExpr span)
-
-    -- Type annotation: check against the annotation
-    | .ann expr ty () span => do
-      -- The type itself is in erased context
-      let (_, tyExpr) ← TCM.inErasedContext do
-        infer ty
-      let tyVal ← TCM.evalTyped tyExpr
-      -- But the expression is checked in current context
-      let checkedExpr ← check expr tyVal
-      return (tyVal, .ann checkedExpr tyExpr tyVal span)
-
-    -- Holes: create a metavariable
-    | .hole id span => do
-      let holeTy ← TCM.freshMetaVal (.vType .zero)
-      let _ ← TCM.freshMetaVal holeTy
-      return (holeTy, .hole id span)
-
-    -- Metavariables: look up
-    | .mvar id () span => do
-      let info? ← TCM.lookupMeta ⟨id⟩
-      match info? with
-      | some info => return (info.type, .mvar id info.type span)
-      | none =>
-        -- Unknown meta, create a fresh one
-        let metaTy ← TCM.freshMetaVal (.vType .zero)
-        return (metaTy, .mvar id metaTy span)
-
-    -- Equality type
-    | .eq tyLevel ty lhs rhs span => do
-      -- The type argument is in erased context
-      let (_, tyExpr) ← TCM.inErasedContext do
-        infer ty
-      let tyVal ← TCM.evalTyped tyExpr
-      -- lhs and rhs are also in erased context (equality is a type former)
-      let lhsExpr ← TCM.inErasedContext do
-        check lhs tyVal
-      let rhsExpr ← TCM.inErasedContext do
-        check rhs tyVal
-      return (.vType tyLevel, .eq tyLevel tyExpr lhsExpr rhsExpr span)
-
-    -- Refl: infer the type from x
-    | .refl ty x span => do
-      -- The type argument is in erased context
-      let (_, tyExpr) ← TCM.inErasedContext do
-        infer ty
-      let tyVal ← TCM.evalTyped tyExpr
-      -- x is also in erased context (refl is a proof constructor)
-      let (_, xExpr) ← TCM.inErasedContext do
-        infer x
-      let xVal ← TCM.evalTyped xExpr
-      let eqTy := Value.vEq .zero tyVal xVal xVal
-      return (eqTy, .refl tyExpr xExpr span)
-
-    -- Transport: transport P eq px : P rhs
-    -- Given P : ty -> Type, eq : lhs = rhs, body : P lhs
-    -- Returns P rhs
-    | .transport tyLevel ty motive lhs rhs eq body span => do
-      -- All arguments are in erased context (transport is a proof eliminator)
-      let (_, tyExpr) ← TCM.inErasedContext do
-        infer ty
-      let tyVal ← TCM.evalTyped tyExpr
-
-      -- Check the motive: P : ty -> Type
-      let (_, motiveExpr) ← TCM.inErasedContext do
-        infer motive
-      let motiveVal ← TCM.evalTyped motiveExpr
-
-      -- Check lhs and rhs have type ty
-      let lhsExpr ← TCM.inErasedContext do
-        check lhs tyVal
-      let lhsVal ← TCM.evalTyped lhsExpr
-      let rhsExpr ← TCM.inErasedContext do
-        check rhs tyVal
-      let rhsVal ← TCM.evalTyped rhsExpr
-
-      -- Check eq : lhs = rhs
-      let eqTy := Value.vEq tyLevel tyVal lhsVal rhsVal
-      let eqExpr ← TCM.inErasedContext do
-        check eq eqTy
-
-      -- Apply motive to lhs to get the expected type of body
-      let pLhs ← vAppMotive motiveVal lhsVal
-      -- Check body : P lhs
-      let bodyExpr ← TCM.inErasedContext do
-        check body pLhs
-
-      -- The result type is P rhs
-      let pRhs ← vAppMotive motiveVal rhsVal
-      return (pRhs, .transport tyLevel tyExpr motiveExpr lhsExpr rhsExpr eqExpr bodyExpr span)
-
-    -- Global references
-    | .global name () span => do
-      match ← TCM.lookupGlobal name.display with
-      | some info =>
-        if info.isConstructor then
-          -- For constructors, instantiate implicit type parameters with fresh metas
-          -- This is needed because constructors like `Nil : forall {n} {a}. Vec Zero a`
-          -- need their implicits filled in even when used standalone (not in application)
-          let instantiatedTy ← instantiateImplicits info.type span
-          return (instantiatedTy, .global info.name instantiatedTy span)
-        else
-          -- For non-constructors, return the type directly
-          -- Implicits will be inserted when used in application position
-          return (info.type, .global info.name info.type span)
-      | none => TCM.throw (.unboundGlobal name.display span #[])
-
-    -- Records
-    | .record fields () span => do
-      let (rowTy, fieldsExpr) ← inferRecordFields fields
-      let recTy := Value.vRecord rowTy
-      return (recTy, .record fieldsExpr recTy span)
-
-    -- Tuples (as pairs)
-    | .tuple elems () span => do
-      let (tys, elemsExpr) ← inferExprList elems
-      -- Build a proper nested Sigma type for tuples
-      let tupleTy ← match tys with
-        | [] => pure (Value.vPrimTy .unit)
-        | [t] => pure t
-        | _ =>
-          -- Build nested Sigma: (A, B, C) -> Σ(_ : A). Σ(_ : B). C
-          tys.foldrM (init := Value.vPrimTy .unit) fun elemTy acc => do
-            match acc with
-            | .vPrimTy .unit => pure elemTy  -- Last element, no sigma wrapping
-            | _ =>
-              let sndClosure ← TCM.mkEmptyClosure "_"
-              -- Create a Sigma type where the second component is the accumulator
-              pure (Value.vSigma .omega "_" elemTy sndClosure)
-      return (tupleTy, .tuple elemsExpr tupleTy span)
-
-    -- Constructors
-    | .construct name tag args () span => do
-      -- Try to look up the constructor's type from globals for proper index inference
-      match ← TCM.lookupGlobal name.display with
-      | some ctorInfo =>
-        -- Use its declared type for index inference
-        let (resultTy, argsExpr) ← inferConstructorApp ctorInfo.type args span
-        return (resultTy, .construct name tag argsExpr resultTy span)
-      | none =>
-        -- Fallback: constructor not in globals, use simple inference
-        let (argTys, argsExpr) ← inferExprList args
-        let resultTy := Value.vConstructor name tag argTys
-        return (resultTy, .construct name tag argsExpr resultTy span)
-
-    -- Field access
-    | .fieldAccess expr fieldName fieldIdx () span => do
-      let (exprTy, exprE) ← infer expr
-      let fieldTy ← lookupFieldType exprTy fieldName span
-      return (fieldTy, .fieldAccess exprE fieldName fieldIdx fieldTy span)
-
-    -- If-then-else
-    | .if_ cond then_ else_ () span => do
-      let condExpr ← check cond (.vPrimTy .bool)
-      let (thenTy, thenExpr) ← infer then_
-      let elseExpr ← check else_ thenTy
-      return (thenTy, .if_ condExpr thenExpr elseExpr thenTy span)
-
-    -- Case expressions
-    | .case scruts arms () span => do
-      let (scrutTys, scrutsExpr) ← inferExprList scruts
-      -- Create a metavariable for the result type
-      let resultTy ← TCM.freshMetaVal (.vType .zero)
-      -- Pass scrutinee types to inferArms so pattern bindings get proper types
-      let armsExpr ← inferArms arms scrutTys resultTy
-      return (resultTy, .case scrutsExpr armsExpr resultTy span)
-
-    -- Variant injection
-    | .inject label args () span => do
-      let (argTys, argsExpr) ← inferExprList args
-      let argTy := match argTys with
-        | [t] => t
-        | _ => Value.vRecordVal [] -- Unit for nullary
-      let rowTail ← TCM.freshMetaVal .vRowSort
-      let row := Value.vRowExtend (.vLabelLit label) argTy rowTail
-      let variantTy := Value.vVariant row
-      return (variantTy, .inject label argsExpr variantTy span)
-
-    -- Array/List literals: infer as List type (not Array)
-    | .array elems () span => do
-      -- Create a fresh metavariable for element type
-      let elemTy ← TCM.freshMetaVal (.vType .zero)
-      -- Check each element against the element type (this unifies element types)
-      let elemsChecked ← checkExprList elems.toList elemTy
-      -- Build List type with stable builtin TypeId
-      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
-      let listTy := Value.vDataType listId [elemTy]
-      return (listTy, .array (Soma.Metal.ExprList.fromList elemsChecked) listTy span)
-
-    | .recordUpdate base updates () span => do
-      let (baseTy, baseExpr) ← infer base
-      let (_, updatesExpr) ← inferRecordFields updates
-      return (baseTy, .recordUpdate baseExpr updatesExpr baseTy span)
-
-    | .closure name caps () span => do
-      let (_, capsExpr) ← inferCaptures caps
-      let closTy ← TCM.freshMetaVal (.vType .zero)
-      return (closTy, .closure name capsExpr closTy span)
-
-    | .panic msg () span => do
-      let resultTy ← TCM.freshMetaVal (.vType .zero)
-      return (resultTy, .panic msg resultTy span)
-
-    | .proj typeName fieldName fieldIdx () span => do
-      let fieldTy ← TCM.freshMetaVal (.vType .zero)
-      return (fieldTy, .proj typeName fieldName fieldIdx fieldTy span)
-
-    | .typeApp arg () span => do
-      let resultTy ← TCM.freshMetaVal (.vType .zero)
-      return (resultTy, .typeApp arg resultTy span)
-
-/-- Check a list of expressions against an expected element type -/
-partial def checkExprList {scope : Scope} (exprs : List (Expr Unit scope)) (elemTy : Value)
-    : TCM (List (Expr Value scope)) := do
-  match exprs with
-  | [] => return []
-  | e :: es =>
-    let e' ← check e elemTy
-    let es' ← checkExprList es elemTy
-    return e' :: es'
-
-/-- Check an expression against an expected type -/
-partial def check {scope : Scope} (e : Expr Unit scope) (expected : Value)
-    : TCM (Expr Value scope) := do
-  let kind := exprKind e
-  TCM.debugEnter "check" s!"{kind} ⇐ {expected}"
-  let result ← TCM.withDebugIndent do
-    TCM.withSpan e.span do
-      checkCore e expected
-  TCM.debugLeave "check" "ok"
-  return result
-where
-  checkCore {scope : Scope} (e : Expr Unit scope) (expected : Value)
-      : TCM (Expr Value scope) := do
-    -- Force expected type to resolve metavariables
-    let expected' ← force expected
-
-    match e, expected' with
-    -- Lambda against Pi type: check body under extended context
-    -- Handle multi-parameter lambdas by peeling off one Pi per parameter
-    | .lam params body () span, .vPi _ _ _ _ _ => do
-      let paramList := params.toList
-      match paramList with
-      | [] =>
-        -- No params, shouldn't happen but handle it by inferring body and wrapping
-        let (_, bodyExpr) ← infer body
-        let typedParams := params.mapInfo (fun () => expected')
-        let h : typedParams.bindingIds ++ scope = params.bindingIds ++ scope := by
-          rw [Soma.Metal.ParamList.mapInfo_bindingIds]
-        return .lam typedParams (h ▸ bodyExpr) expected' span
-      | _ =>
-        -- Use withParamBindingsFromPi to peel off all Pi layers and extend context
-        let bodyExpr ← withParamBindingsFromPi paramList expected' span fun finalCodTy => do
-          check body finalCodTy
-        let typedParams := params.mapInfo (fun () => expected')
-        -- Use the theorem that mapInfo preserves bindingIds
-        let h : typedParams.bindingIds ++ scope = params.bindingIds ++ scope := by
-          rw [Soma.Metal.ParamList.mapInfo_bindingIds]
-        return .lam typedParams (h ▸ bodyExpr) expected' span
-
-    -- Pair against Sigma type
-    | .pair fst snd () span, .vSigma qty name fstTy sndClos => do
-      let fstExpr ← check fst fstTy
-      -- For the second component, apply closure to the first type (not value)
-      let fstTy' ← force fstTy
-      let sndTy ← applyClosure sndClos fstTy'
-      let sndExpr ← check snd sndTy
-      return .pair fstExpr sndExpr expected' span
-
-    -- If-then-else: check both branches against expected
-    | .if_ cond then_ else_ () span, _ => do
-      let condExpr ← check cond (.vPrimTy .bool)
-      let thenExpr ← check then_ expected'
-      let elseExpr ← check else_ expected'
-      return .if_ condExpr thenExpr elseExpr expected' span
-
-    -- Hole: register with expected type
-    | .hole id span, _ => do
-      -- Create a metavariable with the expected type
-      let _ ← TCM.freshMeta expected'
-      return .hole id span
-
-    -- Function application: use expected type to guide implicit solving
-    | .call fn args () span, _ => do
-      -- Count explicit arguments for expected type propagation
-      let numExplicitArgs := args.length
-      -- Infer function type
-      let (fnTy, fnExpr) ← infer fn
-      -- Use expected type to solve implicits BEFORE processing arguments
-      -- This is the key bidirectional propagation improvement
-      let (fnTy', fnExpr') ← insertImplicitsWithExpected fnTy fnExpr (some expected') numExplicitArgs span
-      -- Now infer the application with the (possibly improved) function type
-      let (resultTy, appExpr) ← inferApp fnTy' fnExpr' args span
-      -- After processing arguments, try greedy solving
-      solveImplicitsGreedy
-      -- Unify result with expected type (may solve more implicits)
-      unify resultTy expected'
-      return appExpr
-
-    -- Array literal against List type: treat [] as List, not Array
-    | .array elems () span, .vDataType typeId (elemTy :: _) => do
-      -- Check if the expected type is List (using stable builtin TypeId)
-      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
-      if typeId == listId then
-        -- Check each element against the expected element type
-        let elemsChecked ← checkExprList elems.toList elemTy
-        -- Return array with List type annotation
-        return .array (Soma.Metal.ExprList.fromList elemsChecked) expected' span
-      else
-        -- Not a List, fall through to default
-        let (inferred, expr) ← infer e
-        let (inferred', expr') ← insertImplicits inferred expr e.span
-        unify inferred' expected'
-        solveImplicitsGreedy
-        return expr'
-
-    -- Default: infer and unify with expected type
-    | _, _ => do
-      let (inferred, expr) ← infer e
-      -- If the inferred type has implicit arguments and the expected type doesn't,
-      -- we need to instantiate the implicit arguments before unifying
-      let (inferred', expr') ← insertImplicits inferred expr e.span
-      -- Use unify to solve metavariables
-      unify inferred' expected'
-      -- After unification, try greedy solving to resolve any pending constraints
-      solveImplicitsGreedy
-      return expr'
-
-/-- Elaborate a type argument (from explicit type application syntax like `f @T`) -/
-partial def elaborateTypeArg (typeArg : Soma.Metal.TypeArg) : TCM Value := do
+/-- Build nested Core lambdas from `(fvar, name, domainExpr)` bindings. -/
+partial def buildLambdas (bindings : List (Unique × String × Soma.Core.Expr))
+    (body : Soma.Core.Expr) : Soma.Core.Expr :=
+  match bindings with
+  | [] => body
+  | (fvar, name, domExpr) :: rest =>
+    let innerBody := buildLambdas rest body
+    let closedBody := Soma.Core.Expr.abstractFVar innerBody fvar
+    .lam .explicit name domExpr closedBody
+
+/-- Quote a `Value` to a Core `Expr`. -/
+partial def quoteValueToExpr (v : Value) : TCM Soma.Core.Expr := do
+  let depth ← TCM.currentLevel
+  return Soma.Core.quoteExpr depth v
+
+/-- Elaborate an explicit type application argument (`@T` or `@label`). -/
+partial def elaborateTypeArg (typeArg : Soma.Syntax.TypeAppArg) : TCM Value := do
   match typeArg with
   | .label labelName =>
-    -- Check if it's a bound variable or literal
-    match ← TCM.lookupLocal labelName with
+    match ← TCM.lookupLocal labelName.value with
     | some entry =>
-      -- Return neutral reference
-      pure (Value.vNeutral entry.type (Neutral.nVar ⟨labelName, entry.level⟩))
+      pure (Value.vNeutral entry.type (Neutral.nVar ⟨labelName.value, entry.level⟩))
     | none =>
-      pure (Value.vLabelLit labelName)
+      pure (Value.vLabelLit labelName.value)
   | .type tyExpr =>
-    -- Elaborate the type expression
     Elaborate.elaborateType Elaborate.ElabEnv.empty tyExpr
 
-/--
-  Handle explicit type application: `f @T` where `f` has an implicit parameter.
-
-  Given a function with type `∀ {a : K}. B a` and an explicit type argument `T`,
-  elaborate `T` at kind `K` and return the instantiated type `B T`.
--/
-partial def inferExplicitTypeApp {scope : Scope}
-    (fnExpr : Expr Value scope) (cod : Closure)
-    (typeArg : Soma.Metal.TypeArg) (argSpan : Span) (callSpan : Span)
-    : TCM (Value × Expr Value scope) := do
-  -- Elaborate the type argument
+/-- Infer explicit type application to an implicit parameter (`f @T`). -/
+partial def inferExplicitTypeApp
+    (fnExpr : Soma.Core.Expr) (cod : Closure)
+    (typeArg : Soma.Syntax.TypeAppArg) (_argSpan : Span) (_callSpan : Span)
+    : TCM (Value × Soma.Core.Expr) := do
   let argVal ← elaborateTypeArg typeArg
-  -- Apply the function type's codomain closure to get result type
   let resultTy ← applyClosure cod argVal
-  -- Create the elaborated type application expression
-  let argExpr : Expr Value scope := .typeApp typeArg resultTy argSpan
-  let appExpr := Expr.call fnExpr (.cons argExpr .nil) resultTy callSpan
+  let argExpr ← quoteValueToExpr argVal
+  let appExpr := Soma.Core.Expr.app fnExpr argExpr
   return (resultTy, appExpr)
 
-/--
-  Handle polymorphic field access: `rec @l` where `rec` has a record type.
-
-  Given a record with type `{ l : A | r }` and a label `l` (which may be a
-  bound label variable or a literal), find the field type `A`.
--/
-partial def inferPolymorphicFieldAccess {scope : Scope}
-    (recExpr : Expr Value scope) (row : Value)
-    (labelName : String) (argSpan : Span) (callSpan : Span)
-    : TCM (Value × Expr Value scope) := do
-  -- Resolve the label which may be a bound variable or literal
-  let labelVal ← match ← TCM.lookupLocal labelName with
-    | some entry =>
-      pure (Value.vNeutral entry.type (Neutral.nVar ⟨labelName, entry.level⟩))
-    | none =>
-      pure (Value.vLabelLit labelName)
-  -- Find the field type by unifying with row labels
-  let fieldTy ← findFieldInRowByLabelVal row labelVal argSpan
-  -- Create field access expression
-  let fieldExpr := Expr.fieldAccess recExpr labelName 0 fieldTy callSpan
-  return (fieldTy, fieldExpr)
-
-/--
-  Instantiate all leading implicit parameters in a type with fresh metavariables.
-  This is used when a constructor is referenced without explicit application,
-
-  Returns the instantiated type with all leading implicits filled in.
--/
-partial def instantiateImplicits (ty : Value) (span : Span) : TCM Value := do
+/-- Instantiate all leading implicit binders in a type with fresh metas. -/
+partial def instantiateImplicits (ty : Value) (_span : Span) : TCM Value := do
   let ty' ← force ty
   match ty' with
   | .vPi _qty binder _name dom cod =>
     if binder.isImplicit then
-      -- Create metavariable for implicit parameter
       let metaVal ← TCM.freshMetaVal dom
       let resultTy ← applyClosure cod metaVal
-      -- Continue instantiating more implicits
-      instantiateImplicits resultTy span
+      instantiateImplicits resultTy Span.uninhabited
     else
-      -- Hit an explicit parameter, stop instantiating
       return ty'
   | _ =>
-    -- Not a Pi type, return as-is
     return ty'
 
-/--
-  Infer constructor application with proper index constraint generation.
-
-  For indexed type families like `Vec n a`, when we see a constructor like `Cons`:
-  1. Look up the constructor's declared type: `forall {a}. a -> Vec n a -> Vec (n+1) a`
-  2. Insert metavariables for implicit type parameters (creating index metas)
-  3. Check each argument against the expected domain type
-  4. Return the fully instantiated result type with proper indices
-
-  This enables bidirectional index inference:
-  - When checking `Cons x xs` against `Vec 5 Int`, we generate constraint `n+1 = 5`
-  - When inferring `Cons x xs`, we get `Vec ?n+1 ?a` with fresh metas for indices
--/
-partial def inferConstructorApp {scope : Scope}
-    (ctorTy : Value) (args : ExprList Unit scope) (span : Span)
-    : TCM (Value × ExprList Value scope) := do
-  -- Insert implicit arguments (type parameters and indices become metavariables)
-  -- This creates fresh metas for each implicit, e.g., ?a for type param, ?n for index
-  let rec go (ty : Value) (remainingArgs : ExprList Unit scope)
-      (checkedArgs : ExprList Value scope)
-      : TCM (Value × ExprList Value scope) := do
-    let ty' ← force ty
-    match ty', remainingArgs with
-    -- No more arguments: return the result type
-    | _, .nil =>
-      return (ty', checkedArgs)
-
-    -- Pi type with implicit parameter: insert metavariable automatically
-    | .vPi _qty binder _name dom cod, _ =>
-      if binder.isImplicit then
-        -- Create metavariable for implicit type/index parameter
-        let metaVal ← TCM.freshMetaVal dom
-        let resultTy ← applyClosure cod metaVal
-        -- Continue with the same remaining args (implicit was auto-inserted)
-        go resultTy remainingArgs checkedArgs
-      else
-        -- Explicit parameter: check the next argument
-        match remainingArgs with
-        | .nil =>
-          -- Partial application - return current type
-          return (ty', checkedArgs)
-        | .cons arg restArgs =>
-          -- Check argument against domain type (generates unification constraints)
-          let argExpr ← check arg dom
-          let argVal ← TCM.evalTyped argExpr
-          let resultTy ← applyClosure cod argVal
-          -- Continue with remaining arguments
-          go resultTy restArgs (.cons argExpr checkedArgs)
-
-    -- Not a Pi type but have more arguments: error
-    | _, .cons _ _ =>
-      TCM.throw (.expectedFunction ty' span none)
-
-  let (resultTy, reversedArgs) ← go ctorTy args .nil
-  -- Reverse the accumulated args to get correct order
-  let argsExpr := reverseExprList reversedArgs
-  return (resultTy, argsExpr)
-where
-  /-- Reverse an ExprList -/
-  reverseExprList {scope : Scope} (xs : ExprList Value scope) : ExprList Value scope :=
-    let rec go (acc : ExprList Value scope) : ExprList Value scope → ExprList Value scope
-      | .nil => acc
-      | .cons x rest => go (.cons x acc) rest
-    go .nil xs
-
-partial def inferValueApp {scope : Scope}
-    (fnExpr : Expr Value scope) (dom : Value) (cod : Closure)
-    (arg : Expr Unit scope) (callSpan : Span)
-    : TCM (Value × Expr Value scope) := do
-  -- Single-pass bidirectional elaboration: check the argument against the expected domain.
-
-  -- For non-lambda expressions, check falls through to infer + unify.
-  let argExpr ← check arg dom
-
-  -- For full dependent types, always evaluate the argument to a value.
-  -- This correctly handles:
-  -- - Closed terms: evaluate to concrete values (e.g., 5 → vIntLit 5)
-  -- - Open terms with free variables: evaluate to neutral terms that
-  --   represent the "stuck" computation (e.g., x → vNeutral Nat (nVar "x"))
-  -- - Type arguments: evaluate to type values for substitution
-  --
-  -- The closure application will then substitute this value into the codomain,
-  -- correctly propagating type dependencies even for value-level arguments.
-  -- For non-dependent codomains (const closures), the value is ignored anyway.
-  let argVal ← TCM.evalTyped argExpr
-  -- Apply codomain closure to get result type
-  let resultTy ← applyClosure cod argVal
-  -- Create application expression
-  let appExpr := Expr.call fnExpr (.cons argExpr .nil) resultTy callSpan
-  return (resultTy, appExpr)
-
-/--
-  Infer type of function application.
-
-  Handles three cases:
-  1. Explicit type application to implicit parameter: `f @T`
-  2. Polymorphic field access on records: `rec @l`
-  3. Regular value application: `f x`
-
-  Implicit arguments are automatically inserted before explicit value arguments.
--/
-partial def inferApp {scope : Scope} (fnTy : Value) (fnExpr : Expr Value scope)
-    (args : ExprList Unit scope) (span : Span) : TCM (Value × Expr Value scope) := do
-  match args with
-  | .nil =>
-    -- After processing all arguments, do a final greedy solve
-    solveImplicitsGreedy
-    return (fnTy, fnExpr)
-  | .cons arg rest => do
-    let fnTy' ← force fnTy
-
-    -- Dispatch based on function type and argument form
-    match fnTy', arg with
-
-    -- Case 1: Explicit type application to implicit parameter
-    | .vPi _qty binder _name _dom cod, .typeApp typeArg () argSpan =>
-      if binder.isImplicit then
-        let (resultTy, appExpr) ← inferExplicitTypeApp fnExpr cod typeArg argSpan span
-        -- Greedy solve after each argument to propagate type info
-        solveImplicitsGreedy
-        inferApp resultTy appExpr rest span
-      else
-        -- Explicit parameter with typeApp - treat as regular application
-        let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
-        let (_, _, _, dom, cod) ← ensurePi fnTy'' span
-        let (resultTy, appExpr) ← inferValueApp fnExpr' dom cod arg span
-        -- Greedy solve after each argument
-        solveImplicitsGreedy
-        inferApp resultTy appExpr rest span
-
-    -- Case 2: Polymorphic field access on record type
-    | .vRecord row, .typeApp (.label labelName) () argSpan =>
-      let (fieldTy, fieldExpr) ← inferPolymorphicFieldAccess fnExpr row labelName argSpan span
-      -- Greedy solve after field access
-      solveImplicitsGreedy
-      inferApp fieldTy fieldExpr rest span
-
-    -- Case 3: Regular value application
-    | _, _ =>
-      -- Insert implicit arguments first
-      let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
-      let (_, _, _, dom, cod) ← ensurePi fnTy'' span
-      let (resultTy, appExpr) ← inferValueApp fnExpr' dom cod arg span
-      -- Greedy solve after each argument to propagate constraints immediately
-      -- This enables solving implicits as soon as we have enough information
-      solveImplicitsGreedy
-      inferApp resultTy appExpr rest span
-
-/-- Infer types for an expression list -/
-partial def inferExprList {scope : Scope} (es : ExprList Unit scope)
-    : TCM (List Value × ExprList Value scope) := do
-  match es with
-  | .nil => return ([], .nil)
-  | .cons e rest => do
-    let (ty, expr) ← infer e
-    let (restTys, restExprs) ← inferExprList rest
-    return (ty :: restTys, .cons expr restExprs)
-
-/-- Infer types for record fields -/
-partial def inferRecordFields {scope : Scope} (fields : Soma.Metal.RecordFieldList Unit scope)
-    : TCM (Value × Soma.Metal.RecordFieldList Value scope) := do
-  match fields with
-  | .nil =>
-    return (.vRowEmpty, .nil)
-  | .cons name expr rest => do
-    let (ty, exprE) ← infer expr
-    let (restRow, restFields) ← inferRecordFields rest
-    let row := Value.vRowExtend (.vLabelLit name) ty restRow
-    return (row, .cons name exprE restFields)
-
-/-- Infer types for capture list -/
-partial def inferCaptures {scope : Scope} (caps : Soma.Metal.CaptureList Unit scope)
-    : TCM (List Value × Soma.Metal.CaptureList Value scope) := do
-  match caps with
-  | .nil => return ([], .nil)
-  | .cons v () rest => do
-    match ← TCM.lookupLocal v.original with
-    | some entry =>
-      let (restTys, restCaps) ← inferCaptures rest
-      return (entry.type :: restTys, .cons v entry.type restCaps)
-    | none =>
-      TCM.throw (.unboundVariable v.original Span.uninhabited #[])
-
-/-- Infer arms of a case expression.
-    For each arm, we:
-    1. Extract pattern bindings with types from scrutinee types
-    2. Extend the context with these bindings
-    3. Infer the body type under the extended context
-    4. Check all arms produce the same result type -/
-partial def inferArms {scope : Scope} (arms : Soma.Metal.ArmList Unit scope)
-    (scrutTys : List Value) (expectedTy : Value)
-    : TCM (Soma.Metal.ArmList Value scope) := do
-  match arms with
-  | .nil => return .nil
-  | .cons (.mk pats body armSpan) rest => do
-    -- Type the patterns with the expected type as annotation
-    let typedPats := pats.mapInfo (fun () => expectedTy)
-
-    -- Check the body - inferArmBody handles context extension for pattern bindings
-    let bodyExpr ← inferArmBody pats scrutTys body expectedTy armSpan
-
-    -- Check remaining arms
-    let restArms ← inferArms rest scrutTys expectedTy
-
-    -- Use the theorem that mapInfo preserves bindingIds
-    let h : typedPats.bindingIds ++ scope = pats.bindingIds ++ scope := by
-      rw [Soma.Metal.PatternList.mapInfo_bindingIds]
-    return .cons (.mk typedPats (h ▸ bodyExpr) armSpan) restArms
-
-/-- Extract field types from a constructor type, unifying the result type with the scrutinee type.
+/-- Extract constructor field types, constraining result type against scrutinee type.
 
     For a constructor type like `forall {a}. a -> Vec n a -> Vec (n+1) a` and
     scrutinee type `Vec 5 Int`:
@@ -1206,172 +360,6 @@ partial def extractConstructorFieldTypes (ctorTy : Value) (scrutTy : Value)
 
   return fieldTypes
 
-/-- Extract binding types from a pattern and its scrutinee type.
-    For example, if pattern is (x, y) and scrutinee type is (Int, Bool),
-    returns [(x, Int), (y, Bool)]. -/
-partial def extractPatternBindingTypes (pat : Soma.Metal.Pattern Unit) (scrutTy : Value)
-    : TCM (List (Soma.Metal.BindingId × String × Value)) := do
-  match pat with
-  | .var binding orig () _ =>
-    return [(binding, orig, scrutTy)]
-  | .wildcard () _ =>
-    return []
-  | .lit _ _ =>
-    return []
-  | .tuple elems () _ =>
-    -- For tuple patterns, decompose the sigma type
-    extractTupleBindingTypes elems.toList scrutTy
-  | .ctor ctorName args () _ =>
-    -- For constructor patterns, try to get field types from the constructor's declared type
-    -- This enables proper index inference in pattern matching
-    match ← TCM.lookupGlobal ctorName.display with
-    | some ctorInfo =>
-      -- Extract field types from constructor type, unifying with scrutinee type
-      let fieldTypes ← extractConstructorFieldTypes ctorInfo.type scrutTy
-      let mut result : List (Soma.Metal.BindingId × String × Value) := []
-      for (arg, fieldTy) in args.toList.zip fieldTypes.toList do
-        let bindings ← extractPatternBindingTypes arg fieldTy
-        result := result ++ bindings
-      -- Handle remaining args with fresh metas if constructor has more args than extracted types
-      for arg in args.toList.drop fieldTypes.size do
-        let argTy ← TCM.freshMetaVal (.vType .zero)
-        let bindings ← extractPatternBindingTypes arg argTy
-        result := result ++ bindings
-      return result
-    | none =>
-      -- Fallback: constructor not in globals, use fresh metas
-      let mut result : List (Soma.Metal.BindingId × String × Value) := []
-      for arg in args do
-        let argTy ← TCM.freshMetaVal (.vType .zero)
-        let bindings ← extractPatternBindingTypes arg argTy
-        result := result ++ bindings
-      return result
-  | .array elems () _ =>
-    -- Array/List elements all have the same type
-    let elemTy ← TCM.freshMetaVal (.vType .zero)
-    -- Try to extract element type from scrutinee and unify
-    let scrutTy' ← force scrutTy
-    match scrutTy' with
-    | .vDataType _ (actualElemTy :: _) =>
-      -- Scrutinee is a data type with at least one param (List a or Array a)
-      unify elemTy actualElemTy
-    | _ =>
-      -- If scrutinee is a metavariable or other form, construct the expected
-      -- list type and unify with scrutinee using stable builtin TypeId
-      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
-      let expectedListTy := Value.vDataType listId [elemTy]
-      unify scrutTy expectedListTy
-    let mut result : List (Soma.Metal.BindingId × String × Value) := []
-    for elem in elems do
-      let bindings ← extractPatternBindingTypes elem elemTy
-      result := result ++ bindings
-    return result
-  | .cons head tail () _ =>
-    -- List cons: head has element type, tail has list type
-    -- Create a fresh meta for element type and unify with scrutinee structure
-    let elemTy ← TCM.freshMetaVal (.vType .zero)
-    -- Try to extract element type from scrutinee and unify
-    let scrutTy' ← force scrutTy
-    match scrutTy' with
-    | .vDataType _ (actualElemTy :: _) =>
-      -- Scrutinee is a data type with at least one param (List a)
-      -- Unify our fresh meta with the actual element type
-      unify elemTy actualElemTy
-    | _ =>
-      -- If scrutinee is a metavariable or other form, construct the expected
-      -- list type and unify with scrutinee using stable builtin TypeId
-      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
-      let expectedListTy := Value.vDataType listId [elemTy]
-      unify scrutTy expectedListTy
-    let headBindings ← extractPatternBindingTypes head elemTy
-    -- The tail has the same type as the scrutinee (List elemTy)
-    let tailBindings ← extractPatternBindingTypes tail scrutTy
-    return headBindings ++ tailBindings
-  | .as binding orig inner () _ =>
-    let innerBindings ← extractPatternBindingTypes inner scrutTy
-    return (binding, orig, scrutTy) :: innerBindings
-  | .variant _ arg () _ =>
-    match arg with
-    | some p =>
-      let argTy ← TCM.freshMetaVal (.vType .zero)
-      extractPatternBindingTypes p argTy
-    | none => return []
-where
-  /-- Extract bindings from tuple pattern elements against a Sigma type -/
-  extractTupleBindingTypes (elems : List (Soma.Metal.Pattern Unit)) (ty : Value)
-      : TCM (List (Soma.Metal.BindingId × String × Value)) := do
-    match elems with
-    | [] => return []
-    | [lastElem] =>
-      -- Last element gets whatever type remains
-      extractPatternBindingTypes lastElem ty
-    | elem :: rest =>
-      -- Try to decompose as a Sigma type
-      let ty' ← force ty
-      match ty' with
-      | .vSigma _ _ fstTy sndClos =>
-        let elemBindings ← extractPatternBindingTypes elem fstTy
-        -- Apply closure to get the second component type
-        let lvl ← TCM.currentLevel
-        let dummyVal := Value.vNeutral fstTy (.nVar ⟨"_", lvl⟩)
-        let sndTy ← applyClosure sndClos dummyVal
-        let restBindings ← extractTupleBindingTypes rest sndTy
-        return elemBindings ++ restBindings
-      | _ =>
-        -- Not a Sigma, fall back to fresh metas
-        let mut result : List (Soma.Metal.BindingId × String × Value) := []
-        for e in (elem :: rest) do
-          let eTy ← TCM.freshMetaVal (.vType .zero)
-          let bindings ← extractPatternBindingTypes e eTy
-          result := result ++ bindings
-        return result
-
-/-- Extract binding types from a pattern list and corresponding scrutinee types -/
-partial def extractPatternListBindingTypes (pats : Soma.Metal.PatternList Unit) (scrutTys : List Value)
-    : TCM (List (Soma.Metal.BindingId × String × Value)) := do
-  match pats, scrutTys with
-  | .nil, _ => return []
-  | .cons pat rest, ty :: tys =>
-    let patBindings ← extractPatternBindingTypes pat ty
-    let restBindings ← extractPatternListBindingTypes rest tys
-    return patBindings ++ restBindings
-  | .cons pat rest, [] =>
-    -- No more scrutinee types, use fresh metas
-    let freshTy ← TCM.freshMetaVal (.vType .zero)
-    let patBindings ← extractPatternBindingTypes pat freshTy
-    let restBindings ← extractPatternListBindingTypes rest []
-    return patBindings ++ restBindings
-
-/-- Infer a single arm body, extending context with pattern bindings.
-    This function processes the pattern list to extend the context appropriately
-    before type-checking the body. Uses scrutinee types to properly type pattern variables. -/
-partial def inferArmBody {scope : Scope} (pats : Soma.Metal.PatternList Unit)
-    (scrutTys : List Value) (body : Expr Unit (pats.bindingIds ++ scope))
-    (expectedTy : Value) (span : Span)
-    : TCM (Expr Value (pats.bindingIds ++ scope)) := do
-  -- Get bindings with types from patterns and scrutinee types
-  let bindingsWithTypes ← extractPatternListBindingTypes pats scrutTys
-
-  -- Extend context with all bindings (with proper types) and check body
-  inferArmBodyWithBindings bindingsWithTypes body expectedTy span
-
-/-- Helper: extend context with bindings (with known types) and infer body.
-    The scope parameter is implicit in the body type. -/
-partial def inferArmBodyWithBindings {extScope : Scope}
-    (bindings : List (Soma.Metal.BindingId × String × Value))
-    (body : Expr Unit extScope) (expectedTy : Value) (span : Span)
-    : TCM (Expr Value extScope) := do
-  match bindings with
-  | [] =>
-    -- No bindings left, CHECK the body against expected type
-    -- This is important: check (not infer) so that [] can be treated as List
-    -- when the expected type is List, rather than being inferred as Array
-    check body expectedTy
-  | (bindingId, name, bindingTy) :: rest =>
-    -- Use the type from pattern matching against scrutinee
-    TCM.withBinding name bindingId bindingTy .omega .explicit span do
-      inferArmBodyWithBindings rest body expectedTy span
-
 /-- Collect available field names from a row -/
 partial def collectRowFields (row : Value) : TCM (Array String) := do
   match row with
@@ -1382,20 +370,15 @@ partial def collectRowFields (row : Value) : TCM (Array String) := do
   | .vRowExtend _ _ tail => collectRowFields tail
   | _ => return #[]
 
-/-- Look up field type in a record type -/
-partial def lookupFieldType (recTy : Value) (fieldName : String) (span : Span) : TCM Value := do
-  let recTy' ← force recTy
-  match recTy' with
-  | .vRecord row =>
-    findFieldInRow row fieldName span
-  | .vRecordVal fields =>
-    match fields.find? (·.1 == fieldName) with
-    | some (_, ty) => return ty
-    | none =>
-      let available := fields.map (·.1) |>.toArray
-      TCM.throw (.fieldNotFound fieldName recTy' span available none)
-  | _ =>
-    TCM.throw (.expectedRecord recTy' span #[])
+/-- Find the positional index of a field in a row type -/
+partial def findFieldIndex (row : Value) (fieldName : String) (idx : Nat := 0) : TCM (Option Nat) := do
+  match ← force row with
+  | .vRowEmpty => return none
+  | .vRowExtend (.vLabelLit name) _ tail =>
+    if name == fieldName then return some idx
+    else findFieldIndex tail fieldName (idx + 1)
+  | .vRowExtend _ _ tail => findFieldIndex tail fieldName (idx + 1)
+  | _ => return none
 
 /-- Find a field in a row type -/
 partial def findFieldInRow (row : Value) (fieldName : String) (span : Span) : TCM Value := do
@@ -1413,6 +396,21 @@ partial def findFieldInRow (row : Value) (fieldName : String) (span : Span) : TC
     TCM.throw (.fieldNotFound fieldName row span available none)
   | _ =>
     TCM.throw (.fieldNotFound fieldName row span #[] none)
+
+/-- Look up field type in a record type -/
+partial def lookupFieldType (recTy : Value) (fieldName : String) (span : Span) : TCM Value := do
+  let recTy' ← force recTy
+  match recTy' with
+  | .vRecord row =>
+    findFieldInRow row fieldName span
+  | .vRecordVal fields =>
+    match fields.find? (·.1 == fieldName) with
+    | some (_, ty) => return ty
+    | none =>
+      let available := fields.map (·.1) |>.toArray
+      TCM.throw (.fieldNotFound fieldName recTy' span available none)
+  | _ =>
+    TCM.throw (.expectedRecord recTy' span #[])
 
 /-- Find a field in a row type by label value, supporting label polymorphism.
     This handles the case where both the row label and the lookup label can be
@@ -1457,20 +455,752 @@ partial def findFieldInRowByLabelVal (row : Value) (lookupLabel : Value) (span :
       | _ => "<label>"
     TCM.throw (.fieldNotFound labelStr row' span #[] none)
 
-end
+/-- Infer polymorphic field access (`rec @l`). -/
+partial def inferPolymorphicFieldAccess
+    (recExpr : Soma.Core.Expr) (row : Value)
+    (labelName : String) (argSpan : Span) (_callSpan : Span)
+    : TCM (Value × Soma.Core.Expr) := do
+  let labelVal ← match ← TCM.lookupLocal labelName with
+    | some entry =>
+      pure (Value.vNeutral entry.type (Neutral.nVar ⟨labelName, entry.level⟩))
+    | none =>
+      pure (Value.vLabelLit labelName)
+  let fieldTy ← findFieldInRowByLabelVal row labelVal argSpan
+  let fieldExpr := Soma.Core.Expr.fieldAccess recExpr labelName 0
+  return (fieldTy, fieldExpr)
+
+/-! ## Syntax.Expr-based inference (Phase 5b) -/
+
+/-- Short debug description of a Syntax.Expr -/
+def syntaxExprKind : Soma.Syntax.Expr → String
+  | .var name => s!"var({name.value})"
+  | .lit _ => "lit"
+  | .app _ _ _ => "app"
+  | .infix op _ _ _ => s!"infix({op.value})"
+  | .lambda params _ _ => s!"λ({params.size} params)"
+  | .if_ _ _ _ _ => "if"
+  | .case _ _ _ => "case"
+  | .tuple elems _ => s!"tuple({elems.size})"
+  | .list _ _ => "list"
+  | .record _ _ => "record"
+  | .recordUpdate _ _ _ => "recordUpdate"
+  | .fieldAccess _ field _ => s!".{field.value}"
+  | .projection tn fn _ => s!"proj({tn.value}.{fn.value})"
+  | .parens _ _ => "parens"
+  | .typeAnnot _ _ _ => "ann"
+  | .typeApp _ _ => "typeApp"
+  | .compose _ _ => "compose"
+  | .bind _ _ => "bind"
+  | .variant label _ _ => s!"variant(.{label.value})"
+
+/-- Build a nested Pair pattern from a list of core patterns: (a, b, c) → Pair(a, Pair(b, c))
+    Requires @[wired_in "pair"] to be defined on a binary constructor. -/
+partial def buildNestedPairPattern (elems : List Soma.Core.Pattern) (span : Span)
+    : TCM Soma.Core.Pattern := do
+  match elems with
+  | [] => pure .wildcard
+  | [single] => pure single
+  | [a, b] =>
+    match ← TCM.lookupWiredIn "pair" with
+    | some info => pure (.ctor info.name info.ctorTag #[a, b])
+    | none => TCM.throw (.unboundGlobal "pair (no @[wired_in \"pair\"] constructor in scope)" span #[])
+  | a :: rest => do
+    let nested ← buildNestedPairPattern rest span
+    match ← TCM.lookupWiredIn "pair" with
+    | some info => pure (.ctor info.name info.ctorTag #[a, nested])
+    | none => TCM.throw (.unboundGlobal "pair (no @[wired_in \"pair\"] constructor in scope)" span #[])
+
+/-- Build a list pattern from elements: [a, b] → Cons(a, Cons(b, Nil))
+    Requires @[wired_in "cons"] and @[wired_in "nil"] to be defined. -/
+partial def buildListPattern (elems : List Soma.Core.Pattern) (span : Span)
+    : TCM Soma.Core.Pattern := do
+  match elems with
+  | [] =>
+    match ← TCM.lookupWiredIn "nil" with
+    | some info => pure (.ctor info.name info.ctorTag #[])
+    | none => TCM.throw (.unboundGlobal "nil (no @[wired_in \"nil\"] constructor in scope)" span #[])
+  | head :: tail => do
+    let tailPat ← buildListPattern tail span
+    match ← TCM.lookupWiredIn "cons" with
+    | some info => pure (.ctor info.name info.ctorTag #[head, tailPat])
+    | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
+
+/-- Convert a Syntax.Pattern to a Core.Pattern -/
+partial def convertSyntaxPattern (pat : Soma.Syntax.Pattern) : TCM Soma.Core.Pattern := do
+  match pat with
+  | .var name =>
+    -- Generate a unique for this pattern variable
+    let u ← TCM.freshUnique name.value
+    pure (.var (some u))
+  | .wildcard _ => pure .wildcard
+  | .lit l =>
+    pure (.lit (match l with
+      | .int n _ => .int n
+      | .string s _ => .string s
+      | .bool b _ => .bool b))
+  | .con name args _ =>
+    let coreArgs ← args.mapM convertSyntaxPattern
+    -- Look up constructor via namespace-aware resolution to get its QualifiedName
+    match ← TCM.resolveConstructor name.value with
+    | some ctorInfo =>
+      pure (.ctor ctorInfo.name ctorInfo.ctorTag coreArgs)
+    | none =>
+      -- Unknown constructor — use a placeholder
+      let u ← TCM.freshUnique name.value
+      pure (.ctor ⟨u⟩ 0 coreArgs)
+  | .tuple elems span => do
+    let coreElems ← elems.mapM convertSyntaxPattern
+    buildNestedPairPattern coreElems.toList span
+  | .list elems span => do
+    let coreElems ← elems.mapM convertSyntaxPattern
+    buildListPattern coreElems.toList span
+  | .cons head tail span => do
+    let coreHead ← convertSyntaxPattern head
+    let coreTail ← convertSyntaxPattern tail
+    match ← TCM.lookupWiredIn "cons" with
+    | some info => pure (.ctor info.name info.ctorTag #[coreHead, coreTail])
+    | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
+  | .parens inner _ => convertSyntaxPattern inner
+  | .typed pat _ _ => convertSyntaxPattern pat
+  | .variant label arg _ => do
+    let coreArg ← match arg with
+      | some p => some <$> convertSyntaxPattern p
+      | none => pure none
+    pure (.inject label.value coreArg)
+
+/-- Extract binding types from a Syntax.Pattern and its scrutinee type -/
+partial def extractSyntaxPatternBindingTypes (pat : Soma.Syntax.Pattern) (scrutTy : Value)
+  : TCM (List (Unique × String × Value)) := do
+  match pat with
+  | .var name =>
+    let binding ← TCM.freshLocalId name.value
+    return [(binding, name.value, scrutTy)]
+  | .wildcard _ => return []
+  | .lit _ => return []
+  | .tuple elems _ =>
+    extractSyntaxTupleBindingTypes elems.toList scrutTy
+  | .con name args _ =>
+    match ← TCM.resolveConstructor name.value with
+    | some ctorInfo =>
+      let fieldTypes ← extractConstructorFieldTypes ctorInfo.type scrutTy
+      let mut result : List (Unique × String × Value) := []
+      for (arg, fieldTy) in args.toList.zip fieldTypes.toList do
+        let bindings ← extractSyntaxPatternBindingTypes arg fieldTy
+        result := result ++ bindings
+      for arg in args.toList.drop fieldTypes.size do
+        let argTy ← TCM.freshMetaVal (.vType .zero)
+        let bindings ← extractSyntaxPatternBindingTypes arg argTy
+        result := result ++ bindings
+      return result
+    | none =>
+      let mut result : List (Unique × String × Value) := []
+      for arg in args do
+        let argTy ← TCM.freshMetaVal (.vType .zero)
+        let bindings ← extractSyntaxPatternBindingTypes arg argTy
+        result := result ++ bindings
+      return result
+  | .list elems _ =>
+    let elemTy ← TCM.freshMetaVal (.vType .zero)
+    let scrutTy' ← force scrutTy
+    match scrutTy' with
+    | .vDataType _ (actualElemTy :: _) => unify elemTy actualElemTy
+    | _ =>
+      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let expectedListTy := Value.vDataType listId [elemTy]
+      unify scrutTy expectedListTy
+    let mut result : List (Unique × String × Value) := []
+    for elem in elems do
+      let bindings ← extractSyntaxPatternBindingTypes elem elemTy
+      result := result ++ bindings
+    return result
+  | .cons head tail _ =>
+    let elemTy ← TCM.freshMetaVal (.vType .zero)
+    let scrutTy' ← force scrutTy
+    match scrutTy' with
+    | .vDataType _ (actualElemTy :: _) => unify elemTy actualElemTy
+    | _ =>
+      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let expectedListTy := Value.vDataType listId [elemTy]
+      unify scrutTy expectedListTy
+    let headBindings ← extractSyntaxPatternBindingTypes head elemTy
+    let tailBindings ← extractSyntaxPatternBindingTypes tail scrutTy
+    return headBindings ++ tailBindings
+  | .parens inner _ => extractSyntaxPatternBindingTypes inner scrutTy
+  | .typed pat _ _ => extractSyntaxPatternBindingTypes pat scrutTy
+  | .variant _ arg _ =>
+    match arg with
+    | some p =>
+      let argTy ← TCM.freshMetaVal (.vType .zero)
+      extractSyntaxPatternBindingTypes p argTy
+    | none => return []
+where
+  extractSyntaxTupleBindingTypes (elems : List Soma.Syntax.Pattern) (ty : Value)
+      : TCM (List (Unique × String × Value)) := do
+    match elems with
+    | [] => return []
+    | [lastElem] => extractSyntaxPatternBindingTypes lastElem ty
+    | elem :: rest =>
+      let ty' ← force ty
+      match ty' with
+      | .vSigma _ _ fstTy sndClos =>
+        let elemBindings ← extractSyntaxPatternBindingTypes elem fstTy
+        let lvl ← TCM.currentLevel
+        let dummyVal := Value.vNeutral fstTy (.nVar ⟨"_", lvl⟩)
+        let sndTy ← applyClosure sndClos dummyVal
+        let restBindings ← extractSyntaxTupleBindingTypes rest sndTy
+        return elemBindings ++ restBindings
+      | _ =>
+        let mut result : List (Unique × String × Value) := []
+        for e in (elem :: rest) do
+          let eTy ← TCM.freshMetaVal (.vType .zero)
+          let bindings ← extractSyntaxPatternBindingTypes e eTy
+          result := result ++ bindings
+        return result
+
+/-- Extract binding types from a list of patterns and corresponding scrutinee types -/
+partial def extractSyntaxPatternListBindingTypes (pats : List Soma.Syntax.Pattern) (scrutTys : List Value)
+  : TCM (List (Unique × String × Value)) := do
+  match pats, scrutTys with
+  | [], _ => return []
+  | pat :: rest, ty :: tys =>
+    let patBindings ← extractSyntaxPatternBindingTypes pat ty
+    let restBindings ← extractSyntaxPatternListBindingTypes rest tys
+    return patBindings ++ restBindings
+  | pat :: rest, [] =>
+    let freshTy ← TCM.freshMetaVal (.vType .zero)
+    let patBindings ← extractSyntaxPatternBindingTypes pat freshTy
+    let restBindings ← extractSyntaxPatternListBindingTypes rest []
+    return patBindings ++ restBindings
+
+mutual
+
+/-- Infer the type of a Syntax.Expr, returning (type, Core.Expr) -/
+partial def inferSyntax (e : Soma.Syntax.Expr) : TCM (Value × Soma.Core.Expr) := do
+  let kind := syntaxExprKind e
+  TCM.debugEnter "inferS" kind
+  let result ← TCM.withDebugIndent do
+    TCM.withSpan e.span do
+      inferSyntaxCore e
+  TCM.debugLeave "inferS" (toString result.1)
+  return result
+where
+  inferSyntaxCore (e : Soma.Syntax.Expr) : TCM (Value × Soma.Core.Expr) := do
+    match e with
+    -- Variables: resolve name (local, global, or builtin)
+    | .var name => do
+      -- First check local context
+      match ← TCM.lookupLocal name.value with
+      | some entry =>
+        useVarChecked entry.bindingId name.span
+        return (entry.type, .fvar entry.fvarId)
+      | none =>
+        -- Check globals (functions, constructors, data types)
+        match ← TCM.lookupGlobal name.value with
+        | some info =>
+          let qn := info.name
+          if info.isConstructor then
+            let instantiatedTy ← instantiateImplicits info.type name.span
+            return (instantiatedTy, .const qn)
+          else
+            return (info.type, .const qn)
+        | none =>
+          -- Check builtin type names
+          match name.value with
+          | "Int" => return (.vType .zero, .primTy .int)
+          | "Long" => return (.vType .zero, .primTy .long)
+          | "Short" => return (.vType .zero, .primTy .short)
+          | "Byte" => return (.vType .zero, .primTy .byte)
+          | "Bool" => return (.vType .zero, .primTy .bool)
+          | "String" => return (.vType .zero, .primTy .string)
+          | "Float" => return (.vType .zero, .primTy .float)
+          | "Double" => return (.vType .zero, .primTy .double)
+          | "Unit" => return (.vType .zero, .primTy .unit)
+          | "Int8" => return (.vType .zero, .primTy .int8)
+          | "Int16" => return (.vType .zero, .primTy .int16)
+          | "Int32" => return (.vType .zero, .primTy .int32)
+          | "Int64" => return (.vType .zero, .primTy .int64)
+          | "Word8" => return (.vType .zero, .primTy .word8)
+          | "Word16" => return (.vType .zero, .primTy .word16)
+          | "Word32" => return (.vType .zero, .primTy .word32)
+          | "Word64" => return (.vType .zero, .primTy .word64)
+          | "Type" => return (.vType .one, .sort .zero)
+          | "Row" => return (.vType .zero, .rowSort)
+          | "Label" => return (.vType .zero, .labelSort)
+          | _ => TCM.throw (.unboundVariable name.value name.span #[])
+
+    -- Literals
+    | .lit (.int n _) => return (.vPrimTy .int, .lit (.int n))
+    | .lit (.string s _) => return (.vPrimTy .string, .lit (.string s))
+    | .lit (.bool b _) => return (.vPrimTy .bool, .lit (.bool b))
+
+    -- Application: infer fn, then apply arg
+    | .app fn arg span => do
+      let (fnTy, fnExpr) ← inferSyntax fn
+      inferSyntaxApp fnTy fnExpr arg span
+
+    -- Infix operators: resolve op, apply to both args
+    | .infix op left right span => do
+      -- Resolve the operator name
+      let (opTy, opExpr) ← inferSyntax (.var ⟨op.value, op.span⟩)
+      -- Apply to left
+      let (ty1, expr1) ← inferSyntaxApp opTy opExpr left span
+      -- Apply to right
+      let (ty2, expr2) ← inferSyntaxApp ty1 expr1 right span
+      return (ty2, expr2)
+
+    -- Lambda: generate bindings, infer body
+    | .lambda params body span => do
+      inferSyntaxLamBody params.toList body span []
+
+    -- If-then-else
+    | .if_ cond then_ else_ _ => do
+      let condExpr ← checkSyntax cond (.vPrimTy .bool)
+      let (thenTy, thenExpr) ← inferSyntax then_
+      let elseExpr ← checkSyntax else_ thenTy
+      return (thenTy, .if_ condExpr thenExpr elseExpr)
+
+    -- Case expressions
+    | .case scruts arms _ => do
+      let (scrutTys, scrutsExpr) ← inferSyntaxList scruts.toList
+      let resultTy ← TCM.freshMetaVal (.vType .zero)
+      let armsExpr ← inferSyntaxArms arms.toList scrutTys resultTy
+      return (resultTy, .«case» scrutsExpr armsExpr)
+
+    -- Tuple: desugar to nested pairs
+    | .tuple elems span => do
+      let elemList := elems.toList
+      match elemList with
+      | [] =>
+        -- Empty tuple = unit
+        return (.vPrimTy .unit, .tuple #[])
+      | [e] =>
+        -- Single element, unwrap
+        inferSyntax e
+      | _ =>
+        -- Multiple: desugar to nested pairs
+        inferSyntaxTuple elemList span
+
+    -- List literal
+    | .list elems _ => do
+      let elemTy ← TCM.freshMetaVal (.vType .zero)
+      let elemsChecked ← checkSyntaxList elems.toList elemTy
+      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let listTy := Value.vDataType listId [elemTy]
+      return (listTy, .array elemsChecked.toArray)
+
+    -- Record literal
+    | .record fields _ => do
+      let (rowTy, fieldsExpr) ← inferSyntaxRecordFields fields.toList
+      let recTy := Value.vRecord rowTy
+      return (recTy, .record fieldsExpr)
+
+    -- Record update
+    | .recordUpdate base updates _ => do
+      let (baseTy, baseExpr) ← inferSyntax base
+      let (_, updatesExpr) ← inferSyntaxRecordFields updates.toList
+      return (baseTy, .recordUpdate baseExpr updatesExpr)
+
+    -- Field access
+    | .fieldAccess expr field span => do
+      let (exprTy, exprE) ← inferSyntax expr
+      let fieldTy ← lookupFieldType exprTy field.value span
+      let idx ← do
+        let ty ← force exprTy
+        match ty with
+        | .vRecord row =>
+          match ← findFieldIndex row field.value with
+          | some i => pure i
+          | none => pure 0
+        | _ => pure 0
+      return (fieldTy, .fieldAccess exprE field.value idx)
+
+    -- Projection function: Type.field
+    | .projection typeName fieldName span => do
+      let accessorName := s!"{typeName.value}::{fieldName.value}"
+      match ← TCM.lookupGlobal accessorName with
+      | some accessorInfo =>
+        let ctx ← TCM.getCtx
+        let idx := ctx.globals.lookupFieldIndex typeName.value fieldName.value |>.getD 0
+        return (accessorInfo.type, .proj accessorInfo.name fieldName.value idx)
+      | none =>
+        TCM.throw (.unboundGlobal accessorName span #[])
+
+    -- Parenthesized: recurse
+    | .parens inner _ => inferSyntax inner
+
+    -- Type annotation: elaborate type, check expr against it
+    | .typeAnnot expr ty _ => do
+      let tyVal ← TCM.inErasedContext do
+        Elaborate.elaborateType Elaborate.ElabEnv.empty ty
+      let tyExpr ← quoteValueToExpr tyVal
+      let checkedExpr ← checkSyntax expr tyVal
+      return (tyVal, .ann checkedExpr tyExpr)
+
+    -- Explicit type application
+    | .typeApp _arg _span => do
+      let resultTy ← TCM.freshMetaVal (.vType .zero)
+      -- Standalone typeApp: produce placeholder (normally handled in app context)
+      return (resultTy, .panic "typeApp not supported standalone")
+
+    -- Compose block: recurse on body
+    | .compose body _ => inferSyntax body
+
+    -- Bind block: recurse on body
+    | .bind body _ => inferSyntax body
+
+    -- Variant injection
+    | .variant label arg _ => do
+      let (argTy, argsExpr) ← match arg with
+        | some argExpr =>
+          let (ty, e) ← inferSyntax argExpr
+          pure (ty, #[e])
+        | none =>
+          pure (Value.vRecordVal [], #[])
+      let rowTail ← TCM.freshMetaVal .vRowSort
+      let row := Value.vRowExtend (.vLabelLit label.value) argTy rowTail
+      let variantTy := Value.vVariant row
+      return (variantTy, .inject label.value argsExpr)
+
+/-- Apply a function to a single Syntax.Expr argument -/
+partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
+    (arg : Soma.Syntax.Expr) (span : Span) : TCM (Value × Soma.Core.Expr) := do
+  let fnTy' ← force fnTy
+
+  -- Check if the argument is a type application (@T or @label)
+  match arg with
+  | .typeApp typeArg argSpan =>
+    -- Handle explicit type application
+    match fnTy' with
+    | .vPi _qty binder _name _dom cod =>
+      if binder.isImplicit then
+        let argVal ← elaborateTypeArg typeArg
+        let resultTy ← applyClosure cod argVal
+        let argExpr ← quoteValueToExpr argVal
+        let appExpr := Soma.Core.Expr.app fnExpr argExpr
+        solveImplicitsGreedy
+        return (resultTy, appExpr)
+      else
+        -- Explicit param with typeApp — insert implicits first, then apply
+        let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
+        let (_, _, _, _dom, cod) ← ensurePi fnTy'' span
+        let argVal ← elaborateTypeArg typeArg
+        let argExpr ← quoteValueToExpr argVal
+        let resultTy ← applyClosure cod argVal
+        let appExpr := Soma.Core.Expr.app fnExpr' argExpr
+        solveImplicitsGreedy
+        return (resultTy, appExpr)
+    | .vRecord row =>
+      -- Polymorphic field access: rec @l
+      match typeArg with
+      | .label name =>
+        let (fieldTy, fieldExpr) ← inferPolymorphicFieldAccess fnExpr row name.value argSpan span
+        solveImplicitsGreedy
+        return (fieldTy, fieldExpr)
+      | _ =>
+        -- Not a label — insert implicits and apply
+        let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
+        let (_, _, _, _dom, cod) ← ensurePi fnTy'' span
+        let argVal ← elaborateTypeArg typeArg
+        let argExpr ← quoteValueToExpr argVal
+        let resultTy ← applyClosure cod argVal
+        let appExpr := Soma.Core.Expr.app fnExpr' argExpr
+        solveImplicitsGreedy
+        return (resultTy, appExpr)
+    | _ =>
+      let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
+      let (_, _, _, _dom, cod) ← ensurePi fnTy'' span
+      let argVal ← elaborateTypeArg typeArg
+      let argExpr ← quoteValueToExpr argVal
+      let resultTy ← applyClosure cod argVal
+      let appExpr := Soma.Core.Expr.app fnExpr' argExpr
+      solveImplicitsGreedy
+      return (resultTy, appExpr)
+  | _ =>
+    -- Regular value application: insert implicits, then check arg against domain
+    let (fnTy'', fnExpr') ← insertImplicits fnTy fnExpr span
+    let (_, _, _, dom, cod) ← ensurePi fnTy'' span
+    let argExpr ← checkSyntax arg dom
+    let argVal ← TCM.evalExpr argExpr
+    let resultTy ← applyClosure cod argVal
+    let appExpr := Soma.Core.Expr.app fnExpr' argExpr
+    solveImplicitsGreedy
+    return (resultTy, appExpr)
+
+/-- Infer lambda body from Syntax params, building nested Core.Expr lambdas -/
+partial def inferSyntaxLamBody
+    (params : List (Soma.Syntax.Name × Option Soma.Syntax.TypeExpr))
+    (body : Soma.Syntax.Expr) (span : Span)
+    (acc : List (Unique × String × Soma.Core.Expr))
+    : TCM (Value × Soma.Core.Expr) := do
+  match params with
+  | [] =>
+    let (bodyTy, bodyExpr) ← inferSyntax body
+    let lamExpr := buildLambdas acc.reverse bodyExpr
+    return (bodyTy, lamExpr)
+  | (name, _tyAnnot) :: rest =>
+    let paramTy ← TCM.freshMetaVal (.vType .zero)
+    let bindingId ← TCM.freshLocalId name.value
+    TCM.withBinding name.value bindingId paramTy .omega .explicit span do
+      match ← TCM.lookupLocal name.value with
+      | some entry =>
+        let domExpr ← quoteValueToExpr paramTy
+        inferSyntaxLamBody rest body span (acc ++ [(entry.fvarId, name.value, domExpr)])
+      | none =>
+        inferSyntaxLamBody rest body span acc
+
+/-- Check lambda body against expected Pi type from Syntax params -/
+partial def checkSyntaxLamBody
+    (params : List (Soma.Syntax.Name × Option Soma.Syntax.TypeExpr))
+    (body : Soma.Syntax.Expr) (expectedTy : Value) (span : Span)
+    (acc : List (Unique × String × Soma.Core.Expr))
+    : TCM Soma.Core.Expr := do
+  match params with
+  | [] =>
+    let bodyExpr ← checkSyntax body expectedTy
+    return buildLambdas acc.reverse bodyExpr
+  | (name, _tyAnnot) :: rest =>
+    let expectedTy' ← force expectedTy
+    match expectedTy' with
+    | .vPi qty binder _ dom cod =>
+      let codTy ← do
+        let lvl ← TCM.currentLevel
+        let x := Value.vNeutral dom (.nVar ⟨name.value, lvl⟩)
+        applyClosure cod x
+      let bindingId ← TCM.freshLocalId name.value
+      withCheckedBinding name.value bindingId dom qty binder span do
+        match ← TCM.lookupLocal name.value with
+        | some entry =>
+          let domExpr ← quoteValueToExpr dom
+          checkSyntaxLamBody rest body codTy span (acc ++ [(entry.fvarId, name.value, domExpr)])
+        | none =>
+          checkSyntaxLamBody rest body codTy span acc
+    | _ =>
+      let paramTy ← TCM.freshMetaVal (.vType .zero)
+      let bindingId ← TCM.freshLocalId name.value
+      TCM.withBinding name.value bindingId paramTy .omega .explicit span do
+        match ← TCM.lookupLocal name.value with
+        | some entry =>
+          let domExpr ← quoteValueToExpr paramTy
+          checkSyntaxLamBody rest body expectedTy' span (acc ++ [(entry.fvarId, name.value, domExpr)])
+        | none =>
+          checkSyntaxLamBody rest body expectedTy' span acc
+
+/-- Infer a list of Syntax.Exprs, returning (types, Core.Expr array) -/
+partial def inferSyntaxList (es : List Soma.Syntax.Expr)
+    : TCM (List Value × Array Soma.Core.Expr) := do
+  match es with
+  | [] => return ([], #[])
+  | e :: rest => do
+    let (ty, expr) ← inferSyntax e
+    let (restTys, restExprs) ← inferSyntaxList rest
+    return (ty :: restTys, #[expr] ++ restExprs)
+
+/-- Check a list of Syntax.Exprs against an expected type -/
+partial def checkSyntaxList (exprs : List Soma.Syntax.Expr) (elemTy : Value)
+    : TCM (List Soma.Core.Expr) := do
+  match exprs with
+  | [] => return []
+  | e :: es =>
+    let e' ← checkSyntax e elemTy
+    let es' ← checkSyntaxList es elemTy
+    return e' :: es'
+
+/-- Infer record fields from Syntax -/
+partial def inferSyntaxRecordFields (fields : List (Soma.Syntax.Name × Soma.Syntax.Expr))
+    : TCM (Value × Array (String × Soma.Core.Expr)) := do
+  match fields with
+  | [] => return (.vRowEmpty, #[])
+  | (name, expr) :: rest => do
+    let (ty, exprE) ← inferSyntax expr
+    let (restRow, restFields) ← inferSyntaxRecordFields rest
+    let row := Value.vRowExtend (.vLabelLit name.value) ty restRow
+    return (row, #[(name.value, exprE)] ++ restFields)
+
+/-- Infer arms of a case expression from Syntax.MatchArm -/
+partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)
+    (scrutTys : List Value) (expectedTy : Value)
+    : TCM (Array Soma.Core.Arm) := do
+  match arms with
+  | [] => return #[]
+  | arm :: rest => do
+    let pats := arm.patterns.toList
+    -- Convert Syntax patterns to Core patterns
+    let corePatterns ← pats.mapM convertSyntaxPattern
+
+    -- Get bindings with types from patterns and scrutinee types
+    let bindingsWithTypes ← extractSyntaxPatternListBindingTypes pats scrutTys
+
+    -- Check the body under extended context
+    let bodyExpr ← inferSyntaxArmBodyWithBindings bindingsWithTypes arm.body expectedTy arm.span
+
+    -- Check remaining arms
+    let restArms ← inferSyntaxArms rest scrutTys expectedTy
+    return #[Soma.Core.Arm.mk corePatterns.toArray bodyExpr] ++ restArms
+
+/-- Helper: extend context with bindings and check body -/
+partial def inferSyntaxArmBodyWithBindings
+  (bindings : List (Unique × String × Value))
+    (body : Soma.Syntax.Expr) (expectedTy : Value) (span : Span)
+    : TCM Soma.Core.Expr := do
+  match bindings with
+  | [] => checkSyntax body expectedTy
+  | (bindingId, name, bindingTy) :: rest =>
+    TCM.withBinding name bindingId bindingTy .omega .explicit span do
+      inferSyntaxArmBodyWithBindings rest body expectedTy span
+
+/-- Infer nested tuple as nested pairs -/
+partial def inferSyntaxTuple (elems : List Soma.Syntax.Expr) (span : Span)
+    : TCM (Value × Soma.Core.Expr) := do
+  match elems with
+  | [] => return (.vPrimTy .unit, .tuple #[])
+  | [e] => inferSyntax e
+  | e :: rest => do
+    let (fstTy, fstExpr) ← inferSyntax e
+    let (_sndTy, sndExpr) ← inferSyntaxTuple rest span
+    let clos ← TCM.mkEmptyClosure "_"
+    let sigmaTy := Value.vSigma .omega "_" fstTy clos
+    return (sigmaTy, .pair fstExpr sndExpr)
+
+/-- Infer constructor application from Syntax -/
+partial def inferSyntaxConstructorApp
+    (ctorTy : Value) (args : List Soma.Syntax.Expr) (span : Span)
+    : TCM (Value × Array Soma.Core.Expr) := do
+  let rec go (ty : Value) (remainingArgs : List Soma.Syntax.Expr)
+      (checkedArgs : Array Soma.Core.Expr)
+      : TCM (Value × Array Soma.Core.Expr) := do
+    let ty' ← force ty
+    match ty', remainingArgs with
+    | _, [] => return (ty', checkedArgs)
+    | .vPi _qty binder _name dom cod, _ =>
+      if binder.isImplicit then
+        let metaVal ← TCM.freshMetaVal dom
+        let resultTy ← applyClosure cod metaVal
+        go resultTy remainingArgs checkedArgs
+      else
+        match remainingArgs with
+        | [] => return (ty', checkedArgs)
+        | arg :: restArgs =>
+          let argExpr ← checkSyntax arg dom
+          let argVal ← TCM.evalExpr argExpr
+          let resultTy ← applyClosure cod argVal
+          go resultTy restArgs (checkedArgs.push argExpr)
+    | _, _ :: _ => TCM.throw (.expectedFunction ty' span none)
+  go ctorTy args #[]
+
+/-- Check an expression against an expected type (Syntax.Expr version) -/
+partial def checkSyntax (e : Soma.Syntax.Expr) (expected : Value)
+    : TCM Soma.Core.Expr := do
+  let kind := syntaxExprKind e
+  TCM.debugEnter "checkS" s!"{kind} ⇐ {expected}"
+  let result ← TCM.withDebugIndent do
+    TCM.withSpan e.span do
+      checkSyntaxCore e expected
+  TCM.debugLeave "checkS" "ok"
+  return result
+where
+  checkSyntaxCore (e : Soma.Syntax.Expr) (expected : Value)
+      : TCM Soma.Core.Expr := do
+    let expected' ← force expected
+
+    match e, expected' with
+    -- Lambda against Pi type
+    | .lambda params body span, .vPi _ _ _ _ _ =>
+      match params.toList with
+      | [] =>
+        let (_, bodyExpr) ← inferSyntax body
+        return bodyExpr
+      | paramList =>
+        checkSyntaxLamBody paramList body expected' span []
+
+    -- If-then-else: check both branches
+    | .if_ cond then_ else_ _, _ => do
+      let condExpr ← checkSyntax cond (.vPrimTy .bool)
+      let thenExpr ← checkSyntax then_ expected'
+      let elseExpr ← checkSyntax else_ expected'
+      return .if_ condExpr thenExpr elseExpr
+
+    -- Tuple against Sigma: desugar to nested pair checks
+    | .tuple elems _, .vSigma _ _ _ _ =>
+      checkSyntaxTupleAgainstSigma elems.toList expected'
+
+    -- Application: use expected type to guide implicit solving
+    | .app fn arg span, _ => do
+      let (fnTy, fnExpr) ← inferSyntax fn
+      let (fnTy', fnExpr') ← insertImplicitsWithExpected fnTy fnExpr (some expected') 1 span
+      let (resultTy, appExpr) ← inferSyntaxApp fnTy' fnExpr' arg span
+      solveImplicitsGreedy
+      unify resultTy expected'
+      return appExpr
+
+    -- List literal against List type
+    | .list elems _, .vDataType typeId (elemTy :: _) => do
+      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      if typeId == listId then
+        let elemsChecked ← checkSyntaxList elems.toList elemTy
+        return .array elemsChecked.toArray
+      else
+        let (inferred, expr) ← inferSyntax e
+        let (inferred', expr') ← insertImplicits inferred expr e.span
+        unify inferred' expected'
+        solveImplicitsGreedy
+        return expr'
+
+    -- Default: infer and unify
+    | _, _ => do
+      let (inferred, expr) ← inferSyntax e
+      let (inferred', expr') ← insertImplicits inferred expr e.span
+      unify inferred' expected'
+      solveImplicitsGreedy
+      return expr'
+
+/-- Check tuple elements against a Sigma type -/
+partial def checkSyntaxTupleAgainstSigma (elems : List Soma.Syntax.Expr) (sigmaTy : Value)
+    : TCM Soma.Core.Expr := do
+  match elems with
+  | [] => do
+    let (_, expr) ← inferSyntax (.tuple #[] Span.uninhabited)
+    return expr
+  | [e] => checkSyntax e sigmaTy
+  | e :: rest => do
+    let sigmaTy' ← force sigmaTy
+    match sigmaTy' with
+    | .vSigma _qty _name fstTy sndClos =>
+      let fstExpr ← checkSyntax e fstTy
+      let fstVal ← TCM.evalExpr fstExpr
+      let sndTy ← applyClosure sndClos fstVal
+      let sndExpr ← checkSyntaxTupleAgainstSigma rest sndTy
+      return .pair fstExpr sndExpr
+    | _ =>
+      -- Not a sigma, fall back to inference
+      let (_, expr) ← inferSyntaxTuple elems Span.uninhabited
+      return expr
+
+end -- mutual
 
 /-! ## Top-Level Interface -/
 
 /-- Type check an expression, inferring its type -/
-def typeInfer (e : Expr Unit scope) (ctx : TCContext := TCContext.empty)
-    : Except TCError (Value × Expr Value scope × TCState) := do
-  let ((ty, expr), state) ← (infer e).run ctx
+def typeInfer (e : Soma.Syntax.Expr) (ctx : TCContext := TCContext.empty)
+    : Except TCError (Value × Soma.Core.Expr × TCState) := do
+  let ((ty, expr), state) ← (inferSyntax e).run ctx
   return (ty, expr, state)
 
 /-- Type check an expression against an expected type -/
-def typeCheck (e : Expr Unit scope) (expected : Value)
-    (ctx : TCContext := TCContext.empty) : Except TCError (Expr Value scope × TCState) := do
-  let (expr, state) ← (check e expected).run ctx
+def typeCheck (e : Soma.Syntax.Expr) (expected : Value)
+    (ctx : TCContext := TCContext.empty) : Except TCError (Soma.Core.Expr × TCState) := do
+  let (expr, state) ← (checkSyntax e expected).run ctx
+  return (expr, state)
+
+/-- Type check a Syntax expression, inferring its type -/
+def typeInferSyntax (e : Soma.Syntax.Expr) (ctx : TCContext := TCContext.empty)
+    : Except TCError (Value × Soma.Core.Expr × TCState) := do
+  let ((ty, expr), state) ← (inferSyntax e).run ctx
+  return (ty, expr, state)
+
+/-- Type check a Syntax expression against an expected type -/
+def typeCheckSyntax (e : Soma.Syntax.Expr) (expected : Value)
+    (ctx : TCContext := TCContext.empty) : Except TCError (Soma.Core.Expr × TCState) := do
+  let (expr, state) ← (checkSyntax e expected).run ctx
   return (expr, state)
 
 end Soma.Dependent

@@ -6,11 +6,11 @@ data Nat where
   | Succ :: Nat -> Nat
 
 data Vec n (a : Type) where
-  | Nil :: Vec Zero a
-  | Cons :: a -> Vec m a -> Vec (Succ m) a
+  | Nil :: Vec Nat::Zero a
+  | Cons :: a -> Vec m a -> Vec (Nat::Succ m) a
 
-def emptyVec :: Vec Zero Int = Nil
+def emptyVec :: Vec Nat::Zero Int = Vec::Nil
 
-def oneElem :: Vec (Succ Zero) Int = Cons 42 Nil
+def oneElem :: Vec (Nat::Succ Nat::Zero) Int = Vec::Cons 42 Vec::Nil
 
-def twoElems :: Vec (Succ (Succ Zero)) Int = Cons 1 (Cons 2 Nil)
+def twoElems :: Vec (Nat::Succ (Nat::Succ Nat::Zero)) Int = Vec::Cons 1 (Vec::Cons 2 Vec::Nil)

@@ -12,7 +12,6 @@
 import Soma.Dependent
 import Soma.Core.Value
 import Soma.Core.Level
-import Soma.Metal.Expr
 import Soma.Syntax.Source
 import Test.Fixtures
 
@@ -23,7 +22,6 @@ open Test.Fixtures
 open Soma.Dependent
 open Soma.Dependent.Unify (SolveResult)
 open Soma.Core
-open Soma.Metal (Expr BinderInfo)
 open Soma.Syntax (Span)
 
 /-! ## Test Infrastructure -/

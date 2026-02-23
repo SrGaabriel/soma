@@ -1,8 +1,8 @@
 import Soma.Core.Value
+import Soma.Core.Module
 import Soma.Dependent.Monad
 import Soma.Dependent.Error
 import Soma.Dependent.TraitElaborate
-import Soma.Metal.Module
 import Std.Data.HashMap
 import Std.Data.HashSet
 
@@ -328,11 +328,18 @@ def rebuildGlobals (s : IncrementalState) : Globals := Id.run do
       | none =>
         -- Fallback reconstruction (shouldn't happen if cache.isComplete is true)
         let info : GlobalInfo := {
-          name := .user { id := 0, module := def_.module, original := def_.name }
+          name := ⟨{ id := 0, module := def_.module, original := def_.name }⟩
           type := cache.type
           isConstructor := match cache.kind with
             | .constructor _ => true
             | _ => false
+          origin := match cache.kind with
+            | .function => .function
+            | .dataType => .typeDecl
+            | .constructor _ => .constructor
+            | .typeClass => .typeDecl
+            | .instance_ _ => .generated
+            | .method _ => .traitMethod
         }
         globals := globals.insert def_.name info
   return globals
@@ -432,13 +439,6 @@ private def exprTag : Nat → UInt64
   | 39 => 0x1028 -- labelSort
   | _ => 0x1FFF
 
-/-- Hash a literal -/
-def hashLiteral (l : Soma.Metal.Literal) : UInt64 :=
-  match l with
-  | .int n => combineHash 0x3000 (hash n)
-  | .bool b => combineHash 0x3001 (if b then 1 else 0)
-  | .string s => combineHash 0x3002 (hashString s)
-
 /-- Hash a TypeExpr from the AST -/
 partial def hashTypeExpr (te : Soma.Syntax.TypeExpr) : UInt64 :=
   match te with
@@ -484,12 +484,6 @@ partial def hashTypeExpr (te : Soma.Syntax.TypeExpr) : UInt64 :=
     let nameHash := match name with | none => 0 | some n => hashString n.value
     combineHashes #[0x600E, nameHash, hashTypeExpr domain, hashTypeExpr codomain]
 
-/-- Hash a type argument -/
-def hashTypeArg (arg : Soma.Metal.TypeArg) : UInt64 :=
-  match arg with
-  | .type tyExpr => combineHash 0x4000 (hashTypeExpr tyExpr)
-  | .label name => combineHash 0x4001 (hashString name)
-
 /-- Hash a level -/
 def hashLevel (l : Soma.Core.Level) : UInt64 :=
   match l with
@@ -498,137 +492,45 @@ def hashLevel (l : Soma.Core.Level) : UInt64 :=
   | .max l1 l2 => combineHashes #[0x5002, hashLevel l1, hashLevel l2]
   | .succ l => combineHash 0x5003 (hashLevel l)
 
-/-- Hash a parameter list -/
-def hashParamList (params : Soma.Metal.ParamList α) : UInt64 :=
-  match params with
-  | .nil => 0
-  | .cons _ name _ rest => combineHash (hashString name) (hashParamList rest)
-
-/-- Hash a pattern -/
-partial def hashPattern (p : Soma.Metal.Pattern α) : UInt64 :=
-  match p with
-  | .var _ name _ _ => combineHash 0x2001 (hashString name)
-  | .wildcard _ _ => 0x2000
-  | .lit l _ => combineHash 0x2002 (hashLiteral l)
-  | .ctor name args _ _ =>
-    let argsHash := args.foldl (fun acc pat => combineHash acc (hashPattern pat)) 0
-    combineHashes #[0x2003, hashString name.display, argsHash]
-  | .tuple elems _ _ =>
-    let elemsHash := elems.foldl (fun acc pat => combineHash acc (hashPattern pat)) 0
-    combineHash 0x2004 elemsHash
-  | .array elems _ _ =>
-    let elemsHash := elems.foldl (fun acc pat => combineHash acc (hashPattern pat)) 0
-    combineHash 0x2005 elemsHash
-  | .cons head tail _ _ =>
-    combineHashes #[0x2006, hashPattern head, hashPattern tail]
-  | .as _ name inner _ _ =>
-    combineHashes #[0x2007, hashString name, hashPattern inner]
-  | .variant label arg _ _ =>
-    combineHashes #[0x2008, hashString label,
-      match arg with | none => 0 | some p => hashPattern p]
-
-/-- Hash a pattern list -/
-def hashPatternList (patterns : Soma.Metal.PatternList α) : UInt64 :=
-  match patterns with
-  | .nil => 0
-  | .cons p rest => combineHash (hashPattern p) (hashPatternList rest)
-
-open Soma.Metal in
-mutual
-/-- Hash a Metal expression by traversing its structure -/
-partial def hashExpr (e : Expr α scope) : UInt64 :=
+/-- Hash a Syntax.Expr by traversing its structure -/
+partial def hashSyntaxExpr (e : Soma.Syntax.Expr) : UInt64 :=
   match e with
-  | .var v _ _ => combineHash (exprTag 0) (hash v.binding)
-  | .lit l _ => combineHash (exprTag 1) (hashLiteral l)
-  | .call fn args _ _ => combineHashes #[exprTag 2, hashExpr fn, hashExprList args]
-  | .lam params body _ _ =>
-    combineHashes #[exprTag 3, hashParamList params, hashExpr body]
-  | .closure name captures _ _ =>
-    combineHashes #[exprTag 4, hashString name.display, hashCaptureList captures]
-  | .construct name tag args _ _ =>
-    combineHashes #[exprTag 5, hashString name.display, hash tag, hashExprList args]
-  | .tuple elems _ _ => combineHash (exprTag 6) (hashExprList elems)
-  | .record fields _ _ => combineHash (exprTag 7) (hashRecordFieldList fields)
-  | .recordUpdate base updates _ _ =>
-    combineHashes #[exprTag 8, hashExpr base, hashRecordFieldList updates]
-  | .inject label args _ _ =>
-    combineHashes #[exprTag 9, hashString label, hashExprList args]
-  | .array elems _ _ => combineHash (exprTag 10) (hashExprList elems)
-  | .if_ cond then_ else_ _ _ =>
-    combineHashes #[exprTag 11, hashExpr cond, hashExpr then_, hashExpr else_]
-  | .case scrutinees arms _ _ =>
-    combineHashes #[exprTag 12, hashExprList scrutinees, hashArmList arms]
-  | .fieldAccess expr fieldName fieldIndex _ _ =>
-    combineHashes #[exprTag 13, hashExpr expr, hashString fieldName, hash fieldIndex]
-  | .global name _ _ => combineHash (exprTag 14) (hashString name.display)
-  | .panic msg _ _ => combineHash (exprTag 15) (hashString msg)
-  | .proj typeName fieldName fieldIndex _ _ =>
-    combineHashes #[exprTag 16, hashString typeName.display, hashString fieldName, hash fieldIndex]
-  | .typeApp arg _ _ => combineHash (exprTag 17) (hashTypeArg arg)
-  | .type level _ => combineHash (exprTag 18) (hashLevel level)
-  | .pi qty binder name domain codomain _ =>
-    combineHashes #[exprTag 19, hash qty, hash binder, hashString name, hashExpr domain, hashExpr codomain]
-  | .sigma qty name fstTy sndTy _ =>
-    combineHashes #[exprTag 20, hash qty, hashString name, hashExpr fstTy, hashExpr sndTy]
-  | .pair fst snd _ _ => combineHashes #[exprTag 21, hashExpr fst, hashExpr snd]
-  | .fst e _ _ => combineHash (exprTag 22) (hashExpr e)
-  | .snd e _ _ => combineHash (exprTag 23) (hashExpr e)
-  | .primTy p _ => combineHash (exprTag 24) (hash p)
-  | .rowSort _ => exprTag 38
-  | .labelSort _ => exprTag 39
-  | .rowEmpty _ => exprTag 26
-  | .rowExtend label fieldTy tail _ =>
-    combineHashes #[exprTag 27, hashExpr label, hashExpr fieldTy, hashExpr tail]
-  | .recordTy row _ => combineHash (exprTag 28) (hashExpr row)
-  | .variantTy row _ => combineHash (exprTag 29) (hashExpr row)
-  | .labelLit name _ => combineHash (exprTag 30) (hashString name)
-  | .dataTy id params _ => combineHashes #[exprTag 31, hash id, hashExprList params]
-  | .ann expr ty _ _ => combineHashes #[exprTag 32, hashExpr expr, hashExpr ty]
-  | .hole id _ => combineHashes #[exprTag 33, hash id.id]
-  | .mvar id _ _ => combineHash (exprTag 34) (hash id)
-  | .eq tyLevel ty lhs rhs _ =>
-    combineHashes #[exprTag 35, hashLevel tyLevel, hashExpr ty, hashExpr lhs, hashExpr rhs]
-  | .refl ty x _ => combineHashes #[exprTag 36, hashExpr ty, hashExpr x]
-  | .transport tyLevel ty motive lhs rhs eq body _ =>
-    combineHashes #[exprTag 37, hashLevel tyLevel, hashExpr ty, hashExpr motive,
-                    hashExpr lhs, hashExpr rhs, hashExpr eq, hashExpr body]
+  | .var name => combineHash (exprTag 0) (hashString name.value)
+  | .lit l => combineHash (exprTag 1) (match l with
+      | .int n _ => hash n
+      | .string s _ => hashString s
+      | .bool b _ => hash b)
+  | .app fn arg _ => combineHashes #[exprTag 2, hashSyntaxExpr fn, hashSyntaxExpr arg]
+  | .infix op l r _ => combineHashes #[exprTag 3, hashString op.value, hashSyntaxExpr l, hashSyntaxExpr r]
+  | .lambda params body _ => combineHashes #[exprTag 4, hash params.size, hashSyntaxExpr body]
+  | .if_ cond then_ else_ _ => combineHashes #[exprTag 5, hashSyntaxExpr cond, hashSyntaxExpr then_, hashSyntaxExpr else_]
+  | .case scruts arms _ =>
+    let scrutsHash := scruts.foldl (fun acc s => combineHash acc (hashSyntaxExpr s)) 0
+    let armsHash := arms.foldl (fun acc a => combineHash acc (hashSyntaxExpr a.body)) 0
+    combineHashes #[exprTag 6, scrutsHash, armsHash]
+  | .tuple elems _ => combineHash (exprTag 7) (elems.foldl (fun acc e => combineHash acc (hashSyntaxExpr e)) 0)
+  | .list elems _ => combineHash (exprTag 8) (elems.foldl (fun acc e => combineHash acc (hashSyntaxExpr e)) 0)
+  | .record fields _ => combineHash (exprTag 9) (fields.foldl (fun acc (_, v) => combineHash acc (hashSyntaxExpr v)) 0)
+  | .recordUpdate base updates _ => combineHashes #[exprTag 10, hashSyntaxExpr base,
+      updates.foldl (fun acc (_, v) => combineHash acc (hashSyntaxExpr v)) 0]
+  | .fieldAccess expr field _ => combineHashes #[exprTag 11, hashSyntaxExpr expr, hashString field.value]
+  | .projection typeName fieldName _ => combineHashes #[exprTag 12, hashString typeName.value, hashString fieldName.value]
+  | .parens inner _ => hashSyntaxExpr inner
+  | .typeAnnot expr ty _ => combineHashes #[exprTag 13, hashSyntaxExpr expr, hashTypeExpr ty]
+  | .typeApp arg _ => combineHash (exprTag 14) (match arg with
+      | .type ty => hashTypeExpr ty
+      | .label name => hashString name.value)
+  | .compose body _ => hashSyntaxExpr body
+  | .bind body _ => hashSyntaxExpr body
+  | .variant label arg _ => combineHashes #[exprTag 15, hashString label.value,
+      match arg with | some a => hashSyntaxExpr a | none => 0]
 
-/-- Hash an expression list -/
-partial def hashExprList (es : ExprList α scope) : UInt64 :=
-  match es with
-  | .nil => 0
-  | .cons e rest => combineHash (hashExpr e) (hashExprList rest)
-
-/-- Hash an arm list -/
-partial def hashArmList (arms : ArmList α scope) : UInt64 :=
-  match arms with
-  | .nil => 0
-  | .cons arm rest =>
-    let armHash := match arm with
-      | .mk patterns body _ => combineHash (hashPatternList patterns) (hashExpr body)
-    combineHash armHash (hashArmList rest)
-
-/-- Hash a capture list -/
-partial def hashCaptureList (caps : CaptureList α scope) : UInt64 :=
-  match caps with
-  | .nil => 0
-  | .cons v _ rest => combineHash (hash v.binding) (hashCaptureList rest)
-
-/-- Hash a record field list -/
-partial def hashRecordFieldList (fields : RecordFieldList α scope) : UInt64 :=
-  match fields with
-  | .nil => 0
-  | .cons name expr rest =>
-    combineHashes #[hashString name, hashExpr expr, hashRecordFieldList rest]
-
-end
-
-/-- Hash a Metal function by fully traversing its expression tree -/
-def hashFunction (fn : Soma.Metal.UntypedFunction) : UInt64 :=
+/-- Hash a function by traversing its expression tree -/
+def hashFunction (fn : Soma.Core.UntypedFunction) : UInt64 :=
   let nameHash := hashString fn.name.display
-  let paramsHash := fn.params.foldl (fun acc (_, name) =>
+  let paramsHash := fn.params.foldl (fun acc name =>
     combineHash acc (hashString name)) 0
-  let bodyHash := hashExpr fn.body
+  let bodyHash := hashSyntaxExpr fn.body
   -- Also hash the declared type if present
   let typeHash := match fn.declaredTypeSyntax with
     | none => 0
@@ -636,7 +538,7 @@ def hashFunction (fn : Soma.Metal.UntypedFunction) : UInt64 :=
   combineHashes #[nameHash, paramsHash, bodyHash, typeHash]
 
 /-- Hash a type definition for incremental checking -/
-def hashTypeDef (td : Soma.Metal.TypeDef) : UInt64 :=
+def hashTypeDef (td : Soma.Core.TypeDef) : UInt64 :=
   match td with
   | .algebraic name typeVars ctors =>
     let nameHash := hashString name.display
@@ -659,7 +561,7 @@ def hashTypeDef (td : Soma.Metal.TypeDef) : UInt64 :=
     combineHashes #[2, nameHash, varsHash, fieldsHash] -- 2 = record tag
 
 /-- Hash all definitions in a module, returning a map from DefId to hash -/
-def hashModuleDefinitions (moduleName : String) (module : Soma.Metal.UntypedModule)
+def hashModuleDefinitions (moduleName : String) (module : Soma.Core.UntypedModule)
     : HashMap DefId UInt64 := Id.run do
   let mut hashes : HashMap DefId UInt64 := {}
 

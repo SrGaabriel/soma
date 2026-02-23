@@ -41,7 +41,7 @@ def loadHaomaProject (ctx : RequestContext LspState) (projectRoot : System.FileP
   match ← Haoma.loadMetadataFull projectRoot with
   | .ok metadata =>
     -- Load external dependency metadata from the type_metadata paths
-    let mut deps : Array Soma.Check.ExternalDependency := #[]
+    let mut deps : Array Soma.Project.Check.ExternalDependency := #[]
     for (depName, metaPath) in metadata.type_metadata.toArray do
       -- Skip root package metadata
       if depName == metadata.root_package then

@@ -3,7 +3,6 @@ import Soma.Dependent.Totality.Core
 namespace Soma.Dependent.Totality
 
 open Soma.Core
-open Soma.Metal (Name)
 open Soma.Syntax (Span)
 
 /-- Polarity for positivity checking -/
@@ -33,7 +32,7 @@ partial def checkPositivityClosure (typeId : TypeId) (pol : Polarity) (clos : Cl
   | some body =>
     let env' := clos.env.extend clos.name freshVar
     let evalCtx : EvalCtx := { env := env', globals := GlobalEnv.empty, metas := MetaState.empty }
-    let bodyVal := evalTerm evalCtx body
+    let bodyVal := evalCoreExpr evalCtx body
     checkPositivityValue typeId pol bodyVal
   | none =>
     let envVals := clos.env.values.map (·.2)
@@ -201,7 +200,7 @@ def validateTypeIndex (idx : Value) (registry : TotalityRegistry) (span : Span) 
   | [] => pure ()
   | name :: _ =>
     let u ← TCM.freshUnique name
-    TCM.throw (.partialInTypeIndex (Name.user u) span)
+    TCM.throw (.partialInTypeIndex ⟨u⟩ span)
 
 /-- Check and report positivity for a data type definition -/
 def checkAndReportPositivity (typeName : String) (typeId : TypeId)

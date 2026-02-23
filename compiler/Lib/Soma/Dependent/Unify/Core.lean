@@ -166,31 +166,40 @@ partial def occursInClosure (m : MetaId) (clos : Closure) : Bool :=
   | .term _ env body =>
     -- Term-based closure: check environment and body
     let envOccurs := env.values.any fun (_, v) => occursIn m v
-    envOccurs || occursInTerm m body
+    envOccurs || occursInExpr m body
 where
-  /-- Check if a metavariable occurs in a term -/
-  occursInTerm (m : MetaId) : Term → Bool
-    | .mvar id => id == m.id
-    | .app fn args => occursInTerm m fn || args.any (occursInTerm m)
-    | .lam _ body => occursInTerm m body
-    | .pi _ _ _ dom cod => occursInTerm m dom || occursInTerm m cod
-    | .sigma _ _ fst snd => occursInTerm m fst || occursInTerm m snd
-    | .pair a b => occursInTerm m a || occursInTerm m b
-    | .fst e => occursInTerm m e
-    | .snd e => occursInTerm m e
-    | .if_ c t e => occursInTerm m c || occursInTerm m t || occursInTerm m e
-    | .case s arms => occursInTerm m s || arms.any fun (_, _, b) => occursInTerm m b
-    | .eq _ ty l r => occursInTerm m ty || occursInTerm m l || occursInTerm m r
-    | .refl ty x => occursInTerm m ty || occursInTerm m x
+  /-- Check if a metavariable occurs in a Core.Expr -/
+  occursInExpr (m : MetaId) : Soma.Core.Expr → Bool
+    | .mvar id => id == m
+    | .app fn arg => occursInExpr m fn || occursInExpr m arg
+    | .lam _ _ dom body => occursInExpr m dom || occursInExpr m body
+    | .let_ _ ty val body => occursInExpr m ty || occursInExpr m val || occursInExpr m body
+    | .pi _ _ _ dom cod => occursInExpr m dom || occursInExpr m cod
+    | .sigma _ _ _ fst snd => occursInExpr m fst || occursInExpr m snd
+    | .pair a b => occursInExpr m a || occursInExpr m b
+    | .projFst e => occursInExpr m e
+    | .projSnd e => occursInExpr m e
+    | .if_ c t e => occursInExpr m c || occursInExpr m t || occursInExpr m e
+    | .«case» scruts arms =>
+        scruts.any (occursInExpr m) || arms.any fun arm => occursInExpr m arm.body
+    | .eqTy _ ty l r => occursInExpr m ty || occursInExpr m l || occursInExpr m r
+    | .refl ty x => occursInExpr m ty || occursInExpr m x
     | .transport _ ty mot l r eq b =>
-        occursInTerm m ty || occursInTerm m mot || occursInTerm m l ||
-        occursInTerm m r || occursInTerm m eq || occursInTerm m b
-    | .rowExtend l t tail => occursInTerm m l || occursInTerm m t || occursInTerm m tail
-    | .recordTy r => occursInTerm m r
-    | .variantTy r => occursInTerm m r
-    | .record fields => fields.any fun (_, t) => occursInTerm m t
-    | .fieldAccess e _ => occursInTerm m e
-    | .construct _ _ args => args.any (occursInTerm m)
+        occursInExpr m ty || occursInExpr m mot || occursInExpr m l ||
+        occursInExpr m r || occursInExpr m eq || occursInExpr m b
+    | .rowExtend l t tail => occursInExpr m l || occursInExpr m t || occursInExpr m tail
+    | .recordTy r => occursInExpr m r
+    | .variantTy r => occursInExpr m r
+    | .record fields => fields.any fun (_, e) => occursInExpr m e
+    | .recordUpdate b us => occursInExpr m b || us.any fun (_, e) => occursInExpr m e
+    | .fieldAccess e _ _ => occursInExpr m e
+    | .construct _ _ args => args.any (occursInExpr m)
+    | .inject _ args => args.any (occursInExpr m)
+    | .closure _ caps => caps.any (occursInExpr m)
+    | .array es => es.any (occursInExpr m)
+    | .tuple es => es.any (occursInExpr m)
+    | .dataTy _ ps => ps.any (occursInExpr m)
+    | .ann x t => occursInExpr m x || occursInExpr m t
     | _ => false
 
 end
@@ -254,34 +263,41 @@ partial def inScopeClosure (allowedLevels : List DeBruijnLvl) (clos : Closure) :
     | some body =>
       -- The closure binds one variable, so extend allowed levels
       let extendedLevels := ⟨clos.env.size⟩ :: allowedLevels
-      inScopeTerm extendedLevels body
+      inScopeExpr extendedLevels body
     | none => true  -- Empty closure is always in scope
 where
-  /-- Check if all variable references in a term are in the allowed scope -/
-  inScopeTerm (levels : List DeBruijnLvl) : Term → Bool
-    | .var idx _ =>
-      -- todo: don't be so conservative here (allowing it if it looks reasonable)
-      idx < levels.length
-    | .app fn args => inScopeTerm levels fn && args.all (inScopeTerm levels)
-    | .lam _ body => inScopeTerm levels body  -- lam binds new vars
-    | .pi _ _ _ dom cod => inScopeTerm levels dom && inScopeTerm levels cod
-    | .sigma _ _ fst snd => inScopeTerm levels fst && inScopeTerm levels snd
-    | .pair a b => inScopeTerm levels a && inScopeTerm levels b
-    | .fst e => inScopeTerm levels e
-    | .snd e => inScopeTerm levels e
-    | .if_ c t e => inScopeTerm levels c && inScopeTerm levels t && inScopeTerm levels e
-    | .case s arms => inScopeTerm levels s && arms.all fun (_, _, b) => inScopeTerm levels b
-    | .eq _ ty l r => inScopeTerm levels ty && inScopeTerm levels l && inScopeTerm levels r
-    | .refl ty x => inScopeTerm levels ty && inScopeTerm levels x
+  /-- Check if all variable references in a Core.Expr are in the allowed scope -/
+  inScopeExpr (levels : List DeBruijnLvl) : Soma.Core.Expr → Bool
+    | .bvar idx => idx < levels.length
+    | .app fn arg => inScopeExpr levels fn && inScopeExpr levels arg
+    | .lam _ _ dom body => inScopeExpr levels dom && inScopeExpr levels body
+    | .let_ _ ty val body => inScopeExpr levels ty && inScopeExpr levels val && inScopeExpr levels body
+    | .pi _ _ _ dom cod => inScopeExpr levels dom && inScopeExpr levels cod
+    | .sigma _ _ _ fst snd => inScopeExpr levels fst && inScopeExpr levels snd
+    | .pair a b => inScopeExpr levels a && inScopeExpr levels b
+    | .projFst e => inScopeExpr levels e
+    | .projSnd e => inScopeExpr levels e
+    | .if_ c t e => inScopeExpr levels c && inScopeExpr levels t && inScopeExpr levels e
+    | .«case» scruts arms =>
+        scruts.all (inScopeExpr levels) && arms.all fun arm => inScopeExpr levels arm.body
+    | .eqTy _ ty l r => inScopeExpr levels ty && inScopeExpr levels l && inScopeExpr levels r
+    | .refl ty x => inScopeExpr levels ty && inScopeExpr levels x
     | .transport _ ty mot l r eq b =>
-        inScopeTerm levels ty && inScopeTerm levels mot && inScopeTerm levels l &&
-        inScopeTerm levels r && inScopeTerm levels eq && inScopeTerm levels b
-    | .rowExtend l t tail => inScopeTerm levels l && inScopeTerm levels t && inScopeTerm levels tail
-    | .recordTy r => inScopeTerm levels r
-    | .variantTy r => inScopeTerm levels r
-    | .record fields => fields.all fun (_, t) => inScopeTerm levels t
-    | .fieldAccess e _ => inScopeTerm levels e
-    | .construct _ _ args => args.all (inScopeTerm levels)
+        inScopeExpr levels ty && inScopeExpr levels mot && inScopeExpr levels l &&
+        inScopeExpr levels r && inScopeExpr levels eq && inScopeExpr levels b
+    | .rowExtend l t tail => inScopeExpr levels l && inScopeExpr levels t && inScopeExpr levels tail
+    | .recordTy r => inScopeExpr levels r
+    | .variantTy r => inScopeExpr levels r
+    | .record fields => fields.all fun (_, e) => inScopeExpr levels e
+    | .recordUpdate b us => inScopeExpr levels b && us.all fun (_, e) => inScopeExpr levels e
+    | .fieldAccess e _ _ => inScopeExpr levels e
+    | .construct _ _ args => args.all (inScopeExpr levels)
+    | .inject _ args => args.all (inScopeExpr levels)
+    | .closure _ caps => caps.all (inScopeExpr levels)
+    | .array es => es.all (inScopeExpr levels)
+    | .tuple es => es.all (inScopeExpr levels)
+    | .dataTy _ ps => ps.all (inScopeExpr levels)
+    | .ann x t => inScopeExpr levels x && inScopeExpr levels t
     | _ => true
 
 end

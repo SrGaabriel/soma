@@ -1,7 +1,7 @@
 import Cli
 import Soma.Driver.Options
 import Soma.Syntax
-import Soma.Metal
+import Soma.Core.LambdaLift
 import Soma.Logging
 import Soma.Project
 import Soma.Project.Check
@@ -13,7 +13,7 @@ import Somac.Build
 import Somac.Build.Metadata
 
 open Cli
-open Soma.Check (parseOnly toAst toMetal)
+open Soma.Project.Check (parseOnly toAst toElaborated)
 
 namespace Soma.Driver
 
@@ -101,13 +101,13 @@ def runParse (p : Parsed) : IO UInt32 := do
 
   return if allDiags.hasErrors then 1 else 0
 
-/-- Handler for the `lower` command - Metal HIR lowering -/
+/-- Handler for the `lower` command -/
 def runLower (p : Parsed) : IO UInt32 := do
   let input := p.positionalArg! "input" |>.as! String
 
   let content ← IO.FS.readFile input
-  let (parseRes, lowerRes, metalRes) := toMetal input content
-  let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics ++ metalRes.diagnostics
+  let (parseRes, lowerRes, elabRes) := toElaborated input content
+  let allDiags := parseRes.diagnostics ++ lowerRes.diagnostics ++ elabRes.diagnostics
 
   -- Print diagnostics
   if !allDiags.isEmpty then
@@ -119,10 +119,14 @@ def runLower (p : Parsed) : IO UInt32 := do
     return 1
 
   -- Success
-  let module := metalRes.module
-  let cfg : Metal.Pretty.Config := { indent := 2 }
-  IO.println (Metal.Pretty.ppModule cfg module)
-  IO.println "\nMetal lowering successful!"
+  let module := elabRes.module
+  IO.println s!"Lowered module: {module.name}"
+  IO.println s!"  functions: {module.functions.size}"
+  IO.println s!"  types: {module.types.size}"
+  IO.println s!"  instances: {module.instances.size}"
+  IO.println s!"  typeclasses: {module.typeClasses.size}"
+  IO.println s!"  abbreviations: {module.abbreviations.size}"
+  IO.println "\nLowering successful!"
   return 0
 
 /-- Parse dependency flags into array of (name, path) pairs -/
@@ -144,14 +148,14 @@ def runCheckDep (p : Parsed) : IO UInt32 := do
   let deps := parseDeps p
 
   -- Build project config
-  let config : Soma.Check.ProjectConfig := {
+  let config : Soma.Project.Check.ProjectConfig := {
     input := ⟨input⟩
     name := name
     deps := deps.map fun (n, p) => (n, ⟨p⟩)
   }
 
   -- Run dependent type checking via Check module
-  let result ← Soma.Check.checkProject config Somac.Build.loadExternalDependencies
+  let result ← Soma.Project.Check.checkProject config Somac.Build.loadExternalDependencies
 
   -- Output diagnostics
   match format with
@@ -201,7 +205,7 @@ def runLLVM (p : Parsed) : IO UInt32 := do
   let content ← IO.FS.readFile input
 
   -- Phase 1-3: Parse and lower to AST
-  let moduleName := Soma.Check.moduleNameFromPath input
+  let moduleName := Soma.Project.Check.moduleNameFromPath input
   let (parseRes, lowerRes) := toAst input content (some moduleName)
   let parseDiags := parseRes.diagnostics ++ lowerRes.diagnostics
 
@@ -211,26 +215,26 @@ def runLLVM (p : Parsed) : IO UInt32 := do
     IO.eprintln (Soma.Logging.Error.renderSummary parseDiags)
     return 1
 
-  -- Phase 4: Lower to Metal IR
-  let metalRes := Soma.Check.metal lowerRes.ast
-  let metalDiags := parseDiags ++ metalRes.diagnostics
+  -- Phase 4: Lower declarations to Core untyped module
+  let elabRes := Soma.Project.Check.elaborate lowerRes.ast
+  let elabDiags := parseDiags ++ elabRes.diagnostics
 
-  if metalRes.diagnostics.hasErrors then
-    Soma.Logging.Error.printDiagnostics metalDiags parseRes.sourceFile
+  if elabRes.diagnostics.hasErrors then
+    Soma.Logging.Error.printDiagnostics elabDiags parseRes.sourceFile
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary metalDiags)
+    IO.eprintln (Soma.Logging.Error.renderSummary elabDiags)
     return 1
 
   -- Phase 5: Type check with dependent types (this gives us usage counts)
-  let tcResult := Soma.Check.typeCheckModule
-    metalRes.module moduleName
+  let tcResult := Soma.Project.Check.typeCheckModule
+    elabRes.module moduleName
     Soma.Dependent.Globals.empty
     Soma.Dependent.InstanceEnv.empty
     Soma.Dependent.AbbrevEnv.empty
     none
 
   let tcDiags := tcResult.errors.map (·.toDiagnostic)
-  let allDiags := metalDiags ++ tcDiags
+  let allDiags := elabDiags ++ tcDiags
 
   if allDiags.hasErrors then
     Soma.Logging.Error.printDiagnostics allDiags parseRes.sourceFile
@@ -239,10 +243,10 @@ def runLLVM (p : Parsed) : IO UInt32 := do
     return 1
 
   -- Phase 5.5: Lambda lifting
-  let liftedTypedFunctions := Soma.Metal.LambdaLift.liftAll tcResult.typedFunctions moduleName
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Somac.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
+  let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
 
   -- Phase 7: Lower to Alloy MIR
   let alloyModule := Somac.Alloy.Lower.lower graph moduleName
@@ -264,7 +268,7 @@ def runAlloy (p : Parsed) : IO UInt32 := do
   let content ← IO.FS.readFile input
 
   -- Phase 1-3: Parse and lower to AST
-  let moduleName := Soma.Check.moduleNameFromPath input
+  let moduleName := Soma.Project.Check.moduleNameFromPath input
   let (parseRes, lowerRes) := toAst input content (some moduleName)
   let parseDiags := parseRes.diagnostics ++ lowerRes.diagnostics
 
@@ -274,26 +278,26 @@ def runAlloy (p : Parsed) : IO UInt32 := do
     IO.eprintln (Soma.Logging.Error.renderSummary parseDiags)
     return 1
 
-  -- Phase 4: Lower to Metal IR
-  let metalRes := Soma.Check.metal lowerRes.ast
-  let metalDiags := parseDiags ++ metalRes.diagnostics
+  -- Phase 4: Lower declarations to Core untyped module
+  let elabRes := Soma.Project.Check.elaborate lowerRes.ast
+  let elabDiags := parseDiags ++ elabRes.diagnostics
 
-  if metalRes.diagnostics.hasErrors then
-    Soma.Logging.Error.printDiagnostics metalDiags parseRes.sourceFile
+  if elabRes.diagnostics.hasErrors then
+    Soma.Logging.Error.printDiagnostics elabDiags parseRes.sourceFile
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary metalDiags)
+    IO.eprintln (Soma.Logging.Error.renderSummary elabDiags)
     return 1
 
   -- Phase 5: Type check with dependent types (this gives us usage counts)
-  let tcResult := Soma.Check.typeCheckModule
-    metalRes.module moduleName
+  let tcResult := Soma.Project.Check.typeCheckModule
+    elabRes.module moduleName
     Soma.Dependent.Globals.empty
     Soma.Dependent.InstanceEnv.empty
     Soma.Dependent.AbbrevEnv.empty
     none
 
   let tcDiags := tcResult.errors.map (·.toDiagnostic)
-  let allDiags := metalDiags ++ tcDiags
+  let allDiags := elabDiags ++ tcDiags
 
   if allDiags.hasErrors then
     Soma.Logging.Error.printDiagnostics allDiags parseRes.sourceFile
@@ -302,10 +306,10 @@ def runAlloy (p : Parsed) : IO UInt32 := do
     return 1
 
   -- Phase 5.5: Lambda lifting
-  let liftedTypedFunctions := Soma.Metal.LambdaLift.liftAll tcResult.typedFunctions moduleName
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Somac.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
+  let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
 
   -- Phase 7: Lower to Alloy MIR
   let alloyModule := Somac.Alloy.Lower.lower graph moduleName
@@ -325,7 +329,7 @@ def runCircuit (p : Parsed) : IO UInt32 := do
   let content ← IO.FS.readFile input
 
   -- Phase 1-3: Parse and lower to AST
-  let moduleName := Soma.Check.moduleNameFromPath input
+  let moduleName := Soma.Project.Check.moduleNameFromPath input
   let (parseRes, lowerRes) := toAst input content (some moduleName)
   let parseDiags := parseRes.diagnostics ++ lowerRes.diagnostics
 
@@ -335,26 +339,26 @@ def runCircuit (p : Parsed) : IO UInt32 := do
     IO.eprintln (Soma.Logging.Error.renderSummary parseDiags)
     return 1
 
-  -- Phase 4: Lower to Metal IR
-  let metalRes := Soma.Check.metal lowerRes.ast
-  let metalDiags := parseDiags ++ metalRes.diagnostics
+  -- Phase 4: Lower declarations to Core untyped module
+  let elabRes := Soma.Project.Check.elaborate lowerRes.ast
+  let elabDiags := parseDiags ++ elabRes.diagnostics
 
-  if metalRes.diagnostics.hasErrors then
-    Soma.Logging.Error.printDiagnostics metalDiags parseRes.sourceFile
+  if elabRes.diagnostics.hasErrors then
+    Soma.Logging.Error.printDiagnostics elabDiags parseRes.sourceFile
     IO.eprintln ""
-    IO.eprintln (Soma.Logging.Error.renderSummary metalDiags)
+    IO.eprintln (Soma.Logging.Error.renderSummary elabDiags)
     return 1
 
   -- Phase 5: Type check with dependent types (this gives us usage counts)
-  let tcResult := Soma.Check.typeCheckModule
-    metalRes.module moduleName
+  let tcResult := Soma.Project.Check.typeCheckModule
+    elabRes.module moduleName
     Soma.Dependent.Globals.empty
     Soma.Dependent.InstanceEnv.empty
     Soma.Dependent.AbbrevEnv.empty
     none
 
   let tcDiags := tcResult.errors.map (·.toDiagnostic)
-  let allDiags := metalDiags ++ tcDiags
+  let allDiags := elabDiags ++ tcDiags
 
   if allDiags.hasErrors then
     Soma.Logging.Error.printDiagnostics allDiags parseRes.sourceFile
@@ -363,10 +367,10 @@ def runCircuit (p : Parsed) : IO UInt32 := do
     return 1
 
   -- Phase 5.5: Lambda lifting
-  let liftedTypedFunctions := Soma.Metal.LambdaLift.liftAll tcResult.typedFunctions moduleName
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Somac.Circuit.Lower.lower metalRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
+  let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
 
   -- Pretty print the Circuit IR graph
   let cfg : Somac.Circuit.Pretty.Config := { showIds := true, showConnections := true, showLabels := true, showTypes := showTypes }
@@ -446,7 +450,7 @@ def parseCmd : Cmd := `[Cli|
 /-- The `lower` subcommand -/
 def lowerCmd : Cmd := `[Cli|
   lower VIA runLower; ["0.1.0"]
-  "Lower a source file to Metal HIR (untyped intermediate representation)."
+  "Lower a source file to the Core untyped module representation."
 
   ARGS:
     input : String; "Input source file (.soma)"

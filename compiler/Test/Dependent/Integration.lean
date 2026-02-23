@@ -17,7 +17,7 @@ import Test.Fixtures
 
 namespace Test.Dependent.Integration
 
-open Soma.Check
+open Soma.Project.Check
 open Test.Fixtures
 
 /-! ## Expectation Parsing -/

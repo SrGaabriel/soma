@@ -1,9 +1,11 @@
 import Somac.Circuit.PatternMatch.Pattern
-import Soma.Metal.Expr
+import Soma.Core.Expr
+import Soma.Core.Literal
 
 namespace Somac.Circuit.PatternMatch
 
-open Soma.Metal (BindingId Pattern PatternList Arm ArmList)
+open Soma.Core (Arm)
+open Soma (Unique)
 
 /-- A row in the pattern matrix.
 
@@ -17,7 +19,7 @@ structure Row where
   /-- Variable bindings accumulated during specialization.
       Each entry is (binding id, variable name, column index where bound).
       The column index indicates which scrutinee the variable is bound to. -/
-  bindings : Array (BindingId × String × Nat)
+  bindings : Array (Unique × String × Nat)
   /-- Index of the original arm (for selecting the right body) -/
   armIndex : Nat
   deriving Repr, Inhabited
@@ -49,11 +51,11 @@ def isWildcardAt (row : Row) (col : Nat) : Bool :=
   | none => false
 
 /-- Add a binding to the row -/
-def addBinding (row : Row) (binding : BindingId) (name : String) (col : Nat) : Row :=
+def addBinding (row : Row) (binding : Unique) (name : String) (col : Nat) : Row :=
   { row with bindings := row.bindings.push (binding, name, col) }
 
 /-- Add multiple bindings -/
-def addBindings (row : Row) (newBindings : Array (BindingId × String × Nat)) : Row :=
+def addBindings (row : Row) (newBindings : Array (Unique × String × Nat)) : Row :=
   { row with bindings := row.bindings ++ newBindings }
 
 /-- Collect bindings from a pattern at a given column and add them to the row -/
@@ -125,7 +127,7 @@ def getConstructorTags (m : PatternMatrix) (col : Nat) : Array (Nat × Nat) :=
     else acc.push (tag, arity)
 
 /-- Get all distinct literal values appearing in a column -/
-def getLiteralValues (m : PatternMatrix) (col : Nat) : Array Soma.Metal.Literal :=
+def getLiteralValues (m : PatternMatrix) (col : Nat) : Array Soma.Core.Literal :=
   let lits := m.rows.filterMap fun row =>
     match row.patterns[col]? with
     | some p => p.getLit?
@@ -220,7 +222,7 @@ def specializeRow (row : Row) (col : Nat) (tag : Nat) (arity : Nat)
 where
   /-- Strip as-patterns and collect their bindings -/
   collectAsBindings (p : SimplePattern) (col : Nat)
-      : SimplePattern × Array (BindingId × String × Nat) :=
+      : SimplePattern × Array (Unique × String × Nat) :=
     match p with
     | .as binding name inner =>
       let (inner', bindings) := collectAsBindings inner col
@@ -240,7 +242,7 @@ def PatternMatrix.specialize (m : PatternMatrix) (col : Nat) (tag : Nat) (arity 
   ⟨newRows, newNumCols⟩
 
 /-- Specialize a row for a literal match at column `col`. -/
-def specializeRowLit (row : Row) (col : Nat) (lit : Soma.Metal.Literal)
+def specializeRowLit (row : Row) (col : Nat) (lit : Soma.Core.Literal)
     : Option Row :=
   match row.patterns[col]? with
   | none => none
@@ -279,7 +281,7 @@ def specializeRowLit (row : Row) (col : Nat) (lit : Soma.Metal.Literal)
       none
 where
   collectAsBindings (p : SimplePattern) (col : Nat)
-      : SimplePattern × Array (BindingId × String × Nat) :=
+      : SimplePattern × Array (Unique × String × Nat) :=
     match p with
     | .as binding name inner =>
       let (inner', bindings) := collectAsBindings inner col
@@ -287,7 +289,7 @@ where
     | other => (other, #[])
 
 /-- Specialize matrix for a literal match -/
-def PatternMatrix.specializeLit (m : PatternMatrix) (col : Nat) (lit : Soma.Metal.Literal)
+def PatternMatrix.specializeLit (m : PatternMatrix) (col : Nat) (lit : Soma.Core.Literal)
     : PatternMatrix :=
   let newRows := m.rows.filterMap fun row => specializeRowLit row col lit
   ⟨newRows, m.numColumns - 1⟩
@@ -333,7 +335,7 @@ def defaultRow (row : Row) (col : Nat) : Option Row :=
       none
 where
   collectAsBindings (p : SimplePattern) (col : Nat)
-      : SimplePattern × Array (BindingId × String × Nat) :=
+      : SimplePattern × Array (Unique × String × Nat) :=
     match p with
     | .as binding name inner =>
       let (inner', bindings) := collectAsBindings inner col
@@ -348,43 +350,17 @@ def PatternMatrix.default (m : PatternMatrix) (col : Nat) : PatternMatrix :=
   let newRows := m.rows.filterMap fun row => defaultRow row col
   ⟨newRows, m.numColumns - 1⟩
 
-/-! ## Building the Matrix from Metal IR -/
+/-! ## Building the Matrix from Core IR -/
 
-/-- Build a pattern matrix from a list of match arms.
-
-    Each arm contributes one row. The patterns are simplified
-    to the SimplePattern representation.
--/
-def buildMatrix (ctx : SimplifyCtx) (arms : List (Arm α scope))
+/-- Build a pattern matrix from Core case arms. -/
+def buildMatrixFromArms (ctx : SimplifyCtx) (arms : Array Soma.Core.Arm)
     : PatternMatrix :=
-  let rows := buildRows arms 0
-  let numCols := match rows with
-    | [] => 0
-    | r :: _ => r.patterns.size
-  ⟨rows.toArray, numCols⟩
-where
-  extractPatterns (arm : Arm α scope) : Array (Pattern α) :=
-    match arm with
-    | .mk patList _ _ => patListToArray patList
-
-  patListToArray : PatternList α → Array (Pattern α)
-    | .nil => #[]
-    | .cons p ps => #[p] ++ patListToArray ps
-
-  buildRows : List (Arm α scope) → Nat → List Row
-    | [], _ => []
-    | arm :: rest, idx =>
-      let patterns := extractPatterns arm
-      let simplified := patterns.map (simplifyPattern ctx)
-      Row.ofPatterns simplified idx :: buildRows rest (idx + 1)
-
-/-- Build matrix from ArmList (the actual Metal IR type) -/
-def buildMatrixFromArmList (ctx : SimplifyCtx) (arms : ArmList α scope)
-    : PatternMatrix :=
-  buildMatrix ctx (armListToList arms)
-where
-  armListToList : ArmList α scope → List (Arm α scope)
-    | .nil => []
-    | .cons a as => a :: armListToList as
+  let rows := arms.mapIdx fun idx arm =>
+    let simplified := arm.patterns.map (simplifyPattern ctx)
+    Row.ofPatterns simplified idx
+  let numCols := match rows[0]? with
+    | some r => r.patterns.size
+    | none => 0
+  ⟨rows, numCols⟩
 
 end Somac.Circuit.PatternMatch

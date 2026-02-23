@@ -3,34 +3,25 @@ import Soma.Core.Quantity
 import Soma.Core.Level
 import Soma.Core.Primitive
 import Soma.Core.TypeId
-import Soma.Core.Name
-import Soma.Metal.Expr
 
 namespace Soma.Core
-
-open Soma.Metal (Expr ExprList Scope BinderInfo HoleId)
-open Soma.Syntax (Span)
-
--- Inhabited instance for Expr
-instance [Inhabited α] : Inhabited (Expr α scope) :=
-  ⟨.panic "uninhabited" default default⟩
 
 /-! ## Evaluation Context -/
 
 /-- Global environment for looking up definitions -/
 structure GlobalEnv where
   /-- Map from global names to their values -/
-  defs : Std.HashMap String Value := {}
+  defs : Std.HashMap QualifiedName Value := {}
   deriving Inhabited
 
 namespace GlobalEnv
 
 def empty : GlobalEnv := ⟨{}⟩
 
-def insert (env : GlobalEnv) (name : String) (v : Value) : GlobalEnv :=
+def insert (env : GlobalEnv) (name : QualifiedName) (v : Value) : GlobalEnv :=
   ⟨env.defs.insert name v⟩
 
-def lookup (env : GlobalEnv) (name : String) : Option Value :=
+def lookup (env : GlobalEnv) (name : QualifiedName) : Option Value :=
   env.defs.get? name
 
 end GlobalEnv
@@ -101,228 +92,179 @@ def listEnumerate (xs : List α) : List (Nat × α) :=
     | x :: xs => (i, x) :: go (i + 1) xs
   go 0 xs
 
-/-- Find the index of a binding in a scope (De Bruijn index) -/
-def findBindingIndex (scope : Scope) (binding : BindingId) : Nat :=
-  match scope.findIdx? (· == binding) with
-  | some idx => idx
-  | none => 0 -- Shouldn't happen for well-scoped terms
+/-- Check if an arm matches a given constructor tag -/
+private def matchArmTag (arm : Arm) (tag : Nat) : Bool :=
+  let pat : Option Pattern := arm.patterns[0]?
+  match pat with
+  | some (Pattern.ctor _ t _) => t == tag
+  | some Pattern.wildcard => true
+  | some (Pattern.var _) => true
+  | _ => false
 
 mutual
 
-/-- Convert an Expr to a Term, dropping annotations and spans.
-    Variables are converted using their position in the scope (De Bruijn index). -/
-def exprToTerm {scope : Scope} (e : Expr α scope) : Term :=
+/-- Evaluate a Core.Expr to a Value -/
+partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
   match e with
-  | .var v _ _ =>
-    -- Compute De Bruijn index from the binding's position in scope
-    let idx := findBindingIndex scope v.binding
-    .var idx v.original
-  | .lit l _ => .lit l
-  | .call fn args _ _ => .app (exprToTerm fn) (exprListToTerms args)
-  | .lam params body _ _ => .lam (params.toList.map (·.2.1)) (exprToTerm body)
-  | .if_ cond then_ else_ _ _ => .if_ (exprToTerm cond) (exprToTerm then_) (exprToTerm else_)
-  | .pair fst snd _ _ => .pair (exprToTerm fst) (exprToTerm snd)
-  | .fst e _ _ => .fst (exprToTerm e)
-  | .snd e _ _ => .snd (exprToTerm e)
-  | .pi qty binder name dom cod _ => .pi qty binder name (exprToTerm dom) (exprToTerm cod)
-  | .sigma qty name fst snd _ => .sigma qty name (exprToTerm fst) (exprToTerm snd)
-  | .type level _ => .type level
-  | .primTy p _ => .primTy p
-  | .rowSort _ => .rowSort
-  | .labelSort _ => .labelSort
-  | .rowEmpty _ => .rowEmpty
-  | .rowExtend label fieldTy tail _ => .rowExtend (exprToTerm label) (exprToTerm fieldTy) (exprToTerm tail)
-  | .recordTy row _ => .recordTy (exprToTerm row)
-  | .variantTy row _ => .variantTy (exprToTerm row)
-  | .labelLit name _ => .labelLit name
-  | .record fields _ _ => .record (recordFieldsToTerms fields)
-  | .fieldAccess e field _ _ _ => .fieldAccess (exprToTerm e) field
-  | .construct name tag args _ _ => .construct name tag (exprListToTerms args)
-  | .global name _ _ => .global name
-  | .eq tyLevel ty lhs rhs _ => .eq tyLevel (exprToTerm ty) (exprToTerm lhs) (exprToTerm rhs)
-  | .refl ty x _ => .refl (exprToTerm ty) (exprToTerm x)
-  | .transport tyLevel ty motive lhs rhs eq body _ =>
-      .transport tyLevel (exprToTerm ty) (exprToTerm motive) (exprToTerm lhs)
-                 (exprToTerm rhs) (exprToTerm eq) (exprToTerm body)
-  | .mvar id _ _ => .mvar id
-  | .hole _ _ => .panic "hole in term"
-  | .panic msg _ _ => .panic msg
-  | .ann e _ _ _ => exprToTerm e
-  | .closure name _ _ _ => .global name
-  | .recordUpdate _ _ _ _ => .panic "recordUpdate not supported in Term"
-  | .inject _ _ _ _ => .panic "inject not yet supported"
-  | .array _ _ _ => .panic "array not yet supported"
-  | .case _ _ _ _ => .panic "case not yet converted"
-  | .tuple _ _ _ => .panic "tuple not yet converted"
-  | .proj _ field _ _ _ => .panic s!"proj {field}"
-  | .typeApp _ _ _ => .panic "typeApp not supported"
-  | .dataTy _ _ _ => .panic "dataTy not supported"
-
-/-- Convert ExprList to list of Terms -/
-def exprListToTerms {scope : Scope} (es : ExprList α scope) : List Term :=
-  match es with
-  | .nil => []
-  | .cons e rest => exprToTerm e :: exprListToTerms rest
-
-/-- Convert record fields to list of (name, Term) pairs -/
-def recordFieldsToTerms {scope : Scope} (fields : Soma.Metal.RecordFieldList α scope) : List (String × Term) :=
-  match fields with
-  | .nil => []
-  | .cons name e rest => (name, exprToTerm e) :: recordFieldsToTerms rest
-
-end
-
-mutual
-
-/-- Evaluate a Term to a Value.
-    Terms use De Bruijn indices, which we resolve using the environment. -/
-partial def evalTerm (ctx : EvalCtx) (t : Term) : Value :=
-  match t with
-  | .var idx name =>
-    -- Look up by index: environment stores values in order, idx 0 is most recent
+  | .bvar idx =>
     let lvl := ctx.env.size - idx - 1
     match ctx.env.lookup ⟨lvl⟩ with
     | some v => v
+    | none => .vNeutral .type0 (.nVar ⟨s!"bvar{idx}", ctx.env.level⟩)
+
+  | .fvar id =>
+    -- Free variables: look up by display name in environment
+    match ctx.env.lookupByName id.original with
+    | some v => v
     | none =>
-      -- Fall back to name lookup for globals or error
-      match ctx.env.lookupByName name with
+      match ctx.globals.lookup ⟨id⟩ with
       | some v => v
-      | none => .vNeutral .type0 (.nVar ⟨name, ctx.env.level⟩)
+      | none => .vNeutral .type0 (.nVar ⟨id.original, ctx.env.level⟩)
 
-  | .lit l =>
-    match l with
-    | .int n => .vIntLit n
-    | .string s => .vStringLit s
-    | .bool true => .vConstructor (.user ⟨0, "", "True"⟩) 0 []
-    | .bool false => .vConstructor (.user ⟨0, "", "False"⟩) 1 []
+  | .mvar id =>
+    match ctx.metas.lookup id with
+    | some info =>
+      match info.solution with
+      | some v => v
+      | none => .vNeutral .type0 (.nMeta id)
+    | none => .vNeutral .type0 (.nMeta id)
 
-  | .app fn args =>
-    let fnVal := evalTerm ctx fn
-    args.foldl (fun acc arg => vApp acc (evalTerm ctx arg) ctx) fnVal
-
-  | .lam names body =>
-    match names with
-    | [] => evalTerm ctx body
-    | name :: rest =>
-      let innerBody := if rest.isEmpty then body else .lam rest body
-      .vLam name (Closure.mkWithBody name ctx.env innerBody)
-
-  | .if_ cond then_ else_ =>
-    match evalTerm ctx cond with
-    | .vConstructor _ 0 _ => evalTerm ctx then_  -- True
-    | .vConstructor _ 1 _ => evalTerm ctx else_  -- False
-    | _ => .vNeutral .type0 (.nVar ⟨"if", ctx.env.level⟩)  -- Stuck
-
-  | .pair fst snd =>
-    .vPair (evalTerm ctx fst) (evalTerm ctx snd)
-
-  | .fst e =>
-    match evalTerm ctx e with
-    | .vPair f _ => f
-    | _ => .vNeutral .type0 (.nFst (.nVar ⟨"fst", ctx.env.level⟩))
-
-  | .snd e =>
-    match evalTerm ctx e with
-    | .vPair _ s => s
-    | _ => .vNeutral .type0 (.nSnd (.nVar ⟨"snd", ctx.env.level⟩))
-
-  | .pi qty binder name domain codomain =>
-    let domVal := evalTerm ctx domain
-    .vPi qty binder name domVal (Closure.mkWithBody name ctx.env codomain)
-
-  | .sigma qty name fst snd =>
-    let fstVal := evalTerm ctx fst
-    .vSigma qty name fstVal (Closure.mkWithBody name ctx.env snd)
-
-  | .type level => .vType level
-  | .primTy p => .vPrimTy p
-  | .rowSort => .vRowSort
-  | .labelSort => .vLabelSort
-  | .intLit n => .vIntLit n
-  | .stringLit s => .vStringLit s
-  | .rowEmpty => .vRowEmpty
-  | .labelLit name => .vLabelLit name
-
-  | .recordTy row => .vRecord (evalTerm ctx row)
-  | .variantTy row => .vVariant (evalTerm ctx row)
-
-  | .rowExtend label fieldTy tail =>
-    .vRowExtend (evalTerm ctx label) (evalTerm ctx fieldTy) (evalTerm ctx tail)
-
-  | .record fields =>
-    .vRecordVal (fields.map fun (name, t) => (name, evalTerm ctx t))
-
-  | .fieldAccess e field =>
-    match evalTerm ctx e with
-    | .vRecordVal fields =>
-      match fields.find? (·.1 == field) with
-      | some (_, v) => v
-      | none => .vNeutral .type0 (.nFieldAccess (.nVar ⟨"rec", ctx.env.level⟩) field)
-    | _ => .vNeutral .type0 (.nFieldAccess (.nVar ⟨"rec", ctx.env.level⟩) field)
-
-  | .construct name tag args =>
-    .vConstructor name tag (args.map (evalTerm ctx))
-
-  | .case scrutinee arms =>
-    let scrut := evalTerm ctx scrutinee
-    match scrut with
-    | .vConstructor _ tag ctorArgs =>
-      match arms.find? (fun (_, t, _) => t == tag) with
-      | some (_, _, body) =>
-        -- Extend environment with constructor arguments
-        -- Args are bound in order: first arg gets lowest de Bruijn level,
-        -- so idx 0 in body refers to the last arg (most recently bound)
-        let ctx' := ctorArgs.foldl (fun c arg => c.extendEnv "_" arg) ctx
-        evalTerm ctx' body
-      | none => .vNeutral .type0 (.nVar ⟨"case", ctx.env.level⟩)
-    | _ => .vNeutral .type0 (.nVar ⟨"case", ctx.env.level⟩)
-
-  | .global name =>
-    match ctx.globals.lookup name.display with
+  | .const name =>
+    match ctx.globals.lookup name with
     | some v => v
     | none =>
       match HigherPrimitive.fromName? name.display with
       | some hp => .vDataType (TypeId.builtin hp.name hp.uniqueId) []
       | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
 
-  | .eq tyLevel ty lhs rhs =>
-    .vEq tyLevel (evalTerm ctx ty) (evalTerm ctx lhs) (evalTerm ctx rhs)
+  | .app fn arg =>
+    let fnVal := evalCoreExpr ctx fn
+    vApp fnVal (evalCoreExpr ctx arg) ctx
 
-  | .refl ty x =>
-    .vRefl (evalTerm ctx ty) (evalTerm ctx x)
+  | .lam _info name _domain body =>
+    .vLam name (Closure.mkWithBody name ctx.env body)
 
+  | .let_ _name _ty val body =>
+    let valV := evalCoreExpr ctx val
+    evalCoreExpr (ctx.extendEnv _name valV) body
+
+  | .lit l =>
+    match l with
+    | .int n => .vIntLit n
+    | .string s => .vStringLit s
+    | .bool true => .vConstructor ⟨⟨0, "", "True"⟩⟩ 0 []
+    | .bool false => .vConstructor ⟨⟨0, "", "False"⟩⟩ 1 []
+
+  | .sort level => .vType level
+
+  | .pi qty _info name domain codomain =>
+    let domVal := evalCoreExpr ctx domain
+    .vPi qty _info name domVal (Closure.mkWithBody name ctx.env codomain)
+
+  | .sigma qty _info name fst snd =>
+    let fstVal := evalCoreExpr ctx fst
+    .vSigma qty name fstVal (Closure.mkWithBody name ctx.env snd)
+
+  | .pair fst snd => .vPair (evalCoreExpr ctx fst) (evalCoreExpr ctx snd)
+  | .projFst e => vFst (evalCoreExpr ctx e)
+  | .projSnd e => vSnd (evalCoreExpr ctx e)
+
+  | .construct name tag args =>
+    .vConstructor name tag (args.toList.map (evalCoreExpr ctx))
+
+  | .«case» scruts arms =>
+    -- Simplified: evaluate first scrutinee
+    match scruts[0]? with
+    | some scrut =>
+      let scrutVal := evalCoreExpr ctx scrut
+      match scrutVal with
+      | .vConstructor _ tag ctorArgs =>
+        -- Find matching arm by trying each arm's patterns
+        match arms.toList.find? (fun arm => matchArmTag arm tag) with
+        | some arm =>
+          let ctx' := ctorArgs.foldl (fun c arg => c.extendEnv "_" arg) ctx
+          evalCoreExpr ctx' arm.body
+        | none => .vNeutral .type0 (.nVar ⟨"case", ctx.env.level⟩)
+      | _ => .vNeutral .type0 (.nVar ⟨"case", ctx.env.level⟩)
+    | none => .vNeutral .type0 (.nVar ⟨"case", ctx.env.level⟩)
+
+  | .record fields =>
+    .vRecordVal (fields.toList.map fun (n, e) => (n, evalCoreExpr ctx e))
+
+  | .recordUpdate base updates =>
+    let baseVal := evalCoreExpr ctx base
+    match baseVal with
+    | .vRecordVal fields =>
+      let updates' := updates.toList.map fun (n, e) => (n, evalCoreExpr ctx e)
+      let merged := fields.map fun (n, v) =>
+        match updates'.find? (·.1 == n) with
+        | some (_, newV) => (n, newV)
+        | none => (n, v)
+      .vRecordVal merged
+    | _ => baseVal
+
+  | .fieldAccess e field _idx =>
+    vFieldAccess (evalCoreExpr ctx e) field
+
+  | .inject _label _args =>
+    -- Inject into variant: create a constructor-like value
+    .vNeutral .type0 (.nVar ⟨s!"inject:{_label}", ctx.env.level⟩)
+
+  | .primTy p => .vPrimTy p
+  | .rowSort => .vRowSort
+  | .labelSort => .vLabelSort
+  | .rowEmpty => .vRowEmpty
+  | .rowExtend label fieldTy tail =>
+    .vRowExtend (evalCoreExpr ctx label) (evalCoreExpr ctx fieldTy) (evalCoreExpr ctx tail)
+  | .recordTy row => .vRecord (evalCoreExpr ctx row)
+  | .variantTy row => .vVariant (evalCoreExpr ctx row)
+  | .labelLit name => .vLabelLit name
+  | .dataTy id params => .vDataType id (params.toList.map (evalCoreExpr ctx))
+
+  | .eqTy tyLevel ty lhs rhs =>
+    .vEq tyLevel (evalCoreExpr ctx ty) (evalCoreExpr ctx lhs) (evalCoreExpr ctx rhs)
+  | .refl ty x => .vRefl (evalCoreExpr ctx ty) (evalCoreExpr ctx x)
   | .transport tyLevel ty motive lhs rhs eq body =>
-    -- Transport along equality: if the equality proof is refl, just return the body
-    let eqVal := evalTerm ctx eq
+    let eqVal := evalCoreExpr ctx eq
     match eqVal with
-    | .vRefl _ _ =>
-      -- When proof is refl, the lhs and rhs are definitionally equal
-      -- so transport reduces to the body
-      evalTerm ctx body
+    | .vRefl _ _ => evalCoreExpr ctx body
     | _ =>
-      -- Otherwise, transport is stuck (neutral)
-      .vTransport tyLevel (evalTerm ctx ty) (evalTerm ctx motive)
-                  (evalTerm ctx lhs) (evalTerm ctx rhs) eqVal (evalTerm ctx body)
+      .vTransport tyLevel (evalCoreExpr ctx ty) (evalCoreExpr ctx motive)
+                  (evalCoreExpr ctx lhs) (evalCoreExpr ctx rhs)
+                  eqVal (evalCoreExpr ctx body)
 
-  | .mvar id =>
-    match ctx.metas.lookup ⟨id⟩ with
-    | some info =>
-      match info.solution with
-      | some v => v
-      | none => .vNeutral .type0 (.nMeta ⟨id⟩)
-    | none => .vNeutral .type0 (.nMeta ⟨id⟩)
+  | .if_ cond then_ else_ =>
+    match evalCoreExpr ctx cond with
+    | .vConstructor _ 0 _ => evalCoreExpr ctx then_
+    | .vConstructor _ 1 _ => evalCoreExpr ctx else_
+    | _ => .vNeutral .type0 (.nVar ⟨"if", ctx.env.level⟩)
 
-  | .panic msg =>
-    .vNeutral .type0 (.nVar ⟨s!"panic: {msg}", ctx.env.level⟩)
+  | .panic msg => .vNeutral .type0 (.nVar ⟨s!"panic: {msg}", ctx.env.level⟩)
 
-/-- Apply a closure to an argument, we extend the environment and evaluate the body. -/
+  | .closure name _captures =>
+    -- Post lambda-lift closure: treated as global reference
+    match ctx.globals.lookup name with
+    | some v => v
+    | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
+
+  | .array _elements => .vNeutral .type0 (.nVar ⟨"array", ctx.env.level⟩)
+  | .tuple elements =>
+    let vals := elements.toList.map (evalCoreExpr ctx)
+    match vals with
+    | [a, b] => .vPair a b
+    | _ => .vRecordVal (listEnumerate vals |>.map fun (i, v) => (s!"_{i}", v))
+
+  | .proj _typeName _field _idx =>
+    .vNeutral .type0 (.nVar ⟨s!"proj:{_field}", ctx.env.level⟩)
+
+  | .ann expr _ty => evalCoreExpr ctx expr
+
+/-- Apply a closure to an argument -/
 partial def applyClosure (clos : Closure) (arg : Value) (ctx : EvalCtx) : Value :=
-  -- Extend the closure's environment with the argument
   let env' := clos.env.extend clos.name arg
-  -- Evaluate the Term body under the extended environment
   match clos.body with
   | some body =>
-    evalTerm { ctx with env := env' } body
+    evalCoreExpr { ctx with env := env' } body
   | none =>
     .vNeutral .type0 (.nVar ⟨clos.name, env'.level⟩)
 
@@ -332,185 +274,20 @@ partial def vApp (fn : Value) (arg : Value) (ctx : EvalCtx) : Value :=
   | .vLam _ body =>
     applyClosure body arg ctx
   | .vNeutral ty neu =>
-    -- Application is stuck, create neutral application
-    -- The result type would be the codomain applied to arg
     .vNeutral ty (.nApp neu arg)
   | .vDataType id params =>
-    -- Type application: accumulate type parameters
     .vDataType id (params ++ [arg])
   | _ =>
-    -- Type error: applying non-function
     fn
-
-/-- Evaluate an expression to a value -/
-partial def eval (ctx : EvalCtx) : {scope : Scope} → Expr Unit scope → Value
-  -- Variables
-  | _, .var v _ _ =>
-    -- Convert De Bruijn index to level and look up
-    -- For now, use the variable name to look up in environment
-    match ctx.env.lookupByName v.original with
-    | some val => val
-    | none => .vNeutral .type0 (.nVar ⟨v.original, ctx.env.level⟩)
-
-  -- Literals
-  | _, .lit (.int n) _ => .vIntLit n
-  | _, .lit (.string s) _ => .vStringLit s
-  | _, .lit (.bool true) _ => .vConstructor (.user ⟨0, "", "True"⟩) 0 []
-  | _, .lit (.bool false) _ => .vConstructor (.user ⟨0, "", "False"⟩) 1 []
-
-  -- Function application
-  | _, .call fn args _ _ =>
-    let fnVal := eval ctx fn
-    evalArgs ctx args |>.foldl (fun acc arg => vApp acc arg ctx) fnVal
-
-  -- Lambda
-  | _, .lam params body _ _ =>
-    -- Create a closure capturing the current environment
-    match params.toList with
-    | [] => eval ctx body
-    | (_, name, _) :: rest =>
-      -- Convert the body to a Term for storage in the closure
-      let termBody := exprToTerm body
-      if rest.isEmpty then
-        -- Single parameter lambda
-        .vLam name (Closure.mkWithBody name ctx.env termBody)
-      else
-        -- Multi-param: the body includes all parameters, so we store it once
-        -- When applied, we'll extend the environment with each argument
-        .vLam name (Closure.mkWithBody name ctx.env termBody)
-
-  -- Global reference
-  | _, .global name _ _ =>
-    match ctx.globals.lookup name.display with
-    | some v => v
-    | none =>
-      match HigherPrimitive.fromName? name.display with
-      | some hp => .vDataType (TypeId.builtin hp.name hp.uniqueId) []
-      | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
-
-  -- Constructors
-  | _, .construct name tag args _ _ =>
-    let argVals := evalArgs ctx args
-    .vConstructor name tag argVals
-
-  -- Tuples (as pairs for 2-tuples)
-  | _, .tuple elems _ _ =>
-    let vals := evalArgs ctx elems
-    match vals with
-    | [a, b] => .vPair a b
-    | _ => .vRecordVal (listEnumerate vals |>.map fun (i, v) => (s!"_{i}", v))
-
-  -- Records
-  | _, .record fields _ _ =>
-    let fieldVals := evalRecordFields ctx fields
-    .vRecordVal fieldVals
-
-  -- Field access
-  | _, .fieldAccess e fieldName _ _ _ =>
-    let v := eval ctx e
-    vFieldAccess v fieldName
-
-  -- If-then-else
-  | _, .if_ cond then_ else_ _ _ =>
-    match eval ctx cond with
-    | .vConstructor _ 0 _ => eval ctx then_  -- True
-    | .vConstructor _ 1 _ => eval ctx else_  -- False
-    | _ => .vNeutral .type0 (.nVar ⟨"if", ⟨0⟩⟩)  -- Stuck
-
-  -- Dependent type constructors
-  | _, .type level _ => .vType level
-
-  | _, .pi qty binder name domain codomain _ =>
-    let domV := eval ctx domain
-    let codomainTerm := exprToTerm codomain
-    .vPi qty binder name domV (Closure.mkWithBody name ctx.env codomainTerm)
-
-  | _, .sigma qty name fst snd _ =>
-    let fstV := eval ctx fst
-    let sndTerm := exprToTerm snd
-    .vSigma qty name fstV (Closure.mkWithBody name ctx.env sndTerm)
-
-  | _, .pair fst snd _ _ =>
-    .vPair (eval ctx fst) (eval ctx snd)
-
-  | _, .fst e _ _ => vFst (eval ctx e)
-
-  | _, .snd e _ _ => vSnd (eval ctx e)
-
-  | _, .primTy p _ => .vPrimTy p
-
-  | _, .rowEmpty _ => .vRowEmpty
-
-  | _, .rowExtend label fieldTy tail _ =>
-    .vRowExtend (eval ctx label) (eval ctx fieldTy) (eval ctx tail)
-
-  | _, .recordTy row _ => .vRecord (eval ctx row)
-
-  | _, .variantTy row _ => .vVariant (eval ctx row)
-
-  | _, .labelLit name _ => .vLabelLit name
-
-  | _, .dataTy id params _ =>
-    let paramVals := evalArgs ctx params
-    .vDataType id paramVals
-
-  | _, .ann expr _ _ _ => eval ctx expr  -- Annotations are erased
-
-  | _, .hole id _ =>
-    -- Holes become metavariables
-    .vNeutral .type0 (.nMeta ⟨id.id⟩)
-
-  | _, .mvar id _ _ =>
-    -- Look up metavariable solution
-    match ctx.metas.lookup ⟨id⟩ with
-    | some info =>
-      match info.solution with
-      | some v => v
-      | none => .vNeutral .type0 (.nMeta ⟨id⟩)
-    | none => .vNeutral .type0 (.nMeta ⟨id⟩)
-
-  | _, .eq tyLevel ty lhs rhs _ =>
-    .vEq tyLevel (eval ctx ty) (eval ctx lhs) (eval ctx rhs)
-
-  | _, .refl ty x _ =>
-    .vRefl (eval ctx ty) (eval ctx x)
-
-  | _, .transport tyLevel ty motive lhs rhs eq body _ =>
-    -- Transport along equality: if the equality proof is refl, just return the body
-    let eqVal := eval ctx eq
-    match eqVal with
-    | .vRefl _ _ =>
-      -- When proof is refl, the lhs and rhs are definitionally equal
-      -- so transport reduces to the body
-      eval ctx body
-    | _ =>
-      -- Otherwise, transport is stuck (neutral)
-      .vTransport tyLevel (eval ctx ty) (eval ctx motive)
-                  (eval ctx lhs) (eval ctx rhs) eqVal (eval ctx body)
-
-  -- Fallback for other constructors
-  | _, _ => .vNeutral .type0 (.nVar ⟨"_", ⟨0⟩⟩)
-
-/-- Evaluate an expression list to a list of values -/
-partial def evalArgs (ctx : EvalCtx) : {scope : Scope} → ExprList Unit scope → List Value
-  | _, .nil => []
-  | _, .cons e es => eval ctx e :: evalArgs ctx es
-
-/-- Evaluate record fields to a list of (name, value) pairs -/
-partial def evalRecordFields (ctx : EvalCtx) :
-    {scope : Scope} → Soma.Metal.RecordFieldList Unit scope → List (String × Value)
-  | _, .nil => []
-  | _, .cons name expr rest =>
-    (name, eval ctx expr) :: evalRecordFields ctx rest
 
 end
 
-/-- Evaluate a closed expression -/
-def evalClosed (e : Expr Unit []) : Value :=
-  eval EvalCtx.empty e
+/-- Evaluate a closed Core expression. -/
+def evalClosed (e : Soma.Core.Expr) : Value :=
+  evalCoreExpr EvalCtx.empty e
 
-/-- Evaluate with a global environment -/
-def evalWithGlobals (globals : GlobalEnv) (e : Expr Unit []) : Value :=
-  eval { EvalCtx.empty with globals := globals } e
+/-- Evaluate a Core expression with a global environment. -/
+def evalWithGlobals (globals : GlobalEnv) (e : Soma.Core.Expr) : Value :=
+  evalCoreExpr { EvalCtx.empty with globals := globals } e
 
 end Soma.Core

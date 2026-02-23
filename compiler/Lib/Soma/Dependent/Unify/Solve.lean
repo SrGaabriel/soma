@@ -46,7 +46,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let x := Value.vNeutral d1 (.nVar ⟨n1, lvl⟩)
     let cod1 ← applyClosure c1 x
     let cod2 ← applyClosure c2 x
-    let bindingId ← TCM.freshBindingId n1
+    let bindingId ← TCM.freshLocalId n1
     TCM.withBinding n1 bindingId d1 q1 b1 defaultSpan do
       unify cod1 cod2
 
@@ -55,7 +55,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let x := Value.vNeutral .type0 (.nVar ⟨n1, lvl⟩)
     let b1Val ← applyClosure body1 x
     let b2Val ← applyClosure body2 x
-    let bindingId ← TCM.freshBindingId n1
+    let bindingId ← TCM.freshLocalId n1
     TCM.withBinding n1 bindingId .type0 .omega .explicit defaultSpan do
       unify b1Val b2Val
 
@@ -67,7 +67,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let x := Value.vNeutral f1 (.nVar ⟨n1, lvl⟩)
     let snd1 ← applyClosure s1 x
     let snd2 ← applyClosure s2 x
-    let bindingId ← TCM.freshBindingId n1
+    let bindingId ← TCM.freshLocalId n1
     TCM.withBinding n1 bindingId f1 q1 .explicit defaultSpan do
       unify snd1 snd2
 
@@ -162,7 +162,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let x := Value.vNeutral .type0 (.nVar ⟨n, lvl⟩)
     let bodyVal ← applyClosure body x
     let otherApp := Value.vNeutral .type0 (.nApp (valueToNeutral other) x)
-    let bindingId ← TCM.freshBindingId n
+    let bindingId ← TCM.freshLocalId n
     TCM.withBinding n bindingId .type0 .omega .explicit defaultSpan do
       unify bodyVal otherApp
 
@@ -171,7 +171,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
     let x := Value.vNeutral .type0 (.nVar ⟨n, lvl⟩)
     let bodyVal ← applyClosure body x
     let otherApp := Value.vNeutral .type0 (.nApp (valueToNeutral other) x)
-    let bindingId ← TCM.freshBindingId n
+    let bindingId ← TCM.freshLocalId n
     TCM.withBinding n bindingId .type0 .omega .explicit defaultSpan do
       unify otherApp bodyVal
 

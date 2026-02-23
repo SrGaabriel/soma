@@ -12,7 +12,7 @@ open Soma.Project
 open Soma.Project.Metadata
 open Soma.Driver
 open Soma.Syntax (Diagnostic)
-open Soma.Check
+open Soma.Project.Check
 open Kenosis
 
 /-- Result of metadata generation -/

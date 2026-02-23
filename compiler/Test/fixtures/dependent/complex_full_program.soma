@@ -12,9 +12,9 @@ def id :: forall a. a -> a
     | x => x
 
 def map :: forall a b. (a -> b) -> Maybe a -> Maybe b
-    | f Nothing => Nothing
-    | f (Just x) => Just (f x)
+    | f Maybe::Nothing => Maybe::Nothing
+    | f (Maybe::Just x) => Maybe::Just (f x)
 
 def test1 :: Int = id 42
-def test2 :: Maybe Int = Just 100
-def test3 :: Maybe Int = map id (Just 42)
+def test2 :: Maybe Int = Maybe::Just 100
+def test3 :: Maybe Int = map id (Maybe::Just 42)

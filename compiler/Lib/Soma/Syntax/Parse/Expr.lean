@@ -25,15 +25,28 @@ def operatorPrecedence (op : String) : Nat × Assoc :=
   | "$" => (0, .right)
   | _ => (5, .left)
 
-def parseExprVar : ParserM (Option GreenNode) := do
-  match ← parseLowerIdent with
-  | some tok => return some (GreenNode.mkNode .exprVar #[tok])
-  | none => return none
+private def parseIdentAny : ParserM (Option GreenNode) := do
+  let tok ← current
+  match tok.kind with
+  | some .lowerIdent | some .upperIdent => some <$> consumeAny
+  | _ => return none
 
-def parseExprCon : ParserM (Option GreenNode) := do
-  match ← parseUpperIdent with
-  | some tok => return some (GreenNode.mkNode .exprVar #[tok])
+/-- Parse an expression name reference, including qualified forms with `::` -/
+def parseExprVar : ParserM (Option GreenNode) := do
+  match ← parseIdentAny with
   | none => return none
+  | some first =>
+      let mut parts : Array GreenNode := #[first]
+      while (← check .doubleColon) do
+        let sep ← consumeAny
+        match ← parseIdentAny with
+        | some next =>
+            parts := parts.push sep
+            parts := parts.push next
+        | none =>
+            recordError "expected identifier after '::'"
+            return some (GreenNode.mkError "incomplete qualified name" (parts.push sep))
+      return some (GreenNode.mkNode .exprVar parts)
 
 def parseExprNumber : ParserM (Option GreenNode) := do
   match ← tryConsume .number with
@@ -668,7 +681,6 @@ partial def parseExprAtom : ParserM (Option GreenNode) := do
   if let some e ← parseVariantExpr then return some e
   if let some e ← parseProjection then return some e
   if let some e ← parseExprVar then return some e
-  if let some e ← parseExprCon then return some e
   return none
 
 partial def parseExprApp : ParserM (Option GreenNode) := do

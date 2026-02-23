@@ -6,11 +6,11 @@ data Nat where
   | Succ :: Nat -> Nat
 
 data Fin n where
-  | FZero :: Fin (Succ m)
-  | FSucc :: Fin m -> Fin (Succ m)
+  | FZero :: Fin (Nat::Succ m)
+  | FSucc :: Fin m -> Fin (Nat::Succ m)
 
-def fin0of3 :: Fin (Succ (Succ (Succ Zero))) = FZero
+def fin0of3 :: Fin (Nat::Succ (Nat::Succ (Nat::Succ Nat::Zero))) = Fin::FZero
 
-def fin1of3 :: Fin (Succ (Succ (Succ Zero))) = FSucc FZero
+def fin1of3 :: Fin (Nat::Succ (Nat::Succ (Nat::Succ Nat::Zero))) = Fin::FSucc Fin::FZero
 
-def fin2of3 :: Fin (Succ (Succ (Succ Zero))) = FSucc (FSucc FZero)
+def fin2of3 :: Fin (Nat::Succ (Nat::Succ (Nat::Succ Nat::Zero))) = Fin::FSucc (Fin::FSucc Fin::FZero)

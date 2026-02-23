@@ -1,12 +1,14 @@
 import Somac.Circuit.PatternMatch.Pattern
 import Somac.Circuit.PatternMatch.Types
-import Soma.Metal.Literal
+import Soma.Core.Literal
 import Soma.Core.Value
+import Soma.Core.Expr
 
 namespace Somac.Circuit.PatternMatch
 
-open Soma.Metal (BindingId Literal)
 open Soma.Core (Value)
+open Soma (Unique)
+open Soma.Core (Literal)
 
 /-- Path to a sub-value within a scrutinee.
 
@@ -68,7 +70,7 @@ end TypedOccurrence
 /-- A variable binding at a decision tree leaf -/
 structure Binding where
   /-- The binding ID from the source pattern -/
-  id : BindingId
+  id : Unique
   /-- The original variable name -/
   name : String
   /-- Where to get the value from -/
