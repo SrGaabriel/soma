@@ -62,7 +62,7 @@ def checkFunctionTotality (fn : Soma.Core.UntypedFunction) (body : Soma.Core.Exp
 def checkDataTypePositivity (typeDef : Soma.Core.UntypedTypeDef) (ctx : TCContext) (state : TCState)
     : Array TCError :=
   match typeDef with
-  | .algebraic name _params constructors =>
+  | .algebraic _ name _params constructors =>
     -- Look up the registered Unique, or create a placeholder
     let typeName := name.display
     let unique : Soma.Unique := match ctx.globals.lookupUnique typeName with
@@ -82,11 +82,11 @@ def checkDataTypePositivity (typeDef : Soma.Core.UntypedTypeDef) (ctx : TCContex
     | .violated reason violationSpan =>
       #[TCError.positivityViolation typeName reason violationSpan none]
 
-  | .struct _ _ _ _ =>
+  | .struct _ _ _ _ _ =>
     -- Structs are always positive (they're just records)
     #[]
 
-  | .record _ _ _ =>
+  | .record _ _ _ _ =>
     -- Records are always positive
     #[]
 
@@ -337,6 +337,50 @@ def elaborateFunctionType (sigSyntax : Syntax.TypeExpr) : TCM Value := do
 
   return fnType
 
+private def registerWiredRoleFromAttrs
+    (globals : Globals)
+    (attrs : Array Syntax.Attribute)
+    (info : GlobalInfo)
+    (what : String)
+    : TCM Globals := do
+  let mut g := globals
+  for attr in attrs do
+    if attr.name.value == "wired_in" then
+      match attr.args[0]? with
+      | some (Soma.Syntax.Expr.lit (Soma.Syntax.Literal.string roleName _)) =>
+        match WiredRole.fromString? roleName with
+        | none =>
+          TCM.throw (.cannotInfer s!"unknown wired_in role '{roleName}' on {what}" attr.span none)
+        | some role =>
+          let existing := g.wiredIn.getAll role
+          let conflicts := existing.filter (fun e => e.name != info.name)
+          if conflicts.isEmpty then
+            g := { g with wiredIn := g.wiredIn.register role info }
+          else
+            let prev := String.intercalate ", " ((conflicts.map (fun e => e.name.display)).toList)
+            TCM.throw (.cannotInfer s!"duplicate wired_in role '{role.canonical}' on {what}; already bound to {prev}" attr.span none)
+      | _ =>
+        TCM.throw (.cannotInfer s!"@[wired_in] on {what} requires a string literal role argument" attr.span none)
+  pure g
+
+private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Globals) : TCM Globals := do
+  let mut g := globals
+  for typeDef in module.types do
+    match typeDef with
+    | .algebraic attrs typeName _ ctors =>
+      if let some typeInfo := g.lookup typeName.display then
+        g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {typeName.display}"
+      for ctor in ctors do
+        if let some ctorInfo := g.lookup ctor.name.display then
+          g ← registerWiredRoleFromAttrs g ctor.attrs ctorInfo s!"constructor {ctor.name.display}"
+    | .struct attrs structName _ _ _ =>
+      if let some typeInfo := g.lookup structName.display then
+        g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {structName.display}"
+    | .record attrs recordName _ _ =>
+      if let some typeInfo := g.lookup recordName.display then
+        g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {recordName.display}"
+  pure g
+
 /-- Build a Globals enviro      -- Check for builtin higher-kinded types (List, Array, IO, Ref)
 nment from all function definitions in a module -/
 def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
@@ -347,7 +391,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
   -- First pass: Register all data types (so they can be referenced by functions and constructors)
   for typeDef in module.types do
     match typeDef with
-    | .algebraic typeName typeVarNames _ =>
+    | .algebraic _ typeName typeVarNames _ =>
       -- Generate a proper Unique for this data type
       let typeUnique ← TCM.freshUnique typeName.display
       -- Register the Unique in both local globals and TCM context
@@ -365,7 +409,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
         origin := .typeDecl
       }
       globals := globals.insert typeName.display dataTypeInfo
-    | .struct structName typeVarNames _ fields =>
+    | .struct _ structName typeVarNames _ fields =>
       -- Generate a proper Unique for this struct
       let typeUnique ← TCM.freshUnique structName.display
       -- Register the Unique in both local globals and TCM context
@@ -384,13 +428,13 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
         origin := .typeDecl
       }
       globals := globals.insert structName.display dataTypeInfo
-    | .record _ _ _ =>
+    | .record _ _ _ _ =>
       pure ()
 
   -- Second pass: Register constructors (now data types are available for reference)
   for typeDef in module.types do
     match typeDef with
-    | .algebraic typeName typeVarNames constructors =>
+    | .algebraic _ typeName typeVarNames constructors =>
       for ctor in constructors do
         -- Elaborate the constructor type by checking wheter indexed (has signature) or simple (has fields)
         -- Use withGlobals so the TCM context sees the registered data types
@@ -427,9 +471,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
           type := ctorType
         }
         globals := globals.registerConstructorMeta typeName.display ctorMeta
-        -- Register wired-in role if @[wired_in "role"] attribute present
-        globals := { globals with wiredIn := globals.wiredIn.tryRegisterFromAttrs ctor.attrs info }
-    | .struct structName typeVarNames _ctorName fields =>
+    | .struct _ structName typeVarNames _ctorName fields =>
       -- Elaborate struct constructor type from field types
       let fieldTypes := fields.map (·.2)
       let ctorType ← TCM.recoverWithM
@@ -475,7 +517,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
       let fieldNames := fields.filterMap (·.1)
       globals := { globals with
         structFields := globals.structFields.insert structName.display fieldNames }
-    | .record _ _ _ =>
+    | .record _ _ _ _ =>
       pure ()
 
   -- Register type class methods as globals (with error recovery for each method)
@@ -569,6 +611,8 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
         | none => .function
     }
     globals := globals.insert fn.name.display info
+
+  globals ← indexWiredRoles module globals
 
   return globals
 
@@ -905,28 +949,28 @@ def buildGlobalsIncremental
   -- First pass: Register all data types
   for typeDef in module.types do
     match typeDef with
-    | .algebraic typeName typeVarNames _ =>
+    | .algebraic _ typeName typeVarNames _ =>
       let nameStr := typeName.display
       let isDirty := dirtyNames.contains nameStr
       globals ← registerDataType globals nameStr .algebraic typeVarNames #[] (some prevGlobals) isDirty
-    | .struct structName typeVarNames _ fields =>
+    | .struct _ structName typeVarNames _ fields =>
       let nameStr := structName.display
       let isDirty := dirtyNames.contains nameStr
       globals ← registerDataType globals nameStr .struct typeVarNames (fields.filterMap (·.1)) (some prevGlobals) isDirty
-    | .record _ _ _ =>
+    | .record _ _ _ _ =>
       pure ()
 
   -- Second pass: Register constructors
   for typeDef in module.types do
     match typeDef with
-    | .algebraic typeName typeVarNames constructors =>
+    | .algebraic _ typeName typeVarNames constructors =>
       let isDirty := dirtyNames.contains typeName.display
       for ctor in constructors do
         globals ← registerConstructor globals typeName typeVarNames ctor (some prevGlobals) isDirty
-    | .struct structName typeVarNames ctorName fields =>
+    | .struct _ structName typeVarNames ctorName fields =>
       let isDirty := dirtyNames.contains structName.display
       globals ← registerStructConstructor globals structName typeVarNames ctorName fields (some prevGlobals) isDirty
-    | .record _ _ _ =>
+    | .record _ _ _ _ =>
       pure ()
 
   -- Register type class methods
@@ -939,6 +983,8 @@ def buildGlobalsIncremental
   for fn in module.functions do
     let isDirty := dirtyNames.contains fn.name.display
     globals ← registerFunction globals fn (some prevGlobals) isDirty
+
+  globals ← indexWiredRoles module globals
 
   return globals
 

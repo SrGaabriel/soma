@@ -20,11 +20,22 @@ open Soma.Dependent.Unify (SolveResult ConstraintGraph)
 
 mutual
 
+/-- Normalize wired primitive data type wrappers into canonical primitive types -/
+private partial def normalizeWiredPrimitiveValue (v : Value) : TCM Value := do
+  match v with
+  | .vDataType u [] =>
+    match ← TCM.lookupWiredPrimitiveOfTypeUnique u with
+    | some prim => pure (.vPrimTy prim)
+    | none => pure v
+  | _ => pure v
+
 /-- Unify two values. May solve metavariables or postpone constraints -/
 partial def unify (v1 v2 : Value) : TCM Unit := do
   -- Force both values first
-  let v1' ← force v1
-  let v2' ← force v2
+  let v1f ← force v1
+  let v2f ← force v2
+  let v1' ← normalizeWiredPrimitiveValue v1f
+  let v2' ← normalizeWiredPrimitiveValue v2f
 
   -- Early exit: if values are syntactically equal, no work needed
   if valueEq v1' v2' then

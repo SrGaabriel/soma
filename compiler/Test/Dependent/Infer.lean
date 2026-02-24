@@ -352,16 +352,12 @@ def testInferTypeUniverse : IO TestResult := do
     | _ => return .failed s!"Expected Type, got {ty}"
   | .error e => return .failed s!"Inference failed: {e}"
 
-/-- Test: Infer primitive type (Int as type) -/
+/-- Test: Primitive type names are not hardcoded in inference -/
 def testInferPrimTy : IO TestResult := do
   let expr : Soma.Syntax.Expr := .var (synName "Int")
   match typeInfer expr with
-  | .ok (ty, _, _) =>
-    match ty with
-    | .vType (.lit 0) => return .passed
-    | .vType l => return .failed s!"Expected Type₀, got Type with level {l}"
-    | _ => return .failed s!"Expected Type, got {ty}"
-  | .error e => return .failed s!"Inference failed: {e}"
+  | .ok _ => return .failed "Expected unknown variable error for Int without wired-in registration"
+  | .error _ => return .passed
 
 /-- Test: Infer row empty type -/
 def testInferTuple : IO TestResult := do

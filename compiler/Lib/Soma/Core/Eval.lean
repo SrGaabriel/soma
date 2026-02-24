@@ -132,10 +132,7 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
   | .const name =>
     match ctx.globals.lookup name with
     | some v => v
-    | none =>
-      match HigherPrimitive.fromName? name.display with
-      | some hp => .vDataType (Unique.builtin hp.name hp.uniqueId) []
-      | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
+    | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
 
   | .app fn arg =>
     let fnVal := evalCoreExpr ctx fn

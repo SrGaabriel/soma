@@ -859,7 +859,7 @@ def registerTypes (types : Array Soma.Core.TypeDef)
     (globals : Option Soma.Dependent.Globals := none) : LowerM Unit := do
   for typeDef in types do
     match typeDef with
-    | .algebraic typeName _tvars ctors =>
+    | .algebraic _attrs typeName _tvars ctors =>
       let mut usedMetadata := false
       if let some g := globals then
         if let some indInfo := g.lookupInductive typeName.display then
@@ -883,7 +883,7 @@ def registerTypes (types : Array Soma.Core.TypeDef)
               LowerM.modifyCtx fun ctx =>
                 ctx.registerCtorType unique ctor.tag ctorInfo.type
 
-    | .struct structName _tvars ctorName fields =>
+    | .struct _attrs structName _tvars ctorName fields =>
       let mut usedMetadata := false
       if let some g := globals then
         if let some indInfo := g.lookupInductive structName.display then
@@ -904,7 +904,7 @@ def registerTypes (types : Array Soma.Core.TypeDef)
               LowerM.modifyCtx fun ctx =>
                 ctx.registerCtorType unique 0 ctorInfo.type
 
-    | .record name _tvars fields =>
+    | .record _attrs name _tvars fields =>
       let mut usedMetadata := false
       if let some g := globals then
         if let some indInfo := g.lookupInductive name.display then

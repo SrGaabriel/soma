@@ -37,38 +37,6 @@ def lookup (env : ElabEnv) (name : String) : Option (DeBruijnLvl × Value) :=
 
 end ElabEnv
 
-/-- Resolve a type constructor name to a primitive type (todo: remove) -/
-def resolvePrimitive (name : String) : Option StarPrimitive :=
-  match name with
-  | "Int" => some .int
-  | "Long" => some .long
-  | "Short" => some .short
-  | "Byte" => some .byte
-  | "String" => some .string
-  | "Bool" => some .bool
-  | "Float" => some .float
-  | "Double" => some .double
-  | "Unit" => some .unit
-  | "Int8" => some .int8
-  | "Int16" => some .int16
-  | "Int32" => some .int32
-  | "Int64" => some .int64
-  | "Word8" => some .word8
-  | "Word16" => some .word16
-  | "Word32" => some .word32
-  | "Word64" => some .word64
-  | _ => none
-
-/-- Resolve a higher-kinded primitive type -/
-def resolveHigherPrimitive (name : String) : Option HigherPrimitive :=
-  match name with
-  | "IO" => some .io
-  | "Array" => some .array
-  | "List" => some .list
-  | "Ref" => some .ref
-  | "Ptr" => some .ptr
-  | _ => none
-
 /-- Resolve "Type" to a universe -/
 def resolveType (name : String) : Option Value :=
   if name == "Type" then some (Value.vType Level.zero)
@@ -166,40 +134,28 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- For non-parameterized: this is the final type (e.g., vPrimTy Int32)
       -- For parameterized: this is a Pi type that will be applied via .app
       return abbrevInfo.expansion
-    -- Then try primitive types
-    else if let some prim := resolvePrimitive name.value then
-      return Value.vPrimTy prim
-    -- Then try Type
+    -- Then try Type/Row/Label sort names
     else if let some tyVal := resolveType name.value then
       return tyVal
-    -- Check if it's a constructor (for indexed type families like Fin (Succ m))
+    -- Check globals for constructors/types
     else if let some globalInfo ← TCM.lookupGlobal name.value then
       if globalInfo.isConstructor then
         -- It's a constructor, return as vConstructor with no args yet
         return Value.vConstructor globalInfo.name globalInfo.ctorTag []
       else
-        -- It's a defined value or data type - look up Unique
-        let unique ← match ← TCM.lookupUnique name.value with
-          | some id => pure id
-          | none =>
-            let u ← TCM.freshUnique name.value
-            TCM.registerUnique name.value u
-            pure u
-        return Value.vDataType unique []
-    -- Otherwise, treat as a user-defined type (data type)
+        if let some primTy ← TCM.lookupWiredPrimitiveOfGlobal globalInfo.name then
+          return Value.vPrimTy primTy
+        else
+          return Value.vDataType globalInfo.name.id []
+    -- Otherwise, treat as a user-defined type reference
     else
-      -- Try higher-kinded primitives as a fallback only when no user/global type exists
-      if let some hprim := resolveHigherPrimitive name.value then
-        return Value.vDataType (Unique.builtin hprim.name hprim.uniqueId) []
-      else
-        -- Look up the registered Unique, or create a fresh one if not found
-        let unique ← match ← TCM.lookupUnique name.value with
-          | some id => pure id
-          | none =>
-            let u ← TCM.freshUnique name.value
-            TCM.registerUnique name.value u
-            pure u
-        return Value.vDataType unique []
+      let unique ← match ← TCM.lookupUnique name.value with
+        | some id => pure id
+        | none =>
+          let u ← TCM.freshUnique name.value
+          TCM.registerUnique name.value u
+          pure u
+      return Value.vDataType unique []
 
   -- Type application: F A
   | .app fn arg span =>
@@ -254,11 +210,13 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
         return result
 
   -- List type: [A]
-  | .list elem _ =>
+  | .list elem span =>
     let elemVal ← elaborateType env elem
-    -- Use a stable builtin Unique for List
-    let listId := Unique.builtin "List" HigherPrimitive.list.uniqueId
-    return Value.vDataType listId [elemVal]
+    match ← TCM.lookupWiredIn .typeList with
+    | some info =>
+      return Value.vDataType info.name.id [elemVal]
+    | none =>
+      TCM.throw (.unboundGlobal "List (no @[wired_in \"type.list\"] type in scope)" span #[])
 
   -- Universal quantification: forall a b. T
   | .forall_ vars body _ =>

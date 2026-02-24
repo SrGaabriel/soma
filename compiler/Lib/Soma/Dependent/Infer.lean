@@ -485,6 +485,17 @@ def syntaxExprKind : Soma.Syntax.Expr → String
   | .bind _ _ => "bind"
   | .variant label _ _ => s!"variant(.{label.value})"
 
+private def requireUniqueWiredRole (role : WiredRole) (span : Span) : TCM GlobalInfo := do
+  let infos ← TCM.lookupWiredInAll role
+  match infos.toList with
+  | [info] => pure info
+  | [] =>
+    TCM.throw (.unboundGlobal s!"{role.canonical} (missing @[wired_in \"{role.canonical}\"] declaration)" span #[])
+  | _ =>
+    let names := infos.map (fun i => i.name.display)
+    let details := String.intercalate ", " names.toList
+    TCM.throw (.cannotInfer s!"wired role '{role.canonical}' is ambiguous: {details}" span none)
+
 /-- Build a nested Pair pattern from a list of core patterns: (a, b, c) → Pair(a, Pair(b, c))
     Requires @[wired_in "pair"] to be defined on a binary constructor. -/
 partial def buildNestedPairPattern (elems : List Soma.Core.Pattern) (span : Span)
@@ -493,12 +504,12 @@ partial def buildNestedPairPattern (elems : List Soma.Core.Pattern) (span : Span
   | [] => pure .wildcard
   | [single] => pure single
   | [a, b] =>
-    match ← TCM.lookupWiredIn "pair" with
+    match ← TCM.lookupWiredIn .pair with
     | some info => pure (.ctor info.name info.ctorTag #[a, b])
     | none => TCM.throw (.unboundGlobal "pair (no @[wired_in \"pair\"] constructor in scope)" span #[])
   | a :: rest => do
     let nested ← buildNestedPairPattern rest span
-    match ← TCM.lookupWiredIn "pair" with
+    match ← TCM.lookupWiredIn .pair with
     | some info => pure (.ctor info.name info.ctorTag #[a, nested])
     | none => TCM.throw (.unboundGlobal "pair (no @[wired_in \"pair\"] constructor in scope)" span #[])
 
@@ -508,12 +519,12 @@ partial def buildListPattern (elems : List Soma.Core.Pattern) (span : Span)
     : TCM Soma.Core.Pattern := do
   match elems with
   | [] =>
-    match ← TCM.lookupWiredIn "nil" with
+    match ← TCM.lookupWiredIn .nil with
     | some info => pure (.ctor info.name info.ctorTag #[])
     | none => TCM.throw (.unboundGlobal "nil (no @[wired_in \"nil\"] constructor in scope)" span #[])
   | head :: tail => do
     let tailPat ← buildListPattern tail span
-    match ← TCM.lookupWiredIn "cons" with
+    match ← TCM.lookupWiredIn .cons with
     | some info => pure (.ctor info.name info.ctorTag #[head, tailPat])
     | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
 
@@ -549,7 +560,7 @@ partial def convertSyntaxPattern (pat : Soma.Syntax.Pattern) : TCM Soma.Core.Pat
   | .cons head tail span => do
     let coreHead ← convertSyntaxPattern head
     let coreTail ← convertSyntaxPattern tail
-    match ← TCM.lookupWiredIn "cons" with
+    match ← TCM.lookupWiredIn .cons with
     | some info => pure (.ctor info.name info.ctorTag #[coreHead, coreTail])
     | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
   | .parens inner _ => convertSyntaxPattern inner
@@ -591,13 +602,14 @@ partial def extractSyntaxPatternBindingTypes (pat : Soma.Syntax.Pattern) (scrutT
         let bindings ← extractSyntaxPatternBindingTypes arg argTy
         result := result ++ bindings
       return result
-  | .list elems _ =>
+  | .list elems span =>
     let elemTy ← TCM.freshMetaVal (.vType .zero)
     let scrutTy' ← force scrutTy
     match scrutTy' with
     | .vDataType _ (actualElemTy :: _) => unify elemTy actualElemTy
     | _ =>
-      let listId := Soma.Unique.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let listInfo ← requireUniqueWiredRole .typeList span
+      let listId := listInfo.name.id
       let expectedListTy := Value.vDataType listId [elemTy]
       unify scrutTy expectedListTy
     let mut result : List (Unique × String × Value) := []
@@ -605,13 +617,14 @@ partial def extractSyntaxPatternBindingTypes (pat : Soma.Syntax.Pattern) (scrutT
       let bindings ← extractSyntaxPatternBindingTypes elem elemTy
       result := result ++ bindings
     return result
-  | .cons head tail _ =>
+  | .cons head tail span =>
     let elemTy ← TCM.freshMetaVal (.vType .zero)
     let scrutTy' ← force scrutTy
     match scrutTy' with
     | .vDataType _ (actualElemTy :: _) => unify elemTy actualElemTy
     | _ =>
-      let listId := Soma.Unique.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let listInfo ← requireUniqueWiredRole .typeList span
+      let listId := listInfo.name.id
       let expectedListTy := Value.vDataType listId [elemTy]
       unify scrutTy expectedListTy
     let headBindings ← extractSyntaxPatternBindingTypes head elemTy
@@ -696,26 +709,9 @@ where
           else
             return (info.type, .const qn)
         | none =>
-          -- Check builtin type names
           match name.value with
-          | "Int" => return (.vType .zero, .primTy .int)
-          | "Long" => return (.vType .zero, .primTy .long)
-          | "Short" => return (.vType .zero, .primTy .short)
-          | "Byte" => return (.vType .zero, .primTy .byte)
-          | "Bool" => return (.vType .zero, .primTy .bool)
-          | "String" => return (.vType .zero, .primTy .string)
-          | "Float" => return (.vType .zero, .primTy .float)
-          | "Double" => return (.vType .zero, .primTy .double)
-          | "Unit" => return (.vType .zero, .primTy .unit)
-          | "Int8" => return (.vType .zero, .primTy .int8)
-          | "Int16" => return (.vType .zero, .primTy .int16)
-          | "Int32" => return (.vType .zero, .primTy .int32)
-          | "Int64" => return (.vType .zero, .primTy .int64)
-          | "Word8" => return (.vType .zero, .primTy .word8)
-          | "Word16" => return (.vType .zero, .primTy .word16)
-          | "Word32" => return (.vType .zero, .primTy .word32)
-          | "Word64" => return (.vType .zero, .primTy .word64)
-          | "Type" => return (.vType .one, .sort .zero)
+          | "Type" | "Type0" => return (.vType .one, .sort .zero)
+          | "Type1" => return (.vType .one, .sort .one)
           | "Row" => return (.vType .zero, .rowSort)
           | "Label" => return (.vType .zero, .labelSort)
           | _ => TCM.throw (.unboundVariable name.value name.span #[])
@@ -773,10 +769,11 @@ where
         inferSyntaxTuple elemList span
 
     -- List literal
-    | .list elems _ => do
+    | .list elems span => do
       let elemTy ← TCM.freshMetaVal (.vType .zero)
       let elemsChecked ← checkSyntaxList elems.toList elemTy
-      let listId := Soma.Unique.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let listInfo ← requireUniqueWiredRole .typeList span
+      let listId := listInfo.name.id
       let listTy := Value.vDataType listId [elemTy]
       return (listTy, .array elemsChecked.toArray)
 
@@ -1125,8 +1122,9 @@ where
       return appExpr
 
     -- List literal against List type
-    | .list elems _, .vDataType unique (elemTy :: _) => do
-      let listId := Soma.Unique.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+    | .list elems span, .vDataType unique (elemTy :: _) => do
+      let listInfo ← requireUniqueWiredRole .typeList span
+      let listId := listInfo.name.id
       if unique == listId then
         let elemsChecked ← checkSyntaxList elems.toList elemTy
         return .array elemsChecked.toArray

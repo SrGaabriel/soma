@@ -22,36 +22,42 @@ end Constructor
 
 /-- A type definition -/
 inductive TypeDef where
-  | algebraic (name : QualifiedName) (typeVarNames : Array String) (ctors : Array Constructor)
-  | struct (name : QualifiedName) (typeVarNames : Array String) (ctorName : QualifiedName)
+  | algebraic (attrs : Array Syntax.Attribute) (name : QualifiedName)
+      (typeVarNames : Array String) (ctors : Array Constructor)
+  | struct (attrs : Array Syntax.Attribute) (name : QualifiedName) (typeVarNames : Array String) (ctorName : QualifiedName)
       (fields : Array (Option String × Syntax.TypeExpr))
-  | record (name : QualifiedName) (typeVarNames : Array String)
+  | record (attrs : Array Syntax.Attribute) (name : QualifiedName) (typeVarNames : Array String)
       (fieldNamesAndTypes : Array (String × Syntax.TypeExpr))
 
 namespace TypeDef
 
 def name : TypeDef → QualifiedName
-  | .algebraic n _ _ => n
-  | .struct n _ _ _ => n
-  | .record n _ _ => n
+  | .algebraic _ n _ _ => n
+  | .struct _ n _ _ _ => n
+  | .record _ n _ _ => n
 
 def qualifiedName (td : TypeDef) : QualifiedName :=
   td.name
 
 def typeVarNames : TypeDef → Array String
-  | .algebraic _ vs _ => vs
-  | .struct _ vs _ _ => vs
-  | .record _ vs _ => vs
+  | .algebraic _ _ vs _ => vs
+  | .struct _ _ vs _ _ => vs
+  | .record _ _ vs _ => vs
 
 def typeVarCount : TypeDef → Nat
-  | .algebraic _ vs _ => vs.size
-  | .struct _ vs _ _ => vs.size
-  | .record _ vs _ => vs.size
+  | .algebraic _ _ vs _ => vs.size
+  | .struct _ _ vs _ _ => vs.size
+  | .record _ _ vs _ => vs.size
+
+def attrs : TypeDef → Array Syntax.Attribute
+  | .algebraic attrs _ _ _ => attrs
+  | .struct attrs _ _ _ _ => attrs
+  | .record attrs _ _ _ => attrs
 
 def constructors : TypeDef → Array Constructor
-  | .algebraic _ _ cs => cs
-  | .struct _ _ cn fields => #[{ name := cn, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
-  | .record n _ fields => #[{ name := n, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
+  | .algebraic _ _ _ cs => cs
+  | .struct _ _ _ cn fields => #[{ name := cn, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
+  | .record _ n _ fields => #[{ name := n, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
 
 end TypeDef
 

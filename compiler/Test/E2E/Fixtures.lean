@@ -3,6 +3,9 @@ namespace Test.E2E
 /-- Base directory for E2E fixtures -/
 def fixturesDir : System.FilePath := "Test/fixtures/e2e"
 
+/-- Shared primitive lang-items fixture used by tests -/
+def sharedPrimPath : System.FilePath := "Test/fixtures/shared/prim.soma"
+
 /-- Source type for a test case -/
 inductive TestSource where
   | directory (path : System.FilePath)
@@ -141,15 +144,17 @@ def createTempDir (testName : String) : IO System.FilePath := do
 
 /-- Set up a test case in a temporary directory -/
 def setupTestDir (tc : TestCase) (tempDir : System.FilePath) : IO Unit := do
+  let dstDir := tempDir / "src"
   match tc.source with
   | .directory dir =>
     let srcDir := dir / "src"
-    let dstDir := tempDir / "src"
     copyDirRecursive srcDir dstDir
   | .singleFile file =>
-    let dstDir := tempDir / "src"
     IO.FS.createDirAll dstDir
     let content ← IO.FS.readBinFile file
     IO.FS.writeBinFile (dstDir / file.fileName.getD "main.soma") content
+
+  let primSource ← IO.FS.readFile sharedPrimPath
+  IO.FS.writeFile (dstDir / "prim.soma") primSource
 
 end Test.E2E

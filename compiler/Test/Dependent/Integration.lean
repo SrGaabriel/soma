@@ -41,6 +41,20 @@ def parseExpectation (source : String) : Expectation :=
 
 /-! ## Test Running -/
 
+/-- Path to the shared fixture prelude for dependent tests -/
+def dependentPrimPath : System.FilePath := "Test/fixtures/shared/prim.soma"
+
+/-- Build a temporary source file that prepends shared fixture prim definitions -/
+def writeTempDependentFixture (fileName : String) (source : String) : IO System.FilePath := do
+  let primSource ← IO.FS.readFile dependentPrimPath
+  let timestamp ← IO.monoMsNow
+  let tempDir : System.FilePath := ".lake/test-dependent"
+  IO.FS.createDirAll tempDir
+  let tempPath := tempDir / s!"{fileName}-{timestamp}.soma"
+  let merged := primSource ++ "\n\n" ++ source
+  IO.FS.writeFile tempPath merged
+  pure tempPath
+
 /-- A no-op dependency loader for single-file tests -/
 def noDepsLoader (_ : Array (String × System.FilePath)) : IO (Except CheckError (Array ExternalDependency)) :=
   pure (.ok #[])
@@ -48,37 +62,39 @@ def noDepsLoader (_ : Array (String × System.FilePath)) : IO (Except CheckError
 /-- Run a single test from a fixture file -/
 def runDepCheckTest (tc : TestCase) (_debug : Bool := true) : IO TestResult := do
   let expectation := parseExpectation tc.source
-  let filePath := s!"Test/fixtures/dependent/{tc.name}"
+  let tempPath ← writeTempDependentFixture tc.name tc.source
   let config : ProjectConfig := {
-    input := filePath
+    input := tempPath
     name := some tc.name
     deps := #[]
   }
   let result ← checkSingleFile config noDepsLoader
 
-  match expectation with
-  | .success =>
-    if result.success then
-      return .passed
-    else
-      let diagErrors := result.diagnostics.filter (·.severity == .error)
-        |>.map (·.message) |>.toList
-      return .failed s!"Expected success but got errors:\n  {String.intercalate "\n  " diagErrors}"
+  try
+    match expectation with
+    | .success =>
+      if result.success then
+        return .passed
+      else
+        let diagErrors := result.diagnostics.filter (·.severity == .error)
+          |>.map (·.message) |>.toList
+        return .failed s!"Expected success but got errors:\n  {String.intercalate "\n  " diagErrors}"
 
-  | .error expectedSubstr =>
-    if result.success then
-      return .failed "Expected error but type checking succeeded"
-    else
-      match expectedSubstr with
-      | some substr =>
-        let diagMsgs := result.diagnostics.filter (·.severity == .error) |>.map (·.message)
-        -- Check if any error message contains the expected substring
-        if diagMsgs.any (fun msg => msg.toSlice.contains substr) then
+    | .error expectedSubstr =>
+      if result.success then
+        return .failed "Expected error but type checking succeeded"
+      else
+        match expectedSubstr with
+        | some substr =>
+          let diagMsgs := result.diagnostics.filter (·.severity == .error) |>.map (·.message)
+          if diagMsgs.any (fun msg => msg.toSlice.contains substr) then
+            return .passed
+          else
+            return .failed s!"Expected error containing '{substr}' but got: {diagMsgs.toList}"
+        | none =>
           return .passed
-        else
-          return .failed s!"Expected error containing '{substr}' but got: {diagMsgs.toList}"
-      | none =>
-        return .passed  -- Just expected some error, got one
+  finally
+    IO.FS.removeFile tempPath |>.catchExceptions fun _ => pure ()
 
 /-- Run all tests from the dependent fixtures directory -/
 def runFromFixtures (debug : Bool := true) : IO TestRunner := do

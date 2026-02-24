@@ -245,8 +245,11 @@ def mergeGlobals (g1 g2 : Globals) : Globals :=
     acc.insert ctorName typeName
   let openNs := g2.openNamespaces.foldl (init := g1.openNamespaces) fun acc ns =>
     if acc.contains ns then acc else acc.push ns
-  let wiredRoles := g2.wiredIn.roles.fold (init := g1.wiredIn.roles) fun acc role info =>
-    if acc.contains role then acc else acc.insert role info
+  let wiredRoles := g2.wiredIn.roles.fold (init := g1.wiredIn.roles) fun acc role infos =>
+    let existing := acc.getD role #[]
+    let merged := infos.foldl (init := existing) fun arr info =>
+      if arr.any (fun e => e.name == info.name) then arr else arr.push info
+    acc.insert role merged
   { root := mergedRoot
     openNamespaces := openNs
     intrinsics := intrinsics
@@ -619,7 +622,7 @@ def extractPublicSymbols
   -- Extract type definitions and constructors
   for typeDef in untypedModule.types do
     match typeDef with
-    | .algebraic typeName _typeVars constructors =>
+    | .algebraic _ typeName _typeVars constructors =>
       let typeNameStr := typeName.display
       if shouldExport typeNameStr then
         -- Register type
@@ -658,7 +661,7 @@ def extractPublicSymbols
             addedNames := addedNames.insert ctorSimpleName
           | none => pure ()
 
-    | .struct structName _typeVars _ctorName fields =>
+    | .struct _ structName _typeVars _ctorName fields =>
       let structNameStr := structName.display
       if shouldExport structNameStr then
         let (structUnique, sup') := sup.fresh structNameStr
@@ -714,7 +717,7 @@ def extractPublicSymbols
               addedNames := addedNames.insert accessorName
             | none => pure ()
 
-    | .record _ _ _ => pure ()
+    | .record _ _ _ _ => pure ()
 
   -- Extract type class methods
   for typeClass in untypedModule.typeClasses do

@@ -1,0 +1,33 @@
+@[wired_in "type.int"]
+inductive Int where
+    | MkInt
+
+@[wired_in "type.bool"]
+inductive Bool where
+    | True
+    | False
+
+@[wired_in "type.string"]
+inductive String where
+    | MkString
+
+@[wired_in "type.unit"]
+inductive Unit where
+    | Unit
+
+@[wired_in "type.word8"]
+inductive Word8 where
+    | MkWord8
+
+@[wired_in "type.list"]
+inductive List {a : Type} where
+    | Nil
+    | Cons (head : a) (tail : List a)
+
+@[wired_in "type.ptr"]
+inductive Ptr {a : Type} where
+    | MkPtr
+
+@[wired_in "type.io"]
+inductive IO {a : Type} where
+    | MkIO

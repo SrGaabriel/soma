@@ -179,7 +179,7 @@ private def lowerTypeDecl
     (supply : UniqueSupply)
   : Option Soma.Core.UntypedTypeDef × UniqueSupply :=
   match decl with
-  | .inductive _ name params constructors _ _ =>
+  | .inductive attrs name params constructors _ _ =>
     let (typeUnique, supply') := supply.fresh name.value
     let typeName : Soma.Core.QualifiedName := ⟨typeUnique⟩
     let typeVarNames := params.map (·.name.value)
@@ -200,8 +200,8 @@ private def lowerTypeDecl
           acc := acc.push lowered
       (acc, supply'')
     let (ctors, supply'') := ctors
-    (some (.algebraic typeName typeVarNames ctors), supply'')
-  | .struct _ name params ctorName fields _ =>
+    (some (.algebraic attrs typeName typeVarNames ctors), supply'')
+  | .struct attrs name params ctorName fields _ =>
     let (typeUnique, supply') := supply.fresh name.value
     let typeName : Soma.Core.QualifiedName := ⟨typeUnique⟩
     let typeVarNames := params.map (·.name.value)
@@ -209,7 +209,7 @@ private def lowerTypeDecl
     let ctorQName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
     let fieldsWithOptNames := fields.map fun field =>
       (field.name.map (·.value), field.type_)
-    (some (.struct typeName typeVarNames ctorQName fieldsWithOptNames), supply'')
+    (some (.struct attrs typeName typeVarNames ctorQName fieldsWithOptNames), supply'')
   | _ => (none, supply)
 
 private def lowerTypeClassDecl

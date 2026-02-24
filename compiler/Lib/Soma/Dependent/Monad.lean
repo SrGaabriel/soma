@@ -184,22 +184,160 @@ def upsertCtor (m : InductiveMeta) (ctor : ConstructorMeta) : InductiveMeta :=
 
 end InductiveMeta
 
-/-- Well-known constructors resolved during global registration via @[wired_in "role"] attributes -/
+/-- Typed roles for language-level wired declarations -/
+inductive WiredRole where
+  | pair
+  | cons
+  | nil
+  | typeInt
+  | typeLong
+  | typeShort
+  | typeByte
+  | typeBool
+  | typeString
+  | typeFloat
+  | typeDouble
+  | typeUnit
+  | typeInt8
+  | typeInt16
+  | typeInt32
+  | typeInt64
+  | typeWord8
+  | typeWord16
+  | typeWord32
+  | typeWord64
+  | typeNat
+  | typeList
+  | typeArray
+  | typeRef
+  | typeIO
+  | typePtr
+  | sortType
+  | sortType0
+  | sortType1
+  | sortRow
+  | sortLabel
+  deriving Inhabited, BEq, DecidableEq, Hashable, Repr
+
+namespace WiredRole
+
+def canonical : WiredRole → String
+  | .pair => "pair"
+  | .cons => "cons"
+  | .nil => "nil"
+  | .typeInt => "type.int"
+  | .typeLong => "type.long"
+  | .typeShort => "type.short"
+  | .typeByte => "type.byte"
+  | .typeBool => "type.bool"
+  | .typeString => "type.string"
+  | .typeFloat => "type.float"
+  | .typeDouble => "type.double"
+  | .typeUnit => "type.unit"
+  | .typeInt8 => "type.int8"
+  | .typeInt16 => "type.int16"
+  | .typeInt32 => "type.int32"
+  | .typeInt64 => "type.int64"
+  | .typeWord8 => "type.word8"
+  | .typeWord16 => "type.word16"
+  | .typeWord32 => "type.word32"
+  | .typeWord64 => "type.word64"
+  | .typeNat => "type.nat"
+  | .typeList => "type.list"
+  | .typeArray => "type.array"
+  | .typeRef => "type.ref"
+  | .typeIO => "type.io"
+  | .typePtr => "type.ptr"
+  | .sortType => "sort.type"
+  | .sortType0 => "sort.type0"
+  | .sortType1 => "sort.type1"
+  | .sortRow => "sort.row"
+  | .sortLabel => "sort.label"
+
+instance : ToString WiredRole := ⟨canonical⟩
+
+def fromString? : String → Option WiredRole
+  | "pair" => some .pair
+  | "cons" => some .cons
+  | "nil" => some .nil
+  | "type.int" | "int" => some .typeInt
+  | "type.long" | "long" => some .typeLong
+  | "type.short" | "short" => some .typeShort
+  | "type.byte" | "byte" => some .typeByte
+  | "type.bool" | "bool" => some .typeBool
+  | "type.string" | "string" => some .typeString
+  | "type.float" | "float" => some .typeFloat
+  | "type.double" | "double" => some .typeDouble
+  | "type.unit" | "unit" => some .typeUnit
+  | "type.int8" | "int8" => some .typeInt8
+  | "type.int16" | "int16" => some .typeInt16
+  | "type.int32" | "int32" => some .typeInt32
+  | "type.int64" | "int64" => some .typeInt64
+  | "type.word8" | "word8" => some .typeWord8
+  | "type.word16" | "word16" => some .typeWord16
+  | "type.word32" | "word32" => some .typeWord32
+  | "type.word64" | "word64" => some .typeWord64
+  | "type.nat" | "nat" => some .typeNat
+  | "type.list" | "list" => some .typeList
+  | "type.array" | "array" => some .typeArray
+  | "type.ref" | "ref" => some .typeRef
+  | "type.io" | "io" => some .typeIO
+  | "type.ptr" | "ptr" => some .typePtr
+  | "sort.type" | "type" => some .sortType
+  | "sort.type0" | "type0" => some .sortType0
+  | "sort.type1" | "type1" => some .sortType1
+  | "sort.row" | "row" => some .sortRow
+  | "sort.label" | "label" => some .sortLabel
+  | _ => none
+
+/-- Map wired type roles to canonical primitive representations when applicable -/
+def primType? : WiredRole → Option Soma.Core.StarPrimitive
+  | .typeInt => some .int
+  | .typeLong => some .long
+  | .typeShort => some .short
+  | .typeByte => some .byte
+  | .typeBool => some .bool
+  | .typeString => some .string
+  | .typeFloat => some .float
+  | .typeDouble => some .double
+  | .typeUnit => some .unit
+  | .typeInt8 => some .int8
+  | .typeInt16 => some .int16
+  | .typeInt32 => some .int32
+  | .typeInt64 => some .int64
+  | .typeWord8 => some .word8
+  | .typeWord16 => some .word16
+  | .typeWord32 => some .word32
+  | .typeWord64 => some .word64
+  | _ => none
+
+end WiredRole
+
+/-- Well-known language entities resolved via @[wired_in "role"] attributes -/
 structure WiredIn where
-  /-- Role → constructor info mapping -/
-  roles : Std.HashMap String GlobalInfo := {}
+  /-- Role → all declarations bound to this role -/
+  roles : Std.HashMap WiredRole (Array GlobalInfo) := {}
   deriving Inhabited
 
 namespace WiredIn
 
-/-- Look up a wired-in constructor by role name -/
-def get? (w : WiredIn) (role : String) : Option GlobalInfo :=
-  w.roles.get? role
+/-- Look up all declarations registered to a role -/
+def getAll (w : WiredIn) (role : WiredRole) : Array GlobalInfo :=
+  w.roles.getD role #[]
+
+/-- Look up a role only when it has exactly one declaration -/
+def getUnique? (w : WiredIn) (role : WiredRole) : Option GlobalInfo :=
+  match w.getAll role with
+  | #[info] => some info
+  | _ => none
 
 /-- Register a constructor under a role -/
-def register (w : WiredIn) (role : String) (info : GlobalInfo) : WiredIn :=
-  if w.roles.contains role then w
-  else { w with roles := w.roles.insert role info }
+def register (w : WiredIn) (role : WiredRole) (info : GlobalInfo) : WiredIn :=
+  let existing := w.roles.getD role #[]
+  if existing.any (fun e => e.name == info.name) then
+    w
+  else
+    { w with roles := w.roles.insert role (existing.push info) }
 
 /-- Scan attributes for @[wired_in "role"] and register if found (todo: register lazily) -/
 def tryRegisterFromAttrs (w : WiredIn) (attrs : Array Soma.Syntax.Attribute) (info : GlobalInfo) : WiredIn :=
@@ -207,14 +345,24 @@ def tryRegisterFromAttrs (w : WiredIn) (attrs : Array Soma.Syntax.Attribute) (in
     if attr.name.value == "wired_in" then
       if h : 0 < attr.args.size then
         match attr.args[0] with
-        | .lit (.string role _) => acc.register role info
+        | .lit (.string role _) =>
+          match WiredRole.fromString? role with
+          | some r => acc.register r info
+          | none => acc
         | _ => acc
       else acc
     else acc
 
-def pair (w : WiredIn) : Option GlobalInfo := w.get? "pair"
-def cons (w : WiredIn) : Option GlobalInfo := w.get? "cons"
-def nil  (w : WiredIn) : Option GlobalInfo := w.get? "nil"
+def pair (w : WiredIn) : Option GlobalInfo := w.getUnique? .pair
+def cons (w : WiredIn) : Option GlobalInfo := w.getUnique? .cons
+def nil  (w : WiredIn) : Option GlobalInfo := w.getUnique? .nil
+
+/-- Find the wired role assigned to a particular global name -/
+def roleOf? (w : WiredIn) (qn : Soma.Core.QualifiedName) : Option WiredRole :=
+  w.roles.fold (init := none) fun found role infos =>
+    match found with
+    | some _ => found
+    | none => if infos.any (fun info => info.name == qn) then some role else none
 
 end WiredIn
 
@@ -1135,10 +1283,44 @@ def resolveConstructor (name : String) : TCM (Option GlobalInfo) := do
     recordGlobalDep name
   return result
 
-/-- Look up a wired-in constructor by role name -/
-def lookupWiredIn (role : String) : TCM (Option GlobalInfo) := do
+/-- Look up all declarations registered under a wired-in role -/
+def lookupWiredInAll (role : WiredRole) : TCM (Array GlobalInfo) := do
   let ctx ← getCtx
-  return ctx.globals.wiredIn.get? role
+  return ctx.globals.wiredIn.getAll role
+
+/-- Look up a wired-in role, requiring uniqueness -/
+def lookupWiredIn (role : WiredRole) : TCM (Option GlobalInfo) := do
+  let ctx ← getCtx
+  return ctx.globals.wiredIn.getUnique? role
+
+/-- Look up a wired-in role by textual role name -/
+def lookupWiredInByName (role : String) : TCM (Option GlobalInfo) := do
+  match WiredRole.fromString? role with
+  | some r => lookupWiredIn r
+  | none => pure none
+
+/-- Resolve the wired role associated with a global declaration name -/
+def lookupWiredRoleOfGlobal (qn : Soma.Core.QualifiedName) : TCM (Option WiredRole) := do
+  let ctx ← getCtx
+  return ctx.globals.wiredIn.roleOf? qn
+
+/-- Resolve primitive representation for a wired global type declaration when applicable -/
+def lookupWiredPrimitiveOfGlobal (qn : Soma.Core.QualifiedName) : TCM (Option Soma.Core.StarPrimitive) := do
+  match ← lookupWiredRoleOfGlobal qn with
+  | some role => pure (WiredRole.primType? role)
+  | none => pure none
+
+/-- Resolve primitive representation for a wired type unique when applicable -/
+def lookupWiredPrimitiveOfTypeUnique (u : Soma.Unique) : TCM (Option Soma.Core.StarPrimitive) := do
+  let ctx ← getCtx
+  let role? := ctx.globals.wiredIn.roles.fold (init := none) fun found role infos =>
+    match found with
+    | some _ => found
+    | none =>
+      if infos.any (fun info => info.name.id == u) then some role else none
+  match role? with
+  | some role => pure (WiredRole.primType? role)
+  | none => pure none
 
 /-- Look up a type abbreviation by name -/
 def lookupAbbrev (name : String) : TCM (Option AbbrevInfo) := do
