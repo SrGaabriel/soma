@@ -10,7 +10,6 @@ import Soma.Dependent.Error
 import Soma.Dependent.Totality
 import Soma.Dependent.Elaborate
 import Soma.Dependent.TraitElaborate
-import Soma.Unique
 import Soma.Core.Eval
 
 namespace Soma.Dependent.Driver
@@ -64,11 +63,11 @@ def checkDataTypePositivity (typeDef : Soma.Core.UntypedTypeDef) (ctx : TCContex
     : Array TCError :=
   match typeDef with
   | .algebraic name _params constructors =>
-    -- Look up the registered TypeId, or create a placeholder
+    -- Look up the registered Unique, or create a placeholder
     let typeName := name.display
-    let typeId : Soma.Core.TypeId := match ctx.globals.lookupTypeId typeName with
+    let unique : Soma.Unique := match ctx.globals.lookupUnique typeName with
       | some id => id
-      | none => ⟨state.uniqueSupply.module, typeName, state.uniqueSupply.nextId⟩
+      | none => ⟨state.uniqueSupply.nextId, state.uniqueSupply.module, typeName⟩
 
     -- Elaborate each constructor's field types
     let ctorTypes := constructors.foldl (init := #[]) fun acc ctor =>
@@ -78,7 +77,7 @@ def checkDataTypePositivity (typeDef : Soma.Core.UntypedTypeDef) (ctx : TCContex
         | .error _ => acc2  -- Skip fields that fail to elaborate
 
     -- Run positivity check
-    match Totality.checkDataTypePositivity typeId ctorTypes Span.uninhabited with
+    match Totality.checkDataTypePositivity unique ctorTypes Span.uninhabited with
     | .ok => #[]
     | .violated reason violationSpan =>
       #[TCError.positivityViolation typeName reason violationSpan none]
@@ -239,15 +238,13 @@ def elaborateCtorType (typeName : Soma.Core.QualifiedName) (typeVarNames : Array
     typeVarVals := typeVarVals.push varVal
     elabEnv := elabEnv.extend varName (.vType .zero)
 
-  -- Look up the registered TypeId, or create a fresh one if not found
-  let typeId ← match ← TCM.lookupTypeId typeName.display with
+  -- Look up the registered Unique, or create a fresh one if not found
+  let unique ← match ← TCM.lookupUnique typeName.display with
     | some id => pure id
-    | none =>
-      let u ← TCM.freshUnique typeName.display
-      pure (Soma.Core.TypeId.fromUnique u)
+    | none => TCM.freshUnique typeName.display
 
   -- Build the result type: DataType applied to type vars
-  let resultType := Value.vDataType typeId typeVarVals.toList
+  let resultType := Value.vDataType unique typeVarVals.toList
 
   -- Elaborate field types and build function type
   let mut ctorType := resultType
@@ -343,7 +340,7 @@ def elaborateFunctionType (sigSyntax : Syntax.TypeExpr) : TCM Value := do
 /-- Build a Globals enviro      -- Check for builtin higher-kinded types (List, Array, IO, Ref)
 nment from all function definitions in a module -/
 def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
-  -- Start with existing globals from context to preserve external typeIds
+  -- Start with existing globals from context to preserve external uniques
   let ctx ← TCM.getCtx
   let mut globals := ctx.globals
 
@@ -351,16 +348,15 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
   for typeDef in module.types do
     match typeDef with
     | .algebraic typeName typeVarNames _ =>
-      -- Generate a proper TypeId for this data type
+      -- Generate a proper Unique for this data type
       let typeUnique ← TCM.freshUnique typeName.display
-      let typeId : Soma.Core.TypeId := Soma.Core.TypeId.fromUnique typeUnique
-      -- Register the TypeId in both local globals and TCM context
-      globals := globals.registerTypeId typeName.display typeId
-      globals := globals.registerInductive typeName.display typeId .algebraic typeVarNames
-      TCM.registerTypeId typeName.display typeId
+      -- Register the Unique in both local globals and TCM context
+      globals := globals.registerUnique typeName.display typeUnique
+      globals := globals.registerInductive typeName.display typeUnique .algebraic typeVarNames
+      TCM.registerUnique typeName.display typeUnique
 
       -- Register the data type name itself (for evaluation of Expr.const)
-      let dataTypeVal := Value.vDataType typeId []
+      let dataTypeVal := Value.vDataType typeUnique []
       let dataTypeInfo : GlobalInfo := {
         name := ⟨typeUnique⟩
         type := Value.vType .zero  -- The type of the data type is Type
@@ -370,17 +366,16 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
       }
       globals := globals.insert typeName.display dataTypeInfo
     | .struct structName typeVarNames _ fields =>
-      -- Generate a proper TypeId for this struct
+      -- Generate a proper Unique for this struct
       let typeUnique ← TCM.freshUnique structName.display
-      let typeId : Soma.Core.TypeId := Soma.Core.TypeId.fromUnique typeUnique
-      -- Register the TypeId in both local globals and TCM context
-      globals := globals.registerTypeId structName.display typeId
-      globals := globals.registerInductive structName.display typeId .struct typeVarNames
+      -- Register the Unique in both local globals and TCM context
+      globals := globals.registerUnique structName.display typeUnique
+      globals := globals.registerInductive structName.display typeUnique .struct typeVarNames
         (fields.filterMap (·.1))
-      TCM.registerTypeId structName.display typeId
+      TCM.registerUnique structName.display typeUnique
 
       -- Register the struct type name itself
-      let dataTypeVal := Value.vDataType typeId []
+      let dataTypeVal := Value.vDataType typeUnique []
       let dataTypeInfo : GlobalInfo := {
         name := ⟨typeUnique⟩
         type := Value.vType .zero
@@ -649,21 +644,20 @@ private def registerDataType
     if let some prev := prevGlobals then
       if let some info := prev.lookup nameStr then
         let mut g := globals.insert nameStr info
-        if let some typeId := prev.lookupTypeId nameStr then
-          g := g.registerTypeId nameStr typeId
-          g := g.registerInductive nameStr typeId kind typeVarNames fieldNames
-          TCM.registerTypeId nameStr typeId
+        if let some unique := prev.lookupUnique nameStr then
+          g := g.registerUnique nameStr unique
+          g := g.registerInductive nameStr unique kind typeVarNames fieldNames
+          TCM.registerUnique nameStr unique
         else if let some metaInfo := prev.lookupInductive nameStr then
           g := { g with inductives := g.inductives.insert metaInfo.name metaInfo }
         return g
 
   -- Must elaborate fresh
   let typeUnique ← TCM.freshUnique nameStr
-  let typeId : Soma.Core.TypeId := Soma.Core.TypeId.fromUnique typeUnique
-  let mut g := globals.registerTypeId nameStr typeId
-  g := g.registerInductive nameStr typeId kind typeVarNames fieldNames
-  TCM.registerTypeId nameStr typeId
-  let dataTypeVal := Value.vDataType typeId []
+  let mut g := globals.registerUnique nameStr typeUnique
+  g := g.registerInductive nameStr typeUnique kind typeVarNames fieldNames
+  TCM.registerUnique nameStr typeUnique
+  let dataTypeVal := Value.vDataType typeUnique []
   let dataTypeInfo : GlobalInfo := {
     name := ⟨typeUnique⟩
     type := Value.vType .zero

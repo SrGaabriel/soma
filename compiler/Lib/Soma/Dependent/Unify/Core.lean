@@ -424,7 +424,7 @@ def getValueKind : Value → String
   | .vLabelLit _ => "vLabelLit"
   | .vRowSort => "vRowSort"
   | .vLabelSort => "vLabelSort"
-  | .vDataType id _ => s!"vDataType({id.name})"
+  | .vDataType id _ => s!"vDataType({id.original})"
   | .vConstructor n _ _ => s!"vConstructor({n})"
   | .vEq _ _ _ _ => "vEq"
   | .vRefl _ _ => "vRefl"

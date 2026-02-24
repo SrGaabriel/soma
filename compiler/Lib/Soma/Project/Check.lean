@@ -235,7 +235,7 @@ def mergeGlobals (g1 g2 : Globals) : Globals :=
   let mergedRoot := Soma.Dependent.Namespace.merge g1.root g2.root
   let intrinsics := g2.intrinsics.fold (init := g1.intrinsics) fun acc qn info =>
     acc.insert qn info
-  let typeIds := g2.typeIds.fold (init := g1.typeIds) fun acc name id =>
+  let uniques := g2.uniques.fold (init := g1.uniques) fun acc name id =>
     acc.insert name id
   let structFields := g2.structFields.fold (init := g1.structFields) fun acc typeName fields =>
     acc.insert typeName fields
@@ -250,7 +250,7 @@ def mergeGlobals (g1 g2 : Globals) : Globals :=
   { root := mergedRoot
     openNamespaces := openNs
     intrinsics := intrinsics
-    typeIds := typeIds
+    uniques := uniques
     structFields := structFields
     inductives := inductives
     ctorToInductive := ctorToInductive

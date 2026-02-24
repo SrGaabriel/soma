@@ -73,6 +73,11 @@ def mangle (u : Unique) : String :=
 
 instance : ToString Unique := ⟨Unique.display⟩
 
+def builtinModule : String := "$builtin"
+
+def builtin (name : String) (unique : Nat) : Unique :=
+  { id := unique, module := builtinModule, original := name }
+
 end Unique
 
 /-- State for generating unique identifiers -/

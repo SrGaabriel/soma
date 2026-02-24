@@ -1,7 +1,6 @@
 import Soma.Syntax
 import Soma.Core.Module
 import Soma.Core.Function
-import Soma.Unique
 
 namespace Soma.Dependent.Lower
 

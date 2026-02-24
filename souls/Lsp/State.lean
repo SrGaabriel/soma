@@ -46,7 +46,7 @@ instance : ToString SymbolKind where
 /-- Convert SyntaxKind to SymbolKind -/
 def syntaxKindToSymbolKind : SyntaxKind → SymbolKind
   | .declDef => .function
-  | .declData => .type
+  | .declInductive => .type
   | .declStruct => .type
   | .declTrait => .trait
   | .constructor => .constructor

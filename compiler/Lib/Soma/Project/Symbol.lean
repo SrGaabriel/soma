@@ -1,4 +1,3 @@
-import Soma.Unique
 import Soma.Syntax.Source
 import Soma.Core.Value
 import Kenosis

@@ -29,7 +29,7 @@ def testSpan : Span := Span.uninhabited
 def synName (s : String) : Soma.Syntax.Name := ⟨s, testSpan⟩
 
 /-- Helper to create a simple unique ID -/
-def mkUnique (n : Nat) (name : String) : Unique :=
+def mkUnique (n : Nat) (name : String) : Soma.Unique :=
   ⟨n, "test", name⟩
 
 /-! ## Conversion Tests -/

@@ -7,7 +7,6 @@ import Soma.Core.Intrinsic
 import Soma.Dependent.Error
 import Soma.Core.Module
 import Soma.Syntax.Source
-import Soma.Unique
 import Std.Data.HashMap
 import Std.Data.HashMap.Raw
 import Kenosis
@@ -162,8 +161,8 @@ structure ConstructorMeta where
 structure InductiveMeta where
   /-- Canonical type name (`A::B::T`) -/
   name : String
-  /-- Stable TypeId used in elaboration/evaluation/lowering -/
-  typeId : Soma.Core.TypeId
+  /-- Stable Unique used in elaboration/evaluation/lowering -/
+  unique : Soma.Unique
   /-- Source declaration kind -/
   kind : InductiveKind
   /-- Declared type parameter names, in order -/
@@ -303,8 +302,8 @@ structure Globals where
   openNamespaces : Array String := #[]
   /-- Intrinsic dispatch table keyed by qualified global name -/
   intrinsics : Std.HashMap Soma.Core.QualifiedName Soma.Core.Intrinsic := {}
-  /-- Registry mapping type names to their TypeIds -/
-  typeIds : Std.HashMap String Soma.Core.TypeId := {}
+  /-- Registry mapping type names to their Uniques -/
+  uniques : Std.HashMap String Soma.Unique := {}
   /-- Ordered field names for struct types -/
   structFields : Std.HashMap String (Array String) := {}
   /-- First-class inductive metadata keyed by canonical type name -/
@@ -377,30 +376,30 @@ def lookupIntrinsic (g : Globals) (name : Soma.Core.QualifiedName)
     : Option Soma.Core.Intrinsic :=
   g.intrinsics.get? name
 
-/-- Register a TypeId for a type name -/
-def registerTypeId (g : Globals) (name : String) (id : Soma.Core.TypeId) : Globals :=
-  { g with typeIds := g.typeIds.insert name id }
+/-- Register a Unique for a type name -/
+def registerUnique (g : Globals) (name : String) (id : Soma.Unique) : Globals :=
+  { g with uniques := g.uniques.insert name id }
 
 /-- Register or refresh top-level inductive metadata for a type name -/
-def registerInductive (g : Globals) (name : String) (typeId : Soma.Core.TypeId)
+def registerInductive (g : Globals) (name : String) (unique : Soma.Unique)
     (kind : InductiveKind) (typeVarNames : Array String := #[])
     (fieldNames : Array String := #[]) : Globals :=
   let normalized := normalizeQualified name
   let metaInfo : InductiveMeta := match g.inductives.get? normalized with
     | some existing =>
       { existing with
-        typeId := typeId
+        unique := unique
         kind := kind
         typeVarNames := typeVarNames
         fieldNames := fieldNames }
     | none =>
       { name := normalized
-        typeId := typeId
+        unique := unique
         kind := kind
         typeVarNames := typeVarNames
         fieldNames := fieldNames }
   { g with
-    typeIds := g.typeIds.insert normalized typeId
+    uniques := g.uniques.insert normalized unique
     structFields := if fieldNames.isEmpty then g.structFields else g.structFields.insert normalized fieldNames
     inductives := g.inductives.insert normalized metaInfo }
 
@@ -427,12 +426,12 @@ def lookupInductiveByCtor (g : Globals) (ctorName : Soma.Core.QualifiedName)
     g.inductives.toList.findSome? fun (_, info) =>
       if info.ctors.any (·.name == ctorName) then some info else none
 
-/-- Look up a TypeId by name -/
-def lookupTypeId (g : Globals) (name : String) : Option Soma.Core.TypeId :=
+/-- Look up a Unique by name -/
+def lookupUnique (g : Globals) (name : String) : Option Soma.Unique :=
   let normalized := normalizeQualified name
-  match g.typeIds.get? normalized with
+  match g.uniques.get? normalized with
   | some id => some id
-  | none => (g.lookupInductive normalized).map (·.typeId)
+  | none => (g.lookupInductive normalized).map (·.unique)
 
 /-- Insert a declaration into a child namespace -/
 def insertInChild (g : Globals) (parentName : String) (childName : String) (info : GlobalInfo) : Globals :=
@@ -834,8 +833,8 @@ structure TCState where
   pendingInstances : Array PendingInstance := #[]
   /-- Unique supply for generating compiler-internal names -/
   uniqueSupply : Soma.UniqueSupply := Soma.UniqueSupply.initial ""
-  /-- Registry mapping type names to their TypeIds -/
-  typeIds : Std.HashMap String Soma.Core.TypeId := {}
+  /-- Registry mapping type names to their Uniques -/
+  uniques : Std.HashMap String Soma.Unique := {}
   /-- Dependencies on global definitions (for incremental checking) -/
   globalDeps : Std.HashSet String := {}
   deriving Inhabited
@@ -1175,20 +1174,20 @@ def withGlobalsAndAbbrevs (globals : Globals) (abbrevEnv : AbbrevEnv)
     (m : TCM α) : TCM α :=
   withReader (fun ctx => { ctx with globals := globals, abbrevEnv := abbrevEnv }) m
 
-/-- Look up a TypeId by name (checks both state and global context) -/
-def lookupTypeId (name : String) : TCM (Option Soma.Core.TypeId) := do
+/-- Look up a Unique by name (checks both state and global context) -/
+def lookupUnique (name : String) : TCM (Option Soma.Unique) := do
   let state ← getState
-  -- First check state (where we register new TypeIds)
-  match state.typeIds.get? name with
+  -- First check state (where we register new Uniques)
+  match state.uniques.get? name with
   | some id => return some id
   | none =>
-    -- Fall back to globals (for pre-registered TypeIds)
+    -- Fall back to globals (for pre-registered Uniques)
     let ctx ← getCtx
-    return ctx.globals.lookupTypeId name
+    return ctx.globals.lookupUnique name
 
-/-- Register a TypeId for a type name -/
-def registerTypeId (name : String) (id : Soma.Core.TypeId) : TCM Unit := do
-  modifyState fun s => { s with typeIds := s.typeIds.insert name id }
+/-- Register a Unique for a type name -/
+def registerUnique (name : String) (id : Soma.Unique) : TCM Unit := do
+  modifyState fun s => { s with uniques := s.uniques.insert name id }
 
 /-- Get the current De Bruijn level -/
 def currentLevel : TCM DeBruijnLvl := do

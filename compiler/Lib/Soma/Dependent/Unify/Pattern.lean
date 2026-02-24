@@ -86,7 +86,7 @@ partial def applySubst (r : Subst) (v : Value) : Option Soma.Core.Expr :=
     let paramExprs := params.filterMap (applySubst r)
     if paramExprs.length != params.length then none
     else
-      let baseExpr := Soma.Core.Expr.const ⟨⟨id.unique, id.module, id.name⟩⟩
+      let baseExpr := Soma.Core.Expr.const ⟨⟨id.id, id.module, id.original⟩⟩
       some (paramExprs.foldl (fun acc p => .app acc p) baseExpr)
   | .vConstructor name tag args =>
     let argExprs := args.filterMap (applySubst r)

@@ -116,10 +116,10 @@ def registerCtor (ctx : LowerCtx) (name : QualifiedName) (typeName : QualifiedNa
   { ctx with constructors := ctx.constructors.insert name (typeName, tag, arity) }
 
 /-- Register a constructor with its elaborated type (for pattern matching field type lookup) -/
-def registerCtorType (ctx : LowerCtx) (typeId : Soma.Core.TypeId) (tag : Nat)
+def registerCtorType (ctx : LowerCtx) (unique : Soma.Unique) (tag : Nat)
     (ctorType : Value) : LowerCtx :=
   let info := PatternMatch.ConstructorTypeRegistry.fromElaboratedType ctorType
-  { ctx with ctorTypeRegistry := ctx.ctorTypeRegistry.register typeId tag info }
+  { ctx with ctorTypeRegistry := ctx.ctorTypeRegistry.register unique tag info }
 
 /-- Look up constructor info -/
 def lookupCtor (ctx : LowerCtx) (name : QualifiedName) : Option (QualifiedName × Nat × Nat) :=
@@ -868,20 +868,20 @@ def registerTypes (types : Array Soma.Core.TypeDef)
             LowerM.modifyCtx fun ctx =>
               ctx.registerCtor ctor.name typeName ctor.tag ctor.arity
             LowerM.modifyCtx fun ctx =>
-              ctx.registerCtorType indInfo.typeId ctor.tag ctor.type
+              ctx.registerCtorType indInfo.unique ctor.tag ctor.type
       if !usedMetadata then
         -- Legacy fallback path
-        let typeIdOpt := globals.bind fun g => g.lookupTypeId typeName.display
+        let uniqueOpt := globals.bind fun g => g.lookupUnique typeName.display
         for ctor in ctors do
           let arity := ctor.fieldTypeSyntax.size
           LowerM.modifyCtx fun ctx =>
             ctx.registerCtor ctor.name typeName ctor.tag arity
 
-          if let (some g, some typeId) := (globals, typeIdOpt) then
+          if let (some g, some unique) := (globals, uniqueOpt) then
             let ctorSimpleName := ctor.name.id.original
             if let some ctorInfo := g.lookupInChild typeName.display ctorSimpleName then
               LowerM.modifyCtx fun ctx =>
-                ctx.registerCtorType typeId ctor.tag ctorInfo.type
+                ctx.registerCtorType unique ctor.tag ctorInfo.type
 
     | .struct structName _tvars ctorName fields =>
       let mut usedMetadata := false
@@ -892,17 +892,17 @@ def registerTypes (types : Array Soma.Core.TypeDef)
             LowerM.modifyCtx fun ctx =>
               ctx.registerCtor ctor.name structName ctor.tag ctor.arity
             LowerM.modifyCtx fun ctx =>
-              ctx.registerCtorType indInfo.typeId ctor.tag ctor.type
+              ctx.registerCtorType indInfo.unique ctor.tag ctor.type
       if !usedMetadata then
         let arity := fields.size
         LowerM.modifyCtx fun ctx =>
           ctx.registerCtor ctorName structName 0 arity
 
         if let some g := globals then
-          if let some typeId := g.lookupTypeId structName.display then
+          if let some unique := g.lookupUnique structName.display then
             if let some ctorInfo := g.lookupInChild structName.display "new" then
               LowerM.modifyCtx fun ctx =>
-                ctx.registerCtorType typeId 0 ctorInfo.type
+                ctx.registerCtorType unique 0 ctorInfo.type
 
     | .record name _tvars fields =>
       let mut usedMetadata := false
@@ -913,7 +913,7 @@ def registerTypes (types : Array Soma.Core.TypeDef)
             LowerM.modifyCtx fun ctx =>
               ctx.registerCtor ctor.name name ctor.tag ctor.arity
             LowerM.modifyCtx fun ctx =>
-              ctx.registerCtorType indInfo.typeId ctor.tag ctor.type
+              ctx.registerCtorType indInfo.unique ctor.tag ctor.type
       if !usedMetadata then
         let arity := fields.size
         LowerM.modifyCtx fun ctx =>

@@ -4,7 +4,6 @@ import Soma.Core.Level
 import Soma.Core.Quote
 import Soma.Core.Eval
 import Soma.Core.Primitive
-import Soma.Core.TypeId
 import Soma.Core.Expr
 import Soma.Dependent.Prelude
 import Soma.Dependent.Monad
@@ -14,7 +13,6 @@ import Soma.Dependent.Error
 import Soma.Dependent.Usage
 import Soma.Dependent.Elaborate
 import Soma.Syntax.Ast
-import Soma.Unique
 
 namespace Soma.Dependent
 
@@ -87,14 +85,8 @@ def vAppMotive (motive : Value) (arg : Value) : TCM Value := do
     Returns the class unique ID and type arguments if the type is a class application. -/
 def extractClassInfo (ty : Value) : Option (Unique × Array Value) := do
   match ty with
-  | .vDataType typeId args =>
-    -- Convert TypeId to Unique for class resolution
-    let classId : Unique := {
-      id := typeId.unique
-      module := typeId.module
-      original := typeId.name
-    }
-    return (classId, args.toArray)
+  | .vDataType unique args =>
+    return (unique, args.toArray)
   | _ => none
 
 /-- Insert implicit arguments for a function type, tracking created metavariables.
@@ -605,7 +597,7 @@ partial def extractSyntaxPatternBindingTypes (pat : Soma.Syntax.Pattern) (scrutT
     match scrutTy' with
     | .vDataType _ (actualElemTy :: _) => unify elemTy actualElemTy
     | _ =>
-      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let listId := Soma.Unique.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
       let expectedListTy := Value.vDataType listId [elemTy]
       unify scrutTy expectedListTy
     let mut result : List (Unique × String × Value) := []
@@ -619,7 +611,7 @@ partial def extractSyntaxPatternBindingTypes (pat : Soma.Syntax.Pattern) (scrutT
     match scrutTy' with
     | .vDataType _ (actualElemTy :: _) => unify elemTy actualElemTy
     | _ =>
-      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let listId := Soma.Unique.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
       let expectedListTy := Value.vDataType listId [elemTy]
       unify scrutTy expectedListTy
     let headBindings ← extractSyntaxPatternBindingTypes head elemTy
@@ -784,7 +776,7 @@ where
     | .list elems _ => do
       let elemTy ← TCM.freshMetaVal (.vType .zero)
       let elemsChecked ← checkSyntaxList elems.toList elemTy
-      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      let listId := Soma.Unique.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
       let listTy := Value.vDataType listId [elemTy]
       return (listTy, .array elemsChecked.toArray)
 
@@ -1133,9 +1125,9 @@ where
       return appExpr
 
     -- List literal against List type
-    | .list elems _, .vDataType typeId (elemTy :: _) => do
-      let listId := Soma.Core.TypeId.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
-      if typeId == listId then
+    | .list elems _, .vDataType unique (elemTy :: _) => do
+      let listId := Soma.Unique.builtin "List" Soma.Core.HigherPrimitive.list.uniqueId
+      if unique == listId then
         let elemsChecked ← checkSyntaxList elems.toList elemTy
         return .array elemsChecked.toArray
       else

@@ -1,7 +1,6 @@
 import Soma.Core.Quantity
 import Soma.Core.Level
 import Soma.Core.Primitive
-import Soma.Core.TypeId
 import Soma.Core.MetaId
 import Soma.Core.Expr
 import Kenosis
@@ -65,7 +64,7 @@ inductive Value where
   | vRecordVal (fields : List (String × Value))
 
   /-- User-defined data type applied to parameters -/
-  | vDataType (id : TypeId) (params : List Value)
+  | vDataType (id : Unique) (params : List Value)
 
   /-- Constructor application -/
   | vConstructor (name : QualifiedName) (tag : Nat) (args : List Value)

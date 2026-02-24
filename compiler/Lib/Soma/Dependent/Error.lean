@@ -3,7 +3,6 @@ import Soma.Core.Level
 import Soma.Core.Quantity
 import Soma.Core.Quote
 import Soma.Syntax.Diagnostic
-import Soma.Unique
 
 namespace Soma.Dependent
 

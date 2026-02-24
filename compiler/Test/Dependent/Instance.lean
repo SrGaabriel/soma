@@ -12,7 +12,6 @@
 
 import Soma.Dependent
 import Soma.Core
-import Soma.Unique
 import Soma.Syntax.Source
 import Test.Fixtures
 
@@ -26,20 +25,20 @@ open Test.Fixtures
 
 /-! ## Inhabited instances for test types -/
 
-instance : Inhabited (Unique × Array Nat) where
+instance : Inhabited (Soma.Unique × Array Nat) where
   default := ({ id := 0, module := "", original := "" }, #[])
 
-instance : Inhabited (Unique × Array Value) where
+instance : Inhabited (Soma.Unique × Array Value) where
   default := ({ id := 0, module := "", original := "" }, #[])
 
 /-! ## Test Helpers -/
 
 /-- Create a test class unique -/
-def mkTestClassId (name : String) (id : Nat) : Unique :=
+def mkTestClassId (name : String) (id : Nat) : Soma.Unique :=
   { id := id, module := "Test", original := name }
 
 /-- Create a test instance unique -/
-def mkTestInstanceId (name : String) (id : Nat) : Unique :=
+def mkTestInstanceId (name : String) (id : Nat) : Soma.Unique :=
   { id := id, module := "Test", original := name }
 
 /-! ## Instance Environment Tests -/

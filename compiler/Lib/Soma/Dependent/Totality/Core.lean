@@ -1,11 +1,9 @@
 import Soma.Core.Value
 import Soma.Core.Level
 import Soma.Core.Eval
-import Soma.Core.TypeId
 import Soma.Dependent.Monad
 import Soma.Dependent.Error
 import Soma.Dependent.Prelude
-import Soma.Unique
 
 namespace Soma.Dependent.Totality
 

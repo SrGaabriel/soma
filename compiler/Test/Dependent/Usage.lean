@@ -26,7 +26,7 @@ open Test.Fixtures
 def testSpan : Span := Span.uninhabited
 
 /-- Helper to create a test unique from a name -/
-def testUnique (name : String) (id : Nat := 0) : Unique :=
+def testUnique (name : String) (id : Nat := 0) : Soma.Unique :=
   { id := id, module := "test", original := name }
 
 /-! ## Quantity Compatibility Tests

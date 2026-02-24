@@ -25,7 +25,7 @@ inductive PositivityResult where
 
 mutual
 
-partial def checkPositivityClosure (typeId : TypeId) (pol : Polarity) (clos : Closure)
+partial def checkPositivityClosure (unique : Unique) (pol : Polarity) (clos : Closure)
     (argTy : Value) : PositivityResult :=
   let freshVar := Value.vNeutral argTy (.nVar ⟨clos.name, ⟨clos.env.size⟩⟩)
   match clos.body with
@@ -33,34 +33,34 @@ partial def checkPositivityClosure (typeId : TypeId) (pol : Polarity) (clos : Cl
     let env' := clos.env.extend clos.name freshVar
     let evalCtx : EvalCtx := { env := env', globals := GlobalEnv.empty, metas := MetaState.empty }
     let bodyVal := evalCoreExpr evalCtx body
-    checkPositivityValue typeId pol bodyVal
+    checkPositivityValue unique pol bodyVal
   | none =>
     let envVals := clos.env.values.map (·.2)
     envVals.foldl (fun acc v =>
       match acc with
       | .violated _ _ => acc
-      | .ok => checkPositivityValue typeId pol v
+      | .ok => checkPositivityValue unique pol v
     ) .ok
 
-partial def checkPositivityList (typeId : TypeId) (pol : Polarity)
+partial def checkPositivityList (unique : Unique) (pol : Polarity)
     (values : List Value) : PositivityResult :=
   match values with
   | [] => .ok
   | v :: rest =>
-    match checkPositivityValue typeId pol v with
+    match checkPositivityValue unique pol v with
     | .violated reason span => .violated reason span
-    | .ok => checkPositivityList typeId pol rest
+    | .ok => checkPositivityList unique pol rest
 
-partial def checkPositivityFields (typeId : TypeId) (pol : Polarity)
+partial def checkPositivityFields (unique : Unique) (pol : Polarity)
     (fields : List (String × Value)) : PositivityResult :=
   match fields with
   | [] => .ok
   | (_, v) :: rest =>
-    match checkPositivityValue typeId pol v with
+    match checkPositivityValue unique pol v with
     | .violated reason span => .violated reason span
-    | .ok => checkPositivityFields typeId pol rest
+    | .ok => checkPositivityFields unique pol rest
 
-partial def checkPositivityValue (typeId : TypeId) (pol : Polarity) (ty : Value) : PositivityResult :=
+partial def checkPositivityValue (unique : Unique) (pol : Polarity) (ty : Value) : PositivityResult :=
   match ty with
   | .vType _ => .ok
   | .vPrimTy _ => .ok
@@ -70,91 +70,91 @@ partial def checkPositivityValue (typeId : TypeId) (pol : Polarity) (ty : Value)
   | .vRowSort | .vLabelSort => .ok
 
   | .vDataType id params =>
-    if id == typeId then
+    if id == unique then
       match pol with
       | .positive => .ok
       | .negative => .violated "type appears in negative position" Span.uninhabited
       | .mixed => .violated "type appears in mixed position" Span.uninhabited
     else
-      checkPositivityList typeId pol params
+      checkPositivityList unique pol params
 
   | .vPi _ _ _ dom cod =>
-    match checkPositivityValue typeId pol.flip dom with
+    match checkPositivityValue unique pol.flip dom with
     | .violated reason span => .violated reason span
-    | .ok => checkPositivityClosure typeId pol cod dom
+    | .ok => checkPositivityClosure unique pol cod dom
 
   | .vSigma _ _ fst snd =>
-    match checkPositivityValue typeId pol fst with
+    match checkPositivityValue unique pol fst with
     | .violated reason span => .violated reason span
-    | .ok => checkPositivityClosure typeId pol snd fst
+    | .ok => checkPositivityClosure unique pol snd fst
 
   | .vLam _ body =>
-    checkPositivityClosure typeId pol body (.vType .zero)
+    checkPositivityClosure unique pol body (.vType .zero)
 
   | .vPair a b =>
-    match checkPositivityValue typeId pol a with
+    match checkPositivityValue unique pol a with
     | .violated reason span => .violated reason span
-    | .ok => checkPositivityValue typeId pol b
+    | .ok => checkPositivityValue unique pol b
 
   | .vRowEmpty => .ok
 
   | .vRowExtend label fieldTy tail =>
-    match checkPositivityValue typeId pol label with
+    match checkPositivityValue unique pol label with
     | .violated reason span => .violated reason span
     | .ok =>
-      match checkPositivityValue typeId pol fieldTy with
+      match checkPositivityValue unique pol fieldTy with
       | .violated reason span => .violated reason span
-      | .ok => checkPositivityValue typeId pol tail
+      | .ok => checkPositivityValue unique pol tail
 
-  | .vRecord row => checkPositivityValue typeId pol row
-  | .vVariant row => checkPositivityValue typeId pol row
+  | .vRecord row => checkPositivityValue unique pol row
+  | .vVariant row => checkPositivityValue unique pol row
 
-  | .vConstructor _ _ args => checkPositivityList typeId pol args
+  | .vConstructor _ _ args => checkPositivityList unique pol args
 
   | .vNeutral _ _ => .ok
 
   | .vEq _ eqTy lhs rhs =>
-    match checkPositivityValue typeId pol eqTy with
+    match checkPositivityValue unique pol eqTy with
     | .violated reason span => .violated reason span
     | .ok =>
-      match checkPositivityValue typeId pol lhs with
+      match checkPositivityValue unique pol lhs with
       | .violated reason span => .violated reason span
-      | .ok => checkPositivityValue typeId pol rhs
+      | .ok => checkPositivityValue unique pol rhs
 
   | .vRefl reflTy x =>
-    match checkPositivityValue typeId pol reflTy with
+    match checkPositivityValue unique pol reflTy with
     | .violated reason span => .violated reason span
-    | .ok => checkPositivityValue typeId pol x
+    | .ok => checkPositivityValue unique pol x
 
   | .vTransport _ transTy motive lhs rhs eq body =>
-    match checkPositivityValue typeId pol transTy with
+    match checkPositivityValue unique pol transTy with
     | .violated reason span => .violated reason span
     | .ok =>
-      match checkPositivityValue typeId pol motive with
+      match checkPositivityValue unique pol motive with
       | .violated reason span => .violated reason span
       | .ok =>
-        match checkPositivityValue typeId pol lhs with
+        match checkPositivityValue unique pol lhs with
         | .violated reason span => .violated reason span
         | .ok =>
-          match checkPositivityValue typeId pol rhs with
+          match checkPositivityValue unique pol rhs with
           | .violated reason span => .violated reason span
           | .ok =>
-            match checkPositivityValue typeId pol eq with
+            match checkPositivityValue unique pol eq with
             | .violated reason span => .violated reason span
-            | .ok => checkPositivityValue typeId pol body
+            | .ok => checkPositivityValue unique pol body
 
-  | .vRecordVal fields => checkPositivityFields typeId pol fields
+  | .vRecordVal fields => checkPositivityFields unique pol fields
 
 end
 
 /-- Check positivity for a data type definition -/
-def checkDataTypePositivity (typeId : TypeId) (constructors : Array Value)
+def checkDataTypePositivity (unique : Unique) (constructors : Array Value)
     (span : Span) : PositivityResult :=
   constructors.foldl (init := PositivityResult.ok) fun acc ctorTy =>
     match acc with
     | .violated _ _ => acc
     | .ok =>
-      match checkPositivityValue typeId .positive ctorTy with
+      match checkPositivityValue unique .positive ctorTy with
       | .violated reason _ => .violated reason span
       | .ok => .ok
 
@@ -203,9 +203,9 @@ def validateTypeIndex (idx : Value) (registry : TotalityRegistry) (span : Span) 
     TCM.throw (.partialInTypeIndex ⟨u⟩ span)
 
 /-- Check and report positivity for a data type definition -/
-def checkAndReportPositivity (typeName : String) (typeId : TypeId)
+def checkAndReportPositivity (typeName : String) (unique : Unique)
     (constructorTypes : Array Value) (span : Span) : TCM Unit := do
-  match checkDataTypePositivity typeId constructorTypes span with
+  match checkDataTypePositivity unique constructorTypes span with
   | .ok => pure ()
   | .violated reason violationSpan =>
     TCM.throw (.positivityViolation typeName reason violationSpan none)

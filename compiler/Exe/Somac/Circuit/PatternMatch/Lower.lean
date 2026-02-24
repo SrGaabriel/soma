@@ -160,7 +160,7 @@ def getFieldType (registry : ConstructorTypeRegistry) (parentType : Value)
       | .const _ v => v
       | .term _ _ _ => unitTy -- Can't evaluate dependent closure without argument
 
-  | .vDataType _typeId _params =>
+  | .vDataType _unique _params =>
     -- todo: look up field types from registry (requires tag, which we don't have here)
     let fieldTypes := fallbackFieldTypes parentType (fieldIdx + 1)
     fieldTypes[fieldIdx]?.getD unitTy

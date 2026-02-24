@@ -80,10 +80,10 @@ partial def valueToString (v : Value) : String :=
     "{ " ++ ", ".intercalate fieldsStr ++ " }"
 
   | .vDataType id params =>
-    if params.isEmpty then id.name
+    if params.isEmpty then id.original
     else
       let paramsStr := params.map valueToString
-      s!"{id.name} {" ".intercalate paramsStr}"
+      s!"{id.original} {" ".intercalate paramsStr}"
 
   | .vConstructor name _ args =>
     if args.isEmpty then name.display

@@ -1,5 +1,4 @@
 import Soma.Core.Primitive
-import Soma.Core.TypeId
 import Soma.Core.Intrinsic
 import Soma.Core.Literal
 import Soma.Core.Quantity

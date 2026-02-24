@@ -2,7 +2,7 @@ import Soma.Core.Value
 import Soma.Core.Quantity
 import Soma.Core.Level
 import Soma.Core.Primitive
-import Soma.Core.TypeId
+import Soma.Unique
 
 namespace Soma.Core
 
@@ -134,7 +134,7 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     | some v => v
     | none =>
       match HigherPrimitive.fromName? name.display with
-      | some hp => .vDataType (TypeId.builtin hp.name hp.uniqueId) []
+      | some hp => .vDataType (Unique.builtin hp.name hp.uniqueId) []
       | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
 
   | .app fn arg =>

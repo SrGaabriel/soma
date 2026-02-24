@@ -2,7 +2,7 @@ import Soma.Unique
 import Soma.Core.Quantity
 import Soma.Core.Level
 import Soma.Core.Primitive
-import Soma.Core.TypeId
+import Soma.Unique
 import Soma.Core.MetaId
 import Soma.Core.Literal
 import Kenosis
@@ -133,7 +133,7 @@ inductive Expr where
   | recordTy (row : Expr)
   | variantTy (row : Expr)
   | labelLit (name : String)
-  | dataTy (id : TypeId) (params : Array Expr)
+  | dataTy (id : Unique) (params : Array Expr)
 
   -- Equality types
   | eqTy (tyLevel : Level) (ty : Expr) (lhs : Expr) (rhs : Expr)

@@ -21,6 +21,7 @@ open Test.Fixtures
 
 open Soma.Dependent
 open Soma.Dependent.Unify (SolveResult)
+open Soma (Unique)
 open Soma.Core
 open Soma.Syntax (Span)
 
@@ -1055,7 +1056,7 @@ def testFlexFlexWithIntersectionSolves : Bool :=
 def testDependentPatternWithTwins : Bool :=
   -- Simulates: ?X n = Vec n Bool where n is both in spine and RHS
   match runTCM do
-    let vecId : TypeId := ⟨"test", "Vec", 200⟩
+    let vecId : Unique := ⟨200, "test", "Vec"⟩
     let n := Value.vNeutral (.vPrimTy .int) (.nVar ⟨"n", ⟨0⟩⟩)
     -- Create meta ?X with type (n : Int) -> Type
     let piTy := Value.vPi .omega .explicit "n" (.vPrimTy .int)
@@ -1110,8 +1111,8 @@ def advancedIntegrationTests : List (String × Bool) := [
 /-- Test: Unifying DataType with same indices should succeed -/
 def testUnifyDataTypesSameIndices : Bool :=
   match runTCM do
-    -- Create TypeIds for a Vec-like type
-    let vecId : TypeId := ⟨"test", "Vec", 100⟩
+    -- Create Uniques for a Vec-like type
+    let vecId : Unique := ⟨100, "test", "Vec"⟩
     -- Vec 5 Int
     let vec1 := Value.vDataType vecId [.vIntLit 5, .vPrimTy .int]
     -- Vec 5 Int (same)
@@ -1125,7 +1126,7 @@ def testUnifyDataTypesSameIndices : Bool :=
 /-- Test: Unifying DataType with different indices should fail -/
 def testUnifyDataTypesDifferentIndices : Bool :=
   match runTCM do
-    let vecId : TypeId := ⟨"test", "Vec", 100⟩
+    let vecId : Unique := ⟨100, "test", "Vec"⟩
     -- Vec 5 Int
     let vec1 := Value.vDataType vecId [.vIntLit 5, .vPrimTy .int]
     -- Vec 3 Int (different length)
@@ -1139,7 +1140,7 @@ def testUnifyDataTypesDifferentIndices : Bool :=
 /-- Test: Unifying DataType with meta index should solve the meta -/
 def testUnifyDataTypeMetaIndex : Bool :=
   match runTCM do
-    let vecId : TypeId := ⟨"test", "Vec", 100⟩
+    let vecId : Unique := ⟨100, "test", "Vec"⟩
     -- Create a meta for the length index
     let lenMeta ← TCM.freshMetaVal (.vPrimTy .int)
     -- Vec ?len Int
@@ -1159,7 +1160,7 @@ def testUnifyDataTypeMetaIndex : Bool :=
 /-- Test: Unifying DataType with meta type parameter should solve the meta -/
 def testUnifyDataTypeMetaTypeParam : Bool :=
   match runTCM do
-    let maybeId : TypeId := ⟨"test", "Maybe", 101⟩
+    let maybeId : Unique := ⟨101, "test", "Maybe"⟩
     -- Create a meta for the type parameter
     let tyMeta ← TCM.freshMetaVal (.vType .zero)
     -- Maybe ?a
@@ -1179,8 +1180,8 @@ def testUnifyDataTypeMetaTypeParam : Bool :=
 /-- Test: Unifying nested indexed types propagates constraints -/
 def testUnifyNestedIndexedTypes : Bool :=
   match runTCM do
-    let vecId : TypeId := ⟨"test", "Vec", 100⟩
-    let pairId : TypeId := ⟨"test", "Pair", 102⟩
+    let vecId : Unique := ⟨100, "test", "Vec"⟩
+    let pairId : Unique := ⟨102, "test", "Pair"⟩
     -- Create metas
     let lenMeta ← TCM.freshMetaVal (.vPrimTy .int)
     let tyMeta ← TCM.freshMetaVal (.vType .zero)
@@ -1202,10 +1203,10 @@ def testUnifyNestedIndexedTypes : Bool :=
   | _ => false
 
 /-- Test: Unifying DataType with different type IDs should fail -/
-def testUnifyDataTypesDifferentTypeIds : Bool :=
+def testUnifyDataTypesDifferentUniques : Bool :=
   match runTCM do
-    let vecId : TypeId := ⟨"test", "Vec", 100⟩
-    let listId : TypeId := ⟨"test", "List", 103⟩
+    let vecId : Unique := ⟨100, "test", "Vec"⟩
+    let listId : Unique := ⟨103, "test", "List"⟩
     -- Vec 5 Int
     let vec := Value.vDataType vecId [.vIntLit 5, .vPrimTy .int]
     -- List Int (different type)
@@ -1219,7 +1220,7 @@ def testUnifyDataTypesDifferentTypeIds : Bool :=
 /-- Test: Bidirectional constraint propagation with two metas -/
 def testBidirectionalIndexConstraint : Bool :=
   match runTCM do
-    let vecId : TypeId := ⟨"test", "Vec", 100⟩
+    let vecId : Unique := ⟨100, "test", "Vec"⟩
     -- Create two metas for length indices
     let lenMeta1 ← TCM.freshMetaVal (.vPrimTy .int)
     let lenMeta2 ← TCM.freshMetaVal (.vPrimTy .int)
@@ -1246,7 +1247,7 @@ def indexedTypeTests : List (String × Bool) := [
   ("unify DataType meta index", testUnifyDataTypeMetaIndex),
   ("unify DataType meta type param", testUnifyDataTypeMetaTypeParam),
   ("unify nested indexed types", testUnifyNestedIndexedTypes),
-  ("unify DataTypes different type IDs (fail)", testUnifyDataTypesDifferentTypeIds),
+  ("unify DataTypes different type IDs (fail)", testUnifyDataTypesDifferentUniques),
   ("bidirectional index constraint", testBidirectionalIndexConstraint)
 ]
 

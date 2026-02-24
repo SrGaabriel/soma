@@ -318,7 +318,8 @@ def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
   | none =>
     .external s!"unresolved_ref_{refId}"
 
-open Soma.Core (Value StarPrimitive HigherPrimitive TypeId)
+open Soma.Core (Value StarPrimitive HigherPrimitive)
+open Soma.Unique
 
 /-- Convert a StarPrimitive to Alloy PrimTy -/
 def convertStarPrimitive : StarPrimitive → PrimTy
@@ -390,9 +391,9 @@ partial def convertValueTypeWithMapping (val : Value) (mapping : TyVarMapping n)
   | Value.vPair fst snd =>
     .struct #[("fst", convertValueTypeWithMapping fst mapping),
               ("snd", convertValueTypeWithMapping snd mapping)]
-  | Value.vDataType id params =>
-    if id.module == TypeId.builtinModule then
-      match HigherPrimitive.fromName? id.name with
+  | Value.vDataType dId params =>
+    if dId.module == Soma.Unique.builtinModule then
+      match HigherPrimitive.fromName? dId.original with
       | some .io =>
         match params with
         | [innerTy] => convertValueTypeWithMapping innerTy mapping

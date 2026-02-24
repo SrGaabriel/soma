@@ -52,7 +52,7 @@ def findChangedDeclIds (tree : RedTree) (changedIds : HashSet NodeId) : HashSet 
 /-- Extract the declaration name from a syntax Decl -/
 private def getDeclName : Decl → Option String
   | .def_ _ name _ _ _ _ => some name.value
-  | .data _ name _ _ _ _ => some name.value
+  | .inductive _ name _ _ _ _ => some name.value
   | .struct _ name _ _ _ _ => some name.value
   | .trait _ name _ _ _ _ => some name.value
   | .abbrev name _ _ _ => some name.value

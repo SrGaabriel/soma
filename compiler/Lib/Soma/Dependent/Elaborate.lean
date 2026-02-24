@@ -2,7 +2,6 @@
 import Soma.Core.Quantity
 import Soma.Core.Level
 import Soma.Core.Primitive
-import Soma.Core.TypeId
 import Soma.Core.Quote
 import Soma.Dependent.Monad
 import Soma.Dependent.Convert
@@ -179,30 +178,28 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
         -- It's a constructor, return as vConstructor with no args yet
         return Value.vConstructor globalInfo.name globalInfo.ctorTag []
       else
-        -- It's a defined value or data type - look up TypeId
-        let typeId ← match ← TCM.lookupTypeId name.value with
+        -- It's a defined value or data type - look up Unique
+        let unique ← match ← TCM.lookupUnique name.value with
           | some id => pure id
           | none =>
             let u ← TCM.freshUnique name.value
-            let id := TypeId.fromUnique u
-            TCM.registerTypeId name.value id
-            pure id
-        return Value.vDataType typeId []
+            TCM.registerUnique name.value u
+            pure u
+        return Value.vDataType unique []
     -- Otherwise, treat as a user-defined type (data type)
     else
       -- Try higher-kinded primitives as a fallback only when no user/global type exists
       if let some hprim := resolveHigherPrimitive name.value then
-        return Value.vDataType (TypeId.builtin hprim.name hprim.uniqueId) []
+        return Value.vDataType (Unique.builtin hprim.name hprim.uniqueId) []
       else
-        -- Look up the registered TypeId, or create a fresh one if not found
-        let typeId ← match ← TCM.lookupTypeId name.value with
+        -- Look up the registered Unique, or create a fresh one if not found
+        let unique ← match ← TCM.lookupUnique name.value with
           | some id => pure id
           | none =>
             let u ← TCM.freshUnique name.value
-            let id := TypeId.fromUnique u
-            TCM.registerTypeId name.value id
-            pure id
-        return Value.vDataType typeId []
+            TCM.registerUnique name.value u
+            pure u
+        return Value.vDataType unique []
 
   -- Type application: F A
   | .app fn arg span =>
@@ -259,8 +256,8 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
   -- List type: [A]
   | .list elem _ =>
     let elemVal ← elaborateType env elem
-    -- Use a stable builtin TypeId for List
-    let listId := TypeId.builtin "List" HigherPrimitive.list.uniqueId
+    -- Use a stable builtin Unique for List
+    let listId := Unique.builtin "List" HigherPrimitive.list.uniqueId
     return Value.vDataType listId [elemVal]
 
   -- Universal quantification: forall a b. T
@@ -307,11 +304,9 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- Elaborate constraint arguments
       let argVals ← args.toList.mapM (elaborateType env)
       -- Create the constraint type (e.g., Show Int)
-      let classId ← match ← TCM.lookupTypeId className.value with
+      let classId ← match ← TCM.lookupUnique className.value with
         | some id => pure id
-        | none =>
-          let u ← TCM.freshUnique className.value
-          pure (TypeId.fromUnique u)
+        | none => TCM.freshUnique className.value
       let constraintTy := Value.vDataType classId argVals
       -- Use const closure since the body doesn't depend on the instance parameter
       return Value.vPi .omega .instance_ "_" constraintTy (Closure.const "_" acc)
@@ -452,12 +447,10 @@ def elaborateConstructorTypes (typeName : String) (params : Array String)
   -- Elaborate each constructor's field types
   constructors.mapM fun (_, fieldTys) => do
     -- For positivity, we care about the function type from fields to result
-    let typeId ← match ← TCM.lookupTypeId typeName with
+    let unique ← match ← TCM.lookupUnique typeName with
       | some id => pure id
-      | none =>
-        let u ← TCM.freshUnique typeName
-        pure (TypeId.fromUnique u)
-    let mut ty := Value.vDataType typeId []
+      | none => TCM.freshUnique typeName
+    let mut ty := Value.vDataType unique []
     for fieldTy in fieldTys.reverse do
       let fieldVal ← elaborateType env fieldTy
       let codClosure ← mkConstClosure "_" ty

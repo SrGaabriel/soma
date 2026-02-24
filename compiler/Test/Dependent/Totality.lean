@@ -26,12 +26,13 @@ open Soma.Dependent
 open Soma.Dependent.Totality
 open Soma.Core
 open Soma.Syntax (Span)
-open Soma.Core (TypeId QualifiedName)
+open Soma (Unique)
+open Soma.Core (QualifiedName)
 open Test.Fixtures
 
 def testSpan : Span := Span.uninhabited
 def testFnName (s : String) : QualifiedName := ⟨⟨0, "", s⟩⟩
-def testTypeId (name : String) : TypeId := ⟨"", name, 0⟩
+def testUnique (name : String) : Unique := ⟨0, "", name⟩
 
 /-- Create a free variable Expr for tests (using fvar with the given name) -/
 def testVar (name : String) : Soma.Core.Expr := .fvar ⟨0, "", name⟩
@@ -514,23 +515,23 @@ end StandardRecursionTests
 namespace PositivityTests
 
 def testPrimPositive : IO TestResult := do
-  let typeId := testTypeId "Test"
+  let unique := testUnique "Test"
   let ty := Value.vPrimTy .int
-  match checkPositivityValue typeId .positive ty with
+  match checkPositivityValue unique .positive ty with
   | .ok => return .passed
   | .violated reason _ => return .failed s!"primitives should be positive: {reason}"
 
 def testSelfPositive : IO TestResult := do
-  let typeId := testTypeId "Nat"
-  let ty := Value.vDataType typeId []
-  match checkPositivityValue typeId .positive ty with
+  let unique := testUnique "Nat"
+  let ty := Value.vDataType unique []
+  match checkPositivityValue unique .positive ty with
   | .ok => return .passed
   | .violated reason _ => return .failed s!"self in positive should be ok: {reason}"
 
 def testSelfNegative : IO TestResult := do
-  let typeId := testTypeId "Bad"
-  let ty := Value.vDataType typeId []
-  match checkPositivityValue typeId .negative ty with
+  let unique := testUnique "Bad"
+  let ty := Value.vDataType unique []
+  match checkPositivityValue unique .negative ty with
   | .violated _ _ => return .passed
   | .ok => return .failed "self in negative should be violation"
 

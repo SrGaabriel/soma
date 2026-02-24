@@ -1,7 +1,6 @@
 import Soma.Core.Value
 import Soma.Core.Quantity
 import Soma.Core.Level
-import Soma.Core.TypeId
 import Soma.Core.Eval
 import Soma.Dependent.Monad
 import Soma.Dependent.Elaborate
@@ -9,7 +8,6 @@ import Soma.Dependent.Infer
 import Soma.Dependent.Instance
 import Soma.Core.Module
 import Soma.Syntax.Ast
-import Soma.Unique
 
 namespace Soma.Dependent.TraitElaborate
 

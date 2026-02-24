@@ -1,11 +1,9 @@
 import Soma.Project
 import Soma.Project.Check
-import Soma.Unique
 import Soma.Core.Value
 import Soma.Core.Level
 import Soma.Core.Quantity
 import Soma.Core.Primitive
-import Soma.Core.TypeId
 import Soma.Dependent.Monad
 import Kenosis
 
@@ -50,9 +48,9 @@ structure GlobalDefEntry where
   deriving Serialize, Deserialize
 
 /-- Serializable type ID entry -/
-structure TypeIdEntry where
+structure UniqueEntry where
   name : String
-  id : TypeId
+  id : Unique
   deriving Serialize, Deserialize
 
 /-- Serializable inductive metadata entry -/
@@ -70,7 +68,7 @@ structure CtorOwnerEntry where
 /-- Serializable globals -/
 structure SerializableGlobals where
   defs : Array GlobalDefEntry := #[]
-  typeIds : Array TypeIdEntry := #[]
+  uniques : Array UniqueEntry := #[]
   inductives : Array InductiveEntry := #[]
   ctorOwners : Array CtorOwnerEntry := #[]
   deriving Serialize, Deserialize
@@ -132,13 +130,13 @@ def constructorsToSerializable (ctors : Std.HashMap String Nat) : Array Construc
 def globalsToSerializable (g : Globals) : SerializableGlobals :=
   let defs := g.foldDecls (init := #[]) fun acc name info =>
     acc.push { name, info }
-  let typeIds := g.typeIds.fold (init := #[]) fun acc name id =>
+  let uniques := g.uniques.fold (init := #[]) fun acc name id =>
     acc.push { name, id }
   let inductives := g.inductives.fold (init := #[]) fun acc name info =>
     acc.push { name, info }
   let ctorOwners := g.ctorToInductive.fold (init := #[]) fun acc ctorName inductiveName =>
     acc.push { ctorName, inductiveName }
-  { defs, typeIds, inductives, ctorOwners }
+  { defs, uniques, inductives, ctorOwners }
 
 /-- Convert InstanceEnv to serializable form -/
 def instanceEnvToSerializable (env : InstanceEnv) : SerializableInstanceEnv :=
@@ -175,14 +173,14 @@ def constructorsFromSerializable (entries : Array ConstructorEntry) : Std.HashMa
 /-- Convert serializable globals to Globals -/
 def globalsFromSerializable (sg : SerializableGlobals) : Globals :=
   let defs := sg.defs.foldl (fun acc entry => acc.insert entry.name entry.info) Globals.empty
-  let typeIds := sg.typeIds.foldl (fun acc entry => acc.insert entry.name entry.id) {}
+  let uniques := sg.uniques.foldl (fun acc entry => acc.insert entry.name entry.id) {}
   let inductives := sg.inductives.foldl (fun acc entry => acc.insert entry.name entry.info) {}
   let ctorToInductive := sg.ctorOwners.foldl (fun acc entry => acc.insert entry.ctorName entry.inductiveName) {}
   let structFields := sg.inductives.foldl (fun acc entry =>
     if entry.info.fieldNames.isEmpty then acc else acc.insert entry.name entry.info.fieldNames
   ) {}
   { defs with
-    typeIds := typeIds
+    uniques := uniques
     structFields := structFields
     inductives := inductives
     ctorToInductive := ctorToInductive }

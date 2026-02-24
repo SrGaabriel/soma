@@ -131,7 +131,7 @@ inductive Guardedness where
 
 /-- Information about a coinductive type -/
 structure CodataInfo where
-  typeId : TypeId
+  unique : Unique
   name : String
   constructors : Array String
   deriving Repr, Inhabited

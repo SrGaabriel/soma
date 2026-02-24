@@ -1,14 +1,14 @@
 import Soma.Core.Value
-import Soma.Core.TypeId
 import Std.Data.HashMap
 
 namespace Somac.Circuit.PatternMatch
 
-open Soma.Core (Value Closure TypeId)
+open Soma.Core (Value Closure)
+open Soma (Unique)
 
-/-- Key for looking up constructor field types: (TypeId, constructor tag) -/
+/-- Key for looking up constructor field types: (Unique, constructor tag) -/
 structure ConstructorKey where
-  typeId : TypeId
+  unique : Unique
   tag : Nat
   deriving BEq, Hashable, Repr, Inhabited
 
@@ -32,14 +32,14 @@ namespace ConstructorTypeRegistry
 def empty : ConstructorTypeRegistry := {}
 
 /-- Register a constructor's type information -/
-def register (reg : ConstructorTypeRegistry) (typeId : TypeId) (tag : Nat)
+def register (reg : ConstructorTypeRegistry) (unique : Unique) (tag : Nat)
     (info : ConstructorTypeInfo) : ConstructorTypeRegistry :=
-  reg.insert ⟨typeId, tag⟩ info
+  reg.insert ⟨unique, tag⟩ info
 
 /-- Look up constructor type info -/
-def lookup (reg : ConstructorTypeRegistry) (typeId : TypeId) (tag : Nat)
+def lookup (reg : ConstructorTypeRegistry) (unique : Unique) (tag : Nat)
     : Option ConstructorTypeInfo :=
-  reg.get? ⟨typeId, tag⟩
+  reg.get? ⟨unique, tag⟩
 
 /-- Extract field types from an elaborated constructor type. -/
 def extractFieldTypes (ctorType : Value) : Array Value × Value :=
@@ -82,57 +82,57 @@ mutual
 
 /-- Substitute type parameters in a Value -/
 partial def substituteParams (v : Value) (params : Array Value)
-    (parentTypeId : TypeId) : Value :=
+    (parentUnique : Unique) : Value :=
   match v with
   | .vNeutral _ (.nVar bv) =>
     -- Variable at level i → params[i] if in range
     let idx := bv.level.lvl
     params[idx]?.getD v
 
-  | .vDataType typeId innerParams =>
+  | .vDataType unique innerParams =>
     -- Recursively substitute in data type parameters
-    let newParams := innerParams.map (substituteParams · params parentTypeId)
-    .vDataType typeId newParams
+    let newParams := innerParams.map (substituteParams · params parentUnique)
+    .vDataType unique newParams
 
   | .vPi qty binder name dom cod =>
-    let newDom := substituteParams dom params parentTypeId
+    let newDom := substituteParams dom params parentUnique
     -- For codomain, we can only substitute in const closures
     let newCod := match cod with
       | .const n result =>
-        .const n (substituteParams result params parentTypeId)
+        .const n (substituteParams result params parentUnique)
       | other => other
     .vPi qty binder name newDom newCod
 
   | .vSigma qty name fst snd =>
-    let newFst := substituteParams fst params parentTypeId
+    let newFst := substituteParams fst params parentUnique
     let newSnd := match snd with
       | .const n result =>
-        .const n (substituteParams result params parentTypeId)
+        .const n (substituteParams result params parentUnique)
       | other => other
     .vSigma qty name newFst newSnd
 
   | .vRecord row =>
-    .vRecord (substituteParamsInRow row params parentTypeId)
+    .vRecord (substituteParamsInRow row params parentUnique)
 
   | .vVariant row =>
-    .vVariant (substituteParamsInRow row params parentTypeId)
+    .vVariant (substituteParamsInRow row params parentUnique)
 
   | .vRowExtend label fieldTy tail =>
-    let newFieldTy := substituteParams fieldTy params parentTypeId
-    let newTail := substituteParams tail params parentTypeId
+    let newFieldTy := substituteParams fieldTy params parentUnique
+    let newTail := substituteParams tail params parentUnique
     .vRowExtend label newFieldTy newTail
 
   | other => other
 
 /-- Substitute type parameters in a row type -/
 partial def substituteParamsInRow (row : Value) (params : Array Value)
-    (parentTypeId : TypeId) : Value :=
+    (parentUnique : Unique) : Value :=
   match row with
   | .vRowExtend label fieldTy tail =>
-    let newFieldTy := substituteParams fieldTy params parentTypeId
-    let newTail := substituteParamsInRow tail params parentTypeId
+    let newFieldTy := substituteParams fieldTy params parentUnique
+    let newTail := substituteParamsInRow tail params parentUnique
     .vRowExtend label newFieldTy newTail
-  | other => substituteParams other params parentTypeId
+  | other => substituteParams other params parentUnique
 
 end
 
@@ -166,18 +166,18 @@ def fallbackFieldTypes (scrutineeType : Value) (arity : Nat) : Array Value :=
 
 /-- Instantiate field types by substituting type parameters -/
 def instantiateFieldTypes (fieldTypes : Array Value) (params : Array Value)
-    (parentTypeId : TypeId) : Array Value :=
-  fieldTypes.map (substituteParams · params parentTypeId)
+    (parentUnique : Unique) : Array Value :=
+  fieldTypes.map (substituteParams · params parentUnique)
 
 /-- Compute field types for a constructor match -/
 def computeFieldTypes (registry : ConstructorTypeRegistry) (scrutineeType : Value)
     (tag : Nat) (arity : Nat) : Array Value :=
   match scrutineeType with
-  | .vDataType typeId params =>
-    match registry.lookup typeId tag with
+  | .vDataType unique params =>
+    match registry.lookup unique tag with
     | some info =>
       -- Instantiate field types by substituting type parameters
-      instantiateFieldTypes info.fieldTypes params.toArray typeId
+      instantiateFieldTypes info.fieldTypes params.toArray unique
     | none =>
       -- Constructor not in registry, fall back to heuristic
       fallbackFieldTypes scrutineeType arity
