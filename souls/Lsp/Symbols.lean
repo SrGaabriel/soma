@@ -210,8 +210,13 @@ def formatSyntaxHover (kind : SyntaxKind) (text : String) : String :=
 
 /-- Get hover information at a position -/
 def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array CompiledModule)
-    (seedSymbols : SymbolEnv := {}) : Option String := do
+    (seedSymbols : SymbolEnv := {}) : Option (String × Span) := do
   let nodeInfo ← findNodeAtPosition offset mod.tree
+
+  guard (!nodeInfo.node.green.isTrivia)
+  if nodeInfo.node.syntaxKind? == some .triviaToken then none else
+
+  let span := mod.tree.spanOf nodeInfo.node
 
   -- Check if it's a token
   if nodeInfo.node.isToken then
@@ -219,39 +224,38 @@ def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array Compile
     let kind ← nodeInfo.node.tokenKind?
 
     if kind.isNameLike then
-      -- Try local scope first
+      if let some local_ := mod.scopeMap.resolveByNodeId nodeInfo.node.id then
+        return (formatLocalBindingHover local_, span)
       if let some local_ := mod.scopeMap.resolve text offset then
-        return formatLocalBindingHover local_
+        return (formatLocalBindingHover local_, span)
       -- Try to find definition in current module
       if let some def_ := mod.symbols.lookupDefinition text then
-        return formatDefinitionHover def_ mod.globals
+        return (formatDefinitionHover def_ mod.globals, span)
       -- Try other open modules (for imported symbols)
       for other in allModules do
         if let some def_ := other.symbols.lookupDefinition text then
-          return formatDefinitionHover def_ other.globals
+          return (formatDefinitionHover def_ other.globals, span)
       -- Try external dependencies (seedSymbols)
       if let some (sym, ty) := lookupInSeedSymbols text seedSymbols then
-        return formatExternalSymbolHover sym ty
+        return (formatExternalSymbolHover sym ty, span)
       -- Unknown identifier/operator
-      return s!"**{text}** — *unknown*"
+      return (s!"**{text}** — *unknown*", span)
     else if kind.isKeyword then
-      return formatKeywordHover kind text
+      return (formatKeywordHover kind text, span)
     else
       -- Punctuation
-      return s!"`{text}` — {kind.describe}"
+      return (s!"`{text}` — {kind.describe}", span)
   else
     -- Interior node
     if let some kind := nodeInfo.node.syntaxKind? then
       match nodeInfo.node.green with
       | .error msg _ _ =>
-          let span := mod.tree.spanOf nodeInfo.node
-          return s!"**Error** at {span.start.line}:{span.start.column}\n\n{msg}"
+          return (s!"**Error** at {span.start.line}:{span.start.column}\n\n{msg}", span)
       | .missing expected =>
-          let span := mod.tree.spanOf nodeInfo.node
-          return s!"**Missing** at {span.start.line}:{span.start.column}\n\nExpected: {expected.describe}"
+          return (s!"**Missing** at {span.start.line}:{span.start.column}\n\nExpected: {expected.describe}", span)
       | _ =>
           let text := nodeText mod.tree nodeInfo.node
-          return formatSyntaxHover kind text
+          return (formatSyntaxHover kind text, span)
     else
       none
 
@@ -298,7 +302,8 @@ def getDefinitionAt (offset : Nat) (mod : CompiledModule) (allModules : Array Co
     let kind ← nodeInfo.node.tokenKind?
     if kind.isNameLike then
       let text ← nodeInfo.node.text?
-      -- Try local scope first
+      if let some local_ := mod.scopeMap.resolveByNodeId nodeInfo.node.id then
+        return (mod.filePath, local_.nameSpan)
       if let some local_ := mod.scopeMap.resolve text offset then
         return (mod.filePath, local_.nameSpan)
       findDefinitionLocation text mod allModules seedSymbols
@@ -364,17 +369,27 @@ def getCompletionsAt (offset : Nat) (mod : CompiledModule) (allModules : Array C
     | none => .unknown
   getCompletionsForContext context mod allModules
 
+/-- Try to find a local binding at the given offset (either in scope or at binding site) -/
+private def resolveLocalBinding (name : String) (offset : Nat) (mod : CompiledModule)
+    : Option LocalBinding :=
+  -- Try in-scope resolution first
+  if let some local_ := mod.scopeMap.resolve name offset then
+    some local_
+  else
+    -- Try binding-site resolution (cursor is on the definition)
+    mod.scopeMap.bindings.find? fun b =>
+      b.name == name &&
+      offset >= b.nameSpan.start.byteOffset &&
+      offset < b.nameSpan.stop.byteOffset
+
 /-- Find all references to a name in a module -/
 def findReferencesInModule (name : String) (mod : CompiledModule)
     (targetOffset : Option Nat := none) : Array Span :=
-  -- If we have an offset, try local scope first
   match targetOffset with
   | some offset =>
-    if let some local_ := mod.scopeMap.resolve name offset then
-      -- Find all references to this specific local binding
+    if let some local_ := resolveLocalBinding name offset mod then
       mod.scopeMap.findLocalReferences local_ mod.tree
     else
-      -- Fall back to module-level references
       (mod.symbols.getReferences name).map (·.span)
   | none =>
     (mod.symbols.getReferences name).map (·.span)

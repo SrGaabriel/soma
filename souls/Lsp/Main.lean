@@ -20,11 +20,12 @@ open Lapis.Server.Progress
 open Lapis.Server.SemanticTokens
 open Lapis.Protocol.Generated (SemanticTokensParams)
 open Soma.Project.Metadata (loadMetadataFromFile)
+open Soma.Syntax (SourceFile)
 
 /-- Convert Soma diagnostics to LSP format -/
-def convertDiagnostics (diags : Soma.Syntax.Diagnostics) : Array Diagnostic :=
+def convertDiagnostics (sf : SourceFile) (diags : Soma.Syntax.Diagnostics) : Array Diagnostic :=
   diags.map fun diag =>
-    let range := spanToRange diag.span
+    let range := spanToRange sf diag.span
     { range := range
     , severity := some (match diag.severity with
         | .error => .error
@@ -108,7 +109,7 @@ def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentP
   ctx.modifyUserState fun s => s.setModule filePath mod
 
   -- Publish diagnostics immediately on open
-  let lspDiags := convertDiagnostics mod.diagnostics
+  let lspDiags := convertDiagnostics mod.sourceFile mod.diagnostics
   ctx.publishDiagnostics { uri, version := some version, diagnostics := lspDiags }
 
   ctx.logInfo s!"Opened: {uri} ({mod.symbols.allNames.size} symbols, {mod.diagnostics.size} diagnostics)"
@@ -142,7 +143,7 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   let version := snap.version
 
   -- Publish diagnostics for the changed module
-  let lspDiags := convertDiagnostics mod.diagnostics
+  let lspDiags := convertDiagnostics mod.sourceFile mod.diagnostics
   ctx.publishDiagnostics { uri, version := some version, diagnostics := lspDiags }
 
   -- Find and re-analyze dependent modules
@@ -166,7 +167,7 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
         ctx.modifyUserState fun s => s.setModule depFilePath depMod
 
         -- Publish diagnostics for the dependent module
-        let depLspDiags := convertDiagnostics depMod.diagnostics
+        let depLspDiags := convertDiagnostics depMod.sourceFile depMod.diagnostics
         ctx.publishDiagnostics { uri := depUri, diagnostics := depLspDiags }
 
 /-- Handle textDocument/didClose -/
@@ -194,7 +195,7 @@ def handleDidSave (ctx : RequestContext LspState) (params : DidSaveTextDocumentP
 
   ctx.modifyUserState fun s => s.setModule filePath mod
 
-  let lspDiags := convertDiagnostics mod.diagnostics
+  let lspDiags := convertDiagnostics mod.sourceFile mod.diagnostics
   let some snap ← ctx.getDocument uri | return
   ctx.publishDiagnostics { uri, version := some snap.version, diagnostics := lspDiags }
 
@@ -216,11 +217,11 @@ def handleHover (ctx : RequestContext LspState) (params : HoverParams) : IO (Opt
   let allMods := state.allModules
 
   -- Get hover content (uses cached symbol table and external deps)
-  let some hoverText := getHoverAt offset mod allMods state.seedSymbols | return none
+  let some (hoverText, hoverSpan) := getHoverAt offset mod allMods state.seedSymbols | return none
 
   return some {
     contents := { kind := .markdown, value := hoverText }
-    range := none
+    range := some (spanToRange mod.sourceFile hoverSpan)
   }
 
 /-- Handle textDocument/definition -/
@@ -251,9 +252,13 @@ def handleDefinition (ctx : RequestContext LspState) (params : TextDocumentPosit
     return none
 
   ctx.logInfo s!"definition: found at {defPath}"
+  let targetSf := if defPath == filePath then mod.sourceFile
+    else match state.allModules.find? (·.filePath == defPath) with
+      | some targetMod => targetMod.sourceFile
+      | none => mod.sourceFile
   return some {
     uri := pathToUri defPath
-    range := spanToRange defSpan
+    range := spanToRange targetSf defSpan
   }
 
 /-- Handle textDocument/completion -/
@@ -312,9 +317,10 @@ def handleDocumentSymbol (ctx : RequestContext LspState) (params : Lean.Json) : 
   let symbols := getDocumentSymbols mod
 
   -- Convert to JSON
+  let sf := mod.sourceFile
   let symbolInfos := symbols.map fun def_ =>
-    let range := spanToRange def_.declSpan
-    let selectionRange := spanToRange def_.nameSpan
+    let range := spanToRange sf def_.declSpan
+    let selectionRange := spanToRange sf def_.nameSpan
     Lean.Json.mkObj [
       ("name", Lean.Json.str def_.name),
       ("kind", Lean.Json.num (documentSymbolKindNumber def_.kind)),
@@ -358,7 +364,11 @@ def handleReferences (ctx : RequestContext LspState) (params : ReferenceParams) 
 
   return refs.map fun (path, span) => {
     uri := pathToUri path
-    range := spanToRange span
+    range := spanToRange (
+      match state.allModules.find? (·.filePath == path) with
+      | some m => m.sourceFile
+      | none => mod.sourceFile
+    ) span
   }
 
 /-- Handle textDocument/semanticTokens/full -/

@@ -98,9 +98,13 @@ def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
     : Option (SemanticTokenTypes × Array SemanticTokenModifiers) := do
   let text ← node.text?
   let kind ← node.tokenKind?
-  let isDef := isDefinitionSite tree node
   let offset := (tree.spanOf node).start.byteOffset
 
+  if let some local_ := scopeMap.resolveByNodeId node.id then
+    let tokenType := symbolKindToTokenType local_.kind.toSymbolKind
+    return (tokenType, #[.declaration, .definition])
+
+  let isDef := isDefinitionSite tree node
   let modifiers : Array SemanticTokenModifiers :=
     if isDef then #[.declaration, .definition] else #[]
 
@@ -111,7 +115,7 @@ def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
   -- Check if in function position (head of application)
   let isFnPos := isInFunctionPosition tree node
 
-  -- Try local scope first
+  -- Try local scope resolution
   if let some local_ := scopeMap.resolve text offset then
     let tokenType := symbolKindToTokenType local_.kind.toSymbolKind
     return (tokenType, modifiers)
@@ -141,13 +145,9 @@ def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
         return (.variable, modifiers)
     | _ => none
 
-/-- Convert a source location to 0-indexed line/character -/
-def locToLineChar (loc : SourceLoc) : Nat × Nat :=
-  (loc.line - 1, loc.column - 1)
-
 /-- Collect a single semantic token from a RedNode -/
-def collectTokenFromNode (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
-    (scopeMap : ScopeMap) : Option Token := do
+def collectTokenFromNode (tree : RedTree) (sf : SourceFile) (node : RedNode)
+    (symbols : SymbolTable) (scopeMap : ScopeMap) : Option Token := do
   guard node.isToken
   guard (!node.green.isTrivia)
 
@@ -157,11 +157,20 @@ def collectTokenFromNode (tree : RedTree) (node : RedNode) (symbols : SymbolTabl
   guard (!kind.isLayout)
 
   let span := tree.spanOf node
-  let (line, character) := locToLineChar span.start
-  let length := span.stop.byteOffset - span.start.byteOffset
+  let byteLength := span.stop.byteOffset - span.start.byteOffset
 
   -- Skip zero-length tokens
-  guard (length > 0)
+  guard (byteLength > 0)
+
+  -- Convert to 0-indexed line and UTF-16 character offset
+  let line := span.start.line - 1
+  let lineContent := getLineContent sf line
+  let byteCol := span.start.column - 1
+  let character := utf8OffsetToUtf16 lineContent byteCol
+
+  -- Convert byte length to UTF-16 length using the token text
+  let text ← node.text?
+  let length := utf8LengthToUtf16 text
 
   -- Classify the token
   if kind.isNameLike then
@@ -174,12 +183,13 @@ def collectTokenFromNode (tree : RedTree) (node : RedNode) (symbols : SymbolTabl
 /-- Collect all semantic tokens from a compiled module -/
 def collectSemanticTokens (mod : CompiledModule) : Array Token := Id.run do
   let tree := mod.tree
+  let sf := mod.sourceFile
   let symbols := mod.symbols
   let scopeMap := mod.scopeMap
   let mut tokens : Array Token := #[]
 
   for node in tree.nodes do
-    if let some token := collectTokenFromNode tree node symbols scopeMap then
+    if let some token := collectTokenFromNode tree sf node symbols scopeMap then
       tokens := tokens.push token
 
   return tokens

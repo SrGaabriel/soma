@@ -46,10 +46,11 @@ structure LocalBinding where
   scopeEnd : Nat
   deriving Repr, Inhabited
 
-/-- The scope map for a module: flat array of bindings with a name index -/
+/-- The scope map for a module: flat array of bindings with indexed lookups -/
 structure ScopeMap where
   bindings : Array LocalBinding := #[]
   nameIndex : HashMap String (Array Nat) := {}
+  nodeIdIndex : HashMap NodeId Nat := {}
   deriving Inhabited
 
 namespace ScopeMap
@@ -76,6 +77,11 @@ def resolve (sm : ScopeMap) (name : String) (offset : Nat) : Option LocalBinding
             bestSize := size
   return best
 
+/-- Look up a binding by its binding-site node ID (for definition-site classification) -/
+def resolveByNodeId (sm : ScopeMap) (nodeId : NodeId) : Option LocalBinding := do
+  let idx ← sm.nodeIdIndex.get? nodeId
+  if h : idx < sm.bindings.size then some sm.bindings[idx] else none
+
 /-- All bindings visible at a given offset -/
 def visibleAt (sm : ScopeMap) (offset : Nat) : Array LocalBinding :=
   sm.bindings.filter fun b =>
@@ -92,6 +98,9 @@ def findLocalReferences (sm : ScopeMap) (binding : LocalBinding)
     guard (text == binding.name)
     let span := tree.spanOf node
     let offset := span.start.byteOffset
+    -- Check if this is the binding site itself
+    if node.id == binding.bindingNodeId then
+      return span
     let resolved? := sm.resolve text offset
     match resolved? with
     | some resolved =>
@@ -117,6 +126,14 @@ private def extractFieldTypeText (tree : RedTree) (fieldNode : RedNode) : Option
     else some (String.intercalate " " (typeTokens.filterMap (·.text?)))
   | [] => none
 
+/-- Walk up through triviaToken wrappers to find the semantic parent -/
+private partial def semanticParent? (tree : RedTree) (node : RedNode) : Option RedNode :=
+  match tree.parent? node with
+  | none => none
+  | some p =>
+    if p.syntaxKind? == some .triviaToken then semanticParent? tree p
+    else some p
+
 /-- Recursively collect all patVar names from a pattern subtree -/
 private def collectPatternVarNames (tree : RedTree) (node : RedNode)
     : Array (String × RedNode) := Id.run do
@@ -129,7 +146,7 @@ private def collectPatternVarNames (tree : RedTree) (node : RedNode)
       let n := tree.nodes[i]
       if n.tokenKind? == some .lowerIdent then
         -- Check if parent is a pattern (patVar, patAs, patTyped)
-        if let some parent := tree.parent? n then
+        if let some parent := semanticParent? tree n then
           match parent.syntaxKind? with
           | some .patVar | some .patAs | some .patTyped =>
             if let some text := n.text? then
@@ -367,6 +384,10 @@ private def extractTyParamNames (tree : RedTree) (tyParamListNode : RedNode)
           -- Extract kind annotation
           let typeAnnot := extractFieldTypeText tree child
           result := result.push (name, nameTok, typeAnnot)
+    | some .triviaToken =>
+      if let some nameTok := findToken? tree child .lowerIdent then
+        if let some name := nameTok.text? then
+          result := result.push (name, nameTok, none)
     | _ =>
       -- Could be a bare lowerIdent token
       if child.isToken && child.tokenKind? == some .lowerIdent then
@@ -600,14 +621,16 @@ def buildScopeMap (tree : RedTree) : ScopeMap := Id.run do
   -- Sort by scopeStart for deterministic ordering
   let sorted := bindings.qsort (fun a b => a.scopeStart < b.scopeStart)
 
-  -- Build name index
+  -- Build indices
   let mut nameIdx : HashMap String (Array Nat) := {}
+  let mut nodeIdIdx : HashMap NodeId Nat := {}
   for h : i in [:sorted.size] do
     let b := sorted[i]
     let existing := nameIdx.getD b.name #[]
     nameIdx := nameIdx.insert b.name (existing.push i)
+    nodeIdIdx := nodeIdIdx.insert b.bindingNodeId i
 
-  return { bindings := sorted, nameIndex := nameIdx }
+  return { bindings := sorted, nameIndex := nameIdx, nodeIdIndex := nodeIdIdx }
 
 /-- Format hover content for a local binding -/
 def formatLocalBindingHover (b : LocalBinding) : String :=
