@@ -351,9 +351,10 @@ def handleReferences (ctx : RequestContext LspState) (params : ReferenceParams) 
   let some mod := state.getModule filePath | return #[]
 
   let some word := wordAtPosition mod.sourceFile params.position | return #[]
+  let offset := positionToOffset mod.sourceFile params.position
 
   let allMods := state.allModules
-  let refs := findAllReferences word allMods
+  let refs := findAllReferences word allMods (some offset)
 
   return refs.map fun (path, span) => {
     uri := pathToUri path

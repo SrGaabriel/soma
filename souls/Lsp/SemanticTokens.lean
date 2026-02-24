@@ -94,10 +94,12 @@ partial def isInFunctionPosition (tree : RedTree) (node : RedNode) : Bool :=
 
 /-- Determine the semantic token type for an identifier based on context and symbols -/
 def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
+    (scopeMap : ScopeMap)
     : Option (SemanticTokenTypes × Array SemanticTokenModifiers) := do
   let text ← node.text?
   let kind ← node.tokenKind?
   let isDef := isDefinitionSite tree node
+  let offset := (tree.spanOf node).start.byteOffset
 
   let modifiers : Array SemanticTokenModifiers :=
     if isDef then #[.declaration, .definition] else #[]
@@ -109,7 +111,12 @@ def classifyIdentifier (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
   -- Check if in function position (head of application)
   let isFnPos := isInFunctionPosition tree node
 
-  -- Look up in symbol table first
+  -- Try local scope first
+  if let some local_ := scopeMap.resolve text offset then
+    let tokenType := symbolKindToTokenType local_.kind.toSymbolKind
+    return (tokenType, modifiers)
+
+  -- Then try module-level symbol table
   match symbols.lookupDefinition text with
   | some def_ =>
     let tokenType := symbolKindToTokenType def_.kind
@@ -140,7 +147,7 @@ def locToLineChar (loc : SourceLoc) : Nat × Nat :=
 
 /-- Collect a single semantic token from a RedNode -/
 def collectTokenFromNode (tree : RedTree) (node : RedNode) (symbols : SymbolTable)
-    : Option Token := do
+    (scopeMap : ScopeMap) : Option Token := do
   guard node.isToken
   guard (!node.green.isTrivia)
 
@@ -158,7 +165,7 @@ def collectTokenFromNode (tree : RedTree) (node : RedNode) (symbols : SymbolTabl
 
   -- Classify the token
   if kind.isNameLike then
-    let (tokenType, modifiers) ← classifyIdentifier tree node symbols
+    let (tokenType, modifiers) ← classifyIdentifier tree node symbols scopeMap
     return Token.ofType line character length tokenType modifiers
   else
     let tokenType ← tokenKindToTokenType? kind
@@ -168,10 +175,11 @@ def collectTokenFromNode (tree : RedTree) (node : RedNode) (symbols : SymbolTabl
 def collectSemanticTokens (mod : CompiledModule) : Array Token := Id.run do
   let tree := mod.tree
   let symbols := mod.symbols
+  let scopeMap := mod.scopeMap
   let mut tokens : Array Token := #[]
 
   for node in tree.nodes do
-    if let some token := collectTokenFromNode tree node symbols then
+    if let some token := collectTokenFromNode tree node symbols scopeMap then
       tokens := tokens.push token
 
   return tokens

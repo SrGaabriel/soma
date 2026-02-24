@@ -178,7 +178,10 @@ def extractSignatureText (tree : RedTree) (sigNode : RedNode) : String :=
 /-- Extract a definition from a declaration node -/
 def extractDefinition (tree : RedTree) (node : RedNode) : Option CstDefinition := do
   let kind ← node.syntaxKind?
-  guard (kind.isDecl || kind == .constructor || kind == .field || kind == .traitMethod || kind == .patVar || kind == .composeLetStmt)
+  guard (kind.isDecl || kind == .constructor || kind == .field || kind == .traitMethod)
+  if kind == .field then
+    if let some parent := tree.parent? node then
+      guard (parent.syntaxKind? != some .paramList)
 
   -- Find the name token
   let nameToken ←

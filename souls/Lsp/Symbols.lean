@@ -219,6 +219,9 @@ def getHoverAt (offset : Nat) (mod : CompiledModule) (allModules : Array Compile
     let kind ← nodeInfo.node.tokenKind?
 
     if kind.isNameLike then
+      -- Try local scope first
+      if let some local_ := mod.scopeMap.resolve text offset then
+        return formatLocalBindingHover local_
       -- Try to find definition in current module
       if let some def_ := mod.symbols.lookupDefinition text then
         return formatDefinitionHover def_ mod.globals
@@ -295,6 +298,9 @@ def getDefinitionAt (offset : Nat) (mod : CompiledModule) (allModules : Array Co
     let kind ← nodeInfo.node.tokenKind?
     if kind.isNameLike then
       let text ← nodeInfo.node.text?
+      -- Try local scope first
+      if let some local_ := mod.scopeMap.resolve text offset then
+        return (mod.filePath, local_.nameSpan)
       findDefinitionLocation text mod allModules seedSymbols
     else
       none
@@ -359,15 +365,26 @@ def getCompletionsAt (offset : Nat) (mod : CompiledModule) (allModules : Array C
   getCompletionsForContext context mod allModules
 
 /-- Find all references to a name in a module -/
-def findReferencesInModule (name : String) (mod : CompiledModule) : Array Span :=
-  let refs := mod.symbols.getReferences name
-  refs.map (·.span)
+def findReferencesInModule (name : String) (mod : CompiledModule)
+    (targetOffset : Option Nat := none) : Array Span :=
+  -- If we have an offset, try local scope first
+  match targetOffset with
+  | some offset =>
+    if let some local_ := mod.scopeMap.resolve name offset then
+      -- Find all references to this specific local binding
+      mod.scopeMap.findLocalReferences local_ mod.tree
+    else
+      -- Fall back to module-level references
+      (mod.symbols.getReferences name).map (·.span)
+  | none =>
+    (mod.symbols.getReferences name).map (·.span)
 
 /-- Find all references across modules -/
 def findAllReferences (name : String) (allModules : Array CompiledModule)
+    (targetOffset : Option Nat := none)
     : Array (String × Span) :=
   allModules.foldl (fun acc mod =>
-    let refs := findReferencesInModule name mod
+    let refs := findReferencesInModule name mod targetOffset
     acc ++ refs.map (mod.filePath, ·)) #[]
 
 /-- LSP symbol kind numbers -/

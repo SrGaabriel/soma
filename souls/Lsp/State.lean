@@ -6,6 +6,7 @@ import Soma.Dependent.Incremental
 import Soma.Project.Check
 import Soma.Project.Metadata
 import Lsp.Cst
+import Lsp.Scope
 import Lsp.Haoma
 
 namespace Lsp
@@ -42,6 +43,19 @@ instance : ToString SymbolKind where
     | .typeVariable => "type variable"
     | .module => "module"
     | .parameter => "parameter"
+
+/-- Convert LocalBindingKind to the coarser SymbolKind for LSP presentation -/
+def LocalBindingKind.toSymbolKind : LocalBindingKind → SymbolKind
+  | .parameter         => .parameter
+  | .lambdaParam       => .parameter
+  | .letBinding        => .variable
+  | .patternVariable   => .variable
+  | .typeVariable      => .typeVariable
+  | .piBinder          => .typeVariable
+  | .sigmaBinder       => .typeVariable
+  | .composeLetVar     => .variable
+  | .composeBindVar    => .variable
+  | .inductiveTypeParam => .typeVariable
 
 /-- Convert SyntaxKind to SymbolKind -/
 def syntaxKindToSymbolKind : SyntaxKind → SymbolKind
@@ -171,6 +185,8 @@ structure CompiledModule where
   instanceEnv : Option InstanceEnv := none
   /-- Incremental type checking state (dependency tracking and caching) -/
   incrementalState : Option Soma.Dependent.Incremental.IncrementalState := none
+  /-- Local scope map for position-aware local symbol resolution -/
+  scopeMap : ScopeMap := {}
   deriving Inhabited
 
 namespace CompiledModule

@@ -5,6 +5,7 @@ import Soma.Dependent
 import Soma.Dependent.Incremental
 import Soma.Project.Check
 import Lsp.State
+import Lsp.Scope
 import Lsp.Symbols
 import Lsp.Loc
 
@@ -78,6 +79,9 @@ def analyzeSourceFresh (filePath : String) (content : String)
   let cstDefs := collectDefinitions parsedTree.red
   let declNodeIds := buildDeclNodeIds cstDefs
 
+  -- Phase 4b: Build local scope map
+  let scopeMap := buildScopeMap parsedTree.red
+
   -- Phase 5: Lower CST to AST
   let (ast, astLowerDiags) := lower parsedTree moduleName
 
@@ -113,6 +117,7 @@ def analyzeSourceFresh (filePath : String) (content : String)
     globals := some tcResult.globals
     instanceEnv := some tcResult.instanceEnv
     incrementalState := some finalIncrState
+    scopeMap := scopeMap
   }
 
 /-- Analyze a source file incrementally using prior state -/
@@ -156,6 +161,9 @@ def analyzeSourceIncremental (filePath : String) (content : String)
       (newSymbols, collectDefinitions parsedTree.red)
 
   let declNodeIds := buildDeclNodeIds cstDefs
+
+  -- Build local scope map
+  let scopeMap := buildScopeMap parsedTree.red
 
   -- Phase 6: Incremental AST lowering
   let (declAsts, astLowerDiags) :=
@@ -212,6 +220,7 @@ def analyzeSourceIncremental (filePath : String) (content : String)
     globals := some tcResult.globals
     instanceEnv := some tcResult.instanceEnv
     incrementalState := some finalIncrState
+    scopeMap := scopeMap
   }
 
 /-- Analyze a source file, using incremental analysis if old module is available -/
