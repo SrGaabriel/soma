@@ -201,11 +201,11 @@ private def lowerTypeDecl
       (acc, supply'')
     let (ctors, supply'') := ctors
     (some (.algebraic attrs typeName typeVarNames ctors), supply'')
-  | .struct attrs name params ctorName fields _ =>
+  | .struct attrs name params _ctorName fields _ =>
     let (typeUnique, supply') := supply.fresh name.value
     let typeName : Soma.Core.QualifiedName := ⟨typeUnique⟩
     let typeVarNames := params.map (·.name.value)
-    let (ctorUnique, supply'') := supply'.fresh ctorName.value
+    let (ctorUnique, supply'') := supply'.fresh "New"
     let ctorQName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
     let fieldsWithOptNames := fields.map fun field =>
       (field.name.map (·.value), field.type_)

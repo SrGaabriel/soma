@@ -389,9 +389,36 @@ partial def findFieldInRow (row : Value) (fieldName : String) (span : Span) : TC
   | _ =>
     TCM.throw (.fieldNotFound fieldName row span #[] none)
 
+/-- If a type is a type-class application, instantiate its class record type -/
+private def normalizeRecordLikeType (ty : Value) (span : Span := Span.uninhabited) : TCM Value := do
+  let ty' ← force ty
+  match ty' with
+  | .vDataType classId args =>
+    match ← TCM.lookupClass classId with
+    | none =>
+      return ty'
+    | some classInfo =>
+      if args.length > classInfo.numParams then
+        TCM.throw (.cannotInfer
+          s!"type class expects {classInfo.numParams} argument(s) but was applied to {args.length}"
+          span none)
+      let mut instTy := classInfo.recordType
+      for arg in args do
+        let instTy' ← force instTy
+        match instTy' with
+        | .vPi _ _ _ _ cod =>
+          instTy ← applyClosure cod arg
+        | _ =>
+          TCM.throw (.cannotInfer
+            s!"type class record type is not a function; cannot apply remaining argument"
+            span none)
+      return instTy
+  | _ =>
+    return ty'
+
 /-- Look up field type in a record type -/
 partial def lookupFieldType (recTy : Value) (fieldName : String) (span : Span) : TCM Value := do
-  let recTy' ← force recTy
+  let recTy' ← normalizeRecordLikeType recTy span
   match recTy' with
   | .vRecord row =>
     findFieldInRow row fieldName span
@@ -792,10 +819,17 @@ where
     -- Field access
     | .fieldAccess expr field span => do
       let (exprTy, exprE) ← inferSyntax expr
-      let fieldTy ← lookupFieldType exprTy field.value span
-      let idx ← do
-        let ty ← force exprTy
-        match ty with
+      let normalizedTy ← normalizeRecordLikeType exprTy span
+      let fieldTy ← match normalizedTy with
+        | .vRecord row => findFieldInRow row field.value span
+        | .vRecordVal fields =>
+          match fields.find? (·.1 == field.value) with
+          | some (_, ty) => pure ty
+          | none =>
+            let available := fields.map (·.1) |>.toArray
+            TCM.throw (.fieldNotFound field.value normalizedTy span available none)
+        | _ => TCM.throw (.expectedRecord normalizedTy span #[])
+      let idx ← match normalizedTy with
         | .vRecord row =>
           match ← findFieldIndex row field.value with
           | some i => pure i

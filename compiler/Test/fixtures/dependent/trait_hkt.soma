@@ -4,5 +4,5 @@
 class Functor (f : Type -> Type) where
     fmap : ∀ a b. (a -> b) -> f a -> f b
 
-def map_both : ∀ (f : Type -> Type) a b. {{Functor f}} -> (a -> b) -> f a -> f a -> (f b, f b)
-    | fn, x, y => (fmap fn x, fmap fn y)
+def map_both : ∀ (f : Type -> Type) a b. {{h : Functor f}} -> (a -> b) -> f a -> f a -> (f b, f b)
+    | fn, x, y => (h.fmap fn x, h.fmap fn y)

@@ -126,7 +126,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- Unknown type variable - create a metavariable
       TCM.freshMetaVal (Value.vType Level.zero)
 
-  -- Type constructor
+  -- Type constructor (uppercase identifier)
   | .con name =>
     -- First check if this is a type abbreviation (e.g., CInt = Int32)
     if let some abbrevInfo ← TCM.lookupAbbrev name.value then
@@ -151,10 +151,10 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     else
       let unique ← match ← TCM.lookupUnique name.value with
         | some id => pure id
-        | none =>
-          let u ← TCM.freshUnique name.value
-          TCM.registerUnique name.value u
-          pure u
+        | none => TCM.throw (.cannotInfer
+          s!"unknown type constructor `{name.value}` (no builtin/intrinsic binding in context)"
+          name.span
+          none)
       return Value.vDataType unique []
 
   -- Type application: F A
@@ -258,13 +258,14 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     -- (Show a) => becomes {{Show a}} ->
     -- Constraints don't introduce new bound variables that the body depends on,
     -- so we use const closures here (the body doesn't reference the instance arg)
-    let result ← constraints.foldrM (init := bodyVal) fun (className, args, _) acc => do
+    let result ← constraints.foldrM (init := bodyVal) fun (className, args, classSpan) acc => do
       -- Elaborate constraint arguments
       let argVals ← args.toList.mapM (elaborateType env)
       -- Create the constraint type (e.g., Show Int)
       let classId ← match ← TCM.lookupUnique className.value with
         | some id => pure id
-        | none => TCM.freshUnique className.value
+        | none =>
+          TCM.throw (.unboundGlobal s!"{className.value} (unknown type class)" classSpan #[])
       let constraintTy := Value.vDataType classId argVals
       -- Use const closure since the body doesn't depend on the instance parameter
       return Value.vPi .omega .instance_ "_" constraintTy (Closure.const "_" acc)

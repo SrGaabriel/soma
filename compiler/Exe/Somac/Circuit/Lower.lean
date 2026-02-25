@@ -900,7 +900,7 @@ def registerTypes (types : Array Soma.Core.TypeDef)
 
         if let some g := globals then
           if let some unique := g.lookupUnique structName.display then
-            if let some ctorInfo := g.lookupInChild structName.display "new" then
+            if let some ctorInfo := g.lookupInChild structName.display "New" then
               LowerM.modifyCtx fun ctx =>
                 ctx.registerCtorType unique 0 ctorInfo.type
 

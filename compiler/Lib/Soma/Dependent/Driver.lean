@@ -381,6 +381,62 @@ private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Global
         g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {recordName.display}"
   pure g
 
+/-- Elaborate the type constructor kind for a type class head -/
+private def elaborateTypeClassHeadType
+    (typeClass : Soma.Core.TypeClassMeta)
+    : TCM Value := do
+  let mut paramKinds : Array (String × Value) := #[]
+  for param in typeClass.params do
+    let kind ← match param.kind with
+      | some k => Elaborate.elaborateType Elaborate.ElabEnv.empty k
+      | none => pure (Value.vType Level.zero)
+    paramKinds := paramKinds.push (param.name.value, kind)
+
+  let mut classHeadTy : Value := Value.vType Level.zero
+  for (paramName, paramKind) in paramKinds.reverse do
+    let codClosure ← Elaborate.mkConstClosure paramName classHeadTy
+    classHeadTy := Value.vPi .omega .implicit paramName paramKind codClosure
+  return classHeadTy
+
+/-- Register or reuse a type class head symbol as a global type -/
+private def registerTypeClassHead
+    (globals : Globals)
+    (typeClass : Soma.Core.TypeClassMeta)
+    (prevGlobals : Option Globals)
+    (isDirty : Bool)
+    : TCM Globals := do
+  let classNameStr := typeClass.name.display
+
+  if !isDirty then
+    if let some prev := prevGlobals then
+      if let some info := prev.lookup classNameStr then
+        let mut g := globals.insert classNameStr info
+        if let some classUnique := prev.lookupUnique classNameStr then
+          g := g.registerUnique classNameStr classUnique
+          TCM.registerUnique classNameStr classUnique
+        return g
+
+  let classUnique ← match globals.lookupUnique classNameStr with
+    | some id => pure id
+    | none => TCM.freshUnique classNameStr
+
+  let mut g := globals.registerUnique classNameStr classUnique
+  TCM.registerUnique classNameStr classUnique
+
+  let classHeadTy ← TCM.recoverWithM
+    (TCM.withGlobals g (elaborateTypeClassHeadType typeClass))
+    (TCM.typePlaceholder typeClass.span)
+
+  let classInfo : GlobalInfo := {
+    name := ⟨classUnique⟩
+    type := classHeadTy
+    value := none
+    isConstructor := false
+    origin := .typeDecl
+  }
+  g := g.insert classNameStr classInfo
+  return g
+
 /-- Build a Globals enviro      -- Check for builtin higher-kinded types (List, Array, IO, Ref)
 nment from all function definitions in a module -/
 def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
@@ -472,32 +528,32 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
         }
         globals := globals.registerConstructorMeta typeName.display ctorMeta
     | .struct _ structName typeVarNames _ctorName fields =>
-      -- Elaborate struct constructor type from field types
-      let fieldTypes := fields.map (·.2)
+      let ctorSimpleName := "New"
+      let ctorQualifiedName := s!"{structName.display}::{ctorSimpleName}"
       let ctorType ← TCM.recoverWithM
-        (TCM.withGlobals globals (elaborateCtorType structName typeVarNames fieldTypes))
+        (TCM.withGlobals globals (elaborateCtorType structName typeVarNames (fields.map (·.2))))
         (TCM.typePlaceholder Span.uninhabited)
-      -- Struct constructors are named "new" in the namespace, accessed as StructName::new
-      let structCtorUnique ← TCM.freshUnique s!"{structName.display}::new"
-      let structCtorCoreName : Soma.Core.QualifiedName := ⟨structCtorUnique⟩
+      let ctorUnique ← TCM.freshUnique ctorQualifiedName
+      let ctorCoreName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
       let info : GlobalInfo := {
-        name := structCtorCoreName
+        name := ctorCoreName
         type := ctorType
         value := none
         isConstructor := true
         ctorTag := 0
         origin := .constructor
       }
-      globals := globals.insertInChild structName.display "new" info
+      globals := globals.insert ctorQualifiedName info
+      globals := globals.insertInChild structName.display ctorSimpleName info
+      let fieldTypes := fields.map (·.2)
       let ctorMeta : ConstructorMeta := {
-        name := structCtorCoreName
-        simpleName := "new"
+        name := ctorCoreName
+        simpleName := ctorSimpleName
         tag := 0
-        arity := fields.size
+        arity := fieldTypes.size
         type := ctorType
       }
       globals := globals.registerConstructorMeta structName.display ctorMeta
-      -- Register field accessors
       for (fieldNameOpt, _) in fields do
         if let some fieldName := fieldNameOpt then
           let accessorNameStr := s!"{structName.display}::{fieldName}"
@@ -511,14 +567,13 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
             origin := .projection
           }
           globals := globals.insert accessorNameStr accessorInfo
-          -- Also register accessor in child namespace
           globals := globals.insertInChild structName.display fieldName accessorInfo
-      -- Register ordered field names for index lookup
-      let fieldNames := fields.filterMap (·.1)
-      globals := { globals with
-        structFields := globals.structFields.insert structName.display fieldNames }
     | .record _ _ _ _ =>
       pure ()
+
+  -- Register type class heads as globals
+  for typeClass in module.typeClasses do
+    globals ← registerTypeClassHead globals typeClass none true
 
   -- Register type class methods as globals (with error recovery for each method)
   for typeClass in module.typeClasses do
@@ -711,16 +766,18 @@ private def registerDataType
   }
   return g.insert nameStr dataTypeInfo
 
-/-- Register or reuse a constructor, returns updated globals -/
-private def registerConstructor
+/-- Core constructor registration logic -/
+private def registerConstructorRaw
     (globals : Globals)
   (typeName : Soma.Core.QualifiedName)
     (typeVarNames : Array String)
-  (ctor : Soma.Core.UntypedConstructor)
+    (ctorSimpleName : String)
+    (ctorTag : Nat)
+    (fieldTypes : Array Syntax.TypeExpr)
+    (sigSyntax : Option Syntax.TypeExpr)
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
-  let ctorSimpleName := ctor.name.id.original
   let ctorQualifiedName := s!"{typeName.display}::{ctorSimpleName}"
 
   -- Check if we can reuse from previous globals
@@ -743,9 +800,9 @@ private def registerConstructor
 
   -- Must elaborate fresh
   let ctorType ← TCM.recoverWithM
-    (match ctor.sigSyntax with
+    (match sigSyntax with
       | some sig => TCM.withGlobals globals (elaborateIndexedCtorType typeName typeVarNames sig)
-      | none => TCM.withGlobals globals (elaborateCtorType typeName typeVarNames ctor.fieldTypeSyntax))
+      | none => TCM.withGlobals globals (elaborateCtorType typeName typeVarNames fieldTypes))
     (TCM.typePlaceholder Span.uninhabited)
   let ctorUnique ← TCM.freshUnique ctorQualifiedName
   let info : GlobalInfo := {
@@ -753,7 +810,7 @@ private def registerConstructor
     type := ctorType
     value := none
     isConstructor := true
-    ctorTag := ctor.tag
+    ctorTag := ctorTag
     origin := .constructor
   }
   let mut g := globals.insert ctorQualifiedName info
@@ -761,75 +818,47 @@ private def registerConstructor
   let ctorMeta : ConstructorMeta := {
     name := info.name
     simpleName := ctorSimpleName
-    tag := ctor.tag
-    arity := ctor.fieldTypeSyntax.size
+    tag := ctorTag
+    arity := fieldTypes.size
     type := ctorType
   }
   g := g.registerConstructorMeta typeName.display ctorMeta
   return g
 
-/-- Register or reuse a struct constructor and its field accessors, returns updated globals -/
-private def registerStructConstructor
+/-- Register or reuse a constructor from an `UntypedConstructor` record -/
+private def registerConstructor
     (globals : Globals)
-  (structName : Soma.Core.QualifiedName)
+  (typeName : Soma.Core.QualifiedName)
     (typeVarNames : Array String)
-  (_ctorName : Soma.Core.QualifiedName)
+  (ctor : Soma.Core.UntypedConstructor)
+    (prevGlobals : Option Globals)
+    (isDirty : Bool)
+    : TCM Globals :=
+  registerConstructorRaw globals typeName typeVarNames
+    ctor.name.id.original ctor.tag ctor.fieldTypeSyntax ctor.sigSyntax
+    prevGlobals isDirty
+
+/-- Register or reuse struct field accessors, returns updated globals -/
+private def registerStructFieldAccessors
+    (globals : Globals)
+    (structName : Soma.Core.QualifiedName)
     (fields : Array (Option String × Syntax.TypeExpr))
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
   let structNameStr := structName.display
-  let ctorQualifiedName := s!"{structNameStr}::new"
+  let mut g := globals
 
-  -- Check if we can reuse from previous globals
   if !isDirty then
     if let some prev := prevGlobals then
-      if let some info := prev.lookup ctorQualifiedName then
-        let mut g := globals.insert ctorQualifiedName info
-        g := g.insertInChild structNameStr "new" info
-        let ctorMeta : ConstructorMeta := {
-          name := info.name
-          simpleName := "new"
-          tag := info.ctorTag
-          arity := fields.size
-          type := info.type
-        }
-        g := g.registerConstructorMeta structNameStr ctorMeta
-        -- Also restore field accessors
-        for (fieldNameOpt, _) in fields do
-          if let some fieldName := fieldNameOpt then
-            let accessorNameStr := s!"{structNameStr}::{fieldName}"
-            if let some accessorInfo := prev.lookup accessorNameStr then
-              g := g.insert accessorNameStr accessorInfo
-              g := g.insertInChild structNameStr fieldName accessorInfo
-        return g
+      for (fieldNameOpt, _) in fields do
+        if let some fieldName := fieldNameOpt then
+          let accessorNameStr := s!"{structNameStr}::{fieldName}"
+          if let some accessorInfo := prev.lookup accessorNameStr then
+            g := g.insert accessorNameStr accessorInfo
+            g := g.insertInChild structNameStr fieldName accessorInfo
+      return g
 
-  -- Must elaborate fresh
-  let fieldTypes := fields.map (·.2)
-  let ctorType ← TCM.recoverWithM
-    (TCM.withGlobals globals (elaborateCtorType structName typeVarNames fieldTypes))
-    (TCM.typePlaceholder Span.uninhabited)
-  let structCtorUnique ← TCM.freshUnique ctorQualifiedName
-  let info : GlobalInfo := {
-    name := ⟨structCtorUnique⟩
-    type := ctorType
-    value := none
-    isConstructor := true
-    ctorTag := 0
-    origin := .constructor
-  }
-  let mut g := globals.insert ctorQualifiedName info
-  g := g.insertInChild structNameStr "new" info
-  let ctorMeta : ConstructorMeta := {
-    name := info.name
-    simpleName := "new"
-    tag := 0
-    arity := fields.size
-    type := ctorType
-  }
-  g := g.registerConstructorMeta structNameStr ctorMeta
-
-  -- Register field accessors
   for (fieldNameOpt, _) in fields do
     if let some fieldName := fieldNameOpt then
       let accessorNameStr := s!"{structNameStr}::{fieldName}"
@@ -845,6 +874,20 @@ private def registerStructConstructor
       g := g.insert accessorNameStr accessorInfo
       g := g.insertInChild structNameStr fieldName accessorInfo
   return g
+
+/-- Register or reuse a struct constructor and its field accessors, returns updated globals -/
+private def registerStructConstructor
+    (globals : Globals)
+  (structName : Soma.Core.QualifiedName)
+    (typeVarNames : Array String)
+  (_ctorName : Soma.Core.QualifiedName)
+    (fields : Array (Option String × Syntax.TypeExpr))
+    (prevGlobals : Option Globals)
+    (isDirty : Bool)
+    : TCM Globals := do
+  let g ← registerConstructorRaw globals structName typeVarNames
+    "New" 0 (fields.map (·.2)) none prevGlobals isDirty
+  registerStructFieldAccessors g structName fields prevGlobals isDirty
 
 /-- Elaborate a type class method type -/
 private def elaborateMethodType
@@ -972,6 +1015,11 @@ def buildGlobalsIncremental
       globals ← registerStructConstructor globals structName typeVarNames ctorName fields (some prevGlobals) isDirty
     | .record _ _ _ _ =>
       pure ()
+
+  -- Register type class heads
+  for typeClass in module.typeClasses do
+    let isDirty := dirtyNames.contains typeClass.name.display
+    globals ← registerTypeClassHead globals typeClass (some prevGlobals) isDirty
 
   -- Register type class methods
   for typeClass in module.typeClasses do

@@ -253,8 +253,13 @@ def elaborateSuperclasses (params : Array TypeVarBinder)
 /-- Elaborate a single type class into a ClassInfo. -/
 def elaborateClass (typeClass : Soma.Core.TypeClassMeta) (registry : ClassRegistry)
     : TCM (ClassInfo × ClassRegistry) := do
-  -- Generate a unique ID for this class
-  let classUnique ← TCM.freshUnique typeClass.name.display
+  -- Reuse pre-registered class unique when available
+  let classUnique ← match ← TCM.lookupUnique typeClass.name.display with
+    | some id => pure id
+    | none =>
+      let u ← TCM.freshUnique typeClass.name.display
+      TCM.registerUnique typeClass.name.display u
+      pure u
 
   -- Elaborate the record type from method signatures
   let recordType ← elaborateClassRecordType typeClass.params typeClass.methodSignatures

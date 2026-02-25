@@ -1562,12 +1562,6 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             let name ← match getTokenText nameNodes[0]! with
             | some text => pure text
             | none => pure "_Error"
-            let conName ← if h : nameNodes.size > 1 then
-              match getTokenText nameNodes[1]! with
-              | some text => pure text
-              | none => pure name
-            else
-              pure name
 
             let allKids := childrenWithOffsets green offset
             let paramNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .tyParamList
@@ -1581,7 +1575,8 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             -- Extract attributes
             let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
             let attrs ← lowerAttributes attrNodes
-            pure (.struct attrs ⟨name, span⟩ params ⟨conName, span⟩ fields span)
+            -- Constructor is canonically "New"; the name field is unused downstream
+            pure (.struct attrs ⟨name, span⟩ params ⟨name, span⟩ fields span)
 
       | .declTrait =>
           let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent

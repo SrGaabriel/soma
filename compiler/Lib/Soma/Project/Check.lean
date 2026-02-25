@@ -677,8 +677,8 @@ def extractPublicSymbols
         acc := acc.insert structSym (Value.vType Level.zero)
         addedNames := addedNames.insert structNameStr
 
-      -- Register struct constructor (named "new" in namespace)
-      let ctorQualified := s!"{structNameStr}::new"
+      -- Register struct constructor (named "New" in namespace)
+      let ctorQualified := s!"{structNameStr}::New"
       if shouldExport structNameStr then
         match globals.lookup ctorQualified with
         | some ctorInfo =>
