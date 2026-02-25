@@ -237,7 +237,7 @@ def mergeGlobals (g1 g2 : Globals) : Globals :=
     acc.insert qn info
   let uniques := g2.uniques.fold (init := g1.uniques) fun acc name id =>
     acc.insert name id
-  let structFields := g2.structFields.fold (init := g1.structFields) fun acc typeName fields =>
+  let recordFields := g2.recordFields.fold (init := g1.recordFields) fun acc typeName fields =>
     acc.insert typeName fields
   let inductives := g2.inductives.fold (init := g1.inductives) fun acc typeName metaInfo =>
     acc.insert typeName metaInfo
@@ -254,7 +254,7 @@ def mergeGlobals (g1 g2 : Globals) : Globals :=
     openNamespaces := openNs
     intrinsics := intrinsics
     uniques := uniques
-    structFields := structFields
+    recordFields := recordFields
     inductives := inductives
     ctorToInductive := ctorToInductive
     wiredIn := { roles := wiredRoles }
@@ -661,25 +661,25 @@ def extractPublicSymbols
             addedNames := addedNames.insert ctorSimpleName
           | none => pure ()
 
-    | .struct _ structName _typeVars _ctorName fields =>
-      let structNameStr := structName.display
-      if shouldExport structNameStr then
-        let (structUnique, sup') := sup.fresh structNameStr
+    | .record _ recordName _typeVars _ctorName fields =>
+      let recordNameStr := recordName.display
+      if shouldExport recordNameStr then
+        let (recordUnique, sup') := sup.fresh recordNameStr
         sup := sup'
-        let structSym : Symbol := {
-          unique := structUnique
-          name := structNameStr
+        let recordSym : Symbol := {
+          unique := recordUnique
+          name := recordNameStr
           kind := .type
           module := moduleName
           package := packageName
           span := Span.uninhabited
         }
-        acc := acc.insert structSym (Value.vType Level.zero)
-        addedNames := addedNames.insert structNameStr
+        acc := acc.insert recordSym (Value.vType Level.zero)
+        addedNames := addedNames.insert recordNameStr
 
-      -- Register struct constructor (named "New" in namespace)
-      let ctorQualified := s!"{structNameStr}::New"
-      if shouldExport structNameStr then
+      -- Register record constructor (named "New" in namespace)
+      let ctorQualified := s!"{recordNameStr}::New"
+      if shouldExport recordNameStr then
         match globals.lookup ctorQualified with
         | some ctorInfo =>
           let (ctorUnique, sup') := sup.fresh ctorQualified
@@ -687,7 +687,7 @@ def extractPublicSymbols
           let ctorSym : Symbol := {
             unique := ctorUnique
             name := ctorQualified
-            kind := .dataCon structNameStr 0
+            kind := .dataCon recordNameStr 0
             module := moduleName
             package := packageName
             span := Span.uninhabited
@@ -699,7 +699,7 @@ def extractPublicSymbols
       -- Register field accessors
       for (fieldNameOpt, _) in fields do
         if let some fieldName := fieldNameOpt then
-          let accessorName := s!"{structNameStr}::{fieldName}"
+          let accessorName := s!"{recordNameStr}::{fieldName}"
           if shouldExport accessorName then
             match globals.lookup accessorName with
             | some accessorInfo =>
@@ -716,8 +716,6 @@ def extractPublicSymbols
               acc := acc.insert accessorSym accessorInfo.type
               addedNames := addedNames.insert accessorName
             | none => pure ()
-
-    | .record _ _ _ _ => pure ()
 
   -- Extract type class methods
   for typeClass in untypedModule.typeClasses do

@@ -139,7 +139,6 @@ end GlobalInfo
 /-- Kind of inductive-like type declaration tracked in metadata. -/
 inductive InductiveKind where
   | algebraic
-  | struct
   | record
   deriving Inhabited, BEq, Serialize, Deserialize
 
@@ -169,7 +168,7 @@ structure InductiveMeta where
   typeVarNames : Array String := #[]
   /-- Constructor metadata in declaration order -/
   ctors : Array ConstructorMeta := #[]
-  /-- Ordered field names for struct/record declarations -/
+  /-- Ordered field names for record declarations -/
   fieldNames : Array String := #[]
   deriving Inhabited, Serialize, Deserialize
 
@@ -452,8 +451,8 @@ structure Globals where
   intrinsics : Std.HashMap Soma.Core.QualifiedName Soma.Core.Intrinsic := {}
   /-- Registry mapping type names to their Uniques -/
   uniques : Std.HashMap String Soma.Unique := {}
-  /-- Ordered field names for struct types -/
-  structFields : Std.HashMap String (Array String) := {}
+  /-- Ordered field names for record types -/
+  recordFields : Std.HashMap String (Array String) := {}
   /-- First-class inductive metadata keyed by canonical type name -/
   inductives : Std.HashMap String InductiveMeta := {}
   /-- Reverse index: constructor qualified name -> canonical inductive name -/
@@ -548,7 +547,7 @@ def registerInductive (g : Globals) (name : String) (unique : Soma.Unique)
         fieldNames := fieldNames }
   { g with
     uniques := g.uniques.insert normalized unique
-    structFields := if fieldNames.isEmpty then g.structFields else g.structFields.insert normalized fieldNames
+    recordFields := if fieldNames.isEmpty then g.recordFields else g.recordFields.insert normalized fieldNames
     inductives := g.inductives.insert normalized metaInfo }
 
 /-- Register constructor metadata under an inductive type -/
@@ -689,7 +688,7 @@ def resolveConstructor (g : Globals) (name : String) : Option GlobalInfo :=
       else
         resolveFromType (String.intercalate "::" prefixParts) suffix
 
-/-- Look up a struct field's positional index by type name and field name -/
+/-- Look up a record field's positional index by type name and field name -/
 def lookupFieldIndex (g : Globals) (typeName : String) (fieldName : String) : Option Nat :=
   let normalized := normalizeQualified typeName
   match g.lookupInductive normalized with
@@ -697,11 +696,11 @@ def lookupFieldIndex (g : Globals) (typeName : String) (fieldName : String) : Op
     match indInfo.fieldNames.toList.findIdx? (· == fieldName) with
     | some idx => some idx
     | none =>
-      match g.structFields.get? normalized with
+      match g.recordFields.get? normalized with
       | some fields => fields.toList.findIdx? (· == fieldName)
       | none => none
   | none =>
-  match g.structFields.get? normalized with
+  match g.recordFields.get? normalized with
   | some fields => fields.toList.findIdx? (· == fieldName)
   | none => none
 

@@ -82,11 +82,7 @@ def checkDataTypePositivity (typeDef : Soma.Core.UntypedTypeDef) (ctx : TCContex
     | .violated reason violationSpan =>
       #[TCError.positivityViolation typeName reason violationSpan none]
 
-  | .struct _ _ _ _ _ =>
-    -- Structs are always positive (they're just records)
-    #[]
-
-  | .record _ _ _ _ =>
+  | .record _ _ _ _ _ =>
     -- Records are always positive
     #[]
 
@@ -373,10 +369,7 @@ private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Global
       for ctor in ctors do
         if let some ctorInfo := g.lookup ctor.name.display then
           g ← registerWiredRoleFromAttrs g ctor.attrs ctorInfo s!"constructor {ctor.name.display}"
-    | .struct attrs structName _ _ _ =>
-      if let some typeInfo := g.lookup structName.display then
-        g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {structName.display}"
-    | .record attrs recordName _ _ =>
+    | .record attrs recordName _ _ _ =>
       if let some typeInfo := g.lookup recordName.display then
         g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {recordName.display}"
   pure g
@@ -465,16 +458,12 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
         origin := .typeDecl
       }
       globals := globals.insert typeName.display dataTypeInfo
-    | .struct _ structName typeVarNames _ fields =>
-      -- Generate a proper Unique for this struct
-      let typeUnique ← TCM.freshUnique structName.display
-      -- Register the Unique in both local globals and TCM context
-      globals := globals.registerUnique structName.display typeUnique
-      globals := globals.registerInductive structName.display typeUnique .struct typeVarNames
+    | .record _ recordName typeVarNames _ fields =>
+      let typeUnique ← TCM.freshUnique recordName.display
+      globals := globals.registerUnique recordName.display typeUnique
+      globals := globals.registerInductive recordName.display typeUnique .record typeVarNames
         (fields.filterMap (·.1))
-      TCM.registerUnique structName.display typeUnique
-
-      -- Register the struct type name itself
+      TCM.registerUnique recordName.display typeUnique
       let dataTypeVal := Value.vDataType typeUnique []
       let dataTypeInfo : GlobalInfo := {
         name := ⟨typeUnique⟩
@@ -483,9 +472,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
         isConstructor := false
         origin := .typeDecl
       }
-      globals := globals.insert structName.display dataTypeInfo
-    | .record _ _ _ _ =>
-      pure ()
+      globals := globals.insert recordName.display dataTypeInfo
 
   -- Second pass: Register constructors (now data types are available for reference)
   for typeDef in module.types do
@@ -527,11 +514,11 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
           type := ctorType
         }
         globals := globals.registerConstructorMeta typeName.display ctorMeta
-    | .struct _ structName typeVarNames _ctorName fields =>
+    | .record _ recordName typeVarNames _ctorName fields =>
       let ctorSimpleName := "New"
-      let ctorQualifiedName := s!"{structName.display}::{ctorSimpleName}"
+      let ctorQualifiedName := s!"{recordName.display}::{ctorSimpleName}"
       let ctorType ← TCM.recoverWithM
-        (TCM.withGlobals globals (elaborateCtorType structName typeVarNames (fields.map (·.2))))
+        (TCM.withGlobals globals (elaborateCtorType recordName typeVarNames (fields.map (·.2))))
         (TCM.typePlaceholder Span.uninhabited)
       let ctorUnique ← TCM.freshUnique ctorQualifiedName
       let ctorCoreName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
@@ -544,19 +531,18 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
         origin := .constructor
       }
       globals := globals.insert ctorQualifiedName info
-      globals := globals.insertInChild structName.display ctorSimpleName info
-      let fieldTypes := fields.map (·.2)
+      globals := globals.insertInChild recordName.display ctorSimpleName info
       let ctorMeta : ConstructorMeta := {
         name := ctorCoreName
         simpleName := ctorSimpleName
         tag := 0
-        arity := fieldTypes.size
+        arity := fields.size
         type := ctorType
       }
-      globals := globals.registerConstructorMeta structName.display ctorMeta
+      globals := globals.registerConstructorMeta recordName.display ctorMeta
       for (fieldNameOpt, _) in fields do
         if let some fieldName := fieldNameOpt then
-          let accessorNameStr := s!"{structName.display}::{fieldName}"
+          let accessorNameStr := s!"{recordName.display}::{fieldName}"
           let accessorUnique ← TCM.freshUnique accessorNameStr
           let accessorType ← TCM.freshMetaVal (.vType .zero)
           let accessorInfo : GlobalInfo := {
@@ -567,13 +553,58 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
             origin := .projection
           }
           globals := globals.insert accessorNameStr accessorInfo
-          globals := globals.insertInChild structName.display fieldName accessorInfo
-    | .record _ _ _ _ =>
-      pure ()
+          globals := globals.insertInChild recordName.display fieldName accessorInfo
 
   -- Register type class heads as globals
   for typeClass in module.typeClasses do
     globals ← registerTypeClassHead globals typeClass none true
+
+  for typeClass in module.typeClasses do
+    let classNameStr := typeClass.name.display
+    let methodFieldNames := typeClass.methodSignatures.map (·.1.display)
+    let typeVarNames := typeClass.params.map (·.name.value)
+    if let some classUnique := globals.lookupUnique classNameStr then
+      globals := globals.registerInductive classNameStr classUnique .record typeVarNames methodFieldNames
+      let methodTypes := typeClass.methodSignatures.map (·.2)
+      let ctorSimpleName := "New"
+      let ctorQualifiedName := s!"{classNameStr}::{ctorSimpleName}"
+      let ctorType ← TCM.recoverWithM
+        (TCM.withGlobals globals (elaborateCtorType typeClass.name typeVarNames methodTypes))
+        (TCM.typePlaceholder typeClass.span)
+      let ctorUnique ← TCM.freshUnique ctorQualifiedName
+      let ctorCoreName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
+      let ctorInfo : GlobalInfo := {
+        name := ctorCoreName
+        type := ctorType
+        value := none
+        isConstructor := true
+        ctorTag := 0
+        origin := .constructor
+      }
+      globals := globals.insert ctorQualifiedName ctorInfo
+      globals := globals.insertInChild classNameStr ctorSimpleName ctorInfo
+      let ctorMeta : ConstructorMeta := {
+        name := ctorCoreName
+        simpleName := ctorSimpleName
+        tag := 0
+        arity := methodTypes.size
+        type := ctorType
+      }
+      globals := globals.registerConstructorMeta classNameStr ctorMeta
+      for (methodName, _) in typeClass.methodSignatures do
+        let fieldName := methodName.display
+        let accessorNameStr := s!"{classNameStr}::{fieldName}"
+        let accessorUnique ← TCM.freshUnique accessorNameStr
+        let accessorType ← TCM.freshMetaVal (.vType .zero)
+        let accessorInfo : GlobalInfo := {
+          name := ⟨accessorUnique⟩
+          type := accessorType
+          value := none
+          isConstructor := false
+          origin := .projection
+        }
+        globals := globals.insert accessorNameStr accessorInfo
+        globals := globals.insertInChild classNameStr fieldName accessorInfo
 
   -- Register type class methods as globals (with error recovery for each method)
   for typeClass in module.typeClasses do
@@ -838,30 +869,30 @@ private def registerConstructor
     ctor.name.id.original ctor.tag ctor.fieldTypeSyntax ctor.sigSyntax
     prevGlobals isDirty
 
-/-- Register or reuse struct field accessors, returns updated globals -/
-private def registerStructFieldAccessors
+/-- Register or reuse record field accessors, returns updated globals -/
+private def registerRecordFieldAccessors
     (globals : Globals)
-    (structName : Soma.Core.QualifiedName)
+    (recordName : Soma.Core.QualifiedName)
     (fields : Array (Option String × Syntax.TypeExpr))
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
-  let structNameStr := structName.display
+  let recordNameStr := recordName.display
   let mut g := globals
 
   if !isDirty then
     if let some prev := prevGlobals then
       for (fieldNameOpt, _) in fields do
         if let some fieldName := fieldNameOpt then
-          let accessorNameStr := s!"{structNameStr}::{fieldName}"
+          let accessorNameStr := s!"{recordNameStr}::{fieldName}"
           if let some accessorInfo := prev.lookup accessorNameStr then
             g := g.insert accessorNameStr accessorInfo
-            g := g.insertInChild structNameStr fieldName accessorInfo
+            g := g.insertInChild recordNameStr fieldName accessorInfo
       return g
 
   for (fieldNameOpt, _) in fields do
     if let some fieldName := fieldNameOpt then
-      let accessorNameStr := s!"{structNameStr}::{fieldName}"
+      let accessorNameStr := s!"{recordNameStr}::{fieldName}"
       let accessorUnique ← TCM.freshUnique accessorNameStr
       let accessorType ← TCM.freshMetaVal (.vType .zero)
       let accessorInfo : GlobalInfo := {
@@ -872,22 +903,22 @@ private def registerStructFieldAccessors
         origin := .projection
       }
       g := g.insert accessorNameStr accessorInfo
-      g := g.insertInChild structNameStr fieldName accessorInfo
+      g := g.insertInChild recordNameStr fieldName accessorInfo
   return g
 
-/-- Register or reuse a struct constructor and its field accessors, returns updated globals -/
-private def registerStructConstructor
+/-- Register or reuse a record constructor and its field accessors, returns updated globals -/
+private def registerRecordConstructor
     (globals : Globals)
-  (structName : Soma.Core.QualifiedName)
+    (recordName : Soma.Core.QualifiedName)
     (typeVarNames : Array String)
-  (_ctorName : Soma.Core.QualifiedName)
+    (_ctorName : Soma.Core.QualifiedName)
     (fields : Array (Option String × Syntax.TypeExpr))
     (prevGlobals : Option Globals)
     (isDirty : Bool)
     : TCM Globals := do
-  let g ← registerConstructorRaw globals structName typeVarNames
+  let g ← registerConstructorRaw globals recordName typeVarNames
     "New" 0 (fields.map (·.2)) none prevGlobals isDirty
-  registerStructFieldAccessors g structName fields prevGlobals isDirty
+  registerRecordFieldAccessors g recordName fields prevGlobals isDirty
 
 /-- Elaborate a type class method type -/
 private def elaborateMethodType
@@ -996,12 +1027,10 @@ def buildGlobalsIncremental
       let nameStr := typeName.display
       let isDirty := dirtyNames.contains nameStr
       globals ← registerDataType globals nameStr .algebraic typeVarNames #[] (some prevGlobals) isDirty
-    | .struct _ structName typeVarNames _ fields =>
-      let nameStr := structName.display
+    | .record _ recordName typeVarNames _ fields =>
+      let nameStr := recordName.display
       let isDirty := dirtyNames.contains nameStr
-      globals ← registerDataType globals nameStr .struct typeVarNames (fields.filterMap (·.1)) (some prevGlobals) isDirty
-    | .record _ _ _ _ =>
-      pure ()
+      globals ← registerDataType globals nameStr .record typeVarNames (fields.filterMap (·.1)) (some prevGlobals) isDirty
 
   -- Second pass: Register constructors
   for typeDef in module.types do
@@ -1010,16 +1039,30 @@ def buildGlobalsIncremental
       let isDirty := dirtyNames.contains typeName.display
       for ctor in constructors do
         globals ← registerConstructor globals typeName typeVarNames ctor (some prevGlobals) isDirty
-    | .struct _ structName typeVarNames ctorName fields =>
-      let isDirty := dirtyNames.contains structName.display
-      globals ← registerStructConstructor globals structName typeVarNames ctorName fields (some prevGlobals) isDirty
-    | .record _ _ _ _ =>
-      pure ()
+    | .record _ recordName typeVarNames ctorName fields =>
+      let isDirty := dirtyNames.contains recordName.display
+      globals ← registerRecordConstructor globals recordName typeVarNames ctorName fields (some prevGlobals) isDirty
 
   -- Register type class heads
   for typeClass in module.typeClasses do
     let isDirty := dirtyNames.contains typeClass.name.display
     globals ← registerTypeClassHead globals typeClass (some prevGlobals) isDirty
+
+  for typeClass in module.typeClasses do
+    let classNameStr := typeClass.name.display
+    let isDirty := dirtyNames.contains classNameStr
+    let methodFieldNames := typeClass.methodSignatures.map (·.1.display)
+    let typeVarNames := typeClass.params.map (·.name.value)
+    if let some classUnique := globals.lookupUnique classNameStr then
+      if !isDirty then
+        if let some indInfo := prevGlobals.lookupInductive classNameStr then
+          globals := { globals with inductives := globals.inductives.insert indInfo.name indInfo }
+        else
+          globals := globals.registerInductive classNameStr classUnique .record typeVarNames methodFieldNames
+      else
+        globals := globals.registerInductive classNameStr classUnique .record typeVarNames methodFieldNames
+      let fields := typeClass.methodSignatures.map (fun (name, ty) => (some name.display, ty))
+      globals ← registerRecordConstructor globals typeClass.name typeVarNames typeClass.name fields (some prevGlobals) isDirty
 
   -- Register type class methods
   for typeClass in module.typeClasses do

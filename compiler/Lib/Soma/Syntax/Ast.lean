@@ -459,8 +459,8 @@ structure DataCon where
   span : Span
   deriving Repr
 
-/-- A struct field: name :: Type -/
-structure StructField where
+/-- A record field: name :: Type -/
+structure RecordField where
   name : Option Name
   type_ : TypeExpr
   span : Span
@@ -498,9 +498,9 @@ inductive Decl where
   | inductive (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
          (constructors : Array DataCon) (kind : Option TypeExpr) (span : Span)
 
-  /-- Struct definition: struct Path = Path String -/
-  | struct (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
-           (con : Name) (fields : Array StructField) (span : Span)
+  /-- Record definition: record Point where x : Int, y : Int -/
+  | record (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
+           (con : Name) (fields : Array RecordField) (span : Span)
 
   /-- Trait definition -/
   | trait (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
@@ -527,7 +527,7 @@ namespace Decl
 def span : Decl → Span
   | .def_ _ _ _ _ _ s => s
   | .inductive _ _ _ _ _ s => s
-  | .struct _ _ _ _ _ s => s
+  | .record _ _ _ _ _ s => s
   | .trait _ _ _ _ _ s => s
   | .instance_ _ _ _ _ _ s => s
   | .use _ _ s => s
@@ -538,7 +538,7 @@ def span : Decl → Span
 def name? : Decl → Option Name
   | .def_ _ name _ _ _ _ => some name
   | .inductive _ name _ _ _ _ => some name
-  | .struct _ name _ _ _ _ => some name
+  | .record _ name _ _ _ _ => some name
   | .trait _ name _ _ _ _ => some name
   | .instance_ instanceName _ _ _ _ _ => instanceName
   | .use _ _ _ => none
@@ -792,7 +792,7 @@ partial def ppDecl : Decl → String
       let consStr := cons.toList.map ppDataCon |> String.intercalate "\n"
       s!"{attrStr}inductive {name.value}{paramsStr}{kindStr} where\n{indent 2 consStr}"
 
-  | .struct attrs name params con fields _ =>
+  | .record attrs name params con fields _ =>
       let attrStr := if attrs.isEmpty then ""
         else s!"@[{attrs.toList.map (·.name.value) |> String.intercalate ", "}]\n"
       let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
@@ -801,7 +801,7 @@ partial def ppDecl : Decl → String
         | some n => s!"{n.value} :: {ppTypeExpr f.type_}"
         | none => ppTypeExpr f.type_
       ) |> String.intercalate ", "
-      s!"{attrStr}struct " ++ name.value ++ paramsStr ++ " = " ++ con.value ++ " { " ++ fieldsStr ++ " }"
+      s!"{attrStr}record " ++ name.value ++ paramsStr ++ " = " ++ con.value ++ " { " ++ fieldsStr ++ " }"
 
   | .trait attrs name params constraints methods _ =>
       let attrStr := if attrs.isEmpty then ""

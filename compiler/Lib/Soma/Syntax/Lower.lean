@@ -875,8 +875,8 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
       lowerError "expected constructor" span
       pure { name := ⟨"_Con", span⟩, fields := #[], span }
 
-/-- Lower a struct field -/
-partial def lowerStructField (green : GreenNode) (offset : Nat) : LowerM StructField := do
+/-- Lower a record field -/
+partial def lowerRecordField (green : GreenNode) (offset : Nat) : LowerM RecordField := do
   let span ← spanFor green offset
   let allKids := childrenWithOffsets green offset
 
@@ -893,7 +893,7 @@ partial def lowerStructField (green : GreenNode) (offset : Nat) : LowerM StructF
     let ftype ← lowerTypeExpr syntaxKids[0]!.1 syntaxKids[0]!.2
     pure ⟨fname, ftype, span⟩
   else
-    lowerError "struct field missing type" span
+    lowerError "record field missing type" span
     pure ⟨none, .var ⟨"_", span⟩, span⟩
 
 /-- Lower a token to an expression -/
@@ -1557,7 +1557,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
           let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent
           if nameNodes.isEmpty then
             lowerError "record missing name" span
-            pure (.struct #[] ⟨"_Error", span⟩ #[] ⟨"_Error", span⟩ #[] span)
+            pure (.record #[] ⟨"_Error", span⟩ #[] ⟨"_Error", span⟩ #[] span)
           else
             let name ← match getTokenText nameNodes[0]! with
             | some text => pure text
@@ -1570,13 +1570,13 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
                 let (plist, plistOffset) := paramNodes[0]!
                 lowerTypeParams plist plistOffset
             let fieldNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .field
-            let fields ← fieldNodes.mapM fun (c, o) => lowerStructField c o
+            let fields ← fieldNodes.mapM fun (c, o) => lowerRecordField c o
 
             -- Extract attributes
             let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
             let attrs ← lowerAttributes attrNodes
             -- Constructor is canonically "New"; the name field is unused downstream
-            pure (.struct attrs ⟨name, span⟩ params ⟨name, span⟩ fields span)
+            pure (.record attrs ⟨name, span⟩ params ⟨name, span⟩ fields span)
 
       | .declTrait =>
           let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent

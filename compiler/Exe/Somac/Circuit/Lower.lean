@@ -883,41 +883,26 @@ def registerTypes (types : Array Soma.Core.TypeDef)
               LowerM.modifyCtx fun ctx =>
                 ctx.registerCtorType unique ctor.tag ctorInfo.type
 
-    | .struct _attrs structName _tvars ctorName fields =>
+    | .record _attrs recordName _tvars ctorName fields =>
       let mut usedMetadata := false
       if let some g := globals then
-        if let some indInfo := g.lookupInductive structName.display then
+        if let some indInfo := g.lookupInductive recordName.display then
           usedMetadata := true
           for ctor in indInfo.ctors do
             LowerM.modifyCtx fun ctx =>
-              ctx.registerCtor ctor.name structName ctor.tag ctor.arity
+              ctx.registerCtor ctor.name recordName ctor.tag ctor.arity
             LowerM.modifyCtx fun ctx =>
               ctx.registerCtorType indInfo.unique ctor.tag ctor.type
       if !usedMetadata then
         let arity := fields.size
         LowerM.modifyCtx fun ctx =>
-          ctx.registerCtor ctorName structName 0 arity
+          ctx.registerCtor ctorName recordName 0 arity
 
         if let some g := globals then
-          if let some unique := g.lookupUnique structName.display then
-            if let some ctorInfo := g.lookupInChild structName.display "New" then
+          if let some unique := g.lookupUnique recordName.display then
+            if let some ctorInfo := g.lookupInChild recordName.display "New" then
               LowerM.modifyCtx fun ctx =>
                 ctx.registerCtorType unique 0 ctorInfo.type
-
-    | .record _attrs name _tvars fields =>
-      let mut usedMetadata := false
-      if let some g := globals then
-        if let some indInfo := g.lookupInductive name.display then
-          usedMetadata := true
-          for ctor in indInfo.ctors do
-            LowerM.modifyCtx fun ctx =>
-              ctx.registerCtor ctor.name name ctor.tag ctor.arity
-            LowerM.modifyCtx fun ctx =>
-              ctx.registerCtorType indInfo.unique ctor.tag ctor.type
-      if !usedMetadata then
-        let arity := fields.size
-        LowerM.modifyCtx fun ctx =>
-          ctx.registerCtor name name 0 arity
 
 /-- Map from function name to typed function -/
 abbrev TypedFunctionMap := Std.HashMap String Soma.Core.TypedFunction

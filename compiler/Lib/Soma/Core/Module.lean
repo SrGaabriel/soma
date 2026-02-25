@@ -24,40 +24,33 @@ end Constructor
 inductive TypeDef where
   | algebraic (attrs : Array Syntax.Attribute) (name : QualifiedName)
       (typeVarNames : Array String) (ctors : Array Constructor)
-  | struct (attrs : Array Syntax.Attribute) (name : QualifiedName) (typeVarNames : Array String) (ctorName : QualifiedName)
+  | record (attrs : Array Syntax.Attribute) (name : QualifiedName) (typeVarNames : Array String) (ctorName : QualifiedName)
       (fields : Array (Option String × Syntax.TypeExpr))
-  | record (attrs : Array Syntax.Attribute) (name : QualifiedName) (typeVarNames : Array String)
-      (fieldNamesAndTypes : Array (String × Syntax.TypeExpr))
 
 namespace TypeDef
 
 def name : TypeDef → QualifiedName
   | .algebraic _ n _ _ => n
-  | .struct _ n _ _ _ => n
-  | .record _ n _ _ => n
+  | .record _ n _ _ _ => n
 
 def qualifiedName (td : TypeDef) : QualifiedName :=
   td.name
 
 def typeVarNames : TypeDef → Array String
   | .algebraic _ _ vs _ => vs
-  | .struct _ _ vs _ _ => vs
-  | .record _ _ vs _ => vs
+  | .record _ _ vs _ _ => vs
 
 def typeVarCount : TypeDef → Nat
   | .algebraic _ _ vs _ => vs.size
-  | .struct _ _ vs _ _ => vs.size
-  | .record _ _ vs _ => vs.size
+  | .record _ _ vs _ _ => vs.size
 
 def attrs : TypeDef → Array Syntax.Attribute
   | .algebraic attrs _ _ _ => attrs
-  | .struct attrs _ _ _ _ => attrs
-  | .record attrs _ _ _ => attrs
+  | .record attrs _ _ _ _ => attrs
 
 def constructors : TypeDef → Array Constructor
   | .algebraic _ _ _ cs => cs
-  | .struct _ _ _ cn fields => #[{ name := cn, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
-  | .record _ n _ fields => #[{ name := n, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
+  | .record _ _ _ cn fields => #[{ name := cn, tag := 0, fieldTypeSyntax := fields.map (·.2) }]
 
 end TypeDef
 

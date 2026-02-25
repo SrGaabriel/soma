@@ -176,12 +176,12 @@ def globalsFromSerializable (sg : SerializableGlobals) : Globals :=
   let uniques := sg.uniques.foldl (fun acc entry => acc.insert entry.name entry.id) {}
   let inductives := sg.inductives.foldl (fun acc entry => acc.insert entry.name entry.info) {}
   let ctorToInductive := sg.ctorOwners.foldl (fun acc entry => acc.insert entry.ctorName entry.inductiveName) {}
-  let structFields := sg.inductives.foldl (fun acc entry =>
+  let recordFields := sg.inductives.foldl (fun acc entry =>
     if entry.info.fieldNames.isEmpty then acc else acc.insert entry.name entry.info.fieldNames
   ) {}
   { defs with
     uniques := uniques
-    structFields := structFields
+    recordFields := recordFields
     inductives := inductives
     ctorToInductive := ctorToInductive }
 
