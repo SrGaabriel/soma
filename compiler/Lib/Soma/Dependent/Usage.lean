@@ -126,6 +126,22 @@ def checkBranchUsages (branch1 branch2 : UsageSnapshot) (span : Span) : TCM Usag
   -- Return the joined usage (max of both branches)
   return branch1.join branch2
 
+/-- Check N branches have compatible usage and return joined (max) snapshot -/
+def checkMultiBranchUsages (branches : Array UsageSnapshot) (span : Span)
+    : TCM UsageSnapshot := do
+  if branches.isEmpty then return .empty
+  let ctx ← TCM.getCtx
+  for entry in ctx.locals do
+    if entry.qty == .one then
+      let usages := branches.map (·.get entry.bindingId)
+      let anyUsed := usages.any (· > 0)
+      let allUsed := usages.all (· > 0)
+      if anyUsed && !allUsed then
+        let total := usages.foldl (· + ·) 0
+        let combined := TCM.countToQuantity total
+        TCM.addError (.quantityMismatch .one combined entry.name span)
+  return branches.foldl (init := .empty) UsageSnapshot.join
+
 /-- Run an action with usage checking for a binder.
     After the action, checks that the bound variable was used correctly. -/
 def withCheckedBinding (name : String) (bindingId : Unique) (ty : Value)

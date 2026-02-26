@@ -788,10 +788,12 @@ where
       inferSyntaxLamBody params.toList body span []
 
     -- If-then-else
-    | .if_ cond then_ else_ _ => do
+    | .if_ cond then_ else_ span => do
       let condExpr ← checkSyntax cond (.vPrimTy .bool)
-      let (thenTy, thenExpr) ← inferSyntax then_
-      let elseExpr ← checkSyntax else_ thenTy
+      let ((thenTy, thenExpr), thenUsages) ← captureUsages (inferSyntax then_)
+      let (elseExpr, elseUsages) ← captureUsages (checkSyntax else_ thenTy)
+      let joined ← checkBranchUsages thenUsages elseUsages span
+      applyUsages joined
       return (thenTy, .if_ condExpr thenExpr elseExpr)
 
     -- Case expressions
@@ -1063,22 +1065,22 @@ partial def inferSyntaxRecordFields (fields : List (Soma.Syntax.Name × Soma.Syn
 partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)
     (scrutTys : List Value) (expectedTy : Value)
     : TCM (Array Soma.Core.Arm) := do
-  match arms with
-  | [] => return #[]
-  | arm :: rest => do
+  let mut results : Array Soma.Core.Arm := #[]
+  let mut armUsagesList : Array UsageSnapshot := #[]
+  for arm in arms do
     let pats := arm.patterns.toList
-    -- Convert Syntax patterns to Core patterns
     let corePatterns ← pats.mapM convertSyntaxPattern
-
-    -- Get bindings with types from patterns and scrutinee types
     let bindingsWithTypes ← extractSyntaxPatternListBindingTypes pats scrutTys
-
-    -- Check the body under extended context
-    let bodyExpr ← inferSyntaxArmBodyWithBindings bindingsWithTypes arm.body expectedTy arm.span
-
-    -- Check remaining arms
-    let restArms ← inferSyntaxArms rest scrutTys expectedTy
-    return #[Soma.Core.Arm.mk corePatterns.toArray bodyExpr] ++ restArms
+    let (bodyExpr, armUsages) ← captureUsages
+      (inferSyntaxArmBodyWithBindings bindingsWithTypes arm.body expectedTy arm.span)
+    results := results.push (Soma.Core.Arm.mk corePatterns.toArray bodyExpr)
+    armUsagesList := armUsagesList.push armUsages
+  let span := match arms.head? with
+    | some arm => arm.span
+    | none => default
+  let joined ← checkMultiBranchUsages armUsagesList span
+  applyUsages joined
+  return results
 
 /-- Helper: extend context with bindings and check body -/
 partial def inferSyntaxArmBodyWithBindings
@@ -1156,10 +1158,12 @@ where
         checkSyntaxLamBody paramList body expected' span []
 
     -- If-then-else: check both branches
-    | .if_ cond then_ else_ _, _ => do
+    | .if_ cond then_ else_ span, _ => do
       let condExpr ← checkSyntax cond (.vPrimTy .bool)
-      let thenExpr ← checkSyntax then_ expected'
-      let elseExpr ← checkSyntax else_ expected'
+      let (thenExpr, thenUsages) ← captureUsages (checkSyntax then_ expected')
+      let (elseExpr, elseUsages) ← captureUsages (checkSyntax else_ expected')
+      let joined ← checkBranchUsages thenUsages elseUsages span
+      applyUsages joined
       return .if_ condExpr thenExpr elseExpr
 
     -- Tuple against Sigma: desugar to nested pair checks
