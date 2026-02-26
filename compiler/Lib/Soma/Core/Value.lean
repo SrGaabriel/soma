@@ -303,6 +303,24 @@ def Value.recordFieldType (v : Value) (idx : Nat) : Option Value :=
   | .vRecord row => Value.rowFieldType row idx
   | _ => none
 
+/-- Collect all field names and types from a record row type -/
+partial def Value.rowFields (row : Value) : Array (String × Value) :=
+  match row with
+  | .vRowExtend (.vLabelLit name) fieldTy tail =>
+    #[(name, fieldTy)] ++ Value.rowFields tail
+  | _ => #[]
+
+/-- Collect all field names and types from a record type -/
+def Value.recordFields (v : Value) : Array (String × Value) :=
+  match v with
+  | .vRecord row => Value.rowFields row
+  | _ => #[]
+
+/-- Look up a field index by name in a record type -/
+def Value.recordFieldIndex (v : Value) (name : String) : Option Nat :=
+  let fields := v.recordFields
+  fields.findIdx? (·.1 == name) |>.map (·)
+
 /-- Extract the first type parameter from a data type -/
 def Value.dataTypeFirstParam? (v : Value) : Option Value :=
   match v with

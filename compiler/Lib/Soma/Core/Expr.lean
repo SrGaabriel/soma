@@ -469,6 +469,47 @@ partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
     r.hasFVar fvar || ep.hasFVar fvar || b.hasFVar fvar
   | .ann x t => x.hasFVar fvar || t.hasFVar fvar
 
+/-- Count the number of occurrences of a specific free variable in an expression -/
+partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
+  match e with
+  | .fvar u => if u == fvar then 1 else 0
+  | .bvar _ | .mvar _ | .const _ | .sort _ | .primTy _ | .rowSort
+  | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
+  | .lit _ => 0
+  | .app f a => f.countFVar fvar + a.countFVar fvar
+  | .lam _ _ d b => d.countFVar fvar + b.countFVar fvar
+  | .let_ _ t v b => t.countFVar fvar + v.countFVar fvar + b.countFVar fvar
+  | .pi _ _ _ d c => d.countFVar fvar + c.countFVar fvar
+  | .sigma _ _ _ f s => f.countFVar fvar + s.countFVar fvar
+  | .pair f s => f.countFVar fvar + s.countFVar fvar
+  | .projFst x => x.countFVar fvar
+  | .projSnd x => x.countFVar fvar
+  | .construct _ _ args => args.foldl (fun acc a => acc + a.countFVar fvar) 0
+  | .«case» scruts arms =>
+    let scrutCount := scruts.foldl (fun acc s => acc + s.countFVar fvar) 0
+    let armMax := arms.foldl (fun acc arm => max acc (arm.body.countFVar fvar)) 0
+    scrutCount + armMax
+  | .record fields => fields.foldl (fun acc (_, e) => acc + e.countFVar fvar) 0
+  | .recordUpdate b us =>
+    b.countFVar fvar + us.foldl (fun acc (_, e) => acc + e.countFVar fvar) 0
+  | .fieldAccess x _ _ => x.countFVar fvar
+  | .inject _ args => args.foldl (fun acc a => acc + a.countFVar fvar) 0
+  | .if_ c t el =>
+    c.countFVar fvar + max (t.countFVar fvar) (el.countFVar fvar)
+  | .closure _ caps => caps.foldl (fun acc e => acc + e.countFVar fvar) 0
+  | .array es => es.foldl (fun acc e => acc + e.countFVar fvar) 0
+  | .tuple es => es.foldl (fun acc e => acc + e.countFVar fvar) 0
+  | .rowExtend l f t => l.countFVar fvar + f.countFVar fvar + t.countFVar fvar
+  | .recordTy r => r.countFVar fvar
+  | .variantTy r => r.countFVar fvar
+  | .dataTy _ ps => ps.foldl (fun acc p => acc + p.countFVar fvar) 0
+  | .eqTy _ t l r => t.countFVar fvar + l.countFVar fvar + r.countFVar fvar
+  | .refl t x => t.countFVar fvar + x.countFVar fvar
+  | .transport _ t m l r ep b =>
+    t.countFVar fvar + m.countFVar fvar + l.countFVar fvar +
+    r.countFVar fvar + ep.countFVar fvar + b.countFVar fvar
+  | .ann x t => x.countFVar fvar + t.countFVar fvar
+
 end Expr
 
 end Soma.Core

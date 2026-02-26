@@ -52,6 +52,51 @@ def boolTy : Value := Value.vPrimTy .bool
 /-- The string type -/
 def stringTy : Value := Value.vPrimTy .string
 
+/-- Variant label registry: assigns collision-free deterministic tags to variant -/
+structure VariantTagRegistry where
+  /-- Label name → assigned tag -/
+  labelToTag : Std.HashMap String Nat := {}
+  /-- Assigned tag → label name -/
+  tagToLabel : Std.HashMap Nat String := {}
+  deriving Inhabited
+
+namespace VariantTagRegistry
+
+/-- The tag space upper bound -/
+private def tagSpace : Nat := 0xFFFFF
+
+/-- FNV-1a hash of a string, folded to tag space -/
+private def fnv1aTag (label : String) : Nat :=
+  let fnvOffsetBasis : UInt64 := 14695981039346656037
+  let fnvPrime : UInt64 := 1099511628211
+  let hash := label.foldl (init := fnvOffsetBasis) fun h c =>
+    (h ^^^ c.toNat.toUInt64) * fnvPrime
+  hash.toNat % tagSpace
+
+/-- Resolve a variant label to a collision-free tag -/
+def resolve (reg : VariantTagRegistry) (label : String)
+    : Nat × VariantTagRegistry :=
+  match reg.labelToTag.get? label with
+  | some tag => (tag, reg)
+  | none =>
+    let candidate := fnv1aTag label
+    let rec probe (tag : Nat) (fuel : Nat) : Nat :=
+      match fuel with
+      | 0 => tag
+      | fuel + 1 =>
+        match reg.tagToLabel.get? tag with
+        | none => tag
+        | some existing =>
+          if existing == label then tag
+          else probe ((tag + 1) % tagSpace) fuel
+    let finalTag := probe candidate tagSpace
+    (finalTag, {
+      labelToTag := reg.labelToTag.insert label finalTag
+      tagToLabel := reg.tagToLabel.insert finalTag label
+    })
+
+end VariantTagRegistry
+
 /-- Lowering context tracks variable bindings -/
 structure LowerCtx where
   /-- Variable allocations by local unique id -/
@@ -70,6 +115,8 @@ structure LowerCtx where
   intrinsics : Std.HashMap QualifiedName Intrinsic := {}
   /-- Global type registry: QualifiedName → full Value type (for type synthesis) -/
   globalTypes : Std.HashMap QualifiedName Value := {}
+  /-- Variant label → tag registry -/
+  variantTags : VariantTagRegistry := {}
   deriving Inhabited
 
 namespace LowerCtx
@@ -204,6 +251,13 @@ def setRoot (p : PortId) : LowerM Unit :=
 def addDefinition (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
     (isExternal : Bool := false) : LowerM Nat :=
   liftGraph (GraphM.addDefinition name root arity ty isExternal)
+
+/-- Resolve a variant label to a collision-free tag -/
+def resolveVariantTag (label : String) : LowerM Nat := do
+  let ctx ← getCtx
+  let (tag, newRegistry) := ctx.variantTags.resolve label
+  setCtx { ctx with variantTags := newRegistry }
+  pure tag
 
 end LowerM
 
@@ -621,12 +675,7 @@ partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
   let paramUnique : Unique := { id := name.hash.toNat, module := "$lam", original := name }
   let openBody := Soma.Core.Expr.instantiate body (.fvar paramUnique)
 
-  -- Count how many times the param is actually used in the opened body
-  let usageCount := if openBody.hasFVar paramUnique then
-    -- Conservative: count occurrences. hasFVar just tells us it's used at all.
-    1
-  else
-    0
+  let usageCount := openBody.countFVar paramUnique
   let erased := usageCount == 0
 
   let lam ← LowerM.addNode (.lam erased) ty
@@ -706,7 +755,12 @@ partial def lowerCoreCase (scruts : Array Soma.Core.Expr) (arms : Array Soma.Cor
     pure none
   else
     let ctx ← LowerM.getCtx
-    let simplifyCtx : PatternMatch.SimplifyCtx := {}
+    let variantLabels := PatternMatch.collectArmsVariantLabels arms
+    let mut variantTagMap : Std.HashMap String Nat := {}
+    for label in variantLabels do
+      let tag ← LowerM.resolveVariantTag label
+      variantTagMap := variantTagMap.insert label tag
+    let simplifyCtx : PatternMatch.SimplifyCtx := { variantTags := variantTagMap }
     let matrix := PatternMatch.buildMatrixFromArms simplifyCtx arms
     let tree := PatternMatch.compileMatrix matrix ctx.ctorTypeRegistry scrutTypes
     let usageCounts := usageMapToNatMap ctx.usageMap
@@ -764,10 +818,54 @@ partial def lowerCoreRecord (fields : Array (String × Soma.Core.Expr))
 
 /-- Lower a Core.Expr record update -/
 partial def lowerCoreRecordUpdate (base : Soma.Core.Expr)
-    (_updates : Array (String × Soma.Core.Expr)) (ty : Value)
+    (updates : Array (String × Soma.Core.Expr)) (ty : Value)
     : LowerM (Option PortId) := do
-  -- Record update requires knowing field names from the record type
-  lowerCoreExpr base ty
+  let fields := ty.recordFields
+  if fields.isEmpty then
+    lowerCoreExpr base ty
+  else
+    let mut updateMap : Std.HashMap String Soma.Core.Expr := {}
+    for (name, expr) in updates do
+      updateMap := updateMap.insert name expr
+
+    -- Count how many projections we need from the base (fields NOT in updates)
+    let projCount := fields.foldl (fun acc (name, _) =>
+      if updateMap.contains name then acc else acc + 1) 0
+
+    -- Lower the base and build a DUP chain for projections
+    let baseTy ← synthType base
+    let basePort? ← lowerCoreExpr base baseTy
+    match basePort? with
+    | none => pure none
+    | some basePort =>
+      let (basePorts, _) ← buildDupChain basePort projCount ty
+      let mut projIdx : Nat := 0
+      let mut fieldPorts : Array PortId := #[]
+
+      for i in [:fields.size] do
+        let (name, fieldTy) := fields[i]!
+        match updateMap.get? name with
+        | some updateExpr =>
+          -- Use the updated expression
+          let port? ← lowerCoreExpr updateExpr fieldTy
+          match port? with
+          | some port => fieldPorts := fieldPorts.push port
+          | none => pure ()
+        | none =>
+          -- Project from the base
+          if h : projIdx < basePorts.size then
+            let proj ← LowerM.addNode (.proj i) fieldTy
+            LowerM.connect ⟨proj, ⟨1⟩⟩ basePorts[projIdx]
+            fieldPorts := fieldPorts.push (PortId.principal proj)
+            projIdx := projIdx + 1
+          else
+            pure ()
+
+      -- Construct the new record
+      let rec_ ← LowerM.addNode (.record fieldPorts.size) ty
+      for i in [:fieldPorts.size] do
+        LowerM.connect ⟨rec_, ⟨i + 1⟩⟩ fieldPorts[i]!
+      pure (some (PortId.principal rec_))
 
 /-- Lower a Core.Expr tuple -/
 partial def lowerCoreTuple (elems : Array Soma.Core.Expr)
@@ -890,7 +988,7 @@ partial def lowerCoreInject (label : String) (args : Array Soma.Core.Expr)
     | some port => argPorts := argPorts.push port
     | none => pure ()
 
-  let tag := label.hash.toNat % 0xFFFFFF
+  let tag ← LowerM.resolveVariantTag label
   let ctor ← LowerM.addNode (.ctor tag argPorts.size) ty
   for i in [:argPorts.size] do
     LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ argPorts[i]!

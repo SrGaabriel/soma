@@ -1054,8 +1054,26 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   | .use => lowerPort 1
 
   | .array _ => do
-    let _ ← lowerPort 1 (.prim .u64)
-    lowerPort 2 .rawPtr
+    -- Array node: construct a 16-byte header { u64 length, ptr data }
+    let lenVal ← lowerPort 1 (.prim .u64)
+    let dataVal ← lowerPort 2 .rawPtr
+
+    -- Allocate the 16-byte array header
+    let headerSize := 16
+    let headerPtr ← StateT.lift (LowerM.emitInst (.malloc (.const (.int (Int.ofNat headerSize) .u64))) .rawPtr)
+
+    -- Store length at offset 0
+    StateT.lift (LowerM.emitVoid (.store (.local headerPtr) (.local lenVal)))
+
+    -- Store data pointer at offset 8
+    let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local headerPtr)) (.prim .i64))
+    let offset8 ← StateT.lift (LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64))
+    let dataPtrAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset8) (.prim .i64)) (.prim .i64))
+    let dataPtrSlot ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local dataPtrAddr)) .rawPtr)
+    StateT.lift (LowerM.emitVoid (.store (.local dataPtrSlot) (.local dataVal)))
+
+    -- Return the header pointer as i64
+    StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local headerPtr)) (.prim .i64))
 
   | .string => do
     -- String node: extract length and string index from connected NUM nodes

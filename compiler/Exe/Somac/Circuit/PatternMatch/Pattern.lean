@@ -98,8 +98,10 @@ end SimplePattern
 
 /-! ## Pattern Simplification -/
 
-/-- Context for pattern simplification (reserved) -/
+/-- Context for pattern simplification -/
 structure SimplifyCtx where
+  /-- Pre-resolved variant label → tag mapping -/
+  variantTags : Std.HashMap String Nat := {}
   deriving Inhabited
 
 /-- Well-known tags for list-like structures -/
@@ -123,8 +125,7 @@ partial def simplifyPattern (ctx : SimplifyCtx) : Pattern → SimplePattern
   | .wildcard =>
     .wildcard
   | .inject label arg =>
-    -- Hash label to tag
-    let tag := label.hash.toNat % 0xFFFFFF
+    let tag := ctx.variantTags.getD label (label.hash.toNat % 0xFFFFF)
     let args := match arg with
       | some p => #[simplifyPattern ctx p]
       | none => #[]
@@ -134,5 +135,21 @@ partial def simplifyPattern (ctx : SimplifyCtx) : Pattern → SimplePattern
 def simplifyPatterns (ctx : SimplifyCtx) (pats : Array Pattern)
     : Array SimplePattern :=
   pats.map (simplifyPattern ctx)
+
+/-- Collect all variant label names from a pattern -/
+partial def collectVariantLabels : Pattern → Array String
+  | .inject label arg =>
+    #[label] ++ match arg with
+      | some p => collectVariantLabels p
+      | none => #[]
+  | .ctor _ _ args => args.foldl (fun acc p => acc ++ collectVariantLabels p) #[]
+  | _ => #[]
+
+/-- Collect all variant labels from a list of Core arms -/
+def collectArmsVariantLabels (arms : Array Soma.Core.Arm) : Array String :=
+  let labels := arms.foldl (fun acc arm =>
+    arm.patterns.foldl (fun acc2 p => acc2 ++ collectVariantLabels p) acc) #[]
+  -- Deduplicate
+  labels.foldl (fun acc l => if acc.contains l then acc else acc.push l) #[]
 
 end Somac.Circuit.PatternMatch
