@@ -102,7 +102,7 @@ case some_function x of
   Right z => (h x, g x)
 ```
 
-Here `x` is used once in the `Left` branch and twice in the `Right` branch. A naive approach that sums uses across branches overestimates the required copies. Before addressing lazy duplication (Section 4.5), we must first formalize the placement of DUP and ERA nodes.
+Here `x` is used once in the `Left` branch and twice in the `Right` branch. A naive approach that sums uses across branches overestimates the required copies. Before addressing lazy duplication (Section 4.4), we must first formalize the placement of DUP and ERA nodes.
 
 #heading(level: 2)[Usage Counting and DUP Placement]
 
@@ -185,7 +185,7 @@ The per-path costs are:
 
 On every path, the number of DUP nodes is exactly $u_"path"(x) - 1$ where $u_"path"(x)$ is the number of actual consumptions of $x$ on that path. The only waste is a single DUP + ERA pair on the `cond1 = F` path, where one copy enters the branch but is immediately erased because that branch does not use $x$.
 
-This waste is unavoidable without duplicating the outer code (`f x`) into each branch, a code-motion optimization that is semantically valid in a pure language but causes exponential code size growth with nesting depth. In practice, the single unnecessary ERA is negligible: for Tier 1 values ERA is a no-op, for Tier 2 it is one `free` and for Tier 3 the DUP-ERA annihilation rule eliminates both the DUP and ERA in $O(1)$ with zero copies made.
+This waste is unavoidable without duplicating the outer code (`f x`) into each branch, a code-motion optimization that is semantically valid in a pure language but causes exponential code size growth with nesting depth. In practice, the single unnecessary ERA is negligible: for flat values ERA is a no-op and for heap values the DUP-ERA annihilation rule eliminates both the DUP and ERA in $O(1)$ with zero copies made.
 
 We adopt split-site placement as Soma's DUP placement strategy.
 
@@ -219,29 +219,27 @@ The consequences are:
 
 #heading(level: 2)[Tiered Duplication Strategy]
 
-Not all values require the same duplication mechanism. The compiler selects a strategy at compile time based on the type of the value being duplicated.
+Not all values require the same duplication mechanism. The compiler classifies every type into one of two tiers at compile time and selects the appropriate DUP and ERA strategy accordingly.
 
-#heading(level: 3)[Tier 1: Flat Types]
+#heading(level: 3)[Flat Tier: Register-Copyable Types]
 
-For integers, booleans, floats, characters and small structs that fit in machine registers, DUP is a register copy and ERA is a no-op (no heap allocation to free). These values are represented as tagged words in the runtime: the low 3 bits encode the type tag and the remaining bits hold the payload. This has zero overhead, identical cost to Rust's `Copy` semantics.
+For integers, booleans, floats, characters, function pointers and structs composed entirely of flat fields, DUP is a register copy and ERA is a no-op (no heap allocation to free). Primitive values are represented as tagged words in the runtime: the low 3 bits encode the type tag and the remaining bits hold the payload. This has zero overhead, identical cost to Rust's `Copy` semantics.
 
-#heading(level: 3)[Tier 2: Fixed-Size Heap Objects]
+The compiler uses a recursive predicate to determine whether a composite type is flat: a struct is flat if and only if all of its fields are flat. This means a `Point { x: Int, y: Int }` is duplicated with the same zero-overhead register copies as a bare integer.
 
-Closures, records and fixed-size structures with heap-allocated fields require allocation on the heap. The compiler generates type-specialized clone and drop functions at monomorphization time.
+For ERA, a symmetric predicate determines whether any sub-field contains a pointer. Flat types never do, so ERA on a flat value is always a no-op.
 
-DUP allocates a new header, copies the fields and recursively clones any heap-allocated sub-fields. ERA frees the header and recursively erases sub-fields. The compiler knows the exact layout at monomorphization time.
+#heading(level: 3)[Heap Tier: Lazy Duplication via Superposition Nodes]
 
-Closures are a particularly important case. A closure is a heap-allocated object containing a function pointer, an arity and an array of captured environment values. DUP on a closure allocates a new closure header and recursively clones any pointer-typed environment slots. ERA frees the environment slots and the closure header. The runtime uses per-thread memory pools with size-class allocation (small closures $lt.eq$ 48 bytes, medium $lt.eq$ 112 bytes, large via `malloc`) to minimize allocation overhead.
+All types that contain pointers such as closures, tagged unions, recursive data structures and any composite type with pointer-valued fields use lazy duplication via superposition nodes (SUPs).
 
-This achieves the same cost model as a Rust `Clone`/`Drop` implementation, but requires zero programmer annotation.
-
-#heading(level: 3)[Tier 3: Lazy Duplication via Superposition Nodes]
-
-For recursive data structures (lists, trees and any inductively defined type), eager duplication requires traversing an unbounded structure. A naive DUP on a list of $N$ elements is $O(N)$ regardless of how much of the list each consumer actually accesses. This is where Soma's interaction net semantics enable a fundamentally more efficient strategy.
-
-When DUP is applied to a value of recursive type, instead of performing a deep copy, the runtime creates a *superposition node* (SUP). A SUP represents a value that has been logically duplicated but whose copies have not yet been physically separated. Each consumer receives a reference that may point to either a real constructor or a SUP node.
+When DUP is applied to a heap-tier value, instead of performing any copy, the runtime creates a SUP node wrapping the original value. A SUP represents a value that has been logically duplicated but whose copies have not yet been physically separated. Each consumer receives a projection reference (proj0 or proj1) that resolves lazily: if only one projection is ever accessed, the original value is returned directly and no copy is made. Only when both projections are accessed does the runtime clone the value.
 
 This design follows the symmetric interaction combinators of Lafont (1997), using the same agent types ($gamma$, $delta$, $epsilon$) and interaction rules.
+
+Closures are a particularly important case. A closure is a heap-allocated object containing a function pointer, an arity and an array of captured environment values. When both projections of a duplicated closure are accessed, the runtime allocates a new closure header and copies the environment. For environment slots that contain pointers to other closures or SUPs, the cloner wraps them in fresh SUP nodes for lazy nested cloning. The deeply nested values are only actually copied if both copies are independently accessed. The runtime uses per-thread memory pools with size-class allocation (small closures $lt.eq$ 48 bytes, medium $lt.eq$ 112 bytes, large via `malloc`) to minimize allocation overhead.
+
+For ERA, the compiler generates type-directed erasure code at compile time. Flat fields within a struct are skipped (no-op). Pointer fields are freed via the runtime. Tagged union payloads carry a count prefix that enables the runtime to walk and recursively free their fields without compile-time knowledge of the variant's layout. This approach avoids the need for compiler-generated drop functions while remaining sound for all type structures.
 
 #heading(level: 4)[Labeling and Scope Management]
 
@@ -249,7 +247,7 @@ Each DUP node in the compiled program carries a *label*, which is a natural numb
 
 Crucially, Soma does not employ an oracle. Lamping's original optimal reduction algorithm (1990) required an oracle in order to handle arbitrary untyped $lambda$-terms. The oracle nodes accumulate during reduction and can cause exponential overhead, undermining the optimality claim in practice.
 
-Soma avoids this problem entirely. In Soma's compiled output, every DUP node is emitted by the compiler at a known source location with a statically assigned label. The label assignment is deterministic: each syntactic DUP site receives a unique label at compile time. There is no dynamic label generation and no runtime scope tracking. When a DUP meets a SUP, the interaction is fully determined by comparing the two labels whcih is a single integer comparison, not a graph traversal.
+Soma avoids this problem entirely. In Soma's compiled output, every DUP node is emitted by the compiler at a known source location with a statically assigned label. The label assignment is deterministic: each syntactic DUP site receives a unique label at compile time. There is no dynamic label generation and no runtime scope tracking. When a DUP meets a SUP, the interaction is fully determined by comparing the two labels which is a single integer comparison, not a graph traversal.
 
 The pathological self-copying terms that require the oracle are not expressible in Soma's type system. A well-typed term in Soma can duplicate values (via the DUP mechanism), but the structure of the duplication is always statically determined by the type checker's usage analysis. There is no mechanism by which a term can receive an opaque value and duplicate it in a way that the compiler did not anticipate.
 
@@ -289,7 +287,7 @@ Consider a list of $N$ elements that is duplicated, where one consumer accesses 
   #table(
     columns: (auto, auto, auto),
     align: (left, center, center),
-    table.header([*Operation*], [*Eager clone*], [*Soma Tier 3*]),
+    table.header([*Operation*], [*Eager clone*], [*Soma (lazy SUP)*]),
     [Clone list, both use all $N$], [$O(N)$], [$O(N)$ (deferred)],
     [Clone list, one uses $K < N$], [$O(N)$], [$O(K)$],
     [Clone list, one side erased], [$O(N)$], [$O(1)$],
@@ -317,7 +315,7 @@ No other active pairs arise in well-typed programs. In particular, DUP $arrow.l.
 
 Soma's runtime employs a work-stealing scheduler with per-thread Chase-Lev deques. When a duplicated value is consumed by different threads across a fork/join boundary, the SUP node becomes shared memory. Resolution of a SUP by two threads simultaneously would constitute a data race.
 
-Soma adopts a thread-local SUP policy: when forking a task that captures one side of a duplicated recursive value, the value is eagerly copied at the fork boundary (falling back to Tier 2 behavior). SUP nodes exist only within a single thread's subgraph. This avoids all contention since each worker operates on independently owned data.
+Soma adopts a thread-local SUP policy: when forking a task that captures one side of a duplicated value, the value is eagerly deep-copied at the fork boundary. SUP nodes exist only within a single thread's subgraph. This avoids all contention since each worker operates on independently owned data.
 
 This policy is simple and predictable. It can be refined in the future if profiling reveals that cross-thread duplication of large recursive structures is a bottleneck. Alternative strategies include atomic CAS-based SUP resolution (adding one atomic operation per cross-thread SUP resolution) and ownership transfer at fork boundaries (the parent gives up its side of the SUP to the child, ensuring each thread owns exactly one side with no sharing).
 
@@ -329,21 +327,15 @@ HigherOrderCo's HVM and its surface language Bend represent an alternative appro
 
 HVM is an *interaction net runtime*. Programs are represented as graphs of agents in memory and execution proceeds by graph rewriting: the runtime scans for active pairs (two agents whose principal ports are connected) and applies the corresponding interaction rule. Every value including integers, booleans and function pointers is a node in the interaction net with ports and pointers.
 
-Soma uses interaction nets as a *compilation model*. The DUP/ERA/SUP semantics inform the compiler's code generation, but the output is flat, imperative LLVM IR. Tier 1 values are register copies with no heap representation. Tier 2 values use compiler-generated clone and drop functions that compile to ordinary function calls. Only Tier 3 values (recursive data structures with SUP nodes) retain interaction-net-like behavior at runtime and even then the runtime representation is a tagged union check, not graph rewriting.
+Soma uses interaction nets as a *compilation model*. The DUP/ERA/SUP semantics inform the compiler's code generation, but the output is flat, imperative LLVM IR. Flat-tier values (integers, booleans, all-flat structs) are register copies with no heap representation. Heap-tier values (closures, tagged unions, recursive data) use lazy SUP duplication, but the runtime representation is a tagged pointer check and a pool-allocated SUP node, not graph rewriting.
 
-The consequence is that Soma eliminates the overhead of the graph representation itself. In HVM, every non-trivial value is a heap-allocated node with port pointers, which incurs allocation overhead, pointer indirection and cache pressure on every operation. Soma's Tier 1 and Tier 2 values have zero interaction net overhead at runtime and generate the same machine code that a conventional compiled functional language would produce.
+The consequence is that Soma eliminates the overhead of the graph representation itself. In HVM, every value is a node in the interaction net with ports and pointers. Even duplicating a number creates a DP0/DP1 pointer pair that must be resolved later. Soma compiles `square x = x * x` to a single `mul` instruction with zero indirection, zero allocation and zero runtime dispatch. For the large class of programs that are predominantly first-order (arithmetic, struct manipulation, flat data processing), Soma generates the same machine code that a conventional compiled language would produce.
 
 #heading(level: 3)[Optimality and the Lazy Duplication Trade-off]
 
 HVM claims Lévy-optimality: it never duplicates a redex. When a function body is shared by two consumers, an optimal reducer reduces it once and distributes the result through the sharing node, rather than copying the body and reducing it independently in each copy.
 
-Soma is *not* Lévy-optimal. The tiered duplication strategy sacrifices optimality for predictable performance:
-
-- Tier 1 (flat types): DUP is a register copy. No redex can exist in a flat value, so no sharing opportunity is lost.
-- Tier 2 (closures, records): DUP eagerly deep-copies the value. If a closure captures an unreduced computation, both copies will evaluate it independently. An optimal reducer would have shared the computation.
-- Tier 3 (recursive data): DUP is lazy via SUP nodes, recovering optimal behavior for data traversal patterns.
-
-Consider the following example:
+Soma is *not* Lévy-optimal. The laziness operates at the level of *value copying*, not *reduction sharing*. Consider the following example:
 
 ```haskell
 let f = \x -> expensive x in
@@ -353,11 +345,13 @@ let (f₁, f₂) = DUP(f) in
 
 In HVM, `f` is a net node. DUP creates a sharing node. When `f₁` is applied, the body of the lambda begins reducing. If `f₂` is applied to the same argument, the result is shared and `expensive` is computed once.
 
-In Soma, `f` is a Tier 2 closure. DUP allocates a new closure and copies the captured environment. The two closures are independent. `expensive` is computed twice.
+In Soma, `f` is a heap-tier closure. DUP wraps it in a SUP node, deferring the copy. When both `f₁` and `f₂` are accessed, the closure is cloned: the runtime allocates a new closure header and copies the captured environment. The two closures are now independent. `expensive` is computed twice, once per copy.
 
-This is a deliberate trade-off. Lévy-optimality minimizes the number of $beta$-reduction steps, but each step in HVM involves pointer chasing through a heap-allocated graph with associated cache misses and allocation overhead. Soma's eager copy of a closure is a small `memcpy` followed by native code execution with full register allocation and branch prediction. For the vast majority of programs, the constant-factor advantage of native code execution dominates the asymptotic advantage of optimal sharing.
+The laziness still provides a crucial benefit: if only one of `f₁` or `f₂` is accessed (the common case in branching code), the DUP-ERA annihilation rule means no copy is ever made. But when both copies are used, Soma does not share their reduction and each proceeds independently as native code with full register allocation and branch prediction.
 
-The cases where optimality provides a genuine asymptotic advantage are rare in practice. Soma's Tier 3 lazy duplication captures the case where laziness matters most in real programs: large data structures where consumers have asymmetric access patterns.
+This is a deliberate trade-off. Lévy-optimality minimizes the number of $beta$-reduction steps, but each step in HVM involves pointer chasing through a heap-allocated graph with associated cache misses and allocation overhead. Soma's approach is to defer the copy (via SUPs) but not the computation (via sharing). For the vast majority of programs, the constant-factor advantage of native code execution dominates the asymptotic advantage of optimal sharing.
+
+Moreover, Soma's type system includes Quantitative Type Theory (QTT) with quantities 0 (erased), 1 (linear) and $omega$ (unrestricted). Erased bindings generate no DUP or ERA at all. Linear bindings are used exactly once. Only $omega$-bindings require DUP, and even then the type system constrains where duplication occurs. This statically eliminates most of the cases where Lévy-optimal sharing would provide a benefit, because the compiler already knows at elaboration time that those DUPs will not happen.
 
 #heading(level: 3)[Parallelism Model]
 
@@ -375,11 +369,12 @@ The trade-off is: HVM achieves pervasive parallelism at the cost of graph repres
     [Execution model], [Runtime graph rewriting], [Ahead-of-time LLVM compilation],
     [Value representation], [All values are net nodes], [Tagged words / native structs],
     [Flat type overhead], [Node allocation + ports], [Zero (register copy)],
-    [Closure duplication], [Lazy (optimal)], [Eager (Tier 2 clone)],
-    [Recursive data duplication], [Lazy (SUP nodes)], [Lazy (SUP nodes)],
-    [Lévy-optimality], [Yes], [No (Tier 2 is eager)],
+    [Heap value duplication], [Lazy (optimal sharing)], [Lazy (SUP nodes, no sharing)],
+    [Lévy-optimality], [Yes], [No],
     [Parallelism], [Automatic, fine-grained (GPU)], [Explicit fork/join (CPU)],
     [Cache behavior], [Poor (pointer-heavy graph)], [Good (native data layout)],
     [Single-thread performance], [Lower (interpretation overhead)], [Higher (native code)],
   )
 ]
+
+Notably, the two approaches are not mutually exclusive. Because Soma's Circuit IR already encodes programs as interaction net graphs with the same primitives HVM uses, it is feasible to offer HVM as an opt-in backend target. Users who need automatic fine-grained parallelism for a particular module could compile through HVM's runtime instead of the LLVM path, trading single-thread performance for pervasive parallelism without changing the source language or type system.
