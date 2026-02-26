@@ -704,17 +704,42 @@ def lowerString (stringIdx : Nat) (len : Nat) : LowerM n LocalId := do
   LowerM.emitVoid (.store (.local dataPtrSlot) (.local dataPtr))
   LowerM.emitInst (.unOp (.ptrtoint .i64) (.local stringPtr)) (.prim .i64)
 
-/-- Check if a type needs heap deallocation when erased -/
-def needsErase : Ty n → Bool
-  | .prim _ => false
-  | .rawPtr | .ptr _ | .closure _ _ | .tagged _ _ => true
-  | .struct _ | .array _ _ | .funcPtr _ _ => false
-  | .var _ => true
-
 /-- Mapping from Circuit book index to Alloy FuncId -/
 abbrev FuncIdMap := Std.HashMap Nat FuncId
 
 mutual
+
+/-- Emit inline field-by-field DUP for types where `canInlineDup` is true.
+    Recursively extracts struct fields, copies each one, and reassembles
+    two new struct values. Only called for structs of all-flat fields. -/
+partial def emitInlineDup (inputVal : LocalId) (ty : Ty n)
+    : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
+  match ty with
+  | .struct fields =>
+    let mut fields0 : Array Operand := #[]
+    let mut fields1 : Array Operand := #[]
+    for i in [:fields.size] do
+      if h : i < fields.size then
+        let (_, fieldTy) := fields[i]
+        let fieldVal ← StateT.lift (LowerM.emitInst (.extractField (.local inputVal) i) fieldTy)
+        -- All fields are flat (canInlineDup guarantees this), so just copy
+        let c0 ← StateT.lift (LowerM.emitInst (.copy (.local fieldVal)) fieldTy)
+        let c1 ← StateT.lift (LowerM.emitInst (.copy (.local fieldVal)) fieldTy)
+        fields0 := fields0.push (.local c0)
+        fields1 := fields1.push (.local c1)
+    let struct0 ← StateT.lift (LowerM.emitInst (.structLit fields0 ty) ty)
+    let struct1 ← StateT.lift (LowerM.emitInst (.structLit fields1 ty) ty)
+    pure (struct0, struct1)
+  | .array elem sz =>
+    -- Array of flat elements: copy is trivial (the array value itself is flat)
+    let c0 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) ty)
+    let c1 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) ty)
+    pure (c0, c1)
+  | _ =>
+    -- Flat primitive or funcPtr: direct register copy
+    let c0 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) ty)
+    let c1 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) ty)
+    pure (c0, c1)
 
 /-- Lower an operand with FuncId map -/
 partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : FuncIdMap)
@@ -730,7 +755,13 @@ partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : F
     if let some paramIdx := ns.lamParams.get? port.node.id then
       return ⟨paramIdx⟩
 
-  lowerNodeWithMap graph port.node funcIdMap
+  let nodeResult ← lowerNodeWithMap graph port.node funcIdMap
+  -- Re-check port-specific cache: nodes like DUP populate per-port results
+  -- during lowering, so the port-specific binding may now exist.
+  let ns' ← get
+  if let some cached := ns'.results.get? (port.node.id * 1000 + port.port.idx) then
+    return cached
+  pure nodeResult
 
 /-- Lower a node with FuncId mapping for closure references -/
 partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : FuncIdMap)
@@ -774,7 +805,19 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   | .num primTy val =>
     StateT.lift (lowerNum primTy val)
 
-  | .era =>
+  | .era => do
+    -- ERA nodes erase the value connected to their principal port.
+    -- Emit cleanup only for types that own heap memory (needsErase)
+    match entry.getPort ⟨0⟩ with
+    | some sourcePort =>
+      match graph.getNode sourcePort.node with
+      | some sourceEntry =>
+        let sourceTy := getNodeTypeWithMapping sourceEntry tyMapping
+        if sourceTy.needsErase then
+          let sourceVal ← lowerOperandWithMap graph sourcePort funcIdMap
+          StateT.lift (LowerM.emitVoid (.erase (.local sourceVal) sourceTy))
+      | none => pure ()
+    | none => pure ()
     StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
 
   | .lam _ =>
@@ -967,16 +1010,38 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
   | .dup label => do
     let inputVal ← lowerPort 0
-    let supVal ← StateT.lift (LowerM.emitInst (.lazySup label.id (.local inputVal) nodeTy) nodeTy)
-    let copy0 ← StateT.lift (LowerM.emitInst (.supProj0 (.local supVal) nodeTy) nodeTy)
-    let copy1 ← StateT.lift (LowerM.emitInst (.supProj1 (.local supVal) nodeTy) nodeTy)
-
-    -- Bind copies to specific output port keys
-    modify fun ns => { ns with
-      results := ns.results.insert (nodeId.id * 1000 + 1) copy0
-                 |>.insert (nodeId.id * 1000 + 2) copy1
-    }
-    pure inputVal
+    match nodeTy.dupTier with
+    | .flat =>
+      -- Register copy. Both consumers get the same value.
+      let copy0 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) nodeTy)
+      let copy1 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) nodeTy)
+      modify fun ns => { ns with
+        results := ns.results.insert (nodeId.id * 1000 + 1) copy0
+                   |>.insert (nodeId.id * 1000 + 2) copy1
+      }
+      pure inputVal
+    | .heap =>
+      if nodeTy.canInlineDup then
+        -- Compile-time specialization: the type is fully known with no pointers.
+        -- Emit field-by-field copy inline (DUP-NOD for flat structs).
+        let (copy0, copy1) ← emitInlineDup inputVal nodeTy
+        modify fun ns => { ns with
+          results := ns.results.insert (nodeId.id * 1000 + 1) copy0
+                     |>.insert (nodeId.id * 1000 + 2) copy1
+        }
+        pure inputVal
+      else
+        -- Runtime SUP: lazy duplication via superposition nodes.
+        -- DUP-SUP same-label annihilates in O(1); DUP-ERA annihilates
+        -- without copying. Closures and ADTs are cloned incrementally
+        let supVal ← StateT.lift (LowerM.emitInst (.lazySup label.id (.local inputVal) nodeTy) nodeTy)
+        let copy0 ← StateT.lift (LowerM.emitInst (.supProj0 (.local supVal) nodeTy) nodeTy)
+        let copy1 ← StateT.lift (LowerM.emitInst (.supProj1 (.local supVal) nodeTy) nodeTy)
+        modify fun ns => { ns with
+          results := ns.results.insert (nodeId.id * 1000 + 1) copy0
+                     |>.insert (nodeId.id * 1000 + 2) copy1
+        }
+        pure inputVal
 
   | .sup _ => do
     lowerPort 1

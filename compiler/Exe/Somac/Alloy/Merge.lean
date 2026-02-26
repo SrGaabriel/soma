@@ -134,7 +134,6 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst n) : Inst n :
     .select (remapOp cond) (remapOp thenVal) (remapOp elseVal)
   | .memcpy dst src size => .memcpy (remapOp dst) (remapOp src) (remapOp size)
   | .memset dst val size => .memset (remapOp dst) (remapOp val) (remapOp size)
-  | .clone src ty => .clone (remapOp src) ty
   | .lazySup label src ty => .lazySup label (remapOp src) ty
   | .supProj0 src ty => .supProj0 (remapOp src) ty
   | .supProj1 src ty => .supProj1 (remapOp src) ty

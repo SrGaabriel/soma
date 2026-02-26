@@ -487,6 +487,45 @@ def convertUnOp (op : UnOp 0) (srcTy : ClosedTy) (operand : LLVMValue) : Codegen
       else
         FuncBuilder.inttoptr llvmSrcTy operand
 
+/-- Emit type-recursive erasure code -/
+partial def emitEraseForType (valRef : LLVMValue) (ty : ClosedTy) : CodegenM Unit := do
+  match ty with
+  | .prim _ | .funcPtr _ _ =>
+    pure ()
+  | .rawPtr | .ptr _ =>
+    -- Opaque/typed pointer: delegate to runtime for tag-based dispatch
+    CodegenM.withFuncBuilder do
+      FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, valRef)]
+  | .tagged _ _ =>
+    -- Tagged union {i32, ptr}: free the payload buffer via runtime helper
+    -- that reads the count prefix and recursively frees pointer-valued fields.
+    let payloadPtr ← CodegenM.withFuncBuilder do
+      FuncBuilder.extractvalue taggedTy valRef #[1]
+    CodegenM.withFuncBuilder do
+      FuncBuilder.callNamedVoid "soma_era_tagged_payload" #[(.ptr, .local payloadPtr)]
+  | .closure _ _ =>
+    -- Closure {ptr, ptr}: the env_ptr (field 1) may own heap memory.
+    let envPtr ← CodegenM.withFuncBuilder do
+      FuncBuilder.extractvalue closureTy valRef #[1]
+    CodegenM.withFuncBuilder do
+      FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, .local envPtr)]
+  | .struct fields =>
+    -- Struct: recurse into each field that may contain pointers
+    let llvmTy := convertTy ty
+    for i in [:fields.size] do
+      if h : i < fields.size then
+        let (_, fieldTy) := fields[i]
+        if fieldTy.needsErase then
+          let fieldRef ← CodegenM.withFuncBuilder do
+            FuncBuilder.extractvalue llvmTy valRef #[i]
+          emitEraseForType (.local fieldRef) fieldTy
+  | .array _ _ =>
+    -- todo
+    pure ()
+  | .var _ =>
+    -- Should not occur at closed type level (nomatch in convertTy)
+    pure ()
+
 /-- Lower an Alloy instruction to LLVM, returning result ref and result type -/
 def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := do
   match inst with
@@ -722,9 +761,9 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     -- Tagged unions are by-value { i32, ptr } structs
     let payloadPtr ← CodegenM.withFuncBuilder do
       FuncBuilder.extractvalue llvmValTy valRef #[1]
-    -- Payload is a pointer to heap-allocated fields, each field is 8 bytes (todo: consider target triple)
+    -- Payload layout: [count : i64, field0 : i64, field1 : i64]
     let fieldPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fieldIdx]
+      FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fieldIdx + 1]
     let ref ← CodegenM.withFuncBuilder do
       FuncBuilder.load llvmResultTy (.local fieldPtr)
     pure (some (ref, resultTy))
@@ -738,15 +777,22 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       FuncBuilder.store .i32 (i32Val tag) (.local tagPtr)
     -- Allocate and store payload if non-empty
     if payload.size > 0 then
-      let payloadSize := payload.size * 8
+      -- Payload layout: [count : i64, field0 : i64, field1 : i64]
+      let payloadSize := (payload.size + 1) * 8
       let payloadMem ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .ptr "malloc" #[(.i64, i64Val payloadSize)]
+      -- Store field count as first i64
+      let countPtr ← CodegenM.withFuncBuilder do
+        FuncBuilder.gepi64 .i64 (.local payloadMem) #[0]
+      CodegenM.withFuncBuilder do
+        FuncBuilder.store .i64 (i64Val payload.size) (.local countPtr)
+      -- Store fields at offset +1
       for i in [:payload.size] do
         if h : i < payload.size then
           let fieldOp := payload[i]
           let (fieldLLVMTy, fieldVal) ← convertOperandWithTy fieldOp
           let fieldPtr ← CodegenM.withFuncBuilder do
-            FuncBuilder.gepi64 (.struct false #[]) (.local payloadMem) #[i]
+            FuncBuilder.gepi64 (.struct false #[]) (.local payloadMem) #[i + 1]
           CodegenM.withFuncBuilder do
             FuncBuilder.store fieldLLVMTy fieldVal (.local fieldPtr)
       let payloadPtrSlot ← CodegenM.withFuncBuilder do
@@ -969,28 +1015,6 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     CodegenM.withFuncBuilder (FuncBuilder.memset dstVal valVal sizeVal)
     pure none
 
-  | .clone src ty =>
-    let srcTy ← operandTy src
-    let srcLlvmTy := convertTy srcTy
-    let srcVal ← convertOperand src
-    let llvmTy := convertTy ty
-    let size := ty.sizeBytes
-    let newPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.callNamed .ptr "malloc" #[(.i64, i64Val size)]
-    -- Ensure source is a pointer for memcpy (handle dead code type mismatches)
-    let srcPtr ← if srcLlvmTy == .ptr then
-      pure srcVal
-    else
-      -- Non-pointer source: alloca and store the value, then copy from that
-      let tmpPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca srcLlvmTy)
-      CodegenM.withFuncBuilder (FuncBuilder.store srcLlvmTy srcVal (.local tmpPtr))
-      pure (.local tmpPtr)
-    CodegenM.withFuncBuilder do
-      FuncBuilder.memcpy (.local newPtr) srcPtr (i64Val size)
-    -- Clone returns a copy of the value (load from the malloc'd region)
-    let result ← CodegenM.withFuncBuilder (FuncBuilder.load llvmTy (.local newPtr))
-    pure (some (result, ty))
-
   | .lazySup label src _ty =>
     -- Create a SUP node: soma_dup(label, value_as_i64) → i64 tagged pointer
     let srcVal ← convertOperand src
@@ -1020,19 +1044,11 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     pure (some (ref, ty))
 
   | .erase val ty =>
-    -- Skip erase for unit types (nothing to free)
-    if isUnitTy ty then
+    if isUnitTy ty || !ty.needsErase then
       pure none
     else
       let valRef ← convertOperand val
-      let llvmTy := convertTy ty
-      -- Only call erase for pointer types (heap-allocated values)
-      if llvmTy == .ptr then
-        CodegenM.withFuncBuilder do
-          FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, valRef)]
-      else
-        -- Non-pointer types don't need heap deallocation, skip
-        pure ()
+      emitEraseForType valRef ty
       pure none
 
   | .panic msgIdx line =>
@@ -1365,6 +1381,14 @@ def addRuntimeDeclarations : CodegenM Unit := do
       name := "soma_era_free"
       retTy := .void
       params := #[{ name := "ptr", ty := .ptr }]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_era_tagged_payload"
+      retTy := .void
+      params := #[{ name := "payload", ty := .ptr }]
       isDeclaration := true
     }
 

@@ -98,9 +98,6 @@ inductive Inst : Nat → Type where
   /-- Memory set -/
   | memset : Operand → Operand → Operand → Inst n
 
-  /-- Clone a value (Tier 2: eager deep copy) -/
-  | clone : Operand → Ty n → Inst n
-
   /-- Create a SUP node for lazy duplication -/
   | lazySup : UInt32 → Operand → Ty n → Inst n
 
@@ -173,7 +170,6 @@ def instantiate : Inst n → TyEnv n → ClosedInst
   | .select cond t e, _ => .select cond t e
   | .memcpy dst src size, _ => .memcpy dst src size
   | .memset dst val size, _ => .memset dst val size
-  | .clone src ty, env => .clone src (Somac.Alloy.instantiate ty env)
   | .lazySup label src ty, env => .lazySup label src (Somac.Alloy.instantiate ty env)
   | .supProj0 src ty, env => .supProj0 src (Somac.Alloy.instantiate ty env)
   | .supProj1 src ty, env => .supProj1 src (Somac.Alloy.instantiate ty env)
@@ -223,7 +219,6 @@ def resultTy : ClosedInst → Option ClosedTy
   | .select _ _ _ => none
   | .memcpy _ _ _ => none
   | .memset _ _ _ => none
-  | .clone _ ty => some ty
   | .lazySup _ _ ty => some ty
   | .supProj0 _ ty => some ty
   | .supProj1 _ ty => some ty
@@ -283,7 +278,6 @@ private def toStringAux : Inst n → String
   | .select cond t e => s!"select {cond}, {t}, {e}"
   | .memcpy dst src size => s!"memcpy {dst}, {src}, {size}"
   | .memset dst val size => s!"memset {dst}, {val}, {size}"
-  | .clone src ty => s!"clone {src} : {ty}"
   | .lazySup label src ty => s!"lazy_sup &{label} {src} : {ty}"
   | .supProj0 src ty => s!"sup_proj0 {src} : {ty}"
   | .supProj1 src ty => s!"sup_proj1 {src} : {ty}"

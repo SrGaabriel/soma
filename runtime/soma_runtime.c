@@ -497,6 +497,30 @@ void soma_era_free(void* value) {
 }
 
 /*
+ * soma_era_tagged_payload — Free a tagged union payload buffer
+ *
+ * Payload layout: [count : i64, field0 : i64, field1 : i64, ...]
+ * Each field is stored as a raw i64 (SomaValue). Fields that are heap pointers
+ * (tag bits == TAG_PTR, non-null) are recursively freed via soma_era_free.
+ * The count prefix tells us how many fields to walk.
+ */
+void soma_era_tagged_payload(void* payload) {
+    if (payload == NULL) return;
+
+    int64_t count = *(int64_t*)payload;
+    SomaValue* fields = (SomaValue*)((int64_t*)payload + 1);
+
+    for (int64_t i = 0; i < count; i++) {
+        SomaValue val = fields[i];
+        if (SOMA_IS_PTR(val) && val != 0) {
+            soma_era_free(SOMA_TO_PTR(val));
+        }
+    }
+
+    free(payload);
+}
+
+/*
  * ============================================================================
  * String Operations
  * ============================================================================

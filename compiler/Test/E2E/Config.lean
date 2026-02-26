@@ -5,7 +5,7 @@ structure Config where
   /-- Timeout for execution in milliseconds -/
   runTimeout : Nat := 10000
   /-- Whether to keep temporary directories after tests -/
-  keepTemp : Bool := false
+  keepTemp : Bool := true
   deriving Repr
 
 namespace Config

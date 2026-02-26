@@ -271,6 +271,50 @@ partial def beq (a : Ty n) (b : Ty m) : Bool :=
 instance : BEq (Ty n) where
   beq a b := Ty.beq a b
 
+/-- Duplication tier determines how a value is cloned and erased at runtime.
+
+    - **flat**: Register-width values. DUP is a register copy, ERA is a no-op.
+      Zero heap interaction, identical to Rust `Copy`.
+
+    - **heap**: Everything else. DUP dispatches based on compile-time type knowledge:
+      structs with all-flat fields get inline field-by-field copy and all other heap
+      types (closures, tagged unions, opaque pointers) go through runtime SUP nodes
+      for lazy duplication with O(1) DUP-ERA annihilation. -/
+inductive DupTier where
+  | flat
+  | heap
+  deriving Repr, BEq, Inhabited
+
+/-- Classify a type into its duplication tier -/
+def dupTier : Ty n → DupTier
+  | .prim _ => .flat
+  | .funcPtr _ _ => .flat
+  | _ => .heap
+
+/-- Whether the DUP for this type can be fully inlined at compile time-/
+partial def canInlineDup : Ty n → Bool
+  | .prim _ => true
+  | .funcPtr _ _ => true
+  | .struct fields => fields.all fun (_, t) => canInlineDup t
+  | .array elem _ => canInlineDup elem
+  | .closure _ _ => false -- env is opaque heap pointer
+  | .tagged _ _ => false -- potentially recursive ADTs
+  | .ptr _ => false -- opaque
+  | .rawPtr => false -- opaque
+  | .var _ => false -- polymorphic
+
+/-- Whether erasing a value of this type requires cleanup (freeing heap memory) -/
+partial def needsErase : Ty n → Bool
+  | .prim _ => false
+  | .funcPtr _ _ => false
+  | .struct fields => fields.any fun (_, t) => needsErase t
+  | .array elem _ => needsErase elem
+  | .closure _ _ => true -- env_ptr owns heap memory
+  | .tagged _ _ => true -- payload is heap-allocated
+  | .ptr _ => true
+  | .rawPtr => true
+  | .var _ => true
+
 end Ty
 
 /-! ## Constants -/

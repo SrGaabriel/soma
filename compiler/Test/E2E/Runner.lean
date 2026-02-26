@@ -55,6 +55,7 @@ private def runTestBody (tc : TestCase) (tempDir : System.FilePath) : IO (String
   let buildOpts : BuildOptions := {
     input := srcDir.toString
     output := some outputPath.toString
+    emitLlvm := true
   }
 
   let buildResult ← build buildOpts

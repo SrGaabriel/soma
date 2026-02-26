@@ -207,8 +207,6 @@ def ppInst (cfg : Config) : Inst n → String
     s!"{colorKeyword cfg "memcpy"} {ppOperand cfg dst}, {ppOperand cfg src}, {ppOperand cfg size}"
   | .memset dst val size =>
     s!"{colorKeyword cfg "memset"} {ppOperand cfg dst}, {ppOperand cfg val}, {ppOperand cfg size}"
-  | .clone src ty =>
-    s!"{colorKeyword cfg "clone"} {ppTy cfg ty} {ppOperand cfg src}"
   | .lazySup label src ty =>
     s!"{colorKeyword cfg "lazy_sup"} &{label} {ppTy cfg ty} {ppOperand cfg src}"
   | .supProj0 src ty =>

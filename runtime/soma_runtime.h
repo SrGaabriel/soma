@@ -157,6 +157,9 @@ typedef struct SomaSup {
 /* Free a heap-allocated value */
 void soma_era_free(void* value);
 
+/* Free a tagged union payload buffer (count-prefixed array of fields) */
+void soma_era_tagged_payload(void* payload);
+
 /* Panic: print error message and abort */
 void soma_panic(const char* msg);
 
