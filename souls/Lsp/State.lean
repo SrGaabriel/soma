@@ -56,6 +56,7 @@ def LocalBindingKind.toSymbolKind : LocalBindingKind → SymbolKind
   | .composeLetVar     => .variable
   | .composeBindVar    => .variable
   | .inductiveTypeParam => .typeVariable
+  | .constructorField   => .parameter
 
 /-- Convert SyntaxKind to SymbolKind -/
 def syntaxKindToSymbolKind : SyntaxKind → SymbolKind

@@ -19,6 +19,7 @@ inductive LocalBindingKind where
   | composeLetVar
   | composeBindVar
   | inductiveTypeParam
+  | constructorField
   deriving BEq, Repr, Inhabited
 
 
@@ -34,6 +35,7 @@ def LocalBindingKind.describe : LocalBindingKind → String
   | .composeLetVar     => "local binding"
   | .composeBindVar    => "bound variable"
   | .inductiveTypeParam => "type parameter"
+  | .constructorField   => "constructor field"
 
 /-- A local binding with its visibility interval -/
 structure LocalBinding where
@@ -597,6 +599,30 @@ private def extractImplicitBindings (tree : RedTree) (implNode : RedNode)
           }
   return result
 
+/-- Extract field bindings from a constructor or constructorSig node -/
+private def extractConstructorFieldBindings (tree : RedTree) (consNode : RedNode)
+    : Array LocalBinding := Id.run do
+  let mut result : Array LocalBinding := #[]
+  let consEnd := (tree.spanOf consNode).stop.byteOffset
+  let children := getChildren tree consNode
+
+  for child in children do
+    if child.syntaxKind? == some .field then
+      let scopeStart := (tree.spanOf child).start.byteOffset
+      if let some nameTok := findToken? tree child .lowerIdent then
+        if let some name := nameTok.text? then
+          let typeAnnot := extractFieldTypeText tree child
+          result := result.push {
+            name
+            kind := .constructorField
+            bindingNodeId := nameTok.id
+            nameSpan := tree.spanOf nameTok
+            typeAnnotation := typeAnnot
+            scopeStart
+            scopeEnd := consEnd
+          }
+  return result
+
 /-- Build a ScopeMap from a RedTree by walking the CST -/
 def buildScopeMap (tree : RedTree) : ScopeMap := Id.run do
   let mut bindings : Array LocalBinding := #[]
@@ -616,6 +642,8 @@ def buildScopeMap (tree : RedTree) : ScopeMap := Id.run do
     | some .declStruct    => bindings := bindings ++ extractDeclTypeParamBindings tree node
     | some .declTrait     => bindings := bindings ++ extractDeclTypeParamBindings tree node
     | some .typeImplicit  => bindings := bindings ++ extractImplicitBindings tree node
+    | some .constructor    => bindings := bindings ++ extractConstructorFieldBindings tree node
+    | some .constructorSig => bindings := bindings ++ extractConstructorFieldBindings tree node
     | _ => pure ()
 
   -- Sort by scopeStart for deterministic ordering

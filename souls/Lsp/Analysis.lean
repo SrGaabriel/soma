@@ -54,7 +54,7 @@ def findChangedDeclIds (tree : RedTree) (changedIds : HashSet NodeId) : HashSet 
 private def getDeclName : Decl → Option String
   | .def_ _ name _ _ _ _ => some name.value
   | .inductive _ name _ _ _ _ => some name.value
-  | .struct _ name _ _ _ _ => some name.value
+  | .record _ name _ _ _ _ => some name.value
   | .trait _ name _ _ _ _ => some name.value
   | .abbrev name _ _ _ => some name.value
   | _ => none
