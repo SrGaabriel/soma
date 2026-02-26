@@ -855,17 +855,46 @@ partial def lowerDataCon (green : GreenNode) (offset : Nat) : LowerM DataCon := 
       let attrNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .attribute
       let attrs ← lowerAttributes attrNodes
 
-      -- Indexed constructor with signature: | Cons :: a -> Vec n a -> Vec (n+1) a
+      -- Indexed constructor with signature: | Cons : a -> Vec n a -> Vec (n+1) a
       let nameNodes := green.children.filter fun c => isTokenKind c .upperIdent
       let name := if nameNodes.isEmpty then ⟨"_Con", span⟩
         else match getTokenText nameNodes[0]! with
         | some text => ⟨text, span⟩
         | none => ⟨"_Con", span⟩
 
-      -- Find the type expression (after the :: token)
-      let typeNodes := allKids.filter fun (c, _) => isSemanticNode c && !c.isToken
+      -- Extract binder fields (present when constructor has both binders and a return type)
+      let fieldNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .field
+
+      -- Find the type expression (a non-token semantic node that isn't a .field)
+      let typeNodes := allKids.filter fun (c, _) =>
+        isSemanticNode c && !c.isToken && c.syntaxKind? != some .field
       if typeNodes.size >= 1 then
-        let sig ← lowerTypeExpr typeNodes[0]!.1 typeNodes[0]!.2
+        let mut sig ← lowerTypeExpr typeNodes[0]!.1 typeNodes[0]!.2
+        -- If there are binder fields, wrap them into the signature type.
+        for (f, fo) in fieldNodes.reverse do
+          let fKids := childrenWithOffsets f fo |>.filter fun (c, _) => isSemanticNode c
+          let nameNode? := fKids.find? fun (c, _) => isTokenKind c .lowerIdent
+          let typeNode? := fKids.find? fun (c, _) =>
+            match c.syntaxKind? with
+            | some sk => sk.isType
+            | none => false
+          let isImplicit := f.children.any fun c => isTokenKind c .leftBrace
+          match typeNode? with
+          | some (tyNode, tyOff) =>
+            let ftype ← lowerTypeExpr tyNode tyOff
+            let fname ← match nameNode? with
+              | some (nNode, nOff) =>
+                match firstGreenChild nNode with
+                | some nameChild => getGreenTokenText nameChild nOff
+                | none => pure "_"
+              | none => pure "_"
+            let fnameSpan ← spanFor f fo
+            if isImplicit then
+              let binder := TypeVarBinder.mk ⟨fname, fnameSpan⟩ (some ftype)
+              sig := .forall_ #[binder] sig span
+            else
+              sig := .pi .omega ⟨fname, fnameSpan⟩ ftype sig span
+          | none => pure ()
         pure { attrs, name, fields := #[], sig := some sig, span }
       else
         lowerError "expected type signature for indexed constructor" span

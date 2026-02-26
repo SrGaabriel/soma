@@ -319,7 +319,17 @@ def parseDataConstructor : ParserM (Option GreenNode) := do
           else
             -- Lean-style constructor binders: | Err (a : Type) (b : Nat)
             let fields ← many parseConstructorBinder
-            return some (GreenNode.mkNode .constructor (#[pipeTok, nameTok] ++ fields))
+            -- Check for optional return type annotation after binders
+            if (← check .colon) then
+              let colonTok ← consumeAny
+              match ← parseType with
+              | some ty =>
+                return some (GreenNode.mkNode .constructorSig (#[pipeTok, nameTok] ++ fields ++ #[colonTok, ty]))
+              | none =>
+                recordError "expected type after ':' in constructor"
+                return some (GreenNode.mkError "missing constructor type" (#[pipeTok, nameTok] ++ fields ++ #[colonTok]))
+            else
+              return some (GreenNode.mkNode .constructor (#[pipeTok, nameTok] ++ fields))
       | none =>
           recordError "expected constructor name after '|'"
           return some (GreenNode.mkError "missing constructor name" #[pipeTok])

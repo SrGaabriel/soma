@@ -1,0 +1,14 @@
+// expect: error unknown variable
+// Test: unresolved constructor in pattern should be rejected
+
+inductive ScottNat where
+    | Zero
+    | Succ (n : ScottNat)
+
+inductive IndexedVec (a : Type) : ScottNat -> Type where
+    | Empty : IndexedVec (ScottNat::Zero)
+    | Next {n : ScottNat} : a -> IndexedVec a n -> IndexedVec a (ScottNat::Succ n)
+
+def test : IndexedVec (ScottNat::Zero) -> ScottNat
+    | IndexedVec::Empty => ScottNat::Zero
+    | Indexed::Next _ _ => ScottNat::Zero

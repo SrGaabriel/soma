@@ -310,6 +310,26 @@ partial def instantiateImplicits (ty : Value) (_span : Span) : TCM Value := do
   | _ =>
     return ty'
 
+/-- Check if two forced values are structurally incompatible (distinct head constructors) -/
+partial def structurallyIncompatible (v1 v2 : Value) : TCM Bool := do
+  let v1' ← force v1
+  let v2' ← force v2
+  match v1', v2' with
+  | .vConstructor n1 _ _, .vConstructor n2 _ _ => return n1 != n2
+  | .vIntLit n1, .vIntLit n2 => return n1 != n2
+  | .vStringLit s1, .vStringLit s2 => return s1 != s2
+  | .vPrimTy p1, .vPrimTy p2 => return p1 != p2
+  | .vDataType id1 ps1, .vDataType id2 ps2 =>
+    if id1 != id2 then return true
+    let rec checkParams (l1 l2 : List Value) : TCM Bool := do
+      match l1, l2 with
+      | p1 :: rest1, p2 :: rest2 =>
+        if ← structurallyIncompatible p1 p2 then return true
+        checkParams rest1 rest2
+      | _, _ => return false
+    checkParams ps1 ps2
+  | _, _ => return false
+
 /-- Extract constructor field types, constraining result type against scrutinee type.
 
     For a constructor type like `forall {a}. a -> Vec n a -> Vec (n+1) a` and
@@ -322,6 +342,7 @@ partial def instantiateImplicits (ty : Value) (_span : Span) : TCM Value := do
 
     This enables proper index inference in pattern matching. -/
 partial def extractConstructorFieldTypes (ctorTy : Value) (scrutTy : Value)
+    (ctorName : Option String := none) (span : Span := default)
     : TCM (Array Value) := do
   -- Walk the constructor type, instantiating implicits and collecting explicit field types
   let rec go (ty : Value) (acc : Array Value) : TCM (Array Value × Value) := do
@@ -345,6 +366,12 @@ partial def extractConstructorFieldTypes (ctorTy : Value) (scrutTy : Value)
       return (acc, ty')
 
   let (fieldTypes, resultTy) ← go ctorTy #[]
+
+  -- Check for structurally impossible patterns before unification
+  if ← structurallyIncompatible resultTy scrutTy then
+    match ctorName with
+    | some name => TCM.throw (.impossiblePattern name resultTy scrutTy span)
+    | none => pure ()
 
   -- Unify the constructor's result type with the scrutinee type
   -- This generates constraints on the indices
@@ -568,16 +595,14 @@ partial def convertSyntaxPattern (pat : Soma.Syntax.Pattern) : TCM Soma.Core.Pat
       | .int n _ => .int n
       | .string s _ => .string s
       | .bool b _ => .bool b))
-  | .con name args _ =>
+  | .con name args span =>
     let coreArgs ← args.mapM convertSyntaxPattern
     -- Look up constructor via namespace-aware resolution to get its QualifiedName
     match ← TCM.resolveConstructor name.value with
     | some ctorInfo =>
       pure (.ctor ctorInfo.name ctorInfo.ctorTag coreArgs)
     | none =>
-      -- Unknown constructor — use a placeholder
-      let u ← TCM.freshUnique name.value
-      pure (.ctor ⟨u⟩ 0 coreArgs)
+      TCM.throw (.unboundVariable name.value span #[])
   | .tuple elems span => do
     let coreElems ← elems.mapM convertSyntaxPattern
     buildNestedPairPattern coreElems.toList span
@@ -609,10 +634,10 @@ partial def extractSyntaxPatternBindingTypes (pat : Soma.Syntax.Pattern) (scrutT
   | .lit _ => return []
   | .tuple elems _ =>
     extractSyntaxTupleBindingTypes elems.toList scrutTy
-  | .con name args _ =>
+  | .con name args span =>
     match ← TCM.resolveConstructor name.value with
     | some ctorInfo =>
-      let fieldTypes ← extractConstructorFieldTypes ctorInfo.type scrutTy
+      let fieldTypes ← extractConstructorFieldTypes ctorInfo.type scrutTy (some name.value) span
       let mut result : List (Unique × String × Value) := []
       for (arg, fieldTy) in args.toList.zip fieldTypes.toList do
         let bindings ← extractSyntaxPatternBindingTypes arg fieldTy
@@ -623,12 +648,7 @@ partial def extractSyntaxPatternBindingTypes (pat : Soma.Syntax.Pattern) (scrutT
         result := result ++ bindings
       return result
     | none =>
-      let mut result : List (Unique × String × Value) := []
-      for arg in args do
-        let argTy ← TCM.freshMetaVal (.vType .zero)
-        let bindings ← extractSyntaxPatternBindingTypes arg argTy
-        result := result ++ bindings
-      return result
+      TCM.throw (.unboundVariable name.value span #[])
   | .list elems span =>
     let elemTy ← TCM.freshMetaVal (.vType .zero)
     let scrutTy' ← force scrutTy

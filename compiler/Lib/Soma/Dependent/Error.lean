@@ -393,6 +393,13 @@ inductive TCError where
       (expectedArg : Option (Nat × String))
       (actualArg : Option String)
 
+  /-- Impossible constructor pattern: indices conflict with scrutinee type -/
+  | impossiblePattern
+      (ctor : String)
+      (ctorResultTy : Value)
+      (scrutTy : Value)
+      (span : Span)
+
   deriving Inhabited
 
 namespace TCError
@@ -429,6 +436,7 @@ def span : TCError → Span
   | .partialInTypeIndex _ s => s
   | .positivityViolation _ _ s _ => s
   | .nonStructuralRecursion _ s _ _ => s
+  | .impossiblePattern _ _ _ s => s
 
 /-- Build secondary labels from constraint chain -/
 private def chainToLabels (chain : Array ConstraintInfo) : Array Label :=
@@ -745,6 +753,13 @@ def toDiagnostic : TCError → Diagnostic
     , notes := notes
     , help := some "use pattern matching to obtain structurally smaller subterms"
     }
+
+  | .impossiblePattern ctor ctorResultTy scrutTy span =>
+    Diagnostic.error s!"impossible pattern `{ctor}`" span
+        s!"constructor produces `{ctorResultTy}`, but matching against `{scrutTy}`"
+      |>.withCode "E1030"
+      |>.withNote "the constructor's index does not match the scrutinee type"
+      |>.withHelp "remove this pattern — it can never match"
 
 instance : ToString TCError where
   toString err := err.toDiagnostic.message

@@ -3,8 +3,19 @@
 
 inductive List {a : Type} where
     | Nil
-    | Cons (head : a) (tail : List a)
+    | Cons (front : a) (tail : List a)
+
+inductive ScottNat where
+    | Zero
+    | Succ (n : ScottNat)
+    
+inductive IndexedVec (a : Type) : ScottNat -> Type where
+    | Empty : IndexedVec (ScottNat::Zero)
+    | Next {n : ScottNat} : a -> IndexedVec a n -> IndexedVec a (ScottNat::Succ n)
 
 def head (a : Type) : a -> List a -> a
     | default, List::Nil => default
     | _, (List::Cons x _) => x
+
+def cool_head {a : Type} {n : ScottNat} : IndexedVec a (ScottNat::Succ n) -> a
+    | IndexedVec::Next x _ => x
