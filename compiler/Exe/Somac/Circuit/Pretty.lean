@@ -42,6 +42,7 @@ def ppNode (cfg : Config) (n : Node) : String :=
   | .lam false   => "λ"
   | .app         => "@"
   | .dup label   => if cfg.showLabels then s!"dup{ppLabel label}" else "dup"
+  | .sup label   => if cfg.showLabels then s!"sup{ppLabel label}" else "sup"
   | .era         => "era"
   | .ctor tag ar => s!"C{tag}[{ar}]"
   | .mat exp     => s!"mat({exp})"

@@ -142,6 +142,18 @@ inductive Node where
       - label: unique identifier for this duplication -/
   | dup (label : Label)
 
+  /-- Superposition node (lazy duplication result)
+      - Principal: the superposed value
+      - Aux 0: first contained value (val0)
+      - Aux 1: second contained value (val1)
+      - label: matches DUP labels for annihilation
+
+      SUP is the runtime counterpart to DUP for Tier 3 (recursive data).
+      When a DUP is applied to a recursive value, instead of eagerly cloning,
+      a SUP node is created. Consumers access the copies via projections.
+      Same-label DUP-SUP annihilates in O(1); different-label commutes. -/
+  | sup (label : Label)
+
   /-- Eraser node (discard value)
       - Principal: value to erase
       - No auxiliary ports -/
@@ -275,6 +287,7 @@ def numAuxPorts : Node → Nat
   | .lam _ => 2 -- var, body
   | .app => 2 -- fun, arg
   | .dup _ => 2 -- copy0, copy1
+  | .sup _ => 2 -- val0, val1
   | .era => 0
   | .ctor _ n => n -- fields
   | .mat _ => 3 -- scrutinee, hit, miss
@@ -296,7 +309,7 @@ def numPorts (n : Node) : Nat := 1 + n.numAuxPorts
 
 /-- Check if a node is a combinator (pure interaction net node) -/
 def isCombinator : Node → Bool
-  | .lam _ | .app | .dup _ | .era => true
+  | .lam _ | .app | .dup _ | .sup _ | .era => true
   | _ => false
 
 /-- Check if a node carries an immediate value (no heap children) -/
@@ -309,6 +322,7 @@ def toTag : Node → Tag
   | .lam _    => .lam
   | .app      => .app
   | .dup _    => .dup
+  | .sup _    => .sup
   | .era      => .era
   | .ctor _ _ => .ctor
   | .mat _    => .mat
@@ -331,6 +345,7 @@ def toTerm (n : Node) (loc : Loc) : Term :=
   | .lam erased   => Term.mkLam loc erased
   | .app          => Term.mkApp loc
   | .dup label    => Term.mkDup label.id loc
+  | .sup label    => Term.mkSup label.id loc
   | .era          => Term.mkEra
   | .ctor tag ar  => Term.mkCtor tag.toUInt32 ar.toUInt32 loc
   | .mat expected => Term.mkMat expected.toUInt32 loc
@@ -353,6 +368,7 @@ instance : ToString Node where
     | .lam false   => "LAM"
     | .app         => "APP"
     | .dup label   => s!"DUP{label}"
+    | .sup label   => s!"SUP{label}"
     | .era         => "ERA"
     | .ctor tag ar => s!"CTOR({tag}/{ar})"
     | .mat exp     => s!"MAT({exp})"
@@ -387,6 +403,10 @@ inductive PortRole where
   | dupCopy0
   /-- DUP's second copy output -/
   | dupCopy1
+  /-- SUP's first contained value -/
+  | supVal0
+  /-- SUP's second contained value -/
+  | supVal1
   /-- Constructor field at index -/
   | ctorField (index : Nat)
   /-- MAT scrutinee -/
@@ -440,6 +460,8 @@ instance : ToString PortRole where
     | .appArg         => "arg"
     | .dupCopy0       => "copy₀"
     | .dupCopy1       => "copy₁"
+    | .supVal0        => "val₀"
+    | .supVal1        => "val₁"
     | .ctorField i    => s!"field[{i}]"
     | .matScrutinee   => "scrutinee"
     | .matHit         => "hit"
@@ -473,6 +495,8 @@ def Node.portRole (n : Node) (p : PortIdx) : Option PortRole :=
     | .app, 2         => some .appArg
     | .dup _, 1       => some .dupCopy0
     | .dup _, 2       => some .dupCopy1
+    | .sup _, 1       => some .supVal0
+    | .sup _, 2       => some .supVal1
     | .ctor _ ar, i   => if i <= ar then some (.ctorField (i - 1)) else none
     | .mat _, 1       => some .matScrutinee
     | .mat _, 2       => some .matHit

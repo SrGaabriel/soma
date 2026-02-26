@@ -17,6 +17,7 @@
  *   0      = (reserved)
  *   1      = NODE_CLOSURE
  *   2-127  = (reserved for future node types)
+ *   0x80+  = SUP_TAG_* (superposition nodes for lazy duplication)
  */
 
 #ifndef SOMA_RUNTIME_H
@@ -28,6 +29,32 @@
 
 /* Node tag constants (stored in heap objects) */
 #define NODE_CLOSURE    1
+
+/*
+ * SUP (Superposition) Node Tags
+ *
+ * SUP nodes implement lazy duplication for Tier 3 values (recursive data).
+ * Instead of eagerly cloning, a DUP creates a SUP wrapping the value.
+ * When projections access the SUP, cloning is deferred until both sides
+ * are needed. Same-label DUP-SUP pairs annihilate in O(1).
+ *
+ * Tag encodes the lifecycle state of the SUP:
+ *   FRESH        → neither projection accessed yet
+ *   PROJ0        → first projection (proj0) accessed
+ *   PROJ1        → second projection (proj1) accessed
+ *   BOTH         → both projections accessed, value cloned
+ *   PROJ0_CLONING → proj0 accessed, speculative clone in flight for proj1
+ *   PROJ1_CLONING → proj1 accessed, speculative clone in flight for proj0
+ */
+#define SUP_TAG_FRESH         0x80
+#define SUP_TAG_PROJ0         0x81
+#define SUP_TAG_PROJ1         0x82
+#define SUP_TAG_BOTH          0x83
+#define SUP_TAG_PROJ0_CLONING 0x84
+#define SUP_TAG_PROJ1_CLONING 0x85
+
+/* Check if a tag byte indicates a SUP node */
+#define IS_SUP(tag)  (((tag) & 0x80) != 0)
 
 /*
  * Tagged Pointer Representation
@@ -106,6 +133,24 @@ typedef struct SomaClosure {
 } SomaClosure;
 
 /*
+ * SUP (Superposition) node structure (40 bytes, pool-allocated)
+ *
+ *   [0]  u8       tag     (SUP_TAG_*)
+ *   [4]  u32      label   (duplication label for annihilation matching)
+ *   [8]  void*    value   (the wrapped value)
+ *   [16] void*    proj0   (cached first projection / clone task)
+ *   [24] void*    proj1   (cached second projection / clone task)
+ */
+typedef struct SomaSup {
+    uint8_t  tag;
+    uint8_t  _pad[3];
+    uint32_t label;
+    void*    value;
+    void*    proj0;
+    void*    proj1;
+} SomaSup;
+
+/*
  * Core runtime functions
  */
 
@@ -163,6 +208,22 @@ void* soma_closure_get_func(void* closure);
 void* soma_clone_closure(void* closure);
 
 /*
+ * SUP (Superposition) operations — Tier 3 lazy duplication
+ */
+
+/* Generate a fresh unique label (atomic, thread-safe) */
+uint32_t soma_fresh_label(void);
+
+/* Create a SUP node wrapping a value for lazy duplication */
+SomaValue soma_dup(uint32_t label, SomaValue value);
+
+/* Extract first projection from a SUP */
+SomaValue soma_proj0(SomaValue sup_val);
+
+/* Extract second projection from a SUP */
+SomaValue soma_proj1(SomaValue sup_val);
+
+/*
  * Memory Pool API
  * 
  * Arena-style allocation for reduced malloc overhead.
@@ -171,6 +232,7 @@ void* soma_clone_closure(void* closure);
 
 /* Block sizes for different allocation classes */
 #define POOL_BLOCK_SIZE     (64 * 1024)  /* 64KB per block */
+#define POOL_SUP_SIZE       40           /* SomaSup struct */
 #define POOL_CLOSURE_SMALL  48           /* Closure with 0-3 env slots */
 #define POOL_CLOSURE_MEDIUM 112          /* Closure with 4-11 env slots */
 /* Large closures (12+ env slots) use malloc */
@@ -190,6 +252,7 @@ typedef struct SomaPool {
 
 /* Global pools (one per allocation class) */
 typedef struct SomaPools {
+    SomaPool sup_pool;          /* For SUP nodes */
     SomaPool closure_small;     /* For small closures */
     SomaPool closure_medium;    /* For medium closures */
 } SomaPools;
@@ -203,6 +266,12 @@ void soma_pool_init(void);
 /* Clean up all pools (call at shutdown) */
 void soma_pool_cleanup(void);
 
+/* Allocate from SUP pool */
+void* soma_pool_alloc_sup(void);
+
+/* Return SUP to pool's free list */
+void soma_pool_free_sup(void* ptr);
+
 /* Allocate from closure pool (picks appropriate size class) */
 void* soma_pool_alloc_closure(uint16_t env_size);
 
@@ -211,6 +280,8 @@ void soma_pool_free_closure(void* ptr, uint16_t env_size);
 
 /* Pool statistics (for debugging/profiling) - atomic for thread-safety */
 typedef struct SomaPoolStats {
+    _Atomic size_t sup_allocs;
+    _Atomic size_t sup_frees;
     _Atomic size_t closure_small_allocs;
     _Atomic size_t closure_small_frees;
     _Atomic size_t closure_medium_allocs;

@@ -975,6 +975,33 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let result ← CodegenM.withFuncBuilder (FuncBuilder.load llvmTy (.local newPtr))
     pure (some (result, ty))
 
+  | .lazySup label src _ty =>
+    -- Create a SUP node for lazy duplication: soma_dup(label, value)
+    let srcVal ← convertOperand src
+    let srcLlvmTy := convertTy (← operandTy src)
+    let srcAsI64 ← toI64 srcLlvmTy srcVal
+    let ref ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .i64 "soma_dup" #[(.i32, i32Val label.toNat), (.i64, .local srcAsI64)]
+    pure (some (ref, .prim .i64))
+
+  | .supProj0 src _ty =>
+    -- Extract first projection from SUP: soma_proj0(sup_val)
+    let srcVal ← convertOperand src
+    let srcLlvmTy := convertTy (← operandTy src)
+    let srcAsI64 ← toI64 srcLlvmTy srcVal
+    let ref ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .i64 "soma_proj0" #[(.i64, .local srcAsI64)]
+    pure (some (ref, .prim .i64))
+
+  | .supProj1 src _ty =>
+    -- Extract second projection from SUP: soma_proj1(sup_val)
+    let srcVal ← convertOperand src
+    let srcLlvmTy := convertTy (← operandTy src)
+    let srcAsI64 ← toI64 srcLlvmTy srcVal
+    let ref ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .i64 "soma_proj1" #[(.i64, .local srcAsI64)]
+    pure (some (ref, .prim .i64))
+
   | .erase val ty =>
     -- Skip erase for unit types (nothing to free)
     if isUnitTy ty then
@@ -1396,6 +1423,31 @@ def addRuntimeDeclarations : CodegenM Unit := do
       name := "soma_int_to_string"
       retTy := .ptr
       params := #[{ name := "val", ty := .i32 }]
+      isDeclaration := true
+    }
+
+  -- SUP operations (lazy duplication via superposition nodes)
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_dup"
+      retTy := .i64
+      params := #[{ name := "label", ty := .i32 }, { name := "value", ty := .i64 }]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_proj0"
+      retTy := .i64
+      params := #[{ name := "sup_val", ty := .i64 }]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_proj1"
+      retTy := .i64
+      params := #[{ name := "sup_val", ty := .i64 }]
       isDeclaration := true
     }
 

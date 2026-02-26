@@ -209,6 +209,12 @@ def ppInst (cfg : Config) : Inst n → String
     s!"{colorKeyword cfg "memset"} {ppOperand cfg dst}, {ppOperand cfg val}, {ppOperand cfg size}"
   | .clone src ty =>
     s!"{colorKeyword cfg "clone"} {ppTy cfg ty} {ppOperand cfg src}"
+  | .lazySup label src ty =>
+    s!"{colorKeyword cfg "lazy_sup"} &{label} {ppTy cfg ty} {ppOperand cfg src}"
+  | .supProj0 src ty =>
+    s!"{colorKeyword cfg "sup_proj0"} {ppTy cfg ty} {ppOperand cfg src}"
+  | .supProj1 src ty =>
+    s!"{colorKeyword cfg "sup_proj1"} {ppTy cfg ty} {ppOperand cfg src}"
   | .erase val ty =>
     s!"{colorKeyword cfg "erase"} {ppTy cfg ty} {ppOperand cfg val}"
   | .panic msgIdx line =>

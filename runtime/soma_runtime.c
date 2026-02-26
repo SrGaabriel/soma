@@ -13,6 +13,9 @@
 
 #include <sched.h>
 
+/* Global label counter for SUP nodes */
+_Atomic uint32_t soma_label_counter = 0;
+
 /* Global memory pools */
 SomaPools soma_pools;
 SomaPoolStats soma_pool_stats;
@@ -103,6 +106,7 @@ static void tls_pool_init(void) {
 
     tls_pools = (SomaPools*)malloc(sizeof(SomaPools));
     if (tls_pools) {
+        pool_init(&tls_pools->sup_pool, POOL_SUP_SIZE);
         pool_init(&tls_pools->closure_small, POOL_CLOSURE_SMALL);
         pool_init(&tls_pools->closure_medium, POOL_CLOSURE_MEDIUM);
         tls_pools_initialized = 1;
@@ -113,6 +117,7 @@ static void tls_pool_init(void) {
 static void tls_pool_cleanup(void) {
     if (!tls_pools_initialized || !tls_pools) return;
 
+    pool_cleanup(&tls_pools->sup_pool);
     pool_cleanup(&tls_pools->closure_small);
     pool_cleanup(&tls_pools->closure_medium);
     free(tls_pools);
@@ -130,11 +135,13 @@ static inline SomaPools* get_pools(void) {
 
 void soma_pool_init(void) {
     memset(&soma_pool_stats, 0, sizeof(soma_pool_stats));
+    pool_init(&soma_pools.sup_pool, POOL_SUP_SIZE);
     pool_init(&soma_pools.closure_small, POOL_CLOSURE_SMALL);
     pool_init(&soma_pools.closure_medium, POOL_CLOSURE_MEDIUM);
 }
 
 void soma_pool_cleanup(void) {
+    pool_cleanup(&soma_pools.sup_pool);
     pool_cleanup(&soma_pools.closure_small);
     pool_cleanup(&soma_pools.closure_medium);
 }
@@ -175,6 +182,211 @@ void soma_pool_free_closure(void* ptr, uint16_t env_size) {
 
 /*
  * ============================================================================
+ * SUP Pool Operations
+ * ============================================================================
+ */
+
+void* soma_pool_alloc_sup(void) {
+    atomic_fetch_add(&soma_pool_stats.sup_allocs, 1);
+    SomaPools* pools = get_pools();
+    return pool_alloc(&pools->sup_pool);
+}
+
+void soma_pool_free_sup(void* ptr) {
+    atomic_fetch_add(&soma_pool_stats.sup_frees, 1);
+    SomaPools* pools = get_pools();
+    pool_free(&pools->sup_pool, ptr);
+}
+
+
+/*
+ * soma_fresh_label — Generate a fresh unique duplication label
+ */
+uint32_t soma_fresh_label(void) {
+    return atomic_fetch_add(&soma_label_counter, 1);
+}
+
+/* Check if a SomaValue is a heap pointer to a SUP node */
+static inline int is_heap_sup(SomaValue value) {
+    if (!SOMA_IS_PTR(value) || value == 0) return 0;
+    uint8_t tag = *(uint8_t*)SOMA_TO_PTR(value);
+    return IS_SUP(tag);
+}
+
+/* Check if a SomaValue is a heap pointer to a closure */
+static inline int is_heap_closure(SomaValue value) {
+    if (!SOMA_IS_PTR(value) || value == 0) return 0;
+    uint8_t tag = *(uint8_t*)SOMA_TO_PTR(value);
+    return tag == NODE_CLOSURE;
+}
+
+/*
+ * soma_dup — Create a SUP node for lazy duplication
+ *
+ * The value is not cloned immediately; cloning is deferred until both
+ * projections are accessed. If only one projection is ever used
+ * (DUP-ERA annihilation), no cloning happens at all.
+ */
+SomaValue soma_dup(uint32_t label, SomaValue value) {
+    SomaSup* sup = (SomaSup*)soma_pool_alloc_sup();
+    sup->tag   = SUP_TAG_FRESH;
+    sup->label = label;
+    sup->value = (void*)value;
+    sup->proj0 = NULL;
+    sup->proj1 = NULL;
+    return SOMA_PTR(sup);
+}
+
+/*
+ * soma_proj0 — Extract first projection from a SUP
+ *
+ * Implements lazy duplication with label-based annihilation:
+ *   Fresh: mark as proj0-accessed, return value
+ *   Proj1 was first: clone the value (or annihilate if same-label inner SUP)
+ *   Already accessed: return cached result
+ */
+SomaValue soma_proj0(SomaValue sup_val) {
+    /* Non-pointer values pass through (no SUP wrapping) */
+    if (!SOMA_IS_PTR(sup_val) || sup_val == 0) return sup_val;
+
+    SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sup_val);
+    uint8_t tag = sup->tag;
+
+    /* Fresh — first access via proj0 */
+    if (tag == SUP_TAG_FRESH) {
+        sup->tag = SUP_TAG_PROJ0;
+        SomaValue value = (SomaValue)sup->value;
+
+        /* Check for annihilation: is value a SUP with same label? */
+        if (is_heap_sup(value)) {
+            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
+            if (inner->label == sup->label) {
+                /* Same-label annihilation: return inner's first value directly */
+                SomaValue result = (SomaValue)inner->value;
+                sup->proj0 = (void*)result;
+                return result;
+            }
+        }
+
+        /* No annihilation — cache and return value */
+        sup->proj0 = (void*)value;
+        return value;
+    }
+
+    /* Proj1 was accessed first — this is the second access, need to clone */
+    if (tag == SUP_TAG_PROJ1) {
+        sup->tag = SUP_TAG_BOTH;
+        SomaValue value = (SomaValue)sup->value;
+
+        /* Tagged values (int, bool, char) are value types — no cloning needed */
+        if (!SOMA_IS_PTR(value) || value == 0) {
+            sup->proj0 = (void*)value;
+            return value;
+        }
+
+        /* Check for same-label annihilation */
+        if (is_heap_sup(value)) {
+            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
+            if (inner->label == sup->label) {
+                SomaValue result = (SomaValue)inner->value;
+                sup->proj0 = (void*)result;
+                return result;
+            }
+            /* Different label — pass through (implicit commutation) */
+            sup->proj0 = (void*)value;
+            return value;
+        }
+
+        /* Closure — need to clone */
+        if (is_heap_closure(value)) {
+            void* cloned = soma_clone_closure(SOMA_TO_PTR(value));
+            sup->proj0 = cloned;
+            return SOMA_PTR(cloned);
+        }
+
+        /* Other heap object — shallow copy */
+        sup->proj0 = (void*)value;
+        return value;
+    }
+
+    /* Already accessed (PROJ0, BOTH, or cloning states) — return cached */
+    return (SomaValue)sup->proj0;
+}
+
+/*
+ * soma_proj1 — Extract second projection from a SUP
+ *
+ * Symmetric to soma_proj0.
+ */
+SomaValue soma_proj1(SomaValue sup_val) {
+    /* Non-pointer values pass through */
+    if (!SOMA_IS_PTR(sup_val) || sup_val == 0) return sup_val;
+
+    SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sup_val);
+    uint8_t tag = sup->tag;
+
+    /* Fresh — first access via proj1 */
+    if (tag == SUP_TAG_FRESH) {
+        sup->tag = SUP_TAG_PROJ1;
+        SomaValue value = (SomaValue)sup->value;
+
+        /* Check for annihilation */
+        if (is_heap_sup(value)) {
+            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
+            if (inner->label == sup->label) {
+                SomaValue result = (SomaValue)inner->value;
+                sup->proj1 = (void*)result;
+                return result;
+            }
+        }
+
+        /* No annihilation — cache and return */
+        sup->proj1 = (void*)value;
+        return value;
+    }
+
+    /* Proj0 was accessed first — second access, need to clone */
+    if (tag == SUP_TAG_PROJ0) {
+        sup->tag = SUP_TAG_BOTH;
+        SomaValue value = (SomaValue)sup->value;
+
+        /* Tagged values — no cloning */
+        if (!SOMA_IS_PTR(value) || value == 0) {
+            sup->proj1 = (void*)value;
+            return value;
+        }
+
+        /* Same-label annihilation */
+        if (is_heap_sup(value)) {
+            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
+            if (inner->label == sup->label) {
+                SomaValue result = (SomaValue)inner->value;
+                sup->proj1 = (void*)result;
+                return result;
+            }
+            /* Different label — pass through */
+            sup->proj1 = (void*)value;
+            return value;
+        }
+
+        /* Closure — clone */
+        if (is_heap_closure(value)) {
+            void* cloned = soma_clone_closure(SOMA_TO_PTR(value));
+            sup->proj1 = cloned;
+            return SOMA_PTR(cloned);
+        }
+
+        /* Other heap object — shallow copy */
+        sup->proj1 = (void*)value;
+        return value;
+    }
+
+    /* Already accessed — return cached */
+    return (SomaValue)sup->proj1;
+}
+
+/*
+ * ============================================================================
  * Closure Operations
  * ============================================================================
  */
@@ -208,10 +420,12 @@ void* soma_closure_get_func(void* closure_ptr) {
 }
 
 /*
- * soma_clone_closure - Eager deep clone of a closure
+ * soma_clone_closure — Clone a closure with lazy nested duplication
  *
- * Copies the header and all environment slots. Environment slots containing
- * closures are recursively cloned.
+ * Copies the header and all environment slots. For slots that contain
+ * closures or SUPs (detected at runtime via tag byte), wraps them in
+ * fresh SUP nodes for lazy incremental cloning — the nested values are
+ * only actually cloned when both copies are accessed.
  */
 void* soma_clone_closure(void* closure_ptr) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
@@ -226,16 +440,17 @@ void* soma_clone_closure(void* closure_ptr) {
     SomaValue* src_env = (SomaValue*)(closure + 1);
     SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
 
-    /* Copy environment, recursively cloning nested closures */
+    /* Copy environment, wrapping heap objects in fresh SUPs for lazy cloning */
     for (uint16_t i = 0; i < env_size; i++) {
         SomaValue val = src_env[i];
 
         if (SOMA_IS_PTR(val) && val != 0) {
             uint8_t tag = *(uint8_t*)SOMA_TO_PTR(val);
-            if (tag == NODE_CLOSURE) {
-                /* Recursively clone nested closure */
-                void* cloned = soma_clone_closure(SOMA_TO_PTR(val));
-                dst_env[i] = SOMA_PTR(cloned);
+            if (tag == NODE_CLOSURE || IS_SUP(tag)) {
+                /* Wrap in fresh SUP for lazy nested cloning */
+                uint32_t fresh_label = soma_fresh_label();
+                SomaValue sup = soma_dup(fresh_label, val);
+                dst_env[i] = sup;
                 continue;
             }
         }
@@ -246,9 +461,11 @@ void* soma_clone_closure(void* closure_ptr) {
 }
 
 /*
- * soma_era_free - Free a heap-allocated value
+ * soma_era_free — Free a heap-allocated value (ERA node)
  *
- * Recursively frees the value and its children.
+ * Recursively frees the value and its children. After linearization,
+ * every value is used exactly once, so when ERA fires we have exclusive
+ * ownership — no reference counting needed.
  */
 void soma_era_free(void* value) {
     if (value == NULL) return;
@@ -266,8 +483,15 @@ void soma_era_free(void* value) {
             }
         }
         soma_pool_free_closure(value, closure->env_size);
+
+    } else if (IS_SUP(tag)) {
+        /* SUP being erased — free the SUP node itself.
+         * In well-linearized code, an erased SUP was never fully projected,
+         * so cached projections should be NULL. */
+        soma_pool_free_sup(value);
+
     } else {
-        /* Unknown heap object - use regular free */
+        /* Unknown heap object — use regular free */
         free(value);
     }
 }
@@ -854,6 +1078,9 @@ void soma_par_print_stats(void) {
                 (unsigned long)w->steal_attempts);
     }
 
+    fprintf(stderr, "[soma_pool] SUP allocs: %lu, frees: %lu\n",
+            (unsigned long)atomic_load(&soma_pool_stats.sup_allocs),
+            (unsigned long)atomic_load(&soma_pool_stats.sup_frees));
     fprintf(stderr, "[soma_pool] Closure small: %lu/%lu, medium: %lu/%lu, large: %lu/%lu\n",
             (unsigned long)atomic_load(&soma_pool_stats.closure_small_allocs),
             (unsigned long)atomic_load(&soma_pool_stats.closure_small_frees),

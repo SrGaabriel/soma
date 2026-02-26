@@ -98,8 +98,17 @@ inductive Inst : Nat → Type where
   /-- Memory set -/
   | memset : Operand → Operand → Operand → Inst n
 
-  /-- Clone a value -/
+  /-- Clone a value (Tier 2: eager deep copy) -/
   | clone : Operand → Ty n → Inst n
+
+  /-- Create a SUP node for lazy duplication -/
+  | lazySup : UInt32 → Operand → Ty n → Inst n
+
+  /-- Project the first copy from a SUP node -/
+  | supProj0 : Operand → Ty n → Inst n
+
+  /-- Project the second copy from a SUP node -/
+  | supProj1 : Operand → Ty n → Inst n
 
   /-- Erase a value -/
   | erase : Operand → Ty n → Inst n
@@ -165,6 +174,9 @@ def instantiate : Inst n → TyEnv n → ClosedInst
   | .memcpy dst src size, _ => .memcpy dst src size
   | .memset dst val size, _ => .memset dst val size
   | .clone src ty, env => .clone src (Somac.Alloy.instantiate ty env)
+  | .lazySup label src ty, env => .lazySup label src (Somac.Alloy.instantiate ty env)
+  | .supProj0 src ty, env => .supProj0 src (Somac.Alloy.instantiate ty env)
+  | .supProj1 src ty, env => .supProj1 src (Somac.Alloy.instantiate ty env)
   | .erase val ty, env => .erase val (Somac.Alloy.instantiate ty env)
   | .panic msgIdx line, _ => .panic msgIdx line
   | .callIntrinsic op args retTy, env => .callIntrinsic op args (Somac.Alloy.instantiate retTy env)
@@ -212,6 +224,9 @@ def resultTy : ClosedInst → Option ClosedTy
   | .memcpy _ _ _ => none
   | .memset _ _ _ => none
   | .clone _ ty => some ty
+  | .lazySup _ _ ty => some ty
+  | .supProj0 _ ty => some ty
+  | .supProj1 _ ty => some ty
   | .erase _ _ => none
   | .panic _ _ => none
   | .callIntrinsic op _ retTy => if op.hasResult then some retTy else none
@@ -269,6 +284,9 @@ private def toStringAux : Inst n → String
   | .memcpy dst src size => s!"memcpy {dst}, {src}, {size}"
   | .memset dst val size => s!"memset {dst}, {val}, {size}"
   | .clone src ty => s!"clone {src} : {ty}"
+  | .lazySup label src ty => s!"lazy_sup &{label} {src} : {ty}"
+  | .supProj0 src ty => s!"sup_proj0 {src} : {ty}"
+  | .supProj1 src ty => s!"sup_proj1 {src} : {ty}"
   | .erase val ty => s!"erase {val} : {ty}"
   | .panic msgIdx line => s!"panic #{msgIdx} @ line {line}"
   | .callIntrinsic op args _ =>

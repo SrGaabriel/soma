@@ -135,6 +135,9 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst n) : Inst n :
   | .memcpy dst src size => .memcpy (remapOp dst) (remapOp src) (remapOp size)
   | .memset dst val size => .memset (remapOp dst) (remapOp val) (remapOp size)
   | .clone src ty => .clone (remapOp src) ty
+  | .lazySup label src ty => .lazySup label (remapOp src) ty
+  | .supProj0 src ty => .supProj0 (remapOp src) ty
+  | .supProj1 src ty => .supProj1 (remapOp src) ty
   | .erase val ty => .erase (remapOp val) ty
   | .malloc size => .malloc (remapOp size)
   | .free ptr => .free (remapOp ptr)

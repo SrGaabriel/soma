@@ -962,10 +962,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     let opTy := if binOp.isComparison then getPortType 1 else nodeTy
     StateT.lift (LowerM.emitInst (.binOp binOp (.local lhsVal) (.local rhsVal) opTy) nodeTy)
 
-  | .dup _ => do
+  | .dup label => do
     let inputVal ← lowerPort 0
-    let copy0 ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) nodeTy) nodeTy)
-    let copy1 ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) nodeTy) nodeTy)
+    let supVal ← StateT.lift (LowerM.emitInst (.lazySup label.id (.local inputVal) nodeTy) nodeTy)
+    let copy0 ← StateT.lift (LowerM.emitInst (.supProj0 (.local supVal) nodeTy) nodeTy)
+    let copy1 ← StateT.lift (LowerM.emitInst (.supProj1 (.local supVal) nodeTy) nodeTy)
 
     -- Bind copies to specific output port keys
     modify fun ns => { ns with
@@ -973,6 +974,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                  |>.insert (nodeId.id * 1000 + 2) copy1
     }
     pure inputVal
+
+  | .sup _ => do
+    lowerPort 1
 
   | .ref refId | .alo refId => do
     let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
