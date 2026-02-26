@@ -329,6 +329,22 @@ def toI64 (ty : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
     else
       panic! s!"CODEGEN BUG: toI64 cannot convert {ty.toLLVM} to i64"
 
+/-- Convert an i64 value back to the target LLVM type -/
+def fromI64 (targetTy : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
+  CodegenM.withFuncBuilder do
+    if targetTy == .ptr then
+      FuncBuilder.inttoptr .i64 val
+    else if targetTy == .i64 then
+      FuncBuilder.add .i64 val (intVal 0 64)
+    else if targetTy.isInt then
+      let bits := targetTy.intBits.getD 64
+      if bits < 64 then
+        FuncBuilder.trunc .i64 targetTy val
+      else
+        FuncBuilder.zext targetTy .i64 val
+    else
+      panic! s!"CODEGEN BUG: fromI64 cannot convert i64 to {targetTy.toLLVM}"
+
 /-- Convert Alloy binary operation to LLVM -/
 def convertBinOp (op : BinOp) (ty : ClosedTy) (lhs rhs : LLVMValue) : CodegenM LocalRef := do
   let llvmTy := convertTy ty
@@ -976,7 +992,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     pure (some (result, ty))
 
   | .lazySup label src _ty =>
-    -- Create a SUP node for lazy duplication: soma_dup(label, value)
+    -- Create a SUP node: soma_dup(label, value_as_i64) → i64 tagged pointer
     let srcVal ← convertOperand src
     let srcLlvmTy := convertTy (← operandTy src)
     let srcAsI64 ← toI64 srcLlvmTy srcVal
@@ -984,23 +1000,24 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       FuncBuilder.callNamed .i64 "soma_dup" #[(.i32, i32Val label.toNat), (.i64, .local srcAsI64)]
     pure (some (ref, .prim .i64))
 
-  | .supProj0 src _ty =>
-    -- Extract first projection from SUP: soma_proj0(sup_val)
+  | .supProj0 src ty =>
+    -- Project from SUP: soma_proj0(sup_i64) → i64, then convert to target type
     let srcVal ← convertOperand src
-    let srcLlvmTy := convertTy (← operandTy src)
-    let srcAsI64 ← toI64 srcLlvmTy srcVal
-    let ref ← CodegenM.withFuncBuilder do
-      FuncBuilder.callNamed .i64 "soma_proj0" #[(.i64, .local srcAsI64)]
-    pure (some (ref, .prim .i64))
+    -- src is i64 from lazySup; operandTy correctly reports i64
+    let rawRef ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .i64 "soma_proj0" #[(.i64, srcVal)]
+    let targetLlvmTy := convertTy ty
+    let ref ← fromI64 targetLlvmTy (.local rawRef)
+    pure (some (ref, ty))
 
-  | .supProj1 src _ty =>
-    -- Extract second projection from SUP: soma_proj1(sup_val)
+  | .supProj1 src ty =>
+    -- Project from SUP: soma_proj1(sup_i64) → i64, then convert to target type
     let srcVal ← convertOperand src
-    let srcLlvmTy := convertTy (← operandTy src)
-    let srcAsI64 ← toI64 srcLlvmTy srcVal
-    let ref ← CodegenM.withFuncBuilder do
-      FuncBuilder.callNamed .i64 "soma_proj1" #[(.i64, .local srcAsI64)]
-    pure (some (ref, .prim .i64))
+    let rawRef ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .i64 "soma_proj1" #[(.i64, srcVal)]
+    let targetLlvmTy := convertTy ty
+    let ref ← fromI64 targetLlvmTy (.local rawRef)
+    pure (some (ref, ty))
 
   | .erase val ty =>
     -- Skip erase for unit types (nothing to free)

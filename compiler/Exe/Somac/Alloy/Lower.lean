@@ -835,19 +835,22 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           | .lam _ =>
             lowerNodeWithMap graph fp.node funcIdMap
           | .ref refId | .alo refId =>
-            -- Direct function reference: emit direct call instead of closure call
+            -- Direct function reference: emit direct call
+            let callRetTy := match graph.getDefinition refId with
+              | some def_ => extractReturnTypeWithMapping def_.ty tyMapping
+              | none => nodeTy
             let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
             match funcRef with
             | .local funcId =>
-              StateT.lift (LowerM.emitInst (.call funcId #[.local argVal] nodeTy) nodeTy)
+              StateT.lift (LowerM.emitInst (.call funcId #[.local argVal] callRetTy) callRetTy)
             | .external name =>
-              StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] nodeTy) nodeTy)
+              StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
             | .intrinsic op =>
               panic! "Unexpected intrinsic in direct function call"
             | .primOp _op =>
               panic! "Unexpected primOp in direct function call"
             | .externC name =>
-              StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] nodeTy) nodeTy)
+              StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
           | _ =>
             -- Regular closure call: lower the function and use callClosure
             let fnNodeTy := getNodeTypeWithMapping fnEntry tyMapping

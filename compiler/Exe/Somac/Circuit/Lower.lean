@@ -68,6 +68,8 @@ structure LowerCtx where
   usageMap : UsageMap := {}
   /-- Intrinsic dispatch table from elaboration/type-checking -/
   intrinsics : Std.HashMap QualifiedName Intrinsic := {}
+  /-- Global type registry: QualifiedName → full Value type (for type synthesis) -/
+  globalTypes : Std.HashMap QualifiedName Value := {}
   deriving Inhabited
 
 namespace LowerCtx
@@ -124,6 +126,14 @@ def registerCtorType (ctx : LowerCtx) (unique : Soma.Unique) (tag : Nat)
 /-- Look up constructor info -/
 def lookupCtor (ctx : LowerCtx) (name : QualifiedName) : Option (QualifiedName × Nat × Nat) :=
   ctx.constructors.get? name
+
+/-- Look up the full type for a global -/
+def lookupGlobalType (ctx : LowerCtx) (name : QualifiedName) : Option Value :=
+  ctx.globalTypes.get? name
+
+/-- Register a global function's type -/
+def registerGlobalType (ctx : LowerCtx) (name : QualifiedName) (ty : Value) : LowerCtx :=
+  { ctx with globalTypes := ctx.globalTypes.insert name ty }
 
 /-- Look up usage count for a binding. Returns 1 if not found (safe default) -/
 def getUsageCount (ctx : LowerCtx) (id : Unique) : Nat :=
@@ -394,6 +404,76 @@ private def isCoreTypeLevelExpr : Soma.Core.Expr → Bool
   | .mvar _ | .bvar _ => true
   | _ => false
 
+/-- Synthesize the type of a Core expression from the lowering context -/
+partial def synthType (e : Soma.Core.Expr) : LowerM Value := do
+  let ctx ← LowerM.getCtx
+  match e with
+  | .fvar u =>
+    match ctx.getVarType u with
+    | some ty => pure ty
+    | none => panic! s!"synthType: unbound variable {u.original} (id={u.id})"
+  | .lit (.int _) => pure intTy
+  | .lit (.string _) => pure stringTy
+  | .lit (.bool _) => pure boolTy
+  | .const qn =>
+    match ctx.lookupGlobalType qn with
+    | some ty => pure ty
+    | none => panic! s!"synthType: unregistered global '{qn.display}'"
+  | .app fn arg =>
+    let fnTy ← synthType fn
+    match fnTy with
+    | .vPi _ _ _ _ (.const _ result) => pure result
+    | .vPi _ _ _ _ (.term _ _ _) =>
+      -- Dependent return type: requires NbE to instantiate
+      pure (Value.vPrimTy .int64)
+    | _ =>
+      -- The fn type might not be Pi if implicit args were erased
+      if isCoreTypeLevelExpr arg then synthType fn
+      else panic! s!"synthType: expected Pi type for application, got non-Pi value"
+  | .lam _info _name _domain body =>
+    synthType body
+  | .ann expr _ty => synthType expr
+  | .pair fst snd =>
+    let fstTy ← synthType fst
+    let sndTy ← synthType snd
+    pure (Value.prod fstTy sndTy)
+  | .projFst inner =>
+    let innerTy ← synthType inner
+    match innerTy.sigmaFst? with
+    | some ty => pure ty
+    | none => panic! s!"synthType: projFst on non-sigma type"
+  | .projSnd inner =>
+    let innerTy ← synthType inner
+    match innerTy.sigmaSnd? with
+    | some ty => pure ty
+    | none => panic! s!"synthType: projSnd on non-sigma type"
+  | .if_ _ then_ _ => synthType then_
+  | .«case» _ _ => panic! s!"synthType: case expressions need contextual type"
+  | .construct _ _ _ => panic! s!"synthType: construct needs contextual type"
+  | .record _ => panic! s!"synthType: record needs contextual type"
+  | .fieldAccess expr _ idx =>
+    let exprTy ← synthType expr
+    match exprTy.recordFieldType idx with
+    | some ty => pure ty
+    | none => panic! s!"synthType: fieldAccess on non-record or bad index {idx}"
+  | .closure qn _ =>
+    match ctx.lookupGlobalType qn with
+    | some ty => pure ty
+    | none => panic! s!"synthType: unregistered closure '{qn.display}'"
+  | .array _ => panic! s!"synthType: array needs contextual type"
+  | .inject _ _ => panic! s!"synthType: inject needs contextual type"
+  | .recordUpdate base _ => synthType base
+  | .tuple _ => panic! s!"synthType: tuple needs contextual type"
+  | .let_ _ _ _ body => synthType body
+  | .panic _ => panic! s!"synthType: panic expression has no type"
+  -- Type-level expressions are erased at runtime
+  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
+  | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
+  | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
+  | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
+  | .mvar _ | .bvar _ => pure unitTy
+  | .proj _ _ _ => panic! s!"synthType: proj needs contextual type"
+
 /-- Lower a Core.Expr variable (fvar) by looking up its Unique.id in the bindings map -/
 private def lowerCoreVar (u : Unique) : LowerM (Option PortId) := do
   lowerVar u
@@ -479,8 +559,9 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
     | some primOp =>
       match primOpToOp2Code primOp with
       | some op2 =>
-        let arg1Port? ← lowerCoreExpr innerArg unitTy
-        let arg2Port? ← lowerCoreExpr arg unitTy
+        let argTy ← synthType innerArg
+        let arg1Port? ← lowerCoreExpr innerArg argTy
+        let arg2Port? ← lowerCoreExpr arg argTy
         match arg1Port?, arg2Port? with
         | some arg1Port, some arg2Port =>
           let op2Node ← LowerM.addNode (.op2 op2) ty
@@ -496,7 +577,8 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
     | some primOp =>
       match primOpToOp1Code primOp with
       | some op1 =>
-        let argPort? ← lowerCoreExpr arg unitTy
+        let argTy ← synthType arg
+        let argPort? ← lowerCoreExpr arg argTy
         match argPort? with
         | some argPort =>
           let op1Node ← LowerM.addNode (.op1 op1) ty
@@ -514,11 +596,13 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
 /-- Generic application lowering for Core.Expr -/
 partial def lowerCoreAppGeneric (fn arg : Soma.Core.Expr) (ty : Value)
     : LowerM (Option PortId) := do
-  let fnPort? ← lowerCoreExpr fn unitTy
+  let fnTy ← synthType fn
+  let fnPort? ← lowerCoreExpr fn fnTy
   match fnPort? with
   | none => pure none
   | some fnPort =>
-    let argPort? ← lowerCoreExpr arg unitTy
+    let argTy := fnTy.piDomain?.getD unitTy
+    let argPort? ← lowerCoreExpr arg argTy
     match argPort? with
     | some argPort =>
       let app ← LowerM.addNode .app ty
@@ -554,7 +638,10 @@ partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
   LowerM.modifyCtx fun ctx => ctx.bindVar paramBinding name usePorts paramTy isErased
 
   -- Lower the opened body
-  let bodyPort? ← lowerCoreExpr openBody (ty.piCodomain?.getD unitTy)
+  let codomainTy := match ty.piCodomain? with
+    | some t => t
+    | none => panic! s!"lowerCoreLam: expected Pi type for lambda body"
+  let bodyPort? ← lowerCoreExpr openBody codomainTy
   let bodyPort := bodyPort?.getD ⟨lam, ⟨1⟩⟩
   LowerM.connect ⟨lam, ⟨2⟩⟩ bodyPort
 
@@ -565,7 +652,8 @@ partial def lowerCoreConstruct (tag : Nat) (args : Array Soma.Core.Expr)
     (ty : Value) : LowerM (Option PortId) := do
   let mut argPorts : Array PortId := #[]
   for arg in args do
-    let port? ← lowerCoreExpr arg unitTy
+    let argTy ← synthType arg
+    let port? ← lowerCoreExpr arg argTy
     match port? with
     | some port => argPorts := argPorts.push port
     | none => pure ()
@@ -579,7 +667,7 @@ partial def lowerCoreConstruct (tag : Nat) (args : Array Soma.Core.Expr)
 /-- Lower a Core.Expr if-then-else -/
 partial def lowerCoreIf (cond then_ else_ : Soma.Core.Expr) (ty : Value)
     : LowerM (Option PortId) := do
-  let condPort? ← lowerCoreExpr cond unitTy
+  let condPort? ← lowerCoreExpr cond boolTy
   match condPort? with
   | none => pure none
   | some condPort =>
@@ -606,11 +694,12 @@ partial def lowerCoreCase (scruts : Array Soma.Core.Expr) (arms : Array Soma.Cor
   let mut scrutPorts : Array PortId := #[]
   let mut scrutTypes : Array Value := #[]
   for scrut in scruts do
-    let port? ← lowerCoreExpr scrut unitTy
+    let scrutTy ← synthType scrut
+    let port? ← lowerCoreExpr scrut scrutTy
     match port? with
     | some port =>
       scrutPorts := scrutPorts.push port
-      scrutTypes := scrutTypes.push unitTy
+      scrutTypes := scrutTypes.push scrutTy
     | none => pure ()
 
   if scrutPorts.isEmpty then
@@ -636,10 +725,10 @@ where
       for (bindingId, name, ports, varTy) in armCtx.bindings do
         LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name ports varTy
       -- Lower the arm body
-      match ← lowerCoreExpr arm.body unitTy with
+      match ← lowerCoreExpr arm.body ty with
       | some port => pure port
       | none =>
-        let era ← LowerM.addNode .era unitTy
+        let era ← LowerM.addNode .era ty
         pure (PortId.principal era)
     else
       let era ← LowerM.addNode .era unitTy
@@ -648,7 +737,8 @@ where
 /-- Lower a Core.Expr field access -/
 partial def lowerCoreFieldAccess (expr : Soma.Core.Expr) (idx : Nat)
     (ty : Value) : LowerM (Option PortId) := do
-  let exprPort? ← lowerCoreExpr expr unitTy
+  let recordTy ← synthType expr
+  let exprPort? ← lowerCoreExpr expr recordTy
   match exprPort? with
   | none => pure none
   | some exprPort =>
@@ -661,7 +751,8 @@ partial def lowerCoreRecord (fields : Array (String × Soma.Core.Expr))
     (ty : Value) : LowerM (Option PortId) := do
   let mut fieldPorts : Array PortId := #[]
   for (_, e) in fields do
-    let port? ← lowerCoreExpr e unitTy
+    let fieldTy ← synthType e
+    let port? ← lowerCoreExpr e fieldTy
     match port? with
     | some port => fieldPorts := fieldPorts.push port
     | none => pure ()
@@ -683,7 +774,8 @@ partial def lowerCoreTuple (elems : Array Soma.Core.Expr)
     (ty : Value) : LowerM (Option PortId) := do
   let mut elemPorts : Array PortId := #[]
   for e in elems do
-    let port? ← lowerCoreExpr e unitTy
+    let elemTy ← synthType e
+    let port? ← lowerCoreExpr e elemTy
     match port? with
     | some port => elemPorts := elemPorts.push port
     | none => pure ()
@@ -696,8 +788,10 @@ partial def lowerCoreTuple (elems : Array Soma.Core.Expr)
 /-- Lower a Core.Expr pair -/
 partial def lowerCorePair (fst snd : Soma.Core.Expr)
     (ty : Value) : LowerM (Option PortId) := do
-  let fstPort? ← lowerCoreExpr fst unitTy
-  let sndPort? ← lowerCoreExpr snd unitTy
+  let fstTy ← synthType fst
+  let sndTy ← synthType snd
+  let fstPort? ← lowerCoreExpr fst fstTy
+  let sndPort? ← lowerCoreExpr snd sndTy
   match fstPort?, sndPort? with
   | none, none => pure none
   | some fstPort, some sndPort =>
@@ -721,7 +815,8 @@ partial def lowerCorePair (fst snd : Soma.Core.Expr)
 /-- Lower a Core.Expr projection -/
 partial def lowerCoreProj (expr : Soma.Core.Expr) (idx : Nat)
     (ty : Value) : LowerM (Option PortId) := do
-  let exprPort? ← lowerCoreExpr expr unitTy
+  let pairTy ← synthType expr
+  let exprPort? ← lowerCoreExpr expr pairTy
   match exprPort? with
   | none => pure none
   | some exprPort =>
@@ -737,9 +832,10 @@ partial def lowerCoreClosure (fnName : Soma.Core.QualifiedName)
   -- Lower captures
   let mut capturePairs : Array (PortId × Value) := #[]
   for cap in captures do
-    let port? ← lowerCoreExpr cap unitTy
+    let capTy ← synthType cap
+    let port? ← lowerCoreExpr cap capTy
     match port? with
-    | some port => capturePairs := capturePairs.push (port, unitTy)
+    | some port => capturePairs := capturePairs.push (port, capTy)
     | none => pure ()
 
   let envPort ← if capturePairs.isEmpty then do
@@ -761,9 +857,10 @@ partial def lowerCoreClosure (fnName : Soma.Core.QualifiedName)
 /-- Lower a Core.Expr array literal -/
 partial def lowerCoreArray (elems : Array Soma.Core.Expr)
     (ty : Value) : LowerM (Option PortId) := do
+  let elemTy := ty.dataTypeFirstParam?.getD intTy
   let mut elemPorts : Array PortId := #[]
   for e in elems do
-    let port? ← lowerCoreExpr e unitTy
+    let port? ← lowerCoreExpr e elemTy
     match port? with
     | some port => elemPorts := elemPorts.push port
     | none => pure ()
@@ -787,7 +884,8 @@ partial def lowerCoreInject (label : String) (args : Array Soma.Core.Expr)
     (ty : Value) : LowerM (Option PortId) := do
   let mut argPorts : Array PortId := #[]
   for arg in args do
-    let port? ← lowerCoreExpr arg unitTy
+    let argTy ← synthType arg
+    let port? ← lowerCoreExpr arg argTy
     match port? with
     | some port => argPorts := argPorts.push port
     | none => pure ()
@@ -918,6 +1016,13 @@ def lowerModule (types : Array Soma.Core.TypeDef)
   -- Load intrinsic dispatch metadata from elaboration/type checking.
   if let some g := globals then
     LowerM.modifyCtx fun ctx => { ctx with intrinsics := g.intrinsics }
+
+  -- Register global types for type synthesis during lowering.
+  for (_, fn) in typedFunctions do
+    LowerM.modifyCtx fun ctx => ctx.registerGlobalType fn.name fn.fnType
+  if let some g := globals then
+    for (_, info) in g.allDecls do
+      LowerM.modifyCtx fun ctx => ctx.registerGlobalType info.name info.type
 
   -- Register type constructors from current module
   registerTypes types globals

@@ -1,0 +1,13 @@
+use test/prim.{Int}
+
+@[intrinsic]
+def {+} : Int -> Int -> Int
+
+@[intrinsic]
+def {*} : Int -> Int -> Int
+
+def double (x : Int) : Int = x + x
+
+def square (x : Int) : Int = x * x
+
+def main : Int = (double 17 + square 4)

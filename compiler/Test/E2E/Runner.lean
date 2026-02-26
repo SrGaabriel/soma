@@ -40,54 +40,58 @@ def formatDiagnostics (diags : Array Soma.Syntax.Diagnostic) : String :=
   let msgs := diags.map fun d => s!"{d.severity}: {d.message}"
   String.intercalate "\n" msgs.toList
 
-/-- Run a single E2E test case -/
-def runTestCase (config : Config) (tc : TestCase) : IO (String × TestResult) := do
+/-- Run the test body, returning the result -/
+private def runTestBody (tc : TestCase) (tempDir : System.FilePath) : IO (String × TestResult) := do
   let testId := s!"e2e/{tc.name}"
 
+  setupTestDir tc tempDir
+
+  let srcDir := tempDir / "src"
+  let outputPath := if System.Platform.isWindows then
+    tempDir / "output.exe"
+  else
+    tempDir / "output"
+
+  let buildOpts : BuildOptions := {
+    input := srcDir.toString
+    output := some outputPath.toString
+  }
+
+  let buildResult ← build buildOpts
+
+  if !buildResult.success then
+    let diagMsg := formatDiagnostics buildResult.diagnostics
+    return (testId, .failed s!"Compilation failed:\n{diagMsg}")
+
+  unless ← outputPath.pathExists do
+    return (testId, .failed s!"Compilation succeeded but output file not found: {outputPath}")
+
+  let runResult ← runProcess outputPath.toString #[]
+
+  if runResult.exitCode ≠ tc.expectedExitCode then
+    return (testId, .failed s!"Exit code mismatch: expected {tc.expectedExitCode}, got {runResult.exitCode}\nstdout: {runResult.stdout}\nstderr: {runResult.stderr}")
+
+  if let some expected := tc.expectedStdout then
+    let actualNorm := normalizeOutput runResult.stdout
+    let expectedNorm := normalizeOutput expected
+    if actualNorm ≠ expectedNorm then
+      return (testId, .failed s!"stdout mismatch:\n--- expected ---\n{expectedNorm}\n--- actual ---\n{actualNorm}")
+
+  return (testId, .passed)
+
+/-- Run a single E2E test case -/
+def runTestCase (config : Config) (tc : TestCase) : IO (String × TestResult) := do
   let tempDir ← createTempDir tc.name
 
-  try
-    setupTestDir tc tempDir
+  let result ← runTestBody tc tempDir |>.catchExceptions fun e =>
+    pure (s!"e2e/{tc.name}", .failed s!"Exception: {e}")
 
-    let srcDir := tempDir / "src"
-    let outputPath := if System.Platform.isWindows then
-      tempDir / "output.exe"
-    else
-      tempDir / "output"
+  -- Keep temp dir on failure for debugging
+  let passed := match result with | (_, .passed) => true | _ => false
+  unless config.keepTemp || !passed do
+    removeDirRecursive tempDir |>.catchExceptions fun _ => pure ()
 
-    let buildOpts : BuildOptions := {
-      input := srcDir.toString
-      output := some outputPath.toString
-    }
-
-    let buildResult ← build buildOpts
-
-    if !buildResult.success then
-      let diagMsg := formatDiagnostics buildResult.diagnostics
-      return (testId, .failed s!"Compilation failed:\n{diagMsg}")
-
-    unless ← outputPath.pathExists do
-      return (testId, .failed s!"Compilation succeeded but output file not found: {outputPath}")
-
-    let runResult ← runProcess outputPath.toString #[]
-
-    if runResult.exitCode ≠ tc.expectedExitCode then
-      return (testId, .failed s!"Exit code mismatch: expected {tc.expectedExitCode}, got {runResult.exitCode}\nstdout: {runResult.stdout}\nstderr: {runResult.stderr}")
-
-    if let some expected := tc.expectedStdout then
-      let actualNorm := normalizeOutput runResult.stdout
-      let expectedNorm := normalizeOutput expected
-      if actualNorm ≠ expectedNorm then
-        return (testId, .failed s!"stdout mismatch:\n--- expected ---\n{expectedNorm}\n--- actual ---\n{actualNorm}")
-
-    return (testId, .passed)
-
-  catch e =>
-    return (testId, .failed s!"Exception: {e}")
-
-  finally
-    unless config.keepTemp do
-      removeDirRecursive tempDir |>.catchExceptions fun _ => pure ()
+  return result
 
 /-- Run all E2E tests -/
 def runAll (config : Config) : IO TestRunner := do
@@ -103,7 +107,9 @@ def runAll (config : Config) : IO TestRunner := do
     runner := runner.record name result
     match result with
     | .passed => IO.println s!"  ✓ {tc.name}"
-    | .failed msg => IO.println s!"  ✗ {tc.name}: {msg}"
+    | .failed msg => do
+      IO.println s!"  ✗ {tc.name}: {msg}"
+      IO.println s!"    Artifacts preserved in: .lake/e2e-temp/{tc.name}-*"
     | .skipped reason => IO.println s!"  ○ {tc.name}: {reason}"
 
   return runner
