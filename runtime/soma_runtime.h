@@ -30,6 +30,12 @@
 /* Node tag constants (stored in heap objects) */
 #define NODE_CLOSURE    1
 
+/* Runtime object validation sentinels */
+#define SOMA_CLOSURE_MAGIC 0x534f4d41u /* 'SOMA' */
+#define SOMA_SUP_PAD0 0x53u            /* 'S' */
+#define SOMA_SUP_PAD1 0x55u            /* 'U' */
+#define SOMA_SUP_PAD2 0x50u            /* 'P' */
+
 /*
  * SUP (Superposition) Node Tags
  *
@@ -212,6 +218,12 @@ void* soma_closure_get_func(void* closure);
 
 /* Clone a closure under a statically assigned DUP label */
 void* soma_clone_closure(void* closure, uint32_t label);
+
+/* Clone a tagged payload buffer, recursively cloning pointer fields */
+void* soma_clone_tagged_payload(void* payload, uint32_t label);
+
+/* Clone an array header { length, data_ptr } and recursively clone data pointer */
+void* soma_clone_array_header(void* header, uint32_t label);
 
 /*
  * SUP (Superposition) operations — Tier 3 lazy duplication

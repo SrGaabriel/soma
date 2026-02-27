@@ -726,6 +726,36 @@ partial def emitInlineDup (inputVal : LocalId) (ty : Ty n)
     let c1 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) ty)
     pure (c0, c1)
 
+/-- Emit eager, type-directed String duplication -/
+partial def emitStringDup (inputVal : LocalId) : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
+  let cstr1 ← StateT.lift (LowerM.emitInst (.callIntrinsic .toCString #[.local inputVal] .rawPtr) .rawPtr)
+  let copy1 ← StateT.lift (LowerM.emitInst (.callIntrinsic .fromCString #[.local cstr1] Ty.string) Ty.string)
+  pure (inputVal, copy1)
+
+/-- Emit eager type-directed tagged-union duplication by cloning payload buffers -/
+partial def emitTaggedDup (inputVal : LocalId) (taggedTy : Ty n) (label : UInt32)
+    : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
+  let tagVal ← StateT.lift (LowerM.emitInst (.extractField (.local inputVal) 0) (.prim .u32))
+  let payloadPtr ← StateT.lift (LowerM.emitInst (.extractField (.local inputVal) 1) .rawPtr)
+  let lbl : Operand := .const (.int (Int.ofNat label.toNat) .u32)
+  let payload1 ← StateT.lift (LowerM.emitInst (.callExtern "soma_clone_tagged_payload" #[.local payloadPtr, lbl] .rawPtr) .rawPtr)
+  let copy1 ← StateT.lift (LowerM.emitInst (.structLit #[.local tagVal, .local payload1] taggedTy) taggedTy)
+  pure (inputVal, copy1)
+
+/-- Emit eager array header duplication for runtime array objects represented as raw pointers -/
+partial def emitArrayHeaderDup (inputVal : LocalId) (srcTy : Ty n) (label : UInt32)
+    : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
+  let inputPtr ← match srcTy with
+    | .prim .i64 =>
+      StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local inputVal)) .rawPtr)
+    | .rawPtr | .ptr _ =>
+      pure inputVal
+    | _ =>
+      panic! s!"ALLOY LOWERING BUG: array header DUP expected pointer-like source type, got {srcTy}"
+  let lbl : Operand := .const (.int (Int.ofNat label.toNat) .u32)
+  let copy1 ← StateT.lift (LowerM.emitInst (.callExtern "soma_clone_array_header" #[.local inputPtr, lbl] .rawPtr) .rawPtr)
+  pure (inputVal, copy1)
+
 /-- Lower an operand with FuncId map -/
 partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : FuncIdMap)
     : StateT (NodeState n) (LowerM n) LocalId := do
@@ -754,7 +784,7 @@ partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : F
       match entry.node with
       | .dup _ =>
         let nodeTy := getNodeTypeWithMapping entry ns'.tyVarMapping
-        if nodeTy.dupTier == .heap && !nodeTy.canInlineDup then
+        if nodeTy.dupTier == .heap && !nodeTy.canInlineDup && Ty.supportsLazySup nodeTy then
           let projVal ←
             if port.port.idx == 1 then
               StateT.lift (LowerM.emitInst (.supProj0 (.local nodeResult) nodeTy) nodeTy)
@@ -1033,10 +1063,46 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                      |>.insert (nodeId.id * 1000 + 2) copy1
         }
         pure inputVal
-      else
+      else if nodeTy == Ty.string then
+        let (copy0, copy1) ← emitStringDup inputVal
+        modify fun ns => { ns with
+          results := ns.results.insert (nodeId.id * 1000 + 1) copy0
+                     |>.insert (nodeId.id * 1000 + 2) copy1
+        }
+        pure inputVal
+      else if (match nodeTy with | .tagged _ _ => true | _ => false) then
+        let (copy0, copy1) ← emitTaggedDup inputVal nodeTy label.id
+        modify fun ns => { ns with
+          results := ns.results.insert (nodeId.id * 1000 + 1) copy0
+                     |>.insert (nodeId.id * 1000 + 2) copy1
+        }
+        pure inputVal
+      else if nodeTy == .rawPtr then
+        match entry.getPort ⟨0⟩ with
+        | some srcPort =>
+          match graph.getNode srcPort.node with
+          | some srcEntry =>
+            match srcEntry.node with
+            | .array _ =>
+              let srcTy := getPortType 0 nodeTy
+              let (copy0, copy1) ← emitArrayHeaderDup inputVal srcTy label.id
+              modify fun ns => { ns with
+                results := ns.results.insert (nodeId.id * 1000 + 1) copy0
+                           |>.insert (nodeId.id * 1000 + 2) copy1
+              }
+              pure inputVal
+            | _ =>
+              panic! s!"ALLOY LOWERING BUG: DUP on opaque rawPtr source ({srcEntry.node}) is unsupported without typed clone lowering"
+          | none =>
+            panic! s!"ALLOY LOWERING BUG: DUP source node not found for rawPtr duplication"
+        | none =>
+          panic! s!"ALLOY LOWERING BUG: DUP node has no principal source for rawPtr duplication"
+      else if Ty.supportsLazySup nodeTy then
         -- Runtime SUP: lazy duplication via superposition nodes.
         let supVal ← StateT.lift (LowerM.emitInst (.lazySup label.id (.local inputVal) nodeTy) nodeTy)
         pure supVal
+      else
+        panic! s!"ALLOY LOWERING BUG: DUP on unsupported heap type for lazy SUP ({nodeTy}). Implement type-directed clone/erase lowering for this type before enabling SUP duplication."
 
   | .sup _ => do
     lowerPort 1

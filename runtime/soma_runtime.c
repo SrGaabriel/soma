@@ -207,19 +207,40 @@ uint32_t soma_fresh_label(void) {
 /* Check if a SomaValue is a heap pointer to a SUP node */
 static inline int is_heap_sup(SomaValue value) {
     if (!SOMA_IS_PTR(value) || value == 0) return 0;
-    uint8_t tag = *(uint8_t*)SOMA_TO_PTR(value);
-    return IS_SUP(tag);
+    SomaSup* sup = (SomaSup*)SOMA_TO_PTR(value);
+    if (!IS_SUP(sup->tag)) return 0;
+    return sup->_pad[0] == SOMA_SUP_PAD0 &&
+           sup->_pad[1] == SOMA_SUP_PAD1 &&
+           sup->_pad[2] == SOMA_SUP_PAD2;
 }
 
 /* Check if a SomaValue is a heap pointer to a closure */
 static inline int is_heap_closure(SomaValue value) {
     if (!SOMA_IS_PTR(value) || value == 0) return 0;
-    uint8_t tag = *(uint8_t*)SOMA_TO_PTR(value);
-    return tag == NODE_CLOSURE;
+    SomaClosure* closure = (SomaClosure*)SOMA_TO_PTR(value);
+    return closure->tag == NODE_CLOSURE && closure->_pad == SOMA_CLOSURE_MAGIC;
 }
 
 static SomaValue soma_clone_value_for_fork(SomaValue value);
 static void* soma_clone_closure_for_fork(void* closure_ptr);
+
+static SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
+    if (!SOMA_IS_PTR(value) || value == 0) return value;
+
+    uint8_t tag = *(uint8_t*)SOMA_TO_PTR(value);
+
+    if (tag == NODE_CLOSURE) {
+        void* cloned = soma_clone_closure(SOMA_TO_PTR(value), label);
+        return SOMA_PTR(cloned);
+    }
+
+    if (IS_SUP(tag)) {
+        return soma_dup(label, value);
+    }
+
+    soma_panic("soma_clone_heap_value_for_dup: unsupported heap object tag for typed DUP clone");
+    return value;
+}
 
 /*
  * soma_dup — Create a SUP node for lazy duplication
@@ -231,6 +252,9 @@ static void* soma_clone_closure_for_fork(void* closure_ptr);
 SomaValue soma_dup(uint32_t label, SomaValue value) {
     SomaSup* sup = (SomaSup*)soma_pool_alloc_sup();
     sup->tag   = SUP_TAG_FRESH;
+    sup->_pad[0] = SOMA_SUP_PAD0;
+    sup->_pad[1] = SOMA_SUP_PAD1;
+    sup->_pad[2] = SOMA_SUP_PAD2;
     sup->label = label;
     sup->value = (void*)value;
     sup->proj0 = NULL;
@@ -309,8 +333,7 @@ SomaValue soma_proj0(SomaValue sup_val) {
             return SOMA_PTR(cloned);
         }
 
-        /* Other heap object — shallow copy */
-        sup->proj0 = (void*)value;
+        soma_panic("soma_proj0: DUP of non-closure heap value is not yet supported safely");
         return value;
     }
 
@@ -385,8 +408,7 @@ SomaValue soma_proj1(SomaValue sup_val) {
             return SOMA_PTR(cloned);
         }
 
-        /* Other heap object — shallow copy */
-        sup->proj1 = (void*)value;
+        soma_panic("soma_proj1: DUP of non-closure heap value is not yet supported safely");
         return value;
     }
 
@@ -406,6 +428,7 @@ void* soma_alloc_closure(void* func_ptr, uint8_t arity, uint16_t env_size) {
     closure->tag      = NODE_CLOSURE;
     closure->arity    = arity;
     closure->env_size = env_size;
+    closure->_pad     = SOMA_CLOSURE_MAGIC;
     closure->func_ptr = func_ptr;
 
     return closure;
@@ -449,23 +472,60 @@ void* soma_clone_closure(void* closure_ptr, uint32_t label) {
     SomaValue* src_env = (SomaValue*)(closure + 1);
     SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
 
-    /* Copy environment, wrapping heap objects in SUP(label, ·) for lazy cloning */
+    /* Copy environment slots through typed heap DUP clone helper. */
     for (uint16_t i = 0; i < env_size; i++) {
         SomaValue val = src_env[i];
-
-        if (SOMA_IS_PTR(val) && val != 0) {
-            uint8_t tag = *(uint8_t*)SOMA_TO_PTR(val);
-            if (tag == NODE_CLOSURE || IS_SUP(tag)) {
-                /* Preserve the caller's static DUP label through commutation. */
-                SomaValue sup = soma_dup(label, val);
-                dst_env[i] = sup;
-                continue;
-            }
-        }
-        dst_env[i] = val;
+        dst_env[i] = soma_clone_heap_value_for_dup(val, label);
     }
 
     return new_closure;
+}
+
+void* soma_clone_tagged_payload(void* payload, uint32_t label) {
+    if (payload == NULL) return NULL;
+
+    int64_t count = *(int64_t*)payload;
+    if (count < 0) {
+        soma_panic("soma_clone_tagged_payload: negative payload field count");
+        return NULL;
+    }
+
+    size_t bytes = (size_t)(count + 1) * sizeof(int64_t);
+    void* copy = malloc(bytes);
+    if (copy == NULL) {
+        soma_panic("soma_clone_tagged_payload: out of memory");
+        return NULL;
+    }
+
+    *(int64_t*)copy = count;
+    SomaValue* src_fields = (SomaValue*)((int64_t*)payload + 1);
+    SomaValue* dst_fields = (SomaValue*)((int64_t*)copy + 1);
+
+    for (int64_t i = 0; i < count; i++) {
+        SomaValue v = src_fields[i];
+        dst_fields[i] = soma_clone_heap_value_for_dup(v, label);
+    }
+
+    return copy;
+}
+
+void* soma_clone_array_header(void* header, uint32_t label) {
+    (void)label;
+    if (header == NULL) return NULL;
+
+    int64_t length = *(int64_t*)header;
+    void* data_ptr = *(void**)((int64_t*)header + 1);
+
+    void* copy = malloc(16);
+    if (copy == NULL) {
+        soma_panic("soma_clone_array_header: out of memory");
+        return NULL;
+    }
+
+    *(int64_t*)copy = length;
+    *(void**)((int64_t*)copy + 1) = data_ptr;
+
+    return copy;
 }
 
 static SomaValue soma_clone_value_for_fork(SomaValue value) {

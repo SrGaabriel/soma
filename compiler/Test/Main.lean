@@ -13,7 +13,9 @@ import Test.Dependent.Instance
 import Test.Dependent.Equality
 import Test.Dependent.Totality
 import Test.Dependent.Integration
+import Test.Alloy
 import Test.Circuit
+import Test.Circuit.Reduce
 import Test.PatternMatch
 import Test.E2E
 
@@ -83,9 +85,17 @@ def main : IO UInt32 := do
   let integrationRunner ← Test.Dependent.Integration.run
   total := total.merge integrationRunner
 
+  -- Run Alloy IR tests
+  let alloyRunner ← Test.Alloy.run
+  total := total.merge alloyRunner
+
   -- Run Circuit IR tests
   let circuitRunner ← Test.Circuit.run
   total := total.merge circuitRunner
+
+  -- Run Circuit Reducer tests
+  let reduceRunner ← Test.Circuit.Reduce.run
+  total := total.merge reduceRunner
 
   -- Run Pattern Match Compilation tests
   let patternMatchRunner ← Test.PatternMatch.run

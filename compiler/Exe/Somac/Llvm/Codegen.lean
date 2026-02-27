@@ -42,7 +42,7 @@ partial def convertTy : ClosedTy → LLVMType
   | .tagged _ _ =>
     .struct false #[.i32, .ptr]
   | .closure _ _ =>
-    .struct false #[.ptr, .ptr]
+    .ptr
   | .var i => nomatch i -- impossible
 
 /-- Check if an Alloy type is unit -/
@@ -55,8 +55,8 @@ partial def convertRetTy : ClosedTy → LLVMType
   | .prim .unit => .i8
   | other => convertTy other
 
-/-- The closure struct type -/
-def closureTy : LLVMType := .struct false #[.ptr, .ptr]
+/-- Runtime closure object pointer type -/
+def closureTy : LLVMType := .ptr
 
 /-- The tagged union struct type -/
 def taggedTy : LLVMType := .struct false #[.i32, .ptr]
@@ -515,11 +515,9 @@ partial def emitEraseForType (valRef : LLVMValue) (ty : ClosedTy) : CodegenM Uni
     CodegenM.withFuncBuilder do
       FuncBuilder.callNamedVoid "soma_era_tagged_payload" #[(.ptr, .local payloadPtr)]
   | .closure _ _ =>
-    -- Closure {ptr, ptr}: the env_ptr (field 1) may own heap memory.
-    let envPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.extractvalue closureTy valRef #[1]
+    -- Runtime closure object pointer.
     CodegenM.withFuncBuilder do
-      FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, .local envPtr)]
+      FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, valRef)]
   | .struct fields =>
     -- Struct: recurse into each field that may contain pointers
     let llvmTy := convertTy ty
@@ -891,11 +889,13 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       pure (some (ref, retTy))
     else
       let closureVal ← convertOperand closure
-      -- Extract function pointer (field 0) and environment (field 1)
+      -- Runtime closure object accessors
       let fnPtr ← CodegenM.withFuncBuilder do
-        FuncBuilder.extractvalue closureTy closureVal #[0]
+        FuncBuilder.callNamed .ptr "soma_closure_get_func" #[(.ptr, closureVal)]
+      let envRaw ← CodegenM.withFuncBuilder do
+        FuncBuilder.callNamed .i64 "soma_closure_get_env" #[(.ptr, closureVal), (.i16, intVal 0 16)]
       let envPtr ← CodegenM.withFuncBuilder do
-        FuncBuilder.extractvalue closureTy closureVal #[1]
+        FuncBuilder.inttoptr .i64 (.local envRaw)
       -- Build args: env first, then regular args
       let mut llvmArgs : Array (LLVMType × LLVMValue) := #[(.ptr, .local envPtr)]
       for arg in args do
@@ -911,15 +911,12 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       | _ => FuncId.mk 0 -- todo: consider panicking
     let funcName ← CodegenM.getFuncName funcId.id
     let (envLLVMTy, envVal) ← convertOperandWithTy env
-    let closurePtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca closureTy)
-    -- Store function pointer
-    let fnPtrSlot ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi32 closureTy (.local closurePtr) #[0, 0]
-    CodegenM.withFuncBuilder do
-      FuncBuilder.store .ptr (globalVal funcName) (.local fnPtrSlot)
-    -- Store environment pointer
-    let envPtrSlot ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi32 closureTy (.local closurePtr) #[0, 1]
+    let closureArity : Nat ← do
+      match ← CodegenM.getFuncSig funcId.id with
+      | some sig =>
+        let n := sig.params.size
+        pure (if n == 0 then 0 else n - 1)
+      | none => pure 0
     -- Convert env to pointer based on its type
     let envPtrVal ← if envLLVMTy == .ptr then pure envVal
                     else if envLLVMTy.isInt then do
@@ -932,15 +929,20 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
                       CodegenM.withFuncBuilder do
                         FuncBuilder.store envLLVMTy envVal (.local boxPtr)
                       pure (.local boxPtr)
+    let closurePtr ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .ptr "soma_alloc_closure"
+        #[(.ptr, globalVal funcName), (.i8, intVal (Int.ofNat closureArity) 8), (.i16, intVal 1 16)]
+    let envAsI64 ← CodegenM.withFuncBuilder do
+      FuncBuilder.ptrtoint .i64 envPtrVal
     CodegenM.withFuncBuilder do
-      FuncBuilder.store .ptr envPtrVal (.local envPtrSlot)
-    let ref ← CodegenM.withFuncBuilder (FuncBuilder.load closureTy (.local closurePtr))
+      FuncBuilder.callNamedVoid "soma_closure_set_env"
+        #[(.ptr, .local closurePtr), (.i16, intVal 0 16), (.i64, .local envAsI64)]
     -- Get closure type from function signature if available
     let closureTyAlloy ← do
       match ← CodegenM.getFuncSig funcId.id with
       | some sig => pure (.closure (sig.params.map (·.ty)) sig.retTy)
       | none => pure (.closure #[] (.prim .i64))
-    pure (some (ref, closureTyAlloy))
+    pure (some (closurePtr, closureTyAlloy))
 
   | .makeClosurePoly funcRef _typeArgs env =>
     -- Same as makeClosure
@@ -949,13 +951,12 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       | _ => FuncId.mk 0 -- todo: consider panicking
     let funcName ← CodegenM.getFuncName funcId.id
     let (envLLVMTy, envVal) ← convertOperandWithTy env
-    let closurePtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca closureTy)
-    let fnPtrSlot ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi32 closureTy (.local closurePtr) #[0, 0]
-    CodegenM.withFuncBuilder do
-      FuncBuilder.store .ptr (globalVal funcName) (.local fnPtrSlot)
-    let envPtrSlot ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi32 closureTy (.local closurePtr) #[0, 1]
+    let closureArity : Nat ← do
+      match ← CodegenM.getFuncSig funcId.id with
+      | some sig =>
+        let n := sig.params.size
+        pure (if n == 0 then 0 else n - 1)
+      | none => pure 0
     -- Convert env to pointer based on its type
     let envPtrVal ← if envLLVMTy == .ptr then pure envVal
                     else if envLLVMTy.isInt then do
@@ -968,25 +969,32 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
                       CodegenM.withFuncBuilder do
                         FuncBuilder.store envLLVMTy envVal (.local boxPtr)
                       pure (.local boxPtr)
+    let closurePtr ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .ptr "soma_alloc_closure"
+        #[(.ptr, globalVal funcName), (.i8, intVal (Int.ofNat closureArity) 8), (.i16, intVal 1 16)]
+    let envAsI64 ← CodegenM.withFuncBuilder do
+      FuncBuilder.ptrtoint .i64 envPtrVal
     CodegenM.withFuncBuilder do
-      FuncBuilder.store .ptr envPtrVal (.local envPtrSlot)
-    let ref ← CodegenM.withFuncBuilder (FuncBuilder.load closureTy (.local closurePtr))
+      FuncBuilder.callNamedVoid "soma_closure_set_env"
+        #[(.ptr, .local closurePtr), (.i16, intVal 0 16), (.i64, .local envAsI64)]
     let closureTyAlloy ← do
       match ← CodegenM.getFuncSig funcId.id with
       | some sig => pure (.closure (sig.params.map (·.ty)) sig.retTy)
       | none => pure (.closure #[] (.prim .i64))
-    pure (some (ref, closureTyAlloy))
+    pure (some (closurePtr, closureTyAlloy))
 
   | .closureFunc closure =>
     let closureVal ← convertOperand closure
     let ref ← CodegenM.withFuncBuilder do
-      FuncBuilder.extractvalue closureTy closureVal #[0]
+      FuncBuilder.callNamed .ptr "soma_closure_get_func" #[(.ptr, closureVal)]
     pure (some (ref, .rawPtr))
 
   | .closureEnv closure =>
     let closureVal ← convertOperand closure
+    let rawRef ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .i64 "soma_closure_get_env" #[(.ptr, closureVal), (.i16, intVal 0 16)]
     let ref ← CodegenM.withFuncBuilder do
-      FuncBuilder.extractvalue closureTy closureVal #[1]
+      FuncBuilder.inttoptr .i64 (.local rawRef)
     pure (some (ref, .rawPtr))
 
   | .phi incoming ty =>
@@ -1495,6 +1503,49 @@ def addRuntimeDeclarations : CodegenM Unit := do
       name := "soma_int_to_string"
       retTy := .ptr
       params := #[{ name := "val", ty := .i32 }]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_alloc_closure"
+      retTy := .ptr
+      params := #[
+        { name := "func_ptr", ty := .ptr },
+        { name := "arity", ty := .i8 },
+        { name := "env_size", ty := .i16 }
+      ]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_closure_set_env"
+      retTy := .void
+      params := #[
+        { name := "closure", ty := .ptr },
+        { name := "index", ty := .i16 },
+        { name := "value", ty := .i64 }
+      ]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_closure_get_env"
+      retTy := .i64
+      params := #[
+        { name := "closure", ty := .ptr },
+        { name := "index", ty := .i16 }
+      ]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_closure_get_func"
+      retTy := .ptr
+      params := #[{ name := "closure", ty := .ptr }]
       isDeclaration := true
     }
 

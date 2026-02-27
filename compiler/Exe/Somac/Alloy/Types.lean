@@ -278,9 +278,9 @@ instance : BEq (Ty n) where
       Zero heap interaction, identical to Rust `Copy`.
 
     - **heap**: Everything else. DUP dispatches based on compile-time type knowledge:
-      structs with all-flat fields get inline field-by-field copy and all other heap
-      types (closures, tagged unions, opaque pointers) go through runtime SUP nodes
-      for lazy duplication with O(1) DUP-ERA annihilation. -/
+      structs with all-flat fields get inline field-by-field copy; selected heap
+      types may use runtime SUP (`supportsLazySup`), and other heap types use
+      dedicated type-directed clone paths. -/
 inductive DupTier where
   | flat
   | heap
@@ -315,6 +315,15 @@ partial def needsErase : Ty n → Bool
   | .ptr _ => true
   | .rawPtr => true
   | .var _ => true
+
+/-- Whether this type supports runtime lazy SUP duplication soundly.
+
+    Today, closure values are the only heap representation with a complete
+    runtime clone/erase story under SUP projection. Other heap types must not
+    be lowered to runtime SUP until dedicated clone semantics are implemented. -/
+def supportsLazySup : Ty n → Bool
+  | .closure _ _ => true
+  | _ => false
 
 end Ty
 

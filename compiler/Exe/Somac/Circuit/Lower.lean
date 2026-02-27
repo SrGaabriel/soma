@@ -589,6 +589,7 @@ private def isCoreTypeLevelExpr : Soma.Core.Expr → Bool
 def inferExprType (e : Soma.Core.Expr) : LowerM Value := do
   let ctx ← LowerM.getCtx
   match e with
+  | .ann expr _ => inferExprType expr
   | .fvar u =>
     match ctx.getVarType u with
     | some ty => pure ty
@@ -604,7 +605,15 @@ def inferExprType (e : Soma.Core.Expr) : LowerM Value := do
     match ctx.lookupGlobalType qn with
     | some ty => pure ty
     | none => panic! s!"inferExprType: unknown closure target '{qn}'"
-  | .ann _ _ | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
+  | .app fn _ =>
+    let fnTy ← inferExprType fn
+    match fnTy.piCodomain? with
+    | some codomainTy => pure codomainTy
+    | none =>
+      match fnTy with
+      | .vPi _ _ _ _ _ => pure unitTy
+      | _ => panic! s!"inferExprType: app with non-function type {fnTy}"
+  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
