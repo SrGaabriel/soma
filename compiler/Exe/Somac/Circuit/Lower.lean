@@ -28,10 +28,11 @@ abbrev UsageMap := Std.HashMap Unique Nat
 /-- Convert TCState.usages to UsageMap for clear boundaries -/
 def UsageMap.fromTCUsages (usages : Std.HashMap Unique Nat) : UsageMap := usages
 
-/-- A port allocation for a variable binding -/
 structure VarAlloc where
-  /-- Ports available for use (one per remaining use) -/
-  ports : Array PortId
+  /-- Current owned source port for this binding -/
+  source : PortId
+  /-- Remaining dynamic uses available for this binding -/
+  remaining : Nat
   /-- Original variable name (for debugging) -/
   name : String
   /-- Type of the bound variable -/
@@ -125,30 +126,17 @@ namespace LowerCtx
 
 def empty : LowerCtx := {}
 
-/-- Register a variable binding with pre-allocated ports -/
-def bindVar (ctx : LowerCtx) (id : Unique) (name : String) (ports : Array PortId) (ty : Value)
+/-- Register an ownership-based variable binding -/
+def bindVarOwned (ctx : LowerCtx) (id : Unique) (name : String)
+    (source : PortId) (remaining : Nat) (ty : Value)
     (erased : Bool := false) : LowerCtx :=
-  { ctx with bindings := ctx.bindings.insert id ⟨ports, name, ty, erased⟩ }
+  { ctx with bindings := ctx.bindings.insert id ⟨source, remaining, name, ty, erased⟩ }
 
 /-- Check if a binding is erased -/
 def isBindingErased (ctx : LowerCtx) (id : Unique) : Bool :=
   match ctx.bindings.get? id with
   | some alloc => alloc.erased
   | none => false
-
-/-- Consume one use of a variable, returning the port and type for that use -/
-def useVar (ctx : LowerCtx) (id : Unique) : Option (PortId × Value × LowerCtx) :=
-  match ctx.bindings.get? id with
-  | none => none
-  | some alloc =>
-    if alloc.erased then none
-    else if alloc.ports.isEmpty then none
-    else
-      let port := alloc.ports[0]!
-      let remaining := alloc.ports.extract 1 alloc.ports.size
-      let newAlloc : VarAlloc := ⟨remaining, alloc.name, alloc.ty, alloc.erased⟩
-      let ctx' := { ctx with bindings := ctx.bindings.insert id newAlloc }
-      some (port, alloc.ty, ctx')
 
 /-- Look up type for a binding -/
 def getVarType (ctx : LowerCtx) (id : Unique) : Option Value :=
@@ -314,6 +302,136 @@ def buildDupChain (sourcePort : PortId) (n : Nat) (ty : Value) : LowerM (Array P
     usePorts := usePorts.push chainPort
     pure (usePorts, false)
 
+/-- Increment usage count in a map -/
+private def usageInc (m : Std.HashMap Unique Nat) (id : Unique) (k : Nat := 1) : Std.HashMap Unique Nat :=
+  m.insert id (m.getD id 0 + k)
+
+/-- Pointwise addition of two usage maps -/
+private def usageAdd (a b : Std.HashMap Unique Nat) : Std.HashMap Unique Nat :=
+  b.fold (init := a) fun acc id cnt => usageInc acc id cnt
+
+/-- Structural usage count for Core expressions (additive over syntax tree) -/
+partial def countUsesExpr (e : Soma.Core.Expr) : Std.HashMap Unique Nat :=
+  match e with
+  | .fvar u => usageInc {} u
+  | .app fn arg => usageAdd (countUsesExpr fn) (countUsesExpr arg)
+  | .lam _ _ _ body => countUsesExpr body
+  | .construct _ _ args
+  | .inject _ args
+  | .array args =>
+    args.foldl (init := {}) fun acc arg => usageAdd acc (countUsesExpr arg)
+  | .if_ cond then_ else_ =>
+    usageAdd (countUsesExpr cond) (usageAdd (countUsesExpr then_) (countUsesExpr else_))
+  | .«case» scruts arms =>
+    let scrutUses := scruts.foldl (init := {}) fun acc s => usageAdd acc (countUsesExpr s)
+    let armUses := arms.foldl (init := {}) fun acc arm => usageAdd acc (countUsesExpr arm.body)
+    usageAdd scrutUses armUses
+  | .fieldAccess expr _ _
+  | .projFst expr
+  | .projSnd expr
+  | .ann expr _ => countUsesExpr expr
+  | .record fields
+  | .recordUpdate (.record fields) #[] =>
+    fields.foldl (init := {}) fun acc (_, expr) => usageAdd acc (countUsesExpr expr)
+  | .recordUpdate base updates =>
+    let baseUses := countUsesExpr base
+    let updUses := updates.foldl (init := {}) fun acc (_, expr) => usageAdd acc (countUsesExpr expr)
+    usageAdd baseUses updUses
+  | .tuple elems =>
+    elems.foldl (init := {}) fun acc expr => usageAdd acc (countUsesExpr expr)
+  | .pair fst snd => usageAdd (countUsesExpr fst) (countUsesExpr snd)
+  | .closure _ captures =>
+    captures.foldl (init := {}) fun acc cap => usageAdd acc (countUsesExpr cap)
+  | .let_ _ _ val body => usageAdd (countUsesExpr val) (countUsesExpr body)
+  | .panic _
+  | .lit _
+  | .const _
+  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _
+  | .primTy _ | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
+  | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
+  | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
+  | .mvar _ | .bvar _ | .proj _ _ _ => {}
+
+namespace LowerM
+
+/-- Consume one use of a variable, lazily inserting DUP at the current split site -/
+def consumeVar (id : Unique) : LowerM (Option (PortId × Value)) := do
+  let ctx ← getCtx
+  match ctx.bindings.get? id with
+  | none => pure none
+  | some alloc =>
+    if alloc.erased then
+      pure none
+    else if alloc.remaining == 0 then
+      pure none
+    else if alloc.remaining == 1 then
+      let updated : VarAlloc := { alloc with remaining := 0, erased := true }
+      setCtx { ctx with bindings := ctx.bindings.insert id updated }
+      pure (some (alloc.source, alloc.ty))
+    else
+      let label ← freshLabel
+      let dup ← addNode (.dup label) alloc.ty
+      connect (PortId.principal dup) alloc.source
+      let usePort : PortId := ⟨dup, ⟨1⟩⟩
+      let nextSource : PortId := ⟨dup, ⟨2⟩⟩
+      let updated : VarAlloc := { alloc with
+        source := nextSource
+        remaining := alloc.remaining - 1
+      }
+      setCtx { ctx with bindings := ctx.bindings.insert id updated }
+      pure (some (usePort, alloc.ty))
+
+/-- Split a source value into N owned outputs at the current control-flow split site -/
+def splitOwnedSource (source : PortId) (n : Nat) (ty : Value) : LowerM (Array PortId) := do
+  if n == 0 then
+    pure #[]
+  else if n == 1 then
+    pure #[source]
+  else
+    let (ports, _) ← buildDupChain source n ty
+    pure ports
+
+/-- Build then/else/continuation contexts for split-site lowering of `if` -/
+def splitIfContexts (thenUses elseUses : Std.HashMap Unique Nat)
+    : LowerM (LowerCtx × LowerCtx × LowerCtx) := do
+  let ctx ← getCtx
+  let mut contBindings := ctx.bindings
+  let mut thenBindings := ctx.bindings
+  let mut elseBindings := ctx.bindings
+
+  for (id, alloc) in ctx.bindings.toList do
+    let t := thenUses.getD id 0
+    let e := elseUses.getD id 0
+    let useThen := Nat.min t alloc.remaining
+    let useElse := Nat.min e (alloc.remaining - useThen)
+    let keep := alloc.remaining - useThen - useElse
+
+    let needed := (if keep > 0 then 1 else 0) + (if useThen > 0 then 1 else 0) + (if useElse > 0 then 1 else 0)
+    let outs ← splitOwnedSource alloc.source needed alloc.ty
+
+    let contIdx : Nat := 0
+    let thenIdx : Nat := contIdx + (if keep > 0 then 1 else 0)
+    let elseIdx : Nat := thenIdx + (if useThen > 0 then 1 else 0)
+
+    let contSource := if keep > 0 then outs[contIdx]! else alloc.source
+    let thenSource := if useThen > 0 then outs[thenIdx]! else alloc.source
+    let elseSource := if useElse > 0 then outs[elseIdx]! else alloc.source
+
+    let contAlloc : VarAlloc := { alloc with source := contSource, remaining := keep, erased := keep == 0 }
+    let thenAlloc : VarAlloc := { alloc with source := thenSource, remaining := useThen, erased := useThen == 0 }
+    let elseAlloc : VarAlloc := { alloc with source := elseSource, remaining := useElse, erased := useElse == 0 }
+
+    contBindings := contBindings.insert id contAlloc
+    thenBindings := thenBindings.insert id thenAlloc
+    elseBindings := elseBindings.insert id elseAlloc
+
+  let contCtx : LowerCtx := { ctx with bindings := contBindings }
+  let thenCtx : LowerCtx := { ctx with bindings := thenBindings }
+  let elseCtx : LowerCtx := { ctx with bindings := elseBindings }
+  pure (thenCtx, elseCtx, contCtx)
+
+end LowerM
+
 /-- Encode a signed integer as UInt32 using two's complement.
     For values that fit in 32 bits, this preserves the bit pattern. -/
 def encodeSignedInt (n : Int) : UInt32 :=
@@ -366,9 +484,8 @@ def lowerVar (bindingId : Unique) : LowerM (Option PortId) := do
   if ctx.isBindingErased bindingId then
     pure none
   else
-    match ctx.useVar bindingId with
-    | some (port, _ty, ctx') =>
-      LowerM.setCtx ctx'
+    match ← LowerM.consumeVar bindingId with
+    | some (port, _ty) =>
       pure (some port)
     | none =>
       pure none
@@ -652,8 +769,9 @@ partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
     | none => panic! s!"lowerCoreLam: expected Pi type for parameter, got {ty}"
 
   let varPort : PortId := ⟨lam, ⟨1⟩⟩
-  let (usePorts, isErased) ← buildDupChain varPort usageCount paramTy
-  LowerM.modifyCtx fun ctx => ctx.bindVar paramUnique name usePorts paramTy isErased
+  let isErased := usageCount == 0
+  LowerM.modifyCtx fun ctx =>
+    ctx.bindVarOwned paramUnique name varPort usageCount paramTy isErased
 
   -- Lower the opened body
   let codomainTy := match ty.piCodomain? with
@@ -689,8 +807,20 @@ partial def lowerCoreIf (cond then_ else_ : Soma.Core.Expr) (ty : Value)
   match condPort? with
   | none => pure none
   | some condPort =>
+    let thenUses := countUsesExpr then_
+    let elseUses := countUsesExpr else_
+    let (thenCtx, elseCtx, contCtx) ← LowerM.splitIfContexts thenUses elseUses
+
+    let savedCtx ← LowerM.getCtx
+    LowerM.setCtx { savedCtx with bindings := thenCtx.bindings }
     let thenPort? ← lowerCoreExpr then_ ty
+
+    let afterThenCtx ← LowerM.getCtx
+    LowerM.setCtx { afterThenCtx with bindings := elseCtx.bindings }
     let elsePort? ← lowerCoreExpr else_ ty
+
+    let afterElseCtx ← LowerM.getCtx
+    LowerM.setCtx { afterElseCtx with bindings := contCtx.bindings }
 
     let thenPort := match thenPort? with
       | some p => p
@@ -744,8 +874,10 @@ where
     if h : idx < arms.size then
       let arm := arms[idx]
       -- Install bindings from armCtx into the context
-      for (bindingId, name, ports, varTy) in armCtx.bindings do
-        LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name ports varTy
+      for (bindingId, name, source, useCount, varTy) in armCtx.bindings do
+        let erased := useCount == 0
+        LowerM.modifyCtx fun ctx =>
+          ctx.bindVarOwned bindingId name source useCount varTy erased
       -- Lower the arm body
       match ← lowerCoreExpr arm.body ty with
       | some port => pure port
@@ -980,13 +1112,12 @@ def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
   -- Create LAM nodes for parameters
   let paramList := fn.params.toList
   let mut lamNodes : Array NodeId := #[]
-  let ctx ← LowerM.getCtx
   let mut currentTy := fn.fnType
+  let bodyUses := countUsesExpr fn.body
 
   for param in paramList do
     let (bindingId, name) := param
-    -- Look up actual usage count from type checking
-    let usageCount := ctx.getUsageCount bindingId
+    let usageCount := bodyUses.getD bindingId 0
     let erased := usageCount == 0
     let lam ← LowerM.addNode (.lam erased) currentTy
     lamNodes := lamNodes.push lam
@@ -998,11 +1129,11 @@ def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
       | some c => c
       | none => panic! s!"lowerFunction: expected Pi type for codomain after '{name}', got {currentTy}"
 
-    -- Build DUP chain based on actual usage
+    -- Register ownership-based binding, DUP will be inserted lazily at split sites
     let varPort : PortId := ⟨lam, ⟨1⟩⟩
-    let (usePorts, isErased) ← buildDupChain varPort usageCount paramTy
     -- Bind the variable with its erasure status
-    LowerM.modifyCtx fun ctx => ctx.bindVar bindingId name usePorts paramTy isErased
+    LowerM.modifyCtx fun ctx =>
+      ctx.bindVarOwned bindingId name varPort usageCount paramTy erased
 
   -- Wire LAMs together
   for i in [:lamNodes.size - 1] do

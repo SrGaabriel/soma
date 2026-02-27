@@ -174,12 +174,21 @@ private def lowerFunctionDecl
     | _ =>
       return (none, #[])
 
+/-- Maximum number of constructors per data type -/
+private def maxConstructors : Nat := 255
+
 private def lowerTypeDecl
     (decl : Syntax.Decl)
     (supply : UniqueSupply)
-  : Option Soma.Core.UntypedTypeDef × UniqueSupply :=
+  : Option Soma.Core.UntypedTypeDef × Diagnostics × UniqueSupply :=
   match decl with
-  | .inductive attrs name params constructors _ _ =>
+  | .inductive attrs name params constructors _ span =>
+    let diags : Diagnostics :=
+      if constructors.size > maxConstructors then
+        #[Diagnostic.error
+          s!"data type '{name.value}' has {constructors.size} constructors, exceeding the maximum of {maxConstructors}"
+          span]
+      else #[]
     let (typeUnique, supply') := supply.fresh name.value
     let typeName : Soma.Core.QualifiedName := ⟨typeUnique⟩
     let typeVarNames := params.map (·.name.value)
@@ -200,7 +209,7 @@ private def lowerTypeDecl
           acc := acc.push lowered
       (acc, supply'')
     let (ctors, supply'') := ctors
-    (some (.algebraic attrs typeName typeVarNames ctors), supply'')
+    (some (.algebraic attrs typeName typeVarNames ctors), diags, supply'')
   | .record attrs name params _ctorName fields _ =>
     let (typeUnique, supply') := supply.fresh name.value
     let typeName : Soma.Core.QualifiedName := ⟨typeUnique⟩
@@ -209,8 +218,8 @@ private def lowerTypeDecl
     let ctorQName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
     let fieldsWithOptNames := fields.map fun field =>
       (field.name.map (·.value), field.type_)
-    (some (.record attrs typeName typeVarNames ctorQName fieldsWithOptNames), supply'')
-  | _ => (none, supply)
+    (some (.record attrs typeName typeVarNames ctorQName fieldsWithOptNames), #[], supply'')
+  | _ => (none, #[], supply)
 
 private def lowerTypeClassDecl
     (decl : Syntax.Decl)
@@ -290,7 +299,8 @@ def lowerModule (ast : Syntax.Module) : Result :=
       if let some fn := fn? then
         functions := functions.push fn
 
-      let (td?, supply') := lowerTypeDecl decl supply
+      let (td?, tdDiags, supply') := lowerTypeDecl decl supply
+      diagnostics := diagnostics ++ tdDiags
       supply := supply'
       if let some td := td? then
         types := types.push td

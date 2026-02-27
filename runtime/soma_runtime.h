@@ -210,14 +210,14 @@ SomaValue soma_closure_get_env(void* closure, uint16_t index);
 /* Get function pointer from closure */
 void* soma_closure_get_func(void* closure);
 
-/* Clone a closure */
-void* soma_clone_closure(void* closure);
+/* Clone a closure under a statically assigned DUP label */
+void* soma_clone_closure(void* closure, uint32_t label);
 
 /*
  * SUP (Superposition) operations — Tier 3 lazy duplication
  */
 
-/* Generate a fresh unique label (atomic, thread-safe) */
+/* Runtime fresh labels are disabled; labels must be compiler-assigned */
 uint32_t soma_fresh_label(void);
 
 /* Create a SUP node wrapping a value for lazy duplication */

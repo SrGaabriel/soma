@@ -13,9 +13,6 @@
 
 #include <sched.h>
 
-/* Global label counter for SUP nodes */
-_Atomic uint32_t soma_label_counter = 0;
-
 /* Global memory pools */
 SomaPools soma_pools;
 SomaPoolStats soma_pool_stats;
@@ -203,7 +200,8 @@ void soma_pool_free_sup(void* ptr) {
  * soma_fresh_label — Generate a fresh unique duplication label
  */
 uint32_t soma_fresh_label(void) {
-    return atomic_fetch_add(&soma_label_counter, 1);
+    soma_panic("soma_fresh_label: dynamic runtime labels are disabled; labels must be compiler-assigned");
+    return 0;
 }
 
 /* Check if a SomaValue is a heap pointer to a SUP node */
@@ -219,6 +217,9 @@ static inline int is_heap_closure(SomaValue value) {
     uint8_t tag = *(uint8_t*)SOMA_TO_PTR(value);
     return tag == NODE_CLOSURE;
 }
+
+static SomaValue soma_clone_value_for_fork(SomaValue value);
+static void* soma_clone_closure_for_fork(void* closure_ptr);
 
 /*
  * soma_dup — Create a SUP node for lazy duplication
@@ -303,7 +304,7 @@ SomaValue soma_proj0(SomaValue sup_val) {
 
         /* Closure — need to clone */
         if (is_heap_closure(value)) {
-            void* cloned = soma_clone_closure(SOMA_TO_PTR(value));
+            void* cloned = soma_clone_closure(SOMA_TO_PTR(value), sup->label);
             sup->proj0 = cloned;
             return SOMA_PTR(cloned);
         }
@@ -379,7 +380,7 @@ SomaValue soma_proj1(SomaValue sup_val) {
 
         /* Closure — clone */
         if (is_heap_closure(value)) {
-            void* cloned = soma_clone_closure(SOMA_TO_PTR(value));
+            void* cloned = soma_clone_closure(SOMA_TO_PTR(value), sup->label);
             sup->proj1 = cloned;
             return SOMA_PTR(cloned);
         }
@@ -435,7 +436,7 @@ void* soma_closure_get_func(void* closure_ptr) {
  * fresh SUP nodes for lazy incremental cloning — the nested values are
  * only actually cloned when both copies are accessed.
  */
-void* soma_clone_closure(void* closure_ptr) {
+void* soma_clone_closure(void* closure_ptr, uint32_t label) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
     const uint16_t env_size = closure->env_size;
 
@@ -448,21 +449,55 @@ void* soma_clone_closure(void* closure_ptr) {
     SomaValue* src_env = (SomaValue*)(closure + 1);
     SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
 
-    /* Copy environment, wrapping heap objects in fresh SUPs for lazy cloning */
+    /* Copy environment, wrapping heap objects in SUP(label, ·) for lazy cloning */
     for (uint16_t i = 0; i < env_size; i++) {
         SomaValue val = src_env[i];
 
         if (SOMA_IS_PTR(val) && val != 0) {
             uint8_t tag = *(uint8_t*)SOMA_TO_PTR(val);
             if (tag == NODE_CLOSURE || IS_SUP(tag)) {
-                /* Wrap in fresh SUP for lazy nested cloning */
-                uint32_t fresh_label = soma_fresh_label();
-                SomaValue sup = soma_dup(fresh_label, val);
+                /* Preserve the caller's static DUP label through commutation. */
+                SomaValue sup = soma_dup(label, val);
                 dst_env[i] = sup;
                 continue;
             }
         }
         dst_env[i] = val;
+    }
+
+    return new_closure;
+}
+
+static SomaValue soma_clone_value_for_fork(SomaValue value) {
+    if (!SOMA_IS_PTR(value) || value == 0) return value;
+
+    uint8_t tag = *(uint8_t*)SOMA_TO_PTR(value);
+
+    if (IS_SUP(tag)) {
+        SomaValue materialized = soma_proj0(value);
+        return soma_clone_value_for_fork(materialized);
+    }
+
+    if (tag == NODE_CLOSURE) {
+        void* cloned = soma_clone_closure_for_fork(SOMA_TO_PTR(value));
+        return SOMA_PTR(cloned);
+    }
+
+    return value;
+}
+
+static void* soma_clone_closure_for_fork(void* closure_ptr) {
+    SomaClosure* closure = (SomaClosure*)closure_ptr;
+    const uint16_t env_size = closure->env_size;
+
+    void* new_closure = soma_pool_alloc_closure(env_size);
+    memcpy(new_closure, closure, sizeof(SomaClosure));
+
+    SomaValue* src_env = (SomaValue*)(closure + 1);
+    SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
+
+    for (uint16_t i = 0; i < env_size; i++) {
+      dst_env[i] = soma_clone_value_for_fork(src_env[i]);
     }
 
     return new_closure;
@@ -503,9 +538,30 @@ void soma_era_free(void* value) {
         soma_pool_free_closure(value, closure->env_size);
 
     } else if (IS_SUP(tag)) {
-        /* SUP being erased — free the SUP node itself.
-         * In well-linearized code, an erased SUP was never fully projected,
-         * so cached projections should be NULL. */
+        SomaSup* sup = (SomaSup*)value;
+        SomaValue candidates[3] = {
+            (SomaValue)sup->value,
+            (SomaValue)sup->proj0,
+            (SomaValue)sup->proj1
+        };
+
+        for (int i = 0; i < 3; i++) {
+            SomaValue child = candidates[i];
+            if (!SOMA_IS_PTR(child) || child == 0) continue;
+            if (SOMA_TO_PTR(child) == value) continue;
+
+            int duplicate = 0;
+            for (int j = 0; j < i; j++) {
+                if (candidates[j] == child) {
+                    duplicate = 1;
+                    break;
+                }
+            }
+            if (duplicate) continue;
+
+            soma_era_free(SOMA_TO_PTR(child));
+        }
+
         soma_pool_free_sup(value);
 
     } else {
@@ -968,6 +1024,15 @@ SomaTask* soma_fork(SomaTaskFn fn, void* env) {
     task->kind = TASK_KIND_GENERIC;
     task->fn.generic = fn;
     task->env = env;
+    if (env != NULL) {
+        uint8_t tag = *(uint8_t*)env;
+        if (tag == NODE_CLOSURE) {
+            task->env = soma_clone_closure_for_fork(env);
+        } else if (IS_SUP(tag)) {
+            SomaValue isolated = soma_clone_value_for_fork(SOMA_PTR(env));
+            task->env = SOMA_TO_PTR(isolated);
+        }
+    }
     task->arg = 0;
     task->result = 0;
 
@@ -993,7 +1058,7 @@ SomaTask* soma_fork_direct(SomaDirectFn fn, SomaValue arg) {
     task->kind = TASK_KIND_DIRECT;
     task->fn.direct = fn;
     task->env = NULL;
-    task->arg = arg;
+    task->arg = soma_clone_value_for_fork(arg);
     task->result = 0;
 
     soma_par_spawn(task);
@@ -1013,8 +1078,8 @@ SomaTask* soma_fork_closure(SomaClosureFn fn, void* closure, SomaValue arg) {
 
     task->kind = TASK_KIND_CLOSURE;
     task->fn.closure = fn;
-    task->env = closure;
-    task->arg = arg;
+    task->env = soma_clone_closure_for_fork(closure);
+    task->arg = soma_clone_value_for_fork(arg);
     task->result = 0;
 
     soma_par_spawn(task);
@@ -1037,7 +1102,9 @@ SomaTask* soma_fork_multi(void* fn, SomaValue* args, int num_args) {
         soma_task_free(task);
         return NULL;
     }
-    memcpy(args_copy, args, num_args * sizeof(SomaValue));
+    for (int i = 0; i < num_args; i++) {
+        args_copy[i] = soma_clone_value_for_fork(args[i]);
+    }
 
     task->kind = TASK_KIND_TRAMPOLINE;
     task->fn.trampoline = (SomaTrampolineFn)fn;

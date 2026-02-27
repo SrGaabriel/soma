@@ -574,13 +574,13 @@ def testLowerWithBindings : IO TestResult := do
     -- Check that we received the binding
     if ctx.bindings.size != 1 then
       panic! s!"Expected 1 binding, got {ctx.bindings.size}"
-    let (_, name, ports, _) := ctx.bindings[0]!
+    let (_, name, source, useCount, _) := ctx.bindings[0]!
     if name != "x" then
       panic! "Binding name should be 'x'"
-    if ports.size != 1 then
-      panic! "Should have 1 port for binding"
+    if useCount != 1 then
+      panic! s!"Should have use count 1 for binding, got {useCount}"
     -- Return the bound value
-    pure ports[0]!
+    pure source
 
   let usageCounts : Std.HashMap Unique Nat := ({} : Std.HashMap Unique Nat).insert bid 1
   let (_, graph) := GraphM.run' do
@@ -601,10 +601,10 @@ def testLowerMultiUse : IO TestResult := do
   let lowerArm : ArmCallback GraphM := fun _ ctx => do
     if ctx.bindings.size != 1 then
       panic! s!"Expected 1 binding, got {ctx.bindings.size}"
-    let (_, _, ports, _) := ctx.bindings[0]!
-    -- For multi-use, should have 3 ports
-    if ports.size != 3 then
-      panic! s!"Should have 3 ports for binding used 3 times, got {ports.size}"
+    let (_, _, _source, useCount, _) := ctx.bindings[0]!
+    -- For multi-use, lowering should preserve ownership budget
+    if useCount != 3 then
+      panic! s!"Should have use count 3 for binding, got {useCount}"
     let num ← GraphM.addNode (.num .i64 0) testTy
     pure (PortId.principal num)
 
@@ -613,10 +613,9 @@ def testLowerMultiUse : IO TestResult := do
     let scrut ← GraphM.addNode (.num .i64 99) testTy
     lower tree #[PortId.principal scrut] #[testTy] emptyRegistry testTy lowerArm usageCounts
 
-  -- Should create DUP nodes for the multi-use binding
-  -- 3 uses requires 2 DUP nodes
-  if graph.nodeCount < 3 then  -- scrutinee + 2 DUPs + result
-    return .failed s!"Multi-use should create at least 3 nodes, got {graph.nodeCount}"
+  -- Pattern-match lowering now defers duplication to expression lowering split-sites
+  if graph.nodeCount < 2 then
+    return .failed s!"Multi-use should create at least 2 nodes, got {graph.nodeCount}"
   return .passed
 
 /-- Test: Lower nested occurrence -/
@@ -630,9 +629,11 @@ def testLowerNestedOccurrence : IO TestResult := do
   let lowerArm : ArmCallback GraphM := fun _ ctx => do
     if ctx.bindings.size != 1 then
       panic! "Expected 1 binding"
-    let (_, _, ports, _) := ctx.bindings[0]!
+    let (_, _, source, useCount, _) := ctx.bindings[0]!
+    if useCount != 1 then
+      panic! s!"Expected use count 1 for nested binding, got {useCount}"
     -- Port should be from a PROJ node
-    pure ports[0]!
+    pure source
 
   let (_, graph) := GraphM.run' do
     -- Create a 2-field constructor as scrutinee
@@ -709,8 +710,10 @@ def testCtorMatchWithBindings : IO TestResult := do
       -- Some case: return y
       if ctx.bindings.size != 1 then
         panic! "Should have binding for y"
-      let (_, _, ports, _) := ctx.bindings[0]!
-      pure ports[0]!
+      let (_, _, source, useCount, _) := ctx.bindings[0]!
+      if useCount != 1 then
+        panic! s!"Expected use count 1 for y, got {useCount}"
+      pure source
     else
       -- None case: return 0
       let num ← GraphM.addNode (.num .i64 0) testTy

@@ -253,8 +253,8 @@ def buildDupChain {M : Type → Type} [Monad M] [MonadGraph M]
 
 /-- Context passed to arm body lowering. -/
 structure ArmContext where
-  /-- Variable bindings: (id, name, ports, type). -/
-  bindings : Array (Unique × String × Array PortId × Value)
+  /-- Variable bindings: (id, name, source port, use count, type). -/
+  bindings : Array (Unique × String × PortId × Nat × Value)
 
 /-- Type of callback for lowering arm bodies -/
 abbrev ArmCallback (M : Type → Type) := Nat → ArmContext → M PortId
@@ -289,7 +289,7 @@ partial def lowerTree {M : Type → Type} [Monad M] [MonadGraph M]
       -- The resolved type should now be accurate thanks to pre-caching
       pure (binding.id, binding.name, port, ty)
 
-    -- Build DUP chains based on usage counts
+    -- Compute ownership budgets per binding, duplication stays lazy in caller lowering
     let finalBindings ← resolvedBindings.foldlM (init := #[]) fun acc (id, name, port, ty) =>
       let count := usageCounts.getD id 1
       if count == 0 then do
@@ -297,24 +297,24 @@ partial def lowerTree {M : Type → Type} [Monad M] [MonadGraph M]
         LowerT.connect (PortId.principal era) port
         pure acc
       else do
-        let dupPorts ← buildDupChain port count ty
-        pure (acc.push (id, name, dupPorts, ty))
+        pure (acc.push (id, name, port, count, ty))
 
     -- Call the arm body lowering callback (lifted to LowerT)
     StateT.lift (lowerArm armIndex ⟨finalBindings⟩)
 
   | .switch occurrence kind cases default =>
-    let (scrutPort, _scrutTy) ← resolveOccurrence occurrence
+    let (scrutPort, scrutTy) ← resolveOccurrence occurrence
 
     match kind with
     | .constructor =>
-      lowerConstructorSwitch scrutPort cases default lowerArm usageCounts
+      lowerConstructorSwitch scrutPort scrutTy cases default lowerArm usageCounts
     | .literal lits =>
-      lowerLiteralSwitch scrutPort lits cases default lowerArm usageCounts
+      lowerLiteralSwitch scrutPort scrutTy lits cases default lowerArm usageCounts
 
 /-- Lower a constructor switch (chain of MAT nodes) -/
 partial def lowerConstructorSwitch {M : Type → Type} [Monad M] [MonadGraph M]
     (scrutPort : PortId)
+    (scrutTy : Value)
     (cases : Array (Nat × DecisionTree))
     (default : Option DecisionTree)
     (lowerArm : ArmCallback M)
@@ -328,11 +328,12 @@ partial def lowerConstructorSwitch {M : Type → Type} [Monad M] [MonadGraph M]
       LowerT.connect (PortId.principal era) scrutPort
       pure (PortId.principal era)
   else
-    lowerMATChain scrutPort cases.toList default lowerArm usageCounts
+    lowerMATChain scrutPort scrutTy cases.toList default lowerArm usageCounts
 
 /-- Lower a literal switch using MAT nodes -/
 partial def lowerLiteralSwitch {M : Type → Type} [Monad M] [MonadGraph M]
     (scrutPort : PortId)
+  (scrutTy : Value)
     (lits : Array Literal)
     (cases : Array (Nat × DecisionTree))
     (default : Option DecisionTree)
@@ -351,7 +352,7 @@ partial def lowerLiteralSwitch {M : Type → Type} [Monad M] [MonadGraph M]
       match lits[idx]? with
       | some lit => some (literalToTag lit, tree)
       | none => none
-    lowerMATChain scrutPort litCases.toList default lowerArm usageCounts
+    lowerMATChain scrutPort scrutTy litCases.toList default lowerArm usageCounts
 where
   literalToTag : Literal → Nat
     | .bool true => 1
@@ -362,12 +363,52 @@ where
 /-- Build a chain of MAT nodes -/
 partial def lowerMATChain {M : Type → Type} [Monad M] [MonadGraph M]
     (scrutPort : PortId)
+    (scrutTy : Value)
     (cases : List (Nat × DecisionTree))
     (default : Option DecisionTree)
     (lowerArm : ArmCallback M)
   (usageCounts : Std.HashMap Unique Nat)
     : LowerT M PortId := do
   let resultTy ← LowerT.getResultType
+
+  let rec lowerWithPorts (ports : List PortId) (work : List (Nat × DecisionTree))
+      : LowerT M PortId := do
+    match work, ports with
+    | [], _ =>
+      match default with
+      | some d => lowerTree d lowerArm usageCounts
+      | none =>
+        let era ← LowerT.addEra
+        LowerT.connect (PortId.principal era) scrutPort
+        pure (PortId.principal era)
+
+    | [(tag, subtree)], [currentScrut] =>
+      let hitPort ← lowerTree subtree lowerArm usageCounts
+      let missPort ← match default with
+        | some d => lowerTree d lowerArm usageCounts
+        | none =>
+          let era ← LowerT.addEra
+          pure (PortId.principal era)
+
+      let mat ← LowerT.addMat tag resultTy
+      LowerT.connect ⟨mat, ⟨1⟩⟩ currentScrut
+      LowerT.connect ⟨mat, ⟨2⟩⟩ hitPort
+      LowerT.connect ⟨mat, ⟨3⟩⟩ missPort
+      pure (PortId.principal mat)
+
+    | (tag, subtree) :: rest, currentScrut :: restScruts =>
+      let hitPort ← lowerTree subtree lowerArm usageCounts
+      let missPort ← lowerWithPorts restScruts rest
+
+      let mat ← LowerT.addMat tag resultTy
+      LowerT.connect ⟨mat, ⟨1⟩⟩ currentScrut
+      LowerT.connect ⟨mat, ⟨2⟩⟩ hitPort
+      LowerT.connect ⟨mat, ⟨3⟩⟩ missPort
+      pure (PortId.principal mat)
+
+    | _, _ =>
+      panic! s!"lowerMATChain: internal arity mismatch (cases={work.length}, ports={ports.length})"
+
   match cases with
   | [] =>
     match default with
@@ -376,30 +417,14 @@ partial def lowerMATChain {M : Type → Type} [Monad M] [MonadGraph M]
       let era ← LowerT.addEra
       LowerT.connect (PortId.principal era) scrutPort
       pure (PortId.principal era)
-
-  | [(tag, subtree)] =>
-    let hitPort ← lowerTree subtree lowerArm usageCounts
-    let missPort ← match default with
-      | some d => lowerTree d lowerArm usageCounts
-      | none =>
-        let era ← LowerT.addEra
-        pure (PortId.principal era)
-
-    let mat ← LowerT.addMat tag resultTy
-    LowerT.connect ⟨mat, ⟨1⟩⟩ scrutPort
-    LowerT.connect ⟨mat, ⟨2⟩⟩ hitPort
-    LowerT.connect ⟨mat, ⟨3⟩⟩ missPort
-    pure (PortId.principal mat)
-
-  | (tag, subtree) :: rest =>
-    let hitPort ← lowerTree subtree lowerArm usageCounts
-    let missPort ← lowerMATChain scrutPort rest default lowerArm usageCounts
-
-    let mat ← LowerT.addMat tag resultTy
-    LowerT.connect ⟨mat, ⟨1⟩⟩ scrutPort
-    LowerT.connect ⟨mat, ⟨2⟩⟩ hitPort
-    LowerT.connect ⟨mat, ⟨3⟩⟩ missPort
-    pure (PortId.principal mat)
+  | _ =>
+    let caseCount := cases.length
+    let scrutPorts ←
+      if caseCount == 1 then
+        pure #[scrutPort]
+      else
+        buildDupChain scrutPort caseCount scrutTy
+    lowerWithPorts scrutPorts.toList cases
 
 end
 
