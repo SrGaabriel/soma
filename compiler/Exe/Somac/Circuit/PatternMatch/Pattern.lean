@@ -125,7 +125,7 @@ partial def simplifyPattern (ctx : SimplifyCtx) : Pattern → SimplePattern
   | .wildcard =>
     .wildcard
   | .inject label arg =>
-    let tag := ctx.variantTags.getD label (label.hash.toNat % 0xFFFFF)
+    let tag := ctx.variantTags.getD label (label.hash.toNat % 0xFFFF)
     let args := match arg with
       | some p => #[simplifyPattern ctx p]
       | none => #[]

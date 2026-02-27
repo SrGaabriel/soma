@@ -157,6 +157,15 @@ def allWildcardsAt (m : PatternMatrix) (col : Nat) : Bool :=
 
 end PatternMatrix
 
+/-- Strip as-patterns and collect their bindings with their column index -/
+def collectAsBindings (p : SimplePattern) (col : Nat)
+    : SimplePattern × Array (Unique × String × Nat) :=
+  match p with
+  | .as binding name inner =>
+    let (inner', bindings) := collectAsBindings inner col
+    (inner', #[(binding, name, col)] ++ bindings)
+  | other => (other, #[])
+
 /-! ## Matrix Specialization
 
     Specialization is the key operation in Maranget's algorithm.
@@ -219,15 +228,6 @@ def specializeRow (row : Row) (col : Nat) (tag : Nat) (arity : Nat)
     | .as _ _ _ =>
       -- Should have been handled by collectAsBindings
       none
-where
-  /-- Strip as-patterns and collect their bindings -/
-  collectAsBindings (p : SimplePattern) (col : Nat)
-      : SimplePattern × Array (Unique × String × Nat) :=
-    match p with
-    | .as binding name inner =>
-      let (inner', bindings) := collectAsBindings inner col
-      (inner', #[(binding, name, col)] ++ bindings)
-    | other => (other, #[])
 
 /-- Specialize the entire matrix for constructor `tag` at column `col`.
 
@@ -279,14 +279,6 @@ def specializeRowLit (row : Row) (col : Nat) (lit : Soma.Core.Literal)
       none
     | .as _ _ _ =>
       none
-where
-  collectAsBindings (p : SimplePattern) (col : Nat)
-      : SimplePattern × Array (Unique × String × Nat) :=
-    match p with
-    | .as binding name inner =>
-      let (inner', bindings) := collectAsBindings inner col
-      (inner', #[(binding, name, col)] ++ bindings)
-    | other => (other, #[])
 
 /-- Specialize matrix for a literal match -/
 def PatternMatrix.specializeLit (m : PatternMatrix) (col : Nat) (lit : Soma.Core.Literal)
@@ -333,14 +325,6 @@ def defaultRow (row : Row) (col : Nat) : Option Row :=
       none
     | .as _ _ _ =>
       none
-where
-  collectAsBindings (p : SimplePattern) (col : Nat)
-      : SimplePattern × Array (Unique × String × Nat) :=
-    match p with
-    | .as binding name inner =>
-      let (inner', bindings) := collectAsBindings inner col
-      (inner', #[(binding, name, col)] ++ bindings)
-    | other => (other, #[])
 
 /-- Compute the default matrix for column `col`.
 

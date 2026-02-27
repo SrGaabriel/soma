@@ -465,8 +465,8 @@ def mkEra : Term :=
 
 /-- Create a constructor term -/
 def mkCtor (ctorTag : UInt32) (arity : UInt32) (loc : Loc) : Term :=
-  -- EXT encodes: lower 20 bits = ctor tag, upper 4 bits = arity
-  let ext := Ext.ofNat ((arity.toNat <<< 20) ||| (ctorTag.toNat &&& 0xFFFFF))
+  -- EXT encodes: lower 16 bits = ctor tag, upper 8 bits = arity
+  let ext := Ext.ofNat ((arity.toNat <<< 16) ||| (ctorTag.toNat &&& 0xFFFF))
   create Tag.ctor ext loc.val
 
 /-- Create a pattern match term -/
@@ -536,13 +536,13 @@ def getLabel (t : Term) : UInt32 :=
 def isLamErased (t : Term) : Bool :=
   t.ext.isErased
 
-/-- Get the constructor tag from a CTOR term (lower 20 bits of EXT) -/
+/-- Get the constructor tag from a CTOR term (lower 16 bits of EXT) -/
 def getCtorTag (t : Term) : UInt32 :=
-  (t.ext.val &&& 0xFFFFF)
+  (t.ext.val &&& 0xFFFF)
 
-/-- Get the arity from a CTOR term (upper 4 bits of EXT) -/
+/-- Get the arity from a CTOR term (upper 8 bits of EXT) -/
 def getCtorArity (t : Term) : UInt32 :=
-  (t.ext.val >>> 20) &&& 0xF
+  (t.ext.val >>> 16) &&& 0xFF
 
 /-- Get the expected tag from a MAT term -/
 def getMatExpectedTag (t : Term) : UInt32 :=

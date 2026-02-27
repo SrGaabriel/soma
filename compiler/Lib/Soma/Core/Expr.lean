@@ -173,6 +173,25 @@ end Arm
 
 instance : Inhabited Expr := ⟨.sort Level.zero⟩
 instance : Inhabited Arm := ⟨.mk #[] default⟩
+
+/-- Short constructor name for diagnostic messages -/
+def Expr.ctorName : Expr → String
+  | .bvar _ => "bvar" | .fvar _ => "fvar" | .mvar _ => "mvar" | .const _ => "const"
+  | .app _ _ => "app" | .lam _ _ _ _ => "lam" | .let_ _ _ _ _ => "let" | .lit _ => "lit"
+  | .sort _ => "sort" | .pi _ _ _ _ _ => "pi" | .sigma _ _ _ _ _ => "sigma"
+  | .pair _ _ => "pair" | .projFst _ => "projFst" | .projSnd _ => "projSnd"
+  | .construct _ _ _ => "construct" | .case _ _ => "case"
+  | .record _ => "record" | .recordUpdate _ _ => "recordUpdate"
+  | .fieldAccess _ _ _ => "fieldAccess" | .inject _ _ => "inject"
+  | .primTy _ => "primTy" | .rowSort => "rowSort" | .labelSort => "labelSort"
+  | .rowEmpty => "rowEmpty" | .rowExtend _ _ _ => "rowExtend"
+  | .recordTy _ => "recordTy" | .variantTy _ => "variantTy"
+  | .labelLit _ => "labelLit" | .dataTy _ _ => "dataTy"
+  | .eqTy _ _ _ _ => "eqTy" | .refl _ _ => "refl" | .transport _ _ _ _ _ _ _ => "transport"
+  | .if_ _ _ _ => "if" | .panic _ => "panic"
+  | .closure _ _ => "closure" | .array _ => "array" | .tuple _ => "tuple"
+  | .proj _ _ _ => "proj" | .ann _ _ => "ann"
+
 deriving instance Serialize, Deserialize for Expr
 deriving instance Serialize, Deserialize for Arm
 

@@ -87,8 +87,8 @@ structure Graph where
   nextLabel : UInt32
   /-- Global definitions book (for REF nodes) -/
   book : Array Definition
-  /-- String table: maps hash → (index, string content) -/
-  strings : Std.HashMap UInt64 (Nat × String) := {}
+  /-- String table: maps string content → index -/
+  strings : Std.HashMap String Nat := {}
   /-- Next string index -/
   nextStringIdx : Nat := 0
   deriving Inhabited
@@ -114,26 +114,21 @@ def freshLabel (g : Graph) : Label × Graph :=
 
 /-- Intern a string, returning its index. If already interned, returns existing index -/
 def internString (g : Graph) (s : String) : Nat × Graph :=
-  let hash := s.hash
-  match g.strings.get? hash with
-  | some (idx, _) => (idx, g)
+  match g.strings.get? s with
+  | some idx => (idx, g)
   | none =>
     let idx := g.nextStringIdx
     (idx, { g with
-      strings := g.strings.insert hash (idx, s)
+      strings := g.strings.insert s idx
       nextStringIdx := idx + 1
     })
-
-/-- Look up a string by its hash -/
-def lookupStringByHash (g : Graph) (hash : UInt64) : Option (Nat × String) :=
-  g.strings.get? hash
 
 /-- Get all strings as an array ordered by index -/
 def getStringTable (g : Graph) : Array String := Id.run do
   let mut arr : Array String := .mkEmpty g.nextStringIdx
   for _ in [:g.nextStringIdx] do
     arr := arr.push ""
-  for (_, (idx, s)) in g.strings.toList do
+  for (s, idx) in g.strings.toList do
     arr := arr.set! idx s
   arr
 

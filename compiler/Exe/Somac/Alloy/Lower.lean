@@ -587,10 +587,10 @@ def tagType : Ty n := .prim .u32
 def closureType : Ty n := .struct #[("fn", .rawPtr), ("env", .rawPtr)]
 
 /-- Reserved tag for closure CTORs in Circuit IR -/
-def closureTag : Nat := 0xFFFFFE
+def closureTag : Nat := 0xFFFE
 
 /-- Reserved tag for panic CTORs in Circuit IR -/
-def panicTag : Nat := 0xFFFFFF
+def panicTag : Nat := 0xFFFF
 
 /-- State maintained during graph traversal -/
 structure NodeState (n : Nat) where
@@ -907,7 +907,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
 
   | .ctor tag arity => do
-    -- Check for special closure CTOR (tag 0xFFFFFE, arity 2)
+    -- Check for special closure CTOR (tag 0xFFFE, arity 2)
     if tag == closureTag && arity == 2 then
       -- Closure CTOR
       let fnPort ← match entry.getPort ⟨1⟩ with
