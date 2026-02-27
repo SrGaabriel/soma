@@ -781,9 +781,10 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     -- Tagged unions are by-value { i32, ptr } structs
     let payloadPtr ← CodegenM.withFuncBuilder do
       FuncBuilder.extractvalue llvmValTy valRef #[1]
-    -- Payload layout: [count : i64, field0 : i64, field1 : i64]
+    -- Payload layout: [tag+pad : 8B, count : i64, field0 : i64, ...]
+    -- Fields start at i64 index 2 (after 8-byte header + 8-byte count)
     let fieldPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fieldIdx + 1]
+      FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fieldIdx + 2]
     let ref ← CodegenM.withFuncBuilder do
       FuncBuilder.load llvmResultTy (.local fieldPtr)
     pure (some (ref, resultTy))
@@ -797,22 +798,16 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       FuncBuilder.store .i32 (i32Val tag) (.local tagPtr)
     -- Allocate and store payload if non-empty
     if payload.size > 0 then
-      -- Payload layout: [count : i64, field0 : i64, field1 : i64]
-      let payloadSize := (payload.size + 1) * 8
+      -- Payload layout: [tag+pad : 8B, count : i64, field0 : i64, ...]
+      -- Fields start at i64 index 2 (after 8-byte header + 8-byte count)
       let payloadMem ← CodegenM.withFuncBuilder do
-        FuncBuilder.callNamed .ptr "malloc" #[(.i64, i64Val payloadSize)]
-      -- Store field count as first i64
-      let countPtr ← CodegenM.withFuncBuilder do
-        FuncBuilder.gepi64 .i64 (.local payloadMem) #[0]
-      CodegenM.withFuncBuilder do
-        FuncBuilder.store .i64 (i64Val payload.size) (.local countPtr)
-      -- Store fields at offset +1
+        FuncBuilder.callNamed .ptr "soma_alloc_tagged_payload" #[(.i64, i64Val payload.size)]
       for i in [:payload.size] do
         if h : i < payload.size then
           let fieldOp := payload[i]
           let (fieldLLVMTy, fieldVal) ← convertOperandWithTy fieldOp
           let fieldPtr ← CodegenM.withFuncBuilder do
-            FuncBuilder.gepi64 (.struct false #[]) (.local payloadMem) #[i + 1]
+            FuncBuilder.gepi64 (.struct false #[]) (.local payloadMem) #[i + 2]
           CodegenM.withFuncBuilder do
             FuncBuilder.store fieldLLVMTy fieldVal (.local fieldPtr)
       let payloadPtrSlot ← CodegenM.withFuncBuilder do
@@ -1428,6 +1423,22 @@ def addRuntimeDeclarations : CodegenM Unit := do
       name := "soma_era_tagged_payload"
       retTy := .void
       params := #[{ name := "payload", ty := .ptr }]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_alloc_tagged_payload"
+      retTy := .ptr
+      params := #[{ name := "field_count", ty := .i64 }]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_alloc_array_header"
+      retTy := .ptr
+      params := #[]
       isDeclaration := true
     }
 

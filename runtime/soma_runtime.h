@@ -1,22 +1,57 @@
 /*
  * Soma Runtime
- * 
+ *
+ * All heap objects share a common 8-byte header:
+ *   [0]  u8   tag       (NODE_* constant identifying the object type)
+ *   [1]  u8[3]          (type-specific or padding)
+ *   [4]  u32            (validation sentinel / type-specific)
  *
  * Memory Layout:
- * 
+ *
  * Closure (16 + env_size*8 bytes):
  *   [0]  u8   tag       (NODE_CLOSURE = 1)
  *   [1]  u8   arity     (remaining parameters)
  *   [2]  u16  env_size  (captured variable count)
+ *   [4]  u32  _pad      (SOMA_CLOSURE_MAGIC)
  *   [8]  ptr  func_ptr  (function pointer)
- *   [16] ptr  env[0]    (first captured value)
- *   [24] ptr  env[1]    (second captured value)
- *   ...
+ *   [16] ptr  env[0]    ...
+ *
+ * String (16 + length + 1 bytes, contiguous):
+ *   [0]  u8   tag       (NODE_STRING = 2)
+ *   [1]  u8[3] _pad
+ *   [4]  u32  _magic    (SOMA_STRING_MAGIC)
+ *   [8]  i64  length
+ *   [16] char data[]    (inline, null-terminated)
+ *
+ * Tagged Payload (16 + count*8 bytes):
+ *   [0]  u8   tag       (NODE_TAGGED_PAYLOAD = 3)
+ *   [1]  u8[3] _pad
+ *   [4]  u32  _magic    (SOMA_TAGGED_MAGIC)
+ *   [8]  i64  count     (number of fields)
+ *   [16] i64  field[0]  ...
+ *
+ * Array Header (24 bytes):
+ *   [0]  u8   tag       (NODE_ARRAY_HEADER = 4)
+ *   [1]  u8[3] _pad
+ *   [4]  u32  _magic    (SOMA_ARRAY_MAGIC)
+ *   [8]  i64  length
+ *   [16] ptr  data_ptr
+ *
+ * SUP (40 bytes, pool-allocated):
+ *   [0]  u8   tag       (SUP_TAG_* = 0x80+)
+ *   [1]  u8[3] _pad     ('S','U','P')
+ *   [4]  u32  label
+ *   [8]  ptr  value
+ *   [16] ptr  proj0
+ *   [24] ptr  proj1
  *
  * Node Tags:
- *   0      = (reserved)
+ *   0      = (reserved/invalid)
  *   1      = NODE_CLOSURE
- *   2-127  = (reserved for future node types)
+ *   2      = NODE_STRING
+ *   3      = NODE_TAGGED_PAYLOAD
+ *   4      = NODE_ARRAY_HEADER
+ *   5-127  = (reserved for future node types)
  *   0x80+  = SUP_TAG_* (superposition nodes for lazy duplication)
  */
 
@@ -27,11 +62,17 @@
 #include <stddef.h>
 #include <stdatomic.h>
 
-/* Node tag constants (stored in heap objects) */
-#define NODE_CLOSURE    1
+/* Node tag constants (stored at byte 0 of every heap object) */
+#define NODE_CLOSURE          1
+#define NODE_STRING           2
+#define NODE_TAGGED_PAYLOAD   3
+#define NODE_ARRAY_HEADER     4
 
 /* Runtime object validation sentinels */
 #define SOMA_CLOSURE_MAGIC 0x534f4d41u /* 'SOMA' */
+#define SOMA_STRING_MAGIC  0x53545247u /* 'STRG' */
+#define SOMA_TAGGED_MAGIC  0x54414750u /* 'TAGP' */
+#define SOMA_ARRAY_MAGIC   0x41525948u /* 'ARYH' */
 #define SOMA_SUP_PAD0 0x53u            /* 'S' */
 #define SOMA_SUP_PAD1 0x55u            /* 'U' */
 #define SOMA_SUP_PAD2 0x50u            /* 'P' */
@@ -163,7 +204,7 @@ typedef struct SomaSup {
 /* Free a heap-allocated value */
 void soma_era_free(void* value);
 
-/* Free a Soma String object (header + owned data) */
+/* Free a Soma String object (contiguous header + inline data) */
 void soma_era_string(void* value);
 
 /* Free a tagged union payload buffer (count-prefixed array of fields) */
@@ -174,16 +215,39 @@ void soma_panic(const char* msg);
 
 /*
  * String operations
- *
- * Soma String representation (16 bytes, heap-allocated):
- *   [0]  int64_t length   (string length in bytes)
- *   [8]  char*   data     (pointer to null-terminated UTF-8 data)
  */
 
 typedef struct SomaString {
-    int64_t length;
-    char*   data;
+    uint8_t  tag;       /* NODE_STRING */
+    uint8_t  _pad[3];
+    uint32_t _magic;    /* SOMA_STRING_MAGIC */
+    int64_t  length;
+    char     data[];    /* flexible array member: string data inline */
 } SomaString;
+
+/*
+ * Tagged payload (variable-size, count-prefixed field array)
+ */
+
+typedef struct SomaTaggedPayload {
+    uint8_t  tag;       /* NODE_TAGGED_PAYLOAD */
+    uint8_t  _pad[3];
+    uint32_t _magic;    /* SOMA_TAGGED_MAGIC */
+    int64_t  count;
+    /* SomaValue fields[] follows at offset 16 */
+} SomaTaggedPayload;
+
+/*
+ * Array header (fixed 24 bytes)
+ */
+
+typedef struct SomaArrayHeader {
+    uint8_t  tag;       /* NODE_ARRAY_HEADER */
+    uint8_t  _pad[3];
+    uint32_t _magic;    /* SOMA_ARRAY_MAGIC */
+    int64_t  length;
+    void*    data_ptr;
+} SomaArrayHeader;
 
 /* Convert Soma String to C string (returns data pointer) */
 char* soma_to_cstring(SomaString* str);
@@ -225,6 +289,12 @@ void* soma_clone_tagged_payload(void* payload, uint32_t label);
 /* Clone an array header { length, data_ptr } and recursively clone data pointer */
 void* soma_clone_array_header(void* header, uint32_t label);
 
+/* Allocate a tagged payload buffer with count prefix initialized */
+void* soma_alloc_tagged_payload(uint64_t field_count);
+
+/* Allocate a 24-byte array header { tag, length, data_ptr } */
+void* soma_alloc_array_header(void);
+
 /*
  * SUP (Superposition) operations — Tier 3 lazy duplication
  */
@@ -248,12 +318,25 @@ SomaValue soma_proj1(SomaValue sup_val);
  * Each pool manages a linked list of fixed-size blocks.
  */
 
-/* Block sizes for different allocation classes */
-#define POOL_BLOCK_SIZE     (64 * 1024)  /* 64KB per block */
-#define POOL_SUP_SIZE       40           /* SomaSup struct */
-#define POOL_CLOSURE_SMALL  48           /* Closure with 0-3 env slots */
-#define POOL_CLOSURE_MEDIUM 112          /* Closure with 4-11 env slots */
-/* Large closures (12+ env slots) use malloc */
+/*
+ * Size-class pool allocator.
+ *
+ * Three pools cover all fixed-size heap objects:
+ *   pool_40  — SUP nodes (40 bytes)
+ *   pool_48  — small objects ≤48 bytes:
+ *              closures (0-4 env), strings (≤31 chars), tagged payloads (≤4 fields),
+ *              array headers (24 bytes)
+ *   pool_112 — medium objects ≤112 bytes:
+ *              closures (5-12 env), strings (≤95 chars), tagged payloads (≤12 fields)
+ *
+ * Larger objects fall through to malloc.
+ * Pools are TLS-local for lock-free allocation on worker threads.
+ */
+
+#define POOL_BLOCK_SIZE  (64 * 1024)  /* 64KB per block */
+#define POOL_SIZE_40     40           /* SUP nodes */
+#define POOL_SIZE_48     48           /* Small objects */
+#define POOL_SIZE_112    112          /* Medium objects */
 
 /* Memory pool structure */
 typedef struct SomaPoolBlock {
@@ -268,11 +351,11 @@ typedef struct SomaPool {
     void* free_list;            /* Free list for recycled items */
 } SomaPool;
 
-/* Global pools (one per allocation class) */
+/* Global pools (one per size class) */
 typedef struct SomaPools {
-    SomaPool sup_pool;          /* For SUP nodes */
-    SomaPool closure_small;     /* For small closures */
-    SomaPool closure_medium;    /* For medium closures */
+    SomaPool pool_40;           /* SUP nodes */
+    SomaPool pool_48;           /* Small objects */
+    SomaPool pool_112;          /* Medium objects */
 } SomaPools;
 
 /* Global pool instance */
@@ -284,33 +367,49 @@ void soma_pool_init(void);
 /* Clean up all pools (call at shutdown) */
 void soma_pool_cleanup(void);
 
-/* Allocate from SUP pool */
+/* SUP pool */
 void* soma_pool_alloc_sup(void);
-
-/* Return SUP to pool's free list */
 void soma_pool_free_sup(void* ptr);
 
-/* Allocate from closure pool (picks appropriate size class) */
+/* Closure pool (routes to appropriate size class) */
 void* soma_pool_alloc_closure(uint16_t env_size);
-
-/* Return to pool's free list */
 void soma_pool_free_closure(void* ptr, uint16_t env_size);
 
-/* Pool statistics (for debugging/profiling) - atomic for thread-safety */
+/* String pool (routes to appropriate size class, falls back to malloc) */
+void* soma_pool_alloc_string(size_t total_size);
+void soma_pool_free_string(void* ptr, size_t total_size);
+
+/* Tagged payload pool (routes to appropriate size class, falls back to malloc) */
+void* soma_pool_alloc_tagged(size_t total_size);
+void soma_pool_free_tagged(void* ptr, size_t total_size);
+
+/*
+ * Pool statistics — opt-in via -DSOMA_POOL_STATS.
+ * When enabled, every alloc/free increments an atomic counter.
+ * When disabled (default), zero overhead on hot paths.
+ */
+#ifdef SOMA_POOL_STATS
 typedef struct SomaPoolStats {
     _Atomic size_t sup_allocs;
     _Atomic size_t sup_frees;
-    _Atomic size_t closure_small_allocs;
-    _Atomic size_t closure_small_frees;
-    _Atomic size_t closure_medium_allocs;
-    _Atomic size_t closure_medium_frees;
-    _Atomic size_t closure_large_allocs;
-    _Atomic size_t closure_large_frees;
+    _Atomic size_t small_allocs;
+    _Atomic size_t small_frees;
+    _Atomic size_t medium_allocs;
+    _Atomic size_t medium_frees;
+    _Atomic size_t large_allocs;
+    _Atomic size_t large_frees;
     _Atomic size_t blocks_allocated;
     _Atomic size_t bytes_allocated;
 } SomaPoolStats;
 
 extern SomaPoolStats soma_pool_stats;
+
+#define SOMA_STAT_INC(field) atomic_fetch_add(&soma_pool_stats.field, 1)
+#define SOMA_STAT_ADD(field, n) atomic_fetch_add(&soma_pool_stats.field, (n))
+#else
+#define SOMA_STAT_INC(field) ((void)0)
+#define SOMA_STAT_ADD(field, n) ((void)0)
+#endif
 
 
 #include <pthread.h>

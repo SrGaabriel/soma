@@ -15,11 +15,15 @@
 
 /* Global memory pools */
 SomaPools soma_pools;
+
+#ifdef SOMA_POOL_STATS
 SomaPoolStats soma_pool_stats;
+#endif
+
 
 /*
  * ============================================================================
- * Per-Thread Memory Pool Implementation (TLS)
+ * Size-Class Pool Allocator (TLS)
  * ============================================================================
  */
 
@@ -35,8 +39,8 @@ static SomaPoolBlock* pool_alloc_block(void) {
     if (block) {
         block->next = NULL;
         block->used = 0;
-        atomic_fetch_add(&soma_pool_stats.blocks_allocated, 1);
-        atomic_fetch_add(&soma_pool_stats.bytes_allocated, sizeof(SomaPoolBlock) + POOL_BLOCK_SIZE);
+        SOMA_STAT_INC(blocks_allocated);
+        SOMA_STAT_ADD(bytes_allocated, sizeof(SomaPoolBlock) + POOL_BLOCK_SIZE);
     }
     return block;
 }
@@ -103,9 +107,9 @@ static void tls_pool_init(void) {
 
     tls_pools = (SomaPools*)malloc(sizeof(SomaPools));
     if (tls_pools) {
-        pool_init(&tls_pools->sup_pool, POOL_SUP_SIZE);
-        pool_init(&tls_pools->closure_small, POOL_CLOSURE_SMALL);
-        pool_init(&tls_pools->closure_medium, POOL_CLOSURE_MEDIUM);
+        pool_init(&tls_pools->pool_40, POOL_SIZE_40);
+        pool_init(&tls_pools->pool_48, POOL_SIZE_48);
+        pool_init(&tls_pools->pool_112, POOL_SIZE_112);
         tls_pools_initialized = 1;
     }
 }
@@ -114,9 +118,9 @@ static void tls_pool_init(void) {
 static void tls_pool_cleanup(void) {
     if (!tls_pools_initialized || !tls_pools) return;
 
-    pool_cleanup(&tls_pools->sup_pool);
-    pool_cleanup(&tls_pools->closure_small);
-    pool_cleanup(&tls_pools->closure_medium);
+    pool_cleanup(&tls_pools->pool_40);
+    pool_cleanup(&tls_pools->pool_48);
+    pool_cleanup(&tls_pools->pool_112);
     free(tls_pools);
     tls_pools = NULL;
     tls_pools_initialized = 0;
@@ -131,33 +135,39 @@ static inline SomaPools* get_pools(void) {
 }
 
 void soma_pool_init(void) {
+#ifdef SOMA_POOL_STATS
     memset(&soma_pool_stats, 0, sizeof(soma_pool_stats));
-    pool_init(&soma_pools.sup_pool, POOL_SUP_SIZE);
-    pool_init(&soma_pools.closure_small, POOL_CLOSURE_SMALL);
-    pool_init(&soma_pools.closure_medium, POOL_CLOSURE_MEDIUM);
+#endif
+    pool_init(&soma_pools.pool_40, POOL_SIZE_40);
+    pool_init(&soma_pools.pool_48, POOL_SIZE_48);
+    pool_init(&soma_pools.pool_112, POOL_SIZE_112);
 }
 
 void soma_pool_cleanup(void) {
-    pool_cleanup(&soma_pools.sup_pool);
-    pool_cleanup(&soma_pools.closure_small);
-    pool_cleanup(&soma_pools.closure_medium);
+    pool_cleanup(&soma_pools.pool_40);
+    pool_cleanup(&soma_pools.pool_48);
+    pool_cleanup(&soma_pools.pool_112);
 }
+
+/*
+ * Size-class routing: all object types share the same three pools.
+ * Objects ≤48 bytes → pool_48, ≤112 bytes → pool_112, larger → malloc.
+ */
 
 void* soma_pool_alloc_closure(uint16_t env_size) {
     size_t needed = sizeof(SomaClosure) + (env_size * sizeof(void*));
     SomaPools* pools = get_pools();
 
-    if (needed <= POOL_CLOSURE_SMALL) {
-        atomic_fetch_add(&soma_pool_stats.closure_small_allocs, 1);
-        return pool_alloc(&pools->closure_small);
+    if (needed <= POOL_SIZE_48) {
+        SOMA_STAT_INC(small_allocs);
+        return pool_alloc(&pools->pool_48);
     }
-    if (needed <= POOL_CLOSURE_MEDIUM) {
-        atomic_fetch_add(&soma_pool_stats.closure_medium_allocs, 1);
-        return pool_alloc(&pools->closure_medium);
+    if (needed <= POOL_SIZE_112) {
+        SOMA_STAT_INC(medium_allocs);
+        return pool_alloc(&pools->pool_112);
     }
 
-    /* Large closure - fall back to malloc */
-    atomic_fetch_add(&soma_pool_stats.closure_large_allocs, 1);
+    SOMA_STAT_INC(large_allocs);
     return malloc(needed);
 }
 
@@ -165,14 +175,76 @@ void soma_pool_free_closure(void* ptr, uint16_t env_size) {
     size_t needed = sizeof(SomaClosure) + (env_size * sizeof(void*));
     SomaPools* pools = get_pools();
 
-    if (needed <= POOL_CLOSURE_SMALL) {
-        atomic_fetch_add(&soma_pool_stats.closure_small_frees, 1);
-        pool_free(&pools->closure_small, ptr);
-    } else if (needed <= POOL_CLOSURE_MEDIUM) {
-        atomic_fetch_add(&soma_pool_stats.closure_medium_frees, 1);
-        pool_free(&pools->closure_medium, ptr);
+    if (needed <= POOL_SIZE_48) {
+        SOMA_STAT_INC(small_frees);
+        pool_free(&pools->pool_48, ptr);
+    } else if (needed <= POOL_SIZE_112) {
+        SOMA_STAT_INC(medium_frees);
+        pool_free(&pools->pool_112, ptr);
     } else {
-        atomic_fetch_add(&soma_pool_stats.closure_large_frees, 1);
+        SOMA_STAT_INC(large_frees);
+        free(ptr);
+    }
+}
+
+void* soma_pool_alloc_string(size_t total_size) {
+    SomaPools* pools = get_pools();
+
+    if (total_size <= POOL_SIZE_48) {
+        SOMA_STAT_INC(small_allocs);
+        return pool_alloc(&pools->pool_48);
+    }
+    if (total_size <= POOL_SIZE_112) {
+        SOMA_STAT_INC(medium_allocs);
+        return pool_alloc(&pools->pool_112);
+    }
+
+    SOMA_STAT_INC(large_allocs);
+    return malloc(total_size);
+}
+
+void soma_pool_free_string(void* ptr, size_t total_size) {
+    SomaPools* pools = get_pools();
+
+    if (total_size <= POOL_SIZE_48) {
+        SOMA_STAT_INC(small_frees);
+        pool_free(&pools->pool_48, ptr);
+    } else if (total_size <= POOL_SIZE_112) {
+        SOMA_STAT_INC(medium_frees);
+        pool_free(&pools->pool_112, ptr);
+    } else {
+        SOMA_STAT_INC(large_frees);
+        free(ptr);
+    }
+}
+
+void* soma_pool_alloc_tagged(size_t total_size) {
+    SomaPools* pools = get_pools();
+
+    if (total_size <= POOL_SIZE_48) {
+        SOMA_STAT_INC(small_allocs);
+        return pool_alloc(&pools->pool_48);
+    }
+    if (total_size <= POOL_SIZE_112) {
+        SOMA_STAT_INC(medium_allocs);
+        return pool_alloc(&pools->pool_112);
+    }
+
+    SOMA_STAT_INC(large_allocs);
+    return malloc(total_size);
+}
+
+void soma_pool_free_tagged(void* ptr, size_t total_size) {
+    SomaPools* pools = get_pools();
+
+    if (total_size <= POOL_SIZE_48) {
+        SOMA_STAT_INC(small_frees);
+        pool_free(&pools->pool_48, ptr);
+    } else if (total_size <= POOL_SIZE_112) {
+        SOMA_STAT_INC(medium_frees);
+        pool_free(&pools->pool_112, ptr);
+    } else {
+        SOMA_STAT_INC(large_frees);
         free(ptr);
     }
 }
@@ -184,15 +256,15 @@ void soma_pool_free_closure(void* ptr, uint16_t env_size) {
  */
 
 void* soma_pool_alloc_sup(void) {
-    atomic_fetch_add(&soma_pool_stats.sup_allocs, 1);
+    SOMA_STAT_INC(sup_allocs);
     SomaPools* pools = get_pools();
-    return pool_alloc(&pools->sup_pool);
+    return pool_alloc(&pools->pool_40);
 }
 
 void soma_pool_free_sup(void* ptr) {
-    atomic_fetch_add(&soma_pool_stats.sup_frees, 1);
+    SOMA_STAT_INC(sup_frees);
     SomaPools* pools = get_pools();
-    pool_free(&pools->sup_pool, ptr);
+    pool_free(&pools->pool_40, ptr);
 }
 
 
@@ -224,22 +296,72 @@ static inline int is_heap_closure(SomaValue value) {
 static SomaValue soma_clone_value_for_fork(SomaValue value);
 static void* soma_clone_closure_for_fork(void* closure_ptr);
 
+static SomaString* soma_clone_string_obj(SomaString* src) {
+    if (src == NULL) return NULL;
+    size_t data_bytes = (size_t)src->length + 1;
+    size_t total = sizeof(SomaString) + data_bytes;
+    SomaString* out = (SomaString*)soma_pool_alloc_string(total);
+    if (out == NULL) {
+        soma_panic("soma_clone_string_obj: out of memory");
+        return NULL;
+    }
+    out->tag = NODE_STRING;
+    out->_magic = SOMA_STRING_MAGIC;
+    out->length = src->length;
+    memcpy(out->data, src->data, data_bytes);
+    return out;
+}
+
 static SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
     if (!SOMA_IS_PTR(value) || value == 0) return value;
 
-    uint8_t tag = *(uint8_t*)SOMA_TO_PTR(value);
+    void* ptr = SOMA_TO_PTR(value);
+    uint8_t tag = *(uint8_t*)ptr;
 
-    if (tag == NODE_CLOSURE) {
-        void* cloned = soma_clone_closure(SOMA_TO_PTR(value), label);
-        return SOMA_PTR(cloned);
+    switch (tag) {
+    case NODE_CLOSURE:
+        return SOMA_PTR(soma_clone_closure(ptr, label));
+    case NODE_STRING:
+        return SOMA_PTR(soma_clone_string_obj((SomaString*)ptr));
+    case NODE_TAGGED_PAYLOAD:
+        return SOMA_PTR(soma_clone_tagged_payload(ptr, label));
+    case NODE_ARRAY_HEADER:
+        return SOMA_PTR(soma_clone_array_header(ptr, label));
+    default:
+        if (IS_SUP(tag)) {
+            return soma_dup(label, value);
+        }
+        soma_panic("soma_clone_heap_value_for_dup: unsupported heap object tag");
+        return value;
     }
+}
 
-    if (IS_SUP(tag)) {
-        return soma_dup(label, value);
+void* soma_alloc_tagged_payload(uint64_t field_count) {
+    size_t bytes = sizeof(SomaTaggedPayload) + field_count * sizeof(SomaValue);
+    SomaTaggedPayload* payload = (SomaTaggedPayload*)soma_pool_alloc_tagged(bytes);
+    if (payload == NULL) {
+        soma_panic("soma_alloc_tagged_payload: out of memory");
+        return NULL;
     }
+    payload->tag = NODE_TAGGED_PAYLOAD;
+    payload->_magic = SOMA_TAGGED_MAGIC;
+    payload->count = (int64_t)field_count;
+    return payload;
+}
 
-    soma_panic("soma_clone_heap_value_for_dup: unsupported heap object tag for typed DUP clone");
-    return value;
+void* soma_alloc_array_header(void) {
+    SomaPools* pools = get_pools();
+    SOMA_STAT_INC(small_allocs);
+    SomaArrayHeader* header = (SomaArrayHeader*)pool_alloc(&pools->pool_48);
+    if (header == NULL) {
+        soma_panic("soma_alloc_array_header: out of memory");
+        return NULL;
+    }
+    header->tag = NODE_ARRAY_HEADER;
+    header->_magic = SOMA_ARRAY_MAGIC;
+    header->length = 0;
+    header->data_ptr = NULL;
+    return header;
 }
 
 /*
@@ -321,20 +443,12 @@ SomaValue soma_proj0(SomaValue sup_val) {
                 soma_pool_free_sup(inner);
                 return result;
             }
-            /* Different label — pass through (implicit commutation) */
-            sup->proj0 = (void*)value;
-            return value;
         }
 
-        /* Closure — need to clone */
-        if (is_heap_closure(value)) {
-            void* cloned = soma_clone_closure(SOMA_TO_PTR(value), sup->label);
-            sup->proj0 = cloned;
-            return SOMA_PTR(cloned);
-        }
-
-        soma_panic("soma_proj0: DUP of non-closure heap value is not yet supported safely");
-        return value;
+        /* Clone for second access — handles all heap types */
+        SomaValue cloned = soma_clone_heap_value_for_dup(value, sup->label);
+        sup->proj0 = (void*)cloned;
+        return cloned;
     }
 
     /* Already accessed (PROJ0, BOTH, or cloning states) — return cached */
@@ -396,20 +510,12 @@ SomaValue soma_proj1(SomaValue sup_val) {
                 soma_pool_free_sup(inner);
                 return result;
             }
-            /* Different label — pass through */
-            sup->proj1 = (void*)value;
-            return value;
         }
 
-        /* Closure — clone */
-        if (is_heap_closure(value)) {
-            void* cloned = soma_clone_closure(SOMA_TO_PTR(value), sup->label);
-            sup->proj1 = cloned;
-            return SOMA_PTR(cloned);
-        }
-
-        soma_panic("soma_proj1: DUP of non-closure heap value is not yet supported safely");
-        return value;
+        /* Clone for second access — handles all heap types */
+        SomaValue cloned = soma_clone_heap_value_for_dup(value, sup->label);
+        sup->proj1 = (void*)cloned;
+        return cloned;
     }
 
     /* Already accessed — return cached */
@@ -455,9 +561,8 @@ void* soma_closure_get_func(void* closure_ptr) {
  * soma_clone_closure — Clone a closure with lazy nested duplication
  *
  * Copies the header and all environment slots. For slots that contain
- * closures or SUPs (detected at runtime via tag byte), wraps them in
- * fresh SUP nodes for lazy incremental cloning — the nested values are
- * only actually cloned when both copies are accessed.
+ * heap objects, clones them via the typed DUP helper which handles
+ * closures, strings, tagged payloads, arrays, and nested SUPs.
  */
 void* soma_clone_closure(void* closure_ptr, uint32_t label) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
@@ -484,26 +589,24 @@ void* soma_clone_closure(void* closure_ptr, uint32_t label) {
 void* soma_clone_tagged_payload(void* payload, uint32_t label) {
     if (payload == NULL) return NULL;
 
-    int64_t count = *(int64_t*)payload;
+    SomaTaggedPayload* src = (SomaTaggedPayload*)payload;
+    int64_t count = src->count;
     if (count < 0) {
         soma_panic("soma_clone_tagged_payload: negative payload field count");
         return NULL;
     }
 
-    size_t bytes = (size_t)(count + 1) * sizeof(int64_t);
-    void* copy = malloc(bytes);
+    SomaTaggedPayload* copy = (SomaTaggedPayload*)soma_alloc_tagged_payload((uint64_t)count);
     if (copy == NULL) {
         soma_panic("soma_clone_tagged_payload: out of memory");
         return NULL;
     }
 
-    *(int64_t*)copy = count;
-    SomaValue* src_fields = (SomaValue*)((int64_t*)payload + 1);
-    SomaValue* dst_fields = (SomaValue*)((int64_t*)copy + 1);
+    SomaValue* src_fields = (SomaValue*)(src + 1);
+    SomaValue* dst_fields = (SomaValue*)(copy + 1);
 
     for (int64_t i = 0; i < count; i++) {
-        SomaValue v = src_fields[i];
-        dst_fields[i] = soma_clone_heap_value_for_dup(v, label);
+        dst_fields[i] = soma_clone_heap_value_for_dup(src_fields[i], label);
     }
 
     return copy;
@@ -513,17 +616,15 @@ void* soma_clone_array_header(void* header, uint32_t label) {
     (void)label;
     if (header == NULL) return NULL;
 
-    int64_t length = *(int64_t*)header;
-    void* data_ptr = *(void**)((int64_t*)header + 1);
-
-    void* copy = malloc(16);
+    SomaArrayHeader* src = (SomaArrayHeader*)header;
+    SomaArrayHeader* copy = (SomaArrayHeader*)soma_alloc_array_header();
     if (copy == NULL) {
         soma_panic("soma_clone_array_header: out of memory");
         return NULL;
     }
 
-    *(int64_t*)copy = length;
-    *(void**)((int64_t*)copy + 1) = data_ptr;
+    copy->length = src->length;
+    copy->data_ptr = src->data_ptr;
 
     return copy;
 }
@@ -538,12 +639,18 @@ static SomaValue soma_clone_value_for_fork(SomaValue value) {
         return soma_clone_value_for_fork(materialized);
     }
 
-    if (tag == NODE_CLOSURE) {
-        void* cloned = soma_clone_closure_for_fork(SOMA_TO_PTR(value));
-        return SOMA_PTR(cloned);
+    switch (tag) {
+    case NODE_CLOSURE:
+        return SOMA_PTR(soma_clone_closure_for_fork(SOMA_TO_PTR(value)));
+    case NODE_STRING:
+        return SOMA_PTR(soma_clone_string_obj((SomaString*)SOMA_TO_PTR(value)));
+    case NODE_TAGGED_PAYLOAD:
+        return SOMA_PTR(soma_clone_tagged_payload(SOMA_TO_PTR(value), 0));
+    case NODE_ARRAY_HEADER:
+        return SOMA_PTR(soma_clone_array_header(SOMA_TO_PTR(value), 0));
+    default:
+        return value;
     }
-
-    return value;
 }
 
 static void* soma_clone_closure_for_fork(void* closure_ptr) {
@@ -565,12 +672,9 @@ static void* soma_clone_closure_for_fork(void* closure_ptr) {
 
 void soma_era_string(void* value) {
     if (value == NULL) return;
-
     SomaString* s = (SomaString*)value;
-    if (s->data != NULL) {
-        free(s->data);
-    }
-    free(s);
+    size_t total = sizeof(SomaString) + (size_t)s->length + 1;
+    soma_pool_free_string(value, total);
 }
 
 /*
@@ -584,6 +688,21 @@ void soma_era_free(void* value) {
     if (value == NULL) return;
 
     uint8_t tag = *(uint8_t*)value;
+
+    if (tag == NODE_STRING) {
+        soma_era_string(value);
+        return;
+    }
+    if (tag == NODE_TAGGED_PAYLOAD) {
+        soma_era_tagged_payload(value);
+        return;
+    }
+    if (tag == NODE_ARRAY_HEADER) {
+        SomaPools* pools = get_pools();
+        SOMA_STAT_INC(small_frees);
+        pool_free(&pools->pool_48, value);
+        return;
+    }
 
     if (tag == NODE_CLOSURE) {
         SomaClosure* closure = (SomaClosure*)value;
@@ -633,16 +752,16 @@ void soma_era_free(void* value) {
 /*
  * soma_era_tagged_payload — Free a tagged union payload buffer
  *
- * Payload layout: [count : i64, field0 : i64, field1 : i64, ...]
- * Each field is stored as a raw i64 (SomaValue). Fields that are heap pointers
+ * Payload layout: [SomaTaggedPayload header, field0, field1, ...]
+ * Each field is stored as a SomaValue. Fields that are heap pointers
  * (tag bits == TAG_PTR, non-null) are recursively freed via soma_era_free.
- * The count prefix tells us how many fields to walk.
  */
 void soma_era_tagged_payload(void* payload) {
     if (payload == NULL) return;
 
-    int64_t count = *(int64_t*)payload;
-    SomaValue* fields = (SomaValue*)((int64_t*)payload + 1);
+    SomaTaggedPayload* p = (SomaTaggedPayload*)payload;
+    int64_t count = p->count;
+    SomaValue* fields = (SomaValue*)(p + 1);
 
     for (int64_t i = 0; i < count; i++) {
         SomaValue val = fields[i];
@@ -651,7 +770,8 @@ void soma_era_tagged_payload(void* payload) {
         }
     }
 
-    free(payload);
+    size_t total = sizeof(SomaTaggedPayload) + (size_t)count * sizeof(SomaValue);
+    soma_pool_free_tagged(payload, total);
 }
 
 /*
@@ -668,29 +788,19 @@ char* soma_to_cstring(SomaString* str) {
 }
 
 SomaString* soma_from_cstring(const char* cstr) {
-    if (cstr == NULL) {
-        return NULL;
-    }
+    if (cstr == NULL) return NULL;
 
     size_t len = strlen(cstr);
-
-    SomaString* s = (SomaString*)malloc(sizeof(SomaString));
+    size_t total = sizeof(SomaString) + len + 1;
+    SomaString* s = (SomaString*)soma_pool_alloc_string(total);
     if (s == NULL) {
         soma_panic("soma_from_cstring: out of memory");
         return NULL;
     }
-
-    char* data = (char*)malloc(len + 1);
-    if (data == NULL) {
-        free(s);
-        soma_panic("soma_from_cstring: out of memory");
-        return NULL;
-    }
-    memcpy(data, cstr, len + 1);
-
+    s->tag = NODE_STRING;
+    s->_magic = SOMA_STRING_MAGIC;
     s->length = (int64_t)len;
-    s->data = data;
-
+    memcpy(s->data, cstr, len + 1);
     return s;
 }
 
@@ -703,39 +813,27 @@ uint64_t soma_cstring_len(const char* cstr) {
 
 SomaString* soma_strcat(SomaString* a, SomaString* b) {
     if (a == NULL) {
-        if (b == NULL) {
-            return soma_from_cstring("");
-        }
+        if (b == NULL) return soma_from_cstring("");
         return soma_from_cstring(b->data);
     }
-    if (b == NULL) {
-        return soma_from_cstring(a->data);
-    }
+    if (b == NULL) return soma_from_cstring(a->data);
 
     size_t len_a = (size_t)a->length;
     size_t len_b = (size_t)b->length;
     size_t total_len = len_a + len_b;
+    size_t total = sizeof(SomaString) + total_len + 1;
 
-    SomaString* result = (SomaString*)malloc(sizeof(SomaString));
+    SomaString* result = (SomaString*)soma_pool_alloc_string(total);
     if (result == NULL) {
         soma_panic("soma_strcat: out of memory");
         return NULL;
     }
-
-    char* data = (char*)malloc(total_len + 1);
-    if (data == NULL) {
-        free(result);
-        soma_panic("soma_strcat: out of memory");
-        return NULL;
-    }
-
-    memcpy(data, a->data, len_a);
-    memcpy(data + len_a, b->data, len_b);
-    data[total_len] = '\0';
-
+    result->tag = NODE_STRING;
+    result->_magic = SOMA_STRING_MAGIC;
     result->length = (int64_t)total_len;
-    result->data = data;
-
+    memcpy(result->data, a->data, len_a);
+    memcpy(result->data + len_a, b->data, len_b);
+    result->data[total_len] = '\0';
     return result;
 }
 
@@ -743,23 +841,16 @@ SomaString* soma_int_to_string(int32_t val) {
     char buf[12];
     int len = snprintf(buf, sizeof(buf), "%d", val);
 
-    SomaString* s = (SomaString*)malloc(sizeof(SomaString));
+    size_t total = sizeof(SomaString) + len + 1;
+    SomaString* s = (SomaString*)soma_pool_alloc_string(total);
     if (s == NULL) {
         soma_panic("soma_int_to_string: out of memory");
         return NULL;
     }
-
-    char* data = (char*)malloc(len + 1);
-    if (data == NULL) {
-        free(s);
-        soma_panic("soma_int_to_string: out of memory");
-        return NULL;
-    }
-    memcpy(data, buf, len + 1);
-
+    s->tag = NODE_STRING;
+    s->_magic = SOMA_STRING_MAGIC;
     s->length = (int64_t)len;
-    s->data = data;
-
+    memcpy(s->data, buf, len + 1);
     return s;
 }
 
@@ -1246,19 +1337,21 @@ void soma_par_print_stats(void) {
                 (unsigned long)w->steal_attempts);
     }
 
+#ifdef SOMA_POOL_STATS
     fprintf(stderr, "[soma_pool] SUP allocs: %lu, frees: %lu\n",
             (unsigned long)atomic_load(&soma_pool_stats.sup_allocs),
             (unsigned long)atomic_load(&soma_pool_stats.sup_frees));
-    fprintf(stderr, "[soma_pool] Closure small: %lu/%lu, medium: %lu/%lu, large: %lu/%lu\n",
-            (unsigned long)atomic_load(&soma_pool_stats.closure_small_allocs),
-            (unsigned long)atomic_load(&soma_pool_stats.closure_small_frees),
-            (unsigned long)atomic_load(&soma_pool_stats.closure_medium_allocs),
-            (unsigned long)atomic_load(&soma_pool_stats.closure_medium_frees),
-            (unsigned long)atomic_load(&soma_pool_stats.closure_large_allocs),
-            (unsigned long)atomic_load(&soma_pool_stats.closure_large_frees));
+    fprintf(stderr, "[soma_pool] Small (48B): %lu/%lu, Medium (112B): %lu/%lu, Large: %lu/%lu\n",
+            (unsigned long)atomic_load(&soma_pool_stats.small_allocs),
+            (unsigned long)atomic_load(&soma_pool_stats.small_frees),
+            (unsigned long)atomic_load(&soma_pool_stats.medium_allocs),
+            (unsigned long)atomic_load(&soma_pool_stats.medium_frees),
+            (unsigned long)atomic_load(&soma_pool_stats.large_allocs),
+            (unsigned long)atomic_load(&soma_pool_stats.large_frees));
     fprintf(stderr, "[soma_pool] Blocks allocated: %lu, bytes: %lu\n",
             (unsigned long)atomic_load(&soma_pool_stats.blocks_allocated),
             (unsigned long)atomic_load(&soma_pool_stats.bytes_allocated));
+#endif
 }
 
 #ifndef SOMA_NO_MAIN

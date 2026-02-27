@@ -1115,21 +1115,22 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   | .use => lowerPort 1
 
   | .array _ => do
-    -- Array node: construct a 16-byte header { u64 length, ptr data }
+    -- Array node: construct a 24-byte header { tag+pad: 8B, length: i64, data_ptr: ptr }
     let lenVal ← lowerPort 1 (.prim .u64)
     let dataVal ← lowerPort 2 .rawPtr
 
-    -- Allocate the 16-byte array header
-    let headerSize := 16
-    let headerPtr ← StateT.lift (LowerM.emitInst (.malloc (.const (.int (Int.ofNat headerSize) .u64))) .rawPtr)
+    let headerPtr ← StateT.lift (LowerM.emitInst (.callExtern "soma_alloc_array_header" #[] .rawPtr) .rawPtr)
 
-    -- Store length at offset 0
-    StateT.lift (LowerM.emitVoid (.store (.local headerPtr) (.local lenVal)))
-
-    -- Store data pointer at offset 8
+    -- Store length at offset 8 (after 8-byte tag header)
     let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local headerPtr)) (.prim .i64))
     let offset8 ← StateT.lift (LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64))
-    let dataPtrAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset8) (.prim .i64)) (.prim .i64))
+    let lenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset8) (.prim .i64)) (.prim .i64))
+    let lenSlot ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr)
+    StateT.lift (LowerM.emitVoid (.store (.local lenSlot) (.local lenVal)))
+
+    -- Store data pointer at offset 16
+    let offset16 ← StateT.lift (LowerM.emitInst (.copy (.const (.int 16 .i64))) (.prim .i64))
+    let dataPtrAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset16) (.prim .i64)) (.prim .i64))
     let dataPtrSlot ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local dataPtrAddr)) .rawPtr)
     StateT.lift (LowerM.emitVoid (.store (.local dataPtrSlot) (.local dataVal)))
 
@@ -1163,9 +1164,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     let arrayVal ← lowerPort 1
     let indexVal ← lowerPort 2 (.prim .u64)
 
+    -- data_ptr is at offset 16 in the array header (after 8-byte tag header + 8-byte length)
     let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local arrayVal)) (.prim .i64))
-    let offset8 ← StateT.lift (LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64))
-    let dataPtrAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset8) (.prim .i64)) (.prim .i64))
+    let offset16 ← StateT.lift (LowerM.emitInst (.copy (.const (.int 16 .i64))) (.prim .i64))
+    let dataPtrAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset16) (.prim .i64)) (.prim .i64))
     let dataPtrSlot ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local dataPtrAddr)) .rawPtr)
     let dataPtr ← StateT.lift (LowerM.emitInst (.load (.local dataPtrSlot) .rawPtr) .rawPtr)
 
