@@ -1052,8 +1052,9 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       pure none
 
   | .panic msgIdx line =>
+    let _ := line
     CodegenM.withFuncBuilder do
-      FuncBuilder.callNamedVoid "soma_panic" #[(.i32, i32Val msgIdx), (.i32, i32Val line)]
+      FuncBuilder.callNamedVoid "soma_panic" #[(.ptr, globalVal s!".str.{msgIdx}")]
     pure none
 
 
@@ -1396,7 +1397,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_panic"
       retTy := .void
-      params := #[{ name := "msg", ty := .i32 }, { name := "line", ty := .i32 }]
+      params := #[{ name := "msg", ty := .ptr }]
       attrs := { noreturn := true }
       isDeclaration := true
     }

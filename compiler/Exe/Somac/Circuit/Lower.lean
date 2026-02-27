@@ -100,7 +100,7 @@ end VariantTagRegistry
 /-- Lowering context tracks variable bindings -/
 structure LowerCtx where
   /-- Variable allocations by local unique id -/
-  bindings : Std.HashMap Nat VarAlloc := {}
+  bindings : Std.HashMap Unique VarAlloc := {}
   /-- Global function QualifiedName → book index -/
   globals : Std.HashMap QualifiedName Nat := {}
   /-- Constructor QualifiedName → (type QualifiedName, tag, arity) -/
@@ -117,6 +117,8 @@ structure LowerCtx where
   globalTypes : Std.HashMap QualifiedName Value := {}
   /-- Variant label → tag registry -/
   variantTags : VariantTagRegistry := {}
+  /-- Next synthetic local id used during lowering -/
+  nextSyntheticId : Nat := 0
   deriving Inhabited
 
 namespace LowerCtx
@@ -126,17 +128,17 @@ def empty : LowerCtx := {}
 /-- Register a variable binding with pre-allocated ports -/
 def bindVar (ctx : LowerCtx) (id : Unique) (name : String) (ports : Array PortId) (ty : Value)
     (erased : Bool := false) : LowerCtx :=
-  { ctx with bindings := ctx.bindings.insert id.id ⟨ports, name, ty, erased⟩ }
+  { ctx with bindings := ctx.bindings.insert id ⟨ports, name, ty, erased⟩ }
 
 /-- Check if a binding is erased -/
 def isBindingErased (ctx : LowerCtx) (id : Unique) : Bool :=
-  match ctx.bindings.get? id.id with
+  match ctx.bindings.get? id with
   | some alloc => alloc.erased
   | none => false
 
 /-- Consume one use of a variable, returning the port and type for that use -/
 def useVar (ctx : LowerCtx) (id : Unique) : Option (PortId × Value × LowerCtx) :=
-  match ctx.bindings.get? id.id with
+  match ctx.bindings.get? id with
   | none => none
   | some alloc =>
     if alloc.erased then none
@@ -145,12 +147,12 @@ def useVar (ctx : LowerCtx) (id : Unique) : Option (PortId × Value × LowerCtx)
       let port := alloc.ports[0]!
       let remaining := alloc.ports.extract 1 alloc.ports.size
       let newAlloc : VarAlloc := ⟨remaining, alloc.name, alloc.ty, alloc.erased⟩
-      let ctx' := { ctx with bindings := ctx.bindings.insert id.id newAlloc }
+      let ctx' := { ctx with bindings := ctx.bindings.insert id newAlloc }
       some (port, alloc.ty, ctx')
 
 /-- Look up type for a binding -/
 def getVarType (ctx : LowerCtx) (id : Unique) : Option Value :=
-  ctx.bindings.get? id.id |>.map (·.ty)
+  ctx.bindings.get? id |>.map (·.ty)
 
 /-- Register a global function -/
 def registerGlobal (ctx : LowerCtx) (name : QualifiedName) (idx : Nat) : LowerCtx :=
@@ -189,6 +191,11 @@ def getUsageCount (ctx : LowerCtx) (id : Unique) : Nat :=
 /-- Create context with a usage map -/
 def withUsageMap (usageMap : UsageMap) : LowerCtx :=
   { empty with usageMap := usageMap }
+
+/-- Generate a fresh synthetic unique for lowering-introduced locals. -/
+def freshSyntheticUnique (ctx : LowerCtx) (name : String) : Unique × LowerCtx :=
+  let unique : Unique := { id := ctx.nextSyntheticId, module := "$lam", original := name }
+  (unique, { ctx with nextSyntheticId := ctx.nextSyntheticId + 1 })
 
 end LowerCtx
 
@@ -258,6 +265,13 @@ def resolveVariantTag (label : String) : LowerM Nat := do
   let (tag, newRegistry) := ctx.variantTags.resolve label
   setCtx { ctx with variantTags := newRegistry }
   pure tag
+
+/-- Generate a fresh synthetic unique for lowering-introduced locals -/
+def freshSyntheticUnique (name : String) : LowerM Unique := do
+  let ctx ← getCtx
+  let (unique, ctx') := ctx.freshSyntheticUnique name
+  setCtx ctx'
+  pure unique
 
 end LowerM
 
@@ -383,10 +397,6 @@ def primOpToOp2Code : PrimOp → Option Op2Code
   | .not => none  -- Unary operation
   | .neg => none  -- Unary operation
 
-/-- Convert UsageMap (keyed by Unique) to Std.HashMap Nat Nat (keyed by raw id) -/
-def usageMapToNatMap (usageMap : UsageMap) : Std.HashMap Nat Nat :=
-  usageMap.fold (init := {}) fun acc bindingId count =>
-    acc.insert bindingId.id count
 
 /-- Lower a global function or constructor reference to a circuit node -/
 def lowerGlobal (name : QualifiedName) (ty : Value) : LowerM PortId := do
@@ -672,7 +682,7 @@ partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
     (body : Soma.Core.Expr) (ty : Value) : LowerM PortId := do
   -- The body uses bvar(0) for the lambda parameter (locally nameless).
   -- Instantiate bvar(0) with fvar(u) so it can be looked up during lowering.
-  let paramUnique : Unique := { id := name.hash.toNat, module := "$lam", original := name }
+  let paramUnique ← LowerM.freshSyntheticUnique name
   let openBody := Soma.Core.Expr.instantiate body (.fvar paramUnique)
 
   let usageCount := openBody.countFVar paramUnique
@@ -681,10 +691,9 @@ partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
   let lam ← LowerM.addNode (.lam erased) ty
   let paramTy := ty.piDomain?.getD unitTy
 
-  let paramBinding : Unique := { id := paramUnique.id, module := paramUnique.module, original := name }
   let varPort : PortId := ⟨lam, ⟨1⟩⟩
   let (usePorts, isErased) ← buildDupChain varPort usageCount paramTy
-  LowerM.modifyCtx fun ctx => ctx.bindVar paramBinding name usePorts paramTy isErased
+  LowerM.modifyCtx fun ctx => ctx.bindVar paramUnique name usePorts paramTy isErased
 
   -- Lower the opened body
   let codomainTy := match ty.piCodomain? with
@@ -763,11 +772,10 @@ partial def lowerCoreCase (scruts : Array Soma.Core.Expr) (arms : Array Soma.Cor
     let simplifyCtx : PatternMatch.SimplifyCtx := { variantTags := variantTagMap }
     let matrix := PatternMatch.buildMatrixFromArms simplifyCtx arms
     let tree := PatternMatch.compileMatrix matrix ctx.ctorTypeRegistry scrutTypes
-    let usageCounts := usageMapToNatMap ctx.usageMap
 
     let result ← PatternMatch.lower tree scrutPorts scrutTypes ctx.ctorTypeRegistry ty
       (fun armIndex armCtx => lowerCoreArmBodyByIndex arms armIndex armCtx)
-      usageCounts
+      ctx.usageMap
     pure (some result)
 where
   /-- Lower the body of a case arm by index -/

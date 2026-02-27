@@ -582,7 +582,7 @@ def testLowerWithBindings : IO TestResult := do
     -- Return the bound value
     pure ports[0]!
 
-  let usageCounts : Std.HashMap Nat Nat := ({} : Std.HashMap Nat Nat).insert 1 1
+  let usageCounts : Std.HashMap Unique Nat := ({} : Std.HashMap Unique Nat).insert bid 1
   let (_, graph) := GraphM.run' do
     let scrut ← GraphM.addNode (.num .i64 99) testTy
     lower tree #[PortId.principal scrut] #[testTy] emptyRegistry testTy lowerArm usageCounts
@@ -608,7 +608,7 @@ def testLowerMultiUse : IO TestResult := do
     let num ← GraphM.addNode (.num .i64 0) testTy
     pure (PortId.principal num)
 
-  let usageCounts : Std.HashMap Nat Nat := ({} : Std.HashMap Nat Nat).insert 1 3  -- x is used 3 times
+  let usageCounts : Std.HashMap Unique Nat := ({} : Std.HashMap Unique Nat).insert bid 3  -- x is used 3 times
   let (_, graph) := GraphM.run' do
     let scrut ← GraphM.addNode (.num .i64 99) testTy
     lower tree #[PortId.principal scrut] #[testTy] emptyRegistry testTy lowerArm usageCounts
@@ -716,7 +716,7 @@ def testCtorMatchWithBindings : IO TestResult := do
       let num ← GraphM.addNode (.num .i64 0) testTy
       pure (PortId.principal num)
 
-  let usageCounts : Std.HashMap Nat Nat := ({} : Std.HashMap Nat Nat).insert 1 1
+  let usageCounts : Std.HashMap Unique Nat := ({} : Std.HashMap Unique Nat).insert b1 1
   let (_, graph) := GraphM.run' do
     -- Create Some(42)
     let inner ← GraphM.addNode (.num .i64 42) testTy

@@ -267,7 +267,7 @@ mutual
 partial def lowerTree {M : Type → Type} [Monad M] [MonadGraph M]
     (tree : DecisionTree)
     (lowerArm : ArmCallback M)
-    (usageCounts : Std.HashMap Nat Nat)
+  (usageCounts : Std.HashMap Unique Nat)
     : LowerT M PortId := do
   match tree with
   | .fail =>
@@ -291,7 +291,7 @@ partial def lowerTree {M : Type → Type} [Monad M] [MonadGraph M]
 
     -- Build DUP chains based on usage counts
     let finalBindings ← resolvedBindings.foldlM (init := #[]) fun acc (id, name, port, ty) =>
-      let count := usageCounts.getD id.id 1
+      let count := usageCounts.getD id 1
       if count == 0 then do
         let era ← LowerT.addEra
         LowerT.connect (PortId.principal era) port
@@ -318,7 +318,7 @@ partial def lowerConstructorSwitch {M : Type → Type} [Monad M] [MonadGraph M]
     (cases : Array (Nat × DecisionTree))
     (default : Option DecisionTree)
     (lowerArm : ArmCallback M)
-    (usageCounts : Std.HashMap Nat Nat)
+  (usageCounts : Std.HashMap Unique Nat)
     : LowerT M PortId := do
   if cases.isEmpty then
     match default with
@@ -337,7 +337,7 @@ partial def lowerLiteralSwitch {M : Type → Type} [Monad M] [MonadGraph M]
     (cases : Array (Nat × DecisionTree))
     (default : Option DecisionTree)
     (lowerArm : ArmCallback M)
-    (usageCounts : Std.HashMap Nat Nat)
+  (usageCounts : Std.HashMap Unique Nat)
     : LowerT M PortId := do
   if cases.isEmpty then
     match default with
@@ -365,7 +365,7 @@ partial def lowerMATChain {M : Type → Type} [Monad M] [MonadGraph M]
     (cases : List (Nat × DecisionTree))
     (default : Option DecisionTree)
     (lowerArm : ArmCallback M)
-    (usageCounts : Std.HashMap Nat Nat)
+  (usageCounts : Std.HashMap Unique Nat)
     : LowerT M PortId := do
   let resultTy ← LowerT.getResultType
   match cases with
@@ -413,7 +413,7 @@ def lower {M : Type → Type} [Monad M] [MonadGraph M]
     (registry : ConstructorTypeRegistry)
     (resultType : Value)
     (lowerArm : ArmCallback M)
-    (usageCounts : Std.HashMap Nat Nat := {})
+    (usageCounts : Std.HashMap Unique Nat := {})
     : M PortId := do
   let (result, _) ← LowerT.run
     (lowerTree tree lowerArm usageCounts)
@@ -429,7 +429,7 @@ def compileAndLower {M : Type → Type} [Monad M] [MonadGraph M]
     (scrutineeTypes : Array Value)
     (resultType : Value)
     (lowerArm : ArmCallback M)
-    (usageCounts : Std.HashMap Nat Nat := {})
+    (usageCounts : Std.HashMap Unique Nat := {})
     : M PortId := do
   let matrix := buildMatrixFromArms ctx arms
   let tree := compileMatrix matrix registry scrutineeTypes
