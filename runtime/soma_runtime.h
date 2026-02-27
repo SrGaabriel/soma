@@ -157,6 +157,9 @@ typedef struct SomaSup {
 /* Free a heap-allocated value */
 void soma_era_free(void* value);
 
+/* Free a Soma String object (header + owned data) */
+void soma_era_string(void* value);
+
 /* Free a tagged union payload buffer (count-prefixed array of fields) */
 void soma_era_tagged_payload(void* payload);
 
@@ -177,7 +180,7 @@ typedef struct SomaString {
 } SomaString;
 
 /* Convert Soma String to C string (returns data pointer) */
-char* soma_to_cstring(SomaValue str);
+char* soma_to_cstring(SomaString* str);
 
 /* Convert C string to Soma String (allocates new String) */
 SomaString* soma_from_cstring(const char* cstr);

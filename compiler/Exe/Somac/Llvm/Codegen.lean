@@ -82,6 +82,10 @@ def getArrayElemTy : ClosedTy → ClosedTy
   | .array elem _ => elem
   | _ => .prim .i64
 
+/-- Check whether a closed type is the runtime String object type -/
+def isStringObjTy (ty : ClosedTy) : Bool :=
+  ty == (.ptr (.struct #[("length", .prim .i64), ("data", .rawPtr)]) : ClosedTy)
+
 /-- Get payload field types from a tagged union -/
 def getTaggedPayloadTy (taggedTy : ClosedTy) (variantIdx : Nat) (fieldIdx : Nat) : ClosedTy :=
   match taggedTy with
@@ -492,10 +496,17 @@ partial def emitEraseForType (valRef : LLVMValue) (ty : ClosedTy) : CodegenM Uni
   match ty with
   | .prim _ | .funcPtr _ _ =>
     pure ()
-  | .rawPtr | .ptr _ =>
-    -- Opaque/typed pointer: delegate to runtime for tag-based dispatch
+  | .rawPtr =>
+    -- Opaque pointer: delegate to runtime for tag-based dispatch
     CodegenM.withFuncBuilder do
       FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, valRef)]
+  | .ptr _ =>
+    if isStringObjTy ty then
+      CodegenM.withFuncBuilder do
+        FuncBuilder.callNamedVoid "soma_era_string" #[(.ptr, valRef)]
+    else
+      CodegenM.withFuncBuilder do
+        FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, valRef)]
   | .tagged _ _ =>
     -- Tagged union {i32, ptr}: free the payload buffer via runtime helper
     -- that reads the count prefix and recursively frees pointer-valued fields.
@@ -520,8 +531,19 @@ partial def emitEraseForType (valRef : LLVMValue) (ty : ClosedTy) : CodegenM Uni
             FuncBuilder.extractvalue llvmTy valRef #[i]
           emitEraseForType (.local fieldRef) fieldTy
   | .array _ _ =>
-    -- todo
-    pure ()
+    -- Arrays are value types at this level so we recursively erase elements that own memory
+    let elemTy := getArrayElemTy ty
+    if elemTy.needsErase then
+      let llvmArrTy := convertTy ty
+      match ty with
+      | .array _ size =>
+        for i in [:size] do
+          let elemRef ← CodegenM.withFuncBuilder do
+            FuncBuilder.extractvalue llvmArrTy valRef #[i]
+          emitEraseForType (.local elemRef) elemTy
+      | _ => pure ()
+    else
+      pure ()
   | .var _ =>
     -- Should not occur at closed type level (nomatch in convertTy)
     pure ()
@@ -1387,6 +1409,14 @@ def addRuntimeDeclarations : CodegenM Unit := do
 
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
+      name := "soma_era_string"
+      retTy := .void
+      params := #[{ name := "ptr", ty := .ptr }]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
       name := "soma_era_tagged_payload"
       retTy := .void
       params := #[{ name := "payload", ty := .ptr }]
@@ -1432,7 +1462,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_to_cstring"
       retTy := .ptr
-      params := #[{ name := "str", ty := .i64 }]
+      params := #[{ name := "str", ty := .ptr }]
       isDeclaration := true
     }
 

@@ -321,26 +321,26 @@ def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
 open Soma.Core (Value StarPrimitive HigherPrimitive)
 open Soma.Unique
 
-/-- Convert a StarPrimitive to Alloy PrimTy -/
-def convertStarPrimitive : StarPrimitive → PrimTy
-  | .int => .i32
-  | .long => .i64
-  | .short => .i16
-  | .byte => .i8
-  | .float => .f32
-  | .double => .f64
-  | .bool => .bool
-  | .string => .i64 -- String is a pointer
-  | .unit => .unit
-  | .closurePtr => .i64 -- Closure pointer
-  | .int8 => .i8
-  | .int16 => .i16
-  | .int32 => .i32
-  | .int64 => .i64
-  | .word8 => .u8
-  | .word16 => .u16
-  | .word32 => .u32
-  | .word64 => .u64
+/-- Convert a StarPrimitive to an Alloy type -/
+def convertStarPrimitive : StarPrimitive → Ty n
+  | .int => .prim .i32
+  | .long => .prim .i64
+  | .short => .prim .i16
+  | .byte => .prim .i8
+  | .float => .prim .f32
+  | .double => .prim .f64
+  | .bool => .prim .bool
+  | .string => Ty.string
+  | .unit => .prim .unit
+  | .closurePtr => .rawPtr
+  | .int8 => .prim .i8
+  | .int16 => .prim .i16
+  | .int32 => .prim .i32
+  | .int64 => .prim .i64
+  | .word8 => .prim .u8
+  | .word16 => .prim .u16
+  | .word32 => .prim .u32
+  | .word64 => .prim .u64
 
 /-- Convert a HigherPrimitive to Alloy Ty -/
 def convertHigherPrimitive : HigherPrimitive → Ty n
@@ -373,7 +373,7 @@ partial def extractRowVariantsWithMapping (row : Value) (mapping : TyVarMapping 
 partial def convertValueTypeWithMapping (val : Value) (mapping : TyVarMapping n) : Ty n :=
   match val with
   -- Primitive types
-  | Value.vPrimTy prim => .prim (convertStarPrimitive prim)
+  | Value.vPrimTy prim => convertStarPrimitive prim
 
   | Value.vPi _ _ _ dom cod =>
     let domTy := convertValueTypeWithMapping dom mapping
@@ -427,7 +427,7 @@ partial def convertValueTypeWithMapping (val : Value) (mapping : TyVarMapping n)
   | Value.vRefl _ _ => .prim .unit
   | Value.vTransport _ _ _ _ _ _ _ => .prim .i64
   | Value.vIntLit _ => .prim .i32
-  | Value.vStringLit _ => .rawPtr
+  | Value.vStringLit _ => Ty.string
 
 end
 
@@ -684,25 +684,10 @@ def lowerMat (expectedTag : Nat) (scrutinee : LocalId) : LowerM n (LocalId × Bl
 
   pure (cond, thenBlock, elseBlock)
 
-/-- Lower a string literal -/
-def lowerString (stringIdx : Nat) (len : Nat) : LowerM n LocalId := do
-  let stringSize := 16
-  let stringPtr ← LowerM.emitInst (.malloc (.const (.int (Int.ofNat stringSize) .u64))) .rawPtr
-
-  -- Store length
-  let lenVal ← LowerM.emitInst (.copy (.const (.int (Int.ofNat len) .u64))) (.prim .u64)
-  LowerM.emitVoid (.store (.local stringPtr) (.local lenVal))
-
-  -- Store data pointer
-  let baseAsI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local stringPtr)) (.prim .i64)
-  let offset8 ← LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64)
-  let dataPtrAddr ← LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset8) (.prim .i64)) (.prim .i64)
-  let dataPtrSlot ← LowerM.emitInst (.unOp .inttoptr (.local dataPtrAddr)) .rawPtr
-
-  -- Reference the string data directly from the global string table
-  let dataPtr ← LowerM.emitInst (.copy (.const (.string stringIdx len))) .rawPtr
-  LowerM.emitVoid (.store (.local dataPtrSlot) (.local dataPtr))
-  LowerM.emitInst (.unOp (.ptrtoint .i64) (.local stringPtr)) (.prim .i64)
+/-- Lower a string literal via runtime allocation for uniform ownership semantics -/
+def lowerString (stringIdx : Nat) (_len : Nat) : LowerM n LocalId := do
+  let cstr ← LowerM.emitInst (.copy (.const (.string stringIdx 0))) .rawPtr
+  LowerM.emitInst (.callIntrinsic .fromCString #[.local cstr] Ty.string) Ty.string
 
 /-- Mapping from Circuit book index to Alloy FuncId -/
 abbrev FuncIdMap := Std.HashMap Nat FuncId
@@ -761,6 +746,24 @@ partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : F
   let ns' ← get
   if let some cached := ns'.results.get? (port.node.id * 1000 + port.port.idx) then
     return cached
+
+  -- Deferred SUP projection for heap DUPs
+  if port.port.idx == 1 || port.port.idx == 2 then
+    match graph.getNode port.node with
+    | some entry =>
+      match entry.node with
+      | .dup _ =>
+        let nodeTy := getNodeTypeWithMapping entry ns'.tyVarMapping
+        if nodeTy.dupTier == .heap && !nodeTy.canInlineDup then
+          let projVal ←
+            if port.port.idx == 1 then
+              StateT.lift (LowerM.emitInst (.supProj0 (.local nodeResult) nodeTy) nodeTy)
+            else
+              StateT.lift (LowerM.emitInst (.supProj1 (.local nodeResult) nodeTy) nodeTy)
+          modify fun s => { s with results := s.results.insert (port.node.id * 1000 + port.port.idx) projVal }
+          return projVal
+      | _ => pure ()
+    | none => pure ()
   pure nodeResult
 
 /-- Lower a node with FuncId mapping for closure references -/
@@ -1032,16 +1035,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         pure inputVal
       else
         -- Runtime SUP: lazy duplication via superposition nodes.
-        -- DUP-SUP same-label annihilates in O(1); DUP-ERA annihilates
-        -- without copying. Closures and ADTs are cloned incrementally
         let supVal ← StateT.lift (LowerM.emitInst (.lazySup label.id (.local inputVal) nodeTy) nodeTy)
-        let copy0 ← StateT.lift (LowerM.emitInst (.supProj0 (.local supVal) nodeTy) nodeTy)
-        let copy1 ← StateT.lift (LowerM.emitInst (.supProj1 (.local supVal) nodeTy) nodeTy)
-        modify fun ns => { ns with
-          results := ns.results.insert (nodeId.id * 1000 + 1) copy0
-                     |>.insert (nodeId.id * 1000 + 2) copy1
-        }
-        pure inputVal
+        pure supVal
 
   | .sup _ => do
     lowerPort 1

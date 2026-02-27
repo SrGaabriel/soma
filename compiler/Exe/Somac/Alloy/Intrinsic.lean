@@ -120,7 +120,7 @@ def intrinsicOpSignature (op : IntrinsicOp) : ClosedSignature :=
     { name
     , params := #[
         { id := ⟨0⟩, name := "env", ty := .rawPtr },
-        { id := ⟨1⟩, name := "str", ty := .rawPtr }
+        { id := ⟨1⟩, name := "str", ty := Ty.string }
       ]
     , retTy := .rawPtr
     , isClosure := true
@@ -131,7 +131,7 @@ def intrinsicOpSignature (op : IntrinsicOp) : ClosedSignature :=
         { id := ⟨0⟩, name := "env", ty := .rawPtr },
         { id := ⟨1⟩, name := "cstr", ty := .rawPtr }
       ]
-    , retTy := .rawPtr
+    , retTy := Ty.string
     , isClosure := true
     }
   | .cstringLen =>
@@ -147,10 +147,10 @@ def intrinsicOpSignature (op : IntrinsicOp) : ClosedSignature :=
     { name
     , params := #[
         { id := ⟨0⟩, name := "env", ty := .rawPtr },
-        { id := ⟨1⟩, name := "a", ty := .rawPtr },
-        { id := ⟨2⟩, name := "b", ty := .rawPtr }
+        { id := ⟨1⟩, name := "a", ty := Ty.string },
+        { id := ⟨2⟩, name := "b", ty := Ty.string }
       ]
-    , retTy := .rawPtr
+    , retTy := Ty.string
     , isClosure := true
     }
   | .intToString =>
@@ -159,7 +159,7 @@ def intrinsicOpSignature (op : IntrinsicOp) : ClosedSignature :=
         { id := ⟨0⟩, name := "env", ty := .rawPtr },
         { id := ⟨1⟩, name := "val", ty := .prim .i32 }
       ]
-    , retTy := .rawPtr
+    , retTy := Ty.string
     , isClosure := true
     }
   | .pureIO =>

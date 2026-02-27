@@ -263,7 +263,9 @@ SomaValue soma_proj0(SomaValue sup_val) {
             if (inner->label == sup->label) {
                 /* Same-label annihilation: return inner's first value directly */
                 SomaValue result = (SomaValue)inner->value;
+                sup->value = (void*)result;
                 sup->proj0 = (void*)result;
+                soma_pool_free_sup(inner);
                 return result;
             }
         }
@@ -289,7 +291,9 @@ SomaValue soma_proj0(SomaValue sup_val) {
             SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
             if (inner->label == sup->label) {
                 SomaValue result = (SomaValue)inner->value;
+                sup->value = (void*)result;
                 sup->proj0 = (void*)result;
+                soma_pool_free_sup(inner);
                 return result;
             }
             /* Different label — pass through (implicit commutation) */
@@ -335,7 +339,9 @@ SomaValue soma_proj1(SomaValue sup_val) {
             SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
             if (inner->label == sup->label) {
                 SomaValue result = (SomaValue)inner->value;
+                sup->value = (void*)result;
                 sup->proj1 = (void*)result;
+                soma_pool_free_sup(inner);
                 return result;
             }
         }
@@ -361,7 +367,9 @@ SomaValue soma_proj1(SomaValue sup_val) {
             SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
             if (inner->label == sup->label) {
                 SomaValue result = (SomaValue)inner->value;
+                sup->value = (void*)result;
                 sup->proj1 = (void*)result;
+                soma_pool_free_sup(inner);
                 return result;
             }
             /* Different label — pass through */
@@ -460,6 +468,16 @@ void* soma_clone_closure(void* closure_ptr) {
     return new_closure;
 }
 
+void soma_era_string(void* value) {
+    if (value == NULL) return;
+
+    SomaString* s = (SomaString*)value;
+    if (s->data != NULL) {
+        free(s->data);
+    }
+    free(s);
+}
+
 /*
  * soma_era_free — Free a heap-allocated value (ERA node)
  *
@@ -526,12 +544,11 @@ void soma_era_tagged_payload(void* payload) {
  * ============================================================================
  */
 
-char* soma_to_cstring(SomaValue str) {
-    if (!SOMA_IS_PTR(str) || str == 0) {
+char* soma_to_cstring(SomaString* str) {
+    if (str == NULL) {
         return NULL;
     }
-    SomaString* s = (SomaString*)SOMA_TO_PTR(str);
-    return s->data;
+    return str->data;
 }
 
 SomaString* soma_from_cstring(const char* cstr) {

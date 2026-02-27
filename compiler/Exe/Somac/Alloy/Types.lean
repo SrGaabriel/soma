@@ -186,6 +186,7 @@ def u64 : Ty n := .prim .u64
 def u32 : Ty n := .prim .u32
 def bool : Ty n := .prim .bool
 def unit : Ty n := .prim .unit
+def string : Ty n := .ptr (.struct #[("length", .prim .i64), ("data", .rawPtr)])
 
 /-- Size in bytes -/
 partial def sizeBytes (ty : Ty n) : Nat :=
@@ -502,10 +503,10 @@ def fixedRetTy : IntrinsicOp → Option ClosedTy
   | .ptrWrite => some (.prim .unit)
   | .ptrCast => some .rawPtr
   | .toCString => some .rawPtr
-  | .fromCString => some .rawPtr
+  | .fromCString => some Ty.string
   | .cstringLen => some (.prim .u64)
-  | .strcat => some .rawPtr
-  | .intToString => some .rawPtr
+  | .strcat => some Ty.string
+  | .intToString => some Ty.string
   | .pureIO => none
 
 end IntrinsicOp
