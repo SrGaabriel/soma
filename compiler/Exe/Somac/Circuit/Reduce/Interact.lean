@@ -37,6 +37,30 @@ def computeOp1 (op : Op1Code) (val : UInt32) : UInt32 :=
   | .not => if val == 0 then 1 else 0
   | .neg => 0 - val
 
+/-- Result of algebraic simplification attempt -/
+inductive AlgSimplification where
+  /-- Result is the other operand -/
+  | identity
+  /-- Result is a constant value -/
+  | absorb (val : UInt32)
+
+/-- Check if a binary operation with one concrete operand can be algebraically simplified -/
+def algebraicSimplify? (op : Op2Code) (val : UInt32) (constIsLeft : Bool)
+    : Option AlgSimplification :=
+  match op with
+  | .add => if val == 0 then some .identity else none
+  | .sub => if val == 0 && !constIsLeft then some .identity else none
+  | .mul =>
+    if val == 0 then some (.absorb 0)
+    else if val == 1 then some .identity
+    else none
+  | .and => if val == 0 then some (.absorb 0) else none
+  | .or  => if val == 0 then some .identity else none
+  | .xor => if val == 0 then some .identity else none
+  | .shl => if val == 0 && !constIsLeft then some .identity else none
+  | .shr => if val == 0 && !constIsLeft then some .identity else none
+  | _ => none
+
 mutual
 
 /-- Connect an ERA node to whatever is connected to the given port, consuming that subgraph -/
@@ -518,8 +542,51 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
           ReduceM.removeNode rightId
           whnf demandPort
         | .error e => throw e
-      | _ => pure nid -- stuck: right operand not numeric/sup/era
-    | _ => pure nid -- stuck: left operand not numeric/sup/era
+      | _ =>
+        -- Right operand stuck: check algebraic identities with left as constant
+        match algebraicSimplify? op vL true with
+        | some .identity =>
+          ReduceM.modifyStats (·.incArithmetic)
+          ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨2⟩⟩
+          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
+          ReduceM.removeNode nid
+          ReduceM.removeNode leftId
+          whnf demandPort
+        | some (.absorb absorbVal) =>
+          ReduceM.modifyStats (·.incArithmetic)
+          erasePort ⟨nid, ⟨2⟩⟩
+          let resultNode ← ReduceM.addNode (.num ptL absorbVal) leftEntry.ty
+          ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resultNode)
+          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
+          ReduceM.removeNode nid
+          ReduceM.removeNode leftId
+          whnf demandPort
+        | none => pure nid
+    | _ =>
+      -- Left operand stuck: speculatively evaluate right for algebraic identity
+      let rightId ← whnf ⟨nid, ⟨2⟩⟩
+      let rightEntry ← ReduceM.getNode rightId
+      match rightEntry.node with
+      | .num ptR vR =>
+        match algebraicSimplify? op vR false with
+        | some .identity =>
+          ReduceM.modifyStats (·.incArithmetic)
+          ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨1⟩⟩
+          ReduceM.disconnect ⟨nid, ⟨2⟩⟩
+          ReduceM.removeNode nid
+          ReduceM.removeNode rightId
+          whnf demandPort
+        | some (.absorb absorbVal) =>
+          ReduceM.modifyStats (·.incArithmetic)
+          erasePort ⟨nid, ⟨1⟩⟩
+          let resultNode ← ReduceM.addNode (.num ptR absorbVal) rightEntry.ty
+          ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal resultNode)
+          ReduceM.disconnect ⟨nid, ⟨2⟩⟩
+          ReduceM.removeNode nid
+          ReduceM.removeNode rightId
+          whnf demandPort
+        | none => pure nid
+      | _ => pure nid
 
   -- Unary operation
   | .op1 op => do
@@ -695,7 +762,8 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
     ReduceM.consumeFuel
     let def_ ← ReduceM.getDefinition refId
     if def_.isExternal then
-      -- External function: cannot reduce further
+      pure nid
+    else if (← ReduceM.isNormalizingDef refId) then
       pure nid
     else
       ReduceM.modifyStats (·.incInstantiation)
@@ -716,6 +784,8 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
     ReduceM.consumeFuel
     let def_ ← ReduceM.getDefinition refId
     if def_.isExternal then
+      pure nid
+    else if (← ReduceM.isNormalizingDef refId) then
       pure nid
     else
       ReduceM.modifyStats (·.incInstantiation)

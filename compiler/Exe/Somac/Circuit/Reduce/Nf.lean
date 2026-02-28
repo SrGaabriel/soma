@@ -8,9 +8,6 @@ open Somac.Circuit.Node (Node NodeId PortId PortIdx)
 def nfChildren (recurse : PortId → ReduceM NodeId)
     (nid : NodeId) (node : Node) : ReduceM Unit := do
   match node with
-  -- Lambda: body only (port 2). Port 1 connects into consumers.
-  | .lam _ =>
-    let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
   -- Data nodes: all fields (tree-structured, no recursive refs)
   | .ctor _ arity =>
     for i in [:arity] do let _ ← recurse ⟨nid, ⟨i + 1⟩⟩
@@ -26,14 +23,63 @@ def nfChildren (recurse : PortId → ReduceM NodeId)
     let _ ← recurse ⟨nid, ⟨1⟩⟩; let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
   | .op1 _ | .proj _ =>
     let _ ← recurse ⟨nid, ⟨1⟩⟩; pure ()
-  -- Terminal: MAT (branches may recurse), DUP (consumers), NUM/ERA/REF/ALO (leaves)
+  -- Erased LAM: var connects to ERA (no DUP cycle), body normalization is safe
+  | .lam true =>
+    let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
+  -- Non-erased LAM: only safe if var is used linearly (no DUP)
+  | .lam false => do
+    match ← ReduceM.getConnection ⟨nid, ⟨1⟩⟩ with
+    | some target =>
+      let varEntry ← ReduceM.getNode target.node
+      match varEntry.node with
+      | .dup _ => pure ()
+      | _ => let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
+    | none => let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
+  -- Stuck MAT: scrutinee was already WHNF'd so we can normalize all sub-expressions!
+  -- Safe because normalizingDefs guards prevent infinite recursive instantiation
+  | .mat _ =>
+    let _ ← recurse ⟨nid, ⟨1⟩⟩
+    let _ ← recurse ⟨nid, ⟨2⟩⟩
+    let _ ← recurse ⟨nid, ⟨3⟩⟩
+    pure ()
+  -- Terminal: DUP (consumers), NUM/ERA/REF/ALO (leaves)
   | _ => pure ()
+
+/-- Try eta-reduction: λx. f x → f -/
+def tryEtaReduce (nid : NodeId) : ReduceM Bool := do
+  -- LAM.var (port 1) must connect to APP.arg (port 2) of some APP
+  let some varTarget ← ReduceM.getConnection ⟨nid, ⟨1⟩⟩ | return false
+  if varTarget.port.idx != 2 then return false
+  let varEntry ← ReduceM.getNode varTarget.node
+  match varEntry.node with
+  | .app => pure ()
+  | _ => return false
+  -- LAM.body (port 2) must connect to the same APP's principal (port 0)
+  let some bodyTarget ← ReduceM.getConnection ⟨nid, ⟨2⟩⟩ | return false
+  if bodyTarget.node != varTarget.node || !bodyTarget.port.isPrincipal then return false
+  -- Eta pattern confirmed: λx. f x → f
+  let appId := varTarget.node
+  ReduceM.modifyStats (·.incEta)
+  ReduceM.link ⟨nid, .principal⟩ ⟨appId, ⟨1⟩⟩
+  ReduceM.disconnect ⟨nid, ⟨1⟩⟩
+  ReduceM.disconnect ⟨nid, ⟨2⟩⟩
+  ReduceM.removeNode nid
+  ReduceM.removeNode appId
+  return true
 
 /-- Evaluate to full normal form: reduce to WHNF, then recursively normalize safe sub-expressions -/
 partial def nf (demandPort : PortId) : ReduceM NodeId := do
   let nid ← whnf demandPort
-  let entry ← ReduceM.getNode nid
-  nfChildren nf nid entry.node
+  let target ← ReduceM.follow demandPort
+  if target.port.isPrincipal then
+    let entry ← ReduceM.getNode nid
+    match entry.node with
+    | .lam false =>
+      if (← tryEtaReduce nid) then
+        return ← nf demandPort
+      else
+        nfChildren nf nid entry.node
+    | _ => nfChildren nf nid entry.node
   pure nid
 
 end Somac.Circuit.Reduce

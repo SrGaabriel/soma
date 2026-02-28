@@ -4,6 +4,7 @@ import Somac.Circuit.Term
 import Soma.Core.Value
 import Soma.Core.Intrinsic
 import Std.Data.HashMap
+import Std.Data.HashSet
 
 namespace Somac.Circuit.Reduce
 
@@ -100,6 +101,8 @@ structure Stats where
   supCommutations : Nat := 0
   /-- ERA absorptions at computation nodes (APP-ERA, OP2-ERA, MAT-ERA, etc.) -/
   eraAbsorptions : Nat := 0
+  /-- Eta reductions (λx. f x → f) -/
+  etaReductions : Nat := 0
   /-- Peak node count observed during reduction -/
   peakNodes : Nat := 0
   /-- Maximum WHNF evaluation stack depth reached -/
@@ -147,6 +150,9 @@ def incSupCommutation (s : Stats) : Stats :=
 def incEraAbsorption (s : Stats) : Stats :=
   { s with totalSteps := s.totalSteps + 1, eraAbsorptions := s.eraAbsorptions + 1 }
 
+def incEta (s : Stats) : Stats :=
+  { s with totalSteps := s.totalSteps + 1, etaReductions := s.etaReductions + 1 }
+
 def updatePeakNodes (s : Stats) (n : Nat) : Stats :=
   { s with peakNodes := max s.peakNodes n }
 
@@ -169,6 +175,7 @@ def merge (a b : Stats) : Stats :=
     useReductions      := a.useReductions + b.useReductions
     supCommutations    := a.supCommutations + b.supCommutations
     eraAbsorptions     := a.eraAbsorptions + b.eraAbsorptions
+    etaReductions      := a.etaReductions + b.etaReductions
     peakNodes          := max a.peakNodes b.peakNodes
     maxStackDepth      := max a.maxStackDepth b.maxStackDepth }
 
@@ -190,6 +197,7 @@ instance : ToString Stats where
       s!"  USE reductions:        {s.useReductions}",
       s!"  SUP commutations:      {s.supCommutations}",
       s!"  ERA absorptions:       {s.eraAbsorptions}",
+      s!"  Eta reductions:        {s.etaReductions}",
       s!"  Peak nodes:            {s.peakNodes}",
       s!"  Max stack depth:       {s.maxStackDepth}"
     ]
@@ -357,6 +365,8 @@ structure ReduceState where
   fuel : Nat
   /-- Configuration -/
   config : Config
+  /-- Definitions currently being normalized by nf (recursion guard) -/
+  normalizingDefs : Std.HashSet Nat := {}
   deriving Inhabited
 
 /-- The reduction monad -/
@@ -479,6 +489,18 @@ def getDefinition (refId : Nat) : ReduceM Definition := do
 /-- Update a definition's root node in the book -/
 def updateDefinitionRoot (idx : Nat) (newRoot : NodeId) : ReduceM Unit :=
   modifyGraph (·.updateDefinitionRoot idx newRoot)
+
+/-- Check if a definition is currently being normalized (recursion guard) -/
+def isNormalizingDef (refId : Nat) : ReduceM Bool := do
+  return (← get).normalizingDefs.contains refId
+
+/-- Mark a definition as currently being normalized -/
+def addNormalizingDef (refId : Nat) : ReduceM Unit :=
+  modify fun s => { s with normalizingDefs := s.normalizingDefs.insert refId }
+
+/-- Remove a definition from the normalizing set -/
+def removeNormalizingDef (refId : Nat) : ReduceM Unit :=
+  modify fun s => { s with normalizingDefs := s.normalizingDefs.erase refId }
 
 end ReduceM
 

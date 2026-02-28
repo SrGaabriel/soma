@@ -7,8 +7,8 @@ import Soma.Core.Intrinsic
 
 namespace Somac.Circuit.Reduce
 
-open Somac.Circuit.Graph (Graph)
-open Somac.Circuit.Node (NodeId PortId)
+open Somac.Circuit.Graph (Graph NodeEntry)
+open Somac.Circuit.Node (Node NodeId PortId)
 open Soma.Core (Intrinsic)
 
 /-- Result of a reduction: the final value plus statistics -/
@@ -61,25 +61,66 @@ def eval (graph : Graph) (config : Config := .forPartialEval) : IO ReadbackValue
 def interpret (graph : Graph) (fuel : Nat := 1000000) : IO ReduceResult :=
   reduce graph { Config.forTotalEval with fuel }
 
+/-- Compute a dependency-ordered processing sequence for definitions -/
+private def defProcessingOrder (g : Graph) : Array Nat := Id.run do
+  let n := g.book.size
+  if n == 0 then return #[]
+  let mut depCount : Array Nat := Array.mk (List.replicate n 0)
+  let mut rdeps : Array (Array Nat) := Array.mk (List.replicate n #[])
+  for i in [:n] do
+    if let some def_ := g.book[i]? then
+      if !def_.isExternal then
+        let reachable := g.reachableFrom (PortId.principal def_.root)
+        let mut seen : Std.HashSet Nat := {}
+        for nid in reachable do
+          if let some entry := g.getNode nid then
+            match entry.node with
+            | .alo refId | .ref refId =>
+              if refId != i && refId < n && !seen.contains refId then
+                seen := seen.insert refId
+                depCount := depCount.set! i (depCount[i]! + 1)
+                rdeps := rdeps.set! refId (rdeps[refId]!.push i)
+            | _ => ()
+  let mut queue : Array Nat := #[]
+  for i in [:n] do
+    if depCount[i]! == 0 then queue := queue.push i
+  let mut result : Array Nat := #[]
+  let mut qi := 0
+  for _ in [:n] do
+    if qi >= queue.size then break
+    let cur := queue[qi]!
+    qi := qi + 1
+    result := result.push cur
+    for dependent in rdeps[cur]! do
+      let newCount := depCount[dependent]! - 1
+      depCount := depCount.set! dependent newCount
+      if newCount == 0 then
+        queue := queue.push dependent
+  if result.size < n then
+    let mut inResult : Std.HashSet Nat := {}
+    for i in result do inResult := inResult.insert i
+    for i in [:n] do
+      if !inResult.contains i then result := result.push i
+  result
+
 /-- Run one pass of partial evaluation over all definitions -/
 private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) := do
+  let order := defProcessingOrder graph
   let (result, state) ← ReduceM.run (do
-    let g ← ReduceM.getGraph
-    for i in [:g.book.size] do
+    for i in order do
       let g' ← ReduceM.getGraph
       if let some def_ := g'.book[i]? then
         if !def_.isExternal then
-          -- Wire a temporary ERA as demand endpoint to the definition root
           let era ← ReduceM.addNode .era
           ReduceM.connect (PortId.principal era) (PortId.principal def_.root)
-          -- Normalize the definition's subgraph
+          ReduceM.addNormalizingDef i
           let resultId ← nf (PortId.principal era)
-          -- Update the definition root if it changed
+          ReduceM.removeNormalizingDef i
           if resultId != def_.root then
             ReduceM.updateDefinitionRoot i resultId
-          -- Clean up the temporary demand node
           ReduceM.disconnect (PortId.principal era)
           ReduceM.removeNode era
+    pure ()
   ) graph { Config.forPartialEval with fuel }
   match result with
   | .ok _ => return (state.graph, state.stats)
@@ -99,7 +140,8 @@ def partialEval (graph : Graph) (fuel : Nat := 1000000) (maxPasses : Nat := 8)
       g := g'
       break
     remainingFuel := remainingFuel - (min passStats.totalSteps remainingFuel)
-    g := g'
+    let (swept, _) := g'.sweep
+    g := swept
   let (compacted, _) := g.sweep
   return (compacted, totalStats)
 
