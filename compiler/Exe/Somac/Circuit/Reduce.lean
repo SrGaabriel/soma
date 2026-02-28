@@ -1,5 +1,5 @@
 import Somac.Circuit.Reduce.Types
-import Somac.Circuit.Reduce.Interact
+import Somac.Circuit.Reduce.Nf
 import Somac.Circuit.Reduce.Readback
 import Somac.Circuit.Graph
 import Somac.Circuit.Node
@@ -61,13 +61,47 @@ def eval (graph : Graph) (config : Config := .forPartialEval) : IO ReadbackValue
 def interpret (graph : Graph) (fuel : Nat := 1000000) : IO ReduceResult :=
   reduce graph { Config.forTotalEval with fuel }
 
-/-- Reduce a graph in partial evaluation mode -/
-def partialEval (graph : Graph) (fuel : Nat := 1000000) : IO (Graph × Stats) := do
-  let (_result, state) ← ReduceM.run (do
-    let _rootId ← nf (← ReduceM.getGraph).root
-    pure ()
+/-- Run one pass of partial evaluation over all definitions -/
+private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) := do
+  let (result, state) ← ReduceM.run (do
+    let g ← ReduceM.getGraph
+    for i in [:g.book.size] do
+      let g' ← ReduceM.getGraph
+      if let some def_ := g'.book[i]? then
+        if !def_.isExternal then
+          -- Wire a temporary ERA as demand endpoint to the definition root
+          let era ← ReduceM.addNode .era
+          ReduceM.connect (PortId.principal era) (PortId.principal def_.root)
+          -- Normalize the definition's subgraph
+          let resultId ← nf (PortId.principal era)
+          -- Update the definition root if it changed
+          if resultId != def_.root then
+            ReduceM.updateDefinitionRoot i resultId
+          -- Clean up the temporary demand node
+          ReduceM.disconnect (PortId.principal era)
+          ReduceM.removeNode era
   ) graph { Config.forPartialEval with fuel }
-  return (state.graph, state.stats)
+  match result with
+  | .ok _ => return (state.graph, state.stats)
+  | .error _ => return (state.graph, state.stats)
+
+/-- Partially evaluate each definition in the graph's book -/
+def partialEval (graph : Graph) (fuel : Nat := 1000000) (maxPasses : Nat := 8)
+    : IO (Graph × Stats) := do
+  let mut g := graph
+  let mut totalStats : Stats := {}
+  let mut remainingFuel := fuel
+  for _ in [:maxPasses] do
+    if remainingFuel == 0 then break
+    let (g', passStats) ← partialEvalPass g remainingFuel
+    totalStats := totalStats.merge passStats
+    if passStats.totalSteps == 0 then
+      g := g'
+      break
+    remainingFuel := remainingFuel - (min passStats.totalSteps remainingFuel)
+    g := g'
+  let (compacted, _) := g.sweep
+  return (compacted, totalStats)
 
 /-- Build a configuration with intrinsics from the compiler's elaboration context -/
 def Config.withIntrinsics (config : Config) (intrinsics : Std.HashMap String Intrinsic)

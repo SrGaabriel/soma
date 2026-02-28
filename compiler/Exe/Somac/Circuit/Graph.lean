@@ -244,6 +244,13 @@ def addDefinition (g : Graph) (name : QualifiedName) (root : NodeId) (arity : Na
 def getDefinition (g : Graph) (idx : Nat) : Option Definition :=
   g.book[idx]?
 
+/-- Update a definition's root node -/
+def updateDefinitionRoot (g : Graph) (idx : Nat) (newRoot : NodeId) : Graph :=
+  if h : idx < g.book.size then
+    let def_ := g.book[idx]
+    { g with book := g.book.set idx { def_ with root := newRoot } }
+  else g
+
 /-- Look up a definition by name -/
 def findDefinition (g : Graph) (name : QualifiedName) : Option (Nat × Definition) :=
   (enumList g.book.toList).find? fun (_, d) => d.name == name
@@ -296,6 +303,35 @@ partial def reachableFrom (g : Graph) (start : PortId) : List NodeId :=
 def areConnected (g : Graph) (n1 n2 : NodeId) : Bool :=
   let reachable := g.reachableFrom (PortId.principal n1)
   reachable.any (· == n2)
+
+/-- Collect all node IDs reachable from multiple start ports -/
+partial def reachableFromAll (g : Graph) (starts : Array PortId) : Std.HashSet Nat :=
+  let rec go (visited : Std.HashSet Nat) (queue : List PortId) : Std.HashSet Nat :=
+    match queue with
+    | [] => visited
+    | p :: rest =>
+      if visited.contains p.node.id then go visited rest
+      else
+        let visited' := visited.insert p.node.id
+        match g.getNode p.node with
+        | some entry =>
+          let neighbors := entry.connections.filterMap fun (_, target) =>
+            if visited'.contains target.node.id then none else some target
+          go visited' (rest ++ neighbors.map (·))
+        | none => go visited' rest
+  go {} starts.toList
+
+/-- Remove all nodes not reachable from definition roots and graph root -/
+def sweep (g : Graph) : Graph × Nat :=
+  let starts := g.book.foldl (init := #[g.root]) fun acc def_ =>
+    acc.push (PortId.principal def_.root)
+  let live := g.reachableFromAll starts
+  let allIds := g.nodes.toList.map (·.1)
+  allIds.foldl (init := (g, 0)) fun (g', removed) id =>
+    if !live.contains id then
+      (g'.removeNode ⟨id⟩, removed + 1)
+    else
+      (g', removed)
 
 end Graph
 

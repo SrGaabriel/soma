@@ -153,6 +153,25 @@ def updatePeakNodes (s : Stats) (n : Nat) : Stats :=
 def updateStackDepth (s : Stats) (depth : Nat) : Stats :=
   { s with maxStackDepth := max s.maxStackDepth depth }
 
+/-- Accumulate stats from two passes -/
+def merge (a b : Stats) : Stats :=
+  { totalSteps         := a.totalSteps + b.totalSteps
+    betaReductions     := a.betaReductions + b.betaReductions
+    dupCommutations    := a.dupCommutations + b.dupCommutations
+    dupSupAnnihilations := a.dupSupAnnihilations + b.dupSupAnnihilations
+    dupSupCommutations := a.dupSupCommutations + b.dupSupCommutations
+    dupEraAnnihilations := a.dupEraAnnihilations + b.dupEraAnnihilations
+    eraPropagations    := a.eraPropagations + b.eraPropagations
+    matchReductions    := a.matchReductions + b.matchReductions
+    projections        := a.projections + b.projections
+    arithmeticOps      := a.arithmeticOps + b.arithmeticOps
+    instantiations     := a.instantiations + b.instantiations
+    useReductions      := a.useReductions + b.useReductions
+    supCommutations    := a.supCommutations + b.supCommutations
+    eraAbsorptions     := a.eraAbsorptions + b.eraAbsorptions
+    peakNodes          := max a.peakNodes b.peakNodes
+    maxStackDepth      := max a.maxStackDepth b.maxStackDepth }
+
 instance : ToString Stats where
   toString s :=
     let lines := #[
@@ -456,6 +475,10 @@ def getDefinition (refId : Nat) : ReduceM Definition := do
   match (← getGraph).getDefinition refId with
   | some def_ => pure def_
   | none => throw (.malformedGraph s!"definition {refId} not found in book")
+
+/-- Update a definition's root node in the book -/
+def updateDefinitionRoot (idx : Nat) (newRoot : NodeId) : ReduceM Unit :=
+  modifyGraph (·.updateDefinitionRoot idx newRoot)
 
 end ReduceM
 

@@ -99,15 +99,23 @@ def loadDependencyAlloyModules (deps : Array (String × System.FilePath))
     pure (.ok allModules)
 
 /-- Lower a single checked module to Alloy IR -/
-def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : Alloy.Module :=
+def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Alloy.Module := do
   -- Lambda lifting
   let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name
 
   -- Lower to Circuit IR
   let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals)
 
+  -- Partial evaluation
+  IO.println s!"  [{cm.name}] Circuit graph: {graph.nodes.size} node(s), {graph.book.size} definition(s)"
+  IO.println s!"  [{cm.name}] Before partial eval:\n{Circuit.ppGraph {} graph}"
+  let (optimized, stats) ← Circuit.partialEval graph
+  IO.println s!"  [{cm.name}] After partial eval: {optimized.nodes.size} node(s) ({stats.totalSteps} steps, {stats.betaReductions} β, {stats.matchReductions} mat, {stats.arithmeticOps} arith, {stats.eraPropagations} era)"
+  if stats.totalSteps > 0 then
+    IO.println s!"  [{cm.name}] After partial eval:\n{Circuit.ppGraph {} optimized}"
+
   -- Lower to Alloy MIR
-  Alloy.Lower.lower graph cm.name
+  return Alloy.Lower.lower optimized cm.name
 
 /-- Result of compilation pipeline -/
 structure CompileResult where
@@ -140,8 +148,10 @@ def compileModules
 
   -- Lower each module to Alloy IR
   IO.println "  Lowering to Alloy IR..."
-  let localAlloyModules : Array (String × Alloy.Module) := modules.map fun cm =>
-    (cm.name, lowerToAlloy cm mergedGlobals)
+  let mut localAlloyModules : Array (String × Alloy.Module) := #[]
+  for cm in modules do
+    let alloyMod ← lowerToAlloy cm mergedGlobals
+    localAlloyModules := localAlloyModules.push (cm.name, alloyMod)
 
   IO.println s!"  Generated {localAlloyModules.size} local Alloy module(s)"
 

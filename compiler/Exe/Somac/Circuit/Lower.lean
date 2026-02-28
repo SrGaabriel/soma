@@ -1305,7 +1305,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
         (isExternal := true)
 
   -- Set root to main function if it exists
-  -- Use ALO (allocation/instantiation) instead of REF because we want to actually exec
+  -- Wire an ERA demand node to the root ALO so demand-driven evaluation can proceed
   let ctx ← LowerM.getCtx
   let mainEntry := ctx.globals.toList.find? fun (name, _) => name.id.original == "main"
   match mainEntry with
@@ -1314,7 +1314,9 @@ def lowerModule (types : Array Soma.Core.TypeDef)
       | some typedFn => typedFn.fnType
       | none => unitTy
     let alo ← LowerM.addNode (.alo idx) mainTy
-    LowerM.setRoot (PortId.principal alo)
+    let era ← LowerM.addNode .era unitTy
+    LowerM.connect (PortId.principal era) (PortId.principal alo)
+    LowerM.setRoot (PortId.principal era)
   | none =>
     let era ← LowerM.addNode .era unitTy
     LowerM.setRoot (PortId.principal era)

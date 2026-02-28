@@ -126,27 +126,20 @@ static void tls_pool_cleanup(void) {
     tls_pools_initialized = 0;
 }
 
-/* Get the appropriate pools (TLS if available, global otherwise) */
+/* Get this thread's pools */
 static inline SomaPools* get_pools(void) {
-    if (tls_pools_initialized && tls_pools) {
-        return tls_pools;
-    }
-    return &soma_pools;
+    return tls_pools;
 }
 
 void soma_pool_init(void) {
 #ifdef SOMA_POOL_STATS
     memset(&soma_pool_stats, 0, sizeof(soma_pool_stats));
 #endif
-    pool_init(&soma_pools.pool_40, POOL_SIZE_40);
-    pool_init(&soma_pools.pool_48, POOL_SIZE_48);
-    pool_init(&soma_pools.pool_112, POOL_SIZE_112);
+    tls_pool_init();
 }
 
 void soma_pool_cleanup(void) {
-    pool_cleanup(&soma_pools.pool_40);
-    pool_cleanup(&soma_pools.pool_48);
-    pool_cleanup(&soma_pools.pool_112);
+    tls_pool_cleanup();
 }
 
 /*
@@ -680,98 +673,192 @@ void soma_era_string(void* value) {
 /*
  * soma_era_free — Free a heap-allocated value (ERA node)
  *
- * Recursively frees the value and its children. After linearization,
- * every value is used exactly once, so when ERA fires we have exclusive
- * ownership — no reference counting needed.
+ * Uses an explicit worklist instead of recursion to avoid stack overflow
+ * on deeply nested object graphs. A small inline stack handles the
+ * common case without any allocation; only pathological graphs spill
+ * to a heap-allocated worklist.
  */
+
+#define ERA_STACK_INLINE 64
+
 void soma_era_free(void* value) {
     if (value == NULL) return;
 
-    uint8_t tag = *(uint8_t*)value;
+    void*  stack_buf[ERA_STACK_INLINE];
+    void** stack = stack_buf;
+    int    sp    = 0;
+    int    cap   = ERA_STACK_INLINE;
 
-    if (tag == NODE_STRING) {
-        soma_era_string(value);
-        return;
-    }
-    if (tag == NODE_TAGGED_PAYLOAD) {
-        soma_era_tagged_payload(value);
-        return;
-    }
-    if (tag == NODE_ARRAY_HEADER) {
-        SomaPools* pools = get_pools();
-        SOMA_STAT_INC(small_frees);
-        pool_free(&pools->pool_48, value);
-        return;
-    }
+    stack[sp++] = value;
 
-    if (tag == NODE_CLOSURE) {
-        SomaClosure* closure = (SomaClosure*)value;
-        SomaValue* env = (SomaValue*)(closure + 1);
+    SomaPools* pools = get_pools();
 
-        /* Recursively free pointer-typed env slots */
-        for (uint16_t i = 0; i < closure->env_size; i++) {
-            if (SOMA_IS_PTR(env[i]) && env[i] != 0) {
-                soma_era_free(SOMA_TO_PTR(env[i]));
+    while (sp > 0) {
+        void* cur = stack[--sp];
+        if (cur == NULL) continue;
+
+        uint8_t tag = *(uint8_t*)cur;
+
+        /* --- leaf types: free immediately, no children --- */
+
+        if (tag == NODE_STRING) {
+            SomaString* s = (SomaString*)cur;
+            size_t total = sizeof(SomaString) + (size_t)s->length + 1;
+            if (total <= POOL_SIZE_48) {
+                SOMA_STAT_INC(small_frees);
+                pool_free(&pools->pool_48, cur);
+            } else if (total <= POOL_SIZE_112) {
+                SOMA_STAT_INC(medium_frees);
+                pool_free(&pools->pool_112, cur);
+            } else {
+                SOMA_STAT_INC(large_frees);
+                free(cur);
             }
+            continue;
         }
-        soma_pool_free_closure(value, closure->env_size);
 
-    } else if (IS_SUP(tag)) {
-        SomaSup* sup = (SomaSup*)value;
-        SomaValue candidates[3] = {
-            (SomaValue)sup->value,
-            (SomaValue)sup->proj0,
-            (SomaValue)sup->proj1
-        };
+        if (tag == NODE_ARRAY_HEADER) {
+            SOMA_STAT_INC(small_frees);
+            pool_free(&pools->pool_48, cur);
+            continue;
+        }
 
-        for (int i = 0; i < 3; i++) {
-            SomaValue child = candidates[i];
-            if (!SOMA_IS_PTR(child) || child == 0) continue;
-            if (SOMA_TO_PTR(child) == value) continue;
+        /* --- compound types: push children, then free the node --- */
 
-            int duplicate = 0;
-            for (int j = 0; j < i; j++) {
-                if (candidates[j] == child) {
-                    duplicate = 1;
-                    break;
+        /* Macro: ensure worklist capacity for N more entries */
+        #define ERA_ENSURE(n) do {                                     \
+            if (sp + (n) > cap) {                                      \
+                int new_cap = cap * 2;                                 \
+                while (new_cap < sp + (n)) new_cap *= 2;              \
+                if (stack == stack_buf) {                               \
+                    stack = (void**)malloc(new_cap * sizeof(void*));    \
+                    memcpy(stack, stack_buf, sp * sizeof(void*));       \
+                } else {                                               \
+                    stack = (void**)realloc(stack, new_cap * sizeof(void*)); \
+                }                                                      \
+                cap = new_cap;                                         \
+            }                                                          \
+        } while (0)
+
+        if (tag == NODE_CLOSURE) {
+            SomaClosure* closure = (SomaClosure*)cur;
+            SomaValue* env = (SomaValue*)(closure + 1);
+            uint16_t env_size = closure->env_size;
+
+            ERA_ENSURE(env_size);
+            for (uint16_t i = 0; i < env_size; i++) {
+                if (SOMA_IS_PTR(env[i]) && env[i] != 0) {
+                    stack[sp++] = SOMA_TO_PTR(env[i]);
                 }
             }
-            if (duplicate) continue;
 
-            soma_era_free(SOMA_TO_PTR(child));
+            size_t needed = sizeof(SomaClosure) + (env_size * sizeof(void*));
+            if (needed <= POOL_SIZE_48) {
+                SOMA_STAT_INC(small_frees);
+                pool_free(&pools->pool_48, cur);
+            } else if (needed <= POOL_SIZE_112) {
+                SOMA_STAT_INC(medium_frees);
+                pool_free(&pools->pool_112, cur);
+            } else {
+                SOMA_STAT_INC(large_frees);
+                free(cur);
+            }
+
+        } else if (tag == NODE_TAGGED_PAYLOAD) {
+            SomaTaggedPayload* p = (SomaTaggedPayload*)cur;
+            int64_t count = p->count;
+            SomaValue* fields = (SomaValue*)(p + 1);
+
+            ERA_ENSURE(count);
+            for (int64_t i = 0; i < count; i++) {
+                if (SOMA_IS_PTR(fields[i]) && fields[i] != 0) {
+                    stack[sp++] = SOMA_TO_PTR(fields[i]);
+                }
+            }
+
+            size_t total = sizeof(SomaTaggedPayload) + (size_t)count * sizeof(SomaValue);
+            if (total <= POOL_SIZE_48) {
+                SOMA_STAT_INC(small_frees);
+                pool_free(&pools->pool_48, cur);
+            } else if (total <= POOL_SIZE_112) {
+                SOMA_STAT_INC(medium_frees);
+                pool_free(&pools->pool_112, cur);
+            } else {
+                SOMA_STAT_INC(large_frees);
+                free(cur);
+            }
+
+        } else if (IS_SUP(tag)) {
+            SomaSup* sup = (SomaSup*)cur;
+
+            /*
+             * Tag-aware child collection — the SUP tag tells us exactly
+             * which fields are live and which alias each other:
+             *
+             *   FRESH  → only value is live (proj0/proj1 are NULL)
+             *   PROJ0  → proj0 == value (aliased), both point to the same object
+             *   PROJ1  → proj1 == value (aliased), both point to the same object
+             *   BOTH   → value is the original; one of proj0/proj1 is a clone
+             */
+            SomaValue v = (SomaValue)sup->value;
+
+            switch (sup->tag) {
+            case SUP_TAG_FRESH:
+            case SUP_TAG_PROJ0:
+            case SUP_TAG_PROJ1:
+                /* Single live value — free it once */
+                if (SOMA_IS_PTR(v) && v != 0) {
+                    ERA_ENSURE(1);
+                    stack[sp++] = SOMA_TO_PTR(v);
+                }
+                break;
+
+            case SUP_TAG_BOTH:
+            default: {
+                /* Original value + the clone (whichever proj differs from value) */
+                SomaValue p0 = (SomaValue)sup->proj0;
+                SomaValue p1 = (SomaValue)sup->proj1;
+                ERA_ENSURE(2);
+
+                if (SOMA_IS_PTR(v) && v != 0) {
+                    stack[sp++] = SOMA_TO_PTR(v);
+                }
+                /* Exactly one of p0/p1 is a clone (differs from value) */
+                if (p0 != v && SOMA_IS_PTR(p0) && p0 != 0) {
+                    stack[sp++] = SOMA_TO_PTR(p0);
+                }
+                if (p1 != v && SOMA_IS_PTR(p1) && p1 != 0) {
+                    stack[sp++] = SOMA_TO_PTR(p1);
+                }
+                break;
+            }
+            }
+
+            SOMA_STAT_INC(sup_frees);
+            pool_free(&pools->pool_40, cur);
+
+        } else {
+            /* Unknown heap object — use regular free */
+            free(cur);
         }
 
-        soma_pool_free_sup(value);
+        #undef ERA_ENSURE
+    }
 
-    } else {
-        /* Unknown heap object — use regular free */
-        free(value);
+    if (stack != stack_buf) {
+        free(stack);
     }
 }
 
 /*
  * soma_era_tagged_payload — Free a tagged union payload buffer
  *
- * Payload layout: [SomaTaggedPayload header, field0, field1, ...]
- * Each field is stored as a SomaValue. Fields that are heap pointers
- * (tag bits == TAG_PTR, non-null) are recursively freed via soma_era_free.
+ * Delegates to the iterative soma_era_free which handles tagged payloads
+ * inline.  Kept as a separate entry point for callers that have already
+ * identified the object type.
  */
 void soma_era_tagged_payload(void* payload) {
-    if (payload == NULL) return;
-
-    SomaTaggedPayload* p = (SomaTaggedPayload*)payload;
-    int64_t count = p->count;
-    SomaValue* fields = (SomaValue*)(p + 1);
-
-    for (int64_t i = 0; i < count; i++) {
-        SomaValue val = fields[i];
-        if (SOMA_IS_PTR(val) && val != 0) {
-            soma_era_free(SOMA_TO_PTR(val));
-        }
-    }
-
-    size_t total = sizeof(SomaTaggedPayload) + (size_t)count * sizeof(SomaValue);
-    soma_pool_free_tagged(payload, total);
+    soma_era_free(payload);
 }
 
 /*

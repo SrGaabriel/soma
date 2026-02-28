@@ -762,29 +762,4 @@ partial def whnfAtAuxiliary (nid : NodeId) (entry : NodeEntry) (_port : PortIdx)
 
 end -- mutual
 
-/-! ## Full Normal Form
-
-  `nf` evaluates to full normal form by first reducing to WHNF,
-  then recursively normalizing all sub-expressions.
--/
-
-/-- Evaluate to full normal form: reduce to WHNF, then normalize all fields -/
-partial def nf (demandPort : PortId) : ReduceM NodeId := do
-  let nid ← whnf demandPort
-  let entry ← ReduceM.getNode nid
-  match entry.node with
-  | .ctor _ arity =>
-    for i in [:arity] do
-      let _ ← nf ⟨nid, ⟨i + 1⟩⟩
-    pure nid
-  | .record numFields =>
-    for i in [:numFields] do
-      let _ ← nf ⟨nid, ⟨i + 1⟩⟩
-    pure nid
-  | .sup _ =>
-    let _ ← nf ⟨nid, ⟨1⟩⟩
-    let _ ← nf ⟨nid, ⟨2⟩⟩
-    pure nid
-  | _ => pure nid
-
 end Somac.Circuit.Reduce
