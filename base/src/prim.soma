@@ -1,3 +1,73 @@
+@[wired_in "type.int"]
+@[intrinsic]
+record Int
+
+@[wired_in "type.bool"]
+inductive Bool where
+    | True
+    | False
+
+@[wired_in "type.string"]
+@[intrinsic]
+record String
+
+@[wired_in "type.unit"]
+@[intrinsic]
+record Unit
+
+@[wired_in "type.int8"]
+@[intrinsic]
+record Int8
+
+@[wired_in "type.int16"]
+@[intrinsic]
+record Int16
+
+@[wired_in "type.int32"]
+@[intrinsic]
+record Int32
+
+@[wired_in "type.int64"]
+@[intrinsic]
+record Int64
+
+@[wired_in "type.word8"]
+@[intrinsic]
+record Word8
+
+@[wired_in "type.word16"]
+@[intrinsic]
+record Word16
+
+@[wired_in "type.word32"]
+@[intrinsic]
+record Word32
+
+@[wired_in "type.word64"]
+@[intrinsic]
+record Word64
+
+@[wired_in "type.float"]
+@[intrinsic]
+record Float
+
+@[wired_in "type.double"]
+@[intrinsic]
+record Double
+
+@[wired_in "type.list"]
+inductive List {a : Type} where
+    | Nil
+    | Cons (head : a) (tail : List a)
+
+@[wired_in "type.ptr"]
+@[intrinsic]
+record Ptr {a : Type}
+
+@[wired_in "type.io"]
+@[intrinsic]
+record IO {a : Type}
+
 @[intrinsic]
 def {+} : Int -> Int -> Int
 @[intrinsic]

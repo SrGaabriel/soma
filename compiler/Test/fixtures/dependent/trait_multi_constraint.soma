@@ -1,10 +1,10 @@
 // expect: success
 // Test: multiple class constraints
 
-class Eq a where
+class Eq (a : Type) where
     eq : a -> a -> Bool
 
-class Ord a where
+class Ord (a : Type) where
     compare : a -> a -> Int
 
 def sorted_eq (a : Type) : {{Eq a}} -> {{Ord a}} -> a -> a -> Bool

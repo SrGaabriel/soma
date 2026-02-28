@@ -477,18 +477,20 @@ def parseStructDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
   | some recordTok =>
       match ← parseUpperIdent with
       | some nameTok =>
-          let params ← parseTypeParams
+          let params ← parseInductiveBinders
+          let paramList := if params.isEmpty then #[]
+            else #[GreenNode.mkNode .tyParamList params]
           match ← tryConsume .kw_where with
           | some whereTok =>
               let fields ← layoutSepBy parseConstructorField
-              let paramList := if params.isEmpty then #[]
-                else #[GreenNode.mkNode .tyParamList params]
               let children := attrs ++ #[recordTok, nameTok] ++ paramList ++ #[whereTok] ++ fields
               return some (GreenNode.mkNode .declStruct children)
           | none =>
+              -- Bodiless record: only allowed with @[intrinsic]
+              if hasBodyProvidingAttr attrs then
+                let children := attrs ++ #[recordTok, nameTok] ++ paramList
+                return some (GreenNode.mkNode .declStruct children)
               recordError "expected 'where' in record declaration"
-              let paramList := if params.isEmpty then #[]
-                else #[GreenNode.mkNode .tyParamList params]
               return some (GreenNode.mkError "missing 'where'" (attrs ++ #[recordTok, nameTok] ++ paramList))
       | none =>
           recordError "expected record name after 'record'"
@@ -526,11 +528,14 @@ def parseTraitDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
   | some traitTok =>
       match ← parseUpperIdent with
       | some nameTok =>
-          -- Parse type parameters, supporting both simple vars and kinded vars like (f :: * -> *)
+          -- Parse type parameters
           let mut params : Array GreenNode := #[]
           while true do
             match ← parseForallBinder with
-            | some binder => params := params.push binder
+            | some binder =>
+                if binder.syntaxKind? == some .typeVar then
+                  recordError "class type parameters require explicit kind annotation, e.g., '(a : Type)'"
+                params := params.push binder
             | none => break
 
           let constraints ← if (← check .kw_with) then do

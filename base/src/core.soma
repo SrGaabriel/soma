@@ -1,3 +1,5 @@
+use base/prim
+
 @[extern "soma_strcat"]
 def strcat : String -> String -> String
 @[extern "soma_int_to_string"]
@@ -11,45 +13,48 @@ inductive Either {err : Type} {ok : Type} where
     | Err (error : err)
     | Ok (value : ok)
 
-class Display a where
-    def display : a -> String
+class Display (a : Type) where
+    display : a -> String
 
-class Semigroup a where
-    def {<>} : a -> a -> a
+class Semigroup (a : Type) where
+    {<>} : a -> a -> a
 
-class Monoid a with (Semigroup a) where
-    def mempty : a
-    def mconcat : [a] -> a
+class Monoid (a : Type) with (Semigroup a) where
+    mempty : a
+    mconcat : List a -> a
 
-class Functor f where
-    def fmap : (a -> b) -> f a -> f b
+class Functor (f : Type -> Type) where
+    fmap : ∀ a b. (a -> b) -> f a -> f b
 
-class Applicative f with (Functor f) where
-    def pure : a -> f a
-    def {<*>} : f (a -> b) -> f a -> f b
-    def {*>} : f a -> f b -> f b
-    def {<*} : f a -> f b -> f a
+class Applicative (f : Type -> Type) with (Functor f) where
+    pure : ∀ a. a -> f a
+    {<*>} : ∀ a b. f (a -> b) -> f a -> f b
+    {*>} : ∀ a b. f a -> f b -> f b
+    {<*} : ∀ a b. f a -> f b -> f a
 
-class Monad m with (Applicative m) where
-    def {>>=} : m a -> (a -> m b) -> m b
-    def {>>} : m a -> m b -> m b
+class Monad (m : Type -> Type) with (Applicative m) where
+    {>>=} : ∀ a b. m a -> (a -> m b) -> m b
+    {>>} : ∀ a b. m a -> m b -> m b
 
 instance Functor Option where
     def fmap : (a -> b) -> Option a -> Option b
-        | f (Some value) => Some (f value)
-        | f (None) => None
+        | f, (Option::Some value) => Option::Some (f value)
+        | _, Option::None => Option::None
 
 instance Display (Option a) with (Display a) where
     def display : Option a -> String
-        | (Some value) => "Some(" <> display value <> ")"
-        | (None) => "None"
+        | (Option::Some value) => strcat (strcat "Some(" (display value)) ")"
+        | Option::None => "None"
 
 instance Display String where
-    def display(str: String) -> String = str
+    def display : String -> String
+        | str => str
 
 instance Display Int where
-    def display(n: Int) -> String = int_to_string n
+    def display : Int -> String
+        | n => int_to_string n
 
 instance Semigroup String where
     @[inline]
-    def {<>}(s1: String, s2: String) -> String = strcat s1 s2
+    def {<>} : String -> String -> String
+        | s1, s2 => strcat s1 s2

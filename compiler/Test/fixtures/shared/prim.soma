@@ -15,9 +15,45 @@ inductive String where
 inductive Unit where
     | Unit
 
+@[wired_in "type.int8"]
+inductive Int8 where
+    | MkInt8
+
+@[wired_in "type.int16"]
+inductive Int16 where
+    | MkInt16
+
+@[wired_in "type.int32"]
+inductive Int32 where
+    | MkInt32
+
+@[wired_in "type.int64"]
+inductive Int64 where
+    | MkInt64
+
 @[wired_in "type.word8"]
 inductive Word8 where
     | MkWord8
+
+@[wired_in "type.word16"]
+inductive Word16 where
+    | MkWord16
+
+@[wired_in "type.word32"]
+inductive Word32 where
+    | MkWord32
+
+@[wired_in "type.word64"]
+inductive Word64 where
+    | MkWord64
+
+@[wired_in "type.float"]
+inductive Float where
+    | MkFloat
+
+@[wired_in "type.double"]
+inductive Double where
+    | MkDouble
 
 @[wired_in "type.list"]
 inductive List {a : Type} where

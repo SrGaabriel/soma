@@ -5,7 +5,7 @@
 
 # ⚗️ soma
 
-Soma is a statically-typed, pure functional language with dependent types, explicit effect modeling and eager evaluation semantics. It leverages Interaction Nets for optimal evaluation, enabling GC-free memory management with deterministic lifetimes, zero-cost proofs and automatic parallelism.
+Soma is a dependently-typed, pure functional language with explicit effect modeling and eager evaluation semantics. It leverages Interaction Nets for optimal evaluation, enabling GC-free memory management with deterministic lifetimes, zero-cost proofs and automatic parallelism.
 
 ---
 
@@ -15,7 +15,6 @@ Combining high-level expressiveness with predictable performance characteristics
 
 Soma achieves optimal evaluation via Interaction Nets, in turn delivering GC-free memory management with deterministic lifetimes. The key is that the compiler statically analyzes variable usage patterns through quantities, automatically inserting duplication and erasure operations that correspond to precise allocation and deallocation points.
 
-The Interaction Net foundation also enables automatic parallelism, since independent subgraphs can reduce concurrently without synchronization overhead. The compiler offers three execution modes allowing developers to choose the appropriate performance-predictability tradeoff for their use case.
 
 In practice, this means developers write composable functional code with optional dependent types for compile-time guarantees (vector lengths, protocol states, resource usage) while the compiler guarantees systems-level performance: deterministic memory reclamation, predictable execution timing, zero-cost proofs and no runtime garbage collection overhead.
 
@@ -39,7 +38,7 @@ That will open a TUI where you can install the rest of the ecosystem.
 Then:
 
 ```bash
-somac <source-file>.soma -m <mode>
+somac <source-file>.soma
 ```
 
 Or for projects:
@@ -47,7 +46,7 @@ Or for projects:
 ```
 haoma new <project-name>
 cd <project-name>
-haoma run -m <mode>
+haoma run
 ```
 
 ---

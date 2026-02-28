@@ -1,8 +1,8 @@
 // expect: success
 // Test: class (type class) definition
 
-class Display a where
+class Display (a : Type) where
     display : a -> String
 
-class Eq a where
+class Eq (a : Type) where
     eq : a -> a -> Bool

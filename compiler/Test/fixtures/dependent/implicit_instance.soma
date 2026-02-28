@@ -3,7 +3,7 @@
 // classs are elaborated into ClassInfo with record types.
 // Instance arguments ({{Display a}}) are resolved via the InstanceEnv.
 
-class Display a where
+class Display (a : Type) where
     display : a -> String
 
 def show (a : Type) : {{Display a}} -> a -> String

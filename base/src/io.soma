@@ -4,17 +4,17 @@ use base/core.{Functor, Applicative, Monad, >>=}
 def pure_io : a -> IO a
 
 instance Functor IO where
-    def fmap(f, ioA) : (a -> b) -> IO a -> IO b =
-        ioA >>= (\x -> pure_io (f x))
+    def fmap : (a -> b) -> IO a -> IO b
+        | f, ioA => ioA >>= (\x -> pure_io (f x))
 
 instance Applicative IO with (Functor IO) where
     def pure : a -> IO a = pure_io
-    def {<*>}(ioF, ioA) : IO (a -> b) -> IO a -> IO b =
-        ioF >>= (\f -> ioA >>= (\a -> pure_io (f a)))
-    def {*>}(ioA, ioB) : IO a -> IO b -> IO b =
-        ioA >>= (\a -> ioB)
-    def {<*}(ioA, ioB) : IO a -> IO b -> IO a =
-        ioA >>= (\a -> ioB >>= (\b -> pure_io a))
+    def {<*>} : IO (a -> b) -> IO a -> IO b
+        | ioF, ioA => ioF >>= (\f -> ioA >>= (\a -> pure_io (f a)))
+    def {*>} : IO a -> IO b -> IO b
+        | ioA, ioB => ioA >>= (\x -> ioB)
+    def {<*} : IO a -> IO b -> IO a
+        | ioA, ioB => ioA >>= (\a -> ioB >>= (\b -> pure_io a))
 
 @[intrinsic]
 instance Monad IO with (Applicative IO)

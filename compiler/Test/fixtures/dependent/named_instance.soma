@@ -2,7 +2,7 @@
 // Test: named instance syntax
 // Instances can be given explicit names: `instance myName : class Type where ...`
 
-class Showable a where
+class Showable (a : Type) where
     render : a -> String
 
 // Named instance - can be referenced by name later

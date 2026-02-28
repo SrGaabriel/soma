@@ -8,7 +8,7 @@ inductive Maybe {a : Type} where
     | Just (value : a)
 
 class Functor (f : Type -> Type) where
-    def fmap :  a b. (a -> b) -> f a -> f b
+    fmap : ∀ a b. (a -> b) -> f a -> f b
 
  instance Functor Maybe where
     def fmap : (a -> b) -> Maybe a -> Maybe b
