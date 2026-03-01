@@ -9,42 +9,14 @@ use crate::build::graph::BuildNode;
 use crate::build::resolve::DependencyResolver;
 use crate::cli::parse_manifest;
 use crate::cli::somac;
-use crate::logging::output_err;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Position {
-    pub line: u32,
-    pub character: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Range {
-    pub start: Position,
-    pub end: Position,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Diagnostic {
-    pub file: String,
-    pub range: Range,
-    pub severity: u32,
-    pub message: String,
-    pub source: String,
-    pub code: Option<String>,
-}
+use crate::logging::{output_err, output_ok};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckOutput {
     pub success: bool,
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Option<String>,
     #[serde(rename = "module")]
     pub module_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectCheckOutput {
-    pub success: bool,
-    pub modules: Vec<CheckOutput>,
 }
 
 pub fn execute(path: &Path) {
@@ -55,11 +27,6 @@ pub fn execute(path: &Path) {
         Ok(g) => g,
         Err(e) => {
             output_err(&format!("Failed to resolve dependencies: {}", e));
-            let output = ProjectCheckOutput {
-                success: false,
-                modules: vec![],
-            };
-            println!("{}", serde_json::to_string(&output).unwrap());
             std::process::exit(1);
         }
     };
@@ -68,11 +35,6 @@ pub fn execute(path: &Path) {
         Ok(l) => l,
         Err(e) => {
             output_err(&format!("Failed to order modules: {}", e));
-            let output = ProjectCheckOutput {
-                success: false,
-                modules: vec![],
-            };
-            println!("{}", serde_json::to_string(&output).unwrap());
             std::process::exit(1);
         }
     };
@@ -112,7 +74,7 @@ pub fn execute(path: &Path) {
                         Ok(metadata_path) => {
                             all_outputs.push(CheckOutput {
                                 success: true,
-                                diagnostics: vec![],
+                                diagnostics: None,
                                 module_name: Some(module_name.clone()),
                             });
                             dep_metadata.insert(module_name.clone(), metadata_path);
@@ -131,42 +93,30 @@ pub fn execute(path: &Path) {
         }
     }
 
-    let project_output = ProjectCheckOutput {
-        success: all_success,
-        modules: all_outputs,
-    };
-
-    println!("{}", serde_json::to_string(&project_output).unwrap());
+    for module_output in all_outputs {
+        if let Some(module_name) = &module_output.module_name {
+            if module_output.success {
+                output_ok(&format!("Module '{}': Check passed", module_name));
+            } else {
+                output_err(&format!("Module '{}': Check failed", module_name));
+                if let Some(diagnostics) = &module_output.diagnostics {
+                    println!("{}", diagnostics);
+                }
+            }
+        }
+    }
 
     if !all_success {
+        output_err("One or more checks failed. Please review the diagnostics above.");
         std::process::exit(1);
     }
+    output_ok("All checks passed successfully!");
 }
 
 fn make_error_output(node: &BuildNode, module_name: &str, message: &str) -> CheckOutput {
     CheckOutput {
         success: false,
-        diagnostics: vec![Diagnostic {
-            file: node
-                .path
-                .join(SRC_FOLDER_NAME)
-                .to_string_lossy()
-                .to_string(),
-            range: Range {
-                start: Position {
-                    line: 0,
-                    character: 0,
-                },
-                end: Position {
-                    line: 0,
-                    character: 0,
-                },
-            },
-            severity: 1,
-            message: message.to_string(),
-            source: "haoma".to_string(),
-            code: None,
-        }],
+        diagnostics: Some(message.to_string()),
         module_name: Some(module_name.to_string()),
     }
 }
@@ -187,9 +137,9 @@ fn check_module(
         .arg(&src_path)
         .arg("--name")
         .arg(&node.manifest.name)
-        .arg("--format=json")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .arg("--format=human")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
 
     for (dep_name, dep_path) in dependency_metadata {
         let meta_path = dep_path.canonicalize().unwrap_or_else(|_| dep_path.clone());
@@ -202,29 +152,15 @@ fn check_module(
         .output()
         .map_err(|e| format!("Failed to run compiler: {}", e))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Parse JSON output from somac
-    let json_line = stdout
-        .lines()
-        .find(|line| line.trim().starts_with('[') || line.trim().starts_with('{'))
-        .unwrap_or(&stdout);
-
-    // Try parsing as array of diagnostics first (somac check format)
-    if let Ok(diagnostics) = serde_json::from_str::<Vec<Diagnostic>>(json_line) {
-        let has_errors = diagnostics.iter().any(|d| d.severity == 1);
-        return Ok(CheckOutput {
-            success: !has_errors,
-            diagnostics,
-            module_name: Some(node.manifest.name.clone()),
-        });
-    }
-
-    // Fall back to parsing as CheckOutput directly
-    serde_json::from_str(json_line).map_err(|e| {
-        format!(
-            "Failed to parse compiler output: {} (output was: {})",
-            e, stdout
-        )
+    Ok(CheckOutput {
+        success: output.status.success(),
+        diagnostics: stderr
+            .trim()
+            .is_empty()
+            .then(|| None)
+            .unwrap_or_else(|| Some(stderr.trim().to_string())),
+        module_name: Some(node.manifest.name.clone()),
     })
 }
