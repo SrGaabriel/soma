@@ -3,6 +3,9 @@ use base/core.{Functor, Applicative, Monad}
 @[intrinsic]
 def pure_io : a -> IO a
 
+@[intrinsic]
+def io_bind : IO a -> (a -> IO b) -> IO b
+
 instance Functor IO where
 	def fmap (f : (a -> b)) (ioA : IO a) : IO b =
 	    io_bind ioA (\x -> pure_io (f x))
@@ -18,4 +21,4 @@ instance Applicative IO with (Functor IO) where
 
 instance Monad IO with (Applicative IO) where
 	def {>>=} (ioA : IO a) (f : a -> IO b) : IO b = io_bind ioA f
-	def {>>} (ioA : IO a) (ioB : IO b) : IO b = io_bind ioA (\unused -> ioB)
+	def {>>} (ioA : IO a) (ioB : IO b) : IO b = ioA >>= (\unused -> ioB)

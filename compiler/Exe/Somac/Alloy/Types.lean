@@ -486,7 +486,7 @@ end UnOp
 inductive IntrinsicOp where
   | ptrNull | ptrAdd | ptrDiff | ptrRead | ptrWrite | ptrCast
   | toCString | fromCString | cstringLen
-  | strcat | intToString | pureIO
+  | strcat | intToString | pureIO | bindIO
   deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 namespace IntrinsicOp
@@ -496,6 +496,7 @@ def name : IntrinsicOp → String
   | .ptrRead => "ptr_read" | .ptrWrite => "ptr_write" | .ptrCast => "ptr_cast"
   | .toCString => "to_cstring" | .fromCString => "from_cstring" | .cstringLen => "cstring_len"
   | .strcat => "strcat" | .intToString => "int_to_string" | .pureIO => "pure_io"
+  | .bindIO => "io_bind"
 
 instance : ToString IntrinsicOp where
   toString := IntrinsicOp.name
@@ -503,6 +504,11 @@ instance : ToString IntrinsicOp where
 def hasResult : IntrinsicOp → Bool
   | .ptrWrite => false
   | _ => true
+
+/-- Whether this intrinsic is a closure call -/
+def isClosureCall : IntrinsicOp → Bool
+  | .bindIO => true
+  | _ => false
 
 def fixedRetTy : IntrinsicOp → Option ClosedTy
   | .ptrNull => some .rawPtr
@@ -517,6 +523,7 @@ def fixedRetTy : IntrinsicOp → Option ClosedTy
   | .strcat => some Ty.string
   | .intToString => some Ty.string
   | .pureIO => none
+  | .bindIO => none
 
 end IntrinsicOp
 

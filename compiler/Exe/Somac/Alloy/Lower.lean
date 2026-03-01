@@ -252,6 +252,7 @@ def convertFFIOp : FFIOp → IntrinsicOp
   | .strcat => .strcat
   | .intToString => .intToString
   | .pureIO => .pureIO
+  | .bindIO => .bindIO
 
 /-- Convert Core.PrimOp to Alloy.PrimOp -/
 def convertCorePrimOp : Soma.Core.PrimOp → PrimOp

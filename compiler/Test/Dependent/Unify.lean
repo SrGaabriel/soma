@@ -125,23 +125,23 @@ def testSpineIsPatternNonVar : Bool :=
   | none => true  -- Should fail
   | some _ => false
 
-/-! ## Substitution Tests -/
+/-! ## Partial Renaming Tests -/
 
-def testSubstLookupFound : Bool :=
-  let subst := mkSubst [⟨0⟩, ⟨1⟩]
-  match subst.lookup ⟨0⟩ with
-  | some 0 => true
-  | _ => false
-
-def testSubstLookupSecond : Bool :=
-  let subst := mkSubst [⟨0⟩, ⟨1⟩]
-  match subst.lookup ⟨1⟩ with
+def testRenamingLookupFirst : Bool :=
+  let ren := PartialRenaming.fromSpine [⟨0⟩, ⟨1⟩] ⟨99⟩
+  match ren.lookupIdx 0 with
   | some 1 => true
   | _ => false
 
-def testSubstLookupNotFound : Bool :=
-  let subst := mkSubst [⟨0⟩, ⟨1⟩]
-  match subst.lookup ⟨2⟩ with
+def testRenamingLookupSecond : Bool :=
+  let ren := PartialRenaming.fromSpine [⟨0⟩, ⟨1⟩] ⟨99⟩
+  match ren.lookupIdx 1 with
+  | some 0 => true
+  | _ => false
+
+def testRenamingLookupNotFound : Bool :=
+  let ren := PartialRenaming.fromSpine [⟨0⟩, ⟨1⟩] ⟨99⟩
+  match ren.lookupIdx 2 with
   | none => true
   | some _ => false
 
@@ -371,10 +371,10 @@ def spinePatternTests : List (String × Bool) := [
   ("spine pattern non-var fails", testSpineIsPatternNonVar)
 ]
 
-def substTests : List (String × Bool) := [
-  ("subst lookup first", testSubstLookupFound),
-  ("subst lookup second", testSubstLookupSecond),
-  ("subst lookup not found", testSubstLookupNotFound)
+def renamingTests : List (String × Bool) := [
+  ("renaming lookup first", testRenamingLookupFirst),
+  ("renaming lookup second", testRenamingLookupSecond),
+  ("renaming lookup not found", testRenamingLookupNotFound)
 ]
 
 def basicUnifyTests : List (String × Bool) := [
@@ -1282,8 +1282,8 @@ def runAllTests : IO TestRunner := do
   let r3 ← runTestGroup "Spine Pattern" spinePatternTests
   combined := combined.merge r3
 
-  IO.println "  === Substitution Tests ==="
-  let r4 ← runTestGroup "Substitution" substTests
+  IO.println "  === Partial Renaming Tests ==="
+  let r4 ← runTestGroup "Partial Renaming" renamingTests
   combined := combined.merge r4
 
   IO.println "  === Basic Unification Tests ==="

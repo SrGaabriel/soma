@@ -242,13 +242,12 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     let mut accExpr := bodyExpr
     for v in vars.toList.reverse do
       let kind ← match v.kind with
-        | some k => elaborateType ElabEnv.empty k
+        | some k => elaborateType env k
         | none => pure (Value.vType Level.zero)
-      let kindExpr := quoteValue kind 0
+      let kindExpr := quoteValue kind env.level
       accExpr := Soma.Core.Expr.pi .omega .implicit v.name.value kindExpr accExpr
 
-    -- Evaluate the final Expr to get a Value
-    TCM.evalExpr accExpr
+    TCM.evalExprInEnv (elabEnvToEnv env) accExpr
 
   -- Constrained type: T with (C1, C2)
   | .constrained constraints body _ =>

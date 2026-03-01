@@ -1,5 +1,6 @@
 import Soma.Core.Value
 import Soma.Core.Eval
+import Soma.Core.Quote
 import Soma.Dependent.Monad
 import Soma.Dependent.Unify.Core
 
@@ -7,143 +8,177 @@ namespace Soma.Dependent
 
 open Soma.Core
 
-/-- A renaming maps levels in the RHS to levels in the spine.
-    For ?m x y = t, if t mentions x at level 0 and y at level 1,
-    we need to know which spine argument corresponds to each. -/
-structure Subst where
-  /-- Map from RHS levels to spine positions -/
-  mapping : List (DeBruijnLvl × Nat)
-  deriving Inhabited
+/-- A partial renaming maps de Bruijn levels in the RHS to de Bruijn levels in the output -/
+structure PartialRenaming where
+  /-- Maps input de Bruijn levels to output de Bruijn levels -/
+  mapping : Std.HashMap Nat Nat
+  /-- Output context size (de Bruijn depth in the solution expression) -/
+  cod : Nat
+  /-- Input context size (next available fresh level for opening closures) -/
+  dom : Nat
+  /-- Meta being solved (for inline occurs check) -/
+  targetMeta : MetaId
 
-/-- Create a renaming from spine levels -/
-def mkSubst (spineLevels : List DeBruijnLvl) : Subst :=
-  ⟨enumList spineLevels |>.map (fun (i, lvl) => (lvl, i))⟩
+namespace PartialRenaming
 
-/-- Look up a level in the renaming -/
-def Subst.lookup (r : Subst) (lvl : DeBruijnLvl) : Option Nat :=
-  match r.mapping.find? (fun (l, _) => l == lvl) with
-  | some (_, idx) => some idx
+/-- Create a partial renaming from spine levels -/
+def fromSpine (spineLevels : List DeBruijnLvl) (m : MetaId) : PartialRenaming :=
+  let n := spineLevels.length
+  let maxLvl := spineLevels.foldl (fun acc l => max acc l.lvl) 0
+  let mapping := Id.run do
+    let mut map : Std.HashMap Nat Nat := {}
+    let mut i := 0
+    for l in spineLevels do
+      map := map.insert l.lvl i
+      i := i + 1
+    return map
+  { mapping, cod := n, dom := maxLvl + 1, targetMeta := m }
+
+/-- Look up an input level and convert to an output de Bruijn index -/
+def lookupIdx (ren : PartialRenaming) (lvl : Nat) : Option Nat :=
+  match ren.mapping.get? lvl with
+  | some outLvl => some (ren.cod - outLvl - 1)
   | none => none
+
+/-- Extend the renaming when entering a binder -/
+def lift (ren : PartialRenaming) : PartialRenaming :=
+  { ren with
+    mapping := ren.mapping.insert ren.dom ren.cod
+    cod := ren.cod + 1
+    dom := ren.dom + 1 }
+
+end PartialRenaming
+
+/-- Why a rename failed -/
+inductive RenameFailure where
+  | occursCheck
+  | escapeCheck
+  deriving Inhabited, BEq
+
+/-- Result of applying a partial renaming to a value -/
+abbrev RenameResult := Except RenameFailure Soma.Core.Expr
 
 mutual
 
-/-- Apply a renaming to a value, producing an Expr that uses de Bruijn indices relative to the lambda we're building -/
-partial def applySubst (r : Subst) (v : Value) : Option Soma.Core.Expr :=
+/-- Apply a partial renaming to a value, producing an Expr for the solution body -/
+partial def rename (ren : PartialRenaming) (v : Value) : RenameResult :=
   match v with
-  | .vType level => some (.sort level)
-  | .vPi qty binder name dom cod =>
-    match applySubst r dom with
-    | some domE =>
-      match cod.body with
-      | some body => some (.pi qty binder name domE body)
-      | none => some (.pi qty binder name domE (.bvar 0))
-    | none => none
-  | .vLam name body =>
-    match body.body with
-    | some bodyE => some (.lam .explicit name (.sort Level.zero) bodyE)
-    | none => some (.lam .explicit name (.sort Level.zero) (.bvar 0))
-  | .vSigma qty name fst snd =>
-    match applySubst r fst with
-    | some fstE =>
-      match snd.body with
-      | some sndBody => some (.sigma qty .explicit name fstE sndBody)
-      | none => some (.sigma qty .explicit name fstE (.bvar 0))
-    | none => none
-  | .vPair a b =>
-    match applySubst r a, applySubst r b with
-    | some aE, some bE => some (.pair aE bE)
-    | _, _ => none
-  | .vNeutral _ neu => applySubstNeutral r neu
-  | .vPrimTy p => some (.primTy p)
-  | .vIntLit n => some (.lit (.int n))
-  | .vStringLit s => some (.lit (.string s))
-  | .vRowEmpty => some .rowEmpty
-  | .vRowExtend label ty tail =>
-    match applySubst r label, applySubst r ty, applySubst r tail with
-    | some labelE, some tyE, some tailE => some (.rowExtend labelE tyE tailE)
-    | _, _, _ => none
-  | .vRecord row =>
-    match applySubst r row with
-    | some rowE => some (.recordTy rowE)
-    | none => none
-  | .vVariant row =>
-    match applySubst r row with
-    | some rowE => some (.variantTy rowE)
-    | none => none
-  | .vLabelLit name => some (.labelLit name)
-  | .vRowSort => some .rowSort
-  | .vLabelSort => some .labelSort
-  | .vRecordVal fields =>
-    let fieldExprs := fields.filterMap (fun (name, v) =>
-      match applySubst r v with
-      | some e => some (name, e)
-      | none => none)
-    if fieldExprs.length == fields.length then
-      some (.record fieldExprs.toArray)
-    else
-      none
-  | .vDataType id params =>
-    let paramExprs := params.filterMap (applySubst r)
-    if paramExprs.length != params.length then none
-    else
-      let baseExpr := Soma.Core.Expr.const ⟨⟨id.id, id.module, id.original⟩⟩
-      some (paramExprs.foldl (fun acc p => .app acc p) baseExpr)
-  | .vConstructor name tag args =>
-    let argExprs := args.filterMap (applySubst r)
-    if argExprs.length == args.length then
-      some (.construct name tag argExprs.toArray)
-    else
-      none
-  | .vEq tyLevel ty lhs rhs =>
-    match applySubst r ty, applySubst r lhs, applySubst r rhs with
-    | some tyE, some lhsE, some rhsE => some (.eqTy tyLevel tyE lhsE rhsE)
-    | _, _, _ => none
-  | .vRefl ty x =>
-    match applySubst r ty, applySubst r x with
-    | some tyE, some xE => some (.refl tyE xE)
-    | _, _ => none
-  | .vTransport tyLevel ty motive lhs rhs eq body =>
-    match applySubst r ty, applySubst r motive, applySubst r lhs,
-          applySubst r rhs, applySubst r eq, applySubst r body with
-    | some tyE, some motiveE, some lhsE, some rhsE, some eqE, some bodyE =>
-      some (.transport tyLevel tyE motiveE lhsE rhsE eqE bodyE)
-    | _, _, _, _, _, _ => none
+  | .vType level => .ok (.sort level)
 
-partial def applySubstNeutral (r : Subst) (n : Neutral) : Option Soma.Core.Expr :=
+  | .vPi qty binder name dom cod => do
+    let domE ← rename ren dom
+    let argVal := Value.vNeutral dom (.nVar ⟨name, ⟨ren.dom⟩⟩)
+    let codVal := applyClosurePure cod argVal
+    let codE ← rename ren.lift codVal
+    .ok (.pi qty binder name domE codE)
+
+  | .vLam name body => do
+    let argVal := Value.vNeutral .type0 (.nVar ⟨name, ⟨ren.dom⟩⟩)
+    let bodyVal := applyClosurePure body argVal
+    let bodyE ← rename ren.lift bodyVal
+    .ok (.lam .explicit name (.sort Level.zero) bodyE)
+
+  | .vSigma qty name fst snd => do
+    let fstE ← rename ren fst
+    let argVal := Value.vNeutral fst (.nVar ⟨name, ⟨ren.dom⟩⟩)
+    let sndVal := applyClosurePure snd argVal
+    let sndE ← rename ren.lift sndVal
+    .ok (.sigma qty .explicit name fstE sndE)
+
+  | .vPair a b => do
+    let aE ← rename ren a
+    let bE ← rename ren b
+    .ok (.pair aE bE)
+
+  | .vNeutral _ neu => renameNeutral ren neu
+  | .vPrimTy p => .ok (.primTy p)
+  | .vIntLit n => .ok (.lit (.int n))
+  | .vStringLit s => .ok (.lit (.string s))
+  | .vRowEmpty => .ok .rowEmpty
+
+  | .vRowExtend label ty tail => do
+    let labelE ← rename ren label
+    let tyE ← rename ren ty
+    let tailE ← rename ren tail
+    .ok (.rowExtend labelE tyE tailE)
+
+  | .vRecord row => do
+    let rowE ← rename ren row
+    .ok (.recordTy rowE)
+
+  | .vVariant row => do
+    let rowE ← rename ren row
+    .ok (.variantTy rowE)
+
+  | .vLabelLit name => .ok (.labelLit name)
+  | .vRowSort => .ok .rowSort
+  | .vLabelSort => .ok .labelSort
+
+  | .vRecordVal fields => do
+    let fieldExprs ← fields.mapM fun (name, v) => do
+      let e ← rename ren v
+      pure (name, e)
+    .ok (.record fieldExprs.toArray)
+
+  | .vDataType id params => do
+    let paramExprs ← params.mapM (rename ren)
+    let baseExpr := Soma.Core.Expr.const ⟨⟨id.id, id.module, id.original⟩⟩
+    .ok (paramExprs.foldl (fun acc p => .app acc p) baseExpr)
+
+  | .vConstructor name tag args => do
+    let argExprs ← args.mapM (rename ren)
+    .ok (.construct name tag argExprs.toArray)
+
+  | .vEq tyLevel ty lhs rhs => do
+    let tyE ← rename ren ty
+    let lhsE ← rename ren lhs
+    let rhsE ← rename ren rhs
+    .ok (.eqTy tyLevel tyE lhsE rhsE)
+
+  | .vRefl ty x => do
+    let tyE ← rename ren ty
+    let xE ← rename ren x
+    .ok (.refl tyE xE)
+
+  | .vTransport tyLevel ty motive lhs rhs eq body => do
+    let tyE ← rename ren ty
+    let motiveE ← rename ren motive
+    let lhsE ← rename ren lhs
+    let rhsE ← rename ren rhs
+    let eqE ← rename ren eq
+    let bodyE ← rename ren body
+    .ok (.transport tyLevel tyE motiveE lhsE rhsE eqE bodyE)
+
+partial def renameNeutral (ren : PartialRenaming) (n : Neutral) : RenameResult :=
   match n with
   | .nVar v =>
-    match r.lookup v.level with
-    | some idx => some (.bvar idx)
-    | none => none  -- Variable not in scope
-  | .nMeta id => some (.mvar id)
-  | .nApp fn arg =>
-    match applySubstNeutral r fn, applySubst r arg with
-    | some fnE, some argE => some (.app fnE argE)
-    | _, _ => none
-  | .nFst pair =>
-    match applySubstNeutral r pair with
-    | some pairE => some (.projFst pairE)
-    | none => none
-  | .nSnd pair =>
-    match applySubstNeutral r pair with
-    | some pairE => some (.projSnd pairE)
-    | none => none
-  | .nFieldAccess rec field =>
-    match applySubstNeutral r rec with
-    | some recE => some (.fieldAccess recE field 0)
-    | none => none
-  | .nCase scrut arms =>
-    match applySubstNeutral r scrut with
-    | some scrutE =>
-      let armExprs := arms.filterMap fun arm =>
-        match arm.closure.body with
-        | some bodyExpr => some (Soma.Core.Arm.mk #[Soma.Core.Pattern.wildcard] bodyExpr)
-        | none => none
-      if armExprs.length == arms.length then
-        some (.«case» #[scrutE] armExprs.toArray)
-      else
-        none
-    | none => none
+    match ren.lookupIdx v.level.lvl with
+    | some idx => .ok (.bvar idx)
+    | none => .error .escapeCheck
+  | .nMeta id =>
+    if id == ren.targetMeta then .error .occursCheck
+    else .ok (.mvar id)
+  | .nApp fn arg => do
+    let fnE ← renameNeutral ren fn
+    let argE ← rename ren arg
+    .ok (.app fnE argE)
+  | .nFst pair => do
+    let pairE ← renameNeutral ren pair
+    .ok (.projFst pairE)
+  | .nSnd pair => do
+    let pairE ← renameNeutral ren pair
+    .ok (.projSnd pairE)
+  | .nFieldAccess rec field => do
+    let recE ← renameNeutral ren rec
+    .ok (.fieldAccess recE field 0)
+  | .nCase scrut arms => do
+    let scrutE ← renameNeutral ren scrut
+    let armExprs ← arms.mapM fun arm => do
+      let argVal := Value.vNeutral .type0 (.nVar ⟨arm.pattern, ⟨ren.dom⟩⟩)
+      let bodyVal := applyClosurePure arm.closure argVal
+      let bodyE ← rename ren.lift bodyVal
+      pure (Soma.Core.Arm.mk #[Soma.Core.Pattern.wildcard] bodyE)
+    .ok (.«case» #[scrutE] armExprs.toArray)
 
 end
 
@@ -162,5 +197,11 @@ def evalSolutionTerm (t : Soma.Core.Expr) : TCM Value := do
     metas := state.metas
   }
   return evalCoreExpr evalCtx t
+
+/-- Build and install a meta solution from a partial renaming result -/
+def installSolution (m : MetaId) (spineLevels : List DeBruijnLvl) (body : Soma.Core.Expr) : TCM Unit := do
+  let solution := buildLambdaSolution spineLevels body
+  let solutionVal ← evalSolutionTerm solution
+  TCM.solveMeta m solutionVal
 
 end Soma.Dependent

@@ -622,7 +622,7 @@ def extractPublicSymbols
   -- Extract type definitions and constructors
   for typeDef in untypedModule.types do
     match typeDef with
-    | .algebraic _ typeName _typeVars constructors =>
+    | .algebraic _ typeName typeVarNames constructors =>
       let typeNameStr := typeName.display
       if shouldExport typeNameStr then
         -- Register type
@@ -636,8 +636,7 @@ def extractPublicSymbols
           package := packageName
           span := Span.uninhabited
         }
-        -- Type itself maps to Type₀
-        acc := acc.insert typeSym (Value.vType Level.zero)
+        acc := acc.insert typeSym (Value.typeConstructorKind typeVarNames.size)
         addedNames := addedNames.insert typeNameStr
 
       -- Register constructors
@@ -661,7 +660,7 @@ def extractPublicSymbols
             addedNames := addedNames.insert ctorSimpleName
           | none => pure ()
 
-    | .record _ recordName _typeVars _ctorName fields =>
+    | .record _ recordName typeVarNames _ctorName fields =>
       let recordNameStr := recordName.display
       if shouldExport recordNameStr then
         let (recordUnique, sup') := sup.fresh recordNameStr
@@ -674,7 +673,7 @@ def extractPublicSymbols
           package := packageName
           span := Span.uninhabited
         }
-        acc := acc.insert recordSym (Value.vType Level.zero)
+        acc := acc.insert recordSym (Value.typeConstructorKind typeVarNames.size)
         addedNames := addedNames.insert recordNameStr
 
       -- Register record constructor (named "New" in namespace)

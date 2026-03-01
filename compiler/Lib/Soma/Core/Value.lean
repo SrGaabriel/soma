@@ -219,6 +219,12 @@ def Closure.mkWithBody (name : String) (env : Env) (body : Soma.Core.Expr) : Clo
 def Value.arrow (a b : Value) : Value :=
   Value.vPi Quantity.omega BinderInfo.explicit "_" a (Closure.const "_" b)
 
+/-- Build the kind of a type constructor with `arity` type parameters -/
+def Value.typeConstructorKind (arity : Nat) : Value :=
+  match arity with
+  | 0 => Value.vType .zero
+  | n + 1 => Value.arrow (Value.vType .zero) (typeConstructorKind n)
+
 /-- Create Type₀ -/
 def Value.type0 : Value := Value.vType Level.zero
 

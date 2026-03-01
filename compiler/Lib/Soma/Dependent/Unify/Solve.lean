@@ -429,59 +429,23 @@ partial def solvePattern (m : MetaId) (spine : List Value) (rhs : Value) (metaTy
   -- Check if spine is a pattern (distinct bound variables)
   match spineIsPattern ⟨spine⟩ with
   | some spineLevels =>
-    -- Occurs check: prevent infinite types like ?X = List ?X
-    if occursIn m rhs then
-      -- NEW: Try occurs check with pruning before failing
+    let ren := PartialRenaming.fromSpine spineLevels m
+    match rename ren rhs' with
+    | .ok body =>
+      installSolution m spineLevels body
+    | .error .occursCheck =>
+      -- Meta appears in RHS → try pruning recovery before failing
       let pruned ← tryOccursCheckPruning m spine rhs
       if pruned then
-        -- Pruning was attempted, retry unification
         let span ← TCM.getSpan
         TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
       else
         let span ← TCM.getSpan
         TCM.throw (.unificationFailed (.occursCheck m rhs) .general span #[] #[m])
-    else
-      -- Scope check: ensure RHS only references variables in the spine
-      if !inScope spineLevels rhs then
-        -- Try pruning: can we restrict the meta's domain?
-        let _ ← tryPrune m spine rhs
-
-        -- RHS contains variables not in scope - postpone rather than fail
-        -- (it might become solvable after more unification)
-        let span ← TCM.getSpan
-        TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
-      else
-        -- Check for twin variables (dependent pattern matching)
-        let twins := detectTwinVars spine rhs
-        if !twins.isEmpty && allVarsCoveredByTwins twins rhs then
-          -- All RHS variables are twins with spine variables
-          -- This is solvable via identity-like substitution
-          let subst := mkSubst spineLevels
-          match applySubst subst rhs with
-          | some solutionBody =>
-            let solution := buildLambdaSolution spineLevels solutionBody
-            let solutionVal ← evalSolutionTerm solution
-            TCM.solveMeta m solutionVal
-          | none =>
-            let span ← TCM.getSpan
-            TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
-        else
-          -- Build substitution from spine levels
-          let subst := mkSubst spineLevels
-
-          -- Apply substitution to RHS to get the solution body
-          match applySubst subst rhs with
-          | some solutionBody =>
-            -- Build the solution as nested lambdas
-            let solution := buildLambdaSolution spineLevels solutionBody
-            -- Evaluate the solution to a Value
-            let solutionVal ← evalSolutionTerm solution
-            -- Record the solution
-            TCM.solveMeta m solutionVal
-          | none =>
-            -- RHS contains variables not in the spine - postpone
-            let span ← TCM.getSpan
-            TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
+    | .error .escapeCheck =>
+      let _ ← tryPrune m spine rhs
+      let span ← TCM.getSpan
+      TCM.postpone (.unify (.vNeutral metaTy (buildMetaSpine m spine)) rhs span)
 
   | none =>
     -- Not a pattern - try η-expansion to make it one

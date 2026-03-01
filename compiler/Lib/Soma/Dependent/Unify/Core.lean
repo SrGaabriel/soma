@@ -254,51 +254,9 @@ partial def inScopeNeutral (allowedLevels : List DeBruijnLvl) (n : Neutral) : Bo
   | .nCase scrut _ => inScopeNeutral allowedLevels scrut
 
 partial def inScopeClosure (allowedLevels : List DeBruijnLvl) (clos : Closure) : Bool :=
-  -- Check the closure's environment values are in scope
-  let envInScope := clos.env.values.all fun (_, v) => inScope allowedLevels v
-  if !envInScope then false
-  else
-    -- For the body, check if all variable references are in the allowed scope
-    match clos.body with
-    | some body =>
-      -- The closure binds one variable, so extend allowed levels
-      let extendedLevels := ⟨clos.env.size⟩ :: allowedLevels
-      inScopeExpr extendedLevels body
-    | none => true  -- Empty closure is always in scope
-where
-  /-- Check if all variable references in a Core.Expr are in the allowed scope -/
-  inScopeExpr (levels : List DeBruijnLvl) : Soma.Core.Expr → Bool
-    | .bvar idx => idx < levels.length
-    | .app fn arg => inScopeExpr levels fn && inScopeExpr levels arg
-    | .lam _ _ dom body => inScopeExpr levels dom && inScopeExpr levels body
-    | .let_ _ ty val body => inScopeExpr levels ty && inScopeExpr levels val && inScopeExpr levels body
-    | .pi _ _ _ dom cod => inScopeExpr levels dom && inScopeExpr levels cod
-    | .sigma _ _ _ fst snd => inScopeExpr levels fst && inScopeExpr levels snd
-    | .pair a b => inScopeExpr levels a && inScopeExpr levels b
-    | .projFst e => inScopeExpr levels e
-    | .projSnd e => inScopeExpr levels e
-    | .if_ c t e => inScopeExpr levels c && inScopeExpr levels t && inScopeExpr levels e
-    | .«case» scruts arms =>
-        scruts.all (inScopeExpr levels) && arms.all fun arm => inScopeExpr levels arm.body
-    | .eqTy _ ty l r => inScopeExpr levels ty && inScopeExpr levels l && inScopeExpr levels r
-    | .refl ty x => inScopeExpr levels ty && inScopeExpr levels x
-    | .transport _ ty mot l r eq b =>
-        inScopeExpr levels ty && inScopeExpr levels mot && inScopeExpr levels l &&
-        inScopeExpr levels r && inScopeExpr levels eq && inScopeExpr levels b
-    | .rowExtend l t tail => inScopeExpr levels l && inScopeExpr levels t && inScopeExpr levels tail
-    | .recordTy r => inScopeExpr levels r
-    | .variantTy r => inScopeExpr levels r
-    | .record fields => fields.all fun (_, e) => inScopeExpr levels e
-    | .recordUpdate b us => inScopeExpr levels b && us.all fun (_, e) => inScopeExpr levels e
-    | .fieldAccess e _ _ => inScopeExpr levels e
-    | .construct _ _ args => args.all (inScopeExpr levels)
-    | .inject _ args => args.all (inScopeExpr levels)
-    | .closure _ caps => caps.all (inScopeExpr levels)
-    | .array es => es.all (inScopeExpr levels)
-    | .tuple es => es.all (inScopeExpr levels)
-    | .dataTy _ ps => ps.all (inScopeExpr levels)
-    | .ann x t => inScopeExpr levels x && inScopeExpr levels t
-    | _ => true
+  match clos with
+  | .const _ val => inScope allowedLevels val
+  | .term _ env _ => env.values.all fun (_, v) => inScope allowedLevels v
 
 end
 

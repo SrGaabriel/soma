@@ -1664,6 +1664,17 @@ def evalExpr (e : Soma.Core.Expr) : TCM Value := do
   }
   return Soma.Core.evalCoreExpr evalCtx e
 
+/-- Evaluate a Core.Expr to a Value using a specific environment -/
+def evalExprInEnv (env : Env) (e : Soma.Core.Expr) : TCM Value := do
+  let ctx ← getCtx
+  let state ← getState
+  let evalCtx : EvalCtx := {
+    env := env
+    globals := globalsToEvalGlobals ctx.globals
+    metas := state.metas
+  }
+  return Soma.Core.evalCoreExpr evalCtx e
+
 /-- Create a Pi type value -/
 def mkPi (qty : Quantity) (binder : BinderInfo) (name : String) (domain : Value)
     (codomain : Closure) : Value :=

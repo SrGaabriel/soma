@@ -14,7 +14,7 @@ namespace Soma.Dependent.TraitElaborate
 open Soma (Unique)
 open Soma.Core
 open Soma.Syntax (TypeExpr Span TypeVarBinder)
-open Soma.Dependent.Elaborate (ElabEnv elaborateType mkConstClosure mkDependentClosure)
+open Soma.Dependent.Elaborate (ElabEnv elaborateType mkConstClosure mkDependentClosure quoteValue)
 
 /-- Maps source spans to their elaborated instance info -/
 abbrev InstanceMap := Std.HashMap Span InstanceInfo
@@ -61,6 +61,15 @@ private partial def neutralHeadAndArgs (neu : Neutral) : Neutral × List Value :
     (head, args ++ [arg])
   | _ => (neu, [])
 
+/-- Build an evaluation Env of the given size with neutral variables at each level -/
+private def buildSubstEnv (depth : Nat) : Env :=
+  if depth == 0 then Env.mk [] 0
+  else
+    let bindings := (List.range depth).reverse.map fun lvl =>
+      let name := s!"_sv{lvl}"
+      (name, Value.vNeutral (.vType .zero) (.nVar ⟨name, ⟨lvl⟩⟩))
+    Env.mk bindings depth
+
 partial def substituteTypeArgsInValue (v : Value) (paramNames : Array String)
     (typeArgs : Array Value) (depth : Nat) : TCM Value := do
   let v' ← force v
@@ -103,7 +112,9 @@ partial def substituteTypeArgsInValue (v : Value) (paramNames : Array String)
     let dummyArg := Value.vNeutral dom' (.nVar ⟨name, ⟨depth⟩⟩)
     let codVal ← applyClosure cod dummyArg
     let codVal' ← substituteTypeArgsInValue codVal paramNames typeArgs (depth + 1)
-    let codClosure ← mkDependentClosure name codVal' ElabEnv.empty
+    let closureEnv := buildSubstEnv depth
+    let bodyExpr := quoteValue codVal' (depth + 1)
+    let codClosure := Closure.term name closureEnv bodyExpr
     return .vPi qty binder name dom' codClosure
 
   | .vSigma qty name fst snd =>
@@ -111,7 +122,9 @@ partial def substituteTypeArgsInValue (v : Value) (paramNames : Array String)
     let dummyArg := Value.vNeutral fst' (.nVar ⟨name, ⟨depth⟩⟩)
     let sndVal ← applyClosure snd dummyArg
     let sndVal' ← substituteTypeArgsInValue sndVal paramNames typeArgs (depth + 1)
-    let sndClosure ← mkDependentClosure name sndVal' ElabEnv.empty
+    let closureEnv := buildSubstEnv depth
+    let bodyExpr := quoteValue sndVal' (depth + 1)
+    let sndClosure := Closure.term name closureEnv bodyExpr
     return .vSigma qty name fst' sndClosure
 
   | .vRecord row =>
@@ -350,7 +363,7 @@ def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : V
   -- Extend context with params, then elaborate the method body
   let rec bindParams (idx : Nat) : TCM Value := do
     if idx >= paramNames.size then
-      let (_, coreBody) ← Soma.Dependent.inferSyntax methodFn.body
+      let (_bodyTy, coreBody) ← Soma.Dependent.inferSyntax methodFn.body
       let bodyVal ← TCM.evalExpr coreBody
       return bodyVal
     else
@@ -367,6 +380,77 @@ def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : V
   let methodVal ← buildLambdaValue paramNames paramTypes bodyVal
 
   return methodVal
+
+/-- Extract field names and types from a record type value -/
+private partial def extractRecordFields (v : Value) : TCM (Array (String × Value)) := do
+  match ← force v with
+  | .vRecord row => extractRowFields row
+  | _ => pure #[]
+where
+  extractRowFields (row : Value) : TCM (Array (String × Value)) := do
+    match ← force row with
+    | .vRowExtend (.vLabelLit name) ty rest =>
+      let restFields ← extractRowFields rest
+      return #[(name, ty)] ++ restFields
+    | .vRowEmpty => return #[]
+    | _ => return #[]
+
+/-- Elaborate an instance value -/
+partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
+    (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction) : TCM Value := do
+  let mut recordTy := classInfo.recordType
+  for arg in typeArgs do
+    match ← force recordTy with
+    | .vPi _ _ _ _ cod =>
+      recordTy ← applyClosure cod arg
+    | _ => pure ()
+
+  -- Extract method names and types from the concrete record type
+  let methodTypes ← extractRecordFields recordTy
+
+  -- Elaborate each method implementation against its expected type
+  let mut fields : List (String × Value) := []
+  for method in methods do
+    let methodName := method.name.display
+    match methodTypes.find? (fun (name, _) => name == methodName) with
+    | some (_, expectedType) =>
+      let methodVal ← elaborateMethodImpl method expectedType
+      fields := (methodName, methodVal) :: fields
+    | none => pure ()
+
+  return Value.vRecordVal fields.reverse
+
+/-- Elaborate a single instance using ClassInfo instead of TypeClassMeta -/
+partial def elaborateInstanceFromClassInfo (inst : Soma.Core.InstanceDecl)
+    (classInfo : ClassInfo) (registry : ClassRegistry) : TCM (Option InstanceInfo) := do
+  -- Elaborate the type arguments
+  let elabEnv := ElabEnv.empty
+  let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)
+
+  -- Elaborate the instance constraints
+  let mut constraints : Array (Unique × Array Value) := #[]
+  for constraint in inst.constraintsSyntax do
+    match ← elaborateConstraint constraint elabEnv registry with
+    | some c => constraints := constraints.push c
+    | none => pure ()
+
+  -- Build the instance value using ClassInfo's record type
+  let instValue ← elaborateInstanceValueFromClassInfo classInfo typeArgs inst.methods
+
+  let instName := s!"$inst_{inst.className}_{typeArgs.size}"
+  let instUnique ← TCM.freshUnique instName
+
+  let instanceInfo : InstanceInfo := {
+    instanceId := instUnique
+    classId := classInfo.classId
+    args := typeArgs
+    argQuantities := typeArgs.map (fun _ => .omega)
+    constraints := constraints
+    value := instValue
+    span := inst.span
+  }
+
+  return some instanceInfo
 
 /-- Build the instance value (a record of method implementations).
 
@@ -458,8 +542,14 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule) : TCM (Instanc
   env := { env with moduleName := module.name }
   let mut instanceMap : InstanceMap := {}
 
-  -- First pass: elaborate all type classes and build the registry
+  let seedEnv ← TCM.getInstanceEnv
   let mut registry := ClassRegistry.empty
+  for (classUnique, _) in seedEnv.classes.toList do
+    match ← TCM.lookupUnique classUnique.original with
+    | some officialUnique => registry := registry.register classUnique.original officialUnique
+    | none => registry := registry.register classUnique.original classUnique
+
+  -- First pass: elaborate all type classes and build the registry
   for typeClass in module.typeClasses do
     let (classInfo, registry') ← elaborateClass typeClass registry
     env := env.addClass classInfo
@@ -472,13 +562,26 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule) : TCM (Instanc
       tc.name.display == inst.className
 
     match typeClass? with
-    | none =>
-      pure ()
     | some typeClass =>
       match ← elaborateInstance inst registry typeClass with
       | some instInfo =>
         env := env.addInstanceWithId instInfo
         instanceMap := instanceMap.insert inst.span instInfo
+      | none => pure ()
+    | none =>
+      -- Cross-module type class: look up ClassInfo from seed instance env
+      match registry.lookup inst.className with
+      | some classId =>
+        let classInfo? := seedEnv.getClass classId
+          |>.orElse (fun _ => defaultInstanceEnv.getClass classId)
+        match classInfo? with
+        | some classInfo =>
+          match ← elaborateInstanceFromClassInfo inst classInfo registry with
+          | some instInfo =>
+            env := env.addInstanceWithId instInfo
+            instanceMap := instanceMap.insert inst.span instInfo
+          | none => pure ()
+        | none => pure ()
       | none => pure ()
 
   return (env, instanceMap)
@@ -495,8 +598,15 @@ def buildInstanceEnvFromModuleIncremental
   env := { env with moduleName := module.name }
   let mut instanceMap : InstanceMap := {}
 
-  -- First pass: elaborate type classes, reusing cached ones when possible
+  -- Pre-populate registry from the seed instance env (dependency classes)
+  let seedEnv ← TCM.getInstanceEnv
   let mut registry := ClassRegistry.empty
+  for (classUnique, _) in seedEnv.classes.toList do
+    match ← TCM.lookupUnique classUnique.original with
+    | some officialUnique => registry := registry.register classUnique.original officialUnique
+    | none => registry := registry.register classUnique.original classUnique
+
+  -- First pass: elaborate type classes, reusing cached ones when possible
   for typeClass in module.typeClasses do
     let className := typeClass.name.display
 
@@ -531,12 +641,25 @@ def buildInstanceEnvFromModuleIncremental
         tc.name.display == instClassName
 
       match typeClass? with
-      | none => pure ()
       | some typeClass =>
         match ← elaborateInstance inst registry typeClass with
         | some instInfo =>
           env := env.addInstanceWithId instInfo
           instanceMap := instanceMap.insert inst.span instInfo
+        | none => pure ()
+      | none =>
+        match registry.lookup instClassName with
+        | some classId =>
+          let classInfo? := seedEnv.getClass classId
+            |>.orElse (fun _ => defaultInstanceEnv.getClass classId)
+          match classInfo? with
+          | some classInfo =>
+            match ← elaborateInstanceFromClassInfo inst classInfo registry with
+            | some instInfo =>
+              env := env.addInstanceWithId instInfo
+              instanceMap := instanceMap.insert inst.span instInfo
+            | none => pure ()
+          | none => pure ()
         | none => pure ()
     else
       -- Not dirty: look up the specific instance by span from previous map
@@ -551,12 +674,25 @@ def buildInstanceEnvFromModuleIncremental
           tc.name.display == instClassName
 
         match typeClass? with
-        | none => pure ()
         | some typeClass =>
           match ← elaborateInstance inst registry typeClass with
           | some instInfo =>
             env := env.addInstanceWithId instInfo
             instanceMap := instanceMap.insert inst.span instInfo
+          | none => pure ()
+        | none =>
+          match registry.lookup instClassName with
+          | some classId =>
+            let classInfo? := seedEnv.getClass classId
+              |>.orElse (fun _ => defaultInstanceEnv.getClass classId)
+            match classInfo? with
+            | some classInfo =>
+              match ← elaborateInstanceFromClassInfo inst classInfo registry with
+              | some instInfo =>
+                env := env.addInstanceWithId instInfo
+                instanceMap := instanceMap.insert inst.span instInfo
+              | none => pure ()
+            | none => pure ()
           | none => pure ()
 
   return (env, instanceMap)

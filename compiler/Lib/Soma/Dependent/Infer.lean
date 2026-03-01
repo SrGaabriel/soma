@@ -55,7 +55,8 @@ def ensurePi (v : Value) (span : Span) (origin : Option ConstraintOrigin := none
   let v' ← force v
   match v' with
   | .vPi qty binder name dom cod => return (qty, binder, name, dom, cod)
-  | _ => TCM.throw (.expectedFunction v' span origin)
+  | _ =>
+    TCM.throw (.expectedFunction v' span origin)
 
 /-- Ensure a value is a Sigma type -/
 def ensureSigma (v : Value) (span : Span) (origin : Option ConstraintOrigin := none)

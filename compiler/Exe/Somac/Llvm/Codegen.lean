@@ -1223,6 +1223,27 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       else
         pure none
 
+    | .bindIO =>
+      -- io_bind m f = f(m): IO erases, so this is just closure application
+      if llvmArgs.size >= 2 then
+        let (_, ioVal) := llvmArgs[0]!
+        let (_, funcVal) := llvmArgs[1]!
+        let funcPtrAddr ← CodegenM.withFuncBuilder do
+          FuncBuilder.gepi32 closureHeaderTy funcVal #[0, 4]
+        let fnPtr ← CodegenM.withFuncBuilder do
+          FuncBuilder.load .ptr (.local funcPtrAddr)
+        let envBaseAddr ← CodegenM.withFuncBuilder do
+          FuncBuilder.gepi32 closureHeaderTy funcVal #[1]
+        let envRaw ← CodegenM.withFuncBuilder do
+          FuncBuilder.load .i64 (.local envBaseAddr)
+        let envPtr ← CodegenM.withFuncBuilder do
+          FuncBuilder.inttoptr .i64 (.local envRaw)
+        let ref ← CodegenM.withFuncBuilder do
+          FuncBuilder.call llvmRetTy (.local fnPtr) #[(.ptr, .local envPtr), (.i64, ioVal)]
+        pure (some (ref, retTy))
+      else
+        pure none
+
   | .callExtern name args retTy =>
     -- External function call: emit regular LLVM call to @name
     let llvmRetTy := convertTy retTy

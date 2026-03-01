@@ -314,6 +314,7 @@ private def builtinHandleFFI (op : FFIOp) (args : Array ReadbackValue)
     : IO (Option ReadbackValue) := do
   match op with
   | .pureIO => pure (args[0]? : Option ReadbackValue)
+  | .bindIO => pure (args[0]? : Option ReadbackValue)
   | .strcat =>
     match (args[0]? : Option ReadbackValue), (args[1]? : Option ReadbackValue) with
     | some (.string a), some (.string b) => pure (some (.string (a ++ b)))
