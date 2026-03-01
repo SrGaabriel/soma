@@ -989,7 +989,11 @@ partial def inferSyntaxLamBody
       match ← TCM.lookupLocal name.value with
       | some entry =>
         let domExpr ← quoteValueToExpr paramTy
-        inferSyntaxLamBody rest body span (acc ++ [(entry.fvarId, name.value, domExpr)])
+        let (innerTy, lamExpr) ← inferSyntaxLamBody rest body span (acc ++ [(entry.fvarId, name.value, domExpr)])
+        -- Build Pi type: paramTy -> innerTy
+        let codClosure := Closure.const name.value innerTy
+        let piTy := Value.vPi .omega .explicit name.value paramTy codClosure
+        return (piTy, lamExpr)
       | none =>
         inferSyntaxLamBody rest body span acc
 
@@ -1135,6 +1139,9 @@ partial def inferSyntaxConstructorApp
 /-- Check an expression against an expected type (Syntax.Expr version) -/
 partial def checkSyntax (e : Soma.Syntax.Expr) (expected : Value)
     : TCM Soma.Core.Expr := do
+  match e with
+  | .parens inner _ => checkSyntax inner expected
+  | _ =>
   let kind := syntaxExprKind e
   TCM.debugEnter "checkS" s!"{kind} ⇐ {expected}"
   let result ← TCM.withDebugIndent do
