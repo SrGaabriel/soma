@@ -1106,9 +1106,8 @@ partial def inferSyntaxTuple (elems : List Soma.Syntax.Expr) (span : Span)
   | [e] => inferSyntax e
   | e :: rest => do
     let (fstTy, fstExpr) ← inferSyntax e
-    let (_sndTy, sndExpr) ← inferSyntaxTuple rest span
-    let clos ← TCM.mkEmptyClosure "_"
-    let sigmaTy := Value.vSigma .omega "_" fstTy clos
+    let (sndTy, sndExpr) ← inferSyntaxTuple rest span
+    let sigmaTy := Value.vSigma .omega "_" fstTy (Closure.const "_" sndTy)
     return (sigmaTy, .pair fstExpr sndExpr)
 
 /-- Infer constructor application from Syntax -/

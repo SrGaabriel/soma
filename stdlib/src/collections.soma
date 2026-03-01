@@ -2,9 +2,6 @@ use base/prim.{+, -, *}
 use base/core.{Option}
 
 @[intrinsic]
-def cons : a -> [a] -> [a]
-
-@[intrinsic]
 def {==} : a -> a -> Bool
 @[intrinsic]
 def {<=} : Int -> Int -> Bool
@@ -31,21 +28,21 @@ def singleton : a -> [a]
 
 def replicate : Int -> a -> [a]
     | n, x =>
-        if n <= 0 then [] else cons x (replicate (n - 1) x)
+        if n <= 0 then [] else List::Cons x (replicate (n - 1) x)
 
 def map : (a -> b) -> [a] -> [b]
-    | f, (x:xs) => cons (f x) (map f xs)
+    | f, (x:xs) => List::Cons (f x) (map f xs)
     | _, [] => []
 
 def reverse_acc : [a] -> [a] -> [a]
-    | (x:xs), acc => reverse_acc xs (cons x acc)
+    | (x:xs), acc => reverse_acc xs (List::Cons x acc)
     | [], acc => acc
 
 def reverse : [a] -> [a]
     | xs => reverse_acc xs []
 
 def append : [a] -> [a] -> [a]
-    | (x:xs), ys => cons x (append xs ys)
+    | (x:xs), ys => List::Cons x (append xs ys)
     | [], ys => ys
 
 def concat : [[a]] -> [a]
@@ -90,19 +87,19 @@ def all : (a -> Bool) -> [a] -> Bool
     | _, [] => true
 
 def take : Int -> [a] -> [a]
-    | n, (x:xs) => if n <= 0 then [] else cons x (take (n - 1) xs)
+    | n, (x:xs) => if n <= 0 then [] else List::Cons x (take (n - 1) xs)
     | _, [] => []
 
 def drop : Int -> [a] -> [a]
-    | n, (x:xs) => if n <= 0 then cons x xs else drop (n - 1) xs
+    | n, (x:xs) => if n <= 0 then List::Cons x xs else drop (n - 1) xs
     | _, [] => []
 
 def take_while : (a -> Bool) -> [a] -> [a]
-    | p, (x:xs) => if p x then cons x (take_while p xs) else []
+    | p, (x:xs) => if p x then List::Cons x (take_while p xs) else []
     | _, [] => []
 
 def drop_while : (a -> Bool) -> [a] -> [a]
-    | p, (x:xs) => if p x then drop_while p xs else cons x xs
+    | p, (x:xs) => if p x then drop_while p xs else List::Cons x xs
     | _, [] => []
 
 def split_at : Int -> [a] -> ([a], [a])
@@ -113,7 +110,7 @@ def elem : a -> [a] -> Bool
     | _, [] => false
 
 def filter : (a -> Bool) -> [a] -> [a]
-    | p, (x:xs) => if p x then cons x (filter p xs) else filter p xs
+    | p, (x:xs) => if p x then List::Cons x (filter p xs) else filter p xs
     | _, [] => []
 
 def find : (a -> Bool) -> [a] -> Option a
@@ -123,7 +120,7 @@ def find : (a -> Bool) -> [a] -> Option a
 def partition : (a -> Bool) -> [a] -> ([a], [a])
     | p, (x:xs) =>
         let (yes, no) = partition p xs in
-        if p x then (cons x yes, no) else (yes, cons x no)
+        if p x then (List::Cons x yes, no) else (yes, List::Cons x no)
     | _, [] => ([], [])
 
 def nth : Int -> [a] -> Option a
@@ -131,9 +128,9 @@ def nth : Int -> [a] -> Option a
     | _, [] => Option::None
 
 def zip : [a] -> [b] -> [(a, b)]
-    | (x:xs), (y:ys) => cons (x, y) (zip xs ys)
+    | (x:xs), (y:ys) => List::Cons (x, y) (zip xs ys)
     | _, _ => []
 
 def zip_with : (a -> b -> c) -> [a] -> [b] -> [c]
-    | f, (x:xs), (y:ys) => cons (f x y) (zip_with f xs ys)
+    | f, (x:xs), (y:ys) => List::Cons (f x y) (zip_with f xs ys)
     | _, _, _ => []
