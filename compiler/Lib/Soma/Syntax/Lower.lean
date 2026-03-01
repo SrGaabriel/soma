@@ -298,21 +298,23 @@ partial def lowerTypeVarBinder (v : GreenNode) (o : Nat) : LowerM TypeVarBinder 
   match v.syntaxKind? with
   | some .tyParamKinded =>
       let kids := childrenWithOffsets v o |>.filter (isSemanticNode ·.1)
-      let varChild := kids.find? fun (c, _) => c.syntaxKind? == some .typeVar
+      -- Look for the type variable name: either a .typeVar wrapper node
+      -- or a raw .lowerIdent token (produced by parseInductiveBinders)
+      let varChild := kids.find? fun (c, _) =>
+        c.syntaxKind? == some .typeVar || isTokenKind c .lowerIdent
       let kindChildren := kids.filter fun (c, _) =>
-        c.syntaxKind? != some .typeVar
+        c.syntaxKind? != some .typeVar && !(isTokenKind c .lowerIdent)
       match varChild with
       | some (varNode, varOff) =>
-          match firstGreenChild varNode with
-          | some child =>
-              let text ← getGreenTokenText child varOff
-              let vspan ← spanFor varNode varOff
-              let kindExpr ← if kindChildren.isEmpty then pure none
-                else some <$> lowerTypeExpr kindChildren[0]!.1 kindChildren[0]!.2
-              pure (TypeVarBinder.mk ⟨text, vspan⟩ kindExpr)
-          | none =>
-              let vspan ← spanFor varNode varOff
-              pure (TypeVarBinder.mk ⟨"_", vspan⟩ none)
+          -- If varNode is a .typeVar wrapper, extract text from its child token;
+          -- if it's already a leaf token (.lowerIdent), extract text directly.
+          let text ← match firstGreenChild varNode with
+            | some child => getGreenTokenText child varOff
+            | none => getGreenTokenText varNode varOff
+          let vspan ← spanFor varNode varOff
+          let kindExpr ← if kindChildren.isEmpty then pure none
+            else some <$> lowerTypeExpr kindChildren[0]!.1 kindChildren[0]!.2
+          pure (TypeVarBinder.mk ⟨text, vspan⟩ kindExpr)
       | none =>
           let vspan ← spanFor v o
           pure (TypeVarBinder.mk ⟨"_", vspan⟩ none)
