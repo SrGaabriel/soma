@@ -1,44 +1,45 @@
-use base/core.{<>}
+use base/core.{<>, >>, >>=}
 use base/ffi.{Ptr, CString, CInt, to_cstring, free}
-use base/io.{IO}
+use base/io.{IO, pure_io}
 
-struct Path = Path String
+record Path where
+    value : String
 
 def {</>} : Path -> Path -> Path
-    | (Path p1) (Path p2) => Path (p1 <> "/" <> p2)
+    | (Path::New p1), (Path::New p2) => Path::New (p1 <> "/" <> p2)
 
 def to_string : Path -> String
-    | (Path p) => p
+    | (Path::New p) => p
 
 def from_string : String -> Path
-    | p => Path p
+    | p => Path::New p
 
-inductive FileHandle where
-    | FileHandle (ptr : Ptr Unit)
-
-@[extern]
-def c_fopen : CString -> CString -> Ptr Unit
+record FileHandle where
+    ptr : Ptr Unit
 
 @[extern]
-def c_fclose : Ptr Unit -> CInt
+def c_fopen : CString -> CString -> IO (Ptr Unit)
 
 @[extern]
-def c_fflush : Ptr Unit -> CInt
+def c_fclose : Ptr Unit -> IO CInt
+
+@[extern]
+def c_fflush : Ptr Unit -> IO CInt
 
 def open : Path -> String -> IO FileHandle
-    | (Path path) mode => compose
+    | (Path::New path), mode => compose
         let cpath = to_cstring path
         let cmode = to_cstring mode
-        let handle = c_fopen cpath cmode
+        bind handle <- c_fopen cpath cmode
         free cpath
         free cmode
-        pure (FileHandle handle)
+        pure_io (FileHandle::New handle)
 
 def close : FileHandle -> IO CInt
-    | (FileHandle ptr) => pure (c_fclose ptr)
+    | (FileHandle::New ptr) => c_fclose ptr
 
 def create : Path -> IO FileHandle
     | path => open path "w"
 
 def flush : FileHandle -> IO CInt
-    | (FileHandle ptr) => pure (c_fflush ptr)
+    | (FileHandle::New ptr) => c_fflush ptr

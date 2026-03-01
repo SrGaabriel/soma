@@ -65,12 +65,19 @@ structure CtorOwnerEntry where
   inductiveName : String
   deriving Serialize, Deserialize
 
+/-- Serializable wired-in entry: maps a role to its registered declarations -/
+structure WiredInEntry where
+  role : Soma.Dependent.WiredRole
+  infos : Array GlobalInfo
+  deriving Serialize, Deserialize
+
 /-- Serializable globals -/
 structure SerializableGlobals where
   defs : Array GlobalDefEntry := #[]
   uniques : Array UniqueEntry := #[]
   inductives : Array InductiveEntry := #[]
   ctorOwners : Array CtorOwnerEntry := #[]
+  wiredIns : Array WiredInEntry := #[]
   deriving Serialize, Deserialize
 
 /-- Serializable class entry -/
@@ -136,7 +143,9 @@ def globalsToSerializable (g : Globals) : SerializableGlobals :=
     acc.push { name, info }
   let ctorOwners := g.ctorToInductive.fold (init := #[]) fun acc ctorName inductiveName =>
     acc.push { ctorName, inductiveName }
-  { defs, uniques, inductives, ctorOwners }
+  let wiredIns := g.wiredIn.roles.fold (init := #[]) fun acc role infos =>
+    acc.push { role, infos }
+  { defs, uniques, inductives, ctorOwners, wiredIns }
 
 /-- Convert InstanceEnv to serializable form -/
 def instanceEnvToSerializable (env : InstanceEnv) : SerializableInstanceEnv :=
@@ -179,11 +188,13 @@ def globalsFromSerializable (sg : SerializableGlobals) : Globals :=
   let recordFields := sg.inductives.foldl (fun acc entry =>
     if entry.info.fieldNames.isEmpty then acc else acc.insert entry.name entry.info.fieldNames
   ) {}
+  let wiredRoles := sg.wiredIns.foldl (fun acc entry => acc.insert entry.role entry.infos) {}
   { defs with
     uniques := uniques
     recordFields := recordFields
     inductives := inductives
-    ctorToInductive := ctorToInductive }
+    ctorToInductive := ctorToInductive
+    wiredIn := { roles := wiredRoles } }
 
 /-- Convert serializable instance env to InstanceEnv -/
 def instanceEnvFromSerializable (sie : SerializableInstanceEnv) : InstanceEnv :=

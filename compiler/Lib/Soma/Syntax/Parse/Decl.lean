@@ -303,6 +303,9 @@ def parseConstructorBinder : ParserM (Option GreenNode) := do
     return none
 
 def parseDataConstructor : ParserM (Option GreenNode) := do
+  let attrs ← parseAttributes
+  if !attrs.isEmpty then
+    let _ ← tryLayoutSep
   match ← tryConsume .pipe with
   | some pipeTok =>
       match ← parseUpperIdent with
@@ -312,10 +315,10 @@ def parseDataConstructor : ParserM (Option GreenNode) := do
             let colonTok ← consumeAny
             match ← parseType with
             | some ty =>
-                return some (GreenNode.mkNode .constructorSig #[pipeTok, nameTok, colonTok, ty])
+                return some (GreenNode.mkNode .constructorSig (attrs ++ #[pipeTok, nameTok, colonTok, ty]))
             | none =>
                 recordError "expected type after ':' in constructor"
-                return some (GreenNode.mkError "missing constructor type" #[pipeTok, nameTok, colonTok])
+                return some (GreenNode.mkError "missing constructor type" (attrs ++ #[pipeTok, nameTok, colonTok]))
           else
             -- Lean-style constructor binders: | Err (a : Type) (b : Nat)
             let fields ← many parseConstructorBinder
@@ -324,16 +327,19 @@ def parseDataConstructor : ParserM (Option GreenNode) := do
               let colonTok ← consumeAny
               match ← parseType with
               | some ty =>
-                return some (GreenNode.mkNode .constructorSig (#[pipeTok, nameTok] ++ fields ++ #[colonTok, ty]))
+                return some (GreenNode.mkNode .constructorSig (attrs ++ #[pipeTok, nameTok] ++ fields ++ #[colonTok, ty]))
               | none =>
                 recordError "expected type after ':' in constructor"
-                return some (GreenNode.mkError "missing constructor type" (#[pipeTok, nameTok] ++ fields ++ #[colonTok]))
+                return some (GreenNode.mkError "missing constructor type" (attrs ++ #[pipeTok, nameTok] ++ fields ++ #[colonTok]))
             else
-              return some (GreenNode.mkNode .constructor (#[pipeTok, nameTok] ++ fields))
+              return some (GreenNode.mkNode .constructor (attrs ++ #[pipeTok, nameTok] ++ fields))
       | none =>
           recordError "expected constructor name after '|'"
-          return some (GreenNode.mkError "missing constructor name" #[pipeTok])
-  | none => return none
+          return some (GreenNode.mkError "missing constructor name" (attrs ++ #[pipeTok]))
+  | none =>
+      if attrs.isEmpty then return none
+      recordError "expected '|' after constructor attributes"
+      return some (GreenNode.mkError "missing '|' after attributes" attrs)
 
 def parseTypeParams : ParserM (Array GreenNode) := do
   let mut params : Array GreenNode := #[]

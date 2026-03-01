@@ -1,5 +1,5 @@
 use base/prim.{+, -, *}
-use base/core.{Option, Some, None}
+use base/core.{Option}
 
 @[intrinsic]
 def cons : a -> [a] -> [a]
@@ -10,17 +10,17 @@ def {==} : a -> a -> Bool
 def {<=} : Int -> Int -> Bool
 
 def head : [a] -> Option a
-    | (x:_) => Some x
-    | [] => None
+    | (x:_) => Option::Some x
+    | [] => Option::None
 
 def tail : [a] -> Option [a]
-    | (_:xs) => Some xs
-    | [] => None
+    | (_:xs) => Option::Some xs
+    | [] => Option::None
 
 def last : [a] -> Option a
-    | [x] => Some x
+    | [x] => Option::Some x
     | (_:xs) => last xs
-    | [] => None
+    | [] => Option::None
 
 def length : [a] -> Int
     | [] => 0
@@ -30,42 +30,42 @@ def singleton : a -> [a]
     | x => [x]
 
 def replicate : Int -> a -> [a]
-    | n x =>
+    | n, x =>
         if n <= 0 then [] else cons x (replicate (n - 1) x)
 
 def map : (a -> b) -> [a] -> [b]
-    | f (x:xs) => cons (f x) (map f xs)
-    | _ [] => []
+    | f, (x:xs) => cons (f x) (map f xs)
+    | _, [] => []
 
 def reverse_acc : [a] -> [a] -> [a]
-    | (x:xs) acc => reverse_acc xs (cons x acc)
-    | [] acc => acc
+    | (x:xs), acc => reverse_acc xs (cons x acc)
+    | [], acc => acc
 
 def reverse : [a] -> [a]
     | xs => reverse_acc xs []
 
 def append : [a] -> [a] -> [a]
-    | (x:xs) ys => cons x (append xs ys)
-    | [] ys => ys
+    | (x:xs), ys => cons x (append xs ys)
+    | [], ys => ys
 
 def concat : [[a]] -> [a]
     | (xs:xss) => append xs (concat xss)
     | [] => []
 
 def concat_map : (a -> [b]) -> [a] -> [b]
-    | f xs => concat (map f xs)
+    | f, xs => concat (map f xs)
 
 def foldl : (b -> a -> b) -> b -> [a] -> b
-    | f acc (x:xs) => foldl f (f acc x) xs
-    | _ acc [] => acc
+    | f, acc, (x:xs) => foldl f (f acc x) xs
+    | _, acc, [] => acc
 
 def foldr : (a -> b -> b) -> b -> [a] -> b
-    | f acc (x:xs) => f x (foldr f acc xs)
-    | _ acc [] => acc
+    | f, acc, (x:xs) => f x (foldr f acc xs)
+    | _, acc, [] => acc
 
 def foldl1 : (a -> a -> a) -> [a] -> Option a
-    | f (x:xs) => Some (foldl f x xs)
-    | _ [] => None
+    | f, (x:xs) => Option::Some (foldl f x xs)
+    | _, [] => Option::None
 
 def sum : [Int] -> Int
     | xs => foldl (\acc x -> acc + x) 0 xs
@@ -82,58 +82,58 @@ def or : [Bool] -> Bool
     | [] => false
 
 def any : (a -> Bool) -> [a] -> Bool
-    | p (x:xs) => if p x then true else any p xs
-    | _ [] => false
+    | p, (x:xs) => if p x then true else any p xs
+    | _, [] => false
 
 def all : (a -> Bool) -> [a] -> Bool
-    | p (x:xs) => if p x then all p xs else false
-    | _ [] => true
+    | p, (x:xs) => if p x then all p xs else false
+    | _, [] => true
 
 def take : Int -> [a] -> [a]
-    | n (x:xs) => if n <= 0 then [] else cons x (take (n - 1) xs)
-    | _ [] => []
+    | n, (x:xs) => if n <= 0 then [] else cons x (take (n - 1) xs)
+    | _, [] => []
 
 def drop : Int -> [a] -> [a]
-    | n (x:xs) => if n <= 0 then cons x xs else drop (n - 1) xs
-    | _ [] => []
+    | n, (x:xs) => if n <= 0 then cons x xs else drop (n - 1) xs
+    | _, [] => []
 
 def take_while : (a -> Bool) -> [a] -> [a]
-    | p (x:xs) => if p x then cons x (take_while p xs) else []
-    | _ [] => []
+    | p, (x:xs) => if p x then cons x (take_while p xs) else []
+    | _, [] => []
 
 def drop_while : (a -> Bool) -> [a] -> [a]
-    | p (x:xs) => if p x then drop_while p xs else cons x xs
-    | _ [] => []
+    | p, (x:xs) => if p x then drop_while p xs else cons x xs
+    | _, [] => []
 
 def split_at : Int -> [a] -> ([a], [a])
-    | n xs => (take n xs, drop n xs)
+    | n, xs => (take n xs, drop n xs)
 
 def elem : a -> [a] -> Bool
-    | x (y:ys) => if x == y then true else elem x ys
-    | _ [] => false
+    | x, (y:ys) => if x == y then true else elem x ys
+    | _, [] => false
 
 def filter : (a -> Bool) -> [a] -> [a]
-    | p (x:xs) => if p x then cons x (filter p xs) else filter p xs
-    | _ [] => []
+    | p, (x:xs) => if p x then cons x (filter p xs) else filter p xs
+    | _, [] => []
 
 def find : (a -> Bool) -> [a] -> Option a
-    | p (x:xs) => if p x then Some x else find p xs
-    | _ [] => None
+    | p, (x:xs) => if p x then Option::Some x else find p xs
+    | _, [] => Option::None
 
 def partition : (a -> Bool) -> [a] -> ([a], [a])
-    | p (x:xs) =>
+    | p, (x:xs) =>
         let (yes, no) = partition p xs in
         if p x then (cons x yes, no) else (yes, cons x no)
-    | _ [] => ([], [])
+    | _, [] => ([], [])
 
 def nth : Int -> [a] -> Option a
-    | n (x:xs) => if n == 0 then Some x else nth (n - 1) xs
-    | _ [] => None
+    | n, (x:xs) => if n == 0 then Option::Some x else nth (n - 1) xs
+    | _, [] => Option::None
 
 def zip : [a] -> [b] -> [(a, b)]
-    | (x:xs) (y:ys) => cons (x, y) (zip xs ys)
-    | _ _ => []
+    | (x:xs), (y:ys) => cons (x, y) (zip xs ys)
+    | _, _ => []
 
 def zip_with : (a -> b -> c) -> [a] -> [b] -> [c]
-    | f (x:xs) (y:ys) => cons (f x y) (zip_with f xs ys)
-    | _ _ _ => []
+    | f, (x:xs), (y:ys) => cons (f x y) (zip_with f xs ys)
+    | _, _, _ => []

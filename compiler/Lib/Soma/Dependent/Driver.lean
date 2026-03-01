@@ -367,8 +367,9 @@ private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Global
       if let some typeInfo := g.lookup typeName.display then
         g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {typeName.display}"
       for ctor in ctors do
-        if let some ctorInfo := g.lookup ctor.name.display then
-          g ← registerWiredRoleFromAttrs g ctor.attrs ctorInfo s!"constructor {ctor.name.display}"
+        let ctorQualifiedName := s!"{typeName.display}::{ctor.name.id.original}"
+        if let some ctorInfo := g.lookup ctorQualifiedName then
+          g ← registerWiredRoleFromAttrs g ctor.attrs ctorInfo s!"constructor {ctorQualifiedName}"
     | .record attrs recordName _ _ _ =>
       if let some typeInfo := g.lookup recordName.display then
         g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {recordName.display}"

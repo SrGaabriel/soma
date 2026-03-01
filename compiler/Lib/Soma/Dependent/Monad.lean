@@ -216,7 +216,7 @@ inductive WiredRole where
   | sortType1
   | sortRow
   | sortLabel
-  deriving Inhabited, BEq, DecidableEq, Hashable, Repr
+  deriving Inhabited, BEq, DecidableEq, Hashable, Repr, Serialize, Deserialize
 
 namespace WiredRole
 

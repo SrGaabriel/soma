@@ -50,7 +50,7 @@ def cstring_len : CString -> CSize
 def malloc : CSize -> Ptr a
 
 @[extern]
-def free : Ptr a -> Unit
+def free : Ptr a -> IO Unit
 
 @[extern]
 def realloc : Ptr a -> CSize -> Ptr a

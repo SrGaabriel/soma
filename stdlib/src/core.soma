@@ -1,4 +1,4 @@
 use base/core.{Display}
 
 @[intrinsic]
-def println : a -> IO () with (Display a)
+def println : a -> IO ()
