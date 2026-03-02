@@ -115,7 +115,8 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
     IO.println s!"  [{cm.name}] After partial eval:\n{Circuit.ppGraph {} optimized}"
 
   -- Lower to Alloy MIR
-  return Alloy.Lower.lower optimized cm.name
+  let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
+  return Alloy.Lower.lower optimized cm.name primTypes
 
 /-- Result of compilation pipeline -/
 structure CompileResult where

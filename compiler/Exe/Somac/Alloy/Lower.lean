@@ -18,6 +18,7 @@ import Soma.Core.Value
 import Soma.Core.Eval
 import Soma.Core.Intrinsic
 import Soma.Core.Primitive
+import Soma.Dependent.Monad
 import Std.Data.HashMap
 import Std.Data.HashSet
 
@@ -34,8 +35,8 @@ abbrev CPortIdx := Somac.Circuit.Node.PortIdx
 abbrev CLabel := Somac.Circuit.Node.Label
 abbrev CNodeEntry := Somac.Circuit.Graph.NodeEntry
 
-open Somac.Circuit.Term (Op1Code Op2Code PrimType Tag)
-open Soma.Core (QualifiedName PrimOp FFIOp Intrinsic)
+open Somac.Circuit.Term (Op1Code Op2Code Tag)
+open Soma.Core (QualifiedName PrimOp FFIOp Intrinsic PrimType)
 
 private def intrinsicOfQName? (qn : QualifiedName) : Option Intrinsic :=
   let n := qn.id.original
@@ -69,6 +70,25 @@ def insert (m : TyVarMapping n) (level : Nat) (idx : Fin n) : TyVarMapping n :=
   ⟨m.map.insert level idx⟩
 
 end TyVarMapping
+
+/-- Registry mapping type Uniques to their primitive type representations -/
+abbrev PrimTypeRegistry := Std.HashMap Soma.Unique PrimType
+
+/-- Combined context for type conversion during Alloy lowering -/
+structure TypeConvCtx (n : Nat) where
+  tyVars : TyVarMapping n
+  primTypes : PrimTypeRegistry
+  deriving Inhabited
+
+/-- Build the primitive type registry from the wired-in type registry -/
+def buildPrimTypeRegistry (wiredIn : Soma.Dependent.WiredIn) : PrimTypeRegistry :=
+  wiredIn.roles.fold (init := {}) fun acc role infos =>
+    match infos with
+    | #[info] =>
+      match Soma.Dependent.WiredRole.primType? role with
+      | some prim => acc.insert info.name.id prim
+      | none => acc
+    | _ => acc
 
 /-- Mapping from Circuit node ports to Alloy local values -/
 abbrev PortMap := Std.HashMap (Nat × Nat) LocalId
@@ -221,7 +241,7 @@ def getCurrentBlockId : LowerM n BlockId := do
 end LowerM
 
 /-- Convert Circuit PrimType to Alloy PrimTy -/
-def convertPrimType : PrimType → PrimTy
+def convertCircuitPrimType : Somac.Circuit.Term.PrimType → PrimTy
   | .u8 => .u8 | .u16 => .u16 | .u32 => .u32 | .u64 => .u64
   | .i8 => .i8 | .i16 => .i16 | .i32 => .i32 | .i64 => .i64
   | .f32 => .f32 | .f64 => .f64
@@ -323,39 +343,35 @@ def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
   | none =>
     .external s!"unresolved_ref_{refId}"
 
-open Soma.Core (Value StarPrimitive HigherPrimitive)
+open Soma.Core (Value)
 open Soma.Unique
 
-/-- Convert a StarPrimitive to an Alloy type -/
-def convertStarPrimitive : StarPrimitive → Ty n
-  | .int => .prim .i32
-  | .long => .prim .i64
-  | .short => .prim .i16
-  | .byte => .prim .i8
+mutual
+
+/-- Convert a PrimType to an Alloy Ty -/
+partial def convertPrimToAlloyTy (prim : PrimType) (params : List Value) (ctx : TypeConvCtx n) : Ty n :=
+  match prim with
+  | .int | .int32 => .prim .i32
+  | .long | .int64 => .prim .i64
+  | .short | .int16 => .prim .i16
+  | .byte | .int8 => .prim .i8
   | .float => .prim .f32
   | .double => .prim .f64
   | .bool => .prim .bool
   | .string => Ty.string
   | .unit => .prim .unit
   | .closurePtr => .rawPtr
-  | .int8 => .prim .i8
-  | .int16 => .prim .i16
-  | .int32 => .prim .i32
-  | .int64 => .prim .i64
   | .word8 => .prim .u8
   | .word16 => .prim .u16
   | .word32 => .prim .u32
   | .word64 => .prim .u64
-
-/-- Convert a HigherPrimitive to Alloy Ty -/
-def convertHigherPrimitive : HigherPrimitive → Ty n
-  | .array => .rawPtr | .list => .rawPtr | .ref => .rawPtr
-  | .io => .prim .unit | .ptr => .rawPtr
-
-mutual
+  | .io => match params with
+    | [innerTy] => convertValueTypeWithMapping innerTy ctx
+    | _ => .prim .unit
+  | .array | .list | .ref | .ptr => .rawPtr
 
 /-- Extract variant information from a row type -/
-partial def extractRowVariantsWithMapping (row : Value) (mapping : TyVarMapping n)
+partial def extractRowVariantsWithMapping (row : Value) (ctx : TypeConvCtx n)
     (idx : Nat := 0) (acc : Array (Nat × Array (Ty n)) := #[]) : Array (Nat × Array (Ty n)) :=
   match row with
   | Value.vRowEmpty => acc
@@ -363,62 +379,54 @@ partial def extractRowVariantsWithMapping (row : Value) (mapping : TyVarMapping 
     let fields := match fieldTy with
       | Value.vPrimTy (.unit) => #[]
       | Value.vSigma _ _ fst sndClos =>
-        let fstTy := convertValueTypeWithMapping fst mapping
+        let fstTy := convertValueTypeWithMapping fst ctx
         let sndTy := match sndClos with
-          | .const _ v => convertValueTypeWithMapping v mapping
+          | .const _ v => convertValueTypeWithMapping v ctx
           | _ => .prim .i64
         #[fstTy, sndTy]
       | Value.vPair fst snd =>
-        #[convertValueTypeWithMapping fst mapping, convertValueTypeWithMapping snd mapping]
-      | other => #[convertValueTypeWithMapping other mapping]
-    extractRowVariantsWithMapping tail mapping (idx + 1) (acc.push (idx, fields))
+        #[convertValueTypeWithMapping fst ctx, convertValueTypeWithMapping snd ctx]
+      | other => #[convertValueTypeWithMapping other ctx]
+    extractRowVariantsWithMapping tail ctx (idx + 1) (acc.push (idx, fields))
   | _ => acc
 
 /-- Convert a Soma Value type to an Alloy Ty -/
-partial def convertValueTypeWithMapping (val : Value) (mapping : TyVarMapping n) : Ty n :=
+partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty n :=
   match val with
-  -- Primitive types
-  | Value.vPrimTy prim => convertStarPrimitive prim
+  | Value.vPrimTy prim => convertPrimToAlloyTy prim [] ctx
 
   | Value.vPi _ _ name dom cod =>
-    let domTy := convertValueTypeWithMapping dom mapping
+    let domTy := convertValueTypeWithMapping dom ctx
     let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨name, ⟨0⟩⟩)
     let codResult := cod.applyPure neutralArg
-    let codTy := convertValueTypeWithMapping codResult mapping
+    let codTy := convertValueTypeWithMapping codResult ctx
     .closure #[domTy] codTy
   | Value.vLam _ _ => .closure #[] (.prim .i64)
   | Value.vSigma _ name fst sndClos =>
     let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨name, ⟨0⟩⟩)
     let sndResult := sndClos.applyPure neutralArg
-    let sndTy := convertValueTypeWithMapping sndResult mapping
-    .struct #[("fst", convertValueTypeWithMapping fst mapping), ("snd", sndTy)]
+    let sndTy := convertValueTypeWithMapping sndResult ctx
+    .struct #[("fst", convertValueTypeWithMapping fst ctx), ("snd", sndTy)]
   | Value.vPair fst snd =>
-    .struct #[("fst", convertValueTypeWithMapping fst mapping),
-              ("snd", convertValueTypeWithMapping snd mapping)]
+    .struct #[("fst", convertValueTypeWithMapping fst ctx),
+              ("snd", convertValueTypeWithMapping snd ctx)]
   | Value.vDataType dId params =>
-    if dId.module == Soma.Unique.builtinModule then
-      match HigherPrimitive.fromName? dId.original with
-      | some .io =>
-        match params with
-        | [innerTy] => convertValueTypeWithMapping innerTy mapping
-        | _ => .prim .unit
-      | some prim => convertHigherPrimitive prim
-      | none => .tagged (.prim .u32) #[]
-    else .tagged (.prim .u32) #[]
+    match ctx.primTypes.get? dId with
+    | some prim => convertPrimToAlloyTy prim params ctx
+    | none => .tagged (.prim .u32) #[]
   | Value.vConstructor _ _ _ _ => .rawPtr
   | Value.vRecord _ => .rawPtr
   | Value.vRecordVal _ => .rawPtr
-  | Value.vVariant row => .tagged (.prim .u32) (extractRowVariantsWithMapping row mapping)
+  | Value.vVariant row => .tagged (.prim .u32) (extractRowVariantsWithMapping row ctx)
   | Value.vType _ => .prim .unit
   | Value.vNeutral _ neu =>
     match neu with
     | .nVar v =>
-      -- Look up the de Bruijn level in our mapping to get the normalized index
-      match mapping.get? v.level.lvl with
-      | some idx => .var idx -- idx : Fin n, type-safe!
-      | none => .prim .i64 -- fallback for unknown vars
+      match ctx.tyVars.get? v.level.lvl with
+      | some idx => .var idx
+      | none => .prim .i64
     | .nMeta m =>
-      match mapping.get? m.id with
+      match ctx.tyVars.get? m.id with
       | some idx => .var idx
       | none => .prim .i64
     | _ => .prim .i64
@@ -526,8 +534,8 @@ def buildTyVarMappingFromDefinition (_graph : CGraph) (def_ : CDefinition) : Σ 
   let defLevels := collectTyVarLevels def_.ty
   buildTyVarMapping defLevels
 
-/-- Extract type parameter names and value parameters using a mapping -/
-partial def extractParamsUsingMapping (ty : Value) (mapping : TyVarMapping n)
+/-- Extract type parameter names and value parameters using a type conversion context -/
+partial def extractParamsUsingMapping (ty : Value) (ctx : TypeConvCtx n)
     (typeAcc : Array String := #[]) (valAcc : Array (String × Ty n) := #[])
     : Array String × Array (String × Ty n) :=
   match ty with
@@ -536,32 +544,31 @@ partial def extractParamsUsingMapping (ty : Value) (mapping : TyVarMapping n)
     match cod with
     | .const _ nextTy =>
       if isTypeParam then
-        extractParamsUsingMapping nextTy mapping (typeAcc.push name) valAcc
+        extractParamsUsingMapping nextTy ctx (typeAcc.push name) valAcc
       else
-        let paramTy := convertValueTypeWithMapping dom mapping
-        extractParamsUsingMapping nextTy mapping typeAcc (valAcc.push (name, paramTy))
+        let paramTy := convertValueTypeWithMapping dom ctx
+        extractParamsUsingMapping nextTy ctx typeAcc (valAcc.push (name, paramTy))
     | .term _ _ _ =>
       if isTypeParam then
         (typeAcc.push name, valAcc)
       else
-        let paramTy := convertValueTypeWithMapping dom mapping
+        let paramTy := convertValueTypeWithMapping dom ctx
         (typeAcc, valAcc.push (name, paramTy))
   | _ => (typeAcc, valAcc)
 
-/-- Extract the return type from a function type (Pi chain) with type variable mapping -/
-partial def extractReturnTypeWithMapping (ty : Value) (mapping : TyVarMapping n) : Ty n :=
+/-- Extract the return type from a function type (Pi chain) -/
+partial def extractReturnTypeWithMapping (ty : Value) (ctx : TypeConvCtx n) : Ty n :=
   match ty with
   | Value.vPi _ _ _ _ cod =>
     match cod with
-    | .const _ nextTy => extractReturnTypeWithMapping nextTy mapping
+    | .const _ nextTy => extractReturnTypeWithMapping nextTy ctx
     | .term _ _ _ => .prim .i64
-  | other => convertValueTypeWithMapping other mapping
+  | other => convertValueTypeWithMapping other ctx
 
 /-- Build function signature from a Value type with known type parameter count -/
 def buildSignatureFromType (name : QualifiedName) (ty : Value) (arity : Nat)
-    (mapping : TyVarMapping n) (numTypeParams : Nat) : Signature n :=
-  let (explicitTypeParams, paramInfos) := extractParamsUsingMapping ty mapping
-  -- Ensure we have names for all n type parameters
+    (ctx : TypeConvCtx n) (numTypeParams : Nat) : Signature n :=
+  let (explicitTypeParams, paramInfos) := extractParamsUsingMapping ty ctx
   let typeParamNames := if explicitTypeParams.size >= numTypeParams then
       explicitTypeParams.extract 0 numTypeParams
     else
@@ -574,12 +581,12 @@ def buildSignatureFromType (name : QualifiedName) (ty : Value) (arity : Nat)
       let (pname, pty) := paramInfos[i]
       { id := ⟨i⟩, name := pname, ty := pty : Param n }
     else { id := ⟨i⟩, name := s!"arg{i}", ty := defaultTy : Param n }
-  let retTy := extractReturnTypeWithMapping ty mapping
+  let retTy := extractReturnTypeWithMapping ty ctx
   { name := name.display, typeParamNames, params, retTy }
 
-/-- Get node type with type variable mapping -/
-def getNodeTypeWithMapping (entry : CNodeEntry) (mapping : TyVarMapping n) : Ty n :=
-  convertValueTypeWithMapping entry.ty mapping
+/-- Get node type with type conversion context -/
+def getNodeTypeWithMapping (entry : CNodeEntry) (ctx : TypeConvCtx n) : Ty n :=
+  convertValueTypeWithMapping entry.ty ctx
 
 /-- The generic value type used at runtime -/
 def valueType : Ty n := .prim .i64
@@ -606,6 +613,8 @@ structure NodeState (n : Nat) where
   lamParams : Std.HashMap Nat Nat := {}
   /-- Type variable level → index mapping -/
   tyVarMapping : TyVarMapping n
+  /-- Primitive type registry for resolving wired-in types -/
+  primTypes : PrimTypeRegistry := {}
   deriving Inhabited
 
 namespace NodeState
@@ -615,17 +624,21 @@ def snapshotResults (s : NodeState n) : Std.HashMap Nat LocalId := s.results
 def restoreResults (s : NodeState n) (snapshot : Std.HashMap Nat LocalId) : NodeState n :=
   { s with results := snapshot }
 
+/-- Build a type conversion context from this node state -/
+def toTypeConvCtx (s : NodeState n) : TypeConvCtx n :=
+  { tyVars := s.tyVarMapping, primTypes := s.primTypes }
+
 end NodeState
 
 /-- Lower a numeric literal -/
-def lowerNum (primTy : PrimType) (val : UInt32) : LowerM n LocalId := do
-  let ty : Ty n := Ty.prim (convertPrimType primTy)
+def lowerNum (primTy : Somac.Circuit.Term.PrimType) (val : UInt32) : LowerM n LocalId := do
+  let ty : Ty n := Ty.prim (convertCircuitPrimType primTy)
   let intVal : Int :=
     if primTy.toUInt8 >= 4 && primTy.toUInt8 <= 7 then
       let v := val.toNat
       if v >= 0x80000000 then Int.negOfNat (0x100000000 - v) else Int.ofNat v
     else Int.ofNat val.toNat
-  LowerM.emitInst (.copy (.const (.int intVal (convertPrimType primTy)))) ty
+  LowerM.emitInst (.copy (.const (.int intVal (convertCircuitPrimType primTy)))) ty
 
 /-- Lower a constructor (creates a tagged struct on the heap) -/
 def lowerCtor (tag : Nat) (_arity : Nat) (fieldVals : Array LocalId) (ty : Ty n) : LowerM n LocalId := do
@@ -787,7 +800,7 @@ partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : F
     | some entry =>
       match entry.node with
       | .dup _ =>
-        let nodeTy := getNodeTypeWithMapping entry ns'.tyVarMapping
+        let nodeTy := getNodeTypeWithMapping entry ns'.toTypeConvCtx
         if nodeTy.dupTier == .heap && !nodeTy.canInlineDup && Ty.supportsLazySup nodeTy then
           let projVal ←
             if port.port.idx == 1 then
@@ -822,14 +835,14 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef (.prim .i64)))) valueType)
     return undef
 
-  let tyMapping := ns.tyVarMapping
-  let nodeTy := getNodeTypeWithMapping entry tyMapping
+  let ctx := ns.toTypeConvCtx
+  let nodeTy := getNodeTypeWithMapping entry ctx
 
   let getPortType (portIdx : Nat) (defaultTy : Ty n := nodeTy) : Ty n :=
     match entry.getPort ⟨portIdx⟩ with
     | some targetPort =>
       match graph.getNode targetPort.node with
-      | some targetEntry => getNodeTypeWithMapping targetEntry tyMapping
+      | some targetEntry => getNodeTypeWithMapping targetEntry ctx
       | none => defaultTy
     | none => defaultTy
 
@@ -849,7 +862,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     | some sourcePort =>
       match graph.getNode sourcePort.node with
       | some sourceEntry =>
-        let sourceTy := getNodeTypeWithMapping sourceEntry tyMapping
+        let sourceTy := getNodeTypeWithMapping sourceEntry ctx
         if sourceTy.needsErase then
           let sourceVal ← lowerOperandWithMap graph sourcePort funcIdMap
           StateT.lift (LowerM.emitVoid (.erase (.local sourceVal) sourceTy))
@@ -917,7 +930,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           | .ref refId | .alo refId =>
             -- Direct function reference: emit direct call
             let callRetTy := match graph.getDefinition refId with
-              | some def_ => extractReturnTypeWithMapping def_.ty tyMapping
+              | some def_ => extractReturnTypeWithMapping def_.ty ctx
               | none => nodeTy
             let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
             match funcRef with
@@ -933,7 +946,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
           | _ =>
             -- Regular closure call: lower the function and use callClosure
-            let fnNodeTy := getNodeTypeWithMapping fnEntry tyMapping
+            let fnNodeTy := getNodeTypeWithMapping fnEntry ctx
             if fnNodeTy == .prim .unit then
               StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
             else
@@ -1218,8 +1231,9 @@ def collectLamChain (graph : CGraph) (root : CNodeId) (arity : Nat)
 
 /-- Lower a definition with a specific type parameter count n -/
 def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
-    (funcIdMap : FuncIdMap) (tyVarMapping : TyVarMapping n) : Func n :=
-  let (explicitTypeParams, paramInfos) := extractParamsUsingMapping def_.ty tyVarMapping
+    (funcIdMap : FuncIdMap) (tyVarMapping : TyVarMapping n) (primTypes : PrimTypeRegistry) : Func n :=
+  let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes }
+  let (explicitTypeParams, paramInfos) := extractParamsUsingMapping def_.ty ctx
   let numTyVars := n
   let typeParamNames := if explicitTypeParams.size >= numTyVars then
       explicitTypeParams.extract 0 numTyVars
@@ -1234,19 +1248,19 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
       let (pname, pty) := paramInfos[i]
       { id := ⟨i⟩, name := pname, ty := pty : Param n }
     else { id := ⟨i⟩, name := s!"arg{i}", ty := defaultTy : Param n }
-  let retTy := extractReturnTypeWithMapping def_.ty tyVarMapping
+  let retTy := extractReturnTypeWithMapping def_.ty ctx
   let sig : Signature n := { name := def_.name.display, typeParamNames, params, retTy }
   let returnsUnit := sig.retTy == .prim .unit
 
   let (_, func) := LowerM.run' funcId sig do
     if def_.arity == 0 then
-      let initState : NodeState n := { tyVarMapping }
+      let initState : NodeState n := { tyVarMapping, primTypes }
       let (result, _) ← StateT.run (lowerNodeWithMap graph def_.root funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
     else
       let (bodyNode, lamParams) := collectLamChain graph def_.root def_.arity
-      let initState : NodeState n := { lamParams, tyVarMapping }
+      let initState : NodeState n := { lamParams, tyVarMapping, primTypes }
       let (result, _) ← StateT.run (lowerNodeWithMap graph bodyNode funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
@@ -1255,16 +1269,16 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
 
 /-- Lower a Circuit definition to an Alloy function -/
 def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
-    (funcIdMap : FuncIdMap) : SomeFunc :=
+    (funcIdMap : FuncIdMap) (primTypes : PrimTypeRegistry) : SomeFunc :=
   -- Collect all type variable levels and build mapping
   let ⟨n, tyVarMapping⟩ := buildTyVarMappingFromDefinition graph def_
   -- Lower with the determined n
-  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping
+  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes
   -- Return existentially quantified function
   ⟨n, func⟩
 
 /-- Lower an entire Circuit graph to an Alloy module -/
-def lowerGraph (graph : CGraph) (moduleName : String := "main") : Module := Id.run do
+def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {}) : Module := Id.run do
   let mut module := Module.empty moduleName
 
   -- Copy string table from Circuit graph to Alloy module
@@ -1289,7 +1303,7 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") : Module := Id.r
     if let some def_ := graph.book[i]? then
       if not def_.isExternal then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
-        let func := lowerDefinition graph def_ funcId funcIdMap
+        let func := lowerDefinition graph def_ funcId funcIdMap primTypes
         module := module.addFunc func
 
   -- Set main function using the mapped ID
@@ -1300,7 +1314,7 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") : Module := Id.r
   module
 
 /-- Main entry point: lower a Circuit graph to an Alloy module -/
-def lower (graph : CGraph) (moduleName : String := "main") : Module :=
-  lowerGraph graph moduleName
+def lower (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {}) : Module :=
+  lowerGraph graph moduleName primTypes
 
 end Somac.Alloy.Lower

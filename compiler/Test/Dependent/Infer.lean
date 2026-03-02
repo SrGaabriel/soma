@@ -309,7 +309,7 @@ end ErrorTests
 
 namespace InferTests
 
-open Soma.Core (StarPrimitive)
+open Soma.Core (PrimType)
 
 /-- Test: Infer integer literal type -/
 def testInferIntLit : IO TestResult := do
@@ -389,7 +389,7 @@ end InferTests
 
 namespace CheckTests
 
-open Soma.Core (StarPrimitive)
+open Soma.Core (PrimType)
 
 /-- Test: Check integer literal against Int -/
 def testCheckIntAgainstInt : IO TestResult := do
@@ -506,7 +506,7 @@ end UsageTests
 
 namespace ImplicitPropagationTests
 
-open Soma.Core (StarPrimitive)
+open Soma.Core (PrimType)
 
 /-- Helper to create a polymorphic identity function type: forall {a : Type}. a -> a -/
 def mkIdType : TCM Value := do

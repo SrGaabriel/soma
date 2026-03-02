@@ -144,7 +144,10 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
         return Value.vConstructor globalInfo.name globalInfo.ctorTag [] globalInfo.type
       else
         if let some primTy ← TCM.lookupWiredPrimitiveOfGlobal globalInfo.name then
-          return Value.vPrimTy primTy
+          if primTy.isNullary then
+            return Value.vPrimTy primTy
+          else
+            return Value.vDataType globalInfo.name.id []
         else
           return Value.vDataType globalInfo.name.id []
     -- Otherwise, treat as a user-defined type reference

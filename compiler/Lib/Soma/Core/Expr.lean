@@ -125,7 +125,7 @@ inductive Expr where
   | inject (label : String) (args : Array Expr) (resultTy : Expr)
 
   -- Primitive types as expressions
-  | primTy (p : StarPrimitive)
+  | primTy (p : PrimType)
   | rowSort
   | labelSort
   | rowEmpty

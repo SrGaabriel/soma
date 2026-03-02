@@ -32,7 +32,7 @@ inductive Value where
   | vNeutral (ty : Value) (neu : Neutral)
 
   /-- Primitive type (Int, Bool, etc.) -/
-  | vPrimTy (p : StarPrimitive)
+  | vPrimTy (p : PrimType)
 
   /-- Row sorts -/
   | vRowSort

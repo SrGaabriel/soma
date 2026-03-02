@@ -25,7 +25,7 @@ private partial def normalizeWiredPrimitiveValue (v : Value) : TCM Value := do
   match v with
   | .vDataType u [] =>
     match ← TCM.lookupWiredPrimitiveOfTypeUnique u with
-    | some prim => pure (.vPrimTy prim)
+    | some prim => if prim.isNullary then pure (.vPrimTy prim) else pure v
     | none => pure v
   | _ => pure v
 

@@ -290,7 +290,7 @@ def fromString? : String → Option WiredRole
   | _ => none
 
 /-- Map wired type roles to canonical primitive representations when applicable -/
-def primType? : WiredRole → Option Soma.Core.StarPrimitive
+def primType? : WiredRole → Option Soma.Core.PrimType
   | .typeInt => some .int
   | .typeLong => some .long
   | .typeShort => some .short
@@ -308,6 +308,11 @@ def primType? : WiredRole → Option Soma.Core.StarPrimitive
   | .typeWord16 => some .word16
   | .typeWord32 => some .word32
   | .typeWord64 => some .word64
+  | .typeIO => some .io
+  | .typeArray => some .array
+  | .typeList => some .list
+  | .typeRef => some .ref
+  | .typePtr => some .ptr
   | _ => none
 
 end WiredRole
@@ -1304,13 +1309,13 @@ def lookupWiredRoleOfGlobal (qn : Soma.Core.QualifiedName) : TCM (Option WiredRo
   return ctx.globals.wiredIn.roleOf? qn
 
 /-- Resolve primitive representation for a wired global type declaration when applicable -/
-def lookupWiredPrimitiveOfGlobal (qn : Soma.Core.QualifiedName) : TCM (Option Soma.Core.StarPrimitive) := do
+def lookupWiredPrimitiveOfGlobal (qn : Soma.Core.QualifiedName) : TCM (Option Soma.Core.PrimType) := do
   match ← lookupWiredRoleOfGlobal qn with
   | some role => pure (WiredRole.primType? role)
   | none => pure none
 
 /-- Resolve primitive representation for a wired type unique when applicable -/
-def lookupWiredPrimitiveOfTypeUnique (u : Soma.Unique) : TCM (Option Soma.Core.StarPrimitive) := do
+def lookupWiredPrimitiveOfTypeUnique (u : Soma.Unique) : TCM (Option Soma.Core.PrimType) := do
   let ctx ← getCtx
   let role? := ctx.globals.wiredIn.roles.fold (init := none) fun found role infos =>
     match found with
