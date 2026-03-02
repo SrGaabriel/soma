@@ -258,12 +258,11 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
 
 /-- Apply a closure to an argument -/
 partial def applyClosure (clos : Closure) (arg : Value) (ctx : EvalCtx) : Value :=
-  let env' := clos.env.extend clos.name arg
-  match clos.body with
-  | some body =>
+  match clos with
+  | .const _ value => value
+  | .term name env body =>
+    let env' := env.extend name arg
     evalCoreExpr { ctx with env := env' } body
-  | none =>
-    .vNeutral .type0 (.nVar ⟨clos.name, env'.level⟩)
 
 /-- Apply a value to an argument -/
 partial def vApp (fn : Value) (arg : Value) (ctx : EvalCtx) : Value :=
@@ -278,6 +277,19 @@ partial def vApp (fn : Value) (arg : Value) (ctx : EvalCtx) : Value :=
     fn
 
 end
+
+/-- Apply a closure using only its captured environment (no external context needed).
+    For Closure.const: returns the constant result directly.
+    For Closure.term: evaluates the body with the closure's captured env extended by the argument. -/
+def Closure.applyPure (clos : Closure) (arg : Value) : Value :=
+  applyClosure clos arg EvalCtx.empty
+
+/-- Apply a Pi type to an argument, computing the codomain type.
+    Works for both non-dependent (Closure.const) and dependent (Closure.term) Pi types. -/
+def Value.piApply (v : Value) (arg : Value) : Option Value :=
+  match v with
+  | .vPi _ _ _ _ cod => some (cod.applyPure arg)
+  | _ => none
 
 /-- Evaluate a closed Core expression. -/
 def evalClosed (e : Soma.Core.Expr) : Value :=

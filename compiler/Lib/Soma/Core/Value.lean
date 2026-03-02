@@ -261,12 +261,6 @@ def Value.piDomain? (v : Value) : Option Value :=
   | Value.vPi _ _ _ domain _ => some domain
   | _ => none
 
-/-- Extract the codomain from a Pi type (for non-dependent functions) -/
-def Value.piCodomain? (v : Value) : Option Value :=
-  match v with
-  | Value.vPi _ _ _ _ (Closure.const _ result) => some result
-  | _ => none
-
 /-- Extract the first component type from a Sigma type -/
 def Value.sigmaFst? (v : Value) : Option Value :=
   match v with

@@ -15,6 +15,7 @@ import Somac.Alloy.Func
 import Somac.Circuit.Graph
 import Somac.Circuit.Node
 import Soma.Core.Value
+import Soma.Core.Eval
 import Soma.Core.Intrinsic
 import Soma.Core.Primitive
 import Std.Data.HashMap
@@ -376,18 +377,17 @@ partial def convertValueTypeWithMapping (val : Value) (mapping : TyVarMapping n)
   -- Primitive types
   | Value.vPrimTy prim => convertStarPrimitive prim
 
-  | Value.vPi _ _ _ dom cod =>
+  | Value.vPi _ _ name dom cod =>
     let domTy := convertValueTypeWithMapping dom mapping
-    let codTy := match cod with
-      | .const _ result => convertValueTypeWithMapping result mapping
-      | .term _ _ _ => .prim .i64
+    let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨name, ⟨0⟩⟩)
+    let codResult := cod.applyPure neutralArg
+    let codTy := convertValueTypeWithMapping codResult mapping
     .closure #[domTy] codTy
-  -- todo: panic
   | Value.vLam _ _ => .closure #[] (.prim .i64)
-  | Value.vSigma _ _ fst sndClos =>
-    let sndTy := match sndClos with
-      | .const _ v => convertValueTypeWithMapping v mapping
-      | _ => .prim .i64 -- Dependent type, fall back to boxed
+  | Value.vSigma _ name fst sndClos =>
+    let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨name, ⟨0⟩⟩)
+    let sndResult := sndClos.applyPure neutralArg
+    let sndTy := convertValueTypeWithMapping sndResult mapping
     .struct #[("fst", convertValueTypeWithMapping fst mapping), ("snd", sndTy)]
   | Value.vPair fst snd =>
     .struct #[("fst", convertValueTypeWithMapping fst mapping),

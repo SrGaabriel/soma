@@ -1,6 +1,7 @@
 use stdlib/collections.{cons, head, length, map, foldl, filter, sum, reverse, append, ==}
 use stdlib/core.{println}
 use base/core.{display}
+use base/prim.{List}
 
 def main : IO () =
     compose
@@ -32,7 +33,7 @@ def main : IO () =
         let combinedSum = sum combined
         println ("Append sum: " <> display combinedSum)
 
-        let withZero = cons 0 xs
+        let withZero = List::Cons 0 xs
         let consSum = sum withZero
         println ("Cons sum: " <> display consSum)
 

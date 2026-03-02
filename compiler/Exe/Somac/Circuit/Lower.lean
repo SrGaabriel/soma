@@ -5,6 +5,7 @@ import Somac.Circuit.PatternMatch
 import Soma.Core.Module
 import Soma.Core.Function
 import Soma.Core.Value
+import Soma.Core.Eval
 import Soma.Core.Quantity
 import Soma.Core.Expr
 import Soma.Core.Intrinsic
@@ -605,14 +606,12 @@ def inferExprType (e : Soma.Core.Expr) : LowerM Value := do
     match ctx.lookupGlobalType qn with
     | some ty => pure ty
     | none => panic! s!"inferExprType: unknown closure target '{qn}'"
-  | .app fn _ =>
+  | .app fn arg =>
     let fnTy ← inferExprType fn
-    match fnTy.piCodomain? with
+    let argVal := Soma.Core.evalCoreExpr Soma.Core.EvalCtx.empty arg
+    match fnTy.piApply argVal with
     | some codomainTy => pure codomainTy
-    | none =>
-      match fnTy with
-      | .vPi _ _ _ _ _ => pure unitTy
-      | _ => panic! s!"inferExprType: app with non-function type {fnTy}"
+    | none => panic! s!"inferExprType: app with non-function type {fnTy}"
   | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
   | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
@@ -783,7 +782,8 @@ partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
     ctx.bindVarOwned paramUnique name varPort usageCount paramTy isErased
 
   -- Lower the opened body
-  let codomainTy := match ty.piCodomain? with
+  let paramNeutral := Value.vNeutral paramTy (.nVar ⟨name, ⟨paramUnique.id⟩⟩)
+  let codomainTy := match ty.piApply paramNeutral with
     | some t => t
     | none => panic! s!"lowerCoreLam: expected Pi type for codomain, got {ty}"
   let bodyPort? ← lowerCoreExpr openBody codomainTy
@@ -1134,7 +1134,8 @@ def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
     let paramTy := match currentTy.piDomain? with
       | some d => d
       | none => panic! s!"lowerFunction: expected Pi type for param '{name}', got {currentTy}"
-    currentTy := match currentTy.piCodomain? with
+    let paramNeutral := Value.vNeutral paramTy (.nVar ⟨name, ⟨bindingId.id⟩⟩)
+    currentTy := match currentTy.piApply paramNeutral with
       | some c => c
       | none => panic! s!"lowerFunction: expected Pi type for codomain after '{name}', got {currentTy}"
 
