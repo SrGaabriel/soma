@@ -1,4 +1,4 @@
 use base/core.{Display}
 
-@[intrinsic]
-def println : a -> IO ()
+@[extern]
+def puts : String -> IO ()

@@ -1095,25 +1095,26 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         }
         pure inputVal
       else if nodeTy == .rawPtr then
-        match entry.getPort ⟨0⟩ with
-        | some srcPort =>
-          match graph.getNode srcPort.node with
-          | some srcEntry =>
-            match srcEntry.node with
-            | .array _ =>
-              let srcTy := getPortType 0 nodeTy
-              let (copy0, copy1) ← emitArrayHeaderDup inputVal srcTy label.id
-              modify fun ns => { ns with
-                results := ns.results.insert (nodeId.id * 1000 + 1) copy0
-                           |>.insert (nodeId.id * 1000 + 2) copy1
-              }
-              pure inputVal
-            | _ =>
-              panic! s!"ALLOY LOWERING BUG: DUP on opaque rawPtr source ({srcEntry.node}) is unsupported without typed clone lowering"
-          | none =>
-            panic! s!"ALLOY LOWERING BUG: DUP source node not found for rawPtr duplication"
-        | none =>
-          panic! s!"ALLOY LOWERING BUG: DUP node has no principal source for rawPtr duplication"
+        -- Inspect source node to select the right clone strategy
+        let srcNode? : Option CNode := (entry.getPort ⟨0⟩).bind fun srcPort =>
+          graph.getNode srcPort.node |>.map (·.node)
+        let (copy0, copy1) ← match srcNode? with
+          | some (.array _) =>
+            -- Arrays carry their own header; use the typed array-dup helper
+            let srcTy := getPortType 0 nodeTy
+            emitArrayHeaderDup inputVal srcTy label.id
+          | _ =>
+            -- Closures (LAM), algebraic-data-type cells, REF, ALO etc are closure-like
+            -- TODO: review if any other node types require special handling here
+            let lbl : Operand := .const (.int (Int.ofNat label.id.toNat) .u32)
+            let clone ← StateT.lift (LowerM.emitInst
+              (.callExtern "soma_clone_closure" #[.local inputVal, lbl] .rawPtr) .rawPtr)
+            pure (inputVal, clone)
+        modify fun ns => { ns with
+          results := ns.results.insert (nodeId.id * 1000 + 1) copy0
+                     |>.insert (nodeId.id * 1000 + 2) copy1
+        }
+        pure inputVal
       else if Ty.supportsLazySup nodeTy then
         -- Runtime SUP: lazy duplication via superposition nodes.
         let supVal ← StateT.lift (LowerM.emitInst (.lazySup label.id (.local inputVal) nodeTy) nodeTy)

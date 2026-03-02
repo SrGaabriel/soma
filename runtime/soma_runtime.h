@@ -313,7 +313,7 @@ SomaValue soma_proj1(SomaValue sup_val);
 
 /*
  * Memory Pool API
- * 
+ *
  * Arena-style allocation for reduced malloc overhead.
  * Each pool manages a linked list of fixed-size blocks.
  */
@@ -476,7 +476,7 @@ struct SomaWorker {
     _Atomic int hungry;
     _Atomic int active;
     SomaParRuntime* runtime;
-    
+
     /* Per-worker stats */
     uint64_t tasks_run;
     uint64_t tasks_stolen;
@@ -490,7 +490,7 @@ struct SomaParRuntime {
     _Atomic int shutdown;
     _Atomic size_t pending_tasks;
     _Atomic size_t hungry_count;
-    
+
     /* Task pool for recycling */
     SomaTask* task_pool;
     _Atomic size_t task_pool_size;
