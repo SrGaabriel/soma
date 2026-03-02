@@ -105,6 +105,8 @@ structure LowerState (n : Nat) where
   portMap : PortMap := {}
   /-- Next block ID -/
   nextBlockId : Nat := 1
+  /-- Intrinsic dispatch table from elaboration -/
+  ctxIntrinsics : Std.HashMap QualifiedName Intrinsic := {}
 
 namespace LowerState
 
@@ -115,13 +117,16 @@ instance : Inhabited (LowerState n) where
     blocks := #[]
     portMap := {}
     nextBlockId := 1
+    ctxIntrinsics := {}
   }
 
 /-- Create initial state for a function -/
-def init (funcId : FuncId) (sig : Signature n) : LowerState n :=
+def init (funcId : FuncId) (sig : Signature n)
+    (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : LowerState n :=
   let entry : Block n := { id := .entry, terminator := .unreachable }
   { func := Func.withBody funcId sig (CFG.withEntry entry)
   , currentBlock := entry
+  , ctxIntrinsics := intrinsics
   }
 
 /-- Allocate a fresh local -/
@@ -187,8 +192,10 @@ abbrev LowerM (n : Nat) := StateM (LowerState n)
 
 namespace LowerM
 
-def run' (funcId : FuncId) (sig : Signature n) (m : LowerM n α) : α × Func n :=
-  let (result, state) := Id.run (StateT.run m (LowerState.init funcId sig))
+def run' (funcId : FuncId) (sig : Signature n)
+    (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
+    (m : LowerM n α) : α × Func n :=
+  let (result, state) := Id.run (StateT.run m (LowerState.init funcId sig intrinsics))
   (result, state.finalize)
 
 def freshLocal : LowerM n LocalId := do
@@ -316,7 +323,8 @@ partial def resolveCanonicalRef (graph : CGraph) (nodeId : CNodeId)
 
 /-- Build a FuncRef from a book index, handling intrinsics and externals -/
 def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
-    (funcIdMap : Option (Std.HashMap Nat FuncId) := none) : FuncRef :=
+    (funcIdMap : Option (Std.HashMap Nat FuncId) := none)
+    (ctxIntrinsics : Std.HashMap QualifiedName Intrinsic := {}) : FuncRef :=
   match graph.getDefinition refId with
   | some def_ =>
     match intrinsicOfQName? def_.name with
@@ -329,17 +337,26 @@ def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
     | some (Intrinsic.llvm name) => .externC name
     | some (Intrinsic.runtime fn) => .externC fn.name
     | none =>
-      if def_.isExternal then
-        .external def_.name.symbolName
-      else
-        -- Local function
-        match funcIdMap with
-        | some map =>
-          match map.get? refId with
-          | some funcId => .local funcId
-          | none => .external def_.name.symbolName
-        | none =>
-          .local (FuncId.mk refId)
+      match ctxIntrinsics.get? def_.name with
+      | some (Intrinsic.extern name) => .externC name
+      | some (Intrinsic.ffiOp op) => .intrinsic (convertFFIOp op)
+      | some (Intrinsic.llvm name) => .externC name
+      | some (Intrinsic.runtime fn) => .externC fn.name
+      | some (Intrinsic.primOp op) =>
+        match funcIdMap >>= (·.get? refId) with
+        | some funcId => .local funcId
+        | none => .primOp (convertCorePrimOp op)
+      | none =>
+        if def_.isExternal then
+          .external def_.name.symbolName
+        else
+          match funcIdMap with
+          | some map =>
+            match map.get? refId with
+            | some funcId => .local funcId
+            | none => .external def_.name.symbolName
+          | none =>
+            .local (FuncId.mk refId)
   | none =>
     .external s!"unresolved_ref_{refId}"
 
@@ -953,7 +970,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 pure (some result)
               | _ =>
                 -- Regular function: resolve reference
-                let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
+                let ls ← StateT.lift get
+                let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
                 let result ← match funcRef with
                   | .local funcId =>
                     StateT.lift (LowerM.emitInst (.call funcId argOps callRetTy) callRetTy)
@@ -1029,22 +1047,28 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             | .lam _ =>
               lowerNodeWithMap graph fp.node funcIdMap
             | .ref refId | .alo refId =>
-              -- Direct function reference: emit direct call
-              let callRetTy := match graph.getDefinition refId with
-                | some def_ => extractReturnTypeWithMapping def_.ty ctx
-                | none => nodeTy
-              let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
-              match funcRef with
-              | .local funcId =>
-                StateT.lift (LowerM.emitInst (.call funcId #[.local argVal] callRetTy) callRetTy)
-              | .external name =>
-                StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
-              | .intrinsic op =>
-                panic! "Unexpected intrinsic in direct function call"
-              | .primOp _op =>
-                panic! "Unexpected primOp in direct function call"
-              | .externC name =>
-                StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
+              let defArity := match graph.getDefinition refId with
+                | some def_ => def_.arity
+                | none => 1
+              let ls ← StateT.lift get
+              let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
+              if defArity > 1 then
+                StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local argVal)) nodeTy)
+              else
+                let callRetTy := match graph.getDefinition refId with
+                  | some def_ => extractReturnTypeWithMapping def_.ty ctx
+                  | none => nodeTy
+                match funcRef with
+                | .local funcId =>
+                  StateT.lift (LowerM.emitInst (.call funcId #[.local argVal] callRetTy) callRetTy)
+                | .external name =>
+                  StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
+                | .intrinsic op =>
+                  StateT.lift (LowerM.emitInst (.callIntrinsic op #[.local argVal] callRetTy) callRetTy)
+                | .primOp _op =>
+                  StateT.lift (LowerM.emitInst (.callExtern s!"primop_{_op}" #[.local argVal] callRetTy) callRetTy)
+                | .externC name =>
+                  StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
             | _ =>
               -- Regular closure call: lower the function and use callClosure
               let fnNodeTy := getNodeTypeWithMapping fnEntry ctx
@@ -1067,7 +1091,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       let canonRef := resolveCanonicalRef graph fnPort.node
       let funcRef ← match canonRef with
         | .bookRef refId =>
-          pure (buildFuncRefFromBookRef graph refId (some funcIdMap))
+          let ls ← StateT.lift get
+          pure (buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics)
         | .dynamicValue dynNodeId =>
           -- todo: extract the function pointer at runtime.
           pure (FuncRef.external s!"$dynamic_closure_{dynNodeId.id}")
@@ -1227,7 +1252,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     lowerPort 1
 
   | .ref refId | .alo refId => do
-    let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
+    let ls ← StateT.lift get
+                let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
     let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
     StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local nullEnv)) nodeTy)
 
@@ -1333,7 +1359,8 @@ def collectLamChain (graph : CGraph) (root : CNodeId) (arity : Nat)
 
 /-- Lower a definition with a specific type parameter count n -/
 def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
-    (funcIdMap : FuncIdMap) (tyVarMapping : TyVarMapping n) (primTypes : PrimTypeRegistry) : Func n :=
+    (funcIdMap : FuncIdMap) (tyVarMapping : TyVarMapping n) (primTypes : PrimTypeRegistry)
+    (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Func n :=
   let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes }
   let (explicitTypeParams, paramInfos) := extractParamsUsingMapping def_.ty ctx
   let numTyVars := n
@@ -1354,7 +1381,7 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
   let sig : Signature n := { name := def_.name.symbolName, typeParamNames, params, retTy }
   let returnsUnit := sig.retTy == .prim .unit
 
-  let (_, func) := LowerM.run' funcId sig do
+  let (_, func) := LowerM.run' funcId sig intrinsics do
     if def_.arity == 0 then
       let initState : NodeState n := { tyVarMapping, primTypes }
       let (result, _) ← StateT.run (lowerNodeWithMap graph def_.root funcIdMap) initState
@@ -1371,16 +1398,18 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
 
 /-- Lower a Circuit definition to an Alloy function -/
 def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
-    (funcIdMap : FuncIdMap) (primTypes : PrimTypeRegistry) : SomeFunc :=
+    (funcIdMap : FuncIdMap) (primTypes : PrimTypeRegistry)
+    (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : SomeFunc :=
   -- Collect all type variable levels and build mapping
   let ⟨n, tyVarMapping⟩ := buildTyVarMappingFromDefinition graph def_
   -- Lower with the determined n
-  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes
+  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes intrinsics
   -- Return existentially quantified function
   ⟨n, func⟩
 
 /-- Lower an entire Circuit graph to an Alloy module -/
-def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {}) : Module := Id.run do
+def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
+    (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Module := Id.run do
   let mut module := Module.empty moduleName
 
   -- Copy string table from Circuit graph to Alloy module
@@ -1405,7 +1434,7 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
     if let some def_ := graph.book[i]? then
       if not def_.isExternal then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
-        let func := lowerDefinition graph def_ funcId funcIdMap primTypes
+        let func := lowerDefinition graph def_ funcId funcIdMap primTypes intrinsics
         module := module.addFunc func
 
   -- Set main function using the mapped ID
@@ -1416,7 +1445,8 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
   module
 
 /-- Main entry point: lower a Circuit graph to an Alloy module -/
-def lower (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {}) : Module :=
-  lowerGraph graph moduleName primTypes
+def lower (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
+    (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Module :=
+  lowerGraph graph moduleName primTypes intrinsics
 
 end Somac.Alloy.Lower

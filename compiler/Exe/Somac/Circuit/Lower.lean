@@ -668,6 +668,32 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
 /-- Lower a Core.Expr function application -/
 partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
     : LowerM (Option PortId) := do
+  let rec collectAppSpine (e : Soma.Core.Expr) (args : Array Soma.Core.Expr)
+      : Soma.Core.Expr × Array Soma.Core.Expr :=
+    match e with
+    | .app fn' arg' => collectAppSpine fn' (#[arg'] ++ args)
+    | _ => (e, args)
+  let (baseFn, allArgs) := collectAppSpine fn #[arg]
+
+  if isCoreTypeLevelExpr baseFn then
+    return none
+
+  match baseFn with
+  | .const qn _ =>
+    let ctx ← LowerM.getCtx
+    match ctx.lookupCtor qn with
+    | some (_, tag, arity) =>
+      let explicitArgs := allArgs.filter (!isCoreTypeLevelExpr ·)
+      if explicitArgs.size == arity then
+        lowerCoreConstruct tag explicitArgs ty
+      else
+        lowerCoreAppDefault fn arg ty
+    | none => lowerCoreAppDefault fn arg ty
+  | _ => lowerCoreAppDefault fn arg ty
+
+/-- Default application lowering -/
+partial def lowerCoreAppDefault (fn arg : Soma.Core.Expr) (ty : Value)
+    : LowerM (Option PortId) := do
   -- Check for binary primop: f x y where f is a primop
   match fn with
   | .app innerFn innerArg =>

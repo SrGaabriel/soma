@@ -116,7 +116,7 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
 
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
-  return Alloy.Lower.lower optimized cm.name primTypes
+  return Alloy.Lower.lower optimized cm.name primTypes globals.intrinsics
 
 /-- Result of compilation pipeline -/
 structure CompileResult where

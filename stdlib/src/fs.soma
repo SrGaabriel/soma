@@ -17,13 +17,13 @@ def from_string : String -> Path
 record FileHandle where
     ptr : Ptr Unit
 
-@[extern]
+@[extern "fopen"]
 def c_fopen : CString -> CString -> IO (Ptr Unit)
 
-@[extern]
+@[extern "fclose"]
 def c_fclose : Ptr Unit -> IO CInt
 
-@[extern]
+@[extern "fflush"]
 def c_fflush : Ptr Unit -> IO CInt
 
 def open : Path -> String -> IO FileHandle

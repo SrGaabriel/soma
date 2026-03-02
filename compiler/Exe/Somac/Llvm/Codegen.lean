@@ -839,13 +839,18 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let maybeSig ← CodegenM.getFuncSig func.id
     let llvmArgs ← args.mapIdxM fun i arg => do
       let argVal ← convertOperand arg
+      let actualTy ← operandTy arg
+      let actualLLVMTy := convertTy actualTy
       -- Use callee's parameter type if available, otherwise infer from operand
-      let argTy ← match maybeSig with
+      let expectedTy ← match maybeSig with
         | some sig =>
           if h : i < sig.params.size then pure sig.params[i].ty
-          else operandTy arg
-        | none => operandTy arg
-      pure (convertTy argTy, argVal)
+          else pure actualTy
+        | none => pure actualTy
+      let expectedLLVMTy := convertTy expectedTy
+      let coercedVal ← if actualLLVMTy == expectedLLVMTy then pure argVal
+                        else coerceValue actualLLVMTy expectedLLVMTy argVal
+      pure (expectedLLVMTy, coercedVal)
     let ref ← CodegenM.withFuncBuilder do
       FuncBuilder.callNamed llvmRetTy funcName llvmArgs
     pure (some (ref, retTy))
@@ -857,12 +862,17 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let maybeSig ← CodegenM.getFuncSig func.id
     let llvmArgs ← args.mapIdxM fun i arg => do
       let argVal ← convertOperand arg
-      let argTy ← match maybeSig with
+      let actualTy ← operandTy arg
+      let actualLLVMTy := convertTy actualTy
+      let expectedTy ← match maybeSig with
         | some sig =>
           if h : i < sig.params.size then pure sig.params[i].ty
-          else operandTy arg
-        | none => operandTy arg
-      pure (convertTy argTy, argVal)
+          else pure actualTy
+        | none => pure actualTy
+      let expectedLLVMTy := convertTy expectedTy
+      let coercedVal ← if actualLLVMTy == expectedLLVMTy then pure argVal
+                        else coerceValue actualLLVMTy expectedLLVMTy argVal
+      pure (expectedLLVMTy, coercedVal)
     let ref ← CodegenM.withFuncBuilder do
       FuncBuilder.callNamed llvmRetTy funcName llvmArgs
     pure (some (ref, retTy))
@@ -1226,14 +1236,20 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     | .bindIO =>
       -- io_bind m f = f(m): IO erases, so this is just closure application
       if llvmArgs.size >= 2 then
-        let (_, ioVal) := llvmArgs[0]!
-        let (_, funcVal) := llvmArgs[1]!
+        let (ioTy, ioValRaw) := llvmArgs[0]!
+        let ioVal ← if ioTy == .i64 then pure ioValRaw
+                     else coerceValue ioTy .i64 ioValRaw
+        let (funcTy, funcVal) := llvmArgs[1]!
+        let funcPtr ← if funcTy == .ptr then pure funcVal
+                       else do
+                         let ref ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr funcTy funcVal)
+                         pure (.local ref)
         let funcPtrAddr ← CodegenM.withFuncBuilder do
-          FuncBuilder.gepi32 closureHeaderTy funcVal #[0, 4]
+          FuncBuilder.gepi32 closureHeaderTy funcPtr #[0, 4]
         let fnPtr ← CodegenM.withFuncBuilder do
           FuncBuilder.load .ptr (.local funcPtrAddr)
         let envBaseAddr ← CodegenM.withFuncBuilder do
-          FuncBuilder.gepi32 closureHeaderTy funcVal #[1]
+          FuncBuilder.gepi32 closureHeaderTy funcPtr #[1]
         let envRaw ← CodegenM.withFuncBuilder do
           FuncBuilder.load .i64 (.local envBaseAddr)
         let envPtr ← CodegenM.withFuncBuilder do
@@ -1607,6 +1623,17 @@ def addRuntimeDeclarations : CodegenM Unit := do
       isDeclaration := true
     }
 
+  let runtimeNames := #[
+    "malloc", "free", "soma_era_free", "soma_era_string",
+    "soma_era_tagged_payload", "soma_alloc_tagged_payload",
+    "soma_alloc_array_header", "soma_panic",
+    "llvm.memcpy.p0.p0.i64", "llvm.memset.p0.i64",
+    "soma_to_cstring", "soma_from_cstring", "soma_cstring_len",
+    "soma_strcat", "soma_int_to_string", "soma_pool_alloc_closure",
+    "soma_dup", "soma_proj0", "soma_proj1"
+  ]
+  for name in runtimeNames do
+    CodegenM.markExternDeclared name
 
 /-- Lower an Alloy module to LLVM -/
 def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
