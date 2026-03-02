@@ -121,20 +121,20 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
 /-- Result of compilation pipeline -/
 structure CompileResult where
   /-- Generated LLVM IR -/
-  llvmIR : String
+  llvmIR : Option String := none
   /-- All constructor metadata -/
   constructors : Std.HashMap String Nat
   /-- Pre-merge Alloy modules -/
   alloyModules : Array (String × Alloy.Module)
 
-/-- Compile checked modules to LLVM IR -/
-def compileModules
+/-- Lower checked modules to Alloy IR and merge with dependencies -/
+def lowerAndMerge
     (packageName : String)
     (modules : Array CheckedModule)
     (externalConstructors : Std.HashMap String Nat)
     (mergedGlobals : Soma.Dependent.Globals)
     (dependencyAlloyModules : Array (String × Alloy.Module) := #[])
-    : IO CompileResult := do
+    : IO (Std.HashMap String Nat × Array (String × Alloy.Module) × Alloy.Module) := do
   IO.println "\n=== Starting compilation phase ==="
   IO.println s!"  Compiling {modules.size} module(s) for package '{packageName}'"
 
@@ -168,6 +168,34 @@ def compileModules
 
   IO.println s!"  Merged module has {merged.funcs.size} function(s)"
 
+  pure (allConstructors, localAlloyModules, merged)
+
+/-- Compile checked modules to a library package -/
+def compileLibrary
+    (packageName : String)
+    (modules : Array CheckedModule)
+    (externalConstructors : Std.HashMap String Nat)
+    (mergedGlobals : Soma.Dependent.Globals)
+    (dependencyAlloyModules : Array (String × Alloy.Module) := #[])
+    : IO CompileResult := do
+  let (allConstructors, localAlloyModules, _merged) ←
+    lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules
+
+  IO.println "Compilation phase complete"
+
+  pure { constructors := allConstructors, alloyModules := localAlloyModules }
+
+/-- Compile checked modules to LLVM IR for an executable -/
+def compileModules
+    (packageName : String)
+    (modules : Array CheckedModule)
+    (externalConstructors : Std.HashMap String Nat)
+    (mergedGlobals : Soma.Dependent.Globals)
+    (dependencyAlloyModules : Array (String × Alloy.Module) := #[])
+    : IO CompileResult := do
+  let (allConstructors, localAlloyModules, merged) ←
+    lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules
+
   -- Monomorphize
   IO.println "  Monomorphizing..."
   let mono := Alloy.Monomorphize.monomorphize merged
@@ -180,8 +208,7 @@ def compileModules
 
   IO.println "Compilation phase complete"
 
-  -- Return only local modules for library packaging (not dependencies)
-  pure { llvmIR, constructors := allConstructors, alloyModules := localAlloyModules }
+  pure { llvmIR := some llvmIR, constructors := allConstructors, alloyModules := localAlloyModules }
 
 /-- Build ProjectMetadata from a ProjectResult for library packaging -/
 def buildProjectMetadata (result : ProjectResult) : Metadata.ProjectMetadata :=

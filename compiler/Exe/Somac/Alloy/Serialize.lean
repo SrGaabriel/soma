@@ -76,6 +76,315 @@ def constFromSerializable : SerializableConst → Const
   | .string idx len => .string idx len
   | .undef t => .undef (tyFromSerializable t)
 
+/-- Serializable Operand -/
+inductive SerializableOperand where
+  | local_ (id : Nat)
+  | const_ (c : SerializableConst)
+  | global_ (id : Nat)
+  | func_ (id : Nat)
+  deriving Serialize, Deserialize
+
+def operandToSerializable : Operand → SerializableOperand
+  | .local id => .local_ id.id
+  | .const c => .const_ (constToSerializable c)
+  | .global id => .global_ id.id
+  | .func id => .func_ id.id
+
+def operandFromSerializable : SerializableOperand → Operand
+  | .local_ id => .local ⟨id⟩
+  | .const_ c => .const (constFromSerializable c)
+  | .global_ id => .global ⟨id⟩
+  | .func_ id => .func ⟨id⟩
+
+/-- Serializable BinOp -/
+-- BinOp already derives Serialize, so we use it directly via a Nat tag
+def binOpToNat : BinOp → Nat
+  | .add => 0 | .sub => 1 | .mul => 2 | .div => 3 | .rem => 4
+  | .and => 5 | .or => 6 | .xor => 7 | .shl => 8 | .shr => 9
+  | .eq => 10 | .ne => 11 | .lt => 12 | .le => 13 | .gt => 14 | .ge => 15
+
+def natToBinOp : Nat → BinOp
+  | 0 => .add | 1 => .sub | 2 => .mul | 3 => .div | 4 => .rem
+  | 5 => .and | 6 => .or | 7 => .xor | 8 => .shl | 9 => .shr
+  | 10 => .eq | 11 => .ne | 12 => .lt | 13 => .le | 14 => .gt | 15 => .ge
+  | _ => .add
+
+/-- Serializable UnOp -/
+inductive SerializableUnOp where
+  | neg | not
+  | trunc (to : PrimTy) | zext (to : PrimTy) | sext (to : PrimTy)
+  | itof (to : PrimTy) | ftoi (to : PrimTy)
+  | bitcast (to : SerializableTy)
+  | ptrtoint (to : PrimTy) | inttoptr
+  deriving Serialize, Deserialize
+
+def unOpToSerializable : UnOp 0 → SerializableUnOp
+  | .neg => .neg | .not => .not
+  | .trunc t => .trunc t | .zext t => .zext t | .sext t => .sext t
+  | .itof t => .itof t | .ftoi t => .ftoi t
+  | .bitcast t => .bitcast (tyToSerializable t)
+  | .ptrtoint t => .ptrtoint t | .inttoptr => .inttoptr
+
+def unOpFromSerializable : SerializableUnOp → UnOp 0
+  | .neg => .neg | .not => .not
+  | .trunc t => .trunc t | .zext t => .zext t | .sext t => .sext t
+  | .itof t => .itof t | .ftoi t => .ftoi t
+  | .bitcast t => .bitcast (tyFromSerializable t)
+  | .ptrtoint t => .ptrtoint t | .inttoptr => .inttoptr
+
+/-- Serializable FuncRef -/
+inductive SerializableFuncRef where
+  | local_ (id : Nat)
+  | external (name : String)
+  | intrinsic (op : IntrinsicOp)
+  | primOp (op : PrimOp)
+  | externC (name : String)
+  deriving Serialize, Deserialize
+
+def funcRefToSerializable : FuncRef → SerializableFuncRef
+  | .local id => .local_ id.id
+  | .external name => .external name
+  | .intrinsic op => .intrinsic op
+  | .primOp op => .primOp op
+  | .externC name => .externC name
+
+def funcRefFromSerializable : SerializableFuncRef → FuncRef
+  | .local_ id => .local ⟨id⟩
+  | .external name => .external name
+  | .intrinsic op => .intrinsic op
+  | .primOp op => .primOp op
+  | .externC name => .externC name
+
+/-! ## Instruction Serialization -/
+
+/-- Serializable instruction — mirrors every constructor of `Inst 0`.
+    Each constructor is assigned a numeric tag for stable binary encoding. -/
+inductive SerializableInst where
+  | binOp (op : Nat) (lhs rhs : SerializableOperand) (ty : SerializableTy)
+  | unOp (op : SerializableUnOp) (operand : SerializableOperand)
+  | copy (src : SerializableOperand)
+  | alloca (ty : SerializableTy)
+  | malloc (size : SerializableOperand)
+  | free (ptr : SerializableOperand)
+  | load (ptr : SerializableOperand) (ty : SerializableTy)
+  | store (ptr val : SerializableOperand)
+  | getFieldPtr (base : SerializableOperand) (idx : Nat) (ty : SerializableTy)
+  | getElemPtr (base idx : SerializableOperand) (ty : SerializableTy)
+  | extractField (val : SerializableOperand) (idx : Nat)
+  | insertField (val : SerializableOperand) (idx : Nat) (newVal : SerializableOperand)
+  | extractElem (val idx : SerializableOperand)
+  | insertElem (val idx newVal : SerializableOperand)
+  | structLit (fields : Array SerializableOperand) (ty : SerializableTy)
+  | arrayLit (elems : Array SerializableOperand) (ty : SerializableTy)
+  | getTag (val : SerializableOperand)
+  | getPayload (val : SerializableOperand) (variant field : Nat) (ty : SerializableTy)
+  | taggedLit (tag : Nat) (payload : Array SerializableOperand) (ty : SerializableTy)
+  | call (funcId : Nat) (args : Array SerializableOperand) (retTy : SerializableTy)
+  | callPoly (funcId : Nat) (tyArgs : Array SerializableTy) (args : Array SerializableOperand)
+      (retTy : SerializableTy)
+  | callIndirect (ptr : SerializableOperand) (args : Array SerializableOperand) (retTy : SerializableTy)
+  | callClosure (closure : SerializableOperand) (args : Array SerializableOperand)
+      (retTy : SerializableTy)
+  | makeClosurePoly (funcRef : SerializableFuncRef) (tyArgs : Array SerializableTy)
+      (env : SerializableOperand)
+  | makeClosure (funcRef : SerializableFuncRef) (env : SerializableOperand)
+  | closureFunc (closure : SerializableOperand)
+  | closureEnv (closure : SerializableOperand)
+  | phi (incoming : Array (SerializableOperand × Nat)) (ty : SerializableTy)
+  | select (cond thenVal elseVal : SerializableOperand)
+  | memcpy (dst src size : SerializableOperand)
+  | memset (dst val size : SerializableOperand)
+  | lazySup (label : Nat) (src : SerializableOperand) (ty : SerializableTy)
+  | supProj0 (src : SerializableOperand) (ty : SerializableTy)
+  | supProj1 (src : SerializableOperand) (ty : SerializableTy)
+  | erase (val : SerializableOperand) (ty : SerializableTy)
+  | panic (msgIdx line : Nat)
+  | callIntrinsic (op : IntrinsicOp) (args : Array SerializableOperand) (retTy : SerializableTy)
+  | callExtern (name : String) (args : Array SerializableOperand) (retTy : SerializableTy)
+  deriving Serialize, Deserialize
+
+private abbrev SOp := SerializableOperand
+private abbrev STy := SerializableTy
+private def sop := operandToSerializable
+private def sty := tyToSerializable
+private def sops (ops : Array Operand) : Array SOp := ops.map sop
+private def stys (tys : Array ClosedTy) : Array STy := tys.map sty
+
+def instToSerializable : ClosedInst → SerializableInst
+  | .binOp op l r ty => .binOp (binOpToNat op) (sop l) (sop r) (sty ty)
+  | .unOp op o => .unOp (unOpToSerializable op) (sop o)
+  | .copy s => .copy (sop s)
+  | .alloca ty => .alloca (sty ty)
+  | .malloc s => .malloc (sop s)
+  | .free p => .free (sop p)
+  | .load p ty => .load (sop p) (sty ty)
+  | .store p v => .store (sop p) (sop v)
+  | .getFieldPtr b i ty => .getFieldPtr (sop b) i (sty ty)
+  | .getElemPtr b i ty => .getElemPtr (sop b) (sop i) (sty ty)
+  | .extractField v i => .extractField (sop v) i
+  | .insertField v i nv => .insertField (sop v) i (sop nv)
+  | .extractElem v i => .extractElem (sop v) (sop i)
+  | .insertElem v i nv => .insertElem (sop v) (sop i) (sop nv)
+  | .structLit fs ty => .structLit (sops fs) (sty ty)
+  | .arrayLit es ty => .arrayLit (sops es) (sty ty)
+  | .getTag v => .getTag (sop v)
+  | .getPayload v var fld ty => .getPayload (sop v) var fld (sty ty)
+  | .taggedLit t p ty => .taggedLit t (sops p) (sty ty)
+  | .call f as ty => .call f.id (sops as) (sty ty)
+  | .callPoly f ta as ty => .callPoly f.id (stys ta) (sops as) (sty ty)
+  | .callIndirect p as ty => .callIndirect (sop p) (sops as) (sty ty)
+  | .callClosure c as ty => .callClosure (sop c) (sops as) (sty ty)
+  | .makeClosurePoly fr ta e => .makeClosurePoly (funcRefToSerializable fr) (stys ta) (sop e)
+  | .makeClosure fr e => .makeClosure (funcRefToSerializable fr) (sop e)
+  | .closureFunc c => .closureFunc (sop c)
+  | .closureEnv c => .closureEnv (sop c)
+  | .phi inc ty => .phi (inc.map fun (o, b) => (sop o, b.id)) (sty ty)
+  | .select c t e => .select (sop c) (sop t) (sop e)
+  | .memcpy d s sz => .memcpy (sop d) (sop s) (sop sz)
+  | .memset d v sz => .memset (sop d) (sop v) (sop sz)
+  | .lazySup l s ty => .lazySup l.toNat (sop s) (sty ty)
+  | .supProj0 s ty => .supProj0 (sop s) (sty ty)
+  | .supProj1 s ty => .supProj1 (sop s) (sty ty)
+  | .erase v ty => .erase (sop v) (sty ty)
+  | .panic m l => .panic m l
+  | .callIntrinsic op as ty => .callIntrinsic op (sops as) (sty ty)
+  | .callExtern n as ty => .callExtern n (sops as) (sty ty)
+
+private abbrev dop := operandFromSerializable
+private abbrev dty := tyFromSerializable
+private def dops (ops : Array SOp) : Array Operand := ops.map dop
+private def dtys (tys : Array STy) : Array ClosedTy := tys.map dty
+
+def instFromSerializable : SerializableInst → ClosedInst
+  | .binOp op l r ty => .binOp (natToBinOp op) (dop l) (dop r) (dty ty)
+  | .unOp op o => .unOp (unOpFromSerializable op) (dop o)
+  | .copy s => .copy (dop s)
+  | .alloca ty => .alloca (dty ty)
+  | .malloc s => .malloc (dop s)
+  | .free p => .free (dop p)
+  | .load p ty => .load (dop p) (dty ty)
+  | .store p v => .store (dop p) (dop v)
+  | .getFieldPtr b i ty => .getFieldPtr (dop b) i (dty ty)
+  | .getElemPtr b i ty => .getElemPtr (dop b) (dop i) (dty ty)
+  | .extractField v i => .extractField (dop v) i
+  | .insertField v i nv => .insertField (dop v) i (dop nv)
+  | .extractElem v i => .extractElem (dop v) (dop i)
+  | .insertElem v i nv => .insertElem (dop v) (dop i) (dop nv)
+  | .structLit fs ty => .structLit (dops fs) (dty ty)
+  | .arrayLit es ty => .arrayLit (dops es) (dty ty)
+  | .getTag v => .getTag (dop v)
+  | .getPayload v var fld ty => .getPayload (dop v) var fld (dty ty)
+  | .taggedLit t p ty => .taggedLit t (dops p) (dty ty)
+  | .call f as ty => .call ⟨f⟩ (dops as) (dty ty)
+  | .callPoly f ta as ty => .callPoly ⟨f⟩ (dtys ta) (dops as) (dty ty)
+  | .callIndirect p as ty => .callIndirect (dop p) (dops as) (dty ty)
+  | .callClosure c as ty => .callClosure (dop c) (dops as) (dty ty)
+  | .makeClosurePoly fr ta e => .makeClosurePoly (funcRefFromSerializable fr) (dtys ta) (dop e)
+  | .makeClosure fr e => .makeClosure (funcRefFromSerializable fr) (dop e)
+  | .closureFunc c => .closureFunc (dop c)
+  | .closureEnv c => .closureEnv (dop c)
+  | .phi inc ty => .phi (inc.map fun (o, b) => (dop o, ⟨b⟩)) (dty ty)
+  | .select c t e => .select (dop c) (dop t) (dop e)
+  | .memcpy d s sz => .memcpy (dop d) (dop s) (dop sz)
+  | .memset d v sz => .memset (dop d) (dop v) (dop sz)
+  | .lazySup l s ty => .lazySup (UInt32.ofNat l) (dop s) (dty ty)
+  | .supProj0 s ty => .supProj0 (dop s) (dty ty)
+  | .supProj1 s ty => .supProj1 (dop s) (dty ty)
+  | .erase v ty => .erase (dop v) (dty ty)
+  | .panic m l => .panic m l
+  | .callIntrinsic op as ty => .callIntrinsic op (dops as) (dty ty)
+  | .callExtern n as ty => .callExtern n (dops as) (dty ty)
+
+/-! ## Terminator Serialization -/
+
+/-- Serializable Terminator -/
+inductive SerializableTerminator where
+  | jump (target : Nat)
+  | branch (cond : SerializableOperand) (thenBlock elseBlock : Nat)
+  | switch (val : SerializableOperand) (cases : Array (Int × Nat)) (default : Nat)
+  | ret (val : SerializableOperand)
+  | retUnit
+  | unreachable
+  deriving Serialize, Deserialize
+
+def terminatorToSerializable : Terminator → SerializableTerminator
+  | .jump t => .jump t.id
+  | .branch c t e => .branch (sop c) t.id e.id
+  | .switch v cs d => .switch (sop v) (cs.map fun (i, b) => (i, b.id)) d.id
+  | .ret v => .ret (sop v)
+  | .retUnit => .retUnit
+  | .unreachable => .unreachable
+
+def terminatorFromSerializable : SerializableTerminator → Terminator
+  | .jump t => .jump ⟨t⟩
+  | .branch c t e => .branch (dop c) ⟨t⟩ ⟨e⟩
+  | .switch v cs d => .switch (dop v) (cs.map fun (i, b) => (i, ⟨b⟩)) ⟨d⟩
+  | .ret v => .ret (dop v)
+  | .retUnit => .retUnit
+  | .unreachable => .unreachable
+
+/-! ## Statement Serialization -/
+
+structure SerializableStmt where
+  result : Option Nat
+  inst : SerializableInst
+  deriving Serialize, Deserialize
+
+def stmtToSerializable (s : ClosedStmt) : SerializableStmt :=
+  { result := s.result.map (·.id), inst := instToSerializable s.inst }
+
+def stmtFromSerializable (ss : SerializableStmt) : ClosedStmt :=
+  { result := ss.result.map (⟨·⟩), inst := instFromSerializable ss.inst }
+
+/-! ## Block Serialization -/
+
+structure SerializableBlock where
+  id : Nat
+  label : Option String
+  params : Array (Nat × SerializableTy)
+  stmts : Array SerializableStmt
+  terminator : SerializableTerminator
+  deriving Serialize, Deserialize
+
+def blockToSerializable (b : ClosedBlock) : SerializableBlock :=
+  { id := b.id.id
+  , label := b.label
+  , params := b.params.map fun (lid, ty) => (lid.id, sty ty)
+  , stmts := b.stmts.map stmtToSerializable
+  , terminator := terminatorToSerializable b.terminator
+  }
+
+def blockFromSerializable (sb : SerializableBlock) : ClosedBlock :=
+  { id := ⟨sb.id⟩
+  , label := sb.label
+  , params := sb.params.map fun (lid, ty) => (⟨lid⟩, dty ty)
+  , stmts := sb.stmts.map stmtFromSerializable
+  , terminator := terminatorFromSerializable sb.terminator
+  }
+
+/-! ## CFG Serialization -/
+
+structure SerializableCFG where
+  /-- Blocks stored as array of (blockId, block) pairs (HashMap is not directly serializable) -/
+  blocks : Array SerializableBlock
+  entry : Nat
+  nextBlockId : Nat
+  deriving Serialize, Deserialize
+
+def cfgToSerializable (cfg : ClosedCFG) : SerializableCFG :=
+  { blocks := cfg.allBlocks.map blockToSerializable
+  , entry := cfg.entry.id
+  , nextBlockId := cfg.nextBlockId
+  }
+
+def cfgFromSerializable (sc : SerializableCFG) : ClosedCFG :=
+  let blocks := sc.blocks.foldl (init := ({} : Std.HashMap Nat ClosedBlock)) fun acc sb =>
+    let block := blockFromSerializable sb
+    acc.insert block.id.id block
+  { blocks, entry := ⟨sc.entry⟩, nextBlockId := sc.nextBlockId }
+
+/-! ## Param, Signature, Func Serialization -/
+
 /-- Serializable Param -/
 structure SerializableParam where
   id : Nat
@@ -111,11 +420,11 @@ def sigFromSerializable (ss : SerializableSignature) : ClosedSignature :=
   , isClosure := ss.isClosure
   }
 
-/-- Serializable Func (without body for simplicity) -/
+/-- Serializable Func with full body support -/
 structure SerializableFunc where
   id : Nat
   sig : SerializableSignature
-  hasBody : Bool
+  body : Option SerializableCFG
   attrs : FuncAttrs
   nextLocalId : Nat
   localTypes : Array (Nat × SerializableTy)
@@ -124,7 +433,7 @@ structure SerializableFunc where
 def funcToSerializable (f : ClosedFunc) : SerializableFunc :=
   { id := f.id.id
   , sig := sigToSerializable f.sig
-  , hasBody := f.body.isSome
+  , body := f.body.map cfgToSerializable
   , attrs := f.attrs
   , nextLocalId := f.nextLocalId
   , localTypes := f.localTypes.toArray.map fun (k, v) => (k, tyToSerializable v)
@@ -133,11 +442,13 @@ def funcToSerializable (f : ClosedFunc) : SerializableFunc :=
 def funcFromSerializable (sf : SerializableFunc) : ClosedFunc :=
   { id := ⟨sf.id⟩
   , sig := sigFromSerializable sf.sig
-  , body := none  -- Body serialization is complex, skip for now
+  , body := sf.body.map cfgFromSerializable
   , attrs := sf.attrs
   , nextLocalId := sf.nextLocalId
   , localTypes := Std.HashMap.ofList (sf.localTypes.toList.map fun (k, v) => (k, tyFromSerializable v))
   }
+
+/-! ## Global, TypeDef, Module Serialization -/
 
 /-- Serializable Global -/
 structure SerializableGlobal where
@@ -231,8 +542,8 @@ end Module
 /-- Magic bytes for .alloybin files -/
 def magicBytes : ByteArray := ByteArray.mk #[0x41, 0x4C, 0x4F, 0x59]
 
-/-- Version of the serialization format -/
-def formatVersion : UInt8 := 1
+/-- Version of the serialization format — bumped to 2 for body serialization support -/
+def formatVersion : UInt8 := 2
 
 /-- Serialize an Alloy module to binary format -/
 def serializeModule (m : Module) : ByteArray :=

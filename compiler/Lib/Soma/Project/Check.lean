@@ -405,6 +405,8 @@ structure GlobalsAndInstancesResult where
   abbrevEnv : AbbrevEnv
   /-- Map from instance source spans to elaborated InstanceInfo -/
   instanceMap : InstanceMap
+  /-- TypedFunctions produced by instance method elaboration -/
+  instanceTypedFunctions : Array Soma.Core.TypedFunction
   /-- Final TC state -/
   finalState : TCState
   /-- Errors encountered -/
@@ -478,9 +480,9 @@ def buildGlobalsAndInstances
     | _, _, _ =>
       (Soma.Dependent.Driver.buildInstanceEnv untypedModule moduleName).run ctx state'
 
-  let (moduleInstanceEnv, instanceMap, state'', instanceErrors) := match instanceEnvResult with
-    | .error e => (InstanceEnv.empty, {}, state', #[e])
-    | .ok ((instEnv, instMap), st) => (instEnv, instMap, st, st.errors)
+  let (moduleInstanceEnv, instanceMap, instanceTypedFns, state'', instanceErrors) := match instanceEnvResult with
+    | .error e => (InstanceEnv.empty, {}, #[], state', #[e])
+    | .ok ((instEnv, instMap, instFns), st) => (instEnv, instMap, instFns, st, st.errors)
 
   allErrors := allErrors ++ instanceErrors
 
@@ -491,6 +493,7 @@ def buildGlobalsAndInstances
     instanceEnv := fullInstanceEnv
     abbrevEnv := fullAbbrevEnv
     instanceMap := instanceMap
+    instanceTypedFunctions := instanceTypedFns
     finalState := state''
     errors := allErrors
   }
@@ -564,6 +567,13 @@ def typeCheckModule
     cachedInstanceEnv := globalsResult.instanceEnv
     cachedInstanceMap := globalsResult.instanceMap }
 
+  -- Merge instance method TypedFunctions into the function-check results.
+  -- Instance methods are elaborated during instance resolution and produce
+  -- TypedFunctions with Core Expr bodies needed for Circuit IR lowering.
+  let mut mergedTypedFns := fnResult.typedFunctions
+  for instFn in globalsResult.instanceTypedFunctions do
+    mergedTypedFns := mergedTypedFns.insert instFn.name.display instFn
+
   return {
     globals := globalsResult.globals
     instanceEnv := globalsResult.instanceEnv
@@ -571,7 +581,7 @@ def typeCheckModule
     instanceMap := globalsResult.instanceMap
     incrementalState := finalIncrState
     usages := usages
-    typedFunctions := fnResult.typedFunctions
+    typedFunctions := mergedTypedFns
     errors := allErrors
   }
 

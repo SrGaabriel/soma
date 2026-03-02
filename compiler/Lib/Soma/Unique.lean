@@ -71,6 +71,22 @@ def mangle (u : Unique) : String :=
     if c.isAlphanum || c == '_' then c else '_'
   s!"{modSanitized}_{sanitized}_{u.id}"
 
+/-- Stable C-compatible symbol name for linker-level identification -/
+def symbolName (u : Unique) : String :=
+  let escapeChar (c : Char) : String :=
+    if c.isAlphanum || c == '_' then String.singleton c
+    else
+      let code := c.toNat
+      let hi := code / 16
+      let lo := code % 16
+      let hexChar (n : Nat) : Char :=
+        if n < 10 then Char.ofNat (n + '0'.toNat) else Char.ofNat (n - 10 + 'a'.toNat)
+      "$" ++ String.singleton (hexChar hi) ++ String.singleton (hexChar lo)
+  let escapedName := u.original.foldl (fun acc c => acc ++ escapeChar c) ""
+  let escapedMod := u.module.foldl (fun acc c => acc ++ escapeChar c) ""
+  if escapedMod.isEmpty then s!"S_{escapedName}"
+  else s!"S_{escapedMod}$${escapedName}"
+
 instance : ToString Unique := ⟨Unique.display⟩
 
 def builtinModule : String := "$builtin"

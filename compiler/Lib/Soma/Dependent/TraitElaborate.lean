@@ -349,37 +349,56 @@ partial def buildLambdaValue (paramNames : Array String) (paramTypes : Array Val
 
   return result
 
+/-- Result of elaborating a single instance method -/
+structure MethodElabResult where
+  /-- The method value for the instance record -/
+  value : Value
+  /-- The Core Expr body (before NbE evaluation) -/
+  coreBody : Expr
+  /-- The full function type (after instance type argument substitution) -/
+  fnType : Value
+  /-- Parameter bindings: (Unique, name) pairs -/
+  params : Array (Unique × String)
+
 /-- Elaborate a method implementation.
 
 Type-checks the method body against the expected (substituted) signature
 and returns the elaborated value.
 -/
-def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : Value) : TCM Value := do
+def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : Value)
+    : TCM MethodElabResult := do
   let paramNames := methodFn.params
 
   -- Decompose the expected type to get parameter types
   let (paramTypes, _resultType) ← extractParamTypes expectedType paramNames.size
 
   -- Extend context with params, then elaborate the method body
-  let rec bindParams (idx : Nat) : TCM Value := do
+  let rec bindParams (idx : Nat) (accParams : Array (Unique × String))
+      : TCM (Value × Expr × Array (Unique × String)) := do
     if idx >= paramNames.size then
       let (_bodyTy, coreBody) ← Soma.Dependent.inferSyntax methodFn.body
       let bodyVal ← TCM.evalExpr coreBody
-      return bodyVal
+      return (bodyVal, coreBody, accParams)
     else
       let name := paramNames[idx]!
       let paramTy := if h : idx < paramTypes.size then paramTypes[idx] else Value.vType .zero
       let bindingId ← TCM.freshLocalId name
       TCM.withBinding name bindingId paramTy .omega
         (Soma.Core.BinderInfo.explicit) methodFn.span do
-        bindParams (idx + 1)
+        let paramUnique : Unique := ⟨bindingId.id, bindingId.module, name⟩
+        bindParams (idx + 1) (accParams.push (paramUnique, name))
 
-  let bodyVal ← bindParams 0
+  let (bodyVal, coreBody, generatedParams) ← bindParams 0 #[]
 
   -- Build the method value as a lambda
   let methodVal ← buildLambdaValue paramNames paramTypes bodyVal
 
-  return methodVal
+  return {
+    value := methodVal
+    coreBody := coreBody
+    fnType := expectedType
+    params := generatedParams
+  }
 
 /-- Extract field names and types from a record type value -/
 private partial def extractRecordFields (v : Value) : TCM (Array (String × Value)) := do
@@ -395,9 +414,11 @@ where
     | .vRowEmpty => return #[]
     | _ => return #[]
 
-/-- Elaborate an instance value -/
+/-- Elaborate an instance value, returning both the record Value and
+    the TypedFunctions for each method. -/
 partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
-    (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction) : TCM Value := do
+    (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
+    : TCM (Value × Array Soma.Core.TypedFunction) := do
   let mut recordTy := classInfo.recordType
   for arg in typeArgs do
     match ← force recordTy with
@@ -410,19 +431,33 @@ partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
 
   -- Elaborate each method implementation against its expected type
   let mut fields : List (String × Value) := []
+  let mut typedFns : Array Soma.Core.TypedFunction := #[]
   for method in methods do
     let methodName := method.name.display
     match methodTypes.find? (fun (name, _) => name == methodName) with
     | some (_, expectedType) =>
-      let methodVal ← elaborateMethodImpl method expectedType
-      fields := (methodName, methodVal) :: fields
+      let result ← elaborateMethodImpl method expectedType
+      fields := (methodName, result.value) :: fields
+      let canonicalName ← do
+        match ← TCM.lookupGlobalNoDep methodName with
+        | some info => pure info.name
+        | none => pure method.name
+      typedFns := typedFns.push {
+        name := canonicalName
+        params := result.params
+        body := result.coreBody
+        fnType := result.fnType
+        closureInfo := method.closureInfo
+        attrs := method.attrs
+      }
     | none => pure ()
 
-  return Value.vRecordVal fields.reverse
+  return (Value.vRecordVal fields.reverse, typedFns)
 
 /-- Elaborate a single instance using ClassInfo instead of TypeClassMeta -/
 partial def elaborateInstanceFromClassInfo (inst : Soma.Core.InstanceDecl)
-    (classInfo : ClassInfo) (registry : ClassRegistry) : TCM (Option InstanceInfo) := do
+    (classInfo : ClassInfo) (registry : ClassRegistry)
+    : TCM (Option (InstanceInfo × Array Soma.Core.TypedFunction)) := do
   -- Elaborate the type arguments
   let elabEnv := ElabEnv.empty
   let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)
@@ -435,7 +470,7 @@ partial def elaborateInstanceFromClassInfo (inst : Soma.Core.InstanceDecl)
     | none => pure ()
 
   -- Build the instance value using ClassInfo's record type
-  let instValue ← elaborateInstanceValueFromClassInfo classInfo typeArgs inst.methods
+  let (instValue, methodFns) ← elaborateInstanceValueFromClassInfo classInfo typeArgs inst.methods
 
   let instName := s!"$inst_{inst.className}_{typeArgs.size}"
   let instUnique ← TCM.freshUnique instName
@@ -450,7 +485,7 @@ partial def elaborateInstanceFromClassInfo (inst : Soma.Core.InstanceDecl)
     span := inst.span
   }
 
-  return some instanceInfo
+  return some (instanceInfo, methodFns)
 
 /-- Build the instance value (a record of method implementations).
 
@@ -464,8 +499,9 @@ We build:
 def elaborateInstanceValue (typeArgs : Array Value)
   (methods : Array Soma.Core.UntypedFunction)
     (methodSignatures : Array (QualifiedName × TypeExpr))
-    (params : Array TypeVarBinder) : TCM Value := do
+    (params : Array TypeVarBinder) : TCM (Value × Array Soma.Core.TypedFunction) := do
   let mut fields : List (String × Value) := []
+  let mut typedFns : Array Soma.Core.TypedFunction := #[]
 
   for method in methods do
     -- Find the corresponding method signature
@@ -481,14 +517,26 @@ def elaborateInstanceValue (typeArgs : Array Value)
       let expectedType ← substituteMethodType sigSyntax params typeArgs
 
       -- Elaborate the method implementation
-      let methodVal ← elaborateMethodImpl method expectedType
-      fields := (method.name.display, methodVal) :: fields
+      let result ← elaborateMethodImpl method expectedType
+      fields := (method.name.display, result.value) :: fields
+      let canonicalName ← do
+        match ← TCM.lookupGlobalNoDep method.name.display with
+        | some info => pure info.name
+        | none => pure method.name
+      typedFns := typedFns.push {
+        name := canonicalName
+        params := result.params
+        body := result.coreBody
+        fnType := result.fnType
+        closureInfo := method.closureInfo
+        attrs := method.attrs
+      }
 
-  return Value.vRecordVal fields.reverse
+  return (Value.vRecordVal fields.reverse, typedFns)
 
-/-- Elaborate a single instance declaration into an InstanceInfo. -/
+/-- Elaborate a single instance declaration into an InstanceInfo -/
 def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
-  (typeClass : Soma.Core.TypeClassMeta) : TCM (Option InstanceInfo) := do
+  (typeClass : Soma.Core.TypeClassMeta) : TCM (Option (InstanceInfo × Array Soma.Core.TypedFunction)) := do
   -- Look up the class this is an instance of
   match registry.lookup inst.className with
   | none =>
@@ -506,7 +554,7 @@ def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
       | none => pure ()
 
     -- Build the instance value (record of method implementations)
-    let instValue ← elaborateInstanceValue
+    let (instValue, methodFns) ← elaborateInstanceValue
       typeArgs
       inst.methods
       typeClass.methodSignatures
@@ -526,7 +574,7 @@ def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
       span := inst.span
     }
 
-    return some instanceInfo
+    return some (instanceInfo, methodFns)
 
 /-! ## Building the Complete Instance Environment -/
 
@@ -536,11 +584,13 @@ This is the main entry point for trait/instance elaboration.
 It processes all type classes first (to build the registry),
 then processes all instances using that registry.
 -/
-def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule) : TCM (InstanceEnv × InstanceMap) := do
+def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
+    : TCM (InstanceEnv × InstanceMap × Array Soma.Core.TypedFunction) := do
   -- Start with the default built-in instances (Eq Int, Num Int, etc.)
   let mut env := defaultInstanceEnv
   env := { env with moduleName := module.name }
   let mut instanceMap : InstanceMap := {}
+  let mut allTypedFns : Array Soma.Core.TypedFunction := #[]
 
   let seedEnv ← TCM.getInstanceEnv
   let mut registry := ClassRegistry.empty
@@ -564,9 +614,10 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule) : TCM (Instanc
     match typeClass? with
     | some typeClass =>
       match ← elaborateInstance inst registry typeClass with
-      | some instInfo =>
+      | some (instInfo, methodFns) =>
         env := env.addInstanceWithId instInfo
         instanceMap := instanceMap.insert inst.span instInfo
+        allTypedFns := allTypedFns ++ methodFns
       | none => pure ()
     | none =>
       -- Cross-module type class: look up ClassInfo from seed instance env
@@ -577,14 +628,15 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule) : TCM (Instanc
         match classInfo? with
         | some classInfo =>
           match ← elaborateInstanceFromClassInfo inst classInfo registry with
-          | some instInfo =>
+          | some (instInfo, methodFns) =>
             env := env.addInstanceWithId instInfo
             instanceMap := instanceMap.insert inst.span instInfo
+            allTypedFns := allTypedFns ++ methodFns
           | none => pure ()
         | none => pure ()
       | none => pure ()
 
-  return (env, instanceMap)
+  return (env, instanceMap, allTypedFns)
 
 /-- Build an InstanceEnv incrementally, reusing cached class/instance info for unchanged definitions -/
 def buildInstanceEnvFromModuleIncremental
@@ -592,11 +644,12 @@ def buildInstanceEnvFromModuleIncremental
     (prevEnv : InstanceEnv)
     (prevInstanceMap : InstanceMap)
     (dirtyNames : Std.HashSet String)
-    : TCM (InstanceEnv × InstanceMap) := do
+    : TCM (InstanceEnv × InstanceMap × Array Soma.Core.TypedFunction) := do
   -- Start with the default built-in instances
   let mut env := defaultInstanceEnv
   env := { env with moduleName := module.name }
   let mut instanceMap : InstanceMap := {}
+  let mut allTypedFns : Array Soma.Core.TypedFunction := #[]
 
   -- Pre-populate registry from the seed instance env (dependency classes)
   let seedEnv ← TCM.getInstanceEnv
@@ -643,9 +696,10 @@ def buildInstanceEnvFromModuleIncremental
       match typeClass? with
       | some typeClass =>
         match ← elaborateInstance inst registry typeClass with
-        | some instInfo =>
+        | some (instInfo, methodFns) =>
           env := env.addInstanceWithId instInfo
           instanceMap := instanceMap.insert inst.span instInfo
+          allTypedFns := allTypedFns ++ methodFns
         | none => pure ()
       | none =>
         match registry.lookup instClassName with
@@ -655,9 +709,10 @@ def buildInstanceEnvFromModuleIncremental
           match classInfo? with
           | some classInfo =>
             match ← elaborateInstanceFromClassInfo inst classInfo registry with
-            | some instInfo =>
+            | some (instInfo, methodFns) =>
               env := env.addInstanceWithId instInfo
               instanceMap := instanceMap.insert inst.span instInfo
+              allTypedFns := allTypedFns ++ methodFns
             | none => pure ()
           | none => pure ()
         | none => pure ()
@@ -676,9 +731,10 @@ def buildInstanceEnvFromModuleIncremental
         match typeClass? with
         | some typeClass =>
           match ← elaborateInstance inst registry typeClass with
-          | some instInfo =>
+          | some (instInfo, methodFns) =>
             env := env.addInstanceWithId instInfo
             instanceMap := instanceMap.insert inst.span instInfo
+            allTypedFns := allTypedFns ++ methodFns
           | none => pure ()
         | none =>
           match registry.lookup instClassName with
@@ -688,13 +744,14 @@ def buildInstanceEnvFromModuleIncremental
             match classInfo? with
             | some classInfo =>
               match ← elaborateInstanceFromClassInfo inst classInfo registry with
-              | some instInfo =>
+              | some (instInfo, methodFns) =>
                 env := env.addInstanceWithId instInfo
                 instanceMap := instanceMap.insert inst.span instInfo
+                allTypedFns := allTypedFns ++ methodFns
               | none => pure ()
             | none => pure ()
           | none => pure ()
 
-  return (env, instanceMap)
+  return (env, instanceMap, allTypedFns)
 
 end Soma.Dependent.TraitElaborate

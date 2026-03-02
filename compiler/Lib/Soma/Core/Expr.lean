@@ -29,6 +29,7 @@ instance : Hashable QualifiedName where
 def display (qn : QualifiedName) : String := qn.id.display
 def qualifiedDisplay (qn : QualifiedName) : String := qn.id.qualifiedDisplay
 def mangle (qn : QualifiedName) : String := qn.id.mangle
+def symbolName (qn : QualifiedName) : String := qn.id.symbolName
 def module (qn : QualifiedName) : String := qn.id.module
 
 instance : ToString QualifiedName := ⟨QualifiedName.display⟩

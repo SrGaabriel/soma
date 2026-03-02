@@ -109,9 +109,10 @@ def generateLibrary
 
   -- Optionally emit LLVM IR
   if opts.emitLlvm then
-    let llPath := outputPath.withExtension "ll"
-    IO.FS.writeFile llPath compileResult.llvmIR
-    IO.println s!"LLVM IR saved to: {llPath}"
+    if let some llvmIR := compileResult.llvmIR then
+      let llPath := outputPath.withExtension "ll"
+      IO.FS.writeFile llPath llvmIR
+      IO.println s!"LLVM IR saved to: {llPath}"
 
   -- Create .toria package
   Package.createPackage
@@ -145,9 +146,7 @@ def build (opts : BuildOptions) : IO BuildResult := do
     IO.eprintln (Error.renderSummary result.diagnostics)
     pure (BuildResult.failed result.diagnostics)
   else
-    let dependencyAlloyModules ← if opts.lib then
-      pure #[]
-    else if opts.deps.isEmpty then
+    let dependencyAlloyModules ← if opts.deps.isEmpty then
       pure #[]
     else do
       IO.println "  Loading dependency Alloy IR..."
@@ -158,19 +157,17 @@ def build (opts : BuildOptions) : IO BuildResult := do
         IO.eprintln s!"Failed to load dependency Alloy IR: {e}"
         pure #[]
 
-    -- Compile modules
-    let extConstructors : Std.HashMap String Nat := result.constructors
-    let compileResult ← compileModules
-      result.packageName
-      result.checkedModules
-      extConstructors
-      result.globals
-      dependencyAlloyModules
-
     -- Generate output
     let outputPath := generateOutputPath opts result.packageName
+    let extConstructors : Std.HashMap String Nat := result.constructors
 
     if opts.lib then
+      let compileResult ← compileLibrary
+        result.packageName
+        result.checkedModules
+        extConstructors
+        result.globals
+        dependencyAlloyModules
       let libPath := outputPath.withExtension "toria"
       match ← generateLibrary opts result compileResult libPath with
       | .ok () =>
@@ -180,12 +177,23 @@ def build (opts : BuildOptions) : IO BuildResult := do
         IO.eprintln s!"Library packaging failed: {e}"
         pure (BuildResult.failed #[])
     else
-      match ← generateOutput opts outputPath compileResult.llvmIR with
-      | .ok () =>
-        IO.println s!"Successfully compiled {result.checkedModules.size} module(s)"
-        pure (BuildResult.succeeded outputPath)
-      | .error e =>
-        IO.eprintln s!"Compilation failed: {e}"
+      let compileResult ← compileModules
+        result.packageName
+        result.checkedModules
+        extConstructors
+        result.globals
+        dependencyAlloyModules
+      match compileResult.llvmIR with
+      | some llvmIR =>
+        match ← generateOutput opts outputPath llvmIR with
+        | .ok () =>
+          IO.println s!"Successfully compiled {result.checkedModules.size} module(s)"
+          pure (BuildResult.succeeded outputPath)
+        | .error e =>
+          IO.eprintln s!"Compilation failed: {e}"
+          pure (BuildResult.failed #[])
+      | none =>
+        IO.eprintln "Internal error: executable build produced no LLVM IR"
         pure (BuildResult.failed #[])
 
 end Somac.Build

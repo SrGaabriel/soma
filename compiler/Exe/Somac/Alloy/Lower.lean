@@ -330,18 +330,57 @@ def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
     | some (Intrinsic.runtime fn) => .externC fn.name
     | none =>
       if def_.isExternal then
-        .external def_.name.display
+        .external def_.name.symbolName
       else
         -- Local function
         match funcIdMap with
         | some map =>
           match map.get? refId with
           | some funcId => .local funcId
-          | none => .external def_.name.display
+          | none => .external def_.name.symbolName
         | none =>
           .local (FuncId.mk refId)
   | none =>
     .external s!"unresolved_ref_{refId}"
+
+/-- Result of collecting a chain of nested APP nodes -/
+structure AppChainResult where
+  /-- The base function node -/
+  baseNodeId : CNodeId
+  /-- The base function's node entry -/
+  baseEntry : CNodeEntry
+  /-- Argument ports in application order -/
+  argPorts : Array CPortId
+  /-- Node IDs of intermediate app nodes consumed by the chain (excludes the outermost) -/
+  intermediateAppNodes : Array CNodeId
+
+/-- Walk a chain of nested APP nodes to collect the base function and all arguments -/
+partial def collectAppChain (graph : CGraph) (startEntry : CNodeEntry) : Option AppChainResult :=
+  let rec go (currentEntry : CNodeEntry) (revArgs : Array CPortId)
+      (intermediates : Array CNodeId) (fuel : Nat) : Option AppChainResult :=
+    if fuel == 0 then none
+    else do
+      let fnPort ← currentEntry.getPort ⟨1⟩
+      let fnEntry ← graph.getNode fnPort.node
+      match fnEntry.node with
+      | .app =>
+        -- Another APP node in the chain: collect its arg and continue down
+        let arg ← fnEntry.getPort ⟨2⟩
+        go fnEntry (revArgs.push arg) (intermediates.push fnPort.node) (fuel - 1)
+      | _ =>
+        -- Only return a chain if we collected 2+ args (outermost + at least one inner)
+        if revArgs.size >= 2 then
+          some {
+            baseNodeId := fnPort.node
+            baseEntry := fnEntry
+            argPorts := revArgs.reverse
+            intermediateAppNodes := intermediates
+          }
+        else
+          none
+  do
+    let outerArg ← startEntry.getPort ⟨2⟩
+    go startEntry #[outerArg] #[] 100
 
 open Soma.Core (Value)
 open Soma.Unique
@@ -582,7 +621,7 @@ def buildSignatureFromType (name : QualifiedName) (ty : Value) (arity : Nat)
       { id := ⟨i⟩, name := pname, ty := pty : Param n }
     else { id := ⟨i⟩, name := s!"arg{i}", ty := defaultTy : Param n }
   let retTy := extractReturnTypeWithMapping ty ctx
-  { name := name.display, typeParamNames, params, retTy }
+  { name := name.symbolName, typeParamNames, params, retTy }
 
 /-- Get node type with type conversion context -/
 def getNodeTypeWithMapping (entry : CNodeEntry) (ctx : TypeConvCtx n) : Ty n :=
@@ -874,84 +913,146 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     lowerPort 2
 
   | .app => do
-    -- Application: call closure with argument
-    -- aux0 = function, aux1 = argument
-    let fnPort := entry.getPort ⟨1⟩
+    -- Try saturated multi-argument call via app chain collection
+    let saturatedResult ← do
+      match collectAppChain graph entry with
+      | some chain =>
+        -- We have a multi-arg chain. Check if the base is a known function
+        match chain.baseEntry.node with
+        | .ref refId | .alo refId =>
+          match graph.getDefinition refId with
+          | some def_ =>
+            -- Check arity match for saturated call
+            if def_.arity == chain.argPorts.size then
+              -- Saturated call, let's lower all arguments
+              let mut argVals : Array LocalId := #[]
+              for argPort in chain.argPorts do
+                let val ← lowerOperandWithMap graph argPort funcIdMap
+                argVals := argVals.push val
+              let argOps := argVals.map fun v => Operand.local v
 
-    -- Check for intrinsic/extern calls
-    let maybeIntrinsic ← match fnPort with
-      | some fp =>
-        match graph.getNode fp.node with
-        | some fnEntry =>
-          match fnEntry.node with
-          | .ref refId | .alo refId =>
-            match graph.getDefinition refId with
-            | some def_ =>
+              -- Get return type from the function definition
+              let callRetTy := extractReturnTypeWithMapping def_.ty ctx
+
+              -- Check for intrinsics first
               match intrinsicOfQName? def_.name with
-              | some (Intrinsic.ffiOp op) => pure (some (Sum.inl op : Sum FFIOp String))
-              | some (Intrinsic.extern name) => pure (some (Sum.inr name : Sum FFIOp String))
-              | _ => pure none
-            | none => pure none
-          | _ => pure none
-        | none => pure none
+              | some (Intrinsic.ffiOp op) =>
+                let intrinsicOp := convertFFIOp op
+                let retTy : Ty n := match intrinsicOp.fixedRetTy with
+                  | some t => ClosedTy.embed t
+                  | none => callRetTy
+                let result ← StateT.lift (LowerM.emitInst (.callIntrinsic intrinsicOp argOps retTy) retTy)
+                -- Memoize intermediate app nodes to prevent relowering
+                for intermediateId in chain.intermediateAppNodes do
+                  modify fun s => { s with results := s.results.insert intermediateId.id result }
+                pure (some result)
+              | some (Intrinsic.extern name) =>
+                let result ← StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
+                for intermediateId in chain.intermediateAppNodes do
+                  modify fun s => { s with results := s.results.insert intermediateId.id result }
+                pure (some result)
+              | _ =>
+                -- Regular function: resolve reference
+                let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
+                let result ← match funcRef with
+                  | .local funcId =>
+                    StateT.lift (LowerM.emitInst (.call funcId argOps callRetTy) callRetTy)
+                  | .external name =>
+                    StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
+                  | .externC name =>
+                    StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
+                  | .intrinsic op =>
+                    StateT.lift (LowerM.emitInst (.callIntrinsic op argOps callRetTy) callRetTy)
+                  | .primOp _op =>
+                    -- PrimOps with multiple args
+                    StateT.lift (LowerM.emitInst (.callExtern s!"primop_{_op}" argOps callRetTy) callRetTy)
+                for intermediateId in chain.intermediateAppNodes do
+                  modify fun s => { s with results := s.results.insert intermediateId.id result }
+                pure (some result)
+            else
+              -- Arity mismatch: not a saturated call, fall through
+              pure none
+          | none => pure none
+        | _ => pure none
       | none => pure none
 
-    -- Lower the argument
-    let argVal ← lowerPort 2 (.prim .unit)
+    match saturatedResult with
+    | some result => pure result
+    | none => do
+      let fnPort := entry.getPort ⟨1⟩
 
-    match maybeIntrinsic with
-    | some (Sum.inl ffiOp) =>
-      let intrinsicOp := convertFFIOp ffiOp
-      let retTy : Ty n := match intrinsicOp.fixedRetTy with
-        | some t => ClosedTy.embed t
-        | none => nodeTy
-      StateT.lift (LowerM.emitInst (.callIntrinsic intrinsicOp #[.local argVal] retTy) retTy)
-    | some (Sum.inr externName) =>
-      -- Extern function: emit callExtern
-      StateT.lift (LowerM.emitInst (.callExtern externName #[.local argVal] nodeTy) nodeTy)
-    | none =>
-      -- Regular function call: check what the function node is
-      match fnPort with
+      let maybeIntrinsic ← match fnPort with
+        | some fp =>
+          match graph.getNode fp.node with
+          | some fnEntry =>
+            match fnEntry.node with
+            | .ref refId | .alo refId =>
+              match graph.getDefinition refId with
+              | some def_ =>
+                match intrinsicOfQName? def_.name with
+                | some (Intrinsic.ffiOp op) => pure (some (Sum.inl op : Sum FFIOp String))
+                | some (Intrinsic.extern name) => pure (some (Sum.inr name : Sum FFIOp String))
+                | _ => pure none
+              | none => pure none
+            | _ => pure none
+          | none => pure none
+        | none => pure none
+
+      let argVal ← lowerPort 2 (.prim .unit)
+
+      match maybeIntrinsic with
+      | some (Sum.inl ffiOp) =>
+        let intrinsicOp := convertFFIOp ffiOp
+        let retTy : Ty n := match intrinsicOp.fixedRetTy with
+          | some t => ClosedTy.embed t
+          | none => nodeTy
+        StateT.lift (LowerM.emitInst (.callIntrinsic intrinsicOp #[.local argVal] retTy) retTy)
+      | some (Sum.inr externName) =>
+        -- Extern function: emit callExtern
+        StateT.lift (LowerM.emitInst (.callExtern externName #[.local argVal] nodeTy) nodeTy)
       | none =>
-        -- No function port → erased, return unit
-        StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
-      | some fp =>
-        match graph.getNode fp.node with
+        -- Regular function call: check what the function node is
+        match fnPort with
         | none =>
-          -- Missing node → treat as erased
+          -- No function port → erased, return unit
           StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
-        | some fnEntry =>
-          match fnEntry.node with
-          | .era =>
-            -- Function is ERA → erased, return unit
+        | some fp =>
+          match graph.getNode fp.node with
+          | none =>
+            -- Missing node → treat as erased
             StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
-          | .lam _ =>
-            lowerNodeWithMap graph fp.node funcIdMap
-          | .ref refId | .alo refId =>
-            -- Direct function reference: emit direct call
-            let callRetTy := match graph.getDefinition refId with
-              | some def_ => extractReturnTypeWithMapping def_.ty ctx
-              | none => nodeTy
-            let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
-            match funcRef with
-            | .local funcId =>
-              StateT.lift (LowerM.emitInst (.call funcId #[.local argVal] callRetTy) callRetTy)
-            | .external name =>
-              StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
-            | .intrinsic op =>
-              panic! "Unexpected intrinsic in direct function call"
-            | .primOp _op =>
-              panic! "Unexpected primOp in direct function call"
-            | .externC name =>
-              StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
-          | _ =>
-            -- Regular closure call: lower the function and use callClosure
-            let fnNodeTy := getNodeTypeWithMapping fnEntry ctx
-            if fnNodeTy == .prim .unit then
+          | some fnEntry =>
+            match fnEntry.node with
+            | .era =>
+              -- Function is ERA → erased, return unit
               StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
-            else
-              let fnVal ← lowerNodeWithMap graph fp.node funcIdMap
-              StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
+            | .lam _ =>
+              lowerNodeWithMap graph fp.node funcIdMap
+            | .ref refId | .alo refId =>
+              -- Direct function reference: emit direct call
+              let callRetTy := match graph.getDefinition refId with
+                | some def_ => extractReturnTypeWithMapping def_.ty ctx
+                | none => nodeTy
+              let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap)
+              match funcRef with
+              | .local funcId =>
+                StateT.lift (LowerM.emitInst (.call funcId #[.local argVal] callRetTy) callRetTy)
+              | .external name =>
+                StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
+              | .intrinsic op =>
+                panic! "Unexpected intrinsic in direct function call"
+              | .primOp _op =>
+                panic! "Unexpected primOp in direct function call"
+              | .externC name =>
+                StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
+            | _ =>
+              -- Regular closure call: lower the function and use callClosure
+              let fnNodeTy := getNodeTypeWithMapping fnEntry ctx
+              if fnNodeTy == .prim .unit then
+                StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
+              else
+                let fnVal ← lowerNodeWithMap graph fp.node funcIdMap
+                StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
 
   | .ctor tag arity => do
     -- Check for special closure CTOR (tag 0xFFFE, arity 2)
@@ -1250,7 +1351,7 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
       { id := ⟨i⟩, name := pname, ty := pty : Param n }
     else { id := ⟨i⟩, name := s!"arg{i}", ty := defaultTy : Param n }
   let retTy := extractReturnTypeWithMapping def_.ty ctx
-  let sig : Signature n := { name := def_.name.display, typeParamNames, params, retTy }
+  let sig : Signature n := { name := def_.name.symbolName, typeParamNames, params, retTy }
   let returnsUnit := sig.retTy == .prim .unit
 
   let (_, func) := LowerM.run' funcId sig do

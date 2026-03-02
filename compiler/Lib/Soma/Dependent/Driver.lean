@@ -705,7 +705,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
 
 /-- Build the InstanceEnv from module type classes and instances -/
 def buildInstanceEnv (module : Soma.Core.UntypedModule) (_moduleName : String)
-    : TCM (InstanceEnv × TraitElaborate.InstanceMap) := do
+    : TCM (InstanceEnv × TraitElaborate.InstanceMap × Array Soma.Core.TypedFunction) := do
   TraitElaborate.buildInstanceEnvFromModule module
 
 /-- Build the InstanceEnv incrementally, reusing cached info for unchanged definitions -/
@@ -715,7 +715,7 @@ def buildInstanceEnvIncremental
     (prevEnv : InstanceEnv)
     (prevInstanceMap : TraitElaborate.InstanceMap)
     (dirtyNames : Std.HashSet String)
-    : TCM (InstanceEnv × TraitElaborate.InstanceMap) := do
+    : TCM (InstanceEnv × TraitElaborate.InstanceMap × Array Soma.Core.TypedFunction) := do
   TraitElaborate.buildInstanceEnvFromModuleIncremental module prevEnv prevInstanceMap dirtyNames
 
 /-- Elaborate a single type abbreviation into an AbbrevInfo.
