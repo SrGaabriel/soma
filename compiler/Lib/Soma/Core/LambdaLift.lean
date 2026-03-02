@@ -2,6 +2,7 @@ import Soma.Core.Function
 import Soma.Core.Module
 import Soma.Core.Value
 import Soma.Core.Expr
+import Soma.Core.Eval
 import Std.Data.HashMap
 import Std.Data.HashSet
 
@@ -56,12 +57,55 @@ def isGlobal (name : QualifiedName) : LiftM Bool := do
 
 end LiftM
 
-def defaultTy : Value := Value.vType Soma.Core.Level.zero
-
 def buildFnType (paramTypes : Array Value) (resultType : Value) : Value :=
   paramTypes.foldr (init := resultType) fun paramTy acc =>
     Value.vPi Soma.Core.Quantity.omega Soma.Core.BinderInfo.explicit "_" paramTy
       (Soma.Core.Closure.const "_" acc)
+
+/-- Collect free variables with their type expressions from an expression tree -/
+partial def collectFVarsWithTypes (e : Soma.Core.Expr) : HashMap Soma.Unique Soma.Core.Expr :=
+  go e {}
+where
+  go (e : Soma.Core.Expr) (acc : HashMap Soma.Unique Soma.Core.Expr)
+      : HashMap Soma.Unique Soma.Core.Expr :=
+    match e with
+    | .fvar u ty => go ty (acc.insert u ty)
+    | .const _ ty => go ty acc
+    | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
+    | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
+    | .lit _ => acc
+    | .app f a => go a (go f acc)
+    | .lam _ _ d b => go b (go d acc)
+    | .let_ _ t v b => go b (go v (go t acc))
+    | .pi _ _ _ d c => go c (go d acc)
+    | .sigma _ _ _ f s => go s (go f acc)
+    | .pair f s => go s (go f acc)
+    | .projFst x => go x acc
+    | .projSnd x => go x acc
+    | .construct _ _ args rty => go rty (args.foldl (fun a e => go e a) acc)
+    | .«case» scruts arms rty =>
+      let acc := scruts.foldl (fun a e => go e a) acc
+      let acc := arms.foldl (fun a arm => go arm.body a) acc
+      go rty acc
+    | .record fields => fields.foldl (fun a (_, e) => go e a) acc
+    | .recordUpdate b us =>
+      let acc := go b acc
+      us.foldl (fun a (_, e) => go e a) acc
+    | .fieldAccess x _ _ => go x acc
+    | .inject _ args rty => go rty (args.foldl (fun a e => go e a) acc)
+    | .if_ c t el => go el (go t (go c acc))
+    | .closure _ caps => caps.foldl (fun a e => go e a) acc
+    | .array es ety => go ety (es.foldl (fun a e => go e a) acc)
+    | .tuple es => es.foldl (fun a e => go e a) acc
+    | .rowExtend l f t => go t (go f (go l acc))
+    | .recordTy r => go r acc
+    | .variantTy r => go r acc
+    | .dataTy _ ps => ps.foldl (fun a e => go e a) acc
+    | .eqTy _ t l r => go r (go l (go t acc))
+    | .refl t x => go x (go t acc)
+    | .transport _ t m l r ep b =>
+      go b (go ep (go r (go l (go m (go t acc)))))
+    | .ann x t => go t (go x acc)
 
 mutual
 
@@ -74,27 +118,30 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
   | .lam info name domain body => do
     let body' ← liftCoreExpr body
     let liftedLam : Soma.Core.Expr := Soma.Core.Expr.lam info name domain body'
-    let fvars := Soma.Core.Expr.collectFVars liftedLam
 
-    -- Filter out globals
-    let mut captures : Array (Soma.Unique × String × Value) := #[]
-    for fv in fvars do
+    let fvarTypes := collectFVarsWithTypes liftedLam
+
+    let fvarSet := Soma.Core.Expr.collectFVars liftedLam
+
+    let mut captures : Array (Soma.Unique × String × Soma.Core.Expr) := #[]
+    for fv in fvarSet do
       let isGlob ← LiftM.isGlobal ⟨fv⟩
       if !isGlob then
-        captures := captures.push (fv, fv.original, defaultTy)
+        let tyExpr := fvarTypes.get? fv |>.getD (.sort .zero)
+        captures := captures.push (fv, fv.original, tyExpr)
 
-    -- Generate fresh fvars for capture parameters
-    let mut captureParams : Array (Soma.Unique × String × Value) := #[]
-    let mut replacements : Array (Soma.Unique × Soma.Unique) := #[]
-    for (oldU, capName, ty) in captures do
+    let mut captureParams : Array (Soma.Unique × String × Soma.Core.Expr) := #[]
+    let mut replacements : Array (Soma.Unique × Soma.Unique × Soma.Core.Expr) := #[]
+    for (oldU, capName, tyExpr) in captures do
       let newU ← LiftM.freshUnique capName
-      captureParams := captureParams.push (newU, capName, ty)
-      replacements := replacements.push (oldU, newU)
+      captureParams := captureParams.push (newU, capName, tyExpr)
+      replacements := replacements.push (oldU, newU, tyExpr)
 
     -- Replace old fvars with new ones in the lambda body
     let mut substituted : Soma.Core.Expr := liftedLam
-    for (oldU, newU) in replacements do
-      substituted := Soma.Core.Expr.replaceFVar substituted oldU (Soma.Core.Expr.fvar newU (.sort .zero))
+    for (oldU, newU, tyExpr) in replacements do
+      substituted := Soma.Core.Expr.replaceFVar substituted oldU
+        (Soma.Core.Expr.fvar newU tyExpr)
 
     -- Extract the lambda binder into an explicit param
     let lamParamUnique ← LiftM.freshUnique name
@@ -104,7 +151,8 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
       | other => other
 
     -- Open the binder: replace bvar(0) with fvar(lamParamUnique)
-    let openedBody := Soma.Core.Expr.instantiate innerBody (Soma.Core.Expr.fvar lamParamUnique (.sort .zero))
+    let openedBody := Soma.Core.Expr.instantiate innerBody
+      (Soma.Core.Expr.fvar lamParamUnique domain)
 
     let liftedName ← LiftM.freshLambdaName
 
@@ -112,8 +160,12 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
       (u, n)
     let lamParamBinding := lamParamUnique
     let allParams := captureBindings ++ #[(lamParamBinding, name)]
-    let allParamTypes := captureParams.map (·.2.2) ++ #[defaultTy]
-    let liftedFnType := buildFnType allParamTypes defaultTy
+
+    let captureValueTypes := captureParams.map fun (_, _, tyExpr) => Soma.Core.evalClosed tyExpr
+    let domainTy := Soma.Core.evalClosed domain
+    let bodyTy := Soma.Core.Expr.typeOf openedBody
+    let allParamTypes := captureValueTypes ++ #[domainTy]
+    let liftedFnType := buildFnType allParamTypes bodyTy
 
     let liftedFn : TypedFunction := {
       name := liftedName
@@ -125,7 +177,8 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     }
     LiftM.addLiftedFunction liftedFn
 
-    let captureExprs := captures.map fun (u, _, _) => Soma.Core.Expr.fvar u (.sort .zero)
+    let captureExprs := captures.map fun (u, _, tyExpr) =>
+      Soma.Core.Expr.fvar u tyExpr
     pure (Soma.Core.Expr.closure liftedName captureExprs)
 
   | .closure n caps => do
