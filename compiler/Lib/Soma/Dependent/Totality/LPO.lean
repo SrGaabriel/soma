@@ -174,7 +174,7 @@ partial def checkProductivity (fnName : String) (body : Soma.Core.Expr) (codata 
 where
   go (t : Soma.Core.Expr) (guard : Guardedness) : Guardedness :=
     match t with
-    | .construct name _ args =>
+    | .construct name _ args _ =>
       if codata.isConstructor name.display then
         let newGuard := match guard with
           | .guarded d => .guarded (d + 1)
@@ -187,7 +187,7 @@ where
     | .app _ _ =>
       let (head, args) := collectAppSpine t
       match head with
-      | .const name =>
+      | .const name _ =>
         if name.display == fnName then
           match guard with
           | .guarded _ => args.foldl (fun g arg => combineGuardedness g (go arg guard)) guard
@@ -202,7 +202,7 @@ where
 
     | .lam _ _ _ body => go body guard
 
-    | .«case» scruts arms =>
+    | .«case» scruts arms _ =>
       let g := scruts.foldl (fun g' s => combineGuardedness g' (go s guard)) guard
       arms.toList.foldl (fun g' arm => combineGuardedness g' (go arm.body guard)) g
 

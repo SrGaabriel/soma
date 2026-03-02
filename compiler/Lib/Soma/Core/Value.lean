@@ -67,7 +67,7 @@ inductive Value where
   | vDataType (id : Unique) (params : List Value)
 
   /-- Constructor application -/
-  | vConstructor (name : QualifiedName) (tag : Nat) (args : List Value)
+  | vConstructor (name : QualifiedName) (tag : Nat) (args : List Value) (resultTy : Value)
 
   /-- Equality type: a = b -/
   | vEq (tyLevel : Level) (ty : Value) (lhs rhs : Value)
@@ -111,7 +111,7 @@ inductive Neutral where
   /-- Field access on a neutral record -/
   | nFieldAccess (record : Neutral) (field : String)
   /-- Case analysis on a neutral scrutinee -/
-  | nCase (scrutinee : Neutral) (arms : List ArmClosure)
+  | nCase (scrutinee : Neutral) (arms : List ArmClosure) (resultTy : Value)
 
 /-- Case arm closure -/
 inductive ArmClosure where
@@ -265,12 +265,6 @@ def Value.piDomain? (v : Value) : Option Value :=
 def Value.sigmaFst? (v : Value) : Option Value :=
   match v with
   | Value.vSigma _ _ fst _ => some fst
-  | _ => none
-
-/-- Extract the second component type from a Sigma type (for non-dependent) -/
-def Value.sigmaSnd? (v : Value) : Option Value :=
-  match v with
-  | Value.vSigma _ _ _ (Closure.const _ snd) => some snd
   | _ => none
 
 /-- Create a non-dependent Sigma (product) -/

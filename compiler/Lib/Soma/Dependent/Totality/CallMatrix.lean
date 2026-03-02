@@ -487,7 +487,7 @@ private partial def collectCallsGo (caller : String) (targets : Array String)
   | e@(.app _ _) =>
     let (head, args) := collectAppSpine e
     match head with
-    | .const name =>
+    | .const name _ =>
       let callee := name.display
       if targets.contains callee then
         let row := buildRow caller callee args ctx Span.uninhabited
@@ -506,8 +506,8 @@ private partial def collectCallsGo (caller : String) (targets : Array String)
     collectCallsGo caller targets b ctx acc'
   | .projFst e => collectCallsGo caller targets e ctx acc
   | .projSnd e => collectCallsGo caller targets e ctx acc
-  | .construct _ _ args => collectCallsGoArgs caller targets args.toList ctx acc
-  | .«case» scruts arms =>
+  | .construct _ _ args _ => collectCallsGoArgs caller targets args.toList ctx acc
+  | .«case» scruts arms _ =>
     let acc' := match scruts[0]? with
       | some s => collectCallsGo caller targets s ctx acc
       | none => acc

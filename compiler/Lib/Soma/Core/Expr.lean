@@ -92,9 +92,9 @@ mutual
 inductive Expr where
   -- Variables (locally nameless)
   | bvar (idx : Nat)
-  | fvar (id : Unique)
+  | fvar (id : Unique) (ty : Expr)
   | mvar (id : MetaId)
-  | const (name : QualifiedName)
+  | const (name : QualifiedName) (ty : Expr)
 
   -- Core lambda calculus
   | app (fn : Expr) (arg : Expr)
@@ -115,14 +115,14 @@ inductive Expr where
   | projSnd (e : Expr)
 
   -- Data types and constructors
-  | construct (name : QualifiedName) (tag : Nat) (args : Array Expr)
-  | «case» (scrutinees : Array Expr) (arms : Array Arm)
+  | construct (name : QualifiedName) (tag : Nat) (args : Array Expr) (resultTy : Expr)
+  | «case» (scrutinees : Array Expr) (arms : Array Arm) (resultTy : Expr)
 
   -- Records and variants (row polymorphism)
   | record (fields : Array (String × Expr))
   | recordUpdate (base : Expr) (updates : Array (String × Expr))
   | fieldAccess (e : Expr) (field : String) (idx : Nat)
-  | inject (label : String) (args : Array Expr)
+  | inject (label : String) (args : Array Expr) (resultTy : Expr)
 
   -- Primitive types as expressions
   | primTy (p : StarPrimitive)
@@ -149,7 +149,7 @@ inductive Expr where
   | closure (name : QualifiedName) (captures : Array Expr)
 
   -- Arrays and tuples
-  | array (elements : Array Expr)
+  | array (elements : Array Expr) (resultTy : Expr)
   | tuple (elements : Array Expr)
 
   -- Projection function (first-class field accessor)
@@ -176,20 +176,20 @@ instance : Inhabited Arm := ⟨.mk #[] default⟩
 
 /-- Short constructor name for diagnostic messages -/
 def Expr.ctorName : Expr → String
-  | .bvar _ => "bvar" | .fvar _ => "fvar" | .mvar _ => "mvar" | .const _ => "const"
+  | .bvar _ => "bvar" | .fvar _ _ => "fvar" | .mvar _ => "mvar" | .const _ _ => "const"
   | .app _ _ => "app" | .lam _ _ _ _ => "lam" | .let_ _ _ _ _ => "let" | .lit _ => "lit"
   | .sort _ => "sort" | .pi _ _ _ _ _ => "pi" | .sigma _ _ _ _ _ => "sigma"
   | .pair _ _ => "pair" | .projFst _ => "projFst" | .projSnd _ => "projSnd"
-  | .construct _ _ _ => "construct" | .case _ _ => "case"
+  | .construct _ _ _ _ => "construct" | .case _ _ _ => "case"
   | .record _ => "record" | .recordUpdate _ _ => "recordUpdate"
-  | .fieldAccess _ _ _ => "fieldAccess" | .inject _ _ => "inject"
+  | .fieldAccess _ _ _ => "fieldAccess" | .inject _ _ _ => "inject"
   | .primTy _ => "primTy" | .rowSort => "rowSort" | .labelSort => "labelSort"
   | .rowEmpty => "rowEmpty" | .rowExtend _ _ _ => "rowExtend"
   | .recordTy _ => "recordTy" | .variantTy _ => "variantTy"
   | .labelLit _ => "labelLit" | .dataTy _ _ => "dataTy"
   | .eqTy _ _ _ _ => "eqTy" | .refl _ _ => "refl" | .transport _ _ _ _ _ _ _ => "transport"
   | .if_ _ _ _ => "if" | .panic _ => "panic"
-  | .closure _ _ => "closure" | .array _ => "array" | .tuple _ => "tuple"
+  | .closure _ _ => "closure" | .array _ _ => "array" | .tuple _ => "tuple"
   | .proj _ _ _ => "proj" | .ann _ _ => "ann"
 
 deriving instance Serialize, Deserialize for Expr
@@ -214,7 +214,9 @@ partial def shift (e : Expr) (amount : Int) (cutoff : Nat) : Expr :=
   | .bvar i =>
     if i >= cutoff then .bvar (Int.ofNat i + amount).toNat
     else e
-  | .fvar _ | .mvar _ | .const _ | .sort _ | .primTy _ | .rowSort
+  | .fvar id ty => .fvar id (ty.shift amount cutoff)
+  | .const name ty => .const name (ty.shift amount cutoff)
+  | .mvar _ | .sort _ | .primTy _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
   | .lit _ => e
   | .app f a => .app (f.shift amount cutoff) (a.shift amount cutoff)
@@ -229,22 +231,23 @@ partial def shift (e : Expr) (amount : Int) (cutoff : Nat) : Expr :=
   | .pair f s => .pair (f.shift amount cutoff) (s.shift amount cutoff)
   | .projFst x => .projFst (x.shift amount cutoff)
   | .projSnd x => .projSnd (x.shift amount cutoff)
-  | .construct n t args =>
-    .construct n t (args.map (·.shift amount cutoff))
-  | .«case» scruts arms =>
+  | .construct n t args rty =>
+    .construct n t (args.map (·.shift amount cutoff)) (rty.shift amount cutoff)
+  | .«case» scruts arms rty =>
     .«case» (scruts.map (·.shift amount cutoff))
       (mapArmBodies arms (fun b d => b.shift amount d) cutoff)
+      (rty.shift amount cutoff)
   | .record fields =>
     .record (fields.map fun (n, e) => (n, e.shift amount cutoff))
   | .recordUpdate b us =>
     .recordUpdate (b.shift amount cutoff)
       (us.map fun (n, e) => (n, e.shift amount cutoff))
   | .fieldAccess x f i => .fieldAccess (x.shift amount cutoff) f i
-  | .inject l args => .inject l (args.map (·.shift amount cutoff))
+  | .inject l args rty => .inject l (args.map (·.shift amount cutoff)) (rty.shift amount cutoff)
   | .if_ c t el =>
     .if_ (c.shift amount cutoff) (t.shift amount cutoff) (el.shift amount cutoff)
   | .closure n caps => .closure n (caps.map (·.shift amount cutoff))
-  | .array es => .array (es.map (·.shift amount cutoff))
+  | .array es ety => .array (es.map (·.shift amount cutoff)) (ety.shift amount cutoff)
   | .tuple es => .tuple (es.map (·.shift amount cutoff))
   | .rowExtend l f t =>
     .rowExtend (l.shift amount cutoff) (f.shift amount cutoff) (t.shift amount cutoff)
@@ -269,9 +272,10 @@ partial def abstractFVar (e : Expr) (fvar : Unique) : Expr :=
 where
   go (e : Expr) (depth : Nat) : Expr :=
     match e with
-    | .fvar u => if u == fvar then .bvar depth else e
+    | .fvar u ty => if u == fvar then .bvar depth else .fvar u (go ty depth)
     | .bvar i => if i >= depth then .bvar (i + 1) else e
-    | .mvar _ | .const _ | .sort _ | .primTy _ | .rowSort | .labelSort
+    | .const name ty => .const name (go ty depth)
+    | .mvar _ | .sort _ | .primTy _ | .rowSort | .labelSort
     | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ => e
     | .app f a => .app (go f depth) (go a depth)
     | .lam info n d b => .lam info n (go d depth) (go b (depth + 1))
@@ -281,18 +285,19 @@ where
     | .pair f s => .pair (go f depth) (go s depth)
     | .projFst x => .projFst (go x depth)
     | .projSnd x => .projSnd (go x depth)
-    | .construct n t args => .construct n t (args.map (go · depth))
-    | .«case» scruts arms =>
+    | .construct n t args rty => .construct n t (args.map (go · depth)) (go rty depth)
+    | .«case» scruts arms rty =>
       .«case» (scruts.map (go · depth))
         (mapArmBodies arms (fun b d => go b d) depth)
+        (go rty depth)
     | .record fields => .record (fields.map fun (n, e) => (n, go e depth))
     | .recordUpdate b us =>
       .recordUpdate (go b depth) (us.map fun (n, e) => (n, go e depth))
     | .fieldAccess x f i => .fieldAccess (go x depth) f i
-    | .inject l args => .inject l (args.map (go · depth))
+    | .inject l args rty => .inject l (args.map (go · depth)) (go rty depth)
     | .if_ c t el => .if_ (go c depth) (go t depth) (go el depth)
     | .closure n caps => .closure n (caps.map (go · depth))
-    | .array es => .array (es.map (go · depth))
+    | .array es ety => .array (es.map (go · depth)) (go ety depth)
     | .tuple es => .tuple (es.map (go · depth))
     | .rowExtend l f t => .rowExtend (go l depth) (go f depth) (go t depth)
     | .recordTy r => .recordTy (go r depth)
@@ -315,7 +320,9 @@ where
       if i == depth then replacement.shift (Int.ofNat depth) 0
       else if i > depth then .bvar (i - 1)
       else e
-    | .fvar _ | .mvar _ | .const _ | .sort _ | .primTy _ | .rowSort
+    | .fvar id ty => .fvar id (go ty depth)
+    | .const name ty => .const name (go ty depth)
+    | .mvar _ | .sort _ | .primTy _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
     | .lit _ => e
     | .app f a => .app (go f depth) (go a depth)
@@ -326,18 +333,19 @@ where
     | .pair f s => .pair (go f depth) (go s depth)
     | .projFst x => .projFst (go x depth)
     | .projSnd x => .projSnd (go x depth)
-    | .construct n t args => .construct n t (args.map (go · depth))
-    | .«case» scruts arms =>
+    | .construct n t args rty => .construct n t (args.map (go · depth)) (go rty depth)
+    | .«case» scruts arms rty =>
       .«case» (scruts.map (go · depth))
         (mapArmBodies arms (fun b d => go b d) depth)
+        (go rty depth)
     | .record fields => .record (fields.map fun (n, e) => (n, go e depth))
     | .recordUpdate b us =>
       .recordUpdate (go b depth) (us.map fun (n, e) => (n, go e depth))
     | .fieldAccess x f i => .fieldAccess (go x depth) f i
-    | .inject l args => .inject l (args.map (go · depth))
+    | .inject l args rty => .inject l (args.map (go · depth)) (go rty depth)
     | .if_ c t el => .if_ (go c depth) (go t depth) (go el depth)
     | .closure n caps => .closure n (caps.map (go · depth))
-    | .array es => .array (es.map (go · depth))
+    | .array es ety => .array (es.map (go · depth)) (go ety depth)
     | .tuple es => .tuple (es.map (go · depth))
     | .rowExtend l f t => .rowExtend (go l depth) (go f depth) (go t depth)
     | .recordTy r => .recordTy (go r depth)
@@ -353,8 +361,9 @@ where
 /-- Replace all occurrences of FVar(fvar) with replacement -/
 partial def replaceFVar (e : Expr) (fvar : Unique) (replacement : Expr) : Expr :=
   match e with
-  | .fvar u => if u == fvar then replacement else e
-  | .bvar _ | .mvar _ | .const _ | .sort _ | .primTy _ | .rowSort
+  | .fvar u ty => if u == fvar then replacement else .fvar u (ty.replaceFVar fvar replacement)
+  | .const name ty => .const name (ty.replaceFVar fvar replacement)
+  | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
   | .lit _ => e
   | .app f a =>
@@ -372,23 +381,24 @@ partial def replaceFVar (e : Expr) (fvar : Unique) (replacement : Expr) : Expr :
     .pair (f.replaceFVar fvar replacement) (s.replaceFVar fvar replacement)
   | .projFst x => .projFst (x.replaceFVar fvar replacement)
   | .projSnd x => .projSnd (x.replaceFVar fvar replacement)
-  | .construct n t args =>
-    .construct n t (args.map (·.replaceFVar fvar replacement))
-  | .«case» scruts arms =>
+  | .construct n t args rty =>
+    .construct n t (args.map (·.replaceFVar fvar replacement)) (rty.replaceFVar fvar replacement)
+  | .«case» scruts arms rty =>
     .«case» (scruts.map (·.replaceFVar fvar replacement))
       (mapArmBodiesSimple arms (·.replaceFVar fvar replacement))
+      (rty.replaceFVar fvar replacement)
   | .record fields =>
     .record (fields.map fun (n, e) => (n, e.replaceFVar fvar replacement))
   | .recordUpdate b us =>
     .recordUpdate (b.replaceFVar fvar replacement)
       (us.map fun (n, e) => (n, e.replaceFVar fvar replacement))
   | .fieldAccess x f i => .fieldAccess (x.replaceFVar fvar replacement) f i
-  | .inject l args => .inject l (args.map (·.replaceFVar fvar replacement))
+  | .inject l args rty => .inject l (args.map (·.replaceFVar fvar replacement)) (rty.replaceFVar fvar replacement)
   | .if_ c t el =>
     .if_ (c.replaceFVar fvar replacement)
          (t.replaceFVar fvar replacement) (el.replaceFVar fvar replacement)
   | .closure n caps => .closure n (caps.map (·.replaceFVar fvar replacement))
-  | .array es => .array (es.map (·.replaceFVar fvar replacement))
+  | .array es ety => .array (es.map (·.replaceFVar fvar replacement)) (ety.replaceFVar fvar replacement)
   | .tuple es => .tuple (es.map (·.replaceFVar fvar replacement))
   | .rowExtend l f t =>
     .rowExtend (l.replaceFVar fvar replacement) (f.replaceFVar fvar replacement)
@@ -414,8 +424,9 @@ partial def collectFVars (e : Expr) : Std.HashSet Unique :=
 where
   go (e : Expr) (acc : Std.HashSet Unique) : Std.HashSet Unique :=
     match e with
-    | .fvar u => acc.insert u
-    | .bvar _ | .mvar _ | .const _ | .sort _ | .primTy _ | .rowSort
+    | .fvar u ty => go ty (acc.insert u)
+    | .const _ ty => go ty acc
+    | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
     | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
     | .lit _ => acc
     | .app f a => go a (go f acc)
@@ -426,19 +437,20 @@ where
     | .pair f s => go s (go f acc)
     | .projFst x => go x acc
     | .projSnd x => go x acc
-    | .construct _ _ args => args.foldl (fun a e => go e a) acc
-    | .«case» scruts arms =>
+    | .construct _ _ args rty => go rty (args.foldl (fun a e => go e a) acc)
+    | .«case» scruts arms rty =>
       let acc := scruts.foldl (fun a e => go e a) acc
-      arms.foldl (fun a arm => go arm.body a) acc
+      let acc := arms.foldl (fun a arm => go arm.body a) acc
+      go rty acc
     | .record fields => fields.foldl (fun a (_, e) => go e a) acc
     | .recordUpdate b us =>
       let acc := go b acc
       us.foldl (fun a (_, e) => go e a) acc
     | .fieldAccess x _ _ => go x acc
-    | .inject _ args => args.foldl (fun a e => go e a) acc
+    | .inject _ args rty => go rty (args.foldl (fun a e => go e a) acc)
     | .if_ c t el => go el (go t (go c acc))
     | .closure _ caps => caps.foldl (fun a e => go e a) acc
-    | .array es => es.foldl (fun a e => go e a) acc
+    | .array es ety => go ety (es.foldl (fun a e => go e a) acc)
     | .tuple es => es.foldl (fun a e => go e a) acc
     | .rowExtend l f t => go t (go f (go l acc))
     | .recordTy r => go r acc
@@ -453,8 +465,9 @@ where
 /-- Check if an expression contains a specific free variable -/
 partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
   match e with
-  | .fvar u => u == fvar
-  | .bvar _ | .mvar _ | .const _ | .sort _ | .primTy _ | .rowSort
+  | .fvar u ty => u == fvar || ty.hasFVar fvar
+  | .const _ ty => ty.hasFVar fvar
+  | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
   | .lit _ => false
   | .app f a => f.hasFVar fvar || a.hasFVar fvar
@@ -465,17 +478,17 @@ partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
   | .pair f s => f.hasFVar fvar || s.hasFVar fvar
   | .projFst x => x.hasFVar fvar
   | .projSnd x => x.hasFVar fvar
-  | .construct _ _ args => args.any (·.hasFVar fvar)
-  | .«case» scruts arms =>
-    scruts.any (·.hasFVar fvar) || arms.any (fun arm => arm.body.hasFVar fvar)
+  | .construct _ _ args rty => args.any (·.hasFVar fvar) || rty.hasFVar fvar
+  | .«case» scruts arms rty =>
+    scruts.any (·.hasFVar fvar) || arms.any (fun arm => arm.body.hasFVar fvar) || rty.hasFVar fvar
   | .record fields => fields.any (fun p => p.2.hasFVar fvar)
   | .recordUpdate b us =>
     b.hasFVar fvar || us.any (fun p => p.2.hasFVar fvar)
   | .fieldAccess x _ _ => x.hasFVar fvar
-  | .inject _ args => args.any (·.hasFVar fvar)
+  | .inject _ args rty => args.any (·.hasFVar fvar) || rty.hasFVar fvar
   | .if_ c t el => c.hasFVar fvar || t.hasFVar fvar || el.hasFVar fvar
   | .closure _ caps => caps.any (·.hasFVar fvar)
-  | .array es => es.any (·.hasFVar fvar)
+  | .array es ety => es.any (·.hasFVar fvar) || ety.hasFVar fvar
   | .tuple es => es.any (·.hasFVar fvar)
   | .rowExtend l f t => l.hasFVar fvar || f.hasFVar fvar || t.hasFVar fvar
   | .recordTy r => r.hasFVar fvar
@@ -491,8 +504,9 @@ partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
 /-- Count the number of occurrences of a specific free variable in an expression -/
 partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
   match e with
-  | .fvar u => if u == fvar then 1 else 0
-  | .bvar _ | .mvar _ | .const _ | .sort _ | .primTy _ | .rowSort
+  | .fvar u ty => (if u == fvar then 1 else 0) + ty.countFVar fvar
+  | .const _ ty => ty.countFVar fvar
+  | .bvar _ | .mvar _ | .sort _ | .primTy _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _
   | .lit _ => 0
   | .app f a => f.countFVar fvar + a.countFVar fvar
@@ -503,20 +517,20 @@ partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
   | .pair f s => f.countFVar fvar + s.countFVar fvar
   | .projFst x => x.countFVar fvar
   | .projSnd x => x.countFVar fvar
-  | .construct _ _ args => args.foldl (fun acc a => acc + a.countFVar fvar) 0
-  | .«case» scruts arms =>
+  | .construct _ _ args rty => args.foldl (fun acc a => acc + a.countFVar fvar) 0 + rty.countFVar fvar
+  | .«case» scruts arms rty =>
     let scrutCount := scruts.foldl (fun acc s => acc + s.countFVar fvar) 0
     let armMax := arms.foldl (fun acc arm => max acc (arm.body.countFVar fvar)) 0
-    scrutCount + armMax
+    scrutCount + armMax + rty.countFVar fvar
   | .record fields => fields.foldl (fun acc (_, e) => acc + e.countFVar fvar) 0
   | .recordUpdate b us =>
     b.countFVar fvar + us.foldl (fun acc (_, e) => acc + e.countFVar fvar) 0
   | .fieldAccess x _ _ => x.countFVar fvar
-  | .inject _ args => args.foldl (fun acc a => acc + a.countFVar fvar) 0
+  | .inject _ args rty => args.foldl (fun acc a => acc + a.countFVar fvar) 0 + rty.countFVar fvar
   | .if_ c t el =>
     c.countFVar fvar + max (t.countFVar fvar) (el.countFVar fvar)
   | .closure _ caps => caps.foldl (fun acc e => acc + e.countFVar fvar) 0
-  | .array es => es.foldl (fun acc e => acc + e.countFVar fvar) 0
+  | .array es ety => es.foldl (fun acc e => acc + e.countFVar fvar) 0 + ety.countFVar fvar
   | .tuple es => es.foldl (fun acc e => acc + e.countFVar fvar) 0
   | .rowExtend l f t => l.countFVar fvar + f.countFVar fvar + t.countFVar fvar
   | .recordTy r => r.countFVar fvar

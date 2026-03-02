@@ -314,9 +314,10 @@ partial def zonkValueLevels (v : Value) : TCM Value := do
   | .vDataType id params =>
     let params' ← params.mapM zonkValueLevels
     return .vDataType id params'
-  | .vConstructor name tag args =>
+  | .vConstructor name tag args rty =>
     let args' ← args.mapM zonkValueLevels
-    return .vConstructor name tag args'
+    let rty' ← zonkValueLevels rty
+    return .vConstructor name tag args' rty'
   | .vEq tyLevel ty lhs rhs =>
     let tyLevel' ← solveLevelVars tyLevel
     let ty' ← zonkValueLevels ty

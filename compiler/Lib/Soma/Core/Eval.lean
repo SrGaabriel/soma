@@ -112,7 +112,7 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     | some v => v
     | none => .vNeutral .type0 (.nVar ⟨s!"bvar{idx}", ctx.env.level⟩)
 
-  | .fvar id =>
+  | .fvar id _ =>
     -- Free variables: look up by display name in environment
     match ctx.env.lookupByName id.original with
     | some v => v
@@ -129,7 +129,7 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
       | none => .vNeutral .type0 (.nMeta id)
     | none => .vNeutral .type0 (.nMeta id)
 
-  | .const name =>
+  | .const name _ =>
     match ctx.globals.lookup name with
     | some v => v
     | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
@@ -149,8 +149,8 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     match l with
     | .int n => .vIntLit n
     | .string s => .vStringLit s
-    | .bool true => .vConstructor ⟨⟨0, "", "True"⟩⟩ 0 []
-    | .bool false => .vConstructor ⟨⟨0, "", "False"⟩⟩ 1 []
+    | .bool true => .vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
+    | .bool false => .vConstructor ⟨⟨0, "", "False"⟩⟩ 1 [] (.vPrimTy .bool)
 
   | .sort level => .vType level
 
@@ -166,16 +166,16 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
   | .projFst e => vFst (evalCoreExpr ctx e)
   | .projSnd e => vSnd (evalCoreExpr ctx e)
 
-  | .construct name tag args =>
-    .vConstructor name tag (args.toList.map (evalCoreExpr ctx))
+  | .construct name tag args rty =>
+    .vConstructor name tag (args.toList.map (evalCoreExpr ctx)) (evalCoreExpr ctx rty)
 
-  | .«case» scruts arms =>
+  | .«case» scruts arms _ =>
     -- Simplified: evaluate first scrutinee
     match scruts[0]? with
     | some scrut =>
       let scrutVal := evalCoreExpr ctx scrut
       match scrutVal with
-      | .vConstructor _ tag ctorArgs =>
+      | .vConstructor _ tag ctorArgs _ =>
         -- Find matching arm by trying each arm's patterns
         match arms.toList.find? (fun arm => matchArmTag arm tag) with
         | some arm =>
@@ -203,7 +203,7 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
   | .fieldAccess e field _idx =>
     vFieldAccess (evalCoreExpr ctx e) field
 
-  | .inject _label _args =>
+  | .inject _label _args _ =>
     -- Inject into variant: create a constructor-like value
     .vNeutral .type0 (.nVar ⟨s!"inject:{_label}", ctx.env.level⟩)
 
@@ -232,8 +232,8 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
 
   | .if_ cond then_ else_ =>
     match evalCoreExpr ctx cond with
-    | .vConstructor _ 0 _ => evalCoreExpr ctx then_
-    | .vConstructor _ 1 _ => evalCoreExpr ctx else_
+    | .vConstructor _ 0 _ _ => evalCoreExpr ctx then_
+    | .vConstructor _ 1 _ _ => evalCoreExpr ctx else_
     | _ => .vNeutral .type0 (.nVar ⟨"if", ctx.env.level⟩)
 
   | .panic msg => .vNeutral .type0 (.nVar ⟨s!"panic: {msg}", ctx.env.level⟩)
@@ -244,7 +244,7 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     | some v => v
     | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
 
-  | .array _elements => .vNeutral .type0 (.nVar ⟨"array", ctx.env.level⟩)
+  | .array _elements _ => .vNeutral .type0 (.nVar ⟨"array", ctx.env.level⟩)
   | .tuple elements =>
     let vals := elements.toList.map (evalCoreExpr ctx)
     match vals with
@@ -291,6 +291,18 @@ def Value.piApply (v : Value) (arg : Value) : Option Value :=
   | .vPi _ _ _ _ cod => some (cod.applyPure arg)
   | _ => none
 
+/-- Apply a Sigma type to a first-component value, computing the second-component type -/
+def Value.sigmaApply (v : Value) (arg : Value) : Option Value :=
+  match v with
+  | .vSigma _ _ _ clos => some (clos.applyPure arg)
+  | _ => none
+
+/-- Extract the second component type from a Sigma type (non-dependent shortcut) -/
+def Value.sigmaSnd? (v : Value) : Option Value :=
+  match v with
+  | .vSigma _ _ _ clos => some (clos.applyPure (.vPrimTy .unit))
+  | _ => none
+
 /-- Evaluate a closed Core expression. -/
 def evalClosed (e : Soma.Core.Expr) : Value :=
   evalCoreExpr EvalCtx.empty e
@@ -298,5 +310,88 @@ def evalClosed (e : Soma.Core.Expr) : Value :=
 /-- Evaluate a Core expression with a global environment. -/
 def evalWithGlobals (globals : GlobalEnv) (e : Soma.Core.Expr) : Value :=
   evalCoreExpr { EvalCtx.empty with globals := globals } e
+
+/-- Compute the type of a Core expression purely from its structure -/
+partial def Expr.typeOf : Expr → Value
+  | .ann _ ty => evalClosed ty
+
+  | .fvar _ ty => evalClosed ty
+  | .const _ ty => evalClosed ty
+
+  | .lit (.int _) => .vPrimTy .int
+  | .lit (.string _) => .vPrimTy .string
+  | .lit (.bool _) => .vPrimTy .bool
+
+  | .app fn arg =>
+    let fnTy := typeOf fn
+    let argVal := evalClosed arg
+    match fnTy.piApply argVal with
+    | some codomainTy => codomainTy
+    | none => panic! s!"Expr.typeOf: app with non-Pi function type (fn={fn.ctorName})"
+
+  | .lam _info name domain body =>
+    let domTy := evalClosed domain
+    let bodyTy := typeOf body
+    .vPi Quantity.omega Soma.Core.BinderInfo.explicit name domTy (Closure.const name bodyTy)
+
+  | .let_ _ _ _ body => typeOf body
+
+  | .if_ _ then_ _ => typeOf then_
+
+  | .«case» _ _ resultTy => evalClosed resultTy
+
+  | .array _ resultTy => evalClosed resultTy
+
+  | .construct _ _ _ resultTy => evalClosed resultTy
+
+  | .inject _ _ resultTy => evalClosed resultTy
+
+  | .pair fst snd =>
+    let fstTy := typeOf fst
+    let sndTy := typeOf snd
+    Value.prod fstTy sndTy
+
+  | .tuple elems =>
+    if elems.size ≥ 2 then
+      let fstTy := typeOf elems[0]!
+      let sndTy := typeOf elems[1]!
+      Value.prod fstTy sndTy
+    else if elems.size = 1 then
+      typeOf elems[0]!
+    else .vPrimTy .unit
+
+  | .projFst expr =>
+    let sigTy := typeOf expr
+    match sigTy.sigmaFst? with
+    | some ty => ty
+    | none => panic! s!"Expr.typeOf: projFst on non-Sigma type (expr={expr.ctorName})"
+  | .projSnd expr =>
+    let sigTy := typeOf expr
+    let fstVal := evalClosed (.projFst expr)
+    match sigTy.sigmaApply fstVal with
+    | some ty => ty
+    | none => panic! s!"Expr.typeOf: projSnd on non-Sigma type (expr={expr.ctorName})"
+
+  | .record fields =>
+    let row := fields.foldr (init := Value.vRowEmpty) fun (name, expr) acc =>
+      .vRowExtend (.vLabelLit name) (typeOf expr) acc
+    .vRecord row
+
+  | .fieldAccess expr field _ =>
+    let recTy := typeOf expr
+    let fields := recTy.recordFields
+    match fields.toList.find? (·.1 == field) with
+    | some (_, ty) => ty
+    | none => panic! s!"Expr.typeOf: field '{field}' not found in record type (expr={expr.ctorName})"
+
+  | .closure _name _captures => .vType .zero
+
+  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
+  | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
+  | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
+  | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
+  | .proj _ _ _ => .vType .zero
+
+  | .mvar _ | .bvar _ | .recordUpdate _ _ | .panic _ => .vType .zero
 
 end Soma.Core

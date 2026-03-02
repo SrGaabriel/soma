@@ -271,7 +271,7 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
     convertValueLists ps1 ps2
 
   -- Constructors
-  | .vConstructor n1 t1 as1, .vConstructor n2 t2 as2 =>
+  | .vConstructor n1 t1 as1 _, .vConstructor n2 t2 as2 _ =>
     if n1 != n2 || t1 != t2 then return false
     if as1.length != as2.length then return false
     convertValueLists as1 as2
@@ -369,7 +369,7 @@ partial def convertNeutral (n1 n2 : Neutral) : TCM Bool := do
     if f1 != f2 then return false
     convertNeutral r1 r2
 
-  | .nCase s1 as1, .nCase s2 as2 =>
+  | .nCase s1 as1 _, .nCase s2 as2 _ =>
     let scrutEq ← convertNeutral s1 s2
     if !scrutEq then return false
     if as1.length != as2.length then return false

@@ -71,7 +71,7 @@ partial def collectMetas (v : Value) : Array MetaId :=
     fields.foldl (fun acc (_, v) => acc ++ collectMetas v) #[]
   | .vDataType _ params =>
     params.foldl (fun acc p => acc ++ collectMetas p) #[]
-  | .vConstructor _ _ args =>
+  | .vConstructor _ _ args _ =>
     args.foldl (fun acc a => acc ++ collectMetas a) #[]
   | .vEq _ ty lhs rhs =>
     collectMetas ty ++ collectMetas lhs ++ collectMetas rhs
@@ -89,7 +89,7 @@ partial def collectMetasNeutral (n : Neutral) : Array MetaId :=
   | .nFst pair => collectMetasNeutral pair
   | .nSnd pair => collectMetasNeutral pair
   | .nFieldAccess rec _ => collectMetasNeutral rec
-  | .nCase scrut arms =>
+  | .nCase scrut arms _ =>
     collectMetasNeutral scrut ++ arms.foldl (fun acc arm =>
       acc ++ collectMetasClosure arm.closure) #[]
 
@@ -137,7 +137,7 @@ partial def occursIn (m : MetaId) (v : Value) : Bool :=
     fields.any (fun (_, v) => occursIn m v)
   | .vDataType _ params =>
     params.any (occursIn m)
-  | .vConstructor _ _ args =>
+  | .vConstructor _ _ args _ =>
     args.any (occursIn m)
   | .vEq _ ty lhs rhs =>
     occursIn m ty || occursIn m lhs || occursIn m rhs
@@ -155,7 +155,7 @@ partial def occursInNeutral (m : MetaId) (n : Neutral) : Bool :=
   | .nFst pair => occursInNeutral m pair
   | .nSnd pair => occursInNeutral m pair
   | .nFieldAccess rec _ => occursInNeutral m rec
-  | .nCase scrut arms =>
+  | .nCase scrut arms _ =>
     occursInNeutral m scrut || arms.any (fun arm => occursInClosure m arm.closure)
 
 partial def occursInClosure (m : MetaId) (clos : Closure) : Bool :=
@@ -180,7 +180,7 @@ where
     | .projFst e => occursInExpr m e
     | .projSnd e => occursInExpr m e
     | .if_ c t e => occursInExpr m c || occursInExpr m t || occursInExpr m e
-    | .«case» scruts arms =>
+    | .«case» scruts arms _ =>
         scruts.any (occursInExpr m) || arms.any fun arm => occursInExpr m arm.body
     | .eqTy _ ty l r => occursInExpr m ty || occursInExpr m l || occursInExpr m r
     | .refl ty x => occursInExpr m ty || occursInExpr m x
@@ -193,10 +193,10 @@ where
     | .record fields => fields.any fun (_, e) => occursInExpr m e
     | .recordUpdate b us => occursInExpr m b || us.any fun (_, e) => occursInExpr m e
     | .fieldAccess e _ _ => occursInExpr m e
-    | .construct _ _ args => args.any (occursInExpr m)
-    | .inject _ args => args.any (occursInExpr m)
+    | .construct _ _ args _ => args.any (occursInExpr m)
+    | .inject _ args _ => args.any (occursInExpr m)
     | .closure _ caps => caps.any (occursInExpr m)
-    | .array es => es.any (occursInExpr m)
+    | .array es _ => es.any (occursInExpr m)
     | .tuple es => es.any (occursInExpr m)
     | .dataTy _ ps => ps.any (occursInExpr m)
     | .ann x t => occursInExpr m x || occursInExpr m t
@@ -232,7 +232,7 @@ partial def inScope (allowedLevels : List DeBruijnLvl) (v : Value) : Bool :=
     fields.all (fun (_, v) => inScope allowedLevels v)
   | .vDataType _ params =>
     params.all (inScope allowedLevels)
-  | .vConstructor _ _ args =>
+  | .vConstructor _ _ args _ =>
     args.all (inScope allowedLevels)
   | .vEq _ ty lhs rhs =>
     inScope allowedLevels ty && inScope allowedLevels lhs && inScope allowedLevels rhs
@@ -251,7 +251,7 @@ partial def inScopeNeutral (allowedLevels : List DeBruijnLvl) (n : Neutral) : Bo
   | .nFst pair => inScopeNeutral allowedLevels pair
   | .nSnd pair => inScopeNeutral allowedLevels pair
   | .nFieldAccess rec _ => inScopeNeutral allowedLevels rec
-  | .nCase scrut _ => inScopeNeutral allowedLevels scrut
+  | .nCase scrut _ _ => inScopeNeutral allowedLevels scrut
 
 partial def inScopeClosure (allowedLevels : List DeBruijnLvl) (clos : Closure) : Bool :=
   match clos with
@@ -288,7 +288,7 @@ partial def collectFreeVars (v : Value) : Array DeBruijnLvl :=
     fields.foldl (fun acc (_, v) => acc ++ collectFreeVars v) #[]
   | .vDataType _ params =>
     params.foldl (fun acc p => acc ++ collectFreeVars p) #[]
-  | .vConstructor _ _ args =>
+  | .vConstructor _ _ args _ =>
     args.foldl (fun acc a => acc ++ collectFreeVars a) #[]
   | .vEq _ ty lhs rhs =>
     collectFreeVars ty ++ collectFreeVars lhs ++ collectFreeVars rhs
@@ -306,7 +306,7 @@ partial def collectFreeVarsNeutral (n : Neutral) : Array DeBruijnLvl :=
   | .nFst pair => collectFreeVarsNeutral pair
   | .nSnd pair => collectFreeVarsNeutral pair
   | .nFieldAccess rec _ => collectFreeVarsNeutral rec
-  | .nCase scrut arms =>
+  | .nCase scrut arms _ =>
     collectFreeVarsNeutral scrut ++ arms.foldl (fun acc arm =>
       acc ++ collectFreeVarsClosure arm.closure) #[]
 
@@ -383,7 +383,7 @@ def getValueKind : Value → String
   | .vRowSort => "vRowSort"
   | .vLabelSort => "vLabelSort"
   | .vDataType id _ => s!"vDataType({id.original})"
-  | .vConstructor n _ _ => s!"vConstructor({n})"
+  | .vConstructor n _ _ _ => s!"vConstructor({n})"
   | .vEq _ _ _ _ => "vEq"
   | .vRefl _ _ => "vRefl"
   | .vTransport _ _ _ _ _ _ _ => "vTransport"
@@ -395,7 +395,7 @@ where
     | .nFst _ => "nFst"
     | .nSnd _ => "nSnd"
     | .nFieldAccess _ f => s!"nFieldAccess({f})"
-    | .nCase _ _ => "nCase"
+    | .nCase _ _ _ => "nCase"
 
 def throwUnifyError (v1 v2 : Value) (_msg : String := "") : TCM Unit := do
   let span ← TCM.getSpan

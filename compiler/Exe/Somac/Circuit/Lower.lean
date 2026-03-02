@@ -314,16 +314,16 @@ private def usageAdd (a b : Std.HashMap Unique Nat) : Std.HashMap Unique Nat :=
 /-- Structural usage count for Core expressions (additive over syntax tree) -/
 partial def countUsesExpr (e : Soma.Core.Expr) : Std.HashMap Unique Nat :=
   match e with
-  | .fvar u => usageInc {} u
+  | .fvar u _ => usageInc {} u
   | .app fn arg => usageAdd (countUsesExpr fn) (countUsesExpr arg)
   | .lam _ _ _ body => countUsesExpr body
-  | .construct _ _ args
-  | .inject _ args
-  | .array args =>
+  | .construct _ _ args _
+  | .inject _ args _
+  | .array args _ =>
     args.foldl (init := {}) fun acc arg => usageAdd acc (countUsesExpr arg)
   | .if_ cond then_ else_ =>
     usageAdd (countUsesExpr cond) (usageAdd (countUsesExpr then_) (countUsesExpr else_))
-  | .«case» scruts arms =>
+  | .«case» scruts arms _ =>
     let scrutUses := scruts.foldl (init := {}) fun acc s => usageAdd acc (countUsesExpr s)
     let armUses := arms.foldl (init := {}) fun acc arm => usageAdd acc (countUsesExpr arm.body)
     usageAdd scrutUses armUses
@@ -346,7 +346,7 @@ partial def countUsesExpr (e : Soma.Core.Expr) : Std.HashMap Unique Nat :=
   | .let_ _ _ val body => usageAdd (countUsesExpr val) (countUsesExpr body)
   | .panic _
   | .lit _
-  | .const _
+  | .const _ _
   | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _
   | .primTy _ | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
   | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
@@ -567,7 +567,7 @@ def lowerFirstClassProj (fieldIdx : Nat) (ty : Value) : LowerM PortId := do
 /-- Check if a Core.Expr is a primitive operation global reference -/
 private partial def getCoreExprPrimOp (e : Soma.Core.Expr) : LowerM (Option PrimOp) := do
   match e with
-  | .const qn =>
+  | .const qn _ =>
     let ctx ← LowerM.getCtx
     match ctx.intrinsics.get? qn with
     | some (.primOp op) => pure (some op)
@@ -586,38 +586,9 @@ private def isCoreTypeLevelExpr : Soma.Core.Expr → Bool
   | .mvar _ | .bvar _ => true
   | _ => false
 
-/-- Look up the type of a Core expression from context -/
-def inferExprType (e : Soma.Core.Expr) : LowerM Value := do
-  let ctx ← LowerM.getCtx
-  match e with
-  | .ann expr _ => inferExprType expr
-  | .fvar u =>
-    match ctx.getVarType u with
-    | some ty => pure ty
-    | none => panic! s!"inferExprType: unbound fvar {u.original}#{u.id}"
-  | .lit (.int _) => pure intTy
-  | .lit (.string _) => pure stringTy
-  | .lit (.bool _) => pure boolTy
-  | .const qn =>
-    match ctx.lookupGlobalType qn with
-    | some ty => pure ty
-    | none => panic! s!"inferExprType: unknown global '{qn}'"
-  | .closure qn _ =>
-    match ctx.lookupGlobalType qn with
-    | some ty => pure ty
-    | none => panic! s!"inferExprType: unknown closure target '{qn}'"
-  | .app fn arg =>
-    let fnTy ← inferExprType fn
-    let argVal := Soma.Core.evalCoreExpr Soma.Core.EvalCtx.empty arg
-    match fnTy.piApply argVal with
-    | some codomainTy => pure codomainTy
-    | none => panic! s!"inferExprType: app with non-function type {fnTy}"
-  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
-  | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
-  | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
-  | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
-  | .mvar _ | .bvar _ => pure unitTy
-  | _ => panic! s!"inferExprType: cannot infer type for {e.ctorName}"
+/-- Compute the type of a Core expression -/
+def getExprType (e : Soma.Core.Expr) : Value :=
+  e.typeOf
 
 /-- Lower a Core.Expr variable (fvar) by looking up its Unique.id in the bindings map -/
 private def lowerCoreVar (u : Unique) : LowerM (Option PortId) := do
@@ -628,7 +599,7 @@ mutual
 /-- Lower a Core.Expr to a Circuit IR subgraph. -/
 partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option PortId) := do
   match e with
-  | .fvar u => lowerCoreVar u
+  | .fvar u _ => lowerCoreVar u
 
   | .lit lit => some <$> lowerLiteral lit
 
@@ -636,13 +607,13 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
 
   | .lam info name _domain body => some <$> lowerCoreLam info name body ty
 
-  | .construct _qn tag args => lowerCoreConstruct tag args ty
+  | .construct _qn tag args _ => lowerCoreConstruct tag args ty
 
   | .if_ cond then_ else_ => lowerCoreIf cond then_ else_ ty
 
-  | .«case» scruts arms => lowerCoreCase scruts arms ty
+  | .«case» scruts arms _ => lowerCoreCase scruts arms ty
 
-  | .const qn => some <$> lowerGlobal qn ty
+  | .const qn _ => some <$> lowerGlobal qn ty
 
   | .fieldAccess expr _field idx => lowerCoreFieldAccess expr idx ty
 
@@ -672,11 +643,11 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
 
   | .closure qn captures => lowerCoreClosure qn captures ty
 
-  | .array elems => lowerCoreArray elems ty
+  | .array elems _ => lowerCoreArray elems ty
 
   | .proj _typeName _field idx => some <$> lowerFirstClassProj idx ty
 
-  | .inject label args => lowerCoreInject label args ty
+  | .inject label args _ => lowerCoreInject label args ty
 
   | .recordUpdate base updates => lowerCoreRecordUpdate base updates ty
 
@@ -704,7 +675,7 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
     | some primOp =>
       match primOpToOp2Code primOp with
       | some op2 =>
-        let argTy ← inferExprType innerArg
+        let argTy := getExprType innerArg
         let arg1Port? ← lowerCoreExpr innerArg argTy
         let arg2Port? ← lowerCoreExpr arg argTy
         match arg1Port?, arg2Port? with
@@ -722,7 +693,7 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
     | some primOp =>
       match primOpToOp1Code primOp with
       | some op1 =>
-        let argTy ← inferExprType arg
+        let argTy := getExprType arg
         let argPort? ← lowerCoreExpr arg argTy
         match argPort? with
         | some argPort =>
@@ -741,24 +712,28 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
 /-- Generic application lowering for Core.Expr -/
 partial def lowerCoreAppGeneric (fn arg : Soma.Core.Expr) (ty : Value)
     : LowerM (Option PortId) := do
-  let fnTy ← inferExprType fn
-  let fnPort? ← lowerCoreExpr fn fnTy
-  match fnPort? with
-  | none => pure none
-  | some fnPort =>
-    let argTy := match fnTy.piDomain? with
-      | some d => d
-      | none => panic! s!"lowerCoreAppGeneric: expected Pi type for function, got {fnTy}"
-    let argPort? ← lowerCoreExpr arg argTy
-    match argPort? with
-    | some argPort =>
-      let app ← LowerM.addNode .app ty
-      LowerM.connect ⟨app, ⟨1⟩⟩ fnPort
-      LowerM.connect ⟨app, ⟨2⟩⟩ argPort
-      pure (some (PortId.principal app))
-    | none =>
-      -- Arg is erased, just return fn
-      pure (some fnPort)
+  let fnTy := getExprType fn
+  match fnTy.piDomain? with
+  | none =>
+    let fnDesc := match fn with
+      | .const qn _ => s!"const '{qn.display}'"
+      | .fvar u _ => s!"fvar '{u.original}'"
+      | other => other.ctorName
+    panic! s!"lowerCoreAppGeneric: expected Pi type for function ({fnDesc})"
+  | some argTy =>
+    let fnPort? ← lowerCoreExpr fn fnTy
+    match fnPort? with
+    | none => pure none
+    | some fnPort =>
+      let argPort? ← lowerCoreExpr arg argTy
+      match argPort? with
+      | some argPort =>
+        let app ← LowerM.addNode .app ty
+        LowerM.connect ⟨app, ⟨1⟩⟩ fnPort
+        LowerM.connect ⟨app, ⟨2⟩⟩ argPort
+        pure (some (PortId.principal app))
+      | none =>
+        pure (some fnPort)
 
 /-- Lower a Core.Expr lambda -/
 partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
@@ -766,7 +741,10 @@ partial def lowerCoreLam (_info : Soma.Core.BinderInfo) (name : String)
   -- The body uses bvar(0) for the lambda parameter (locally nameless).
   -- Instantiate bvar(0) with fvar(u) so it can be looked up during lowering.
   let paramUnique ← LowerM.freshSyntheticUnique name
-  let openBody := Soma.Core.Expr.instantiate body (.fvar paramUnique)
+  let paramTyExpr := match ty.piDomain? with
+    | some d => Soma.Core.quoteExpr0 d
+    | none => .sort .zero
+  let openBody := Soma.Core.Expr.instantiate body (.fvar paramUnique paramTyExpr)
 
   let usageCount := openBody.countFVar paramUnique
   let erased := usageCount == 0
@@ -797,7 +775,7 @@ partial def lowerCoreConstruct (tag : Nat) (args : Array Soma.Core.Expr)
     (ty : Value) : LowerM (Option PortId) := do
   let mut argPorts : Array PortId := #[]
   for arg in args do
-    let argTy ← inferExprType arg
+    let argTy := getExprType arg
     let port? ← lowerCoreExpr arg argTy
     match port? with
     | some port => argPorts := argPorts.push port
@@ -851,7 +829,7 @@ partial def lowerCoreCase (scruts : Array Soma.Core.Expr) (arms : Array Soma.Cor
   let mut scrutPorts : Array PortId := #[]
   let mut scrutTypes : Array Value := #[]
   for scrut in scruts do
-    let scrutTy ← inferExprType scrut
+    let scrutTy := getExprType scrut
     let port? ← lowerCoreExpr scrut scrutTy
     match port? with
     | some port =>
@@ -900,7 +878,7 @@ where
 /-- Lower a Core.Expr field access -/
 partial def lowerCoreFieldAccess (expr : Soma.Core.Expr) (idx : Nat)
     (ty : Value) : LowerM (Option PortId) := do
-  let recordTy ← inferExprType expr
+  let recordTy := getExprType expr
   let exprPort? ← lowerCoreExpr expr recordTy
   match exprPort? with
   | none => pure none
@@ -984,7 +962,7 @@ partial def lowerCoreTuple (elems : Array Soma.Core.Expr)
     (ty : Value) : LowerM (Option PortId) := do
   let mut elemPorts : Array PortId := #[]
   for e in elems do
-    let elemTy ← inferExprType e
+    let elemTy := getExprType e
     let port? ← lowerCoreExpr e elemTy
     match port? with
     | some port => elemPorts := elemPorts.push port
@@ -998,12 +976,13 @@ partial def lowerCoreTuple (elems : Array Soma.Core.Expr)
 /-- Lower a Core.Expr pair -/
 partial def lowerCorePair (fst snd : Soma.Core.Expr)
     (ty : Value) : LowerM (Option PortId) := do
-  let fstTy := match ty.sigmaFst? with
-    | some t => t
-    | none => panic! s!"lowerCorePair: expected Sigma type for fst, got {ty}"
-  let sndTy := match ty.sigmaSnd? with
-    | some t => t
-    | none => panic! s!"lowerCorePair: expected Sigma type for snd, got {ty}"
+  let some fstTy := ty.sigmaFst? | return none
+  let sndTy ← do
+    match ty with
+    | .vSigma _ _ _ clos =>
+      let fstVal := Soma.Core.evalCoreExpr Soma.Core.EvalCtx.empty fst
+      pure (clos.applyPure fstVal)
+    | _ => return none
   let fstPort? ← lowerCoreExpr fst fstTy
   let sndPort? ← lowerCoreExpr snd sndTy
   match fstPort?, sndPort? with
@@ -1029,7 +1008,7 @@ partial def lowerCorePair (fst snd : Soma.Core.Expr)
 /-- Lower a Core.Expr projection -/
 partial def lowerCoreProj (expr : Soma.Core.Expr) (idx : Nat)
     (ty : Value) : LowerM (Option PortId) := do
-  let pairTy ← inferExprType expr
+  let pairTy := getExprType expr
   let exprPort? ← lowerCoreExpr expr pairTy
   match exprPort? with
   | none => pure none
@@ -1046,7 +1025,7 @@ partial def lowerCoreClosure (fnName : Soma.Core.QualifiedName)
   -- Lower captures
   let mut capturePairs : Array (PortId × Value) := #[]
   for cap in captures do
-    let capTy ← inferExprType cap
+    let capTy := getExprType cap
     let port? ← lowerCoreExpr cap capTy
     match port? with
     | some port => capturePairs := capturePairs.push (port, capTy)
@@ -1099,7 +1078,7 @@ partial def lowerCoreInject (label : String) (args : Array Soma.Core.Expr)
     (ty : Value) : LowerM (Option PortId) := do
   let mut argPorts : Array PortId := #[]
   for arg in args do
-    let argTy ← inferExprType arg
+    let argTy := getExprType arg
     let port? ← lowerCoreExpr arg argTy
     match port? with
     | some port => argPorts := argPorts.push port
@@ -1228,6 +1207,50 @@ abbrev TypedFunctionMap := Std.HashMap String Soma.Core.TypedFunction
 def shouldLowerBody (fn : Soma.Core.TypedFunction) : Bool :=
   not fn.attrs.intrinsic && fn.attrs.extern.isNone
 
+/-- Generate a proper Circuit IR function body for a primitive operation -/
+def generatePrimOpBody (op : PrimOp) (fnTy : Value) : LowerM (NodeId × Nat) := do
+  match primOpToOp2Code op with
+  | some op2 =>
+    -- Binary operation: 2 parameters
+    let paramTy := fnTy.piDomain?.getD intTy
+    let lamOuter ← LowerM.addNode (.lam false) fnTy
+    -- Compute inner type (codomain after applying first param)
+    let innerTy := match fnTy.piApply (Value.vNeutral paramTy (.nVar ⟨"x", ⟨0⟩⟩)) with
+      | some t => t
+      | none => fnTy
+    let lamInner ← LowerM.addNode (.lam false) innerTy
+    -- Result type (codomain after applying both params)
+    let resultTy := match innerTy.piApply (Value.vNeutral paramTy (.nVar ⟨"y", ⟨0⟩⟩)) with
+      | some t => t
+      | none => paramTy
+    let opNode ← LowerM.addNode (.op2 op2) resultTy
+    -- Wire LAMs: outer.body → inner
+    LowerM.connect ⟨lamOuter, ⟨2⟩⟩ (PortId.principal lamInner)
+    -- Wire inner.body → op2
+    LowerM.connect ⟨lamInner, ⟨2⟩⟩ (PortId.principal opNode)
+    -- Wire variables to op2 inputs
+    LowerM.connect ⟨opNode, ⟨1⟩⟩ ⟨lamOuter, ⟨1⟩⟩ -- first param
+    LowerM.connect ⟨opNode, ⟨2⟩⟩ ⟨lamInner, ⟨1⟩⟩ -- second param
+    pure (lamOuter, 2)
+  | none =>
+    match primOpToOp1Code op with
+    | some op1 =>
+      -- Unary operation: 1 parameter
+      let resultTy := match fnTy.piApply (Value.vNeutral unitTy (.nVar ⟨"x", ⟨0⟩⟩)) with
+        | some t => t
+        | none => fnTy
+      let lamNode ← LowerM.addNode (.lam false) fnTy
+      let opNode ← LowerM.addNode (.op1 op1) resultTy
+      -- Wire body to op1
+      LowerM.connect ⟨lamNode, ⟨2⟩⟩ (PortId.principal opNode)
+      -- Wire variable to op1 input
+      LowerM.connect ⟨opNode, ⟨1⟩⟩ ⟨lamNode, ⟨1⟩⟩
+      pure (lamNode, 1)
+    | none =>
+      -- Unknown op: fallback to ERA placeholder
+      let era ← LowerM.addNode .era unitTy
+      pure (era, 0)
+
 /-- Lower an entire module using typed functions from type checking -/
 def lowerModule (types : Array Soma.Core.TypeDef)
     (typedFunctions : TypedFunctionMap)
@@ -1290,10 +1313,16 @@ def lowerModule (types : Array Soma.Core.TypeDef)
     let arity := fn.params.size
     let _ ← LowerM.addDefinition fn.name root arity fn.fnType
 
-  -- Fifth pass: add placeholder definitions for intrinsic/extern functions from current module
+  -- Fifth pass: add definitions for intrinsic/extern functions from current module
   for (_, fn) in intrinsics do
-    let era ← LowerM.addNode .era unitTy
-    let _ ← LowerM.addDefinition fn.name era 0 fn.fnType (isExternal := true)
+    let ctx ← LowerM.getCtx
+    match ctx.intrinsics.get? fn.name with
+    | some (.primOp op) =>
+      let (root, arity) ← generatePrimOpBody op fn.fnType
+      let _ ← LowerM.addDefinition fn.name root arity fn.fnType
+    | _ =>
+      let era ← LowerM.addNode .era unitTy
+      let _ ← LowerM.addDefinition fn.name era 0 fn.fnType (isExternal := true)
 
   -- Sixth pass: add placeholder definitions for external functions from dependencies
   if let some g := globals then

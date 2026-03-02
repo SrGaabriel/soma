@@ -116,9 +116,10 @@ partial def traverseValue (action : TraversalAction α) (v : Value) : α :=
       params.foldl (fun acc p =>
         inst.combine acc (traverseValue action p)) inst.empty
 
-    | .vConstructor _ _ args =>
-      args.foldl (fun acc a =>
+    | .vConstructor _ _ args rty =>
+      let argsResult := args.foldl (fun acc a =>
         inst.combine acc (traverseValue action a)) inst.empty
+      inst.combine argsResult (traverseValue action rty)
 
     | .vEq _ ty lhs rhs =>
       inst.combine
@@ -151,10 +152,11 @@ partial def traverseNeutral (action : TraversalAction α) (n : Neutral) : α :=
     | .nSnd pair => traverseNeutral action pair
     | .nFieldAccess rec _ => traverseNeutral action rec
 
-    | .nCase scrut arms =>
+    | .nCase scrut arms rty =>
       let scrutResult := traverseNeutral action scrut
-      arms.foldl (fun acc arm =>
+      let armsResult := arms.foldl (fun acc arm =>
         inst.combine acc (traverseClosure action arm.closure)) scrutResult
+      inst.combine armsResult (traverseValue action rty)
 
 /-- Traverse a Closure -/
 partial def traverseClosure (action : TraversalAction α) (clos : Closure) : α :=
@@ -290,12 +292,13 @@ partial def traverseValueM
         result := inst.combine result r
       return result
 
-    | .vConstructor _ _ args =>
+    | .vConstructor _ _ args rty =>
       let mut result := inst.empty
       for a in args do
         let r ← traverseValueM action a
         result := inst.combine result r
-      return result
+      let rtyResult ← traverseValueM action rty
+      return inst.combine result rtyResult
 
     | .vEq _ ty lhs rhs =>
       let r1 ← traverseValueM action ty
@@ -339,12 +342,13 @@ partial def traverseNeutralM
     | .nSnd pair => traverseNeutralM action pair
     | .nFieldAccess rec _ => traverseNeutralM action rec
 
-    | .nCase scrut arms =>
+    | .nCase scrut arms rty =>
       let mut result ← traverseNeutralM action scrut
       for arm in arms do
         let r ← traverseClosureM action arm.closure
         result := inst.combine result r
-      return result
+      let rtyResult ← traverseValueM action rty
+      return inst.combine result rtyResult
 
 /-- Monadic traversal of a Closure -/
 partial def traverseClosureM
@@ -438,9 +442,10 @@ partial def transformValueM (t : ValueTransformer M) (v : Value) : M Value := do
       let params' ← params.mapM (transformValueM t)
       return .vDataType id params'
 
-    | .vConstructor name tag args =>
+    | .vConstructor name tag args rty =>
       let args' ← args.mapM (transformValueM t)
-      return .vConstructor name tag args'
+      let rty' ← transformValueM t rty
+      return .vConstructor name tag args' rty'
 
     | .vEq tyLevel ty lhs rhs =>
       let ty' ← transformValueM t ty
@@ -488,12 +493,13 @@ partial def transformNeutralM (t : ValueTransformer M) (n : Neutral) : M Neutral
       let rec' ← transformNeutralM t rec
       return .nFieldAccess rec' field
 
-    | .nCase scrut arms =>
+    | .nCase scrut arms rty =>
       let scrut' ← transformNeutralM t scrut
       let arms' ← arms.mapM fun arm => do
         let clos' ← transformClosureM t arm.closure
         return ArmClosure.mk arm.pattern clos'
-      return .nCase scrut' arms'
+      let rty' ← transformValueM t rty
+      return .nCase scrut' arms' rty'
 
 /-- Transform a Closure using a ValueTransformer -/
 partial def transformClosureM (t : ValueTransformer M) (clos : Closure) : M Closure := do

@@ -369,7 +369,7 @@ partial def collectMetaOccurrences (m : MetaId) (v : Value) (depth : Nat)
   | .vDataType _ params =>
     params.foldl (fun acc p =>
       acc ++ collectMetaOccurrences m p (depth + 1) scope) #[]
-  | .vConstructor _ _ args =>
+  | .vConstructor _ _ args _ =>
     args.foldl (fun acc a =>
       acc ++ collectMetaOccurrences m a (depth + 1) scope) #[]
   | .vEq _ ty lhs rhs =>
@@ -401,7 +401,7 @@ partial def collectMetaOccurrencesNeutral (m : MetaId) (n : Neutral) (depth : Na
   | .nFst pair => collectMetaOccurrencesNeutral m pair depth scope
   | .nSnd pair => collectMetaOccurrencesNeutral m pair depth scope
   | .nFieldAccess rec _ => collectMetaOccurrencesNeutral m rec depth scope
-  | .nCase scrut arms =>
+  | .nCase scrut arms _ =>
     collectMetaOccurrencesNeutral m scrut depth scope ++
     arms.foldl (fun acc arm =>
       acc ++ collectMetaOccurrencesClosure m arm.closure (depth + 1) scope) #[]

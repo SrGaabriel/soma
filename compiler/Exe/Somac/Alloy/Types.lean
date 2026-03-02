@@ -323,6 +323,7 @@ partial def needsErase : Ty n → Bool
     be lowered to runtime SUP until dedicated clone semantics are implemented. -/
 def supportsLazySup : Ty n → Bool
   | .closure _ _ => true
+  | .var _ => true -- todo: dont be conservative
   | _ => false
 
 end Ty

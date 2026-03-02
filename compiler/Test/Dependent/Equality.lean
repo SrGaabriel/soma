@@ -66,8 +66,8 @@ def testTransportConstruction : IO TestResult := do
 /-- Test: mkEq helper function -/
 def testMkEq : IO TestResult := do
   let ty := Value.vPrimTy .bool
-  let lhs := Value.vConstructor ⟨⟨0, "", "True"⟩⟩ 0 []
-  let rhs := Value.vConstructor ⟨⟨0, "", "True"⟩⟩ 0 []
+  let lhs := Value.vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
+  let rhs := Value.vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
   let eq := mkEq Level.zero ty lhs rhs
   match eq with
   | .vEq (.lit 0) (.vPrimTy .bool) _ _ => return .passed

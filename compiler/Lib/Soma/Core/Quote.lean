@@ -17,7 +17,7 @@ partial def neutralToString (neu : Neutral) : String :=
   | .nFst pair => s!"{neutralToString pair}.1"
   | .nSnd pair => s!"{neutralToString pair}.2"
   | .nFieldAccess record field => s!"{neutralToString record}.{field}"
-  | .nCase scrutinee _ => s!"case {neutralToString scrutinee} of ..."
+  | .nCase scrutinee _ _ => s!"case {neutralToString scrutinee} of ..."
 
 /-- Quote a value to a string (for error messages) -/
 partial def valueToString (v : Value) : String :=
@@ -85,7 +85,7 @@ partial def valueToString (v : Value) : String :=
       let paramsStr := params.map valueToString
       s!"{id.original} {" ".intercalate paramsStr}"
 
-  | .vConstructor name _ args =>
+  | .vConstructor name _ args _ =>
     if args.isEmpty then name.display
     else
       let argsStr := args.map valueToString
@@ -127,7 +127,7 @@ partial def valueEq (v1 v2 : Value) : Bool :=
   | .vDataType id1 ps1, .vDataType id2 ps2 =>
     id1 == id2 && ps1.length == ps2.length &&
     (ps1.zip ps2).all (fun (a, b) => valueEq a b)
-  | .vConstructor n1 t1 as1, .vConstructor n2 t2 as2 =>
+  | .vConstructor n1 t1 as1 _, .vConstructor n2 t2 as2 _ =>
     n1 == n2 && t1 == t2 && as1.length == as2.length &&
     (as1.zip as2).all (fun (a, b) => valueEq a b)
   | .vEq l1 t1 a1 b1, .vEq l2 t2 a2 b2 =>
@@ -177,18 +177,18 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
     match env.lookup ⟨lvl⟩ with
     | some v => v
     | none => .vNeutral .type0 (.nVar ⟨s!"bvar{idx}", ⟨env.size⟩⟩)
-  | .fvar id =>
+  | .fvar id _ =>
     match env.lookupByName id.original with
     | some v => v
     | none => .vNeutral .type0 (.nVar ⟨id.original, ⟨env.size⟩⟩)
   | .mvar id => .vNeutral .type0 (.nMeta id)
-  | .const name => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
+  | .const name _ => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
   | .lit l =>
     match l with
     | .int n => .vIntLit n
     | .string s => .vStringLit s
-    | .bool true => .vConstructor ⟨⟨0, "", "True"⟩⟩ 0 []
-    | .bool false => .vConstructor ⟨⟨0, "", "False"⟩⟩ 1 []
+    | .bool true => .vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
+    | .bool false => .vConstructor ⟨⟨0, "", "False"⟩⟩ 1 [] (.vPrimTy .bool)
   | .sort level => .vType level
   | .primTy p => .vPrimTy p
   | .rowSort => .vRowSort
@@ -229,8 +229,8 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
     evalExprPure (env.extend name valV) body
   | .if_ cond then_ else_ =>
     match evalExprPure env cond with
-    | .vConstructor _ 0 _ => evalExprPure env then_
-    | .vConstructor _ 1 _ => evalExprPure env else_
+    | .vConstructor _ 0 _ _ => evalExprPure env then_
+    | .vConstructor _ 1 _ _ => evalExprPure env else_
     | _ => .vNeutral .type0 (.nVar ⟨"if", ⟨env.size⟩⟩)
   | .record fields =>
     .vRecordVal (fields.toList.map fun (n, e) => (n, evalExprPure env e))
@@ -252,14 +252,14 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
       | some (_, v) => v
       | none => .vNeutral .type0 (.nFieldAccess (.nVar ⟨"rec", ⟨env.size⟩⟩) field)
     | _ => .vNeutral .type0 (.nFieldAccess (.nVar ⟨"rec", ⟨env.size⟩⟩) field)
-  | .construct name tag args =>
-    .vConstructor name tag (args.toList.map (evalExprPure env))
-  | .«case» scruts arms =>
+  | .construct name tag args rty =>
+    .vConstructor name tag (args.toList.map (evalExprPure env)) (evalExprPure env rty)
+  | .«case» scruts arms _ =>
     match scruts[0]? with
     | some scrut =>
       let scrutVal := evalExprPure env scrut
       match scrutVal with
-      | .vConstructor _ tag ctorArgs =>
+      | .vConstructor _ tag ctorArgs _ =>
         match arms.toList.find? (fun arm => matchArmTagPure arm tag) with
         | some arm =>
           let env' := ctorArgs.foldl (fun e arg => e.extend "_" arg) env
@@ -267,7 +267,7 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
         | none => .vNeutral .type0 (.nVar ⟨"case", ⟨env.size⟩⟩)
       | _ => .vNeutral .type0 (.nVar ⟨"case", ⟨env.size⟩⟩)
     | none => .vNeutral .type0 (.nVar ⟨"case", ⟨env.size⟩⟩)
-  | .inject _label _args =>
+  | .inject _label _args _ =>
     .vNeutral .type0 (.nVar ⟨s!"inject:{_label}", ⟨env.size⟩⟩)
   | .dataTy id params => .vDataType id (params.toList.map (evalExprPure env))
   | .eqTy tyLevel ty lhs rhs =>
@@ -283,7 +283,7 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
   | .panic msg => .vNeutral .type0 (.nVar ⟨s!"panic: {msg}", ⟨env.size⟩⟩)
   | .closure name _captures =>
     .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
-  | .array _elements => .vNeutral .type0 (.nVar ⟨"array", ⟨env.size⟩⟩)
+  | .array _elements _ => .vNeutral .type0 (.nVar ⟨"array", ⟨env.size⟩⟩)
   | .tuple elements =>
     let vals := elements.toList.map (evalExprPure env)
     match vals with
@@ -344,8 +344,8 @@ partial def quoteExpr (depth : DeBruijnLvl) (v : Value) : Expr :=
     .record (fields.map (fun (n, v) => (n, quoteExpr depth v)) |>.toArray)
   | .vDataType id params =>
     .dataTy id (params.map (quoteExpr depth) |>.toArray)
-  | .vConstructor name tag args =>
-    .construct name tag (args.map (quoteExpr depth) |>.toArray)
+  | .vConstructor name tag args resultTy =>
+    .construct name tag (args.map (quoteExpr depth) |>.toArray) (quoteExpr depth resultTy)
   | .vEq lv ty lhs rhs =>
     .eqTy lv (quoteExpr depth ty) (quoteExpr depth lhs) (quoteExpr depth rhs)
   | .vRefl ty x => .refl (quoteExpr depth ty) (quoteExpr depth x)
@@ -363,13 +363,14 @@ partial def quoteNeutralExpr (depth : DeBruijnLvl) (neu : Neutral) : Expr :=
   | .nFst n => .projFst (quoteNeutralExpr depth n)
   | .nSnd n => .projSnd (quoteNeutralExpr depth n)
   | .nFieldAccess n field => .fieldAccess (quoteNeutralExpr depth n) field 0
-  | .nCase scrut arms =>
+  | .nCase scrut arms resultTy =>
     .«case» #[quoteNeutralExpr depth scrut]
       (arms.map (fun ac =>
         let argVal := Value.vNeutral Value.type0 (Neutral.nVar ⟨ac.pattern, depth⟩)
         let bodyVal := applyClosurePure ac.closure argVal
         Arm.mk #[.wildcard] (quoteExpr depth.succ bodyVal)
       ) |>.toArray)
+      (quoteExpr depth resultTy)
 
 end
 

@@ -118,7 +118,7 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
       throwUnifyError v1' v2' "data type mismatch"
     unifyList ps1 ps2
 
-  | .vConstructor n1 t1 as1, .vConstructor n2 t2 as2 =>
+  | .vConstructor n1 t1 as1 _, .vConstructor n2 t2 as2 _ =>
     if n1 != n2 || t1 != t2 then throwUnifyError v1' v2' "constructor mismatch"
     unifyList as1 as2
 

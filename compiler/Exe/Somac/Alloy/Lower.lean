@@ -302,7 +302,10 @@ def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
     match intrinsicOfQName? def_.name with
     | some (Intrinsic.ffiOp op) => .intrinsic (convertFFIOp op)
     | some (Intrinsic.extern name) => .externC name
-    | some (Intrinsic.primOp op) => .primOp (convertCorePrimOp op)
+    | some (Intrinsic.primOp op) =>
+      match funcIdMap >>= (·.get? refId) with
+      | some funcId => .local funcId
+      | none => .primOp (convertCorePrimOp op)
     | some (Intrinsic.llvm name) => .externC name
     | some (Intrinsic.runtime fn) => .externC fn.name
     | none =>
@@ -402,7 +405,7 @@ partial def convertValueTypeWithMapping (val : Value) (mapping : TyVarMapping n)
       | some prim => convertHigherPrimitive prim
       | none => .tagged (.prim .u32) #[]
     else .tagged (.prim .u32) #[]
-  | Value.vConstructor _ _ _ => .rawPtr
+  | Value.vConstructor _ _ _ _ => .rawPtr
   | Value.vRecord _ => .rawPtr
   | Value.vRecordVal _ => .rawPtr
   | Value.vVariant row => .tagged (.prim .u32) (extractRowVariantsWithMapping row mapping)
@@ -444,7 +447,7 @@ partial def collectTyVarLevelsNeutral (neu : Soma.Core.Neutral) (acc : Std.HashS
   | .nFst pair => collectTyVarLevelsNeutral pair acc
   | .nSnd pair => collectTyVarLevelsNeutral pair acc
   | .nFieldAccess record _ => collectTyVarLevelsNeutral record acc
-  | .nCase scrutinee _ => collectTyVarLevelsNeutral scrutinee acc
+  | .nCase scrutinee _ _ => collectTyVarLevelsNeutral scrutinee acc
 
 /-- Collect all de Bruijn levels of type variables appearing in a Value -/
 partial def collectTyVarLevels (val : Value) (acc : Std.HashSet Nat := {}) : Std.HashSet Nat :=
@@ -1277,14 +1280,14 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") : Module := Id.r
   let mut nextFuncId : Nat := 0
   for i in [:graph.book.size] do
     if let some def_ := graph.book[i]? then
-      if not (isIntrinsicQName def_.name) && not def_.isExternal then
+      if not def_.isExternal then
         funcIdMap := funcIdMap.insert i (FuncId.mk nextFuncId)
         nextFuncId := nextFuncId + 1
 
   -- Second pass: lower definitions using the mapping
   for i in [:graph.book.size] do
     if let some def_ := graph.book[i]? then
-      if not (isIntrinsicQName def_.name) && not def_.isExternal then
+      if not def_.isExternal then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
         let func := lowerDefinition graph def_ funcId funcIdMap
         module := module.addFunc func

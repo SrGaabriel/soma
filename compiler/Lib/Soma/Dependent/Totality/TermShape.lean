@@ -16,8 +16,8 @@ private partial def collectAppSpine (e : Expr) : Expr × List Expr :=
 
 /-- Get a display name from an Expr (for variable tracking) -/
 private def exprName? : Expr → Option String
-  | .fvar id => some id.original
-  | .const name => some name.display
+  | .fvar id _ => some id.original
+  | .const name _ => some name.display
   | .bvar idx => some s!"_bvar{idx}"
   | _ => none
 
@@ -57,8 +57,8 @@ end TermShape
 
 /-- Collect all variable names used in an Expr (standalone function for termination) -/
 partial def collectExprVars : Expr → List String
-  | .fvar id => [id.original]
-  | .const name => [name.display]
+  | .fvar id _ => [id.original]
+  | .const name _ => [name.display]
   | .bvar idx => [s!"_bvar{idx}"]
   | .app fn arg => collectExprVars fn ++ collectExprVars arg
   | .lam _ _ dom body => collectExprVars dom ++ collectExprVars body
@@ -67,15 +67,15 @@ partial def collectExprVars : Expr → List String
   | .pair a b => collectExprVars a ++ collectExprVars b
   | .projFst e => collectExprVars e
   | .projSnd e => collectExprVars e
-  | .construct _ _ args => args.toList.flatMap collectExprVars
-  | .«case» scruts arms =>
+  | .construct _ _ args _ => args.toList.flatMap collectExprVars
+  | .«case» scruts arms _ =>
     scruts.toList.flatMap collectExprVars ++
       arms.toList.flatMap fun arm => collectExprVars arm.body
   | .record fields => fields.toList.flatMap fun (_, t) => collectExprVars t
   | .recordUpdate base updates =>
     collectExprVars base ++ updates.toList.flatMap fun (_, t) => collectExprVars t
   | .fieldAccess e _ _ => collectExprVars e
-  | .inject _ args => args.toList.flatMap collectExprVars
+  | .inject _ args _ => args.toList.flatMap collectExprVars
   | .pi _ _ _ d c => collectExprVars d ++ collectExprVars c
   | .sigma _ _ _ f s => collectExprVars f ++ collectExprVars s
   | .eqTy _ ty l r => collectExprVars ty ++ collectExprVars l ++ collectExprVars r
@@ -88,7 +88,7 @@ partial def collectExprVars : Expr → List String
   | .variantTy r => collectExprVars r
   | .dataTy _ ps => ps.toList.flatMap collectExprVars
   | .closure _ caps => caps.toList.flatMap collectExprVars
-  | .array es => es.toList.flatMap collectExprVars
+  | .array es _ => es.toList.flatMap collectExprVars
   | .tuple es => es.toList.flatMap collectExprVars
   | .ann e _ => collectExprVars e
   | _ => []
@@ -98,11 +98,11 @@ abbrev collectTermVars := collectExprVars
 
 /-- Convert an Expr to its structural shape for analysis -/
 partial def analyzeExprShape : Expr → TermShape
-  | .fvar id => .var id.original
-  | .const name => .var name.display
+  | .fvar id _ => .var id.original
+  | .const name _ => .var name.display
   | .bvar idx => .var s!"_bvar{idx}"
   | .lit l => .lit l
-  | .construct name _ args =>
+  | .construct name _ args _ =>
     .ctor name.display (args.map analyzeExprShape)
   | .pair fst snd => .pair (analyzeExprShape fst) (analyzeExprShape snd)
   | .projFst e => .fstProj (analyzeExprShape e)
@@ -141,11 +141,11 @@ inductive Pattern where
 
 /-- Extract a Pattern from an Expr -/
 partial def exprToPattern : Expr → Pattern
-  | .fvar id => .var id.original
-  | .const name => .var name.display
+  | .fvar id _ => .var id.original
+  | .const name _ => .var name.display
   | .bvar idx => .var s!"_bvar{idx}"
   | .lit l => .lit l
-  | .construct name _ args =>
+  | .construct name _ args _ =>
     .ctor name.display (args.map exprToPattern)
   | .pair a b => .pair (exprToPattern a) (exprToPattern b)
   | .record fields =>
@@ -158,7 +158,7 @@ abbrev termToPattern := exprToPattern
 partial def extractPatternBindings (t : Expr) (paramIdx : Nat) (paramName : String)
     (path : StructurePath := .root) : Array BindingInfo :=
   match t with
-  | .fvar id =>
+  | .fvar id _ =>
     -- A free variable in a pattern = a binding
     #[{
       name := id.original
@@ -178,7 +178,7 @@ partial def extractPatternBindings (t : Expr) (paramIdx : Nat) (paramName : Stri
       depth := path.depth
     }]
 
-  | .construct ctorName _ args =>
+  | .construct ctorName _ args _ =>
     -- Constructor pattern: each argument is deeper
     args.foldl (init := (#[], 0)) (fun (acc, idx) arg =>
       let argPath := .ctorArg path ctorName.display idx

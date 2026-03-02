@@ -67,7 +67,7 @@ mutual
 
 partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
   match e with
-  | .fvar _ | .bvar _ | .mvar _ | .const _ | .sort _ | .primTy _ | .rowSort
+  | .fvar _ _ | .bvar _ | .mvar _ | .const _ _ | .sort _ | .primTy _ | .rowSort
   | .labelSort | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ =>
     pure e
 
@@ -94,7 +94,7 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     -- Replace old fvars with new ones in the lambda body
     let mut substituted : Soma.Core.Expr := liftedLam
     for (oldU, newU) in replacements do
-      substituted := Soma.Core.Expr.replaceFVar substituted oldU (Soma.Core.Expr.fvar newU)
+      substituted := Soma.Core.Expr.replaceFVar substituted oldU (Soma.Core.Expr.fvar newU (.sort .zero))
 
     -- Extract the lambda binder into an explicit param
     let lamParamUnique ← LiftM.freshUnique name
@@ -104,7 +104,7 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
       | other => other
 
     -- Open the binder: replace bvar(0) with fvar(lamParamUnique)
-    let openedBody := Soma.Core.Expr.instantiate innerBody (Soma.Core.Expr.fvar lamParamUnique)
+    let openedBody := Soma.Core.Expr.instantiate innerBody (Soma.Core.Expr.fvar lamParamUnique (.sort .zero))
 
     let liftedName ← LiftM.freshLambdaName
 
@@ -125,7 +125,7 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     }
     LiftM.addLiftedFunction liftedFn
 
-    let captureExprs := captures.map fun (u, _, _) => Soma.Core.Expr.fvar u
+    let captureExprs := captures.map fun (u, _, _) => Soma.Core.Expr.fvar u (.sort .zero)
     pure (Soma.Core.Expr.closure liftedName captureExprs)
 
   | .closure n caps => do
@@ -144,13 +144,13 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     pure (.pair (← liftCoreExpr f) (← liftCoreExpr s))
   | .projFst x => do pure (.projFst (← liftCoreExpr x))
   | .projSnd x => do pure (.projSnd (← liftCoreExpr x))
-  | .construct n t args => do
-    pure (.construct n t (← args.mapM (liftCoreExpr ·)))
-  | .«case» scruts arms => do
+  | .construct n t args rty => do
+    pure (.construct n t (← args.mapM (liftCoreExpr ·)) (← liftCoreExpr rty))
+  | .«case» scruts arms rty => do
     let scruts' ← scruts.mapM (liftCoreExpr ·)
     let arms' ← arms.mapM fun arm => do
       pure (Soma.Core.Arm.mk arm.patterns (← liftCoreExpr arm.body))
-    pure (.«case» scruts' arms')
+    pure (.«case» scruts' arms' (← liftCoreExpr rty))
   | .record fields => do
     let fields' ← fields.mapM fun (n, e') => do pure (n, ← liftCoreExpr e')
     pure (.record fields')
@@ -159,11 +159,11 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     let updates' ← updates.mapM fun (n, e') => do pure (n, ← liftCoreExpr e')
     pure (.recordUpdate base' updates')
   | .fieldAccess x f i => do pure (.fieldAccess (← liftCoreExpr x) f i)
-  | .inject l args => do pure (.inject l (← args.mapM (liftCoreExpr ·)))
+  | .inject l args rty => do pure (.inject l (← args.mapM (liftCoreExpr ·)) (← liftCoreExpr rty))
   | .if_ c t el => do
     pure (.if_ (← liftCoreExpr c) (← liftCoreExpr t)
                (← liftCoreExpr el))
-  | .array es => do pure (.array (← es.mapM (liftCoreExpr ·)))
+  | .array es ety => do pure (.array (← es.mapM (liftCoreExpr ·)) (← liftCoreExpr ety))
   | .tuple es => do pure (.tuple (← es.mapM (liftCoreExpr ·)))
   | .rowExtend l f t => do
     pure (.rowExtend (← liftCoreExpr l) (← liftCoreExpr f)

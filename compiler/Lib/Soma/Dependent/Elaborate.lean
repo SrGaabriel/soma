@@ -141,7 +141,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     else if let some globalInfo ← TCM.lookupGlobal name.value then
       if globalInfo.isConstructor then
         -- It's a constructor, return as vConstructor with no args yet
-        return Value.vConstructor globalInfo.name globalInfo.ctorTag []
+        return Value.vConstructor globalInfo.name globalInfo.ctorTag [] globalInfo.type
       else
         if let some primTy ← TCM.lookupWiredPrimitiveOfGlobal globalInfo.name then
           return Value.vPrimTy primTy
@@ -166,10 +166,10 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     | .vDataType id params =>
       -- Accumulate type parameters for data types
       return Value.vDataType id (params ++ [argVal])
-    | .vConstructor name tag args =>
+    | .vConstructor name tag args rty =>
       -- Constructor application in type position
       -- Accumulate arguments to the constructor
-      return Value.vConstructor name tag (args ++ [argVal])
+      return Value.vConstructor name tag (args ++ [argVal]) rty
     | .vPi _ _ _ _ cod =>
       -- Apply function type - evaluate the closure with TCM's applyClosure
       Soma.Dependent.applyClosure cod argVal

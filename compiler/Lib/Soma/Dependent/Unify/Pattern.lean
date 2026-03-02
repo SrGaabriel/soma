@@ -122,12 +122,13 @@ partial def rename (ren : PartialRenaming) (v : Value) : RenameResult :=
 
   | .vDataType id params => do
     let paramExprs ← params.mapM (rename ren)
-    let baseExpr := Soma.Core.Expr.const ⟨⟨id.id, id.module, id.original⟩⟩
+    let baseExpr := Soma.Core.Expr.const ⟨⟨id.id, id.module, id.original⟩⟩ (.sort .zero)
     .ok (paramExprs.foldl (fun acc p => .app acc p) baseExpr)
 
-  | .vConstructor name tag args => do
+  | .vConstructor name tag args rty => do
     let argExprs ← args.mapM (rename ren)
-    .ok (.construct name tag argExprs.toArray)
+    let rtyE ← rename ren rty
+    .ok (.construct name tag argExprs.toArray rtyE)
 
   | .vEq tyLevel ty lhs rhs => do
     let tyE ← rename ren ty
@@ -171,14 +172,15 @@ partial def renameNeutral (ren : PartialRenaming) (n : Neutral) : RenameResult :
   | .nFieldAccess rec field => do
     let recE ← renameNeutral ren rec
     .ok (.fieldAccess recE field 0)
-  | .nCase scrut arms => do
+  | .nCase scrut arms rty => do
     let scrutE ← renameNeutral ren scrut
     let armExprs ← arms.mapM fun arm => do
       let argVal := Value.vNeutral .type0 (.nVar ⟨arm.pattern, ⟨ren.dom⟩⟩)
       let bodyVal := applyClosurePure arm.closure argVal
       let bodyE ← rename ren.lift bodyVal
       pure (Soma.Core.Arm.mk #[Soma.Core.Pattern.wildcard] bodyE)
-    .ok (.«case» #[scrutE] armExprs.toArray)
+    let rtyE ← rename ren rty
+    .ok (.«case» #[scrutE] armExprs.toArray rtyE)
 
 end
 

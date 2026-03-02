@@ -19,8 +19,8 @@ private partial def collectAppSpine' (e : Soma.Core.Expr) : Soma.Core.Expr × Li
 
 /-- Get a variable name from an Expr for scrutinee parameter matching -/
 private def exprVarName? : Soma.Core.Expr → Option String
-  | .fvar id => some id.original
-  | .const name => some name.display
+  | .fvar id _ => some id.original
+  | .const name _ => some name.display
   | _ => none
 
 /-- Analyze a case arm and extract all bindings introduced by the pattern (Expr version). -/
@@ -112,9 +112,9 @@ where
   checkTerm (t : Soma.Core.Expr) : TermM Unit := do
     match t with
     | .bvar _ => pure ()
-    | .fvar _ => pure ()
+    | .fvar _ _ => pure ()
     | .mvar _ => pure ()
-    | .const _ => pure ()
+    | .const _ _ => pure ()
     | .lit _ => pure ()
     | .sort _ => pure ()
     | .primTy _ => pure ()
@@ -128,7 +128,7 @@ where
     | .app _ _ =>
       let (head, args) := collectAppSpine' t
       match head with
-      | .const name =>
+      | .const name _ =>
         let fnInfo? ← TermM.getCurrentFn
         match fnInfo? with
         | some fnInfo =>
@@ -195,15 +195,15 @@ where
 
     | .fieldAccess e _ _ => checkTerm e
 
-    | .inject _ args =>
+    | .inject _ args _ =>
       for arg in args do
         checkTerm arg
 
-    | .construct _ _ args =>
+    | .construct _ _ args _ =>
       for arg in args do
         checkTerm arg
 
-    | .«case» scruts arms =>
+    | .«case» scruts arms _ =>
       for scrut in scruts do
         checkTerm scrut
 
@@ -250,7 +250,7 @@ where
       for cap in caps do
         checkTerm cap
 
-    | .array elements =>
+    | .array elements _ =>
       for e in elements do
         checkTerm e
 

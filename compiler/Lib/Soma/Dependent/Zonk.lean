@@ -86,9 +86,10 @@ partial def zonkValue (v : Value) : TCM Value := do
     let params' ← params.mapM zonkValue
     return .vDataType id params'
 
-  | .vConstructor name tag args =>
+  | .vConstructor name tag args rty =>
     let args' ← args.mapM zonkValue
-    return .vConstructor name tag args'
+    let rty' ← zonkValue rty
+    return .vConstructor name tag args' rty'
 
   | .vEq tyLevel ty lhs rhs =>
     let tyLevel' ← zonkLevel tyLevel
@@ -146,12 +147,13 @@ partial def zonkNeutral (n : Neutral) : TCM Neutral := do
     let rec' ← zonkNeutral rec
     return .nFieldAccess rec' field
 
-  | .nCase scrut arms =>
+  | .nCase scrut arms rty =>
     let scrut' ← zonkNeutral scrut
     let arms' ← arms.mapM fun arm => do
       let clos' ← zonkClosure arm.closure
       return ArmClosure.mk arm.pattern clos'
-    return .nCase scrut' arms'
+    let rty' ← zonkValue rty
+    return .nCase scrut' arms' rty'
 
 /-- Zonk a closure -/
 partial def zonkClosure (clos : Closure) : TCM Closure := do
@@ -211,7 +213,7 @@ partial def hasUnsolvedMetas (v : Value) : TCM Bool := do
     for p in params do
       if ← hasUnsolvedMetas p then return true
     return false
-  | .vConstructor _ _ args =>
+  | .vConstructor _ _ args _ =>
     for a in args do
       if ← hasUnsolvedMetas a then return true
     return false
@@ -243,7 +245,7 @@ partial def hasUnsolvedMetasNeutral (n : Neutral) : TCM Bool := do
   | .nFst pair => hasUnsolvedMetasNeutral pair
   | .nSnd pair => hasUnsolvedMetasNeutral pair
   | .nFieldAccess rec _ => hasUnsolvedMetasNeutral rec
-  | .nCase scrut _ => hasUnsolvedMetasNeutral scrut
+  | .nCase scrut _ _ => hasUnsolvedMetasNeutral scrut
   | _ => return false
 
 end
@@ -280,7 +282,7 @@ partial def collectUnsolvedMetas (v : Value) (span : Span) : TCM Unit := do
   | .vDataType _ params =>
     for p in params do
       collectUnsolvedMetas p span
-  | .vConstructor _ _ args =>
+  | .vConstructor _ _ args _ =>
     for a in args do
       collectUnsolvedMetas a span
   | .vEq _ ty lhs rhs =>
@@ -313,7 +315,7 @@ partial def collectUnsolvedMetasNeutral (n : Neutral) (span : Span) : TCM Unit :
   | .nFst pair => collectUnsolvedMetasNeutral pair span
   | .nSnd pair => collectUnsolvedMetasNeutral pair span
   | .nFieldAccess rec _ => collectUnsolvedMetasNeutral rec span
-  | .nCase scrut _ => collectUnsolvedMetasNeutral scrut span
+  | .nCase scrut _ _ => collectUnsolvedMetasNeutral scrut span
   | _ => pure ()
 
 end

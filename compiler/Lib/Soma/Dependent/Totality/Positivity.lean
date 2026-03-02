@@ -109,7 +109,7 @@ partial def checkPositivityValue (unique : Unique) (pol : Polarity) (ty : Value)
   | .vRecord row => checkPositivityValue unique pol row
   | .vVariant row => checkPositivityValue unique pol row
 
-  | .vConstructor _ _ args => checkPositivityList unique pol args
+  | .vConstructor _ _ args _ => checkPositivityList unique pol args
 
   | .vNeutral _ _ => .ok
 
@@ -163,7 +163,7 @@ private partial def checkIndexValue (v : Value) (reg : TotalityRegistry) : List 
   match v with
   | .vNeutral _ neu => checkNeutral neu reg
   | .vPair a b => checkIndexValue a reg ++ checkIndexValue b reg
-  | .vConstructor _ _ args => args.flatMap (checkIndexValue · reg)
+  | .vConstructor _ _ args _ => args.flatMap (checkIndexValue · reg)
   | .vDataType _ params => params.flatMap (checkIndexValue · reg)
   | .vPi _ _ _ dom _ => checkIndexValue dom reg
   | .vSigma _ _ fst _ => checkIndexValue fst reg
@@ -187,7 +187,7 @@ where
     | .nFst pair => checkNeutral pair reg
     | .nSnd pair => checkNeutral pair reg
     | .nFieldAccess rec _ => checkNeutral rec reg
-    | .nCase scrut _ => checkNeutral scrut reg
+    | .nCase scrut _ _ => checkNeutral scrut reg
 
 /-- Check that a type index only uses total functions -/
 def checkTypeIndexTotality (idx : Value) (registry : TotalityRegistry) : List String :=

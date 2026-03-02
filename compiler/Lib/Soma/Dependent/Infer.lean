@@ -316,7 +316,7 @@ partial def structurallyIncompatible (v1 v2 : Value) : TCM Bool := do
   let v1' ← force v1
   let v2' ← force v2
   match v1', v2' with
-  | .vConstructor n1 _ _, .vConstructor n2 _ _ => return n1 != n2
+  | .vConstructor n1 _ _ _, .vConstructor n2 _ _ _ => return n1 != n2
   | .vIntLit n1, .vIntLit n2 => return n1 != n2
   | .vStringLit s1, .vStringLit s2 => return s1 != s2
   | .vPrimTy p1, .vPrimTy p2 => return p1 != p2
@@ -745,7 +745,8 @@ where
       match ← TCM.lookupLocal name.value with
       | some entry =>
         useVarChecked entry.bindingId name.span
-        return (entry.type, .fvar entry.fvarId)
+        let tyExpr ← quoteValueToExpr entry.type
+        return (entry.type, .fvar entry.fvarId tyExpr)
       | none =>
         -- Check globals (functions, constructors, data types)
         match ← TCM.lookupGlobal name.value with
@@ -753,9 +754,11 @@ where
           let qn := info.name
           if info.isConstructor then
             let instantiatedTy ← instantiateImplicits info.type name.span
-            return (instantiatedTy, .const qn)
+            let tyExpr ← quoteValueToExpr instantiatedTy
+            return (instantiatedTy, .const qn tyExpr)
           else
-            return (info.type, .const qn)
+            let tyExpr ← quoteValueToExpr info.type
+            return (info.type, .const qn tyExpr)
         | none =>
           match name.value with
           | "Type" | "Type0" => return (.vType .one, .sort .zero)
@@ -802,7 +805,8 @@ where
       let (scrutTys, scrutsExpr) ← inferSyntaxList scruts.toList
       let resultTy ← TCM.freshMetaVal (.vType .zero)
       let armsExpr ← inferSyntaxArms arms.toList scrutTys resultTy
-      return (resultTy, .«case» scrutsExpr armsExpr)
+      let resultTyExpr ← quoteValueToExpr resultTy
+      return (resultTy, .«case» scrutsExpr armsExpr resultTyExpr)
 
     -- Tuple: desugar to nested pairs
     | .tuple elems span => do
@@ -825,7 +829,8 @@ where
       let listInfo ← requireUniqueWiredRole .typeList span
       let listId := listInfo.name.id
       let listTy := Value.vDataType listId [elemTy]
-      return (listTy, .array elemsChecked.toArray)
+      let listTyExpr ← quoteValueToExpr listTy
+      return (listTy, .array elemsChecked.toArray listTyExpr)
 
     -- Record literal
     | .record fields _ => do
@@ -905,7 +910,8 @@ where
       let rowTail ← TCM.freshMetaVal .vRowSort
       let row := Value.vRowExtend (.vLabelLit label.value) argTy rowTail
       let variantTy := Value.vVariant row
-      return (variantTy, .inject label.value argsExpr)
+      let variantTyExpr ← quoteValueToExpr variantTy
+      return (variantTy, .inject label.value argsExpr variantTyExpr)
 
 /-- Apply a function to a single Syntax.Expr argument -/
 partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
@@ -1192,7 +1198,8 @@ where
       let listId := listInfo.name.id
       if unique == listId then
         let elemsChecked ← checkSyntaxList elems.toList elemTy
-        return .array elemsChecked.toArray
+        let listTyExpr ← quoteValueToExpr (Value.vDataType unique [elemTy])
+        return .array elemsChecked.toArray listTyExpr
       else
         let (inferred, expr) ← inferSyntax e
         let (inferred', expr') ← insertImplicits inferred expr e.span
