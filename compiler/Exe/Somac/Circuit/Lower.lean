@@ -1326,12 +1326,17 @@ def lowerModule (types : Array Soma.Core.TypeDef)
   -- Their book indices start after all local functions
   let intrinsicCount := intrinsics.length
   if let some g := globals then
-    let externals := g.allDecls.filter fun (name, info) =>
-      !typedFunctions.contains name &&
+    let externals := g.allDecls.filter fun (_, info) =>
+      !typedFunctions.contains info.name.id.original &&
       !info.isConstructor
     for (i, (_, info)) in enumList externals do
       LowerM.modifyCtx fun ctx =>
         ctx.registerGlobal info.name (localCount + intrinsicCount + i)
+
+  -- Debug: dump registered globals
+  let regCtx ← LowerM.getCtx
+  for (name, idx) in regCtx.globals.toList do
+    dbg_trace s!"REG[{idx}]: {name.display}"
 
   -- Fourth pass: lower each function body and add to book
   for (_, fn) in functions do
@@ -1348,17 +1353,25 @@ def lowerModule (types : Array Soma.Core.TypeDef)
       let _ ← LowerM.addDefinition fn.name root arity fn.fnType
     | _ =>
       let era ← LowerM.addNode .era unitTy
-      let _ ← LowerM.addDefinition fn.name era 0 fn.fnType (isExternal := true)
+      let arity := fn.fnType.arityFull
+      let _ ← LowerM.addDefinition fn.name era arity fn.fnType (isExternal := true)
 
   -- Sixth pass: add placeholder definitions for external functions from dependencies
   if let some g := globals then
-    let externals := g.allDecls.filter fun (name, info) =>
-      !typedFunctions.contains name && -- Not in current module
+    let externals := g.allDecls.filter fun (_, info) =>
+      !typedFunctions.contains info.name.id.original &&
       !info.isConstructor
     for (_, info) in externals do
       let era ← LowerM.addNode .era unitTy
-      let _ ← LowerM.addDefinition info.name era 0 info.type
+      let arity := info.type.arityFull
+      let _ ← LowerM.addDefinition info.name era arity info.type
         (isExternal := true)
+
+  -- Debug: dump book contents
+  let graph ← LowerM.liftGraph get
+  for i in [:graph.book.size] do
+    if let some def_ := graph.book[i]? then
+      dbg_trace s!"BOOK[{i}]: {def_.name.display} arity={def_.arity} ext={def_.isExternal}"
 
   -- Set root to main function if it exists
   -- Wire an ERA demand node to the root ALO so demand-driven evaluation can proceed

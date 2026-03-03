@@ -321,13 +321,18 @@ partial def resolveCanonicalRef (graph : CGraph) (nodeId : CNodeId)
         .dynamicValue nodeId
     | none => .dynamicValue nodeId
 
+/-- Resolve an intrinsic from a qualified name -/
+private def resolveIntrinsic? (qn : QualifiedName)
+    (ctxIntrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Option Intrinsic :=
+  ctxIntrinsics.get? qn |>.orElse fun _ => intrinsicOfQName? qn
+
 /-- Build a FuncRef from a book index, handling intrinsics and externals -/
 def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
     (funcIdMap : Option (Std.HashMap Nat FuncId) := none)
     (ctxIntrinsics : Std.HashMap QualifiedName Intrinsic := {}) : FuncRef :=
   match graph.getDefinition refId with
   | some def_ =>
-    match intrinsicOfQName? def_.name with
+    match resolveIntrinsic? def_.name ctxIntrinsics with
     | some (Intrinsic.ffiOp op) => .intrinsic (convertFFIOp op)
     | some (Intrinsic.extern name) => .externC name
     | some (Intrinsic.primOp op) =>
@@ -337,26 +342,16 @@ def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
     | some (Intrinsic.llvm name) => .externC name
     | some (Intrinsic.runtime fn) => .externC fn.name
     | none =>
-      match ctxIntrinsics.get? def_.name with
-      | some (Intrinsic.extern name) => .externC name
-      | some (Intrinsic.ffiOp op) => .intrinsic (convertFFIOp op)
-      | some (Intrinsic.llvm name) => .externC name
-      | some (Intrinsic.runtime fn) => .externC fn.name
-      | some (Intrinsic.primOp op) =>
-        match funcIdMap >>= (·.get? refId) with
-        | some funcId => .local funcId
-        | none => .primOp (convertCorePrimOp op)
-      | none =>
-        if def_.isExternal then
-          .external def_.name.symbolName
-        else
-          match funcIdMap with
-          | some map =>
-            match map.get? refId with
-            | some funcId => .local funcId
-            | none => .external def_.name.symbolName
-          | none =>
-            .local (FuncId.mk refId)
+      if def_.isExternal then
+        .external def_.name.symbolName
+      else
+        match funcIdMap with
+        | some map =>
+          match map.get? refId with
+          | some funcId => .local funcId
+          | none => .external def_.name.symbolName
+        | none =>
+          .local (FuncId.mk refId)
   | none =>
     .external s!"unresolved_ref_{refId}"
 
@@ -379,6 +374,7 @@ partial def collectAppChain (graph : CGraph) (startEntry : CNodeEntry) : Option 
     else do
       let fnPort ← currentEntry.getPort ⟨1⟩
       let fnEntry ← graph.getNode fnPort.node
+      dbg_trace s!"  CHAIN-GO: fn=n{fnPort.node.id} tag={fnEntry.node} revArgs={revArgs.size}"
       match fnEntry.node with
       | .app =>
         -- Another APP node in the chain: collect its arg and continue down
@@ -386,6 +382,7 @@ partial def collectAppChain (graph : CGraph) (startEntry : CNodeEntry) : Option 
         go fnEntry (revArgs.push arg) (intermediates.push fnPort.node) (fuel - 1)
       | _ =>
         -- Only return a chain if we collected 2+ args (outermost + at least one inner)
+        dbg_trace s!"  CHAIN-END: base={fnEntry.node} revArgs={revArgs.size}"
         if revArgs.size >= 2 then
           some {
             baseNodeId := fnPort.node
@@ -397,6 +394,7 @@ partial def collectAppChain (graph : CGraph) (startEntry : CNodeEntry) : Option 
           none
   do
     let outerArg ← startEntry.getPort ⟨2⟩
+    dbg_trace s!"COLLECT-APP-CHAIN: start={startEntry.node} port2={outerArg}"
     go startEntry #[outerArg] #[] 100
 
 open Soma.Core (Value)
@@ -605,20 +603,27 @@ partial def extractParamsUsingMapping (ty : Value) (ctx : TypeConvCtx n)
         let paramTy := convertValueTypeWithMapping dom ctx
         extractParamsUsingMapping nextTy ctx typeAcc (valAcc.push (name, paramTy))
     | .term _ _ _ =>
+      -- Evaluate the dependent codomain with a neutral argument to continue traversal
+      let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
+      let nextTy := cod.applyPure dummyArg
       if isTypeParam then
-        (typeAcc.push name, valAcc)
+        extractParamsUsingMapping nextTy ctx (typeAcc.push name) valAcc
       else
         let paramTy := convertValueTypeWithMapping dom ctx
-        (typeAcc, valAcc.push (name, paramTy))
+        extractParamsUsingMapping nextTy ctx typeAcc (valAcc.push (name, paramTy))
   | _ => (typeAcc, valAcc)
 
 /-- Extract the return type from a function type (Pi chain) -/
 partial def extractReturnTypeWithMapping (ty : Value) (ctx : TypeConvCtx n) : Ty n :=
   match ty with
-  | Value.vPi _ _ _ _ cod =>
+  | Value.vPi _ _ _ dom cod =>
     match cod with
     | .const _ nextTy => extractReturnTypeWithMapping nextTy ctx
-    | .term _ _ _ => .prim .i64
+    | .term name _ _ =>
+      -- Evaluate the dependent codomain with a neutral argument to extract actual return type
+      let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
+      let nextTy := cod.applyPure dummyArg
+      extractReturnTypeWithMapping nextTy ctx
   | other => convertValueTypeWithMapping other ctx
 
 /-- Build function signature from a Value type with known type parameter count -/
@@ -874,8 +879,12 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     : StateT (NodeState n) (LowerM n) LocalId := do
   let ns ← get
 
+  let nodeTag := (graph.getNode nodeId).map fun e => s!"{e.node}"
+  dbg_trace s!"LOWER-NODE: n{nodeId.id} tag={nodeTag} memo={ns.results.contains nodeId.id} proc={ns.processing.contains nodeId.id}"
+
   -- Check memoization cache
   if let some result := ns.results.get? nodeId.id then
+    dbg_trace s!"  MEMO-HIT: n{nodeId.id}"
     return result
 
   -- Cycle detection
@@ -931,15 +940,18 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
   | .app => do
     -- Try saturated multi-argument call via app chain collection
+    dbg_trace s!"APP-ENTER: n{nodeId.id}"
     let saturatedResult ← do
       match collectAppChain graph entry with
       | some chain =>
+        dbg_trace s!"  CHAIN: base={chain.baseEntry.node} args={chain.argPorts.size}"
         -- We have a multi-arg chain. Check if the base is a known function
         match chain.baseEntry.node with
         | .ref refId | .alo refId =>
           match graph.getDefinition refId with
           | some def_ =>
             -- Check arity match for saturated call
+            dbg_trace s!"SAT-CHECK: {def_.name.display} arity={def_.arity} args={chain.argPorts.size} ext={def_.isExternal}"
             if def_.arity == chain.argPorts.size then
               -- Saturated call, let's lower all arguments
               let mut argVals : Array LocalId := #[]
@@ -951,8 +963,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               -- Get return type from the function definition
               let callRetTy := extractReturnTypeWithMapping def_.ty ctx
 
-              -- Check for intrinsics first
-              match intrinsicOfQName? def_.name with
+              -- Resolve intrinsics via authoritative table + name fallback
+              let ls ← StateT.lift get
+              match resolveIntrinsic? def_.name ls.ctxIntrinsics with
               | some (Intrinsic.ffiOp op) =>
                 let intrinsicOp := convertFFIOp op
                 let retTy : Ty n := match intrinsicOp.fixedRetTy with
@@ -970,7 +983,6 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 pure (some result)
               | _ =>
                 -- Regular function: resolve reference
-                let ls ← StateT.lift get
                 let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
                 let result ← match funcRef with
                   | .local funcId =>
@@ -999,6 +1011,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     | none => do
       let fnPort := entry.getPort ⟨1⟩
 
+      let lsUnsaturated ← StateT.lift get
       let maybeIntrinsic ← match fnPort with
         | some fp =>
           match graph.getNode fp.node with
@@ -1007,7 +1020,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             | .ref refId | .alo refId =>
               match graph.getDefinition refId with
               | some def_ =>
-                match intrinsicOfQName? def_.name with
+                match resolveIntrinsic? def_.name lsUnsaturated.ctxIntrinsics with
                 | some (Intrinsic.ffiOp op) => pure (some (Sum.inl op : Sum FFIOp String))
                 | some (Intrinsic.extern name) => pure (some (Sum.inr name : Sum FFIOp String))
                 | _ => pure none
@@ -1389,6 +1402,21 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
       else LowerM.terminate (.ret (.local result))
     else
       let (bodyNode, lamParams) := collectLamChain graph def_.root def_.arity
+      let bodyEntry := graph.getNode bodyNode
+      let bodyTag := bodyEntry.map fun e => s!"{e.node}"
+      dbg_trace s!"BODY: {def_.name.display} bodyNode=n{bodyNode.id} tag={bodyTag}"
+      if let some be := bodyEntry then
+        if let some p1 := be.getPort ⟨1⟩ then
+          let fnNode := graph.getNode p1.node
+          let fnTag := fnNode.map fun e => s!"{e.node}"
+          dbg_trace s!"  fn(port1)=n{p1.node.id} tag={fnTag}"
+          if let some fne := fnNode then
+            if let some p1inner := fne.getPort ⟨1⟩ then
+              let innerNode := graph.getNode p1inner.node
+              let innerTag := innerNode.map fun e => s!"{e.node}"
+              dbg_trace s!"  fn.fn(port1)=n{p1inner.node.id} tag={innerTag}"
+        if let some p2 := be.getPort ⟨2⟩ then
+          dbg_trace s!"  arg(port2)=n{p2.node.id}"
       let initState : NodeState n := { lamParams, tyVarMapping, primTypes }
       let (result, _) ← StateT.run (lowerNodeWithMap graph bodyNode funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit

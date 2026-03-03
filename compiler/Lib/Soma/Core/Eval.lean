@@ -291,6 +291,29 @@ def Value.piApply (v : Value) (arg : Value) : Option Value :=
   | .vPi _ _ _ _ cod => some (cod.applyPure arg)
   | _ => none
 
+/-- Count all Pi binders in a value type, evaluating dependent codomains as needed -/
+partial def Value.arityFull (v : Value) : Nat :=
+  match v with
+  | .vPi _ _ _ dom cod =>
+    match cod with
+    | .const _ nextTy => 1 + Value.arityFull nextTy
+    | .term name _ _ =>
+      let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
+      1 + Value.arityFull (cod.applyPure dummyArg)
+  | _ => 0
+
+/-- Count explicit Pi binders, evaluating dependent codomains as needed -/
+partial def Value.explicitArityFull (v : Value) : Nat :=
+  match v with
+  | .vPi _ binder _ dom cod =>
+    let rest := match cod with
+      | .const _ nextTy => Value.explicitArityFull nextTy
+      | .term name _ _ =>
+        let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
+        Value.explicitArityFull (cod.applyPure dummyArg)
+    if binder.isImplicit then rest else 1 + rest
+  | _ => 0
+
 /-- Apply a Sigma type to a first-component value, computing the second-component type -/
 def Value.sigmaApply (v : Value) (arg : Value) : Option Value :=
   match v with

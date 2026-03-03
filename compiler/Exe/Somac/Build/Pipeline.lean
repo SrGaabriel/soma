@@ -116,7 +116,9 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
 
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
-  return Alloy.Lower.lower optimized cm.name primTypes globals.intrinsics
+  let alloyMod := Alloy.Lower.lower optimized cm.name primTypes globals.intrinsics
+  IO.println s!"  [{cm.name}] Alloy IR:\n{alloyMod}"
+  return alloyMod
 
 /-- Result of compilation pipeline -/
 structure CompileResult where
@@ -201,6 +203,8 @@ def compileModules
   let mono := Alloy.Monomorphize.monomorphize merged
 
   IO.println s!"  Monomorphized module has {mono.funcs.size} function(s)"
+
+  IO.println s!"  === DEBUG: Monomorphized Alloy IR ===\n{mono}\n  === END DEBUG ==="
 
   -- Generate LLVM IR
   IO.println "  Generating LLVM IR..."
