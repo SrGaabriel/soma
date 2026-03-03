@@ -890,15 +890,14 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let llvmRetTy := convertTy retTy
     -- Check if closure operand is actually a closure type (not unit from ERA)
     if closureLLVMTy != closureTy then
-      -- Not a real closure, return a default value (dead code path)
+      -- Not a real closure
+      CodegenM.withFuncBuilder do
+        FuncBuilder.callNamedVoid "soma_panic" #[(.ptr, globalVal ".str.panic")]
       let ref ← CodegenM.withFuncBuilder do
         if llvmRetTy == .ptr then
           FuncBuilder.inttoptr .i64 (intVal 0 64)
-        else if llvmRetTy.isInt then
-          FuncBuilder.add llvmRetTy (intVal 0 (llvmRetTy.intBits.getD 64)) (intVal 0 (llvmRetTy.intBits.getD 64))
         else
-          let undefVal := LLVMValue.const (.undef llvmRetTy)
-          FuncBuilder.select llvmRetTy (boolVal true) undefVal undefVal
+          FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
       pure (some (ref, retTy))
     else
       let closureVal ← convertOperand closure
@@ -1645,6 +1644,18 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
     CodegenM.registerFunc func.id.id name func.sig
 
   addRuntimeDeclarations
+
+  let panicMsg := "soma: unreachable code"
+  let panicGlobal : LLVMGlobal := {
+    name := ".str.panic"
+    ty := .array (panicMsg.utf8ByteSize + 1) .i8
+    init := some (.string panicMsg)
+    linkage := .private_
+    isConstant := true
+    align := some 1
+  }
+  CodegenM.withModuleBuilder do
+    modify fun st => { st with module := { st.module with globals := st.module.globals.push panicGlobal } }
 
   -- Emit string table as LLVM global constants
   for (s, idx) in alloyModule.strings.strings.zipIdx do

@@ -300,32 +300,77 @@ def renumberFuncs (funcs : Array ClosedFunc) : Array ClosedFunc × Std.HashMap N
       (arr.push newF, map.insert f.id.id idx, idx + 1)
   (arr, mapResult)
 
-/-- Check if a function is used -/
-def isUsed (m : Module) (funcId : FuncId) : Bool :=
-  if m.mainFunc == some funcId then true
-  else
-    m.funcs.any fun sf =>
-      match sf.asMono? with
-      | none => false
-      | some f =>
-        match f.body with
-        | none => false
-        | some cfg =>
-          cfg.allBlocks.any fun block =>
-            block.stmts.any fun stmt =>
-              match stmt.inst with
-              | .call fid _ _ => fid == funcId
-              | .makeClosure (.local fid) _ => fid == funcId
-              | _ => false
+/-- Collect all FuncId references from an instruction -/
+private def collectFuncRefs (inst : ClosedInst) (acc : Array FuncId) : Array FuncId :=
+  let fromOperand (op : Operand) (a : Array FuncId) : Array FuncId :=
+    match op with
+    | .func fid => a.push fid
+    | _ => a
+  let fromOperands (ops : Array Operand) (a : Array FuncId) : Array FuncId :=
+    ops.foldl (fun a op => fromOperand op a) a
+  let fromFuncRef (ref : FuncRef) (a : Array FuncId) : Array FuncId :=
+    match ref with
+    | .local fid => a.push fid
+    | _ => a
+  match inst with
+  | .call fid args _ => fromOperands args (acc.push fid)
+  | .callPoly fid _ args _ => fromOperands args (acc.push fid)
+  | .makeClosure ref env => fromFuncRef ref (fromOperand env acc)
+  | .makeClosurePoly ref _ env => fromFuncRef ref (fromOperand env acc)
+  | .phi pairs _ => pairs.foldl (fun a (op, _) => fromOperand op a) acc
+  | .select c t e => fromOperand e (fromOperand t (fromOperand c acc))
+  | .callClosure clo args _ => fromOperands args (fromOperand clo acc)
+  | .callIndirect fn args _ => fromOperands args (fromOperand fn acc)
+  | _ => acc
+
+/-- Collect all FuncId references from a function body -/
+private def collectFuncRefsFromFunc (sf : SomeFunc) : Array FuncId :=
+  match sf.asMono? with
+  | none => #[]
+  | some f =>
+    match f.body with
+    | none => #[]
+    | some cfg =>
+      cfg.allBlocks.foldl (init := #[]) fun acc block =>
+        block.stmts.foldl (init := acc) fun acc stmt =>
+          collectFuncRefs stmt.inst acc
+
+/-- Find all functions reachable from main via transitive call graph -/
+partial def findReachableFuncs (m : Module) : Std.HashSet FuncId :=
+  let funcById := m.funcs.foldl (init := ({} : Std.HashMap Nat SomeFunc))
+    fun acc sf => acc.insert sf.id.id sf
+  -- BFS from main
+  let seeds : Array FuncId := match m.mainFunc with
+    | some id => #[id]
+    | none => #[]
+  go funcById {} seeds
+where
+  go (funcById : Std.HashMap Nat SomeFunc) (visited : Std.HashSet FuncId)
+     (worklist : Array FuncId) : Std.HashSet FuncId :=
+    if h : worklist.size > 0 then
+      let funcId := worklist[worklist.size - 1]
+      let worklist := worklist.pop
+      if visited.contains funcId then
+        go funcById visited worklist
+      else
+        let visited := visited.insert funcId
+        let refs := match funcById.get? funcId.id with
+          | some sf => collectFuncRefsFromFunc sf
+          | none => #[]
+        let worklist := refs.foldl (init := worklist) fun wl ref =>
+          if visited.contains ref then wl else wl.push ref
+        go funcById visited worklist
+    else visited
 
 /-- Remove polymorphic functions and compact IDs -/
 def removePolymorphicAndCompact : StateM MonoState Unit := do
   let s ← get
 
-  -- Keep only monomorphic functions that are used
+  -- Keep only monomorphic functions reachable from main
+  let reachable := findReachableFuncs s.module
   let monoFuncs := s.module.funcs.filterMap fun sf =>
     match sf.asMono? with
-    | some f => if isUsed s.module f.id then some f else none
+    | some f => if reachable.contains f.id then some f else none
     | none => none
 
   -- Renumber

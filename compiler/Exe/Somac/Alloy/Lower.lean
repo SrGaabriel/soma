@@ -107,6 +107,8 @@ structure LowerState (n : Nat) where
   nextBlockId : Nat := 1
   /-- Intrinsic dispatch table from elaboration -/
   ctxIntrinsics : Std.HashMap QualifiedName Intrinsic := {}
+  /-- String table index for panic message -/
+  panicMsgIdx : Nat := 0
 
 namespace LowerState
 
@@ -118,15 +120,18 @@ instance : Inhabited (LowerState n) where
     portMap := {}
     nextBlockId := 1
     ctxIntrinsics := {}
+    panicMsgIdx := 0
   }
 
 /-- Create initial state for a function -/
 def init (funcId : FuncId) (sig : Signature n)
-    (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : LowerState n :=
+    (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
+    (panicMsgIdx : Nat := 0) : LowerState n :=
   let entry : Block n := { id := .entry, terminator := .unreachable }
   { func := Func.withBody funcId sig (CFG.withEntry entry)
   , currentBlock := entry
   , ctxIntrinsics := intrinsics
+  , panicMsgIdx
   }
 
 /-- Allocate a fresh local -/
@@ -194,8 +199,9 @@ namespace LowerM
 
 def run' (funcId : FuncId) (sig : Signature n)
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
+    (panicMsgIdx : Nat := 0)
     (m : LowerM n α) : α × Func n :=
-  let (result, state) := Id.run (StateT.run m (LowerState.init funcId sig intrinsics))
+  let (result, state) := Id.run (StateT.run m (LowerState.init funcId sig intrinsics panicMsgIdx))
   (result, state.finalize)
 
 def freshLocal : LowerM n LocalId := do
@@ -244,6 +250,12 @@ def lookupPort (port : CPortId) : LowerM n (Option LocalId) := do
 def getCurrentBlockId : LowerM n BlockId := do
   let s ← get
   pure s.currentBlock.id
+
+/-- Emit a panic instruction followed by a dummy return value -/
+def emitPanic (ty : Ty n) : LowerM n LocalId := do
+  let s ← get
+  emitVoid (.panic s.panicMsgIdx 0)
+  emitInst (.copy (.const (.undef ty.close))) ty
 
 end LowerM
 
@@ -881,20 +893,18 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   if let some result := ns.results.get? nodeId.id then
     return result
 
-  -- Cycle detection (probably recursive data or DUP self-reference)
+  -- Cycle detection
   if ns.processing.contains nodeId.id then
     let ty := ns.expectedResultTy.getD valueType
-    let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef ty.close))) ty)
-    return undef
+    return ← StateT.lift (LowerM.emitPanic ty)
 
   -- Mark as processing
   modify fun s => { s with processing := s.processing.insert nodeId.id }
 
-  -- Missing node: emit undef with expected type. Probably stub/external definition
+  -- Missing node: should not happen in well-formed graphs
   let some entry := graph.getNode nodeId | do
     let ty := ns.expectedResultTy.getD valueType
-    let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef ty.close))) ty)
-    return undef
+    return ← StateT.lift (LowerM.emitPanic ty)
 
   let ctx := ns.toTypeConvCtx
   let nodeTy := getNodeTypeWithMapping entry ctx
@@ -910,7 +920,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   let lowerPort (portIdx : Nat) (defaultTy : Ty n := nodeTy) : StateT (NodeState n) (LowerM n) LocalId := do
     match entry.getPort ⟨portIdx⟩ with
     | some targetPort => lowerOperandWithMap graph targetPort funcIdMap
-    | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef defaultTy.close))) defaultTy)
+    | none => StateT.lift (LowerM.emitPanic defaultTy)
 
   let result ← match entry.node with
   | .num primTy val =>
@@ -1040,18 +1050,18 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         -- Regular function call: check what the function node is
         match fnPort with
         | none =>
-          -- No function port → erased, emit undef of expected type
-          StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
+          -- No function port → erased function call
+          StateT.lift (LowerM.emitPanic nodeTy)
         | some fp =>
           match graph.getNode fp.node with
           | none =>
-            -- Missing node → treat as erased
-            StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
+            -- Missing function node
+            StateT.lift (LowerM.emitPanic nodeTy)
           | some fnEntry =>
             match fnEntry.node with
             | .era =>
-              -- Function is ERA → erased, emit undef of expected type
-              StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
+              -- Function is ERA → erased function call
+              StateT.lift (LowerM.emitPanic nodeTy)
             | .lam _ =>
               lowerNodeWithMap graph fp.node funcIdMap
             | .ref refId | .alo refId =>
@@ -1081,7 +1091,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               -- Regular closure call: lower the function and use callClosure
               let fnNodeTy := getNodeTypeWithMapping fnEntry ctx
               if fnNodeTy == .prim .unit then
-                StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
+                StateT.lift (LowerM.emitPanic nodeTy)
               else
                 let fnVal ← lowerNodeWithMap graph fp.node funcIdMap
                 StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
@@ -1093,8 +1103,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       let fnPort ← match entry.getPort ⟨1⟩ with
         | some p => pure p
         | none =>
-          let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
-          return undef
+          return ← StateT.lift (LowerM.emitPanic nodeTy)
 
       let canonRef := resolveCanonicalRef graph fnPort.node
       let funcRef ← match canonRef with
@@ -1172,16 +1181,21 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     -- Restore cache
     modify fun ns => ns.restoreResults cacheSnapshot
 
-    -- Lower miss value
-    let missVal ← lowerPort 3
-    -- Record the actual block we're in after lowering the miss branch
-    let missBlock ← StateT.lift LowerM.getCurrentBlockId
-    StateT.lift (LowerM.finishBlock (.jump joinBlock) joinBlock)
-
-    -- Phi to merge results
-    StateT.lift (LowerM.emitInst
-      (.phi #[(Operand.local hitVal, hitBlock), (Operand.local missVal, missBlock)] nodeTy)
-      nodeTy)
+    match entry.getPort ⟨3⟩ with
+    | some _ =>
+      -- Non-exhaustive or chained match: lower miss branch normally
+      let missVal ← lowerPort 3
+      let missBlock ← StateT.lift LowerM.getCurrentBlockId
+      StateT.lift (LowerM.finishBlock (.jump joinBlock) joinBlock)
+      StateT.lift (LowerM.emitInst
+        (.phi #[(Operand.local hitVal, hitBlock), (Operand.local missVal, missBlock)] nodeTy)
+        nodeTy)
+    | none =>
+      -- Exhaustive match: miss branch is unreachable
+      let ls ← StateT.lift get
+      StateT.lift (LowerM.emitVoid (.panic ls.panicMsgIdx 0))
+      StateT.lift (LowerM.finishBlock .unreachable joinBlock)
+      pure hitVal
 
   | .op1 op => do
     let operandVal ← lowerPort 1
@@ -1336,7 +1350,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     StateT.lift (LowerM.emitInst (.load (.local elemPtr) nodeTy) nodeTy)
 
   | .slice =>
-    StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
+    StateT.lift (LowerM.emitPanic nodeTy)
 
   -- Cache result and clear processing flag
   modify fun ns => { ns with
@@ -1370,7 +1384,8 @@ def collectLamChain (graph : CGraph) (root : CNodeId) (arity : Nat)
 /-- Lower a definition with a specific type parameter count n -/
 def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (funcIdMap : FuncIdMap) (tyVarMapping : TyVarMapping n) (primTypes : PrimTypeRegistry)
-    (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Func n :=
+    (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
+    (panicMsgIdx : Nat := 0) : Func n :=
   let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes }
   let (explicitTypeParams, paramInfos) := extractParamsUsingMapping def_.ty ctx
   let numTyVars := n
@@ -1391,7 +1406,7 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
   let sig : Signature n := { name := def_.name.symbolName, typeParamNames, params, retTy }
   let returnsUnit := sig.retTy == .prim .unit
 
-  let (_, func) := LowerM.run' funcId sig intrinsics do
+  let (_, func) := LowerM.run' funcId sig intrinsics panicMsgIdx do
     if def_.arity == 0 then
       let initState : NodeState n := { tyVarMapping, primTypes, expectedResultTy := some sig.retTy }
       let (result, _) ← StateT.run (lowerNodeWithMap graph def_.root funcIdMap) initState
@@ -1411,11 +1426,12 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
 /-- Lower a Circuit definition to an Alloy function -/
 def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (funcIdMap : FuncIdMap) (primTypes : PrimTypeRegistry)
-    (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : SomeFunc :=
+    (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
+    (panicMsgIdx : Nat := 0) : SomeFunc :=
   -- Collect all type variable levels and build mapping
   let ⟨n, tyVarMapping⟩ := buildTyVarMappingFromDefinition graph def_
   -- Lower with the determined n
-  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes intrinsics
+  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes intrinsics panicMsgIdx
   -- Return existentially quantified function
   ⟨n, func⟩
 
@@ -1430,6 +1446,9 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
   for s in circuitStrings do
     let (_, st') := stringTable.intern s
     stringTable := st'
+  -- Intern panic message for unreachable code paths
+  let (panicMsgIdx, st') := stringTable.intern "soma: unreachable code"
+  stringTable := st'
   module := { module with strings := stringTable }
 
   -- First pass: build mapping from Circuit book index to sequential Alloy FuncId
@@ -1446,7 +1465,7 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
     if let some def_ := graph.book[i]? then
       if not def_.isExternal then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
-        let func := lowerDefinition graph def_ funcId funcIdMap primTypes intrinsics
+        let func := lowerDefinition graph def_ funcId funcIdMap primTypes intrinsics panicMsgIdx
         module := module.addFunc func
 
   -- Set main function using the mapped ID
