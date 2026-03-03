@@ -374,15 +374,12 @@ partial def collectAppChain (graph : CGraph) (startEntry : CNodeEntry) : Option 
     else do
       let fnPort ← currentEntry.getPort ⟨1⟩
       let fnEntry ← graph.getNode fnPort.node
-      dbg_trace s!"  CHAIN-GO: fn=n{fnPort.node.id} tag={fnEntry.node} revArgs={revArgs.size}"
       match fnEntry.node with
       | .app =>
         -- Another APP node in the chain: collect its arg and continue down
         let arg ← fnEntry.getPort ⟨2⟩
         go fnEntry (revArgs.push arg) (intermediates.push fnPort.node) (fuel - 1)
       | _ =>
-        -- Only return a chain if we collected 2+ args (outermost + at least one inner)
-        dbg_trace s!"  CHAIN-END: base={fnEntry.node} revArgs={revArgs.size}"
         if revArgs.size >= 2 then
           some {
             baseNodeId := fnPort.node
@@ -394,7 +391,6 @@ partial def collectAppChain (graph : CGraph) (startEntry : CNodeEntry) : Option 
           none
   do
     let outerArg ← startEntry.getPort ⟨2⟩
-    dbg_trace s!"COLLECT-APP-CHAIN: start={startEntry.node} port2={outerArg}"
     go startEntry #[outerArg] #[] 100
 
 open Soma.Core (Value)
@@ -455,7 +451,7 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
     let codResult := cod.applyPure neutralArg
     let codTy := convertValueTypeWithMapping codResult ctx
     .closure #[domTy] codTy
-  | Value.vLam _ _ => .closure #[] (.prim .i64)
+  | Value.vLam _ _ => .closure #[] .rawPtr
   | Value.vSigma _ name fst sndClos =>
     let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨name, ⟨0⟩⟩)
     let sndResult := sndClos.applyPure neutralArg
@@ -478,12 +474,12 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
     | .nVar v =>
       match ctx.tyVars.get? v.level.lvl with
       | some idx => .var idx
-      | none => .prim .i64
+      | none => .rawPtr
     | .nMeta m =>
       match ctx.tyVars.get? m.id with
       | some idx => .var idx
-      | none => .prim .i64
-    | _ => .prim .i64
+      | none => .rawPtr
+    | _ => .rawPtr
   | Value.vLabelLit _ => .prim .unit
   | Value.vRowSort => .prim .unit
   | Value.vLabelSort => .prim .unit
@@ -491,7 +487,7 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
   | Value.vRowExtend _ _ _ => .prim .unit
   | Value.vEq _ _ _ _ => .prim .unit
   | Value.vRefl _ _ => .prim .unit
-  | Value.vTransport _ _ _ _ _ _ _ => .prim .i64
+  | Value.vTransport _ _ _ _ _ _ _ => .rawPtr
   | Value.vIntLit _ => .prim .i32
   | Value.vStringLit _ => Ty.string
 
@@ -676,6 +672,8 @@ structure NodeState (n : Nat) where
   tyVarMapping : TyVarMapping n
   /-- Primitive type registry for resolving wired-in types -/
   primTypes : PrimTypeRegistry := {}
+  /-- Expected result type from the consumer context -/
+  expectedResultTy : Option (Ty n) := none
   deriving Inhabited
 
 namespace NodeState
@@ -879,25 +877,23 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     : StateT (NodeState n) (LowerM n) LocalId := do
   let ns ← get
 
-  let nodeTag := (graph.getNode nodeId).map fun e => s!"{e.node}"
-  dbg_trace s!"LOWER-NODE: n{nodeId.id} tag={nodeTag} memo={ns.results.contains nodeId.id} proc={ns.processing.contains nodeId.id}"
-
   -- Check memoization cache
   if let some result := ns.results.get? nodeId.id then
-    dbg_trace s!"  MEMO-HIT: n{nodeId.id}"
     return result
 
-  -- Cycle detection
+  -- Cycle detection (probably recursive data or DUP self-reference)
   if ns.processing.contains nodeId.id then
-    let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef (.prim .i64)))) valueType)
+    let ty := ns.expectedResultTy.getD valueType
+    let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef ty.close))) ty)
     return undef
 
   -- Mark as processing
   modify fun s => { s with processing := s.processing.insert nodeId.id }
 
-  -- Get the node
+  -- Missing node: emit undef with expected type. Probably stub/external definition
   let some entry := graph.getNode nodeId | do
-    let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef (.prim .i64)))) valueType)
+    let ty := ns.expectedResultTy.getD valueType
+    let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef ty.close))) ty)
     return undef
 
   let ctx := ns.toTypeConvCtx
@@ -914,7 +910,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   let lowerPort (portIdx : Nat) (defaultTy : Ty n := nodeTy) : StateT (NodeState n) (LowerM n) LocalId := do
     match entry.getPort ⟨portIdx⟩ with
     | some targetPort => lowerOperandWithMap graph targetPort funcIdMap
-    | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef (.prim .i64)))) defaultTy)
+    | none => StateT.lift (LowerM.emitInst (.copy (.const (.undef defaultTy.close))) defaultTy)
 
   let result ← match entry.node with
   | .num primTy val =>
@@ -933,25 +929,24 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           StateT.lift (LowerM.emitVoid (.erase (.local sourceVal) sourceTy))
       | none => pure ()
     | none => pure ()
-    StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
+    let eraTy := match (← get).expectedResultTy with
+      | some expected => expected
+      | none => nodeTy
+    StateT.lift (LowerM.emitInst (.copy (.const (.undef eraTy.close))) eraTy)
 
   | .lam _ =>
     lowerPort 2
 
   | .app => do
     -- Try saturated multi-argument call via app chain collection
-    dbg_trace s!"APP-ENTER: n{nodeId.id}"
     let saturatedResult ← do
       match collectAppChain graph entry with
       | some chain =>
-        dbg_trace s!"  CHAIN: base={chain.baseEntry.node} args={chain.argPorts.size}"
         -- We have a multi-arg chain. Check if the base is a known function
         match chain.baseEntry.node with
         | .ref refId | .alo refId =>
           match graph.getDefinition refId with
           | some def_ =>
-            -- Check arity match for saturated call
-            dbg_trace s!"SAT-CHECK: {def_.name.display} arity={def_.arity} args={chain.argPorts.size} ext={def_.isExternal}"
             if def_.arity == chain.argPorts.size then
               -- Saturated call, let's lower all arguments
               let mut argVals : Array LocalId := #[]
@@ -1045,18 +1040,18 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         -- Regular function call: check what the function node is
         match fnPort with
         | none =>
-          -- No function port → erased, return unit
-          StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
+          -- No function port → erased, emit undef of expected type
+          StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
         | some fp =>
           match graph.getNode fp.node with
           | none =>
             -- Missing node → treat as erased
-            StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
+            StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
           | some fnEntry =>
             match fnEntry.node with
             | .era =>
-              -- Function is ERA → erased, return unit
-              StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
+              -- Function is ERA → erased, emit undef of expected type
+              StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
             | .lam _ =>
               lowerNodeWithMap graph fp.node funcIdMap
             | .ref refId | .alo refId =>
@@ -1086,7 +1081,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               -- Regular closure call: lower the function and use callClosure
               let fnNodeTy := getNodeTypeWithMapping fnEntry ctx
               if fnNodeTy == .prim .unit then
-                StateT.lift (LowerM.emitInst (.copy (.const .unit)) (.prim .unit))
+                StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
               else
                 let fnVal ← lowerNodeWithMap graph fp.node funcIdMap
                 StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
@@ -1098,7 +1093,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       let fnPort ← match entry.getPort ⟨1⟩ with
         | some p => pure p
         | none =>
-          let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef (.prim .i64)))) nodeTy)
+          let undef ← StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
           return undef
 
       let canonRef := resolveCanonicalRef graph fnPort.node
@@ -1164,6 +1159,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     let scrutineeVal ← lowerPort 1
     let (_, _thenBlock, elseBlock) ← StateT.lift (lowerMat expectedTag scrutineeVal)
     let cacheSnapshot ← do let ns ← get; pure ns.snapshotResults
+
+    modify fun ns => { ns with expectedResultTy := some nodeTy }
 
     -- Lower hit value
     let hitVal ← lowerPort 2
@@ -1339,7 +1336,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     StateT.lift (LowerM.emitInst (.load (.local elemPtr) nodeTy) nodeTy)
 
   | .slice =>
-    StateT.lift (LowerM.emitInst (.copy (.const (.undef (.prim .i64)))) nodeTy)
+    StateT.lift (LowerM.emitInst (.copy (.const (.undef nodeTy.close))) nodeTy)
 
   -- Cache result and clear processing flag
   modify fun ns => { ns with
@@ -1396,7 +1393,7 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
 
   let (_, func) := LowerM.run' funcId sig intrinsics do
     if def_.arity == 0 then
-      let initState : NodeState n := { tyVarMapping, primTypes }
+      let initState : NodeState n := { tyVarMapping, primTypes, expectedResultTy := some sig.retTy }
       let (result, _) ← StateT.run (lowerNodeWithMap graph def_.root funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
@@ -1404,20 +1401,7 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
       let (bodyNode, lamParams) := collectLamChain graph def_.root def_.arity
       let bodyEntry := graph.getNode bodyNode
       let bodyTag := bodyEntry.map fun e => s!"{e.node}"
-      dbg_trace s!"BODY: {def_.name.display} bodyNode=n{bodyNode.id} tag={bodyTag}"
-      if let some be := bodyEntry then
-        if let some p1 := be.getPort ⟨1⟩ then
-          let fnNode := graph.getNode p1.node
-          let fnTag := fnNode.map fun e => s!"{e.node}"
-          dbg_trace s!"  fn(port1)=n{p1.node.id} tag={fnTag}"
-          if let some fne := fnNode then
-            if let some p1inner := fne.getPort ⟨1⟩ then
-              let innerNode := graph.getNode p1inner.node
-              let innerTag := innerNode.map fun e => s!"{e.node}"
-              dbg_trace s!"  fn.fn(port1)=n{p1inner.node.id} tag={innerTag}"
-        if let some p2 := be.getPort ⟨2⟩ then
-          dbg_trace s!"  arg(port2)=n{p2.node.id}"
-      let initState : NodeState n := { lamParams, tyVarMapping, primTypes }
+      let initState : NodeState n := { lamParams, tyVarMapping, primTypes, expectedResultTy := some sig.retTy }
       let (result, _) ← StateT.run (lowerNodeWithMap graph bodyNode funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))

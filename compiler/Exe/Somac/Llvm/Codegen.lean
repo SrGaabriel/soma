@@ -555,6 +555,29 @@ partial def emitEraseForType (valRef : LLVMValue) (ty : ClosedTy) : CodegenM Uni
     -- Should not occur at closed type level (nomatch in convertTy)
     pure ()
 
+/-- Lower a direct function call -/
+def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
+    : CodegenM (Option (LocalRef × ClosedTy)) := do
+  let funcName ← CodegenM.getFuncName funcId
+  let llvmRetTy := convertTy retTy
+  let maybeSig ← CodegenM.getFuncSig funcId
+  let llvmArgs ← args.mapIdxM fun i arg => do
+    let argVal ← convertOperand arg
+    let actualTy ← operandTy arg
+    let actualLLVMTy := convertTy actualTy
+    let expectedTy ← match maybeSig with
+      | some sig =>
+        if h : i < sig.params.size then pure sig.params[i].ty
+        else pure actualTy
+      | none => pure actualTy
+    let expectedLLVMTy := convertTy expectedTy
+    let coercedVal ← if actualLLVMTy == expectedLLVMTy then pure argVal
+                      else coerceValue actualLLVMTy expectedLLVMTy argVal
+    pure (expectedLLVMTy, coercedVal)
+  let ref ← CodegenM.withFuncBuilder do
+    FuncBuilder.callNamed llvmRetTy funcName llvmArgs
+  pure (some (ref, retTy))
+
 /-- Lower an Alloy instruction to LLVM, returning result ref and result type -/
 def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := do
   match inst with
@@ -736,9 +759,16 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     -- Handle based on Alloy type to determine the proper extraction strategy
     match valTy with
     | .tagged _ _ =>
-      -- Tagged union: extract the tag (field 0) directly
+      -- Tagged union by value: extract the tag (field 0) directly from { i32, ptr }
       let ref ← CodegenM.withFuncBuilder do
         FuncBuilder.extractvalue llvmValTy valRef #[0]
+      pure (some (ref, .prim .u32))
+    | .rawPtr | .ptr _ =>
+      -- Pointer to tagged union in memory: GEP to tag field + load
+      let tagPtr ← CodegenM.withFuncBuilder do
+        FuncBuilder.gepi32 taggedTy valRef #[0, 0]
+      let ref ← CodegenM.withFuncBuilder do
+        FuncBuilder.load .i32 (.local tagPtr)
       pure (some (ref, .prim .u32))
     | .struct fields =>
       -- Struct: check if first field is a tagged union
@@ -787,9 +817,17 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let valRef ← convertOperand val
     let llvmValTy := convertTy valTy
     let llvmResultTy := convertTy resultTy
-    -- Tagged unions are by-value { i32, ptr } structs
-    let payloadPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.extractvalue llvmValTy valRef #[1]
+    let payloadPtr ← match valTy with
+      | .rawPtr | .ptr _ =>
+        -- Pointer to tagged union: GEP to payload field (index 1) + load
+        let payloadSlot ← CodegenM.withFuncBuilder do
+          FuncBuilder.gepi32 taggedTy valRef #[0, 1]
+        CodegenM.withFuncBuilder do
+          FuncBuilder.load .ptr (.local payloadSlot)
+      | _ =>
+        -- By-value tagged union: extractvalue to get payload pointer
+        CodegenM.withFuncBuilder do
+          FuncBuilder.extractvalue llvmValTy valRef #[1]
     -- Payload layout: [tag+pad : 8B, count : i64, field0 : i64, ...]
     -- Fields start at i64 index 2 (after 8-byte header + 8-byte count)
     let fieldPtr ← CodegenM.withFuncBuilder do
@@ -833,49 +871,10 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     pure (some (ref, ty))
 
   | .call func args retTy =>
-    let funcName ← CodegenM.getFuncName func.id
-    let llvmRetTy := convertTy retTy
-    -- Get callee signature for proper argument types
-    let maybeSig ← CodegenM.getFuncSig func.id
-    let llvmArgs ← args.mapIdxM fun i arg => do
-      let argVal ← convertOperand arg
-      let actualTy ← operandTy arg
-      let actualLLVMTy := convertTy actualTy
-      -- Use callee's parameter type if available, otherwise infer from operand
-      let expectedTy ← match maybeSig with
-        | some sig =>
-          if h : i < sig.params.size then pure sig.params[i].ty
-          else pure actualTy
-        | none => pure actualTy
-      let expectedLLVMTy := convertTy expectedTy
-      let coercedVal ← if actualLLVMTy == expectedLLVMTy then pure argVal
-                        else coerceValue actualLLVMTy expectedLLVMTy argVal
-      pure (expectedLLVMTy, coercedVal)
-    let ref ← CodegenM.withFuncBuilder do
-      FuncBuilder.callNamed llvmRetTy funcName llvmArgs
-    pure (some (ref, retTy))
+    lowerDirectCall func.id args retTy
 
   | .callPoly func _typeArgs args retTy =>
-    -- this should've been monomorphized, but anyway we handle it the exact same as normal call
-    let funcName ← CodegenM.getFuncName func.id
-    let llvmRetTy := convertTy retTy
-    let maybeSig ← CodegenM.getFuncSig func.id
-    let llvmArgs ← args.mapIdxM fun i arg => do
-      let argVal ← convertOperand arg
-      let actualTy ← operandTy arg
-      let actualLLVMTy := convertTy actualTy
-      let expectedTy ← match maybeSig with
-        | some sig =>
-          if h : i < sig.params.size then pure sig.params[i].ty
-          else pure actualTy
-        | none => pure actualTy
-      let expectedLLVMTy := convertTy expectedTy
-      let coercedVal ← if actualLLVMTy == expectedLLVMTy then pure argVal
-                        else coerceValue actualLLVMTy expectedLLVMTy argVal
-      pure (expectedLLVMTy, coercedVal)
-    let ref ← CodegenM.withFuncBuilder do
-      FuncBuilder.callNamed llvmRetTy funcName llvmArgs
-    pure (some (ref, retTy))
+    lowerDirectCall func.id args retTy
 
   | .callIndirect ptr args retTy =>
     let ptrVal ← convertOperand ptr

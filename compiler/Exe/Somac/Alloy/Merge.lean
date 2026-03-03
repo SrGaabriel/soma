@@ -13,6 +13,8 @@ structure IdRemap where
   funcMap : Std.HashMap String (Std.HashMap Nat Nat) := {}
   /-- Module name → (old GlobalId → new GlobalId) -/
   globalMap : Std.HashMap String (Std.HashMap Nat Nat) := {}
+  /-- Module name → (old string index → new string index) -/
+  stringMap : Std.HashMap String (Std.HashMap Nat Nat) := {}
   deriving Inhabited
 
 namespace IdRemap
@@ -32,6 +34,13 @@ def lookupFunc (r : IdRemap) (moduleName : String) (oldId : Nat) : Option Nat :=
 
 def lookupGlobal (r : IdRemap) (moduleName : String) (oldId : Nat) : Option Nat :=
   r.globalMap.get? moduleName |>.bind (·.get? oldId)
+
+def addStringMapping (r : IdRemap) (moduleName : String) (oldIdx newIdx : Nat) : IdRemap :=
+  let moduleMap := r.stringMap.get? moduleName |>.getD {}
+  { r with stringMap := r.stringMap.insert moduleName (moduleMap.insert oldIdx newIdx) }
+
+def lookupString (r : IdRemap) (moduleName : String) (oldIdx : Nat) : Option Nat :=
+  r.stringMap.get? moduleName |>.bind (·.get? oldIdx)
 
 end IdRemap
 
@@ -78,6 +87,10 @@ def remapOperand (remap : IdRemap) (moduleName : String) (op : Operand) : Operan
   | .global id =>
     match remap.lookupGlobal moduleName id.id with
     | some newId => .global ⟨newId⟩
+    | none => op
+  | .const (.string idx len) =>
+    match remap.lookupString moduleName idx with
+    | some newIdx => .const (.string newIdx len)
     | none => op
   | _ => op
 
@@ -280,9 +293,11 @@ def registerModule (moduleName : String) (module : Module) (state : MergeState) 
     s := s.addTypeDef td
 
   -- Merge string table
+  let mut strIdx := 0
   for str in module.strings.strings do
-    let (_, s') := s.internString str
-    s := s'
+    let (newIdx, s') := s.internString str
+    s := { s' with remap := s'.remap.addStringMapping moduleName strIdx newIdx }
+    strIdx := strIdx + 1
 
   s
 

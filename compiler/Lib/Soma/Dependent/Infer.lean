@@ -583,74 +583,42 @@ partial def buildListPattern (elems : List Soma.Core.Pattern) (span : Span)
     | some info => pure (.ctor info.name info.ctorTag #[head, tailPat])
     | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
 
-/-- Convert a Syntax.Pattern to a Core.Pattern -/
-partial def convertSyntaxPattern (pat : Soma.Syntax.Pattern) : TCM Soma.Core.Pattern := do
+/-- Convert a Syntax.Pattern to a Core.Pattern and simultaneously extract binding types -/
+partial def convertPatternWithBindings (pat : Soma.Syntax.Pattern) (scrutTy : Value)
+    : TCM (Soma.Core.Pattern × List (Unique × String × Value)) := do
   match pat with
   | .var name =>
-    -- Generate a unique for this pattern variable
     let u ← TCM.freshUnique name.value
-    pure (.var (some u))
-  | .wildcard _ => pure .wildcard
+    pure (.var (some u), [(u, name.value, scrutTy)])
+  | .wildcard _ => pure (.wildcard, [])
   | .lit l =>
     pure (.lit (match l with
       | .int n _ => .int n
       | .string s _ => .string s
-      | .bool b _ => .bool b))
-  | .con name args span =>
-    let coreArgs ← args.mapM convertSyntaxPattern
-    -- Look up constructor via namespace-aware resolution to get its QualifiedName
-    match ← TCM.resolveConstructor name.value with
-    | some ctorInfo =>
-      pure (.ctor ctorInfo.name ctorInfo.ctorTag coreArgs)
-    | none =>
-      TCM.throw (.unboundVariable name.value span #[])
-  | .tuple elems span => do
-    let coreElems ← elems.mapM convertSyntaxPattern
-    buildNestedPairPattern coreElems.toList span
-  | .list elems span => do
-    let coreElems ← elems.mapM convertSyntaxPattern
-    buildListPattern coreElems.toList span
-  | .cons head tail span => do
-    let coreHead ← convertSyntaxPattern head
-    let coreTail ← convertSyntaxPattern tail
-    match ← TCM.lookupWiredIn .cons with
-    | some info => pure (.ctor info.name info.ctorTag #[coreHead, coreTail])
-    | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
-  | .parens inner _ => convertSyntaxPattern inner
-  | .typed pat _ _ => convertSyntaxPattern pat
-  | .variant label arg _ => do
-    let coreArg ← match arg with
-      | some p => some <$> convertSyntaxPattern p
-      | none => pure none
-    pure (.inject label.value coreArg)
-
-/-- Extract binding types from a Syntax.Pattern and its scrutinee type -/
-partial def extractSyntaxPatternBindingTypes (pat : Soma.Syntax.Pattern) (scrutTy : Value)
-  : TCM (List (Unique × String × Value)) := do
-  match pat with
-  | .var name =>
-    let binding ← TCM.freshLocalId name.value
-    return [(binding, name.value, scrutTy)]
-  | .wildcard _ => return []
-  | .lit _ => return []
-  | .tuple elems _ =>
-    extractSyntaxTupleBindingTypes elems.toList scrutTy
+      | .bool b _ => .bool b), [])
   | .con name args span =>
     match ← TCM.resolveConstructor name.value with
     | some ctorInfo =>
       let fieldTypes ← extractConstructorFieldTypes ctorInfo.type scrutTy (some name.value) span
-      let mut result : List (Unique × String × Value) := []
-      for (arg, fieldTy) in args.toList.zip fieldTypes.toList do
-        let bindings ← extractSyntaxPatternBindingTypes arg fieldTy
-        result := result ++ bindings
-      for arg in args.toList.drop fieldTypes.size do
-        let argTy ← TCM.freshMetaVal (.vType .zero)
-        let bindings ← extractSyntaxPatternBindingTypes arg argTy
-        result := result ++ bindings
-      return result
+      let mut coreArgs : Array Soma.Core.Pattern := #[]
+      let mut bindings : List (Unique × String × Value) := []
+      for h : i in [:args.size] do
+        let arg := args[i]
+        let fieldTy ← if h' : i < fieldTypes.size then
+          pure fieldTypes[i]
+        else
+          TCM.freshMetaVal (.vType .zero)
+        let (corePat, argBindings) ← convertPatternWithBindings arg fieldTy
+        coreArgs := coreArgs.push corePat
+        bindings := bindings ++ argBindings
+      pure (.ctor ctorInfo.name ctorInfo.ctorTag coreArgs, bindings)
     | none =>
       TCM.throw (.unboundVariable name.value span #[])
-  | .list elems span =>
+  | .tuple elems span => do
+    let (coreElems, bindings) ← convertTuplePatternWithBindings elems.toList scrutTy
+    let nested ← buildNestedPairPattern coreElems span
+    pure (nested, bindings)
+  | .list elems span => do
     let elemTy ← TCM.freshMetaVal (.vType .zero)
     let scrutTy' ← force scrutTy
     match scrutTy' with
@@ -660,12 +628,15 @@ partial def extractSyntaxPatternBindingTypes (pat : Soma.Syntax.Pattern) (scrutT
       let listId := listInfo.name.id
       let expectedListTy := Value.vDataType listId [elemTy]
       unify scrutTy expectedListTy
-    let mut result : List (Unique × String × Value) := []
+    let mut coreElems : List Soma.Core.Pattern := []
+    let mut bindings : List (Unique × String × Value) := []
     for elem in elems do
-      let bindings ← extractSyntaxPatternBindingTypes elem elemTy
-      result := result ++ bindings
-    return result
-  | .cons head tail span =>
+      let (corePat, elemBindings) ← convertPatternWithBindings elem elemTy
+      coreElems := coreElems ++ [corePat]
+      bindings := bindings ++ elemBindings
+    let listPat ← buildListPattern coreElems span
+    pure (listPat, bindings)
+  | .cons head tail span => do
     let elemTy ← TCM.freshMetaVal (.vType .zero)
     let scrutTy' ← force scrutTy
     match scrutTy' with
@@ -675,55 +646,62 @@ partial def extractSyntaxPatternBindingTypes (pat : Soma.Syntax.Pattern) (scrutT
       let listId := listInfo.name.id
       let expectedListTy := Value.vDataType listId [elemTy]
       unify scrutTy expectedListTy
-    let headBindings ← extractSyntaxPatternBindingTypes head elemTy
-    let tailBindings ← extractSyntaxPatternBindingTypes tail scrutTy
-    return headBindings ++ tailBindings
-  | .parens inner _ => extractSyntaxPatternBindingTypes inner scrutTy
-  | .typed pat _ _ => extractSyntaxPatternBindingTypes pat scrutTy
-  | .variant _ arg _ =>
+    let (coreHead, headBindings) ← convertPatternWithBindings head elemTy
+    let (coreTail, tailBindings) ← convertPatternWithBindings tail scrutTy
+    match ← TCM.lookupWiredIn .cons with
+    | some info => pure (.ctor info.name info.ctorTag #[coreHead, coreTail], headBindings ++ tailBindings)
+    | none => TCM.throw (.unboundGlobal "cons (no @[wired_in \"cons\"] constructor in scope)" span #[])
+  | .parens inner _ => convertPatternWithBindings inner scrutTy
+  | .typed pat _ _ => convertPatternWithBindings pat scrutTy
+  | .variant label arg _ => do
     match arg with
     | some p =>
       let argTy ← TCM.freshMetaVal (.vType .zero)
-      extractSyntaxPatternBindingTypes p argTy
-    | none => return []
+      let (coreArg, bindings) ← convertPatternWithBindings p argTy
+      pure (.inject label.value (some coreArg), bindings)
+    | none => pure (.inject label.value none, [])
 where
-  extractSyntaxTupleBindingTypes (elems : List Soma.Syntax.Pattern) (ty : Value)
-      : TCM (List (Unique × String × Value)) := do
+  convertTuplePatternWithBindings (elems : List Soma.Syntax.Pattern) (ty : Value)
+      : TCM (List Soma.Core.Pattern × List (Unique × String × Value)) := do
     match elems with
-    | [] => return []
-    | [lastElem] => extractSyntaxPatternBindingTypes lastElem ty
+    | [] => return ([], [])
+    | [lastElem] =>
+      let (pat, bindings) ← convertPatternWithBindings lastElem ty
+      pure ([pat], bindings)
     | elem :: rest =>
       let ty' ← force ty
       match ty' with
       | .vSigma _ _ fstTy sndClos =>
-        let elemBindings ← extractSyntaxPatternBindingTypes elem fstTy
+        let (elemPat, elemBindings) ← convertPatternWithBindings elem fstTy
         let lvl ← TCM.currentLevel
         let dummyVal := Value.vNeutral fstTy (.nVar ⟨"_", lvl⟩)
         let sndTy ← applyClosure sndClos dummyVal
-        let restBindings ← extractSyntaxTupleBindingTypes rest sndTy
-        return elemBindings ++ restBindings
+        let (restPats, restBindings) ← convertTuplePatternWithBindings rest sndTy
+        return (elemPat :: restPats, elemBindings ++ restBindings)
       | _ =>
-        let mut result : List (Unique × String × Value) := []
+        let mut pats : List Soma.Core.Pattern := []
+        let mut bindings : List (Unique × String × Value) := []
         for e in (elem :: rest) do
           let eTy ← TCM.freshMetaVal (.vType .zero)
-          let bindings ← extractSyntaxPatternBindingTypes e eTy
-          result := result ++ bindings
-        return result
+          let (p, bs) ← convertPatternWithBindings e eTy
+          pats := pats ++ [p]
+          bindings := bindings ++ bs
+        return (pats, bindings)
 
-/-- Extract binding types from a list of patterns and corresponding scrutinee types -/
-partial def extractSyntaxPatternListBindingTypes (pats : List Soma.Syntax.Pattern) (scrutTys : List Value)
-  : TCM (List (Unique × String × Value)) := do
+/-- Convert a list of Syntax.Patterns with corresponding scrutinee types -/
+partial def convertPatternListWithBindings (pats : List Soma.Syntax.Pattern) (scrutTys : List Value)
+    : TCM (Array Soma.Core.Pattern × List (Unique × String × Value)) := do
   match pats, scrutTys with
-  | [], _ => return []
+  | [], _ => return (#[], [])
   | pat :: rest, ty :: tys =>
-    let patBindings ← extractSyntaxPatternBindingTypes pat ty
-    let restBindings ← extractSyntaxPatternListBindingTypes rest tys
-    return patBindings ++ restBindings
+    let (corePat, patBindings) ← convertPatternWithBindings pat ty
+    let (restPats, restBindings) ← convertPatternListWithBindings rest tys
+    return (#[corePat] ++ restPats, patBindings ++ restBindings)
   | pat :: rest, [] =>
     let freshTy ← TCM.freshMetaVal (.vType .zero)
-    let patBindings ← extractSyntaxPatternBindingTypes pat freshTy
-    let restBindings ← extractSyntaxPatternListBindingTypes rest []
-    return patBindings ++ restBindings
+    let (corePat, patBindings) ← convertPatternWithBindings pat freshTy
+    let (restPats, restBindings) ← convertPatternListWithBindings rest []
+    return (#[corePat] ++ restPats, patBindings ++ restBindings)
 
 mutual
 
@@ -1080,11 +1058,11 @@ partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)
   let mut armUsagesList : Array UsageSnapshot := #[]
   for arm in arms do
     let pats := arm.patterns.toList
-    let corePatterns ← pats.mapM convertSyntaxPattern
-    let bindingsWithTypes ← extractSyntaxPatternListBindingTypes pats scrutTys
+    -- Single unified pass: convert patterns and extract bindings with shared unique IDs
+    let (corePatterns, bindingsWithTypes) ← convertPatternListWithBindings pats scrutTys
     let (bodyExpr, armUsages) ← captureUsages
       (inferSyntaxArmBodyWithBindings bindingsWithTypes arm.body expectedTy arm.span)
-    results := results.push (Soma.Core.Arm.mk corePatterns.toArray bodyExpr)
+    results := results.push (Soma.Core.Arm.mk corePatterns bodyExpr)
     armUsagesList := armUsagesList.push armUsages
   let span := match arms.head? with
     | some arm => arm.span

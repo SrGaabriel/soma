@@ -178,6 +178,10 @@ partial def ClosedTy.embed (ty : ClosedTy) : Ty n :=
 
 instance : Coe ClosedTy (Ty n) := ⟨ClosedTy.embed⟩
 
+/-- Close a polymorphic type by substituting all type variables with rawPtr -/
+def Ty.close (ty : Ty n) : ClosedTy :=
+  instantiate ty (fun _ => .rawPtr)
+
 namespace Ty
 
 def i64 : Ty n := .prim .i64
