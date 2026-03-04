@@ -215,6 +215,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       TCM.infallible (Soma.Dependent.checkSyntax fn.body resultType) default
     -- Zonk all solved metas so downstream passes see concrete types
     let declaredType' ← zonkValue declaredType
+    reportUnsolvedMetas declaredType' span
     let typedBody' ← zonkExpr typedBody
     return (declaredType', typedBody', generatedParams)
   | none =>
@@ -225,6 +226,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       TCM.infallibleExpr (Soma.Dependent.inferSyntax fn.body) span
     -- Zonk all solved metas so downstream passes see concrete types
     let inferredType' ← zonkValue inferredType
+    reportUnsolvedMetas inferredType' span
     let typedBody' ← zonkExpr typedBody
     return (inferredType', typedBody', generatedParams)
 
