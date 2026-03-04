@@ -210,15 +210,13 @@ def processRequest (key : SpecKey) : StateM MonoState Unit := do
   let s ← get
 
   -- Look up the original function
-  let some origFunc := s.module.getFunc key.funcId
-    | return ()
+  let some origFunc := s.module.getFunc key.funcId | return ()
 
   -- Only specialize if it's actually polymorphic
   if !origFunc.isPolymorphic then return ()
 
   -- Try to create a type-safe specialization request
-  let some ⟨_, req⟩ := mkSpecRequest? origFunc key.typeArgs
-    | return ()
+  let some ⟨_, req⟩ := mkSpecRequest? origFunc key.typeArgs | return ()
 
   -- Allocate a new function ID
   let (newFuncId, s') := s.freshFuncId
@@ -241,14 +239,16 @@ def processRequest (key : SpecKey) : StateM MonoState Unit := do
   modify fun s => s.addRequests newRequests
 
 /-- Process all pending specialization requests (fixed-point iteration) -/
-partial def processAllRequests : StateM MonoState Unit := do
-  let s ← get
-  match s.popPending with
-  | none => return ()  -- No more work
-  | some (key, s') =>
-    set s'
-    processRequest key
-    processAllRequests
+partial def processAllRequests : StateM MonoState Unit := go
+where
+  go : StateM MonoState Unit := do
+    let s ← get
+    match s.popPending with
+    | none => return ()
+    | some (key, s') =>
+      set s'
+      processRequest key
+      go
 
 /-- Rewrite all functions to use specialized versions -/
 def rewriteAllFuncs : StateM MonoState Unit := do
@@ -398,13 +398,12 @@ def removePolymorphicAndCompact : StateM MonoState Unit := do
 /-! ## Entry Point -/
 
 /-- Run the monomorphization pass on a module -/
-def monomorphize (m : Module) : Module :=
+def monomorphize (m : Module) : Module := Id.run do
   -- Initialize state
   let initState := MonoState.init m
 
   -- Collect initial specialization requests from the whole module
   let initialRequests := collectModuleRequests m
-
   -- Add all requests to the work list
   let stateWithRequests := initState.addRequests initialRequests
 
@@ -415,7 +414,7 @@ def monomorphize (m : Module) : Module :=
   let ((), stateAfterRewrite) := Id.run (StateT.run rewriteAllFuncs stateAfterSpec)
 
   let ((), finalState) := Id.run (StateT.run removePolymorphicAndCompact stateAfterRewrite)
-  finalState.module
+  return finalState.module
 
 /-! ## Verification -/
 

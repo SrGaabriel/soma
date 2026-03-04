@@ -523,16 +523,22 @@ partial def collectTyVarLevelsNeutral (neu : Soma.Core.Neutral) (acc : Std.HashS
 partial def collectTyVarLevels (val : Value) (acc : Std.HashSet Nat := {}) : Std.HashSet Nat :=
   match val with
   | Value.vNeutral _ neu => collectTyVarLevelsNeutral neu acc
-  | Value.vPi _ _ _ dom cod =>
+  | Value.vPi _ _ name dom cod =>
     let acc' := collectTyVarLevels dom acc
     match cod with
     | .const _ body => collectTyVarLevels body acc'
-    | _ => acc'
-  | Value.vSigma _ _ fst sndClos =>
+    | .term _ _ _ =>
+      let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
+      let nextTy := cod.applyPure dummyArg
+      collectTyVarLevels nextTy acc'
+  | Value.vSigma _ name fst sndClos =>
     let acc' := collectTyVarLevels fst acc
     match sndClos with
     | .const _ body => collectTyVarLevels body acc'
-    | _ => acc'
+    | .term _ _ _ =>
+      let dummyArg := Value.vNeutral fst (.nVar ⟨name, sndClos.env.level⟩)
+      let nextTy := sndClos.applyPure dummyArg
+      collectTyVarLevels nextTy acc'
   | Value.vPair fst snd =>
     collectTyVarLevels snd (collectTyVarLevels fst acc)
   | Value.vDataType _ params =>
@@ -551,6 +557,68 @@ partial def collectTyVarLevels (val : Value) (acc : Std.HashSet Nat := {}) : Std
     collectTyVarLevels body acc'
   | _ => acc
 
+end
+
+/-- Advance a Closure codomain by substituting a neutral dummy argument -/
+private partial def advanceCodomain (cod : Soma.Core.Closure) (dom : Value) : Value :=
+  match cod with
+  | .const _ body => body
+  | .term name _ _ =>
+    let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
+    cod.applyPure dummyArg
+
+/-- Strip all leading implicit type parameters (∀ a : Type) from a Value type -/
+private partial def stripLeadingImplicits (val : Value) : Value :=
+  match val with
+  | Value.vPi _ binder _ dom cod =>
+    if binder.isImplicit && dom.isType then
+      stripLeadingImplicits (advanceCodomain cod dom)
+    else val
+  | _ => val
+
+mutual
+/-- Structurally match a polymorphic Value type against a concrete Value type -/
+partial def matchTypeStructural (poly concrete : Value)
+    (levels : Std.HashSet Nat) (bindings : Std.HashMap Nat Value) : Std.HashMap Nat Value :=
+  match poly with
+  | Value.vNeutral _ (.nVar v) =>
+    if levels.contains v.level.lvl then bindings.insert v.level.lvl concrete
+    else bindings
+  | Value.vNeutral _ (.nMeta m) =>
+    if levels.contains m.id then bindings.insert m.id concrete
+    else bindings
+  | Value.vPi _ _ _ dom1 cod1 =>
+    match concrete with
+    | Value.vPi _ _ _ dom2 cod2 =>
+      let bindings' := matchTypeStructural dom1 dom2 levels bindings
+      let next1 := advanceCodomain cod1 dom1
+      let next2 := advanceCodomain cod2 dom2
+      matchTypeStructural next1 next2 levels bindings'
+    | _ => bindings
+  | Value.vDataType id1 params1 =>
+    match concrete with
+    | Value.vDataType id2 params2 =>
+      if id1 == id2 then
+        (params1.zip params2).foldl (fun acc (p, c) =>
+          matchTypeStructural p c levels acc) bindings
+      else bindings
+    | _ => bindings
+  | Value.vSigma _ _ fst1 sndClos1 =>
+    match concrete with
+    | Value.vSigma _ _ fst2 sndClos2 =>
+      let bindings' := matchTypeStructural fst1 fst2 levels bindings
+      let snd1 := advanceCodomain sndClos1 fst1
+      let snd2 := advanceCodomain sndClos2 fst2
+      matchTypeStructural snd1 snd2 levels bindings'
+    | _ => bindings
+  | _ => bindings
+
+/-- Match a polymorphic function type against a concrete function type -/
+partial def matchPolyAgainstConcrete (poly concrete : Value)
+    (levels : Std.HashSet Nat) (bindings : Std.HashMap Nat Value) : Std.HashMap Nat Value :=
+  let poly := stripLeadingImplicits poly
+  let concrete := stripLeadingImplicits concrete
+  matchTypeStructural poly concrete levels bindings
 end
 
 /-- Collect all tyVar levels from all reachable nodes in a definition's graph -/
@@ -595,6 +663,20 @@ def buildTyVarMapping (levels : Std.HashSet Nat) : Σ n, TyVarMapping n :=
 def buildTyVarMappingFromDefinition (_graph : CGraph) (def_ : CDefinition) : Σ n, TyVarMapping n :=
   let defLevels := collectTyVarLevels def_.ty
   buildTyVarMapping defLevels
+
+/-- Extract type arguments for a call to a polymorphic function -/
+partial def extractCallTypeArgs (defTy : Value) (concreteTy : Value)
+    (ctx : TypeConvCtx n) : Option (Array (Ty n)) :=
+  let levels := collectTyVarLevels defTy
+  if levels.isEmpty then none
+  else
+    let bindings := matchPolyAgainstConcrete defTy concreteTy levels {}
+    let sortedLevels := levels.toArray.qsort (· < ·)
+    let typeArgs := sortedLevels.map fun level =>
+      match bindings.get? level with
+      | some val => convertValueTypeWithMapping val ctx
+      | none => .rawPtr
+    some typeArgs
 
 /-- Extract type parameter names and value parameters using a type conversion context -/
 partial def extractParamsUsingMapping (ty : Value) (ctx : TypeConvCtx n)
@@ -965,8 +1047,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 argVals := argVals.push val
               let argOps := argVals.map fun v => Operand.local v
 
-              -- Get return type from the function definition
-              let callRetTy := extractReturnTypeWithMapping def_.ty ctx
+              let callRetTy := extractReturnTypeWithMapping chain.baseEntry.ty ctx
 
               -- Resolve intrinsics via authoritative table + name fallback
               let ls ← StateT.lift get
@@ -991,7 +1072,12 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
                 let result ← match funcRef with
                   | .local funcId =>
-                    StateT.lift (LowerM.emitInst (.call funcId argOps callRetTy) callRetTy)
+                    let typeArgs? := extractCallTypeArgs def_.ty chain.baseEntry.ty ctx
+                    match typeArgs? with
+                    | some typeArgs =>
+                      StateT.lift (LowerM.emitInst (.callPoly funcId typeArgs argOps callRetTy) callRetTy)
+                    | none =>
+                      StateT.lift (LowerM.emitInst (.call funcId argOps callRetTy) callRetTy)
                   | .external name =>
                     StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
                   | .externC name =>
@@ -1065,20 +1151,29 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             | .lam _ =>
               lowerNodeWithMap graph fp.node funcIdMap
             | .ref refId | .alo refId =>
-              let defArity := match graph.getDefinition refId with
+              let def_? := graph.getDefinition refId
+              let defArity := match def_? with
                 | some def_ => def_.arity
                 | none => 1
               let ls ← StateT.lift get
               let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
+              let typeArgs? := def_?.bind fun def_ =>
+                extractCallTypeArgs def_.ty fnEntry.ty ctx
               if defArity > 1 then
-                StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local argVal)) nodeTy)
+                match typeArgs? with
+                | some typeArgs =>
+                  StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs (.local argVal)) nodeTy)
+                | none =>
+                  StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local argVal)) nodeTy)
               else
-                let callRetTy := match graph.getDefinition refId with
-                  | some def_ => extractReturnTypeWithMapping def_.ty ctx
-                  | none => nodeTy
+                let callRetTy := extractReturnTypeWithMapping fnEntry.ty ctx
                 match funcRef with
                 | .local funcId =>
-                  StateT.lift (LowerM.emitInst (.call funcId #[.local argVal] callRetTy) callRetTy)
+                  match typeArgs? with
+                  | some typeArgs =>
+                    StateT.lift (LowerM.emitInst (.callPoly funcId typeArgs #[.local argVal] callRetTy) callRetTy)
+                  | none =>
+                    StateT.lift (LowerM.emitInst (.call funcId #[.local argVal] callRetTy) callRetTy)
                 | .external name =>
                   StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
                 | .intrinsic op =>
@@ -1106,21 +1201,29 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           return ← StateT.lift (LowerM.emitPanic nodeTy)
 
       let canonRef := resolveCanonicalRef graph fnPort.node
-      let funcRef ← match canonRef with
+      let (funcRef, typeArgs?) ← match canonRef with
         | .bookRef refId =>
           let ls ← StateT.lift get
-          pure (buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics)
+          let ref := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
+          let fnNodeTy := graph.getNode fnPort.node |>.map (·.ty)
+          let tArgs := (graph.getDefinition refId).bind fun def_ =>
+            fnNodeTy.bind fun concTy => extractCallTypeArgs def_.ty concTy ctx
+          pure (ref, tArgs)
         | .dynamicValue dynNodeId =>
           -- todo: extract the function pointer at runtime.
-          pure (FuncRef.external s!"$dynamic_closure_{dynNodeId.id}")
+          pure (FuncRef.external s!"$dynamic_closure_{dynNodeId.id}", none)
 
       -- Lower the environment (port 2)
       let envVal ← match entry.getPort ⟨2⟩ with
         | some envPort => lowerOperandWithMap graph envPort funcIdMap
         | none => StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
 
-      -- Emit makeClosure instruction
-      StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local envVal)) nodeTy)
+      -- Emit makeClosure or makeClosurePoly instruction
+      match typeArgs? with
+      | some typeArgs =>
+        StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs (.local envVal)) nodeTy)
+      | none =>
+        StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local envVal)) nodeTy)
     else
       -- Regular constructor: build tagged struct
       let mut fieldVals : Array LocalId := #[]
@@ -1205,7 +1308,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     let lhsVal ← lowerPort 1
     let rhsVal ← lowerPort 2
     let binOp := convertBinOp op
-    let opTy := if binOp.isComparison then getPortType 1 else nodeTy
+    let opTy ← if binOp.isComparison then do
+        let ls ← StateT.lift get
+        pure (ls.func.getLocalType lhsVal |>.getD nodeTy)
+      else pure nodeTy
     StateT.lift (LowerM.emitInst (.binOp binOp (.local lhsVal) (.local rhsVal) opTy) nodeTy)
 
   | .dup label => do
@@ -1277,9 +1383,15 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
   | .ref refId | .alo refId => do
     let ls ← StateT.lift get
-                let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
+    let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
     let nullEnv ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
-    StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local nullEnv)) nodeTy)
+    let typeArgs? := (graph.getDefinition refId).bind fun def_ =>
+      extractCallTypeArgs def_.ty entry.ty ctx
+    match typeArgs? with
+    | some typeArgs =>
+      StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs (.local nullEnv)) nodeTy)
+    | none =>
+      StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local nullEnv)) nodeTy)
 
   | .use => lowerPort 1
 

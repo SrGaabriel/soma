@@ -20,10 +20,11 @@ inductive SerializableTy where
   | array_ (elem : SerializableTy) (size : Nat)
   | tagged (tag : SerializableTy) (variants : Array (Nat × Array SerializableTy))
   | closure (args : Array SerializableTy) (ret : SerializableTy)
+  | tyvar (idx : Nat)
   deriving Serialize, Deserialize
 
-/-- Convert ClosedTy to SerializableTy -/
-partial def tyToSerializable : ClosedTy → SerializableTy
+/-- Convert Ty n to SerializableTy -/
+partial def tyToSerializable : Ty n → SerializableTy
   | .prim p => .prim p
   | .ptr t => .ptr (tyToSerializable t)
   | .rawPtr => .rawPtr
@@ -33,19 +34,25 @@ partial def tyToSerializable : ClosedTy → SerializableTy
   | .tagged tag variants => .tagged (tyToSerializable tag)
       (variants.map fun (i, ts) => (i, ts.map tyToSerializable))
   | .closure args ret => .closure (args.map tyToSerializable) (tyToSerializable ret)
-  | .var i => nomatch i
+  | .var i => .tyvar i.val
 
-/-- Convert SerializableTy back to ClosedTy -/
-partial def tyFromSerializable : SerializableTy → ClosedTy
+/-- Convert SerializableTy back to Ty n -/
+partial def tyFromSerializableN (n : Nat) : SerializableTy → Ty n
   | .prim p => .prim p
-  | .ptr t => .ptr (tyFromSerializable t)
+  | .ptr t => .ptr (tyFromSerializableN n t)
   | .rawPtr => .rawPtr
-  | .funcPtr args ret => .funcPtr (args.map tyFromSerializable) (tyFromSerializable ret)
-  | .struct_ fields => .struct (fields.map fun (n, t) => (n, tyFromSerializable t))
-  | .array_ elem size => .array (tyFromSerializable elem) size
-  | .tagged tag variants => .tagged (tyFromSerializable tag)
-      (variants.map fun (i, ts) => (i, ts.map tyFromSerializable))
-  | .closure args ret => .closure (args.map tyFromSerializable) (tyFromSerializable ret)
+  | .funcPtr args ret => .funcPtr (args.map (tyFromSerializableN n)) (tyFromSerializableN n ret)
+  | .struct_ fields => .struct (fields.map fun (name, t) => (name, tyFromSerializableN n t))
+  | .array_ elem size => .array (tyFromSerializableN n elem) size
+  | .tagged tag variants => .tagged (tyFromSerializableN n tag)
+      (variants.map fun (i, ts) => (i, ts.map (tyFromSerializableN n)))
+  | .closure args ret => .closure (args.map (tyFromSerializableN n)) (tyFromSerializableN n ret)
+  | .tyvar idx =>
+      if h : idx < n then .var ⟨idx, h⟩
+      else .rawPtr
+
+/-- Convert SerializableTy to ClosedTy -/
+def tyFromSerializable : SerializableTy → ClosedTy := tyFromSerializableN 0
 
 /-- Serializable Const using simple tagged format -/
 inductive SerializableConst where
@@ -118,18 +125,18 @@ inductive SerializableUnOp where
   | ptrtoint (to : PrimTy) | inttoptr
   deriving Serialize, Deserialize
 
-def unOpToSerializable : UnOp 0 → SerializableUnOp
+def unOpToSerializable : UnOp n → SerializableUnOp
   | .neg => .neg | .not => .not
   | .trunc t => .trunc t | .zext t => .zext t | .sext t => .sext t
   | .itof t => .itof t | .ftoi t => .ftoi t
   | .bitcast t => .bitcast (tyToSerializable t)
   | .ptrtoint t => .ptrtoint t | .inttoptr => .inttoptr
 
-def unOpFromSerializable : SerializableUnOp → UnOp 0
+def unOpFromSerializableN (n : Nat) : SerializableUnOp → UnOp n
   | .neg => .neg | .not => .not
   | .trunc t => .trunc t | .zext t => .zext t | .sext t => .sext t
   | .itof t => .itof t | .ftoi t => .ftoi t
-  | .bitcast t => .bitcast (tyFromSerializable t)
+  | .bitcast t => .bitcast (tyFromSerializableN n t)
   | .ptrtoint t => .ptrtoint t | .inttoptr => .inttoptr
 
 /-- Serializable FuncRef -/
@@ -157,7 +164,7 @@ def funcRefFromSerializable : SerializableFuncRef → FuncRef
 
 /-! ## Instruction Serialization -/
 
-/-- Serializable instruction — mirrors every constructor of `Inst 0`.
+/-- Serializable instruction — mirrors every constructor of `Inst n`.
     Each constructor is assigned a numeric tag for stable binary encoding. -/
 inductive SerializableInst where
   | binOp (op : Nat) (lhs rhs : SerializableOperand) (ty : SerializableTy)
@@ -206,11 +213,11 @@ inductive SerializableInst where
 private abbrev SOp := SerializableOperand
 private abbrev STy := SerializableTy
 private def sop := operandToSerializable
-private def sty := tyToSerializable
+private def sty : Ty n → STy := tyToSerializable
 private def sops (ops : Array Operand) : Array SOp := ops.map sop
-private def stys (tys : Array ClosedTy) : Array STy := tys.map sty
+private def stys (tys : Array (Ty n)) : Array STy := tys.map tyToSerializable
 
-def instToSerializable : ClosedInst → SerializableInst
+def instToSerializable : Inst n → SerializableInst
   | .binOp op l r ty => .binOp (binOpToNat op) (sop l) (sop r) (sty ty)
   | .unOp op o => .unOp (unOpToSerializable op) (sop o)
   | .copy s => .copy (sop s)
@@ -248,52 +255,52 @@ def instToSerializable : ClosedInst → SerializableInst
   | .erase v ty => .erase (sop v) (sty ty)
   | .panic m l => .panic m l
   | .callIntrinsic op as ty => .callIntrinsic op (sops as) (sty ty)
-  | .callExtern n as ty => .callExtern n (sops as) (sty ty)
+  | .callExtern name as ty => .callExtern name (sops as) (sty ty)
 
 private abbrev dop := operandFromSerializable
-private abbrev dty := tyFromSerializable
+private def dty (n : Nat) := tyFromSerializableN n
 private def dops (ops : Array SOp) : Array Operand := ops.map dop
-private def dtys (tys : Array STy) : Array ClosedTy := tys.map dty
+private def dtys (n : Nat) (tys : Array STy) : Array (Ty n) := tys.map (tyFromSerializableN n)
 
-def instFromSerializable : SerializableInst → ClosedInst
-  | .binOp op l r ty => .binOp (natToBinOp op) (dop l) (dop r) (dty ty)
-  | .unOp op o => .unOp (unOpFromSerializable op) (dop o)
+def instFromSerializableN (n : Nat) : SerializableInst → Inst n
+  | .binOp op l r ty => .binOp (natToBinOp op) (dop l) (dop r) (dty n ty)
+  | .unOp op o => .unOp (unOpFromSerializableN n op) (dop o)
   | .copy s => .copy (dop s)
-  | .alloca ty => .alloca (dty ty)
+  | .alloca ty => .alloca (dty n ty)
   | .malloc s => .malloc (dop s)
   | .free p => .free (dop p)
-  | .load p ty => .load (dop p) (dty ty)
+  | .load p ty => .load (dop p) (dty n ty)
   | .store p v => .store (dop p) (dop v)
-  | .getFieldPtr b i ty => .getFieldPtr (dop b) i (dty ty)
-  | .getElemPtr b i ty => .getElemPtr (dop b) (dop i) (dty ty)
+  | .getFieldPtr b i ty => .getFieldPtr (dop b) i (dty n ty)
+  | .getElemPtr b i ty => .getElemPtr (dop b) (dop i) (dty n ty)
   | .extractField v i => .extractField (dop v) i
   | .insertField v i nv => .insertField (dop v) i (dop nv)
   | .extractElem v i => .extractElem (dop v) (dop i)
   | .insertElem v i nv => .insertElem (dop v) (dop i) (dop nv)
-  | .structLit fs ty => .structLit (dops fs) (dty ty)
-  | .arrayLit es ty => .arrayLit (dops es) (dty ty)
+  | .structLit fs ty => .structLit (dops fs) (dty n ty)
+  | .arrayLit es ty => .arrayLit (dops es) (dty n ty)
   | .getTag v => .getTag (dop v)
-  | .getPayload v var fld ty => .getPayload (dop v) var fld (dty ty)
-  | .taggedLit t p ty => .taggedLit t (dops p) (dty ty)
-  | .call f as ty => .call ⟨f⟩ (dops as) (dty ty)
-  | .callPoly f ta as ty => .callPoly ⟨f⟩ (dtys ta) (dops as) (dty ty)
-  | .callIndirect p as ty => .callIndirect (dop p) (dops as) (dty ty)
-  | .callClosure c as ty => .callClosure (dop c) (dops as) (dty ty)
-  | .makeClosurePoly fr ta e => .makeClosurePoly (funcRefFromSerializable fr) (dtys ta) (dop e)
+  | .getPayload v var fld ty => .getPayload (dop v) var fld (dty n ty)
+  | .taggedLit t p ty => .taggedLit t (dops p) (dty n ty)
+  | .call f as ty => .call ⟨f⟩ (dops as) (dty n ty)
+  | .callPoly f ta as ty => .callPoly ⟨f⟩ (dtys n ta) (dops as) (dty n ty)
+  | .callIndirect p as ty => .callIndirect (dop p) (dops as) (dty n ty)
+  | .callClosure c as ty => .callClosure (dop c) (dops as) (dty n ty)
+  | .makeClosurePoly fr ta e => .makeClosurePoly (funcRefFromSerializable fr) (dtys n ta) (dop e)
   | .makeClosure fr e => .makeClosure (funcRefFromSerializable fr) (dop e)
   | .closureFunc c => .closureFunc (dop c)
   | .closureEnv c => .closureEnv (dop c)
-  | .phi inc ty => .phi (inc.map fun (o, b) => (dop o, ⟨b⟩)) (dty ty)
+  | .phi inc ty => .phi (inc.map fun (o, b) => (dop o, ⟨b⟩)) (dty n ty)
   | .select c t e => .select (dop c) (dop t) (dop e)
   | .memcpy d s sz => .memcpy (dop d) (dop s) (dop sz)
   | .memset d v sz => .memset (dop d) (dop v) (dop sz)
-  | .lazySup l s ty => .lazySup (UInt32.ofNat l) (dop s) (dty ty)
-  | .supProj0 s ty => .supProj0 (dop s) (dty ty)
-  | .supProj1 s ty => .supProj1 (dop s) (dty ty)
-  | .erase v ty => .erase (dop v) (dty ty)
+  | .lazySup l s ty => .lazySup (UInt32.ofNat l) (dop s) (dty n ty)
+  | .supProj0 s ty => .supProj0 (dop s) (dty n ty)
+  | .supProj1 s ty => .supProj1 (dop s) (dty n ty)
+  | .erase v ty => .erase (dop v) (dty n ty)
   | .panic m l => .panic m l
-  | .callIntrinsic op as ty => .callIntrinsic op (dops as) (dty ty)
-  | .callExtern n as ty => .callExtern n (dops as) (dty ty)
+  | .callIntrinsic op as ty => .callIntrinsic op (dops as) (dty n ty)
+  | .callExtern name as ty => .callExtern name (dops as) (dty n ty)
 
 /-! ## Terminator Serialization -/
 
@@ -330,11 +337,11 @@ structure SerializableStmt where
   inst : SerializableInst
   deriving Serialize, Deserialize
 
-def stmtToSerializable (s : ClosedStmt) : SerializableStmt :=
+def stmtToSerializable (s : Stmt n) : SerializableStmt :=
   { result := s.result.map (·.id), inst := instToSerializable s.inst }
 
-def stmtFromSerializable (ss : SerializableStmt) : ClosedStmt :=
-  { result := ss.result.map (⟨·⟩), inst := instFromSerializable ss.inst }
+def stmtFromSerializableN (n : Nat) (ss : SerializableStmt) : Stmt n :=
+  { result := ss.result.map (⟨·⟩), inst := instFromSerializableN n ss.inst }
 
 /-! ## Block Serialization -/
 
@@ -346,19 +353,19 @@ structure SerializableBlock where
   terminator : SerializableTerminator
   deriving Serialize, Deserialize
 
-def blockToSerializable (b : ClosedBlock) : SerializableBlock :=
+def blockToSerializable (b : Block n) : SerializableBlock :=
   { id := b.id.id
   , label := b.label
-  , params := b.params.map fun (lid, ty) => (lid.id, sty ty)
+  , params := b.params.map fun (lid, ty) => (lid.id, tyToSerializable ty)
   , stmts := b.stmts.map stmtToSerializable
   , terminator := terminatorToSerializable b.terminator
   }
 
-def blockFromSerializable (sb : SerializableBlock) : ClosedBlock :=
+def blockFromSerializableN (n : Nat) (sb : SerializableBlock) : Block n :=
   { id := ⟨sb.id⟩
   , label := sb.label
-  , params := sb.params.map fun (lid, ty) => (⟨lid⟩, dty ty)
-  , stmts := sb.stmts.map stmtFromSerializable
+  , params := sb.params.map fun (lid, ty) => (⟨lid⟩, tyFromSerializableN n ty)
+  , stmts := sb.stmts.map (stmtFromSerializableN n)
   , terminator := terminatorFromSerializable sb.terminator
   }
 
@@ -371,15 +378,15 @@ structure SerializableCFG where
   nextBlockId : Nat
   deriving Serialize, Deserialize
 
-def cfgToSerializable (cfg : ClosedCFG) : SerializableCFG :=
+def cfgToSerializable (cfg : CFG n) : SerializableCFG :=
   { blocks := cfg.allBlocks.map blockToSerializable
   , entry := cfg.entry.id
   , nextBlockId := cfg.nextBlockId
   }
 
-def cfgFromSerializable (sc : SerializableCFG) : ClosedCFG :=
-  let blocks := sc.blocks.foldl (init := ({} : Std.HashMap Nat ClosedBlock)) fun acc sb =>
-    let block := blockFromSerializable sb
+def cfgFromSerializableN (n : Nat) (sc : SerializableCFG) : CFG n :=
+  let blocks := sc.blocks.foldl (init := ({} : Std.HashMap Nat (Block n))) fun acc sb =>
+    let block := blockFromSerializableN n sb
     acc.insert block.id.id block
   { blocks, entry := ⟨sc.entry⟩, nextBlockId := sc.nextBlockId }
 
@@ -392,37 +399,41 @@ structure SerializableParam where
   ty : SerializableTy
   deriving Serialize, Deserialize
 
-def paramToSerializable (p : ClosedParam) : SerializableParam :=
+def paramToSerializable (p : Param n) : SerializableParam :=
   { id := p.id.id, name := p.name, ty := tyToSerializable p.ty }
 
-def paramFromSerializable (sp : SerializableParam) : ClosedParam :=
-  { id := ⟨sp.id⟩, name := sp.name, ty := tyFromSerializable sp.ty }
+def paramFromSerializableN (n : Nat) (sp : SerializableParam) : Param n :=
+  { id := ⟨sp.id⟩, name := sp.name, ty := tyFromSerializableN n sp.ty }
 
 /-- Serializable Signature -/
 structure SerializableSignature where
   name : String
+  typeParamNames : Array String := #[]
   params : Array SerializableParam
   retTy : SerializableTy
   isClosure : Bool
   deriving Serialize, Deserialize
 
-def sigToSerializable (sig : ClosedSignature) : SerializableSignature :=
+def sigToSerializable (sig : Signature n) : SerializableSignature :=
   { name := sig.name
+  , typeParamNames := sig.typeParamNames
   , params := sig.params.map paramToSerializable
   , retTy := tyToSerializable sig.retTy
   , isClosure := sig.isClosure
   }
 
-def sigFromSerializable (ss : SerializableSignature) : ClosedSignature :=
+def sigFromSerializableN (n : Nat) (ss : SerializableSignature) : Signature n :=
   { name := ss.name
-  , params := ss.params.map paramFromSerializable
-  , retTy := tyFromSerializable ss.retTy
+  , typeParamNames := ss.typeParamNames
+  , params := ss.params.map (paramFromSerializableN n)
+  , retTy := tyFromSerializableN n ss.retTy
   , isClosure := ss.isClosure
   }
 
 /-- Serializable Func with full body support -/
 structure SerializableFunc where
   id : Nat
+  typeArity : Nat
   sig : SerializableSignature
   body : Option SerializableCFG
   attrs : FuncAttrs
@@ -430,8 +441,11 @@ structure SerializableFunc where
   localTypes : Array (Nat × SerializableTy)
   deriving Serialize, Deserialize
 
-def funcToSerializable (f : ClosedFunc) : SerializableFunc :=
+/-- Serialize a function of any type arity -/
+def someFuncToSerializable (sf : SomeFunc) : SerializableFunc :=
+  let ⟨n, f⟩ := sf
   { id := f.id.id
+  , typeArity := n
   , sig := sigToSerializable f.sig
   , body := f.body.map cfgToSerializable
   , attrs := f.attrs
@@ -439,14 +453,19 @@ def funcToSerializable (f : ClosedFunc) : SerializableFunc :=
   , localTypes := f.localTypes.toArray.map fun (k, v) => (k, tyToSerializable v)
   }
 
-def funcFromSerializable (sf : SerializableFunc) : ClosedFunc :=
-  { id := ⟨sf.id⟩
-  , sig := sigFromSerializable sf.sig
-  , body := sf.body.map cfgFromSerializable
-  , attrs := sf.attrs
-  , nextLocalId := sf.nextLocalId
-  , localTypes := Std.HashMap.ofList (sf.localTypes.toList.map fun (k, v) => (k, tyFromSerializable v))
-  }
+/-- Deserialize a function, reconstructing the correct type arity -/
+def someFuncFromSerializable (sf : SerializableFunc) : SomeFunc :=
+  let n := sf.typeArity
+  let func : Func n :=
+    { id := ⟨sf.id⟩
+    , sig := sigFromSerializableN n sf.sig
+    , body := sf.body.map (cfgFromSerializableN n)
+    , attrs := sf.attrs
+    , nextLocalId := sf.nextLocalId
+    , localTypes := Std.HashMap.ofList (sf.localTypes.toList.map fun (k, v) =>
+        (k, tyFromSerializableN n v))
+    }
+  ⟨n, func⟩
 
 /-! ## Global, TypeDef, Module Serialization -/
 
@@ -515,10 +534,8 @@ end StringTable
 namespace Module
 
 def toSerializable (m : Module) : SerializableModule :=
-  -- Only serialize monomorphic functions
-  let closedFuncs := m.monoFuncs
   { name := m.name
-  , funcs := closedFuncs.map funcToSerializable
+  , funcs := m.funcs.map someFuncToSerializable
   , globals := m.globals.map globalToSerializable
   , types := m.types.map typeDefToSerializable
   , strings := StringTable.toSerializable m.strings
@@ -527,9 +544,8 @@ def toSerializable (m : Module) : SerializableModule :=
   }
 
 def fromSerializable (sm : SerializableModule) : Module :=
-  let closedFuncs := sm.funcs.map funcFromSerializable
   { name := sm.name
-  , funcs := closedFuncs.map fun f => ⟨0, f⟩
+  , funcs := sm.funcs.map someFuncFromSerializable
   , globals := sm.globals.map globalFromSerializable
   , types := sm.types.map typeDefFromSerializable
   , strings := StringTable.fromSerializable sm.strings
@@ -542,8 +558,8 @@ end Module
 /-- Magic bytes for .alloybin files -/
 def magicBytes : ByteArray := ByteArray.mk #[0x41, 0x4C, 0x4F, 0x59]
 
-/-- Version of the serialization format — bumped to 2 for body serialization support -/
-def formatVersion : UInt8 := 2
+/-- Version of the serialization format — bumped to 3 for polymorphic function support -/
+def formatVersion : UInt8 := 3
 
 /-- Serialize an Alloy module to binary format -/
 def serializeModule (m : Module) : ByteArray :=

@@ -254,7 +254,7 @@ partial def beq (a : Ty n) (b : Ty m) : Bool :=
   | .rawPtr, .rawPtr => true
   | .funcPtr args₁ ret₁, .funcPtr args₂ ret₂ =>
       args₁.size == args₂.size &&
-      (List.zip args₁.toList args₂.toList).all fun (x, y) => beq x y &&
+      (List.zip args₁.toList args₂.toList).all (fun (x, y) => beq x y) &&
       beq ret₁ ret₂
   | .struct fields₁, .struct fields₂ =>
       fields₁.size == fields₂.size &&
@@ -268,7 +268,7 @@ partial def beq (a : Ty n) (b : Ty m) : Bool :=
         (List.zip fs₁.toList fs₂.toList).all fun (x, y) => beq x y
   | .closure args₁ ret₁, .closure args₂ ret₂ =>
       args₁.size == args₂.size &&
-      (List.zip args₁.toList args₂.toList).all fun (x, y) => beq x y &&
+      (List.zip args₁.toList args₂.toList).all (fun (x, y) => beq x y) &&
       beq ret₁ ret₂
   | .var i₁, .var i₂ => i₁.val == i₂.val
   | _, _ => false

@@ -10,6 +10,7 @@ import Soma.Dependent.Error
 import Soma.Dependent.Totality
 import Soma.Dependent.Elaborate
 import Soma.Dependent.TraitElaborate
+import Soma.Dependent.Zonk
 import Soma.Core.Eval
 
 namespace Soma.Dependent.Driver
@@ -212,14 +213,20 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     -- Extend context with prefix binders and check body against the exact remaining result type
     let (generatedParams, typedBody) ← withSignaturePrefixBindings allParams fn.params span do
       TCM.infallible (Soma.Dependent.checkSyntax fn.body resultType) default
-    return (declaredType, typedBody, generatedParams)
+    -- Zonk all solved metas so downstream passes see concrete types
+    let declaredType' ← zonkValue declaredType
+    let typedBody' ← zonkExpr typedBody
+    return (declaredType', typedBody', generatedParams)
   | none =>
     -- No signature: create fresh metavariables for param types
     let paramTypes ← fn.params.mapM fun _ => TCM.freshMetaVal (.vType .zero)
     -- Extend context with parameters and infer body type
     let (generatedParams, (inferredType, typedBody)) ← withFunctionParams fn.params paramTypes span do
       TCM.infallibleExpr (Soma.Dependent.inferSyntax fn.body) span
-    return (inferredType, typedBody, generatedParams)
+    -- Zonk all solved metas so downstream passes see concrete types
+    let inferredType' ← zonkValue inferredType
+    let typedBody' ← zonkExpr typedBody
+    return (inferredType', typedBody', generatedParams)
 
 /-- Elaborate a constructor type: fields -> DataType params -/
 def elaborateCtorType (typeName : Soma.Core.QualifiedName) (typeVarNames : Array String)
