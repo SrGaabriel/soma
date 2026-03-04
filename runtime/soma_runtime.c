@@ -318,8 +318,11 @@ static SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) 
         return SOMA_PTR(soma_clone_string_obj((SomaString*)ptr));
     case NODE_TAGGED_PAYLOAD:
         return SOMA_PTR(soma_clone_tagged_payload(ptr, label));
-    case NODE_ARRAY_HEADER:
-        return SOMA_PTR(soma_clone_array_header(ptr, label));
+    case NODE_FLAT_ARRAY: {
+        SomaFlatArray* arr = (SomaFlatArray*)ptr;
+        atomic_fetch_add_explicit(&arr->refcount, 1, memory_order_relaxed);
+        return value;
+    }
     default:
         if (IS_SUP(tag)) {
             return soma_dup(label, value);
@@ -342,20 +345,6 @@ void* soma_alloc_tagged_payload(uint64_t field_count) {
     return payload;
 }
 
-void* soma_alloc_array_header(void) {
-    SomaPools* pools = get_pools();
-    SOMA_STAT_INC(small_allocs);
-    SomaArrayHeader* header = (SomaArrayHeader*)pool_alloc(&pools->pool_48);
-    if (header == NULL) {
-        soma_panic("soma_alloc_array_header: out of memory");
-        return NULL;
-    }
-    header->tag = NODE_ARRAY_HEADER;
-    header->_magic = SOMA_ARRAY_MAGIC;
-    header->length = 0;
-    header->data_ptr = NULL;
-    return header;
-}
 
 /*
  * soma_dup — Create a SUP node for lazy duplication
@@ -605,22 +594,6 @@ void* soma_clone_tagged_payload(void* payload, uint32_t label) {
     return copy;
 }
 
-void* soma_clone_array_header(void* header, uint32_t label) {
-    (void)label;
-    if (header == NULL) return NULL;
-
-    SomaArrayHeader* src = (SomaArrayHeader*)header;
-    SomaArrayHeader* copy = (SomaArrayHeader*)soma_alloc_array_header();
-    if (copy == NULL) {
-        soma_panic("soma_clone_array_header: out of memory");
-        return NULL;
-    }
-
-    copy->length = src->length;
-    copy->data_ptr = src->data_ptr;
-
-    return copy;
-}
 
 static SomaValue soma_clone_value_for_fork(SomaValue value) {
     if (!SOMA_IS_PTR(value) || value == 0) return value;
@@ -639,8 +612,11 @@ static SomaValue soma_clone_value_for_fork(SomaValue value) {
         return SOMA_PTR(soma_clone_string_obj((SomaString*)SOMA_TO_PTR(value)));
     case NODE_TAGGED_PAYLOAD:
         return SOMA_PTR(soma_clone_tagged_payload(SOMA_TO_PTR(value), 0));
-    case NODE_ARRAY_HEADER:
-        return SOMA_PTR(soma_clone_array_header(SOMA_TO_PTR(value), 0));
+    case NODE_FLAT_ARRAY: {
+        SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(value);
+        atomic_fetch_add_explicit(&arr->refcount, 1, memory_order_relaxed);
+        return value;
+    }
     default:
         return value;
     }
@@ -717,12 +693,6 @@ void soma_era_free(void* value) {
             continue;
         }
 
-        if (tag == NODE_ARRAY_HEADER) {
-            SOMA_STAT_INC(small_frees);
-            pool_free(&pools->pool_48, cur);
-            continue;
-        }
-
         /* --- compound types: push children, then free the node --- */
 
         /* Macro: ensure worklist capacity for N more entries */
@@ -785,6 +755,12 @@ void soma_era_free(void* value) {
                 pool_free(&pools->pool_112, cur);
             } else {
                 SOMA_STAT_INC(large_frees);
+                free(cur);
+            }
+
+        } else if (tag == NODE_FLAT_ARRAY) {
+            SomaFlatArray* arr = (SomaFlatArray*)cur;
+            if (atomic_fetch_sub_explicit(&arr->refcount, 1, memory_order_acq_rel) == 1) {
                 free(cur);
             }
 

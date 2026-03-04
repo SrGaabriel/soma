@@ -74,6 +74,12 @@ end TyVarMapping
 /-- Registry mapping type Uniques to their primitive type representations -/
 abbrev PrimTypeRegistry := Std.HashMap Soma.Unique PrimType
 
+/-- Check if a Core Value type is a List type via the primitive type registry -/
+def isListValue (v : Soma.Core.Value) (primTypes : PrimTypeRegistry) : Bool :=
+  match v with
+  | .vDataType uid _ => primTypes.get? uid == some .list
+  | _ => false
+
 /-- Combined context for type conversion during Alloy lowering -/
 structure TypeConvCtx (n : Nat) where
   tyVars : TyVarMapping n
@@ -754,6 +760,28 @@ def closureTag : Nat := 0xFFFE
 /-- Reserved tag for panic CTORs in Circuit IR -/
 def panicTag : Nat := 0xFFFF
 
+/-- NODE_FLAT_ARRAY tag value -/
+def flatArrayTag : Nat := 4
+
+/-- Byte offset of the refcount field -/
+def flatArrayRefcountOffset : Nat := 4
+
+/-- Byte offset of the length field -/
+def flatArrayLengthOffset : Nat := 8
+
+/-- Byte offset of the element data -/
+def flatArrayDataOffset : Nat := 16
+
+/-- Size of the flat array header in bytes -/
+def flatArrayHeaderSize : Nat := 16
+
+/-- Emit the 8-byte flat array header: tag=4, elem_size, pad, refcount=1 -/
+def emitFlatArrayHeader (bufPtr : LocalId) (elemSizeBytes : Nat) : LowerM n Unit := do
+  let headerVal : Nat :=
+    flatArrayTag + (elemSizeBytes <<< 8) + (1 <<< 32)
+  let hdr ← LowerM.emitInst (.copy (.const (.int (Int.ofNat headerVal) .i64))) (.prim .i64)
+  LowerM.emitVoid (.store (.local bufPtr) (.local hdr))
+
 /-- State maintained during graph traversal -/
 structure NodeState (n : Nat) where
   /-- Nodes currently being processed (for cycle detection) -/
@@ -768,6 +796,8 @@ structure NodeState (n : Nat) where
   primTypes : PrimTypeRegistry := {}
   /-- Expected result type from the consumer context -/
   expectedResultTy : Option (Ty n) := none
+  /-- LocalIds known to hold list-typed (flat array) values -/
+  listTypedLocals : Std.HashSet Nat := {}
   deriving Inhabited
 
 namespace NodeState
@@ -912,8 +942,8 @@ partial def emitTaggedDup (inputVal : LocalId) (taggedTy : Ty n) (label : UInt32
   let copy1 ← StateT.lift (LowerM.emitInst (.structLit #[.local tagVal, .local payload1] taggedTy) taggedTy)
   pure (inputVal, copy1)
 
-/-- Emit eager array header duplication for runtime array objects represented as raw pointers -/
-partial def emitArrayHeaderDup (inputVal : LocalId) (srcTy : Ty n) (label : UInt32)
+/-- Emit refcount-based array duplication -/
+partial def emitArrayHeaderDup (inputVal : LocalId) (srcTy : Ty n) (_label : UInt32)
     : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
   let inputPtr ← match srcTy with
     | .prim .i64 =>
@@ -921,10 +951,18 @@ partial def emitArrayHeaderDup (inputVal : LocalId) (srcTy : Ty n) (label : UInt
     | .rawPtr | .ptr _ =>
       pure inputVal
     | _ =>
-      panic! s!"ALLOY LOWERING BUG: array header DUP expected pointer-like source type, got {srcTy}"
-  let lbl : Operand := .const (.int (Int.ofNat label.toNat) .u32)
-  let copy1 ← StateT.lift (LowerM.emitInst (.callExtern "soma_clone_array_header" #[.local inputPtr, lbl] .rawPtr) .rawPtr)
-  pure (inputVal, copy1)
+      panic! s!"ALLOY LOWERING BUG: array DUP expected pointer-like source type, got {srcTy}"
+  -- Load refcount from offset 4 (u32)
+  let ptrAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local inputPtr)) (.prim .i64))
+  let rcOffset ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayRefcountOffset) .i64))) (.prim .i64))
+  let rcAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local ptrAsI64) (.local rcOffset) (.prim .i64)) (.prim .i64))
+  let rcPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local rcAddr)) .rawPtr)
+  let oldRc ← StateT.lift (LowerM.emitInst (.load (.local rcPtr) (.prim .u32)) (.prim .u32))
+  let one ← StateT.lift (LowerM.emitInst (.copy (.const (.int 1 .u32))) (.prim .u32))
+  let newRc ← StateT.lift (LowerM.emitInst (.binOp .add (.local oldRc) (.local one) (.prim .u32)) (.prim .u32))
+  StateT.lift (LowerM.emitVoid (.store (.local rcPtr) (.local newRc)))
+  -- Both copies share the same pointer
+  pure (inputVal, inputVal)
 
 /-- Lower an operand with FuncId map -/
 partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : FuncIdMap)
@@ -1224,6 +1262,65 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs (.local envVal)) nodeTy)
       | none =>
         StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local envVal)) nodeTy)
+    else if isListValue entry.ty (← get).primTypes then
+      -- List constructor: produce refcounted flat array
+      -- Layout: { u8 tag=4, u8 elem_size=8, u16 pad, u32 refcount=1, i64 length, data... }
+      if tag == 0 then
+        -- Nil: allocate header only (16 bytes), length=0
+        let sizeVal ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayHeaderSize) .i64))) (.prim .i64))
+        let buf ← StateT.lift (LowerM.emitInst (.malloc (.local sizeVal)) .rawPtr)
+        StateT.lift (emitFlatArrayHeader buf 8)
+        -- Store length=0 at offset 8
+        let bufI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local buf)) (.prim .i64))
+        let lenOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64))
+        let lenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local bufI64) (.local lenOff) (.prim .i64)) (.prim .i64))
+        let lenPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr)
+        let zero ← StateT.lift (LowerM.emitInst (.copy (.const (.int 0 .i64))) (.prim .i64))
+        StateT.lift (LowerM.emitVoid (.store (.local lenPtr) (.local zero)))
+        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local buf)) (.prim .i64))
+      else
+        -- Cons x xs: load xs.length, allocate new buffer, write header, store x, copy xs data
+        let headVal ← lowerPort 1
+        let tailVal ← lowerPort 2
+        let tailPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local tailVal)) .rawPtr)
+        -- Load tail length from offset 8
+        let tailI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local tailPtr)) (.prim .i64))
+        let tailLenOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64))
+        let tailLenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local tailI64) (.local tailLenOff) (.prim .i64)) (.prim .i64))
+        let tailLenPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local tailLenAddr)) .rawPtr)
+        let tailLen ← StateT.lift (LowerM.emitInst (.load (.local tailLenPtr) (.prim .i64)) (.prim .i64))
+        let one ← StateT.lift (LowerM.emitInst (.copy (.const (.int 1 .i64))) (.prim .i64))
+        let newLen ← StateT.lift (LowerM.emitInst (.binOp .add (.local tailLen) (.local one) (.prim .i64)) (.prim .i64))
+        -- Total: headerSize + newLen * 8
+        let elemSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64))
+        let dataSize ← StateT.lift (LowerM.emitInst (.binOp .mul (.local newLen) (.local elemSize) (.prim .i64)) (.prim .i64))
+        let hdrSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayHeaderSize) .i64))) (.prim .i64))
+        let totalSize ← StateT.lift (LowerM.emitInst (.binOp .add (.local hdrSize) (.local dataSize) (.prim .i64)) (.prim .i64))
+        let newBuf ← StateT.lift (LowerM.emitInst (.malloc (.local totalSize)) .rawPtr)
+        -- Write header
+        StateT.lift (emitFlatArrayHeader newBuf 8)
+        -- Store new length at offset 8
+        let newBufI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local newBuf)) (.prim .i64))
+        let lenOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64))
+        let lenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local newBufI64) (.local lenOff) (.prim .i64)) (.prim .i64))
+        let lenPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr)
+        StateT.lift (LowerM.emitVoid (.store (.local lenPtr) (.local newLen)))
+        -- Store head at offset 16
+        let headOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
+        let headAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local newBufI64) (.local headOff) (.prim .i64)) (.prim .i64))
+        let headPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local headAddr)) .rawPtr)
+        let headAsI64 ← StateT.lift (LowerM.emitInst (.copy (.local headVal)) (.prim .i64))
+        StateT.lift (LowerM.emitVoid (.store (.local headPtr) (.local headAsI64)))
+        -- Memcpy tail data: from tail+16 to newBuf+24, size = tailLen * 8
+        let tailDataSize ← StateT.lift (LowerM.emitInst (.binOp .mul (.local tailLen) (.local elemSize) (.prim .i64)) (.prim .i64))
+        let tailDataOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
+        let tailDataAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local tailI64) (.local tailDataOff) (.prim .i64)) (.prim .i64))
+        let tailDataPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local tailDataAddr)) .rawPtr)
+        let newDataOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat (flatArrayDataOffset + 8)) .i64))) (.prim .i64))
+        let newDataAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local newBufI64) (.local newDataOff) (.prim .i64)) (.prim .i64))
+        let newDataPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local newDataAddr)) .rawPtr)
+        StateT.lift (LowerM.emitVoid (.memcpy (.local newDataPtr) (.local tailDataPtr) (.local tailDataSize)))
+        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local newBuf)) (.prim .i64))
     else
       -- Regular constructor: build tagged struct
       let mut fieldVals : Array LocalId := #[]
@@ -1242,6 +1339,68 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   | .proj fieldIdx => do
     let recordVal ← lowerPort 1
     let recordTy := getPortType 1
+    -- Check if the projected value is an array or List type (for church-encoded list destructuring)
+    let ns ← get
+    let arrayElemType? :=
+      -- First check: is the record value known to be list-typed from a prior MAT?
+      if ns.listTypedLocals.contains recordVal.id then some .i64
+      else match entry.getPort ⟨1⟩ with
+      | some recPort => match graph.getNode recPort.node with
+        | some recEntry => match recEntry.node with
+          | .array et => some et
+          | _ => if isListValue recEntry.ty ns.primTypes then some .i64 else none
+        | none => none
+      | none => none
+    match arrayElemType? with
+    | some elemTy => do
+      -- Array-backed list projection (header layout: 8B header, 8B length, data at 16)
+      let elemSize : Nat := match elemTy with
+        | .u8 | .i8 | .bool => 1
+        | .u16 | .i16 => 2
+        | .u32 | .i32 | .f32 | .char => 4
+        | .u64 | .i64 | .f64 => 8
+      let arrPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local recordVal)) .rawPtr)
+      let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local arrPtr)) (.prim .i64))
+      if fieldIdx == 0 then
+        -- Head: load first element from offset 16 (flatArrayDataOffset)
+        let dataOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
+        let elemAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local dataOff) (.prim .i64)) (.prim .i64))
+        let elemPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local elemAddr)) .rawPtr)
+        StateT.lift (LowerM.emitInst (.load (.local elemPtr) nodeTy) nodeTy)
+      else if fieldIdx == 1 then
+        -- Tail: create new refcounted array with len-1 elements
+        let lenOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64))
+        let lenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local lenOff) (.prim .i64)) (.prim .i64))
+        let lenPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr)
+        let len ← StateT.lift (LowerM.emitInst (.load (.local lenPtr) (.prim .i64)) (.prim .i64))
+        let one ← StateT.lift (LowerM.emitInst (.copy (.const (.int 1 .i64))) (.prim .i64))
+        let newLen ← StateT.lift (LowerM.emitInst (.binOp .sub (.local len) (.local one) (.prim .i64)) (.prim .i64))
+        -- Allocate: headerSize + newLen * elemSize
+        let elemSizeVal ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat elemSize) .i64))) (.prim .i64))
+        let dataSize ← StateT.lift (LowerM.emitInst (.binOp .mul (.local newLen) (.local elemSizeVal) (.prim .i64)) (.prim .i64))
+        let hdrSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayHeaderSize) .i64))) (.prim .i64))
+        let totalSize ← StateT.lift (LowerM.emitInst (.binOp .add (.local hdrSize) (.local dataSize) (.prim .i64)) (.prim .i64))
+        let newBuf ← StateT.lift (LowerM.emitInst (.malloc (.local totalSize)) .rawPtr)
+        -- Write header (tag + elem_size + refcount=1)
+        StateT.lift (emitFlatArrayHeader newBuf elemSize)
+        -- Store new length at offset 8
+        let newBufI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local newBuf)) (.prim .i64))
+        let newLenOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64))
+        let newLenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local newBufI64) (.local newLenOff) (.prim .i64)) (.prim .i64))
+        let newLenPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local newLenAddr)) .rawPtr)
+        StateT.lift (LowerM.emitVoid (.store (.local newLenPtr) (.local newLen)))
+        -- Memcpy remaining data: src = arr + dataOffset + elemSize, dst = newBuf + dataOffset
+        let srcOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat (flatArrayDataOffset + elemSize)) .i64))) (.prim .i64))
+        let srcAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local srcOff) (.prim .i64)) (.prim .i64))
+        let srcPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local srcAddr)) .rawPtr)
+        let dstOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
+        let dstAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local newBufI64) (.local dstOff) (.prim .i64)) (.prim .i64))
+        let dstPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local dstAddr)) .rawPtr)
+        StateT.lift (LowerM.emitVoid (.memcpy (.local dstPtr) (.local srcPtr) (.local dataSize)))
+        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local newBuf)) (.prim .i64))
+      else
+        StateT.lift (LowerM.emitPanic nodeTy)
+    | none =>
     -- Check if record is struct or tagged union
     match recordTy with
     | .struct fields =>
@@ -1269,7 +1428,40 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
   | .mat expectedTag => do
     let scrutineeVal ← lowerPort 1
-    let (_, _thenBlock, elseBlock) ← StateT.lift (lowerMat expectedTag scrutineeVal)
+    -- Check if the scrutinee is an array or List type (for church-encoded list matching)
+    let ns ← get
+    let scrutIsArray := match entry.getPort ⟨1⟩ with
+      | some scrutPort => match graph.getNode scrutPort.node with
+        | some scrutEntry => match scrutEntry.node with
+          | .array _ => true
+          | _ => isListValue scrutEntry.ty ns.primTypes
+        | none => false
+      | none => false
+    -- Track list-typed scrutinees so PROJ nodes can detect them
+    if scrutIsArray then
+      modify fun ns => { ns with listTypedLocals := ns.listTypedLocals.insert scrutineeVal.id }
+    let (_, _thenBlock, elseBlock) ← if scrutIsArray then
+      -- Array-backed list: compare length at offset 8 against 0
+      StateT.lift do
+        let arrPtr ← LowerM.emitInst (.unOp .inttoptr (.local scrutineeVal)) .rawPtr
+        let arrI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local arrPtr)) (.prim .i64)
+        let lenOff ← LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64)
+        let lenAddr ← LowerM.emitInst (.binOp .add (.local arrI64) (.local lenOff) (.prim .i64)) (.prim .i64)
+        let lenPtr ← LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr
+        let len ← LowerM.emitInst (.load (.local lenPtr) (.prim .i64)) (.prim .i64)
+        let zero ← LowerM.emitInst (.copy (.const (.int 0 .i64))) (.prim .i64)
+        let cond ← if expectedTag == 0 then
+          -- Nil: matches when length == 0
+          LowerM.emitInst (.binOp .eq (.local len) (.local zero) (.prim .i64)) Ty.bool
+        else
+          -- Cons (or any other tag): matches when length != 0
+          LowerM.emitInst (.binOp .ne (.local len) (.local zero) (.prim .i64)) Ty.bool
+        let thenBlock ← LowerM.freshBlockId
+        let elseBlock ← LowerM.freshBlockId
+        LowerM.finishBlock (.branch (.local cond) thenBlock elseBlock) thenBlock
+        pure (cond, thenBlock, elseBlock)
+    else
+      StateT.lift (lowerMat expectedTag scrutineeVal)
     let cacheSnapshot ← do let ns ← get; pure ns.snapshotResults
 
     modify fun ns => { ns with expectedResultTy := some nodeTy }
@@ -1360,12 +1552,19 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             let srcTy := getPortType 0 nodeTy
             emitArrayHeaderDup inputVal srcTy label.id
           | _ =>
-            -- Closures (LAM), algebraic-data-type cells, REF, ALO etc are closure-like
-            -- TODO: review if any other node types require special handling here
-            let lbl : Operand := .const (.int (Int.ofNat label.id.toNat) .u32)
-            let clone ← StateT.lift (LowerM.emitInst
-              (.callExtern "soma_clone_closure" #[.local inputVal, lbl] .rawPtr) .rawPtr)
-            pure (inputVal, clone)
+            let ns ← get
+            let isListDup := isListValue entry.ty ns.primTypes ||
+              match (entry.getPort ⟨0⟩).bind (fun p => graph.getNode p.node) with
+              | some srcEntry => isListValue srcEntry.ty ns.primTypes
+              | none => false
+            if isListDup then
+              emitArrayHeaderDup inputVal nodeTy label.id
+            else
+              -- Closures (LAM), algebraic-data-type cells, REF, ALO etc etc are closure-like
+              let lbl : Operand := .const (.int (Int.ofNat label.id.toNat) .u32)
+              let clone ← StateT.lift (LowerM.emitInst
+                (.callExtern "soma_clone_closure" #[.local inputVal, lbl] .rawPtr) .rawPtr)
+              pure (inputVal, clone)
         modify fun ns => { ns with
           results := ns.results.insert (nodeId.id * 1000 + 1) copy0
                      |>.insert (nodeId.id * 1000 + 2) copy1
@@ -1396,27 +1595,60 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   | .use => lowerPort 1
 
   | .array _ => do
-    -- Array node: construct a 24-byte header { tag+pad: 8B, length: i64, data_ptr: ptr }
-    let lenVal ← lowerPort 1 (.prim .u64)
-    let dataVal ← lowerPort 2 .rawPtr
+    let len : Nat ← match entry.getPort ⟨1⟩ with
+      | some lenPort =>
+        match graph.getNode lenPort.node with
+        | some lenEntry => match lenEntry.node with
+          | .num _ val => pure val.toNat
+          | _ => pure 0
+        | none => pure 0
+      | none => pure 0
 
-    let headerPtr ← StateT.lift (LowerM.emitInst (.callExtern "soma_alloc_array_header" #[] .rawPtr) .rawPtr)
+    let ctorInfo ← match entry.getPort ⟨2⟩ with
+      | some dataPort =>
+        match graph.getNode dataPort.node with
+        | some ctorEntry => pure (some (dataPort.node, ctorEntry))
+        | none => pure none
+      | none => pure none
 
-    -- Store length at offset 8 (after 8-byte tag header)
-    let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local headerPtr)) (.prim .i64))
-    let offset8 ← StateT.lift (LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64))
-    let lenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset8) (.prim .i64)) (.prim .i64))
-    let lenSlot ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr)
-    StateT.lift (LowerM.emitVoid (.store (.local lenSlot) (.local lenVal)))
+    let elemSize : Nat := match ctorInfo with
+      | some (_, ctorEntry) =>
+        if len > 0 then
+          match ctorEntry.getPort ⟨1⟩ with
+          | some elemPort =>
+            match graph.getNode elemPort.node with
+            | some elemEntry => Ty.sizeBytes (getNodeTypeWithMapping elemEntry ctx)
+            | none => 8
+          | none => 8
+        else 8
+      | none => 8
 
-    -- Store data pointer at offset 16
-    let offset16 ← StateT.lift (LowerM.emitInst (.copy (.const (.int 16 .i64))) (.prim .i64))
-    let dataPtrAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset16) (.prim .i64)) (.prim .i64))
-    let dataPtrSlot ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local dataPtrAddr)) .rawPtr)
-    StateT.lift (LowerM.emitVoid (.store (.local dataPtrSlot) (.local dataVal)))
+    let totalSize := flatArrayHeaderSize + len * elemSize
+    let totalSizeVal ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat totalSize) .i64))) (.prim .i64))
+    let buf ← StateT.lift (LowerM.emitInst (.malloc (.local totalSizeVal)) .rawPtr)
 
-    -- Return the header pointer as i64
-    StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local headerPtr)) (.prim .i64))
+    StateT.lift (emitFlatArrayHeader buf elemSize)
+
+    let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local buf)) (.prim .i64))
+    let lenOffset ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64))
+    let lenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local lenOffset) (.prim .i64)) (.prim .i64))
+    let lenPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr)
+    let lenConst ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat len) .i64))) (.prim .i64))
+    StateT.lift (LowerM.emitVoid (.store (.local lenPtr) (.local lenConst)))
+
+    match ctorInfo with
+    | some (_, ctorEntry) =>
+      for i in [:len] do
+        let elemVal ← match ctorEntry.getPort ⟨i + 1⟩ with
+          | some elemPort => lowerOperandWithMap graph elemPort funcIdMap
+          | none => StateT.lift (LowerM.emitPanic (.prim .i64))
+        let offsetVal ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat (flatArrayDataOffset + i * elemSize)) .i64))) (.prim .i64))
+        let elemAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offsetVal) (.prim .i64)) (.prim .i64))
+        let elemPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local elemAddr)) .rawPtr)
+        StateT.lift (LowerM.emitVoid (.store (.local elemPtr) (.local elemVal)))
+    | none => pure ()
+
+    StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local buf)) (.prim .i64))
 
   | .string => do
     -- String node: extract length and string index from connected NUM nodes
@@ -1445,17 +1677,14 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     let arrayVal ← lowerPort 1
     let indexVal ← lowerPort 2 (.prim .u64)
 
-    -- data_ptr is at offset 16 in the array header (after 8-byte tag header + 8-byte length)
+    -- Flat buffer layout: { header(8), i64 length, data... }
+    -- Data starts at offset 16 (after 8-byte header + 8-byte length)
     let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local arrayVal)) (.prim .i64))
-    let offset16 ← StateT.lift (LowerM.emitInst (.copy (.const (.int 16 .i64))) (.prim .i64))
-    let dataPtrAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offset16) (.prim .i64)) (.prim .i64))
-    let dataPtrSlot ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local dataPtrAddr)) .rawPtr)
-    let dataPtr ← StateT.lift (LowerM.emitInst (.load (.local dataPtrSlot) .rawPtr) .rawPtr)
-
+    let dataOffset ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
     let elemSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat (Ty.sizeBytes nodeTy)) .i64))) (.prim .i64))
-    let offset ← StateT.lift (LowerM.emitInst (.binOp .mul (.local indexVal) (.local elemSize) (.prim .i64)) (.prim .i64))
-    let dataAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local dataPtr)) (.prim .i64))
-    let elemAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local dataAsI64) (.local offset) (.prim .i64)) (.prim .i64))
+    let indexOffset ← StateT.lift (LowerM.emitInst (.binOp .mul (.local indexVal) (.local elemSize) (.prim .i64)) (.prim .i64))
+    let totalOffset ← StateT.lift (LowerM.emitInst (.binOp .add (.local dataOffset) (.local indexOffset) (.prim .i64)) (.prim .i64))
+    let elemAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local totalOffset) (.prim .i64)) (.prim .i64))
     let elemPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local elemAddr)) .rawPtr)
 
     -- Load with the node's actual type

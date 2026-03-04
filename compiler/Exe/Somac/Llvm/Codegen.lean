@@ -1512,14 +1512,6 @@ def addRuntimeDeclarations : CodegenM Unit := do
 
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
-      name := "soma_alloc_array_header"
-      retTy := .ptr
-      params := #[]
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
       name := "soma_panic"
       retTy := .void
       params := #[{ name := "msg", ty := .ptr }]
@@ -1629,7 +1621,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
   let runtimeNames := #[
     "malloc", "free", "soma_era_free", "soma_era_string",
     "soma_era_tagged_payload", "soma_alloc_tagged_payload",
-    "soma_alloc_array_header", "soma_panic",
+    "soma_panic",
     "llvm.memcpy.p0.p0.i64", "llvm.memset.p0.i64",
     "soma_to_cstring", "soma_from_cstring", "soma_cstring_len",
     "soma_strcat", "soma_int_to_string", "soma_pool_alloc_closure",

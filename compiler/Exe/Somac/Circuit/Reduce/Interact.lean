@@ -702,6 +702,25 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       erasePort ⟨nid, ⟨1⟩⟩
       ReduceM.removeNode nid
       whnf demandPort
+    | .array _ =>
+      let lenId ← whnf ⟨scrutId, ⟨1⟩⟩
+      let lenEntry ← ReduceM.getNode lenId
+      match lenEntry.node with
+      | .num _ v =>
+        let isHit := if expectedTag == 0 then v.toNat == 0
+                     else if expectedTag == 1 then v.toNat > 0
+                     else false
+        ReduceM.modifyStats (·.incMatch)
+        if isHit then
+          ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨2⟩⟩
+          erasePort ⟨nid, ⟨3⟩⟩
+        else
+          ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨3⟩⟩
+          erasePort ⟨nid, ⟨2⟩⟩
+        erasePort ⟨nid, ⟨1⟩⟩
+        ReduceM.removeNode nid
+        whnf demandPort
+      | _ => pure nid -- dynamic length, stuck
     | _ => pure nid  -- stuck
 
   -- Field projection
@@ -755,6 +774,63 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       ReduceM.removeNode nid
       ReduceM.removeNode recId
       whnf demandPort
+    | .array elemType =>
+      ReduceM.modifyStats (·.incProjection)
+      if fieldIdx == 0 then
+        -- Head: extract first element from backing CTOR(0xFFFD)
+        let dataId ← whnf ⟨recId, ⟨2⟩⟩
+        let dataEntry ← ReduceM.getNode dataId
+        match dataEntry.node with
+        | .ctor _ arity =>
+          -- Link result to CTOR's first field (aux port 1)
+          ReduceM.link ⟨nid, .principal⟩ ⟨dataId, ⟨1⟩⟩
+          -- Erase remaining CTOR fields
+          for i in [1:arity] do
+            erasePort ⟨dataId, ⟨i + 1⟩⟩
+          -- Erase array's length
+          erasePort ⟨recId, ⟨1⟩⟩
+          -- Disconnect ARRAY from CTOR and PROJ from ARRAY
+          ReduceM.disconnect ⟨recId, ⟨2⟩⟩
+          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
+          ReduceM.removeNode nid
+          ReduceM.removeNode dataId
+          ReduceM.removeNode recId
+          whnf demandPort
+        | _ => pure nid
+      else if fieldIdx == 1 then
+        -- Tail: create new array with remaining elements (O(1) graph rewiring)
+        let lenId ← whnf ⟨recId, ⟨1⟩⟩
+        let lenEntry ← ReduceM.getNode lenId
+        let dataId ← whnf ⟨recId, ⟨2⟩⟩
+        let dataEntry ← ReduceM.getNode dataId
+        match lenEntry.node, dataEntry.node with
+        | .num pt v, .ctor _ arity =>
+          let newLen := v - 1
+          let newArity := arity - 1
+          -- Create new length NUM
+          let newLenNode ← ReduceM.addNode (.num pt newLen) lenEntry.ty
+          let newDataNode ← ReduceM.addNode (.ctor 0xFFFD newArity) recEntry.ty
+          for i in [:newArity] do
+            ReduceM.rewirePort ⟨dataId, ⟨i + 2⟩⟩ ⟨newDataNode, ⟨i + 1⟩⟩
+          erasePort ⟨dataId, ⟨1⟩⟩
+          -- Create new ARRAY node
+          let newArrayNode ← ReduceM.addNode (.array elemType) recEntry.ty
+          ReduceM.connect ⟨newArrayNode, ⟨1⟩⟩ (PortId.principal newLenNode)
+          ReduceM.connect ⟨newArrayNode, ⟨2⟩⟩ (PortId.principal newDataNode)
+          -- Rewire demand to new array
+          ReduceM.rewirePort ⟨nid, .principal⟩ (PortId.principal newArrayNode)
+          -- Clean up old nodes
+          ReduceM.disconnect ⟨recId, ⟨1⟩⟩
+          ReduceM.disconnect ⟨recId, ⟨2⟩⟩
+          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
+          ReduceM.removeNode nid
+          ReduceM.removeNode dataId
+          ReduceM.removeNode lenId
+          ReduceM.removeNode recId
+          ReduceM.trackPeakNodes
+          whnf demandPort
+        | _, _ => pure nid
+      else pure nid
     | _ => pure nid  -- stuck
 
   -- Definition instantiation (ALO)

@@ -30,13 +30,6 @@
  *   [8]  i64  count     (number of fields)
  *   [16] i64  field[0]  ...
  *
- * Array Header (24 bytes):
- *   [0]  u8   tag       (NODE_ARRAY_HEADER = 4)
- *   [1]  u8[3] _pad
- *   [4]  u32  _magic    (SOMA_ARRAY_MAGIC)
- *   [8]  i64  length
- *   [16] ptr  data_ptr
- *
  * SUP (40 bytes, pool-allocated):
  *   [0]  u8   tag       (SUP_TAG_* = 0x80+)
  *   [1]  u8[3] _pad     ('S','U','P')
@@ -50,7 +43,7 @@
  *   1      = NODE_CLOSURE
  *   2      = NODE_STRING
  *   3      = NODE_TAGGED_PAYLOAD
- *   4      = NODE_ARRAY_HEADER
+ *   4      = NODE_FLAT_ARRAY
  *   5-127  = (reserved for future node types)
  *   0x80+  = SUP_TAG_* (superposition nodes for lazy duplication)
  */
@@ -66,13 +59,11 @@
 #define NODE_CLOSURE          1
 #define NODE_STRING           2
 #define NODE_TAGGED_PAYLOAD   3
-#define NODE_ARRAY_HEADER     4
-
+#define NODE_FLAT_ARRAY       4
 /* Runtime object validation sentinels */
 #define SOMA_CLOSURE_MAGIC 0x534f4d41u /* 'SOMA' */
 #define SOMA_STRING_MAGIC  0x53545247u /* 'STRG' */
 #define SOMA_TAGGED_MAGIC  0x54414750u /* 'TAGP' */
-#define SOMA_ARRAY_MAGIC   0x41525948u /* 'ARYH' */
 #define SOMA_SUP_PAD0 0x53u            /* 'S' */
 #define SOMA_SUP_PAD1 0x55u            /* 'U' */
 #define SOMA_SUP_PAD2 0x50u            /* 'P' */
@@ -238,16 +229,30 @@ typedef struct SomaTaggedPayload {
 } SomaTaggedPayload;
 
 /*
- * Array header (fixed 24 bytes)
+ * Flat array (compiler-generated, for church-encoded lists)
+ *
+ * Reference-counted immutable array. DUP increments the refcount and
+ * shares the pointer (O(1), zero allocation). ERA decrements the refcount
+ * and frees when it reaches zero. Safe because Soma is pure — arrays are
+ * never mutated, so sharing is always correct.
+ *
+ * Layout:
+ *   [0]  u8   tag         (NODE_FLAT_ARRAY = 4)
+ *   [1]  u8   elem_size   (bytes per element: 1/2/4/8)
+ *   [2]  u8[2] _pad
+ *   [4]  u32  refcount    (atomic reference count, starts at 1)
+ *   [8]  i64  length      (number of elements)
+ *   [16] data             (length * elem_size bytes of contiguous element data)
  */
+typedef struct SomaFlatArray {
+    uint8_t   tag;         /* NODE_FLAT_ARRAY */
+    uint8_t   elem_size;   /* bytes per element */
+    uint8_t   _pad[2];
+    _Atomic uint32_t refcount;  /* reference count */
+    int64_t   length;
+    /* element data follows at offset 16 */
+} SomaFlatArray;
 
-typedef struct SomaArrayHeader {
-    uint8_t  tag;       /* NODE_ARRAY_HEADER */
-    uint8_t  _pad[3];
-    uint32_t _magic;    /* SOMA_ARRAY_MAGIC */
-    int64_t  length;
-    void*    data_ptr;
-} SomaArrayHeader;
 
 /* Convert Soma String to C string (returns data pointer) */
 char* soma_to_cstring(SomaString* str);
@@ -286,14 +291,9 @@ void* soma_clone_closure(void* closure, uint32_t label);
 /* Clone a tagged payload buffer, recursively cloning pointer fields */
 void* soma_clone_tagged_payload(void* payload, uint32_t label);
 
-/* Clone an array header { length, data_ptr } and recursively clone data pointer */
-void* soma_clone_array_header(void* header, uint32_t label);
-
 /* Allocate a tagged payload buffer with count prefix initialized */
 void* soma_alloc_tagged_payload(uint64_t field_count);
 
-/* Allocate a 24-byte array header { tag, length, data_ptr } */
-void* soma_alloc_array_header(void);
 
 /*
  * SUP (Superposition) operations — Tier 3 lazy duplication
