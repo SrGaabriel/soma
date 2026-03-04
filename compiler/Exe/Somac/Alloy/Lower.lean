@@ -1188,7 +1188,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               if fnNodeTy == .prim .unit then
                 StateT.lift (LowerM.emitPanic nodeTy)
               else
-                let fnVal ← lowerNodeWithMap graph fp.node funcIdMap
+                let fnVal ← lowerOperandWithMap graph fp funcIdMap
                 StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
 
   | .ctor tag arity => do

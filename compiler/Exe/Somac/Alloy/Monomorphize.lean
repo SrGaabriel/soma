@@ -301,7 +301,7 @@ def renumberFuncs (funcs : Array ClosedFunc) : Array ClosedFunc × Std.HashMap N
   (arr, mapResult)
 
 /-- Collect all FuncId references from an instruction -/
-private def collectFuncRefs (inst : ClosedInst) (acc : Array FuncId) : Array FuncId :=
+private def collectFuncRefsInst (inst : Inst n) (acc : Array FuncId) : Array FuncId :=
   let fromOperand (op : Operand) (a : Array FuncId) : Array FuncId :=
     match op with
     | .func fid => a.push fid
@@ -325,15 +325,13 @@ private def collectFuncRefs (inst : ClosedInst) (acc : Array FuncId) : Array Fun
 
 /-- Collect all FuncId references from a function body -/
 private def collectFuncRefsFromFunc (sf : SomeFunc) : Array FuncId :=
-  match sf.asMono? with
+  let ⟨_, f⟩ := sf
+  match f.body with
   | none => #[]
-  | some f =>
-    match f.body with
-    | none => #[]
-    | some cfg =>
-      cfg.allBlocks.foldl (init := #[]) fun acc block =>
-        block.stmts.foldl (init := acc) fun acc stmt =>
-          collectFuncRefs stmt.inst acc
+  | some cfg =>
+    cfg.allBlocks.foldl (init := #[]) fun acc block =>
+      block.stmts.foldl (init := acc) fun acc stmt =>
+        collectFuncRefsInst stmt.inst acc
 
 /-- Find all functions reachable from main via transitive call graph -/
 partial def findReachableFuncs (m : Module) : Std.HashSet FuncId :=
@@ -366,12 +364,18 @@ where
 def removePolymorphicAndCompact : StateM MonoState Unit := do
   let s ← get
 
-  -- Keep only monomorphic functions reachable from main
+  -- Keep reachable monomorphic functions and auto-specialize reachable
   let reachable := findReachableFuncs s.module
   let monoFuncs := s.module.funcs.filterMap fun sf =>
     match sf.asMono? with
     | some f => if reachable.contains f.id then some f else none
-    | none => none
+    | none =>
+      -- Polymorphic function: include if reachable, auto-specializing with rawPtr
+      if reachable.contains sf.id then
+        let ⟨n, f⟩ := sf
+        let env : TyEnv n := fun _ => .rawPtr
+        some (f.instantiate env f.id f.sig.name)
+      else none
 
   -- Renumber
   let (newFuncs, idMap) := renumberFuncs monoFuncs

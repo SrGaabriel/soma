@@ -600,31 +600,36 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     pure (some (ref, resultTy))
 
   | .copy src =>
-    let srcTy ← operandTy src
-    let srcVal ← convertOperand src
-    let llvmTy := convertTy srcTy
-    -- For copies, we need to produce an SSA value. Check if source is already a local.
-    match srcVal with
-    | .local ref =>
-      pure (some (ref, srcTy))
+    match src with
+    | .const (.undef _) =>
+      -- Return none to let the statement handler emit a correctly-typed value
+      pure none
     | _ =>
-      let ref ← CodegenM.withFuncBuilder do
-        match srcVal with
-        | .const .null =>
-          -- todo: consider optimizing
-          FuncBuilder.inttoptr .i64 (intVal 0 64)
-        | .const (.int v bits) =>
-          -- todo: consider optimizing
-          FuncBuilder.add llvmTy srcVal (intVal 0 bits)
-        | _ =>
-          -- For other values, bitcast to same type (LLVM will eliminate)
-          if llvmTy == .ptr then
-            FuncBuilder.bitcast .ptr .ptr srcVal
-          else if llvmTy.isInt then
-            FuncBuilder.add llvmTy srcVal (intVal 0 (llvmTy.intBits.getD 64))
-          else
-            FuncBuilder.bitcast llvmTy llvmTy srcVal
-      pure (some (ref, srcTy))
+      let srcTy ← operandTy src
+      let srcVal ← convertOperand src
+      let llvmTy := convertTy srcTy
+      -- For copies, we need to produce an SSA value
+      match srcVal with
+      | .local ref =>
+        pure (some (ref, srcTy))
+      | _ =>
+        let ref ← CodegenM.withFuncBuilder do
+          match srcVal with
+          | .const .null =>
+            -- todo: consider optimizing
+            FuncBuilder.inttoptr .i64 (intVal 0 64)
+          | .const (.int v bits) =>
+            -- todo: consider optimizing
+            FuncBuilder.add llvmTy srcVal (intVal 0 bits)
+          | _ =>
+            -- For other values, bitcast to same type (LLVM will eliminate)
+            if llvmTy == .ptr then
+              FuncBuilder.bitcast .ptr .ptr srcVal
+            else if llvmTy.isInt then
+              FuncBuilder.add llvmTy srcVal (intVal 0 (llvmTy.intBits.getD 64))
+            else
+              FuncBuilder.bitcast llvmTy llvmTy srcVal
+        pure (some (ref, srcTy))
 
   | .alloca ty =>
     let llvmTy := convertTy ty
