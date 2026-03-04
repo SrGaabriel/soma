@@ -85,16 +85,6 @@ private def registerGlobalNames
             let (u, s') := supply.fresh m.name.value
             supply := s'
             names := names.insert m.name.value ⟨u⟩
-      | .instance_ _ _ _ _ methods _ =>
-        for methodDecl in methods do
-          match methodDecl with
-          | .def_ attrs methodName _ _ _ _ =>
-            if names.get? methodName.value |>.isNone then
-              let fnAttrs := functionAttrsFromSyntax attrs (some methodName.value)
-              let (n, s') := mkGlobalName methodName.value fnAttrs supply
-              supply := s'
-              names := names.insert methodName.value n
-          | _ => pure ()
       | _ => pure ()
 
     (names, supply)
@@ -246,29 +236,108 @@ private def lowerTypeClassDecl
     }, supply)
   | _ => (none, supply)
 
+/-- Lower a function declaration using an explicitly provided QualifiedName -/
+private def lowerFunctionDeclWithName
+    (decl : Syntax.Decl)
+    (globalName : Soma.Core.QualifiedName)
+  : Option Soma.Core.UntypedFunction × Diagnostics :=
+  Id.run do
+    match decl with
+    | .def_ attrs name headerParams sig clauses span =>
+      let fnAttrs := functionAttrsFromSyntax attrs (some name.value)
+      match clauses[0]? with
+      | some clause =>
+        let hasPatternClauses := clauses.any (fun c => c.patterns.size > 0)
+        if hasPatternClauses then
+          if let some sigTy := sig then
+            let totalArity := explicitArityOfType sigTy
+            let expectedArity := totalArity - headerParams.size
+            if let some badClause := clauses.find? (fun c => c.patterns.size != expectedArity) then
+              let d := Diagnostic.error
+                (s!"definition '{name.value}' expects {expectedArity} pattern(s) from its signature, but got {badClause.patterns.size}")
+                badClause.span
+              return (none, #[d])
+
+        let headerParamNames := headerParams.map (·.name.value)
+        if allSimplePatterns clause.patterns then
+          let params := headerParamNames ++ (clause.patterns.map extractVarName)
+          return (some {
+            name := globalName
+            params := params
+            body := clause.body
+            span := span
+            declaredTypeSyntax := sig
+            closureInfo := none
+            attrs := fnAttrs
+          }, #[])
+
+        let numClauseParams := clause.patterns.size
+        let clauseParams := (List.range numClauseParams).toArray.map fun i => s!"_arg{i}"
+        let params := headerParamNames ++ clauseParams
+        let scrutineeSyntax : Array Syntax.Expr := clauseParams.map fun paramName =>
+          Syntax.Expr.var ⟨paramName, span⟩
+        let armsSyntax : Array Syntax.MatchArm := clauses.map fun c =>
+          Syntax.MatchArm.mk c.patterns c.guard c.body c.span
+        let caseSyntax := Syntax.Expr.case scrutineeSyntax armsSyntax span
+        return (some {
+          name := globalName
+          params := params
+          body := caseSyntax
+          span := span
+          declaredTypeSyntax := sig
+          closureInfo := none
+          attrs := fnAttrs
+        }, #[])
+      | none =>
+        if fnAttrs.intrinsic || fnAttrs.extern.isSome then
+          let body := Syntax.Expr.lit
+            (Syntax.Literal.string s!"{if fnAttrs.intrinsic then "intrinsic" else "extern"}:{name.value}" span)
+          return (some {
+            name := globalName
+            params := #[]
+            body := body
+            span := span
+            declaredTypeSyntax := sig
+            closureInfo := none
+            attrs := fnAttrs
+          }, #[])
+        let d := Diagnostic.error
+          (s!"definition '{name.value}' must have at least one clause or be marked @[intrinsic]/@[extern]")
+          span
+        return (none, #[d])
+    | _ =>
+      return (none, #[])
+
 private def lowerInstanceDecl
     (decl : Syntax.Decl)
-  (globalNames : Std.HashMap String Soma.Core.QualifiedName)
-  : Option Soma.Core.UntypedInstance × Diagnostics :=
+    (supply : UniqueSupply)
+  : Option Soma.Core.UntypedInstance × Diagnostics × UniqueSupply :=
   match decl with
   | .instance_ _ traitName args constraints methods span =>
-    let (methodFns, diags) := Id.run do
+    let (methodFns, diags, supply') := Id.run do
       let mut fns : Array Soma.Core.UntypedFunction := #[]
       let mut ds : Diagnostics := #[]
+      let mut sup := supply
       for methodDecl in methods do
-        let (fn?, fnDiags) := lowerFunctionDecl methodDecl globalNames
-        ds := ds ++ fnDiags
-        if let some fn := fn? then
-          fns := fns.push fn
-      (fns, ds)
+        match methodDecl with
+        | .def_ _ methodName _ _ _ _ =>
+          let (u, sup') := sup.fresh methodName.value
+          sup := sup'
+          let methodQN : Soma.Core.QualifiedName := ⟨u⟩
+          let (fn?, fnDiags) := lowerFunctionDeclWithName methodDecl methodQN
+          ds := ds ++ fnDiags
+          if let some fn := fn? then
+            fns := fns.push fn
+        | _ => pure ()
+      (fns, ds, sup)
     (some {
       className := traitName.value
       typeArgsSyntax := args
       constraintsSyntax := constraints
       methods := methodFns
       span := span
-    }, diags)
-  | _ => (none, #[])
+    }, diags, supply')
+  | _ => (none, #[], supply)
 
 private def lowerAbbrevDecl (decl : Syntax.Decl) : Option Soma.Core.TypeAbbrev :=
   match decl with
@@ -310,8 +379,9 @@ def lowerModule (ast : Syntax.Module) : Result :=
       if let some tc := tc? then
         typeClasses := typeClasses.push tc
 
-      let (inst?, instDiags) := lowerInstanceDecl decl globalNames
+      let (inst?, instDiags, supply''') := lowerInstanceDecl decl supply
       diagnostics := diagnostics ++ instDiags
+      supply := supply'''
       if let some inst := inst? then
         instances := instances.push inst
 

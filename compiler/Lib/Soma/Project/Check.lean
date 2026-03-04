@@ -572,7 +572,7 @@ def typeCheckModule
   -- TypedFunctions with Core Expr bodies needed for Circuit IR lowering.
   let mut mergedTypedFns := fnResult.typedFunctions
   for instFn in globalsResult.instanceTypedFunctions do
-    mergedTypedFns := mergedTypedFns.insert instFn.name.display instFn
+    mergedTypedFns := mergedTypedFns.insert instFn.name.id.mangle instFn
 
   return {
     globals := globalsResult.globals

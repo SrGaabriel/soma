@@ -651,6 +651,20 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
 
           -- Wrap in implicit foralls for method's own type variables (right to left)
           let mut methodType := methodTypeBody
+
+          let classNameStr' := typeClass.name.display
+          if let some classUnique := globals.lookupUnique classNameStr' then
+            let methodOwnVarCount := methodOwnVarsUnique.length
+            let mut typeParamVars : List Value := []
+            let mut paramIdx := 0
+            for (paramName, paramKind) in paramKinds do
+              let paramLevel := methodOwnVarCount + paramIdx
+              typeParamVars := typeParamVars ++ [Value.vNeutral paramKind (.nVar ⟨paramName, ⟨paramLevel⟩⟩)]
+              paramIdx := paramIdx + 1
+            let instanceDomain := Value.vDataType classUnique typeParamVars
+            let codClosure ← Elaborate.mkDependentClosure "$dict" methodType elabEnv
+            methodType := Value.vPi .omega .instance_ "$dict" instanceDomain codClosure
+
           let mut outerEnv := elabEnv
 
           -- First wrap trait parameters (outermost foralls)
@@ -947,6 +961,18 @@ private def elaborateMethodType
     elabEnv := elabEnv.extend paramName kind
   let methodTypeBody ← TCM.withGlobals globals (Elaborate.elaborateType elabEnv methodTypeSyntax)
   let mut methodType := methodTypeBody
+
+  let classNameStr' := typeClass.name.display
+  if let some classUnique := globals.lookupUnique classNameStr' then
+    let mut typeParamVars : List Value := []
+    let mut paramIdx := 0
+    for (paramName, paramKind) in paramKinds do
+      typeParamVars := typeParamVars ++ [Value.vNeutral paramKind (.nVar ⟨paramName, ⟨paramIdx⟩⟩)]
+      paramIdx := paramIdx + 1
+    let instanceDomain := Value.vDataType classUnique typeParamVars
+    let codClosure ← Elaborate.mkDependentClosure "$dict" methodType elabEnv
+    methodType := Value.vPi .omega .instance_ "$dict" instanceDomain codClosure
+
   let mut outerEnv := elabEnv
   for (paramName, paramKind) in paramKinds.reverse do
     outerEnv := { tyVars := outerEnv.tyVars.tail!, level := outerEnv.level - 1 }

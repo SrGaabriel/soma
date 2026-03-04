@@ -107,17 +107,11 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
   let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals)
 
   -- Partial evaluation
-  IO.println s!"  [{cm.name}] Circuit graph: {graph.nodes.size} node(s), {graph.book.size} definition(s)"
-  IO.println s!"  [{cm.name}] Before partial eval:\n{Circuit.ppGraph {} graph}"
-  let (optimized, stats) ← Circuit.partialEval graph
-  IO.println s!"  [{cm.name}] After partial eval: {optimized.nodes.size} node(s) ({stats.totalSteps} steps, {stats.betaReductions} β, {stats.matchReductions} mat, {stats.arithmeticOps} arith, {stats.eraPropagations} era)"
-  if stats.totalSteps > 0 then
-    IO.println s!"  [{cm.name}] After partial eval:\n{Circuit.ppGraph {} optimized}"
+  let (optimized, _stats) ← Circuit.partialEval graph
 
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
   let alloyMod := Alloy.Lower.lower optimized cm.name primTypes globals.intrinsics
-  IO.println s!"  [{cm.name}] Alloy IR:\n{alloyMod}"
   return alloyMod
 
 /-- Result of compilation pipeline -/
@@ -203,8 +197,6 @@ def compileModules
   let mono := Alloy.Monomorphize.monomorphize merged
 
   IO.println s!"  Monomorphized module has {mono.funcs.size} function(s)"
-
-  IO.println s!"  === DEBUG: Monomorphized Alloy IR ===\n{mono}\n  === END DEBUG ==="
 
   -- Generate LLVM IR
   IO.println "  Generating LLVM IR..."

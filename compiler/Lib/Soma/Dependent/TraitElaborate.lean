@@ -6,6 +6,7 @@ import Soma.Dependent.Monad
 import Soma.Dependent.Elaborate
 import Soma.Dependent.Infer
 import Soma.Dependent.Instance
+import Soma.Dependent.Zonk
 import Soma.Core.Module
 import Soma.Syntax.Ast
 
@@ -390,13 +391,16 @@ def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : V
 
   let (bodyVal, coreBody, generatedParams) ← bindParams 0 #[]
 
+  let coreBody' ← zonkExpr coreBody
+  let expectedType' ← zonkValue expectedType
+
   -- Build the method value as a lambda
   let methodVal ← buildLambdaValue paramNames paramTypes bodyVal
 
   return {
     value := methodVal
-    coreBody := coreBody
-    fnType := expectedType
+    coreBody := coreBody'
+    fnType := expectedType'
     params := generatedParams
   }
 
@@ -438,12 +442,8 @@ partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
     | some (_, expectedType) =>
       let result ← elaborateMethodImpl method expectedType
       fields := (methodName, result.value) :: fields
-      let canonicalName ← do
-        match ← TCM.lookupGlobalNoDep methodName with
-        | some info => pure info.name
-        | none => pure method.name
       typedFns := typedFns.push {
-        name := canonicalName
+        name := method.name
         params := result.params
         body := result.coreBody
         fnType := result.fnType
@@ -519,12 +519,8 @@ def elaborateInstanceValue (typeArgs : Array Value)
       -- Elaborate the method implementation
       let result ← elaborateMethodImpl method expectedType
       fields := (method.name.display, result.value) :: fields
-      let canonicalName ← do
-        match ← TCM.lookupGlobalNoDep method.name.display with
-        | some info => pure info.name
-        | none => pure method.name
       typedFns := typedFns.push {
-        name := canonicalName
+        name := method.name
         params := result.params
         body := result.coreBody
         fnType := result.fnType
@@ -635,6 +631,47 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
           | none => pure ()
         | none => pure ()
       | none => pure ()
+
+  for typeClass in module.typeClasses do
+    let mut idx := 0
+    for (methodName, _) in typeClass.methodSignatures do
+      let methodNameStr := methodName.display
+      match ← TCM.lookupGlobal methodNameStr with
+      | some info =>
+        let mut wrapperParams : Array (Soma.Unique × String) := #[]
+        let mut walkTy := info.type
+        let mut dictUnique : Soma.Unique := ⟨0, "", "$dict"⟩
+        let mut foundInstance := false
+        let mut walking := true
+        while walking do
+          match walkTy with
+          | .vPi _qty binder name _dom cod =>
+            let paramUnique ← TCM.freshUnique name
+            wrapperParams := wrapperParams.push (paramUnique, name)
+            if binder == .instance_ then
+              dictUnique := paramUnique
+              foundInstance := true
+              walking := false
+            else
+              walkTy := cod.applyPure (.vType .zero)
+          | _ => walking := false
+
+        if foundInstance then
+          let body := Soma.Core.Expr.fieldAccess
+            (Soma.Core.Expr.fvar dictUnique (.sort .zero))
+            methodNameStr
+            idx
+          let wrapper : Soma.Core.TypedFunction := {
+            name := info.name
+            params := wrapperParams
+            body := body
+            fnType := info.type
+            closureInfo := none
+            attrs := {}
+          }
+          allTypedFns := allTypedFns.push wrapper
+      | none => pure ()
+      idx := idx + 1
 
   return (env, instanceMap, allTypedFns)
 
@@ -751,6 +788,48 @@ def buildInstanceEnvFromModuleIncremental
               | none => pure ()
             | none => pure ()
           | none => pure ()
+
+  -- Third pass: create wrapper TypedFunctions for class methods
+  for typeClass in module.typeClasses do
+    let mut idx := 0
+    for (methodName, _) in typeClass.methodSignatures do
+      let methodNameStr := methodName.display
+      match ← TCM.lookupGlobal methodNameStr with
+      | some info =>
+        let mut wrapperParams : Array (Soma.Unique × String) := #[]
+        let mut walkTy := info.type
+        let mut dictUnique : Soma.Unique := ⟨0, "", "$dict"⟩
+        let mut foundInstance := false
+        let mut walking := true
+        while walking do
+          match walkTy with
+          | .vPi _qty binder name _dom cod =>
+            let paramUnique ← TCM.freshUnique name
+            wrapperParams := wrapperParams.push (paramUnique, name)
+            if binder == .instance_ then
+              dictUnique := paramUnique
+              foundInstance := true
+              walking := false
+            else
+              walkTy := cod.applyPure (.vType .zero)
+          | _ => walking := false
+
+        if foundInstance then
+          let body := Soma.Core.Expr.fieldAccess
+            (Soma.Core.Expr.fvar dictUnique (.sort .zero))
+            methodNameStr
+            idx
+          let wrapper : Soma.Core.TypedFunction := {
+            name := info.name
+            params := wrapperParams
+            body := body
+            fnType := info.type
+            closureInfo := none
+            attrs := {}
+          }
+          allTypedFns := allTypedFns.push wrapper
+      | none => pure ()
+      idx := idx + 1
 
   return (env, instanceMap, allTypedFns)
 
