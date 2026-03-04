@@ -60,8 +60,13 @@
 #define NODE_STRING           2
 #define NODE_TAGGED_PAYLOAD   3
 #define NODE_FLAT_ARRAY       4
+/* Closure env_kind constants: type-directed clone/erase strategy per closure */
+#define SOMA_ENV_DEFAULT  0  /* Generic tag-based dispatch per env slot */
+#define SOMA_ENV_FLAT     1  /* Env slots are flat scalars (memcpy, no clone) */
+#define SOMA_ENV_TAGGED   2  /* Env slots are heap-alloc'd tagged unions {i32,ptr} */
+#define SOMA_ENV_LIST     3  /* Env slots are refcounted flat arrays */
 /* Runtime object validation sentinels */
-#define SOMA_CLOSURE_MAGIC 0x534f4d41u /* 'SOMA' */
+#define SOMA_CLOSURE_MAGIC 0x534f4d41u /* 'SOMA' — legacy, unused */
 #define SOMA_STRING_MAGIC  0x53545247u /* 'STRG' */
 #define SOMA_TAGGED_MAGIC  0x54414750u /* 'TAGP' */
 #define SOMA_SUP_PAD0 0x53u            /* 'S' */
@@ -160,14 +165,15 @@ typedef uintptr_t SomaValue;
 /* Create pointer value (for heap objects) */
 #define SOMA_PTR(p)          ((SomaValue)(p))
 
-/* Closure header structure (env follows) */
+/* Closure header structure (env follows at offset 16) */
 typedef struct SomaClosure {
-    uint8_t  tag;
-    uint8_t  arity;
-    uint16_t env_size;
-    uint32_t _pad;     /* Padding for alignment */
-    void*    func_ptr;
-    /* void* env[] follows */
+    uint8_t  tag;         /* NODE_CLOSURE */
+    uint8_t  arity;       /* remaining args after first */
+    uint16_t env_size;    /* number of captured env slots */
+    uint16_t env_kind;    /* SOMA_ENV_* — clone/erase strategy */
+    uint16_t _pad;        /* reserved */
+    void*    func_ptr;    /* function pointer */
+    /* SomaValue env[] follows at offset 16 */
 } SomaClosure;
 
 /*

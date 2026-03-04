@@ -61,8 +61,11 @@ def closureTy : LLVMType := .ptr
 /-- Closure header struct for inline GEP field access -/
 def closureHeaderTy : LLVMType := .struct false #[.i8, .i8, .i16, .i32, .ptr]
 
-/-- SOMA_CLOSURE_MAGIC (0x534f4d41 = 'SOMA') -/
-def closureMagic : Int := 0x534f4d41
+/-- env_kind constants  -/
+def envKindDefault : Int := 0
+def envKindFlat    : Int := 1
+def envKindTagged  : Int := 2
+def envKindList    : Int := 3
 
 /-- NODE_CLOSURE tag constant -/
 def nodeClosureTag : Int := 1
@@ -932,12 +935,17 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       | _ => FuncId.mk 0 -- todo: consider panicking
     let funcName ← CodegenM.getFuncName funcId.id
     let (envLLVMTy, envVal) ← convertOperandWithTy env
+    let envAlloTy ← operandTy env
     let closureArity : Nat ← do
       match ← CodegenM.getFuncSig funcId.id with
       | some sig =>
         let n := sig.params.size
         pure (if n == 0 then 0 else n - 1)
       | none => pure 0
+    let envKind : Int := match envAlloTy with
+      | .tagged _ _ => envKindTagged
+      | .prim _ => envKindFlat
+      | _ => envKindDefault
     -- Convert env to pointer based on its type
     let envPtrVal ← if envLLVMTy == .ptr then pure envVal
                     else if envLLVMTy.isInt then do
@@ -945,8 +953,14 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
                         FuncBuilder.inttoptr envLLVMTy envVal
                       pure (.local converted)
                     else do
-                      -- Struct/aggregate type: box it by allocating and storing
-                      let boxPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca envLLVMTy)
+                      -- Struct/aggregate type: heap-allocate via malloc so the
+                      -- pointer survives closure cloning and can be freed on erase
+                      let sizePtr ← CodegenM.withFuncBuilder
+                        (FuncBuilder.gepi32 envLLVMTy (.const .null) #[1])
+                      let sizeI64 ← CodegenM.withFuncBuilder
+                        (FuncBuilder.ptrtoint .i64 (.local sizePtr))
+                      let boxPtr ← CodegenM.withFuncBuilder do
+                        FuncBuilder.callNamed .ptr "malloc" #[(.i64, .local sizeI64)]
                       CodegenM.withFuncBuilder do
                         FuncBuilder.store envLLVMTy envVal (.local boxPtr)
                       pure (.local boxPtr)
@@ -959,8 +973,9 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal (Int.ofNat closureArity) 8) (.local arityAddr))
     let envSizeAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
     CodegenM.withFuncBuilder (FuncBuilder.store .i16 (intVal 1 16) (.local envSizeAddr))
-    let magicAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 3])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i32 (intVal closureMagic 32) (.local magicAddr))
+    -- Store env_kind (type-directed clone/erase discriminator)
+    let envKindAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 3])
+    CodegenM.withFuncBuilder (FuncBuilder.store .i32 (intVal envKind 32) (.local envKindAddr))
     let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 4])
     CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal funcName) (.local funcFieldAddr))
     -- Store env[0] at offset 16 (one struct-width past header)
@@ -982,12 +997,18 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       | _ => FuncId.mk 0 -- todo: consider panicking
     let funcName ← CodegenM.getFuncName funcId.id
     let (envLLVMTy, envVal) ← convertOperandWithTy env
+    let envAlloTy ← operandTy env
     let closureArity : Nat ← do
       match ← CodegenM.getFuncSig funcId.id with
       | some sig =>
         let n := sig.params.size
         pure (if n == 0 then 0 else n - 1)
       | none => pure 0
+    -- Determine env_kind from the Alloy type of the env operand
+    let envKind : Int := match envAlloTy with
+      | .tagged _ _ => envKindTagged
+      | .prim _ => envKindFlat
+      | _ => envKindDefault
     -- Convert env to pointer based on its type
     let envPtrVal ← if envLLVMTy == .ptr then pure envVal
                     else if envLLVMTy.isInt then do
@@ -995,8 +1016,14 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
                         FuncBuilder.inttoptr envLLVMTy envVal
                       pure (.local converted)
                     else do
-                      -- Struct/aggregate type: box it by allocating and storing
-                      let boxPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca envLLVMTy)
+                      -- Struct/aggregate type: heap-allocate via malloc so the
+                      -- pointer survives closure cloning and can be freed on erase.
+                      let sizePtr ← CodegenM.withFuncBuilder
+                        (FuncBuilder.gepi32 envLLVMTy (.const .null) #[1])
+                      let sizeI64 ← CodegenM.withFuncBuilder
+                        (FuncBuilder.ptrtoint .i64 (.local sizePtr))
+                      let boxPtr ← CodegenM.withFuncBuilder do
+                        FuncBuilder.callNamed .ptr "malloc" #[(.i64, .local sizeI64)]
                       CodegenM.withFuncBuilder do
                         FuncBuilder.store envLLVMTy envVal (.local boxPtr)
                       pure (.local boxPtr)
@@ -1008,8 +1035,9 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal (Int.ofNat closureArity) 8) (.local arityAddr))
     let envSizeAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
     CodegenM.withFuncBuilder (FuncBuilder.store .i16 (intVal 1 16) (.local envSizeAddr))
-    let magicAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 3])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i32 (intVal closureMagic 32) (.local magicAddr))
+    -- Store env_kind (type-directed clone/erase discriminator)
+    let envKindAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 3])
+    CodegenM.withFuncBuilder (FuncBuilder.store .i32 (intVal envKind 32) (.local envKindAddr))
     let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 4])
     CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal funcName) (.local funcFieldAddr))
     -- Store env[0] at offset 16

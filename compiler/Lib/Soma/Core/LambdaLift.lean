@@ -116,8 +116,12 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     pure e
 
   | .lam info name domain body => do
-    let body' ← liftCoreExpr body
-    let liftedLam : Soma.Core.Expr := Soma.Core.Expr.lam info name domain body'
+    let preOpenU ← LiftM.freshUnique name
+    let preOpenedBody := Soma.Core.Expr.instantiate body
+      (Soma.Core.Expr.fvar preOpenU domain)
+    let body' ← liftCoreExpr preOpenedBody
+    let closedBody' := Soma.Core.Expr.abstractFVar body' preOpenU
+    let liftedLam : Soma.Core.Expr := Soma.Core.Expr.lam info name domain closedBody'
 
     let fvarTypes := collectFVarsWithTypes liftedLam
 

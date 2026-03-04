@@ -1352,13 +1352,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         | none => none
       | none => none
     match arrayElemType? with
-    | some elemTy => do
+    | some _elemTy => do
       -- Array-backed list projection (header layout: 8B header, 8B length, data at 16)
-      let elemSize : Nat := match elemTy with
-        | .u8 | .i8 | .bool => 1
-        | .u16 | .i16 => 2
-        | .u32 | .i32 | .f32 | .char => 4
-        | .u64 | .i64 | .f64 => 8
+      let elemSize : Nat := 8
       let arrPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local recordVal)) .rawPtr)
       let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local arrPtr)) (.prim .i64))
       if fieldIdx == 0 then
@@ -1611,7 +1607,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         | none => pure none
       | none => pure none
 
-    let elemSize : Nat := match ctorInfo with
+    let elemSize : Nat := 8
+
+    -- Determine the natural element size for sext/zext decisions
+    let naturalElemSize : Nat := match ctorInfo with
       | some (_, ctorEntry) =>
         if len > 0 then
           match ctorEntry.getPort ⟨1⟩ with
@@ -1642,10 +1641,13 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         let elemVal ← match ctorEntry.getPort ⟨i + 1⟩ with
           | some elemPort => lowerOperandWithMap graph elemPort funcIdMap
           | none => StateT.lift (LowerM.emitPanic (.prim .i64))
+        let elemI64 ← if naturalElemSize < 8 then
+          StateT.lift (LowerM.emitInst (.unOp (.sext .i64) (.local elemVal)) (.prim .i64))
+        else pure elemVal
         let offsetVal ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat (flatArrayDataOffset + i * elemSize)) .i64))) (.prim .i64))
         let elemAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local offsetVal) (.prim .i64)) (.prim .i64))
         let elemPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local elemAddr)) .rawPtr)
-        StateT.lift (LowerM.emitVoid (.store (.local elemPtr) (.local elemVal)))
+        StateT.lift (LowerM.emitVoid (.store (.local elemPtr) (.local elemI64)))
     | none => pure ()
 
     StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local buf)) (.prim .i64))
@@ -1681,14 +1683,19 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     -- Data starts at offset 16 (after 8-byte header + 8-byte length)
     let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local arrayVal)) (.prim .i64))
     let dataOffset ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
-    let elemSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat (Ty.sizeBytes nodeTy)) .i64))) (.prim .i64))
-    let indexOffset ← StateT.lift (LowerM.emitInst (.binOp .mul (.local indexVal) (.local elemSize) (.prim .i64)) (.prim .i64))
+    let elemStride ← StateT.lift (LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64))
+    let indexOffset ← StateT.lift (LowerM.emitInst (.binOp .mul (.local indexVal) (.local elemStride) (.prim .i64)) (.prim .i64))
     let totalOffset ← StateT.lift (LowerM.emitInst (.binOp .add (.local dataOffset) (.local indexOffset) (.prim .i64)) (.prim .i64))
     let elemAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local totalOffset) (.prim .i64)) (.prim .i64))
     let elemPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local elemAddr)) .rawPtr)
 
-    -- Load with the node's actual type
-    StateT.lift (LowerM.emitInst (.load (.local elemPtr) nodeTy) nodeTy)
+    let elemI64 ← StateT.lift (LowerM.emitInst (.load (.local elemPtr) (.prim .i64)) (.prim .i64))
+    let nodeSize := Ty.sizeBytes nodeTy
+    if nodeSize < 8 then
+      match nodeTy with
+      | .prim p => StateT.lift (LowerM.emitInst (.unOp (.trunc p) (.local elemI64)) nodeTy)
+      | _ => pure elemI64
+    else pure elemI64
 
   | .slice =>
     StateT.lift (LowerM.emitPanic nodeTy)

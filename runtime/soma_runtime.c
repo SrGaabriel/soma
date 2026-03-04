@@ -283,7 +283,7 @@ static inline int is_heap_sup(SomaValue value) {
 static inline int is_heap_closure(SomaValue value) {
     if (!SOMA_IS_PTR(value) || value == 0) return 0;
     SomaClosure* closure = (SomaClosure*)SOMA_TO_PTR(value);
-    return closure->tag == NODE_CLOSURE && closure->_pad == SOMA_CLOSURE_MAGIC;
+    return closure->tag == NODE_CLOSURE;
 }
 
 static SomaValue soma_clone_value_for_fork(SomaValue value);
@@ -516,7 +516,8 @@ void* soma_alloc_closure(void* func_ptr, uint8_t arity, uint16_t env_size) {
     closure->tag      = NODE_CLOSURE;
     closure->arity    = arity;
     closure->env_size = env_size;
-    closure->_pad     = SOMA_CLOSURE_MAGIC;
+    closure->env_kind = SOMA_ENV_DEFAULT;
+    closure->_pad     = 0;
     closure->func_ptr = func_ptr;
 
     return closure;
@@ -550,19 +551,50 @@ void* soma_clone_closure(void* closure_ptr, uint32_t label) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
     const uint16_t env_size = closure->env_size;
 
-    /* Allocate new closure */
     void* new_closure = soma_pool_alloc_closure(env_size);
-
-    /* Copy header */
     memcpy(new_closure, closure, sizeof(SomaClosure));
 
     SomaValue* src_env = (SomaValue*)(closure + 1);
     SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
 
-    /* Copy environment slots through typed heap DUP clone helper. */
-    for (uint16_t i = 0; i < env_size; i++) {
-        SomaValue val = src_env[i];
-        dst_env[i] = soma_clone_heap_value_for_dup(val, label);
+    switch (closure->env_kind) {
+    case SOMA_ENV_FLAT:
+        /* Flat scalars: bit-copy, no heap interaction */
+        memcpy(dst_env, src_env, env_size * sizeof(SomaValue));
+        break;
+    case SOMA_ENV_TAGGED:
+        /* Each env slot is a pointer to a heap-alloc'd {i32 tag, ptr payload}.
+         * Clone: deep-copy the struct, clone the payload pointer inside. */
+        for (uint16_t i = 0; i < env_size; i++) {
+            SomaValue val = src_env[i];
+            if (!SOMA_IS_PTR(val) || val == 0) { dst_env[i] = val; continue; }
+            void* src_tu = SOMA_TO_PTR(val);
+            int32_t vtag = *(int32_t*)src_tu;
+            void* payload = *(void**)((char*)src_tu + 8);
+            void* new_payload = (payload != NULL)
+                ? soma_clone_tagged_payload(payload, label) : NULL;
+            void* new_tu = malloc(16);
+            *(int32_t*)new_tu = vtag;
+            *(void**)((char*)new_tu + 8) = new_payload;
+            dst_env[i] = SOMA_PTR(new_tu);
+        }
+        break;
+    case SOMA_ENV_LIST:
+        /* Flat arrays: O(1) refcount increment, share pointer */
+        for (uint16_t i = 0; i < env_size; i++) {
+            dst_env[i] = src_env[i];
+            if (SOMA_IS_PTR(src_env[i]) && src_env[i] != 0) {
+                SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(src_env[i]);
+                atomic_fetch_add_explicit(&arr->refcount, 1, memory_order_relaxed);
+            }
+        }
+        break;
+    default: /* SOMA_ENV_DEFAULT */
+        /* Generic: runtime tag-based dispatch per env slot */
+        for (uint16_t i = 0; i < env_size; i++) {
+            dst_env[i] = soma_clone_heap_value_for_dup(src_env[i], label);
+        }
+        break;
     }
 
     return new_closure;
@@ -632,8 +664,39 @@ static void* soma_clone_closure_for_fork(void* closure_ptr) {
     SomaValue* src_env = (SomaValue*)(closure + 1);
     SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
 
-    for (uint16_t i = 0; i < env_size; i++) {
-      dst_env[i] = soma_clone_value_for_fork(src_env[i]);
+    switch (closure->env_kind) {
+    case SOMA_ENV_FLAT:
+        memcpy(dst_env, src_env, env_size * sizeof(SomaValue));
+        break;
+    case SOMA_ENV_TAGGED:
+        for (uint16_t i = 0; i < env_size; i++) {
+            SomaValue val = src_env[i];
+            if (!SOMA_IS_PTR(val) || val == 0) { dst_env[i] = val; continue; }
+            void* src_tu = SOMA_TO_PTR(val);
+            int32_t vtag = *(int32_t*)src_tu;
+            void* payload = *(void**)((char*)src_tu + 8);
+            void* new_payload = (payload != NULL)
+                ? soma_clone_tagged_payload(payload, 0) : NULL;
+            void* new_tu = malloc(16);
+            *(int32_t*)new_tu = vtag;
+            *(void**)((char*)new_tu + 8) = new_payload;
+            dst_env[i] = SOMA_PTR(new_tu);
+        }
+        break;
+    case SOMA_ENV_LIST:
+        for (uint16_t i = 0; i < env_size; i++) {
+            dst_env[i] = src_env[i];
+            if (SOMA_IS_PTR(src_env[i]) && src_env[i] != 0) {
+                SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(src_env[i]);
+                atomic_fetch_add_explicit(&arr->refcount, 1, memory_order_relaxed);
+            }
+        }
+        break;
+    default:
+        for (uint16_t i = 0; i < env_size; i++) {
+            dst_env[i] = soma_clone_value_for_fork(src_env[i]);
+        }
+        break;
     }
 
     return new_closure;
@@ -715,11 +778,43 @@ void soma_era_free(void* value) {
             SomaValue* env = (SomaValue*)(closure + 1);
             uint16_t env_size = closure->env_size;
 
-            ERA_ENSURE(env_size);
-            for (uint16_t i = 0; i < env_size; i++) {
-                if (SOMA_IS_PTR(env[i]) && env[i] != 0) {
-                    stack[sp++] = SOMA_TO_PTR(env[i]);
+            switch (closure->env_kind) {
+            case SOMA_ENV_FLAT:
+                /* No heap children — nothing to push */
+                break;
+            case SOMA_ENV_TAGGED:
+                /* Each env slot is a pointer to a heap-alloc'd {i32, ptr}.
+                 * Push the payload pointer, then free the struct. */
+                for (uint16_t i = 0; i < env_size; i++) {
+                    if (!SOMA_IS_PTR(env[i]) || env[i] == 0) continue;
+                    void* tu = SOMA_TO_PTR(env[i]);
+                    void* payload = *(void**)((char*)tu + 8);
+                    if (payload != NULL) {
+                        ERA_ENSURE(1);
+                        stack[sp++] = payload;
+                    }
+                    free(tu);
                 }
+                break;
+            case SOMA_ENV_LIST:
+                /* Flat arrays: refcount decrement, free when zero */
+                for (uint16_t i = 0; i < env_size; i++) {
+                    if (!SOMA_IS_PTR(env[i]) || env[i] == 0) continue;
+                    SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(env[i]);
+                    if (atomic_fetch_sub_explicit(&arr->refcount, 1,
+                                                  memory_order_acq_rel) == 1) {
+                        free(arr);
+                    }
+                }
+                break;
+            default: /* SOMA_ENV_DEFAULT */
+                ERA_ENSURE(env_size);
+                for (uint16_t i = 0; i < env_size; i++) {
+                    if (SOMA_IS_PTR(env[i]) && env[i] != 0) {
+                        stack[sp++] = SOMA_TO_PTR(env[i]);
+                    }
+                }
+                break;
             }
 
             size_t needed = sizeof(SomaClosure) + (env_size * sizeof(void*));
