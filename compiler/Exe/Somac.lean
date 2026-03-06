@@ -243,7 +243,7 @@ def runLLVM (p : Parsed) : IO UInt32 := do
     return 1
 
   -- Phase 5.5: Lambda lifting
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName tcResult.uniqueNextId
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
   let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
@@ -307,7 +307,7 @@ def runAlloy (p : Parsed) : IO UInt32 := do
     return 1
 
   -- Phase 5.5: Lambda lifting
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName tcResult.uniqueNextId
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
   let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
@@ -369,7 +369,7 @@ def runCircuit (p : Parsed) : IO UInt32 := do
     return 1
 
   -- Phase 5.5: Lambda lifting
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName tcResult.uniqueNextId
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
   let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)

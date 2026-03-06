@@ -137,6 +137,8 @@ structure CheckedModule where
   typedFunctions : Std.HashMap String Soma.Core.TypedFunction := {}
   /-- Usage counts from type checking -/
   usages : Std.HashMap Soma.Unique Nat := {}
+  /-- Final unique ID counter from elaboration (for lambda lifting) -/
+  uniqueNextId : Nat := 0
 
 namespace CheckedModule
 
@@ -509,6 +511,8 @@ structure TypeCheckResult where
   /-- Typed function bodies (function name -> typed fn) -/
   typedFunctions : Std.HashMap String Soma.Core.TypedFunction
   errors : Array Soma.Dependent.TCError
+  /-- Final unique ID counter from elaboration (for downstream passes) -/
+  uniqueNextId : Nat := 0
   deriving Inhabited
 
 def typeCheckModule
@@ -583,6 +587,7 @@ def typeCheckModule
     usages := usages
     typedFunctions := mergedTypedFns
     errors := allErrors
+    uniqueNextId := fnResult.finalState.uniqueSupply.nextId
   }
 
 /-- Extract public symbols from a type-checked module -/
@@ -903,6 +908,7 @@ def checkModule
     incrementalState := tcResult.incrementalState
     typedFunctions := tcResult.typedFunctions
     usages := tcResult.usages
+    uniqueNextId := tcResult.uniqueNextId
   }
 
   (elabRes.diagnostics ++ allDiags, some checkedModule, supply'')
@@ -981,6 +987,7 @@ def checkModuleIncremental
     incrementalState := tcResult.incrementalState
     typedFunctions := tcResult.typedFunctions
     usages := tcResult.usages
+    uniqueNextId := tcResult.uniqueNextId
   }
 
   (elabRes.diagnostics ++ allDiags, some checkedModule, supply'')

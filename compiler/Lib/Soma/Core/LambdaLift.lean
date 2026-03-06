@@ -23,8 +23,9 @@ abbrev LiftM := StateM LiftState
 
 namespace LiftM
 
-def run (m : LiftM α) (moduleName : String) (globalNames : HashSet QualifiedName) : α × LiftState :=
-  StateT.run m { moduleName, globalNames }
+def run (m : LiftM α) (moduleName : String) (globalNames : HashSet QualifiedName)
+    (startId : Nat := 0) : α × LiftState :=
+  StateT.run m { moduleName, globalNames, nextId := startId }
 
 def freshId : LiftM Nat := do
   let st ← get
@@ -250,7 +251,7 @@ def liftTypedFunction (fn : TypedFunction) : LiftM TypedFunction := do
 
 abbrev TypedFunctionMap := Std.HashMap String TypedFunction
 
-def liftTypedFunctions (typedFunctions : TypedFunctionMap) (moduleName : String)
+def liftTypedFunctions (typedFunctions : TypedFunctionMap) (moduleName : String) (startId : Nat)
     : TypedFunctionMap × Array TypedFunction := Id.run do
   let globalNames : HashSet QualifiedName := typedFunctions.fold (init := {}) fun acc _ fn =>
     acc.insert fn.name
@@ -261,12 +262,12 @@ def liftTypedFunctions (typedFunctions : TypedFunctionMap) (moduleName : String)
       let fn' ← liftTypedFunction fn
       result := result.insert fnName fn'
     pure result
-  ) moduleName globalNames
+  ) moduleName globalNames startId
 
   (liftedFunctions, finalState.liftedFunctions)
 
-def liftAll (typedFunctions : TypedFunctionMap) (moduleName : String) : TypedFunctionMap :=
-  let (lifted, generated) := liftTypedFunctions typedFunctions moduleName
+def liftAll (typedFunctions : TypedFunctionMap) (moduleName : String) (startId : Nat) : TypedFunctionMap :=
+  let (lifted, generated) := liftTypedFunctions typedFunctions moduleName startId
   generated.foldl (init := lifted) fun acc fn =>
     acc.insert fn.name.display fn
 

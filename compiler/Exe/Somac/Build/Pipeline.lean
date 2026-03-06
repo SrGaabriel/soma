@@ -13,6 +13,7 @@ namespace Somac.Build
 open Soma
 open Soma.Project
 open Soma.Syntax
+
 open Soma.Project.Check
 
 /-- Load external dependencies from metadata JSON files -/
@@ -101,7 +102,7 @@ def loadDependencyAlloyModules (deps : Array (String × System.FilePath))
 /-- Lower a single checked module to Alloy IR -/
 def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Alloy.Module := do
   -- Lambda lifting
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name cm.uniqueNextId
 
   -- Lower to Circuit IR
   let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals)
