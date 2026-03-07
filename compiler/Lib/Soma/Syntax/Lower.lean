@@ -609,8 +609,8 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
               pure (.var ⟨"_error", span⟩)
 
       | .typeImplicit =>
-          -- Implicit type: {{x : A}} -> B or {{A}} -> B
-          -- Structure: lbrace, lbrace, (binder | domain), rbrace, rbrace, arrow, codomain
+          -- Implicit type: {x : A} -> B, {{x : A}} -> B, or {{A}} -> B
+          -- Structure varies: single-brace or double-brace, named or unnamed
           let allKids := childrenWithOffsets green offset
           let binderNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .typePiBinder
           let semanticKids := allKids.filter fun (c, _) => isSemanticNode c
@@ -1473,13 +1473,14 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
                       match c.syntaxKind? with
                       | some sk => sk.isType
                       | none => false
+                    let isImplicit := v.children.any fun c => isTokenKind c .leftBrace
                     match nameNode? with
                     | some (nameNode, nameOffset) =>
                         let nameText ← getGreenTokenText nameNode nameOffset
                         let tyOpt ← match typeNode? with
                           | some (tyNode, tyOffset) => some <$> lowerTypeExpr tyNode tyOffset
                           | none => pure none
-                        pure { name := ⟨nameText, vspan⟩, type? := tyOpt, span := vspan }
+                        pure { name := ⟨nameText, vspan⟩, type? := tyOpt, isImplicit, span := vspan }
                     | none =>
                         lowerError "field missing name" vspan
                         pure { name := ⟨"_error", vspan⟩, type? := none, span := vspan }
@@ -1501,21 +1502,21 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             | some .doubleColon => if explicitSig.isNone then explicitSig := some sigTy
             | _ => if explicitSig.isNone then explicitSig := some sigTy
 
-          -- Extract parameter types from .field nodes in paramList
-          let paramTypes := headerParams.filterMap (·.type?)
-
-          -- Build the full function signature: paramType1 -> paramType2 -> ... -> returnType
-          -- Header parameters become leading binders; tail comes from explicit `::` or `->` return.
+          -- Build the full function signature, respecting implicit vs explicit binders.
+          -- Implicit `{a : Type}` params become `forall` binders; explicit `(x : T)` become arrows.
+          let typedParams := headerParams.filter (·.type?.isSome)
           let sigBase := explicitSig.orElse (fun _ => returnTypeSig)
           let sig ← match sigBase with
             | none => pure none
             | some retTy =>
-              if paramTypes.isEmpty then
+              if typedParams.isEmpty then
                 pure (some retTy)
               else
-                -- Build: paramTypes[0] -> paramTypes[1] -> ... -> retTy
-                let fullSig := paramTypes.foldr (init := retTy) fun paramTy accTy =>
-                  TypeExpr.arrow paramTy accTy span
+                let fullSig := typedParams.foldr (init := retTy) fun param accTy =>
+                  if param.isImplicit then
+                    TypeExpr.forall_ #[TypeVarBinder.mk param.name param.type?] accTy span
+                  else
+                    TypeExpr.arrow (param.type?.getD accTy) accTy span
                 pure (some fullSig)
 
           let clauseNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .defClause

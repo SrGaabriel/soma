@@ -2,65 +2,65 @@ use base/prim.{+, -, *}
 use base/core.{Option}
 
 @[intrinsic]
-def {==} : a -> a -> Bool
+def {==} {a : Type} : a -> a -> Bool
 @[intrinsic]
 def {<=} : Int -> Int -> Bool
 
-def head : [a] -> Option a
+def head {a : Type} : [a] -> Option a
     | (x:_) => Option::Some x
     | [] => Option::None
 
-def tail : [a] -> Option [a]
+def tail {a : Type} : [a] -> Option [a]
     | (_:xs) => Option::Some xs
     | [] => Option::None
 
-def last : [a] -> Option a
+def last {a : Type} : [a] -> Option a
     | [x] => Option::Some x
     | (_:xs) => last xs
     | [] => Option::None
 
-def length : [a] -> Int
+def length {a : Type} : [a] -> Int
     | [] => 0
     | (_:xs) => 1 + length xs
 
-def singleton : a -> [a]
+def singleton {a : Type} : a -> [a]
     | x => [x]
 
-def replicate : Int -> a -> [a]
+def replicate {a : Type} : Int -> a -> [a]
     | n, x =>
         if n <= 0 then [] else List::Cons x (replicate (n - 1) x)
 
-def map : (a -> b) -> [a] -> [b]
+def map {a : Type} {b : Type} : (a -> b) -> [a] -> [b]
     | f, (x:xs) => List::Cons (f x) (map f xs)
     | _, [] => []
 
-def reverse_acc : [a] -> [a] -> [a]
+def reverse_acc {a : Type} : [a] -> [a] -> [a]
     | (x:xs), acc => reverse_acc xs (List::Cons x acc)
     | [], acc => acc
 
-def reverse : [a] -> [a]
+def reverse {a : Type} : [a] -> [a]
     | xs => reverse_acc xs []
 
-def append : [a] -> [a] -> [a]
+def append {a : Type} : [a] -> [a] -> [a]
     | (x:xs), ys => List::Cons x (append xs ys)
     | [], ys => ys
 
-def concat : [[a]] -> [a]
+def concat {a : Type} : [[a]] -> [a]
     | (xs:xss) => append xs (concat xss)
     | [] => []
 
-def concat_map : (a -> [b]) -> [a] -> [b]
+def concat_map {a : Type} {b : Type} : (a -> [b]) -> [a] -> [b]
     | f, xs => concat (map f xs)
 
-def foldl : (b -> a -> b) -> b -> [a] -> b
+def foldl {a : Type} {b : Type} : (b -> a -> b) -> b -> [a] -> b
     | f, acc, (x:xs) => foldl f (f acc x) xs
     | _, acc, [] => acc
 
-def foldr : (a -> b -> b) -> b -> [a] -> b
+def foldr {a : Type} {b : Type} : (a -> b -> b) -> b -> [a] -> b
     | f, acc, (x:xs) => f x (foldr f acc xs)
     | _, acc, [] => acc
 
-def foldl1 : (a -> a -> a) -> [a] -> Option a
+def foldl1 {a : Type} : (a -> a -> a) -> [a] -> Option a
     | f, (x:xs) => Option::Some (foldl f x xs)
     | _, [] => Option::None
 
@@ -78,59 +78,59 @@ def or : [Bool] -> Bool
     | (x:xs) => if x then true else or xs
     | [] => false
 
-def any : (a -> Bool) -> [a] -> Bool
+def any {a : Type} : (a -> Bool) -> [a] -> Bool
     | p, (x:xs) => if p x then true else any p xs
     | _, [] => false
 
-def all : (a -> Bool) -> [a] -> Bool
+def all {a : Type} : (a -> Bool) -> [a] -> Bool
     | p, (x:xs) => if p x then all p xs else false
     | _, [] => true
 
-def take : Int -> [a] -> [a]
+def take {a : Type} : Int -> [a] -> [a]
     | n, (x:xs) => if n <= 0 then [] else List::Cons x (take (n - 1) xs)
     | _, [] => []
 
-def drop : Int -> [a] -> [a]
+def drop {a : Type} : Int -> [a] -> [a]
     | n, (x:xs) => if n <= 0 then List::Cons x xs else drop (n - 1) xs
     | _, [] => []
 
-def take_while : (a -> Bool) -> [a] -> [a]
+def take_while {a : Type} : (a -> Bool) -> [a] -> [a]
     | p, (x:xs) => if p x then List::Cons x (take_while p xs) else []
     | _, [] => []
 
-def drop_while : (a -> Bool) -> [a] -> [a]
+def drop_while {a : Type} : (a -> Bool) -> [a] -> [a]
     | p, (x:xs) => if p x then drop_while p xs else List::Cons x xs
     | _, [] => []
 
-def split_at : Int -> [a] -> ([a], [a])
+def split_at {a : Type} : Int -> [a] -> ([a], [a])
     | n, xs => (take n xs, drop n xs)
 
-def elem : a -> [a] -> Bool
+def elem {a : Type} : a -> [a] -> Bool
     | x, (y:ys) => if x == y then true else elem x ys
     | _, [] => false
 
-def filter : (a -> Bool) -> [a] -> [a]
+def filter {a : Type} : (a -> Bool) -> [a] -> [a]
     | p, (x:xs) => if p x then List::Cons x (filter p xs) else filter p xs
     | _, [] => []
 
-def find : (a -> Bool) -> [a] -> Option a
+def find {a : Type} : (a -> Bool) -> [a] -> Option a
     | p, (x:xs) => if p x then Option::Some x else find p xs
     | _, [] => Option::None
 
-def partition : (a -> Bool) -> [a] -> ([a], [a])
+def partition {a : Type} : (a -> Bool) -> [a] -> ([a], [a])
     | p, (x:xs) =>
         let (yes, no) = partition p xs in
         if p x then (List::Cons x yes, no) else (yes, List::Cons x no)
     | _, [] => ([], [])
 
-def nth : Int -> [a] -> Option a
+def nth {a : Type} : Int -> [a] -> Option a
     | n, (x:xs) => if n == 0 then Option::Some x else nth (n - 1) xs
     | _, [] => Option::None
 
-def zip : [a] -> [b] -> [(a, b)]
+def zip {a : Type} {b : Type} : [a] -> [b] -> [(a, b)]
     | (x:xs), (y:ys) => List::Cons (x, y) (zip xs ys)
     | _, _ => []
 
-def zip_with : (a -> b -> c) -> [a] -> [b] -> [c]
+def zip_with {a : Type} {b : Type} {c : Type} : (a -> b -> c) -> [a] -> [b] -> [c]
     | f, (x:xs), (y:ys) => List::Cons (f x y) (zip_with f xs ys)
     | _, _, _ => []

@@ -336,7 +336,7 @@ def checkFunctionsCore
 
     if shouldCheck then
       -- Clear dependency tracking before checking this function
-      let stateWithClearedDeps := { currentState with globalDeps := {} }
+      let stateWithClearedDeps := { currentState with globalDeps := {}, errors := #[] }
 
       let checkResult := (Soma.Dependent.Driver.checkFunction fn).run ctx stateWithClearedDeps
       match checkResult with

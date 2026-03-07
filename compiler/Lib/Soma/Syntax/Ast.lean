@@ -485,6 +485,7 @@ structure DefClause where
 structure DefParam where
   name : Name
   type? : Option TypeExpr
+  isImplicit : Bool := false
   span : Span
   deriving Repr
 

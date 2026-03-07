@@ -92,29 +92,30 @@ private def registerGlobalNames
 private def allSimplePatterns (patterns : Array Syntax.Pattern) : Bool :=
   patterns.all isSimpleVarPattern
 
-private def lowerFunctionDecl
+/-- Core function lowering logic -/
+private def lowerFunctionDeclCore
     (decl : Syntax.Decl)
-  (globalNames : Std.HashMap String Soma.Core.QualifiedName)
+    (globalName : Soma.Core.QualifiedName)
   : Option Soma.Core.UntypedFunction × Diagnostics :=
   Id.run do
     match decl with
     | .def_ attrs name headerParams sig clauses span =>
       let fnAttrs := functionAttrsFromSyntax attrs (some name.value)
-      let globalName := globalNames.getD name.value ⟨{ id := 0, module := "", original := name.value }⟩
       match clauses[0]? with
       | some clause =>
         let hasPatternClauses := clauses.any (fun c => c.patterns.size > 0)
         if hasPatternClauses then
           if let some sigTy := sig then
             let totalArity := explicitArityOfType sigTy
-            let expectedArity := totalArity - headerParams.size
+            let explicitHeaderParams := headerParams.filter (!·.isImplicit)
+            let expectedArity := totalArity - explicitHeaderParams.size
             if let some badClause := clauses.find? (fun c => c.patterns.size != expectedArity) then
               let d := Diagnostic.error
                 (s!"definition '{name.value}' expects {expectedArity} pattern(s) from its signature, but got {badClause.patterns.size}")
                 badClause.span
               return (none, #[d])
 
-        let headerParamNames := headerParams.map (·.name.value)
+        let headerParamNames := (headerParams.filter (!·.isImplicit)).map (·.name.value)
         if allSimplePatterns clause.patterns then
           let params := headerParamNames ++ (clause.patterns.map extractVarName)
           return (some {
@@ -163,6 +164,16 @@ private def lowerFunctionDecl
         return (none, #[d])
     | _ =>
       return (none, #[])
+
+private def lowerFunctionDecl
+    (decl : Syntax.Decl)
+    (globalNames : Std.HashMap String Soma.Core.QualifiedName)
+  : Option Soma.Core.UntypedFunction × Diagnostics :=
+  match decl with
+  | .def_ _ name .. =>
+    let globalName := globalNames.getD name.value ⟨{ id := 0, module := "", original := name.value }⟩
+    lowerFunctionDeclCore decl globalName
+  | _ => (none, #[])
 
 /-- Maximum number of constructors per data type -/
 private def maxConstructors : Nat := 255
@@ -211,6 +222,26 @@ private def lowerTypeDecl
     (some (.record attrs typeName typeVarNames ctorQName fieldsWithOptNames), #[], supply'')
   | _ => (none, #[], supply)
 
+/-- Rewrite single-field record types in arrow domain position as implicit binders -/
+private partial def rewriteRecordArrowsAsImplicits : Syntax.TypeExpr → Syntax.TypeExpr
+  | .arrow (.record #[(name, ty)] none _) body span =>
+    .implicit (some name) (rewriteRecordArrowsAsImplicits ty) (rewriteRecordArrowsAsImplicits body) span
+  | .arrow from_ to span =>
+    .arrow (rewriteRecordArrowsAsImplicits from_) (rewriteRecordArrowsAsImplicits to) span
+  | .forall_ vars body span =>
+    .forall_ vars (rewriteRecordArrowsAsImplicits body) span
+  | .constrained cs body span =>
+    .constrained cs (rewriteRecordArrowsAsImplicits body) span
+  | .parens inner span =>
+    .parens (rewriteRecordArrowsAsImplicits inner) span
+  | .pi qty name dom cod span =>
+    .pi qty name (rewriteRecordArrowsAsImplicits dom) (rewriteRecordArrowsAsImplicits cod) span
+  | .implicit name dom cod span =>
+    .implicit name (rewriteRecordArrowsAsImplicits dom) (rewriteRecordArrowsAsImplicits cod) span
+  | .app fn arg span =>
+    .app (rewriteRecordArrowsAsImplicits fn) (rewriteRecordArrowsAsImplicits arg) span
+  | other => other
+
 private def lowerTypeClassDecl
     (decl : Syntax.Decl)
   (globalNames : Std.HashMap String Soma.Core.QualifiedName)
@@ -226,7 +257,7 @@ private def lowerTypeClassDecl
         ⟨u⟩
     let methodSigs := methods.map fun m =>
       let mName := globalNames.getD m.name.value ⟨{ id := 0, module := "", original := m.name.value }⟩
-      (mName, m.type_)
+      (mName, rewriteRecordArrowsAsImplicits m.type_)
     (some {
       name := className
       params := params
@@ -236,77 +267,12 @@ private def lowerTypeClassDecl
     }, supply)
   | _ => (none, supply)
 
-/-- Lower a function declaration using an explicitly provided QualifiedName -/
+/-- Lower a function declaration using an explicitly provided QualifiedName. -/
 private def lowerFunctionDeclWithName
     (decl : Syntax.Decl)
     (globalName : Soma.Core.QualifiedName)
   : Option Soma.Core.UntypedFunction × Diagnostics :=
-  Id.run do
-    match decl with
-    | .def_ attrs name headerParams sig clauses span =>
-      let fnAttrs := functionAttrsFromSyntax attrs (some name.value)
-      match clauses[0]? with
-      | some clause =>
-        let hasPatternClauses := clauses.any (fun c => c.patterns.size > 0)
-        if hasPatternClauses then
-          if let some sigTy := sig then
-            let totalArity := explicitArityOfType sigTy
-            let expectedArity := totalArity - headerParams.size
-            if let some badClause := clauses.find? (fun c => c.patterns.size != expectedArity) then
-              let d := Diagnostic.error
-                (s!"definition '{name.value}' expects {expectedArity} pattern(s) from its signature, but got {badClause.patterns.size}")
-                badClause.span
-              return (none, #[d])
-
-        let headerParamNames := headerParams.map (·.name.value)
-        if allSimplePatterns clause.patterns then
-          let params := headerParamNames ++ (clause.patterns.map extractVarName)
-          return (some {
-            name := globalName
-            params := params
-            body := clause.body
-            span := span
-            declaredTypeSyntax := sig
-            closureInfo := none
-            attrs := fnAttrs
-          }, #[])
-
-        let numClauseParams := clause.patterns.size
-        let clauseParams := (List.range numClauseParams).toArray.map fun i => s!"_arg{i}"
-        let params := headerParamNames ++ clauseParams
-        let scrutineeSyntax : Array Syntax.Expr := clauseParams.map fun paramName =>
-          Syntax.Expr.var ⟨paramName, span⟩
-        let armsSyntax : Array Syntax.MatchArm := clauses.map fun c =>
-          Syntax.MatchArm.mk c.patterns c.guard c.body c.span
-        let caseSyntax := Syntax.Expr.case scrutineeSyntax armsSyntax span
-        return (some {
-          name := globalName
-          params := params
-          body := caseSyntax
-          span := span
-          declaredTypeSyntax := sig
-          closureInfo := none
-          attrs := fnAttrs
-        }, #[])
-      | none =>
-        if fnAttrs.intrinsic || fnAttrs.extern.isSome then
-          let body := Syntax.Expr.lit
-            (Syntax.Literal.string s!"{if fnAttrs.intrinsic then "intrinsic" else "extern"}:{name.value}" span)
-          return (some {
-            name := globalName
-            params := #[]
-            body := body
-            span := span
-            declaredTypeSyntax := sig
-            closureInfo := none
-            attrs := fnAttrs
-          }, #[])
-        let d := Diagnostic.error
-          (s!"definition '{name.value}' must have at least one clause or be marked @[intrinsic]/@[extern]")
-          span
-        return (none, #[d])
-    | _ =>
-      return (none, #[])
+  lowerFunctionDeclCore decl globalName
 
 private def lowerInstanceDecl
     (decl : Syntax.Decl)

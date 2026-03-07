@@ -193,6 +193,7 @@ def peekNextRelevant : ParserM (Option TokenKind) := do
 def checkNextRelevant (kind : TokenKind) : ParserM Bool := do
   return (← peekNextRelevant) == some kind
 
+
 /-- Consume layoutStart if present -/
 def tryLayoutStart : ParserM Bool := do
   if (← check .layoutStart) then advance; return true

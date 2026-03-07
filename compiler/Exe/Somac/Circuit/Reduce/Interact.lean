@@ -355,6 +355,7 @@ partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
     Returns the NodeId of the value node in WHNF.
     May modify the graph through interaction rules (β-reduction, etc.). -/
 partial def whnf (demandPort : PortId) : ReduceM NodeId := do
+  ReduceM.consumeFuel
   let target ← ReduceM.follow demandPort
   let entry ← ReduceM.getNode target.node
   if target.port.isPrincipal then

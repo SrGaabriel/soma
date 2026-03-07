@@ -143,26 +143,6 @@ partial def substituteTypeArgsInValue (v : Value) (paramNames : Array String)
 
   | _ => return v'
 
-/-- Extract parameter types from a function type.
-
-For a type like (Int -> Int -> Bool), returns ([Int, Int], Bool).
--/
-partial def extractParamTypes (ty : Value) (count : Nat) : TCM (Array Value × Value) := do
-  if count == 0 then
-    return (#[], ty)
-  else
-    let ty' ← force ty
-    match ty' with
-    | .vPi _ binder _ dom cod =>
-      let dummyArg ← TCM.freshMetaVal dom
-      let codTy ← applyClosure cod dummyArg
-      if binder.isImplicit then
-        extractParamTypes codTy count
-      else
-        let (restParams, resultTy) ← extractParamTypes codTy (count - 1)
-        return (#[dom] ++ restParams, resultTy)
-    | _ =>
-      return (#[], ty')
 
 /-! ## Trait Elaboration
 
@@ -361,16 +341,33 @@ structure MethodElabResult where
   /-- Parameter bindings: (Unique, name) pairs -/
   params : Array (Unique × String)
 
+/-- Extract explicit parameter types from a function type, skipping implicit binders -/
+private partial def extractParamTypes (ty : Value) (count : Nat) : TCM (Array Value × Value) := do
+  if count == 0 then
+    return (#[], ty)
+  else
+    let ty' ← force ty
+    match ty' with
+    | .vPi _ binder _ dom cod =>
+      let dummyArg ← TCM.freshMetaVal dom
+      let codTy ← applyClosure cod dummyArg
+      if binder.isImplicit then
+        extractParamTypes codTy count
+      else
+        let (restParams, resultTy) ← extractParamTypes codTy (count - 1)
+        return (#[dom] ++ restParams, resultTy)
+    | _ =>
+      return (#[], ty')
+
 /-- Elaborate a method implementation.
 
 Type-checks the method body against the expected (substituted) signature
-and returns the elaborated value.
--/
+and returns the elaborated value -/
 def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : Value)
     : TCM MethodElabResult := do
   let paramNames := methodFn.params
 
-  -- Decompose the expected type to get parameter types
+  -- Decompose the expected type to get explicit parameter types
   let (paramTypes, _resultType) ← extractParamTypes expectedType paramNames.size
 
   -- Extend context with params, then elaborate the method body
