@@ -656,9 +656,9 @@ def getOrCreateTrampoline (arity : Nat) : CodegenM String := do
   let s ← get
   if s.trampolineCache.contains name then
     return name
-  let mut params : Array LLVMParam := #[{ name := "0", ty := .ptr }]
+  let mut params : Array LLVMParam := #[{ name := "v0", ty := .ptr }]
   for i in List.range arity do
-    params := params.push { name := s!"{i + 1}", ty := .ptr }
+    params := params.push { name := s!"v{i + 1}", ty := .ptr }
   let trampolineFunc := buildFuncWithEntry name .ptr params {} do
     let compositeEnvRef := LocalRef.mk 0
     let innerSlotAddr ← FuncBuilder.gepi32 compositeEnvTy (.local compositeEnvRef) #[0, 0]
@@ -1346,6 +1346,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let _ := line
     CodegenM.withFuncBuilder do
       FuncBuilder.callNamedVoid "soma_panic" #[(.ptr, globalVal s!".str.{msgIdx}")]
+    CodegenM.signalNoReturn
     pure none
 
 
@@ -1620,7 +1621,7 @@ def lowerFuncWithName (func : ClosedFunc) (name : String) : CodegenM LLVMFunc :=
   -- Convert parameters using numeric names matching the LocalRef IDs
   let llvmParams : Array LLVMParam ← func.sig.params.mapM fun p => do
     match ← CodegenM.getLocal p.id.id with
-    | some ref => pure { name := s!"{ref.id}", ty := convertTy p.ty }
+    | some ref => pure { name := s!"v{ref.id}", ty := convertTy p.ty }
     | none => pure { name := p.name, ty := convertTy p.ty }
 
   -- Convert return type

@@ -1102,6 +1102,26 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       | some chain =>
         -- We have a multi-arg chain. Check if the base is a known function
         match chain.baseEntry.node with
+        | .ctor tag arity =>
+          -- Constructor applied via APP chain: collect CTOR fields + chain args
+          let mut fieldVals : Array LocalId := #[]
+          for i in [:arity] do
+            match chain.baseEntry.getPort ⟨i + 1⟩ with
+            | some port =>
+              let val ← lowerOperandWithMap graph port funcIdMap
+              fieldVals := fieldVals.push val
+            | none =>
+              let val ← StateT.lift (LowerM.emitPanic (.prim .i64) s!"CTOR-APP chain: missing CTOR field {i}")
+              fieldVals := fieldVals.push val
+          for argPort in chain.argPorts do
+            let val ← lowerOperandWithMap graph argPort funcIdMap
+            fieldVals := fieldVals.push val
+          let result ← match nodeTy with
+            | .struct _ => StateT.lift (lowerNestedStructLit fieldVals nodeTy)
+            | _ => StateT.lift (lowerCtor tag fieldVals.size fieldVals nodeTy)
+          for intermediateId in chain.intermediateAppNodes do
+            modify fun s => { s with results := s.results.insert intermediateId.id result }
+          pure (some result)
         | .ref refId | .alo refId =>
           match graph.getDefinition refId with
           | some def_ =>
@@ -1248,6 +1268,21 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                   StateT.lift (LowerM.emitInst (.callExtern s!"primop_{_op}" #[.local argVal] callRetTy) callRetTy)
                 | .externC name =>
                   StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
+            | .ctor tag arity =>
+              -- Constructor applied via single APP: collect CTOR fields + the APP arg
+              let mut fieldVals : Array LocalId := #[]
+              for i in [:arity] do
+                match fnEntry.getPort ⟨i + 1⟩ with
+                | some port =>
+                  let val ← lowerOperandWithMap graph port funcIdMap
+                  fieldVals := fieldVals.push val
+                | none =>
+                  let val ← StateT.lift (LowerM.emitPanic (.prim .i64) s!"CTOR-APP: missing CTOR field {i}")
+                  fieldVals := fieldVals.push val
+              fieldVals := fieldVals.push argVal
+              match nodeTy with
+              | .struct _ => StateT.lift (lowerNestedStructLit fieldVals nodeTy)
+              | _ => StateT.lift (lowerCtor tag fieldVals.size fieldVals nodeTy)
             | _ =>
               -- Regular closure call: lower the function and use callClosure
               let fnNodeTy := getNodeTypeWithMapping fnEntry ctx

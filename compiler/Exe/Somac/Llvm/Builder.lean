@@ -21,6 +21,8 @@ structure FuncBuilderState where
   blockOrder : Array Label := #[]
   /-- LLVM types for each local SSA value, keyed by LocalRef id -/
   localTypes : Std.HashMap Nat LLVMType := {}
+  /-- Label of the entry block (first block in the function) -/
+  entryLabel : Option Label := none
   deriving Inhabited
 
 /-- State for building an LLVM module -/
@@ -61,11 +63,12 @@ def freshLabel (labelPrefix : String := "bb") : FuncBuilder Label := do
 /-- Start a new basic block -/
 def startBlock (label : Label) : FuncBuilder Unit := do
   let s ← get
-  -- Finish current block if any (without terminator, will error if not terminated properly)
+  let entryLabel := if s.entryLabel.isNone then some label else s.entryLabel
   set { s with
     currentBlock := some label
     currentStmts := #[]
     blockOrder := s.blockOrder.push label
+    entryLabel
   }
 
 /-- Emit an instruction with a result -/
@@ -84,7 +87,7 @@ def getLocalType (ref : LocalRef) : FuncBuilder (Option LLVMType) := do
   let s ← get
   pure (s.localTypes.get? ref.id)
 
-/-- Insert an instruction with a result into an already-completed block -/
+/-- Insert an instruction with a result at the end of an already-completed block -/
 def insertInBlock (label : Label) (inst : LLVMInst) : FuncBuilder LocalRef := do
   let ref ← freshLocal
   let stmt := LLVMStmt.mk (some ref) inst
@@ -98,7 +101,7 @@ def insertInBlock (label : Label) (inst : LLVMInst) : FuncBuilder LocalRef := do
     | none => s
   pure ref
 
-/-- Insert a void instruction into an already-completed block -/
+/-- Insert a void instruction at the end of an already-completed block -/
 def insertVoidInBlock (label : Label) (inst : LLVMInst) : FuncBuilder Unit := do
   let stmt := LLVMStmt.mk none inst
   modify fun s =>
@@ -107,9 +110,25 @@ def insertVoidInBlock (label : Label) (inst : LLVMInst) : FuncBuilder Unit := do
       else b
     { s with blocks }
 
-/-- Insert an instruction in the entry block -/
-def insertInEntryBlock (inst : LLVMInst) : FuncBuilder LocalRef :=
-  insertInBlock ⟨"entry"⟩ inst
+/-- Insert an instruction at the beginning of an already-completed block -/
+def prependInBlock (label : Label) (inst : LLVMInst) : FuncBuilder LocalRef := do
+  let ref ← freshLocal
+  let stmt := LLVMStmt.mk (some ref) inst
+  modify fun s =>
+    let blocks := s.blocks.map fun b =>
+      if b.label == label then { b with stmts := #[stmt] ++ b.stmts }
+      else b
+    let s := { s with blocks }
+    match inst.instResultTy with
+    | some ty => { s with localTypes := s.localTypes.insert ref.id ty }
+    | none => s
+  pure ref
+
+/-- Insert an instruction at the beginning of the entry block -/
+def insertInEntryBlock (inst : LLVMInst) : FuncBuilder LocalRef := do
+  let s ← get
+  let label := s.entryLabel.getD ⟨"entry"⟩
+  prependInBlock label inst
 
 /-- Emit a void instruction (no result) -/
 def emitVoid (inst : LLVMInst) : FuncBuilder Unit := do
@@ -525,6 +544,7 @@ def buildFuncWithEntry (name : String) (retTy : LLVMType) (params : Array LLVMPa
     nextLocalId := params.size
     currentBlock := some ⟨"entry"⟩
     blockOrder := #[⟨"entry"⟩]
+    entryLabel := some ⟨"entry"⟩
   }
   let ((), state) := Id.run (StateT.run builder initState)
   { name, retTy, params, attrs, blocks := state.blocks, isDeclaration := false }

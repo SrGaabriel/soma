@@ -121,7 +121,7 @@ structure LocalRef where
 
 namespace LocalRef
 
-def toLLVM (r : LocalRef) : String := s!"%{r.id}"
+def toLLVM (r : LocalRef) : String := s!"%v{r.id}"
 
 instance : ToString LocalRef where
   toString := toLLVM
