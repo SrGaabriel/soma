@@ -19,21 +19,32 @@ structure ElabEnv where
   tyVars : List (String × DeBruijnLvl × Value)
   /-- Current De Bruijn level -/
   level : Nat := 0
+  /-- Value overrides: type variable name -> pre-allocated Value -/
+  overrides : List (String × Value) := []
   deriving Inhabited
 
 namespace ElabEnv
 
-def empty : ElabEnv := { tyVars := [], level := 0 }
+def empty : ElabEnv := { tyVars := [], level := 0, overrides := [] }
 
 /-- Extend the environment with a new type variable -/
 def extend (env : ElabEnv) (name : String) (kind : Value) : ElabEnv :=
-  { tyVars := (name, ⟨env.level⟩, kind) :: env.tyVars
+  { env with
+    tyVars := (name, ⟨env.level⟩, kind) :: env.tyVars
   , level := env.level + 1
   }
+
+/-- Add a value override for a type variable name -/
+def addOverride (env : ElabEnv) (name : String) (val : Value) : ElabEnv :=
+  { env with overrides := (name, val) :: env.overrides }
 
 /-- Look up a type variable by name -/
 def lookup (env : ElabEnv) (name : String) : Option (DeBruijnLvl × Value) :=
   env.tyVars.find? (·.1 == name) |>.map (fun (_, lvl, k) => (lvl, k))
+
+/-- Look up a value override by name -/
+def lookupOverride (env : ElabEnv) (name : String) : Option Value :=
+  env.overrides.find? (·.1 == name) |>.map (·.2)
 
 end ElabEnv
 
@@ -123,8 +134,11 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- Return a neutral variable
       return Value.vNeutral kind (Neutral.nVar ⟨name.value, lvl⟩)
     | none =>
-      -- Unknown type variable - create a metavariable
-      TCM.freshMetaVal (Value.vType Level.zero)
+      -- Check for a pre-allocated value override (used by instance elaboration to share metavariables across type args and constraints)
+      match env.lookupOverride name.value with
+      | some val => return val
+      | none =>
+        TCM.freshMetaVal (Value.vType Level.zero)
 
   -- Type constructor (uppercase identifier)
   | .con name =>

@@ -1239,24 +1239,19 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
             -- Single expression, no desugaring needed
             lowerExpr kidsWithOffsets[0]!.1 kidsWithOffsets[0]!.2
           else
-            -- Desugar compose block:
-            -- - `let x = expr` (pure binding) becomes `case expr of x -> rest`
-            -- - `bind x <- action` (monadic bind) becomes `action >>= (\x -> rest)`
-            -- - `expr` (expression statement) becomes `expr >> rest`
-            --
-            -- Process statements from last to first, building up the result
             let lastIdx := kidsWithOffsets.size - 1
             let (lastNode, lastOffset) := kidsWithOffsets[lastIdx]!
-            let mut result ← lowerExpr lastNode lastOffset
+            let finalExpr ← lowerExpr lastNode lastOffset
 
-            for i in List.reverse (List.range lastIdx) do
+            let mut stmts : Array ComposeStmt := #[]
+
+            for i in List.range lastIdx do
               let (stmtNode, stmtOffset) := kidsWithOffsets[i]!
               let stmtSpan ← spanFor stmtNode stmtOffset
 
               match stmtNode.syntaxKind? with
               | some .composeLetStmt =>
-                  -- Pure let binding: let x = expr
-                  -- Desugar to: case expr of | x -> result (same as regular let expressions)
+                  -- Pure let binding: let x = value
                   let nameTokens := stmtNode.children.filter fun c => isTokenKind c .lowerIdent
                   let valueNodes := childrenWithOffsets stmtNode stmtOffset |>.filter fun (c, _) => isSemanticNode c
                   if valueNodes.isEmpty then
@@ -1269,13 +1264,10 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
                         | some text => text
                         | none => "_"
                       | none => "_"
-                    let pat := Pattern.var ⟨varName, stmtSpan⟩
-                    let arm := MatchArm.mk #[pat] none result stmtSpan
-                    result := Expr.case #[value] #[arm] stmtSpan
+                    stmts := stmts.push (.let_ ⟨varName, stmtSpan⟩ value stmtSpan)
 
               | some .composeBindStmt =>
                   -- Monadic bind: bind x <- action
-                  -- Desugar to: action >>= (\x -> result)
                   let nameTokens := stmtNode.children.filter fun c => isTokenKind c .lowerIdent
                   let valueNodes := childrenWithOffsets stmtNode stmtOffset |>.filter fun (c, _) => isSemanticNode c
                   if valueNodes.isEmpty then
@@ -1288,17 +1280,14 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
                         | some text => text
                         | none => "_"
                       | none => "_"
-                    let bindOp : OpName := ⟨">>=", stmtSpan⟩
-                    let lambda := Expr.lambda #[(⟨varName, stmtSpan⟩, none)] result stmtSpan
-                    result := Expr.infix bindOp value lambda stmtSpan
+                    stmts := stmts.push (.bind_ ⟨varName, stmtSpan⟩ value stmtSpan)
 
               | _ =>
-                  -- Expression statement: expr >> result
+                  -- Expression statement
                   let expr ← lowerExpr stmtNode stmtOffset
-                  let seqOp : OpName := ⟨">>", stmtSpan⟩
-                  result := Expr.infix seqOp expr result stmtSpan
+                  stmts := stmts.push (.expr expr stmtSpan)
 
-            pure result
+            pure (.composeBlock stmts finalExpr span)
 
       | .exprVariant =>
           -- Structure: [dot, labelToken, optionalArgExpr]

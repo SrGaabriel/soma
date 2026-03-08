@@ -354,6 +354,15 @@ mutual
 inductive MatchArm where
   | mk (patterns : Array Pattern) (guard : Option Expr) (body : Expr) (span : Span)
 
+/-- A statement in a compose block -/
+inductive ComposeStmt where
+  /-- Expression statement: `action` that desugars to `action >> rest` -/
+  | expr (action : Expr) (span : Span)
+  /-- Let binding: `let x = value` that desugars to `case value of | x -> rest` -/
+  | let_ (name : Name) (value : Expr) (span : Span)
+  /-- Monadic bind: `bind x <- action` that desugars to `action >>= (\x -> rest)` -/
+  | bind_ (name : Name) (action : Expr) (span : Span)
+
 /-- Expressions - the core of the AST -/
 inductive Expr where
   /-- Variable reference: name -/
@@ -388,20 +397,20 @@ inductive Expr where
   | typeAnnot (expr : Expr) (type_ : TypeExpr) (span : Span)
   /-- Explicit type application: @Type or @label -/
   | typeApp (typeArg : TypeAppArg) (span : Span)
-  /-- Compose block: compose ... -/
-  | compose (body : Expr) (span : Span)
-  /-- Bind block: bind ... -/
-  | bind (body : Expr) (span : Span)
+  /-- Compose block -/
+  | composeBlock (stmts : Array ComposeStmt) (final_ : Expr) (span : Span)
   /-- Variant injection: .Ok value -/
   | variant (label : Name) (arg : Option Expr) (span : Span)
 
 end
 
 -- Derive Repr after mutual block
+deriving instance Repr for ComposeStmt
 deriving instance Repr for MatchArm
 deriving instance Repr for Expr
 
 -- Inhabited instances for array indexing, should never be used in practice
+instance : Inhabited ComposeStmt := ⟨.expr (.var ⟨"_", Span.uninhabited⟩) Span.uninhabited⟩
 instance : Inhabited Expr := ⟨.var ⟨"_", Span.uninhabited⟩⟩
 instance : Inhabited MatchArm := ⟨.mk #[] none (.var ⟨"_", Span.uninhabited⟩) Span.uninhabited⟩
 
@@ -433,8 +442,7 @@ def span : Expr → Span
   | .parens _ s => s
   | .typeAnnot _ _ s => s
   | .typeApp _ s => s
-  | .compose _ s => s
-  | .bind _ s => s
+  | .composeBlock _ _ s => s
   | .variant _ _ s => s
 
 end Expr
@@ -717,8 +725,13 @@ partial def ppExpr : Expr → String
   | .typeApp arg _ => match arg with
     | .type ty => s!"@{ppTypeExpr ty}"
     | .label name => s!"@{name.value}"
-  | .compose body _ => s!"compose {ppExpr body}"
-  | .bind body _ => s!"bind {ppExpr body}"
+  | .composeBlock stmts final_ _ =>
+    let stmtStrs := stmts.map fun
+      | .expr action _ => ppExpr action
+      | .let_ name value _ => s!"let {name.value} = {ppExpr value}"
+      | .bind_ name action _ => s!"bind {name.value} <- {ppExpr action}"
+    let body := String.intercalate "; " stmtStrs.toList
+    s!"compose ( {body}; {ppExpr final_} )"
   | .variant label arg _ =>
       match arg with
       | some e => s!".{label.value} {ppExprAtom e}"

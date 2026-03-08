@@ -643,7 +643,7 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
 
   | .closure qn captures => lowerCoreClosure qn captures ty
 
-  | .array elems _ => lowerCoreArray elems ty
+  | .array elems _ => lowerCoreArray elems (getExprType e)
 
   | .proj _typeName _field idx => some <$> lowerFirstClassProj idx ty
 
@@ -652,9 +652,20 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
   | .recordUpdate base updates => lowerCoreRecordUpdate base updates ty
 
   | .let_ _name _ty val body => do
-    -- Lower let as immediate application: (λx. body) val
-    -- Bind val, then lower body
-    lowerCoreExpr (.app (.lam .explicit _name _ty body) val) ty
+    -- Open the body by replacing bvar(0) with an fvar, then lower as a bound variable
+    let letUnique ← LowerM.freshSyntheticUnique _name
+    let fvarBody := Soma.Core.Expr.instantiate body (Soma.Core.Expr.fvar letUnique _ty)
+    let valTy := Soma.Core.evalClosed _ty
+    let usageCount := fvarBody.countFVar letUnique
+    let valPort? ← lowerCoreExpr val valTy
+    match valPort? with
+    | none =>
+      -- val is type-level (erased) so we just lower the body directly
+      lowerCoreExpr fvarBody ty
+    | some valPort =>
+      LowerM.modifyCtx fun ctx =>
+        ctx.bindVarOwned letUnique _name valPort usageCount valTy (usageCount == 0)
+      lowerCoreExpr fvarBody ty
 
   -- Type-level constructs (erased at runtime)
   | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _
@@ -920,9 +931,10 @@ partial def lowerCoreRecord (fields : Array (String × Soma.Core.Expr))
   let mut fieldPorts : Array PortId := #[]
   for i in [:fields.size] do
     let (_, e) := fields[i]!
+    -- Get field type from row structure if available, otherwise infer from expression
     let fieldTy := match rowFields[i]? with
       | some (_, ft) => ft
-      | none => panic! s!"lowerCoreRecord: no row type for field {i} in {ty}"
+      | none => getExprType e
     let port? ← lowerCoreExpr e fieldTy
     match port? with
     | some port => fieldPorts := fieldPorts.push port

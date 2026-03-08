@@ -32,7 +32,7 @@ namespace BuiltinClass
 end BuiltinClass
 
 /-- Default maximum depth for instance resolution -/
-def defaultInstanceMaxDepth : Nat := 100
+def defaultInstanceMaxDepth : Nat := 20
 
 /-- Configuration for instance resolution -/
 structure InstanceResolutionConfig where
@@ -149,11 +149,115 @@ end ResolutionResult
 inductive MatchResult where
   /-- Instance matches with the given substitutions -/
   | matched (instValue : Value) (substitutions : Array (MetaId × Value))
+      (refreshedConstraints : Array (Unique × Array Value))
   /-- Instance doesn't match -/
   | noMatch
   /-- Matching failed with an error -/
   | error (msg : String)
   deriving Inhabited
+
+/-- Refresh stale metavariables in a Value -/
+private partial def refreshStaleMetas (v : Value) (mapping : Std.HashMap Nat MetaId)
+    : TCM (Value × Std.HashMap Nat MetaId) := do
+  match v with
+  | .vNeutral _ty (.nMeta m) =>
+    match mapping.get? m.id with
+    | some freshId =>
+      return (Value.vNeutral (.vType .zero) (.nMeta freshId), mapping)
+    | none =>
+      let freshMeta ← TCM.freshMetaVal (.vType .zero)
+      let freshId ← match freshMeta with
+        | .vNeutral _ (.nMeta fid) => pure fid
+        | _ => pure m
+      return (freshMeta, mapping.insert m.id freshId)
+  | .vNeutral ty neu =>
+    let (ty', mapping') ← refreshStaleMetas ty mapping
+    let (neu', mapping'') ← refreshStaleMetasNeutral neu mapping'
+    return (.vNeutral ty' neu', mapping'')
+  | .vDataType id params =>
+    let mut mapping' := mapping
+    let mut params' : List Value := []
+    for p in params do
+      let (p', m) ← refreshStaleMetas p mapping'
+      mapping' := m
+      params' := params' ++ [p']
+    return (.vDataType id params', mapping')
+  | .vPi qty binder name dom cod =>
+    let (dom', mapping') ← refreshStaleMetas dom mapping
+    return (.vPi qty binder name dom' cod, mapping')
+  | .vSigma qty name fst snd =>
+    let (fst', mapping') ← refreshStaleMetas fst mapping
+    return (.vSigma qty name fst' snd, mapping')
+  | .vPair fst snd =>
+    let (fst', mapping') ← refreshStaleMetas fst mapping
+    let (snd', mapping'') ← refreshStaleMetas snd mapping'
+    return (.vPair fst' snd', mapping'')
+  | .vRowExtend label fieldTy tail =>
+    let (label', mapping') ← refreshStaleMetas label mapping
+    let (fieldTy', mapping'') ← refreshStaleMetas fieldTy mapping'
+    let (tail', mapping''') ← refreshStaleMetas tail mapping''
+    return (.vRowExtend label' fieldTy' tail', mapping''')
+  | .vRecord row =>
+    let (row', mapping') ← refreshStaleMetas row mapping
+    return (.vRecord row', mapping')
+  | .vVariant row =>
+    let (row', mapping') ← refreshStaleMetas row mapping
+    return (.vVariant row', mapping')
+  | .vLam name body => return (.vLam name body, mapping)
+  | .vRecordVal fields =>
+    let mut mapping' := mapping
+    let mut fields' : List (String × Value) := []
+    for (name, val) in fields do
+      let (val', m) ← refreshStaleMetas val mapping'
+      mapping' := m
+      fields' := fields' ++ [(name, val')]
+    return (.vRecordVal fields', mapping')
+  | .vConstructor name tag args resultTy =>
+    let mut mapping' := mapping
+    let mut args' : List Value := []
+    for arg in args do
+      let (arg', m) ← refreshStaleMetas arg mapping'
+      mapping' := m
+      args' := args' ++ [arg']
+    let (resultTy', mapping'') ← refreshStaleMetas resultTy mapping'
+    return (.vConstructor name tag args' resultTy', mapping'')
+  | .vEq lv ty lhs rhs =>
+    let (ty', mapping') ← refreshStaleMetas ty mapping
+    let (lhs', mapping'') ← refreshStaleMetas lhs mapping'
+    let (rhs', mapping''') ← refreshStaleMetas rhs mapping''
+    return (.vEq lv ty' lhs' rhs', mapping''')
+  | other => return (other, mapping)
+where
+  refreshStaleMetasNeutral (n : Neutral) (mapping : Std.HashMap Nat MetaId)
+      : TCM (Neutral × Std.HashMap Nat MetaId) := do
+    match n with
+    | .nMeta m =>
+      match mapping.get? m.id with
+      | some freshId => return (.nMeta freshId, mapping)
+      | none =>
+        let freshMeta ← TCM.freshMetaVal (.vType .zero)
+        let freshId ← match freshMeta with
+          | .vNeutral _ (.nMeta fid) => pure fid
+          | _ => pure m
+        return (.nMeta freshId, mapping.insert m.id freshId)
+    | .nApp fn arg =>
+      let (fn', mapping') ← refreshStaleMetasNeutral fn mapping
+      let (arg', mapping'') ← refreshStaleMetas arg mapping'
+      return (.nApp fn' arg', mapping'')
+    | .nFst pair =>
+      let (pair', mapping') ← refreshStaleMetasNeutral pair mapping
+      return (.nFst pair', mapping')
+    | .nSnd pair =>
+      let (pair', mapping') ← refreshStaleMetasNeutral pair mapping
+      return (.nSnd pair', mapping')
+    | .nFieldAccess record field =>
+      let (record', mapping') ← refreshStaleMetasNeutral record mapping
+      return (.nFieldAccess record' field, mapping')
+    | .nCase scrutinee _arms resultTy =>
+      let (scrutinee', mapping') ← refreshStaleMetasNeutral scrutinee mapping
+      let (resultTy', mapping'') ← refreshStaleMetas resultTy mapping'
+      return (.nCase scrutinee' _arms resultTy', mapping'')
+    | .nVar _ => return (n, mapping)
 
 /-- Try to match instance arguments against goal arguments using unification.
     Creates fresh metavariables for polymorphic type parameters in the instance.
@@ -166,20 +270,32 @@ def tryMatchInstanceUnify (inst : InstanceInfo) (goalArgs : Array Value)
   -- Save state for potential rollback
   let stateBefore ← TCM.getState
 
+  let mut metaMapping : Std.HashMap Nat MetaId := {}
+  let mut refreshedArgs : Array Value := #[]
+  for arg in inst.args do
+    let (arg', mapping') ← refreshStaleMetas arg metaMapping
+    metaMapping := mapping'
+    refreshedArgs := refreshedArgs.push arg'
+  let mut refreshedConstraints : Array (Unique × Array Value) := #[]
+  for (cid, cargs) in inst.constraints do
+    let mut cargs' : Array Value := #[]
+    for carg in cargs do
+      let (carg', mapping') ← refreshStaleMetas carg metaMapping
+      metaMapping := mapping'
+      cargs' := cargs'.push carg'
+    refreshedConstraints := refreshedConstraints.push (cid, cargs')
+
   -- Create fresh metavariables for any polymorphic parameters in the instance
   let mut substitutions : Array (MetaId × Value) := #[]
 
-  -- Try to unify each argument
-  for i in [:inst.args.size] do
-    if let (some instArg, some goalArg) := (inst.args[i]?, goalArgs[i]?) then
+  for i in [:refreshedArgs.size] do
+    if let (some instArg, some goalArg) := (refreshedArgs[i]?, goalArgs[i]?) then
       let instArg' ← force instArg
       let goalArg' ← force goalArg
 
-      -- Try unification - this will solve metavariables
-      let unifyResult := (unify instArg' goalArg').run'
-      match unifyResult with
-      | .ok () => pure ()
-      | .error e =>
+      try
+        unify instArg' goalArg'
+      catch e =>
         -- Unification failed - restore state and return error with details
         TCM.modifyState fun _ => stateBefore
         return .error s!"unification failed: {e}"
@@ -192,22 +308,28 @@ def tryMatchInstanceUnify (inst : InstanceInfo) (goalArgs : Array Value)
       if let some sol := info.solution then
         substitutions := substitutions.push (metaId, sol)
 
-  return .matched inst.value substitutions
+  return .matched inst.value substitutions refreshedConstraints
+
+/-- Result of matching an instance: value + refreshed constraints -/
+structure InstanceMatch where
+  value : Value
+  refreshedConstraints : Array (Unique × Array Value)
 
 /-- Check if an instance matches a goal using unification -/
 def matchInstance (inst : InstanceInfo) (classId : Unique) (args : Array Value)
-    : TCM (Option Value) := do
+    : TCM (Option InstanceMatch) := do
   -- Check class id matches
   if inst.classId != classId then
     return none
 
   -- Try to match arguments using unification
-  match ← tryMatchInstanceUnify inst args with
-  | .matched value _ => return some value
-  | .noMatch => return none
-  | .error msg =>
-    -- Log the error for debugging but return none to try other instances
-    TCM.debug s!"Instance matching error: {msg}"
+  let result ← tryMatchInstanceUnify inst args
+  match result with
+  | .matched value _ constraints =>
+    return some ⟨value, constraints⟩
+  | .noMatch =>
+    return none
+  | .error _ =>
     return none
 
 mutual
@@ -269,17 +391,19 @@ partial def resolveInstance (classId : Unique) (args : Array Value)
 
     -- Check if instance matches using unification
     match ← matchInstance inst classId args with
-    | some value =>
-      -- Instance matches! Now check constraints
+    | some instMatch =>
+      -- Instance matches! Now check constraints using the refreshed constraints
+      -- (which share fresh metas with the refreshed instance args)
 
       -- 1. Check instance's own constraints
       let constraintsSatisfied ← do
-        if inst.isGround then
+        if instMatch.refreshedConstraints.isEmpty then
           pure true
         else
           let mut allSatisfied := true
-          for (constraintClassId, constraintArgs) in inst.constraints do
-            let result ← resolveInstance constraintClassId constraintArgs state'
+          for (constraintClassId, constraintArgs) in instMatch.refreshedConstraints do
+            let forcedArgs ← constraintArgs.mapM force
+            let result ← resolveInstance constraintClassId forcedArgs state'
             match result with
             | .found _ _ => pure ()
             | _ =>
@@ -307,7 +431,7 @@ partial def resolveInstance (classId : Unique) (args : Array Value)
         continue
 
       -- All constraints satisfied!
-      return .found value #[inst.instanceId]
+      return .found instMatch.value #[inst.instanceId]
 
     | none =>
       -- Instance doesn't match, try next
@@ -339,12 +463,30 @@ instance : Inhabited InstanceFailure where
     span := Span.uninhabited
   }
 
-/-- Solve all pending instance constraints -/
+/-- Check if a Value is concrete enough for instance resolution -/
+private partial def isConcreteForResolution : Value → Bool
+  | .vNeutral _ (.nVar _) => false
+  | .vNeutral _ (.nMeta _) => false
+  | .vDataType _ params => params.all isConcreteForResolution
+  | .vPrimTy _ => true
+  | .vType _ => true
+  | .vPi _ _ _ dom cod =>
+    isConcreteForResolution dom && match cod with
+    | .const _ v => isConcreteForResolution v
+    | .term _ _ _ => true
+  | _ => true
+
 def solvePendingInstances : TCM (Array InstanceFailure) := do
   let pending ← TCM.getPendingInstances
   let mut failures : Array InstanceFailure := #[]
 
   for p in pending do
+    let solved ← TCM.isMetaSolved p.metaId
+    if solved then continue
+    let forcedArgs ← p.args.mapM force
+    let allConcrete := forcedArgs.all isConcreteForResolution
+    if !allConcrete then continue
+
     let result ← resolveInstance p.classId p.args
     match result with
     | .found value _ =>
@@ -380,6 +522,25 @@ def solvePendingInstances : TCM (Array InstanceFailure) := do
 
 /-- Solve pending instances and accumulate errors for all failures -/
 def solvePendingInstancesOrFail : TCM Unit := do
+  let deferred ← TCM.getDeferredInstanceMetas
+  TCM.clearDeferredInstanceMetas
+  for (metaId, domTy, span) in deferred do
+    let solved ← TCM.isMetaSolved metaId
+    if !solved then
+      let forcedDom ← force domTy
+      match forcedDom with
+      | .vDataType classId args =>
+        let result ← resolveInstance classId args.toArray
+        match result with
+        | .found value _ =>
+          TCM.solveMeta metaId value
+        | .notFound _ _ _ =>
+          TCM.addError (.noInstance classId args.toArray span #[] #[])
+        | .cycle classId _ =>
+          TCM.addError (.instanceCycle classId span #[])
+        | .depthExceeded classId =>
+          TCM.addError (.instanceDepthExceeded classId span #[])
+      | _ => pure ()
   let failures ← solvePendingInstances
   for failure in failures do
     match failure.reason with

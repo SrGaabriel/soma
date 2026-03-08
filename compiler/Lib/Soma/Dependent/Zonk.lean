@@ -182,103 +182,128 @@ partial def zonkLevel (l : Level) : TCM Level := do
 
 end
 
-/-- Zonk a Core.Expr: substitute all solved metavariables in type annotations and terms -/
-partial def zonkExpr (e : Expr) (depth : Nat := 0) : TCM Expr := do
+/-- Collect all mvar IDs from an expression -/
+partial def collectMvarIds (e : Expr) (acc : Std.HashSet MetaId := {}) : Std.HashSet MetaId :=
   match e with
-  | .mvar id =>
-    match ← TCM.lookupMeta id with
-    | some info =>
-      match info.solution with
-      | some sol =>
-        let zonked ← zonkValue sol
-        return Soma.Core.quoteExpr ⟨depth⟩ zonked
-      | none => return e
-    | none => return e
-
+  | .mvar id => acc.insert id
   | .bvar _ | .sort _ | .primTy _ | .rowSort | .labelSort
-  | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ => return e
-
-  | .fvar id ty => return .fvar id (← zonkExpr ty depth)
-  | .const name ty => return .const name (← zonkExpr ty depth)
-
-  | .app fn arg => return .app (← zonkExpr fn depth) (← zonkExpr arg depth)
-
-  | .lam info name dom body =>
-    return .lam info name (← zonkExpr dom depth) (← zonkExpr body (depth + 1))
-
-  | .let_ name ty val body =>
-    return .let_ name (← zonkExpr ty depth) (← zonkExpr val depth) (← zonkExpr body (depth + 1))
-
-  | .pi qty info name dom cod =>
-    return .pi qty info name (← zonkExpr dom depth) (← zonkExpr cod (depth + 1))
-
-  | .sigma qty info name fst snd =>
-    return .sigma qty info name (← zonkExpr fst depth) (← zonkExpr snd (depth + 1))
-
-  | .pair fst snd => return .pair (← zonkExpr fst depth) (← zonkExpr snd depth)
-  | .projFst e => return .projFst (← zonkExpr e depth)
-  | .projSnd e => return .projSnd (← zonkExpr e depth)
-
-  | .construct name tag args resultTy =>
-    let args' ← args.mapM (zonkExpr · depth)
-    return .construct name tag args' (← zonkExpr resultTy depth)
-
-  | .«case» scruts arms resultTy =>
-    let scruts' ← scruts.mapM (zonkExpr · depth)
-    let arms' ← arms.mapM fun arm => do
-      let binds := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
-      let body' ← zonkExpr arm.body (depth + binds)
-      return Arm.mk arm.patterns body'
-    return .«case» scruts' arms' (← zonkExpr resultTy depth)
-
-  | .record fields =>
-    let fields' ← fields.mapM fun (name, e) => return (name, ← zonkExpr e depth)
-    return .record fields'
-
+  | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ => acc
+  | .fvar _ ty => collectMvarIds ty acc
+  | .const _ ty => collectMvarIds ty acc
+  | .app fn arg => collectMvarIds arg (collectMvarIds fn acc)
+  | .lam _ _ dom body => collectMvarIds body (collectMvarIds dom acc)
+  | .let_ _ ty val body => collectMvarIds body (collectMvarIds val (collectMvarIds ty acc))
+  | .pi _ _ _ dom cod => collectMvarIds cod (collectMvarIds dom acc)
+  | .sigma _ _ _ fst snd => collectMvarIds snd (collectMvarIds fst acc)
+  | .pair fst snd => collectMvarIds snd (collectMvarIds fst acc)
+  | .projFst e => collectMvarIds e acc
+  | .projSnd e => collectMvarIds e acc
+  | .construct _ _ args rty =>
+    args.foldl (fun a e => collectMvarIds e a) acc |> collectMvarIds rty
+  | .«case» scruts arms rty =>
+    let a := scruts.foldl (fun a e => collectMvarIds e a) acc
+    let a := arms.foldl (fun a arm => collectMvarIds arm.body a) a
+    collectMvarIds rty a
+  | .record fields => fields.foldl (fun a (_, e) => collectMvarIds e a) acc
   | .recordUpdate base updates =>
-    let base' ← zonkExpr base depth
-    let updates' ← updates.mapM fun (name, e) => return (name, ← zonkExpr e depth)
-    return .recordUpdate base' updates'
+    let a := collectMvarIds base acc
+    updates.foldl (fun a (_, e) => collectMvarIds e a) a
+  | .fieldAccess e _ _ => collectMvarIds e acc
+  | .inject _ args rty =>
+    args.foldl (fun a e => collectMvarIds e a) acc |> collectMvarIds rty
+  | .if_ c t el => collectMvarIds el (collectMvarIds t (collectMvarIds c acc))
+  | .closure _ caps => caps.foldl (fun a e => collectMvarIds e a) acc
+  | .array es ety => es.foldl (fun a e => collectMvarIds e a) acc |> collectMvarIds ety
+  | .tuple es => es.foldl (fun a e => collectMvarIds e a) acc
+  | .rowExtend l f t => collectMvarIds t (collectMvarIds f (collectMvarIds l acc))
+  | .recordTy r => collectMvarIds r acc
+  | .variantTy r => collectMvarIds r acc
+  | .dataTy _ ps => ps.foldl (fun a e => collectMvarIds e a) acc
+  | .eqTy _ t l r => collectMvarIds r (collectMvarIds l (collectMvarIds t acc))
+  | .refl t x => collectMvarIds x (collectMvarIds t acc)
+  | .transport _ t m l r ep b =>
+    collectMvarIds b (collectMvarIds ep (collectMvarIds r (collectMvarIds l
+      (collectMvarIds m (collectMvarIds t acc)))))
+  | .ann x t => collectMvarIds t (collectMvarIds x acc)
 
-  | .fieldAccess e field idx => return .fieldAccess (← zonkExpr e depth) field idx
+/-- Apply a metavariable substitution map to an expression -/
+partial def applyMvarSubst (e : Expr) (subst : Std.HashMap MetaId Expr) (depth : Nat := 0) : Expr :=
+  match e with
+  | .mvar id => subst.getD id e
+  | .bvar _ | .sort _ | .primTy _ | .rowSort | .labelSort
+  | .rowEmpty | .labelLit _ | .panic _ | .proj _ _ _ | .lit _ => e
+  | .fvar id ty => .fvar id (applyMvarSubst ty subst depth)
+  | .const name ty => .const name (applyMvarSubst ty subst depth)
+  | .app fn arg => .app (applyMvarSubst fn subst depth) (applyMvarSubst arg subst depth)
+  | .lam info name dom body =>
+    .lam info name (applyMvarSubst dom subst depth) (applyMvarSubst body subst (depth + 1))
+  | .let_ name ty val body =>
+    .let_ name (applyMvarSubst ty subst depth) (applyMvarSubst val subst depth) (applyMvarSubst body subst (depth + 1))
+  | .pi qty info name dom cod =>
+    .pi qty info name (applyMvarSubst dom subst depth) (applyMvarSubst cod subst (depth + 1))
+  | .sigma qty info name fst snd =>
+    .sigma qty info name (applyMvarSubst fst subst depth) (applyMvarSubst snd subst (depth + 1))
+  | .pair fst snd => .pair (applyMvarSubst fst subst depth) (applyMvarSubst snd subst depth)
+  | .projFst x => .projFst (applyMvarSubst x subst depth)
+  | .projSnd x => .projSnd (applyMvarSubst x subst depth)
+  | .construct name tag args rty =>
+    .construct name tag (args.map (applyMvarSubst · subst depth)) (applyMvarSubst rty subst depth)
+  | .«case» scruts arms rty =>
+    .«case» (scruts.map (applyMvarSubst · subst depth))
+      (arms.map fun arm =>
+        let binds := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
+        Arm.mk arm.patterns (applyMvarSubst arm.body subst (depth + binds)))
+      (applyMvarSubst rty subst depth)
+  | .record fields => .record (fields.map fun (n, e) => (n, applyMvarSubst e subst depth))
+  | .recordUpdate base updates =>
+    .recordUpdate (applyMvarSubst base subst depth)
+      (updates.map fun (n, e) => (n, applyMvarSubst e subst depth))
+  | .fieldAccess x field idx => .fieldAccess (applyMvarSubst x subst depth) field idx
+  | .inject l args rty =>
+    .inject l (args.map (applyMvarSubst · subst depth)) (applyMvarSubst rty subst depth)
+  | .if_ c t el =>
+    .if_ (applyMvarSubst c subst depth) (applyMvarSubst t subst depth) (applyMvarSubst el subst depth)
+  | .closure n caps => .closure n (caps.map (applyMvarSubst · subst depth))
+  | .array es ety =>
+    .array (es.map (applyMvarSubst · subst depth)) (applyMvarSubst ety subst depth)
+  | .tuple es => .tuple (es.map (applyMvarSubst · subst depth))
+  | .rowExtend l f t =>
+    .rowExtend (applyMvarSubst l subst depth) (applyMvarSubst f subst depth) (applyMvarSubst t subst depth)
+  | .recordTy r => .recordTy (applyMvarSubst r subst depth)
+  | .variantTy r => .variantTy (applyMvarSubst r subst depth)
+  | .dataTy id ps => .dataTy id (ps.map (applyMvarSubst · subst depth))
+  | .eqTy lv t l r =>
+    .eqTy lv (applyMvarSubst t subst depth) (applyMvarSubst l subst depth) (applyMvarSubst r subst depth)
+  | .refl t x => .refl (applyMvarSubst t subst depth) (applyMvarSubst x subst depth)
+  | .transport lv t m l r ep b =>
+    .transport lv (applyMvarSubst t subst depth) (applyMvarSubst m subst depth)
+      (applyMvarSubst l subst depth) (applyMvarSubst r subst depth)
+      (applyMvarSubst ep subst depth) (applyMvarSubst b subst depth)
+  | .ann x t => .ann (applyMvarSubst x subst depth) (applyMvarSubst t subst depth)
 
-  | .inject label args resultTy =>
-    let args' ← args.mapM (zonkExpr · depth)
-    return .inject label args' (← zonkExpr resultTy depth)
-
-  | .if_ cond then_ else_ =>
-    return .if_ (← zonkExpr cond depth) (← zonkExpr then_ depth) (← zonkExpr else_ depth)
-
-  | .closure name captures =>
-    let captures' ← captures.mapM (zonkExpr · depth)
-    return .closure name captures'
-
-  | .array elems resultTy =>
-    let elems' ← elems.mapM (zonkExpr · depth)
-    return .array elems' (← zonkExpr resultTy depth)
-
-  | .tuple elems =>
-    let elems' ← elems.mapM (zonkExpr · depth)
-    return .tuple elems'
-
-  | .rowExtend label fieldTy tail =>
-    return .rowExtend (← zonkExpr label depth) (← zonkExpr fieldTy depth) (← zonkExpr tail depth)
-
-  | .recordTy row => return .recordTy (← zonkExpr row depth)
-  | .variantTy row => return .variantTy (← zonkExpr row depth)
-  | .dataTy id params =>
-    let params' ← params.mapM (zonkExpr · depth)
-    return .dataTy id params'
-
-  | .eqTy lv ty lhs rhs =>
-    return .eqTy lv (← zonkExpr ty depth) (← zonkExpr lhs depth) (← zonkExpr rhs depth)
-  | .refl ty x => return .refl (← zonkExpr ty depth) (← zonkExpr x depth)
-  | .transport lv ty motive lhs rhs eq body =>
-    return .transport lv (← zonkExpr ty depth) (← zonkExpr motive depth)
-      (← zonkExpr lhs depth) (← zonkExpr rhs depth)
-      (← zonkExpr eq depth) (← zonkExpr body depth)
-
-  | .ann expr ty => return .ann (← zonkExpr expr depth) (← zonkExpr ty depth)
+/-- Substitute all solved metavariables in type annotations and terms -/
+partial def zonkExpr (e : Expr) (depth : Nat := 0) : TCM Expr := do
+  let mut result := e
+  let mut seen : Std.HashSet MetaId := {}
+  for _ in List.range 100 do
+    let mvarIds := collectMvarIds result
+    let newIds := mvarIds.fold (fun acc id => if seen.contains id then acc else acc.push id) #[]
+    if newIds.isEmpty then
+      return result
+    let mut subst : Std.HashMap MetaId Expr := {}
+    for id in newIds do
+      seen := seen.insert id
+      match ← TCM.lookupMeta id with
+      | some info =>
+        match info.solution with
+        | some sol =>
+          subst := subst.insert id (Soma.Core.quoteExpr ⟨depth⟩ sol)
+        | none => pure ()
+      | none => pure ()
+    if subst.isEmpty then
+      return result
+    result := applyMvarSubst result subst depth
+  return result
 
 mutual
 

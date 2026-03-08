@@ -335,31 +335,38 @@ def evalWithGlobals (globals : GlobalEnv) (e : Soma.Core.Expr) : Value :=
   evalCoreExpr { EvalCtx.empty with globals := globals } e
 
 /-- Compute the type of a Core expression purely from its structure -/
-partial def Expr.typeOf : Expr → Value
+partial def Expr.typeOfWith (bvarCtx : Array Value) : Expr → Value
   | .ann _ ty => evalClosed ty
 
   | .fvar _ ty => evalClosed ty
   | .const _ ty => evalClosed ty
+
+  | .bvar idx =>
+    match bvarCtx[bvarCtx.size - idx - 1]? with
+    | some ty => ty
+    | none => panic! s!"Expr.typeOfWith: bvar({idx}) out of range (context size {bvarCtx.size})"
 
   | .lit (.int _) => .vPrimTy .int
   | .lit (.string _) => .vPrimTy .string
   | .lit (.bool _) => .vPrimTy .bool
 
   | .app fn arg =>
-    let fnTy := typeOf fn
+    let fnTy := typeOfWith bvarCtx fn
     let argVal := evalClosed arg
     match fnTy.piApply argVal with
     | some codomainTy => codomainTy
-    | none => panic! s!"Expr.typeOf: app with non-Pi function type (fn={fn.ctorName})"
+    | none => panic! s!"Expr.typeOfWith: app with non-Pi function type (fn={fn.ctorName})"
 
   | .lam _info name domain body =>
     let domTy := evalClosed domain
-    let bodyTy := typeOf body
+    let bodyTy := typeOfWith (bvarCtx.push domTy) body
     .vPi Quantity.omega Soma.Core.BinderInfo.explicit name domTy (Closure.const name bodyTy)
 
-  | .let_ _ _ _ body => typeOf body
+  | .let_ _ ty _ body =>
+    let letTy := evalClosed ty
+    typeOfWith (bvarCtx.push letTy) body
 
-  | .if_ _ then_ _ => typeOf then_
+  | .if_ _ then_ _ => typeOfWith bvarCtx then_
 
   | .«case» _ _ resultTy => evalClosed resultTy
 
@@ -370,42 +377,49 @@ partial def Expr.typeOf : Expr → Value
   | .inject _ _ resultTy => evalClosed resultTy
 
   | .pair fst snd =>
-    let fstTy := typeOf fst
-    let sndTy := typeOf snd
+    let fstTy := typeOfWith bvarCtx fst
+    let sndTy := typeOfWith bvarCtx snd
     Value.prod fstTy sndTy
 
   | .tuple elems =>
     if elems.size ≥ 2 then
-      let fstTy := typeOf elems[0]!
-      let sndTy := typeOf elems[1]!
+      let fstTy := typeOfWith bvarCtx elems[0]!
+      let sndTy := typeOfWith bvarCtx elems[1]!
       Value.prod fstTy sndTy
     else if elems.size = 1 then
-      typeOf elems[0]!
+      typeOfWith bvarCtx elems[0]!
     else .vPrimTy .unit
 
   | .projFst expr =>
-    let sigTy := typeOf expr
+    let sigTy := typeOfWith bvarCtx expr
     match sigTy.sigmaFst? with
     | some ty => ty
-    | none => panic! s!"Expr.typeOf: projFst on non-Sigma type (expr={expr.ctorName})"
+    | none => panic! s!"Expr.typeOfWith: projFst on non-Sigma type (expr={expr.ctorName})"
   | .projSnd expr =>
-    let sigTy := typeOf expr
+    let sigTy := typeOfWith bvarCtx expr
     let fstVal := evalClosed (.projFst expr)
     match sigTy.sigmaApply fstVal with
     | some ty => ty
-    | none => panic! s!"Expr.typeOf: projSnd on non-Sigma type (expr={expr.ctorName})"
+    | none => panic! s!"Expr.typeOfWith: projSnd on non-Sigma type (expr={expr.ctorName})"
 
   | .record fields =>
     let row := fields.foldr (init := Value.vRowEmpty) fun (name, expr) acc =>
-      .vRowExtend (.vLabelLit name) (typeOf expr) acc
+      .vRowExtend (.vLabelLit name) (typeOfWith bvarCtx expr) acc
     .vRecord row
 
   | .fieldAccess expr field _ =>
-    let recTy := typeOf expr
+    let recTy := typeOfWith bvarCtx expr
     let fields := recTy.recordFields
     match fields.toList.find? (·.1 == field) with
     | some (_, ty) => ty
-    | none => panic! s!"Expr.typeOf: field '{field}' not found in record type (expr={expr.ctorName})"
+    | none =>
+      -- For instance dicts, get field type from the record expression
+      match expr with
+      | .record recFields =>
+        match recFields.toList.find? (·.1 == field) with
+        | some (_, fieldExpr) => typeOfWith bvarCtx fieldExpr
+        | none => panic! s!"Expr.typeOfWith: field '{field}' not found in record literal"
+      | _ => panic! s!"Expr.typeOfWith: field '{field}' not found in record type (expr={expr.ctorName})"
 
   | .closure _name _captures => .vType .zero
 
@@ -415,6 +429,10 @@ partial def Expr.typeOf : Expr → Value
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
   | .proj _ _ _ => .vType .zero
 
-  | .mvar _ | .bvar _ | .recordUpdate _ _ | .panic _ => .vType .zero
+  | .mvar _ | .recordUpdate _ _ | .panic _ => .vType .zero
+
+/-- Compute the type of a Core expression purely from its structure -/
+partial def Expr.typeOf (e : Expr) : Value :=
+  Expr.typeOfWith #[] e
 
 end Soma.Core

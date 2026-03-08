@@ -1,10 +1,10 @@
-use crate::build::BuildResult;
 use crate::build::consts::{
     BUILD_FOLDER_NAME, CONFIG_BUILD_FILE_NAME, CONFIG_FOLDER_NAME, SRC_FOLDER_NAME,
 };
 use crate::build::errors::{BuildError, InternalBuildError};
 use crate::build::graph::BuildNode;
-use crate::config::build::{BuildConfig, find_sysroot};
+use crate::build::BuildResult;
+use crate::config::build::{find_sysroot, BuildConfig};
 use crate::config::manifest::ManifestModuleType;
 use std::collections::HashMap;
 use std::fs;
@@ -77,6 +77,9 @@ fn compile_module(
     };
 
     let mut command = build_config.somac.to_command();
+    if std::env::var("LEAN_STACK_SIZE").is_err() {
+        command.env("LEAN_STACK_SIZE", "32768");
+    }
     command
         .arg(&src_path)
         .arg("--name")

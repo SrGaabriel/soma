@@ -527,6 +527,31 @@ def elaborateInstanceValue (typeArgs : Array Value)
 
   return (Value.vRecordVal fields.reverse, typedFns)
 
+/-- Collect free type variable names from a TypeExpr -/
+private partial def collectTypeVars (ty : TypeExpr) (acc : Array String := #[])
+    (bound : Array String := #[]) : Array String :=
+  match ty with
+  | .var name =>
+    if bound.contains name.value then acc
+    else if acc.contains name.value then acc
+    else acc.push name.value
+  | .con _ => acc
+  | .app fn arg _ => collectTypeVars arg (collectTypeVars fn acc bound) bound
+  | .arrow from_ to _ => collectTypeVars to (collectTypeVars from_ acc bound) bound
+  | .tuple elems _ => elems.foldl (fun a e => collectTypeVars e a bound) acc
+  | .list elem _ => collectTypeVars elem acc bound
+  | .forall_ vars body _ =>
+    let bound' := vars.foldl (fun b v => b.push v.name.value) bound
+    collectTypeVars body acc bound'
+  | .constrained _ body _ => collectTypeVars body acc bound
+  | .parens inner _ => collectTypeVars inner acc bound
+  | .kinded ty _ _ => collectTypeVars ty acc bound
+  | .record fields _ _ => fields.foldl (fun a (_, e) => collectTypeVars e a bound) acc
+  | .variant cases _ _ => cases.foldl (fun a (_, e) => collectTypeVars e a bound) acc
+  | .pi _ _ dom cod _ => collectTypeVars cod (collectTypeVars dom acc bound) bound
+  | .sigma _ _ fst snd _ => collectTypeVars snd (collectTypeVars fst acc bound) bound
+  | .implicit _ dom cod _ => collectTypeVars cod (collectTypeVars dom acc bound) bound
+
 /-- Elaborate a single instance declaration into an InstanceInfo -/
 def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
   (typeClass : Soma.Core.TypeClassMeta) : TCM (Option (InstanceInfo × Array Soma.Core.TypedFunction)) := do
@@ -535,8 +560,13 @@ def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
   | none =>
     return none
   | some classId =>
+    let freeVars := inst.typeArgsSyntax.foldl (fun acc ty => collectTypeVars ty acc) #[]
+    let mut elabEnv := ElabEnv.empty
+    for name in freeVars do
+      let metaVal ← TCM.freshMetaVal (Value.vType Level.zero)
+      elabEnv := elabEnv.addOverride name metaVal
+
     -- Elaborate the type arguments
-    let elabEnv := ElabEnv.empty
     let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)
 
     -- Elaborate the instance constraints
@@ -569,14 +599,54 @@ def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
 
     return some (instanceInfo, methodFns)
 
-/-! ## Building the Complete Instance Environment -/
+/-- Build a method dispatch wrapper for a type class method -/
+private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
+    (fieldIdx : Nat) : TCM (Option TypedFunction) := do
+  let mut wrapperParams : Array (Soma.Unique × String) := #[]
+  let mut walkTy := info.type
+  let mut wrapperTy := info.type
+  let mut dictUnique : Soma.Unique := ⟨0, "", "$dict"⟩
+  let mut dictDomTy : Value := .vType .zero
+  let mut foundInstance := false
+  let mut walking := true
+  while walking do
+    match walkTy with
+    | .vPi _qty binder name dom cod =>
+      let paramUnique ← TCM.freshUnique name
+      if binder == .instance_ then
+        wrapperParams := wrapperParams.push (paramUnique, name)
+        dictUnique := paramUnique
+        dictDomTy := dom
+        foundInstance := true
+        walking := false
+      else if binder.isImplicit then
+        let nextTy := cod.applyPure (.vType .zero)
+        walkTy := nextTy
+        wrapperTy := nextTy
+      else
+        wrapperParams := wrapperParams.push (paramUnique, name)
+        walkTy := cod.applyPure (.vType .zero)
+    | _ => walking := false
+  if !foundInstance then return none
+  let dictTyExpr := Soma.Core.quoteExpr0 dictDomTy
+  let body := Soma.Core.Expr.fieldAccess
+    (Soma.Core.Expr.fvar dictUnique dictTyExpr)
+    methodNameStr
+    fieldIdx
+  return some {
+    name := info.name
+    params := wrapperParams
+    body := body
+    fnType := wrapperTy
+    closureInfo := none
+    attrs := {}
+  }
 
 /-- Build a complete InstanceEnv from a module's type classes and instances.
 
 This is the main entry point for trait/instance elaboration.
 It processes all type classes first (to build the registry),
-then processes all instances using that registry.
--/
+then processes all instances using that registry. -/
 def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
     : TCM (InstanceEnv × InstanceMap × Array Soma.Core.TypedFunction) := do
   -- Start with the default built-in instances (Eq Int, Num Int, etc.)
@@ -635,37 +705,7 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
       let methodNameStr := methodName.display
       match ← TCM.lookupGlobal methodNameStr with
       | some info =>
-        let mut wrapperParams : Array (Soma.Unique × String) := #[]
-        let mut walkTy := info.type
-        let mut dictUnique : Soma.Unique := ⟨0, "", "$dict"⟩
-        let mut foundInstance := false
-        let mut walking := true
-        while walking do
-          match walkTy with
-          | .vPi _qty binder name _dom cod =>
-            let paramUnique ← TCM.freshUnique name
-            wrapperParams := wrapperParams.push (paramUnique, name)
-            if binder == .instance_ then
-              dictUnique := paramUnique
-              foundInstance := true
-              walking := false
-            else
-              walkTy := cod.applyPure (.vType .zero)
-          | _ => walking := false
-
-        if foundInstance then
-          let body := Soma.Core.Expr.fieldAccess
-            (Soma.Core.Expr.fvar dictUnique (.sort .zero))
-            methodNameStr
-            idx
-          let wrapper : Soma.Core.TypedFunction := {
-            name := info.name
-            params := wrapperParams
-            body := body
-            fnType := info.type
-            closureInfo := none
-            attrs := {}
-          }
+        if let some wrapper ← buildMethodWrapper info methodNameStr idx then
           allTypedFns := allTypedFns.push wrapper
       | none => pure ()
       idx := idx + 1
@@ -793,37 +833,7 @@ def buildInstanceEnvFromModuleIncremental
       let methodNameStr := methodName.display
       match ← TCM.lookupGlobal methodNameStr with
       | some info =>
-        let mut wrapperParams : Array (Soma.Unique × String) := #[]
-        let mut walkTy := info.type
-        let mut dictUnique : Soma.Unique := ⟨0, "", "$dict"⟩
-        let mut foundInstance := false
-        let mut walking := true
-        while walking do
-          match walkTy with
-          | .vPi _qty binder name _dom cod =>
-            let paramUnique ← TCM.freshUnique name
-            wrapperParams := wrapperParams.push (paramUnique, name)
-            if binder == .instance_ then
-              dictUnique := paramUnique
-              foundInstance := true
-              walking := false
-            else
-              walkTy := cod.applyPure (.vType .zero)
-          | _ => walking := false
-
-        if foundInstance then
-          let body := Soma.Core.Expr.fieldAccess
-            (Soma.Core.Expr.fvar dictUnique (.sort .zero))
-            methodNameStr
-            idx
-          let wrapper : Soma.Core.TypedFunction := {
-            name := info.name
-            params := wrapperParams
-            body := body
-            fnType := info.type
-            closureInfo := none
-            attrs := {}
-          }
+        if let some wrapper ← buildMethodWrapper info methodNameStr idx then
           allTypedFns := allTypedFns.push wrapper
       | none => pure ()
       idx := idx + 1

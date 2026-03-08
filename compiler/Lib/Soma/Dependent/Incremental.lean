@@ -520,8 +520,12 @@ partial def hashSyntaxExpr (e : Soma.Syntax.Expr) : UInt64 :=
   | .typeApp arg _ => combineHash (exprTag 14) (match arg with
       | .type ty => hashTypeExpr ty
       | .label name => hashString name.value)
-  | .compose body _ => hashSyntaxExpr body
-  | .bind body _ => hashSyntaxExpr body
+  | .composeBlock stmts final_ _ =>
+    let stmtHash := stmts.foldl (fun acc s => combineHash acc (match s with
+      | .expr e _ => hashSyntaxExpr e
+      | .let_ n v _ => combineHash (hashString n.value) (hashSyntaxExpr v)
+      | .bind_ n a _ => combineHash (hashString n.value) (hashSyntaxExpr a))) 0
+    combineHashes #[exprTag 16, stmtHash, hashSyntaxExpr final_]
   | .variant label arg _ => combineHashes #[exprTag 15, hashString label.value,
       match arg with | some a => hashSyntaxExpr a | none => 0]
 

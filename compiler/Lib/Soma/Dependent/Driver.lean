@@ -213,6 +213,8 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     -- Extend context with prefix binders and check body against the exact remaining result type
     let (generatedParams, typedBody) ← withSignaturePrefixBindings allParams fn.params span do
       TCM.infallible (Soma.Dependent.checkSyntax fn.body resultType) default
+    -- Solve pending instance constraints before zonking
+    Soma.Dependent.solvePendingInstancesOrFail
     -- Zonk all solved metas so downstream passes see concrete types
     let declaredType' ← zonkValue declaredType
     reportUnsolvedMetas declaredType' span
@@ -224,6 +226,8 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     -- Extend context with parameters and infer body type
     let (generatedParams, (inferredType, typedBody)) ← withFunctionParams fn.params paramTypes span do
       TCM.infallibleExpr (Soma.Dependent.inferSyntax fn.body) span
+    -- Solve pending instance constraints before zonking
+    Soma.Dependent.solvePendingInstancesOrFail
     -- Zonk all solved metas so downstream passes see concrete types
     let inferredType' ← zonkValue inferredType
     reportUnsolvedMetas inferredType' span

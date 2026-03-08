@@ -132,6 +132,9 @@ fn check_module(
         .map_err(|e| format!("Failed to canonicalize src path: {}", e))?;
 
     let mut command = Command::new("somac");
+    if std::env::var("LEAN_STACK_SIZE").is_err() {
+        command.env("LEAN_STACK_SIZE", "32768");
+    }
     command
         .arg("check")
         .arg(&src_path)

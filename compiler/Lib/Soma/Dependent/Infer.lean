@@ -104,10 +104,12 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span :
 
       -- Handle instance parameters specially
       if binder == .instance_ then
-        match extractClassInfo (← force dom) with
+        let forcedDom ← force dom
+        match extractClassInfo forcedDom with
         | some (classId, args) =>
           TCM.addPendingInstance classId args metaId span
-        | none => pure ()
+        | none =>
+          TCM.addDeferredInstanceMeta metaId dom span
 
       -- Apply the function to the metavariable
       let resultTy ← applyClosure cod argMeta
@@ -536,8 +538,7 @@ def syntaxExprKind : Soma.Syntax.Expr → String
   | .parens _ _ => "parens"
   | .typeAnnot _ _ _ => "ann"
   | .typeApp _ _ => "typeApp"
-  | .compose _ _ => "compose"
-  | .bind _ _ => "bind"
+  | .composeBlock stmts _ _ => s!"composeBlock({stmts.size} stmts)"
   | .variant label _ _ => s!"variant(.{label.value})"
 
 private def requireUniqueWiredRole (role : WiredRole) (span : Span) : TCM GlobalInfo := do
@@ -702,6 +703,19 @@ partial def convertPatternListWithBindings (pats : List Soma.Syntax.Pattern) (sc
     let (corePat, patBindings) ← convertPatternWithBindings pat freshTy
     let (restPats, restBindings) ← convertPatternListWithBindings rest []
     return (#[corePat] ++ restPats, patBindings ++ restBindings)
+
+/-- Intermediate result from elaborating a compose block statement -/
+private inductive ComposeElabStmt where
+  /-- Expression statement: (>> action) applied to rest -/
+  | seqStmt (partialTy : Value) (partialExpr : Soma.Core.Expr) (stmtSpan : Span)
+  /-- Let binding: let x = value -/
+  | letBind (name : String) (valTy : Value) (valTyExpr : Soma.Core.Expr)
+      (valExpr : Soma.Core.Expr) (fvarId : Unique)
+  /-- Monadic bind: bind x <- action -/
+  | monadBind (name : String) (bindTy : Value) (bindTyExpr : Soma.Core.Expr)
+      (partialTy : Value) (partialExpr : Soma.Core.Expr)
+      (codomain : Closure) (fvarId : Unique) (stmtSpan : Span)
+  deriving Inhabited
 
 mutual
 
@@ -871,11 +885,9 @@ where
       -- Standalone typeApp: produce placeholder (normally handled in app context)
       return (resultTy, .panic "typeApp not supported standalone")
 
-    -- Compose block: recurse on body
-    | .compose body _ => inferSyntax body
-
-    -- Bind block: recurse on body
-    | .bind body _ => inferSyntax body
+    -- Compose block: elaborate iteratively (avoids deep recursion)
+    | .composeBlock stmts final_ span => do
+      inferComposeBlock stmts final_ span
 
     -- Variant injection
     | .variant label arg _ => do
@@ -890,6 +902,77 @@ where
       let variantTy := Value.vVariant row
       let variantTyExpr ← quoteValueToExpr variantTy
       return (variantTy, .inject label.value argsExpr variantTyExpr)
+
+/-- Elaborate a flat compose block in three iterative phases -/
+partial def inferComposeBlock (stmts : Array Soma.Syntax.ComposeStmt)
+    (final_ : Soma.Syntax.Expr) (_span : Span) : TCM (Value × Soma.Core.Expr) := do
+  if stmts.isEmpty then
+    return ← inferSyntax final_
+
+  let mut elabStmts : Array ComposeElabStmt := #[]
+  let mut extCtx ← read
+
+  for stmt in stmts do
+    match stmt with
+    | .expr action stmtSpan =>
+      -- Elaborate >> operator and apply to action (in current extended context)
+      let (partialTy, partialExpr) ← withReader (fun _ => extCtx) do
+        let (opTy, opExpr) ← inferSyntax (.var ⟨">>", stmtSpan⟩)
+        inferSyntaxApp opTy opExpr action stmtSpan
+      elabStmts := elabStmts.push (.seqStmt partialTy partialExpr stmtSpan)
+
+    | .let_ name value stmtSpan =>
+      -- Elaborate the value in the current extended context
+      let (valTy, valExpr) ← withReader (fun _ => extCtx) (inferSyntax value)
+      let valTyExpr ← withReader (fun _ => extCtx) (quoteValueToExpr valTy)
+      let bindingId ← TCM.freshLocalId name.value
+      extCtx := extCtx.extend name.value bindingId valTy .omega .explicit stmtSpan
+      elabStmts := elabStmts.push (.letBind name.value valTy valTyExpr valExpr bindingId)
+
+    | .bind_ name action stmtSpan =>
+      -- Elaborate >>= operator and apply to action (in current extended context)
+      let (partialTy, partialExpr) ← withReader (fun _ => extCtx) do
+        let (opTy, opExpr) ← inferSyntax (.var ⟨">>=", stmtSpan⟩)
+        inferSyntaxApp opTy opExpr action stmtSpan
+      let partialTy' ← withReader (fun _ => extCtx) (force partialTy)
+      let (_, _, _, dom, cod) ← withReader (fun _ => extCtx) (ensurePi partialTy' stmtSpan)
+      let dom' ← withReader (fun _ => extCtx) (force dom)
+      let bindTy ← match dom' with
+        | .vPi _ _ _ innerDom _ => pure innerDom
+        | _ => withReader (fun _ => extCtx) (TCM.freshMetaVal (.vType .zero))
+      let bindTyExpr ← withReader (fun _ => extCtx) (quoteValueToExpr bindTy)
+      -- Create binding and extend context for subsequent statements
+      let bindingId ← TCM.freshLocalId name.value
+      extCtx := extCtx.extend name.value bindingId bindTy .omega .explicit stmtSpan
+      elabStmts := elabStmts.push (.monadBind name.value bindTy bindTyExpr partialTy partialExpr cod bindingId stmtSpan)
+
+  let finalResult ← withReader (fun _ => extCtx) (inferSyntax final_)
+  let mut resultTy := finalResult.1
+  let mut resultExpr := finalResult.2
+
+  for i in List.reverse (List.range elabStmts.size) do
+    match elabStmts[i]! with
+    | .seqStmt partialTy partialExpr stmtSpan =>
+      let partialTy' ← force partialTy
+      let (_, _, _, _dom, cod) ← ensurePi partialTy' stmtSpan
+      -- Argument value is irrelevant so we pass a placeholder to extract the result type
+      let newTy ← applyClosure cod (.vType .zero)
+      resultExpr := .app partialExpr resultExpr
+      resultTy := newTy
+
+    | .letBind name _valTy valTyExpr valExpr fvarId =>
+      let abstractedBody := resultExpr.abstractFVar fvarId
+      resultExpr := .let_ name valTyExpr valExpr abstractedBody
+
+    | .monadBind name _bindTy bindTyExpr _partialTy partialExpr codomain fvarId _stmtSpan =>
+      let abstractedBody := resultExpr.abstractFVar fvarId
+      let lamExpr := Soma.Core.Expr.lam .explicit name bindTyExpr abstractedBody
+      -- The argument value is irrelevant so we pass a placeholder to extract the result type
+      let newTy ← applyClosure codomain (.vType .zero)
+      resultExpr := .app partialExpr lamExpr
+      resultTy := newTy
+
+  return (resultTy, resultExpr)
 
 /-- Apply a function to a single Syntax.Expr argument -/
 partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)

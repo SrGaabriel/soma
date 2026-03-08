@@ -983,6 +983,8 @@ structure TCState where
   usages : Std.HashMap Unique Nat := {}
   /-- Pending instance constraints to be resolved -/
   pendingInstances : Array PendingInstance := #[]
+  /-- Deferred instance metas where class info couldn't be extracted yet -/
+  deferredInstanceMetas : Array (MetaId × Value × Span) := #[]
   /-- Unique supply for generating compiler-internal names -/
   uniqueSupply : Soma.UniqueSupply := Soma.UniqueSupply.initial ""
   /-- Registry mapping type names to their Uniques -/
@@ -1117,6 +1119,18 @@ def getPendingInstances (s : TCState) : Array PendingInstance :=
 /-- Clear pending instances -/
 def clearPendingInstances (s : TCState) : TCState :=
   { s with pendingInstances := #[] }
+
+/-- Add a deferred instance meta -/
+def addDeferredInstanceMeta (s : TCState) (metaId : MetaId) (domTy : Value) (span : Span) : TCState :=
+  { s with deferredInstanceMetas := s.deferredInstanceMetas.push (metaId, domTy, span) }
+
+/-- Get deferred instance metas -/
+def getDeferredInstanceMetas (s : TCState) : Array (MetaId × Value × Span) :=
+  s.deferredInstanceMetas
+
+/-- Clear deferred instance metas -/
+def clearDeferredInstanceMetas (s : TCState) : TCState :=
+  { s with deferredInstanceMetas := #[] }
 
 end TCState
 
@@ -1761,6 +1775,19 @@ def getPendingInstances : TCM (Array PendingInstance) := do
 /-- Clear pending instance constraints -/
 def clearPendingInstances : TCM Unit := do
   modifyState (·.clearPendingInstances)
+
+/-- Add a deferred instance meta -/
+def addDeferredInstanceMeta (metaId : MetaId) (domTy : Value) (span : Span) : TCM Unit := do
+  modifyState (·.addDeferredInstanceMeta metaId domTy span)
+
+/-- Get deferred instance metas -/
+def getDeferredInstanceMetas : TCM (Array (MetaId × Value × Span)) := do
+  let state ← getState
+  return state.getDeferredInstanceMetas
+
+/-- Clear deferred instance metas -/
+def clearDeferredInstanceMetas : TCM Unit := do
+  modifyState (·.clearDeferredInstanceMetas)
 
 /-- Look up a class by unique -/
 def lookupClass (classId : Unique) : TCM (Option ClassInfo) := do
