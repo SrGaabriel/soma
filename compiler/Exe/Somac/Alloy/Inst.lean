@@ -80,6 +80,9 @@ inductive Inst : Nat → Type where
   /-- Create closure (monomorphic) -/
   | makeClosure : FuncRef → Operand → Inst n
 
+  /-- Create closure from a dynamically-resolved function (itself a closure) -/
+  | makeClosureDyn : Operand → Operand → Ty n → Inst n
+
   /-- Get function pointer from closure -/
   | closureFunc : Operand → Inst n
 
@@ -164,6 +167,7 @@ def instantiate : Inst n → TyEnv n → ClosedInst
   | .makeClosurePoly func tyArgs envOp, env =>
       .makeClosurePoly func (tyArgs.map (Somac.Alloy.instantiate · env)) envOp
   | .makeClosure func envOp, _ => .makeClosure func envOp
+  | .makeClosureDyn fnClosure envOp ty, env => .makeClosureDyn fnClosure envOp (Somac.Alloy.instantiate ty env)
   | .closureFunc closure, _ => .closureFunc closure
   | .closureEnv closure, _ => .closureEnv closure
   | .phi incoming ty, env => .phi incoming (Somac.Alloy.instantiate ty env)
@@ -213,6 +217,7 @@ def resultTy : ClosedInst → Option ClosedTy
   | .callClosure _ _ retTy => some retTy
   | .makeClosurePoly _ _ _ => none
   | .makeClosure _ _ => none
+  | .makeClosureDyn _ _ ty => some ty
   | .closureFunc _ => none
   | .closureEnv _ => some .rawPtr
   | .phi _ ty => some ty
@@ -270,6 +275,7 @@ private def toStringAux : Inst n → String
       let ts := String.intercalate ", " (typeArgs.toList.map Ty.toString)
       s!"makeclosure.poly {funcRef}<{ts}>, {env}"
   | .makeClosure funcRef env => s!"makeclosure {funcRef}, {env}"
+  | .makeClosureDyn fnClosure env ty => s!"makeclosure.dyn {fnClosure}, {env} : {ty}"
   | .closureFunc closure => s!"closure.func {closure}"
   | .closureEnv closure => s!"closure.env {closure}"
   | .phi incoming _ =>

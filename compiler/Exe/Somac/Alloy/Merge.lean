@@ -139,6 +139,7 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst n) : Inst n :
   | .callClosure closure args retTy => .callClosure (remapOp closure) (remapOps args) retTy
   | .makeClosure funcRef env => .makeClosure (remapRef funcRef) (remapOp env)
   | .makeClosurePoly funcRef typeArgs env => .makeClosurePoly (remapRef funcRef) typeArgs (remapOp env)
+  | .makeClosureDyn fn env ty => .makeClosureDyn (remapOp fn) (remapOp env) ty
   | .closureFunc closure => .closureFunc (remapOp closure)
   | .closureEnv closure => .closureEnv (remapOp closure)
   | .phi incoming ty =>
@@ -354,6 +355,7 @@ def resolveInstFuncRefs (resolver : FuncRefResolver) (inst : Inst n) : Inst n :=
   match inst with
   | .makeClosure ref env => .makeClosure (resolver.resolveToLocal ref) env
   | .makeClosurePoly ref typeArgs env => .makeClosurePoly (resolver.resolveToLocal ref) typeArgs env
+  | .makeClosureDyn fn env ty => .makeClosureDyn fn env ty
   | .callExtern name args retTy =>
     -- Check if the extern function is now available as a local function in the merged module
     match resolver.nameToFuncId.get? name with

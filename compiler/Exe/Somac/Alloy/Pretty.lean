@@ -186,6 +186,8 @@ def ppInst (cfg : Config) : Inst n → String
     s!"{colorKeyword cfg "call.closure"} {ppTy cfg retTy} {ppOperand cfg closure}({as})"
   | .makeClosure func env =>
     s!"{colorKeyword cfg "makeclosure"} {ppFuncRef cfg func}, {ppOperand cfg env}"
+  | .makeClosureDyn fnClosure env ty =>
+    s!"{colorKeyword cfg "makeclosure.dyn"} {ppOperand cfg fnClosure}, {ppOperand cfg env} : {ppTy cfg ty}"
   | .makeClosurePoly func typeArgs env =>
     let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
     s!"{colorKeyword cfg "makeclosure.poly"} {ppFuncRef cfg func}<{tyArgsStr}>, {ppOperand cfg env}"

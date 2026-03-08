@@ -1296,6 +1296,34 @@ def generatePrimOpBody (op : PrimOp) (fnTy : Value) : LowerM (NodeId × Nat) := 
       let era ← LowerM.addNode .era unitTy
       pure (era, 0)
 
+/-- Generate Circuit IR body for io_bind -/
+def generateBindIOBody (fnTy : Value) : LowerM (NodeId × Nat) := do
+  let mTy := fnTy.piDomain?.getD unitTy
+  let innerTy := match fnTy.piApply (Value.vNeutral mTy (.nVar ⟨"m", ⟨0⟩⟩)) with
+    | some t => t
+    | none => fnTy
+  let resultTy := match innerTy.piApply (Value.vNeutral innerTy (.nVar ⟨"f", ⟨0⟩⟩)) with
+    | some t => t
+    | none => mTy
+  let lamM ← LowerM.addNode (.lam false) fnTy
+  let lamF ← LowerM.addNode (.lam false) innerTy
+  let app ← LowerM.addNode .app resultTy
+  -- Wire: lamM.body → lamF
+  LowerM.connect ⟨lamM, ⟨2⟩⟩ (PortId.principal lamF)
+  -- Wire: lamF.body → app (f m)
+  LowerM.connect ⟨lamF, ⟨2⟩⟩ (PortId.principal app)
+  -- Wire: app.fn → lamF.var (f)
+  LowerM.connect ⟨app, ⟨1⟩⟩ ⟨lamF, ⟨1⟩⟩
+  -- Wire: app.arg → lamM.var (m)
+  LowerM.connect ⟨app, ⟨2⟩⟩ ⟨lamM, ⟨1⟩⟩
+  pure (lamM, 2)
+
+/-- Generate Circuit IR body for pure_io -/
+def generatePureIOBody (fnTy : Value) : LowerM (NodeId × Nat) := do
+  let lamX ← LowerM.addNode (.lam false) fnTy
+  LowerM.connect ⟨lamX, ⟨2⟩⟩ ⟨lamX, ⟨1⟩⟩
+  pure (lamX, 1)
+
 /-- Lower an entire module using typed functions from type checking -/
 def lowerModule (types : Array Soma.Core.TypeDef)
     (typedFunctions : TypedFunctionMap)

@@ -84,6 +84,33 @@ def getLocalType (ref : LocalRef) : FuncBuilder (Option LLVMType) := do
   let s ← get
   pure (s.localTypes.get? ref.id)
 
+/-- Insert an instruction with a result into an already-completed block -/
+def insertInBlock (label : Label) (inst : LLVMInst) : FuncBuilder LocalRef := do
+  let ref ← freshLocal
+  let stmt := LLVMStmt.mk (some ref) inst
+  modify fun s =>
+    let blocks := s.blocks.map fun b =>
+      if b.label == label then { b with stmts := b.stmts.push stmt }
+      else b
+    let s := { s with blocks }
+    match inst.instResultTy with
+    | some ty => { s with localTypes := s.localTypes.insert ref.id ty }
+    | none => s
+  pure ref
+
+/-- Insert a void instruction into an already-completed block -/
+def insertVoidInBlock (label : Label) (inst : LLVMInst) : FuncBuilder Unit := do
+  let stmt := LLVMStmt.mk none inst
+  modify fun s =>
+    let blocks := s.blocks.map fun b =>
+      if b.label == label then { b with stmts := b.stmts.push stmt }
+      else b
+    { s with blocks }
+
+/-- Insert an instruction in the entry block -/
+def insertInEntryBlock (inst : LLVMInst) : FuncBuilder LocalRef :=
+  insertInBlock ⟨"entry"⟩ inst
+
 /-- Emit a void instruction (no result) -/
 def emitVoid (inst : LLVMInst) : FuncBuilder Unit := do
   let stmt := LLVMStmt.mk none inst
@@ -495,6 +522,7 @@ def buildFuncWithEntry (name : String) (retTy : LLVMType) (params : Array LLVMPa
     (attrs : LLVMFuncAttrs := {})
     (builder : FuncBuilder Unit) : LLVMFunc :=
   let initState : FuncBuilderState := {
+    nextLocalId := params.size
     currentBlock := some ⟨"entry"⟩
     blockOrder := #[⟨"entry"⟩]
   }

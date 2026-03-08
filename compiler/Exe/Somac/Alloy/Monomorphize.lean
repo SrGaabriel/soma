@@ -279,6 +279,7 @@ def remapInstRefs (inst : ClosedInst) (idMap : Std.HashMap Nat Nat) : ClosedInst
   | .callPoly fid tyArgs args retTy => .callPoly (remapFuncId fid idMap) tyArgs args retTy
   | .makeClosure ref env => .makeClosure (remapFuncRefId ref idMap) env
   | .makeClosurePoly ref tyArgs env => .makeClosurePoly (remapFuncRefId ref idMap) tyArgs env
+  | .makeClosureDyn _ _ _ => inst
   | _ => inst
 
 def remapFuncRefs (f : ClosedFunc) (idMap : Std.HashMap Nat Nat) : ClosedFunc :=
@@ -317,6 +318,7 @@ private def collectFuncRefsInst (inst : Inst n) (acc : Array FuncId) : Array Fun
   | .callPoly fid _ args _ => fromOperands args (acc.push fid)
   | .makeClosure ref env => fromFuncRef ref (fromOperand env acc)
   | .makeClosurePoly ref _ env => fromFuncRef ref (fromOperand env acc)
+  | .makeClosureDyn fnClo env _ => fromOperand env (fromOperand fnClo acc)
   | .phi pairs _ => pairs.foldl (fun a (op, _) => fromOperand op a) acc
   | .select c t e => fromOperand e (fromOperand t (fromOperand c acc))
   | .callClosure clo args _ => fromOperands args (fromOperand clo acc)

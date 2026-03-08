@@ -62,10 +62,11 @@ def closureTy : LLVMType := .ptr
 def closureHeaderTy : LLVMType := .struct false #[.i8, .i8, .i16, .i32, .ptr]
 
 /-- env_kind constants  -/
-def envKindDefault : Int := 0
-def envKindFlat    : Int := 1
-def envKindTagged  : Int := 2
-def envKindList    : Int := 3
+def envKindDefault   : Int := 0
+def envKindFlat      : Int := 1
+def envKindTagged    : Int := 2
+def envKindList      : Int := 3
+def envKindComposite : Int := 4
 
 /-- NODE_CLOSURE tag constant -/
 def nodeClosureTag : Int := 1
@@ -129,6 +130,12 @@ structure CodegenState where
   currentFunc : Option ClosedFunc := none
   /-- Set of extern function names that have been declared -/
   declaredExterns : Std.HashSet String := {}
+  /-- Cache of generated trampoline functions, keyed by signature string -/
+  trampolineCache : Std.HashMap String String := {}
+  /-- Blocks that were terminated early due to noreturn instructions -/
+  deadBlocks : Std.HashSet Nat := {}
+  /-- Set during instruction lowering when a noreturn call is emitted -/
+  noreturnEmitted : Bool := false
   deriving Inhabited
 
 /-- Codegen monad -/
@@ -216,11 +223,33 @@ def getFuncSig (alloyId : Nat) : CodegenM (Option ClosedSignature) := do
   pure (s.funcSigs.get? alloyId)
 
 /-- Clear per-function state -/
+def markBlockDead (alloyBlockId : Nat) : CodegenM Unit := do
+  modify fun s => { s with deadBlocks := s.deadBlocks.insert alloyBlockId }
+
+/-- Signal that a noreturn call was emitted during instruction lowering -/
+def signalNoReturn : CodegenM Unit := do
+  modify fun s => { s with noreturnEmitted := true }
+
+/-- Check and clear the noreturn flag -/
+def consumeNoReturn : CodegenM Bool := do
+  let s ← get
+  if s.noreturnEmitted then
+    modify fun s => { s with noreturnEmitted := false }
+    pure true
+  else
+    pure false
+
+def isBlockDead (alloyBlockId : Nat) : CodegenM Bool := do
+  let s ← get
+  pure (s.deadBlocks.contains alloyBlockId)
+
 def clearFuncState : CodegenM Unit := do
   modify fun s => { s with
     localMap := {}
     localTypes := {}
     blockMap := {}
+    deadBlocks := {}
+    noreturnEmitted := false
     funcState := {}
     currentFunc := none
   }
@@ -291,6 +320,9 @@ def coerceValue (srcTy dstTy : LLVMType) (val : LLVMValue) : CodegenM LLVMValue 
         | .i32 => FuncBuilder.extractvalue srcTy val #[0]
         | .ptr => FuncBuilder.extractvalue srcTy val #[1]
         | _ => panic! s!"CODEGEN BUG: coerceValue cannot convert {srcTy.toLLVM} to {dstTy.toLLVM}"
+      -- ptr → aggregate: load from pointer
+      else if srcTy == .ptr && !(dstTy.isInt) && !(dstTy == .ptr) then
+        FuncBuilder.load dstTy val
       -- Aggregate → ptr: box via malloc
       else if dstTy == .ptr && !srcTy.isInt then do
         let sizePtr ← FuncBuilder.gepi32 srcTy (.const .null) #[1]
@@ -615,6 +647,45 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
     FuncBuilder.callNamed llvmRetTy funcName llvmArgs
   pure (some (ref, retTy))
 
+/-- The composite env struct type: two i64 slots -/
+def compositeEnvTy : LLVMType := .struct false #[.i64, .i64]
+
+/-- Get or create a trampoline function for dynamic closures with the given arity -/
+def getOrCreateTrampoline (arity : Nat) : CodegenM String := do
+  let name := s!"soma_dyn_trampoline_{arity}"
+  let s ← get
+  if s.trampolineCache.contains name then
+    return name
+  let mut params : Array LLVMParam := #[{ name := "0", ty := .ptr }]
+  for i in List.range arity do
+    params := params.push { name := s!"{i + 1}", ty := .ptr }
+  let trampolineFunc := buildFuncWithEntry name .ptr params {} do
+    let compositeEnvRef := LocalRef.mk 0
+    let innerSlotAddr ← FuncBuilder.gepi32 compositeEnvTy (.local compositeEnvRef) #[0, 0]
+    let innerAsI64 ← FuncBuilder.load .i64 (.local innerSlotAddr)
+    let innerClosurePtr ← FuncBuilder.inttoptr .i64 (.local innerAsI64)
+    -- Load outer_env from compositeEnv[1]
+    let outerEnvSlotAddr ← FuncBuilder.gepi32 compositeEnvTy (.local compositeEnvRef) #[0, 1]
+    let outerEnvAsI64 ← FuncBuilder.load .i64 (.local outerEnvSlotAddr)
+    let outerEnvPtr ← FuncBuilder.inttoptr .i64 (.local outerEnvAsI64)
+    -- Extract fn_ptr from inner closure header (field 4 = function pointer)
+    let fnPtrAddr ← FuncBuilder.gepi32 closureHeaderTy (.local innerClosurePtr) #[0, 4]
+    let fnPtr ← FuncBuilder.load .ptr (.local fnPtrAddr)
+    -- Extract inner_env from inner closure env slot (slot 1 of the closure layout)
+    let innerEnvAddr ← FuncBuilder.gepi32 closureHeaderTy (.local innerClosurePtr) #[1]
+    let innerEnvAsI64 ← FuncBuilder.load .i64 (.local innerEnvAddr)
+    let innerEnvPtr ← FuncBuilder.inttoptr .i64 (.local innerEnvAsI64)
+    let mut callArgs : Array (LLVMType × LLVMValue) :=
+      #[(.ptr, .local innerEnvPtr), (.ptr, .local outerEnvPtr)]
+    for i in List.range arity do
+      callArgs := callArgs.push (.ptr, .local (LocalRef.mk (i + 1)))
+    let result ← FuncBuilder.call .ptr (.local fnPtr) callArgs
+    FuncBuilder.ret .ptr (.local result)
+  -- Add the trampoline to the module
+  CodegenM.withModuleBuilder (ModuleBuilder.addFunc trampolineFunc)
+  modify fun s => { s with trampolineCache := s.trampolineCache.insert name name }
+  return name
+
 /-- Lower an Alloy instruction to LLVM, returning result ref and result type -/
 def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := do
   match inst with
@@ -638,9 +709,17 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
   | .copy src =>
     match src with
-    | .const (.undef _) =>
-      -- Return none to let the statement handler emit a correctly-typed value
-      pure none
+    | .const (.undef ty) =>
+      -- Emit a dummy of the correct type for undef copies
+      let llvmTy := convertTy ty
+      let ref ← CodegenM.withFuncBuilder do
+        if llvmTy == .ptr then
+          FuncBuilder.inttoptr .i64 (intVal 0 64)
+        else if llvmTy.isInt then
+          FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
+        else
+          FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
+      pure (some (ref, ty))
     | _ =>
       let srcTy ← operandTy src
       let srcVal ← convertOperand src
@@ -934,15 +1013,12 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let llvmRetTy := convertTy retTy
     -- Check if closure operand is actually a closure type (not unit from ERA)
     if closureLLVMTy != closureTy then
-      -- Not a real closure
+      -- Not a real closure — unreachable at runtime. Emit panic + signal noreturn
+      -- so that lowerBlock stops emitting dead code after this instruction.
       CodegenM.withFuncBuilder do
         FuncBuilder.callNamedVoid "soma_panic" #[(.ptr, globalVal ".str.panic")]
-      let ref ← CodegenM.withFuncBuilder do
-        if llvmRetTy == .ptr then
-          FuncBuilder.inttoptr .i64 (intVal 0 64)
-        else
-          FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
-      pure (some (ref, retTy))
+      CodegenM.signalNoReturn
+      pure none
     else
       let closureVal ← convertOperand closure
       -- Inline closure field access via GEP
@@ -1087,6 +1163,50 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       | none => pure (.closure #[] (.prim .i64))
     pure (some (closurePtr, closureTyAlloy))
 
+  | .makeClosureDyn fnClosure env resultTy =>
+    -- The trampoline unpacks both from a composite env buffer and forwards the call
+    let (fnClosureLLVMTy, fnClosureRaw) ← convertOperandWithTy fnClosure
+    let fnClosureVal ← if fnClosureLLVMTy == .ptr then pure fnClosureRaw
+      else coerceValue fnClosureLLVMTy .ptr fnClosureRaw
+    let (envLLVMTy, envVal) ← convertOperandWithTy env
+    -- Determine arity from result type (closure type carries arg types)
+    let closureArity : Nat := match resultTy with
+      | .closure argTys _ => argTys.size
+      | _ => 0
+    -- Get or create a trampoline for this arity
+    let trampolineName ← getOrCreateTrampoline closureArity
+    let compositeBuf ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .ptr "malloc" #[(.i64, intVal 16 64)]
+    -- Store inner closure pointer as i64 at slot 0
+    let fnAsI64 ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 fnClosureVal)
+    CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local fnAsI64) (.local compositeBuf))
+    -- Store outer env as i64 at slot 1
+    let envSlotAddr ← CodegenM.withFuncBuilder do
+      FuncBuilder.gepi32 compositeEnvTy (.local compositeBuf) #[0, 1]
+    let envAsI64 ← toI64 envLLVMTy envVal
+    CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local envAsI64) (.local envSlotAddr))
+    -- Allocate closure pointing to trampoline, with composite env
+    let closurePtr ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .ptr "soma_pool_alloc_closure" #[(.i16, intVal 1 16)]
+    -- Initialize header fields
+    let tagAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 0])
+    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal nodeClosureTag 8) (.local tagAddr))
+    let arityAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1])
+    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal (Int.ofNat closureArity) 8) (.local arityAddr))
+    let envSizeAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
+    CodegenM.withFuncBuilder (FuncBuilder.store .i16 (intVal 1 16) (.local envSizeAddr))
+    let envKindAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 3])
+    CodegenM.withFuncBuilder (FuncBuilder.store .i32 (intVal envKindComposite 32) (.local envKindAddr))
+    -- Store trampoline as the function pointer
+    let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 4])
+    CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal trampolineName) (.local funcFieldAddr))
+    -- Store composite env pointer as i64 in the env slot
+    let compositeAsI64 ← CodegenM.withFuncBuilder do
+      FuncBuilder.ptrtoint .i64 (.local compositeBuf)
+    let closureEnvSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
+    CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local compositeAsI64) (.local closureEnvSlotAddr))
+    pure (some (closurePtr, resultTy))
+
   | .closureFunc closure =>
     let closureVal ← convertOperand closure
     let funcPtrAddr ← CodegenM.withFuncBuilder do
@@ -1107,28 +1227,61 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
   | .phi incoming ty =>
     let llvmTy := convertTy ty
-    let llvmIncoming ← incoming.mapM fun (val, blockId) => do
+    -- Filter out predecessors from dead blocks
+    let liveIncoming ← incoming.filterM fun (_, blockId) => do
+      let isDead ← CodegenM.isBlockDead blockId.id
+      pure !isDead
+    -- For each incoming value, check its ground-truth LLVM type
+    let llvmIncoming ← liveIncoming.mapM fun (val, blockId) => do
       let label ← CodegenM.getOrCreateBlock blockId.id
-      match val with
-      | .local id =>
-        match ← CodegenM.getLocal id.id with
-        | some ref =>
-          let valTy ← CodegenM.getLocalTy id.id
-          let valLlvmTy := convertTy valTy
-          if valLlvmTy == llvmTy then
-            pure (LLVMValue.local ref, label)
+      let (valTy, valLlvm) ← convertOperandWithTy val
+      if valTy == llvmTy then
+        pure (valLlvm, label)
+      else
+        -- Insert coercion in the predecessor block
+        let coercedRef ← CodegenM.withFuncBuilder do
+          if llvmTy == .ptr && valTy.isInt then
+            FuncBuilder.insertInBlock label (.inttoptr valTy .ptr valLlvm)
+          else if llvmTy.isInt && valTy == .ptr then
+            FuncBuilder.insertInBlock label (.ptrtoint .ptr llvmTy valLlvm)
+          else if llvmTy.isInt && valTy.isInt then
+            let srcBits := valTy.intBits.getD 64
+            let dstBits := llvmTy.intBits.getD 64
+            if srcBits < dstBits then
+              FuncBuilder.insertInBlock label (.zext valTy llvmTy valLlvm)
+            else
+              FuncBuilder.insertInBlock label (.trunc valTy llvmTy valLlvm)
+          else if valTy == .ptr then
+            -- ptr → aggregate: load the aggregate from the pointer
+            FuncBuilder.insertInBlock label (.load llvmTy valLlvm none)
+          else if llvmTy == .ptr then
+            -- aggregate → ptr: alloca in entry block (stack safety), store+load in predecessor
+            let allocaRef ← FuncBuilder.insertInEntryBlock (.alloca valTy none none)
+            FuncBuilder.insertVoidInBlock label (.store valTy valLlvm (.local allocaRef) none)
+            pure allocaRef
           else
-            panic! s!"CODEGEN BUG: phi node type mismatch - expected {llvmTy.toLLVM} but got {valLlvmTy.toLLVM} for local %{id.id}"
-        | none =>
-          panic! s!"CODEGEN BUG: phi node references undefined local %{id.id}"
-      | .const c =>
-        let constVal ← convertOperand val
-        pure (constVal, label)
+            -- Mismatched non-ptr types: bitcast through alloca in entry block
+            let allocaRef ← FuncBuilder.insertInEntryBlock (.alloca valTy none none)
+            FuncBuilder.insertVoidInBlock label (.store valTy valLlvm (.local allocaRef) none)
+            FuncBuilder.insertInBlock label (.load llvmTy (.local allocaRef) none)
+        pure (.local coercedRef, label)
+    -- If all predecessors are dead, this block is itself unreachable
+    if llvmIncoming.size == 0 then
+      let ref ← CodegenM.withFuncBuilder do
+        if llvmTy == .ptr then FuncBuilder.inttoptr .i64 (intVal 0 64)
+        else FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
+      pure (some (ref, ty))
+    else if llvmIncoming.size == 1 then
+      let (val, _) := llvmIncoming[0]!
+      match val with
+      | .local r => pure (some (r, ty))
       | _ =>
-        let opVal ← convertOperand val
-        pure (opVal, label)
-    let ref ← CodegenM.withFuncBuilder (FuncBuilder.phi llvmTy llvmIncoming)
-    pure (some (ref, ty))
+        -- Constants need to be materialized
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.phi llvmTy llvmIncoming)
+        pure (some (ref, ty))
+    else
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.phi llvmTy llvmIncoming)
+      pure (some (ref, ty))
 
   | .select cond thenVal elseVal =>
     let condVal ← convertOperand cond
@@ -1371,32 +1524,16 @@ def lowerTerminator (term : Terminator) (retTy : ClosedTy) : CodegenM Unit := do
     CodegenM.withFuncBuilder (FuncBuilder.switch valLLVMTy valRef defaultLabel llvmCases)
 
   | .ret val =>
-    let valTy ← operandTy val
     let llvmRetTy := convertTy retTy
     if isUnitTy retTy then
       CodegenM.withFuncBuilder (FuncBuilder.ret .i8 (intVal 0 8))
     else
-      let valRef ← convertOperand val
-      let llvmValTy := convertTy valTy
+      let (llvmValTy, valRef) ← convertOperandWithTy val
       if llvmValTy == llvmRetTy then
         CodegenM.withFuncBuilder (FuncBuilder.ret llvmRetTy valRef)
       else
-        let converted ← CodegenM.withFuncBuilder do
-          if llvmRetTy == .ptr && llvmValTy.isInt then
-            FuncBuilder.inttoptr llvmValTy valRef
-          else if llvmRetTy.isInt && llvmValTy == .ptr then
-            FuncBuilder.ptrtoint llvmRetTy valRef
-          else if llvmRetTy == .ptr && llvmValTy == .ptr then
-            pure (match valRef with | .local r => r | _ => ⟨0⟩)
-          else if llvmRetTy.isInt && llvmValTy.isInt then
-            let srcBits := llvmValTy.intBits.getD 64
-            let dstBits := llvmRetTy.intBits.getD 64
-            if srcBits < dstBits then FuncBuilder.zext llvmValTy llvmRetTy valRef
-            else if srcBits > dstBits then FuncBuilder.trunc llvmValTy llvmRetTy valRef
-            else pure (match valRef with | .local r => r | _ => ⟨0⟩)
-          else
-            panic! s!"CODEGEN BUG: return type mismatch - expected {llvmRetTy.toLLVM} but got {llvmValTy.toLLVM}"
-        CodegenM.withFuncBuilder (FuncBuilder.ret llvmRetTy (.local converted))
+        let coerced ← coerceValue llvmValTy llvmRetTy valRef
+        CodegenM.withFuncBuilder (FuncBuilder.ret llvmRetTy coerced)
 
   | .retUnit =>
     CodegenM.withFuncBuilder (FuncBuilder.ret .i8 (intVal 0 8))
@@ -1426,6 +1563,7 @@ def instReferencedLocals (inst : ClosedInst) : Array Nat :=
   | .extractField v _ => collectOp v
   | .getFieldPtr v _ _ => collectOp v
   | .makeClosure _ env => collectOp env
+  | .makeClosureDyn fnClo env _ => collectOp fnClo ++ collectOp env
   | .malloc sz => collectOp sz
   | .free ptr => collectOp ptr
   | .callIntrinsic _ args _ => collectOps args
@@ -1447,9 +1585,11 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) : CodegenM Unit := do
       let tyFromAlloy := func?.bind (·.getLocalType alloyLocal)
       let ty := tyFromAlloy.getD _tyFromLowerInst
       CodegenM.mapLocal alloyLocal.id llvmRef ty
+    | none, _ => pure ()
     | some alloyLocal, none =>
-      -- Statement has a result LocalId but lowerInst returned none
-      let tyFromAlloy := func?.bind (·.getLocalType alloyLocal) |>.getD (.prim .unit)
+      let tyFromAlloy := func?.bind (·.getLocalType alloyLocal)
+        |>.orElse (fun _ => stmt.inst.resultTy)
+        |>.getD (.prim .unit)
       let llvmTy := convertTy tyFromAlloy
       let dummyRef ← CodegenM.withFuncBuilder do
         if llvmTy == .ptr then
@@ -1459,7 +1599,11 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) : CodegenM Unit := do
         else
           FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
       CodegenM.mapLocal alloyLocal.id dummyRef tyFromAlloy
-    | none, _ => pure ()
+
+    if (← CodegenM.consumeNoReturn) then
+      CodegenM.markBlockDead block.id.id
+      CodegenM.withFuncBuilder FuncBuilder.unreachable
+      return
 
   lowerTerminator block.terminator retTy
 

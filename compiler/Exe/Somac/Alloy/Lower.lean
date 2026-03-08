@@ -257,8 +257,8 @@ def getCurrentBlockId : LowerM n BlockId := do
   let s ← get
   pure s.currentBlock.id
 
-/-- Emit a panic instruction followed by a dummy return value -/
-def emitPanic (ty : Ty n) : LowerM n LocalId := do
+/-- Emit a panic + undef fallback for unreachable lowering artifacts. -/
+def emitPanic (ty : Ty n) (_reason : String := "unknown") : LowerM n LocalId := do
   let s ← get
   emitVoid (.panic s.panicMsgIdx 0)
   emitInst (.copy (.const (.undef ty.close))) ty
@@ -973,10 +973,16 @@ partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : F
   if let some cached := ns.results.get? (port.node.id * 1000 + port.port.idx) then
     return cached
 
-  -- Special case: accessing a LAM's var port means we want the parameter
-  if port.port.idx == 1 then
-    if let some paramIdx := ns.lamParams.get? port.node.id then
+  -- Special case: accessing a consumed LAM (from collectLamChain)
+  if let some paramIdx := ns.lamParams.get? port.node.id then
+    if port.port.idx == 1 then
+      -- VAR port: return the parameter directly
       return ⟨paramIdx⟩
+    else
+      -- PRINCIPAL (port 0) or BODY (port 2) port of a consumed LAM.
+      -- These are structural connections that shouldn't be followed, produce undef
+      let ty := ns.expectedResultTy.getD (.prim .unit)
+      return ← StateT.lift (LowerM.emitInst (.copy (.const (.undef ty.close))) ty)
 
   let nodeResult ← lowerNodeWithMap graph port.node funcIdMap
   -- Re-check port-specific cache: nodes like DUP populate per-port results
@@ -1015,8 +1021,24 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
   -- Cycle detection
   if ns.processing.contains nodeId.id then
+    let nodeTag := match graph.getNode nodeId with
+      | some e => toString e.node
+      | none => "missing"
+    -- Print all port connections of the cycling node
+    let portInfo := match graph.getNode nodeId with
+      | some e =>
+        let ports := (List.range e.ports.size).map fun i =>
+          match e.getPort ⟨i⟩ with
+          | some p => s!"p{i}→{p.node.id}:{p.port.idx}"
+          | none => s!"p{i}→∅"
+        String.intercalate ", " ports
+      | none => "?"
+    let stackStr := ns.processing.toList.map (fun nid =>
+      match graph.getNode ⟨nid⟩ with
+      | some e => s!"{nid}:{e.node}"
+      | none => s!"{nid}:?") |> String.intercalate " → "
     let ty := ns.expectedResultTy.getD valueType
-    return ← StateT.lift (LowerM.emitPanic ty)
+    return ← StateT.lift (LowerM.emitPanic ty s!"cycle at {nodeId.id} ({nodeTag}) ports=[{portInfo}] stack=[{stackStr}]")
 
   -- Mark as processing
   modify fun s => { s with processing := s.processing.insert nodeId.id }
@@ -1024,7 +1046,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   -- Missing node: should not happen in well-formed graphs
   let some entry := graph.getNode nodeId | do
     let ty := ns.expectedResultTy.getD valueType
-    return ← StateT.lift (LowerM.emitPanic ty)
+    return ← StateT.lift (LowerM.emitPanic ty s!"missing node {nodeId.id}")
 
   let ctx := ns.toTypeConvCtx
   let nodeTy := getNodeTypeWithMapping entry ctx
@@ -1040,7 +1062,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   let lowerPort (portIdx : Nat) (defaultTy : Ty n := nodeTy) : StateT (NodeState n) (LowerM n) LocalId := do
     match entry.getPort ⟨portIdx⟩ with
     | some targetPort => lowerOperandWithMap graph targetPort funcIdMap
-    | none => StateT.lift (LowerM.emitPanic defaultTy)
+    | none => StateT.lift (LowerM.emitPanic defaultTy s!"missing port {portIdx} on node {nodeId.id}")
 
   let result ← match entry.node with
   | .num primTy val =>
@@ -1048,16 +1070,22 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
   | .era => do
     -- ERA nodes erase the value connected to their principal port.
-    -- Emit cleanup only for types that own heap memory (needsErase)
     match entry.getPort ⟨0⟩ with
     | some sourcePort =>
-      match graph.getNode sourcePort.node with
-      | some sourceEntry =>
-        let sourceTy := getNodeTypeWithMapping sourceEntry ctx
-        if sourceTy.needsErase then
-          let sourceVal ← lowerOperandWithMap graph sourcePort funcIdMap
-          StateT.lift (LowerM.emitVoid (.erase (.local sourceVal) sourceTy))
-      | none => pure ()
+      if sourcePort.port.isPrincipal then
+        -- ERA is erasing a value producer so it's safe to follow
+        match graph.getNode sourcePort.node with
+        | some sourceEntry =>
+          let sourceTy := getNodeTypeWithMapping sourceEntry ctx
+          if sourceTy.needsErase then
+            -- Check cycle: don't erase if the source is already being processed
+            let ns ← get
+            if !ns.processing.contains sourcePort.node.id then
+              let sourceVal ← lowerOperandWithMap graph sourcePort funcIdMap
+              StateT.lift (LowerM.emitVoid (.erase (.local sourceVal) sourceTy))
+        | none => pure ()
+      else
+        pure ()
     | none => pure ()
     let eraTy := match (← get).expectedResultTy with
       | some expected => expected
@@ -1175,17 +1203,17 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         match fnPort with
         | none =>
           -- No function port → erased function call
-          StateT.lift (LowerM.emitPanic nodeTy)
+          StateT.lift (LowerM.emitPanic nodeTy s!"APP node {nodeId.id}: no function port")
         | some fp =>
           match graph.getNode fp.node with
           | none =>
             -- Missing function node
-            StateT.lift (LowerM.emitPanic nodeTy)
+            StateT.lift (LowerM.emitPanic nodeTy s!"APP node {nodeId.id}: missing fn node {fp.node}")
           | some fnEntry =>
             match fnEntry.node with
             | .era =>
               -- Function is ERA → erased function call
-              StateT.lift (LowerM.emitPanic nodeTy)
+              StateT.lift (LowerM.emitPanic nodeTy s!"APP node {nodeId.id}: fn is ERA (fn node {fp.node})")
             | .lam _ =>
               lowerNodeWithMap graph fp.node funcIdMap
             | .ref refId | .alo refId =>
@@ -1224,7 +1252,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               -- Regular closure call: lower the function and use callClosure
               let fnNodeTy := getNodeTypeWithMapping fnEntry ctx
               if fnNodeTy == .prim .unit then
-                StateT.lift (LowerM.emitPanic nodeTy)
+                StateT.lift (LowerM.emitPanic nodeTy s!"APP node {nodeId.id}: fn has unit type (fn node {fp.node}, tag {fnEntry.node})")
               else
                 let fnVal ← lowerOperandWithMap graph fp funcIdMap
                 StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
@@ -1236,32 +1264,30 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       let fnPort ← match entry.getPort ⟨1⟩ with
         | some p => pure p
         | none =>
-          return ← StateT.lift (LowerM.emitPanic nodeTy)
+          return ← StateT.lift (LowerM.emitPanic nodeTy s!"CTOR closure node {nodeId.id}: no fn port")
 
       let canonRef := resolveCanonicalRef graph fnPort.node
-      let (funcRef, typeArgs?) ← match canonRef with
-        | .bookRef refId =>
-          let ls ← StateT.lift get
-          let ref := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
-          let fnNodeTy := graph.getNode fnPort.node |>.map (·.ty)
-          let tArgs := (graph.getDefinition refId).bind fun def_ =>
-            fnNodeTy.bind fun concTy => extractCallTypeArgs def_.ty concTy ctx
-          pure (ref, tArgs)
-        | .dynamicValue dynNodeId =>
-          -- todo: extract the function pointer at runtime.
-          pure (FuncRef.external s!"$dynamic_closure_{dynNodeId.id}", none)
 
       -- Lower the environment (port 2)
       let envVal ← match entry.getPort ⟨2⟩ with
         | some envPort => lowerOperandWithMap graph envPort funcIdMap
         | none => StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
 
-      -- Emit makeClosure or makeClosurePoly instruction
-      match typeArgs? with
-      | some typeArgs =>
-        StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs (.local envVal)) nodeTy)
-      | none =>
-        StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local envVal)) nodeTy)
+      match canonRef with
+      | .bookRef refId =>
+        let ls ← StateT.lift get
+        let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
+        let fnNodeTy := graph.getNode fnPort.node |>.map (·.ty)
+        let typeArgs? := (graph.getDefinition refId).bind fun def_ =>
+          fnNodeTy.bind fun concTy => extractCallTypeArgs def_.ty concTy ctx
+        match typeArgs? with
+        | some typeArgs =>
+          StateT.lift (LowerM.emitInst (.makeClosurePoly funcRef typeArgs (.local envVal)) nodeTy)
+        | none =>
+          StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local envVal)) nodeTy)
+      | .dynamicValue _ =>
+        let fnClosureVal ← lowerOperandWithMap graph fnPort funcIdMap
+        StateT.lift (LowerM.emitInst (.makeClosureDyn (.local fnClosureVal) (.local envVal) nodeTy) nodeTy)
     else if isListValue entry.ty (← get).primTypes then
       -- List constructor: produce refcounted flat array
       -- Layout: { u8 tag=4, u8 elem_size=8, u16 pad, u32 refcount=1, i64 length, data... }
