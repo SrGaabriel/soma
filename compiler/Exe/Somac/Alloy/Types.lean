@@ -192,6 +192,12 @@ def bool : Ty n := .prim .bool
 def unit : Ty n := .prim .unit
 def string : Ty n := .ptr (.struct #[("length", .prim .i64), ("data", .rawPtr)])
 
+/-- Whether this type supports LLVM arithmetic instructions -/
+def isArithmetic (ty : Ty n) : Bool :=
+  match ty with
+  | .prim _ => true
+  | _ => false
+
 /-- Size in bytes -/
 partial def sizeBytes (ty : Ty n) : Nat :=
   match ty with

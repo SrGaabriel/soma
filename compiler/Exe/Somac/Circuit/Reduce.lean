@@ -106,11 +106,12 @@ private def defProcessingOrder (g : Graph) : Array Nat := Id.run do
 /-- Run one pass of partial evaluation over all definitions -/
 private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) := do
   let order := defProcessingOrder graph
-  let (result, state) ← ReduceM.run (do
-    for i in order do
-      let g' ← ReduceM.getGraph
-      if let some def_ := g'.book[i]? then
-        if !def_.isExternal then
+  let mut g := graph
+  let mut stats : Stats := {}
+  for i in order do
+    if let some def_ := g.book[i]? then
+      if !def_.isExternal then
+        let (result, state) ← ReduceM.run (do
           let era ← ReduceM.addNode .era
           ReduceM.connect (PortId.principal era) (PortId.principal def_.root)
           ReduceM.addNormalizingDef i
@@ -120,11 +121,14 @@ private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) :
             ReduceM.updateDefinitionRoot i resultId
           ReduceM.disconnect (PortId.principal era)
           ReduceM.removeNode era
-    pure ()
-  ) graph { Config.forPartialEval with fuel }
-  match result with
-  | .ok _ => return (state.graph, state.stats)
-  | .error _ => return (state.graph, state.stats)
+        ) g { Config.forPartialEval with fuel }
+        match result with
+        | .ok _ =>
+          g := state.graph
+          stats := stats.merge state.stats
+        | .error _ =>
+          stats := stats.merge state.stats
+  return (g, stats)
 
 /-- Partially evaluate each definition in the graph's book -/
 def partialEval (graph : Graph) (fuel : Nat := 1000000) (maxPasses : Nat := 8)

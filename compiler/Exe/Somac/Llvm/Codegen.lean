@@ -1346,7 +1346,6 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let _ := line
     CodegenM.withFuncBuilder do
       FuncBuilder.callNamedVoid "soma_panic" #[(.ptr, globalVal s!".str.{msgIdx}")]
-    CodegenM.signalNoReturn
     pure none
 
 
@@ -1484,7 +1483,18 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
   | .callExtern name args retTy =>
     -- External function call: emit regular LLVM call to @name
     let llvmRetTy := convertTy retTy
-    let llvmArgs ← args.mapM fun arg => convertOperandWithTy arg
+
+    let mut llvmArgs : Array (LLVMType × LLVMValue) := #[]
+    for arg in args do
+      let argAlloTy ← operandTy arg
+      let (argLLVMTy, argVal) ← convertOperandWithTy arg
+      if argAlloTy == Ty.string then
+        -- SomaString → C string conversion for extern calls
+        let cstr ← CodegenM.withFuncBuilder
+          (FuncBuilder.callNamed .ptr "soma_to_cstring" #[(.ptr, argVal)])
+        llvmArgs := llvmArgs.push (.ptr, .local cstr)
+      else
+        llvmArgs := llvmArgs.push (argLLVMTy, argVal)
 
     -- Declare the extern function if not already declared
     unless (← CodegenM.isExternDeclared name) do
@@ -1724,7 +1734,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
       name := "soma_panic"
       retTy := .void
       params := #[{ name := "msg", ty := .ptr }]
-      attrs := { noreturn := true }
+      attrs := {}
       isDeclaration := true
     }
 

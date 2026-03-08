@@ -155,7 +155,10 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst n) : Inst n :
   | .malloc size => .malloc (remapOp size)
   | .free ptr => .free (remapOp ptr)
   | .alloca _ => inst
-  | .panic _ _ => inst
+  | .panic msgIdx line =>
+    match remap.lookupString moduleName msgIdx with
+    | some newIdx => .panic newIdx line
+    | none => inst
   | .callIntrinsic op args retTy => .callIntrinsic op (remapOps args) retTy
   | .callExtern name args retTy => .callExtern name (remapOps args) retTy
 
