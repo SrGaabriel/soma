@@ -380,6 +380,62 @@ inductive LLVMInst where
 
 namespace LLVMInst
 
+/-- Extract the LLVM result type of an instruction -/
+def instResultTy : LLVMInst → Option LLVMType
+  | .add _ _ ty _ _      => some ty
+  | .sub _ _ ty _ _      => some ty
+  | .mul _ _ ty _ _      => some ty
+  | .udiv _ ty _ _       => some ty
+  | .sdiv _ ty _ _       => some ty
+  | .urem ty _ _         => some ty
+  | .srem ty _ _         => some ty
+  | .fadd ty _ _         => some ty
+  | .fsub ty _ _         => some ty
+  | .fmul ty _ _         => some ty
+  | .fdiv ty _ _         => some ty
+  | .frem ty _ _         => some ty
+  | .fneg ty _           => some ty
+  | .shl _ _ ty _ _      => some ty
+  | .lshr _ ty _ _       => some ty
+  | .ashr _ ty _ _       => some ty
+  | .and_ ty _ _         => some ty
+  | .or_ ty _ _          => some ty
+  | .xor_ ty _ _         => some ty
+  | .icmp ..             => some .i1
+  | .fcmp ..             => some .i1
+  | .trunc _ toTy _      => some toTy
+  | .zext _ toTy _       => some toTy
+  | .sext _ toTy _       => some toTy
+  | .fptrunc _ toTy _    => some toTy
+  | .fpext _ toTy _      => some toTy
+  | .fptoui _ toTy _     => some toTy
+  | .fptosi _ toTy _     => some toTy
+  | .uitofp _ toTy _     => some toTy
+  | .sitofp _ toTy _     => some toTy
+  | .ptrtoint _ toTy _   => some toTy
+  | .inttoptr _ toTy _   => some toTy
+  | .bitcast _ toTy _    => some toTy
+  | .alloca ..           => some .ptr
+  | .load ty _ _         => some ty
+  | .store ..            => none
+  | .getelementptr ..    => some .ptr
+  | .extractvalue aggTy _ indices =>
+    let rec walkIndices (ty : LLVMType) : List Nat → Option LLVMType
+      | [] => some ty
+      | i :: rest =>
+        match ty with
+        | .struct _ fields => fields[i]? |>.bind (walkIndices · rest)
+        | .array _ elem => walkIndices elem rest
+        | _ => none
+    walkIndices aggTy indices.toList
+  | .insertvalue aggTy _ _ _ => some aggTy
+  | .call _ _ retTy _ _  => if retTy == .void then none else some retTy
+  | .select _ resTy _ _ _ => some resTy
+  | .phi ty _             => some ty
+  | .memcpy ..           => none
+  | .memset ..           => none
+  | .memmove ..          => none
+
 /-- Convert instruction to LLVM IR syntax -/
 partial def toLLVM : LLVMInst → String
   | .add nuw nsw ty lhs rhs =>

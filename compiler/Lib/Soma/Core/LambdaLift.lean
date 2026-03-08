@@ -17,6 +17,7 @@ structure LiftState where
   liftedFunctions : Array TypedFunction := #[]
   globalNames : HashSet QualifiedName := {}
   moduleName : String
+  globalEnv : Soma.Core.GlobalEnv := .empty
   deriving Inhabited
 
 abbrev LiftM := StateM LiftState
@@ -24,8 +25,8 @@ abbrev LiftM := StateM LiftState
 namespace LiftM
 
 def run (m : LiftM α) (moduleName : String) (globalNames : HashSet QualifiedName)
-    (startId : Nat := 0) : α × LiftState :=
-  StateT.run m { moduleName, globalNames, nextId := startId }
+    (startId : Nat := 0) (globalEnv : Soma.Core.GlobalEnv := .empty) : α × LiftState :=
+  StateT.run m { moduleName, globalNames, nextId := startId, globalEnv }
 
 def freshId : LiftM Nat := do
   let st ← get
@@ -166,9 +167,10 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     let lamParamBinding := lamParamUnique
     let allParams := captureBindings ++ #[(lamParamBinding, name)]
 
-    let captureValueTypes := captureParams.map fun (_, _, tyExpr) => Soma.Core.evalClosed tyExpr
-    let domainTy := Soma.Core.evalClosed domain
-    let bodyTy := Soma.Core.Expr.typeOf openedBody
+    let genv := (← get).globalEnv
+    let captureValueTypes := captureParams.map fun (_, _, tyExpr) => Soma.Core.evalWithGlobals genv tyExpr
+    let domainTy := Soma.Core.evalWithGlobals genv domain
+    let bodyTy := Soma.Core.Expr.typeOf openedBody genv
     let allParamTypes := captureValueTypes ++ #[domainTy]
     let liftedFnType := buildFnType allParamTypes bodyTy
 
@@ -252,7 +254,7 @@ def liftTypedFunction (fn : TypedFunction) : LiftM TypedFunction := do
 abbrev TypedFunctionMap := Std.HashMap String TypedFunction
 
 def liftTypedFunctions (typedFunctions : TypedFunctionMap) (moduleName : String) (startId : Nat)
-    : TypedFunctionMap × Array TypedFunction := Id.run do
+    (globalEnv : Soma.Core.GlobalEnv) : TypedFunctionMap × Array TypedFunction := Id.run do
   let globalNames : HashSet QualifiedName := typedFunctions.fold (init := {}) fun acc _ fn =>
     acc.insert fn.name
 
@@ -262,12 +264,13 @@ def liftTypedFunctions (typedFunctions : TypedFunctionMap) (moduleName : String)
       let fn' ← liftTypedFunction fn
       result := result.insert fnName fn'
     pure result
-  ) moduleName globalNames startId
+  ) moduleName globalNames startId globalEnv
 
   (liftedFunctions, finalState.liftedFunctions)
 
-def liftAll (typedFunctions : TypedFunctionMap) (moduleName : String) (startId : Nat) : TypedFunctionMap :=
-  let (lifted, generated) := liftTypedFunctions typedFunctions moduleName startId
+def liftAll (typedFunctions : TypedFunctionMap) (moduleName : String) (startId : Nat)
+    (globalEnv : Soma.Core.GlobalEnv) : TypedFunctionMap :=
+  let (lifted, generated) := liftTypedFunctions typedFunctions moduleName startId globalEnv
   generated.foldl (init := lifted) fun acc fn =>
     acc.insert fn.name.display fn
 

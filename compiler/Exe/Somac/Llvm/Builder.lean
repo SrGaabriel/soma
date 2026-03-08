@@ -19,6 +19,8 @@ structure FuncBuilderState where
   blocks : Array LLVMBlock := #[]
   /-- Block order (for deterministic output) -/
   blockOrder : Array Label := #[]
+  /-- LLVM types for each local SSA value, keyed by LocalRef id -/
+  localTypes : Std.HashMap Nat LLVMType := {}
   deriving Inhabited
 
 /-- State for building an LLVM module -/
@@ -70,8 +72,17 @@ def startBlock (label : Label) : FuncBuilder Unit := do
 def emit (inst : LLVMInst) : FuncBuilder LocalRef := do
   let ref ← freshLocal
   let stmt := LLVMStmt.mk (some ref) inst
-  modify fun s => { s with currentStmts := s.currentStmts.push stmt }
+  modify fun s =>
+    let s := { s with currentStmts := s.currentStmts.push stmt }
+    match inst.instResultTy with
+    | some ty => { s with localTypes := s.localTypes.insert ref.id ty }
+    | none => s
   pure ref
+
+/-- Look up the LLVM type of a local SSA value -/
+def getLocalType (ref : LocalRef) : FuncBuilder (Option LLVMType) := do
+  let s ← get
+  pure (s.localTypes.get? ref.id)
 
 /-- Emit a void instruction (no result) -/
 def emitVoid (inst : LLVMInst) : FuncBuilder Unit := do

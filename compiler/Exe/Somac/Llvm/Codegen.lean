@@ -285,6 +285,19 @@ def coerceValue (srcTy dstTy : LLVMType) (val : LLVMValue) : CodegenM LLVMValue 
         if srcBits < dstBits then FuncBuilder.zext srcTy dstTy val
         else if srcBits > dstBits then FuncBuilder.trunc srcTy dstTy val
         else FuncBuilder.add dstTy val (intVal 0 dstBits)
+      -- Tagged union struct { i32, ptr } → extract tag (i32) or payload (ptr)
+      else if srcTy == taggedTy then
+        match dstTy with
+        | .i32 => FuncBuilder.extractvalue srcTy val #[0]
+        | .ptr => FuncBuilder.extractvalue srcTy val #[1]
+        | _ => panic! s!"CODEGEN BUG: coerceValue cannot convert {srcTy.toLLVM} to {dstTy.toLLVM}"
+      -- Aggregate → ptr: box via malloc
+      else if dstTy == .ptr && !srcTy.isInt then do
+        let sizePtr ← FuncBuilder.gepi32 srcTy (.const .null) #[1]
+        let sizeI64 ← FuncBuilder.ptrtoint .i64 (.local sizePtr)
+        let boxPtr ← FuncBuilder.callNamed .ptr "malloc" #[(.i64, .local sizeI64)]
+        FuncBuilder.store srcTy val (.local boxPtr)
+        pure boxPtr
       else
         panic! s!"CODEGEN BUG: coerceValue cannot convert {srcTy.toLLVM} to {dstTy.toLLVM}"
     pure (.local ref)
@@ -317,11 +330,23 @@ def convertOperand (op : Operand) : CodegenM LLVMValue := do
     let name ← CodegenM.getFuncName id.id
     pure (.global ⟨name⟩)
 
-/-- Convert operand with its LLVM type -/
+/-- Look up the LLVM ground-truth type -/
+def operandLLVMTy (op : Operand) : CodegenM (Option LLVMType) := do
+  match op with
+  | .local id =>
+    match ← CodegenM.getLocal id.id with
+    | some llvmRef => CodegenM.withFuncBuilder (FuncBuilder.getLocalType llvmRef)
+    | none => pure none
+  | _ => pure none
+
+/-- Convert operand with its LLVM type preferring ground-truth LLVM type over Alloy-derived type -/
 def convertOperandWithTy (op : Operand) : CodegenM (LLVMType × LLVMValue) := do
-  let ty ← operandTy op
   let val ← convertOperand op
-  pure (convertTy ty, val)
+  match ← operandLLVMTy op with
+  | some llvmTy => pure (llvmTy, val)
+  | none =>
+    let ty ← operandTy op
+    pure (convertTy ty, val)
 
 /-- Ensure a value is a pointer, converting if necessary -/
 def ensurePtr (ty : LLVMType) (val : LLVMValue) : CodegenM LLVMValue :=
@@ -329,37 +354,46 @@ def ensurePtr (ty : LLVMType) (val : LLVMValue) : CodegenM LLVMValue :=
 
 /-- Convert a value to i64, handling both pointers and other integer types -/
 def toI64 (ty : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
-  CodegenM.withFuncBuilder do
-    if ty == .ptr then
-      FuncBuilder.ptrtoint .i64 val
-    else if ty == .i64 then
-      -- Already i64, just need to produce an SSA value
-      FuncBuilder.add .i64 val (intVal 0 64)
-    else if ty.isInt then
-      -- Other integer type, extend or truncate to i64
-      let bits := ty.intBits.getD 64
-      if bits < 64 then
-        FuncBuilder.zext ty .i64 val
-      else
-        FuncBuilder.trunc ty .i64 val
+  if ty == .ptr then
+    CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 val)
+  else if ty == .i64 then
+    -- Already i64, just need to produce an SSA value
+    CodegenM.withFuncBuilder (FuncBuilder.add .i64 val (intVal 0 64))
+  else if ty.isInt then
+    -- Other integer type, extend or truncate to i64
+    let bits := ty.intBits.getD 64
+    if bits < 64 then
+      CodegenM.withFuncBuilder (FuncBuilder.zext ty .i64 val)
     else
-      panic! s!"CODEGEN BUG: toI64 cannot convert {ty.toLLVM} to i64"
+      CodegenM.withFuncBuilder (FuncBuilder.trunc ty .i64 val)
+  else
+    -- Aggregate type: box via malloc, return ptr as i64
+    let sizePtr ← CodegenM.withFuncBuilder
+      (FuncBuilder.gepi32 ty (.const .null) #[1])
+    let sizeI64 ← CodegenM.withFuncBuilder
+      (FuncBuilder.ptrtoint .i64 (.local sizePtr))
+    let boxPtr ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .ptr "malloc" #[(.i64, .local sizeI64)]
+    CodegenM.withFuncBuilder do
+      FuncBuilder.store ty val (.local boxPtr)
+    CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 (.local boxPtr))
 
 /-- Convert an i64 value back to the target LLVM type -/
 def fromI64 (targetTy : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
-  CodegenM.withFuncBuilder do
-    if targetTy == .ptr then
-      FuncBuilder.inttoptr .i64 val
-    else if targetTy == .i64 then
-      FuncBuilder.add .i64 val (intVal 0 64)
-    else if targetTy.isInt then
-      let bits := targetTy.intBits.getD 64
-      if bits < 64 then
-        FuncBuilder.trunc .i64 targetTy val
-      else
-        FuncBuilder.zext targetTy .i64 val
+  if targetTy == .ptr then
+    CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 val)
+  else if targetTy == .i64 then
+    CodegenM.withFuncBuilder (FuncBuilder.add .i64 val (intVal 0 64))
+  else if targetTy.isInt then
+    let bits := targetTy.intBits.getD 64
+    if bits < 64 then
+      CodegenM.withFuncBuilder (FuncBuilder.trunc .i64 targetTy val)
     else
-      panic! s!"CODEGEN BUG: fromI64 cannot convert i64 to {targetTy.toLLVM}"
+      CodegenM.withFuncBuilder (FuncBuilder.zext targetTy .i64 val)
+  else
+    -- Aggregate type: unbox from heap pointer
+    let boxPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 val)
+    CodegenM.withFuncBuilder (FuncBuilder.load targetTy (.local boxPtr))
 
 /-- Convert Alloy binary operation to LLVM -/
 def convertBinOp (op : BinOp) (ty : ClosedTy) (lhs rhs : LLVMValue) : CodegenM LocalRef := do
@@ -862,9 +896,11 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
           let fieldOp := payload[i]
           let (fieldLLVMTy, fieldVal) ← convertOperandWithTy fieldOp
           let fieldPtr ← CodegenM.withFuncBuilder do
-            FuncBuilder.gepi64 (.struct false #[]) (.local payloadMem) #[i + 2]
+            FuncBuilder.gepi64 .i64 (.local payloadMem) #[i + 2]
+          -- Store as i64 to match the i64-slot payload layout used by taggedFieldAccess
+          let i64Val ← toI64 fieldLLVMTy fieldVal
           CodegenM.withFuncBuilder do
-            FuncBuilder.store fieldLLVMTy fieldVal (.local fieldPtr)
+            FuncBuilder.store .i64 (.local i64Val) (.local fieldPtr)
       let payloadPtrSlot ← CodegenM.withFuncBuilder do
         FuncBuilder.gepi32 taggedTy (.local taggedPtr) #[0, 1]
       CodegenM.withFuncBuilder do

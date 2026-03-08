@@ -486,7 +486,7 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
   | Value.vRecord _ => .rawPtr
   | Value.vRecordVal _ => .rawPtr
   | Value.vVariant row => .tagged (.prim .u32) (extractRowVariantsWithMapping row ctx)
-  | Value.vType _ => .prim .unit
+  | Value.vType _ => .rawPtr
   | Value.vNeutral _ neu =>
     match neu with
     | .nVar v =>
@@ -498,13 +498,13 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
       | some idx => .var idx
       | none => .rawPtr
     | _ => .rawPtr
-  | Value.vLabelLit _ => .prim .unit
-  | Value.vRowSort => .prim .unit
-  | Value.vLabelSort => .prim .unit
-  | Value.vRowEmpty => .prim .unit
-  | Value.vRowExtend _ _ _ => .prim .unit
-  | Value.vEq _ _ _ _ => .prim .unit
-  | Value.vRefl _ _ => .prim .unit
+  | Value.vLabelLit _ => .rawPtr
+  | Value.vRowSort => .rawPtr
+  | Value.vLabelSort => .rawPtr
+  | Value.vRowEmpty => .rawPtr
+  | Value.vRowExtend _ _ _ => .rawPtr
+  | Value.vEq _ _ _ _ => .rawPtr
+  | Value.vRefl _ _ => .rawPtr
   | Value.vTransport _ _ _ _ _ _ _ => .rawPtr
   | Value.vIntLit _ => .prim .i32
   | Value.vStringLit _ => Ty.string

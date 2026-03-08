@@ -334,12 +334,12 @@ def evalClosed (e : Soma.Core.Expr) : Value :=
 def evalWithGlobals (globals : GlobalEnv) (e : Soma.Core.Expr) : Value :=
   evalCoreExpr { EvalCtx.empty with globals := globals } e
 
-/-- Compute the type of a Core expression purely from its structure -/
-partial def Expr.typeOfWith (bvarCtx : Array Value) : Expr → Value
-  | .ann _ ty => evalClosed ty
+/-- Compute the type of a Core expression -/
+partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr → Value
+  | .ann _ ty => evalWithGlobals globals ty
 
-  | .fvar _ ty => evalClosed ty
-  | .const _ ty => evalClosed ty
+  | .fvar _ ty => evalWithGlobals globals ty
+  | .const _ ty => evalWithGlobals globals ty
 
   | .bvar idx =>
     match bvarCtx[bvarCtx.size - idx - 1]? with
@@ -351,64 +351,67 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) : Expr → Value
   | .lit (.bool _) => .vPrimTy .bool
 
   | .app fn arg =>
-    let fnTy := typeOfWith bvarCtx fn
-    let argVal := evalClosed arg
+    let fnTy := typeOfWith bvarCtx globals fn
+    let argVal := evalWithGlobals globals arg
     match fnTy.piApply argVal with
     | some codomainTy => codomainTy
-    | none => panic! s!"Expr.typeOfWith: app with non-Pi function type (fn={fn.ctorName})"
+    | none =>
+      match fnTy with
+      | .vType _ | .vNeutral _ _ => .vType .zero
+      | _ => panic! s!"Expr.typeOfWith: app with non-Pi function type (fn={fn.ctorName})"
 
   | .lam _info name domain body =>
-    let domTy := evalClosed domain
-    let bodyTy := typeOfWith (bvarCtx.push domTy) body
+    let domTy := evalWithGlobals globals domain
+    let bodyTy := typeOfWith (bvarCtx.push domTy) globals body
     .vPi Quantity.omega Soma.Core.BinderInfo.explicit name domTy (Closure.const name bodyTy)
 
   | .let_ _ ty _ body =>
-    let letTy := evalClosed ty
-    typeOfWith (bvarCtx.push letTy) body
+    let letTy := evalWithGlobals globals ty
+    typeOfWith (bvarCtx.push letTy) globals body
 
-  | .if_ _ then_ _ => typeOfWith bvarCtx then_
+  | .if_ _ then_ _ => typeOfWith bvarCtx globals then_
 
-  | .«case» _ _ resultTy => evalClosed resultTy
+  | .«case» _ _ resultTy => evalWithGlobals globals resultTy
 
-  | .array _ resultTy => evalClosed resultTy
+  | .array _ resultTy => evalWithGlobals globals resultTy
 
-  | .construct _ _ _ resultTy => evalClosed resultTy
+  | .construct _ _ _ resultTy => evalWithGlobals globals resultTy
 
-  | .inject _ _ resultTy => evalClosed resultTy
+  | .inject _ _ resultTy => evalWithGlobals globals resultTy
 
   | .pair fst snd =>
-    let fstTy := typeOfWith bvarCtx fst
-    let sndTy := typeOfWith bvarCtx snd
+    let fstTy := typeOfWith bvarCtx globals fst
+    let sndTy := typeOfWith bvarCtx globals snd
     Value.prod fstTy sndTy
 
   | .tuple elems =>
     if elems.size ≥ 2 then
-      let fstTy := typeOfWith bvarCtx elems[0]!
-      let sndTy := typeOfWith bvarCtx elems[1]!
+      let fstTy := typeOfWith bvarCtx globals elems[0]!
+      let sndTy := typeOfWith bvarCtx globals elems[1]!
       Value.prod fstTy sndTy
     else if elems.size = 1 then
-      typeOfWith bvarCtx elems[0]!
+      typeOfWith bvarCtx globals elems[0]!
     else .vPrimTy .unit
 
   | .projFst expr =>
-    let sigTy := typeOfWith bvarCtx expr
+    let sigTy := typeOfWith bvarCtx globals expr
     match sigTy.sigmaFst? with
     | some ty => ty
     | none => panic! s!"Expr.typeOfWith: projFst on non-Sigma type (expr={expr.ctorName})"
   | .projSnd expr =>
-    let sigTy := typeOfWith bvarCtx expr
-    let fstVal := evalClosed (.projFst expr)
+    let sigTy := typeOfWith bvarCtx globals expr
+    let fstVal := evalWithGlobals globals (.projFst expr)
     match sigTy.sigmaApply fstVal with
     | some ty => ty
     | none => panic! s!"Expr.typeOfWith: projSnd on non-Sigma type (expr={expr.ctorName})"
 
   | .record fields =>
     let row := fields.foldr (init := Value.vRowEmpty) fun (name, expr) acc =>
-      .vRowExtend (.vLabelLit name) (typeOfWith bvarCtx expr) acc
+      .vRowExtend (.vLabelLit name) (typeOfWith bvarCtx globals expr) acc
     .vRecord row
 
   | .fieldAccess expr field _ =>
-    let recTy := typeOfWith bvarCtx expr
+    let recTy := typeOfWith bvarCtx globals expr
     let fields := recTy.recordFields
     match fields.toList.find? (·.1 == field) with
     | some (_, ty) => ty
@@ -417,7 +420,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) : Expr → Value
       match expr with
       | .record recFields =>
         match recFields.toList.find? (·.1 == field) with
-        | some (_, fieldExpr) => typeOfWith bvarCtx fieldExpr
+        | some (_, fieldExpr) => typeOfWith bvarCtx globals fieldExpr
         | none => panic! s!"Expr.typeOfWith: field '{field}' not found in record literal"
       | _ => panic! s!"Expr.typeOfWith: field '{field}' not found in record type (expr={expr.ctorName})"
 
@@ -431,8 +434,8 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) : Expr → Value
 
   | .mvar _ | .recordUpdate _ _ | .panic _ => .vType .zero
 
-/-- Compute the type of a Core expression purely from its structure -/
-partial def Expr.typeOf (e : Expr) : Value :=
-  Expr.typeOfWith #[] e
+/-- Compute the type of a Core expression using globals for resolving type annotations -/
+partial def Expr.typeOf (e : Expr) (globals : GlobalEnv) : Value :=
+  Expr.typeOfWith #[] globals e
 
 end Soma.Core
