@@ -40,8 +40,114 @@ def formatDiagnostics (diags : Array Soma.Syntax.Diagnostic) : String :=
   let msgs := diags.map fun d => s!"{d.severity}: {d.message}"
   String.intercalate "\n" msgs.toList
 
+/-- Root paths for base and stdlib source directories, relative to compiler/ -/
+def baseSourceDir : System.FilePath := ".." / "base" / "src"
+def stdlibSourceDir : System.FilePath := ".." / "stdlib" / "src"
+
+/-- Cache directory for pre-built .toria library artifacts -/
+def libCacheDir : System.FilePath := ".lake" / "e2e-temp" / "libs"
+
+/-- Known library dependency graph: base has no deps, stdlib depends on base -/
+def libraryDeps : String → Array String
+  | "stdlib" => #["base"]
+  | _ => #[]
+
+/-- Source directory for a known library -/
+def librarySourceDir : String → Option System.FilePath
+  | "base" => some baseSourceDir
+  | "stdlib" => some stdlibSourceDir
+  | _ => none
+
+/-- Cached .toria artifacts built lazily on first use -/
+structure LibCache where
+  artifacts : Std.HashMap String System.FilePath := {}
+
+/-- Build a library to a .toria artifact resolving transitive deps first -/
+partial def LibCache.ensure (cache : LibCache) (lib : String) : IO (LibCache × System.FilePath) := do
+  -- Return cached artifact if already built
+  if let some path := cache.artifacts.get? lib then
+    return (cache, path)
+
+  let srcDir ← match librarySourceDir lib with
+    | some d => pure d
+    | none => throw (.userError s!"Unknown library dependency: {lib}")
+
+  unless ← srcDir.pathExists do
+    throw (.userError s!"Library source not found: {srcDir}")
+
+  -- Recursively build transitive dependencies first
+  let deps := libraryDeps lib
+  let mut cache := cache
+  let mut depPairs : Array (String × String) := #[]
+  for dep in deps do
+    let (cache', depPath) ← cache.ensure dep
+    cache := cache'
+    depPairs := depPairs.push (dep, depPath.toString)
+
+  -- Build the library
+  IO.FS.createDirAll libCacheDir
+  let outputPath := libCacheDir / s!"{lib}.toria"
+
+  -- Skip rebuild if artifact already exists on disk
+  if ← outputPath.pathExists then
+    let cache' := { cache with artifacts := cache.artifacts.insert lib outputPath }
+    return (cache', outputPath)
+
+  let buildOpts : BuildOptions := {
+    input := srcDir.toString
+    output := some outputPath.toString
+    name := some lib
+    lib := true
+    deps := depPairs
+  }
+
+  let result ← build buildOpts
+  unless result.success do
+    let diagMsg := formatDiagnostics result.diagnostics
+    throw (.userError s!"Failed to build library '{lib}':\n{diagMsg}")
+
+  let cache' := { cache with artifacts := cache.artifacts.insert lib outputPath }
+  return (cache', outputPath)
+
+/-- Resolve all dependencies for a test case, building libraries as needed -/
+def LibCache.resolveTestDeps (cache : LibCache) (tc : TestCase)
+    : IO (LibCache × Array (String × String)) := do
+  if tc.requiredDeps.isEmpty then
+    return (cache, #[])
+
+  let mut cache := cache
+  let mut allDeps : Array (String × String) := #[]
+  let mut resolved : Std.HashSet String := {}
+
+  let mut queue := tc.requiredDeps.toList
+  while !queue.isEmpty do
+    match queue with
+    | [] => break
+    | dep :: rest =>
+      queue := rest
+      if resolved.contains dep then continue
+      -- Add transitive deps to front of queue
+      let transitive := libraryDeps dep
+      queue := transitive.toList ++ queue
+      resolved := resolved.insert dep
+
+  for dep in tc.requiredDeps do
+    let transitive := libraryDeps dep
+    for tdep in transitive do
+      if !allDeps.any (·.1 == tdep) then
+        let (cache', path) ← cache.ensure tdep
+        cache := cache'
+        allDeps := allDeps.push (tdep, path.toString)
+    if !allDeps.any (·.1 == dep) then
+      let (cache', path) ← cache.ensure dep
+      cache := cache'
+      allDeps := allDeps.push (dep, path.toString)
+
+  return (cache, allDeps)
+
 /-- Run the test body, returning the result -/
-private def runTestBody (tc : TestCase) (tempDir : System.FilePath) : IO (String × TestResult) := do
+private def runTestBody (tc : TestCase) (tempDir : System.FilePath)
+    (deps : Array (String × String)) : IO (String × TestResult) := do
   let testId := s!"e2e/{tc.name}"
 
   setupTestDir tc tempDir
@@ -56,6 +162,7 @@ private def runTestBody (tc : TestCase) (tempDir : System.FilePath) : IO (String
     input := srcDir.toString
     output := some outputPath.toString
     emitLlvm := true
+    deps := deps
   }
 
   let buildResult ← build buildOpts
@@ -81,10 +188,18 @@ private def runTestBody (tc : TestCase) (tempDir : System.FilePath) : IO (String
   return (testId, .passed)
 
 /-- Run a single E2E test case -/
-def runTestCase (config : Config) (tc : TestCase) : IO (String × TestResult) := do
+def runTestCase (config : Config) (cache : LibCache) (tc : TestCase)
+    : IO (LibCache × String × TestResult) := do
   let tempDir ← createTempDir tc.name
 
-  let result ← runTestBody tc tempDir |>.catchExceptions fun e =>
+  let (cache, deps) ← cache.resolveTestDeps tc |>.catchExceptions fun e =>
+    pure (cache, #[("_err", s!"{e}")])
+
+  if deps.any (·.1 == "_err") then
+    let errMsg := deps.find? (·.1 == "_err") |>.map (·.2) |>.getD "unknown"
+    return (cache, s!"e2e/{tc.name}", .failed s!"Dependency resolution failed: {errMsg}")
+
+  let result ← runTestBody tc tempDir deps |>.catchExceptions fun e =>
     pure (s!"e2e/{tc.name}", .failed s!"Exception: {e}")
 
   -- Keep temp dir on failure for debugging
@@ -92,19 +207,21 @@ def runTestCase (config : Config) (tc : TestCase) : IO (String × TestResult) :=
   unless config.keepTemp || !passed do
     removeDirRecursive tempDir |>.catchExceptions fun _ => pure ()
 
-  return result
+  return (cache, result.1, result.2)
 
 /-- Run all E2E tests -/
 def runAll (config : Config) : IO TestRunner := do
   let cases ← discoverTestCases
   let mut runner := TestRunner.init
+  let mut cache : LibCache := {}
 
   if cases.isEmpty then
     IO.println "  No E2E test cases found"
     return runner
 
   for tc in cases do
-    let (name, result) ← runTestCase config tc
+    let (cache', name, result) ← runTestCase config cache tc
+    cache := cache'
     runner := runner.record name result
     match result with
     | .passed => IO.println s!"  ✓ {tc.name}"

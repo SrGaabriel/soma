@@ -22,6 +22,8 @@ structure TestCase where
   expectedStdout : Option String
   /-- Expected exit code -/
   expectedExitCode : UInt32
+  /-- Required library dependencies -/
+  requiredDeps : Array String := #[]
   deriving Repr
 
 namespace TestCase
@@ -47,6 +49,17 @@ def parseInlineExpected (content : String) : Option String × UInt32 := Id.run d
 
   (stdout, exitCode)
 
+/-- Parse a deps file listing required library dependencies one per line -/
+def parseDepsFile (path : System.FilePath) : IO (Array String) := do
+  if ← path.pathExists then
+    let content ← IO.FS.readFile path
+    let lines := content.splitOn "\n"
+      |>.map (·.trimAscii.toString)
+      |>.filter (!·.isEmpty)
+    return lines.toArray
+  else
+    pure #[]
+
 /-- Load a test case from a fixture directory -/
 def loadFromDir (dir : System.FilePath) : IO TestCase := do
   let name := dir.fileName.getD "unknown"
@@ -68,11 +81,15 @@ def loadFromDir (dir : System.FilePath) : IO TestCase := do
   else
     pure 0
 
+  -- Read dependency requirements
+  let requiredDeps ← parseDepsFile (dir / "deps")
+
   return {
     name
     source := .directory dir
     expectedStdout
     expectedExitCode
+    requiredDeps
   }
 
 /-- Load a test case from a single .soma file -/
@@ -154,7 +171,10 @@ def setupTestDir (tc : TestCase) (tempDir : System.FilePath) : IO Unit := do
     let content ← IO.FS.readBinFile file
     IO.FS.writeBinFile (dstDir / file.fileName.getD "main.soma") content
 
-  let primSource ← IO.FS.readFile sharedPrimPath
-  IO.FS.writeFile (dstDir / "prim.soma") primSource
+  -- Only inject the shared prim.soma for standalone tests.
+  -- Tests with library deps get their primitives from base.
+  if tc.requiredDeps.isEmpty then
+    let primSource ← IO.FS.readFile sharedPrimPath
+    IO.FS.writeFile (dstDir / "prim.soma") primSource
 
 end Test.E2E

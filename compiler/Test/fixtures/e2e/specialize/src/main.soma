@@ -1,0 +1,8 @@
+use stdlib/core.{puts, strcat}
+
+instance Semigroup String where
+    def {<>} : String -> String -> String
+        | s1, s2 => strcat s1 s2
+
+def main : IO () =
+    puts ("Hello" <> ", World!")
