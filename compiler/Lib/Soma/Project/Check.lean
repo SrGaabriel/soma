@@ -579,21 +579,15 @@ def typeCheckModule
   for instFn in globalsResult.instanceTypedFunctions do
     mergedTypedFns := mergedTypedFns.insert instFn.name.id.mangle instFn
 
+  -- Dictionary specialization: replace class method calls with direct field access
+  -- or inline the implementation when the dictionary is a known record literal.
   let methodRegistry := Soma.Dependent.Specialize.buildClassMethodRegistry
     globalsResult.globals globalsResult.instanceEnv
-  if false && !methodRegistry.isEmpty then
-    for (name, fn) in mergedTypedFns.toList do
-      if name == "main" then
-        dbg_trace s!"[SPEC-BEFORE]\n{Soma.Dependent.Specialize.debugExpr fn.body}"
-    for (qn, info) in methodRegistry.toList do
-      dbg_trace s!"[REG] {qn.display} -> method={info.methodName} fieldIdx={info.fieldIdx}"
+  if !methodRegistry.isEmpty then
     let mut specializedFns : Std.HashMap String Soma.Core.TypedFunction := {}
     for (name, fn) in mergedTypedFns.toList do
       specializedFns := specializedFns.insert name
         (Soma.Dependent.Specialize.specializeFunction methodRegistry fn)
-    for (name, fn) in specializedFns.toList do
-      if name == "main" then
-        dbg_trace s!"[SPEC-AFTER]\n{Soma.Dependent.Specialize.debugExpr fn.body}"
     mergedTypedFns := specializedFns
 
   return {

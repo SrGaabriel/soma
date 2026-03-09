@@ -1018,7 +1018,7 @@ partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : F
   pure nodeResult
 
 /-- Resolve a closure CTOR's fn port to a book definition index -/
-private def resolveClosureFnBookIdx (graph : CGraph) (fnNodeId : CNodeId)
+private partial def resolveClosureFnBookIdx (graph : CGraph) (fnNodeId : CNodeId)
     (anonLamBookIdx : Std.HashMap Nat Nat) : Option Nat :=
   if let some bookIdx := anonLamBookIdx.get? fnNodeId.id then
     some bookIdx

@@ -67,6 +67,26 @@ private def isTypeLevelExpr : Expr → Bool
   | .mvar _ => true
   | _ => false
 
+/-- Check if a const references a known IO intrinsic by original name -/
+private def isIOIntrinsicName (name : String) : Bool :=
+  name == "io_bind" || name == "pure_io"
+
+/-- Check if an expression references IO intrinsics (io_bind, pure_io) -/
+private partial def referencesIOIntrinsic : Expr → Bool
+  | .const qn _ => isIOIntrinsicName qn.id.original
+  | .app fn arg => referencesIOIntrinsic fn || referencesIOIntrinsic arg
+  | .lam _ _ domain body => referencesIOIntrinsic domain || referencesIOIntrinsic body
+  | .let_ _ ty val body =>
+    referencesIOIntrinsic ty || referencesIOIntrinsic val || referencesIOIntrinsic body
+  | .record fields => fields.any fun (_, e) => referencesIOIntrinsic e
+  | .closure _ captures => captures.any referencesIOIntrinsic
+  | .«case» scruts arms _ =>
+    scruts.any referencesIOIntrinsic || arms.any fun arm => referencesIOIntrinsic arm.body
+  | .construct _ _ args _ => args.any referencesIOIntrinsic
+  | .fieldAccess e _ _ => referencesIOIntrinsic e
+  | _ => false
+
+
 /-- Try to inline a field access on a known record literal -/
 private def inlineFieldAccess (dictExpr : Expr) (methodName : String) (fieldIdx : Nat)
     : Option Expr :=
@@ -97,6 +117,48 @@ private def rebuildAppSpine (fn : Expr) (args : Array Expr) : Expr :=
 /-- Find the index of the first non-type-level argument -/
 private def findDictArgIdx (args : Array Expr) : Option Nat :=
   args.findIdx? (!isTypeLevelExpr ·)
+
+/-- Exhaustive beta-reduction -/
+private partial def betaReduce (e : Expr) : Expr :=
+  match e with
+  | .app fn arg =>
+    let fn' := betaReduce fn
+    let arg' := betaReduce arg
+    match fn' with
+    | .lam _ _ _ body => betaReduce (body.instantiate arg')
+    | _ =>
+      -- Strip type-level arguments (mvar, primTy, dataTy) that remain
+      if isTypeLevelExpr arg' then fn'
+      else .app fn' arg'
+  | .lam info name domain body =>
+    .lam info name (betaReduce domain) (betaReduce body)
+  | .let_ name ty val body =>
+    .let_ name (betaReduce ty) (betaReduce val) (betaReduce body)
+  | .pi qty info name domain codomain =>
+    .pi qty info name (betaReduce domain) (betaReduce codomain)
+  | .sigma qty info name fst snd =>
+    .sigma qty info name (betaReduce fst) (betaReduce snd)
+  | .pair fst snd => .pair (betaReduce fst) (betaReduce snd)
+  | .projFst x => .projFst (betaReduce x)
+  | .projSnd x => .projSnd (betaReduce x)
+  | .if_ c t el => .if_ (betaReduce c) (betaReduce t) (betaReduce el)
+  | .«case» scruts arms resultTy =>
+    .«case» (scruts.map betaReduce)
+      (arms.map fun arm => Arm.mk arm.patterns (betaReduce arm.body))
+      (betaReduce resultTy)
+  | .construct name tag args resultTy =>
+    .construct name tag (args.map betaReduce) (betaReduce resultTy)
+  | .fieldAccess expr field idx => .fieldAccess (betaReduce expr) field idx
+  | .record fields => .record (fields.map fun (n, x) => (n, betaReduce x))
+  | .recordUpdate base updates =>
+    .recordUpdate (betaReduce base) (updates.map fun (n, x) => (n, betaReduce x))
+  | .tuple elems => .tuple (elems.map betaReduce)
+  | .array elems resultTy => .array (elems.map betaReduce) (betaReduce resultTy)
+  | .inject label args resultTy => .inject label (args.map betaReduce) (betaReduce resultTy)
+  | .closure name captures => .closure name (captures.map betaReduce)
+  | .ann expr ty => .ann (betaReduce expr) (betaReduce ty)
+  | _ => e
+
 
 /-- Debug printer for Expr -/
 partial def debugExpr : Expr → String
@@ -144,26 +206,43 @@ mutual
 
 /-- Core specialization: transform a single expression node -/
 private partial def specializeExpr (registry : ClassMethodRegistry) (e : Expr) : Expr :=
-  let e' := specializeChildren registry e
-  let (head, args) := collectAppSpine e'
+  let (head, args) := collectAppSpine e
   match head with
   | .const qn _ =>
     match registry.get? qn with
     | some info =>
       match findDictArgIdx args with
       | some idx =>
-        let dictExpr := args[idx]!
-        let specialized := match inlineFieldAccess dictExpr info.methodName info.fieldIdx with
-          | some impl => impl
-          | none => Expr.fieldAccess dictExpr info.methodName info.fieldIdx
-        -- Drop all type-level args (both before and after the dict)
-        let remainingArgs := (args.extract (idx + 1) args.size).filter (!isTypeLevelExpr ·)
-        rebuildAppSpine specialized remainingArgs
-      | none => e'
-    | none => e'
-  | _ => e'
+        -- Specialize the dict and remaining args, but not the spine itself
+        let dictExpr := specializeExpr registry args[idx]!
+        let implOpt := inlineFieldAccess dictExpr info.methodName info.fieldIdx
+        -- Check if the inlined implementation references IO intrinsics
+        let isIOMethod := match implOpt with
+          | some impl => referencesIOIntrinsic impl
+          | none => false
+        if isIOMethod then
+          -- Skip specialization for IO methods — recurse normally
+          rebuildAppSpine (specializeChildren registry head) (args.map (specializeExpr registry))
+        else
+          let specialized := match implOpt with
+            | some impl => specializeExpr registry impl
+            | none => Expr.fieldAccess dictExpr info.methodName info.fieldIdx
+          -- Keep only non-type-level args after the dict, recursively specialized
+          let remainingArgs := (args.extract (idx + 1) args.size)
+            |>.filter (!isTypeLevelExpr ·)
+            |>.map (specializeExpr registry)
+          rebuildAppSpine specialized remainingArgs
+      | none =>
+        rebuildAppSpine head (args.map (specializeExpr registry))
+    | none =>
+      rebuildAppSpine (specializeChildren registry head) (args.map (specializeExpr registry))
+  | _ =>
+    if args.isEmpty then
+      specializeChildren registry e
+    else
+      rebuildAppSpine (specializeExpr registry head) (args.map (specializeExpr registry))
 
-/-- Recursively specialize all children of an expression -/
+/-- Recursively specialize non-application children of an expression -/
 private partial def specializeChildren (registry : ClassMethodRegistry) (e : Expr) : Expr :=
   match e with
   | .app fn arg => .app (specializeExpr registry fn) (specializeExpr registry arg)
@@ -189,8 +268,11 @@ private partial def specializeChildren (registry : ClassMethodRegistry) (e : Exp
     .construct name tag (args.map (specializeExpr registry)) (specializeExpr registry resultTy)
   | .fieldAccess expr field idx =>
     .fieldAccess (specializeExpr registry expr) field idx
-  | .record fields =>
-    .record (fields.map fun (name, expr) => (name, specializeExpr registry expr))
+  | .record _ =>
+    -- Do NOT recurse into record literals. These are typically type class
+    -- dictionaries, and their fields may contain self-referential method calls
+    -- (e.g., >> defined in terms of >>=) where the dict context is not in scope.
+    e
   | .recordUpdate base updates =>
     .recordUpdate (specializeExpr registry base)
       (updates.map fun (name, expr) => (name, specializeExpr registry expr))
@@ -214,6 +296,6 @@ end
 def specializeFunction (registry : ClassMethodRegistry) (fn : Soma.Core.TypedFunction)
     : Soma.Core.TypedFunction :=
   if registry.isEmpty then fn
-  else { fn with body := specializeExpr registry fn.body }
+  else { fn with body := betaReduce (specializeExpr registry fn.body) }
 
 end Soma.Dependent.Specialize

@@ -1399,6 +1399,12 @@ def lowerModule (types : Array Soma.Core.TypeDef)
     | some (.primOp op) =>
       let (root, arity) ← generatePrimOpBody op fn.fnType
       let _ ← LowerM.addDefinition fn.name root arity fn.fnType
+    | some (.ffiOp .bindIO) =>
+      let (root, arity) ← generateBindIOBody fn.fnType
+      let _ ← LowerM.addDefinition fn.name root arity fn.fnType (isExternal := true)
+    | some (.ffiOp .pureIO) =>
+      let (root, arity) ← generatePureIOBody fn.fnType
+      let _ ← LowerM.addDefinition fn.name root arity fn.fnType (isExternal := true)
     | _ =>
       let era ← LowerM.addNode .era unitTy
       let arity := fn.fnType.explicitArityFull

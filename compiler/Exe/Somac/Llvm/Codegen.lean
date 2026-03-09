@@ -1472,7 +1472,11 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       CodegenM.markExternDeclared name
 
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
-    pure (some (ref, retTy))
+    if isUnitTy retTy then
+      let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.add .i8 (intVal 0 8) (intVal 0 8))
+      pure (some (unitRef, retTy))
+    else
+      pure (some (ref, retTy))
 
 /-- Lower an Alloy terminator to LLVM -/
 def lowerTerminator (term : Terminator) (retTy : ClosedTy) : CodegenM Unit := do
