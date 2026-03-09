@@ -85,7 +85,7 @@ def symbolName (u : Unique) : String :=
   let escapedName := u.original.foldl (fun acc c => acc ++ escapeChar c) ""
   let escapedMod := u.module.foldl (fun acc c => acc ++ escapeChar c) ""
   if escapedMod.isEmpty then s!"S_{escapedName}"
-  else s!"S_{escapedMod}$${escapedName}"
+  else s!"S_{escapedMod}$${escapedName}${u.id}"
 
 instance : ToString Unique := ⟨Unique.display⟩
 

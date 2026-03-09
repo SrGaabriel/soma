@@ -57,8 +57,25 @@ def tryEtaReduce (nid : NodeId) : ReduceM Bool := do
   -- LAM.body (port 2) must connect to the same APP's principal (port 0)
   let some bodyTarget ← ReduceM.getConnection ⟨nid, ⟨2⟩⟩ | return false
   if bodyTarget.node != varTarget.node || !bodyTarget.port.isPrincipal then return false
-  -- Eta pattern confirmed: λx. f x → f
+  -- APP.function (port 1) is what the consumer would receive after eta-reduction.
   let appId := varTarget.node
+  let some fnTarget ← ReduceM.getConnection ⟨appId, ⟨1⟩⟩ | return false
+  let fnEntry ← ReduceM.getNode fnTarget.node
+  if fnTarget.port.isPrincipal then
+    match fnEntry.node with
+    | .app =>
+      -- Check whether the APP is reducible or a stuck partial application
+      let some appFnTarget ← ReduceM.getConnection ⟨fnTarget.node, ⟨1⟩⟩ | return false
+      let appFnEntry ← ReduceM.getNode appFnTarget.node
+      match appFnEntry.node with
+      | .lam _ | .ctor _ _ =>
+        -- Beta-redex or constructor application so it will reduce further, safe to eta
+        pure ()
+      | _ =>
+        -- Potentially stuck partial application
+        return false
+    | _ => pure ()
+  -- Safe to eta-reduce: λx. f x → f
   ReduceM.modifyStats (·.incEta)
   ReduceM.link ⟨nid, .principal⟩ ⟨appId, ⟨1⟩⟩
   ReduceM.disconnect ⟨nid, ⟨1⟩⟩

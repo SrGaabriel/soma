@@ -158,6 +158,8 @@ partial def traverseNeutral (action : TraversalAction α) (n : Neutral) : α :=
         inst.combine acc (traverseClosure action arm.closure)) scrutResult
       inst.combine armsResult (traverseValue action rty)
 
+    | .nConst _ _ => inst.empty
+
 /-- Traverse a Closure -/
 partial def traverseClosure (action : TraversalAction α) (clos : Closure) : α :=
   match clos with
@@ -350,6 +352,8 @@ partial def traverseNeutralM
       let rtyResult ← traverseValueM action rty
       return inst.combine result rtyResult
 
+    | .nConst _ _ => return inst.empty
+
 /-- Monadic traversal of a Closure -/
 partial def traverseClosureM
     (action : MTraversalAction M α) (clos : Closure) : M α := do
@@ -500,6 +504,8 @@ partial def transformNeutralM (t : ValueTransformer M) (n : Neutral) : M Neutral
         return ArmClosure.mk arm.pattern clos'
       let rty' ← transformValueM t rty
       return .nCase scrut' arms' rty'
+
+    | .nConst name ty => return .nConst name ty
 
 /-- Transform a Closure using a ValueTransformer -/
 partial def transformClosureM (t : ValueTransformer M) (clos : Closure) : M Closure := do

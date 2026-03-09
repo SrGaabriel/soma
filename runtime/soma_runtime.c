@@ -541,6 +541,130 @@ void* soma_closure_get_func(void* closure_ptr) {
 }
 
 /*
+ * soma_call_with_args — Dispatch a call with a void* argument array.
+ *
+ * Supports up to SOMA_MAX_CALL_ARGS (16) arguments. Centralizes the variadic
+ * dispatch used by soma_apply for saturated calls and over-application.
+ */
+#define SOMA_MAX_CALL_ARGS 16
+
+static void* soma_call_with_args(void* (*fn)(), void** args, unsigned nargs) {
+    switch (nargs) {
+        case 0:  return fn();
+        case 1:  return ((void*(*)(void*))fn)(args[0]);
+        case 2:  return ((void*(*)(void*,void*))fn)(args[0], args[1]);
+        case 3:  return ((void*(*)(void*,void*,void*))fn)(args[0], args[1], args[2]);
+        case 4:  return ((void*(*)(void*,void*,void*,void*))fn)(
+                     args[0], args[1], args[2], args[3]);
+        case 5:  return ((void*(*)(void*,void*,void*,void*,void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4]);
+        case 6:  return ((void*(*)(void*,void*,void*,void*,void*,void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4], args[5]);
+        case 7:  return ((void*(*)(void*,void*,void*,void*,void*,void*,void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4], args[5],
+                     args[6]);
+        case 8:  return ((void*(*)(void*,void*,void*,void*,void*,void*,void*,void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4], args[5],
+                     args[6], args[7]);
+        case 9:  return ((void*(*)(void*,void*,void*,void*,void*,void*,void*,void*,
+                          void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4], args[5],
+                     args[6], args[7], args[8]);
+        case 10: return ((void*(*)(void*,void*,void*,void*,void*,void*,void*,void*,
+                          void*,void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4], args[5],
+                     args[6], args[7], args[8], args[9]);
+        case 11: return ((void*(*)(void*,void*,void*,void*,void*,void*,void*,void*,
+                          void*,void*,void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4], args[5],
+                     args[6], args[7], args[8], args[9], args[10]);
+        case 12: return ((void*(*)(void*,void*,void*,void*,void*,void*,void*,void*,
+                          void*,void*,void*,void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4], args[5],
+                     args[6], args[7], args[8], args[9], args[10], args[11]);
+        case 13: return ((void*(*)(void*,void*,void*,void*,void*,void*,void*,void*,
+                          void*,void*,void*,void*,void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4], args[5],
+                     args[6], args[7], args[8], args[9], args[10], args[11],
+                     args[12]);
+        case 14: return ((void*(*)(void*,void*,void*,void*,void*,void*,void*,void*,
+                          void*,void*,void*,void*,void*,void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4], args[5],
+                     args[6], args[7], args[8], args[9], args[10], args[11],
+                     args[12], args[13]);
+        case 15: return ((void*(*)(void*,void*,void*,void*,void*,void*,void*,void*,
+                          void*,void*,void*,void*,void*,void*,void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4], args[5],
+                     args[6], args[7], args[8], args[9], args[10], args[11],
+                     args[12], args[13], args[14]);
+        case 16: return ((void*(*)(void*,void*,void*,void*,void*,void*,void*,void*,
+                          void*,void*,void*,void*,void*,void*,void*,void*))fn)(
+                     args[0], args[1], args[2], args[3], args[4], args[5],
+                     args[6], args[7], args[8], args[9], args[10], args[11],
+                     args[12], args[13], args[14], args[15]);
+        default:
+            soma_panic("soma_call_with_args: too many arguments (max 16)");
+            return NULL;
+    }
+}
+
+/*
+ * soma_apply — Apply one argument to a closure with partial application support
+ *
+ * Implements the eval/apply calling convention (Marlow & Peyton Jones 2004):
+ *   arity == 0: over-application — call fn(env...) to get result closure, apply arg to it
+ *   arity == 1: saturated call — call fn(env..., arg), return result
+ *   arity >  1: PAP (partial application) — extend env with arg, decrement arity
+ *
+ * The env slots accumulate arguments across partial applications. When finally
+ * saturated, all accumulated env slots are passed as leading arguments to the
+ * original function, followed by the final arg.
+ */
+void* soma_apply(void* closure_ptr, void* arg) {
+    SomaClosure* closure = (SomaClosure*)closure_ptr;
+    uint8_t arity = closure->arity;
+    uint16_t env_size = closure->env_size;
+    void* (*fn)() = (void* (*)())closure->func_ptr;
+    SomaValue* env = (SomaValue*)(closure + 1);
+
+    if (arity == 0) {
+        /* Over-application: fn already has all declared args in env.
+         * Call fn(env...) → result closure, then apply arg to it. */
+        void* args[SOMA_MAX_CALL_ARGS];
+        for (uint16_t i = 0; i < env_size && i < SOMA_MAX_CALL_ARGS; i++)
+            args[i] = (void*)env[i];
+        void* result = soma_call_with_args(fn, args, env_size);
+        return soma_apply(result, arg);
+    } else if (arity == 1) {
+        /* Saturated call: fn(env[0], ..., env[n-1], arg) */
+        void* args[SOMA_MAX_CALL_ARGS];
+        uint16_t n = 0;
+        for (uint16_t i = 0; i < env_size && n < SOMA_MAX_CALL_ARGS; i++)
+            args[n++] = (void*)env[i];
+        if (n < SOMA_MAX_CALL_ARGS)
+            args[n++] = arg;
+        return soma_call_with_args(fn, args, n);
+    } else {
+        /* PAP: create new closure with arity-1 and env extended by arg */
+        uint16_t new_env_size = env_size + 1;
+        SomaClosure* pap = (SomaClosure*)soma_pool_alloc_closure(new_env_size);
+        pap->tag      = NODE_CLOSURE;
+        pap->arity    = arity - 1;
+        pap->env_size = new_env_size;
+        pap->env_kind = closure->env_kind;
+        pap->_pad     = 0;
+        pap->func_ptr = closure->func_ptr;
+
+        SomaValue* pap_env = (SomaValue*)(pap + 1);
+        for (uint16_t i = 0; i < env_size; i++)
+            pap_env[i] = env[i];
+        pap_env[env_size] = (SomaValue)(uintptr_t)arg;
+
+        return pap;
+    }
+}
+
+/*
  * soma_clone_closure — Clone a closure with lazy nested duplication
  *
  * Copies the header and all environment slots. For slots that contain

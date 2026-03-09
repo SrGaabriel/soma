@@ -112,6 +112,8 @@ inductive Neutral where
   | nFieldAccess (record : Neutral) (field : String)
   /-- Case analysis on a neutral scrutinee -/
   | nCase (scrutinee : Neutral) (arms : List ArmClosure) (resultTy : Value)
+  /-- Stuck on an unresolved global constant (extern or opaque) -/
+  | nConst (name : Soma.Core.QualifiedName) (constTy : Value)
 
 /-- Case arm closure -/
 inductive ArmClosure where

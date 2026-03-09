@@ -706,8 +706,9 @@ partial def convertPatternListWithBindings (pats : List Soma.Syntax.Pattern) (sc
 
 /-- Intermediate result from elaborating a compose block statement -/
 private inductive ComposeElabStmt where
-  /-- Expression statement: (>> action) applied to rest -/
-  | seqStmt (partialTy : Value) (partialExpr : Soma.Core.Expr) (stmtSpan : Span)
+  /-- Expression statement: (>>= action) with lambda-wrapped continuation -/
+  | seqStmt (partialTy : Value) (partialExpr : Soma.Core.Expr)
+      (codomain : Closure) (stmtSpan : Span)
   /-- Let binding: let x = value -/
   | letBind (name : String) (valTy : Value) (valTyExpr : Soma.Core.Expr)
       (valExpr : Soma.Core.Expr) (fvarId : Unique)
@@ -915,11 +916,13 @@ partial def inferComposeBlock (stmts : Array Soma.Syntax.ComposeStmt)
   for stmt in stmts do
     match stmt with
     | .expr action stmtSpan =>
-      -- Elaborate >> operator and apply to action (in current extended context)
+      -- Elaborate >>= operator and apply to action (in current extended context)
       let (partialTy, partialExpr) ← withReader (fun _ => extCtx) do
-        let (opTy, opExpr) ← inferSyntax (.var ⟨">>", stmtSpan⟩)
+        let (opTy, opExpr) ← inferSyntax (.var ⟨">>=", stmtSpan⟩)
         inferSyntaxApp opTy opExpr action stmtSpan
-      elabStmts := elabStmts.push (.seqStmt partialTy partialExpr stmtSpan)
+      let partialTy' ← withReader (fun _ => extCtx) (force partialTy)
+      let (_, _, _, _dom, cod) ← withReader (fun _ => extCtx) (ensurePi partialTy' stmtSpan)
+      elabStmts := elabStmts.push (.seqStmt partialTy partialExpr cod stmtSpan)
 
     | .let_ name value stmtSpan =>
       -- Elaborate the value in the current extended context
@@ -952,12 +955,11 @@ partial def inferComposeBlock (stmts : Array Soma.Syntax.ComposeStmt)
 
   for i in List.reverse (List.range elabStmts.size) do
     match elabStmts[i]! with
-    | .seqStmt partialTy partialExpr stmtSpan =>
-      let partialTy' ← force partialTy
-      let (_, _, _, _dom, cod) ← ensurePi partialTy' stmtSpan
-      -- Argument value is irrelevant so we pass a placeholder to extract the result type
-      let newTy ← applyClosure cod (.vType .zero)
-      resultExpr := .app partialExpr resultExpr
+    | .seqStmt _partialTy partialExpr codomain _stmtSpan =>
+      let unitTyExpr := Soma.Core.Expr.primTy .unit
+      let lamExpr := Soma.Core.Expr.lam .explicit "_" unitTyExpr resultExpr
+      let newTy ← applyClosure codomain (.vType .zero)
+      resultExpr := .app partialExpr lamExpr
       resultTy := newTy
 
     | .letBind name _valTy valTyExpr valExpr fvarId =>

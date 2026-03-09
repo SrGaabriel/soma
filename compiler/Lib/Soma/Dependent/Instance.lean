@@ -258,6 +258,7 @@ where
       let (resultTy', mapping'') ← refreshStaleMetas resultTy mapping'
       return (.nCase scrutinee' _arms resultTy', mapping'')
     | .nVar _ => return (n, mapping)
+    | .nConst _ _ => return (n, mapping)
 
 /-- Try to match instance arguments against goal arguments using unification.
     Creates fresh metavariables for polymorphic type parameters in the instance.

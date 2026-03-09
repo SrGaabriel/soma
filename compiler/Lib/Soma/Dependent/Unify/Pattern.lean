@@ -172,6 +172,7 @@ partial def renameNeutral (ren : PartialRenaming) (n : Neutral) : RenameResult :
   | .nFieldAccess rec field => do
     let recE ← renameNeutral ren rec
     .ok (.fieldAccess recE field 0)
+  | .nConst name constTy => .ok (.const name (quoteExpr0 constTy))
   | .nCase scrut arms rty => do
     let scrutE ← renameNeutral ren scrut
     let armExprs ← arms.mapM fun arm => do

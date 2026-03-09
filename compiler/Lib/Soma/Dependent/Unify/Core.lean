@@ -84,6 +84,7 @@ partial def collectMetas (v : Value) : Array MetaId :=
 partial def collectMetasNeutral (n : Neutral) : Array MetaId :=
   match n with
   | .nVar _ => #[]
+  | .nConst _ _ => #[]
   | .nMeta id => #[id]
   | .nApp fn arg => collectMetasNeutral fn ++ collectMetas arg
   | .nFst pair => collectMetasNeutral pair
@@ -150,6 +151,7 @@ partial def occursIn (m : MetaId) (v : Value) : Bool :=
 partial def occursInNeutral (m : MetaId) (n : Neutral) : Bool :=
   match n with
   | .nVar _ => false
+  | .nConst _ _ => false
   | .nMeta id => id == m
   | .nApp fn arg => occursInNeutral m fn || occursIn m arg
   | .nFst pair => occursInNeutral m pair
@@ -246,6 +248,7 @@ partial def inScope (allowedLevels : List DeBruijnLvl) (v : Value) : Bool :=
 partial def inScopeNeutral (allowedLevels : List DeBruijnLvl) (n : Neutral) : Bool :=
   match n with
   | .nVar v => allowedLevels.contains v.level
+  | .nConst _ _ => true -- Constants are always in scope (global)
   | .nMeta _ => true  -- Metas are always in scope
   | .nApp fn arg => inScopeNeutral allowedLevels fn && inScope allowedLevels arg
   | .nFst pair => inScopeNeutral allowedLevels pair
@@ -301,6 +304,7 @@ partial def collectFreeVars (v : Value) : Array DeBruijnLvl :=
 partial def collectFreeVarsNeutral (n : Neutral) : Array DeBruijnLvl :=
   match n with
   | .nVar v => #[v.level]
+  | .nConst _ _ => #[] -- Constants are global, no free vars
   | .nMeta _ => #[] -- Metas don't contribute free vars for pruning
   | .nApp fn arg => collectFreeVarsNeutral fn ++ collectFreeVars arg
   | .nFst pair => collectFreeVarsNeutral pair
@@ -390,6 +394,7 @@ def getValueKind : Value → String
 where
   getNeutralKind : Neutral → String
     | .nVar v => s!"nVar({v.name})"
+    | .nConst qn _ => s!"nConst({qn})"
     | .nMeta m => s!"nMeta({m.id})"
     | .nApp _ _ => "nApp"
     | .nFst _ => "nFst"

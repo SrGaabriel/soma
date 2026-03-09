@@ -405,6 +405,7 @@ partial def collectMetaOccurrencesNeutral (m : MetaId) (n : Neutral) (depth : Na
     collectMetaOccurrencesNeutral m scrut depth scope ++
     arms.foldl (fun acc arm =>
       acc ++ collectMetaOccurrencesClosure m arm.closure (depth + 1) scope) #[]
+  | .nConst _ _ => #[]
 
 partial def collectMetaOccurrencesClosure (m : MetaId) (clos : Closure) (depth : Nat)
     (scope : Array DeBruijnLvl) : Array MetaOccurrence :=

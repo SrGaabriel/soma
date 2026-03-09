@@ -2,6 +2,7 @@ import Soma.Core.Value
 import Soma.Core.Quantity
 import Soma.Core.Level
 import Soma.Core.Eval
+import Soma.Core.Quote
 import Soma.Dependent.Monad
 import Soma.Dependent.Elaborate
 import Soma.Dependent.Infer
@@ -386,13 +387,23 @@ def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : V
         let paramUnique : Unique := ⟨bindingId.id, bindingId.module, name⟩
         bindParams (idx + 1) (accParams.push (paramUnique, name))
 
-  let (bodyVal, coreBody, generatedParams) ← bindParams 0 #[]
+  let (_bodyVal, coreBody, generatedParams) ← bindParams 0 #[]
 
   let coreBody' ← zonkExpr coreBody
   let expectedType' ← zonkValue expectedType
 
-  -- Build the method value as a lambda
-  let methodVal ← buildLambdaValue paramNames paramTypes bodyVal
+  -- Build the method value by abstracting fvars into proper lambda binders
+  let mut lambdaExpr := coreBody'
+  for i in [:generatedParams.size] do
+    let idx := generatedParams.size - 1 - i
+    let (paramId, paramName) := generatedParams[idx]!
+    lambdaExpr := lambdaExpr.abstractFVar paramId
+    let domTy := if idx < paramTypes.size then
+      Soma.Core.quoteExpr0 paramTypes[idx]!
+    else
+      Expr.sort Level.zero
+    lambdaExpr := .lam .explicit paramName domTy lambdaExpr
+  let methodVal ← TCM.evalExpr lambdaExpr
 
   return {
     value := methodVal

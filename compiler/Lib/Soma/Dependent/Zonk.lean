@@ -118,6 +118,7 @@ partial def zonkValue (v : Value) : TCM Value := do
 partial def zonkNeutral (n : Neutral) : TCM Neutral := do
   match n with
   | .nVar v => return .nVar v
+  | .nConst qn ty => return .nConst qn ty
 
   | .nMeta m =>
     -- Check if solved

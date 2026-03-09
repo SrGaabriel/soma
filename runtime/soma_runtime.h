@@ -282,6 +282,12 @@ SomaString* soma_int_to_string(int32_t val);
 /* Allocate a closure with space for env_size captured values */
 void* soma_alloc_closure(void* func_ptr, uint8_t arity, uint16_t env_size);
 
+/* Apply one argument to a closure via eval/apply (Marlow & Peyton Jones 2004).
+ * Handles saturated calls (arity==1), PAP creation (arity>1), and
+ * over-application (arity==0, recursive apply to result closure).
+ * Supports up to 16 total arguments (env slots + direct arg). */
+void* soma_apply(void* closure, void* arg);
+
 /* Set a closure environment slot */
 void soma_closure_set_env(void* closure, uint16_t index, SomaValue value);
 

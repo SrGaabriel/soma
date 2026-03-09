@@ -129,10 +129,12 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
       | none => .vNeutral .type0 (.nMeta id)
     | none => .vNeutral .type0 (.nMeta id)
 
-  | .const name _ =>
+  | .const name tyExpr =>
     match ctx.globals.lookup name with
     | some v => v
-    | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
+    | none =>
+      let tyVal := evalCoreExpr ctx tyExpr
+      .vNeutral tyVal (.nConst name tyVal)
 
   | .app fn arg =>
     let fnVal := evalCoreExpr ctx fn
@@ -242,7 +244,7 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     -- Post lambda-lift closure: treated as global reference
     match ctx.globals.lookup name with
     | some v => v
-    | none => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
+    | none => .vNeutral .type0 (.nConst name .type0)
 
   | .array _elements _ => .vNeutral .type0 (.nVar ⟨"array", ctx.env.level⟩)
   | .tuple elements =>

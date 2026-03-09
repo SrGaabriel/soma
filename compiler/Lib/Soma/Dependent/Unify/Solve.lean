@@ -237,6 +237,11 @@ partial def unifyNeutral (n1 n2 : Neutral) : TCM Unit := do
       TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span #[] #[])
     unifyNeutral r1 r2
 
+  | .nConst c1 _, .nConst c2 _ =>
+    if c1 != c2 then
+      let span ← TCM.getSpan
+      TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span #[] #[])
+
   | _, _ =>
     let span ← TCM.getSpan
     TCM.throw (.unificationFailed (.rigidMismatch n1 n2) .general span #[] #[])

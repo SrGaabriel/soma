@@ -18,6 +18,7 @@ partial def neutralToString (neu : Neutral) : String :=
   | .nSnd pair => s!"{neutralToString pair}.2"
   | .nFieldAccess record field => s!"{neutralToString record}.{field}"
   | .nCase scrutinee _ _ => s!"case {neutralToString scrutinee} of ..."
+  | .nConst name _ => name.display
 
 /-- Quote a value to a string (for error messages) -/
 partial def valueToString (v : Value) : String :=
@@ -148,6 +149,7 @@ partial def neutralEq (n1 n2 : Neutral) : Bool :=
   | .nFst p1, .nFst p2 => neutralEq p1 p2
   | .nSnd p1, .nSnd p2 => neutralEq p1 p2
   | .nFieldAccess r1 f1, .nFieldAccess r2 f2 => neutralEq r1 r2 && f1 == f2
+  | .nConst n1 _, .nConst n2 _ => n1 == n2
   | _, _ => false
 
 end
@@ -182,7 +184,9 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
     | some v => v
     | none => .vNeutral .type0 (.nVar ⟨id.original, ⟨env.size⟩⟩)
   | .mvar id => .vNeutral .type0 (.nMeta id)
-  | .const name _ => .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
+  | .const name tyExpr =>
+    let tyVal := evalExprPure env tyExpr
+    .vNeutral tyVal (.nConst name tyVal)
   | .lit l =>
     match l with
     | .int n => .vIntLit n
@@ -282,7 +286,7 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
                        eqVal (evalExprPure env body)
   | .panic msg => .vNeutral .type0 (.nVar ⟨s!"panic: {msg}", ⟨env.size⟩⟩)
   | .closure name _captures =>
-    .vNeutral .type0 (.nVar ⟨name.display, ⟨0⟩⟩)
+    .vNeutral .type0 (.nConst name .type0)
   | .array _elements _ => .vNeutral .type0 (.nVar ⟨"array", ⟨env.size⟩⟩)
   | .tuple elements =>
     let vals := elements.toList.map (evalExprPure env)
@@ -371,6 +375,7 @@ partial def quoteNeutralExpr (depth : DeBruijnLvl) (neu : Neutral) : Expr :=
         Arm.mk #[.wildcard] (quoteExpr depth.succ bodyVal)
       ) |>.toArray)
       (quoteExpr depth resultTy)
+  | .nConst name constTy => .const name (quoteExpr depth constTy)
 
 end
 

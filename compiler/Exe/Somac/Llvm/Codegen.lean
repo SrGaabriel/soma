@@ -630,7 +630,13 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
   let funcName ← CodegenM.getFuncName funcId
   let llvmRetTy := convertTy retTy
   let maybeSig ← CodegenM.getFuncSig funcId
-  let llvmArgs ← args.mapIdxM fun i arg => do
+  let paramCount := match maybeSig with
+    | some sig => sig.params.size
+    | none => args.size
+  -- Split args into direct params (up to function arity) and over-applied extras
+  let directArgs := if args.size > paramCount then args.extract 0 paramCount else args
+  let extraArgs := if args.size > paramCount then args.extract paramCount args.size else #[]
+  let llvmArgs ← directArgs.mapIdxM fun i arg => do
     let argVal ← convertOperand arg
     let actualTy ← operandTy arg
     let actualLLVMTy := convertTy actualTy
@@ -643,8 +649,20 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
     let coercedVal ← if actualLLVMTy == expectedLLVMTy then pure argVal
                       else coerceValue actualLLVMTy expectedLLVMTy argVal
     pure (expectedLLVMTy, coercedVal)
-  let ref ← CodegenM.withFuncBuilder do
-    FuncBuilder.callNamed llvmRetTy funcName llvmArgs
+  -- Call function with its declared parameters
+  let callRetTy := if extraArgs.isEmpty then llvmRetTy else .ptr
+  let mut ref ← CodegenM.withFuncBuilder do
+    FuncBuilder.callNamed callRetTy funcName llvmArgs
+  -- Over-application: apply extra args via soma_apply to the returned closure
+  for extraArg in extraArgs do
+    let (extraArgTy, extraArgVal) ← convertOperandWithTy extraArg
+    let argPtr ← if extraArgTy == .ptr then pure extraArgVal
+                  else if extraArgTy.isInt then do
+                    let converted ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr extraArgTy extraArgVal)
+                    pure (.local converted)
+                  else pure extraArgVal
+    ref ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, .local ref), (.ptr, argPtr)]
   pure (some (ref, retTy))
 
 /-- The composite env struct type: two i64 slots -/
@@ -685,6 +703,70 @@ def getOrCreateTrampoline (arity : Nat) : CodegenM String := do
   CodegenM.withModuleBuilder (ModuleBuilder.addFunc trampolineFunc)
   modify fun s => { s with trampolineCache := s.trampolineCache.insert name name }
   return name
+
+/-- Shared closure allocation logic for makeClosure and makeClosurePoly -/
+private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
+    : CodegenM (Option (LocalRef × ClosedTy)) := do
+  let funcId := match funcRef with
+    | .local id => id
+    | _ => FuncId.mk 0
+  let funcName ← CodegenM.getFuncName funcId.id
+  let (envLLVMTy, envVal) ← convertOperandWithTy env
+  let envAlloTy ← operandTy env
+  -- Detect empty env (unit/erased): CTOR(closureTag) with ERA produces unit env
+  -- For empty env: arity = full params.size (no arg captured), envSize = 0
+  -- For real env (partial application): arity = params.size - 1, envSize = 1
+  let isEmptyEnv := envAlloTy == .prim .unit
+  let closureArity : Nat ← do
+    match ← CodegenM.getFuncSig funcId.id with
+    | some sig =>
+      let n := sig.params.size
+      pure (if isEmptyEnv then n else if n == 0 then 0 else n - 1)
+    | none => pure 0
+  let envSize : Int := if isEmptyEnv then 0 else 1
+  let envKind : Int := match envAlloTy with
+    | .tagged _ _ => envKindTagged
+    | .prim _ => envKindFlat
+    | _ => envKindDefault
+  let closurePtr ← CodegenM.withFuncBuilder do
+    FuncBuilder.callNamed .ptr "soma_pool_alloc_closure" #[(.i16, intVal envSize 16)]
+  -- Initialize header fields inline via GEP+store
+  let tagAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 0])
+  CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal nodeClosureTag 8) (.local tagAddr))
+  let arityAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1])
+  CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal (Int.ofNat closureArity) 8) (.local arityAddr))
+  let envSizeAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
+  CodegenM.withFuncBuilder (FuncBuilder.store .i16 (intVal envSize 16) (.local envSizeAddr))
+  let envKindAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 3])
+  CodegenM.withFuncBuilder (FuncBuilder.store .i32 (intVal envKind 32) (.local envKindAddr))
+  let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 4])
+  CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal funcName) (.local funcFieldAddr))
+  -- Store env slot only if env is non-empty
+  if !isEmptyEnv then
+    let envPtrVal ← if envLLVMTy == .ptr then pure envVal
+                    else if envLLVMTy.isInt then do
+                      let converted ← CodegenM.withFuncBuilder do
+                        FuncBuilder.inttoptr envLLVMTy envVal
+                      pure (.local converted)
+                    else do
+                      let sizePtr ← CodegenM.withFuncBuilder
+                        (FuncBuilder.gepi32 envLLVMTy (.const .null) #[1])
+                      let sizeI64 ← CodegenM.withFuncBuilder
+                        (FuncBuilder.ptrtoint .i64 (.local sizePtr))
+                      let boxPtr ← CodegenM.withFuncBuilder do
+                        FuncBuilder.callNamed .ptr "malloc" #[(.i64, .local sizeI64)]
+                      CodegenM.withFuncBuilder do
+                        FuncBuilder.store envLLVMTy envVal (.local boxPtr)
+                      pure (.local boxPtr)
+    let envAsI64 ← CodegenM.withFuncBuilder do
+      FuncBuilder.ptrtoint .i64 envPtrVal
+    let envSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
+    CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local envAsI64) (.local envSlotAddr))
+  let closureTyAlloy ← do
+    match ← CodegenM.getFuncSig funcId.id with
+    | some sig => pure (.closure (sig.params.map (·.ty)) sig.retTy)
+    | none => pure (.closure #[] (.prim .i64))
+  pure (some (closurePtr, closureTyAlloy))
 
 /-- Lower an Alloy instruction to LLVM, returning result ref and result type -/
 def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := do
@@ -1010,7 +1092,6 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
   | .callClosure closure args retTy =>
     let closureTyAlloy ← operandTy closure
     let closureLLVMTy := convertTy closureTyAlloy
-    let llvmRetTy := convertTy retTy
     -- Check if closure operand is actually a closure type (not unit from ERA)
     if closureLLVMTy != closureTy then
       -- Not a real closure — unreachable at runtime. Emit panic + signal noreturn
@@ -1020,148 +1101,35 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       CodegenM.signalNoReturn
       pure none
     else
+      -- Use soma_apply for closure calls to handle partial application (PAP), variable env sizes, and proper argument accumulation
       let closureVal ← convertOperand closure
-      -- Inline closure field access via GEP
-      let funcPtrAddr ← CodegenM.withFuncBuilder do
-        FuncBuilder.gepi32 closureHeaderTy closureVal #[0, 4]
-      let fnPtr ← CodegenM.withFuncBuilder do
-        FuncBuilder.load .ptr (.local funcPtrAddr)
-      let envBaseAddr ← CodegenM.withFuncBuilder do
-        FuncBuilder.gepi32 closureHeaderTy closureVal #[1]
-      let envRaw ← CodegenM.withFuncBuilder do
-        FuncBuilder.load .i64 (.local envBaseAddr)
-      let envPtr ← CodegenM.withFuncBuilder do
-        FuncBuilder.inttoptr .i64 (.local envRaw)
-      -- Build args: env first, then regular args
-      let mut llvmArgs : Array (LLVMType × LLVMValue) := #[(.ptr, .local envPtr)]
-      for arg in args do
-        let argWithTy ← convertOperandWithTy arg
-        llvmArgs := llvmArgs.push argWithTy
+      let argVal ← match args[0]? with
+        | some arg => do
+          let (argLLVMTy, argV) ← convertOperandWithTy arg
+          if argLLVMTy == .ptr then pure argV
+          else if argLLVMTy.isInt then do
+            let converted ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr argLLVMTy argV)
+            pure (.local converted)
+          else do
+            -- Coerce aggregate to ptr via alloca+store
+            let slot ← CodegenM.withFuncBuilder (FuncBuilder.alloca argLLVMTy)
+            CodegenM.withFuncBuilder (FuncBuilder.store argLLVMTy argV (.local slot))
+            pure (.local slot)
+        | none => pure (.const .null)
+      -- Coerce closure to ptr if needed
+      let closurePtr ← do
+        let closureLLVMTy := convertTy closureTyAlloy
+        if closureLLVMTy == .ptr then pure closureVal
+        else if closureLLVMTy.isInt then do
+          let ref ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr closureLLVMTy closureVal)
+          pure (.local ref)
+        else pure closureVal
       let ref ← CodegenM.withFuncBuilder do
-        FuncBuilder.call llvmRetTy (.local fnPtr) llvmArgs
+        FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, closurePtr), (.ptr, argVal)]
       pure (some (ref, retTy))
 
-  | .makeClosure funcRef env =>
-    let funcId := match funcRef with
-      | .local id => id
-      | _ => FuncId.mk 0 -- todo: consider panicking
-    let funcName ← CodegenM.getFuncName funcId.id
-    let (envLLVMTy, envVal) ← convertOperandWithTy env
-    let envAlloTy ← operandTy env
-    let closureArity : Nat ← do
-      match ← CodegenM.getFuncSig funcId.id with
-      | some sig =>
-        let n := sig.params.size
-        pure (if n == 0 then 0 else n - 1)
-      | none => pure 0
-    let envKind : Int := match envAlloTy with
-      | .tagged _ _ => envKindTagged
-      | .prim _ => envKindFlat
-      | _ => envKindDefault
-    -- Convert env to pointer based on its type
-    let envPtrVal ← if envLLVMTy == .ptr then pure envVal
-                    else if envLLVMTy.isInt then do
-                      let converted ← CodegenM.withFuncBuilder do
-                        FuncBuilder.inttoptr envLLVMTy envVal
-                      pure (.local converted)
-                    else do
-                      -- Struct/aggregate type: heap-allocate via malloc so the
-                      -- pointer survives closure cloning and can be freed on erase
-                      let sizePtr ← CodegenM.withFuncBuilder
-                        (FuncBuilder.gepi32 envLLVMTy (.const .null) #[1])
-                      let sizeI64 ← CodegenM.withFuncBuilder
-                        (FuncBuilder.ptrtoint .i64 (.local sizePtr))
-                      let boxPtr ← CodegenM.withFuncBuilder do
-                        FuncBuilder.callNamed .ptr "malloc" #[(.i64, .local sizeI64)]
-                      CodegenM.withFuncBuilder do
-                        FuncBuilder.store envLLVMTy envVal (.local boxPtr)
-                      pure (.local boxPtr)
-    let closurePtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.callNamed .ptr "soma_pool_alloc_closure" #[(.i16, intVal 1 16)]
-    -- Initialize header fields inline via GEP+store
-    let tagAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 0])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal nodeClosureTag 8) (.local tagAddr))
-    let arityAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal (Int.ofNat closureArity) 8) (.local arityAddr))
-    let envSizeAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i16 (intVal 1 16) (.local envSizeAddr))
-    -- Store env_kind (type-directed clone/erase discriminator)
-    let envKindAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 3])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i32 (intVal envKind 32) (.local envKindAddr))
-    let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 4])
-    CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal funcName) (.local funcFieldAddr))
-    -- Store env[0] at offset 16 (one struct-width past header)
-    let envAsI64 ← CodegenM.withFuncBuilder do
-      FuncBuilder.ptrtoint .i64 envPtrVal
-    let envSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local envAsI64) (.local envSlotAddr))
-    -- Get closure type from function signature if available
-    let closureTyAlloy ← do
-      match ← CodegenM.getFuncSig funcId.id with
-      | some sig => pure (.closure (sig.params.map (·.ty)) sig.retTy)
-      | none => pure (.closure #[] (.prim .i64))
-    pure (some (closurePtr, closureTyAlloy))
-
-  | .makeClosurePoly funcRef _typeArgs env =>
-    -- Same as makeClosure
-    let funcId := match funcRef with
-      | .local id => id
-      | _ => FuncId.mk 0 -- todo: consider panicking
-    let funcName ← CodegenM.getFuncName funcId.id
-    let (envLLVMTy, envVal) ← convertOperandWithTy env
-    let envAlloTy ← operandTy env
-    let closureArity : Nat ← do
-      match ← CodegenM.getFuncSig funcId.id with
-      | some sig =>
-        let n := sig.params.size
-        pure (if n == 0 then 0 else n - 1)
-      | none => pure 0
-    -- Determine env_kind from the Alloy type of the env operand
-    let envKind : Int := match envAlloTy with
-      | .tagged _ _ => envKindTagged
-      | .prim _ => envKindFlat
-      | _ => envKindDefault
-    -- Convert env to pointer based on its type
-    let envPtrVal ← if envLLVMTy == .ptr then pure envVal
-                    else if envLLVMTy.isInt then do
-                      let converted ← CodegenM.withFuncBuilder do
-                        FuncBuilder.inttoptr envLLVMTy envVal
-                      pure (.local converted)
-                    else do
-                      -- Struct/aggregate type: heap-allocate via malloc so the
-                      -- pointer survives closure cloning and can be freed on erase.
-                      let sizePtr ← CodegenM.withFuncBuilder
-                        (FuncBuilder.gepi32 envLLVMTy (.const .null) #[1])
-                      let sizeI64 ← CodegenM.withFuncBuilder
-                        (FuncBuilder.ptrtoint .i64 (.local sizePtr))
-                      let boxPtr ← CodegenM.withFuncBuilder do
-                        FuncBuilder.callNamed .ptr "malloc" #[(.i64, .local sizeI64)]
-                      CodegenM.withFuncBuilder do
-                        FuncBuilder.store envLLVMTy envVal (.local boxPtr)
-                      pure (.local boxPtr)
-    let closurePtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.callNamed .ptr "soma_pool_alloc_closure" #[(.i16, intVal 1 16)]
-    let tagAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 0])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal nodeClosureTag 8) (.local tagAddr))
-    let arityAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal (Int.ofNat closureArity) 8) (.local arityAddr))
-    let envSizeAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i16 (intVal 1 16) (.local envSizeAddr))
-    -- Store env_kind (type-directed clone/erase discriminator)
-    let envKindAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 3])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i32 (intVal envKind 32) (.local envKindAddr))
-    let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 4])
-    CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal funcName) (.local funcFieldAddr))
-    -- Store env[0] at offset 16
-    let envAsI64 ← CodegenM.withFuncBuilder do
-      FuncBuilder.ptrtoint .i64 envPtrVal
-    let envSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local envAsI64) (.local envSlotAddr))
-    let closureTyAlloy ← do
-      match ← CodegenM.getFuncSig funcId.id with
-      | some sig => pure (.closure (sig.params.map (·.ty)) sig.retTy)
-      | none => pure (.closure #[] (.prim .i64))
-    pure (some (closurePtr, closureTyAlloy))
+  | .makeClosure funcRef env => emitMakeClosureImpl funcRef env
+  | .makeClosurePoly funcRef _typeArgs env => emitMakeClosureImpl funcRef env
 
   | .makeClosureDyn fnClosure env resultTy =>
     -- The trampoline unpacks both from a composite env buffer and forwards the call
@@ -1457,25 +1425,17 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       -- io_bind m f = f(m): IO erases, so this is just closure application
       if llvmArgs.size >= 2 then
         let (ioTy, ioValRaw) := llvmArgs[0]!
-        let ioVal ← if ioTy == .i64 then pure ioValRaw
-                     else coerceValue ioTy .i64 ioValRaw
+        let ioArgPtr ← if ioTy == .ptr then pure ioValRaw
+                        else do
+                          let ref ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr ioTy ioValRaw)
+                          pure (.local ref)
         let (funcTy, funcVal) := llvmArgs[1]!
         let funcPtr ← if funcTy == .ptr then pure funcVal
                        else do
                          let ref ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr funcTy funcVal)
                          pure (.local ref)
-        let funcPtrAddr ← CodegenM.withFuncBuilder do
-          FuncBuilder.gepi32 closureHeaderTy funcPtr #[0, 4]
-        let fnPtr ← CodegenM.withFuncBuilder do
-          FuncBuilder.load .ptr (.local funcPtrAddr)
-        let envBaseAddr ← CodegenM.withFuncBuilder do
-          FuncBuilder.gepi32 closureHeaderTy funcPtr #[1]
-        let envRaw ← CodegenM.withFuncBuilder do
-          FuncBuilder.load .i64 (.local envBaseAddr)
-        let envPtr ← CodegenM.withFuncBuilder do
-          FuncBuilder.inttoptr .i64 (.local envRaw)
         let ref ← CodegenM.withFuncBuilder do
-          FuncBuilder.call llvmRetTy (.local fnPtr) #[(.ptr, .local envPtr), (.i64, ioVal)]
+          FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, funcPtr), (.ptr, ioArgPtr)]
         pure (some (ref, retTy))
       else
         pure none
@@ -1484,12 +1444,14 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     -- External function call: emit regular LLVM call to @name
     let llvmRetTy := convertTy retTy
 
+    -- TODO: review workaround
+    let isSomaRuntime := name.startsWith "soma_"
     let mut llvmArgs : Array (LLVMType × LLVMValue) := #[]
     for arg in args do
       let argAlloTy ← operandTy arg
       let (argLLVMTy, argVal) ← convertOperandWithTy arg
-      if argAlloTy == Ty.string then
-        -- SomaString → C string conversion for extern calls
+      if argAlloTy == Ty.string && !isSomaRuntime then
+        -- SomaString → C string conversion for foreign extern calls
         let cstr ← CodegenM.withFuncBuilder
           (FuncBuilder.callNamed .ptr "soma_to_cstring" #[(.ptr, argVal)])
         llvmArgs := llvmArgs.push (.ptr, .local cstr)
@@ -1812,6 +1774,14 @@ def addRuntimeDeclarations : CodegenM Unit := do
       isDeclaration := true
     }
 
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_apply"
+      retTy := .ptr
+      params := #[{ name := "closure", ty := .ptr }, { name := "arg", ty := .ptr }]
+      isDeclaration := true
+    }
+
   -- SUP operations (lazy duplication via superposition nodes)
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
@@ -1844,7 +1814,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
     "llvm.memcpy.p0.p0.i64", "llvm.memset.p0.i64",
     "soma_to_cstring", "soma_from_cstring", "soma_cstring_len",
     "soma_strcat", "soma_int_to_string", "soma_pool_alloc_closure",
-    "soma_dup", "soma_proj0", "soma_proj1"
+    "soma_apply", "soma_dup", "soma_proj0", "soma_proj1"
   ]
   for name in runtimeNames do
     CodegenM.markExternDeclared name
@@ -1854,9 +1824,14 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
   let monoFuncs := alloyModule.monoFuncs
 
   -- Register all functions first (names and signatures)
+  let mut seenNames : Std.HashMap String Nat := {}
   for func in monoFuncs do
     let isMain := alloyModule.mainFunc == some func.id
-    let name := if isMain then "soma_main" else func.sig.name
+    let baseName := if isMain then "soma_main" else func.sig.name
+    let name := match seenNames.get? baseName with
+      | none => baseName
+      | some count => s!"{baseName}$$mono{count}"
+    seenNames := seenNames.insert baseName ((seenNames.get? baseName |>.getD 0) + 1)
     CodegenM.registerFunc func.id.id name func.sig
 
   addRuntimeDeclarations
@@ -1916,8 +1891,7 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
 
   -- Lower all monomorphic functions
   for func in monoFuncs do
-    let isMain := alloyModule.mainFunc == some func.id
-    let funcName := if isMain then "soma_main" else func.sig.name
+    let funcName ← CodegenM.getFuncName func.id.id
     let llvmFunc ← lowerFuncWithName func funcName
     CodegenM.withModuleBuilder (ModuleBuilder.addFunc llvmFunc)
 

@@ -386,6 +386,8 @@ partial def convertNeutral (n1 n2 : Neutral) : TCM Bool := do
       if !bodiesEq then return false
     return true
 
+  | .nConst n1 _, .nConst n2 _ => return n1 == n2
+
   | _, _ => return false
 
 /-- Convert rows with rewriting (find label in one row, match with other) -/

@@ -182,6 +182,7 @@ where
       | some .isPartial => [v.name]
       | some .isUnknown => [v.name]
       | _ => []
+    | .nConst _ _ => []
     | .nMeta _ => []
     | .nApp fn arg => checkNeutral fn reg ++ checkIndexValue arg reg
     | .nFst pair => checkNeutral pair reg
