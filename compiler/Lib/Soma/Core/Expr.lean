@@ -521,15 +521,15 @@ partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
   | .construct _ _ args rty => args.foldl (fun acc a => acc + a.countFVar fvar) 0 + rty.countFVar fvar
   | .«case» scruts arms rty =>
     let scrutCount := scruts.foldl (fun acc s => acc + s.countFVar fvar) 0
-    let armMax := arms.foldl (fun acc arm => max acc (arm.body.countFVar fvar)) 0
-    scrutCount + armMax + rty.countFVar fvar
+    let armSum := arms.foldl (fun acc arm => acc + arm.body.countFVar fvar) 0
+    scrutCount + armSum + rty.countFVar fvar
   | .record fields => fields.foldl (fun acc (_, e) => acc + e.countFVar fvar) 0
   | .recordUpdate b us =>
     b.countFVar fvar + us.foldl (fun acc (_, e) => acc + e.countFVar fvar) 0
   | .fieldAccess x _ _ => x.countFVar fvar
   | .inject _ args rty => args.foldl (fun acc a => acc + a.countFVar fvar) 0 + rty.countFVar fvar
   | .if_ c t el =>
-    c.countFVar fvar + max (t.countFVar fvar) (el.countFVar fvar)
+    c.countFVar fvar + t.countFVar fvar + el.countFVar fvar
   | .closure _ caps => caps.foldl (fun acc e => acc + e.countFVar fvar) 0
   | .array es ety => es.foldl (fun acc e => acc + e.countFVar fvar) 0 + ety.countFVar fvar
   | .tuple es => es.foldl (fun acc e => acc + e.countFVar fvar) 0

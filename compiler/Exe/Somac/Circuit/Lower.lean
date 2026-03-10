@@ -907,9 +907,19 @@ partial def lowerCoreCase (scruts : Array Soma.Core.Expr) (arms : Array Soma.Cor
     let matrix := PatternMatch.buildMatrixFromArms simplifyCtx arms
     let tree := PatternMatch.compileMatrix matrix ctx.ctorTypeRegistry scrutTypes
 
+    -- Compute additive usage counts from arm bodies for split-site DUP placement.
+    -- The usageMap uses max-counting across branches (suitable for
+    -- binding-site placement), but split-site placement needs the total uses across
+    -- ALL branches so that splitIfContexts can distribute copies to each branch.
+    let mut splitSiteUsages : UsageMap := {}
+    for arm in arms do
+      let armUses := countUsesExpr arm.body
+      for (id, count) in armUses.toList do
+        splitSiteUsages := splitSiteUsages.insert id (splitSiteUsages.getD id 0 + count)
+
     let result ← PatternMatch.lower tree scrutPorts scrutTypes ctx.ctorTypeRegistry ty
       (fun armIndex armCtx => lowerCoreArmBodyByIndex arms armIndex armCtx)
-      ctx.usageMap
+      splitSiteUsages
     pure (some result)
 where
   /-- Lower the body of a case arm by index -/
@@ -1092,6 +1102,8 @@ partial def lowerCoreClosure (fnName : Soma.Core.QualifiedName)
   let envPort ← if capturePairs.isEmpty then do
     let era ← LowerM.addNode .era unitTy
     pure (PortId.principal era)
+  else if capturePairs.size == 1 then do
+    pure capturePairs[0]!.1
   else do
     let captureTypes := capturePairs.map (·.2)
     let envTy := Value.tuple captureTypes
@@ -1160,6 +1172,25 @@ def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
   let mut lamNodes : Array NodeId := #[]
   let mut currentTy := fn.fnType
   let bodyUses := countUsesExpr fn.body
+
+  let mut currentTy' := currentTy
+  let mut done := false
+  while !done do
+    match currentTy' with
+    | .vPi _ binder name dom cod =>
+      let isErasedImplicit := match binder with
+        | .implicit | .strictImplicit =>
+          match dom with
+          | .vType _ | .vRowSort | .vLabelSort => true
+          | _ => false
+        | _ => false
+      if isErasedImplicit then
+        let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
+        currentTy' := cod.applyPure dummyArg
+      else
+        done := true
+    | _ => done := true
+  currentTy := currentTy'
 
   for param in paramList do
     let (bindingId, name) := param
@@ -1366,7 +1397,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
         let ctx ← LowerM.getCtx
         let ctorQN := info.name
         if ctx.lookupCtor ctorQN |>.isNone then
-          let arity := info.type.explicitArity
+          let arity := info.type.explicitArityFull
           LowerM.modifyCtx fun ctx =>
             ctx.registerCtor ctorQN ctorQN info.ctorTag arity
 

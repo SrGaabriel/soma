@@ -1408,9 +1408,12 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       let canonRef := resolveCanonicalRef graph fnPort.node
 
       -- Lower the environment (port 2)
+      let savedExpectedTy := (← get).expectedResultTy
+      modify fun s => { s with expectedResultTy := none }
       let envVal ← match entry.getPort ⟨2⟩ with
         | some envPort => lowerOperandWithMap graph envPort funcIdMap
         | none => StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+      modify fun s => { s with expectedResultTy := savedExpectedTy }
 
       match canonRef with
       | .bookRef refId =>
@@ -1501,7 +1504,17 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         let headOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
         let headAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local newBufI64) (.local headOff) (.prim .i64)) (.prim .i64))
         let headPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local headAddr)) .rawPtr)
-        let headAsI64 ← StateT.lift (LowerM.emitInst (.copy (.local headVal)) (.prim .i64))
+        -- Convert head value to i64 for flat array storage
+        let headTy := getPortType 1 (.prim .i64)
+        let headAsI64 ← match headTy with
+          | .rawPtr | .ptr _ => StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local headVal)) (.prim .i64))
+          | .prim .i64 => pure headVal
+          | .prim p =>
+            if Ty.sizeBytes (.prim p : Ty n) < 8 then
+              StateT.lift (LowerM.emitInst (.unOp (.sext .i64) (.local headVal)) (.prim .i64))
+            else
+              pure headVal
+          | _ => StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local headVal)) (.prim .i64))
         StateT.lift (LowerM.emitVoid (.store (.local headPtr) (.local headAsI64)))
         -- Memcpy tail data: from tail+16 to newBuf+24, size = tailLen * 8
         let tailDataSize ← StateT.lift (LowerM.emitInst (.binOp .mul (.local tailLen) (.local elemSize) (.prim .i64)) (.prim .i64))

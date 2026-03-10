@@ -869,7 +869,7 @@ private def registerConstructorRaw
           name := info.name
           simpleName := ctorSimpleName
           tag := info.ctorTag
-          arity := info.type.explicitArity
+          arity := info.type.explicitArityFull
           type := info.type
         }
         g := g.registerConstructorMeta typeName.display ctorMeta

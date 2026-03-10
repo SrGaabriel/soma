@@ -1,7 +1,20 @@
+use stdlib/collections.{cons, head, length, map, foldl, filter, sum, reverse, append, ==}
 use stdlib/core.{puts}
+use base/core.{display}
+use base/prim.{List}
 
 def main : IO () =
     compose
-        puts "Hello"
-        puts "World"
+        let xs = [1, 2, 3, 4, 5]
+
+        let len = length xs
+        puts ("Length: " <> display len)
+
+        let total = sum xs
+        puts ("Sum: " <> display total)
+
+        let evens = filter (\x -> x % 2 == 0) [1, 2, 3, 4, 5, 6]
+        let evensSum = sum evens
+        puts ("Evens sum: " <> display evensSum)
+
         puts "Done!"
