@@ -666,9 +666,22 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
       -- val is type-level (erased) so we just lower the body directly
       lowerCoreExpr fvarBody ty
     | some valPort =>
-      LowerM.modifyCtx fun ctx =>
-        ctx.bindVarOwned letUnique _name valPort usageCount valTy (usageCount == 0)
-      lowerCoreExpr fvarBody ty
+      if usageCount == 0 then
+        -- Emit a USE node to force evaluation of the value before continuing with the body
+        let bodyPort? ← lowerCoreExpr fvarBody ty
+        match bodyPort? with
+        | none =>
+          -- Body is type-level, just return none
+          pure none
+        | some bodyPort =>
+          let useNode ← LowerM.addNode .use ty
+          LowerM.connect ⟨useNode, ⟨1⟩⟩ valPort
+          LowerM.connect ⟨useNode, ⟨2⟩⟩ bodyPort
+          pure (some (PortId.principal useNode))
+      else
+        LowerM.modifyCtx fun ctx =>
+          ctx.bindVarOwned letUnique _name valPort usageCount valTy false
+        lowerCoreExpr fvarBody ty
 
   -- Type-level constructs (erased at runtime)
   | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _

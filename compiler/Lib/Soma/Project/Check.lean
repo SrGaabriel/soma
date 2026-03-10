@@ -590,6 +590,12 @@ def typeCheckModule
         (Soma.Dependent.Specialize.specializeFunction methodRegistry fn)
     mergedTypedFns := specializedFns
 
+  let mut inlinedFns : Std.HashMap String Soma.Core.TypedFunction := {}
+  for (name, fn) in mergedTypedFns.toList do
+    inlinedFns := inlinedFns.insert name
+      (Soma.Dependent.Specialize.inlineIOBindsFunction fn)
+  mergedTypedFns := inlinedFns
+
   return {
     globals := globalsResult.globals
     instanceEnv := globalsResult.instanceEnv

@@ -290,4 +290,100 @@ def specializeFunction (registry : ClassMethodRegistry) (fn : Soma.Core.TypedFun
   if registry.isEmpty then fn
   else { fn with body := betaReduce (specializeExpr registry fn.body) }
 
+/-- Check if an expression is a reference to io_bind (TODO: FIX WORKAROUND) -/
+private partial def isIOBind : Expr → Bool
+  | .const qn _ => qn.id.original == "io_bind"
+  | .app fn arg => isTypeLevelExpr arg && isIOBind fn
+  | _ => false
+
+/-- Check if an expression is a reference to pure_io (TODO: FIX WORKAROUND) -/
+private partial def isPureIO : Expr → Bool
+  | .const qn _ => qn.id.original == "pure_io"
+  | .app fn arg => isTypeLevelExpr arg && isPureIO fn
+  | _ => false
+
+/-- Check if a de Bruijn variable at the given depth is referenced in an expression -/
+private partial def referencesBVar (depth : Nat) : Expr → Bool
+  | .bvar idx => idx == depth
+  | .app fn arg => referencesBVar depth fn || referencesBVar depth arg
+  | .lam _ _ domain body => referencesBVar depth domain || referencesBVar (depth + 1) body
+  | .let_ _ ty val body =>
+    referencesBVar depth ty || referencesBVar depth val || referencesBVar (depth + 1) body
+  | .pi _ _ _ domain codomain => referencesBVar depth domain || referencesBVar (depth + 1) codomain
+  | .sigma _ _ _ fst snd => referencesBVar depth fst || referencesBVar (depth + 1) snd
+  | .pair f s => referencesBVar depth f || referencesBVar depth s
+  | .projFst x | .projSnd x => referencesBVar depth x
+  | .construct _ _ args rty => args.any (referencesBVar depth) || referencesBVar depth rty
+  | .«case» scruts arms rty =>
+    scruts.any (referencesBVar depth) || arms.any (fun a => referencesBVar depth a.body) ||
+    referencesBVar depth rty
+  | .record fields => fields.any fun (_, e) => referencesBVar depth e
+  | .recordUpdate b us =>
+    referencesBVar depth b || us.any fun (_, e) => referencesBVar depth e
+  | .fieldAccess x _ _ => referencesBVar depth x
+  | .inject _ args rty => args.any (referencesBVar depth) || referencesBVar depth rty
+  | .if_ c t el => referencesBVar depth c || referencesBVar depth t || referencesBVar depth el
+  | .closure _ caps => caps.any (referencesBVar depth)
+  | .array es ety => es.any (referencesBVar depth) || referencesBVar depth ety
+  | .tuple es => es.any (referencesBVar depth)
+  | .ann x t => referencesBVar depth x || referencesBVar depth t
+  | .fvar _ ty => referencesBVar depth ty
+  | .const _ ty => referencesBVar depth ty
+  | _ => false
+
+/-- Inline IO bind chains into flat let sequences -/
+partial def inlineIOBinds : Expr → Expr
+  | e@(.app fn arg) =>
+    -- Check for io_bind pattern: app (app io_bind action) continuation
+    match fn with
+    | .app ioBind action =>
+      if isIOBind ioBind then
+        let action' := inlineIOBinds action
+        let cont' := inlineIOBinds arg
+        match cont' with
+        | .lam _ name domain body =>
+          .let_ name domain action' (inlineIOBinds body)
+        | _ =>
+          .let_ "_" (.primTy .unit) action' (.app (cont'.shift 1 0) (.bvar 0))
+      else
+        .app (inlineIOBinds fn) (inlineIOBinds arg)
+    | _ =>
+      if isPureIO fn then
+        inlineIOBinds arg
+      else
+        .app (inlineIOBinds fn) (inlineIOBinds arg)
+  | .lam info name domain body =>
+    .lam info name (inlineIOBinds domain) (inlineIOBinds body)
+  | .let_ name ty val body =>
+    .let_ name (inlineIOBinds ty) (inlineIOBinds val) (inlineIOBinds body)
+  | .closure name captures =>
+    .closure name (captures.map inlineIOBinds)
+  | .«case» scruts arms resultTy =>
+    .«case» (scruts.map inlineIOBinds)
+      (arms.map fun arm => Arm.mk arm.patterns (inlineIOBinds arm.body))
+      (inlineIOBinds resultTy)
+  | .construct name tag args resultTy =>
+    .construct name tag (args.map inlineIOBinds) (inlineIOBinds resultTy)
+  | .if_ c t el => .if_ (inlineIOBinds c) (inlineIOBinds t) (inlineIOBinds el)
+  | .pair f s => .pair (inlineIOBinds f) (inlineIOBinds s)
+  | .projFst x => .projFst (inlineIOBinds x)
+  | .projSnd x => .projSnd (inlineIOBinds x)
+  | .record fields => .record (fields.map fun (n, x) => (n, inlineIOBinds x))
+  | .recordUpdate base updates =>
+    .recordUpdate (inlineIOBinds base) (updates.map fun (n, x) => (n, inlineIOBinds x))
+  | .tuple elems => .tuple (elems.map inlineIOBinds)
+  | .array elems resultTy => .array (elems.map inlineIOBinds) (inlineIOBinds resultTy)
+  | .inject label args resultTy => .inject label (args.map inlineIOBinds) (inlineIOBinds resultTy)
+  | .fieldAccess expr field idx => .fieldAccess (inlineIOBinds expr) field idx
+  | .ann expr ty => .ann (inlineIOBinds expr) (inlineIOBinds ty)
+  | .pi qty info name domain codomain =>
+    .pi qty info name (inlineIOBinds domain) (inlineIOBinds codomain)
+  | .sigma qty info name fst snd =>
+    .sigma qty info name (inlineIOBinds fst) (inlineIOBinds snd)
+  | e => e
+
+/-- Inline IO binds in a TypedFunction body -/
+def inlineIOBindsFunction (fn : Soma.Core.TypedFunction) : Soma.Core.TypedFunction :=
+  { fn with body := inlineIOBinds fn.body }
+
 end Soma.Dependent.Specialize

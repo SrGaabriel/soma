@@ -324,8 +324,8 @@ partial def resolveCanonicalRef (graph : CGraph) (nodeId : CNodeId)
       | .ref idx => .bookRef idx
       | .alo idx => .bookRef idx
       | .use =>
-        -- USE reads its value from port 1, follow through
-        match entry.getPort ⟨1⟩ with
+        -- USE returns its continuation (port 2), follow through
+        match entry.getPort ⟨2⟩ with
         | some port => resolveCanonicalRef graph port.node (fuel - 1)
         | none => .dynamicValue nodeId
       | .dup _ =>
@@ -1819,7 +1819,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     | none =>
       StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local nullEnv)) nodeTy)
 
-  | .use => lowerPort 1
+  | .use => do
+    let _termVal ← lowerPort 1
+    lowerPort 2
 
   | .array _ => do
     let len : Nat ← match entry.getPort ⟨1⟩ with

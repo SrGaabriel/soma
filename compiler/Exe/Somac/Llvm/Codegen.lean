@@ -294,6 +294,15 @@ def operandTy (op : Operand) : CodegenM ClosedTy := do
   | .global _ => pure .rawPtr
   | .func _ => pure .rawPtr
 
+/-- Unbox a ptr result from soma_apply to the expected LLVM type -/
+def unboxApplyResult (ref : LocalRef) (retTy : ClosedTy) : CodegenM LocalRef := do
+  let expectedLLVMTy := convertTy retTy
+  if expectedLLVMTy == .ptr then pure ref
+  else if expectedLLVMTy.isInt then
+    CodegenM.withFuncBuilder (FuncBuilder.ptrtoint expectedLLVMTy (.local ref))
+  else
+    CodegenM.withFuncBuilder (FuncBuilder.load expectedLLVMTy (.local ref))
+
 /-- Coerce an LLVM value from one type to another, handling all valid conversions -/
 def coerceValue (srcTy dstTy : LLVMType) (val : LLVMValue) : CodegenM LLVMValue := do
   if srcTy == dstTy then pure val
@@ -663,6 +672,8 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
                   else pure extraArgVal
     ref ← CodegenM.withFuncBuilder do
       FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, .local ref), (.ptr, argPtr)]
+  if !extraArgs.isEmpty then
+    ref ← unboxApplyResult ref retTy
   pure (some (ref, retTy))
 
 /-- The composite env struct type: two i64 slots -/
@@ -1126,6 +1137,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         else pure closureVal
       let ref ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, closurePtr), (.ptr, argVal)]
+      let ref ← unboxApplyResult ref retTy
       pure (some (ref, retTy))
 
   | .makeClosure funcRef env => emitMakeClosureImpl funcRef env
@@ -1436,6 +1448,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
                          pure (.local ref)
         let ref ← CodegenM.withFuncBuilder do
           FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, funcPtr), (.ptr, ioArgPtr)]
+        let ref ← unboxApplyResult ref retTy
         pure (some (ref, retTy))
       else
         pure none

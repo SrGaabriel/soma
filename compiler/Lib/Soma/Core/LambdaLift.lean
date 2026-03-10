@@ -194,8 +194,13 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
   | .app fn arg => do
     pure (.app (← liftCoreExpr fn) (← liftCoreExpr arg))
   | .let_ n t v b => do
-    pure (.let_ n (← liftCoreExpr t) (← liftCoreExpr v)
-                   (← liftCoreExpr b))
+    let liftedT ← liftCoreExpr t
+    let liftedV ← liftCoreExpr v
+    let u ← LiftM.freshUnique n
+    let openedB := Soma.Core.Expr.instantiate b (Soma.Core.Expr.fvar u liftedT)
+    let liftedB ← liftCoreExpr openedB
+    let closedB := Soma.Core.Expr.abstractFVar liftedB u
+    pure (.let_ n liftedT liftedV closedB)
   | .pi q info n d c => do
     pure (.pi q info n (← liftCoreExpr d) (← liftCoreExpr c))
   | .sigma q info n f s => do
