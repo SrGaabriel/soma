@@ -104,7 +104,7 @@ partial def applyClosure (clos : Closure) (arg : Value) : TCM Value := do
     let ctx ← TCM.getCtx
     let evalCtx : EvalCtx := {
       env := env'
-      globals := ctx.globals.toGlobalEnv
+      globals := ctx.globals.toGlobalEnvWithClasses ctx.instanceEnv
       metas := state.metas
     }
     let result := Soma.Core.evalCoreExpr evalCtx body

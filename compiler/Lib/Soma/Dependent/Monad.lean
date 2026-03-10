@@ -873,6 +873,17 @@ def instanceCount (env : InstanceEnv) : Nat :=
 
 end InstanceEnv
 
+/-- Enrich a GlobalEnv with class record types from an InstanceEnv.
+    This enables pure `typeOfWith` to resolve field access on class dictionary types
+    (e.g., `vDataType(Monad, [IO])`) without needing the TCM monad. -/
+def enrichGlobalEnvWithClasses (env : Soma.Core.GlobalEnv) (instanceEnv : InstanceEnv) : Soma.Core.GlobalEnv :=
+  instanceEnv.classes.fold (init := env) fun acc classId classInfo =>
+    acc.insertClassRecordType classId classInfo.recordType
+
+/-- Convert Globals to GlobalEnv enriched with class record types -/
+def Globals.toGlobalEnvWithClasses (g : Globals) (instanceEnv : InstanceEnv) : Soma.Core.GlobalEnv :=
+  enrichGlobalEnvWithClasses g.toGlobalEnv instanceEnv
+
 /-- Elaborated type abbreviation -/
 structure AbbrevInfo where
   /-- Unique identifier for this abbreviation -/
@@ -1665,20 +1676,13 @@ def withFreshUsages (m : TCM α) : TCM (α × Std.HashMap Unique Nat) := do
 
 /-! ## Evaluation -/
 
-/-- Convert TCM globals to EvalCtx globals -/
-private def globalsToEvalGlobals (g : Globals) : GlobalEnv :=
-  g.foldDecls (init := GlobalEnv.empty) fun acc _ info =>
-    match info.value with
-    | some v => acc.insert info.name v
-    | none => acc
-
 /-- Evaluate a Core.Expr to a Value using the current environment. -/
 def evalExpr (e : Soma.Core.Expr) : TCM Value := do
   let ctx ← getCtx
   let state ← getState
   let evalCtx : EvalCtx := {
     env := ctx.env
-    globals := globalsToEvalGlobals ctx.globals
+    globals := ctx.globals.toGlobalEnvWithClasses ctx.instanceEnv
     metas := state.metas
   }
   return Soma.Core.evalCoreExpr evalCtx e
@@ -1689,7 +1693,7 @@ def evalExprInEnv (env : Env) (e : Soma.Core.Expr) : TCM Value := do
   let state ← getState
   let evalCtx : EvalCtx := {
     env := env
-    globals := globalsToEvalGlobals ctx.globals
+    globals := ctx.globals.toGlobalEnvWithClasses ctx.instanceEnv
     metas := state.metas
   }
   return Soma.Core.evalCoreExpr evalCtx e

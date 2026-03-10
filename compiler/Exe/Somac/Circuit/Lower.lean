@@ -1327,12 +1327,13 @@ def generatePureIOBody (fnTy : Value) : LowerM (NodeId × Nat) := do
 /-- Lower an entire module using typed functions from type checking -/
 def lowerModule (types : Array Soma.Core.TypeDef)
     (typedFunctions : TypedFunctionMap)
-    (globals : Option Soma.Dependent.Globals := none) : LowerM Unit := do
+    (globals : Option Soma.Dependent.Globals := none)
+    (instanceEnv : Soma.Dependent.InstanceEnv := .empty) : LowerM Unit := do
   -- Load intrinsic dispatch metadata from elaboration/type checking.
   if let some g := globals then
     LowerM.modifyCtx fun ctx => { ctx with
       intrinsics := g.intrinsics
-      evalGlobalEnv := g.toGlobalEnv
+      evalGlobalEnv := g.toGlobalEnvWithClasses instanceEnv
     }
 
   -- Register global types for type synthesis during lowering.
@@ -1446,7 +1447,8 @@ def lowerModule (types : Array Soma.Core.TypeDef)
 def lower (types : Array Soma.Core.TypeDef)
     (typedFunctions : TypedFunctionMap)
     (usageMap : UsageMap)
-    (globals : Option Soma.Dependent.Globals := none) : Graph :=
-  LowerM.build (lowerModule types typedFunctions globals) usageMap
+    (globals : Option Soma.Dependent.Globals := none)
+    (instanceEnv : Soma.Dependent.InstanceEnv := .empty) : Graph :=
+  LowerM.build (lowerModule types typedFunctions globals instanceEnv) usageMap
 
 end Somac.Circuit.Lower

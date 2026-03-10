@@ -243,10 +243,10 @@ def runLLVM (p : Parsed) : IO UInt32 := do
     return 1
 
   -- Phase 5.5: Lambda lifting
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName tcResult.uniqueNextId tcResult.globals.toGlobalEnv
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName tcResult.uniqueNextId (tcResult.globals.toGlobalEnvWithClasses tcResult.instanceEnv)
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
+  let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals) tcResult.instanceEnv
 
   -- Phase 7: Lower to Alloy MIR
   let primTypes := Somac.Alloy.Lower.buildPrimTypeRegistry tcResult.globals.wiredIn
@@ -307,10 +307,10 @@ def runAlloy (p : Parsed) : IO UInt32 := do
     return 1
 
   -- Phase 5.5: Lambda lifting
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName tcResult.uniqueNextId tcResult.globals.toGlobalEnv
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName tcResult.uniqueNextId (tcResult.globals.toGlobalEnvWithClasses tcResult.instanceEnv)
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
+  let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals) tcResult.instanceEnv
 
   -- Phase 7: Lower to Alloy MIR
   let primTypes := Somac.Alloy.Lower.buildPrimTypeRegistry tcResult.globals.wiredIn
@@ -369,10 +369,10 @@ def runCircuit (p : Parsed) : IO UInt32 := do
     return 1
 
   -- Phase 5.5: Lambda lifting
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName tcResult.uniqueNextId tcResult.globals.toGlobalEnv
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll tcResult.typedFunctions moduleName tcResult.uniqueNextId (tcResult.globals.toGlobalEnvWithClasses tcResult.instanceEnv)
 
   -- Phase 6: Lower to Circuit IR with usage data and type info from type checking
-  let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals)
+  let graph := Somac.Circuit.Lower.lower elabRes.module.types liftedTypedFunctions tcResult.usages (some tcResult.globals) tcResult.instanceEnv
 
   -- Pretty print the Circuit IR graph
   let cfg : Somac.Circuit.Pretty.Config := { showIds := true, showConnections := true, showLabels := true, showTypes := showTypes }

@@ -12,17 +12,27 @@ namespace Soma.Core
 structure GlobalEnv where
   /-- Map from global names to their values -/
   defs : Std.HashMap QualifiedName Value := {}
+  /-- Map from class unique IDs to their Pi-wrapped record types -/
+  classRecordTypes : Std.HashMap Unique Value := {}
   deriving Inhabited
 
 namespace GlobalEnv
 
-def empty : GlobalEnv := ⟨{}⟩
+def empty : GlobalEnv := {}
 
 def insert (env : GlobalEnv) (name : QualifiedName) (v : Value) : GlobalEnv :=
-  ⟨env.defs.insert name v⟩
+  { env with defs := env.defs.insert name v }
 
 def lookup (env : GlobalEnv) (name : QualifiedName) : Option Value :=
   env.defs.get? name
+
+/-- Register a class's record type for pure field access resolution -/
+def insertClassRecordType (env : GlobalEnv) (classId : Unique) (recordType : Value) : GlobalEnv :=
+  { env with classRecordTypes := env.classRecordTypes.insert classId recordType }
+
+/-- Look up a class record type by class unique ID -/
+def lookupClassRecordType (env : GlobalEnv) (classId : Unique) : Option Value :=
+  env.classRecordTypes.get? classId
 
 end GlobalEnv
 
@@ -336,6 +346,22 @@ def evalClosed (e : Soma.Core.Expr) : Value :=
 def evalWithGlobals (globals : GlobalEnv) (e : Soma.Core.Expr) : Value :=
   evalCoreExpr { EvalCtx.empty with globals := globals } e
 
+/-- Apply type arguments to a Pi-wrapped class record type, stripping one Pi per argument -/
+partial def applyClassRecordType (recordType : Value) (args : List Value) : Option Value :=
+  match args with
+  | [] => some recordType
+  | arg :: rest =>
+    match recordType with
+    | .vPi _ _ _ _ cod => applyClassRecordType (cod.applyPure arg) rest
+    | _ => none
+
+/-- Resolve field access on a class dictionary type -/
+def resolveClassFieldType (globals : GlobalEnv) (classId : Unique) (args : List Value) (field : String) : Option Value := do
+  let recordType ← globals.lookupClassRecordType classId
+  let appliedTy ← applyClassRecordType recordType args
+  let fields := appliedTy.recordFields
+  fields.toList.find? (·.1 == field) |>.map (·.2)
+
 /-- Compute the type of a Core expression -/
 partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr → Value
   | .ann _ ty => evalWithGlobals globals ty
@@ -418,17 +444,28 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr
     match fields.toList.find? (·.1 == field) with
     | some (_, ty) => ty
     | none =>
-      -- For instance dicts, get field type from the record expression
-      match expr with
-      | .record recFields =>
-        match recFields.toList.find? (·.1 == field) with
-        | some (_, fieldExpr) => typeOfWith bvarCtx globals fieldExpr
-        | none => .vType .zero
+      -- The record type may be a class dictionary type (vDataType(ClassId, args)).
+      -- Resolve it by looking up the class record type and applying type arguments.
+      match recTy with
+      | .vDataType classId args =>
+        match resolveClassFieldType globals classId args field with
+        | some fieldTy => fieldTy
+        | none =>
+          -- Fallback: infer from the record expression itself
+          match expr with
+          | .record recFields =>
+            match recFields.toList.find? (·.1 == field) with
+            | some (_, fieldExpr) => typeOfWith bvarCtx globals fieldExpr
+            | none => .vType .zero
+          | _ => .vType .zero
       | _ =>
-        -- The record type may be a class application (vDataType) rather than a vRecord,
-        -- e.g. when accessing methods from an instance dictionary fvar whose type
-        -- annotation is the class constraint. Return a neutral type to avoid panicking.
-        .vType .zero
+        -- Non-class, non-record type — try expression-level fallback
+        match expr with
+        | .record recFields =>
+          match recFields.toList.find? (·.1 == field) with
+          | some (_, fieldExpr) => typeOfWith bvarCtx globals fieldExpr
+          | none => .vType .zero
+        | _ => .vType .zero
 
   | .closure _name _captures => .vType .zero
 

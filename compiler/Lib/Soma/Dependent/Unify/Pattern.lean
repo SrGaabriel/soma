@@ -196,7 +196,7 @@ def evalSolutionTerm (t : Soma.Core.Expr) : TCM Value := do
   let state ← TCM.getState
   let evalCtx : EvalCtx := {
     env := ctx.env
-    globals := ctx.globals.toGlobalEnv
+    globals := ctx.globals.toGlobalEnvWithClasses ctx.instanceEnv
     metas := state.metas
   }
   return evalCoreExpr evalCtx t
