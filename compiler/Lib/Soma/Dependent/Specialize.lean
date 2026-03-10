@@ -216,17 +216,9 @@ private partial def specializeExpr (registry : ClassMethodRegistry) (e : Expr) :
         -- Specialize the dict and remaining args, but not the spine itself
         let dictExpr := specializeExpr registry args[idx]!
         let implOpt := inlineFieldAccess dictExpr info.methodName info.fieldIdx
-        -- Check if the inlined implementation references IO intrinsics
-        let isIOMethod := match implOpt with
-          | some impl => referencesIOIntrinsic impl
-          | none => false
-        if isIOMethod then
-          -- Skip specialization for IO methods — recurse normally
-          rebuildAppSpine (specializeChildren registry head) (args.map (specializeExpr registry))
-        else
-          let specialized := match implOpt with
-            | some impl => specializeExpr registry impl
-            | none => Expr.fieldAccess dictExpr info.methodName info.fieldIdx
+        let specialized := match implOpt with
+          | some impl => specializeExpr registry impl
+          | none => Expr.fieldAccess dictExpr info.methodName info.fieldIdx
           -- Keep only non-type-level args after the dict, recursively specialized
           let remainingArgs := (args.extract (idx + 1) args.size)
             |>.filter (!isTypeLevelExpr ·)

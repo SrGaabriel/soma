@@ -1077,8 +1077,8 @@ partial def lowerCoreClosure (fnName : Soma.Core.QualifiedName)
     | none => pure ()
 
   let envPort ← if capturePairs.isEmpty then do
-    let ctor ← LowerM.addNode (.ctor 0 0) unitTy
-    pure (PortId.principal ctor)
+    let era ← LowerM.addNode .era unitTy
+    pure (PortId.principal era)
   else do
     let captureTypes := capturePairs.map (·.2)
     let envTy := Value.tuple captureTypes

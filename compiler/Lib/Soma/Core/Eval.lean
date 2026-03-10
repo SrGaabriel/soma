@@ -423,8 +423,12 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr
       | .record recFields =>
         match recFields.toList.find? (·.1 == field) with
         | some (_, fieldExpr) => typeOfWith bvarCtx globals fieldExpr
-        | none => panic! s!"Expr.typeOfWith: field '{field}' not found in record literal"
-      | _ => panic! s!"Expr.typeOfWith: field '{field}' not found in record type (expr={expr.ctorName})"
+        | none => .vType .zero
+      | _ =>
+        -- The record type may be a class application (vDataType) rather than a vRecord,
+        -- e.g. when accessing methods from an instance dictionary fvar whose type
+        -- annotation is the class constraint. Return a neutral type to avoid panicking.
+        .vType .zero
 
   | .closure _name _captures => .vType .zero
 

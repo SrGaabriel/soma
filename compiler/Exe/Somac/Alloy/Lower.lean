@@ -89,12 +89,10 @@ structure TypeConvCtx (n : Nat) where
 /-- Build the primitive type registry from the wired-in type registry -/
 def buildPrimTypeRegistry (wiredIn : Soma.Dependent.WiredIn) : PrimTypeRegistry :=
   wiredIn.roles.fold (init := {}) fun acc role infos =>
-    match infos with
-    | #[info] =>
-      match Soma.Dependent.WiredRole.primType? role with
-      | some prim => acc.insert info.name.id prim
-      | none => acc
-    | _ => acc
+    match Soma.Dependent.WiredRole.primType? role with
+    | some prim => infos.foldl (init := acc) fun acc info =>
+        acc.insert info.name.id prim
+    | none => acc
 
 /-- Mapping from Circuit node ports to Alloy local values -/
 abbrev PortMap := Std.HashMap (Nat × Nat) LocalId
@@ -1265,7 +1263,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       let fnPort := entry.getPort ⟨1⟩
 
       let lsUnsaturated ← StateT.lift get
-      let maybeIntrinsic ← match fnPort with
+      let ctx := ns.toTypeConvCtx
+      let maybeIntrinsicWithDef ← match fnPort with
         | some fp =>
           match graph.getNode fp.node with
           | some fnEntry =>
@@ -1274,8 +1273,12 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               match graph.getDefinition refId with
               | some def_ =>
                 match resolveIntrinsic? def_.name lsUnsaturated.ctxIntrinsics with
-                | some (Intrinsic.ffiOp op) => pure (some (Sum.inl op : Sum FFIOp String))
-                | some (Intrinsic.extern name) => pure (some (Sum.inr name : Sum FFIOp String))
+                | some (Intrinsic.ffiOp op) =>
+                  let v : Sum FFIOp String := Sum.inl op
+                  pure (some (v, some def_))
+                | some (Intrinsic.extern name) =>
+                  let v : Sum FFIOp String := Sum.inr name
+                  pure (some (v, some def_))
                 | _ => pure none
               | none => pure none
             | _ => pure none
@@ -1284,16 +1287,18 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
       let argVal ← lowerPort 2 (.prim .unit)
 
-      match maybeIntrinsic with
-      | some (Sum.inl ffiOp) =>
+      match maybeIntrinsicWithDef with
+      | some (Sum.inl ffiOp, _) =>
         let intrinsicOp := convertFFIOp ffiOp
         let retTy : Ty n := match intrinsicOp.fixedRetTy with
           | some t => ClosedTy.embed t
           | none => nodeTy
         StateT.lift (LowerM.emitInst (.callIntrinsic intrinsicOp #[.local argVal] retTy) retTy)
-      | some (Sum.inr externName) =>
-        -- Extern function: emit callExtern
-        StateT.lift (LowerM.emitInst (.callExtern externName #[.local argVal] nodeTy) nodeTy)
+      | some (Sum.inr externName, def_?) =>
+        let callRetTy := match def_? with
+          | some d => extractReturnTypeWithMapping d.ty ctx
+          | none => nodeTy
+        StateT.lift (LowerM.emitInst (.callExtern externName #[.local argVal] callRetTy) callRetTy)
       | none =>
         -- Regular function call: check what the function node is
         match fnPort with
