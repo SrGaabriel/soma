@@ -1,13 +1,13 @@
 // expect: success
 // Test: binary operations - OP2 node lowering
 
-@[intrinsic]
+@[intrinsic "primop.add"]
 def {+} : Int -> Int -> Int
 
-@[intrinsic]
+@[intrinsic "primop.sub"]
 def {-} : Int -> Int -> Int
 
-@[intrinsic]
+@[intrinsic "primop.mul"]
 def {*} : Int -> Int -> Int
 
 def add : Int -> Int -> Int

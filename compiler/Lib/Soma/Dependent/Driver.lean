@@ -34,16 +34,21 @@ structure CheckState where
   /-- Accumulated errors -/
   errors : Array TCError := #[]
 
-private def inferIntrinsicInfo (fn : Soma.Core.UntypedFunction) : Option Intrinsic :=
-  if fn.attrs.intrinsic then
-    match PrimOp.fromString? fn.name.display with
-    | some op => some (.primOp op)
-    | none =>
-      match FFIOp.fromString? fn.name.display with
-      | some op => some (.ffiOp op)
-      | none => some (.extern (fn.attrs.extern.getD fn.name.display))
-  else
-    fn.attrs.extern.map Intrinsic.extern
+private def inferIntrinsicInfo (fn : Soma.Core.UntypedFunction) : TCM (Option Intrinsic) :=
+  match fn.attrs.intrinsic with
+  | some tag =>
+    if tag.isEmpty then
+      TCM.throw (.cannotInfer
+        s!"@[intrinsic] on '{fn.name.display}' requires a tag string, e.g. @[intrinsic \"primop.add\"]"
+        fn.span none)
+    else
+      match Intrinsic.fromTag? tag with
+      | some i => pure (some i)
+      | none => TCM.throw (.cannotInfer
+          s!"unknown intrinsic tag '{tag}' on '{fn.name.display}'"
+          fn.span none)
+  | none =>
+    pure (fn.attrs.extern.map Intrinsic.extern)
 
 /-- Check totality for a function if it's marked @[total] -/
 def checkFunctionTotality (fn : Soma.Core.UntypedFunction) (body : Soma.Core.Expr)
@@ -186,7 +191,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
   : TCM (Value × Soma.Core.Expr × Array (Soma.Unique × String)) := do
   let span := fn.span
   -- Intrinsic/extern functions have no real body — just elaborate the type
-  if fn.attrs.intrinsic || fn.attrs.extern.isSome then
+  if fn.attrs.intrinsic.isSome || fn.attrs.extern.isSome then
     match fn.declaredTypeSyntax with
     | some typeSyntax =>
       let declaredType ← TCM.recoverWithM
@@ -386,6 +391,20 @@ private def indexWiredRoles (module : Soma.Core.UntypedModule) (globals : Global
     | .record attrs recordName _ _ _ =>
       if let some typeInfo := g.lookup recordName.display then
         g ← registerWiredRoleFromAttrs g attrs typeInfo s!"type {recordName.display}"
+  for fn in module.functions do
+    if let some roleName := fn.attrs.wiredIn then
+      if let some fnInfo := g.lookup fn.name.display then
+        match WiredRole.fromString? roleName with
+        | some role =>
+          let existing := g.wiredIn.getAll role
+          let conflicts := existing.filter (fun e => e.name != fnInfo.name)
+          if conflicts.isEmpty then
+            g := { g with wiredIn := g.wiredIn.register role fnInfo }
+          else
+            let prev := String.intercalate ", " ((conflicts.map (fun e => e.name.display)).toList)
+            TCM.throw (.cannotInfer s!"duplicate wired_in role '{role.canonical}' on function {fn.name.display}; already bound to {prev}" fn.span none)
+        | none =>
+          TCM.throw (.cannotInfer s!"unknown wired_in role '{roleName}' on function {fn.name.display}" fn.span none)
   pure g
 
 /-- Elaborate the type constructor kind for a type class head -/
@@ -713,14 +732,15 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
         | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
         | none => TCM.freshMetaVal (.vType .zero))
       (TCM.typePlaceholder fn.span)
+    let intrinsic ← inferIntrinsicInfo fn
     let info : GlobalInfo := {
       name := fn.name
       type := fnType
       value := none
-      intrinsic := inferIntrinsicInfo fn
+      intrinsic := intrinsic
       isConstructor := false
-      origin := match inferIntrinsicInfo fn with
-        | some (.extern _) => if fn.attrs.intrinsic then .intrinsic else .extern
+      origin := match intrinsic with
+        | some (.extern _) => if fn.attrs.intrinsic.isSome then .intrinsic else .extern
         | some _ => .intrinsic
         | none => .function
     }
@@ -1038,14 +1058,15 @@ private def registerFunction
       | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
       | none => TCM.freshMetaVal (.vType .zero))
     (TCM.typePlaceholder fn.span)
+  let intrinsic ← inferIntrinsicInfo fn
   let info : GlobalInfo := {
     name := fn.name
     type := fnType
     value := none
-    intrinsic := inferIntrinsicInfo fn
+    intrinsic := intrinsic
     isConstructor := false
-    origin := match inferIntrinsicInfo fn with
-      | some (.extern _) => if fn.attrs.intrinsic then .intrinsic else .extern
+    origin := match intrinsic with
+      | some (.extern _) => if fn.attrs.intrinsic.isSome then .intrinsic else .extern
       | some _ => .intrinsic
       | none => .function
   }

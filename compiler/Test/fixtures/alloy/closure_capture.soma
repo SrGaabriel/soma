@@ -1,7 +1,7 @@
 // expect: success
 // Test: closure with captured variable - environment lowering
 
-@[intrinsic]
+@[intrinsic "primop.add"]
 def {+} : Int -> Int -> Int
 
 def make_adder : Int -> Int -> Int

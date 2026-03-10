@@ -1,9 +1,9 @@
 use base/prim.{+, -, *}
 use base/core.{Option}
 
-@[intrinsic]
+@[intrinsic "primop.eq"]
 def {==} {a : Type} : a -> a -> Bool
-@[intrinsic]
+@[intrinsic "primop.le"]
 def {<=} : Int -> Int -> Bool
 
 def head {a : Type} : [a] -> Option a

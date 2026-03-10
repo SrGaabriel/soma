@@ -1,19 +1,19 @@
-@[intrinsic]
+@[intrinsic "ffi.null"]
 def null : Ptr a
 
-@[intrinsic]
+@[intrinsic "ffi.ptr_add"]
 def ptr_add : Ptr a -> Int64 -> Ptr a
 
-@[intrinsic]
+@[intrinsic "ffi.ptr_diff"]
 def ptr_diff : Ptr a -> Ptr a -> Int64
 
-@[intrinsic]
+@[intrinsic "ffi.ptr_read"]
 def ptr_read : Ptr a -> a
 
-@[intrinsic]
+@[intrinsic "ffi.ptr_write"]
 def ptr_write : Ptr a -> a -> Unit
 
-@[intrinsic]
+@[intrinsic "ffi.ptr_cast"]
 def ptr_cast : Ptr a -> Ptr b
 
 alias CChar = Int8
@@ -37,13 +37,13 @@ alias CUIntPtr = Word64
 
 alias CString = Ptr Word8
 
-@[intrinsic]
+@[intrinsic "ffi.to_cstring"]
 def to_cstring : String -> CString
 
-@[intrinsic]
+@[intrinsic "ffi.from_cstring"]
 def from_cstring : CString -> String
 
-@[intrinsic]
+@[intrinsic "ffi.cstring_len"]
 def cstring_len : CString -> CSize
 
 @[extern]

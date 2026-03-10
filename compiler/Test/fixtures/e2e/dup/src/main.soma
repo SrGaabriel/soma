@@ -1,9 +1,9 @@
 use test/prim.{Int}
 
-@[intrinsic]
+@[intrinsic "primop.add"]
 def {+} : Int -> Int -> Int
 
-@[intrinsic]
+@[intrinsic "primop.mul"]
 def {*} : Int -> Int -> Int
 
 def double (x : Int) : Int = x + x

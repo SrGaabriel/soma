@@ -1263,7 +1263,7 @@ abbrev TypedFunctionMap := Std.HashMap String Soma.Core.TypedFunction
 
 /-- Check if a function should be lowered to actual code -/
 def shouldLowerBody (fn : Soma.Core.TypedFunction) : Bool :=
-  not fn.attrs.intrinsic && fn.attrs.extern.isNone
+  fn.attrs.intrinsic.isNone && fn.attrs.extern.isNone
 
 /-- Generate a proper Circuit IR function body for a primitive operation -/
 def generatePrimOpBody (op : PrimOp) (fnTy : Value) : LowerM (NodeId × Nat) := do

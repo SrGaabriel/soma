@@ -13,8 +13,10 @@ structure FunctionAttrs where
   deprecated : Option String := none
   /-- External function name (for @[extern] functions) -/
   extern : Option String := none
-  /-- Whether this function is an @[intrinsic] (compiler-handled operation) -/
-  intrinsic : Bool := false
+  /-- Intrinsic tag from @[intrinsic "tag"] -/
+  intrinsic : Option String := none
+  /-- Wired-in role from @[wired_in "role"] -/
+  wiredIn : Option String := none
   /-- Whether this function is marked as total (must terminate) -/
   total : Bool := false
   deriving BEq, Inhabited

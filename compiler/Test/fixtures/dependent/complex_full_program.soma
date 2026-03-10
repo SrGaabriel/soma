@@ -1,7 +1,7 @@
 // expect: success
 // Test: a complete program with multiple features
 
-@[intrinsic]
+@[intrinsic "primop.add"]
 def {+} : Int -> Int -> Int
 
 inductive Maybe {a : Type} where

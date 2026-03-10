@@ -1,10 +1,10 @@
 // expect: success
 // Test: higher-order functions - callClosure lowering
 
-@[intrinsic]
+@[intrinsic "primop.add"]
 def {+} : Int -> Int -> Int
 
-@[intrinsic]
+@[intrinsic "primop.mul"]
 def {*} : Int -> Int -> Int
 
 def comp : (Int -> Int) -> (Int -> Int) -> Int -> Int

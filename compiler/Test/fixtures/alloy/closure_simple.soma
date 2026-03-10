@@ -1,7 +1,7 @@
 // expect: success
 // Test: simple closure - lambda lifting and closure lowering
 
-@[intrinsic]
+@[intrinsic "primop.add"]
 def {+} : Int -> Int -> Int
 
 def apply : (Int -> Int) -> Int -> Int

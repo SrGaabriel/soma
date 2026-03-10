@@ -1,7 +1,7 @@
 // expect: success
 // Test: unary operations - OP1 node lowering
 
-@[intrinsic]
+@[intrinsic "primop.sub"]
 def {-} : Int -> Int -> Int
 
 def negate : Int -> Int

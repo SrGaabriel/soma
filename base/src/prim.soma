@@ -74,13 +74,13 @@ record Ptr {a : Type}
 @[intrinsic]
 record IO {a : Type}
 
-@[intrinsic]
+@[intrinsic "primop.add"]
 def {+} : Int -> Int -> Int
-@[intrinsic]
+@[intrinsic "primop.sub"]
 def {-} : Int -> Int -> Int
-@[intrinsic]
+@[intrinsic "primop.mul"]
 def {*} : Int -> Int -> Int
-@[intrinsic]
+@[intrinsic "primop.mod"]
 def {%} : Int -> Int -> Int
-@[intrinsic]
+@[intrinsic "primop.div"]
 def {/} : Int -> Int -> Int

@@ -1,43 +1,7 @@
-use stdlib/collections.{cons, head, length, map, foldl, filter, sum, reverse, append, ==}
 use stdlib/core.{puts}
-use base/core.{display}
-use base/prim.{List}
 
 def main : IO () =
     compose
-        let xs = [1, 2, 3, 4, 5]
-
-        let len = length xs
-        puts ("Length: " <> display len)
-        puts ("Buggy")
-
-        let total = sum xs
-        puts ("Sum: " <> display total)
-        puts ("Hello, World!")
-
-        bind x <- puts "5"
-
-        let doubled = map (\x -> x * 2) xs
-        let doubledSum = sum doubled
-        puts ("Doubled sum: " <> display doubledSum)
-
-        let evens = filter (\x -> x % 2 == 0) [1, 2, 3, 4, 5, 6]
-        let evensSum = sum evens
-        puts ("Evens sum: " <> display evensSum)
-
-        let rev = reverse [1, 2, 3]
-        let revSum = sum rev
-        puts ("Reverse sum: " <> display revSum)
-
-        let combined = append [1, 2] [3, 4]
-        let combinedSum = sum combined
-        puts ("Append sum: " <> display combinedSum)
-
-        let withZero = List::Cons 0 xs
-        let consSum = sum withZero
-        puts ("Cons sum: " <> display consSum)
-
-        let first = head xs
-        puts ("Head: " <> display first)
-
+        puts "Hello"
+        puts "World"
         puts "Done!"

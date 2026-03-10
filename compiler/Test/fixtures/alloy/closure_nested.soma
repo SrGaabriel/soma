@@ -1,7 +1,7 @@
 // expect: success
 // Test: nested closures - multiple capture environments
 
-@[intrinsic]
+@[intrinsic "primop.add"]
 def {+} : Int -> Int -> Int
 
 def curry3 : Int -> Int -> Int -> Int

@@ -1,5 +1,5 @@
 // expect: success
-@[intrinsic]
+@[intrinsic "primop.add"]
 def {+} : Int -> Int -> Int
 
 def add (x : Int) (y : Int) : Int = x + y

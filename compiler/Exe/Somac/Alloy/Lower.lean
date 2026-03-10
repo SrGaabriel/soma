@@ -38,21 +38,6 @@ abbrev CNodeEntry := Somac.Circuit.Graph.NodeEntry
 open Somac.Circuit.Term (Op1Code Op2Code Tag)
 open Soma.Core (QualifiedName PrimOp FFIOp Intrinsic PrimType)
 
-private def intrinsicOfQName? (qn : QualifiedName) : Option Intrinsic :=
-  let n := qn.id.original
-  match PrimOp.fromString? n with
-  | some op => some (.primOp op)
-  | none =>
-    match FFIOp.fromString? n with
-    | some op => some (.ffiOp op)
-    | none =>
-      if qn.id.module == "$intrinsic" then
-        some (.extern n)
-      else
-        none
-
-private def isIntrinsicQName (qn : QualifiedName) : Bool :=
-  (intrinsicOfQName? qn).isSome
 
 /-- Mapping from de Bruijn level to bounded type variable index -/
 structure TyVarMapping (n : Nat) where
@@ -340,7 +325,7 @@ partial def resolveCanonicalRef (graph : CGraph) (nodeId : CNodeId)
 /-- Resolve an intrinsic from a qualified name -/
 private def resolveIntrinsic? (qn : QualifiedName)
     (ctxIntrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Option Intrinsic :=
-  ctxIntrinsics.get? qn |>.orElse fun _ => intrinsicOfQName? qn
+  ctxIntrinsics.get? qn
 
 /-- Build a FuncRef from a book index, handling intrinsics and externals -/
 def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)

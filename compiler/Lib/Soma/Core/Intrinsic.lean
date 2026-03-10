@@ -51,25 +51,6 @@ instance : ToString PrimOp := ⟨PrimOp.symbol⟩
 
 def llvmName (op : PrimOp) : String := s!"primop_{op.name}"
 
-/-- Parse a string (symbol or name) into a PrimOp -/
-def fromString? : String → Option PrimOp
-  | "+" | "add" => some .add
-  | "-" | "sub" => some .sub
-  | "*" | "mul" => some .mul
-  | "/" | "div" => some .div
-  | "%" | "mod" => some .mod
-  | "==" | "eq" => some .eq
-  | "!=" | "ne" => some .ne
-  | "<" | "lt" => some .lt
-  | "<=" | "le" => some .le
-  | ">" | "gt" => some .gt
-  | ">=" | "ge" => some .ge
-  | "&&" | "and" => some .and
-  | "||" | "or" => some .or
-  | "!" | "not" => some .not
-  | "neg" => some .neg
-  | _ => none
-
 end PrimOp
 
 /-- FFI intrinsic operations (pointer/memory operations implemented as LLVM instructions) -/
@@ -123,23 +104,6 @@ instance : ToString FFIOp := ⟨FFIOp.name⟩
 
 def llvmName (op : FFIOp) : String := s!"soma_ffi_{op.name}"
 
-/-- Parse a string into an FFIOp -/
-def fromString? : String → Option FFIOp
-  | "null" => some .null
-  | "ptr_add" => some .ptrAdd
-  | "ptr_diff" => some .ptrDiff
-  | "ptr_read" => some .ptrRead
-  | "ptr_write" => some .ptrWrite
-  | "ptr_cast" => some .ptrCast
-  | "to_cstring" => some .toCString
-  | "from_cstring" => some .fromCString
-  | "cstring_len" => some .cstringLen
-  | "strcat" => some .strcat
-  | "int_to_string" => some .intToString
-  | "pure_io" => some .pureIO
-  | "io_bind" => some .bindIO
-  | _ => none
-
 end FFIOp
 
 /-- Compiler intrinsics (LLVM, runtime, primitive ops, FFI ops, or externs) -/
@@ -188,6 +152,38 @@ def ffiOp? : Intrinsic → Option FFIOp
 /-- Get extern name if this is one -/
 def externName? : Intrinsic → Option String
   | .extern name => some name
+  | _ => none
+
+/-- Resolve an explicit @[intrinsic "tag"] value to an Intrinsic -/
+def fromTag? : String → Option Intrinsic
+  | "primop.add" => some (.primOp .add)
+  | "primop.sub" => some (.primOp .sub)
+  | "primop.mul" => some (.primOp .mul)
+  | "primop.div" => some (.primOp .div)
+  | "primop.mod" => some (.primOp .mod)
+  | "primop.eq" => some (.primOp .eq)
+  | "primop.ne" => some (.primOp .ne)
+  | "primop.lt" => some (.primOp .lt)
+  | "primop.le" => some (.primOp .le)
+  | "primop.gt" => some (.primOp .gt)
+  | "primop.ge" => some (.primOp .ge)
+  | "primop.and" => some (.primOp .and)
+  | "primop.or" => some (.primOp .or)
+  | "primop.not" => some (.primOp .not)
+  | "primop.neg" => some (.primOp .neg)
+  | "ffi.null" => some (.ffiOp .null)
+  | "ffi.ptr_add" => some (.ffiOp .ptrAdd)
+  | "ffi.ptr_diff" => some (.ffiOp .ptrDiff)
+  | "ffi.ptr_read" => some (.ffiOp .ptrRead)
+  | "ffi.ptr_write" => some (.ffiOp .ptrWrite)
+  | "ffi.ptr_cast" => some (.ffiOp .ptrCast)
+  | "ffi.to_cstring" => some (.ffiOp .toCString)
+  | "ffi.from_cstring" => some (.ffiOp .fromCString)
+  | "ffi.cstring_len" => some (.ffiOp .cstringLen)
+  | "ffi.strcat" => some (.ffiOp .strcat)
+  | "ffi.int_to_string" => some (.ffiOp .intToString)
+  | "ffi.pure_io" => some (.ffiOp .pureIO)
+  | "ffi.io_bind" => some (.ffiOp .bindIO)
   | _ => none
 
 end Intrinsic

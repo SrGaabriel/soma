@@ -7,6 +7,7 @@ namespace Soma.Dependent.Specialize
 
 open Soma.Core (Expr QualifiedName Value Closure Level Quantity Arm Pattern)
 open Soma (Unique)
+open Soma.Core (Intrinsic FFIOp)
 
 /-- Info about a class method needed for specialization -/
 structure ClassMethodInfo where
@@ -66,26 +67,6 @@ private def isTypeLevelExpr : Expr → Bool
   | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
   | .mvar _ => true
   | _ => false
-
-/-- Check if a const references a known IO intrinsic by original name -/
-private def isIOIntrinsicName (name : String) : Bool :=
-  name == "io_bind" || name == "pure_io"
-
-/-- Check if an expression references IO intrinsics (io_bind, pure_io) -/
-private partial def referencesIOIntrinsic : Expr → Bool
-  | .const qn _ => isIOIntrinsicName qn.id.original
-  | .app fn arg => referencesIOIntrinsic fn || referencesIOIntrinsic arg
-  | .lam _ _ domain body => referencesIOIntrinsic domain || referencesIOIntrinsic body
-  | .let_ _ ty val body =>
-    referencesIOIntrinsic ty || referencesIOIntrinsic val || referencesIOIntrinsic body
-  | .record fields => fields.any fun (_, e) => referencesIOIntrinsic e
-  | .closure _ captures => captures.any referencesIOIntrinsic
-  | .«case» scruts arms _ =>
-    scruts.any referencesIOIntrinsic || arms.any fun arm => referencesIOIntrinsic arm.body
-  | .construct _ _ args _ => args.any referencesIOIntrinsic
-  | .fieldAccess e _ _ => referencesIOIntrinsic e
-  | _ => false
-
 
 /-- Try to inline a field access on a known record literal -/
 private def inlineFieldAccess (dictExpr : Expr) (methodName : String) (fieldIdx : Nat)
@@ -290,16 +271,10 @@ def specializeFunction (registry : ClassMethodRegistry) (fn : Soma.Core.TypedFun
   if registry.isEmpty then fn
   else { fn with body := betaReduce (specializeExpr registry fn.body) }
 
-/-- Check if an expression is a reference to io_bind (TODO: FIX WORKAROUND) -/
-private partial def isIOBind : Expr → Bool
-  | .const qn _ => qn.id.original == "io_bind"
-  | .app fn arg => isTypeLevelExpr arg && isIOBind fn
-  | _ => false
-
-/-- Check if an expression is a reference to pure_io (TODO: FIX WORKAROUND) -/
-private partial def isPureIO : Expr → Bool
-  | .const qn _ => qn.id.original == "pure_io"
-  | .app fn arg => isTypeLevelExpr arg && isPureIO fn
+/-- Check if the head of an expression refers to a specific wired-in QualifiedName -/
+private partial def isWiredInRef (qn : QualifiedName) : Expr → Bool
+  | .const qn' _ => qn' == qn
+  | .app fn arg => isTypeLevelExpr arg && isWiredInRef qn fn
   | _ => false
 
 /-- Check if a de Bruijn variable at the given depth is referenced in an expression -/
@@ -331,59 +306,79 @@ private partial def referencesBVar (depth : Nat) : Expr → Bool
   | .const _ ty => referencesBVar depth ty
   | _ => false
 
+/-- Resolved names for IO primitives used during inlining -/
+structure IONames where
+  bindName : QualifiedName
+  pureName : QualifiedName
+
 /-- Inline IO bind chains into flat let sequences -/
-partial def inlineIOBinds : Expr → Expr
+partial def inlineIOBinds (io : IONames) : Expr → Expr
   | e@(.app fn arg) =>
     -- Check for io_bind pattern: app (app io_bind action) continuation
     match fn with
     | .app ioBind action =>
-      if isIOBind ioBind then
-        let action' := inlineIOBinds action
-        let cont' := inlineIOBinds arg
+      if isWiredInRef io.bindName ioBind then
+        let action' := inlineIOBinds io action
+        let cont' := inlineIOBinds io arg
         match cont' with
         | .lam _ name domain body =>
-          .let_ name domain action' (inlineIOBinds body)
+          .let_ name domain action' (inlineIOBinds io body)
         | _ =>
           .let_ "_" (.primTy .unit) action' (.app (cont'.shift 1 0) (.bvar 0))
       else
-        .app (inlineIOBinds fn) (inlineIOBinds arg)
+        .app (inlineIOBinds io fn) (inlineIOBinds io arg)
     | _ =>
-      if isPureIO fn then
-        inlineIOBinds arg
+      if isWiredInRef io.pureName fn then
+        inlineIOBinds io arg
       else
-        .app (inlineIOBinds fn) (inlineIOBinds arg)
+        .app (inlineIOBinds io fn) (inlineIOBinds io arg)
   | .lam info name domain body =>
-    .lam info name (inlineIOBinds domain) (inlineIOBinds body)
+    .lam info name (inlineIOBinds io domain) (inlineIOBinds io body)
   | .let_ name ty val body =>
-    .let_ name (inlineIOBinds ty) (inlineIOBinds val) (inlineIOBinds body)
+    .let_ name (inlineIOBinds io ty) (inlineIOBinds io val) (inlineIOBinds io body)
   | .closure name captures =>
-    .closure name (captures.map inlineIOBinds)
+    .closure name (captures.map (inlineIOBinds io))
   | .«case» scruts arms resultTy =>
-    .«case» (scruts.map inlineIOBinds)
-      (arms.map fun arm => Arm.mk arm.patterns (inlineIOBinds arm.body))
-      (inlineIOBinds resultTy)
+    .«case» (scruts.map (inlineIOBinds io))
+      (arms.map fun arm => Arm.mk arm.patterns (inlineIOBinds io arm.body))
+      (inlineIOBinds io resultTy)
   | .construct name tag args resultTy =>
-    .construct name tag (args.map inlineIOBinds) (inlineIOBinds resultTy)
-  | .if_ c t el => .if_ (inlineIOBinds c) (inlineIOBinds t) (inlineIOBinds el)
-  | .pair f s => .pair (inlineIOBinds f) (inlineIOBinds s)
-  | .projFst x => .projFst (inlineIOBinds x)
-  | .projSnd x => .projSnd (inlineIOBinds x)
-  | .record fields => .record (fields.map fun (n, x) => (n, inlineIOBinds x))
+    .construct name tag (args.map (inlineIOBinds io)) (inlineIOBinds io resultTy)
+  | .if_ c t el => .if_ (inlineIOBinds io c) (inlineIOBinds io t) (inlineIOBinds io el)
+  | .pair f s => .pair (inlineIOBinds io f) (inlineIOBinds io s)
+  | .projFst x => .projFst (inlineIOBinds io x)
+  | .projSnd x => .projSnd (inlineIOBinds io x)
+  | .record fields => .record (fields.map fun (n, x) => (n, inlineIOBinds io x))
   | .recordUpdate base updates =>
-    .recordUpdate (inlineIOBinds base) (updates.map fun (n, x) => (n, inlineIOBinds x))
-  | .tuple elems => .tuple (elems.map inlineIOBinds)
-  | .array elems resultTy => .array (elems.map inlineIOBinds) (inlineIOBinds resultTy)
-  | .inject label args resultTy => .inject label (args.map inlineIOBinds) (inlineIOBinds resultTy)
-  | .fieldAccess expr field idx => .fieldAccess (inlineIOBinds expr) field idx
-  | .ann expr ty => .ann (inlineIOBinds expr) (inlineIOBinds ty)
+    .recordUpdate (inlineIOBinds io base) (updates.map fun (n, x) => (n, inlineIOBinds io x))
+  | .tuple elems => .tuple (elems.map (inlineIOBinds io))
+  | .array elems resultTy => .array (elems.map (inlineIOBinds io)) (inlineIOBinds io resultTy)
+  | .inject label args resultTy => .inject label (args.map (inlineIOBinds io)) (inlineIOBinds io resultTy)
+  | .fieldAccess expr field idx => .fieldAccess (inlineIOBinds io expr) field idx
+  | .ann expr ty => .ann (inlineIOBinds io expr) (inlineIOBinds io ty)
   | .pi qty info name domain codomain =>
-    .pi qty info name (inlineIOBinds domain) (inlineIOBinds codomain)
+    .pi qty info name (inlineIOBinds io domain) (inlineIOBinds io codomain)
   | .sigma qty info name fst snd =>
-    .sigma qty info name (inlineIOBinds fst) (inlineIOBinds snd)
+    .sigma qty info name (inlineIOBinds io fst) (inlineIOBinds io snd)
   | e => e
 
-/-- Inline IO binds in a TypedFunction body -/
-def inlineIOBindsFunction (fn : Soma.Core.TypedFunction) : Soma.Core.TypedFunction :=
-  { fn with body := inlineIOBinds fn.body }
+/-- Build a reverse lookup table from Intrinsic → QualifiedName -/
+def buildReverseIntrinsicMap (intrinsics : Std.HashMap QualifiedName Intrinsic)
+    : Std.HashMap Intrinsic QualifiedName :=
+  intrinsics.fold (init := {}) fun acc qn i => acc.insert i qn
+
+/-- Resolve IO primitive names from the reverse intrinsic map -/
+def resolveIONames? (reverseMap : Std.HashMap Intrinsic QualifiedName)
+    : Option IONames :=
+  match reverseMap.get? (.ffiOp .bindIO), reverseMap.get? (.ffiOp .pureIO) with
+  | some bindName, some pureName => some { bindName, pureName }
+  | _, _ => none
+
+/-- Inline IO binds in a TypedFunction body using pre-resolved IO names -/
+def inlineIOBindsFunction (ioNames? : Option IONames)
+    (fn : Soma.Core.TypedFunction) : Soma.Core.TypedFunction :=
+  match ioNames? with
+  | some io => { fn with body := inlineIOBinds io fn.body }
+  | none => fn
 
 end Soma.Dependent.Specialize

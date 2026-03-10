@@ -1,9 +1,9 @@
 use base/core.{Functor, Applicative, Monad}
 
-@[intrinsic]
+@[intrinsic "ffi.pure_io"]
 def pure_io : a -> IO a
 
-@[intrinsic]
+@[intrinsic "ffi.io_bind"]
 def io_bind : IO a -> (a -> IO b) -> IO b
 
 instance Functor IO where

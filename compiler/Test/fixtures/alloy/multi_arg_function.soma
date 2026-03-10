@@ -1,7 +1,7 @@
 // expect: success
 // Test: multi-argument function - LAM chain lowering
 
-@[intrinsic]
+@[intrinsic "primop.add"]
 def {+} : Int -> Int -> Int
 
 def add3 : Int -> Int -> Int -> Int

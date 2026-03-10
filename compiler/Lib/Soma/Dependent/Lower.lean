@@ -46,13 +46,28 @@ private def functionAttrsFromSyntax
       | some (Syntax.Expr.lit (Syntax.Literal.string s _)) => some s
       | _ => defaultExternName
     | none => none
+  let intrinsicAttr := attrs.find? fun a => a.name.value == "intrinsic"
+  let intrinsicTag := match intrinsicAttr with
+    | some attr =>
+      match attr.args[0]? with
+      | some (Syntax.Expr.lit (Syntax.Literal.string s _)) => some s
+      | _ => some ""
+    | none => none
+  let wiredInAttr := attrs.find? fun a => a.name.value == "wired_in"
+  let wiredInRole := match wiredInAttr with
+    | some attr =>
+      match attr.args[0]? with
+      | some (Syntax.Expr.lit (Syntax.Literal.string s _)) => some s
+      | _ => none
+    | none => none
   {
     inline := attrs.any fun a => a.name.value == "inline"
     noInline := attrs.any fun a => a.name.value == "noinline"
     total := attrs.any fun a => a.name.value == "total"
     deprecated := none
     extern := externName
-    intrinsic := attrs.any fun a => a.name.value == "intrinsic"
+    intrinsic := intrinsicTag
+    wiredIn := wiredInRole
   }
 
 private def mkGlobalName
@@ -146,9 +161,9 @@ private def lowerFunctionDeclCore
           attrs := fnAttrs
         }, #[])
       | none =>
-        if fnAttrs.intrinsic || fnAttrs.extern.isSome then
+        if fnAttrs.intrinsic.isSome || fnAttrs.extern.isSome then
           let body := Syntax.Expr.lit
-            (Syntax.Literal.string s!"{if fnAttrs.intrinsic then "intrinsic" else "extern"}:{name.value}" span)
+            (Syntax.Literal.string s!"{if fnAttrs.intrinsic.isSome then "intrinsic" else "extern"}:{name.value}" span)
           return (some {
             name := globalName
             params := #[]
