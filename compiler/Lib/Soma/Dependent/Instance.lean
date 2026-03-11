@@ -497,6 +497,32 @@ private partial def isConcreteForResolution : Value → Bool
     | .term _ _ _ => true
   | _ => true
 
+/-- Deeply force metavariables inside values -/
+private partial def deepForceValue (v : Value) : TCM Value := do
+  let v' ← force v
+  match v' with
+  | .vDataType id params =>
+    let params' ← params.mapM deepForceValue
+    return .vDataType id params'
+  | .vPi qty binder name dom cod =>
+    let dom' ← deepForceValue dom
+    return .vPi qty binder name dom' cod
+  | .vSigma qty name fst snd =>
+    let fst' ← deepForceValue fst
+    return .vSigma qty name fst' snd
+  | .vRowExtend label fieldTy tail =>
+    let label' ← deepForceValue label
+    let fieldTy' ← deepForceValue fieldTy
+    let tail' ← deepForceValue tail
+    return .vRowExtend label' fieldTy' tail'
+  | .vRecord row =>
+    let row' ← deepForceValue row
+    return .vRecord row'
+  | .vVariant row =>
+    let row' ← deepForceValue row
+    return .vVariant row'
+  | other => return other
+
 def solvePendingInstances : TCM (Array InstanceFailure) := do
   let pending ← TCM.getPendingInstances
   let mut failures : Array InstanceFailure := #[]
@@ -504,11 +530,11 @@ def solvePendingInstances : TCM (Array InstanceFailure) := do
   for p in pending do
     let solved ← TCM.isMetaSolved p.metaId
     if solved then continue
-    let forcedArgs ← p.args.mapM force
+    let forcedArgs ← p.args.mapM deepForceValue
     let allConcrete := forcedArgs.all isConcreteForResolution
     if !allConcrete then continue
 
-    let result ← resolveInstance p.classId p.args
+    let result ← resolveInstance p.classId forcedArgs
     match result with
     | .found value _ =>
       TCM.solveMeta p.metaId value
@@ -548,15 +574,16 @@ def solvePendingInstancesOrFail : TCM Unit := do
   for (metaId, domTy, span) in deferred do
     let solved ← TCM.isMetaSolved metaId
     if !solved then
-      let forcedDom ← force domTy
+      let forcedDom ← deepForceValue domTy
       match forcedDom with
       | .vDataType classId args =>
-        let result ← resolveInstance classId args.toArray
+        let forcedArgs ← args.mapM deepForceValue
+        let result ← resolveInstance classId forcedArgs.toArray
         match result with
         | .found value _ =>
           TCM.solveMeta metaId value
         | .notFound _ _ _ =>
-          TCM.addError (.noInstance classId args.toArray span #[] #[])
+          TCM.addError (.noInstance classId forcedArgs.toArray span #[] #[])
         | .cycle classId _ =>
           TCM.addError (.instanceCycle classId span #[])
         | .depthExceeded classId =>

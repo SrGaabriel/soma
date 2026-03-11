@@ -56,5 +56,5 @@ instance : Semigroup String where
 
 instance {a : Type} {{d : Display a}} : Display (Option a) where
     def display : Option a -> String
-        | Option::Some value => strcat (strcat "Some(" (d.display value)) ")"
+        | Option::Some value => "Some(" <> d.display value <> ")"
         | Option::None => "None"
