@@ -463,19 +463,56 @@ private def registerTypeClassHead
   g := g.insert classNameStr classInfo
   return g
 
-/-- Build a Globals enviro      -- Check for builtin higher-kinded types (List, Array, IO, Ref)
-nment from all function definitions in a module -/
+/-- Pre-register all type names from a module -/
+def preRegisterTypes (module : Soma.Core.UntypedModule) : TCM Globals := do
+  let ctx ← TCM.getCtx
+  let mut globals := ctx.globals
+  for typeDef in module.types do
+    match typeDef with
+    | .algebraic _ typeName typeVarNames _ =>
+      let typeUnique ← TCM.freshUnique typeName.display
+      globals := globals.registerUnique typeName.display typeUnique
+      globals := globals.registerInductive typeName.display typeUnique .algebraic typeVarNames
+      TCM.registerUnique typeName.display typeUnique
+      let dataTypeVal := Value.vDataType typeUnique []
+      let dataTypeInfo : GlobalInfo := {
+        name := ⟨typeUnique⟩
+        type := Value.typeConstructorKind typeVarNames.size
+        value := some dataTypeVal
+        isConstructor := false
+        origin := .typeDecl
+      }
+      globals := globals.insert typeName.display dataTypeInfo
+    | .record _ recordName typeVarNames _ fields =>
+      let typeUnique ← TCM.freshUnique recordName.display
+      globals := globals.registerUnique recordName.display typeUnique
+      globals := globals.registerInductive recordName.display typeUnique .record typeVarNames
+        (fields.filterMap (·.1))
+      TCM.registerUnique recordName.display typeUnique
+      let dataTypeVal := Value.vDataType typeUnique []
+      let dataTypeInfo : GlobalInfo := {
+        name := ⟨typeUnique⟩
+        type := Value.typeConstructorKind typeVarNames.size
+        value := some dataTypeVal
+        isConstructor := false
+        origin := .typeDecl
+      }
+      globals := globals.insert recordName.display dataTypeInfo
+  return globals
+
 def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
   -- Start with existing globals from context to preserve external uniques
   let ctx ← TCM.getCtx
   let mut globals := ctx.globals
 
-  -- First pass: Register all data types (so they can be referenced by functions and constructors)
+  -- First pass: Register all data types
   for typeDef in module.types do
     match typeDef with
     | .algebraic _ typeName typeVarNames _ =>
-      -- Generate a proper Unique for this data type
-      let typeUnique ← TCM.freshUnique typeName.display
+      -- Reuse pre-registered unique if available, otherwise generate fresh
+      let typeUnique ← match ← TCM.lookupUnique typeName.display with
+        | some id => pure id
+        | none => TCM.freshUnique typeName.display
       -- Register the Unique in both local globals and TCM context
       globals := globals.registerUnique typeName.display typeUnique
       globals := globals.registerInductive typeName.display typeUnique .algebraic typeVarNames
@@ -492,7 +529,9 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
       }
       globals := globals.insert typeName.display dataTypeInfo
     | .record _ recordName typeVarNames _ fields =>
-      let typeUnique ← TCM.freshUnique recordName.display
+      let typeUnique ← match ← TCM.lookupUnique recordName.display with
+        | some id => pure id
+        | none => TCM.freshUnique recordName.display
       globals := globals.registerUnique recordName.display typeUnique
       globals := globals.registerInductive recordName.display typeUnique .record typeVarNames
         (fields.filterMap (·.1))
@@ -732,7 +771,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
         | some typeSyntax => TCM.withGlobals globals (elaborateFunctionType typeSyntax)
         | none => TCM.freshMetaVal (.vType .zero))
       (TCM.typePlaceholder fn.span)
-    let intrinsic ← inferIntrinsicInfo fn
+    let intrinsic ← TCM.recoverWithM (inferIntrinsicInfo fn) (pure none)
     let info : GlobalInfo := {
       name := fn.name
       type := fnType

@@ -445,12 +445,19 @@ def buildGlobalsAndInstances
   let state := TCState.forModule moduleName
   let mut allErrors : Array Soma.Dependent.TCError := #[]
 
-  -- Build abbreviation environment for this module
-  let abbrevResult := (Soma.Dependent.Driver.buildAbbrevEnv untypedModule).run
+  -- Pre-register type names so abbreviations can reference same-module types
+  let preRegResult := (Soma.Dependent.Driver.preRegisterTypes untypedModule).run
     { baseCtx with globals := seedGlobals, abbrevEnv := seedAbbrevEnv } state
+  let (preGlobals, preState) := match preRegResult with
+    | .error _ => (seedGlobals, state)
+    | .ok (globals, st) => (globals, st)
+
+  -- Build abbreviation environment with pre-registered types visible
+  let abbrevResult := (Soma.Dependent.Driver.buildAbbrevEnv untypedModule).run
+    { baseCtx with globals := preGlobals, abbrevEnv := seedAbbrevEnv } preState
 
   let (moduleAbbrevEnv, state0, abbrevErrors) := match abbrevResult with
-    | .error e => (AbbrevEnv.empty, state, #[e])
+    | .error e => (AbbrevEnv.empty, preState, #[e])
     | .ok (abbrevEnv, st) => (abbrevEnv, st, st.errors)
 
   allErrors := allErrors ++ abbrevErrors
