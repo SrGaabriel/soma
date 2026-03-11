@@ -8,5 +8,5 @@ Evens sum: 12
 Reverse sum: 6
 Append sum: 10
 Cons sum: 15
-Head: 1
+Head: Some(1)
 Done!

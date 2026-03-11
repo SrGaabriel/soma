@@ -18,6 +18,7 @@ namespace Soma.Project.Check
 open Std (HashSet HashMap)
 open Soma.Syntax
 open Soma.Core
+
 open Soma.Project
 open Soma (UniqueSupply)
 open Soma.Dependent (Globals GlobalInfo TCContext TCState InstanceEnv InstanceInfo ClassInfo AbbrevEnv AbbrevInfo TCM)
@@ -598,7 +599,6 @@ def typeCheckModule
     inlinedFns := inlinedFns.insert name
       (Soma.Dependent.Specialize.inlineIOBindsFunction ioNames? fn)
   mergedTypedFns := inlinedFns
-
   return {
     globals := globalsResult.globals
     instanceEnv := globalsResult.instanceEnv

@@ -773,6 +773,8 @@ structure InstanceInfo where
   constraints : Array (Unique × Array Value)
   /-- The instance value (a record value) -/
   value : Value
+  /-- Number of leading lambda parameters that are constraint dictionary arguments -/
+  constraintDictCount : Nat := 0
   /-- Source span for error reporting -/
   span : Span
   deriving Serialize, Deserialize

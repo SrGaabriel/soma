@@ -117,7 +117,8 @@ inductive Neutral where
 
 /-- Case arm closure -/
 inductive ArmClosure where
-  | mk (pattern : String) (closure : Closure) : ArmClosure
+  | mk (pattern : String) (closure : Closure)
+      (patterns : Array Soma.Core.Pattern := #[.wildcard]) : ArmClosure
 
 end
 
@@ -166,10 +167,13 @@ end Env
 namespace ArmClosure
 
 def pattern : ArmClosure → String
-  | .mk p _ => p
+  | .mk p _ _ => p
 
 def closure : ArmClosure → Closure
-  | .mk _ c => c
+  | .mk _ c _ => c
+
+def patterns : ArmClosure → Array Soma.Core.Pattern
+  | .mk _ _ ps => ps
 
 end ArmClosure
 
@@ -178,7 +182,7 @@ mutual
   def Closure.defaultValue : Closure := Closure.const "_" Value.defaultValue
   def Env.defaultValue : Env := Env.mk [] 0
   def Neutral.defaultValue : Neutral := Neutral.nVar ⟨"_", ⟨0⟩⟩
-  def ArmClosure.defaultValue : ArmClosure := ArmClosure.mk "_" Closure.defaultValue
+  def ArmClosure.defaultValue : ArmClosure := ArmClosure.mk "_" Closure.defaultValue #[.wildcard]
 end
 
 instance : Inhabited Value := ⟨Value.defaultValue⟩

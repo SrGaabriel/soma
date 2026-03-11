@@ -337,6 +337,8 @@ structure MethodElabResult where
   value : Value
   /-- The Core Expr body (before NbE evaluation) -/
   coreBody : Expr
+  /-- The full lambda-wrapped Expr (params abstracted, before evaluation) -/
+  lambdaExpr : Expr
   /-- The full function type (after instance type argument substitution) -/
   fnType : Value
   /-- Parameter bindings: (Unique, name) pairs -/
@@ -408,6 +410,7 @@ def elaborateMethodImpl (methodFn : Soma.Core.UntypedFunction) (expectedType : V
   return {
     value := methodVal
     coreBody := coreBody'
+    lambdaExpr := lambdaExpr
     fnType := expectedType'
     params := generatedParams
   }
@@ -426,11 +429,92 @@ where
     | .vRowEmpty => return #[]
     | _ => return #[]
 
-/-- Elaborate an instance value, returning both the record Value and
-    the TypedFunctions for each method. -/
+/-- Recursively check whether a Value contains an unsolved metavariable -/
+private partial def valueContainsMeta : Value → Bool
+  | .vNeutral _ (.nMeta _) => true
+  | .vNeutral ty neu => valueContainsMeta ty || neutralContainsMeta neu
+  | .vDataType _ params => params.any valueContainsMeta
+  | .vPi _ _ _ dom cod => valueContainsMeta dom || match cod with
+    | .const _ v => valueContainsMeta v
+    | .term _ _ _ => false -- can't inspect closure bodies
+  | .vSigma _ _ fst snd => valueContainsMeta fst || match snd with
+    | .const _ v => valueContainsMeta v
+    | .term _ _ _ => false
+  | .vPair a b => valueContainsMeta a || valueContainsMeta b
+  | .vRowExtend l ft t => valueContainsMeta l || valueContainsMeta ft || valueContainsMeta t
+  | .vRecord row => valueContainsMeta row
+  | .vVariant row => valueContainsMeta row
+  | .vConstructor _ _ args rty => args.any valueContainsMeta || valueContainsMeta rty
+  | .vEq _ ty l r => valueContainsMeta ty || valueContainsMeta l || valueContainsMeta r
+  | _ => false
+where
+  neutralContainsMeta : Neutral → Bool
+    | .nMeta _ => true
+    | .nApp fn arg => neutralContainsMeta fn || valueContainsMeta arg
+    | .nFst n | .nSnd n => neutralContainsMeta n
+    | .nFieldAccess n _ => neutralContainsMeta n
+    | .nCase scrut _ rty => neutralContainsMeta scrut || valueContainsMeta rty
+    | .nConst _ ty => valueContainsMeta ty
+    | .nVar _ => false
+
+/-- Build the record type for a constraint dict (class record type applied to args) -/
+private partial def buildConstraintDictType (constraintClassId : Unique)
+    (constraintArgs : Array Value) : TCM Value := do
+  let classInfo? ← TCM.lookupClass constraintClassId
+  match classInfo? with
+  | some ci =>
+    let mut rty := ci.recordType
+    for arg in constraintArgs do
+      match ← force rty with
+      | .vPi _ _ _ _ cod => rty ← applyClosure cod arg
+      | _ => pure ()
+    pure rty
+  | none => pure (Value.vType .zero)
+
+/-- Constraint dict info for Expr-level substitution -/
+structure ConstraintDictEntry where
+  classId : Unique
+  dictUnique : Unique
+  dictTyExpr : Expr
+
+/-- Resolve constraint dict metas in method bodies via Expr-level substitution -/
+private def buildConstraintDictSubst
+    (constraintDicts : Array ConstraintDictEntry)
+    (pendingBefore : Nat)
+    : TCM (Std.HashMap MetaId Expr) := do
+  let pending ← TCM.getPendingInstances
+  let mut subst : Std.HashMap MetaId Expr := {}
+  for i in [pendingBefore:pending.size] do
+    let p := pending[i]!
+    if ← TCM.isMetaSolved p.metaId then continue
+    -- Match this pending instance against our constraint dicts by class ID
+    for entry in constraintDicts do
+      if p.classId == entry.classId then
+        let fvarExpr := Expr.fvar entry.dictUnique entry.dictTyExpr
+        subst := subst.insert p.metaId fvarExpr
+        -- Mark meta as solved to prevent error reporting
+        let dictTy ← buildConstraintDictType entry.classId p.args
+        let placeholderVal := Value.vNeutral dictTy
+          (.nConst ⟨entry.dictUnique.id, entry.dictUnique.module, entry.dictUnique.original⟩
+                   dictTy)
+        TCM.solveMeta p.metaId placeholderVal
+        break
+  return subst
+
+/-- Result of elaborating all instance methods -/
+structure InstanceElabResult where
+  /-- The instance record value -/
+  value : Value
+  /-- Typed functions for codegen -/
+  typedFns : Array Soma.Core.TypedFunction
+  /-- Method names paired with their lambda-wrapped Exprs (for rebuilding) -/
+  methodExprs : Array (String × Expr)
+
+/-- Elaborate an instance value -/
 partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
     (typeArgs : Array Value) (methods : Array Soma.Core.UntypedFunction)
-    : TCM (Value × Array Soma.Core.TypedFunction) := do
+    (constraintDicts : Array ConstraintDictEntry := #[])
+    : TCM InstanceElabResult := do
   let mut recordTy := classInfo.recordType
   for arg in typeArgs do
     match ← force recordTy with
@@ -444,56 +528,231 @@ partial def elaborateInstanceValueFromClassInfo (classInfo : ClassInfo)
   -- Elaborate each method implementation against its expected type
   let mut fields : List (String × Value) := []
   let mut typedFns : Array Soma.Core.TypedFunction := #[]
+  let mut methodExprs : Array (String × Expr) := #[]
   for method in methods do
     let methodName := method.name.display
     match methodTypes.find? (fun (name, _) => name == methodName) with
     | some (_, expectedType) =>
+      let pendingBefore := (← TCM.getPendingInstances).size
       let result ← elaborateMethodImpl method expectedType
+
+      -- For constrained instances: substitute constraint dict metas with
+      -- fvar Exprs in the method body, so abstractFVar can find them later.
+      let (lambdaExpr, coreBody) ←
+        if constraintDicts.isEmpty then
+          pure (result.lambdaExpr, result.coreBody)
+        else
+          let subst ← buildConstraintDictSubst constraintDicts pendingBefore
+          if subst.isEmpty then
+            pure (result.lambdaExpr, result.coreBody)
+          else
+            pure (applyMvarSubst result.lambdaExpr subst,
+                  applyMvarSubst result.coreBody subst)
+
       fields := (methodName, result.value) :: fields
+      methodExprs := methodExprs.push (methodName, lambdaExpr)
       typedFns := typedFns.push {
         name := method.name
         params := result.params
-        body := result.coreBody
+        body := coreBody
         fnType := result.fnType
         closureInfo := method.closureInfo
         attrs := method.attrs
       }
     | none => pure ()
 
-  return (Value.vRecordVal fields.reverse, typedFns)
+  return {
+    value := Value.vRecordVal fields.reverse
+    typedFns := typedFns
+    methodExprs := methodExprs
+  }
+
+/-- Result of eager constraint resolution -/
+private inductive EagerResolutionResult where
+  | resolved (dicts : Array (Unique × Value))
+  | unresolvable
+
+/-- Try to eagerly resolve all constraints -/
+private def tryEagerResolution
+    (constraints : Array (Unique × Array Value))
+    : TCM EagerResolutionResult := do
+  let mut resolvedDicts : Array (Unique × Value) := #[]
+  for (constraintClassId, constraintArgs) in constraints do
+    if constraintArgs.any valueContainsMeta then
+      return .unresolvable
+    let result ← Soma.Dependent.resolveInstance constraintClassId constraintArgs
+    match result with
+    | .found value _ =>
+      resolvedDicts := resolvedDicts.push (constraintClassId, value)
+    | _ =>
+      return .unresolvable
+  return .resolved resolvedDicts
+
+/-- Elaborate an instance with eagerly-resolved constraints -/
+private def elaborateWithEagerDicts
+    (constraints : Array (Unique × Array Value))
+    (resolvedDicts : Array (Unique × Value))
+    (span : Span)
+    (elabMethods : TCM InstanceElabResult)
+    : TCM InstanceElabResult := do
+  let mut resolvedInstEnv ← TCM.getInstanceEnv
+  for (constraintClassId, constraintArgs) in constraints do
+    let dictVal := resolvedDicts.find? (·.1 == constraintClassId) |>.map (·.2)
+      |>.getD (Value.vType .zero)
+    let tempInst : InstanceInfo := {
+      instanceId := ← TCM.freshUnique s!"$resolved_{constraintClassId.original}"
+      classId := constraintClassId
+      args := constraintArgs
+      constraints := #[]
+      value := dictVal
+      span := span
+    }
+    resolvedInstEnv := resolvedInstEnv.addInstanceWithId tempInst
+  TCM.withInstanceEnv resolvedInstEnv elabMethods
+
+/-- Full dictionary-passing elaboration for constrained instances -/
+private def elaborateDictPassingInstance
+    (constraints : Array (Unique × Array Value))
+    (span : Span)
+    (elabMethods : Array ConstraintDictEntry → TCM InstanceElabResult)
+    : TCM (Value × Array Soma.Core.TypedFunction × Nat) := do
+  -- 1. Create constraint dict bindings.
+  let mut constraintDictBindings : Array (Unique × String × Value) := #[]
+  let mut constraintDictEntries : Array ConstraintDictEntry := #[]
+  let mut tempInstEnv ← TCM.getInstanceEnv
+  for (constraintClassId, constraintArgs) in constraints do
+    let dictName := s!"$dict_{constraintClassId.original}"
+    let dictUnique ← TCM.freshUnique dictName
+    let dictTy ← buildConstraintDictType constraintClassId constraintArgs
+    let dictTyExpr := Soma.Core.quoteExpr0 dictTy
+    let dictVal := Value.vNeutral dictTy
+      (.nConst ⟨dictUnique.id, dictUnique.module, dictName⟩ dictTy)
+    constraintDictBindings := constraintDictBindings.push (dictUnique, dictName, dictTy)
+    constraintDictEntries := constraintDictEntries.push {
+      classId := constraintClassId
+      dictUnique := dictUnique
+      dictTyExpr := dictTyExpr
+    }
+    let tempInst : InstanceInfo := {
+      instanceId := dictUnique
+      classId := constraintClassId
+      args := constraintArgs
+      constraints := #[]
+      value := dictVal
+      span := span
+    }
+    tempInstEnv := tempInstEnv.addInstanceWithId tempInst
+
+  -- 2. Elaborate methods within the modified instance env and bindings.
+  let result ← TCM.withInstanceEnv tempInstEnv do
+    let rec withConstraintBindings (idx : Nat) : TCM InstanceElabResult := do
+      if idx >= constraintDictBindings.size then
+        elabMethods constraintDictEntries
+      else
+        let (dictUnique, dictName, dictTy) := constraintDictBindings[idx]!
+        TCM.withBinding dictName dictUnique dictTy .omega .instance_ span do
+          withConstraintBindings (idx + 1)
+    withConstraintBindings 0
+
+  -- 3. Build the instance value: a lambda wrapping the method record.
+  let recordExpr := Expr.record (result.methodExprs.map fun (name, expr) => (name, expr))
+  let zonkedRecordExpr ← zonkExpr recordExpr
+
+  let mut wrappedExpr := zonkedRecordExpr
+  for i in [:constraintDictBindings.size] do
+    let idx := constraintDictBindings.size - 1 - i
+    let (dictUnique, dictName, dictTy) := constraintDictBindings[idx]!
+    wrappedExpr := wrappedExpr.abstractFVar dictUnique
+    let domTyExpr := Soma.Core.quoteExpr0 dictTy
+    wrappedExpr := .lam .instance_ dictName domTyExpr wrappedExpr
+
+  let instValue ← TCM.evalExpr wrappedExpr
+
+  -- 4. Build TypedFunctions with dict params.
+  let mut dictPassedFns := #[]
+  for fn in result.typedFns do
+    let mut body := fn.body
+    let mut fnType := fn.fnType
+    let mut extraParams : Array (Unique × String) := #[]
+    for i in [:constraintDictBindings.size] do
+      let idx := constraintDictBindings.size - 1 - i
+      let (dictUnique, dictName, dictTy) := constraintDictBindings[idx]!
+      body := body.abstractFVar dictUnique
+      let domTyExpr := Soma.Core.quoteExpr0 dictTy
+      body := .lam .instance_ dictName domTyExpr body
+      fnType := .vPi .omega .instance_ dictName dictTy
+        (.const dictName fnType)
+      extraParams := #[(dictUnique, dictName)] ++ extraParams
+    dictPassedFns := dictPassedFns.push {
+      fn with
+      body := body
+      fnType := fnType
+      params := extraParams ++ fn.params
+    }
+
+  return (instValue, dictPassedFns, constraints.size)
+
+/-- Build an InstanceInfo from the common fields. -/
+private def mkInstanceInfo (instUnique classId : Unique) (typeArgs : Array Value)
+    (constraints : Array (Unique × Array Value)) (value : Value)
+    (span : Span) (constraintDictCount : Nat := 0) : InstanceInfo := {
+  instanceId := instUnique
+  classId := classId
+  args := typeArgs
+  argQuantities := typeArgs.map (fun _ => .omega)
+  constraints := constraints
+  value := value
+  constraintDictCount := constraintDictCount
+  span := span
+}
+
+/-- Three-tier constrained instance elaboration strategy:
+    1. No constraints → direct elaboration
+    2. All constraints eagerly resolvable → inline resolved dicts
+    3. Unresolvable constraints → full dictionary-passing -/
+private def elaborateConstrainedInstance
+    (classId instUnique : Unique) (typeArgs : Array Value)
+    (constraints : Array (Unique × Array Value)) (span : Span)
+    (elabSimple : TCM InstanceElabResult)
+    (elabConstrained : Array ConstraintDictEntry → TCM InstanceElabResult)
+    : TCM (InstanceInfo × Array Soma.Core.TypedFunction) := do
+  if constraints.isEmpty then
+    let result ← elabSimple
+    return (mkInstanceInfo instUnique classId typeArgs constraints result.value span,
+            result.typedFns)
+  else
+    match ← tryEagerResolution constraints with
+    | .resolved resolvedDicts =>
+      let result ← elaborateWithEagerDicts constraints resolvedDicts span elabSimple
+      return (mkInstanceInfo instUnique classId typeArgs constraints result.value span,
+              result.typedFns)
+    | .unresolvable =>
+      let (instValue, dictPassedFns, dictCount) ←
+        elaborateDictPassingInstance constraints span elabConstrained
+      return (mkInstanceInfo instUnique classId typeArgs constraints instValue span dictCount,
+              dictPassedFns)
 
 /-- Elaborate a single instance using ClassInfo instead of TypeClassMeta -/
 partial def elaborateInstanceFromClassInfo (inst : Soma.Core.InstanceDecl)
     (classInfo : ClassInfo) (registry : ClassRegistry)
     : TCM (Option (InstanceInfo × Array Soma.Core.TypedFunction)) := do
-  -- Elaborate the type arguments
   let elabEnv := ElabEnv.empty
   let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)
 
-  -- Elaborate the instance constraints
   let mut constraints : Array (Unique × Array Value) := #[]
   for constraint in inst.constraintsSyntax do
     match ← elaborateConstraint constraint elabEnv registry with
     | some c => constraints := constraints.push c
     | none => pure ()
 
-  -- Build the instance value using ClassInfo's record type
-  let (instValue, methodFns) ← elaborateInstanceValueFromClassInfo classInfo typeArgs inst.methods
+  let instUnique ← TCM.freshUnique s!"$inst_{inst.className}_{typeArgs.size}"
 
-  let instName := s!"$inst_{inst.className}_{typeArgs.size}"
-  let instUnique ← TCM.freshUnique instName
+  let (instanceInfo, typedFns) ← elaborateConstrainedInstance
+    classInfo.classId instUnique typeArgs constraints inst.span
+    (elaborateInstanceValueFromClassInfo classInfo typeArgs inst.methods)
+    (elaborateInstanceValueFromClassInfo classInfo typeArgs inst.methods ·)
 
-  let instanceInfo : InstanceInfo := {
-    instanceId := instUnique
-    classId := classInfo.classId
-    args := typeArgs
-    argQuantities := typeArgs.map (fun _ => .omega)
-    constraints := constraints
-    value := instValue
-    span := inst.span
-  }
-
-  return some (instanceInfo, methodFns)
+  return some (instanceInfo, typedFns)
 
 /-- Build the instance value (a record of method implementations).
 
@@ -507,9 +766,12 @@ We build:
 def elaborateInstanceValue (typeArgs : Array Value)
   (methods : Array Soma.Core.UntypedFunction)
     (methodSignatures : Array (QualifiedName × TypeExpr))
-    (params : Array TypeVarBinder) : TCM (Value × Array Soma.Core.TypedFunction) := do
+    (params : Array TypeVarBinder)
+    (constraintDicts : Array ConstraintDictEntry := #[])
+    : TCM InstanceElabResult := do
   let mut fields : List (String × Value) := []
   let mut typedFns : Array Soma.Core.TypedFunction := #[]
+  let mut methodExprs : Array (String × Expr) := #[]
 
   for method in methods do
     -- Find the corresponding method signature
@@ -524,19 +786,42 @@ def elaborateInstanceValue (typeArgs : Array Value)
       -- Substitute type arguments into the method signature
       let expectedType ← substituteMethodType sigSyntax params typeArgs
 
+      -- Record pending instance count for constraint dict substitution.
+      let pendingBefore := (← TCM.getPendingInstances).size
+
       -- Elaborate the method implementation
       let result ← elaborateMethodImpl method expectedType
+
+      -- For constrained instances: substitute constraint dict metas with
+      -- fvar Exprs in the method body.
+      let (lambdaExpr, coreBody) ←
+        if constraintDicts.isEmpty then
+          pure (result.lambdaExpr, result.coreBody)
+        else
+          let subst ← buildConstraintDictSubst constraintDicts pendingBefore
+          if subst.isEmpty then
+            pure (result.lambdaExpr, result.coreBody)
+          else
+            let le := applyMvarSubst result.lambdaExpr subst
+            let cb := applyMvarSubst result.coreBody subst
+            pure (le, cb)
+
       fields := (method.name.display, result.value) :: fields
+      methodExprs := methodExprs.push (method.name.display, lambdaExpr)
       typedFns := typedFns.push {
         name := method.name
         params := result.params
-        body := result.coreBody
+        body := coreBody
         fnType := result.fnType
         closureInfo := method.closureInfo
         attrs := method.attrs
       }
 
-  return (Value.vRecordVal fields.reverse, typedFns)
+  return {
+    value := Value.vRecordVal fields.reverse
+    typedFns := typedFns
+    methodExprs := methodExprs
+  }
 
 /-- Collect free type variable names from a TypeExpr -/
 private partial def collectTypeVars (ty : TypeExpr) (acc : Array String := #[])
@@ -563,10 +848,11 @@ private partial def collectTypeVars (ty : TypeExpr) (acc : Array String := #[])
   | .sigma _ _ fst snd _ => collectTypeVars snd (collectTypeVars fst acc bound) bound
   | .implicit _ dom cod _ => collectTypeVars cod (collectTypeVars dom acc bound) bound
 
-/-- Elaborate a single instance declaration into an InstanceInfo -/
+/-- Elaborate a single instance declaration into an InstanceInfo.
+    Handles both unconstrained and constrained (`with`) instances
+    using dictionary-passing elaboration for the latter. -/
 def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
   (typeClass : Soma.Core.TypeClassMeta) : TCM (Option (InstanceInfo × Array Soma.Core.TypedFunction)) := do
-  -- Look up the class this is an instance of
   match registry.lookup inst.className with
   | none =>
     return none
@@ -577,38 +863,25 @@ def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
       let metaVal ← TCM.freshMetaVal (Value.vType Level.zero)
       elabEnv := elabEnv.addOverride name metaVal
 
-    -- Elaborate the type arguments
     let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)
 
-    -- Elaborate the instance constraints
     let mut constraints : Array (Unique × Array Value) := #[]
     for constraint in inst.constraintsSyntax do
       match ← elaborateConstraint constraint elabEnv registry with
       | some c => constraints := constraints.push c
       | none => pure ()
 
-    -- Build the instance value (record of method implementations)
-    let (instValue, methodFns) ← elaborateInstanceValue
-      typeArgs
-      inst.methods
-      typeClass.methodSignatures
-      typeClass.params
+    let instUnique ← TCM.freshUnique s!"$inst_{inst.className}_{typeArgs.size}"
 
-    -- Generate instance ID
-    let instName := s!"$inst_{inst.className}_{typeArgs.size}"
-    let instUnique ← TCM.freshUnique instName
+    let elabSimple := elaborateInstanceValue typeArgs inst.methods
+      typeClass.methodSignatures typeClass.params
+    let (instanceInfo, typedFns) ← elaborateConstrainedInstance
+      classId instUnique typeArgs constraints inst.span
+      elabSimple
+      (fun entries => elaborateInstanceValue typeArgs inst.methods
+        typeClass.methodSignatures typeClass.params entries)
 
-    let instanceInfo : InstanceInfo := {
-      instanceId := instUnique
-      classId := classId
-      args := typeArgs
-      argQuantities := typeArgs.map (fun _ => .omega)
-      constraints := constraints
-      value := instValue
-      span := inst.span
-    }
-
-    return some (instanceInfo, methodFns)
+    return some (instanceInfo, typedFns)
 
 /-- Build a method dispatch wrapper for a type class method -/
 private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
@@ -653,6 +926,20 @@ private def buildMethodWrapper (info : GlobalInfo) (methodNameStr : String)
     attrs := {}
   }
 
+/-- Merge a module-local instance env with a seed env (from dependencies).
+    Classes and instances from both are combined, deduplicating by instance ID. -/
+private def mergeInstanceEnvs (local_ seed : InstanceEnv) : InstanceEnv := {
+  classes := local_.classes.fold (init := seed.classes) fun acc uid info => acc.insert uid info
+  instances := local_.instances.fold (init := seed.instances) fun acc uid insts =>
+    match seed.instances.get? uid with
+    | none => acc.insert uid insts
+    | some existing =>
+      let merged := insts.foldl (init := existing) fun a inst =>
+        if a.any (·.instanceId == inst.instanceId) then a else a.push inst
+      acc.insert uid merged
+  moduleName := local_.moduleName
+}
+
 /-- Build a complete InstanceEnv from a module's type classes and instances.
 
 This is the main entry point for trait/instance elaboration.
@@ -660,7 +947,6 @@ It processes all type classes first (to build the registry),
 then processes all instances using that registry. -/
 def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
     : TCM (InstanceEnv × InstanceMap × Array Soma.Core.TypedFunction) := do
-  -- Start with the default built-in instances (Eq Int, Num Int, etc.)
   let mut env := defaultInstanceEnv
   env := { env with moduleName := module.name }
   let mut instanceMap : InstanceMap := {}
@@ -679,29 +965,35 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
     env := env.addClass classInfo
     registry := registry'
 
-  -- Second pass: elaborate all instances
+  -- Second pass: elaborate all instances.
+  -- We elaborate within a progressively enriched instance env so that
+  -- later instances can eagerly resolve constraints satisfied by earlier ones.
   for inst in module.instances do
-    -- Find the corresponding type class for method signatures
     let typeClass? := module.typeClasses.find? fun tc =>
       tc.name.display == inst.className
 
+    let currentEnv := mergeInstanceEnvs env seedEnv
+
     match typeClass? with
     | some typeClass =>
-      match ← elaborateInstance inst registry typeClass with
+      match ← TCM.withInstanceEnv currentEnv do
+        elaborateInstance inst registry typeClass
+      with
       | some (instInfo, methodFns) =>
         env := env.addInstanceWithId instInfo
         instanceMap := instanceMap.insert inst.span instInfo
         allTypedFns := allTypedFns ++ methodFns
       | none => pure ()
     | none =>
-      -- Cross-module type class: look up ClassInfo from seed instance env
       match registry.lookup inst.className with
       | some classId =>
         let classInfo? := seedEnv.getClass classId
           |>.orElse (fun _ => defaultInstanceEnv.getClass classId)
         match classInfo? with
         | some classInfo =>
-          match ← elaborateInstanceFromClassInfo inst classInfo registry with
+          match ← TCM.withInstanceEnv currentEnv do
+            elaborateInstanceFromClassInfo inst classInfo registry
+          with
           | some (instInfo, methodFns) =>
             env := env.addInstanceWithId instInfo
             instanceMap := instanceMap.insert inst.span instInfo

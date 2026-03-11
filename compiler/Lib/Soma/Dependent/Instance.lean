@@ -150,6 +150,7 @@ inductive MatchResult where
   /-- Instance matches with the given substitutions -/
   | matched (instValue : Value) (substitutions : Array (MetaId × Value))
       (refreshedConstraints : Array (Unique × Array Value))
+      (metaMapping : Std.HashMap Nat MetaId)
   /-- Instance doesn't match -/
   | noMatch
   /-- Matching failed with an error -/
@@ -309,12 +310,13 @@ def tryMatchInstanceUnify (inst : InstanceInfo) (goalArgs : Array Value)
       if let some sol := info.solution then
         substitutions := substitutions.push (metaId, sol)
 
-  return .matched inst.value substitutions refreshedConstraints
+  return .matched inst.value substitutions refreshedConstraints metaMapping
 
 /-- Result of matching an instance: value + refreshed constraints -/
 structure InstanceMatch where
   value : Value
   refreshedConstraints : Array (Unique × Array Value)
+  metaMapping : Std.HashMap Nat MetaId
 
 /-- Check if an instance matches a goal using unification -/
 def matchInstance (inst : InstanceInfo) (classId : Unique) (args : Array Value)
@@ -326,12 +328,23 @@ def matchInstance (inst : InstanceInfo) (classId : Unique) (args : Array Value)
   -- Try to match arguments using unification
   let result ← tryMatchInstanceUnify inst args
   match result with
-  | .matched value _ constraints =>
-    return some ⟨value, constraints⟩
+  | .matched value _ constraints metaMapping =>
+    return some ⟨value, constraints, metaMapping⟩
   | .noMatch =>
     return none
   | .error _ =>
     return none
+
+/-- Apply resolved constraint dicts to a dictionary-passing instance value -/
+private def applyConstraintDicts (instValue : Value) (constraintDicts : Array Value)
+    : TCM Value := do
+  let mut result := instValue
+  for dict in constraintDicts do
+    result ← match result with
+      | .vLam _ body => applyClosure body dict
+      | .vNeutral ty neu => pure (.vNeutral ty (.nApp neu dict))
+      | other => pure other
+  return result
 
 mutual
 
@@ -396,7 +409,8 @@ partial def resolveInstance (classId : Unique) (args : Array Value)
       -- Instance matches! Now check constraints using the refreshed constraints
       -- (which share fresh metas with the refreshed instance args)
 
-      -- 1. Check instance's own constraints
+      -- 1. Check instance's own constraints, capturing resolved dict values
+      let mut resolvedConstraintDicts : Array Value := #[]
       let constraintsSatisfied ← do
         if instMatch.refreshedConstraints.isEmpty then
           pure true
@@ -406,7 +420,8 @@ partial def resolveInstance (classId : Unique) (args : Array Value)
             let forcedArgs ← constraintArgs.mapM force
             let result ← resolveInstance constraintClassId forcedArgs state'
             match result with
-            | .found _ _ => pure ()
+            | .found value _ =>
+              resolvedConstraintDicts := resolvedConstraintDicts.push value
             | _ =>
               allSatisfied := false
               break
@@ -432,7 +447,12 @@ partial def resolveInstance (classId : Unique) (args : Array Value)
         continue
 
       -- All constraints satisfied!
-      return .found instMatch.value #[inst.instanceId]
+      let finalValue ←
+        if inst.constraintDictCount > 0 && !resolvedConstraintDicts.isEmpty then
+          applyConstraintDicts instMatch.value resolvedConstraintDicts
+        else
+          pure instMatch.value
+      return .found finalValue #[inst.instanceId]
 
     | none =>
       -- Instance doesn't match, try next

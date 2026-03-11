@@ -95,9 +95,11 @@ where
 private def rebuildAppSpine (fn : Expr) (args : Array Expr) : Expr :=
   args.foldl (init := fn) fun acc arg => .app acc arg
 
-/-- Find the index of the first non-type-level argument -/
+/-- Find the index of the dictionary argument in a class method application spine -/
 private def findDictArgIdx (args : Array Expr) : Option Nat :=
-  args.findIdx? (!isTypeLevelExpr ·)
+  args.findIdx? fun
+    | .record _ => true
+    | _ => false
 
 /-- Exhaustive beta-reduction -/
 private partial def betaReduce (e : Expr) : Expr :=
@@ -139,49 +141,6 @@ private partial def betaReduce (e : Expr) : Expr :=
   | .closure name captures => .closure name (captures.map betaReduce)
   | .ann expr ty => .ann (betaReduce expr) (betaReduce ty)
   | _ => e
-
-
-/-- Debug printer for Expr -/
-partial def debugExpr : Expr → String
-  | .bvar idx => s!"bvar({idx})"
-  | .fvar name _ => s!"fvar({name.display})"
-  | .mvar _ => "mvar"
-  | .const qn _ => s!"const({qn.display})"
-  | .app fn arg => s!"app({debugExpr fn}, {debugExpr arg})"
-  | .lam _ name _ body => s!"λ{name}.{debugExpr body}"
-  | .let_ name _ val body => s!"let {name}={debugExpr val} in {debugExpr body}"
-  | .lit l => s!"lit({l})"
-  | .sort _ => "sort"
-  | .pi _ _ _ _ _ => "pi"
-  | .sigma _ _ _ _ _ => "sigma"
-  | .pair a b => s!"pair({debugExpr a},{debugExpr b})"
-  | .projFst e => s!"fst({debugExpr e})"
-  | .projSnd e => s!"snd({debugExpr e})"
-  | .construct n _ _ _ => s!"ctor({n.display})"
-  | .case _ _ _ => "case"
-  | .record fields => s!"\{{String.intercalate ", " (fields.toList.map fun (n,e) => s!"{n}={debugExpr e}")}}"
-  | .recordUpdate _ _ => "recordUpdate"
-  | .fieldAccess e f idx => s!"fieldAccess({debugExpr e}, {f}, {idx})"
-  | .inject _ _ _ => "inject"
-  | .primTy p => s!"primTy({p})"
-  | .rowSort => "rowSort"
-  | .labelSort => "labelSort"
-  | .rowEmpty => "rowEmpty"
-  | .rowExtend _ _ _ => "rowExtend"
-  | .recordTy _ => "recordTy"
-  | .variantTy _ => "variantTy"
-  | .labelLit s => s!"label({s})"
-  | .dataTy n _ => s!"dataTy({n.display})"
-  | .eqTy _ _ _ _ => "eqTy"
-  | .refl _ _ => "refl"
-  | .transport _ _ _ _ _ _ _ => "transport"
-  | .if_ _ _ _ => "if"
-  | .panic _ => "panic"
-  | .closure n caps => s!"closure({n.display}, [{String.intercalate ", " (caps.toList.map debugExpr)}])"
-  | .array _ _ => "array"
-  | .tuple _ => "tuple"
-  | .proj _ _ _ => "proj"
-  | .ann e _ => debugExpr e
 
 mutual
 
@@ -269,7 +228,10 @@ end
 def specializeFunction (registry : ClassMethodRegistry) (fn : Soma.Core.TypedFunction)
     : Soma.Core.TypedFunction :=
   if registry.isEmpty then fn
-  else { fn with body := betaReduce (specializeExpr registry fn.body) }
+  else
+    let specialized := specializeExpr registry fn.body
+    let reduced := betaReduce specialized
+    { fn with body := reduced }
 
 /-- Check if the head of an expression refers to a specific wired-in QualifiedName -/
 private partial def isWiredInRef (qn : QualifiedName) : Expr → Bool
@@ -313,7 +275,7 @@ structure IONames where
 
 /-- Inline IO bind chains into flat let sequences -/
 partial def inlineIOBinds (io : IONames) : Expr → Expr
-  | e@(.app fn arg) =>
+  | .app fn arg =>
     -- Check for io_bind pattern: app (app io_bind action) continuation
     match fn with
     | .app ioBind action =>

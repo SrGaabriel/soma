@@ -1147,7 +1147,9 @@ partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)
     let (corePatterns, bindingsWithTypes) ← convertPatternListWithBindings pats scrutTys
     let (bodyExpr, armUsages) ← captureUsages
       (inferSyntaxArmBodyWithBindings bindingsWithTypes arm.body expectedTy arm.span)
-    results := results.push (Soma.Core.Arm.mk corePatterns bodyExpr)
+    let abstractedBody := bindingsWithTypes.foldl
+      (fun body (bindingId, _, _) => body.abstractFVar bindingId) bodyExpr
+    results := results.push (Soma.Core.Arm.mk corePatterns abstractedBody)
     armUsagesList := armUsagesList.push armUsages
   let span := match arms.head? with
     | some arm => arm.span

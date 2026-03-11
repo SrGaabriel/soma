@@ -258,7 +258,7 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
     | _ => .vNeutral .type0 (.nFieldAccess (.nVar ⟨"rec", ⟨env.size⟩⟩) field)
   | .construct name tag args rty =>
     .vConstructor name tag (args.toList.map (evalExprPure env)) (evalExprPure env rty)
-  | .«case» scruts arms _ =>
+  | .«case» scruts arms resultTyExpr =>
     match scruts[0]? with
     | some scrut =>
       let scrutVal := evalExprPure env scrut
@@ -268,9 +268,22 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
         | some arm =>
           let env' := ctorArgs.foldl (fun e arg => e.extend "_" arg) env
           evalExprPure env' arm.body
-        | none => .vNeutral .type0 (.nVar ⟨"case", ⟨env.size⟩⟩)
-      | _ => .vNeutral .type0 (.nVar ⟨"case", ⟨env.size⟩⟩)
-    | none => .vNeutral .type0 (.nVar ⟨"case", ⟨env.size⟩⟩)
+        | none => .vNeutral .type0 (.nVar ⟨"case-no-arm", ⟨env.size⟩⟩)
+      | .vNeutral ty neu =>
+        let resultTy := evalExprPure env resultTyExpr
+        let armClosures := arms.toList.map fun arm =>
+          let binds := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
+          let patName := match arm.patterns[0]? with
+            | some (Pattern.ctor qn _ _) => qn.id.original
+            | some (Pattern.var (some uid)) => uid.original
+            | _ => s!"pat{binds}"
+          if binds == 0 then
+            ArmClosure.mk patName (.const patName (evalExprPure env arm.body)) arm.patterns
+          else
+            ArmClosure.mk patName (Closure.mkWithBody patName env arm.body) arm.patterns
+        .vNeutral ty (.nCase neu armClosures resultTy)
+      | _ => .vNeutral .type0 (.nVar ⟨"case-stuck", ⟨env.size⟩⟩)
+    | none => .vNeutral .type0 (.nVar ⟨"case-empty", ⟨env.size⟩⟩)
   | .inject _label _args _ =>
     .vNeutral .type0 (.nVar ⟨s!"inject:{_label}", ⟨env.size⟩⟩)
   | .dataTy id params => .vDataType id (params.toList.map (evalExprPure env))
@@ -370,9 +383,23 @@ partial def quoteNeutralExpr (depth : DeBruijnLvl) (neu : Neutral) : Expr :=
   | .nCase scrut arms resultTy =>
     .«case» #[quoteNeutralExpr depth scrut]
       (arms.map (fun ac =>
-        let argVal := Value.vNeutral Value.type0 (Neutral.nVar ⟨ac.pattern, depth⟩)
-        let bodyVal := applyClosurePure ac.closure argVal
-        Arm.mk #[.wildcard] (quoteExpr depth.succ bodyVal)
+        let binds := ac.patterns.foldl (fun a p => a + p.bindingCount) 0
+        let bodyDepth : DeBruijnLvl := ⟨depth.lvl + binds⟩
+        if binds == 0 then
+          let bodyVal := applyClosurePure ac.closure
+            (Value.vNeutral Value.type0 (Neutral.nVar ⟨ac.pattern, depth⟩))
+          Arm.mk ac.patterns (quoteExpr depth bodyVal)
+        else
+          let bodyVal := match ac.closure with
+            | .const _ v => v
+            | .term _ env body =>
+              let env' := (List.range binds).foldl (fun e i =>
+                let lvl : DeBruijnLvl := ⟨depth.lvl + i⟩
+                e.extend s!"pat_{i}" (Value.vNeutral Value.type0
+                  (Neutral.nVar ⟨s!"pat_{i}", lvl⟩))
+              ) env
+              evalExprPure env' body
+          Arm.mk ac.patterns (quoteExpr bodyDepth bodyVal)
       ) |>.toArray)
       (quoteExpr depth resultTy)
   | .nConst name constTy => .const name (quoteExpr depth constTy)

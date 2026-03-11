@@ -85,6 +85,16 @@ partial def bindingCount : Pattern → Nat
   | .inject _ (some p) => p.bindingCount
   | .inject _ none => 0
 
+/-- Collect binding Unique IDs from a pattern in left-to-right depth-first order -/
+partial def collectBindingIds : Pattern → Array Unique
+  | .var (some u) => #[u]
+  | .var none => #[]
+  | .ctor _ _ fields => fields.foldl (fun acc p => acc ++ p.collectBindingIds) #[]
+  | .lit _ => #[]
+  | .wildcard => #[]
+  | .inject _ (some p) => p.collectBindingIds
+  | .inject _ none => #[]
+
 end Pattern
 
 mutual

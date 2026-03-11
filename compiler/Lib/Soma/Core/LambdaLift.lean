@@ -214,7 +214,18 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
   | .«case» scruts arms rty => do
     let scruts' ← scruts.mapM (liftCoreExpr ·)
     let arms' ← arms.mapM fun arm => do
-      pure (Soma.Core.Arm.mk arm.patterns (← liftCoreExpr arm.body))
+      let bindingIds := arm.patterns.foldl
+        (fun acc p => acc ++ p.collectBindingIds) #[]
+      let mut openedBody := arm.body
+      let mut freshIds : Array Soma.Unique := #[]
+      for uid in bindingIds.reverse do
+        let freshU ← LiftM.freshUnique uid.original
+        freshIds := freshIds.push freshU
+        openedBody := openedBody.instantiate (.fvar freshU (.sort (.lit 0)))
+      let liftedBody ← liftCoreExpr openedBody
+      let closedBody := freshIds.reverse.foldl
+        (fun body u => body.abstractFVar u) liftedBody
+      pure (Soma.Core.Arm.mk arm.patterns closedBody)
     pure (.«case» scruts' arms' (← liftCoreExpr rty))
   | .record fields => do
     let fields' ← fields.mapM fun (n, e') => do pure (n, ← liftCoreExpr e')

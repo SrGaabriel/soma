@@ -913,7 +913,11 @@ partial def lowerCoreCase (scruts : Array Soma.Core.Expr) (arms : Array Soma.Cor
     -- ALL branches so that splitIfContexts can distribute copies to each branch.
     let mut splitSiteUsages : UsageMap := {}
     for arm in arms do
-      let armUses := countUsesExpr arm.body
+      let bindingIds := arm.patterns.foldl
+        (fun acc p => acc ++ p.collectBindingIds) #[]
+      let openedBody := bindingIds.foldr
+        (fun uid body => body.instantiate (.fvar uid (.sort (.lit 0)))) arm.body
+      let armUses := countUsesExpr openedBody
       for (id, count) in armUses.toList do
         splitSiteUsages := splitSiteUsages.insert id (splitSiteUsages.getD id 0 + count)
 
@@ -927,13 +931,26 @@ where
       (armCtx : PatternMatch.ArmContext) : LowerM PortId := do
     if h : idx < arms.size then
       let arm := arms[idx]
+      -- Open the arm body: instantiate bvars with fvars matching the pattern binding IDs.
+      -- The arm body uses locally-nameless binding (bvars for pattern bindings), while
+      -- the Circuit IR lowering resolves variables by fvar Unique IDs
+      let bindingIds := arm.patterns.foldl
+        (fun acc p => acc ++ p.collectBindingIds) #[]
+      let bindingTypes : Std.HashMap Unique Value := armCtx.bindings.foldl
+        (init := {}) fun m (id, _, _, _, ty) => m.insert id ty
+      let openedBody := bindingIds.foldr
+        (fun uid body =>
+          let tyExpr := match bindingTypes.get? uid with
+            | some ty => Soma.Core.quoteExpr ⟨0⟩ ty
+            | none => .sort (.lit 0)
+          body.instantiate (.fvar uid tyExpr)) arm.body
       -- Install bindings from armCtx into the context
       for (bindingId, name, source, useCount, varTy) in armCtx.bindings do
         let erased := useCount == 0
         LowerM.modifyCtx fun ctx =>
           ctx.bindVarOwned bindingId name source useCount varTy erased
       -- Lower the arm body
-      match ← lowerCoreExpr arm.body ty with
+      match ← lowerCoreExpr openedBody ty with
       | some port => pure port
       | none =>
         let era ← LowerM.addNode .era ty

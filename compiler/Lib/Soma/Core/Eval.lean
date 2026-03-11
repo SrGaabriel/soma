@@ -181,21 +181,35 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
   | .construct name tag args rty =>
     .vConstructor name tag (args.toList.map (evalCoreExpr ctx)) (evalCoreExpr ctx rty)
 
-  | .«case» scruts arms _ =>
-    -- Simplified: evaluate first scrutinee
+  | .«case» scruts arms resultTyExpr =>
     match scruts[0]? with
     | some scrut =>
       let scrutVal := evalCoreExpr ctx scrut
       match scrutVal with
       | .vConstructor _ tag ctorArgs _ =>
-        -- Find matching arm by trying each arm's patterns
         match arms.toList.find? (fun arm => matchArmTag arm tag) with
         | some arm =>
           let ctx' := ctorArgs.foldl (fun c arg => c.extendEnv "_" arg) ctx
           evalCoreExpr ctx' arm.body
-        | none => .vNeutral .type0 (.nVar ⟨"case", ctx.env.level⟩)
-      | _ => .vNeutral .type0 (.nVar ⟨"case", ctx.env.level⟩)
-    | none => .vNeutral .type0 (.nVar ⟨"case", ctx.env.level⟩)
+        | none => .vNeutral .type0 (.nVar ⟨"case-no-arm", ctx.env.level⟩)
+      | .vNeutral ty neu =>
+        -- Preserve case structure as nCase neutral for proper quoting
+        let resultTy := evalCoreExpr ctx resultTyExpr
+        let armClosures := arms.toList.map fun arm =>
+          let binds := arm.patterns.foldl (fun acc p => acc + p.bindingCount) 0
+          let patName := match arm.patterns[0]? with
+            | some (Pattern.ctor qn _ _) => qn.id.original
+            | some (Pattern.var (some uid)) => uid.original
+            | _ => s!"pat{binds}"
+          if binds == 0 then
+            -- No bindings: pre-evaluate body, use const closure
+            ArmClosure.mk patName (.const patName (evalCoreExpr ctx arm.body)) arm.patterns
+          else
+            -- Has bindings: create term closure for proper substitution
+            ArmClosure.mk patName (Closure.mkWithBody patName ctx.env arm.body) arm.patterns
+        .vNeutral ty (.nCase neu armClosures resultTy)
+      | _ => .vNeutral .type0 (.nVar ⟨"case-stuck", ctx.env.level⟩)
+    | none => .vNeutral .type0 (.nVar ⟨"case-empty", ctx.env.level⟩)
 
   | .record fields =>
     .vRecordVal (fields.toList.map fun (n, e) => (n, evalCoreExpr ctx e))
