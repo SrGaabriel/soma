@@ -610,9 +610,15 @@ private def elaborateWithEagerDicts
     resolvedInstEnv := resolvedInstEnv.addInstanceWithId tempInst
   TCM.withInstanceEnv resolvedInstEnv elabMethods
 
+/-- A constraint with an optional user-chosen dict name from instance binders. -/
+private structure NamedConstraint where
+  classId : Unique
+  args : Array Value
+  dictName? : Option String
+
 /-- Full dictionary-passing elaboration for constrained instances -/
 private def elaborateDictPassingInstance
-    (constraints : Array (Unique × Array Value))
+    (constraints : Array NamedConstraint)
     (span : Span)
     (elabMethods : Array ConstraintDictEntry → TCM InstanceElabResult)
     : TCM (Value × Array Soma.Core.TypedFunction × Nat) := do
@@ -620,8 +626,13 @@ private def elaborateDictPassingInstance
   let mut constraintDictBindings : Array (Unique × String × Value) := #[]
   let mut constraintDictEntries : Array ConstraintDictEntry := #[]
   let mut tempInstEnv ← TCM.getInstanceEnv
-  for (constraintClassId, constraintArgs) in constraints do
-    let dictName := s!"$dict_{constraintClassId.original}"
+  for nc in constraints do
+    let constraintClassId := nc.classId
+    let constraintArgs := nc.args
+    -- Use user-chosen name if available, otherwise generate one
+    let dictName := match nc.dictName? with
+      | some name => name
+      | none => s!"$dict_{constraintClassId.original}"
     let dictUnique ← TCM.freshUnique dictName
     let dictTy ← buildConstraintDictType constraintClassId constraintArgs
     let dictTyExpr := Soma.Core.quoteExpr0 dictTy
@@ -712,11 +723,12 @@ private def mkInstanceInfo (instUnique classId : Unique) (typeArgs : Array Value
     3. Unresolvable constraints → full dictionary-passing -/
 private def elaborateConstrainedInstance
     (classId instUnique : Unique) (typeArgs : Array Value)
-    (constraints : Array (Unique × Array Value)) (span : Span)
+    (namedConstraints : Array NamedConstraint) (span : Span)
     (elabSimple : TCM InstanceElabResult)
     (elabConstrained : Array ConstraintDictEntry → TCM InstanceElabResult)
     : TCM (InstanceInfo × Array Soma.Core.TypedFunction) := do
-  if constraints.isEmpty then
+  let constraints := namedConstraints.map fun nc => (nc.classId, nc.args)
+  if namedConstraints.isEmpty then
     let result ← elabSimple
     return (mkInstanceInfo instUnique classId typeArgs constraints result.value span,
             result.typedFns)
@@ -728,22 +740,43 @@ private def elaborateConstrainedInstance
               result.typedFns)
     | .unresolvable =>
       let (instValue, dictPassedFns, dictCount) ←
-        elaborateDictPassingInstance constraints span elabConstrained
+        elaborateDictPassingInstance namedConstraints span elabConstrained
       return (mkInstanceInfo instUnique classId typeArgs constraints instValue span dictCount,
               dictPassedFns)
 
-/-- Elaborate a single instance using ClassInfo instead of TypeClassMeta -/
+/-- Process instance binders into an elaboration environment and constraint list.
+
+Explicit type variable binders `{a : Type}` create fresh metas in the elabEnv.
+Instance dict binders `{{d : Display a}}` produce constraint entries for dict-passing,
+preserving the user-chosen name for use in method bodies.
+-/
+private def processInstanceBinders (binders : Array Syntax.InstanceBinder)
+    (registry : ClassRegistry) (baseEnv : ElabEnv := ElabEnv.empty)
+    : TCM (ElabEnv × Array NamedConstraint) := do
+  let mut elabEnv := baseEnv
+  let mut constraints : Array NamedConstraint := #[]
+  for binder in binders do
+    match binder with
+    | .typeVar name kind _ =>
+      -- {a : Type} — create a fresh meta for this type variable
+      let kindVal ← elaborateType elabEnv kind
+      let metaVal ← TCM.freshMetaVal kindVal
+      elabEnv := elabEnv.addOverride name.value metaVal
+    | .dictParam name? constraint _ =>
+      -- {{d : Display a}} or {{Display a}} — elaborate the constraint
+      match ← elaborateConstraint constraint elabEnv registry with
+      | some (cid, cargs) =>
+        constraints := constraints.push {
+          classId := cid, args := cargs, dictName? := name?.map (·.value)
+        }
+      | none => pure ()
+  return (elabEnv, constraints)
+
 partial def elaborateInstanceFromClassInfo (inst : Soma.Core.InstanceDecl)
     (classInfo : ClassInfo) (registry : ClassRegistry)
     : TCM (Option (InstanceInfo × Array Soma.Core.TypedFunction)) := do
-  let elabEnv := ElabEnv.empty
+  let (elabEnv, constraints) ← processInstanceBinders inst.binders registry
   let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)
-
-  let mut constraints : Array (Unique × Array Value) := #[]
-  for constraint in inst.constraintsSyntax do
-    match ← elaborateConstraint constraint elabEnv registry with
-    | some c => constraints := constraints.push c
-    | none => pure ()
 
   let instUnique ← TCM.freshUnique s!"$inst_{inst.className}_{typeArgs.size}"
 
@@ -823,53 +856,18 @@ def elaborateInstanceValue (typeArgs : Array Value)
     methodExprs := methodExprs
   }
 
-/-- Collect free type variable names from a TypeExpr -/
-private partial def collectTypeVars (ty : TypeExpr) (acc : Array String := #[])
-    (bound : Array String := #[]) : Array String :=
-  match ty with
-  | .var name =>
-    if bound.contains name.value then acc
-    else if acc.contains name.value then acc
-    else acc.push name.value
-  | .con _ => acc
-  | .app fn arg _ => collectTypeVars arg (collectTypeVars fn acc bound) bound
-  | .arrow from_ to _ => collectTypeVars to (collectTypeVars from_ acc bound) bound
-  | .tuple elems _ => elems.foldl (fun a e => collectTypeVars e a bound) acc
-  | .list elem _ => collectTypeVars elem acc bound
-  | .forall_ vars body _ =>
-    let bound' := vars.foldl (fun b v => b.push v.name.value) bound
-    collectTypeVars body acc bound'
-  | .constrained _ body _ => collectTypeVars body acc bound
-  | .parens inner _ => collectTypeVars inner acc bound
-  | .kinded ty _ _ => collectTypeVars ty acc bound
-  | .record fields _ _ => fields.foldl (fun a (_, e) => collectTypeVars e a bound) acc
-  | .variant cases _ _ => cases.foldl (fun a (_, e) => collectTypeVars e a bound) acc
-  | .pi _ _ dom cod _ => collectTypeVars cod (collectTypeVars dom acc bound) bound
-  | .sigma _ _ fst snd _ => collectTypeVars snd (collectTypeVars fst acc bound) bound
-  | .implicit _ dom cod _ => collectTypeVars cod (collectTypeVars dom acc bound) bound
-
 /-- Elaborate a single instance declaration into an InstanceInfo.
-    Handles both unconstrained and constrained (`with`) instances
-    using dictionary-passing elaboration for the latter. -/
+    Processes explicit binders for type variables and dictionary parameters,
+    then delegates to the constrained instance elaboration pipeline. -/
 def elaborateInstance (inst : Soma.Core.InstanceDecl) (registry : ClassRegistry)
   (typeClass : Soma.Core.TypeClassMeta) : TCM (Option (InstanceInfo × Array Soma.Core.TypedFunction)) := do
   match registry.lookup inst.className with
   | none =>
     return none
   | some classId =>
-    let freeVars := inst.typeArgsSyntax.foldl (fun acc ty => collectTypeVars ty acc) #[]
-    let mut elabEnv := ElabEnv.empty
-    for name in freeVars do
-      let metaVal ← TCM.freshMetaVal (Value.vType Level.zero)
-      elabEnv := elabEnv.addOverride name metaVal
+    let (elabEnv, constraints) ← processInstanceBinders inst.binders registry
 
     let typeArgs ← inst.typeArgsSyntax.mapM (elaborateType elabEnv)
-
-    let mut constraints : Array (Unique × Array Value) := #[]
-    for constraint in inst.constraintsSyntax do
-      match ← elaborateConstraint constraint elabEnv registry with
-      | some c => constraints := constraints.push c
-      | none => pure ()
 
     let instUnique ← TCM.freshUnique s!"$inst_{inst.className}_{typeArgs.size}"
 

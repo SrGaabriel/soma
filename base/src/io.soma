@@ -6,11 +6,11 @@ def pure_io : a -> IO a
 @[intrinsic "ffi.io_bind"]
 def io_bind : IO a -> (a -> IO b) -> IO b
 
-instance Functor IO where
+instance : Functor IO where
 	def fmap (f : (a -> b)) (ioA : IO a) : IO b =
 	    io_bind ioA (\x -> pure_io (f x))
 
-instance Applicative IO with (Functor IO) where
+instance {{Functor IO}} : Applicative IO where
 	def pure : a -> IO a = pure_io
 	def {<*>} (ioF : IO (a -> b)) (ioA : IO a) : IO b =
 	    io_bind ioF (\f -> io_bind ioA (\a -> pure_io (f a)))
@@ -19,6 +19,6 @@ instance Applicative IO with (Functor IO) where
 	def {<*} (ioA : IO a) (ioB : IO b) : IO a =
 	    io_bind ioA (\a -> io_bind ioB (\b -> pure_io a))
 
-instance Monad IO with (Applicative IO) where
+instance {{Applicative IO}} : Monad IO where
 	def {>>=} (ioA : IO a) (f : a -> IO b) : IO b = io_bind ioA f
 	def {>>} (ioA : IO a) (ioB : IO b) : IO b = ioA >>= (\unused -> ioB)

@@ -294,7 +294,7 @@ private def lowerInstanceDecl
     (supply : UniqueSupply)
   : Option Soma.Core.UntypedInstance × Diagnostics × UniqueSupply :=
   match decl with
-  | .instance_ _ traitName args constraints methods span =>
+  | .instance_ _ binders traitName args methods span =>
     let (methodFns, diags, supply') := Id.run do
       let mut fns : Array Soma.Core.UntypedFunction := #[]
       let mut ds : Diagnostics := #[]
@@ -314,7 +314,7 @@ private def lowerInstanceDecl
     (some {
       className := traitName.value
       typeArgsSyntax := args
-      constraintsSyntax := constraints
+      binders := binders
       methods := methodFns
       span := span
     }, diags, supply')

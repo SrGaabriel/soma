@@ -10,8 +10,8 @@ instance intShowable : Showable Int where
     def render
         | x => "int"
 
-// Unnamed instance (traditional syntax) also works
-instance Showable Bool where
+// Unnamed instance also works
+instance : Showable Bool where
     def render
         | b => "bool"
 

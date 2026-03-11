@@ -58,7 +58,7 @@ end TypeDef
 structure InstanceDecl where
   className : String
   typeArgsSyntax : Array Syntax.TypeExpr
-  constraintsSyntax : Array Syntax.Constraint
+  binders : Array Syntax.InstanceBinder
   methods : Array UntypedFunction
   span : Syntax.Span
 

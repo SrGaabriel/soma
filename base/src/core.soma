@@ -36,25 +36,25 @@ class Monad (m : Type -> Type) with (Applicative m) where
     {>>=} : ∀ a b. m a -> (a -> m b) -> m b
     {>>} : ∀ a b. m a -> m b -> m b
 
-instance Functor Option where
+instance : Functor Option where
     def fmap : (a -> b) -> Option a -> Option b
         | f, (Option::Some value) => Option::Some (f value)
         | _, Option::None => Option::None
 
-instance Display (Option a) with (Display a) where
-    def display : Option a -> String
-        | (Option::Some value) => strcat (strcat "Some(" (display value)) ")"
-        | Option::None => "None"
-
-instance Display String where
+instance : Display String where
     def display : String -> String
         | str => str
 
-instance Display Int where
+instance : Display Int where
     def display : Int -> String
         | n => int_to_string n
 
-instance Semigroup String where
+instance : Semigroup String where
     @[inline]
     def {<>} : String -> String -> String
         | s1, s2 => strcat s1 s2
+
+instance {a : Type} {{d : Display a}} : Display (Option a) where
+    def display : Option a -> String
+        | Option::Some value => strcat (strcat "Some(" (d.display value)) ")"
+        | Option::None => "None"

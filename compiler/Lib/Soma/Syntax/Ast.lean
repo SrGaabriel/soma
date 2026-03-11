@@ -263,6 +263,25 @@ structure Constraint where
 
 instance : Nonempty Constraint := ⟨⟨⟨"_", Span.uninhabited⟩, #[], Span.uninhabited⟩⟩
 
+/-- A binder on an instance declaration -/
+inductive InstanceBinder where
+  /-- Implicit type variable -/
+  | typeVar (name : Name) (kind : TypeExpr) (span : Span)
+  /-- Instance dictionary parameter -/
+  | dictParam (name : Option Name) (constraint : Constraint) (span : Span)
+  deriving Repr
+
+namespace InstanceBinder
+
+def span : InstanceBinder → Span
+  | .typeVar _ _ s => s
+  | .dictParam _ _ s => s
+
+end InstanceBinder
+
+instance : Nonempty InstanceBinder :=
+  ⟨.typeVar ⟨"_", Span.uninhabited⟩ (.var ⟨"Type", Span.uninhabited⟩) Span.uninhabited⟩
+
 namespace TypeExpr
 
 def span : TypeExpr → Span
@@ -516,8 +535,9 @@ inductive Decl where
           (constraints : Array Constraint) (methods : Array MethodSig) (span : Span)
 
   /-- Instance definition -/
-  | instance_ (instanceName : Option Name) (traitName : Name) (args : Array TypeExpr)
-              (constraints : Array Constraint) (methods : Array Decl) (span : Span)
+  | instance_ (instanceName : Option Name) (binders : Array InstanceBinder)
+              (traitName : Name) (args : Array TypeExpr)
+              (methods : Array Decl) (span : Span)
 
   /-- Import declaration: use base/core.{Option, Some, None} -/
   | use (path : QualName) (items : Array Name) (span : Span)
@@ -826,15 +846,23 @@ partial def ppDecl : Decl → String
       let methodsStr := methods.toList.map ppMethodSig |> String.intercalate "\n"
       s!"{attrStr}trait {name.value}{paramsStr}{consStr} where\n{indent 2 methodsStr}"
 
-  | .instance_ instanceName traitName args constraints methods _ =>
+  | .instance_ instanceName binders traitName args methods _ =>
       let nameStr := match instanceName with
         | some n => s!"{n.value} : "
         | none => ""
+      let bindersStr := if binders.isEmpty then "" else
+        let bs := binders.toList.map fun
+          | .typeVar name kind _ =>
+            "{" ++ name.value ++ " : " ++ ppTypeExpr kind ++ "}"
+          | .dictParam name constraint _ =>
+            let nameStr := match name with
+              | some n => s!"{n.value} : "
+              | none => ""
+            "{{" ++ nameStr ++ ppConstraint constraint ++ "}}"
+        (bs |> String.intercalate " ") ++ " "
       let argsStr := args.toList.map ppTypeExpr |> String.intercalate " "
-      let consStr := if constraints.isEmpty then ""
-        else s!" with ({constraints.toList.map ppConstraint |> String.intercalate ", "})"
       let methodsStr := methods.toList.map ppDecl |> String.intercalate "\n\n"
-      s!"instance {nameStr}{traitName.value} {argsStr}{consStr} where\n{indent 2 methodsStr}"
+      s!"instance {bindersStr}{nameStr}: {traitName.value} {argsStr} where\n{indent 2 methodsStr}"
 
   | .use path items _ =>
       let itemsStr := if items.isEmpty then ""

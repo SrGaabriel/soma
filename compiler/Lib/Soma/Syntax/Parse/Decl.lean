@@ -572,58 +572,115 @@ def parseTraitDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
 def parseInstanceDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := do
   match ← tryConsume .kw_instance with
   | some instanceTok =>
-      -- Check for named instance: `instance myName : TraitName Type where ...`
-      -- vs unnamed instance: `instance TraitName Type where ...`
-      -- We look ahead to see if we have `lowerIdent :` pattern
-      let (instanceName, traitApp) ← do
-        -- Try to parse an identifier followed by colon (named instance)
-        match ← parseLowerIdent with
-        | some nameTok =>
-            match ← tryConsume .colon with
-            | some colonTok =>
-                -- Named instance: `instance myName : TraitName ...`
-                let nameNode := GreenNode.mkNode .name #[nameTok, colonTok]
-                match ← parseConstraint with
-                | some trait => pure (some nameNode, trait)
+      let instanceName ← do
+        let tok ← current
+        let next ← peekNext
+        if (tok.kind == some .lowerIdent) &&
+           (next.kind == some .colon || next.kind == some .leftBrace) then
+          let nameTok ← consumeAny
+          pure (some nameTok)
+        else
+          pure none
+
+      let mut binders : Array GreenNode := #[]
+      let mut parsing := true
+      while parsing do
+        if (← checkDoubleBrace) then
+          -- Parse {{d : ClassName args}} or {{ClassName args}}
+          let lbrace1 ← consumeAny
+          let lbrace2 ← consumeAny
+          -- Check for named dict: lowerIdent followed by `:`
+          let dictNode ← do
+            let tok ← current
+            let next ← peekNext
+            if tok.kind == some .lowerIdent && next.kind == some .colon then
+              -- Named: {{d : Display a}}
+              let nameTok ← consumeAny
+              let colonTok ← consumeAny
+              match ← parseConstraint with
+              | some constraintNode =>
+                match ← tryConsume .rightBrace with
+                | some rbrace1 =>
+                  match ← tryConsume .rightBrace with
+                  | some rbrace2 =>
+                    pure (GreenNode.mkNode .instDictBinder
+                      #[lbrace1, lbrace2, nameTok, colonTok, constraintNode, rbrace1, rbrace2])
+                  | none =>
+                    recordError "expected '}}' after instance dict binder"
+                    pure (GreenNode.mkError "unclosed dict binder"
+                      #[lbrace1, lbrace2, nameTok, colonTok, constraintNode, rbrace1])
                 | none =>
-                    recordError "expected trait application after ':'"
-                    pure (some nameNode, GreenNode.mkError "missing trait" #[])
-            | none =>
-                -- No colon - this identifier is actually the start of the trait name
-                -- Need to build the constraint from this token + rest
-                let className := GreenNode.mkNode .typeCon #[nameTok]
-                let mut args := #[className]
-                while true do
-                  let tok ← current
-                  if tok.kind == some .comma || tok.kind == some .rightParen ||
-                     tok.kind == some .kw_where || tok.kind == some .kw_with ||
-                     tok.kind == some .layoutStart || tok.kind == some .layoutSep ||
-                     tok.kind == some .layoutEnd || tok.kind == some .eof then
-                    break
-                  match ← parseTypeAtom with
-                  | some arg => args := args.push arg
-                  | none => break
-                pure (none, GreenNode.mkNode .constraint args)
+                  recordError "expected '}}' after instance dict binder"
+                  pure (GreenNode.mkError "unclosed dict binder"
+                    #[lbrace1, lbrace2, nameTok, colonTok, constraintNode])
+              | none =>
+                recordError "expected constraint after ':' in instance dict binder"
+                pure (GreenNode.mkError "missing constraint"
+                  #[lbrace1, lbrace2, nameTok, colonTok])
+            else
+              -- Unnamed: {{Display a}}
+              match ← parseConstraint with
+              | some constraintNode =>
+                match ← tryConsume .rightBrace with
+                | some rbrace1 =>
+                  match ← tryConsume .rightBrace with
+                  | some rbrace2 =>
+                    pure (GreenNode.mkNode .instDictBinder
+                      #[lbrace1, lbrace2, constraintNode, rbrace1, rbrace2])
+                  | none =>
+                    recordError "expected '}}' after instance dict binder"
+                    pure (GreenNode.mkError "unclosed dict binder"
+                      #[lbrace1, lbrace2, constraintNode, rbrace1])
+                | none =>
+                  recordError "expected '}}' after instance dict binder"
+                  pure (GreenNode.mkError "unclosed dict binder"
+                    #[lbrace1, lbrace2, constraintNode])
+              | none =>
+                recordError "expected constraint in instance dict binder"
+                pure (GreenNode.mkError "missing constraint" #[lbrace1, lbrace2])
+          binders := binders.push dictNode
+        else if (← check .leftBrace) then
+          -- Parse {a : Type} — implicit type variable binder
+          let lbrace ← consumeAny
+          match ← parseLowerIdent with
+          | some nameTok =>
+            if (← check .colon) then
+              let colonTok ← consumeAny
+              match ← parseType with
+              | some kindTy =>
+                match ← tryConsume .rightBrace with
+                | some rbrace =>
+                  let binderNode := GreenNode.mkNode .instTypeVarBinder
+                    #[lbrace, nameTok, colonTok, kindTy, rbrace]
+                  binders := binders.push binderNode
+                | none =>
+                  recordError "expected '}' after type variable binder"
+                  parsing := false
+              | none =>
+                recordError "expected type after ':' in binder"
+                parsing := false
+            else
+              recordError "expected ':' in implicit type binder"
+              parsing := false
+          | none =>
+            recordError "expected binder name after '{'"
+            parsing := false
+        else
+          parsing := false
+
+      -- Step 3: Expect `:` then trait application (constraint)
+      let colonTok ← tryConsume .colon
+      let traitApp ← match ← parseConstraint with
+        | some trait => pure trait
         | none =>
-            -- Try upper ident for unnamed instance starting with UpperCase trait name
-            match ← parseConstraint with
-            | some trait => pure (none, trait)
-            | none =>
-                recordError "expected trait application after 'instance'"
-                pure (none, GreenNode.mkError "missing trait" #[])
+          recordError "expected trait application after ':'"
+          pure (GreenNode.mkError "missing trait" #[])
 
-      let constraints ← if (← check .kw_with) then do
-        let withTok ← consumeAny
-        match ← parseConstraints with
-        | some cs => pure (some (GreenNode.mkNode .constraintList #[withTok, cs]))
-        | none => pure none
-      else pure none
-
+      -- Step 4: Optional `where` and method definitions
       let whereTok ← tryConsume .kw_where
 
       let parseInstanceMethod : ParserM (Option GreenNode) := do
         let attrs ← parseAttributes
-        -- Skip layoutSep between attributes and def (when attribute is on separate line)
         let _ ← tryLayoutSep
         parseDefDecl attrs
 
@@ -634,14 +691,16 @@ def parseInstanceDecl (attrs : Array GreenNode) : ParserM (Option GreenNode) := 
         recordError "bodiless instance requires @[intrinsic] attribute"
         let children := attrs ++ #[instanceTok] ++
           (match instanceName with | some n => #[n] | none => #[]) ++
-          #[traitApp] ++
-          (match constraints with | some c => #[c] | none => #[])
+          binders ++
+          (match colonTok with | some c => #[c] | none => #[]) ++
+          #[traitApp]
         return some (GreenNode.mkError "missing methods" children)
 
       let children := attrs ++ #[instanceTok] ++
         (match instanceName with | some n => #[n] | none => #[]) ++
+        binders ++
+        (match colonTok with | some c => #[c] | none => #[]) ++
         #[traitApp] ++
-        (match constraints with | some c => #[c] | none => #[]) ++
         (match whereTok with | some w => #[w] | none => #[]) ++
         methods
       return some (GreenNode.mkNode .declInstance children)

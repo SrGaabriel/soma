@@ -1656,24 +1656,72 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
       | .declInstance =>
           let allKids := childrenWithOffsets green offset
 
-          -- Check for optional instance name (a .name node before the constraint)
-          let nameNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .name
-          let instanceName ← if nameNodes.isEmpty then
-            pure none
-          else
-            let (nameNode, nameOffset) := nameNodes[0]!
-            -- The name node contains the identifier token (and possibly a colon)
-            let nameTokens := nameNode.children.filter fun c =>
-              isTokenKind c .lowerIdent || isTokenKind c .upperIdent
-            match nameTokens[0]? with
-            | some tok =>
-                match getTokenText tok with
-                | some text =>
-                    let nspan ← spanFor nameNode nameOffset
-                    pure (some ⟨text, nspan⟩)
-                | none => pure none
-            | none => pure none
+          -- Check for optional instance name (a lowerIdent token directly under declInstance)
+          -- Named instances have a bare lowerIdent token as a child (not wrapped in a node)
+          let instanceName ← do
+            let nameTokens := allKids.filter fun (c, _) =>
+              isTokenKind c .lowerIdent
+            if nameTokens.isEmpty then pure none
+            else
+              let (tok, tokOffset) := nameTokens[0]!
+              match getTokenText tok with
+              | some text =>
+                let nspan ← spanFor tok tokOffset
+                pure (some ⟨text, nspan⟩)
+              | none => pure none
 
+          -- Lower instance binders: {a : Type} and {{d : Display a}}
+          let mut binders : Array InstanceBinder := #[]
+          -- Process all binder nodes in source order
+          for (child, childOffset) in allKids do
+            match child.syntaxKind? with
+            | some .instTypeVarBinder =>
+              -- {name : kind} — children: lbrace, nameTok, colon, kindTy, rbrace
+              let semanticKids := childrenWithOffsets child childOffset
+                |>.filter fun (c, _) => isSemanticNode c || isTokenKind c .lowerIdent
+              let bspan ← spanFor child childOffset
+              if semanticKids.size >= 2 then
+                -- First semantic child should be the lowerIdent name
+                let nameText ← do
+                  let (nc, noff) := semanticKids[0]!
+                  match getTokenText nc with
+                  | some t => pure t
+                  | none =>
+                    -- try nested
+                    match firstGreenChild nc with
+                    | some inner => getGreenTokenText inner noff
+                    | none => pure "_error"
+                let nspan ← spanFor semanticKids[0]!.1 semanticKids[0]!.2
+                -- Second semantic child is the kind type
+                let (kindNode, kindOffset) := semanticKids[1]!
+                let kindTy ← lowerTypeExpr kindNode kindOffset
+                binders := binders.push (.typeVar ⟨nameText, nspan⟩ kindTy bspan)
+              else
+                lowerError "malformed type variable binder" bspan
+
+            | some .instDictBinder =>
+              -- {{name : Constraint}} or {{Constraint}}
+              -- Children vary: lbrace1, lbrace2, [nameTok, colonTok,] constraintNode, rbrace1, rbrace2
+              let bspan ← spanFor child childOffset
+              let constraintKids := childrenWithOffsets child childOffset
+                |>.filter fun (c, _) => c.syntaxKind? == some .constraint
+              let nameKids := child.children.filter fun c =>
+                isTokenKind c .lowerIdent
+              let dictName ← if nameKids.isEmpty then pure none
+                else match getTokenText nameKids[0]! with
+                  | some text =>
+                    let nspan ← spanFor nameKids[0]! childOffset
+                    pure (some ⟨text, nspan⟩)
+                  | none => pure none
+              if constraintKids.isEmpty then
+                lowerError "missing constraint in dict binder" bspan
+              else
+                let (cnode, coffset) := constraintKids[0]!
+                let constraint ← lowerConstraint cnode coffset
+                binders := binders.push (.dictParam dictName constraint bspan)
+            | _ => pure ()
+
+          -- Lower the trait head (the constraint node after the colon)
           let constraintNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .constraint
           let (traitName, args) ← if constraintNodes.isEmpty then
             pure (⟨"_Error", span⟩, #[])
@@ -1681,13 +1729,10 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
             let c ← lowerConstraint constraintNodes[0]!.1 constraintNodes[0]!.2
             pure (c.className, c.args)
 
-          let superNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .constraintList
-          let constraints ← superNodes.mapM fun (c, o) => lowerConstraint c o
-
           let methodNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .declDef
           let methods ← methodNodes.mapM fun (c, o) => lowerDecl c o
 
-          pure (.instance_ instanceName traitName args constraints methods span)
+          pure (.instance_ instanceName binders traitName args methods span)
 
       | .declUse =>
           let allKids := childrenWithOffsets green offset

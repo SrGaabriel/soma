@@ -82,6 +82,9 @@ inductive SyntaxKind where
   -- Type Constraints
   | constraint        -- Single constraint
   | constraintList    -- Multiple constraints
+  -- Instance Binders
+  | instTypeVarBinder -- Implicit type var binder on instance: {a : Type}
+  | instDictBinder    -- Instance dict binder on instance: {{d : Display a}} or {{Display a}}
   -- Auxiliary Nodes
   | paramList         -- Parameter list
   | argList           -- Argument list in application
@@ -182,6 +185,8 @@ def SyntaxKind.describe : SyntaxKind → String
   | .typeQuantity => "quantity annotation"
   | .constraint => "constraint"
   | .constraintList => "constraint list"
+  | .instTypeVarBinder => "instance type variable binder"
+  | .instDictBinder => "instance dictionary binder"
   | .paramList => "parameter list"
   | .argList => "argument list"
   | .tyParamList => "type parameter list"

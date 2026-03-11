@@ -9,7 +9,6 @@ def main : IO () =
 
         let len = length xs
         puts ("Length: " <> display len)
-        puts ("Buggy")
 
         let total = sum xs
         puts ("Sum: " <> display total)

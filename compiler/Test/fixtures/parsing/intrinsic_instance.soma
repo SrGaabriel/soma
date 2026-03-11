@@ -1,2 +1,2 @@
 @[intrinsic]
-instance Semigroup String
+instance : Semigroup String
