@@ -199,9 +199,11 @@ def compileModules
 
   IO.println s!"  Monomorphized module has {mono.funcs.size} function(s)"
 
+  let optimized := Alloy.ClosureSpec.closureSpec mono
+
   -- Generate LLVM IR
   IO.println "  Generating LLVM IR..."
-  let llvmIR := Llvm.codegenToString mono
+  let llvmIR := Llvm.codegenToString optimized
 
   IO.println "Compilation phase complete"
 
