@@ -512,6 +512,94 @@ partial def hasFVar (e : Expr) (fvar : Unique) : Bool :=
     r.hasFVar fvar || ep.hasFVar fvar || b.hasFVar fvar
   | .ann x t => x.hasFVar fvar || t.hasFVar fvar
 
+/-- Check if an expression is type-level (will be erased at runtime) -/
+def isTypeLevelExpr : Expr → Bool
+  | .sort _ | .pi _ _ _ _ _ | .sigma _ _ _ _ _ | .primTy _
+  | .rowSort | .labelSort | .rowEmpty | .rowExtend _ _ _
+  | .recordTy _ | .variantTy _ | .labelLit _ | .dataTy _ _
+  | .eqTy _ _ _ _ | .refl _ _ | .transport _ _ _ _ _ _ _
+  | .mvar _ => true
+  | _ => false
+
+/-- Collect an application spine: `f a b c` → `(f, #[a, b, c])` -/
+def collectAppSpine (e : Expr) : Expr × Array Expr :=
+  let (head, revArgs) := go e #[]
+  (head, revArgs.reverse)
+where
+  go (e : Expr) (acc : Array Expr) : Expr × Array Expr :=
+    match e with
+    | .app fn arg => go fn (acc.push arg)
+    | _ => (e, acc)
+
+/-- Rebuild an application spine from head and args -/
+def rebuildAppSpine (fn : Expr) (args : Array Expr) : Expr :=
+  args.foldl (init := fn) fun acc arg => .app acc arg
+
+/-- Exhaustive beta-reduction: reduces `app (lam ...) arg` redexes.
+    When `stripTypeArgs` is true, type-level arguments applied to non-lambda
+    heads are dropped (useful after dictionary specialization). -/
+partial def betaReduce (e : Expr) (stripTypeArgs : Bool := false) : Expr :=
+  match e with
+  | .app fn arg =>
+    let fn' := betaReduce fn stripTypeArgs
+    let arg' := betaReduce arg stripTypeArgs
+    match fn' with
+    | .lam _ _ _ body => betaReduce (body.instantiate arg') stripTypeArgs
+    | _ =>
+      if stripTypeArgs && isTypeLevelExpr arg' then fn'
+      else .app fn' arg'
+  | .lam info name domain body =>
+    .lam info name (betaReduce domain stripTypeArgs) (betaReduce body stripTypeArgs)
+  | .let_ name ty val body =>
+    .let_ name (betaReduce ty stripTypeArgs) (betaReduce val stripTypeArgs) (betaReduce body stripTypeArgs)
+  | .pi qty info name domain codomain =>
+    .pi qty info name (betaReduce domain stripTypeArgs) (betaReduce codomain stripTypeArgs)
+  | .sigma qty info name fst snd =>
+    .sigma qty info name (betaReduce fst stripTypeArgs) (betaReduce snd stripTypeArgs)
+  | .pair f s => .pair (betaReduce f stripTypeArgs) (betaReduce s stripTypeArgs)
+  | .projFst x => .projFst (betaReduce x stripTypeArgs)
+  | .projSnd x => .projSnd (betaReduce x stripTypeArgs)
+  | .if_ c t el => .if_ (betaReduce c stripTypeArgs) (betaReduce t stripTypeArgs) (betaReduce el stripTypeArgs)
+  | .«case» scruts arms resultTy =>
+    .«case» (scruts.map (betaReduce · stripTypeArgs))
+      (arms.map fun arm => Arm.mk arm.patterns (betaReduce arm.body stripTypeArgs))
+      (betaReduce resultTy stripTypeArgs)
+  | .construct name tag args resultTy =>
+    .construct name tag (args.map (betaReduce · stripTypeArgs)) (betaReduce resultTy stripTypeArgs)
+  | .fieldAccess expr field idx => .fieldAccess (betaReduce expr stripTypeArgs) field idx
+  | .record fields => .record (fields.map fun (n, x) => (n, betaReduce x stripTypeArgs))
+  | .recordUpdate base updates =>
+    .recordUpdate (betaReduce base stripTypeArgs) (updates.map fun (n, x) => (n, betaReduce x stripTypeArgs))
+  | .inject label args resultTy => .inject label (args.map (betaReduce · stripTypeArgs)) (betaReduce resultTy stripTypeArgs)
+  | .closure name captures => .closure name (captures.map (betaReduce · stripTypeArgs))
+  | .array es ety => .array (es.map (betaReduce · stripTypeArgs)) (betaReduce ety stripTypeArgs)
+  | .tuple es => .tuple (es.map (betaReduce · stripTypeArgs))
+  | .ann x t => .ann (betaReduce x stripTypeArgs) (betaReduce t stripTypeArgs)
+  | _ => e
+
+/-- Count occurrences of bvar(target) at the given depth -/
+partial def countBVar (e : Expr) (depth : Nat := 0) : Nat :=
+  match e with
+  | .bvar i => if i == depth then 1 else 0
+  | .app f a => countBVar f depth + countBVar a depth
+  | .lam _ _ d b => countBVar d depth + countBVar b (depth + 1)
+  | .let_ _ t v b => countBVar t depth + countBVar v depth + countBVar b (depth + 1)
+  | .«case» scruts arms _ =>
+    let s := scruts.foldl (fun acc e => acc + countBVar e depth) 0
+    let a := arms.foldl (fun acc arm =>
+      acc + countBVar arm.body (depth + arm.patterns.foldl (fun n p => n + p.bindingCount) 0)) 0
+    s + a
+  | .if_ c t el => countBVar c depth + countBVar t depth + countBVar el depth
+  | .construct _ _ args _ => args.foldl (fun acc e => acc + countBVar e depth) 0
+  | .pair f s => countBVar f depth + countBVar s depth
+  | .projFst x => countBVar x depth
+  | .projSnd x => countBVar x depth
+  | .fieldAccess x _ _ => countBVar x depth
+  | .closure _ caps => caps.foldl (fun acc e => acc + countBVar e depth) 0
+  | .fvar _ _ => 0  -- type annotation is erased, skip
+  | .const _ _ => 0  -- type annotation is erased, skip
+  | _ => 0
+
 /-- Count the number of occurrences of a specific free variable in an expression -/
 partial def countFVar (e : Expr) (fvar : Unique) : Nat :=
   match e with

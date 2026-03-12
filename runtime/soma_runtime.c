@@ -305,6 +305,45 @@ static SomaString* soma_clone_string_obj(SomaString* src) {
     return out;
 }
 
+void* soma_clone_flat_array_view(SomaFlatArrayView* src) {
+    if (src == NULL) return NULL;
+
+    /* Deep-copy the backing array */
+    SomaFlatArray* srcBacking = (SomaFlatArray*)src->backing;
+    SomaFlatArray* newBacking = NULL;
+    void* newData = NULL;
+
+    if (srcBacking != NULL) {
+        size_t backingTotal = sizeof(SomaFlatArray) +
+            (size_t)srcBacking->length * (size_t)srcBacking->elem_size;
+        newBacking = (SomaFlatArray*)malloc(backingTotal);
+        if (newBacking == NULL) {
+            soma_panic("soma_clone_flat_array_view: out of memory");
+            return NULL;
+        }
+        memcpy(newBacking, srcBacking, backingTotal);
+        newBacking->_reserved = 0;
+
+        /* Compute the data pointer offset within the backing */
+        ptrdiff_t offset = (char*)src->data - (char*)(srcBacking + 1);
+        newData = (char*)(newBacking + 1) + offset;
+    }
+
+    /* Allocate the new view */
+    SomaFlatArrayView* dst = (SomaFlatArrayView*)malloc(sizeof(SomaFlatArrayView));
+    if (dst == NULL) {
+        soma_panic("soma_clone_flat_array_view: out of memory");
+        return NULL;
+    }
+    dst->tag = NODE_FLAT_ARRAY_VIEW;
+    memset(dst->_pad, 0, sizeof(dst->_pad));
+    dst->_reserved = 0;
+    dst->length = src->length;
+    dst->data = newData;
+    dst->backing = newBacking;
+    return dst;
+}
+
 static SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
     if (!SOMA_IS_PTR(value) || value == 0) return value;
 
@@ -318,10 +357,21 @@ static SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) 
         return SOMA_PTR(soma_clone_string_obj((SomaString*)ptr));
     case NODE_TAGGED_PAYLOAD:
         return SOMA_PTR(soma_clone_tagged_payload(ptr, label));
+    case NODE_FLAT_ARRAY_VIEW:
+        return SOMA_PTR(soma_clone_flat_array_view((SomaFlatArrayView*)ptr));
     case NODE_FLAT_ARRAY: {
+        /* Backing arrays should not be DUP'd directly in the new design,
+         * but handle gracefully by deep-copying */
         SomaFlatArray* arr = (SomaFlatArray*)ptr;
-        atomic_fetch_add_explicit(&arr->refcount, 1, memory_order_relaxed);
-        return value;
+        size_t total = sizeof(SomaFlatArray) +
+            (size_t)arr->length * (size_t)arr->elem_size;
+        SomaFlatArray* copy = (SomaFlatArray*)malloc(total);
+        if (copy == NULL) {
+            soma_panic("soma_clone_heap_value_for_dup: out of memory");
+            return value;
+        }
+        memcpy(copy, arr, total);
+        return SOMA_PTR(copy);
     }
     default:
         if (IS_SUP(tag)) {
@@ -704,12 +754,23 @@ void* soma_clone_closure(void* closure_ptr, uint32_t label) {
         }
         break;
     case SOMA_ENV_LIST:
-        /* Flat arrays: O(1) refcount increment, share pointer */
+        /* Deep-copy list views (interaction net ownership semantics) */
         for (uint16_t i = 0; i < env_size; i++) {
-            dst_env[i] = src_env[i];
             if (SOMA_IS_PTR(src_env[i]) && src_env[i] != 0) {
-                SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(src_env[i]);
-                atomic_fetch_add_explicit(&arr->refcount, 1, memory_order_relaxed);
+                uint8_t etag = *(uint8_t*)SOMA_TO_PTR(src_env[i]);
+                if (etag == NODE_FLAT_ARRAY_VIEW) {
+                    dst_env[i] = SOMA_PTR(soma_clone_flat_array_view(
+                        (SomaFlatArrayView*)SOMA_TO_PTR(src_env[i])));
+                } else {
+                    SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(src_env[i]);
+                    size_t total = sizeof(SomaFlatArray) +
+                        (size_t)arr->length * (size_t)arr->elem_size;
+                    SomaFlatArray* copy = (SomaFlatArray*)malloc(total);
+                    if (copy != NULL) memcpy(copy, arr, total);
+                    dst_env[i] = SOMA_PTR(copy);
+                }
+            } else {
+                dst_env[i] = src_env[i];
             }
         }
         break;
@@ -768,10 +829,17 @@ static SomaValue soma_clone_value_for_fork(SomaValue value) {
         return SOMA_PTR(soma_clone_string_obj((SomaString*)SOMA_TO_PTR(value)));
     case NODE_TAGGED_PAYLOAD:
         return SOMA_PTR(soma_clone_tagged_payload(SOMA_TO_PTR(value), 0));
+    case NODE_FLAT_ARRAY_VIEW:
+        return SOMA_PTR(soma_clone_flat_array_view(
+            (SomaFlatArrayView*)SOMA_TO_PTR(value)));
     case NODE_FLAT_ARRAY: {
+        /* Deep-copy backing array for fork isolation */
         SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(value);
-        atomic_fetch_add_explicit(&arr->refcount, 1, memory_order_relaxed);
-        return value;
+        size_t total = sizeof(SomaFlatArray) +
+            (size_t)arr->length * (size_t)arr->elem_size;
+        SomaFlatArray* copy = (SomaFlatArray*)malloc(total);
+        if (copy != NULL) memcpy(copy, arr, total);
+        return SOMA_PTR(copy);
     }
     default:
         return value;
@@ -809,10 +877,22 @@ static void* soma_clone_closure_for_fork(void* closure_ptr) {
         break;
     case SOMA_ENV_LIST:
         for (uint16_t i = 0; i < env_size; i++) {
-            dst_env[i] = src_env[i];
             if (SOMA_IS_PTR(src_env[i]) && src_env[i] != 0) {
-                SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(src_env[i]);
-                atomic_fetch_add_explicit(&arr->refcount, 1, memory_order_relaxed);
+                uint8_t etag = *(uint8_t*)SOMA_TO_PTR(src_env[i]);
+                if (etag == NODE_FLAT_ARRAY_VIEW) {
+                    dst_env[i] = SOMA_PTR(soma_clone_flat_array_view(
+                        (SomaFlatArrayView*)SOMA_TO_PTR(src_env[i])));
+                } else {
+                    /* Legacy flat array — deep copy */
+                    SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(src_env[i]);
+                    size_t total = sizeof(SomaFlatArray) +
+                        (size_t)arr->length * (size_t)arr->elem_size;
+                    SomaFlatArray* copy = (SomaFlatArray*)malloc(total);
+                    if (copy != NULL) memcpy(copy, arr, total);
+                    dst_env[i] = SOMA_PTR(copy);
+                }
+            } else {
+                dst_env[i] = src_env[i];
             }
         }
         break;
@@ -921,14 +1001,11 @@ void soma_era_free(void* value) {
                 }
                 break;
             case SOMA_ENV_LIST:
-                /* Flat arrays: refcount decrement, free when zero */
+                /* List views/arrays: push onto ERA worklist */
+                ERA_ENSURE(env_size);
                 for (uint16_t i = 0; i < env_size; i++) {
                     if (!SOMA_IS_PTR(env[i]) || env[i] == 0) continue;
-                    SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(env[i]);
-                    if (atomic_fetch_sub_explicit(&arr->refcount, 1,
-                                                  memory_order_acq_rel) == 1) {
-                        free(arr);
-                    }
+                    stack[sp++] = SOMA_TO_PTR(env[i]);
                 }
                 break;
             default: /* SOMA_ENV_DEFAULT */
@@ -977,11 +1054,17 @@ void soma_era_free(void* value) {
                 free(cur);
             }
 
-        } else if (tag == NODE_FLAT_ARRAY) {
-            SomaFlatArray* arr = (SomaFlatArray*)cur;
-            if (atomic_fetch_sub_explicit(&arr->refcount, 1, memory_order_acq_rel) == 1) {
-                free(cur);
+        } else if (tag == NODE_FLAT_ARRAY_VIEW) {
+            SomaFlatArrayView* view = (SomaFlatArrayView*)cur;
+            /* Free the owned backing array, then free the view */
+            if (view->backing != NULL) {
+                free(view->backing);
             }
+            free(cur);
+
+        } else if (tag == NODE_FLAT_ARRAY) {
+            /* Backing arrays freed directly (legacy or via view ERA) */
+            free(cur);
 
         } else if (IS_SUP(tag)) {
             SomaSup* sup = (SomaSup*)cur;

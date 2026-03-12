@@ -216,6 +216,15 @@ inductive WiredRole where
   | sortType1
   | sortRow
   | sortLabel
+  | listMap
+  | listFilter
+  | listFoldl
+  | listFoldr
+  | listSum
+  | listProduct
+  | listLength
+  | listAny
+  | listAll
   deriving Inhabited, BEq, DecidableEq, Hashable, Repr, Serialize, Deserialize
 
 namespace WiredRole
@@ -252,6 +261,15 @@ def canonical : WiredRole → String
   | .sortType1 => "sort.type1"
   | .sortRow => "sort.row"
   | .sortLabel => "sort.label"
+  | .listMap => "list.map"
+  | .listFilter => "list.filter"
+  | .listFoldl => "list.foldl"
+  | .listFoldr => "list.foldr"
+  | .listSum => "list.sum"
+  | .listProduct => "list.product"
+  | .listLength => "list.length"
+  | .listAny => "list.any"
+  | .listAll => "list.all"
 
 instance : ToString WiredRole := ⟨canonical⟩
 
@@ -287,6 +305,15 @@ def fromString? : String → Option WiredRole
   | "sort.type1" | "type1" => some .sortType1
   | "sort.row" | "row" => some .sortRow
   | "sort.label" | "label" => some .sortLabel
+  | "list.map" => some .listMap
+  | "list.filter" => some .listFilter
+  | "list.foldl" => some .listFoldl
+  | "list.foldr" => some .listFoldr
+  | "list.sum" => some .listSum
+  | "list.product" => some .listProduct
+  | "list.length" => some .listLength
+  | "list.any" => some .listAny
+  | "list.all" => some .listAll
   | _ => none
 
 /-- Map wired type roles to canonical primitive representations when applicable -/

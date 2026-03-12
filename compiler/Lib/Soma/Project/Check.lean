@@ -11,6 +11,7 @@ import Soma.Dependent.Lower
 import Soma.Dependent.Driver
 import Soma.Dependent.Incremental
 import Soma.Dependent.Specialize
+import Soma.Dependent.Fusion
 import Soma.Core.Value
 
 namespace Soma.Project.Check
@@ -606,6 +607,8 @@ def typeCheckModule
     inlinedFns := inlinedFns.insert name
       (Soma.Dependent.Specialize.inlineIOBindsFunction ioNames? fn)
   mergedTypedFns := inlinedFns
+  mergedTypedFns := Soma.Dependent.Fusion.fuseAll mergedTypedFns globalsResult.globals
+
   return {
     globals := globalsResult.globals
     instanceEnv := globalsResult.instanceEnv

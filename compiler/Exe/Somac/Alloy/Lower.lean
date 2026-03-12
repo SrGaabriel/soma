@@ -747,24 +747,120 @@ def panicTag : Nat := 0xFFFF
 /-- NODE_FLAT_ARRAY tag value -/
 def flatArrayTag : Nat := 4
 
-/-- Byte offset of the refcount field -/
-def flatArrayRefcountOffset : Nat := 4
+/-- NODE_FLAT_ARRAY_VIEW tag value -/
+def flatArrayViewTag : Nat := 5
 
-/-- Byte offset of the length field -/
+/-- Byte offset of the length field in backing array -/
 def flatArrayLengthOffset : Nat := 8
 
-/-- Byte offset of the element data -/
+/-- Byte offset of the element data in backing array -/
 def flatArrayDataOffset : Nat := 16
 
-/-- Size of the flat array header in bytes -/
+/-- Size of the flat array backing header in bytes -/
 def flatArrayHeaderSize : Nat := 16
 
-/-- Emit the 8-byte flat array header: tag=4, elem_size, pad, refcount=1 -/
+/-- Byte offset of the length field in a view -/
+def viewLengthOffset : Nat := 8
+
+/-- Byte offset of the data pointer in a view -/
+def viewDataOffset : Nat := 16
+
+/-- Byte offset of the backing pointer in a view -/
+def viewBackingOffset : Nat := 24
+
+/-- Total size of a view struct in bytes -/
+def viewSize : Nat := 32
+
+/-- Emit the 8-byte flat array backing header: tag=4, elem_size, pad, reserved=0 -/
 def emitFlatArrayHeader (bufPtr : LocalId) (elemSizeBytes : Nat) : LowerM n Unit := do
   let headerVal : Nat :=
-    flatArrayTag + (elemSizeBytes <<< 8) + (1 <<< 32)
+    flatArrayTag + (elemSizeBytes <<< 8)
   let hdr ← LowerM.emitInst (.copy (.const (.int (Int.ofNat headerVal) .i64))) (.prim .i64)
   LowerM.emitVoid (.store (.local bufPtr) (.local hdr))
+
+/-- Emit the 8-byte view header: tag=5, pad, reserved=0 -/
+def emitViewHeader (viewPtr : LocalId) : LowerM n Unit := do
+  let headerVal : Nat := flatArrayViewTag
+  let hdr ← LowerM.emitInst (.copy (.const (.int (Int.ofNat headerVal) .i64))) (.prim .i64)
+  LowerM.emitVoid (.store (.local viewPtr) (.local hdr))
+
+/-- Emit a complete view struct: allocate 32 bytes, write header, length, data ptr, backing ptr -/
+def emitAllocView (length : LocalId) (dataPtr : LocalId) (backingPtr : LocalId)
+    : LowerM n LocalId := do
+  let sizeVal ← LowerM.emitInst (.copy (.const (.int (Int.ofNat viewSize) .i64))) (.prim .i64)
+  let view ← LowerM.emitInst (.malloc (.local sizeVal)) .rawPtr
+  emitViewHeader view
+  -- Store length at offset 8
+  let viewI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local view)) (.prim .i64)
+  let lenOff ← LowerM.emitInst (.copy (.const (.int (Int.ofNat viewLengthOffset) .i64))) (.prim .i64)
+  let lenAddr ← LowerM.emitInst (.binOp .add (.local viewI64) (.local lenOff) (.prim .i64)) (.prim .i64)
+  let lenPtr ← LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr
+  LowerM.emitVoid (.store (.local lenPtr) (.local length))
+  -- Store data pointer at offset 16
+  let dataOff ← LowerM.emitInst (.copy (.const (.int (Int.ofNat viewDataOffset) .i64))) (.prim .i64)
+  let dataAddr ← LowerM.emitInst (.binOp .add (.local viewI64) (.local dataOff) (.prim .i64)) (.prim .i64)
+  let dataAddrPtr ← LowerM.emitInst (.unOp .inttoptr (.local dataAddr)) .rawPtr
+  let dataPtrI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local dataPtr)) (.prim .i64)
+  LowerM.emitVoid (.store (.local dataAddrPtr) (.local dataPtrI64))
+  -- Store backing pointer at offset 24
+  let backOff ← LowerM.emitInst (.copy (.const (.int (Int.ofNat viewBackingOffset) .i64))) (.prim .i64)
+  let backAddr ← LowerM.emitInst (.binOp .add (.local viewI64) (.local backOff) (.prim .i64)) (.prim .i64)
+  let backAddrPtr ← LowerM.emitInst (.unOp .inttoptr (.local backAddr)) .rawPtr
+  let backPtrI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local backingPtr)) (.prim .i64)
+  LowerM.emitVoid (.store (.local backAddrPtr) (.local backPtrI64))
+  pure view
+
+/-- Load the length field from a view (at offset 8) -/
+def emitLoadViewLength (viewPtr : LocalId) : LowerM n LocalId := do
+  let viewI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local viewPtr)) (.prim .i64)
+  let lenOff ← LowerM.emitInst (.copy (.const (.int (Int.ofNat viewLengthOffset) .i64))) (.prim .i64)
+  let lenAddr ← LowerM.emitInst (.binOp .add (.local viewI64) (.local lenOff) (.prim .i64)) (.prim .i64)
+  let lenPtr ← LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr
+  LowerM.emitInst (.load (.local lenPtr) (.prim .i64)) (.prim .i64)
+
+/-- Load the data pointer from a view (at offset 16) -/
+def emitLoadViewData (viewPtr : LocalId) : LowerM n LocalId := do
+  let viewI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local viewPtr)) (.prim .i64)
+  let dataOff ← LowerM.emitInst (.copy (.const (.int (Int.ofNat viewDataOffset) .i64))) (.prim .i64)
+  let dataAddr ← LowerM.emitInst (.binOp .add (.local viewI64) (.local dataOff) (.prim .i64)) (.prim .i64)
+  let dataAddrPtr ← LowerM.emitInst (.unOp .inttoptr (.local dataAddr)) .rawPtr
+  let dataI64 ← LowerM.emitInst (.load (.local dataAddrPtr) (.prim .i64)) (.prim .i64)
+  LowerM.emitInst (.unOp .inttoptr (.local dataI64)) .rawPtr
+
+/-- Load the backing pointer from a view (at offset 24) -/
+def emitLoadViewBacking (viewPtr : LocalId) : LowerM n LocalId := do
+  let viewI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local viewPtr)) (.prim .i64)
+  let backOff ← LowerM.emitInst (.copy (.const (.int (Int.ofNat viewBackingOffset) .i64))) (.prim .i64)
+  let backAddr ← LowerM.emitInst (.binOp .add (.local viewI64) (.local backOff) (.prim .i64)) (.prim .i64)
+  let backAddrPtr ← LowerM.emitInst (.unOp .inttoptr (.local backAddr)) .rawPtr
+  let backI64 ← LowerM.emitInst (.load (.local backAddrPtr) (.prim .i64)) (.prim .i64)
+  LowerM.emitInst (.unOp .inttoptr (.local backI64)) .rawPtr
+
+/-- Store a new length into a view (at offset 8) -/
+def emitStoreViewLength (viewPtr : LocalId) (newLen : LocalId) : LowerM n Unit := do
+  let viewI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local viewPtr)) (.prim .i64)
+  let lenOff ← LowerM.emitInst (.copy (.const (.int (Int.ofNat viewLengthOffset) .i64))) (.prim .i64)
+  let lenAddr ← LowerM.emitInst (.binOp .add (.local viewI64) (.local lenOff) (.prim .i64)) (.prim .i64)
+  let lenPtr ← LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr
+  LowerM.emitVoid (.store (.local lenPtr) (.local newLen))
+
+/-- Store a new data pointer into a view (at offset 16) -/
+def emitStoreViewData (viewPtr : LocalId) (newDataPtr : LocalId) : LowerM n Unit := do
+  let viewI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local viewPtr)) (.prim .i64)
+  let dataOff ← LowerM.emitInst (.copy (.const (.int (Int.ofNat viewDataOffset) .i64))) (.prim .i64)
+  let dataAddr ← LowerM.emitInst (.binOp .add (.local viewI64) (.local dataOff) (.prim .i64)) (.prim .i64)
+  let dataAddrPtr ← LowerM.emitInst (.unOp .inttoptr (.local dataAddr)) .rawPtr
+  let dataPtrI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local newDataPtr)) (.prim .i64)
+  LowerM.emitVoid (.store (.local dataAddrPtr) (.local dataPtrI64))
+
+/-- Store a new backing pointer into a view (at offset 24) -/
+def emitStoreViewBacking (viewPtr : LocalId) (newBackingPtr : LocalId) : LowerM n Unit := do
+  let viewI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local viewPtr)) (.prim .i64)
+  let backOff ← LowerM.emitInst (.copy (.const (.int (Int.ofNat viewBackingOffset) .i64))) (.prim .i64)
+  let backAddr ← LowerM.emitInst (.binOp .add (.local viewI64) (.local backOff) (.prim .i64)) (.prim .i64)
+  let backAddrPtr ← LowerM.emitInst (.unOp .inttoptr (.local backAddr)) .rawPtr
+  let backPtrI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local newBackingPtr)) (.prim .i64)
+  LowerM.emitVoid (.store (.local backAddrPtr) (.local backPtrI64))
 
 /-- State maintained during graph traversal -/
 structure NodeState (n : Nat) where
@@ -928,8 +1024,8 @@ partial def emitTaggedDup (inputVal : LocalId) (taggedTy : Ty n) (label : UInt32
   let copy1 ← StateT.lift (LowerM.emitInst (.structLit #[.local tagVal, .local payload1] taggedTy) taggedTy)
   pure (inputVal, copy1)
 
-/-- Emit refcount-based array duplication -/
-partial def emitArrayHeaderDup (inputVal : LocalId) (srcTy : Ty n) (_label : UInt32)
+/-- Emit view-based list duplication -/
+partial def emitListViewDup (inputVal : LocalId) (srcTy : Ty n) (_label : UInt32)
     : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
   let inputPtr ← match srcTy with
     | .prim .i64 =>
@@ -937,18 +1033,19 @@ partial def emitArrayHeaderDup (inputVal : LocalId) (srcTy : Ty n) (_label : UIn
     | .rawPtr | .ptr _ =>
       pure inputVal
     | _ =>
-      panic! s!"ALLOY LOWERING BUG: array DUP expected pointer-like source type, got {srcTy}"
-  -- Load refcount from offset 4 (u32)
-  let ptrAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local inputPtr)) (.prim .i64))
-  let rcOffset ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayRefcountOffset) .i64))) (.prim .i64))
-  let rcAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local ptrAsI64) (.local rcOffset) (.prim .i64)) (.prim .i64))
-  let rcPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local rcAddr)) .rawPtr)
-  let oldRc ← StateT.lift (LowerM.emitInst (.load (.local rcPtr) (.prim .u32)) (.prim .u32))
-  let one ← StateT.lift (LowerM.emitInst (.copy (.const (.int 1 .u32))) (.prim .u32))
-  let newRc ← StateT.lift (LowerM.emitInst (.binOp .add (.local oldRc) (.local one) (.prim .u32)) (.prim .u32))
-  StateT.lift (LowerM.emitVoid (.store (.local rcPtr) (.local newRc)))
-  -- Both copies share the same pointer
-  pure (inputVal, inputVal)
+      panic! s!"ALLOY LOWERING BUG: list DUP expected pointer-like source type, got {srcTy}"
+  let clone ← StateT.lift (LowerM.emitInst
+    (.callExtern "soma_clone_flat_array_view" #[.local inputPtr] .rawPtr) .rawPtr)
+  -- Convert both to the same type as the input
+  let copy0 ← match srcTy with
+    | .prim .i64 =>
+      StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local inputPtr)) (.prim .i64))
+    | _ => pure inputPtr
+  let copy1 ← match srcTy with
+    | .prim .i64 =>
+      StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local clone)) (.prim .i64))
+    | _ => pure clone
+  pure (copy0, copy1)
 
 /-- Lower an operand with FuncId map -/
 partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : FuncIdMap)
@@ -1458,51 +1555,41 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           let fnClosureVal ← lowerOperandWithMap graph fnPort funcIdMap
           StateT.lift (LowerM.emitInst (.makeClosureDyn (.local fnClosureVal) (.local envVal) nodeTy) nodeTy)
     else if isListValue entry.ty (← get).primTypes then
-      -- List constructor: produce refcounted flat array
-      -- Layout: { u8 tag=4, u8 elem_size=8, u16 pad, u32 refcount=1, i64 length, data... }
+      -- List constructor: produce a SomaFlatArrayView (slice view into backing array)
+      -- View layout: { u8 tag=5, pad[3], u32 reserved, i64 length, ptr data, ptr backing }
       if tag == 0 then
-        -- Nil: allocate header only (16 bytes), length=0
-        let sizeVal ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayHeaderSize) .i64))) (.prim .i64))
-        let buf ← StateT.lift (LowerM.emitInst (.malloc (.local sizeVal)) .rawPtr)
-        StateT.lift (emitFlatArrayHeader buf 8)
-        -- Store length=0 at offset 8
-        let bufI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local buf)) (.prim .i64))
-        let lenOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64))
-        let lenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local bufI64) (.local lenOff) (.prim .i64)) (.prim .i64))
-        let lenPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr)
+        -- Nil: view with length=0, data=null, backing=null
         let zero ← StateT.lift (LowerM.emitInst (.copy (.const (.int 0 .i64))) (.prim .i64))
-        StateT.lift (LowerM.emitVoid (.store (.local lenPtr) (.local zero)))
-        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local buf)) (.prim .i64))
+        let nullPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local zero)) .rawPtr)
+        let view ← StateT.lift (emitAllocView zero nullPtr nullPtr)
+        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local view)) (.prim .i64))
       else
-        -- Cons x xs: load xs.length, allocate new buffer, write header, store x, copy xs data
+        -- Cons x xs: allocate new backing array, copy xs data + prepend x, create view
         let headVal ← lowerPort 1
         let tailVal ← lowerPort 2
         let tailPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local tailVal)) .rawPtr)
-        -- Load tail length from offset 8
-        let tailI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local tailPtr)) (.prim .i64))
-        let tailLenOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64))
-        let tailLenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local tailI64) (.local tailLenOff) (.prim .i64)) (.prim .i64))
-        let tailLenPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local tailLenAddr)) .rawPtr)
-        let tailLen ← StateT.lift (LowerM.emitInst (.load (.local tailLenPtr) (.prim .i64)) (.prim .i64))
+        -- Load tail's length from the view (offset 8)
+        let tailLen ← StateT.lift (emitLoadViewLength tailPtr)
+        -- Load tail's data pointer from the view (offset 16)
+        let tailDataPtr ← StateT.lift (emitLoadViewData tailPtr)
         let one ← StateT.lift (LowerM.emitInst (.copy (.const (.int 1 .i64))) (.prim .i64))
         let newLen ← StateT.lift (LowerM.emitInst (.binOp .add (.local tailLen) (.local one) (.prim .i64)) (.prim .i64))
-        -- Total: headerSize + newLen * 8
+        -- Allocate backing: headerSize + newLen * 8
         let elemSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64))
         let dataSize ← StateT.lift (LowerM.emitInst (.binOp .mul (.local newLen) (.local elemSize) (.prim .i64)) (.prim .i64))
         let hdrSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayHeaderSize) .i64))) (.prim .i64))
         let totalSize ← StateT.lift (LowerM.emitInst (.binOp .add (.local hdrSize) (.local dataSize) (.prim .i64)) (.prim .i64))
-        let newBuf ← StateT.lift (LowerM.emitInst (.malloc (.local totalSize)) .rawPtr)
-        -- Write header
-        StateT.lift (emitFlatArrayHeader newBuf 8)
-        -- Store new length at offset 8
-        let newBufI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local newBuf)) (.prim .i64))
+        let backing ← StateT.lift (LowerM.emitInst (.malloc (.local totalSize)) .rawPtr)
+        StateT.lift (emitFlatArrayHeader backing 8)
+        -- Store total length in backing at offset 8
+        let backingI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local backing)) (.prim .i64))
         let lenOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64))
-        let lenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local newBufI64) (.local lenOff) (.prim .i64)) (.prim .i64))
+        let lenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local backingI64) (.local lenOff) (.prim .i64)) (.prim .i64))
         let lenPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr)
         StateT.lift (LowerM.emitVoid (.store (.local lenPtr) (.local newLen)))
-        -- Store head at offset 16
+        -- Store head at backing data offset 16
         let headOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
-        let headAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local newBufI64) (.local headOff) (.prim .i64)) (.prim .i64))
+        let headAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local backingI64) (.local headOff) (.prim .i64)) (.prim .i64))
         let headPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local headAddr)) .rawPtr)
         -- Convert head value to i64 for flat array storage
         let headTy := getPortType 1 (.prim .i64)
@@ -1516,16 +1603,18 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               pure headVal
           | _ => StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local headVal)) (.prim .i64))
         StateT.lift (LowerM.emitVoid (.store (.local headPtr) (.local headAsI64)))
-        -- Memcpy tail data: from tail+16 to newBuf+24, size = tailLen * 8
+        -- Memcpy tail data: from tail's data ptr to backing+24, size = tailLen * 8
         let tailDataSize ← StateT.lift (LowerM.emitInst (.binOp .mul (.local tailLen) (.local elemSize) (.prim .i64)) (.prim .i64))
-        let tailDataOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
-        let tailDataAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local tailI64) (.local tailDataOff) (.prim .i64)) (.prim .i64))
-        let tailDataPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local tailDataAddr)) .rawPtr)
         let newDataOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat (flatArrayDataOffset + 8)) .i64))) (.prim .i64))
-        let newDataAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local newBufI64) (.local newDataOff) (.prim .i64)) (.prim .i64))
+        let newDataAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local backingI64) (.local newDataOff) (.prim .i64)) (.prim .i64))
         let newDataPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local newDataAddr)) .rawPtr)
         StateT.lift (LowerM.emitVoid (.memcpy (.local newDataPtr) (.local tailDataPtr) (.local tailDataSize)))
-        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local newBuf)) (.prim .i64))
+        -- Create view pointing to start of backing data
+        let dataStartOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
+        let dataStartAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local backingI64) (.local dataStartOff) (.prim .i64)) (.prim .i64))
+        let dataStartPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local dataStartAddr)) .rawPtr)
+        let view ← StateT.lift (emitAllocView newLen dataStartPtr backing)
+        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local view)) (.prim .i64))
     else
       -- Regular constructor: build tagged struct
       let mut fieldVals : Array LocalId := #[]
@@ -1546,62 +1635,52 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     let recordTy := getPortType 1
     -- Check if the projected value is an array or List type (for church-encoded list destructuring)
     let ns ← get
-    let arrayElemType? :=
+    let isListProj :=
       -- First check: is the record value known to be list-typed from a prior MAT?
-      if ns.listTypedLocals.contains recordVal.id then some .i64
-      else match entry.getPort ⟨1⟩ with
-      | some recPort => match graph.getNode recPort.node with
-        | some recEntry => match recEntry.node with
-          | .array et => some et
-          | _ => if isListValue recEntry.ty ns.primTypes then some .i64 else none
-        | none => none
-      | none => none
-    match arrayElemType? with
-    | some _elemTy => do
-      -- Array-backed list projection (header layout: 8B header, 8B length, data at 16)
-      let elemSize : Nat := 8
-      let arrPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local recordVal)) .rawPtr)
-      let baseAsI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local arrPtr)) (.prim .i64))
+      if ns.listTypedLocals.contains recordVal.id then true
+      else
+        let rec traceSource (portOpt : Option CPortId) (fuel : Nat) : Bool :=
+          match fuel with
+          | 0 => false
+          | fuel + 1 =>
+            match portOpt with
+            | some port => match graph.getNode port.node with
+              | some srcEntry => match srcEntry.node with
+                | .array _ => true
+                | .dup _ => traceSource (srcEntry.getPort ⟨0⟩) fuel
+                | _ => isListValue srcEntry.ty ns.primTypes
+              | none => false
+            | none => false
+        traceSource (entry.getPort ⟨1⟩) 10
+    if isListProj then do
+      -- View-based list projection: view layout { tag, pad, reserved, length, data_ptr, backing_ptr }
+      let viewPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local recordVal)) .rawPtr)
       if fieldIdx == 0 then
-        -- Head: load first element from offset 16 (flatArrayDataOffset)
-        let dataOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
-        let elemAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local dataOff) (.prim .i64)) (.prim .i64))
-        let elemPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local elemAddr)) .rawPtr)
-        StateT.lift (LowerM.emitInst (.load (.local elemPtr) nodeTy) nodeTy)
+        -- Head: load first element from view.data[0]
+        let dataPtr ← StateT.lift (emitLoadViewData viewPtr)
+        StateT.lift (LowerM.emitInst (.load (.local dataPtr) nodeTy) nodeTy)
       else if fieldIdx == 1 then
-        -- Tail: create new refcounted array with len-1 elements
-        let lenOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64))
-        let lenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local lenOff) (.prim .i64)) (.prim .i64))
-        let lenPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr)
-        let len ← StateT.lift (LowerM.emitInst (.load (.local lenPtr) (.prim .i64)) (.prim .i64))
+        -- Tail: create new view with data+8, length-1, transferring backing ownership
+        let len ← StateT.lift (emitLoadViewLength viewPtr)
+        let dataPtr ← StateT.lift (emitLoadViewData viewPtr)
+        let backingPtr ← StateT.lift (emitLoadViewBacking viewPtr)
         let one ← StateT.lift (LowerM.emitInst (.copy (.const (.int 1 .i64))) (.prim .i64))
         let newLen ← StateT.lift (LowerM.emitInst (.binOp .sub (.local len) (.local one) (.prim .i64)) (.prim .i64))
-        -- Allocate: headerSize + newLen * elemSize
-        let elemSizeVal ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat elemSize) .i64))) (.prim .i64))
-        let dataSize ← StateT.lift (LowerM.emitInst (.binOp .mul (.local newLen) (.local elemSizeVal) (.prim .i64)) (.prim .i64))
-        let hdrSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayHeaderSize) .i64))) (.prim .i64))
-        let totalSize ← StateT.lift (LowerM.emitInst (.binOp .add (.local hdrSize) (.local dataSize) (.prim .i64)) (.prim .i64))
-        let newBuf ← StateT.lift (LowerM.emitInst (.malloc (.local totalSize)) .rawPtr)
-        -- Write header (tag + elem_size + refcount=1)
-        StateT.lift (emitFlatArrayHeader newBuf elemSize)
-        -- Store new length at offset 8
-        let newBufI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local newBuf)) (.prim .i64))
-        let newLenOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64))
-        let newLenAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local newBufI64) (.local newLenOff) (.prim .i64)) (.prim .i64))
-        let newLenPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local newLenAddr)) .rawPtr)
-        StateT.lift (LowerM.emitVoid (.store (.local newLenPtr) (.local newLen)))
-        -- Memcpy remaining data: src = arr + dataOffset + elemSize, dst = newBuf + dataOffset
-        let srcOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat (flatArrayDataOffset + elemSize)) .i64))) (.prim .i64))
-        let srcAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local srcOff) (.prim .i64)) (.prim .i64))
-        let srcPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local srcAddr)) .rawPtr)
-        let dstOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
-        let dstAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local newBufI64) (.local dstOff) (.prim .i64)) (.prim .i64))
-        let dstPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local dstAddr)) .rawPtr)
-        StateT.lift (LowerM.emitVoid (.memcpy (.local dstPtr) (.local srcPtr) (.local dataSize)))
-        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local newBuf)) (.prim .i64))
+        -- Advance data pointer by one element (8 bytes)
+        let dataPtrI64 ← StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local dataPtr)) (.prim .i64))
+        let elemSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64))
+        let newDataI64 ← StateT.lift (LowerM.emitInst (.binOp .add (.local dataPtrI64) (.local elemSize) (.prim .i64)) (.prim .i64))
+        let newDataPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local newDataI64)) .rawPtr)
+        -- Allocate the tail view (O(1) — no data copy, just a 32-byte view struct)
+        let tailView ← StateT.lift (emitAllocView newLen newDataPtr backingPtr)
+        -- Transfer backing ownership: null out source view's backing to prevent double-free
+        let nullPtr ← StateT.lift (LowerM.emitInst (.copy (.const (.int 0 .i64))) (.prim .i64))
+        let nullRawPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local nullPtr)) .rawPtr)
+        StateT.lift (emitStoreViewBacking viewPtr nullRawPtr)
+        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local tailView)) (.prim .i64))
       else
         StateT.lift (LowerM.emitPanic nodeTy)
-    | none =>
+    else
     -- Check if record is struct or tagged union
     match recordTy with
     | .struct fields =>
@@ -1643,14 +1722,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     if scrutIsArray then
       modify fun ns => { ns with listTypedLocals := ns.listTypedLocals.insert scrutineeVal.id }
     let (_, _thenBlock, elseBlock) ← if scrutIsArray then
-      -- Array-backed list: compare length at offset 8 against 0
+      -- View-based list: compare view.length against 0
       StateT.lift do
-        let arrPtr ← LowerM.emitInst (.unOp .inttoptr (.local scrutineeVal)) .rawPtr
-        let arrI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local arrPtr)) (.prim .i64)
-        let lenOff ← LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayLengthOffset) .i64))) (.prim .i64)
-        let lenAddr ← LowerM.emitInst (.binOp .add (.local arrI64) (.local lenOff) (.prim .i64)) (.prim .i64)
-        let lenPtr ← LowerM.emitInst (.unOp .inttoptr (.local lenAddr)) .rawPtr
-        let len ← LowerM.emitInst (.load (.local lenPtr) (.prim .i64)) (.prim .i64)
+        let viewPtr ← LowerM.emitInst (.unOp .inttoptr (.local scrutineeVal)) .rawPtr
+        let len ← emitLoadViewLength viewPtr
         let zero ← LowerM.emitInst (.copy (.const (.int 0 .i64))) (.prim .i64)
         let cond ← if expectedTag == 0 then
           -- Nil: matches when length == 0
@@ -1768,22 +1843,24 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         }
         pure inputVal
       else if nodeTy == .rawPtr then
-        -- Inspect source node to select the right clone strategy
-        let srcNode? : Option CNode := (entry.getPort ⟨0⟩).bind fun srcPort =>
-          graph.getNode srcPort.node |>.map (·.node)
-        let (copy0, copy1) ← match srcNode? with
-          | some (.array _) =>
-            -- Arrays carry their own header; use the typed array-dup helper
-            let srcTy := getPortType 0 nodeTy
-            emitArrayHeaderDup inputVal srcTy label.id
-          | _ =>
-            let ns ← get
-            let isListDup := isListValue entry.ty ns.primTypes ||
-              match (entry.getPort ⟨0⟩).bind (fun p => graph.getNode p.node) with
-              | some srcEntry => isListValue srcEntry.ty ns.primTypes
+        let ns ← get
+        let rec traceDupSource (portOpt : Option CPortId) (fuel : Nat) : Bool :=
+          match fuel with
+          | 0 => false
+          | fuel + 1 =>
+            match portOpt with
+            | some port => match graph.getNode port.node with
+              | some srcEntry => match srcEntry.node with
+                | .array _ => true
+                | .dup _ => traceDupSource (srcEntry.getPort ⟨0⟩) fuel
+                | _ => isListValue srcEntry.ty ns.primTypes
               | none => false
-            if isListDup then
-              emitArrayHeaderDup inputVal nodeTy label.id
+            | none => false
+        let isListSource := isListValue entry.ty ns.primTypes ||
+          traceDupSource (entry.getPort ⟨0⟩) 10
+        let (copy0, copy1) ←
+          if isListSource then
+            emitListViewDup inputVal (.prim .i64) label.id
             else
               -- Closures (LAM), algebraic-data-type cells, REF, ALO etc etc are closure-like
               let lbl : Operand := .const (.int (Int.ofNat label.id.toNat) .u32)
@@ -1794,6 +1871,12 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           results := ns.results.insert (nodeId.id * 1000 + 1) copy0
                      |>.insert (nodeId.id * 1000 + 2) copy1
         }
+        -- Propagate list-type info to DUP input & outputs so downstream PROJ/MAT nodes detect them
+        if isListSource then
+          modify fun ns => { ns with
+            listTypedLocals := ns.listTypedLocals.insert inputVal.id
+              |>.insert copy0.id |>.insert copy1.id
+          }
         pure inputVal
       else if Ty.supportsLazySup nodeTy then
         -- Runtime SUP: lazy duplication via superposition nodes.
@@ -1881,7 +1964,12 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         StateT.lift (LowerM.emitVoid (.store (.local elemPtr) (.local elemI64)))
     | none => pure ()
 
-    StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local buf)) (.prim .i64))
+    -- Wrap backing array in a view
+    let dataStartOff ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayDataOffset) .i64))) (.prim .i64))
+    let dataStartAddr ← StateT.lift (LowerM.emitInst (.binOp .add (.local baseAsI64) (.local dataStartOff) (.prim .i64)) (.prim .i64))
+    let dataStartPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local dataStartAddr)) .rawPtr)
+    let view ← StateT.lift (emitAllocView lenConst dataStartPtr buf)
+    StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local view)) (.prim .i64))
 
   | .string => do
     -- String node: extract length and string index from connected NUM nodes

@@ -1824,6 +1824,14 @@ def addRuntimeDeclarations : CodegenM Unit := do
       isDeclaration := true
     }
 
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_clone_flat_array_view"
+      retTy := .ptr
+      params := #[{ name := "src", ty := .ptr }]
+      isDeclaration := true
+    }
+
   let runtimeNames := #[
     "malloc", "free", "soma_era_free", "soma_era_string",
     "soma_era_tagged_payload", "soma_alloc_tagged_payload",
@@ -1831,7 +1839,8 @@ def addRuntimeDeclarations : CodegenM Unit := do
     "llvm.memcpy.p0.p0.i64", "llvm.memset.p0.i64",
     "soma_to_cstring", "soma_from_cstring", "soma_cstring_len",
     "soma_strcat", "soma_int_to_string", "soma_pool_alloc_closure",
-    "soma_apply", "soma_dup", "soma_proj0", "soma_proj1"
+    "soma_apply", "soma_dup", "soma_proj0", "soma_proj1",
+    "soma_clone_flat_array_view"
   ]
   for name in runtimeNames do
     CodegenM.markExternDeclared name

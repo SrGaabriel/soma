@@ -38,13 +38,22 @@
  *   [16] ptr  proj0
  *   [24] ptr  proj1
  *
+ * Flat Array View (32 bytes):
+ *   [0]  u8   tag         (NODE_FLAT_ARRAY_VIEW = 5)
+ *   [1]  u8[3] _pad
+ *   [4]  u32  _reserved
+ *   [8]  i64  length      (number of visible elements)
+ *   [16] ptr  data        (points to first visible element in backing array)
+ *   [24] ptr  backing     (owns the backing SomaFlatArray for ERA)
+ *
  * Node Tags:
  *   0      = (reserved/invalid)
  *   1      = NODE_CLOSURE
  *   2      = NODE_STRING
  *   3      = NODE_TAGGED_PAYLOAD
- *   4      = NODE_FLAT_ARRAY
- *   5-127  = (reserved for future node types)
+ *   4      = NODE_FLAT_ARRAY (backing storage only, not user-facing)
+ *   5      = NODE_FLAT_ARRAY_VIEW (user-facing list representation)
+ *   6-127  = (reserved for future node types)
  *   0x80+  = SUP_TAG_* (superposition nodes for lazy duplication)
  */
 
@@ -60,6 +69,7 @@
 #define NODE_STRING           2
 #define NODE_TAGGED_PAYLOAD   3
 #define NODE_FLAT_ARRAY       4
+#define NODE_FLAT_ARRAY_VIEW  5
 /* Closure env_kind constants: type-directed clone/erase strategy per closure */
 #define SOMA_ENV_DEFAULT  0  /* Generic tag-based dispatch per env slot */
 #define SOMA_ENV_FLAT     1  /* Env slots are flat scalars (memcpy, no clone) */
@@ -235,29 +245,56 @@ typedef struct SomaTaggedPayload {
 } SomaTaggedPayload;
 
 /*
- * Flat array (compiler-generated, for church-encoded lists)
+ * Flat array backing storage (compiler-generated, not user-facing)
  *
- * Reference-counted immutable array. DUP increments the refcount and
- * shares the pointer (O(1), zero allocation). ERA decrements the refcount
- * and frees when it reaches zero. Safe because Soma is pure — arrays are
- * never mutated, so sharing is always correct.
+ * Contiguous element storage for lists. Never accessed directly by user code;
+ * always accessed through a SomaFlatArrayView. Ownership is transferred to
+ * the view — when the view is ERA'd, it frees the backing array.
  *
  * Layout:
  *   [0]  u8   tag         (NODE_FLAT_ARRAY = 4)
  *   [1]  u8   elem_size   (bytes per element: 1/2/4/8)
  *   [2]  u8[2] _pad
- *   [4]  u32  refcount    (atomic reference count, starts at 1)
- *   [8]  i64  length      (number of elements)
+ *   [4]  u32  _reserved
+ *   [8]  i64  length      (total number of elements allocated)
  *   [16] data             (length * elem_size bytes of contiguous element data)
  */
 typedef struct SomaFlatArray {
     uint8_t   tag;         /* NODE_FLAT_ARRAY */
     uint8_t   elem_size;   /* bytes per element */
     uint8_t   _pad[2];
-    _Atomic uint32_t refcount;  /* reference count */
+    uint32_t  _reserved;
     int64_t   length;
     /* element data follows at offset 16 */
 } SomaFlatArray;
+
+/*
+ * Flat array view (user-facing list representation)
+ *
+ * A view into a backing SomaFlatArray. The view owns the backing array:
+ * ERA frees both the view and the backing. Tail extraction creates a new
+ * view with data pointer advanced and length decremented — O(1), zero copy.
+ *
+ * DUP wraps the view in a SUP node (standard heap-tier lazy duplication).
+ * When both projections are accessed, the runtime deep-copies the backing
+ * array and creates a new view pointing to the copy.
+ *
+ * Layout:
+ *   [0]  u8   tag         (NODE_FLAT_ARRAY_VIEW = 5)
+ *   [1]  u8[3] _pad
+ *   [4]  u32  _reserved
+ *   [8]  i64  length      (number of visible elements)
+ *   [16] ptr  data        (points to first visible element in backing)
+ *   [24] ptr  backing     (owns the SomaFlatArray for ERA; NULL for empty)
+ */
+typedef struct SomaFlatArrayView {
+    uint8_t   tag;         /* NODE_FLAT_ARRAY_VIEW */
+    uint8_t   _pad[3];
+    uint32_t  _reserved;
+    int64_t   length;
+    void*     data;        /* pointer to first visible element */
+    void*     backing;     /* owned backing SomaFlatArray (or NULL) */
+} SomaFlatArrayView;
 
 
 /* Convert Soma String to C string (returns data pointer) */
@@ -274,6 +311,13 @@ SomaString* soma_strcat(SomaString* a, SomaString* b);
 
 /* Convert int32 to Soma String (allocates new String) */
 SomaString* soma_int_to_string(int32_t val);
+
+/*
+ * Flat array view operations
+ */
+
+/* Clone a flat array view (deep-copies the backing array) */
+void* soma_clone_flat_array_view(SomaFlatArrayView* src);
 
 /*
  * Closure operations

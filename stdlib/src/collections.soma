@@ -19,6 +19,7 @@ def last {a : Type} : [a] -> Option a
     | (_:xs) => last xs
     | [] => Option::None
 
+@[wired_in "list.length"]
 def length {a : Type} : [a] -> Int
     | [] => 0
     | (_:xs) => 1 + length xs
@@ -30,6 +31,7 @@ def replicate {a : Type} : Int -> a -> [a]
     | n, x =>
         if n <= 0 then [] else List::Cons x (replicate (n - 1) x)
 
+@[wired_in "list.map"]
 def map {a : Type} {b : Type} : (a -> b) -> [a] -> [b]
     | f, (x:xs) => List::Cons (f x) (map f xs)
     | _, [] => []
@@ -52,10 +54,12 @@ def concat {a : Type} : [[a]] -> [a]
 def concat_map {a : Type} {b : Type} : (a -> [b]) -> [a] -> [b]
     | f, xs => concat (map f xs)
 
+@[wired_in "list.foldl"]
 def foldl {a : Type} {b : Type} : (b -> a -> b) -> b -> [a] -> b
     | f, acc, (x:xs) => foldl f (f acc x) xs
     | _, acc, [] => acc
 
+@[wired_in "list.foldr"]
 def foldr {a : Type} {b : Type} : (a -> b -> b) -> b -> [a] -> b
     | f, acc, (x:xs) => f x (foldr f acc xs)
     | _, acc, [] => acc
@@ -64,9 +68,11 @@ def foldl1 {a : Type} : (a -> a -> a) -> [a] -> Option a
     | f, (x:xs) => Option::Some (foldl f x xs)
     | _, [] => Option::None
 
+@[wired_in "list.sum"]
 def sum : [Int] -> Int
     | xs => foldl (\acc x -> acc + x) 0 xs
 
+@[wired_in "list.product"]
 def product : [Int] -> Int
     | xs => foldl (\acc x -> acc * x) 1 xs
 
@@ -78,10 +84,12 @@ def or : [Bool] -> Bool
     | (x:xs) => if x then true else or xs
     | [] => false
 
+@[wired_in "list.any"]
 def any {a : Type} : (a -> Bool) -> [a] -> Bool
     | p, (x:xs) => if p x then true else any p xs
     | _, [] => false
 
+@[wired_in "list.all"]
 def all {a : Type} : (a -> Bool) -> [a] -> Bool
     | p, (x:xs) => if p x then all p xs else false
     | _, [] => true
@@ -109,6 +117,7 @@ def elem {a : Type} : a -> [a] -> Bool
     | x, (y:ys) => if x == y then true else elem x ys
     | _, [] => false
 
+@[wired_in "list.filter"]
 def filter {a : Type} : (a -> Bool) -> [a] -> [a]
     | p, (x:xs) => if p x then List::Cons x (filter p xs) else filter p xs
     | _, [] => []
