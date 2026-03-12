@@ -1,0 +1,34 @@
+build:
+    haoma clean
+    haoma build -v --emit-llvm
+
+run:
+    ./target/example.exe
+
+bench: build
+    python bench.py
+
+bench-only:
+    python bench.py
+
+bench-long: build
+    python bench.py --runs 30 --warmup 5
+
+ir-stats:
+    @echo "=== LLVM IR stats ==="
+    @wc -l target/example.ll
+    @echo ""
+    @echo "--- GEP usage ---"
+    @grep -c "getelementptr" target/example.ll || echo "0"
+    @echo ""
+    @echo "--- ptrtoint/inttoptr ---"
+    @grep -c "ptrtoint" target/example.ll || echo "0"
+    @grep -c "inttoptr" target/example.ll || echo "0"
+    @echo ""
+    @echo "--- malloc/pool calls ---"
+    @grep -c "@malloc" target/example.ll || echo "0"
+    @grep -c "@soma_alloc_view" target/example.ll || echo "0"
+    @grep -c "@soma_pool_alloc" target/example.ll || echo "0"
+    @echo ""
+    @echo "--- add N, 0 patterns ---"
+    @grep -cE "add i64 [0-9]+, 0" target/example.ll || echo "0"
