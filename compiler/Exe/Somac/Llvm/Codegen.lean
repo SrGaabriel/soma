@@ -136,6 +136,8 @@ structure CodegenState where
   deadBlocks : Std.HashSet Nat := {}
   /-- Set during instruction lowering when a noreturn call is emitted -/
   noreturnEmitted : Bool := false
+  /-- String table name for the panic message -/
+  panicStrName : String := ".str.0"
   deriving Inhabited
 
 /-- Codegen monad -/
@@ -322,7 +324,7 @@ def coerceValue (srcTy dstTy : LLVMType) (val : LLVMValue) : CodegenM LLVMValue 
         let dstBits := dstTy.intBits.getD 64
         if srcBits < dstBits then FuncBuilder.zext srcTy dstTy val
         else if srcBits > dstBits then FuncBuilder.trunc srcTy dstTy val
-        else FuncBuilder.add dstTy val (intVal 0 dstBits)
+        else FuncBuilder.asLocalRef dstTy val
       -- Tagged union struct { i32, ptr } → extract tag (i32) or payload (ptr)
       else if srcTy == taggedTy then
         match dstTy with
@@ -398,8 +400,8 @@ def toI64 (ty : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
   if ty == .ptr then
     CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 val)
   else if ty == .i64 then
-    -- Already i64, just need to produce an SSA value
-    CodegenM.withFuncBuilder (FuncBuilder.add .i64 val (intVal 0 64))
+    -- Already i64
+    CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i64 val)
   else if ty.isInt then
     -- Other integer type, extend or truncate to i64
     let bits := ty.intBits.getD 64
@@ -424,7 +426,7 @@ def fromI64 (targetTy : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
   if targetTy == .ptr then
     CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 val)
   else if targetTy == .i64 then
-    CodegenM.withFuncBuilder (FuncBuilder.add .i64 val (intVal 0 64))
+    CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i64 val)
   else if targetTy.isInt then
     let bits := targetTy.intBits.getD 64
     if bits < 64 then
@@ -532,11 +534,9 @@ def convertUnOp (op : UnOp 0) (srcTy : ClosedTy) (operand : LLVMValue) : Codegen
     | .bitcast t =>
       let toTy := convertTy t
       if llvmSrcTy == toTy then
-        -- Same type, no-op (just produce SSA value)
-        if toTy.isInt then
-          FuncBuilder.add toTy operand (intVal 0 (toTy.intBits.getD 64))
-        else if toTy == .ptr then
-          FuncBuilder.bitcast .ptr .ptr operand
+        -- Same type, no-op
+        if toTy.isInt || toTy == .ptr then
+          FuncBuilder.asLocalRef toTy operand
         else
           -- For structs/other types, use select to produce new SSA value
           FuncBuilder.select toTy (boolVal true) operand operand
@@ -564,7 +564,7 @@ def convertUnOp (op : UnOp 0) (srcTy : ClosedTy) (operand : LLVMValue) : Codegen
         let srcBits := llvmSrcTy.intBits.getD 64
         let dstBits := toTy.intBits.getD 64
         if srcBits == dstBits then
-          FuncBuilder.add llvmSrcTy operand (intVal 0 srcBits)
+          FuncBuilder.asLocalRef llvmSrcTy operand
         else if srcBits < dstBits then
           FuncBuilder.zext llvmSrcTy toTy operand
         else
@@ -827,17 +827,9 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
           | .const .null =>
             -- todo: consider optimizing
             FuncBuilder.inttoptr .i64 (intVal 0 64)
-          | .const (.int v bits) =>
-            -- todo: consider optimizing
-            FuncBuilder.add llvmTy srcVal (intVal 0 bits)
           | _ =>
-            -- For other values, bitcast to same type (LLVM will eliminate)
-            if llvmTy == .ptr then
-              FuncBuilder.bitcast .ptr .ptr srcVal
-            else if llvmTy.isInt then
-              FuncBuilder.add llvmTy srcVal (intVal 0 (llvmTy.intBits.getD 64))
-            else
-              FuncBuilder.bitcast llvmTy llvmTy srcVal
+            -- Materialize non-local values (constants, globals) as SSA values
+            FuncBuilder.asLocalRef llvmTy srcVal
         pure (some (ref, srcTy))
 
   | .alloca ty =>
@@ -1006,9 +998,9 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     | _ =>
       match llvmValTy with
       | .i32 =>
-        -- Already i32, just copy it (for simple enums)
+        -- Already i32
         let ref ← CodegenM.withFuncBuilder do
-          FuncBuilder.add .i32 valRef (intVal 0 32)
+          FuncBuilder.asLocalRef .i32 valRef
         pure (some (ref, .prim .u32))
       | .i1 | .i8 | .i16 =>
         -- Small integer type, zext to i32
@@ -1107,8 +1099,9 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     if closureLLVMTy != closureTy then
       -- Not a real closure — unreachable at runtime. Emit panic + signal noreturn
       -- so that lowerBlock stops emitting dead code after this instruction.
+      let panicName := (← get).panicStrName
       CodegenM.withFuncBuilder do
-        FuncBuilder.callNamedVoid "soma_panic" #[(.ptr, globalVal ".str.panic")]
+        FuncBuilder.callNamedVoid "soma_panic" #[(.ptr, globalVal panicName)]
       CodegenM.signalNoReturn
       pure none
     else
@@ -1486,7 +1479,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
     if isUnitTy retTy then
-      let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.add .i8 (intVal 0 8) (intVal 0 8))
+      let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
       pure (some (unitRef, retTy))
     else
       pure (some (ref, retTy))
@@ -1832,6 +1825,22 @@ def addRuntimeDeclarations : CodegenM Unit := do
       isDeclaration := true
     }
 
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_alloc_view"
+      retTy := .ptr
+      params := #[]
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_free_view"
+      retTy := .void
+      params := #[{ name := "ptr", ty := .ptr }]
+      isDeclaration := true
+    }
+
   let runtimeNames := #[
     "malloc", "free", "soma_era_free", "soma_era_string",
     "soma_era_tagged_payload", "soma_alloc_tagged_payload",
@@ -1840,7 +1849,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
     "soma_to_cstring", "soma_from_cstring", "soma_cstring_len",
     "soma_strcat", "soma_int_to_string", "soma_pool_alloc_closure",
     "soma_apply", "soma_dup", "soma_proj0", "soma_proj1",
-    "soma_clone_flat_array_view"
+    "soma_clone_flat_array_view", "soma_alloc_view", "soma_free_view"
   ]
   for name in runtimeNames do
     CodegenM.markExternDeclared name
@@ -1862,17 +1871,10 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
 
   addRuntimeDeclarations
 
+  -- Find panic string index in the string table
   let panicMsg := "soma: unreachable code"
-  let panicGlobal : LLVMGlobal := {
-    name := ".str.panic"
-    ty := .array (panicMsg.utf8ByteSize + 1) .i8
-    init := some (.string panicMsg)
-    linkage := .private_
-    isConstant := true
-    align := some 1
-  }
-  CodegenM.withModuleBuilder do
-    modify fun st => { st with module := { st.module with globals := st.module.globals.push panicGlobal } }
+  let panicStrIdx := alloyModule.strings.strings.findIdx? (· == panicMsg) |>.getD 0
+  modify fun s => { s with panicStrName := s!".str.{panicStrIdx}" }
 
   -- Emit string table as LLVM global constants
   for (s, idx) in alloyModule.strings.strings.zipIdx do

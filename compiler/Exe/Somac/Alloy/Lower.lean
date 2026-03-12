@@ -787,8 +787,7 @@ def emitViewHeader (viewPtr : LocalId) : LowerM n Unit := do
 /-- Emit a complete view struct: allocate 32 bytes, write header, length, data ptr, backing ptr -/
 def emitAllocView (length : LocalId) (dataPtr : LocalId) (backingPtr : LocalId)
     : LowerM n LocalId := do
-  let sizeVal ← LowerM.emitInst (.copy (.const (.int (Int.ofNat viewSize) .i64))) (.prim .i64)
-  let view ← LowerM.emitInst (.malloc (.local sizeVal)) .rawPtr
+  let view ← LowerM.emitInst (.callExtern "soma_alloc_view" #[] .rawPtr) .rawPtr
   emitViewHeader view
   -- Store length at offset 8
   let viewI64 ← LowerM.emitInst (.unOp (.ptrtoint .i64) (.local view)) (.prim .i64)

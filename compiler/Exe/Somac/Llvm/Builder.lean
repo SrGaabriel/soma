@@ -243,6 +243,16 @@ end ModuleBuilder
 
 namespace FuncBuilder
 
+/-- Return an LLVMValue as a LocalRef without emitting a redundant instruction -/
+def asLocalRef (ty : LLVMType) (val : LLVMValue) : FuncBuilder LocalRef :=
+  match val with
+  | .local ref => pure ref
+  | _ =>
+    if ty == .ptr then
+      emit (.bitcast .ptr .ptr val)
+    else
+      emit (.add false false ty val (.const (.int 0 (ty.intBits.getD 64))))
+
 /-- Add two integers -/
 def add (ty : LLVMType) (lhs rhs : LLVMValue) (nuw nsw : Bool := false)
     : FuncBuilder LocalRef :=

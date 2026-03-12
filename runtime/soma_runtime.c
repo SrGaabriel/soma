@@ -329,8 +329,8 @@ void* soma_clone_flat_array_view(SomaFlatArrayView* src) {
         newData = (char*)(newBacking + 1) + offset;
     }
 
-    /* Allocate the new view */
-    SomaFlatArrayView* dst = (SomaFlatArrayView*)malloc(sizeof(SomaFlatArrayView));
+    /* Allocate the new view via pool */
+    SomaFlatArrayView* dst = (SomaFlatArrayView*)soma_alloc_view();
     if (dst == NULL) {
         soma_panic("soma_clone_flat_array_view: out of memory");
         return NULL;
@@ -395,6 +395,22 @@ void* soma_alloc_tagged_payload(uint64_t field_count) {
     return payload;
 }
 
+
+/*
+ * Flat array view pool allocation (32 bytes → pool_48)
+ */
+
+void* soma_alloc_view(void) {
+    SomaPools* pools = get_pools();
+    SOMA_STAT_INC(small_allocs);
+    return pool_alloc(&pools->pool_48);
+}
+
+void soma_free_view(void* ptr) {
+    SomaPools* pools = get_pools();
+    SOMA_STAT_INC(small_frees);
+    pool_free(&pools->pool_48, ptr);
+}
 
 /*
  * soma_dup — Create a SUP node for lazy duplication
@@ -1056,11 +1072,11 @@ void soma_era_free(void* value) {
 
         } else if (tag == NODE_FLAT_ARRAY_VIEW) {
             SomaFlatArrayView* view = (SomaFlatArrayView*)cur;
-            /* Free the owned backing array, then free the view */
+            /* Free the owned backing array, then free the view via pool */
             if (view->backing != NULL) {
                 free(view->backing);
             }
-            free(cur);
+            soma_free_view(cur);
 
         } else if (tag == NODE_FLAT_ARRAY) {
             /* Backing arrays freed directly (legacy or via view ERA) */

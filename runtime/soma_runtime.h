@@ -439,6 +439,10 @@ void soma_pool_free_string(void* ptr, size_t total_size);
 void* soma_pool_alloc_tagged(size_t total_size);
 void soma_pool_free_tagged(void* ptr, size_t total_size);
 
+/* Flat array view pool (32 bytes → pool_48) */
+void* soma_alloc_view(void);
+void soma_free_view(void* ptr);
+
 /*
  * Pool statistics — opt-in via -DSOMA_POOL_STATS.
  * When enabled, every alloc/free increments an atomic counter.
