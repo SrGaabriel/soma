@@ -62,6 +62,9 @@ inductive Inst : Nat → Type where
   /-- Construct tagged union -/
   | taggedLit : Nat → Array Operand → Ty n → Inst n
 
+  /-- Construct tagged union by reusing an existing payload allocation in-place -/
+  | reuseTaggedLit : Nat → Array Operand → Operand → Ty n → Inst n
+
   /-- Direct function call (monomorphic) -/
   | call : FuncId → Array Operand → Ty n → Inst n
 
@@ -159,6 +162,8 @@ def instantiate : Inst n → TyEnv n → ClosedInst
   | .getTag val, _ => .getTag val
   | .getPayload val variant field ty, env => .getPayload val variant field (Somac.Alloy.instantiate ty env)
   | .taggedLit tag payload ty, env => .taggedLit tag payload (Somac.Alloy.instantiate ty env)
+  | .reuseTaggedLit tag payload reuse ty, env =>
+      .reuseTaggedLit tag payload reuse (Somac.Alloy.instantiate ty env)
   | .call func args retTy, env => .call func args (Somac.Alloy.instantiate retTy env)
   | .callPoly func tyArgs args retTy, env =>
       .callPoly func (tyArgs.map (Somac.Alloy.instantiate · env)) args (Somac.Alloy.instantiate retTy env)
@@ -211,6 +216,7 @@ def resultTy : ClosedInst → Option ClosedTy
   | .getTag _ => some (.prim .u32)
   | .getPayload _ _ _ ty => some ty
   | .taggedLit _ _ ty => some ty
+  | .reuseTaggedLit _ _ _ ty => some ty
   | .call _ _ retTy => some retTy
   | .callPoly _ _ _ retTy => some retTy
   | .callIndirect _ _ retTy => some retTy
@@ -258,6 +264,9 @@ private def toStringAux : Inst n → String
   | .taggedLit tag payload _ =>
       let ps := String.intercalate ", " (payload.toList.map ToString.toString)
       s!"tagged {tag}({ps})"
+  | .reuseTaggedLit tag payload reuse _ =>
+      let ps := String.intercalate ", " (payload.toList.map ToString.toString)
+      s!"reuse_tagged {tag}({ps}) reusing {reuse}"
   | .call func args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call {func}({as})"

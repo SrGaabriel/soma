@@ -1090,6 +1090,35 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let ref ← CodegenM.withFuncBuilder (FuncBuilder.load taggedTy (.local taggedPtr))
     pure (some (ref, ty))
 
+  | .reuseTaggedLit tag payload reuseOp ty =>
+    let reusePtr ← convertOperand reuseOp
+    for i in [:payload.size] do
+      if h : i < payload.size then
+        let fieldOp := payload[i]
+        let (fieldLLVMTy, fieldVal) ← convertOperandWithTy fieldOp
+        let fieldPtr ← CodegenM.withFuncBuilder do
+          FuncBuilder.gepi64 .i64 reusePtr #[i + 2]
+        let i64Val ← toI64 fieldLLVMTy fieldVal
+        CodegenM.withFuncBuilder do
+          FuncBuilder.store .i64 (.local i64Val) (.local fieldPtr)
+    -- Update the count field if needed (offset 1 in i64 layout = bytes 8..15)
+    let countPtr ← CodegenM.withFuncBuilder do
+      FuncBuilder.gepi64 .i64 reusePtr #[1]
+    CodegenM.withFuncBuilder do
+      FuncBuilder.store .i64 (i64Val payload.size) (.local countPtr)
+    -- Build the result struct {tag, reusePtr} on the stack
+    let taggedPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca taggedTy)
+    let tagPtr ← CodegenM.withFuncBuilder do
+      FuncBuilder.gepi32 taggedTy (.local taggedPtr) #[0, 0]
+    CodegenM.withFuncBuilder do
+      FuncBuilder.store .i32 (i32Val tag) (.local tagPtr)
+    let payloadPtrSlot ← CodegenM.withFuncBuilder do
+      FuncBuilder.gepi32 taggedTy (.local taggedPtr) #[0, 1]
+    CodegenM.withFuncBuilder do
+      FuncBuilder.store .ptr reusePtr (.local payloadPtrSlot)
+    let ref ← CodegenM.withFuncBuilder (FuncBuilder.load taggedTy (.local taggedPtr))
+    pure (some (ref, ty))
+
   | .call func args retTy =>
     lowerDirectCall func.id args retTy
 

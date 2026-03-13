@@ -125,6 +125,7 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst n) : Inst n :
   | .getTag val => .getTag (remapOp val)
   | .getPayload val variant field ty => .getPayload (remapOp val) variant field ty
   | .taggedLit tag payload ty => .taggedLit tag (remapOps payload) ty
+  | .reuseTaggedLit tag payload reuse ty => .reuseTaggedLit tag (remapOps payload) (remapOp reuse) ty
   | .call funcId args retTy =>
     let newFuncId := match remap.lookupFunc moduleName funcId.id with
       | some newId => ⟨newId⟩

@@ -175,6 +175,9 @@ def ppInst (cfg : Config) : Inst n → String
   | .taggedLit tag payload ty =>
     let ps := String.intercalate ", " (payload.toList.map (ppOperand cfg))
     s!"{colorKeyword cfg "tagged"} {ppTy cfg ty} {tag}({ps})"
+  | .reuseTaggedLit tag payload reuse ty =>
+    let ps := String.intercalate ", " (payload.toList.map (ppOperand cfg))
+    s!"{colorKeyword cfg "tagged.reuse"} {ppTy cfg ty} {tag}({ps}) reuse {ppOperand cfg reuse}"
   | .call func args retTy =>
     let as := String.intercalate ", " (args.toList.map (ppOperand cfg))
     s!"{colorKeyword cfg "call"} {ppTy cfg retTy} {ppFuncId cfg func}({as})"

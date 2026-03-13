@@ -66,6 +66,7 @@ private def mapOperandsInInst (inst : ClosedInst) (f : Operand → Operand) : Cl
   | .getTag src => .getTag (f src)
   | .getPayload src vi fi ty => .getPayload (f src) vi fi ty
   | .taggedLit tag payload ty => .taggedLit tag (payload.map f) ty
+  | .reuseTaggedLit tag payload reuse ty => .reuseTaggedLit tag (payload.map f) (f reuse) ty
   | .call fid args ty => .call fid (args.map f) ty
   | .callPoly fid tys args ty => .callPoly fid tys (args.map f) ty
   | .callIndirect fn args ty => .callIndirect (f fn) (args.map f) ty
@@ -109,6 +110,7 @@ private def getOperands (inst : ClosedInst) : Array Operand :=
   | .getTag src => #[src]
   | .getPayload src _ _ _ => #[src]
   | .taggedLit _ payload _ => payload
+  | .reuseTaggedLit _ payload reuse _ => payload ++ #[reuse]
   | .call _ args _ => args
   | .callPoly _ _ args _ => args
   | .callIndirect fn args _ => #[fn] ++ args

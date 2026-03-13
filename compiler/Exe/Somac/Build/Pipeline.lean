@@ -201,9 +201,13 @@ def compileModules
 
   let optimized := Alloy.ClosureSpec.closureSpec mono
 
+  let (reused, reuseCount) := Alloy.Reuse.reuseModule optimized
+  if reuseCount > 0 then
+    IO.println s!"  Reuse analysis: {reuseCount} allocation(s) eliminated"
+
   -- Generate LLVM IR
   IO.println "  Generating LLVM IR..."
-  let llvmIR := Llvm.codegenToString optimized
+  let llvmIR := Llvm.codegenToString reused
 
   IO.println "Compilation phase complete"
 
