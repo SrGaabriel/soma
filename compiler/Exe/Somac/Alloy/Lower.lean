@@ -1826,9 +1826,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           }
         pure inputVal
       else if (match nodeTy with | .closure _ _ => true | _ => false) then
+        let asRawPtr ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .rawPtr)
         let lbl : Operand := .const (.int (Int.ofNat label.id.toNat) .u32)
         let clone ← StateT.lift (LowerM.emitInst
-          (.callExtern "soma_clone_closure" #[.local inputVal, lbl] .rawPtr) .rawPtr)
+          (.callExtern "soma_clone_closure" #[.local asRawPtr, lbl] .rawPtr) .rawPtr)
         modify fun ns => { ns with
           results := ns.results.insert (nodeId.id * 1000 + 1) inputVal
                      |>.insert (nodeId.id * 1000 + 2) clone

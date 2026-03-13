@@ -262,6 +262,14 @@ private def buildDerivedParamMap (cfg : ClosedCFG) (paramIds : Std.HashSet Nat)
           | .unOp _ (.local srcId) =>
             if let some srcParam := derivedFrom.get? srcId.id then
               derivedFrom := derivedFrom.insert resultId.id srcParam
+          | .callExtern _ args _ =>
+            -- If any argument is derived from a param, the result is derived too
+            -- (covers soma_clone_closure and similar runtime calls on closure params)
+            for arg in args do
+              if let .local srcId := arg then
+                if let some srcParam := derivedFrom.get? srcId.id then
+                  derivedFrom := derivedFrom.insert resultId.id srcParam
+                  break
           | _ => pure ()
   return derivedFrom
 
@@ -387,13 +395,10 @@ private def rewriteStmtForSpec (stmt : ClosedStmt) (closureDerived : Std.HashSet
       let newArgs := removeAt args paramIdx
       some { stmt with inst := .call specFuncId newArgs retTy }
     else some stmt
-  | .lazySup _ (.local srcId) _ =>
-    if closureDerived.contains srcId.id then none else some stmt
-  | .supProj0 (.local srcId) _ =>
-    if closureDerived.contains srcId.id then none else some stmt
-  | .supProj1 (.local srcId) _ =>
-    if closureDerived.contains srcId.id then none else some stmt
-  | _ => some stmt
+  | _ =>
+    match stmt.result with
+    | some rid => if closureDerived.contains rid.id then none else some stmt
+    | none => some stmt
 
 /-- Rewrite a block for specialization -/
 private def rewriteBlockForSpec (block : ClosedBlock) (closureDerived : Std.HashSet Nat)
@@ -438,6 +443,11 @@ def specializeFunc (_m : Module) (origFunc : ClosedFunc) (req : SpecRequest)
       acc.insert id (rewriteBlockForSpec block closureDerived
         req.targetFuncId origFunc.id specFuncId req.paramIdx req.hasEnv envLocalId)
 
+  let cleanLocalTypes := origFunc.localTypes.fold (init := ({} : Std.HashMap Nat ClosedTy))
+    fun acc lid ty =>
+      if closureDerived.contains lid || lid == closureParamId.id then acc
+      else acc.insert lid ty
+
   let specName := s!"{origFunc.sig.name}$cs_{req.targetFuncId.id}"
   return {
     id := specFuncId
@@ -445,7 +455,7 @@ def specializeFunc (_m : Module) (origFunc : ClosedFunc) (req : SpecRequest)
     body := some { cfg with blocks := newBlocks }
     attrs := origFunc.attrs
     nextLocalId := origFunc.nextLocalId
-    localTypes := origFunc.localTypes
+    localTypes := cleanLocalTypes
   }
 
 /-- Check if a type is pointer-like -/
