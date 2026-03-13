@@ -925,6 +925,7 @@ static void* soma_clone_closure_for_fork(void* closure_ptr) {
 void soma_era_string(void* value) {
     if (value == NULL) return;
     SomaString* s = (SomaString*)value;
+    if (s->tag & NODE_STATIC_BIT) return; /* static string literal, skip free */
     size_t total = sizeof(SomaString) + (size_t)s->length + 1;
     soma_pool_free_string(value, total);
 }
@@ -957,6 +958,9 @@ void soma_era_free(void* value) {
         if (cur == NULL) continue;
 
         uint8_t tag = *(uint8_t*)cur;
+
+        /* Static objects (string literals, etc.) must never be freed */
+        if (tag & NODE_STATIC_BIT) continue;
 
         /* --- leaf types: free immediately, no children --- */
 

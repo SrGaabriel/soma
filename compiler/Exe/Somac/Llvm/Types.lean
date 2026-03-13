@@ -84,6 +84,19 @@ def isStruct : LLVMType → Bool
   | .namedStruct _ => true
   | _ => false
 
+/-- Natural alignment in bytes for a given LLVM type -/
+partial def alignment : LLVMType → Nat
+  | .i1 | .i8 => 1
+  | .i16 | .half => 2
+  | .i32 | .float => 4
+  | .i64 | .double | .ptr | .i128 | .fp128 => 8
+  | .void => 1
+  | .array _ elem => elem.alignment
+  | .struct _packed fields =>
+    fields.foldl (fun acc f => max acc f.alignment) 1
+  | .vector _ elem => elem.alignment
+  | .func .. | .namedStruct _ => 8
+
 /-- Convert to LLVM IR syntax -/
 partial def toLLVM : LLVMType → String
   | .void => "void"
@@ -657,8 +670,12 @@ structure LLVMFuncAttrs where
   nounwind : Bool := false
   noreturn : Bool := false
   readonly : Bool := false
+  readnone : Bool := false
+  memory : Option String := none
   alwaysInline : Bool := false
   noInline : Bool := false
+  willreturn : Bool := false
+  cold : Bool := false
   deriving Repr, Inhabited
 
 namespace LLVMFuncAttrs
@@ -667,9 +684,15 @@ def toLLVM (a : LLVMFuncAttrs) : String :=
   let parts : List String := []
   let parts := if a.nounwind then parts ++ ["nounwind"] else parts
   let parts := if a.noreturn then parts ++ ["noreturn"] else parts
-  let parts := if a.readonly then parts ++ ["readonly"] else parts
+  let parts := match a.memory with
+    | some m => parts ++ [s!"memory({m})"]
+    | none =>
+      let parts := if a.readnone then parts ++ ["readnone"] else parts
+      if a.readonly then parts ++ ["readonly"] else parts
   let parts := if a.alwaysInline then parts ++ ["alwaysinline"] else parts
   let parts := if a.noInline then parts ++ ["noinline"] else parts
+  let parts := if a.willreturn then parts ++ ["willreturn"] else parts
+  let parts := if a.cold then parts ++ ["cold"] else parts
   if parts.isEmpty then "" else " " ++ String.intercalate " " parts
 
 instance : ToString LLVMFuncAttrs where
@@ -683,6 +706,7 @@ structure LLVMFunc where
   retTy : LLVMType
   params : Array LLVMParam
   attrs : LLVMFuncAttrs := {}
+  returnAttrs : Array String := #[]
   blocks : Array LLVMBlock := #[]
   isDeclaration : Bool := false
   deriving Repr, Inhabited
@@ -696,12 +720,14 @@ def toLLVM (f : LLVMFunc) : String :=
   let defOrDecl := if f.isDeclaration then "declare" else "define"
   let paramsStr := String.intercalate ", " (f.params.toList.map LLVMParam.toLLVM)
   let quotedName := quoteIfNeeded f.name
+  let retAttrsStr := if f.returnAttrs.isEmpty then ""
+    else String.intercalate " " f.returnAttrs.toList ++ " "
 
   if f.isDeclaration then
-    s!"{defOrDecl} {linkageStr}{f.retTy} @{quotedName}({paramsStr}){f.attrs}"
+    s!"{defOrDecl} {linkageStr}{retAttrsStr}{f.retTy} @{quotedName}({paramsStr}){f.attrs}"
   else
     let blocksStr := String.intercalate "\n" (f.blocks.toList.map LLVMBlock.toLLVM)
-    s!"{defOrDecl} {linkageStr}{f.retTy} @{quotedName}({paramsStr}){f.attrs} \{\n{blocksStr}\n}"
+    s!"{defOrDecl} {linkageStr}{retAttrsStr}{f.retTy} @{quotedName}({paramsStr}){f.attrs} \{\n{blocksStr}\n}"
 
 instance : ToString LLVMFunc where
   toString := toLLVM

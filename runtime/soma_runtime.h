@@ -70,6 +70,8 @@
 #define NODE_TAGGED_PAYLOAD   3
 #define NODE_FLAT_ARRAY       4
 #define NODE_FLAT_ARRAY_VIEW  5
+/* Bit flag: marks a heap object as statically allocated (skip ERA/free) */
+#define NODE_STATIC_BIT       0x80
 /* Closure env_kind constants: type-directed clone/erase strategy per closure */
 #define SOMA_ENV_DEFAULT  0  /* Generic tag-based dispatch per env slot */
 #define SOMA_ENV_FLAT     1  /* Env slots are flat scalars (memcpy, no clone) */

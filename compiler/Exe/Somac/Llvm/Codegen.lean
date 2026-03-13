@@ -74,6 +74,11 @@ def nodeClosureTag : Int := 1
 /-- The tagged union struct type -/
 def taggedTy : LLVMType := .struct false #[.i32, .ptr]
 
+/-- Natural alignment for a type -/
+def naturalAlign (ty : LLVMType) : Option Nat :=
+  let a := ty.alignment
+  if a > 0 then some a else none
+
 /-- Get the type of an Alloy operand -/
 def getOperandTy (op : Operand) (localTypes : Std.HashMap Nat ClosedTy) : ClosedTy :=
   match op with
@@ -136,6 +141,8 @@ structure CodegenState where
   deadBlocks : Std.HashSet Nat := {}
   /-- Set during instruction lowering when a noreturn call is emitted -/
   noreturnEmitted : Bool := false
+  /-- Tracks Alloy locals that hold string constants (localId → string table index) -/
+  stringConstLocals : Std.HashMap Nat Nat := {}
   /-- String table name for the panic message -/
   panicStrName : String := ".str.0"
   deriving Inhabited
@@ -252,6 +259,7 @@ def clearFuncState : CodegenM Unit := do
     blockMap := {}
     deadBlocks := {}
     noreturnEmitted := false
+    stringConstLocals := {}
     funcState := {}
     currentFunc := none
   }
@@ -813,6 +821,10 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         else
           FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
       pure (some (ref, ty))
+    | .const (.string _idx _) =>
+      let srcVal ← convertOperand src
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .ptr srcVal)
+      pure (some (ref, .rawPtr))
     | _ =>
       let srcTy ← operandTy src
       let srcVal ← convertOperand src
@@ -1396,9 +1408,19 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       pure (some (ref, .rawPtr))
 
     | .fromCString =>
-      -- Convert C string to String: call runtime function
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_from_cstring" llvmArgs)
-      pure (some (ref, .rawPtr))
+      let strConsts ← do pure (← get).stringConstLocals
+      let staticIdx? : Option Nat := match args[0]? with
+        | some (Operand.const (Const.string idx _)) => some idx
+        | some (Operand.local localId) => strConsts.get? localId.id
+        | _ => none
+      match staticIdx? with
+      | some idx =>
+        let ref ← CodegenM.withFuncBuilder
+          (FuncBuilder.bitcast .ptr .ptr (.global ⟨s!".soma_str.{idx}"⟩))
+        pure (some (ref, .rawPtr))
+      | none =>
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_from_cstring" llvmArgs)
+        pure (some (ref, .rawPtr))
 
     | .cstringLen =>
       -- Get C string length: call runtime function
@@ -1568,6 +1590,10 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) : CodegenM Unit := do
       let tyFromAlloy := func?.bind (·.getLocalType alloyLocal)
       let ty := tyFromAlloy.getD _tyFromLowerInst
       CodegenM.mapLocal alloyLocal.id llvmRef ty
+      match stmt.inst with
+      | .copy (.const (.string idx _)) =>
+        modify fun s => { s with stringConstLocals := s.stringConstLocals.insert alloyLocal.id idx }
+      | _ => pure ()
     | none, _ => pure ()
     | some alloyLocal, none =>
       let tyFromAlloy := func?.bind (·.getLocalType alloyLocal)
@@ -1657,7 +1683,10 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "malloc"
       retTy := .ptr
+      returnAttrs := #["noalias"]
       params := #[{ name := "size", ty := .i64 }]
+      attrs := { nounwind := true, willreturn := true,
+                 memory := some "inaccessiblemem: readwrite" }
       isDeclaration := true
     }
 
@@ -1665,7 +1694,9 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "free"
       retTy := .void
-      params := #[{ name := "ptr", ty := .ptr }]
+      params := #[{ name := "ptr", ty := .ptr, attrs := #["nocapture"] }]
+      attrs := { nounwind := true, willreturn := true,
+                 memory := some "argmem: readwrite, inaccessiblemem: readwrite" }
       isDeclaration := true
     }
 
@@ -1673,7 +1704,8 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_era_free"
       retTy := .void
-      params := #[{ name := "ptr", ty := .ptr }]
+      params := #[{ name := "ptr", ty := .ptr, attrs := #["nocapture"] }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1681,7 +1713,8 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_era_string"
       retTy := .void
-      params := #[{ name := "ptr", ty := .ptr }]
+      params := #[{ name := "ptr", ty := .ptr, attrs := #["nocapture"] }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1689,7 +1722,8 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_era_tagged_payload"
       retTy := .void
-      params := #[{ name := "payload", ty := .ptr }]
+      params := #[{ name := "payload", ty := .ptr, attrs := #["nocapture"] }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1697,7 +1731,9 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_alloc_tagged_payload"
       retTy := .ptr
+      returnAttrs := #["noalias"]
       params := #[{ name := "field_count", ty := .i64 }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1705,8 +1741,8 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_panic"
       retTy := .void
-      params := #[{ name := "msg", ty := .ptr }]
-      attrs := {}
+      params := #[{ name := "msg", ty := .ptr, attrs := #["nocapture", "readonly"] }]
+      attrs := { noreturn := true, nounwind := true, cold := true }
       isDeclaration := true
     }
 
@@ -1715,11 +1751,12 @@ def addRuntimeDeclarations : CodegenM Unit := do
       name := "llvm.memcpy.p0.p0.i64"
       retTy := .void
       params := #[
-        { name := "dst", ty := .ptr },
-        { name := "src", ty := .ptr },
+        { name := "dst", ty := .ptr, attrs := #["nocapture", "writeonly"] },
+        { name := "src", ty := .ptr, attrs := #["nocapture", "readonly"] },
         { name := "len", ty := .i64 },
         { name := "isvolatile", ty := .i1 }
       ]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1728,11 +1765,12 @@ def addRuntimeDeclarations : CodegenM Unit := do
       name := "llvm.memset.p0.i64"
       retTy := .void
       params := #[
-        { name := "dst", ty := .ptr },
+        { name := "dst", ty := .ptr, attrs := #["nocapture", "writeonly"] },
         { name := "val", ty := .i8 },
         { name := "len", ty := .i64 },
         { name := "isvolatile", ty := .i1 }
       ]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1740,7 +1778,10 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_to_cstring"
       retTy := .ptr
-      params := #[{ name := "str", ty := .ptr }]
+      returnAttrs := #["nonnull"]
+      params := #[{ name := "str", ty := .ptr, attrs := #["nocapture", "readonly"] }]
+      attrs := { nounwind := true, willreturn := true,
+                 memory := some "argmem: read" }
       isDeclaration := true
     }
 
@@ -1748,7 +1789,9 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_from_cstring"
       retTy := .ptr
-      params := #[{ name := "cstr", ty := .ptr }]
+      returnAttrs := #["noalias"]
+      params := #[{ name := "cstr", ty := .ptr, attrs := #["nocapture", "readonly"] }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1756,7 +1799,9 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_cstring_len"
       retTy := .i64
-      params := #[{ name := "cstr", ty := .ptr }]
+      params := #[{ name := "cstr", ty := .ptr, attrs := #["nocapture", "readonly"] }]
+      attrs := { nounwind := true, willreturn := true,
+                 memory := some "argmem: read" }
       isDeclaration := true
     }
 
@@ -1764,7 +1809,12 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_strcat"
       retTy := .ptr
-      params := #[{ name := "a", ty := .ptr }, { name := "b", ty := .ptr }]
+      returnAttrs := #["noalias"]
+      params := #[
+        { name := "a", ty := .ptr, attrs := #["nocapture", "readonly"] },
+        { name := "b", ty := .ptr, attrs := #["nocapture", "readonly"] }
+      ]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1772,7 +1822,9 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_int_to_string"
       retTy := .ptr
+      returnAttrs := #["noalias"]
       params := #[{ name := "val", ty := .i32 }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1780,7 +1832,9 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_pool_alloc_closure"
       retTy := .ptr
+      returnAttrs := #["noalias"]
       params := #[{ name := "env_size", ty := .i16 }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1789,6 +1843,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
       name := "soma_apply"
       retTy := .ptr
       params := #[{ name := "closure", ty := .ptr }, { name := "arg", ty := .ptr }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1798,6 +1853,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
       name := "soma_dup"
       retTy := .i64
       params := #[{ name := "label", ty := .i32 }, { name := "value", ty := .i64 }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1806,6 +1862,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
       name := "soma_proj0"
       retTy := .i64
       params := #[{ name := "sup_val", ty := .i64 }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1814,6 +1871,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
       name := "soma_proj1"
       retTy := .i64
       params := #[{ name := "sup_val", ty := .i64 }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1821,7 +1879,9 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_clone_flat_array_view"
       retTy := .ptr
-      params := #[{ name := "src", ty := .ptr }]
+      returnAttrs := #["noalias"]
+      params := #[{ name := "src", ty := .ptr, attrs := #["nocapture", "readonly"] }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1829,7 +1889,9 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_alloc_view"
       retTy := .ptr
+      returnAttrs := #["noalias"]
       params := #[]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1837,7 +1899,8 @@ def addRuntimeDeclarations : CodegenM Unit := do
     ModuleBuilder.addFunc {
       name := "soma_free_view"
       retTy := .void
-      params := #[{ name := "ptr", ty := .ptr }]
+      params := #[{ name := "ptr", ty := .ptr, attrs := #["nocapture"] }]
+      attrs := { nounwind := true }
       isDeclaration := true
     }
 
@@ -1879,7 +1942,7 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
   -- Emit string table as LLVM global constants
   for (s, idx) in alloyModule.strings.strings.zipIdx do
     let strBytes := s.utf8ByteSize + 1
-    let global : LLVMGlobal := {
+    let rawGlobal : LLVMGlobal := {
       name := s!".str.{idx}"
       ty := .array strBytes .i8
       init := some (.string s)
@@ -1887,8 +1950,25 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
       isConstant := true
       align := some 1
     }
+    let somaStrTy : LLVMType := .struct false #[.i8, .array 3 .i8, .i32, .i64, .array strBytes .i8]
+    let somaStrInit : LLVMConst := .struct false #[
+      (.i8, .int 130 8),
+      (.array 3 .i8, .zeroinit (.array 3 .i8)),
+      (.i32, .int 1398035015 32),
+      (.i64, .int (s.utf8ByteSize : Int) 64),
+      (.array strBytes .i8, .string s)
+    ]
+    let somaStrGlobal : LLVMGlobal := {
+      name := s!".soma_str.{idx}"
+      ty := somaStrTy
+      init := some somaStrInit
+      linkage := .private_
+      isConstant := true
+      align := some 8
+    }
     CodegenM.withModuleBuilder do
-      modify fun st => { st with module := { st.module with globals := st.module.globals.push global } }
+      modify fun st => { st with module := { st.module with
+        globals := st.module.globals.push rawGlobal |>.push somaStrGlobal } }
 
   -- Add type definitions
   for typedef in alloyModule.types do
