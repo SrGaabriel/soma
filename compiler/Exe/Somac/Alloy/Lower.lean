@@ -1050,7 +1050,9 @@ partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : F
       match entry.node with
       | .dup _ =>
         let nodeTy := getNodeTypeWithMapping entry ns'.toTypeConvCtx
-        if nodeTy.dupTier == .heap && !nodeTy.canInlineDup && Ty.supportsLazySup nodeTy then
+        let usesLazySup := nodeTy.dupTier == .heap && !nodeTy.canInlineDup &&
+          Ty.supportsLazySup nodeTy && (match nodeTy with | .closure _ _ => false | _ => true)
+        if usesLazySup then
           let projVal ←
             if port.port.idx == 1 then
               StateT.lift (LowerM.emitInst (.supProj0 (.local nodeResult) nodeTy) nodeTy)
@@ -1823,8 +1825,17 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               |>.insert copy0.id |>.insert copy1.id
           }
         pure inputVal
+      else if (match nodeTy with | .closure _ _ => true | _ => false) then
+        let lbl : Operand := .const (.int (Int.ofNat label.id.toNat) .u32)
+        let clone ← StateT.lift (LowerM.emitInst
+          (.callExtern "soma_clone_closure" #[.local inputVal, lbl] .rawPtr) .rawPtr)
+        modify fun ns => { ns with
+          results := ns.results.insert (nodeId.id * 1000 + 1) inputVal
+                     |>.insert (nodeId.id * 1000 + 2) clone
+        }
+        pure inputVal
       else if Ty.supportsLazySup nodeTy then
-        -- Runtime SUP: lazy duplication via superposition nodes.
+        -- Truly polymorphic (.var) types: runtime representation unknown, must use SUP
         let supVal ← StateT.lift (LowerM.emitInst (.lazySup label.id (.local inputVal) nodeTy) nodeTy)
         pure supVal
       else
