@@ -201,7 +201,20 @@ def compileModules
 
   let optimized := Alloy.ClosureSpec.closureSpec mono
 
-  let (reused, reuseCount) := Alloy.Reuse.reuseModule optimized
+  let (borrowed, borrowStats) := Alloy.Borrow.borrowModule optimized
+  if borrowStats.borrowedParams > 0 then
+    let cloneMsg := if borrowStats.clonesEliminated > 0 then
+      s!", {borrowStats.clonesEliminated} clone(s) eliminated"
+    else ""
+    let narrowMsg := if borrowStats.clonesNarrowed > 0 then
+      s!", {borrowStats.clonesNarrowed} clone(s) narrowed"
+    else ""
+    let eraseMsg := if borrowStats.erasesEliminated > 0 then
+      s!", {borrowStats.erasesEliminated} erase(s) eliminated"
+    else ""
+    IO.println s!"  Borrow analysis: {borrowStats.borrowedParams} parameter(s) borrowed{cloneMsg}{narrowMsg}{eraseMsg}"
+
+  let (reused, reuseCount) := Alloy.Reuse.reuseModule borrowed
   if reuseCount > 0 then
     IO.println s!"  Reuse analysis: {reuseCount} allocation(s) eliminated"
 

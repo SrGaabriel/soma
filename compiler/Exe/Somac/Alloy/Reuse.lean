@@ -1,5 +1,6 @@
 import Somac.Alloy.Func
 import Somac.Alloy.Analysis
+import Somac.Alloy.DefUse
 import Std.Data.HashMap
 import Std.Data.HashSet
 
@@ -88,52 +89,9 @@ def beq (a b : TokenSet) : Bool :=
 
 end TokenSet
 
-/-- Extract LocalId from an operand if it references a local -/
-private def operandLocal? (op : Operand) : Option LocalId :=
-  match op with
-  | .local id => some id
-  | _ => none
-
 /-- Collect all LocalIds referenced by an instruction's operands -/
 private def instOperandLocals (inst : ClosedInst) : Array LocalId :=
-  let ops := match inst with
-    | .binOp _ l r _ => #[l, r]
-    | .unOp _ o => #[o]
-    | .copy o => #[o]
-    | .load o _ => #[o]
-    | .store v p => #[v, p]
-    | .getFieldPtr o _ _ => #[o]
-    | .getElemPtr o i _ => #[o, i]
-    | .extractField o _ => #[o]
-    | .insertField o _ v => #[o, v]
-    | .call _ args _ => args
-    | .callPoly _ _ args _ => args
-    | .callIndirect f args _ => #[f] ++ args
-    | .callClosure f args _ => #[f] ++ args
-    | .callExtern _ args _ => args
-    | .callIntrinsic _ args _ => args
-    | .makeClosure _ env => #[env]
-    | .makeClosurePoly _ _ env => #[env]
-    | .makeClosureDyn f env _ => #[f, env]
-    | .taggedLit _ fields _ => fields
-    | .reuseTaggedLit _ fields r _ => fields ++ #[r]
-    | .structLit fields _ => fields
-    | .arrayLit elems _ => elems
-    | .getTag o => #[o]
-    | .getPayload o _ _ _ => #[o]
-    | .erase o _ => #[o]
-    | .closureFunc o => #[o]
-    | .closureEnv o => #[o]
-    | .phi incoming _ => incoming.map Prod.fst
-    | .select c t e => #[c, t, e]
-    | .memcpy d s sz => #[d, s, sz]
-    | .memset d v sz => #[d, v, sz]
-    | .lazySup _ o _ => #[o]
-    | .supProj0 o _ => #[o]
-    | .supProj1 o _ => #[o]
-    | .clone o _ _ => #[o]
-    | _ => #[]
-  ops.filterMap operandLocal?
+  inst.localUses
 
 /-- Check if an instruction uses a specific local (as any operand) -/
 private def instUsesLocal (inst : ClosedInst) (lid : LocalId) : Bool :=

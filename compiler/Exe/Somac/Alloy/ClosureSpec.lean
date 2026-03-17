@@ -44,113 +44,15 @@ private def removeAt [Inhabited α] (arr : Array α) (idx : Nat) : Array α := I
     if i != idx then result := result.push arr[i]!
   return result
 
-/-- Apply a function to all operands in an instruction, preserving structure -/
-private def mapOperandsInInst (inst : ClosedInst) (f : Operand → Operand) : ClosedInst :=
-  match inst with
-  | .binOp op lhs rhs ty => .binOp op (f lhs) (f rhs) ty
-  | .unOp op src => .unOp op (f src)
-  | .copy src => .copy (f src)
-  | .alloca ty => .alloca ty
-  | .malloc size => .malloc (f size)
-  | .free ptr => .free (f ptr)
-  | .load ptr ty => .load (f ptr) ty
-  | .store ptr val => .store (f ptr) (f val)
-  | .getFieldPtr base idx ty => .getFieldPtr (f base) idx ty
-  | .getElemPtr base idx ty => .getElemPtr (f base) (f idx) ty
-  | .extractField src idx => .extractField (f src) idx
-  | .insertField src idx val => .insertField (f src) idx (f val)
-  | .extractElem src idx => .extractElem (f src) (f idx)
-  | .insertElem src idx val => .insertElem (f src) (f idx) (f val)
-  | .structLit fields ty => .structLit (fields.map f) ty
-  | .arrayLit elems ty => .arrayLit (elems.map f) ty
-  | .getTag src => .getTag (f src)
-  | .getPayload src vi fi ty => .getPayload (f src) vi fi ty
-  | .taggedLit tag payload ty => .taggedLit tag (payload.map f) ty
-  | .reuseTaggedLit tag payload reuse ty => .reuseTaggedLit tag (payload.map f) (f reuse) ty
-  | .call fid args ty => .call fid (args.map f) ty
-  | .callPoly fid tys args ty => .callPoly fid tys (args.map f) ty
-  | .callIndirect fn args ty => .callIndirect (f fn) (args.map f) ty
-  | .callClosure clo args ty => .callClosure (f clo) (args.map f) ty
-  | .makeClosure ref env => .makeClosure ref (f env)
-  | .makeClosurePoly ref tys env => .makeClosurePoly ref tys (f env)
-  | .makeClosureDyn fn env ty => .makeClosureDyn (f fn) (f env) ty
-  | .closureFunc src => .closureFunc (f src)
-  | .closureEnv src => .closureEnv (f src)
-  | .phi branches ty => .phi (branches.map fun (op, bid) => (f op, bid)) ty
-  | .select cond thenVal elseVal => .select (f cond) (f thenVal) (f elseVal)
-  | .memcpy dst src size => .memcpy (f dst) (f src) (f size)
-  | .memset dst val size => .memset (f dst) (f val) (f size)
-  | .lazySup label src ty => .lazySup label (f src) ty
-  | .supProj0 src ty => .supProj0 (f src) ty
-  | .supProj1 src ty => .supProj1 (f src) ty
-  | .erase src ty => .erase (f src) ty
-  | .clone src ty label => .clone (f src) ty label
-  | .panic idx line => .panic idx line
-  | .callIntrinsic op args ty => .callIntrinsic op (args.map f) ty
-  | .callExtern name args ty => .callExtern name (args.map f) ty
-
-/-- Extract all operands referenced in an instruction -/
-private def getOperands (inst : ClosedInst) : Array Operand :=
-  match inst with
-  | .binOp _ lhs rhs _ => #[lhs, rhs]
-  | .unOp _ src => #[src]
-  | .copy src => #[src]
-  | .alloca _ => #[]
-  | .malloc size => #[size]
-  | .free ptr => #[ptr]
-  | .load ptr _ => #[ptr]
-  | .store ptr val => #[ptr, val]
-  | .getFieldPtr base _ _ => #[base]
-  | .getElemPtr base idx _ => #[base, idx]
-  | .extractField src _ => #[src]
-  | .insertField src _ val => #[src, val]
-  | .extractElem src idx => #[src, idx]
-  | .insertElem src idx val => #[src, idx, val]
-  | .structLit fields _ => fields
-  | .arrayLit elems _ => elems
-  | .getTag src => #[src]
-  | .getPayload src _ _ _ => #[src]
-  | .taggedLit _ payload _ => payload
-  | .reuseTaggedLit _ payload reuse _ => payload ++ #[reuse]
-  | .call _ args _ => args
-  | .callPoly _ _ args _ => args
-  | .callIndirect fn args _ => #[fn] ++ args
-  | .callClosure clo args _ => #[clo] ++ args
-  | .makeClosure _ env => #[env]
-  | .makeClosurePoly _ _ env => #[env]
-  | .makeClosureDyn fn env _ => #[fn, env]
-  | .closureFunc src => #[src]
-  | .closureEnv src => #[src]
-  | .phi branches _ => branches.map (·.1)
-  | .select cond thenVal elseVal => #[cond, thenVal, elseVal]
-  | .memcpy dst src size => #[dst, src, size]
-  | .memset dst val size => #[dst, val, size]
-  | .lazySup _ src _ => #[src]
-  | .supProj0 src _ => #[src]
-  | .supProj1 src _ => #[src]
-  | .erase src _ => #[src]
-  | .clone src _ _ => #[src]
-  | .panic _ _ => #[]
-  | .callIntrinsic _ args _ => args
-  | .callExtern _ args _ => args
-
-/-- Extract operands from a terminator -/
-private def getTerminatorOperands : Terminator → Array Operand
-  | .ret val => #[val]
-  | .branch cond _ _ => #[cond]
-  | .switch val _ _ => #[val]
-  | .jump _ => #[]
-  | .retUnit => #[]
-  | .unreachable => #[]
 
 /-- Collect all LocalId.ids referenced as operands in statements + terminator -/
 private def collectUsedLocals (stmts : Array ClosedStmt) (term : Terminator) : Std.HashSet Nat := Id.run do
   let mut used : Std.HashSet Nat := {}
   for stmt in stmts do
-    for op in getOperands stmt.inst do
-      if let .local lid := op then used := used.insert lid.id
-  for op in getTerminatorOperands term do
-    if let .local lid := op then used := used.insert lid.id
+    for lid in stmt.inst.localUses do
+      used := used.insert lid.id
+  for lid in term.localUses do
+    used := used.insert lid.id
   return used
 
 /-- Check if an instruction is pure (safe to remove if result unused) -/
@@ -203,10 +105,10 @@ def dceFunc (f : ClosedFunc) : ClosedFunc := Id.run do
     let mut allUsed : Std.HashSet Nat := {}
     for (_, block) in allBlocks.toArray do
       for stmt in block.stmts do
-        for op in getOperands stmt.inst do
-          if let .local lid := op then allUsed := allUsed.insert lid.id
-      for op in getTerminatorOperands block.terminator do
-        if let .local lid := op then allUsed := allUsed.insert lid.id
+        for lid in stmt.inst.localUses do
+          allUsed := allUsed.insert lid.id
+      for lid in block.terminator.localUses do
+        allUsed := allUsed.insert lid.id
     let mut changed := false
     let mut newBlocks : Std.HashMap Nat ClosedBlock := {}
     for (blockId, block) in allBlocks.toArray do
@@ -589,7 +491,7 @@ private def inlineCall (callee : ClosedFunc) (callArgs : Array Operand)
     let newResult := stmt.result.bind fun rid =>
       if paramSubst.contains rid.id then none
       else localRemap.get? rid.id
-    let newInst := mapOperandsInInst stmt.inst remapOp
+    let newInst := stmt.inst.mapOperands remapOp
     inlinedStmts := inlinedStmts.push { result := newResult, inst := newInst }
 
   -- Link return value to call result, inserting type coercion if needed

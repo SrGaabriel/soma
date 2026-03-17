@@ -6,7 +6,9 @@ import Somac.Alloy.Lower
 import Somac.Alloy.Pretty
 import Somac.Alloy.Monomorphize
 import Somac.Alloy.Analysis
+import Somac.Alloy.DefUse
 import Somac.Alloy.ClosureSpec
+import Somac.Alloy.Borrow
 import Somac.Alloy.Merge
 import Somac.Alloy.Serialize
 import Somac.Alloy.Reuse
@@ -17,6 +19,7 @@ export Lower (lower lowerGraph)
 export Pretty (pp ppColored ppFn ppBb ppModule)
 export Monomorphize (monomorphize isFullyMonomorphic reportPolymorphism)
 export ClosureSpec (closureSpec)
+export Borrow (borrowModule)
 export Reuse (reuseModule)
 export Merge (merge mergeModules)
 export Serialize (serializeModule deserializeModule writeAlloyBin readAlloyBin)

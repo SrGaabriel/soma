@@ -315,6 +315,101 @@ private def toStringAux : Inst n → String
 instance : ToString (Inst n) where
   toString := toStringAux
 
+/-- Extract all operands referenced by an instruction -/
+def operands : Inst n → Array (Operand)
+  | .binOp _ l r _ => #[l, r]
+  | .unOp _ o => #[o]
+  | .copy o => #[o]
+  | .load o _ => #[o]
+  | .store v p => #[v, p]
+  | .getFieldPtr o _ _ => #[o]
+  | .getElemPtr o i _ => #[o, i]
+  | .extractField o _ => #[o]
+  | .insertField o _ v => #[o, v]
+  | .extractElem o i => #[o, i]
+  | .insertElem o i v => #[o, i, v]
+  | .call _ args _ => args
+  | .callPoly _ _ args _ => args
+  | .callIndirect f args _ => #[f] ++ args
+  | .callClosure f args _ => #[f] ++ args
+  | .callExtern _ args _ => args
+  | .callIntrinsic _ args _ => args
+  | .makeClosure _ env => #[env]
+  | .makeClosurePoly _ _ env => #[env]
+  | .makeClosureDyn f env _ => #[f, env]
+  | .taggedLit _ fields _ => fields
+  | .reuseTaggedLit _ fields r _ => fields ++ #[r]
+  | .structLit fields _ => fields
+  | .arrayLit elems _ => elems
+  | .getTag o => #[o]
+  | .getPayload o _ _ _ => #[o]
+  | .erase o _ => #[o]
+  | .clone o _ _ => #[o]
+  | .closureFunc o => #[o]
+  | .closureEnv o => #[o]
+  | .phi incoming _ => incoming.map Prod.fst
+  | .select c t e => #[c, t, e]
+  | .memcpy d s sz => #[d, s, sz]
+  | .memset d v sz => #[d, v, sz]
+  | .lazySup _ o _ => #[o]
+  | .supProj0 o _ => #[o]
+  | .supProj1 o _ => #[o]
+  | .malloc sz => #[sz]
+  | .free p => #[p]
+  | .alloca _ => #[]
+  | .panic _ _ => #[]
+
+/-- Extract all local variable references from an instruction's operands -/
+def localUses (inst : Inst n) : Array LocalId :=
+  inst.operands.filterMap fun
+    | .local id => some id
+    | _ => none
+
+/-- Apply a function to every operand in an instruction, producing a new instruction -/
+def mapOperands (inst : Inst 0) (f : Operand → Operand) : Inst 0 :=
+  match inst with
+  | .binOp op l r ty => .binOp op (f l) (f r) ty
+  | .unOp op o => .unOp op (f o)
+  | .copy o => .copy (f o)
+  | .alloca ty => .alloca ty
+  | .malloc sz => .malloc (f sz)
+  | .free p => .free (f p)
+  | .load o ty => .load (f o) ty
+  | .store v p => .store (f v) (f p)
+  | .getFieldPtr o idx ty => .getFieldPtr (f o) idx ty
+  | .getElemPtr o i ty => .getElemPtr (f o) (f i) ty
+  | .extractField o idx => .extractField (f o) idx
+  | .insertField o idx v => .insertField (f o) idx (f v)
+  | .extractElem o idx => .extractElem (f o) (f idx)
+  | .insertElem o idx v => .insertElem (f o) (f idx) (f v)
+  | .structLit fields ty => .structLit (fields.map f) ty
+  | .arrayLit elems ty => .arrayLit (elems.map f) ty
+  | .getTag o => .getTag (f o)
+  | .getPayload o vi fi ty => .getPayload (f o) vi fi ty
+  | .taggedLit tag fields ty => .taggedLit tag (fields.map f) ty
+  | .reuseTaggedLit tag fields r ty => .reuseTaggedLit tag (fields.map f) (f r) ty
+  | .call fid args ty => .call fid (args.map f) ty
+  | .callPoly fid tys args ty => .callPoly fid tys (args.map f) ty
+  | .callIndirect fn args ty => .callIndirect (f fn) (args.map f) ty
+  | .callClosure clo args ty => .callClosure (f clo) (args.map f) ty
+  | .callExtern name args ty => .callExtern name (args.map f) ty
+  | .callIntrinsic op args ty => .callIntrinsic op (args.map f) ty
+  | .makeClosure ref env => .makeClosure ref (f env)
+  | .makeClosurePoly ref tys env => .makeClosurePoly ref tys (f env)
+  | .makeClosureDyn fn env ty => .makeClosureDyn (f fn) (f env) ty
+  | .closureFunc o => .closureFunc (f o)
+  | .closureEnv o => .closureEnv (f o)
+  | .phi incoming ty => .phi (incoming.map fun (op, bid) => (f op, bid)) ty
+  | .select c t e => .select (f c) (f t) (f e)
+  | .memcpy d s sz => .memcpy (f d) (f s) (f sz)
+  | .memset d v sz => .memset (f d) (f v) (f sz)
+  | .lazySup lbl o ty => .lazySup lbl (f o) ty
+  | .supProj0 o ty => .supProj0 (f o) ty
+  | .supProj1 o ty => .supProj1 (f o) ty
+  | .erase o ty => .erase (f o) ty
+  | .clone o ty label => .clone (f o) ty label
+  | .panic idx line => .panic idx line
+
 end Inst
 
 /-! ## Block Terminators -/
@@ -359,6 +454,28 @@ instance : ToString Terminator where
     | .ret val => s!"ret {val}"
     | .retUnit => "ret"
     | .unreachable => "unreachable"
+
+/-- Extract all local variable references from a terminator -/
+def localUses : Terminator → Array LocalId
+  | .ret val => match val with
+    | .local id => #[id]
+    | _ => #[]
+  | .branch cond _ _ => match cond with
+    | .local id => #[id]
+    | _ => #[]
+  | .switch val _ _ => match val with
+    | .local id => #[id]
+    | _ => #[]
+  | .jump _ | .retUnit | .unreachable => #[]
+
+/-- Apply a function to every operand in a terminator -/
+def mapOperands : Terminator → (Operand → Operand) → Terminator
+  | .ret val, f => .ret (f val)
+  | .branch cond t e, f => .branch (f cond) t e
+  | .switch val cases d, f => .switch (f val) cases d
+  | .jump t, _ => .jump t
+  | .retUnit, _ => .retUnit
+  | .unreachable, _ => .unreachable
 
 end Terminator
 
