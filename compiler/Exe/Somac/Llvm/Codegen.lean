@@ -146,6 +146,8 @@ structure CodegenState where
   stringConstLocals : Std.HashMap Nat Nat := {}
   /-- String table name for the panic message -/
   panicStrName : String := ".str.0"
+  /-- Per-function borrow info: FuncId.id → Array Bool (indexed by param) -/
+  borrowInfo : Std.HashMap Nat (Array Bool) := {}
   /-- Cache of generated type-specialized eraser functions -/
   eraserCache : Std.HashMap String String := {}
   /-- Cache of generated type-specialized cloner functions -/
@@ -2025,10 +2027,15 @@ def lowerFuncWithName (func : ClosedFunc) (name : String) : CodegenM LLVMFunc :=
     CodegenM.mapLocal param.id.id localRef param.ty
 
   -- Convert parameters using numeric names matching the LocalRef IDs
-  let llvmParams : Array LLVMParam ← func.sig.params.mapM fun p => do
+  let funcBorrowInfo := (← get).borrowInfo.get? func.id.id
+  let llvmParams : Array LLVMParam ← func.sig.params.mapIdxM fun i p => do
+    let attrs := match funcBorrowInfo with
+      | some borrowed =>
+        if borrowed.getD i false then #["nocapture", "readonly"] else #[]
+      | none => #[]
     match ← CodegenM.getLocal p.id.id with
-    | some ref => pure { name := s!"v{ref.id}", ty := convertTy p.ty }
-    | none => pure { name := p.name, ty := convertTy p.ty }
+    | some ref => pure { name := s!"v{ref.id}", ty := convertTy p.ty, attrs }
+    | none => pure { name := p.name, ty := convertTy p.ty, attrs }
 
   -- Convert return type
   let isMain := name == "soma_main"
@@ -2434,14 +2441,16 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
   CodegenM.withModuleBuilder ModuleBuilder.getModule
 
 /-- Generate LLVM IR from an Alloy module -/
-def codegen (alloyModule : Module) (targetTriple : Option String := none) : LLVMModule :=
-  let initState := CodegenM.init alloyModule.name targetTriple
+def codegen (alloyModule : Module) (targetTriple : Option String := none)
+    (borrowInfo : Std.HashMap Nat (Array Bool) := {}) : LLVMModule :=
+  let initState : CodegenState := { CodegenM.init alloyModule.name targetTriple with borrowInfo }
   let (llvmModule, _) := Id.run (StateT.run (lowerModule alloyModule) initState)
   llvmModule
 
 /-- Generate LLVM IR text from an Alloy module -/
-def codegenToString (alloyModule : Module) (targetTriple : Option String := none) : String :=
-  let llvmModule := codegen alloyModule targetTriple
+def codegenToString (alloyModule : Module) (targetTriple : Option String := none)
+    (borrowInfo : Std.HashMap Nat (Array Bool) := {}) : String :=
+  let llvmModule := codegen alloyModule targetTriple borrowInfo
   llvmModule.toLLVM
 
 end Somac.Llvm.Codegen

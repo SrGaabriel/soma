@@ -220,7 +220,7 @@ def compileModules
 
   -- Generate LLVM IR
   IO.println "  Generating LLVM IR..."
-  let llvmIR := Llvm.codegenToString reused
+  let llvmIR := Llvm.codegenToString reused (borrowInfo := borrowStats.paramInfo)
 
   IO.println "Compilation phase complete"
 

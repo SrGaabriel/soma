@@ -537,6 +537,7 @@ structure BorrowStats where
   clonesEliminated : Nat := 0
   clonesNarrowed : Nat := 0
   erasesEliminated : Nat := 0
+  paramInfo : Std.HashMap Nat (Array Bool) := {}
 
 /-- Run borrow analysis on a module -/
 def borrowModule (m : Module) : Module × BorrowStats := Id.run do
@@ -562,7 +563,11 @@ def borrowModule (m : Module) : Module × BorrowStats := Id.run do
 
   -- Projection-aware clone narrowing
   let mut newFuncs : Array SomeFunc := #[]
-  let mut totalStats : BorrowStats := { borrowedParams := borrowedCount }
+  let mut paramInfo : Std.HashMap Nat (Array Bool) := {}
+  for (fid, fInfo) in finalInfo.toArray do
+    paramInfo := paramInfo.insert fid fInfo.borrowed
+
+  let mut totalStats : BorrowStats := { borrowedParams := borrowedCount, paramInfo }
 
   for sf in m.funcs do
     match sf.asMono? with
