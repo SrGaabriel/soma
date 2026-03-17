@@ -33,6 +33,12 @@ pub enum Commands {
         verbose: bool,
         #[arg(long)]
         emit_llvm: bool,
+        #[arg(long, default_value = "dev")]
+        profile: String,
+        #[arg(long, conflicts_with = "profile")]
+        debug: bool,
+        #[arg(long, conflicts_with = "profile")]
+        release: bool,
     },
     Check {
         #[arg(short, long, default_value = ".")]
@@ -51,6 +57,12 @@ pub enum Commands {
         path: PathBuf,
         #[arg(long)]
         emit_llvm: bool,
+        #[arg(long, default_value = "dev")]
+        profile: String,
+        #[arg(long, conflicts_with = "profile")]
+        debug: bool,
+        #[arg(long, conflicts_with = "profile")]
+        release: bool,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -60,6 +72,16 @@ pub enum Commands {
         #[arg(short, long)]
         full: bool,
     },
+}
+
+pub fn resolve_profile(profile: &str, debug: bool, release: bool) -> &str {
+    if debug {
+        "debug"
+    } else if release {
+        "release"
+    } else {
+        profile
+    }
 }
 
 pub fn parse() -> Cli {
@@ -72,6 +94,9 @@ pub fn execute(command: &Commands) {
             path,
             verbose,
             emit_llvm,
+            profile,
+            debug,
+            release,
         } => {
             unsafe {
                 if *emit_llvm {
@@ -80,6 +105,7 @@ pub fn execute(command: &Commands) {
                 if *verbose {
                     std::env::set_var("SOMA_VERBOSE_LOGGING", "1");
                 }
+                std::env::set_var("SOMA_PROFILE", resolve_profile(profile, *debug, *release));
             }
             build::execute(path);
         }
@@ -92,12 +118,16 @@ pub fn execute(command: &Commands) {
         Commands::Run {
             path,
             emit_llvm,
+            profile,
+            debug,
+            release,
             args,
         } => {
-            if *emit_llvm {
-                unsafe {
+            unsafe {
+                if *emit_llvm {
                     std::env::set_var("SOMA_EMIT_LLVM", "1");
                 }
+                std::env::set_var("SOMA_PROFILE", resolve_profile(profile, *debug, *release));
             }
             run::execute(path, args);
         }

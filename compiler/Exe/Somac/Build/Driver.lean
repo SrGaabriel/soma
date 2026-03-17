@@ -49,7 +49,7 @@ def generateOutput
     : IO (Except String Unit) := do
   let ext := outputPath.extension
   let tools := External.defaultTools
-  let optLevel := opts.optimizationLevel.getD 2
+  let optLevel := opts.resolvedOptLevel
 
   match ext with
   | some "ll" =>
@@ -60,7 +60,7 @@ def generateOutput
   | some "o" =>
     let llTemp := outputPath.withExtension "ll"
     IO.FS.writeFile llTemp llvmIR
-    let result ← External.compileToObject tools llTemp outputPath optLevel
+    let result ← External.compileToObject tools llTemp outputPath optLevel opts.lto
     if !opts.emitLlvm then
       IO.FS.removeFile llTemp |>.catchExceptions fun _ => pure ()
     else
@@ -77,7 +77,7 @@ def generateOutput
       IO.FS.writeFile llTemp llvmIR
 
       IO.println s!"Compiling to executable..."
-      let result ← External.compileAndLink tools llTemp outputPath none optLevel false opts.sysroot
+      let result ← External.compileAndLink tools llTemp outputPath none optLevel false opts.sysroot opts.lto
 
       match result with
       | .ok () =>
@@ -183,6 +183,7 @@ def build (opts : BuildOptions) : IO BuildResult := do
         extConstructors
         result.globals
         dependencyAlloyModules
+        opts.runSomaPasses
       match compileResult.llvmIR with
       | some llvmIR =>
         match ← generateOutput opts outputPath llvmIR with

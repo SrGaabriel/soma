@@ -189,6 +189,7 @@ def compileModules
     (externalConstructors : Std.HashMap String Nat)
     (mergedGlobals : Soma.Dependent.Globals)
     (dependencyAlloyModules : Array (String × Alloy.Module) := #[])
+    (runSomaPasses : Bool := true)
     : IO CompileResult := do
   let (allConstructors, localAlloyModules, merged) ←
     lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules
@@ -199,28 +200,36 @@ def compileModules
 
   IO.println s!"  Monomorphized module has {mono.funcs.size} function(s)"
 
-  let optimized := Alloy.ClosureSpec.closureSpec mono
+  let mut optimized := mono
+  let mut borrowParamInfo : Std.HashMap Nat (Array Bool) := {}
 
-  let (borrowed, borrowStats) := Alloy.Borrow.borrowModule optimized
-  if borrowStats.borrowedParams > 0 then
-    let cloneMsg := if borrowStats.clonesEliminated > 0 then
-      s!", {borrowStats.clonesEliminated} clone(s) eliminated"
-    else ""
-    let narrowMsg := if borrowStats.clonesNarrowed > 0 then
-      s!", {borrowStats.clonesNarrowed} clone(s) narrowed"
-    else ""
-    let eraseMsg := if borrowStats.erasesEliminated > 0 then
-      s!", {borrowStats.erasesEliminated} erase(s) eliminated"
-    else ""
-    IO.println s!"  Borrow analysis: {borrowStats.borrowedParams} parameter(s) borrowed{cloneMsg}{narrowMsg}{eraseMsg}"
+  if runSomaPasses then
+    optimized := Alloy.ClosureSpec.closureSpec optimized
 
-  let (reused, reuseCount) := Alloy.Reuse.reuseModule borrowed
-  if reuseCount > 0 then
-    IO.println s!"  Reuse analysis: {reuseCount} allocation(s) eliminated"
+    let (borrowed, borrowStats) := Alloy.Borrow.borrowModule optimized
+    if borrowStats.borrowedParams > 0 then
+      let cloneMsg := if borrowStats.clonesEliminated > 0 then
+        s!", {borrowStats.clonesEliminated} clone(s) eliminated"
+      else ""
+      let narrowMsg := if borrowStats.clonesNarrowed > 0 then
+        s!", {borrowStats.clonesNarrowed} clone(s) narrowed"
+      else ""
+      let eraseMsg := if borrowStats.erasesEliminated > 0 then
+        s!", {borrowStats.erasesEliminated} erase(s) eliminated"
+      else ""
+      IO.println s!"  Borrow analysis: {borrowStats.borrowedParams} parameter(s) borrowed{cloneMsg}{narrowMsg}{eraseMsg}"
+    borrowParamInfo := borrowStats.paramInfo
+
+    let (reused, reuseCount) := Alloy.Reuse.reuseModule borrowed
+    if reuseCount > 0 then
+      IO.println s!"  Reuse analysis: {reuseCount} allocation(s) eliminated"
+    optimized := reused
+  else
+    IO.println "  Skipping optimization passes (debug profile)"
 
   -- Generate LLVM IR
   IO.println "  Generating LLVM IR..."
-  let llvmIR := Llvm.codegenToString reused (borrowInfo := borrowStats.paramInfo)
+  let llvmIR := Llvm.codegenToString optimized (borrowInfo := borrowParamInfo)
 
   IO.println "Compilation phase complete"
 

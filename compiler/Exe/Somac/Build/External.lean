@@ -111,10 +111,14 @@ def compileToObject
     (llPath : System.FilePath)
     (oPath : System.FilePath)
     (optLevel : Nat := 2)
+    (lto : Bool := false)
     : IO (Except String Unit) := do
   -- Use clang to compile LLVM IR directly to object
   let optFlag := s!"-O{min optLevel 3}"
   let mut args := #["-c", optFlag, "-o", oPath.toString, llPath.toString]
+
+  if lto then
+    args := args.push "-flto"
 
   -- On Windows, target MinGW to match the linker (gcc uses ___chkstk, MSVC uses __chkstk)
   if System.Platform.isWindows then
@@ -134,11 +138,15 @@ def linkExecutable
     (output : System.FilePath)
     (runtime : Option System.FilePath := none)
     (optLevel : Nat := 2)
+    (lto : Bool := false)
     : IO (Except String Unit) := do
   let optFlag := s!"-O{min optLevel 3}"
 
   -- Build argument list
   let mut args := #[optFlag, "-o", output.toString]
+
+  if lto then
+    args := args.push "-flto"
 
   -- Add object files
   for obj in objs do
@@ -150,15 +158,17 @@ def linkExecutable
       args := args ++ #["-I", rtDir.toString]
     args := args.push rt.toString
 
-  -- Add standard libraries (math library often needed)
+  -- Add standard libraries
   args := args.push "-lm"
+  args := args.push "-lpthread"
 
-  -- On Windows, link against libgcc for __chkstk (stack probing for large stack frames)
-  if System.Platform.isWindows then
+  let linker := if lto then tools.clang else tools.cc
+  if lto && System.Platform.isWindows then
+    args := #["-target", "x86_64-w64-mingw32", "-fuse-ld=bfd"] ++ args
     args := args.push "-lgcc"
-
-  -- Use system cc for linking (todo: reconsider)
-  let result ← runCommand tools.cc args
+  else if System.Platform.isWindows then
+    args := args.push "-lgcc"
+  let result ← runCommand linker args
 
   if result.exitCode == 0 then
     pure (.ok ())
@@ -220,6 +230,23 @@ def extractTarball
   else
     pure (.error s!"tar failed (exit {result.exitCode}):\n{result.stderr}")
 
+/-- Pre-compile a C runtime source file to an object using gcc -/
+def precompileRuntime
+    (tools : ToolPaths)
+    (cPath : System.FilePath)
+    (oPath : System.FilePath)
+    (optLevel : Nat := 2)
+    : IO (Except String Unit) := do
+  let optFlag := s!"-O{min optLevel 3}"
+  -- -I for the runtime's own directory so it finds soma_runtime.h
+  let includeDir := cPath.parent.getD "."
+  let args := #["-c", optFlag, "-I", includeDir.toString, "-o", oPath.toString, cPath.toString]
+  let result ← runCommand tools.cc args
+  if result.exitCode == 0 then
+    pure (.ok ())
+  else
+    pure (.error s!"gcc runtime compilation failed (exit {result.exitCode}):\n{result.stderr}")
+
 /-- Full compilation pipeline: LLVM IR → object → executable -/
 def compileAndLink
     (tools : ToolPaths)
@@ -229,11 +256,12 @@ def compileAndLink
     (optLevel : Nat := 2)
     (keepIntermediates : Bool := false)
     (sysroot : Option String := none)
+    (lto : Bool := false)
     : IO (Except String Unit) := do
   -- Compile to object
   let oPath := output.withExtension "o"
 
-  match ← compileToObject tools llPath oPath optLevel with
+  match ← compileToObject tools llPath oPath optLevel lto with
   | .error e => pure (.error e)
   | .ok () =>
     -- Find runtime if not explicitly provided
@@ -241,12 +269,26 @@ def compileAndLink
       | some r => pure (some r)
       | none => findRuntime sysroot
 
+    let mut runtimeForLink := runtimePath
+    let mut runtimeOPath : Option System.FilePath := none
+    if lto then
+      if let some rtPath := runtimePath then
+        if rtPath.extension == some "c" then
+          let rtOPath := output.withExtension "rt.o"
+          match ← precompileRuntime tools rtPath rtOPath optLevel with
+          | .error e => return .error e
+          | .ok () =>
+            runtimeForLink := some rtOPath
+            runtimeOPath := some rtOPath
+
     -- Link to executable
-    match ← linkExecutable tools #[oPath] output runtimePath optLevel with
+    match ← linkExecutable tools #[oPath] output runtimeForLink optLevel lto with
     | .error e => pure (.error e)
     | .ok () =>
       unless keepIntermediates do
         IO.FS.removeFile oPath |>.catchExceptions fun _ => pure ()
+        if let some rtO := runtimeOPath then
+          IO.FS.removeFile rtO |>.catchExceptions fun _ => pure ()
       pure (.ok ())
 
 end Somac.Build.External

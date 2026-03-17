@@ -16,6 +16,47 @@ inductive CompilationMode where
   | hybrid : CompilationMode
   deriving Repr, BEq
 
+/-- Optimization profile -/
+inductive OptProfile where
+  | debug   : OptProfile  -- No Soma passes, -O0, Cranelift backend (futurely)
+  | dev     : OptProfile  -- All Soma passes, -O1
+  | release : OptProfile  -- All Soma passes, -O2 -flto
+  deriving Repr, BEq
+
+namespace OptProfile
+
+/-- Default LLVM optimization level for a profile -/
+def defaultOptLevel : OptProfile → Nat
+  | .debug   => 0
+  | .dev     => 1
+  | .release => 2
+
+/-- Whether to run Soma-level optimization passes -/
+def runSomaPasses : OptProfile → Bool
+  | .debug   => false
+  | .dev     => true
+  | .release => true
+
+/-- Whether to enable LTO at link time -/
+def lto : OptProfile → Bool
+  | .release => !System.Platform.isWindows
+  | _ => false
+
+/-- Parse a profile name string -/
+def parse? : String → Option OptProfile
+  | "debug"   => some .debug
+  | "dev"     => some .dev
+  | "release" => some .release
+  | _ => none
+
+instance : ToString OptProfile where
+  toString
+    | .debug => "debug"
+    | .dev => "dev"
+    | .release => "release"
+
+end OptProfile
+
 /-- Options for the `check` command -/
 structure CheckOptions where
   input : String
@@ -56,11 +97,28 @@ structure BuildOptions where
   deps : Array (String × String) := #[]
   skipCircuit : Bool := false
   mode : CompilationMode := .standard
+  profile : OptProfile := .dev
   optimizationLevel : Option Nat := none
   validate : Bool := false
-  sysroot : Option String := none  -- Path to sysroot (contains lib/ with runtime)
-  emitLlvm : Bool := false  -- Keep the LLVM IR file after compilation
+  sysroot : Option String := none
+  emitLlvm : Bool := false
   deriving Repr
+
+namespace BuildOptions
+
+/-- Resolved LLVM optimization level: explicit flag overrides profile default -/
+def resolvedOptLevel (opts : BuildOptions) : Nat :=
+  opts.optimizationLevel.getD opts.profile.defaultOptLevel
+
+/-- Whether to run Soma-level optimization passes -/
+def runSomaPasses (opts : BuildOptions) : Bool :=
+  opts.profile.runSomaPasses
+
+/-- Whether to enable LTO -/
+def lto (opts : BuildOptions) : Bool :=
+  opts.profile.lto
+
+end BuildOptions
 
 /-- All commands supported by the compiler -/
 inductive Command where

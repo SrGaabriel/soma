@@ -7,7 +7,7 @@ import Somac.Build
 namespace Test.E2E
 
 open Test.Fixtures (TestResult TestRunner)
-open Soma.Driver (BuildOptions)
+open Soma.Driver (BuildOptions OptProfile)
 open Somac.Build (build BuildResult)
 
 /-- Result of running a process -/
@@ -147,8 +147,8 @@ def LibCache.resolveTestDeps (cache : LibCache) (tc : TestCase)
 
 /-- Run the test body, returning the result -/
 private def runTestBody (tc : TestCase) (tempDir : System.FilePath)
-    (deps : Array (String × String)) : IO (String × TestResult) := do
-  let testId := s!"e2e/{tc.name}"
+    (deps : Array (String × String)) (profile : OptProfile) : IO (String × TestResult) := do
+  let testId := s!"e2e/{tc.name}[{profile}]"
 
   setupTestDir tc tempDir
 
@@ -163,6 +163,7 @@ private def runTestBody (tc : TestCase) (tempDir : System.FilePath)
     output := some outputPath.toString
     emitLlvm := true
     deps := deps
+    profile := profile
   }
 
   let buildResult ← build buildOpts
@@ -187,20 +188,23 @@ private def runTestBody (tc : TestCase) (tempDir : System.FilePath)
 
   return (testId, .passed)
 
-/-- Run a single E2E test case -/
-def runTestCase (config : Config) (cache : LibCache) (tc : TestCase)
+/-- All profiles to test against -/
+private def allProfiles : Array OptProfile := #[.debug, .dev, .release]
+
+/-- Run a single E2E test case against a specific profile -/
+def runTestCase (config : Config) (cache : LibCache) (tc : TestCase) (profile : OptProfile)
     : IO (LibCache × String × TestResult) := do
-  let tempDir ← createTempDir tc.name
+  let tempDir ← createTempDir s!"{tc.name}-{profile}"
 
   let (cache, deps) ← cache.resolveTestDeps tc |>.catchExceptions fun e =>
     pure (cache, #[("_err", s!"{e}")])
 
   if deps.any (·.1 == "_err") then
     let errMsg := deps.find? (·.1 == "_err") |>.map (·.2) |>.getD "unknown"
-    return (cache, s!"e2e/{tc.name}", .failed s!"Dependency resolution failed: {errMsg}")
+    return (cache, s!"e2e/{tc.name}[{profile}]", .failed s!"Dependency resolution failed: {errMsg}")
 
-  let result ← runTestBody tc tempDir deps |>.catchExceptions fun e =>
-    pure (s!"e2e/{tc.name}", .failed s!"Exception: {e}")
+  let result ← runTestBody tc tempDir deps profile |>.catchExceptions fun e =>
+    pure (s!"e2e/{tc.name}[{profile}]", .failed s!"Exception: {e}")
 
   -- Keep temp dir on failure for debugging
   let passed := match result with | (_, .passed) => true | _ => false
@@ -209,7 +213,7 @@ def runTestCase (config : Config) (cache : LibCache) (tc : TestCase)
 
   return (cache, result.1, result.2)
 
-/-- Run all E2E tests -/
+/-- Run all E2E tests against all optimization profiles -/
 def runAll (config : Config) : IO TestRunner := do
   let cases ← discoverTestCases
   let mut runner := TestRunner.init
@@ -220,15 +224,16 @@ def runAll (config : Config) : IO TestRunner := do
     return runner
 
   for tc in cases do
-    let (cache', name, result) ← runTestCase config cache tc
-    cache := cache'
-    runner := runner.record name result
-    match result with
-    | .passed => IO.println s!"  ✓ {tc.name}"
-    | .failed msg => do
-      IO.println s!"  ✗ {tc.name}: {msg}"
-      IO.println s!"    Artifacts preserved in: .lake/e2e-temp/{tc.name}-*"
-    | .skipped reason => IO.println s!"  ○ {tc.name}: {reason}"
+    for profile in allProfiles do
+      let (cache', name, result) ← runTestCase config cache tc profile
+      cache := cache'
+      runner := runner.record name result
+      match result with
+      | .passed => IO.println s!"  ✓ {tc.name} [{profile}]"
+      | .failed msg => do
+        IO.println s!"  ✗ {tc.name} [{profile}]: {msg}"
+        IO.println s!"    Artifacts preserved in: .lake/e2e-temp/{tc.name}-{profile}-*"
+      | .skipped reason => IO.println s!"  ○ {tc.name} [{profile}]: {reason}"
 
   return runner
 

@@ -402,6 +402,12 @@ def runBuild (p : Parsed) : IO UInt32 := do
     | "hybrid" => CompilationMode.hybrid
     | _ => CompilationMode.standard
 
+  let profile := if p.hasFlag "debug" then OptProfile.debug
+    else if p.hasFlag "release" then OptProfile.release
+    else match p.flag? "profile" |>.map (·.as! String) with
+      | some s => OptProfile.parse? s |>.getD .dev
+      | none => .dev
+
   let opts : BuildOptions := {
     input := input
     output := output
@@ -410,13 +416,14 @@ def runBuild (p : Parsed) : IO UInt32 := do
     deps := parseDeps p
     skipCircuit := p.hasFlag "skip-circuit"
     mode := compMode
+    profile := profile
     optimizationLevel := optLevel
     validate := p.hasFlag "validate"
     sysroot := sysroot
     emitLlvm := emitLlvm
   }
 
-  IO.println "Soma Compiler"
+  IO.println s!"Soma Compiler [{opts.profile}]"
 
   let result ← Somac.Build.build opts
 
@@ -532,7 +539,10 @@ def buildCmd : Cmd := `[Cli|
     d, dep : Array String; "External dependency (NAME=PATH)"
     "skip-circuit"; "Do not use Circuit IR pipeline"
     m, mode : String; "Compilation mode: standard (default), graph, or hybrid"
-    O, "opt-level" : Nat; "Optimization level (0-3)"
+    p, profile : String; "Optimization profile: debug, dev (default), or release"
+    debug; "Shorthand for --profile debug"
+    release; "Shorthand for --profile release"
+    O, "opt-level" : Nat; "Optimization level (0-3), overrides profile default"
     validate; "Validate the Circuit IR for correctness"
     sysroot : String; "Path to sysroot (contains lib/ with runtime)"
     "emit-llvm"; "Keep the generated LLVM IR file (.ll) after compilation"
@@ -553,7 +563,10 @@ def somaCmd : Cmd := `[Cli|
     d, dep : Array String; "External dependency (NAME=PATH)"
     "skip-circuit"; "Do not use Circuit IR pipeline"
     m, mode : String; "Compilation mode: standard (default), graph, or hybrid"
-    O, "opt-level" : Nat; "Optimization level (0-3)"
+    p, profile : String; "Optimization profile: debug, dev (default), or release"
+    debug; "Shorthand for --profile debug"
+    release; "Shorthand for --profile release"
+    O, "opt-level" : Nat; "Optimization level (0-3), overrides profile default"
     validate; "Validate the Circuit IR for correctness"
     sysroot : String; "Path to sysroot (contains lib/ with runtime)"
     "emit-llvm"; "Keep the generated LLVM IR file (.ll) after compilation"

@@ -2,7 +2,7 @@ set shell := ["C:\\Program Files\\Git\\usr\\bin\\bash.exe", "-c"]
 
 build:
     haoma clean
-    haoma build -v --emit-llvm
+    haoma build -v --emit-llvm --release
 
 run:
     ./target/example.exe
