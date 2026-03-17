@@ -208,6 +208,7 @@ inductive SerializableInst where
   | supProj0 (src : SerializableOperand) (ty : SerializableTy)
   | supProj1 (src : SerializableOperand) (ty : SerializableTy)
   | erase (val : SerializableOperand) (ty : SerializableTy)
+  | clone (val : SerializableOperand) (ty : SerializableTy) (label : Nat)
   | panic (msgIdx line : Nat)
   | callIntrinsic (op : IntrinsicOp) (args : Array SerializableOperand) (retTy : SerializableTy)
   | callExtern (name : String) (args : Array SerializableOperand) (retTy : SerializableTy)
@@ -258,6 +259,7 @@ def instToSerializable : Inst n → SerializableInst
   | .supProj0 s ty => .supProj0 (sop s) (sty ty)
   | .supProj1 s ty => .supProj1 (sop s) (sty ty)
   | .erase v ty => .erase (sop v) (sty ty)
+  | .clone v ty l => .clone (sop v) (sty ty) l.toNat
   | .panic m l => .panic m l
   | .callIntrinsic op as ty => .callIntrinsic op (sops as) (sty ty)
   | .callExtern name as ty => .callExtern name (sops as) (sty ty)
@@ -305,6 +307,7 @@ def instFromSerializableN (n : Nat) : SerializableInst → Inst n
   | .supProj0 s ty => .supProj0 (dop s) (dty n ty)
   | .supProj1 s ty => .supProj1 (dop s) (dty n ty)
   | .erase v ty => .erase (dop v) (dty n ty)
+  | .clone v ty l => .clone (dop v) (dty n ty) (UInt32.ofNat l)
   | .panic m l => .panic m l
   | .callIntrinsic op as ty => .callIntrinsic op (dops as) (dty n ty)
   | .callExtern name as ty => .callExtern name (dops as) (dty n ty)

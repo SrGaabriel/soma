@@ -30,13 +30,14 @@
  *   [8]  i64  count     (number of fields)
  *   [16] i64  field[0]  ...
  *
- * SUP (40 bytes, pool-allocated):
- *   [0]  u8   tag       (SUP_TAG_* = 0x80+)
- *   [1]  u8[3] _pad     ('S','U','P')
+ * SUP (48 bytes, pool-allocated):
+ *   [0]  u8   tag        (SUP_TAG_* = 0x80+)
+ *   [1]  u8[3] _pad      ('S','U','P')
  *   [4]  u32  label
  *   [8]  ptr  value
  *   [16] ptr  proj0
  *   [24] ptr  proj1
+ *   [32] ptr  type_desc  (SomaTypeDesc* or NULL)
  *
  * Flat Array View (32 bytes):
  *   [0]  u8   tag         (NODE_FLAT_ARRAY_VIEW = 5)
@@ -189,21 +190,44 @@ typedef struct SomaClosure {
 } SomaClosure;
 
 /*
- * SUP (Superposition) node structure (40 bytes, pool-allocated)
+ * Type-specialized function pointers for clone and erase.
  *
- *   [0]  u8       tag     (SUP_TAG_*)
- *   [4]  u32      label   (duplication label for annihilation matching)
- *   [8]  void*    value   (the wrapped value)
- *   [16] void*    proj0   (cached first projection / clone task)
- *   [24] void*    proj1   (cached second projection / clone task)
+ * The compiler generates one clone and one erase function per concrete type.
+ * A SomaTypeDesc bundles both into a single struct so SUP nodes only need
+ * one pointer (8 bytes) instead of two (16 bytes). The TypeDesc structs are
+ * emitted as static LLVM globals — no runtime allocation.
+ */
+typedef SomaValue (*SomaCloneFn)(SomaValue value, uint32_t label);
+typedef void      (*SomaEraseFn)(SomaValue value);
+
+typedef struct SomaTypeDesc {
+    SomaCloneFn  clone_fn;
+    SomaEraseFn  erase_fn;
+} SomaTypeDesc;
+
+/*
+ * SUP (Superposition) node structure (48 bytes, pool-allocated)
+ *
+ *   [0]  u8              tag        (SUP_TAG_*)
+ *   [4]  u32             label      (duplication label for annihilation matching)
+ *   [8]  void*           value      (the wrapped value)
+ *   [16] void*           proj0      (cached first projection / clone task)
+ *   [24] void*           proj1      (cached second projection / clone task)
+ *   [32] SomaTypeDesc*   type_desc  (type-specialized ops, or NULL for generic)
+ *
+ * By storing a single pointer to a shared TypeDesc instead of two function
+ * pointers, SUPs fit in pool_48 alongside closures and small objects.
+ * The extra indirection is only paid on projection (which already calls
+ * through a function pointer), not on every SUP allocation.
  */
 typedef struct SomaSup {
-    uint8_t  tag;
-    uint8_t  _pad[3];
-    uint32_t label;
-    void*    value;
-    void*    proj0;
-    void*    proj1;
+    uint8_t       tag;
+    uint8_t       _pad[3];
+    uint32_t      label;
+    void*         value;
+    void*         proj0;
+    void*         proj1;
+    SomaTypeDesc* type_desc;
 } SomaSup;
 
 /*
@@ -346,6 +370,9 @@ void* soma_closure_get_func(void* closure);
 /* Clone a closure under a statically assigned DUP label */
 void* soma_clone_closure(void* closure, uint32_t label);
 
+/* Generic heap value clone with tag-based dispatch (rawPtr fallback) */
+SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label);
+
 /* Clone a tagged payload buffer, recursively cloning pointer fields */
 void* soma_clone_tagged_payload(void* payload, uint32_t label);
 
@@ -360,8 +387,16 @@ void* soma_alloc_tagged_payload(uint64_t field_count);
 /* Runtime fresh labels are disabled; labels must be compiler-assigned */
 uint32_t soma_fresh_label(void);
 
-/* Create a SUP node wrapping a value for lazy duplication */
+/* Create a SUP node wrapping a value for lazy duplication (legacy, generic clone) */
 SomaValue soma_dup(uint32_t label, SomaValue value);
+
+/* Create a SUP node with a type descriptor for specialized clone/erase.
+ * When both projections are accessed, type_desc->clone_fn is called instead
+ * of dispatching on the heap object's tag byte. When the SUP is erased,
+ * type_desc->erase_fn is called. This enables headerless heap objects.
+ * The type_desc pointer is to a static global — no ownership transfer. */
+SomaValue soma_dup_typed(uint32_t label, SomaValue value,
+                         SomaTypeDesc* type_desc);
 
 /* Extract first projection from a SUP */
 SomaValue soma_proj0(SomaValue sup_val);
@@ -379,11 +414,10 @@ SomaValue soma_proj1(SomaValue sup_val);
 /*
  * Size-class pool allocator.
  *
- * Three pools cover all fixed-size heap objects:
- *   pool_40  — SUP nodes (40 bytes)
+ * Two pools cover all fixed-size heap objects:
  *   pool_48  — small objects ≤48 bytes:
- *              closures (0-4 env), strings (≤31 chars), tagged payloads (≤4 fields),
- *              array headers (24 bytes)
+ *              SUP nodes (48 bytes), closures (0-4 env), strings (≤31 chars),
+ *              tagged payloads (≤4 fields), array headers (24 bytes)
  *   pool_112 — medium objects ≤112 bytes:
  *              closures (5-12 env), strings (≤95 chars), tagged payloads (≤12 fields)
  *
@@ -392,8 +426,7 @@ SomaValue soma_proj1(SomaValue sup_val);
  */
 
 #define POOL_BLOCK_SIZE  (64 * 1024)  /* 64KB per block */
-#define POOL_SIZE_40     40           /* SUP nodes */
-#define POOL_SIZE_48     48           /* Small objects */
+#define POOL_SIZE_48     48           /* Small objects + SUP nodes */
 #define POOL_SIZE_112    112          /* Medium objects */
 
 /* Memory pool structure */
@@ -411,8 +444,7 @@ typedef struct SomaPool {
 
 /* Global pools (one per size class) */
 typedef struct SomaPools {
-    SomaPool pool_40;           /* SUP nodes */
-    SomaPool pool_48;           /* Small objects */
+    SomaPool pool_48;           /* Small objects + SUP nodes */
     SomaPool pool_112;          /* Medium objects */
 } SomaPools;
 

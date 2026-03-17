@@ -220,6 +220,8 @@ def ppInst (cfg : Config) : Inst n → String
     s!"{colorKeyword cfg "sup_proj1"} {ppTy cfg ty} {ppOperand cfg src}"
   | .erase val ty =>
     s!"{colorKeyword cfg "erase"} {ppTy cfg ty} {ppOperand cfg val}"
+  | .clone val ty label =>
+    s!"{colorKeyword cfg "clone"} {ppTy cfg ty} {ppOperand cfg val} &{label}"
   | .panic msgIdx line =>
     s!"{colorKeyword cfg "panic"} #{msgIdx} @ line {line}"
   | .callIntrinsic op args retTy =>

@@ -44,14 +44,19 @@ def findSysroot (explicit : Option String) : IO (Option System.FilePath) := do
         return some sysroot
 
   -- 4. Well-known svm location
-  if let some home ← IO.getEnv "HOME" then
-    -- Detect target triple (todo: properly implement this shit)
-    let target := if System.Platform.isWindows then "x86_64-windows"
-                  else if System.Platform.isOSX then "aarch64-macos"
-                  else "x86_64-linux"
-    let svmPath : System.FilePath := ⟨home⟩ / ".svm" / "current" / target
-    if ← svmPath.pathExists then
-      return some svmPath
+  let home? ← do
+    if let some h ← IO.getEnv "HOME" then return some h
+    if let some h ← IO.getEnv "USERPROFILE" then return some h
+    pure none
+  if let some home := home? then
+    let svmCurrent : System.FilePath := ⟨home⟩ / ".svm" / "current"
+    if ← svmCurrent.pathExists then
+      let entries ← svmCurrent.readDir
+      for entry in entries do
+        let candidate := entry.path
+        let libPath := candidate / "lib"
+        if ← libPath.pathExists then
+          return some candidate
 
   return none
 
@@ -141,6 +146,8 @@ def linkExecutable
 
   -- Add runtime library if specified
   if let some rt := runtime then
+    if let some rtDir := rt.parent then
+      args := args ++ #["-I", rtDir.toString]
     args := args.push rt.toString
 
   -- Add standard libraries (math library often needed)

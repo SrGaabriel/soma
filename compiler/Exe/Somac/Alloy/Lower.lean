@@ -979,14 +979,10 @@ partial def emitStringDup (inputVal : LocalId) : StateT (NodeState n) (LowerM n)
   let copy1 ← StateT.lift (LowerM.emitInst (.callIntrinsic .fromCString #[.local cstr1] Ty.string) Ty.string)
   pure (inputVal, copy1)
 
-/-- Emit eager type-directed tagged-union duplication by cloning payload buffers -/
+/-- Emit eager type-directed tagged-union duplication via specialized clone -/
 partial def emitTaggedDup (inputVal : LocalId) (taggedTy : Ty n) (label : UInt32)
     : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
-  let tagVal ← StateT.lift (LowerM.emitInst (.extractField (.local inputVal) 0) (.prim .u32))
-  let payloadPtr ← StateT.lift (LowerM.emitInst (.extractField (.local inputVal) 1) .rawPtr)
-  let lbl : Operand := .const (.int (Int.ofNat label.toNat) .u32)
-  let payload1 ← StateT.lift (LowerM.emitInst (.callExtern "soma_clone_tagged_payload" #[.local payloadPtr, lbl] .rawPtr) .rawPtr)
-  let copy1 ← StateT.lift (LowerM.emitInst (.structLit #[.local tagVal, .local payload1] taggedTy) taggedTy)
+  let copy1 ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) taggedTy label) taggedTy)
   pure (inputVal, copy1)
 
 /-- Emit view-based list duplication -/
@@ -1809,10 +1805,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           if isListSource then
             emitListViewDup inputVal (.prim .i64) label.id
             else
-              -- Closures (LAM), algebraic-data-type cells, REF, ALO etc etc are closure-like
-              let lbl : Operand := .const (.int (Int.ofNat label.id.toNat) .u32)
-              let clone ← StateT.lift (LowerM.emitInst
-                (.callExtern "soma_clone_closure" #[.local inputVal, lbl] .rawPtr) .rawPtr)
+              let clone ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) .rawPtr label.id) .rawPtr)
               pure (inputVal, clone)
         modify fun ns => { ns with
           results := ns.results.insert (nodeId.id * 1000 + 1) copy0
@@ -1826,10 +1819,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           }
         pure inputVal
       else if (match nodeTy with | .closure _ _ => true | _ => false) then
-        let asRawPtr ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .rawPtr)
-        let lbl : Operand := .const (.int (Int.ofNat label.id.toNat) .u32)
-        let clone ← StateT.lift (LowerM.emitInst
-          (.callExtern "soma_clone_closure" #[.local asRawPtr, lbl] .rawPtr) .rawPtr)
+        let clone ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) nodeTy label.id) nodeTy)
         modify fun ns => { ns with
           results := ns.results.insert (nodeId.id * 1000 + 1) inputVal
                      |>.insert (nodeId.id * 1000 + 2) clone

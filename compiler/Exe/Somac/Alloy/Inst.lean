@@ -116,6 +116,9 @@ inductive Inst : Nat → Type where
   /-- Erase a value -/
   | erase : Operand → Ty n → Inst n
 
+  /-- Produces a type-specialized deep copy of a value -/
+  | clone : Operand → Ty n → UInt32 → Inst n
+
   /-- Panic with message -/
   | panic : Nat → Nat → Inst n
 
@@ -137,6 +140,7 @@ def hasResult : Inst n → Bool
   | .memcpy _ _ _ => false
   | .memset _ _ _ => false
   | .erase _ _ => false
+  | .clone _ _ _ => true
   | .panic _ _ => false
   | .callIntrinsic op _ _ => op.hasResult
   | _ => true
@@ -183,6 +187,7 @@ def instantiate : Inst n → TyEnv n → ClosedInst
   | .supProj0 src ty, env => .supProj0 src (Somac.Alloy.instantiate ty env)
   | .supProj1 src ty, env => .supProj1 src (Somac.Alloy.instantiate ty env)
   | .erase val ty, env => .erase val (Somac.Alloy.instantiate ty env)
+  | .clone val ty label, env => .clone val (Somac.Alloy.instantiate ty env) label
   | .panic msgIdx line, _ => .panic msgIdx line
   | .callIntrinsic op args retTy, env => .callIntrinsic op args (Somac.Alloy.instantiate retTy env)
   | .callExtern name args retTy, env => .callExtern name args (Somac.Alloy.instantiate retTy env)
@@ -234,6 +239,7 @@ def resultTy : ClosedInst → Option ClosedTy
   | .supProj0 _ ty => some ty
   | .supProj1 _ ty => some ty
   | .erase _ _ => none
+  | .clone _ ty _ => some ty
   | .panic _ _ => none
   | .callIntrinsic op _ retTy => if op.hasResult then some retTy else none
   | .callExtern _ _ retTy => some retTy
@@ -297,6 +303,7 @@ private def toStringAux : Inst n → String
   | .supProj0 src ty => s!"sup_proj0 {src} : {ty}"
   | .supProj1 src ty => s!"sup_proj1 {src} : {ty}"
   | .erase val ty => s!"erase {val} : {ty}"
+  | .clone val ty label => s!"clone {val} : {ty} &{label}"
   | .panic msgIdx line => s!"panic #{msgIdx} @ line {line}"
   | .callIntrinsic op args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)

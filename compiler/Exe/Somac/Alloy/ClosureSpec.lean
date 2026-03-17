@@ -84,6 +84,7 @@ private def mapOperandsInInst (inst : ClosedInst) (f : Operand → Operand) : Cl
   | .supProj0 src ty => .supProj0 (f src) ty
   | .supProj1 src ty => .supProj1 (f src) ty
   | .erase src ty => .erase (f src) ty
+  | .clone src ty label => .clone (f src) ty label
   | .panic idx line => .panic idx line
   | .callIntrinsic op args ty => .callIntrinsic op (args.map f) ty
   | .callExtern name args ty => .callExtern name (args.map f) ty
@@ -128,6 +129,7 @@ private def getOperands (inst : ClosedInst) : Array Operand :=
   | .supProj0 src _ => #[src]
   | .supProj1 src _ => #[src]
   | .erase src _ => #[src]
+  | .clone src _ _ => #[src]
   | .panic _ _ => #[]
   | .callIntrinsic _ args _ => args
   | .callExtern _ args _ => args
@@ -264,6 +266,9 @@ private def buildDerivedParamMap (cfg : ClosedCFG) (paramIds : Std.HashSet Nat)
           | .unOp _ (.local srcId) =>
             if let some srcParam := derivedFrom.get? srcId.id then
               derivedFrom := derivedFrom.insert resultId.id srcParam
+          | .clone (.local srcId) _ _ =>
+            if let some srcParam := derivedFrom.get? srcId.id then
+              derivedFrom := derivedFrom.insert resultId.id srcParam
           | .callExtern _ args _ =>
             -- If any argument is derived from a param, the result is derived too
             -- (covers soma_clone_closure and similar runtime calls on closure params)
@@ -397,6 +402,12 @@ private def rewriteStmtForSpec (stmt : ClosedStmt) (closureDerived : Std.HashSet
       let newArgs := removeAt args paramIdx
       some { stmt with inst := .call specFuncId newArgs retTy }
     else some stmt
+  | .erase (.local lid) _ =>
+    -- Drop erase of closure-derived values since the caller owns the env lifetime
+    if closureDerived.contains lid.id then none else some stmt
+  | .clone (.local lid) _ _ =>
+    -- Drop clone of closure-derived values because the closure no longer exists
+    if closureDerived.contains lid.id then none else some stmt
   | _ =>
     match stmt.result with
     | some rid => if closureDerived.contains rid.id then none else some stmt

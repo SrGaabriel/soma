@@ -131,6 +131,7 @@ private def instOperandLocals (inst : ClosedInst) : Array LocalId :=
     | .lazySup _ o _ => #[o]
     | .supProj0 o _ => #[o]
     | .supProj1 o _ => #[o]
+    | .clone o _ _ => #[o]
     | _ => #[]
   ops.filterMap operandLocal?
 

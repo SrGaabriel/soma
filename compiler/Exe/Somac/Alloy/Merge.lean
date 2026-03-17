@@ -153,6 +153,7 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst n) : Inst n :
   | .supProj0 src ty => .supProj0 (remapOp src) ty
   | .supProj1 src ty => .supProj1 (remapOp src) ty
   | .erase val ty => .erase (remapOp val) ty
+  | .clone val ty label => .clone (remapOp val) ty label
   | .malloc size => .malloc (remapOp size)
   | .free ptr => .free (remapOp ptr)
   | .alloca _ => inst

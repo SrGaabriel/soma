@@ -107,7 +107,6 @@ static void tls_pool_init(void) {
 
     tls_pools = (SomaPools*)malloc(sizeof(SomaPools));
     if (tls_pools) {
-        pool_init(&tls_pools->pool_40, POOL_SIZE_40);
         pool_init(&tls_pools->pool_48, POOL_SIZE_48);
         pool_init(&tls_pools->pool_112, POOL_SIZE_112);
         tls_pools_initialized = 1;
@@ -118,7 +117,6 @@ static void tls_pool_init(void) {
 static void tls_pool_cleanup(void) {
     if (!tls_pools_initialized || !tls_pools) return;
 
-    pool_cleanup(&tls_pools->pool_40);
     pool_cleanup(&tls_pools->pool_48);
     pool_cleanup(&tls_pools->pool_112);
     free(tls_pools);
@@ -251,13 +249,13 @@ void soma_pool_free_tagged(void* ptr, size_t total_size) {
 void* soma_pool_alloc_sup(void) {
     SOMA_STAT_INC(sup_allocs);
     SomaPools* pools = get_pools();
-    return pool_alloc(&pools->pool_40);
+    return pool_alloc(&pools->pool_48);
 }
 
 void soma_pool_free_sup(void* ptr) {
     SOMA_STAT_INC(sup_frees);
     SomaPools* pools = get_pools();
-    pool_free(&pools->pool_40, ptr);
+    pool_free(&pools->pool_48, ptr);
 }
 
 
@@ -344,7 +342,7 @@ void* soma_clone_flat_array_view(SomaFlatArrayView* src) {
     return dst;
 }
 
-static SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
+SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
     if (!SOMA_IS_PTR(value) || value == 0) return value;
 
     void* ptr = SOMA_TO_PTR(value);
@@ -429,6 +427,22 @@ SomaValue soma_dup(uint32_t label, SomaValue value) {
     sup->value = (void*)value;
     sup->proj0 = NULL;
     sup->proj1 = NULL;
+    sup->type_desc = NULL;  /* generic: falls back to tag-based dispatch */
+    return SOMA_PTR(sup);
+}
+
+SomaValue soma_dup_typed(uint32_t label, SomaValue value,
+                         SomaTypeDesc* type_desc) {
+    SomaSup* sup = (SomaSup*)soma_pool_alloc_sup();
+    sup->tag   = SUP_TAG_FRESH;
+    sup->_pad[0] = SOMA_SUP_PAD0;
+    sup->_pad[1] = SOMA_SUP_PAD1;
+    sup->_pad[2] = SOMA_SUP_PAD2;
+    sup->label = label;
+    sup->value = (void*)value;
+    sup->proj0 = NULL;
+    sup->proj1 = NULL;
+    sup->type_desc = type_desc;
     return SOMA_PTR(sup);
 }
 
@@ -493,8 +507,13 @@ SomaValue soma_proj0(SomaValue sup_val) {
             }
         }
 
-        /* Clone for second access — handles all heap types */
-        SomaValue cloned = soma_clone_heap_value_for_dup(value, sup->label);
+        /* Clone for second access — use type-specialized clone if available */
+        SomaValue cloned;
+        if (sup->type_desc != NULL) {
+            cloned = sup->type_desc->clone_fn(value, sup->label);
+        } else {
+            cloned = soma_clone_heap_value_for_dup(value, sup->label);
+        }
         sup->proj0 = (void*)cloned;
         return cloned;
     }
@@ -560,8 +579,13 @@ SomaValue soma_proj1(SomaValue sup_val) {
             }
         }
 
-        /* Clone for second access — handles all heap types */
-        SomaValue cloned = soma_clone_heap_value_for_dup(value, sup->label);
+        /* Clone for second access — use type-specialized clone if available */
+        SomaValue cloned;
+        if (sup->type_desc != NULL) {
+            cloned = sup->type_desc->clone_fn(value, sup->label);
+        } else {
+            cloned = soma_clone_heap_value_for_dup(value, sup->label);
+        }
         sup->proj1 = (void*)cloned;
         return cloned;
     }
@@ -1099,6 +1123,7 @@ void soma_era_free(void* value) {
              *   BOTH   → value is the original; one of proj0/proj1 is a clone
              */
             SomaValue v = (SomaValue)sup->value;
+            SomaEraseFn efn = sup->type_desc ? sup->type_desc->erase_fn : NULL;
 
             switch (sup->tag) {
             case SUP_TAG_FRESH:
@@ -1106,8 +1131,12 @@ void soma_era_free(void* value) {
             case SUP_TAG_PROJ1:
                 /* Single live value — free it once */
                 if (SOMA_IS_PTR(v) && v != 0) {
-                    ERA_ENSURE(1);
-                    stack[sp++] = SOMA_TO_PTR(v);
+                    if (efn != NULL) {
+                        efn(v);
+                    } else {
+                        ERA_ENSURE(1);
+                        stack[sp++] = SOMA_TO_PTR(v);
+                    }
                 }
                 break;
 
@@ -1116,24 +1145,30 @@ void soma_era_free(void* value) {
                 /* Original value + the clone (whichever proj differs from value) */
                 SomaValue p0 = (SomaValue)sup->proj0;
                 SomaValue p1 = (SomaValue)sup->proj1;
-                ERA_ENSURE(2);
 
-                if (SOMA_IS_PTR(v) && v != 0) {
-                    stack[sp++] = SOMA_TO_PTR(v);
-                }
-                /* Exactly one of p0/p1 is a clone (differs from value) */
-                if (p0 != v && SOMA_IS_PTR(p0) && p0 != 0) {
-                    stack[sp++] = SOMA_TO_PTR(p0);
-                }
-                if (p1 != v && SOMA_IS_PTR(p1) && p1 != 0) {
-                    stack[sp++] = SOMA_TO_PTR(p1);
+                if (efn != NULL) {
+                    /* Use specialized eraser for each live value */
+                    if (SOMA_IS_PTR(v) && v != 0) efn(v);
+                    if (p0 != v && SOMA_IS_PTR(p0) && p0 != 0) efn(p0);
+                    if (p1 != v && SOMA_IS_PTR(p1) && p1 != 0) efn(p1);
+                } else {
+                    ERA_ENSURE(2);
+                    if (SOMA_IS_PTR(v) && v != 0) {
+                        stack[sp++] = SOMA_TO_PTR(v);
+                    }
+                    if (p0 != v && SOMA_IS_PTR(p0) && p0 != 0) {
+                        stack[sp++] = SOMA_TO_PTR(p0);
+                    }
+                    if (p1 != v && SOMA_IS_PTR(p1) && p1 != 0) {
+                        stack[sp++] = SOMA_TO_PTR(p1);
+                    }
                 }
                 break;
             }
             }
 
             SOMA_STAT_INC(sup_frees);
-            pool_free(&pools->pool_40, cur);
+            pool_free(&pools->pool_48, cur);
 
         } else {
             /* Unknown heap object — use regular free */

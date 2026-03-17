@@ -51,7 +51,11 @@ partial def mangleTy (ty : ClosedTy) : String :=
       let fieldsM := String.intercalate "" (fields.toList.map fun (_, t) => mangleTy t)
       s!"S{fields.size}{fieldsM}"
   | .array elem size => s!"A{size}{mangleTy elem}"
-  | .tagged _ variants => s!"T{variants.size}"
+  | .tagged tagTy variants =>
+      let variantsM := String.intercalate "" (variants.toList.map fun (idx, fields) =>
+        let fieldsM := String.intercalate "" (fields.toList.map mangleTy)
+        s!"{idx}_{fields.size}{fieldsM}")
+      s!"T{mangleTy tagTy}{variants.size}{variantsM}"
   | .closure args ret =>
       let argsM := String.intercalate "" (args.toList.map mangleTy)
       s!"C{args.size}{argsM}{mangleTy ret}"
