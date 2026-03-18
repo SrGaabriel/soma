@@ -158,10 +158,6 @@ def linkExecutable
       args := args ++ #["-I", rtDir.toString]
     args := args.push rt.toString
 
-  -- Add standard libraries
-  args := args.push "-lm"
-  args := args.push "-lpthread"
-
   let linker := if lto then tools.clang else tools.cc
   if lto && System.Platform.isWindows then
     args := #["-target", "x86_64-w64-mingw32", "-fuse-ld=bfd"] ++ args

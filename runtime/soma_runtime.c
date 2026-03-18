@@ -11,7 +11,32 @@
 #include <unistd.h>
 #endif
 
-#include <sched.h>
+/*
+ * Portable aligned allocation.
+ * Pool blocks are cache-line aligned (64 bytes) to prevent false sharing
+ * and enable aligned SIMD loads within the data region.
+ */
+static inline void* soma_aligned_alloc(size_t alignment, size_t size) {
+#if defined(_WIN32)
+    return _aligned_malloc(size, alignment);
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__APPLE__)
+    size = (size + alignment - 1) & ~(alignment - 1);
+    return aligned_alloc(alignment, size);
+#else
+    void* ptr = NULL;
+    posix_memalign(&ptr, alignment, size);
+    return ptr;
+#endif
+}
+
+static inline void soma_aligned_free(void* ptr) {
+#if defined(_WIN32)
+    _aligned_free(ptr);
+#else
+    free(ptr);
+#endif
+}
+
 
 /* Global memory pools */
 SomaPools soma_pools;
@@ -23,20 +48,21 @@ SomaPoolStats soma_pool_stats;
 
 /*
  * ============================================================================
- * Size-Class Pool Allocator (TLS)
+ * Size-Class Pool Allocator (TLS) with Bump-Pointer Fast Path
  * ============================================================================
  */
 
 /* Thread-local pool storage */
 __thread SomaPools* tls_pools = NULL;
-__thread int tls_pools_initialized = 0;
 
-/* Allocate a new block for a pool */
+/* Allocate a new block for a pool — cold path, called rarely */
+SOMA_COLD SOMA_NOINLINE
 static SomaPoolBlock* pool_alloc_block(void) {
-    SomaPoolBlock* block = (SomaPoolBlock*)malloc(
-        sizeof(SomaPoolBlock) + POOL_BLOCK_SIZE
+    /* Cache-line aligned so data[] starts at a predictable boundary */
+    SomaPoolBlock* block = (SomaPoolBlock*)soma_aligned_alloc(
+        SOMA_CACHELINE, sizeof(SomaPoolBlock) + POOL_BLOCK_SIZE
     );
-    if (block) {
+    if (SOMA_LIKELY(block != NULL)) {
         block->next = NULL;
         block->used = 0;
         SOMA_STAT_INC(blocks_allocated);
@@ -45,86 +71,99 @@ static SomaPoolBlock* pool_alloc_block(void) {
     return block;
 }
 
-/* Initialize a single pool */
 static void pool_init(SomaPool* pool, size_t item_size) {
-    pool->blocks = pool_alloc_block();
+    SomaPoolBlock* block = pool_alloc_block();
+    pool->blocks = block;
     pool->item_size = item_size;
     pool->free_list = NULL;
+    if (SOMA_LIKELY(block != NULL)) {
+        pool->bump_ptr = block->data;
+        pool->bump_limit = block->data + POOL_BLOCK_SIZE;
+    } else {
+        pool->bump_ptr = NULL;
+        pool->bump_limit = NULL;
+    }
 }
 
-/* Clean up a single pool */
 static void pool_cleanup(SomaPool* pool) {
     SomaPoolBlock* block = pool->blocks;
     while (block) {
         SomaPoolBlock* next = block->next;
-        free(block);
+        soma_aligned_free(block);
         block = next;
     }
     pool->blocks = NULL;
     pool->free_list = NULL;
+    pool->bump_ptr = NULL;
+    pool->bump_limit = NULL;
 }
 
-/* Allocate from a pool */
+/*
+ * Allocate from a pool.
+ * Fast path: bump pointer (single comparison).
+ * Medium path: free list (LIFO, cache-warm).
+ * Slow path: allocate new block.
+ */
+SOMA_HOT
 static inline void* pool_alloc(SomaPool* pool) {
-    /* Check free list first */
-    if (pool->free_list != NULL) {
-        void* ptr = pool->free_list;
-        pool->free_list = *(void**)ptr;
-        return ptr;
-    }
-
-    /* Try current block */
-    SomaPoolBlock* block = pool->blocks;
+    /* Bump-pointer fast path — single comparison */
     const size_t item_size = pool->item_size;
-    if (block->used + item_size <= POOL_BLOCK_SIZE) {
-        void* ptr = block->data + block->used;
-        block->used += item_size;
-        return ptr;
+    char* ptr = pool->bump_ptr;
+    char* new_ptr = ptr + item_size;
+    if (SOMA_LIKELY(new_ptr <= pool->bump_limit)) {
+        pool->bump_ptr = new_ptr;
+        return SOMA_ASSUME_ALIGNED(ptr, 16);
     }
 
-    /* Need new block */
+    /* Free list — recycle previously freed objects */
+    if (pool->free_list != NULL) {
+        void* result = pool->free_list;
+        pool->free_list = *(void**)result;
+        if (pool->free_list != NULL) {
+            SOMA_PREFETCH(pool->free_list);
+        }
+        return result;
+    }
+
+    /* Slow path: need new block */
     SomaPoolBlock* new_block = pool_alloc_block();
-    if (!new_block) {
+    if (SOMA_UNLIKELY(!new_block)) {
         return NULL;
     }
     new_block->next = pool->blocks;
     pool->blocks = new_block;
 
-    void* ptr = new_block->data;
-    new_block->used = item_size;
-    return ptr;
+    pool->bump_ptr = new_block->data + item_size;
+    pool->bump_limit = new_block->data + POOL_BLOCK_SIZE;
+    return SOMA_ASSUME_ALIGNED(new_block->data, 16);
 }
 
-/* Return to pool's free list */
+/* Return to pool's free list (LIFO — recently freed = cache-warm on reuse) */
+SOMA_HOT
 static inline void pool_free(SomaPool* pool, void* ptr) {
     *(void**)ptr = pool->free_list;
     pool->free_list = ptr;
 }
 
-/* Initialize per-thread pools */
 static void tls_pool_init(void) {
-    if (tls_pools_initialized) return;
+    if (SOMA_LIKELY(tls_pools != NULL)) return;
 
-    tls_pools = (SomaPools*)malloc(sizeof(SomaPools));
-    if (tls_pools) {
+    tls_pools = (SomaPools*)soma_aligned_alloc(SOMA_CACHELINE, sizeof(SomaPools));
+    if (SOMA_LIKELY(tls_pools != NULL)) {
         pool_init(&tls_pools->pool_48, POOL_SIZE_48);
         pool_init(&tls_pools->pool_112, POOL_SIZE_112);
-        tls_pools_initialized = 1;
     }
 }
 
-/* Cleanup per-thread pools */
 static void tls_pool_cleanup(void) {
-    if (!tls_pools_initialized || !tls_pools) return;
+    if (SOMA_UNLIKELY(tls_pools == NULL)) return;
 
     pool_cleanup(&tls_pools->pool_48);
     pool_cleanup(&tls_pools->pool_112);
-    free(tls_pools);
+    soma_aligned_free(tls_pools);
     tls_pools = NULL;
-    tls_pools_initialized = 0;
 }
 
-/* Get this thread's pools */
 static inline SomaPools* get_pools(void) {
     return tls_pools;
 }
@@ -146,14 +185,15 @@ void soma_pool_cleanup(void) {
  * ============================================================================
  */
 
+SOMA_HOT
 void* soma_pool_alloc_raw(size_t byte_size) {
     SomaPools* pools = get_pools();
 
-    if (byte_size <= POOL_SIZE_48) {
+    if (SOMA_LIKELY(byte_size <= POOL_SIZE_48)) {
         SOMA_STAT_INC(small_allocs);
         return pool_alloc(&pools->pool_48);
     }
-    if (byte_size <= POOL_SIZE_112) {
+    if (SOMA_LIKELY(byte_size <= POOL_SIZE_112)) {
         SOMA_STAT_INC(medium_allocs);
         return pool_alloc(&pools->pool_112);
     }
@@ -162,13 +202,14 @@ void* soma_pool_alloc_raw(size_t byte_size) {
     return malloc(byte_size);
 }
 
+SOMA_HOT
 void soma_pool_free_raw(void* ptr, size_t byte_size) {
     SomaPools* pools = get_pools();
 
-    if (byte_size <= POOL_SIZE_48) {
+    if (SOMA_LIKELY(byte_size <= POOL_SIZE_48)) {
         SOMA_STAT_INC(small_frees);
         pool_free(&pools->pool_48, ptr);
-    } else if (byte_size <= POOL_SIZE_112) {
+    } else if (SOMA_LIKELY(byte_size <= POOL_SIZE_112)) {
         SOMA_STAT_INC(medium_frees);
         pool_free(&pools->pool_112, ptr);
     } else {
@@ -183,12 +224,14 @@ void soma_pool_free_raw(void* ptr, size_t byte_size) {
  * ============================================================================
  */
 
+SOMA_HOT
 void* soma_pool_alloc_sup(void) {
     SOMA_STAT_INC(sup_allocs);
     SomaPools* pools = get_pools();
     return pool_alloc(&pools->pool_48);
 }
 
+SOMA_HOT
 void soma_pool_free_sup(void* ptr) {
     SOMA_STAT_INC(sup_frees);
     SomaPools* pools = get_pools();
@@ -201,12 +244,14 @@ void soma_pool_free_sup(void* ptr) {
  * ============================================================================
  */
 
+SOMA_HOT
 void* soma_alloc_view(void) {
     SomaPools* pools = get_pools();
     SOMA_STAT_INC(small_allocs);
     return pool_alloc(&pools->pool_48);
 }
 
+SOMA_HOT
 void soma_free_view(void* ptr) {
     SomaPools* pools = get_pools();
     SOMA_STAT_INC(small_frees);
@@ -219,10 +264,10 @@ void soma_free_view(void* ptr) {
  * ============================================================================
  */
 
-void* soma_clone_flat_array_view(SomaFlatArrayView* src) {
-    if (src == NULL) return NULL;
+SOMA_HOT
+void* soma_clone_flat_array_view(SomaFlatArrayView* restrict src) {
+    if (SOMA_UNLIKELY(src == NULL)) return NULL;
 
-    /* Deep-copy the backing array */
     SomaFlatArray* srcBacking = (SomaFlatArray*)src->backing;
     SomaFlatArray* newBacking = NULL;
     void* newData = NULL;
@@ -230,10 +275,9 @@ void* soma_clone_flat_array_view(SomaFlatArrayView* src) {
     if (srcBacking != NULL) {
         size_t backingTotal = sizeof(SomaFlatArray) +
             (size_t)srcBacking->length * (size_t)srcBacking->elem_size;
-        newBacking = (SomaFlatArray*)malloc(backingTotal);
-        if (newBacking == NULL) {
+        newBacking = (SomaFlatArray*)soma_pool_alloc_raw(backingTotal);
+        if (SOMA_UNLIKELY(newBacking == NULL)) {
             soma_panic("soma_clone_flat_array_view: out of memory");
-            return NULL;
         }
         memcpy(newBacking, srcBacking, backingTotal);
         newBacking->_reserved = 0;
@@ -242,14 +286,11 @@ void* soma_clone_flat_array_view(SomaFlatArrayView* src) {
         newData = (char*)(newBacking + 1) + offset;
     }
 
-    SomaFlatArrayView* dst = (SomaFlatArrayView*)soma_alloc_view();
-    if (dst == NULL) {
+    SomaFlatArrayView* restrict dst = (SomaFlatArrayView*)soma_alloc_view();
+    if (SOMA_UNLIKELY(dst == NULL)) {
         soma_panic("soma_clone_flat_array_view: out of memory");
-        return NULL;
     }
     dst->tag = NODE_FLAT_ARRAY_VIEW;
-    memset(dst->_pad, 0, sizeof(dst->_pad));
-    dst->_reserved = 0;
     dst->length = src->length;
     dst->data = newData;
     dst->backing = newBacking;
@@ -268,7 +309,6 @@ SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
     void* ptr = SOMA_TO_PTR(value);
     uint8_t tag = *(uint8_t*)ptr;
 
-    /* Only SUPs and flat array types have identifiable tags */
     if (IS_SUP(tag)) {
         return soma_dup_typed(label, value, NULL);
     }
@@ -280,22 +320,23 @@ SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
         size_t total = sizeof(SomaFlatArray) +
             (size_t)arr->length * (size_t)arr->elem_size;
         SomaFlatArray* copy = (SomaFlatArray*)malloc(total);
-        if (copy == NULL) {
+        if (SOMA_UNLIKELY(copy == NULL)) {
             soma_panic("soma_clone_heap_value_for_dup: out of memory");
-            return value;
         }
         memcpy(copy, arr, total);
         return SOMA_PTR(copy);
     }
 
-    /* Check for closure via _pad[0] sentinel at byte offset 1 */
     if (((uint8_t*)ptr)[1] == NODE_CLOSURE) {
         return SOMA_PTR(soma_clone_closure(ptr, label));
     }
 
-    /* Unknown headerless object — typed cloner required */
     soma_panic("soma_clone_heap_value_for_dup: unrecognized heap object (missing typed cloner)");
-    return value; /* unreachable */
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin_unreachable();
+#else
+    return value;
+#endif
 }
 
 /*
@@ -304,145 +345,106 @@ SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
  * ============================================================================
  */
 
+SOMA_HOT
 SomaValue soma_dup_typed(uint32_t label, SomaValue value,
                          SomaTypeDesc* type_desc) {
     SomaSup* sup = (SomaSup*)soma_pool_alloc_sup();
-    sup->tag   = SUP_TAG_FRESH;
-    sup->_pad[0] = SOMA_SUP_PAD0;
-    sup->_pad[1] = SOMA_SUP_PAD1;
-    sup->_pad[2] = SOMA_SUP_PAD2;
+
+    /*
+     * H: Pack tag + _pad[0..2] into a single 32-bit store.
+     * Little-endian: [SUP_TAG_FRESH, 'S', 'U', 'P']
+     * One store-queue entry instead of four byte stores.
+     */
+    uint32_t header = SOMA_SUP_HEADER_FRESH;
+    memcpy(&sup->tag, &header, sizeof(uint32_t));
+
     sup->label = label;
     sup->value = (void*)value;
-    sup->proj0 = NULL;
-    sup->proj1 = NULL;
     sup->type_desc = type_desc;
     return SOMA_PTR(sup);
 }
 
-/* Check if a SomaValue is a heap pointer to a SUP node */
+SOMA_HOT
 static inline int is_heap_sup(SomaValue value) {
     if (!SOMA_IS_PTR(value) || value == 0) return 0;
     SomaSup* sup = (SomaSup*)SOMA_TO_PTR(value);
     if (!IS_SUP(sup->tag)) return 0;
-    return sup->_pad[0] == SOMA_SUP_PAD0 &&
-           sup->_pad[1] == SOMA_SUP_PAD1 &&
-           sup->_pad[2] == SOMA_SUP_PAD2;
+    uint32_t pad_val;
+    memcpy(&pad_val, sup->_pad, sizeof(uint32_t));
+    return (pad_val & 0x00FFFFFFu) == SOMA_SUP_MAGIC_U32;
 }
 
+SOMA_HOT
+static inline SomaValue soma_proj_impl(SomaValue sup_val, int proj_idx) {
+    if (!SOMA_IS_PTR(sup_val) || sup_val == 0) return sup_val;
+
+    SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sup_val);
+    uint8_t tag = sup->tag;
+
+    const uint8_t my_proj_tag    = (proj_idx == 0) ? SUP_TAG_PROJ0 : SUP_TAG_PROJ1;
+    const uint8_t other_proj_tag = (proj_idx == 0) ? SUP_TAG_PROJ1 : SUP_TAG_PROJ0;
+    void** my_slot = (proj_idx == 0) ? &sup->proj0 : &sup->proj1;
+
+    if (SOMA_LIKELY(tag == SUP_TAG_FRESH)) {
+        sup->tag = my_proj_tag;
+        SomaValue value = (SomaValue)sup->value;
+
+        if (is_heap_sup(value)) {
+            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
+            if (inner->label == sup->label) {
+                SomaValue result = (SomaValue)inner->value;
+                sup->value = (void*)result;
+                *my_slot = (void*)result;
+                soma_pool_free_sup(inner);
+                return result;
+            }
+        }
+
+        *my_slot = (void*)value;
+        return value;
+    }
+
+    if (tag == other_proj_tag) {
+        sup->tag = SUP_TAG_BOTH;
+        SomaValue value = (SomaValue)sup->value;
+
+        if (!SOMA_IS_PTR(value) || value == 0) {
+            *my_slot = (void*)value;
+            return value;
+        }
+
+        if (is_heap_sup(value)) {
+            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
+            if (inner->label == sup->label) {
+                SomaValue result = (SomaValue)inner->value;
+                sup->value = (void*)result;
+                *my_slot = (void*)result;
+                soma_pool_free_sup(inner);
+                return result;
+            }
+        }
+
+        SomaValue cloned;
+        if (sup->type_desc != NULL) {
+            cloned = sup->type_desc->clone_fn(value, sup->label);
+        } else {
+            cloned = soma_clone_heap_value_for_dup(value, sup->label);
+        }
+        *my_slot = (void*)cloned;
+        return cloned;
+    }
+
+    return (SomaValue)*my_slot;
+}
+
+SOMA_HOT
 SomaValue soma_proj0(SomaValue sup_val) {
-    if (!SOMA_IS_PTR(sup_val) || sup_val == 0) return sup_val;
-
-    SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sup_val);
-    uint8_t tag = sup->tag;
-
-    if (tag == SUP_TAG_FRESH) {
-        sup->tag = SUP_TAG_PROJ0;
-        SomaValue value = (SomaValue)sup->value;
-
-        if (is_heap_sup(value)) {
-            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
-            if (inner->label == sup->label) {
-                SomaValue result = (SomaValue)inner->value;
-                sup->value = (void*)result;
-                sup->proj0 = (void*)result;
-                soma_pool_free_sup(inner);
-                return result;
-            }
-        }
-
-        sup->proj0 = (void*)value;
-        return value;
-    }
-
-    if (tag == SUP_TAG_PROJ1) {
-        sup->tag = SUP_TAG_BOTH;
-        SomaValue value = (SomaValue)sup->value;
-
-        if (!SOMA_IS_PTR(value) || value == 0) {
-            sup->proj0 = (void*)value;
-            return value;
-        }
-
-        if (is_heap_sup(value)) {
-            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
-            if (inner->label == sup->label) {
-                SomaValue result = (SomaValue)inner->value;
-                sup->value = (void*)result;
-                sup->proj0 = (void*)result;
-                soma_pool_free_sup(inner);
-                return result;
-            }
-        }
-
-        SomaValue cloned;
-        if (sup->type_desc != NULL) {
-            cloned = sup->type_desc->clone_fn(value, sup->label);
-        } else {
-            cloned = soma_clone_heap_value_for_dup(value, sup->label);
-        }
-        sup->proj0 = (void*)cloned;
-        return cloned;
-    }
-
-    return (SomaValue)sup->proj0;
+    return soma_proj_impl(sup_val, 0);
 }
 
+SOMA_HOT
 SomaValue soma_proj1(SomaValue sup_val) {
-    if (!SOMA_IS_PTR(sup_val) || sup_val == 0) return sup_val;
-
-    SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sup_val);
-    uint8_t tag = sup->tag;
-
-    if (tag == SUP_TAG_FRESH) {
-        sup->tag = SUP_TAG_PROJ1;
-        SomaValue value = (SomaValue)sup->value;
-
-        if (is_heap_sup(value)) {
-            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
-            if (inner->label == sup->label) {
-                SomaValue result = (SomaValue)inner->value;
-                sup->value = (void*)result;
-                sup->proj1 = (void*)result;
-                soma_pool_free_sup(inner);
-                return result;
-            }
-        }
-
-        sup->proj1 = (void*)value;
-        return value;
-    }
-
-    if (tag == SUP_TAG_PROJ0) {
-        sup->tag = SUP_TAG_BOTH;
-        SomaValue value = (SomaValue)sup->value;
-
-        if (!SOMA_IS_PTR(value) || value == 0) {
-            sup->proj1 = (void*)value;
-            return value;
-        }
-
-        if (is_heap_sup(value)) {
-            SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
-            if (inner->label == sup->label) {
-                SomaValue result = (SomaValue)inner->value;
-                sup->value = (void*)result;
-                sup->proj1 = (void*)result;
-                soma_pool_free_sup(inner);
-                return result;
-            }
-        }
-
-        SomaValue cloned;
-        if (sup->type_desc != NULL) {
-            cloned = sup->type_desc->clone_fn(value, sup->label);
-        } else {
-            cloned = soma_clone_heap_value_for_dup(value, sup->label);
-        }
-        sup->proj1 = (void*)cloned;
-        return cloned;
-    }
-
-    return (SomaValue)sup->proj1;
+    return soma_proj_impl(sup_val, 1);
 }
 
 /*
@@ -455,37 +457,41 @@ void* soma_alloc_closure(void* func_ptr, uint8_t arity, uint16_t env_size) {
     size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(SomaValue);
     SomaClosure* closure = (SomaClosure*)soma_pool_alloc_raw(byte_size);
 
-    closure->arity = arity;
-    memset(closure->_pad, 0, sizeof(closure->_pad));
-    closure->_pad[0] = NODE_CLOSURE;
-    closure->_pad[1] = (uint8_t)(env_size & 0xFF);
-    closure->_pad[2] = (uint8_t)((env_size >> 8) & 0xFF);
+    uint32_t packed = (uint32_t)arity
+                    | ((uint32_t)NODE_CLOSURE << 8)
+                    | ((uint32_t)(env_size & 0xFF) << 16)
+                    | ((uint32_t)((env_size >> 8) & 0xFF) << 24);
+    memcpy(&closure->arity, &packed, sizeof(uint32_t));
     closure->func_ptr = func_ptr;
 
     return closure;
 }
 
+SOMA_NONNULL(1)
 void soma_closure_set_env(void* closure_ptr, uint16_t index, SomaValue value) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
     SomaValue* env = (SomaValue*)(closure + 1);
     env[index] = value;
 }
 
+SOMA_NONNULL(1)
 SomaValue soma_closure_get_env(void* closure_ptr, uint16_t index) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
     SomaValue* env = (SomaValue*)(closure + 1);
     return env[index];
 }
 
+SOMA_NONNULL(1)
 void* soma_closure_get_func(void* closure_ptr) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
     return closure->func_ptr;
 }
 
+SOMA_HOT
 void soma_era_closure(void* closure_ptr) {
-    if (closure_ptr == NULL) return;
+    if (SOMA_UNLIKELY(closure_ptr == NULL)) return;
     SomaClosure* closure = (SomaClosure*)closure_ptr;
-    uint16_t env_size = (uint16_t)closure->_pad[1] | ((uint16_t)closure->_pad[2] << 8);
+    uint16_t env_size = CLOSURE_ENV_SIZE(closure);
     SomaValue* env = (SomaValue*)(closure + 1);
     for (uint16_t i = 0; i < env_size; i++) {
         if (SOMA_IS_PTR(env[i]) && env[i] != 0) {
@@ -493,17 +499,31 @@ void soma_era_closure(void* closure_ptr) {
         }
     }
     size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(SomaValue);
-    soma_pool_free_raw(closure_ptr, byte_size);
+    SomaPools* pools = get_pools();
+    if (SOMA_LIKELY(byte_size <= POOL_SIZE_48)) {
+        SOMA_STAT_INC(small_frees);
+        pool_free(&pools->pool_48, closure_ptr);
+    } else if (byte_size <= POOL_SIZE_112) {
+        SOMA_STAT_INC(medium_frees);
+        pool_free(&pools->pool_112, closure_ptr);
+    } else {
+        SOMA_STAT_INC(large_frees);
+        free(closure_ptr);
+    }
 }
 
 #define SOMA_MAX_CALL_ARGS 16
 
 static void* soma_call_with_args(void* (*fn)(), void** args, unsigned nargs) {
+    if (SOMA_LIKELY(nargs == 1))
+        return ((void*(*)(void*))fn)(args[0]);
+    if (SOMA_LIKELY(nargs == 2))
+        return ((void*(*)(void*,void*))fn)(args[0], args[1]);
+    if (SOMA_LIKELY(nargs == 3))
+        return ((void*(*)(void*,void*,void*))fn)(args[0], args[1], args[2]);
+
     switch (nargs) {
         case 0:  return fn();
-        case 1:  return ((void*(*)(void*))fn)(args[0]);
-        case 2:  return ((void*(*)(void*,void*))fn)(args[0], args[1]);
-        case 3:  return ((void*(*)(void*,void*,void*))fn)(args[0], args[1], args[2]);
         case 4:  return ((void*(*)(void*,void*,void*,void*))fn)(
                      args[0], args[1], args[2], args[3]);
         case 5:  return ((void*(*)(void*,void*,void*,void*,void*))fn)(
@@ -554,63 +574,121 @@ static void* soma_call_with_args(void* (*fn)(), void** args, unsigned nargs) {
                      args[12], args[13], args[14], args[15]);
         default:
             soma_panic("soma_call_with_args: too many arguments (max 16)");
+#if defined(__GNUC__) || defined(__clang__)
+            __builtin_unreachable();
+#else
             return NULL;
+#endif
     }
 }
 
+/*
+ * Apply one argument to a closure (eval/apply, Marlow & Peyton Jones 2004).
+ *
+ * SOMA_FLATTEN force-inlines all callees (pool_alloc, soma_call_with_args,
+ * CLOSURE_ENV_SIZE) into one large optimized function body — the single
+ * hottest path in any eval/apply functional language runtime.
+ */
+SOMA_HOT SOMA_FLATTEN
 void* soma_apply(void* closure_ptr, void* arg) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
     uint8_t arity = closure->arity;
     void* (*fn)() = (void* (*)())closure->func_ptr;
     SomaValue* env = (SomaValue*)(closure + 1);
+    uint16_t env_size = CLOSURE_ENV_SIZE(closure);
 
-    /* Read env_size from _pad[1..2] (little-endian u16) */
-    uint16_t env_size = (uint16_t)closure->_pad[1] | ((uint16_t)closure->_pad[2] << 8);
-
-    if (arity == 0) {
+    while (SOMA_UNLIKELY(arity == 0)) {
         void* args[SOMA_MAX_CALL_ARGS];
-        for (uint16_t i = 0; i < env_size && i < SOMA_MAX_CALL_ARGS; i++)
+        unsigned n = (env_size < SOMA_MAX_CALL_ARGS) ? env_size : SOMA_MAX_CALL_ARGS;
+        for (unsigned i = 0; i < n; i++)
             args[i] = (void*)env[i];
-        void* result = soma_call_with_args(fn, args, env_size);
-        return soma_apply(result, arg);
-    } else if (arity == 1) {
-        void* args[SOMA_MAX_CALL_ARGS];
-        uint16_t n = 0;
-        for (uint16_t i = 0; i < env_size && n < SOMA_MAX_CALL_ARGS; i++)
-            args[n++] = (void*)env[i];
-        if (n < SOMA_MAX_CALL_ARGS)
-            args[n++] = arg;
-        return soma_call_with_args(fn, args, n);
-    } else {
-        /* PAP: create new closure with arity-1 and env extended by arg */
-        uint16_t new_env_size = env_size + 1;
-        size_t pap_bytes = sizeof(SomaClosure) + new_env_size * sizeof(SomaValue);
-        SomaClosure* pap = (SomaClosure*)soma_pool_alloc_raw(pap_bytes);
-        pap->arity = arity - 1;
-        memset(pap->_pad, 0, sizeof(pap->_pad));
-        pap->_pad[0] = NODE_CLOSURE;
-        pap->_pad[1] = (uint8_t)(new_env_size & 0xFF);
-        pap->_pad[2] = (uint8_t)((new_env_size >> 8) & 0xFF);
-        pap->func_ptr = closure->func_ptr;
+        void* result = soma_call_with_args(fn, args, n);
 
-        SomaValue* pap_env = (SomaValue*)(pap + 1);
-        for (uint16_t i = 0; i < env_size; i++)
-            pap_env[i] = env[i];
-        pap_env[env_size] = (SomaValue)(uintptr_t)arg;
-
-        return pap;
+        closure = (SomaClosure*)result;
+        arity = closure->arity;
+        fn = (void* (*)())closure->func_ptr;
+        env = (SomaValue*)(closure + 1);
+        env_size = CLOSURE_ENV_SIZE(closure);
     }
+
+    if (SOMA_LIKELY(arity == 1)) {
+        switch (env_size) {
+        case 0:
+            return ((void*(*)(void*))fn)(arg);
+        case 1:
+            return ((void*(*)(void*,void*))fn)((void*)env[0], arg);
+        case 2:
+            return ((void*(*)(void*,void*,void*))fn)(
+                (void*)env[0], (void*)env[1], arg);
+        case 3:
+            return ((void*(*)(void*,void*,void*,void*))fn)(
+                (void*)env[0], (void*)env[1], (void*)env[2], arg);
+        default: {
+            void* args[SOMA_MAX_CALL_ARGS];
+            uint16_t n = 0;
+            for (uint16_t i = 0; i < env_size && n < SOMA_MAX_CALL_ARGS - 1; i++)
+                args[n++] = (void*)env[i];
+            args[n++] = arg;
+            return soma_call_with_args(fn, args, n);
+        }
+        }
+    }
+
+    /* PAP */
+    uint16_t new_env_size = env_size + 1;
+    size_t pap_bytes = sizeof(SomaClosure) + new_env_size * sizeof(SomaValue);
+    SomaClosure* pap = (SomaClosure*)soma_pool_alloc_raw(pap_bytes);
+
+    uint32_t packed = (uint32_t)(arity - 1)
+                    | ((uint32_t)NODE_CLOSURE << 8)
+                    | ((uint32_t)(new_env_size & 0xFF) << 16)
+                    | ((uint32_t)((new_env_size >> 8) & 0xFF) << 24);
+    memcpy(&pap->arity, &packed, sizeof(uint32_t));
+    pap->func_ptr = closure->func_ptr;
+
+    SomaValue* pap_env = (SomaValue*)(pap + 1);
+    if (env_size > 0) {
+        memcpy(pap_env, env, env_size * sizeof(SomaValue));
+    }
+    pap_env[env_size] = (SomaValue)(uintptr_t)arg;
+
+    return pap;
 }
 
+/*
+ * N: Pre-scan env for heap pointers. If all env slots are value types
+ * (ints, bools, chars), bulk-copy the closure without deep cloning.
+ */
 void* soma_clone_closure(void* closure_ptr, uint32_t label) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
-    uint16_t env_size = (uint16_t)closure->_pad[1] | ((uint16_t)closure->_pad[2] << 8);
+    uint16_t env_size = CLOSURE_ENV_SIZE(closure);
 
     size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(SomaValue);
     void* new_closure = soma_pool_alloc_raw(byte_size);
-    memcpy(new_closure, closure, sizeof(SomaClosure));
 
+    if (env_size == 0) {
+        memcpy(new_closure, closure, sizeof(SomaClosure));
+        return new_closure;
+    }
+
+    /* Pre-scan: any env slot that's a heap pointer? */
     SomaValue* src_env = (SomaValue*)(closure + 1);
+    int has_heap_ptrs = 0;
+    for (uint16_t i = 0; i < env_size; i++) {
+        if (SOMA_IS_PTR(src_env[i]) && src_env[i] != 0) {
+            has_heap_ptrs = 1;
+            break;
+        }
+    }
+
+    if (!has_heap_ptrs) {
+        /* All env slots are value types — bulk copy entire closure */
+        memcpy(new_closure, closure, byte_size);
+        return new_closure;
+    }
+
+    /* Deep clone each env slot */
+    memcpy(new_closure, closure, sizeof(SomaClosure));
     SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
 
     for (uint16_t i = 0; i < env_size; i++) {
@@ -626,20 +704,19 @@ void* soma_clone_closure(void* closure_ptr, uint32_t label) {
  * ============================================================================
  */
 
+SOMA_NONNULL(1)
 char* soma_to_cstring(SomaString* str) {
-    if (str == NULL) return NULL;
     return str->data;
 }
 
 SomaString* soma_from_cstring(const char* cstr) {
-    if (cstr == NULL) return NULL;
+    if (SOMA_UNLIKELY(cstr == NULL)) return NULL;
 
     size_t len = strlen(cstr);
     size_t total = sizeof(SomaString) + len + 1;
     SomaString* s = (SomaString*)soma_pool_alloc_raw(total);
-    if (s == NULL) {
+    if (SOMA_UNLIKELY(s == NULL)) {
         soma_panic("soma_from_cstring: out of memory");
-        return NULL;
     }
     s->length = (int64_t)len;
     memcpy(s->data, cstr, len + 1);
@@ -647,27 +724,46 @@ SomaString* soma_from_cstring(const char* cstr) {
 }
 
 uint64_t soma_cstring_len(const char* cstr) {
-    if (cstr == NULL) return 0;
+    if (SOMA_UNLIKELY(cstr == NULL)) return 0;
     return (uint64_t)strlen(cstr);
 }
 
-SomaString* soma_strcat(SomaString* a, SomaString* b) {
-    if (a == NULL) {
-        if (b == NULL) return soma_from_cstring("");
-        return soma_from_cstring(b->data);
+SOMA_HOT
+SomaString* soma_strcat(SomaString* restrict a, SomaString* restrict b) {
+    if (SOMA_UNLIKELY(a == NULL)) {
+        if (SOMA_UNLIKELY(b == NULL)) {
+            size_t total = sizeof(SomaString) + 1;
+            SomaString* result = (SomaString*)soma_pool_alloc_raw(total);
+            if (SOMA_UNLIKELY(result == NULL)) soma_panic("soma_strcat: out of memory");
+            result->length = 0;
+            result->data[0] = '\0';
+            return result;
+        }
+        size_t len_b = (size_t)soma_string_len(b);
+        size_t total = sizeof(SomaString) + len_b + 1;
+        SomaString* result = (SomaString*)soma_pool_alloc_raw(total);
+        if (SOMA_UNLIKELY(result == NULL)) soma_panic("soma_strcat: out of memory");
+        result->length = (int64_t)len_b;
+        memcpy(result->data, b->data, len_b + 1);
+        return result;
     }
-    if (b == NULL) return soma_from_cstring(a->data);
+    if (SOMA_UNLIKELY(b == NULL)) {
+        size_t len_a = (size_t)soma_string_len(a);
+        size_t total = sizeof(SomaString) + len_a + 1;
+        SomaString* result = (SomaString*)soma_pool_alloc_raw(total);
+        if (SOMA_UNLIKELY(result == NULL)) soma_panic("soma_strcat: out of memory");
+        result->length = (int64_t)len_a;
+        memcpy(result->data, a->data, len_a + 1);
+        return result;
+    }
 
     size_t len_a = (size_t)soma_string_len(a);
     size_t len_b = (size_t)soma_string_len(b);
     size_t total_len = len_a + len_b;
     size_t total = sizeof(SomaString) + total_len + 1;
 
-    SomaString* result = (SomaString*)soma_pool_alloc_raw(total);
-    if (result == NULL) {
-        soma_panic("soma_strcat: out of memory");
-        return NULL;
-    }
+    SomaString* restrict result = (SomaString*)soma_pool_alloc_raw(total);
+    if (SOMA_UNLIKELY(result == NULL)) soma_panic("soma_strcat: out of memory");
     result->length = (int64_t)total_len;
     memcpy(result->data, a->data, len_a);
     memcpy(result->data + len_a, b->data, len_b);
@@ -677,41 +773,53 @@ SomaString* soma_strcat(SomaString* a, SomaString* b) {
 
 SomaString* soma_int_to_string(int32_t val) {
     char buf[12];
-    int len = snprintf(buf, sizeof(buf), "%d", val);
+    char* p = buf + sizeof(buf);
+    *--p = '\0';
 
+    uint32_t uval;
+    int negative = 0;
+    if (val < 0) {
+        negative = 1;
+        uval = (uint32_t)(-(int64_t)val);
+    } else {
+        uval = (uint32_t)val;
+    }
+
+    do {
+        *--p = '0' + (char)(uval % 10);
+        uval /= 10;
+    } while (uval > 0);
+
+    if (negative) *--p = '-';
+
+    int len = (int)(buf + sizeof(buf) - 1 - p);
     size_t total = sizeof(SomaString) + len + 1;
     SomaString* s = (SomaString*)soma_pool_alloc_raw(total);
-    if (s == NULL) {
-        soma_panic("soma_int_to_string: out of memory");
-        return NULL;
-    }
+    if (SOMA_UNLIKELY(s == NULL)) soma_panic("soma_int_to_string: out of memory");
     s->length = (int64_t)len;
-    memcpy(s->data, buf, len + 1);
+    memcpy(s->data, p, len + 1);
     return s;
 }
 
 void soma_era_string(void* value) {
-    if (value == NULL) return;
+    if (SOMA_UNLIKELY(value == NULL)) return;
     SomaString* s = (SomaString*)value;
-    if (s->length < 0) return;  /* Static string — MSB sentinel, never free */
+    if (s->length < 0) return;
     size_t total = sizeof(SomaString) + (size_t)s->length + 1;
     soma_pool_free_raw(value, total);
 }
 
 /*
  * ============================================================================
- * soma_era_free — Free SUPs, flat arrays, and flat array views
- *
- * Only handles objects with identifiable tag bytes (SUPs, flat arrays).
- * Closures, strings, and tagged payloads are headerless and freed by
- * compiler-generated specialized erasers.
+ * soma_era_free — Free SUPs, flat arrays, flat array views, and closures
  * ============================================================================
  */
 
 #define ERA_STACK_INLINE 64
 
+SOMA_HOT
 void soma_era_free(void* value) {
-    if (value == NULL) return;
+    if (SOMA_UNLIKELY(value == NULL)) return;
 
     void*  stack_buf[ERA_STACK_INLINE];
     void** stack = stack_buf;
@@ -724,12 +832,12 @@ void soma_era_free(void* value) {
 
     while (sp > 0) {
         void* cur = stack[--sp];
-        if (cur == NULL) continue;
+        if (SOMA_UNLIKELY(cur == NULL)) continue;
 
         uint8_t tag = *(uint8_t*)cur;
 
         #define ERA_ENSURE(n) do {                                     \
-            if (sp + (n) > cap) {                                      \
+            if (SOMA_UNLIKELY(sp + (n) > cap)) {                       \
                 int new_cap = cap * 2;                                 \
                 while (new_cap < sp + (n)) new_cap *= 2;              \
                 if (stack == stack_buf) {                               \
@@ -745,9 +853,13 @@ void soma_era_free(void* value) {
         if (tag == NODE_FLAT_ARRAY_VIEW) {
             SomaFlatArrayView* view = (SomaFlatArrayView*)cur;
             if (view->backing != NULL) {
-                free(view->backing);
+                SomaFlatArray* backing = (SomaFlatArray*)view->backing;
+                size_t backing_size = sizeof(SomaFlatArray) +
+                    (size_t)backing->length * (size_t)backing->elem_size;
+                soma_pool_free_raw(view->backing, backing_size);
             }
-            soma_free_view(cur);
+            SOMA_STAT_INC(small_frees);
+            pool_free(&pools->pool_48, cur);
 
         } else if (tag == NODE_FLAT_ARRAY) {
             free(cur);
@@ -780,7 +892,7 @@ void soma_era_free(void* value) {
                 if (efn != NULL) {
                     if (SOMA_IS_PTR(v) && v != 0) efn(v);
                     if (p0 != v && SOMA_IS_PTR(p0) && p0 != 0) efn(p0);
-                    if (p1 != v && SOMA_IS_PTR(p1) && p1 != 0) efn(p1);
+                    if (p1 != v && p1 != p0 && SOMA_IS_PTR(p1) && p1 != 0) efn(p1);
                 } else {
                     ERA_ENSURE(2);
                     if (SOMA_IS_PTR(v) && v != 0) {
@@ -789,7 +901,7 @@ void soma_era_free(void* value) {
                     if (p0 != v && SOMA_IS_PTR(p0) && p0 != 0) {
                         stack[sp++] = SOMA_TO_PTR(p0);
                     }
-                    if (p1 != v && SOMA_IS_PTR(p1) && p1 != 0) {
+                    if (p1 != v && p1 != p0 && SOMA_IS_PTR(p1) && p1 != 0) {
                         stack[sp++] = SOMA_TO_PTR(p1);
                     }
                 }
@@ -801,10 +913,8 @@ void soma_era_free(void* value) {
             pool_free(&pools->pool_48, cur);
 
         } else if (((uint8_t*)cur)[1] == NODE_CLOSURE) {
-            /* Closure identified by _pad[0] sentinel at byte offset 1 */
             SomaClosure* closure = (SomaClosure*)cur;
-            uint16_t es = (uint16_t)closure->_pad[1]
-                        | ((uint16_t)closure->_pad[2] << 8);
+            uint16_t es = CLOSURE_ENV_SIZE(closure);
             SomaValue* env = (SomaValue*)(closure + 1);
             ERA_ENSURE(es);
             for (uint16_t i = 0; i < es; i++) {
@@ -813,7 +923,7 @@ void soma_era_free(void* value) {
                 }
             }
             size_t needed = sizeof(SomaClosure) + es * sizeof(SomaValue);
-            if (needed <= POOL_SIZE_48) {
+            if (SOMA_LIKELY(needed <= POOL_SIZE_48)) {
                 SOMA_STAT_INC(small_frees);
                 pool_free(&pools->pool_48, cur);
             } else if (needed <= POOL_SIZE_112) {
@@ -824,468 +934,24 @@ void soma_era_free(void* value) {
                 free(cur);
             }
         } else {
-            /* Unknown headerless object — typed eraser required */
             soma_panic("soma_era_free: unrecognized heap object (missing typed eraser)");
         }
 
         #undef ERA_ENSURE
     }
 
-    if (stack != stack_buf) {
+    if (SOMA_UNLIKELY(stack != stack_buf)) {
         free(stack);
     }
 }
 
+SOMA_NORETURN SOMA_COLD
 void soma_panic(const char* msg) {
     fprintf(stderr, "PANIC: %s\n", msg);
     soma_pool_cleanup();
     exit(1);
 }
 
-/*
- * ============================================================================
- * Parallel Runtime Implementation
- * ============================================================================
- */
-
-SomaParRuntime soma_par = {0};
-SomaParStats soma_par_stats = {0};
-
-__thread SomaWorker* soma_current_worker = NULL;
-
-/*
- * Chase-Lev Deque Operations
- */
-
-static void deque_init(SomaDeque* d) {
-    atomic_store(&d->top, 0);
-    atomic_store(&d->bottom, 0);
-    for (int i = 0; i < SOMA_TASK_QUEUE_SIZE; i++) {
-        atomic_store(&d->buffer[i], NULL);
-    }
-}
-
-static void deque_push(SomaDeque* d, SomaTask* task) {
-    size_t b = atomic_load_explicit(&d->bottom, memory_order_relaxed);
-    atomic_store_explicit(&d->buffer[b % SOMA_TASK_QUEUE_SIZE], task, memory_order_relaxed);
-    atomic_thread_fence(memory_order_release);
-    atomic_store_explicit(&d->bottom, b + 1, memory_order_relaxed);
-}
-
-static SomaTask* deque_pop(SomaDeque* d) {
-    size_t b = atomic_load_explicit(&d->bottom, memory_order_relaxed) - 1;
-    atomic_store_explicit(&d->bottom, b, memory_order_relaxed);
-    atomic_thread_fence(memory_order_seq_cst);
-    size_t t = atomic_load_explicit(&d->top, memory_order_relaxed);
-
-    if (t <= b) {
-        SomaTask* task = atomic_load_explicit(&d->buffer[b % SOMA_TASK_QUEUE_SIZE],
-                                               memory_order_relaxed);
-        if (t == b) {
-            if (!atomic_compare_exchange_strong_explicit(
-                    &d->top, &t, t + 1,
-                    memory_order_seq_cst, memory_order_relaxed)) {
-                task = NULL;
-            }
-            atomic_store_explicit(&d->bottom, b + 1, memory_order_relaxed);
-        }
-        return task;
-    } else {
-        atomic_store_explicit(&d->bottom, b + 1, memory_order_relaxed);
-        return NULL;
-    }
-}
-
-static SomaTask* deque_steal(SomaDeque* d) {
-    size_t t = atomic_load_explicit(&d->top, memory_order_acquire);
-    atomic_thread_fence(memory_order_seq_cst);
-    size_t b = atomic_load_explicit(&d->bottom, memory_order_acquire);
-
-    if (t < b) {
-        SomaTask* task = atomic_load_explicit(&d->buffer[t % SOMA_TASK_QUEUE_SIZE],
-                                               memory_order_relaxed);
-        if (!atomic_compare_exchange_strong_explicit(
-                &d->top, &t, t + 1,
-                memory_order_seq_cst, memory_order_relaxed)) {
-            return NULL;
-        }
-        return task;
-    }
-    return NULL;
-}
-
-/*
- * Task Pool
- */
-
-#define TASK_POOL_INITIAL_SIZE 256
-
-SomaTask* soma_task_alloc(void) {
-    pthread_mutex_lock(&soma_par.task_pool_lock);
-    if (soma_par.task_pool != NULL) {
-        SomaTask* task = soma_par.task_pool;
-        soma_par.task_pool = *(SomaTask**)task;
-        pthread_mutex_unlock(&soma_par.task_pool_lock);
-        return task;
-    }
-    pthread_mutex_unlock(&soma_par.task_pool_lock);
-
-    return (SomaTask*)malloc(sizeof(SomaTask));
-}
-
-void soma_task_free(SomaTask* task) {
-    pthread_mutex_lock(&soma_par.task_pool_lock);
-    *(SomaTask**)task = soma_par.task_pool;
-    soma_par.task_pool = task;
-    pthread_mutex_unlock(&soma_par.task_pool_lock);
-}
-
-static inline SomaValue task_execute(SomaTask* task) {
-    switch (task->kind) {
-        case TASK_KIND_DIRECT:
-            return task->fn.direct(task->arg);
-        case TASK_KIND_CLOSURE:
-            return task->fn.closure(task->env, task->arg);
-        case TASK_KIND_TRAMPOLINE: {
-            SomaValue* args = (SomaValue*)task->env;
-            SomaValue result = task->fn.trampoline(args);
-            free(args);
-            return result;
-        }
-        case TASK_KIND_GENERIC:
-        default:
-            return task->fn.generic(task->env);
-    }
-}
-
-static void worker_set_hungry(SomaWorker* w, int hungry) {
-    int was_hungry = atomic_exchange(&w->hungry, hungry);
-    if (hungry && !was_hungry) {
-        atomic_fetch_add(&soma_par.hungry_count, 1);
-    } else if (!hungry && was_hungry) {
-        atomic_fetch_sub(&soma_par.hungry_count, 1);
-    }
-}
-
-static void* worker_main(void* arg) {
-    SomaWorker* self = (SomaWorker*)arg;
-    soma_current_worker = self;
-
-    tls_pool_init();
-
-    while (!atomic_load(&soma_par.shutdown)) {
-        SomaTask* task = deque_pop(&self->deque);
-
-        if (task == NULL) {
-            worker_set_hungry(self, 1);
-
-            int victim_id = (self->id + 1) % soma_par.num_workers;
-            for (int attempts = 0; attempts < soma_par.num_workers; attempts++) {
-                if (victim_id != self->id) {
-                    SomaWorker* victim = &soma_par.workers[victim_id];
-                    task = deque_steal(&victim->deque);
-                    self->steal_attempts++;
-                    if (task != NULL) {
-                        self->tasks_stolen++;
-                        atomic_fetch_add(&soma_par_stats.tasks_stolen, 1);
-                        worker_set_hungry(self, 0);
-                        break;
-                    }
-                }
-                victim_id = (victim_id + 1) % soma_par.num_workers;
-            }
-
-            if (task == NULL) {
-                sched_yield();
-                continue;
-            }
-        } else {
-            worker_set_hungry(self, 0);
-        }
-
-        int expected = TASK_PENDING;
-        if (atomic_compare_exchange_strong(&task->state, &expected, TASK_RUNNING)) {
-            task->result = task_execute(task);
-            atomic_store(&task->state, TASK_DONE);
-            atomic_fetch_sub(&soma_par.pending_tasks, 1);
-            self->tasks_run++;
-            atomic_fetch_add(&soma_par_stats.tasks_run, 1);
-        }
-    }
-
-    tls_pool_cleanup();
-
-    return NULL;
-}
-
-static int get_num_cpus(void) {
-#ifdef _WIN32
-    SYSTEM_INFO sysinfo;
-    GetSystemInfo(&sysinfo);
-    return (int)sysinfo.dwNumberOfProcessors;
-#else
-    return (int)sysconf(_SC_NPROCESSORS_ONLN);
-#endif
-}
-
-void soma_par_init(int num_workers) {
-    if (num_workers <= 0) {
-        num_workers = get_num_cpus() - 1;
-        if (num_workers < 1) num_workers = 1;
-    }
-    if (num_workers > SOMA_MAX_WORKERS) {
-        num_workers = SOMA_MAX_WORKERS;
-    }
-
-    soma_par.num_workers = num_workers;
-    atomic_store(&soma_par.shutdown, 0);
-    atomic_store(&soma_par.pending_tasks, 0);
-    atomic_store(&soma_par.hungry_count, 0);
-    soma_par.task_pool = NULL;
-    pthread_mutex_init(&soma_par.task_pool_lock, NULL);
-
-    for (int i = 0; i < TASK_POOL_INITIAL_SIZE; i++) {
-        SomaTask* t = (SomaTask*)malloc(sizeof(SomaTask));
-        soma_task_free(t);
-    }
-
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 512 * 1024);
-
-    for (int i = 0; i < num_workers; i++) {
-        SomaWorker* w = &soma_par.workers[i];
-        w->id = i;
-        w->runtime = &soma_par;
-        atomic_store(&w->active, 1);
-        atomic_store(&w->hungry, 0);
-        w->tasks_run = 0;
-        w->tasks_stolen = 0;
-        w->steal_attempts = 0;
-        deque_init(&w->deque);
-        pthread_create(&w->thread, &attr, worker_main, w);
-    }
-
-    pthread_attr_destroy(&attr);
-}
-
-void soma_par_shutdown(void) {
-    if (soma_par.num_workers == 0) return;
-
-    atomic_store(&soma_par.shutdown, 1);
-
-    for (int i = 0; i < soma_par.num_workers; i++) {
-        pthread_join(soma_par.workers[i].thread, NULL);
-    }
-
-    pthread_mutex_lock(&soma_par.task_pool_lock);
-    while (soma_par.task_pool != NULL) {
-        SomaTask* next = *(SomaTask**)soma_par.task_pool;
-        free(soma_par.task_pool);
-        soma_par.task_pool = next;
-    }
-    pthread_mutex_unlock(&soma_par.task_pool_lock);
-    pthread_mutex_destroy(&soma_par.task_pool_lock);
-
-    soma_par.num_workers = 0;
-}
-
-void soma_par_spawn(SomaTask* task) {
-    SomaWorker* w = soma_current_worker;
-
-    atomic_store(&task->state, TASK_PENDING);
-    atomic_fetch_add(&soma_par.pending_tasks, 1);
-    atomic_fetch_add(&soma_par_stats.tasks_spawned, 1);
-
-    if (w != NULL) {
-        deque_push(&w->deque, task);
-    } else {
-        deque_push(&soma_par.workers[0].deque, task);
-    }
-}
-
-SomaTask* soma_par_pop(SomaWorker* worker) {
-    return deque_pop(&worker->deque);
-}
-
-SomaTask* soma_par_steal(SomaWorker* thief, SomaWorker* victim) {
-    (void)thief;
-    return deque_steal(&victim->deque);
-}
-
-SomaValue soma_par_run_task(SomaTask* task) {
-    int expected = TASK_PENDING;
-    if (atomic_compare_exchange_strong(&task->state, &expected, TASK_RUNNING)) {
-        task->result = task_execute(task);
-        atomic_store(&task->state, TASK_DONE);
-        atomic_fetch_sub(&soma_par.pending_tasks, 1);
-        return task->result;
-    }
-
-    while (atomic_load(&task->state) != TASK_DONE) {
-        sched_yield();
-    }
-    return task->result;
-}
-
-SomaTask* soma_fork(SomaTaskFn fn, void* env) {
-    if (!soma_par_enabled()) return NULL;
-
-    SomaTask* task = soma_task_alloc();
-    if (!task) return NULL;
-
-    task->kind = TASK_KIND_GENERIC;
-    task->fn.generic = fn;
-    task->env = env;
-    task->arg = 0;
-    task->result = 0;
-
-    soma_par_spawn(task);
-    return task;
-}
-
-int soma_par_enabled_export(void) {
-    return soma_par_enabled();
-}
-
-SomaTask* soma_fork_direct(SomaDirectFn fn, SomaValue arg) {
-    if (!soma_par_enabled()) return NULL;
-
-    SomaTask* task = soma_task_alloc();
-    if (!task) return NULL;
-
-    task->kind = TASK_KIND_DIRECT;
-    task->fn.direct = fn;
-    task->env = NULL;
-    task->arg = arg;
-    task->result = 0;
-
-    soma_par_spawn(task);
-    return task;
-}
-
-SomaTask* soma_fork_closure(SomaClosureFn fn, void* closure, SomaValue arg) {
-    if (!soma_par_enabled()) return NULL;
-
-    SomaTask* task = soma_task_alloc();
-    if (!task) return NULL;
-
-    task->kind = TASK_KIND_CLOSURE;
-    task->fn.closure = fn;
-    task->env = closure;
-    task->arg = arg;
-    task->result = 0;
-
-    soma_par_spawn(task);
-    return task;
-}
-
-SomaTask* soma_fork_multi(void* fn, SomaValue* args, int num_args) {
-    if (!soma_par_enabled()) return NULL;
-
-    SomaTask* task = soma_task_alloc();
-    if (!task) return NULL;
-
-    SomaValue* args_copy = (SomaValue*)malloc(num_args * sizeof(SomaValue));
-    if (!args_copy) {
-        soma_task_free(task);
-        return NULL;
-    }
-    memcpy(args_copy, args, num_args * sizeof(SomaValue));
-
-    task->kind = TASK_KIND_TRAMPOLINE;
-    task->fn.trampoline = (SomaTrampolineFn)fn;
-    task->env = args_copy;
-    task->arg = (SomaValue)num_args;
-    task->result = 0;
-
-    soma_par_spawn(task);
-    return task;
-}
-
-SomaValue soma_join(SomaTask* task) {
-    if (task == NULL) return 0;
-
-    SomaValue result;
-    int state = atomic_load(&task->state);
-
-    if (state == TASK_PENDING) {
-        for (int i = 0; i < 100; i++) {
-            sched_yield();
-            state = atomic_load(&task->state);
-            if (state != TASK_PENDING) break;
-        }
-
-        if (state == TASK_PENDING) {
-            int expected = TASK_PENDING;
-            if (atomic_compare_exchange_strong(&task->state, &expected, TASK_RUNNING)) {
-                task->result = task_execute(task);
-                atomic_store(&task->state, TASK_DONE);
-                atomic_fetch_sub(&soma_par.pending_tasks, 1);
-                atomic_fetch_add(&soma_par_stats.tasks_run_inline, 1);
-                result = task->result;
-                soma_task_free(task);
-                return result;
-            }
-        }
-    }
-
-    while (atomic_load(&task->state) != TASK_DONE) {
-        SomaWorker* w = soma_current_worker;
-        if (w != NULL) {
-            SomaTask* other = deque_pop(&w->deque);
-            if (other != NULL) {
-                int exp = TASK_PENDING;
-                if (atomic_compare_exchange_strong(&other->state, &exp, TASK_RUNNING)) {
-                    other->result = task_execute(other);
-                    atomic_store(&other->state, TASK_DONE);
-                    atomic_fetch_sub(&soma_par.pending_tasks, 1);
-                }
-            }
-        }
-        sched_yield();
-    }
-
-    result = task->result;
-    soma_task_free(task);
-    return result;
-}
-
-void soma_par_print_stats(void) {
-    if (!soma_par_enabled()) {
-        fprintf(stderr, "[soma_par] Parallel runtime not enabled\n");
-        return;
-    }
-
-    fprintf(stderr, "[soma_par] Workers: %d\n", soma_par.num_workers);
-    fprintf(stderr, "[soma_par] Tasks spawned: %lu\n", (unsigned long)atomic_load(&soma_par_stats.tasks_spawned));
-    fprintf(stderr, "[soma_par] Tasks run (workers): %lu\n", (unsigned long)atomic_load(&soma_par_stats.tasks_run));
-    fprintf(stderr, "[soma_par] Tasks run (inline): %lu\n", (unsigned long)atomic_load(&soma_par_stats.tasks_run_inline));
-    fprintf(stderr, "[soma_par] Tasks stolen: %lu\n", (unsigned long)atomic_load(&soma_par_stats.tasks_stolen));
-
-    for (int i = 0; i < soma_par.num_workers; i++) {
-        SomaWorker* w = &soma_par.workers[i];
-        fprintf(stderr, "[soma_par] Worker %d: run=%lu stolen=%lu attempts=%lu\n",
-                i, (unsigned long)w->tasks_run, (unsigned long)w->tasks_stolen,
-                (unsigned long)w->steal_attempts);
-    }
-
-#ifdef SOMA_POOL_STATS
-    fprintf(stderr, "[soma_pool] SUP allocs: %lu, frees: %lu\n",
-            (unsigned long)atomic_load(&soma_pool_stats.sup_allocs),
-            (unsigned long)atomic_load(&soma_pool_stats.sup_frees));
-    fprintf(stderr, "[soma_pool] Small (48B): %lu/%lu, Medium (112B): %lu/%lu, Large: %lu/%lu\n",
-            (unsigned long)atomic_load(&soma_pool_stats.small_allocs),
-            (unsigned long)atomic_load(&soma_pool_stats.small_frees),
-            (unsigned long)atomic_load(&soma_pool_stats.medium_allocs),
-            (unsigned long)atomic_load(&soma_pool_stats.medium_frees),
-            (unsigned long)atomic_load(&soma_pool_stats.large_allocs),
-            (unsigned long)atomic_load(&soma_pool_stats.large_frees));
-    fprintf(stderr, "[soma_pool] Blocks allocated: %lu, bytes: %lu\n",
-            (unsigned long)atomic_load(&soma_pool_stats.blocks_allocated),
-            (unsigned long)atomic_load(&soma_pool_stats.bytes_allocated));
-#endif
-}
 
 #ifndef SOMA_NO_MAIN
 extern int soma_main(void);

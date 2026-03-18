@@ -50,6 +50,60 @@
 #include <stddef.h>
 #include <stdatomic.h>
 
+/*
+ * Compiler intrinsics and attributes
+ *
+ * These macros abstract GCC/Clang-specific features with safe fallbacks.
+ * They control branch prediction, code layout, alias analysis, and
+ * alignment — all critical for a high-performance allocator + eval/apply.
+ *
+ * SOMA_HOT / SOMA_COLD:
+ *   Control function placement. HOT functions are grouped into .text.hot
+ *   (better I-cache density); COLD functions are pushed away to avoid
+ *   polluting hot pages. GCC/Clang also raise inline thresholds for HOT.
+ *
+ * SOMA_MALLOC:
+ *   Returned pointer doesn't alias any existing pointer. Enables the
+ *   compiler to eliminate redundant loads after allocation in callers.
+ *
+ * SOMA_FLATTEN:
+ *   Force-inline all callees. Used on soma_apply to create one large
+ *   optimized function body — the single hottest path in eval/apply.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#define SOMA_LIKELY(x)          __builtin_expect(!!(x), 1)
+#define SOMA_UNLIKELY(x)        __builtin_expect(!!(x), 0)
+#define SOMA_PREFETCH(p)        __builtin_prefetch(p)
+#define SOMA_HOT                __attribute__((hot))
+#define SOMA_COLD               __attribute__((cold))
+#define SOMA_MALLOC             __attribute__((malloc))
+#define SOMA_ALLOC_SIZE(...)    __attribute__((alloc_size(__VA_ARGS__)))
+#define SOMA_NORETURN           __attribute__((noreturn))
+#define SOMA_FLATTEN            __attribute__((flatten))
+#define SOMA_NOINLINE           __attribute__((noinline))
+#define SOMA_NONNULL(...)       __attribute__((nonnull(__VA_ARGS__)))
+#define SOMA_WARN_UNUSED        __attribute__((warn_unused_result))
+#define SOMA_ALIGNED(n)         __attribute__((aligned(n)))
+#define SOMA_ASSUME_ALIGNED(p, a) __builtin_assume_aligned((p), (a))
+#else
+#define SOMA_LIKELY(x)          (x)
+#define SOMA_UNLIKELY(x)        (x)
+#define SOMA_PREFETCH(p)        ((void)0)
+#define SOMA_HOT
+#define SOMA_COLD
+#define SOMA_MALLOC
+#define SOMA_ALLOC_SIZE(...)
+#define SOMA_NORETURN
+#define SOMA_FLATTEN
+#define SOMA_NOINLINE
+#define SOMA_NONNULL(...)
+#define SOMA_WARN_UNUSED
+#define SOMA_ALIGNED(n)
+#define SOMA_ASSUME_ALIGNED(p, a) (p)
+#endif
+
+#define SOMA_CACHELINE 64
+
 /* Node tag constants */
 #define NODE_CLOSURE          1   /* stored in closure _pad[0] for runtime identification */
 #define NODE_FLAT_ARRAY       4
@@ -59,6 +113,21 @@
 #define SOMA_SUP_PAD0 0x53u            /* 'S' */
 #define SOMA_SUP_PAD1 0x55u            /* 'U' */
 #define SOMA_SUP_PAD2 0x50u            /* 'P' */
+
+/* Packed SUP magic for single-compare identification (little-endian: 'S','U','P') */
+#define SOMA_SUP_MAGIC_U32 (((uint32_t)SOMA_SUP_PAD2 << 16) | \
+                            ((uint32_t)SOMA_SUP_PAD1 << 8)  | \
+                            ((uint32_t)SOMA_SUP_PAD0))
+
+/*
+ * Packed SUP header: tag + pad[0..2] as a single 32-bit value.
+ * Used by soma_dup_typed to init the first 4 bytes in one store.
+ * Little-endian layout: [SUP_TAG_FRESH, 'S', 'U', 'P']
+ */
+#define SOMA_SUP_HEADER_FRESH ((uint32_t)SUP_TAG_FRESH         \
+                             | ((uint32_t)SOMA_SUP_PAD0 << 8)  \
+                             | ((uint32_t)SOMA_SUP_PAD1 << 16) \
+                             | ((uint32_t)SOMA_SUP_PAD2 << 24))
 
 /*
  * SUP (Superposition) Node Tags
@@ -152,6 +221,9 @@ typedef struct SomaClosure {
     /* SomaValue env[] follows at offset 16 */
 } SomaClosure;
 
+/* Extract env_size from closure _pad[1..2] as little-endian u16 */
+#define CLOSURE_ENV_SIZE(c) ((uint16_t)(c)->_pad[1] | ((uint16_t)(c)->_pad[2] << 8))
+
 /*
  * Type-specialized function pointers for clone and erase.
  *
@@ -224,87 +296,78 @@ typedef struct SomaFlatArrayView {
     void*     backing;     /* owned backing SomaFlatArray (or NULL) */
 } SomaFlatArrayView;
 
+/* Layout guards — catch struct packing surprises across compilers */
+_Static_assert(sizeof(SomaClosure)      == 16, "SomaClosure must be 16 bytes");
+_Static_assert(sizeof(SomaSup)          == 48
+            || sizeof(SomaSup)          == 40, "SomaSup must fit pool_48");
+_Static_assert(sizeof(SomaFlatArrayView) == 32, "View must fit pool_48");
+_Static_assert(sizeof(SomaFlatArray)    == 16, "FlatArray header must be 16 bytes");
+
 
 /*
  * Core runtime functions
  */
 
-/* Free a heap-allocated SUP/view/array by tag dispatch */
-void soma_era_free(void* value);
+SOMA_HOT void soma_era_free(void* value);
 
-/* Panic: print error message and abort */
-void soma_panic(const char* msg);
+SOMA_NORETURN SOMA_COLD void soma_panic(const char* msg);
 
 /*
  * String operations
  */
 
-/* Convert Soma String to C string (returns data pointer) */
-char* soma_to_cstring(SomaString* str);
+SOMA_NONNULL(1) char* soma_to_cstring(SomaString* str);
 
-/* Convert C string to Soma String (allocates new String) */
+SOMA_MALLOC SOMA_WARN_UNUSED
 SomaString* soma_from_cstring(const char* cstr);
 
-/* Get C string length */
 uint64_t soma_cstring_len(const char* cstr);
 
-/* Concatenate two Soma Strings */
+SOMA_MALLOC SOMA_WARN_UNUSED SOMA_HOT
 SomaString* soma_strcat(SomaString* a, SomaString* b);
 
-/* Convert int32 to Soma String */
+SOMA_MALLOC SOMA_WARN_UNUSED
 SomaString* soma_int_to_string(int32_t val);
 
-/* Free a string (length + data) */
 void soma_era_string(void* value);
 
 /*
  * Flat array view operations
  */
 
-/* Clone a flat array view (deep-copies the backing array) */
+SOMA_MALLOC SOMA_WARN_UNUSED SOMA_HOT
 void* soma_clone_flat_array_view(SomaFlatArrayView* src);
 
 /*
  * Closure operations
  */
 
-/* Allocate a closure with space for env_size captured values */
+SOMA_MALLOC SOMA_WARN_UNUSED
 void* soma_alloc_closure(void* func_ptr, uint8_t arity, uint16_t env_size);
 
-/* Apply one argument to a closure via eval/apply (Marlow & Peyton Jones 2004) */
+SOMA_HOT SOMA_FLATTEN
 void* soma_apply(void* closure, void* arg);
 
-/* Set a closure environment slot */
-void soma_closure_set_env(void* closure, uint16_t index, SomaValue value);
+SOMA_NONNULL(1) void soma_closure_set_env(void* closure, uint16_t index, SomaValue value);
+SOMA_NONNULL(1) SomaValue soma_closure_get_env(void* closure, uint16_t index);
+SOMA_NONNULL(1) void* soma_closure_get_func(void* closure);
 
-/* Get a closure environment slot */
-SomaValue soma_closure_get_env(void* closure, uint16_t index);
+SOMA_HOT void soma_era_closure(void* closure);
 
-/* Get function pointer from closure */
-void* soma_closure_get_func(void* closure);
-
-/* Erase a closure: traverse and erase all env slots, then free */
-void soma_era_closure(void* closure);
-
-/* Clone a closure under a statically assigned DUP label */
+SOMA_MALLOC SOMA_WARN_UNUSED
 void* soma_clone_closure(void* closure, uint32_t label);
 
-/* Generic heap value clone — handles SUPs, views, arrays, and closures */
 SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label);
 
 /*
  * SUP (Superposition) operations — Tier 3 lazy duplication
  */
 
-/* Create a SUP node with a type descriptor for specialized clone/erase */
-SomaValue soma_dup_typed(uint32_t label, SomaValue value,
-                         SomaTypeDesc* type_desc);
+SOMA_HOT SomaValue soma_dup_typed(uint32_t label, SomaValue value,
+                                   SomaTypeDesc* type_desc);
 
-/* Extract first projection from a SUP */
-SomaValue soma_proj0(SomaValue sup_val);
-
-/* Extract second projection from a SUP */
-SomaValue soma_proj1(SomaValue sup_val);
+SOMA_HOT SomaValue soma_proj0(SomaValue sup_val);
+SOMA_HOT SomaValue soma_proj1(SomaValue sup_val);
 
 /*
  * Memory Pool API
@@ -313,28 +376,51 @@ SomaValue soma_proj1(SomaValue sup_val);
  *   pool_48  — small objects ≤48 bytes (SUPs, small closures, small strings)
  *   pool_112 — medium objects ≤112 bytes
  * Larger objects fall through to malloc.
+ *
+ * Each pool uses a bump-pointer fast path (bump_ptr/bump_limit) for
+ * sequential allocation within a block, falling back to a LIFO free list
+ * for recycled objects. This gives a single-comparison fast path for
+ * fresh allocations.
+ *
+ * FUTURE: Region/arena allocator for batch deallocation of short-lived
+ * objects (e.g., intermediate SUPs during reduction). Would supplement
+ * the size-class pools with scope-based lifetime management.
  */
 
-#define POOL_BLOCK_SIZE  (64 * 1024)  /* 64KB per block */
-#define POOL_SIZE_48     48           /* Small objects + SUP nodes */
-#define POOL_SIZE_112    112          /* Medium objects */
+#define POOL_BLOCK_SIZE  (256 * 1024)  /* 256KB per block */
+#define POOL_SIZE_48     48            /* Small objects + SUP nodes */
+#define POOL_SIZE_112    112           /* Medium objects */
 
-/* Memory pool structure */
+/* Memory pool block — linked list of bump-allocated slabs */
 typedef struct SomaPoolBlock {
     struct SomaPoolBlock* next;
-    size_t used;
-    char data[];
+    uint32_t used;      /* bytes used in this block (max POOL_BLOCK_SIZE) */
+    uint32_t _pad;
+    char data[];        /* 16-byte aligned (follows 8+4+4 header) */
 } SomaPoolBlock;
 
+/*
+ * Pool with bump-pointer fast path.
+ * bump_ptr/bump_limit avoid reloading block->used on every allocation.
+ * Fields ordered so the hot triple (bump_ptr, bump_limit, free_list)
+ * lives in a single cache line.
+ */
 typedef struct SomaPool {
-    SomaPoolBlock* blocks;
-    size_t item_size;
-    void* free_list;
+    char*          bump_ptr;    /* next free byte in current block */
+    char*          bump_limit;  /* end of current block's data region */
+    void*          free_list;   /* LIFO free list of recycled objects */
+    size_t         item_size;
+    SomaPoolBlock* blocks;      /* linked list of allocated blocks */
 } SomaPool;
 
+/*
+ * Per-thread pool set.
+ * Each pool is cache-line aligned to prevent false sharing when one
+ * pool is hot and the other is cold.
+ */
 typedef struct SomaPools {
-    SomaPool pool_48;
-    SomaPool pool_112;
+    SomaPool pool_48  SOMA_ALIGNED(SOMA_CACHELINE);
+    SomaPool pool_112 SOMA_ALIGNED(SOMA_CACHELINE);
 } SomaPools;
 
 extern SomaPools soma_pools;
@@ -342,17 +428,20 @@ extern SomaPools soma_pools;
 void soma_pool_init(void);
 void soma_pool_cleanup(void);
 
-/* SUP pool */
+SOMA_MALLOC SOMA_WARN_UNUSED SOMA_HOT
 void* soma_pool_alloc_sup(void);
-void soma_pool_free_sup(void* ptr);
 
-/* Generic size-class pool allocation */
+SOMA_HOT void soma_pool_free_sup(void* ptr);
+
+SOMA_MALLOC SOMA_WARN_UNUSED SOMA_ALLOC_SIZE(1) SOMA_HOT
 void* soma_pool_alloc_raw(size_t byte_size);
-void  soma_pool_free_raw(void* ptr, size_t byte_size);
 
-/* Flat array view pool (32 bytes → pool_48) */
+SOMA_HOT void soma_pool_free_raw(void* ptr, size_t byte_size);
+
+SOMA_MALLOC SOMA_WARN_UNUSED SOMA_HOT
 void* soma_alloc_view(void);
-void soma_free_view(void* ptr);
+
+SOMA_HOT void soma_free_view(void* ptr);
 
 /*
  * Pool statistics — opt-in via -DSOMA_POOL_STATS.
@@ -380,129 +469,5 @@ extern SomaPoolStats soma_pool_stats;
 #define SOMA_STAT_ADD(field, n) ((void)0)
 #endif
 
-
-#include <pthread.h>
-
-/* Configuration */
-#ifndef SOMA_MAX_WORKERS
-#define SOMA_MAX_WORKERS 64
-#endif
-
-#ifndef SOMA_TASK_QUEUE_SIZE
-#define SOMA_TASK_QUEUE_SIZE 4096
-#endif
-
-/* Forward declarations */
-typedef struct SomaTask SomaTask;
-typedef struct SomaWorker SomaWorker;
-typedef struct SomaParRuntime SomaParRuntime;
-
-/* Task function signatures */
-typedef SomaValue (*SomaTaskFn)(void* env);
-typedef SomaValue (*SomaDirectFn)(SomaValue arg);
-typedef SomaValue (*SomaClosureFn)(void* closure, SomaValue arg);
-typedef SomaValue (*SomaTrampolineFn)(SomaValue* args);
-
-/* Task states */
-#define TASK_PENDING    0
-#define TASK_RUNNING    1
-#define TASK_DONE       2
-#define TASK_STOLEN     3
-
-/* Task kind */
-#define TASK_KIND_GENERIC   0
-#define TASK_KIND_DIRECT    1
-#define TASK_KIND_CLOSURE   2
-#define TASK_KIND_TRAMPOLINE 3
-
-/* Task structure */
-struct SomaTask {
-    _Atomic int state;
-    uint8_t kind;
-    union {
-        SomaTaskFn generic;
-        SomaDirectFn direct;
-        SomaClosureFn closure;
-        SomaTrampolineFn trampoline;
-    } fn;
-    void* env;
-    SomaValue arg;
-    SomaValue result;
-};
-
-/* Chase-Lev work-stealing deque */
-typedef struct {
-    _Atomic size_t top;
-    _Atomic size_t bottom;
-    _Atomic(SomaTask*) buffer[SOMA_TASK_QUEUE_SIZE];
-} SomaDeque;
-
-/* Worker thread state */
-struct SomaWorker {
-    pthread_t thread;
-    int id;
-    SomaDeque deque;
-    _Atomic int hungry;
-    _Atomic int active;
-    SomaParRuntime* runtime;
-
-    /* Per-worker stats */
-    uint64_t tasks_run;
-    uint64_t tasks_stolen;
-    uint64_t steal_attempts;
-};
-
-/* Global runtime */
-struct SomaParRuntime {
-    int num_workers;
-    SomaWorker workers[SOMA_MAX_WORKERS];
-    _Atomic int shutdown;
-    _Atomic size_t pending_tasks;
-    _Atomic size_t hungry_count;
-
-    /* Task pool for recycling */
-    SomaTask* task_pool;
-    _Atomic size_t task_pool_size;
-    pthread_mutex_t task_pool_lock;
-};
-
-extern SomaParRuntime soma_par;
-
-void soma_par_init(int num_workers);
-void soma_par_shutdown(void);
-
-static inline int soma_par_enabled(void) {
-    return soma_par.num_workers > 0;
-}
-
-SomaTask* soma_task_alloc(void);
-void soma_task_free(SomaTask* task);
-void soma_par_spawn(SomaTask* task);
-SomaTask* soma_par_pop(SomaWorker* worker);
-SomaTask* soma_par_steal(SomaWorker* thief, SomaWorker* victim);
-SomaValue soma_par_run_task(SomaTask* task);
-
-SomaTask* soma_fork(SomaTaskFn fn, void* env);
-SomaTask* soma_fork_direct(SomaDirectFn fn, SomaValue arg);
-SomaTask* soma_fork_closure(SomaClosureFn fn, void* closure, SomaValue arg);
-SomaTask* soma_fork_multi(void* fn, SomaValue* args, int num_args);
-SomaValue soma_join(SomaTask* task);
-
-typedef struct {
-    _Atomic uint64_t tasks_spawned;
-    _Atomic uint64_t tasks_run;
-    _Atomic uint64_t tasks_run_inline;
-    _Atomic uint64_t tasks_stolen;
-} SomaParStats;
-
-extern SomaParStats soma_par_stats;
-
-void soma_par_print_stats(void);
-
-extern __thread SomaWorker* soma_current_worker;
-
-static inline SomaWorker* soma_par_current_worker(void) {
-    return soma_current_worker;
-}
 
 #endif /* SOMA_RUNTIME_H */
