@@ -59,17 +59,10 @@ partial def convertRetTy : ClosedTy → LLVMType
 /-- Runtime closure object pointer type -/
 def closureTy : LLVMType := .ptr
 
-/-- Closure header struct for inline GEP field access -/
-def closureHeaderTy : LLVMType := .struct false #[.i8, .i8, .i16, .i32, .ptr]
+/-- Headerless closure struct -/
+def closureHeaderTy : LLVMType := .struct false #[.i8, .array 7 .i8, .ptr]
 
-/-- env_kind constants  -/
-def envKindDefault   : Int := 0
-def envKindFlat      : Int := 1
-def envKindTagged    : Int := 2
-def envKindList      : Int := 3
-def envKindComposite : Int := 4
-
-/-- NODE_CLOSURE tag constant -/
+/-- NODE_CLOSURE sentinel -/
 def nodeClosureTag : Int := 1
 
 /-- The tagged union struct type -/
@@ -682,6 +675,8 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
 
     match ty with
     | .tagged _tagTy variants =>
+      -- Headerless tagged union: {i32 tag, ptr payload} on stack,
+      -- payload is a raw i64[] buffer with fields starting at index 0 (no header)
       let structPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 (.local paramRef))
       let structVal ← CodegenM.withFuncBuilder (FuncBuilder.load taggedTy (.local structPtr))
       let tagVal ← CodegenM.withFuncBuilder do
@@ -700,8 +695,11 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
       let hasAnyErasableFields := variants.any fun (_, fields) =>
         fields.any fun ft => ft.needsErase
 
+      -- Compute max field count for pool free size calculation
+      let maxFieldCount : Nat := variants.foldl (fun acc (_, fields) => max acc fields.size) 0
+      let payloadByteSize : Int := Int.ofNat (maxFieldCount * 8)
+
       if hasAnyErasableFields then
-        -- Build a switch over the tag value to dispatch per-variant
         let freeLabel ← CodegenM.withFuncBuilder (FuncBuilder.freshLabel "free_payload")
         let mut cases : Array (LLVMConst × Label) := #[]
         let mut variantLabels : Array Label := #[]
@@ -711,23 +709,20 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
           variantLabels := variantLabels.push lbl
           cases := cases.push (.int (Int.ofNat vi) 32, lbl)
 
-        -- Default: no field erasure, just free the payload
         CodegenM.withFuncBuilder (FuncBuilder.switch .i32 (.local tagVal) freeLabel cases)
 
-        -- Emit per-variant blocks
         for h : vi in [:variants.size] do
           if hv : vi < variants.size then
             let (_, fields) := variants[vi]
             let lbl := variantLabels[vi]!
             CodegenM.withFuncBuilder (FuncBuilder.startBlock lbl)
 
-            -- Erase only this variant's heap-typed fields
             for hf : fi in [:fields.size] do
               if h2 : fi < fields.size then
                 let fieldTy := fields[fi]
                 if fieldTy.needsErase then
                   let fieldAddr ← CodegenM.withFuncBuilder do
-                    FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fi + 2]
+                    FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fi]
                   let fieldVal ← CodegenM.withFuncBuilder do
                     FuncBuilder.load .i64 (.local fieldAddr)
                   let fieldEraserName ← getOrEmitEraser fieldTy
@@ -736,33 +731,35 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
 
             CodegenM.withFuncBuilder (FuncBuilder.br freeLabel)
 
-        -- Free block: free payload buffer and boxed struct, then return
+        -- Free block: free headerless payload buffer + boxed struct
         CodegenM.withFuncBuilder (FuncBuilder.startBlock freeLabel)
         CodegenM.withFuncBuilder do
-          FuncBuilder.callNamedVoid "soma_era_tagged_payload" #[(.ptr, .local payloadPtr)]
+          FuncBuilder.callNamedVoid "soma_pool_free_raw"
+            #[(.ptr, .local payloadPtr), (.i64, .const (.int payloadByteSize 64))]
         CodegenM.withFuncBuilder do
           FuncBuilder.callNamedVoid "free" #[(.ptr, .local structPtr)]
         CodegenM.withFuncBuilder FuncBuilder.retVoid
       else
-        -- No erasable fields in any variant — just free payload and struct
+        -- No erasable fields — just free payload and struct
         CodegenM.withFuncBuilder do
-          FuncBuilder.callNamedVoid "soma_era_tagged_payload" #[(.ptr, .local payloadPtr)]
+          FuncBuilder.callNamedVoid "soma_pool_free_raw"
+            #[(.ptr, .local payloadPtr), (.i64, .const (.int payloadByteSize 64))]
         CodegenM.withFuncBuilder do
           FuncBuilder.callNamedVoid "free" #[(.ptr, .local structPtr)]
         CodegenM.withFuncBuilder FuncBuilder.retVoid
 
-      -- Null-payload block: free only the boxed struct (no payload to free)
+      -- Null-payload block: free only the boxed struct
       CodegenM.withFuncBuilder (FuncBuilder.startBlock nullLabel)
       CodegenM.withFuncBuilder do
         FuncBuilder.callNamedVoid "free" #[(.ptr, .local structPtr)]
       CodegenM.withFuncBuilder FuncBuilder.retVoid
 
     | .closure _ _ =>
-      -- Closure: delegate to soma_era_free (closures still have headers for now)
+      -- Delegate to soma_era_closure which reads env_size from _pad[1..2]
       let asPtr ← CodegenM.withFuncBuilder do
         FuncBuilder.inttoptr .i64 (.local paramRef)
       CodegenM.withFuncBuilder do
-        FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, .local asPtr)]
+        FuncBuilder.callNamedVoid "soma_era_closure" #[(.ptr, .local asPtr)]
       CodegenM.withFuncBuilder FuncBuilder.retVoid
 
     | .rawPtr =>
@@ -830,13 +827,12 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
 
     match ty with
     | .tagged _tagTy variants =>
-      -- The i64 param is a pointer to a heap-allocated {i32, ptr} struct
+      -- Headerless: payload is raw i64[] with fields at index 0 (no header)
       let structPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 (.local valParam))
       let structVal ← CodegenM.withFuncBuilder (FuncBuilder.load taggedTy (.local structPtr))
       let tagVal ← CodegenM.withFuncBuilder (FuncBuilder.extractvalue taggedTy (.local structVal) #[0])
       let payloadPtr ← CodegenM.withFuncBuilder (FuncBuilder.extractvalue taggedTy (.local structVal) #[1])
 
-      -- Null payload means no heap data to clone (e.g. None, Nil)
       let isNull ← CodegenM.withFuncBuilder do
         FuncBuilder.icmp .eq .ptr (.local payloadPtr) (.const .null)
       let cloneLabel ← CodegenM.withFuncBuilder (FuncBuilder.freshLabel "clone")
@@ -846,9 +842,10 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
       CodegenM.withFuncBuilder (FuncBuilder.startBlock cloneLabel)
 
       let maxFieldCount : Nat := variants.foldl (fun acc (_, fields) => max acc fields.size) 0
+      let payloadByteSize : Int := Int.ofNat (maxFieldCount * 8)
       let newPayload ← CodegenM.withFuncBuilder do
-        FuncBuilder.callNamed .ptr "soma_alloc_tagged_payload"
-          #[(.i64, .const (.int maxFieldCount 64))]
+        FuncBuilder.callNamed .ptr "soma_pool_alloc_raw"
+          #[(.i64, .const (.int payloadByteSize 64))]
 
       let buildLabel ← CodegenM.withFuncBuilder (FuncBuilder.freshLabel "build")
 
@@ -878,11 +875,11 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
               if h2 : fi < fields.size then
                 let fieldTy := fields[fi]
                 let srcAddr ← CodegenM.withFuncBuilder do
-                  FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fi + 2]
+                  FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fi]
                 let fieldVal ← CodegenM.withFuncBuilder do
                   FuncBuilder.load .i64 (.local srcAddr)
                 let dstAddr ← CodegenM.withFuncBuilder do
-                  FuncBuilder.gepi64 .i64 (.local newPayload) #[fi + 2]
+                  FuncBuilder.gepi64 .i64 (.local newPayload) #[fi]
 
                 if fieldTy.needsErase then
                   let fieldClonerName ← getOrEmitCloner fieldTy
@@ -899,11 +896,11 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
       else
         for fi in [:maxFieldCount] do
           let srcAddr ← CodegenM.withFuncBuilder do
-            FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fi + 2]
+            FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fi]
           let fieldVal ← CodegenM.withFuncBuilder do
             FuncBuilder.load .i64 (.local srcAddr)
           let dstAddr ← CodegenM.withFuncBuilder do
-            FuncBuilder.gepi64 .i64 (.local newPayload) #[fi + 2]
+            FuncBuilder.gepi64 .i64 (.local newPayload) #[fi]
           CodegenM.withFuncBuilder do
             FuncBuilder.store .i64 (.local fieldVal) (.local dstAddr)
         CodegenM.withFuncBuilder (FuncBuilder.br buildLabel)
@@ -926,7 +923,8 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
       CodegenM.withFuncBuilder (FuncBuilder.ret .i64 (.local valParam))
 
     | .closure _ _ =>
-      -- Closure: delegate to soma_clone_closure (closures still have headers)
+      -- Delegate to soma_clone_closure which reads env_size from _pad[1..2]
+      -- and handles PAPs with arbitrary env sizes
       let asPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 (.local valParam))
       let cloned ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .ptr "soma_clone_closure"
@@ -1052,10 +1050,10 @@ def getOrCreateTrampoline (arity : Nat) : CodegenM String := do
     let outerEnvSlotAddr ← FuncBuilder.gepi32 compositeEnvTy (.local compositeEnvRef) #[0, 1]
     let outerEnvAsI64 ← FuncBuilder.load .i64 (.local outerEnvSlotAddr)
     let outerEnvPtr ← FuncBuilder.inttoptr .i64 (.local outerEnvAsI64)
-    -- Extract fn_ptr from inner closure header (field 4 = function pointer)
-    let fnPtrAddr ← FuncBuilder.gepi32 closureHeaderTy (.local innerClosurePtr) #[0, 4]
+    -- Headerless: func_ptr is field 2 of { i8, [7xi8], ptr }
+    let fnPtrAddr ← FuncBuilder.gepi32 closureHeaderTy (.local innerClosurePtr) #[0, 2]
     let fnPtr ← FuncBuilder.load .ptr (.local fnPtrAddr)
-    -- Extract inner_env from inner closure env slot (slot 1 of the closure layout)
+    -- Headerless: env is at GEP index 1 past header struct
     let innerEnvAddr ← FuncBuilder.gepi32 closureHeaderTy (.local innerClosurePtr) #[1]
     let innerEnvAsI64 ← FuncBuilder.load .i64 (.local innerEnvAddr)
     let innerEnvPtr ← FuncBuilder.inttoptr .i64 (.local innerEnvAsI64)
@@ -1079,9 +1077,7 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
   let funcName ← CodegenM.getFuncName funcId.id
   let (envLLVMTy, envVal) ← convertOperandWithTy env
   let envAlloTy ← operandTy env
-  -- Detect empty env (unit/erased): CTOR(closureTag) with ERA produces unit env
-  -- For empty env: arity = full params.size (no arg captured), envSize = 0
-  -- For real env (partial application): arity = params.size - 1, envSize = 1
+  -- Detect empty env (unit/erased)
   let isEmptyEnv := envAlloTy == .prim .unit
   let closureArity : Nat ← do
     match ← CodegenM.getFuncSig funcId.id with
@@ -1089,23 +1085,27 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
       let n := sig.params.size
       pure (if isEmptyEnv then n else if n == 0 then 0 else n - 1)
     | none => pure 0
-  let envSize : Int := if isEmptyEnv then 0 else 1
-  let envKind : Int := match envAlloTy with
-    | .tagged _ _ => envKindTagged
-    | .prim _ => envKindFlat
-    | _ => envKindDefault
+  -- Headerless closure: { i8 arity, [7xi8] pad, ptr func_ptr, i64 env[0..] }
+  let envSlotCount : Nat := if isEmptyEnv then 0 else 1
+  let closureByteSize : Int := Int.ofNat (16 + envSlotCount * 8)
   let closurePtr ← CodegenM.withFuncBuilder do
-    FuncBuilder.callNamed .ptr "soma_pool_alloc_closure" #[(.i16, intVal envSize 16)]
-  -- Initialize header fields inline via GEP+store
-  let tagAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 0])
-  CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal nodeClosureTag 8) (.local tagAddr))
-  let arityAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1])
+    FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int closureByteSize 64))]
+  -- Store arity (field 0 of closureHeaderTy)
+  let arityAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 0])
   CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal (Int.ofNat closureArity) 8) (.local arityAddr))
-  let envSizeAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
-  CodegenM.withFuncBuilder (FuncBuilder.store .i16 (intVal envSize 16) (.local envSizeAddr))
-  let envKindAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 3])
-  CodegenM.withFuncBuilder (FuncBuilder.store .i32 (intVal envKind 32) (.local envKindAddr))
-  let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 4])
+  -- Store _pad[0] = NODE_CLOSURE sentinel for runtime identification
+  let pad0Addr ← CodegenM.withFuncBuilder do
+    FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1, 0]
+  CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal nodeClosureTag 8) (.local pad0Addr))
+  -- Store env_size in _pad[1..2] as little-endian u16
+  let pad1Addr ← CodegenM.withFuncBuilder do
+    FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1, 1]
+  CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal (Int.ofNat (envSlotCount % 256)) 8) (.local pad1Addr))
+  let pad2Addr ← CodegenM.withFuncBuilder do
+    FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1, 2]
+  CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal (Int.ofNat (envSlotCount / 256)) 8) (.local pad2Addr))
+  -- Store func_ptr (field 2 of closureHeaderTy = the ptr field)
+  let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
   CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal funcName) (.local funcFieldAddr))
   -- Store env slot only if env is non-empty
   if !isEmptyEnv then
@@ -1126,6 +1126,7 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
                       pure (.local boxPtr)
     let envAsI64 ← CodegenM.withFuncBuilder do
       FuncBuilder.ptrtoint .i64 envPtrVal
+    -- Env slot is at GEP index 1 past the header struct
     let envSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
     CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local envAsI64) (.local envSlotAddr))
   let closureTyAlloy ← do
@@ -1393,10 +1394,9 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         -- By-value tagged union: extractvalue to get payload pointer
         CodegenM.withFuncBuilder do
           FuncBuilder.extractvalue llvmValTy valRef #[1]
-    -- Payload layout: [tag+pad : 8B, count : i64, field0 : i64, ...]
-    -- Fields start at i64 index 2 (after 8-byte header + 8-byte count)
+    -- Headerless payload: fields start at i64 index 0 (no header)
     let fieldPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fieldIdx + 2]
+      FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fieldIdx]
     let ref ← CodegenM.withFuncBuilder do
       FuncBuilder.load llvmResultTy (.local fieldPtr)
     pure (some (ref, resultTy))
@@ -1410,17 +1410,17 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       FuncBuilder.store .i32 (i32Val tag) (.local tagPtr)
     -- Allocate and store payload if non-empty
     if payload.size > 0 then
-      -- Payload layout: [tag+pad : 8B, count : i64, field0 : i64, ...]
-      -- Fields start at i64 index 2 (after 8-byte header + 8-byte count)
+      -- Headerless payload: raw i64[] buffer, fields at index 0
+      let payloadByteSize : Int := Int.ofNat (payload.size * 8)
       let payloadMem ← CodegenM.withFuncBuilder do
-        FuncBuilder.callNamed .ptr "soma_alloc_tagged_payload" #[(.i64, i64Val payload.size)]
+        FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int payloadByteSize 64))]
       for i in [:payload.size] do
         if h : i < payload.size then
           let fieldOp := payload[i]
           let (fieldLLVMTy, fieldVal) ← convertOperandWithTy fieldOp
+          -- Headerless: fields at index i (no +2 offset)
           let fieldPtr ← CodegenM.withFuncBuilder do
-            FuncBuilder.gepi64 .i64 (.local payloadMem) #[i + 2]
-          -- Store as i64 to match the i64-slot payload layout used by taggedFieldAccess
+            FuncBuilder.gepi64 .i64 (.local payloadMem) #[i]
           let i64Val ← toI64 fieldLLVMTy fieldVal
           CodegenM.withFuncBuilder do
             FuncBuilder.store .i64 (.local i64Val) (.local fieldPtr)
@@ -1443,16 +1443,12 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       if h : i < payload.size then
         let fieldOp := payload[i]
         let (fieldLLVMTy, fieldVal) ← convertOperandWithTy fieldOp
+        -- Headerless: fields at index i (no +2 offset)
         let fieldPtr ← CodegenM.withFuncBuilder do
-          FuncBuilder.gepi64 .i64 reusePtr #[i + 2]
+          FuncBuilder.gepi64 .i64 reusePtr #[i]
         let i64Val ← toI64 fieldLLVMTy fieldVal
         CodegenM.withFuncBuilder do
           FuncBuilder.store .i64 (.local i64Val) (.local fieldPtr)
-    -- Update the count field if needed (offset 1 in i64 layout = bytes 8..15)
-    let countPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi64 .i64 reusePtr #[1]
-    CodegenM.withFuncBuilder do
-      FuncBuilder.store .i64 (i64Val payload.size) (.local countPtr)
     -- Build the result struct {tag, reusePtr} on the stack
     let taggedPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca taggedTy)
     let tagPtr ← CodegenM.withFuncBuilder do
@@ -1530,36 +1526,38 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let fnClosureVal ← if fnClosureLLVMTy == .ptr then pure fnClosureRaw
       else coerceValue fnClosureLLVMTy .ptr fnClosureRaw
     let (envLLVMTy, envVal) ← convertOperandWithTy env
-    -- Determine arity from result type (closure type carries arg types)
     let closureArity : Nat := match resultTy with
       | .closure argTys _ => argTys.size
       | _ => 0
-    -- Get or create a trampoline for this arity
     let trampolineName ← getOrCreateTrampoline closureArity
     let compositeBuf ← CodegenM.withFuncBuilder do
       FuncBuilder.callNamed .ptr "malloc" #[(.i64, intVal 16 64)]
-    -- Store inner closure pointer as i64 at slot 0
     let fnAsI64 ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 fnClosureVal)
     CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local fnAsI64) (.local compositeBuf))
-    -- Store outer env as i64 at slot 1
     let envSlotAddr ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 compositeEnvTy (.local compositeBuf) #[0, 1]
     let envAsI64 ← toI64 envLLVMTy envVal
     CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local envAsI64) (.local envSlotAddr))
-    -- Allocate closure pointing to trampoline, with composite env
+    -- Headerless closure: { i8 arity, [7xi8] pad, ptr func_ptr, i64 env }
+    let closureByteSize : Int := 24  -- 16 header + 8 env
     let closurePtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.callNamed .ptr "soma_pool_alloc_closure" #[(.i16, intVal 1 16)]
-    -- Initialize header fields
-    let tagAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 0])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal nodeClosureTag 8) (.local tagAddr))
-    let arityAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1])
+      FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int closureByteSize 64))]
+    -- Store arity
+    let arityAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 0])
     CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal (Int.ofNat closureArity) 8) (.local arityAddr))
-    let envSizeAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i16 (intVal 1 16) (.local envSizeAddr))
-    let envKindAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 3])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i32 (intVal envKindComposite 32) (.local envKindAddr))
-    -- Store trampoline as the function pointer
-    let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 4])
+    -- Store _pad[0] = NODE_CLOSURE sentinel
+    let dynPad0Addr ← CodegenM.withFuncBuilder do
+      FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1, 0]
+    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal nodeClosureTag 8) (.local dynPad0Addr))
+    -- Store env_size=1 in _pad[1..2]
+    let dynPad1Addr ← CodegenM.withFuncBuilder do
+      FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1, 1]
+    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal 1 8) (.local dynPad1Addr))
+    let dynPad2Addr ← CodegenM.withFuncBuilder do
+      FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 1, 2]
+    CodegenM.withFuncBuilder (FuncBuilder.store .i8 (intVal 0 8) (.local dynPad2Addr))
+    -- Store trampoline as the function pointer (field 2 = ptr in headerless layout)
+    let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
     CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal trampolineName) (.local funcFieldAddr))
     -- Store composite env pointer as i64 in the env slot
     let compositeAsI64 ← CodegenM.withFuncBuilder do
@@ -1570,14 +1568,16 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
   | .closureFunc closure =>
     let closureVal ← convertOperand closure
+    -- Headerless: func_ptr is field 2 of { i8, [7xi8], ptr }
     let funcPtrAddr ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi32 closureHeaderTy closureVal #[0, 4]
+      FuncBuilder.gepi32 closureHeaderTy closureVal #[0, 2]
     let ref ← CodegenM.withFuncBuilder do
       FuncBuilder.load .ptr (.local funcPtrAddr)
     pure (some (ref, .rawPtr))
 
   | .closureEnv closure =>
     let closureVal ← convertOperand closure
+    -- Headerless: env is at GEP index 1 past the header struct
     let envBaseAddr ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 closureHeaderTy closureVal #[1]
     let rawRef ← CodegenM.withFuncBuilder do
@@ -1797,7 +1797,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         pure none
 
     | .toCString =>
-      -- Convert String to C string: call runtime function
+      -- Headerless string conversion
       let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_to_cstring" llvmArgs)
       pure (some (ref, .rawPtr))
 
@@ -1813,6 +1813,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
           (FuncBuilder.bitcast .ptr .ptr (.global ⟨s!".soma_str.{idx}"⟩))
         pure (some (ref, .rawPtr))
       | none =>
+        -- Headerless string allocation
         let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_from_cstring" llvmArgs)
         pure (some (ref, .rawPtr))
 
@@ -1822,12 +1823,12 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       pure (some (ref, .prim .u64))
 
     | .strcat =>
-      -- String concatenation: call runtime function
+      -- Headerless string concatenation
       let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_strcat" llvmArgs)
       pure (some (ref, .rawPtr))
 
     | .intToString =>
-      -- Integer to string: call runtime function
+      -- Headerless int to string
       let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_int_to_string" llvmArgs)
       pure (some (ref, .rawPtr))
 
@@ -1873,7 +1874,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       let argAlloTy ← operandTy arg
       let (argLLVMTy, argVal) ← convertOperandWithTy arg
       if argAlloTy == Ty.string && !isSomaRuntime then
-        -- SomaString → C string conversion for foreign extern calls
+        -- Headerless SomaStringH → C string conversion for foreign extern calls
         let cstr ← CodegenM.withFuncBuilder
           (FuncBuilder.callNamed .ptr "soma_to_cstring" #[(.ptr, argVal)])
         llvmArgs := llvmArgs.push (.ptr, .local cstr)
@@ -2117,6 +2118,15 @@ def addRuntimeDeclarations : CodegenM Unit := do
 
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
+      name := "soma_era_closure"
+      retTy := .void
+      params := #[{ name := "ptr", ty := .ptr, attrs := #["nocapture"] }]
+      attrs := { nounwind := true }
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
       name := "soma_era_string"
       retTy := .void
       params := #[{ name := "ptr", ty := .ptr, attrs := #["nocapture"] }]
@@ -2126,56 +2136,20 @@ def addRuntimeDeclarations : CodegenM Unit := do
 
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
-      name := "soma_era_tagged_payload"
-      retTy := .void
-      params := #[{ name := "payload", ty := .ptr, attrs := #["nocapture"] }]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_alloc_tagged_payload"
+      name := "soma_pool_alloc_raw"
       retTy := .ptr
       returnAttrs := #["noalias"]
-      params := #[{ name := "field_count", ty := .i64 }]
+      params := #[{ name := "byte_size", ty := .i64 }]
       attrs := { nounwind := true }
       isDeclaration := true
     }
 
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
-      name := "soma_panic"
+      name := "soma_pool_free_raw"
       retTy := .void
-      params := #[{ name := "msg", ty := .ptr, attrs := #["nocapture", "readonly"] }]
-      attrs := { noreturn := true, nounwind := true, cold := true }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "llvm.memcpy.p0.p0.i64"
-      retTy := .void
-      params := #[
-        { name := "dst", ty := .ptr, attrs := #["nocapture", "writeonly"] },
-        { name := "src", ty := .ptr, attrs := #["nocapture", "readonly"] },
-        { name := "len", ty := .i64 },
-        { name := "isvolatile", ty := .i1 }
-      ]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "llvm.memset.p0.i64"
-      retTy := .void
-      params := #[
-        { name := "dst", ty := .ptr, attrs := #["nocapture", "writeonly"] },
-        { name := "val", ty := .i8 },
-        { name := "len", ty := .i64 },
-        { name := "isvolatile", ty := .i1 }
-      ]
+      params := #[{ name := "ptr", ty := .ptr, attrs := #["nocapture"] },
+                  { name := "byte_size", ty := .i64 }]
       attrs := { nounwind := true }
       isDeclaration := true
     }
@@ -2236,10 +2210,37 @@ def addRuntimeDeclarations : CodegenM Unit := do
 
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
-      name := "soma_pool_alloc_closure"
-      retTy := .ptr
-      returnAttrs := #["noalias"]
-      params := #[{ name := "env_size", ty := .i16 }]
+      name := "soma_panic"
+      retTy := .void
+      params := #[{ name := "msg", ty := .ptr, attrs := #["nocapture", "readonly"] }]
+      attrs := { noreturn := true, nounwind := true, cold := true }
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "llvm.memcpy.p0.p0.i64"
+      retTy := .void
+      params := #[
+        { name := "dst", ty := .ptr, attrs := #["nocapture", "writeonly"] },
+        { name := "src", ty := .ptr, attrs := #["nocapture", "readonly"] },
+        { name := "len", ty := .i64 },
+        { name := "isvolatile", ty := .i1 }
+      ]
+      attrs := { nounwind := true }
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "llvm.memset.p0.i64"
+      retTy := .void
+      params := #[
+        { name := "dst", ty := .ptr, attrs := #["nocapture", "writeonly"] },
+        { name := "val", ty := .i8 },
+        { name := "len", ty := .i64 },
+        { name := "isvolatile", ty := .i1 }
+      ]
       attrs := { nounwind := true }
       isDeclaration := true
     }
@@ -2253,16 +2254,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
       isDeclaration := true
     }
 
-  -- SUP operations (lazy duplication via superposition nodes)
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_dup"
-      retTy := .i64
-      params := #[{ name := "label", ty := .i32 }, { name := "value", ty := .i64 }]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
-
+  -- SUP operations
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
       name := "soma_dup_typed"
@@ -2339,13 +2331,13 @@ def addRuntimeDeclarations : CodegenM Unit := do
     }
 
   let runtimeNames := #[
-    "malloc", "free", "soma_era_free", "soma_era_string",
-    "soma_era_tagged_payload", "soma_alloc_tagged_payload",
-    "soma_panic",
+    "malloc", "free",
+    "soma_era_free", "soma_era_closure", "soma_era_string", "soma_panic",
     "llvm.memcpy.p0.p0.i64", "llvm.memset.p0.i64",
+    "soma_pool_alloc_raw", "soma_pool_free_raw",
     "soma_to_cstring", "soma_from_cstring", "soma_cstring_len",
-    "soma_strcat", "soma_int_to_string", "soma_pool_alloc_closure",
-    "soma_apply", "soma_dup", "soma_dup_typed", "soma_proj0", "soma_proj1",
+    "soma_strcat", "soma_int_to_string",
+    "soma_apply", "soma_dup_typed", "soma_proj0", "soma_proj1",
     "soma_clone_closure", "soma_clone_heap_value_for_dup",
     "soma_clone_flat_array_view", "soma_alloc_view", "soma_free_view"
   ]
@@ -2385,12 +2377,10 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
       isConstant := true
       align := some 1
     }
-    let somaStrTy : LLVMType := .struct false #[.i8, .array 3 .i8, .i32, .i64, .array strBytes .i8]
+    let staticLength : Int := (s.utf8ByteSize : Int) + Int.ofNat (1 <<< 63)
+    let somaStrTy : LLVMType := .struct false #[.i64, .array strBytes .i8]
     let somaStrInit : LLVMConst := .struct false #[
-      (.i8, .int 130 8),
-      (.array 3 .i8, .zeroinit (.array 3 .i8)),
-      (.i32, .int 1398035015 32),
-      (.i64, .int (s.utf8ByteSize : Int) 64),
+      (.i64, .int staticLength 64),
       (.array strBytes .i8, .string s)
     ]
     let somaStrGlobal : LLVMGlobal := {

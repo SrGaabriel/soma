@@ -141,97 +141,34 @@ void soma_pool_cleanup(void) {
 }
 
 /*
- * Size-class routing: all object types share the same three pools.
- * Objects ≤48 bytes → pool_48, ≤112 bytes → pool_112, larger → malloc.
+ * ============================================================================
+ * Generic Size-Class Pool Allocation
+ * ============================================================================
  */
 
-void* soma_pool_alloc_closure(uint16_t env_size) {
-    size_t needed = sizeof(SomaClosure) + (env_size * sizeof(void*));
+void* soma_pool_alloc_raw(size_t byte_size) {
     SomaPools* pools = get_pools();
 
-    if (needed <= POOL_SIZE_48) {
+    if (byte_size <= POOL_SIZE_48) {
         SOMA_STAT_INC(small_allocs);
         return pool_alloc(&pools->pool_48);
     }
-    if (needed <= POOL_SIZE_112) {
+    if (byte_size <= POOL_SIZE_112) {
         SOMA_STAT_INC(medium_allocs);
         return pool_alloc(&pools->pool_112);
     }
 
     SOMA_STAT_INC(large_allocs);
-    return malloc(needed);
+    return malloc(byte_size);
 }
 
-void soma_pool_free_closure(void* ptr, uint16_t env_size) {
-    size_t needed = sizeof(SomaClosure) + (env_size * sizeof(void*));
+void soma_pool_free_raw(void* ptr, size_t byte_size) {
     SomaPools* pools = get_pools();
 
-    if (needed <= POOL_SIZE_48) {
+    if (byte_size <= POOL_SIZE_48) {
         SOMA_STAT_INC(small_frees);
         pool_free(&pools->pool_48, ptr);
-    } else if (needed <= POOL_SIZE_112) {
-        SOMA_STAT_INC(medium_frees);
-        pool_free(&pools->pool_112, ptr);
-    } else {
-        SOMA_STAT_INC(large_frees);
-        free(ptr);
-    }
-}
-
-void* soma_pool_alloc_string(size_t total_size) {
-    SomaPools* pools = get_pools();
-
-    if (total_size <= POOL_SIZE_48) {
-        SOMA_STAT_INC(small_allocs);
-        return pool_alloc(&pools->pool_48);
-    }
-    if (total_size <= POOL_SIZE_112) {
-        SOMA_STAT_INC(medium_allocs);
-        return pool_alloc(&pools->pool_112);
-    }
-
-    SOMA_STAT_INC(large_allocs);
-    return malloc(total_size);
-}
-
-void soma_pool_free_string(void* ptr, size_t total_size) {
-    SomaPools* pools = get_pools();
-
-    if (total_size <= POOL_SIZE_48) {
-        SOMA_STAT_INC(small_frees);
-        pool_free(&pools->pool_48, ptr);
-    } else if (total_size <= POOL_SIZE_112) {
-        SOMA_STAT_INC(medium_frees);
-        pool_free(&pools->pool_112, ptr);
-    } else {
-        SOMA_STAT_INC(large_frees);
-        free(ptr);
-    }
-}
-
-void* soma_pool_alloc_tagged(size_t total_size) {
-    SomaPools* pools = get_pools();
-
-    if (total_size <= POOL_SIZE_48) {
-        SOMA_STAT_INC(small_allocs);
-        return pool_alloc(&pools->pool_48);
-    }
-    if (total_size <= POOL_SIZE_112) {
-        SOMA_STAT_INC(medium_allocs);
-        return pool_alloc(&pools->pool_112);
-    }
-
-    SOMA_STAT_INC(large_allocs);
-    return malloc(total_size);
-}
-
-void soma_pool_free_tagged(void* ptr, size_t total_size) {
-    SomaPools* pools = get_pools();
-
-    if (total_size <= POOL_SIZE_48) {
-        SOMA_STAT_INC(small_frees);
-        pool_free(&pools->pool_48, ptr);
-    } else if (total_size <= POOL_SIZE_112) {
+    } else if (byte_size <= POOL_SIZE_112) {
         SOMA_STAT_INC(medium_frees);
         pool_free(&pools->pool_112, ptr);
     } else {
@@ -258,50 +195,29 @@ void soma_pool_free_sup(void* ptr) {
     pool_free(&pools->pool_48, ptr);
 }
 
+/*
+ * ============================================================================
+ * Flat Array View Pool
+ * ============================================================================
+ */
+
+void* soma_alloc_view(void) {
+    SomaPools* pools = get_pools();
+    SOMA_STAT_INC(small_allocs);
+    return pool_alloc(&pools->pool_48);
+}
+
+void soma_free_view(void* ptr) {
+    SomaPools* pools = get_pools();
+    SOMA_STAT_INC(small_frees);
+    pool_free(&pools->pool_48, ptr);
+}
 
 /*
- * soma_fresh_label — Generate a fresh unique duplication label
+ * ============================================================================
+ * Flat Array View Clone
+ * ============================================================================
  */
-uint32_t soma_fresh_label(void) {
-    soma_panic("soma_fresh_label: dynamic runtime labels are disabled; labels must be compiler-assigned");
-    return 0;
-}
-
-/* Check if a SomaValue is a heap pointer to a SUP node */
-static inline int is_heap_sup(SomaValue value) {
-    if (!SOMA_IS_PTR(value) || value == 0) return 0;
-    SomaSup* sup = (SomaSup*)SOMA_TO_PTR(value);
-    if (!IS_SUP(sup->tag)) return 0;
-    return sup->_pad[0] == SOMA_SUP_PAD0 &&
-           sup->_pad[1] == SOMA_SUP_PAD1 &&
-           sup->_pad[2] == SOMA_SUP_PAD2;
-}
-
-/* Check if a SomaValue is a heap pointer to a closure */
-static inline int is_heap_closure(SomaValue value) {
-    if (!SOMA_IS_PTR(value) || value == 0) return 0;
-    SomaClosure* closure = (SomaClosure*)SOMA_TO_PTR(value);
-    return closure->tag == NODE_CLOSURE;
-}
-
-static SomaValue soma_clone_value_for_fork(SomaValue value);
-static void* soma_clone_closure_for_fork(void* closure_ptr);
-
-static SomaString* soma_clone_string_obj(SomaString* src) {
-    if (src == NULL) return NULL;
-    size_t data_bytes = (size_t)src->length + 1;
-    size_t total = sizeof(SomaString) + data_bytes;
-    SomaString* out = (SomaString*)soma_pool_alloc_string(total);
-    if (out == NULL) {
-        soma_panic("soma_clone_string_obj: out of memory");
-        return NULL;
-    }
-    out->tag = NODE_STRING;
-    out->_magic = SOMA_STRING_MAGIC;
-    out->length = src->length;
-    memcpy(out->data, src->data, data_bytes);
-    return out;
-}
 
 void* soma_clone_flat_array_view(SomaFlatArrayView* src) {
     if (src == NULL) return NULL;
@@ -322,12 +238,10 @@ void* soma_clone_flat_array_view(SomaFlatArrayView* src) {
         memcpy(newBacking, srcBacking, backingTotal);
         newBacking->_reserved = 0;
 
-        /* Compute the data pointer offset within the backing */
         ptrdiff_t offset = (char*)src->data - (char*)(srcBacking + 1);
         newData = (char*)(newBacking + 1) + offset;
     }
 
-    /* Allocate the new view via pool */
     SomaFlatArrayView* dst = (SomaFlatArrayView*)soma_alloc_view();
     if (dst == NULL) {
         soma_panic("soma_clone_flat_array_view: out of memory");
@@ -342,24 +256,26 @@ void* soma_clone_flat_array_view(SomaFlatArrayView* src) {
     return dst;
 }
 
+/*
+ * ============================================================================
+ * Generic Heap Value Clone (SUP/view/array only)
+ * ============================================================================
+ */
+
 SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
     if (!SOMA_IS_PTR(value) || value == 0) return value;
 
     void* ptr = SOMA_TO_PTR(value);
     uint8_t tag = *(uint8_t*)ptr;
 
-    switch (tag) {
-    case NODE_CLOSURE:
-        return SOMA_PTR(soma_clone_closure(ptr, label));
-    case NODE_STRING:
-        return SOMA_PTR(soma_clone_string_obj((SomaString*)ptr));
-    case NODE_TAGGED_PAYLOAD:
-        return SOMA_PTR(soma_clone_tagged_payload(ptr, label));
-    case NODE_FLAT_ARRAY_VIEW:
+    /* Only SUPs and flat array types have identifiable tags */
+    if (IS_SUP(tag)) {
+        return soma_dup_typed(label, value, NULL);
+    }
+    if (tag == NODE_FLAT_ARRAY_VIEW) {
         return SOMA_PTR(soma_clone_flat_array_view((SomaFlatArrayView*)ptr));
-    case NODE_FLAT_ARRAY: {
-        /* Backing arrays should not be DUP'd directly in the new design,
-         * but handle gracefully by deep-copying */
+    }
+    if (tag == NODE_FLAT_ARRAY) {
         SomaFlatArray* arr = (SomaFlatArray*)ptr;
         size_t total = sizeof(SomaFlatArray) +
             (size_t)arr->length * (size_t)arr->elem_size;
@@ -371,65 +287,22 @@ SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
         memcpy(copy, arr, total);
         return SOMA_PTR(copy);
     }
-    default:
-        if (IS_SUP(tag)) {
-            return soma_dup(label, value);
-        }
-        soma_panic("soma_clone_heap_value_for_dup: unsupported heap object tag");
-        return value;
+
+    /* Check for closure via _pad[0] sentinel at byte offset 1 */
+    if (((uint8_t*)ptr)[1] == NODE_CLOSURE) {
+        return SOMA_PTR(soma_clone_closure(ptr, label));
     }
-}
 
-void* soma_alloc_tagged_payload(uint64_t field_count) {
-    size_t bytes = sizeof(SomaTaggedPayload) + field_count * sizeof(SomaValue);
-    SomaTaggedPayload* payload = (SomaTaggedPayload*)soma_pool_alloc_tagged(bytes);
-    if (payload == NULL) {
-        soma_panic("soma_alloc_tagged_payload: out of memory");
-        return NULL;
-    }
-    payload->tag = NODE_TAGGED_PAYLOAD;
-    payload->_magic = SOMA_TAGGED_MAGIC;
-    payload->count = (int64_t)field_count;
-    return payload;
-}
-
-
-/*
- * Flat array view pool allocation (32 bytes → pool_48)
- */
-
-void* soma_alloc_view(void) {
-    SomaPools* pools = get_pools();
-    SOMA_STAT_INC(small_allocs);
-    return pool_alloc(&pools->pool_48);
-}
-
-void soma_free_view(void* ptr) {
-    SomaPools* pools = get_pools();
-    SOMA_STAT_INC(small_frees);
-    pool_free(&pools->pool_48, ptr);
+    /* Unknown headerless object — typed cloner required */
+    soma_panic("soma_clone_heap_value_for_dup: unrecognized heap object (missing typed cloner)");
+    return value; /* unreachable */
 }
 
 /*
- * soma_dup — Create a SUP node for lazy duplication
- *
- * The value is not cloned immediately; cloning is deferred until both
- * projections are accessed. If only one projection is ever used
- * (DUP-ERA annihilation), no cloning happens at all.
+ * ============================================================================
+ * SUP Operations
+ * ============================================================================
  */
-SomaValue soma_dup(uint32_t label, SomaValue value) {
-    SomaSup* sup = (SomaSup*)soma_pool_alloc_sup();
-    sup->tag   = SUP_TAG_FRESH;
-    sup->_pad[0] = SOMA_SUP_PAD0;
-    sup->_pad[1] = SOMA_SUP_PAD1;
-    sup->_pad[2] = SOMA_SUP_PAD2;
-    sup->label = label;
-    sup->value = (void*)value;
-    sup->proj0 = NULL;
-    sup->proj1 = NULL;
-    sup->type_desc = NULL;  /* generic: falls back to tag-based dispatch */
-    return SOMA_PTR(sup);
-}
 
 SomaValue soma_dup_typed(uint32_t label, SomaValue value,
                          SomaTypeDesc* type_desc) {
@@ -446,31 +319,29 @@ SomaValue soma_dup_typed(uint32_t label, SomaValue value,
     return SOMA_PTR(sup);
 }
 
-/*
- * soma_proj0 — Extract first projection from a SUP
- *
- * Implements lazy duplication with label-based annihilation:
- *   Fresh: mark as proj0-accessed, return value
- *   Proj1 was first: clone the value (or annihilate if same-label inner SUP)
- *   Already accessed: return cached result
- */
+/* Check if a SomaValue is a heap pointer to a SUP node */
+static inline int is_heap_sup(SomaValue value) {
+    if (!SOMA_IS_PTR(value) || value == 0) return 0;
+    SomaSup* sup = (SomaSup*)SOMA_TO_PTR(value);
+    if (!IS_SUP(sup->tag)) return 0;
+    return sup->_pad[0] == SOMA_SUP_PAD0 &&
+           sup->_pad[1] == SOMA_SUP_PAD1 &&
+           sup->_pad[2] == SOMA_SUP_PAD2;
+}
+
 SomaValue soma_proj0(SomaValue sup_val) {
-    /* Non-pointer values pass through (no SUP wrapping) */
     if (!SOMA_IS_PTR(sup_val) || sup_val == 0) return sup_val;
 
     SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sup_val);
     uint8_t tag = sup->tag;
 
-    /* Fresh — first access via proj0 */
     if (tag == SUP_TAG_FRESH) {
         sup->tag = SUP_TAG_PROJ0;
         SomaValue value = (SomaValue)sup->value;
 
-        /* Check for annihilation: is value a SUP with same label? */
         if (is_heap_sup(value)) {
             SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
             if (inner->label == sup->label) {
-                /* Same-label annihilation: return inner's first value directly */
                 SomaValue result = (SomaValue)inner->value;
                 sup->value = (void*)result;
                 sup->proj0 = (void*)result;
@@ -479,23 +350,19 @@ SomaValue soma_proj0(SomaValue sup_val) {
             }
         }
 
-        /* No annihilation — cache and return value */
         sup->proj0 = (void*)value;
         return value;
     }
 
-    /* Proj1 was accessed first — this is the second access, need to clone */
     if (tag == SUP_TAG_PROJ1) {
         sup->tag = SUP_TAG_BOTH;
         SomaValue value = (SomaValue)sup->value;
 
-        /* Tagged values (int, bool, char) are value types — no cloning needed */
         if (!SOMA_IS_PTR(value) || value == 0) {
             sup->proj0 = (void*)value;
             return value;
         }
 
-        /* Check for same-label annihilation */
         if (is_heap_sup(value)) {
             SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
             if (inner->label == sup->label) {
@@ -507,7 +374,6 @@ SomaValue soma_proj0(SomaValue sup_val) {
             }
         }
 
-        /* Clone for second access — use type-specialized clone if available */
         SomaValue cloned;
         if (sup->type_desc != NULL) {
             cloned = sup->type_desc->clone_fn(value, sup->label);
@@ -518,28 +384,19 @@ SomaValue soma_proj0(SomaValue sup_val) {
         return cloned;
     }
 
-    /* Already accessed (PROJ0, BOTH, or cloning states) — return cached */
     return (SomaValue)sup->proj0;
 }
 
-/*
- * soma_proj1 — Extract second projection from a SUP
- *
- * Symmetric to soma_proj0.
- */
 SomaValue soma_proj1(SomaValue sup_val) {
-    /* Non-pointer values pass through */
     if (!SOMA_IS_PTR(sup_val) || sup_val == 0) return sup_val;
 
     SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sup_val);
     uint8_t tag = sup->tag;
 
-    /* Fresh — first access via proj1 */
     if (tag == SUP_TAG_FRESH) {
         sup->tag = SUP_TAG_PROJ1;
         SomaValue value = (SomaValue)sup->value;
 
-        /* Check for annihilation */
         if (is_heap_sup(value)) {
             SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
             if (inner->label == sup->label) {
@@ -551,23 +408,19 @@ SomaValue soma_proj1(SomaValue sup_val) {
             }
         }
 
-        /* No annihilation — cache and return */
         sup->proj1 = (void*)value;
         return value;
     }
 
-    /* Proj0 was accessed first — second access, need to clone */
     if (tag == SUP_TAG_PROJ0) {
         sup->tag = SUP_TAG_BOTH;
         SomaValue value = (SomaValue)sup->value;
 
-        /* Tagged values — no cloning */
         if (!SOMA_IS_PTR(value) || value == 0) {
             sup->proj1 = (void*)value;
             return value;
         }
 
-        /* Same-label annihilation */
         if (is_heap_sup(value)) {
             SomaSup* inner = (SomaSup*)SOMA_TO_PTR(value);
             if (inner->label == sup->label) {
@@ -579,7 +432,6 @@ SomaValue soma_proj1(SomaValue sup_val) {
             }
         }
 
-        /* Clone for second access — use type-specialized clone if available */
         SomaValue cloned;
         if (sup->type_desc != NULL) {
             cloned = sup->type_desc->clone_fn(value, sup->label);
@@ -590,7 +442,6 @@ SomaValue soma_proj1(SomaValue sup_val) {
         return cloned;
     }
 
-    /* Already accessed — return cached */
     return (SomaValue)sup->proj1;
 }
 
@@ -601,13 +452,14 @@ SomaValue soma_proj1(SomaValue sup_val) {
  */
 
 void* soma_alloc_closure(void* func_ptr, uint8_t arity, uint16_t env_size) {
-    SomaClosure* closure = (SomaClosure*)soma_pool_alloc_closure(env_size);
+    size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(SomaValue);
+    SomaClosure* closure = (SomaClosure*)soma_pool_alloc_raw(byte_size);
 
-    closure->tag      = NODE_CLOSURE;
-    closure->arity    = arity;
-    closure->env_size = env_size;
-    closure->env_kind = SOMA_ENV_DEFAULT;
-    closure->_pad     = 0;
+    closure->arity = arity;
+    memset(closure->_pad, 0, sizeof(closure->_pad));
+    closure->_pad[0] = NODE_CLOSURE;
+    closure->_pad[1] = (uint8_t)(env_size & 0xFF);
+    closure->_pad[2] = (uint8_t)((env_size >> 8) & 0xFF);
     closure->func_ptr = func_ptr;
 
     return closure;
@@ -630,12 +482,20 @@ void* soma_closure_get_func(void* closure_ptr) {
     return closure->func_ptr;
 }
 
-/*
- * soma_call_with_args — Dispatch a call with a void* argument array.
- *
- * Supports up to SOMA_MAX_CALL_ARGS (16) arguments. Centralizes the variadic
- * dispatch used by soma_apply for saturated calls and over-application.
- */
+void soma_era_closure(void* closure_ptr) {
+    if (closure_ptr == NULL) return;
+    SomaClosure* closure = (SomaClosure*)closure_ptr;
+    uint16_t env_size = (uint16_t)closure->_pad[1] | ((uint16_t)closure->_pad[2] << 8);
+    SomaValue* env = (SomaValue*)(closure + 1);
+    for (uint16_t i = 0; i < env_size; i++) {
+        if (SOMA_IS_PTR(env[i]) && env[i] != 0) {
+            soma_era_free(SOMA_TO_PTR(env[i]));
+        }
+    }
+    size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(SomaValue);
+    soma_pool_free_raw(closure_ptr, byte_size);
+}
+
 #define SOMA_MAX_CALL_ARGS 16
 
 static void* soma_call_with_args(void* (*fn)(), void** args, unsigned nargs) {
@@ -698,35 +558,22 @@ static void* soma_call_with_args(void* (*fn)(), void** args, unsigned nargs) {
     }
 }
 
-/*
- * soma_apply — Apply one argument to a closure with partial application support
- *
- * Implements the eval/apply calling convention (Marlow & Peyton Jones 2004):
- *   arity == 0: over-application — call fn(env...) to get result closure, apply arg to it
- *   arity == 1: saturated call — call fn(env..., arg), return result
- *   arity >  1: PAP (partial application) — extend env with arg, decrement arity
- *
- * The env slots accumulate arguments across partial applications. When finally
- * saturated, all accumulated env slots are passed as leading arguments to the
- * original function, followed by the final arg.
- */
 void* soma_apply(void* closure_ptr, void* arg) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
     uint8_t arity = closure->arity;
-    uint16_t env_size = closure->env_size;
     void* (*fn)() = (void* (*)())closure->func_ptr;
     SomaValue* env = (SomaValue*)(closure + 1);
 
+    /* Read env_size from _pad[1..2] (little-endian u16) */
+    uint16_t env_size = (uint16_t)closure->_pad[1] | ((uint16_t)closure->_pad[2] << 8);
+
     if (arity == 0) {
-        /* Over-application: fn already has all declared args in env.
-         * Call fn(env...) → result closure, then apply arg to it. */
         void* args[SOMA_MAX_CALL_ARGS];
         for (uint16_t i = 0; i < env_size && i < SOMA_MAX_CALL_ARGS; i++)
             args[i] = (void*)env[i];
         void* result = soma_call_with_args(fn, args, env_size);
         return soma_apply(result, arg);
     } else if (arity == 1) {
-        /* Saturated call: fn(env[0], ..., env[n-1], arg) */
         void* args[SOMA_MAX_CALL_ARGS];
         uint16_t n = 0;
         for (uint16_t i = 0; i < env_size && n < SOMA_MAX_CALL_ARGS; i++)
@@ -737,12 +584,13 @@ void* soma_apply(void* closure_ptr, void* arg) {
     } else {
         /* PAP: create new closure with arity-1 and env extended by arg */
         uint16_t new_env_size = env_size + 1;
-        SomaClosure* pap = (SomaClosure*)soma_pool_alloc_closure(new_env_size);
-        pap->tag      = NODE_CLOSURE;
-        pap->arity    = arity - 1;
-        pap->env_size = new_env_size;
-        pap->env_kind = closure->env_kind;
-        pap->_pad     = 0;
+        size_t pap_bytes = sizeof(SomaClosure) + new_env_size * sizeof(SomaValue);
+        SomaClosure* pap = (SomaClosure*)soma_pool_alloc_raw(pap_bytes);
+        pap->arity = arity - 1;
+        memset(pap->_pad, 0, sizeof(pap->_pad));
+        pap->_pad[0] = NODE_CLOSURE;
+        pap->_pad[1] = (uint8_t)(new_env_size & 0xFF);
+        pap->_pad[2] = (uint8_t)((new_env_size >> 8) & 0xFF);
         pap->func_ptr = closure->func_ptr;
 
         SomaValue* pap_env = (SomaValue*)(pap + 1);
@@ -754,213 +602,110 @@ void* soma_apply(void* closure_ptr, void* arg) {
     }
 }
 
-/*
- * soma_clone_closure — Clone a closure with lazy nested duplication
- *
- * Copies the header and all environment slots. For slots that contain
- * heap objects, clones them via the typed DUP helper which handles
- * closures, strings, tagged payloads, arrays, and nested SUPs.
- */
 void* soma_clone_closure(void* closure_ptr, uint32_t label) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
-    const uint16_t env_size = closure->env_size;
+    uint16_t env_size = (uint16_t)closure->_pad[1] | ((uint16_t)closure->_pad[2] << 8);
 
-    void* new_closure = soma_pool_alloc_closure(env_size);
+    size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(SomaValue);
+    void* new_closure = soma_pool_alloc_raw(byte_size);
     memcpy(new_closure, closure, sizeof(SomaClosure));
 
     SomaValue* src_env = (SomaValue*)(closure + 1);
     SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
 
-    switch (closure->env_kind) {
-    case SOMA_ENV_FLAT:
-        /* Flat scalars: bit-copy, no heap interaction */
-        memcpy(dst_env, src_env, env_size * sizeof(SomaValue));
-        break;
-    case SOMA_ENV_TAGGED:
-        /* Each env slot is a pointer to a heap-alloc'd {i32 tag, ptr payload}.
-         * Clone: deep-copy the struct, clone the payload pointer inside. */
-        for (uint16_t i = 0; i < env_size; i++) {
-            SomaValue val = src_env[i];
-            if (!SOMA_IS_PTR(val) || val == 0) { dst_env[i] = val; continue; }
-            void* src_tu = SOMA_TO_PTR(val);
-            int32_t vtag = *(int32_t*)src_tu;
-            void* payload = *(void**)((char*)src_tu + 8);
-            void* new_payload = (payload != NULL)
-                ? soma_clone_tagged_payload(payload, label) : NULL;
-            void* new_tu = malloc(16);
-            *(int32_t*)new_tu = vtag;
-            *(void**)((char*)new_tu + 8) = new_payload;
-            dst_env[i] = SOMA_PTR(new_tu);
-        }
-        break;
-    case SOMA_ENV_LIST:
-        /* Deep-copy list views (interaction net ownership semantics) */
-        for (uint16_t i = 0; i < env_size; i++) {
-            if (SOMA_IS_PTR(src_env[i]) && src_env[i] != 0) {
-                uint8_t etag = *(uint8_t*)SOMA_TO_PTR(src_env[i]);
-                if (etag == NODE_FLAT_ARRAY_VIEW) {
-                    dst_env[i] = SOMA_PTR(soma_clone_flat_array_view(
-                        (SomaFlatArrayView*)SOMA_TO_PTR(src_env[i])));
-                } else {
-                    SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(src_env[i]);
-                    size_t total = sizeof(SomaFlatArray) +
-                        (size_t)arr->length * (size_t)arr->elem_size;
-                    SomaFlatArray* copy = (SomaFlatArray*)malloc(total);
-                    if (copy != NULL) memcpy(copy, arr, total);
-                    dst_env[i] = SOMA_PTR(copy);
-                }
-            } else {
-                dst_env[i] = src_env[i];
-            }
-        }
-        break;
-    default: /* SOMA_ENV_DEFAULT */
-        /* Generic: runtime tag-based dispatch per env slot */
-        for (uint16_t i = 0; i < env_size; i++) {
-            dst_env[i] = soma_clone_heap_value_for_dup(src_env[i], label);
-        }
-        break;
+    for (uint16_t i = 0; i < env_size; i++) {
+        dst_env[i] = soma_clone_heap_value_for_dup(src_env[i], label);
     }
 
     return new_closure;
 }
 
-void* soma_clone_tagged_payload(void* payload, uint32_t label) {
-    if (payload == NULL) return NULL;
+/*
+ * ============================================================================
+ * String Operations
+ * ============================================================================
+ */
 
-    SomaTaggedPayload* src = (SomaTaggedPayload*)payload;
-    int64_t count = src->count;
-    if (count < 0) {
-        soma_panic("soma_clone_tagged_payload: negative payload field count");
-        return NULL;
-    }
-
-    SomaTaggedPayload* copy = (SomaTaggedPayload*)soma_alloc_tagged_payload((uint64_t)count);
-    if (copy == NULL) {
-        soma_panic("soma_clone_tagged_payload: out of memory");
-        return NULL;
-    }
-
-    SomaValue* src_fields = (SomaValue*)(src + 1);
-    SomaValue* dst_fields = (SomaValue*)(copy + 1);
-
-    for (int64_t i = 0; i < count; i++) {
-        dst_fields[i] = soma_clone_heap_value_for_dup(src_fields[i], label);
-    }
-
-    return copy;
+char* soma_to_cstring(SomaString* str) {
+    if (str == NULL) return NULL;
+    return str->data;
 }
 
+SomaString* soma_from_cstring(const char* cstr) {
+    if (cstr == NULL) return NULL;
 
-static SomaValue soma_clone_value_for_fork(SomaValue value) {
-    if (!SOMA_IS_PTR(value) || value == 0) return value;
-
-    uint8_t tag = *(uint8_t*)SOMA_TO_PTR(value);
-
-    if (IS_SUP(tag)) {
-        SomaValue materialized = soma_proj0(value);
-        return soma_clone_value_for_fork(materialized);
+    size_t len = strlen(cstr);
+    size_t total = sizeof(SomaString) + len + 1;
+    SomaString* s = (SomaString*)soma_pool_alloc_raw(total);
+    if (s == NULL) {
+        soma_panic("soma_from_cstring: out of memory");
+        return NULL;
     }
-
-    switch (tag) {
-    case NODE_CLOSURE:
-        return SOMA_PTR(soma_clone_closure_for_fork(SOMA_TO_PTR(value)));
-    case NODE_STRING:
-        return SOMA_PTR(soma_clone_string_obj((SomaString*)SOMA_TO_PTR(value)));
-    case NODE_TAGGED_PAYLOAD:
-        return SOMA_PTR(soma_clone_tagged_payload(SOMA_TO_PTR(value), 0));
-    case NODE_FLAT_ARRAY_VIEW:
-        return SOMA_PTR(soma_clone_flat_array_view(
-            (SomaFlatArrayView*)SOMA_TO_PTR(value)));
-    case NODE_FLAT_ARRAY: {
-        /* Deep-copy backing array for fork isolation */
-        SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(value);
-        size_t total = sizeof(SomaFlatArray) +
-            (size_t)arr->length * (size_t)arr->elem_size;
-        SomaFlatArray* copy = (SomaFlatArray*)malloc(total);
-        if (copy != NULL) memcpy(copy, arr, total);
-        return SOMA_PTR(copy);
-    }
-    default:
-        return value;
-    }
+    s->length = (int64_t)len;
+    memcpy(s->data, cstr, len + 1);
+    return s;
 }
 
-static void* soma_clone_closure_for_fork(void* closure_ptr) {
-    SomaClosure* closure = (SomaClosure*)closure_ptr;
-    const uint16_t env_size = closure->env_size;
+uint64_t soma_cstring_len(const char* cstr) {
+    if (cstr == NULL) return 0;
+    return (uint64_t)strlen(cstr);
+}
 
-    void* new_closure = soma_pool_alloc_closure(env_size);
-    memcpy(new_closure, closure, sizeof(SomaClosure));
-
-    SomaValue* src_env = (SomaValue*)(closure + 1);
-    SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
-
-    switch (closure->env_kind) {
-    case SOMA_ENV_FLAT:
-        memcpy(dst_env, src_env, env_size * sizeof(SomaValue));
-        break;
-    case SOMA_ENV_TAGGED:
-        for (uint16_t i = 0; i < env_size; i++) {
-            SomaValue val = src_env[i];
-            if (!SOMA_IS_PTR(val) || val == 0) { dst_env[i] = val; continue; }
-            void* src_tu = SOMA_TO_PTR(val);
-            int32_t vtag = *(int32_t*)src_tu;
-            void* payload = *(void**)((char*)src_tu + 8);
-            void* new_payload = (payload != NULL)
-                ? soma_clone_tagged_payload(payload, 0) : NULL;
-            void* new_tu = malloc(16);
-            *(int32_t*)new_tu = vtag;
-            *(void**)((char*)new_tu + 8) = new_payload;
-            dst_env[i] = SOMA_PTR(new_tu);
-        }
-        break;
-    case SOMA_ENV_LIST:
-        for (uint16_t i = 0; i < env_size; i++) {
-            if (SOMA_IS_PTR(src_env[i]) && src_env[i] != 0) {
-                uint8_t etag = *(uint8_t*)SOMA_TO_PTR(src_env[i]);
-                if (etag == NODE_FLAT_ARRAY_VIEW) {
-                    dst_env[i] = SOMA_PTR(soma_clone_flat_array_view(
-                        (SomaFlatArrayView*)SOMA_TO_PTR(src_env[i])));
-                } else {
-                    /* Legacy flat array — deep copy */
-                    SomaFlatArray* arr = (SomaFlatArray*)SOMA_TO_PTR(src_env[i]);
-                    size_t total = sizeof(SomaFlatArray) +
-                        (size_t)arr->length * (size_t)arr->elem_size;
-                    SomaFlatArray* copy = (SomaFlatArray*)malloc(total);
-                    if (copy != NULL) memcpy(copy, arr, total);
-                    dst_env[i] = SOMA_PTR(copy);
-                }
-            } else {
-                dst_env[i] = src_env[i];
-            }
-        }
-        break;
-    default:
-        for (uint16_t i = 0; i < env_size; i++) {
-            dst_env[i] = soma_clone_value_for_fork(src_env[i]);
-        }
-        break;
+SomaString* soma_strcat(SomaString* a, SomaString* b) {
+    if (a == NULL) {
+        if (b == NULL) return soma_from_cstring("");
+        return soma_from_cstring(b->data);
     }
+    if (b == NULL) return soma_from_cstring(a->data);
 
-    return new_closure;
+    size_t len_a = (size_t)soma_string_len(a);
+    size_t len_b = (size_t)soma_string_len(b);
+    size_t total_len = len_a + len_b;
+    size_t total = sizeof(SomaString) + total_len + 1;
+
+    SomaString* result = (SomaString*)soma_pool_alloc_raw(total);
+    if (result == NULL) {
+        soma_panic("soma_strcat: out of memory");
+        return NULL;
+    }
+    result->length = (int64_t)total_len;
+    memcpy(result->data, a->data, len_a);
+    memcpy(result->data + len_a, b->data, len_b);
+    result->data[total_len] = '\0';
+    return result;
+}
+
+SomaString* soma_int_to_string(int32_t val) {
+    char buf[12];
+    int len = snprintf(buf, sizeof(buf), "%d", val);
+
+    size_t total = sizeof(SomaString) + len + 1;
+    SomaString* s = (SomaString*)soma_pool_alloc_raw(total);
+    if (s == NULL) {
+        soma_panic("soma_int_to_string: out of memory");
+        return NULL;
+    }
+    s->length = (int64_t)len;
+    memcpy(s->data, buf, len + 1);
+    return s;
 }
 
 void soma_era_string(void* value) {
     if (value == NULL) return;
     SomaString* s = (SomaString*)value;
-    if (s->tag & NODE_STATIC_BIT) return; /* static string literal, skip free */
+    if (s->length < 0) return;  /* Static string — MSB sentinel, never free */
     size_t total = sizeof(SomaString) + (size_t)s->length + 1;
-    soma_pool_free_string(value, total);
+    soma_pool_free_raw(value, total);
 }
 
 /*
- * soma_era_free — Free a heap-allocated value (ERA node)
+ * ============================================================================
+ * soma_era_free — Free SUPs, flat arrays, and flat array views
  *
- * Uses an explicit worklist instead of recursion to avoid stack overflow
- * on deeply nested object graphs. A small inline stack handles the
- * common case without any allocation; only pathological graphs spill
- * to a heap-allocated worklist.
+ * Only handles objects with identifiable tag bytes (SUPs, flat arrays).
+ * Closures, strings, and tagged payloads are headerless and freed by
+ * compiler-generated specialized erasers.
+ * ============================================================================
  */
 
 #define ERA_STACK_INLINE 64
@@ -983,30 +728,6 @@ void soma_era_free(void* value) {
 
         uint8_t tag = *(uint8_t*)cur;
 
-        /* Static objects (string literals, etc.) must never be freed */
-        if (tag & NODE_STATIC_BIT) continue;
-
-        /* --- leaf types: free immediately, no children --- */
-
-        if (tag == NODE_STRING) {
-            SomaString* s = (SomaString*)cur;
-            size_t total = sizeof(SomaString) + (size_t)s->length + 1;
-            if (total <= POOL_SIZE_48) {
-                SOMA_STAT_INC(small_frees);
-                pool_free(&pools->pool_48, cur);
-            } else if (total <= POOL_SIZE_112) {
-                SOMA_STAT_INC(medium_frees);
-                pool_free(&pools->pool_112, cur);
-            } else {
-                SOMA_STAT_INC(large_frees);
-                free(cur);
-            }
-            continue;
-        }
-
-        /* --- compound types: push children, then free the node --- */
-
-        /* Macro: ensure worklist capacity for N more entries */
         #define ERA_ENSURE(n) do {                                     \
             if (sp + (n) > cap) {                                      \
                 int new_cap = cap * 2;                                 \
@@ -1021,107 +742,19 @@ void soma_era_free(void* value) {
             }                                                          \
         } while (0)
 
-        if (tag == NODE_CLOSURE) {
-            SomaClosure* closure = (SomaClosure*)cur;
-            SomaValue* env = (SomaValue*)(closure + 1);
-            uint16_t env_size = closure->env_size;
-
-            switch (closure->env_kind) {
-            case SOMA_ENV_FLAT:
-                /* No heap children — nothing to push */
-                break;
-            case SOMA_ENV_TAGGED:
-                /* Each env slot is a pointer to a heap-alloc'd {i32, ptr}.
-                 * Push the payload pointer, then free the struct. */
-                for (uint16_t i = 0; i < env_size; i++) {
-                    if (!SOMA_IS_PTR(env[i]) || env[i] == 0) continue;
-                    void* tu = SOMA_TO_PTR(env[i]);
-                    void* payload = *(void**)((char*)tu + 8);
-                    if (payload != NULL) {
-                        ERA_ENSURE(1);
-                        stack[sp++] = payload;
-                    }
-                    free(tu);
-                }
-                break;
-            case SOMA_ENV_LIST:
-                /* List views/arrays: push onto ERA worklist */
-                ERA_ENSURE(env_size);
-                for (uint16_t i = 0; i < env_size; i++) {
-                    if (!SOMA_IS_PTR(env[i]) || env[i] == 0) continue;
-                    stack[sp++] = SOMA_TO_PTR(env[i]);
-                }
-                break;
-            default: /* SOMA_ENV_DEFAULT */
-                ERA_ENSURE(env_size);
-                for (uint16_t i = 0; i < env_size; i++) {
-                    if (SOMA_IS_PTR(env[i]) && env[i] != 0) {
-                        stack[sp++] = SOMA_TO_PTR(env[i]);
-                    }
-                }
-                break;
-            }
-
-            size_t needed = sizeof(SomaClosure) + (env_size * sizeof(void*));
-            if (needed <= POOL_SIZE_48) {
-                SOMA_STAT_INC(small_frees);
-                pool_free(&pools->pool_48, cur);
-            } else if (needed <= POOL_SIZE_112) {
-                SOMA_STAT_INC(medium_frees);
-                pool_free(&pools->pool_112, cur);
-            } else {
-                SOMA_STAT_INC(large_frees);
-                free(cur);
-            }
-
-        } else if (tag == NODE_TAGGED_PAYLOAD) {
-            SomaTaggedPayload* p = (SomaTaggedPayload*)cur;
-            int64_t count = p->count;
-            SomaValue* fields = (SomaValue*)(p + 1);
-
-            ERA_ENSURE(count);
-            for (int64_t i = 0; i < count; i++) {
-                if (SOMA_IS_PTR(fields[i]) && fields[i] != 0) {
-                    stack[sp++] = SOMA_TO_PTR(fields[i]);
-                }
-            }
-
-            size_t total = sizeof(SomaTaggedPayload) + (size_t)count * sizeof(SomaValue);
-            if (total <= POOL_SIZE_48) {
-                SOMA_STAT_INC(small_frees);
-                pool_free(&pools->pool_48, cur);
-            } else if (total <= POOL_SIZE_112) {
-                SOMA_STAT_INC(medium_frees);
-                pool_free(&pools->pool_112, cur);
-            } else {
-                SOMA_STAT_INC(large_frees);
-                free(cur);
-            }
-
-        } else if (tag == NODE_FLAT_ARRAY_VIEW) {
+        if (tag == NODE_FLAT_ARRAY_VIEW) {
             SomaFlatArrayView* view = (SomaFlatArrayView*)cur;
-            /* Free the owned backing array, then free the view via pool */
             if (view->backing != NULL) {
                 free(view->backing);
             }
             soma_free_view(cur);
 
         } else if (tag == NODE_FLAT_ARRAY) {
-            /* Backing arrays freed directly (legacy or via view ERA) */
             free(cur);
 
         } else if (IS_SUP(tag)) {
             SomaSup* sup = (SomaSup*)cur;
 
-            /*
-             * Tag-aware child collection — the SUP tag tells us exactly
-             * which fields are live and which alias each other:
-             *
-             *   FRESH  → only value is live (proj0/proj1 are NULL)
-             *   PROJ0  → proj0 == value (aliased), both point to the same object
-             *   PROJ1  → proj1 == value (aliased), both point to the same object
-             *   BOTH   → value is the original; one of proj0/proj1 is a clone
-             */
             SomaValue v = (SomaValue)sup->value;
             SomaEraseFn efn = sup->type_desc ? sup->type_desc->erase_fn : NULL;
 
@@ -1129,7 +762,6 @@ void soma_era_free(void* value) {
             case SUP_TAG_FRESH:
             case SUP_TAG_PROJ0:
             case SUP_TAG_PROJ1:
-                /* Single live value — free it once */
                 if (SOMA_IS_PTR(v) && v != 0) {
                     if (efn != NULL) {
                         efn(v);
@@ -1142,12 +774,10 @@ void soma_era_free(void* value) {
 
             case SUP_TAG_BOTH:
             default: {
-                /* Original value + the clone (whichever proj differs from value) */
                 SomaValue p0 = (SomaValue)sup->proj0;
                 SomaValue p1 = (SomaValue)sup->proj1;
 
                 if (efn != NULL) {
-                    /* Use specialized eraser for each live value */
                     if (SOMA_IS_PTR(v) && v != 0) efn(v);
                     if (p0 != v && SOMA_IS_PTR(p0) && p0 != 0) efn(p0);
                     if (p1 != v && SOMA_IS_PTR(p1) && p1 != 0) efn(p1);
@@ -1170,9 +800,32 @@ void soma_era_free(void* value) {
             SOMA_STAT_INC(sup_frees);
             pool_free(&pools->pool_48, cur);
 
+        } else if (((uint8_t*)cur)[1] == NODE_CLOSURE) {
+            /* Closure identified by _pad[0] sentinel at byte offset 1 */
+            SomaClosure* closure = (SomaClosure*)cur;
+            uint16_t es = (uint16_t)closure->_pad[1]
+                        | ((uint16_t)closure->_pad[2] << 8);
+            SomaValue* env = (SomaValue*)(closure + 1);
+            ERA_ENSURE(es);
+            for (uint16_t i = 0; i < es; i++) {
+                if (SOMA_IS_PTR(env[i]) && env[i] != 0) {
+                    stack[sp++] = SOMA_TO_PTR(env[i]);
+                }
+            }
+            size_t needed = sizeof(SomaClosure) + es * sizeof(SomaValue);
+            if (needed <= POOL_SIZE_48) {
+                SOMA_STAT_INC(small_frees);
+                pool_free(&pools->pool_48, cur);
+            } else if (needed <= POOL_SIZE_112) {
+                SOMA_STAT_INC(medium_frees);
+                pool_free(&pools->pool_112, cur);
+            } else {
+                SOMA_STAT_INC(large_frees);
+                free(cur);
+            }
         } else {
-            /* Unknown heap object — use regular free */
-            free(cur);
+            /* Unknown headerless object — typed eraser required */
+            soma_panic("soma_era_free: unrecognized heap object (missing typed eraser)");
         }
 
         #undef ERA_ENSURE
@@ -1181,97 +834,6 @@ void soma_era_free(void* value) {
     if (stack != stack_buf) {
         free(stack);
     }
-}
-
-/*
- * soma_era_tagged_payload — Free a tagged union payload buffer
- *
- * Delegates to the iterative soma_era_free which handles tagged payloads
- * inline.  Kept as a separate entry point for callers that have already
- * identified the object type.
- */
-void soma_era_tagged_payload(void* payload) {
-    soma_era_free(payload);
-}
-
-/*
- * ============================================================================
- * String Operations
- * ============================================================================
- */
-
-char* soma_to_cstring(SomaString* str) {
-    if (str == NULL) {
-        return NULL;
-    }
-    return str->data;
-}
-
-SomaString* soma_from_cstring(const char* cstr) {
-    if (cstr == NULL) return NULL;
-
-    size_t len = strlen(cstr);
-    size_t total = sizeof(SomaString) + len + 1;
-    SomaString* s = (SomaString*)soma_pool_alloc_string(total);
-    if (s == NULL) {
-        soma_panic("soma_from_cstring: out of memory");
-        return NULL;
-    }
-    s->tag = NODE_STRING;
-    s->_magic = SOMA_STRING_MAGIC;
-    s->length = (int64_t)len;
-    memcpy(s->data, cstr, len + 1);
-    return s;
-}
-
-uint64_t soma_cstring_len(const char* cstr) {
-    if (cstr == NULL) {
-        return 0;
-    }
-    return (uint64_t)strlen(cstr);
-}
-
-SomaString* soma_strcat(SomaString* a, SomaString* b) {
-    if (a == NULL) {
-        if (b == NULL) return soma_from_cstring("");
-        return soma_from_cstring(b->data);
-    }
-    if (b == NULL) return soma_from_cstring(a->data);
-
-    size_t len_a = (size_t)a->length;
-    size_t len_b = (size_t)b->length;
-    size_t total_len = len_a + len_b;
-    size_t total = sizeof(SomaString) + total_len + 1;
-
-    SomaString* result = (SomaString*)soma_pool_alloc_string(total);
-    if (result == NULL) {
-        soma_panic("soma_strcat: out of memory");
-        return NULL;
-    }
-    result->tag = NODE_STRING;
-    result->_magic = SOMA_STRING_MAGIC;
-    result->length = (int64_t)total_len;
-    memcpy(result->data, a->data, len_a);
-    memcpy(result->data + len_a, b->data, len_b);
-    result->data[total_len] = '\0';
-    return result;
-}
-
-SomaString* soma_int_to_string(int32_t val) {
-    char buf[12];
-    int len = snprintf(buf, sizeof(buf), "%d", val);
-
-    size_t total = sizeof(SomaString) + len + 1;
-    SomaString* s = (SomaString*)soma_pool_alloc_string(total);
-    if (s == NULL) {
-        soma_panic("soma_int_to_string: out of memory");
-        return NULL;
-    }
-    s->tag = NODE_STRING;
-    s->_magic = SOMA_STRING_MAGIC;
-    s->length = (int64_t)len;
-    memcpy(s->data, buf, len + 1);
-    return s;
 }
 
 void soma_panic(const char* msg) {
@@ -1378,10 +940,6 @@ void soma_task_free(SomaTask* task) {
     pthread_mutex_unlock(&soma_par.task_pool_lock);
 }
 
-/*
- * Task Execution
- */
-
 static inline SomaValue task_execute(SomaTask* task) {
     switch (task->kind) {
         case TASK_KIND_DIRECT:
@@ -1399,10 +957,6 @@ static inline SomaValue task_execute(SomaTask* task) {
             return task->fn.generic(task->env);
     }
 }
-
-/*
- * Worker Thread
- */
 
 static void worker_set_hungry(SomaWorker* w, int hungry) {
     int was_hungry = atomic_exchange(&w->hungry, hungry);
@@ -1463,10 +1017,6 @@ static void* worker_main(void* arg) {
 
     return NULL;
 }
-
-/*
- * Runtime Lifecycle
- */
 
 static int get_num_cpus(void) {
 #ifdef _WIN32
@@ -1578,37 +1128,19 @@ SomaValue soma_par_run_task(SomaTask* task) {
     return task->result;
 }
 
-/*
- * Fork-Join API
- */
-
 SomaTask* soma_fork(SomaTaskFn fn, void* env) {
-    if (!soma_par_enabled()) {
-        return NULL;
-    }
+    if (!soma_par_enabled()) return NULL;
 
     SomaTask* task = soma_task_alloc();
-    if (!task) {
-        return NULL;
-    }
+    if (!task) return NULL;
 
     task->kind = TASK_KIND_GENERIC;
     task->fn.generic = fn;
     task->env = env;
-    if (env != NULL) {
-        uint8_t tag = *(uint8_t*)env;
-        if (tag == NODE_CLOSURE) {
-            task->env = soma_clone_closure_for_fork(env);
-        } else if (IS_SUP(tag)) {
-            SomaValue isolated = soma_clone_value_for_fork(SOMA_PTR(env));
-            task->env = SOMA_TO_PTR(isolated);
-        }
-    }
     task->arg = 0;
     task->result = 0;
 
     soma_par_spawn(task);
-
     return task;
 }
 
@@ -1617,65 +1149,49 @@ int soma_par_enabled_export(void) {
 }
 
 SomaTask* soma_fork_direct(SomaDirectFn fn, SomaValue arg) {
-    if (!soma_par_enabled()) {
-        return NULL;
-    }
+    if (!soma_par_enabled()) return NULL;
 
     SomaTask* task = soma_task_alloc();
-    if (!task) {
-        return NULL;
-    }
+    if (!task) return NULL;
 
     task->kind = TASK_KIND_DIRECT;
     task->fn.direct = fn;
     task->env = NULL;
-    task->arg = soma_clone_value_for_fork(arg);
+    task->arg = arg;
     task->result = 0;
 
     soma_par_spawn(task);
-
     return task;
 }
 
 SomaTask* soma_fork_closure(SomaClosureFn fn, void* closure, SomaValue arg) {
-    if (!soma_par_enabled()) {
-        return NULL;
-    }
+    if (!soma_par_enabled()) return NULL;
 
     SomaTask* task = soma_task_alloc();
-    if (!task) {
-        return NULL;
-    }
+    if (!task) return NULL;
 
     task->kind = TASK_KIND_CLOSURE;
     task->fn.closure = fn;
-    task->env = soma_clone_closure_for_fork(closure);
-    task->arg = soma_clone_value_for_fork(arg);
+    task->env = closure;
+    task->arg = arg;
     task->result = 0;
 
     soma_par_spawn(task);
-
     return task;
 }
 
 SomaTask* soma_fork_multi(void* fn, SomaValue* args, int num_args) {
-    if (!soma_par_enabled()) {
-        return NULL;
-    }
+    if (!soma_par_enabled()) return NULL;
 
     SomaTask* task = soma_task_alloc();
-    if (!task) {
-        return NULL;
-    }
+    if (!task) return NULL;
 
     SomaValue* args_copy = (SomaValue*)malloc(num_args * sizeof(SomaValue));
     if (!args_copy) {
         soma_task_free(task);
         return NULL;
     }
-    for (int i = 0; i < num_args; i++) {
-        args_copy[i] = soma_clone_value_for_fork(args[i]);
-    }
+    memcpy(args_copy, args, num_args * sizeof(SomaValue));
 
     task->kind = TASK_KIND_TRAMPOLINE;
     task->fn.trampoline = (SomaTrampolineFn)fn;
@@ -1684,14 +1200,11 @@ SomaTask* soma_fork_multi(void* fn, SomaValue* args, int num_args) {
     task->result = 0;
 
     soma_par_spawn(task);
-
     return task;
 }
 
 SomaValue soma_join(SomaTask* task) {
-    if (task == NULL) {
-        return 0;
-    }
+    if (task == NULL) return 0;
 
     SomaValue result;
     int state = atomic_load(&task->state);

@@ -1,61 +1,46 @@
 /*
  * Soma Runtime
  *
- * All heap objects share a common 8-byte header:
- *   [0]  u8   tag       (NODE_* constant identifying the object type)
- *   [1]  u8[3]          (type-specific or padding)
- *   [4]  u32            (validation sentinel / type-specific)
+ * === Headerless Heap Objects ===
  *
- * Memory Layout:
+ * After monomorphization, the compiler knows every type at every point.
+ * Heap objects carry NO runtime headers — no tag byte, no magic sentinel,
+ * no count field. Object identity and layout are determined entirely at
+ * compile time via type-specialized erase/clone functions.
+ *
+ * Tagged Payload (count*8 bytes):
+ *   [0]  i64  field[0]
+ *   [8]  i64  field[1]  ...
+ *   Pure data — the compiler-generated eraser knows field count/types.
  *
  * Closure (16 + env_size*8 bytes):
- *   [0]  u8   tag       (NODE_CLOSURE = 1)
- *   [1]  u8   arity     (remaining parameters)
- *   [2]  u16  env_size  (captured variable count)
- *   [4]  u32  _pad      (SOMA_CLOSURE_MAGIC)
+ *   [0]  u8   arity     (needed by soma_apply for PAP detection)
+ *   [1]  u8   _pad[1]   (env_size low byte — used by soma_apply internally)
+ *   [2]  u8   _pad[2]   (env_size high byte)
+ *   [3-7] u8  _pad[3-7] (alignment)
  *   [8]  ptr  func_ptr  (function pointer)
- *   [16] ptr  env[0]    ...
+ *   [16] i64  env[0]    ...
  *
- * String (16 + length + 1 bytes, contiguous):
- *   [0]  u8   tag       (NODE_STRING = 2)
- *   [1]  u8[3] _pad
- *   [4]  u32  _magic    (SOMA_STRING_MAGIC)
- *   [8]  i64  length
- *   [16] char data[]    (inline, null-terminated)
+ * String (8 + length + 1 bytes):
+ *   [0]  i64  length    (byte count, excluding null terminator)
+ *   [8]  char data[]    (inline, null-terminated)
  *
- * Tagged Payload (16 + count*8 bytes):
- *   [0]  u8   tag       (NODE_TAGGED_PAYLOAD = 3)
- *   [1]  u8[3] _pad
- *   [4]  u32  _magic    (SOMA_TAGGED_MAGIC)
- *   [8]  i64  count     (number of fields)
- *   [16] i64  field[0]  ...
- *
- * SUP (48 bytes, pool-allocated):
- *   [0]  u8   tag        (SUP_TAG_* = 0x80+)
+ * SUP (48 bytes, pool-allocated — keeps header for state machine):
+ *   [0]  u8   tag        (SUP_TAG_*)
  *   [1]  u8[3] _pad      ('S','U','P')
  *   [4]  u32  label
  *   [8]  ptr  value
  *   [16] ptr  proj0
  *   [24] ptr  proj1
- *   [32] ptr  type_desc  (SomaTypeDesc* or NULL)
+ *   [32] ptr  type_desc
  *
- * Flat Array View (32 bytes):
+ * Flat Array View (32 bytes — keeps header for tag dispatch):
  *   [0]  u8   tag         (NODE_FLAT_ARRAY_VIEW = 5)
  *   [1]  u8[3] _pad
  *   [4]  u32  _reserved
- *   [8]  i64  length      (number of visible elements)
- *   [16] ptr  data        (points to first visible element in backing array)
- *   [24] ptr  backing     (owns the backing SomaFlatArray for ERA)
- *
- * Node Tags:
- *   0      = (reserved/invalid)
- *   1      = NODE_CLOSURE
- *   2      = NODE_STRING
- *   3      = NODE_TAGGED_PAYLOAD
- *   4      = NODE_FLAT_ARRAY (backing storage only, not user-facing)
- *   5      = NODE_FLAT_ARRAY_VIEW (user-facing list representation)
- *   6-127  = (reserved for future node types)
- *   0x80+  = SUP_TAG_* (superposition nodes for lazy duplication)
+ *   [8]  i64  length
+ *   [16] ptr  data
+ *   [24] ptr  backing
  */
 
 #ifndef SOMA_RUNTIME_H
@@ -65,23 +50,12 @@
 #include <stddef.h>
 #include <stdatomic.h>
 
-/* Node tag constants (stored at byte 0 of every heap object) */
-#define NODE_CLOSURE          1
-#define NODE_STRING           2
-#define NODE_TAGGED_PAYLOAD   3
+/* Node tag constants */
+#define NODE_CLOSURE          1   /* stored in closure _pad[0] for runtime identification */
 #define NODE_FLAT_ARRAY       4
 #define NODE_FLAT_ARRAY_VIEW  5
-/* Bit flag: marks a heap object as statically allocated (skip ERA/free) */
-#define NODE_STATIC_BIT       0x80
-/* Closure env_kind constants: type-directed clone/erase strategy per closure */
-#define SOMA_ENV_DEFAULT  0  /* Generic tag-based dispatch per env slot */
-#define SOMA_ENV_FLAT     1  /* Env slots are flat scalars (memcpy, no clone) */
-#define SOMA_ENV_TAGGED   2  /* Env slots are heap-alloc'd tagged unions {i32,ptr} */
-#define SOMA_ENV_LIST     3  /* Env slots are refcounted flat arrays */
-/* Runtime object validation sentinels */
-#define SOMA_CLOSURE_MAGIC 0x534f4d41u /* 'SOMA' — legacy, unused */
-#define SOMA_STRING_MAGIC  0x53545247u /* 'STRG' */
-#define SOMA_TAGGED_MAGIC  0x54414750u /* 'TAGP' */
+
+/* SUP padding bytes for identification */
 #define SOMA_SUP_PAD0 0x53u            /* 'S' */
 #define SOMA_SUP_PAD1 0x55u            /* 'U' */
 #define SOMA_SUP_PAD2 0x50u            /* 'P' */
@@ -93,14 +67,6 @@
  * Instead of eagerly cloning, a DUP creates a SUP wrapping the value.
  * When projections access the SUP, cloning is deferred until both sides
  * are needed. Same-label DUP-SUP pairs annihilate in O(1).
- *
- * Tag encodes the lifecycle state of the SUP:
- *   FRESH        → neither projection accessed yet
- *   PROJ0        → first projection (proj0) accessed
- *   PROJ1        → second projection (proj1) accessed
- *   BOTH         → both projections accessed, value cloned
- *   PROJ0_CLONING → proj0 accessed, speculative clone in flight for proj1
- *   PROJ1_CLONING → proj1 accessed, speculative clone in flight for proj0
  */
 #define SUP_TAG_FRESH         0x80
 #define SUP_TAG_PROJ0         0x81
@@ -115,9 +81,7 @@
 /*
  * Tagged Pointer Representation
  *
- * We use the low 3 bits of pointers for type tags (assuming 8-byte alignment).
- * This allows unboxed representation of small integers and distinguishing
- * value types without dereferencing.
+ * Low 3 bits of pointers for type tags (assuming 8-byte alignment).
  *
  * Pointer format (64-bit):
  *   [63:3] payload  [2:0] tag
@@ -127,10 +91,6 @@
  *   001 = Small integer (63-bit signed, shifted right by 3)
  *   010 = Boolean/Unit (payload: 0=false, 1=true, 2=unit)
  *   011 = Character (payload: Unicode codepoint)
- *   100 = (reserved)
- *   101 = (reserved)
- *   110 = (reserved)
- *   111 = (reserved)
  */
 
 #define TAG_BITS        3
@@ -178,13 +138,16 @@ typedef uintptr_t SomaValue;
 /* Create pointer value (for heap objects) */
 #define SOMA_PTR(p)          ((SomaValue)(p))
 
-/* Closure header structure (env follows at offset 16) */
+/*
+ * Closure structure (env follows at offset 16)
+ *
+ * _pad[0] = NODE_CLOSURE sentinel for runtime identification by soma_era_free.
+ * _pad[1..2] = env_size as little-endian u16 (needed by soma_apply for PAP
+ *   creation and by soma_era_closure for dynamic env traversal).
+ */
 typedef struct SomaClosure {
-    uint8_t  tag;         /* NODE_CLOSURE */
-    uint8_t  arity;       /* remaining args after first */
-    uint16_t env_size;    /* number of captured env slots */
-    uint16_t env_kind;    /* SOMA_ENV_* — clone/erase strategy */
-    uint16_t _pad;        /* reserved */
+    uint8_t  arity;       /* remaining args (needed by soma_apply) */
+    uint8_t  _pad[7];     /* [0]=NODE_CLOSURE, [1..2]=env_size LE16, [3..6]=reserved */
     void*    func_ptr;    /* function pointer */
     /* SomaValue env[] follows at offset 16 */
 } SomaClosure;
@@ -207,18 +170,6 @@ typedef struct SomaTypeDesc {
 
 /*
  * SUP (Superposition) node structure (48 bytes, pool-allocated)
- *
- *   [0]  u8              tag        (SUP_TAG_*)
- *   [4]  u32             label      (duplication label for annihilation matching)
- *   [8]  void*           value      (the wrapped value)
- *   [16] void*           proj0      (cached first projection / clone task)
- *   [24] void*           proj1      (cached second projection / clone task)
- *   [32] SomaTypeDesc*   type_desc  (type-specialized ops, or NULL for generic)
- *
- * By storing a single pointer to a shared TypeDesc instead of two function
- * pointers, SUPs fit in pool_48 alongside closures and small objects.
- * The extra indirection is only paid on projection (which already calls
- * through a function pointer), not on every SUP allocation.
  */
 typedef struct SomaSup {
     uint8_t       tag;
@@ -231,59 +182,26 @@ typedef struct SomaSup {
 } SomaSup;
 
 /*
- * Core runtime functions
+ * String structure (length + inline data, no header overhead)
+ *
+ * The MSB of `length` is a static sentinel: static string globals
+ * emitted by the compiler have bit 63 set, preventing soma_era_string
+ * from freeing read-only memory.  All length readers use
+ * soma_string_len() which masks the sentinel bit.
  */
-
-/* Free a heap-allocated value */
-void soma_era_free(void* value);
-
-/* Free a Soma String object (contiguous header + inline data) */
-void soma_era_string(void* value);
-
-/* Free a tagged union payload buffer (count-prefixed array of fields) */
-void soma_era_tagged_payload(void* payload);
-
-/* Panic: print error message and abort */
-void soma_panic(const char* msg);
-
-/*
- * String operations
- */
+#define SOMA_STRING_STATIC_BIT ((int64_t)1 << 63)
 
 typedef struct SomaString {
-    uint8_t  tag;       /* NODE_STRING */
-    uint8_t  _pad[3];
-    uint32_t _magic;    /* SOMA_STRING_MAGIC */
-    int64_t  length;
+    int64_t  length;    /* byte count; bit 63 = static sentinel */
     char     data[];    /* flexible array member: string data inline */
 } SomaString;
 
-/*
- * Tagged payload (variable-size, count-prefixed field array)
- */
-
-typedef struct SomaTaggedPayload {
-    uint8_t  tag;       /* NODE_TAGGED_PAYLOAD */
-    uint8_t  _pad[3];
-    uint32_t _magic;    /* SOMA_TAGGED_MAGIC */
-    int64_t  count;
-    /* SomaValue fields[] follows at offset 16 */
-} SomaTaggedPayload;
+static inline int64_t soma_string_len(const SomaString* s) {
+    return s->length & ~SOMA_STRING_STATIC_BIT;
+}
 
 /*
  * Flat array backing storage (compiler-generated, not user-facing)
- *
- * Contiguous element storage for lists. Never accessed directly by user code;
- * always accessed through a SomaFlatArrayView. Ownership is transferred to
- * the view — when the view is ERA'd, it frees the backing array.
- *
- * Layout:
- *   [0]  u8   tag         (NODE_FLAT_ARRAY = 4)
- *   [1]  u8   elem_size   (bytes per element: 1/2/4/8)
- *   [2]  u8[2] _pad
- *   [4]  u32  _reserved
- *   [8]  i64  length      (total number of elements allocated)
- *   [16] data             (length * elem_size bytes of contiguous element data)
  */
 typedef struct SomaFlatArray {
     uint8_t   tag;         /* NODE_FLAT_ARRAY */
@@ -296,22 +214,6 @@ typedef struct SomaFlatArray {
 
 /*
  * Flat array view (user-facing list representation)
- *
- * A view into a backing SomaFlatArray. The view owns the backing array:
- * ERA frees both the view and the backing. Tail extraction creates a new
- * view with data pointer advanced and length decremented — O(1), zero copy.
- *
- * DUP wraps the view in a SUP node (standard heap-tier lazy duplication).
- * When both projections are accessed, the runtime deep-copies the backing
- * array and creates a new view pointing to the copy.
- *
- * Layout:
- *   [0]  u8   tag         (NODE_FLAT_ARRAY_VIEW = 5)
- *   [1]  u8[3] _pad
- *   [4]  u32  _reserved
- *   [8]  i64  length      (number of visible elements)
- *   [16] ptr  data        (points to first visible element in backing)
- *   [24] ptr  backing     (owns the SomaFlatArray for ERA; NULL for empty)
  */
 typedef struct SomaFlatArrayView {
     uint8_t   tag;         /* NODE_FLAT_ARRAY_VIEW */
@@ -323,6 +225,20 @@ typedef struct SomaFlatArrayView {
 } SomaFlatArrayView;
 
 
+/*
+ * Core runtime functions
+ */
+
+/* Free a heap-allocated SUP/view/array by tag dispatch */
+void soma_era_free(void* value);
+
+/* Panic: print error message and abort */
+void soma_panic(const char* msg);
+
+/*
+ * String operations
+ */
+
 /* Convert Soma String to C string (returns data pointer) */
 char* soma_to_cstring(SomaString* str);
 
@@ -332,11 +248,14 @@ SomaString* soma_from_cstring(const char* cstr);
 /* Get C string length */
 uint64_t soma_cstring_len(const char* cstr);
 
-/* Concatenate two Soma Strings (allocates new String) */
+/* Concatenate two Soma Strings */
 SomaString* soma_strcat(SomaString* a, SomaString* b);
 
-/* Convert int32 to Soma String (allocates new String) */
+/* Convert int32 to Soma String */
 SomaString* soma_int_to_string(int32_t val);
+
+/* Free a string (length + data) */
+void soma_era_string(void* value);
 
 /*
  * Flat array view operations
@@ -352,10 +271,7 @@ void* soma_clone_flat_array_view(SomaFlatArrayView* src);
 /* Allocate a closure with space for env_size captured values */
 void* soma_alloc_closure(void* func_ptr, uint8_t arity, uint16_t env_size);
 
-/* Apply one argument to a closure via eval/apply (Marlow & Peyton Jones 2004).
- * Handles saturated calls (arity==1), PAP creation (arity>1), and
- * over-application (arity==0, recursive apply to result closure).
- * Supports up to 16 total arguments (env slots + direct arg). */
+/* Apply one argument to a closure via eval/apply (Marlow & Peyton Jones 2004) */
 void* soma_apply(void* closure, void* arg);
 
 /* Set a closure environment slot */
@@ -367,34 +283,20 @@ SomaValue soma_closure_get_env(void* closure, uint16_t index);
 /* Get function pointer from closure */
 void* soma_closure_get_func(void* closure);
 
+/* Erase a closure: traverse and erase all env slots, then free */
+void soma_era_closure(void* closure);
+
 /* Clone a closure under a statically assigned DUP label */
 void* soma_clone_closure(void* closure, uint32_t label);
 
-/* Generic heap value clone with tag-based dispatch (rawPtr fallback) */
+/* Generic heap value clone — handles SUPs, views, arrays, and closures */
 SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label);
-
-/* Clone a tagged payload buffer, recursively cloning pointer fields */
-void* soma_clone_tagged_payload(void* payload, uint32_t label);
-
-/* Allocate a tagged payload buffer with count prefix initialized */
-void* soma_alloc_tagged_payload(uint64_t field_count);
-
 
 /*
  * SUP (Superposition) operations — Tier 3 lazy duplication
  */
 
-/* Runtime fresh labels are disabled; labels must be compiler-assigned */
-uint32_t soma_fresh_label(void);
-
-/* Create a SUP node wrapping a value for lazy duplication (legacy, generic clone) */
-SomaValue soma_dup(uint32_t label, SomaValue value);
-
-/* Create a SUP node with a type descriptor for specialized clone/erase.
- * When both projections are accessed, type_desc->clone_fn is called instead
- * of dispatching on the heap object's tag byte. When the SUP is erased,
- * type_desc->erase_fn is called. This enables headerless heap objects.
- * The type_desc pointer is to a static global — no ownership transfer. */
+/* Create a SUP node with a type descriptor for specialized clone/erase */
 SomaValue soma_dup_typed(uint32_t label, SomaValue value,
                          SomaTypeDesc* type_desc);
 
@@ -407,22 +309,10 @@ SomaValue soma_proj1(SomaValue sup_val);
 /*
  * Memory Pool API
  *
- * Arena-style allocation for reduced malloc overhead.
- * Each pool manages a linked list of fixed-size blocks.
- */
-
-/*
- * Size-class pool allocator.
- *
- * Two pools cover all fixed-size heap objects:
- *   pool_48  — small objects ≤48 bytes:
- *              SUP nodes (48 bytes), closures (0-4 env), strings (≤31 chars),
- *              tagged payloads (≤4 fields), array headers (24 bytes)
- *   pool_112 — medium objects ≤112 bytes:
- *              closures (5-12 env), strings (≤95 chars), tagged payloads (≤12 fields)
- *
+ * Two size-class pools cover all fixed-size heap objects:
+ *   pool_48  — small objects ≤48 bytes (SUPs, small closures, small strings)
+ *   pool_112 — medium objects ≤112 bytes
  * Larger objects fall through to malloc.
- * Pools are TLS-local for lock-free allocation on worker threads.
  */
 
 #define POOL_BLOCK_SIZE  (64 * 1024)  /* 64KB per block */
@@ -437,41 +327,28 @@ typedef struct SomaPoolBlock {
 } SomaPoolBlock;
 
 typedef struct SomaPool {
-    SomaPoolBlock* blocks;      /* Linked list of blocks */
-    size_t item_size;           /* Size of each item in this pool */
-    void* free_list;            /* Free list for recycled items */
+    SomaPoolBlock* blocks;
+    size_t item_size;
+    void* free_list;
 } SomaPool;
 
-/* Global pools (one per size class) */
 typedef struct SomaPools {
-    SomaPool pool_48;           /* Small objects + SUP nodes */
-    SomaPool pool_112;          /* Medium objects */
+    SomaPool pool_48;
+    SomaPool pool_112;
 } SomaPools;
 
-/* Global pool instance */
 extern SomaPools soma_pools;
 
-/* Initialize memory pools (call once at startup) */
 void soma_pool_init(void);
-
-/* Clean up all pools (call at shutdown) */
 void soma_pool_cleanup(void);
 
 /* SUP pool */
 void* soma_pool_alloc_sup(void);
 void soma_pool_free_sup(void* ptr);
 
-/* Closure pool (routes to appropriate size class) */
-void* soma_pool_alloc_closure(uint16_t env_size);
-void soma_pool_free_closure(void* ptr, uint16_t env_size);
-
-/* String pool (routes to appropriate size class, falls back to malloc) */
-void* soma_pool_alloc_string(size_t total_size);
-void soma_pool_free_string(void* ptr, size_t total_size);
-
-/* Tagged payload pool (routes to appropriate size class, falls back to malloc) */
-void* soma_pool_alloc_tagged(size_t total_size);
-void soma_pool_free_tagged(void* ptr, size_t total_size);
+/* Generic size-class pool allocation */
+void* soma_pool_alloc_raw(size_t byte_size);
+void  soma_pool_free_raw(void* ptr, size_t byte_size);
 
 /* Flat array view pool (32 bytes → pool_48) */
 void* soma_alloc_view(void);
@@ -479,8 +356,6 @@ void soma_free_view(void* ptr);
 
 /*
  * Pool statistics — opt-in via -DSOMA_POOL_STATS.
- * When enabled, every alloc/free increments an atomic counter.
- * When disabled (default), zero overhead on hot paths.
  */
 #ifdef SOMA_POOL_STATS
 typedef struct SomaPoolStats {
@@ -593,24 +468,12 @@ struct SomaParRuntime {
 
 extern SomaParRuntime soma_par;
 
-/*
- * Runtime Lifecycle
- */
-
-/* Initialize parallel runtime (0 = auto-detect cores) */
 void soma_par_init(int num_workers);
-
-/* Shutdown and join all workers */
 void soma_par_shutdown(void);
 
-/* Check if parallel runtime is enabled */
 static inline int soma_par_enabled(void) {
     return soma_par.num_workers > 0;
 }
-
-/*
- * Task API
- */
 
 SomaTask* soma_task_alloc(void);
 void soma_task_free(SomaTask* task);
@@ -619,19 +482,12 @@ SomaTask* soma_par_pop(SomaWorker* worker);
 SomaTask* soma_par_steal(SomaWorker* thief, SomaWorker* victim);
 SomaValue soma_par_run_task(SomaTask* task);
 
-/*
- * Fork-Join API
- */
-
 SomaTask* soma_fork(SomaTaskFn fn, void* env);
 SomaTask* soma_fork_direct(SomaDirectFn fn, SomaValue arg);
 SomaTask* soma_fork_closure(SomaClosureFn fn, void* closure, SomaValue arg);
 SomaTask* soma_fork_multi(void* fn, SomaValue* args, int num_args);
 SomaValue soma_join(SomaTask* task);
 
-/*
- * Statistics
- */
 typedef struct {
     _Atomic uint64_t tasks_spawned;
     _Atomic uint64_t tasks_run;
@@ -643,9 +499,6 @@ extern SomaParStats soma_par_stats;
 
 void soma_par_print_stats(void);
 
-/*
- * Thread-Local Worker Access
- */
 extern __thread SomaWorker* soma_current_worker;
 
 static inline SomaWorker* soma_par_current_worker(void) {
