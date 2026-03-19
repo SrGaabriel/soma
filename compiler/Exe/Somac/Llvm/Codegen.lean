@@ -68,6 +68,25 @@ def nodeClosureTag : Int := 1
 /-- The tagged union struct type -/
 def taggedTy : LLVMType := .struct false #[.i32, .ptr]
 
+/-- Compute the LLVM struct type for a variant's payload fields -/
+partial def variantPayloadTy (fields : Array ClosedTy) : LLVMType :=
+  .struct false (fields.map convertTy)
+
+/-- Compute the byte size of a naturally-typed payload struct -/
+partial def computePayloadSize (fields : Array ClosedTy) : Nat :=
+  if fields.isEmpty then 0
+  else
+    let offset := fields.foldl (fun acc field =>
+      let align := max 1 field.alignment
+      ((acc + align - 1) / align) * align + field.sizeBytes) 0
+    -- Align total to max field alignment (struct trailing padding)
+    let maxAlign := fields.foldl (fun acc t => max acc t.alignment) 1
+    ((offset + maxAlign - 1) / maxAlign) * maxAlign
+
+/-- Compute allocation size for a tagged union payload: max across all variants -/
+partial def maxPayloadSize (variants : Array (Nat × Array ClosedTy)) : Nat :=
+  variants.foldl (fun acc (_, fields) => max acc (computePayloadSize fields)) 0
+
 /-- Natural alignment for a type -/
 def naturalAlign (ty : LLVMType) : Option Nat :=
   let a := ty.alignment
@@ -676,7 +695,7 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
     match ty with
     | .tagged _tagTy variants =>
       -- Headerless tagged union: {i32 tag, ptr payload} on stack,
-      -- payload is a raw i64[] buffer with fields starting at index 0 (no header)
+      -- payload is a naturally-typed struct per variant
       let structPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 (.local paramRef))
       let structVal ← CodegenM.withFuncBuilder (FuncBuilder.load taggedTy (.local structPtr))
       let tagVal ← CodegenM.withFuncBuilder do
@@ -695,9 +714,7 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
       let hasAnyErasableFields := variants.any fun (_, fields) =>
         fields.any fun ft => ft.needsErase
 
-      -- Compute max field count for pool free size calculation
-      let maxFieldCount : Nat := variants.foldl (fun acc (_, fields) => max acc fields.size) 0
-      let payloadByteSize : Int := Int.ofNat (maxFieldCount * 8)
+      let payloadByteSize : Int := Int.ofNat (maxPayloadSize variants)
 
       if hasAnyErasableFields then
         let freeLabel ← CodegenM.withFuncBuilder (FuncBuilder.freshLabel "free_payload")
@@ -717,17 +734,21 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
             let lbl := variantLabels[vi]!
             CodegenM.withFuncBuilder (FuncBuilder.startBlock lbl)
 
+            let varPayloadTy := variantPayloadTy fields
             for hf : fi in [:fields.size] do
               if h2 : fi < fields.size then
                 let fieldTy := fields[fi]
                 if fieldTy.needsErase then
                   let fieldAddr ← CodegenM.withFuncBuilder do
-                    FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fi]
+                    FuncBuilder.gepi32 varPayloadTy (.local payloadPtr) #[0, fi]
+                  let fieldLLVMTy := convertTy fieldTy
                   let fieldVal ← CodegenM.withFuncBuilder do
-                    FuncBuilder.load .i64 (.local fieldAddr)
+                    FuncBuilder.load fieldLLVMTy (.local fieldAddr)
+                  -- Convert to i64 for eraser interface
+                  let fieldAsI64 ← toI64 fieldLLVMTy (.local fieldVal)
                   let fieldEraserName ← getOrEmitEraser fieldTy
                   CodegenM.withFuncBuilder do
-                    FuncBuilder.callNamedVoid fieldEraserName #[(.i64, .local fieldVal)]
+                    FuncBuilder.callNamedVoid fieldEraserName #[(.i64, .local fieldAsI64)]
 
             CodegenM.withFuncBuilder (FuncBuilder.br freeLabel)
 
@@ -827,7 +848,6 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
 
     match ty with
     | .tagged _tagTy variants =>
-      -- Headerless: payload is raw i64[] with fields at index 0 (no header)
       let structPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 (.local valParam))
       let structVal ← CodegenM.withFuncBuilder (FuncBuilder.load taggedTy (.local structPtr))
       let tagVal ← CodegenM.withFuncBuilder (FuncBuilder.extractvalue taggedTy (.local structVal) #[0])
@@ -841,8 +861,7 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
 
       CodegenM.withFuncBuilder (FuncBuilder.startBlock cloneLabel)
 
-      let maxFieldCount : Nat := variants.foldl (fun acc (_, fields) => max acc fields.size) 0
-      let payloadByteSize : Int := Int.ofNat (maxFieldCount * 8)
+      let payloadByteSize : Int := Int.ofNat (maxPayloadSize variants)
       let newPayload ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .ptr "soma_pool_alloc_raw"
           #[(.i64, .const (.int payloadByteSize 64))]
@@ -871,38 +890,37 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
             let lbl := variantLabels[vi]!
             CodegenM.withFuncBuilder (FuncBuilder.startBlock lbl)
 
+            let varPayloadTy := variantPayloadTy fields
             for hf : fi in [:fields.size] do
               if h2 : fi < fields.size then
                 let fieldTy := fields[fi]
+                let fieldLLVMTy := convertTy fieldTy
                 let srcAddr ← CodegenM.withFuncBuilder do
-                  FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fi]
+                  FuncBuilder.gepi32 varPayloadTy (.local payloadPtr) #[0, fi]
                 let fieldVal ← CodegenM.withFuncBuilder do
-                  FuncBuilder.load .i64 (.local srcAddr)
+                  FuncBuilder.load fieldLLVMTy (.local srcAddr)
                 let dstAddr ← CodegenM.withFuncBuilder do
-                  FuncBuilder.gepi64 .i64 (.local newPayload) #[fi]
+                  FuncBuilder.gepi32 varPayloadTy (.local newPayload) #[0, fi]
 
                 if fieldTy.needsErase then
+                  -- Convert to i64 for cloner interface
+                  let fieldAsI64 ← toI64 fieldLLVMTy (.local fieldVal)
                   let fieldClonerName ← getOrEmitCloner fieldTy
-                  let clonedVal ← CodegenM.withFuncBuilder do
+                  let clonedI64 ← CodegenM.withFuncBuilder do
                     FuncBuilder.callNamed .i64 fieldClonerName
-                      #[(.i64, .local fieldVal), (.i32, .local lblParam)]
+                      #[(.i64, .local fieldAsI64), (.i32, .local lblParam)]
+                  let clonedVal ← fromI64 fieldLLVMTy (.local clonedI64)
                   CodegenM.withFuncBuilder do
-                    FuncBuilder.store .i64 (.local clonedVal) (.local dstAddr)
+                    FuncBuilder.store fieldLLVMTy (.local clonedVal) (.local dstAddr)
                 else
                   CodegenM.withFuncBuilder do
-                    FuncBuilder.store .i64 (.local fieldVal) (.local dstAddr)
+                    FuncBuilder.store fieldLLVMTy (.local fieldVal) (.local dstAddr)
 
             CodegenM.withFuncBuilder (FuncBuilder.br buildLabel)
       else
-        for fi in [:maxFieldCount] do
-          let srcAddr ← CodegenM.withFuncBuilder do
-            FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fi]
-          let fieldVal ← CodegenM.withFuncBuilder do
-            FuncBuilder.load .i64 (.local srcAddr)
-          let dstAddr ← CodegenM.withFuncBuilder do
-            FuncBuilder.gepi64 .i64 (.local newPayload) #[fi]
-          CodegenM.withFuncBuilder do
-            FuncBuilder.store .i64 (.local fieldVal) (.local dstAddr)
+        let payloadSizeVal : LLVMValue := .const (.int payloadByteSize 64)
+        CodegenM.withFuncBuilder do
+          FuncBuilder.memcpy (.local newPayload) (.local payloadPtr) payloadSizeVal
         CodegenM.withFuncBuilder (FuncBuilder.br buildLabel)
 
       -- Build block: allocate a new boxed {i32, ptr} struct and return as i64
@@ -1394,9 +1412,23 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         -- By-value tagged union: extractvalue to get payload pointer
         CodegenM.withFuncBuilder do
           FuncBuilder.extractvalue llvmValTy valRef #[1]
-    -- Headerless payload: fields start at i64 index 0 (no header)
-    let fieldPtr ← CodegenM.withFuncBuilder do
-      FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fieldIdx]
+    -- Natural-size payload: GEP into typed struct for this variant
+    let variantFieldTypes? := match valTy with
+      | .tagged _ variants =>
+        match variants.find? (fun (idx, _) => idx == variantIdx) with
+        | some (_, fields) => if fields.isEmpty then none else some fields
+        | none => none
+      | _ => none
+    let fieldPtr ← match variantFieldTypes? with
+      | some fields =>
+        -- Known variant: use naturally-typed struct GEP
+        let payloadStructTy := variantPayloadTy fields
+        CodegenM.withFuncBuilder do
+          FuncBuilder.gepi32 payloadStructTy (.local payloadPtr) #[0, fieldIdx]
+      | none =>
+        -- Unknown variant or rawPtr fallback: use i64-stride GEP
+        CodegenM.withFuncBuilder do
+          FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fieldIdx]
     let ref ← CodegenM.withFuncBuilder do
       FuncBuilder.load llvmResultTy (.local fieldPtr)
     pure (some (ref, resultTy))
@@ -1410,20 +1442,23 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       FuncBuilder.store .i32 (i32Val tag) (.local tagPtr)
     -- Allocate and store payload if non-empty
     if payload.size > 0 then
-      -- Headerless payload: raw i64[] buffer, fields at index 0
-      let payloadByteSize : Int := Int.ofNat (payload.size * 8)
+      let fieldTypes ← payload.mapM fun op => operandTy op
+      let payloadStructTy := variantPayloadTy fieldTypes
+      let payloadBytes : Int := Int.ofNat (computePayloadSize fieldTypes)
       let payloadMem ← CodegenM.withFuncBuilder do
-        FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int payloadByteSize 64))]
+        FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int payloadBytes 64))]
       for i in [:payload.size] do
         if h : i < payload.size then
           let fieldOp := payload[i]
           let (fieldLLVMTy, fieldVal) ← convertOperandWithTy fieldOp
-          -- Headerless: fields at index i (no +2 offset)
+          -- GEP into naturally-typed struct
           let fieldPtr ← CodegenM.withFuncBuilder do
-            FuncBuilder.gepi64 .i64 (.local payloadMem) #[i]
-          let i64Val ← toI64 fieldLLVMTy fieldVal
+            FuncBuilder.gepi32 payloadStructTy (.local payloadMem) #[0, i]
+          let targetFieldTy := (fieldTypes.map convertTy).getD i fieldLLVMTy
+          let storeVal ← if fieldLLVMTy == targetFieldTy then pure fieldVal
+                          else coerceValue fieldLLVMTy targetFieldTy fieldVal
           CodegenM.withFuncBuilder do
-            FuncBuilder.store .i64 (.local i64Val) (.local fieldPtr)
+            FuncBuilder.store targetFieldTy storeVal (.local fieldPtr)
       let payloadPtrSlot ← CodegenM.withFuncBuilder do
         FuncBuilder.gepi32 taggedTy (.local taggedPtr) #[0, 1]
       CodegenM.withFuncBuilder do
@@ -1439,16 +1474,19 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
   | .reuseTaggedLit tag payload reuseOp ty =>
     let reusePtr ← convertOperand reuseOp
+    let fieldTypes ← payload.mapM fun op => operandTy op
+    let payloadStructTy := variantPayloadTy fieldTypes
     for i in [:payload.size] do
       if h : i < payload.size then
         let fieldOp := payload[i]
         let (fieldLLVMTy, fieldVal) ← convertOperandWithTy fieldOp
-        -- Headerless: fields at index i (no +2 offset)
         let fieldPtr ← CodegenM.withFuncBuilder do
-          FuncBuilder.gepi64 .i64 reusePtr #[i]
-        let i64Val ← toI64 fieldLLVMTy fieldVal
+          FuncBuilder.gepi32 payloadStructTy reusePtr #[0, i]
+        let targetFieldTy := (fieldTypes.map convertTy).getD i fieldLLVMTy
+        let storeVal ← if fieldLLVMTy == targetFieldTy then pure fieldVal
+                        else coerceValue fieldLLVMTy targetFieldTy fieldVal
         CodegenM.withFuncBuilder do
-          FuncBuilder.store .i64 (.local i64Val) (.local fieldPtr)
+          FuncBuilder.store targetFieldTy storeVal (.local fieldPtr)
     -- Build the result struct {tag, reusePtr} on the stack
     let taggedPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca taggedTy)
     let tagPtr ← CodegenM.withFuncBuilder do
