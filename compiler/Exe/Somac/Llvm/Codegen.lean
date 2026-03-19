@@ -68,24 +68,51 @@ def nodeClosureTag : Int := 1
 /-- The tagged union struct type -/
 def taggedTy : LLVMType := .struct false #[.i32, .ptr]
 
-/-- Compute the LLVM struct type for a variant's payload fields -/
-partial def variantPayloadTy (fields : Array ClosedTy) : LLVMType :=
-  .struct false (fields.map convertTy)
+/-- Packed layout for a variant's payload: fields sorted by alignment (desc) -/
+structure PackedLayout where
+  /-- LLVM struct type with fields in physical (sorted) order -/
+  llvmTy : LLVMType
+  /-- Total byte size including alignment padding -/
+  byteSize : Nat
+  /-- Maps physical struct index → logical field index -/
+  physToLog : Array Nat
+  /-- Maps logical field index → physical struct index -/
+  logToPhys : Array Nat
 
-/-- Compute the byte size of a naturally-typed payload struct -/
-partial def computePayloadSize (fields : Array ClosedTy) : Nat :=
-  if fields.isEmpty then 0
+/-- Invert a permutation: if perm[physIdx] = logIdx, result[logIdx] = physIdx -/
+def invertPerm (perm : Array Nat) : Array Nat :=
+  let init := (List.replicate perm.size 0).toArray
+  perm.foldl (fun (acc, phys) logIdx =>
+    (acc.set! logIdx phys, phys + 1))
+    (init, 0) |>.1
+
+/-- Compute optimal packed layout for a variant's payload fields -/
+partial def computePackedLayout (fields : Array ClosedTy) : PackedLayout :=
+  if fields.isEmpty then
+    { llvmTy := .struct false #[], byteSize := 0, physToLog := #[], logToPhys := #[] }
+  else if fields.size == 1 then
+    { llvmTy := .struct false #[convertTy fields[0]!]
+      byteSize := fields[0]!.sizeBytes
+      physToLog := #[0]
+      logToPhys := #[0] }
   else
-    let offset := fields.foldl (fun acc field =>
-      let align := max 1 field.alignment
-      ((acc + align - 1) / align) * align + field.sizeBytes) 0
-    -- Align total to max field alignment (struct trailing padding)
+    let indexed := fields.mapIdx fun i f => (i, f)
+    let sorted := indexed.qsort fun (_, a) (_, b) =>
+      if a.alignment != b.alignment then a.alignment > b.alignment
+      else a.sizeBytes > b.sizeBytes
+    let physToLog := sorted.map fun (i, _) => i
+    let logToPhys := invertPerm physToLog
+    let physFields := sorted.map fun (_, t) => convertTy t
+    let rawSize := sorted.foldl (fun acc (_, t) =>
+      let align := max 1 t.alignment
+      ((acc + align - 1) / align) * align + t.sizeBytes) 0
     let maxAlign := fields.foldl (fun acc t => max acc t.alignment) 1
-    ((offset + maxAlign - 1) / maxAlign) * maxAlign
+    let byteSize := ((rawSize + maxAlign - 1) / maxAlign) * maxAlign
+    { llvmTy := .struct false physFields, byteSize, physToLog, logToPhys }
 
-/-- Compute allocation size for a tagged union payload: max across all variants -/
-partial def maxPayloadSize (variants : Array (Nat × Array ClosedTy)) : Nat :=
-  variants.foldl (fun acc (_, fields) => max acc (computePayloadSize fields)) 0
+/-- Maximum packed payload size across all variants of a tagged union -/
+partial def maxPackedPayloadSize (variants : Array (Nat × Array ClosedTy)) : Nat :=
+  variants.foldl (fun acc (_, fields) => max acc (computePackedLayout fields).byteSize) 0
 
 /-- Natural alignment for a type -/
 def naturalAlign (ty : LLVMType) : Option Nat :=
@@ -714,7 +741,7 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
       let hasAnyErasableFields := variants.any fun (_, fields) =>
         fields.any fun ft => ft.needsErase
 
-      let payloadByteSize : Int := Int.ofNat (maxPayloadSize variants)
+      let payloadByteSize : Int := Int.ofNat (maxPackedPayloadSize variants)
 
       if hasAnyErasableFields then
         let freeLabel ← CodegenM.withFuncBuilder (FuncBuilder.freshLabel "free_payload")
@@ -734,17 +761,17 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
             let lbl := variantLabels[vi]!
             CodegenM.withFuncBuilder (FuncBuilder.startBlock lbl)
 
-            let varPayloadTy := variantPayloadTy fields
+            let layout := computePackedLayout fields
             for hf : fi in [:fields.size] do
               if h2 : fi < fields.size then
-                let fieldTy := fields[fi]
+                let logIdx := layout.physToLog.getD fi fi
+                let fieldTy := fields.getD logIdx fields[fi]
                 if fieldTy.needsErase then
                   let fieldAddr ← CodegenM.withFuncBuilder do
-                    FuncBuilder.gepi32 varPayloadTy (.local payloadPtr) #[0, fi]
+                    FuncBuilder.gepi32 layout.llvmTy (.local payloadPtr) #[0, fi]
                   let fieldLLVMTy := convertTy fieldTy
                   let fieldVal ← CodegenM.withFuncBuilder do
                     FuncBuilder.load fieldLLVMTy (.local fieldAddr)
-                  -- Convert to i64 for eraser interface
                   let fieldAsI64 ← toI64 fieldLLVMTy (.local fieldVal)
                   let fieldEraserName ← getOrEmitEraser fieldTy
                   CodegenM.withFuncBuilder do
@@ -861,7 +888,7 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
 
       CodegenM.withFuncBuilder (FuncBuilder.startBlock cloneLabel)
 
-      let payloadByteSize : Int := Int.ofNat (maxPayloadSize variants)
+      let payloadByteSize : Int := Int.ofNat (maxPackedPayloadSize variants)
       let newPayload ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .ptr "soma_pool_alloc_raw"
           #[(.i64, .const (.int payloadByteSize 64))]
@@ -890,20 +917,20 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
             let lbl := variantLabels[vi]!
             CodegenM.withFuncBuilder (FuncBuilder.startBlock lbl)
 
-            let varPayloadTy := variantPayloadTy fields
+            let layout := computePackedLayout fields
             for hf : fi in [:fields.size] do
               if h2 : fi < fields.size then
-                let fieldTy := fields[fi]
+                let logIdx := layout.physToLog.getD fi fi
+                let fieldTy := fields.getD logIdx fields[fi]
                 let fieldLLVMTy := convertTy fieldTy
                 let srcAddr ← CodegenM.withFuncBuilder do
-                  FuncBuilder.gepi32 varPayloadTy (.local payloadPtr) #[0, fi]
+                  FuncBuilder.gepi32 layout.llvmTy (.local payloadPtr) #[0, fi]
                 let fieldVal ← CodegenM.withFuncBuilder do
                   FuncBuilder.load fieldLLVMTy (.local srcAddr)
                 let dstAddr ← CodegenM.withFuncBuilder do
-                  FuncBuilder.gepi32 varPayloadTy (.local newPayload) #[0, fi]
+                  FuncBuilder.gepi32 layout.llvmTy (.local newPayload) #[0, fi]
 
                 if fieldTy.needsErase then
-                  -- Convert to i64 for cloner interface
                   let fieldAsI64 ← toI64 fieldLLVMTy (.local fieldVal)
                   let fieldClonerName ← getOrEmitCloner fieldTy
                   let clonedI64 ← CodegenM.withFuncBuilder do
@@ -1421,10 +1448,10 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       | _ => none
     let fieldPtr ← match variantFieldTypes? with
       | some fields =>
-        -- Known variant: use naturally-typed struct GEP
-        let payloadStructTy := variantPayloadTy fields
+        let layout := computePackedLayout fields
+        let physIdx := layout.logToPhys.getD fieldIdx fieldIdx
         CodegenM.withFuncBuilder do
-          FuncBuilder.gepi32 payloadStructTy (.local payloadPtr) #[0, fieldIdx]
+          FuncBuilder.gepi32 layout.llvmTy (.local payloadPtr) #[0, physIdx]
       | none =>
         -- Unknown variant or rawPtr fallback: use i64-stride GEP
         CodegenM.withFuncBuilder do
@@ -1443,17 +1470,17 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     -- Allocate and store payload if non-empty
     if payload.size > 0 then
       let fieldTypes ← payload.mapM fun op => operandTy op
-      let payloadStructTy := variantPayloadTy fieldTypes
-      let payloadBytes : Int := Int.ofNat (computePayloadSize fieldTypes)
+      let layout := computePackedLayout fieldTypes
+      let payloadBytes : Int := Int.ofNat layout.byteSize
       let payloadMem ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int payloadBytes 64))]
       for i in [:payload.size] do
         if h : i < payload.size then
           let fieldOp := payload[i]
           let (fieldLLVMTy, fieldVal) ← convertOperandWithTy fieldOp
-          -- GEP into naturally-typed struct
+          let physIdx := layout.logToPhys.getD i i
           let fieldPtr ← CodegenM.withFuncBuilder do
-            FuncBuilder.gepi32 payloadStructTy (.local payloadMem) #[0, i]
+            FuncBuilder.gepi32 layout.llvmTy (.local payloadMem) #[0, physIdx]
           let targetFieldTy := (fieldTypes.map convertTy).getD i fieldLLVMTy
           let storeVal ← if fieldLLVMTy == targetFieldTy then pure fieldVal
                           else coerceValue fieldLLVMTy targetFieldTy fieldVal
@@ -1475,13 +1502,14 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
   | .reuseTaggedLit tag payload reuseOp ty =>
     let reusePtr ← convertOperand reuseOp
     let fieldTypes ← payload.mapM fun op => operandTy op
-    let payloadStructTy := variantPayloadTy fieldTypes
+    let layout := computePackedLayout fieldTypes
     for i in [:payload.size] do
       if h : i < payload.size then
         let fieldOp := payload[i]
         let (fieldLLVMTy, fieldVal) ← convertOperandWithTy fieldOp
+        let physIdx := layout.logToPhys.getD i i
         let fieldPtr ← CodegenM.withFuncBuilder do
-          FuncBuilder.gepi32 payloadStructTy reusePtr #[0, i]
+          FuncBuilder.gepi32 layout.llvmTy reusePtr #[0, physIdx]
         let targetFieldTy := (fieldTypes.map convertTy).getD i fieldLLVMTy
         let storeVal ← if fieldLLVMTy == targetFieldTy then pure fieldVal
                         else coerceValue fieldLLVMTy targetFieldTy fieldVal

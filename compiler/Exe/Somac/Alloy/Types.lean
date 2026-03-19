@@ -198,21 +198,6 @@ def isArithmetic (ty : Ty n) : Bool :=
   | .prim _ => true
   | _ => false
 
-/-- Size in bytes -/
-partial def sizeBytes (ty : Ty n) : Nat :=
-  match ty with
-  | .prim p => (p.bitWidth + 7) / 8
-  | .ptr _ | .rawPtr => 8
-  | .funcPtr _ _ => 8
-  | .struct fields => fields.foldl (fun acc (_, t) => acc + t.sizeBytes) 0
-  | .array elem size => elem.sizeBytes * size
-  | .tagged tag variants =>
-      let maxPayload := variants.foldl (fun acc (_, fields) =>
-        max acc (fields.foldl (fun a t => a + t.sizeBytes) 0)) 0
-      tag.sizeBytes + maxPayload
-  | .closure _ _ => 16
-  | .var _ => 8
-
 /-- Alignment in bytes -/
 partial def alignment (ty : Ty n) : Nat :=
   match ty with
@@ -226,6 +211,33 @@ partial def alignment (ty : Ty n) : Nat :=
       max tag.alignment maxAlign
   | .closure _ _ => 8
   | .var _ => 8
+
+mutual
+/-- Aligned size of fields laid out as a struct with natural alignment padding -/
+partial def alignedFieldsSize (fields : Array (Ty n)) : Nat :=
+  if fields.isEmpty then 0
+  else
+    let rawSize := fields.foldl (fun acc f =>
+      let a := max 1 (alignment f)
+      ((acc + a - 1) / a) * a + sizeBytes f) 0
+    let maxAlign := fields.foldl (fun acc f => max acc (alignment f)) 1
+    ((rawSize + maxAlign - 1) / maxAlign) * maxAlign
+
+/-- Size in bytes -/
+partial def sizeBytes (ty : Ty n) : Nat :=
+  match ty with
+  | .prim p => (p.bitWidth + 7) / 8
+  | .ptr _ | .rawPtr => 8
+  | .funcPtr _ _ => 8
+  | .struct fields => alignedFieldsSize (fields.map fun (_, t) => t)
+  | .array elem size => sizeBytes elem * size
+  | .tagged tag variants =>
+      let maxPayload := variants.foldl (fun acc (_, fields) =>
+        max acc (alignedFieldsSize fields)) 0
+      sizeBytes tag + maxPayload
+  | .closure _ _ => 16
+  | .var _ => 8
+end
 
 /-- Pretty-print a type -/
 partial def toString (ty : Ty n) : String :=
