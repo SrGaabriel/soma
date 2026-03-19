@@ -85,7 +85,7 @@ def imports (m : ModuleInfo) : Array QualName :=
     | _ => none
 
 /-- Extract export list if explicitly declared -/
-def exports (m : ModuleInfo) : Option (Array Name) :=
+def exports (m : ModuleInfo) : Option (Array QualName) :=
   m.ast.decls.findSome? fun decl =>
     match decl with
     | .export_ items _ => some items

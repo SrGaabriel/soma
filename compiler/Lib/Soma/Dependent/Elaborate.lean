@@ -129,13 +129,13 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
   match ty with
   -- Type variable
   | .var name =>
-    match env.lookup name.value with
+    match env.lookup name.name with
     | some (lvl, kind) =>
       -- Return a neutral variable
-      return Value.vNeutral kind (Neutral.nVar ⟨name.value, lvl⟩)
+      return Value.vNeutral kind (Neutral.nVar ⟨name.name, lvl⟩)
     | none =>
       -- Check for a pre-allocated value override (used by instance elaboration to share metavariables across type args and constraints)
-      match env.lookupOverride name.value with
+      match env.lookupOverride name.name with
       | some val => return val
       | none =>
         TCM.freshMetaVal (Value.vType Level.zero)
@@ -143,16 +143,16 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
   -- Type constructor (uppercase identifier)
   | .con name =>
     -- First check if this is a type abbreviation (e.g., CInt = Int32)
-    if let some abbrevInfo ← TCM.lookupAbbrev name.value then
+    if let some abbrevInfo ← TCM.lookupAbbrev name.name then
       -- Return the elaborated expansion directly.
       -- For non-parameterized: this is the final type (e.g., vPrimTy Int32)
       -- For parameterized: this is a Pi type that will be applied via .app
       return abbrevInfo.expansion
     -- Then try Type/Row/Label sort names
-    else if let some tyVal := resolveType name.value then
+    else if let some tyVal := resolveType name.name then
       return tyVal
     -- Check globals for constructors/types
-    else if let some globalInfo ← TCM.lookupGlobal name.value then
+    else if let some globalInfo ← TCM.lookupGlobal name.name then
       if globalInfo.isConstructor then
         -- It's a constructor, return as vConstructor with no args yet
         return Value.vConstructor globalInfo.name globalInfo.ctorTag [] globalInfo.type
@@ -166,10 +166,10 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
           return Value.vDataType globalInfo.name.id []
     -- Otherwise, treat as a user-defined type reference
     else
-      let unique ← match ← TCM.lookupUnique name.value with
+      let unique ← match ← TCM.lookupUnique name.name with
         | some id => pure id
         | none => TCM.throw (.cannotInfer
-          s!"unknown type constructor `{name.value}` (no builtin/intrinsic binding in context)"
+          s!"unknown type constructor `{name.name}` (no builtin/intrinsic binding in context)"
           name.span
           none)
       return Value.vDataType unique []
@@ -245,7 +245,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       let kind ← match v.kind with
         | some k => elaborateType acc k
         | none => pure (Value.vType Level.zero)
-      return acc.extend v.name.value kind
+      return acc.extend v.name.name kind
 
     let bodyVal ← elaborateType env' body
 
@@ -262,7 +262,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
         | some k => elaborateType env k
         | none => pure (Value.vType Level.zero)
       let kindExpr := quoteValue kind env.level
-      accExpr := Soma.Core.Expr.pi .omega .implicit v.name.value kindExpr accExpr
+      accExpr := Soma.Core.Expr.pi .omega .implicit v.name.name kindExpr accExpr
 
     TCM.evalExprInEnv (elabEnvToEnv env) accExpr
 
@@ -278,10 +278,10 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- Elaborate constraint arguments
       let argVals ← args.toList.mapM (elaborateType env)
       -- Create the constraint type (e.g., Show Int)
-      let classId ← match ← TCM.lookupUnique className.value with
+      let classId ← match ← TCM.lookupUnique className.name with
         | some id => pure id
         | none =>
-          TCM.throw (.unboundGlobal s!"{className.value} (unknown type class)" classSpan #[])
+          TCM.throw (.unboundGlobal s!"{className.name} (unknown type class)" classSpan #[])
       let constraintTy := Value.vDataType classId argVals
       -- Use const closure since the body doesn't depend on the instance parameter
       return Value.vPi .omega .instance_ "_" constraintTy (Closure.const "_" acc)
@@ -304,23 +304,23 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       let tyVal ← elaborateType env fieldTy
       -- Check if the field name is a bound label variable (for label polymorphism)
       -- If so, use the variable reference; otherwise use a literal label
-      let labelVal := match env.lookup name.value with
+      let labelVal := match env.lookup name.name with
         | some (lvl, _) =>
           -- Field name is a bound variable - use as label variable
-          Value.vNeutral Value.vLabelSort (Neutral.nVar ⟨name.value, lvl⟩)
+          Value.vNeutral Value.vLabelSort (Neutral.nVar ⟨name.name, lvl⟩)
         | none =>
           -- Field name is a literal label
-          Value.vLabelLit name.value
+          Value.vLabelLit name.name
       row := Value.vRowExtend labelVal tyVal row
     -- Handle row tail (for polymorphism)
     -- The tail represents a row variable that can be unified with other rows
     match tail with
     | some tailName =>
-      match env.lookup tailName.value with
+      match env.lookup tailName.name with
       | some (lvl, _) =>
         -- The tail is a known row variable - use it directly as the row tail
         -- (not as a labeled field, but as the actual tail of the row)
-        let tailVar := Value.vNeutral Value.vRowSort (Neutral.nVar ⟨tailName.value, lvl⟩)
+        let tailVar := Value.vNeutral Value.vRowSort (Neutral.nVar ⟨tailName.name, lvl⟩)
         -- Properly concatenate: prepend our fields to the tail row
         -- We need to rebuild the row with the tail as the base
         row := rebuildRowWithTail row tailVar
@@ -338,18 +338,18 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
     for (name, caseTy) in cases.toList.reverse do
       let tyVal ← elaborateType env caseTy
       -- Check if the case name is a bound label variable (for label polymorphism)
-      let labelVal := match env.lookup name.value with
+      let labelVal := match env.lookup name.name with
         | some (lvl, _) =>
-          Value.vNeutral Value.vLabelSort (Neutral.nVar ⟨name.value, lvl⟩)
+          Value.vNeutral Value.vLabelSort (Neutral.nVar ⟨name.name, lvl⟩)
         | none =>
-          Value.vLabelLit name.value
+          Value.vLabelLit name.name
       row := Value.vRowExtend labelVal tyVal row
     -- Handle row tail (for polymorphism)
     match tail with
     | some tailName =>
-      match env.lookup tailName.value with
+      match env.lookup tailName.name with
       | some (lvl, _) =>
-        let tailVar := Value.vNeutral Value.vRowSort (Neutral.nVar ⟨tailName.value, lvl⟩)
+        let tailVar := Value.vNeutral Value.vRowSort (Neutral.nVar ⟨tailName.name, lvl⟩)
         row := rebuildRowWithTail row tailVar
       | none =>
         let tailMeta ← TCM.freshMetaVal Value.vRowSort
@@ -361,29 +361,29 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
   | .pi qty name domain codomain _ =>
     let domVal ← elaborateType env domain
     -- Extend env with the bound variable for the codomain
-    let env' := env.extend name.value domVal
+    let env' := env.extend name.name domVal
     let codVal ← elaborateType env' codomain
     -- Create a term-based closure for dependent substitution
     -- IMPORTANT: Pass env (not env') - the closure should NOT capture its own parameter.
     -- When applied, the closure will be extended with the argument.
-    let codClosure ← mkDependentClosure name.value codVal env
-    return Value.vPi qty .explicit name.value domVal codClosure
+    let codClosure ← mkDependentClosure name.name codVal env
+    return Value.vPi qty .explicit name.name domVal codClosure
 
   -- Dependent pair type (Sigma): (x : A) × B
   | .sigma qty name fst snd _ =>
     let fstVal ← elaborateType env fst
-    let env' := env.extend name.value fstVal
+    let env' := env.extend name.name fstVal
     let sndVal ← elaborateType env' snd
     -- Create a term-based closure for dependent substitution
     -- Pass env (not env') - the closure should NOT capture its own parameter.
-    let sndClosure ← mkDependentClosure name.value sndVal env
-    return Value.vSigma qty name.value fstVal sndClosure
+    let sndClosure ← mkDependentClosure name.name sndVal env
+    return Value.vSigma qty name.name fstVal sndClosure
 
   -- Instance-implicit parameter: {{x : A}} -> B
   -- Uses BinderInfo.instance_ so that instance resolution kicks in
   | .implicit name domain codomain _ =>
     let domVal ← elaborateType env domain
-    let bindName := name.map (·.value) |>.getD "_"
+    let bindName := name.map (·.name) |>.getD "_"
     let env' := env.extend bindName domVal
     let codVal ← elaborateType env' codomain
     -- Create a term-based closure for dependent substitution

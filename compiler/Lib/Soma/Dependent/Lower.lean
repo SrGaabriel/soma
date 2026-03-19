@@ -20,7 +20,7 @@ private def isSimpleVarPattern : Syntax.Pattern → Bool
   | _ => false
 
 private def extractVarName : Syntax.Pattern → String
-  | .var n => n.value
+  | .var n => n.name
   | .parens inner _ => extractVarName inner
   | .typed inner _ _ => extractVarName inner
   | _ => "_"
@@ -39,21 +39,21 @@ private def functionAttrsFromSyntax
     (attrs : Array Syntax.Attribute)
     (defaultExternName : Option String := none)
   : FunctionAttrs :=
-  let externAttr := attrs.find? fun a => a.name.value == "extern"
+  let externAttr := attrs.find? fun a => a.name.name == "extern"
   let externName := match externAttr with
     | some attr =>
       match attr.args[0]? with
       | some (Syntax.Expr.lit (Syntax.Literal.string s _)) => some s
       | _ => defaultExternName
     | none => none
-  let intrinsicAttr := attrs.find? fun a => a.name.value == "intrinsic"
+  let intrinsicAttr := attrs.find? fun a => a.name.name == "intrinsic"
   let intrinsicTag := match intrinsicAttr with
     | some attr =>
       match attr.args[0]? with
       | some (Syntax.Expr.lit (Syntax.Literal.string s _)) => some s
       | _ => some ""
     | none => none
-  let wiredInAttr := attrs.find? fun a => a.name.value == "wired_in"
+  let wiredInAttr := attrs.find? fun a => a.name.name == "wired_in"
   let wiredInRole := match wiredInAttr with
     | some attr =>
       match attr.args[0]? with
@@ -61,9 +61,9 @@ private def functionAttrsFromSyntax
       | _ => none
     | none => none
   {
-    inline := attrs.any fun a => a.name.value == "inline"
-    noInline := attrs.any fun a => a.name.value == "noinline"
-    total := attrs.any fun a => a.name.value == "total"
+    inline := attrs.any fun a => a.name.name == "inline"
+    noInline := attrs.any fun a => a.name.name == "noinline"
+    total := attrs.any fun a => a.name.name == "total"
     deprecated := none
     extern := externName
     intrinsic := intrinsicTag
@@ -89,17 +89,17 @@ private def registerGlobalNames
     for decl in ast.decls do
       match decl with
       | .def_ attrs name _ _ _ _ =>
-        if names.get? name.value |>.isNone then
-          let fnAttrs := functionAttrsFromSyntax attrs (some name.value)
-          let (n, s') := mkGlobalName name.value fnAttrs supply
+        if names.get? name.name |>.isNone then
+          let fnAttrs := functionAttrsFromSyntax attrs (some name.name)
+          let (n, s') := mkGlobalName name.name fnAttrs supply
           supply := s'
-          names := names.insert name.value n
+          names := names.insert name.name n
       | .trait _ _ _ _ methods _ =>
         for m in methods do
-          if names.get? m.name.value |>.isNone then
-            let (u, s') := supply.fresh m.name.value
+          if names.get? m.name.name |>.isNone then
+            let (u, s') := supply.fresh m.name.name
             supply := s'
-            names := names.insert m.name.value ⟨u⟩
+            names := names.insert m.name.name ⟨u⟩
       | _ => pure ()
 
     (names, supply)
@@ -115,7 +115,7 @@ private def lowerFunctionDeclCore
   Id.run do
     match decl with
     | .def_ attrs name headerParams sig clauses span =>
-      let fnAttrs := functionAttrsFromSyntax attrs (some name.value)
+      let fnAttrs := functionAttrsFromSyntax attrs (some name.name)
       match clauses[0]? with
       | some clause =>
         let hasPatternClauses := clauses.any (fun c => c.patterns.size > 0)
@@ -126,11 +126,11 @@ private def lowerFunctionDeclCore
             let expectedArity := totalArity - explicitHeaderParams.size
             if let some badClause := clauses.find? (fun c => c.patterns.size != expectedArity) then
               let d := Diagnostic.error
-                (s!"definition '{name.value}' expects {expectedArity} pattern(s) from its signature, but got {badClause.patterns.size}")
+                (s!"definition '{name.name}' expects {expectedArity} pattern(s) from its signature, but got {badClause.patterns.size}")
                 badClause.span
               return (none, #[d])
 
-        let headerParamNames := (headerParams.filter (!·.isImplicit)).map (·.name.value)
+        let headerParamNames := (headerParams.filter (!·.isImplicit)).map (·.name.name)
         if allSimplePatterns clause.patterns then
           let params := headerParamNames ++ (clause.patterns.map extractVarName)
           return (some {
@@ -147,7 +147,7 @@ private def lowerFunctionDeclCore
         let clauseParams := (List.range numClauseParams).toArray.map fun i => s!"_arg{i}"
         let params := headerParamNames ++ clauseParams
         let scrutineeSyntax : Array Syntax.Expr := clauseParams.map fun paramName =>
-          Syntax.Expr.var ⟨paramName, span⟩
+          Syntax.Expr.var ⟨#[], paramName, span⟩
         let armsSyntax : Array Syntax.MatchArm := clauses.map fun c =>
           Syntax.MatchArm.mk c.patterns c.guard c.body c.span
         let caseSyntax := Syntax.Expr.case scrutineeSyntax armsSyntax span
@@ -163,7 +163,7 @@ private def lowerFunctionDeclCore
       | none =>
         if fnAttrs.intrinsic.isSome || fnAttrs.extern.isSome then
           let body := Syntax.Expr.lit
-            (Syntax.Literal.string s!"{if fnAttrs.intrinsic.isSome then "intrinsic" else "extern"}:{name.value}" span)
+            (Syntax.Literal.string s!"{if fnAttrs.intrinsic.isSome then "intrinsic" else "extern"}:{name.name}" span)
           return (some {
             name := globalName
             params := #[]
@@ -174,7 +174,7 @@ private def lowerFunctionDeclCore
             attrs := fnAttrs
           }, #[])
         let d := Diagnostic.error
-          (s!"definition '{name.value}' must have at least one clause or be marked @[intrinsic]/@[extern]")
+          (s!"definition '{name.name}' must have at least one clause or be marked @[intrinsic]/@[extern]")
           span
         return (none, #[d])
     | _ =>
@@ -186,7 +186,7 @@ private def lowerFunctionDecl
   : Option Soma.Core.UntypedFunction × Diagnostics :=
   match decl with
   | .def_ _ name .. =>
-    let globalName := globalNames.getD name.value ⟨{ id := 0, module := "", original := name.value }⟩
+    let globalName := globalNames.getD name.name ⟨{ id := 0, module := "", original := name.name }⟩
     lowerFunctionDeclCore decl globalName
   | _ => (none, #[])
 
@@ -202,19 +202,19 @@ private def lowerTypeDecl
     let diags : Diagnostics :=
       if constructors.size > maxConstructors then
         #[Diagnostic.error
-          s!"data type '{name.value}' has {constructors.size} constructors, exceeding the maximum of {maxConstructors}"
+          s!"data type '{name.name}' has {constructors.size} constructors, exceeding the maximum of {maxConstructors}"
           span]
       else #[]
-    let (typeUnique, supply') := supply.fresh name.value
+    let (typeUnique, supply') := supply.fresh name.name
     let typeName : Soma.Core.QualifiedName := ⟨typeUnique⟩
-    let typeVarNames := params.map (·.name.value)
+    let typeVarNames := params.map (·.name.name)
     let ctors := Id.run do
       let mut acc : Array Soma.Core.UntypedConstructor := #[]
       let mut supply'' := supply'
       for i in [:constructors.size] do
         if hIdx : i < constructors.size then
           let ctor : Syntax.DataCon := constructors[i]'hIdx
-          let (ctorUnique, supplyNext) := supply''.fresh ctor.name.value
+          let (ctorUnique, supplyNext) := supply''.fresh ctor.name.name
           supply'' := supplyNext
           let ctorName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
           let lowered : Soma.Core.UntypedConstructor := match ctor.sig with
@@ -227,13 +227,13 @@ private def lowerTypeDecl
     let (ctors, supply'') := ctors
     (some (.algebraic attrs typeName typeVarNames ctors), diags, supply'')
   | .record attrs name params _ctorName fields _ =>
-    let (typeUnique, supply') := supply.fresh name.value
+    let (typeUnique, supply') := supply.fresh name.name
     let typeName : Soma.Core.QualifiedName := ⟨typeUnique⟩
-    let typeVarNames := params.map (·.name.value)
+    let typeVarNames := params.map (·.name.name)
     let (ctorUnique, supply'') := supply'.fresh "New"
     let ctorQName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
     let fieldsWithOptNames := fields.map fun field =>
-      (field.name.map (·.value), field.type_)
+      (field.name.map (·.name), field.type_)
     (some (.record attrs typeName typeVarNames ctorQName fieldsWithOptNames), #[], supply'')
   | _ => (none, #[], supply)
 
@@ -265,13 +265,13 @@ private def lowerTypeClassDecl
   match decl with
   | .trait _ name params constraints methods span =>
     let className :=
-      match globalNames.get? name.value with
+      match globalNames.get? name.name with
       | some n => n
       | none =>
-        let (u, _) := supply.fresh name.value
+        let (u, _) := supply.fresh name.name
         ⟨u⟩
     let methodSigs := methods.map fun m =>
-      let mName := globalNames.getD m.name.value ⟨{ id := 0, module := "", original := m.name.value }⟩
+      let mName := globalNames.getD m.name.name ⟨{ id := 0, module := "", original := m.name.name }⟩
       (mName, rewriteRecordArrowsAsImplicits m.type_)
     (some {
       name := className
@@ -302,7 +302,7 @@ private def lowerInstanceDecl
       for methodDecl in methods do
         match methodDecl with
         | .def_ _ methodName _ _ _ _ =>
-          let (u, sup') := sup.fresh methodName.value
+          let (u, sup') := sup.fresh methodName.name
           sup := sup'
           let methodQN : Soma.Core.QualifiedName := ⟨u⟩
           let (fn?, fnDiags) := lowerFunctionDeclWithName methodDecl methodQN
@@ -312,7 +312,7 @@ private def lowerInstanceDecl
         | _ => pure ()
       (fns, ds, sup)
     (some {
-      className := traitName.value
+      className := traitName.name
       typeArgsSyntax := args
       binders := binders
       methods := methodFns
@@ -324,8 +324,8 @@ private def lowerAbbrevDecl (decl : Syntax.Decl) : Option Soma.Core.TypeAbbrev :
   match decl with
   | .abbrev name params expansion span =>
     some {
-      name := name.value
-      params := params.map (·.value)
+      name := name.name
+      params := params.map (·.name)
       expansion := expansion
       span := span
     }

@@ -911,7 +911,7 @@ def checkModule
   -- Check for explicit exports in the AST
   let explicitExports : Option (Array String) := info.ast.decls.findSome? fun decl =>
     match decl with
-    | .export_ items _ => some (items.map (·.value))
+    | .export_ items _ => some (items.map (·.name))
     | _ => none
 
   let (publicSymbols, supply') := extractPublicSymbols
@@ -992,7 +992,7 @@ def checkModuleIncremental
   -- Check for explicit exports in the AST
   let explicitExports : Option (Array String) := info.ast.decls.findSome? fun decl =>
     match decl with
-    | .export_ items _ => some (items.map (·.value))
+    | .export_ items _ => some (items.map (·.name))
     | _ => none
 
   let (publicSymbols, supply') := extractPublicSymbols

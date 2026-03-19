@@ -221,7 +221,7 @@ end ConversionTests
 
 namespace InferTests
 
-def synName (s : String) : Soma.Syntax.Name := ⟨s, testSpan⟩
+def synName (s : String) : Soma.Syntax.QualName := ⟨#[], s, testSpan⟩
 
 /-- Test: Infer integer literal in equality suite -/
 def testInferIntLit : IO TestResult := do

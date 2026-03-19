@@ -26,7 +26,7 @@ open Test.Fixtures
 def testSpan : Span := Span.uninhabited
 
 /-- Helper to create a syntax name at test span -/
-def synName (s : String) : Soma.Syntax.Name := ⟨s, testSpan⟩
+def synName (s : String) : Soma.Syntax.QualName := ⟨#[], s, testSpan⟩
 
 /-- Helper to create a simple unique ID -/
 def mkUnique (n : Nat) (name : String) : Soma.Unique :=

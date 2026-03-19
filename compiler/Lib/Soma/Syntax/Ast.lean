@@ -6,17 +6,6 @@ namespace Soma.Syntax
 
 open Soma.Core (Quantity)
 
-/-! ## Names -/
-
-/-- A simple name (identifier) -/
-structure Name where
-  value : String
-  span : Span
-  deriving Repr, BEq, Inhabited
-
-instance : ToString Name where
-  toString n := n.value
-
 /-- An operator name (wrapped in braces in source: {+}, {>>=}) -/
 structure OpName where
   value : String
@@ -36,7 +25,20 @@ structure QualName where
 instance : ToString QualName where
   toString qn :=
     if qn.path.isEmpty then qn.name
-    else String.intercalate "/" qn.path.toList ++ "." ++ qn.name
+    else String.intercalate "::" qn.path.toList ++ "::" ++ qn.name
+
+namespace QualName
+
+/-- The fully qualified display string -/
+def display (qn : QualName) : String := toString qn
+
+/-- Whether this is an unqualified (simple) name -/
+def isSimple (qn : QualName) : Bool := qn.path.isEmpty
+
+/-- All segments as a flat list (path ++ [name]) -/
+def segments (qn : QualName) : List String := qn.path.toList ++ [qn.name]
+
+end QualName
 
 /-! ## Literals -/
 
@@ -63,13 +65,13 @@ mutual
 /-- Patterns for destructuring in case expressions and function definitions -/
 inductive Pattern : Type where
   /-- Variable pattern: x -/
-  | var (name : Name)
+  | var (name : QualName)
   /-- Wildcard pattern: _ -/
   | wildcard (span : Span)
   /-- Literal pattern: 42, "hello", true -/
   | lit (lit : Literal)
   /-- Constructor pattern: Some x, Cons h t -/
-  | con (name : Name) (args : Array Pattern) (span : Span)
+  | con (name : QualName) (args : Array Pattern) (span : Span)
   /-- Tuple pattern: (a, b, c) -/
   | tuple (elements : Array Pattern) (span : Span)
   /-- List pattern: [a, b, c] -/
@@ -81,18 +83,18 @@ inductive Pattern : Type where
   /-- Typed pattern: (x :: Type) -/
   | typed (pat : Pattern) (ty : TypeExpr) (span : Span)
   /-- Variant pattern: .Ok x -/
-  | variant (label : Name) (arg : Option Pattern) (span : Span)
+  | variant (label : QualName) (arg : Option Pattern) (span : Span)
 
 /-- A type variable binder, optionally with a type/kind annotation -/
 inductive TypeVarBinder : Type where
-  | mk (name : Name) (kind : Option TypeExpr) : TypeVarBinder
+  | mk (name : QualName) (kind : Option TypeExpr) : TypeVarBinder
 
 /-- Type expressions -/
 inductive TypeExpr : Type where
   /-- Type variable: a, b -/
-  | var (name : Name)
+  | var (name : QualName)
   /-- Type constructor: Int, String, Option -/
-  | con (name : Name)
+  | con (name : QualName)
   /-- Type application: Option a, Either e a -/
   | app (fn : TypeExpr) (arg : TypeExpr) (span : Span)
   /-- Function type: a -> b -/
@@ -104,27 +106,27 @@ inductive TypeExpr : Type where
   /-- Universal quantification: forall a (r :: Row). Type -/
   | forall_ (vars : Array TypeVarBinder) (body : TypeExpr) (span : Span)
   /-- Constrained type: Type with (Constraint1, Constraint2) -/
-  | constrained (constraints : Array (Name × Array TypeExpr × Span)) (body : TypeExpr) (span : Span)
+  | constrained (constraints : Array (QualName × Array TypeExpr × Span)) (body : TypeExpr) (span : Span)
   /-- Parenthesized type -/
   | parens (inner : TypeExpr) (span : Span)
   /-- Kind annotation: Type :: * -> * -/
   | kinded (ty : TypeExpr) (kind : TypeExpr) (span : Span)
   /-- Record type: { x :: Int, y :: Bool } or { x :: Int | r } -/
-  | record (fields : Array (Name × TypeExpr)) (tail : Option Name) (span : Span)
+  | record (fields : Array (QualName × TypeExpr)) (tail : Option QualName) (span : Span)
   /-- Variant type: < Ok :: Int | Err :: String > or < Ok :: Int | r > -/
-  | variant (cases : Array (Name × TypeExpr)) (tail : Option Name) (span : Span)
+  | variant (cases : Array (QualName × TypeExpr)) (tail : Option QualName) (span : Span)
   /-- Dependent function type (Pi): (q x : A) -> B -/
-  | pi (qty : Quantity) (name : Name) (domain : TypeExpr) (codomain : TypeExpr) (span : Span)
+  | pi (qty : Quantity) (name : QualName) (domain : TypeExpr) (codomain : TypeExpr) (span : Span)
   /-- Dependent pair type (Sigma): (x : A) × B -/
-  | sigma (qty : Quantity) (name : Name) (fst : TypeExpr) (snd : TypeExpr) (span : Span)
+  | sigma (qty : Quantity) (name : QualName) (fst : TypeExpr) (snd : TypeExpr) (span : Span)
   /-- Implicit parameter type: {{x : A}} -> B -/
-  | implicit (name : Option Name) (domain : TypeExpr) (codomain : TypeExpr) (span : Span)
+  | implicit (name : Option QualName) (domain : TypeExpr) (codomain : TypeExpr) (span : Span)
 
 end
 
 namespace TypeVarBinder
 
-def name : TypeVarBinder → Name
+def name : TypeVarBinder → QualName
   | .mk n _ => n
 
 def kind : TypeVarBinder → Option TypeExpr
@@ -132,7 +134,7 @@ def kind : TypeVarBinder → Option TypeExpr
 
 end TypeVarBinder
 
-instance : Inhabited TypeVarBinder := ⟨.mk ⟨"_", Span.uninhabited⟩ none⟩
+instance : Inhabited TypeVarBinder := ⟨.mk ⟨#[], "_", Span.uninhabited⟩ none⟩
 
 namespace TypeExpr
 
@@ -143,7 +145,7 @@ partial def collectVarNames (ty : TypeExpr) : Std.HashSet String :=
 where
   go (ty : TypeExpr) (acc : Std.HashSet String) : Std.HashSet String :=
     match ty with
-    | .var name => acc.insert name.value
+    | .var name => acc.insert name.name
     | .con _ => acc
     | .arrow from_ to _ => go to (go from_ acc)
     | .tuple elems _ => elems.foldl (fun a e => go e a) acc
@@ -156,12 +158,12 @@ where
     | .record fields tail _ =>
       let acc' := fields.foldl (fun a (_, t) => go t a) acc
       match tail with
-      | some tailName => acc'.insert tailName.value
+      | some tailName => acc'.insert tailName.name
       | none => acc'
     | .variant cases tail _ =>
       let acc' := cases.foldl (fun a (_, t) => go t a) acc
       match tail with
-      | some tailName => acc'.insert tailName.value
+      | some tailName => acc'.insert tailName.name
       | none => acc'
     | .pi _ _ domain codomain _ => go codomain (go domain acc)
     | .sigma _ _ fst snd _ => go snd (go fst acc)
@@ -171,8 +173,8 @@ end TypeExpr
 
 -- Nonempty instances (needed for partial recursive functions)
 instance : Nonempty Pattern := ⟨.wildcard Span.uninhabited⟩
-instance : Nonempty TypeExpr := ⟨.var ⟨"_", Span.uninhabited⟩⟩
-instance : Nonempty TypeVarBinder := ⟨.mk ⟨"_", Span.uninhabited⟩ none⟩
+instance : Nonempty TypeExpr := ⟨.var ⟨#[], "_", Span.uninhabited⟩⟩
+instance : Nonempty TypeVarBinder := ⟨.mk ⟨#[], "_", Span.uninhabited⟩ none⟩
 
 -- Manually derive Repr for mutually recursive types
 mutual
@@ -238,7 +240,7 @@ def span : Pattern → Span
   | .variant _ _ s => s
 
 /-- Get all variable names bound by this pattern -/
-partial def boundVars : Pattern → Array Name
+partial def boundVars : Pattern → Array QualName
   | .var name => #[name]
   | .wildcard _ => #[]
   | .lit _ => #[]
@@ -256,19 +258,19 @@ end Pattern
 
 /-- Type class constraint: Show a, Functor f -/
 structure Constraint where
-  className : Name
+  className : QualName
   args : Array TypeExpr
   span : Span
   deriving Repr
 
-instance : Nonempty Constraint := ⟨⟨⟨"_", Span.uninhabited⟩, #[], Span.uninhabited⟩⟩
+instance : Nonempty Constraint := ⟨⟨⟨#[], "_", Span.uninhabited⟩, #[], Span.uninhabited⟩⟩
 
 /-- A binder on an instance declaration -/
 inductive InstanceBinder where
   /-- Implicit type variable -/
-  | typeVar (name : Name) (kind : TypeExpr) (span : Span)
+  | typeVar (name : QualName) (kind : TypeExpr) (span : Span)
   /-- Instance dictionary parameter -/
-  | dictParam (name : Option Name) (constraint : Constraint) (span : Span)
+  | dictParam (name : Option QualName) (constraint : Constraint) (span : Span)
   deriving Repr
 
 namespace InstanceBinder
@@ -280,7 +282,7 @@ def span : InstanceBinder → Span
 end InstanceBinder
 
 instance : Nonempty InstanceBinder :=
-  ⟨.typeVar ⟨"_", Span.uninhabited⟩ (.var ⟨"Type", Span.uninhabited⟩) Span.uninhabited⟩
+  ⟨.typeVar ⟨#[], "_", Span.uninhabited⟩ (.var ⟨#[], "Type", Span.uninhabited⟩) Span.uninhabited⟩
 
 namespace TypeExpr
 
@@ -308,7 +310,7 @@ inductive TypeAppArg : Type where
   /-- A type expression: @Int -/
   | type (ty : TypeExpr)
   /-- A label literal: @fieldName -/
-  | label (name : Name)
+  | label (name : QualName)
 
 namespace TypeAppArg
 
@@ -327,7 +329,7 @@ instance : Repr TypeAppArg := ⟨TypeAppArg.repr'⟩
 namespace TypeExpr
 
 /-- Get all free type variables in this type -/
-partial def freeVars : TypeExpr → Array Name
+partial def freeVars : TypeExpr → Array QualName
   | .var name => #[name]
   | .con _ => #[]
   | .app fn arg _ => fn.freeVars ++ arg.freeVars
@@ -335,8 +337,8 @@ partial def freeVars : TypeExpr → Array Name
   | .tuple elems _ => elems.foldl (fun acc t => acc ++ t.freeVars) #[]
   | .list elem _ => elem.freeVars
   | .forall_ vars body _ =>
-      let bound := vars.map (·.name.value)
-      body.freeVars.filter fun v => !bound.contains v.value
+      let bound := vars.map (·.name.name)
+      body.freeVars.filter fun v => !bound.contains v.name
   | .constrained _ body _ => body.freeVars
   | .parens inner _ => inner.freeVars
   | .kinded ty _ _ => ty.freeVars
@@ -352,13 +354,13 @@ partial def freeVars : TypeExpr → Array Name
       | none => caseVars
   | .pi _ name domain codomain _ =>
       -- The bound variable is not free in the codomain
-      domain.freeVars ++ (codomain.freeVars.filter fun v => v.value != name.value)
+      domain.freeVars ++ (codomain.freeVars.filter fun v => v.name != name.name)
   | .sigma _ name fst snd _ =>
       -- The bound variable is not free in the second component
-      fst.freeVars ++ (snd.freeVars.filter fun v => v.value != name.value)
+      fst.freeVars ++ (snd.freeVars.filter fun v => v.name != name.name)
   | .implicit name domain codomain _ =>
       let codomainVars := match name with
-        | some n => codomain.freeVars.filter fun v => v.value != n.value
+        | some n => codomain.freeVars.filter fun v => v.name != n.name
         | none => codomain.freeVars
       domain.freeVars ++ codomainVars
 
@@ -378,14 +380,14 @@ inductive ComposeStmt where
   /-- Expression statement: `action` that desugars to `action >> rest` -/
   | expr (action : Expr) (span : Span)
   /-- Let binding: `let x = value` that desugars to `case value of | x -> rest` -/
-  | let_ (name : Name) (value : Expr) (span : Span)
+  | let_ (name : QualName) (value : Expr) (span : Span)
   /-- Monadic bind: `bind x <- action` that desugars to `action >>= (\x -> rest)` -/
-  | bind_ (name : Name) (action : Expr) (span : Span)
+  | bind_ (name : QualName) (action : Expr) (span : Span)
 
 /-- Expressions - the core of the AST -/
 inductive Expr where
   /-- Variable reference: name -/
-  | var (name : Name)
+  | var (name : QualName)
   /-- Literal: 42, "hello", true -/
   | lit (lit : Literal)
   /-- Function application: f x -/
@@ -393,7 +395,7 @@ inductive Expr where
   /-- Infix operator application: a + b -/
   | infix (op : OpName) (left : Expr) (right : Expr) (span : Span)
   /-- Lambda expression: \x y -> body -/
-  | lambda (params : Array (Name × Option TypeExpr)) (body : Expr) (span : Span)
+  | lambda (params : Array (QualName × Option TypeExpr)) (body : Expr) (span : Span)
   /-- If expression: if cond then e1 else e2 -/
   | if_ (cond : Expr) (then_ : Expr) (else_ : Expr) (span : Span)
   /-- Case expression: case e of | pat => body ... -/
@@ -403,13 +405,13 @@ inductive Expr where
   /-- List literal: [1, 2, 3] -/
   | list (elements : Array Expr) (span : Span)
   /-- Record literal: { field1 = val1, field2 = val2 } -/
-  | record (fields : Array (Name × Expr)) (span : Span)
+  | record (fields : Array (QualName × Expr)) (span : Span)
   /-- Record update: { baseExpr | field1 = val1, field2 = val2 } -/
-  | recordUpdate (base : Expr) (updates : Array (Name × Expr)) (span : Span)
+  | recordUpdate (base : Expr) (updates : Array (QualName × Expr)) (span : Span)
   /-- Field access: expr.field -/
-  | fieldAccess (expr : Expr) (field : Name) (span : Span)
+  | fieldAccess (expr : Expr) (field : QualName) (span : Span)
   /-- Projection function: Type.field (first-class accessor) -/
-  | projection (typeName : Name) (fieldName : Name) (span : Span)
+  | projection (typeName : QualName) (fieldName : QualName) (span : Span)
   /-- Parenthesized expression -/
   | parens (inner : Expr) (span : Span)
   /-- Type annotation: expr :: Type -/
@@ -419,7 +421,7 @@ inductive Expr where
   /-- Compose block -/
   | composeBlock (stmts : Array ComposeStmt) (final_ : Expr) (span : Span)
   /-- Variant injection: .Ok value -/
-  | variant (label : Name) (arg : Option Expr) (span : Span)
+  | variant (label : QualName) (arg : Option Expr) (span : Span)
 
 end
 
@@ -429,9 +431,9 @@ deriving instance Repr for MatchArm
 deriving instance Repr for Expr
 
 -- Inhabited instances for array indexing, should never be used in practice
-instance : Inhabited ComposeStmt := ⟨.expr (.var ⟨"_", Span.uninhabited⟩) Span.uninhabited⟩
-instance : Inhabited Expr := ⟨.var ⟨"_", Span.uninhabited⟩⟩
-instance : Inhabited MatchArm := ⟨.mk #[] none (.var ⟨"_", Span.uninhabited⟩) Span.uninhabited⟩
+instance : Inhabited ComposeStmt := ⟨.expr (.var ⟨#[], "_", Span.uninhabited⟩) Span.uninhabited⟩
+instance : Inhabited Expr := ⟨.var ⟨#[], "_", Span.uninhabited⟩⟩
+instance : Inhabited MatchArm := ⟨.mk #[] none (.var ⟨#[], "_", Span.uninhabited⟩) Span.uninhabited⟩
 
 namespace MatchArm
 
@@ -468,7 +470,7 @@ end Expr
 
 /-- Attributes on declarations: @[inline], @[specialize], @[wired_in "role"] -/
 structure Attribute where
-  name : Name
+  name : QualName
   args : Array Expr
   span : Span
   deriving Repr
@@ -478,8 +480,8 @@ structure Attribute where
     | Cons :: a -> Vec n a -> Vec (n + 1) a -/
 structure DataCon where
   attrs : Array Attribute := #[]
-  name : Name
-  fields : Array (Option Name × TypeExpr)  -- Named or positional fields (for simple constructors)
+  name : QualName
+  fields : Array (Option QualName × TypeExpr)  -- Named or positional fields (for simple constructors)
   /-- Full constructor type signature (for indexed data types).
       When present, `fields` should be empty and this contains the complete type. -/
   sig : Option TypeExpr := none
@@ -488,14 +490,14 @@ structure DataCon where
 
 /-- A record field: name :: Type -/
 structure RecordField where
-  name : Option Name
+  name : Option QualName
   type_ : TypeExpr
   span : Span
   deriving Repr
 
 /-- A method signature in a trait -/
 structure MethodSig where
-  name : Name
+  name : QualName
   type_ : TypeExpr
   span : Span
   deriving Repr
@@ -510,7 +512,7 @@ structure DefClause where
 
 /-- A named definition parameter from the declaration header -/
 structure DefParam where
-  name : Name
+  name : QualName
   type? : Option TypeExpr
   isImplicit : Bool := false
   span : Span
@@ -519,34 +521,34 @@ structure DefParam where
 /-- Top-level declarations -/
 inductive Decl where
   /-- Function/value definition -/
-  | def_ (attrs : Array Attribute) (name : Name) (params : Array DefParam) (sig : Option TypeExpr)
+  | def_ (attrs : Array Attribute) (name : QualName) (params : Array DefParam) (sig : Option TypeExpr)
          (clauses : Array DefClause) (span : Span)
 
   /-- Inductive type definition: inductive Option {a : Type} where ... -/
-  | inductive (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
+  | inductive (attrs : Array Attribute) (name : QualName) (params : Array TypeVarBinder)
          (constructors : Array DataCon) (kind : Option TypeExpr) (span : Span)
 
   /-- Record definition: record Point where x : Int, y : Int -/
-  | record (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
-           (con : Name) (fields : Array RecordField) (span : Span)
+  | record (attrs : Array Attribute) (name : QualName) (params : Array TypeVarBinder)
+           (con : QualName) (fields : Array RecordField) (span : Span)
 
   /-- Trait definition -/
-  | trait (attrs : Array Attribute) (name : Name) (params : Array TypeVarBinder)
+  | trait (attrs : Array Attribute) (name : QualName) (params : Array TypeVarBinder)
           (constraints : Array Constraint) (methods : Array MethodSig) (span : Span)
 
   /-- Instance definition -/
-  | instance_ (instanceName : Option Name) (binders : Array InstanceBinder)
-              (traitName : Name) (args : Array TypeExpr)
+  | instance_ (instanceName : Option QualName) (binders : Array InstanceBinder)
+              (traitName : QualName) (args : Array TypeExpr)
               (methods : Array Decl) (span : Span)
 
   /-- Import declaration: use base/core.{Option, Some, None} -/
-  | use (path : QualName) (items : Array Name) (span : Span)
+  | use (path : QualName) (items : Array QualName) (span : Span)
 
   /-- Export declaration: export { items } -/
-  | export_ (items : Array Name) (span : Span)
+  | export_ (items : Array QualName) (span : Span)
 
-  /-- Type abbreviation: abbrev Name params = Type -/
-  | abbrev (name : Name) (params : Array Name) (type_ : TypeExpr) (span : Span)
+  /-- Type abbreviation: abbrev Foo params = Type -/
+  | abbrev (name : QualName) (params : Array QualName) (type_ : TypeExpr) (span : Span)
   deriving Repr
 
 instance : Nonempty Decl := ⟨.export_ #[] Span.uninhabited⟩
@@ -564,7 +566,7 @@ def span : Decl → Span
   | .abbrev _ _ _ s => s
 
 /-- Get the name of a declaration (if it has one) -/
-def name? : Decl → Option Name
+def name? : Decl → Option QualName
   | .def_ _ name _ _ _ _ => some name
   | .inductive _ name _ _ _ _ => some name
   | .record _ name _ _ _ _ => some name
@@ -593,11 +595,11 @@ def indent (n : Nat) (s : String) : String :=
   let pre := String.ofList (List.replicate n ' ')
   s.splitOn "\n" |>.map (pre ++ ·) |> String.intercalate "\n"
 
-/-- Pretty print a Name -/
-def ppName (n : Name) : String := n.value
+/-- Pretty print a QualName -/
+def ppName (n : QualName) : String := n.name
 
 /-- Pretty print a list of Names -/
-def ppNames (ns : Array Name) : String :=
+def ppNames (ns : Array QualName) : String :=
   ns.toList.map ppName |> String.intercalate " "
 
 /-- Pretty print a Literal -/
@@ -610,12 +612,12 @@ mutual
 
 /-- Pretty print a Pattern -/
 partial def ppPattern : Pattern → String
-  | .var n => n.value
+  | .var n => n.name
   | .wildcard _ => "_"
   | .lit l => ppLiteral l
   | .con n args _ =>
-      if args.isEmpty then n.value
-      else s!"{n.value} {args.toList.map ppPattern |> String.intercalate " "}"
+      if args.isEmpty then n.name
+      else s!"{n.name} {args.toList.map ppPattern |> String.intercalate " "}"
   | .tuple elems _ =>
       s!"({elems.toList.map ppPattern |> String.intercalate ", "})"
   | .list elems _ =>
@@ -625,13 +627,13 @@ partial def ppPattern : Pattern → String
   | .typed p ty _ => s!"({ppPattern p} :: {ppTypeExpr ty})"
   | .variant label arg _ =>
       match arg with
-      | some p => s!".{label.value} {ppPattern p}"
-      | none => s!".{label.value}"
+      | some p => s!".{label.name} {ppPattern p}"
+      | none => s!".{label.name}"
 
 /-- Pretty print a TypeVarBinder -/
 partial def ppTypeVarBinder (v : TypeVarBinder) : String := match v.kind with
-  | some k => s!"({v.name.value} :: {ppTypeExpr k})"
-  | none => v.name.value
+  | some k => s!"({v.name.name} :: {ppTypeExpr k})"
+  | none => v.name.name
 
 /-- Pretty print an array of TypeVarBinders -/
 partial def ppTypeVarBinders (vs : Array TypeVarBinder) : String :=
@@ -639,8 +641,8 @@ partial def ppTypeVarBinders (vs : Array TypeVarBinder) : String :=
 
 /-- Pretty print a TypeExpr -/
 partial def ppTypeExpr : TypeExpr → String
-  | .var n => n.value
-  | .con n => n.value
+  | .var n => n.name
+  | .con n => n.name
   | .app fn arg _ => s!"{ppTypeExpr fn} {ppTypeAtom arg}"
   | .arrow from_ to _ => s!"{ppTypeAtom from_} -> {ppTypeExpr to}"
   | .tuple elems _ =>
@@ -650,55 +652,55 @@ partial def ppTypeExpr : TypeExpr → String
       s!"forall {vars.toList.map ppTypeVarBinder |> String.intercalate " "}. {ppTypeExpr body}"
   | .constrained cs body _ =>
       let csStr := cs.toList.map (fun (n, args, _) =>
-        if args.isEmpty then n.value
-        else s!"{n.value} {args.toList.map ppTypeExpr |> String.intercalate " "}"
+        if args.isEmpty then n.name
+        else s!"{n.name} {args.toList.map ppTypeExpr |> String.intercalate " "}"
       ) |> String.intercalate ", "
       s!"{ppTypeExpr body} with ({csStr})"
   | .parens t _ => s!"({ppTypeExpr t})"
   | .kinded t k _ => s!"{ppTypeExpr t} :: {ppTypeExpr k}"
   | .record fields tail _ =>
-      let fieldsStr := fields.toList.map (fun (n, t) => s!"{n.value} :: {ppTypeExpr t}") |> String.intercalate ", "
+      let fieldsStr := fields.toList.map (fun (n, t) => s!"{n.name} :: {ppTypeExpr t}") |> String.intercalate ", "
       match tail with
-      | some name => "{ " ++ fieldsStr ++ " | " ++ name.value ++ " }"
+      | some name => "{ " ++ fieldsStr ++ " | " ++ name.name ++ " }"
       | none => "{ " ++ fieldsStr ++ " }"
   | .variant cases tail _ =>
-      let casesStr := cases.toList.map (fun (n, t) => s!"{n.value} :: {ppTypeExpr t}") |> String.intercalate " | "
+      let casesStr := cases.toList.map (fun (n, t) => s!"{n.name} :: {ppTypeExpr t}") |> String.intercalate " | "
       match tail with
-      | some name => "< " ++ casesStr ++ " | " ++ name.value ++ " >"
+      | some name => "< " ++ casesStr ++ " | " ++ name.name ++ " >"
       | none => "< " ++ casesStr ++ " >"
   | .pi qty name domain codomain _ =>
       let qtyStr := match qty with
         | .zero => "0 "
         | .one => "1 "
         | .omega => ""
-      s!"({qtyStr}{name.value} : {ppTypeExpr domain}) -> {ppTypeExpr codomain}"
+      s!"({qtyStr}{name.name} : {ppTypeExpr domain}) -> {ppTypeExpr codomain}"
   | .sigma qty name fst snd _ =>
       let qtyStr := match qty with
         | .zero => "0 "
         | .one => "1 "
         | .omega => ""
-      s!"({qtyStr}{name.value} : {ppTypeExpr fst}) × {ppTypeExpr snd}"
+      s!"({qtyStr}{name.name} : {ppTypeExpr fst}) × {ppTypeExpr snd}"
   | .implicit name domain codomain _ =>
       let nameStr := match name with
-        | some n => s!"{n.value} : "
+        | some n => s!"{n.name} : "
         | none => ""
       "{{" ++ nameStr ++ ppTypeExpr domain ++ "}} -> " ++ ppTypeExpr codomain
 where
   ppTypeAtom : TypeExpr → String
-    | .var n => n.value
-    | .con n => n.value
+    | .var n => n.name
+    | .con n => n.name
     | .tuple elems _ => s!"({elems.toList.map ppTypeExpr |> String.intercalate ", "})"
     | .list elem _ => s!"[{ppTypeExpr elem}]"
     | .parens t _ => s!"({ppTypeExpr t})"
     | .record fields tail _ =>
-        let fieldsStr := fields.toList.map (fun (n, t) => s!"{n.value} :: {ppTypeExpr t}") |> String.intercalate ", "
+        let fieldsStr := fields.toList.map (fun (n, t) => s!"{n.name} :: {ppTypeExpr t}") |> String.intercalate ", "
         match tail with
-        | some name => "{ " ++ fieldsStr ++ " | " ++ name.value ++ " }"
+        | some name => "{ " ++ fieldsStr ++ " | " ++ name.name ++ " }"
         | none => "{ " ++ fieldsStr ++ " }"
     | .variant cases tail _ =>
-        let casesStr := cases.toList.map (fun (n, t) => s!"{n.value} :: {ppTypeExpr t}") |> String.intercalate " | "
+        let casesStr := cases.toList.map (fun (n, t) => s!"{n.name} :: {ppTypeExpr t}") |> String.intercalate " | "
         match tail with
-        | some name => "< " ++ casesStr ++ " | " ++ name.value ++ " >"
+        | some name => "< " ++ casesStr ++ " | " ++ name.name ++ " >"
         | none => "< " ++ casesStr ++ " >"
     | t => s!"({ppTypeExpr t})"
 
@@ -706,22 +708,22 @@ end
 
 /-- Pretty print a Constraint -/
 def ppConstraint (c : Constraint) : String :=
-  if c.args.isEmpty then c.className.value
-  else s!"{c.className.value} {c.args.toList.map ppTypeExpr |> String.intercalate " "}"
+  if c.args.isEmpty then c.className.name
+  else s!"{c.className.name} {c.args.toList.map ppTypeExpr |> String.intercalate " "}"
 
 mutual
 
 /-- Pretty print an Expr -/
 partial def ppExpr : Expr → String
-  | .var n => n.value
+  | .var n => n.name
   | .lit l => ppLiteral l
   | .app fn arg _ => s!"{ppExpr fn} {ppExprAtom arg}"
   | .infix op l r _ => s!"{ppExprAtom l} {op.value} {ppExprAtom r}"
   | .lambda params body _ =>
       let ps := params.toList.map fun (n, ty) =>
         match ty with
-        | some t => s!"({n.value} :: {ppTypeExpr t})"
-        | none => n.value
+        | some t => s!"({n.name} :: {ppTypeExpr t})"
+        | none => n.name
       s!"\\{ps |> String.intercalate " "} -> {ppExpr body}"
   | .if_ c t e _ => s!"if {ppExpr c} then {ppExpr t} else {ppExpr e}"
   | .case scruts arms _ =>
@@ -733,32 +735,32 @@ partial def ppExpr : Expr → String
   | .list elems _ =>
       s!"[{elems.toList.map ppExpr |> String.intercalate ", "}]"
   | .record fields _ =>
-      let fs := fields.toList.map fun (n, e) => s!"{n.value} = {ppExpr e}"
+      let fs := fields.toList.map fun (n, e) => s!"{n.name} = {ppExpr e}"
       "{ " ++ (fs |> String.intercalate ", ") ++ " }"
   | .recordUpdate base updates _ =>
-      let us := updates.toList.map fun (n, e) => s!"{n.value} = {ppExpr e}"
+      let us := updates.toList.map fun (n, e) => s!"{n.name} = {ppExpr e}"
       "{ " ++ ppExpr base ++ " | " ++ (us |> String.intercalate ", ") ++ " }"
-  | .fieldAccess e f _ => s!"{ppExprAtom e}.{f.value}"
-  | .projection typeName fieldName _ => s!"{typeName.value}.{fieldName.value}"
+  | .fieldAccess e f _ => s!"{ppExprAtom e}.{f.name}"
+  | .projection typeName fieldName _ => s!"{typeName.name}.{fieldName.name}"
   | .parens e _ => s!"({ppExpr e})"
   | .typeAnnot e t _ => s!"{ppExprAtom e} :: {ppTypeExpr t}"
   | .typeApp arg _ => match arg with
     | .type ty => s!"@{ppTypeExpr ty}"
-    | .label name => s!"@{name.value}"
+    | .label name => s!"@{name.name}"
   | .composeBlock stmts final_ _ =>
     let stmtStrs := stmts.map fun
       | .expr action _ => ppExpr action
-      | .let_ name value _ => s!"let {name.value} = {ppExpr value}"
-      | .bind_ name action _ => s!"bind {name.value} <- {ppExpr action}"
+      | .let_ name value _ => s!"let {name.name} = {ppExpr value}"
+      | .bind_ name action _ => s!"bind {name.name} <- {ppExpr action}"
     let body := String.intercalate "; " stmtStrs.toList
     s!"compose ( {body}; {ppExpr final_} )"
   | .variant label arg _ =>
       match arg with
-      | some e => s!".{label.value} {ppExprAtom e}"
-      | none => s!".{label.value}"
+      | some e => s!".{label.name} {ppExprAtom e}"
+      | none => s!".{label.name}"
 where
   ppExprAtom : Expr → String
-    | .var n => n.value
+    | .var n => n.name
     | .lit l => ppLiteral l
     | .tuple elems _ => s!"({elems.toList.map ppExpr |> String.intercalate ", "})"
     | .list elems _ => s!"[{elems.toList.map ppExpr |> String.intercalate ", "}]"
@@ -787,94 +789,94 @@ def ppDefClause (clause : DefClause) : String :=
 def ppDataCon (con : DataCon) : String :=
   let fieldsStr := con.fields.toList.map (fun (optName, ty) =>
     match optName with
-    | some n => s!"{n.value} :: {ppTypeExpr ty}"
+    | some n => s!"{n.name} :: {ppTypeExpr ty}"
     | none => ppTypeExpr ty
   ) |> String.intercalate ", "
-  if fieldsStr.isEmpty then s!"| {con.name.value}"
-  else s!"| {con.name.value} " ++ "{ " ++ fieldsStr ++ " }"
+  if fieldsStr.isEmpty then s!"| {con.name.name}"
+  else s!"| {con.name.name} " ++ "{ " ++ fieldsStr ++ " }"
 
 /-- Pretty print a MethodSig -/
 def ppMethodSig (m : MethodSig) : String :=
-  s!"def {m.name.value} :: {ppTypeExpr m.type_}"
+  s!"def {m.name.name} :: {ppTypeExpr m.type_}"
 
 /-- Pretty print a Decl -/
 partial def ppDecl : Decl → String
   | .def_ attrs name params sig clauses _ =>
       let attrStr := if attrs.isEmpty then ""
-        else s!"@[{attrs.toList.map (·.name.value) |> String.intercalate ", "}]\n"
+        else s!"@[{attrs.toList.map (·.name.name) |> String.intercalate ", "}]\n"
       let paramsStr := if params.isEmpty then "" else
         let ppParam (p : DefParam) := match p.type? with
-          | some ty => s!"({p.name.value} : {ppTypeExpr ty})"
-          | none => p.name.value
+          | some ty => s!"({p.name.name} : {ppTypeExpr ty})"
+          | none => p.name.name
         " " ++ (params.toList.map ppParam |> String.intercalate " ")
       let sigStr := match sig with
         | some t => s!" :: {ppTypeExpr t}"
         | none => ""
       let clausesStr := clauses.toList.map ppDefClause |> String.intercalate "\n"
       if clauses.isEmpty then
-        s!"{attrStr}def {name.value}{paramsStr}{sigStr}"
+        s!"{attrStr}def {name.name}{paramsStr}{sigStr}"
       else
-        s!"{attrStr}def {name.value}{paramsStr}{sigStr}\n{indent 2 clausesStr}"
+        s!"{attrStr}def {name.name}{paramsStr}{sigStr}\n{indent 2 clausesStr}"
 
   | .inductive attrs name params cons kind _ =>
       let attrStr := if attrs.isEmpty then ""
-        else s!"@[{attrs.toList.map (·.name.value) |> String.intercalate ", "}]\n"
+        else s!"@[{attrs.toList.map (·.name.name) |> String.intercalate ", "}]\n"
       let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
       let kindStr := match kind with
         | some k => s!" :: {ppTypeExpr k}"
         | none => ""
       let consStr := cons.toList.map ppDataCon |> String.intercalate "\n"
-      s!"{attrStr}inductive {name.value}{paramsStr}{kindStr} where\n{indent 2 consStr}"
+      s!"{attrStr}inductive {name.name}{paramsStr}{kindStr} where\n{indent 2 consStr}"
 
   | .record attrs name params con fields _ =>
       let attrStr := if attrs.isEmpty then ""
-        else s!"@[{attrs.toList.map (·.name.value) |> String.intercalate ", "}]\n"
+        else s!"@[{attrs.toList.map (·.name.name) |> String.intercalate ", "}]\n"
       let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
       let fieldsStr := fields.toList.map (fun f =>
         match f.name with
-        | some n => s!"{n.value} :: {ppTypeExpr f.type_}"
+        | some n => s!"{n.name} :: {ppTypeExpr f.type_}"
         | none => ppTypeExpr f.type_
       ) |> String.intercalate ", "
-      s!"{attrStr}record " ++ name.value ++ paramsStr ++ " = " ++ con.value ++ " { " ++ fieldsStr ++ " }"
+      s!"{attrStr}record " ++ name.name ++ paramsStr ++ " = " ++ con.name ++ " { " ++ fieldsStr ++ " }"
 
   | .trait attrs name params constraints methods _ =>
       let attrStr := if attrs.isEmpty then ""
-        else s!"@[{attrs.toList.map (·.name.value) |> String.intercalate ", "}]\n"
+        else s!"@[{attrs.toList.map (·.name.name) |> String.intercalate ", "}]\n"
       let paramsStr := if params.isEmpty then "" else s!" {ppTypeVarBinders params}"
       let consStr := if constraints.isEmpty then ""
         else s!" with ({constraints.toList.map ppConstraint |> String.intercalate ", "})"
       let methodsStr := methods.toList.map ppMethodSig |> String.intercalate "\n"
-      s!"{attrStr}trait {name.value}{paramsStr}{consStr} where\n{indent 2 methodsStr}"
+      s!"{attrStr}trait {name.name}{paramsStr}{consStr} where\n{indent 2 methodsStr}"
 
   | .instance_ instanceName binders traitName args methods _ =>
       let nameStr := match instanceName with
-        | some n => s!"{n.value} : "
+        | some n => s!"{n.name} : "
         | none => ""
       let bindersStr := if binders.isEmpty then "" else
         let bs := binders.toList.map fun
           | .typeVar name kind _ =>
-            "{" ++ name.value ++ " : " ++ ppTypeExpr kind ++ "}"
+            "{" ++ name.name ++ " : " ++ ppTypeExpr kind ++ "}"
           | .dictParam name constraint _ =>
             let nameStr := match name with
-              | some n => s!"{n.value} : "
+              | some n => s!"{n.name} : "
               | none => ""
             "{{" ++ nameStr ++ ppConstraint constraint ++ "}}"
         (bs |> String.intercalate " ") ++ " "
       let argsStr := args.toList.map ppTypeExpr |> String.intercalate " "
       let methodsStr := methods.toList.map ppDecl |> String.intercalate "\n\n"
-      s!"instance {bindersStr}{nameStr}: {traitName.value} {argsStr} where\n{indent 2 methodsStr}"
+      s!"instance {bindersStr}{nameStr}: {traitName.name} {argsStr} where\n{indent 2 methodsStr}"
 
   | .use path items _ =>
       let itemsStr := if items.isEmpty then ""
-        else ".{" ++ (items.toList.map (·.value) |> String.intercalate ", ") ++ "}"
+        else ".{" ++ (items.toList.map (·.name) |> String.intercalate ", ") ++ "}"
       s!"use {path}{itemsStr}"
 
   | .export_ items _ =>
-      "export {" ++ (items.toList.map (·.value) |> String.intercalate ", ") ++ "}"
+      "export {" ++ (items.toList.map (·.name) |> String.intercalate ", ") ++ "}"
 
   | .abbrev name params ty _ =>
       let paramsStr := if params.isEmpty then "" else s!" {ppNames params}"
-      s!"abbrev {name.value}{paramsStr} = {ppTypeExpr ty}"
+      s!"abbrev {name.name}{paramsStr} = {ppTypeExpr ty}"
 
 /-- Pretty print a Module -/
 def ppModule (m : Module) : String :=

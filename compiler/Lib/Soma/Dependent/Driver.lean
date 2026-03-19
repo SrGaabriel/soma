@@ -294,7 +294,7 @@ def elaborateIndexedCtorType (_typeName : Soma.Core.QualifiedName) (_typeVarName
     (sigSyntax : Syntax.TypeExpr) : TCM Value := do
   -- Find ALL free type variables in the constructor signature
   -- This includes variables that may not be in the data type's parameter list
-  let freeVarNames := sigSyntax.freeVars.map (·.value)
+  let freeVarNames := sigSyntax.freeVars.map (·.name)
   let freeVarNamesUnique := freeVarNames.toList.eraseDups
 
   -- Create an elaboration environment with ALL free type variables
@@ -325,7 +325,7 @@ def elaborateIndexedCtorType (_typeName : Soma.Core.QualifiedName) (_typeVarName
     For example, `a -> [a] -> [a]` becomes `forall {a : Type}. a -> [a] -> [a]` -/
 def elaborateFunctionType (sigSyntax : Syntax.TypeExpr) : TCM Value := do
   -- Find all free type variables in the function signature
-  let freeVarNames := sigSyntax.freeVars.map (·.value)
+  let freeVarNames := sigSyntax.freeVars.map (·.name)
   let freeVarNamesUnique := freeVarNames.toList.eraseDups
 
   -- Create an elaboration environment with all free type variables bound
@@ -359,7 +359,7 @@ private def registerWiredRoleFromAttrs
     : TCM Globals := do
   let mut g := globals
   for attr in attrs do
-    if attr.name.value == "wired_in" then
+    if attr.name.name == "wired_in" then
       match attr.args[0]? with
       | some (Soma.Syntax.Expr.lit (Soma.Syntax.Literal.string roleName _)) =>
         match WiredRole.fromString? roleName with
@@ -416,7 +416,7 @@ private def elaborateTypeClassHeadType
     let kind ← match param.kind with
       | some k => Elaborate.elaborateType Elaborate.ElabEnv.empty k
       | none => pure (Value.vType Level.zero)
-    paramKinds := paramKinds.push (param.name.value, kind)
+    paramKinds := paramKinds.push (param.name.name, kind)
 
   let mut classHeadTy : Value := Value.vType Level.zero
   for (paramName, paramKind) in paramKinds.reverse do
@@ -634,7 +634,7 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
   for typeClass in module.typeClasses do
     let classNameStr := typeClass.name.display
     let methodFieldNames := typeClass.methodSignatures.map (·.1.display)
-    let typeVarNames := typeClass.params.map (·.name.value)
+    let typeVarNames := typeClass.params.map (·.name.name)
     if let some classUnique := globals.lookupUnique classNameStr then
       globals := globals.registerInductive classNameStr classUnique .record typeVarNames methodFieldNames
       let methodTypes := typeClass.methodSignatures.map (·.2)
@@ -689,11 +689,11 @@ def buildGlobals (module : Soma.Core.UntypedModule) : TCM Globals := do
             let kind ← match param.kind with
               | some k => Elaborate.elaborateType Elaborate.ElabEnv.empty k
               | none => pure (Value.vType Level.zero)
-            paramKinds := paramKinds.push (param.name.value, kind)
+            paramKinds := paramKinds.push (param.name.name, kind)
 
           -- Collect free type variables from the method signature that are not trait params
           let traitParamNames := paramKinds.map (·.1)
-          let methodFreeVars := methodTypeSyntax.freeVars.map (·.value)
+          let methodFreeVars := methodTypeSyntax.freeVars.map (·.name)
           let methodOwnVars := methodFreeVars.filter (fun v => !traitParamNames.contains v)
           let methodOwnVarsUnique := methodOwnVars.toList.eraseDups
 
@@ -1019,7 +1019,7 @@ private def elaborateMethodType
     let kind ← match param.kind with
       | some k => Elaborate.elaborateType Elaborate.ElabEnv.empty k
       | none => pure (Value.vType Level.zero)
-    paramKinds := paramKinds.push (param.name.value, kind)
+    paramKinds := paramKinds.push (param.name.name, kind)
 
   let mut elabEnv := Elaborate.ElabEnv.empty
   for (paramName, kind) in paramKinds do
@@ -1152,7 +1152,7 @@ def buildGlobalsIncremental
     let classNameStr := typeClass.name.display
     let isDirty := dirtyNames.contains classNameStr
     let methodFieldNames := typeClass.methodSignatures.map (·.1.display)
-    let typeVarNames := typeClass.params.map (·.name.value)
+    let typeVarNames := typeClass.params.map (·.name.name)
     if let some classUnique := globals.lookupUnique classNameStr then
       if !isDirty then
         if let some indInfo := prevGlobals.lookupInductive classNameStr then

@@ -280,11 +280,11 @@ partial def quoteValueToExpr (v : Value) : TCM Soma.Core.Expr := do
 partial def elaborateTypeArg (typeArg : Soma.Syntax.TypeAppArg) : TCM Value := do
   match typeArg with
   | .label labelName =>
-    match ← TCM.lookupLocal labelName.value with
+    match ← TCM.lookupLocal labelName.name with
     | some entry =>
-      pure (Value.vNeutral entry.type (Neutral.nVar ⟨labelName.value, entry.level⟩))
+      pure (Value.vNeutral entry.type (Neutral.nVar ⟨labelName.name, entry.level⟩))
     | none =>
-      pure (Value.vLabelLit labelName.value)
+      pure (Value.vLabelLit labelName.name)
   | .type tyExpr =>
     Elaborate.elaborateType Elaborate.ElabEnv.empty tyExpr
 
@@ -522,7 +522,7 @@ partial def inferPolymorphicFieldAccess
 
 /-- Short debug description of a Syntax.Expr -/
 def syntaxExprKind : Soma.Syntax.Expr → String
-  | .var name => s!"var({name.value})"
+  | .var name => s!"var({name.name})"
   | .lit _ => "lit"
   | .app _ _ _ => "app"
   | .infix op _ _ _ => s!"infix({op.value})"
@@ -533,13 +533,13 @@ def syntaxExprKind : Soma.Syntax.Expr → String
   | .list _ _ => "list"
   | .record _ _ => "record"
   | .recordUpdate _ _ _ => "recordUpdate"
-  | .fieldAccess _ field _ => s!".{field.value}"
-  | .projection tn fn _ => s!"proj({tn.value}.{fn.value})"
+  | .fieldAccess _ field _ => s!".{field.name}"
+  | .projection tn fn _ => s!"proj({tn.name}.{fn.name})"
   | .parens _ _ => "parens"
   | .typeAnnot _ _ _ => "ann"
   | .typeApp _ _ => "typeApp"
   | .composeBlock stmts _ _ => s!"composeBlock({stmts.size} stmts)"
-  | .variant label _ _ => s!"variant(.{label.value})"
+  | .variant label _ _ => s!"variant(.{label.name})"
 
 private def requireUniqueWiredRole (role : WiredRole) (span : Span) : TCM GlobalInfo := do
   let infos ← TCM.lookupWiredInAll role
@@ -589,8 +589,8 @@ partial def convertPatternWithBindings (pat : Soma.Syntax.Pattern) (scrutTy : Va
     : TCM (Soma.Core.Pattern × List (Unique × String × Value)) := do
   match pat with
   | .var name =>
-    let u ← TCM.freshUnique name.value
-    pure (.var (some u), [(u, name.value, scrutTy)])
+    let u ← TCM.freshUnique name.name
+    pure (.var (some u), [(u, name.name, scrutTy)])
   | .wildcard _ => pure (.wildcard, [])
   | .lit l =>
     pure (.lit (match l with
@@ -598,9 +598,9 @@ partial def convertPatternWithBindings (pat : Soma.Syntax.Pattern) (scrutTy : Va
       | .string s _ => .string s
       | .bool b _ => .bool b), [])
   | .con name args span =>
-    match ← TCM.resolveConstructor name.value with
+    match ← TCM.resolveConstructor name.name with
     | some ctorInfo =>
-      let fieldTypes ← extractConstructorFieldTypes ctorInfo.type scrutTy (some name.value) span
+      let fieldTypes ← extractConstructorFieldTypes ctorInfo.type scrutTy (some name.name) span
       let mut coreArgs : Array Soma.Core.Pattern := #[]
       let mut bindings : List (Unique × String × Value) := []
       for h : i in [:args.size] do
@@ -614,7 +614,7 @@ partial def convertPatternWithBindings (pat : Soma.Syntax.Pattern) (scrutTy : Va
         bindings := bindings ++ argBindings
       pure (.ctor ctorInfo.name ctorInfo.ctorTag coreArgs, bindings)
     | none =>
-      TCM.throw (.unboundVariable name.value span #[])
+      TCM.throw (.unboundVariable name.name span #[])
   | .tuple elems span => do
     let (coreElems, bindings) ← convertTuplePatternWithBindings elems.toList scrutTy
     let nested ← buildNestedPairPattern coreElems span
@@ -659,8 +659,8 @@ partial def convertPatternWithBindings (pat : Soma.Syntax.Pattern) (scrutTy : Va
     | some p =>
       let argTy ← TCM.freshMetaVal (.vType .zero)
       let (coreArg, bindings) ← convertPatternWithBindings p argTy
-      pure (.inject label.value (some coreArg), bindings)
-    | none => pure (.inject label.value none, [])
+      pure (.inject label.name (some coreArg), bindings)
+    | none => pure (.inject label.name none, [])
 where
   convertTuplePatternWithBindings (elems : List Soma.Syntax.Pattern) (ty : Value)
       : TCM (List Soma.Core.Pattern × List (Unique × String × Value)) := do
@@ -735,14 +735,14 @@ where
     -- Variables: resolve name (local, global, or builtin)
     | .var name => do
       -- First check local context
-      match ← TCM.lookupLocal name.value with
+      match ← TCM.lookupLocal name.name with
       | some entry =>
         useVarChecked entry.bindingId name.span
         let tyExpr ← quoteValueToExpr entry.type
         return (entry.type, .fvar entry.fvarId tyExpr)
       | none =>
         -- Check globals (functions, constructors, data types)
-        match ← TCM.lookupGlobal name.value with
+        match ← TCM.lookupGlobal name.name with
         | some info =>
           let qn := info.name
           if info.isConstructor then
@@ -753,12 +753,12 @@ where
             let tyExpr ← quoteValueToExpr info.type
             return (info.type, .const qn tyExpr)
         | none =>
-          match name.value with
+          match name.name with
           | "Type" | "Type0" => return (.vType .one, .sort .zero)
           | "Type1" => return (.vType .one, .sort .one)
           | "Row" => return (.vType .zero, .rowSort)
           | "Label" => return (.vType .zero, .labelSort)
-          | _ => TCM.throw (.unboundVariable name.value name.span #[])
+          | _ => TCM.throw (.unboundVariable name.name name.span #[])
 
     -- Literals
     | .lit (.int n _) => return (.vPrimTy .int, .lit (.int n))
@@ -773,7 +773,7 @@ where
     -- Infix operators: resolve op, apply to both args
     | .infix op left right span => do
       -- Resolve the operator name
-      let (opTy, opExpr) ← inferSyntax (.var ⟨op.value, op.span⟩)
+      let (opTy, opExpr) ← inferSyntax (.var ⟨#[], op.value, op.span⟩)
       -- Apply to left
       let (ty1, expr1) ← inferSyntaxApp opTy opExpr left span
       -- Apply to right
@@ -842,30 +842,30 @@ where
       let (exprTy, exprE) ← inferSyntax expr
       let normalizedTy ← normalizeRecordLikeType exprTy span
       let fieldTy ← match normalizedTy with
-        | .vRecord row => findFieldInRow row field.value span
+        | .vRecord row => findFieldInRow row field.name span
         | .vRecordVal fields =>
-          match fields.find? (·.1 == field.value) with
+          match fields.find? (·.1 == field.name) with
           | some (_, ty) => pure ty
           | none =>
             let available := fields.map (·.1) |>.toArray
-            TCM.throw (.fieldNotFound field.value normalizedTy span available none)
+            TCM.throw (.fieldNotFound field.name normalizedTy span available none)
         | _ => TCM.throw (.expectedRecord normalizedTy span #[])
       let idx ← match normalizedTy with
         | .vRecord row =>
-          match ← findFieldIndex row field.value with
+          match ← findFieldIndex row field.name with
           | some i => pure i
           | none => pure 0
         | _ => pure 0
-      return (fieldTy, .fieldAccess exprE field.value idx)
+      return (fieldTy, .fieldAccess exprE field.name idx)
 
     -- Projection function: Type.field
     | .projection typeName fieldName span => do
-      let accessorName := s!"{typeName.value}::{fieldName.value}"
+      let accessorName := s!"{typeName.name}::{fieldName.name}"
       match ← TCM.lookupGlobal accessorName with
       | some accessorInfo =>
         let ctx ← TCM.getCtx
-        let idx := ctx.globals.lookupFieldIndex typeName.value fieldName.value |>.getD 0
-        return (accessorInfo.type, .proj accessorInfo.name fieldName.value idx)
+        let idx := ctx.globals.lookupFieldIndex typeName.name fieldName.name |>.getD 0
+        return (accessorInfo.type, .proj accessorInfo.name fieldName.name idx)
       | none =>
         TCM.throw (.unboundGlobal accessorName span #[])
 
@@ -899,10 +899,10 @@ where
         | none =>
           pure (Value.vRecordVal [], #[])
       let rowTail ← TCM.freshMetaVal .vRowSort
-      let row := Value.vRowExtend (.vLabelLit label.value) argTy rowTail
+      let row := Value.vRowExtend (.vLabelLit label.name) argTy rowTail
       let variantTy := Value.vVariant row
       let variantTyExpr ← quoteValueToExpr variantTy
-      return (variantTy, .inject label.value argsExpr variantTyExpr)
+      return (variantTy, .inject label.name argsExpr variantTyExpr)
 
 /-- Elaborate a flat compose block in three iterative phases -/
 partial def inferComposeBlock (stmts : Array Soma.Syntax.ComposeStmt)
@@ -918,7 +918,7 @@ partial def inferComposeBlock (stmts : Array Soma.Syntax.ComposeStmt)
     | .expr action stmtSpan =>
       -- Elaborate >>= operator and apply to action (in current extended context)
       let (partialTy, partialExpr) ← withReader (fun _ => extCtx) do
-        let (opTy, opExpr) ← inferSyntax (.var ⟨">>=", stmtSpan⟩)
+        let (opTy, opExpr) ← inferSyntax (.var ⟨#[], ">>=", stmtSpan⟩)
         inferSyntaxApp opTy opExpr action stmtSpan
       let partialTy' ← withReader (fun _ => extCtx) (force partialTy)
       let (_, _, _, _dom, cod) ← withReader (fun _ => extCtx) (ensurePi partialTy' stmtSpan)
@@ -928,14 +928,14 @@ partial def inferComposeBlock (stmts : Array Soma.Syntax.ComposeStmt)
       -- Elaborate the value in the current extended context
       let (valTy, valExpr) ← withReader (fun _ => extCtx) (inferSyntax value)
       let valTyExpr ← withReader (fun _ => extCtx) (quoteValueToExpr valTy)
-      let bindingId ← TCM.freshLocalId name.value
-      extCtx := extCtx.extend name.value bindingId valTy .omega .explicit stmtSpan
-      elabStmts := elabStmts.push (.letBind name.value valTy valTyExpr valExpr bindingId)
+      let bindingId ← TCM.freshLocalId name.name
+      extCtx := extCtx.extend name.name bindingId valTy .omega .explicit stmtSpan
+      elabStmts := elabStmts.push (.letBind name.name valTy valTyExpr valExpr bindingId)
 
     | .bind_ name action stmtSpan =>
       -- Elaborate >>= operator and apply to action (in current extended context)
       let (partialTy, partialExpr) ← withReader (fun _ => extCtx) do
-        let (opTy, opExpr) ← inferSyntax (.var ⟨">>=", stmtSpan⟩)
+        let (opTy, opExpr) ← inferSyntax (.var ⟨#[], ">>=", stmtSpan⟩)
         inferSyntaxApp opTy opExpr action stmtSpan
       let partialTy' ← withReader (fun _ => extCtx) (force partialTy)
       let (_, _, _, dom, cod) ← withReader (fun _ => extCtx) (ensurePi partialTy' stmtSpan)
@@ -945,9 +945,9 @@ partial def inferComposeBlock (stmts : Array Soma.Syntax.ComposeStmt)
         | _ => withReader (fun _ => extCtx) (TCM.freshMetaVal (.vType .zero))
       let bindTyExpr ← withReader (fun _ => extCtx) (quoteValueToExpr bindTy)
       -- Create binding and extend context for subsequent statements
-      let bindingId ← TCM.freshLocalId name.value
-      extCtx := extCtx.extend name.value bindingId bindTy .omega .explicit stmtSpan
-      elabStmts := elabStmts.push (.monadBind name.value bindTy bindTyExpr partialTy partialExpr cod bindingId stmtSpan)
+      let bindingId ← TCM.freshLocalId name.name
+      extCtx := extCtx.extend name.name bindingId bindTy .omega .explicit stmtSpan
+      elabStmts := elabStmts.push (.monadBind name.name bindTy bindTyExpr partialTy partialExpr cod bindingId stmtSpan)
 
   let finalResult ← withReader (fun _ => extCtx) (inferSyntax final_)
   let mut resultTy := finalResult.1
@@ -1008,7 +1008,7 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
       -- Polymorphic field access: rec @l
       match typeArg with
       | .label name =>
-        let (fieldTy, fieldExpr) ← inferPolymorphicFieldAccess fnExpr row name.value argSpan span
+        let (fieldTy, fieldExpr) ← inferPolymorphicFieldAccess fnExpr row name.name argSpan span
         solveImplicitsGreedy
         return (fieldTy, fieldExpr)
       | _ =>
@@ -1043,7 +1043,7 @@ partial def inferSyntaxApp (fnTy : Value) (fnExpr : Soma.Core.Expr)
 
 /-- Infer lambda body from Syntax params, building nested Core.Expr lambdas -/
 partial def inferSyntaxLamBody
-    (params : List (Soma.Syntax.Name × Option Soma.Syntax.TypeExpr))
+    (params : List (Soma.Syntax.QualName × Option Soma.Syntax.TypeExpr))
     (body : Soma.Syntax.Expr) (span : Span)
     (acc : List (Unique × String × Soma.Core.Expr))
     : TCM (Value × Soma.Core.Expr) := do
@@ -1054,22 +1054,22 @@ partial def inferSyntaxLamBody
     return (bodyTy, lamExpr)
   | (name, _tyAnnot) :: rest =>
     let paramTy ← TCM.freshMetaVal (.vType .zero)
-    let bindingId ← TCM.freshLocalId name.value
-    TCM.withBinding name.value bindingId paramTy .omega .explicit span do
-      match ← TCM.lookupLocal name.value with
+    let bindingId ← TCM.freshLocalId name.name
+    TCM.withBinding name.name bindingId paramTy .omega .explicit span do
+      match ← TCM.lookupLocal name.name with
       | some entry =>
         let domExpr ← quoteValueToExpr paramTy
-        let (innerTy, lamExpr) ← inferSyntaxLamBody rest body span (acc ++ [(entry.fvarId, name.value, domExpr)])
+        let (innerTy, lamExpr) ← inferSyntaxLamBody rest body span (acc ++ [(entry.fvarId, name.name, domExpr)])
         -- Build Pi type: paramTy -> innerTy
-        let codClosure := Closure.const name.value innerTy
-        let piTy := Value.vPi .omega .explicit name.value paramTy codClosure
+        let codClosure := Closure.const name.name innerTy
+        let piTy := Value.vPi .omega .explicit name.name paramTy codClosure
         return (piTy, lamExpr)
       | none =>
         inferSyntaxLamBody rest body span acc
 
 /-- Check lambda body against expected Pi type from Syntax params -/
 partial def checkSyntaxLamBody
-    (params : List (Soma.Syntax.Name × Option Soma.Syntax.TypeExpr))
+    (params : List (Soma.Syntax.QualName × Option Soma.Syntax.TypeExpr))
     (body : Soma.Syntax.Expr) (expectedTy : Value) (span : Span)
     (acc : List (Unique × String × Soma.Core.Expr))
     : TCM Soma.Core.Expr := do
@@ -1083,24 +1083,24 @@ partial def checkSyntaxLamBody
     | .vPi qty binder _ dom cod =>
       let codTy ← do
         let lvl ← TCM.currentLevel
-        let x := Value.vNeutral dom (.nVar ⟨name.value, lvl⟩)
+        let x := Value.vNeutral dom (.nVar ⟨name.name, lvl⟩)
         applyClosure cod x
-      let bindingId ← TCM.freshLocalId name.value
-      withCheckedBinding name.value bindingId dom qty binder span do
-        match ← TCM.lookupLocal name.value with
+      let bindingId ← TCM.freshLocalId name.name
+      withCheckedBinding name.name bindingId dom qty binder span do
+        match ← TCM.lookupLocal name.name with
         | some entry =>
           let domExpr ← quoteValueToExpr dom
-          checkSyntaxLamBody rest body codTy span (acc ++ [(entry.fvarId, name.value, domExpr)])
+          checkSyntaxLamBody rest body codTy span (acc ++ [(entry.fvarId, name.name, domExpr)])
         | none =>
           checkSyntaxLamBody rest body codTy span acc
     | _ =>
       let paramTy ← TCM.freshMetaVal (.vType .zero)
-      let bindingId ← TCM.freshLocalId name.value
-      TCM.withBinding name.value bindingId paramTy .omega .explicit span do
-        match ← TCM.lookupLocal name.value with
+      let bindingId ← TCM.freshLocalId name.name
+      TCM.withBinding name.name bindingId paramTy .omega .explicit span do
+        match ← TCM.lookupLocal name.name with
         | some entry =>
           let domExpr ← quoteValueToExpr paramTy
-          checkSyntaxLamBody rest body expectedTy' span (acc ++ [(entry.fvarId, name.value, domExpr)])
+          checkSyntaxLamBody rest body expectedTy' span (acc ++ [(entry.fvarId, name.name, domExpr)])
         | none =>
           checkSyntaxLamBody rest body expectedTy' span acc
 
@@ -1125,15 +1125,15 @@ partial def checkSyntaxList (exprs : List Soma.Syntax.Expr) (elemTy : Value)
     return e' :: es'
 
 /-- Infer record fields from Syntax -/
-partial def inferSyntaxRecordFields (fields : List (Soma.Syntax.Name × Soma.Syntax.Expr))
+partial def inferSyntaxRecordFields (fields : List (Soma.Syntax.QualName × Soma.Syntax.Expr))
     : TCM (Value × Array (String × Soma.Core.Expr)) := do
   match fields with
   | [] => return (.vRowEmpty, #[])
   | (name, expr) :: rest => do
     let (ty, exprE) ← inferSyntax expr
     let (restRow, restFields) ← inferSyntaxRecordFields rest
-    let row := Value.vRowExtend (.vLabelLit name.value) ty restRow
-    return (row, #[(name.value, exprE)] ++ restFields)
+    let row := Value.vRowExtend (.vLabelLit name.name) ty restRow
+    return (row, #[(name.name, exprE)] ++ restFields)
 
 /-- Infer arms of a case expression from Syntax.MatchArm -/
 partial def inferSyntaxArms (arms : List Soma.Syntax.MatchArm)

@@ -158,10 +158,6 @@ structure ConstructorMeta where
 
 /-- Metadata for an inductive-like declaration and its constructors. -/
 structure InductiveMeta where
-  /-- Canonical type name (`A::B::T`) -/
-  name : String
-  /-- Stable Unique used in elaboration/evaluation/lowering -/
-  unique : Soma.Unique
   /-- Source declaration kind -/
   kind : InductiveKind
   /-- Declared type parameter names, in order -/
@@ -373,7 +369,7 @@ def register (w : WiredIn) (role : WiredRole) (info : GlobalInfo) : WiredIn :=
 /-- Scan attributes for @[wired_in "role"] and register if found (todo: register lazily) -/
 def tryRegisterFromAttrs (w : WiredIn) (attrs : Array Soma.Syntax.Attribute) (info : GlobalInfo) : WiredIn :=
   attrs.foldl (init := w) fun acc attr =>
-    if attr.name.value == "wired_in" then
+    if attr.name.name == "wired_in" then
       if h : 0 < attr.args.size then
         match attr.args[0] with
         | .lit (.string role _) =>
@@ -481,14 +477,12 @@ structure Globals where
   openNamespaces : Array String := #[]
   /-- Intrinsic dispatch table keyed by qualified global name -/
   intrinsics : Std.HashMap Soma.Core.QualifiedName Soma.Core.Intrinsic := {}
-  /-- Registry mapping type names to their Uniques -/
-  uniques : Std.HashMap String Soma.Unique := {}
   /-- Ordered field names for record types -/
-  recordFields : Std.HashMap String (Array String) := {}
-  /-- First-class inductive metadata keyed by type Unique -/
-  inductives : Std.HashMap Soma.Unique InductiveMeta := {}
-  /-- Reverse index: constructor qualified name -> inductive Unique -/
-  ctorToInductive : Std.HashMap Soma.Core.QualifiedName Soma.Unique := {}
+  recordFields : Std.HashMap Soma.Core.QualifiedName (Array String) := {}
+  /-- First-class inductive metadata keyed by type QualifiedName -/
+  inductives : Std.HashMap Soma.Core.QualifiedName InductiveMeta := {}
+  /-- Reverse index: constructor qualified name -> inductive QualifiedName -/
+  ctorToInductive : Std.HashMap Soma.Core.QualifiedName Soma.Core.QualifiedName := {}
   /-- Well-known constructors for pattern desugaring -/
   wiredIn : WiredIn := {}
   deriving Inhabited
@@ -500,10 +494,6 @@ def empty : Globals := {}
 /-- Split a qualified name by `::`, dropping empty segments. -/
 def splitQualified (name : String) : List String :=
   (name.splitOn "::").filter (fun s => !s.isEmpty)
-
-/-- Normalize a potentially-qualified name to canonical `A::B::x` form. -/
-def normalizeQualified (name : String) : String :=
-  String.intercalate "::" (splitQualified name)
 
 def insert (g : Globals) (name : String) (info : GlobalInfo) : Globals :=
   let parts := splitQualified name
@@ -532,18 +522,18 @@ def contains (g : Globals) (name : String) : Bool :=
 
 /-- Mark a namespace as opened for unqualified lookup fallback -/
 def openNamespace (g : Globals) (ns : String) : Globals :=
-  let normalized := normalizeQualified ns
-  if g.openNamespaces.contains normalized then g
-  else { g with openNamespaces := g.openNamespaces.push normalized }
+  let canonical := String.intercalate "::" (splitQualified ns)
+  if g.openNamespaces.contains canonical then g
+  else { g with openNamespaces := g.openNamespaces.push canonical }
 
 /-- Remove an opened namespace. -/
 def closeNamespace (g : Globals) (ns : String) : Globals :=
-  let normalized := normalizeQualified ns
-  { g with openNamespaces := g.openNamespaces.filter (· != normalized) }
+  let canonical := String.intercalate "::" (splitQualified ns)
+  { g with openNamespaces := g.openNamespaces.filter (· != canonical) }
 
 /-- Replace all opened namespaces -/
 def setOpenNamespaces (g : Globals) (namespaces : Array String) : Globals :=
-  { g with openNamespaces := namespaces.map normalizeQualified }
+  { g with openNamespaces := namespaces.map (fun ns => String.intercalate "::" (splitQualified ns)) }
 
 /-- Register intrinsic metadata for a qualified name -/
 def registerIntrinsic (g : Globals) (name : Soma.Core.QualifiedName)
@@ -555,74 +545,45 @@ def lookupIntrinsic (g : Globals) (name : Soma.Core.QualifiedName)
     : Option Soma.Core.Intrinsic :=
   g.intrinsics.get? name
 
-/-- Register a Unique for a type name -/
-def registerUnique (g : Globals) (name : String) (id : Soma.Unique) : Globals :=
-  { g with uniques := g.uniques.insert name id }
-
 /-- Register or refresh top-level inductive metadata for a type name -/
-def registerInductive (g : Globals) (name : String) (unique : Soma.Unique)
+def registerInductive (g : Globals) (qn : Soma.Core.QualifiedName)
     (kind : InductiveKind) (typeVarNames : Array String := #[])
     (fieldNames : Array String := #[]) : Globals :=
-  let normalized := normalizeQualified name
-  let metaInfo : InductiveMeta := match g.inductives.get? unique with
+  let metaInfo : InductiveMeta := match g.inductives.get? qn with
     | some existing =>
       { existing with
-        unique := unique
         kind := kind
         typeVarNames := typeVarNames
         fieldNames := fieldNames }
     | none =>
-      { name := normalized
-        unique := unique
-        kind := kind
+      { kind := kind
         typeVarNames := typeVarNames
         fieldNames := fieldNames }
   { g with
-    uniques := g.uniques.insert normalized unique
-    recordFields := if fieldNames.isEmpty then g.recordFields else g.recordFields.insert normalized fieldNames
-    inductives := g.inductives.insert unique metaInfo }
+    recordFields := if fieldNames.isEmpty then g.recordFields else g.recordFields.insert qn fieldNames
+    inductives := g.inductives.insert qn metaInfo }
 
 /-- Register constructor metadata under an inductive type -/
-def registerConstructorMeta (g : Globals) (typeName : String) (ctor : ConstructorMeta) : Globals :=
-  let normalized := normalizeQualified typeName
-  let unique := g.uniques.get? normalized
-  let g := match unique with
-    | some uid =>
-      match g.inductives.get? uid with
-      | some metaInfo =>
-        let updated := metaInfo.upsertCtor ctor
-        { g with inductives := g.inductives.insert uid updated }
-      | none => g
+def registerConstructorMeta (g : Globals) (typeQN : Soma.Core.QualifiedName) (ctor : ConstructorMeta) : Globals :=
+  let g := match g.inductives.get? typeQN with
+    | some metaInfo =>
+      let updated := metaInfo.upsertCtor ctor
+      { g with inductives := g.inductives.insert typeQN updated }
     | none => g
-  match unique with
-  | some uid => { g with ctorToInductive := g.ctorToInductive.insert ctor.name uid }
-  | none => g
+  { g with ctorToInductive := g.ctorToInductive.insert ctor.name typeQN }
 
-/-- Look up inductive metadata by Unique -/
-def lookupInductiveByUnique (g : Globals) (uid : Soma.Unique) : Option InductiveMeta :=
-  g.inductives.get? uid
-
-/-- Look up inductive metadata by type name -/
-def lookupInductive (g : Globals) (name : String) : Option InductiveMeta :=
-  match g.uniques.get? (normalizeQualified name) with
-  | some uid => g.inductives.get? uid
-  | none => none
+/-- Look up inductive metadata by QualifiedName -/
+def lookupInductive (g : Globals) (qn : Soma.Core.QualifiedName) : Option InductiveMeta :=
+  g.inductives.get? qn
 
 /-- Look up inductive metadata owning a constructor -/
 def lookupInductiveByCtor (g : Globals) (ctorName : Soma.Core.QualifiedName)
     : Option InductiveMeta :=
   match g.ctorToInductive.get? ctorName with
-  | some uid => g.inductives.get? uid
+  | some typeQN => g.inductives.get? typeQN
   | none =>
     g.inductives.toList.findSome? fun (_, info) =>
       if info.ctors.any (·.name == ctorName) then some info else none
-
-/-- Look up a Unique by name -/
-def lookupUnique (g : Globals) (name : String) : Option Soma.Unique :=
-  let normalized := normalizeQualified name
-  match g.uniques.get? normalized with
-  | some id => some id
-  | none => (g.lookupInductive normalized).map (·.unique)
 
 /-- Insert a declaration into a child namespace -/
 def insertInChild (g : Globals) (parentName : String) (childName : String) (info : GlobalInfo) : Globals :=

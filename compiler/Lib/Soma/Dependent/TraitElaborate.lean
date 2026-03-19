@@ -174,7 +174,7 @@ def elaborateClassRecordType (params : Array TypeVarBinder)
     let kind ← match param.kind with
       | some k => Elaborate.elaborateType Elaborate.ElabEnv.empty k
       | none => pure (Value.vType Level.zero)  -- default to Type
-    paramKinds := paramKinds.push (param.name.value, kind)
+    paramKinds := paramKinds.push (param.name.name, kind)
 
   -- Build elaboration environment with type parameters and their kinds
   let mut elabEnv := ElabEnv.empty
@@ -223,11 +223,11 @@ Returns an array of (superclass Unique, parameter index mapping).
 def elaborateSuperclasses (params : Array TypeVarBinder)
     (constraints : Array Syntax.Constraint)
     (registry : ClassRegistry) : TCM (Array (Unique × Array Nat)) := do
-  let paramNames := params.map (·.name.value)
+  let paramNames := params.map (·.name.name)
   let mut result : Array (Unique × Array Nat) := #[]
 
   for constraint in constraints do
-    match registry.lookup constraint.className.value with
+    match registry.lookup constraint.className.name with
     | none =>
       -- Superclass not found - this will be caught during instance resolution
       pure ()
@@ -237,7 +237,7 @@ def elaborateSuperclasses (params : Array TypeVarBinder)
       for arg in constraint.args do
         match arg with
         | .var name =>
-          match paramNames.findIdx? (· == name.value) with
+          match paramNames.findIdx? (· == name.name) with
           | some idx => indices := indices.push idx
           | none => pure ()
         | _ => pure ()
@@ -285,7 +285,7 @@ The instance value is a record containing the elaborated method implementations.
 /-- Elaborate a constraint into (class Unique, arg Values). -/
 def elaborateConstraint (constraint : Syntax.Constraint) (env : ElabEnv)
     (registry : ClassRegistry) : TCM (Option (Unique × Array Value)) := do
-  match registry.lookup constraint.className.value with
+  match registry.lookup constraint.className.name with
   | none => return none
   | some classId =>
     let args ← constraint.args.mapM (elaborateType env)
@@ -305,9 +305,9 @@ def substituteMethodType (methodTypeSyntax : TypeExpr) (params : Array TypeVarBi
     let kind ← match param.kind with
       | some k => elaborateType elabEnv k
       | none => pure (Value.vType Level.zero)
-    elabEnv := elabEnv.extend param.name.value kind
+    elabEnv := elabEnv.extend param.name.name kind
 
-  let paramNames := params.map (·.name.value)
+  let paramNames := params.map (·.name.name)
 
   -- Elaborate the method type in this environment
   let methodType ← elaborateType elabEnv methodTypeSyntax
@@ -762,13 +762,13 @@ private def processInstanceBinders (binders : Array Syntax.InstanceBinder)
       -- {a : Type} — create a fresh meta for this type variable
       let kindVal ← elaborateType elabEnv kind
       let metaVal ← TCM.freshMetaVal kindVal
-      elabEnv := elabEnv.addOverride name.value metaVal
+      elabEnv := elabEnv.addOverride name.name metaVal
     | .dictParam name? constraint _ =>
       -- {{d : Display a}} or {{Display a}} — elaborate the constraint
       match ← elaborateConstraint constraint elabEnv registry with
       | some (cid, cargs) =>
         constraints := constraints.push {
-          classId := cid, args := cargs, dictName? := name?.map (·.value)
+          classId := cid, args := cargs, dictName? := name?.map (·.name)
         }
       | none => pure ()
   return (elabEnv, constraints)

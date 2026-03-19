@@ -442,8 +442,8 @@ private def exprTag : Nat → UInt64
 /-- Hash a TypeExpr from the AST -/
 partial def hashTypeExpr (te : Soma.Syntax.TypeExpr) : UInt64 :=
   match te with
-  | .var name => combineHash 0x6000 (hashString name.value)
-  | .con name => combineHash 0x6001 (hashString name.value)
+  | .var name => combineHash 0x6000 (hashString name.name)
+  | .con name => combineHash 0x6001 (hashString name.name)
   | .app fn arg _ =>
     combineHashes #[0x6002, hashTypeExpr fn, hashTypeExpr arg]
   | .arrow from_ to _ =>
@@ -455,12 +455,12 @@ partial def hashTypeExpr (te : Soma.Syntax.TypeExpr) : UInt64 :=
     combineHash 0x6005 (hashTypeExpr elem)
   | .forall_ vars body _ =>
     let varsHash := vars.foldl (fun acc v =>
-      combineHash acc (hashString v.name.value)) 0
+      combineHash acc (hashString v.name.name)) 0
     combineHashes #[0x6006, varsHash, hashTypeExpr body]
   | .constrained constraints body _ =>
     let constrHash := constraints.foldl (fun acc (name, args, _) =>
       let argsHash := args.foldl (fun h te => combineHash h (hashTypeExpr te)) 0
-      combineHashes #[acc, hashString name.value, argsHash]) 0
+      combineHashes #[acc, hashString name.name, argsHash]) 0
     combineHashes #[0x6007, constrHash, hashTypeExpr body]
   | .parens inner _ =>
     combineHash 0x6008 (hashTypeExpr inner)
@@ -468,20 +468,20 @@ partial def hashTypeExpr (te : Soma.Syntax.TypeExpr) : UInt64 :=
     combineHashes #[0x6009, hashTypeExpr ty, hashTypeExpr kind]
   | .record fields tail _ =>
     let fieldsHash := fields.foldl (fun acc (name, te) =>
-      combineHashes #[acc, hashString name.value, hashTypeExpr te]) 0
-    let tailHash := match tail with | none => 0 | some n => hashString n.value
+      combineHashes #[acc, hashString name.name, hashTypeExpr te]) 0
+    let tailHash := match tail with | none => 0 | some n => hashString n.name
     combineHashes #[0x600A, fieldsHash, tailHash]
   | .variant cases tail _ =>
     let casesHash := cases.foldl (fun acc (name, te) =>
-      combineHashes #[acc, hashString name.value, hashTypeExpr te]) 0
-    let tailHash := match tail with | none => 0 | some n => hashString n.value
+      combineHashes #[acc, hashString name.name, hashTypeExpr te]) 0
+    let tailHash := match tail with | none => 0 | some n => hashString n.name
     combineHashes #[0x600B, casesHash, tailHash]
   | .pi qty name domain codomain _ =>
-    combineHashes #[0x600C, hash qty, hashString name.value, hashTypeExpr domain, hashTypeExpr codomain]
+    combineHashes #[0x600C, hash qty, hashString name.name, hashTypeExpr domain, hashTypeExpr codomain]
   | .sigma qty name fst snd _ =>
-    combineHashes #[0x600D, hash qty, hashString name.value, hashTypeExpr fst, hashTypeExpr snd]
+    combineHashes #[0x600D, hash qty, hashString name.name, hashTypeExpr fst, hashTypeExpr snd]
   | .implicit name domain codomain _ =>
-    let nameHash := match name with | none => 0 | some n => hashString n.value
+    let nameHash := match name with | none => 0 | some n => hashString n.name
     combineHashes #[0x600E, nameHash, hashTypeExpr domain, hashTypeExpr codomain]
 
 /-- Hash a level -/
@@ -495,7 +495,7 @@ def hashLevel (l : Soma.Core.Level) : UInt64 :=
 /-- Hash a Syntax.Expr by traversing its structure -/
 partial def hashSyntaxExpr (e : Soma.Syntax.Expr) : UInt64 :=
   match e with
-  | .var name => combineHash (exprTag 0) (hashString name.value)
+  | .var name => combineHash (exprTag 0) (hashString name.name)
   | .lit l => combineHash (exprTag 1) (match l with
       | .int n _ => hash n
       | .string s _ => hashString s
@@ -513,20 +513,20 @@ partial def hashSyntaxExpr (e : Soma.Syntax.Expr) : UInt64 :=
   | .record fields _ => combineHash (exprTag 9) (fields.foldl (fun acc (_, v) => combineHash acc (hashSyntaxExpr v)) 0)
   | .recordUpdate base updates _ => combineHashes #[exprTag 10, hashSyntaxExpr base,
       updates.foldl (fun acc (_, v) => combineHash acc (hashSyntaxExpr v)) 0]
-  | .fieldAccess expr field _ => combineHashes #[exprTag 11, hashSyntaxExpr expr, hashString field.value]
-  | .projection typeName fieldName _ => combineHashes #[exprTag 12, hashString typeName.value, hashString fieldName.value]
+  | .fieldAccess expr field _ => combineHashes #[exprTag 11, hashSyntaxExpr expr, hashString field.name]
+  | .projection typeName fieldName _ => combineHashes #[exprTag 12, hashString typeName.name, hashString fieldName.name]
   | .parens inner _ => hashSyntaxExpr inner
   | .typeAnnot expr ty _ => combineHashes #[exprTag 13, hashSyntaxExpr expr, hashTypeExpr ty]
   | .typeApp arg _ => combineHash (exprTag 14) (match arg with
       | .type ty => hashTypeExpr ty
-      | .label name => hashString name.value)
+      | .label name => hashString name.name)
   | .composeBlock stmts final_ _ =>
     let stmtHash := stmts.foldl (fun acc s => combineHash acc (match s with
       | .expr e _ => hashSyntaxExpr e
-      | .let_ n v _ => combineHash (hashString n.value) (hashSyntaxExpr v)
-      | .bind_ n a _ => combineHash (hashString n.value) (hashSyntaxExpr a))) 0
+      | .let_ n v _ => combineHash (hashString n.name) (hashSyntaxExpr v)
+      | .bind_ n a _ => combineHash (hashString n.name) (hashSyntaxExpr a))) 0
     combineHashes #[exprTag 16, stmtHash, hashSyntaxExpr final_]
-  | .variant label arg _ => combineHashes #[exprTag 15, hashString label.value,
+  | .variant label arg _ => combineHashes #[exprTag 15, hashString label.name,
       match arg with | some a => hashSyntaxExpr a | none => 0]
 
 /-- Hash a function by traversing its expression tree -/
@@ -545,14 +545,14 @@ def hashFunction (fn : Soma.Core.UntypedFunction) : UInt64 :=
 def hashTypeDef (td : Soma.Core.TypeDef) : UInt64 :=
   match td with
   | .algebraic attrs name typeVars ctors =>
-    let attrsHash := attrs.foldl (fun acc a => combineHash acc (hashString a.name.value)) 0
+    let attrsHash := attrs.foldl (fun acc a => combineHash acc (hashString a.name.name)) 0
     let nameHash := hashString name.display
     let varsHash := typeVars.foldl (fun acc v => combineHash acc (hashString v)) 0
     let ctorsHash := ctors.foldl (fun acc ctor =>
       combineHash acc (hashString ctor.name.display)) 0
     combineHashes #[0, attrsHash, nameHash, varsHash, ctorsHash]  -- 0 = algebraic tag
   | .record attrs name typeVars ctorName fields =>
-    let attrsHash := attrs.foldl (fun acc a => combineHash acc (hashString a.name.value)) 0
+    let attrsHash := attrs.foldl (fun acc a => combineHash acc (hashString a.name.name)) 0
     let nameHash := hashString name.display
     let varsHash := typeVars.foldl (fun acc v => combineHash acc (hashString v)) 0
     let ctorHash := hashString ctorName.display
