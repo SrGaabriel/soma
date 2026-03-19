@@ -866,7 +866,7 @@ private def registerDataType
           g := g.registerInductive nameStr unique kind typeVarNames fieldNames
           TCM.registerUnique nameStr unique
         else if let some metaInfo := prev.lookupInductive nameStr then
-          g := { g with inductives := g.inductives.insert metaInfo.name metaInfo }
+          g := { g with inductives := g.inductives.insert metaInfo.unique metaInfo }
         return g
 
   -- Must elaborate fresh
@@ -1156,7 +1156,7 @@ def buildGlobalsIncremental
     if let some classUnique := globals.lookupUnique classNameStr then
       if !isDirty then
         if let some indInfo := prevGlobals.lookupInductive classNameStr then
-          globals := { globals with inductives := globals.inductives.insert indInfo.name indInfo }
+          globals := { globals with inductives := globals.inductives.insert indInfo.unique indInfo }
         else
           globals := globals.registerInductive classNameStr classUnique .record typeVarNames methodFieldNames
       else

@@ -1453,9 +1453,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         CodegenM.withFuncBuilder do
           FuncBuilder.gepi32 layout.llvmTy (.local payloadPtr) #[0, physIdx]
       | none =>
-        -- Unknown variant or rawPtr fallback: use i64-stride GEP
-        CodegenM.withFuncBuilder do
-          FuncBuilder.gepi64 .i64 (.local payloadPtr) #[fieldIdx]
+        panic! s!"CODEGEN BUG: field access on unknown variant {variantIdx} of {valTy}"
     let ref ← CodegenM.withFuncBuilder do
       FuncBuilder.load llvmResultTy (.local fieldPtr)
     pure (some (ref, resultTy))
@@ -1481,11 +1479,8 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
           let physIdx := layout.logToPhys.getD i i
           let fieldPtr ← CodegenM.withFuncBuilder do
             FuncBuilder.gepi32 layout.llvmTy (.local payloadMem) #[0, physIdx]
-          let targetFieldTy := (fieldTypes.map convertTy).getD i fieldLLVMTy
-          let storeVal ← if fieldLLVMTy == targetFieldTy then pure fieldVal
-                          else coerceValue fieldLLVMTy targetFieldTy fieldVal
           CodegenM.withFuncBuilder do
-            FuncBuilder.store targetFieldTy storeVal (.local fieldPtr)
+            FuncBuilder.store fieldLLVMTy fieldVal (.local fieldPtr)
       let payloadPtrSlot ← CodegenM.withFuncBuilder do
         FuncBuilder.gepi32 taggedTy (.local taggedPtr) #[0, 1]
       CodegenM.withFuncBuilder do
@@ -1510,11 +1505,8 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         let physIdx := layout.logToPhys.getD i i
         let fieldPtr ← CodegenM.withFuncBuilder do
           FuncBuilder.gepi32 layout.llvmTy reusePtr #[0, physIdx]
-        let targetFieldTy := (fieldTypes.map convertTy).getD i fieldLLVMTy
-        let storeVal ← if fieldLLVMTy == targetFieldTy then pure fieldVal
-                        else coerceValue fieldLLVMTy targetFieldTy fieldVal
         CodegenM.withFuncBuilder do
-          FuncBuilder.store targetFieldTy storeVal (.local fieldPtr)
+          FuncBuilder.store fieldLLVMTy fieldVal (.local fieldPtr)
     -- Build the result struct {tag, reusePtr} on the stack
     let taggedPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca taggedTy)
     let tagPtr ← CodegenM.withFuncBuilder do

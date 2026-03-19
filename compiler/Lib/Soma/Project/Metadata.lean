@@ -55,14 +55,14 @@ structure UniqueEntry where
 
 /-- Serializable inductive metadata entry -/
 structure InductiveEntry where
-  name : String
+  unique : Unique
   info : Soma.Dependent.InductiveMeta
   deriving Serialize, Deserialize
 
 /-- Serializable constructor-to-inductive reverse index entry -/
 structure CtorOwnerEntry where
   ctorName : Soma.Core.QualifiedName
-  inductiveName : String
+  inductiveUnique : Unique
   deriving Serialize, Deserialize
 
 /-- Serializable wired-in entry: maps a role to its registered declarations -/
@@ -139,10 +139,10 @@ def globalsToSerializable (g : Globals) : SerializableGlobals :=
     acc.push { name, info }
   let uniques := g.uniques.fold (init := #[]) fun acc name id =>
     acc.push { name, id }
-  let inductives := g.inductives.fold (init := #[]) fun acc name info =>
-    acc.push { name, info }
-  let ctorOwners := g.ctorToInductive.fold (init := #[]) fun acc ctorName inductiveName =>
-    acc.push { ctorName, inductiveName }
+  let inductives := g.inductives.fold (init := #[]) fun acc unique info =>
+    acc.push { unique, info }
+  let ctorOwners := g.ctorToInductive.fold (init := #[]) fun acc ctorName inductiveUnique =>
+    acc.push { ctorName, inductiveUnique }
   let wiredIns := g.wiredIn.roles.fold (init := #[]) fun acc role infos =>
     acc.push { role, infos }
   { defs, uniques, inductives, ctorOwners, wiredIns }
@@ -183,10 +183,10 @@ def constructorsFromSerializable (entries : Array ConstructorEntry) : Std.HashMa
 def globalsFromSerializable (sg : SerializableGlobals) : Globals :=
   let defs := sg.defs.foldl (fun acc entry => acc.insert entry.name entry.info) Globals.empty
   let uniques := sg.uniques.foldl (fun acc entry => acc.insert entry.name entry.id) {}
-  let inductives := sg.inductives.foldl (fun acc entry => acc.insert entry.name entry.info) {}
-  let ctorToInductive := sg.ctorOwners.foldl (fun acc entry => acc.insert entry.ctorName entry.inductiveName) {}
+  let inductives := sg.inductives.foldl (fun acc entry => acc.insert entry.unique entry.info) {}
+  let ctorToInductive := sg.ctorOwners.foldl (fun acc entry => acc.insert entry.ctorName entry.inductiveUnique) {}
   let recordFields := sg.inductives.foldl (fun acc entry =>
-    if entry.info.fieldNames.isEmpty then acc else acc.insert entry.name entry.info.fieldNames
+    if entry.info.fieldNames.isEmpty then acc else acc.insert entry.info.name entry.info.fieldNames
   ) {}
   let wiredRoles := sg.wiredIns.foldl (fun acc entry => acc.insert entry.role entry.infos) {}
   { defs with

@@ -244,10 +244,10 @@ def mergeGlobals (g1 g2 : Globals) : Globals :=
     acc.insert name id
   let recordFields := g2.recordFields.fold (init := g1.recordFields) fun acc typeName fields =>
     acc.insert typeName fields
-  let inductives := g2.inductives.fold (init := g1.inductives) fun acc typeName metaInfo =>
-    acc.insert typeName metaInfo
-  let ctorToInductive := g2.ctorToInductive.fold (init := g1.ctorToInductive) fun acc ctorName typeName =>
-    acc.insert ctorName typeName
+  let inductives := g2.inductives.fold (init := g1.inductives) fun acc uid metaInfo =>
+    acc.insert uid metaInfo
+  let ctorToInductive := g2.ctorToInductive.fold (init := g1.ctorToInductive) fun acc ctorName uid =>
+    acc.insert ctorName uid
   let openNs := g2.openNamespaces.foldl (init := g1.openNamespaces) fun acc ns =>
     if acc.contains ns then acc else acc.push ns
   let wiredRoles := g2.wiredIn.roles.fold (init := g1.wiredIn.roles) fun acc role infos =>

@@ -213,11 +213,14 @@ partial def alignment (ty : Ty n) : Nat :=
   | .var _ => 8
 
 mutual
-/-- Aligned size of fields laid out as a struct with natural alignment padding -/
+/-- Aligned size of fields laid out as a packed struct (sorted by alignment desc) -/
 partial def alignedFieldsSize (fields : Array (Ty n)) : Nat :=
   if fields.isEmpty then 0
   else
-    let rawSize := fields.foldl (fun acc f =>
+    let sorted := fields.qsort fun a b =>
+      if a.alignment != b.alignment then a.alignment > b.alignment
+      else sizeBytes a > sizeBytes b
+    let rawSize := sorted.foldl (fun acc f =>
       let a := max 1 (alignment f)
       ((acc + a - 1) / a) * a + sizeBytes f) 0
     let maxAlign := fields.foldl (fun acc f => max acc (alignment f)) 1

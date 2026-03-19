@@ -485,10 +485,10 @@ structure Globals where
   uniques : Std.HashMap String Soma.Unique := {}
   /-- Ordered field names for record types -/
   recordFields : Std.HashMap String (Array String) := {}
-  /-- First-class inductive metadata keyed by canonical type name -/
-  inductives : Std.HashMap String InductiveMeta := {}
-  /-- Reverse index: constructor qualified name -> canonical inductive name -/
-  ctorToInductive : Std.HashMap Soma.Core.QualifiedName String := {}
+  /-- First-class inductive metadata keyed by type Unique -/
+  inductives : Std.HashMap Soma.Unique InductiveMeta := {}
+  /-- Reverse index: constructor qualified name -> inductive Unique -/
+  ctorToInductive : Std.HashMap Soma.Core.QualifiedName Soma.Unique := {}
   /-- Well-known constructors for pattern desugaring -/
   wiredIn : WiredIn := {}
   deriving Inhabited
@@ -564,7 +564,7 @@ def registerInductive (g : Globals) (name : String) (unique : Soma.Unique)
     (kind : InductiveKind) (typeVarNames : Array String := #[])
     (fieldNames : Array String := #[]) : Globals :=
   let normalized := normalizeQualified name
-  let metaInfo : InductiveMeta := match g.inductives.get? normalized with
+  let metaInfo : InductiveMeta := match g.inductives.get? unique with
     | some existing =>
       { existing with
         unique := unique
@@ -580,27 +580,39 @@ def registerInductive (g : Globals) (name : String) (unique : Soma.Unique)
   { g with
     uniques := g.uniques.insert normalized unique
     recordFields := if fieldNames.isEmpty then g.recordFields else g.recordFields.insert normalized fieldNames
-    inductives := g.inductives.insert normalized metaInfo }
+    inductives := g.inductives.insert unique metaInfo }
 
 /-- Register constructor metadata under an inductive type -/
 def registerConstructorMeta (g : Globals) (typeName : String) (ctor : ConstructorMeta) : Globals :=
   let normalized := normalizeQualified typeName
-  let g := match g.inductives.get? normalized with
-    | some metaInfo =>
-      let updated := metaInfo.upsertCtor ctor
-      { g with inductives := g.inductives.insert normalized updated }
+  let unique := g.uniques.get? normalized
+  let g := match unique with
+    | some uid =>
+      match g.inductives.get? uid with
+      | some metaInfo =>
+        let updated := metaInfo.upsertCtor ctor
+        { g with inductives := g.inductives.insert uid updated }
+      | none => g
     | none => g
-  { g with ctorToInductive := g.ctorToInductive.insert ctor.name normalized }
+  match unique with
+  | some uid => { g with ctorToInductive := g.ctorToInductive.insert ctor.name uid }
+  | none => g
+
+/-- Look up inductive metadata by Unique -/
+def lookupInductiveByUnique (g : Globals) (uid : Soma.Unique) : Option InductiveMeta :=
+  g.inductives.get? uid
 
 /-- Look up inductive metadata by type name -/
 def lookupInductive (g : Globals) (name : String) : Option InductiveMeta :=
-  g.inductives.get? (normalizeQualified name)
+  match g.uniques.get? (normalizeQualified name) with
+  | some uid => g.inductives.get? uid
+  | none => none
 
 /-- Look up inductive metadata owning a constructor -/
 def lookupInductiveByCtor (g : Globals) (ctorName : Soma.Core.QualifiedName)
     : Option InductiveMeta :=
   match g.ctorToInductive.get? ctorName with
-  | some typeName => g.inductives.get? typeName
+  | some uid => g.inductives.get? uid
   | none =>
     g.inductives.toList.findSome? fun (_, info) =>
       if info.ctors.any (·.name == ctorName) then some info else none

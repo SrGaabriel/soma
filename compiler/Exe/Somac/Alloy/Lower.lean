@@ -69,6 +69,7 @@ def isListValue (v : Soma.Core.Value) (primTypes : PrimTypeRegistry) : Bool :=
 structure TypeConvCtx (n : Nat) where
   tyVars : TyVarMapping n
   primTypes : PrimTypeRegistry
+  inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {}
   deriving Inhabited
 
 /-- Build the primitive type registry from the wired-in type registry -/
@@ -399,6 +400,19 @@ open Soma.Unique
 
 mutual
 
+/-- Extract field types from a constructor's elaborated Pi type -/
+partial def extractCtorFieldTypes (ty : Value) (ctx : TypeConvCtx n) : Array (Ty n) :=
+  match ty with
+  | Value.vPi _ _ _ dom cod =>
+    if dom.isType then
+      let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨"_", ⟨0⟩⟩)
+      extractCtorFieldTypes (cod.applyPure neutralArg) ctx
+    else
+      let fieldTy := convertValueTypeWithMapping dom ctx
+      let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨"_", ⟨0⟩⟩)
+      #[fieldTy] ++ extractCtorFieldTypes (cod.applyPure neutralArg) ctx
+  | _ => #[]
+
 /-- Convert a PrimType to an Alloy Ty -/
 partial def convertPrimToAlloyTy (prim : PrimType) (params : List Value) (ctx : TypeConvCtx n) : Ty n :=
   match prim with
@@ -464,7 +478,14 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
   | Value.vDataType dId params =>
     match ctx.primTypes.get? dId with
     | some prim => convertPrimToAlloyTy prim params ctx
-    | none => .tagged (.prim .u32) #[]
+    | none =>
+      match ctx.inductives.get? dId with
+      | some indInfo =>
+        let variants := indInfo.ctors.map fun ctor =>
+          let fields := extractCtorFieldTypes ctor.type ctx
+          (ctor.tag, fields)
+        .tagged (.prim .u32) variants
+      | none => .tagged (.prim .u32) #[]
   | Value.vConstructor _ _ _ _ => .rawPtr
   | Value.vRecord _ => .rawPtr
   | Value.vRecordVal _ => .rawPtr
@@ -839,6 +860,8 @@ structure NodeState (n : Nat) where
   tyVarMapping : TyVarMapping n
   /-- Primitive type registry for resolving wired-in types -/
   primTypes : PrimTypeRegistry := {}
+  /-- Inductive metadata for resolving ADT variant info -/
+  inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {}
   /-- Expected result type from the consumer context -/
   expectedResultTy : Option (Ty n) := none
   /-- LocalIds known to hold list-typed (flat array) values -/
@@ -856,7 +879,7 @@ def restoreResults (s : NodeState n) (snapshot : Std.HashMap Nat LocalId) : Node
 
 /-- Build a type conversion context from this node state -/
 def toTypeConvCtx (s : NodeState n) : TypeConvCtx n :=
-  { tyVars := s.tyVarMapping, primTypes := s.primTypes }
+  { tyVars := s.tyVarMapping, primTypes := s.primTypes, inductives := s.inductives }
 
 end NodeState
 
@@ -2011,10 +2034,11 @@ def collectLamChain (graph : CGraph) (root : CNodeId) (arity : Nat)
 /-- Lower a definition with a specific type parameter count n -/
 def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (funcIdMap : FuncIdMap) (tyVarMapping : TyVarMapping n) (primTypes : PrimTypeRegistry)
+    (inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
     (anonLamBookIdx : Std.HashMap Nat Nat := {}) : Func n :=
-  let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes }
+  let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes, inductives }
   let (explicitTypeParams, paramInfos) := extractParamsUsingMapping def_.ty ctx
   let numTyVars := n
   let typeParamNames := if explicitTypeParams.size >= numTyVars then
@@ -2036,13 +2060,13 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
 
   let (_, func) := LowerM.run' funcId sig intrinsics panicMsgIdx do
     if def_.arity == 0 then
-      let initState : NodeState n := { tyVarMapping, primTypes, expectedResultTy := some sig.retTy, anonLamBookIdx }
+      let initState : NodeState n := { tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx }
       let (result, _) ← StateT.run (lowerNodeWithMap graph def_.root funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
     else
       let (bodyNode, lamParams) := collectLamChain graph def_.root def_.arity
-      let initState : NodeState n := { lamParams, tyVarMapping, primTypes, expectedResultTy := some sig.retTy, anonLamBookIdx }
+      let initState : NodeState n := { lamParams, tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx }
       let (result, _) ← StateT.run (lowerNodeWithMap graph bodyNode funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
@@ -2052,18 +2076,20 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
 /-- Lower a Circuit definition to an Alloy function -/
 def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (funcIdMap : FuncIdMap) (primTypes : PrimTypeRegistry)
+    (inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
     (anonLamBookIdx : Std.HashMap Nat Nat := {}) : SomeFunc :=
   -- Collect all type variable levels and build mapping
   let ⟨n, tyVarMapping⟩ := buildTyVarMappingFromDefinition graph def_
   -- Lower with the determined n
-  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes intrinsics panicMsgIdx anonLamBookIdx
+  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes inductives intrinsics panicMsgIdx anonLamBookIdx
   -- Return existentially quantified function
   ⟨n, func⟩
 
 /-- Lower an entire Circuit graph to an Alloy module -/
 def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
+    (inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Module := Id.run do
   let mut module := Module.empty moduleName
 
@@ -2119,7 +2145,7 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
     if let some def_ := extGraph.book[i]? then
       if not def_.isExternal then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
-        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes intrinsics panicMsgIdx anonLamBookIdx
+        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes inductives intrinsics panicMsgIdx anonLamBookIdx
         module := module.addFunc func
 
   -- Set main function using the mapped ID
@@ -2131,7 +2157,8 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
 
 /-- Main entry point: lower a Circuit graph to an Alloy module -/
 def lower (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
+    (inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Module :=
-  lowerGraph graph moduleName primTypes intrinsics
+  lowerGraph graph moduleName primTypes inductives intrinsics
 
 end Somac.Alloy.Lower
