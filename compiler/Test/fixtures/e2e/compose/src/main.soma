@@ -1,5 +1,3 @@
-use stdlib::core::{puts, strcat}
-
 def main : IO () =
     compose
         puts "Hello"

@@ -84,3 +84,7 @@ def {*} : Int -> Int -> Int
 def {%} : Int -> Int -> Int
 @[intrinsic "primop.div"]
 def {/} : Int -> Int -> Int
+@[intrinsic "primop.eq"]
+def {==} {a : Type} : a -> a -> Bool
+@[intrinsic "primop.le"]
+def {<=} : Int -> Int -> Bool

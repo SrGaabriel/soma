@@ -43,8 +43,9 @@ def severityColor : Severity → String
   | .info => bold ++ blue
   | .hint => bold ++ green
 
-def labelColor : LabelStyle → String
-  | .primary => bold ++ red
+def labelColor (style : LabelStyle) (severity : Severity := .error) : String :=
+  match style with
+  | .primary => severityColor severity
   | .secondary => bold ++ blue
 
 end Color
@@ -179,15 +180,15 @@ def mostSevereStyle (a b : LabelStyle) : LabelStyle :=
   | _, .primary => .primary
   | _, _ => .secondary
 
-def getMostSevereColorAtCol (spans : Array MultiSpan) (visualCol : Nat) : String :=
+def getMostSevereColorAtCol (spans : Array MultiSpan) (visualCol : Nat) (severity : Severity := .error) : String :=
   let matching := spans.filter (·.visualCol == visualCol)
   let style := matching.foldl (fun acc ms => mostSevereStyle acc ms.style) LabelStyle.secondary
-  Color.labelColor style
+  Color.labelColor style severity
 
-def getMostSevereColorAtColVirtual (spans : Array MultiSpan) (col : Nat) : String :=
+def getMostSevereColorAtColVirtual (spans : Array MultiSpan) (col : Nat) (severity : Severity := .error) : String :=
   let matching := spans.filter (·.startCol == col)
   let style := matching.foldl (fun acc ms => mostSevereStyle acc ms.style) LabelStyle.secondary
-  Color.labelColor style
+  Color.labelColor style severity
 
 /-! ## Main Rendering -/
 
@@ -260,9 +261,10 @@ private def collectUniqueLines (singleLabels : Array SingleLabel) (multiSpans : 
 
 def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) : String := Id.run do
   let mut output : Array String := #[]
+  let sev := d.severity
 
   -- Header: severity and message
-  let sevColor := Color.severityColor d.severity
+  let sevColor := Color.severityColor sev
   let sevText := toString d.severity
   let codeText := match d.code with
     | some c => s!"[{c}]"
@@ -357,7 +359,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
           let mut skipParts : Array String := #[]
           let mut visualPos : Nat := 0
           for ms in activeSpans do
-            let color := Color.labelColor ms.style
+            let color := Color.labelColor ms.style sev
             -- Use START line content for consistent vertical alignment
             let startLineContent := sf.getLine ms.startLine
             -- +1 to account for space between margin and content
@@ -380,7 +382,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
       -- +1 to account for space between margin and content
       let targetCol := byteColToVisualColWithTabs startLineContent ms.visualCol
       if targetCol >= visualPos then
-        let color := getMostSevereColorAtCol activeSpans ms.visualCol
+        let color := getMostSevereColorAtCol activeSpans ms.visualCol sev
         marginParts := marginParts.push (String.ofList (List.replicate (targetCol - visualPos) ' '))
         marginParts := marginParts.push color
         marginParts := marginParts.push Chars.pipe
@@ -402,7 +404,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
     -- Render multi-line span start underlines
     for ms in multiSpansWithCols do
       if ms.startLine == lineNum then
-        let color := Color.labelColor ms.style
+        let color := Color.labelColor ms.style sev
         -- For the span's own connector, use current line (rawContent) since this IS the start line
         let connVisualCol := byteColToVisualColWithTabs rawContent ms.visualCol
         let startVisualCol := byteColToVisualColWithTabs rawContent ms.startCol
@@ -417,7 +419,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
           let targetCol := byteColToVisualColWithTabs otherStartLineContent other.visualCol
           if targetCol >= underlineVisualPos then
             underlineParts := underlineParts.push (String.ofList (List.replicate (targetCol - underlineVisualPos) ' '))
-            let c := getMostSevereColorAtCol activeSpans other.visualCol
+            let c := getMostSevereColorAtCol activeSpans other.visualCol sev
             underlineParts := underlineParts.push c
             underlineParts := underlineParts.push Chars.pipe
             underlineParts := underlineParts.push Color.reset
@@ -448,7 +450,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
     -- Render multi-line span end lines
     for ms in multiSpansWithCols do
       if ms.endLine == lineNum then
-        let color := Color.labelColor ms.style
+        let color := Color.labelColor ms.style sev
         let continuingSpans := activeSpans.filter fun other => other.endLine > lineNum
         -- Use START line content for connector position to ensure vertical alignment
         let startLineContent := sf.getLine ms.startLine
@@ -469,7 +471,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
           let targetCol := otherVisualCol
           if targetCol < msVisualCol && targetCol >= rowPos then
             rowParts := rowParts.push (String.ofList (List.replicate (targetCol - rowPos) ' '))
-            let c := getMostSevereColorAtCol activeSpans other.visualCol
+            let c := getMostSevereColorAtCol activeSpans other.visualCol sev
             rowParts := rowParts.push c
             rowParts := rowParts.push Chars.pipe
             rowParts := rowParts.push Color.reset
@@ -499,7 +501,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
               let sStartContent := sf.getLine s.startLine
               if byteColToVisualColWithTabs sStartContent s.visualCol == currentCol then mostSevereStyle acc s.style else acc) LabelStyle.secondary
             let combinedStyle := mostSevereStyle ms.style continuingStyle
-            let c := Color.labelColor combinedStyle
+            let c := Color.labelColor combinedStyle sev
             rowParts := rowParts.push c
             rowParts := rowParts.push Chars.cross
             rowParts := rowParts.push Color.reset
@@ -534,7 +536,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
         -- +1 to account for space between margin and content
         let targetCol := ms.visualCol
         if targetCol >= firstRowPos then
-          let color := getMostSevereColorAtCol activeSpans ms.visualCol
+          let color := getMostSevereColorAtCol activeSpans ms.visualCol sev
           firstRowParts := firstRowParts.push (String.ofList (List.replicate (targetCol - firstRowPos) ' '))
           firstRowParts := firstRowParts.push color
           firstRowParts := firstRowParts.push Chars.pipe
@@ -544,7 +546,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
       for vs in sortedVirtual do
         let targetCol := byteColToVisualColWithTabs rawContent vs.startCol
         if targetCol >= firstRowPos then
-          let color := getMostSevereColorAtColVirtual sortedVirtual vs.startCol
+          let color := getMostSevereColorAtColVirtual sortedVirtual vs.startCol sev
           firstRowParts := firstRowParts.push (String.ofList (List.replicate (targetCol - firstRowPos) ' '))
           firstRowParts := firstRowParts.push color
           firstRowParts := firstRowParts.push Chars.teeRight
@@ -553,7 +555,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
 
       let lastSpan := sortedVirtual.getD (sortedVirtual.size - 1) default
       if !lastSpan.message.isEmpty then
-        firstRowParts := firstRowParts.push (Color.labelColor lastSpan.style)
+        firstRowParts := firstRowParts.push (Color.labelColor lastSpan.style sev)
         firstRowParts := firstRowParts.push Chars.horizontal
         firstRowParts := firstRowParts.push " "
         firstRowParts := firstRowParts.push lastSpan.message
@@ -564,7 +566,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
       -- Render remaining virtual span messages (bottom to top)
       for spanIdx in List.range (numSpans - 1) |>.reverse do
         let currentSpan := sortedVirtual.getD spanIdx default
-        let color := Color.labelColor currentSpan.style
+        let color := Color.labelColor currentSpan.style sev
 
         let mut rowParts : Array String := #[]
         let mut rowPos : Nat := 0
@@ -573,7 +575,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
           -- +1 to account for space between margin and content
           let targetCol := ms.visualCol
           if targetCol >= rowPos then
-            let c := getMostSevereColorAtCol activeSpans ms.visualCol
+            let c := getMostSevereColorAtCol activeSpans ms.visualCol sev
             rowParts := rowParts.push (String.ofList (List.replicate (targetCol - rowPos) ' '))
             rowParts := rowParts.push c
             rowParts := rowParts.push Chars.pipe
@@ -589,13 +591,13 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
           if targetCol >= rowPos then
             rowParts := rowParts.push (String.ofList (List.replicate (targetCol - rowPos) ' '))
             if targetCol == cornerCol then
-              let c := getMostSevereColorAtColVirtual sortedVirtual vs.startCol
+              let c := getMostSevereColorAtColVirtual sortedVirtual vs.startCol sev
               rowParts := rowParts.push c
               rowParts := rowParts.push Chars.teeRight
               rowParts := rowParts.push Color.reset
               drewCorner := true
             else
-              let c := getMostSevereColorAtColVirtual sortedVirtual vs.startCol
+              let c := getMostSevereColorAtColVirtual sortedVirtual vs.startCol sev
               rowParts := rowParts.push c
               rowParts := rowParts.push Chars.pipe
               rowParts := rowParts.push Color.reset
@@ -627,7 +629,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
     if lineLabels.size == 1 then
       -- Single label: render with message inline
       let sl := lineLabels[0]!
-      let color := Color.labelColor sl.style
+      let color := Color.labelColor sl.style sev
       let char := match sl.style with
         | .primary => Chars.underlineCaret
         | .secondary => Chars.underlineTilde
@@ -639,7 +641,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
         -- +1 to account for space between margin and content
         let targetCol := ms.visualCol
         if targetCol >= labelVisualPos then
-          let c := getMostSevereColorAtCol activeSpans ms.visualCol
+          let c := getMostSevereColorAtCol activeSpans ms.visualCol sev
           labelParts := labelParts.push (String.ofList (List.replicate (targetCol - labelVisualPos) ' '))
           labelParts := labelParts.push c
           labelParts := labelParts.push Chars.pipe
@@ -675,7 +677,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
         -- +1 to account for space between margin and content
         let targetCol := ms.visualCol
         if targetCol >= underlineRowPos then
-          let c := getMostSevereColorAtCol activeSpans ms.visualCol
+          let c := getMostSevereColorAtCol activeSpans ms.visualCol sev
           underlineParts := underlineParts.push (String.ofList (List.replicate (targetCol - underlineRowPos) ' '))
           underlineParts := underlineParts.push c
           underlineParts := underlineParts.push Chars.pipe
@@ -709,7 +711,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
           -- Primary takes precedence over secondary
           let hasPrimary := coveringLabels.any (·.style == .primary)
           let char := if hasPrimary then Chars.underlineCaret else Chars.underlineTilde
-          let color := if hasPrimary then Color.labelColor .primary else Color.labelColor .secondary
+          let color := if hasPrimary then Color.labelColor .primary sev else Color.labelColor .secondary sev
           underlineParts := underlineParts.push color
           underlineParts := underlineParts.push (String.ofList [char])
           underlineParts := underlineParts.push Color.reset
@@ -726,7 +728,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
       let numLabels := lineLabels.size
       for idx in List.range numLabels |>.reverse do
         let currentLabel := lineLabels.getD idx default
-        let color := Color.labelColor currentLabel.style
+        let color := Color.labelColor currentLabel.style sev
 
         let mut rowParts : Array String := #[]
         let mut rowPos : Nat := 0
@@ -735,7 +737,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
           -- +1 to account for space between margin and content
           let targetCol := ms.visualCol
           if targetCol >= rowPos then
-            let c := getMostSevereColorAtCol activeSpans ms.visualCol
+            let c := getMostSevereColorAtCol activeSpans ms.visualCol sev
             rowParts := rowParts.push (String.ofList (List.replicate (targetCol - rowPos) ' '))
             rowParts := rowParts.push c
             rowParts := rowParts.push Chars.pipe
@@ -752,7 +754,7 @@ def renderDiagnostic (d : Diagnostic) (sf : SourceFile) (debug : Bool := false) 
           if targetCol > rowPos then
             rowParts := rowParts.push (String.ofList (List.replicate (targetCol - rowPos) ' '))
             rowPos := targetCol
-          let c := Color.labelColor sl.style
+          let c := Color.labelColor sl.style sev
           rowParts := rowParts.push c
           rowParts := rowParts.push Chars.pipe
           rowParts := rowParts.push Color.reset

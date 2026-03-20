@@ -1,5 +1,5 @@
 use base::core::{<>, >>, >>=}
-use base::ffi::{Ptr, CString, CInt, to_cstring, free}
+use base::ffi::{CString, CInt, to_cstring, free}
 use base::io::{pure_io}
 use base::prim::{Ptr, IO, String, Unit}
 

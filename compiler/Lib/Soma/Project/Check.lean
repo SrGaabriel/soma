@@ -269,15 +269,15 @@ private def resolveImportItem (root : Soma.Dependent.Namespace)
     (modulePath : List String) (itemName : String) : Option Soma.Core.QualifiedName :=
   root.resolve (modulePath ++ [itemName])
 
-def processImports (ast : Soma.Syntax.Module) (globals : Globals) : Globals :=
+def processImports (ast : Soma.Syntax.Module) (globals : Globals) : Globals × Diagnostics :=
   let moduleNs := (ModuleName.fromString ast.name).toNamespace
-  ast.decls.foldl (init := globals) fun g decl =>
+  ast.decls.foldl (init := (globals, #[])) fun (g, diags) decl =>
     match decl with
     | .use isPublic path items _ =>
-      if items.isEmpty then g
+      if items.isEmpty then (g, diags)
       else
         let modulePath := path.path.toList ++ [path.name]
-        items.foldl (init := g) fun g' item =>
+        items.foldl (init := (g, diags)) fun (g', ds) item =>
           match resolveImportItem g'.root modulePath item.name with
           | some qn =>
             let g'' := g'.registerImport item.name modulePath qn
@@ -287,10 +287,15 @@ def processImports (ast : Soma.Syntax.Module) (globals : Globals) : Globals :=
                 | some sourceChildNs =>
                   root'.mergeAt (moduleNs.toList ++ [item.name]) sourceChildNs
                 | none => root'
-              { g'' with root := root'' }
-            else g''
-          | none => g' -- todo: error
-    | _ => g
+              ({ g'' with root := root'' }, ds)
+            else (g'', ds)
+          | none =>
+            let moduleStr := String.intercalate "::" modulePath
+            let d := Diagnostic.error
+              s!"unresolved import `{item.name}` in `{moduleStr}`" item.span
+              |>.withHelp s!"no declaration named `{item.name}` exists in module `{moduleStr}`"
+            (g', ds.push d)
+    | _ => (g, diags)
 
 /-- Merge InstanceEnv (type class registry), deduplicating instances by instanceId -/
 def mergeInstanceEnv (e1 e2 : InstanceEnv) : InstanceEnv :=
@@ -330,6 +335,8 @@ structure FunctionCheckResult where
   typedFunctions : Std.HashMap String Soma.Core.TypedFunction
   /-- Errors encountered during checking -/
   errors : Array Soma.Dependent.TCError
+  /-- All globals referenced across all functions -/
+  allUsedGlobals : Std.HashSet Soma.Core.QualifiedName := {}
   deriving Inhabited
 
 /-- Check all functions in a module, tracking dependencies and caching results.
@@ -354,6 +361,7 @@ def checkFunctionsCore
   let mut currentState := initialState
   let mut incrState := prevIncrState
   let mut typedFns : Std.HashMap String Soma.Core.TypedFunction := {}
+  let mut allUsedGlobals : Std.HashSet Soma.Core.QualifiedName := {}
 
   for fn in untypedModule.functions do
     let fnName := fn.name.display
@@ -395,6 +403,7 @@ def checkFunctionsCore
         -- Clear old dependencies and record new ones
         incrState := incrState.clearDeps defId
         let deps := newState.globalDeps
+        allUsedGlobals := deps.fold (init := allUsedGlobals) fun acc qn => acc.insert qn
         for depQN in deps do
           if (ctx.globals.getDef depQN).isSome then
             let depId := DefId.mk moduleName depQN.display
@@ -422,7 +431,7 @@ def checkFunctionsCore
         currentState := newState
     -- else: not dirty, keep cached result (already in incrState)
 
-  return { finalState := currentState, incrementalState := incrState, typedFunctions := typedFns, errors := errors }
+  return { finalState := currentState, incrementalState := incrState, typedFunctions := typedFns, errors := errors, allUsedGlobals := allUsedGlobals }
 
 /-- Result of building globals and instance environment -/
 structure GlobalsAndInstancesResult where
@@ -559,6 +568,8 @@ structure TypeCheckResult where
   /-- Typed function bodies (function name -> typed fn) -/
   typedFunctions : Std.HashMap String Soma.Core.TypedFunction
   errors : Array Soma.Dependent.TCError
+  /-- All globals referenced during type checking -/
+  allUsedGlobals : Std.HashSet Soma.Core.QualifiedName := {}
   /-- Final unique ID counter from elaboration (for downstream passes) -/
   uniqueNextId : Nat := 0
   deriving Inhabited
@@ -658,6 +669,7 @@ def typeCheckModule
     usages := usages
     typedFunctions := mergedTypedFns
     errors := allErrors
+    allUsedGlobals := fnResult.allUsedGlobals
     uniqueNextId := fnResult.finalState.uniqueSupply.nextId
   }
 
@@ -895,6 +907,25 @@ def extractPreludeSymbols (extSymbols : Std.HashMap String SymbolEnv) : Array St
   | none => #[]
   | some env => env.toArray.map fun (sym, _) => sym.name
 
+/-- Detect imports that were resolved but never referenced during type checking -/
+def detectUnusedImports (ast : Soma.Syntax.Module) (globals : Globals)
+    (usedGlobals : Std.HashSet Soma.Core.QualifiedName) : Diagnostics :=
+  let root := globals.root
+  ast.decls.foldl (init := #[]) fun diags decl =>
+    match decl with
+    | .use isPublic path items _ =>
+      if isPublic then diags
+      else
+        let modulePath := path.path.toList ++ [path.name]
+        items.foldl (init := diags) fun ds item =>
+          match resolveImportItem root modulePath item.name with
+          | some qn =>
+            if usedGlobals.contains qn then ds
+            else ds.push (Diagnostic.warning s!"unused import `{item.name}`" item.span
+              |>.withHelp "remove this import or use the imported name")
+          | none => ds
+    | _ => diags
+
 /-- Check a single module with access to already-checked dependencies using dependent types.
     Uses error recovery to continue checking and produce partial results even on errors. -/
 def checkModule
@@ -914,7 +945,7 @@ def checkModule
   let mergedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
     mergeGlobals acc dep.globals
 
-  let withImports := processImports info.ast mergedGlobals
+  let (withImports, importDiags) := processImports info.ast mergedGlobals
 
   let seedGlobals := withImports.injectPrelude ["stdlib", "prelude"] preludeSymbols
 
@@ -933,12 +964,16 @@ def checkModule
   -- Lower AST to Core untyped module
   let elabRes := elaborateWithExternals info.ast
   if elabRes.diagnostics.hasErrors then
-    return (elabRes.diagnostics, none, supply)
+    return (elabRes.diagnostics ++ importDiags, none, supply)
 
   -- Use the shared type checking pipeline (fresh check, no previous state)
   let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv none (some elabRes.uniqueSupply)
 
   let allDiags := tcResult.errors.map (·.toDiagnostic)
+
+  let unusedImportDiags := if allDiags.isEmpty then
+    detectUnusedImports info.ast tcResult.globals tcResult.allUsedGlobals
+  else #[]
 
   -- Extract public symbols and instances (always do this, even with errors)
   let depSymbols : SymbolEnv := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
@@ -980,7 +1015,7 @@ def checkModule
     uniqueNextId := tcResult.uniqueNextId
   }
 
-  (elabRes.diagnostics ++ allDiags, some checkedModule, supply'')
+  (elabRes.diagnostics ++ importDiags ++ allDiags ++ unusedImportDiags, some checkedModule, supply'')
 
 /-- Check a single module incrementally, reusing cached results for unchanged definitions.
     This is the main entry point for incremental type checking in the LSP. -/
@@ -1002,7 +1037,7 @@ def checkModuleIncremental
   let mergedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
     mergeGlobals acc dep.globals
 
-  let withImports := processImports info.ast mergedGlobals
+  let (withImports, importDiags) := processImports info.ast mergedGlobals
   let seedGlobals := withImports.injectPrelude ["stdlib", "prelude"] preludeSymbols
 
   let seedInstanceEnv := checkedDeps.fold (init := externalInstanceEnv) fun acc _ dep =>
@@ -1017,7 +1052,7 @@ def checkModuleIncremental
   -- Lower AST to Core untyped module
   let elabRes := elaborateWithExternals info.ast
   if elabRes.diagnostics.hasErrors then
-    return (elabRes.diagnostics, none, supply)
+    return (elabRes.diagnostics ++ importDiags, none, supply)
 
   -- Use the shared type checking pipeline with previous state for incremental checking
   let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv (some prevModule.incrementalState) (some elabRes.uniqueSupply)
@@ -1026,6 +1061,10 @@ def checkModuleIncremental
   -- But for correctness, we rebuild anyway since the lowered module might have changed
 
   let allDiags := tcResult.errors.map (·.toDiagnostic)
+
+  let unusedImportDiags := if allDiags.isEmpty then
+    detectUnusedImports info.ast tcResult.globals tcResult.allUsedGlobals
+  else #[]
 
   -- Extract public symbols and instances
   let depSymbols : SymbolEnv := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
@@ -1065,7 +1104,7 @@ def checkModuleIncremental
     uniqueNextId := tcResult.uniqueNextId
   }
 
-  (elabRes.diagnostics ++ allDiags, some checkedModule, supply'')
+  (elabRes.diagnostics ++ importDiags ++ allDiags ++ unusedImportDiags, some checkedModule, supply'')
 
 /-- Check all modules in topological order -/
 def checkModulesInOrder

@@ -242,7 +242,7 @@ def getCurrentBlockId : LowerM n BlockId := do
   pure s.currentBlock.id
 
 /-- Emit a panic + undef fallback for unreachable lowering artifacts. -/
-def emitPanic (ty : Ty n) (reason : String := "unknown") : LowerM n LocalId := do
+def emitPanic (ty : Ty n) (_reason : String := "unknown") : LowerM n LocalId := do
   let s ← get
   emitVoid (.panic s.panicMsgIdx 0)
   emitInst (.copy (.const (.undef ty.close))) ty

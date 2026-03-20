@@ -1,4 +1,2 @@
-use stdlib::core::{puts, strcat}
-
 def main : IO () =
     puts ("Hello" <> ", World!")

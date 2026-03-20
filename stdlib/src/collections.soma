@@ -1,11 +1,6 @@
-use base::prim::{+, -, *}
+use base::prim::{+, -, *, ==, <=}
 use base::core::{Option}
 use base::prim::{List, Bool, Int}
-
-@[intrinsic "primop.eq"]
-def {==} {a : Type} : a -> a -> Bool
-@[intrinsic "primop.le"]
-def {<=} : Int -> Int -> Bool
 
 def head {a : Type} : [a] -> Option a
     | (x:_) => Option::Some x

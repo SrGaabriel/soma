@@ -1,4 +1,3 @@
-use base::core::{Display}
 use base::prim::{String, IO}
 
 @[extern]
