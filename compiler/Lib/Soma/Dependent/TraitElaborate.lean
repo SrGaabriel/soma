@@ -248,13 +248,7 @@ def elaborateSuperclasses (params : Array TypeVarBinder)
 /-- Elaborate a single type class into a ClassInfo. -/
 def elaborateClass (typeClass : Soma.Core.TypeClassMeta) (registry : ClassRegistry)
     : TCM (ClassInfo × ClassRegistry) := do
-  -- Reuse pre-registered class unique when available
-  let classUnique ← match ← TCM.lookupUnique typeClass.name.display with
-    | some id => pure id
-    | none =>
-      let u ← TCM.freshUnique typeClass.name.display
-      TCM.registerUnique typeClass.name.display u
-      pure u
+  let classUnique := typeClass.name.id
 
   -- Elaborate the record type from method signatures
   let recordType ← elaborateClassRecordType typeClass.params typeClass.methodSignatures
@@ -954,9 +948,7 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
   let seedEnv ← TCM.getInstanceEnv
   let mut registry := ClassRegistry.empty
   for (classUnique, _) in seedEnv.classes.toList do
-    match ← TCM.lookupUnique classUnique.original with
-    | some officialUnique => registry := registry.register classUnique.original officialUnique
-    | none => registry := registry.register classUnique.original classUnique
+    registry := registry.register classUnique.original classUnique
 
   -- First pass: elaborate all type classes and build the registry
   for typeClass in module.typeClasses do
@@ -1004,10 +996,9 @@ def buildInstanceEnvFromModule (module : Soma.Core.UntypedModule)
   for typeClass in module.typeClasses do
     let mut idx := 0
     for (methodName, _) in typeClass.methodSignatures do
-      let methodNameStr := methodName.display
-      match ← TCM.lookupGlobal methodNameStr with
+      match ← TCM.lookupGlobalByQN methodName with
       | some info =>
-        if let some wrapper ← buildMethodWrapper info methodNameStr idx then
+        if let some wrapper ← buildMethodWrapper info methodName.display idx then
           allTypedFns := allTypedFns.push wrapper
       | none => pure ()
       idx := idx + 1
@@ -1031,9 +1022,7 @@ def buildInstanceEnvFromModuleIncremental
   let seedEnv ← TCM.getInstanceEnv
   let mut registry := ClassRegistry.empty
   for (classUnique, _) in seedEnv.classes.toList do
-    match ← TCM.lookupUnique classUnique.original with
-    | some officialUnique => registry := registry.register classUnique.original officialUnique
-    | none => registry := registry.register classUnique.original classUnique
+    registry := registry.register classUnique.original classUnique
 
   -- First pass: elaborate type classes, reusing cached ones when possible
   for typeClass in module.typeClasses do
@@ -1132,10 +1121,9 @@ def buildInstanceEnvFromModuleIncremental
   for typeClass in module.typeClasses do
     let mut idx := 0
     for (methodName, _) in typeClass.methodSignatures do
-      let methodNameStr := methodName.display
-      match ← TCM.lookupGlobal methodNameStr with
+      match ← TCM.lookupGlobalByQN methodName with
       | some info =>
-        if let some wrapper ← buildMethodWrapper info methodNameStr idx then
+        if let some wrapper ← buildMethodWrapper info methodName.display idx then
           allTypedFns := allTypedFns.push wrapper
       | none => pure ()
       idx := idx + 1

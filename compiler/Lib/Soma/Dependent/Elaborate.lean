@@ -142,37 +142,34 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
 
   -- Type constructor (uppercase identifier)
   | .con name =>
-    -- First check if this is a type abbreviation (e.g., CInt = Int32)
-    if let some abbrevInfo ← TCM.lookupAbbrev name.name then
-      -- Return the elaborated expansion directly.
-      -- For non-parameterized: this is the final type (e.g., vPrimTy Int32)
-      -- For parameterized: this is a Pi type that will be applied via .app
-      return abbrevInfo.expansion
-    -- Then try Type/Row/Label sort names
-    else if let some tyVal := resolveType name.name then
+    -- Try Type/Row/Label sort names first (builtins)
+    if let some tyVal := resolveType name.name then
       return tyVal
-    -- Check globals for constructors/types
-    else if let some globalInfo ← TCM.lookupGlobal name.name then
-      if globalInfo.isConstructor then
-        -- It's a constructor, return as vConstructor with no args yet
-        return Value.vConstructor globalInfo.name globalInfo.ctorTag [] globalInfo.type
-      else
-        if let some primTy ← TCM.lookupWiredPrimitiveOfGlobal globalInfo.name then
-          if primTy.isNullary then
-            return Value.vPrimTy primTy
+    -- Resolve through the namespace tree
+    else match ← TCM.resolve name.path name.name with
+    | some qn =>
+      -- Check if it's a type abbreviation
+      if let some abbrevInfo ← TCM.lookupAbbrev qn then
+        return abbrevInfo.expansion
+      -- Check globals for constructors/types
+      else if let some globalInfo ← TCM.lookupGlobal name.path name.name then
+        if globalInfo.isConstructor then
+          return Value.vConstructor globalInfo.name globalInfo.ctorTag [] globalInfo.type
+        else
+          if let some primTy ← TCM.lookupWiredPrimitiveOfGlobal globalInfo.name then
+            if primTy.isNullary then
+              return Value.vPrimTy primTy
+            else
+              return Value.vDataType globalInfo.name.id []
           else
             return Value.vDataType globalInfo.name.id []
-        else
-          return Value.vDataType globalInfo.name.id []
-    -- Otherwise, treat as a user-defined type reference
-    else
-      let unique ← match ← TCM.lookupUnique name.name with
-        | some id => pure id
-        | none => TCM.throw (.cannotInfer
-          s!"unknown type constructor `{name.name}` (no builtin/intrinsic binding in context)"
-          name.span
-          none)
-      return Value.vDataType unique []
+      else
+        return Value.vDataType qn.id []
+    | none =>
+      TCM.throw (.cannotInfer
+        s!"unknown type constructor `{name.name}` (no builtin/intrinsic binding in context)"
+        name.span
+        none)
 
   -- Type application: F A
   | .app fn arg span =>
@@ -278,11 +275,11 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- Elaborate constraint arguments
       let argVals ← args.toList.mapM (elaborateType env)
       -- Create the constraint type (e.g., Show Int)
-      let classId ← match ← TCM.lookupUnique className.name with
-        | some id => pure id
+      let classQN ← match ← TCM.resolve #[] className.name with
+        | some qn => pure qn
         | none =>
           TCM.throw (.unboundGlobal s!"{className.name} (unknown type class)" classSpan #[])
-      let constraintTy := Value.vDataType classId argVals
+      let constraintTy := Value.vDataType classQN.id argVals
       -- Use const closure since the body doesn't depend on the instance parameter
       return Value.vPi .omega .instance_ "_" constraintTy (Closure.const "_" acc)
     return result
@@ -422,8 +419,8 @@ def elaborateConstructorTypes (typeName : String) (params : Array String)
   -- Elaborate each constructor's field types
   constructors.mapM fun (_, fieldTys) => do
     -- For positivity, we care about the function type from fields to result
-    let unique ← match ← TCM.lookupUnique typeName with
-      | some id => pure id
+    let unique ← match ← TCM.resolve #[] typeName with
+      | some qn => pure qn.id
       | none => TCM.freshUnique typeName
     let mut ty := Value.vDataType unique []
     for fieldTy in fieldTys.reverse do

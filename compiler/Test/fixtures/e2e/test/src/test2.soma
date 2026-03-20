@@ -1,4 +1,4 @@
-use test/prim.{String, Unit, Word8, Ptr, IO}
+use test::prim::{String, Unit, Word8, Ptr, IO}
 
 alias CString = Ptr Word8
 

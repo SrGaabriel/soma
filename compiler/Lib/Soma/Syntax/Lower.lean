@@ -144,19 +144,23 @@ def childrenWithOffsets (green : GreenNode) (baseOffset : Nat) : Array (GreenNod
 def tokensOfKind (green : GreenNode) (kind : TokenKind) : Array GreenNode :=
   green.children.filter fun c => isTokenKind c kind
 
-/-- Extract a qualified identifier from a node by joining identifier segments with `::` -/
-def lowerQualifiedNameText (green : GreenNode) (offset : Nat) : LowerM String := do
+/-- Lower a CST qualified name to a split (path, name) pair -/
+def lowerQualifiedName (green : GreenNode) (offset : Nat) : LowerM (Array String × String) := do
   if green.isToken then
-    return ← getGreenTokenText green offset
+    let text ← getGreenTokenText green offset
+    return (#[], text)
   let kidsWithOffsets := childrenWithOffsets green offset
   let mut parts : Array String := #[]
   for (c, o) in kidsWithOffsets do
     if isTokenKind c .lowerIdent || isTokenKind c .upperIdent then
       parts := parts.push (← getGreenTokenText c o)
   if parts.isEmpty then
-    return ← getGreenTokenText green offset
+    let text ← getGreenTokenText green offset
+    return (#[], text)
+  else if parts.size == 1 then
+    return (#[], parts[0]!)
   else
-    return String.intercalate "::" parts.toList
+    return (parts[0:parts.size-1].toArray, parts[parts.size-1]!)
 
 mutual
 
@@ -215,10 +219,10 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
             pure (.wildcard span)
           else
             let (nameNode, nameOffset) := kidsWithOffsets[0]!
-            let name ← lowerQualifiedNameText nameNode nameOffset
+            let (path, name) ← lowerQualifiedName nameNode nameOffset
             let nameSpan ← spanFor nameNode nameOffset
             let args ← kidsWithOffsets[1:].toArray.mapM fun (c, o) => lowerPattern c o
-            pure (.con ⟨#[], name, nameSpan⟩ args span)
+            pure (.con ⟨path, name, nameSpan⟩ args span)
 
       | .patTuple =>
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
@@ -275,11 +279,11 @@ partial def lowerPattern (green : GreenNode) (offset : Nat) : LowerM Pattern := 
             pure (.variant ⟨#[], labelText, labelSpan⟩ arg span)
 
       | .name =>
-          let text ← lowerQualifiedNameText green offset
-          if text.length > 0 && (String.Pos.Raw.get text ⟨0⟩).isUpper then
-            pure (.con ⟨#[], text, span⟩ #[] span)
+          let (path, name) ← lowerQualifiedName green offset
+          if name.length > 0 && (String.Pos.Raw.get name ⟨0⟩).isUpper then
+            pure (.con ⟨path, name, span⟩ #[] span)
           else
-            pure (.var ⟨#[], text, span⟩)
+            pure (.var ⟨path, name, span⟩)
 
       | _ =>
           lowerError s!"unexpected pattern kind: {kind}" span
@@ -367,8 +371,8 @@ partial def lowerTypeExpr (green : GreenNode) (offset : Nat) : LowerM TypeExpr :
               pure (.var ⟨#[], "_error", span⟩)
 
       | .typeCon =>
-          let text ← lowerQualifiedNameText green offset
-          pure (.con ⟨#[], text, span⟩)
+          let (path, name) ← lowerQualifiedName green offset
+          pure (.con ⟨path, name, span⟩)
 
       | .typeApp =>
           let kidsWithOffsets := childrenWithOffsets green offset |>.filter fun (c, _) => isSemanticNode c
@@ -730,8 +734,8 @@ partial def lowerConstraint (green : GreenNode) (offset : Nat) : LowerM Constrai
         if kidsWithOffsets.isEmpty then
           match kind with
           | .typeCon =>
-              let text ← lowerQualifiedNameText green offset
-              pure ⟨⟨#[], text, span⟩, #[], span⟩
+              let (path, name) ← lowerQualifiedName green offset
+              pure ⟨⟨path, name, span⟩, #[], span⟩
           | _ =>
               lowerError "expected constraint" span
               pure ⟨⟨#[], "_error", span⟩, #[], span⟩
@@ -739,9 +743,9 @@ partial def lowerConstraint (green : GreenNode) (offset : Nat) : LowerM Constrai
           let (classNode, classOffset) := kidsWithOffsets[0]!
           let className ← match classNode.syntaxKind? with
           | some .typeCon =>
-              let text ← lowerQualifiedNameText classNode classOffset
+              let (path, name) ← lowerQualifiedName classNode classOffset
               let cspan ← spanFor classNode classOffset
-              pure ⟨#[], text, cspan⟩
+              pure ⟨path, name, cspan⟩
           | _ =>
               match getTokenText classNode with
               | some text =>
@@ -1007,8 +1011,8 @@ partial def lowerExpr (green : GreenNode) (offset : Nat) : LowerM Expr := do
   | .node kind children _ =>
       match kind with
       | .exprVar =>
-          let text ← lowerQualifiedNameText green offset
-          pure (.var ⟨#[], text, span⟩)
+          let (path, name) ← lowerQualifiedName green offset
+          pure (.var ⟨path, name, span⟩)
 
       | .exprLit =>
           match firstGreenChild green with
@@ -1736,6 +1740,10 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
 
       | .declUse =>
           let allKids := childrenWithOffsets green offset
+          let isPublic := allKids.any fun (c, _) =>
+            match c with
+            | .token k _ => k == .kw_pub
+            | _ => false
           let pathNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .importPath
           let itemNodes := allKids.filter fun (c, _) => c.syntaxKind? == some .importItems
 
@@ -1777,30 +1785,7 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
                     let nspan ← spanFor n no
                     pure ⟨#[], "_", nspan⟩
 
-          pure (.use path items span)
-
-      | .declExport =>
-          let allKids := childrenWithOffsets green offset
-          let itemNodes := allKids.filter fun (c, _) =>
-            c.syntaxKind? == some .importItems || c.syntaxKind? == some .exportItems
-
-          let items ← if itemNodes.isEmpty then pure #[]
-            else
-              let (ilist, ilistOffset) := itemNodes[0]!
-              let iAllKids := childrenWithOffsets ilist ilistOffset
-              let names := iAllKids.filter fun (c, _) =>
-                c.syntaxKind? == some .name || c.syntaxKind? == some .operatorName
-              names.mapM fun (n, no) => do
-                match firstGreenChild n with
-                | some child =>
-                    let text ← getGreenTokenText child no
-                    let nspan ← spanFor n no
-                    pure ⟨#[], text, nspan⟩
-                | none =>
-                    let nspan ← spanFor n no
-                    pure ⟨#[], "_", nspan⟩
-
-          pure (.export_ items span)
+          pure (.use isPublic path items span)
 
       | .declAbbrev =>
           -- Structure: [abbrevTok, nameTok, optional tyParamList, eqTok, type]
@@ -1846,19 +1831,19 @@ partial def lowerDecl (green : GreenNode) (offset : Nat) : LowerM Decl := do
 
       | _ =>
           lowerError s!"unexpected declaration kind: {kind}" span
-          pure (.export_ #[] span)
+          pure (.use false ⟨#[], "_error", span⟩ #[] span)
 
   | .error message _ _ =>
       lowerError message span
-      pure (.export_ #[] span)
+      pure (.use false ⟨#[], "_error", span⟩ #[] span)
 
   | .missing expected =>
       lowerError s!"missing {expected}" span
-      pure (.export_ #[] span)
+      pure (.use false ⟨#[], "_error", span⟩ #[] span)
 
   | .token kind _ =>
       lowerError s!"unexpected token at declaration level: {kind}" span
-      pure (.export_ #[] span)
+      pure (.use false ⟨#[], "_error", span⟩ #[] span)
 
 /-- Lower a module from a green tree -/
 def lowerModule (green : GreenNode) (offset : Nat) (moduleName : String) : LowerM Module := do

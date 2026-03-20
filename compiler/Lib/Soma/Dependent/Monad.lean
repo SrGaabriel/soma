@@ -393,10 +393,10 @@ def roleOf? (w : WiredIn) (qn : Soma.Core.QualifiedName) : Option WiredRole :=
 
 end WiredIn
 
-/-- Recursive namespace tree -/
+/-- Recursive namespace tree for name resolution -/
 structure Namespace where
-  /-- Declarations directly in this namespace -/
-  decls : Std.HashMap.Raw String GlobalInfo := {}
+  /-- Declarations directly in this namespace: name → identity -/
+  decls : Std.HashMap.Raw String Soma.Core.QualifiedName := {}
   /-- Child namespaces -/
   children : Std.HashMap.Raw String Namespace := {}
 
@@ -407,24 +407,20 @@ namespace Namespace
 
 def empty : Namespace := {}
 
-/-- Look up a declaration by simple (unqualified) name -/
-def getDecl? (ns : Namespace) (name : String) : Option GlobalInfo :=
+/-- Resolve a name to its QualifiedName -/
+def getDecl? (ns : Namespace) (name : String) : Option Soma.Core.QualifiedName :=
   ns.decls.get? name
 
 /-- Look up a child namespace -/
 def getChild? (ns : Namespace) (name : String) : Option Namespace :=
   ns.children.get? name
 
-/-- Insert a declaration into this namespace -/
-def insertDecl (ns : Namespace) (name : String) (info : GlobalInfo) : Namespace :=
-  { ns with decls := ns.decls.insert name info }
+/-- Register a name → identity mapping -/
+def insertDecl (ns : Namespace) (name : String) (qn : Soma.Core.QualifiedName) : Namespace :=
+  { ns with decls := ns.decls.insert name qn }
 
-/-- Check if a declaration exists by simple name -/
-def containsDecl (ns : Namespace) (name : String) : Bool :=
-  ns.decls.contains name
-
-/-- Resolve a qualified path -/
-partial def resolve (ns : Namespace) (parts : List String) : Option GlobalInfo :=
+/-- Resolve a qualified path to its QualifiedName -/
+partial def resolve (ns : Namespace) (parts : List String) : Option Soma.Core.QualifiedName :=
   match parts with
   | [] => none
   | [name] => ns.getDecl? name
@@ -433,48 +429,61 @@ partial def resolve (ns : Namespace) (parts : List String) : Option GlobalInfo :
     | some child => child.resolve rest
     | none => none
 
-/-- Insert at a qualified path, creating intermediate namespaces as needed -/
-partial def insertAt (ns : Namespace) (parts : List String) (info : GlobalInfo) : Namespace :=
+/-- Insert a name → identity mapping at a qualified path, creating intermediate namespaces -/
+partial def insertAt (ns : Namespace) (parts : List String) (qn : Soma.Core.QualifiedName) : Namespace :=
   match parts with
   | [] => ns
-  | [name] => ns.insertDecl name info
+  | [name] => ns.insertDecl name qn
   | seg :: rest =>
     let child := (ns.children.get? seg).getD .empty
-    let child' := child.insertAt rest info
+    let child' := child.insertAt rest qn
     { ns with children := ns.children.insert seg child' }
 
-/-- Fold over all declarations in the tree, passing the qualified name prefix -/
-partial def foldDecls (f : β → String → GlobalInfo → β) (init : β)
-    (ns : Namespace) (prefix_ : String := "") : β :=
-  let acc := Std.HashMap.Raw.fold (fun acc name info =>
-    let qualified := if prefix_.isEmpty then name else s!"{prefix_}::{name}"
-    f acc qualified info) init ns.decls
-  Std.HashMap.Raw.fold (fun acc childName child =>
-    let childPrefix := if prefix_.isEmpty then childName else s!"{prefix_}::{childName}"
-    child.foldDecls f acc childPrefix) acc ns.children
+/-- Walk a path and return the namespace node at that location -/
+partial def getAt? (ns : Namespace) (parts : List String) : Option Namespace :=
+  match parts with
+  | [] => some ns
+  | seg :: rest =>
+    match ns.getChild? seg with
+    | some child => child.getAt? rest
+    | none => none
 
 /-- Recursively merge another namespace into this one -/
 partial def merge (ns1 ns2 : Namespace) : Namespace :=
-  let mergedDecls := Std.HashMap.Raw.fold (fun acc name info =>
-    acc.insert name info) ns1.decls ns2.decls
+  let mergedDecls := Std.HashMap.Raw.fold (fun acc name qn =>
+    acc.insert name qn) ns1.decls ns2.decls
   let mergedChildren := Std.HashMap.Raw.fold (fun acc childName child2 =>
     match acc.get? childName with
     | some child1 => acc.insert childName (Namespace.merge child1 child2)
     | none => acc.insert childName child2) ns1.children ns2.children
   { decls := mergedDecls, children := mergedChildren }
 
-/-- List constructor declarations in this namespace -/
-def constructorDecls (ns : Namespace) : List (String × GlobalInfo) :=
-  Std.HashMap.Raw.fold (fun acc name info =>
-    if info.isConstructor then (name, info) :: acc else acc) [] ns.decls
+/-- Merge a child namespace at a given path, creating intermediates as needed -/
+partial def mergeAt (ns : Namespace) (parts : List String) (other : Namespace) : Namespace :=
+  match parts with
+  | [] => Namespace.merge ns other
+  | seg :: rest =>
+    let child := (ns.children.get? seg).getD .empty
+    let child' := child.mergeAt rest other
+    { ns with children := ns.children.insert seg child' }
+
+/-- Collect all declarations with their namespace paths -/
+partial def collectPaths (ns : Namespace) (_prefix : Array String)
+    : Array (Array String × String × Soma.Core.QualifiedName) :=
+  let fromDecls := ns.decls.fold (init := #[]) fun acc name qn =>
+    acc.push (_prefix, name, qn)
+  ns.children.fold (init := fromDecls) fun acc childName child =>
+    acc ++ child.collectPaths (_prefix.push childName)
 
 end Namespace
 
 structure Globals where
-  /-- Hierarchical namespace tree -/
+  /-- Hierarchical namespace tree for resolution (name → identity) -/
   root : Namespace := .empty
-  /-- Open namespaces for unqualified lookup fallback -/
-  openNamespaces : Array String := #[]
+  /-- Flat declaration map (identity → data) -/
+  defs : Std.HashMap Soma.Core.QualifiedName GlobalInfo := {}
+  /-- Explicit imports: unqualified name → (tree path, identity) -/
+  imports : Std.HashMap.Raw String (List String × Soma.Core.QualifiedName) := {}
   /-- Intrinsic dispatch table keyed by qualified global name -/
   intrinsics : Std.HashMap Soma.Core.QualifiedName Soma.Core.Intrinsic := {}
   /-- Ordered field names for record types -/
@@ -491,49 +500,34 @@ namespace Globals
 
 def empty : Globals := {}
 
-/-- Split a qualified name by `::`, dropping empty segments. -/
-def splitQualified (name : String) : List String :=
-  (name.splitOn "::").filter (fun s => !s.isEmpty)
-
-def insert (g : Globals) (name : String) (info : GlobalInfo) : Globals :=
-  let parts := splitQualified name
-  let g' := { g with root := g.root.insertAt parts info }
+/-- Register a declaration at a namespace path -/
+def register (g : Globals) (ns : Array String) (displayName : String) (info : GlobalInfo) : Globals :=
+  let g' := { g with
+    root := g.root.insertAt (ns.toList ++ [displayName]) info.name
+    defs := g.defs.insert info.name info }
   match info.intrinsic with
   | some i =>
     { g' with intrinsics := g'.intrinsics.insert info.name i }
   | none => g'
 
-def lookup (g : Globals) (name : String) : Option GlobalInfo :=
-  let parts := splitQualified name
-  match g.root.resolve parts with
-  | some info => some info
-  | none =>
-    if name.contains "::" then
-      none
+/-- Look up a declaration by its QualifiedName -/
+def getDef (g : Globals) (qn : Soma.Core.QualifiedName) : Option GlobalInfo :=
+  g.defs.get? qn
+
+/-- Register an explicit import: makes `name` resolvable unqualified to `qn` -/
+def registerImport (g : Globals) (name : String) (treePath : List String) (qn : Soma.Core.QualifiedName) : Globals :=
+  { g with imports := g.imports.insert name (treePath, qn) }
+
+/-- Inject prelude symbols into the imports map. Each symbol name is resolved
+    through the namespace tree under the prelude module path. Symbols that
+    don't resolve (e.g., prelude not loaded) are silently skipped. -/
+def injectPrelude (g : Globals) (preludePath : List String) (symbols : Array String) : Globals :=
+  symbols.foldl (init := g) fun g' name =>
+    if g'.imports.contains name then g'
     else
-      g.openNamespaces.foldl (init := none) fun acc ns =>
-        match acc with
-        | some _ => acc
-        | none => g.root.resolve (splitQualified s!"{ns}::{name}")
-
-/-- Check if a name is defined -/
-def contains (g : Globals) (name : String) : Bool :=
-  (g.lookup name).isSome
-
-/-- Mark a namespace as opened for unqualified lookup fallback -/
-def openNamespace (g : Globals) (ns : String) : Globals :=
-  let canonical := String.intercalate "::" (splitQualified ns)
-  if g.openNamespaces.contains canonical then g
-  else { g with openNamespaces := g.openNamespaces.push canonical }
-
-/-- Remove an opened namespace. -/
-def closeNamespace (g : Globals) (ns : String) : Globals :=
-  let canonical := String.intercalate "::" (splitQualified ns)
-  { g with openNamespaces := g.openNamespaces.filter (· != canonical) }
-
-/-- Replace all opened namespaces -/
-def setOpenNamespaces (g : Globals) (namespaces : Array String) : Globals :=
-  { g with openNamespaces := namespaces.map (fun ns => String.intercalate "::" (splitQualified ns)) }
+      match g'.root.resolve (preludePath ++ [name]) with
+      | some qn => g'.registerImport name preludePath qn
+      | none => g'
 
 /-- Register intrinsic metadata for a qualified name -/
 def registerIntrinsic (g : Globals) (name : Soma.Core.QualifiedName)
@@ -581,147 +575,60 @@ def lookupInductiveByCtor (g : Globals) (ctorName : Soma.Core.QualifiedName)
     : Option InductiveMeta :=
   match g.ctorToInductive.get? ctorName with
   | some typeQN => g.inductives.get? typeQN
+  | none => none
+
+/-- Resolve a name through the namespace tree, returning its QualifiedName -/
+def resolve (g : Globals) (currentNs : Array String) (path : Array String) (name : String) : Option Soma.Core.QualifiedName :=
+  let suffix := path.toList ++ [name]
+  match g.root.resolve (currentNs.toList ++ suffix) with
+  | some qn => some qn
   | none =>
-    g.inductives.toList.findSome? fun (_, info) =>
-      if info.ctors.any (·.name == ctorName) then some info else none
-
-/-- Insert a declaration into a child namespace -/
-def insertInChild (g : Globals) (parentName : String) (childName : String) (info : GlobalInfo) : Globals :=
-  let parentParts := splitQualified parentName
-  let qualified := parentParts ++ [childName]
-  let g' := { g with root := g.root.insertAt qualified info }
-  -- Also insert as a flat qualified name for direct references
-  g'.insert (normalizeQualified s!"{normalizeQualified parentName}::{childName}") info
-
-/-- Look up a declaration in a child namespace -/
-def lookupInChild (g : Globals) (parentName : String) (childName : String) : Option GlobalInfo :=
-  let normalizedParent := normalizeQualified parentName
-  -- Priority 1: inductive metadata constructors
-  match g.lookupInductive normalizedParent with
-  | some indInfo =>
-    match indInfo.ctors.find? (fun c => c.simpleName == childName) with
-    | some ctor =>
-      some {
-        name := ctor.name
-        type := ctor.type
-        isConstructor := true
-        ctorTag := ctor.tag
-      }
-    | none =>
-      -- Priority 2: namespace tree
-      let parts := splitQualified normalizedParent ++ [childName]
-      g.root.resolve parts
-  | none =>
-    -- No inductive: go straight to namespace tree
-    let parts := splitQualified normalizedParent ++ [childName]
-    g.root.resolve parts
-
-/-- Look up a constructor by name, with namespace-aware resolution -/
-def resolveConstructor (g : Globals) (name : String) : Option GlobalInfo :=
-  let resolveFromType (typeName : String) (ctorName : String) : Option GlobalInfo :=
-    match g.lookupInductive typeName with
-    | some indInfo =>
-      indInfo.ctors.findSome? fun ctor =>
-        if ctor.simpleName == ctorName then
-          some {
-            name := ctor.name
-            type := ctor.type
-            isConstructor := true
-            ctorTag := ctor.tag
-          }
-        else none
-    | none => g.lookupInChild typeName ctorName
-  match g.lookup name with
-  | some info =>
-    if info.isConstructor then some info
+    if path.isEmpty then
+      match g.imports.get? name with
+      | some (_, qn) => some qn
+      | none => none
     else
-      let parent := normalizeQualified name
-      match g.lookupInductive parent with
-      | some indInfo =>
-        match indInfo.ctors.toList with
-        | [ctor] =>
-          some {
-            name := ctor.name
-            type := ctor.type
-            isConstructor := true
-            ctorTag := ctor.tag
-          }
-        | _ => none
+      match g.root.resolve suffix with
+      | some qn => some qn
       | none =>
-        -- Check child namespace for a single constructor
-        let parentParts := splitQualified parent
-        match g.root.resolve (parentParts.dropLast) with
-        | some _ => none  -- parent exists but is a decl, not a namespace
-        | none =>
-          -- Walk down to the child namespace and check its decls
-          let childNs := parentParts.foldl (init := some g.root) fun acc seg =>
-            match acc with
-            | some ns => ns.getChild? seg
-            | none => none
-          match childNs with
-          | some ns =>
-            let ctors := ns.constructorDecls
-            match ctors with
-            | [(_, ctorInfo)] => some ctorInfo
-            | _ => none
+        match path.toList with
+        | head :: rest =>
+          match g.imports.get? head with
+          | some (treePath, _) =>
+            g.root.resolve (treePath ++ [head] ++ rest ++ [name])
           | none => none
-  | none =>
-    match splitQualified name |>.reverse with
-    | [] => none
-    | suffix :: revPrefix =>
-      let prefixParts := revPrefix.reverse
-      if prefixParts.isEmpty then
-        -- Unqualified constructor: try open namespaces against inductive metadata first
-        let fromOpens := g.openNamespaces.findSome? fun ns => resolveFromType ns suffix
-        match fromOpens with
-        | some info => some info
-        | none =>
-          -- As a last resort, accept a unique global constructor simple name
-          let candidates := g.inductives.toList.foldl (init := #[]) fun acc (_, indInfo) =>
-            indInfo.ctors.foldl (init := acc) fun acc2 ctor =>
-              if ctor.simpleName == suffix then
-                acc2.push {
-                  name := ctor.name
-                  type := ctor.type
-                  isConstructor := true
-                  ctorTag := ctor.tag
-                }
-              else acc2
-          match candidates.toList with
-          | [only] => some only
-          | _ => none
-      else
-        resolveFromType (String.intercalate "::" prefixParts) suffix
+        | [] => none
 
-/-- Look up a record field's positional index by type name and field name -/
-def lookupFieldIndex (g : Globals) (typeName : String) (fieldName : String) : Option Nat :=
-  let normalized := normalizeQualified typeName
-  match g.lookupInductive normalized with
+/-- Find a constructor by simple name within an inductive type -/
+def lookupCtor (g : Globals) (typeQN : Soma.Core.QualifiedName) (ctorSimpleName : String) : Option ConstructorMeta :=
+  match g.lookupInductive typeQN with
+  | some indInfo => indInfo.ctors.find? (·.simpleName == ctorSimpleName)
+  | none => none
+
+/-- Look up a record field's positional index -/
+def lookupFieldIndex (g : Globals) (typeQN : Soma.Core.QualifiedName) (fieldName : String) : Option Nat :=
+  match g.lookupInductive typeQN with
   | some indInfo =>
     match indInfo.fieldNames.toList.findIdx? (· == fieldName) with
     | some idx => some idx
     | none =>
-      match g.recordFields.get? normalized with
+      match g.recordFields.get? typeQN with
       | some fields => fields.toList.findIdx? (· == fieldName)
       | none => none
   | none =>
-  match g.recordFields.get? normalized with
-  | some fields => fields.toList.findIdx? (· == fieldName)
-  | none => none
+    match g.recordFields.get? typeQN with
+    | some fields => fields.toList.findIdx? (· == fieldName)
+    | none => none
 
-/-- Fold over all declarations across the entire namespace tree -/
-def foldDecls (f : β → String → GlobalInfo → β) (init : β) (g : Globals) : β :=
-  g.root.foldDecls f init
-
-/-- Collect all declarations as a list of (qualifiedName, info) pairs -/
-def allDecls (g : Globals) : List (String × GlobalInfo) :=
-  g.foldDecls (fun acc name info => (name, info) :: acc) []
+/-- Collect all declarations -/
+def allDecls (g : Globals) : List (Soma.Core.QualifiedName × GlobalInfo) :=
+  g.defs.fold (fun acc qn info => (qn, info) :: acc) []
 
 /-- Convert Globals to GlobalEnv (for evaluation context) -/
 def toGlobalEnv (g : Globals) : GlobalEnv :=
-  g.foldDecls (init := GlobalEnv.empty) fun acc _ info =>
+  g.defs.fold (init := GlobalEnv.empty) fun acc qn info =>
     match info.value with
-    | some v => acc.insert info.name v
+    | some v => acc.insert qn v
     | none => acc
 
 end Globals
@@ -916,43 +823,12 @@ def isParameterized (a : AbbrevInfo) : Bool := a.arity > 0
 
 end AbbrevInfo
 
-/-- Environment mapping abbreviation names to their elaborated info -/
-structure AbbrevEnv where
-  /-- Map from name to info -/
-  byName : Std.HashMap String AbbrevInfo := {}
-  /-- Map from unique to info -/
-  byUnique : Std.HashMap Unique AbbrevInfo := {}
-  deriving Inhabited
+abbrev AbbrevEnv := Std.HashMap Soma.Core.QualifiedName AbbrevInfo
 
 namespace AbbrevEnv
-
 def empty : AbbrevEnv := {}
-
-def insert (env : AbbrevEnv) (info : AbbrevInfo) : AbbrevEnv :=
-  { byName := env.byName.insert info.abbrevId.original info
-    byUnique := env.byUnique.insert info.abbrevId info }
-
-def get? (env : AbbrevEnv) (name : String) : Option AbbrevInfo :=
-  env.byName.get? name
-
-def getByUnique? (env : AbbrevEnv) (u : Unique) : Option AbbrevInfo :=
-  env.byUnique.get? u
-
-def contains (env : AbbrevEnv) (name : String) : Bool :=
-  env.byName.contains name
-
-/-- Merge two abbreviation environments, deduplicating by Unique -/
-def merge (e1 e2 : AbbrevEnv) : AbbrevEnv :=
-  e2.byUnique.fold (init := e1) fun acc unique info =>
-    if acc.byUnique.contains unique then acc
-    else acc.insert info
-
-def fold (env : AbbrevEnv) (init : α) (f : α → AbbrevInfo → α) : α :=
-  env.byName.fold (fun acc _ info => f acc info) init
-
-def size (env : AbbrevEnv) : Nat :=
-  env.byName.size
-
+def merge (a b : AbbrevEnv) : AbbrevEnv :=
+  b.fold (init := a) fun acc k v => acc.insert k v
 end AbbrevEnv
 
 /-- A pending instance constraint to be resolved -/
@@ -1000,10 +876,8 @@ structure TCState where
   deferredInstanceMetas : Array (MetaId × Value × Span) := #[]
   /-- Unique supply for generating compiler-internal names -/
   uniqueSupply : Soma.UniqueSupply := Soma.UniqueSupply.initial ""
-  /-- Registry mapping type names to their Uniques -/
-  uniques : Std.HashMap String Soma.Unique := {}
   /-- Dependencies on global definitions (for incremental checking) -/
-  globalDeps : Std.HashSet String := {}
+  globalDeps : Std.HashSet Soma.Core.QualifiedName := {}
   deriving Inhabited
 
 namespace TCState
@@ -1157,10 +1031,12 @@ structure TCContext where
   env : Env := Env.empty
   /-- Global definitions -/
   globals : Globals := Globals.empty
+  /-- Current namespace path for registration -/
+  currentNamespace : Array String := #[]
   /-- Instance environment (type classes and instances) -/
   instanceEnv : InstanceEnv := InstanceEnv.empty
   /-- Type abbreviations (elaborated, merged from dependencies) -/
-  abbrevEnv : AbbrevEnv := AbbrevEnv.empty
+  abbrevEnv : AbbrevEnv := {}
   /-- Current span (for error reporting) -/
   currentSpan : Span := Span.uninhabited
   /-- Are we in erased context? (under a 0-quantity binder) -/
@@ -1204,13 +1080,19 @@ def lookupLevel (ctx : TCContext) (lvl : DeBruijnLvl) : Option CtxEntry :=
   let idx := ctx.size - lvl.lvl - 1
   ctx.locals[idx]?
 
-/-- Look up a global -/
-def lookupGlobal (ctx : TCContext) (name : String) : Option GlobalInfo :=
-  ctx.globals.lookup name
+/-- Look up a global by resolving through the namespace tree, then fetching from defs -/
+def lookupGlobal (ctx : TCContext) (path : Array String) (name : String) : Option GlobalInfo :=
+  match ctx.globals.resolve ctx.currentNamespace path name with
+  | some qn => ctx.globals.getDef qn
+  | none => none
 
-/-- Look up a type abbreviation by name -/
-def lookupAbbrev (ctx : TCContext) (name : String) : Option AbbrevInfo :=
-  ctx.abbrevEnv.get? name
+/-- Look up a global directly by QualifiedName -/
+def lookupGlobalByQN (ctx : TCContext) (qn : Soma.Core.QualifiedName) : Option GlobalInfo :=
+  ctx.globals.getDef qn
+
+/-- Look up a type abbreviation by QualifiedName -/
+def lookupAbbrev (ctx : TCContext) (qn : Soma.Core.QualifiedName) : Option AbbrevInfo :=
+  ctx.abbrevEnv.get? qn
 
 /-- Extend context with a new binding -/
 def extend (ctx : TCContext) (name : String) (bindingId : Unique)
@@ -1289,30 +1171,31 @@ def lookupLocal (name : String) : TCM (Option CtxEntry) := do
   return ctx.lookupLocal name
 
 /-- Record a dependency on a global definition (for incremental checking) -/
-def recordGlobalDep (name : String) : TCM Unit := do
-  modifyState fun s => { s with globalDeps := s.globalDeps.insert name }
+def recordGlobalDep (qn : Soma.Core.QualifiedName) : TCM Unit := do
+  modifyState fun s => { s with globalDeps := s.globalDeps.insert qn }
 
 /-- Look up a global (and record dependency for incremental checking) -/
-def lookupGlobal (name : String) : TCM (Option GlobalInfo) := do
+def lookupGlobal (path : Array String) (name : String) : TCM (Option GlobalInfo) := do
   let ctx ← getCtx
-  let result := ctx.lookupGlobal name
-  -- Record dependency if found
-  if result.isSome then
-    recordGlobalDep name
-  return result
+  match ctx.globals.resolve ctx.currentNamespace path name with
+  | some qn =>
+    match ctx.globals.getDef qn with
+    | some info =>
+      recordGlobalDep qn
+      return some info
+    | none => return none
+  | none => return none
 
 /-- Look up a global without recording a dependency -/
-def lookupGlobalNoDep (name : String) : TCM (Option GlobalInfo) := do
+def lookupGlobalNoDep (path : Array String) (name : String) : TCM (Option GlobalInfo) := do
   let ctx ← getCtx
-  return ctx.lookupGlobal name
+  return ctx.lookupGlobal path name
 
-/-- Resolve a constructor name using namespace-aware lookup -/
-def resolveConstructor (name : String) : TCM (Option GlobalInfo) := do
+/-- Look up a global directly by QualifiedName -/
+def lookupGlobalByQN (qn : Soma.Core.QualifiedName) : TCM (Option GlobalInfo) := do
   let ctx ← getCtx
-  let result := ctx.globals.resolveConstructor name
-  if result.isSome then
-    recordGlobalDep name
-  return result
+  return ctx.globals.getDef qn
+
 
 /-- Look up all declarations registered under a wired-in role -/
 def lookupWiredInAll (role : WiredRole) : TCM (Array GlobalInfo) := do
@@ -1353,13 +1236,13 @@ def lookupWiredPrimitiveOfTypeUnique (u : Soma.Unique) : TCM (Option Soma.Core.P
   | some role => pure (WiredRole.primType? role)
   | none => pure none
 
-/-- Look up a type abbreviation by name -/
-def lookupAbbrev (name : String) : TCM (Option AbbrevInfo) := do
+/-- Look up a type abbreviation by QualifiedName -/
+def lookupAbbrev (qn : Soma.Core.QualifiedName) : TCM (Option AbbrevInfo) := do
   let ctx ← getCtx
-  return ctx.lookupAbbrev name
+  return ctx.lookupAbbrev qn
 
 /-- Get all recorded global dependencies -/
-def getGlobalDeps : TCM (Std.HashSet String) := do
+def getGlobalDeps : TCM (Std.HashSet Soma.Core.QualifiedName) := do
   let state ← getState
   return state.globalDeps
 
@@ -1368,7 +1251,7 @@ def clearGlobalDeps : TCM Unit := do
   modifyState fun s => { s with globalDeps := {} }
 
 /-- Run an action and collect its global dependencies -/
-def withDependencyTracking (action : TCM α) : TCM (α × Std.HashSet String) := do
+def withDependencyTracking (action : TCM α) : TCM (α × Std.HashSet Soma.Core.QualifiedName) := do
   clearGlobalDeps
   let result ← action
   let deps ← getGlobalDeps
@@ -1387,20 +1270,19 @@ def withGlobalsAndAbbrevs (globals : Globals) (abbrevEnv : AbbrevEnv)
     (m : TCM α) : TCM α :=
   withReader (fun ctx => { ctx with globals := globals, abbrevEnv := abbrevEnv }) m
 
-/-- Look up a Unique by name (checks both state and global context) -/
-def lookupUnique (name : String) : TCM (Option Soma.Unique) := do
-  let state ← getState
-  -- First check state (where we register new Uniques)
-  match state.uniques.get? name with
-  | some id => return some id
-  | none =>
-    -- Fall back to globals (for pre-registered Uniques)
-    let ctx ← getCtx
-    return ctx.globals.lookupUnique name
+/-- Run inside a child namespace -/
+def withNamespace (name : String) (m : TCM α) : TCM α :=
+  withReader (fun ctx => { ctx with currentNamespace := ctx.currentNamespace.push name }) m
 
-/-- Register a Unique for a type name -/
-def registerUnique (name : String) (id : Soma.Unique) : TCM Unit := do
-  modifyState fun s => { s with uniques := s.uniques.insert name id }
+/-- Get the current namespace path -/
+def getCurrentNamespace : TCM (Array String) := do
+  let ctx ← getCtx
+  return ctx.currentNamespace
+
+/-- Resolve a name to its QualifiedName through the namespace tree -/
+def resolve (path : Array String) (name : String) : TCM (Option Soma.Core.QualifiedName) := do
+  let ctx ← getCtx
+  return ctx.globals.resolve ctx.currentNamespace path name
 
 /-- Get the current De Bruijn level -/
 def currentLevel : TCM DeBruijnLvl := do

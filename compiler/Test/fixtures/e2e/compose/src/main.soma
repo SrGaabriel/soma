@@ -1,4 +1,4 @@
-use stdlib/core.{puts, strcat}
+use stdlib::core::{puts, strcat}
 
 def main : IO () =
     compose

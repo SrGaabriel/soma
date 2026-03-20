@@ -1,5 +1,6 @@
-use base/prim.{+, -, *}
-use base/core.{Option}
+use base::prim::{+, -, *}
+use base::core::{Option}
+use base::prim::{List, Bool, Int}
 
 @[intrinsic "primop.eq"]
 def {==} {a : Type} : a -> a -> Bool

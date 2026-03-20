@@ -711,12 +711,16 @@ def parseImportPath : ParserM (Option GreenNode) := do
   match ← parseLowerIdent with
   | some first =>
       segments := segments.push first
-      while (← check .slash) do
-        let slashTok ← consumeAny
-        segments := segments.push slashTok
-        match ← parseLowerIdent with
-        | some seg => segments := segments.push seg
-        | none => recordError "expected path segment after '/'"; break
+      while (← check .doubleColon) do
+        let next ← peekNext
+        match next.kind with
+        | some .lowerIdent | some .upperIdent =>
+          let colonTok ← consumeAny
+          segments := segments.push colonTok
+          match ← parseLowerIdent with
+          | some seg => segments := segments.push seg
+          | none => recordError "expected path segment after '::'"; break
+        | _ => break
       return some (GreenNode.mkNode .importPath segments)
   | none => return none
 
@@ -735,35 +739,26 @@ def parseImportItems : ParserM (Option GreenNode) := do
   let (lbrace, items, rbrace) ← delimitedSepBy .leftBrace .rightBrace .comma parseImportItem .importItems
   return some (GreenNode.mkNode .importItems (#[lbrace] ++ items ++ #[rbrace]))
 
-def parseUseDecl : ParserM (Option GreenNode) := do
+/-- Parse `use` or `pub use` declaration -/
+def parseUseDecl (pubTok : Option GreenNode := none) : ParserM (Option GreenNode) := do
   match ← tryConsume .kw_use with
   | some useTok =>
+      let toks := match pubTok with | some p => #[p, useTok] | none => #[useTok]
       match ← parseImportPath with
       | some path =>
-          if (← checkDot) then
-            let dotTok ← consumeAny
+          if (← check .doubleColon) then
+            let colonTok ← consumeAny
             match ← parseImportItems with
             | some items =>
-                return some (GreenNode.mkNode .declUse #[useTok, path, dotTok, items])
+                return some (GreenNode.mkNode .declUse (toks ++ #[path, colonTok, items]))
             | none =>
-                recordError "expected '{' after '.'"
-                return some (GreenNode.mkError "missing import items" #[useTok, path, dotTok])
+                recordError "expected '{' after '::'"
+                return some (GreenNode.mkError "missing import items" (toks ++ #[path, colonTok]))
           else
-            return some (GreenNode.mkNode .declUse #[useTok, path])
+            return some (GreenNode.mkNode .declUse (toks ++ #[path]))
       | none =>
           recordError "expected import path after 'use'"
-          return some (GreenNode.mkError "missing import path" #[useTok])
-  | none => return none
-
-def parseExportDecl : ParserM (Option GreenNode) := do
-  match ← tryConsume .kw_export with
-  | some exportTok =>
-      match ← parseImportItems with
-      | some items =>
-          return some (GreenNode.mkNode .declExport #[exportTok, items])
-      | none =>
-          recordError "expected '{' after 'export'"
-          return some (GreenNode.mkError "missing export items" #[exportTok])
+          return some (GreenNode.mkError "missing import path" toks)
   | none => return none
 
 def parseAbbrevDecl : ParserM (Option GreenNode) := do
@@ -802,7 +797,12 @@ partial def parseDecl : ParserM (Option GreenNode) := do
   else if (← check .kw_trait) then parseTraitDecl attrs
   else if (← check .kw_instance) then parseInstanceDecl attrs
   else if (← check .kw_use) then parseUseDecl
-  else if (← check .kw_export) then parseExportDecl
+  else if (← check .kw_pub) then do
+    let pubTok ← consumeAny
+    if (← check .kw_use) then parseUseDecl (some pubTok)
+    else
+      recordError "expected 'use' after 'pub'"
+      return some (GreenNode.mkError "expected 'use' after 'pub'" #[pubTok])
   else if (← check .kw_abbrev) then parseAbbrevDecl
   else return none
 

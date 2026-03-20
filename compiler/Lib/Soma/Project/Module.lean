@@ -54,6 +54,10 @@ def fromParts (package : String) (path : Array String) : ModuleName :=
 def fromString (s : String) : ModuleName :=
   parse s |>.getD { package := s, path := #[] }
 
+/-- Convert to namespace path segments for the namespace tree -/
+def toNamespace (m : ModuleName) : Array String :=
+  #[m.package] ++ m.path
+
 end ModuleName
 
 /-- Information about a parsed module, ready for type checking -/
@@ -81,19 +85,22 @@ def nameStr (m : ModuleInfo) : String := m.name.toString
 def imports (m : ModuleInfo) : Array QualName :=
   m.ast.decls.filterMap fun decl =>
     match decl with
-    | .use path _ _ => some path
+    | .use _ path _ _ => some path
     | _ => none
 
-/-- Extract export list if explicitly declared -/
-def exports (m : ModuleInfo) : Option (Array QualName) :=
-  m.ast.decls.findSome? fun decl =>
+/-- Collect all pub use items -/
+def pubUseItems (m : ModuleInfo) : Array (QualName × Array QualName) :=
+  m.ast.decls.filterMap fun decl =>
     match decl with
-    | .export_ items _ => some items
+    | .use true path items _ => some (path, items)
     | _ => none
 
-/-- Check if this module explicitly exports (vs exporting everything) -/
-def hasExplicitExports (m : ModuleInfo) : Bool :=
-  m.exports.isSome
+/-- Check if this module has any pub use declarations -/
+def hasPubUses (m : ModuleInfo) : Bool :=
+  m.ast.decls.any fun decl =>
+    match decl with
+    | .use true _ _ _ => true
+    | _ => false
 
 end ModuleInfo
 

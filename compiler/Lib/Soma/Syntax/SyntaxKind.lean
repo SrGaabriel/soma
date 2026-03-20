@@ -10,8 +10,7 @@ inductive SyntaxKind where
   | declStruct        -- Struct definition
   | declTrait         -- Trait definition
   | declInstance      -- Instance definition (may have no methods if @[intrinsic])
-  | declUse           -- Import declaration
-  | declExport        -- Export declaration
+  | declUse           -- Import declaration (use / pub use)
   | declAbbrev        -- Type abbreviation
   -- Definition Components
   | signature         -- Type signature
@@ -94,7 +93,6 @@ inductive SyntaxKind where
   | matchGuard        -- Guard in match
   | importPath        -- Import path
   | importItems       -- Import item list
-  | exportItems       -- Export item list
   | attribute         -- Attribute
   | attributeList     -- Multiple attributes
   -- Operators
@@ -120,7 +118,6 @@ def SyntaxKind.describe : SyntaxKind → String
   | .declTrait => "class"
   | .declInstance => "instance"
   | .declUse => "import"
-  | .declExport => "export"
   | .declAbbrev => "abbreviation"
   | .signature => "type signature"
   | .defClause => "definition clause"
@@ -195,7 +192,6 @@ def SyntaxKind.describe : SyntaxKind → String
   | .matchGuard => "match guard"
   | .importPath => "import path"
   | .importItems => "import items"
-  | .exportItems => "export items"
   | .attribute => "attribute"
   | .attributeList => "attribute list"
   | .operator => "operator"
@@ -213,7 +209,7 @@ instance : ToString SyntaxKind where
 /-- Check if a syntax kind represents a declaration -/
 def SyntaxKind.isDecl : SyntaxKind → Bool
   | .declDef | .declInductive | .declStruct | .declTrait
-  | .declInstance | .declUse | .declExport | .declAbbrev => true
+  | .declInstance | .declUse | .declAbbrev => true
   | _ => false
 
 /-- Check if a syntax kind represents an expression -/

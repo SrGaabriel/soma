@@ -1,4 +1,5 @@
-use base/core.{Display}
+use base::core::{Display}
+use base::prim::{String, IO}
 
 @[extern]
 def puts : String -> IO ()

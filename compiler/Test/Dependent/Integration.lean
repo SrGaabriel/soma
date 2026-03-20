@@ -77,7 +77,10 @@ def runDepCheckTest (tc : TestCase) (_debug : Bool := true) : IO TestResult := d
         return .passed
       else
         let diagErrors := result.diagnostics.filter (·.severity == .error)
-          |>.map (·.message) |>.toList
+          |>.map (fun d =>
+            let labels := d.labels.map (·.message) |>.toList
+            let labelStr := if labels.isEmpty then "" else "\n    > " ++ String.intercalate "\n    > " labels
+            s!"{d.message}{labelStr}") |>.toList
         return .failed s!"Expected success but got errors:\n  {String.intercalate "\n  " diagErrors}"
 
     | .error expectedSubstr =>

@@ -1,6 +1,7 @@
-use base/core.{<>, >>, >>=}
-use base/ffi.{Ptr, CString, CInt, to_cstring, free}
-use base/io.{IO, pure_io}
+use base::core::{<>, >>, >>=}
+use base::ffi::{Ptr, CString, CInt, to_cstring, free}
+use base::io::{pure_io}
+use base::prim::{Ptr, IO, String, Unit}
 
 record Path where
     value : String

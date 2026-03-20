@@ -324,7 +324,7 @@ def rebuildGlobals (s : IncrementalState) : Globals := Id.run do
       -- Use cached GlobalInfo if available, otherwise reconstruct
       match cache.globalInfo with
       | some info =>
-        globals := globals.insert def_.name info
+        globals := globals.register #[] def_.name info
       | none =>
         -- Fallback reconstruction (shouldn't happen if cache.isComplete is true)
         let info : GlobalInfo := {
@@ -341,7 +341,7 @@ def rebuildGlobals (s : IncrementalState) : Globals := Id.run do
             | .instance_ _ => .generated
             | .method _ => .traitMethod
         }
-        globals := globals.insert def_.name info
+        globals := globals.register #[] def_.name info
   return globals
 
 end IncrementalState

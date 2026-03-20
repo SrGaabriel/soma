@@ -161,6 +161,7 @@ private def runTestBody (tc : TestCase) (tempDir : System.FilePath)
   let buildOpts : BuildOptions := {
     input := srcDir.toString
     output := some outputPath.toString
+    name := some tc.name
     emitLlvm := true
     deps := deps
     profile := profile

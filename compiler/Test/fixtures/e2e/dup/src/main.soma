@@ -1,4 +1,4 @@
-use test/prim.{Int}
+use dup::prim::{Int}
 
 @[intrinsic "primop.add"]
 def {+} : Int -> Int -> Int

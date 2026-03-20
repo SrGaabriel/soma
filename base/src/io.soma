@@ -1,4 +1,5 @@
-use base/core.{Functor, Applicative, Monad}
+use base::prim::{IO}
+use base::core::{Functor, Applicative, Monad, >>=}
 
 @[intrinsic "ffi.pure_io"]
 def pure_io : a -> IO a

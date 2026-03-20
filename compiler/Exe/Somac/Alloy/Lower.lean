@@ -69,7 +69,7 @@ def isListValue (v : Soma.Core.Value) (primTypes : PrimTypeRegistry) : Bool :=
 structure TypeConvCtx (n : Nat) where
   tyVars : TyVarMapping n
   primTypes : PrimTypeRegistry
-  inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {}
+  inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {}
   deriving Inhabited
 
 /-- Build the primitive type registry from the wired-in type registry -/
@@ -479,7 +479,7 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
     match ctx.primTypes.get? dId with
     | some prim => convertPrimToAlloyTy prim params ctx
     | none =>
-      match ctx.inductives.get? dId with
+      match ctx.inductives.get? ⟨dId⟩ with
       | some indInfo =>
         let variants := indInfo.ctors.map fun ctor =>
           let fields := extractCtorFieldTypes ctor.type ctx
@@ -861,7 +861,7 @@ structure NodeState (n : Nat) where
   /-- Primitive type registry for resolving wired-in types -/
   primTypes : PrimTypeRegistry := {}
   /-- Inductive metadata for resolving ADT variant info -/
-  inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {}
+  inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {}
   /-- Expected result type from the consumer context -/
   expectedResultTy : Option (Ty n) := none
   /-- LocalIds known to hold list-typed (flat array) values -/
@@ -2034,7 +2034,7 @@ def collectLamChain (graph : CGraph) (root : CNodeId) (arity : Nat)
 /-- Lower a definition with a specific type parameter count n -/
 def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (funcIdMap : FuncIdMap) (tyVarMapping : TyVarMapping n) (primTypes : PrimTypeRegistry)
-    (inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {})
+    (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
     (anonLamBookIdx : Std.HashMap Nat Nat := {}) : Func n :=
@@ -2076,7 +2076,7 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
 /-- Lower a Circuit definition to an Alloy function -/
 def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (funcIdMap : FuncIdMap) (primTypes : PrimTypeRegistry)
-    (inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {})
+    (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
     (anonLamBookIdx : Std.HashMap Nat Nat := {}) : SomeFunc :=
@@ -2089,7 +2089,7 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
 
 /-- Lower an entire Circuit graph to an Alloy module -/
 def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
-    (inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {})
+    (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Module := Id.run do
   let mut module := Module.empty moduleName
 
@@ -2157,7 +2157,7 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
 
 /-- Main entry point: lower a Circuit graph to an Alloy module -/
 def lower (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
-    (inductives : Std.HashMap Soma.Unique Soma.Dependent.InductiveMeta := {})
+    (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Module :=
   lowerGraph graph moduleName primTypes inductives intrinsics
 

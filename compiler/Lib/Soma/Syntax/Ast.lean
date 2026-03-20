@@ -541,17 +541,14 @@ inductive Decl where
               (traitName : QualName) (args : Array TypeExpr)
               (methods : Array Decl) (span : Span)
 
-  /-- Import declaration: use base/core.{Option, Some, None} -/
-  | use (path : QualName) (items : Array QualName) (span : Span)
-
-  /-- Export declaration: export { items } -/
-  | export_ (items : Array QualName) (span : Span)
+  /-- Import declaration: use / pub use -/
+  | use (isPublic : Bool) (path : QualName) (items : Array QualName) (span : Span)
 
   /-- Type abbreviation: abbrev Foo params = Type -/
   | abbrev (name : QualName) (params : Array QualName) (type_ : TypeExpr) (span : Span)
   deriving Repr
 
-instance : Nonempty Decl := ⟨.export_ #[] Span.uninhabited⟩
+instance : Nonempty Decl := ⟨.use false ⟨#[], "_", Span.uninhabited⟩ #[] Span.uninhabited⟩
 
 namespace Decl
 
@@ -561,8 +558,7 @@ def span : Decl → Span
   | .record _ _ _ _ _ s => s
   | .trait _ _ _ _ _ s => s
   | .instance_ _ _ _ _ _ s => s
-  | .use _ _ s => s
-  | .export_ _ s => s
+  | .use _ _ _ s => s
   | .abbrev _ _ _ s => s
 
 /-- Get the name of a declaration (if it has one) -/
@@ -572,8 +568,7 @@ def name? : Decl → Option QualName
   | .record _ name _ _ _ _ => some name
   | .trait _ name _ _ _ _ => some name
   | .instance_ instanceName _ _ _ _ _ => instanceName
-  | .use _ _ _ => none
-  | .export_ _ _ => none
+  | .use _ _ _ _ => none
   | .abbrev name _ _ _ => some name
 
 end Decl
@@ -866,13 +861,11 @@ partial def ppDecl : Decl → String
       let methodsStr := methods.toList.map ppDecl |> String.intercalate "\n\n"
       s!"instance {bindersStr}{nameStr}: {traitName.name} {argsStr} where\n{indent 2 methodsStr}"
 
-  | .use path items _ =>
+  | .use isPublic path items _ =>
+      let pubStr := if isPublic then "pub " else ""
       let itemsStr := if items.isEmpty then ""
-        else ".{" ++ (items.toList.map (·.name) |> String.intercalate ", ") ++ "}"
-      s!"use {path}{itemsStr}"
-
-  | .export_ items _ =>
-      "export {" ++ (items.toList.map (·.name) |> String.intercalate ", ") ++ "}"
+        else "::{" ++ (items.toList.map (·.name) |> String.intercalate ", ") ++ "}"
+      s!"{pubStr}use {path}{itemsStr}"
 
   | .abbrev name params ty _ =>
       let paramsStr := if params.isEmpty then "" else s!" {ppNames params}"

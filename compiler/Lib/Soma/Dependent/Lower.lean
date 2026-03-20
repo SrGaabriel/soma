@@ -11,6 +11,8 @@ open Soma.Core
 structure Result where
   module : Soma.Core.UntypedModule
   diagnostics : Diagnostics
+  uniqueSupply : Soma.UniqueSupply
+
 
 private def isSimpleVarPattern : Syntax.Pattern → Bool
   | .var _ => true
@@ -79,30 +81,68 @@ private def mkGlobalName
   let (u, s') := supply.fresh name
   (⟨u⟩, s')
 
+/-- Pre-registered names, split into two namespaces -/
+structure GlobalNameRegistry where
+  /-- Top-level names: types, functions, trait methods -/
+  topLevel : Std.HashMap String Soma.Core.QualifiedName := {}
+  /-- Constructor names: keyed by (parentTypeName, ctorSimpleName) -/
+  ctors : Std.HashMap (String × String) Soma.Core.QualifiedName := {}
+
+def GlobalNameRegistry.requireTopLevel (reg : GlobalNameRegistry) (name : String) : Soma.Core.QualifiedName :=
+  match reg.topLevel.get? name with
+  | some qn => qn
+  | none => panic! s!"internal error: no pre-registered top-level name for '{name}'"
+
+def GlobalNameRegistry.requireCtor (reg : GlobalNameRegistry) (parentType : String) (ctorName : String) : Soma.Core.QualifiedName :=
+  match reg.ctors.get? (parentType, ctorName) with
+  | some qn => qn
+  | none => panic! s!"internal error: no pre-registered constructor name for '{parentType}::{ctorName}'"
+
 private def registerGlobalNames
     (ast : Syntax.Module)
-  : Std.HashMap String Soma.Core.QualifiedName × UniqueSupply :=
+  : GlobalNameRegistry × UniqueSupply :=
   Id.run do
     let mut supply := UniqueSupply.initial ast.name
-    let mut names : Std.HashMap String Soma.Core.QualifiedName := {}
+    let mut topLevel : Std.HashMap String Soma.Core.QualifiedName := {}
+    let mut ctors : Std.HashMap (String × String) Soma.Core.QualifiedName := {}
 
     for decl in ast.decls do
       match decl with
       | .def_ attrs name _ _ _ _ =>
-        if names.get? name.name |>.isNone then
+        if topLevel.get? name.name |>.isNone then
           let fnAttrs := functionAttrsFromSyntax attrs (some name.name)
           let (n, s') := mkGlobalName name.name fnAttrs supply
           supply := s'
-          names := names.insert name.name n
-      | .trait _ _ _ _ methods _ =>
+          topLevel := topLevel.insert name.name n
+      | .inductive _ name _ constructors _ _ =>
+        if topLevel.get? name.name |>.isNone then
+          let (u, s') := supply.fresh name.name
+          supply := s'
+          topLevel := topLevel.insert name.name ⟨u⟩
+        for ctor in constructors do
+          let key := (name.name, ctor.name.name)
+          if ctors.get? key |>.isNone then
+            let (u, s') := supply.fresh ctor.name.name
+            supply := s'
+            ctors := ctors.insert key ⟨u⟩
+      | .record _ name _ _ _ _ =>
+        if topLevel.get? name.name |>.isNone then
+          let (u, s') := supply.fresh name.name
+          supply := s'
+          topLevel := topLevel.insert name.name ⟨u⟩
+      | .trait _ name _ _ methods _ =>
+        if topLevel.get? name.name |>.isNone then
+          let (u, s') := supply.fresh name.name
+          supply := s'
+          topLevel := topLevel.insert name.name ⟨u⟩
         for m in methods do
-          if names.get? m.name.name |>.isNone then
+          if topLevel.get? m.name.name |>.isNone then
             let (u, s') := supply.fresh m.name.name
             supply := s'
-            names := names.insert m.name.name ⟨u⟩
+            topLevel := topLevel.insert m.name.name ⟨u⟩
       | _ => pure ()
 
-    (names, supply)
+    ({ topLevel, ctors }, supply)
 
 private def allSimplePatterns (patterns : Array Syntax.Pattern) : Bool :=
   patterns.all isSimpleVarPattern
@@ -182,11 +222,11 @@ private def lowerFunctionDeclCore
 
 private def lowerFunctionDecl
     (decl : Syntax.Decl)
-    (globalNames : Std.HashMap String Soma.Core.QualifiedName)
+    (registry : GlobalNameRegistry)
   : Option Soma.Core.UntypedFunction × Diagnostics :=
   match decl with
   | .def_ _ name .. =>
-    let globalName := globalNames.getD name.name ⟨{ id := 0, module := "", original := name.name }⟩
+    let globalName := registry.requireTopLevel name.name
     lowerFunctionDeclCore decl globalName
   | _ => (none, #[])
 
@@ -195,6 +235,7 @@ private def maxConstructors : Nat := 255
 
 private def lowerTypeDecl
     (decl : Syntax.Decl)
+    (registry : GlobalNameRegistry)
     (supply : UniqueSupply)
   : Option Soma.Core.UntypedTypeDef × Diagnostics × UniqueSupply :=
   match decl with
@@ -205,32 +246,26 @@ private def lowerTypeDecl
           s!"data type '{name.name}' has {constructors.size} constructors, exceeding the maximum of {maxConstructors}"
           span]
       else #[]
-    let (typeUnique, supply') := supply.fresh name.name
-    let typeName : Soma.Core.QualifiedName := ⟨typeUnique⟩
+    let typeName := registry.requireTopLevel name.name
     let typeVarNames := params.map (·.name.name)
     let ctors := Id.run do
       let mut acc : Array Soma.Core.UntypedConstructor := #[]
-      let mut supply'' := supply'
       for i in [:constructors.size] do
         if hIdx : i < constructors.size then
           let ctor : Syntax.DataCon := constructors[i]'hIdx
-          let (ctorUnique, supplyNext) := supply''.fresh ctor.name.name
-          supply'' := supplyNext
-          let ctorName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
+          let ctorName := registry.requireCtor name.name ctor.name.name
           let lowered : Soma.Core.UntypedConstructor := match ctor.sig with
             | some sig => { name := ctorName, tag := i, fieldTypeSyntax := #[], sigSyntax := some sig, attrs := ctor.attrs }
             | none =>
               let fieldTypes := ctor.fields.map (·.2)
               { name := ctorName, tag := i, fieldTypeSyntax := fieldTypes, sigSyntax := none, attrs := ctor.attrs }
           acc := acc.push lowered
-      (acc, supply'')
-    let (ctors, supply'') := ctors
-    (some (.algebraic attrs typeName typeVarNames ctors), diags, supply'')
+      acc
+    (some (.algebraic attrs typeName typeVarNames ctors), diags, supply)
   | .record attrs name params _ctorName fields _ =>
-    let (typeUnique, supply') := supply.fresh name.name
-    let typeName : Soma.Core.QualifiedName := ⟨typeUnique⟩
+    let typeName := registry.requireTopLevel name.name
     let typeVarNames := params.map (·.name.name)
-    let (ctorUnique, supply'') := supply'.fresh "New"
+    let (ctorUnique, supply'') := supply.fresh "New"
     let ctorQName : Soma.Core.QualifiedName := ⟨ctorUnique⟩
     let fieldsWithOptNames := fields.map fun field =>
       (field.name.map (·.name), field.type_)
@@ -259,19 +294,14 @@ private partial def rewriteRecordArrowsAsImplicits : Syntax.TypeExpr → Syntax.
 
 private def lowerTypeClassDecl
     (decl : Syntax.Decl)
-  (globalNames : Std.HashMap String Soma.Core.QualifiedName)
+    (registry : GlobalNameRegistry)
     (supply : UniqueSupply)
   : Option Soma.Core.TypeClassMeta × UniqueSupply :=
   match decl with
   | .trait _ name params constraints methods span =>
-    let className :=
-      match globalNames.get? name.name with
-      | some n => n
-      | none =>
-        let (u, _) := supply.fresh name.name
-        ⟨u⟩
+    let className := registry.requireTopLevel name.name
     let methodSigs := methods.map fun m =>
-      let mName := globalNames.getD m.name.name ⟨{ id := 0, module := "", original := m.name.name }⟩
+      let mName := registry.requireTopLevel m.name.name
       (mName, rewriteRecordArrowsAsImplicits m.type_)
     (some {
       name := className
@@ -334,7 +364,7 @@ private def lowerAbbrevDecl (decl : Syntax.Decl) : Option Soma.Core.TypeAbbrev :
 /-- Lower a parsed syntax module directly to `UntypedModule` for type checking. -/
 def lowerModule (ast : Syntax.Module) : Result :=
   Id.run do
-    let (globalNames, supply0) := registerGlobalNames ast
+    let (registry, supply0) := registerGlobalNames ast
     let mut supply := supply0
     let mut functions : Array Soma.Core.UntypedFunction := #[]
     let mut types : Array Soma.Core.UntypedTypeDef := #[]
@@ -344,18 +374,18 @@ def lowerModule (ast : Syntax.Module) : Result :=
     let mut diagnostics : Diagnostics := #[]
 
     for decl in ast.decls do
-      let (fn?, fnDiags) := lowerFunctionDecl decl globalNames
+      let (fn?, fnDiags) := lowerFunctionDecl decl registry
       diagnostics := diagnostics ++ fnDiags
       if let some fn := fn? then
         functions := functions.push fn
 
-      let (td?, tdDiags, supply') := lowerTypeDecl decl supply
+      let (td?, tdDiags, supply') := lowerTypeDecl decl registry supply
       diagnostics := diagnostics ++ tdDiags
       supply := supply'
       if let some td := td? then
         types := types.push td
 
-      let (tc?, supply'') := lowerTypeClassDecl decl globalNames supply
+      let (tc?, supply'') := lowerTypeClassDecl decl registry supply
       supply := supply''
       if let some tc := tc? then
         typeClasses := typeClasses.push tc
@@ -379,6 +409,7 @@ def lowerModule (ast : Syntax.Module) : Result :=
         abbreviations := abbreviations
       }
       diagnostics := diagnostics
+      uniqueSupply := supply
     }
 
 end Soma.Dependent.Lower

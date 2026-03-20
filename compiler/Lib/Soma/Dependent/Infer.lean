@@ -597,8 +597,18 @@ partial def convertPatternWithBindings (pat : Soma.Syntax.Pattern) (scrutTy : Va
       | .int n _ => .int n
       | .string s _ => .string s
       | .bool b _ => .bool b), [])
-  | .con name args span =>
-    match ← TCM.resolveConstructor name.name with
+  | .con name args span => do
+    let ctorInfo? ← do
+      match ← TCM.lookupGlobal name.path name.name with
+      | some info =>
+        if info.isConstructor then pure (some info)
+        else
+          -- If the name is a record type, use its `New` constructor
+          match ← TCM.lookupGlobal (name.path.push name.name) "New" with
+          | some newInfo => if newInfo.isConstructor then pure (some newInfo) else pure none
+          | none => pure none
+      | none => pure none
+    match ctorInfo? with
     | some ctorInfo =>
       let fieldTypes ← extractConstructorFieldTypes ctorInfo.type scrutTy (some name.name) span
       let mut coreArgs : Array Soma.Core.Pattern := #[]
@@ -742,7 +752,7 @@ where
         return (entry.type, .fvar entry.fvarId tyExpr)
       | none =>
         -- Check globals (functions, constructors, data types)
-        match ← TCM.lookupGlobal name.name with
+        match ← TCM.lookupGlobal name.path name.name with
         | some info =>
           let qn := info.name
           if info.isConstructor then
@@ -860,14 +870,14 @@ where
 
     -- Projection function: Type.field
     | .projection typeName fieldName span => do
-      let accessorName := s!"{typeName.name}::{fieldName.name}"
-      match ← TCM.lookupGlobal accessorName with
+      match ← TCM.lookupGlobal (typeName.path.push typeName.name) fieldName.name with
       | some accessorInfo =>
         let ctx ← TCM.getCtx
-        let idx := ctx.globals.lookupFieldIndex typeName.name fieldName.name |>.getD 0
+        let typeQN := ctx.globals.resolve ctx.currentNamespace typeName.path typeName.name
+        let idx := typeQN.bind (ctx.globals.lookupFieldIndex · fieldName.name) |>.getD 0
         return (accessorInfo.type, .proj accessorInfo.name fieldName.name idx)
       | none =>
-        TCM.throw (.unboundGlobal accessorName span #[])
+        TCM.throw (.unboundGlobal s!"{typeName}::{fieldName}" span #[])
 
     -- Parenthesized: recurse
     | .parens inner _ => inferSyntax inner

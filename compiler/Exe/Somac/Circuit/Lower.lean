@@ -1264,47 +1264,47 @@ def registerTypes (types : Array Soma.Core.TypeDef)
     | .algebraic _attrs typeName _tvars ctors =>
       let mut usedMetadata := false
       if let some g := globals then
-        if let some indInfo := g.lookupInductive typeName.display then
-          usedMetadata := true
-          for ctor in indInfo.ctors do
-            LowerM.modifyCtx fun ctx =>
-              ctx.registerCtor ctor.name typeName ctor.tag ctor.arity
-            LowerM.modifyCtx fun ctx =>
-              ctx.registerCtorType indInfo.unique ctor.tag ctor.type
+        if let some typeQN := g.resolve #[] #[] typeName.display then
+          if let some indInfo := g.lookupInductive typeQN then
+            usedMetadata := true
+            for ctor in indInfo.ctors do
+              LowerM.modifyCtx fun ctx =>
+                ctx.registerCtor ctor.name typeName ctor.tag ctor.arity
+              LowerM.modifyCtx fun ctx =>
+                ctx.registerCtorType typeQN.id ctor.tag ctor.type
       if !usedMetadata then
-        -- Legacy fallback path
-        let uniqueOpt := globals.bind fun g => g.lookupUnique typeName.display
         for ctor in ctors do
           let arity := ctor.fieldTypeSyntax.size
           LowerM.modifyCtx fun ctx =>
             ctx.registerCtor ctor.name typeName ctor.tag arity
 
-          if let (some g, some unique) := (globals, uniqueOpt) then
-            let ctorSimpleName := ctor.name.id.original
-            if let some ctorInfo := g.lookupInChild typeName.display ctorSimpleName then
-              LowerM.modifyCtx fun ctx =>
-                ctx.registerCtorType unique ctor.tag ctorInfo.type
+          if let some g := globals then
+            if let some typeQN := g.resolve #[] #[] typeName.display then
+              if let some ctorMeta := g.lookupCtor typeQN ctor.name.id.original then
+                LowerM.modifyCtx fun ctx =>
+                  ctx.registerCtorType typeQN.id ctor.tag ctorMeta.type
 
     | .record _attrs recordName _tvars ctorName fields =>
       let mut usedMetadata := false
       if let some g := globals then
-        if let some indInfo := g.lookupInductive recordName.display then
-          usedMetadata := true
-          for ctor in indInfo.ctors do
-            LowerM.modifyCtx fun ctx =>
-              ctx.registerCtor ctor.name recordName ctor.tag ctor.arity
-            LowerM.modifyCtx fun ctx =>
-              ctx.registerCtorType indInfo.unique ctor.tag ctor.type
+        if let some typeQN := g.resolve #[] #[] recordName.display then
+          if let some indInfo := g.lookupInductive typeQN then
+            usedMetadata := true
+            for ctor in indInfo.ctors do
+              LowerM.modifyCtx fun ctx =>
+                ctx.registerCtor ctor.name recordName ctor.tag ctor.arity
+              LowerM.modifyCtx fun ctx =>
+                ctx.registerCtorType typeQN.id ctor.tag ctor.type
       if !usedMetadata then
         let arity := fields.size
         LowerM.modifyCtx fun ctx =>
           ctx.registerCtor ctorName recordName 0 arity
 
         if let some g := globals then
-          if let some unique := g.lookupUnique recordName.display then
-            if let some ctorInfo := g.lookupInChild recordName.display "New" then
+          if let some typeQN := g.resolve #[] #[] recordName.display then
+            if let some ctorMeta := g.lookupCtor typeQN "New" then
               LowerM.modifyCtx fun ctx =>
-                ctx.registerCtorType unique 0 ctorInfo.type
+                ctx.registerCtorType typeQN.id 0 ctorMeta.type
 
 /-- Map from function name to typed function -/
 abbrev TypedFunctionMap := Std.HashMap String Soma.Core.TypedFunction

@@ -34,7 +34,7 @@ inductive TopoSortResult where
   | cycles (cycles : Array DependencyCycle)
   deriving Repr
 
-/-- Convert a QualName to a module path string using slashes (matching findModules format) -/
+/-- Convert a QualName to a module path string (/ filesystem layout) -/
 def qualNameToModulePath (qn : QualName) : String :=
   if qn.path.isEmpty then qn.name
   else String.intercalate "/" qn.path.toList ++ "/" ++ qn.name
@@ -43,7 +43,7 @@ def qualNameToModulePath (qn : QualName) : String :=
 def extractImports (ast : Module) : Array ImportEdge :=
   ast.decls.filterMap fun decl =>
     match decl with
-    | .use path _ span => some { targetModule := qualNameToModulePath path, importSpan := span }
+    | .use _ path _ span => some { targetModule := qualNameToModulePath path, importSpan := span }
     | _ => none
 
 /-- Build a dependency graph from a module graph -/
@@ -177,21 +177,5 @@ where
 
 /-- The well-known prelude module name -/
 def preludeModuleName : String := "stdlib/prelude"
-
-/-- Inject prelude imports into all modules that need it -/
-def injectPreludeIntoGraph (preludeSymbols : Array String) (graph : ModuleGraph) : ModuleGraph :=
-  graph.fold (init := {}) fun acc name info =>
-    if name == preludeModuleName then
-      acc.insert name info
-    else
-      let injectedAst := injectPreludeImport preludeSymbols info.ast
-      acc.insert name { info with ast := injectedAst }
-where
-  injectPreludeImport (symbols : Array String) (ast : Module) : Module :=
-    let preludeImport : Decl := .use
-      { path := #["stdlib"], name := "prelude", span := Span.uninhabited }
-      (symbols.map fun s => { value := s, span := Span.uninhabited })
-      Span.uninhabited
-    { ast with decls := #[preludeImport] ++ ast.decls }
 
 end Soma.Project

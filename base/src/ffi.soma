@@ -1,3 +1,5 @@
+use base::prim::{Ptr, Int8, Int16, Int32, Int64, Word8, Word16, Word32, Word64, String, Unit, IO}
+
 @[intrinsic "ffi.null"]
 def null : Ptr a
 
@@ -57,36 +59,3 @@ def realloc : Ptr a -> CSize -> Ptr a
 
 @[extern]
 def calloc : CSize -> CSize -> Ptr a
-
-export {
-    Ptr,
-    null,
-    ptr_add,
-    ptr_diff,
-    ptr_read,
-    ptr_write,
-    ptr_cast,
-    CChar,
-    CShort,
-    CInt,
-    CLong,
-    CLLong,
-    CUChar,
-    CUShort,
-    CUInt,
-    CULong,
-    CULLong,
-    CSize,
-    CSsize,
-    CPtrdiff,
-    CIntPtr,
-    CUIntPtr,
-    CString,
-    to_cstring,
-    from_cstring,
-    cstring_len,
-    malloc,
-    free,
-    realloc,
-    calloc
-}

@@ -53,10 +53,11 @@ structure LowerResult where
 structure ElaborationResult where
   module : Soma.Core.UntypedModule
   diagnostics : Diagnostics
+  uniqueSupply : Soma.UniqueSupply
 
 private def lowerModuleFromSyntax (ast : Syntax.Module) : ElaborationResult :=
   let lowered := Soma.Dependent.Lower.lowerModule ast
-  { module := lowered.module, diagnostics := lowered.diagnostics }
+  { module := lowered.module, diagnostics := lowered.diagnostics, uniqueSupply := lowered.uniqueSupply }
 
 /-- Phase 1+2: Parse source code (lex + parse combined) -/
 def parse (filePath : String) (content : String) : ParseResult :=
@@ -150,7 +151,8 @@ def constructorMetadata (m : CheckedModule) : Std.HashMap String Nat :=
   let fromInductives := m.globals.inductives.fold (init := {}) fun acc _ indInfo =>
     indInfo.ctors.foldl (init := acc) fun acc2 ctor =>
       acc2.insert ctor.name.display ctor.tag
-  m.globals.foldDecls (init := fromInductives) fun acc name info =>
+  m.globals.defs.fold (init := fromInductives) fun acc _qn info =>
+    let name := info.name.display
     if info.isConstructor && !acc.contains name then
       acc.insert name info.ctorTag
     else acc
@@ -236,34 +238,59 @@ def mergeInstanceEnvs (e1 e2 : InstanceMetadata) : InstanceMetadata :=
 
 /-- Merge Globals environments -/
 def mergeGlobals (g1 g2 : Globals) : Globals :=
-  -- Merge namespace trees recursively
+  -- Merge namespace trees and defs
   let mergedRoot := Soma.Dependent.Namespace.merge g1.root g2.root
+  let defs := g2.defs.fold (init := g1.defs) fun acc qn info =>
+    acc.insert qn info
   let intrinsics := g2.intrinsics.fold (init := g1.intrinsics) fun acc qn info =>
     acc.insert qn info
-  let uniques := g2.uniques.fold (init := g1.uniques) fun acc name id =>
-    acc.insert name id
   let recordFields := g2.recordFields.fold (init := g1.recordFields) fun acc typeName fields =>
     acc.insert typeName fields
   let inductives := g2.inductives.fold (init := g1.inductives) fun acc uid metaInfo =>
     acc.insert uid metaInfo
   let ctorToInductive := g2.ctorToInductive.fold (init := g1.ctorToInductive) fun acc ctorName uid =>
     acc.insert ctorName uid
-  let openNs := g2.openNamespaces.foldl (init := g1.openNamespaces) fun acc ns =>
-    if acc.contains ns then acc else acc.push ns
   let wiredRoles := g2.wiredIn.roles.fold (init := g1.wiredIn.roles) fun acc role infos =>
     let existing := acc.getD role #[]
     let merged := infos.foldl (init := existing) fun arr info =>
       if arr.any (fun e => e.name == info.name) then arr else arr.push info
     acc.insert role merged
   { root := mergedRoot
-    openNamespaces := openNs
+    defs := defs
     intrinsics := intrinsics
-    uniques := uniques
     recordFields := recordFields
     inductives := inductives
     ctorToInductive := ctorToInductive
     wiredIn := { roles := wiredRoles }
   }
+
+/-- Resolve an imported item name against the namespace tree -/
+private def resolveImportItem (root : Soma.Dependent.Namespace)
+    (modulePath : List String) (itemName : String) : Option Soma.Core.QualifiedName :=
+  root.resolve (modulePath ++ [itemName])
+
+def processImports (ast : Soma.Syntax.Module) (globals : Globals) : Globals :=
+  let moduleNs := (ModuleName.fromString ast.name).toNamespace
+  ast.decls.foldl (init := globals) fun g decl =>
+    match decl with
+    | .use isPublic path items _ =>
+      if items.isEmpty then g
+      else
+        let modulePath := path.path.toList ++ [path.name]
+        items.foldl (init := g) fun g' item =>
+          match resolveImportItem g'.root modulePath item.name with
+          | some qn =>
+            let g'' := g'.registerImport item.name modulePath qn
+            if isPublic then
+              let root' := g''.root.insertAt (moduleNs.toList ++ [item.name]) qn
+              let root'' := match g''.root.getAt? (modulePath ++ [item.name]) with
+                | some sourceChildNs =>
+                  root'.mergeAt (moduleNs.toList ++ [item.name]) sourceChildNs
+                | none => root'
+              { g'' with root := root'' }
+            else g''
+          | none => g' -- todo: error
+    | _ => g
 
 /-- Merge InstanceEnv (type class registry), deduplicating instances by instanceId -/
 def mergeInstanceEnv (e1 e2 : InstanceEnv) : InstanceEnv :=
@@ -368,21 +395,18 @@ def checkFunctionsCore
         -- Clear old dependencies and record new ones
         incrState := incrState.clearDeps defId
         let deps := newState.globalDeps
-        for depName in deps do
-          -- Only track dependencies on definitions in globals
-          if ctx.globals.lookup depName |>.isSome then
-            let depId := DefId.mk moduleName depName
+        for depQN in deps do
+          if (ctx.globals.getDef depQN).isSome then
+            let depId := DefId.mk moduleName depQN.display
             incrState := incrState.addDependency defId depId
 
         -- Cache successful result
         let syntaxHash := hashFunction fn
         let isComplete := newState.errors.isEmpty
         let cache := if isComplete then
-          -- Look up the GlobalInfo from the context (it should be registered already)
-          match ctx.globals.lookup fnName with
+          match ctx.globals.getDef fn.name with
           | some info => DefCache.success syntaxHash fnType DefKind.function info
           | none =>
-            -- Fallback: create a basic GlobalInfo if not found (shouldn't happen)
             let info : GlobalInfo := {
               name := fn.name
               type := fnType
@@ -441,9 +465,13 @@ def buildGlobalsAndInstances
     (prevInstanceEnv : Option InstanceEnv := none)
     (prevInstanceMap : Option InstanceMap := none)
     (dirtyNames : Option (HashSet String) := none)
+    (loweringSupply : Option Soma.UniqueSupply := none)
     : GlobalsAndInstancesResult := Id.run do
-  let baseCtx := TCContext.withDefaultInstances
-  let state := TCState.forModule moduleName
+  let moduleNs := (ModuleName.fromString moduleName).toNamespace
+  let baseCtx := { TCContext.withDefaultInstances with currentNamespace := moduleNs }
+  let state := match loweringSupply with
+    | some supply => { TCState.forModule moduleName with uniqueSupply := supply }
+    | none => TCState.forModule moduleName
   let mut allErrors : Array Soma.Dependent.TCError := #[]
 
   -- Pre-register type names so abbreviations can reference same-module types
@@ -466,14 +494,24 @@ def buildGlobalsAndInstances
   -- Merge with seed abbreviations
   let fullAbbrevEnv := AbbrevEnv.merge seedAbbrevEnv moduleAbbrevEnv
 
-  -- Build globals with the full abbreviation environment
+  -- Register abbreviations as globals so they're resolvable and survive serialization
+  let seedWithAbbrevs := moduleAbbrevEnv.fold (init := seedGlobals) fun g qn info =>
+    g.register moduleNs qn.id.original {
+      name := qn
+      type := info.expansion
+      value := some info.expansion
+      isConstructor := false
+      origin := .typeDecl
+    }
+
+  -- Build globals with abbreviation names visible in the tree
   let globalsResult := match dirtyNames, prevGlobals with
     | some dirty, some prev =>
       (Soma.Dependent.Driver.buildGlobalsIncremental untypedModule prev dirty).run
-        { baseCtx with globals := seedGlobals, abbrevEnv := fullAbbrevEnv } state0
+        { baseCtx with globals := seedWithAbbrevs, abbrevEnv := fullAbbrevEnv } state0
     | _, _ =>
       (Soma.Dependent.Driver.buildGlobals untypedModule).run
-        { baseCtx with globals := seedGlobals, abbrevEnv := fullAbbrevEnv } state0
+        { baseCtx with globals := seedWithAbbrevs, abbrevEnv := fullAbbrevEnv } state0
 
   let (moduleGlobals, state', globalsErrors) := match globalsResult with
     | .error e => (Globals.empty, state0, #[e])
@@ -481,8 +519,8 @@ def buildGlobalsAndInstances
 
   allErrors := allErrors ++ globalsErrors
 
-  -- Merge with seed globals
-  let fullGlobals := mergeGlobals seedGlobals moduleGlobals
+  -- Merge with seed globals, preserving the module-local imports
+  let fullGlobals := { mergeGlobals seedWithAbbrevs moduleGlobals with imports := seedGlobals.imports }
   let ctx := { baseCtx with globals := fullGlobals, instanceEnv := seedInstanceEnv, abbrevEnv := fullAbbrevEnv }
 
   -- Build instance environment
@@ -532,6 +570,7 @@ def typeCheckModule
     (seedInstanceEnv : InstanceEnv)
     (seedAbbrevEnv : AbbrevEnv)
     (prevIncrState : Option IncrementalState := none)
+    (loweringSupply : Option Soma.UniqueSupply := none)
     : TypeCheckResult := Id.run do
   -- Determine dirty names if we have previous state
   let (dirtyNames, baseIncrState) := match prevIncrState with
@@ -550,16 +589,17 @@ def typeCheckModule
   let prevInstanceEnv : Option InstanceEnv := prevIncrState.map (fun (s : IncrementalState) => s.cachedInstanceEnv)
   let prevInstanceMap : Option InstanceMap := prevIncrState.map (fun (s : IncrementalState) => s.cachedInstanceMap)
 
-  -- Build globals, instance environment, and abbreviation environment
   let globalsResult := buildGlobalsAndInstances
-    untypedModule moduleName seedGlobals seedInstanceEnv seedAbbrevEnv prevGlobals prevInstanceEnv prevInstanceMap dirtyNames
+    untypedModule moduleName seedGlobals seedInstanceEnv seedAbbrevEnv prevGlobals prevInstanceEnv prevInstanceMap dirtyNames loweringSupply
 
   let mut allErrors := globalsResult.errors
 
   -- Prepare context for function checking
+  let moduleNs := (ModuleName.fromString moduleName).toNamespace
   let baseCtx := TCContext.withDefaultInstances
   let ctx := { baseCtx with
     globals := globalsResult.globals
+    currentNamespace := moduleNs
     instanceEnv := globalsResult.instanceEnv
     abbrevEnv := globalsResult.abbrevEnv }
 
@@ -644,17 +684,17 @@ def extractPublicSymbols
     | none => true -- No explicit exports means export everything defined
     | some exports => exports.contains name
 
+  -- Compute module namespace for resolution
+  let moduleNs := (ModuleName.fromString moduleName).toNamespace
+
   -- Extract function symbols
   for fn in untypedModule.functions do
     let fnName := fn.name.display
     if shouldExport fnName then
-      match globals.lookup fnName with
+      match globals.getDef fn.name with
       | some info =>
-        let unique := fn.name.id
-        let sup' := sup
-        sup := sup'
         let sym : Symbol := {
-          unique := unique
+          unique := fn.name.id
           name := fnName
           kind := .binding
           module := moduleName
@@ -671,11 +711,8 @@ def extractPublicSymbols
     | .algebraic _ typeName typeVarNames constructors =>
       let typeNameStr := typeName.display
       if shouldExport typeNameStr then
-        -- Register type
-        let (typeUnique, sup') := sup.fresh typeNameStr
-        sup := sup'
         let typeSym : Symbol := {
-          unique := typeUnique
+          unique := typeName.id
           name := typeNameStr
           kind := .type
           module := moduleName
@@ -689,13 +726,10 @@ def extractPublicSymbols
       for ctor in constructors do
         let ctorSimpleName := ctor.name.id.original
         if shouldExport ctorSimpleName then
-          let ctorQualified := s!"{typeNameStr}::{ctorSimpleName}"
-          match globals.lookup ctorQualified with
+          match globals.getDef ctor.name with
           | some ctorInfo =>
-            let (ctorUnique, sup') := sup.fresh ctorSimpleName
-            sup := sup'
             let ctorSym : Symbol := {
-              unique := ctorUnique
+              unique := ctor.name.id
               name := ctorSimpleName
               kind := .dataCon typeNameStr ctor.tag
               module := moduleName
@@ -706,13 +740,11 @@ def extractPublicSymbols
             addedNames := addedNames.insert ctorSimpleName
           | none => pure ()
 
-    | .record _ recordName typeVarNames _ctorName fields =>
+    | .record _ recordName typeVarNames ctorName fields =>
       let recordNameStr := recordName.display
       if shouldExport recordNameStr then
-        let (recordUnique, sup') := sup.fresh recordNameStr
-        sup := sup'
         let recordSym : Symbol := {
-          unique := recordUnique
+          unique := recordName.id
           name := recordNameStr
           kind := .type
           module := moduleName
@@ -722,23 +754,20 @@ def extractPublicSymbols
         acc := acc.insert recordSym (Value.typeConstructorKind typeVarNames.size)
         addedNames := addedNames.insert recordNameStr
 
-      -- Register record constructor (named "New" in namespace)
-      let ctorQualified := s!"{recordNameStr}::New"
+      -- Register record constructor
       if shouldExport recordNameStr then
-        match globals.lookup ctorQualified with
+        match globals.getDef ctorName with
         | some ctorInfo =>
-          let (ctorUnique, sup') := sup.fresh ctorQualified
-          sup := sup'
           let ctorSym : Symbol := {
-            unique := ctorUnique
-            name := ctorQualified
+            unique := ctorName.id
+            name := ctorName.display
             kind := .dataCon recordNameStr 0
             module := moduleName
             package := packageName
             span := Span.uninhabited
           }
           acc := acc.insert ctorSym ctorInfo.type
-          addedNames := addedNames.insert ctorQualified
+          addedNames := addedNames.insert ctorName.display
         | none => pure ()
 
       -- Register field accessors
@@ -746,20 +775,21 @@ def extractPublicSymbols
         if let some fieldName := fieldNameOpt then
           let accessorName := s!"{recordNameStr}::{fieldName}"
           if shouldExport accessorName then
-            match globals.lookup accessorName with
-            | some accessorInfo =>
-              let (accessorUnique, sup') := sup.fresh accessorName
-              sup := sup'
-              let accessorSym : Symbol := {
-                unique := accessorUnique
-                name := accessorName
-                kind := .binding
-                module := moduleName
-                package := packageName
-                span := Span.uninhabited
-              }
-              acc := acc.insert accessorSym accessorInfo.type
-              addedNames := addedNames.insert accessorName
+            match globals.resolve moduleNs #[recordNameStr] fieldName with
+            | some accessorQN =>
+              match globals.getDef accessorQN with
+              | some accessorInfo =>
+                let accessorSym : Symbol := {
+                  unique := accessorQN.id
+                  name := accessorName
+                  kind := .binding
+                  module := moduleName
+                  package := packageName
+                  span := Span.uninhabited
+                }
+                acc := acc.insert accessorSym accessorInfo.type
+                addedNames := addedNames.insert accessorName
+              | none => pure ()
             | none => pure ()
 
   -- Extract type class methods
@@ -770,12 +800,10 @@ def extractPublicSymbols
     for (methodName, _) in typeClass.methodSignatures do
       let methodNameStr := methodName.display
       if shouldExport methodNameStr then
-        match globals.lookup methodNameStr with
+        match globals.getDef methodName with
         | some methodInfo =>
-          let (methodUnique, sup') := sup.fresh methodNameStr
-          sup := sup'
           let methodSym : Symbol := {
-            unique := methodUnique
+            unique := methodName.id
             name := methodNameStr
             kind := .typeClassMethod className
             module := moduleName
@@ -858,9 +886,12 @@ def processExternalDependencies (deps : Array ExternalDependency)
     let abbrevEnv' := AbbrevEnv.merge abbrevEnv dep.abbrevEnv
     (symbols', instances', constructors', globals', instEnv', abbrevEnv')
 
-/-- Extract prelude symbols from external dependencies -/
+/-- Extract prelude symbol names from external dependencies -/
 def extractPreludeSymbols (extSymbols : Std.HashMap String SymbolEnv) : Array String :=
-  match extSymbols.get? preludeModuleName with
+  let preludePackage := (ModuleName.fromString preludeModuleName).package
+  let env := extSymbols.get? preludeModuleName
+    |>.orElse fun _ => extSymbols.get? preludePackage
+  match env with
   | none => #[]
   | some env => env.toArray.map fun (sym, _) => sym.name
 
@@ -875,12 +906,17 @@ def checkModule
     (externalSymbols : SymbolEnv)
     (packageName : String)
     (supply : UniqueSupply)
+    (preludeSymbols : Array String := #[])
     : Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
   let modName := info.name.toString
 
   -- Collect globals from checked dependencies
-  let seedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
+  let mergedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
     mergeGlobals acc dep.globals
+
+  let withImports := processImports info.ast mergedGlobals
+
+  let seedGlobals := withImports.injectPrelude ["stdlib", "prelude"] preludeSymbols
 
   -- Collect instance env from checked dependencies
   let seedInstanceEnv := checkedDeps.fold (init := externalInstanceEnv) fun acc _ dep =>
@@ -900,7 +936,7 @@ def checkModule
     return (elabRes.diagnostics, none, supply)
 
   -- Use the shared type checking pipeline (fresh check, no previous state)
-  let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv none
+  let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv none (some elabRes.uniqueSupply)
 
   let allDiags := tcResult.errors.map (·.toDiagnostic)
 
@@ -908,11 +944,13 @@ def checkModule
   let depSymbols : SymbolEnv := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
     dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
-  -- Check for explicit exports in the AST
-  let explicitExports : Option (Array String) := info.ast.decls.findSome? fun decl =>
+  -- Collect pub use items as explicit exports
+  let pubUseNames := info.ast.decls.foldl (init := #[]) fun acc decl =>
     match decl with
-    | .export_ items _ => some (items.map (·.name))
-    | _ => none
+    | .use true _ items _ => acc ++ items.map (·.name)
+    | _ => acc
+  let explicitExports : Option (Array String) :=
+    if pubUseNames.isEmpty then none else some pubUseNames
 
   let (publicSymbols, supply') := extractPublicSymbols
     elabRes.module tcResult.globals packageName modName {} supply explicitExports depSymbols
@@ -956,12 +994,16 @@ def checkModuleIncremental
     (externalSymbols : SymbolEnv)
     (packageName : String)
     (supply : UniqueSupply)
+    (preludeSymbols : Array String := #[])
     : Diagnostics × Option CheckedModule × UniqueSupply := Id.run do
   let modName := info.name.toString
 
   -- Collect globals from checked dependencies
-  let seedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
+  let mergedGlobals := checkedDeps.fold (init := externalGlobals) fun acc _ dep =>
     mergeGlobals acc dep.globals
+
+  let withImports := processImports info.ast mergedGlobals
+  let seedGlobals := withImports.injectPrelude ["stdlib", "prelude"] preludeSymbols
 
   let seedInstanceEnv := checkedDeps.fold (init := externalInstanceEnv) fun acc _ dep =>
     mergeInstanceEnv acc dep.instanceEnv
@@ -978,7 +1020,7 @@ def checkModuleIncremental
     return (elabRes.diagnostics, none, supply)
 
   -- Use the shared type checking pipeline with previous state for incremental checking
-  let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv (some prevModule.incrementalState)
+  let tcResult := typeCheckModule elabRes.module modName seedGlobals seedInstanceEnv seedAbbrevEnv (some prevModule.incrementalState) (some elabRes.uniqueSupply)
 
   -- If nothing changed (empty errors and same state), we could reuse previous result
   -- But for correctness, we rebuild anyway since the lowered module might have changed
@@ -989,11 +1031,13 @@ def checkModuleIncremental
   let depSymbols : SymbolEnv := checkedDeps.fold (init := externalSymbols) fun acc _ dep =>
     dep.publicSymbols.fold (init := acc) fun env sym ty => env.insert sym ty
 
-  -- Check for explicit exports in the AST
-  let explicitExports : Option (Array String) := info.ast.decls.findSome? fun decl =>
+  -- Collect pub use items as explicit exports
+  let pubUseNames := info.ast.decls.foldl (init := #[]) fun acc decl =>
     match decl with
-    | .export_ items _ => some (items.map (·.name))
-    | _ => none
+    | .use true _ items _ => acc ++ items.map (·.name)
+    | _ => acc
+  let explicitExports : Option (Array String) :=
+    if pubUseNames.isEmpty then none else some pubUseNames
 
   let (publicSymbols, supply') := extractPublicSymbols
     elabRes.module tcResult.globals packageName modName {} supply explicitExports depSymbols
@@ -1033,6 +1077,7 @@ def checkModulesInOrder
     (externalSymbols : SymbolEnv)
     (packageName : String)
     (supply : UniqueSupply)
+    (preludeSymbols : Array String := #[])
     : Diagnostics × Array CheckedModule × UniqueSupply :=
   let (allDiags, _, results, finalSupply) := sortedNames.foldl
     (init := (#[], ({} : Std.HashMap String CheckedModule), #[], supply))
@@ -1040,7 +1085,8 @@ def checkModulesInOrder
       match graph.get? modName with
       | none => (diags, checked, results, sup)
       | some info =>
-        let (moduleDiags, cmOpt, sup') := checkModule info checked externalGlobals externalInstanceEnv externalAbbrevEnv externalSymbols packageName sup
+        let modulePrelude := if modName == preludeModuleName then #[] else preludeSymbols
+        let (moduleDiags, cmOpt, sup') := checkModule info checked externalGlobals externalInstanceEnv externalAbbrevEnv externalSymbols packageName sup modulePrelude
         match cmOpt with
         | some cm => (diags ++ moduleDiags, checked.insert modName cm, results.push cm, sup')
         | none => (diags ++ moduleDiags, checked, results, sup')
@@ -1115,13 +1161,16 @@ def checkSingleFile
 
       | .ok deps =>
         let (extSymbolsByModule, _, extConstructors, extGlobals, extInstanceEnv, extAbbrevEnv) := processExternalDependencies deps
+
+        let preludeSymbols := extractPreludeSymbols extSymbolsByModule
+
         -- Flatten external symbols into a single SymbolEnv
         let extSymbols : SymbolEnv := extSymbolsByModule.fold (init := {}) fun acc _ env =>
           env.fold (init := acc) fun e sym ty => e.insert sym ty
         let supply := UniqueSupply.initial name
 
         let (checkDiags, checkedModules, _) := checkModulesInOrder
-          sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols name supply
+          sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols name supply preludeSymbols
 
         let symbols := checkedModules.foldl (init := {}) fun acc m =>
           m.publicSymbols.fold (init := acc) fun env sym val => env.insert sym val
@@ -1175,10 +1224,7 @@ def checkDirectory
       | .ok deps =>
         let (extSymbolsByModule, _, extConstructors, extGlobals, extInstanceEnv, extAbbrevEnv) := processExternalDependencies deps
 
-        -- Optionally inject prelude
         let preludeSymbols := extractPreludeSymbols extSymbolsByModule
-        let graph := if preludeSymbols.isEmpty then graph
-                     else injectPreludeIntoGraph preludeSymbols graph
 
         -- Flatten external symbols into a single SymbolEnv
         let extSymbols : SymbolEnv := extSymbolsByModule.fold (init := {}) fun acc _ env =>
@@ -1187,7 +1233,7 @@ def checkDirectory
         let supply := UniqueSupply.initial packageName
 
         let (checkDiags, checkedModules, _) := checkModulesInOrder
-          sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols packageName supply
+          sortedNames graph extGlobals extInstanceEnv extAbbrevEnv extSymbols packageName supply preludeSymbols
 
         let symbols := checkedModules.foldl (init := {}) fun acc m =>
           m.publicSymbols.fold (init := acc) fun env sym val => env.insert sym val

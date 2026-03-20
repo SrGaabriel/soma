@@ -43,26 +43,21 @@ structure ConstructorEntry where
 
 /-- Serializable global definition entry -/
 structure GlobalDefEntry where
-  name : String
+  namespacePath : Array String
+  displayName : String
   info : GlobalInfo
-  deriving Serialize, Deserialize
-
-/-- Serializable type ID entry -/
-structure UniqueEntry where
-  name : String
-  id : Unique
   deriving Serialize, Deserialize
 
 /-- Serializable inductive metadata entry -/
 structure InductiveEntry where
-  unique : Unique
+  typeQN : Soma.Core.QualifiedName
   info : Soma.Dependent.InductiveMeta
   deriving Serialize, Deserialize
 
 /-- Serializable constructor-to-inductive reverse index entry -/
 structure CtorOwnerEntry where
   ctorName : Soma.Core.QualifiedName
-  inductiveUnique : Unique
+  inductiveQN : Soma.Core.QualifiedName
   deriving Serialize, Deserialize
 
 /-- Serializable wired-in entry: maps a role to its registered declarations -/
@@ -74,7 +69,6 @@ structure WiredInEntry where
 /-- Serializable globals -/
 structure SerializableGlobals where
   defs : Array GlobalDefEntry := #[]
-  uniques : Array UniqueEntry := #[]
   inductives : Array InductiveEntry := #[]
   ctorOwners : Array CtorOwnerEntry := #[]
   wiredIns : Array WiredInEntry := #[]
@@ -135,17 +129,18 @@ def constructorsToSerializable (ctors : Std.HashMap String Nat) : Array Construc
 
 /-- Convert Globals to serializable form -/
 def globalsToSerializable (g : Globals) : SerializableGlobals :=
-  let defs := g.foldDecls (init := #[]) fun acc name info =>
-    acc.push { name, info }
-  let uniques := g.uniques.fold (init := #[]) fun acc name id =>
-    acc.push { name, id }
-  let inductives := g.inductives.fold (init := #[]) fun acc unique info =>
-    acc.push { unique, info }
-  let ctorOwners := g.ctorToInductive.fold (init := #[]) fun acc ctorName inductiveUnique =>
-    acc.push { ctorName, inductiveUnique }
+  let pathEntries := g.root.collectPaths #[]
+  let defs := pathEntries.foldl (init := #[]) fun acc (ns, displayName, qn) =>
+    match g.defs.get? qn with
+    | some info => acc.push { namespacePath := ns, displayName, info }
+    | none => acc
+  let inductives := g.inductives.fold (init := #[]) fun acc typeQN info =>
+    acc.push { typeQN, info }
+  let ctorOwners := g.ctorToInductive.fold (init := #[]) fun acc ctorName inductiveQN =>
+    acc.push { ctorName, inductiveQN }
   let wiredIns := g.wiredIn.roles.fold (init := #[]) fun acc role infos =>
     acc.push { role, infos }
-  { defs, uniques, inductives, ctorOwners, wiredIns }
+  { defs, inductives, ctorOwners, wiredIns }
 
 /-- Convert InstanceEnv to serializable form -/
 def instanceEnvToSerializable (env : InstanceEnv) : SerializableInstanceEnv :=
@@ -157,7 +152,7 @@ def instanceEnvToSerializable (env : InstanceEnv) : SerializableInstanceEnv :=
 
 /-- Convert AbbrevEnv to serializable form -/
 def abbrevEnvToSerializable (env : AbbrevEnv) : SerializableAbbrevEnv :=
-  let abbrevs := env.fold (init := #[]) fun acc info => acc.push info
+  let abbrevs := env.fold (init := #[]) fun acc _qn info => acc.push info
   { abbrevs }
 
 /-- Convert ProjectMetadata to JSON string -/
@@ -181,16 +176,16 @@ def constructorsFromSerializable (entries : Array ConstructorEntry) : Std.HashMa
 
 /-- Convert serializable globals to Globals -/
 def globalsFromSerializable (sg : SerializableGlobals) : Globals :=
-  let defs := sg.defs.foldl (fun acc entry => acc.insert entry.name entry.info) Globals.empty
-  let uniques := sg.uniques.foldl (fun acc entry => acc.insert entry.name entry.id) {}
-  let inductives := sg.inductives.foldl (fun acc entry => acc.insert entry.unique entry.info) {}
-  let ctorToInductive := sg.ctorOwners.foldl (fun acc entry => acc.insert entry.ctorName entry.inductiveUnique) {}
+  let g := sg.defs.foldl (fun acc entry =>
+    acc.register entry.namespacePath entry.displayName entry.info
+  ) Globals.empty
+  let inductives := sg.inductives.foldl (fun acc entry => acc.insert entry.typeQN entry.info) {}
+  let ctorToInductive := sg.ctorOwners.foldl (fun acc entry => acc.insert entry.ctorName entry.inductiveQN) {}
   let recordFields := sg.inductives.foldl (fun acc entry =>
-    if entry.info.fieldNames.isEmpty then acc else acc.insert entry.info.name entry.info.fieldNames
+    if entry.info.fieldNames.isEmpty then acc else acc.insert entry.typeQN entry.info.fieldNames
   ) {}
   let wiredRoles := sg.wiredIns.foldl (fun acc entry => acc.insert entry.role entry.infos) {}
-  { defs with
-    uniques := uniques
+  { g with
     recordFields := recordFields
     inductives := inductives
     ctorToInductive := ctorToInductive
@@ -204,7 +199,7 @@ def instanceEnvFromSerializable (sie : SerializableInstanceEnv) : InstanceEnv :=
 
 /-- Convert serializable abbrev env to AbbrevEnv -/
 def abbrevEnvFromSerializable (sae : SerializableAbbrevEnv) : AbbrevEnv :=
-  sae.abbrevs.foldl (fun env info => env.insert info) AbbrevEnv.empty
+  sae.abbrevs.foldl (fun env info => env.insert ⟨info.abbrevId⟩ info) {}
 
 /-- Convert ProjectMetadata to ExternalDependency -/
 def metadataToExternalDependency (pm : ProjectMetadata) : ExternalDependency :=

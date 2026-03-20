@@ -1,7 +1,4 @@
-use stdlib/collections.{cons, head, length, map, foldl, filter, sum, reverse, append, ==}
-use stdlib/core.{puts}
-use base/core.{display}
-use base/prim.{List}
+use stdlib::collections::{cons, head, length, map, foldl, filter, sum, reverse, append, ==}
 
 def main : IO () =
     compose
