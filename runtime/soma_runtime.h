@@ -8,39 +8,33 @@
  * no count field. Object identity and layout are determined entirely at
  * compile time via type-specialized erase/clone functions.
  *
- * Tagged Payload (count*8 bytes):
- *   [0]  i64  field[0]
- *   [8]  i64  field[1]  ...
+ * All pointer-width values use `void*` or `sizeof(void*)` — the runtime
+ * adapts automatically to 32-bit (wasm32) and 64-bit targets when compiled
+ * with the appropriate -target flag.
+ *
+ * Tagged Payload (count * sizeof(void*) bytes):
  *   Pure data — the compiler-generated eraser knows field count/types.
  *
- * Closure (16 + env_size*8 bytes):
- *   [0]  u8   arity     (needed by soma_apply for PAP detection)
- *   [1]  u8   _pad[1]   (env_size low byte — used by soma_apply internally)
- *   [2]  u8   _pad[2]   (env_size high byte)
- *   [3-7] u8  _pad[3-7] (alignment)
- *   [8]  ptr  func_ptr  (function pointer)
- *   [16] i64  env[0]    ...
+ * Closure (sizeof(SomaClosure) + env_size * sizeof(void*) bytes):
+ *   [0]         u8    arity     (needed by soma_apply for PAP detection)
+ *   [1..PAD-1]  u8    _pad      [0]=NODE_CLOSURE, [1..2]=env_size LE16, rest=alignment
+ *   [PAD]       ptr   func_ptr  (function pointer)
+ *   [PAD+PTR]   ptr   env[0]    ...
  *
- * String (8 + length + 1 bytes):
- *   [0]  i64  length    (byte count, excluding null terminator)
- *   [8]  char data[]    (inline, null-terminated)
+ * String (fat pointer, 2 * sizeof(void*) bytes):
+ *   ptr  data   (pointer to UTF-8 bytes, null-terminated)
+ *   i64  len    (byte count; bit 63 = static sentinel)
  *
- * SUP (48 bytes, pool-allocated — keeps header for state machine):
- *   [0]  u8   tag        (SUP_TAG_*)
- *   [1]  u8[3] _pad      ('S','U','P')
- *   [4]  u32  label
- *   [8]  ptr  value
- *   [16] ptr  proj0
- *   [24] ptr  proj1
- *   [32] ptr  type_desc
+ * SUP (pool-allocated — keeps header for state machine):
+ *   u8           tag        (SUP_TAG_*)
+ *   u8[3]        _pad       ('S','U','P')
+ *   u32          label
+ *   ptr          value, proj0, proj1, type_desc
  *
- * Flat Array View (32 bytes — keeps header for tag dispatch):
- *   [0]  u8   tag         (NODE_FLAT_ARRAY_VIEW = 5)
- *   [1]  u8[3] _pad
- *   [4]  u32  _reserved
- *   [8]  i64  length
- *   [16] ptr  data
- *   [24] ptr  backing
+ * Flat Array View (pool-allocated — keeps header for tag dispatch):
+ *   u8/pad/u32   header
+ *   i64          length
+ *   ptr          data, backing
  */
 
 #ifndef SOMA_RUNTIME_H
@@ -152,21 +146,29 @@
 /*
  * Tagged Pointer Representation
  *
- * Low 3 bits of pointers for type tags (assuming 8-byte alignment).
+ * Low bits of pointers for type tags (assuming pointer-aligned allocation).
  *
- * Pointer format (64-bit):
- *   [63:3] payload  [2:0] tag
+ * Pointer format:
+ *   [MSB : TAG_BITS] payload  [TAG_BITS-1 : 0] tag
  *
  * Tag values:
- *   000 = Heap pointer (closure, etc.) - must be 8-byte aligned
- *   001 = Small integer (63-bit signed, shifted right by 3)
+ *   000 = Heap pointer (closure, etc.) - must be pointer-aligned
+ *   001 = Small integer (shifted right by TAG_BITS)
  *   010 = Boolean/Unit (payload: 0=false, 1=true, 2=unit)
  *   011 = Character (payload: Unicode codepoint)
  */
 
+#if UINTPTR_MAX == 0xFFFFFFFF
+/* 32-bit: 2 tag bits (4-byte alignment) */
+#define TAG_BITS        2
+#define TAG_MASK        0x3UL
+#define PAYLOAD_SHIFT   2
+#else
+/* 64-bit: 3 tag bits (8-byte alignment) */
 #define TAG_BITS        3
 #define TAG_MASK        0x7ULL
 #define PAYLOAD_SHIFT   3
+#endif
 
 /* Tag values */
 #define TAG_PTR         0   /* Heap pointer */
@@ -192,9 +194,9 @@ typedef uintptr_t SomaValue;
 /* Extract pointer (assumes TAG_PTR) */
 #define SOMA_TO_PTR(v)       ((void*)(v))
 
-/* Create/extract small integer */
-#define SOMA_INT(n)          ((((SomaValue)(int64_t)(n)) << PAYLOAD_SHIFT) | TAG_INT)
-#define SOMA_TO_INT(v)       ((int64_t)(v) >> PAYLOAD_SHIFT)
+/* Create/extract small integer (intptr_t-width, sign-extended) */
+#define SOMA_INT(n)          ((((SomaValue)(intptr_t)(n)) << PAYLOAD_SHIFT) | TAG_INT)
+#define SOMA_TO_INT(v)       ((intptr_t)(v) >> PAYLOAD_SHIFT)
 
 /* Create/extract boolean */
 #define SOMA_FALSE           ((SomaValue)(BOOL_FALSE << PAYLOAD_SHIFT) | TAG_BOOL)
@@ -210,17 +212,21 @@ typedef uintptr_t SomaValue;
 #define SOMA_PTR(p)          ((SomaValue)(p))
 
 /*
- * Closure structure (env follows at offset 16)
+ * Closure structure (env follows after func_ptr)
  *
  * _pad[0] = NODE_CLOSURE sentinel for runtime identification by soma_era_free.
  * _pad[1..2] = env_size as little-endian u16 (needed by soma_apply for PAP
  *   creation and by soma_era_closure for dynamic env traversal).
+ *
+ * Layout adapts to pointer width:
+ *   64-bit: {u8, u8[7], ptr} = 16 bytes header
+ *   32-bit: {u8, u8[3], ptr} =  8 bytes header
  */
 typedef struct SomaClosure {
-    uint8_t  arity;       /* remaining args (needed by soma_apply) */
-    uint8_t  _pad[7];     /* [0]=NODE_CLOSURE, [1..2]=env_size LE16, [3..6]=reserved */
-    void*    func_ptr;    /* function pointer */
-    /* void* env[] follows at offset 16 */
+    uint8_t  arity;                       /* remaining args (needed by soma_apply) */
+    uint8_t  _pad[sizeof(void*) - 1];    /* [0]=NODE_CLOSURE, [1..2]=env_size LE16, rest=reserved */
+    void*    func_ptr;                    /* function pointer */
+    /* void* env[] follows at offset 2*sizeof(void*) */
 } SomaClosure;
 
 /* Extract env_size from closure _pad[1..2] as little-endian u16 */
@@ -315,7 +321,7 @@ typedef struct SomaSegment {
  * List node — a view into a segment plus a link to the next node.
  * A list is a SomaListNode* (NULL = empty list / Nil).
  * Multiple nodes can share the same segment via refcounting.
- * 24 bytes total — fits in pool_48.
+ * 2*ptr + 2*u16 + u32 — fits in pool_48 on both 32-bit and 64-bit.
  */
 typedef struct SomaListNode {
     SomaSegment*          segment;   /* owned segment (refcounted) */
@@ -326,13 +332,22 @@ typedef struct SomaListNode {
 } SomaListNode;
 
 /* Layout guards — catch struct packing surprises across compilers */
-_Static_assert(sizeof(SomaClosure)      == 16, "SomaClosure must be 16 bytes");
+#if UINTPTR_MAX == 0xFFFFFFFF
+/* 32-bit targets */
+_Static_assert(sizeof(SomaClosure)      == 8,  "SomaClosure header must be 2*sizeof(void*)");
+_Static_assert(sizeof(SomaSup)          <= 28, "SomaSup must fit pool_48");
+_Static_assert(sizeof(SomaSegment)      == 8,  "SomaSegment header must be 8 bytes");
+_Static_assert(sizeof(SomaListNode)     <= 20, "SomaListNode must fit pool_48");
+#else
+/* 64-bit targets */
+_Static_assert(sizeof(SomaClosure)      == 16, "SomaClosure header must be 2*sizeof(void*)");
 _Static_assert(sizeof(SomaSup)          == 48
             || sizeof(SomaSup)          == 40, "SomaSup must fit pool_48");
 _Static_assert(sizeof(SomaFlatArrayView) == 32, "View must fit pool_48");
 _Static_assert(sizeof(SomaFlatArray)    == 16, "FlatArray header must be 16 bytes");
 _Static_assert(sizeof(SomaSegment)      == 8,  "SomaSegment header must be 8 bytes");
 _Static_assert(sizeof(SomaListNode)     == 24, "SomaListNode must fit pool_48");
+#endif
 
 
 /*
@@ -462,7 +477,7 @@ typedef struct SomaPoolBlock {
     struct SomaPoolBlock* next;
     uint32_t used;      /* bytes used in this block (max POOL_BLOCK_SIZE) */
     uint32_t _pad;
-    char data[];        /* 16-byte aligned (follows 8+4+4 header) */
+    char data[];        /* follows ptr+4+4 header; cache-line aligned via allocation */
 } SomaPoolBlock;
 
 /*

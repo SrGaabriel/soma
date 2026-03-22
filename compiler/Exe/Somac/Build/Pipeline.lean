@@ -2,6 +2,7 @@ import Soma.Project.Metadata
 import Soma.Project
 import Soma.Project.Check
 import Soma.Core.LambdaLift
+import Soma.Driver.Target
 import Somac.Circuit
 import Somac.Alloy
 import Somac.Alloy.Merge
@@ -190,6 +191,10 @@ def compileModules
     (mergedGlobals : Soma.Dependent.Globals)
     (dependencyAlloyModules : Array (String × Alloy.Module) := #[])
     (runSomaPasses : Bool := true)
+    (targetTriple : Option String := none)
+    (targetOs : Soma.Driver.TargetOS)
+    (ptrSize : Nat)
+    (dataLayout : Option String := none)
     : IO CompileResult := do
   let (allConstructors, localAlloyModules, merged) ←
     lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules
@@ -221,7 +226,7 @@ def compileModules
       IO.println s!"  Borrow analysis: {borrowStats.borrowedParams} parameter(s) borrowed{cloneMsg}{narrowMsg}{eraseMsg}"
     borrowParamInfo := borrowStats.paramInfo
 
-    let (reused, reuseCount) := Alloy.Reuse.reuseModule borrowed
+    let (reused, reuseCount) := Alloy.Reuse.reuseModule borrowed ptrSize
     if reuseCount > 0 then
       IO.println s!"  Reuse analysis: {reuseCount} allocation(s) eliminated"
     optimized := reused
@@ -230,7 +235,9 @@ def compileModules
 
   -- Generate LLVM IR
   IO.println "  Generating LLVM IR..."
-  let llvmIR := Llvm.codegenToString optimized (borrowInfo := borrowParamInfo)
+  let llvmIR := Llvm.codegenToString optimized (targetTriple := targetTriple)
+    (targetOs := targetOs) (ptrSize := ptrSize) (borrowInfo := borrowParamInfo)
+    (dataLayout := dataLayout)
 
   IO.println "Compilation phase complete"
 

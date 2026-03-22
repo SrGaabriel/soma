@@ -105,24 +105,23 @@ def checkTool (path : String) : IO Bool := do
   let result ← runCommand "which" #[path]
   pure (result.exitCode == 0)
 
-/-- Compile LLVM IR (.ll) to object file (.o) using llc + clang -/
+/-- Compile LLVM IR (.ll) to object file (.o) using clang -/
 def compileToObject
     (tools : ToolPaths)
     (llPath : System.FilePath)
     (oPath : System.FilePath)
     (optLevel : Nat := 2)
     (lto : Bool := false)
+    (llvmTarget : Option String := none)
     : IO (Except String Unit) := do
-  -- Use clang to compile LLVM IR directly to object
   let optFlag := s!"-O{min optLevel 3}"
   let mut args := #["-c", optFlag, "-o", oPath.toString, llPath.toString]
 
   if lto then
     args := args.push "-flto"
 
-  -- On Windows, target MinGW to match the linker (gcc uses ___chkstk, MSVC uses __chkstk)
-  if System.Platform.isWindows then
-    args := #["-target", "x86_64-w64-mingw32"] ++ args
+  if let some triple := llvmTarget then
+    args := #["-target", triple] ++ args
 
   let result ← runCommand tools.clang args
 
@@ -139,6 +138,8 @@ def linkExecutable
     (runtime : Option System.FilePath := none)
     (optLevel : Nat := 2)
     (lto : Bool := false)
+    (llvmTarget : Option String := none)
+    (isWindowsTarget : Bool := System.Platform.isWindows)
     : IO (Except String Unit) := do
   let optFlag := s!"-O{min optLevel 3}"
 
@@ -159,11 +160,13 @@ def linkExecutable
     args := args.push rt.toString
 
   let linker := if lto then tools.clang else tools.cc
-  if lto && System.Platform.isWindows then
-    args := #["-target", "x86_64-w64-mingw32", "-fuse-ld=bfd"] ++ args
+  if lto then
+    if let some triple := llvmTarget then
+      args := #["-target", triple, "-fuse-ld=bfd"] ++ args
+
+  if isWindowsTarget then
     args := args.push "-lgcc"
-  else if System.Platform.isWindows then
-    args := args.push "-lgcc"
+
   let result ← runCommand linker args
 
   if result.exitCode == 0 then
@@ -253,11 +256,13 @@ def compileAndLink
     (keepIntermediates : Bool := false)
     (sysroot : Option String := none)
     (lto : Bool := false)
+    (llvmTarget : Option String := none)
+    (isWindowsTarget : Bool := System.Platform.isWindows)
     : IO (Except String Unit) := do
   -- Compile to object
   let oPath := output.withExtension "o"
 
-  match ← compileToObject tools llPath oPath optLevel lto with
+  match ← compileToObject tools llPath oPath optLevel lto llvmTarget with
   | .error e => pure (.error e)
   | .ok () =>
     -- Find runtime if not explicitly provided
@@ -278,7 +283,7 @@ def compileAndLink
             runtimeOPath := some rtOPath
 
     -- Link to executable
-    match ← linkExecutable tools #[oPath] output runtimeForLink optLevel lto with
+    match ← linkExecutable tools #[oPath] output runtimeForLink optLevel lto llvmTarget isWindowsTarget with
     | .error e => pure (.error e)
     | .ok () =>
       unless keepIntermediates do

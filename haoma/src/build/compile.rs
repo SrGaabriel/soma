@@ -105,6 +105,10 @@ fn compile_module(
         command.arg("--profile").arg(profile);
     }
 
+    if let Ok(target) = std::env::var("SOMA_TARGET") {
+        command.arg("--target").arg(target);
+    }
+
     let emit_llvm_from_config = build_config.somac.emit_llvm.unwrap_or(false);
     let emit_llvm_from_env = std::env::var("SOMA_EMIT_LLVM").is_ok();
     if emit_llvm_from_config || emit_llvm_from_env {

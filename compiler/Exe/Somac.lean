@@ -1,5 +1,6 @@
 import Cli
 import Soma.Driver.Options
+import Soma.Driver.Target
 import Soma.Syntax
 import Soma.Core.LambdaLift
 import Soma.Logging
@@ -256,7 +257,11 @@ def runLLVM (p : Parsed) : IO UInt32 := do
   let monoModule := Somac.Alloy.Monomorphize.monomorphize alloyModule
 
   -- Phase 9: Generate LLVM IR
+  let host := Soma.Driver.TargetSpec.hostTarget
   let llvmIR := Somac.Llvm.codegenToString monoModule
+    (targetTriple := some host.llvmTarget)
+    (targetOs := host.os)
+    (ptrSize := host.pointerWidth / 8)
 
   IO.println llvmIR
   return 0
@@ -396,6 +401,7 @@ def runBuild (p : Parsed) : IO UInt32 := do
   let optLevel := p.flag? "opt-level" |>.map (·.as! Nat)
   let sysroot := p.flag? "sysroot" |>.map (·.as! String)
   let emitLlvm := p.hasFlag "emit-llvm"
+  let target := p.flag? "target" |>.map (·.as! String)
 
   let compMode := match mode with
     | "graph" => CompilationMode.graph
@@ -421,6 +427,7 @@ def runBuild (p : Parsed) : IO UInt32 := do
     validate := p.hasFlag "validate"
     sysroot := sysroot
     emitLlvm := emitLlvm
+    target := target
   }
 
   IO.println s!"Soma Compiler [{opts.profile}]"
@@ -546,6 +553,7 @@ def buildCmd : Cmd := `[Cli|
     validate; "Validate the Circuit IR for correctness"
     sysroot : String; "Path to sysroot (contains lib/ with runtime)"
     "emit-llvm"; "Keep the generated LLVM IR file (.ll) after compilation"
+    target : String; "Target spec: built-in name (e.g., x86_64-windows-gnu) or path to custom .json"
 
   ARGS:
     input : String; "Input source file or directory"
@@ -570,6 +578,7 @@ def somaCmd : Cmd := `[Cli|
     validate; "Validate the Circuit IR for correctness"
     sysroot : String; "Path to sysroot (contains lib/ with runtime)"
     "emit-llvm"; "Keep the generated LLVM IR file (.ll) after compilation"
+    target : String; "Target spec: built-in name (e.g., x86_64-windows-gnu) or path to custom .json"
 
   ARGS:
     input : String; "Input source file or directory"

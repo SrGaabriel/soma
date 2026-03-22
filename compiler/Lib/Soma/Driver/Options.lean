@@ -102,6 +102,7 @@ structure BuildOptions where
   validate : Bool := false
   sysroot : Option String := none
   emitLlvm : Bool := false
+  target : Option String := none
   deriving Repr
 
 namespace BuildOptions

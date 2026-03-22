@@ -4,6 +4,7 @@ import Somac.Build.Package
 import Soma.Project
 import Soma.Project.Check
 import Soma.Driver.Options
+import Soma.Driver.Target
 import Soma.Logging
 
 namespace Somac.Build
@@ -46,10 +47,13 @@ def generateOutput
     (opts : BuildOptions)
     (outputPath : System.FilePath)
     (llvmIR : String)
+    (targetSpec : TargetSpec)
     : IO (Except String Unit) := do
   let ext := outputPath.extension
   let tools := External.defaultTools
   let optLevel := opts.resolvedOptLevel
+  let llvmTarget := some targetSpec.llvmTarget
+  let isWin := targetSpec.os.isWindowsABI
 
   match ext with
   | some "ll" =>
@@ -60,7 +64,7 @@ def generateOutput
   | some "o" =>
     let llTemp := outputPath.withExtension "ll"
     IO.FS.writeFile llTemp llvmIR
-    let result ← External.compileToObject tools llTemp outputPath optLevel opts.lto
+    let result ← External.compileToObject tools llTemp outputPath optLevel opts.lto llvmTarget
     if !opts.emitLlvm then
       IO.FS.removeFile llTemp |>.catchExceptions fun _ => pure ()
     else
@@ -77,7 +81,7 @@ def generateOutput
       IO.FS.writeFile llTemp llvmIR
 
       IO.println s!"Compiling to executable..."
-      let result ← External.compileAndLink tools llTemp outputPath none optLevel false opts.sysroot opts.lto
+      let result ← External.compileAndLink tools llTemp outputPath none optLevel false opts.sysroot opts.lto llvmTarget isWin
 
       match result with
       | .ok () =>
@@ -177,6 +181,8 @@ def build (opts : BuildOptions) : IO BuildResult := do
         IO.eprintln s!"Library packaging failed: {e}"
         pure (BuildResult.failed #[])
     else
+      let targetSpec ← Soma.Driver.TargetSpec.resolve opts.target
+      let dataLayout := if targetSpec.dataLayout.isEmpty then none else some targetSpec.dataLayout
       let compileResult ← compileModules
         result.packageName
         result.checkedModules
@@ -184,9 +190,13 @@ def build (opts : BuildOptions) : IO BuildResult := do
         result.globals
         dependencyAlloyModules
         opts.runSomaPasses
+        (some targetSpec.llvmTarget)
+        targetSpec.os
+        (targetSpec.pointerWidth / 8)
+        dataLayout
       match compileResult.llvmIR with
       | some llvmIR =>
-        match ← generateOutput opts outputPath llvmIR with
+        match ← generateOutput opts outputPath llvmIR targetSpec with
         | .ok () =>
           IO.println s!"Successfully compiled {result.checkedModules.size} module(s)"
           pure (BuildResult.succeeded outputPath)

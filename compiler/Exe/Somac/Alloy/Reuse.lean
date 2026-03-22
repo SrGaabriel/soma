@@ -17,8 +17,8 @@ inductive SizeClass where
   deriving BEq, Repr, Inhabited
 
 /-- Compute the pool size class for a tagged payload with `fieldCount` fields -/
-def payloadSizeClass (fieldCount : Nat) : SizeClass :=
-  let bytes := 16 + fieldCount * 8
+def payloadSizeClass (fieldCount : Nat) (ptrBytes : Nat) : SizeClass :=
+  let bytes := ptrBytes * 2 + fieldCount * ptrBytes
   if bytes ≤ 48 then .pool48
   else if bytes ≤ 112 then .pool112
   else .large
@@ -125,7 +125,7 @@ structure AllocSite where
 
 /-- Pre-scan a block to identify erase sites and their associated payload extractions -/
 def preAnalyzeBlock (block : ClosedBlock) (localTypes : Std.HashMap Nat ClosedTy)
-    : Array EraseSite := Id.run do
+    (ptrBytes : Nat) : Array EraseSite := Id.run do
   let mut payloadExtractMap : Std.HashMap Nat (Nat × LocalId) := {}
   for h : i in [:block.stmts.size] do
     let stmt := block.stmts[i]
@@ -162,7 +162,7 @@ def preAnalyzeBlock (block : ClosedBlock) (localTypes : Std.HashMap Nat ClosedTy
           payloadLocal
           extractStmtIdx := extractIdx
           fieldCount
-          sizeClass := payloadSizeClass fieldCount
+          sizeClass := payloadSizeClass fieldCount ptrBytes
         }
       | none => pure ()
     | _ => pure ()
@@ -224,7 +224,7 @@ structure ReusePair where
        other use of payload → kill token. Tokens flow across blocks via
        intersection at merge points (computed by fixpoint iteration).
     3. Collect matched pairs and rewrite the function. -/
-def reuseFunc (f : ClosedFunc) : ClosedFunc × Nat := Id.run do
+def reuseFunc (f : ClosedFunc) (ptrBytes : Nat) : ClosedFunc × Nat := Id.run do
   let some cfg := f.body | return (f, 0)
 
   -- Pre-analyze all blocks to find erase sites
@@ -232,7 +232,7 @@ def reuseFunc (f : ClosedFunc) : ClosedFunc × Nat := Id.run do
   for entry in cfg.blocks.toArray do
     let blockId := entry.1
     let block := entry.2
-    let sites := preAnalyzeBlock block f.localTypes
+    let sites := preAnalyzeBlock block f.localTypes ptrBytes
     if !sites.isEmpty then
       blockEraseSites := blockEraseSites.insert blockId sites
 
@@ -291,7 +291,7 @@ def reuseFunc (f : ClosedFunc) : ClosedFunc × Nat := Id.run do
 
         | .taggedLit _tag fields (.tagged _ _) =>
           -- Try to consume a compatible token
-          let allocSizeClass := payloadSizeClass fields.size
+          let allocSizeClass := payloadSizeClass fields.size ptrBytes
           match findBestToken tokens allocSizeClass fields.size with
           | some tok =>
             reusePairs := reusePairs.push {
@@ -373,14 +373,14 @@ def reuseFunc (f : ClosedFunc) : ClosedFunc × Nat := Id.run do
   return ({ f with body := some newCfg }, reuseCount)
 
 /-- Apply reuse analysis to all monomorphic functions in a module -/
-def reuseModule (m : Module) : Module × Nat := Id.run do
+def reuseModule (m : Module) (ptrBytes : Nat) : Module × Nat := Id.run do
   let mut totalReuses : Nat := 0
   let mut newFuncs : Array SomeFunc := #[]
 
   for sf in m.funcs do
     match sf.asMono? with
     | some f =>
-      let (newFunc, reuses) := reuseFunc f
+      let (newFunc, reuses) := reuseFunc f ptrBytes
       newFuncs := newFuncs.push (SomeFunc.ofMono newFunc)
       totalReuses := totalReuses + reuses
     | none => newFuncs := newFuncs.push sf

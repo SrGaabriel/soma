@@ -396,21 +396,21 @@ def bitcast (fromTy toTy : LLVMType) (val : LLVMValue) : FuncBuilder LocalRef :=
   emit (.bitcast fromTy toTy val)
 
 /-- Allocate stack space -/
-def alloca (ty : LLVMType) (align : Option Nat := some ty.alignment) : FuncBuilder LocalRef :=
+def alloca (ty : LLVMType) (align : Option Nat := none) : FuncBuilder LocalRef :=
   emit (.alloca ty none align)
 
 /-- Allocate array on stack -/
-def allocaArray (ty : LLVMType) (numElems : LLVMValue) (align : Option Nat := some ty.alignment)
+def allocaArray (ty : LLVMType) (numElems : LLVMValue) (align : Option Nat := none)
     : FuncBuilder LocalRef :=
   emit (.alloca ty (some numElems) align)
 
 /-- Load from pointer -/
-def load (ty : LLVMType) (ptr : LLVMValue) (align : Option Nat := some ty.alignment)
+def load (ty : LLVMType) (ptr : LLVMValue) (align : Option Nat := none)
     : FuncBuilder LocalRef :=
   emit (.load ty ptr align)
 
 /-- Store to pointer -/
-def store (ty : LLVMType) (val ptr : LLVMValue) (align : Option Nat := some ty.alignment)
+def store (ty : LLVMType) (val ptr : LLVMValue) (align : Option Nat := none)
     : FuncBuilder Unit :=
   emitVoid (.store ty val ptr align)
 

@@ -941,10 +941,10 @@ def emitStoreViewBacking (viewPtr : LocalId) (newBackingPtr : LocalId) : LowerM 
   LowerM.emitVoid (.store (.local backFieldPtr) (.local newBackingPtr))
 
 /-- Default element size for lists when element type is unknown (pointer-sized) -/
-def defaultElemSize : Nat := 8
+def defaultElemSize (ptrBytes : Nat) : Nat := ptrBytes
 
 /-- Get the element size in bytes for a list element type -/
-def listElemSize (_elemTy : Ty n) : Nat := defaultElemSize
+def listElemSize (_elemTy : Ty n) (ptrBytes : Nat) : Nat := defaultElemSize ptrBytes
 
 /-- State maintained during graph traversal -/
 structure NodeState (n : Nat) where
@@ -966,6 +966,8 @@ structure NodeState (n : Nat) where
   listTypedLocals : Std.HashSet Nat := {}
   /-- Anonymous LAM node ID → graph book index mapping -/
   anonLamBookIdx : Std.HashMap Nat Nat := {}
+  /-- Target pointer width in bytes -/
+  ptrBytes : Nat := 8
   deriving Inhabited
 
 namespace NodeState
@@ -1675,7 +1677,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         let headVal ← lowerPort 1
         let tailVal ← lowerPort 2
         let headTy := getPortType 1 (.prim .i64)
-        let elemSz := listElemSize headTy
+        let elemSz := listElemSize headTy (← get).ptrBytes
         let headAlloca ← StateT.lift (LowerM.emitInst (.alloca headTy) (.ptr headTy))
         StateT.lift (LowerM.emitVoid (.store (.local headAlloca) (.local headVal)))
         let elemSizeConst ← StateT.lift (LowerM.emitInst
@@ -1977,17 +1979,18 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         | none => pure none
       | none => pure none
 
+    let pb := (← get).ptrBytes
     let elemSizeBytes : Nat := match ctorInfo with
       | some (_, ctorEntry) =>
         if len > 0 then
           match ctorEntry.getPort ⟨1⟩ with
           | some elemPort =>
             match graph.getNode elemPort.node with
-            | some elemEntry => listElemSize (getNodeTypeWithMapping elemEntry ctx)
-            | none => defaultElemSize
-          | none => defaultElemSize
-        else defaultElemSize
-      | none => defaultElemSize
+            | some elemEntry => listElemSize (getNodeTypeWithMapping elemEntry ctx) pb
+            | none => defaultElemSize pb
+          | none => defaultElemSize pb
+        else defaultElemSize pb
+      | none => defaultElemSize pb
 
     if len == 0 then
       StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
@@ -2053,8 +2056,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     let elemPtr ← StateT.lift (LowerM.emitInst (.getElemPtr (.local dataStartPtr) (.local indexVal) (.prim .i64)) (.ptr (.prim .i64)))
 
     let elemI64 ← StateT.lift (LowerM.emitInst (.load (.local elemPtr) (.prim .i64)) (.prim .i64))
-    let nodeSize := Ty.sizeBytes nodeTy
-    if nodeSize < 8 then
+    let pb := (← get).ptrBytes
+    let nodeSize := Ty.sizeBytes nodeTy pb
+    if nodeSize < pb then
       match nodeTy with
       | .prim p => StateT.lift (LowerM.emitInst (.unOp (.trunc p) (.local elemI64)) nodeTy)
       | _ => pure elemI64

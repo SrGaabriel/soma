@@ -1,6 +1,7 @@
 import Somac.Alloy.Func
 import Somac.Alloy.Monomorphize
 import Somac.Llvm.Builder
+import Soma.Driver.Target
 import Std.Data.HashMap
 
 namespace Somac.Llvm.Codegen
@@ -8,6 +9,7 @@ namespace Somac.Llvm.Codegen
 open Somac.Alloy
 open Somac.Llvm
 open Somac.Llvm.Builder
+open Soma.Driver
 
 /-- Convert Alloy primitive type to LLVM type -/
 def convertPrimTy : PrimTy → LLVMType
@@ -87,36 +89,36 @@ def invertPerm (perm : Array Nat) : Array Nat :=
     (init, 0) |>.1
 
 /-- Compute optimal packed layout for a variant's payload fields -/
-partial def computePackedLayout (fields : Array ClosedTy) : PackedLayout :=
+partial def computePackedLayout (fields : Array ClosedTy) (ptrBytes : Nat) : PackedLayout :=
   if fields.isEmpty then
     { llvmTy := .struct false #[], byteSize := 0, physToLog := #[], logToPhys := #[] }
   else if fields.size == 1 then
     { llvmTy := .struct false #[convertTy fields[0]!]
-      byteSize := fields[0]!.sizeBytes
+      byteSize := fields[0]!.sizeBytes ptrBytes
       physToLog := #[0]
       logToPhys := #[0] }
   else
     let indexed := fields.mapIdx fun i f => (i, f)
     let sorted := indexed.qsort fun (_, a) (_, b) =>
-      if a.alignment != b.alignment then a.alignment > b.alignment
-      else a.sizeBytes > b.sizeBytes
+      if a.alignment ptrBytes != b.alignment ptrBytes then a.alignment ptrBytes > b.alignment ptrBytes
+      else a.sizeBytes ptrBytes > b.sizeBytes ptrBytes
     let physToLog := sorted.map fun (i, _) => i
     let logToPhys := invertPerm physToLog
     let physFields := sorted.map fun (_, t) => convertTy t
     let rawSize := sorted.foldl (fun acc (_, t) =>
-      let align := max 1 t.alignment
-      ((acc + align - 1) / align) * align + t.sizeBytes) 0
-    let maxAlign := fields.foldl (fun acc t => max acc t.alignment) 1
+      let align := max 1 (t.alignment ptrBytes)
+      ((acc + align - 1) / align) * align + t.sizeBytes ptrBytes) 0
+    let maxAlign := fields.foldl (fun acc t => max acc (t.alignment ptrBytes)) 1
     let byteSize := ((rawSize + maxAlign - 1) / maxAlign) * maxAlign
     { llvmTy := .struct false physFields, byteSize, physToLog, logToPhys }
 
 /-- Maximum packed payload size across all variants of a tagged union -/
-partial def maxPackedPayloadSize (variants : Array (Nat × Array ClosedTy)) : Nat :=
-  variants.foldl (fun acc (_, fields) => max acc (computePackedLayout fields).byteSize) 0
+partial def maxPackedPayloadSize (variants : Array (Nat × Array ClosedTy)) (ptrBytes : Nat) : Nat :=
+  variants.foldl (fun acc (_, fields) => max acc (computePackedLayout fields ptrBytes).byteSize) 0
 
 /-- Natural alignment for a type -/
-def naturalAlign (ty : LLVMType) : Option Nat :=
-  let a := ty.alignment
+def naturalAlign (ty : LLVMType) (ptrBytes : Nat) : Option Nat :=
+  let a := ty.alignment ptrBytes
   if a > 0 then some a else none
 
 /-- Get the type of an Alloy operand -/
@@ -195,7 +197,13 @@ structure CodegenState where
   clonerCache : Std.HashMap String String := {}
   /-- Cache of generated TypeDesc globals -/
   typeDescCache : Std.HashMap String String := {}
-  deriving Inhabited
+  /-- Target operating system for ABI and platform decisions -/
+  targetOs : TargetOS := .linux
+  /-- Pointer width in bytes -/
+  ptrSize : Nat := 8
+
+instance : Inhabited CodegenState where
+  default := { moduleState := default, funcState := default, ptrSize := 8 }
 
 /-- Codegen monad -/
 abbrev CodegenM := StateM CodegenState
@@ -203,8 +211,15 @@ abbrev CodegenM := StateM CodegenState
 namespace CodegenM
 
 /-- Initialize codegen state -/
-def init (name : String) (triple : Option String := none) : CodegenState :=
-  { moduleState := ModuleBuilder.init name triple }
+def init (name : String) (triple : Option String := none) (dataLayout : Option String := none)
+    (ptrSize : Nat) (targetOs : TargetOS) : CodegenState :=
+  { moduleState := ModuleBuilder.init name triple dataLayout, ptrSize, targetOs }
+
+/-- Is the target OS Windows? (Uses the Windows x64 calling convention) -/
+def isWindows : CodegenM Bool := do return (← get).targetOs.isWindowsABI
+
+/-- Get pointer size in bytes -/
+def getPointerSize : CodegenM Nat := do return (← get).ptrSize
 
 /-- Run a FuncBuilder operation -/
 def withFuncBuilder (m : FuncBuilder α) : CodegenM α := do
@@ -516,10 +531,11 @@ def somaStringLLVMTy : LLVMType := .struct false #[.ptr, .i64]
 def isSomaStringLLVMTy (ty : LLVMType) : Bool :=
   ty == somaStringLLVMTy
 
-/-- Call a named C function with correct ABI for struct-by-value args/returns (TODO: consider specializing for each platform?) -/
+/-- Call a named C function with correct ABI for struct-by-value args/returns -/
 def callCFuncStructABI (retTy : LLVMType) (name : String)
     (args : Array (LLVMType × LLVMValue)) : CodegenM LocalRef := do
-  let hasStructRet := retTy.isStruct
+  let winABI ← CodegenM.isWindows
+  let hasStructRet := retTy.isStruct && winABI
   let mut abiArgs : Array (LLVMType × LLVMValue) := #[]
   let mut argAttrs : Array (Option String) := #[]
   let sretAlloca? ← if hasStructRet then do
@@ -529,7 +545,7 @@ def callCFuncStructABI (retTy : LLVMType) (name : String)
       pure (some alloca)
     else pure none
   for (ty, val) in args do
-    if ty.isStruct then
+    if ty.isStruct && winABI then
       let alloca ← CodegenM.withFuncBuilder (FuncBuilder.alloca ty)
       CodegenM.withFuncBuilder (FuncBuilder.store ty val (.local alloca))
       abiArgs := abiArgs.push (.ptr, .local alloca)
@@ -549,10 +565,11 @@ def callCFuncStructABI (retTy : LLVMType) (name : String)
 /-- Call a named void C function with correct ABI for struct-by-value args -/
 def callCFuncStructABIVoid (name : String) (args : Array (LLVMType × LLVMValue))
     : CodegenM Unit := do
+  let winABI ← CodegenM.isWindows
   let mut abiArgs : Array (LLVMType × LLVMValue) := #[]
   let mut argAttrs : Array (Option String) := #[]
   for (ty, val) in args do
-    if ty.isStruct then
+    if ty.isStruct && winABI then
       let alloca ← CodegenM.withFuncBuilder (FuncBuilder.alloca ty)
       CodegenM.withFuncBuilder (FuncBuilder.store ty val (.local alloca))
       abiArgs := abiArgs.push (.ptr, .local alloca)
@@ -809,7 +826,7 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
       let hasAnyErasableFields := variants.any fun (_, fields) =>
         fields.any fun ft => ft.needsErase
 
-      let payloadByteSize : Int := Int.ofNat (maxPackedPayloadSize variants)
+      let payloadByteSize : Int := Int.ofNat (maxPackedPayloadSize variants (← get).ptrSize)
 
       if hasAnyErasableFields then
         let freeLabel ← CodegenM.withFuncBuilder (FuncBuilder.freshLabel "free_payload")
@@ -829,7 +846,7 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
             let lbl := variantLabels[vi]!
             CodegenM.withFuncBuilder (FuncBuilder.startBlock lbl)
 
-            let layout := computePackedLayout fields
+            let layout := computePackedLayout fields (← get).ptrSize
             for hf : fi in [:fields.size] do
               if h2 : fi < fields.size then
                 let logIdx := layout.physToLog.getD fi fi
@@ -945,7 +962,7 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
 
       CodegenM.withFuncBuilder (FuncBuilder.startBlock cloneLabel)
 
-      let payloadByteSize : Int := Int.ofNat (maxPackedPayloadSize variants)
+      let payloadByteSize : Int := Int.ofNat (maxPackedPayloadSize variants (← get).ptrSize)
       let newPayload ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .ptr "soma_pool_alloc_raw"
           #[(.i64, .const (.int payloadByteSize 64))]
@@ -974,7 +991,7 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
             let lbl := variantLabels[vi]!
             CodegenM.withFuncBuilder (FuncBuilder.startBlock lbl)
 
-            let layout := computePackedLayout fields
+            let layout := computePackedLayout fields (← get).ptrSize
             for hf : fi in [:fields.size] do
               if h2 : fi < fields.size then
                 let logIdx := layout.physToLog.getD fi fi
@@ -1009,9 +1026,11 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
 
       -- Build block: allocate a new boxed {i32, ptr} struct and return as ptr
       CodegenM.withFuncBuilder (FuncBuilder.startBlock buildLabel)
+      -- tagged struct = {i32 tag, ptr payload}, aligned to pointer size
+      let taggedSize : Int := Int.ofNat ((← get).ptrSize * 2)
       let newStructPtr ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .ptr "malloc"
-          #[(.i64, .const (.int 16 64))]
+          #[(.i64, .const (.int taggedSize 64))]
       let newTagAddr ← CodegenM.withFuncBuilder do
         FuncBuilder.gepi32 taggedTy (.local newStructPtr) #[0, 0]
       CodegenM.withFuncBuilder (FuncBuilder.store .i32 (.local tagVal) (.local newTagAddr))
@@ -1186,7 +1205,9 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
     | none => pure 0
   -- Headerless closure: { i8 arity, [7xi8] pad, ptr func_ptr, i64 env[0..] }
   let envSlotCount : Nat := if isEmptyEnv then 0 else 1
-  let closureByteSize : Int := Int.ofNat (16 + envSlotCount * 8)
+  let ps := (← get).ptrSize
+  let closureHeaderSize := ps + ps
+  let closureByteSize : Int := Int.ofNat (closureHeaderSize + envSlotCount * ps)
   let closurePtr ← CodegenM.withFuncBuilder do
     FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int closureByteSize 64))]
   -- Store arity (field 0 of closureHeaderTy)
@@ -1284,7 +1305,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
   | .alloca ty =>
     let llvmTy := convertTy ty
-    let ref ← CodegenM.withFuncBuilder (FuncBuilder.alloca llvmTy (some 8))
+    let ref ← CodegenM.withFuncBuilder (FuncBuilder.alloca llvmTy (some (← get).ptrSize))
     pure (some (ref, .ptr ty))
 
   | .malloc size =>
@@ -1493,7 +1514,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       | _ => none
     let fieldPtr ← match variantFieldTypes? with
       | some fields =>
-        let layout := computePackedLayout fields
+        let layout := computePackedLayout fields (← get).ptrSize
         let physIdx := layout.logToPhys.getD fieldIdx fieldIdx
         CodegenM.withFuncBuilder do
           FuncBuilder.gepi32 layout.llvmTy (.local payloadPtr) #[0, physIdx]
@@ -1513,7 +1534,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     -- Allocate and store payload if non-empty
     if payload.size > 0 then
       let fieldTypes ← payload.mapM fun op => operandTy op
-      let layout := computePackedLayout fieldTypes
+      let layout := computePackedLayout fieldTypes (← get).ptrSize
       let payloadBytes : Int := Int.ofNat layout.byteSize
       let payloadMem ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int payloadBytes 64))]
@@ -1542,7 +1563,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
   | .reuseTaggedLit tag payload reuseOp ty =>
     let reusePtr ← convertOperand reuseOp
     let fieldTypes ← payload.mapM fun op => operandTy op
-    let layout := computePackedLayout fieldTypes
+    let layout := computePackedLayout fieldTypes (← get).ptrSize
     for i in [:payload.size] do
       if h : i < payload.size then
         let fieldOp := payload[i]
@@ -1633,15 +1654,18 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       | .closure argTys _ => argTys.size
       | _ => 0
     let trampolineName ← getOrCreateTrampoline closureArity
+    let ps := (← get).ptrSize
+    let compositeSize : Int := Int.ofNat (ps * 2)
     let compositeBuf ← CodegenM.withFuncBuilder do
-      FuncBuilder.callNamed .ptr "malloc" #[(.i64, intVal 16 64)]
+      FuncBuilder.callNamed .ptr "malloc" #[(.i64, .const (.int compositeSize 64))]
     CodegenM.withFuncBuilder (FuncBuilder.store .ptr fnClosureVal (.local compositeBuf))
     let envSlotAddr ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 compositeEnvTy (.local compositeBuf) #[0, 1]
     let envAsPtr ← ensurePtr envLLVMTy envVal
     CodegenM.withFuncBuilder (FuncBuilder.store .ptr envAsPtr (.local envSlotAddr))
     -- Headerless closure: { i8 arity, [7xi8] pad, ptr func_ptr, i64 env }
-    let closureByteSize : Int := 24  -- 16 header + 8 env
+    let closureHeaderSize := ps + ps
+    let closureByteSize : Int := Int.ofNat (closureHeaderSize + ps)
     let closurePtr ← CodegenM.withFuncBuilder do
       FuncBuilder.callNamed .ptr "soma_pool_alloc_raw" #[(.i64, .const (.int closureByteSize 64))]
     -- Store arity
@@ -2307,7 +2331,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
   -- String runtime functions: on Windows, structs > 8 bytes use byval/sret ABI
   let strTy := somaStringLLVMTy
   let strTyStr := strTy.toLLVM
-  if System.Platform.isWindows then
+  if (← get).targetOs.isWindowsABI then
     -- Windows x64: structs passed by hidden pointer (byval), returned via sret
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
@@ -2691,15 +2715,20 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
 
 /-- Generate LLVM IR from an Alloy module -/
 def codegen (alloyModule : Module) (targetTriple : Option String := none)
-    (borrowInfo : Std.HashMap Nat (Array Bool) := {}) : LLVMModule :=
-  let initState : CodegenState := { CodegenM.init alloyModule.name targetTriple with borrowInfo }
+    (targetOs : TargetOS) (ptrSize : Nat)
+    (borrowInfo : Std.HashMap Nat (Array Bool) := {})
+    (dataLayout : Option String := none) : LLVMModule :=
+  let initState : CodegenState :=
+    { CodegenM.init alloyModule.name targetTriple dataLayout ptrSize targetOs with borrowInfo }
   let (llvmModule, _) := Id.run (StateT.run (lowerModule alloyModule) initState)
   llvmModule
 
 /-- Generate LLVM IR text from an Alloy module -/
 def codegenToString (alloyModule : Module) (targetTriple : Option String := none)
-    (borrowInfo : Std.HashMap Nat (Array Bool) := {}) : String :=
-  let llvmModule := codegen alloyModule targetTriple borrowInfo
+    (targetOs : TargetOS) (ptrSize : Nat)
+    (borrowInfo : Std.HashMap Nat (Array Bool) := {})
+    (dataLayout : Option String := none) : String :=
+  let llvmModule := codegen alloyModule targetTriple targetOs ptrSize borrowInfo dataLayout
   llvmModule.toLLVM
 
 end Somac.Llvm.Codegen

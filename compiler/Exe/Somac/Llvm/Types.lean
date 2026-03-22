@@ -85,17 +85,19 @@ def isStruct : LLVMType → Bool
   | _ => false
 
 /-- Natural alignment in bytes for a given LLVM type -/
-partial def alignment : LLVMType → Nat
+partial def alignment (ty : LLVMType) (ptrBytes : Nat) : Nat :=
+  match ty with
   | .i1 | .i8 => 1
   | .i16 | .half => 2
   | .i32 | .float => 4
-  | .i64 | .double | .ptr | .i128 | .fp128 => 8
+  | .i64 | .double | .i128 | .fp128 => 8
+  | .ptr => ptrBytes
   | .void => 1
-  | .array _ elem => elem.alignment
+  | .array _ elem => elem.alignment ptrBytes
   | .struct _packed fields =>
-    fields.foldl (fun acc f => max acc f.alignment) 1
-  | .vector _ elem => elem.alignment
-  | .func .. | .namedStruct _ => 8
+    fields.foldl (fun acc f => max acc (f.alignment ptrBytes)) 1
+  | .vector _ elem => elem.alignment ptrBytes
+  | .func .. | .namedStruct _ => ptrBytes
 
 /-- Convert to LLVM IR syntax -/
 partial def toLLVM : LLVMType → String

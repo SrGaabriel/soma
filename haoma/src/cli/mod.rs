@@ -39,6 +39,8 @@ pub enum Commands {
         debug: bool,
         #[arg(long, conflicts_with = "profile")]
         release: bool,
+        #[arg(long)]
+        target: Option<String>,
     },
     Check {
         #[arg(short, long, default_value = ".")]
@@ -63,6 +65,8 @@ pub enum Commands {
         debug: bool,
         #[arg(long, conflicts_with = "profile")]
         release: bool,
+        #[arg(long)]
+        target: Option<String>,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -97,6 +101,7 @@ pub fn execute(command: &Commands) {
             profile,
             debug,
             release,
+            target,
         } => {
             unsafe {
                 if *emit_llvm {
@@ -106,6 +111,9 @@ pub fn execute(command: &Commands) {
                     std::env::set_var("SOMA_VERBOSE_LOGGING", "1");
                 }
                 std::env::set_var("SOMA_PROFILE", resolve_profile(profile, *debug, *release));
+                if let Some(t) = target {
+                    std::env::set_var("SOMA_TARGET", t);
+                }
             }
             build::execute(path);
         }
@@ -121,6 +129,7 @@ pub fn execute(command: &Commands) {
             profile,
             debug,
             release,
+            target,
             args,
         } => {
             unsafe {
@@ -128,6 +137,9 @@ pub fn execute(command: &Commands) {
                     std::env::set_var("SOMA_EMIT_LLVM", "1");
                 }
                 std::env::set_var("SOMA_PROFILE", resolve_profile(profile, *debug, *release));
+                if let Some(t) = target {
+                    std::env::set_var("SOMA_TARGET", t);
+                }
             }
             run::execute(path, args);
         }
