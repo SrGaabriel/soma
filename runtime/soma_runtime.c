@@ -455,20 +455,21 @@ SomaListNode* soma_list_from_array(const void* data, uint32_t len, uint16_t elem
  * ============================================================================
  */
 
-SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
-    if (!SOMA_IS_PTR(value) || value == 0) return value;
+void* soma_clone_heap_value_for_dup(void* value, uint32_t label) {
+    if (value == NULL) return NULL;
 
-    void* ptr = SOMA_TO_PTR(value);
-    uint8_t tag = *(uint8_t*)ptr;
+    uint8_t tag = *(uint8_t*)value;
 
     if (IS_SUP(tag)) {
-        return soma_dup_typed(label, value, NULL);
+        SomaValue sv = (SomaValue)value;
+        SomaValue cloned = soma_dup_typed(label, sv, NULL);
+        return (void*)cloned;
     }
     if (tag == NODE_FLAT_ARRAY_VIEW) {
-        return SOMA_PTR(soma_clone_flat_array_view((SomaFlatArrayView*)ptr));
+        return soma_clone_flat_array_view((SomaFlatArrayView*)value);
     }
     if (tag == NODE_FLAT_ARRAY) {
-        SomaFlatArray* arr = (SomaFlatArray*)ptr;
+        SomaFlatArray* arr = (SomaFlatArray*)value;
         size_t total = sizeof(SomaFlatArray) +
             (size_t)arr->length * (size_t)arr->elem_size;
         SomaFlatArray* copy = (SomaFlatArray*)malloc(total);
@@ -476,11 +477,11 @@ SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label) {
             soma_panic("soma_clone_heap_value_for_dup: out of memory");
         }
         memcpy(copy, arr, total);
-        return SOMA_PTR(copy);
+        return copy;
     }
 
-    if (((uint8_t*)ptr)[1] == NODE_CLOSURE) {
-        return SOMA_PTR(soma_clone_closure(ptr, label));
+    if (((uint8_t*)value)[1] == NODE_CLOSURE) {
+        return soma_clone_closure(value, label);
     }
 
     soma_panic("soma_clone_heap_value_for_dup: unrecognized heap object (missing typed cloner)");
@@ -580,7 +581,7 @@ static inline SomaValue soma_proj_impl(SomaValue sup_val, int proj_idx) {
         if (sup->type_desc != NULL) {
             cloned = (SomaValue)sup->type_desc->clone_fn((void*)value, sup->label);
         } else {
-            cloned = soma_clone_heap_value_for_dup(value, sup->label);
+            cloned = (SomaValue)soma_clone_heap_value_for_dup((void*)value, sup->label);
         }
         *my_slot = (void*)cloned;
         return cloned;
@@ -844,7 +845,7 @@ void* soma_clone_closure(void* closure_ptr, uint32_t label) {
     SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
 
     for (uint16_t i = 0; i < env_size; i++) {
-        dst_env[i] = soma_clone_heap_value_for_dup(src_env[i], label);
+        dst_env[i] = (SomaValue)soma_clone_heap_value_for_dup((void*)src_env[i], label);
     }
 
     return new_closure;

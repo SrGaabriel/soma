@@ -205,6 +205,7 @@ def compileModules
 
   if runSomaPasses then
     optimized := Alloy.ClosureSpec.closureSpec optimized
+    optimized := Alloy.Monomorphize.deadFunctionElimination optimized
 
     let (borrowed, borrowStats) := Alloy.Borrow.borrowModule optimized
     if borrowStats.borrowedParams > 0 then

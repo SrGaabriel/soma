@@ -111,7 +111,15 @@ def rewriteInst (inst : ClosedInst) (specMap : Std.HashMap SpecKey FuncId) : Clo
       let key : SpecKey := ⟨funcId, typeArgs⟩
       match specMap.get? key with
       | some newFuncId => .call newFuncId args retTy
-      | none => inst
+      | none =>
+        let fallback := specMap.toArray.find? fun (k, _) =>
+          k.funcId == funcId && k.typeArgs.size == typeArgs.size &&
+          (List.zip k.typeArgs.toList typeArgs.toList).all fun (specTy, callTy) =>
+            Ty.beq specTy callTy ||
+            (match callTy with | .rawPtr => true | _ => false)
+        match fallback with
+        | some (_, newFuncId) => .call newFuncId args retTy
+        | none => inst
   | .callExternPoly _ _ _ _ =>
       inst
   | .makeClosurePoly funcRef typeArgs env =>
@@ -247,8 +255,14 @@ def processRequest (key : SpecKey) : StateM MonoState Unit := do
 
   -- The specialized function may contain more polymorphic calls
   let newRequests := collectFuncRequests specializedFunc
-  pure ()
-  modify fun s => s.addRequests newRequests
+  let filteredRequests := newRequests.filter fun r =>
+    if r.funcId == key.funcId then
+      let hasDegraded := r.typeArgs.any fun ty => match ty with
+        | .rawPtr => !(key.typeArgs.any fun kty => match kty with | .rawPtr => true | _ => false)
+        | _ => false
+      !hasDegraded
+    else true
+  modify fun s => s.addRequests filteredRequests
 
 /-- Process all pending specialization requests (fixed-point iteration) -/
 partial def processAllRequests : StateM MonoState Unit := go
@@ -480,5 +494,26 @@ def reportPolymorphism (m : Module) : Array String :=
                 | _ => pure ()
           pure issues
         acc ++ funcIssues
+
+/-- Remove unreachable functions and compact IDs -/
+def deadFunctionElimination (m : Module) : Module := Id.run do
+  let reachable := findReachableFuncs m
+  let liveFuncs := m.funcs.filterMap fun sf =>
+    match sf.asMono? with
+    | some f => if reachable.contains f.id then some f else none
+    | none => none
+  let (newFuncs, idMap) := renumberFuncs liveFuncs
+  let finalFuncs := newFuncs.map fun f => remapFuncRefs f idMap
+  let newFuncIndex := finalFuncs.foldl
+    (init := ({} : Std.HashMap String FuncId)) fun acc f =>
+      acc.insert f.sig.name f.id
+  let newMain := m.mainFunc.bind fun oldId =>
+    idMap.get? oldId.id |>.map FuncId.mk
+  return {
+    m with
+    funcs := finalFuncs.map SomeFunc.ofMono
+    funcIndex := newFuncIndex
+    mainFunc := newMain
+  }
 
 end Somac.Alloy.Monomorphize

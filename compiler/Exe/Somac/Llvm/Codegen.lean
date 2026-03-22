@@ -235,6 +235,11 @@ def getLocalTy (alloyId : Nat) : CodegenM ClosedTy := do
   let s ← get
   pure (s.localTypes.get? alloyId |>.getD (.prim .i64))
 
+/-- Get Alloy type from codegen state, returning none if not mapped -/
+def getLocalTy? (alloyId : Nat) : CodegenM (Option ClosedTy) := do
+  let s ← get
+  pure (s.localTypes.get? alloyId)
+
 /-- Get LLVM local, creating if needed (with default type) -/
 def getOrCreateLocal (alloyId : Nat) (defaultTy : ClosedTy := .prim .i64) : CodegenM LocalRef := do
   match ← getLocal alloyId with
@@ -341,13 +346,15 @@ end CodegenM
 def operandTy (op : Operand) : CodegenM ClosedTy := do
   match op with
   | .local id =>
-    -- First try the Alloy Func's localTypes (authoritative source)
-    let func? ← CodegenM.getCurrentFunc
-    match func?.bind (·.getLocalType id) with
+    let codegenTy ← CodegenM.getLocalTy? id.id
+    match codegenTy with
     | some ty => pure ty
     | none =>
-      -- Fall back to CodegenState.localTypes
-      CodegenM.getLocalTy id.id
+      -- Fall back to Alloy Func's localTypes
+      let func? ← CodegenM.getCurrentFunc
+      match func?.bind (·.getLocalType id) with
+      | some ty => pure ty
+      | none => pure .rawPtr
   | .const c => pure c.ty
   | .global _ => pure .rawPtr
   | .func _ => pure .rawPtr
@@ -967,12 +974,10 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
 
     | .rawPtr =>
       -- rawPtr fallback: generic clone
-      let valAsI64 ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 (.local valParam))
       let cloned ← CodegenM.withFuncBuilder do
-        FuncBuilder.callNamed .i64 "soma_clone_heap_value_for_dup"
-          #[(.i64, .local valAsI64), (.i32, .local lblParam)]
-      let resultPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 (.local cloned))
-      CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local resultPtr))
+        FuncBuilder.callNamed .ptr "soma_clone_heap_value_for_dup"
+          #[(.ptr, .local valParam), (.i32, .local lblParam)]
+      CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local cloned))
 
     | _ =>
       -- Flat types: identity clone
@@ -1025,8 +1030,11 @@ end
 def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
     : CodegenM (Option (LocalRef × ClosedTy)) := do
   let funcName ← CodegenM.getFuncName funcId
-  let llvmRetTy := convertTy retTy
   let maybeSig ← CodegenM.getFuncSig funcId
+  let actualRetTy := match maybeSig with
+    | some sig => if retTy == .rawPtr && sig.retTy != .rawPtr then sig.retTy else retTy
+    | none => retTy
+  let llvmRetTy := convertTy actualRetTy
   let paramCount := match maybeSig with
     | some sig => sig.params.size
     | none => args.size
@@ -1062,7 +1070,7 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
       FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, .local ref), (.ptr, argPtr)]
   if !extraArgs.isEmpty then
     ref ← unboxApplyResult ref retTy
-  pure (some (ref, retTy))
+  pure (some (ref, actualRetTy))
 
 /-- The composite env struct type: two i64 slots -/
 def compositeEnvTy : LLVMType := .struct false #[.i64, .i64]
@@ -2075,7 +2083,10 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) (llvmRetOverride : Optio
     match stmt.result, maybeResult with
     | some alloyLocal, some (llvmRef, _tyFromLowerInst) =>
       let tyFromAlloy := func?.bind (·.getLocalType alloyLocal)
-      let ty := tyFromAlloy.getD _tyFromLowerInst
+      let ty := match tyFromAlloy with
+        | some .rawPtr => _tyFromLowerInst
+        | some t => t
+        | none => _tyFromLowerInst
       CodegenM.mapLocal alloyLocal.id llvmRef ty
       match stmt.inst with
       | .copy (.const (.string idx _)) =>
@@ -2364,8 +2375,8 @@ def addRuntimeDeclarations : CodegenM Unit := do
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
       name := "soma_clone_heap_value_for_dup"
-      retTy := .i64
-      params := #[{ name := "value", ty := .i64 }, { name := "label", ty := .i32 }]
+      retTy := .ptr
+      params := #[{ name := "value", ty := .ptr }, { name := "label", ty := .i32 }]
       attrs := { nounwind := true }
       isDeclaration := true
     }

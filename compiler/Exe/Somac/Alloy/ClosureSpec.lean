@@ -171,6 +171,12 @@ private def buildDerivedParamMap (cfg : ClosedCFG) (paramIds : Std.HashSet Nat)
           | .clone (.local srcId) _ _ =>
             if let some srcParam := derivedFrom.get? srcId.id then
               derivedFrom := derivedFrom.insert resultId.id srcParam
+          | .closureFunc (.local srcId) =>
+            if let some srcParam := derivedFrom.get? srcId.id then
+              derivedFrom := derivedFrom.insert resultId.id srcParam
+          | .closureEnv (.local srcId) =>
+            if let some srcParam := derivedFrom.get? srcId.id then
+              derivedFrom := derivedFrom.insert resultId.id srcParam
           | .callExtern _ args _
           | .callExternPoly _ _ args _ =>
             -- If any argument is derived from a param, the result is derived too
@@ -281,6 +287,7 @@ private def remapLocalsInOps (ops : Array Operand) (from_ to_ : LocalId) : Array
 private def rewriteStmtForSpec (stmt : ClosedStmt) (closureDerived : Std.HashSet Nat)
     (targetFuncId : FuncId) (origFuncId : FuncId) (specFuncId : FuncId)
     (paramIdx : Nat) (hasEnv : Bool) (envLocalId : Option LocalId)
+    (targetRetTy : Option ClosedTy := none)
     : Option ClosedStmt :=
   match stmt.inst with
   | .callClosure closureOp args retTy =>
@@ -292,7 +299,8 @@ private def rewriteStmtForSpec (stmt : ClosedStmt) (closureDerived : Std.HashSet
           | some envId => #[.local envId] ++ args
           | none => args
         else args
-        some { stmt with inst := .call targetFuncId callArgs retTy }
+        let actualRetTy := targetRetTy.getD retTy
+        some { stmt with inst := .call targetFuncId callArgs actualRetTy }
       else some stmt
     | _ => some stmt
   | .call funcId args retTy =>
@@ -320,14 +328,15 @@ private def rewriteStmtForSpec (stmt : ClosedStmt) (closureDerived : Std.HashSet
 private def rewriteBlockForSpec (block : ClosedBlock) (closureDerived : Std.HashSet Nat)
     (targetFuncId : FuncId) (origFuncId : FuncId) (specFuncId : FuncId)
     (paramIdx : Nat) (hasEnv : Bool) (envLocalId : Option LocalId)
+    (targetRetTy : Option ClosedTy := none)
     : ClosedBlock :=
   let newStmts := block.stmts.filterMap fun stmt =>
     rewriteStmtForSpec stmt closureDerived
-      targetFuncId origFuncId specFuncId paramIdx hasEnv envLocalId
+      targetFuncId origFuncId specFuncId paramIdx hasEnv envLocalId targetRetTy
   { block with stmts := newStmts }
 
 /-- Create a specialized version of a function with a known closure parameter -/
-def specializeFunc (_m : Module) (origFunc : ClosedFunc) (req : SpecRequest)
+def specializeFunc (m : Module) (origFunc : ClosedFunc) (req : SpecRequest)
     (specFuncId : FuncId) : ClosedFunc := Id.run do
   let some cfg := origFunc.body | return { origFunc with id := specFuncId }
 
@@ -354,15 +363,42 @@ def specializeFunc (_m : Module) (origFunc : ClosedFunc) (req : SpecRequest)
       if i != req.paramIdx then
         newParams := newParams.push origFunc.sig.params[i]!
 
+  let targetRetTy : Option ClosedTy := Id.run do
+    let mut retTy : Option ClosedTy := none
+    for sf in m.funcs do
+      if sf.id == req.targetFuncId then
+        match sf.asMono? with
+        | some f =>
+          if f.sig.retTy != .rawPtr then
+            return some f.sig.retTy
+          else
+            retTy := some f.sig.retTy
+        | none => pure ()
+    match retTy with
+    | some .rawPtr =>
+      if origFunc.sig.retTy != .rawPtr then
+        return some origFunc.sig.retTy
+      else return none
+    | other => return other
+
   let newBlocks := cfg.blocks.fold (init := ({} : Std.HashMap Nat ClosedBlock))
     fun acc id block =>
       acc.insert id (rewriteBlockForSpec block closureDerived
-        req.targetFuncId origFunc.id specFuncId req.paramIdx req.hasEnv envLocalId)
+        req.targetFuncId origFunc.id specFuncId req.paramIdx req.hasEnv envLocalId targetRetTy)
 
-  let cleanLocalTypes := origFunc.localTypes.fold (init := ({} : Std.HashMap Nat ClosedTy))
+  -- Update local types: remove closure-derived locals and fix return types for callClosure → direct call rewrites
+  let mut cleanLocalTypes := origFunc.localTypes.fold (init := ({} : Std.HashMap Nat ClosedTy))
     fun acc lid ty =>
       if closureDerived.contains lid || lid == closureParamId.id then acc
       else acc.insert lid ty
+  if let some retTy := targetRetTy then
+    for (_, block) in cfg.blocks.toArray do
+      for stmt in block.stmts do
+        match stmt.inst, stmt.result with
+        | .callClosure (.local cloId) _ _, some rid =>
+          if closureDerived.contains cloId.id then
+            cleanLocalTypes := cleanLocalTypes.insert rid.id retTy
+        | _, _ => pure ()
 
   let specName := s!"{origFunc.sig.name}$cs_{req.targetFuncId.id}"
   return {
@@ -830,8 +866,6 @@ def closureSpec (m : Module) : Module := Id.run do
       let mut newFuncs := module.funcs
       for req in requests do
         let some origFunc := getMonoFunc? module req.hofFuncId | continue
-        -- todo: reenable
-        if origFunc.sig.name.find (· == '$') != origFunc.sig.name.endPos then continue
         let specFuncId := FuncId.mk nextFuncId
         nextFuncId := nextFuncId + 1
         let specFunc := specializeFunc module origFunc req specFuncId

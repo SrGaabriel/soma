@@ -419,7 +419,7 @@ SOMA_HOT void soma_era_closure(void* closure);
 SOMA_MALLOC SOMA_WARN_UNUSED
 void* soma_clone_closure(void* closure, uint32_t label);
 
-SomaValue soma_clone_heap_value_for_dup(SomaValue value, uint32_t label);
+void* soma_clone_heap_value_for_dup(void* value, uint32_t label);
 
 /*
  * SUP (Superposition) operations — Tier 3 lazy duplication
