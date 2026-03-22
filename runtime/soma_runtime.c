@@ -384,12 +384,6 @@ SOMA_HOT
 SomaListNode* soma_list_tail(SomaListNode* list) {
     uint16_t next_start = list->start + 1;
     if (next_start < list->end) {
-        /* More elements in this chunk — check if we can mutate in place */
-        if (atomic_load_explicit(&list->refcount, memory_order_relaxed) == 1) {
-            list->start = next_start;
-            return list;
-        }
-        /* Shared: allocate a new node viewing the same segment */
         SomaListNode* node = alloc_node();
         node->segment = list->segment;
         atomic_fetch_add_explicit(&list->segment->refcount, 1, memory_order_relaxed);
@@ -401,17 +395,10 @@ SomaListNode* soma_list_tail(SomaListNode* list) {
         node->end = list->end;
         return node;
     }
-    /* This chunk exhausted — move to next */
+    /* This chunk exhausted */
     SomaListNode* next = list->next;
-    /* If uniquely owned, free the current node (it's fully consumed) */
-    if (atomic_load_explicit(&list->refcount, memory_order_relaxed) == 1) {
-        segment_release(list->segment);
-        free_node(list);
-    } else {
-        /* Shared: just bump refcount on next */
-        if (next != NULL) {
-            atomic_fetch_add_explicit(&next->refcount, 1, memory_order_relaxed);
-        }
+    if (next != NULL) {
+        atomic_fetch_add_explicit(&next->refcount, 1, memory_order_relaxed);
     }
     return next;
 }

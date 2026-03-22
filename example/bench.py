@@ -3,6 +3,100 @@ import statistics
 import subprocess
 import sys
 import time
+import shutil
+
+
+BENCH_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench")
+TARGET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "target")
+
+
+def find_tool(name):
+    return shutil.which(name)
+
+
+def compile_targets():
+    """Compile all benchmark targets. Returns list of (name, exe_path) tuples."""
+    os.makedirs(TARGET_DIR, exist_ok=True)
+    targets = []
+
+    # Soma (already built)
+    soma_exe = os.path.join(TARGET_DIR, "example.exe")
+    if os.path.isfile(soma_exe):
+        targets.append(("Soma", soma_exe))
+    else:
+        print("  [skip] Soma: not built (run 'haoma build --release' first)")
+
+    # C (gcc -O2)
+    gcc = find_tool("gcc")
+    if gcc:
+        c_src = os.path.join(BENCH_DIR, "main.c")
+        c_exe = os.path.join(TARGET_DIR, "bench_c.exe")
+        r = subprocess.run([gcc, "-O2", "-o", c_exe, c_src], capture_output=True)
+        if r.returncode == 0:
+            targets.append(("C (gcc -O2)", c_exe))
+        else:
+            print(f"  [skip] C: compile failed: {r.stderr.decode(errors='replace')[:200]}")
+    else:
+        print("  [skip] C: gcc not found")
+
+    # Rust (rustc -O)
+    rustc = find_tool("rustc")
+    if rustc:
+        rs_src = os.path.join(BENCH_DIR, "main.rs")
+        rs_exe = os.path.join(TARGET_DIR, "bench_rust.exe")
+        r = subprocess.run([rustc, "-O", "-o", rs_exe, rs_src], capture_output=True)
+        if r.returncode == 0:
+            targets.append(("Rust (rustc -O)", rs_exe))
+        else:
+            print(f"  [skip] Rust: compile failed: {r.stderr.decode(errors='replace')[:200]}")
+    else:
+        print("  [skip] Rust: rustc not found")
+
+    # Go
+    go = find_tool("go")
+    if go:
+        go_src = os.path.join(BENCH_DIR, "main.go")
+        go_exe = os.path.join(TARGET_DIR, "bench_go.exe")
+        r = subprocess.run([go, "build", "-o", go_exe, go_src], capture_output=True)
+        if r.returncode == 0:
+            targets.append(("Go", go_exe))
+        else:
+            print(f"  [skip] Go: compile failed: {r.stderr.decode(errors='replace')[:200]}")
+    else:
+        print("  [skip] Go: go not found")
+
+    # Haskell (ghc -O2)
+    ghc = find_tool("ghc")
+    if ghc:
+        hs_src = os.path.join(BENCH_DIR, "main.hs")
+        hs_exe = os.path.join(TARGET_DIR, "bench_haskell.exe")
+        r = subprocess.run([ghc, "-O2", "-o", hs_exe, hs_src, "-no-keep-hi-files", "-no-keep-o-files"],
+                           capture_output=True)
+        if r.returncode == 0:
+            targets.append(("Haskell (ghc -O2)", hs_exe))
+        else:
+            print(f"  [skip] Haskell: compile failed: {r.stderr.decode(errors='replace')[:200]}")
+    else:
+        print("  [skip] Haskell: ghc not found")
+
+    # OCaml (ocamlfind/ocamlopt)
+    ocamlopt = find_tool("ocamlfind") or find_tool("ocamlopt")
+    if ocamlopt:
+        ml_src = os.path.join(BENCH_DIR, "main.ml")
+        ml_exe = os.path.join(TARGET_DIR, "bench_ocaml.exe")
+        if "ocamlfind" in ocamlopt:
+            cmd = [ocamlopt, "ocamlopt", "-package", "stdlib", "-linkpkg", "-O2", "-o", ml_exe, ml_src]
+        else:
+            cmd = [ocamlopt, "-O2", "-o", ml_exe, ml_src]
+        r = subprocess.run(cmd, capture_output=True)
+        if r.returncode == 0:
+            targets.append(("OCaml (ocamlopt -O2)", ml_exe))
+        else:
+            print(f"  [skip] OCaml: compile failed: {r.stderr.decode(errors='replace')[:200]}")
+    else:
+        print("  [skip] OCaml: ocamlopt not found")
+
+    return targets
 
 
 def run_once(exe):
@@ -17,7 +111,7 @@ def run_once(exe):
         print(f"ERROR: {exe} exited with code {result.returncode}", file=sys.stderr)
         if result.stderr:
             print(result.stderr.decode(errors="replace"), file=sys.stderr)
-        sys.exit(1)
+        return None
     return elapsed_ns
 
 
@@ -30,42 +124,73 @@ def fmt_ns(ns):
         return f"{ns / 1_000_000_000:.3f}s"
 
 
-def main():
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Soma benchmark runner")
-    parser.add_argument("exe", nargs="?", default=os.path.join("target", "example.exe"))
-    parser.add_argument("--runs", type=int, default=10)
-    parser.add_argument("--warmup", type=int, default=2)
-    args = parser.parse_args()
-
-    exe = os.path.abspath(args.exe)
-    if not os.path.isfile(exe):
-        print(f"ERROR: executable not found: {exe}", file=sys.stderr)
-        sys.exit(1)
-
-    total_runs = args.warmup + args.runs
-    print(f"Benchmark: {os.path.basename(exe)}")
-    print(f"  Warmup: {args.warmup}  Measured: {args.runs}")
-    print()
-
+def bench_target(name, exe, runs=10, warmup=2):
+    total_runs = warmup + runs
     times = []
     for i in range(total_runs):
         ns = run_once(exe)
-        is_warmup = i < args.warmup
-        label = "warmup" if is_warmup else f"run {i - args.warmup + 1:>2}"
-        print(f"  [{label}] {fmt_ns(ns)}")
-        if not is_warmup:
+        if ns is None:
+            return None
+        if i >= warmup:
             times.append(ns)
-
     times.sort()
+    return {
+        "name": name,
+        "min": times[0],
+        "median": statistics.median(times),
+        "mean": statistics.mean(times),
+        "max": times[-1],
+        "stdev": statistics.stdev(times) if len(times) > 1 else 0,
+    }
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Soma cross-language benchmark")
+    parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument("--warmup", type=int, default=3)
+    args = parser.parse_args()
+
+    print("=" * 60)
+    print("  Soma Cross-Language Benchmark")
+    print("=" * 60)
     print()
-    print(f"  Results ({args.runs} runs):")
-    print(f"    Min:    {fmt_ns(times[0])}")
-    print(f"    Median: {fmt_ns(statistics.median(times))}")
-    print(f"    Mean:   {fmt_ns(statistics.mean(times))}")
-    print(f"    Max:    {fmt_ns(times[-1])}")
-    print(f"    Stdev:  {fmt_ns(statistics.stdev(times))}" if len(times) > 1 else "")
+    print("Compiling targets...")
+    targets = compile_targets()
+    print(f"  {len(targets)} target(s) ready")
+    print()
+
+    results = []
+    for name, exe in targets:
+        print(f"Benchmarking: {name}")
+        r = bench_target(name, exe, runs=args.runs, warmup=args.warmup)
+        if r:
+            print(f"  median: {fmt_ns(r['median'])}  min: {fmt_ns(r['min'])}")
+            results.append(r)
+        else:
+            print("  FAILED")
+        print()
+
+    if not results:
+        print("No results.")
+        return
+
+    # Sort by median time
+    results.sort(key=lambda r: r["median"])
+    baseline = results[0]["median"]
+
+    print("=" * 60)
+    print("  RESULTS (sorted by median, lower is better)")
+    print("=" * 60)
+    print()
+    print(f"  {'Language':<25} {'Median':>10} {'Min':>10} {'vs best':>10}")
+    print(f"  {'-'*25} {'-'*10} {'-'*10} {'-'*10}")
+    for r in results:
+        ratio = r["median"] / baseline if baseline > 0 else 0
+        ratio_str = f"{ratio:.2f}x" if ratio > 1.005 else "baseline"
+        print(f"  {r['name']:<25} {fmt_ns(r['median']):>10} {fmt_ns(r['min']):>10} {ratio_str:>10}")
+    print()
 
 
 if __name__ == "__main__":

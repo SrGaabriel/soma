@@ -2,71 +2,126 @@
 ![GitHub Repo stars](https://img.shields.io/github/stars/SrGaabriel/soma?style=for-the-badge)
 ![GitHub License](https://img.shields.io/github/license/SrGaabriel/soma?style=for-the-badge)
 
+# Soma
 
-# ⚗️ soma
+Soma is a dependently typed, pure functional language that compiles to native code via LLVM. It uses interaction nets as a compilation model to get deterministic, GC-free memory management without programmer annotation, reference counting, garbage collector, or explicit `free` calls.
 
-Soma is a dependently-typed, pure functional language with explicit effect modeling and eager evaluation semantics. It leverages Interaction Nets for optimal evaluation, enabling GC-free memory management with deterministic lifetimes, zero-cost proofs and automatic parallelism.
-
----
-
-## ✨ Overview
-
-Combining high-level expressiveness with predictable performance characteristics, Soma features a dependent type system with quantities that track variable usage (erased, linear, or unrestricted).
-
-Soma achieves optimal evaluation via Interaction Nets, in turn delivering GC-free memory management with deterministic lifetimes. The key is that the compiler statically analyzes variable usage patterns through quantities, automatically inserting duplication and erasure operations that correspond to precise allocation and deallocation points.
-
-
-In practice, this means developers write composable functional code with optional dependent types for compile-time guarantees (vector lengths, protocol states, resource usage) while the compiler guarantees systems-level performance: deterministic memory reclamation, predictable execution timing, zero-cost proofs and no runtime garbage collection overhead.
+The compiler tracks how many times each variable is used (zero, once, or many times) through Quantitative Type Theory, then inserts duplication and erasure operations at the right places. Values are copied lazily, only when both copies are actually accessed. When one side of a duplication is erased before being used, no copy happens.
 
 ---
 
-## 📚 User Guide
+## Language
 
-You need to have `svm`, currently you can clone the repository and in the `svm` folder run:
+Soma has dependent types, row polymorphism, type classes and first-class linear types. Here's what it looks like:
+
+```lean
+// Polymorphic identity
+def id : ∀a. a -> a
+    | x => x
+
+// Dependent type: vector length in the type
+def head : ∀a. (n : Nat) -> Vec a (n + 1) -> a
+    | _, Vec::Cons x _ => x
+
+// Pattern matching on ADTs
+inductive Maybe {a : Type} where
+    | Nothing
+    | Just (value : a)
+
+def from_maybe : ∀a. a -> Maybe a -> a
+    | default, Maybe::Nothing => default
+    | _, Maybe::Just x => x
+
+// Row polymorphism: open record types
+def get_x : { x : Int | r } -> Int
+    | p => p.x
+
+// Open variants
+def to_ok : Int -> < Ok : Int | r >
+    | n => .Ok n
+
+// Type classes
+class Functor (f : Type -> Type) where
+    fmap : {a b : Type} -> (a -> b) -> f a -> f b
+
+instance : Functor Maybe where
+    def fmap : (a -> b) -> Maybe a -> Maybe b
+        | g, Maybe::Just x => Maybe::Just (g x)
+        | g, Maybe::Nothing => Maybe::Nothing
+
+// Linear types: use exactly once
+def use_once : (1 x : Int) -> Int
+    | x => x + 1
+```
+
+Quantities (`0`, `1`, `ω`) appear in binders. A `0`-bound variable is erased at compile time, generating no code. A `1`-bound variable must be used exactly once. An `ω`-bound variable (the default) can be used any number of times.
+
+---
+
+## Memory management
+
+Soma has no garbage collector and no manual memory management. Memory is reclaimed deterministically through interaction net semantics baked into the compiled output.
+
+The compiler classifies every type into two tiers:
+
+**Flat types** (integers, booleans, floats, all-flat structs): duplication is a register copy, erasure is a no-op. Zero overhead, same as C.
+
+**Heap types** (closures, tagged unions, recursive data): duplication creates a superposition node (SUP) that defers the copy. If only one side of the duplication is ever accessed, the SUP and its partner ERA node annihilate each other and no copy happens. If both sides are accessed, the copy happens on demand.
+
+Defensive duplication (inserting a DUP because a value might be used in multiple branches) costs nothing when only one branch executes. The DUP and the unused ERA annihilate each other.
+
+Soma is not Lévy-optimal. It does not share the reduction of duplicated redexes the way HVM does. The bet is that native code with good cache behavior wins over graph rewriting for most programs and that QTT eliminates most of the cases where sharing would help anyway.
+
+---
+
+## Getting started
+
+Install `svm` (the Soma version manager) by cloning the repository and running:
 
 ```bash
+cd svm
 cargo install --path .
 ```
 
-To install the rest of the ecosystem, you can run:
+Then use the TUI to install the rest of the ecosystem:
 
 ```bash
 svm tui
 ```
-That will open a TUI where you can install the rest of the ecosystem.
 
-Then:
+Compile a file directly:
 
 ```bash
-somac <source-file>.soma
+somac <file>.soma
 ```
 
-Or for projects:
+Or create and run a project:
 
-```
-haoma new <project-name>
-cd <project-name>
+```bash
+haoma new my-project
+cd my-project
 haoma run
 ```
 
 ---
 
-# ✨ Etymology
+## Etymology
 
-Soma draws its name from three linguistic roots that together capture the language's philosophy:
+The name comes from three words that happen to overlap:
+The name draws from three separate words that happen to coincide.
 
-1. **Portuguese: "soma":** In mathematics, Σ denotes summation: the composition of many terms into a whole. Soma embraces this compositional spirit: monads chain effects, functions composition and type classes let you abstract over structure. The syntax reads like notation, letting you build programs as elegant equations where complex behavior emerges from the sum of simple, pure parts.
+1. **Portuguese: "soma":** In mathematics, Σ denotes summation: the composition of many terms into a whole. Soma embraces this compositional spirit through monads chain effects. The syntax reads like notation, letting you build programs as elegant equations where complex behavior emerges from the sum of simple, pure parts.
 
-2. **Sanskrit: सोम (soma):** In Vedic tradition, soma was a ritual drink prepared through extensive refinement: pressed, filtered, and purified. The name evokes transformation through process: taking raw materials and distilling them into something potent and essential. Soma the language shares this emphasis on refinement, where high-level abstractions are transformed into efficient machine code without losing their essential clarity.
+2. **Sanskrit: सोम (soma):** In Vedic tradition, soma was a ritual drink prepared through extensive refinement: pressed, filtered and purified. The name evokes transformation through process: taking raw materials and distilling them into something potent and essential. Soma the language shares this emphasis on refinement, where high-level abstractions are transformed into efficient machine code without losing their essential clarity.
 
 3. **Greek: σῶμα (sôma):** In Greek philosophy, sôma represents the physical embodiment of form: the material instantiation of abstract ideas. Soma gives your functional abstractions a tangible body: the compiler translates pure, high-level code into concrete, efficient executables. Just as sôma grounds the ethereal in the corporeal, Soma grounds elegant code in performant machine behavior.
 
 ---
 
-# 🙏 Acknowledgments
+## Acknowledgments
 
-First and foremost, I would like to thank Jesus Christ for His guidance and blessings throughout this project and giving me the opportunity to create this.
+Thanks first to Jesus Christ for making this possible.
 
-Special thanks to **HigherOrderCo** (HOC) and **Victor Taelin** for their groundbreaking research and development in Interaction Nets and Interaction Calculus. Their work on optimal evaluation, the HVM runtime and the theoretical foundations of interaction-based computation has been instrumental in developing Soma's Circuit IR and runtime system.
+Thanks to **HigherOrderCo** and **Victor Taelin** for their work on interaction nets, the HVM runtime and the Interaction Calculus. Soma's Circuit IR and memory model draw directly from that research.
 
-Lastly, thanks to the open-source community and researchers whose contributions made this project possible.
+Thanks to the open-source community whose tools and libraries made this feasible to build.

@@ -1096,13 +1096,28 @@ partial def emitTaggedDup (inputVal : LocalId) (taggedTy : Ty n) (label : UInt32
   let copy1 ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) taggedTy label) taggedTy)
   pure (inputVal, copy1)
 
-/-- Emit chunked list duplication via refcount increment -/
+/-- Emit list duplication -/
 partial def emitListDup (inputVal : LocalId) (_srcTy : Ty n) (_label : UInt32)
-    (_graph : CGraph) (_nodeId : CNodeId)
+    (graph : CGraph) (nodeId : CNodeId)
     : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
-  let copy1 ← StateT.lift (LowerM.emitInst
-    (.callExtern "soma_list_dup" #[.local inputVal] .rawPtr) .rawPtr)
-  pure (inputVal, copy1)
+  let isPatternMatchDup := match graph.getNode nodeId with
+    | some entry =>
+      let checkPort (portIdx : Nat) : Bool :=
+        match entry.getPort ⟨portIdx⟩ with
+        | some port => match graph.getNode port.node with
+          | some e => match e.node with | .mat _ => true | _ => false
+          | none => false
+        | none => false
+      checkPort 1 || checkPort 2
+    | none => false
+  if isPatternMatchDup then
+    let copy0 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .rawPtr)
+    let copy1 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .rawPtr)
+    pure (copy0, copy1)
+  else
+    let copy1 ← StateT.lift (LowerM.emitInst
+      (.callExtern "soma_list_dup" #[.local inputVal] .rawPtr) .rawPtr)
+    pure (inputVal, copy1)
 
 /-- Lower an operand with FuncId map -/
 partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : FuncIdMap)
