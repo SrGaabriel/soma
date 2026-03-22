@@ -170,7 +170,7 @@ def specializeFunction (registry : ClassMethodRegistry) (fn : Soma.Core.TypedFun
   if registry.isEmpty then fn
   else
     let specialized := specializeExpr registry fn.body
-    let reduced := specialized.betaReduce (stripTypeArgs := true)
+    let reduced := specialized.betaReduce
     { fn with body := reduced }
 
 /-- Check if the head of an expression refers to a specific wired-in QualifiedName -/

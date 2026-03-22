@@ -2353,6 +2353,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
       isDeclaration := true
     }
 
+  -- Legacy flat array view operations
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
       name := "soma_clone_flat_array_view"
@@ -2382,6 +2383,66 @@ def addRuntimeDeclarations : CodegenM Unit := do
       isDeclaration := true
     }
 
+  -- Chunked list operations
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_list_cons"
+      retTy := .ptr
+      params := #[{ name := "elem", ty := .ptr, attrs := #["nocapture", "readonly"] },
+                  { name := "tail", ty := .ptr },
+                  { name := "elem_size", ty := .i16 }]
+      attrs := { nounwind := true }
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_list_head"
+      retTy := .ptr
+      params := #[{ name := "list", ty := .ptr, attrs := #["nocapture", "readonly"] }]
+      attrs := { nounwind := true }
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_list_tail"
+      retTy := .ptr
+      params := #[{ name := "list", ty := .ptr }]
+      attrs := { nounwind := true }
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_list_dup"
+      retTy := .ptr
+      params := #[{ name := "list", ty := .ptr }]
+      attrs := { nounwind := true }
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_list_era"
+      retTy := .void
+      params := #[{ name := "list", ty := .ptr }]
+      attrs := { nounwind := true }
+      isDeclaration := true
+    }
+
+  CodegenM.withModuleBuilder do
+    ModuleBuilder.addFunc {
+      name := "soma_list_from_array"
+      retTy := .ptr
+      returnAttrs := #["noalias"]
+      params := #[{ name := "data", ty := .ptr, attrs := #["nocapture", "readonly"] },
+                  { name := "len", ty := .i32 },
+                  { name := "elem_size", ty := .i16 }]
+      attrs := { nounwind := true }
+      isDeclaration := true
+    }
+
   let runtimeNames := #[
     "malloc", "free",
     "soma_era_free", "soma_era_closure", "soma_era_string", "soma_panic",
@@ -2391,7 +2452,9 @@ def addRuntimeDeclarations : CodegenM Unit := do
     "soma_strcat", "soma_int_to_string",
     "soma_apply", "soma_dup_typed", "soma_proj0", "soma_proj1",
     "soma_clone_closure", "soma_clone_heap_value_for_dup",
-    "soma_clone_flat_array_view", "soma_alloc_view", "soma_free_view"
+    "soma_clone_flat_array_view", "soma_alloc_view", "soma_free_view",
+    "soma_list_cons", "soma_list_head", "soma_list_tail",
+    "soma_list_dup", "soma_list_era", "soma_list_from_array"
   ]
   for name in runtimeNames do
     CodegenM.markExternDeclared name

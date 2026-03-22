@@ -299,6 +299,158 @@ void* soma_clone_flat_array_view(SomaFlatArrayView* restrict src) {
 
 /*
  * ============================================================================
+ * Chunked List Operations
+ * ============================================================================
+ */
+
+/* Inline helpers */
+static inline void* segment_data(SomaSegment* seg) {
+    return (char*)seg + sizeof(SomaSegment);
+}
+
+static inline void* segment_elem(SomaSegment* seg, uint16_t idx) {
+    return (char*)seg + sizeof(SomaSegment) + (size_t)idx * seg->elem_size;
+}
+
+static inline SomaSegment* alloc_segment(uint16_t capacity, uint16_t elem_size) {
+    size_t total = sizeof(SomaSegment) + (size_t)capacity * elem_size;
+    SomaSegment* seg = (SomaSegment*)soma_pool_alloc_raw(total);
+    if (SOMA_UNLIKELY(seg == NULL)) soma_panic("alloc_segment: out of memory");
+    atomic_init(&seg->refcount, 1);
+    seg->capacity = capacity;
+    seg->elem_size = elem_size;
+    return seg;
+}
+
+static inline SomaListNode* alloc_node(void) {
+    SomaPools* pools = get_pools();
+    SOMA_STAT_INC(small_allocs);
+    SomaListNode* node = (SomaListNode*)pool_alloc(&pools->pool_48);
+    if (SOMA_UNLIKELY(node == NULL)) soma_panic("alloc_node: out of memory");
+    atomic_init(&node->refcount, 1);
+    return node;
+}
+
+static inline void free_node(SomaListNode* node) {
+    SomaPools* pools = get_pools();
+    SOMA_STAT_INC(small_frees);
+    pool_free(&pools->pool_48, node);
+}
+
+static inline void segment_release(SomaSegment* seg) {
+    if (seg != NULL && atomic_fetch_sub_explicit(&seg->refcount, 1, memory_order_acq_rel) == 1) {
+        size_t total = sizeof(SomaSegment) + (size_t)seg->capacity * seg->elem_size;
+        soma_pool_free_raw(seg, total);
+    }
+}
+
+static inline uint16_t default_chunk_capacity(uint16_t elem_size) {
+    /* Target one cache line (64 bytes) of element data per chunk */
+    uint16_t cap = (uint16_t)(SOMA_CACHELINE / elem_size);
+    return cap < 4 ? 4 : cap;
+}
+
+SOMA_HOT
+SomaListNode* soma_list_cons(const void* elem, SomaListNode* tail, uint16_t elem_size) {
+    /* Fast path: tail is uniquely owned, has slack before start, and elem_size matches. */
+    if (tail != NULL && tail->start > 0 &&
+        tail->segment->elem_size == elem_size &&
+        atomic_load_explicit(&tail->refcount, memory_order_relaxed) == 1 &&
+        atomic_load_explicit(&tail->segment->refcount, memory_order_relaxed) == 1) {
+        tail->start--;
+        memcpy(segment_elem(tail->segment, tail->start), elem, elem_size);
+        return tail;
+    }
+    /* Slow path: allocate new segment + node */
+    uint16_t cap = default_chunk_capacity(elem_size);
+    SomaSegment* seg = alloc_segment(cap, elem_size);
+    uint16_t idx = cap - 1;  /* fill from the right for future cons slack */
+    memcpy(segment_elem(seg, idx), elem, elem_size);
+
+    SomaListNode* node = alloc_node();
+    node->segment = seg;
+    node->next = tail;
+    node->start = idx;
+    node->end = idx + 1;
+    return node;
+}
+
+SOMA_HOT
+void* soma_list_head(SomaListNode* list) {
+    return segment_elem(list->segment, list->start);
+}
+
+SOMA_HOT
+SomaListNode* soma_list_tail(SomaListNode* list) {
+    uint16_t next_start = list->start + 1;
+    if (next_start < list->end) {
+        /* More elements in this chunk — check if we can mutate in place */
+        if (atomic_load_explicit(&list->refcount, memory_order_relaxed) == 1) {
+            list->start = next_start;
+            return list;
+        }
+        /* Shared: allocate a new node viewing the same segment */
+        SomaListNode* node = alloc_node();
+        node->segment = list->segment;
+        atomic_fetch_add_explicit(&list->segment->refcount, 1, memory_order_relaxed);
+        node->next = list->next;
+        if (list->next != NULL) {
+            atomic_fetch_add_explicit(&list->next->refcount, 1, memory_order_relaxed);
+        }
+        node->start = next_start;
+        node->end = list->end;
+        return node;
+    }
+    /* This chunk exhausted — move to next */
+    SomaListNode* next = list->next;
+    /* If uniquely owned, free the current node (it's fully consumed) */
+    if (atomic_load_explicit(&list->refcount, memory_order_relaxed) == 1) {
+        segment_release(list->segment);
+        free_node(list);
+    } else {
+        /* Shared: just bump refcount on next */
+        if (next != NULL) {
+            atomic_fetch_add_explicit(&next->refcount, 1, memory_order_relaxed);
+        }
+    }
+    return next;
+}
+
+SOMA_HOT
+SomaListNode* soma_list_dup(SomaListNode* list) {
+    if (list != NULL) {
+        atomic_fetch_add_explicit(&list->refcount, 1, memory_order_relaxed);
+    }
+    return list;
+}
+
+SOMA_HOT
+void soma_list_era(SomaListNode* list) {
+    while (list != NULL) {
+        uint32_t prev = atomic_fetch_sub_explicit(&list->refcount, 1, memory_order_acq_rel);
+        if (prev > 1) return;  /* other owners remain */
+        SomaListNode* next = list->next;
+        segment_release(list->segment);
+        free_node(list);
+        list = next;
+    }
+}
+
+SomaListNode* soma_list_from_array(const void* data, uint32_t len, uint16_t elem_size) {
+    if (len == 0) return NULL;
+    /* Allocate a single segment large enough for all elements */
+    SomaSegment* seg = alloc_segment((uint16_t)len, elem_size);
+    memcpy(segment_data(seg), data, (size_t)len * elem_size);
+    SomaListNode* node = alloc_node();
+    node->segment = seg;
+    node->next = NULL;
+    node->start = 0;
+    node->end = (uint16_t)len;
+    return node;
+}
+
+/*
+ * ============================================================================
  * Generic Heap Value Clone (SUP/view/array only)
  * ============================================================================
  */

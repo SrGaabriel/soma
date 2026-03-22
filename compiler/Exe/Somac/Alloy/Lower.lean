@@ -690,28 +690,76 @@ partial def extractCallTypeArgs (defTy : Value) (concreteTy : Value)
     some typeArgs
 
 /-- Match explicit parameter types of a polymorphic definition against concrete argument types -/
+private partial def countLeadingImplicits (ty : Value) : Nat :=
+  match ty with
+  | Value.vPi _ binder _ dom cod =>
+    if binder.isImplicit && dom.isType then
+      1 + countLeadingImplicits (advanceCodomain cod dom)
+    else 0
+  | _ => 0
+
+private partial def matchExplicitParamsGo (ty : Value) (args : Array Value) (idx : Nat)
+    (retTy : Option Value) (levels : Std.HashSet Nat) (bindings : Std.HashMap Nat Value)
+    : Std.HashMap Nat Value :=
+  if idx >= args.size then
+    match retTy with
+    | some ret => matchTypeStructural ty ret levels bindings
+    | none => bindings
+  else
+    match ty with
+    | Value.vPi _ _ _ dom cod =>
+      let bindings' := matchTypeStructural dom args[idx]! levels bindings
+      let next := advanceCodomain cod dom
+      matchExplicitParamsGo next args (idx + 1) retTy levels bindings'
+    | _ => bindings
+
 partial def matchParamsAgainstArgs (defTy : Value) (argTypes : Array Value) (returnTy : Option Value)
     (levels : Std.HashSet Nat) : Std.HashMap Nat Value :=
+  let numImplicits := countLeadingImplicits defTy
   let stripped := stripLeadingImplicits defTy
-  go stripped argTypes 0 {}
-where
-  go (ty : Value) (args : Array Value) (idx : Nat) (bindings : Std.HashMap Nat Value)
-      : Std.HashMap Nat Value :=
-    if idx >= args.size then
-      match returnTy with
-      | some retTy => matchTypeStructural ty retTy levels bindings
-      | none => bindings
-    else
-      match ty with
-      | Value.vPi _ binder _ dom cod =>
-        if binder.isImplicit && dom.isType then
-          let next := advanceCodomain cod dom
-          go next args idx bindings
-        else
-          let bindings' := matchTypeStructural dom args[idx]! levels bindings
-          let next := advanceCodomain cod dom
-          go next args (idx + 1) bindings'
-      | _ => bindings
+  -- Pick the alignment that produces the most bindings
+  Id.run do
+    let mut bestBindings : Std.HashMap Nat Value := {}
+    for skip in List.range (numImplicits + 1) do
+      if skip ≤ argTypes.size then
+        let explicitArgs := argTypes.extract skip argTypes.size
+        let bindings := matchExplicitParamsGo stripped explicitArgs 0 returnTy levels {}
+        pure ()
+        if bindings.size > bestBindings.size then
+          bestBindings := bindings
+    return bestBindings
+
+/-- Convert resolved type arg Values (from the elaborator) to Alloy Ty -/
+private partial def bindResolvedArgsGo (ty : Value) (args : Array Value) (idx : Nat)
+    (levels : Std.HashSet Nat) (bindings : Std.HashMap Nat Value)
+    : Std.HashMap Nat Value :=
+  if idx >= args.size then bindings
+  else
+    match ty with
+    | Value.vPi _ binder _ dom cod =>
+      if binder.isImplicit && dom.isType then
+        let next := advanceCodomain cod dom
+        let lvl := cod.env.level
+        let bindings' := if levels.contains lvl.lvl then
+          bindings.insert lvl.lvl args[idx]!
+        else bindings
+        bindResolvedArgsGo next args (idx + 1) levels bindings'
+      else bindings
+    | _ => bindings
+
+partial def convertResolvedTypeArgs (resolvedArgs : Array Value) (defTy : Value)
+    (ctx : TypeConvCtx n) : Option (Array (Ty n)) :=
+  let levels := collectTyVarLevels defTy
+  if levels.isEmpty then none
+  else
+    let sortedLevels := levels.toArray.qsort (· < ·)
+    let bindings := bindResolvedArgsGo defTy resolvedArgs 0 levels {}
+    let typeArgs := sortedLevels.map fun level =>
+      match bindings.get? level with
+      | some val => convertValueTypeWithMapping val ctx
+      | none => .rawPtr
+    if typeArgs.any (· != .rawPtr) then some typeArgs
+    else none
 
 /-- Extract type arguments by matching the definition's parameter types against
     the concrete argument types from an APP chain -/
@@ -878,20 +926,15 @@ def emitLoadViewBacking (viewPtr : LocalId) : LowerM n LocalId := do
   let backFieldPtr ← LowerM.emitInst (.getFieldPtr (.local viewPtr) 3 viewStructTy) (.ptr .rawPtr)
   LowerM.emitInst (.load (.local backFieldPtr) .rawPtr) .rawPtr
 
-/-- Store a new length into a view (field 1) -/
-def emitStoreViewLength (viewPtr : LocalId) (newLen : LocalId) : LowerM n Unit := do
-  let lenFieldPtr ← LowerM.emitInst (.getFieldPtr (.local viewPtr) 1 viewStructTy) (.ptr (.prim .i64))
-  LowerM.emitVoid (.store (.local lenFieldPtr) (.local newLen))
-
-/-- Store a new data pointer into a view (field 2) -/
-def emitStoreViewData (viewPtr : LocalId) (newDataPtr : LocalId) : LowerM n Unit := do
-  let dataFieldPtr ← LowerM.emitInst (.getFieldPtr (.local viewPtr) 2 viewStructTy) (.ptr .rawPtr)
-  LowerM.emitVoid (.store (.local dataFieldPtr) (.local newDataPtr))
-
-/-- Store a new backing pointer into a view (field 3) -/
 def emitStoreViewBacking (viewPtr : LocalId) (newBackingPtr : LocalId) : LowerM n Unit := do
   let backFieldPtr ← LowerM.emitInst (.getFieldPtr (.local viewPtr) 3 viewStructTy) (.ptr .rawPtr)
   LowerM.emitVoid (.store (.local backFieldPtr) (.local newBackingPtr))
+
+/-- Default element size for lists when element type is unknown (pointer-sized) -/
+def defaultElemSize : Nat := 8
+
+/-- Get the element size in bytes for a list element type -/
+def listElemSize (_elemTy : Ty n) : Nat := defaultElemSize
 
 /-- State maintained during graph traversal -/
 structure NodeState (n : Nat) where
@@ -1053,28 +1096,12 @@ partial def emitTaggedDup (inputVal : LocalId) (taggedTy : Ty n) (label : UInt32
   let copy1 ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) taggedTy label) taggedTy)
   pure (inputVal, copy1)
 
-/-- Emit view-based list duplication -/
-partial def emitListViewDup (inputVal : LocalId) (srcTy : Ty n) (_label : UInt32)
+/-- Emit chunked list duplication via refcount increment -/
+partial def emitListDup (inputVal : LocalId) (_srcTy : Ty n) (_label : UInt32)
     : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
-  let inputPtr ← match srcTy with
-    | .prim .i64 =>
-      StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local inputVal)) .rawPtr)
-    | .rawPtr | .ptr _ =>
-      pure inputVal
-    | _ =>
-      panic! s!"ALLOY LOWERING BUG: list DUP expected pointer-like source type, got {srcTy}"
-  let clone ← StateT.lift (LowerM.emitInst
-    (.callExtern "soma_clone_flat_array_view" #[.local inputPtr] .rawPtr) .rawPtr)
-  -- Convert both to the same type as the input
-  let copy0 ← match srcTy with
-    | .prim .i64 =>
-      StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local inputPtr)) (.prim .i64))
-    | _ => pure inputPtr
-  let copy1 ← match srcTy with
-    | .prim .i64 =>
-      StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local clone)) (.prim .i64))
-    | _ => pure clone
-  pure (copy0, copy1)
+  let copy1 ← StateT.lift (LowerM.emitInst
+    (.callExtern "soma_list_dup" #[.local inputVal] .rawPtr) .rawPtr)
+  pure (inputVal, copy1)
 
 /-- Lower an operand with FuncId map -/
 partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : FuncIdMap)
@@ -1349,7 +1376,12 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                   | none => pure (Value.vType .zero)
                 let result ← match funcRef with
                   | .local funcId =>
-                    let typeArgs? := extractCallTypeArgsFromArgs def_.ty argTypes entry.ty chain.baseEntry.ty ctx
+                    let resolvedTypeArgs? := graph.getResolvedTypeArgs chain.baseNodeId
+                    let typeArgs? := match resolvedTypeArgs? with
+                      | some resolved => convertResolvedTypeArgs resolved def_.ty ctx
+                      | none => none
+                    let typeArgs? := typeArgs?.orElse fun _ =>
+                      extractCallTypeArgsFromArgs def_.ty argTypes entry.ty chain.baseEntry.ty ctx
                     match typeArgs? with
                     | some typeArgs =>
                       StateT.lift (LowerM.emitInst (.callPoly funcId typeArgs argOps callRetTy) callRetTy)
@@ -1596,53 +1628,20 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           let fnClosureVal ← lowerOperandWithMap graph fnPort funcIdMap
           StateT.lift (LowerM.emitInst (.makeClosureDyn (.local fnClosureVal) (.local envVal) nodeTy) nodeTy)
     else if isListValue entry.ty (← get).primTypes then
-      -- List constructor: produce a SomaFlatArrayView (slice view into backing array)
-      -- View layout: { i64 header, i64 length, ptr data, ptr backing }
       if tag == 0 then
-        -- Nil: view with length=0, data=null, backing=null
-        let zero ← StateT.lift (LowerM.emitInst (.copy (.const (.int 0 .i64))) (.prim .i64))
-        let nullPtr ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
-        let view ← StateT.lift (emitAllocView zero nullPtr nullPtr)
-        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local view)) (.prim .i64))
+        StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
       else
-        -- Cons x xs: allocate new backing array, copy xs data + prepend x, create view
         let headVal ← lowerPort 1
         let tailVal ← lowerPort 2
-        let tailPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local tailVal)) .rawPtr)
-        -- Load tail's length and data pointer
-        let tailLen ← StateT.lift (emitLoadViewLength tailPtr)
-        let tailDataPtr ← StateT.lift (emitLoadViewData tailPtr)
-        let one ← StateT.lift (LowerM.emitInst (.copy (.const (.int 1 .i64))) (.prim .i64))
-        let newLen ← StateT.lift (LowerM.emitInst (.binOp .add (.local tailLen) (.local one) (.prim .i64)) (.prim .i64))
-        -- Allocate backing: headerSize + newLen * 8
-        let elemSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int 8 .i64))) (.prim .i64))
-        let dataSize ← StateT.lift (LowerM.emitInst (.binOp .mul (.local newLen) (.local elemSize) (.prim .i64)) (.prim .i64))
-        let hdrSize ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat flatArrayHeaderSize) .i64))) (.prim .i64))
-        let totalSize ← StateT.lift (LowerM.emitInst (.binOp .add (.local hdrSize) (.local dataSize) (.prim .i64)) (.prim .i64))
-        let backing ← StateT.lift (LowerM.emitInst (.malloc (.local totalSize)) .rawPtr)
-        StateT.lift (emitFlatArrayHeader backing 8)
-        StateT.lift (emitStoreFlatArrayLength backing newLen)
-        let dataStartPtr ← StateT.lift (emitFlatArrayDataPtr backing)
-        let headPtr ← StateT.lift (LowerM.emitInst (.getElemPtr (.local dataStartPtr) (.const (.int 0 .i64)) (.prim .i64)) (.ptr (.prim .i64)))
-        -- Convert head value to i64 for flat array storage
         let headTy := getPortType 1 (.prim .i64)
-        let headAsI64 ← match headTy with
-          | .rawPtr | .ptr _ => StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local headVal)) (.prim .i64))
-          | .prim .i64 => pure headVal
-          | .prim p =>
-            if Ty.sizeBytes (.prim p : Ty n) < 8 then
-              StateT.lift (LowerM.emitInst (.unOp (.sext .i64) (.local headVal)) (.prim .i64))
-            else
-              pure headVal
-          | _ => StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local headVal)) (.prim .i64))
-        StateT.lift (LowerM.emitVoid (.store (.local headPtr) (.local headAsI64)))
-        -- Memcpy tail data: from tail's data ptr to second element slot, size = tailLen * 8
-        let tailDataSize ← StateT.lift (LowerM.emitInst (.binOp .mul (.local tailLen) (.local elemSize) (.prim .i64)) (.prim .i64))
-        let newDataPtr ← StateT.lift (LowerM.emitInst (.getElemPtr (.local dataStartPtr) (.const (.int 1 .i64)) (.prim .i64)) (.ptr (.prim .i64)))
-        StateT.lift (LowerM.emitVoid (.memcpy (.local newDataPtr) (.local tailDataPtr) (.local tailDataSize)))
-        -- Create view pointing to start of backing data
-        let view ← StateT.lift (emitAllocView newLen dataStartPtr backing)
-        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local view)) (.prim .i64))
+        let elemSz := listElemSize headTy
+        let headAlloca ← StateT.lift (LowerM.emitInst (.alloca headTy) (.ptr headTy))
+        StateT.lift (LowerM.emitVoid (.store (.local headAlloca) (.local headVal)))
+        let elemSizeConst ← StateT.lift (LowerM.emitInst
+          (.copy (.const (.int (Int.ofNat elemSz) .u16))) (.prim .u16))
+        StateT.lift (LowerM.emitInst
+          (.callExtern "soma_list_cons"
+            #[.local headAlloca, .local tailVal, .local elemSizeConst] .rawPtr) .rawPtr)
     else
       -- Regular constructor: build tagged struct
       let mut fieldVals : Array LocalId := #[]
@@ -1681,24 +1680,16 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             | none => false
         traceSource (entry.getPort ⟨1⟩) 10
     if isListProj then do
-      -- View-based list projection: view layout { i64 header, i64 length, ptr data, ptr backing }
-      let viewPtr ← StateT.lift (LowerM.emitInst (.unOp .inttoptr (.local recordVal)) .rawPtr)
       if fieldIdx == 0 then
-        -- Head: load first element from view.data[0]
-        let dataPtr ← StateT.lift (emitLoadViewData viewPtr)
-        StateT.lift (LowerM.emitInst (.load (.local dataPtr) nodeTy) nodeTy)
+        -- Head: load element at list->segment->data[list->start]
+        let headPtr ← StateT.lift (LowerM.emitInst
+          (.callExtern "soma_list_head" #[.local recordVal] .rawPtr) .rawPtr)
+        -- Load the element value from the pointer returned by soma_list_head
+        StateT.lift (LowerM.emitInst (.load (.local headPtr) nodeTy) nodeTy)
       else if fieldIdx == 1 then
-        -- Tail: create new view with data+8, length-1, transferring backing ownership
-        let len ← StateT.lift (emitLoadViewLength viewPtr)
-        let dataPtr ← StateT.lift (emitLoadViewData viewPtr)
-        let backingPtr ← StateT.lift (emitLoadViewBacking viewPtr)
-        let one ← StateT.lift (LowerM.emitInst (.copy (.const (.int 1 .i64))) (.prim .i64))
-        let newLen ← StateT.lift (LowerM.emitInst (.binOp .sub (.local len) (.local one) (.prim .i64)) (.prim .i64))
-        let newDataPtr ← StateT.lift (LowerM.emitInst (.getElemPtr (.local dataPtr) (.const (.int 1 .i64)) (.prim .i64)) (.ptr (.prim .i64)))
-        let tailView ← StateT.lift (emitAllocView newLen newDataPtr backingPtr)
-        let nullRawPtr ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
-        StateT.lift (emitStoreViewBacking viewPtr nullRawPtr)
-        StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local tailView)) (.prim .i64))
+        -- Tail: get the rest of the list
+        StateT.lift (LowerM.emitInst
+          (.callExtern "soma_list_tail" #[.local recordVal] .rawPtr) .rawPtr)
       else
         StateT.lift (LowerM.emitPanic nodeTy)
     else
@@ -1743,17 +1734,15 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     if scrutIsArray then
       modify fun ns => { ns with listTypedLocals := ns.listTypedLocals.insert scrutineeVal.id }
     let (_, _thenBlock, elseBlock) ← if scrutIsArray then
-      -- View-based list: compare view.length against 0
+      -- Chunked list: check if list pointer is null (Nil) or non-null (Cons)
       StateT.lift do
-        let viewPtr ← LowerM.emitInst (.unOp .inttoptr (.local scrutineeVal)) .rawPtr
-        let len ← emitLoadViewLength viewPtr
-        let zero ← LowerM.emitInst (.copy (.const (.int 0 .i64))) (.prim .i64)
+        let nullPtr ← LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr
         let cond ← if expectedTag == 0 then
-          -- Nil: matches when length == 0
-          LowerM.emitInst (.binOp .eq (.local len) (.local zero) (.prim .i64)) Ty.bool
+          -- Nil: matches when list == null
+          LowerM.emitInst (.binOp .eq (.local scrutineeVal) (.local nullPtr) .rawPtr) Ty.bool
         else
-          -- Cons (or any other tag): matches when length != 0
-          LowerM.emitInst (.binOp .ne (.local len) (.local zero) (.prim .i64)) Ty.bool
+          -- Cons: matches when list != null
+          LowerM.emitInst (.binOp .ne (.local scrutineeVal) (.local nullPtr) .rawPtr) Ty.bool
         let thenBlock ← LowerM.freshBlockId
         let elseBlock ← LowerM.freshBlockId
         LowerM.finishBlock (.branch (.local cond) thenBlock elseBlock) thenBlock
@@ -1881,7 +1870,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           traceDupSource (entry.getPort ⟨0⟩) 10
         let (copy0, copy1) ←
           if isListSource then
-            emitListViewDup inputVal (.prim .i64) label.id
+            let srcTy := (← StateT.lift get).func.getLocalType inputVal |>.getD .rawPtr
+            emitListDup inputVal srcTy label.id
             else
               let clone ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) .rawPtr label.id) .rawPtr)
               pure (inputVal, clone)
@@ -1946,51 +1936,49 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         | none => pure none
       | none => pure none
 
-    let elemSize : Nat := 8
-
-    -- Determine the natural element size for sext/zext decisions
-    let naturalElemSize : Nat := match ctorInfo with
+    let elemSizeBytes : Nat := match ctorInfo with
       | some (_, ctorEntry) =>
         if len > 0 then
           match ctorEntry.getPort ⟨1⟩ with
           | some elemPort =>
             match graph.getNode elemPort.node with
-            | some elemEntry => Ty.sizeBytes (getNodeTypeWithMapping elemEntry ctx)
-            | none => 8
-          | none => 8
-        else 8
-      | none => 8
+            | some elemEntry => listElemSize (getNodeTypeWithMapping elemEntry ctx)
+            | none => defaultElemSize
+          | none => defaultElemSize
+        else defaultElemSize
+      | none => defaultElemSize
 
-    let totalSize := flatArrayHeaderSize + len * elemSize
-    let totalSizeVal ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat totalSize) .i64))) (.prim .i64))
-    let buf ← StateT.lift (LowerM.emitInst (.malloc (.local totalSizeVal)) .rawPtr)
-
-    StateT.lift (emitFlatArrayHeader buf elemSize)
-
-    -- Store length in backing via GEP (field 1 of flat array header)
-    let lenConst ← StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat len) .i64))) (.prim .i64))
-    StateT.lift (emitStoreFlatArrayLength buf lenConst)
-
-    -- Get pointer to data region (past the { i64, i64 } header) via GEP
-    let dataStartPtr ← StateT.lift (emitFlatArrayDataPtr buf)
-
-    match ctorInfo with
-    | some (_, ctorEntry) =>
-      for i in [:len] do
-        let elemVal ← match ctorEntry.getPort ⟨i + 1⟩ with
-          | some elemPort => lowerOperandWithMap graph elemPort funcIdMap
-          | none => StateT.lift (LowerM.emitPanic (.prim .i64))
-        let elemI64 ← if naturalElemSize < 8 then
-          StateT.lift (LowerM.emitInst (.unOp (.sext .i64) (.local elemVal)) (.prim .i64))
-        else pure elemVal
-        -- Store element via GEP indexing into data region
-        let elemPtr ← StateT.lift (LowerM.emitInst (.getElemPtr (.local dataStartPtr) (.const (.int (Int.ofNat i) .i64)) (.prim .i64)) (.ptr (.prim .i64)))
-        StateT.lift (LowerM.emitVoid (.store (.local elemPtr) (.local elemI64)))
-    | none => pure ()
-
-    -- Wrap backing array in a view
-    let view ← StateT.lift (emitAllocView lenConst dataStartPtr buf)
-    StateT.lift (LowerM.emitInst (.unOp (.ptrtoint .i64) (.local view)) (.prim .i64))
+    if len == 0 then
+      StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+    else
+      let elemSizeVal ← StateT.lift (LowerM.emitInst
+        (.copy (.const (.int (Int.ofNat elemSizeBytes) .u16))) (.prim .u16))
+      let elemAllocTy : Ty n := match ctorInfo with
+        | some (_, ctorEntry) =>
+          match ctorEntry.getPort ⟨1⟩ with
+          | some elemPort =>
+            match graph.getNode elemPort.node with
+            | some elemEntry => getNodeTypeWithMapping elemEntry ctx
+            | none => .prim .i64
+          | none => .prim .i64
+        | none => .prim .i64
+      let elemSlot ← StateT.lift (LowerM.emitInst (.alloca elemAllocTy) (.ptr elemAllocTy))
+      let mut list ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+      match ctorInfo with
+      | some (_, ctorEntry) =>
+        let mut elemVals : Array LocalId := #[]
+        for i in [:len] do
+          let elemVal ← match ctorEntry.getPort ⟨i + 1⟩ with
+            | some elemPort => lowerOperandWithMap graph elemPort funcIdMap
+            | none => StateT.lift (LowerM.emitPanic (.prim .i64))
+          elemVals := elemVals.push elemVal
+        for i in List.range len |>.reverse do
+          if h : i < elemVals.size then
+            StateT.lift (LowerM.emitVoid (.store (.local elemSlot) (.local elemVals[i])))
+            list ← StateT.lift (LowerM.emitInst
+              (.callExtern "soma_list_cons" #[.local elemSlot, .local list, .local elemSizeVal] .rawPtr) .rawPtr)
+      | none => pure ()
+      pure list
 
   | .string => do
     -- String node: extract length and string index from connected NUM nodes

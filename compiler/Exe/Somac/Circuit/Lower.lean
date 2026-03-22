@@ -245,6 +245,10 @@ def freshLabels (n : Nat) : LowerM (Array Label) :=
 def setRoot (p : PortId) : LowerM Unit :=
   liftGraph (GraphM.setRoot p)
 
+/-- Store resolved type arguments for a call site node -/
+def recordTypeArgs (nodeId : NodeId) (typeArgs : Array Value) : LowerM Unit :=
+  liftGraph (modify fun g => g.setResolvedTypeArgs nodeId typeArgs)
+
 /-- Add a definition to the book -/
 def addDefinition (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
     (isExternal : Bool := false) : LowerM Nat :=
@@ -593,6 +597,16 @@ def getExprType (e : Soma.Core.Expr) : LowerM Value := do
   let ctx ← LowerM.getCtx
   pure (e.typeOf ctx.evalGlobalEnv)
 
+/-- Evaluate a Core expression to a Value -/
+def evalExprToValue (e : Soma.Core.Expr) : LowerM Value := do
+  let ctx ← LowerM.getCtx
+  let evalCtx : Soma.Core.EvalCtx := {
+    env := .empty
+    globals := ctx.evalGlobalEnv
+    metas := .empty
+  }
+  pure (Soma.Core.evalCoreExpr evalCtx e)
+
 /-- Lower a Core.Expr variable (fvar) by looking up its Unique.id in the bindings map -/
 private def lowerCoreVar (u : Unique) : LowerM (Option PortId) := do
   lowerVar u
@@ -705,6 +719,8 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
   if isCoreTypeLevelExpr baseFn then
     return none
 
+  pure ()
+
   match baseFn with
   | .const qn _ =>
     let ctx ← LowerM.getCtx
@@ -715,7 +731,37 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
         lowerCoreConstruct tag explicitArgs ty
       else
         lowerCoreAppDefault fn arg ty
-    | none => lowerCoreAppDefault fn arg ty
+    | none =>
+      let typeArgExprs := allArgs.filter isCoreTypeLevelExpr
+      if typeArgExprs.size > 0 then
+        let mut typeArgVals : Array Value := #[]
+        for e in typeArgExprs do
+          let v ← evalExprToValue e
+          pure ()
+          typeArgVals := typeArgVals.push v
+        let result ← lowerCoreAppDefault fn arg ty
+        match ctx.lookupGlobal qn with
+        | some _idx =>
+          match result with
+          | some resultPort =>
+            let mut curNode := resultPort.node
+            for _ in [:allArgs.size + 2] do
+              let nodeEntry? ← LowerM.liftGraph (get >>= fun g => pure (g.getNode curNode))
+              match nodeEntry? with
+              | some nodeEntry => match nodeEntry.node with
+                | .app => match nodeEntry.getPort ⟨1⟩ with
+                  | some fnPort => curNode := fnPort.node
+                  | none => break
+                | .ref _ | .alo _ =>
+                  LowerM.recordTypeArgs curNode typeArgVals
+                  break
+                | _ => break
+              | none => break
+          | none => pure ()
+        | none => pure ()
+        pure result
+      else
+        lowerCoreAppDefault fn arg ty
   | _ => lowerCoreAppDefault fn arg ty
 
 /-- Default application lowering -/

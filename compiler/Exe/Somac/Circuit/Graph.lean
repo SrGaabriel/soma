@@ -91,6 +91,8 @@ structure Graph where
   strings : Std.HashMap String Nat := {}
   /-- Next string index -/
   nextStringIdx : Nat := 0
+  /-- Resolved type arguments per call site -/
+  resolvedTypeArgs : Std.HashMap Nat (Array Value) := {}
   deriving Inhabited
 
 namespace Graph
@@ -103,6 +105,14 @@ def empty : Graph :=
   , nextLabel := 0
   , book := #[]
   }
+
+/-- Store resolved type arguments for a call site node -/
+def setResolvedTypeArgs (g : Graph) (nodeId : NodeId) (typeArgs : Array Value) : Graph :=
+  { g with resolvedTypeArgs := g.resolvedTypeArgs.insert nodeId.id typeArgs }
+
+/-- Get resolved type arguments for a call site node -/
+def getResolvedTypeArgs (g : Graph) (nodeId : NodeId) : Option (Array Value) :=
+  g.resolvedTypeArgs.get? nodeId.id
 
 /-- Allocate a fresh node ID -/
 def freshNodeId (g : Graph) : NodeId × Graph :=

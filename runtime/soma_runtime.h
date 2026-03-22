@@ -108,6 +108,8 @@
 #define NODE_CLOSURE          1   /* stored in closure _pad[0] for runtime identification */
 #define NODE_FLAT_ARRAY       4
 #define NODE_FLAT_ARRAY_VIEW  5
+#define NODE_LIST_SEGMENT     6
+#define NODE_LIST_NODE        7
 
 /* SUP padding bytes for identification */
 #define SOMA_SUP_PAD0 0x53u            /* 'S' */
@@ -296,12 +298,40 @@ typedef struct SomaFlatArrayView {
     void*     backing;     /* owned backing SomaFlatArray (or NULL) */
 } SomaFlatArrayView;
 
+/*
+ * Chunked list segment — refcounted contiguous storage for typed elements.
+ * One cache line of data per segment by default (capacity = CACHELINE / elem_size).
+ * The data region follows inline at offset 8.
+ */
+typedef struct SomaSegment {
+    _Atomic uint32_t refcount;   /* shared ownership count */
+    uint16_t capacity;           /* total element slots in data[] */
+    uint16_t elem_size;          /* bytes per element (e.g. 4 for i32, 8 for ptr) */
+    /* T data[capacity] follows at offset 8 */
+} SomaSegment;
+
+/*
+ * List node — a view into a segment plus a link to the next node.
+ * A list is a SomaListNode* (NULL = empty list / Nil).
+ * Multiple nodes can share the same segment via refcounting.
+ * 24 bytes total — fits in pool_48.
+ */
+typedef struct SomaListNode {
+    SomaSegment*          segment;   /* owned segment (refcounted) */
+    struct SomaListNode*  next;      /* next node in chain (or NULL) */
+    uint16_t              start;     /* first valid element index in segment */
+    uint16_t              end;       /* one past last valid element index */
+    _Atomic uint32_t      refcount;  /* shared ownership count */
+} SomaListNode;
+
 /* Layout guards — catch struct packing surprises across compilers */
 _Static_assert(sizeof(SomaClosure)      == 16, "SomaClosure must be 16 bytes");
 _Static_assert(sizeof(SomaSup)          == 48
             || sizeof(SomaSup)          == 40, "SomaSup must fit pool_48");
 _Static_assert(sizeof(SomaFlatArrayView) == 32, "View must fit pool_48");
 _Static_assert(sizeof(SomaFlatArray)    == 16, "FlatArray header must be 16 bytes");
+_Static_assert(sizeof(SomaSegment)      == 8,  "SomaSegment header must be 8 bytes");
+_Static_assert(sizeof(SomaListNode)     == 24, "SomaListNode must fit pool_48");
 
 
 /*
@@ -332,11 +362,43 @@ SomaString* soma_int_to_string(int32_t val);
 void soma_era_string(void* value);
 
 /*
- * Flat array view operations
+ * Flat array view operations (legacy — used for Array, not List)
  */
 
 SOMA_MALLOC SOMA_WARN_UNUSED SOMA_HOT
 void* soma_clone_flat_array_view(SomaFlatArrayView* src);
+
+/*
+ * Chunked list operations
+ *
+ * Lists are represented as SomaListNode* (NULL = Nil).
+ * All operations are O(1). Cons exploits linear ownership (refcount==1)
+ * for zero-allocation in-place mutation.
+ */
+
+/* Cons: prepend an element to a list. elem is copied by value (elem_size bytes). */
+SOMA_WARN_UNUSED SOMA_HOT
+SomaListNode* soma_list_cons(const void* elem, SomaListNode* tail, uint16_t elem_size);
+
+/* Head: pointer to the first element (caller must know the element type). */
+SOMA_NONNULL(1) SOMA_HOT
+void* soma_list_head(SomaListNode* list);
+
+/* Tail: the list without its first element. Returns NULL if only one element. */
+SOMA_NONNULL(1) SOMA_WARN_UNUSED SOMA_HOT
+SomaListNode* soma_list_tail(SomaListNode* list);
+
+/* DUP: increment refcount, return same pointer. */
+SOMA_HOT
+SomaListNode* soma_list_dup(SomaListNode* list);
+
+/* ERA: decrement refcount, free chain when zero. */
+SOMA_HOT
+void soma_list_era(SomaListNode* list);
+
+/* Build a list from a contiguous array of elements. */
+SOMA_MALLOC SOMA_WARN_UNUSED
+SomaListNode* soma_list_from_array(const void* data, uint32_t len, uint16_t elem_size);
 
 /*
  * Closure operations
