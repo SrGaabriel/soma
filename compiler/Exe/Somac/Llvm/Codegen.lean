@@ -661,15 +661,15 @@ partial def emitEraseForType (valRef : LLVMValue) (ty : ClosedTy) : CodegenM Uni
   | .tagged _ _ =>
     -- Tagged union: use type-specialized eraser that knows field layout
     let eraserName ← getOrEmitEraser ty
-    let valAsI64 ← toI64 (convertTy ty) valRef
+    let valAsPtr ← ensurePtr (convertTy ty) valRef
     CodegenM.withFuncBuilder do
-      FuncBuilder.callNamedVoid eraserName #[(.i64, .local valAsI64)]
+      FuncBuilder.callNamedVoid eraserName #[(.ptr, valAsPtr)]
   | .closure _ _ =>
     -- Closure: use type-specialized eraser
     let eraserName ← getOrEmitEraser ty
-    let valAsI64 ← toI64 .ptr valRef
+    let valAsPtr ← ensurePtr .ptr valRef
     CodegenM.withFuncBuilder do
-      FuncBuilder.callNamedVoid eraserName #[(.i64, .local valAsI64)]
+      FuncBuilder.callNamedVoid eraserName #[(.ptr, valAsPtr)]
   | .struct fields =>
     -- Struct: recurse into each field that may contain pointers
     let llvmTy := convertTy ty
@@ -713,7 +713,6 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
   let eraserFunc ← do
     modify fun s => { s with funcState := {} }
 
-    -- Parameter: the value as i64 (SomaValue)
     let paramRef ← CodegenM.withFuncBuilder FuncBuilder.freshLocal
 
     let entryLabel ← CodegenM.withFuncBuilder (FuncBuilder.freshLabel "entry")
@@ -723,8 +722,7 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
     | .tagged _tagTy variants =>
       -- Headerless tagged union: {i32 tag, ptr payload} on stack,
       -- payload is a naturally-typed struct per variant
-      let structPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 (.local paramRef))
-      let structVal ← CodegenM.withFuncBuilder (FuncBuilder.load taggedTy (.local structPtr))
+      let structVal ← CodegenM.withFuncBuilder (FuncBuilder.load taggedTy (.local paramRef))
       let tagVal ← CodegenM.withFuncBuilder do
         FuncBuilder.extractvalue taggedTy (.local structVal) #[0]
       let payloadPtr ← CodegenM.withFuncBuilder do
@@ -772,10 +770,10 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
                   let fieldLLVMTy := convertTy fieldTy
                   let fieldVal ← CodegenM.withFuncBuilder do
                     FuncBuilder.load fieldLLVMTy (.local fieldAddr)
-                  let fieldAsI64 ← toI64 fieldLLVMTy (.local fieldVal)
+                  let fieldAsPtr ← ensurePtr fieldLLVMTy (.local fieldVal)
                   let fieldEraserName ← getOrEmitEraser fieldTy
                   CodegenM.withFuncBuilder do
-                    FuncBuilder.callNamedVoid fieldEraserName #[(.i64, .local fieldAsI64)]
+                    FuncBuilder.callNamedVoid fieldEraserName #[(.ptr, fieldAsPtr)]
 
             CodegenM.withFuncBuilder (FuncBuilder.br freeLabel)
 
@@ -785,7 +783,7 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
           FuncBuilder.callNamedVoid "soma_pool_free_raw"
             #[(.ptr, .local payloadPtr), (.i64, .const (.int payloadByteSize 64))]
         CodegenM.withFuncBuilder do
-          FuncBuilder.callNamedVoid "free" #[(.ptr, .local structPtr)]
+          FuncBuilder.callNamedVoid "free" #[(.ptr, .local paramRef)]
         CodegenM.withFuncBuilder FuncBuilder.retVoid
       else
         -- No erasable fields — just free payload and struct
@@ -793,41 +791,35 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
           FuncBuilder.callNamedVoid "soma_pool_free_raw"
             #[(.ptr, .local payloadPtr), (.i64, .const (.int payloadByteSize 64))]
         CodegenM.withFuncBuilder do
-          FuncBuilder.callNamedVoid "free" #[(.ptr, .local structPtr)]
+          FuncBuilder.callNamedVoid "free" #[(.ptr, .local paramRef)]
         CodegenM.withFuncBuilder FuncBuilder.retVoid
 
       -- Null-payload block: free only the boxed struct
       CodegenM.withFuncBuilder (FuncBuilder.startBlock nullLabel)
       CodegenM.withFuncBuilder do
-        FuncBuilder.callNamedVoid "free" #[(.ptr, .local structPtr)]
+        FuncBuilder.callNamedVoid "free" #[(.ptr, .local paramRef)]
       CodegenM.withFuncBuilder FuncBuilder.retVoid
 
     | .closure _ _ =>
       -- Delegate to soma_era_closure which reads env_size from _pad[1..2]
-      let asPtr ← CodegenM.withFuncBuilder do
-        FuncBuilder.inttoptr .i64 (.local paramRef)
       CodegenM.withFuncBuilder do
-        FuncBuilder.callNamedVoid "soma_era_closure" #[(.ptr, .local asPtr)]
+        FuncBuilder.callNamedVoid "soma_era_closure" #[(.ptr, .local paramRef)]
       CodegenM.withFuncBuilder FuncBuilder.retVoid
 
     | .rawPtr =>
       -- rawPtr fallback: generic tag-based dispatch
-      let asPtr ← CodegenM.withFuncBuilder do
-        FuncBuilder.inttoptr .i64 (.local paramRef)
       CodegenM.withFuncBuilder do
-        FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, .local asPtr)]
+        FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, .local paramRef)]
       CodegenM.withFuncBuilder FuncBuilder.retVoid
 
     | .ptr _ =>
       -- Pointer to known type: check if string, else generic
-      let asPtr ← CodegenM.withFuncBuilder do
-        FuncBuilder.inttoptr .i64 (.local paramRef)
       if isStringObjTy ty then
         CodegenM.withFuncBuilder do
-          FuncBuilder.callNamedVoid "soma_era_string" #[(.ptr, .local asPtr)]
+          FuncBuilder.callNamedVoid "soma_era_string" #[(.ptr, .local paramRef)]
       else
         CodegenM.withFuncBuilder do
-          FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, .local asPtr)]
+          FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, .local paramRef)]
       CodegenM.withFuncBuilder FuncBuilder.retVoid
 
     | _ =>
@@ -838,7 +830,7 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
     pure ({
       name := name
       retTy := .void
-      params := #[{ name := "v0", ty := .i64 }]
+      params := #[{ name := "v0", ty := .ptr }]
       attrs := { nounwind := true }
       blocks := blocks
       isDeclaration := false
@@ -875,8 +867,7 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
 
     match ty with
     | .tagged _tagTy variants =>
-      let structPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 (.local valParam))
-      let structVal ← CodegenM.withFuncBuilder (FuncBuilder.load taggedTy (.local structPtr))
+      let structVal ← CodegenM.withFuncBuilder (FuncBuilder.load taggedTy (.local valParam))
       let tagVal ← CodegenM.withFuncBuilder (FuncBuilder.extractvalue taggedTy (.local structVal) #[0])
       let payloadPtr ← CodegenM.withFuncBuilder (FuncBuilder.extractvalue taggedTy (.local structVal) #[1])
 
@@ -931,14 +922,14 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
                   FuncBuilder.gepi32 layout.llvmTy (.local newPayload) #[0, fi]
 
                 if fieldTy.needsErase then
-                  let fieldAsI64 ← toI64 fieldLLVMTy (.local fieldVal)
+                  let fieldAsPtr ← ensurePtr fieldLLVMTy (.local fieldVal)
                   let fieldClonerName ← getOrEmitCloner fieldTy
-                  let clonedI64 ← CodegenM.withFuncBuilder do
-                    FuncBuilder.callNamed .i64 fieldClonerName
-                      #[(.i64, .local fieldAsI64), (.i32, .local lblParam)]
-                  let clonedVal ← fromI64 fieldLLVMTy (.local clonedI64)
+                  let clonedPtr ← CodegenM.withFuncBuilder do
+                    FuncBuilder.callNamed .ptr fieldClonerName
+                      #[(.ptr, fieldAsPtr), (.i32, .local lblParam)]
+                  let clonedVal ← coerceValue .ptr fieldLLVMTy (.local clonedPtr)
                   CodegenM.withFuncBuilder do
-                    FuncBuilder.store fieldLLVMTy (.local clonedVal) (.local dstAddr)
+                    FuncBuilder.store fieldLLVMTy clonedVal (.local dstAddr)
                 else
                   CodegenM.withFuncBuilder do
                     FuncBuilder.store fieldLLVMTy (.local fieldVal) (.local dstAddr)
@@ -950,7 +941,7 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
           FuncBuilder.memcpy (.local newPayload) (.local payloadPtr) payloadSizeVal
         CodegenM.withFuncBuilder (FuncBuilder.br buildLabel)
 
-      -- Build block: allocate a new boxed {i32, ptr} struct and return as i64
+      -- Build block: allocate a new boxed {i32, ptr} struct and return as ptr
       CodegenM.withFuncBuilder (FuncBuilder.startBlock buildLabel)
       let newStructPtr ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .ptr "malloc"
@@ -961,38 +952,37 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
       let newPayloadAddr ← CodegenM.withFuncBuilder do
         FuncBuilder.gepi32 taggedTy (.local newStructPtr) #[0, 1]
       CodegenM.withFuncBuilder (FuncBuilder.store .ptr (.local newPayload) (.local newPayloadAddr))
-      let resultI64 ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 (.local newStructPtr))
-      CodegenM.withFuncBuilder (FuncBuilder.ret .i64 (.local resultI64))
+      CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local newStructPtr))
 
       CodegenM.withFuncBuilder (FuncBuilder.startBlock doneLabel)
-      CodegenM.withFuncBuilder (FuncBuilder.ret .i64 (.local valParam))
+      CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local valParam))
 
     | .closure _ _ =>
       -- Delegate to soma_clone_closure which reads env_size from _pad[1..2]
       -- and handles PAPs with arbitrary env sizes
-      let asPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 (.local valParam))
       let cloned ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .ptr "soma_clone_closure"
-          #[(.ptr, .local asPtr), (.i32, .local lblParam)]
-      let resultI64 ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 (.local cloned))
-      CodegenM.withFuncBuilder (FuncBuilder.ret .i64 (.local resultI64))
+          #[(.ptr, .local valParam), (.i32, .local lblParam)]
+      CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local cloned))
 
     | .rawPtr =>
       -- rawPtr fallback: generic clone
+      let valAsI64 ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 (.local valParam))
       let cloned ← CodegenM.withFuncBuilder do
         FuncBuilder.callNamed .i64 "soma_clone_heap_value_for_dup"
-          #[(.i64, .local valParam), (.i32, .local lblParam)]
-      CodegenM.withFuncBuilder (FuncBuilder.ret .i64 (.local cloned))
+          #[(.i64, .local valAsI64), (.i32, .local lblParam)]
+      let resultPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 (.local cloned))
+      CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local resultPtr))
 
     | _ =>
       -- Flat types: identity clone
-      CodegenM.withFuncBuilder (FuncBuilder.ret .i64 (.local valParam))
+      CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local valParam))
 
     let blocks ← CodegenM.withFuncBuilder FuncBuilder.getBlocks
     pure ({
       name := name
-      retTy := .i64
-      params := #[{ name := "v0", ty := .i64 }, { name := "v1", ty := .i32 }]
+      retTy := .ptr
+      params := #[{ name := "v0", ty := .ptr }, { name := "v1", ty := .i32 }]
       attrs := { nounwind := true }
       blocks := blocks
       isDeclaration := false
@@ -1208,7 +1198,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       let llvmTy := convertTy ty
       let ref ← CodegenM.withFuncBuilder do
         if llvmTy == .ptr then
-          FuncBuilder.inttoptr .i64 (intVal 0 64)
+          FuncBuilder.asLocalRef .ptr (.const .null)
         else if llvmTy.isInt then
           FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
         else
@@ -1230,8 +1220,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         let ref ← CodegenM.withFuncBuilder do
           match srcVal with
           | .const .null =>
-            -- todo: consider optimizing
-            FuncBuilder.inttoptr .i64 (intVal 0 64)
+            FuncBuilder.asLocalRef .ptr (.const .null)
           | _ =>
             -- Materialize non-local values (constants, globals) as SSA values
             FuncBuilder.asLocalRef llvmTy srcVal
@@ -1687,7 +1676,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     -- If all predecessors are dead, this block is itself unreachable
     if llvmIncoming.size == 0 then
       let ref ← CodegenM.withFuncBuilder do
-        if llvmTy == .ptr then FuncBuilder.inttoptr .i64 (intVal 0 64)
+        if llvmTy == .ptr then FuncBuilder.asLocalRef .ptr (.const .null)
         else FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
       pure (some (ref, ty))
     else if llvmIncoming.size == 1 then
@@ -1770,14 +1759,18 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
   | .clone val ty label =>
     let valRef ← convertOperand val
     let valLlvmTy := convertTy (← operandTy val)
-    let valAsI64 ← toI64 valLlvmTy valRef
+    let valAsPtr ← ensurePtr valLlvmTy valRef
     let clonerName ← getOrEmitCloner ty
-    let resultI64 ← CodegenM.withFuncBuilder do
-      FuncBuilder.callNamed .i64 clonerName
-        #[(.i64, .local valAsI64), (.i32, i32Val label.toNat)]
+    let clonedPtr ← CodegenM.withFuncBuilder do
+      FuncBuilder.callNamed .ptr clonerName
+        #[(.ptr, valAsPtr), (.i32, i32Val label.toNat)]
     let targetLlvmTy := convertTy ty
-    let resultRef ← fromI64 targetLlvmTy (.local resultI64)
-    pure (some (resultRef, ty))
+    let resultRef ← coerceValue .ptr targetLlvmTy (.local clonedPtr)
+    match resultRef with
+    | .local ref => pure (some (ref, ty))
+    | _ =>
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef targetLlvmTy resultRef)
+      pure (some (ref, ty))
 
   | .panic msgIdx line =>
     let _ := line
@@ -2061,7 +2054,7 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) (llvmRetOverride : Optio
       let llvmTy := convertTy tyFromAlloy
       let dummyRef ← CodegenM.withFuncBuilder do
         if llvmTy == .ptr then
-          FuncBuilder.inttoptr .i64 (intVal 0 64)
+          FuncBuilder.asLocalRef .ptr (.const .null)
         else if llvmTy.isInt then
           FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
         else
@@ -2088,13 +2081,14 @@ def lowerFuncWithName (func : ClosedFunc) (name : String) : CodegenM LLVMFunc :=
   -- Convert parameters using numeric names matching the LocalRef IDs
   let funcBorrowInfo := (← get).borrowInfo.get? func.id.id
   let llvmParams : Array LLVMParam ← func.sig.params.mapIdxM fun i p => do
+    let llvmTy := convertTy p.ty
     let attrs := match funcBorrowInfo with
       | some borrowed =>
-        if borrowed.getD i false then #["nocapture", "readonly"] else #[]
+        if borrowed.getD i false && llvmTy == .ptr then #["nocapture", "readonly"] else #[]
       | none => #[]
     match ← CodegenM.getLocal p.id.id with
-    | some ref => pure { name := s!"v{ref.id}", ty := convertTy p.ty, attrs }
-    | none => pure { name := p.name, ty := convertTy p.ty, attrs }
+    | some ref => pure { name := s!"v{ref.id}", ty := llvmTy, attrs }
+    | none => pure { name := p.name, ty := llvmTy, attrs }
 
   -- Convert return type
   let isMain := name == "soma_main"

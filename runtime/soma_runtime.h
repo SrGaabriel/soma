@@ -232,8 +232,8 @@ typedef struct SomaClosure {
  * one pointer (8 bytes) instead of two (16 bytes). The TypeDesc structs are
  * emitted as static LLVM globals — no runtime allocation.
  */
-typedef SomaValue (*SomaCloneFn)(SomaValue value, uint32_t label);
-typedef void      (*SomaEraseFn)(SomaValue value);
+typedef void* (*SomaCloneFn)(void* value, uint32_t label);
+typedef void  (*SomaEraseFn)(void* value);
 
 typedef struct SomaTypeDesc {
     SomaCloneFn  clone_fn;

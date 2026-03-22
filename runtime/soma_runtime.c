@@ -426,7 +426,7 @@ static inline SomaValue soma_proj_impl(SomaValue sup_val, int proj_idx) {
 
         SomaValue cloned;
         if (sup->type_desc != NULL) {
-            cloned = sup->type_desc->clone_fn(value, sup->label);
+            cloned = (SomaValue)sup->type_desc->clone_fn((void*)value, sup->label);
         } else {
             cloned = soma_clone_heap_value_for_dup(value, sup->label);
         }
@@ -876,7 +876,7 @@ void soma_era_free(void* value) {
             case SUP_TAG_PROJ1:
                 if (SOMA_IS_PTR(v) && v != 0) {
                     if (efn != NULL) {
-                        efn(v);
+                        efn((void*)v);
                     } else {
                         ERA_ENSURE(1);
                         stack[sp++] = SOMA_TO_PTR(v);
@@ -890,9 +890,9 @@ void soma_era_free(void* value) {
                 SomaValue p1 = (SomaValue)sup->proj1;
 
                 if (efn != NULL) {
-                    if (SOMA_IS_PTR(v) && v != 0) efn(v);
-                    if (p0 != v && SOMA_IS_PTR(p0) && p0 != 0) efn(p0);
-                    if (p1 != v && p1 != p0 && SOMA_IS_PTR(p1) && p1 != 0) efn(p1);
+                    if (SOMA_IS_PTR(v) && v != 0) efn((void*)v);
+                    if (p0 != v && SOMA_IS_PTR(p0) && p0 != 0) efn((void*)p0);
+                    if (p1 != v && p1 != p0 && SOMA_IS_PTR(p1) && p1 != 0) efn((void*)p1);
                 } else {
                     ERA_ENSURE(2);
                     if (SOMA_IS_PTR(v) && v != 0) {

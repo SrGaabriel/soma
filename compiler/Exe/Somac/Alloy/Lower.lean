@@ -689,6 +689,51 @@ partial def extractCallTypeArgs (defTy : Value) (concreteTy : Value)
       | none => .rawPtr
     some typeArgs
 
+/-- Match explicit parameter types of a polymorphic definition against concrete argument types -/
+partial def matchParamsAgainstArgs (defTy : Value) (argTypes : Array Value) (returnTy : Option Value)
+    (levels : Std.HashSet Nat) : Std.HashMap Nat Value :=
+  let stripped := stripLeadingImplicits defTy
+  go stripped argTypes 0 {}
+where
+  go (ty : Value) (args : Array Value) (idx : Nat) (bindings : Std.HashMap Nat Value)
+      : Std.HashMap Nat Value :=
+    if idx >= args.size then
+      match returnTy with
+      | some retTy => matchTypeStructural ty retTy levels bindings
+      | none => bindings
+    else
+      match ty with
+      | Value.vPi _ binder _ dom cod =>
+        if binder.isImplicit && dom.isType then
+          let next := advanceCodomain cod dom
+          go next args idx bindings
+        else
+          let bindings' := matchTypeStructural dom args[idx]! levels bindings
+          let next := advanceCodomain cod dom
+          go next args (idx + 1) bindings'
+      | _ => bindings
+
+/-- Extract type arguments by matching the definition's parameter types against
+    the concrete argument types from an APP chain -/
+partial def extractCallTypeArgsFromArgs (defTy : Value) (argTypes : Array Value)
+    (returnTy : Value) (fallbackConcreteTy : Value)
+    (ctx : TypeConvCtx n) : Option (Array (Ty n)) :=
+  let levels := collectTyVarLevels defTy
+  if levels.isEmpty then none
+  else
+    let bindings := matchParamsAgainstArgs defTy argTypes (some returnTy) levels
+    let sortedLevels := levels.toArray.qsort (· < ·)
+    let hasUseful := sortedLevels.any fun level => bindings.contains level
+    let finalBindings :=
+      if hasUseful then bindings
+      else
+        matchPolyAgainstConcrete defTy fallbackConcreteTy levels {}
+    let typeArgs := sortedLevels.map fun level =>
+      match finalBindings.get? level with
+      | some val => convertValueTypeWithMapping val ctx
+      | none => .rawPtr
+    some typeArgs
+
 /-- Extract type parameter names and value parameters using a type conversion context -/
 partial def extractParamsUsingMapping (ty : Value) (ctx : TypeConvCtx n)
     (typeAcc : Array String := #[]) (valAcc : Array (String × Ty n) := #[])
@@ -1298,9 +1343,13 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               | _ =>
                 -- Regular function: resolve reference
                 let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
+                let argTypes ← chain.argPorts.mapM fun port =>
+                  match graph.getNode port.node with
+                  | some argEntry => pure argEntry.ty
+                  | none => pure (Value.vType .zero)
                 let result ← match funcRef with
                   | .local funcId =>
-                    let typeArgs? := extractCallTypeArgs def_.ty chain.baseEntry.ty ctx
+                    let typeArgs? := extractCallTypeArgsFromArgs def_.ty argTypes entry.ty chain.baseEntry.ty ctx
                     match typeArgs? with
                     | some typeArgs =>
                       StateT.lift (LowerM.emitInst (.callPoly funcId typeArgs argOps callRetTy) callRetTy)
@@ -1394,8 +1443,14 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 | none => 1
               let ls ← StateT.lift get
               let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
+              let argType := match entry.getPort ⟨2⟩ with
+                | some argPort =>
+                  match graph.getNode argPort.node with
+                  | some argEntry => argEntry.ty
+                  | none => Value.vType .zero
+                | none => Value.vType .zero
               let typeArgs? := def_?.bind fun def_ =>
-                extractCallTypeArgs def_.ty fnEntry.ty ctx
+                extractCallTypeArgsFromArgs def_.ty #[argType] entry.ty fnEntry.ty ctx
               if defArity > 1 then
                 match typeArgs? with
                 | some typeArgs =>
