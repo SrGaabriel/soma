@@ -76,6 +76,8 @@ Find all polymorphic call sites and collect specialization requests.
 /-- Extract specialization keys from a closed instruction -/
 def collectInstRequests : ClosedInst → Array SpecKey
   | .callPoly funcId typeArgs _ _ => #[⟨funcId, typeArgs⟩]
+  | .callExternPoly _ _ _ _ =>
+      #[]
   | .makeClosurePoly funcRef typeArgs _ =>
       match funcRef with
       | .local funcId => #[⟨funcId, typeArgs⟩]
@@ -110,6 +112,8 @@ def rewriteInst (inst : ClosedInst) (specMap : Std.HashMap SpecKey FuncId) : Clo
       match specMap.get? key with
       | some newFuncId => .call newFuncId args retTy
       | none => inst
+  | .callExternPoly _ _ _ _ =>
+      inst
   | .makeClosurePoly funcRef typeArgs env =>
       match funcRef with
       | .local funcId =>
@@ -213,6 +217,9 @@ def mkSpecRequest? (sf : SomeFunc) (typeArgs : Array ClosedTy) : Option SomeSpec
 def processRequest (key : SpecKey) : StateM MonoState Unit := do
   let s ← get
 
+  -- Skip if already specialized
+  if s.specMap.contains key then return ()
+
   -- Look up the original function
   let some origFunc := s.module.getFunc key.funcId | return ()
 
@@ -240,6 +247,7 @@ def processRequest (key : SpecKey) : StateM MonoState Unit := do
 
   -- The specialized function may contain more polymorphic calls
   let newRequests := collectFuncRequests specializedFunc
+  pure ()
   modify fun s => s.addRequests newRequests
 
 /-- Process all pending specialization requests (fixed-point iteration) -/
@@ -281,6 +289,7 @@ def remapInstRefs (inst : ClosedInst) (idMap : Std.HashMap Nat Nat) : ClosedInst
   match inst with
   | .call fid args retTy => .call (remapFuncId fid idMap) args retTy
   | .callPoly fid tyArgs args retTy => .callPoly (remapFuncId fid idMap) tyArgs args retTy
+  | .callExternPoly _ _ _ _ => inst
   | .makeClosure ref env => .makeClosure (remapFuncRefId ref idMap) env
   | .makeClosurePoly ref tyArgs env => .makeClosurePoly (remapFuncRefId ref idMap) tyArgs env
   | .makeClosureDyn _ _ _ => inst
@@ -320,6 +329,7 @@ private def collectFuncRefsInst (inst : Inst n) (acc : Array FuncId) : Array Fun
   match inst with
   | .call fid args _ => fromOperands args (acc.push fid)
   | .callPoly fid _ args _ => fromOperands args (acc.push fid)
+  | .callExternPoly _ _ args _ => fromOperands args acc
   | .makeClosure ref env => fromFuncRef ref (fromOperand env acc)
   | .makeClosurePoly ref _ env => fromFuncRef ref (fromOperand env acc)
   | .makeClosureDyn fnClo env _ => fromOperand env (fromOperand fnClo acc)
@@ -442,6 +452,7 @@ def isFullyMonomorphic (m : Module) : Bool :=
           block.stmts.all fun stmt =>
             match stmt.inst with
             | .callPoly _ _ _ _ => false
+            | .callExternPoly _ _ _ _ => false
             | .makeClosurePoly _ _ _ => false
             | _ => true
 
@@ -462,6 +473,8 @@ def reportPolymorphism (m : Module) : Array String :=
                 match stmt.inst with
                 | .callPoly funcId typeArgs _ _ =>
                     issues := issues.push s!"Function {f.sig.name} has callPoly to {funcId} with {typeArgs.size} type args"
+                | .callExternPoly name typeArgs _ _ =>
+                    issues := issues.push s!"Function {f.sig.name} has callExternPoly to \"{name}\" with {typeArgs.size} type args"
                 | .makeClosurePoly funcRef typeArgs _ =>
                     issues := issues.push s!"Function {f.sig.name} has makeClosurePoly to {funcRef} with {typeArgs.size} type args"
                 | _ => pure ()

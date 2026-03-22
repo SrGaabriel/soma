@@ -171,7 +171,8 @@ private def buildDerivedParamMap (cfg : ClosedCFG) (paramIds : Std.HashSet Nat)
           | .clone (.local srcId) _ _ =>
             if let some srcParam := derivedFrom.get? srcId.id then
               derivedFrom := derivedFrom.insert resultId.id srcParam
-          | .callExtern _ args _ =>
+          | .callExtern _ args _
+          | .callExternPoly _ _ args _ =>
             -- If any argument is derived from a param, the result is derived too
             -- (covers soma_clone_closure and similar runtime calls on closure params)
             for arg in args do
@@ -818,6 +819,7 @@ def closureSpec (m : Module) : Module := Id.run do
       if let some f := sf.asMono? then
         let cps := findClosureParams f
         if !cps.isEmpty then
+          pure ()
           closureParamMap := closureParamMap.insert f.id.id cps
 
     let requests := findSpecRequests module closureParamMap
@@ -828,6 +830,8 @@ def closureSpec (m : Module) : Module := Id.run do
       let mut newFuncs := module.funcs
       for req in requests do
         let some origFunc := getMonoFunc? module req.hofFuncId | continue
+        -- todo: reenable
+        if origFunc.sig.name.find (· == '$') != origFunc.sig.name.endPos then continue
         let specFuncId := FuncId.mk nextFuncId
         nextFuncId := nextFuncId + 1
         let specFunc := specializeFunc module origFunc req specFuncId

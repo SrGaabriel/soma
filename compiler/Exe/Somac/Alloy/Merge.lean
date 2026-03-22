@@ -163,6 +163,7 @@ def remapInst (remap : IdRemap) (moduleName : String) (inst : Inst n) : Inst n :
     | none => inst
   | .callIntrinsic op args retTy => .callIntrinsic op (remapOps args) retTy
   | .callExtern name args retTy => .callExtern name (remapOps args) retTy
+  | .callExternPoly name typeArgs args retTy => .callExternPoly name typeArgs (remapOps args) retTy
 
 /-- Rewrite FuncId references in a terminator -/
 def remapTerminator (remap : IdRemap) (moduleName : String) (term : Terminator) : Terminator :=
@@ -365,6 +366,10 @@ def resolveInstFuncRefs (resolver : FuncRefResolver) (inst : Inst n) : Inst n :=
     -- Check if the extern function is now available as a local function in the merged module
     match resolver.nameToFuncId.get? name with
     | some funcId => .call funcId args retTy
+    | none => inst
+  | .callExternPoly name typeArgs args retTy =>
+    match resolver.nameToFuncId.get? name with
+    | some funcId => .callPoly funcId typeArgs args retTy
     | none => inst
   | _ => inst
 

@@ -212,6 +212,8 @@ inductive SerializableInst where
   | panic (msgIdx line : Nat)
   | callIntrinsic (op : IntrinsicOp) (args : Array SerializableOperand) (retTy : SerializableTy)
   | callExtern (name : String) (args : Array SerializableOperand) (retTy : SerializableTy)
+  | callExternPoly (name : String) (tyArgs : Array SerializableTy) (args : Array SerializableOperand)
+      (retTy : SerializableTy)
   deriving Serialize, Deserialize
 
 private abbrev SOp := SerializableOperand
@@ -263,6 +265,7 @@ def instToSerializable : Inst n → SerializableInst
   | .panic m l => .panic m l
   | .callIntrinsic op as ty => .callIntrinsic op (sops as) (sty ty)
   | .callExtern name as ty => .callExtern name (sops as) (sty ty)
+  | .callExternPoly name ta as ty => .callExternPoly name (stys ta) (sops as) (sty ty)
 
 private abbrev dop := operandFromSerializable
 private def dty (n : Nat) := tyFromSerializableN n
@@ -311,6 +314,7 @@ def instFromSerializableN (n : Nat) : SerializableInst → Inst n
   | .panic m l => .panic m l
   | .callIntrinsic op as ty => .callIntrinsic op (dops as) (dty n ty)
   | .callExtern name as ty => .callExtern name (dops as) (dty n ty)
+  | .callExternPoly name ta as ty => .callExternPoly name (dtys n ta) (dops as) (dty n ty)
 
 /-! ## Terminator Serialization -/
 

@@ -1952,6 +1952,40 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     else
       pure (some (ref, retTy))
 
+  | .callExternPoly name _typeArgs args retTy =>
+    let llvmRetTy := convertTy retTy
+
+    let isSomaRuntime := name.startsWith "soma_"
+    let mut llvmArgs : Array (LLVMType × LLVMValue) := #[]
+    for arg in args do
+      let argAlloTy ← operandTy arg
+      let (argLLVMTy, argVal) ← convertOperandWithTy arg
+      if argAlloTy == Ty.string && !isSomaRuntime then
+        let cstr ← CodegenM.withFuncBuilder
+          (FuncBuilder.callNamed .ptr "soma_to_cstring" #[(.ptr, argVal)])
+        llvmArgs := llvmArgs.push (.ptr, .local cstr)
+      else
+        llvmArgs := llvmArgs.push (argLLVMTy, argVal)
+
+    unless (← CodegenM.isExternDeclared name) do
+      let llvmParams := llvmArgs.mapIdx fun i (ty, _) =>
+        { name := s!"arg{i}", ty := ty : LLVMParam }
+      CodegenM.withModuleBuilder do
+        ModuleBuilder.addFunc {
+          name := name
+          retTy := llvmRetTy
+          params := llvmParams
+          isDeclaration := true
+        }
+      CodegenM.markExternDeclared name
+
+    let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
+    if isUnitTy retTy then
+      let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
+      pure (some (unitRef, retTy))
+    else
+      pure (some (ref, retTy))
+
 /-- Lower an Alloy terminator to LLVM -/
 def lowerTerminator (term : Terminator) (retTy : ClosedTy) (llvmRetOverride : Option LLVMType := none) : CodegenM Unit := do
   match term with
@@ -2025,6 +2059,7 @@ def instReferencedLocals (inst : ClosedInst) : Array Nat :=
   | .free ptr => collectOp ptr
   | .callIntrinsic _ args _ => collectOps args
   | .callExtern _ args _ => collectOps args
+  | .callExternPoly _ _ args _ => collectOps args
   | _ => #[]
 
 /-- Lower an Alloy basic block to LLVM -/

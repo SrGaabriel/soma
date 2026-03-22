@@ -1377,18 +1377,30 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 let result ← match funcRef with
                   | .local funcId =>
                     let resolvedTypeArgs? := graph.getResolvedTypeArgs chain.baseNodeId
+                    pure ()
                     let typeArgs? := match resolvedTypeArgs? with
                       | some resolved => convertResolvedTypeArgs resolved def_.ty ctx
                       | none => none
                     let typeArgs? := typeArgs?.orElse fun _ =>
                       extractCallTypeArgsFromArgs def_.ty argTypes entry.ty chain.baseEntry.ty ctx
+                    pure ()
                     match typeArgs? with
                     | some typeArgs =>
                       StateT.lift (LowerM.emitInst (.callPoly funcId typeArgs argOps callRetTy) callRetTy)
                     | none =>
                       StateT.lift (LowerM.emitInst (.call funcId argOps callRetTy) callRetTy)
                   | .external name =>
-                    StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
+                    let resolvedTypeArgs? := graph.getResolvedTypeArgs chain.baseNodeId
+                    let extTypeArgs? := match resolvedTypeArgs? with
+                      | some resolved => convertResolvedTypeArgs resolved def_.ty ctx
+                      | none => none
+                    let extTypeArgs? := extTypeArgs?.orElse fun _ =>
+                      extractCallTypeArgsFromArgs def_.ty argTypes entry.ty chain.baseEntry.ty ctx
+                    match extTypeArgs? with
+                    | some typeArgs =>
+                      StateT.lift (LowerM.emitInst (.callExternPoly name typeArgs argOps callRetTy) callRetTy)
+                    | none =>
+                      StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
                   | .externC name =>
                     StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
                   | .intrinsic op =>
@@ -1499,7 +1511,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                   | none =>
                     StateT.lift (LowerM.emitInst (.call funcId #[.local argVal] callRetTy) callRetTy)
                 | .external name =>
-                  StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
+                  match typeArgs? with
+                  | some typeArgs =>
+                    StateT.lift (LowerM.emitInst (.callExternPoly name typeArgs #[.local argVal] callRetTy) callRetTy)
+                  | none =>
+                    StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
                 | .intrinsic op =>
                   StateT.lift (LowerM.emitInst (.callIntrinsic op #[.local argVal] callRetTy) callRetTy)
                 | .primOp _op =>

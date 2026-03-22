@@ -123,6 +123,8 @@ structure LowerCtx where
   nextSyntheticId : Nat := 0
   /-- Global environment for evaluating type annotations -/
   evalGlobalEnv : Soma.Core.GlobalEnv := .empty
+  /-- Metavariable solutions from type checking -/
+  metaState : Soma.Core.MetaState := .empty
   deriving Inhabited
 
 namespace LowerCtx
@@ -603,7 +605,7 @@ def evalExprToValue (e : Soma.Core.Expr) : LowerM Value := do
   let evalCtx : Soma.Core.EvalCtx := {
     env := .empty
     globals := ctx.evalGlobalEnv
-    metas := .empty
+    metas := ctx.metaState
   }
   pure (Soma.Core.evalCoreExpr evalCtx e)
 
@@ -733,6 +735,7 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
         lowerCoreAppDefault fn arg ty
     | none =>
       let typeArgExprs := allArgs.filter isCoreTypeLevelExpr
+      pure ()
       if typeArgExprs.size > 0 then
         let mut typeArgVals : Array Value := #[]
         for e in typeArgExprs do
@@ -1435,12 +1438,14 @@ def generatePureIOBody (fnTy : Value) : LowerM (NodeId × Nat) := do
 def lowerModule (types : Array Soma.Core.TypeDef)
     (typedFunctions : TypedFunctionMap)
     (globals : Option Soma.Dependent.Globals := none)
-    (instanceEnv : Soma.Dependent.InstanceEnv := .empty) : LowerM Unit := do
+    (instanceEnv : Soma.Dependent.InstanceEnv := .empty)
+    (metas : Soma.Core.MetaState := .empty) : LowerM Unit := do
   -- Load intrinsic dispatch metadata from elaboration/type checking.
   if let some g := globals then
     LowerM.modifyCtx fun ctx => { ctx with
       intrinsics := g.intrinsics
       evalGlobalEnv := g.toGlobalEnvWithClasses instanceEnv
+      metaState := metas
     }
 
   -- Register global types for type synthesis during lowering.
@@ -1555,7 +1560,8 @@ def lower (types : Array Soma.Core.TypeDef)
     (typedFunctions : TypedFunctionMap)
     (usageMap : UsageMap)
     (globals : Option Soma.Dependent.Globals := none)
-    (instanceEnv : Soma.Dependent.InstanceEnv := .empty) : Graph :=
-  LowerM.build (lowerModule types typedFunctions globals instanceEnv) usageMap
+    (instanceEnv : Soma.Dependent.InstanceEnv := .empty)
+    (metas : Soma.Core.MetaState := .empty) : Graph :=
+  LowerM.build (lowerModule types typedFunctions globals instanceEnv metas) usageMap
 
 end Somac.Circuit.Lower

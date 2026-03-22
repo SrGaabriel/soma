@@ -230,6 +230,10 @@ def ppInst (cfg : Config) : Inst n → String
   | .callExtern name args retTy =>
     let as := String.intercalate ", " (args.toList.map (ppOperand cfg))
     s!"{colorKeyword cfg "call.extern"} {ppTy cfg retTy} \"{name}\"({as})"
+  | .callExternPoly name typeArgs args retTy =>
+    let tyArgsStr := String.intercalate ", " (typeArgs.toList.map (ppTy cfg))
+    let as := String.intercalate ", " (args.toList.map (ppOperand cfg))
+    s!"{colorKeyword cfg "call.extern.poly"} {ppTy cfg retTy} \"{name}\"<{tyArgsStr}>({as})"
 
 /-! ## Terminator Formatting -/
 

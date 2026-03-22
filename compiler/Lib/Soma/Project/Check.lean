@@ -572,6 +572,8 @@ structure TypeCheckResult where
   allUsedGlobals : Std.HashSet Soma.Core.QualifiedName := {}
   /-- Final unique ID counter from elaboration (for downstream passes) -/
   uniqueNextId : Nat := 0
+  /-- Metavariable solutions from type checking (for resolving implicit type args) -/
+  metas : Soma.Core.MetaState := .empty
   deriving Inhabited
 
 def typeCheckModule
@@ -671,6 +673,7 @@ def typeCheckModule
     errors := allErrors
     allUsedGlobals := fnResult.allUsedGlobals
     uniqueNextId := fnResult.finalState.uniqueSupply.nextId
+    metas := fnResult.finalState.metas
   }
 
 /-- Extract public symbols from a type-checked module -/

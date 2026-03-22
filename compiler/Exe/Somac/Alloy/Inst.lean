@@ -128,6 +128,9 @@ inductive Inst : Nat → Type where
   /-- External function call -/
   | callExtern : String → Array Operand → Ty n → Inst n
 
+  /-- Polymorphic external function call -/
+  | callExternPoly : String → Array (Ty n) → Array Operand → Ty n → Inst n
+
 /-- Monomorphic instruction -/
 abbrev ClosedInst := Inst 0
 
@@ -191,6 +194,8 @@ def instantiate : Inst n → TyEnv n → ClosedInst
   | .panic msgIdx line, _ => .panic msgIdx line
   | .callIntrinsic op args retTy, env => .callIntrinsic op args (Somac.Alloy.instantiate retTy env)
   | .callExtern name args retTy, env => .callExtern name args (Somac.Alloy.instantiate retTy env)
+  | .callExternPoly name tyArgs args retTy, env =>
+      .callExternPoly name (tyArgs.map (Somac.Alloy.instantiate · env)) args (Somac.Alloy.instantiate retTy env)
 
 /-- Get the result type of a closed instruction -/
 def resultTy : ClosedInst → Option ClosedTy
@@ -243,6 +248,7 @@ def resultTy : ClosedInst → Option ClosedTy
   | .panic _ _ => none
   | .callIntrinsic op _ retTy => if op.hasResult then some retTy else none
   | .callExtern _ _ retTy => some retTy
+  | .callExternPoly _ _ _ retTy => some retTy
 
 private def toStringAux : Inst n → String
   | .binOp op lhs rhs _ => s!"{op} {lhs}, {rhs}"
@@ -311,6 +317,10 @@ private def toStringAux : Inst n → String
   | .callExtern name args _ =>
       let as := String.intercalate ", " (args.toList.map ToString.toString)
       s!"call.extern {name}({as})"
+  | .callExternPoly name typeArgs args _ =>
+      let ts := String.intercalate ", " (typeArgs.toList.map Ty.toString)
+      let as := String.intercalate ", " (args.toList.map ToString.toString)
+      s!"call.extern.poly {name}<{ts}>({as})"
 
 instance : ToString (Inst n) where
   toString := toStringAux
@@ -333,6 +343,7 @@ def operands : Inst n → Array (Operand)
   | .callIndirect f args _ => #[f] ++ args
   | .callClosure f args _ => #[f] ++ args
   | .callExtern _ args _ => args
+  | .callExternPoly _ _ args _ => args
   | .callIntrinsic _ args _ => args
   | .makeClosure _ env => #[env]
   | .makeClosurePoly _ _ env => #[env]
@@ -393,6 +404,7 @@ def mapOperands (inst : Inst 0) (f : Operand → Operand) : Inst 0 :=
   | .callIndirect fn args ty => .callIndirect (f fn) (args.map f) ty
   | .callClosure clo args ty => .callClosure (f clo) (args.map f) ty
   | .callExtern name args ty => .callExtern name (args.map f) ty
+  | .callExternPoly name tys args ty => .callExternPoly name tys (args.map f) ty
   | .callIntrinsic op args ty => .callIntrinsic op (args.map f) ty
   | .makeClosure ref env => .makeClosure ref (f env)
   | .makeClosurePoly ref tys env => .makeClosurePoly ref tys (f env)

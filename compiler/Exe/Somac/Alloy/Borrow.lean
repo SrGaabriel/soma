@@ -66,6 +66,7 @@ private def instEscapesLocal (inst : ClosedInst) (lid : LocalId) : Bool :=
   | .callIndirect _ args _ => args.any isOp
   | .callClosure _ args _ => args.any isOp
   | .callExtern _ args _ => args.any isOp
+  | .callExternPoly _ _ args _ => args.any isOp
   | _ => false
 
 /-- Check if a terminator returns a local -/
