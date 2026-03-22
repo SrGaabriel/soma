@@ -20,15 +20,15 @@ def id : ∀a. a -> a
     | x => x
 
 // Dependent type: vector length in the type
-def head : ∀a. (n : Nat) -> Vec a (n + 1) -> a
-    | _, Vec::Cons x _ => x
+def head {n : Nat} : Vec a (n + 1) -> a
+    | Vec::Cons x _ => x
 
 // Pattern matching on ADTs
 inductive Maybe {a : Type} where
     | Nothing
     | Just (value : a)
 
-def from_maybe : ∀a. a -> Maybe a -> a
+def from_maybe {a : Type} : a -> Maybe a -> a
     | default, Maybe::Nothing => default
     | _, Maybe::Just x => x
 
@@ -37,21 +37,21 @@ def get_x : { x : Int | r } -> Int
     | p => p.x
 
 // Open variants
-def to_ok : Int -> < Ok : Int | r >
-    | n => .Ok n
+def to_ok (n : Int) : < Ok : Int | r >
+    = .Ok n
 
 // Type classes
 class Functor (f : Type -> Type) where
-    fmap : {a b : Type} -> (a -> b) -> f a -> f b
+    fmap : {a : Type} {b : Type} -> (a -> b) -> f a -> f b
 
 instance : Functor Maybe where
-    def fmap : (a -> b) -> Maybe a -> Maybe b
-        | g, Maybe::Just x => Maybe::Just (g x)
-        | g, Maybe::Nothing => Maybe::Nothing
+    def fmap (g : a -> b) : Maybe a -> Maybe b
+        | Maybe::Just x => Maybe::Just (g x)
+        | Maybe::Nothing => Maybe::Nothing
 
 // Linear types: use exactly once
-def use_once : (1 x : Int) -> Int
-    | x => x + 1
+def use_once (1 x : Int) : Int
+    = x + 1
 ```
 
 Quantities (`0`, `1`, `ω`) appear in binders. A `0`-bound variable is erased at compile time, generating no code. A `1`-bound variable must be used exactly once. An `ω`-bound variable (the default) can be used any number of times.
@@ -108,7 +108,6 @@ haoma run
 ## Etymology
 
 The name comes from three words that happen to overlap:
-The name draws from three separate words that happen to coincide.
 
 1. **Portuguese: "soma":** In mathematics, Σ denotes summation: the composition of many terms into a whole. Soma embraces this compositional spirit through monads chain effects. The syntax reads like notation, letting you build programs as elegant equations where complex behavior emerges from the sum of simple, pure parts.
 
