@@ -8,8 +8,9 @@ inductive Bool where
     | False
 
 @[wired_in "type.string"]
-@[intrinsic]
-record String
+record String where
+    data : Ptr Word8
+    len  : Int64
 
 @[wired_in "type.unit"]
 @[intrinsic]

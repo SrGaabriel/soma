@@ -458,6 +458,33 @@ partial def lookupFieldType (recTy : Value) (fieldName : String) (span : Span) :
     | none =>
       let available := fields.map (·.1) |>.toArray
       TCM.throw (.fieldNotFound fieldName recTy' span available none)
+  | .vDataType typeId _ =>
+    -- Check if this data type is a record with named fields
+    let ctx ← TCM.getCtx
+    match ctx.globals.lookupFieldIndex ⟨typeId⟩ fieldName with
+    | some fieldIdx =>
+      -- Look up the constructor's type to extract the field type
+      match ctx.globals.lookupInductive ⟨typeId⟩ with
+      | some indInfo =>
+        if indInfo.ctors.size == 1 then
+          let ctor := indInfo.ctors[0]!
+          -- Walk the constructor type (Pi chain) to find the field at fieldIdx
+          let mut ty := ctor.type
+          for _ in [:fieldIdx] do
+            match ty with
+            | .vPi _ _ _ _ cod => ty ← applyClosure cod (Value.vNeutral (.vType .zero) (.nVar ⟨"_", ⟨0⟩⟩))
+            | _ => break
+          match ty with
+          | .vPi _ _ _ dom _ => return dom
+          | _ => TCM.throw (.expectedRecord recTy' span #[])
+        else
+          TCM.throw (.expectedRecord recTy' span #[])
+      | none => TCM.throw (.expectedRecord recTy' span #[])
+    | none =>
+      let available := match ctx.globals.lookupInductive ⟨typeId⟩ with
+        | some indInfo => indInfo.fieldNames
+        | none => #[]
+      TCM.throw (.fieldNotFound fieldName recTy' span available none)
   | _ =>
     TCM.throw (.expectedRecord recTy' span #[])
 
@@ -772,7 +799,13 @@ where
 
     -- Literals
     | .lit (.int n _) => return (.vPrimTy .int, .lit (.int n))
-    | .lit (.string s _) => return (.vPrimTy .string, .lit (.string s))
+    | .lit (.string s _) =>
+      -- Look up the String type from wired-in registry (real record, not primitive)
+      let stringTy ← do
+        match ← TCM.lookupWiredIn .typeString with
+        | some info => pure (Value.vDataType info.name.id [])
+        | none => pure (Value.vPrimTy .string)
+      return (stringTy, .lit (.string s))
     | .lit (.bool b _) => return (.vPrimTy .bool, .lit (.bool b))
 
     -- Application: infer fn, then apply arg
@@ -851,21 +884,25 @@ where
     | .fieldAccess expr field span => do
       let (exprTy, exprE) ← inferSyntax expr
       let normalizedTy ← normalizeRecordLikeType exprTy span
-      let fieldTy ← match normalizedTy with
-        | .vRecord row => findFieldInRow row field.name span
+      let (fieldTy, idx) ← match normalizedTy with
+        | .vRecord row =>
+          let ty ← findFieldInRow row field.name span
+          let idx ← match ← findFieldIndex row field.name with
+            | some i => pure i
+            | none => pure 0
+          pure (ty, idx)
         | .vRecordVal fields =>
           match fields.find? (·.1 == field.name) with
-          | some (_, ty) => pure ty
+          | some (_, ty) => pure (ty, 0)
           | none =>
             let available := fields.map (·.1) |>.toArray
             TCM.throw (.fieldNotFound field.name normalizedTy span available none)
+        | .vDataType typeId _ =>
+          let fieldTy ← lookupFieldType normalizedTy field.name span
+          let ctx ← TCM.getCtx
+          let idx := ctx.globals.lookupFieldIndex ⟨typeId⟩ field.name |>.getD 0
+          pure (fieldTy, idx)
         | _ => TCM.throw (.expectedRecord normalizedTy span #[])
-      let idx ← match normalizedTy with
-        | .vRecord row =>
-          match ← findFieldIndex row field.name with
-          | some i => pure i
-          | none => pure 0
-        | _ => pure 0
       return (fieldTy, .fieldAccess exprE field.name idx)
 
     -- Projection function: Type.field

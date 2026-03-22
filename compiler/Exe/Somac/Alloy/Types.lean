@@ -190,7 +190,7 @@ def u64 : Ty n := .prim .u64
 def u32 : Ty n := .prim .u32
 def bool : Ty n := .prim .bool
 def unit : Ty n := .prim .unit
-def string : Ty n := .ptr (.struct #[("length", .prim .i64), ("data", .rawPtr)])
+def string : Ty n := .struct #[("data", .rawPtr), ("len", .prim .i64)]
 
 /-- Whether this type supports LLVM arithmetic instructions -/
 def isArithmetic (ty : Ty n) : Bool :=
@@ -391,7 +391,7 @@ def ty : Const → ClosedTy
   | .bool _ => .prim .bool
   | .unit => .prim .unit
   | .null t => .ptr t
-  | .string _ _ => .rawPtr
+  | .string _ _ => Ty.string
   | .undef t => t
 
 instance : ToString Const where

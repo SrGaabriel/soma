@@ -684,7 +684,7 @@ def defaultInstanceEnv : InstanceEnv := Id.run do
     span := Span.uninhabited
   }
 
-  for prim in [PrimType.int, .long, .short, .byte, .float, .double, .bool, .string] do
+  for prim in [PrimType.int, .long, .short, .byte, .float, .double, .bool] do
     let primTy := Value.vPrimTy prim
     -- Create an instance value that's a record with the eq method
     let eqMethod := mkMethodPlaceholder "eq"
@@ -698,7 +698,7 @@ def defaultInstanceEnv : InstanceEnv := Id.run do
     env := env.addInstance BuiltinClass.ord #[primTy] #[.omega]
       #[(BuiltinClass.eq, #[primTy])] instValue
 
-  for prim in [PrimType.int, .long, .short, .byte, .float, .double, .bool, .string] do
+  for prim in [PrimType.int, .long, .short, .byte, .float, .double, .bool] do
     let primTy := Value.vPrimTy prim
     let showMethod := mkMethodPlaceholder "show"
     let instValue := Value.vRecordVal [("show", showMethod)]

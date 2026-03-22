@@ -39,14 +39,11 @@ alias CUIntPtr = Word64
 
 alias CString = Ptr Word8
 
-@[intrinsic "ffi.to_cstring"]
 def to_cstring : String -> CString
+    | s => s.data
 
 @[intrinsic "ffi.from_cstring"]
 def from_cstring : CString -> String
-
-@[intrinsic "ffi.cstring_len"]
-def cstring_len : CString -> CSize
 
 @[extern]
 def malloc : CSize -> Ptr a

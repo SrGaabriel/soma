@@ -481,10 +481,20 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
     | none =>
       match ctx.inductives.get? ⟨dId⟩ with
       | some indInfo =>
-        let variants := indInfo.ctors.map fun ctor =>
+        if indInfo.kind == .record && indInfo.ctors.size == 1 then
+          -- Record type (single constructor): produce flat struct with named fields
+          let ctor := indInfo.ctors[0]!
           let fields := extractCtorFieldTypes ctor.type ctx
-          (ctor.tag, fields)
-        .tagged (.prim .u32) variants
+          let fieldNames := indInfo.fieldNames
+          let namedFields := fields.mapIdx fun i ty =>
+            let name := if h : i < fieldNames.size then fieldNames[i] else s!"field{i}"
+            (name, ty)
+          .struct namedFields
+        else
+          let variants := indInfo.ctors.map fun ctor =>
+            let fields := extractCtorFieldTypes ctor.type ctx
+            (ctor.tag, fields)
+          .tagged (.prim .u32) variants
       | none => .tagged (.prim .u32) #[]
   | Value.vConstructor _ _ _ _ => .rawPtr
   | Value.vRecord _ => .rawPtr
@@ -1042,10 +1052,9 @@ def lowerMat (expectedTag : Nat) (scrutinee : LocalId) : LowerM n (LocalId × Bl
 
   pure (cond, thenBlock, elseBlock)
 
-/-- Lower a string literal via runtime allocation for uniform ownership semantics -/
-def lowerString (stringIdx : Nat) (_len : Nat) : LowerM n LocalId := do
-  let cstr ← LowerM.emitInst (.copy (.const (.string stringIdx 0))) .rawPtr
-  LowerM.emitInst (.callIntrinsic .fromCString #[.local cstr] Ty.string) Ty.string
+/-- Lower a string literal to a fat pointer constant { ptr data, i64 len } -/
+def lowerString (stringIdx : Nat) (len : Nat) : LowerM n LocalId := do
+  LowerM.emitInst (.copy (.const (.string stringIdx len))) Ty.string
 
 /-- Mapping from Circuit book index to Alloy FuncId -/
 abbrev FuncIdMap := Std.HashMap Nat FuncId

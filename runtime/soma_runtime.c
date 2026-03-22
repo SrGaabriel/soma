@@ -846,108 +846,52 @@ void* soma_clone_closure(void* closure_ptr, uint32_t label) {
  */
 
 SOMA_NONNULL(1)
-char* soma_to_cstring(SomaString* str) {
-    return str->data;
-}
+/* soma_to_cstring is now inline in the header (just returns str.data) */
 
-SomaString* soma_from_cstring(const char* cstr) {
-    if (SOMA_UNLIKELY(cstr == NULL)) return NULL;
-
+SomaString soma_from_cstring(const char* cstr) {
+    if (SOMA_UNLIKELY(cstr == NULL))
+        return (SomaString){ .data = NULL, .len = 0 };
     size_t len = strlen(cstr);
-    size_t total = sizeof(SomaString) + len + 1;
-    SomaString* s = (SomaString*)soma_pool_alloc_raw(total);
-    if (SOMA_UNLIKELY(s == NULL)) {
-        soma_panic("soma_from_cstring: out of memory");
-    }
-    s->length = (int64_t)len;
-    memcpy(s->data, cstr, len + 1);
-    return s;
-}
-
-uint64_t soma_cstring_len(const char* cstr) {
-    if (SOMA_UNLIKELY(cstr == NULL)) return 0;
-    return (uint64_t)strlen(cstr);
+    char* buf = (char*)soma_pool_alloc_raw(len + 1);
+    if (SOMA_UNLIKELY(buf == NULL)) soma_panic("soma_from_cstring: out of memory");
+    memcpy(buf, cstr, len + 1);
+    return (SomaString){ .data = buf, .len = (int64_t)len };
 }
 
 SOMA_HOT
-SomaString* soma_strcat(SomaString* restrict a, SomaString* restrict b) {
-    if (SOMA_UNLIKELY(a == NULL)) {
-        if (SOMA_UNLIKELY(b == NULL)) {
-            size_t total = sizeof(SomaString) + 1;
-            SomaString* result = (SomaString*)soma_pool_alloc_raw(total);
-            if (SOMA_UNLIKELY(result == NULL)) soma_panic("soma_strcat: out of memory");
-            result->length = 0;
-            result->data[0] = '\0';
-            return result;
-        }
-        size_t len_b = (size_t)soma_string_len(b);
-        size_t total = sizeof(SomaString) + len_b + 1;
-        SomaString* result = (SomaString*)soma_pool_alloc_raw(total);
-        if (SOMA_UNLIKELY(result == NULL)) soma_panic("soma_strcat: out of memory");
-        result->length = (int64_t)len_b;
-        memcpy(result->data, b->data, len_b + 1);
-        return result;
-    }
-    if (SOMA_UNLIKELY(b == NULL)) {
-        size_t len_a = (size_t)soma_string_len(a);
-        size_t total = sizeof(SomaString) + len_a + 1;
-        SomaString* result = (SomaString*)soma_pool_alloc_raw(total);
-        if (SOMA_UNLIKELY(result == NULL)) soma_panic("soma_strcat: out of memory");
-        result->length = (int64_t)len_a;
-        memcpy(result->data, a->data, len_a + 1);
-        return result;
-    }
-
+SomaString soma_strcat(SomaString a, SomaString b) {
     size_t len_a = (size_t)soma_string_len(a);
     size_t len_b = (size_t)soma_string_len(b);
     size_t total_len = len_a + len_b;
-    size_t total = sizeof(SomaString) + total_len + 1;
-
-    SomaString* restrict result = (SomaString*)soma_pool_alloc_raw(total);
-    if (SOMA_UNLIKELY(result == NULL)) soma_panic("soma_strcat: out of memory");
-    result->length = (int64_t)total_len;
-    memcpy(result->data, a->data, len_a);
-    memcpy(result->data + len_a, b->data, len_b);
-    result->data[total_len] = '\0';
-    return result;
+    char* buf = (char*)soma_pool_alloc_raw(total_len + 1);
+    if (SOMA_UNLIKELY(buf == NULL)) soma_panic("soma_strcat: out of memory");
+    memcpy(buf, a.data, len_a);
+    memcpy(buf + len_a, b.data, len_b);
+    buf[total_len] = '\0';
+    return (SomaString){ .data = buf, .len = (int64_t)total_len };
 }
 
-SomaString* soma_int_to_string(int32_t val) {
-    char buf[12];
-    char* p = buf + sizeof(buf);
+SomaString soma_int_to_string(int32_t val) {
+    char tmp[12];
+    char* p = tmp + sizeof(tmp);
     *--p = '\0';
-
     uint32_t uval;
     int negative = 0;
-    if (val < 0) {
-        negative = 1;
-        uval = (uint32_t)(-(int64_t)val);
-    } else {
-        uval = (uint32_t)val;
-    }
-
-    do {
-        *--p = '0' + (char)(uval % 10);
-        uval /= 10;
-    } while (uval > 0);
-
+    if (val < 0) { negative = 1; uval = (uint32_t)(-(int64_t)val); }
+    else { uval = (uint32_t)val; }
+    do { *--p = '0' + (char)(uval % 10); uval /= 10; } while (uval > 0);
     if (negative) *--p = '-';
-
-    int len = (int)(buf + sizeof(buf) - 1 - p);
-    size_t total = sizeof(SomaString) + len + 1;
-    SomaString* s = (SomaString*)soma_pool_alloc_raw(total);
-    if (SOMA_UNLIKELY(s == NULL)) soma_panic("soma_int_to_string: out of memory");
-    s->length = (int64_t)len;
-    memcpy(s->data, p, len + 1);
-    return s;
+    int len = (int)(tmp + sizeof(tmp) - 1 - p);
+    char* buf = (char*)soma_pool_alloc_raw(len + 1);
+    if (SOMA_UNLIKELY(buf == NULL)) soma_panic("soma_int_to_string: out of memory");
+    memcpy(buf, p, len + 1);
+    return (SomaString){ .data = buf, .len = (int64_t)len };
 }
 
-void soma_era_string(void* value) {
-    if (SOMA_UNLIKELY(value == NULL)) return;
-    SomaString* s = (SomaString*)value;
-    if (s->length < 0) return;
-    size_t total = sizeof(SomaString) + (size_t)s->length + 1;
-    soma_pool_free_raw(value, total);
+void soma_era_string(SomaString str) {
+    if (SOMA_UNLIKELY(str.data == NULL)) return;
+    if (str.len < 0) return;  /* static string — don't free */
+    soma_pool_free_raw(str.data, (size_t)str.len + 1);
 }
 
 /*

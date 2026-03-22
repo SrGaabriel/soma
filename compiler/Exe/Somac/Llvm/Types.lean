@@ -381,6 +381,7 @@ inductive LLVMInst where
   -- Function calls
   | call (tailcall : Bool) (callconv : Option CallConv) (retTy : LLVMType)
          (func : LLVMValue) (args : Array (LLVMType × LLVMValue))
+         (argAttrs : Array (Option String) := #[])
   -- Select and phi
   | select (condTy resTy : LLVMType) (cond thenVal elseVal : LLVMValue)
   | phi (ty : LLVMType) (incoming : Array (LLVMValue × Label))
@@ -442,7 +443,7 @@ def instResultTy : LLVMInst → Option LLVMType
         | _ => none
     walkIndices aggTy indices.toList
   | .insertvalue aggTy _ _ _ => some aggTy
-  | .call _ _ retTy _ _  => if retTy == .void then none else some retTy
+  | .call _ _ retTy _ _ _  => if retTy == .void then none else some retTy
   | .select _ resTy _ _ _ => some resTy
   | .phi ty _             => some ty
   | .memcpy ..           => none
@@ -534,15 +535,31 @@ partial def toLLVM : LLVMInst → String
     s!"extractvalue {aggTy} {agg}, {indicesStr}"
   | .insertvalue aggTy agg val indices =>
     let indicesStr := String.intercalate ", " (indices.toList.map ToString.toString)
-    s!"insertvalue {aggTy} {agg}, {val}, {indicesStr}"
+    -- Compute element type from aggregate type + indices
+    let rec walkIndices (ty : LLVMType) : List Nat → LLVMType
+      | [] => ty
+      | i :: rest =>
+        match ty with
+        | .struct _ fields => match fields[i]? with
+          | some f => walkIndices f rest
+          | none => ty
+        | .array _ elem => walkIndices elem rest
+        | _ => ty
+    let elemTy := walkIndices aggTy indices.toList
+    s!"insertvalue {aggTy} {agg}, {elemTy} {val}, {indicesStr}"
 
-  | .call tailcall callconv retTy func args =>
+  | .call tailcall callconv retTy func args argAttrs =>
     let tailStr := if tailcall then "tail " else ""
     let convStr := match callconv with
       | some cc => s!"{cc} "
       | none => ""
-    let argsStr := String.intercalate ", " (args.toList.map fun (ty, v) =>
-      s!"{ty} {v}")
+    -- Build args with optional per-arg attributes
+    let argsStrs := args.mapIdx fun i (ty, v) =>
+      let attr := argAttrs.getD i none
+      match attr with
+      | some a => s!"{ty} {a} {v}"
+      | none => s!"{ty} {v}"
+    let argsStr := String.intercalate ", " argsStrs.toList
     s!"{tailStr}call {convStr}{retTy} {func}({argsStr})"
 
   | .select condTy resTy cond thenVal elseVal =>

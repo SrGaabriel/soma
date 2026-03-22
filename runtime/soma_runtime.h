@@ -256,22 +256,23 @@ typedef struct SomaSup {
 } SomaSup;
 
 /*
- * String structure (length + inline data, no header overhead)
+ * String: fat pointer { data, len }.
  *
- * The MSB of `length` is a static sentinel: static string globals
- * emitted by the compiler have bit 63 set, preventing soma_era_string
- * from freeing read-only memory.  All length readers use
- * soma_string_len() which masks the sentinel bit.
+ * 16 bytes, passed/returned by value in two registers (x86-64: rax, rdx).
+ * `data` always points to a valid null-terminated UTF-8 byte sequence.
+ * The MSB of `len` is a static sentinel: static string globals emitted
+ * by the compiler have bit 63 set, preventing soma_era_string from
+ * freeing read-only memory.
  */
 #define SOMA_STRING_STATIC_BIT ((int64_t)1 << 63)
 
 typedef struct SomaString {
-    int64_t  length;    /* byte count; bit 63 = static sentinel */
-    char     data[];    /* flexible array member: string data inline */
+    char*    data;      /* pointer to UTF-8 bytes (null-terminated) */
+    int64_t  len;       /* byte count; bit 63 = static sentinel */
 } SomaString;
 
-static inline int64_t soma_string_len(const SomaString* s) {
-    return s->length & ~SOMA_STRING_STATIC_BIT;
+static inline int64_t soma_string_len(SomaString s) {
+    return s.len & ~SOMA_STRING_STATIC_BIT;
 }
 
 /*
@@ -346,20 +347,23 @@ SOMA_NORETURN SOMA_COLD void soma_panic(const char* msg);
  * String operations
  */
 
-SOMA_NONNULL(1) char* soma_to_cstring(SomaString* str);
+/* to_cstring: returns the data pointer directly (identity for null-terminated strings) */
+static inline char* soma_to_cstring(SomaString str) { return str.data; }
 
-SOMA_MALLOC SOMA_WARN_UNUSED
-SomaString* soma_from_cstring(const char* cstr);
+/* from_cstring: allocates a new SomaString from a C string */
+SOMA_WARN_UNUSED
+SomaString soma_from_cstring(const char* cstr);
 
-uint64_t soma_cstring_len(const char* cstr);
+/* strcat: concatenates two strings, allocating a new buffer */
+SOMA_WARN_UNUSED SOMA_HOT
+SomaString soma_strcat(SomaString a, SomaString b);
 
-SOMA_MALLOC SOMA_WARN_UNUSED SOMA_HOT
-SomaString* soma_strcat(SomaString* a, SomaString* b);
+/* int_to_string: format i32 as decimal string */
+SOMA_WARN_UNUSED
+SomaString soma_int_to_string(int32_t val);
 
-SOMA_MALLOC SOMA_WARN_UNUSED
-SomaString* soma_int_to_string(int32_t val);
-
-void soma_era_string(void* value);
+/* era_string: free string data if heap-allocated (not static) */
+void soma_era_string(SomaString str);
 
 /*
  * Flat array view operations (legacy — used for Array, not List)

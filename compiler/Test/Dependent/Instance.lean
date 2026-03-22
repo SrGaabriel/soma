@@ -314,11 +314,11 @@ def testHasApplicativeClass : IO TestResult := do
 def testEqIntInstance : IO TestResult := do
   let env := defaultInstanceEnv
   let instances := env.getInstances BuiltinClass.eq
-  -- Should have 8 instances (int, long, short, byte, float, double, bool, string)
-  if instances.size >= 8 then
+  -- Should have 7 instances (int, long, short, byte, float, double, bool)
+  if instances.size >= 7 then
     return .passed
   else
-    return .failed s!"Expected at least 8 Eq instances, got {instances.size}"
+    return .failed s!"Expected at least 7 Eq instances, got {instances.size}"
 
 /-- Test: Ord has superclass Eq -/
 def testOrdSuperclass : IO TestResult := do
@@ -413,17 +413,6 @@ def testResolveEqInt : IO TestResult := do
       return .failed s!"Resolution failed: {result}"
   | .error e => return .failed s!"Unexpected error: {e}"
 
-/-- Test: Resolve Show String succeeds -/
-def testResolveShowString : IO TestResult := do
-  let ctx := TCContext.withDefaultInstances
-  let action : TCM ResolutionResult := resolveInstance BuiltinClass.show_ #[Value.vPrimTy .string]
-  match action.run ctx with
-  | .ok (result, _) =>
-    if result.isFound then
-      return .passed
-    else
-      return .failed s!"Resolution failed: {result}"
-  | .error e => return .failed s!"Unexpected error: {e}"
 
 /-- Test: Resolve for non-existent class fails -/
 def testResolveNonExistentClass : IO TestResult := do
@@ -481,7 +470,6 @@ def run : IO TestRunner := do
   let mut runner := TestRunner.init
 
   runner := runner.record "resolve_eq_int" (← testResolveEqInt)
-  runner := runner.record "resolve_show_string" (← testResolveShowString)
   runner := runner.record "resolve_non_existent_class" (← testResolveNonExistentClass)
   runner := runner.record "resolve_non_matching_type" (← testResolveNonMatchingType)
   runner := runner.record "depth_exceeded" (← testDepthExceeded)

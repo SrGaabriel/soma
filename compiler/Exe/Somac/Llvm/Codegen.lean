@@ -142,7 +142,7 @@ def getArrayElemTy : ClosedTy → ClosedTy
 
 /-- Check whether a closed type is the runtime String object type -/
 def isStringObjTy (ty : ClosedTy) : Bool :=
-  ty == (.ptr (.struct #[("length", .prim .i64), ("data", .rawPtr)]) : ClosedTy)
+  ty == (.struct #[("data", .rawPtr), ("len", .prim .i64)] : ClosedTy)
 
 /-- Get payload field types from a tagged union -/
 def getTaggedPayloadTy (taggedTy : ClosedTy) (variantIdx : Nat) (fieldIdx : Nat) : ClosedTy :=
@@ -185,6 +185,8 @@ structure CodegenState where
   stringConstLocals : Std.HashMap Nat Nat := {}
   /-- String table name for the panic message -/
   panicStrName : String := ".str.0"
+  /-- String table contents -/
+  stringTable : Array String := #[]
   /-- Per-function borrow info: FuncId.id → Array Bool (indexed by param) -/
   borrowInfo : Std.HashMap Nat (Array Bool) := {}
   /-- Cache of generated type-specialized eraser functions -/
@@ -429,7 +431,13 @@ def convertOperand (op : Operand) : CodegenM LLVMValue := do
     | .bool b => pure (.const (.bool b))
     | .unit => pure (.const (.int 0 8))
     | .null _ => pure (.const .null)
-    | .string idx _ => pure (.global ⟨s!".str.{idx}"⟩)
+    | .string idx len =>
+      let staticBit : Int := Int.ofNat (1 <<< 63)
+      let staticLen : Int := (Int.ofNat len) + staticBit
+      pure (.const (.struct false #[
+        (.ptr, .globalRef s!".str.{idx}"),
+        (.i64, .int staticLen 64)
+      ]))
     | .undef t => pure (.const (.undef (convertTy t)))
   | .global id => pure (.global ⟨s!"global{id.id}"⟩)
   | .func id =>
@@ -500,6 +508,60 @@ def fromI64 (targetTy : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
     -- Aggregate type: unbox from heap pointer
     let boxPtr ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr .i64 val)
     CodegenM.withFuncBuilder (FuncBuilder.load targetTy (.local boxPtr))
+
+/-- The LLVM type used for the SomaString fat pointer -/
+def somaStringLLVMTy : LLVMType := .struct false #[.ptr, .i64]
+
+/-- Check if a type is the SomaString struct -/
+def isSomaStringLLVMTy (ty : LLVMType) : Bool :=
+  ty == somaStringLLVMTy
+
+/-- Call a named C function with correct ABI for struct-by-value args/returns (TODO: consider specializing for each platform?) -/
+def callCFuncStructABI (retTy : LLVMType) (name : String)
+    (args : Array (LLVMType × LLVMValue)) : CodegenM LocalRef := do
+  let hasStructRet := retTy.isStruct
+  let mut abiArgs : Array (LLVMType × LLVMValue) := #[]
+  let mut argAttrs : Array (Option String) := #[]
+  let sretAlloca? ← if hasStructRet then do
+      let alloca ← CodegenM.withFuncBuilder (FuncBuilder.alloca retTy)
+      abiArgs := abiArgs.push (.ptr, .local alloca)
+      argAttrs := argAttrs.push (some s!"sret({retTy.toLLVM})")
+      pure (some alloca)
+    else pure none
+  for (ty, val) in args do
+    if ty.isStruct then
+      let alloca ← CodegenM.withFuncBuilder (FuncBuilder.alloca ty)
+      CodegenM.withFuncBuilder (FuncBuilder.store ty val (.local alloca))
+      abiArgs := abiArgs.push (.ptr, .local alloca)
+      argAttrs := argAttrs.push (some s!"byval({ty.toLLVM})")
+    else
+      abiArgs := abiArgs.push (ty, val)
+      argAttrs := argAttrs.push none
+  let callRetTy := if hasStructRet then LLVMType.void else retTy
+  CodegenM.withFuncBuilder do
+    let inst : LLVMInst := .call false none callRetTy (.global ⟨name⟩) abiArgs argAttrs
+    if hasStructRet then
+      FuncBuilder.emitVoid inst
+      FuncBuilder.load retTy (.local sretAlloca?.get!)
+    else
+      FuncBuilder.emit inst
+
+/-- Call a named void C function with correct ABI for struct-by-value args -/
+def callCFuncStructABIVoid (name : String) (args : Array (LLVMType × LLVMValue))
+    : CodegenM Unit := do
+  let mut abiArgs : Array (LLVMType × LLVMValue) := #[]
+  let mut argAttrs : Array (Option String) := #[]
+  for (ty, val) in args do
+    if ty.isStruct then
+      let alloca ← CodegenM.withFuncBuilder (FuncBuilder.alloca ty)
+      CodegenM.withFuncBuilder (FuncBuilder.store ty val (.local alloca))
+      abiArgs := abiArgs.push (.ptr, .local alloca)
+      argAttrs := argAttrs.push (some s!"byval({ty.toLLVM})")
+    else
+      abiArgs := abiArgs.push (ty, val)
+      argAttrs := argAttrs.push none
+  CodegenM.withFuncBuilder do
+    FuncBuilder.emitVoid (.call false none .void (.global ⟨name⟩) abiArgs argAttrs)
 
 /-- Convert Alloy binary operation to LLVM -/
 def convertBinOp (op : BinOp) (ty : ClosedTy) (lhs rhs : LLVMValue) : CodegenM LocalRef := do
@@ -659,12 +721,8 @@ partial def emitEraseForType (valRef : LLVMValue) (ty : ClosedTy) : CodegenM Uni
     CodegenM.withFuncBuilder do
       FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, valRef)]
   | .ptr _ =>
-    if isStringObjTy ty then
-      CodegenM.withFuncBuilder do
-        FuncBuilder.callNamedVoid "soma_era_string" #[(.ptr, valRef)]
-    else
-      CodegenM.withFuncBuilder do
-        FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, valRef)]
+    CodegenM.withFuncBuilder do
+      FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, valRef)]
   | .tagged _ _ =>
     -- Tagged union: use type-specialized eraser that knows field layout
     let eraserName ← getOrEmitEraser ty
@@ -678,15 +736,20 @@ partial def emitEraseForType (valRef : LLVMValue) (ty : ClosedTy) : CodegenM Uni
     CodegenM.withFuncBuilder do
       FuncBuilder.callNamedVoid eraserName #[(.ptr, valAsPtr)]
   | .struct fields =>
-    -- Struct: recurse into each field that may contain pointers
-    let llvmTy := convertTy ty
-    for i in [:fields.size] do
-      if h : i < fields.size then
-        let (_, fieldTy) := fields[i]
-        if fieldTy.needsErase then
-          let fieldRef ← CodegenM.withFuncBuilder do
-            FuncBuilder.extractvalue llvmTy valRef #[i]
-          emitEraseForType (.local fieldRef) fieldTy
+    if isStringObjTy ty then
+      -- String fat pointer: call soma_era_string with { ptr, i64 } struct
+      let llvmTy := convertTy ty
+      callCFuncStructABIVoid "soma_era_string" #[(llvmTy, valRef)]
+    else
+      -- Struct: recurse into each field that may contain pointers
+      let llvmTy := convertTy ty
+      for i in [:fields.size] do
+        if h : i < fields.size then
+          let (_, fieldTy) := fields[i]
+          if fieldTy.needsErase then
+            let fieldRef ← CodegenM.withFuncBuilder do
+              FuncBuilder.extractvalue llvmTy valRef #[i]
+            emitEraseForType (.local fieldRef) fieldTy
   | .array _ _ =>
     -- Arrays are value types at this level so we recursively erase elements that own memory
     let elemTy := getArrayElemTy ty
@@ -820,13 +883,9 @@ partial def getOrEmitEraser (ty : ClosedTy) : CodegenM String := do
       CodegenM.withFuncBuilder FuncBuilder.retVoid
 
     | .ptr _ =>
-      -- Pointer to known type: check if string, else generic
-      if isStringObjTy ty then
-        CodegenM.withFuncBuilder do
-          FuncBuilder.callNamedVoid "soma_era_string" #[(.ptr, .local paramRef)]
-      else
-        CodegenM.withFuncBuilder do
-          FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, .local paramRef)]
+      -- Pointer to known type: generic free
+      CodegenM.withFuncBuilder do
+        FuncBuilder.callNamedVoid "soma_era_free" #[(.ptr, .local paramRef)]
       CodegenM.withFuncBuilder FuncBuilder.retVoid
 
     | _ =>
@@ -1193,10 +1252,18 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         else
           FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
       pure (some (ref, ty))
-    | .const (.string _idx _) =>
-      let srcVal ← convertOperand src
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .ptr srcVal)
-      pure (some (ref, .rawPtr))
+    | .const (.string idx len) =>
+      -- Fat pointer struct: build via insertvalue from undef
+      let somaStrTy : LLVMType := .struct false #[.ptr, .i64]
+      let staticBit : Int := Int.ofNat (1 <<< 63)
+      let staticLen : Int := (Int.ofNat len) + staticBit
+      let r1 ← CodegenM.withFuncBuilder
+        (FuncBuilder.insertvalue somaStrTy (.const (.undef somaStrTy))
+          (.global ⟨s!".str.{idx}"⟩) #[0])
+      let r2 ← CodegenM.withFuncBuilder
+        (FuncBuilder.insertvalue somaStrTy (.local r1)
+          (.const (.int staticLen 64)) #[1])
+      pure (some (r2, Ty.string))
     | _ =>
       let srcTy ← operandTy src
       let srcVal ← convertOperand src
@@ -1831,9 +1898,13 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         pure none
 
     | .toCString =>
-      -- Headerless string conversion
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_to_cstring" llvmArgs)
-      pure (some (ref, .rawPtr))
+      -- Fat pointer string: extract field 0 (data pointer)
+      if llvmArgs.size > 0 then
+        let (strTy, strVal) := llvmArgs[0]!
+        let ref ← CodegenM.withFuncBuilder (FuncBuilder.extractvalue strTy strVal #[0])
+        pure (some (ref, .rawPtr))
+      else
+        pure none
 
     | .fromCString =>
       let strConsts ← do pure (← get).stringConstLocals
@@ -1841,30 +1912,40 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
         | some (Operand.const (Const.string idx _)) => some idx
         | some (Operand.local localId) => strConsts.get? localId.id
         | _ => none
+      let somaStrTy : LLVMType := .struct false #[.ptr, .i64]
       match staticIdx? with
       | some idx =>
-        let ref ← CodegenM.withFuncBuilder
-          (FuncBuilder.bitcast .ptr .ptr (.global ⟨s!".soma_str.{idx}"⟩))
-        pure (some (ref, .rawPtr))
+        -- Static string: look up length from string table and construct fat pointer inline
+        let strTable := (← get).stringTable
+        let len := if h : idx < strTable.size then strTable[idx].utf8ByteSize else 0
+        let staticBit : Int := Int.ofNat (1 <<< 63)
+        let staticLen : Int := (Int.ofNat len) + staticBit
+        -- Build struct via insertvalue from undef (LLVM cannot bitcast struct constants)
+        let r1 ← CodegenM.withFuncBuilder
+          (FuncBuilder.insertvalue somaStrTy (.const (.undef somaStrTy))
+            (.global ⟨s!".str.{idx}"⟩) #[0])
+        let r2 ← CodegenM.withFuncBuilder
+          (FuncBuilder.insertvalue somaStrTy (.local r1)
+            (.const (.int staticLen 64)) #[1])
+        pure (some (r2, Ty.string))
       | none =>
-        -- Headerless string allocation
-        let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_from_cstring" llvmArgs)
-        pure (some (ref, .rawPtr))
+        -- Dynamic path: call soma_from_cstring which returns { ptr, i64 }
+        let ref ← callCFuncStructABI somaStringLLVMTy "soma_from_cstring" llvmArgs
+        pure (some (ref, Ty.string))
 
     | .cstringLen =>
-      -- Get C string length: call runtime function
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .i64 "soma_cstring_len" llvmArgs)
-      pure (some (ref, .prim .u64))
+      -- Removed: soma_cstring_len no longer exists in runtime
+      pure none
 
     | .strcat =>
-      -- Headerless string concatenation
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_strcat" llvmArgs)
-      pure (some (ref, .rawPtr))
+      -- String concatenation: struct args and struct return
+      let ref ← callCFuncStructABI somaStringLLVMTy "soma_strcat" llvmArgs
+      pure (some (ref, Ty.string))
 
     | .intToString =>
-      -- Headerless int to string
-      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed .ptr "soma_int_to_string" llvmArgs)
-      pure (some (ref, .rawPtr))
+      -- Int to string: returns fat pointer struct
+      let ref ← callCFuncStructABI somaStringLLVMTy "soma_int_to_string" llvmArgs
+      pure (some (ref, Ty.string))
 
     | .pureIO =>
       -- pure_io is identity at runtime (IO is just a newtype wrapper)
@@ -1908,32 +1989,45 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       let argAlloTy ← operandTy arg
       let (argLLVMTy, argVal) ← convertOperandWithTy arg
       if argAlloTy == Ty.string && !isSomaRuntime then
-        -- Headerless SomaStringH → C string conversion for foreign extern calls
+        -- Fat pointer → C string: extract data pointer (field 0)
         let cstr ← CodegenM.withFuncBuilder
-          (FuncBuilder.callNamed .ptr "soma_to_cstring" #[(.ptr, argVal)])
+          (FuncBuilder.extractvalue argLLVMTy argVal #[0])
         llvmArgs := llvmArgs.push (.ptr, .local cstr)
       else
         llvmArgs := llvmArgs.push (argLLVMTy, argVal)
 
+    -- Check if any arg or return type is a struct (needs ABI handling)
+    let hasStructTypes := llvmRetTy.isStruct || llvmArgs.any fun (ty, _) => ty.isStruct
+
     -- Declare the extern function if not already declared
     unless (← CodegenM.isExternDeclared name) do
-      let llvmParams := llvmArgs.mapIdx fun i (ty, _) =>
-        { name := s!"arg{i}", ty := ty : LLVMParam }
-      CodegenM.withModuleBuilder do
-        ModuleBuilder.addFunc {
-          name := name
-          retTy := llvmRetTy
-          params := llvmParams
-          isDeclaration := true
-        }
-      CodegenM.markExternDeclared name
+      if !(hasStructTypes && isSomaRuntime) then
+        let llvmParams := llvmArgs.mapIdx fun i (ty, _) =>
+          { name := s!"arg{i}", ty := ty : LLVMParam }
+        CodegenM.withModuleBuilder do
+          ModuleBuilder.addFunc {
+            name := name
+            retTy := llvmRetTy
+            params := llvmParams
+            isDeclaration := true
+          }
+        CodegenM.markExternDeclared name
 
-    let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
-    if isUnitTy retTy then
-      let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
-      pure (some (unitRef, retTy))
+    if hasStructTypes && isSomaRuntime then
+      if isUnitTy retTy || llvmRetTy == .void then
+        callCFuncStructABIVoid name llvmArgs
+        let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
+        pure (some (unitRef, retTy))
+      else
+        let ref ← callCFuncStructABI llvmRetTy name llvmArgs
+        pure (some (ref, retTy))
     else
-      pure (some (ref, retTy))
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
+      if isUnitTy retTy then
+        let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
+        pure (some (unitRef, retTy))
+      else
+        pure (some (ref, retTy))
 
   | .callExternPoly name _typeArgs args retTy =>
     let llvmRetTy := convertTy retTy
@@ -1945,29 +2039,41 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       let (argLLVMTy, argVal) ← convertOperandWithTy arg
       if argAlloTy == Ty.string && !isSomaRuntime then
         let cstr ← CodegenM.withFuncBuilder
-          (FuncBuilder.callNamed .ptr "soma_to_cstring" #[(.ptr, argVal)])
+          (FuncBuilder.extractvalue argLLVMTy argVal #[0])
         llvmArgs := llvmArgs.push (.ptr, .local cstr)
       else
         llvmArgs := llvmArgs.push (argLLVMTy, argVal)
 
-    unless (← CodegenM.isExternDeclared name) do
-      let llvmParams := llvmArgs.mapIdx fun i (ty, _) =>
-        { name := s!"arg{i}", ty := ty : LLVMParam }
-      CodegenM.withModuleBuilder do
-        ModuleBuilder.addFunc {
-          name := name
-          retTy := llvmRetTy
-          params := llvmParams
-          isDeclaration := true
-        }
-      CodegenM.markExternDeclared name
+    let hasStructTypes := llvmRetTy.isStruct || llvmArgs.any fun (ty, _) => ty.isStruct
 
-    let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
-    if isUnitTy retTy then
-      let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
-      pure (some (unitRef, retTy))
+    unless (← CodegenM.isExternDeclared name) do
+      if !(hasStructTypes && isSomaRuntime) then
+        let llvmParams := llvmArgs.mapIdx fun i (ty, _) =>
+          { name := s!"arg{i}", ty := ty : LLVMParam }
+        CodegenM.withModuleBuilder do
+          ModuleBuilder.addFunc {
+            name := name
+            retTy := llvmRetTy
+            params := llvmParams
+            isDeclaration := true
+          }
+        CodegenM.markExternDeclared name
+
+    if hasStructTypes && isSomaRuntime then
+      if isUnitTy retTy || llvmRetTy == .void then
+        callCFuncStructABIVoid name llvmArgs
+        let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
+        pure (some (unitRef, retTy))
+      else
+        let ref ← callCFuncStructABI llvmRetTy name llvmArgs
+        pure (some (ref, retTy))
     else
-      pure (some (ref, retTy))
+      let ref ← CodegenM.withFuncBuilder (FuncBuilder.callNamed llvmRetTy name llvmArgs)
+      if isUnitTy retTy then
+        let unitRef ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .i8 (intVal 0 8))
+        pure (some (unitRef, retTy))
+      else
+        pure (some (ref, retTy))
 
 /-- Lower an Alloy terminator to LLVM -/
 def lowerTerminator (term : Terminator) (retTy : ClosedTy) (llvmRetOverride : Option LLVMType := none) : CodegenM Unit := do
@@ -2198,14 +2304,96 @@ def addRuntimeDeclarations : CodegenM Unit := do
       isDeclaration := true
     }
 
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_era_string"
-      retTy := .void
-      params := #[{ name := "ptr", ty := .ptr, attrs := #["nocapture"] }]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
+  -- String runtime functions: on Windows, structs > 8 bytes use byval/sret ABI
+  let strTy := somaStringLLVMTy
+  let strTyStr := strTy.toLLVM
+  if System.Platform.isWindows then
+    -- Windows x64: structs passed by hidden pointer (byval), returned via sret
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_era_string"
+        retTy := .void
+        params := #[{ name := "str", ty := .ptr, attrs := #[s!"byval({strTyStr})"] }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_from_cstring"
+        retTy := .void
+        params := #[
+          { name := "ret", ty := .ptr, attrs := #[s!"sret({strTyStr})"] },
+          { name := "cstr", ty := .ptr, attrs := #["nocapture", "readonly"] }
+        ]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_strcat"
+        retTy := .void
+        params := #[
+          { name := "ret", ty := .ptr, attrs := #[s!"sret({strTyStr})"] },
+          { name := "a", ty := .ptr, attrs := #[s!"byval({strTyStr})"] },
+          { name := "b", ty := .ptr, attrs := #[s!"byval({strTyStr})"] }
+        ]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_int_to_string"
+        retTy := .void
+        params := #[
+          { name := "ret", ty := .ptr, attrs := #[s!"sret({strTyStr})"] },
+          { name := "val", ty := .i32 }
+        ]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+  else
+    -- Non-Windows: pass structs directly
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_era_string"
+        retTy := .void
+        params := #[{ name := "str", ty := strTy }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_from_cstring"
+        retTy := strTy
+        params := #[{ name := "cstr", ty := .ptr, attrs := #["nocapture", "readonly"] }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_strcat"
+        retTy := strTy
+        params := #[
+          { name := "a", ty := strTy },
+          { name := "b", ty := strTy }
+        ]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_int_to_string"
+        retTy := strTy
+        params := #[{ name := "val", ty := .i32 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
 
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
@@ -2223,60 +2411,6 @@ def addRuntimeDeclarations : CodegenM Unit := do
       retTy := .void
       params := #[{ name := "ptr", ty := .ptr, attrs := #["nocapture"] },
                   { name := "byte_size", ty := .i64 }]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_to_cstring"
-      retTy := .ptr
-      returnAttrs := #["nonnull"]
-      params := #[{ name := "str", ty := .ptr, attrs := #["nocapture", "readonly"] }]
-      attrs := { nounwind := true, willreturn := true,
-                 memory := some "argmem: read" }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_from_cstring"
-      retTy := .ptr
-      returnAttrs := #["noalias"]
-      params := #[{ name := "cstr", ty := .ptr, attrs := #["nocapture", "readonly"] }]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_cstring_len"
-      retTy := .i64
-      params := #[{ name := "cstr", ty := .ptr, attrs := #["nocapture", "readonly"] }]
-      attrs := { nounwind := true, willreturn := true,
-                 memory := some "argmem: read" }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_strcat"
-      retTy := .ptr
-      returnAttrs := #["noalias"]
-      params := #[
-        { name := "a", ty := .ptr, attrs := #["nocapture", "readonly"] },
-        { name := "b", ty := .ptr, attrs := #["nocapture", "readonly"] }
-      ]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_int_to_string"
-      retTy := .ptr
-      returnAttrs := #["noalias"]
-      params := #[{ name := "val", ty := .i32 }]
       attrs := { nounwind := true }
       isDeclaration := true
     }
@@ -2469,7 +2603,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
     "soma_era_free", "soma_era_closure", "soma_era_string", "soma_panic",
     "llvm.memcpy.p0.p0.i64", "llvm.memset.p0.i64",
     "soma_pool_alloc_raw", "soma_pool_free_raw",
-    "soma_to_cstring", "soma_from_cstring", "soma_cstring_len",
+    "soma_from_cstring",
     "soma_strcat", "soma_int_to_string",
     "soma_apply", "soma_dup_typed", "soma_proj0", "soma_proj1",
     "soma_clone_closure", "soma_clone_heap_value_for_dup",
@@ -2500,7 +2634,10 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
   -- Find panic string index in the string table
   let panicMsg := "soma: unreachable code"
   let panicStrIdx := alloyModule.strings.strings.findIdx? (· == panicMsg) |>.getD 0
-  modify fun s => { s with panicStrName := s!".str.{panicStrIdx}" }
+  modify fun s => { s with
+    panicStrName := s!".str.{panicStrIdx}"
+    stringTable := alloyModule.strings.strings
+  }
 
   -- Emit string table as LLVM global constants
   for (s, idx) in alloyModule.strings.strings.zipIdx do
@@ -2513,23 +2650,9 @@ def lowerModule (alloyModule : Module) : CodegenM LLVMModule := do
       isConstant := true
       align := some 1
     }
-    let staticLength : Int := (s.utf8ByteSize : Int) + Int.ofNat (1 <<< 63)
-    let somaStrTy : LLVMType := .struct false #[.i64, .array strBytes .i8]
-    let somaStrInit : LLVMConst := .struct false #[
-      (.i64, .int staticLength 64),
-      (.array strBytes .i8, .string s)
-    ]
-    let somaStrGlobal : LLVMGlobal := {
-      name := s!".soma_str.{idx}"
-      ty := somaStrTy
-      init := some somaStrInit
-      linkage := .private_
-      isConstant := true
-      align := some 8
-    }
     CodegenM.withModuleBuilder do
       modify fun st => { st with module := { st.module with
-        globals := st.module.globals.push rawGlobal |>.push somaStrGlobal } }
+        globals := st.module.globals.push rawGlobal } }
 
   -- Add type definitions
   for typedef in alloyModule.types do

@@ -319,7 +319,7 @@ def primType? : WiredRole → Option Soma.Core.PrimType
   | .typeShort => some .short
   | .typeByte => some .byte
   | .typeBool => some .bool
-  | .typeString => some .string
+  | .typeString => none
   | .typeFloat => some .float
   | .typeDouble => some .double
   | .typeUnit => some .unit
