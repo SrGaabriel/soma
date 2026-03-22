@@ -461,9 +461,7 @@ void* soma_clone_heap_value_for_dup(void* value, uint32_t label) {
     uint8_t tag = *(uint8_t*)value;
 
     if (IS_SUP(tag)) {
-        SomaValue sv = (SomaValue)value;
-        SomaValue cloned = soma_dup_typed(label, sv, NULL);
-        return (void*)cloned;
+        return (void*)soma_dup_typed(label, (SomaValue)value, NULL);
     }
     if (tag == NODE_FLAT_ARRAY_VIEW) {
         return soma_clone_flat_array_view((SomaFlatArrayView*)value);
@@ -500,7 +498,7 @@ void* soma_clone_heap_value_for_dup(void* value, uint32_t label) {
 
 SOMA_HOT
 SomaValue soma_dup_typed(uint32_t label, SomaValue value,
-                         SomaTypeDesc* type_desc) {
+                     SomaTypeDesc* type_desc) {
     SomaSup* sup = (SomaSup*)soma_pool_alloc_sup();
 
     /*
@@ -519,8 +517,9 @@ SomaValue soma_dup_typed(uint32_t label, SomaValue value,
 
 SOMA_HOT
 static inline int is_heap_sup(SomaValue value) {
-    if (!SOMA_IS_PTR(value) || value == 0) return 0;
-    SomaSup* sup = (SomaSup*)SOMA_TO_PTR(value);
+    SomaValue sv = (SomaValue)(uintptr_t)value;
+    if (!SOMA_IS_PTR(sv) || sv == 0) return 0;
+    SomaSup* sup = (SomaSup*)SOMA_TO_PTR(sv);
     if (!IS_SUP(sup->tag)) return 0;
     uint32_t pad_val;
     memcpy(&pad_val, sup->_pad, sizeof(uint32_t));
@@ -607,7 +606,7 @@ SomaValue soma_proj1(SomaValue sup_val) {
  */
 
 void* soma_alloc_closure(void* func_ptr, uint8_t arity, uint16_t env_size) {
-    size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(SomaValue);
+    size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(void*);
     SomaClosure* closure = (SomaClosure*)soma_pool_alloc_raw(byte_size);
 
     uint32_t packed = (uint32_t)arity
@@ -621,16 +620,16 @@ void* soma_alloc_closure(void* func_ptr, uint8_t arity, uint16_t env_size) {
 }
 
 SOMA_NONNULL(1)
-void soma_closure_set_env(void* closure_ptr, uint16_t index, SomaValue value) {
+void soma_closure_set_env(void* closure_ptr, uint16_t index, void* value) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
-    SomaValue* env = (SomaValue*)(closure + 1);
+    void** env = (void**)(closure + 1);
     env[index] = value;
 }
 
 SOMA_NONNULL(1)
-SomaValue soma_closure_get_env(void* closure_ptr, uint16_t index) {
+void* soma_closure_get_env(void* closure_ptr, uint16_t index) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
-    SomaValue* env = (SomaValue*)(closure + 1);
+    void** env = (void**)(closure + 1);
     return env[index];
 }
 
@@ -645,13 +644,14 @@ void soma_era_closure(void* closure_ptr) {
     if (SOMA_UNLIKELY(closure_ptr == NULL)) return;
     SomaClosure* closure = (SomaClosure*)closure_ptr;
     uint16_t env_size = CLOSURE_ENV_SIZE(closure);
-    SomaValue* env = (SomaValue*)(closure + 1);
+    void** env = (void**)(closure + 1);
     for (uint16_t i = 0; i < env_size; i++) {
-        if (SOMA_IS_PTR(env[i]) && env[i] != 0) {
-            soma_era_free(SOMA_TO_PTR(env[i]));
+        SomaValue sv = (SomaValue)(uintptr_t)env[i];
+        if (SOMA_IS_PTR(sv) && sv != 0) {
+            soma_era_free(SOMA_TO_PTR(sv));
         }
     }
-    size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(SomaValue);
+    size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(void*);
     SomaPools* pools = get_pools();
     if (SOMA_LIKELY(byte_size <= POOL_SIZE_48)) {
         SOMA_STAT_INC(small_frees);
@@ -747,20 +747,20 @@ void* soma_apply(void* closure_ptr, void* arg) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
     uint8_t arity = closure->arity;
     void* (*fn)() = (void* (*)())closure->func_ptr;
-    SomaValue* env = (SomaValue*)(closure + 1);
+    void** env = (void**)(closure + 1);
     uint16_t env_size = CLOSURE_ENV_SIZE(closure);
 
     while (SOMA_UNLIKELY(arity == 0)) {
         void* args[SOMA_MAX_CALL_ARGS];
         unsigned n = (env_size < SOMA_MAX_CALL_ARGS) ? env_size : SOMA_MAX_CALL_ARGS;
         for (unsigned i = 0; i < n; i++)
-            args[i] = (void*)env[i];
+            args[i] = env[i];
         void* result = soma_call_with_args(fn, args, n);
 
         closure = (SomaClosure*)result;
         arity = closure->arity;
         fn = (void* (*)())closure->func_ptr;
-        env = (SomaValue*)(closure + 1);
+        env = (void**)(closure + 1);
         env_size = CLOSURE_ENV_SIZE(closure);
     }
 
@@ -769,18 +769,18 @@ void* soma_apply(void* closure_ptr, void* arg) {
         case 0:
             return ((void*(*)(void*))fn)(arg);
         case 1:
-            return ((void*(*)(void*,void*))fn)((void*)env[0], arg);
+            return ((void*(*)(void*,void*))fn)(env[0], arg);
         case 2:
             return ((void*(*)(void*,void*,void*))fn)(
-                (void*)env[0], (void*)env[1], arg);
+                env[0], env[1], arg);
         case 3:
             return ((void*(*)(void*,void*,void*,void*))fn)(
-                (void*)env[0], (void*)env[1], (void*)env[2], arg);
+                env[0], env[1], env[2], arg);
         default: {
             void* args[SOMA_MAX_CALL_ARGS];
             uint16_t n = 0;
             for (uint16_t i = 0; i < env_size && n < SOMA_MAX_CALL_ARGS - 1; i++)
-                args[n++] = (void*)env[i];
+                args[n++] = env[i];
             args[n++] = arg;
             return soma_call_with_args(fn, args, n);
         }
@@ -789,7 +789,7 @@ void* soma_apply(void* closure_ptr, void* arg) {
 
     /* PAP */
     uint16_t new_env_size = env_size + 1;
-    size_t pap_bytes = sizeof(SomaClosure) + new_env_size * sizeof(SomaValue);
+    size_t pap_bytes = sizeof(SomaClosure) + new_env_size * sizeof(void*);
     SomaClosure* pap = (SomaClosure*)soma_pool_alloc_raw(pap_bytes);
 
     uint32_t packed = (uint32_t)(arity - 1)
@@ -799,11 +799,11 @@ void* soma_apply(void* closure_ptr, void* arg) {
     memcpy(&pap->arity, &packed, sizeof(uint32_t));
     pap->func_ptr = closure->func_ptr;
 
-    SomaValue* pap_env = (SomaValue*)(pap + 1);
+    void** pap_env = (void**)(pap + 1);
     if (env_size > 0) {
-        memcpy(pap_env, env, env_size * sizeof(SomaValue));
+        memcpy(pap_env, env, env_size * sizeof(void*));
     }
-    pap_env[env_size] = (SomaValue)(uintptr_t)arg;
+    pap_env[env_size] = arg;
 
     return pap;
 }
@@ -816,7 +816,7 @@ void* soma_clone_closure(void* closure_ptr, uint32_t label) {
     SomaClosure* closure = (SomaClosure*)closure_ptr;
     uint16_t env_size = CLOSURE_ENV_SIZE(closure);
 
-    size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(SomaValue);
+    size_t byte_size = sizeof(SomaClosure) + env_size * sizeof(void*);
     void* new_closure = soma_pool_alloc_raw(byte_size);
 
     if (env_size == 0) {
@@ -825,10 +825,11 @@ void* soma_clone_closure(void* closure_ptr, uint32_t label) {
     }
 
     /* Pre-scan: any env slot that's a heap pointer? */
-    SomaValue* src_env = (SomaValue*)(closure + 1);
+    void** src_env = (void**)(closure + 1);
     int has_heap_ptrs = 0;
     for (uint16_t i = 0; i < env_size; i++) {
-        if (SOMA_IS_PTR(src_env[i]) && src_env[i] != 0) {
+        SomaValue sv = (SomaValue)(uintptr_t)src_env[i];
+        if (SOMA_IS_PTR(sv) && sv != 0) {
             has_heap_ptrs = 1;
             break;
         }
@@ -842,10 +843,10 @@ void* soma_clone_closure(void* closure_ptr, uint32_t label) {
 
     /* Deep clone each env slot */
     memcpy(new_closure, closure, sizeof(SomaClosure));
-    SomaValue* dst_env = (SomaValue*)((SomaClosure*)new_closure + 1);
+    void** dst_env = (void**)((SomaClosure*)new_closure + 1);
 
     for (uint16_t i = 0; i < env_size; i++) {
-        dst_env[i] = (SomaValue)soma_clone_heap_value_for_dup((void*)src_env[i], label);
+        dst_env[i] = soma_clone_heap_value_for_dup(src_env[i], label);
     }
 
     return new_closure;
@@ -1068,14 +1069,15 @@ void soma_era_free(void* value) {
         } else if (((uint8_t*)cur)[1] == NODE_CLOSURE) {
             SomaClosure* closure = (SomaClosure*)cur;
             uint16_t es = CLOSURE_ENV_SIZE(closure);
-            SomaValue* env = (SomaValue*)(closure + 1);
+            void** env = (void**)(closure + 1);
             ERA_ENSURE(es);
             for (uint16_t i = 0; i < es; i++) {
-                if (SOMA_IS_PTR(env[i]) && env[i] != 0) {
-                    stack[sp++] = SOMA_TO_PTR(env[i]);
+                SomaValue sv = (SomaValue)(uintptr_t)env[i];
+                if (SOMA_IS_PTR(sv) && sv != 0) {
+                    stack[sp++] = SOMA_TO_PTR(sv);
                 }
             }
-            size_t needed = sizeof(SomaClosure) + es * sizeof(SomaValue);
+            size_t needed = sizeof(SomaClosure) + es * sizeof(void*);
             if (SOMA_LIKELY(needed <= POOL_SIZE_48)) {
                 SOMA_STAT_INC(small_frees);
                 pool_free(&pools->pool_48, cur);

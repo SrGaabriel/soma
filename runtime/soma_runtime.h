@@ -220,7 +220,7 @@ typedef struct SomaClosure {
     uint8_t  arity;       /* remaining args (needed by soma_apply) */
     uint8_t  _pad[7];     /* [0]=NODE_CLOSURE, [1..2]=env_size LE16, [3..6]=reserved */
     void*    func_ptr;    /* function pointer */
-    /* SomaValue env[] follows at offset 16 */
+    /* void* env[] follows at offset 16 */
 } SomaClosure;
 
 /* Extract env_size from closure _pad[1..2] as little-endian u16 */
@@ -410,8 +410,8 @@ void* soma_alloc_closure(void* func_ptr, uint8_t arity, uint16_t env_size);
 SOMA_HOT SOMA_FLATTEN
 void* soma_apply(void* closure, void* arg);
 
-SOMA_NONNULL(1) void soma_closure_set_env(void* closure, uint16_t index, SomaValue value);
-SOMA_NONNULL(1) SomaValue soma_closure_get_env(void* closure, uint16_t index);
+SOMA_NONNULL(1) void soma_closure_set_env(void* closure, uint16_t index, void* value);
+SOMA_NONNULL(1) void* soma_closure_get_env(void* closure, uint16_t index);
 SOMA_NONNULL(1) void* soma_closure_get_func(void* closure);
 
 SOMA_HOT void soma_era_closure(void* closure);

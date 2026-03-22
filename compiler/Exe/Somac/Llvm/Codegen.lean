@@ -1073,7 +1073,7 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
   pure (some (ref, actualRetTy))
 
 /-- The composite env struct type: two i64 slots -/
-def compositeEnvTy : LLVMType := .struct false #[.i64, .i64]
+def compositeEnvTy : LLVMType := .struct false #[.ptr, .ptr]
 
 /-- Get or create a trampoline function for dynamic closures with the given arity -/
 def getOrCreateTrampoline (arity : Nat) : CodegenM String := do
@@ -1087,19 +1087,16 @@ def getOrCreateTrampoline (arity : Nat) : CodegenM String := do
   let trampolineFunc := buildFuncWithEntry name .ptr params {} do
     let compositeEnvRef := LocalRef.mk 0
     let innerSlotAddr ← FuncBuilder.gepi32 compositeEnvTy (.local compositeEnvRef) #[0, 0]
-    let innerAsI64 ← FuncBuilder.load .i64 (.local innerSlotAddr)
-    let innerClosurePtr ← FuncBuilder.inttoptr .i64 (.local innerAsI64)
+    let innerClosurePtr ← FuncBuilder.load .ptr (.local innerSlotAddr)
     -- Load outer_env from compositeEnv[1]
     let outerEnvSlotAddr ← FuncBuilder.gepi32 compositeEnvTy (.local compositeEnvRef) #[0, 1]
-    let outerEnvAsI64 ← FuncBuilder.load .i64 (.local outerEnvSlotAddr)
-    let outerEnvPtr ← FuncBuilder.inttoptr .i64 (.local outerEnvAsI64)
+    let outerEnvPtr ← FuncBuilder.load .ptr (.local outerEnvSlotAddr)
     -- Headerless: func_ptr is field 2 of { i8, [7xi8], ptr }
     let fnPtrAddr ← FuncBuilder.gepi32 closureHeaderTy (.local innerClosurePtr) #[0, 2]
     let fnPtr ← FuncBuilder.load .ptr (.local fnPtrAddr)
     -- Headerless: env is at GEP index 1 past header struct
     let innerEnvAddr ← FuncBuilder.gepi32 closureHeaderTy (.local innerClosurePtr) #[1]
-    let innerEnvAsI64 ← FuncBuilder.load .i64 (.local innerEnvAddr)
-    let innerEnvPtr ← FuncBuilder.inttoptr .i64 (.local innerEnvAsI64)
+    let innerEnvPtr ← FuncBuilder.load .ptr (.local innerEnvAddr)
     let mut callArgs : Array (LLVMType × LLVMValue) :=
       #[(.ptr, .local innerEnvPtr), (.ptr, .local outerEnvPtr)]
     for i in List.range arity do
@@ -1152,26 +1149,10 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
   CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal funcName) (.local funcFieldAddr))
   -- Store env slot only if env is non-empty
   if !isEmptyEnv then
-    let envPtrVal ← if envLLVMTy == .ptr then pure envVal
-                    else if envLLVMTy.isInt then do
-                      let converted ← CodegenM.withFuncBuilder do
-                        FuncBuilder.inttoptr envLLVMTy envVal
-                      pure (.local converted)
-                    else do
-                      let sizePtr ← CodegenM.withFuncBuilder
-                        (FuncBuilder.gepi32 envLLVMTy (.const .null) #[1])
-                      let sizeI64 ← CodegenM.withFuncBuilder
-                        (FuncBuilder.ptrtoint .i64 (.local sizePtr))
-                      let boxPtr ← CodegenM.withFuncBuilder do
-                        FuncBuilder.callNamed .ptr "malloc" #[(.i64, .local sizeI64)]
-                      CodegenM.withFuncBuilder do
-                        FuncBuilder.store envLLVMTy envVal (.local boxPtr)
-                      pure (.local boxPtr)
-    let envAsI64 ← CodegenM.withFuncBuilder do
-      FuncBuilder.ptrtoint .i64 envPtrVal
+    let envPtrVal ← ensurePtr envLLVMTy envVal
     -- Env slot is at GEP index 1 past the header struct
     let envSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local envAsI64) (.local envSlotAddr))
+    CodegenM.withFuncBuilder (FuncBuilder.store .ptr envPtrVal (.local envSlotAddr))
   let closureTyAlloy ← do
     match ← CodegenM.getFuncSig funcId.id with
     | some sig => pure (.closure (sig.params.map (·.ty)) sig.retTy)
@@ -1587,12 +1568,11 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let trampolineName ← getOrCreateTrampoline closureArity
     let compositeBuf ← CodegenM.withFuncBuilder do
       FuncBuilder.callNamed .ptr "malloc" #[(.i64, intVal 16 64)]
-    let fnAsI64 ← CodegenM.withFuncBuilder (FuncBuilder.ptrtoint .i64 fnClosureVal)
-    CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local fnAsI64) (.local compositeBuf))
+    CodegenM.withFuncBuilder (FuncBuilder.store .ptr fnClosureVal (.local compositeBuf))
     let envSlotAddr ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 compositeEnvTy (.local compositeBuf) #[0, 1]
-    let envAsI64 ← toI64 envLLVMTy envVal
-    CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local envAsI64) (.local envSlotAddr))
+    let envAsPtr ← ensurePtr envLLVMTy envVal
+    CodegenM.withFuncBuilder (FuncBuilder.store .ptr envAsPtr (.local envSlotAddr))
     -- Headerless closure: { i8 arity, [7xi8] pad, ptr func_ptr, i64 env }
     let closureByteSize : Int := 24  -- 16 header + 8 env
     let closurePtr ← CodegenM.withFuncBuilder do
@@ -1614,11 +1594,8 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     -- Store trampoline as the function pointer (field 2 = ptr in headerless layout)
     let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
     CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal trampolineName) (.local funcFieldAddr))
-    -- Store composite env pointer as i64 in the env slot
-    let compositeAsI64 ← CodegenM.withFuncBuilder do
-      FuncBuilder.ptrtoint .i64 (.local compositeBuf)
     let closureEnvSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
-    CodegenM.withFuncBuilder (FuncBuilder.store .i64 (.local compositeAsI64) (.local closureEnvSlotAddr))
+    CodegenM.withFuncBuilder (FuncBuilder.store .ptr (.local compositeBuf) (.local closureEnvSlotAddr))
     pure (some (closurePtr, resultTy))
 
   | .closureFunc closure =>
@@ -1635,10 +1612,8 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     -- Headerless: env is at GEP index 1 past the header struct
     let envBaseAddr ← CodegenM.withFuncBuilder do
       FuncBuilder.gepi32 closureHeaderTy closureVal #[1]
-    let rawRef ← CodegenM.withFuncBuilder do
-      FuncBuilder.load .i64 (.local envBaseAddr)
     let ref ← CodegenM.withFuncBuilder do
-      FuncBuilder.inttoptr .i64 (.local rawRef)
+      FuncBuilder.load .ptr (.local envBaseAddr)
     pure (some (ref, .rawPtr))
 
   | .phi incoming ty =>

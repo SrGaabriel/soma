@@ -1098,6 +1098,7 @@ partial def emitTaggedDup (inputVal : LocalId) (taggedTy : Ty n) (label : UInt32
 
 /-- Emit chunked list duplication via refcount increment -/
 partial def emitListDup (inputVal : LocalId) (_srcTy : Ty n) (_label : UInt32)
+    (_graph : CGraph) (_nodeId : CNodeId)
     : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
   let copy1 ← StateT.lift (LowerM.emitInst
     (.callExtern "soma_list_dup" #[.local inputVal] .rawPtr) .rawPtr)
@@ -1887,7 +1888,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         let (copy0, copy1) ←
           if isListSource then
             let srcTy := (← StateT.lift get).func.getLocalType inputVal |>.getD .rawPtr
-            emitListDup inputVal srcTy label.id
+            emitListDup inputVal srcTy label.id graph nodeId
             else
               let clone ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) .rawPtr label.id) .rawPtr)
               pure (inputVal, clone)
