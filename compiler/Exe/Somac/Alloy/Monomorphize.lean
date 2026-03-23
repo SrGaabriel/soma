@@ -104,6 +104,12 @@ def collectModuleRequests (m : Module) : Array SpecKey :=
     | some f => acc ++ collectFuncRequests f
     | none => acc
 
+/-- Check if a type is pointer-like -/
+private def isPointerLikeTy : ClosedTy → Bool
+  | .rawPtr => true
+  | .ptr _ => true
+  | _ => false
+
 /-- Rewrite a closed instruction, replacing polymorphic calls -/
 def rewriteInst (inst : ClosedInst) (specMap : Std.HashMap SpecKey FuncId) : ClosedInst :=
   match inst with
@@ -116,7 +122,7 @@ def rewriteInst (inst : ClosedInst) (specMap : Std.HashMap SpecKey FuncId) : Clo
           k.funcId == funcId && k.typeArgs.size == typeArgs.size &&
           (List.zip k.typeArgs.toList typeArgs.toList).all fun (specTy, callTy) =>
             Ty.beq specTy callTy ||
-            (match callTy with | .rawPtr => true | _ => false)
+            (isPointerLikeTy specTy && isPointerLikeTy callTy)
         match fallback with
         | some (_, newFuncId) => .call newFuncId args retTy
         | none => inst
@@ -221,6 +227,26 @@ def mkSpecRequest? (sf : SomeFunc) (typeArgs : Array ClosedTy) : Option SomeSpec
   else
     none
 
+/-- Rewrite self-recursive calls from the template's FuncId to the specialized FuncId -/
+private def fixSelfCalls (func : ClosedFunc) (templateId : FuncId) (selfId : FuncId) : ClosedFunc :=
+  if templateId == selfId then func
+  else match func.body with
+  | none => func
+  | some cfg =>
+    let newBlocks := cfg.blocks.fold (init := ({} : Std.HashMap Nat ClosedBlock))
+      fun acc bid block =>
+        let newStmts := block.stmts.map fun stmt =>
+          match stmt.inst with
+          | .call fid args retTy =>
+            if fid == templateId then { stmt with inst := .call selfId args retTy }
+            else stmt
+          | .callPoly fid _tyArgs args retTy =>
+            if fid == templateId then { stmt with inst := .call selfId args retTy }
+            else stmt
+          | _ => stmt
+        acc.insert bid { block with stmts := newStmts }
+    { func with body := some { cfg with blocks := newBlocks } }
+
 /-- Process one specialization request -/
 def processRequest (key : SpecKey) : StateM MonoState Unit := do
   let s ← get
@@ -246,6 +272,9 @@ def processRequest (key : SpecKey) : StateM MonoState Unit := do
 
   -- TOTAL SPECIALIZATION: req.specialize cannot fail
   let specializedFunc := req.specialize newFuncId newName
+
+  -- Fix self-recursive `.call` instructions in the specialized body.
+  let specializedFunc := fixSelfCalls specializedFunc key.funcId newFuncId
 
   -- Record the specialization
   modify fun s => s.recordSpecialization key newFuncId

@@ -28,6 +28,14 @@ private def splitTypeValueArgs (args : Array Expr) : Array Expr × Array Expr :=
     else break
   (args.extract 0 i, args.extract i args.size)
 
+/-- Resolved list constructor info for synthesizing Cons/Nil in cross-producer fusion -/
+structure ListCtorInfo where
+  consName : QualifiedName
+  consTag  : Nat
+  nilName  : QualifiedName
+  nilTag   : Nat
+  listTyId : Unique
+
 /-- Fusion context -/
 structure FusionCtx where
   /-- Map from wired-in Unique → FusionRole -/
@@ -36,10 +44,14 @@ structure FusionCtx where
   consumerBodies : Std.HashMap FusionRole Expr := {}
   /-- Fallback: foldl .const expression with correct type (when consumerBodies unavailable) -/
   foldlConst : Option Expr := none
+  /-- foldr .const expression with correct type (for cross-producer fusion) -/
+  foldrConst : Option Expr := none
   /-- Fallback: Int addition .const expression with correct type (for sum expansion) -/
   addConst : Option Expr := none
   /-- Fallback: Int multiplication .const expression with correct type (for product expansion) -/
   mulConst : Option Expr := none
+  /-- List constructor info for cross-producer fusion (Cons, Nil, List type) -/
+  listCtors : Option ListCtorInfo := none
 
 /-- Resolve the fusion role of a `.const` expression via wired-in Uniques -/
 private def constFusionRole (ctx : FusionCtx) : Expr → Option FusionRole
@@ -76,6 +88,9 @@ def buildFusionCtx
   let foldlConst := match globals.wiredIn.getUnique? .listFoldl with
     | some info => some (mkConst info.name)
     | none => none
+  let foldrConst := match globals.wiredIn.getUnique? .listFoldr with
+    | some info => some (mkConst info.name)
+    | none => none
   let mut addConst : Option Expr := none
   let mut mulConst : Option Expr := none
   for (qn, intrinsic) in globals.intrinsics.toList do
@@ -83,7 +98,20 @@ def buildFusionCtx
     | .primOp .add => addConst := some (mkConst qn)
     | .primOp .mul => mulConst := some (mkConst qn)
     | _ => pure ()
-  return { roles, consumerBodies := bodies, foldlConst, addConst, mulConst }
+  -- Resolve list constructors for cross-producer fusion
+  let listCtors := do
+    let consInfo ← globals.wiredIn.getUnique? .cons
+    let nilInfo  ← globals.wiredIn.getUnique? .nil
+    let listInfo ← globals.wiredIn.getUnique? .typeList
+    let consDef  ← globals.defs.get? consInfo.name
+    let nilDef   ← globals.defs.get? nilInfo.name
+    guard consDef.isConstructor
+    guard nilDef.isConstructor
+    pure { consName := consInfo.name, consTag := consDef.ctorTag,
+           nilName := nilInfo.name, nilTag := nilDef.ctorTag,
+           listTyId := listInfo.name.id }
+  return { roles, consumerBodies := bodies, foldlConst, foldrConst,
+           addConst, mulConst, listCtors }
 
 /-- Check if an expression is a known list producer call (map, filter) -/
 private def isProducerCall (ctx : FusionCtx) (e : Expr) : Bool :=
@@ -136,6 +164,14 @@ private def adjustMapTypeArgs (outerTyArgs innerTyArgs : Array Expr) : Array Exp
     #[innerTyArgs[0]!, outerTyArgs[1]!]
   else
     outerTyArgs
+
+/-- Helper: build `Cons x acc` as `construct consName consTag #[x, acc] (dataTy listTyId [elemTy])` -/
+private def mkCons (lci : ListCtorInfo) (elemTy x acc : Expr) : Expr :=
+  .construct lci.consName lci.consTag #[x, acc] (.dataTy lci.listTyId #[elemTy])
+
+/-- Helper: build `Nil` as `construct nilName nilTag #[] (dataTy listTyId [elemTy])` -/
+private def mkNil (lci : ListCtorInfo) (elemTy : Expr) : Expr :=
+  .construct lci.nilName lci.nilTag #[] (.dataTy lci.listTyId #[elemTy])
 
 mutual
 
@@ -384,7 +420,8 @@ private partial def fuseLengthWithProducer
       | _, _ => none
   | _ => none
 
-/-- Fuse `map {a} {c} f (map {d} {a} g xs)` → `map {d} {c} (λ x → f (g x)) xs` -/
+/-- Fuse `map {a} {c} f (map {d} {a} g xs)` → `map {d} {c} (λ x → f (g x)) xs`
+    Fuse `map {a} {b} f (filter {a} p xs)` → `foldr {a} {[b]} (λ x acc → if p x then Cons (f x) acc else acc) Nil xs` -/
 private partial def fuseMapWithProducer
     (ctx : FusionCtx) (outerHead : Expr) (outerTyArgs : Array Expr)
     (f listArg : Expr) : Option Expr :=
@@ -404,14 +441,39 @@ private partial def fuseMapWithProducer
         (.app f' (.app g' (.bvar 0)))
       let newTyArgs := adjustMapTypeArgs outerTyArgs innerTyArgs
       some (Expr.rebuildAppSpine outerHead (newTyArgs ++ #[newF, xs]))
+  | some .filter =>
+    -- map f (filter p xs): eliminate intermediate filtered list
+    -- → foldr (λ x acc → if p x then Cons (f x) acc else acc) Nil xs
+    if innerValArgs.size != 2 then none
+    else
+      match ctx.foldrConst, ctx.listCtors with
+      | some foldrConst, some lci =>
+        let p := innerValArgs[0]!
+        let xs := innerValArgs[1]!
+        -- map {a} {b} f (filter {a} p xs): a = filter's elem, b = map's output
+        let inputElemTy := innerTyArgs[0]?.getD dummyTy  -- a
+        let outputElemTy := outerTyArgs[1]?.getD dummyTy  -- b
+        let resultListTy := Expr.dataTy lci.listTyId #[outputElemTy]  -- [b]
+        let f' := f.shiftUp 2
+        let p' := p.shiftUp 2
+        let stepFn := Expr.lam .explicit "x" inputElemTy
+          (.lam .explicit "acc" resultListTy
+            (.if_ (.app p' (.bvar 1))
+              (mkCons lci outputElemTy (.app f' (.bvar 1)) (.bvar 0))
+              (.bvar 0)))
+        let nil := mkNil lci outputElemTy
+        -- foldr {a} {[b]} stepFn nil xs
+        some (Expr.rebuildAppSpine foldrConst (#[inputElemTy, resultListTy, stepFn, nil, xs]))
+      | _, _ => none
   | _ => none
 
-/-- Fuse `filter {a} p (filter {a} q xs)` → `filter {a} (λ x → if q x then p x else false) xs` -/
+/-- Fuse `filter {a} p (filter {a} q xs)` → `filter {a} (λ x → if q x then p x else false) xs`
+    Fuse `filter {a} p (map {c} {a} f xs)` → `foldr {c} {[a]} (λ x acc → if p (f x) then Cons (f x) acc else acc) Nil xs` -/
 private partial def fuseFilterWithProducer
     (ctx : FusionCtx) (outerHead : Expr) (outerTyArgs : Array Expr)
     (p listArg : Expr) : Option Expr :=
   let (innerHead, innerArgs) := listArg.collectAppSpine
-  let (_, innerValArgs) := splitTypeValueArgs innerArgs
+  let (innerTyArgs, innerValArgs) := splitTypeValueArgs innerArgs
   match constFusionRole ctx innerHead with
   | some .filter =>
     if innerValArgs.size != 2 then none
@@ -427,6 +489,35 @@ private partial def fuseFilterWithProducer
               (.app p' (.bvar 0))
               (.lit (.bool false)))
       some (Expr.rebuildAppSpine outerHead (outerTyArgs ++ #[newP, xs]))
+  | some .map =>
+    -- filter p (map f xs): eliminate intermediate mapped list
+    -- → foldr (λ x acc → let y = f x in if p y then Cons y acc else acc) Nil xs
+    -- We compute f(x) once via a let binding to avoid duplicate work.
+    if innerValArgs.size != 2 then none
+    else
+      match ctx.foldrConst, ctx.listCtors with
+      | some foldrConst, some lci =>
+        let f := innerValArgs[0]!
+        let xs := innerValArgs[1]!
+        -- filter {a} p (map {c} {a} f xs): c = map input, a = map output = filter elem
+        let inputElemTy := innerTyArgs[0]?.getD dummyTy   -- c
+        let outputElemTy := outerTyArgs[0]?.getD dummyTy   -- a
+        let resultListTy := Expr.dataTy lci.listTyId #[outputElemTy]  -- [a]
+        let f' := f.shiftUp 2
+        let p' := p.shiftUp 2
+        -- λ x acc → let y = f x in if p y then Cons y acc else acc
+        -- Under 2 binders (x=bvar1, acc=bvar0), then let introduces bvar0=y:
+        --   let y = f'(bvar 2{=x}) in if p'(bvar 0{=y}) then Cons(bvar 0{=y}, bvar 1{=acc}) else bvar 1{=acc}
+        let stepFn := Expr.lam .explicit "x" inputElemTy
+          (.lam .explicit "acc" resultListTy
+            (.let_ "y" outputElemTy (.app f' (.bvar 1))
+              (.if_ (.app (p'.shiftUp 1) (.bvar 0))
+                (mkCons lci outputElemTy (.bvar 0) (.bvar 1))
+                (.bvar 1))))
+        let nil := mkNil lci outputElemTy
+        -- foldr {c} {[a]} stepFn nil xs
+        some (Expr.rebuildAppSpine foldrConst (#[inputElemTy, resultListTy, stepFn, nil, xs]))
+      | _, _ => none
   | _ => none
 
 /-- Fuse `any/all {a} pred (map {c} {a} f xs)` → `any/all {c} (λ x → pred (f x)) xs`
