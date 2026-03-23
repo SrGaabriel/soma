@@ -1,10 +1,13 @@
 import Soma.Core.Expr
 import Soma.Core.Function
+import Soma.Core.Intrinsic
+import Soma.Core.Quote
 import Soma.Dependent.Monad
 
 namespace Soma.Dependent.Fusion
 
-open Soma.Core (Expr QualifiedName Arm Pattern BinderInfo Literal TypedFunction PrimType)
+open Soma.Core (Expr QualifiedName Arm Pattern BinderInfo Literal TypedFunction PrimType
+                Intrinsic PrimOp)
 open Soma (Unique)
 open Soma.Dependent (Globals WiredIn WiredRole)
 
@@ -29,15 +32,21 @@ private def splitTypeValueArgs (args : Array Expr) : Array Expr × Array Expr :=
 structure FusionCtx where
   /-- Map from wired-in Unique → FusionRole -/
   roles : Std.HashMap Unique FusionRole := {}
-  /-- Post-specialization bodies of named consumer functions (sum, product) -/
+  /-- Consumer function bodies (sum, product): their Expr bodies with bvar(0) for list param -/
   consumerBodies : Std.HashMap FusionRole Expr := {}
+  /-- Fallback: foldl .const expression with correct type (when consumerBodies unavailable) -/
+  foldlConst : Option Expr := none
+  /-- Fallback: Int addition .const expression with correct type (for sum expansion) -/
+  addConst : Option Expr := none
+  /-- Fallback: Int multiplication .const expression with correct type (for product expansion) -/
+  mulConst : Option Expr := none
 
 /-- Resolve the fusion role of a `.const` expression via wired-in Uniques -/
 private def constFusionRole (ctx : FusionCtx) : Expr → Option FusionRole
   | .const qn _ => ctx.roles.get? qn.id
   | _ => none
 
-/-- Build a fusion context from the wired-in registry and typed function map -/
+/-- Build a fusion context from the wired-in registry and globals -/
 def buildFusionCtx
     (fns : Std.HashMap String TypedFunction)
     (globals : Globals) : FusionCtx := Id.run do
@@ -54,13 +63,27 @@ def buildFusionCtx
     | some info => roles := roles.insert info.name.id fr
     | none => pure ()
   let mut bodies : Std.HashMap FusionRole Expr := {}
-  for (consumerName, role) in #[("sum", FusionRole.sum), ("product", FusionRole.product)] do
-    match fns.get? consumerName with
-    | some fn =>
-      if roles.get? fn.name.id == some role then
+  for (_, fn) in fns.toList do
+    match roles.get? fn.name.id with
+    | some role =>
+      if role == .sum || role == .product then
         bodies := bodies.insert role fn.body
     | none => pure ()
-  return { roles, consumerBodies := bodies }
+  let mkConst (qn : QualifiedName) : Expr :=
+    match globals.defs.get? qn with
+    | some info => .const qn (Soma.Core.quoteExpr0 info.type)
+    | none => .const qn dummyTy
+  let foldlConst := match globals.wiredIn.getUnique? .listFoldl with
+    | some info => some (mkConst info.name)
+    | none => none
+  let mut addConst : Option Expr := none
+  let mut mulConst : Option Expr := none
+  for (qn, intrinsic) in globals.intrinsics.toList do
+    match intrinsic with
+    | .primOp .add => addConst := some (mkConst qn)
+    | .primOp .mul => mulConst := some (mkConst qn)
+    | _ => pure ()
+  return { roles, consumerBodies := bodies, foldlConst, addConst, mulConst }
 
 /-- Check if an expression is a known list producer call (map, filter) -/
 private def isProducerCall (ctx : FusionCtx) (e : Expr) : Bool :=
@@ -192,36 +215,44 @@ private partial def tryFuse (ctx : FusionCtx) (head : Expr) (args : Array Expr) 
     else none
   | _ => none
 
-/-- Fuse `foldl/foldr g z (map f xs)` or `foldl/foldr g z (filter p xs)` -/
+/-- Fuse `foldl/foldr g z (map f xs)` or `foldl/foldr g z (filter p xs)`
+    foldr {a} {b} : (a → b → b) → b → [a] → b → outerTyArgs = [a, b]
+    foldl {a} {b} : (b → a → b) → b → [a] → b → outerTyArgs = [a, b]
+    map {c} {a} f xs → innerTyArgs = [c, a]
+    filter {a} p xs → innerTyArgs = [a] -/
 private partial def fuseFoldWithProducer
     (ctx : FusionCtx) (outerHead : Expr) (outerTyArgs : Array Expr)
     (g z listArg : Expr) (isRight : Bool) : Option Expr :=
   let (innerHead, innerArgs) := listArg.collectAppSpine
   let (innerTyArgs, innerValArgs) := splitTypeValueArgs innerArgs
+  let accTy  := outerTyArgs[1]?.getD dummyTy
+  let elemTy := outerTyArgs[0]?.getD dummyTy
   match constFusionRole ctx innerHead with
   | some .map =>
     if innerValArgs.size != 2 then none
     else
       let f := innerValArgs[0]!
       let xs := innerValArgs[1]!
+      -- After fusion with map {c} {a}: element type changes from a to c
+      let fusedElemTy := innerTyArgs[0]?.getD elemTy
       let newG :=
         if isRight then
           -- foldr: g : a → b → b, so fused = λ x acc → g (f x) acc
           let g' := g.shiftUp 2
           let f' := f.shiftUp 2
-          Expr.lam .explicit "x" dummyTy
-            (.lam .explicit "acc" dummyTy
+          Expr.lam .explicit "x" fusedElemTy
+            (.lam .explicit "acc" accTy
               (.app (.app g' (.app f' (.bvar 1))) (.bvar 0)))
         else
           -- foldl: g : b → a → b, so fused = λ acc x → g acc (f x)
           let g' := g.shiftUp 2
           let f' := f.shiftUp 2
-          Expr.lam .explicit "acc" dummyTy
-            (.lam .explicit "x" dummyTy
+          Expr.lam .explicit "acc" accTy
+            (.lam .explicit "x" fusedElemTy
               (.app (.app g' (.bvar 1)) (.app f' (.bvar 0))))
       let newTyArgs := adjustFoldTypeArgsForMap outerTyArgs innerTyArgs
       some (Expr.rebuildAppSpine outerHead (newTyArgs ++ #[newG, z, xs]))
-  -- foldl/r g z (filter p xs)
+  -- foldl/r g z (filter p xs): filter preserves element type
   | some .filter =>
     if innerValArgs.size != 2 then none
     else
@@ -232,8 +263,8 @@ private partial def fuseFoldWithProducer
           -- foldr: λ x acc → if p x then g x acc else acc
           let g' := g.shiftUp 2
           let p' := p.shiftUp 2
-          Expr.lam .explicit "x" dummyTy
-            (.lam .explicit "acc" dummyTy
+          Expr.lam .explicit "x" elemTy
+            (.lam .explicit "acc" accTy
               (.if_ (.app p' (.bvar 1))
                     (.app (.app g' (.bvar 1)) (.bvar 0))
                     (.bvar 0)))
@@ -241,8 +272,8 @@ private partial def fuseFoldWithProducer
           -- foldl: λ acc x → if p x then g acc x else acc
           let g' := g.shiftUp 2
           let p' := p.shiftUp 2
-          Expr.lam .explicit "acc" dummyTy
-            (.lam .explicit "x" dummyTy
+          Expr.lam .explicit "acc" accTy
+            (.lam .explicit "x" elemTy
               (.if_ (.app p' (.bvar 0))
                     (.app (.app g' (.bvar 1)) (.bvar 0))
                     (.bvar 1)))
@@ -254,19 +285,69 @@ private partial def fuseFoldWithProducer
 private partial def fuseNamedConsumer
     (ctx : FusionCtx) (role : FusionRole)
     (listArg : Expr) : Option Expr :=
-  -- Only inline if the argument is a producer (otherwise no fusion opportunity)
+  -- Only fuse if the argument is a producer (otherwise no fusion opportunity)
   let (innerHead, _) := listArg.collectAppSpine
   match constFusionRole ctx innerHead with
   | some .map | some .filter =>
     match ctx.consumerBodies.get? role with
     | some consumerBody =>
-      -- consumerBody has bvar(0) for its list argument
-      -- Instantiate to get: foldl (λ acc x → specialized_op acc x) identity listArg
       some (consumerBody.instantiate listArg)
-    | none => none
+    | none =>
+      fuseNamedConsumerDirect ctx role listArg
   | _ => none
 
-/-- Fuse `length (map _ xs)` → `length xs` -/
+/-- Fallback direct construction for fuseNamedConsumer when consumer body is unavailable -/
+private partial def fuseNamedConsumerDirect
+    (ctx : FusionCtx) (role : FusionRole)
+    (listArg : Expr) : Option Expr :=
+  let (opConst?, identity) := match role with
+    | .sum     => (ctx.addConst, Expr.lit (.int 0))
+    | .product => (ctx.mulConst, Expr.lit (.int 1))
+    | _ => (none, dummyTy)
+  match opConst?, ctx.foldlConst with
+  | some opConst, some foldlConst =>
+    let (innerHead, innerArgs) := listArg.collectAppSpine
+    let (innerTyArgs, innerValArgs) := splitTypeValueArgs innerArgs
+    match constFusionRole ctx innerHead with
+    | some .map =>
+      if innerValArgs.size != 2 then none
+      else
+        let f := innerValArgs[0]!
+        let xs := innerValArgs[1]!
+        let f' := f.shiftUp 2
+        -- For sum (map @A @B f xs): acc : B (= Int), x : A (map input type)
+        let accTy := Expr.primTy .int
+        let elemTy := if innerTyArgs.size >= 1 then innerTyArgs[0]! else Expr.primTy .int
+        let fusedG := Expr.lam .explicit "acc" accTy
+          (.lam .explicit "x" elemTy
+            (.app (.app opConst (.bvar 1)) (.app f' (.bvar 0))))
+        let foldlTyArgs := if innerTyArgs.size >= 1
+          then #[innerTyArgs[0]!, Expr.primTy .int]
+          else #[]
+        some (Expr.rebuildAppSpine foldlConst (foldlTyArgs ++ #[fusedG, identity, xs]))
+    | some .filter =>
+      if innerValArgs.size != 2 then none
+      else
+        let p := innerValArgs[0]!
+        let xs := innerValArgs[1]!
+        let p' := p.shiftUp 2
+        -- For sum (filter @A p xs): acc : Int, x : A (element type)
+        let accTy := Expr.primTy .int
+        let elemTy := if innerTyArgs.size >= 1 then innerTyArgs[0]! else Expr.primTy .int
+        let fusedG := Expr.lam .explicit "acc" accTy
+          (.lam .explicit "x" elemTy
+            (.if_ (.app p' (.bvar 0))
+              (.app (.app opConst (.bvar 1)) (.bvar 0))
+              (.bvar 1)))
+        let foldlTyArgs := if innerTyArgs.size >= 1
+          then #[innerTyArgs[0]!, Expr.primTy .int]
+          else #[]
+        some (Expr.rebuildAppSpine foldlConst (foldlTyArgs ++ #[fusedG, identity, xs]))
+    | _ => none
+  | _, _ => none
+
+/-- Fuse `length {a} (map {c} {a} _ xs)` → `length {c} xs`
+    Fuse `length {a} (filter {a} p xs)` → `foldl {a} {Int} (λ acc x → if p x then acc+1 else acc) 0 xs` -/
 private partial def fuseLengthWithProducer
     (ctx : FusionCtx) (outerHead : Expr) (outerTyArgs : Array Expr)
     (listArg : Expr) : Option Expr :=
@@ -276,12 +357,34 @@ private partial def fuseLengthWithProducer
   | some .map =>
     if innerValArgs.size != 2 then none
     else
+      -- length (map _ xs) → length xs: map doesn't change list length
       let xs := innerValArgs[1]!
       let newTyArgs := if innerTyArgs.size >= 1 then #[innerTyArgs[0]!] else outerTyArgs
       some (Expr.rebuildAppSpine outerHead (newTyArgs ++ #[xs]))
+  | some .filter =>
+    if innerValArgs.size != 2 then none
+    else
+      -- length (filter p xs) → foldl (λ acc x → if p x then acc+1 else acc) 0 xs
+      match ctx.foldlConst, ctx.addConst with
+      | some foldlConst, some addConst =>
+        let p := innerValArgs[0]!
+        let xs := innerValArgs[1]!
+        let p' := p.shiftUp 2
+        let accTy := Expr.primTy .int
+        let elemTy := innerTyArgs[0]?.getD dummyTy
+        let countG := Expr.lam .explicit "acc" accTy
+          (.lam .explicit "x" elemTy
+            (.if_ (.app p' (.bvar 0))
+              (.app (.app addConst (.bvar 1)) (.lit (.int 1)))
+              (.bvar 1)))
+        let foldlTyArgs := if innerTyArgs.size >= 1
+          then #[innerTyArgs[0]!, Expr.primTy .int]
+          else #[]
+        some (Expr.rebuildAppSpine foldlConst (foldlTyArgs ++ #[countG, .lit (.int 0), xs]))
+      | _, _ => none
   | _ => none
 
-/-- Fuse `map f (map g xs)` → `map (λ x → f (g x)) xs` -/
+/-- Fuse `map {a} {c} f (map {d} {a} g xs)` → `map {d} {c} (λ x → f (g x)) xs` -/
 private partial def fuseMapWithProducer
     (ctx : FusionCtx) (outerHead : Expr) (outerTyArgs : Array Expr)
     (f listArg : Expr) : Option Expr :=
@@ -295,13 +398,15 @@ private partial def fuseMapWithProducer
       let xs := innerValArgs[1]!
       let f' := f.shiftUp 1
       let g' := g.shiftUp 1
-      let newF := Expr.lam .explicit "x" dummyTy
+      -- x has inner map's input type d
+      let elemTy := innerTyArgs[0]?.getD dummyTy
+      let newF := Expr.lam .explicit "x" elemTy
         (.app f' (.app g' (.bvar 0)))
       let newTyArgs := adjustMapTypeArgs outerTyArgs innerTyArgs
       some (Expr.rebuildAppSpine outerHead (newTyArgs ++ #[newF, xs]))
   | _ => none
 
-/-- Fuse `filter p (filter q xs)` → `filter (λ x → if q x then p x else false) xs` -/
+/-- Fuse `filter {a} p (filter {a} q xs)` → `filter {a} (λ x → if q x then p x else false) xs` -/
 private partial def fuseFilterWithProducer
     (ctx : FusionCtx) (outerHead : Expr) (outerTyArgs : Array Expr)
     (p listArg : Expr) : Option Expr :=
@@ -315,14 +420,18 @@ private partial def fuseFilterWithProducer
       let xs := innerValArgs[1]!
       let p' := p.shiftUp 1
       let q' := q.shiftUp 1
-      let newP := Expr.lam .explicit "x" dummyTy
+      -- x has element type a (same for both filters)
+      let elemTy := outerTyArgs[0]?.getD dummyTy
+      let newP := Expr.lam .explicit "x" elemTy
         (.if_ (.app q' (.bvar 0))
               (.app p' (.bvar 0))
               (.lit (.bool false)))
       some (Expr.rebuildAppSpine outerHead (outerTyArgs ++ #[newP, xs]))
   | _ => none
 
-/-- Fuse `any/all pred (map f xs)` → `any/all (λ x → pred (f x)) xs` -/
+/-- Fuse `any/all {a} pred (map {c} {a} f xs)` → `any/all {c} (λ x → pred (f x)) xs`
+    Also fuse `any/all {a} pred (filter {a} p xs)` → `any/all {a} (λ x → p x && pred x) xs`
+    (for all: `λ x → ¬(p x) ∨ pred x` i.e. `if p x then pred x else true`) -/
 private partial def fusePredicateWithProducer
     (ctx : FusionCtx) (outerHead : Expr) (outerTyArgs : Array Expr)
     (pred listArg : Expr) : Option Expr :=
@@ -336,10 +445,38 @@ private partial def fusePredicateWithProducer
       let xs := innerValArgs[1]!
       let pred' := pred.shiftUp 1
       let f' := f.shiftUp 1
-      let newPred := Expr.lam .explicit "x" dummyTy
+      -- x has map's input type c
+      let elemTy := innerTyArgs[0]?.getD dummyTy
+      let newPred := Expr.lam .explicit "x" elemTy
         (.app pred' (.app f' (.bvar 0)))
       let newTyArgs := if innerTyArgs.size >= 1 then #[innerTyArgs[0]!] else outerTyArgs
       some (Expr.rebuildAppSpine outerHead (newTyArgs ++ #[newPred, xs]))
+  | some .filter =>
+    if innerValArgs.size != 2 then none
+    else
+      let p := innerValArgs[0]!
+      let xs := innerValArgs[1]!
+      let pred' := pred.shiftUp 1
+      let p' := p.shiftUp 1
+      -- x has element type a (filter preserves it)
+      let elemTy := outerTyArgs[0]?.getD dummyTy
+      -- Determine the role to pick the right combinator
+      let role := constFusionRole ctx outerHead
+      let newPred := match role with
+        | some .any =>
+          -- any pred (filter p xs) → any (λ x → if p x then pred x else false) xs
+          Expr.lam .explicit "x" elemTy
+            (.if_ (.app p' (.bvar 0))
+                  (.app pred' (.bvar 0))
+                  (.lit (.bool false)))
+        | _ =>
+          -- all pred (filter p xs) → all (λ x → if p x then pred x else true) xs
+          Expr.lam .explicit "x" elemTy
+            (.if_ (.app p' (.bvar 0))
+                  (.app pred' (.bvar 0))
+                  (.lit (.bool true)))
+      -- filter preserves element type, so keep outerTyArgs
+      some (Expr.rebuildAppSpine outerHead (outerTyArgs ++ #[newPred, xs]))
   | _ => none
 
 end
@@ -349,6 +486,7 @@ def fuseFunction (ctx : FusionCtx) (fn : TypedFunction) : TypedFunction :=
   let inlined := inlineProducerLets ctx fn.body
   let fused := fuseExpr ctx inlined
   let reduced := fused.betaReduce
+
   { fn with body := reduced }
 
 /-- Apply build/fold fusion to all typed functions in a module -/
