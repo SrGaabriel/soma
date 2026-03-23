@@ -15,10 +15,9 @@ open Std
 
 open Soma.Syntax
 open Soma.Dependent (Globals InstanceEnv AbbrevEnv)
-open Soma.Dependent.Driver
 open Soma.Dependent.Incremental (IncrementalState)
 open Soma.Project (SymbolEnv)
-open Soma.Project.Check (moduleNameFromPath fileIdFromPath typeCheckModule)
+open Soma.Project.Check (moduleNameFromPath fileIdFromPath)
 
 /-- Extract imported module paths from a symbol table -/
 def extractImportedModules (symbols : SymbolTable) : Array String :=
@@ -52,20 +51,20 @@ def findChangedDeclIds (tree : RedTree) (changedIds : HashSet NodeId) : HashSet 
 
 /-- Extract the declaration name from a syntax Decl -/
 private def getDeclName : Decl → Option String
-  | .def_ _ name _ _ _ _ => some name.value
-  | .inductive _ name _ _ _ _ => some name.value
-  | .record _ name _ _ _ _ => some name.value
-  | .trait _ name _ _ _ _ => some name.value
-  | .abbrev name _ _ _ => some name.value
+  | .def_ _ name _ _ _ _ => some name.name
+  | .inductive _ name _ _ _ _ => some name.name
+  | .record _ name _ _ _ _ => some name.name
+  | .trait _ name _ _ _ _ => some name.name
+  | .abbrev name _ _ _ => some name.name
   | _ => none
 
 /-- Analyze a source file from scratch (no prior state) -/
 def analyzeSourceFresh (filePath : String) (content : String)
-    (seedGlobals : Globals := Globals.empty)
-    (seedInstanceEnv : InstanceEnv := InstanceEnv.empty)
-    (seedAbbrevEnv : AbbrevEnv := AbbrevEnv.empty)
-    (_seedSymbols : SymbolEnv := {}) : CompiledModule := Id.run do
-  let moduleName := moduleNameFromPath filePath
+    (checkedDeps : Std.HashMap String Soma.Project.Check.CheckedModule := {})
+    (preludeSymbols : Array String := #[])
+    (moduleName? : Option String := none)
+    (existingChecked : Option Soma.Project.Check.CheckedModule := none) : CompiledModule := Id.run do
+  let moduleName := moduleName?.getD (moduleNameFromPath filePath)
   let fileId := fileIdFromPath filePath
 
   -- Phase 1: Create source file
@@ -89,20 +88,46 @@ def analyzeSourceFresh (filePath : String) (content : String)
   let allDeclIds := collectDeclNodeIds parsedTree
   let (declAsts, _) := lowerDeclarationsByIds parsedTree allDeclIds
 
-  -- Phase 6: Lower AST to Core untyped module
-  let elabResult := Soma.Dependent.Lower.lowerModule ast
-  let lowerDiags := elabResult.diagnostics
+  match existingChecked with
+  | some cm =>
+    return {
+      name := moduleName
+      filePath := filePath
+      parsedTree := parsedTree
+      ast := some ast
+      symbols := symbols
+      diagnostics := frontendDiags ++ astLowerDiags
+      declNodeIds := declNodeIds
+      declAsts := declAsts
+      elabResult := none
+      globals := some cm.globals
+      instanceEnv := some cm.instanceEnv
+      incrementalState := some cm.incrementalState
+      scopeMap := scopeMap
+    }
+  | none =>
 
-  -- Phase 7: Dependent type checking using the shared pipeline
-  let tcResult := typeCheckModule elabResult.module moduleName seedGlobals seedInstanceEnv seedAbbrevEnv none
+  -- Phase 7: Use checkModule from the compiler pipeline for type checking
+  let modName := Soma.Project.ModuleName.fromString moduleName
+  let modInfo : Soma.Project.ModuleInfo := {
+    name := modName
+    path := System.FilePath.mk filePath
+    content := content
+    sourceFile := sourceFile
+    ast := ast
+  }
+  let packageName := modName.package
+  let supply := Soma.UniqueSupply.initial moduleName
+  let (checkDiags, checkedModule?, _) :=
+    Soma.Project.Check.checkModule modInfo checkedDeps
+      Globals.empty InstanceEnv.empty AbbrevEnv.empty
+      {} packageName supply preludeSymbols
 
-  -- Update incremental state with imported modules
-  let importedMods := extractImportedModules symbols
-  let finalIncrState := importedMods.foldl (fun acc mod => acc.addImportedModule mod) tcResult.incrementalState
+  let globals := checkedModule?.map (·.globals)
+  let instanceEnv := checkedModule?.map (·.instanceEnv)
+  let incrState := checkedModule?.map (·.incrementalState)
 
-  let inferDiags := tcErrorsToDiagnostics tcResult.errors
-
-  let allDiags := frontendDiags ++ astLowerDiags ++ lowerDiags ++ inferDiags
+  let allDiags := frontendDiags ++ astLowerDiags ++ checkDiags
 
   return {
     name := moduleName
@@ -113,21 +138,20 @@ def analyzeSourceFresh (filePath : String) (content : String)
     diagnostics := allDiags
     declNodeIds := declNodeIds
     declAsts := declAsts
-    elabResult := some elabResult
-    globals := some tcResult.globals
-    instanceEnv := some tcResult.instanceEnv
-    incrementalState := some finalIncrState
+    elabResult := none
+    globals := globals
+    instanceEnv := instanceEnv
+    incrementalState := incrState
     scopeMap := scopeMap
   }
 
 /-- Analyze a source file incrementally using prior state -/
 def analyzeSourceIncremental (filePath : String) (content : String)
     (oldModule : CompiledModule)
-    (seedGlobals : Globals := Globals.empty)
-    (seedInstanceEnv : InstanceEnv := InstanceEnv.empty)
-    (seedAbbrevEnv : AbbrevEnv := AbbrevEnv.empty)
-    (_seedSymbols : SymbolEnv := {}) : CompiledModule := Id.run do
-  let moduleName := moduleNameFromPath filePath
+    (checkedDeps : Std.HashMap String Soma.Project.Check.CheckedModule := {})
+    (preludeSymbols : Array String := #[])
+    (moduleName? : Option String := none) : CompiledModule := Id.run do
+  let moduleName := moduleName?.getD (moduleNameFromPath filePath)
   let fileId := fileIdFromPath filePath
 
   -- Phase 1: Create source file
@@ -152,10 +176,8 @@ def analyzeSourceIncremental (filePath : String) (content : String)
   -- Phase 5: Incremental symbol table update
   let (symbols, cstDefs) :=
     if changedDeclIds.isEmpty then
-      -- Nothing changed, reuse old symbols
       (oldModule.symbols, collectDefinitions parsedTree.red)
     else
-      -- Update only changed definitions
       let newSymbols := updateSymbolTableIncremental
         oldModule.symbols parsedTree.red changedDeclIds moduleName filePath
       (newSymbols, collectDefinitions parsedTree.red)
@@ -168,15 +190,11 @@ def analyzeSourceIncremental (filePath : String) (content : String)
   -- Phase 6: Incremental AST lowering
   let (declAsts, astLowerDiags) :=
     if changedDeclIds.isEmpty then
-      -- Nothing changed, reuse all cached ASTs
       (oldModule.declAsts, #[])
     else
-      -- Lower only the changed declarations
       let (freshAsts, diags) := lowerDeclarationsByIds parsedTree changedDeclIds.toArray
-      -- Start with old ASTs, remove changed ones, then merge fresh ones
       let prunedAsts := changedDeclIds.fold (init := oldModule.declAsts) fun acc declId =>
         acc.erase declId
-      -- Merge fresh ASTs into the pruned map
       let mergedAsts := freshAsts.fold (init := prunedAsts) fun acc nodeId decl =>
         acc.insert nodeId decl
       (mergedAsts, diags)
@@ -184,28 +202,27 @@ def analyzeSourceIncremental (filePath : String) (content : String)
   -- Build the Module from the declaration map (in source order)
   let ast := buildModuleFromDeclMap parsedTree declAsts moduleName
 
-  -- Phase 7: Declaration lowering
-  -- For incremental: reuse old result if nothing changed, otherwise re-lower fully
-  let elabResult := match oldModule.elabResult with
-    | some oldResult =>
-      if changedDeclIds.isEmpty then oldResult
-      else Soma.Dependent.Lower.lowerModule ast
-    | none => Soma.Dependent.Lower.lowerModule ast
+  -- Phase 7: Use checkModule from the compiler pipeline for type checking
+  let modName := Soma.Project.ModuleName.fromString moduleName
+  let modInfo : Soma.Project.ModuleInfo := {
+    name := modName
+    path := System.FilePath.mk filePath
+    content := content
+    sourceFile := sourceFile
+    ast := ast
+  }
+  let packageName := modName.package
+  let supply := Soma.UniqueSupply.initial moduleName
+  let (checkDiags, _checkedModule, _) :=
+    Soma.Project.Check.checkModule modInfo checkedDeps
+      Globals.empty InstanceEnv.empty AbbrevEnv.empty
+      {} packageName supply preludeSymbols
 
-  let lowerDiags := elabResult.diagnostics
+  let globals := _checkedModule.map (·.globals)
+  let instanceEnv := _checkedModule.map (·.instanceEnv)
+  let incrState := _checkedModule.map (·.incrementalState)
 
-  -- Phase 8: Incremental dependent type checking using the shared pipeline
-  let prevIncrState := oldModule.incrementalState
-
-  let tcResult := typeCheckModule elabResult.module moduleName seedGlobals seedInstanceEnv seedAbbrevEnv prevIncrState
-
-  -- Update incremental state with imported modules
-  let importedMods := extractImportedModules symbols
-  let finalIncrState := importedMods.foldl (fun acc mod => acc.addImportedModule mod) tcResult.incrementalState
-
-  let inferDiags := tcErrorsToDiagnostics tcResult.errors
-
-  let allDiags := frontendDiags ++ astLowerDiags ++ lowerDiags ++ inferDiags
+  let allDiags := frontendDiags ++ astLowerDiags ++ checkDiags
 
   return {
     name := moduleName
@@ -216,23 +233,23 @@ def analyzeSourceIncremental (filePath : String) (content : String)
     diagnostics := allDiags
     declNodeIds := declNodeIds
     declAsts := declAsts
-    elabResult := some elabResult
-    globals := some tcResult.globals
-    instanceEnv := some tcResult.instanceEnv
-    incrementalState := some finalIncrState
+    elabResult := none
+    globals := globals
+    instanceEnv := instanceEnv
+    incrementalState := incrState
     scopeMap := scopeMap
   }
 
 /-- Analyze a source file, using incremental analysis if old module is available -/
 def analyzeSource (filePath : String) (content : String)
     (oldModule? : Option CompiledModule := none)
-    (seedGlobals : Globals := Globals.empty)
-    (seedInstanceEnv : InstanceEnv := InstanceEnv.empty)
-    (seedAbbrevEnv : AbbrevEnv := AbbrevEnv.empty)
-    (seedSymbols : SymbolEnv := {}) : CompiledModule :=
+    (checkedDeps : Std.HashMap String Soma.Project.Check.CheckedModule := {})
+    (preludeSymbols : Array String := #[])
+    (moduleName? : Option String := none)
+    (existingChecked : Option Soma.Project.Check.CheckedModule := none) : CompiledModule :=
   match oldModule? with
-  | none => analyzeSourceFresh filePath content seedGlobals seedInstanceEnv seedAbbrevEnv seedSymbols
-  | some oldModule => analyzeSourceIncremental filePath content oldModule seedGlobals seedInstanceEnv seedAbbrevEnv seedSymbols
+  | none => analyzeSourceFresh filePath content checkedDeps preludeSymbols moduleName? existingChecked
+  | some oldModule => analyzeSourceIncremental filePath content oldModule checkedDeps preludeSymbols moduleName?
 
 /-- Get all error diagnostics -/
 def getErrors (mod : CompiledModule) : Diagnostics :=

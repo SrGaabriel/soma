@@ -4,18 +4,19 @@ import Soma.Dependent.Lower
 import Soma.Dependent.Monad
 import Soma.Dependent.Incremental
 import Soma.Project.Check
-import Soma.Project.Metadata
+import Soma.Project.Graph
 import Lsp.Cst
 import Lsp.Scope
 import Lsp.Haoma
+import Lsp.Loc
 
 namespace Lsp
 
 open Soma.Syntax
 open Soma.Dependent (Globals InstanceEnv AbbrevEnv)
 open Soma.Dependent.Lower (Result)
-open Soma.Project (SymbolEnv)
-open Soma.Project.Check (ExternalDependency)
+open Soma.Project (SymbolEnv ModuleGraph ModuleInfo)
+open Soma.Project.Check (CheckedModule)
 
 /-- Symbol kinds for LSP features -/
 inductive SymbolKind where
@@ -244,16 +245,16 @@ structure LspState where
   knownProjectRoots : Std.HashSet String := {}
   /-- All loaded haoma project metadata -/
   haomaProjects : Array Haoma.ProjectMetadata := #[]
-  /-- Loaded external dependencies (for type checking with dependency info) -/
-  externalDeps : Array ExternalDependency := #[]
-  /-- Merged globals from all external dependencies -/
-  seedGlobals : Globals := Globals.empty
-  /-- Merged instance environment from all external dependencies -/
-  seedInstanceEnv : InstanceEnv := InstanceEnv.empty
-  /-- Merged abbreviation environment from all external dependencies -/
-  seedAbbrevEnv : AbbrevEnv := AbbrevEnv.empty
-  /-- Merged symbols from all external dependencies (for declaration lowering) -/
-  seedSymbols : SymbolEnv := {}
+  /-- Type-checked modules (project-wide, keyed by module name) -/
+  checkedModules : Std.HashMap String CheckedModule := {}
+  /-- Parsed module graph (keyed by module name) -/
+  moduleGraph : ModuleGraph := {}
+  /-- Topological order of all modules -/
+  topoOrder : Array String := #[]
+  /-- Unique supply for the project (threaded through checkModule calls) -/
+  projectSupply : Soma.UniqueSupply := Soma.UniqueSupply.initial "lsp"
+  /-- Cached prelude symbol names (extracted after checking the prelude) -/
+  preludeSymbols : Array String := #[]
   deriving Inhabited
 
 namespace LspState
@@ -353,13 +354,13 @@ def addHaomaProject (s : LspState) (metadata : Haoma.ProjectMetadata) : LspState
   -- Find the root package to get its path
   let rootPkg := metadata.packages.find? (·.is_root)
   let s' := match rootPkg with
-    | some pkg => { s with knownProjectRoots := s.knownProjectRoots.insert pkg.root }
+    | some pkg => { s with knownProjectRoots := s.knownProjectRoots.insert (normalizePath pkg.root) }
     | none => s
   -- Add to projects list
   let s'' := { s' with haomaProjects := s'.haomaProjects.push metadata }
   -- Register all module paths from haoma metadata
   metadata.modules.foldl (fun acc mod =>
-    acc.registerModulePath mod.name mod.path
+    acc.registerModulePath mod.name (normalizePath mod.path)
   ) s''
 
 /-- Check if a project root is already known -/
@@ -370,24 +371,36 @@ def hasProjectRoot (s : LspState) (root : String) : Bool :=
 def isFileInKnownProject (s : LspState) (filePath : String) : Bool :=
   s.knownProjectRoots.any (filePath.startsWith ·)
 
-/-- Add an external dependency and merge its globals/instanceEnv/abbrevEnv/symbols -/
-def addExternalDep (s : LspState) (dep : ExternalDependency) : LspState :=
-  let newGlobals := Soma.Project.Check.mergeGlobals s.seedGlobals dep.globals
-  let newInstanceEnv := Soma.Project.Check.mergeInstanceEnv s.seedInstanceEnv dep.instanceEnv
-  let newAbbrevEnv := s.seedAbbrevEnv.merge dep.abbrevEnv
-  -- Merge symbols from all modules in this dependency
-  let newSymbols := dep.symbols.fold (init := s.seedSymbols) fun acc _modName modSymbols =>
-    modSymbols.fold (init := acc) fun acc2 sym val => acc2.insert sym val
-  { s with
-    externalDeps := s.externalDeps.push dep
-    seedGlobals := newGlobals
-    seedInstanceEnv := newInstanceEnv
-    seedAbbrevEnv := newAbbrevEnv
-    seedSymbols := newSymbols }
+/-- Collect all checked modules that precede a given module in topological order -/
+def checkedDepsForModule (s : LspState) (moduleName : String) : Std.HashMap String CheckedModule :=
+  let idx := s.topoOrder.findIdx? (· == moduleName) |>.getD s.topoOrder.size
+  let preceding := s.topoOrder.extract 0 idx
+  preceding.foldl (init := ({} : Std.HashMap String CheckedModule)) fun acc name =>
+    match s.checkedModules.get? name with
+    | some cm => acc.insert name cm
+    | none => acc
 
-/-- Add multiple external dependencies -/
-def addExternalDeps (s : LspState) (deps : Array ExternalDependency) : LspState :=
-  deps.foldl addExternalDep s
+/-- Build merged seed environments from checked dependencies for a module -/
+def seedEnvironmentForModule (s : LspState) (moduleName : String)
+    : Globals × InstanceEnv × AbbrevEnv :=
+  let deps := s.checkedDepsForModule moduleName
+  let globals := deps.fold (init := Globals.empty) fun acc _ dep =>
+    Soma.Project.Check.mergeGlobals acc dep.globals
+  let instanceEnv := deps.fold (init := InstanceEnv.empty) fun acc _ dep =>
+    Soma.Project.Check.mergeInstanceEnv acc dep.instanceEnv
+  let abbrevEnv := deps.fold (init := AbbrevEnv.empty) fun acc _ dep =>
+    AbbrevEnv.merge acc dep.abbrevEnv
+  (globals, instanceEnv, abbrevEnv)
+
+/-- Build merged public symbols from checked dependencies for a module -/
+def seedSymbolsForModule (s : LspState) (moduleName : String) : SymbolEnv :=
+  let deps := s.checkedDepsForModule moduleName
+  deps.fold (init := (Inhabited.default : SymbolEnv)) fun acc _ dep =>
+    dep.publicSymbols.fold (init := acc) fun acc2 sym val => acc2.insert sym val
+
+/-- Store a checked module result -/
+def setCheckedModule (s : LspState) (moduleName : String) (cm : CheckedModule) : LspState :=
+  { s with checkedModules := s.checkedModules.insert moduleName cm }
 
 end LspState
 

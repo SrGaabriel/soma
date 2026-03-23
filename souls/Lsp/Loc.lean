@@ -110,11 +110,56 @@ def wordAtPosition (sf : SourceFile) (pos : Position) : Option String :=
 /-- Convert a file path to a file URI -/
 def pathToUri (path : String) : String :=
   if path.startsWith "file://" then path
-  else "file://" ++ path
+  else
+    let pfx := if path.length > 1 && path.get? ⟨1⟩ == some ':' then "/" else ""
+    "file://" ++ pfx ++ path
+
+/-- Decode percent-encoded characters in a URI path -/
+private partial def decodePercent (s : String) : String :=
+  go s 0 ""
+where
+  hexVal (c : Char) : Option Nat :=
+    if '0' ≤ c ∧ c ≤ '9' then some (c.toNat - '0'.toNat)
+    else if 'a' ≤ c ∧ c ≤ 'f' then some (c.toNat - 'a'.toNat + 10)
+    else if 'A' ≤ c ∧ c ≤ 'F' then some (c.toNat - 'A'.toNat + 10)
+    else none
+  go (s : String) (i : Nat) (acc : String) : String :=
+    if i >= s.length then acc
+    else
+      let c := s.get ⟨i⟩
+      if c == '%' && i + 2 < s.length then
+        let h := s.get ⟨i + 1⟩
+        let l := s.get ⟨i + 2⟩
+        match hexVal h, hexVal l with
+        | some hv, some lv => go s (i + 3) (acc.push (Char.ofNat (hv * 16 + lv)))
+        | _, _ => go s (i + 1) (acc.push c)
+      else go s (i + 1) (acc.push c)
 
 /-- Convert a file URI to a path -/
 def uriToPath (uri : String) : String :=
-  if uri.startsWith "file://" then uri.drop 7 |>.copy
-  else uri
+  let raw := if uri.startsWith "file://" then uri.drop 7 |>.copy else uri
+  let decoded := decodePercent raw
+  if decoded.length > 2 then
+    match decoded.get? ⟨0⟩, decoded.get? ⟨2⟩ with
+    | some '/', some ':' => decoded.drop 1 |>.copy
+    | _, _ => decoded
+  else decoded
+
+/-- Normalize a file path for cross-platform comparison -/
+def normalizePath (path : String) : String :=
+  let p := if path.startsWith "\\\\?\\" then path.drop 4 |>.copy
+    else if path.startsWith "//?/" then path.drop 4 |>.copy
+    else path
+  let p := p.map fun c => if c == '\\' then '/' else c
+  let p := if p.length > 2 then
+    match p.get? ⟨0⟩, p.get? ⟨2⟩ with
+    | some '/', some ':' => p.drop 1 |>.copy
+    | _, _ => p
+  else p
+  -- Lowercase drive letter (C:/ → c:/)
+  if p.length > 1 && p.get? ⟨1⟩ == some ':' then
+    let drive := (p.get ⟨0⟩).toLower
+    s!"{drive}{p.drop 1 |>.copy}"
+  else p
 
 end Lsp

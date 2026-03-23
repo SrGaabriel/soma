@@ -5,7 +5,8 @@ import Lsp.Symbols
 import Lsp.Loc
 import Lsp.Haoma
 import Lsp.SemanticTokens
-import Soma.Project.Metadata
+import Soma.Project.Check
+import Soma.Project.Graph
 
 namespace Lsp
 
@@ -19,8 +20,12 @@ open Lapis.Server.Diagnostics
 open Lapis.Server.Progress
 open Lapis.Server.SemanticTokens
 open Lapis.Protocol.Generated (SemanticTokensParams)
-open Soma.Project.Metadata (loadMetadataFromFile)
 open Soma.Syntax (SourceFile)
+open Soma.Dependent (Globals InstanceEnv AbbrevEnv)
+open Soma.Project (ModuleGraph ModuleInfo buildDependencyGraph
+  topoSortModules TopoSortResult preludeModuleName SymbolEnv)
+open Soma.Project.Check (CheckedModule parseModuleFile parseModuleFiles checkModule
+  checkModulesInOrder mergeGlobals extractPreludeSymbols)
 
 /-- Convert Soma diagnostics to LSP format -/
 def convertDiagnostics (sf : SourceFile) (diags : Soma.Syntax.Diagnostics) : Array Diagnostic :=
@@ -36,32 +41,84 @@ def convertDiagnostics (sf : SourceFile) (diags : Soma.Syntax.Diagnostics) : Arr
     , message := diag.message
     : Diagnostic }
 
-/-- Load a single haoma project with logging, including dependency metadata -/
+/-- Load a single haoma project: discover modules, parse, and type-check all from source -/
 def loadHaomaProject (ctx : RequestContext LspState) (projectRoot : System.FilePath) : IO Bool := do
-  -- Use --full to generate type metadata for dependencies
-  match ← Haoma.loadMetadataFull projectRoot with
+  match ← Haoma.loadMetadata projectRoot with
   | .ok metadata =>
-    -- Load external dependency metadata from the type_metadata paths
-    let mut deps : Array Soma.Project.Check.ExternalDependency := #[]
-    for (depName, metaPath) in metadata.type_metadata.toArray do
-      -- Skip root package metadata
-      if depName == metadata.root_package then
-        continue
-      -- Resolve relative paths against project root
-      let path := if metaPath.startsWith "/" then
-        System.FilePath.mk metaPath
-      else
-        projectRoot / metaPath
-      match ← loadMetadataFromFile path with
-      | .ok dep =>
-        deps := deps.push dep
-      | .error e =>
-        ctx.logError s!"Failed to load dependency {depName} from {path}: {e}"
+    let modulePairs := metadata.modules.map fun m =>
+      (m.name, System.FilePath.mk m.path)
+
+    let (parseDiags, graph, _sourceMap) ← parseModuleFiles modulePairs
+
+    if !parseDiags.isEmpty then
+      ctx.logInfo s!"Parse diagnostics: {parseDiags.size}"
+
+    let depGraph := buildDependencyGraph graph
+    let depGraph := if graph.contains preludeModuleName then
+      let preludeDepsSet := Id.run do
+        let mut visited : Std.HashSet String := {}
+        let mut worklist : Array String := #[preludeModuleName]
+        while !worklist.isEmpty do
+          let current := worklist[0]!
+          worklist := worklist.extract 1 worklist.size
+          if visited.contains current then continue
+          visited := visited.insert current
+          let edges := depGraph.get? current |>.getD #[]
+          for e in edges do
+            if !visited.contains e.targetModule then
+              worklist := worklist.push e.targetModule
+        visited
+      depGraph.fold (init := depGraph) fun acc modName edges =>
+        if preludeDepsSet.contains modName then acc
+        else
+          let hasPreludeDep := edges.any (·.targetModule == preludeModuleName)
+          if hasPreludeDep then acc
+          else acc.insert modName (edges.push { targetModule := preludeModuleName, importSpan := Soma.Syntax.Span.uninhabited })
+    else depGraph
+    let sortedNames : Array String := match topoSortModules depGraph with
+      | .sorted order => order
+      | .cycles _cycles =>
+        modulePairs.map (Prod.fst)
+
+    let packageName := metadata.root_package
+
+    let state ← ctx.getUserState
+    let supply := state.projectSupply
+    let emptySymbols : SymbolEnv := Inhabited.default
+
+    let preludeSyms : Array String :=
+      match sortedNames.findIdx? (· == preludeModuleName) with
+      | some idx =>
+        let prefixNames := sortedNames.extract 0 (idx + 1)
+        let (_, prefixResults, _) := checkModulesInOrder prefixNames graph
+          Globals.empty InstanceEnv.empty AbbrevEnv.empty emptySymbols packageName supply #[]
+        match prefixResults.find? (·.name == preludeModuleName) with
+        | some preludeCm =>
+          let ps : SymbolEnv := preludeCm.publicSymbols
+          ps.toArray.map fun p => p.1.name
+        | none => #[]
+      | none => #[]
+
+    let (_checkDiags, checkedResults, finalSupply) :=
+      checkModulesInOrder sortedNames graph Globals.empty InstanceEnv.empty AbbrevEnv.empty
+        emptySymbols packageName supply preludeSyms
+
+    let checkedMap : Std.HashMap String CheckedModule := checkedResults.foldl (init := {})
+      fun acc (cm : CheckedModule) => acc.insert cm.name cm
 
     ctx.modifyUserState fun s =>
       let s' := s.addHaomaProject metadata
-      let s'' := s'.addExternalDeps deps
-      s''
+      let existingSet := s'.topoOrder.foldl (init := ({} : Std.HashSet String)) fun acc n => acc.insert n
+      let newEntries := sortedNames.filter fun n => !existingSet.contains n
+      let mergedOrder := s'.topoOrder ++ newEntries
+      { s' with
+        checkedModules := checkedMap.fold (init := s'.checkedModules) fun acc k v => acc.insert k v
+        moduleGraph := graph.fold (init := s'.moduleGraph) fun acc k v => acc.insert k v
+        topoOrder := mergedOrder
+        projectSupply := finalSupply
+        preludeSymbols := if preludeSyms.isEmpty then s'.preludeSymbols else preludeSyms }
+
+    ctx.logInfo s!"Loaded {checkedResults.size}/{modulePairs.size} modules from {packageName}"
     return true
   | .notHaomaProject =>
     return false
@@ -92,6 +149,18 @@ def tryDiscoverProjectForFile (ctx : RequestContext LspState) (filePath : String
       let _ ← loadHaomaProject ctx projectRoot
       progress.report (message := some "Done") (percentage := some 100)
 
+/-- Find the haoma module name for a file path -/
+private def moduleNameForFile (state : LspState) (filePath : String) : Option String :=
+  let normalized := normalizePath filePath
+  state.moduleNameToPath.fold (init := none) fun acc name path =>
+    if path == normalized then some name else acc
+
+/-- Look up the module name for a file path and compute its checked deps -/
+private def depsForFile (state : LspState) (filePath : String) : Std.HashMap String CheckedModule :=
+  match moduleNameForFile state filePath with
+  | some name => state.checkedDepsForModule name
+  | none => {}
+
 /-- Handle textDocument/didOpen -/
 def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentParams) : IO Unit := do
   let uri := params.textDocument.uri
@@ -103,7 +172,11 @@ def handleDidOpen (ctx : RequestContext LspState) (params : DidOpenTextDocumentP
   tryDiscoverProjectForFile ctx filePath
 
   let state ← ctx.getUserState
-  let mod := analyzeSource filePath content none state.seedGlobals state.seedInstanceEnv state.seedAbbrevEnv state.seedSymbols
+  let modName? := moduleNameForFile state filePath
+  let checkedDeps := depsForFile state filePath
+
+  let existingChecked := modName?.bind state.checkedModules.get?
+  let mod := analyzeSource filePath content none checkedDeps state.preludeSymbols modName? existingChecked
 
   -- Update state
   ctx.modifyUserState fun s => s.setModule filePath mod
@@ -125,9 +198,11 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   -- Get old module for incremental analysis
   let state ← ctx.getUserState
   let oldModule? := state.getModule filePath
+  let modName? := moduleNameForFile state filePath
+  let checkedDeps := depsForFile state filePath
 
   -- Incremental analysis (reuses NodeIds and symbols where possible)
-  let mod := analyzeSource filePath content oldModule? state.seedGlobals state.seedInstanceEnv state.seedAbbrevEnv state.seedSymbols
+  let mod := analyzeSource filePath content oldModule? checkedDeps state.preludeSymbols modName?
 
   -- Extract imported modules from the analyzed module
   let importedModules := extractImportedModules mod.symbols
@@ -151,22 +226,15 @@ def handleDidChange (ctx : RequestContext LspState) (params : DidChangeTextDocum
   let dependentModuleNames := state'.getTransitiveDependents mod.name
 
   for depModName in dependentModuleNames do
-    -- Get the file path for this dependent module
     if let some depFilePath := state'.getModulePath depModName then
-      -- Get the content of the dependent file
       let depUri := pathToUri depFilePath
       if let some depContent ← ctx.getDocumentContent depUri then
-        -- Get old module for incremental analysis
         let depOldModule? := state'.getModule depFilePath
+        let depCheckedDeps := state'.checkedDepsForModule depModName
+        let depMod := analyzeSource depFilePath depContent depOldModule? depCheckedDeps state'.preludeSymbols (some depModName)
 
-        -- Re-analyze with the dependent module marked as needing re-check
-        -- The incremental analysis will detect that imported modules changed
-        let depMod := analyzeSource depFilePath depContent depOldModule? state'.seedGlobals state'.seedInstanceEnv state'.seedAbbrevEnv state'.seedSymbols
-
-        -- Update state
         ctx.modifyUserState fun s => s.setModule depFilePath depMod
 
-        -- Publish diagnostics for the dependent module
         let depLspDiags := convertDiagnostics depMod.sourceFile depMod.diagnostics
         ctx.publishDiagnostics { uri := depUri, diagnostics := depLspDiags }
 
@@ -191,7 +259,9 @@ def handleDidSave (ctx : RequestContext LspState) (params : DidSaveTextDocumentP
   -- On save, do full analysis and publish all diagnostics
   let some content ← ctx.getDocumentContent uri | return
   let state ← ctx.getUserState
-  let mod := analyzeSource filePath content none state.seedGlobals state.seedInstanceEnv state.seedAbbrevEnv state.seedSymbols
+  let modName? := moduleNameForFile state filePath
+  let checkedDeps := depsForFile state filePath
+  let mod := analyzeSource filePath content none checkedDeps state.preludeSymbols modName?
 
   ctx.modifyUserState fun s => s.setModule filePath mod
 
@@ -216,8 +286,11 @@ def handleHover (ctx : RequestContext LspState) (params : HoverParams) : IO (Opt
   -- Get all modules for cross-reference lookup
   let allMods := state.allModules
 
-  -- Get hover content (uses cached symbol table and external deps)
-  let some (hoverText, hoverSpan) := getHoverAt offset mod allMods state.seedSymbols | return none
+  -- Build seed symbols from checked dependencies for this module
+  let seedSymbols := state.seedSymbolsForModule mod.name
+
+  -- Get hover content (uses cached symbol table and checked deps)
+  let some (hoverText, hoverSpan) := getHoverAt offset mod allMods seedSymbols | return none
 
   return some {
     contents := { kind := .markdown, value := hoverText }
@@ -246,8 +319,11 @@ def handleDefinition (ctx : RequestContext LspState) (params : TextDocumentPosit
   let allMods := state.allModules
   ctx.logInfo s!"definition: allMods.size={allMods.size}"
 
-  -- Find definition (uses cached symbol table and external deps)
-  let some (defPath, defSpan) := getDefinitionAt offset mod allMods state.seedSymbols | do
+  -- Build seed symbols from checked dependencies for this module
+  let seedSymbols := state.seedSymbolsForModule mod.name
+
+  -- Find definition (uses cached symbol table and checked deps)
+  let some (defPath, defSpan) := getDefinitionAt offset mod allMods seedSymbols | do
     ctx.logInfo "definition: no definition found"
     return none
 

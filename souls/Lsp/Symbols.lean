@@ -146,7 +146,9 @@ def formatDefinitionHover (def_ : DefinitionSite) (globals : Option Globals := n
     | some sig => some sig
     | none =>
         -- Try to get inferred type from globals
-        globals.bind fun g => g.lookup def_.name |>.map fun info => valueToString info.type
+        globals.bind fun g =>
+          (g.resolve #[] #[] def_.name |>.bind g.getDef)
+          |>.map fun info => valueToString info.type
   match typeStr with
   | some sig =>
       s!"```soma\n{def_.name} :: {sig}\n```\n\n*{kindStr}* from `{def_.moduleName}`"
@@ -196,7 +198,7 @@ def formatKeywordHover (kind : TokenKind) (text : String) : String :=
     | .kw_where => "Begin definition body or constraints"
     | .kw_with => "Add constraints"
     | .kw_use => "Import a module"
-    | .kw_export => "Export definitions"
+    | .kw_pub => "Public visibility modifier"
     | .kw_forall => "Universal quantification"
     | .kw_bind => "Monadic bind block"
     | .kw_compose => "Applicative compose block"
