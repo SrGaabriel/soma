@@ -22,3 +22,8 @@ name = "Lsp"
 [[lean_exe]]
 name = "souls"
 root = "Lsp.Main"
+
+[[require]]
+name = "UnicodeBasic"
+git = "https://github.com/SrGaabriel/lean4-unicode-basic"
+rev = "main"
