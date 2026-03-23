@@ -36,6 +36,7 @@ def reverse_acc {a : Type} : [a] -> [a] -> [a]
     | (x:xs), acc => reverse_acc xs (List::Cons x acc)
     | [], acc => acc
 
+@[wired_in "list.reverse"]
 def reverse {a : Type} : [a] -> [a]
     | xs => reverse_acc xs []
 

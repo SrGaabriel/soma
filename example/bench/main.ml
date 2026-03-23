@@ -27,4 +27,12 @@ let () =
    | h :: _ -> Printf.printf "Head: Some(%d)\n" h
    | [] -> print_endline "Head: None");
 
+  (* Cross-producer fusion: map over filter *)
+  let mf = List.map (fun x -> x * 10) (List.filter (fun x -> x mod 2 = 0) [1; 2; 3; 4; 5; 6]) in
+  Printf.printf "Map-filter sum: %d\n" (sum mf);
+
+  (* Cross-producer fusion: filter over map *)
+  let fm = List.filter (fun x -> x mod 3 = 0) (List.map (fun x -> x * 2) [1; 2; 3; 4; 5]) in
+  Printf.printf "Filter-map sum: %d\n" (sum fm);
+
   print_endline "Done!"

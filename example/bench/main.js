@@ -108,4 +108,12 @@ console.log(`Cons sum: ${sum(withZero)}`);
 if (xs) console.log(`Head: Some(${xs.value})`);
 else console.log("Head: None");
 
+// Cross-producer fusion: map over filter
+const mf = map(x => x * 10, filter(x => x % 2 === 0, makeList([1, 2, 3, 4, 5, 6])));
+console.log(`Map-filter sum: ${sum(mf)}`);
+
+// Cross-producer fusion: filter over map
+const fm = filter(x => x % 3 === 0, map(x => x * 2, makeList([1, 2, 3, 4, 5])));
+console.log(`Filter-map sum: ${sum(fm)}`);
+
 console.log("Done!");

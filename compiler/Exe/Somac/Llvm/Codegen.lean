@@ -201,6 +201,8 @@ structure CodegenState where
   targetOs : TargetOS := .linux
   /-- Pointer width in bytes -/
   ptrSize : Nat := 8
+  /-- Set to true when the current instruction should be emitted as a tail call -/
+  emitAsTailCall : Bool := false
 
 instance : Inhabited CodegenState where
   default := { moduleState := default, funcState := default, ptrSize := 8 }
@@ -1134,8 +1136,10 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
     pure (expectedLLVMTy, coercedVal)
   -- Call function with its declared parameters
   let callRetTy := if extraArgs.isEmpty then llvmRetTy else .ptr
+  let isTailCall := (← get).emitAsTailCall
   let mut ref ← CodegenM.withFuncBuilder do
-    FuncBuilder.callNamed callRetTy funcName llvmArgs
+    FuncBuilder.callNamed callRetTy funcName llvmArgs (tailcall := isTailCall)
+  if isTailCall then modify fun s => { s with emitAsTailCall := false }
   -- Over-application: apply extra args via soma_apply to the returned closure
   for extraArg in extraArgs do
     let (extraArgTy, extraArgVal) ← convertOperandWithTy extraArg
@@ -2183,7 +2187,24 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) (llvmRetOverride : Optio
   -- Get the Alloy Func to look up local types
   let func? ← CodegenM.getCurrentFunc
 
+  -- Detect tail-call pattern: last call stmt whose result is directly returned
+  let tailCallResultId : Option Nat := do
+    match block.terminator with
+    | .ret (.local retId) =>
+      for i in (List.range block.stmts.size).reverse do
+        if let some stmt := block.stmts[i]? then
+          if stmt.result == some retId then
+            match stmt.inst with
+            | .call _ _ _ => return retId.id
+            | _ => failure
+      none
+    | _ => none
+
   for stmt in block.stmts do
+    if let some tcId := tailCallResultId then
+      if stmt.result == some ⟨tcId⟩ then
+        modify fun s => { s with emitAsTailCall := true }
+
     let maybeResult ← lowerInst stmt.inst
     match stmt.result, maybeResult with
     | some alloyLocal, some (llvmRef, _tyFromLowerInst) =>

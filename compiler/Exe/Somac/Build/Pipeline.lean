@@ -210,6 +210,18 @@ def compileModules
 
   if runSomaPasses then
     optimized := Alloy.ClosureSpec.closureSpec optimized
+    let (accumOptimized, accumCount) := Alloy.AccumIntro.accumIntro optimized
+    optimized := accumOptimized
+    if accumCount > 0 then
+      IO.println s!"  Accumulator introduction: {accumCount} list-building recursion(s) converted to accumulator style"
+    let (tcoOptimized, tcoCount) := Alloy.TailCall.tailCallOpt optimized
+    optimized := tcoOptimized
+    if tcoCount > 0 then
+      IO.println s!"  Tail call optimization: {tcoCount} self-recursive call(s) converted to loops"
+    let (mutualOptimized, mutualCount) := Alloy.TailCall.mutualTailCallOpt optimized
+    optimized := mutualOptimized
+    if mutualCount > 0 then
+      IO.println s!"  Mutual tail call optimization: {mutualCount} cross-function tail call(s) restructured"
     optimized := Alloy.Monomorphize.deadFunctionElimination optimized
 
     let (borrowed, borrowStats) := Alloy.Borrow.borrowModule optimized

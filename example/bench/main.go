@@ -60,5 +60,13 @@ func main() {
 		fmt.Println("Head: None")
 	}
 
+	// Cross-producer fusion: map over filter
+	mf := mapList(func(x int) int { return x * 10 }, filterList(func(x int) bool { return x%2 == 0 }, []int{1, 2, 3, 4, 5, 6}))
+	fmt.Printf("Map-filter sum: %d\n", sum(mf))
+
+	// Cross-producer fusion: filter over map
+	fm := filterList(func(x int) bool { return x%3 == 0 }, mapList(func(x int) int { return x * 2 }, []int{1, 2, 3, 4, 5}))
+	fmt.Printf("Filter-map sum: %d\n", sum(fm))
+
 	fmt.Println("Done!")
 }

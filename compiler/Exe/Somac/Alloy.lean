@@ -12,6 +12,8 @@ import Somac.Alloy.Borrow
 import Somac.Alloy.Merge
 import Somac.Alloy.Serialize
 import Somac.Alloy.Reuse
+import Somac.Alloy.TailCall
+import Somac.Alloy.AccumIntro
 
 namespace Somac.Alloy
 
@@ -19,6 +21,8 @@ export Lower (lower lowerGraph)
 export Pretty (pp ppColored ppFn ppBb ppModule)
 export Monomorphize (monomorphize isFullyMonomorphic reportPolymorphism)
 export ClosureSpec (closureSpec)
+export TailCall (tailCallOpt mutualTailCallOpt)
+export AccumIntro (accumIntro)
 export Borrow (borrowModule BorrowStats)
 export Reuse (reuseModule)
 export Merge (merge mergeModules)

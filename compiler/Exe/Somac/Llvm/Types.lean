@@ -551,7 +551,7 @@ partial def toLLVM : LLVMInst → String
     s!"insertvalue {aggTy} {agg}, {elemTy} {val}, {indicesStr}"
 
   | .call tailcall callconv retTy func args argAttrs =>
-    let tailStr := if tailcall then "tail " else ""
+    let tailStr := if tailcall then "musttail " else ""
     let convStr := match callconv with
       | some cc => s!"{cc} "
       | none => ""

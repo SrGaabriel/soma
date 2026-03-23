@@ -1,0 +1,26 @@
+use stdlib::collections::{foldl, sum, filter, map, length, reverse}
+
+def main : IO () =
+    compose
+        let xs = [1, 2, 3, 4, 5]
+
+        let s = sum xs
+        puts ("Sum: " <> display s)
+
+        let s2 = sum (map (\x -> x * 2) xs)
+        puts ("Fused sum+map: " <> display s2)
+
+        let e = sum (filter (\x -> x % 2 == 0) [1, 2, 3, 4, 5, 6])
+        puts ("Fused sum+filter: " <> display e)
+
+        let r = reverse [10, 20, 30]
+        let rs = sum r
+        puts ("Reverse sum: " <> display rs)
+
+        let len = length xs
+        puts ("Length: " <> display len)
+
+        let f = foldl (\acc x -> acc + x) 100 xs
+        puts ("Foldl from 100: " <> display f)
+
+        puts "Done!"

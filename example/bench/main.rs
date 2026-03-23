@@ -28,5 +28,21 @@ fn main() {
         None => println!("Head: None"),
     }
 
+    // Cross-producer fusion: map over filter
+    let mf_sum: i32 = vec![1, 2, 3, 4, 5, 6]
+        .into_iter()
+        .filter(|x| x % 2 == 0)
+        .map(|x| x * 10)
+        .sum();
+    println!("Map-filter sum: {}", mf_sum);
+
+    // Cross-producer fusion: filter over map
+    let fm_sum: i32 = vec![1, 2, 3, 4, 5]
+        .into_iter()
+        .map(|x| x * 2)
+        .filter(|x| x % 3 == 0)
+        .sum();
+    println!("Filter-map sum: {}", fm_sum);
+
     println!("Done!");
 }

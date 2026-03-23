@@ -138,6 +138,46 @@ def compile_targets():
     return targets
 
 
+EXPECTED_STDOUT = """\
+Length: 5
+Sum: 15
+Hello, World!
+5
+Doubled sum: 30
+Evens sum: 12
+Reverse sum: 6
+Append sum: 10
+Cons sum: 15
+Head: Some(1)
+Map-filter sum: 120
+Filter-map sum: 6
+Done!"""
+
+
+def validate_stdout(cmd, name):
+    """Run the command once and verify its stdout matches the expected output."""
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        print(f"  [FAIL] {name}: exited with code {result.returncode}", file=sys.stderr)
+        if result.stderr:
+            print(f"         {result.stderr.decode(errors='replace')[:200]}", file=sys.stderr)
+        return False
+    actual = result.stdout.decode(errors="replace").strip().replace("\r\n", "\n")
+    if actual != EXPECTED_STDOUT:
+        print(f"  [FAIL] {name}: stdout mismatch")
+        expected_lines = EXPECTED_STDOUT.splitlines()
+        actual_lines = actual.splitlines()
+        for i, (exp, act) in enumerate(zip(expected_lines, actual_lines)):
+            if exp != act:
+                print(f"         line {i+1}: expected '{exp}', got '{act}'")
+                break
+        else:
+            if len(expected_lines) != len(actual_lines):
+                print(f"         expected {len(expected_lines)} lines, got {len(actual_lines)}")
+        return False
+    return True
+
+
 def run_once(cmd):
     start = time.perf_counter_ns()
     result = subprocess.run(
@@ -164,6 +204,9 @@ def fmt_ns(ns):
 
 
 def bench_target(name, cmd, runs=10, warmup=2):
+    # Validate correctness before benchmarking
+    if not validate_stdout(cmd, name):
+        return None
     total_runs = warmup + runs
     times = []
     for i in range(total_runs):

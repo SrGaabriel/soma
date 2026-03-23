@@ -111,6 +111,14 @@ def main():
     else:
         print("Head: None")
 
+    # Cross-producer fusion: map over filter
+    mf = map_list(lambda x: x * 10, filter_list(lambda x: x % 2 == 0, make_list([1, 2, 3, 4, 5, 6])))
+    print(f"Map-filter sum: {sum_list(mf)}")
+
+    # Cross-producer fusion: filter over map
+    fm = filter_list(lambda x: x % 3 == 0, map_list(lambda x: x * 2, make_list([1, 2, 3, 4, 5])))
+    print(f"Filter-map sum: {sum_list(fm)}")
+
     print("Done!")
 
 if __name__ == "__main__":

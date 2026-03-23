@@ -1,0 +1,10 @@
+sum(map(*2)): 30
+sum(filter(even)): 12
+sum(map*10(filter(even))): 120
+sum(filter(%3)(map(*2))): 6
+foldl(+)(map(+10)): 65
+foldl(+)(filter(even)): 12
+sum(map(+1)(map(*3))): 50
+sum(filter(even)(filter(%3))): 18
+length(map(*100)): 5
+Done!

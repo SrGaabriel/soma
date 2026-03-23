@@ -128,6 +128,14 @@ fn isEven(x: c_int) callconv(.c) c_int {
     return if (@mod(x, 2) == 0) @as(c_int, 1) else @as(c_int, 0);
 }
 
+fn timesTen(x: c_int) callconv(.c) c_int {
+    return x * 10;
+}
+
+fn isDiv3(x: c_int) callconv(.c) c_int {
+    return if (@mod(x, 3) == 0) @as(c_int, 1) else @as(c_int, 0);
+}
+
 pub fn main() void {
     const xs = makeList(&[_]c_int{ 1, 2, 3, 4, 5 });
 
@@ -167,6 +175,20 @@ pub fn main() void {
     } else {
         _ = c.printf("Head: None\n");
     }
+
+    // Cross-producer fusion: map over filter
+    const mf_filtered = filter(&isEven, makeList(&[_]c_int{ 1, 2, 3, 4, 5, 6 }));
+    const mf_mapped = map(&timesTen, mf_filtered);
+    _ = c.printf("Map-filter sum: %d\n", sum(mf_mapped));
+    freeList(mf_mapped);
+    freeList(mf_filtered);
+
+    // Cross-producer fusion: filter over map
+    const fm_mapped = map(&doubleVal, makeList(&[_]c_int{ 1, 2, 3, 4, 5 }));
+    const fm_filtered = filter(&isDiv3, fm_mapped);
+    _ = c.printf("Filter-map sum: %d\n", sum(fm_filtered));
+    freeList(fm_filtered);
+    freeList(fm_mapped);
 
     _ = c.printf("Done!\n");
 

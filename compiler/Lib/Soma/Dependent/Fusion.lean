@@ -44,8 +44,8 @@ structure FusionCtx where
   consumerBodies : Std.HashMap FusionRole Expr := {}
   /-- Fallback: foldl .const expression with correct type (when consumerBodies unavailable) -/
   foldlConst : Option Expr := none
-  /-- foldr .const expression with correct type (for cross-producer fusion) -/
-  foldrConst : Option Expr := none
+  /-- reverse .const expression with correct type (for cross-producer fusion) -/
+  reverseConst : Option Expr := none
   /-- Fallback: Int addition .const expression with correct type (for sum expansion) -/
   addConst : Option Expr := none
   /-- Fallback: Int multiplication .const expression with correct type (for product expansion) -/
@@ -88,7 +88,7 @@ def buildFusionCtx
   let foldlConst := match globals.wiredIn.getUnique? .listFoldl with
     | some info => some (mkConst info.name)
     | none => none
-  let foldrConst := match globals.wiredIn.getUnique? .listFoldr with
+  let reverseConst := match globals.wiredIn.getUnique? .listReverse with
     | some info => some (mkConst info.name)
     | none => none
   let mut addConst : Option Expr := none
@@ -110,7 +110,7 @@ def buildFusionCtx
     pure { consName := consInfo.name, consTag := consDef.ctorTag,
            nilName := nilInfo.name, nilTag := nilDef.ctorTag,
            listTyId := listInfo.name.id }
-  return { roles, consumerBodies := bodies, foldlConst, foldrConst,
+  return { roles, consumerBodies := bodies, foldlConst, reverseConst,
            addConst, mulConst, listCtors }
 
 /-- Check if an expression is a known list producer call (map, filter) -/
@@ -443,28 +443,30 @@ private partial def fuseMapWithProducer
       some (Expr.rebuildAppSpine outerHead (newTyArgs ++ #[newF, xs]))
   | some .filter =>
     -- map f (filter p xs): eliminate intermediate filtered list
-    -- → foldr (λ x acc → if p x then Cons (f x) acc else acc) Nil xs
+    -- → reverse (foldl (λ acc x → if p x then Cons (f x) acc else acc) Nil xs)
+    -- Uses foldl (tail-recursive) + reverse (tail-recursive) instead of foldr (stack-consuming)
     if innerValArgs.size != 2 then none
     else
-      match ctx.foldrConst, ctx.listCtors with
-      | some foldrConst, some lci =>
+      match ctx.foldlConst, ctx.reverseConst, ctx.listCtors with
+      | some foldlConst, some reverseConst, some lci =>
         let p := innerValArgs[0]!
         let xs := innerValArgs[1]!
-        -- map {a} {b} f (filter {a} p xs): a = filter's elem, b = map's output
-        let inputElemTy := innerTyArgs[0]?.getD dummyTy  -- a
-        let outputElemTy := outerTyArgs[1]?.getD dummyTy  -- b
+        let inputElemTy := innerTyArgs[0]?.getD dummyTy   -- a
+        let outputElemTy := outerTyArgs[1]?.getD dummyTy   -- b
         let resultListTy := Expr.dataTy lci.listTyId #[outputElemTy]  -- [b]
         let f' := f.shiftUp 2
         let p' := p.shiftUp 2
-        let stepFn := Expr.lam .explicit "x" inputElemTy
-          (.lam .explicit "acc" resultListTy
-            (.if_ (.app p' (.bvar 1))
-              (mkCons lci outputElemTy (.app f' (.bvar 1)) (.bvar 0))
-              (.bvar 0)))
+        -- foldl step: λ acc x → if p x then Cons (f x) acc else acc
+        let stepFn := Expr.lam .explicit "acc" resultListTy
+          (.lam .explicit "x" inputElemTy
+            (.if_ (.app p' (.bvar 0))
+              (mkCons lci outputElemTy (.app f' (.bvar 0)) (.bvar 1))
+              (.bvar 1)))
         let nil := mkNil lci outputElemTy
-        -- foldr {a} {[b]} stepFn nil xs
-        some (Expr.rebuildAppSpine foldrConst (#[inputElemTy, resultListTy, stepFn, nil, xs]))
-      | _, _ => none
+        -- reverse (foldl {a} {[b]} stepFn Nil xs)
+        let foldlCall := Expr.rebuildAppSpine foldlConst (#[inputElemTy, resultListTy, stepFn, nil, xs])
+        some (Expr.rebuildAppSpine reverseConst (#[outputElemTy, foldlCall]))
+      | _, _, _ => none
   | _ => none
 
 /-- Fuse `filter {a} p (filter {a} q xs)` → `filter {a} (λ x → if q x then p x else false) xs`
@@ -491,33 +493,34 @@ private partial def fuseFilterWithProducer
       some (Expr.rebuildAppSpine outerHead (outerTyArgs ++ #[newP, xs]))
   | some .map =>
     -- filter p (map f xs): eliminate intermediate mapped list
-    -- → foldr (λ x acc → let y = f x in if p y then Cons y acc else acc) Nil xs
-    -- We compute f(x) once via a let binding to avoid duplicate work.
+    -- → reverse (foldl (λ acc x → let y = f x in if p y then Cons y acc else acc) Nil xs)
+    -- Uses foldl (tail-recursive) + reverse (tail-recursive) instead of foldr.
+    -- f(x) computed once via let binding to avoid duplicate work.
     if innerValArgs.size != 2 then none
     else
-      match ctx.foldrConst, ctx.listCtors with
-      | some foldrConst, some lci =>
+      match ctx.foldlConst, ctx.reverseConst, ctx.listCtors with
+      | some foldlConst, some reverseConst, some lci =>
         let f := innerValArgs[0]!
         let xs := innerValArgs[1]!
-        -- filter {a} p (map {c} {a} f xs): c = map input, a = map output = filter elem
         let inputElemTy := innerTyArgs[0]?.getD dummyTy   -- c
         let outputElemTy := outerTyArgs[0]?.getD dummyTy   -- a
         let resultListTy := Expr.dataTy lci.listTyId #[outputElemTy]  -- [a]
         let f' := f.shiftUp 2
         let p' := p.shiftUp 2
-        -- λ x acc → let y = f x in if p y then Cons y acc else acc
-        -- Under 2 binders (x=bvar1, acc=bvar0), then let introduces bvar0=y:
-        --   let y = f'(bvar 2{=x}) in if p'(bvar 0{=y}) then Cons(bvar 0{=y}, bvar 1{=acc}) else bvar 1{=acc}
-        let stepFn := Expr.lam .explicit "x" inputElemTy
-          (.lam .explicit "acc" resultListTy
-            (.let_ "y" outputElemTy (.app f' (.bvar 1))
+        -- foldl step: λ acc x → let y = f x in if p y then Cons y acc else acc
+        -- Under 2 binders (acc=bvar1, x=bvar0), then let introduces bvar0=y:
+        --   y=bvar(0), x=bvar(1), acc=bvar(2)
+        let stepFn := Expr.lam .explicit "acc" resultListTy
+          (.lam .explicit "x" inputElemTy
+            (.let_ "y" outputElemTy (.app f' (.bvar 0))
               (.if_ (.app (p'.shiftUp 1) (.bvar 0))
-                (mkCons lci outputElemTy (.bvar 0) (.bvar 1))
-                (.bvar 1))))
+                (mkCons lci outputElemTy (.bvar 0) (.bvar 2))
+                (.bvar 2))))
         let nil := mkNil lci outputElemTy
-        -- foldr {c} {[a]} stepFn nil xs
-        some (Expr.rebuildAppSpine foldrConst (#[inputElemTy, resultListTy, stepFn, nil, xs]))
-      | _, _ => none
+        -- reverse {a} (foldl {c} {[a]} stepFn Nil xs)
+        let foldlCall := Expr.rebuildAppSpine foldlConst (#[inputElemTy, resultListTy, stepFn, nil, xs])
+        some (Expr.rebuildAppSpine reverseConst (#[outputElemTy, foldlCall]))
+      | _, _, _ => none
   | _ => none
 
 /-- Fuse `any/all {a} pred (map {c} {a} f xs)` → `any/all {c} (λ x → pred (f x)) xs`

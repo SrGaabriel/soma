@@ -26,4 +26,12 @@ main = do
         (h:_) -> putStrLn $ "Head: Some(" ++ show h ++ ")"
         []    -> putStrLn "Head: None"
 
+    -- Cross-producer fusion: map over filter
+    let mfSum = sum $ map (* 10) $ filter even [1, 2, 3, 4, 5, 6 :: Int]
+    putStrLn $ "Map-filter sum: " ++ show mfSum
+
+    -- Cross-producer fusion: filter over map
+    let fmSum = sum $ filter (\x -> x `mod` 3 == 0) $ map (* 2) [1, 2, 3, 4, 5 :: Int]
+    putStrLn $ "Filter-map sum: " ++ show fmSum
+
     putStrLn "Done!"

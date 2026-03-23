@@ -1,0 +1,40 @@
+use stdlib::collections::{map, filter, sum, length, foldl}
+
+def main : IO () =
+    compose
+        let xs = [1, 2, 3, 4, 5]
+
+        let doubled = map (\x -> x * 2) xs
+        let doubledSum = sum doubled
+        puts ("sum(map(*2)): " <> display doubledSum)
+
+        let evens = filter (\x -> x % 2 == 0) [1, 2, 3, 4, 5, 6]
+        let evensSum = sum evens
+        puts ("sum(filter(even)): " <> display evensSum)
+
+        let mapFilter = map (\x -> x * 10) (filter (\x -> x % 2 == 0) [1, 2, 3, 4, 5, 6])
+        let mapFilterSum = sum mapFilter
+        puts ("sum(map*10(filter(even))): " <> display mapFilterSum)
+
+        let filterMap = filter (\x -> x % 3 == 0) (map (\x -> x * 2) xs)
+        let filterMapSum = sum filterMap
+        puts ("sum(filter(%3)(map(*2))): " <> display filterMapSum)
+
+        let foldlMap = foldl (\acc x -> acc + x) 0 (map (\x -> x + 10) xs)
+        puts ("foldl(+)(map(+10)): " <> display foldlMap)
+
+        let foldlFilter = foldl (\acc x -> acc + x) 0 (filter (\x -> x % 2 == 0) [1, 2, 3, 4, 5, 6])
+        puts ("foldl(+)(filter(even)): " <> display foldlFilter)
+
+        let mapMap = map (\x -> x + 1) (map (\x -> x * 3) xs)
+        let mapMapSum = sum mapMap
+        puts ("sum(map(+1)(map(*3))): " <> display mapMapSum)
+
+        let filterFilter = filter (\x -> x % 2 == 0) (filter (\x -> x % 3 == 0) [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+        let filterFilterSum = sum filterFilter
+        puts ("sum(filter(even)(filter(%3))): " <> display filterFilterSum)
+
+        let lenMap = length (map (\x -> x * 100) xs)
+        puts ("length(map(*100)): " <> display lenMap)
+
+        puts "Done!"

@@ -91,6 +91,8 @@ static Node* append(Node* a, Node* b) {
 
 static int double_val(int x) { return x * 2; }
 static int is_even(int x) { return x % 2 == 0; }
+static int times_ten(int x) { return x * 10; }
+static int is_div3(int x) { return x % 3 == 0; }
 
 static Node* make_list(int* arr, int n) {
     Node* list = NULL;
@@ -140,6 +142,20 @@ int main(void) {
 
     if (xs) printf("Head: Some(%d)\n", xs->value);
     else printf("Head: None\n");
+
+    /* Cross-producer fusion: map over filter */
+    Node* mf_filtered = filter(is_even, make_list((int[]){1, 2, 3, 4, 5, 6}, 6));
+    Node* mf_mapped = map(times_ten, mf_filtered);
+    printf("Map-filter sum: %d\n", sum(mf_mapped));
+    free_list(mf_mapped);
+    free_list(mf_filtered);
+
+    /* Cross-producer fusion: filter over map */
+    Node* fm_mapped = map(double_val, make_list((int[]){1, 2, 3, 4, 5}, 5));
+    Node* fm_filtered = filter(is_div3, fm_mapped);
+    printf("Filter-map sum: %d\n", sum(fm_filtered));
+    free_list(fm_filtered);
+    free_list(fm_mapped);
 
     printf("Done!\n");
 
