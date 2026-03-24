@@ -14,15 +14,21 @@ import Somac.Alloy.Serialize
 import Somac.Alloy.Reuse
 import Somac.Alloy.TailCall
 import Somac.Alloy.AccumIntro
+import Somac.Alloy.ArithAccum
+import Somac.Alloy.ListIntrinsics
+import Somac.Alloy.ElemSize
 
 namespace Somac.Alloy
 
-export Lower (lower lowerGraph)
+export Lower (lower lowerGraph buildWiredFuncRegistry)
 export Pretty (pp ppColored ppFn ppBb ppModule)
 export Monomorphize (monomorphize isFullyMonomorphic reportPolymorphism)
 export ClosureSpec (closureSpec)
 export TailCall (tailCallOpt mutualTailCallOpt)
 export AccumIntro (accumIntro)
+export ArithAccum (arithAccumIntro)
+export ListIntrinsics (replaceListIntrinsics)
+export ElemSize (refineElemSizes)
 export Borrow (borrowModule BorrowStats)
 export Reuse (reuseModule)
 export Merge (merge mergeModules)

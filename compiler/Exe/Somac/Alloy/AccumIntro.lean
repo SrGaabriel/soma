@@ -28,17 +28,13 @@ structure ConsRecSite where
   exitBlockId : Nat
   deriving Repr
 
-/-- Check if a string contains a substring -/
-private def strContains (haystack needle : String) : Bool :=
-  (haystack.splitOn needle).length >= 2
-
-/-- Find `reverse_acc` function by name in the module -/
-private def findReverseAcc (m : Module) (selfFunc : ClosedFunc) : Option FuncId := Id.run do
-  for sf in m.funcs do
-    if let some f := sf.asMono? then
-      if (strContains f.sig.name "reverse_acc") &&
-         f.sig.params.size == 2 && f.sig.retTy == selfFunc.sig.retTy then
-        return some f.id
+/-- Look up a wired-in 2-param list reverse function (reverse_onto / reverse_acc) -/
+private def findReverseFunc (m : Module) (retTy : ClosedTy) : Option FuncId := Id.run do
+  let some candidates := m.wiredFuncIds.get? .listReverse | return none
+  for fid in candidates do
+    if let some f := m.getMonoFunc fid then
+      if f.sig.params.size == 2 && f.sig.retTy == retTy then
+        return some fid
   none
 
 /-- Check if an instruction is a call to soma_list_cons -/
@@ -107,9 +103,10 @@ def transformFunc (m : Module) (func : ClosedFunc) : Option (ClosedFunc × Nat) 
   let sites := findConsRecSites func
   if sites.isEmpty then return none
 
-  -- Need reverse_acc to finalize the accumulated list
-  let some reverseAccId := findReverseAcc m func | return none
+  -- Need a wired-in reverse function to finalize the accumulated list
+  let some reverseAccId := findReverseFunc m func.sig.retTy | return none
   let some cfg := func.body | return none
+  let listTy : ClosedTy := Ty.somaList
 
   -- We handle functions with exactly one list parameter that is recursed on
   let some site := sites[0]? | return none
@@ -159,9 +156,13 @@ def transformFunc (m : Module) (func : ClosedFunc) : Option (ClosedFunc × Nat) 
     entryStmts := entryStmts.push { result := some paramSlots[i]!, inst := .alloca param.ty }
     entryStmts := entryStmts.push { result := none, inst := .store (.local paramSlots[i]!) (.local param.id) }
 
-  -- Accumulator slot (initially null = Nil)
-  entryStmts := entryStmts.push { result := some accSlotId, inst := .alloca .rawPtr }
-  entryStmts := entryStmts.push { result := none, inst := .store (.local accSlotId) (.const (.null .rawPtr)) }
+  -- Accumulator slot (initially Nil = { null, 0, 0, 0 })
+  let nilId : LocalId := ⟨nextLocal⟩; nextLocal := nextLocal + 1
+  let nilLitInst : ClosedInst := .structLit
+    #[.const (.null .rawPtr), .const (.int 0 .u32), .const (.int 0 .u32)] listTy
+  entryStmts := entryStmts.push { result := some accSlotId, inst := .alloca listTy }
+  entryStmts := entryStmts.push { result := some nilId, inst := nilLitInst }
+  entryStmts := entryStmts.push { result := none, inst := .store (.local accSlotId) (.local nilId) }
 
   let entryBlock : ClosedBlock := {
     id := cfg.entry, stmts := entryStmts, terminator := .jump loopBlockId
@@ -176,7 +177,7 @@ def transformFunc (m : Module) (func : ClosedFunc) : Option (ClosedFunc × Nat) 
     loopStmts := loopStmts.push { result := some paramLoads[i]!, inst := .load (.local paramSlots[i]!) param.ty }
 
   -- Acc load (used in cons sites)
-  loopStmts := loopStmts.push { result := some accLoadId, inst := .load (.local accSlotId) .rawPtr }
+  loopStmts := loopStmts.push { result := some accLoadId, inst := .load (.local accSlotId) listTy }
 
   loopStmts := loopStmts ++ origEntry.stmts.map remapStmtFn
 
@@ -205,7 +206,7 @@ def transformFunc (m : Module) (func : ClosedFunc) : Option (ClosedFunc × Nat) 
       let newAccId : LocalId := ⟨nextLocal⟩; nextLocal := nextLocal + 1
       replacementStmts := replacementStmts.push {
         result := some newAccId,
-        inst := .callExtern "soma_list_cons" #[remapOp site.consElemOp, .local accLoadId, remapOp site.consSizeOp] .rawPtr
+        inst := .callExtern "soma_list_cons" #[remapOp site.consElemOp, .local accLoadId, remapOp site.consSizeOp] listTy
       }
       replacementStmts := replacementStmts.push {
         result := none, inst := .store (.local accSlotId) (.local newAccId)
@@ -252,11 +253,11 @@ def transformFunc (m : Module) (func : ClosedFunc) : Option (ClosedFunc × Nat) 
 
       let accFinalId : LocalId := ⟨nextLocal⟩; nextLocal := nextLocal + 1
       finalStmts := finalStmts.push {
-        result := some accFinalId, inst := .load (.local accSlotId) .rawPtr
+        result := some accFinalId, inst := .load (.local accSlotId) listTy
       }
       finalStmts := finalStmts.push {
         result := some reversedId,
-        inst := .call reverseAccId #[.local accFinalId, baseValue] .rawPtr
+        inst := .call reverseAccId #[.local accFinalId, baseValue] listTy
       }
       newStmts := finalStmts
       newTerm := .ret (.local reversedId)
@@ -264,9 +265,10 @@ def transformFunc (m : Module) (func : ClosedFunc) : Option (ClosedFunc × Nat) 
     newBlocks := newBlocks.insert bid { block with stmts := newStmts, terminator := newTerm }
 
   let mut newLocalTypes := func.localTypes
-  newLocalTypes := newLocalTypes.insert accSlotId.id (.ptr .rawPtr)
-  newLocalTypes := newLocalTypes.insert accLoadId.id .rawPtr
-  newLocalTypes := newLocalTypes.insert reversedId.id .rawPtr
+  newLocalTypes := newLocalTypes.insert accSlotId.id (.ptr listTy)
+  newLocalTypes := newLocalTypes.insert accLoadId.id listTy
+  newLocalTypes := newLocalTypes.insert reversedId.id listTy
+  newLocalTypes := newLocalTypes.insert nilId.id listTy
   for i in [:func.sig.params.size] do
     let param := func.sig.params[i]!
     newLocalTypes := newLocalTypes.insert paramSlots[i]!.id (.ptr param.ty)

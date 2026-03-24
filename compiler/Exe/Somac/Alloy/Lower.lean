@@ -59,11 +59,44 @@ end TyVarMapping
 /-- Registry mapping type Uniques to their primitive type representations -/
 abbrev PrimTypeRegistry := Std.HashMap Soma.Unique PrimType
 
+/-- Registry mapping function Uniques to their wired-in Alloy roles -/
+abbrev WiredFuncRegistry := Std.HashMap Soma.Unique WiredFunc
+
+/-- Convert a WiredRole to its Alloy-level WiredFunc, if it represents a function -/
+private def wiredRoleToFunc? : Soma.Dependent.WiredRole → Option WiredFunc
+  | .listMap => some .listMap
+  | .listFilter => some .listFilter
+  | .listFoldl => some .listFoldl
+  | .listFoldr => some .listFoldr
+  | .listSum => some .listSum
+  | .listProduct => some .listProduct
+  | .listLength => some .listLength
+  | .listAny => some .listAny
+  | .listAll => some .listAll
+  | .listReverse => some .listReverse
+  | _ => none
+
+/-- Build a mapping from function Uniques to WiredFunc roles -/
+def buildWiredFuncRegistry (wiredIn : Soma.Dependent.WiredIn) : WiredFuncRegistry :=
+  wiredIn.roles.fold (init := {}) fun acc role infos =>
+    match wiredRoleToFunc? role with
+    | some wf => infos.foldl (init := acc) fun acc info =>
+        acc.insert info.name.id wf
+    | none => acc
+
 /-- Check if a Core Value type is a List type via the primitive type registry -/
 def isListValue (v : Soma.Core.Value) (primTypes : PrimTypeRegistry) : Bool :=
   match v with
   | .vDataType uid _ => primTypes.get? uid == some .list
   | _ => false
+
+/-- Extract the element type parameter from a List Core Value type -/
+def listElemValueType (v : Soma.Core.Value) (primTypes : PrimTypeRegistry) : Option Soma.Core.Value :=
+  match v with
+  | .vDataType uid params =>
+    if primTypes.get? uid == some .list then params[0]?
+    else none
+  | _ => none
 
 /-- Combined context for type conversion during Alloy lowering -/
 structure TypeConvCtx (n : Nat) where
@@ -433,7 +466,8 @@ partial def convertPrimToAlloyTy (prim : PrimType) (params : List Value) (ctx : 
   | .io => match params with
     | [innerTy] => convertValueTypeWithMapping innerTy ctx
     | _ => .prim .unit
-  | .array | .list | .ref | .ptr => .rawPtr
+  | .list => .somaList
+  | .array | .ref | .ptr => .rawPtr
 
 /-- Extract variant information from a row type -/
 partial def extractRowVariantsWithMapping (row : Value) (ctx : TypeConvCtx n)
@@ -944,7 +978,17 @@ def emitStoreViewBacking (viewPtr : LocalId) (newBackingPtr : LocalId) : LowerM 
 def defaultElemSize (ptrBytes : Nat) : Nat := ptrBytes
 
 /-- Get the element size in bytes for a list element type -/
-def listElemSize (_elemTy : Ty n) (ptrBytes : Nat) : Nat := defaultElemSize ptrBytes
+def listElemSize (elemTy : Ty n) (ptrBytes : Nat) : Nat :=
+  let sz := elemTy.sizeBytes ptrBytes
+  if sz == 0 then defaultElemSize ptrBytes else sz
+
+/-- Extract the list element size from a Core Value type -/
+partial def listElemSizeFromValueType (valTy : Value) (ctx : TypeConvCtx n) (ptrBytes : Nat) : Nat :=
+  match listElemValueType valTy ctx.primTypes with
+  | some elemVal =>
+    let elemTy := convertValueTypeWithMapping elemVal ctx
+    listElemSize elemTy ptrBytes
+  | none => defaultElemSize ptrBytes
 
 /-- State maintained during graph traversal -/
 structure NodeState (n : Nat) where
@@ -1107,9 +1151,9 @@ partial def emitTaggedDup (inputVal : LocalId) (taggedTy : Ty n) (label : UInt32
   let copy1 ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) taggedTy label) taggedTy)
   pure (inputVal, copy1)
 
-/-- Emit list duplication -/
-partial def emitListDup (inputVal : LocalId) (_srcTy : Ty n) (_label : UInt32)
-    (graph : CGraph) (nodeId : CNodeId)
+/-- Emit list duplication via lazy SUP -/
+partial def emitListDup (inputVal : LocalId) (_srcTy : Ty n) (label : UInt32)
+    (graph : CGraph) (nodeId : CNodeId) (elemSz : Nat)
     : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
   let isPatternMatchDup := match graph.getNode nodeId with
     | some entry =>
@@ -1122,12 +1166,16 @@ partial def emitListDup (inputVal : LocalId) (_srcTy : Ty n) (_label : UInt32)
       checkPort 1 || checkPort 2
     | none => false
   if isPatternMatchDup then
-    let copy0 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .rawPtr)
-    let copy1 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .rawPtr)
+    let copy0 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .somaList)
+    let copy1 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .somaList)
     pure (copy0, copy1)
   else
+    -- Eager deep copy: soma_list_dup(list, elem_size) returns a fresh SomaList struct.
+    -- TODO: Replace with lazy SUP-based duplication
+    let elemSizeConst ← StateT.lift (LowerM.emitInst
+      (.copy (.const (.int (Int.ofNat elemSz) .u16))) (.prim .u16))
     let copy1 ← StateT.lift (LowerM.emitInst
-      (.callExtern "soma_list_dup" #[.local inputVal] .rawPtr) .rawPtr)
+      (.callExtern "soma_list_dup" #[.local inputVal, .local elemSizeConst] .somaList) .somaList)
     pure (inputVal, copy1)
 
 /-- Lower an operand with FuncId map -/
@@ -1672,7 +1720,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           StateT.lift (LowerM.emitInst (.makeClosureDyn (.local fnClosureVal) (.local envVal) nodeTy) nodeTy)
     else if isListValue entry.ty (← get).primTypes then
       if tag == 0 then
-        StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+        StateT.lift (LowerM.emitInst
+          (.structLit #[.const (.null .rawPtr),
+                        .const (.int 0 .u32),
+                        .const (.int 0 .u32)] .somaList) .somaList)
       else
         let headVal ← lowerPort 1
         let tailVal ← lowerPort 2
@@ -1684,7 +1735,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           (.copy (.const (.int (Int.ofNat elemSz) .u16))) (.prim .u16))
         StateT.lift (LowerM.emitInst
           (.callExtern "soma_list_cons"
-            #[.local headAlloca, .local tailVal, .local elemSizeConst] .rawPtr) .rawPtr)
+            #[.local headAlloca, .local tailVal, .local elemSizeConst] .somaList) .somaList)
     else
       -- Regular constructor: build tagged struct
       let mut fieldVals : Array LocalId := #[]
@@ -1723,16 +1774,29 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             | none => false
         traceSource (entry.getPort ⟨1⟩) 10
     if isListProj then do
+      let pb := (← get).ptrBytes
+      let elemSz := if fieldIdx == 0 then
+          -- For head, nodeTy is the element type
+          listElemSize nodeTy pb
+        else
+          -- For tail, get the list source node's Core Value type to extract element type
+          match entry.getPort ⟨1⟩ with
+          | some srcPort => match graph.getNode srcPort.node with
+            | some srcEntry => listElemSizeFromValueType srcEntry.ty ctx pb
+            | none => defaultElemSize pb
+          | none => defaultElemSize pb
+      let elemSizeConst ← StateT.lift (LowerM.emitInst
+        (.copy (.const (.int (Int.ofNat elemSz) .u16))) (.prim .u16))
       if fieldIdx == 0 then
-        -- Head: load element at list->segment->data[list->start]
+        -- Head: soma_list_head(list, elem_size) returns pointer to element
         let headPtr ← StateT.lift (LowerM.emitInst
-          (.callExtern "soma_list_head" #[.local recordVal] .rawPtr) .rawPtr)
-        -- Load the element value from the pointer returned by soma_list_head
+          (.callExtern "soma_list_head" #[.local recordVal, .local elemSizeConst] .rawPtr) .rawPtr)
+        -- Load the element value from the pointer
         StateT.lift (LowerM.emitInst (.load (.local headPtr) nodeTy) nodeTy)
       else if fieldIdx == 1 then
-        -- Tail: get the rest of the list
+        -- Tail: soma_list_tail(list, elem_size) returns new list struct
         StateT.lift (LowerM.emitInst
-          (.callExtern "soma_list_tail" #[.local recordVal] .rawPtr) .rawPtr)
+          (.callExtern "soma_list_tail" #[.local recordVal, .local elemSizeConst] .somaList) .somaList)
       else
         StateT.lift (LowerM.emitPanic nodeTy)
     else
@@ -1777,15 +1841,16 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     if scrutIsArray then
       modify fun ns => { ns with listTypedLocals := ns.listTypedLocals.insert scrutineeVal.id }
     let (_, _thenBlock, elseBlock) ← if scrutIsArray then
-      -- Chunked list: check if list pointer is null (Nil) or non-null (Cons)
+      -- Array-backed list: check list.len field (index 1) for Nil/Cons
       StateT.lift do
-        let nullPtr ← LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr
+        let lenVal ← LowerM.emitInst (.extractField (.local scrutineeVal) 1) (.prim .u32)
+        let zero ← LowerM.emitInst (.copy (.const (.int 0 .u32))) (.prim .u32)
         let cond ← if expectedTag == 0 then
-          -- Nil: matches when list == null
-          LowerM.emitInst (.binOp .eq (.local scrutineeVal) (.local nullPtr) .rawPtr) Ty.bool
+          -- Nil: matches when len == 0
+          LowerM.emitInst (.binOp .eq (.local lenVal) (.local zero) (.prim .u32)) Ty.bool
         else
-          -- Cons: matches when list != null
-          LowerM.emitInst (.binOp .ne (.local scrutineeVal) (.local nullPtr) .rawPtr) Ty.bool
+          -- Cons: matches when len != 0
+          LowerM.emitInst (.binOp .ne (.local lenVal) (.local zero) (.prim .u32)) Ty.bool
         let thenBlock ← LowerM.freshBlockId
         let elseBlock ← LowerM.freshBlockId
         LowerM.finishBlock (.branch (.local cond) thenBlock elseBlock) thenBlock
@@ -1895,6 +1960,17 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                      |>.insert (nodeId.id * 1000 + 2) copy1
         }
         pure inputVal
+      else if nodeTy.isSomaList then
+        let srcTy := (← StateT.lift get).func.getLocalType inputVal |>.getD .somaList
+        let dupElemSz := listElemSizeFromValueType entry.ty ctx (← get).ptrBytes
+        let (copy0, copy1) ← emitListDup inputVal srcTy label.id graph nodeId dupElemSz
+        modify fun ns => { ns with
+          results := ns.results.insert (nodeId.id * 1000 + 1) copy0
+                     |>.insert (nodeId.id * 1000 + 2) copy1
+          listTypedLocals := ns.listTypedLocals.insert inputVal.id
+            |>.insert copy0.id |>.insert copy1.id
+        }
+        pure inputVal
       else if nodeTy == .rawPtr then
         let ns ← get
         let rec traceDupSource (portOpt : Option CPortId) (fuel : Nat) : Bool :=
@@ -1914,7 +1990,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         let (copy0, copy1) ←
           if isListSource then
             let srcTy := (← StateT.lift get).func.getLocalType inputVal |>.getD .rawPtr
-            emitListDup inputVal srcTy label.id graph nodeId
+            let dupElemSz := listElemSizeFromValueType entry.ty ctx (← get).ptrBytes
+            emitListDup inputVal srcTy label.id graph nodeId dupElemSz
             else
               let clone ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) .rawPtr label.id) .rawPtr)
               pure (inputVal, clone)
@@ -1993,7 +2070,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       | none => defaultElemSize pb
 
     if len == 0 then
-      StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+      -- Nil: { null, 0, 0, 0 }
+      StateT.lift (LowerM.emitInst
+        (.structLit #[.const (.null .rawPtr),
+                      .const (.int 0 .u32),
+                      .const (.int 0 .u32)] .somaList) .somaList)
     else
       let elemSizeVal ← StateT.lift (LowerM.emitInst
         (.copy (.const (.int (Int.ofNat elemSizeBytes) .u16))) (.prim .u16))
@@ -2007,7 +2088,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           | none => .prim .i64
         | none => .prim .i64
       let elemSlot ← StateT.lift (LowerM.emitInst (.alloca elemAllocTy) (.ptr elemAllocTy))
-      let mut list ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+      -- Build list via repeated cons (reverse order for correct element ordering)
+      let mut list ← StateT.lift (LowerM.emitInst
+        (.structLit #[.const (.null .rawPtr),
+                      .const (.int 0 .u32),
+                      .const (.int 0 .u32)] .somaList) .somaList)
       match ctorInfo with
       | some (_, ctorEntry) =>
         let mut elemVals : Array LocalId := #[]
@@ -2020,7 +2105,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           if h : i < elemVals.size then
             StateT.lift (LowerM.emitVoid (.store (.local elemSlot) (.local elemVals[i])))
             list ← StateT.lift (LowerM.emitInst
-              (.callExtern "soma_list_cons" #[.local elemSlot, .local list, .local elemSizeVal] .rawPtr) .rawPtr)
+              (.callExtern "soma_list_cons" #[.local elemSlot, .local list, .local elemSizeVal] .somaList) .somaList)
       | none => pure ()
       pure list
 
@@ -2125,7 +2210,8 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
-    (anonLamBookIdx : Std.HashMap Nat Nat := {}) : Func n :=
+    (anonLamBookIdx : Std.HashMap Nat Nat := {})
+    (wiredRole : Option WiredFunc := none) : Func n :=
   let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes, inductives }
   let (explicitTypeParams, paramInfos) := extractParamsUsingMapping def_.ty ctx
   let numTyVars := n
@@ -2159,7 +2245,7 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
 
-  func
+  { func with attrs := { func.attrs with wiredRole } }
 
 /-- Lower a Circuit definition to an Alloy function -/
 def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
@@ -2167,18 +2253,20 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
-    (anonLamBookIdx : Std.HashMap Nat Nat := {}) : SomeFunc :=
+    (anonLamBookIdx : Std.HashMap Nat Nat := {})
+    (wiredRole : Option WiredFunc := none) : SomeFunc :=
   -- Collect all type variable levels and build mapping
   let ⟨n, tyVarMapping⟩ := buildTyVarMappingFromDefinition graph def_
   -- Lower with the determined n
-  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes inductives intrinsics panicMsgIdx anonLamBookIdx
+  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole
   -- Return existentially quantified function
   ⟨n, func⟩
 
 /-- Lower an entire Circuit graph to an Alloy module -/
 def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
-    (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Module := Id.run do
+    (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
+    (wiredFuncs : WiredFuncRegistry := {}) : Module := Id.run do
   let mut module := Module.empty moduleName
 
   -- Copy string table from Circuit graph to Alloy module
@@ -2233,7 +2321,8 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
     if let some def_ := extGraph.book[i]? then
       if not def_.isExternal then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
-        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes inductives intrinsics panicMsgIdx anonLamBookIdx
+        let wiredRole := wiredFuncs.get? def_.name.id
+        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole
         module := module.addFunc func
 
   -- Set main function using the mapped ID
@@ -2246,7 +2335,8 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
 /-- Main entry point: lower a Circuit graph to an Alloy module -/
 def lower (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
-    (intrinsics : Std.HashMap QualifiedName Intrinsic := {}) : Module :=
-  lowerGraph graph moduleName primTypes inductives intrinsics
+    (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
+    (wiredFuncs : WiredFuncRegistry := {}) : Module :=
+  lowerGraph graph moduleName primTypes inductives intrinsics wiredFuncs
 
 end Somac.Alloy.Lower

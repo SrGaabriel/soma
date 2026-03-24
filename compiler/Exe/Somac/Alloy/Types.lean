@@ -192,6 +192,9 @@ def bool : Ty n := .prim .bool
 def unit : Ty n := .prim .unit
 def string : Ty n := .struct #[("data", .rawPtr), ("len", .prim .i64)]
 
+/-- Array-backed list: { data: ptr, len: u32, offset: u32 } -/
+def somaList : Ty n := .struct #[("data", .rawPtr), ("len", .prim .u32), ("offset", .prim .u32)]
+
 /-- Whether this type supports LLVM arithmetic instructions -/
 def isArithmetic (ty : Ty n) : Bool :=
   match ty with
@@ -296,6 +299,9 @@ partial def beq (a : Ty n) (b : Ty m) : Bool :=
 
 instance : BEq (Ty n) where
   beq a b := Ty.beq a b
+
+/-- Check if a type is the array-backed list struct -/
+def isSomaList (ty : Ty n) : Bool := ty == somaList
 
 /-- Duplication tier determines how a value is cloned and erased at runtime.
 
@@ -653,5 +659,19 @@ instance : Hashable ClosedTy where
 /-- Hash an array of closed types -/
 def hashClosedTyArray (tys : Array ClosedTy) : UInt64 :=
   tys.foldl (init := (0 : UInt64)) fun acc ty => mixHash acc (hashClosedTy ty)
+
+/-- Wired-in function roles at the Alloy IR level -/
+inductive WiredFunc where
+  | listMap
+  | listFilter
+  | listFoldl
+  | listFoldr
+  | listSum
+  | listProduct
+  | listLength
+  | listAny
+  | listAll
+  | listReverse
+  deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 end Somac.Alloy

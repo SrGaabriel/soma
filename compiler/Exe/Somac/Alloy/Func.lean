@@ -80,6 +80,8 @@ structure FuncAttrs where
   pure : Bool := false
   /-- Always tail-call optimize -/
   tailCall : Bool := false
+  /-- Wired-in function role -/
+  wiredRole : Option WiredFunc := none
   deriving Repr, BEq, Inhabited, Serialize, Deserialize
 
 namespace FuncAttrs
@@ -96,6 +98,9 @@ instance : ToString FuncAttrs where
       | none => attrs
     let attrs := if a.pure then attrs ++ ["pure"] else attrs
     let attrs := if a.tailCall then attrs ++ ["tailcall"] else attrs
+    let attrs := match a.wiredRole with
+      | some role => attrs ++ [s!"wired({repr role})"]
+      | none => attrs
     if attrs.isEmpty then "" else s!"[{String.intercalate ", " attrs}]"
 
 end FuncAttrs
@@ -311,6 +316,8 @@ structure Module where
   funcIndex : Std.HashMap String FuncId := {}
   /-- Main function ID (if any) -/
   mainFunc : Option FuncId := none
+  /-- Wired-in function roles → FuncIds. Maps each known role to all FuncIds -/
+  wiredFuncIds : Std.HashMap WiredFunc (Array FuncId) := {}
   deriving Inhabited
 
 namespace Module
@@ -318,11 +325,17 @@ namespace Module
 /-- Create an empty module -/
 def empty (name : String) : Module := { name }
 
-/-- Add a function-/
+/-- Add a function -/
 def addFunc (m : Module) (f : SomeFunc) : Module :=
+  let wired := match f.2.attrs.wiredRole with
+    | some role =>
+      let existing := m.wiredFuncIds.getD role #[]
+      m.wiredFuncIds.insert role (existing.push f.id)
+    | none => m.wiredFuncIds
   { m with
     funcs := m.funcs.push f
     funcIndex := m.funcIndex.insert f.name f.id
+    wiredFuncIds := wired
   }
 
 /-- Add a monomorphic function -/
@@ -374,6 +387,14 @@ def monoFuncs (m : Module) : Array ClosedFunc :=
 /-- Check if module is fully monomorphic -/
 def isFullyMonomorphic (m : Module) : Bool :=
   m.funcs.all (·.isMono)
+
+/-- Rebuild the wired function index from FuncAttrs.wiredRole on all functions -/
+def rebuildWiredFuncIndex (m : Module) : Module :=
+  let idx := m.funcs.foldl (init := ({} : Std.HashMap WiredFunc (Array FuncId))) fun acc sf =>
+    match sf.2.attrs.wiredRole with
+    | some role => acc.insert role ((acc.getD role #[]).push sf.id)
+    | none => acc
+  { m with wiredFuncIds := idx }
 
 instance : ToString Module where
   toString m :=

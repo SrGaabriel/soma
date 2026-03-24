@@ -299,141 +299,187 @@ void* soma_clone_flat_array_view(SomaFlatArrayView* restrict src) {
 
 /*
  * ============================================================================
- * Chunked List Operations
+ * Array-Backed List Operations
+ *
+ * A SomaList is a value type: { data, len, cap, offset }.
+ * `data` points to a contiguous buffer of `cap` element slots.
+ * Live elements occupy data[offset .. offset+len).
+ *
+ * Ownership: each SomaList exclusively owns its `data` buffer.
+ * No reference counting. DUP = memcpy of live region into fresh buffer.
+ * ERA = free(data).
+ *
+ * Cons strategy: elements are prepended by writing at data[offset-1].
+ * Buffers are allocated with geometric slack *before* the first element,
+ * so repeated cons is O(1) amortized. When slack is exhausted, the buffer
+ * is grown and existing elements are copied to the right half, leaving
+ * the left half as prepend room.
+ *
+ * Tail strategy: advance offset, decrement len. No allocation, no copy.
+ * The dropped head element becomes dead space (reclaimed when the list
+ * is freed or DUP'd — DUP only copies the live region).
  * ============================================================================
  */
 
-/* Inline helpers */
-static inline void* segment_data(SomaSegment* seg) {
-    return (char*)seg + sizeof(SomaSegment);
-}
-
-static inline void* segment_elem(SomaSegment* seg, uint16_t idx) {
-    return (char*)seg + sizeof(SomaSegment) + (size_t)idx * seg->elem_size;
-}
-
-static inline SomaSegment* alloc_segment(uint16_t capacity, uint16_t elem_size) {
-    size_t total = sizeof(SomaSegment) + (size_t)capacity * elem_size;
-    SomaSegment* seg = (SomaSegment*)soma_pool_alloc_raw(total);
-    if (SOMA_UNLIKELY(seg == NULL)) soma_panic("alloc_segment: out of memory");
-    atomic_init(&seg->refcount, 1);
-    seg->capacity = capacity;
-    seg->elem_size = elem_size;
-    return seg;
-}
-
-static inline SomaListNode* alloc_node(void) {
-    SomaPools* pools = get_pools();
-    SOMA_STAT_INC(small_allocs);
-    SomaListNode* node = (SomaListNode*)pool_alloc(&pools->pool_48);
-    if (SOMA_UNLIKELY(node == NULL)) soma_panic("alloc_node: out of memory");
-    atomic_init(&node->refcount, 1);
-    return node;
-}
-
-static inline void free_node(SomaListNode* node) {
-    SomaPools* pools = get_pools();
-    SOMA_STAT_INC(small_frees);
-    pool_free(&pools->pool_48, node);
-}
-
-static inline void segment_release(SomaSegment* seg) {
-    if (seg != NULL && atomic_fetch_sub_explicit(&seg->refcount, 1, memory_order_acq_rel) == 1) {
-        size_t total = sizeof(SomaSegment) + (size_t)seg->capacity * seg->elem_size;
-        soma_pool_free_raw(seg, total);
-    }
-}
-
-static inline uint16_t default_chunk_capacity(uint16_t elem_size) {
-    /* Target one cache line (64 bytes) of element data per chunk */
-    uint16_t cap = (uint16_t)(SOMA_CACHELINE / elem_size);
-    return cap < 4 ? 4 : cap;
-}
+/*
+ * Growth policy: minimum capacity and geometric factor.
+ *
+ * SOMA_LIST_MIN_CAP: smallest buffer we'll allocate. Sized for one cache
+ * line of i32 elements (16 elements × 4 bytes = 64 bytes). For larger
+ * element types, the minimum is clamped to at least 4 slots.
+ *
+ * Growth factor: 2× (standard doubling). On reallocation, existing elements
+ * are placed in the RIGHT half of the new buffer, so the left half is
+ * available for future cons operations.
+ */
+#define SOMA_LIST_MIN_CAP(elem_size) \
+    ((uint32_t)(SOMA_CACHELINE / (elem_size) < 4 ? 4 : SOMA_CACHELINE / (elem_size)))
 
 SOMA_HOT
-SomaListNode* soma_list_cons(const void* elem, SomaListNode* tail, uint16_t elem_size) {
-    /* Fast path: tail is uniquely owned, has slack before start, and elem_size matches. */
-    if (tail != NULL && tail->start > 0 &&
-        tail->segment->elem_size == elem_size &&
-        atomic_load_explicit(&tail->refcount, memory_order_relaxed) == 1 &&
-        atomic_load_explicit(&tail->segment->refcount, memory_order_relaxed) == 1) {
-        tail->start--;
-        memcpy(segment_elem(tail->segment, tail->start), elem, elem_size);
+SomaList soma_list_cons(const void* elem, SomaList tail, uint16_t elem_size) {
+    /* Fast path: tail has slack before the live region (offset > 0). */
+    if (SOMA_LIKELY(tail.offset > 0)) {
+        tail.offset--;
+        tail.len++;
+        memcpy((char*)tail.data + (size_t)tail.offset * elem_size, elem, elem_size);
         return tail;
     }
-    /* Slow path: allocate new segment + node */
-    uint16_t cap = default_chunk_capacity(elem_size);
-    SomaSegment* seg = alloc_segment(cap, elem_size);
-    uint16_t idx = cap - 1;  /* fill from the right for future cons slack */
-    memcpy(segment_elem(seg, idx), elem, elem_size);
 
-    SomaListNode* node = alloc_node();
-    node->segment = seg;
-    node->next = tail;
-    node->start = idx;
-    node->end = idx + 1;
-    return node;
+    /* Slow path: grow buffer geometrically, place elements at right end. */
+    uint32_t old_len = tail.len;
+    uint32_t min_cap = SOMA_LIST_MIN_CAP(elem_size);
+    uint32_t new_cap = old_len * 2;
+    if (new_cap < min_cap) new_cap = min_cap;
+    if (new_cap <= old_len) new_cap = old_len + 1;
+
+    void* new_data = malloc((size_t)new_cap * elem_size);
+    if (SOMA_UNLIKELY(new_data == NULL)) soma_panic("soma_list_cons: out of memory");
+
+    uint32_t new_offset = new_cap - old_len;
+    if (old_len > 0) {
+        memcpy((char*)new_data + (size_t)new_offset * elem_size,
+               (char*)tail.data + (size_t)tail.offset * elem_size,
+               (size_t)old_len * elem_size);
+    }
+    free(tail.data);
+
+    new_offset--;
+    memcpy((char*)new_data + (size_t)new_offset * elem_size, elem, elem_size);
+    return (SomaList){ new_data, old_len + 1, new_offset };
 }
 
 SOMA_HOT
-void* soma_list_head(SomaListNode* list) {
-    return segment_elem(list->segment, list->start);
+void* soma_list_head(SomaList list, uint16_t elem_size) {
+    return (char*)list.data + (size_t)list.offset * elem_size;
 }
 
 SOMA_HOT
-SomaListNode* soma_list_tail(SomaListNode* list) {
-    uint16_t next_start = list->start + 1;
-    if (next_start < list->end) {
-        SomaListNode* node = alloc_node();
-        node->segment = list->segment;
-        atomic_fetch_add_explicit(&list->segment->refcount, 1, memory_order_relaxed);
-        node->next = list->next;
-        if (list->next != NULL) {
-            atomic_fetch_add_explicit(&list->next->refcount, 1, memory_order_relaxed);
-        }
-        node->start = next_start;
-        node->end = list->end;
-        return node;
-    }
-    /* This chunk exhausted */
-    SomaListNode* next = list->next;
-    if (next != NULL) {
-        atomic_fetch_add_explicit(&next->refcount, 1, memory_order_relaxed);
-    }
-    return next;
+SomaList soma_list_tail(SomaList list, uint16_t elem_size) {
+    (void)elem_size;
+    return (SomaList){ list.data, list.len - 1, list.offset + 1 };
 }
 
 SOMA_HOT
-SomaListNode* soma_list_dup(SomaListNode* list) {
-    if (list != NULL) {
-        atomic_fetch_add_explicit(&list->refcount, 1, memory_order_relaxed);
-    }
-    return list;
+SomaList soma_list_dup(SomaList list, uint16_t elem_size) {
+    if (list.len == 0) return SOMA_LIST_NIL;
+    size_t live_bytes = (size_t)list.len * elem_size;
+    void* new_data = malloc(live_bytes);
+    if (SOMA_UNLIKELY(new_data == NULL)) soma_panic("soma_list_dup: out of memory");
+    memcpy(new_data, (char*)list.data + (size_t)list.offset * elem_size, live_bytes);
+    return (SomaList){ new_data, list.len, 0 };
 }
 
 SOMA_HOT
-void soma_list_era(SomaListNode* list) {
-    while (list != NULL) {
-        uint32_t prev = atomic_fetch_sub_explicit(&list->refcount, 1, memory_order_acq_rel);
-        if (prev > 1) return;  /* other owners remain */
-        SomaListNode* next = list->next;
-        segment_release(list->segment);
-        free_node(list);
-        list = next;
-    }
+void soma_list_era(SomaList list) {
+    free(list.data);
 }
 
-SomaListNode* soma_list_from_array(const void* data, uint32_t len, uint16_t elem_size) {
-    if (len == 0) return NULL;
-    /* Allocate a single segment large enough for all elements */
-    SomaSegment* seg = alloc_segment((uint16_t)len, elem_size);
-    memcpy(segment_data(seg), data, (size_t)len * elem_size);
-    SomaListNode* node = alloc_node();
-    node->segment = seg;
-    node->next = NULL;
-    node->start = 0;
-    node->end = (uint16_t)len;
-    return node;
+SomaList soma_list_from_array(const void* data, uint32_t len, uint16_t elem_size) {
+    if (len == 0) return SOMA_LIST_NIL;
+    uint32_t min_cap = SOMA_LIST_MIN_CAP(elem_size);
+    uint32_t cap = len < min_cap ? min_cap : len;
+    void* buf = malloc((size_t)cap * elem_size);
+    if (SOMA_UNLIKELY(buf == NULL)) soma_panic("soma_list_from_array: out of memory");
+    uint32_t offset = cap - len;
+    memcpy((char*)buf + (size_t)offset * elem_size, data, (size_t)len * elem_size);
+    return (SomaList){ buf, len, offset };
+}
+
+/*
+ * ============================================================================
+ * Boxed List for SUP Integration
+ *
+ * SUP nodes store values as void* pointers. SomaList is a 16-byte value type
+ * that doesn't fit in a pointer. When a list enters a SUP (via DUP), it's
+ * "boxed" — heap-allocated as a SomaBoxedList that holds the struct fields
+ * plus the elem_size needed for cloning.
+ *
+ * The boxed representation is:
+ *   { void* data, uint32_t len, uint32_t offset, uint16_t elem_size }
+ *
+ * Clone: deep-copies the backing buffer (soma_list_dup semantics).
+ * Erase: frees the backing buffer, then frees the box itself.
+ * ============================================================================
+ */
+
+typedef struct SomaBoxedList {
+    void*    data;
+    uint32_t len;
+    uint32_t offset;
+    uint16_t elem_size;
+} SomaBoxedList;
+
+/* Box a SomaList value onto the heap for SUP storage. */
+static inline SomaBoxedList* soma_list_box(SomaList list, uint16_t elem_size) {
+    SomaBoxedList* box = (SomaBoxedList*)malloc(sizeof(SomaBoxedList));
+    if (SOMA_UNLIKELY(box == NULL)) soma_panic("soma_list_box: out of memory");
+    box->data = list.data;
+    box->len = list.len;
+    box->offset = list.offset;
+    box->elem_size = elem_size;
+    return box;
+}
+
+/* Unbox: read the SomaList fields from a boxed representation (internal). */
+static inline SomaList soma_list_unbox_internal(SomaBoxedList* box) {
+    return (SomaList){ box->data, box->len, box->offset };
+}
+
+/* Clone function for SomaTypeDesc — deep-copies the backing buffer. */
+void* soma_clone_boxed_list(void* value, uint32_t label) {
+    (void)label;
+    SomaBoxedList* src = (SomaBoxedList*)value;
+    SomaList dup = soma_list_dup(soma_list_unbox_internal(src), src->elem_size);
+    return (void*)soma_list_box(dup, src->elem_size);
+}
+
+/* Erase function for SomaTypeDesc — frees buffer and box. */
+void soma_era_boxed_list(void* value) {
+    SomaBoxedList* box = (SomaBoxedList*)value;
+    free(box->data);
+    free(box);
+}
+
+/* TypeDesc for boxed lists — static global, initialized on first use. */
+static SomaTypeDesc soma_boxed_list_typedesc = {
+    .clone_fn = soma_clone_boxed_list,
+    .erase_fn = soma_era_boxed_list,
+};
+
+/* Box a SomaList for SUP storage. Called by compiler-generated DUP code. */
+void* soma_list_box_for_sup(SomaList list, uint16_t elem_size) {
+    return (void*)soma_list_box(list, elem_size);
+}
+
+/* Create a SUP node for a boxed list. Combines boxing + soma_dup_typed. */
+SomaValue soma_dup_typed_list(uint32_t label, void* boxed_list) {
+    return soma_dup_typed(label, (SomaValue)boxed_list, &soma_boxed_list_typedesc);
+}
+
+/* Unbox a SomaList from a boxed pointer. Called after SUP projection. */
+SomaList soma_list_unbox(void* boxed) {
+    SomaBoxedList* box = (SomaBoxedList*)boxed;
+    return (SomaList){ box->data, box->len, box->offset };
 }
 
 /*

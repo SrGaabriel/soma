@@ -113,7 +113,8 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
 
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
-  let alloyMod := Alloy.Lower.lower optimized cm.name primTypes globals.inductives globals.intrinsics
+  let wiredFuncs := Alloy.Lower.buildWiredFuncRegistry globals.wiredIn
+  let alloyMod := Alloy.Lower.lower optimized cm.name primTypes globals.inductives globals.intrinsics wiredFuncs
   return alloyMod
 
 /-- Result of compilation pipeline -/
@@ -201,19 +202,34 @@ def compileModules
 
   -- Monomorphize
   IO.println "  Monomorphizing..."
-  let mono := Alloy.Monomorphize.monomorphize merged
+  let mono := (Alloy.Monomorphize.monomorphize merged).rebuildWiredFuncIndex
 
   IO.println s!"  Monomorphized module has {mono.funcs.size} function(s)"
 
   let mut optimized := mono
   let mut borrowParamInfo : Std.HashMap Nat (Array Bool) := {}
 
+  let (intrinsicOptimized, intrinsicCount) := Alloy.ListIntrinsics.replaceListIntrinsics optimized
+  optimized := intrinsicOptimized
+  if intrinsicCount > 0 then
+    IO.println s!"  List intrinsics: {intrinsicCount} function(s) replaced with O(1) field access"
+
+  let (elemSizeOptimized, elemSizeCount) := Alloy.ElemSize.refineElemSizes optimized ptrSize
+  optimized := elemSizeOptimized
+  if elemSizeCount > 0 then
+    IO.println s!"  Element size refinement: {elemSizeCount} function(s) refined to exact element sizes"
+
+  optimized := Alloy.ClosureSpec.closureSpec optimized
+
   if runSomaPasses then
-    optimized := Alloy.ClosureSpec.closureSpec optimized
     let (accumOptimized, accumCount) := Alloy.AccumIntro.accumIntro optimized
     optimized := accumOptimized
     if accumCount > 0 then
       IO.println s!"  Accumulator introduction: {accumCount} list-building recursion(s) converted to accumulator style"
+    let (arithAccumOptimized, arithAccumCount) := Alloy.ArithAccum.arithAccumIntro optimized
+    optimized := arithAccumOptimized
+    if arithAccumCount > 0 then
+      IO.println s!"  Arithmetic accumulator introduction: {arithAccumCount} recursion(s) converted to accumulator style"
     let (tcoOptimized, tcoCount) := Alloy.TailCall.tailCallOpt optimized
     optimized := tcoOptimized
     if tcoCount > 0 then

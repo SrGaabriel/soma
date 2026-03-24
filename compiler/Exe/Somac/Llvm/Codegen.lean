@@ -146,6 +146,9 @@ def getArrayElemTy : ClosedTy → ClosedTy
 def isStringObjTy (ty : ClosedTy) : Bool :=
   ty == (.struct #[("data", .rawPtr), ("len", .prim .i64)] : ClosedTy)
 
+/-- Check whether a closed type is the runtime List object type -/
+def isListObjTy (ty : ClosedTy) : Bool := ty.isSomaList
+
 /-- Get payload field types from a tagged union -/
 def getTaggedPayloadTy (taggedTy : ClosedTy) (variantIdx : Nat) (fieldIdx : Nat) : ClosedTy :=
   match taggedTy with
@@ -529,6 +532,9 @@ def fromI64 (targetTy : LLVMType) (val : LLVMValue) : CodegenM LocalRef := do
 /-- The LLVM type used for the SomaString fat pointer -/
 def somaStringLLVMTy : LLVMType := .struct false #[.ptr, .i64]
 
+/-- The LLVM type used for the SomaList struct { data, len, offset } -/
+def somaListLLVMTy : LLVMType := .struct false #[.ptr, .i32, .i32]
+
 /-- Check if a type is the SomaString struct -/
 def isSomaStringLLVMTy (ty : LLVMType) : Bool :=
   ty == somaStringLLVMTy
@@ -759,6 +765,8 @@ partial def emitEraseForType (valRef : LLVMValue) (ty : ClosedTy) : CodegenM Uni
       -- String fat pointer: call soma_era_string with { ptr, i64 } struct
       let llvmTy := convertTy ty
       callCFuncStructABIVoid "soma_era_string" #[(llvmTy, valRef)]
+    else if isListObjTy ty then
+      callCFuncStructABIVoid "soma_list_era" #[(somaListLLVMTy, valRef)]
     else
       -- Struct: recurse into each field that may contain pointers
       let llvmTy := convertTy ty
@@ -1136,7 +1144,7 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
     pure (expectedLLVMTy, coercedVal)
   -- Call function with its declared parameters
   let callRetTy := if extraArgs.isEmpty then llvmRetTy else .ptr
-  let isTailCall := (← get).emitAsTailCall
+  let isTailCall := false
   let mut ref ← CodegenM.withFuncBuilder do
     FuncBuilder.callNamed callRetTy funcName llvmArgs (tailcall := isTailCall)
   if isTailCall then modify fun s => { s with emitAsTailCall := false }
@@ -2583,65 +2591,186 @@ def addRuntimeDeclarations : CodegenM Unit := do
       isDeclaration := true
     }
 
-  -- Chunked list operations
+  -- SysV x86-64: fits in 2 registers. Win64: still needs byval/sret (>8 bytes)
+  let listTy := somaListLLVMTy
+  let listTyStr := listTy.toLLVM
+  if (← get).targetOs.isWindowsABI then
+    -- Windows x64: SomaList (32 bytes) passed via hidden pointer
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_cons"
+        retTy := .void
+        params := #[
+          { name := "ret", ty := .ptr, attrs := #[s!"sret({listTyStr})"] },
+          { name := "elem", ty := .ptr, attrs := #["nocapture", "readonly"] },
+          { name := "tail", ty := .ptr, attrs := #[s!"byval({listTyStr})"] },
+          { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_head"
+        retTy := .ptr
+        params := #[
+          { name := "list", ty := .ptr, attrs := #[s!"byval({listTyStr})"] },
+          { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_tail"
+        retTy := .void
+        params := #[
+          { name := "ret", ty := .ptr, attrs := #[s!"sret({listTyStr})"] },
+          { name := "list", ty := .ptr, attrs := #[s!"byval({listTyStr})"] },
+          { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_dup"
+        retTy := .void
+        params := #[
+          { name := "ret", ty := .ptr, attrs := #[s!"sret({listTyStr})"] },
+          { name := "list", ty := .ptr, attrs := #[s!"byval({listTyStr})"] },
+          { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_era"
+        retTy := .void
+        params := #[{ name := "list", ty := .ptr, attrs := #[s!"byval({listTyStr})"] }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_from_array"
+        retTy := .void
+        params := #[
+          { name := "ret", ty := .ptr, attrs := #[s!"sret({listTyStr})"] },
+          { name := "data", ty := .ptr, attrs := #["nocapture", "readonly"] },
+          { name := "len", ty := .i32 },
+          { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+  else
+    -- Non-Windows: pass SomaList struct directly in registers (SysV: 4 regs)
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_cons"
+        retTy := listTy
+        params := #[
+          { name := "elem", ty := .ptr, attrs := #["nocapture", "readonly"] },
+          { name := "tail", ty := listTy },
+          { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_head"
+        retTy := .ptr
+        params := #[{ name := "list", ty := listTy }, { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_tail"
+        retTy := listTy
+        params := #[{ name := "list", ty := listTy }, { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_dup"
+        retTy := listTy
+        params := #[{ name := "list", ty := listTy }, { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_era"
+        retTy := .void
+        params := #[{ name := "list", ty := listTy }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_from_array"
+        retTy := listTy
+        params := #[
+          { name := "data", ty := .ptr, attrs := #["nocapture", "readonly"] },
+          { name := "len", ty := .i32 },
+          { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+  -- SUP integration: box/unbox/dup_typed_list use simpler ABIs
   CodegenM.withModuleBuilder do
     ModuleBuilder.addFunc {
-      name := "soma_list_cons"
-      retTy := .ptr
-      params := #[{ name := "elem", ty := .ptr, attrs := #["nocapture", "readonly"] },
-                  { name := "tail", ty := .ptr },
-                  { name := "elem_size", ty := .i16 }]
+      name := "soma_dup_typed_list"
+      retTy := .i64
+      params := #[{ name := "label", ty := .i32 }, { name := "boxed", ty := .ptr }]
       attrs := { nounwind := true }
       isDeclaration := true
     }
+  -- soma_list_unbox(boxed: ptr) → SomaList (struct return)
+  -- soma_list_box_for_sup(list: SomaList, elem_size: i16) → ptr
+  -- These have struct types so need platform-specific declarations like other list ops
+  if (← get).targetOs.isWindowsABI then
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_box_for_sup"
+        retTy := .ptr
+        params := #[
+          { name := "list", ty := .ptr, attrs := #[s!"byval({listTyStr})"] },
+          { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_unbox"
+        retTy := .void
+        params := #[
+          { name := "ret", ty := .ptr, attrs := #[s!"sret({listTyStr})"] },
+          { name := "boxed", ty := .ptr }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+  else
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_box_for_sup"
+        retTy := .ptr
+        params := #[{ name := "list", ty := listTy }, { name := "elem_size", ty := .i16 }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
+    CodegenM.withModuleBuilder do
+      ModuleBuilder.addFunc {
+        name := "soma_list_unbox"
+        retTy := listTy
+        params := #[{ name := "boxed", ty := .ptr }]
+        attrs := { nounwind := true }
+        isDeclaration := true
+      }
 
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_list_head"
-      retTy := .ptr
-      params := #[{ name := "list", ty := .ptr, attrs := #["nocapture", "readonly"] }]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_list_tail"
-      retTy := .ptr
-      params := #[{ name := "list", ty := .ptr }]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_list_dup"
-      retTy := .ptr
-      params := #[{ name := "list", ty := .ptr }]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_list_era"
-      retTy := .void
-      params := #[{ name := "list", ty := .ptr }]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
-
-  CodegenM.withModuleBuilder do
-    ModuleBuilder.addFunc {
-      name := "soma_list_from_array"
-      retTy := .ptr
-      returnAttrs := #["noalias"]
-      params := #[{ name := "data", ty := .ptr, attrs := #["nocapture", "readonly"] },
-                  { name := "len", ty := .i32 },
-                  { name := "elem_size", ty := .i16 }]
-      attrs := { nounwind := true }
-      isDeclaration := true
-    }
+  for listFn in #["soma_list_cons", "soma_list_head", "soma_list_tail",
+                   "soma_list_dup", "soma_list_era", "soma_list_from_array",
+                   "soma_list_box_for_sup", "soma_list_unbox", "soma_dup_typed_list"] do
+    CodegenM.markExternDeclared listFn
 
   let runtimeNames := #[
     "malloc", "free",
@@ -2652,9 +2781,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
     "soma_strcat", "soma_int_to_string",
     "soma_apply", "soma_dup_typed", "soma_proj0", "soma_proj1",
     "soma_clone_closure", "soma_clone_heap_value_for_dup",
-    "soma_clone_flat_array_view", "soma_alloc_view", "soma_free_view",
-    "soma_list_cons", "soma_list_head", "soma_list_tail",
-    "soma_list_dup", "soma_list_era", "soma_list_from_array"
+    "soma_clone_flat_array_view", "soma_alloc_view", "soma_free_view"
   ]
   for name in runtimeNames do
     CodegenM.markExternDeclared name
