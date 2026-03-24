@@ -2,7 +2,15 @@ name: CI
 
 on:
     push:
+        paths-ignore:
+            - "docs/**"
+            - "**.md"
+            - "LICENSE"
     pull_request:
+        paths-ignore:
+            - "docs/**"
+            - "**.md"
+            - "LICENSE"
 
 env:
     GHC_VERSION: "9.12.2"
@@ -83,7 +91,6 @@ jobs:
             - name: Run tests
               if: "!matrix.cross"
               run: cargo test --verbose --target ${{ matrix.target }}
-              continue-on-error: true
 
             - name: Prepare executable (Unix)
               if: runner.os != 'Windows'
@@ -175,7 +182,6 @@ jobs:
                   msystem: ${{ contains(matrix.target, 'x86_64') && 'MINGW64' || 'MINGW32' }}
                   install: >-
                       mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-gcc
-                      mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-rust
                       mingw-w64-${{ contains(matrix.target, 'x86_64') && 'x86_64' || 'i686' }}-toolchain
                   update: true
                   path-type: inherit
@@ -208,7 +214,6 @@ jobs:
               if: "!matrix.cross"
               working-directory: haoma
               run: cargo test --verbose --all-features --target ${{ matrix.target }}
-              continue-on-error: true
 
             - name: Build release (cross)
               if: matrix.cross
@@ -298,6 +303,18 @@ jobs:
                   echo "$HOME/.elan/bin" >> $GITHUB_PATH
               shell: bash
 
+            - name: Cache Lake packages and build
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.elan/toolchains/
+                      ${{ matrix.project }}/.lake/packages/
+                      ${{ matrix.project }}/.lake/build/
+                  key: ${{ runner.os }}-${{ matrix.target }}-${{ matrix.project }}-lake-${{ hashFiles(format('{0}/lakefile.toml', matrix.project), format('{0}/lean-toolchain', matrix.project), format('{0}/lake-manifest.json', matrix.project)) }}
+                  restore-keys: |
+                      ${{ runner.os }}-${{ matrix.target }}-${{ matrix.project }}-lake-
+                      ${{ runner.os }}-${{ matrix.project }}-lake-
+
             - name: Update Lake packages
               run: lake update
               shell: bash
@@ -305,12 +322,10 @@ jobs:
             - name: Build ${{ matrix.project }}
               run: lake build
               shell: bash
-              continue-on-error: true
 
             - name: Run ${{ matrix.project }} tests
               run: lake test
               shell: bash
-              continue-on-error: true
 
             - name: Prepare artifacts (Unix)
               if: runner.os != 'Windows'
