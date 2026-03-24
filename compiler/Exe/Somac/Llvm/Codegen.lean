@@ -1194,7 +1194,8 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
   let callRetTy := if extraArgs.isEmpty then llvmRetTy else .ptr
   let isTailCall := (← get).emitAsTailCall
   let mut ref ← CodegenM.withFuncBuilder do
-    FuncBuilder.callNamed callRetTy funcName llvmArgs (tailcall := isTailCall)
+    FuncBuilder.callNamed callRetTy funcName llvmArgs
+      (tailcall := isTailCall) (callconv := some .fast)
   if isTailCall then modify fun s => { s with emitAsTailCall := false }
   -- Over-application: apply extra args via soma_apply to the returned closure
   for extraArg in extraArgs do
@@ -2328,6 +2329,7 @@ def lowerFuncWithName (func : ClosedFunc) (name : String) : CodegenM LLVMFunc :=
     nounwind := true
     alwaysInline := func.attrs.inline
     noInline := func.attrs.noInline
+    callconv := if isMain then none else some .fast
   }
 
   match func.body with

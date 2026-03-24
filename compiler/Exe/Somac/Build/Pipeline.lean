@@ -240,6 +240,11 @@ def compileModules
       IO.println s!"  Mutual tail call optimization: {mutualCount} cross-function tail call(s) restructured"
     optimized := Alloy.Monomorphize.deadFunctionElimination optimized
 
+    let (consInlined, consCount) := Alloy.ConsInline.inlineConsFastPath optimized
+    optimized := consInlined
+    if consCount > 0 then
+      IO.println s!"  Cons fast-path inlining: {consCount} function(s) with inlined prepend"
+
     let (borrowed, borrowStats) := Alloy.Borrow.borrowModule optimized
     if borrowStats.borrowedParams > 0 then
       let cloneMsg := if borrowStats.clonesEliminated > 0 then

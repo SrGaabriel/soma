@@ -455,13 +455,13 @@ def callVoid (func : LLVMValue) (args : Array (LLVMType × LLVMValue))
 
 /-- Call a function by name -/
 def callNamed (retTy : LLVMType) (name : String) (args : Array (LLVMType × LLVMValue))
-    (tailcall : Bool := false) : FuncBuilder LocalRef :=
-  call retTy (.global ⟨name⟩) args tailcall
+    (tailcall : Bool := false) (callconv : Option CallConv := none) : FuncBuilder LocalRef :=
+  call retTy (.global ⟨name⟩) args tailcall callconv
 
 /-- Call a void function by name -/
 def callNamedVoid (name : String) (args : Array (LLVMType × LLVMValue))
-    (tailcall : Bool := false) : FuncBuilder Unit :=
-  callVoid (.global ⟨name⟩) args tailcall
+    (tailcall : Bool := false) (callconv : Option CallConv := none) : FuncBuilder Unit :=
+  callVoid (.global ⟨name⟩) args tailcall callconv
 
 /-- Select between two values based on condition -/
 def select (resTy : LLVMType) (cond thenVal elseVal : LLVMValue)

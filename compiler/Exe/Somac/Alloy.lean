@@ -17,6 +17,7 @@ import Somac.Alloy.AccumIntro
 import Somac.Alloy.ArithAccum
 import Somac.Alloy.ListIntrinsics
 import Somac.Alloy.ElemSize
+import Somac.Alloy.ConsInline
 
 namespace Somac.Alloy
 
@@ -29,6 +30,7 @@ export AccumIntro (accumIntro)
 export ArithAccum (arithAccumIntro)
 export ListIntrinsics (replaceListIntrinsics)
 export ElemSize (refineElemSizes)
+export ConsInline (inlineConsFastPath)
 export Borrow (borrowModule BorrowStats)
 export Reuse (reuseModule)
 export Merge (merge mergeModules)

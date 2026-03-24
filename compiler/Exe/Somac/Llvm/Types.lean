@@ -736,6 +736,9 @@ def toLLVM (f : LLVMFunc) : String :=
   let linkageStr := match f.attrs.linkage with
     | .external => ""
     | l => s!"{l} "
+  let ccStr := match f.attrs.callconv with
+    | some cc => s!"{cc} "
+    | none => ""
   let defOrDecl := if f.isDeclaration then "declare" else "define"
   let paramsStr := String.intercalate ", " (f.params.toList.map LLVMParam.toLLVM)
   let quotedName := quoteIfNeeded f.name
@@ -743,10 +746,10 @@ def toLLVM (f : LLVMFunc) : String :=
     else String.intercalate " " f.returnAttrs.toList ++ " "
 
   if f.isDeclaration then
-    s!"{defOrDecl} {linkageStr}{retAttrsStr}{f.retTy} @{quotedName}({paramsStr}){f.attrs}"
+    s!"{defOrDecl} {linkageStr}{ccStr}{retAttrsStr}{f.retTy} @{quotedName}({paramsStr}){f.attrs}"
   else
     let blocksStr := String.intercalate "\n" (f.blocks.toList.map LLVMBlock.toLLVM)
-    s!"{defOrDecl} {linkageStr}{retAttrsStr}{f.retTy} @{quotedName}({paramsStr}){f.attrs} \{\n{blocksStr}\n}"
+    s!"{defOrDecl} {linkageStr}{ccStr}{retAttrsStr}{f.retTy} @{quotedName}({paramsStr}){f.attrs} \{\n{blocksStr}\n}"
 
 instance : ToString LLVMFunc where
   toString := toLLVM
