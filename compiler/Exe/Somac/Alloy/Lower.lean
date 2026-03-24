@@ -1165,18 +1165,12 @@ partial def emitListDup (inputVal : LocalId) (_srcTy : Ty n) (label : UInt32)
         | none => false
       checkPort 1 || checkPort 2
     | none => false
-  if isPatternMatchDup then
-    let copy0 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .somaList)
-    let copy1 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .somaList)
-    pure (copy0, copy1)
-  else
-    -- Eager deep copy: soma_list_dup(list, elem_size) returns a fresh SomaList struct.
-    -- TODO: Replace with lazy SUP-based duplication
-    let elemSizeConst ← StateT.lift (LowerM.emitInst
-      (.copy (.const (.int (Int.ofNat elemSz) .u16))) (.prim .u16))
-    let copy1 ← StateT.lift (LowerM.emitInst
-      (.callExtern "soma_list_dup" #[.local inputVal, .local elemSizeConst] .somaList) .somaList)
-    pure (inputVal, copy1)
+  -- Shallow struct copy for all list DUPs. Both copies share the backing buffer.
+  let _ := isPatternMatchDup
+  let _ := elemSz
+  let copy0 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .somaList)
+  let copy1 ← StateT.lift (LowerM.emitInst (.copy (.local inputVal)) .somaList)
+  pure (copy0, copy1)
 
 /-- Lower an operand with FuncId map -/
 partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : FuncIdMap)
@@ -1774,29 +1768,39 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             | none => false
         traceSource (entry.getPort ⟨1⟩) 10
     if isListProj then do
-      let pb := (← get).ptrBytes
-      let elemSz := if fieldIdx == 0 then
-          -- For head, nodeTy is the element type
-          listElemSize nodeTy pb
-        else
-          -- For tail, get the list source node's Core Value type to extract element type
-          match entry.getPort ⟨1⟩ with
-          | some srcPort => match graph.getNode srcPort.node with
-            | some srcEntry => listElemSizeFromValueType srcEntry.ty ctx pb
-            | none => defaultElemSize pb
-          | none => defaultElemSize pb
-      let elemSizeConst ← StateT.lift (LowerM.emitInst
-        (.copy (.const (.int (Int.ofNat elemSz) .u16))) (.prim .u16))
       if fieldIdx == 0 then
-        -- Head: soma_list_head(list, elem_size) returns pointer to element
+        -- Inline head: (char*)list.data + (size_t)list.offset * elem_size
+        let pb := (← get).ptrBytes
+        let elemSz := listElemSize nodeTy pb
+        let dataPtr ← StateT.lift (LowerM.emitInst
+          (.extractField (.local recordVal) 0) .rawPtr)
+        let offset ← StateT.lift (LowerM.emitInst
+          (.extractField (.local recordVal) 2) (.prim .u32))
+        let offset64 ← StateT.lift (LowerM.emitInst
+          (.unOp (.zext .i64) (.local offset)) (.prim .i64))
+        let elemSz64 ← StateT.lift (LowerM.emitInst
+          (.copy (.const (.int (Int.ofNat elemSz) .i64))) (.prim .i64))
+        let byteOff ← StateT.lift (LowerM.emitInst
+          (.binOp .mul (.local offset64) (.local elemSz64) (.prim .i64)) (.prim .i64))
         let headPtr ← StateT.lift (LowerM.emitInst
-          (.callExtern "soma_list_head" #[.local recordVal, .local elemSizeConst] .rawPtr) .rawPtr)
-        -- Load the element value from the pointer
+          (.callIntrinsic .ptrAdd #[.local dataPtr, .local byteOff] .rawPtr) .rawPtr)
         StateT.lift (LowerM.emitInst (.load (.local headPtr) nodeTy) nodeTy)
       else if fieldIdx == 1 then
-        -- Tail: soma_list_tail(list, elem_size) returns new list struct
+        -- Inline tail: { list.data, list.len - 1, list.offset + 1 }
+        let dataPtr ← StateT.lift (LowerM.emitInst
+          (.extractField (.local recordVal) 0) .rawPtr)
+        let len ← StateT.lift (LowerM.emitInst
+          (.extractField (.local recordVal) 1) (.prim .u32))
+        let offset ← StateT.lift (LowerM.emitInst
+          (.extractField (.local recordVal) 2) (.prim .u32))
+        let one ← StateT.lift (LowerM.emitInst
+          (.copy (.const (.int 1 .u32))) (.prim .u32))
+        let newLen ← StateT.lift (LowerM.emitInst
+          (.binOp .sub (.local len) (.local one) (.prim .u32)) (.prim .u32))
+        let newOff ← StateT.lift (LowerM.emitInst
+          (.binOp .add (.local offset) (.local one) (.prim .u32)) (.prim .u32))
         StateT.lift (LowerM.emitInst
-          (.callExtern "soma_list_tail" #[.local recordVal, .local elemSizeConst] .somaList) .somaList)
+          (.structLit #[.local dataPtr, .local newLen, .local newOff] .somaList) .somaList)
       else
         StateT.lift (LowerM.emitPanic nodeTy)
     else
@@ -2087,27 +2091,23 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             | none => .prim .i64
           | none => .prim .i64
         | none => .prim .i64
-      let elemSlot ← StateT.lift (LowerM.emitInst (.alloca elemAllocTy) (.ptr elemAllocTy))
-      -- Build list via repeated cons (reverse order for correct element ordering)
-      let mut list ← StateT.lift (LowerM.emitInst
-        (.structLit #[.const (.null .rawPtr),
-                      .const (.int 0 .u32),
-                      .const (.int 0 .u32)] .somaList) .somaList)
+      -- Build list via soma_list_from_array: alloca a flat array, store elements, single call
+      let arrayTy : Ty n := .array elemAllocTy len
+      let arraySlot ← StateT.lift (LowerM.emitInst (.alloca arrayTy) (.ptr arrayTy))
       match ctorInfo with
       | some (_, ctorEntry) =>
-        let mut elemVals : Array LocalId := #[]
         for i in [:len] do
           let elemVal ← match ctorEntry.getPort ⟨i + 1⟩ with
             | some elemPort => lowerOperandWithMap graph elemPort funcIdMap
             | none => StateT.lift (LowerM.emitPanic (.prim .i64))
-          elemVals := elemVals.push elemVal
-        for i in List.range len |>.reverse do
-          if h : i < elemVals.size then
-            StateT.lift (LowerM.emitVoid (.store (.local elemSlot) (.local elemVals[i])))
-            list ← StateT.lift (LowerM.emitInst
-              (.callExtern "soma_list_cons" #[.local elemSlot, .local list, .local elemSizeVal] .somaList) .somaList)
+          let elemPtr ← StateT.lift (LowerM.emitInst
+            (.getElemPtr (.local arraySlot) (.const (.int (Int.ofNat i) .i32)) elemAllocTy) (.ptr elemAllocTy))
+          StateT.lift (LowerM.emitVoid (.store (.local elemPtr) (.local elemVal)))
       | none => pure ()
-      pure list
+      let lenVal ← StateT.lift (LowerM.emitInst
+        (.copy (.const (.int (Int.ofNat len) .u32))) (.prim .u32))
+      StateT.lift (LowerM.emitInst
+        (.callExtern "soma_list_from_array" #[.local arraySlot, .local lenVal, .local elemSizeVal] .somaList) .somaList)
 
   | .string => do
     -- String node: extract length and string index from connected NUM nodes

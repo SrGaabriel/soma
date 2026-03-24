@@ -539,6 +539,37 @@ def somaListLLVMTy : LLVMType := .struct false #[.ptr, .i32, .i32]
 def isSomaStringLLVMTy (ty : LLVMType) : Bool :=
   ty == somaStringLLVMTy
 
+/-- Compute the SysV x86-64 coerced type for a struct -/
+def sysVCoercedType (ty : LLVMType) : LLVMType :=
+  match ty with
+  | .struct _ fields =>
+    let totalBytes := fields.foldl (fun acc f =>
+      match f with
+      | .ptr => acc + 8
+      | .i64 | .double => acc + 8
+      | .i32 | .float => acc + 4
+      | .i16 => acc + 2
+      | .i8 | .i1 => acc + 1
+      | _ => acc + 8) 0
+    let numEightbytes := (totalBytes + 7) / 8
+    if numEightbytes == 1 then .i64
+    else .struct false ((List.replicate numEightbytes LLVMType.i64).toArray)
+  | _ => ty
+
+/-- Coerce a struct value to its SysV ABI type via alloca-store-load -/
+def coerceStructToSysV (origTy coercedTy : LLVMType) (val : LLVMValue)
+    : CodegenM LocalRef := do
+  let alloca ← CodegenM.withFuncBuilder (FuncBuilder.alloca origTy)
+  CodegenM.withFuncBuilder (FuncBuilder.store origTy val (.local alloca))
+  CodegenM.withFuncBuilder (FuncBuilder.load coercedTy (.local alloca))
+
+/-- Coerce a SysV ABI return value back to the original struct type -/
+def coerceSysVToStruct (origTy coercedTy : LLVMType) (val : LLVMValue)
+    : CodegenM LocalRef := do
+  let alloca ← CodegenM.withFuncBuilder (FuncBuilder.alloca coercedTy)
+  CodegenM.withFuncBuilder (FuncBuilder.store coercedTy val (.local alloca))
+  CodegenM.withFuncBuilder (FuncBuilder.load origTy (.local alloca))
+
 /-- Call a named C function with correct ABI for struct-by-value args/returns -/
 def callCFuncStructABI (retTy : LLVMType) (name : String)
     (args : Array (LLVMType × LLVMValue)) : CodegenM LocalRef := do
@@ -558,17 +589,29 @@ def callCFuncStructABI (retTy : LLVMType) (name : String)
       CodegenM.withFuncBuilder (FuncBuilder.store ty val (.local alloca))
       abiArgs := abiArgs.push (.ptr, .local alloca)
       argAttrs := argAttrs.push (some s!"byval({ty.toLLVM})")
+    else if ty.isStruct && !winABI then
+      let coerced := sysVCoercedType ty
+      let ref ← coerceStructToSysV ty coerced val
+      abiArgs := abiArgs.push (coerced, .local ref)
+      argAttrs := argAttrs.push none
     else
       abiArgs := abiArgs.push (ty, val)
       argAttrs := argAttrs.push none
-  let callRetTy := if hasStructRet then LLVMType.void else retTy
-  CodegenM.withFuncBuilder do
+  let callRetTy := if hasStructRet then LLVMType.void
+    else if retTy.isStruct && !winABI then sysVCoercedType retTy
+    else retTy
+  let needsSysVCoerce := retTy.isStruct && !winABI
+  let rawRef ← CodegenM.withFuncBuilder do
     let inst : LLVMInst := .call false none callRetTy (.global ⟨name⟩) abiArgs argAttrs
     if hasStructRet then
       FuncBuilder.emitVoid inst
       FuncBuilder.load retTy (.local sretAlloca?.get!)
     else
       FuncBuilder.emit inst
+  if needsSysVCoerce then
+    coerceSysVToStruct retTy callRetTy (.local rawRef)
+  else
+    pure rawRef
 
 /-- Call a named void C function with correct ABI for struct-by-value args -/
 def callCFuncStructABIVoid (name : String) (args : Array (LLVMType × LLVMValue))
@@ -582,6 +625,11 @@ def callCFuncStructABIVoid (name : String) (args : Array (LLVMType × LLVMValue)
       CodegenM.withFuncBuilder (FuncBuilder.store ty val (.local alloca))
       abiArgs := abiArgs.push (.ptr, .local alloca)
       argAttrs := argAttrs.push (some s!"byval({ty.toLLVM})")
+    else if ty.isStruct && !winABI then
+      let coerced := sysVCoercedType ty
+      let ref ← coerceStructToSysV ty coerced val
+      abiArgs := abiArgs.push (coerced, .local ref)
+      argAttrs := argAttrs.push none
     else
       abiArgs := abiArgs.push (ty, val)
       argAttrs := argAttrs.push none
@@ -1144,7 +1192,7 @@ def lowerDirectCall (funcId : Nat) (args : Array Operand) (retTy : ClosedTy)
     pure (expectedLLVMTy, coercedVal)
   -- Call function with its declared parameters
   let callRetTy := if extraArgs.isEmpty then llvmRetTy else .ptr
-  let isTailCall := false
+  let isTailCall := (← get).emitAsTailCall
   let mut ref ← CodegenM.withFuncBuilder do
     FuncBuilder.callNamed callRetTy funcName llvmArgs (tailcall := isTailCall)
   if isTailCall then modify fun s => { s with emitAsTailCall := false }
@@ -1413,18 +1461,19 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
 
   | .structLit fields ty =>
     let llvmTy := convertTy ty
-    -- Allocate and initialize struct
-    let structPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca llvmTy)
+    -- Build struct via insertvalue chain (pure register ops, no memory round-trip)
+    let mut agg : LLVMValue := .const (.undef llvmTy)
     for i in [:fields.size] do
       if h : i < fields.size then
         let fieldOp := fields[i]
-        let (fieldLLVMTy, fieldVal) ← convertOperandWithTy fieldOp
-        let fieldPtr ← CodegenM.withFuncBuilder do
-          FuncBuilder.gepi32 llvmTy (.local structPtr) #[0, i]
-        CodegenM.withFuncBuilder do
-          FuncBuilder.store fieldLLVMTy fieldVal (.local fieldPtr)
-    let ref ← CodegenM.withFuncBuilder (FuncBuilder.load llvmTy (.local structPtr))
-    pure (some (ref, ty))
+        let (_, fieldVal) ← convertOperandWithTy fieldOp
+        let ref ← CodegenM.withFuncBuilder do
+          FuncBuilder.insertvalue llvmTy agg fieldVal #[i]
+        agg := .local ref
+    let finalRef ← match agg with
+      | .local r => pure r
+      | _ => CodegenM.withFuncBuilder (FuncBuilder.asLocalRef llvmTy agg)
+    pure (some (finalRef, ty))
 
   | .arrayLit elems elemTy =>
     let llvmElemTy := convertTy elemTy
@@ -2408,12 +2457,13 @@ def addRuntimeDeclarations : CodegenM Unit := do
         isDeclaration := true
       }
   else
-    -- Non-Windows: pass structs directly
+    -- Non-Windows (SysV): coerce string struct to { i64, i64 } for correct ABI
+    let coercedStrTy := sysVCoercedType strTy
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
         name := "soma_era_string"
         retTy := .void
-        params := #[{ name := "str", ty := strTy }]
+        params := #[{ name := "str", ty := coercedStrTy }]
         attrs := { nounwind := true }
         isDeclaration := true
       }
@@ -2421,7 +2471,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
         name := "soma_from_cstring"
-        retTy := strTy
+        retTy := coercedStrTy
         params := #[{ name := "cstr", ty := .ptr, attrs := #["nocapture", "readonly"] }]
         attrs := { nounwind := true }
         isDeclaration := true
@@ -2430,10 +2480,10 @@ def addRuntimeDeclarations : CodegenM Unit := do
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
         name := "soma_strcat"
-        retTy := strTy
+        retTy := coercedStrTy
         params := #[
-          { name := "a", ty := strTy },
-          { name := "b", ty := strTy }
+          { name := "a", ty := coercedStrTy },
+          { name := "b", ty := coercedStrTy }
         ]
         attrs := { nounwind := true }
         isDeclaration := true
@@ -2442,7 +2492,7 @@ def addRuntimeDeclarations : CodegenM Unit := do
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
         name := "soma_int_to_string"
-        retTy := strTy
+        retTy := coercedStrTy
         params := #[{ name := "val", ty := .i32 }]
         attrs := { nounwind := true }
         isDeclaration := true
@@ -2661,14 +2711,15 @@ def addRuntimeDeclarations : CodegenM Unit := do
         isDeclaration := true
       }
   else
-    -- Non-Windows: pass SomaList struct directly in registers (SysV: 4 regs)
+    -- Non-Windows (SysV): coerce SomaList struct to { i64, i64 } for correct ABI
+    let coercedListTy := sysVCoercedType listTy
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
         name := "soma_list_cons"
-        retTy := listTy
+        retTy := coercedListTy
         params := #[
           { name := "elem", ty := .ptr, attrs := #["nocapture", "readonly"] },
-          { name := "tail", ty := listTy },
+          { name := "tail", ty := coercedListTy },
           { name := "elem_size", ty := .i16 }]
         attrs := { nounwind := true }
         isDeclaration := true
@@ -2677,23 +2728,23 @@ def addRuntimeDeclarations : CodegenM Unit := do
       ModuleBuilder.addFunc {
         name := "soma_list_head"
         retTy := .ptr
-        params := #[{ name := "list", ty := listTy }, { name := "elem_size", ty := .i16 }]
+        params := #[{ name := "list", ty := coercedListTy }, { name := "elem_size", ty := .i16 }]
         attrs := { nounwind := true }
         isDeclaration := true
       }
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
         name := "soma_list_tail"
-        retTy := listTy
-        params := #[{ name := "list", ty := listTy }, { name := "elem_size", ty := .i16 }]
+        retTy := coercedListTy
+        params := #[{ name := "list", ty := coercedListTy }, { name := "elem_size", ty := .i16 }]
         attrs := { nounwind := true }
         isDeclaration := true
       }
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
         name := "soma_list_dup"
-        retTy := listTy
-        params := #[{ name := "list", ty := listTy }, { name := "elem_size", ty := .i16 }]
+        retTy := coercedListTy
+        params := #[{ name := "list", ty := coercedListTy }, { name := "elem_size", ty := .i16 }]
         attrs := { nounwind := true }
         isDeclaration := true
       }
@@ -2701,14 +2752,14 @@ def addRuntimeDeclarations : CodegenM Unit := do
       ModuleBuilder.addFunc {
         name := "soma_list_era"
         retTy := .void
-        params := #[{ name := "list", ty := listTy }]
+        params := #[{ name := "list", ty := coercedListTy }]
         attrs := { nounwind := true }
         isDeclaration := true
       }
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
         name := "soma_list_from_array"
-        retTy := listTy
+        retTy := coercedListTy
         params := #[
           { name := "data", ty := .ptr, attrs := #["nocapture", "readonly"] },
           { name := "len", ty := .i32 },
@@ -2750,18 +2801,19 @@ def addRuntimeDeclarations : CodegenM Unit := do
         isDeclaration := true
       }
   else
+    let coercedListTy := sysVCoercedType listTy
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
         name := "soma_list_box_for_sup"
         retTy := .ptr
-        params := #[{ name := "list", ty := listTy }, { name := "elem_size", ty := .i16 }]
+        params := #[{ name := "list", ty := coercedListTy }, { name := "elem_size", ty := .i16 }]
         attrs := { nounwind := true }
         isDeclaration := true
       }
     CodegenM.withModuleBuilder do
       ModuleBuilder.addFunc {
         name := "soma_list_unbox"
-        retTy := listTy
+        retTy := coercedListTy
         params := #[{ name := "boxed", ty := .ptr }]
         attrs := { nounwind := true }
         isDeclaration := true
