@@ -9,6 +9,8 @@ import shutil
 BENCH_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench")
 TARGET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "target")
 
+EXE_EXT = ".exe" if sys.platform == "win32" else ""
+
 
 def find_tool(name):
     return shutil.which(name)
@@ -20,7 +22,7 @@ def compile_targets():
     targets = []
 
     # Soma (already built)
-    soma_exe = os.path.join(TARGET_DIR, "example.exe")
+    soma_exe = os.path.join(TARGET_DIR, "example" + EXE_EXT)
     if os.path.isfile(soma_exe):
         targets.append(("Soma", [soma_exe]))
     else:
@@ -30,7 +32,7 @@ def compile_targets():
     gcc = find_tool("gcc")
     if gcc:
         c_src = os.path.join(BENCH_DIR, "main.c")
-        c_exe = os.path.join(TARGET_DIR, "bench_c.exe")
+        c_exe = os.path.join(TARGET_DIR, "bench_c" + EXE_EXT)
         r = subprocess.run([gcc, "-O2", "-o", c_exe, c_src], capture_output=True)
         if r.returncode == 0:
             targets.append(("C (gcc -O2)", [c_exe]))
@@ -43,7 +45,7 @@ def compile_targets():
     rustc = find_tool("rustc")
     if rustc:
         rs_src = os.path.join(BENCH_DIR, "main.rs")
-        rs_exe = os.path.join(TARGET_DIR, "bench_rust.exe")
+        rs_exe = os.path.join(TARGET_DIR, "bench_rust" + EXE_EXT)
         r = subprocess.run([rustc, "-O", "-o", rs_exe, rs_src], capture_output=True)
         if r.returncode == 0:
             targets.append(("Rust (rustc -O)", [rs_exe]))
@@ -56,7 +58,7 @@ def compile_targets():
     zig = find_tool("zig")
     if zig:
         zig_src = os.path.join(BENCH_DIR, "main.zig")
-        zig_exe = os.path.join(TARGET_DIR, "bench_zig.exe")
+        zig_exe = os.path.join(TARGET_DIR, "bench_zig" + EXE_EXT)
         r = subprocess.run(
             [zig, "build-exe", "-OReleaseFast", "-lc", "-femit-bin=" + zig_exe, zig_src],
             capture_output=True,
@@ -72,7 +74,7 @@ def compile_targets():
     go = find_tool("go")
     if go:
         go_src = os.path.join(BENCH_DIR, "main.go")
-        go_exe = os.path.join(TARGET_DIR, "bench_go.exe")
+        go_exe = os.path.join(TARGET_DIR, "bench_go" + EXE_EXT)
         r = subprocess.run([go, "build", "-o", go_exe, go_src], capture_output=True)
         if r.returncode == 0:
             targets.append(("Go", [go_exe]))
@@ -85,7 +87,7 @@ def compile_targets():
     ghc = find_tool("ghc")
     if ghc:
         hs_src = os.path.join(BENCH_DIR, "main.hs")
-        hs_exe = os.path.join(TARGET_DIR, "bench_haskell.exe")
+        hs_exe = os.path.join(TARGET_DIR, "bench_haskell" + EXE_EXT)
         r = subprocess.run([ghc, "-O2", "-o", hs_exe, hs_src, "-no-keep-hi-files", "-no-keep-o-files"],
                            capture_output=True)
         if r.returncode == 0:
@@ -99,7 +101,7 @@ def compile_targets():
     ocamlopt = find_tool("ocamlfind") or find_tool("ocamlopt")
     if ocamlopt:
         ml_src = os.path.join(BENCH_DIR, "main.ml")
-        ml_exe = os.path.join(TARGET_DIR, "bench_ocaml.exe")
+        ml_exe = os.path.join(TARGET_DIR, "bench_ocaml" + EXE_EXT)
         if "ocamlfind" in ocamlopt:
             cmd = [ocamlopt, "ocamlopt", "-package", "stdlib", "-linkpkg", "-O2", "-o", ml_exe, ml_src]
         else:
