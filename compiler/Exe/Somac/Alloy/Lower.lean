@@ -1853,6 +1853,25 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     -- Track list-typed scrutinees so PROJ nodes can detect them
     if scrutIsArray then
       modify fun ns => { ns with listTypedLocals := ns.listTypedLocals.insert scrutineeVal.id }
+
+    let loweredScrutTy := (← StateT.lift get).func.getLocalType scrutineeVal
+    let isSingleCtorRecord := if scrutIsArray then false
+      else
+        let scrutTy := match entry.getPort ⟨1⟩ with
+          | some sp => match graph.getNode sp.node with
+            | some se => getNodeTypeWithMapping se ctx
+            | none => nodeTy
+          | none => nodeTy
+        match scrutTy with
+        | .struct _ => true
+        | _ => match loweredScrutTy with
+          | some ty => match ty with | .struct _ => true | _ => false
+          | none => false
+    if isSingleCtorRecord then do
+      modify fun ns => { ns with expectedResultTy := some matResultTy }
+      lowerPort 2 matResultTy (some matResultTy)
+    else do
+
     let (_, _thenBlock, elseBlock) ← if scrutIsArray then
       -- Array-backed list: check list.len field (index 1) for Nil/Cons
       StateT.lift do
@@ -2026,12 +2045,20 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                      |>.insert (nodeId.id * 1000 + 2) clone
         }
         pure inputVal
-      else if Ty.supportsLazySup nodeTy then
-        -- Truly polymorphic (.var) types: runtime representation unknown, must use SUP
-        let supVal ← StateT.lift (LowerM.emitInst (.lazySup label.id (.local inputVal) nodeTy) nodeTy)
-        pure supVal
-      else
-        panic! s!"ALLOY LOWERING BUG: DUP on unsupported heap type for lazy SUP ({nodeTy}). Implement type-directed clone/erase lowering for this type before enabling SUP duplication."
+      else match nodeTy with
+      | .struct _ => do
+        let clone ← StateT.lift (LowerM.emitInst (.clone (.local inputVal) nodeTy label.id) nodeTy)
+        modify fun ns => { ns with
+          results := ns.results.insert (nodeId.id * 1000 + 1) inputVal
+                     |>.insert (nodeId.id * 1000 + 2) clone
+        }
+        pure inputVal
+      | _ =>
+        if Ty.supportsLazySup nodeTy then
+          let supVal ← StateT.lift (LowerM.emitInst (.lazySup label.id (.local inputVal) nodeTy) nodeTy)
+          pure supVal
+        else
+          panic! s!"ALLOY LOWERING BUG: DUP on unsupported heap type for lazy SUP ({nodeTy}). Implement type-directed clone/erase lowering for this type before enabling SUP duplication."
 
   | .sup _ => do
     lowerPort 1

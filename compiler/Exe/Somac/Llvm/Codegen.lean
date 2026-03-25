@@ -1109,11 +1109,42 @@ partial def getOrEmitCloner (ty : ClosedTy) : CodegenM String := do
       CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local cloned))
 
     | .rawPtr =>
-      -- rawPtr fallback: generic clone
-      let cloned ← CodegenM.withFuncBuilder do
-        FuncBuilder.callNamed .ptr "soma_clone_heap_value_for_dup"
-          #[(.ptr, .local valParam), (.i32, .local lblParam)]
-      CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local cloned))
+      CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local valParam))
+
+    | .struct fields =>
+      -- Struct clone: allocate new struct, clone each field
+      let llvmTy := convertTy ty
+      let structVal ← CodegenM.withFuncBuilder (FuncBuilder.load llvmTy (.local valParam))
+      let hasClonableFields := fields.any fun (_, ft) => ft.needsErase
+      if hasClonableFields then
+        let mut result := structVal
+        for fi in [:fields.size] do
+          let (_, fieldTy) := fields[fi]!
+          if fieldTy.needsErase then
+            let fieldLLVMTy := convertTy fieldTy
+            let fieldVal ← CodegenM.withFuncBuilder do
+              FuncBuilder.extractvalue llvmTy (.local result) #[fi]
+            let fieldAsPtr ← ensurePtr fieldLLVMTy (.local fieldVal)
+            let fieldClonerName ← getOrEmitCloner fieldTy
+            let clonedPtr ← CodegenM.withFuncBuilder do
+              FuncBuilder.callNamed .ptr fieldClonerName
+                #[(.ptr, fieldAsPtr), (.i32, .local lblParam)]
+            let clonedVal ← coerceValue .ptr fieldLLVMTy (.local clonedPtr)
+            let newResult ← CodegenM.withFuncBuilder do
+              FuncBuilder.insertvalue llvmTy (.local result) clonedVal #[fi]
+            result := newResult
+        -- Store updated struct and return pointer
+        let structSizePtr ← CodegenM.withFuncBuilder do
+          FuncBuilder.gepi32 llvmTy (.const .null) #[1]
+        let structSizeI64 ← CodegenM.withFuncBuilder do
+          FuncBuilder.ptrtoint .i64 (.local structSizePtr)
+        let newPtr ← CodegenM.withFuncBuilder do
+          FuncBuilder.callNamed .ptr "malloc" #[(.i64, .local structSizeI64)]
+        CodegenM.withFuncBuilder (FuncBuilder.store llvmTy (.local result) (.local newPtr))
+        CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local newPtr))
+      else
+        -- All flat fields: identity clone
+        CodegenM.withFuncBuilder (FuncBuilder.ret .ptr (.local valParam))
 
     | _ =>
       -- Flat types: identity clone
@@ -1519,10 +1550,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
           FuncBuilder.extractvalue taggedTy (.local innerRef) #[0]
         pure (some (ref, .prim .u32))
       | _ =>
-        -- First field is not a tagged union, extract it as the tag
-        let ref ← CodegenM.withFuncBuilder do
-          FuncBuilder.extractvalue llvmValTy valRef #[0]
-        pure (some (ref, .prim .u32))
+        panic! s!"CODEGEN BUG: getTag on plain struct {valTy} — single-constructor records should be optimized out at the Alloy level"
     | .prim .bool =>
       -- Bool: zext i1 to i32
       let ref ← CodegenM.withFuncBuilder do
@@ -1556,35 +1584,42 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let valRef ← convertOperand val
     let llvmValTy := convertTy valTy
     let llvmResultTy := convertTy resultTy
+    match valTy with
+    | .struct _ =>
+      panic! s!"CODEGEN BUG: getPayload on struct {valTy} — should use extractField via PROJ optimization"
+    | .prim .unit =>
+      panic! s!"CODEGEN BUG: getPayload on unit — should be eliminated by single-constructor MAT optimization"
+    | _ =>
+    -- Tagged union: extract payload pointer first
     let payloadPtr ← match valTy with
-      | .rawPtr | .ptr _ =>
-        -- Pointer to tagged union: GEP to payload field (index 1) + load
-        let payloadSlot ← CodegenM.withFuncBuilder do
-          FuncBuilder.gepi32 taggedTy valRef #[0, 1]
-        CodegenM.withFuncBuilder do
-          FuncBuilder.load .ptr (.local payloadSlot)
-      | _ =>
-        -- By-value tagged union: extractvalue to get payload pointer
-        CodegenM.withFuncBuilder do
-          FuncBuilder.extractvalue llvmValTy valRef #[1]
-    -- Natural-size payload: GEP into typed struct for this variant
-    let variantFieldTypes? := match valTy with
-      | .tagged _ variants =>
-        match variants.find? (fun (idx, _) => idx == variantIdx) with
-        | some (_, fields) => if fields.isEmpty then none else some fields
-        | none => none
-      | _ => none
-    let fieldPtr ← match variantFieldTypes? with
+        | .rawPtr | .ptr _ =>
+          -- Pointer to tagged union: GEP to payload field (index 1) + load
+          let payloadSlot ← CodegenM.withFuncBuilder do
+            FuncBuilder.gepi32 taggedTy valRef #[0, 1]
+          CodegenM.withFuncBuilder do
+            FuncBuilder.load .ptr (.local payloadSlot)
+        | _ =>
+          -- By-value tagged union: extractvalue to get payload pointer
+          CodegenM.withFuncBuilder do
+            FuncBuilder.extractvalue llvmValTy valRef #[1]
+      -- Natural-size payload: GEP into typed struct for this variant
+      let variantFieldTypes? := match valTy with
+        | .tagged _ variants =>
+          match variants.find? (fun (idx, _) => idx == variantIdx) with
+          | some (_, fields) => if fields.isEmpty then none else some fields
+          | none => none
+        | _ => none
+      match variantFieldTypes? with
       | some fields =>
         let layout := computePackedLayout fields (← get).ptrSize
         let physIdx := layout.logToPhys.getD fieldIdx fieldIdx
-        CodegenM.withFuncBuilder do
+        let fieldPtr ← CodegenM.withFuncBuilder do
           FuncBuilder.gepi32 layout.llvmTy (.local payloadPtr) #[0, physIdx]
+        let ref ← CodegenM.withFuncBuilder do
+          FuncBuilder.load llvmResultTy (.local fieldPtr)
+        pure (some (ref, resultTy))
       | none =>
         panic! s!"CODEGEN BUG: field access on unknown variant {variantIdx} of {valTy}"
-    let ref ← CodegenM.withFuncBuilder do
-      FuncBuilder.load llvmResultTy (.local fieldPtr)
-    pure (some (ref, resultTy))
 
   | .taggedLit tag payload ty =>
     let taggedPtr ← CodegenM.withFuncBuilder (FuncBuilder.alloca taggedTy)
