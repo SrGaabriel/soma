@@ -2,11 +2,11 @@
 // Test: currying and partial application
 
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 
-def add : Int -> Int -> Int
+def add : Int32 -> Int32 -> Int32
     | x, y  => x + y
 
-def add5 : Int -> Int = add 5
+def add5 : Int32 -> Int32 = add 5
 
-def add_both : Int -> Int -> Int = add
+def add_both : Int32 -> Int32 -> Int32 = add

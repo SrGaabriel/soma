@@ -1,20 +1,20 @@
 // expect: success
 
-def get_x :  (r : Row). { x : Int | r } -> Int
+def get_x :  (r : Row). { x : Int32 | r } -> Int32
     | rec => rec.x
 
 def get_name :  (r : Row). { name : String | r } -> String
     | rec => rec.name
 
-def test1 : Int = get_x { x = 42 }
-def test2 : Int = get_x { x = 1, y = 2 }
-def test3 : Int = get_x { x = 100, y = "hello", z = true }
+def test1 : Int32 = get_x { x = 42 }
+def test2 : Int32 = get_x { x = 1, y = 2 }
+def test3 : Int32 = get_x { x = 100, y = "hello", z = true }
 
 def test4 : String = get_name { name = "alice" }
 def test5 : String = get_name { name = "bob", age = 30 }
 
-def get_both :  (r : Row). { x : Int, name : String | r } -> (Int, String)
+def get_both :  (r : Row). { x : Int32, name : String | r } -> (Int32, String)
     | rec => (rec.x, rec.name)
 
-def test6 : (Int, String) = get_both { x = 42, name = "test" }
-def test7 : (Int, String) = get_both { x = 1, name = "extra", other = 999 }
+def test6 : (Int32, String) = get_both { x = 42, name = "test" }
+def test7 : (Int32, String) = get_both { x = 1, name = "extra", other = 999 }

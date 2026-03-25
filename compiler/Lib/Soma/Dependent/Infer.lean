@@ -320,6 +320,7 @@ partial def structurallyIncompatible (v1 v2 : Value) : TCM Bool := do
   match v1', v2' with
   | .vConstructor n1 _ _ _, .vConstructor n2 _ _ _ => return n1 != n2
   | .vIntLit n1, .vIntLit n2 => return n1 != n2
+  | .vFloatLit f1, .vFloatLit f2 => return f1 != f2
   | .vStringLit s1, .vStringLit s2 => return s1 != s2
   | .vPrimTy p1, .vPrimTy p2 => return p1 != p2
   | .vDataType id1 ps1, .vDataType id2 ps2 =>
@@ -1281,6 +1282,18 @@ where
         return bodyExpr
       | paramList =>
         checkSyntaxLamBody paramList body expected' span []
+
+    | .lit (.int n _), .vPrimTy pt => do
+      if pt.isIntegral then
+        return .lit (.int n)
+      else if pt.isFloating then
+        return .lit (.float (Float.ofInt n))
+      else
+        let (inferred, expr) ← inferSyntax e
+        let (inferred', expr') ← insertImplicits inferred expr e.span
+        unify inferred' expected'
+        solveImplicitsGreedy
+        return expr'
 
     -- If-then-else: check both branches
     | .if_ cond then_ else_ span, _ => do

@@ -1,9 +1,9 @@
 // expect: success
 // Test: pattern matching on variants
 
-def handle_result : < Ok::Int | Err :: String > -> Int
+def handle_result : < Ok::Int32 | Err :: String > -> Int32
     | .Ok n => n
     | .Err _ => 0
 
-def test1 : Int = handle_result (.Ok 42)
-def test2 : Int = handle_result (.Err "oops")
+def test1 : Int32 = handle_result (.Ok 42)
+def test2 : Int32 = handle_result (.Err "oops")

@@ -5,11 +5,11 @@ inductive MyBool where
     | MyTrue
     | MyFalse
 
-def choose : MyBool -> Int -> Int -> Int
+def choose : MyBool -> Int32 -> Int32 -> Int32
     | MyTrue x, _  => x
     | MyFalse _, y  => y
 
-def max : Int -> Int -> Int
+def max : Int32 -> Int32 -> Int32
     | x, y  => choose MyTrue x y
 
-def test : Int = max 10 20
+def test : Int32 = max 10 20

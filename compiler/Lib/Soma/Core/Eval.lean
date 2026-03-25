@@ -160,6 +160,7 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
   | .lit l =>
     match l with
     | .int n => .vIntLit n
+    | .float f => .vFloatLit f
     | .string s => .vStringLit s
     | .bool true => .vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
     | .bool false => .vConstructor ⟨⟨0, "", "False"⟩⟩ 1 [] (.vPrimTy .bool)
@@ -389,6 +390,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr
     | none => panic! s!"Expr.typeOfWith: bvar({idx}) out of range (context size {bvarCtx.size})"
 
   | .lit (.int _) => .vPrimTy .int
+  | .lit (.float _) => .vPrimTy .double
   | .lit (.string _) => .vPrimTy .string
   | .lit (.bool _) => .vPrimTy .bool
 

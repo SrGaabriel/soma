@@ -4,10 +4,10 @@
 inductive Pair {a : Type} {b : Type} where
     | MkPair (fst : a) (snd : b)
 
-def pair : Pair Int Int = Pair::MkPair 1 2
+def pair : Pair Int32 Int32 = Pair::MkPair 1 2
 
-def fst : Pair Int Int -> Int
+def fst : Pair Int32 Int32 -> Int32
     | Pair::MkPair x _ => x
 
-def snd : Pair Int Int -> Int
+def snd : Pair Int32 Int32 -> Int32
     | Pair::MkPair _ y => y

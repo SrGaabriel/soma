@@ -43,6 +43,7 @@ partial def readbackNode (nid : NodeId) (ctx : ReadbackCtx) (depth : Nat := 0)
   match entry.node with
   | .num .bool v => return .num .bool v
   | .num pt v => return .num pt v
+  | .num64 pt lo _hi => return .num pt lo  -- TODO: readback 64-bit values properly
 
   | .era => return .erased
 

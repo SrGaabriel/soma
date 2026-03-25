@@ -6,7 +6,7 @@ class Showable (a : Type) where
     render : a -> String
 
 // Named instance - can be referenced by name later
-instance intShowable : Showable Int where
+instance intShowable : Showable Int32 where
     def render
         | x => "int"
 

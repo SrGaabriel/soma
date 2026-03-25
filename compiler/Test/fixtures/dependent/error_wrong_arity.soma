@@ -1,5 +1,5 @@
 // expect: error
 // Test: wrong number of arguments should be caught
 
-def f : Int -> Int -> Int
+def f : Int32 -> Int32 -> Int32
     | x => x

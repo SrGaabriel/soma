@@ -1,9 +1,9 @@
 // expect: success
 
-alias MyInt = Int
+alias MyInt = Int32
 
 alias Pair a b = (a, b)
 
 def x : MyInt = 42
 
-def p : Pair Int Bool = (1, true)
+def p : Pair Int32 Bool = (1, true)

@@ -54,6 +54,7 @@ partial def zonkValue (v : Value) : TCM Value := do
 
   | .vPrimTy p => return .vPrimTy p
   | .vIntLit n => return .vIntLit n
+  | .vFloatLit f => return .vFloatLit f
   | .vStringLit s => return .vStringLit s
 
   | .vRowEmpty => return .vRowEmpty

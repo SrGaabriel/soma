@@ -4,5 +4,5 @@
 def use_many : (ω a : Type) -> a -> a
     | _, x  => x
 
-def duplicate : (ω x : Int) -> (Int, Int)
+def duplicate : (ω x : Int32) -> (Int32, Int32)
     | x => (x, x)

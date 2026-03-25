@@ -9,5 +9,5 @@ def bimap :  (f : Type -> Type -> Type) a b c d. (a -> c) -> (b -> d) -> f a b -
 def fix :  (f : (Type -> Type) -> Type) (g : Type -> Type). f g -> f g
     | x => x
 
-def map_record :  (f : Type -> Type) (r : Row). { value : f Int | r } -> { value : f Int | r }
+def map_record :  (f : Type -> Type) (r : Row). { value : f Int32 | r } -> { value : f Int32 | r }
     | rec => rec

@@ -193,6 +193,13 @@ inductive Node where
       - value: the immediate value -/
   | num (primType : PrimType) (value : UInt32)
 
+  /-- Wide numeric literal (64-bit immediate)
+      - Principal: numeric value
+      - No auxiliary ports
+      - primType: f64, i64, or u64
+      - lo/hi: lower and upper 32-bit halves -/
+  | num64 (primType : PrimType) (lo hi : UInt32)
+
   /-- Unary primitive operation
       - Principal: result
       - Aux 0: operand
@@ -294,6 +301,7 @@ def numAuxPorts : Node → Nat
   | .record n => n -- fields
   | .proj _ => 1 -- record
   | .num _ _ => 0
+  | .num64 _ _ _ => 0
   | .op1 _ => 1 -- operand
   | .op2 _ => 2 -- left, right
   | .ref _ => 0
@@ -314,7 +322,7 @@ def isCombinator : Node → Bool
 
 /-- Check if a node carries an immediate value (no heap children) -/
 def isImmediate : Node → Bool
-  | .num _ _ | .era | .ref _ | .alo _ => true
+  | .num _ _ | .num64 _ _ _ | .era | .ref _ | .alo _ => true
   | _ => false
 
 /-- Get the tag for a node -/
@@ -329,6 +337,7 @@ def toTag : Node → Tag
   | .record _ => .record
   | .proj _   => .proj
   | .num _ _  => .num
+  | .num64 _ _ _ => .num
   | .op1 _    => .op1
   | .op2 _    => .op2
   | .ref _    => .ref
@@ -352,6 +361,7 @@ def toTerm (n : Node) (loc : Loc) : Term :=
   | .record nf    => Term.mkRec nf.toUInt32 loc
   | .proj idx     => Term.mkProj idx.toUInt32 loc
   | .num pt val   => Term.mkNum pt val
+  | .num64 pt lo _ => Term.mkNum pt lo  -- TODO: extend Term to support 64-bit immediates
   | .op1 op       => Term.mkOp1 op loc
   | .op2 op       => Term.mkOp2 op loc
   | .ref rid      => Term.mkRef rid.toUInt32
@@ -375,6 +385,7 @@ instance : ToString Node where
     | .record nf   => s!"REC({nf})"
     | .proj idx    => s!"PROJ({idx})"
     | .num pt val  => s!"{pt}({val})"
+    | .num64 pt lo hi => s!"{pt}({hi.toNat * 0x100000000 + lo.toNat})"
     | .op1 op      => s!"OP1({op})"
     | .op2 op      => s!"OP2({op})"
     | .ref rid     => s!"REF({rid})"

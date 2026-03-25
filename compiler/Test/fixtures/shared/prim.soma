@@ -1,6 +1,6 @@
 @[wired_in "type.int"]
-inductive Int where
-    | MkInt
+inductive Int32 where
+    | MkInt32
 
 @[wired_in "type.bool"]
 inductive Bool where
@@ -24,10 +24,6 @@ inductive Int8 where
 inductive Int16 where
     | MkInt16
 
-@[wired_in "type.int32"]
-inductive Int32 where
-    | MkInt32
-
 @[wired_in "type.int64"]
 inductive Int64 where
     | MkInt64
@@ -40,7 +36,7 @@ inductive Word8 where
 inductive Word16 where
     | MkWord16
 
-@[wired_in "type.word32"]
+@[wired_in "type.word"]
 inductive Word32 where
     | MkWord32
 

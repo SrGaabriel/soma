@@ -1,9 +1,9 @@
 // expect: success
 // Test: partial functions are allowed by default (no termination check)
 
-def loop : Int -> Int
+def loop : Int32 -> Int32
     | x => loop x
 
-def collatz : Int -> Int
+def collatz : Int32 -> Int32
     | 1 => 1
     | n => collatz n

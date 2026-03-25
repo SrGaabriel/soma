@@ -185,9 +185,6 @@ inductive WiredRole where
   | cons
   | nil
   | typeInt
-  | typeLong
-  | typeShort
-  | typeByte
   | typeBool
   | typeString
   | typeFloat
@@ -195,11 +192,10 @@ inductive WiredRole where
   | typeUnit
   | typeInt8
   | typeInt16
-  | typeInt32
   | typeInt64
+  | typeWord
   | typeWord8
   | typeWord16
-  | typeWord32
   | typeWord64
   | typeNat
   | typeList
@@ -231,9 +227,6 @@ def canonical : WiredRole → String
   | .cons => "cons"
   | .nil => "nil"
   | .typeInt => "type.int"
-  | .typeLong => "type.long"
-  | .typeShort => "type.short"
-  | .typeByte => "type.byte"
   | .typeBool => "type.bool"
   | .typeString => "type.string"
   | .typeFloat => "type.float"
@@ -241,11 +234,10 @@ def canonical : WiredRole → String
   | .typeUnit => "type.unit"
   | .typeInt8 => "type.int8"
   | .typeInt16 => "type.int16"
-  | .typeInt32 => "type.int32"
   | .typeInt64 => "type.int64"
+  | .typeWord => "type.word"
   | .typeWord8 => "type.word8"
   | .typeWord16 => "type.word16"
-  | .typeWord32 => "type.word32"
   | .typeWord64 => "type.word64"
   | .typeNat => "type.nat"
   | .typeList => "type.list"
@@ -276,21 +268,17 @@ def fromString? : String → Option WiredRole
   | "cons" => some .cons
   | "nil" => some .nil
   | "type.int" | "int" => some .typeInt
-  | "type.long" | "long" => some .typeLong
-  | "type.short" | "short" => some .typeShort
-  | "type.byte" | "byte" => some .typeByte
+  | "type.int8" | "int8" => some .typeInt8
+  | "type.int16" | "int16" => some .typeInt16
+  | "type.int64" | "int64" => some .typeInt64
   | "type.bool" | "bool" => some .typeBool
   | "type.string" | "string" => some .typeString
   | "type.float" | "float" => some .typeFloat
   | "type.double" | "double" => some .typeDouble
   | "type.unit" | "unit" => some .typeUnit
-  | "type.int8" | "int8" => some .typeInt8
-  | "type.int16" | "int16" => some .typeInt16
-  | "type.int32" | "int32" => some .typeInt32
-  | "type.int64" | "int64" => some .typeInt64
+  | "type.word" | "word" => some .typeWord
   | "type.word8" | "word8" => some .typeWord8
   | "type.word16" | "word16" => some .typeWord16
-  | "type.word32" | "word32" => some .typeWord32
   | "type.word64" | "word64" => some .typeWord64
   | "type.nat" | "nat" => some .typeNat
   | "type.list" | "list" => some .typeList
@@ -318,9 +306,6 @@ def fromString? : String → Option WiredRole
 /-- Map wired type roles to canonical primitive representations when applicable -/
 def primType? : WiredRole → Option Soma.Core.PrimType
   | .typeInt => some .int
-  | .typeLong => some .long
-  | .typeShort => some .short
-  | .typeByte => some .byte
   | .typeBool => some .bool
   | .typeString => none
   | .typeFloat => some .float
@@ -328,11 +313,10 @@ def primType? : WiredRole → Option Soma.Core.PrimType
   | .typeUnit => some .unit
   | .typeInt8 => some .int8
   | .typeInt16 => some .int16
-  | .typeInt32 => some .int32
   | .typeInt64 => some .int64
+  | .typeWord => some .word
   | .typeWord8 => some .word8
   | .typeWord16 => some .word16
-  | .typeWord32 => some .word32
   | .typeWord64 => some .word64
   | .typeIO => some .io
   | .typeArray => some .array

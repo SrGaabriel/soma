@@ -449,19 +449,19 @@ partial def extractCtorFieldTypes (ty : Value) (ctx : TypeConvCtx n) : Array (Ty
 /-- Convert a PrimType to an Alloy Ty -/
 partial def convertPrimToAlloyTy (prim : PrimType) (params : List Value) (ctx : TypeConvCtx n) : Ty n :=
   match prim with
-  | .int | .int32 => .prim .i32
-  | .long | .int64 => .prim .i64
-  | .short | .int16 => .prim .i16
-  | .byte | .int8 => .prim .i8
+  | .int => .prim .i32
+  | .int64 => .prim .i64
+  | .int16 => .prim .i16
+  | .int8 => .prim .i8
   | .float => .prim .f32
   | .double => .prim .f64
   | .bool => .prim .bool
   | .string => Ty.string
   | .unit => .prim .unit
   | .closurePtr => .rawPtr
+  | .word => .prim .u32
   | .word8 => .prim .u8
   | .word16 => .prim .u16
-  | .word32 => .prim .u32
   | .word64 => .prim .u64
   | .io => match params with
     | [innerTy] => convertValueTypeWithMapping innerTy ctx
@@ -555,6 +555,7 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
   | Value.vRefl _ _ => .rawPtr
   | Value.vTransport _ _ _ _ _ _ _ => .rawPtr
   | Value.vIntLit _ => .prim .i32
+  | Value.vFloatLit _ => .prim .f64
   | Value.vStringLit _ => Ty.string
 
 end
@@ -1276,6 +1277,14 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   let result ← match entry.node with
   | .num primTy val =>
     StateT.lift (lowerNum primTy val)
+
+  | .num64 primTy lo hi => do
+    let ty : Ty n := Ty.prim (convertCircuitPrimType primTy)
+    let val64 : UInt64 := hi.toUInt64 <<< 32 ||| lo.toUInt64
+    if primTy == .f64 then
+      StateT.lift (LowerM.emitInst (.copy (.const (.float (Float.ofBits val64) .f64))) ty)
+    else
+      StateT.lift (LowerM.emitInst (.copy (.const (.int (Int.ofNat val64.toNat) (convertCircuitPrimType primTy)))) ty)
 
   | .era => do
     -- ERA nodes erase the value connected to their principal port.

@@ -5,12 +5,12 @@ inductive Nat where
     | Zero
     | Succ (pred : Nat)
 
-def is_even : Nat -> Int
+def is_even : Nat -> Int32
     | Zero => 1
     | (Succ n) => is_odd n
 
-def is_odd : Nat -> Int
+def is_odd : Nat -> Int32
     | Zero => 0
     | (Succ n) => is_even n
 
-def test : Int = is_even (Succ (Succ Zero))
+def test : Int32 = is_even (Succ (Succ Zero))

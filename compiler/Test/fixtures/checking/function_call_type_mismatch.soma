@@ -1,5 +1,5 @@
 // expect: error mismatch
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 
 def a : String = 5 + 10

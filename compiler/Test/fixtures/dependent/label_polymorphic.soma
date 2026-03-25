@@ -4,6 +4,6 @@
 def get_field : ∀ (l : Label) (a : Type) (r : Row). { l : a | r } -> a
     | rec => rec @l
 
-def test1 : Int = get_field @x { x = 42, y = "hello" }
+def test1 : Int32 = get_field @x { x = 42, y = "hello" }
 def test2 : String = get_field @name { name = "alice", age = 30 }
 def test3 : Bool = get_field @active { id = 1, name = "test", active = true }

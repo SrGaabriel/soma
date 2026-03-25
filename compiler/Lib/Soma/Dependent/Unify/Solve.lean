@@ -92,6 +92,9 @@ partial def unify (v1 v2 : Value) : TCM Unit := do
   | .vIntLit n1, .vIntLit n2 =>
     if n1 != n2 then throwUnifyError v1' v2' "integer mismatch"
 
+  | .vFloatLit f1, .vFloatLit f2 =>
+    if f1 != f2 then throwUnifyError v1' v2' "float mismatch"
+
   | .vStringLit s1, .vStringLit s2 =>
     if s1 != s2 then throwUnifyError v1' v2' "string mismatch"
 

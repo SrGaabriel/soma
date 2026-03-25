@@ -2,7 +2,7 @@
 // Test: nested pattern matching - compound MAT lowering
 
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 
 inductive Maybe {a : Type} where
     | Nothing
@@ -16,5 +16,5 @@ def map_maybe :  a b. (a -> b) -> Maybe a -> Maybe b
     | _, Nothing  => Nothing
     | f (Just, x)  => Just (f x)
 
-def test1 : Int = from_maybe 0 (Just 42)
-def test2 : Int = from_maybe 0 Nothing
+def test1 : Int32 = from_maybe 0 (Just 42)
+def test2 : Int32 = from_maybe 0 Nothing

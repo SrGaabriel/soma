@@ -3,4 +3,4 @@ inductive Maybe {a : Type} where
     | Just (value : a)
     | Nothing
 
-def test : Maybe Int = Just 5
+def test : Maybe Int32 = Just 5

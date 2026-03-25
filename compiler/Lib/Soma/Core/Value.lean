@@ -42,6 +42,9 @@ inductive Value where
   /-- Integer literal -/
   | vIntLit (n : Int)
 
+  /-- Floating-point literal -/
+  | vFloatLit (f : Float)
+
   /-- String literal -/
   | vStringLit (s : String)
 

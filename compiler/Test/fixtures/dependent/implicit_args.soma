@@ -7,5 +7,5 @@ def id : ∀ a. a -> a
 def apply : ∀ a b. (a -> b) -> a -> b
     | f, x => f x
 
-def test_id : Int = id 42
-def test_apply : Int = apply id 100
+def test_id : Int32 = id 42
+def test_apply : Int32 = apply id 100

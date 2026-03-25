@@ -13,4 +13,4 @@ def tail :  a. List a -> List a
     | Nil => Nil
     | (Cons _ xs) => xs
 
-def test : Int = head 0 Nil
+def test : Int32 = head 0 Nil

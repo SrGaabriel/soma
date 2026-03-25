@@ -1,9 +1,9 @@
-use base::prim::{Int, Bool, String, Unit, List, Pair, IO, Ptr}
+use base::prim::{Int32, Bool, String, Unit, List, Pair, IO, Ptr}
 
 @[extern "soma_strcat"]
 def strcat : String -> String -> String
 @[extern "soma_int_to_string"]
-def int_to_string : Int -> String
+def int_to_string : Int32 -> String
 
 inductive Option {a : Type} where
     | Some (value : a)
@@ -45,8 +45,8 @@ instance : Display String where
     def display (s : String) : String =
         s
 
-instance : Display Int where
-    def display (n : Int) : String =
+instance : Display Int32 where
+    def display (n : Int32) : String =
         int_to_string n
 
 instance : Semigroup String where

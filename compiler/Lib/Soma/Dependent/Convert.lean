@@ -233,6 +233,7 @@ partial def convert (v1 v2 : Value) : TCM Bool := do
 
   -- Literals
   | .vIntLit n1, .vIntLit n2 => return n1 == n2
+  | .vFloatLit f1, .vFloatLit f2 => return f1 == f2
   | .vStringLit s1, .vStringLit s2 => return s1 == s2
   | .vLabelLit l1, .vLabelLit l2 => return l1 == l2
 

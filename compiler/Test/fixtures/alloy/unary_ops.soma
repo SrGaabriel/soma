@@ -2,9 +2,9 @@
 // Test: unary operations - OP1 node lowering
 
 @[intrinsic "primop.sub"]
-def {-} : Int -> Int -> Int
+def {-} : Int32 -> Int32 -> Int32
 
-def negate : Int -> Int
+def negate : Int32 -> Int32
     | x => 0 - x
 
-def test : Int = negate 42
+def test : Int32 = negate 42

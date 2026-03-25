@@ -1,14 +1,14 @@
 // expect: error type mismatch
 
 record Point where
-    x : Int
-    y : Int
+    x : Int32
+    y : Int32
 
 record Vec2 where
-    x : Int
-    y : Int
+    x : Int32
+    y : Int32
 
-def needs_point : Point -> Int
+def needs_point : Point -> Int32
     | p => p.x
 
-def test : Int = needs_point (Vec2 1 2)
+def test : Int32 = needs_point (Vec2 1 2)

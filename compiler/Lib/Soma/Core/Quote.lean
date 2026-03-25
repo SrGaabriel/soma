@@ -57,6 +57,7 @@ partial def valueToString (v : Value) : String :=
   | .vLabelSort => "Label"
 
   | .vIntLit n => toString n
+  | .vFloatLit f => toString f
 
   | .vStringLit s => s!"\"{s}\""
 
@@ -115,6 +116,7 @@ partial def valueEq (v1 v2 : Value) : Bool :=
   | .vRowSort, .vRowSort => true
   | .vLabelSort, .vLabelSort => true
   | .vIntLit n1, .vIntLit n2 => n1 == n2
+  | .vFloatLit f1, .vFloatLit f2 => f1 == f2
   | .vStringLit s1, .vStringLit s2 => s1 == s2
   | .vLabelLit n1, .vLabelLit n2 => n1 == n2
   | .vRowEmpty, .vRowEmpty => true
@@ -190,6 +192,7 @@ partial def evalExprPure (env : Env) (e : Expr) : Value :=
   | .lit l =>
     match l with
     | .int n => .vIntLit n
+    | .float f => .vFloatLit f
     | .string s => .vStringLit s
     | .bool true => .vConstructor ⟨⟨0, "", "True"⟩⟩ 0 [] (.vPrimTy .bool)
     | .bool false => .vConstructor ⟨⟨0, "", "False"⟩⟩ 1 [] (.vPrimTy .bool)
@@ -350,6 +353,7 @@ partial def quoteExpr (depth : DeBruijnLvl) (v : Value) : Expr :=
   | .vRowSort => .rowSort
   | .vLabelSort => .labelSort
   | .vIntLit n => .lit (.int n)
+  | .vFloatLit f => .lit (.float f)
   | .vStringLit s => .lit (.string s)
   | .vRowEmpty => .rowEmpty
   | .vRowExtend l ft t =>

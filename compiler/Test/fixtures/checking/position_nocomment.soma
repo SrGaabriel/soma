@@ -1,9 +1,9 @@
 // expect: error mismatch
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 
 inductive Maybe {a : Type} where
     | Just (value : a)
     | Nothing
 
-def a : Maybe Int = Just "hello"
+def a : Maybe Int32 = Just "hello"

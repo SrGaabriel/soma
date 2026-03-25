@@ -1,6 +1,6 @@
 // expect: success
 
-def test1 : < Ok::Int > = .Ok 42
+def test1 : < Ok::Int32 > = .Ok 42
 
 def test2 : < Name::String > = .Name "hello"
 

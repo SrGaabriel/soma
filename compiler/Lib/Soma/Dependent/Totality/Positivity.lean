@@ -65,6 +65,7 @@ partial def checkPositivityValue (unique : Unique) (pol : Polarity) (ty : Value)
   | .vType _ => .ok
   | .vPrimTy _ => .ok
   | .vIntLit _ => .ok
+  | .vFloatLit _ => .ok
   | .vStringLit _ => .ok
   | .vLabelLit _ => .ok
   | .vRowSort | .vLabelSort => .ok

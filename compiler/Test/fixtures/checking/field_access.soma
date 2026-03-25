@@ -1,14 +1,14 @@
 // expect: success
 record Point where
-    x : Int
-    y : Int
+    x : Int32
+    y : Int32
 
 def origin : Point = Point 0 0
 
-def get_x : Point -> Int
+def get_x : Point -> Int32
     | p => p.x
 
-def get_y : Point -> Int
+def get_y : Point -> Int32
     | p => p.y
 
-def test : Int = origin.x
+def test : Int32 = origin.x

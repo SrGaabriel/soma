@@ -4,8 +4,8 @@
 def const :  a b. a -> b -> a
     | x, _  => x
 
-def ignore : Int -> Int
+def ignore : Int32 -> Int32
     | _ => 42
 
-def test1 : Int = const 1 2
-def test2 : Int = ignore 999
+def test1 : Int32 = const 1 2
+def test2 : Int32 = ignore 999

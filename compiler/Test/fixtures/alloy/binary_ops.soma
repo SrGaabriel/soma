@@ -2,22 +2,22 @@
 // Test: binary operations - OP2 node lowering
 
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 
 @[intrinsic "primop.sub"]
-def {-} : Int -> Int -> Int
+def {-} : Int32 -> Int32 -> Int32
 
 @[intrinsic "primop.mul"]
-def {*} : Int -> Int -> Int
+def {*} : Int32 -> Int32 -> Int32
 
-def add : Int -> Int -> Int
+def add : Int32 -> Int32 -> Int32
     | x, y  => x + y
 
-def sub : Int -> Int -> Int
+def sub : Int32 -> Int32 -> Int32
     | x, y  => x - y
 
-def mul : Int -> Int -> Int
+def mul : Int32 -> Int32 -> Int32
     | x, y  => x * y
 
-def test1 : Int = add 3 4
-def test2 : Int = mul (add 2 3) 4
+def test1 : Int32 = add 3 4
+def test2 : Int32 = mul (add 2 3) 4

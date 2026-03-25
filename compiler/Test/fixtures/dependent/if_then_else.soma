@@ -1,8 +1,8 @@
 // expect: success
 // Test: if-then-else expressions
 
-def max : Int -> Int -> Int
+def max : Int32 -> Int32 -> Int32
     | x, y  => if true then x else y
 
-def abs : Int -> Int
+def abs : Int32 -> Int32
     | x => if true then x else x

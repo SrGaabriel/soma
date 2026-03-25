@@ -1,13 +1,13 @@
-use dup::prim::{Int}
+use dup::prim::{Int32}
 
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 
 @[intrinsic "primop.mul"]
-def {*} : Int -> Int -> Int
+def {*} : Int32 -> Int32 -> Int32
 
-def double (x : Int) : Int = x + x
+def double (x : Int32) : Int32 = x + x
 
-def square (x : Int) : Int = x * x
+def square (x : Int32) : Int32 = x * x
 
-def main : Int = (double 17 + square 4)
+def main : Int32 = (double 17 + square 4)

@@ -95,6 +95,7 @@ partial def traverseValue (action : TraversalAction α) (v : Value) : α :=
 
     | .vPrimTy _ => inst.empty
     | .vIntLit _ => inst.empty
+    | .vFloatLit _ => inst.empty
     | .vStringLit _ => inst.empty
     | .vRowEmpty => inst.empty
     | .vLabelLit _ => inst.empty
@@ -266,6 +267,7 @@ partial def traverseValueM
 
     | .vPrimTy _ => return inst.empty
     | .vIntLit _ => return inst.empty
+    | .vFloatLit _ => return inst.empty
     | .vStringLit _ => return inst.empty
     | .vRowEmpty => return inst.empty
     | .vLabelLit _ => return inst.empty
@@ -416,6 +418,7 @@ partial def transformValueM (t : ValueTransformer M) (v : Value) : M Value := do
 
     | .vPrimTy p => return .vPrimTy p
     | .vIntLit n => return .vIntLit n
+    | .vFloatLit f => return .vFloatLit f
     | .vStringLit s => return .vStringLit s
     | .vRowEmpty => return .vRowEmpty
     | .vLabelLit name => return .vLabelLit name

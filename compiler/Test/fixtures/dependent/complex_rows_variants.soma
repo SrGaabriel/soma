@@ -1,12 +1,12 @@
 // expect: success
 // Test: combining row polymorphism and variant types
 
-def get_x : ∀ (r : Row). { x : Int | r } -> Int
+def get_x : ∀ (r : Row). { x : Int32 | r } -> Int32
     | rec => rec.x
 
-def handle_result : < Ok : Int | Err : String > -> Int
+def handle_result : < Ok : Int32 | Err : String > -> Int32
     | .Ok n => n
     | .Err _ => 0
 
-def test1 : Int = get_x { x = 1, y = 2 }
-def test2 : Int = handle_result (.Ok 42)
+def test1 : Int32 = get_x { x = 1, y = 2 }
+def test2 : Int32 = handle_result (.Ok 42)

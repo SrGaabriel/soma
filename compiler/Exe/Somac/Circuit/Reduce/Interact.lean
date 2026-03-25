@@ -166,14 +166,22 @@ partial def resolveDup (dupId : NodeId) (label : Label) (demandPort : PortId)
   let valEntry ← ReduceM.getNode valId
   match valEntry.node with
   | .num pt v =>
-    -- DUP-NUM: flat copy (register-width value, zero overhead)
     ReduceM.modifyStats (·.incDupCommutation)
     let copy0 ← ReduceM.addNode (.num pt v) valEntry.ty
     let copy1 ← ReduceM.addNode (.num pt v) valEntry.ty
-    -- Wire copies to DUP's consumers (rewirePort: fresh node replaces existing endpoint)
     ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal copy0)
     ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal copy1)
-    -- Clean up
+    ReduceM.disconnect (PortId.principal dupId)
+    ReduceM.removeNode dupId
+    ReduceM.removeNode valId
+    ReduceM.trackPeakNodes
+    whnf demandPort
+  | .num64 pt lo hi =>
+    ReduceM.modifyStats (·.incDupCommutation)
+    let copy0 ← ReduceM.addNode (.num64 pt lo hi) valEntry.ty
+    let copy1 ← ReduceM.addNode (.num64 pt lo hi) valEntry.ty
+    ReduceM.rewirePort ⟨dupId, ⟨1⟩⟩ (PortId.principal copy0)
+    ReduceM.rewirePort ⟨dupId, ⟨2⟩⟩ (PortId.principal copy1)
     ReduceM.disconnect (PortId.principal dupId)
     ReduceM.removeNode dupId
     ReduceM.removeNode valId
@@ -369,7 +377,7 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
     : ReduceM NodeId := do
   match entry.node with
   -- Value nodes: already in WHNF
-  | .num _ _ | .lam _ | .ctor _ _ | .record _ | .string | .array _
+  | .num _ _ | .num64 _ _ _ | .lam _ | .ctor _ _ | .record _ | .string | .array _
   | .sup _ | .slice | .era =>
     pure nid
 
@@ -886,7 +894,7 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
     let termId ← whnf ⟨nid, ⟨1⟩⟩
     let termEntry ← ReduceM.getNode termId
     match termEntry.node with
-    | .num _ _ | .era | .ctor _ _ | .record _ | .string | .array _ | .lam _ | .sup _ =>
+    | .num _ _ | .num64 _ _ _ | .era | .ctor _ _ | .record _ | .string | .array _ | .lam _ | .sup _ =>
       ReduceM.modifyStats (·.incUse)
       erasePort ⟨nid, ⟨1⟩⟩
       ReduceM.link ⟨nid, .principal⟩ ⟨nid, ⟨2⟩⟩

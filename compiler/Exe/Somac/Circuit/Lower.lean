@@ -460,10 +460,16 @@ def encodeSignedInt (n : Int) : UInt32 :=
 def lowerLiteral (lit : Literal) : LowerM PortId := do
   match lit with
   | .int n =>
-    -- Use two's complement for proper signed integer representation
     let encoded := encodeSignedInt n
     let node := Node.num .i32 encoded
     let nid ← LowerM.addNode node intTy
+    pure (PortId.principal nid)
+  | .float f =>
+    let doubleTy := Value.vPrimTy .double
+    let bits := f.toBits
+    let lo := (bits &&& 0xFFFFFFFF).toUInt32
+    let hi := (bits >>> 32).toUInt32
+    let nid ← LowerM.addNode (.num64 .f64 lo hi) doubleTy
     pure (PortId.principal nid)
   | .bool b =>
     let node := Node.num .bool (if b then 1 else 0)
@@ -648,7 +654,7 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
 
   | .panic msg =>
     let word64Ty := Value.vPrimTy .word64
-    let word32Ty := Value.vPrimTy .word32
+    let word32Ty := Value.vPrimTy .word
     let msgNode ← LowerM.addNode (Node.num .u64 msg.hash.toUInt32) word64Ty
     let msgPort := PortId.principal msgNode
     let lineNode ← LowerM.addNode (Node.num .u32 0) word32Ty

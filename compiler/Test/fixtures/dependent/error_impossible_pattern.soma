@@ -9,6 +9,6 @@ inductive Vec (n : Nat) (a : Type) where
     | Nil : Vec Nat::Zero a
     | Cons : a -> Vec m a -> Vec (Nat::Succ m) a
 
-def head_of_empty : Vec Nat::Zero Int -> Int
+def head_of_empty : Vec Nat::Zero Int32 -> Int32
     | Vec::Nil => 0
     | Vec::Cons x _ => x

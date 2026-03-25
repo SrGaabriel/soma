@@ -232,7 +232,7 @@ def findSpecRequests (m : Module)
     (closureParamMap : Std.HashMap Nat (Array ClosureParamInfo))
     : Array SpecRequest := Id.run do
   let mut requests : Array SpecRequest := #[]
-  let mut seen : Std.HashSet UInt64 := {}
+  let mut seen : Std.HashSet SpecRequest := {}
   for sf in m.funcs do
     let some f := sf.asMono? | continue
     let some cfg := f.body | continue
@@ -252,10 +252,9 @@ def findSpecRequests (m : Module)
                     hofFuncId, paramIdx := cp.paramIdx,
                     targetFuncId, hasEnv, envOperand := some envOp
                   }
-                  let h := hash req
-                  if !seen.contains h then
+                  if !seen.contains req then
                     requests := requests.push req
-                    seen := seen.insert h
+                    seen := seen.insert req
                 | none => pure ()
               | _ => pure ()
         | _ => pure ()
@@ -794,12 +793,12 @@ private def findMakeClosureForLocal (cfg : ClosedCFG) (op : Operand) (expectedTa
 
 /-- Try to rewrite a single call instruction using specialization map -/
 private def tryRewriteCallInst (cfg : ClosedCFG) (inst : ClosedInst)
-    (specMap : Std.HashMap UInt64 (SpecRequest × FuncId)) : ClosedInst :=
+    (specMap : Std.HashMap SpecRequest FuncId) : ClosedInst :=
   match inst with
   | .call funcId args retTy =>
     let specEntries := specMap.toArray
     Id.run do
-      for (_, (req, specFuncId)) in specEntries do
+      for (req, specFuncId) in specEntries do
         if funcId == req.hofFuncId then
           if h : req.paramIdx < args.size then
             match args[req.paramIdx]'h with
@@ -818,7 +817,7 @@ private def tryRewriteCallInst (cfg : ClosedCFG) (inst : ClosedInst)
   | _ => inst
 
 /-- Rewrite all call sites in the module to use specialized versions -/
-def rewriteCallSites (m : Module) (specMap : Std.HashMap UInt64 (SpecRequest × FuncId))
+def rewriteCallSites (m : Module) (specMap : Std.HashMap SpecRequest FuncId)
     : Module := Id.run do
   let mut newFuncs : Array SomeFunc := #[]
   for sf in m.funcs do
@@ -829,7 +828,7 @@ def rewriteCallSites (m : Module) (specMap : Std.HashMap UInt64 (SpecRequest × 
     | none => newFuncs := newFuncs.push sf
   return { m with funcs := newFuncs }
 where
-  rewriteFuncCallSites (f : ClosedFunc) (specMap : Std.HashMap UInt64 (SpecRequest × FuncId))
+  rewriteFuncCallSites (f : ClosedFunc) (specMap : Std.HashMap SpecRequest FuncId)
       : ClosedFunc := Id.run do
     let some cfg := f.body | return f
     let mut newBlocks : Std.HashMap Nat ClosedBlock := {}
@@ -860,7 +859,7 @@ def closureSpec (m : Module) : Module := Id.run do
 
     let requests := findSpecRequests module closureParamMap
 
-    let mut specMap : Std.HashMap UInt64 (SpecRequest × FuncId) := {}
+    let mut specMap : Std.HashMap SpecRequest FuncId := {}
     if !requests.isEmpty then
       let mut nextFuncId := module.funcs.size
       let mut newFuncs := module.funcs
@@ -870,7 +869,7 @@ def closureSpec (m : Module) : Module := Id.run do
         nextFuncId := nextFuncId + 1
         let specFunc := specializeFunc module origFunc req specFuncId
         newFuncs := newFuncs.push (SomeFunc.ofMono specFunc)
-        specMap := specMap.insert (hash req) (req, specFuncId)
+        specMap := specMap.insert req specFuncId
       module := { module with funcs := newFuncs }
 
     if !specMap.isEmpty then

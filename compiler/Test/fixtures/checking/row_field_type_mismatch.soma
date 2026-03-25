@@ -1,6 +1,6 @@
 // expect: error type mismatch
 
-def get_x : { x : Int } -> Int
+def get_x : { x : Int32 } -> Int32
     | r => r.x
 
 def test = get_x { x = "not an int" }

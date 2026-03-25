@@ -7,11 +7,11 @@ inductive Maybe {a : Type} where
 def identity :  (f : Type -> Type) a. f a -> f a
     | x => x
 
-def identity_maybe : Maybe Int -> Maybe Int
+def identity_maybe : Maybe Int32 -> Maybe Int32
     | x => identity x
 
-def map_record :  (f : Type -> Type) (r : Row). { value : f Int | r } -> { value : f Int | r }
+def map_record :  (f : Type -> Type) (r : Row). { value : f Int32 | r } -> { value : f Int32 | r }
     | rec => rec
 
-def map_maybe_record : { value : Maybe Int, name : String } -> { value : Maybe Int, name : String }
+def map_maybe_record : { value : Maybe Int32, name : String } -> { value : Maybe Int32, name : String }
     | rec => map_record rec

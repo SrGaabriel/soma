@@ -2,9 +2,9 @@
 // Test: total functions with termination checking via @[total] attribute
 
 @[total]
-def add : Int -> Int -> Int
+def add : Int32 -> Int32 -> Int32
     | x, y  => x
 
 @[total]
-def const_zero : Int -> Int
+def const_zero : Int32 -> Int32
     | _ => 0

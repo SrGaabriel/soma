@@ -1,11 +1,11 @@
 // expect: success
 // Test: simple function type inference
 
-def identity : Int -> Int
+def identity : Int32 -> Int32
     | x => x
 
-def const : Int -> Int -> Int
+def const : Int32 -> Int32 -> Int32
     | x, _  => x
 
-def apply : (Int -> Int) -> Int -> Int
+def apply : (Int32 -> Int32) -> Int32 -> Int32
     | f, x  => f x

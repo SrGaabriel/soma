@@ -2,12 +2,12 @@
 // Test: simple closure - lambda lifting and closure lowering
 
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 
-def apply : (Int -> Int) -> Int -> Int
+def apply : (Int32 -> Int32) -> Int32 -> Int32
     | f, x  => f x
 
-def add_one : Int -> Int
+def add_one : Int32 -> Int32
     | x => x + 1
 
-def test : Int = apply add_one 41
+def test : Int32 = apply add_one 41

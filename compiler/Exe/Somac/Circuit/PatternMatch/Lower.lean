@@ -358,6 +358,7 @@ where
     | .bool true => 1
     | .bool false => 0
     | .int n => n.toNat
+    | .float f => f.toBits.toNat
     | .string s => s.hash.toNat
 
 /-- Build a chain of MAT nodes -/

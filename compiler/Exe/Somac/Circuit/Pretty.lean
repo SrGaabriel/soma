@@ -49,6 +49,7 @@ def ppNode (cfg : Config) (n : Node) : String :=
   | .record numFields => s!"rec[{numFields}]"
   | .proj idx    => s!".{idx}"
   | .num pt val  => s!"{ToString.toString pt |>.toLower}({val})"
+  | .num64 pt lo hi => s!"{ToString.toString pt |>.toLower}({hi.toNat * 0x100000000 + lo.toNat})"
   | .op1 op      => s!"({op})"
   | .op2 op      => s!"({op})"
   | .ref rid     => s!"@{rid}"

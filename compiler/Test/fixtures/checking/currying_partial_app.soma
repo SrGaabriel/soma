@@ -1,11 +1,11 @@
 // expect: success
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 
-def add (x : Int) (y : Int) : Int = x + y
+def add (x : Int32) (y : Int32) : Int32 = x + y
 
-def add3 : Int -> Int = add 3
+def add3 : Int32 -> Int32 = add 3
 
-def add_both : Int -> Int -> Int = add
+def add_both : Int32 -> Int32 -> Int32 = add
 
-def apply (fn : Int -> Int -> Int) : Int -> Int = fn 5
+def apply (fn : Int32 -> Int32 -> Int32) : Int32 -> Int32 = fn 5

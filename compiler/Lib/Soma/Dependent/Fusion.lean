@@ -91,12 +91,32 @@ def buildFusionCtx
   let reverseConst := match globals.wiredIn.getUnique? .listReverse with
     | some info => some (mkConst info.name)
     | none => none
+  let isInt32Ty (v : Soma.Core.Value) : Bool :=
+    match v with
+    | .vPrimTy .int => true
+    | .vDataType uid _ =>
+      match globals.wiredIn.roles.fold (init := none) (fun found role infos =>
+        match found with
+        | some _ => found
+        | none => if infos.any (fun i => i.name.id == uid) then some role else none) with
+      | some r => Soma.Dependent.WiredRole.primType? r == some PrimType.int
+      | none => false
+    | _ => false
+  let isInt32Op (qn : QualifiedName) : Bool :=
+    match globals.defs.get? qn with
+    | some info =>
+      match info.type with
+      | .vPi _ _ _ dom _ => isInt32Ty dom
+      | _ => false
+    | none => false
   let mut addConst : Option Expr := none
   let mut mulConst : Option Expr := none
   for (qn, intrinsic) in globals.intrinsics.toList do
     match intrinsic with
-    | .primOp .add => addConst := some (mkConst qn)
-    | .primOp .mul => mulConst := some (mkConst qn)
+    | .primOp .add =>
+      if isInt32Op qn then addConst := some (mkConst qn)
+    | .primOp .mul =>
+      if isInt32Op qn then mulConst := some (mkConst qn)
     | _ => pure ()
   -- Resolve list constructors for cross-producer fusion
   let listCtors := do
@@ -325,11 +345,7 @@ private partial def fuseNamedConsumer
   let (innerHead, _) := listArg.collectAppSpine
   match constFusionRole ctx innerHead with
   | some .map | some .filter =>
-    match ctx.consumerBodies.get? role with
-    | some consumerBody =>
-      some (consumerBody.instantiate listArg)
-    | none =>
-      fuseNamedConsumerDirect ctx role listArg
+    fuseNamedConsumerDirect ctx role listArg
   | _ => none
 
 /-- Fallback direct construction for fuseNamedConsumer when consumer body is unavailable -/

@@ -9,8 +9,8 @@ inductive Vec (n : Nat) (a : Type) where
   | Nil : Vec Nat::Zero a
   | Cons : a -> Vec m a -> Vec (Nat::Succ m) a
 
-def empty_vec : Vec Nat::Zero Int = Vec::Nil
+def empty_vec : Vec Nat::Zero Int32 = Vec::Nil
 
-def one_elem : Vec (Nat::Succ Nat::Zero) Int = Vec::Cons 42 Vec::Nil
+def one_elem : Vec (Nat::Succ Nat::Zero) Int32 = Vec::Cons 42 Vec::Nil
 
-def two_elems : Vec (Nat::Succ (Nat::Succ Nat::Zero)) Int = Vec::Cons 1 (Vec::Cons 2 Vec::Nil)
+def two_elems : Vec (Nat::Succ (Nat::Succ Nat::Zero)) Int32 = Vec::Cons 1 (Vec::Cons 2 Vec::Nil)

@@ -2,13 +2,13 @@
 // Test: variable used multiple times - DUP chain lowering
 
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 
-def use_thrice : Int -> Int
+def use_thrice : Int32 -> Int32
     | x => x + x + x
 
-def use_twice : Int -> (Int, Int)
+def use_twice : Int32 -> (Int32, Int32)
     | x => (x, x)
 
-def test1 : Int = use_thrice 10
-def test2 : (Int, Int) = use_twice 42
+def test1 : Int32 = use_thrice 10
+def test2 : (Int32, Int32) = use_twice 42

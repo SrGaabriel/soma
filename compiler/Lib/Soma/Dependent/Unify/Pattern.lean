@@ -93,6 +93,7 @@ partial def rename (ren : PartialRenaming) (v : Value) : RenameResult :=
   | .vNeutral _ neu => renameNeutral ren neu
   | .vPrimTy p => .ok (.primTy p)
   | .vIntLit n => .ok (.lit (.int n))
+  | .vFloatLit f => .ok (.lit (.float f))
   | .vStringLit s => .ok (.lit (.string s))
   | .vRowEmpty => .ok .rowEmpty
 

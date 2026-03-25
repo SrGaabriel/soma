@@ -1,6 +1,6 @@
 @[wired_in "type.int"]
 @[intrinsic]
-record Int
+record Int32
 
 @[wired_in "type.bool"]
 inductive Bool where
@@ -24,10 +24,6 @@ record Int8
 @[intrinsic]
 record Int16
 
-@[wired_in "type.int32"]
-@[intrinsic]
-record Int32
-
 @[wired_in "type.int64"]
 @[intrinsic]
 record Int64
@@ -40,7 +36,7 @@ record Word8
 @[intrinsic]
 record Word16
 
-@[wired_in "type.word32"]
+@[wired_in "type.word"]
 @[intrinsic]
 record Word32
 
@@ -76,16 +72,16 @@ record Ptr {a : Type}
 record IO {a : Type}
 
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 @[intrinsic "primop.sub"]
-def {-} : Int -> Int -> Int
+def {-} : Int32 -> Int32 -> Int32
 @[intrinsic "primop.mul"]
-def {*} : Int -> Int -> Int
+def {*} : Int32 -> Int32 -> Int32
 @[intrinsic "primop.mod"]
-def {%} : Int -> Int -> Int
+def {%} : Int32 -> Int32 -> Int32
 @[intrinsic "primop.div"]
-def {/} : Int -> Int -> Int
+def {/} : Int32 -> Int32 -> Int32
 @[intrinsic "primop.eq"]
 def {==} {a : Type} : a -> a -> Bool
 @[intrinsic "primop.le"]
-def {<=} : Int -> Int -> Bool
+def {<=} : Int32 -> Int32 -> Bool

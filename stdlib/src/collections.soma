@@ -1,6 +1,6 @@
 use base::prim::{+, -, *, ==, <=}
 use base::core::{Option}
-use base::prim::{List, Bool, Int}
+use base::prim::{List, Bool, Int32}
 
 def head {a : Type} : [a] -> Option a
     | (x:_) => Option::Some x
@@ -16,14 +16,14 @@ def last {a : Type} : [a] -> Option a
     | [] => Option::None
 
 @[wired_in "list.length"]
-def length {a : Type} : [a] -> Int
+def length {a : Type} : [a] -> Int32
     | [] => 0
     | (_:xs) => 1 + length xs
 
 def singleton {a : Type} : a -> [a]
     | x => [x]
 
-def replicate {a : Type} : Int -> a -> [a]
+def replicate {a : Type} : Int32 -> a -> [a]
     | n, x =>
         if n <= 0 then [] else List::Cons x (replicate (n - 1) x)
 
@@ -66,11 +66,11 @@ def foldl1 {a : Type} : (a -> a -> a) -> [a] -> Option a
     | _, [] => Option::None
 
 @[wired_in "list.sum"]
-def sum : [Int] -> Int
+def sum : [Int32] -> Int32
     | xs => foldl (\acc x -> acc + x) 0 xs
 
 @[wired_in "list.product"]
-def product : [Int] -> Int
+def product : [Int32] -> Int32
     | xs => foldl (\acc x -> acc * x) 1 xs
 
 def and : [Bool] -> Bool
@@ -91,11 +91,11 @@ def all {a : Type} : (a -> Bool) -> [a] -> Bool
     | p, (x:xs) => if p x then all p xs else false
     | _, [] => true
 
-def take {a : Type} : Int -> [a] -> [a]
+def take {a : Type} : Int32 -> [a] -> [a]
     | n, (x:xs) => if n <= 0 then [] else List::Cons x (take (n - 1) xs)
     | _, [] => []
 
-def drop {a : Type} : Int -> [a] -> [a]
+def drop {a : Type} : Int32 -> [a] -> [a]
     | n, (x:xs) => if n <= 0 then List::Cons x xs else drop (n - 1) xs
     | _, [] => []
 
@@ -107,7 +107,7 @@ def drop_while {a : Type} : (a -> Bool) -> [a] -> [a]
     | p, (x:xs) => if p x then drop_while p xs else List::Cons x xs
     | _, [] => []
 
-def split_at {a : Type} : Int -> [a] -> ([a], [a])
+def split_at {a : Type} : Int32 -> [a] -> ([a], [a])
     | n, xs => (take n xs, drop n xs)
 
 def elem {a : Type} : a -> [a] -> Bool
@@ -129,7 +129,7 @@ def partition {a : Type} : (a -> Bool) -> [a] -> ([a], [a])
         if p x then (List::Cons x yes, no) else (yes, List::Cons x no)
     | _, [] => ([], [])
 
-def nth {a : Type} : Int -> [a] -> Option a
+def nth {a : Type} : Int32 -> [a] -> Option a
     | n, (x:xs) => if n == 0 then Option::Some x else nth (n - 1) xs
     | _, [] => Option::None
 

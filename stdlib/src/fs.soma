@@ -1,7 +1,10 @@
 use base::core::{<>, >>, >>=}
-use base::ffi::{CString, CInt, to_cstring, free}
+use base::ffi::{CString, CInt, CLong, to_cstring, from_cstring, ptr_cast, ptr_add, ptr_write}
 use base::io::{pure_io}
-use base::prim::{Ptr, IO, String, Unit}
+use base::prim::{Ptr, IO, String, Unit, Word8, Int32, Int64}
+
+@[intrinsic "primop.add"]
+def add64 : Int64 -> Int64 -> Int64
 
 record Path where
     value : String
@@ -27,13 +30,29 @@ def c_fclose : Ptr Unit -> IO CInt
 @[extern "fflush"]
 def c_fflush : Ptr Unit -> IO CInt
 
+@[extern "fputs"]
+def c_fputs : CString -> Ptr Unit -> IO CInt
+
+@[extern "fseek"]
+def c_fseek : Ptr Unit -> CLong -> CInt -> IO CInt
+
+@[extern "ftell"]
+def c_ftell : Ptr Unit -> IO CLong
+
+@[extern "fread"]
+def c_fread : Ptr Word8 -> CLong -> CLong -> Ptr Unit -> IO CLong
+
+@[extern "calloc"]
+def c_calloc : CLong -> CLong -> Ptr Word8
+
+@[extern "remove"]
+def c_remove : CString -> IO CInt
+
 def open : Path -> String -> IO FileHandle
     | (Path::New path), mode => compose
         let cpath = to_cstring path
         let cmode = to_cstring mode
         bind handle <- c_fopen cpath cmode
-        free cpath
-        free cmode
         pure_io (FileHandle::New handle)
 
 def close : FileHandle -> IO CInt
@@ -44,3 +63,18 @@ def create : Path -> IO FileHandle
 
 def flush : FileHandle -> IO CInt
     | (FileHandle::New ptr) => c_fflush ptr
+
+def write : FileHandle -> String -> IO CInt
+    | (FileHandle::New ptr), s => c_fputs (to_cstring s) ptr
+
+def read_to_string : FileHandle -> IO String
+    | (FileHandle::New ptr) => compose
+        c_fseek ptr (0 :: Int64) (2 :: Int32)
+        bind size <- c_ftell ptr
+        c_fseek ptr (0 :: Int64) (0 :: Int32)
+        let buf = c_calloc (add64 size (1 :: Int64)) (1 :: Int64)
+        c_fread buf (1 :: Int64) size ptr
+        pure_io (from_cstring buf)
+
+def remove : Path -> IO CInt
+    | (Path::New path) => c_remove (to_cstring path)

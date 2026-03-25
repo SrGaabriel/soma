@@ -5,7 +5,7 @@ class Eq (a : Type) where
     eq : a -> a -> Bool
 
 class Ord (a : Type) where
-    compare : a -> a -> Int
+    compare : a -> a -> Int32
 
 def sorted_eq (a : Type) : {{Eq a}} -> {{Ord a}} -> a -> a -> Bool
     | x, y => eq x y

@@ -1,5 +1,5 @@
 // expect: success
 // Test: higher-kinded types combined with row polymorphism
 
-def map_record (f : Type -> Type) (r : Row) : { value : f Int | r } -> { value : f Int | r }
+def map_record (f : Type -> Type) (r : Row) : { value : f Int32 | r } -> { value : f Int32 | r }
     | rec => rec

@@ -2,18 +2,18 @@
 // Test: higher-order functions - callClosure lowering
 
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 
 @[intrinsic "primop.mul"]
-def {*} : Int -> Int -> Int
+def {*} : Int32 -> Int32 -> Int32
 
-def comp : (Int -> Int) -> (Int -> Int) -> Int -> Int
+def comp : (Int32 -> Int32) -> (Int32 -> Int32) -> Int32 -> Int32
     | f g, x  => f (g x)
 
-def double : Int -> Int
+def double : Int32 -> Int32
     | x => x + x
 
-def square : Int -> Int
+def square : Int32 -> Int32
     | x => x * x
 
-def test : Int = comp double square 3
+def test : Int32 = comp double square 3

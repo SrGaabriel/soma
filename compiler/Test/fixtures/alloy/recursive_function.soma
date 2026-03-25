@@ -5,7 +5,7 @@ inductive Nat where
     | Zero
     | Succ (pred : Nat)
 
-def is_zero : Nat -> Int
+def is_zero : Nat -> Int32
     | Zero => 1
     | (Succ _) => 0
 
@@ -15,4 +15,4 @@ def pred : Nat -> Nat
 
 def one : Nat = Succ Zero
 def two : Nat = Succ (Succ Zero)
-def test : Int = is_zero one
+def test : Int32 = is_zero one

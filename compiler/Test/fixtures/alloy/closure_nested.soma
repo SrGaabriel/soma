@@ -2,9 +2,9 @@
 // Test: nested closures - multiple capture environments
 
 @[intrinsic "primop.add"]
-def {+} : Int -> Int -> Int
+def {+} : Int32 -> Int32 -> Int32
 
-def curry3 : Int -> Int -> Int -> Int
+def curry3 : Int32 -> Int32 -> Int32 -> Int32
     | a => \b -> \c -> a + b + c
 
-def test : Int = ((curry3 1) 2) 3
+def test : Int32 = ((curry3 1) 2) 3

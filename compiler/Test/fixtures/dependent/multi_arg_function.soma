@@ -1,8 +1,8 @@
 // expect: success
 // Test: multi-argument function types
 
-def add3 : Int -> Int -> Int -> Int
+def add3 : Int32 -> Int32 -> Int32 -> Int32
     | x, y, z => x
 
-def nested : (Int -> Int -> Int) -> Int -> Int
+def nested : (Int32 -> Int32 -> Int32) -> Int32 -> Int32
     | f, x => f x x
