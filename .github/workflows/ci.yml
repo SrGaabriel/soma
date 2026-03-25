@@ -20,7 +20,7 @@ env:
 
 jobs:
     svm-build:
-        name: Build Rust (svm)
+        name: Build svm
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
@@ -114,7 +114,7 @@ jobs:
                   if-no-files-found: error
 
     haoma-build:
-        name: Build Rust (haoma)
+        name: Build haoma
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
@@ -210,8 +210,14 @@ jobs:
               run: cargo build --verbose --all-features --target ${{ matrix.target }}
               shell: bash
 
-            - name: Run tests
-              if: "!matrix.cross"
+            - name: Run tests (Windows GNU)
+              if: "!matrix.cross && contains(matrix.target, 'windows-gnu')"
+              working-directory: haoma
+              shell: msys2 {0}
+              run: cargo test --verbose --all-features --target ${{ matrix.target }}
+
+            - name: Run tests (other)
+              if: "!matrix.cross && !contains(matrix.target, 'windows-gnu')"
               working-directory: haoma
               run: cargo test --verbose --all-features --target ${{ matrix.target }}
 
@@ -265,7 +271,7 @@ jobs:
                   if-no-files-found: error
 
     lean-build:
-        name: Build Lean (${{ matrix.project }})
+        name: Build ${{ matrix.project }} (${{ matrix.os }}, ${{ matrix.target }})
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
