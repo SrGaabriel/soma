@@ -1,6 +1,7 @@
 name = "souls"
 version = "0.1.0"
 defaultTargets = ["souls"]
+testDriver = "test"
 
 [[require]]
 name = "lapis"
@@ -23,7 +24,9 @@ name = "Lsp"
 name = "souls"
 root = "Lsp.Main"
 
-[[require]]
-name = "UnicodeBasic"
-git = "https://github.com/SrGaabriel/lean4-unicode-basic"
-rev = "main"
+[[lean_lib]]
+name = "Test"
+
+[[lean_exe]]
+name = "test"
+root = "Test.Main"
