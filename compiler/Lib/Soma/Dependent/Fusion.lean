@@ -91,14 +91,15 @@ def buildFusionCtx
   let reverseConst := match globals.wiredIn.getUnique? .listReverse with
     | some info => some (mkConst info.name)
     | none => none
+  -- Build reverse index: Unique → WiredRole (for efficient type→role lookup)
+  let uniqueToRole : Std.HashMap Soma.Unique Soma.Dependent.WiredRole :=
+    globals.wiredIn.roles.fold (init := {}) fun acc role infos =>
+      infos.foldl (fun m info => m.insert info.name.id role) acc
   let isInt32Ty (v : Soma.Core.Value) : Bool :=
     match v with
     | .vPrimTy .int => true
     | .vDataType uid _ =>
-      match globals.wiredIn.roles.fold (init := none) (fun found role infos =>
-        match found with
-        | some _ => found
-        | none => if infos.any (fun i => i.name.id == uid) then some role else none) with
+      match uniqueToRole.get? uid with
       | some r => Soma.Dependent.WiredRole.primType? r == some PrimType.int
       | none => false
     | _ => false

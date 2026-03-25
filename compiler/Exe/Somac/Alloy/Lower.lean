@@ -1153,7 +1153,7 @@ partial def emitTaggedDup (inputVal : LocalId) (taggedTy : Ty n) (label : UInt32
   pure (inputVal, copy1)
 
 /-- Emit list duplication via lazy SUP -/
-partial def emitListDup (inputVal : LocalId) (_srcTy : Ty n) (label : UInt32)
+partial def emitListDup (inputVal : LocalId) (_srcTy : Ty n) (_label : UInt32)
     (graph : CGraph) (nodeId : CNodeId) (elemSz : Nat)
     : StateT (NodeState n) (LowerM n) (LocalId × LocalId) := do
   let isPatternMatchDup := match graph.getNode nodeId with
@@ -1854,23 +1854,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     if scrutIsArray then
       modify fun ns => { ns with listTypedLocals := ns.listTypedLocals.insert scrutineeVal.id }
 
-    let loweredScrutTy := (← StateT.lift get).func.getLocalType scrutineeVal
-    let isSingleCtorRecord := if scrutIsArray then false
-      else
-        let scrutTy := match entry.getPort ⟨1⟩ with
-          | some sp => match graph.getNode sp.node with
-            | some se => getNodeTypeWithMapping se ctx
-            | none => nodeTy
-          | none => nodeTy
-        match scrutTy with
-        | .struct _ => true
-        | _ => match loweredScrutTy with
-          | some ty => match ty with | .struct _ => true | _ => false
-          | none => false
-    if isSingleCtorRecord then do
-      modify fun ns => { ns with expectedResultTy := some matResultTy }
-      lowerPort 2 matResultTy (some matResultTy)
-    else do
+    do
 
     let (_, _thenBlock, elseBlock) ← if scrutIsArray then
       -- Array-backed list: check list.len field (index 1) for Nil/Cons
