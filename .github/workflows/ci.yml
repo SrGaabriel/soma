@@ -147,7 +147,7 @@ jobs:
                       cross: false
                     - os: windows-latest
                       target: i686-pc-windows-gnu
-                      cross: false
+                      cross: true
             fail-fast: false
 
         defaults:
