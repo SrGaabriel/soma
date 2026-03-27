@@ -846,7 +846,7 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
   | .alo refId => do
     ReduceM.consumeFuel
     let def_ ← ReduceM.getDefinition refId
-    if def_.isExternal then
+    if def_.reducibility != .reducible then
       pure nid
     else if (← ReduceM.isNormalizingDef refId) then
       pure nid
@@ -868,7 +868,7 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
   | .ref refId => do
     ReduceM.consumeFuel
     let def_ ← ReduceM.getDefinition refId
-    if def_.isExternal then
+    if def_.reducibility != .reducible then
       pure nid
     else if (← ReduceM.isNormalizingDef refId) then
       pure nid

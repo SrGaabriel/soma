@@ -187,6 +187,10 @@ structure IONames where
 /-- Inline IO bind chains into flat let sequences with World token threading -/
 private partial def inlineIOChain (io : IONames) (worldIdx : Nat) : Expr → Expr
   | .app fn arg =>
+    -- First check: is the whole expression `pure_io arg` (possibly with type args)?
+    if isWiredInRef io.pureName fn then
+      .pair (.bvar worldIdx) arg
+    else
     match fn with
     | .app ioBind action =>
       if isWiredInRef io.bindName ioBind then
@@ -259,26 +263,54 @@ private partial def inlineIOChain (io : IONames) (worldIdx : Nat) : Expr → Exp
     .sigma qty info name (inlineIOChain io worldIdx fst) (inlineIOChain io worldIdx snd)
   | e => e
 
-/-- Top-level IO bind inlining -/
-partial def inlineIOBinds (io : IONames) (body : Expr) : Expr :=
+/-- Core IO bind inlining with optional world parameter index from an enclosing World lambda -/
+private partial def inlineIOBindsCore (io : IONames) (worldVar? : Option Nat) (body : Expr) : Expr :=
   match body with
   | .app fn arg =>
+    if isWiredInRef io.pureName fn then
+      match worldVar? with
+      | some worldIdx => .pair (.bvar worldIdx) arg
+      | none => .lam .explicit "w" (.primTy .world) (.pair (.bvar 0) arg.shiftUp)
+    else
     match fn with
     | .app ioBind _action =>
       if isWiredInRef io.bindName ioBind then
-        .lam .explicit "w" (.primTy .world) (inlineIOChain io 0 body.shiftUp)
+        match worldVar? with
+        | some worldIdx =>
+          -- World parameter already in scope so we inline directly without extra lambda
+          inlineIOChain io worldIdx body
+        | none =>
+          -- No world parameter so we wrap in a lambda to introduce one
+          .lam .explicit "w" (.primTy .world) (inlineIOChain io 0 body.shiftUp)
       else
-        .app (inlineIOBinds io fn) (inlineIOBinds io arg)
+        .app (inlineIOBindsCore io worldVar? fn) (inlineIOBindsCore io worldVar? arg)
     | _ =>
       if isWiredInRef io.pureName fn then
-        .lam .explicit "w" (.primTy .world) (.pair (.bvar 0) arg.shiftUp)
+        match worldVar? with
+        | some worldIdx =>
+          -- World parameter already in scope so we construct pair directly
+          .pair (.bvar worldIdx) arg
+        | none =>
+          .lam .explicit "w" (.primTy .world) (.pair (.bvar 0) arg.shiftUp)
       else
-        .app (inlineIOBinds io fn) (inlineIOBinds io arg)
-  | .lam info name domain body =>
-    .lam info name domain (inlineIOBinds io body)
-  | .let_ name ty val body =>
-    .let_ name ty (inlineIOBinds io val) (inlineIOBinds io body)
+        .app (inlineIOBindsCore io worldVar? fn) (inlineIOBindsCore io worldVar? arg)
+  | .lam info name domain innerBody =>
+    -- If this lambda takes a World parameter, we record its index for IO inlining
+    let isWorldLam := match domain with
+      | .primTy .world => true
+      | _ => false
+    if isWorldLam then
+      .lam info name domain (inlineIOBindsCore io (some 0) innerBody)
+    else
+      .lam info name domain (inlineIOBindsCore io (worldVar?.map (· + 1)) innerBody)
+  | .let_ name ty val innerBody =>
+    .let_ name ty (inlineIOBindsCore io worldVar? val)
+      (inlineIOBindsCore io (worldVar?.map (· + 1)) innerBody)
   | _ => body
+
+/-- Top-level IO bind inlining -/
+partial def inlineIOBinds (io : IONames) (body : Expr) : Expr :=
+  inlineIOBindsCore io none body
 
 /-- Resolve IO primitive names from the global declarations -/
 def resolveIONames? (globals : Globals) : Option IONames := Id.run do

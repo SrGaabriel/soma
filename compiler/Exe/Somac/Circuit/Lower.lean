@@ -16,7 +16,7 @@ import Std.Data.HashMap
 
 namespace Somac.Circuit.Lower
 
-open Somac.Circuit.Graph (Graph GraphM enumList)
+open Somac.Circuit.Graph (Graph GraphM Reducibility enumList)
 open Somac.Circuit.Node (Node NodeId PortId PortIdx Label)
 open Somac.Circuit.Term (Op1Code Op2Code PrimType)
 open Somac.Circuit.Term (PrimType)
@@ -253,8 +253,8 @@ def recordTypeArgs (nodeId : NodeId) (typeArgs : Array Value) : LowerM Unit :=
 
 /-- Add a definition to the book -/
 def addDefinition (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
-    (isExternal : Bool := false) : LowerM Nat :=
-  liftGraph (GraphM.addDefinition name root arity ty isExternal)
+    (reducibility : Reducibility := .reducible) : LowerM Nat :=
+  liftGraph (GraphM.addDefinition name root arity ty reducibility)
 
 /-- Resolve a variant label to a collision-free tag -/
 def resolveVariantTag (label : String) : LowerM Nat := do
@@ -823,15 +823,8 @@ partial def lowerCoreAppGeneric (fn arg : Soma.Core.Expr) (ty : Value)
   let fnTy ← getExprType fn
   match fnTy.piDomain? with
   | none =>
-    -- Type-level applications are erased
-    match fnTy with
-    | .vType _ | .vNeutral _ _ => pure none
-    | _ =>
-      let fnDesc := match fn with
-        | .const qn _ => s!"const '{qn.display}'"
-        | .fvar u _ => s!"fvar '{u.original}'"
-        | other => other.ctorName
-      panic! s!"lowerCoreAppGeneric: expected Pi type for function ({fnDesc})"
+    -- Type-level or erased applications
+    pure none
   | some argTy =>
     let fnPort? ← lowerCoreExpr fn fnTy
     match fnPort? with
@@ -1116,13 +1109,16 @@ partial def lowerCoreTuple (elems : Array Soma.Core.Expr)
 /-- Lower a Core.Expr pair -/
 partial def lowerCorePair (fst snd : Soma.Core.Expr)
     (ty : Value) : LowerM (Option PortId) := do
-  let some fstTy := ty.sigmaFst? | return none
-  let sndTy ← do
+  let (fstTy, sndTy) ← do
     match ty with
-    | .vSigma _ _ _ clos =>
+    | .vSigma _ _ fstT clos =>
       let fstVal := Soma.Core.evalCoreExpr Soma.Core.EvalCtx.empty fst
-      pure (clos.applyPure fstVal)
-    | _ => return none
+      pure (fstT, clos.applyPure fstVal)
+    | _ =>
+      -- For non-Sigma pair types, infer component types
+      let fstTy ← getExprType fst
+      let sndTy ← getExprType snd
+      pure (fstTy, sndTy)
   let fstPort? ← lowerCoreExpr fst fstTy
   let sndPort? ← lowerCoreExpr snd sndTy
   match fstPort?, sndPort? with
@@ -1481,7 +1477,8 @@ def lowerModule (types : Array Soma.Core.TypeDef)
   for (_, fn) in functions do
     let root ← lowerFunction fn
     let arity := fn.params.size
-    let _ ← LowerM.addDefinition fn.name root arity fn.fnType
+    let red := if fn.attrs.irreducible then Reducibility.irreducible else .reducible
+    let _ ← LowerM.addDefinition fn.name root arity fn.fnType (reducibility := red)
 
   -- Fifth pass: add definitions for intrinsic/extern functions from current module
   for (_, fn) in intrinsics do
@@ -1493,7 +1490,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
     | _ =>
       let era ← LowerM.addNode .era unitTy
       let arity := fn.fnType.explicitArityFull
-      let _ ← LowerM.addDefinition fn.name era arity fn.fnType (isExternal := true)
+      let _ ← LowerM.addDefinition fn.name era arity fn.fnType (reducibility := .external)
 
   -- Sixth pass: add placeholder definitions for external functions from dependencies
   if let some g := globals then
@@ -1507,8 +1504,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
     for (_, info) in externals do
       let era ← LowerM.addNode .era unitTy
       let arity := info.type.explicitArityFull
-      let _ ← LowerM.addDefinition info.name era arity info.type
-        (isExternal := true)
+      let _ ← LowerM.addDefinition info.name era arity info.type (reducibility := .external)
 
   -- Set root to main function if it exists
   -- Wire an ERA demand node to the root ALO so demand-driven evaluation can proceed

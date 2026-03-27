@@ -68,6 +68,7 @@ private def functionAttrsFromSyntax
     inline := attrs.any fun a => a.name.name == "inline"
     noInline := attrs.any fun a => a.name.name == "noinline"
     total := attrs.any fun a => a.name.name == "total"
+    irreducible := attrs.any fun a => a.name.name == "irreducible"
     deprecated := none
     extern := externName
     intrinsic := intrinsicTag

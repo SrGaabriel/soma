@@ -402,7 +402,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr
     | none =>
       match fnTy with
       | .vType _ | .vNeutral _ _ => .vType .zero
-      | _ => panic! s!"Expr.typeOfWith: app with non-Pi function type (fn={fn.ctorName})"
+      | _ => panic! s!"Expr.typeOfWith: app with non-Pi function type (fn={fn.ctorName}, arg={arg.ctorName})"
 
   | .lam _info name domain body =>
     let domTy := evalWithGlobals globals domain
@@ -441,13 +441,21 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr
     let sigTy := typeOfWith bvarCtx globals expr
     match sigTy.sigmaFst? with
     | some ty => ty
-    | none => panic! s!"Expr.typeOfWith: projFst on non-Sigma type (expr={expr.ctorName})"
+    | none =>
+      -- For DataType pairs (e.g., Pair World a from IO), extract first type arg
+      match sigTy with
+      | .vDataType _ (fstTy :: _) => fstTy
+      | _ => .vType .zero
   | .projSnd expr =>
     let sigTy := typeOfWith bvarCtx globals expr
     let fstVal := evalWithGlobals globals (.projFst expr)
     match sigTy.sigmaApply fstVal with
     | some ty => ty
-    | none => panic! s!"Expr.typeOfWith: projSnd on non-Sigma type (expr={expr.ctorName})"
+    | none =>
+      -- For DataType pairs, extract second type arg
+      match sigTy with
+      | .vDataType _ (_ :: sndTy :: _) => sndTy
+      | _ => .vType .zero
 
   | .record fields =>
     let row := fields.foldr (init := Value.vRowEmpty) fun (name, expr) acc =>

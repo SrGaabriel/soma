@@ -186,6 +186,16 @@ instance : Inhabited Expr := ⟨.sort Level.zero⟩
 instance : Inhabited Arm := ⟨.mk #[] default⟩
 
 /-- Short constructor name for diagnostic messages -/
+partial def Expr.containsPairExpr : Expr → Bool
+  | .pair _ _ => true
+  | .app f a => f.containsPairExpr || a.containsPairExpr
+  | .lam _ _ _ b => b.containsPairExpr
+  | .let_ _ _ v b => v.containsPairExpr || b.containsPairExpr
+  | .«case» scruts arms _ => scruts.any (·.containsPairExpr) || arms.any (·.body.containsPairExpr)
+  | .closure _ caps => caps.any (·.containsPairExpr)
+  | .projFst e | .projSnd e => e.containsPairExpr
+  | _ => false
+
 def Expr.ctorName : Expr → String
   | .bvar _ => "bvar" | .fvar _ _ => "fvar" | .mvar _ => "mvar" | .const _ _ => "const"
   | .app _ _ => "app" | .lam _ _ _ _ => "lam" | .let_ _ _ _ _ => "let" | .lit _ => "lit"

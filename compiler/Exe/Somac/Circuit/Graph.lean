@@ -61,6 +61,16 @@ def connections (e : NodeEntry) : List (PortIdx × PortId) :=
 
 end NodeEntry
 
+/-- Controls how a definition interacts with the reducer and downstream passes. -/
+inductive Reducibility where
+  /-- Normal function -/
+  | reducible
+  /-- Has a body that is compiled to Alloy/LLVM, but the interaction net reducer treats it as opaque -/
+  | irreducible
+  /-- No real body (extern/intrinsic) and opaque to both the reducer and Alloy lowering -/
+  | external
+  deriving Inhabited, BEq
+
 /-- A global definition in the "book" (for recursion via REF nodes) -/
 structure Definition where
   /-- Unique name for this definition -/
@@ -71,8 +81,8 @@ structure Definition where
   arity : Nat
   /-- Full type of this definition (possibly polymorphic) -/
   ty : Value
-  /-- Whether this is an external/intrinsic function -/
-  isExternal : Bool := false
+  /-- How the reducer and downstream passes treat this definition -/
+  reducibility : Reducibility := .reducible
   deriving Inhabited
 
 /-- The interaction net graph -/
@@ -245,9 +255,9 @@ def isFullyConnected (g : Graph) : Bool :=
 
 /-- Add a definition to the book -/
 def addDefinition (g : Graph) (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
-    (isExternal : Bool := false) : Nat × Graph :=
+    (reducibility : Reducibility := .reducible) : Nat × Graph :=
   let idx := g.book.size
-  let def_ : Definition := { name, root, arity, ty, isExternal }
+  let def_ : Definition := { name, root, arity, ty, reducibility }
   (idx, { g with book := g.book.push def_ })
 
 /-- Look up a definition by index -/
@@ -421,9 +431,9 @@ def wireToAux (n1 : NodeId) (p1 : PortIdx) (n2 : NodeId) (auxIdx : Nat) : GraphM
 
 /-- Add a definition to the book -/
 def addDefinition (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
-    (isExternal : Bool := false) : GraphM Nat := do
+    (reducibility : Reducibility := .reducible) : GraphM Nat := do
   let g ← get
-  let (idx, g') := g.addDefinition name root arity ty isExternal
+  let (idx, g') := g.addDefinition name root arity ty reducibility
   set g'
   return idx
 

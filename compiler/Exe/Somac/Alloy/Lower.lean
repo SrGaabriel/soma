@@ -375,7 +375,7 @@ def buildFuncRefFromBookRef (graph : CGraph) (refId : Nat)
     | some (Intrinsic.llvm name) => .externC name
     | some (Intrinsic.runtime fn) => .externC fn.name
     | none =>
-      if def_.isExternal then
+      if def_.reducibility == .external then
         .external def_.name.symbolName
       else
         match funcIdMap with
@@ -1816,7 +1816,8 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       -- Compute the correct field type from the struct definition
       let fieldTy := if h : fieldIdx < fields.size then fields[fieldIdx].snd else nodeTy
       StateT.lift (LowerM.emitInst (.extractField (.local recordVal) fieldIdx) fieldTy)
-    | _ =>
+    | other =>
+      dbg_trace s!"PROJ-FALLBACK: projecting field {fieldIdx} from type {other} (expected struct or taggedUnion)"
       -- Use getPayload for tagged unions
       StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 fieldIdx nodeTy) nodeTy)
 
@@ -2328,14 +2329,14 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
   let mut nextFuncId : Nat := 0
   for i in [:extGraph.book.size] do
     if let some def_ := extGraph.book[i]? then
-      if not def_.isExternal then
+      if def_.reducibility != .external then
         funcIdMap := funcIdMap.insert i (FuncId.mk nextFuncId)
         nextFuncId := nextFuncId + 1
 
   -- Second pass: lower definitions using the mapping
   for i in [:extGraph.book.size] do
     if let some def_ := extGraph.book[i]? then
-      if not def_.isExternal then
+      if def_.reducibility != .external then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
         let wiredRole := wiredFuncs.get? def_.name.id
         let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole

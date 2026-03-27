@@ -7,7 +7,7 @@ import Soma.Core.Intrinsic
 
 namespace Somac.Circuit.Reduce
 
-open Somac.Circuit.Graph (Graph NodeEntry)
+open Somac.Circuit.Graph (Graph NodeEntry Reducibility)
 open Somac.Circuit.Node (Node NodeId PortId)
 open Soma.Core (Intrinsic)
 
@@ -69,7 +69,7 @@ private def defProcessingOrder (g : Graph) : Array Nat := Id.run do
   let mut rdeps : Array (Array Nat) := Array.mk (List.replicate n #[])
   for i in [:n] do
     if let some def_ := g.book[i]? then
-      if !def_.isExternal then
+      if !def_.reducibility != .reducible then
         let reachable := g.reachableFrom (PortId.principal def_.root)
         let mut seen : Std.HashSet Nat := {}
         for nid in reachable do
@@ -110,7 +110,7 @@ private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) :
   let mut stats : Stats := {}
   for i in order do
     if let some def_ := g.book[i]? then
-      if !def_.isExternal then
+      if !def_.reducibility != .reducible then
         let (result, state) ← ReduceM.run (do
           let era ← ReduceM.addNode .era
           ReduceM.connect (PortId.principal era) (PortId.principal def_.root)
