@@ -1336,6 +1336,10 @@ def freshMetaVal (ty : Value) : TCM Value := do
 def solveMeta (id : MetaId) (v : Value) : TCM Unit := do
   modifyState (·.solveMeta id v)
 
+/-- Clear a metavariable's solution, making it unsolved again -/
+def unsolvedMeta (id : MetaId) : TCM Unit := do
+  modifyState fun s => { s with metas := s.metas.unsolve id }
+
 /-- Update metavariable solution for path compression.
     This is a lightweight version of solveMeta that just updates the solution
     without any side effects. Used by `force` to implement union-find style

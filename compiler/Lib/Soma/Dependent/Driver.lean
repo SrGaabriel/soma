@@ -223,7 +223,9 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
         (elaborateFunctionType typeSyntax)
         (TCM.typePlaceholder span)
       let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
-      return (declaredType, placeholderBody, #[])
+      -- Expand abbreviations in intrinsic/extern types too
+      let declaredType' ← expandAbbrevValue declaredType
+      return (declaredType', placeholderBody, #[])
     | none =>
       let ty ← TCM.freshMetaVal (.vType .zero)
       let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
@@ -249,7 +251,9 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     let declaredType' ← zonkValue declaredType
     reportUnsolvedMetas declaredType' span
     let typedBody' ← zonkExpr typedBody
-    return (declaredType', typedBody', generatedParams)
+    -- Expand parameterized type abbreviations so downstream passes see real types
+    let declaredType'' ← expandAbbrevValue declaredType'
+    return (declaredType'', typedBody', generatedParams)
   | none =>
     -- No signature: create fresh metavariables for param types
     let paramTypes ← fn.params.mapM fun _ => TCM.freshMetaVal (.vType .zero)
@@ -262,7 +266,9 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     let inferredType' ← zonkValue inferredType
     reportUnsolvedMetas inferredType' span
     let typedBody' ← zonkExpr typedBody
-    return (inferredType', typedBody', generatedParams)
+    -- Expand parameterized type abbreviations so downstream passes see real types
+    let inferredType'' ← expandAbbrevValue inferredType'
+    return (inferredType'', typedBody', generatedParams)
 
 /-- Elaborate a constructor type: fields -> DataType params -/
 def elaborateCtorType (typeName : Soma.Core.QualifiedName) (typeVarNames : Array String)

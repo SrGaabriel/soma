@@ -98,8 +98,23 @@ partial def collectMetasNeutral (n : Neutral) : Array MetaId :=
 partial def collectMetasClosure (clos : Closure) : Array MetaId :=
   match clos with
   | .const _ value => collectMetas value
-  | .term _ env _ =>
-    env.values.foldl (fun acc (_, v) => acc ++ collectMetas v) #[]
+  | .term _ env body =>
+    let envMetas := env.values.foldl (fun acc (_, v) => acc ++ collectMetas v) #[]
+    let bodyMetas := collectExprMetas body
+    envMetas ++ bodyMetas
+
+/-- Collect metavariable IDs from a Core Expr -/
+partial def collectExprMetas : Soma.Core.Expr → Array MetaId
+  | .mvar mid => #[mid]
+  | .app f a => collectExprMetas f ++ collectExprMetas a
+  | .lam _ _ d b => collectExprMetas d ++ collectExprMetas b
+  | .let_ _ t v b => collectExprMetas t ++ collectExprMetas v ++ collectExprMetas b
+  | .pi _ _ _ d c => collectExprMetas d ++ collectExprMetas c
+  | .sigma _ _ _ f s => collectExprMetas f ++ collectExprMetas s
+  | .pair f s => collectExprMetas f ++ collectExprMetas s
+  | .projFst e | .projSnd e => collectExprMetas e
+  | .fvar _ t | .const _ t | .ann _ t => collectExprMetas t
+  | _ => #[]
 
 end
 

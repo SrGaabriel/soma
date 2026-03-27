@@ -494,6 +494,14 @@ def MetaState.solve (state : MetaState) (id : MetaId) (v : Value) : MetaState :=
     { state with metas := state.metas.insert id.id info' }
   | none => state
 
+/-- Clear a metavariable's solution (make it unsolved again) -/
+def MetaState.unsolve (state : MetaState) (id : MetaId) : MetaState :=
+  match state.metas.get? id.id with
+  | some info =>
+    let info' : MetaInfo := { info with solution := none }
+    { state with metas := state.metas.insert id.id info' }
+  | none => state
+
 def MetaState.lookup (state : MetaState) (id : MetaId) : Option MetaInfo :=
   state.metas.get? id.id
 
