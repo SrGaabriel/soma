@@ -415,7 +415,7 @@ def coerceValue (srcTy dstTy : LLVMType) (val : LLVMValue) : CodegenM LLVMValue 
         match dstTy with
         | .i32 => FuncBuilder.extractvalue srcTy val #[0]
         | .ptr => FuncBuilder.extractvalue srcTy val #[1]
-        | _ => panic! s!"CODEGEN BUG: coerceValue cannot convert {srcTy.toLLVM} to {dstTy.toLLVM}"
+        | _ => panic! s!"CODEGEN BUG: coerceValue cannot convert tagged {srcTy.toLLVM} to {dstTy.toLLVM}"
       -- ptr → aggregate: load from pointer
       else if srcTy == .ptr && !(dstTy.isInt) && !(dstTy == .ptr) then
         FuncBuilder.load dstTy val

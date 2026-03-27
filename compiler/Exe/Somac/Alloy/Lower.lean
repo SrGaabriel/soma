@@ -431,16 +431,25 @@ open Soma.Unique
 
 mutual
 
-/-- Extract field types from a constructor's elaborated Pi type -/
-partial def extractCtorFieldTypes (ty : Value) (ctx : TypeConvCtx n) : Array (Ty n) :=
-  match ty with
-  | Value.vPi _ _ _ dom cod =>
+/-- Check if a Value type is type-level (erased at runtime) -/
+partial def isTypeLevelValue : Value → Bool
+  | .vType _ => true
+  | .vRowSort | .vLabelSort => true
+  | .vPi _ _ _ dom cod =>
     if dom.isType then
       let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨"_", ⟨0⟩⟩)
+      isTypeLevelValue (cod.applyPure neutralArg)
+    else false
+  | _ => false
+
+partial def extractCtorFieldTypes (ty : Value) (ctx : TypeConvCtx n) : Array (Ty n) :=
+  match ty with
+  | Value.vPi qty _ _ dom cod =>
+    let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨"_", ⟨0⟩⟩)
+    if qty.isErased || isTypeLevelValue dom then
       extractCtorFieldTypes (cod.applyPure neutralArg) ctx
     else
       let fieldTy := convertValueTypeWithMapping dom ctx
-      let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨"_", ⟨0⟩⟩)
       #[fieldTy] ++ extractCtorFieldTypes (cod.applyPure neutralArg) ctx
   | _ => #[]
 
@@ -485,12 +494,25 @@ partial def extractRowVariantsWithMapping (row : Value) (ctx : TypeConvCtx n)
     extractRowVariantsWithMapping tail ctx (idx + 1) (acc.push (idx, fields))
   | _ => acc
 
+/-- Extract named fields from a row type for struct representation (used for class dicts / records) -/
+partial def extractRowFieldsForStruct (row : Value) (ctx : TypeConvCtx n)
+    : Array (String × Ty n) :=
+  match row with
+  | Value.vRowEmpty => #[]
+  | Value.vRowExtend (Value.vLabelLit name) fieldTy tail =>
+    let ty := convertValueTypeWithMapping fieldTy ctx
+    #[(name, ty)] ++ extractRowFieldsForStruct tail ctx
+  | Value.vRowExtend _ fieldTy tail =>
+    let ty := convertValueTypeWithMapping fieldTy ctx
+    #[("_", ty)] ++ extractRowFieldsForStruct tail ctx
+  | _ => #[]
+
 /-- Convert a Soma Value type to an Alloy Ty -/
 partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty n :=
   match val with
   | Value.vPrimTy prim => convertPrimToAlloyTy prim [] ctx
 
-  | Value.vPi _ _ name dom cod =>
+  | Value.vPi _qty _binder name dom cod =>
     let domTy := convertValueTypeWithMapping dom ctx
     let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨name, ⟨0⟩⟩)
     let codResult := cod.applyPure neutralArg
@@ -527,8 +549,13 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
           .tagged (.prim .u32) variants
       | none => .tagged (.prim .u32) #[]
   | Value.vConstructor _ _ _ _ => .rawPtr
-  | Value.vRecord _ => .rawPtr
-  | Value.vRecordVal _ => .rawPtr
+  | Value.vRecord row =>
+    let fields := extractRowFieldsForStruct row ctx
+    if fields.isEmpty then .rawPtr else .struct fields
+  | Value.vRecordVal fields =>
+    let alloyFields := fields.toArray.map fun (name, val) =>
+      (name, convertValueTypeWithMapping val ctx)
+    if alloyFields.isEmpty then .rawPtr else .struct alloyFields
   | Value.vVariant row => .tagged (.prim .u32) (extractRowVariantsWithMapping row ctx)
   | Value.vType _ => .rawPtr
   | Value.vNeutral _ neu =>
@@ -1034,13 +1061,20 @@ def lowerNum (primTy : Somac.Circuit.Term.PrimType) (val : UInt32) : LowerM n Lo
     else Int.ofNat val.toNat
   LowerM.emitInst (.copy (.const (.int intVal (convertCircuitPrimType primTy)))) ty
 
-/-- Lower a constructor (creates a tagged struct on the heap) -/
+/-- Lower a constructor. Record types (single constructor, struct layout) produce struct literals -/
 def lowerCtor (tag : Nat) (_arity : Nat) (fieldVals : Array LocalId) (ty : Ty n) : LowerM n LocalId := do
   let payload := fieldVals.map fun id => Operand.local id
-  let taggedTy : Ty n := match ty with
-    | .tagged _ _ => ty
-    | _ => .tagged (.prim .u32) #[]
-  LowerM.emitInst (.taggedLit tag payload taggedTy) taggedTy
+  match ty with
+  | .struct _ =>
+    -- Record type (single constructor): produce a flat struct literal
+    LowerM.emitInst (.structLit payload ty) ty
+  | .tagged _ _ =>
+    -- ADT (multiple constructors): produce a tagged literal
+    LowerM.emitInst (.taggedLit tag payload ty) ty
+  | _ =>
+    -- Unknown layout: default to tagged union
+    let taggedTy : Ty n := .tagged (.prim .u32) #[]
+    LowerM.emitInst (.taggedLit tag payload taggedTy) taggedTy
 
 /-- Build a nested struct literal for nested pair types -/
 partial def lowerNestedStructLit (fieldVals : Array LocalId) (ty : Ty n) : LowerM n LocalId := do
@@ -1260,7 +1294,28 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     match entry.getPort ⟨portIdx⟩ with
     | some targetPort =>
       match graph.getNode targetPort.node with
-      | some targetEntry => getNodeTypeWithMapping targetEntry ctx
+      | some targetEntry =>
+        let nodeAlTy := getNodeTypeWithMapping targetEntry ctx
+        -- Principal port (0): the node's type IS the value type
+        if targetPort.port.idx == 0 then nodeAlTy
+        else
+          -- Auxiliary ports: derive the type from the node's semantics
+          match targetEntry.node with
+          | .lam _ =>
+            -- Port 1 = VAR (parameter binding): type is the Pi domain
+            if targetPort.port.idx == 1 then
+              match targetEntry.ty.piDomain? with
+              | some domTy => convertValueTypeWithMapping domTy ctx
+              | none => nodeAlTy
+            else nodeAlTy
+          | .app =>
+            -- Port 2 = ARG: type is the Pi domain of the function's type
+            if targetPort.port.idx == 2 then
+              match targetEntry.ty.piDomain? with
+              | some domTy => convertValueTypeWithMapping domTy ctx
+              | none => nodeAlTy
+            else nodeAlTy
+          | _ => nodeAlTy
       | none => defaultTy
     | none => defaultTy
 
@@ -1813,12 +1868,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
     match recordTy with
     | .struct fields =>
       -- Use extractField for struct types
-      -- Compute the correct field type from the struct definition
       let fieldTy := if h : fieldIdx < fields.size then fields[fieldIdx].snd else nodeTy
       StateT.lift (LowerM.emitInst (.extractField (.local recordVal) fieldIdx) fieldTy)
-    | other =>
-      dbg_trace s!"PROJ-FALLBACK: projecting field {fieldIdx} from type {other} (expected struct or taggedUnion)"
-      -- Use getPayload for tagged unions
+    | _ =>
+      -- Tagged unions and other types
       StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 fieldIdx nodeTy) nodeTy)
 
   | .record numFields => do
