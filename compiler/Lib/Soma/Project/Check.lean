@@ -652,9 +652,7 @@ def typeCheckModule
         (Soma.Dependent.Specialize.specializeFunction methodRegistry fn)
     mergedTypedFns := specializedFns
 
-  let reverseIntrinsics := Soma.Dependent.Specialize.buildReverseIntrinsicMap
-    globalsResult.globals.intrinsics
-  let ioNames? := Soma.Dependent.Specialize.resolveIONames? reverseIntrinsics
+  let ioNames? := Soma.Dependent.Specialize.resolveIONames? globalsResult.globals
   let mut inlinedFns : Std.HashMap String Soma.Core.TypedFunction := {}
   for (name, fn) in mergedTypedFns.toList do
     inlinedFns := inlinedFns.insert name

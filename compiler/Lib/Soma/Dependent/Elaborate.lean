@@ -185,8 +185,11 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
       -- Accumulate arguments to the constructor
       return Value.vConstructor name tag (args ++ [argVal]) rty
     | .vPi _ _ _ _ cod =>
-      -- Apply function type - evaluate the closure with TCM's applyClosure
+      -- Apply Pi type
       Soma.Dependent.applyClosure cod argVal
+    | .vLam _ body =>
+      -- Apply type-level lambda
+      Soma.Dependent.applyClosure body argVal
     | .vNeutral ty neu =>
       -- Stuck application; if the function kind is Pi, compute codomain kind.
       let resultTy ← match ty with

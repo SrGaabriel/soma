@@ -201,8 +201,10 @@ inductive WiredRole where
   | typeList
   | typeArray
   | typeRef
-  | typeIO
+  | typeWorld
   | typePtr
+  | pureIO
+  | bindIO
   | sortType
   | sortType0
   | sortType1
@@ -243,8 +245,10 @@ def canonical : WiredRole → String
   | .typeList => "type.list"
   | .typeArray => "type.array"
   | .typeRef => "type.ref"
-  | .typeIO => "type.io"
+  | .typeWorld => "type.world"
   | .typePtr => "type.ptr"
+  | .pureIO => "io.pure"
+  | .bindIO => "io.bind"
   | .sortType => "sort.type"
   | .sortType0 => "sort.type0"
   | .sortType1 => "sort.type1"
@@ -284,8 +288,10 @@ def fromString? : String → Option WiredRole
   | "type.list" | "list" => some .typeList
   | "type.array" | "array" => some .typeArray
   | "type.ref" | "ref" => some .typeRef
-  | "type.io" | "io" => some .typeIO
+  | "type.world" | "world" => some .typeWorld
   | "type.ptr" | "ptr" => some .typePtr
+  | "io.pure" => some .pureIO
+  | "io.bind" => some .bindIO
   | "sort.type" | "type" => some .sortType
   | "sort.type0" | "type0" => some .sortType0
   | "sort.type1" | "type1" => some .sortType1
@@ -318,7 +324,7 @@ def primType? : WiredRole → Option Soma.Core.PrimType
   | .typeWord8 => some .word8
   | .typeWord16 => some .word16
   | .typeWord64 => some .word64
-  | .typeIO => some .io
+  | .typeWorld => some .world
   | .typeArray => some .array
   | .typeList => some .list
   | .typeRef => some .ref

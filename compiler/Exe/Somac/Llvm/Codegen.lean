@@ -2068,36 +2068,6 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
       let ref ← callCFuncStructABI somaStringLLVMTy "soma_int_to_string" llvmArgs
       pure (some (ref, Ty.string))
 
-    | .pureIO =>
-      -- pure_io is identity at runtime (IO is just a newtype wrapper)
-      -- Just return the argument as-is
-      if llvmArgs.size > 0 then
-        let (_, argVal) := llvmArgs[0]!
-        -- Use a no-op bitcast to same type as identity operation
-        let ref ← CodegenM.withFuncBuilder (FuncBuilder.bitcast llvmRetTy llvmRetTy argVal)
-        pure (some (ref, retTy))
-      else
-        pure none
-
-    | .bindIO =>
-      -- io_bind m f = f(m): IO erases, so this is just closure application
-      if llvmArgs.size >= 2 then
-        let (ioTy, ioValRaw) := llvmArgs[0]!
-        let ioArgPtr ← if ioTy == .ptr then pure ioValRaw
-                        else do
-                          let ref ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr ioTy ioValRaw)
-                          pure (.local ref)
-        let (funcTy, funcVal) := llvmArgs[1]!
-        let funcPtr ← if funcTy == .ptr then pure funcVal
-                       else do
-                         let ref ← CodegenM.withFuncBuilder (FuncBuilder.inttoptr funcTy funcVal)
-                         pure (.local ref)
-        let ref ← CodegenM.withFuncBuilder do
-          FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, funcPtr), (.ptr, ioArgPtr)]
-        let ref ← unboxApplyResult ref retTy
-        pure (some (ref, retTy))
-      else
-        pure none
 
   | .callExtern name args retTy =>
     -- External function call: emit regular LLVM call to @name

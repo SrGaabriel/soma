@@ -314,8 +314,6 @@ def convertFFIOp : FFIOp → IntrinsicOp
   | .cstringLen => .cstringLen
   | .strcat => .strcat
   | .intToString => .intToString
-  | .pureIO => .pureIO
-  | .bindIO => .bindIO
 
 /-- Convert Core.PrimOp to Alloy.PrimOp -/
 def convertCorePrimOp : Soma.Core.PrimOp → PrimOp
@@ -463,9 +461,7 @@ partial def convertPrimToAlloyTy (prim : PrimType) (params : List Value) (ctx : 
   | .word8 => .prim .u8
   | .word16 => .prim .u16
   | .word64 => .prim .u64
-  | .io => match params with
-    | [innerTy] => convertValueTypeWithMapping innerTy ctx
-    | _ => .prim .unit
+  | .world => .prim .unit
   | .list => .somaList
   | .array | .ref | .ptr => .rawPtr
 

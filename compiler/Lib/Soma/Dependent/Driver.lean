@@ -112,12 +112,12 @@ partial def extractParamTypes (ty : Value) (numParams : Nat) : TCM (Array Value 
       -- Not a Pi type, return remaining as result
       return (#[], ty')
 
-/-- Extract a binder telescope prefix from a Pi type -/
+/-- Extract a binder telescope prefix from a Pi type, preserving QTT quantities -/
 partial def extractSignaturePrefix (ty : Value) (numExplicit : Nat)
-    : TCM (Array (String × Value × Soma.Core.BinderInfo) × Value) := do
+    : TCM (Array (String × Value × Soma.Core.BinderInfo × Soma.Core.Quantity) × Value) := do
   let ty' ← force ty
   match ty' with
-  | .vPi _qty binder name dom cod =>
+  | .vPi qty binder name dom cod =>
     -- Once we consumed all explicit term parameters, stop before the next explicit binder
     if numExplicit == 0 && !binder.isImplicit then
       return (#[], ty')
@@ -126,7 +126,7 @@ partial def extractSignaturePrefix (ty : Value) (numExplicit : Nat)
     let codTy ← applyClosure cod dummyArg
     let remainingExplicit := if binder.isImplicit then numExplicit else numExplicit - 1
     let (restParams, resultTy) ← extractSignaturePrefix codTy remainingExplicit
-    return (#[(name, dom, binder)] ++ restParams, resultTy)
+    return (#[(name, dom, binder, qty)] ++ restParams, resultTy)
   | _ =>
     return (#[], ty')
 
@@ -152,35 +152,63 @@ def withFunctionParams (params : Array String) (paramTypes : Array Value)
 
 /-- Extend the context with a signature telescope prefix, then run an action.
   Explicit binders in the prefix are renamed to the concrete function parameter names.
+  QTT quantities from the type signature are preserved in the binding context.
   Returns generated Unique×String pairs for those explicit term parameters. -/
-def withSignaturePrefixBindings (allParams : Array (String × Value × Soma.Core.BinderInfo))
+def withSignaturePrefixBindings (allParams : Array (String × Value × Soma.Core.BinderInfo × Soma.Core.Quantity))
     (explicitParams : Array String)
     (span : Span) (action : TCM α) : TCM (Array (Soma.Unique × String) × α) := do
   -- Pre-generate all local ids to collect them
   let mut explicitBindings : Array (Soma.Unique × String) := #[]
-  let mut allBindings : Array (Soma.Unique × String × Soma.Core.BinderInfo) := #[]
+  let mut allBindings : Array (Soma.Unique × String × Soma.Core.BinderInfo × Soma.Core.Quantity) := #[]
   let mut eIdx : Nat := 0
-  for (name, _, binder) in allParams do
+  for (name, _, binder, qty) in allParams do
     if binder.isImplicit then
       let bindingId ← TCM.freshLocalId name
-      allBindings := allBindings.push (bindingId, name, binder)
+      allBindings := allBindings.push (bindingId, name, binder, qty)
     else
       let paramName := if h : eIdx < explicitParams.size then explicitParams[eIdx] else name
       let bindingId ← TCM.freshLocalId paramName
-      allBindings := allBindings.push (bindingId, paramName, .explicit)
+      allBindings := allBindings.push (bindingId, paramName, .explicit, qty)
       explicitBindings := explicitBindings.push (bindingId, paramName)
       eIdx := eIdx + 1
-  -- Now bind them all
+  -- Now bind them all, using the quantity from the type signature
   let rec go (idx : Nat) : TCM α := do
     if idx >= allBindings.size then
       action
     else
-      let (bindingId, paramName, binder) := allBindings[idx]!
-      let (_, ty, _) := allParams[idx]!
-      TCM.withBinding paramName bindingId ty .omega binder span do
+      let (bindingId, paramName, binder, qty) := allBindings[idx]!
+      let (_, ty, _, _) := allParams[idx]!
+      TCM.withBinding paramName bindingId ty qty binder span do
         go (idx + 1)
   let result ← go 0
   return (explicitBindings, result)
+
+/-- Elaborate a function type signature with implicit quantification of free type variables -/
+def elaborateFunctionType (sigSyntax : Syntax.TypeExpr) : TCM Value := do
+  -- Find all free type variables in the function signature
+  let freeVarNames := sigSyntax.freeVars.map (·.name)
+  let freeVarNamesUnique := freeVarNames.toList.eraseDups
+
+  -- Create an elaboration environment with all free type variables bound
+  let mut elabEnv := Elaborate.ElabEnv.empty
+  for varName in freeVarNamesUnique do
+    elabEnv := elabEnv.extend varName (.vType .zero)
+
+  -- Elaborate the function type body
+  let fnBodyType ← Elaborate.elaborateType elabEnv sigSyntax
+
+  -- Wrap in implicit foralls for all free type variables (right to left)
+  let mut fnType := fnBodyType
+  for varName in freeVarNamesUnique.reverse do
+    let outerEnv : Elaborate.ElabEnv := {
+      tyVars := elabEnv.tyVars.tail!
+      level := elabEnv.level - 1
+    }
+    let codClosure ← Elaborate.mkDependentClosure varName fnType outerEnv
+    fnType := Value.vPi .omega .implicit varName (.vType .zero) codClosure
+    elabEnv := outerEnv
+
+  return fnType
 
 /-- Type check a single function using dependent types.
     Returns (fnType, typedBody, generatedParams) where generatedParams contains local ids. -/
@@ -192,7 +220,7 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     match fn.declaredTypeSyntax with
     | some typeSyntax =>
       let declaredType ← TCM.recoverWithM
-        (Elaborate.elaborateType Elaborate.ElabEnv.empty typeSyntax)
+        (elaborateFunctionType typeSyntax)
         (TCM.typePlaceholder span)
       let placeholderBody := Soma.Core.Expr.lit (.string s!"placeholder:{fn.name.display}")
       return (declaredType, placeholderBody, #[])
@@ -202,9 +230,9 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
       return (ty, placeholderBody, #[])
   match fn.declaredTypeSyntax with
   | some typeSyntax =>
-    -- Elaborate the declared type signature
+    -- Elaborate the declared type signature with implicit quantification
     let declaredType ← TCM.recoverWithM
-      (Elaborate.elaborateType Elaborate.ElabEnv.empty typeSyntax)
+      (elaborateFunctionType typeSyntax)
       (TCM.typePlaceholder span)
     -- Split declared signature into:
     --   1) telescope prefix needed to check this function's term parameters
@@ -313,37 +341,6 @@ def elaborateIndexedCtorType (_typeName : Soma.Core.QualifiedName) (_typeVarName
     elabEnv := outerEnv
 
   return ctorType
-
-/-- Elaborate a function type signature, properly handling free type variables.
-    Free type variables in the signature become implicit forall-bound parameters.
-    For example, `a -> [a] -> [a]` becomes `forall {a : Type}. a -> [a] -> [a]` -/
-def elaborateFunctionType (sigSyntax : Syntax.TypeExpr) : TCM Value := do
-  -- Find all free type variables in the function signature
-  let freeVarNames := sigSyntax.freeVars.map (·.name)
-  let freeVarNamesUnique := freeVarNames.toList.eraseDups
-
-  -- Create an elaboration environment with all free type variables bound
-  let mut elabEnv := Elaborate.ElabEnv.empty
-
-  -- Bind all free variables from the signature
-  for varName in freeVarNamesUnique do
-    elabEnv := elabEnv.extend varName (.vType .zero)
-
-  -- Elaborate the function type body
-  let fnBodyType ← Elaborate.elaborateType elabEnv sigSyntax
-
-  -- Wrap in implicit foralls for all free type variables
-  let mut fnType := fnBodyType
-  for varName in freeVarNamesUnique.reverse do
-    let outerEnv : Elaborate.ElabEnv := {
-      tyVars := elabEnv.tyVars.tail!
-      level := elabEnv.level - 1
-    }
-    let codClosure ← Elaborate.mkDependentClosure varName fnType outerEnv
-    fnType := Value.vPi .omega .implicit varName (.vType .zero) codClosure
-    elabEnv := outerEnv
-
-  return fnType
 
 private def registerWiredRoleFromAttrs
     (globals : Globals)
@@ -774,11 +771,21 @@ def elaborateAbbrev (typeAbbrev : Soma.Core.TypeAbbrev) : TCM AbbrevInfo := do
     -- Elaborate the expansion body in the parameter context
     let bodyVal ← Elaborate.elaborateType elabEnv typeAbbrev.expansion
 
-    -- Wrap in Pi types (right to left) to create: forall p1 p2 ... pn. body
-    let mut expansion := bodyVal
-    for paramName in typeAbbrev.params.reverse do
-      let closure ← TCM.mkConstClosure paramName expansion
-      expansion := Value.vPi .omega .explicit paramName (Value.vType Level.zero) closure
+    -- Build a proper dependent closure that substitutes parameters when applied
+    let numParams := typeAbbrev.params.size
+    let bodyExpr := Soma.Core.quoteExpr ⟨numParams⟩ bodyVal
+
+    -- Wrap all params except the outermost (first) in nested Expr.pi from inside out
+    let mut innerExpr := bodyExpr
+    for i in List.range (numParams - 1) |>.reverse do
+      let paramIdx := i + 1
+      let paramName := typeAbbrev.params[paramIdx]!
+      innerExpr := Soma.Core.Expr.pi .omega .explicit paramName (Soma.Core.Expr.sort Level.zero) innerExpr
+
+    -- Create the outermost closure with empty env
+    let outerName := typeAbbrev.params[0]!
+    let closure := Soma.Core.Closure.term outerName (Soma.Core.Env.mk [] 0) innerExpr
+    let expansion := Value.vLam outerName closure
 
     return { abbrevId := abbrevUnique, arity, expansion, span := typeAbbrev.span }
 

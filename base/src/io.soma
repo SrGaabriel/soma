@@ -1,11 +1,12 @@
-use base::prim::{IO}
+use base::prim::{IO, World, Pair}
 use base::core::{Functor, Applicative, Monad, >>=}
 
-@[intrinsic "ffi.pure_io"]
-def pure_io : a -> IO a
+def pure_io (x : a) : IO a
+    | w => Pair::Mk w x
 
-@[intrinsic "ffi.io_bind"]
-def io_bind : IO a -> (a -> IO b) -> IO b
+def io_bind (m : IO a) (f : a -> IO b) : IO b
+    | w => match m w
+        | Pair::Mk w1 val => f val w1
 
 instance : Functor IO where
 	def fmap (f : (a -> b)) (ioA : IO a) : IO b =

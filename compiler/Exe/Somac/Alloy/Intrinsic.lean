@@ -162,25 +162,6 @@ def intrinsicOpSignature (op : IntrinsicOp) : ClosedSignature :=
     , retTy := Ty.string
     , isClosure := true
     }
-  | .pureIO =>
-    { name
-    , params := #[
-        { id := ⟨0⟩, name := "env", ty := .rawPtr },
-        { id := ⟨1⟩, name := "val", ty := .prim .i64 }
-      ]
-    , retTy := .prim .i64
-    , isClosure := true
-    }
-  | .bindIO =>
-    { name
-    , params := #[
-        { id := ⟨0⟩, name := "env", ty := .rawPtr },
-        { id := ⟨1⟩, name := "ioVal", ty := .prim .i64 },
-        { id := ⟨2⟩, name := "func", ty := .prim .i64 }
-      ]
-    , retTy := .prim .i64
-    , isClosure := true
-    }
 
 /-- Get signature for an externC wrapper -/
 def externCSignature (name : String) (params : Array ClosedTy) (retTy : ClosedTy) : ClosedSignature :=

@@ -117,6 +117,7 @@ partial def parseDefClause : ParserM (Option GreenNode) := do
 def parseDefBinder : ParserM (Option GreenNode) := do
   if (← check .leftParen) then
     let lparen ← consumeAny
+    let quantityOpt ← Soma.Syntax.Parse.parseQuantity
     match ← parseLowerIdent with
     | some nameTok =>
       if (← check .colon) then
@@ -125,7 +126,10 @@ def parseDefBinder : ParserM (Option GreenNode) := do
         | some ty =>
           match ← tryConsume .rightParen with
           | some rparen =>
-            return some (GreenNode.mkNode .field #[lparen, nameTok, colonTok, ty, rparen])
+            let children := #[lparen] ++
+              (match quantityOpt with | some q => #[q] | none => #[]) ++
+              #[nameTok, colonTok, ty, rparen]
+            return some (GreenNode.mkNode .field children)
           | none =>
             recordError "expected ')' after function binder"
             return some (GreenNode.mkError "unclosed function binder" #[lparen, nameTok, colonTok, ty])

@@ -25,7 +25,7 @@ inductive PrimType where
   | array
   | list
   | ref
-  | io
+  | world
   | ptr
   deriving Repr, BEq, Hashable, DecidableEq, Serialize, Deserialize
 
@@ -49,7 +49,7 @@ def name : PrimType → String
   | .array => "Array"
   | .list => "List"
   | .ref => "Ref"
-  | .io => "IO"
+  | .world => "World"
   | .ptr => "Ptr"
 
 instance : ToString PrimType := ⟨PrimType.name⟩
@@ -72,13 +72,13 @@ def fromName? : String → Option PrimType
   | "Array" => some .array
   | "List" => some .list
   | "Ref" => some .ref
-  | "IO" => some .io
+  | "World" => some .world
   | "Ptr" => some .ptr
   | _ => none
 
 /-- Whether this is a nullary type -/
 def isNullary : PrimType → Bool
-  | .array | .list | .ref | .io | .ptr => false
+  | .array | .list | .ref | .ptr => false
   | _ => true
 
 /-- Check if this is a numeric type -/

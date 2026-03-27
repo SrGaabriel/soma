@@ -309,12 +309,10 @@ private def builtinHandleRuntime (fn : RuntimeFn) (args : Array ReadbackValue)
     | _ => pure none
   | .alloc | .free => pure none
 
-/-- Handle built-in FFI operations (string ops, pureIO) -/
+/-- Handle built-in FFI operations (string ops) -/
 private def builtinHandleFFI (op : FFIOp) (args : Array ReadbackValue)
     : IO (Option ReadbackValue) := do
   match op with
-  | .pureIO => pure (args[0]? : Option ReadbackValue)
-  | .bindIO => pure none  -- Must not reduce: preserves the full IO continuation chain for codegen
   | .strcat =>
     match (args[0]? : Option ReadbackValue), (args[1]? : Option ReadbackValue) with
     | some (.string a), some (.string b) => pure (some (.string (a ++ b)))

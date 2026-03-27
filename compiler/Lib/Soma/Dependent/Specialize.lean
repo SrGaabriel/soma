@@ -179,102 +179,117 @@ private partial def isWiredInRef (qn : QualifiedName) : Expr → Bool
   | .app fn arg => arg.isTypeLevelExpr && isWiredInRef qn fn
   | _ => false
 
-/-- Check if a de Bruijn variable at the given depth is referenced in an expression -/
-private partial def referencesBVar (depth : Nat) : Expr → Bool
-  | .bvar idx => idx == depth
-  | .app fn arg => referencesBVar depth fn || referencesBVar depth arg
-  | .lam _ _ domain body => referencesBVar depth domain || referencesBVar (depth + 1) body
-  | .let_ _ ty val body =>
-    referencesBVar depth ty || referencesBVar depth val || referencesBVar (depth + 1) body
-  | .pi _ _ _ domain codomain => referencesBVar depth domain || referencesBVar (depth + 1) codomain
-  | .sigma _ _ _ fst snd => referencesBVar depth fst || referencesBVar (depth + 1) snd
-  | .pair f s => referencesBVar depth f || referencesBVar depth s
-  | .projFst x | .projSnd x => referencesBVar depth x
-  | .construct _ _ args rty => args.any (referencesBVar depth) || referencesBVar depth rty
-  | .«case» scruts arms rty =>
-    scruts.any (referencesBVar depth) || arms.any (fun a => referencesBVar depth a.body) ||
-    referencesBVar depth rty
-  | .record fields => fields.any fun (_, e) => referencesBVar depth e
-  | .recordUpdate b us =>
-    referencesBVar depth b || us.any fun (_, e) => referencesBVar depth e
-  | .fieldAccess x _ _ => referencesBVar depth x
-  | .inject _ args rty => args.any (referencesBVar depth) || referencesBVar depth rty
-  | .if_ c t el => referencesBVar depth c || referencesBVar depth t || referencesBVar depth el
-  | .closure _ caps => caps.any (referencesBVar depth)
-  | .array es ety => es.any (referencesBVar depth) || referencesBVar depth ety
-  | .tuple es => es.any (referencesBVar depth)
-  | .ann x t => referencesBVar depth x || referencesBVar depth t
-  | .fvar _ ty => referencesBVar depth ty
-  | .const _ ty => referencesBVar depth ty
-  | _ => false
-
 /-- Resolved names for IO primitives used during inlining -/
 structure IONames where
   bindName : QualifiedName
   pureName : QualifiedName
 
-/-- Inline IO bind chains into flat let sequences -/
-partial def inlineIOBinds (io : IONames) : Expr → Expr
+/-- Inline IO bind chains into flat let sequences with World token threading -/
+private partial def inlineIOChain (io : IONames) (worldIdx : Nat) : Expr → Expr
   | .app fn arg =>
-    -- Check for io_bind pattern: app (app io_bind action) continuation
     match fn with
     | .app ioBind action =>
       if isWiredInRef io.bindName ioBind then
-        let action' := inlineIOBinds io action
-        let cont' := inlineIOBinds io arg
-        match cont' with
-        | .lam _ name domain body =>
-          .let_ name domain action' (inlineIOBinds io body)
+        let cont := arg
+        match cont with
+        | .lam _ name _domain body =>
+          -- action applied to current world
+          let actionCall := Expr.app action (.bvar worldIdx)
+          -- let io_r = action world
+          .let_ "io_r" (.primTy .unit) actionCall (
+            -- let x = projSnd io_r (extract value from Pair)
+            .let_ name (.primTy .unit) (.projSnd (.bvar 0)) (
+              -- let __w = projFst io_r (extract new World from Pair)
+              .let_ "__w" (.primTy .world) (.projFst (.bvar 1)) (
+                -- Recurse: world is now at bvar 0, x is at bvar 1
+                -- body originally had x at bvar 0 (from lambda)
+                -- In new scope: x at bvar 1, so shift bvar 0 → bvar 1
+                -- Free vars at depth ≥ 1 shift by +2 (2 extra bindings)
+                let bodyShifted := body.shift 1 0 |>.shift 1 2
+                inlineIOChain io 0 bodyShifted
+              )))
         | _ =>
-          .let_ "_" (.primTy .unit) action' (.app (cont'.shift 1 0) (.bvar 0))
+          -- Non-lambda continuation (rare): apply action to world, bind result,
+          -- then apply continuation to value and new world
+          let actionCall := Expr.app action (.bvar worldIdx)
+          .let_ "io_r" (.primTy .unit) actionCall (
+            .let_ "__val" (.primTy .unit) (.projSnd (.bvar 0)) (
+              .let_ "__w" (.primTy .world) (.projFst (.bvar 1)) (
+                -- cont shifted by 3 (3 new let bindings)
+                let contShifted := cont.shift 3 0
+                -- Apply continuation to value, then apply result to world
+                .app (.app contShifted (.bvar 1)) (.bvar 0)
+              )))
+      else
+        .app (inlineIOChain io worldIdx fn) (inlineIOChain io worldIdx arg)
+    | _ =>
+      if isWiredInRef io.pureName fn then
+        -- pure_io x: wrap value with current world into a Pair
+        .pair (.bvar worldIdx) arg
+      else
+        .app (inlineIOChain io worldIdx fn) (inlineIOChain io worldIdx arg)
+  | .lam info name domain body =>
+    .lam info name (inlineIOChain io worldIdx domain) (inlineIOChain io (worldIdx + 1) body)
+  | .let_ name ty val body =>
+    .let_ name (inlineIOChain io worldIdx ty) (inlineIOChain io worldIdx val)
+      (inlineIOChain io (worldIdx + 1) body)
+  | .closure name captures =>
+    .closure name (captures.map (inlineIOChain io worldIdx))
+  | .«case» scruts arms resultTy =>
+    .«case» (scruts.map (inlineIOChain io worldIdx))
+      (arms.map fun arm => Arm.mk arm.patterns (inlineIOChain io worldIdx arm.body))
+      (inlineIOChain io worldIdx resultTy)
+  | .construct name tag args resultTy =>
+    .construct name tag (args.map (inlineIOChain io worldIdx)) (inlineIOChain io worldIdx resultTy)
+  | .if_ c t el => .if_ (inlineIOChain io worldIdx c) (inlineIOChain io worldIdx t) (inlineIOChain io worldIdx el)
+  | .pair f s => .pair (inlineIOChain io worldIdx f) (inlineIOChain io worldIdx s)
+  | .projFst x => .projFst (inlineIOChain io worldIdx x)
+  | .projSnd x => .projSnd (inlineIOChain io worldIdx x)
+  | .record fields => .record (fields.map fun (n, x) => (n, inlineIOChain io worldIdx x))
+  | .recordUpdate base updates =>
+    .recordUpdate (inlineIOChain io worldIdx base) (updates.map fun (n, x) => (n, inlineIOChain io worldIdx x))
+  | .tuple elems => .tuple (elems.map (inlineIOChain io worldIdx))
+  | .array elems resultTy => .array (elems.map (inlineIOChain io worldIdx)) (inlineIOChain io worldIdx resultTy)
+  | .inject label args resultTy => .inject label (args.map (inlineIOChain io worldIdx)) (inlineIOChain io worldIdx resultTy)
+  | .fieldAccess expr field idx => .fieldAccess (inlineIOChain io worldIdx expr) field idx
+  | .ann expr ty => .ann (inlineIOChain io worldIdx expr) (inlineIOChain io worldIdx ty)
+  | .pi qty info name domain codomain =>
+    .pi qty info name (inlineIOChain io worldIdx domain) (inlineIOChain io worldIdx codomain)
+  | .sigma qty info name fst snd =>
+    .sigma qty info name (inlineIOChain io worldIdx fst) (inlineIOChain io worldIdx snd)
+  | e => e
+
+/-- Top-level IO bind inlining -/
+partial def inlineIOBinds (io : IONames) (body : Expr) : Expr :=
+  match body with
+  | .app fn arg =>
+    match fn with
+    | .app ioBind _action =>
+      if isWiredInRef io.bindName ioBind then
+        .lam .explicit "w" (.primTy .world) (inlineIOChain io 0 body.shiftUp)
       else
         .app (inlineIOBinds io fn) (inlineIOBinds io arg)
     | _ =>
       if isWiredInRef io.pureName fn then
-        inlineIOBinds io arg
+        .lam .explicit "w" (.primTy .world) (.pair (.bvar 0) arg.shiftUp)
       else
         .app (inlineIOBinds io fn) (inlineIOBinds io arg)
   | .lam info name domain body =>
-    .lam info name (inlineIOBinds io domain) (inlineIOBinds io body)
+    .lam info name domain (inlineIOBinds io body)
   | .let_ name ty val body =>
-    .let_ name (inlineIOBinds io ty) (inlineIOBinds io val) (inlineIOBinds io body)
-  | .closure name captures =>
-    .closure name (captures.map (inlineIOBinds io))
-  | .«case» scruts arms resultTy =>
-    .«case» (scruts.map (inlineIOBinds io))
-      (arms.map fun arm => Arm.mk arm.patterns (inlineIOBinds io arm.body))
-      (inlineIOBinds io resultTy)
-  | .construct name tag args resultTy =>
-    .construct name tag (args.map (inlineIOBinds io)) (inlineIOBinds io resultTy)
-  | .if_ c t el => .if_ (inlineIOBinds io c) (inlineIOBinds io t) (inlineIOBinds io el)
-  | .pair f s => .pair (inlineIOBinds io f) (inlineIOBinds io s)
-  | .projFst x => .projFst (inlineIOBinds io x)
-  | .projSnd x => .projSnd (inlineIOBinds io x)
-  | .record fields => .record (fields.map fun (n, x) => (n, inlineIOBinds io x))
-  | .recordUpdate base updates =>
-    .recordUpdate (inlineIOBinds io base) (updates.map fun (n, x) => (n, inlineIOBinds io x))
-  | .tuple elems => .tuple (elems.map (inlineIOBinds io))
-  | .array elems resultTy => .array (elems.map (inlineIOBinds io)) (inlineIOBinds io resultTy)
-  | .inject label args resultTy => .inject label (args.map (inlineIOBinds io)) (inlineIOBinds io resultTy)
-  | .fieldAccess expr field idx => .fieldAccess (inlineIOBinds io expr) field idx
-  | .ann expr ty => .ann (inlineIOBinds io expr) (inlineIOBinds io ty)
-  | .pi qty info name domain codomain =>
-    .pi qty info name (inlineIOBinds io domain) (inlineIOBinds io codomain)
-  | .sigma qty info name fst snd =>
-    .sigma qty info name (inlineIOBinds io fst) (inlineIOBinds io snd)
-  | e => e
+    .let_ name ty (inlineIOBinds io val) (inlineIOBinds io body)
+  | _ => body
 
-/-- Build a reverse lookup table from Intrinsic → QualifiedName -/
-def buildReverseIntrinsicMap (intrinsics : Std.HashMap QualifiedName Intrinsic)
-    : Std.HashMap Intrinsic QualifiedName :=
-  intrinsics.fold (init := {}) fun acc qn i => acc.insert i qn
-
-/-- Resolve IO primitive names from the reverse intrinsic map -/
-def resolveIONames? (reverseMap : Std.HashMap Intrinsic QualifiedName)
-    : Option IONames :=
-  match reverseMap.get? (.ffiOp .bindIO), reverseMap.get? (.ffiOp .pureIO) with
-  | some bindName, some pureName => some { bindName, pureName }
-  | _, _ => none
+/-- Resolve IO primitive names from the global declarations -/
+def resolveIONames? (globals : Globals) : Option IONames := Id.run do
+  let mut bindName? : Option QualifiedName := none
+  let mut pureName? : Option QualifiedName := none
+  for (_, info) in globals.allDecls do
+    if info.name.id.original == "pure_io" then pureName? := some info.name
+    if info.name.id.original == "io_bind" then bindName? := some info.name
+  match bindName?, pureName? with
+  | some bindName, some pureName => return some { bindName, pureName }
+  | _, _ => return none
 
 /-- Inline IO binds in a TypedFunction body using pre-resolved IO names -/
 def inlineIOBindsFunction (ioNames? : Option IONames)
