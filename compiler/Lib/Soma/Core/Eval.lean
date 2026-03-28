@@ -378,7 +378,8 @@ def resolveClassFieldType (globals : GlobalEnv) (classId : Unique) (args : List 
   fields.toList.find? (·.1 == field) |>.map (·.2)
 
 /-- Compute the type of a Core expression -/
-partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr → Value
+partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
+    (unfoldTy : Value → Value := id) : Expr → Value
   | .ann _ ty => evalWithGlobals globals ty
 
   | .fvar _ ty => evalWithGlobals globals ty
@@ -395,25 +396,30 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr
   | .lit (.bool _) => .vPrimTy .bool
 
   | .app fn arg =>
-    let fnTy := typeOfWith bvarCtx globals fn
+    let fnTy := typeOfWith bvarCtx globals unfoldTy fn
     let argVal := evalWithGlobals globals arg
     match fnTy.piApply argVal with
     | some codomainTy => codomainTy
     | none =>
-      match fnTy with
-      | .vType _ | .vNeutral _ _ => .vType .zero
-      | _ => panic! s!"Expr.typeOfWith: app with non-Pi function type (fn={fn.ctorName}, arg={arg.ctorName})"
+      -- Try unfolding type abbreviations
+      let unfolded := unfoldTy fnTy
+      match unfolded.piApply argVal with
+      | some codomainTy => codomainTy
+      | none =>
+        match fnTy with
+        | .vType _ | .vNeutral _ _ => .vType .zero
+        | _ => panic! s!"Expr.typeOfWith: app with non-Pi function type (fn={fn.ctorName}, arg={arg.ctorName})"
 
   | .lam _info name domain body =>
     let domTy := evalWithGlobals globals domain
-    let bodyTy := typeOfWith (bvarCtx.push domTy) globals body
+    let bodyTy := typeOfWith (bvarCtx.push domTy) globals unfoldTy body
     .vPi Quantity.omega Soma.Core.BinderInfo.explicit name domTy (Closure.const name bodyTy)
 
   | .let_ _ ty _ body =>
     let letTy := evalWithGlobals globals ty
-    typeOfWith (bvarCtx.push letTy) globals body
+    typeOfWith (bvarCtx.push letTy) globals unfoldTy body
 
-  | .if_ _ then_ _ => typeOfWith bvarCtx globals then_
+  | .if_ _ then_ _ => typeOfWith bvarCtx globals unfoldTy then_
 
   | .«case» _ _ resultTy => evalWithGlobals globals resultTy
 
@@ -424,46 +430,56 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr
   | .inject _ _ resultTy => evalWithGlobals globals resultTy
 
   | .pair fst snd =>
-    let fstTy := typeOfWith bvarCtx globals fst
-    let sndTy := typeOfWith bvarCtx globals snd
+    let fstTy := typeOfWith bvarCtx globals unfoldTy fst
+    let sndTy := typeOfWith bvarCtx globals unfoldTy snd
     Value.prod fstTy sndTy
 
   | .tuple elems =>
     if elems.size ≥ 2 then
-      let fstTy := typeOfWith bvarCtx globals elems[0]!
-      let sndTy := typeOfWith bvarCtx globals elems[1]!
+      let fstTy := typeOfWith bvarCtx globals unfoldTy elems[0]!
+      let sndTy := typeOfWith bvarCtx globals unfoldTy elems[1]!
       Value.prod fstTy sndTy
     else if elems.size = 1 then
-      typeOfWith bvarCtx globals elems[0]!
+      typeOfWith bvarCtx globals unfoldTy elems[0]!
     else .vPrimTy .unit
 
   | .projFst expr =>
-    let sigTy := typeOfWith bvarCtx globals expr
+    let sigTy := typeOfWith bvarCtx globals unfoldTy expr
     match sigTy.sigmaFst? with
     | some ty => ty
     | none =>
-      -- For DataType pairs (e.g., Pair World a from IO), extract first type arg
-      match sigTy with
-      | .vDataType _ (fstTy :: _) => fstTy
-      | _ => .vType .zero
+      -- Try unfolding abbreviations to get Sigma structure
+      let unfolded := unfoldTy sigTy
+      match unfolded.sigmaFst? with
+      | some ty => ty
+      | none =>
+        -- For DataType pairs, extract first type arg
+        match sigTy with
+        | .vDataType _ (fstTy :: _) => fstTy
+        | _ => .vType .zero
   | .projSnd expr =>
-    let sigTy := typeOfWith bvarCtx globals expr
+    let sigTy := typeOfWith bvarCtx globals unfoldTy expr
     let fstVal := evalWithGlobals globals (.projFst expr)
     match sigTy.sigmaApply fstVal with
     | some ty => ty
     | none =>
-      -- For DataType pairs, extract second type arg
-      match sigTy with
+      -- Try unfolding abbreviations
+      let unfolded := unfoldTy sigTy
+      match unfolded.sigmaApply fstVal with
+      | some ty => ty
+      | none =>
+        -- For DataType pairs, extract second type arg
+        match sigTy with
       | .vDataType _ (_ :: sndTy :: _) => sndTy
       | _ => .vType .zero
 
   | .record fields =>
     let row := fields.foldr (init := Value.vRowEmpty) fun (name, expr) acc =>
-      .vRowExtend (.vLabelLit name) (typeOfWith bvarCtx globals expr) acc
+      .vRowExtend (.vLabelLit name) (typeOfWith bvarCtx globals unfoldTy expr) acc
     .vRecord row
 
   | .fieldAccess expr field _ =>
-    let recTy := typeOfWith bvarCtx globals expr
+    let recTy := typeOfWith bvarCtx globals unfoldTy expr
     let fields := recTy.recordFields
     match fields.toList.find? (·.1 == field) with
     | some (_, ty) => ty
@@ -479,7 +495,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr
           match expr with
           | .record recFields =>
             match recFields.toList.find? (·.1 == field) with
-            | some (_, fieldExpr) => typeOfWith bvarCtx globals fieldExpr
+            | some (_, fieldExpr) => typeOfWith bvarCtx globals unfoldTy fieldExpr
             | none => .vType .zero
           | _ => .vType .zero
       | _ =>
@@ -487,7 +503,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr
         match expr with
         | .record recFields =>
           match recFields.toList.find? (·.1 == field) with
-          | some (_, fieldExpr) => typeOfWith bvarCtx globals fieldExpr
+          | some (_, fieldExpr) => typeOfWith bvarCtx globals unfoldTy fieldExpr
           | none => .vType .zero
         | _ => .vType .zero
 
@@ -502,7 +518,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv) : Expr
   | .mvar _ | .recordUpdate _ _ | .panic _ => .vType .zero
 
 /-- Compute the type of a Core expression using globals for resolving type annotations -/
-partial def Expr.typeOf (e : Expr) (globals : GlobalEnv) : Value :=
-  Expr.typeOfWith #[] globals e
+partial def Expr.typeOf (e : Expr) (globals : GlobalEnv) (unfoldTy : Value → Value := id) : Value :=
+  Expr.typeOfWith #[] globals unfoldTy e
 
 end Soma.Core

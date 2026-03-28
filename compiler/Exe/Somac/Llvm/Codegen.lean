@@ -2196,7 +2196,14 @@ def lowerTerminator (term : Terminator) (retTy : ClosedTy) (llvmRetOverride : Op
       | ty => CodegenM.withFuncBuilder (FuncBuilder.ret ty (intVal 0 (ty.intBits.getD 32)))
     else
       let (llvmValTy, valRef) ← convertOperandWithTy val
-      if llvmValTy == actualRetTy then
+      if llvmRetOverride == some .i32 && llvmValTy == .ptr then
+        -- IO action: call soma_apply(action, null_world) to execute it
+        let nullWorld ← CodegenM.withFuncBuilder (FuncBuilder.asLocalRef .ptr (.const .null))
+        let ioResult ← CodegenM.withFuncBuilder
+          (FuncBuilder.callNamed .ptr "soma_apply" #[(.ptr, valRef), (.ptr, .local nullWorld)])
+        -- Return 0 (success) since the IO action's side effects have been executed
+        CodegenM.withFuncBuilder (FuncBuilder.ret .i32 (intVal 0 32))
+      else if llvmValTy == actualRetTy then
         CodegenM.withFuncBuilder (FuncBuilder.ret actualRetTy valRef)
       else
         let coerced ← coerceValue llvmValTy actualRetTy valRef

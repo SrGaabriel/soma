@@ -13,6 +13,7 @@
 
 import Somac.Alloy.Func
 import Somac.Circuit.Graph
+import Somac.Circuit.Lower
 import Somac.Circuit.Node
 import Soma.Core.Value
 import Soma.Core.Eval
@@ -103,6 +104,7 @@ structure TypeConvCtx (n : Nat) where
   tyVars : TyVarMapping n
   primTypes : PrimTypeRegistry
   inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {}
+  abbrevEnv : Soma.Dependent.AbbrevEnv := {}
   deriving Inhabited
 
 /-- Build the primitive type registry from the wired-in type registry -/
@@ -547,7 +549,11 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
             let fields := extractCtorFieldTypes ctor.type ctx
             (ctor.tag, fields)
           .tagged (.prim .u32) variants
-      | none => .tagged (.prim .u32) #[]
+      | none =>
+        -- Try unfolding as a type abbreviation
+        match Somac.Circuit.Lower.unfoldValue val ctx.abbrevEnv with
+        | .vDataType _ _ => .tagged (.prim .u32) #[]  -- unfold didn't help
+        | unfolded => convertValueTypeWithMapping unfolded ctx
   | Value.vConstructor _ _ _ _ => .rawPtr
   | Value.vRecord row =>
     let fields := extractRowFieldsForStruct row ctx
@@ -792,7 +798,6 @@ partial def matchParamsAgainstArgs (defTy : Value) (argTypes : Array Value) (ret
       if skip ≤ argTypes.size then
         let explicitArgs := argTypes.extract skip argTypes.size
         let bindings := matchExplicitParamsGo stripped explicitArgs 0 returnTy levels {}
-        pure ()
         if bindings.size > bestBindings.size then
           bestBindings := bindings
     return bestBindings
@@ -1036,6 +1041,8 @@ structure NodeState (n : Nat) where
   anonLamBookIdx : Std.HashMap Nat Nat := {}
   /-- Target pointer width in bytes -/
   ptrBytes : Nat := 8
+  /-- Type abbreviation environment for unfolding parameterized aliases -/
+  abbrevEnv : Soma.Dependent.AbbrevEnv := {}
   deriving Inhabited
 
 namespace NodeState
@@ -1047,7 +1054,7 @@ def restoreResults (s : NodeState n) (snapshot : Std.HashMap Nat LocalId) : Node
 
 /-- Build a type conversion context from this node state -/
 def toTypeConvCtx (s : NodeState n) : TypeConvCtx n :=
-  { tyVars := s.tyVarMapping, primTypes := s.primTypes, inductives := s.inductives }
+  { tyVars := s.tyVarMapping, primTypes := s.primTypes, inductives := s.inductives, abbrevEnv := s.abbrevEnv }
 
 end NodeState
 
@@ -1506,13 +1513,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 let result ← match funcRef with
                   | .local funcId =>
                     let resolvedTypeArgs? := graph.getResolvedTypeArgs chain.baseNodeId
-                    pure ()
                     let typeArgs? := match resolvedTypeArgs? with
                       | some resolved => convertResolvedTypeArgs resolved def_.ty ctx
                       | none => none
                     let typeArgs? := typeArgs?.orElse fun _ =>
                       extractCallTypeArgsFromArgs def_.ty argTypes entry.ty chain.baseEntry.ty ctx
-                    pure ()
                     match typeArgs? with
                     | some typeArgs =>
                       StateT.lift (LowerM.emitInst (.callPoly funcId typeArgs argOps callRetTy) callRetTy)
@@ -1708,8 +1713,40 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 let erasedTy := (← get).expectedResultTy.getD nodeTy
                 StateT.lift (LowerM.emitInst (.copy (.const (.undef erasedTy.close))) erasedTy)
               else
-                let fnVal ← lowerOperandWithMap graph fp funcIdMap
-                StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
+                -- Detect IO extern pattern: APP(extern_result, world)
+                let isIOExternApp := match fnEntry.node with
+                  | .app =>
+                    let innerCallsExtern := match fnEntry.getPort ⟨1⟩ with
+                      | some innerFnPort =>
+                        match graph.getNode innerFnPort.node with
+                        | some innerFnEntry =>
+                          match innerFnEntry.node with
+                          | .ref refId | .alo refId =>
+                            match graph.getDefinition refId with
+                            | some def_ => def_.reducibility == .external
+                            | none => false
+                          | _ => false
+                        | none => false
+                      | none => false
+                    innerCallsExtern && (match nodeTy with
+                      | .struct fields => fields.size == 2
+                      | .tagged _ variants => variants.size == 1
+                      | _ => false)
+                  | _ => false
+                -- yes, the == true is necessary lmfao
+                if isIOExternApp == true then
+                  -- IO extern: construct Pair(world, extern_result)
+                  let fnVal ← lowerOperandWithMap graph fp funcIdMap
+                  match nodeTy with
+                  | .struct _ =>
+                    StateT.lift (LowerM.emitInst
+                      (.structLit #[.local argVal, .local fnVal] nodeTy) nodeTy)
+                  | _ =>
+                    -- Tagged union: use lowerCtor with tag=0
+                    StateT.lift (lowerCtor 0 2 #[argVal, fnVal] nodeTy)
+                else
+                  let fnVal ← lowerOperandWithMap graph fp funcIdMap
+                  StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
 
   | .ctor tag arity => do
     -- Check for special closure CTOR (tag 0xFFFE, arity 2)
@@ -2281,8 +2318,9 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
     (anonLamBookIdx : Std.HashMap Nat Nat := {})
-    (wiredRole : Option WiredFunc := none) : Func n :=
-  let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes, inductives }
+    (wiredRole : Option WiredFunc := none)
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : Func n :=
+  let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes, inductives, abbrevEnv }
   let (explicitTypeParams, paramInfos) := extractParamsUsingMapping def_.ty ctx
   let numTyVars := n
   let typeParamNames := if explicitTypeParams.size >= numTyVars then
@@ -2304,13 +2342,13 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
 
   let (_, func) := LowerM.run' funcId sig intrinsics panicMsgIdx do
     if def_.arity == 0 then
-      let initState : NodeState n := { tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx }
+      let initState : NodeState n := { tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx, abbrevEnv }
       let (result, _) ← StateT.run (lowerNodeWithMap graph def_.root funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
     else
       let (bodyNode, lamParams) := collectLamChain graph def_.root def_.arity
-      let initState : NodeState n := { lamParams, tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx }
+      let initState : NodeState n := { lamParams, tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx, abbrevEnv }
       let (result, _) ← StateT.run (lowerNodeWithMap graph bodyNode funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
@@ -2324,11 +2362,12 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (panicMsgIdx : Nat := 0)
     (anonLamBookIdx : Std.HashMap Nat Nat := {})
-    (wiredRole : Option WiredFunc := none) : SomeFunc :=
+    (wiredRole : Option WiredFunc := none)
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : SomeFunc :=
   -- Collect all type variable levels and build mapping
   let ⟨n, tyVarMapping⟩ := buildTyVarMappingFromDefinition graph def_
   -- Lower with the determined n
-  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole
+  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv
   -- Return existentially quantified function
   ⟨n, func⟩
 
@@ -2336,7 +2375,8 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
 def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
-    (wiredFuncs : WiredFuncRegistry := {}) : Module := Id.run do
+    (wiredFuncs : WiredFuncRegistry := {})
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : Module := Id.run do
   let mut module := Module.empty moduleName
 
   -- Copy string table from Circuit graph to Alloy module
@@ -2392,7 +2432,7 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
       if def_.reducibility != .external then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
         let wiredRole := wiredFuncs.get? def_.name.id
-        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole
+        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv
         module := module.addFunc func
 
   -- Set main function using the mapped ID
@@ -2406,7 +2446,8 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
 def lower (graph : CGraph) (moduleName : String := "main") (primTypes : PrimTypeRegistry := {})
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
-    (wiredFuncs : WiredFuncRegistry := {}) : Module :=
-  lowerGraph graph moduleName primTypes inductives intrinsics wiredFuncs
+    (wiredFuncs : WiredFuncRegistry := {})
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : Module :=
+  lowerGraph graph moduleName primTypes inductives intrinsics wiredFuncs abbrevEnv
 
 end Somac.Alloy.Lower

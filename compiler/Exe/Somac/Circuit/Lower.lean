@@ -125,6 +125,8 @@ structure LowerCtx where
   evalGlobalEnv : Soma.Core.GlobalEnv := .empty
   /-- Metavariable solutions from type checking -/
   metaState : Soma.Core.MetaState := .empty
+  /-- Type abbreviation environment for unfolding parameterized type aliases -/
+  abbrevEnv : Soma.Dependent.AbbrevEnv := {}
   deriving Inhabited
 
 namespace LowerCtx
@@ -191,6 +193,30 @@ def freshSyntheticUnique (ctx : LowerCtx) (name : String) : Unique × LowerCtx :
   (unique, { ctx with nextSyntheticId := ctx.nextSyntheticId + 1 })
 
 end LowerCtx
+
+/-- Apply a list of arguments to a value by peeling vLam/vPi closures -/
+private partial def applyArgs (v : Value) : List Value → Option Value
+  | [] => some v
+  | arg :: rest =>
+    match v with
+    | .vLam _ body => applyArgs (body.applyPure arg) rest
+    | .vPi _ _ _ _ cod => applyArgs (cod.applyPure arg) rest
+    | _ => none
+
+/-- Unfold type abbreviations in a Value -/
+partial def unfoldValue (v : Value) (abbrevEnv : Soma.Dependent.AbbrevEnv) : Value :=
+  match v with
+  | .vDataType dId params =>
+    let qn : QualifiedName := ⟨dId⟩
+    match abbrevEnv.get? qn with
+    | some abbrevInfo =>
+      if params.length == abbrevInfo.arity then
+        match applyArgs abbrevInfo.expansion params with
+        | some result => unfoldValue result abbrevEnv
+        | none => v
+      else v
+    | none => v
+  | _ => v
 
 abbrev LowerM := StateT LowerCtx GraphM
 
@@ -603,7 +629,7 @@ private def isCoreTypeLevelExpr : Soma.Core.Expr → Bool
 /-- Compute the type of a Core expression -/
 def getExprType (e : Soma.Core.Expr) : LowerM Value := do
   let ctx ← LowerM.getCtx
-  pure (e.typeOf ctx.evalGlobalEnv)
+  pure (e.typeOf ctx.evalGlobalEnv (unfoldValue · ctx.abbrevEnv))
 
 /-- Evaluate a Core expression to a Value -/
 def evalExprToValue (e : Soma.Core.Expr) : LowerM Value := do
@@ -680,14 +706,18 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
     -- Open the body by replacing bvar(0) with an fvar, then lower as a bound variable
     let letUnique ← LowerM.freshSyntheticUnique _name
     let fvarBody := Soma.Core.Expr.instantiate body (Soma.Core.Expr.fvar letUnique _ty)
-    let valTy := Soma.Core.evalClosed _ty
+    let annotationTy := Soma.Core.evalClosed _ty
     let usageCount := fvarBody.countFVar letUnique
-    let valPort? ← lowerCoreExpr val valTy
+    let valPort? ← lowerCoreExpr val annotationTy
     match valPort? with
     | none =>
       -- val is type-level (erased) so we just lower the body directly
       lowerCoreExpr fvarBody ty
     | some valPort =>
+      let valTy ← do
+        match ← LowerM.liftGraph (get >>= fun g => pure (g.getNode valPort.node)) with
+        | some entry => pure entry.ty
+        | none => pure annotationTy
       if usageCount == 0 then
         -- Emit a USE node to force evaluation of the value before continuing with the body
         let bodyPort? ← lowerCoreExpr fvarBody ty
@@ -727,8 +757,6 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
   if isCoreTypeLevelExpr baseFn then
     return none
 
-  pure ()
-
   match baseFn with
   | .const qn _ =>
     let ctx ← LowerM.getCtx
@@ -741,12 +769,10 @@ partial def lowerCoreApp (fn arg : Soma.Core.Expr) (ty : Value)
         lowerCoreAppDefault fn arg ty
     | none =>
       let typeArgExprs := allArgs.filter isCoreTypeLevelExpr
-      pure ()
       if typeArgExprs.size > 0 then
         let mut typeArgVals : Array Value := #[]
         for e in typeArgExprs do
           let v ← evalExprToValue e
-          pure ()
           typeArgVals := typeArgVals.push v
         let result ← lowerCoreAppDefault fn arg ty
         match ctx.lookupGlobal qn with
@@ -821,11 +847,20 @@ partial def lowerCoreAppDefault (fn arg : Soma.Core.Expr) (ty : Value)
 partial def lowerCoreAppGeneric (fn arg : Soma.Core.Expr) (ty : Value)
     : LowerM (Option PortId) := do
   let fnTy ← getExprType fn
-  match fnTy.piDomain? with
+  let ctx ← LowerM.getCtx
+  -- Unfold type abbreviations if needed
+  let effectiveFnTy := match fnTy.piDomain? with
+    | some _ => fnTy
+    | none => unfoldValue fnTy ctx.abbrevEnv
+  match effectiveFnTy.piDomain? with
   | none =>
-    -- Type-level or erased applications
+    -- Type-level or erased application
     pure none
   | some argTy =>
+    -- Compute the actual result type from the Pi codomain
+    let resultTy := match effectiveFnTy.piApply (Value.vNeutral argTy (.nVar ⟨"_", ⟨0⟩⟩)) with
+      | some codTy => codTy
+      | none => ty
     let fnPort? ← lowerCoreExpr fn fnTy
     match fnPort? with
     | none => pure none
@@ -833,7 +868,7 @@ partial def lowerCoreAppGeneric (fn arg : Soma.Core.Expr) (ty : Value)
       let argPort? ← lowerCoreExpr arg argTy
       match argPort? with
       | some argPort =>
-        let app ← LowerM.addNode .app ty
+        let app ← LowerM.addNode .app resultTy
         LowerM.connect ⟨app, ⟨1⟩⟩ fnPort
         LowerM.connect ⟨app, ⟨2⟩⟩ argPort
         pure (some (PortId.principal app))
@@ -1413,7 +1448,10 @@ def lowerModule (types : Array Soma.Core.TypeDef)
     (typedFunctions : TypedFunctionMap)
     (globals : Option Soma.Dependent.Globals := none)
     (instanceEnv : Soma.Dependent.InstanceEnv := .empty)
-    (metas : Soma.Core.MetaState := .empty) : LowerM Unit := do
+    (metas : Soma.Core.MetaState := .empty)
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : LowerM Unit := do
+  -- Load abbreviation environment for type alias unfolding
+  LowerM.modifyCtx fun ctx => { ctx with abbrevEnv := abbrevEnv }
   -- Load intrinsic dispatch metadata from elaboration/type checking.
   if let some g := globals then
     LowerM.modifyCtx fun ctx => { ctx with
@@ -1516,9 +1554,28 @@ def lowerModule (types : Array Soma.Core.TypeDef)
       | some typedFn => typedFn.fnType
       | none => unitTy
     let alo ← LowerM.addNode (.alo idx) mainTy
-    let era ← LowerM.addNode .era unitTy
-    LowerM.connect (PortId.principal era) (PortId.principal alo)
-    LowerM.setRoot (PortId.principal era)
+    -- Check if main returns IO (a function World → Pair World a)
+    let effectiveMainTy := match mainTy.piDomain? with
+      | some _ => mainTy
+      | none => unfoldValue mainTy ctx.abbrevEnv
+    let resultTy := match effectiveMainTy.piApply (Value.vPrimTy .world) with
+      | some codTy => codTy
+      | none => mainTy
+    match effectiveMainTy.piDomain? with
+    | some _ =>
+      -- main : IO a = World → Pair World a
+      let worldNum ← LowerM.addNode (.num .u64 0) (Value.vPrimTy .world)
+      let app ← LowerM.addNode .app resultTy
+      LowerM.connect ⟨app, ⟨1⟩⟩ (PortId.principal alo)
+      LowerM.connect ⟨app, ⟨2⟩⟩ (PortId.principal worldNum)
+      let era ← LowerM.addNode .era unitTy
+      LowerM.connect (PortId.principal era) (PortId.principal app)
+      LowerM.setRoot (PortId.principal era)
+    | none =>
+      -- main : pure value, just ERA it
+      let era ← LowerM.addNode .era unitTy
+      LowerM.connect (PortId.principal era) (PortId.principal alo)
+      LowerM.setRoot (PortId.principal era)
   | none =>
     let era ← LowerM.addNode .era unitTy
     LowerM.setRoot (PortId.principal era)
@@ -1529,7 +1586,8 @@ def lower (types : Array Soma.Core.TypeDef)
     (usageMap : UsageMap)
     (globals : Option Soma.Dependent.Globals := none)
     (instanceEnv : Soma.Dependent.InstanceEnv := .empty)
-    (metas : Soma.Core.MetaState := .empty) : Graph :=
-  LowerM.build (lowerModule types typedFunctions globals instanceEnv metas) usageMap
+    (metas : Soma.Core.MetaState := .empty)
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : Graph :=
+  LowerM.build (lowerModule types typedFunctions globals instanceEnv metas abbrevEnv) usageMap
 
 end Somac.Circuit.Lower

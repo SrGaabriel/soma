@@ -199,24 +199,41 @@ private partial def inlineIOChain (io : IONames) (worldIdx : Nat) : Expr → Exp
         | .lam _ name _domain body =>
           -- action applied to current world
           let actionCall := Expr.app action (.bvar worldIdx)
-          -- let io_r = action world
-          .let_ "io_r" (.primTy .unit) actionCall (
-            -- let x = projSnd io_r (extract value from Pair)
-            .let_ name (.primTy .unit) (.projSnd (.bvar 0)) (
-              -- let __w = projFst io_r (extract new World from Pair)
-              .let_ "__w" (.primTy .world) (.projFst (.bvar 1)) (
-                -- Recurse: world is now at bvar 0, x is at bvar 1
-                -- body originally had x at bvar 0 (from lambda)
-                -- In new scope: x at bvar 1, so shift bvar 0 → bvar 1
-                -- Free vars at depth ≥ 1 shift by +2 (2 extra bindings)
-                let bodyShifted := body.shift 1 0 |>.shift 1 2
-                inlineIOChain io 0 bodyShifted
-              )))
+          -- io_r : Pair World a (Sigma type)
+          let pairTy := Expr.sigma .omega .explicit "" (.primTy .world) _domain.shiftUp
+          -- Check if the continuation uses the bound value (bvar 0 in body)
+          let valueUsed := body.countBVar 0 > 0
+          if valueUsed then
+            -- Value is used: need both projFst and projSnd → io_r used twice (DUP)
+            .let_ "io_r" pairTy actionCall (
+              .let_ name _domain (.projSnd (.bvar 0)) (
+                .let_ "__w" (.primTy .world) (.projFst (.bvar 1)) (
+                  let bodyShifted := body.shift 1 0 |>.shift 1 2
+                  let chainResult := inlineIOChain io 0 bodyShifted
+                  match chainResult with
+                  | .pair _ _ | .let_ _ _ _ _ => chainResult
+                  | _ => .app chainResult (.bvar 0)
+                )))
+          else
+            -- Value not used: only need projFst → io_r used once (no DUP)
+            .let_ "io_r" pairTy actionCall (
+              .let_ "__w" (.primTy .world) (.projFst (.bvar 0)) (
+                -- body originally: bvar 0 = x (unused value from IO action)
+                -- instantiate removes bvar 0 (shifts free vars down by 1)
+                -- shift 2 0 re-adjusts for the 2 new let binders (io_r, __w)
+                -- Result: bvar 0 = __w, bvar 1 = io_r, free vars at bvar ≥ 2
+                let bodyShifted := (body.instantiate (.primTy .unit)).shift 2 0
+                let chainResult := inlineIOChain io 0 bodyShifted
+                match chainResult with
+                | .pair _ _ | .let_ _ _ _ _ => chainResult
+                | _ => .app chainResult (.bvar 0)
+              ))
         | _ =>
           -- Non-lambda continuation (rare): apply action to world, bind result,
           -- then apply continuation to value and new world
           let actionCall := Expr.app action (.bvar worldIdx)
-          .let_ "io_r" (.primTy .unit) actionCall (
+          let pairTy := Expr.sigma .omega .explicit "" (.primTy .world) (.primTy .unit)
+          .let_ "io_r" pairTy actionCall (
             .let_ "__val" (.primTy .unit) (.projSnd (.bvar 0)) (
               .let_ "__w" (.primTy .world) (.projFst (.bvar 1)) (
                 -- cont shifted by 3 (3 new let bindings)
@@ -327,7 +344,23 @@ def resolveIONames? (globals : Globals) : Option IONames := Id.run do
 def inlineIOBindsFunction (ioNames? : Option IONames)
     (fn : Soma.Core.TypedFunction) : Soma.Core.TypedFunction :=
   match ioNames? with
-  | some io => { fn with body := inlineIOBinds io fn.body }
+  | some io =>
+    let inlinedBody := inlineIOBinds io fn.body
+    -- If inlineIOBinds wrapped the body in \w -> ...
+    match inlinedBody with
+    | .lam _ _ domain innerBody =>
+      match domain with
+      | .primTy .world =>
+        -- Find the World parameter in the function's param list (the last one)
+        let worldParam? := fn.params.toList.reverse.head?
+        match worldParam? with
+        | some (worldUnique, _) =>
+          -- Instantiate the wrapper's bvar(0) with the existing world fvar
+          let unwrapped := innerBody.instantiate (.fvar worldUnique (.primTy .world))
+          { fn with body := unwrapped }
+        | none => { fn with body := inlinedBody }
+      | _ => { fn with body := inlinedBody }
+    | _ => { fn with body := inlinedBody }
   | none => fn
 
 end Soma.Dependent.Specialize

@@ -8,6 +8,11 @@ open Somac.Circuit.Node (Node NodeId PortId PortIdx)
 def nfChildren (recurse : PortId → ReduceM NodeId)
     (nid : NodeId) (node : Node) : ReduceM Unit := do
   match node with
+  -- Closure CTORs: the function LAM will be extracted as a separate Alloy definition
+  | .ctor tag 2 =>
+    if tag == 0xFFFE then pure ()
+    else
+      let _ ← recurse ⟨nid, ⟨1⟩⟩; let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
   -- Data nodes: all fields (tree-structured, no recursive refs)
   | .ctor _ arity =>
     for i in [:arity] do let _ ← recurse ⟨nid, ⟨i + 1⟩⟩
@@ -34,7 +39,7 @@ def nfChildren (recurse : PortId → ReduceM NodeId)
       match varEntry.node with
       | .dup _ => pure ()
       | _ => let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
-    | none => let _ ← recurse ⟨nid, ⟨2⟩⟩; pure ()
+    | none => pure ()
   -- Stuck MAT: scrutinee was already WHNF'd so we can normalize all sub-expressions!
   -- Safe because normalizingDefs guards prevent infinite recursive instantiation
   | .mat _ =>
