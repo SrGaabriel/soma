@@ -44,6 +44,15 @@ private def removeAt [Inhabited α] (arr : Array α) (idx : Nat) : Array α := I
     if i != idx then result := result.push arr[i]!
   return result
 
+/-- Insert an element at a given index, shifting subsequent elements right -/
+private def insertAtIdx [Inhabited α] (arr : Array α) (idx : Nat) (val : α) : Array α := Id.run do
+  let mut result : Array α := #[]
+  for i in [:arr.size] do
+    if i == idx then result := result.push val
+    result := result.push arr[i]!
+  if idx >= arr.size then result := result.push val
+  return result
+
 
 /-- Collect all LocalId.ids referenced as operands in statements + terminator -/
 private def collectUsedLocals (stmts : Array ClosedStmt) (term : Terminator) : Std.HashSet Nat := Id.run do
@@ -305,12 +314,22 @@ private def rewriteStmtForSpec (stmt : ClosedStmt) (closureDerived : Std.HashSet
   | .call funcId args retTy =>
     if funcId == origFuncId then
       let newArgs := removeAt args paramIdx
-      some { stmt with inst := .call specFuncId newArgs retTy }
+      let finalArgs := if hasEnv then
+        match envLocalId with
+        | some envId => insertAtIdx newArgs paramIdx (.local envId)
+        | none => newArgs
+      else newArgs
+      some { stmt with inst := .call specFuncId finalArgs retTy }
     else some stmt
   | .callPoly funcId _tyArgs args retTy =>
     if funcId == origFuncId then
       let newArgs := removeAt args paramIdx
-      some { stmt with inst := .call specFuncId newArgs retTy }
+      let finalArgs := if hasEnv then
+        match envLocalId with
+        | some envId => insertAtIdx newArgs paramIdx (.local envId)
+        | none => newArgs
+      else newArgs
+      some { stmt with inst := .call specFuncId finalArgs retTy }
     else some stmt
   | .erase (.local lid) _ =>
     -- Drop erase of closure-derived values since the caller owns the env lifetime
