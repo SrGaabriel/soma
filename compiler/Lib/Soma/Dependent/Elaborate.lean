@@ -170,7 +170,7 @@ partial def elaborateType (env : ElabEnv) (ty : TypeExpr) : TCM Value := do
         return Value.vDataType qn.id []
     | none =>
       TCM.throw (.cannotInfer
-        s!"unknown type constructor `{name.name}` (no builtin/intrinsic binding in context)"
+        s!"unknown type constructor `{name.name}`"
         name.span
         none)
 

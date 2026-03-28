@@ -805,6 +805,26 @@ def extractPublicSymbols
               | none => pure ()
             | none => pure ()
 
+  for typeAbbrev in untypedModule.abbreviations do
+    let abbrevName := typeAbbrev.name
+    if shouldExport abbrevName then
+      match globals.resolve moduleNs #[] abbrevName with
+      | some qn =>
+        match globals.getDef qn with
+        | some info =>
+          let abbrevSym : Symbol := {
+            unique := qn.id
+            name := abbrevName
+            kind := .type
+            module := moduleName
+            package := packageName
+            span := typeAbbrev.span
+          }
+          acc := acc.insert abbrevSym info.type
+          addedNames := addedNames.insert abbrevName
+        | none => pure ()
+      | none => pure ()
+
   -- Extract type class methods
   for typeClass in untypedModule.typeClasses do
     let className := typeClass.name.display

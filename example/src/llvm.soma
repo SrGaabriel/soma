@@ -1,4 +1,3 @@
-use base::prim::{IO}
 use stdlib::collections::{head, length, map, filter, sum, reverse, append}
 
 def main : IO () =
