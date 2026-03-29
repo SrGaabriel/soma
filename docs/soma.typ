@@ -20,17 +20,27 @@
   Abstract
 ]
 
-Historically, functional programming languages have struggled to match the low-level performance of imperative languages due to their high-level abstractions and runtime overheads. This paper introduces Soma, a general-purpose dependently typed functional programming language that leverages interaction nets to optimize performance while maintaining strong type safety and expressiveness.
+We present Soma, a dependently typed functional programming language that compiles interaction net reduction rules to native code via LLVM. Soma's type system combines full dependent types with Quantitative Type Theory (QTT), which classifies every binding as erased (0), linear (1), or unrestricted ($omega$). This classification drives a three-tier compilation strategy: erased bindings generate no code, linear bindings compile to conventional LLVM IR with zero interaction net overhead and unrestricted bindings compile to type-specialized native interaction net reduction rules that preserve runtime fusion and enable automatic parallelism. The result occupies a previously empty point in the design space which is native performance comparable to Koka for the common (linear) case, with interaction net benefits (lazy sharing, fusion, strong confluence) for the unrestricted case, without the interpretation overhead of systems like HVM or Vine.
 
 #heading(level: 1)[
   Introduction
 ]
 
-Programming languages can be broadly categorized into imperative and functional paradigms, inspired by two different models of computation: the Turing machine and the lambda calculus, respectively.
+Dependently typed functional languages occupy a well-explored point in the design space: expressive type systems paired with either interpretation or GC-backed native compilation. Lean compiles to C with reference counting, Idris 2 targets Scheme or JavaScript and Agda remains primarily an interactive proof assistant. These languages achieve correctness through their type systems but sacrifice performance characteristics that imperative languages take for granted: predictable allocation, cache-friendly data layout and the absence of garbage collection pauses.
 
-Functional programming languages, while offering powerful abstractions and strong type systems, often face challenges in achieving low-level performance comparable to imperative languages. On the other hand, imperative languages, with their mutable state and control flow constructs, can be optimized for performance but may lack the elegance, expressiveness and safety features of functional languages.
+At the other end, interaction net evaluators such as HVM @hvm, Vine @vine exploit the strong confluence property of Lafont's interaction combinators @lafont90 @lafont97 to achieve automatic parallelism and optimal sharing. Every two non-interfering active pairs can reduce simultaneously without coordination, yielding extremely parallel execution by construction. However, these systems represent every value as a node in a heap-allocated graph, incurring interpretation overhead on every reduction step: tag dispatch, pointer chasing and queue management.
 
-To address this challenge, we present Soma, a dependently typed functional programming language that utilizes interaction nets as its underlying computational model. Interaction nets provide a graphical representation of computation that allows for efficient reduction strategies, enabling Soma to achieve low-level performance comparable to imperative languages.
+These two approaches appear to define a trade-off: native speed or interaction net semantics, but not both. We observe that no existing system occupies the upper-right quadrant of native speed _and_ automatic parallelism via interaction nets.
+
+Soma targets this quadrant through a key insight: rather than interpreting or compiling away the interaction net, we _compile the reduction itself_ to native code. Most interaction rules (beta reduction, pattern matching, field projection, arithmetic) are statically predictable, the compiler knows at each call site exactly which rule applies. These compile to conventional LLVM IR with zero overhead. The remaining dynamic interactions (duplication commuting through unknown values) are compiled to type-specialized native functions, preserving the graph topology that enables fusion and parallelism while eliminating interpretation overhead.
+
+Quantitative Type Theory (QTT) @atkey18 @mcbride16 makes this feasible. QTT annotates every binding with a quantity 0 (erased), 1 (linear), or $omega$ (unrestricted) and the type checker enforces these annotations. The compiler trusts them absolutely:
+
+- *Quantity 0*: The binding is a compile-time proof obligation where no code is generated.
+- *Quantity 1*: The binding is consumed exactly once. The compiler emits direct LLVM IR identical to what a conventional compiled language would produce with no interaction net overhead.
+- *Quantity $omega$*: The binding may be used multiple times. DUP and SUP nodes are generated and the interaction rules governing their behavior are compiled to native code per type. The graph structure is preserved for fusion and parallel reduction.
+
+This paper presents the design and implementation of Soma's memory management strategy, which achieves GC-free deterministic lifetimes through compiler-inserted DUP and ERA primitives derived from interaction net semantics.
 
 #heading(level: 1)[
   Interaction Nets Overview
@@ -191,7 +201,7 @@ We adopt split-site placement as Soma's DUP placement strategy.
 
 *Definition.* For a binding `let x = e in body`, DUP nodes are inserted at points where $x$'s ownership must diverge between independent continuations. The number of DUP nodes on any execution path for binding $x$ is exactly $u_"path"(x) - 1$, where $u_"path"(x)$ is the number of consumptions of $x$ on that path. On paths where $x$ enters a branch but is not used, a single ERA node reclaims the unused copy.
 
-Of course, this requires the compiler to be aware of the control flow structure of the program. Therefore, we can't use Lean 4's approach to pattern matching through higher-order functions in their core calculus which obscures the control flow graph. 
+Of course, this requires the compiler to be aware of the control flow structure of the program. Therefore, we can't use Lean 4's approach to pattern matching through higher-order functions in their core calculus which obscures the control flow graph.
 
 #heading(level: 3)[Higher-Order and Recursive Usage]
 
@@ -321,60 +331,189 @@ This policy is simple and predictable. It can be refined in the future if profil
 
 #heading(level: 2)[Comparison with HVM and Bend]
 
-HigherOrderCo's HVM and its surface language Bend represent an alternative approach to applying interaction net semantics to functional programming. Both Soma and Bend use interaction combinators as their computational foundation and support dependent types, but their architectures differ fundamentally in the relationship between interaction nets and the execution model.
+Several systems share design goals with Soma. We compare along four axes: type system, execution model, parallelism and memory management.
 
-#heading(level: 3)[Runtime Interpretation vs. Ahead-of-Time Compilation]
+#heading(level: 3)[Interaction Net Evaluators: HVM and Vine]
 
-HVM is an *interaction net runtime*. Programs are represented as graphs of agents in memory and execution proceeds by graph rewriting: the runtime scans for active pairs (two agents whose principal ports are connected) and applies the corresponding interaction rule. Every value including integers, booleans and function pointers is a node in the interaction net with ports and pointers.
+HVM @hvm and Vine @vine are interaction net interpreters. Both maintain the net as a runtime data structure and execute by graph rewriting: scanning for active pairs and applying rules via tag dispatch. This gives them automatic parallelism (strong confluence) and, in HVM's case, optimal sharing (Lévy-optimality), but every value, even integers and booleans, pays the cost of graph node representation, pointer chasing and dispatch overhead.
 
-Soma uses interaction nets as a *compilation model*. The DUP/ERA/SUP semantics inform the compiler's code generation, but the output is flat, imperative LLVM IR. Flat-tier values (integers, booleans, all-flat structs) are register copies with no heap representation. Heap-tier values (closures, tagged unions, recursive data) use lazy SUP duplication, but the runtime representation is a tagged pointer check and a pool-allocated SUP node, not graph rewriting.
+Soma differs in three respects. First, it _compiles_ interaction rules to native code rather than interpreting them. Statically predictable interactions (beta reduction, pattern matching, arithmetic) emit the same LLVM IR a conventional compiler would produce) and only dynamic interactions (DUP commuting through unknown values) require runtime infrastructure. Second, QTT's quantity annotations eliminate interaction net overhead entirely for quantity 0 (erased) and quantity 1 (linear) bindings, which constitute the majority of bindings in typical programs. Third, Soma uses flat native data representations (tagged words, packed structs, array-backed lists) rather than graph nodes, yielding cache-friendly memory access patterns.
 
-The consequence is that Soma eliminates the overhead of the graph representation itself. In HVM, every value is a node in the interaction net with ports and pointers. Even duplicating a number creates a DP0/DP1 pointer pair that must be resolved later. Soma compiles `square x = x * x` to a single `mul` instruction with zero indirection, zero allocation and zero runtime dispatch. For the large class of programs that are predominantly first-order (arithmetic, struct manipulation, flat data processing), Soma generates the same machine code that a conventional compiled language would produce.
+Soma is not Lévy-optimal. When both copies of a duplicated closure are accessed, they are cloned and reduced independently. This is a deliberate trade-off: Lévy-optimality minimizes $beta$-reduction steps, but each step in an interpreter involves pointer indirection and cache misses. For well-typed programs, the pathological cases requiring optimal sharing (self-application of untyped terms) cannot arise and QTT further constrains duplication to $omega$-quantity bindings only.
 
-#heading(level: 3)[Optimality and the Lazy Duplication Trade-off]
+However, Soma preserves the interaction net property that HVM and Vine exploit for fusion. Tier 2 values maintain graph topology at runtime and DUP-SUP annihilation compiles to native code. Self-inverse compositions (such as $"not" compose "not" = "id"$) still fuse in $O(1)$ per annihilation, preserving the $O(log N)$ reduction count for $N$-fold self-composition.
 
-HVM claims Lévy-optimality: it never duplicates a redex. When a function body is shared by two consumers, an optimal reducer reduces it once and distributes the result through the sharing node, rather than copying the body and reducing it independently in each copy.
+#heading(level: 3)[Native Compiled Languages: Lean and Koka]
 
-Soma is *not* Lévy-optimal. The laziness operates at the level of *value copying*, not *reduction sharing*. Consider the following example:
+Lean @lean compiles to C with reference counting and copy-on-write (RC+COW). Every function boundary requires increment and decrement operations and when a reference count exceeds 1, mutation triggers a full copy. Lean's data structures are pointer-heavy linked lists, sacrificing cache locality.
 
-```haskell
-let f = \x -> expensive x in
-let (f₁, f₂) = DUP(f) in
-(f₁ arg, f₂ arg)
-```
+Koka @koka uses Perceus reference counting with reuse analysis, achieving deterministic memory management with good single-thread performance. Like Lean, it lacks dependent types and automatic parallelism.
 
-In HVM, `f` is a net node. DUP creates a sharing node. When `f₁` is applied, the body of the lambda begins reducing. If `f₂` is applied to the same argument, the result is shared and `expensive` is computed once.
+Soma shares the native compilation target but replaces reference counting with interaction net semantics (DUP/ERA/SUP). This has several consequences:
 
-In Soma, `f` is a heap-tier closure. DUP wraps it in a SUP node, deferring the copy. When both `f₁` and `f₂` are accessed, the closure is cloned: the runtime allocates a new closure header and copies the captured environment. The two closures are now independent. `expensive` is computed twice, once per copy.
+- No increment/decrement overhead on the hot path. Quantity 1 bindings have zero ownership-tracking cost.
+- Lazy duplication via SUP defers cloning to the point of divergence. RC+COW pessimistically maintains counts everywhere and copies the moment any consumer mutates.
+- DUP-ERA annihilation eliminates unnecessary copies in $O(1)$. RC requires decrement-and-conditional-free on every scope exit.
+- No cycle problem. Interaction nets are acyclic by construction. RC requires cycle detection or backup tracing for cyclic data.
 
-The laziness still provides a crucial benefit: if only one of `f₁` or `f₂` is accessed (the common case in branching code), the DUP-ERA annihilation rule means no copy is ever made. But when both copies are used, Soma does not share their reduction and each proceeds independently as native code with full register allocation and branch prediction.
+The trade-off is that structural sharing is less natural than RC+COW. When two consumers independently mutate a shared structure, RC+COW copies on first mutation; Soma's DUP creates independent copies eagerly (Tier 1) or lazily (Tier 2), but does not support in-place mutation of shared data.
 
-This is a deliberate trade-off. Lévy-optimality minimizes the number of $beta$-reduction steps, but each step in HVM involves pointer chasing through a heap-allocated graph with associated cache misses and allocation overhead. Soma's approach is to defer the copy (via SUPs) but not the computation (via sharing). For the vast majority of programs, the constant-factor advantage of native code execution dominates the asymptotic advantage of optimal sharing.
+#heading(level: 3)[Quantitative Type Theory: Idris 2]
 
-Moreover, Soma's type system includes Quantitative Type Theory (QTT) with quantities 0 (erased), 1 (linear) and $omega$ (unrestricted). Erased bindings generate no DUP or ERA at all. Linear bindings are used exactly once. Only $omega$-bindings require DUP, and even then the type system constrains where duplication occurs. This statically eliminates most of the cases where Lévy-optimal sharing would provide a benefit, because the compiler already knows at elaboration time that those DUPs will not happen.
+Idris 2 @idris2 implements QTT with the same quantity semiring ($0$, $1$, $omega$). However, Idris 2 uses QTT primarily as a correctness mechanism and targets high-level backends (Scheme, JavaScript, RefC). It does not exploit quantity annotations for compilation tier selection or memory management optimization.
 
-#heading(level: 3)[Parallelism Model]
-
-Because HVM maintains the interaction net as a runtime data structure, it can exploit parallelism at the granularity of individual interactions. Any two independent active pairs in the net can reduce simultaneously. This enables automatic, fine-grained parallelism without programmer annotation, including GPU execution, where thousands of interactions proceed in parallel.
-
-The trade-off is: HVM achieves pervasive parallelism at the cost of graph representation overhead. Soma achieves better single-thread performance and cache behavior at the cost of less automatic parallelism.
+Soma uses QTT as both a correctness mechanism and a _compilation strategy oracle_. The quantity of every binding directly determines its compilation tier (0 $arrow.r$ erased, 1 $arrow.r$ native LLVM, $omega$ $arrow.r$ compiled inet rules), its memory management strategy (no-op, deterministic free, lazy SUP) and its parallelism eligibility ($omega$ DUP sites are candidate fork points).
 
 #heading(level: 3)[Summary]
 
 #align(center)[
   #table(
-    columns: (auto, auto, auto),
-    align: (left, left, left),
-    table.header([*Property*], [*HVM / Bend*], [*Soma*]),
-    [Execution model], [Runtime graph rewriting], [Ahead-of-time LLVM compilation],
-    [Value representation], [All values are net nodes], [Tagged words / native structs],
-    [Flat type overhead], [Node allocation + ports], [Zero (register copy)],
-    [Heap value duplication], [Lazy (optimal sharing)], [Lazy (SUP nodes, no sharing)],
-    [Lévy-optimality], [Yes], [No],
-    [Parallelism], [Automatic, fine-grained (GPU)], [Explicit fork/join (CPU)],
-    [Cache behavior], [Poor (pointer-heavy graph)], [Good (native data layout)],
-    [Single-thread performance], [Lower (interpretation overhead)], [Higher (native code)],
+    columns: (auto, auto, auto, auto, auto),
+    align: (left, left, left, left, left),
+    table.header([*Property*], [*HVM*], [*Vine*], [*Lean*], [*Soma*]),
+    [Type system], [Untyped], [Generics], [Dependent], [Dependent + QTT],
+    [Execution], [Interpreted inet], [Interpreted inet], [Native (C)], [Compiled inet + LLVM],
+    [Flat types], [Graph nodes], [Graph nodes], [Boxed / unboxed], [Register copy (zero cost)],
+    [Duplication], [Optimal sharing], [Lazy SUP], [RC + COW], [Lazy SUP + compiled rules],
+    [Fusion], [Yes], [Yes], [No], [Yes (Tier 2)],
+    [Parallelism], [Auto (GPU+CPU)], [Auto (CPU)], [None], [QTT-guided (CPU)],
+    [Cache behavior], [Poor], [Poor], [Moderate], [Good (flat arrays)],
+    [GC-free], [Yes], [Yes], [Yes (RC)], [Yes (inet)],
   )
 ]
 
-Notably, the two approaches are not mutually exclusive. Because Soma's Circuit IR already encodes programs as interaction net graphs with the same primitives HVM uses, it is feasible to offer HVM as an opt-in backend target. Users who need automatic fine-grained parallelism for a particular module could compile through HVM's runtime instead of the LLVM path, trading single-thread performance for pervasive parallelism without changing the source language or type system.
+#heading(level: 1)[Compilation Pipeline]
+
+Soma compiles source code through a sequence of intermediate representations, each serving a distinct purpose. The pipeline is:
+
+$ "Source" arrow.r "CST" arrow.r "AST" arrow.r "Core" arrow.r "Circuit IR" arrow.r "Alloy IR" arrow.r "LLVM IR" arrow.r "Native" $
+
+#heading(level: 2)[Frontend: Source to Core]
+
+The lexer produces tokens which the parser assembles into a Concrete Syntax Tree (CST) using a lossless green/red tree representation that preserves whitespace and comments for tooling. The CST is lowered to an Abstract Syntax Tree (AST), which is then elaborated into Core expressions.
+
+Elaboration performs bidirectional type inference, unification (with row polymorphism), QTT usage checking, instance resolution for type classes and totality checking. The output is a fully annotated Core expression where every binding carries its quantity ($0$, $1$, or $omega$) and every subexpression has a known type. Normalization uses evaluation by normalization (NbE) with defunctionalized closures.
+
+#heading(level: 2)[Circuit IR: Interaction Net Graph]
+
+The Core expression is lowered to Circuit IR, Soma's interaction net representation. Circuit IR encodes programs as graphs of nodes connected by ports, using a 64-bit term encoding:
+
+$ "SUB"(1) | "TAG"(7) | "EXT"(24) | "VAL"(32) $
+
+The 7-bit tag field accommodates 20 node types: variable, lambda, application, duplication, superposition, erasure, constructor, match, record, projection, number, unary and binary operators, reference, use, ALO (lazy allocation), array, index, string and slice.
+
+Each definition in the program becomes an entry in the Circuit IR _book_ which is a static array of definition bodies represented as subgraphs. References between definitions use REF and ALO nodes:
+
+- *REF* nodes reference definitions that accept arguments (higher-order). When forced, the entire definition body is instantiated via subgraph copy, but internal REF and ALO nodes within the copy are preserved as-is, providing call-granularity lazy instantiation.
+- *ALO* (lazy allocation) nodes reference self-recursive or nullary definitions. They behave identically to REF during reduction but signal to the compiler that the definition is potentially recursive and should be instantiated lazily.
+
+This lazy instantiation strategy ensures that recursive definitions unfold one call at a time rather than eagerly expanding to infinite depth.
+
+#heading(level: 2)[Alloy IR: Monomorphized SSA]
+
+Circuit IR is partially evaluated (interaction rules are applied at compile time to simplify the graph) and then lowered to Alloy IR, a monomorphized SSA-form IR. Alloy uses conventional SSA concepts like local IDs, block IDs, function IDs, phi nodes augmented with interaction net primitives:
+
+- `lazySup label value typeDesc` create a SUP node (Tier 2 lazy duplication)
+- `supProj0 sup` / `supProj1 sup` project from a SUP
+- `clone value` type-specialized eager copy (Tier 1 duplication)
+- `erase value` type-specialized destruction
+
+Types in Alloy include primitives, pointers, structs, tagged unions, closures (function pointer + environment) and arrays. Every type is fully monomorphized and no polymorphism remains.
+
+#heading(level: 2)[LLVM Code Generation]
+
+Alloy IR is lowered to LLVM IR, each Alloy function becomes an LLVM function and each block becomes an LLVM basic block. The interaction net primitives lower to calls into the C runtime (`soma_runtime.c`) or to inline LLVM operations:
+
+- Flat-tier DUP $arrow.r$ register copy (zero cost)
+- Flat-tier ERA $arrow.r$ no-op
+- Heap-tier eager clone $arrow.r$ call to type-specialized `clone_fn` from `SomaTypeDesc`
+- Heap-tier lazy SUP $arrow.r$ call to `soma_dup_typed`
+- SUP projection $arrow.r$ call to `soma_proj0` / `soma_proj1`
+- Erasure $arrow.r$ call to type-specialized `erase_fn` from `SomaTypeDesc`
+
+The `SomaTypeDesc` structure bundles a clone function pointer and an erase function pointer, both generated at compile time as static LLVM globals. Each concrete type gets exactly one `SomaTypeDesc`, enabling SUP nodes to carry a single pointer (8 bytes) rather than two function pointers (16 bytes).
+
+#heading(level: 1)[Compiled Interaction Net Reduction]
+
+The central contribution of Soma's design is the compilation of interaction net reduction rules to native code. Rather than maintaining the interaction net as a runtime data structure (as in HVM or Vine) or compiling it away entirely (as in a conventional compiler), Soma compiles the reduction _itself_ to type-specialized native code. This section formalizes the approach.
+
+#heading(level: 2)[Statically Predictable Interactions]
+
+The key observation is that the vast majority of interactions in a well-typed program are statically predictable. At each point in the compiled program, the compiler knows which interaction rule will fire:
+
+- *APP-LAM* (beta reduction): The compiler knows a function is being applied. This compiles to a direct `call` instruction.
+- *MAT-CTR* (pattern match): The compiler knows a scrutinee is being matched. This compiles to a `switch` on the constructor tag.
+- *PROJ-RECORD* (field access): The compiler knows a field is being projected. This compiles to a `load` at a known offset.
+- *OP-NUM* (arithmetic): The compiler knows operands are numbers. This compiles to native arithmetic instructions.
+
+These interactions require no interaction net infrastructure at runtime. They compile to exactly the same LLVM IR that a conventional functional language compiler would produce.
+
+The only interactions that require runtime infrastructure are those involving _duplication and sharing_:
+
+- *DUP-LAM* commutation: Duplicating a closure creates two copies.
+- *DUP-SUP* annihilation: A duplication meeting its own superposition cancels out.
+- *DUP-SUP* commutation: Duplications at different nesting levels pass through each other.
+- *DUP-ERA* annihilation: An unnecessary duplication is eliminated.
+
+These are the dynamic interactions and they only arise for $omega$-quantity bindings.
+
+#heading(level: 2)[Three-Tier Compilation]
+
+QTT's quantity annotations partition every binding into one of three compilation tiers:
+
+*Tier 0: Static erasure (quantity 0):* The binding exists only for type checking. No runtime representation or code is generated. This handles proofs, type-level computations and compile-time indices. The cost is zero and strictly better than any system that represents erased terms at runtime.
+
+*Tier 1: Native code (quantity 1 and quantity $omega$ with eager clone):* The binding is consumed at most once (quantity 1) or is duplicated but both copies are consumed immediately (quantity $omega$ with small types). The compiler emits conventional LLVM IR:
+
+- Function application $arrow.r$ `call`
+- Pattern matching $arrow.r$ `switch`
+- Field access $arrow.r$ `getelementptr` + `load`
+- Duplication $arrow.r$ type-specialized `clone_fn` (memcpy for flat data, deep copy for pointers)
+- Erasure $arrow.r$ type-specialized `erase_fn`
+
+No SUP nodes, no interaction net graph, no lazy sharing. This is the same code Lean, Koka, or any conventional compiled language would produce. For programs that are predominantly linear (most programs), the entire program runs at this tier.
+
+*Tier 2: Compiled interaction net rules (quantity $omega$ with lazy sharing).* For bindings where two consumers may access a value at different times (one immediately, one much later, or one conditionally), the compiler emits lazy duplication via SUP nodes with compiled reduction rules:
+
+- DUP creates a SUP node wrapping the value (call to `soma_dup_typed`)
+- Each consumer receives a projection (`soma_proj0` / `soma_proj1`)
+- If only one projection is accessed, the original value is returned directly (zero copy)
+- If both are accessed, the type-specialized `clone_fn` is invoked (same as Tier 1)
+- DUP-SUP same-label annihilation: $O(1)$ with only two stores and zero allocation
+- DUP-SUP different-label commutation: type-specialized native function that creates the crossed SUP/DUP structure
+
+The critical property of Tier 2 is that it _preserves graph topology_. SUP nodes, DUP nodes and the wires connecting them exist at runtime. This is what enables the two properties that compiling away the interaction net would sacrifice: runtime fusion and parallel reduction.
+
+#heading(level: 2)[Runtime Fusion]
+
+When two copies of a self-inverse function are composed via sharing (SUP), the intermediate forms can cancel out through DUP-SUP annihilation. This yields an exponential reduction in interaction count for certain patterns.
+
+Consider the Church-encoded boolean negation:
+
+$ "not" = lambda b. lambda t. lambda f. (b space f space t) $
+
+Applying not to itself yields the identity: $"not" compose "not" = "id"$. In an interaction net, this cancellation happens via DUP-SUP annihilation when the two copies of not share their input through a SUP node. Composing not $2^K$ times requires only $O(K)$ interactions rather than $O(2^K)$ function applications.
+
+This property is _structural_: it depends on the graph topology (SUP nodes connecting shared subexpressions) and the annihilation rule (same-label DUP-SUP cancels in $O(1)$). Both are preserved in Tier 2's compiled representation. The annihilation rule compiles to a single label comparison followed by two stores native-speed execution of the same rule that HVM interprets.
+
+Tier 2 values at quantity $omega$ are exactly the values where fusion matters. Quantity 0 values don't exist at runtime. Quantity 1 values are never duplicated, so fusion is irrelevant. QTT routes values to the tier where their optimization properties are maximally exploited.
+
+#heading(level: 2)[Parallelism via Compiled Reduction]
+
+Interaction nets have a structural property that conventional computation models lack: *strong confluence*. The number of reduction steps required to reach normal form is independent of the order in which rules are applied. Any two non-interfering active pairs can reduce simultaneously without coordination and the result is guaranteed to be the same.
+
+In compiled code, this translates directly: if two compiled reduction rules operate on disjoint subgraphs, they can execute on different threads. The only change required is replacing the LINK operation (a store to a port) with a CAS (atomic compare-and-swap). The reduction rules themselves are identical.
+
+For all *Quantity $omega$ DUP sites*, each DUP creates two independent subgraphs. These are the natural fork points for parallel execution.
+
+The compiler can insert fork/join directives at DUP sites for $omega$-quantity bindings at compile time, without runtime analysis. Per-thread arena allocation (extending the existing pool allocator) eliminates contention on the allocation fast path. A work-stealing scheduler with Chase-Lev deques @chase05 distributes work across cores.
+
+For IO, the linear IO token (quantity 1) prevents duplication statically: `IO.fork` is the only mechanism to split the token, providing explicit controlled parallelism. This is enforced by the type system at compile time, not by runtime checks.
+
+#heading(level: 1)[Conclusion and Future Work]
+
+We have presented Soma, a dependently typed functional language that compiles interaction net reduction rules to native code via LLVM. The design exploits Quantitative Type Theory as a compilation strategy oracle and a three-tier architecture to occupy a previously unexplored point in the design space: native single-thread performance for the linear case with interaction net benefits for the unrestricted case.
+
+The memory management strategy derives DUP and ERA primitives from interaction net semantics, achieving GC-free deterministic lifetimes without reference counting. Split-site DUP placement minimizes duplication to the exact points where ownership diverges and the tiered duplication strategy (register copy for flat types, lazy SUP for heap types) ensures that no unnecessary copies are made. DUP-ERA annihilation makes defensive duplication at branch points essentially free.
+
+#bibliography("refs.yml", style: "association-for-computing-machinery")
