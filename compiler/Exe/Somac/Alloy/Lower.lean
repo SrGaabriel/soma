@@ -754,29 +754,17 @@ def buildTyVarMapping (levels : Std.HashSet Nat) : Σ n, TyVarMapping n :=
       (acc, i) -- impossible
   ⟨n, ⟨map.1⟩⟩
 
-/-- Build tyVar mapping from an entire definition -/
-def buildTyVarMappingFromDefinition (graph : CGraph) (def_ : CDefinition) : Σ n, TyVarMapping n :=
+/-- Build tyVar mapping from a definition's type signature and body -/
+def buildTyVarMappingFromDefinition (graph : CGraph) (def_ : CDefinition)
+    (metaState : Soma.Core.MetaState := .empty) : Σ n, TyVarMapping n :=
   let defLevels := collectTyVarLevels def_.ty
   let ⟨n, baseMapping⟩ := buildTyVarMapping defLevels
-  let allLevels := collectAllTyVarLevels graph def_
-  let extraLevels := allLevels.fold (init := #[]) fun acc lvl =>
-    if defLevels.contains lvl then acc else acc.push lvl
-  if extraLevels.isEmpty then
-    ⟨n, baseMapping⟩
-  else
-    let sortedDefLevels := defLevels.toArray.qsort (· < ·)
-    let augmented := extraLevels.foldl (init := baseMapping) fun mapping extraLvl =>
-      let bestIdx := sortedDefLevels.foldl (init := none) fun acc defLvl =>
-        if defLvl < extraLvl then baseMapping.get? defLvl else acc
-      match bestIdx with
-      | some idx => mapping.insert extraLvl idx
-      | none =>
-        match sortedDefLevels[0]?, n with
-        | some l, _ => match baseMapping.get? l with
-          | some idx => mapping.insert extraLvl idx
-          | none => mapping
-        | none, _ => mapping
-    ⟨n, augmented⟩
+  let implicitMap := metaState.implicitLevelMap
+  let augmented := implicitMap.fold (init := baseMapping) fun mapping metaId level =>
+    match baseMapping.get? level with
+    | some fin => mapping.insert metaId fin
+    | none => mapping
+  ⟨n, augmented⟩
 
 /-- Extract type arguments for a call to a polymorphic function -/
 partial def extractCallTypeArgs (defTy : Value) (concreteTy : Value)
@@ -2464,9 +2452,10 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (panicMsgIdx : Nat := 0)
     (anonLamBookIdx : Std.HashMap Nat Nat := {})
     (wiredRole : Option WiredFunc := none)
-    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : SomeFunc :=
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
+    (metaState : Soma.Core.MetaState := .empty) : SomeFunc :=
   -- Collect all type variable levels and build mapping
-  let ⟨n, tyVarMapping⟩ := buildTyVarMappingFromDefinition graph def_
+  let ⟨n, tyVarMapping⟩ := buildTyVarMappingFromDefinition graph def_ metaState
   -- Lower with the determined n
   let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv
   -- Return existentially quantified function
@@ -2477,7 +2466,8 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (wiredFuncs : WiredFuncRegistry := {})
-    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : Module := Id.run do
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
+    (metaState : Soma.Core.MetaState := .empty) : Module := Id.run do
   let mut module := Module.empty moduleName
 
   -- Copy string table from Circuit graph to Alloy module
@@ -2533,7 +2523,7 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
       if def_.reducibility != .external then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
         let wiredRole := wiredFuncs.get? def_.name.id
-        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv
+        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv metaState
         module := module.addFunc func
 
   -- Set main function using the mapped ID
@@ -2548,7 +2538,8 @@ def lower (graph : CGraph) (moduleName : String := "main") (primTypes : PrimType
     (inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {})
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (wiredFuncs : WiredFuncRegistry := {})
-    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : Module :=
-  lowerGraph graph moduleName primTypes inductives intrinsics wiredFuncs abbrevEnv
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
+    (metaState : Soma.Core.MetaState := .empty) : Module :=
+  lowerGraph graph moduleName primTypes inductives intrinsics wiredFuncs abbrevEnv metaState
 
 end Somac.Alloy.Lower

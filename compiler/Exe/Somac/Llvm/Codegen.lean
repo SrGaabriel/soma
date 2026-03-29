@@ -1947,6 +1947,7 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     let _ := line
     CodegenM.withFuncBuilder do
       FuncBuilder.callNamedVoid "soma_panic" #[(.ptr, globalVal s!".str.{msgIdx}")]
+    CodegenM.signalNoReturn
     pure none
 
 

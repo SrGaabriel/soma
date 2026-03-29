@@ -203,6 +203,31 @@ private partial def applyArgs (v : Value) : List Value → Option Value
     | .vPi _ _ _ _ cod => applyArgs (cod.applyPure arg) rest
     | _ => none
 
+/-- Resolve solved metavariables in a Value, replacing nMeta with their solutions -/
+partial def resolveMetas (v : Value) (metas : Soma.Core.MetaState) : Value :=
+  match v with
+  | .vNeutral ty (.nMeta m) =>
+    match metas.lookup m with
+    | some info =>
+      match info.solution with
+      | some sol => resolveMetas sol metas
+      | none => v
+    | none => v
+  | .vPi qty binder name dom cod =>
+    .vPi qty binder name (resolveMetas dom metas) cod
+  | .vSigma qty name fst sndClos =>
+    .vSigma qty name (resolveMetas fst metas) sndClos
+  | .vPair a b => .vPair (resolveMetas a metas) (resolveMetas b metas)
+  | .vDataType dId params =>
+    .vDataType dId (params.map (resolveMetas · metas))
+  | .vConstructor tag arity args rty =>
+    .vConstructor tag arity (args.map (resolveMetas · metas)) (resolveMetas rty metas)
+  | .vRowExtend label fieldTy tail =>
+    .vRowExtend (resolveMetas label metas) (resolveMetas fieldTy metas) (resolveMetas tail metas)
+  | .vRecord row => .vRecord (resolveMetas row metas)
+  | .vVariant row => .vVariant (resolveMetas row metas)
+  | _ => v
+
 /-- Unfold type abbreviations in a Value -/
 partial def unfoldValue (v : Value) (abbrevEnv : Soma.Dependent.AbbrevEnv) : Value :=
   match v with
@@ -559,6 +584,7 @@ def primOpToOp2Code : PrimOp → Option Op2Code
 /-- Lower a global function or constructor reference to a circuit node -/
 def lowerGlobal (name : QualifiedName) (ty : Value) : LowerM PortId := do
   let ctx ← LowerM.getCtx
+  let ty := resolveMetas ty ctx.metaState
   -- First check if it's a known function
   match ctx.lookupGlobal name with
   | some idx =>
@@ -629,7 +655,9 @@ private def isCoreTypeLevelExpr : Soma.Core.Expr → Bool
 /-- Compute the type of a Core expression -/
 def getExprType (e : Soma.Core.Expr) : LowerM Value := do
   let ctx ← LowerM.getCtx
-  pure (e.typeOf ctx.evalGlobalEnv (unfoldValue · ctx.abbrevEnv))
+  let ty := e.typeOf ctx.evalGlobalEnv (unfoldValue · ctx.abbrevEnv)
+  let resolved := resolveMetas ty ctx.metaState
+  pure resolved
 
 /-- Evaluate a Core expression to a Value -/
 def evalExprToValue (e : Soma.Core.Expr) : LowerM Value := do
@@ -649,6 +677,7 @@ mutual
 
 /-- Lower a Core.Expr to a Circuit IR subgraph. -/
 partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option PortId) := do
+  let ty := resolveMetas ty (← LowerM.getCtx).metaState
   match e with
   | .fvar u _ => lowerCoreVar u
 

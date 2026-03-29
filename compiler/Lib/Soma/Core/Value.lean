@@ -395,6 +395,9 @@ structure MetaInfo where
   dependsOn : Array MetaId := #[]
   /-- Metavariables that depend on this meta (reverse of dependsOn) -/
   dependents : Array MetaId := #[]
+  /-- When this meta was created for an implicit Pi binder's type parameter,
+      the de Bruijn level of that binder -/
+  piLevel : Option Nat := none
   deriving Inhabited
 
 /-- A constraint index for tracking which constraints involve which metas -/
@@ -487,9 +490,10 @@ structure MetaState where
 
 def MetaState.empty : MetaState := ⟨{}, 0, {}⟩
 
-def MetaState.fresh (state : MetaState) (ty : Value) (ctx : List (String × Value × Quantity)) : MetaId × MetaState :=
+def MetaState.fresh (state : MetaState) (ty : Value) (ctx : List (String × Value × Quantity))
+    (piLevel : Option Nat := none) : MetaId × MetaState :=
   let id := state.nextId
-  let info : MetaInfo := { type := ty, context := ctx }
+  let info : MetaInfo := { type := ty, context := ctx, piLevel := piLevel }
   let metas := state.metas.insert id info
   (⟨id⟩, { state with metas := metas, nextId := id + 1 })
 
@@ -515,6 +519,13 @@ def MetaState.isSolved (state : MetaState) (id : MetaId) : Bool :=
   match state.metas.get? id.id with
   | some info => info.solution.isSome
   | none => false
+
+/-- Build a map from MetaId to the de Bruijn level of the Pi binder it represents -/
+def MetaState.implicitLevelMap (state : MetaState) : Std.HashMap Nat Nat :=
+  state.metas.fold (init := {}) fun acc metaId info =>
+    match info.piLevel with
+    | some lvl => acc.insert metaId lvl
+    | none => acc
 
 /-- Register a constraint and the metas it references -/
 def MetaState.registerConstraint (state : MetaState) (metas : Array MetaId)

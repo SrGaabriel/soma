@@ -98,8 +98,8 @@ partial def insertImplicitsCore (fnTy : Value) (fnExpr : Soma.Core.Expr) (span :
   match fnTy' with
   | .vPi _qty binder name dom cod =>
     if binder.isImplicit then
-      -- Create metavariable for this implicit parameter
-      let metaId ← TCM.freshMeta dom
+      let piLvl := cod.level?.map (·.lvl)
+      let metaId ← TCM.freshMeta dom (piLevel := piLvl)
       let argMeta := Value.vNeutral dom (.nMeta metaId)
 
       -- Handle instance parameters specially

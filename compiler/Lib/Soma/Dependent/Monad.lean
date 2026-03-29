@@ -882,9 +882,10 @@ def forModule (moduleName : String) : TCState :=
   { uniqueSupply := Soma.UniqueSupply.initial moduleName }
 
 /-- Create a fresh metavariable -/
-def freshMeta (s : TCState) (ty : Value) (ctx : List CtxEntry) : MetaId × TCState :=
+def freshMeta (s : TCState) (ty : Value) (ctx : List CtxEntry)
+    (piLevel : Option Nat := none) : MetaId × TCState :=
   let ctxList := ctx.map fun e => (e.name, e.type, e.qty)
-  let (id, metas') := s.metas.fresh ty ctxList
+  let (id, metas') := s.metas.fresh ty ctxList (piLevel := piLevel)
   (id, { s with metas := metas' })
 
 /-- Create a fresh level variable -/
@@ -1316,10 +1317,10 @@ def getErrors : TCM (Array TCError) := do
   return state.errors
 
 /-- Create a fresh metavariable of the given type -/
-def freshMeta (ty : Value) : TCM MetaId := do
+def freshMeta (ty : Value) (piLevel : Option Nat := none) : TCM MetaId := do
   let ctx ← getCtx
   let state ← getState
-  let (id, state') := state.freshMeta ty ctx.locals
+  let (id, state') := state.freshMeta ty ctx.locals (piLevel := piLevel)
   set state'
   return id
 

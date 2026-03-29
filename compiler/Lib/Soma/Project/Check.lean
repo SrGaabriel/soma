@@ -141,6 +141,8 @@ structure CheckedModule where
   typedFunctions : Std.HashMap String Soma.Core.TypedFunction := {}
   /-- Usage counts from type checking -/
   usages : Std.HashMap Soma.Unique Nat := {}
+  /-- Metavariable solutions from type checking -/
+  metas : Soma.Core.MetaState := .empty
   /-- Final unique ID counter from elaboration (for lambda lifting) -/
   uniqueNextId : Nat := 0
 
@@ -1033,6 +1035,7 @@ def checkModule
     incrementalState := tcResult.incrementalState
     typedFunctions := tcResult.typedFunctions
     usages := tcResult.usages
+    metas := tcResult.metas
     uniqueNextId := tcResult.uniqueNextId
   }
 
@@ -1122,6 +1125,7 @@ def checkModuleIncremental
     incrementalState := tcResult.incrementalState
     typedFunctions := tcResult.typedFunctions
     usages := tcResult.usages
+    metas := tcResult.metas
     uniqueNextId := tcResult.uniqueNextId
   }
 

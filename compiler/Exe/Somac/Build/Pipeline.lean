@@ -106,7 +106,7 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
   let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv) (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv)
 
   -- Lower to Circuit IR
-  let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (abbrevEnv := cm.abbrevEnv)
+  let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (metas := cm.metas) (abbrevEnv := cm.abbrevEnv)
 
   -- Partial evaluation
   let (optimized, _stats) ← Circuit.partialEval graph
@@ -114,7 +114,7 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
   let wiredFuncs := Alloy.Lower.buildWiredFuncRegistry globals.wiredIn
-  let alloyMod := Alloy.Lower.lower optimized cm.name primTypes globals.inductives globals.intrinsics wiredFuncs (abbrevEnv := cm.abbrevEnv)
+  let alloyMod := Alloy.Lower.lower optimized cm.name primTypes globals.inductives globals.intrinsics wiredFuncs (abbrevEnv := cm.abbrevEnv) (metaState := cm.metas)
   return alloyMod
 
 /-- Result of compilation pipeline -/
