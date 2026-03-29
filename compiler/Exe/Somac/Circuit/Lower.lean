@@ -1272,6 +1272,24 @@ partial def lowerCoreInject (label : String) (args : Array Soma.Core.Expr)
 
 end
 
+/-- Count the number of LAM nodes in a chain starting from a root node -/
+def countLamChainArity (root : NodeId) : LowerM Nat := do
+  let mut count := 0
+  let mut current := root
+  for _ in [:100] do
+    let node? ← LowerM.liftGraph (get >>= fun g => pure (g.getNode current))
+    match node? with
+    | some entry =>
+      match entry.node with
+      | .lam _ =>
+        count := count + 1
+        match entry.getPort ⟨2⟩ with
+        | some bodyPort => current := bodyPort.node
+        | none => break
+      | _ => break
+    | none => break
+  return count
+
 /-- Lower a function definition -/
 def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
   -- Set current function for recursion detection
@@ -1333,24 +1351,85 @@ def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
     LowerM.connect ⟨outer, ⟨2⟩⟩ (PortId.principal inner)
 
   -- Lower the body (now Core.Expr)
-  let resultTy := currentTy  -- type remaining after peeling all param Pis
+  let mut resultTy := currentTy
   let bodyPort? ← lowerCoreExpr fn.body resultTy
 
-  if lamNodes.isEmpty then
+  -- IO eta-expansion
+  let ctx ← LowerM.getCtx
+  let unfoldedResultTy := unfoldValue resultTy ctx.abbrevEnv
+  let mut ioLamNodes : Array NodeId := #[]
+  let mut ioResultTy := unfoldedResultTy
+  -- Collect hidden Pi parameters from the unfolded type
+  if unfoldedResultTy.piDomain?.isSome then
+    let mut tmpTy := unfoldedResultTy
+    let mut cont := true
+    while cont do
+      match tmpTy with
+      | .vPi _ binder name dom cod =>
+        if binder.isImplicit && dom.isType then
+          -- Skip erased implicit type params inside the alias expansion
+          tmpTy := match cod with
+            | .const _ body => body
+            | .term _ env _ => cod.applyPure (Value.vNeutral dom (.nVar ⟨name, env.level⟩))
+        else
+          -- Explicit parameter: create a LAM node
+          let ioLam ← LowerM.addNode (.lam false) tmpTy
+          ioLamNodes := ioLamNodes.push ioLam
+          let ioParamUnique ← LowerM.freshSyntheticUnique name
+          let varPort : PortId := ⟨ioLam, ⟨1⟩⟩
+          LowerM.modifyCtx fun ctx2 =>
+            ctx2.bindVarOwned ioParamUnique name varPort 1 dom false
+          let paramNeutral := Value.vNeutral dom (.nVar ⟨name, ⟨ioParamUnique.id⟩⟩)
+          tmpTy := match cod with
+            | .const _ body => body
+            | .term _ _ _ => cod.applyPure paramNeutral
+          ioResultTy := tmpTy
+      | _ => cont := false
+
+  -- If IO eta-expansion occurred, apply the body to the new parameters
+  let mut finalBodyPort := bodyPort?
+  if !ioLamNodes.isEmpty then
+    if let some bp := bodyPort? then
+      -- Create APP nodes: body applied to each IO param
+      let mut currentPort := bp
+      for ioLam in ioLamNodes do
+        let ioArgPort : PortId := ⟨ioLam, ⟨1⟩⟩
+        let app ← LowerM.addNode .app ioResultTy
+        LowerM.connect ⟨app, ⟨1⟩⟩ currentPort
+        LowerM.connect ⟨app, ⟨2⟩⟩ ioArgPort
+        currentPort := PortId.principal app
+      finalBodyPort := some currentPort
+    -- Wire IO LAMs together
+    for i in [:ioLamNodes.size - 1] do
+      let outer := ioLamNodes[i]!
+      let inner := ioLamNodes[i + 1]!
+      LowerM.connect ⟨outer, ⟨2⟩⟩ (PortId.principal inner)
+    -- Update resultTy for the arity computation
+    resultTy := ioResultTy
+
+  -- Combine explicit param LAMs with IO eta-expansion LAMs
+  let allLamNodes := lamNodes ++ ioLamNodes
+
+  if allLamNodes.isEmpty then
     -- No parameters: body is the root
-    match bodyPort? with
+    match finalBodyPort with
     | some port => pure port.node
     | none =>
       let era ← LowerM.addNode .era unitTy
       pure era
   else
     -- Wire body to innermost LAM
-    let innermost := lamNodes[lamNodes.size - 1]!
-    let bodyPort := match bodyPort? with
+    let innermost := allLamNodes[allLamNodes.size - 1]!
+    let bodyPort' := match finalBodyPort with
       | some port => port
       | none => ⟨innermost, ⟨1⟩⟩
-    LowerM.connect ⟨innermost, ⟨2⟩⟩ bodyPort
-    pure lamNodes[0]!
+    LowerM.connect ⟨innermost, ⟨2⟩⟩ bodyPort'
+    -- Wire explicit LAMs to IO LAMs
+    if !lamNodes.isEmpty && !ioLamNodes.isEmpty then
+      let lastExplicit := lamNodes[lamNodes.size - 1]!
+      let firstIO := ioLamNodes[0]!
+      LowerM.connect ⟨lastExplicit, ⟨2⟩⟩ (PortId.principal firstIO)
+    pure allLamNodes[0]!
 
 /-- Register type definitions and builds the constructor type registry from type checker globals if provided -/
 def registerTypes (types : Array Soma.Core.TypeDef)
@@ -1524,7 +1603,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
   -- Fourth pass: lower each function body and add to book
   for (_, fn) in functions do
     let root ← lowerFunction fn
-    let arity := fn.params.size
+    let arity ← countLamChainArity root
     let red := if fn.attrs.irreducible then Reducibility.irreducible else .reducible
     let _ ← LowerM.addDefinition fn.name root arity fn.fnType (reducibility := red)
 

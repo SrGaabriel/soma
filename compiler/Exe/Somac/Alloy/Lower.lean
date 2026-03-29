@@ -1720,8 +1720,16 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                   | some argEntry => argEntry.ty
                   | none => Value.vType .zero
                 | none => Value.vType .zero
-              let typeArgs? := def_?.bind fun def_ =>
-                extractCallTypeArgsFromArgs def_.ty #[argType] entry.ty fnEntry.ty ctx
+              let resolvedTypeArgs? := graph.getResolvedTypeArgs fp.node
+              let typeArgs? := match resolvedTypeArgs? with
+                | some resolved =>
+                  let levelBased := def_?.bind fun def_ =>
+                    convertResolvedTypeArgs resolved def_.ty ctx
+                  levelBased.orElse fun _ => convertResolvedTypeArgsDirect resolved ctx
+                | none => none
+              let typeArgs? := typeArgs?.orElse fun _ =>
+                def_?.bind fun def_ =>
+                  extractCallTypeArgsFromArgs def_.ty #[argType] entry.ty fnEntry.ty ctx
               if defArity > 1 then
                 match typeArgs? with
                 | some typeArgs =>
