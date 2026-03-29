@@ -398,7 +398,10 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
   | .app fn arg =>
     let fnTy := typeOfWith bvarCtx globals unfoldTy fn
     let argVal := evalWithGlobals globals arg
-    match fnTy.piApply argVal with
+    -- Try direct piApply, then unfold type aliases
+    let applyResult := fnTy.piApply argVal |>.orElse fun _ =>
+      (unfoldTy fnTy).piApply argVal
+    match applyResult with
     | some codomainTy => codomainTy
     | none =>
       -- Try unfolding type abbreviations

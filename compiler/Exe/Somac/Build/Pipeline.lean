@@ -103,7 +103,7 @@ def loadDependencyAlloyModules (deps : Array (String × System.FilePath))
 /-- Lower a single checked module to Alloy IR -/
 def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Alloy.Module := do
   -- Lambda lifting
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv)
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv) (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv)
 
   -- Lower to Circuit IR
   let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (abbrevEnv := cm.abbrevEnv)
