@@ -1,5 +1,6 @@
 import Somac.Alloy.Func
 import Somac.Alloy.Analysis
+import Somac.Alloy.Monomorphize
 import Std.Data.HashMap
 import Std.Data.HashSet
 
@@ -916,6 +917,7 @@ def closureSpec (m : Module) : Module := Id.run do
     if closureCountAfter >= closureCountBefore then
       break
 
+  module := Somac.Alloy.Monomorphize.deadFunctionElimination module
   return module
 
 end Somac.Alloy.ClosureSpec

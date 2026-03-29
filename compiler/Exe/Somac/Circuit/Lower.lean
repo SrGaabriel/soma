@@ -843,6 +843,12 @@ partial def lowerCoreAppDefault (fn arg : Soma.Core.Expr) (ty : Value)
       else
         lowerCoreAppGeneric fn arg ty
 
+/-- Create a dummy neutral for piApply that uses the Pi codomain's closure env-/
+private partial def dummyNeutralForPi (piTy : Value) (argTy : Value) : Value :=
+  match piTy with
+  | .vPi _ _ name _ cod => Value.vNeutral argTy (.nVar ⟨name, cod.env.level⟩)
+  | _ => Value.vNeutral argTy (.nVar ⟨"_", ⟨0⟩⟩)
+
 /-- Generic application lowering for Core.Expr -/
 partial def lowerCoreAppGeneric (fn arg : Soma.Core.Expr) (ty : Value)
     : LowerM (Option PortId) := do
@@ -858,7 +864,7 @@ partial def lowerCoreAppGeneric (fn arg : Soma.Core.Expr) (ty : Value)
     pure none
   | some argTy =>
     -- Compute the actual result type from the Pi codomain
-    let resultTy := match effectiveFnTy.piApply (Value.vNeutral argTy (.nVar ⟨"_", ⟨0⟩⟩)) with
+    let resultTy := match effectiveFnTy.piApply (dummyNeutralForPi effectiveFnTy argTy) with
       | some codTy => codTy
       | none => ty
     let fnPort? ← lowerCoreExpr fn fnTy

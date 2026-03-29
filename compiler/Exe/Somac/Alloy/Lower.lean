@@ -745,9 +745,28 @@ def buildTyVarMapping (levels : Std.HashSet Nat) : Σ n, TyVarMapping n :=
   ⟨n, ⟨map.1⟩⟩
 
 /-- Build tyVar mapping from an entire definition -/
-def buildTyVarMappingFromDefinition (_graph : CGraph) (def_ : CDefinition) : Σ n, TyVarMapping n :=
+def buildTyVarMappingFromDefinition (graph : CGraph) (def_ : CDefinition) : Σ n, TyVarMapping n :=
   let defLevels := collectTyVarLevels def_.ty
-  buildTyVarMapping defLevels
+  let ⟨n, baseMapping⟩ := buildTyVarMapping defLevels
+  let allLevels := collectAllTyVarLevels graph def_
+  let extraLevels := allLevels.fold (init := #[]) fun acc lvl =>
+    if defLevels.contains lvl then acc else acc.push lvl
+  if extraLevels.isEmpty then
+    ⟨n, baseMapping⟩
+  else
+    let sortedDefLevels := defLevels.toArray.qsort (· < ·)
+    let augmented := extraLevels.foldl (init := baseMapping) fun mapping extraLvl =>
+      let bestIdx := sortedDefLevels.foldl (init := none) fun acc defLvl =>
+        if defLvl < extraLvl then baseMapping.get? defLvl else acc
+      match bestIdx with
+      | some idx => mapping.insert extraLvl idx
+      | none =>
+        match sortedDefLevels[0]?, n with
+        | some l, _ => match baseMapping.get? l with
+          | some idx => mapping.insert extraLvl idx
+          | none => mapping
+        | none, _ => mapping
+    ⟨n, augmented⟩
 
 /-- Extract type arguments for a call to a polymorphic function -/
 partial def extractCallTypeArgs (defTy : Value) (concreteTy : Value)
