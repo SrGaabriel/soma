@@ -214,6 +214,12 @@ def Env.lookupByName (env : Env) (name : String) : Option Value :=
 /-- Current level (next variable will get this level) -/
 def Env.level (env : Env) : DeBruijnLvl := ⟨env.size⟩
 
+/-- Level accessor for closures -/
+def Closure.level? (c : Closure) : Option DeBruijnLvl :=
+  match c with
+  | .term _ env _ => some env.level
+  | .const _ _ => none
+
 /-- Create a closure with no body (placeholder) -/
 def Closure.mkEmpty (name : String) (env : Env) : Closure :=
   let clos : Closure := .term name env (.bvar 0)

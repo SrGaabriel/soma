@@ -843,10 +843,11 @@ partial def lowerCoreAppDefault (fn arg : Soma.Core.Expr) (ty : Value)
       else
         lowerCoreAppGeneric fn arg ty
 
-/-- Create a dummy neutral for piApply that uses the Pi codomain's closure env-/
+/-- Create a dummy neutral for piApply that uses the Pi codomain's closure env -/
 private partial def dummyNeutralForPi (piTy : Value) (argTy : Value) : Value :=
   match piTy with
-  | .vPi _ _ name _ cod => Value.vNeutral argTy (.nVar ⟨name, cod.env.level⟩)
+  | .vPi _ _ name _ cod =>
+    Value.vNeutral argTy (.nVar ⟨name, cod.level?.getD ⟨0⟩⟩)
   | _ => Value.vNeutral argTy (.nVar ⟨"_", ⟨0⟩⟩)
 
 /-- Generic application lowering for Core.Expr -/
@@ -1294,8 +1295,11 @@ def lowerFunction (fn : Soma.Core.TypedFunction) : LowerM NodeId := do
           | _ => false
         | _ => false
       if isErasedImplicit then
-        let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
-        currentTy' := cod.applyPure dummyArg
+        match cod with
+        | .const _ body => currentTy' := body
+        | .term _ env _ =>
+          let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
+          currentTy' := cod.applyPure dummyArg
       else
         done := true
     | _ => done := true

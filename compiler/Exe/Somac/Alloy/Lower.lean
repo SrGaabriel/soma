@@ -415,7 +415,7 @@ partial def collectAppChain (graph : CGraph) (startEntry : CNodeEntry) : Option 
         let arg ← fnEntry.getPort ⟨2⟩
         go fnEntry (revArgs.push arg) (intermediates.push fnPort.node) (fuel - 1)
       | _ =>
-        if revArgs.size >= 2 then
+        if revArgs.size >= 1 then
           some {
             baseNodeId := fnPort.node
             baseEntry := fnEntry
@@ -612,16 +612,16 @@ partial def collectTyVarLevels (val : Value) (acc : Std.HashSet Nat := {}) : Std
     let acc' := collectTyVarLevels dom acc
     match cod with
     | .const _ body => collectTyVarLevels body acc'
-    | .term _ _ _ =>
-      let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
+    | .term _ env _ =>
+      let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
       let nextTy := cod.applyPure dummyArg
       collectTyVarLevels nextTy acc'
   | Value.vSigma _ name fst sndClos =>
     let acc' := collectTyVarLevels fst acc
     match sndClos with
     | .const _ body => collectTyVarLevels body acc'
-    | .term _ _ _ =>
-      let dummyArg := Value.vNeutral fst (.nVar ⟨name, sndClos.env.level⟩)
+    | .term _ env _ =>
+      let dummyArg := Value.vNeutral fst (.nVar ⟨name, env.level⟩)
       let nextTy := sndClos.applyPure dummyArg
       collectTyVarLevels nextTy acc'
   | Value.vPair fst snd =>
@@ -648,8 +648,8 @@ end
 private partial def advanceCodomain (cod : Soma.Core.Closure) (dom : Value) : Value :=
   match cod with
   | .const _ body => body
-  | .term name _ _ =>
-    let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
+  | .term name env _ =>
+    let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
     cod.applyPure dummyArg
 
 /-- Strip all leading implicit type parameters (∀ a : Type) from a Value type -/
@@ -660,6 +660,16 @@ private partial def stripLeadingImplicits (val : Value) : Value :=
       stripLeadingImplicits (advanceCodomain cod dom)
     else val
   | _ => val
+
+/-- Count the number of explicit Pi binders in a Value type -/
+private partial def countExplicitPiBinders (val : Value) : Nat :=
+  match val with
+  | Value.vPi _ binder _ dom cod =>
+    if binder.isImplicit && dom.isType then
+      countExplicitPiBinders (advanceCodomain cod dom)
+    else
+      1 + countExplicitPiBinders (advanceCodomain cod dom)
+  | _ => 0
 
 mutual
 /-- Structurally match a polymorphic Value type against a concrete Value type -/
@@ -831,13 +841,23 @@ private partial def bindResolvedArgsGo (ty : Value) (args : Array Value) (idx : 
     | Value.vPi _ binder _ dom cod =>
       if binder.isImplicit && dom.isType then
         let next := advanceCodomain cod dom
-        let lvl := cod.env.level
-        let bindings' := if levels.contains lvl.lvl then
-          bindings.insert lvl.lvl args[idx]!
-        else bindings
+        let bindings' := match cod.level? with
+          | some lvl =>
+            if levels.contains lvl.lvl then bindings.insert lvl.lvl args[idx]!
+            else bindings
+          | none => bindings
         bindResolvedArgsGo next args (idx + 1) levels bindings'
       else bindings
     | _ => bindings
+
+/-- Convert resolved type arg Values directly to Alloy types -/
+partial def convertResolvedTypeArgsDirect (resolvedArgs : Array Value)
+    (ctx : TypeConvCtx n) : Option (Array (Ty n)) :=
+  let typeArgs := resolvedArgs.filterMap fun v =>
+    let ty := convertValueTypeWithMapping v ctx
+    if ty != .rawPtr then some ty else none
+  if typeArgs.isEmpty then none
+  else some typeArgs
 
 partial def convertResolvedTypeArgs (resolvedArgs : Array Value) (defTy : Value)
     (ctx : TypeConvCtx n) : Option (Array (Ty n)) :=
@@ -888,9 +908,9 @@ partial def extractParamsUsingMapping (ty : Value) (ctx : TypeConvCtx n)
       else
         let paramTy := convertValueTypeWithMapping dom ctx
         extractParamsUsingMapping nextTy ctx typeAcc (valAcc.push (name, paramTy))
-    | .term _ _ _ =>
+    | .term _ env _ =>
       -- Evaluate the dependent codomain with a neutral argument to continue traversal
-      let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
+      let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
       let nextTy := cod.applyPure dummyArg
       if isTypeParam then
         extractParamsUsingMapping nextTy ctx (typeAcc.push name) valAcc
@@ -905,9 +925,9 @@ partial def extractReturnTypeWithMapping (ty : Value) (ctx : TypeConvCtx n) : Ty
   | Value.vPi _ _ _ dom cod =>
     match cod with
     | .const _ nextTy => extractReturnTypeWithMapping nextTy ctx
-    | .term name _ _ =>
+    | .term name env _ =>
       -- Evaluate the dependent codomain with a neutral argument to extract actual return type
-      let dummyArg := Value.vNeutral dom (.nVar ⟨name, cod.env.level⟩)
+      let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
       let nextTy := cod.applyPure dummyArg
       extractReturnTypeWithMapping nextTy ctx
   | other => convertValueTypeWithMapping other ctx
@@ -1533,7 +1553,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                   | .local funcId =>
                     let resolvedTypeArgs? := graph.getResolvedTypeArgs chain.baseNodeId
                     let typeArgs? := match resolvedTypeArgs? with
-                      | some resolved => convertResolvedTypeArgs resolved def_.ty ctx
+                      | some resolved =>
+                        let levelBased := convertResolvedTypeArgs resolved def_.ty ctx
+                        levelBased.orElse fun _ => convertResolvedTypeArgsDirect resolved ctx
                       | none => none
                     let typeArgs? := typeArgs?.orElse fun _ =>
                       extractCallTypeArgsFromArgs def_.ty argTypes entry.ty chain.baseEntry.ty ctx
@@ -1545,7 +1567,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                   | .external name =>
                     let resolvedTypeArgs? := graph.getResolvedTypeArgs chain.baseNodeId
                     let extTypeArgs? := match resolvedTypeArgs? with
-                      | some resolved => convertResolvedTypeArgs resolved def_.ty ctx
+                      | some resolved =>
+                        let levelBased := convertResolvedTypeArgs resolved def_.ty ctx
+                        levelBased.orElse fun _ => convertResolvedTypeArgsDirect resolved ctx
                       | none => none
                     let extTypeArgs? := extTypeArgs?.orElse fun _ =>
                       extractCallTypeArgsFromArgs def_.ty argTypes entry.ty chain.baseEntry.ty ctx
@@ -1567,7 +1591,57 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             else
               -- Arity mismatch: not a saturated call, fall through
               pure none
-          | none => pure none
+          | none =>
+            -- External function: definition not in local graph
+            let externalArity := countExplicitPiBinders chain.baseEntry.ty
+            if externalArity != chain.argPorts.size then
+              -- Partial application: fall through to individual APP handling
+              pure none
+            else
+            -- Saturated call: use REF node's type and resolved type args
+            let mut argVals : Array LocalId := #[]
+            for argPort in chain.argPorts do
+              let val ← lowerOperandWithMap graph argPort funcIdMap
+              argVals := argVals.push val
+            let argOps := argVals.map fun v => Operand.local v
+            let callRetTy := extractReturnTypeWithMapping chain.baseEntry.ty ctx
+            let ls ← StateT.lift get
+            let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
+            let argTypes ← chain.argPorts.mapM fun port =>
+              match graph.getNode port.node with
+              | some argEntry => pure argEntry.ty
+              | none => pure (Value.vType .zero)
+            let resolvedTypeArgs? := graph.getResolvedTypeArgs chain.baseNodeId
+            let typeArgs? := match resolvedTypeArgs? with
+              | some resolved =>
+                -- Try level-based conversion first, then direct conversion as fallback
+                let levelBased := convertResolvedTypeArgs resolved chain.baseEntry.ty ctx
+                levelBased.orElse fun _ => convertResolvedTypeArgsDirect resolved ctx
+              | none => none
+            let typeArgs? := typeArgs?.orElse fun _ =>
+              extractCallTypeArgsFromArgs chain.baseEntry.ty argTypes entry.ty chain.baseEntry.ty ctx
+            let result ← match funcRef with
+              | .local funcId =>
+                match typeArgs? with
+                | some typeArgs =>
+                  StateT.lift (LowerM.emitInst (.callPoly funcId typeArgs argOps callRetTy) callRetTy)
+                | none =>
+                  StateT.lift (LowerM.emitInst (.call funcId argOps callRetTy) callRetTy)
+              | .external name =>
+                match typeArgs? with
+                | some typeArgs =>
+                  StateT.lift (LowerM.emitInst (.callExternPoly name typeArgs argOps callRetTy) callRetTy)
+                | none =>
+                  StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
+              | .externC name =>
+                StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
+              | .intrinsic op =>
+                StateT.lift (LowerM.emitInst (.callIntrinsic op argOps callRetTy) callRetTy)
+              | .primOp _op =>
+                StateT.lift (LowerM.emitInst (.callExtern s!"primop_{_op}" argOps callRetTy) callRetTy)
+            for intermediateId in chain.intermediateAppNodes do
+              modify fun s => { s with results := s.results.insert intermediateId.id result }
+            pure (some result)
         | _ => pure none
       | none => pure none
 

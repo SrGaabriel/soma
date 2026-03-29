@@ -308,7 +308,7 @@ private def rewriteStmtForSpec (stmt : ClosedStmt) (closureDerived : Std.HashSet
           | some envId => #[.local envId] ++ args
           | none => args
         else args
-        let actualRetTy := targetRetTy.getD retTy
+        let actualRetTy := if retTy != .rawPtr then retTy else targetRetTy.getD retTy
         some { stmt with inst := .call targetFuncId callArgs actualRetTy }
       else some stmt
     | _ => some stmt
@@ -410,14 +410,15 @@ def specializeFunc (m : Module) (origFunc : ClosedFunc) (req : SpecRequest)
     fun acc lid ty =>
       if closureDerived.contains lid || lid == closureParamId.id then acc
       else acc.insert lid ty
-  if let some retTy := targetRetTy then
-    for (_, block) in cfg.blocks.toArray do
-      for stmt in block.stmts do
-        match stmt.inst, stmt.result with
-        | .callClosure (.local cloId) _ _, some rid =>
-          if closureDerived.contains cloId.id then
-            cleanLocalTypes := cleanLocalTypes.insert rid.id retTy
-        | _, _ => pure ()
+  for (_, block) in cfg.blocks.toArray do
+    for stmt in block.stmts do
+      match stmt.inst, stmt.result with
+      | .callClosure (.local cloId) _ cloRetTy, some rid =>
+        if closureDerived.contains cloId.id then
+          let bestRetTy := if cloRetTy != .rawPtr then cloRetTy
+            else targetRetTy.getD cloRetTy
+          cleanLocalTypes := cleanLocalTypes.insert rid.id bestRetTy
+      | _, _ => pure ()
 
   let specName := s!"{origFunc.sig.name}$cs_{req.targetFuncId.id}"
   return {
