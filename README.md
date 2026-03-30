@@ -28,9 +28,9 @@ inductive Maybe {a : Type} where
     | Nothing
     | Just (value : a)
 
-def from_maybe {a : Type} : a -> Maybe a -> a
-    | default, Maybe::Nothing => default
-    | _, Maybe::Just x => x
+def from_maybe {a : Type} (default : a) : Maybe a -> a
+    | Maybe::Nothing => default
+    | Maybe::Just x => x
 
 // Row polymorphism: open record types
 def get_x : { x : Int | r } -> Int
@@ -42,7 +42,7 @@ def to_ok (n : Int) : < Ok : Int | r >
 
 // Type classes
 class Functor (f : Type -> Type) where
-    fmap : {a : Type} {b : Type} -> (a -> b) -> f a -> f b
+    fmap : {a : Type} -> {b : Type} -> (a -> b) -> f a -> f b
 
 instance : Functor Maybe where
     def fmap (g : a -> b) : Maybe a -> Maybe b
