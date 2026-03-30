@@ -83,6 +83,10 @@ structure Definition where
   ty : Value
   /-- How the reducer and downstream passes treat this definition -/
   reducibility : Reducibility := .reducible
+  /-- For IO extern functions: the number of C-level arguments (excluding World) -/
+  cArity : Option Nat := none
+  /-- For IO extern functions: the Value type of the C return value (the `a` in `IO a`) -/
+  ioPayloadTy : Option Value := none
   deriving Inhabited
 
 /-- The interaction net graph -/
@@ -255,9 +259,10 @@ def isFullyConnected (g : Graph) : Bool :=
 
 /-- Add a definition to the book -/
 def addDefinition (g : Graph) (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
-    (reducibility : Reducibility := .reducible) : Nat × Graph :=
+    (reducibility : Reducibility := .reducible)
+    (cArity : Option Nat := none) (ioPayloadTy : Option Value := none) : Nat × Graph :=
   let idx := g.book.size
-  let def_ : Definition := { name, root, arity, ty, reducibility }
+  let def_ : Definition := { name, root, arity, ty, reducibility, cArity, ioPayloadTy }
   (idx, { g with book := g.book.push def_ })
 
 /-- Look up a definition by index -/
@@ -431,9 +436,10 @@ def wireToAux (n1 : NodeId) (p1 : PortIdx) (n2 : NodeId) (auxIdx : Nat) : GraphM
 
 /-- Add a definition to the book -/
 def addDefinition (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
-    (reducibility : Reducibility := .reducible) : GraphM Nat := do
+    (reducibility : Reducibility := .reducible)
+    (cArity : Option Nat := none) (ioPayloadTy : Option Value := none) : GraphM Nat := do
   let g ← get
-  let (idx, g') := g.addDefinition name root arity ty reducibility
+  let (idx, g') := g.addDefinition name root arity ty reducibility cArity ioPayloadTy
   set g'
   return idx
 

@@ -1110,6 +1110,19 @@ def lowerCtor (tag : Nat) (_arity : Nat) (fieldVals : Array LocalId) (ty : Ty n)
     let taggedTy : Ty n := .tagged (.prim .u32) #[]
     LowerM.emitInst (.taggedLit tag payload taggedTy) taggedTy
 
+/-- Emit a call to an IO extern function -/
+def emitIOExternCall (name : String) (allArgs : Array Operand) (def_ : CDefinition)
+    (ctx : TypeConvCtx n) : LowerM n LocalId := do
+  let cArity := def_.cArity.getD allArgs.size
+  let cArgs := allArgs.extract 0 cArity
+  let payloadTy := match def_.ioPayloadTy with
+    | some v => convertValueTypeWithMapping v ctx
+    | none => .prim .unit
+  let cResult ← LowerM.emitInst (.callExtern name cArgs payloadTy) payloadTy
+  let worldVal ← LowerM.emitInst (.copy (.const (.unit))) (.prim .unit)
+  let pairTy := extractReturnTypeWithMapping def_.ty ctx
+  lowerCtor 0 2 #[worldVal, cResult] pairTy
+
 /-- Build a nested struct literal for nested pair types -/
 partial def lowerNestedStructLit (fieldVals : Array LocalId) (ty : Ty n) : LowerM n LocalId := do
   match ty with
@@ -1526,7 +1539,10 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                   modify fun s => { s with results := s.results.insert intermediateId.id result }
                 pure (some result)
               | some (Intrinsic.extern name) =>
-                let result ← StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
+                let result ← if def_.cArity.isSome then
+                  StateT.lift (emitIOExternCall name argOps def_ ctx)
+                else
+                  StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
                 for intermediateId in chain.intermediateAppNodes do
                   modify fun s => { s with results := s.results.insert intermediateId.id result }
                 pure (some result)
@@ -1553,6 +1569,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                     | none =>
                       StateT.lift (LowerM.emitInst (.call funcId argOps callRetTy) callRetTy)
                   | .external name =>
+                    if def_.cArity.isSome then
+                      StateT.lift (emitIOExternCall name argOps def_ ctx)
+                    else
                     let resolvedTypeArgs? := graph.getResolvedTypeArgs chain.baseNodeId
                     let extTypeArgs? := match resolvedTypeArgs? with
                       | some resolved =>
@@ -1567,6 +1586,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                     | none =>
                       StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
                   | .externC name =>
+                    if def_.cArity.isSome then
+                      StateT.lift (emitIOExternCall name argOps def_ ctx)
+                    else
                     StateT.lift (LowerM.emitInst (.callExtern name argOps callRetTy) callRetTy)
                   | .intrinsic op =>
                     StateT.lift (LowerM.emitInst (.callIntrinsic op argOps callRetTy) callRetTy)
@@ -1802,38 +1824,33 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 let erasedTy := (← get).expectedResultTy.getD nodeTy
                 StateT.lift (LowerM.emitInst (.copy (.const (.undef erasedTy.close))) erasedTy)
               else
-                -- Detect IO extern pattern: APP(extern_result, world)
-                let isIOExternApp := match fnEntry.node with
+                let ioExternDef? : Option CDefinition := match fnEntry.node with
                   | .app =>
-                    let innerCallsExtern := match fnEntry.getPort ⟨1⟩ with
-                      | some innerFnPort =>
-                        match graph.getNode innerFnPort.node with
-                        | some innerFnEntry =>
-                          match innerFnEntry.node with
-                          | .ref refId | .alo refId =>
-                            match graph.getDefinition refId with
-                            | some def_ => def_.reducibility == .external
-                            | none => false
-                          | _ => false
-                        | none => false
-                      | none => false
-                    innerCallsExtern && (match nodeTy with
-                      | .struct fields => fields.size == 2
-                      | .tagged _ variants => variants.size == 1
-                      | _ => false)
-                  | _ => false
-                -- yes, the == true is necessary lmfao
-                if isIOExternApp == true then
-                  -- IO extern: construct Pair(world, extern_result)
+                    match fnEntry.getPort ⟨1⟩ with
+                    | some innerFnPort =>
+                      -- Try direct ref lookup
+                      let def? := match graph.getNode innerFnPort.node with
+                        | some innerFnEntry => match innerFnEntry.node with
+                          | .ref refId | .alo refId => graph.getDefinition refId
+                          | _ => none
+                        | none => none
+                      -- Try through closure CTOR resolution
+                      let def? := def?.orElse fun _ =>
+                        let bookIdx? := resolveClosureFnBookIdx graph innerFnPort.node ns.anonLamBookIdx
+                        bookIdx?.bind graph.getDefinition
+                      def?.bind fun d => if d.cArity.isSome then some d else none
+                    | none => none
+                  | _ => none
+                match ioExternDef? with
+                | some ioDef =>
+                  -- IO extern: lower the inner APP (produces C result), then wrap in Pair.
+                  -- argVal is the World token, fnVal is the C return value.
                   let fnVal ← lowerOperandWithMap graph fp funcIdMap
-                  match nodeTy with
-                  | .struct _ =>
-                    StateT.lift (LowerM.emitInst
-                      (.structLit #[.local argVal, .local fnVal] nodeTy) nodeTy)
-                  | _ =>
-                    -- Tagged union: use lowerCtor with tag=0
-                    StateT.lift (lowerCtor 0 2 #[argVal, fnVal] nodeTy)
-                else
+                  -- Derive Pair type from the definition's full type for consistency
+                  -- with downstream projFst/projSnd operations.
+                  let pairTy := extractReturnTypeWithMapping ioDef.ty ctx
+                  StateT.lift (lowerCtor 0 2 #[argVal, fnVal] pairTy)
+                | none =>
                   let fnVal ← lowerOperandWithMap graph fp funcIdMap
                   StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
 

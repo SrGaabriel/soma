@@ -304,8 +304,9 @@ def recordTypeArgs (nodeId : NodeId) (typeArgs : Array Value) : LowerM Unit :=
 
 /-- Add a definition to the book -/
 def addDefinition (name : QualifiedName) (root : NodeId) (arity : Nat) (ty : Value)
-    (reducibility : Reducibility := .reducible) : LowerM Nat :=
-  liftGraph (GraphM.addDefinition name root arity ty reducibility)
+    (reducibility : Reducibility := .reducible)
+    (cArity : Option Nat := none) (ioPayloadTy : Option Value := none) : LowerM Nat :=
+  liftGraph (GraphM.addDefinition name root arity ty reducibility cArity ioPayloadTy)
 
 /-- Resolve a variant label to a collision-free tag -/
 def resolveVariantTag (label : String) : LowerM Nat := do
@@ -1561,6 +1562,50 @@ def generatePrimOpBody (op : PrimOp) (fnTy : Value) : LowerM (NodeId × Nat) := 
       let era ← LowerM.addNode .era unitTy
       pure (era, 0)
 
+/-- Advance a closure codomain by substituting a neutral dummy argument -/
+private def advanceCod (cod : Soma.Core.Closure) (dom : Value) : Value :=
+  match cod with
+  | .const _ body => body
+  | .term name env _ =>
+    let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
+    cod.applyPure dummyArg
+
+/-- Analyze a function type to detect the IO extern pattern -/
+private partial def analyzeIOExternType (ty : Value) (worldUid : Soma.Unique)
+    (abbrevEnv : Soma.Dependent.AbbrevEnv) (explicitCount : Nat := 0) : Option (Nat × Value) :=
+  let ty := unfoldValue ty abbrevEnv
+  match ty with
+  | .vPi _ binder _ dom cod =>
+    if binder.isImplicit && dom.isType then
+      -- Skip implicit type parameters (∀ a : Type)
+      analyzeIOExternType (advanceCod cod dom) worldUid abbrevEnv explicitCount
+    else
+      -- Check if this explicit parameter is World
+      let isWorld := match dom with
+        | .vPrimTy .world => true
+        | .vDataType uid _ => uid == worldUid
+        | _ => false
+      if isWorld then
+        -- World must be the last explicit parameter
+        let rest := advanceCod cod dom
+        let restCount := rest.explicitArityFull
+        if restCount == 0 then
+          -- Extract the payload type from the Pair codomain
+          let pairTy := unfoldValue rest abbrevEnv
+          let payloadTy := match pairTy with
+            | .vSigma _ _ _fst sndClos => advanceCod sndClos _fst
+            | .vDataType _ params =>
+              match params with
+              | _ :: sndVal :: _ => sndVal
+              | _ => Value.vPrimTy .unit
+            | other => other
+          some (explicitCount, payloadTy)
+        else
+          none
+      else
+        analyzeIOExternType (advanceCod cod dom) worldUid abbrevEnv (explicitCount + 1)
+  | _ => none
+
 /-- Lower an entire module using typed functions from type checking -/
 def lowerModule (types : Array Soma.Core.TypeDef)
     (typedFunctions : TypedFunctionMap)
@@ -1577,6 +1622,8 @@ def lowerModule (types : Array Soma.Core.TypeDef)
       evalGlobalEnv := g.toGlobalEnvWithClasses instanceEnv
       metaState := metas
     }
+  let worldUid? := globals.bind fun g =>
+    g.wiredIn.getUnique? .typeWorld |>.map (·.name.id)
 
   -- Register global types for type synthesis during lowering.
   for (_, fn) in typedFunctions do
@@ -1646,7 +1693,11 @@ def lowerModule (types : Array Soma.Core.TypeDef)
     | _ =>
       let era ← LowerM.addNode .era unitTy
       let arity := fn.fnType.explicitArityFull
-      let _ ← LowerM.addDefinition fn.name era arity fn.fnType (reducibility := .external)
+      let ioInfo := worldUid?.bind fun wuid => analyzeIOExternType fn.fnType wuid abbrevEnv
+      let _ ← LowerM.addDefinition fn.name era arity fn.fnType
+        (reducibility := .external)
+        (cArity := ioInfo.map (·.1))
+        (ioPayloadTy := ioInfo.map (·.2))
 
   -- Sixth pass: add placeholder definitions for external functions from dependencies
   if let some g := globals then
@@ -1660,7 +1711,11 @@ def lowerModule (types : Array Soma.Core.TypeDef)
     for (_, info) in externals do
       let era ← LowerM.addNode .era unitTy
       let arity := info.type.explicitArityFull
-      let _ ← LowerM.addDefinition info.name era arity info.type (reducibility := .external)
+      let ioInfo := worldUid?.bind fun wuid => analyzeIOExternType info.type wuid abbrevEnv
+      let _ ← LowerM.addDefinition info.name era arity info.type
+        (reducibility := .external)
+        (cArity := ioInfo.map (·.1))
+        (ioPayloadTy := ioInfo.map (·.2))
 
   -- Set root to main function if it exists
   -- Wire an ERA demand node to the root ALO so demand-driven evaluation can proceed
