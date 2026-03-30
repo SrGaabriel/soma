@@ -1,4 +1,4 @@
-![GitHub branch status](https://img.shields.io/github/checks-status/SrGaabriel/soma/main?style=for-the-badge)
+![GitHub branch status](https://img.shields.io/github/actions/workflow/status/SrGaabriel/soma/.github%2Fworkflows%2Fci.yml?style=for-the-badge)
 ![GitHub Repo stars](https://img.shields.io/github/stars/SrGaabriel/soma?style=for-the-badge)
 ![GitHub License](https://img.shields.io/github/license/SrGaabriel/soma?style=for-the-badge)
 
