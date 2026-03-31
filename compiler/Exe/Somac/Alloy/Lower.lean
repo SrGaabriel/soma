@@ -1408,8 +1408,16 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       | none => nodeTy
     StateT.lift (LowerM.emitInst (.copy (.const (.undef eraTy.close))) eraTy)
 
-  | .lam _ =>
-    lowerPort 2
+  | .lam _ => do
+    let ns ← get
+    match ns.anonLamBookIdx.get? nodeId.id with
+    | some bookIdx =>
+      let ls ← StateT.lift get
+      let funcRef := buildFuncRefFromBookRef graph bookIdx (some funcIdMap) ls.ctxIntrinsics
+      let envVal ← StateT.lift (LowerM.emitInst (.copy (.const (.null .rawPtr))) .rawPtr)
+      StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local envVal)) nodeTy)
+    | none =>
+      lowerPort 2
 
   | .app => do
     -- Try saturated multi-argument call via app chain collection
@@ -2511,32 +2519,113 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
   stringTable := st'
   module := { module with strings := stringTable }
 
-  -- Extract anonymous LAMs from closure CTORs as synthetic definitions
+  -- Extract anonymous LAMs as synthetic function definitions
   let mut extGraph := graph
   let mut anonLamBookIdx : Std.HashMap Nat Nat := {}
   let mut seen : Std.HashSet Nat := {}
-  for (_, entry) in graph.nodes.toList do
+
+  let tryExtractLam := fun (lamNodeId : CNodeId) (extG : CGraph) (seenS : Std.HashSet Nat)
+      (lamBook : Std.HashMap Nat Nat) =>
+    if !seenS.contains lamNodeId.id then
+      match extG.getNode lamNodeId with
+      | some fnEntry =>
+        match fnEntry.node with
+        | .lam _ =>
+          let lamArity := countLamChainArity extG lamNodeId
+          if lamArity > 0 then
+            let syntheticName : QualifiedName :=
+              ⟨{ id := 100000 + lamNodeId.id, module := "$anon", original := s!"lambda${lamNodeId.id}" }⟩
+            let (bookIdx, g') := extG.addDefinition syntheticName lamNodeId lamArity fnEntry.ty
+            some (lamNodeId.id, bookIdx, g', lamBook.insert lamNodeId.id bookIdx)
+          else none
+        | _ => none
+      | none => none
+    else none
+
+  -- Collect the set of LAM node IDs that are already definition roots
+  let mut definitionRoots : Std.HashSet Nat := {}
+  for i in [:graph.book.size] do
+    if let some def_ := graph.book[i]? then
+      definitionRoots := definitionRoots.insert def_.root.id
+
+  let mut worklist : Array CNodeId := #[]
+  for (nid, entry) in graph.nodes.toList do
     match entry.node with
+    -- Case 1: closure CTOR with LAM at fn port
     | .ctor tag arity =>
       if tag == closureTag && arity == 2 then
         match entry.getPort ⟨1⟩ with
         | some fnPort =>
-          if !seen.contains fnPort.node.id then
-            match graph.getNode fnPort.node with
-            | some fnEntry =>
-              match fnEntry.node with
-              | .lam _ =>
-                seen := seen.insert fnPort.node.id
-                let lamArity := countLamChainArity graph fnPort.node
-                let syntheticName : QualifiedName :=
-                  ⟨{ id := 100000 + fnPort.node.id, module := "$anon", original := s!"lambda${fnPort.node.id}" }⟩
-                let (bookIdx, g') := extGraph.addDefinition syntheticName fnPort.node lamArity fnEntry.ty
-                extGraph := g'
-                anonLamBookIdx := anonLamBookIdx.insert fnPort.node.id bookIdx
-              | _ => pure ()
-            | none => pure ()
+          match tryExtractLam fnPort.node extGraph seen anonLamBookIdx with
+          | some (lamId, _, g', lamBook') =>
+            seen := seen.insert lamId
+            extGraph := g'
+            anonLamBookIdx := lamBook'
+            worklist := worklist.push ⟨lamId⟩
+          | none => pure ()
         | none => pure ()
+    -- Case 2: any LAM node that is not a definition root and not already extracted
+    | .lam _ =>
+      if !definitionRoots.contains nid then
+        if !seen.contains nid then
+          match tryExtractLam ⟨nid⟩ extGraph seen anonLamBookIdx with
+          | some (lamId, _, g', lamBook') =>
+            seen := seen.insert lamId
+            extGraph := g'
+            anonLamBookIdx := lamBook'
+            worklist := worklist.push ⟨lamId⟩
+          | none => pure ()
     | _ => pure ()
+
+  -- Walk the subgraph of each extracted lambda to find nested closure CTORs and bare LAMs
+  let mut fuel := 10000
+  while worklist.size > 0 && fuel > 0 do
+    fuel := fuel - 1
+    let lamRoot := worklist.back!
+    worklist := worklist.pop
+    let mut bfsQueue : Array CNodeId := #[lamRoot]
+    let mut bfsVisited : Std.HashSet Nat := {}
+    bfsVisited := bfsVisited.insert lamRoot.id
+    let mut bfsFuel := 50000
+    while bfsQueue.size > 0 && bfsFuel > 0 do
+      bfsFuel := bfsFuel - 1
+      let cur := bfsQueue.back!
+      bfsQueue := bfsQueue.pop
+      if let some curEntry := extGraph.getNode cur then
+        -- Check for closure CTOR with unextracted LAM
+        match curEntry.node with
+        | .ctor tag arity =>
+          if tag == closureTag && arity == 2 then
+            if let some fnPort := curEntry.getPort ⟨1⟩ then
+              match tryExtractLam fnPort.node extGraph seen anonLamBookIdx with
+              | some (lamId, _, g', lamBook') =>
+                seen := seen.insert lamId
+                extGraph := g'
+                anonLamBookIdx := lamBook'
+                worklist := worklist.push ⟨lamId⟩
+              | none => pure ()
+        -- Check for APP with bare LAM argument
+        | .app =>
+          if let some argPort := curEntry.getPort ⟨2⟩ then
+            if !bfsVisited.contains argPort.node.id then
+              if let some argEntry := extGraph.getNode argPort.node then
+                match argEntry.node with
+                | .lam _ =>
+                  match tryExtractLam argPort.node extGraph seen anonLamBookIdx with
+                  | some (lamId, _, g', lamBook') =>
+                    seen := seen.insert lamId
+                    extGraph := g'
+                    anonLamBookIdx := lamBook'
+                    worklist := worklist.push ⟨lamId⟩
+                  | none => pure ()
+                | _ => pure ()
+        | _ => pure ()
+        -- Enqueue all connected nodes via ports
+        for portOpt in curEntry.ports do
+          if let some portId := portOpt then
+            if !bfsVisited.contains portId.node.id then
+              bfsVisited := bfsVisited.insert portId.node.id
+              bfsQueue := bfsQueue.push portId.node
 
   -- First pass: build mapping from Circuit book index to sequential Alloy FuncId
   let mut funcIdMap : FuncIdMap := {}
