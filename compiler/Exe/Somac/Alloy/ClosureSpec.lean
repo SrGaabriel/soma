@@ -734,8 +734,12 @@ private def rewriteBlockWithAnalysis (m : Module) (localTypes : Std.HashMap Nat 
             let callArgs := totalArgs[:arity].toArray
             let extraArgs := if totalArgs.size > arity then totalArgs[arity:].toArray else #[]
             if extraArgs.isEmpty then
-              -- Exactly saturated: replace with direct call, keep original result
-              newStmts := newStmts.push { stmt with inst := .call funcId callArgs retTy }
+              let sigRetTy := match m.getFunc funcId with
+                | some sf => match sf.asMono? with
+                  | some f => if f.sig.retTy != .rawPtr then f.sig.retTy else retTy
+                  | none => retTy
+                | none => retTy
+              newStmts := newStmts.push { stmt with inst := .call funcId callArgs sigRetTy }
             else
               -- Over-saturated: direct call returns a closure, then apply remaining args
               let mut curId : LocalId := ⟨freshId⟩

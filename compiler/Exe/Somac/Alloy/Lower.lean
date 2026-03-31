@@ -2049,6 +2049,12 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
     do
 
+    let scrutTy := getPortType 1
+    let isSingleCtor := match scrutTy with
+      | .struct _ => true
+      | .tagged _ variants => variants.size == 1
+      | _ => false
+
     let (_, _thenBlock, elseBlock) ← if scrutIsArray then
       -- Array-backed list: check list.len field (index 1) for Nil/Cons
       StateT.lift do
@@ -2063,6 +2069,13 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         let thenBlock ← LowerM.freshBlockId
         let elseBlock ← LowerM.freshBlockId
         LowerM.finishBlock (.branch (.local cond) thenBlock elseBlock) thenBlock
+        pure (cond, thenBlock, elseBlock)
+    else if isSingleCtor then
+      StateT.lift do
+        let thenBlock ← LowerM.freshBlockId
+        let elseBlock ← LowerM.freshBlockId
+        LowerM.finishBlock (.jump thenBlock) thenBlock
+        let cond ← LowerM.emitInst (.copy (.const (.int 1 .u32))) Ty.bool
         pure (cond, thenBlock, elseBlock)
     else
       StateT.lift (lowerMat expectedTag scrutineeVal)

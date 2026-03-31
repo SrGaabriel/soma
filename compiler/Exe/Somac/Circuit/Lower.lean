@@ -688,7 +688,9 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
 
   | .lam info name _domain body => some <$> lowerCoreLam info name body ty
 
-  | .construct _qn tag args _ => lowerCoreConstruct tag args ty
+  | .construct _qn tag args _ =>
+    let ctorTy ← getExprType e
+    lowerCoreConstruct tag args ctorTy
 
   | .if_ cond then_ else_ => lowerCoreIf cond then_ else_ ty
 
@@ -700,9 +702,13 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
 
   | .record fields => lowerCoreRecord fields ty
 
-  | .tuple elems => lowerCoreTuple elems ty
+  | .tuple elems =>
+    let tupleTy ← getExprType e
+    lowerCoreTuple elems tupleTy
 
-  | .pair fst snd => lowerCorePair fst snd ty
+  | .pair fst snd =>
+    let pairTy ← getExprType e
+    lowerCorePair fst snd pairTy
 
   | .projFst e => lowerCoreProj e 0 ty
 
@@ -728,7 +734,9 @@ partial def lowerCoreExpr (e : Soma.Core.Expr) (ty : Value) : LowerM (Option Por
 
   | .proj _typeName _field idx => some <$> lowerFirstClassProj idx ty
 
-  | .inject label args _ => lowerCoreInject label args ty
+  | .inject label args _ =>
+    let injectTy ← getExprType e
+    lowerCoreInject label args injectTy
 
   | .recordUpdate base updates => lowerCoreRecordUpdate base updates ty
 
