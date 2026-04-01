@@ -437,7 +437,11 @@ def convertOperand (op : Operand) : CodegenM LLVMValue := do
     match ← CodegenM.getLocal id.id with
     | some ref => pure (.local ref)
     | none =>
-      panic! s!"CODEGEN BUG: local %{id.id} not found"
+      let s ← get
+      let fname := match s.currentFunc with
+        | some f => f.sig.name
+        | none => "unknown"
+      panic! s!"CODEGEN BUG: local %{id.id} not found in {fname}"
   | .const c =>
     match c with
     | .int val t =>
@@ -2361,6 +2365,10 @@ def lowerFuncWithName (func : ClosedFunc) (name : String) : CodegenM LLVMFunc :=
 
     -- Lower all blocks
     let blockOrder := cfg.reversePostorder
+    let reachable : Std.HashSet Nat := blockOrder.foldl (fun s bid => s.insert bid.id) {}
+    for block in cfg.allBlocks do
+      if !reachable.contains block.id.id then
+        CodegenM.markBlockDead block.id.id
     for blockId in blockOrder do
       if let some block := cfg.getBlock blockId then
         lowerBlock block func.sig.retTy (if isMain then some .i32 else none)
