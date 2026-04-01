@@ -909,6 +909,15 @@ partial def extractParamsUsingMapping (ty : Value) (ctx : TypeConvCtx n)
 
 /-- Extract the return type from a function type (Pi chain) -/
 partial def extractReturnTypeWithMapping (ty : Value) (ctx : TypeConvCtx n) : Ty n :=
+  let ty := match ty with
+    | Value.vDataType dId _ =>
+      if ctx.primTypes.contains dId then ty
+      else match ctx.inductives.get? ⟨dId⟩ with
+        | some _ => ty
+        | none => match Somac.Circuit.Lower.unfoldValue ty ctx.abbrevEnv with
+          | .vDataType _ _ => ty
+          | unfolded => unfolded
+    | _ => ty
   match ty with
   | Value.vPi _ _ _ dom cod =>
     match cod with
