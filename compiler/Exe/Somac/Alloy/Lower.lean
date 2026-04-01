@@ -1057,8 +1057,10 @@ partial def listElemSizeFromValueType (valTy : Value) (ctx : TypeConvCtx n) (ptr
 
 /-- State maintained during graph traversal -/
 structure NodeState (n : Nat) where
-  /-- Nodes currently being processed (for cycle detection) -/
+  /-- Nodes currently being lowered (used by ERA handler to avoid erasing in-flight values) -/
   processing : Std.HashSet Nat := {}
+  /-- Traversal depth counter -/
+  depth : Nat := 0
   /-- Cached results for nodes (principal port values) -/
   results : Std.HashMap Nat LocalId := {}
   /-- LAM node ID → parameter index mapping -/
@@ -1083,10 +1085,11 @@ structure NodeState (n : Nat) where
 
 namespace NodeState
 
-def snapshotResults (s : NodeState n) : Std.HashMap Nat LocalId := s.results
+def snapshotResults (s : NodeState n) : Std.HashMap Nat LocalId × Std.HashSet Nat :=
+  (s.results, s.processing)
 
-def restoreResults (s : NodeState n) (snapshot : Std.HashMap Nat LocalId) : NodeState n :=
-  { s with results := snapshot }
+def restoreResults (s : NodeState n) (snapshot : Std.HashMap Nat LocalId × Std.HashSet Nat) : NodeState n :=
+  { s with results := snapshot.1, processing := snapshot.2 }
 
 /-- Build a type conversion context from this node state -/
 def toTypeConvCtx (s : NodeState n) : TypeConvCtx n :=
@@ -1330,13 +1333,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   if let some result := ns.results.get? nodeId.id then
     return result
 
-  -- Cycles in the interaction net graph arise from erased type-level or structural references that are never acessed
-  if ns.processing.contains nodeId.id then
-    let ty := ns.expectedResultTy.getD valueType
-    return ← StateT.lift (LowerM.emitInst (.copy (.const (.undef ty.close))) ty)
+  -- Depth limit: interaction nets are acyclic, so unbounded depth means a bug
+  if ns.depth > 500 then
+    panic! s!"ALLOY BUG: traversal depth exceeded 500 at node {nodeId.id} — possible malformed graph"
 
-  -- Mark as processing
-  modify fun s => { s with processing := s.processing.insert nodeId.id }
+  modify fun s => { s with processing := s.processing.insert nodeId.id, depth := s.depth + 1 }
 
   -- Missing node: should not happen in well-formed graphs
   let some entry := graph.getNode nodeId | do
@@ -2427,6 +2428,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
   modify fun ns => { ns with
     results := ns.results.insert nodeId.id result
     processing := ns.processing.erase nodeId.id
+    depth := ns.depth - 1
   }
   pure result
 
