@@ -1733,7 +1733,35 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               let erasedTy := (← get).expectedResultTy.getD nodeTy
               StateT.lift (LowerM.emitInst (.copy (.const (.undef erasedTy.close))) erasedTy)
             | .lam _ =>
-              lowerNodeWithMap graph fp.node funcIdMap
+              let ns' ← get
+              if ns'.lamParams.contains fp.node.id then
+                let fnVal : LocalId := ⟨ns'.lamParams.get! fp.node.id⟩
+                StateT.lift (LowerM.emitInst (.callClosure (.local fnVal) #[.local argVal] nodeTy) nodeTy)
+              else
+                -- Check if this LAM is an anonymous lambda extracted to a separate definition
+                match ns'.anonLamBookIdx.get? fp.node.id with
+                | some bookIdx =>
+                  let ls ← StateT.lift get
+                  let funcRef := buildFuncRefFromBookRef graph bookIdx (some funcIdMap) ls.ctxIntrinsics
+                  -- Single-arg call to the extracted lambda
+                  let def_? := graph.getDefinition bookIdx
+                  let defArity := match def_? with | some d => d.arity | none => 1
+                  if defArity == 1 then
+                    let callRetTy := match def_? with
+                      | some d => extractReturnTypeWithMapping d.ty ctx
+                      | none => nodeTy
+                    match funcRef with
+                    | .local funcId =>
+                      StateT.lift (LowerM.emitInst (.call funcId #[.local argVal] callRetTy) callRetTy)
+                    | .external name =>
+                      StateT.lift (LowerM.emitInst (.callExtern name #[.local argVal] callRetTy) callRetTy)
+                    | _ =>
+                      StateT.lift (LowerM.emitInst (.call (FuncId.mk 0) #[.local argVal] nodeTy) nodeTy)
+                  else
+                    -- Partial application
+                    StateT.lift (LowerM.emitInst (.makeClosure funcRef (.local argVal)) nodeTy)
+                | none =>
+                  lowerNodeWithMap graph fp.node funcIdMap
             | .ref refId | .alo refId =>
               let def_? := graph.getDefinition refId
               let defArity := match def_? with

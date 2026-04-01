@@ -1359,15 +1359,16 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
   | .copy src =>
     match src with
     | .const (.undef ty) =>
-      -- Emit a dummy of the correct type for undef copies
       let llvmTy := convertTy ty
       let ref ← CodegenM.withFuncBuilder do
         if llvmTy == .ptr then
           FuncBuilder.asLocalRef .ptr (.const .null)
         else if llvmTy.isInt then
           FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
-        else
-          FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
+        else do
+          -- Aggregate types (structs, tagged unions): alloca + load to produce undef local
+          let allocaRef ← FuncBuilder.emit (.alloca llvmTy none none)
+          FuncBuilder.emit (.load llvmTy (.local allocaRef) none)
       pure (some (ref, ty))
     | .const (.string idx len) =>
       -- Fat pointer struct: build via insertvalue from undef
@@ -1852,7 +1853,11 @@ def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := 
     if llvmIncoming.size == 0 then
       let ref ← CodegenM.withFuncBuilder do
         if llvmTy == .ptr then FuncBuilder.asLocalRef .ptr (.const .null)
-        else FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
+        else if llvmTy.isInt then FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
+        else do
+          -- Dead block with aggregate type: alloca + load undef
+          let allocaRef ← FuncBuilder.emit (.alloca llvmTy none none)
+          FuncBuilder.emit (.load llvmTy (.local allocaRef) none)
       pure (some (ref, ty))
     else if llvmIncoming.size == 1 then
       let (val, _) := llvmIncoming[0]!
@@ -2304,8 +2309,9 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) (llvmRetOverride : Optio
           FuncBuilder.asLocalRef .ptr (.const .null)
         else if llvmTy.isInt then
           FuncBuilder.add llvmTy (intVal 0 (llvmTy.intBits.getD 64)) (intVal 0 (llvmTy.intBits.getD 64))
-        else
-          FuncBuilder.add .i64 (intVal 0 64) (intVal 0 64)
+        else do
+          let allocaRef ← FuncBuilder.emit (.alloca llvmTy none none)
+          FuncBuilder.emit (.load llvmTy (.local allocaRef) none)
       CodegenM.mapLocal alloyLocal.id dummyRef tyFromAlloy
 
     if (← CodegenM.consumeNoReturn) then
