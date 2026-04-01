@@ -101,7 +101,12 @@ partial def nf (demandPort : PortId) : ReduceM NodeId := do
         return ← nf demandPort
       else
         nfChildren nf nid entry.node
-    | _ => nfChildren nf nid entry.node
+        unless (← ReduceM.getGraph).nodes.contains nid.id do
+          return ← nf demandPort
+    | _ =>
+      nfChildren nf nid entry.node
+      unless (← ReduceM.getGraph).nodes.contains nid.id do
+        return ← nf demandPort
   pure nid
 
 end Somac.Circuit.Reduce
