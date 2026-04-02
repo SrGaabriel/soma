@@ -1596,7 +1596,7 @@ private partial def analyzeIOExternType (ty : Value) (worldUid : Soma.Unique)
       if isWorld then
         -- World must be the last explicit parameter
         let rest := advanceCod cod dom
-        let restCount := rest.explicitArityFull
+        let restCount := rest.explicitArityFull (some (unfoldValue · abbrevEnv))
         if restCount == 0 then
           -- Extract the payload type from the Pair codomain
           let pairTy := unfoldValue rest abbrevEnv
@@ -1650,7 +1650,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
         let ctx ← LowerM.getCtx
         let ctorQN := info.name
         if ctx.lookupCtor ctorQN |>.isNone then
-          let arity := info.type.explicitArityFull
+          let arity := info.type.explicitArityFull (some (unfoldValue · abbrevEnv))
           LowerM.modifyCtx fun ctx =>
             ctx.registerCtor ctorQN ctorQN info.ctorTag arity
 
@@ -1700,7 +1700,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
       let _ ← LowerM.addDefinition fn.name root arity fn.fnType
     | _ =>
       let era ← LowerM.addNode .era unitTy
-      let arity := fn.fnType.explicitArityFull
+      let arity := fn.fnType.explicitArityFull (some (unfoldValue · abbrevEnv))
       let ioInfo := worldUid?.bind fun wuid => analyzeIOExternType fn.fnType wuid abbrevEnv
       let _ ← LowerM.addDefinition fn.name era arity fn.fnType
         (reducibility := .external)
@@ -1718,7 +1718,7 @@ def lowerModule (types : Array Soma.Core.TypeDef)
         && info.origin != .typeDecl && info.origin != .projection
     for (_, info) in externals do
       let era ← LowerM.addNode .era unitTy
-      let arity := info.type.explicitArityFull
+      let arity := info.type.explicitArityFull (some (unfoldValue · abbrevEnv))
       let ioInfo := worldUid?.bind fun wuid => analyzeIOExternType info.type wuid abbrevEnv
       let _ ← LowerM.addDefinition info.name era arity info.type
         (reducibility := .external)

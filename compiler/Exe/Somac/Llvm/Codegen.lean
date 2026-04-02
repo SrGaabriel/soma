@@ -1339,9 +1339,15 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
 def lowerInst (inst : ClosedInst) : CodegenM (Option (LocalRef × ClosedTy)) := do
   match inst with
   | .binOp op lhs rhs ty =>
-    let lhsVal ← convertOperand lhs
-    let rhsVal ← convertOperand rhs
-    let ref ← convertBinOp op ty lhsVal rhsVal
+    let targetLlvmTy := convertTy ty
+    let (lhsTy, lhsVal) ← convertOperandWithTy lhs
+    let (rhsTy, rhsVal) ← convertOperandWithTy rhs
+    -- Coerce operands to matching types when widths differ
+    let lhsCoerced ← if lhsTy == targetLlvmTy then pure lhsVal
+                      else coerceValue lhsTy targetLlvmTy lhsVal
+    let rhsCoerced ← if rhsTy == targetLlvmTy then pure rhsVal
+                      else coerceValue rhsTy targetLlvmTy rhsVal
+    let ref ← convertBinOp op ty lhsCoerced rhsCoerced
     let resultTy := if op.isComparison then .prim .bool else ty
     pure (some (ref, resultTy))
 
