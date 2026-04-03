@@ -75,6 +75,8 @@ private def wiredRoleToFunc? : Soma.Dependent.WiredRole → Option WiredFunc
   | .listAny => some .listAny
   | .listAll => some .listAll
   | .listReverse => some .listReverse
+  | .pureIO => some .pureIO
+  | .bindIO => some .bindIO
   | _ => none
 
 /-- Build a mapping from function Uniques to WiredFunc roles -/
@@ -99,12 +101,39 @@ def listElemValueType (v : Soma.Core.Value) (primTypes : PrimTypeRegistry) : Opt
     else none
   | _ => none
 
+/-- Configuration for IO erasure during Alloy lowering -/
+structure ErasureCtx where
+  /-- Unique ID of the World type, for erasing phantom IO tokens -/
+  worldUid? : Option Nat := none
+  /-- Unique ID of the Pair type constructor, for erasing IO return pairs -/
+  pairUid? : Option Nat := none
+  deriving Inhabited
+
+namespace ErasureCtx
+
+/-- Check if a Value type represents World (the phantom IO token) -/
+def isWorld (ctx : ErasureCtx) (v : Soma.Core.Value) : Bool :=
+  match v with
+  | .vPrimTy .world => true
+  | .vDataType uid _ => ctx.worldUid?.any (· == uid.id)
+  | _ => false
+
+/-- Check if a DataType with the given params represents `Pair World a` -/
+def isIOPair (ctx : ErasureCtx) (uid : Soma.Unique) (params : List Soma.Core.Value) : Bool :=
+  ctx.pairUid?.any (· == uid.id) && match params with
+    | fst :: _ :: _ => ctx.isWorld fst
+    | _ => false
+
+end ErasureCtx
+
 /-- Combined context for type conversion during Alloy lowering -/
 structure TypeConvCtx (n : Nat) where
   tyVars : TyVarMapping n
   primTypes : PrimTypeRegistry
   inductives : Std.HashMap QualifiedName Soma.Dependent.InductiveMeta := {}
   abbrevEnv : Soma.Dependent.AbbrevEnv := {}
+  /-- IO erasure configuration (World/Pair detection) -/
+  erasure : ErasureCtx := {}
   deriving Inhabited
 
 /-- Build the primitive type registry from the wired-in type registry -/
@@ -536,7 +565,6 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
       match ctx.inductives.get? ⟨dId⟩ with
       | some indInfo =>
         if indInfo.kind == .record && indInfo.ctors.size == 1 then
-          -- Record type (single constructor): produce flat struct with named fields
           let ctor := indInfo.ctors[0]!
           let fields := extractCtorFieldTypes ctor.type ctx
           let fieldNames := indInfo.fieldNames
@@ -651,6 +679,40 @@ private partial def advanceCodomain (cod : Soma.Core.Closure) (dom : Value) : Va
   | .term name env _ =>
     let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
     cod.applyPure dummyArg
+
+/-- Strip arguments at World parameter positions from a function call's arg list -/
+private partial def stripWorldCallArgs (targetTy : Value) (args : Array Operand)
+    (erasure : ErasureCtx) : Array Operand :=
+  if erasure.worldUid?.isNone then args
+  else Id.run do
+    let mut filtered : Array Operand := #[]
+    let mut currentTy := targetTy
+    let mut argIdx := 0
+    for _ in [:args.size + 20] do
+      if argIdx >= args.size then break
+      match currentTy with
+      | Value.vPi _ binder _ dom cod =>
+        if binder.isImplicit && dom.isType then
+          -- Implicit type param: skip (no arg consumed)
+          currentTy := advanceCodomain cod dom
+        else if erasure.isWorld dom then
+          -- World param: consume arg but don't include in output
+          argIdx := argIdx + 1
+          currentTy := advanceCodomain cod dom
+        else
+          -- Regular param: keep
+          filtered := filtered.push args[argIdx]!
+          argIdx := argIdx + 1
+          currentTy := advanceCodomain cod dom
+      | _ =>
+        -- No more Pi types: pass remaining args through
+        filtered := filtered.push args[argIdx]!
+        argIdx := argIdx + 1
+    -- Pass through any remaining args (shouldn't happen in well-formed code)
+    while argIdx < args.size do
+      filtered := filtered.push args[argIdx]!
+      argIdx := argIdx + 1
+    filtered
 
 /-- Strip all leading implicit type parameters (∀ a : Type) from a Value type -/
 private partial def stripLeadingImplicits (val : Value) : Value :=
@@ -889,18 +951,19 @@ partial def extractParamsUsingMapping (ty : Value) (ctx : TypeConvCtx n)
   match ty with
   | Value.vPi _ binder name dom cod =>
     let isTypeParam := binder.isImplicit && dom.isType
+    -- IO erasure: skip World parameters entirely
+    let isWorldParam := ctx.erasure.isWorld dom
     match cod with
     | .const _ nextTy =>
-      if isTypeParam then
+      if isTypeParam || isWorldParam then
         extractParamsUsingMapping nextTy ctx (typeAcc.push name) valAcc
       else
         let paramTy := convertValueTypeWithMapping dom ctx
         extractParamsUsingMapping nextTy ctx typeAcc (valAcc.push (name, paramTy))
     | .term _ env _ =>
-      -- Evaluate the dependent codomain with a neutral argument to continue traversal
       let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
       let nextTy := cod.applyPure dummyArg
-      if isTypeParam then
+      if isTypeParam || isWorldParam then
         extractParamsUsingMapping nextTy ctx (typeAcc.push name) valAcc
       else
         let paramTy := convertValueTypeWithMapping dom ctx
@@ -1065,6 +1128,8 @@ structure NodeState (n : Nat) where
   results : Std.HashMap Nat LocalId := {}
   /-- LAM node ID → parameter index mapping -/
   lamParams : Std.HashMap Nat Nat := {}
+  /-- LAM node IDs for erased World parameters (IO erasure) -/
+  erasedWorldLams : Std.HashSet Nat := {}
   /-- Type variable level → index mapping -/
   tyVarMapping : TyVarMapping n
   /-- Primitive type registry for resolving wired-in types -/
@@ -1081,6 +1146,8 @@ structure NodeState (n : Nat) where
   ptrBytes : Nat := 8
   /-- Type abbreviation environment for unfolding parameterized aliases -/
   abbrevEnv : Soma.Dependent.AbbrevEnv := {}
+  /-- IO erasure configuration (World/Pair detection) -/
+  erasure : ErasureCtx := {}
   deriving Inhabited
 
 namespace NodeState
@@ -1093,7 +1160,7 @@ def restoreResults (s : NodeState n) (snapshot : Std.HashMap Nat LocalId × Std.
 
 /-- Build a type conversion context from this node state -/
 def toTypeConvCtx (s : NodeState n) : TypeConvCtx n :=
-  { tyVars := s.tyVarMapping, primTypes := s.primTypes, inductives := s.inductives, abbrevEnv := s.abbrevEnv }
+  { tyVars := s.tyVarMapping, primTypes := s.primTypes, inductives := s.inductives, abbrevEnv := s.abbrevEnv, erasure := s.erasure }
 
 end NodeState
 
@@ -1192,6 +1259,13 @@ def lowerMat (expectedTag : Nat) (scrutinee : LocalId) : LowerM n (LocalId × Bl
 def lowerString (stringIdx : Nat) (len : Nat) : LowerM n LocalId := do
   LowerM.emitInst (.copy (.const (.string stringIdx len))) Ty.string
 
+/-- Emit a constructor or record value, dispatching by target type -/
+partial def emitCtorOrRecord (tag : Nat) (fieldVals : Array LocalId) (ty : Ty n)
+    : StateT (NodeState n) (LowerM n) LocalId :=
+  match ty with
+  | .struct _ => StateT.lift (lowerNestedStructLit fieldVals ty)
+  | _ => StateT.lift (lowerCtor tag fieldVals.size fieldVals ty)
+
 /-- Mapping from Circuit book index to Alloy FuncId -/
 abbrev FuncIdMap := Std.HashMap Nat FuncId
 
@@ -1282,6 +1356,9 @@ partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : F
       -- These are structural connections that shouldn't be followed, produce undef
       let ty := expectedTy.orElse (fun _ => ns.expectedResultTy) |>.getD (.prim .unit)
       return ← StateT.lift (LowerM.emitInst (.copy (.const (.undef ty.close))) ty)
+
+  if ns.erasedWorldLams.contains port.node.id then
+    return ← StateT.lift (LowerM.emitInst (.copy (.const (.unit))) (.prim .unit))
 
   -- Propagate expected type from consumer to this node
   if let some ty := expectedTy then
@@ -1454,7 +1531,9 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               for argPort in chain.argPorts do
                 let val ← lowerOperandWithMap graph argPort funcIdMap
                 argVals := argVals.push val
-              let argOps := argVals.map fun v => Operand.local v
+              let rawArgOps := argVals.map fun v => Operand.local v
+              let defTy := match def_? with | some d => d.ty | none => chain.baseEntry.ty
+              let argOps := stripWorldCallArgs defTy rawArgOps (← get).erasure
               let ls ← StateT.lift get
               let funcRef := buildFuncRefFromBookRef graph bookIdx (some funcIdMap) ls.ctxIntrinsics
               if chain.argPorts.size == defArity then
@@ -1524,9 +1603,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             for argPort in chain.argPorts do
               let val ← lowerOperandWithMap graph argPort funcIdMap
               fieldVals := fieldVals.push val
-            let result ← match nodeTy with
-              | .struct _ => StateT.lift (lowerNestedStructLit fieldVals nodeTy)
-              | _ => StateT.lift (lowerCtor tag fieldVals.size fieldVals nodeTy)
+            let result ← emitCtorOrRecord tag fieldVals nodeTy
             for intermediateId in chain.intermediateAppNodes do
               modify fun s => { s with results := s.results.insert intermediateId.id result }
             pure (some result)
@@ -1539,7 +1616,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
               for argPort in chain.argPorts do
                 let val ← lowerOperandWithMap graph argPort funcIdMap
                 argVals := argVals.push val
-              let argOps := argVals.map fun v => Operand.local v
+              let argOps := stripWorldCallArgs def_.ty (argVals.map fun v => Operand.local v) (← get).erasure
 
               let callRetTy := extractReturnTypeWithMapping chain.baseEntry.ty ctx
 
@@ -1631,7 +1708,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
             for argPort in chain.argPorts do
               let val ← lowerOperandWithMap graph argPort funcIdMap
               argVals := argVals.push val
-            let argOps := argVals.map fun v => Operand.local v
+            let argOps := stripWorldCallArgs chain.baseEntry.ty (argVals.map fun v => Operand.local v) (← get).erasure
             let callRetTy := extractReturnTypeWithMapping chain.baseEntry.ty ctx
             let ls ← StateT.lift get
             let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics
@@ -1859,9 +1936,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                     let val ← StateT.lift (LowerM.emitPanic (.prim .i64) s!"CTOR-APP: missing CTOR field {i}")
                     fieldVals := fieldVals.push val
                 fieldVals := fieldVals.push argVal
-                match nodeTy with
-                | .struct _ => StateT.lift (lowerNestedStructLit fieldVals nodeTy)
-                | _ => StateT.lift (lowerCtor tag fieldVals.size fieldVals nodeTy)
+                emitCtorOrRecord tag fieldVals nodeTy
             | _ =>
               -- Regular closure call: lower the function and use callClosure
               let fnNodeTy := getNodeTypeWithMapping fnEntry ctx
@@ -1890,10 +1965,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                 match ioExternDef? with
                 | some ioDef =>
                   -- IO extern: lower the inner APP (produces C result), then wrap in Pair.
-                  -- argVal is the World token, fnVal is the C return value.
                   let fnVal ← lowerOperandWithMap graph fp funcIdMap
-                  -- Derive Pair type from the definition's full type for consistency
-                  -- with downstream projFst/projSnd operations.
                   let pairTy := extractReturnTypeWithMapping ioDef.ty ctx
                   StateT.lift (lowerCtor 0 2 #[argVal, fnVal] pairTy)
                 | none =>
@@ -1986,13 +2058,7 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
         let fieldVal ← lowerPort (i + 1)
         fieldVals := fieldVals.push fieldVal
       -- Check if target type is struct (for tuples/pairs) or tagged union (for ADTs)
-      match nodeTy with
-      | .struct _ =>
-        -- Create struct literal, handling nested pair types
-        StateT.lift (lowerNestedStructLit fieldVals nodeTy)
-      | _ =>
-        -- Create tagged union (for ADTs)
-        StateT.lift (lowerCtor tag arity fieldVals nodeTy)
+      emitCtorOrRecord tag fieldVals nodeTy
 
   | .proj fieldIdx => do
     let recordVal ← lowerPort 1
@@ -2064,18 +2130,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
       StateT.lift (LowerM.emitInst (.getPayload (.local recordVal) 0 fieldIdx nodeTy) nodeTy)
 
   | .record numFields => do
-    -- Record: check if target type is struct or tagged union
     let mut fieldVals : Array LocalId := #[]
     for i in [:numFields] do
       let fieldVal ← lowerPort (i + 1)
       fieldVals := fieldVals.push fieldVal
-    match nodeTy with
-    | .struct _ =>
-      -- Create struct literal, handling nested pair types
-      StateT.lift (lowerNestedStructLit fieldVals nodeTy)
-    | _ =>
-      -- Create tagged union with tag 0
-      StateT.lift (lowerCtor 0 numFields fieldVals nodeTy)
+    emitCtorOrRecord 0 fieldVals nodeTy
 
   | .mat expectedTag => do
     let matResultTy := extractReturnTypeWithMapping entry.ty ctx
@@ -2456,26 +2515,36 @@ def countLamChainArity (graph : CGraph) (root : CNodeId) : Nat := Id.run do
 
 /-- Collect LAM chain information for function parameters -/
 def collectLamChain (graph : CGraph) (root : CNodeId) (arity : Nat)
-    : CNodeId × Std.HashMap Nat Nat := Id.run do
+    (erasure : ErasureCtx := {})
+    : CNodeId × Std.HashMap Nat Nat × Std.HashSet Nat := Id.run do
   let mut current := root
   let mut lamParams : Std.HashMap Nat Nat := {}
+  let mut erasedWorldLams : Std.HashSet Nat := {}
   let mut visited : Std.HashSet Nat := {}
+  let mut paramIdx : Nat := 0
 
-  for i in [:arity] do
+  for _ in [:arity] do
     if visited.contains current.id then break
     visited := visited.insert current.id
     if let some entry := graph.getNode current then
       match entry.node with
       | .lam _ =>
-        -- Record this LAM node as parameter i
-        lamParams := lamParams.insert current.id i
-        -- Move to body
+        -- Check if this LAM's parameter type is World (IO erasure)
+        let isWorldLam := match entry.ty.piDomain? with
+          | some dom => erasure.isWorld dom
+          | none => false
+        if isWorldLam then
+          erasedWorldLams := erasedWorldLams.insert current.id
+        else
+          lamParams := lamParams.insert current.id paramIdx
+          paramIdx := paramIdx + 1
+        -- Move to body in either case
         if let some bodyPort := entry.getPort ⟨2⟩ then
           current := bodyPort.node
       | _ => break
     else break
 
-  (current, lamParams)
+  (current, lamParams, erasedWorldLams)
 
 /-- Lower a definition with a specific type parameter count n -/
 def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
@@ -2485,8 +2554,9 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (panicMsgIdx : Nat := 0)
     (anonLamBookIdx : Std.HashMap Nat Nat := {})
     (wiredRole : Option WiredFunc := none)
-    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : Func n :=
-  let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes, inductives, abbrevEnv }
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
+    (erasure : ErasureCtx := {}) : Func n :=
+  let ctx : TypeConvCtx n := { tyVars := tyVarMapping, primTypes, inductives, abbrevEnv, erasure }
   let (explicitTypeParams, paramInfos) := extractParamsUsingMapping def_.ty ctx
   let numTyVars := n
   let typeParamNames := if explicitTypeParams.size >= numTyVars then
@@ -2497,7 +2567,9 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
         s!"T{explicitTypeParams.size + i}"
       explicitTypeParams ++ extra
   let defaultTy : Ty n := .prim .i64
-  let params := (List.range def_.arity).toArray.map fun i =>
+  -- Use Alloy param count (which skips World params), not Circuit arity
+  let alloyArity := paramInfos.size
+  let params := (List.range alloyArity).toArray.map fun i =>
     if h : i < paramInfos.size then
       let (pname, pty) := paramInfos[i]
       { id := ⟨i⟩, name := pname, ty := pty : Param n }
@@ -2507,17 +2579,103 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
   let returnsUnit := sig.retTy == .prim .unit
 
   let (_, func) := LowerM.run' funcId sig intrinsics panicMsgIdx do
+    match wiredRole with
+    | some .pureIO =>
+      if h : params.size > 0 then
+        let paramId := params[0].id
+        if returnsUnit then LowerM.terminate .retUnit
+        else LowerM.terminate (.ret (.local paramId))
+      else
+        LowerM.terminate .retUnit
+    | some .bindIO =>
+      if h : params.size >= 2 then
+        let mParam := params[0]
+        let fParam := params[1]
+        -- Step 1: Get 'a' value from m
+        let aVal ← match mParam.ty with
+          | .closure _ _ =>
+            let unitVal ← LowerM.emitInst (.copy (.const .unit)) (.prim .unit)
+            let mRetTy := match mParam.ty with
+              | .closure _ ret => ret
+              | _ => sig.retTy
+            LowerM.emitInst (.callClosure (.local mParam.id) #[.local unitVal] mRetTy) mRetTy
+          | _ => pure mParam.id
+        let fResultTy := match fParam.ty with
+          | .closure _ ret => ret
+          | _ => sig.retTy
+        let fResult ← LowerM.emitInst (.callClosure (.local fParam.id) #[.local aVal] fResultTy) fResultTy
+        let bVal ← match fResultTy with
+          | .closure _ _ =>
+            let unitVal2 ← LowerM.emitInst (.copy (.const .unit)) (.prim .unit)
+            let innerRetTy := match fResultTy with
+              | .closure _ ret => ret
+              | _ => sig.retTy
+            LowerM.emitInst (.callClosure (.local fResult) #[.local unitVal2] innerRetTy) innerRetTy
+          | _ => pure fResult
+        if returnsUnit then LowerM.terminate .retUnit
+        else LowerM.terminate (.ret (.local bVal))
+      else
+        LowerM.terminate .retUnit
+    | _ =>
+    -- Normal lowering path: compile the Circuit IR body
     if def_.arity == 0 then
-      let initState : NodeState n := { tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx, abbrevEnv }
+      let initState : NodeState n := { tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx, abbrevEnv, erasure }
       let (result, _) ← StateT.run (lowerNodeWithMap graph def_.root funcIdMap) initState
       if returnsUnit then LowerM.terminate .retUnit
       else LowerM.terminate (.ret (.local result))
     else
-      let (bodyNode, lamParams) := collectLamChain graph def_.root def_.arity
-      let initState : NodeState n := { lamParams, tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx, abbrevEnv }
-      let (result, _) ← StateT.run (lowerNodeWithMap graph bodyNode funcIdMap) initState
-      if returnsUnit then LowerM.terminate .retUnit
-      else LowerM.terminate (.ret (.local result))
+      let (bodyNode, lamParams, erasedWorldLams) := collectLamChain graph def_.root def_.arity erasure
+      -- IO erasure: if the body node produces a closure (IO thunk) but the erased
+      -- return type doesn't match, force the thunk by calling it with unit
+      let bodyIsIOThunk := match graph.getNode bodyNode with
+        | some bodyEntry =>
+          let bodyAlTy := getNodeTypeWithMapping bodyEntry ctx
+          match bodyAlTy, sig.retTy with
+          | .closure _ _, .closure _ _ => false
+          | .closure _ _, _ => true
+          | _, _ => false
+        | none => false
+      let bodyExpectedTy := if bodyIsIOThunk then
+        match graph.getNode bodyNode with
+        | some bodyEntry => getNodeTypeWithMapping bodyEntry ctx
+        | none => sig.retTy
+      else sig.retTy
+      if bodyIsIOThunk then
+        let directFuncId? : Option FuncId := match graph.getNode bodyNode with
+          | some bodyEntry => match bodyEntry.node with
+            | .ctor tag arity =>
+              if tag == closureTag && arity == 2 then
+                match bodyEntry.getPort ⟨1⟩ with
+                | some fnPort =>
+                  match resolveClosureFnBookIdx graph fnPort.node anonLamBookIdx with
+                  | some bookIdx => funcIdMap.get? bookIdx
+                  | none => none
+                | none => none
+              else none
+            | _ => none
+          | none => none
+        match directFuncId? with
+        | some funcId =>
+          -- Call the IO thunk for its side effects.
+          let closureRetTy := match bodyExpectedTy with
+            | .closure _ ret => ret
+            | _ => sig.retTy
+          let callRes ← LowerM.emitInst (.call funcId #[] closureRetTy) closureRetTy
+          -- Copy the result through a new local to break the tail-call pattern
+          let retVal ← LowerM.emitInst (.copy (.local callRes)) closureRetTy
+          if returnsUnit then LowerM.terminate .retUnit
+          else LowerM.terminate (.ret (.local retVal))
+        | none =>
+          -- Fallback: lower body normally
+          let initState : NodeState n := { lamParams, erasedWorldLams, tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx, abbrevEnv, erasure }
+          let (result, _) ← StateT.run (lowerNodeWithMap graph bodyNode funcIdMap) initState
+          if returnsUnit then LowerM.terminate .retUnit
+          else LowerM.terminate (.ret (.local result))
+      else
+        let initState : NodeState n := { lamParams, erasedWorldLams, tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx, abbrevEnv, erasure }
+        let (result, _) ← StateT.run (lowerNodeWithMap graph bodyNode funcIdMap) initState
+        if returnsUnit then LowerM.terminate .retUnit
+        else LowerM.terminate (.ret (.local result))
 
   { func with attrs := { func.attrs with wiredRole } }
 
@@ -2530,11 +2688,12 @@ def lowerDefinition (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
     (anonLamBookIdx : Std.HashMap Nat Nat := {})
     (wiredRole : Option WiredFunc := none)
     (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
-    (metaState : Soma.Core.MetaState := .empty) : SomeFunc :=
+    (metaState : Soma.Core.MetaState := .empty)
+    (erasure : ErasureCtx := {}) : SomeFunc :=
   -- Collect all type variable levels and build mapping
   let ⟨n, tyVarMapping⟩ := buildTyVarMappingFromDefinition graph def_ metaState
   -- Lower with the determined n
-  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv
+  let func := lowerDefinitionWithN graph def_ funcId funcIdMap tyVarMapping primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv erasure
   -- Return existentially quantified function
   ⟨n, func⟩
 
@@ -2544,7 +2703,8 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (wiredFuncs : WiredFuncRegistry := {})
     (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
-    (metaState : Soma.Core.MetaState := .empty) : Module := Id.run do
+    (metaState : Soma.Core.MetaState := .empty)
+    (erasure : ErasureCtx := {}) : Module := Id.run do
   let mut module := Module.empty moduleName
 
   -- Copy string table from Circuit graph to Alloy module
@@ -2681,7 +2841,7 @@ def lowerGraph (graph : CGraph) (moduleName : String := "main") (primTypes : Pri
       if def_.reducibility != .external then
         let funcId := funcIdMap.get? i |>.getD (FuncId.mk 0)
         let wiredRole := wiredFuncs.get? def_.name.id
-        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv metaState
+        let func := lowerDefinition extGraph def_ funcId funcIdMap primTypes inductives intrinsics panicMsgIdx anonLamBookIdx wiredRole abbrevEnv metaState erasure
         module := module.addFunc func
 
   -- Set main function using the mapped ID
@@ -2697,7 +2857,8 @@ def lower (graph : CGraph) (moduleName : String := "main") (primTypes : PrimType
     (intrinsics : Std.HashMap QualifiedName Intrinsic := {})
     (wiredFuncs : WiredFuncRegistry := {})
     (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
-    (metaState : Soma.Core.MetaState := .empty) : Module :=
-  lowerGraph graph moduleName primTypes inductives intrinsics wiredFuncs abbrevEnv metaState
+    (metaState : Soma.Core.MetaState := .empty)
+    (erasure : ErasureCtx := {}) : Module :=
+  lowerGraph graph moduleName primTypes inductives intrinsics wiredFuncs abbrevEnv metaState erasure
 
 end Somac.Alloy.Lower

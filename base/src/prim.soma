@@ -52,6 +52,7 @@ record Float
 @[intrinsic]
 record Double
 
+@[wired_in "type.pair"]
 inductive Pair {a : Type} {b : Type} where
     @[wired_in "pair"]
     | Mk (fst : a) (snd : b)

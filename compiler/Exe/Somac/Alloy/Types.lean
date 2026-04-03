@@ -668,6 +668,8 @@ inductive WiredFunc where
   | listAny
   | listAll
   | listReverse
+  | pureIO
+  | bindIO
   deriving Repr, BEq, Hashable, DecidableEq, Inhabited, Serialize, Deserialize
 
 end Somac.Alloy

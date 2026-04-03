@@ -182,6 +182,7 @@ end InductiveMeta
 /-- Typed roles for language-level wired declarations -/
 inductive WiredRole where
   | pair
+  | typePair
   | cons
   | nil
   | typeInt
@@ -226,6 +227,7 @@ namespace WiredRole
 
 def canonical : WiredRole → String
   | .pair => "pair"
+  | .typePair => "type.pair"
   | .cons => "cons"
   | .nil => "nil"
   | .typeInt => "type.int"
@@ -269,6 +271,7 @@ instance : ToString WiredRole := ⟨canonical⟩
 
 def fromString? : String → Option WiredRole
   | "pair" => some .pair
+  | "type.pair" => some .typePair
   | "cons" => some .cons
   | "nil" => some .nil
   | "type.int" | "int" => some .typeInt
