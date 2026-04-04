@@ -547,7 +547,20 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
     let domTy := convertValueTypeWithMapping dom ctx
     let neutralArg := Value.vNeutral (.vType .zero) (.nVar ⟨name, ⟨0⟩⟩)
     let codResult := cod.applyPure neutralArg
-    let codTy := convertValueTypeWithMapping codResult ctx
+    let codTy := if ctx.erasure.isWorld dom then
+      match codResult with
+      | .vSigma _ _ fst sndClos =>
+        if ctx.erasure.isWorld fst
+        then convertValueTypeWithMapping (sndClos.applyPure fst) ctx
+        else convertValueTypeWithMapping codResult ctx
+      | .vDataType uid params =>
+        if ctx.erasure.isIOPair uid params then
+          match params with
+          | _ :: payload :: _ => convertValueTypeWithMapping payload ctx
+          | _ => convertValueTypeWithMapping codResult ctx
+        else convertValueTypeWithMapping codResult ctx
+      | _ => convertValueTypeWithMapping codResult ctx
+    else convertValueTypeWithMapping codResult ctx
     .closure #[domTy] codTy
   | Value.vLam _ _ => .closure #[] .rawPtr
   | Value.vSigma _ name fst sndClos =>
@@ -713,6 +726,22 @@ private partial def stripWorldCallArgs (targetTy : Value) (args : Array Operand)
       filtered := filtered.push args[argIdx]!
       argIdx := argIdx + 1
     filtered
+
+/-- Count World parameters in a function's type -/
+private partial def countWorldParams (ty : Value) (erasure : ErasureCtx) : Nat :=
+  if erasure.worldUid?.isNone then 0
+  else go ty 0
+where
+  go (ty : Value) (count : Nat) : Nat :=
+    match ty with
+    | Value.vPi _ binder _ dom cod =>
+      if binder.isImplicit && dom.isType then
+        go (advanceCodomain cod dom) count
+      else if erasure.isWorld dom then
+        go (advanceCodomain cod dom) (count + 1)
+      else
+        go (advanceCodomain cod dom) count
+    | _ => count
 
 /-- Strip all leading implicit type parameters (∀ a : Type) from a Value type -/
 private partial def stripLeadingImplicits (val : Value) : Value :=
@@ -990,7 +1019,19 @@ partial def extractReturnTypeWithMapping (ty : Value) (ctx : TypeConvCtx n) : Ty
       let dummyArg := Value.vNeutral dom (.nVar ⟨name, env.level⟩)
       let nextTy := cod.applyPure dummyArg
       extractReturnTypeWithMapping nextTy ctx
-  | other => convertValueTypeWithMapping other ctx
+  | other =>
+    -- IO erasure: unwrap Pair World a → a
+    let unwrapped := if ctx.erasure.worldUid?.isSome then
+      match other with
+      | .vSigma _ _ fst sndClos =>
+        if ctx.erasure.isWorld fst then sndClos.applyPure fst else other
+      | .vDataType uid params =>
+        if ctx.erasure.isIOPair uid params then
+          match params with | _ :: payload :: _ => payload | _ => other
+        else other
+      | _ => other
+    else other
+    convertValueTypeWithMapping unwrapped ctx
 
 /-- Build function signature from a Value type with known type parameter count -/
 def buildSignatureFromType (name : QualifiedName) (ty : Value) (arity : Nat)
@@ -1198,9 +1239,12 @@ def emitIOExternCall (name : String) (allArgs : Array Operand) (def_ : CDefiniti
     | some v => convertValueTypeWithMapping v ctx
     | none => .prim .unit
   let cResult ← LowerM.emitInst (.callExtern name cArgs payloadTy) payloadTy
-  let worldVal ← LowerM.emitInst (.copy (.const (.unit))) (.prim .unit)
-  let pairTy := extractReturnTypeWithMapping def_.ty ctx
-  lowerCtor 0 2 #[worldVal, cResult] pairTy
+  if ctx.erasure.worldUid?.isSome then
+    pure cResult
+  else
+    let worldVal ← LowerM.emitInst (.copy (.const (.unit))) (.prim .unit)
+    let pairTy := extractReturnTypeWithMapping def_.ty ctx
+    lowerCtor 0 2 #[worldVal, cResult] pairTy
 
 /-- Build a nested struct literal for nested pair types -/
 partial def lowerNestedStructLit (fieldVals : Array LocalId) (ty : Ty n) : LowerM n LocalId := do
@@ -1778,6 +1822,29 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
           | none => pure none
         | none => pure none
 
+      let ns := (← get)
+      let argIsWorld := match entry.getPort ⟨2⟩ with
+        | some argPort =>
+          -- Direct: arg is the variable port of an erased World LAM
+          (ns.erasedWorldLams.contains argPort.node.id && argPort.port.idx == 1) ||
+          -- Indirect: arg node has World type (after type propagation)
+          (match graph.getNode argPort.node with
+           | some argEntry => ns.erasure.isWorld argEntry.ty
+           | none => false)
+        | none => false
+      let fnExpectsWorld := match entry.getPort ⟨1⟩ with
+        | some fnPort =>
+          match graph.getNode fnPort.node with
+          | some fnEntry =>
+            match fnEntry.ty.piDomain? with
+            | some dom => ns.erasure.isWorld dom
+            | none => false
+          | none => false
+        | none => false
+      if argIsWorld || fnExpectsWorld then
+        lowerPort 1
+      else
+
       let argVal ← lowerPort 2 (.prim .unit)
 
       match maybeIntrinsicWithDef with
@@ -1842,8 +1909,11 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
                   lowerNodeWithMap graph fp.node funcIdMap
             | .ref refId | .alo refId =>
               let def_? := graph.getDefinition refId
+              let erasure := (← get).erasure
               let defArity := match def_? with
-                | some def_ => def_.arity
+                | some def_ =>
+                  let worldParams := countWorldParams def_.ty erasure
+                  if def_.arity >= worldParams then def_.arity - worldParams else def_.arity
                 | none => 1
               let ls ← StateT.lift get
               let funcRef := buildFuncRefFromBookRef graph refId (some funcIdMap) ls.ctxIntrinsics

@@ -531,19 +531,19 @@ private def inlineCall (callee : ClosedFunc) (callArgs : Array Operand)
         freshId := freshId + 1
         freshTypes := freshTypes.insert convId.id paramTy
         -- Determine conversion direction
+        let isAggregate := fun (t : ClosedTy) => match t with | .struct _ | .tagged _ _ => true | _ => false
+        let argIsAggregate := match argTy with | some t => isAggregate t | none => false
         let convInst : ClosedInst :=
-          if isPtrLikeTy (argTy.getD .rawPtr) then
-            -- ptr-like → prim: ptrtoint
+          if argIsAggregate && !isAggregate paramTy then
+            .copy argOp
+          else if isPtrLikeTy (argTy.getD .rawPtr) then
             match asPrimTy paramTy with
             | some primTy => .unOp (.ptrtoint primTy) argOp
             | none => .unOp (.bitcast paramTy) argOp
+          else if isPtrLikeTy paramTy then
+            .unOp .inttoptr argOp
           else
-            -- prim → ptr-like: inttoptr
-            if isPtrLikeTy paramTy then
-              .unOp .inttoptr argOp
-            else
-              -- Fallback: bitcast
-              .unOp (.bitcast paramTy) argOp
+            .unOp (.bitcast paramTy) argOp
         conversionStmts := conversionStmts.push
           { result := some convId, inst := convInst }
         paramSubst := paramSubst.insert callee.sig.params[i]!.id.id (.local convId)
@@ -598,18 +598,21 @@ private def inlineCall (callee : ClosedFunc) (callArgs : Array Operand)
         inlinedStmts := inlinedStmts.push
           { result := some rawRetId, inst := .copy remappedRet }
         -- Insert conversion from callee return type to expected return type
-        let convInst : ClosedInst :=
-          if isPtrLikeTy calleeRetTy then
-            -- ptr-like → prim: ptrtoint
-            match asPrimTy expectedRetTy with
-            | some primTy => .unOp (.ptrtoint primTy) (.local rawRetId)
-            | none => .unOp (.bitcast expectedRetTy) (.local rawRetId)
+        let isAggregate := fun (t : ClosedTy) => match t with | .struct _ | .tagged _ _ => true | _ => false
+        let structScalarMismatch := isAggregate calleeRetTy && !isAggregate expectedRetTy
+        let (convInst, resultTy) :=
+          if structScalarMismatch then
+            (.copy (.local rawRetId), calleeRetTy)
+          else if isPtrLikeTy calleeRetTy then
+            let inst := match asPrimTy expectedRetTy with
+              | some primTy => .unOp (.ptrtoint primTy) (.local rawRetId)
+              | none => .unOp (.bitcast expectedRetTy) (.local rawRetId)
+            (inst, expectedRetTy)
           else if isPtrLikeTy expectedRetTy then
-            -- prim → ptr-like: inttoptr
-            .unOp .inttoptr (.local rawRetId)
+            (.unOp .inttoptr (.local rawRetId), expectedRetTy)
           else
-            .unOp (.bitcast expectedRetTy) (.local rawRetId)
-        freshTypes := freshTypes.insert cResult.id expectedRetTy
+            (.unOp (.bitcast expectedRetTy) (.local rawRetId), expectedRetTy)
+        freshTypes := freshTypes.insert cResult.id resultTy
         inlinedStmts := inlinedStmts.push
           { result := some cResult, inst := convInst }
       else

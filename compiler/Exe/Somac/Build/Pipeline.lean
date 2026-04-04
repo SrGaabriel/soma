@@ -4,6 +4,7 @@ import Soma.Project.Check
 import Soma.Core.LambdaLift
 import Soma.Driver.Target
 import Somac.Circuit
+import Somac.Circuit.IOErasure
 import Somac.Alloy
 import Somac.Alloy.Merge
 import Somac.Alloy.Serialize
@@ -111,6 +112,17 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
   -- Partial evaluation
   let (optimized, _stats) ← Circuit.partialEval graph
 
+  -- IO erasure at Circuit level: remove World tokens, IO Pairs, io_bind, pure_io
+  let ioErasureCtx : Circuit.IOErasure.IOErasureCtx := {
+    worldUid? := globals.wiredIn.getUnique? .typeWorld |>.map (·.name.id.id)
+    pairUid? := globals.wiredIn.getUnique? .typePair |>.map (·.name.id.id)
+    ioBindBookIdx? := globals.wiredIn.getUnique? .bindIO |>.bind fun info =>
+      optimized.findDefinition info.name |>.map (·.1)
+    pureIOBookIdx? := globals.wiredIn.getUnique? .pureIO |>.bind fun info =>
+      optimized.findDefinition info.name |>.map (·.1)
+  }
+  let (erased, _) ← Circuit.IOErasure.eraseIO optimized ioErasureCtx
+
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
   let wiredFuncs := Alloy.Lower.buildWiredFuncRegistry globals.wiredIn
@@ -118,7 +130,7 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
     worldUid? := globals.wiredIn.getUnique? .typeWorld |>.map (·.name.id.id)
     pairUid? := globals.wiredIn.getUnique? .typePair |>.map (·.name.id.id)
   }
-  let alloyMod := Alloy.Lower.lower optimized cm.name primTypes globals.inductives globals.intrinsics wiredFuncs (abbrevEnv := cm.abbrevEnv) (metaState := cm.metas) (erasure := erasure)
+  let alloyMod := Alloy.Lower.lower erased cm.name primTypes globals.inductives globals.intrinsics wiredFuncs (abbrevEnv := cm.abbrevEnv) (metaState := cm.metas) (erasure := erasure)
   return alloyMod
 
 /-- Result of compilation pipeline -/

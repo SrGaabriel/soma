@@ -1,6 +1,7 @@
 import Somac.Circuit.Graph
 import Somac.Circuit.Node
 import Soma.Core.Value
+import Soma.Core.Eval
 import Std.Data.HashMap
 import Std.Data.HashSet
 
@@ -8,12 +9,15 @@ namespace Somac.Circuit.IOErasure
 
 open Somac.Circuit.Graph (Graph NodeEntry Definition)
 open Somac.Circuit.Node (Node NodeId PortId PortIdx)
-open Soma.Core (Value)
+open Soma.Core (Value Closure)
+open Soma.Core.Closure (applyPure)
 
 /-- Configuration for IO erasure at the Circuit IR level -/
 structure IOErasureCtx where
   worldUid? : Option Nat := none
   pairUid? : Option Nat := none
+  ioBindBookIdx? : Option Nat := none
+  pureIOBookIdx? : Option Nat := none
 
 private def isWorldTy (ctx : IOErasureCtx) (v : Value) : Bool :=
   match v with
@@ -35,6 +39,25 @@ private def hasWorldDomain (ctx : IOErasureCtx) (ty : Value) : Bool :=
   | some dom => isWorldTy ctx dom
   | none => false
 
+/-- Count explicit World parameters in a function type -/
+private partial def countWorldParamsInType (ctx : IOErasureCtx) (ty : Value) : Nat :=
+  match ty with
+  | .vPi _ binder _ dom cod =>
+    if binder.isImplicit && dom.isType then
+      countWorldParamsInType ctx (applyPure cod (Value.vNeutral dom (.nVar ⟨"_", ⟨0⟩⟩)))
+    else if isWorldTy ctx dom then
+      1 + countWorldParamsInType ctx (applyPure cod (Value.vPrimTy .unit))
+    else
+      countWorldParamsInType ctx (applyPure cod (Value.vNeutral dom (.nVar ⟨"_", ⟨0⟩⟩)))
+  | _ => 0
+
+/-- Check if a node is a REF or ALO pointing to a specific book index -/
+private def isBookRef (node : Node) (bookIdx : Nat) : Bool :=
+  match node with
+  | .ref rid => rid == bookIdx
+  | .alo rid => rid == bookIdx
+  | _ => false
+
 /-- What kind of erasure to apply to a node -/
 private inductive EraseAction where
   | worldLam    -- bypass LAM, ERA variable port
@@ -43,6 +66,10 @@ private inductive EraseAction where
   | worldApp    -- bypass APP principal↔function, ERA argument
   | ioPairProj0 -- replace with unit constant
   | ioPairProj1 -- bypass PROJ (identity)
+  | pureIO      -- APP(REF(pure_io), x) → x (identity bypass)
+  | ioBind (innerAppId : NodeId) (refId : NodeId)
+      -- APP₂(APP₁(REF(io_bind), m), f) → APP₂(f, m)
+      -- Rewire outer APP to apply f to m, remove inner APP and REF
 
 /-- Link two ports: connect their external targets to each other, bypassing the node between -/
 private def link (g : Graph) (portA portB : PortId) : Graph :=
@@ -79,6 +106,22 @@ private def classifyNode (g : Graph) (nodeId : NodeId) (ctx : IOErasureCtx)
       | none => entry.ty
     if isIOPairTy ctx scrutTy then some .ioPairMat else none
   | .app =>
+    -- Check for io_bind pattern: APP₂(APP₁(REF(io_bind), m), f)
+    if let some bindIdx := ctx.ioBindBookIdx? then
+      if let some fnPort := entry.getPort ⟨1⟩ then
+        if let some innerEntry := g.getNode fnPort.node then
+          if let .app := innerEntry.node then
+            if let some innerFnPort := innerEntry.getPort ⟨1⟩ then
+              if let some refEntry := g.getNode innerFnPort.node then
+                if isBookRef refEntry.node bindIdx then
+                  return EraseAction.ioBind fnPort.node innerFnPort.node
+    -- Check for pure_io pattern: APP(REF(pure_io), x)
+    if let some pureIdx := ctx.pureIOBookIdx? then
+      if let some fnPort := entry.getPort ⟨1⟩ then
+        if let some refEntry := g.getNode fnPort.node then
+          if isBookRef refEntry.node pureIdx then
+            return EraseAction.pureIO
+    -- Check for World APP (existing pattern)
     let fnExpectsWorld := match entry.getPort ⟨1⟩ with
       | some fnPort =>
         match g.getNode fnPort.node with
@@ -164,6 +207,40 @@ private def applyErase (g : Graph) (nodeId : NodeId) (action : EraseAction)
     graph := link graph (PortId.principal nodeId) ⟨nodeId, ⟨1⟩⟩
     graph := graph.removeNode nodeId
 
+  | .pureIO =>
+    -- pure_io x → x: bypass APP(REF(pure_io), x)
+    -- Link principal(0) ↔ argument(2), ERA the REF
+    graph := link graph (PortId.principal nodeId) ⟨nodeId, ⟨2⟩⟩
+    if let some refPort := entry.getPort ⟨1⟩ then
+      graph := graph.disconnect ⟨nodeId, ⟨1⟩⟩
+      graph := addEra graph refPort
+    graph := graph.removeNode nodeId
+
+  | .ioBind innerAppId refId =>
+    let some innerEntry := graph.getNode innerAppId | return graph
+    let fTarget := entry.getPort ⟨2⟩ -- where f connects externally
+    let mTarget := innerEntry.getPort ⟨2⟩ -- where m connects externally
+    let refTarget := innerEntry.getPort ⟨1⟩ -- the REF node port
+
+    -- Disconnect all involved ports
+    graph := graph.disconnect ⟨nodeId, ⟨1⟩⟩
+    graph := graph.disconnect ⟨nodeId, ⟨2⟩⟩
+    graph := graph.disconnect ⟨innerAppId, ⟨1⟩⟩
+    graph := graph.disconnect ⟨innerAppId, ⟨2⟩⟩
+
+    -- Reconnect: APP₂.function = f, APP₂.argument = m
+    if let some ft := fTarget then
+      graph := graph.connect ⟨nodeId, ⟨1⟩⟩ ft
+    if let some mt := mTarget then
+      graph := graph.connect ⟨nodeId, ⟨2⟩⟩ mt
+
+    -- ERA the REF/ALO node for io_bind
+    if let some rt := refTarget then
+      graph := addEra graph rt
+
+    -- Remove the inner APP₁
+    graph := graph.removeNode innerAppId
+
   graph
 
 /-- Classify all nodes and collect erasure targets (pure, no mutation) -/
@@ -209,41 +286,82 @@ private def processOneWorldLam (s : EraseState) (nodeId : NodeId) : EraseState :
       | none => s
     { s with graph := applyErase s.graph nodeId .worldLam, count := s.count + 1 }
 
-/-- Process a single non-LAM target -/
-private def processOneOther (g : Graph) (nodeId : NodeId) (action : EraseAction) : Graph :=
-  if g.getNode nodeId |>.isNone then g
-  else applyErase g nodeId action
+/-- Get the bypass target for a node -/
+private def getBypassTarget (g : Graph) (nodeId : NodeId) (action : EraseAction) : Option NodeId :=
+  match action with
+  | .worldLam | .ioPairProj1 =>
+    -- principal ↔ port 2 (body/record)
+    (g.getNode nodeId).bind (·.getPort ⟨2⟩) |>.map (·.node)
+  | .ioPairCtor =>
+    -- principal ↔ port 2 (payload)
+    (g.getNode nodeId).bind (·.getPort ⟨2⟩) |>.map (·.node)
+  | .worldApp | .pureIO =>
+    -- principal ↔ port 1 (function) for worldApp, port 2 (argument) for pureIO
+    let portIdx : PortIdx := match action with | .pureIO => ⟨2⟩ | _ => ⟨1⟩
+    (g.getNode nodeId).bind (·.getPort portIdx) |>.map (·.node)
+  | .ioPairMat =>
+    -- principal ↔ port 2 (hit branch)
+    (g.getNode nodeId).bind (·.getPort ⟨2⟩) |>.map (·.node)
+  | .ioBind innerAppId _ =>
+    -- The outer APP stays (rewired), so no root update needed
+    some nodeId
+  | _ => none
 
-/-- Adjust definition arities to account for World LAM parameters -/
-def eraseWorldLamsAtRoots (_graph : Graph) (_ctx : IOErasureCtx) : IO (Graph × Nat) :=
-  pure (_graph, 0)
+/-- Process a single non-LAM target, updating definition roots if the erased node was a root -/
+private def processOneOther (g : Graph) (nodeId : NodeId) (action : EraseAction)
+    (rootMap : Std.HashMap Nat Nat) : Graph × Std.HashMap Nat Nat :=
+  if g.getNode nodeId |>.isNone then (g, rootMap)
+  else
+    -- If this node is a definition root, update the root to the bypass target
+    match rootMap.get? nodeId.id with
+    | some defIdx =>
+      match getBypassTarget g nodeId action with
+      | some target =>
+        match g.book[defIdx]? with
+        | some d =>
+          let g' := { g with book := g.book.set! defIdx { d with root := target } }
+          let rm := (rootMap.erase nodeId.id).insert target.id defIdx
+          (applyErase g' nodeId action, rm)
+        | none => (applyErase g nodeId action, rootMap)
+      | none => (applyErase g nodeId action, rootMap)
+    | none => (applyErase g nodeId action, rootMap)
 
-/-- Erase remaining IO artifacts (Pair CTORs, MATs, PROJs, World APPs) -/
+/-- Erase the IO type wrapper from a Value -/
+private partial def eraseIOFromType (ctx : IOErasureCtx) (ty : Value) : Value :=
+  match ty with
+  | .vPi _ _ _ dom cod =>
+    if isWorldTy ctx dom then
+      -- Strip World Pi; continue to unwrap Pair underneath
+      let body := applyPure cod (Value.vPrimTy .unit)
+      eraseIOFromType ctx body
+    else ty
+  | .vSigma _ _ fst sndClos =>
+    if isWorldTy ctx fst then
+      applyPure sndClos fst -- Pair World a → a
+    else ty
+  | .vDataType _ _ =>
+    if isIOPairTy ctx ty then
+      match ty with
+      | .vDataType _ (_ :: payload :: _) => payload
+      | _ => ty
+    else ty
+  | _ => ty
+
+/-- Erase IO artifacts from all definitions and node types in the graph -/
 def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
   if ctx.worldUid?.isNone && ctx.pairUid?.isNone then
     return (graph, 0)
-  let targets := collectTargets graph ctx
-  if targets.isEmpty then return (graph, 0)
-  let rootMap := buildRootMap graph
-  -- Process all erasures sequentially, forcing evaluation between steps
-  let mut state : EraseState := { graph, rootMap }
+  -- Metadata-only IO erasure: update definition arities and types to reflect
   let mut g := graph
-  -- Pass 1: World LAMs
-  for (nodeId, action) in targets do
-    if let .worldLam := action then
-      state := processOneWorldLam state nodeId
-  g := state.graph
-  -- Pass 2: other nodes (Pair CTOR, MAT, APP, PROJ)
-  for (nodeId, action) in targets do
-    match action with
-    | .worldLam => pure ()
-    | _ => g := processOneOther g nodeId action
-  -- Pass 3: arities
-  for (defIdx, worldLams) in state.defWorldLams.toList do
-    if h : defIdx < g.book.size then
-      let d := g.book[defIdx]
-      let newArity := if d.arity >= worldLams then d.arity - worldLams else 0
-      g := { g with book := g.book.set defIdx { d with arity := newArity } }
-  return (g, state.count)
+
+  -- Update definition types: erase IO wrappers (World -> Pair World a → a)
+  let mut newBook := g.book
+  for i in List.range g.book.size do
+    if let some d := g.book[i]? then
+      let newTy := eraseIOFromType ctx d.ty
+      newBook := newBook.set! i { d with ty := newTy }
+  g := { g with book := newBook }
+
+  return (g, 0)
 
 end Somac.Circuit.IOErasure

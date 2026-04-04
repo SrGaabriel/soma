@@ -2,6 +2,7 @@ import Somac.Circuit.Graph
 import Somac.Circuit.Node
 import Somac.Circuit.Term
 import Soma.Core.Value
+import Soma.Core.Eval
 import Soma.Core.Intrinsic
 import Std.Data.HashMap
 import Std.Data.HashSet
@@ -457,26 +458,97 @@ def freshLabel : ReduceM Label := do
   setGraph g'
   pure label
 
-/-- Link two ports through a consumed node.
-    Connects whatever is on the other side of `portA` to whatever is on the other side of `portB`.
-    Both ports are disconnected; their external targets are connected to each other. -/
+/-- Extract the type at a specific port of a node from its type annotation -/
+private partial def portType (entry : NodeEntry) (portIdx : Nat) : Option Value :=
+  if portIdx == 0 then some entry.ty
+  else match entry.node with
+  | .dup _ | .sup _ =>
+    some entry.ty
+  | .lam _ =>
+    match entry.ty with
+    | .vPi _ _ _ dom cod =>
+      if portIdx == 1 then some dom
+      else if portIdx == 2 then
+        some (cod.applyPure (Value.vNeutral dom (.nVar ⟨"_", ⟨0⟩⟩)))
+      else none
+    | _ => none
+  | .ctor _ _ | .record _ =>
+    let fieldIdx := portIdx - 1
+    extractFieldType entry.ty fieldIdx
+  | .use =>
+    if portIdx == 2 then some entry.ty else none
+  | _ => none
+where
+  extractFieldType (ty : Value) (fieldIdx : Nat) : Option Value :=
+    match ty with
+    | .vSigma _ _ fst sndClos =>
+      if fieldIdx == 0 then some fst
+      else if fieldIdx == 1 then
+        some (sndClos.applyPure (Value.vNeutral (.vType .zero) (.nVar ⟨"_", ⟨0⟩⟩)))
+      else none
+    | .vPi _ _ _ dom cod =>
+      if fieldIdx == 0 then some dom
+      else extractFieldType (cod.applyPure (Value.vNeutral dom (.nVar ⟨"_", ⟨0⟩⟩))) (fieldIdx - 1)
+    | _ => none
+
+/-- After a connection is made, update the type of any passthrough node whose
+    principal port type should reflect its input -/
+private def updateNodeTypeFromConnection (port : PortId) (fuel : Nat := 8) : ReduceM Unit := do
+  match fuel with
+  | 0 => return
+  | fuel + 1 =>
+  let g ← getGraph
+  let some entry := g.getNode port.node | return
+  let sourcePort? : Option PortIdx := match entry.node with
+    | .dup _ => some ⟨0⟩ -- DUP type = input at port 0
+    | .sup _ => some ⟨1⟩ -- SUP type = first value at port 1
+    | .use   => some ⟨2⟩ -- USE type = continuation at port 2
+    | .app   => some ⟨1⟩ -- APP type = codomain of function at port 1
+    | _ => none
+  let some sourcePort := sourcePort? | return
+  let some targetPort := entry.getPort sourcePort | return
+  let g ← getGraph
+  let some targetEntry := g.getNode targetPort.node | return
+  -- Derive the type flowing through this connection
+  let newTy? := match entry.node with
+    | .app =>
+      let fnTy := portType targetEntry targetPort.port.idx |>.getD targetEntry.ty
+      match fnTy with
+      | .vPi _ _ _ dom cod =>
+        some (cod.applyPure (Value.vNeutral dom (.nVar ⟨"_", ⟨0⟩⟩)))
+      | _ => none
+    | _ =>
+      portType targetEntry targetPort.port.idx
+  if let some newTy := newTy? then
+    modifyGraph fun g => g.updateNode port.node fun e => { e with ty := newTy }
+    let g ← getGraph
+    if let some updatedEntry := g.getNode port.node then
+      for portOpt in updatedEntry.ports do
+        if let some connPort := portOpt then
+          if connPort.node != port.node then
+            updateNodeTypeFromConnection connPort fuel
+
+/-- Link two ports through a consumed node -/
 def link (portA portB : PortId) : ReduceM Unit := do
   let targetA ← getConnection portA
   let targetB ← getConnection portB
   disconnect portA
   disconnect portB
   match targetA, targetB with
-  | some a, some b => connect a b
+  | some a, some b =>
+    connect a b
+    updateNodeTypeFromConnection a
+    updateNodeTypeFromConnection b
   | _, _ => pure ()
 
-/-- Rewire: disconnect `oldPort` from its target and connect `newPort` to that target instead.
-    This replaces one endpoint of a wire. Used when inserting a fresh node in place of
-    an existing connection (e.g., DUP resolution, arithmetic result). -/
+/-- Rewire: disconnect `oldPort` from its target and connect `newPort` to that target instead. -/
 def rewirePort (oldPort newPort : PortId) : ReduceM Unit := do
   match ← getConnection oldPort with
   | some target =>
     disconnect oldPort
     connect newPort target
+    updateNodeTypeFromConnection newPort
+    updateNodeTypeFromConnection target
   | none => pure ()
 
 /-- Look up a definition from the book -/
