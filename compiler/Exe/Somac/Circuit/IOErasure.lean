@@ -96,7 +96,15 @@ private def classifyNode (g : Graph) (nodeId : NodeId) (ctx : IOErasureCtx)
   | .lam _ =>
     if hasWorldDomain ctx entry.ty then some .worldLam else none
   | .ctor tag arity =>
-    if tag == 0 && arity == 2 && isIOPairTy ctx entry.ty then some .ioPairCtor else none
+    if tag == 0 && arity == 2 then
+      -- Check type annotation OR structural check (first field is World-typed)
+      let isIO := isIOPairTy ctx entry.ty || match entry.getPort ⟨1⟩ with
+        | some fstPort => match g.getNode fstPort.node with
+          | some fstEntry => isWorldTy ctx fstEntry.ty
+          | none => false
+        | none => false
+      if isIO then some .ioPairCtor else none
+    else none
   | .mat _ =>
     let scrutTy := match entry.getPort ⟨1⟩ with
       | some scrutPort =>
@@ -104,7 +112,20 @@ private def classifyNode (g : Graph) (nodeId : NodeId) (ctx : IOErasureCtx)
         | some scrutEntry => scrutEntry.ty
         | none => entry.ty
       | none => entry.ty
-    if isIOPairTy ctx scrutTy then some .ioPairMat else none
+    -- Check type annotation OR check if scrutinee is an IO Pair CTOR
+    let isIO := isIOPairTy ctx scrutTy || match entry.getPort ⟨1⟩ with
+      | some scrutPort => match g.getNode scrutPort.node with
+        | some scrutEntry => match scrutEntry.node with
+          | .ctor 0 2 => isIOPairTy ctx scrutEntry.ty ||
+            match scrutEntry.getPort ⟨1⟩ with
+            | some fstPort => match g.getNode fstPort.node with
+              | some fstEntry => isWorldTy ctx fstEntry.ty
+              | none => false
+            | none => false
+          | _ => false
+        | none => false
+      | none => false
+    if isIO then some .ioPairMat else none
   | .app =>
     -- Check for io_bind pattern: APP₂(APP₁(REF(io_bind), m), f)
     if let some bindIdx := ctx.ioBindBookIdx? then
@@ -347,14 +368,93 @@ private partial def eraseIOFromType (ctx : IOErasureCtx) (ty : Value) : Value :=
     else ty
   | _ => ty
 
-/-- Erase IO artifacts from all definitions and node types in the graph -/
+/-- Erase all IO artifacts from the graph -/
 def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
   if ctx.worldUid?.isNone && ctx.pairUid?.isNone then
     return (graph, 0)
-  -- Metadata-only IO erasure: update definition arities and types to reflect
-  let mut g := graph
 
-  -- Update definition types: erase IO wrappers (World -> Pair World a → a)
+  let targets := collectTargets graph ctx
+  if targets.isEmpty then return (graph, 0)
+  let rootMap := buildRootMap graph
+
+  -- Pass 1: World LAMs 
+  let mut state : EraseState := { graph, rootMap }
+  for (nodeId, action) in targets do
+    if let .worldLam := action then
+      state := processOneWorldLam state nodeId
+  let mut g := state.graph
+
+  -- Pass 2: io_bind and pure_io (before worldApp, since io_bind APPs could also match worldApp)
+  let mut rm := buildRootMap g
+  for (nodeId, action) in targets do
+    match action with
+    | .ioBind .. | .pureIO =>
+      let (g', rm') := processOneOther g nodeId action rm
+      g := g'; rm := rm'
+    | _ => pure ()
+
+  -- Pass 3: remaining IO artifacts (Pair CTOR, MAT, World APP, PROJ)
+  for (nodeId, action) in targets do
+    match action with
+    | .worldLam | .ioBind .. | .pureIO => pure ()
+    | _ =>
+      let (g', rm') := processOneOther g nodeId action rm
+      g := g'; rm := rm'
+
+  -- Pass 4: iterative cleanup since erasure can expose new targets
+  let mut defWorldLams := state.defWorldLams
+  for _ in [:8] do
+    let newTargets := collectTargets g ctx
+    if newTargets.isEmpty then break
+    let newRootMap := buildRootMap g
+    let mut newState : EraseState := { graph := g, rootMap := newRootMap }
+    for (nodeId, action) in newTargets do
+      if let .worldLam := action then
+        newState := processOneWorldLam newState nodeId
+    g := newState.graph
+    for (k, v) in newState.defWorldLams.toList do
+      defWorldLams := defWorldLams.insert k (v + defWorldLams.getD k 0)
+    rm := buildRootMap g
+    for (nodeId, action) in newTargets do
+      match action with
+      | .worldLam => pure ()
+      | _ =>
+        let (g', rm') := processOneOther g nodeId action rm
+        g := g'; rm := rm'
+
+  -- Pass 5: update definition arities
+  for (k, v) in state.defWorldLams.toList do
+    defWorldLams := defWorldLams.insert k (v + defWorldLams.getD k 0)
+  for (defIdx, worldLams) in defWorldLams.toList do
+    if let some d := g.book[defIdx]? then
+      let newArity := if d.arity >= worldLams then d.arity - worldLams else 0
+      g := { g with book := g.book.set! defIdx { d with arity := newArity } }
+  for i in List.range g.book.size do
+    if !defWorldLams.contains i then
+      if let some d := g.book[i]? then
+        let worldParams := countWorldParamsInType ctx d.ty
+        if worldParams > 0 && d.arity >= worldParams then
+          g := { g with book := g.book.set! i { d with arity := d.arity - worldParams } }
+
+  for i in List.range g.book.size do
+    if let some d := g.book[i]? then
+      if d.arity == 0 then
+        if let some rootEntry := g.getNode d.root then
+          if let .ctor tag 2 := rootEntry.node then
+            if tag == 0xFFFE then
+              if let some fnPort := rootEntry.getPort ⟨1⟩ then
+                -- The function pointer may be a REF/ALO to another definition.
+                -- Follow it to the actual body root.
+                -- Follow REF/ALO to target definition's root
+                let fnNode := g.getNode fnPort.node
+                let refTarget := fnNode.bind fun e => match e.node with
+                  | .ref refId | .alo refId => g.book[refId]?.map (·.root)
+                  | _ => none
+                let actualRoot := refTarget.getD fnPort.node
+                IO.eprintln s!"[IOErasure 5c] def[{i}] '{d.name.display}' root={d.root.id} -> {actualRoot.id}"
+                g := { g with book := g.book.set! i { d with root := actualRoot } }
+
+  -- Pass 6: update definition types
   let mut newBook := g.book
   for i in List.range g.book.size do
     if let some d := g.book[i]? then
@@ -362,6 +462,6 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
       newBook := newBook.set! i { d with ty := newTy }
   g := { g with book := newBook }
 
-  return (g, 0)
+  return (g, state.count)
 
 end Somac.Circuit.IOErasure

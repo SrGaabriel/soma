@@ -16,7 +16,6 @@ import Somac.Alloy.TailCall
 import Somac.Alloy.AccumIntro
 import Somac.Alloy.ArithAccum
 import Somac.Alloy.ListIntrinsics
-import Somac.Alloy.IOIntrinsics
 import Somac.Alloy.ElemSize
 import Somac.Alloy.ConsInline
 
@@ -30,7 +29,6 @@ export TailCall (tailCallOpt mutualTailCallOpt)
 export AccumIntro (accumIntro)
 export ArithAccum (arithAccumIntro)
 export ListIntrinsics (replaceListIntrinsics)
-export IOIntrinsics (replaceIOIntrinsics)
 export ElemSize (refineElemSizes)
 export ConsInline (inlineConsFastPath)
 export Borrow (borrowModule BorrowStats)

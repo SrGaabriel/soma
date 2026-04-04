@@ -126,11 +126,7 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
   let wiredFuncs := Alloy.Lower.buildWiredFuncRegistry globals.wiredIn
-  let erasure : Alloy.Lower.ErasureCtx := {
-    worldUid? := globals.wiredIn.getUnique? .typeWorld |>.map (·.name.id.id)
-    pairUid? := globals.wiredIn.getUnique? .typePair |>.map (·.name.id.id)
-  }
-  let alloyMod := Alloy.Lower.lower erased cm.name primTypes globals.inductives globals.intrinsics wiredFuncs (abbrevEnv := cm.abbrevEnv) (metaState := cm.metas) (erasure := erasure)
+  let alloyMod := Alloy.Lower.lower erased cm.name primTypes globals.inductives globals.intrinsics wiredFuncs (abbrevEnv := cm.abbrevEnv) (metaState := cm.metas)
   return alloyMod
 
 /-- Result of compilation pipeline -/
@@ -224,11 +220,6 @@ def compileModules
 
   let mut optimized := mono
   let mut borrowParamInfo : Std.HashMap Nat (Array Bool) := {}
-
-  let (ioOptimized, ioCount) := Alloy.IOIntrinsics.replaceIOIntrinsics optimized
-  optimized := ioOptimized
-  if ioCount > 0 then
-    IO.println s!"  IO intrinsics: {ioCount} function(s) replaced with erasure-correct bodies"
 
   let (intrinsicOptimized, intrinsicCount) := Alloy.ListIntrinsics.replaceListIntrinsics optimized
   optimized := intrinsicOptimized
