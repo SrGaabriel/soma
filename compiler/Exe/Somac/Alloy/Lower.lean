@@ -1357,7 +1357,7 @@ partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : F
       let ty := expectedTy.orElse (fun _ => ns.expectedResultTy) |>.getD (.prim .unit)
       return ← StateT.lift (LowerM.emitInst (.copy (.const (.undef ty.close))) ty)
 
-  if ns.erasedWorldLams.contains port.node.id then
+  if ns.erasedWorldLams.contains port.node.id && port.port.idx == 1 then
     return ← StateT.lift (LowerM.emitInst (.copy (.const (.unit))) (.prim .unit))
 
   -- Propagate expected type from consumer to this node

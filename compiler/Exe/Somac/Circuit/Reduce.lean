@@ -8,7 +8,7 @@ import Soma.Core.Intrinsic
 namespace Somac.Circuit.Reduce
 
 open Somac.Circuit.Graph (Graph NodeEntry Reducibility)
-open Somac.Circuit.Node (Node NodeId PortId)
+open Somac.Circuit.Node (Node NodeId PortId PortIdx)
 open Soma.Core (Intrinsic)
 
 /-- Result of a reduction: the final value plus statistics -/
@@ -103,6 +103,23 @@ private def defProcessingOrder (g : Graph) : Array Nat := Id.run do
       if !inResult.contains i then result := result.push i
   result
 
+/-- Propagate types through the graph after reduction -/
+private def propagateTypes (graph : Graph) : Graph := Id.run do
+  let mut g := graph
+  for _ in [:3] do
+    for (nid, entry) in g.nodes.toList do
+      let sourcePort? : Option Somac.Circuit.Node.PortIdx := match entry.node with
+        | .dup _ => some ⟨0⟩
+        | .sup _ => some ⟨1⟩
+        | .use   => some ⟨2⟩
+        | _ => none
+      if let some sourcePort := sourcePort? then
+        if let some targetPort := entry.getPort sourcePort then
+          if targetPort.port.isPrincipal then
+            if let some targetEntry := g.getNode targetPort.node then
+              g := g.updateNode ⟨nid⟩ fun e => { e with ty := targetEntry.ty }
+  g
+
 /-- Run one pass of partial evaluation over all definitions -/
 private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) := do
   let order := defProcessingOrder graph
@@ -147,7 +164,8 @@ def partialEval (graph : Graph) (fuel : Nat := 1000000) (maxPasses : Nat := 8)
     let (swept, _) := g'.sweep
     g := swept
   let (compacted, _) := g.sweep
-  return (compacted, totalStats)
+  let propagated := propagateTypes compacted
+  return (propagated, totalStats)
 
 /-- Build a configuration with intrinsics from the compiler's elaboration context -/
 def Config.withIntrinsics (config : Config) (intrinsics : Std.HashMap String Intrinsic)
