@@ -113,9 +113,18 @@ private def partialEvalPass (graph : Graph) (fuel : Nat)
   for i in order do
     if let some def_ := g.book[i]? then
       if !def_.reducibility != .reducible then
-        -- IO-typed definitions are only reduced to WHNF not full NF (TODO)
-        let unfoldedTy := Somac.Circuit.Lower.unfoldValue def_.ty abbrevEnv
-        let isIO := false
+        let isIO := Id.run do
+          let mut ty := Somac.Circuit.Lower.unfoldValue def_.ty abbrevEnv
+          for _ in [:30] do
+            match ty with
+            | .vPi _ _ _ dom cod =>
+              if match dom with | .vPrimTy .world => true | _ => false then
+                return true
+              ty := match cod with
+                | .const _ body => Somac.Circuit.Lower.unfoldValue body abbrevEnv
+                | .term _ _ _ => cod.applyPure (Soma.Core.Value.vNeutral dom (.nVar ⟨"_", ⟨0⟩⟩))
+            | _ => break
+          false
         let (result, state) ← ReduceM.run (do
           let era ← ReduceM.addNode .era
           ReduceM.connect (PortId.principal era) (PortId.principal def_.root)

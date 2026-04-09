@@ -379,7 +379,8 @@ partial def eraseIOFromFuncType (ctx : IOErasureCtx) (ty : Value) : Value :=
       eraseIOFromFuncType ctx body
     else
       -- Preserve non-World parameter, recurse into codomain
-      let body := applyPure cod (Value.vPrimTy .unit)
+      let neutralArg := Value.vNeutral dom (.nVar ⟨name, ⟨0⟩⟩)
+      let body := applyPure cod neutralArg
       let erasedBody := eraseIOFromFuncType ctx body
       .vPi qty binder name dom (.const name erasedBody)
   -- At the return position: unwrap IO Pair types
@@ -765,8 +766,10 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
           | some d => d.ty
           | none => eraseIOFromFuncType ctx entry.ty
         | .ctor tag _ =>
-          if tag == 0xFFFC || tag == 0xFFFE then entry.ty
-          else eraseIOFromFuncType ctx entry.ty
+          -- Closure CTORs (tag 0xFFFE) keep their original types
+          if tag == 0xFFFE then entry.ty
+          else if isIOPairTy ctx entry.ty then eraseIOFromFuncType ctx entry.ty
+          else entry.ty
         | _ => eraseIOFromFuncType ctx entry.ty
       g := g.updateNode ⟨nodeId⟩ fun e => { e with ty := newTy }
 

@@ -1254,9 +1254,7 @@ partial def lowerCoreClosure (fnName : Soma.Core.QualifiedName)
   else do
     let captureTypes := capturePairs.map (·.2)
     let envTy := Value.tuple captureTypes
-    -- Use dedicated tag 0xFFFC for closure environment tuples to avoid
-    -- collision with Pair.Mk (tag 0, arity 2) which IOErasure needs to detect.
-    let ctor ← LowerM.addNode (.ctor 0xFFFC capturePairs.size) envTy
+    let ctor ← LowerM.addNode (.ctor 0 capturePairs.size) envTy
     for i in [:capturePairs.size] do
       LowerM.connect ⟨ctor, ⟨i + 1⟩⟩ capturePairs[i]!.1
     pure (PortId.principal ctor)

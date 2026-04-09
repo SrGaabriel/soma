@@ -968,8 +968,6 @@ def closureType : Ty n := .struct #[("fn", .rawPtr), ("env", .rawPtr)]
 
 /-- Reserved tag for closure CTORs in Circuit IR -/
 def closureTag : Nat := 0xFFFE
-/-- Reserved tag for closure environment tuples in Circuit IR (distinct from Pair.Mk tag 0) -/
-def closureEnvTag : Nat := 0xFFFC
 
 /-- Reserved tag for panic CTORs in Circuit IR -/
 def panicTag : Nat := 0xFFFF
