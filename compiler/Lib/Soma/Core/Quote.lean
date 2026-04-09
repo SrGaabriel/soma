@@ -378,7 +378,11 @@ partial def quoteExpr (depth : DeBruijnLvl) (v : Value) : Expr :=
 /-- Quote a neutral term to an Expr -/
 partial def quoteNeutralExpr (depth : DeBruijnLvl) (neu : Neutral) : Expr :=
   match neu with
-  | .nVar v => .bvar (depth.lvl - v.level.lvl - 1)
+  | .nVar v =>
+    if v.level.lvl < depth.lvl then
+      .bvar (depth.lvl - v.level.lvl - 1)
+    else
+      .fvar ⟨v.level.lvl, "__tyvar", v.name⟩ (.sort .zero)
   | .nMeta id => .mvar id
   | .nApp fn arg => .app (quoteNeutralExpr depth fn) (quoteExpr depth arg)
   | .nFst n => .projFst (quoteNeutralExpr depth n)

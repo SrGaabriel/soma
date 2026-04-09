@@ -110,9 +110,9 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
   let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (metas := cm.metas) (abbrevEnv := cm.abbrevEnv)
 
   -- Partial evaluation
-  let (optimized, _stats) ← Circuit.partialEval graph
+  let (optimized, _stats) ← Circuit.partialEval graph (abbrevEnv := cm.abbrevEnv)
 
-  -- IO erasure at Circuit level: remove World tokens, IO Pairs, io_bind, pure_io
+  -- IO erasure at Circuit level (after reduction)
   let ioErasureCtx : Circuit.IOErasure.IOErasureCtx := {
     worldUid? := globals.wiredIn.getUnique? .typeWorld |>.map (·.name.id.id)
     pairUid? := globals.wiredIn.getUnique? .typePair |>.map (·.name.id.id)
@@ -120,8 +120,11 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
       optimized.findDefinition info.name |>.map (·.1)
     pureIOBookIdx? := globals.wiredIn.getUnique? .pureIO |>.bind fun info =>
       optimized.findDefinition info.name |>.map (·.1)
+    abbrevEnv := cm.abbrevEnv
   }
-  let (erased, _) ← Circuit.IOErasure.eraseIO optimized ioErasureCtx
+  let (erased, erasureCount) ← Circuit.IOErasure.eraseIO optimized ioErasureCtx
+  if erasureCount > 0 then
+    IO.eprintln s!"[Pipeline] IOErasure: {erasureCount} targets in module={cm.name} ({optimized.nodes.size} nodes)"
 
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn

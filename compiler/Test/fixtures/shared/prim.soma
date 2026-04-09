@@ -52,6 +52,7 @@ inductive Float where
 inductive Double where
     | MkDouble
 
+@[wired_in "type.pair"]
 inductive Pair {a : Type} {b : Type} where
     @[wired_in "pair"]
     | MkPair (fst : a) (snd : b)

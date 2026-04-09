@@ -19,6 +19,78 @@ open Soma.Syntax
 open Soma.Core (Value Level PrimOp FFIOp Intrinsic)
 open Soma (UniqueSupply)
 
+/-- Replace dangling bvar references in fvar type annotations with stable
+    sentinel fvar references that preserve de Bruijn level identity -/
+partial def resolveErasedTypeBvars (e : Soma.Core.Expr)
+    (depth : Nat) (erasedParams : Array (Nat × String)) : Soma.Core.Expr :=
+  match e with
+  | .fvar u tyExpr =>
+    .fvar u (resolveTyExpr tyExpr depth erasedParams)
+  | .app f a =>
+    .app (resolveErasedTypeBvars f depth erasedParams)
+         (resolveErasedTypeBvars a depth erasedParams)
+  | .lam i n d b =>
+    .lam i n (resolveTyExpr d depth erasedParams)
+             (resolveErasedTypeBvars b (depth + 1) erasedParams)
+  | .let_ n t v b =>
+    .let_ n (resolveTyExpr t depth erasedParams)
+            (resolveErasedTypeBvars v depth erasedParams)
+            (resolveErasedTypeBvars b (depth + 1) erasedParams)
+  | .«case» scruts arms rty =>
+    .«case» (scruts.map (resolveErasedTypeBvars · depth erasedParams))
+            (arms.map fun arm =>
+              let binds := arm.patterns.foldl (fun a p => a + p.bindingCount) 0
+              Soma.Core.Arm.mk arm.patterns (resolveErasedTypeBvars arm.body (depth + binds) erasedParams))
+            (resolveTyExpr rty depth erasedParams)
+  | .if_ c t el =>
+    .if_ (resolveErasedTypeBvars c depth erasedParams)
+         (resolveErasedTypeBvars t depth erasedParams)
+         (resolveErasedTypeBvars el depth erasedParams)
+  | .construct qn tag args rty =>
+    .construct qn tag (args.map (resolveErasedTypeBvars · depth erasedParams))
+                      (resolveTyExpr rty depth erasedParams)
+  | .inject l args rty =>
+    .inject l (args.map (resolveErasedTypeBvars · depth erasedParams))
+              (resolveTyExpr rty depth erasedParams)
+  | .record fields =>
+    .record (fields.map fun (n, e') => (n, resolveErasedTypeBvars e' depth erasedParams))
+  | .pair f s =>
+    .pair (resolveErasedTypeBvars f depth erasedParams)
+          (resolveErasedTypeBvars s depth erasedParams)
+  | .array es ety =>
+    .array (es.map (resolveErasedTypeBvars · depth erasedParams))
+           (resolveTyExpr ety depth erasedParams)
+  | .closure n caps =>
+    .closure n (caps.map (resolveErasedTypeBvars · depth erasedParams))
+  | .ann x t =>
+    .ann (resolveErasedTypeBvars x depth erasedParams) (resolveTyExpr t depth erasedParams)
+  | other => other
+where
+  /-- Replace bvar references to erased type params in a type expression -/
+  resolveTyExpr (te : Soma.Core.Expr) (d : Nat) (params : Array (Nat × String))
+      : Soma.Core.Expr :=
+    match te with
+    | .bvar idx =>
+      -- A param at de Bruijn level L has bvar index (d - L - 1) at depth d
+      let found := params.find? fun (level, _) => d > level && idx == d - level - 1
+      match found with
+      | some (level, name) => .fvar ⟨level, "__tyvar", name⟩ (.sort .zero)
+      | none => te
+    | .pi q bi n dom cod =>
+      .pi q bi n (resolveTyExpr dom d params) (resolveTyExpr cod (d + 1) params)
+    | .app f a => .app (resolveTyExpr f d params) (resolveTyExpr a d params)
+    | .sigma q bi n f s =>
+      .sigma q bi n (resolveTyExpr f d params) (resolveTyExpr s (d + 1) params)
+    | .dataTy uid ps => .dataTy uid (ps.map (resolveTyExpr · d params))
+    | .fvar u ty => .fvar u (resolveTyExpr ty d params)
+    | .rowExtend l ft t =>
+      .rowExtend (resolveTyExpr l d params) (resolveTyExpr ft d params) (resolveTyExpr t d params)
+    | .recordTy r => .recordTy (resolveTyExpr r d params)
+    | .variantTy r => .variantTy (resolveTyExpr r d params)
+    | .eqTy lv t l r =>
+      .eqTy lv (resolveTyExpr t d params) (resolveTyExpr l d params) (resolveTyExpr r d params)
+    | other => other
+
 /-- Convert TCError to Diagnostic -/
 def tcErrorToDiagnostic (e : TCError) : Diagnostic :=
   e.toDiagnostic
@@ -251,9 +323,20 @@ def checkFunction (fn : Soma.Core.UntypedFunction)
     let declaredType' ← zonkValue declaredType
     reportUnsolvedMetas declaredType' span
     let typedBody' ← zonkExpr typedBody
+    -- Resolve dangling bvar references to erased type params in fvar type annotations
+    let mut erasedParams : Array (Nat × String) := #[]
+    for i in [:allParams.size] do
+      let (name, _, binder, _) := allParams[i]!
+      let isErased := match binder with
+        | .implicit | .strictImplicit => true
+        | _ => false
+      if isErased then
+        erasedParams := erasedParams.push (i, name)
+    let typedBody'' := if erasedParams.isEmpty then typedBody'
+      else resolveErasedTypeBvars typedBody' allParams.size erasedParams
     -- Expand parameterized type abbreviations so downstream passes see real types
     let declaredType'' ← expandAbbrevValue declaredType'
-    return (declaredType'', typedBody', generatedParams)
+    return (declaredType'', typedBody'', generatedParams)
   | none =>
     -- No signature: create fresh metavariables for param types
     let paramTypes ← fn.params.mapM fun _ => TCM.freshMetaVal (.vType .zero)

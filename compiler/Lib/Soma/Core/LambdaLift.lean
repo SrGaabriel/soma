@@ -19,6 +19,7 @@ structure LiftState where
   moduleName : String
   globalEnv : Soma.Core.GlobalEnv := .empty
   unfoldTy : Value → Value := id
+  typeParamEnv : Soma.Core.Env := .empty
   deriving Inhabited
 
 abbrev LiftM := StateM LiftState
@@ -169,9 +170,12 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     let lamParamBinding := lamParamUnique
     let allParams := captureBindings ++ #[(lamParamBinding, name)]
 
-    let genv := (← get).globalEnv
-    let captureValueTypes := captureParams.map fun (_, _, tyExpr) => Soma.Core.evalWithGlobals genv tyExpr
-    let domainTy := Soma.Core.evalWithGlobals genv domain
+    let st ← get
+    let genv := st.globalEnv
+    let tyParamEnv := st.typeParamEnv
+    let evalCtx : Soma.Core.EvalCtx := { env := tyParamEnv, globals := genv, metas := .empty }
+    let captureValueTypes := captureParams.map fun (_, _, tyExpr) => Soma.Core.evalCoreExpr evalCtx tyExpr
+    let domainTy := Soma.Core.evalCoreExpr evalCtx domain
     let bodyTy := Soma.Core.Expr.typeOf openedBody genv (← get).unfoldTy
     let allParamTypes := captureValueTypes ++ #[domainTy]
     let liftedFnType := buildFnType allParamTypes bodyTy
@@ -266,6 +270,28 @@ end
 /-! ## Function and Module Lifting -/
 
 def liftTypedFunction (fn : TypedFunction) : LiftM TypedFunction := do
+  let mut tyParamEnv : Soma.Core.Env := .empty
+  let mut fnTy := fn.fnType
+  let mut cont := true
+  while cont do
+    match fnTy with
+    | .vPi _ binder name dom cod =>
+      let isErasedImplicit := match binder with
+        | .implicit | .strictImplicit =>
+          match dom with
+          | .vType _ | .vRowSort | .vLabelSort => true
+          | _ => false
+        | _ => false
+      if isErasedImplicit then
+        let neutral := Value.vNeutral dom (.nVar ⟨name, tyParamEnv.level⟩)
+        tyParamEnv := tyParamEnv.extend name neutral
+        fnTy := match cod with
+          | .const _ body => body
+          | .term _ _ _ => cod.applyPure neutral
+      else
+        cont := false
+    | _ => cont := false
+  modify fun st => { st with typeParamEnv := tyParamEnv }
   let coreBody' ← liftCoreExpr fn.body
   pure { fn with body := coreBody' }
 

@@ -2,6 +2,7 @@ import Somac.Circuit.Reduce.Types
 import Somac.Circuit.Reduce.Nf
 import Somac.Circuit.Reduce.Readback
 import Somac.Circuit.Graph
+import Somac.Circuit.Lower
 import Somac.Circuit.Node
 import Soma.Core.Intrinsic
 
@@ -104,18 +105,22 @@ private def defProcessingOrder (g : Graph) : Array Nat := Id.run do
   result
 
 /-- Run one pass of partial evaluation over all definitions -/
-private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) := do
+private def partialEvalPass (graph : Graph) (fuel : Nat)
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : IO (Graph × Stats) := do
   let order := defProcessingOrder graph
   let mut g := graph
   let mut stats : Stats := {}
   for i in order do
     if let some def_ := g.book[i]? then
       if !def_.reducibility != .reducible then
+        -- IO-typed definitions are only reduced to WHNF not full NF (TODO)
+        let unfoldedTy := Somac.Circuit.Lower.unfoldValue def_.ty abbrevEnv
+        let isIO := false
         let (result, state) ← ReduceM.run (do
           let era ← ReduceM.addNode .era
           ReduceM.connect (PortId.principal era) (PortId.principal def_.root)
           ReduceM.addNormalizingDef i
-          let resultId ← nf (PortId.principal era)
+          let resultId ← if isIO then whnf (PortId.principal era) else nf (PortId.principal era)
           ReduceM.removeNormalizingDef i
           if resultId != def_.root then
             ReduceM.updateDefinitionRoot i resultId
@@ -132,13 +137,13 @@ private def partialEvalPass (graph : Graph) (fuel : Nat) : IO (Graph × Stats) :
 
 /-- Partially evaluate each definition in the graph's book -/
 def partialEval (graph : Graph) (fuel : Nat := 1000000) (maxPasses : Nat := 8)
-    : IO (Graph × Stats) := do
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : IO (Graph × Stats) := do
   let mut g := graph
   let mut totalStats : Stats := {}
   let mut remainingFuel := fuel
   for _ in [:maxPasses] do
     if remainingFuel == 0 then break
-    let (g', passStats) ← partialEvalPass g remainingFuel
+    let (g', passStats) ← partialEvalPass g remainingFuel abbrevEnv
     totalStats := totalStats.merge passStats
     if passStats.totalSteps == 0 then
       g := g'

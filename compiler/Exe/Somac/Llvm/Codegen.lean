@@ -410,12 +410,9 @@ def coerceValue (srcTy dstTy : LLVMType) (val : LLVMValue) : CodegenM LLVMValue 
         if srcBits < dstBits then FuncBuilder.zext srcTy dstTy val
         else if srcBits > dstBits then FuncBuilder.trunc srcTy dstTy val
         else FuncBuilder.asLocalRef dstTy val
-      -- Tagged union struct { i32, ptr } → extract tag (i32) or payload (ptr)
-      else if srcTy == taggedTy then
-        match dstTy with
-        | .i32 => FuncBuilder.extractvalue srcTy val #[0]
-        | .ptr => FuncBuilder.extractvalue srcTy val #[1]
-        | _ => panic! s!"CODEGEN BUG: coerceValue cannot convert tagged {srcTy.toLLVM} to {dstTy.toLLVM}"
+      -- Tagged union struct { i32, ptr } → extract tag (i32)
+      else if srcTy == taggedTy && dstTy == .i32 then
+        FuncBuilder.extractvalue srcTy val #[0]
       -- ptr → aggregate: load from pointer
       else if srcTy == .ptr && !(dstTy.isInt) && !(dstTy == .ptr) then
         FuncBuilder.load dstTy val
@@ -748,6 +745,8 @@ def convertUnOp (op : UnOp 0) (srcTy : ClosedTy) (operand : LLVMValue) : Codegen
         FuncBuilder.ptrtoint toTy operand
       else if llvmSrcTy == .ptr && toTy == .ptr then
         FuncBuilder.bitcast .ptr .ptr operand
+      else if llvmSrcTy == .ptr && toTy.isStruct then
+        FuncBuilder.load toTy operand
       else if llvmSrcTy.isInt && toTy.isInt then
         let srcBits := llvmSrcTy.intBits.getD 64
         let dstBits := toTy.intBits.getD 64

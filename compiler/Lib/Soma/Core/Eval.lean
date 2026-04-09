@@ -123,6 +123,10 @@ partial def evalCoreExpr (ctx : EvalCtx) (e : Soma.Core.Expr) : Value :=
     | none => .vNeutral .type0 (.nVar ⟨s!"bvar{idx}", ctx.env.level⟩)
 
   | .fvar id _ =>
+    -- Sentinel type variable fvar created by quoteNeutralExpr for out-of-scope neutral variables
+    if id.module == "__tyvar" then
+      .vNeutral .type0 (.nVar ⟨id.original, ⟨id.id⟩⟩)
+    else
     -- Free variables: look up by display name in environment
     match ctx.env.lookupByName id.original with
     | some v => v
@@ -393,11 +397,11 @@ def resolveClassFieldType (globals : GlobalEnv) (classId : Unique) (args : List 
 
 /-- Compute the type of a Core expression -/
 partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
-    (unfoldTy : Value → Value := id) : Expr → Value
-  | .ann _ ty => evalWithGlobals globals ty
+    (unfoldTy : Value → Value := id) (evalEnv : Env := .empty) : Expr → Value
+  | .ann _ ty => evalCoreExpr { env := evalEnv, globals, metas := .empty } ty
 
-  | .fvar _ ty => evalWithGlobals globals ty
-  | .const _ ty => evalWithGlobals globals ty
+  | .fvar _ ty => evalCoreExpr { env := evalEnv, globals, metas := .empty } ty
+  | .const _ ty => evalCoreExpr { env := evalEnv, globals, metas := .empty } ty
 
   | .bvar idx =>
     match bvarCtx[bvarCtx.size - idx - 1]? with
@@ -410,8 +414,8 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
   | .lit (.bool _) => .vPrimTy .bool
 
   | .app fn arg =>
-    let fnTy := typeOfWith bvarCtx globals unfoldTy fn
-    let argVal := evalWithGlobals globals arg
+    let fnTy := typeOfWith bvarCtx globals unfoldTy evalEnv fn
+    let argVal := evalCoreExpr { env := evalEnv, globals, metas := .empty } arg
     -- Try direct piApply, then unfold type aliases
     let applyResult := fnTy.piApply argVal |>.orElse fun _ =>
       (unfoldTy fnTy).piApply argVal
@@ -428,40 +432,40 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
         | _ => panic! s!"Expr.typeOfWith: app with non-Pi function type (fn={fn.ctorName}, arg={arg.ctorName})"
 
   | .lam _info name domain body =>
-    let domTy := evalWithGlobals globals domain
-    let bodyTy := typeOfWith (bvarCtx.push domTy) globals unfoldTy body
+    let domTy := evalCoreExpr { env := evalEnv, globals, metas := .empty } domain
+    let bodyTy := typeOfWith (bvarCtx.push domTy) globals unfoldTy evalEnv body
     .vPi Quantity.omega Soma.Core.BinderInfo.explicit name domTy (Closure.const name bodyTy)
 
   | .let_ _ ty _ body =>
-    let letTy := evalWithGlobals globals ty
-    typeOfWith (bvarCtx.push letTy) globals unfoldTy body
+    let letTy := evalCoreExpr { env := evalEnv, globals, metas := .empty } ty
+    typeOfWith (bvarCtx.push letTy) globals unfoldTy evalEnv body
 
-  | .if_ _ then_ _ => typeOfWith bvarCtx globals unfoldTy then_
+  | .if_ _ then_ _ => typeOfWith bvarCtx globals unfoldTy evalEnv then_
 
-  | .«case» _ _ resultTy => evalWithGlobals globals resultTy
+  | .«case» _ _ resultTy => evalCoreExpr { env := evalEnv, globals, metas := .empty } resultTy
 
-  | .array _ resultTy => evalWithGlobals globals resultTy
+  | .array _ resultTy => evalCoreExpr { env := evalEnv, globals, metas := .empty } resultTy
 
-  | .construct _ _ _ resultTy => evalWithGlobals globals resultTy
+  | .construct _ _ _ resultTy => evalCoreExpr { env := evalEnv, globals, metas := .empty } resultTy
 
-  | .inject _ _ resultTy => evalWithGlobals globals resultTy
+  | .inject _ _ resultTy => evalCoreExpr { env := evalEnv, globals, metas := .empty } resultTy
 
   | .pair fst snd =>
-    let fstTy := typeOfWith bvarCtx globals unfoldTy fst
-    let sndTy := typeOfWith bvarCtx globals unfoldTy snd
+    let fstTy := typeOfWith bvarCtx globals unfoldTy evalEnv fst
+    let sndTy := typeOfWith bvarCtx globals unfoldTy evalEnv snd
     Value.prod fstTy sndTy
 
   | .tuple elems =>
     if elems.size ≥ 2 then
-      let fstTy := typeOfWith bvarCtx globals unfoldTy elems[0]!
-      let sndTy := typeOfWith bvarCtx globals unfoldTy elems[1]!
+      let fstTy := typeOfWith bvarCtx globals unfoldTy evalEnv elems[0]!
+      let sndTy := typeOfWith bvarCtx globals unfoldTy evalEnv elems[1]!
       Value.prod fstTy sndTy
     else if elems.size = 1 then
-      typeOfWith bvarCtx globals unfoldTy elems[0]!
+      typeOfWith bvarCtx globals unfoldTy evalEnv elems[0]!
     else .vPrimTy .unit
 
   | .projFst expr =>
-    let sigTy := typeOfWith bvarCtx globals unfoldTy expr
+    let sigTy := typeOfWith bvarCtx globals unfoldTy evalEnv expr
     match sigTy.sigmaFst? with
     | some ty => ty
     | none =>
@@ -475,8 +479,8 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
         | .vDataType _ (fstTy :: _) => fstTy
         | _ => .vType .zero
   | .projSnd expr =>
-    let sigTy := typeOfWith bvarCtx globals unfoldTy expr
-    let fstVal := evalWithGlobals globals (.projFst expr)
+    let sigTy := typeOfWith bvarCtx globals unfoldTy evalEnv expr
+    let fstVal := evalCoreExpr { env := evalEnv, globals, metas := .empty } (.projFst expr)
     match sigTy.sigmaApply fstVal with
     | some ty => ty
     | none =>
@@ -492,11 +496,11 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
 
   | .record fields =>
     let row := fields.foldr (init := Value.vRowEmpty) fun (name, expr) acc =>
-      .vRowExtend (.vLabelLit name) (typeOfWith bvarCtx globals unfoldTy expr) acc
+      .vRowExtend (.vLabelLit name) (typeOfWith bvarCtx globals unfoldTy evalEnv expr) acc
     .vRecord row
 
   | .fieldAccess expr field _ =>
-    let recTy := typeOfWith bvarCtx globals unfoldTy expr
+    let recTy := typeOfWith bvarCtx globals unfoldTy evalEnv expr
     let fields := recTy.recordFields
     match fields.toList.find? (·.1 == field) with
     | some (_, ty) => ty
@@ -512,7 +516,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
           match expr with
           | .record recFields =>
             match recFields.toList.find? (·.1 == field) with
-            | some (_, fieldExpr) => typeOfWith bvarCtx globals unfoldTy fieldExpr
+            | some (_, fieldExpr) => typeOfWith bvarCtx globals unfoldTy evalEnv fieldExpr
             | none => .vType .zero
           | _ => .vType .zero
       | _ =>
@@ -520,7 +524,7 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
         match expr with
         | .record recFields =>
           match recFields.toList.find? (·.1 == field) with
-          | some (_, fieldExpr) => typeOfWith bvarCtx globals unfoldTy fieldExpr
+          | some (_, fieldExpr) => typeOfWith bvarCtx globals unfoldTy evalEnv fieldExpr
           | none => .vType .zero
         | _ => .vType .zero
 
@@ -536,6 +540,6 @@ partial def Expr.typeOfWith (bvarCtx : Array Value) (globals : GlobalEnv)
 
 /-- Compute the type of a Core expression using globals for resolving type annotations -/
 partial def Expr.typeOf (e : Expr) (globals : GlobalEnv) (unfoldTy : Value → Value := id) : Value :=
-  Expr.typeOfWith #[] globals unfoldTy e
+  Expr.typeOfWith #[] globals unfoldTy .empty e
 
 end Soma.Core

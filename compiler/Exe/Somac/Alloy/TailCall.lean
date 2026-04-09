@@ -179,10 +179,49 @@ def transformFunc (func : ClosedFunc) : Option (ClosedFunc × Nat) := Id.run do
       for i in [:func.sig.params.size] do
         if h : i < site.callArgs.size then
           let arg := remapOperand site.callArgs[i] paramRemap
-          storeStmts := storeStmts.push {
-            result := none,
-            inst := .store (.local slotIds[i]!) arg
-          }
+          let paramTy := func.sig.params[i]!.ty
+          let argTy := match arg with
+            | .local lid => loopLocalTypes.get? lid.id |>.getD .rawPtr
+            | .const c => c.ty
+            | _ => .rawPtr
+          if argTy == paramTy then
+            storeStmts := storeStmts.push {
+              result := none,
+              inst := .store (.local slotIds[i]!) arg
+            }
+          else if argTy == .rawPtr then
+            match paramTy with
+            | .prim pt =>
+              let coercedId : LocalId := ⟨nextLocal⟩
+              nextLocal := nextLocal + 1
+              loopLocalTypes := loopLocalTypes.insert coercedId.id paramTy
+              storeStmts := storeStmts.push {
+                result := some coercedId,
+                inst := .unOp (.ptrtoint pt) arg
+              }
+              storeStmts := storeStmts.push {
+                result := none,
+                inst := .store (.local slotIds[i]!) (.local coercedId)
+              }
+            | _ =>
+              -- rawPtr → struct/other: load from pointer
+              let coercedId : LocalId := ⟨nextLocal⟩
+              nextLocal := nextLocal + 1
+              loopLocalTypes := loopLocalTypes.insert coercedId.id paramTy
+              storeStmts := storeStmts.push {
+                result := some coercedId,
+                inst := .load arg paramTy
+              }
+              storeStmts := storeStmts.push {
+                result := none,
+                inst := .store (.local slotIds[i]!) (.local coercedId)
+              }
+          else
+            -- Other mismatches: store directly, let codegen handle coercion
+            storeStmts := storeStmts.push {
+              result := none,
+              inst := .store (.local slotIds[i]!) arg
+            }
       newStmts := newStmts ++ storeStmts
       newTerm := .jump loopBlockId
 
