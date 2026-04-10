@@ -655,7 +655,7 @@ private def isCoreTypeLevelExpr : Soma.Core.Expr → Bool
 /-- Compute the type of a Core expression -/
 def getExprType (e : Soma.Core.Expr) : LowerM Value := do
   let ctx ← LowerM.getCtx
-  let ty := e.typeOf ctx.evalGlobalEnv (unfoldValue · ctx.abbrevEnv)
+  let ty := e.typeOf ctx.evalGlobalEnv (unfoldValue · ctx.abbrevEnv) ctx.metaState
   let resolved := resolveMetas ty ctx.metaState
   pure resolved
 
@@ -1716,5 +1716,24 @@ def lower (types : Array Soma.Core.TypeDef)
     (metas : Soma.Core.MetaState := .empty)
     (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : Graph :=
   LowerM.build (lowerModule types typedFunctions globals instanceEnv metas abbrevEnv) usageMap
+
+/-- Resolve all metavariables in a Circuit graph's node types and definition types -/
+def resolveGraphMetas (g : Graph) (metas : Soma.Core.MetaState) : Graph := Id.run do
+  let mut graph := g
+  -- Resolve metas in all node types
+  for (nodeId, _) in graph.nodes.toList do
+    graph := graph.updateNode ⟨nodeId⟩ fun e =>
+      { e with ty := resolveMetas e.ty metas }
+  -- Resolve metas in all definition types
+  for i in List.range graph.book.size do
+    if let some d := graph.book[i]? then
+      let resolvedTy := resolveMetas d.ty metas
+      graph := { graph with book := graph.book.set! i { d with ty := resolvedTy } }
+  -- Resolve metas in resolved type arguments
+  let mut newResolvedTypeArgs := graph.resolvedTypeArgs
+  for (nodeId, args) in graph.resolvedTypeArgs.toList do
+    let resolvedArgs := args.map (resolveMetas · metas)
+    newResolvedTypeArgs := newResolvedTypeArgs.insert nodeId resolvedArgs
+  { graph with resolvedTypeArgs := newResolvedTypeArgs }
 
 end Somac.Circuit.Lower

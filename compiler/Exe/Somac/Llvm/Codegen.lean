@@ -2272,18 +2272,30 @@ def lowerBlock (block : ClosedBlock) (retTy : ClosedTy) (llvmRetOverride : Optio
   -- Get the Alloy Func to look up local types
   let func? ← CodegenM.getCurrentFunc
 
-  -- Detect tail-call pattern: last call stmt whose result is directly returned
-  let tailCallResultId : Option Nat := do
-    match block.terminator with
-    | .ret (.local retId) =>
+  let callerActualRetTy := llvmRetOverride.getD (func?.map (fun f => convertRetTy f.sig.retTy) |>.getD .void)
+  let tailCallResultId ← if llvmRetOverride.isSome then pure none else match block.terminator with
+    | .ret (.local retId) => do
+      let mut result : Option Nat := none
       for i in (List.range block.stmts.size).reverse do
+        if result.isSome then break
         if let some stmt := block.stmts[i]? then
           if stmt.result == some retId then
             match stmt.inst with
-            | .call _ _ _ => return retId.id
-            | _ => failure
-      none
-    | _ => none
+            | .call funcId _ _ | .callPoly funcId _ _ _ =>
+              let calleeSig ← CodegenM.getFuncSig funcId.id
+              match calleeSig with
+              | some sig =>
+                let calleeActualRetTy := convertRetTy sig.retTy
+                if callerActualRetTy == calleeActualRetTy then
+                  result := some retId.id
+              | none => pure ()
+            | .callExtern _ _ callRetTy | .callExternPoly _ _ _ callRetTy =>
+              let calleeActualRetTy := convertRetTy callRetTy
+              if callerActualRetTy == calleeActualRetTy then
+                result := some retId.id
+            | _ => pure ()
+      pure result
+    | _ => pure none
 
   for stmt in block.stmts do
     if let some tcId := tailCallResultId then

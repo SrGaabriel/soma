@@ -654,12 +654,6 @@ def typeCheckModule
         (Soma.Dependent.Specialize.specializeFunction methodRegistry fn)
     mergedTypedFns := specializedFns
 
-  let ioNames? := Soma.Dependent.Specialize.resolveIONames? globalsResult.globals
-  let mut inlinedFns : Std.HashMap String Soma.Core.TypedFunction := {}
-  for (name, fn) in mergedTypedFns.toList do
-    let inlined := Soma.Dependent.Specialize.inlineIOBindsFunction ioNames? fn
-    inlinedFns := inlinedFns.insert name inlined
-  mergedTypedFns := inlinedFns
   mergedTypedFns := Soma.Dependent.Fusion.fuseAll mergedTypedFns globalsResult.globals
 
   return {

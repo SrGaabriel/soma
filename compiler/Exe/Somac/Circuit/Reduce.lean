@@ -106,7 +106,8 @@ private def defProcessingOrder (g : Graph) : Array Nat := Id.run do
 
 /-- Run one pass of partial evaluation over all definitions -/
 private def partialEvalPass (graph : Graph) (fuel : Nat)
-    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : IO (Graph × Stats) := do
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
+    (forceNF : Bool := false) : IO (Graph × Stats) := do
   let order := defProcessingOrder graph
   let mut g := graph
   let mut stats : Stats := {}
@@ -129,7 +130,8 @@ private def partialEvalPass (graph : Graph) (fuel : Nat)
           let era ← ReduceM.addNode .era
           ReduceM.connect (PortId.principal era) (PortId.principal def_.root)
           ReduceM.addNormalizingDef i
-          let resultId ← if isIO then whnf (PortId.principal era) else nf (PortId.principal era)
+          let useWhnf := isIO && !forceNF
+          let resultId ← if useWhnf then whnf (PortId.principal era) else nf (PortId.principal era)
           ReduceM.removeNormalizingDef i
           if resultId != def_.root then
             ReduceM.updateDefinitionRoot i resultId
@@ -146,13 +148,14 @@ private def partialEvalPass (graph : Graph) (fuel : Nat)
 
 /-- Partially evaluate each definition in the graph's book -/
 def partialEval (graph : Graph) (fuel : Nat := 1000000) (maxPasses : Nat := 8)
-    (abbrevEnv : Soma.Dependent.AbbrevEnv := {}) : IO (Graph × Stats) := do
+    (abbrevEnv : Soma.Dependent.AbbrevEnv := {})
+    (forceNF : Bool := false) : IO (Graph × Stats) := do
   let mut g := graph
   let mut totalStats : Stats := {}
   let mut remainingFuel := fuel
   for _ in [:maxPasses] do
     if remainingFuel == 0 then break
-    let (g', passStats) ← partialEvalPass g remainingFuel abbrevEnv
+    let (g', passStats) ← partialEvalPass g remainingFuel abbrevEnv forceNF
     totalStats := totalStats.merge passStats
     if passStats.totalSteps == 0 then
       g := g'

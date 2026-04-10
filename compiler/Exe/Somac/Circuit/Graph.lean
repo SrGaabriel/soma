@@ -116,6 +116,13 @@ def empty : Graph :=
   , book := #[]
   }
 
+/-- Set the reducibility of a book definition by index -/
+def setReducibility (g : Graph) (bookIdx : Nat) (r : Reducibility) : Graph :=
+  if h : bookIdx < g.book.size then
+    let d := g.book[bookIdx]
+    { g with book := g.book.set bookIdx { d with reducibility := r } }
+  else g
+
 /-- Store resolved type arguments for a call site node -/
 def setResolvedTypeArgs (g : Graph) (nodeId : NodeId) (typeArgs : Array Value) : Graph :=
   { g with resolvedTypeArgs := g.resolvedTypeArgs.insert nodeId.id typeArgs }

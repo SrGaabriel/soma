@@ -104,32 +104,54 @@ def loadDependencyAlloyModules (deps : Array (String × System.FilePath))
 /-- Lower a single checked module to Alloy IR -/
 def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Alloy.Module := do
   -- Lambda lifting
-  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv) (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv)
+  let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv) (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv) cm.metas
 
   -- Lower to Circuit IR
   let graph := Circuit.Lower.lower cm.untypedModule.types liftedTypedFunctions cm.usages (some globals) cm.instanceEnv (metas := cm.metas) (abbrevEnv := cm.abbrevEnv)
 
-  -- Partial evaluation
-  let (optimized, _stats) ← Circuit.partialEval graph (abbrevEnv := cm.abbrevEnv)
-
-  -- IO erasure at Circuit level (after reduction)
-  let ioErasureCtx : Circuit.IOErasure.IOErasureCtx := {
+  let mkIOCtx (g : Circuit.Graph.Graph) : Circuit.IOErasure.IOErasureCtx := {
     worldUid? := globals.wiredIn.getUnique? .typeWorld |>.map (·.name.id.id)
     pairUid? := globals.wiredIn.getUnique? .typePair |>.map (·.name.id.id)
     ioBindBookIdx? := globals.wiredIn.getUnique? .bindIO |>.bind fun info =>
-      optimized.findDefinition info.name |>.map (·.1)
+      g.findDefinition info.name |>.map (·.1)
     pureIOBookIdx? := globals.wiredIn.getUnique? .pureIO |>.bind fun info =>
-      optimized.findDefinition info.name |>.map (·.1)
+      g.findDefinition info.name |>.map (·.1)
     abbrevEnv := cm.abbrevEnv
   }
-  let (erased, erasureCount) ← Circuit.IOErasure.eraseIO optimized ioErasureCtx
-  if erasureCount > 0 then
-    IO.eprintln s!"[Pipeline] IOErasure: {erasureCount} targets in module={cm.name} ({optimized.nodes.size} nodes)"
+
+  let ioBindIdx := globals.wiredIn.getUnique? .bindIO |>.bind fun info =>
+    graph.findDefinition info.name |>.map (·.1)
+  let pureIOIdx := globals.wiredIn.getUnique? .pureIO |>.bind fun info =>
+    graph.findDefinition info.name |>.map (·.1)
+  let definesIOPrimitives := ioBindIdx.isSome &&
+    graph.book.any fun d => d.name.display.endsWith "io_bind"
+
+  let g ← if definesIOPrimitives then do
+    -- Simple pipeline for the IO runtime module
+    let (optimized, _) ← Circuit.partialEval graph (abbrevEnv := cm.abbrevEnv)
+    let resolved := Circuit.Lower.resolveGraphMetas optimized cm.metas
+    let (erased, erasureCount) ← Circuit.IOErasure.eraseIO resolved (mkIOCtx resolved)
+    if erasureCount > 0 then
+      IO.eprintln s!"[Pipeline] IOErasure: {erasureCount} targets in module={cm.name} ({optimized.nodes.size} nodes)"
+    pure erased
+  else do
+    -- Step 1: partial eval with io_bind/pure_io preserved as irreducible
+    let setIrreducible (g : Circuit.Graph.Graph) : Circuit.Graph.Graph :=
+      let g := match ioBindIdx with | some idx => g.setReducibility idx .irreducible | none => g
+      match pureIOIdx with | some idx => g.setReducibility idx .irreducible | none => g
+    let (optimized, _) ← Circuit.partialEval (setIrreducible graph) (abbrevEnv := cm.abbrevEnv)
+    -- Step 2: resolve all metas so IOErasure and Alloy see clean types
+    let resolved := Circuit.Lower.resolveGraphMetas optimized cm.metas
+    -- Step 3: IOErasure detects and erases io_bind/pure_io patterns
+    let (erased, erasureCount) ← Circuit.IOErasure.eraseIO resolved (mkIOCtx resolved)
+    if erasureCount > 0 then
+      IO.eprintln s!"[Pipeline] IOErasure: {erasureCount} targets in module={cm.name} ({optimized.nodes.size} nodes)"
+    pure erased
 
   -- Lower to Alloy MIR
   let primTypes := Alloy.Lower.buildPrimTypeRegistry globals.wiredIn
   let wiredFuncs := Alloy.Lower.buildWiredFuncRegistry globals.wiredIn
-  let alloyMod := Alloy.Lower.lower erased cm.name primTypes globals.inductives globals.intrinsics wiredFuncs (abbrevEnv := cm.abbrevEnv) (metaState := cm.metas)
+  let alloyMod := Alloy.Lower.lower g cm.name primTypes globals.inductives globals.intrinsics wiredFuncs (abbrevEnv := cm.abbrevEnv) (metaState := cm.metas)
   return alloyMod
 
 /-- Result of compilation pipeline -/

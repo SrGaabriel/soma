@@ -499,8 +499,38 @@ partial def whnfAtPrincipal (nid : NodeId) (entry : NodeEntry) (demandPort : Por
       ReduceM.removeNode fnId
       whnf demandPort
 
+    | .ctor tag 2 =>
+      if tag == 0xFFFE then
+        -- APP-CLOSURE: apply a closure by extracting fn (port 1) and env (port 2)
+        let envIsEra ← do
+          match fnEntry.getPort ⟨2⟩ with
+          | some envPort =>
+            let envEntry ← ReduceM.getNode envPort.node
+            pure (match envEntry.node with | .era => true | _ => false)
+          | none => pure true
+        if envIsEra then
+          -- Link APP.fn ↔ CTOR.fn_port (port 1) to connect APP to fn
+          ReduceM.link ⟨nid, ⟨1⟩⟩ ⟨fnId, ⟨1⟩⟩
+          -- ERA the env (already ERA, just disconnect)
+          ReduceM.disconnect ⟨fnId, ⟨2⟩⟩
+          ReduceM.removeNode fnId
+          ReduceM.trackPeakNodes
+          whnf demandPort
+        else
+          -- Has env: APP(APP(fn, env), arg)
+          let innerApp ← ReduceM.addNode .app entry.ty
+          ReduceM.rewirePort ⟨fnId, ⟨1⟩⟩ ⟨innerApp, ⟨1⟩⟩
+          ReduceM.rewirePort ⟨fnId, ⟨2⟩⟩ ⟨innerApp, ⟨2⟩⟩
+          ReduceM.disconnect ⟨nid, ⟨1⟩⟩
+          ReduceM.connect ⟨nid, ⟨1⟩⟩ (PortId.principal innerApp)
+          ReduceM.removeNode fnId
+          ReduceM.trackPeakNodes
+          whnf demandPort
+      else
+        pure nid
+
     | _ =>
-      -- Non-lambda/sup/era in function position: stuck application
+      -- Non-lambda/sup/era/closure in function position: stuck application
       pure nid
 
   -- Binary operation: two-phase evaluation (left first, then right)

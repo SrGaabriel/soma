@@ -264,9 +264,10 @@ private def findMutualTailCalls (func : ClosedFunc) (allFuncIds : Std.HashSet Na
     | some idx =>
       let stmt := block.stmts[idx]!
       match stmt.inst, stmt.result with
-      | .call funcId args _, some resultId =>
+      | .call funcId args callRetTy, some resultId =>
         -- Cross-function only (self-calls already handled by TCO pass)
-        if funcId != func.id && allFuncIds.contains funcId.id then
+        if funcId != func.id && allFuncIds.contains funcId.id
+           && callRetTy == func.sig.retTy then
           match block.terminator with
           | .jump target =>
             if exitBlocks.contains target.id then

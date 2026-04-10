@@ -402,9 +402,15 @@ private def applyErase (g : Graph) (nodeId : NodeId) (action : EraseAction) (ctx
   let some entry := g.getNode nodeId | return g
   let mut graph := g
   match action with
-  | .worldLam | .worldApp | .ioPairMat | .ioPairProj1 =>
-    -- Preserve graph structure (no-ops that keep nodes in place)
+  | .worldLam | .ioPairMat | .ioPairProj1 =>
     pure ()
+
+  | .worldApp =>
+    graph := link graph (PortId.principal nodeId) ⟨nodeId, ⟨1⟩⟩
+    if let some argPort := entry.getPort ⟨2⟩ then
+      graph := graph.disconnect ⟨nodeId, ⟨2⟩⟩
+      graph := addEra graph argPort
+    graph := graph.removeNode nodeId
 
   | .ioPairCtor =>
     -- Erase IO Pair CTOR. Strategy depends on consumer:
@@ -472,18 +478,19 @@ private def applyErase (g : Graph) (nodeId : NodeId) (action : EraseAction) (ctx
     graph := graph.disconnect ⟨innerAppId, ⟨1⟩⟩
     graph := graph.disconnect ⟨innerAppId, ⟨2⟩⟩
 
+    -- io_bind m f → APP(f, m): apply continuation to the IO action result
     -- Reconnect: APP₂.function = f, APP₂.argument = m
     if let some ft := fTarget then
       graph := graph.connect ⟨nodeId, ⟨1⟩⟩ ft
     if let some mt := mTarget then
       graph := graph.connect ⟨nodeId, ⟨2⟩⟩ mt
 
+    -- Remove the inner APP₁
+    graph := graph.removeNode innerAppId
+
     -- ERA the REF/ALO node for io_bind
     if let some rt := refTarget then
       graph := addEra graph rt
-
-    -- Remove the inner APP₁
-    graph := graph.removeNode innerAppId
 
   graph
 
@@ -535,8 +542,11 @@ private def processOneWorldLam (s : EraseState) (nodeId : NodeId) (ctx : IOErasu
 /-- Get the bypass target for a node -/
 private def getBypassTarget (g : Graph) (nodeId : NodeId) (action : EraseAction) : Option NodeId :=
   match action with
-  | .worldLam | .worldApp | .ioPairMat | .ioPairProj1 =>
-    some nodeId  -- no-ops
+  | .worldLam | .ioPairMat | .ioPairProj1 =>
+    some nodeId -- no-ops: bypass target is self
+  | .worldApp =>
+    -- worldApp bypasses to function (port 1), dropping World argument
+    (g.getNode nodeId).bind (·.getPort ⟨1⟩) |>.map (·.node)
   | .pureIO =>
     (g.getNode nodeId).bind (·.getPort ⟨2⟩) |>.map (·.node)
   | .ioPairCtor =>
@@ -545,7 +555,7 @@ private def getBypassTarget (g : Graph) (nodeId : NodeId) (action : EraseAction)
   | .ioPairProj0 =>
     none
   | .ioBind .. =>
-    some nodeId -- outer APP stays (rewired)
+    some nodeId -- outer APP stays (rewired to APP(f, m))
 
 /-- Process a single non-LAM target, updating definition roots if the erased node was a root -/
 private def processOneOther (g : Graph) (nodeId : NodeId) (action : EraseAction)
@@ -565,6 +575,61 @@ private def processOneOther (g : Graph) (nodeId : NodeId) (action : EraseAction)
       | none => (applyErase g nodeId action ctx, rootMap)
     | none => (applyErase g nodeId action ctx, rootMap)
 
+/-- Collapse type-argument APPs (APP(X, ERA) → X) in chains leading to
+    io_bind/pure_io REFs -/
+private def collapseTypeArgApps (g : Graph) (ctx : IOErasureCtx) : Graph := Id.run do
+  let ioBookIndices : Std.HashSet Nat := Id.run do
+    let mut s : Std.HashSet Nat := {}
+    if let some idx := ctx.ioBindBookIdx? then s := s.insert idx
+    if let some idx := ctx.pureIOBookIdx? then s := s.insert idx
+    s
+  if ioBookIndices.isEmpty then return g
+  let mut graph := g
+  let mut collapseTargets : Array NodeId := #[]
+  for (nid, _) in graph.nodes.toList do
+    if let some entry := graph.getNode ⟨nid⟩ then
+      if let .app := entry.node then
+        let argIsEra := match entry.getPort ⟨2⟩ with
+          | some argPort => match graph.getNode argPort.node with
+            | some argEntry => match argEntry.node with | .era => true | _ => false
+            | none => false
+          | none => false
+        if argIsEra then
+          -- Walk the function chain to see if it reaches an io_bind/pure_io REF
+          let mut current := entry.getPort ⟨1⟩
+          let mut reachesIORef := false
+          for _ in [:20] do
+            match current with
+            | some port =>
+              match graph.getNode port.node with
+              | some fnEntry =>
+                match fnEntry.node with
+                | .ref idx | .alo idx =>
+                  if ioBookIndices.contains idx then reachesIORef := true
+                  current := none
+                | .app =>
+                  let innerArgIsEra := match fnEntry.getPort ⟨2⟩ with
+                    | some ap => match graph.getNode ap.node with
+                      | some ae => match ae.node with | .era => true | _ => false
+                      | none => false
+                    | none => false
+                  if innerArgIsEra then current := fnEntry.getPort ⟨1⟩
+                  else current := none
+                | _ => current := none
+              | none => current := none
+            | none => break
+          if reachesIORef then
+            collapseTargets := collapseTargets.push ⟨nid⟩
+  for appId in collapseTargets do
+    if let some appEntry := graph.getNode appId then
+      graph := link graph (PortId.principal appId) ⟨appId, ⟨1⟩⟩
+      if let some argPort := appEntry.getPort ⟨2⟩ then
+        graph := graph.disconnect ⟨appId, ⟨2⟩⟩
+        graph := addEra graph argPort
+      graph := graph.removeNode appId
+  graph
+
+
 /-- Erase all IO artifacts from the graph -/
 def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
   if ctx.worldUid?.isNone && ctx.pairUid?.isNone then
@@ -580,27 +645,54 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
     if let .worldLam := action then
       state := processOneWorldLam state nodeId ctx
   let mut g := state.graph
-  -- Accumulate World LAM removal counts across all passes
   let mut worldLamCounts := state.defWorldLams
 
-  -- Pass 2: io_bind and pure_io (before worldApp, since io_bind APPs could also match worldApp)
+  -- Pass 2: Collapse type-argument APPs on io_bind/pure_io chains
+  g := collapseTypeArgApps g ctx
+  -- Re-collect targets after type-arg collapse
+  let targets ← collectTargets g ctx
+
+  -- Build a set of node IDs belonging to the io_bind/pure_io definitions
+  let ioDefNodes : Std.HashSet Nat := Id.run do
+    let mut nodes : Std.HashSet Nat := {}
+    let defsToSkip := #[ctx.ioBindBookIdx?, ctx.pureIOBookIdx?].filterMap id
+    for bookIdx in defsToSkip do
+      if let some def_ := g.book[bookIdx]? then
+        let mut queue : Array Somac.Circuit.Node.NodeId := #[def_.root]
+        for _ in [:500] do
+          if queue.isEmpty then break
+          let nid := queue.back!
+          queue := queue.pop
+          if nodes.contains nid.id then continue
+          nodes := nodes.insert nid.id
+          if let some entry := g.getNode nid then
+            for pi in [:entry.node.numPorts] do
+              if let some port := entry.getPort ⟨pi⟩ then
+                if !nodes.contains port.node.id then
+                  queue := queue.push port.node
+    nodes
+
+  -- Pass 3: io_bind and pure_io (before worldApp, since io_bind APPs could also match worldApp)
   let mut rm := buildRootMap g
   for (nodeId, action) in targets do
     match action with
     | .ioBind .. | .pureIO =>
-      let (g', rm') := processOneOther g nodeId action rm ctx
-      g := g'; rm := rm'
+      -- Skip targets inside io_bind/pure_io definitions
+      if ioDefNodes.contains nodeId.id then pure ()
+      else
+        let (g', rm') := processOneOther g nodeId action rm ctx
+        g := g'; rm := rm'
     | _ => pure ()
 
-  -- Pass 3: remaining IO artifacts (Pair CTOR, MAT, World APP, PROJ)
+  -- Pass 4: remaining IO artifacts (Pair CTOR, MAT, PROJ)
   for (nodeId, action) in targets do
     match action with
-    | .worldLam | .ioBind .. | .pureIO => pure ()
+    | .worldLam | .worldApp | .ioBind .. | .pureIO => pure ()
     | _ =>
       let (g', rm') := processOneOther g nodeId action rm ctx
       g := g'; rm := rm'
 
-  -- Pass 4: iterative cleanup because erasure exposes new targets
+  -- Pass 5: iterative cleanup because erasure exposes new targets
   let mut processedNodes : Std.HashSet Nat := {}
   -- Mark all initially-processed nodes to avoid re-detecting no-op targets
   for (nodeId, _) in targets do
@@ -624,7 +716,7 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
     rm := buildRootMap g
     for (nodeId, action) in freshTargets do
       match action with
-      | .worldLam => pure ()
+      | .worldLam | .worldApp => pure ()
       | _ =>
         let (g', rm') := processOneOther g nodeId action rm ctx
         g := g'; rm := rm'
@@ -632,7 +724,7 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
   -- Track definitions whose closure roots were bypassed (ERA env)
   let mut closureBypassed : Std.HashSet Nat := {}
 
-  -- Pass 5a: erase IO Pair CTORs inside closure environments
+  -- Pass 6a: erase IO Pair CTORs inside closure environments
   for (nodeId, _) in g.nodes.toList do
     if let some entry := g.getNode ⟨nodeId⟩ then
       if let .ctor tag 2 := entry.node then
@@ -653,7 +745,7 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
                     g := addEra g worldPort
                   g := g.removeNode pairId
 
-  -- Pass 5b: fix closure CTOR roots after IO erasure
+  -- Pass 6b: fix closure CTOR roots after IO erasure
   for i in List.range g.book.size do
     if let some d := g.book[i]? then
       if let some rootEntry := g.getNode d.root then
@@ -721,7 +813,15 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
                 if lamCount < d.arity then
                   g := { g with book := g.book.set! i { d with arity := lamCount } }
 
-  -- Pass 6: update definition types and arities to reflect IO erasure
+  -- Pass 6c: erase World APPs
+  let worldAppTargets ← collectTargets g ctx
+  rm := buildRootMap g
+  for (nodeId, action) in worldAppTargets do
+    if let .worldApp := action then
+      let (g', rm') := processOneOther g nodeId action rm ctx
+      g := g'; rm := rm'
+
+  -- Pass 7: update definition types and arities to reflect IO erasure
   for i in List.range g.book.size do
     if let some d := g.book[i]? then
       let erasedTy := eraseIOFromFuncType ctx d.ty
@@ -757,7 +857,7 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
         else
           pure ()
 
-  -- Pass 7: update ALL node types for post-erasure consistency
+  -- Pass 8: update ALL node types for post-erasure consistency
   for (nodeId, _) in g.nodes.toList do
     if let some entry := g.getNode ⟨nodeId⟩ then
       let newTy := match entry.node with

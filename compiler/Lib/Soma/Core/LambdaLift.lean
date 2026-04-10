@@ -20,6 +20,7 @@ structure LiftState where
   globalEnv : Soma.Core.GlobalEnv := .empty
   unfoldTy : Value → Value := id
   typeParamEnv : Soma.Core.Env := .empty
+  metas : Soma.Core.MetaState := .empty
   deriving Inhabited
 
 abbrev LiftM := StateM LiftState
@@ -28,8 +29,9 @@ namespace LiftM
 
 def run (m : LiftM α) (moduleName : String) (globalNames : HashSet QualifiedName)
     (startId : Nat := 0) (globalEnv : Soma.Core.GlobalEnv := .empty)
-    (unfoldTy : Value → Value := id) : α × LiftState :=
-  StateT.run m { moduleName, globalNames, nextId := startId, globalEnv, unfoldTy }
+    (unfoldTy : Value → Value := id)
+    (metas : Soma.Core.MetaState := .empty) : α × LiftState :=
+  StateT.run m { moduleName, globalNames, nextId := startId, globalEnv, unfoldTy, metas }
 
 def freshId : LiftM Nat := do
   let st ← get
@@ -176,7 +178,7 @@ partial def liftCoreExpr (e : Soma.Core.Expr) : LiftM Soma.Core.Expr := do
     let evalCtx : Soma.Core.EvalCtx := { env := tyParamEnv, globals := genv, metas := .empty }
     let captureValueTypes := captureParams.map fun (_, _, tyExpr) => Soma.Core.evalCoreExpr evalCtx tyExpr
     let domainTy := Soma.Core.evalCoreExpr evalCtx domain
-    let bodyTy := Soma.Core.Expr.typeOf openedBody genv (← get).unfoldTy
+    let bodyTy := Soma.Core.Expr.typeOf openedBody genv (← get).unfoldTy (← get).metas
     let allParamTypes := captureValueTypes ++ #[domainTy]
     let liftedFnType := buildFnType allParamTypes bodyTy
 
@@ -299,6 +301,7 @@ abbrev TypedFunctionMap := Std.HashMap String TypedFunction
 
 def liftTypedFunctions (typedFunctions : TypedFunctionMap) (moduleName : String) (startId : Nat)
     (globalEnv : Soma.Core.GlobalEnv) (unfoldTy : Value → Value := id)
+    (metas : Soma.Core.MetaState := .empty)
     : TypedFunctionMap × Array TypedFunction := Id.run do
   let globalNames : HashSet QualifiedName := typedFunctions.fold (init := {}) fun acc _ fn =>
     acc.insert fn.name
@@ -309,13 +312,14 @@ def liftTypedFunctions (typedFunctions : TypedFunctionMap) (moduleName : String)
       let fn' ← liftTypedFunction fn
       result := result.insert fnName fn'
     pure result
-  ) moduleName globalNames startId globalEnv unfoldTy
+  ) moduleName globalNames startId globalEnv unfoldTy metas
 
   (liftedFunctions, finalState.liftedFunctions)
 
 def liftAll (typedFunctions : TypedFunctionMap) (moduleName : String) (startId : Nat)
-    (globalEnv : Soma.Core.GlobalEnv) (unfoldTy : Value → Value := id) : TypedFunctionMap :=
-  let (lifted, generated) := liftTypedFunctions typedFunctions moduleName startId globalEnv unfoldTy
+    (globalEnv : Soma.Core.GlobalEnv) (unfoldTy : Value → Value := id)
+    (metas : Soma.Core.MetaState := .empty) : TypedFunctionMap :=
+  let (lifted, generated) := liftTypedFunctions typedFunctions moduleName startId globalEnv unfoldTy metas
   generated.foldl (init := lifted) fun acc fn =>
     acc.insert fn.name.display fn
 
