@@ -402,7 +402,14 @@ private def applyErase (g : Graph) (nodeId : NodeId) (action : EraseAction) (ctx
   let some entry := g.getNode nodeId | return g
   let mut graph := g
   match action with
-  | .worldLam | .ioPairMat | .ioPairProj1 =>
+  | .worldLam =>
+    if let some varPort := entry.getPort ⟨1⟩ then
+      graph := graph.disconnect ⟨nodeId, ⟨1⟩⟩
+      graph := addEra graph varPort
+    graph := link graph (PortId.principal nodeId) ⟨nodeId, ⟨2⟩⟩
+    graph := graph.removeNode nodeId
+
+  | .ioPairMat | .ioPairProj1 =>
     pure ()
 
   | .worldApp =>
@@ -510,12 +517,32 @@ private def buildRootMap (graph : Graph) : Std.HashMap Nat Nat :=
     | some def_ => acc.insert def_.root.id i
     | none => acc
 
+/-- Build a map from every node in each definition's root LAM chain to the definition index -/
+private def buildLamChainMap (graph : Graph) : Std.HashMap Nat Nat := Id.run do
+  let mut m : Std.HashMap Nat Nat := {}
+  for i in List.range graph.book.size do
+    if let some def_ := graph.book[i]? then
+      let mut cur := def_.root
+      for _ in [:30] do
+        if m.contains cur.id then break
+        match graph.getNode cur with
+        | some e => match e.node with
+          | .lam _ =>
+            m := m.insert cur.id i
+            match e.getPort ⟨2⟩ with
+            | some bp => cur := bp.node
+            | none => break
+          | _ => break
+        | none => break
+  m
+
 /-- State threaded through the erasure passes -/
 private structure EraseState where
   graph : Graph
   rootMap : Std.HashMap Nat Nat
+  lamChainMap : Std.HashMap Nat Nat := {}
   count : Nat := 0
-  /-- Tracks how many World LAMs were actually removed per definition (by root advancement) -/
+  /-- Tracks how many World LAMs were actually removed per definition -/
   defWorldLams : Std.HashMap Nat Nat := {}
 
 /-- Process a single World LAM target -/
@@ -536,7 +563,11 @@ private def processOneWorldLam (s : EraseState) (nodeId : NodeId) (ctx : IOErasu
             | none => s
           | none => s
         { s with defWorldLams := s.defWorldLams.insert defIdx ((s.defWorldLams.getD defIdx 0) + 1) }
-      | none => s
+      | none =>
+        match s.lamChainMap.get? nodeId.id with
+        | some defIdx =>
+          { s with defWorldLams := s.defWorldLams.insert defIdx ((s.defWorldLams.getD defIdx 0) + 1) }
+        | none => s
     { s with graph := applyErase s.graph nodeId .worldLam ctx, count := s.count + 1 }
 
 /-- Get the bypass target for a node -/
@@ -640,7 +671,8 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
   let rootMap := buildRootMap graph
 
   -- Pass 1: World LAMs
-  let mut state : EraseState := { graph, rootMap }
+  let lamChainMap := buildLamChainMap graph
+  let mut state : EraseState := { graph, rootMap, lamChainMap }
   for (nodeId, action) in targets do
     if let .worldLam := action then
       state := processOneWorldLam state nodeId ctx
@@ -705,7 +737,8 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
     for (nodeId, _) in freshTargets do
       processedNodes := processedNodes.insert nodeId.id
     let newRootMap := buildRootMap g
-    let mut newState : EraseState := { graph := g, rootMap := newRootMap }
+    let newLamChainMap := buildLamChainMap g
+    let mut newState : EraseState := { graph := g, rootMap := newRootMap, lamChainMap := newLamChainMap }
     for (nodeId, action) in freshTargets do
       if let .worldLam := action then
         newState := processOneWorldLam newState nodeId ctx
@@ -813,13 +846,22 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
                 if lamCount < d.arity then
                   g := { g with book := g.book.set! i { d with arity := lamCount } }
 
-  -- Pass 6c: erase World APPs
-  let worldAppTargets ← collectTargets g ctx
+  -- Pass 6c: erase World APPs using the ORIGINAL targets classification
   rm := buildRootMap g
-  for (nodeId, action) in worldAppTargets do
+  for (nodeId, action) in targets do
     if let .worldApp := action then
-      let (g', rm') := processOneOther g nodeId action rm ctx
-      g := g'; rm := rm'
+      if g.getNode nodeId |>.isSome then
+        let (g', rm') := processOneOther g nodeId action rm ctx
+        g := g'; rm := rm'
+
+  -- Pass 6d: propagate types forward through DUP nodes
+  for (nodeId, _) in g.nodes.toList do
+    if let some entry := g.getNode ⟨nodeId⟩ then
+      if let .dup _ := entry.node then
+        if let some principalTarget := entry.getPrincipal then
+          if let some sourceEntry := g.getNode principalTarget.node then
+            if isWorldTy ctx entry.ty && !isWorldTy ctx sourceEntry.ty then
+              g := g.updateNode ⟨nodeId⟩ fun e => { e with ty := sourceEntry.ty }
 
   -- Pass 7: update definition types and arities to reflect IO erasure
   for i in List.range g.book.size do
@@ -865,11 +907,9 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
           match g.book[idx]? with
           | some d => d.ty
           | none => eraseIOFromFuncType ctx entry.ty
-        | .ctor tag _ =>
-          -- Closure CTORs (tag 0xFFFE) keep their original types
-          if tag == 0xFFFE then entry.ty
-          else if isIOPairTy ctx entry.ty then eraseIOFromFuncType ctx entry.ty
-          else entry.ty
+        | .ctor _ _ =>
+          eraseIOFromFuncType ctx entry.ty
+        | .dup _ => eraseIOFromFuncType ctx entry.ty
         | _ => eraseIOFromFuncType ctx entry.ty
       g := g.updateNode ⟨nodeId⟩ fun e => { e with ty := newTy }
 

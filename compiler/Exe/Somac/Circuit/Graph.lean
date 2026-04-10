@@ -275,7 +275,24 @@ def getDefinition (g : Graph) (idx : Nat) : Option Definition :=
 def updateDefinitionRoot (g : Graph) (idx : Nat) (newRoot : NodeId) : Graph :=
   if h : idx < g.book.size then
     let def_ := g.book[idx]
-    { g with book := g.book.set idx { def_ with root := newRoot } }
+    -- Recount the LAM chain arity from the new root, since partial eval
+    -- may have beta-reduced some root LAMs (e.g., World LAMs consumed by
+    -- APP-LAM annihilation), making the stored arity stale.
+    let newArity := Id.run do
+      let mut count : Nat := 0
+      let mut cur := newRoot
+      for _ in [:100] do
+        match g.getNode cur with
+        | some e => match e.node with
+          | .lam _ =>
+            count := count + 1
+            match e.getPort ⟨2⟩ with
+            | some bp => cur := bp.node
+            | none => break
+          | _ => break
+        | none => break
+      count
+    { g with book := g.book.set idx { def_ with root := newRoot, arity := newArity } }
   else g
 
 /-- Look up a definition by name -/
@@ -359,6 +376,7 @@ def sweep (g : Graph) : Graph × Nat :=
       (g'.removeNode ⟨id⟩, removed + 1)
     else
       (g', removed)
+
 
 end Graph
 

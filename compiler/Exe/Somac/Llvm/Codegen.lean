@@ -1292,14 +1292,17 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
   let envAlloTy ← operandTy env
   -- Detect empty env (unit/erased)
   let isEmptyEnv := envAlloTy == .prim .unit
+  let envFieldCount : Nat := if isEmptyEnv then 0
+    else match envLLVMTy with
+      | .struct _ fields => if fields.size > 1 then fields.size else 1
+      | _ => 1
   let closureArity : Nat ← do
     match ← CodegenM.getFuncSig funcId.id with
     | some sig =>
       let n := sig.params.size
-      pure (if isEmptyEnv then n else if n == 0 then 0 else n - 1)
+      pure (if isEmptyEnv then n else if n ≤ envFieldCount then 0 else n - envFieldCount)
     | none => pure 0
-  -- Headerless closure: { i8 arity, [7xi8] pad, ptr func_ptr, i64 env[0..] }
-  let envSlotCount : Nat := if isEmptyEnv then 0 else 1
+  let envSlotCount : Nat := if isEmptyEnv then 0 else envFieldCount
   let ps := (← get).ptrSize
   let closureHeaderSize := ps + ps
   let closureByteSize : Int := Int.ofNat (closureHeaderSize + envSlotCount * ps)
@@ -1322,12 +1325,29 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
   -- Store func_ptr (field 2 of closureHeaderTy = the ptr field)
   let funcFieldAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[0, 2])
   CodegenM.withFuncBuilder (FuncBuilder.store .ptr (globalVal funcName) (.local funcFieldAddr))
-  -- Store env slot only if env is non-empty
+  -- Store env slots
   if !isEmptyEnv then
-    let envPtrVal ← ensurePtr envLLVMTy envVal
-    -- Env slot is at GEP index 1 past the header struct
-    let envSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
-    CodegenM.withFuncBuilder (FuncBuilder.store .ptr envPtrVal (.local envSlotAddr))
+    if envFieldCount > 1 then
+      -- Multi-field struct env: extract each field and store as separate slots
+      match envLLVMTy with
+      | .struct _ fields =>
+        for fi in [:fields.size] do
+          let fieldVal ← CodegenM.withFuncBuilder (FuncBuilder.extractvalue envLLVMTy envVal #[fi])
+          let fieldPtrVal ← ensurePtr (fields[fi]!) (.local fieldVal)
+          let slotAddr ← CodegenM.withFuncBuilder do
+            FuncBuilder.gepi32 (.array envSlotCount .ptr) (.local closurePtr)
+              #[if fi == 0 then 1 else (1 : Nat) + fi]
+          CodegenM.withFuncBuilder (FuncBuilder.store .ptr fieldPtrVal (.local slotAddr))
+      | _ =>
+        -- Fallback: single slot
+        let envPtrVal ← ensurePtr envLLVMTy envVal
+        let envSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
+        CodegenM.withFuncBuilder (FuncBuilder.store .ptr envPtrVal (.local envSlotAddr))
+    else
+      -- Single env slot
+      let envPtrVal ← ensurePtr envLLVMTy envVal
+      let envSlotAddr ← CodegenM.withFuncBuilder (FuncBuilder.gepi32 closureHeaderTy (.local closurePtr) #[1])
+      CodegenM.withFuncBuilder (FuncBuilder.store .ptr envPtrVal (.local envSlotAddr))
   let closureTyAlloy ← do
     match ← CodegenM.getFuncSig funcId.id with
     | some sig => pure (.closure (sig.params.map (·.ty)) sig.retTy)
