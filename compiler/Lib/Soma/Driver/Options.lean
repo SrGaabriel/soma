@@ -29,7 +29,7 @@ namespace OptProfile
 def defaultOptLevel : OptProfile → Nat
   | .debug   => 0
   | .dev     => 1
-  | .release => 2
+  | .release => 3
 
 /-- Whether to run Soma-level optimization passes -/
 def runSomaPasses : OptProfile → Bool

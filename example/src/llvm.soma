@@ -36,4 +36,12 @@ def main : IO () =
         let first = head xs
         puts ("Head: " <> display first)
 
+        let mapFilter = map (\x -> x * 10) (filter (\x -> x % 2 == 0) [1, 2, 3, 4, 5, 6])
+        let mapFilterSum = sum mapFilter
+        puts ("Map-filter sum: " <> display mapFilterSum)
+
+        let filterMap = filter (\x -> x % 3 == 0) (map (\x -> x * 2) xs)
+        let filterMapSum = sum filterMap
+        puts ("Filter-map sum: " <> display filterMapSum)
+
         puts "Done!"

@@ -131,8 +131,6 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
     let (optimized, _) ← Circuit.partialEval graph (abbrevEnv := cm.abbrevEnv)
     let resolved := Circuit.Lower.resolveGraphMetas optimized cm.metas
     let (erased, erasureCount) ← Circuit.IOErasure.eraseIO resolved (mkIOCtx resolved)
-    if erasureCount > 0 then
-      IO.eprintln s!"[Pipeline] IOErasure: {erasureCount} targets in module={cm.name} ({optimized.nodes.size} nodes)"
     pure erased
   else do
     -- Step 1: partial eval with io_bind/pure_io preserved as irreducible
@@ -144,8 +142,6 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
     let resolved := Circuit.Lower.resolveGraphMetas optimized cm.metas
     -- Step 3: IOErasure detects and erases io_bind/pure_io patterns
     let (erased, erasureCount) ← Circuit.IOErasure.eraseIO resolved (mkIOCtx resolved)
-    if erasureCount > 0 then
-      IO.eprintln s!"[Pipeline] IOErasure: {erasureCount} targets in module={cm.name} ({optimized.nodes.size} nodes)"
     pure erased
 
   -- Lower to Alloy MIR
