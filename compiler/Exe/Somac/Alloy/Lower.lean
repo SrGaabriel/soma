@@ -559,7 +559,7 @@ partial def convertValueTypeWithMapping (val : Value) (ctx : TypeConvCtx n) : Ty
       | none =>
         -- Try unfolding as a type abbreviation
         match Somac.Circuit.Lower.unfoldValue val ctx.abbrevEnv with
-        | .vDataType _ _ => .tagged (.prim .u32) #[]  -- unfold didn't help
+        | .vDataType _ _ => .tagged (.prim .u32) #[] -- genuine data type, not an alias
         | unfolded => convertValueTypeWithMapping unfolded ctx
   | Value.vConstructor _ _ _ _ => .rawPtr
   | Value.vRecord row =>

@@ -1329,14 +1329,14 @@ private def emitMakeClosureImpl (funcRef : FuncRef) (env : Operand)
   if !isEmptyEnv then
     if envFieldCount > 1 then
       -- Multi-field struct env: extract each field and store as separate slots
+      let headerSlots : Nat := closureHeaderSize / ps
       match envLLVMTy with
       | .struct _ fields =>
         for fi in [:fields.size] do
           let fieldVal ← CodegenM.withFuncBuilder (FuncBuilder.extractvalue envLLVMTy envVal #[fi])
           let fieldPtrVal ← ensurePtr (fields[fi]!) (.local fieldVal)
           let slotAddr ← CodegenM.withFuncBuilder do
-            FuncBuilder.gepi32 (.array envSlotCount .ptr) (.local closurePtr)
-              #[if fi == 0 then 1 else (1 : Nat) + fi]
+            FuncBuilder.gepi32 .ptr (.local closurePtr) #[headerSlots + fi]
           CodegenM.withFuncBuilder (FuncBuilder.store .ptr fieldPtrVal (.local slotAddr))
       | _ =>
         -- Fallback: single slot

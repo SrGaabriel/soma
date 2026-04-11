@@ -387,7 +387,7 @@ partial def eraseIOFromFuncType (ctx : IOErasureCtx) (ty : Value) : Value :=
   | .vSigma _ _ fst sndClos =>
     if isWorldTy ctx fst then applyPure sndClos fst
     else ty
-  | .vDataType uid params =>
+  | .vDataType _ _ =>
     if isIOPairTy ctx ty then
       match ty with
       | .vDataType _ (_ :: payload :: _) => payload
@@ -867,11 +867,11 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
   for i in List.range g.book.size do
     if let some d := g.book[i]? then
       let erasedTy := eraseIOFromFuncType ctx d.ty
-      -- Check if the type actually changed (IO was detected and stripped)
+      -- Always update the type (IO Pair unwrapping applies even without World params)
       let originalArity := d.ty.explicitArityFull (some (Somac.Circuit.Lower.unfoldValue · ctx.abbrevEnv))
       let erasedArity := erasedTy.explicitArityFull (some (Somac.Circuit.Lower.unfoldValue · ctx.abbrevEnv))
       let worldParams := if originalArity >= erasedArity then originalArity - erasedArity else 0
-      if worldParams > 0 then
+      let newArity := if worldParams > 0 then
         let removedLams := if d.reducibility == .external then worldParams
           else worldLamCounts.getD i 0
         -- Guard: check if body has surviving CTOR(0,2) (closure capture Pairs)
@@ -894,10 +894,10 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
                         queue := queue.push port.node
             return false
         if !bodyHasIOPair then
-          let newArity := if d.arity >= removedLams then d.arity - removedLams else d.arity
-          g := { g with book := g.book.set! i { d with ty := erasedTy, arity := newArity } }
-        else
-          pure ()
+          if d.arity >= removedLams then d.arity - removedLams else d.arity
+        else d.arity
+      else d.arity
+      g := { g with book := g.book.set! i { d with ty := erasedTy, arity := newArity } }
 
   -- Pass 8: update ALL node types for post-erasure consistency
   for (nodeId, _) in g.nodes.toList do
@@ -907,9 +907,6 @@ def eraseIO (graph : Graph) (ctx : IOErasureCtx) : IO (Graph × Nat) := do
           match g.book[idx]? with
           | some d => d.ty
           | none => eraseIOFromFuncType ctx entry.ty
-        | .ctor _ _ =>
-          eraseIOFromFuncType ctx entry.ty
-        | .dup _ => eraseIOFromFuncType ctx entry.ty
         | _ => eraseIOFromFuncType ctx entry.ty
       g := g.updateNode ⟨nodeId⟩ fun e => { e with ty := newTy }
 

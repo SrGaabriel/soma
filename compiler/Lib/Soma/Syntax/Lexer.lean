@@ -181,36 +181,95 @@ def lexBacktickIdent : LexerM RawToken := do
     recordError "unterminated backtick identifier"
     makeToken .error start
 
-def lexStringLit : LexerM RawToken := do
-  let start ← getOffset
-  advance  -- skip "
-  let contentStart ← getOffset
-  while (← current) != '"' && (← current) != '\n' && (← current) != '\x00' do
+private def isHexDigit (c : Char) : Bool :=
+  ('0' ≤ c && c ≤ '9') || ('a' ≤ c && c ≤ 'f') || ('A' ≤ c && c ≤ 'F')
+
+private def hexDigitVal (c : Char) : Nat :=
+  if '0' ≤ c && c ≤ '9' then c.toNat - '0'.toNat
+  else if 'a' ≤ c && c ≤ 'f' then c.toNat - 'a'.toNat + 10
+  else if 'A' ≤ c && c ≤ 'F' then c.toNat - 'A'.toNat + 10
+  else 0
+
+/-- Process a single escape sequence after consuming the backslash -/
+private partial def lexEscapeChar (start : Nat) : LexerM (Option Char) := do
+  let esc ← current
+  match esc with
+  | 'n'  => advance; return some '\n'
+  | 't'  => advance; return some '\t'
+  | 'r'  => advance; return some '\r'
+  | '\\' => advance; return some '\\'
+  | '"'  => advance; return some '"'
+  | '0'  => advance; return some '\x00'
+  | 'x'  =>
+    advance  -- skip 'x'
+    let h1 ← current
+    if isHexDigit h1 then
+      advance
+      let h2 ← current
+      if isHexDigit h2 then
+        advance
+        return some (Char.ofNat (hexDigitVal h1 * 16 + hexDigitVal h2))
+      else
+        let span ← spanFrom start
+        recordRichError s!"expected hex digit after '\\x{h1}'" span
+          (help := "hex escapes require two digits: \\xHH")
+        return none
+    else
+      let span ← spanFrom start
+      recordRichError "expected hex digit after '\\x'" span
+        (help := "hex escapes require two digits: \\xHH")
+      return none
+  | other =>
+    let span ← spanFrom start
+    recordRichError s!"invalid escape sequence '\\{other}'" span
+      (help := "valid escapes: \\n, \\t, \\r, \\\\, \\\", \\0, \\xHH")
     advance
-  let contentEnd ← getOffset
+    return none
+
+partial def lexStringLit : LexerM RawToken := do
+  let start ← getOffset
+  advance -- skip opening "
+  let mut content : String := ""
+  let mut hasError := false
+  while (← current) != '"' && (← current) != '\n' && (← current) != '\x00' do
+    if (← current) == '\\' then
+      advance -- skip backslash
+      match ← lexEscapeChar start with
+      | some c => content := content.push c
+      | none   => hasError := true
+    else
+      content := content.push (← current)
+      advance
   if (← current) == '"' then
     advance
-    let content ← getText contentStart contentEnd
-    makeToken (.string content) start
+    if hasError then makeToken .error start
+    else makeToken (.string content) start
   else
     let span ← spanFrom start
     recordRichError "unterminated string literal" span
       (help := "add a closing '\"' to terminate the string")
     makeToken .error start
 
-def lexTripleString : LexerM RawToken := do
+partial def lexTripleString : LexerM RawToken := do
   let start ← getOffset
   skipN 3  -- skip """
-  let contentStart ← getOffset
+  let mut content : String := ""
+  let mut hasError := false
   while !(← atEnd) do
     if (← current) == '"' && (← peekNext) == '"' && (← peekAhead 2) == '"' then
       break
-    advance
-  let contentEnd ← getOffset
+    if (← current) == '\\' then
+      advance  -- skip backslash
+      match ← lexEscapeChar start with
+      | some c => content := content.push c
+      | none   => hasError := true
+    else
+      content := content.push (← current)
+      advance
   if (← current) == '"' then
     skipN 3
-    let content ← getText contentStart contentEnd
-    makeToken (.string content) start
+    if hasError then makeToken .error start
+    else makeToken (.string content) start
   else
     let span ← spanFrom start
     recordRichError "unterminated triple-quoted string" span

@@ -102,7 +102,8 @@ def loadDependencyAlloyModules (deps : Array (String × System.FilePath))
     pure (.ok allModules)
 
 /-- Lower a single checked module to Alloy IR -/
-def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Alloy.Module := do
+def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals)
+    (globalAbbrevEnv : Soma.Dependent.AbbrevEnv := {}) : IO Alloy.Module := do
   -- Lambda lifting
   let liftedTypedFunctions := Soma.Core.LambdaLift.liftAll cm.typedFunctions cm.name cm.uniqueNextId (globals.toGlobalEnvWithClasses cm.instanceEnv) (Somac.Circuit.Lower.unfoldValue · cm.abbrevEnv) cm.metas
 
@@ -116,15 +117,20 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
       g.findDefinition info.name |>.map (·.1)
     pureIOBookIdx? := globals.wiredIn.getUnique? .pureIO |>.bind fun info =>
       g.findDefinition info.name |>.map (·.1)
-    abbrevEnv := cm.abbrevEnv
+    abbrevEnv := Id.run do
+      let mut merged := cm.abbrevEnv
+      for (k, v) in globalAbbrevEnv.toList do
+        if !merged.contains k then
+          merged := merged.insert k v
+      merged
   }
 
-  let ioBindIdx := globals.wiredIn.getUnique? .bindIO |>.bind fun info =>
-    graph.findDefinition info.name |>.map (·.1)
-  let pureIOIdx := globals.wiredIn.getUnique? .pureIO |>.bind fun info =>
-    graph.findDefinition info.name |>.map (·.1)
-  let definesIOPrimitives := ioBindIdx.isSome &&
-    graph.book.any fun d => d.name.display.endsWith "io_bind"
+  let ioBindName? := globals.wiredIn.getUnique? .bindIO |>.map (·.name)
+  let pureIOName? := globals.wiredIn.getUnique? .pureIO |>.map (·.name)
+
+  let definesIOPrimitives :=
+    graph.book.any fun d =>
+      (ioBindName?.any (· == d.name)) && d.reducibility != .external
 
   let g ← if definesIOPrimitives then do
     -- Simple pipeline for the IO runtime module
@@ -134,9 +140,14 @@ def lowerToAlloy (cm : CheckedModule) (globals : Soma.Dependent.Globals) : IO Al
     pure erased
   else do
     -- Step 1: partial eval with io_bind/pure_io preserved as irreducible
-    let setIrreducible (g : Circuit.Graph.Graph) : Circuit.Graph.Graph :=
-      let g := match ioBindIdx with | some idx => g.setReducibility idx .irreducible | none => g
-      match pureIOIdx with | some idx => g.setReducibility idx .irreducible | none => g
+    let setIrreducible (g : Circuit.Graph.Graph) : Circuit.Graph.Graph := Id.run do
+      let mut graph := g
+      for i in [:graph.book.size] do
+        if let some d := graph.book[i]? then
+          let isIOPrim := (ioBindName?.any (· == d.name)) || (pureIOName?.any (· == d.name))
+          if isIOPrim then
+            graph := graph.setReducibility i .irreducible
+      graph
     let (optimized, _) ← Circuit.partialEval (setIrreducible graph) (abbrevEnv := cm.abbrevEnv)
     -- Step 2: resolve all metas so IOErasure and Alloy see clean types
     let resolved := Circuit.Lower.resolveGraphMetas optimized cm.metas
@@ -166,6 +177,7 @@ def lowerAndMerge
     (externalConstructors : Std.HashMap String Nat)
     (mergedGlobals : Soma.Dependent.Globals)
     (dependencyAlloyModules : Array (String × Alloy.Module) := #[])
+    (globalAbbrevEnv : Soma.Dependent.AbbrevEnv := {})
     : IO (Std.HashMap String Nat × Array (String × Alloy.Module) × Alloy.Module) := do
   IO.println "\n=== Starting compilation phase ==="
   IO.println s!"  Compiling {modules.size} module(s) for package '{packageName}'"
@@ -183,7 +195,7 @@ def lowerAndMerge
   IO.println "  Lowering to Alloy IR..."
   let mut localAlloyModules : Array (String × Alloy.Module) := #[]
   for cm in modules do
-    let alloyMod ← lowerToAlloy cm mergedGlobals
+    let alloyMod ← lowerToAlloy cm mergedGlobals globalAbbrevEnv
     localAlloyModules := localAlloyModules.push (cm.name, alloyMod)
 
   IO.println s!"  Generated {localAlloyModules.size} local Alloy module(s)"
@@ -209,9 +221,10 @@ def compileLibrary
     (externalConstructors : Std.HashMap String Nat)
     (mergedGlobals : Soma.Dependent.Globals)
     (dependencyAlloyModules : Array (String × Alloy.Module) := #[])
+    (globalAbbrevEnv : Soma.Dependent.AbbrevEnv := {})
     : IO CompileResult := do
   let (allConstructors, localAlloyModules, _merged) ←
-    lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules
+    lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules globalAbbrevEnv
 
   IO.println "Compilation phase complete"
 
@@ -229,9 +242,10 @@ def compileModules
     (targetOs : Soma.Driver.TargetOS)
     (ptrSize : Nat)
     (dataLayout : Option String := none)
+    (globalAbbrevEnv : Soma.Dependent.AbbrevEnv := {})
     : IO CompileResult := do
   let (allConstructors, localAlloyModules, merged) ←
-    lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules
+    lowerAndMerge packageName modules externalConstructors mergedGlobals dependencyAlloyModules globalAbbrevEnv
 
   -- Monomorphize
   IO.println "  Monomorphizing..."

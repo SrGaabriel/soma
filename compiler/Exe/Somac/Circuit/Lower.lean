@@ -235,7 +235,7 @@ partial def unfoldValue (v : Value) (abbrevEnv : Soma.Dependent.AbbrevEnv) : Val
     let qn : QualifiedName := ⟨dId⟩
     match abbrevEnv.get? qn with
     | some abbrevInfo =>
-      if params.length == abbrevInfo.arity then
+      if params.length <= abbrevInfo.arity then
         match applyArgs abbrevInfo.expansion params with
         | some result => unfoldValue result abbrevEnv
         | none => v
