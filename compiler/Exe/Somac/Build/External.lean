@@ -162,7 +162,9 @@ def linkExecutable
   let linker := if lto then tools.clang else tools.cc
   if lto then
     if let some triple := llvmTarget then
-      args := #["-target", triple, "-fuse-ld=bfd"] ++ args
+      let isDarwin := triple.find (· == 'd') != triple.endPos
+      let linkerFlag := if !isDarwin && !isWindowsTarget then #["-fuse-ld=lld"] else #[]
+      args := #["-target", triple] ++ linkerFlag ++ args
 
   if isWindowsTarget then
     args := args.push "-lgcc"

@@ -206,11 +206,13 @@ def hostTarget : TargetSpec :=
   if System.Platform.isWindows then x86_64_windows_gnu
   else
     let t := System.Platform.target
-    if t.startsWith "aarch64" then
-      if t.find (· == 'd') != t.endPos then aarch64_macos
+    let isArm64 := t.startsWith "aarch64" || t.startsWith "arm64"
+    let isDarwin := t.find (· == 'd') != t.endPos
+    if isArm64 then
+      if isDarwin then aarch64_macos
       else aarch64_linux_gnu
     else
-      if t.find (· == 'd') != t.endPos then x86_64_macos
+      if isDarwin then x86_64_macos
       else x86_64_linux_gnu
 
 /-- Load a custom target spec from a JSON file -/
