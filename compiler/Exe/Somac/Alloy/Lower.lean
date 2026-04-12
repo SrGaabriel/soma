@@ -1274,13 +1274,12 @@ partial def lowerOperandWithMap (graph : CGraph) (port : CPortId) (funcIdMap : F
   -- Special case: accessing a consumed LAM (from collectLamChain)
   if let some paramIdx := ns.lamParams.get? port.node.id then
     if port.port.idx == 1 then
-      -- VAR port: return the parameter directly, or produce a dummy for
-      -- dead World params (indices ≥ actual param count from IO eta-expansion)
+      -- VAR port: return the parameter directly
       let ls ← StateT.lift get
       if paramIdx < ls.func.sig.params.size then
         return ⟨paramIdx⟩
       else
-        return ← StateT.lift (LowerM.emitInst (.copy (.const (.int 0 .i8))) (.prim .i8))
+        panic! s!"ALLOY BUG: LAM parameter index {paramIdx} exceeds function arity {ls.func.sig.params.size}"
     else
       -- PRINCIPAL (port 0) or BODY (port 2) port of a consumed LAM.
       -- These are structural connections that shouldn't be followed, produce undef
@@ -1339,7 +1338,12 @@ partial def lowerNodeWithMap (graph : CGraph) (nodeId : CNodeId) (funcIdMap : Fu
 
   -- Depth limit: interaction nets are acyclic, so unbounded depth means a bug
   if ns.depth > 500 then
-    panic! s!"ALLOY BUG: traversal depth exceeded 500 at node {nodeId.id} — possible malformed graph"
+    let nodeDesc := match graph.getNode nodeId with
+      | some e =>
+        let ports := e.ports.filterMap (fun (p? : Option CPortId) => p?) |>.map fun (p : CPortId) => s!"{p.node.id}:{p.port.idx}"
+        s!"{e.node} ports=[{", ".intercalate ports.toList}]"
+      | none => "missing"
+    panic! s!"ALLOY BUG: depth > 500 at node {nodeId.id} ({nodeDesc})"
 
   modify fun s => { s with processing := s.processing.insert nodeId.id, depth := s.depth + 1 }
 
@@ -2642,7 +2646,6 @@ def lowerDefinitionWithN (graph : CGraph) (def_ : CDefinition) (funcId : FuncId)
       else (collectLamChain graph def_.root def_.arity alloyArity).1
     let lamParams := if def_.arity == 0 then {}
       else (collectLamChain graph def_.root def_.arity alloyArity).2
-    pure ()
     let initState : NodeState n := { lamParams, tyVarMapping, primTypes, inductives, expectedResultTy := some sig.retTy, anonLamBookIdx, abbrevEnv }
     let (result, _) ← StateT.run (lowerNodeWithMap graph rootNode funcIdMap) initState
     -- Reconcile return type: the body's lowered type is ground truth

@@ -111,11 +111,6 @@ partial def LibCache.ensure (cache : LibCache) (lib : String) : IO (LibCache × 
   IO.FS.createDirAll libCacheDir
   let outputPath := libCacheDir / s!"{lib}.toria"
 
-  -- Skip rebuild if artifact already exists on disk
-  -- if ← outputPath.pathExists then
-  --   let cache' := { cache with artifacts := cache.artifacts.insert lib outputPath }
-  --   return (cache', outputPath)
-
   let buildOpts : BuildOptions := {
     input := srcDir.toString
     output := some outputPath.toString

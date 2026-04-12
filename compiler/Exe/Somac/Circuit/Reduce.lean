@@ -70,7 +70,7 @@ private def defProcessingOrder (g : Graph) : Array Nat := Id.run do
   let mut rdeps : Array (Array Nat) := Array.mk (List.replicate n #[])
   for i in [:n] do
     if let some def_ := g.book[i]? then
-      if !def_.reducibility != .reducible then
+      if def_.reducibility == .reducible then
         let reachable := g.reachableFrom (PortId.principal def_.root)
         let mut seen : Std.HashSet Nat := {}
         for nid in reachable do
@@ -113,7 +113,7 @@ private def partialEvalPass (graph : Graph) (fuel : Nat)
   let mut stats : Stats := {}
   for i in order do
     if let some def_ := g.book[i]? then
-      if !def_.reducibility != .reducible then
+      if def_.reducibility == .reducible then
         let isIO := Id.run do
           let mut ty := Somac.Circuit.Lower.unfoldValue def_.ty abbrevEnv
           for _ in [:30] do

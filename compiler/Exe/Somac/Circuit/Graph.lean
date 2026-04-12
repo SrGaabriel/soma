@@ -69,7 +69,7 @@ inductive Reducibility where
   | irreducible
   /-- No real body (extern/intrinsic) and opaque to both the reducer and Alloy lowering -/
   | external
-  deriving Inhabited, BEq
+  deriving Inhabited, BEq, Repr
 
 /-- A global definition in the "book" (for recursion via REF nodes) -/
 structure Definition where
